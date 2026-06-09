@@ -1,0 +1,24 @@
+# LLaMA-3.2 compile profile — tier-1 config (optional).
+# Load with: CompileProfile::from_toml_path("llama32.rlx.toml")
+
+[fusion]
+policy = "direct"
+target = "auto"
+assert_clean = false
+skip = false
+
+[passes]
+dce = true
+constant_folding = true
+verbose = false
+
+[precision]
+compute = "f32"
+mixed = "none"
+
+[backend.metal]
+skip_fusion = false
+unfuse_regions = false
+
+[backend.cpu]
+unfuse_regions = true

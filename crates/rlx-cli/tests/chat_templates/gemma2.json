@@ -1,0 +1,14 @@
+{
+  "name": "gemma2-turn",
+  "family": "gemma",
+  "comment": "Gemma 2 chat template — rewrites `system` turns to `user` (Gemma doesn't have a system role) and uses `model` instead of `assistant`.",
+  "template": "{% for m in messages %}{% set role = 'user' if m.role == 'system' else (m.role if m.role != 'assistant' else 'model') %}<start_of_turn>{{ role }}\n{{ m.content }}<end_of_turn>\n{% endfor %}{% if add_generation_prompt %}<start_of_turn>model\n{% endif %}",
+  "bos_token": "<bos>",
+  "eos_token": "<eos>",
+  "messages": [
+    {"role": "system", "content": "be precise"},
+    {"role": "user", "content": "ping"}
+  ],
+  "add_generation_prompt": true,
+  "expected": "<start_of_turn>user\nbe precise<end_of_turn>\n<start_of_turn>user\nping<end_of_turn>\n<start_of_turn>model\n"
+}

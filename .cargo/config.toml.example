@@ -1,0 +1,39 @@
+# Local RLX development — patch crates.io 0.2.4 with a sibling checkout.
+#
+# Layout (recommended):
+#   rlx-workspace/
+#     rlx/           ← upstream RLX repo
+#     rlx-models/    ← this repo
+#
+# Enable local RLX:
+#   cp .cargo/config.toml.example .cargo/config.toml
+#
+# Disable (crates.io only — same as CI / `cargo publish`):
+#   rm .cargo/config.toml
+#
+# Rules:
+# - Root Cargo.toml `[workspace.dependencies]` pins `rlx*` at =0.2.4 (crates.io).
+# - Every crate uses `{ workspace = true }` — no path deps to ../rlx in committed files.
+# - Patches apply only when `.cargo/config.toml` exists (gitignored).
+# - Patch ALL entries below together; a partial patch can break native `links` (e.g. mlx-sys).
+#
+[patch.crates-io]
+rlx = { path = "../rlx/rlx" }
+rlx-ir = { path = "../rlx/rlx-ir" }
+rlx-flow = { path = "../rlx/rlx-flow" }
+rlx-runtime = { path = "../rlx/rlx-runtime" }
+rlx-compile = { path = "../rlx/rlx-compile" }
+rlx-opt = { path = "../rlx/rlx-opt" }
+rlx-autodiff = { path = "../rlx/rlx-autodiff" }
+rlx-fusion = { path = "../rlx/rlx-fusion" }
+rlx-driver = { path = "../rlx/rlx-driver" }
+rlx-cpu = { path = "../rlx/rlx-cpu" }
+rlx-gguf = { path = "../rlx/rlx-gguf" }
+rlx-text = { path = "../rlx/rlx-text" }
+rlx-onnx-import = { path = "../rlx/rlx-onnx-import" }
+rlx-metal = { path = "../rlx/rlx-metal" }
+rlx-mlx = { path = "../rlx/rlx-mlx" }
+rlx-mlx-sys = { path = "../rlx/rlx-mlx-sys" }
+rlx-cuda = { path = "../rlx/rlx-cuda" }
+rlx-wgpu = { path = "../rlx/rlx-wgpu" }
+rlx-rocm = { path = "../rlx/rlx-rocm" }

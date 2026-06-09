@@ -1,0 +1,28 @@
+[package]
+name = "rlx-omnicoder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OmniCoder Qwen3-coder-shaped runner — STUB (PLAN.md M4)"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-llama-base = { workspace = true }
+rlx-qwen3 = { workspace = true }
+rlx-cli = { workspace = true }
+
+[features]
+default = []
+metal = ["rlx-qwen3/metal"]
+mlx = ["rlx-qwen3/mlx"]
+cuda = ["rlx-qwen3/cuda"]
+rocm = ["rlx-qwen3/rocm"]
+gpu = ["rlx-qwen3/gpu"]
+vulkan = ["rlx-qwen3/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+
+[lints]
+workspace = true

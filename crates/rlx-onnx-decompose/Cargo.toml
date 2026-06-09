@@ -1,0 +1,23 @@
+[package]
+name = "rlx-onnx-decompose"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Decompose ONNX models into generated RLX Rust source + safetensors/GGUF weights"
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-onnx-import = { workspace = true }
+safetensors = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "rlx-onnx-decompose"
+path = "src/bin/decompose.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,40 @@
+[package]
+name = "rlx-minicpm5"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "MiniCPM5 causal LM runner (Llama-shaped; openbmb/MiniCPM5-1B)"
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-llama-base = { workspace = true }
+rlx-llama32 = { workspace = true }
+rlx-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hf-hub = { workspace = true, optional = true }
+
+[features]
+default = []
+hf-download = ["dep:hf-hub"]
+tokenizer = ["rlx-llama32/tokenizer"]
+metal = ["rlx-llama32/metal"]
+mlx = ["rlx-llama32/mlx"]
+cuda = ["rlx-llama32/cuda"]
+rocm = ["rlx-llama32/rocm"]
+gpu = ["rlx-llama32/gpu"]
+vulkan = ["rlx-llama32/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+
+[[bin]]
+name = "rlx-minicpm5"
+path = "src/bin/rlx_minicpm5.rs"
+required-features = ["tokenizer"]
+
+[lints]
+workspace = true

@@ -1,0 +1,77 @@
+# Decomposed Kitten ONNX model — `rlx*` deps via workspace (crates.io 0.2.4).
+
+[package]
+name = "kitten_tts_mini_rlx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "RLX native KittenTTS graph decomposed from ONNX (weights downloaded separately)"
+exclude = [
+    "weights/**",
+    "decompose_report.json",
+]
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-cpu = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-onnx-import = { workspace = true }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-opt = { workspace = true }
+rlx-compile = { workspace = true }
+dirs = "6"
+safetensors = { workspace = true }
+half = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+rlx-metal = { workspace = true, optional = true }
+rlx-mlx = { workspace = true, optional = true }
+
+[[example]]
+name = "native_quick"
+path = "examples/native_quick.rs"
+
+[[example]]
+name = "compile_check"
+path = "examples/compile_check.rs"
+required-features = ["generated-graph"]
+
+[[example]]
+name = "duration_parity"
+path = "examples/duration_parity.rs"
+
+[[example]]
+name = "dump_lir_shapes"
+path = "examples/dump_lir_shapes.rs"
+
+[[example]]
+name = "compare_intermediates"
+path = "examples/compare_intermediates.rs"
+
+[features]
+default = ["cpu"]
+cpu = ["rlx-runtime/cpu"]
+cuda = ["rlx-runtime/cuda"]
+metal = ["rlx-runtime/metal", "dep:rlx-metal"]
+mlx = ["rlx-runtime/mlx", "dep:rlx-mlx"]
+gpu = ["rlx-runtime/gpu"]
+rocm = ["rlx-runtime/rocm"]
+# Fallback `graph.rs` (~27k lines). Off by default — use `weights/rlx_bundle` + rlx-onnx-import.
+generated-graph = []
+
+[[example]]
+name = "dump_one_node"
+path = "examples/dump_one_node.rs"
+
+[[example]]
+name = "debug_input_arena"
+path = "examples/debug_input_arena.rs"
+
+[dev-dependencies]
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

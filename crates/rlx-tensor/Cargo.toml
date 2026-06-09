@@ -1,0 +1,16 @@
+[package]
+name = "rlx-tensor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Host-side tensor kernels shared by SAM3, FLUX.2, and V-JEPA2"
+repository.workspace = true
+
+[dependencies]
+rlx-cpu = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,52 @@
+[package]
+name = "rlx-locateanything"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "NVIDIA LocateAnything-3B VLM (MoonViT + Qwen2.5-3B) for RLX"
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-qwen3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+image = { workspace = true }
+tokenizers = { workspace = true, optional = true }
+hf-hub = { workspace = true, optional = true }
+
+[features]
+default = ["tokenizer", "hf-cache", "hf-download"]
+tokenizer = ["dep:tokenizers"]
+hf-cache = ["dep:hf-hub"]
+hf-download = ["hf-cache"]
+metal = ["rlx-runtime/metal", "rlx-qwen3/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-qwen3/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-qwen3/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-qwen3/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-qwen3/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-qwen3/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[[bin]]
+name = "rlx-locateanything"
+path = "src/bin/rlx_locateanything.rs"
+
+[dev-dependencies]
+anyhow = { workspace = true }
+image = { workspace = true }
+rlx-core = { workspace = true }
+
+[lints]
+workspace = true

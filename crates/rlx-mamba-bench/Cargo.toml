@@ -1,0 +1,23 @@
+[package]
+name = "rlx-mamba-bench"
+version = "0.2.4"
+edition = "2024"
+rust-version = "1.87"
+license = "GPL-3.0-only"
+description = "Head-to-head benchmark of rlx-mamba against burn-mamba. Excluded from the default workspace because of the burn dependency footprint."
+publish = false
+
+# Standalone crate (workspace.exclude in the root Cargo.toml). The
+# burn dep graph is heavy, so users who don't care about the
+# comparison shouldn't pay for it. Run with:
+#   cargo bench --manifest-path crates/rlx-mamba-bench/Cargo.toml
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+rlx-mamba = { path = "../rlx-mamba" }
+burn = { version = "0.21", default-features = false, features = ["ndarray", "std"] }
+burn-mamba = { git = "https://github.com/swfsql/burn-mamba.git", default-features = false, features = ["mamba1", "backend-ndarray", "backend-ndarray-blas-accelerate"] }
+
+[[bench]]
+name = "vs_burn_mamba"
+harness = false

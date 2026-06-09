@@ -1,0 +1,41 @@
+[package]
+name = "rlx-nemotron"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "NVIDIA Nemotron 3 Nano runner — text + hybrid Mamba2/attention LM"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-core = { workspace = true }
+rlx-llama-base = { workspace = true }
+rlx-llama32 = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-ssm = { workspace = true }
+rlx-cpu = { workspace = true }
+rlx-gguf = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+# vLLM-Omni reference for Voxtral-4B-TTS parity (GPU recommended).
+#
+# Build:
+#   docker build -t rlx-voxtral-tts-ref:gpu -f docker/voxtral-tts/Dockerfile.ref docker/voxtral-tts
+#
+# Requires NVIDIA Container Toolkit for practical inference.
+
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+
+RUN pip install --no-cache-dir \
+        "mistral_common>=1.5.4" \
+        "soundfile>=0.12" \
+        "vllm-omni" \
+    && rm -rf /root/.cache/pip
+
+WORKDIR /work
+COPY entrypoint-ref.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV PYTHONUNBUFFERED=1
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["help"]

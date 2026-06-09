@@ -1,0 +1,36 @@
+[package]
+name = "rlx-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared CLI helpers and multiplexer registry for RLX model binaries"
+repository.workspace = true
+
+[dependencies]
+rlx-core = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-text = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+phf = { version = "0.11", features = ["macros"] }
+clap = { version = "4", features = ["derive"] }
+ureq = { version = "~2.12", features = ["json"], optional = true }
+
+[features]
+default = []
+# Enable network-backed compatibility checks (hf-repo fetches).
+compat-net = ["dep:ureq"]
+
+[dev-dependencies]
+# Used by tests/chat_templates.rs to deserialize fixture JSON.
+serde = { workspace = true, features = ["derive"] }
+
+[[bin]]
+name = "rlx-inspect"
+path = "src/bin/rlx_inspect.rs"
+
+[lints]
+workspace = true

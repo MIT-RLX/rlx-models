@@ -1,0 +1,106 @@
+[package]
+name = "rlx-ocr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "OCR engine for RLX — text detection + recognition"
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+anyhow = { workspace = true }
+bytemuck = { workspace = true }
+half = { workspace = true }
+image = { workspace = true }
+rten-imageproc = { workspace = true }
+rten-tensor = { workspace = true }
+safetensors = { workspace = true }
+memmap2 = "0.9"
+rten = { workspace = true, optional = true }
+rten-model-file = { version = "0.24", optional = true }
+rayon = { version = "1.12", optional = true }
+ocrs = { workspace = true, optional = true }
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
+
+[[bin]]
+name = "rlx-ocr"
+path = "src/bin/rlx_ocr.rs"
+
+[[bin]]
+name = "rlx-ocr-convert"
+path = "src/bin/rlx_ocr_convert.rs"
+required-features = ["convert-rten"]
+
+[features]
+default = ["rlx", "tensor-ops"]
+# Native RLX detection + recognition graphs (safetensors weights).
+rlx = []
+# NdTensor pad/resize traits (`rten::Operators`); not RTen graph inference.
+tensor-ops = ["dep:rten"]
+# Legacy RTen `.rten` graph inference (baseline / parity only).
+rten-inference = ["tensor-ops", "dep:rayon", "rten/rten_format"]
+rten-mmap = ["rten-inference", "rten/mmap"]
+convert-rten = ["rten-inference", "dep:rten-model-file"]
+parity-ocrs = ["rten-inference", "dep:ocrs", "dep:ureq"]
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[[test]]
+name = "det_shape_probe"
+path = "tests/det_shape_probe.rs"
+required-features = ["rten-inference"]
+
+[[test]]
+name = "ocr_parity"
+path = "tests/ocr_parity.rs"
+required-features = ["parity-ocrs", "convert-rten"]
+
+[[test]]
+name = "ocr_perf_vs_reference"
+path = "tests/ocr_perf_vs_reference.rs"
+required-features = ["parity-ocrs", "convert-rten"]
+
+[dev-dependencies]
+criterion = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[[test]]
+name = "ocr_backend_bench"
+required-features = ["rlx", "convert-rten"]
+
+[[test]]
+name = "ocr_batch_quick_check"
+required-features = ["rlx"]
+
+[[test]]
+name = "ocr_backend_quick_check"
+path = "tests/ocr_backend_quick_check.rs"
+required-features = ["rlx", "convert-rten"]
+
+[[test]]
+name = "recognition_native_bisect"
+path = "tests/recognition_native_bisect.rs"
+required-features = ["rlx", "rten-inference"]
+
+[[bench]]
+name = "ocr_vs_reference"
+harness = false
+required-features = ["parity-ocrs", "convert-rten"]
+
+[lints]
+workspace = true

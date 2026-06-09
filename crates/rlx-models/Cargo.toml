@@ -1,0 +1,469 @@
+[package]
+name = "rlx-models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Model loading for RLX — config parsing, safetensors weights, graph builders"
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-sam-ir = { workspace = true }
+rlx-tensor = { workspace = true }
+rlx-bert = { workspace = true }
+rlx-clinicalbert = { workspace = true }
+rlx-nomic = { workspace = true }
+rlx-vision = { workspace = true }
+rlx-dinov2 = { workspace = true }
+rlx-embed = { workspace = true }
+rlx-sam = { workspace = true }
+rlx-sam2 = { workspace = true }
+rlx-sam3 = { workspace = true }
+rlx-qwen3 = { workspace = true }
+rlx-qwen3-tts = { workspace = true }
+rlx-llama32 = { workspace = true }
+rlx-gemma = { workspace = true }
+rlx-llada2 = { workspace = true }
+rlx-qwen35 = { workspace = true }
+rlx-flux2 = { workspace = true }
+rlx-diamond = { workspace = true }
+rlx-vjepa2 = { workspace = true }
+rlx-wav2vec2-bert = { workspace = true }
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+rlx-vad = { workspace = true }
+rlx-voxtral = { workspace = true }
+rlx-locateanything = { workspace = true }
+rlx-voxtral-tts = { workspace = true }
+rlx-ocr = { workspace = true }
+rlx-neutts = { workspace = true }
+rlx-kittentts = { workspace = true }
+rlx-mistral = { workspace = true }
+rlx-bonsai = { workspace = true }
+rlx-minicpm5 = { workspace = true, features = ["tokenizer"] }
+rlx-phi = { workspace = true }
+rlx-omnicoder = { workspace = true }
+rlx-granite = { workspace = true }
+rlx-cohere = { workspace = true }
+rlx-llama-base = { workspace = true }
+
+rlx-ir = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-opt = { workspace = true }
+rlx-cpu = { workspace = true }
+rlx-gguf = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+half = { workspace = true }
+anyhow = { workspace = true }
+hound = "3.5"
+bytemuck = { workspace = true }
+llama-cpp-2 = { workspace = true, optional = true }
+hf-hub = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+rlx-metal = { workspace = true, optional = true }
+rlx-mlx = { workspace = true, optional = true }
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+candle-transformers = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+rlx-lfm = { workspace = true }
+
+[dev-dependencies]
+ndarray = "0.16"
+criterion = { workspace = true }
+rlx-ssm = { workspace = true }
+rlx-opt = { workspace = true }
+rlx-qwen3-vl = { workspace = true }
+rlx-lfm-vl = { workspace = true }
+rlx-nemotron-omni = { workspace = true }
+rlx-vlm-base = { workspace = true }
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+rlx-vad = { workspace = true }
+image = { workspace = true }
+
+[features]
+default = ["qwen35-tokenizer", "flux2-tokenizer", "flux2-image", "embed"]
+# Forward rlx-cli's `compat-net` so `rlx_models::run::check_hf_repo` works.
+compat-net = ["rlx-cli/compat-net"]
+hf-download = [
+    "dep:hf-hub",
+    "rlx-embed/hf-download",
+    "rlx-llada2/hf-download",
+    "rlx-flux2/hf-download",
+    "rlx-minicpm5/hf-download",
+    "rlx-locateanything/hf-download",
+    "rlx-qwen3-tts/hf-download",
+    "rlx-kittentts/hf-download",
+]
+embed = ["rlx-embed/embed"]
+qwen35-tokenizer = ["rlx-qwen35/tokenizer"]
+qwen35-vlm = ["rlx-qwen35/qwen35-vlm"]
+flux2-tokenizer = ["rlx-flux2/flux2-tokenizer"]
+flux2-image = ["rlx-flux2/flux2-image"]
+metal = [
+    "rlx-runtime/metal",
+    "dep:rlx-metal",
+    "rlx-bert/metal",
+    "rlx-clinicalbert/metal",
+    "rlx-bonsai/metal",
+    "rlx-cohere/metal",
+    "rlx-dinov2/metal",
+    "rlx-embed/metal",
+    "rlx-flux2/metal",
+    "rlx-gemma/metal",
+    "rlx-granite/metal",
+    "rlx-llada2/metal",
+    "rlx-llama32/metal",
+    "rlx-lfm/metal",
+    "rlx-locateanything/metal",
+    "rlx-minicpm5/metal",
+    "rlx-mistral/metal",
+    "rlx-neutts/metal",
+    "rlx-kittentts/metal",
+    "rlx-nomic/metal",
+    "rlx-ocr/metal",
+    "rlx-omnicoder/metal",
+    "rlx-phi/metal",
+    "rlx-qwen3/metal",
+    "rlx-qwen3-tts/metal",
+    "rlx-qwen35/metal",
+    "rlx-sam/metal",
+    "rlx-sam2/metal",
+    "rlx-sam3/metal",
+    "rlx-vision/metal",
+    "rlx-vjepa2/metal",
+    "rlx-voxtral/metal",
+    "rlx-voxtral-tts/metal",
+    "rlx-wav2vec2-bert/metal",
+    "rlx-whisper/metal",
+]
+mlx = [
+    "rlx-runtime/mlx",
+    "dep:rlx-mlx",
+    "rlx-bert/mlx",
+    "rlx-clinicalbert/mlx",
+    "rlx-bonsai/mlx",
+    "rlx-cohere/mlx",
+    "rlx-dinov2/mlx",
+    "rlx-embed/mlx",
+    "rlx-flux2/mlx",
+    "rlx-gemma/mlx",
+    "rlx-granite/mlx",
+    "rlx-llada2/mlx",
+    "rlx-llama32/mlx",
+    "rlx-lfm/mlx",
+    "rlx-locateanything/mlx",
+    "rlx-minicpm5/mlx",
+    "rlx-mistral/mlx",
+    "rlx-neutts/mlx",
+    "rlx-kittentts/mlx",
+    "rlx-nomic/mlx",
+    "rlx-ocr/mlx",
+    "rlx-omnicoder/mlx",
+    "rlx-phi/mlx",
+    "rlx-qwen3/mlx",
+    "rlx-qwen3-tts/mlx",
+    "rlx-qwen35/mlx",
+    "rlx-sam/mlx",
+    "rlx-sam2/mlx",
+    "rlx-sam3/mlx",
+    "rlx-vision/mlx",
+    "rlx-vjepa2/mlx",
+    "rlx-voxtral/mlx",
+    "rlx-voxtral-tts/mlx",
+    "rlx-wav2vec2-bert/mlx",
+    "rlx-whisper/mlx",
+]
+gpu = [
+    "rlx-runtime/gpu",
+    "rlx-bert/gpu",
+    "rlx-clinicalbert/gpu",
+    "rlx-bonsai/gpu",
+    "rlx-cohere/gpu",
+    "rlx-dinov2/gpu",
+    "rlx-embed/gpu",
+    "rlx-flux2/gpu",
+    "rlx-gemma/gpu",
+    "rlx-granite/gpu",
+    "rlx-llada2/gpu",
+    "rlx-llama32/gpu",
+    "rlx-lfm/gpu",
+    "rlx-locateanything/gpu",
+    "rlx-minicpm5/gpu",
+    "rlx-mistral/gpu",
+    "rlx-neutts/gpu",
+    "rlx-kittentts/gpu",
+    "rlx-nomic/gpu",
+    "rlx-ocr/gpu",
+    "rlx-omnicoder/gpu",
+    "rlx-phi/gpu",
+    "rlx-qwen3/gpu",
+    "rlx-qwen3-tts/gpu",
+    "rlx-qwen35/gpu",
+    "rlx-sam/gpu",
+    "rlx-sam2/gpu",
+    "rlx-sam3/gpu",
+    "rlx-vision/gpu",
+    "rlx-vjepa2/gpu",
+    "rlx-voxtral/gpu",
+    "rlx-voxtral-tts/gpu",
+    "rlx-wav2vec2-bert/gpu",
+    "rlx-whisper/gpu",
+]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+vulkan = [
+    "rlx-runtime/vulkan",
+    "rlx-bert/vulkan",
+    "rlx-clinicalbert/vulkan",
+    "rlx-bonsai/vulkan",
+    "rlx-cohere/vulkan",
+    "rlx-dinov2/vulkan",
+    "rlx-embed/vulkan",
+    "rlx-flux2/vulkan",
+    "rlx-gemma/vulkan",
+    "rlx-granite/vulkan",
+    "rlx-llada2/vulkan",
+    "rlx-llama32/vulkan",
+    "rlx-lfm/vulkan",
+    "rlx-locateanything/vulkan",
+    "rlx-minicpm5/vulkan",
+    "rlx-mistral/vulkan",
+    "rlx-neutts/vulkan",
+    "rlx-nomic/vulkan",
+    "rlx-ocr/vulkan",
+    "rlx-omnicoder/vulkan",
+    "rlx-phi/vulkan",
+    "rlx-qwen3/vulkan",
+    "rlx-qwen3-tts/vulkan",
+    "rlx-qwen35/vulkan",
+    "rlx-sam/vulkan",
+    "rlx-sam2/vulkan",
+    "rlx-sam3/vulkan",
+    "rlx-vision/vulkan",
+    "rlx-vjepa2/vulkan",
+    "rlx-voxtral/vulkan",
+    "rlx-voxtral-tts/vulkan",
+    "rlx-wav2vec2-bert/vulkan",
+    "rlx-whisper/vulkan",
+]
+cuda = [
+    "rlx-runtime/cuda",
+    "rlx-bert/cuda",
+    "rlx-clinicalbert/cuda",
+    "rlx-bonsai/cuda",
+    "rlx-cohere/cuda",
+    "rlx-dinov2/cuda",
+    "rlx-embed/cuda",
+    "rlx-flux2/cuda",
+    "rlx-gemma/cuda",
+    "rlx-granite/cuda",
+    "rlx-llada2/cuda",
+    "rlx-llama32/cuda",
+    "rlx-lfm/cuda",
+    "rlx-locateanything/cuda",
+    "rlx-minicpm5/cuda",
+    "rlx-mistral/cuda",
+    "rlx-neutts/cuda",
+    "rlx-kittentts/cuda",
+    "rlx-nomic/cuda",
+    "rlx-ocr/cuda",
+    "rlx-omnicoder/cuda",
+    "rlx-phi/cuda",
+    "rlx-qwen3/cuda",
+    "rlx-qwen3-tts/cuda",
+    "rlx-qwen35/cuda",
+    "rlx-sam/cuda",
+    "rlx-sam2/cuda",
+    "rlx-sam3/cuda",
+    "rlx-vision/cuda",
+    "rlx-vjepa2/cuda",
+    "rlx-voxtral/cuda",
+    "rlx-voxtral-tts/cuda",
+    "rlx-wav2vec2-bert/cuda",
+    "rlx-whisper/cuda",
+]
+rocm = [
+    "rlx-runtime/rocm",
+    "rlx-bert/rocm",
+    "rlx-clinicalbert/rocm",
+    "rlx-bonsai/rocm",
+    "rlx-cohere/rocm",
+    "rlx-dinov2/rocm",
+    "rlx-embed/rocm",
+    "rlx-flux2/rocm",
+    "rlx-gemma/rocm",
+    "rlx-granite/rocm",
+    "rlx-llada2/rocm",
+    "rlx-llama32/rocm",
+    "rlx-lfm/rocm",
+    "rlx-locateanything/rocm",
+    "rlx-minicpm5/rocm",
+    "rlx-mistral/rocm",
+    "rlx-neutts/rocm",
+    "rlx-kittentts/rocm",
+    "rlx-nomic/rocm",
+    "rlx-ocr/rocm",
+    "rlx-omnicoder/rocm",
+    "rlx-phi/rocm",
+    "rlx-qwen3/rocm",
+    "rlx-qwen3-tts/rocm",
+    "rlx-qwen35/rocm",
+    "rlx-sam/rocm",
+    "rlx-sam2/rocm",
+    "rlx-sam3/rocm",
+    "rlx-vision/rocm",
+    "rlx-vjepa2/rocm",
+    "rlx-voxtral/rocm",
+    "rlx-voxtral-tts/rocm",
+    "rlx-wav2vec2-bert/rocm",
+    "rlx-whisper/rocm",
+]
+tpu = ["rlx-runtime/tpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+parity-candle = [
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:candle-transformers",
+    "dep:image",
+]
+parity-gemm = ["rlx-cpu/parity-gemm"]
+parity-pytorch = []
+parity-llama = ["dep:llama-cpp-2", "rlx-qwen35/parity-llama"]
+
+[[example]]
+name = "qwen3_matrix"
+required-features = ["parity-candle"]
+
+[[example]]
+name = "llada2_run"
+path = "examples/llada2_run.rs"
+
+[[example]]
+name = "llada2_e2e_compare"
+path = "examples/llada2_e2e_compare.rs"
+
+[[example]]
+name = "llada2_compare"
+path = "examples/llada2_compare.rs"
+
+[[example]]
+name = "llada2_download"
+path = "examples/llada2_download.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "minicpm5_download"
+path = "examples/minicpm5_download.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "voxtral_download"
+path = "examples/voxtral_download.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "locateanything_download"
+path = "examples/locateanything_download.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "locateanything_ground"
+path = "examples/locateanything_ground.rs"
+
+[[example]]
+name = "locateanything_bench"
+path = "examples/locateanything_bench.rs"
+
+[[example]]
+name = "voxtral_tts_download"
+path = "examples/voxtral_tts_download.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "minicpm5_gguf_download"
+path = "examples/minicpm5_gguf_download.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "minicpm5_forward_bench"
+path = "examples/minicpm5_forward_bench.rs"
+
+[[example]]
+name = "whisper_bench"
+path = "examples/whisper_bench.rs"
+
+[[example]]
+name = "voxtral_tts_bench"
+path = "examples/voxtral_tts_bench.rs"
+
+[[example]]
+name = "qwen3_tts_download"
+path = "examples/qwen3_tts_download.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "qwen3_tts_download_base"
+path = "examples/qwen3_tts_download_base.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "qwen3_tts_jfk_manifest"
+path = "examples/qwen3_tts_jfk_manifest.rs"
+
+[[example]]
+name = "qwen3_tts_bench"
+path = "examples/qwen3_tts_bench.rs"
+
+[[example]]
+name = "qwen3_tts_cp_ab"
+path = "examples/qwen3_tts_cp_ab.rs"
+
+[[example]]
+name = "qwen3_tts_fusion_ab"
+path = "examples/qwen3_tts_fusion_ab.rs"
+
+[[example]]
+name = "run_minicpm5"
+path = "examples/run_minicpm5.rs"
+
+[[example]]
+name = "skill_replacement"
+path = "examples/skill_replacement.rs"
+
+[[bin]]
+name = "rlx-run"
+path = "src/bin/rlx_run.rs"
+
+[[bench]]
+name = "qwen3_inference"
+harness = false
+
+[[bench]]
+name = "minicpm5_inference"
+harness = false
+
+[[bench]]
+name = "dinov2_vs_candle"
+harness = false
+required-features = ["parity-candle"]
+
+[[bench]]
+name = "sam_vs_candle"
+harness = false
+required-features = ["parity-candle"]
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+# CPU-friendly tools: tokenize + convert preset voice embeddings.
+FROM python:3.11-slim
+
+RUN pip install --no-cache-dir \
+        "mistral_common>=1.5.4" \
+        "torch==2.4.0" --index-url https://download.pytorch.org/whl/cpu \
+    && rm -rf /root/.cache/pip
+
+WORKDIR /work
+COPY entrypoint-tools.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV PYTHONUNBUFFERED=1
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["help"]

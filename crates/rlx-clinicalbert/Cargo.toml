@@ -1,0 +1,97 @@
+[package]
+name = "rlx-clinicalbert"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "ClinicalBERT encoder runner (Huang / Bio_ClinicalBERT) on top of rlx-bert"
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+rlx-core = { workspace = true }
+rlx-bert = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-opt = { workspace = true }
+rlx-cpu = { workspace = true }
+hf-hub = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+candle-core = { workspace = true, optional = true }
+half = { workspace = true, optional = true }
+
+[features]
+default = []
+tokenizer = ["dep:tokenizers"]
+prepare = ["dep:candle-core", "dep:half", "dep:hf-hub", "tokenizer"]
+hf-download = ["dep:hf-hub", "prepare"]
+# Pre-trained pooler head: Dense(H→H) + tanh on [CLS]. Loads `bert.pooler.*`.
+pooler = []
+# Masked-Language-Model head: Dense(H→H) + GeLU + LN + tied-decoder over vocab.
+# Loads `cls.predictions.*` (transform + bias) and clones the input embedding
+# matrix (HF ties `decoder.weight` to `bert.embeddings.word_embeddings.weight`).
+mlm = []
+# Convenience: both heads.
+heads = ["pooler", "mlm"]
+# Replace OpenBLAS with Intel MKL on Windows / Linux x86 hosts. macOS
+# stays on Accelerate. Pass through to rlx-cpu via the workspace patch
+# table so the same cargo build picks MKL for every BLAS call (matmul,
+# IR-folded MLM head, pooler, etc.).
+blas-mkl = ["rlx-cpu/blas-mkl"]
+metal = ["rlx-bert/metal", "rlx-runtime/metal"]
+mlx = ["rlx-bert/mlx", "rlx-runtime/mlx"]
+cuda = ["rlx-bert/cuda", "rlx-runtime/cuda"]
+rocm = ["rlx-bert/rocm", "rlx-runtime/rocm"]
+gpu = ["rlx-bert/gpu", "rlx-runtime/gpu"]
+vulkan = ["rlx-bert/vulkan", "rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[[bin]]
+name = "rlx-clinicalbert"
+path = "src/bin/rlx_clinicalbert.rs"
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "encoder"
+harness = false
+required-features = ["heads"]
+
+[[bench]]
+name = "heads"
+harness = false
+required-features = ["heads"]
+
+[[example]]
+name = "prepare_dir"
+required-features = ["prepare"]
+
+[[example]]
+name = "parity_check"
+required-features = ["heads", "tokenizer"]
+
+[[example]]
+name = "mlm_fold_parity"
+required-features = ["heads", "tokenizer"]
+
+[[example]]
+name = "bench_batch"
+required-features = ["heads", "tokenizer"]
+
+[[example]]
+name = "mednli_eval"
+required-features = ["pooler", "tokenizer"]
+
+[lints]
+workspace = true

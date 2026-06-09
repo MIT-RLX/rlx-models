@@ -1,0 +1,14 @@
+{
+  "crate_name": "bench_matmul_relu",
+  "initializer_count": 2,
+  "lowered": 3,
+  "node_count": 3,
+  "op_histogram": {
+    "Add": 1,
+    "MatMul": 1,
+    "Relu": 1
+  },
+  "skipped": 0,
+  "source_onnx": "/tmp/bench_matmul_relu.onnx",
+  "unsupported": {}
+}

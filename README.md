@@ -1,0 +1,797 @@
+# rlx-models
+
+Concrete model graph builders + weight loaders for RLX — the "what actually runs" layer.
+
+Standalone repo: [github.com/MIT-RLX/rlx-models](https://github.com/MIT-RLX/rlx-models). Clone next to [`rlx`](https://github.com/MIT-RLX/rlx):
+
+```text
+rlx-workspace/
+  rlx/          # github.com/MIT-RLX/rlx
+  rlx-models/   # github.com/MIT-RLX/rlx-models
+  candle/       # optional, for parity-candle
+```
+
+```bash
+git clone https://github.com/MIT-RLX/rlx.git
+git clone https://github.com/MIT-RLX/rlx-models.git
+cd rlx-models && cargo test -p rlx-models
+```
+
+The RLX monorepo lists `../rlx-models/crates/rlx-models` as a workspace member; you can also run `cd rlx && cargo test -p rlx-models` there.
+
+Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
+
+## Contents
+
+- [Architecture](#architecture)
+- [Running models](#running-models)
+- [What's here](#whats-here)
+- [Install](#install)
+- [Quickstart — embeddings](#quickstart--embeddings)
+- [High-level runner API](#high-level-runner-api)
+- [Adding a new model](#adding-a-new-model)
+- [Compile profiles](#compile-profiles-tier-1)
+- [Qwen3](#qwen3)
+- [MiniCPM5](#minicpm5)
+- [Qwen3-TTS](#qwen3-tts)
+- [Voxtral TTS](#voxtral-tts)
+- [VAD (Earshot + Silero)](#vad-earshot--silero)
+- [Build and test](#build-and-test)
+- [Status](#status)
+- [Gotchas](#gotchas)
+- [Per-crate READMEs](#per-crate-readmes)
+- [License](#license)
+
+## Architecture
+
+This repo is a **Cargo workspace**: one library crate per model family under `crates/`, plus shared infrastructure. The `rlx-models` package is a thin **facade** that re-exports historical paths (`rlx_models::qwen3`, `rlx_models::sam`, …).
+
+```text
+rlx-models/
+├── Cargo.toml              # workspace members + [workspace.dependencies]
+├── justfile                # shortcuts (optional)
+├── crates/
+│   ├── rlx-models-core/    # config, weight_map, flow_bridge (package `rlx-core`)
+│   ├── rlx-ssm/            # SSM flow stages + custom ops (Mamba, LFM, …)
+│   ├── rlx-cli/            # shared CLI + rlx-inspect
+│   ├── rlx-<model>/        # one crate per family
+│   └── rlx-models/         # facade + optional rlx-run multiplexer
+└── crates/rlx-models/examples/   # integration templates
+```
+
+### Crates
+
+| Crate | Model / role |
+|---|---|
+| `rlx-models-core` (`rlx-core`) | config, `weight_map`, `weight_loader`, `flow_bridge`, `flow_util` |
+| `rlx-ssm` | SSM flow stages (`MambaScanStage`, decode-step custom ops) |
+| `rlx-mamba` | Mamba1 block + multi-backend driver |
+| `rlx-bert` | BERT |
+| `rlx-nomic` | NomicBERT |
+| `rlx-vision` | NomicVision |
+| `rlx-dinov2` | DINOv2 |
+| `rlx-embed` | embedding runtime |
+| `rlx-sam` / `sam2` / `sam3` | SAM family |
+| `rlx-sam-ir` | shared mask-decoder IR |
+| `rlx-qwen3` | Qwen3 LM |
+| `rlx-qwen35` | Qwen3.5 / 3.6 |
+| `rlx-llama32` | LLaMA 3.2 |
+| `rlx-minicpm5` | MiniCPM5 (Llama-shaped; [openbmb/MiniCPM5-1B](https://huggingface.co/openbmb/MiniCPM5-1B)) |
+| `rlx-gemma` | Gemma / Gemma 2 |
+| `rlx-llada2` | LLaDA2 + TIDE offload |
+| `rlx-flux2` | FLUX.2 |
+| `rlx-vjepa2` | V-JEPA 2 |
+| `rlx-wav2vec2-bert` | Wav2Vec2-BERT |
+| `rlx-whisper` | OpenAI Whisper ASR |
+| [`rlx-vad`](crates/rlx-vad/README.md) | Earshot + Silero VAD (embedded weights, 16 kHz) |
+| `rlx-voxtral` | Mistral Voxtral speech LM |
+| `rlx-voxtral-tts` | Voxtral-4B-TTS inference (codec + Ministral LM) |
+| `rlx-voxtral-tts-train` | Native RLX voice-clone training (encoder + LoRA) |
+| [`rlx-qwen3-tts`](crates/rlx-qwen3-tts/README.md) | Qwen3-TTS — voice clone + CustomVoice TTS, progressive streaming, duplex voice chat (Whisper + Qwen3 LM). [JFK samples + roundtrip audio](crates/rlx-qwen3-tts/examples/audio/) ship in the crate. |
+| `rlx-locateanything` | NVIDIA LocateAnything-3B VLM (grounding) |
+| `rlx-cli` | shared CLI helpers + `rlx-inspect` |
+| `rlx-models` | facade (re-exports) + optional `rlx-run` multiplexer |
+
+### How to depend
+
+| Goal | Depend on |
+|------|-----------|
+| One model only (fast builds) | `rlx-qwen3`, `rlx-sam3`, … |
+| Stable `rlx_models::qwen3` paths | `rlx-models` facade |
+| CLI / inspect only | `rlx-cli` |
+
+New code that only needs Qwen3 should depend on `rlx-qwen3` directly.
+
+### Per-crate binaries
+
+Each model crate with a CLI has `src/cli.rs` (`pub fn run`) and `src/bin/rlx-<name>.rs`. Shared flag parsing lives in `rlx-cli`.
+
+**`rlx-run`** (in `rlx-models`) is an optional multiplexer over all built-in CLIs. Prefer per-crate binaries when you only need one family — they link less and compile faster.
+
+**SAM unified runner:** `SamRunner` (SAM1/2/3) stays on the facade (`rlx-models/src/sam_runner.rs`) because `rlx-sam2` depends on `rlx-sam`. Per-arch CLIs are on `rlx-sam`, `rlx-sam2`, `rlx-sam3`.
+
+Published `rlx*` crates (`rlx-runtime`, `rlx-flow`, …) are pinned at **0.2.4** in root `[workspace.dependencies]`; every crate uses `{ workspace = true }`. **Local dev** with a sibling `../rlx` checkout: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored patches). **Publish / CI** uses crates.io only — no `.cargo/config.toml`, no `[patch.crates-io]` in committed `Cargo.toml`.
+
+## Running models
+
+### just (shortcuts)
+
+Install [just](https://github.com/casey/just) (`brew install just`). From the repo root:
+
+```sh
+just                          # list recipes
+just qwen3 -- --weights model.gguf --prompt-ids 1,2,3
+just inspect weights/model.gguf
+just qwen3-metal -- --weights model.gguf --device metal --prompt-ids 1,2,3
+just fetch-minicpm5
+just minicpm5 -- --weights /tmp/rlx-weights/MiniCPM5-1B/model-00000-of-00001.safetensors --device cpu --prompt-ids 1,42 --max-tokens 16
+just minicpm5-chat "Hello from MiniCPM5"
+```
+
+Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md) and [MiniCPM5](#minicpm5). GPU backends: `just features=all-backends qwen3 -- --device metal`, `just qwen35-all-backends -- …`, or per-crate `qwen3-all-backends` / `qwen35-all-backends`.
+
+### Per-crate binaries (recommended)
+
+| Binary | Crate | Example |
+|--------|-------|---------|
+| `rlx-qwen3` | `rlx-qwen3` | `cargo run -p rlx-qwen3 --bin rlx-qwen3 --release -- --weights model.gguf --prompt-ids 1,2,3` |
+| `rlx-qwen35` | `rlx-qwen35` | `cargo run -p rlx-qwen35 --bin rlx-qwen35 --release -- …` |
+| `rlx-llama32` | `rlx-llama32` | `cargo run -p rlx-llama32 --bin rlx-llama32 --release -- …` |
+| `rlx-minicpm5` | `rlx-minicpm5` | `cargo run -p rlx-minicpm5 --features tokenizer --release -- --weights …/model.safetensors --prompt-ids 1,42` |
+| `rlx-gemma` | `rlx-gemma` | `cargo run -p rlx-gemma --bin rlx-gemma --release -- --weights model.gguf --prompt-ids 1,2,3` |
+| `rlx-dinov2` | `rlx-dinov2` | `cargo run -p rlx-dinov2 --bin rlx-dinov2 --release -- …` |
+| `rlx-vjepa2` | `rlx-vjepa2` | `cargo run -p rlx-vjepa2 --bin rlx-vjepa2 --release -- …` |
+| `rlx-wav2vec2-bert` | `rlx-wav2vec2-bert` | `cargo run -p rlx-wav2vec2-bert --bin rlx-wav2vec2-bert --release -- …` |
+| `rlx-whisper` | `rlx-whisper` | `cargo run -p rlx-whisper --bin rlx-whisper --release -- --weights model.safetensors --wav audio16k.wav` |
+| `rlx-vad` | `rlx-vad` | `cargo run -p rlx-vad --release -- --backend silero --wav audio16k.wav` ([docs](crates/rlx-vad/README.md)) |
+| `rlx-voxtral` | `rlx-voxtral` | `cargo run -p rlx-voxtral --bin rlx-voxtral --release -- --weights model_dir --wav audio16k.wav --transcribe` |
+| `rlx-voxtral-tts` | `rlx-voxtral-tts` | `just voxtral-tts -- --model-dir DIR --text "Hello" --voice neutral_female -o out.wav` |
+| `rlx-voxtral-tts-train` | `rlx-voxtral-tts-train` | `just voxtral-tts-train-production -- --model-dir DIR --wav-dir WAVS --device auto` |
+| `rlx-locateanything` | `rlx-locateanything` | `cargo run -p rlx-locateanything --bin rlx-locateanything --release -- --model-dir DIR --dry` |
+| `rlx-sam1` | `rlx-sam` | `cargo run -p rlx-sam --bin rlx-sam1 --release -- …` |
+| `rlx-sam2` | `rlx-sam2` | `cargo run -p rlx-sam2 --bin rlx-sam2 --release -- …` |
+| `rlx-sam3` | `rlx-sam3` | `cargo run -p rlx-sam3 --bin rlx-sam3 --release -- …` |
+| `rlx-flux2` | `rlx-flux2` | `cargo run -p rlx-flux2 --bin rlx-flux2 --release -- …` |
+| `rlx-flux2-serve` | `rlx-flux2` | JSON-lines server on stdin |
+| `rlx-inspect` | `rlx-cli` | `cargo run -p rlx-cli --bin rlx-inspect -- model.gguf` |
+
+Flags match the corresponding `rlx-run` subcommand (without the subcommand name).
+
+### Multiplexer (`rlx-run`)
+
+```sh
+cargo run -p rlx-models --bin rlx-run --release --features metal -- \
+    qwen3 --weights Qwen3-0.6B-Q4_K_M.gguf --device metal --prompt-ids 1,17,42
+
+cargo run -p rlx-models --bin rlx-run -- inspect Qwen3-0.6B-Q4_K_M.gguf
+```
+
+`rlx-inspect` dumps format, tensor count, dtype histogram, GGUF metadata, MTP heads, and multi-`.gguf` dir hints (`--prefer Q4_K_M`).
+
+### Custom CLI
+
+Downstream tools can register runners without forking `rlx-models`:
+
+```rust
+use rlx_cli::{dispatch, register_cli};
+
+register_cli("my-model", "…", |args| { /* … */ });
+dispatch(&argv)?;
+```
+
+See `crates/rlx-models/examples/register_custom_runner.rs`.
+
+### Examples (facade)
+
+Integration templates on the `rlx-models` package:
+
+```sh
+cargo run -p rlx-models --example run_qwen3_gguf --release -- [args]
+just example-qwen3-gguf -- /path/to/model.gguf
+```
+
+| File | What it does |
+|---|---|
+| `run_qwen3_safetensors.rs` | Qwen3 from HF safetensors, builder API, streaming greedy decode |
+| `run_qwen3_gguf.rs` | Same from `.gguf` (Q4_K_M / Q5_K_M / Q6_K), MTP head detection |
+| `run_sam1.rs` | SAM 1 — encode image, prompt encoder + mask decoder |
+| `run_sam2.rs` | SAM 2 — FPN + memory attention |
+| `run_sam3.rs` | SAM 3 — text-conditioned detection + masks |
+| `qwen3_gguf_inference.rs` | Detailed Qwen3 GGUF walk-through |
+| `gguf_qwen3_probe.rs` | Validate `hf_to_gguf_name` against a real GGUF |
+| `qwen3_matrix.rs` | (B, L, mode) × (CPU, Metal, MLX, wgpu) parity + perf vs candle |
+| `minicpm5_download.rs` | Fetch [openbmb/MiniCPM5-1B](https://huggingface.co/openbmb/MiniCPM5-1B) safetensors (`hf-download`) |
+| `minicpm5_gguf_download.rs` | Fetch GGUF quants (Q4_K_M / Q8_0 / F16) |
+| `run_minicpm5.rs` | `MiniCpm5Runner` prefill + greedy decode from safetensors |
+| `minicpm5_forward_bench.rs` | Wall-clock prefill/decode across backends (real 1B weights) |
+| `minicpm5_chat.py` | HF chat template → `rlx-minicpm5` (`just minicpm5-chat`) |
+
+#### Qwen3-TTS samples
+
+Audio and charts live in [`crates/rlx-qwen3-tts`](crates/rlx-qwen3-tts/README.md). **Duplex voice chat** (bundled question → JFK-clone reply):
+
+<video controls preload="metadata" src="crates/rlx-qwen3-tts/examples/audio/voice_chat_question.mp4"></video>
+
+<video controls preload="metadata" src="crates/rlx-qwen3-tts/examples/audio/voice_chat_reply.mp4"></video>
+
+![Voice-chat roundtrip latency](crates/rlx-qwen3-tts/examples/charts/voice_chat_latency.svg)
+
+Three **JFK voice-clone** clips (`ask_not`, `moon`, `rlx_intro`) — ECAPA cosine 0.95+, WER 0–3.8 %. Full metrics, streaming API, and `just voice-chat-demo`: [crate README](crates/rlx-qwen3-tts/README.md).
+
+SAM examples synthesize a 1024×1024 RGB gradient — swap in `image::open(path)` for real images.
+
+```sh
+just fetch-minicpm5
+just example run_minicpm5 --release
+```
+
+### Weight fetch (optional)
+
+`docker/qwen3-fetch/` — container pulls HF checkpoints into `./weights`; host runs `cargo test` / benches natively.
+
+```sh
+just fetch-qwen3
+# or: docker build -t rlx-qwen3-fetch docker/qwen3-fetch && …
+just fetch-minicpm5
+just fetch-minicpm5-gguf Q4_K_M
+```
+
+## What's here
+
+- **`qwen3`** — Qwen3 decoder LM (GQA, QK-norm, RoPE, SwiGLU, tied embeddings). Safetensors + GGUF; optional `qwen3.rlx.toml`. See [Qwen3](#qwen3).
+- **`qwen35`** — Qwen3.5 / 3.6 hybrid (gated DeltaNet + periodic attention + optional MTP). GGUF via `Qwen35Runner`; optional `qwen35.rlx.toml`. Parity: `examples/qwen35_compare.rs` with the llama.cpp reference script in `examples/`.
+- **`gemma`** — Gemma / Gemma 2 / 3 / 4 (GQA, RoPE, GeGLU, tied weights, Gemma2 softcap). Safetensors + GGUF; optional `gemma.rlx.toml`. See [crates/rlx-gemma/README.md](crates/rlx-gemma/README.md). CLI: `rlx-gemma` / `rlx-run gemma`. Parity: `just test-gemma-parity gemma2_synthetic`; backends: `just features=all-backends test-gemma-backends`.
+- **`bert`** — BERT graph builder (MiniLM, BGE, all-MiniLM-L6-v2).
+- **`nomic`** — NomicBERT (RoPE + SwiGLU).
+- **`vision`** — NomicVision-style encoders.
+- **`dinov2`** — DINOv2 ViT (B/14, L/14, g/14).
+- **`sam`**, **`sam2`**, **`sam3`** — Segment Anything encoders + mask decoders. Optional `sam.rlx.toml` next to weights (reference: `crates/rlx-sam/src/sam.rlx.toml`).
+- **`flux2`** — FLUX.2 rectified-flow denoiser. `rlx-flux2` CLI; presets `flux2_dev()`, `flux2_klein_4b()`, `flux2_klein_9b()`. VAE, CFG, img2img, LoRA, `hf-download`, `rlx-flux2-serve`. GPU backends via `rlx-models` features (`metal`, `cuda`, …).
+- **`embed`** — `RlxEmbed`, registry, tokenizers, pooling. `from_pretrained` with `hf-download`.
+- **`config`**, **`weight_loader`** — HF config parsing; `WeightMap` + `GgufLoader` (K-quants, MTP isolation).
+- **`mamba`** — Mamba1 SSM block (`rlx-mamba`); SSM via `rlx-ssm` + `SelectiveScan`. See [crates/rlx-mamba/README.md](crates/rlx-mamba/README.md).
+- **`lfm`**, **`minimax`**, **`nemotron`** — hybrid runners using `rlx-ssm` decode-step stages.
+- **`minicpm5`** — MiniCPM5 edge LMs (Llama-shaped 1B). Wraps `Llama32Runner`; safetensors + GGUF. See [MiniCPM5](#minicpm5) and [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md).
+- **`qwen3-tts`** — Qwen3-TTS Base (voice clone) + CustomVoice. ECAPA x-vector, 28-layer talker, 16-group code predictor, 12 Hz Mimi decode. [`VoiceClone`](crates/rlx-qwen3-tts/README.md#library-api) API, progressive streaming, and `bidirectional_voice_chat` (Whisper → Qwen3-0.6B → TTS). See [Qwen3-TTS](#qwen3-tts).
+- **`voxtral-tts`** — Voxtral-4B-TTS native inference (Tekken tokenizer, codec decode, compiled LM). **`voxtral-tts-train`** — RLX autodiff training for reference-audio cloning (codec encoder + full attention LoRA). See [Voxtral TTS](#voxtral-tts).
+- **`run`** — `Qwen3Runner`, `SamRunner`, … builders for one-call inference.
+
+## Install
+
+```toml
+[dependencies]
+rlx-models = "0.2"
+```
+
+HF-hub download:
+
+```toml
+rlx-models = { version = "0.2", features = ["hf-download"] }
+```
+
+## Quickstart — embeddings
+
+```rust
+use rlx_models::embed::{Pooling, RlxEmbed};
+
+let mut model = RlxEmbed::from_pretrained("sentence-transformers/all-MiniLM-L6-v2")?;
+let hidden = model.forward(&[("input_ids", &ids), ("attention_mask", &mask)], 1, 16)?;
+```
+
+## High-level runner API
+
+`rlx_models::run` exposes builder-style entry points (also `rlx::run` in the monorepo):
+
+```rust
+use rlx_models::run::{Qwen3Runner, Precision};
+use rlx_runtime::Device;
+
+let mut runner = Qwen3Runner::builder()
+    .weights("Qwen3-0.6B-Q4_K_M.gguf")
+    .device(Device::Metal)
+    .max_seq(128)
+    .precision(Precision::F32)
+    .max_memory_gb(16.0)
+    .stream(true)
+    .use_mtp(false)
+    .packed_weights(false)
+    .build()?;
+
+runner.generate(&prompt_ids, 32, |tok| print!("{tok} "))?;
+```
+
+**Packed weights** (large GGUF on limited RAM — CPU-only, memory-frugal, slower):
+
+```rust,ignore
+let mut runner = Qwen3Runner::builder()
+    .weights("Qwen3-14B-Q4_K_M.gguf")
+    .packed_weights(true)
+    .max_seq(128)
+    .build()?;
+runner.generate(&prompt_ids, 16, |tok| print!(" {tok}"))?;
+let logits = runner.predict_logits(&prompt_ids)?;
+```
+
+Format (`safetensors` vs `gguf`) is auto-detected. SAM uses `SamRunner::builder(SamArch::Sam2)`.
+
+CLI equivalent:
+
+```sh
+just qwen3 -- --weights Qwen3-14B-Q4_K_M.gguf --packed --max-seq 128 --max-tokens 16 --prompt-ids 1,17,42
+# or: cargo run -p rlx-qwen3 --bin rlx-qwen3 --release -- …
+```
+
+## Adding a new model
+
+Borrowed from Max's four-file layout; each architecture is a workspace crate `crates/rlx-<name>/`.
+
+### 1. Create the crate
+
+Root `Cargo.toml`:
+
+```toml
+# [workspace.members]
+"crates/rlx-myarch",
+
+# [workspace.dependencies]
+rlx-myarch = { path = "crates/rlx-myarch" }
+```
+
+Depend on `rlx-core`, `rlx-ir`, `rlx-flow`, `rlx-runtime` as needed.
+
+### 2. Source layout
+
+```text
+crates/rlx-myarch/src/
+├── lib.rs
+├── arch.rs       # ArchSpec registration (optional)
+├── config.rs     # HF config.json
+├── weights.rs    # HF → RLX name map
+├── builder.rs    # graph construction
+├── flow.rs       # compile helpers (optional split)
+└── cli.rs        # pub fn run(args: &[String])
+```
+
+`arch.rs` registers with `rlx_core::arch_registry`. `weights.rs` holds rename rules; `builder.rs` emits IR. Reference: `crates/rlx-qwen3`.
+
+### 3. Facade re-export
+
+In `crates/rlx-models/src/lib.rs`:
+
+```rust
+pub mod myarch {
+    pub use rlx_myarch::*;
+}
+```
+
+### 4. CLI (optional)
+
+- `cli.rs` + `[[bin]] name = "rlx-myarch"`
+- Register in `crates/rlx-models/src/bin/rlx_run.rs`: `register_cli("myarch", "…", rlx_myarch::cli::run)`
+- Add a `just` recipe in `justfile` (optional)
+
+### 5. High-level runner (optional)
+
+Put `MyArchRunner` in the model crate; re-export from `crates/rlx-models/src/run.rs`.
+
+Legacy flat modules (`rlx-bert`, `rlx-nomic`) stay as-is until they grow — use this layout for **new** architectures.
+
+## Compile profiles (tier-1)
+
+Compile through tier-1 profiles, not bare `Session::compile(graph)`:
+
+| Model | Profile helper | Optional file next to weights |
+|---|---|---|
+| Qwen3 | `flow_util::compile_graph_qwen3_prefill_with_params` | `qwen3.rlx.toml` |
+| Qwen3.5 | `compile_support::compile_qwen35_prefill` / `compile_qwen35_decode` | `qwen35.rlx.toml` |
+| SAM / SAM3 | `flow_util::compile_graph_sam_with_params` | `sam.rlx.toml` |
+| Encoders | `flow_util::compile_graph_encoder_with_params` | — |
+
+Synthetic Qwen3.5 weights for CPU checks: `rlx_models::qwen35::synth` (`tiny_cfg`, `medium_cfg`, `bench_cfg`, …).
+
+```sh
+just test-quick
+# cargo test -p rlx-models --test qwen35_forward_check --test compile_profile_quick_check
+```
+
+Real-GGUF / backend checks: set `QWEN35_GGUF_PATH` (LMs) or vision env vars (`SAM3_GGUF_PATH`, `DINOV2_GGUF_PATH`, `FLUX_GGUF_PATH`, `W2V_BERT_GGUF_PATH`). Drain: `cargo test -p rlx-models --test vision_gguf_load --release`. Compile quick check: `cargo test -p rlx-models --test vision_gguf_compile --release` (SAM3 also needs `VISION_GGUF_COMPILE=1`; W2V-BERT needs `RLX_W2V_BERT_DIR` with `config.json`). FLUX: `cargo test -p rlx-models --test flux2_gguf_runner_quick_check --release` (`FLUX_GGUF_PATH` / `FLUX_MODEL_ROOT`; optional `FLUX_VAE_DIR` for VAE encode). Q4_0 fused matmul: `cargo test -p rlx-models --test gguf_legacy_quant_matmul --release`; Metal parity: `GGUF_LEGACY_METAL_PARITY=1` with `--features metal`. Enable `metal` / `mlx` / `cuda` / `parity-llama` per test file where noted.
+
+## Qwen3
+
+Prefill + decode on all seven standard backends (CPU, Metal, MLX, CUDA, ROCm, WGPU, Vulkan). Enable matching features at build time (`cargo build -p rlx-qwen3 --features all-backends`). Synthetic checks: `just features=all-backends test-qwen3-backends`. Parity: 100% top-1 vs HF (`tests/qwen3_parity.rs`).
+
+### Safetensors
+
+```rust
+use rlx_models::qwen3::{Qwen3Config, build_qwen3_graph_sized_last_logits};
+use rlx_models::weight_map::WeightMap;
+use rlx_runtime::Device;
+
+let cfg = Qwen3Config::from_file("weights/Qwen3-0.6B/config.json".as_ref())?;
+let mut wm = WeightMap::from_file("weights/Qwen3-0.6B/model.safetensors")?;
+let (graph, params) = build_qwen3_graph_sized_last_logits(&cfg, &mut wm, 1, 128, false)?;
+let mut compiled = rlx_models::flow_util::compile_graph_qwen3_prefill_with_params(
+    Device::Metal, graph, params,
+)?;
+```
+
+### GGUF
+
+```rust
+use rlx_models::weight_loader::GgufLoader;
+let mut wm = GgufLoader::from_file("Qwen3-0.6B-Q4_K_M.gguf")?;
+// same compile + run as safetensors
+```
+
+Demo: `just example-qwen3-gguf -- path/to/model.gguf`. Verified vs `unsloth/Qwen3-0.6B-GGUF` (cosine ≈ 0.976 vs F32 safetensors on Q4_K_M).
+
+**Directories with several `.gguf` files:** pass `ResolveWeightsOptions { prefer_gguf_substring: Some("Q4_K_M"), .. }` or `gguf_index: Some(0)` (see `rlx_core::gguf_support`). Multi-part split GGUF (`split.count` > 1) auto-merges when all shards sit in the same directory; otherwise `rlx-inspect` lists missing parts.
+
+### Weights API (model-agnostic loader)
+
+**`rlx_core::weights`** only handles paths, file formats, and drain policy. It does **not** know about Qwen, FLUX, BERT, etc.
+
+```rust
+use rlx_core::weights::{self, LoadOpts};
+
+let (path, map) = weights::open_map("weights/")?;
+let (path, map) = weights::open_map_with(LoadOpts::map().prefer_q4_k_m(), "weights/")?;
+let loaded = weights::open_with(LoadOpts::loader(), "model.gguf")?; // packed take / MTP
+```
+
+**Model-specific policy** belongs in each runner:
+
+```rust
+use rlx_core::{load_weight_map, gguf_validate_arch, EMBED_GGUF_ARCHES, DINOV2_GGUF_ARCHES};
+
+// One call: resolve path, validate arch on .gguf, drain to F32 map
+let map = load_weight_map(path, DINOV2_GGUF_ARCHES)?;
+
+// Or split validate + open (embed / custom drain policy)
+gguf_validate_arch(&path, EMBED_GGUF_ARCHES)?;
+let (_path, map) = weights::open_map(path)?;
+```
+
+| Layer | Responsibility |
+|-------|----------------|
+| `weights` / `weight_registry` | `.gguf` / `.safetensors`, resolve dir, custom extensions |
+| `gguf_validate_arch`, `assert_gguf_family` | Optional arch guard in **your** crate |
+| `register_gguf_tensor_resolver` | HF ↔ `blk.*` / prefix strip per checkpoint layout |
+| `BertConfig::from_gguf`, `Flux2Config::from_gguf` | Hyperparameters from metadata |
+
+**Inspect:** `rlx-inspect path [--prefer Q4_K_M] [--json]` — directory listing, split-part hints, runner suggestions.
+
+**CLI:** LM / FLUX binaries accept `--prefer-quant` and `--gguf-index` (via `rlx_cli::resolve_weights_cli`); default quant preference is `Q4_K_M` in multi-file dirs.
+
+**Splits:** Multi-part GGUF (`split.count` > 1) auto-merges when all parts are in the same directory; otherwise `rlx-inspect` lists missing shards.
+
+**Legacy quants:** `Q4_0` / `Q8_0` support packed `DequantMatMul` on **CPU** and **Metal** (fused MSL dequant+matmul, 32-element blocks). Set `RLX_DISABLE_METAL_DEQUANT_GPU=1` to force host dequant on Apple GPUs.
+
+**Example:** `cargo run -p rlx-models --example custom_weight_format`
+
+### Apple Silicon
+
+Metal lowers to MPSGraph (per shape). Env toggles:
+
+| env var | effect |
+|---|---|
+| `RLX_DISABLE_MPSGRAPH=1` | per-op Metal thunks |
+| `RLX_DISABLE_MPSGRAPH_EXECUTABLE=1` | JIT MPSGraph |
+| `RLX_MPSGRAPH_PARAM_CONST=1` | bake weights into executable |
+| `RLX_QWEN3_F16_LM_HEAD=1` | F16 final matmul |
+| `RLX_MPSGRAPH_TRACE=1` | print lowering blockers |
+
+Harness: `examples/qwen3_matrix.rs`.
+
+## MiniCPM5
+
+[openbmb/MiniCPM5-1B](https://huggingface.co/openbmb/MiniCPM5-1B) — 1B Llama decoder (GQA, RoPE, SwiGLU). Implemented in `rlx-minicpm5` on top of `rlx-llama32` with HF `config.json` / GGUF arch checks. **Full runbook:** [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md).
+
+### Download
+
+```sh
+just fetch-minicpm5                              # safetensors → /tmp/rlx-weights/MiniCPM5-1B
+just fetch-minicpm5-gguf Q4_K_M                  # GGUF → …/MiniCPM5-1B-GGUF
+```
+
+### CLI
+
+Uses the same flags as `rlx-llama32` (`--weights`, `--device`, `--prompt-ids`, `--tokenizer`, `--packed`, `--max-seq`, `--max-tokens`, …). Build with `tokenizer` for decode:
+
+```sh
+W=/tmp/rlx-weights/MiniCPM5-1B/model-00000-of-00001.safetensors
+
+just minicpm5 -- --weights "$W" --device cpu --prompt-ids 1,42,314 --max-tokens 16
+
+# GGUF packed prefill (CPU + Metal native; MLX/wgpu/CUDA use CPU execution path today):
+just minicpm5 -- --weights /tmp/rlx-weights/MiniCPM5-1B-GGUF/MiniCPM5-1B-Q4_K_M.gguf \
+  --packed --device metal --prompt-ids 1,42 --max-tokens 8
+```
+
+### Chat (HF template)
+
+```sh
+pip install transformers
+just fetch-minicpm5
+just minicpm5-chat "What is 2+2? Answer in one sentence."
+```
+
+`minicpm5_chat.py` tokenizes with the official template, then runs `rlx-minicpm5` (defaults to **CPU** for reliable KV decode on Apple Silicon).
+
+### Library
+
+```rust
+use rlx_minicpm5::MiniCpm5Runner;
+use rlx_runtime::Device;
+
+let mut runner = MiniCpm5Runner::builder()
+    .weights("/tmp/rlx-weights/MiniCPM5-1B/model-00000-of-00001.safetensors")
+    .device(Device::Cpu)
+    .max_seq(512)
+    .build()?;
+let logits = runner.predict_logits(&[1, 42, 314])?;
+```
+
+Example: `just example run_minicpm5 --release` (or `cargo run -p rlx-models --example run_minicpm5 --release`).
+
+### Tests
+
+| Command | What |
+|---------|------|
+| `just test-minicpm5-parity-full` | RLX vs PyTorch (safetensors, needs weights) |
+| `just test-minicpm5-backends-all` | Synthetic 1B-shaped graph, all backends |
+| `just test-minicpm5-gguf-backends` | Real Q4_K_M GGUF packed prefill |
+| `../rlx/rig.sh test-minicpm5` | Remote rig: CPU + CUDA + WGPU on Windows/WSL (after `sync` + `sync-minicpm5-gguf`) |
+| `just bench-minicpm5-real --device cpu` | Wall-clock prefill/decode on 1B weights |
+
+Multiplexer: `cargo run -p rlx-models --bin rlx-run --features tokenizer -- minicpm5 --weights …`.
+
+## LocateAnything
+
+[NVIDIA LocateAnything-3B](https://huggingface.co/nvidia/LocateAnything-3B) — MoonViT vision + `mlp1` projector + Qwen2.5-3B with MTP box decoding. Crate: `rlx-locateanything`; runbook: [crates/rlx-locateanything/README.md](crates/rlx-locateanything/README.md).
+
+```bash
+just fetch-locateanything
+export RLX_LOCATEANYTHING_DIR=.cache/locateanything/LocateAnything-3B
+
+just test-locateanything-checkpoint
+just locateanything-demo   # bundled sample in rlx-locateanything/fixtures/sample.jpg
+just locateanything -- --model-dir $RLX_LOCATEANYTHING_DIR \
+  --image page.png --task ground-single --phrase "red backpack" \
+  --generation-mode hybrid --device cpu
+```
+
+| Command | What |
+|---------|------|
+| `just test-locateanything-backends` | Synthetic projector + LM on all RLX backends |
+| `just test-locateanything-moonvit-backends` | Compiled MoonViT on GPU backends |
+| `just test-locateanything-parity` | Full tensor + MTP decode + RLX/HF processor prompts + tasks + slow/fast/hybrid `generate()` vs HF (28 tests; real JPEG fixture) |
+| `just test-locateanything-parity-real` | Real-photo subset (`fixtures/sample.jpg`; `RLX_LOCATEANYTHING_IMAGE` optional) |
+| `just locateanything-demo` | Quick ground on bundled sample (no `--image`) |
+| `just bench-locateanything-backends` | E2E timing per backend; **one subprocess per backend** by default (avoids OOM). Single backend: `--device wgpu --no-isolate` |
+
+Weights are HF safetensors only (770 tensors: vision / projector / `language_model.*`).
+
+## Qwen3-TTS
+
+[Qwen3-TTS-12Hz-0.6B](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base) — native Rust voice clone and CustomVoice synthesis in `rlx-qwen3-tts`. Full runbook: [crates/rlx-qwen3-tts/README.md](crates/rlx-qwen3-tts/README.md).
+
+### Download and clone
+
+```bash
+just fetch-qwen3-tts-base
+export RLX_QWEN3_TTS_DIR=.cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base
+
+cargo build -p rlx-qwen3-tts --release --features apple-silicon --bin jfk_voice_clone
+./target/release/jfk_voice_clone \
+  --model-dir $RLX_QWEN3_TTS_DIR \
+  --ref-wav assets/jfk/jfk_voice_clone.wav \
+  --target-text "Hello from native Rust TTS." \
+  --out-wav /tmp/hello.wav --device metal
+```
+
+### Duplex voice chat
+
+Mic WAV → Whisper → Qwen3-0.6B → progressive TTS (JFK clone). Bundled roundtrip audio under `crates/rlx-qwen3-tts/examples/audio/`.
+
+```bash
+just fetch-qwen3 && just fetch-whisper-base   # LM + ASR weights
+just voice-chat-demo                          # → /tmp/voice_chat_roundtrip/
+```
+
+`--turbo` preloads all models, streams LM tokens, and uses batched TTS by default (`--streaming-tts` for progressive partial-decode). Measured stop-speaking → first audio ≈ **5.1 s** on Apple Silicon (see [voice_chat_latency.svg](crates/rlx-qwen3-tts/examples/charts/voice_chat_latency.svg)).
+
+### Streaming API
+
+[`VoiceClone::generate_stream`](crates/rlx-qwen3-tts/README.md#live-streaming-api) supports `StreamMode::Batched` (lossless chunking of full `generate()`) and `StreamMode::Progressive` (codec frames decoded during AR). Progressive speech decode uses CPU on Metal/MLX (GPU prefix-length mismatch); CUDA and other backends use GPU speech decode when available.
+
+### Tests
+
+| Command | What |
+|---------|------|
+| `just test-qwen3-tts-parity` | Codec frames + speech decode vs reference (`RLX_QWEN3_TTS_DIR`) |
+| `just features=all-backends test-qwen3-tts-backends` | Talker prefill/decode per backend |
+| `just features=all-backends test-qwen3-tts-streaming` | Streaming PCM parity (batched + progressive) |
+| `just qwen3-tts-vivian-demo` | CustomVoice preset speaker → `/tmp/vivian-demo.wav` |
+
+Env: `RLX_QWEN3_TTS_CP_EAGER=1` / `RLX_QWEN3_TTS_SPEECH_EAGER=1` force CPU paths; `RLX_QWEN3_TTS_TIMING=1` prints stage breakdown.
+
+## Voxtral TTS
+
+[Mistral Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) — native Rust inference in `rlx-voxtral-tts`, voice-clone training in `rlx-voxtral-tts-train`. Full runbook: [docker/voxtral-tts/README.md](docker/voxtral-tts/README.md).
+
+### Download and synthesize
+
+```bash
+just fetch-voxtral-tts
+export RLX_VOXTRAL_TTS_DIR=.cache/voxtral/Voxtral-4B-TTS-2603
+
+just voxtral-tts-prepare-voices
+just voxtral-tts -- --model-dir $RLX_VOXTRAL_TTS_DIR \
+  --text "Hello world" --voice neutral_female -o out.wav
+```
+
+### Voice cloning (native RLX training)
+
+Public checkpoints omit the codec **encoder**. Train it in RLX, inject into `consolidated.safetensors`, then synthesize from a reference WAV:
+
+```bash
+# Optional manifest (transcript field improves ASR auxiliary loss):
+just voxtral-tts-train-manifest -- --wav-dir ./wavs --out ./wavs/manifest.json
+
+PRODUCTION=1 just features=all-backends voxtral-tts-train-production -- \
+  --model-dir $RLX_VOXTRAL_TTS_DIR --wav-dir ./wavs \
+  --manifest ./wavs/manifest.json --out-dir ./out/train --device auto
+
+just voxtral-tts -- --model-dir $RLX_VOXTRAL_TTS_DIR \
+  --reference-wav ./ref.wav --text "Hello from my voice" -o cloned.wav
+```
+
+Periodic checkpoints during long runs: `CHECKPOINT_EVERY=500`. Resume: `--resume-weights ./out/train/encoder/encoder_step_5000.safetensors --resume-step 5000`. Rig validation: `RLX_VOXTRAL_TTS_TRAIN_RIG=1 RLX_VOXTRAL_TTS_REF_WAV=./ref.wav just test-voxtral-tts-train-synthesize-rig` (reports mel similarity).
+
+### Tests
+
+| Command | What |
+|---------|------|
+| `just test-voxtral-tts-train` | Train crate unit + integration tests |
+| `just test-voxtral-tts-train-backends` | Encoder/LoRA backward compile on all GPU backends |
+| `just test-voxtral-tts-codec` | Codec round-trip |
+| `just test-voxtral-tts-native-parity` | Native vs Docker reference export |
+
+## VAD (Earshot + Silero)
+
+[`rlx-vad`](crates/rlx-vad/README.md) — 16 kHz voice activity detection with **embedded weights** (no ONNX Runtime):
+
+- **Earshot** — `weights/earshot_weights.bin` (~75 KiB)
+- **Silero** — `weights/silero_vad_16k.safetensors` (~920 KiB), exported from official `silero_vad.onnx` 16 kHz branch
+
+```sh
+cargo run -p rlx-vad --release -- --backend silero --wav audio16k.wav
+cargo run -p rlx-vad --example jfk_bench --release
+cargo test -p rlx-vad
+```
+
+Regenerate Silero embed: `python3 scripts/export_silero_onnx_weights.py …` (see crate README). The Hugging Face file named `silero_vad_16k.safetensors` is a different (8 kHz) graph — do not substitute it.
+
+Shared loader: `rlx_core::embedded_safetensors::EmbeddedSafetensors`.
+
+## Build and test
+
+```sh
+just check
+just test
+just build
+
+cargo build -p rlx-models
+cargo test  -p rlx-models
+cargo test  -p rlx-models --features parity-candle
+```
+
+burnembed (`/Users/Shared/burnembed`) re-exports `rlx_models::embed` with `--features rlx`.
+
+### Real-weight integration tests
+
+```sh
+just fetch-real-weights              # downloads ~1.5 GB of small Q4_K_M GGUFs (idempotent)
+just test-real-weights               # config + compat + chat-template across 4 families (~2 s/suite)
+just test-real-weights-inference     # adds end-to-end forward inference (slow on CPU)
+just test-net-hf                     # live HuggingFace Hub compat check (RLX_NET_TESTS=1)
+```
+
+Covers SmolLM2 135M (`llama`), Qwen 2.5 0.5B (`qwen2`), Gemma 3 270M (`gemma3` — currently `KnownUnimplemented(M2)`), and Llama 3.2 1B (`llama` + Llama-3 RoPE scaling). The inference path verifies the full `Llama32Runner`/`Qwen3Runner` packed-decode pipeline against real downloaded GGUFs.
+
+### Auto-dispatch + compatibility check
+
+```sh
+rlx-run check <path-or-hf-repo>      # `SUPPORTED`, `KnownUnimplemented(<milestone>)`, `MissingMetadata`, or `Unknown`
+rlx-run check <path> --json          # machine-readable verdict
+rlx-run auto <weights> [args...]     # sniffs arch, dispatches to the right runner
+```
+
+Programmatic: [`rlx_models::run::check_path`](crates/rlx-cli/src/compat.rs), [`check_hf_repo`](crates/rlx-cli/src/compat.rs) (requires `compat-net` feature), [`auto_dispatch`](crates/rlx-cli/src/auto_dispatch.rs), [`ChatTemplate::from_gguf`](crates/rlx-cli/src/chat.rs). Implements the same load-time-field predicate llama.cpp uses (`general.architecture` + `<arch>.context_length` + `<arch>.embedding_length` + `<arch>.block_count` + `tokenizer.ggml.{model,tokens}`).
+
+## Status
+
+### Weights and parity
+
+**rlx GGUF** = this repo can load `.gguf` through `GgufLoader` and the family runner. **GGUF on HF** = models on the Hub tagged `library:gguf` (counts are approximate; use the search link to browse).
+
+| family | safetensors | rlx GGUF | GGUF on Hugging Face | parity |
+|---|---|---|---|---|
+| `bert`, `nomic`, `vision` (`embed`) | yes | yes (`bert`, `nomic-bert`, …) | **yes** — [minilm](https://huggingface.co/models?library=gguf&search=minilm) (~128), [bge](https://huggingface.co/models?library=gguf&search=bge) (~247), [nomic](https://huggingface.co/models?library=gguf&search=nomic) (~60); e.g. [nomic-embed-text-v1.5-GGUF](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) (`nomic-bert`), [bge-small-en-v1.5-gguf](https://huggingface.co/CompendiumLabs/bge-small-en-v1.5-gguf). Vision embed: no GGUF sibling. | production (safetensors) |
+| `dinov2` | yes | yes (`dinov2`; F32 drain or K-quant/Q4_0/Q8_0 packed `DequantMatMul` when quant tensors present) | **no** for `facebook/dinov2-*` — [dinov2](https://huggingface.co/models?library=gguf&search=dinov2) (0). Community converters (dinov2.cpp) use `dinov2` arch; tensor names must match HF/candle keys. | production |
+| `sam`, `sam2`, `sam3` | yes | yes (`sam` / `mobile-sam` / `sam2` F32 drain). **SAM3**: F32 drain or K-quant via fused CPU `gguf_matmul` (ViT, text, detector host+IR, seg cross-attn/mask/scoring, 1×1 inst/sem `DequantMatMul` IR); 3×3 pixel conv stays packed at load (one-time dequant cache on host, materialize for tier-1 IR compile) | **SAM1 ViT-H / SAM2**: no official Hub GGUF — [segment+anything](https://huggingface.co/models?library=gguf&search=segment+anything) (0), [sam2.1](https://huggingface.co/models?library=gguf&search=sam2.1) (0). **MobileSAM**: [mobilesam](https://huggingface.co/models?library=gguf&search=mobilesam) (2), e.g. [Acly/MobileSAM-GGUF](https://huggingface.co/Acly/MobileSAM-GGUF) (`mobile-sam`). **SAM3**: [sam3](https://huggingface.co/models?library=gguf&search=sam3) (1) — [rob-laz/sam3-gguf](https://huggingface.co/rob-laz/sam3-gguf) (`sam3`). Beware [TheBloke/SAM-GGUF](https://huggingface.co/TheBloke/SAM-GGUF) — 7B **chat LM** (`llama`), not Segment Anything. | production (encoder + mask path) |
+| `qwen3` | yes | yes (Q4_K_M / Q5_K_M / Q6_K) | **yes** — [qwen3](https://huggingface.co/models?library=gguf&search=qwen3) (many); e.g. `unsloth/Qwen3-*-GGUF` | top-1 vs HF (`parity-candle` + weights) |
+| `qwen35` | — | yes | **yes** — same hub space; e.g. `unsloth/Qwen3.5-*-GGUF` | vs llama.cpp when `QWEN35_GGUF_PATH` / `parity-llama` |
+| `llama32` | yes | yes | **yes** — [llama-3.2](https://huggingface.co/models?library=gguf&search=llama-3.2) (~5k) | vs llama.cpp when `LLAMA32_GGUF_PATH` |
+| `minicpm5` | yes | yes (`llama`) | **yes** — [MiniCPM5-1B-GGUF](https://huggingface.co/openbmb/MiniCPM5-1B-GGUF) (Q4_K_M / Q8_0 / F16) | vs PyTorch (`minicpm5_parity`); `rlx-minicpm5` 0.2.1 on `rlx-llama32` 0.2.1; GGUF packed CPU/Metal |
+| `llada2` | yes | — | **preview** — [llada2](https://huggingface.co/models?library=gguf&search=llada2) (1): [LLaDA2.0-mini-preview-GGUF](https://huggingface.co/wsbagnsv1/LLaDA2.0-mini-preview-GGUF) (`llada2`) | vs PyTorch when `LLADA2_MODEL_DIR` |
+| `flux2` | yes (BFL / NVFP4 safetensors) | yes (denoiser `.gguf`, `architecture: flux`; K-quant GGUF uses packed `DequantMatMul`; `Flux2Runner` + VAE/TE safetensors) | **yes** — [flux2](https://huggingface.co/models?library=gguf&search=flux2) (~53); e.g. [unsloth/FLUX.2-klein-9B-GGUF](https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF), [city96/FLUX.2-dev-gguf](https://huggingface.co/city96/FLUX.2-dev-gguf) | GGUF = denoiser only; VAE + Qwen3 TE still safetensors dirs |
+| `vjepa2` | yes | yes (`vjepa2` / `vjepa`, F32 drain) | **no** Hub GGUF yet — [vjepa](https://huggingface.co/models?library=gguf&search=vjepa) (0) | synthetic + optional weight checks |
+| `wav2vec2-bert` | yes | yes (`w2v-bert` / `wav2vec2`, F32 drain) | **no** for Seamless W2V-BERT — [w2v-bert](https://huggingface.co/models?library=gguf&search=w2v-bert) (0). Classic ASR: [wav2vec2](https://huggingface.co/models?library=gguf&search=wav2vec2) (~7), e.g. `cstr/wav2vec2-*-GGUF` (`wav2vec2` arch; keys may not match W2V-BERT) | vs HF when `RLX_W2V_BERT_DIR` + python reference |
+
+To discover GGUF on the Hub: open [Models → library GGUF](https://huggingface.co/models?library=gguf) and add a **search term** matching the family (`qwen3`, `bge`, `flux2`, …). Check the model card **Architecture** field — many repos share a name but are unrelated LMs.
+
+### Backends
+
+Every model family targets the same standard backends: **CPU, Metal, MLX, CUDA, ROCm, WGPU (`gpu`), Vulkan**. SAM also accepts **`tpu`**. Policy lives in [`rlx_core::device_capabilities`](crates/rlx-core/src/device_capabilities.rs); runners call `validate_standard_device` (or `validate_sam_device`) at build time.
+
+Enable GPU at compile time with matching features on `rlx-models` or any model crate, e.g. `cargo build -p rlx-qwen3 --features all-backends` or `cargo run -p rlx-models --features metal --bin rlx-run -- qwen3 …`. Per-crate binaries (`rlx-qwen3`, `rlx-sam3`, …) expose the same feature names. CLI: `cpu`, `metal`/`mps`, `mlx`, `cuda`, `rocm`/`hip`, `gpu`/`wgpu`, `vulkan`.
+
+Legend: ✅ supported · ⚠️ partial (host fallback or open runtime gap) · ❌ not supported
+
+| family | cpu | metal | mlx | cuda | rocm | wgpu | vulkan | notes |
+|---|---|---|---|---|---|---|---|---|
+| `embed` (`bert`, `nomic`, `vision`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [`RlxEmbed::from_dir_on`](crates/rlx-embed/src/runtime.rs); `from_dir` defaults to CPU |
+| `dinov2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [`DinoV2Runner`](crates/rlx-dinov2/src/runner.rs) `--device` |
+| `sam`, `sam2`, `sam3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | SAM v1 also accepts `tpu`; CPU/Metal/MLX most exercised in CI |
+| `qwen3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | packed GGUF: CPU + Metal native; MLX/wgpu/CUDA prefill via CPU path (`rlx_core::packed_gguf_*`); MTP decode not wired |
+| `qwen35` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device` on all backends; some ops use host GDN/dequant on GPU; MoE offload may keep experts on host |
+| `llama32` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `rlx-llama32` 0.2.1: Metal decode guard + packed GGUF helpers; same packed rules as Qwen3 |
+| `minicpm5` | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Wraps `rlx-llama32`; safetensors decode on CPU/Metal; GGUF `--packed` parity on CPU/Metal (MLX/wgpu tests use CPU prefill path) |
+| `llada2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | MoE predictive expert offload on all standard backends (GPU uses resident experts + host fallback) |
+| `flux2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Full pipeline; text encoder compiled on Metal/MLX by default, host once on CUDA/ROCm/WGPU/Vulkan |
+| `vjepa2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Runner `--device` |
+| `wav2vec2-bert` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [`Wav2Vec2BertRunner`](crates/rlx-wav2vec2-bert/src/runner.rs) `--device` |
+
+Multi-tenant serving (paged KV, continuous batching) lives in `rlx_runtime::paged_kv`; `qwen3::generator` is single-stream.
+
+## Gotchas
+
+- Safetensors names ≠ IR `Param` names — `weight_map.rs` renames; GGUF uses `GgufLoader`.
+- **GGUF LMs** (`qwen3`, `qwen35`, `llama32`, `minicpm5`): pass a `.gguf` file or a directory with one `.gguf` / `model.safetensors`. Wrong-family files get a redirect (`rlx_core::assert_gguf_family`). Shared helpers: `resolve_weights_file`, `WeightFormat::resolve`, `open_loader_resolved`. MiniCPM5 expects `general.architecture = llama` and HF `model_type = llama`.
+- **Packed GGUF prefill** (`--packed`, K-quant): use `rlx_core::{packed_gguf_compile_guard, compile_options_for_packed_gguf_prefill_with_profile, packed_gguf_execution_device}` in `rlx-llama32`, `rlx-qwen3`, `rlx-gemma`, and `rlx-minicpm5`. Metal sets `RLX_DISABLE_MPSGRAPH=1` during compile; MLX uses `RLX_MLX_MODE=lazy` (host GGUF dequant); wgpu/CUDA/ROCm disable fusion and may run prefill on CPU until upstream GPU parity.
+- **GGUF elsewhere on HF** (embed, FLUX, SAM3, …) does not imply rlx support — see [Weights and parity](#weights-and-parity) column *GGUF on Hugging Face*.
+- **GGUF shapes** are innermost-first labels; byte layout matches safetensors row-major — do not transpose in `take`.
+- Unsupported GGUF quants (Q1_0, Q2_K, IQ*, …) error cleanly.
+- **27B GGUF on Mac**: F32 dequant ≈ 108 GB; needs Metal `Op::DequantMatMul` to stay packed (~13.5 GB).
+- Pooling in `embed::pooling`.
+- New arch: new crate under `crates/`, facade hook, optional parity test.
+
+## Per-crate READMEs
+
+Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.md](AGENTS.md).
+
+| Crate | README |
+|-------|--------|
+| `rlx-qwen3-tts` | [crates/rlx-qwen3-tts/README.md](crates/rlx-qwen3-tts/README.md) |
+| `rlx-gemma` | [crates/rlx-gemma/README.md](crates/rlx-gemma/README.md) |
+| `rlx-minicpm5` | [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md) |
+| `rlx-llama32` | [crates/rlx-llama32/README.md](crates/rlx-llama32/README.md) |
+| `rlx-locateanything` | [crates/rlx-locateanything/README.md](crates/rlx-locateanything/README.md) |
+| `rlx-kittentts` | [crates/rlx-kittentts/README.md](crates/rlx-kittentts/README.md) |
+| `rlx-vad` | [crates/rlx-vad/README.md](crates/rlx-vad/README.md) |
+| `rlx-mamba` | [crates/rlx-mamba/README.md](crates/rlx-mamba/README.md) |
+| `rlx-ssm` | [crates/rlx-ssm/README.md](crates/rlx-ssm/README.md) |
+| `rlx-models-core` (`rlx-core`) | [crates/rlx-models-core/README.md](crates/rlx-models-core/README.md) |
+| `rlx-clinicalbert` | [crates/rlx-clinicalbert/README.md](crates/rlx-clinicalbert/README.md) |
+| `rlx-onnx-import` | [crates/rlx-onnx-import/README.md](crates/rlx-onnx-import/README.md) |
+| `rlx-onnx-decompose` | [crates/rlx-onnx-decompose/README.md](crates/rlx-onnx-decompose/README.md) |
+| `kitten_tts_mini_rlx` | [crates/kitten_tts_mini_rlx/README.md](crates/kitten_tts_mini_rlx/README.md) |
+| Voxtral TTS training | [docker/voxtral-tts/README.md](docker/voxtral-tts/README.md) |
+
+Crates without a dedicated README are documented in [What's here](#whats-here) and the facade examples under `crates/rlx-models/examples/`.
+
+## License
+
+GPL-3.0-only.

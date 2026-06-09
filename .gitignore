@@ -1,0 +1,39 @@
+/target
+**/target
+**/*.rs.bak
+
+.DS_Store
+**/.DS_Store
+**/__pycache__/
+.env
+.env.local
+
+# Local weight caches (GGUF / safetensors trees used by env-gated tests)
+/weights
+./weights
+crates/kitten_tts_mini_rlx/weights/
+crates/rlx-neutts/models/
+**/neucodec_decoder.safetensors
+
+# Qwen3-TTS parity fixtures (bake locally; see tests/qwen3_tts_*_parity)
+crates/rlx-qwen3-tts/tests/fixtures/st_encoder_parity.safetensors
+crates/rlx-qwen3-tts/tests/fixtures/speaker_parity.safetensors
+
+# SAM / PyTorch parity helpers (see tests/sam*_parity_helpers/)
+.venv-*/
+
+# Local Cargo registry overrides (see .cargo/config.toml.example)
+.cargo/config.toml
+
+# HF / model download caches
+.cache/
+
+# Editor / agent scratch
+.claude/
+
+# Ad-hoc audio at repo root (crate examples/audio/ is tracked)
+/*.wav
+
+# Local agent docs — keep out of the repo
+AGENTS.md
+PLAN.md

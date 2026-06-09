@@ -1,0 +1,18 @@
+[package]
+name = "rlx-vlm-base"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Shared vision-language base types for RLX VLM/Omni runners (PLAN.md M7)"
+
+[dependencies]
+anyhow = { workspace = true }
+
+[features]
+default = []
+
+[lints]
+workspace = true

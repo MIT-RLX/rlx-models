@@ -1,0 +1,109 @@
+// RLX — versatile ML compiler + runtime.
+// Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+//! gpt-oss-20b runner.
+//!
+//! gpt-oss ships as `general.architecture = gpt-oss` (or `gpt_oss`)
+//! in its GGUF converters. The 20B variant is an attention-only
+//! Llama-shaped decoder; this crate is a thin wrapper over
+//! [`rlx_llama32::Llama32Runner`] with arch validation.
+
+use anyhow::{Context, Result, bail};
+use rlx_llama_base::LlamaBaseConfig;
+use std::path::{Path, PathBuf};
+
+pub use rlx_llama32::{Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder};
+
+pub const PLAN_MILESTONE: &str = "M4";
+pub const FAMILY: &str = "gpt-oss";
+
+const ACCEPTED_ARCHES: &[&str] = &["gpt-oss", "gpt_oss"];
+
+pub struct GptOssRunner {
+    inner: Llama32Runner,
+    config: LlamaBaseConfig,
+}
+
+impl GptOssRunner {
+    pub fn builder() -> GptOssRunnerBuilder {
+        GptOssRunnerBuilder::default()
+    }
+    pub fn config(&self) -> &LlamaBaseConfig {
+        &self.config
+    }
+    pub fn inner(&self) -> &Llama32Runner {
+        &self.inner
+    }
+    pub fn inner_mut(&mut self) -> &mut Llama32Runner {
+        &mut self.inner
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct GptOssRunnerBuilder {
+    weights: Option<PathBuf>,
+    inner: Llama32RunnerBuilder,
+}
+
+impl GptOssRunnerBuilder {
+    pub fn weights(mut self, path: impl Into<PathBuf>) -> Self {
+        let p = path.into();
+        self.weights = Some(p.clone());
+        self.inner = self.inner.weights(p);
+        self
+    }
+    pub fn inner(mut self, f: impl FnOnce(Llama32RunnerBuilder) -> Llama32RunnerBuilder) -> Self {
+        self.inner = f(self.inner);
+        self
+    }
+
+    pub fn build(self) -> Result<GptOssRunner> {
+        let weights = self
+            .weights
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("weights path required (call .weights(...))"))?
+            .clone();
+        let config = LlamaBaseConfig::from_gguf_path(&weights)
+            .with_context(|| format!("rlx-gpt-oss: parse {weights:?}"))?;
+        if !ACCEPTED_ARCHES.contains(&config.arch.as_str()) {
+            bail!(
+                "rlx-gpt-oss: expected `general.architecture` ∈ {ACCEPTED_ARCHES:?}; \
+                 got `{}` at {weights:?}",
+                config.arch
+            );
+        }
+        let inner = self
+            .inner
+            .build()
+            .context("rlx-gpt-oss: building underlying Llama32Runner")?;
+        Ok(GptOssRunner { inner, config })
+    }
+}
+
+pub fn cli_run(args: &[String]) -> Result<()> {
+    if let Some(first) = args.iter().position(|a| a == "--weights") {
+        if let Some(path) = args.get(first + 1) {
+            let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
+                .with_context(|| format!("rlx-gpt-oss: parse {path}"))?;
+            if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
+                bail!(
+                    "rlx-gpt-oss: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
+                    cfg.arch
+                );
+            }
+        }
+    }
+    rlx_llama32::cli::run(args)
+}

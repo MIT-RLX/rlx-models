@@ -1,0 +1,30 @@
+[package]
+name = "rlx-nemotron-omni"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Nemotron-3 Nano Omni runner (text + vision + audio)"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-core = { workspace = true }
+rlx-llama-base = { workspace = true }
+rlx-vlm-base = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-whisper = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+
+[lints]
+workspace = true

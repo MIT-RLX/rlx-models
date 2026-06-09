@@ -1,0 +1,14 @@
+{
+  "name": "qwen35-chatml-no-genprompt",
+  "family": "qwen35",
+  "comment": "Same Qwen-style template as the qwen3 fixture, but `add_generation_prompt = false` — exercises the branch skill takes when scoring an existing assistant turn rather than continuing.",
+  "template": "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}",
+  "bos_token": null,
+  "eos_token": "<|im_end|>",
+  "messages": [
+    {"role": "user", "content": "hi"},
+    {"role": "assistant", "content": "hello"}
+  ],
+  "add_generation_prompt": false,
+  "expected": "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\nhello<|im_end|>\n"
+}

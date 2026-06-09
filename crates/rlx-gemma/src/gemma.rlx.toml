@@ -1,0 +1,25 @@
+# Gemma / Gemma 2 compile profile — tier-1 config (optional).
+# Place next to weights; loaded by `gemma_profile_near_weights`.
+
+[fusion]
+policy = "direct"
+target = "auto"
+assert_clean = false
+skip = false
+
+[passes]
+# Keep V2 norm params on the execution path (tier-1 DCE can drop unused-looking nodes).
+dce = false
+constant_folding = true
+verbose = false
+
+[precision]
+compute = "f32"
+mixed = "none"
+
+[backend.metal]
+skip_fusion = false
+unfuse_regions = false
+
+[backend.cpu]
+unfuse_regions = false

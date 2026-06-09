@@ -1,0 +1,29 @@
+[package]
+name = "rlx-qwen3-vl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Qwen3-VL runner (vision + Qwen3 MoE LM) — STUB (PLAN.md M7)"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-core = { workspace = true }
+rlx-llama-base = { workspace = true }
+rlx-vlm-base = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-gguf = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+
+[lints]
+workspace = true

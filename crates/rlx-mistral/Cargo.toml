@@ -1,0 +1,29 @@
+[package]
+name = "rlx-mistral"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Mistral 3+ / Ministral runner — STUB (PLAN.md M4)"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-llama-base = { workspace = true }
+rlx-llama32 = { workspace = true }
+rlx-cli = { workspace = true }
+
+[features]
+default = []
+tokenizer = ["rlx-llama32/tokenizer"]
+metal = ["rlx-llama32/metal"]
+mlx = ["rlx-llama32/mlx"]
+cuda = ["rlx-llama32/cuda"]
+rocm = ["rlx-llama32/rocm"]
+gpu = ["rlx-llama32/gpu"]
+vulkan = ["rlx-llama32/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+
+[lints]
+workspace = true

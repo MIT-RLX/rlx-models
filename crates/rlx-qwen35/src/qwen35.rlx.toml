@@ -1,0 +1,25 @@
+# Qwen3.5 compile profile — tier-1 config (optional).
+# Colocate with GGUF weights as `qwen35.rlx.toml`, or pass profiles via
+# `Qwen35RunnerBuilder::with_compile_profiles`.
+
+[fusion]
+policy = "direct"
+target = "auto"
+assert_clean = false
+skip = false
+
+[passes]
+dce = true
+constant_folding = true
+verbose = false
+
+[precision]
+compute = "f32"
+mixed = "none"
+
+[backend.metal]
+skip_fusion = false
+unfuse_regions = false
+
+[backend.cpu]
+unfuse_regions = true

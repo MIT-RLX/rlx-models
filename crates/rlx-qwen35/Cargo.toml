@@ -1,0 +1,56 @@
+[package]
+name = "rlx-qwen35"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Qwen3.5 / Qwen3.6 hybrid trunk for RLX"
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-qwen3 = { workspace = true }
+rlx-llada2 = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-opt = { workspace = true }
+rlx-cpu = { workspace = true }
+rlx-gguf = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+safetensors = { workspace = true }
+tokenizers = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+llama-cpp-2 = { workspace = true, optional = true }
+
+[features]
+default = ["tokenizer"]
+tokenizer = ["dep:tokenizers", "qwen35-tokenizer"]
+# Alias matching the cfg gates in src/tokenizer.rs / src/chat.rs — those
+# checks use `feature = "qwen35-tokenizer"` and would otherwise always
+# fall through to the "support not compiled" branch.
+qwen35-tokenizer = ["dep:tokenizers"]
+qwen35-vlm = ["dep:image"]
+parity-llama = ["dep:llama-cpp-2"]
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[[bin]]
+name = "rlx-qwen35"
+path = "src/bin/rlx_qwen35.rs"
+
+[lints]
+workspace = true

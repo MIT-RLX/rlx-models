@@ -1,0 +1,62 @@
+[package]
+name = "rlx-mamba"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Mamba1 selective-SSM block and multi-backend driver; SSM core via rlx-ssm flow (SelectiveScan / mamba1_step)"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-tensor = { workspace = true }
+rlx-cpu = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-ssm = { workspace = true }
+# Accelerator deps are optional, gated by feature flags. Each backend
+# crate has its own platform constraints (Metal/MLX = Apple, CUDA =
+# NVIDIA, wgpu = cross-platform, ROCm = AMD); see the corresponding
+# `src/backends/<name>.rs` for status.
+rlx-metal = { workspace = true, optional = true }
+rlx-mlx = { workspace = true, optional = true }
+rlx-cuda = { workspace = true, optional = true }
+rlx-wgpu = { workspace = true, optional = true }
+rlx-rocm = { workspace = true, optional = true }
+# The `metal` crate is only needed on Apple platforms; rlx-metal
+# re-exports its core types but we still need direct access for buffer
+# allocation + encoders inside our backend.
+metal = { version = "0.30", optional = true }
+
+[features]
+default = []
+# Apple-only. Real Metal backend (uses rlx-metal's MSL sgemm for the
+# linears; element-wise + scan + conv on CPU via unified-memory access).
+metal = ["dep:rlx-metal", "dep:metal", "rlx-runtime/metal"]
+# Apple-only. Real MLX backend (matmul + element-wise on MLX; scan + conv1d on CPU).
+mlx = ["dep:rlx-mlx", "rlx-runtime/mlx"]
+# NVIDIA. The crate builds on Mac because `rlx-cuda` uses
+# `cudarc/dynamic-loading` to dlopen libcuda at runtime — see
+# src/backends/cuda.rs for the integration plan (IR-graph compile
+# via CudaExecutable, not eager-primitive trait).
+cuda = ["dep:rlx-cuda", "rlx-runtime/cuda"]
+# Cross-platform via wgpu. Same IR-graph compile model as CUDA.
+wgpu = ["dep:rlx-wgpu", "rlx-runtime/gpu"]
+# AMD ROCm. Same IR-graph compile model as CUDA.
+rocm = ["dep:rlx-rocm", "rlx-runtime/rocm"]
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "mamba1"
+harness = false
+
+[lints]
+workspace = true

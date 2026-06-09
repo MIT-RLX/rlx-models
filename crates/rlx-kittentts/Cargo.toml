@@ -1,0 +1,96 @@
+[package]
+name = "rlx-kittentts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "KittenTTS ONNX text-to-speech for RLX"
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+hound = "3"
+once_cell = "1"
+regex = "1"
+fancy-regex = { version = "0.14", optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx = { workspace = true, optional = true, default-features = false }
+rlx-ir = { workspace = true, optional = true }
+kitten_tts_mini_rlx = { workspace = true, optional = true }
+
+espeak-ng = { version = "0.1.2", optional = true, default-features = false, features = [
+    "bundled-data-en",
+] }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "pkg-config",
+    "download-binaries",
+    "tls-rustls",
+] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-rustls",
+] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-rustls",
+    "copy-dylibs",
+] }
+
+[features]
+default = ["onnx", "rlx"]
+onnx = ["dep:ort"]
+native = ["dep:kitten_tts_mini_rlx", "dep:rlx-ir", "kitten_tts_mini_rlx/cpu"]
+rlx = ["dep:rlx", "rlx/cpu"]
+ort-coreml = ["ort/coreml"]
+ort-cuda = ["ort/cuda"]
+ort-rocm = ["ort/rocm"]
+ort-directml = ["ort/directml"]
+metal = [
+    "rlx-runtime/metal",
+    "rlx?/metal",
+    "ort-coreml",
+    "kitten_tts_mini_rlx?/metal",
+]
+mlx = ["rlx-runtime/mlx", "rlx?/mlx", "ort-coreml", "kitten_tts_mini_rlx?/mlx"]
+cuda = [
+    "rlx-runtime/cuda",
+    "rlx?/cuda",
+    "ort-cuda",
+    "kitten_tts_mini_rlx?/cuda",
+]
+rocm = ["rlx-runtime/rocm", "rlx?/rocm", "ort-rocm"]
+gpu = ["rlx-runtime/gpu", "rlx?/gpu", "ort-directml", "ort-cuda", "ort-coreml", "kitten_tts_mini_rlx?/gpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu"]
+apple-silicon = ["metal", "mlx", "gpu"]
+full = ["onnx", "native", "rlx", "all-backends"]
+hf-download = ["dep:hf-hub"]
+espeak = ["dep:espeak-ng", "dep:fancy-regex"]
+
+[dev-dependencies]
+rlx-whisper = { path = "../rlx-whisper" }
+
+[[bin]]
+name = "rlx-kittentts"
+path = "src/bin/rlx_kittentts.rs"
+required-features = ["onnx"]
+
+[lints]
+workspace = true

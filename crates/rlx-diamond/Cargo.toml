@@ -1,0 +1,14 @@
+[package]
+name = "rlx-diamond"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Diamond Maps reward alignment — flow matching value functions and GLASS sampling (arXiv:2602.05993)"
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

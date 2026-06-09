@@ -1,0 +1,82 @@
+# Compile validation for rlx-mamba's ROCm backend. Builds the crate
+# inside an official AMD ROCm container so we can verify that:
+#   1. The rlx-rocm crate (and our `--features rocm` path) compile against
+#      the real HIP runtime + headers shipped by `rocm/dev-ubuntu-22.04`.
+#   2. The link step resolves `libamdhip64` / `libhiprtc` correctly.
+#   3. The integration in `src/backends/rocm.rs` is well-formed for the
+#      AMD host that would actually run it.
+#
+# What this does NOT do: execute kernels. The container has no
+# /dev/kfd device, so `rlx_rocm::is_available()` returns false and the
+# parity test gracefully skips. Actual GPU dispatch requires an AMD
+# GPU host (e.g. MI250/MI300 cloud instance, or a workstation with a
+# supported Radeon). The same parity test that runs here against
+# `is_available() == false` will run against a real device on such a
+# host without changes.
+#
+# Context: this Dockerfile expects two siblings — `rlx/` and
+# `rlx-models/` — at the build context root. Build from the parent
+# directory:
+#
+#   docker build -f rlx-models/crates/rlx-mamba/Dockerfile.rocm-check \
+#                -t rlx-mamba-rocm-check \
+#                /Users/Shared
+#
+# On Apple Silicon this runs under linux/amd64 QEMU emulation and is
+# slow (rust compile is CPU-heavy). On an x86_64 Linux host it's fast.
+
+FROM --platform=linux/amd64 rocm/dev-ubuntu-22.04:latest
+
+# Rust toolchain. Same channel we use on Mac so the kernel sources +
+# Cargo.toml features compile identically.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl build-essential pkg-config git \
+        libopenblas-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+        sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH=/root/.cargo/bin:$PATH
+
+WORKDIR /work
+
+# Layout mirrors the host: /work/rlx + /work/rlx-models — sibling
+# checkouts. The build context root has both.
+COPY rlx         rlx
+COPY rlx-models  rlx-models
+
+# Strip the rlx workspace down to the crates rlx-rocm + rlx-mamba's
+# dep graph need. Keeps the compile-check focused and avoids dragging
+# in metal/mlx/wgpu (and their platform deps that don't exist on
+# linux/amd64).
+RUN sed -i 's|"rlx-metal",|# "rlx-metal",|; \
+            s|"rlx-mlx",|# "rlx-mlx",|; \
+            s|"rlx-wgpu",|# "rlx-wgpu",|; \
+            s|"rlx-coreml",|# "rlx-coreml",|; \
+            s|"rlx-tpu",|# "rlx-tpu",|;' rlx/Cargo.toml
+
+# Strip rlx-models workspace members down to what rlx-mamba actually
+# needs. The full workspace depends on candle/burn/etc. via
+# `path = "../candle"`, which the .dockerignore excludes. rlx-mamba
+# itself only needs rlx-tensor + rlx-cpu + rlx-ir + rlx-rocm — the
+# rest of the workspace is irrelevant to this compile-check. Sed
+# comments out every `"crates/<x>",` line except the keep-list.
+RUN awk 'BEGIN{keep["crates/rlx-mamba"]=1; keep["crates/rlx-tensor"]=1; keep["crates/rlx-models-core"]=1} \
+         { if (match($0, /"crates\/[a-zA-Z0-9_-]+"/)) { \
+             name=substr($0, RSTART+1, RLENGTH-2); \
+             if (!(name in keep)) { print "    # " $0; next } \
+           } print $0 }' rlx-models/Cargo.toml > /tmp/Cargo.toml.new \
+ && mv /tmp/Cargo.toml.new rlx-models/Cargo.toml \
+ && echo "--- active members ---" \
+ && grep -E '^[[:space:]]*"crates/' rlx-models/Cargo.toml
+
+# Build rlx-mamba with --features rocm. This pulls in rlx-rocm, which
+# in turn links against libamdhip64 / libhiprtc available in the
+# rocm/dev image.
+WORKDIR /work/rlx-models
+RUN cargo build -p rlx-mamba --features rocm --release
+
+# Run the parity test. With no AMD GPU mounted, RocmBackend::available()
+# returns false and the test prints a skip notice and exits 0.
+RUN cargo test -p rlx-mamba --features rocm --release --test rocm_backend -- --nocapture
+
+CMD ["echo", "rlx-mamba ROCm compile check passed"]

@@ -1,0 +1,24 @@
+# SAM / SAM2 / SAM3 compile profile — tier-1 config (optional).
+# Place next to safetensors weights; loaded by `sam_profile_near_weights`.
+
+[fusion]
+policy = "direct"
+target = "auto"
+assert_clean = false
+skip = false
+
+[passes]
+dce = true
+constant_folding = true
+verbose = false
+
+[precision]
+compute = "f32"
+mixed = "none"
+
+[backend.metal]
+skip_fusion = false
+unfuse_regions = false
+
+[backend.cpu]
+unfuse_regions = true

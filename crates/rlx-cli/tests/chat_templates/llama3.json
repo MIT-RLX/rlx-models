@@ -1,0 +1,14 @@
+{
+  "name": "llama3-header-ids",
+  "family": "llama32",
+  "comment": "Llama-3-style header-id template. Real Llama-3 ships a longer template with default system message + tools — this fixture is the shape, not a byte-exact copy.",
+  "template": "{% for m in messages %}{% if loop.first %}{{ bos_token }}{% endif %}<|start_header_id|>{{ m.role }}<|end_header_id|>\n\n{{ m.content }}<|eot_id|>{% endfor %}{% if add_generation_prompt %}<|start_header_id|>assistant<|end_header_id|>\n\n{% endif %}",
+  "bos_token": "<|begin_of_text|>",
+  "eos_token": "<|eot_id|>",
+  "messages": [
+    {"role": "system", "content": "be concise"},
+    {"role": "user", "content": "hi"}
+  ],
+  "add_generation_prompt": true,
+  "expected": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nbe concise<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nhi<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+}

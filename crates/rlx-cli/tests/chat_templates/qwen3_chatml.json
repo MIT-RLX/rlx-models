@@ -1,0 +1,16 @@
+{
+  "name": "qwen3-chatml",
+  "family": "qwen3",
+  "comment": "Qwen3 ChatML template — same shape Qwen3-Coder / Qwen3.5 / Qwen3.6 ship in their tokenizer.ggml.chat_template metadata. Whitespace markers omitted so newlines are exact.",
+  "template": "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}",
+  "bos_token": null,
+  "eos_token": "<|im_end|>",
+  "messages": [
+    {"role": "system", "content": "You are a careful assistant."},
+    {"role": "user", "content": "What is 2 + 2?"},
+    {"role": "assistant", "content": "4."},
+    {"role": "user", "content": "And 3 + 3?"}
+  ],
+  "add_generation_prompt": true,
+  "expected": "<|im_start|>system\nYou are a careful assistant.<|im_end|>\n<|im_start|>user\nWhat is 2 + 2?<|im_end|>\n<|im_start|>assistant\n4.<|im_end|>\n<|im_start|>user\nAnd 3 + 3?<|im_end|>\n<|im_start|>assistant\n"
+}

@@ -1,0 +1,43 @@
+[package]
+name = "rlx-qwen3-tts-train"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "RLX MLX/Metal LoRA training for Qwen3-TTS talker (JFK custom voice)"
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-opt = { workspace = true, features = ["training"] }
+rlx-autodiff = { workspace = true }
+rlx-compile = { workspace = true }
+rlx-qwen3 = { workspace = true }
+rlx-qwen3-tts = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+half = { workspace = true }
+tokenizers = { workspace = true }
+ndarray = "0.16"
+
+[features]
+default = ["cpu"]
+cpu = ["rlx-runtime/cpu"]
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+all-backends = ["metal", "mlx", "cuda"]
+apple-silicon = ["metal", "mlx"]
+
+[[bin]]
+name = "rlx-qwen3-tts-train"
+path = "src/bin/rlx_qwen3_tts_train.rs"
+
+[lints]
+workspace = true
