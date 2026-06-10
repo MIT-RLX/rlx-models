@@ -1150,7 +1150,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "spin",
- "toml",
+ "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tynm",
  "wasm-bindgen-futures",
@@ -1368,7 +1368,7 @@ dependencies = [
  "serde_json",
  "spin",
  "thiserror 2.0.18",
- "toml",
+ "toml 1.1.2+spec-1.1.0",
  "tracing",
  "wasm-bindgen-futures",
  "web-time",
@@ -2729,6 +2729,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3997,75 +4006,80 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlx-compile"
-version = "0.2.0"
+name = "rlx-autodiff"
+version = "0.2.5"
 dependencies = [
+ "half",
  "rlx-fusion",
  "rlx-ir",
 ]
 
 [[package]]
-name = "rlx-core"
-version = "0.2.0"
+name = "rlx-compile"
+version = "0.2.5"
 dependencies = [
- "half",
- "rayon",
- "rlx-driver",
+ "rlx-autodiff",
+ "rlx-fusion",
  "rlx-ir",
 ]
 
 [[package]]
 name = "rlx-cpu"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "half",
  "rayon",
- "rlx-core",
- "rlx-driver",
  "rlx-gguf",
  "rlx-ir",
- "rlx-macros",
- "rlx-moe",
  "rlx-opt",
 ]
 
 [[package]]
 name = "rlx-driver"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "half",
  "rlx-ir",
 ]
 
 [[package]]
+name = "rlx-flow"
+version = "0.2.5"
+dependencies = [
+ "anyhow",
+ "rlx-ir",
+ "serde",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "rlx-fusion"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "rlx-ir",
 ]
 
 [[package]]
 name = "rlx-gguf"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "bytemuck",
  "half",
- "rlx-ir",
- "rlx-macros",
 ]
 
 [[package]]
 name = "rlx-ir"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
- "rlx-macros",
+ "serde",
+ "serde_json",
  "smallvec",
 ]
 
 [[package]]
 name = "rlx-macros"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4074,16 +4088,20 @@ dependencies = [
 
 [[package]]
 name = "rlx-mamba"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cpu",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-runtime",
+ "rlx-ssm",
  "rlx-tensor",
 ]
 
 [[package]]
 name = "rlx-mamba-bench"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "burn",
  "burn-mamba",
@@ -4092,24 +4110,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlx-moe"
-version = "0.2.0"
-dependencies = [
- "rlx-driver",
-]
-
-[[package]]
 name = "rlx-opt"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
+ "rlx-autodiff",
  "rlx-compile",
  "rlx-fusion",
  "rlx-ir",
 ]
 
 [[package]]
+name = "rlx-runtime"
+version = "0.2.5"
+dependencies = [
+ "anyhow",
+ "half",
+ "inventory",
+ "rlx-cpu",
+ "rlx-driver",
+ "rlx-ir",
+ "rlx-macros",
+ "rlx-opt",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rlx-ssm"
+version = "0.2.5"
+dependencies = [
+ "anyhow",
+ "rlx-cpu",
+ "rlx-flow",
+ "rlx-ir",
+]
+
+[[package]]
 name = "rlx-tensor"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cpu",
@@ -4330,6 +4368,15 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_spanned"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4780,17 +4827,38 @@ dependencies = [
 
 [[package]]
 name = "toml"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
+dependencies = [
+ "serde",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
+ "toml_edit",
+]
+
+[[package]]
+name = "toml"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81f3d15e84cbcd896376e6730314d59fb5a87f31e4b038454184435cd57defee"
 dependencies = [
  "indexmap",
  "serde_core",
- "serde_spanned",
- "toml_datetime",
+ "serde_spanned 1.1.1",
+ "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
  "toml_writer",
- "winnow",
+ "winnow 1.0.3",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "0.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4803,13 +4871,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_edit"
+version = "0.22.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
+ "toml_write",
+ "winnow 0.7.15",
+]
+
+[[package]]
 name = "toml_parser"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
- "winnow",
+ "winnow 1.0.3",
 ]
+
+[[package]]
+name = "toml_write"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toml_writer"
@@ -5809,6 +5897,15 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
 name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "winnow"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0592e1c9d151f854e6fd382574c3a0855250e1d9b2f99d9281c6e6391af352f1"
@@ -6104,3 +6201,39 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "rlx"
+version = "0.2.5"
+
+[[patch.unused]]
+name = "rlx-cuda"
+version = "0.2.5"
+
+[[patch.unused]]
+name = "rlx-metal"
+version = "0.2.5"
+
+[[patch.unused]]
+name = "rlx-mlx"
+version = "0.2.5"
+
+[[patch.unused]]
+name = "rlx-mlx-sys"
+version = "0.2.5"
+
+[[patch.unused]]
+name = "rlx-onnx-import"
+version = "0.2.5"
+
+[[patch.unused]]
+name = "rlx-rocm"
+version = "0.2.5"
+
+[[patch.unused]]
+name = "rlx-text"
+version = "0.2.5"
+
+[[patch.unused]]
+name = "rlx-wgpu"
+version = "0.2.5"

@@ -85,7 +85,7 @@ hf-download = ["dep:hf-hub"]
 espeak = ["dep:espeak-ng", "dep:fancy-regex"]
 
 [dev-dependencies]
-rlx-whisper = { path = "../rlx-whisper" }
+rlx-whisper = { workspace = true }
 
 [[bin]]
 name = "rlx-kittentts"

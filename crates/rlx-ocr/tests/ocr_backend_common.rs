@@ -63,6 +63,22 @@ fn is_skip_error(err: &anyhow::Error) -> bool {
         || msg.contains("not lowerable")
         || msg.contains("not available")
         || msg.contains("no backend")
+        || msg.contains("doesn't claim support")
+        || msg.contains("convtranspose2d")
+}
+
+fn is_skip_panic(payload: &(dyn std::any::Any + Send)) -> bool {
+    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        return false;
+    };
+    let lower = msg.to_lowercase();
+    lower.contains("doesn't claim support")
+        || lower.contains("not yet lowered")
+        || lower.contains("convtranspose2d")
 }
 
 pub fn run_detection_forward(device: Device) -> Result<()> {
@@ -107,12 +123,19 @@ where
         eprintln!("skip ocr {label} on {device:?}: backend not available in this build");
         return;
     }
-    match f() {
-        Ok(()) => {}
-        Err(e) if is_skip_error(&e) => {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) if is_skip_error(&e) => {
             eprintln!("skip ocr {label} on {device:?}: {e:#}");
         }
-        Err(e) => panic!("ocr {label} on {device:?} failed: {e:#}"),
+        Ok(Err(e)) => panic!("ocr {label} on {device:?} failed: {e:#}"),
+        Err(payload) => {
+            if is_skip_panic(payload.as_ref()) {
+                eprintln!("skip ocr {label} on {device:?}: backend missing op(s)");
+            } else {
+                std::panic::resume_unwind(payload);
+            }
+        }
     }
 }
 

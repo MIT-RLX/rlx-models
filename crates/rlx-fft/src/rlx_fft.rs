@@ -65,8 +65,36 @@ pub fn rlx_fft_forward(
     batch: usize,
     n_fft: usize,
 ) -> Vec<f32> {
-    let block = exec.run(&[("signal", signal)]).remove(0);
+    let block = rlx_fft_forward_block(exec, signal, batch, n_fft);
     crate::reference::block_to_interleaved(&block, batch, n_fft)
+}
+
+/// Real `[batch, n]` → RLX FFT block layout `[batch, 2*n]` (re ∥ im planes).
+pub fn rlx_fft_forward_block(
+    exec: &mut CompiledGraph,
+    signal: &[f32],
+    _batch: usize,
+    _n_fft: usize,
+) -> Vec<f32> {
+    exec.run(&[("signal", signal)]).remove(0)
+}
+
+/// Phase 1 — read FFT block output from arena after `run_slots` (one copy, no interleaved convert).
+pub fn rlx_fft_forward_block_in_arena(
+    exec: &mut CompiledGraph,
+    signal: &[f32],
+    batch: usize,
+    n_fft: usize,
+) -> Vec<f32> {
+    let slots = exec.run_slots(&[signal]);
+    let (off, len) = slots[0];
+    let ptr = exec.arena_ptr();
+    let mut block = vec![0f32; len];
+    unsafe {
+        std::ptr::copy_nonoverlapping(ptr.add(off) as *const f32, block.as_mut_ptr(), len);
+    }
+    let _ = (batch, n_fft);
+    block
 }
 
 /// Block spectrum `[batch, n*2]` (re plane ∥ im plane) → interleaved via inverse `Op::Fft`.

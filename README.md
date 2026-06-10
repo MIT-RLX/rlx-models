@@ -37,6 +37,7 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 - [Voxtral TTS](#voxtral-tts)
 - [VAD (Earshot + Silero)](#vad-earshot--silero)
 - [Build and test](#build-and-test)
+- [Publishing (crates.io)](#publishing-cratesio)
 - [Status](#status)
 - [Gotchas](#gotchas)
 - [Per-crate READMEs](#per-crate-readmes)
@@ -83,6 +84,7 @@ rlx-models/
 | `rlx-vjepa2` | V-JEPA 2 |
 | `rlx-wav2vec2-bert` | Wav2Vec2-BERT |
 | `rlx-whisper` | OpenAI Whisper ASR |
+| [`rlx-fft`](crates/rlx-fft/README.md) | Learned butterfly FFT, Welch PSD, fast top-K spectral peaks |
 | [`rlx-vad`](crates/rlx-vad/README.md) | Earshot + Silero VAD (embedded weights, 16 kHz) |
 | `rlx-voxtral` | Mistral Voxtral speech LM |
 | `rlx-voxtral-tts` | Voxtral-4B-TTS inference (codec + Ministral LM) |
@@ -110,7 +112,7 @@ Each model crate with a CLI has `src/cli.rs` (`pub fn run`) and `src/bin/rlx-<na
 
 **SAM unified runner:** `SamRunner` (SAM1/2/3) stays on the facade (`rlx-models/src/sam_runner.rs`) because `rlx-sam2` depends on `rlx-sam`. Per-arch CLIs are on `rlx-sam`, `rlx-sam2`, `rlx-sam3`.
 
-Published `rlx*` crates (`rlx-runtime`, `rlx-flow`, …) are pinned at **0.2.4** in root `[workspace.dependencies]`; every crate uses `{ workspace = true }`. **Local dev** with a sibling `../rlx` checkout: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored patches). **Publish / CI** uses crates.io only — no `.cargo/config.toml`, no `[patch.crates-io]` in committed `Cargo.toml`.
+Published `rlx*` crates (`rlx-runtime`, `rlx-flow`, …) are pinned at **0.2.5** in root `[workspace.dependencies]`; every crate uses `{ workspace = true }`. **Local dev** with a sibling `../rlx` checkout: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored patches). **Publish / CI** uses crates.io only — no `.cargo/config.toml`, no `[patch.crates-io]` in committed `Cargo.toml`.
 
 ## Running models
 
@@ -143,6 +145,7 @@ Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.m
 | `rlx-vjepa2` | `rlx-vjepa2` | `cargo run -p rlx-vjepa2 --bin rlx-vjepa2 --release -- …` |
 | `rlx-wav2vec2-bert` | `rlx-wav2vec2-bert` | `cargo run -p rlx-wav2vec2-bert --bin rlx-wav2vec2-bert --release -- …` |
 | `rlx-whisper` | `rlx-whisper` | `cargo run -p rlx-whisper --bin rlx-whisper --release -- --weights model.safetensors --wav audio16k.wav` |
+| `rlx-fft` | `rlx-fft` | `cargo run -p rlx-fft --release -- bench-welch-peaks --n-fft 256 --batch 32 --strategy auto` ([docs](crates/rlx-fft/README.md)) |
 | `rlx-vad` | `rlx-vad` | `cargo run -p rlx-vad --release -- --backend silero --wav audio16k.wav` ([docs](crates/rlx-vad/README.md)) |
 | `rlx-voxtral` | `rlx-voxtral` | `cargo run -p rlx-voxtral --bin rlx-voxtral --release -- --weights model_dir --wav audio16k.wav --transcribe` |
 | `rlx-voxtral-tts` | `rlx-voxtral-tts` | `just voxtral-tts -- --model-dir DIR --text "Hello" --voice neutral_female -o out.wav` |
@@ -249,6 +252,7 @@ just fetch-minicpm5-gguf Q4_K_M
 - **`flux2`** — FLUX.2 rectified-flow denoiser. `rlx-flux2` CLI; presets `flux2_dev()`, `flux2_klein_4b()`, `flux2_klein_9b()`. VAE, CFG, img2img, LoRA, `hf-download`, `rlx-flux2-serve`. GPU backends via `rlx-models` features (`metal`, `cuda`, …).
 - **`embed`** — `RlxEmbed`, registry, tokenizers, pooling. `from_pretrained` with `hf-download`.
 - **`config`**, **`weight_loader`** — HF config parsing; `WeightMap` + `GgufLoader` (K-quants, MTP isolation).
+- **`fft`** — Learned butterfly FFT, mel/Welch pipelines, IO-aware Welch peak picker (`AutoWelchPeaks`), fused `Op::WelchPeaks` on GPU. CLI: `rlx-fft`. See [crates/rlx-fft/README.md](crates/rlx-fft/README.md).
 - **`mamba`** — Mamba1 SSM block (`rlx-mamba`); SSM via `rlx-ssm` + `SelectiveScan`. See [crates/rlx-mamba/README.md](crates/rlx-mamba/README.md).
 - **`lfm`**, **`minimax`**, **`nemotron`** — hybrid runners using `rlx-ssm` decode-step stages.
 - **`minicpm5`** — MiniCPM5 edge LMs (Llama-shaped 1B). Wraps `Llama32Runner`; safetensors + GGUF. See [MiniCPM5](#minicpm5) and [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md).
@@ -260,14 +264,16 @@ just fetch-minicpm5-gguf Q4_K_M
 
 ```toml
 [dependencies]
-rlx-models = "0.2"
+rlx-models = "0.2.5"
 ```
 
 HF-hub download:
 
 ```toml
-rlx-models = { version = "0.2", features = ["hf-download"] }
+rlx-models = { version = "0.2.5", features = ["hf-download"] }
 ```
+
+Workspace and published model crates are **0.2.5**, pinned to upstream **`rlx*`** **0.2.5** on crates.io (`[workspace.dependencies]`). Local sibling `../rlx`: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored).
 
 ## Quickstart — embeddings
 
@@ -689,6 +695,38 @@ cargo test  -p rlx-models --features parity-candle
 
 burnembed (`/Users/Shared/burnembed`) re-exports `rlx_models::embed` with `--features rlx`.
 
+### Publishing (crates.io)
+
+Prerequisite: upstream **`rlx*`** **0.2.5** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
+
+```sh
+rm -f .cargo/config.toml
+cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.5, no path source
+```
+
+Pre-flight (same gates as `scripts/publish.sh`):
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --release --exclude kitten_tts_mini_rlx
+```
+
+Dry-run packaging (no upload):
+
+```sh
+just publish-list
+just publish-dry-run
+```
+
+Real publish (tier order — `rlx-models-core` first, facade `rlx-models` last; needs `cargo login` or `CARGO_REGISTRY_TOKEN`):
+
+```sh
+./scripts/publish.sh --yes
+```
+
+See `scripts/publish.sh --help` for `--start-crate`, rate limits, and resume options.
+
 ### Real-weight integration tests
 
 ```sh
@@ -724,7 +762,7 @@ Programmatic: [`rlx_models::run::check_path`](crates/rlx-cli/src/compat.rs), [`c
 | `qwen3` | yes | yes (Q4_K_M / Q5_K_M / Q6_K) | **yes** — [qwen3](https://huggingface.co/models?library=gguf&search=qwen3) (many); e.g. `unsloth/Qwen3-*-GGUF` | top-1 vs HF (`parity-candle` + weights) |
 | `qwen35` | — | yes | **yes** — same hub space; e.g. `unsloth/Qwen3.5-*-GGUF` | vs llama.cpp when `QWEN35_GGUF_PATH` / `parity-llama` |
 | `llama32` | yes | yes | **yes** — [llama-3.2](https://huggingface.co/models?library=gguf&search=llama-3.2) (~5k) | vs llama.cpp when `LLAMA32_GGUF_PATH` |
-| `minicpm5` | yes | yes (`llama`) | **yes** — [MiniCPM5-1B-GGUF](https://huggingface.co/openbmb/MiniCPM5-1B-GGUF) (Q4_K_M / Q8_0 / F16) | vs PyTorch (`minicpm5_parity`); `rlx-minicpm5` 0.2.1 on `rlx-llama32` 0.2.1; GGUF packed CPU/Metal |
+| `minicpm5` | yes | yes (`llama`) | **yes** — [MiniCPM5-1B-GGUF](https://huggingface.co/openbmb/MiniCPM5-1B-GGUF) (Q4_K_M / Q8_0 / F16) | vs PyTorch (`minicpm5_parity`); `rlx-minicpm5` 0.2.5 on `rlx-llama32` 0.2.5; GGUF packed CPU/Metal |
 | `llada2` | yes | — | **preview** — [llada2](https://huggingface.co/models?library=gguf&search=llada2) (1): [LLaDA2.0-mini-preview-GGUF](https://huggingface.co/wsbagnsv1/LLaDA2.0-mini-preview-GGUF) (`llada2`) | vs PyTorch when `LLADA2_MODEL_DIR` |
 | `flux2` | yes (BFL / NVFP4 safetensors) | yes (denoiser `.gguf`, `architecture: flux`; K-quant GGUF uses packed `DequantMatMul`; `Flux2Runner` + VAE/TE safetensors) | **yes** — [flux2](https://huggingface.co/models?library=gguf&search=flux2) (~53); e.g. [unsloth/FLUX.2-klein-9B-GGUF](https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF), [city96/FLUX.2-dev-gguf](https://huggingface.co/city96/FLUX.2-dev-gguf) | GGUF = denoiser only; VAE + Qwen3 TE still safetensors dirs |
 | `vjepa2` | yes | yes (`vjepa2` / `vjepa`, F32 drain) | **no** Hub GGUF yet — [vjepa](https://huggingface.co/models?library=gguf&search=vjepa) (0) | synthetic + optional weight checks |
@@ -747,7 +785,7 @@ Legend: ✅ supported · ⚠️ partial (host fallback or open runtime gap) · �
 | `sam`, `sam2`, `sam3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | SAM v1 also accepts `tpu`; CPU/Metal/MLX most exercised in CI |
 | `qwen3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | packed GGUF: CPU + Metal native; MLX/wgpu/CUDA prefill via CPU path (`rlx_core::packed_gguf_*`); MTP decode not wired |
 | `qwen35` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device` on all backends; some ops use host GDN/dequant on GPU; MoE offload may keep experts on host |
-| `llama32` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `rlx-llama32` 0.2.1: Metal decode guard + packed GGUF helpers; same packed rules as Qwen3 |
+| `llama32` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `rlx-llama32` 0.2.5: Metal decode guard + packed GGUF helpers; same packed rules as Qwen3 |
 | `minicpm5` | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Wraps `rlx-llama32`; safetensors decode on CPU/Metal; GGUF `--packed` parity on CPU/Metal (MLX/wgpu tests use CPU prefill path) |
 | `llada2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | MoE predictive expert offload on all standard backends (GPU uses resident experts + host fallback) |
 | `flux2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Full pipeline; text encoder compiled on Metal/MLX by default, host once on CUDA/ROCm/WGPU/Vulkan |
@@ -774,6 +812,7 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 
 | Crate | README |
 |-------|--------|
+| `rlx-fft` | [crates/rlx-fft/README.md](crates/rlx-fft/README.md) |
 | `rlx-qwen3-tts` | [crates/rlx-qwen3-tts/README.md](crates/rlx-qwen3-tts/README.md) |
 | `rlx-gemma` | [crates/rlx-gemma/README.md](crates/rlx-gemma/README.md) |
 | `rlx-minicpm5` | [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md) |

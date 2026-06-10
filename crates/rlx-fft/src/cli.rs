@@ -75,9 +75,21 @@ pub fn run(args: &[String]) -> Result<()> {
         "train-distill-ternary" => cmd_train_distill_ternary(&args[1..]),
         "bench-e2e" => cmd_bench_e2e(&args[1..]),
         "bench-welch-peaks" => cmd_bench_welch_peaks(&args[1..]),
+        #[cfg(feature = "dev")]
+        "bench-fusion-phases" => cmd_bench_fusion_phases(&args[1..]),
+        #[cfg(not(feature = "dev"))]
+        "bench-fusion-phases" => {
+            bail!("bench-fusion-phases requires --features dev (e.g. --features dev,apple-silicon)")
+        }
         other => bail!("unknown subcommand: {other} (try --help)"),
     }
 }
+
+#[cfg(feature = "dev")]
+const FUSION_PHASES_HELP: &str = "           bench-fusion-phases [--n-fft N] [--batch B] [--k K] [--iters N] [--device auto|cpu|metal|…] [--json PATH]\n";
+
+#[cfg(not(feature = "dev"))]
+const FUSION_PHASES_HELP: &str = "";
 
 fn print_help() {
     eprintln!(
@@ -103,6 +115,7 @@ fn print_help() {
            train-distill-ternary [--n-fft N] [--batch B] [--n-mels M] [--steps N] [--compute-weight F] [--teacher-steps N] [--json PATH]\n\
            bench-e2e [--n-fft N] [--batch B[,B2…]|1-1024] [--n-mels M] [--peak-k K] [--iters N] [--device all|cpu,metal,mlx,wgpu,wgu|apple-silicon|…] [--train-first] [--distill-first] [--ternary-distill] [--steps N] [--distill-steps N] [--compute-weight F] [--no-hard-gates] [--no-compiled] [--no-distilled] [--no-ternary-distilled] [--with-eager-learned] [--json PATH] [--html PATH]\n\
            bench-welch-peaks [--n-fft N] [--batch B[,B2…]|32-8192] [--k K[,K2…]|4-64] [--iters N] [--device auto|cpu|metal|…] [--strategy auto|ultra|fast|rlx|learned] [--train-steps N] [--seed N] [--no-compiled] [--no-ultra-fast] [--json PATH]\n\
+           {FUSION_PHASES_HELP}\
          \n\
          Supported n_fft: {:?}",
         crate::config::SUPPORTED_N_FFT
@@ -1796,6 +1809,62 @@ fn cmd_bench_welch_peaks(args: &[String]) -> Result<()> {
     if let Some(path) = json_out {
         crate::bench_welch_peaks::write_welch_peaks_json(&path, &report)?;
         eprintln!("wrote {}", path.display());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "dev")]
+fn cmd_bench_fusion_phases(args: &[String]) -> Result<()> {
+    let mut n_fft = 256usize;
+    let mut batch_csv = "32".to_string();
+    let mut k = 16usize;
+    let mut device = "auto".to_string();
+    let mut iters = 30usize;
+    let mut seed = 42u64;
+    let mut json_out: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--n-fft" => n_fft = parse_n_fft(&req(args, &mut i)?)?,
+            "--batch" => batch_csv = req(args, &mut i)?,
+            "--k" | "--peak-k" => k = req(args, &mut i)?.parse().context("--k")?,
+            "--device" => device = req(args, &mut i)?,
+            "--iters" => iters = req(args, &mut i)?.parse().context("--iters")?,
+            "--seed" => seed = req(args, &mut i)?.parse().context("--seed")?,
+            "--json" => json_out = Some(req(args, &mut i)?.into()),
+            "--help" | "-h" => {
+                print_help();
+                return Ok(());
+            }
+            other => bail!("unknown flag: {other}"),
+        }
+    }
+
+    let batches = parse_batch_spec(&batch_csv, "--batch")?;
+    let single = batches.len() == 1 && !batch_csv.contains(',') && !batch_csv.contains('-');
+
+    if single {
+        let report = crate::bench_fusion_phases::run_fusion_phase_bench(
+            n_fft, batches[0], k, &device, iters, seed,
+        )?;
+        crate::bench_fusion_phases::print_fusion_phase_report(&report);
+        if let Some(path) = json_out {
+            crate::bench_fusion_phases::write_fusion_phase_json(&path, &report)?;
+            eprintln!("wrote {}", path.display());
+        }
+    } else {
+        let sweep = crate::bench_fusion_phases::run_fusion_phase_sweep(
+            n_fft, &batch_csv, k, &device, iters, seed,
+        )?;
+        for report in &sweep.reports {
+            crate::bench_fusion_phases::print_fusion_phase_report(report);
+        }
+        crate::bench_fusion_phases::print_fusion_phase_sweep_summary(&sweep);
+        if let Some(path) = json_out {
+            crate::bench_fusion_phases::write_fusion_phase_sweep_json(&path, &sweep)?;
+            eprintln!("wrote {}", path.display());
+        }
     }
     Ok(())
 }

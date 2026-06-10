@@ -54,6 +54,8 @@ pub mod ablation_ternary_html;
 pub mod band_correct;
 pub mod bench;
 pub mod bench_encdec;
+#[cfg(feature = "dev")]
+pub mod bench_fusion_phases;
 pub mod bench_sweep;
 pub mod bench_sweep_html;
 pub mod bench_welch_peaks;
@@ -105,6 +107,7 @@ pub mod variants;
 pub mod weights;
 pub mod welch;
 pub mod welch_peaks_compile;
+pub mod welch_peaks_cost;
 pub mod welch_peaks_picker;
 
 pub mod cli;
@@ -202,11 +205,16 @@ pub use twiddle_stability::{
 pub use variants::{FftVariantId, VariantState};
 pub use weights::{EncDecWeights, WeightStore, export_safetensors, load_safetensors};
 pub use welch_peaks_compile::{
-    CompiledLearnedWelchPeaks, CompiledRlxWelchPeaks, compile_learned_welch_peaks,
-    compile_rlx_welch_peaks, default_welch_peaks_hard_threshold,
+    CompiledLearnedWelchPeaks, CompiledRlxWelchPeaks, CompiledRlxWelchPeaksFused,
+    compile_learned_welch_peaks, compile_rlx_welch_peaks, default_welch_peaks_hard_threshold,
+};
+pub use welch_peaks_cost::{
+    WelchPeaksCostEstimates, algorithm_bandwidth_gbps, ayala_io_cost_ns,
+    estimate_welch_peaks_costs, rustfft_peaks_io_profile, useful_bytes_touched,
 };
 pub use welch_peaks_picker::{
-    AutoWelchPeaks, WelchPeaksPickMode, WelchPeaksStrategy, all_welch_peaks_strategy_names,
-    parse_welch_peaks_strategy, pick_welch_peaks_strategy, resolve_welch_peaks_strategy,
-    rlx_crossover_batch, ultra_fast_max_batch,
+    AutoWelchPeaks, WelchPeaksPickBreakdown, WelchPeaksPickMode, WelchPeaksStrategy,
+    all_welch_peaks_strategy_names, parse_welch_peaks_strategy, pick_welch_peaks_breakdown,
+    pick_welch_peaks_strategy, resolve_welch_peaks_strategy, rlx_crossover_batch,
+    ultra_fast_max_batch,
 };

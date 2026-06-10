@@ -220,7 +220,7 @@ version = "0.71.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
@@ -240,7 +240,7 @@ version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
@@ -292,9 +292,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.11.1"
+version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 dependencies = [
  "serde_core",
 ]
@@ -1152,7 +1152,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d44a101f213f6c4cdc1853d4b78aef6db6bdfa3468798cc1d9912f4735013eb"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "core-foundation 0.10.1",
  "libc",
 ]
@@ -1327,7 +1327,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98374a31d2b68b55709891169832ccf205408c201c5e023964482441f213d0b9"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "bytemuck",
  "cubecl-common",
  "cubecl-ir",
@@ -1430,9 +1430,9 @@ dependencies = [
 
 [[package]]
 name = "cubecl-hip-sys"
-version = "7.1.5280200"
+version = "7.2.5321100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcdd98f72d6f17836a0477bcd5ae5dd6b57a80fb62a3c0919f867a231f897f28"
+checksum = "58887c6d217859c2261a868a3a6b66aa8f44ea2f4bfa51d0dbe4dcb0d1f5768d"
 dependencies = [
  "libc",
  "regex",
@@ -1499,7 +1499,7 @@ dependencies = [
  "float-ord",
  "log",
  "num",
- "petgraph",
+ "petgraph 0.6.5",
  "smallvec",
  "stable-vec",
  "type-map",
@@ -1913,7 +1913,7 @@ version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "objc2",
 ]
 
@@ -2130,7 +2130,7 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "083cee3337773bfa7f1c38fe022dab392438ced57f3a64c883011952d13b83a1"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "espeak-ng-data-dict-en",
  "espeak-ng-data-phonemes",
  "thiserror 1.0.69",
@@ -2247,6 +2247,12 @@ name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
+
+[[package]]
+name = "fixedbitset"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "flatbuffers"
@@ -2654,7 +2660,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fbcd2dba93594b227a1f57ee09b8b9da8892c34d55aa332e034a228d0fe6a171"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "gpu-alloc-types",
 ]
 
@@ -2664,7 +2670,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98ff03b468aa837d70984d55f5d3f846f6ec31fe34bbb97c4f85219caeee1ca4"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -2699,7 +2705,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b89c83349105e3732062a895becfc71a8f921bb71ecbbdd8ff99263e3b53a0ca"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "gpu-descriptor-types",
  "hashbrown 0.15.5",
 ]
@@ -2710,7 +2716,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -2845,9 +2851,9 @@ checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
 name = "http"
-version = "1.4.1"
+version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8be7462df143984c4598a256ef469b251d7d7f9e271135073e78fc535414f3d0"
+checksum = "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
 dependencies = [
  "bytes",
  "itoa",
@@ -3202,13 +3208,12 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.99"
+version = "0.3.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "142bc4740e452c1e57ade0cbc129f139c9093e354346f0872ef985f4f5cf5f11"
+checksum = "f2025f20d7a4fa7785846e7b63d10a76d3f1cee98ee5cb79ea59703f95e42162"
 dependencies = [
  "cfg-if",
  "futures-util",
- "once_cell",
  "wasm-bindgen",
 ]
 
@@ -3257,7 +3262,7 @@ dependencies = [
 
 [[package]]
 name = "kitten_tts_mini_rlx"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "dirs",
@@ -3406,9 +3411,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.30"
+version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
+checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "logos"
@@ -3555,7 +3560,7 @@ version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c3572083504c43e14aec05447f8a3d57cce0f66d7a3c1b9058572eca4d70ab9"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "block",
  "core-graphics-types 0.1.3",
  "foreign-types",
@@ -3570,7 +3575,7 @@ version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00c15a6f673ff72ddcc22394663290f870fb224c1bfce55734a75c414150e605"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "block",
  "core-graphics-types 0.2.0",
  "foreign-types",
@@ -3712,7 +3717,7 @@ checksum = "916cbc7cb27db60be930a4e2da243cf4bc39569195f22fd8ee419cd31d5b662c"
 dependencies = [
  "arrayvec",
  "bit-set 0.8.0",
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "cfg-if",
  "cfg_aliases",
  "codespan-reporting 0.12.0",
@@ -3738,7 +3743,7 @@ checksum = "0dd91265cc2454558f659b3b4b9640f0ddb8cc6521277f166b8a8c181c898079"
 dependencies = [
  "arrayvec",
  "bit-set 0.9.1",
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "cfg-if",
  "cfg_aliases",
  "codespan-reporting 0.13.1",
@@ -3947,7 +3952,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "dispatch2",
  "objc2",
 ]
@@ -3964,7 +3969,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "objc2",
  "objc2-core-foundation",
 ]
@@ -3985,7 +3990,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "block2",
  "objc2",
  "objc2-foundation",
@@ -3997,7 +4002,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
@@ -4046,7 +4051,7 @@ version = "6.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc3cbf698f9438986c11a880c90a6d04b9de27575afd28bbf45b154b6c709e2"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "libc",
  "once_cell",
  "onig_sys",
@@ -4171,7 +4176,17 @@ version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
- "fixedbitset",
+ "fixedbitset 0.4.2",
+ "indexmap",
+]
+
+[[package]]
+name = "petgraph"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3672b37090dbd86368a4145bc067582552b29c27377cad4e0a306c97f9bd7772"
+dependencies = [
+ "fixedbitset 0.5.7",
  "indexmap",
 ]
 
@@ -4263,7 +4278,7 @@ version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "crc32fast",
  "fdeflate",
  "flate2",
@@ -4391,7 +4406,7 @@ dependencies = [
  "log",
  "multimap",
  "once_cell",
- "petgraph",
+ "petgraph 0.7.1",
  "prettyplease",
  "prost",
  "prost-types",
@@ -4776,7 +4791,7 @@ version = "11.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -4855,7 +4870,7 @@ version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -4871,9 +4886,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.12.3"
+version = "1.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+checksum = "f1292b7759ae1cb9ec195452d1390a074f0cd8541ab7a5a8c31cd6db45d4a6ba"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -4894,9 +4909,9 @@ dependencies = [
 
 [[package]]
 name = "regex-syntax"
-version = "0.8.10"
+version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "remove_dir_all"
@@ -4970,7 +4985,7 @@ dependencies = [
 
 [[package]]
 name = "rlx"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-driver",
@@ -4982,7 +4997,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-autodiff"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "half",
  "rlx-fusion",
@@ -4991,7 +5006,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-bert"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-flow",
@@ -5005,7 +5020,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-bonsai"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5016,7 +5031,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-cli"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -5032,7 +5047,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-clinicalbert"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "candle-core 0.10.2",
@@ -5054,7 +5069,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-cohere"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5064,7 +5079,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-compile"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "rlx-autodiff",
  "rlx-fusion",
@@ -5073,7 +5088,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-cpu"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "gemm",
  "half",
@@ -5085,7 +5100,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-cuda"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "bytemuck",
  "cudarc 0.19.7",
@@ -5099,11 +5114,11 @@ dependencies = [
 
 [[package]]
 name = "rlx-diamond"
-version = "0.2.4"
+version = "0.2.5"
 
 [[package]]
 name = "rlx-dinov2"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5120,7 +5135,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-driver"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "half",
  "rlx-ir",
@@ -5128,7 +5143,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-embed"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -5150,7 +5165,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-fft"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rand 0.8.6",
@@ -5171,7 +5186,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-flow"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -5181,7 +5196,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-flux2"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5207,14 +5222,14 @@ dependencies = [
 
 [[package]]
 name = "rlx-fusion"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "rlx-ir",
 ]
 
 [[package]]
 name = "rlx-gemma"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "image",
@@ -5235,7 +5250,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-gguf"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5244,7 +5259,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-glm"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5254,7 +5269,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-gpt-oss"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5264,11 +5279,11 @@ dependencies = [
 
 [[package]]
 name = "rlx-gpu-kernels"
-version = "0.2.4"
+version = "0.2.5"
 
 [[package]]
 name = "rlx-granite"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5278,7 +5293,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-ir"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -5287,7 +5302,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-kittentts"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "espeak-ng",
@@ -5310,7 +5325,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-lfm"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5328,7 +5343,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-lfm-vl"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "image",
@@ -5346,7 +5361,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-llada2"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5366,7 +5381,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-llama-base"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-gguf",
@@ -5376,7 +5391,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-llama32"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5396,7 +5411,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-locateanything"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -5414,7 +5429,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-macros"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5423,7 +5438,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mamba"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "criterion",
@@ -5443,7 +5458,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-metal"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "bytemuck",
  "core-graphics-types 0.1.3",
@@ -5460,7 +5475,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-minicpm5"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -5474,7 +5489,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-minimax"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5492,7 +5507,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mistral"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5502,7 +5517,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mlx"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "half",
  "rlx-cpu",
@@ -5516,7 +5531,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mlx-sys"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "cc",
  "cmake",
@@ -5524,7 +5539,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-models"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5599,7 +5614,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-models-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5618,7 +5633,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nemotron"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5637,7 +5652,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nemotron-omni"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "image",
@@ -5656,7 +5671,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-neutts"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "burn",
@@ -5682,7 +5697,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nomic"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-flow",
@@ -5696,7 +5711,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-ocr"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5721,7 +5736,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-omnicoder"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5731,7 +5746,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-onnx-decompose"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-onnx-import",
@@ -5742,7 +5757,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-onnx-import"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5757,7 +5772,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-opt"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "rlx-autodiff",
  "rlx-compile",
@@ -5767,7 +5782,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-phi"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5777,7 +5792,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen3"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5794,7 +5809,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen3-tts"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "futures-channel",
@@ -5822,7 +5837,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen3-tts-train"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "half",
@@ -5844,7 +5859,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen3-vl"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "image",
@@ -5862,7 +5877,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen35"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "image",
@@ -5885,7 +5900,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-rocm"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "libloading 0.8.9",
  "rlx-cpu",
@@ -5898,7 +5913,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-runtime"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "half",
@@ -5920,7 +5935,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-sam"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5938,7 +5953,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-sam-ir"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cpu",
@@ -5951,7 +5966,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-sam2"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5970,7 +5985,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-sam3"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -5990,7 +6005,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-ssm"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cpu",
@@ -6000,7 +6015,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tensor"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cpu",
@@ -6008,7 +6023,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-text"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "minijinja",
@@ -6021,7 +6036,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tpu"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "libloading 0.8.9",
  "prost",
@@ -6037,7 +6052,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-vad"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -6051,7 +6066,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-vision"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-flow",
@@ -6065,7 +6080,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-vjepa2"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -6083,14 +6098,14 @@ dependencies = [
 
 [[package]]
 name = "rlx-vlm-base"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "rlx-voxtral"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -6109,7 +6124,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-voxtral-tts"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -6134,7 +6149,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-voxtral-tts-train"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "half",
@@ -6159,7 +6174,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-wav2vec2-bert"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -6175,7 +6190,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-wgpu"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "bytemuck",
  "half",
@@ -6191,7 +6206,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-whisper"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -6373,7 +6388,7 @@ version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "errno",
  "libc",
  "linux-raw-sys",
@@ -6685,7 +6700,7 @@ version = "0.3.0+sdk-1.3.268.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eda41003dc44290527a59b13432d4a0379379fa074b70174882adfbdfd917844"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -6694,7 +6709,7 @@ version = "0.4.0+sdk-1.4.341.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -6782,7 +6797,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01198a2debb237c62b6826ec7081082d951f46dbb64b0e8c7649a452230d1dfc"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "byteorder",
  "enum-as-inner",
  "libc",
@@ -7165,7 +7180,7 @@ version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "bytes",
  "futures-util",
  "http",
@@ -7375,9 +7390,9 @@ dependencies = [
 
 [[package]]
 name = "unicode-segmentation"
-version = "1.13.2"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-width"
@@ -7510,9 +7525,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.23.2"
+version = "1.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d258b83ceec21034727ecee8c382cfa6c3e133699b0742c64571814fb420c9f7"
+checksum = "144d6b123cef80b301b8f72a9e2ca4370ddec21950d0a103dd22c437006d2db7"
 
 [[package]]
 name = "valuable"
@@ -7588,9 +7603,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.122"
+version = "0.2.123"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ed04576f974d2b2fba0f38c51dbc5518011e38c36bf1143164be765528fd409"
+checksum = "a254a4b10c19a76f09a27640e7ffbf9bc30bf67e16a3bf28aaefa4920fe81563"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -7601,9 +7616,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.72"
+version = "0.4.73"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9473dbd2991ae90b6291c3c32c30c6187ac49aa32f9905d1cce280ec1e110b0f"
+checksum = "54568702fabf5d4849ce2b90fadfa64168a097eaf4b351ce9df8b687a0086aaf"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -7611,9 +7626,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.122"
+version = "0.2.123"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "916151b09da36bd82f6615cbf3a419e2f0ba23a03c6160e8e92eb6bd4aa1dec6"
+checksum = "24a40fc75b0ec6f3746ceb10d36f53a93dcd68a93b11b6445983945d79eba0dc"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -7621,9 +7636,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.122"
+version = "0.2.123"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "299047362ccbfce148b67ab7e73349f77748e00c8296f9542adfad2ad82c5c5e"
+checksum = "908f34bd9b9ce3d4caf07b72dfab63d61504d156856c6bd3cd87fa350cf3985b"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -7634,9 +7649,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.122"
+version = "0.2.123"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a929b2c61f11ba3e9bc35b50c1f25cb38e0e892c0c231ae2b8cf78d5dad4437"
+checksum = "7acbf7616c27b194bbb550bf77ed0c2c3e5b7fd1260a93082b95fb7f47959b92"
 dependencies = [
  "unicode-ident",
 ]
@@ -7669,7 +7684,7 @@ version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47b807c72e1bac69382b3a6fb3dbe8ea4c0ed87ff5629b8685ae6b9a611028fe"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "hashbrown 0.15.5",
  "indexmap",
  "semver",
@@ -7677,9 +7692,9 @@ dependencies = [
 
 [[package]]
 name = "web-sys"
-version = "0.3.99"
+version = "0.3.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d621441cfc37b84979402712047321980c178f299193a3589d05b99e8763436"
+checksum = "6e0871acf327f283dc6da28a1696cdc64fb355ba9f935d052021fa77f35cce69"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -7720,7 +7735,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "70b6ff82bbf6e9206828e1a3178e851f8c20f1c9028e74dd3a8090741ccd5798"
 dependencies = [
  "arrayvec",
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "cfg-if",
  "cfg_aliases",
  "document-features",
@@ -7749,7 +7764,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb3feacc458f7bee8bc1737149b42b6c731aa461039a4264a67bb6681646b250"
 dependencies = [
  "arrayvec",
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "bytemuck",
  "cfg-if",
  "cfg_aliases",
@@ -7781,7 +7796,7 @@ dependencies = [
  "arrayvec",
  "bit-set 0.8.0",
  "bit-vec 0.8.0",
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "cfg_aliases",
  "document-features",
  "hashbrown 0.15.5",
@@ -7812,7 +7827,7 @@ dependencies = [
  "arrayvec",
  "bit-set 0.9.1",
  "bit-vec 0.9.1",
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "bytemuck",
  "cfg_aliases",
  "document-features",
@@ -7890,7 +7905,7 @@ dependencies = [
  "arrayvec",
  "ash",
  "bit-set 0.8.0",
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "block",
  "bytemuck",
  "cfg-if",
@@ -7938,7 +7953,7 @@ dependencies = [
  "arrayvec",
  "ash",
  "bit-set 0.9.1",
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "block2",
  "bytemuck",
  "cfg-if",
@@ -7989,7 +8004,7 @@ version = "26.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eca7a8d8af57c18f57d393601a1fb159ace8b2328f1b6b5f80893f7d672c9ae2"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "bytemuck",
  "js-sys",
  "log",
@@ -8003,7 +8018,7 @@ version = "29.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9bcc31518a0e9735aefebedb5f7a9ef3ed1c42549c9f4c882fa9060ceaac639"
 dependencies = [
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "bytemuck",
  "js-sys",
  "log",
@@ -8540,7 +8555,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d66ea20e9553b30172b5e831994e35fbde2d165325bec84fc43dbf6f4eb9cb2"
 dependencies = [
  "anyhow",
- "bitflags 2.11.1",
+ "bitflags 2.13.0",
  "indexmap",
  "log",
  "serde",
@@ -8594,9 +8609,9 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "yoke"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abe8c5fda708d9ca3df187cae8bfb9ceda00dd96231bed36e445a1a48e66f9ca"
+checksum = "709fe23a0424b6a435d82152b1bd3fdfb0833487d5fa90d05d42762a9891fef5"
 dependencies = [
  "stable_deref_trait",
  "yoke-derive",
@@ -8617,18 +8632,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.50"
+version = "0.8.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b065d4f0e55f82fae73202e189638116a87c55ab6b8e6c2721e13dd9d854ad1"
+checksum = "ce1022995ff5ff5d841ad7d994facc23098cd40152f2c1d11cd607c6f530653f"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.50"
+version = "0.8.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b631b19d36a892ab55420c92dbc83ccd79274f25be714855d3074aa71cab639"
+checksum = "1ae7f38b72ec2a254e2b87ef277cf2cd4fb97cbebf944faa6f33354da0867930"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -2,7 +2,7 @@
 
 LLaMA 3.2–shaped causal LMs in RLX (runner, CLI, GGUF packed prefill).
 
-**Version 0.2.1** — Metal KV-decode compile guard (`RLX_DISABLE_MPSGRAPH` on decode); packed GGUF helpers re-exported via `rlx_core::flow_bridge` (used by `rlx-minicpm5`, `rlx-qwen3`, `rlx-gemma`).
+**Workspace 0.2.5** — Metal KV-decode compile guard (`RLX_DISABLE_MPSGRAPH` on decode); packed GGUF helpers re-exported via `rlx_core::flow_bridge` (used by `rlx-minicpm5`, `rlx-qwen3`, `rlx-gemma`).
 
 ## CLI
 

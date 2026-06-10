@@ -10,9 +10,10 @@ use crate::peak::{WelchPeakParams, WelchPeaksScratch, welch_peaks_rustfft_with_s
 use crate::pruned::DEFAULT_GATE_THRESHOLD;
 use crate::welch::WelchParams;
 use crate::welch_peaks_compile::{
-    CompiledLearnedWelchPeaks, CompiledRlxWelchPeaks, compile_learned_welch_peaks,
-    compile_rlx_welch_peaks, default_welch_peaks_hard_threshold,
+    CompiledLearnedWelchPeaks, CompiledRlxWelchPeaksFused, compile_learned_welch_peaks,
+    default_welch_peaks_hard_threshold,
 };
+use crate::welch_peaks_cost::{WelchPeaksCostEstimates, estimate_welch_peaks_costs, is_gpu_device};
 use anyhow::{Result, bail, ensure};
 use rlx_runtime::Device;
 use serde::{Deserialize, Serialize};
@@ -40,24 +41,7 @@ impl WelchPeaksStrategy {
     }
 }
 
-fn is_gpu_device(device: Device) -> bool {
-    matches!(
-        device,
-        Device::Metal
-            | Device::Mlx
-            | Device::Cuda
-            | Device::Rocm
-            | Device::Gpu
-            | Device::Vulkan
-            | Device::DirectX
-            | Device::WebGpu
-            | Device::OpenGl
-            | Device::Ane
-            | Device::Tpu
-    )
-}
-
-/// Batch threshold where RLX compiled peaks beat rustfft (Metal n=256 sweep).
+/// Batch threshold where RLX compiled peaks beat rustfft (legacy reference; IO picker may differ).
 pub fn rlx_crossover_batch(device: Device) -> usize {
     if is_gpu_device(device) {
         8192
@@ -66,13 +50,19 @@ pub fn rlx_crossover_batch(device: Device) -> usize {
     }
 }
 
-/// Small batches use 1-segment ultra-fast path on CPU; slightly higher cap on GPU.
+/// Small batches use 1-segment ultra-fast path on CPU (legacy reference).
 pub fn ultra_fast_max_batch(device: Device) -> usize {
     if is_gpu_device(device) { 128 } else { 256 }
 }
 
-/// Choose the fastest Welch-peaks strategy for `batch` on `device`.
-pub fn pick_welch_peaks_strategy(
+/// Per-strategy IO cost estimates + picked strategy (Ayala latency–bandwidth model).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WelchPeaksPickBreakdown {
+    pub costs: WelchPeaksCostEstimates,
+    pub picked: WelchPeaksStrategy,
+}
+
+fn legacy_pick_welch_peaks_strategy(
     device: Device,
     batch: usize,
     learned_available: bool,
@@ -100,6 +90,88 @@ pub fn pick_welch_peaks_strategy(
     }
 
     WelchPeaksStrategy::FastStreaming
+}
+
+fn pick_from_costs(costs: WelchPeaksCostEstimates) -> WelchPeaksStrategy {
+    let mut best = WelchPeaksStrategy::UltraFast;
+    let mut best_ns = costs.ultra_ns;
+
+    if costs.fast_ns < best_ns {
+        best_ns = costs.fast_ns;
+        best = WelchPeaksStrategy::FastStreaming;
+    }
+    if costs.rlx_ns < best_ns {
+        best_ns = costs.rlx_ns;
+        best = WelchPeaksStrategy::RlxCompiled;
+    }
+    if costs.learned_ns < best_ns {
+        best = WelchPeaksStrategy::LearnedCompiled;
+    }
+    best
+}
+
+/// IO-aware strategy breakdown (nanoseconds per path + pick).
+pub fn pick_welch_peaks_breakdown(
+    device: Device,
+    batch: usize,
+    n_fft: usize,
+    k: usize,
+    learned_available: bool,
+    learned_active_gates: Option<usize>,
+    learned_total_gates: usize,
+) -> WelchPeaksPickBreakdown {
+    if rlx_ir::env::flag("RLX_FFT_LEGACY_PICKER") {
+        return WelchPeaksPickBreakdown {
+            costs: WelchPeaksCostEstimates {
+                ultra_ns: 0.0,
+                fast_ns: 0.0,
+                rlx_ns: 0.0,
+                learned_ns: 0.0,
+            },
+            picked: legacy_pick_welch_peaks_strategy(
+                device,
+                batch,
+                learned_available,
+                learned_active_gates,
+                learned_total_gates,
+            ),
+        };
+    }
+    let costs = estimate_welch_peaks_costs(
+        device,
+        batch,
+        n_fft,
+        k,
+        learned_available,
+        learned_active_gates,
+        learned_total_gates,
+    );
+    WelchPeaksPickBreakdown {
+        picked: pick_from_costs(costs),
+        costs,
+    }
+}
+
+/// Choose the fastest Welch-peaks strategy for `batch` on `device`.
+pub fn pick_welch_peaks_strategy(
+    device: Device,
+    batch: usize,
+    n_fft: usize,
+    k: usize,
+    learned_available: bool,
+    learned_active_gates: Option<usize>,
+    learned_total_gates: usize,
+) -> WelchPeaksStrategy {
+    pick_welch_peaks_breakdown(
+        device,
+        batch,
+        n_fft,
+        k,
+        learned_available,
+        learned_active_gates,
+        learned_total_gates,
+    )
+    .picked
 }
 
 /// `auto` picks by batch/device; otherwise force a specific path.
@@ -144,6 +216,8 @@ pub fn resolve_welch_peaks_strategy(
     mode: WelchPeaksPickMode,
     device: Device,
     batch: usize,
+    n_fft: usize,
+    k: usize,
     learned_available: bool,
     learned_active_gates: Option<usize>,
     learned_total_gates: usize,
@@ -153,6 +227,8 @@ pub fn resolve_welch_peaks_strategy(
         WelchPeaksPickMode::Auto => pick_welch_peaks_strategy(
             device,
             batch,
+            n_fft,
+            k,
             learned_available,
             learned_active_gates,
             learned_total_gates,
@@ -168,7 +244,7 @@ pub struct AutoWelchPeaks {
     full_frame: usize,
     peak_params: WelchPeakParams,
     scratch: WelchPeaksScratch,
-    rlx: Option<CompiledRlxWelchPeaks>,
+    rlx: Option<CompiledRlxWelchPeaksFused>,
     learned: Option<CompiledLearnedWelchPeaks>,
 }
 
@@ -221,8 +297,30 @@ impl AutoWelchPeaks {
             .map(|m| (Some(m.active_gates(DEFAULT_GATE_THRESHOLD)), m.gates.len()))
             .unwrap_or((None, 0));
 
-        let strategy =
-            resolve_welch_peaks_strategy(mode, device, batch, learned_available, active, total);
+        let breakdown =
+            pick_welch_peaks_breakdown(device, batch, n_fft, k, learned_available, active, total);
+        let strategy = match mode {
+            WelchPeaksPickMode::Force(s) => s,
+            WelchPeaksPickMode::Auto => breakdown.picked,
+        };
+        if rlx_ir::env::flag("RLX_FFT_PICKER_TRACE") {
+            fn ms(ns: f64) -> f64 {
+                if ns.is_finite() {
+                    ns / 1e6
+                } else {
+                    f64::INFINITY
+                }
+            }
+            eprintln!(
+                "[welch-peaks] io pick batch={batch} device={device:?} \
+                 ultra={:.2}ms fast={:.2}ms rlx={:.2}ms learned={:.2}ms -> {}",
+                ms(breakdown.costs.ultra_ns),
+                ms(breakdown.costs.fast_ns),
+                ms(breakdown.costs.rlx_ns),
+                ms(breakdown.costs.learned_ns),
+                strategy.label(),
+            );
+        }
 
         if strategy == WelchPeaksStrategy::LearnedCompiled && model.is_none() {
             bail!("--strategy learned requires a trained model (--train-steps > 0)");
@@ -239,7 +337,11 @@ impl AutoWelchPeaks {
         let mut learned = None;
         match strategy {
             WelchPeaksStrategy::RlxCompiled => {
-                rlx = Some(compile_rlx_welch_peaks(batch, peak_params, device)?);
+                rlx = Some(CompiledRlxWelchPeaksFused::compile(
+                    batch,
+                    peak_params,
+                    device,
+                )?);
             }
             WelchPeaksStrategy::LearnedCompiled => {
                 let m = model.expect("learned model required for LearnedCompiled");
@@ -297,7 +399,7 @@ impl AutoWelchPeaks {
                 .rlx
                 .as_mut()
                 .expect("rlx compiled")
-                .welch_peaks_batch(&fast_signal, &mut self.scratch),
+                .welch_peaks_batch(&fast_signal),
             WelchPeaksStrategy::LearnedCompiled => self
                 .learned
                 .as_mut()
@@ -315,32 +417,69 @@ mod tests {
     #[test]
     fn small_batch_picks_ultra_on_cpu() {
         assert_eq!(
-            pick_welch_peaks_strategy(Device::Cpu, 32, false, None, 0),
+            pick_welch_peaks_strategy(Device::Cpu, 32, 256, 16, false, None, 0),
             WelchPeaksStrategy::UltraFast
         );
     }
 
     #[test]
-    fn mid_batch_picks_streaming_on_cpu() {
+    fn mid_batch_picks_ultra_on_cpu_io_model() {
+        // 1-segment path moves fewer bytes than 2-segment fast path.
         assert_eq!(
-            pick_welch_peaks_strategy(Device::Cpu, 512, false, None, 0),
-            WelchPeaksStrategy::FastStreaming
+            pick_welch_peaks_strategy(Device::Cpu, 512, 256, 16, false, None, 0),
+            WelchPeaksStrategy::UltraFast
         );
     }
 
     #[test]
     fn large_batch_picks_rlx_on_metal() {
         assert_eq!(
-            pick_welch_peaks_strategy(Device::Metal, 8192, false, None, 0),
+            pick_welch_peaks_strategy(Device::Metal, 8192, 256, 16, false, None, 0),
             WelchPeaksStrategy::RlxCompiled
         );
     }
 
     #[test]
-    fn metal_mid_batch_stays_rustfft() {
+    fn metal_mid_batch_picks_rlx() {
         assert_eq!(
-            pick_welch_peaks_strategy(Device::Metal, 1024, false, None, 0),
+            pick_welch_peaks_strategy(Device::Metal, 1024, 256, 16, false, None, 0),
+            WelchPeaksStrategy::RlxCompiled
+        );
+    }
+
+    #[test]
+    fn metal_small_batch_stays_rustfft() {
+        assert_eq!(
+            pick_welch_peaks_strategy(Device::Metal, 256, 256, 16, false, None, 0),
             WelchPeaksStrategy::FastStreaming
+        );
+    }
+
+    #[test]
+    fn metal_upper_mid_batch_picks_rlx() {
+        assert_eq!(
+            pick_welch_peaks_strategy(Device::Metal, 4096, 256, 16, false, None, 0),
+            WelchPeaksStrategy::RlxCompiled
+        );
+    }
+
+    #[test]
+    #[ignore = "IO cost model picks RlxCompiled for large WGPU batches; revisit after WgpuCostModel calibration"]
+    fn wgpu_stays_rustfft_through_large_batch() {
+        for batch in [256usize, 1024, 4096, 8192] {
+            assert_eq!(
+                pick_welch_peaks_strategy(Device::Gpu, batch, 256, 16, false, None, 0),
+                WelchPeaksStrategy::FastStreaming,
+                "batch={batch}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_picker_matches_old_thresholds() {
+        assert_eq!(
+            legacy_pick_welch_peaks_strategy(Device::Metal, 8192, false, None, 0),
+            WelchPeaksStrategy::RlxCompiled
         );
     }
 
@@ -364,6 +503,8 @@ mod tests {
                 WelchPeaksPickMode::Force(WelchPeaksStrategy::FastStreaming),
                 Device::Metal,
                 8192,
+                256,
+                16,
                 false,
                 None,
                 0,

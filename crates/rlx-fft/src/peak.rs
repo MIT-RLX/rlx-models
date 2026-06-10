@@ -168,6 +168,43 @@ pub fn peaks_from_segment_spectrum_streaming(
     peaks_from_psd_batch(psd_scratch, batch, n_bins, params.k)
 }
 
+/// Block-layout FFT spectra (re ∥ im planes) → top-K peaks.
+pub fn peaks_from_block_segment_spectrum_streaming(
+    spectrum: &[f32],
+    batch: usize,
+    params: WelchPeakParams,
+    psd_scratch: &mut [f32],
+) -> Vec<f32> {
+    let n_bins = params.n_bins();
+    let n_fft = params.welch.n_fft;
+    let n_seg = params.welch.n_segments;
+    let row_len = n_fft * 2;
+    let inv = 1.0 / n_seg as f32;
+    psd_scratch.fill(0.0);
+    for b in 0..batch {
+        let row = &mut psd_scratch[b * n_bins..(b + 1) * n_bins];
+        for s in 0..n_seg {
+            let spec_base = (b * n_seg + s) * row_len;
+            accumulate_block_power_row(row, &spectrum[spec_base..spec_base + row_len], n_fft, inv);
+        }
+    }
+    peaks_from_psd_batch(psd_scratch, batch, n_bins, params.k)
+}
+
+fn accumulate_block_power_row(row: &mut [f32], block: &[f32], n_fft: usize, scale: f32) {
+    let n_bins = n_fft / 2 + 1;
+    row[0] += scale * (block[0] * block[0] + block[n_fft] * block[n_fft]);
+    for bin in 1..n_bins.saturating_sub(1) {
+        let re = block[bin];
+        let im = block[n_fft + bin];
+        row[bin] += scale * 2.0 * (re * re + im * im);
+    }
+    if n_bins > 1 {
+        let bin = n_bins - 1;
+        row[bin] += scale * (block[bin] * block[bin] + block[n_fft + bin] * block[n_fft + bin]);
+    }
+}
+
 pub fn welch_peaks_rustfft(
     signal: &[f32],
     batch: usize,

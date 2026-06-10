@@ -2,6 +2,8 @@
 
 Learned butterfly FFT + spectral pipelines (mel, Welch PSD, top-K Welch peaks), compiled via RLX.
 
+**Workspace 0.2.5** — depends on upstream `rlx*` 0.2.5. Publish tier 2 (`scripts/publish.sh`), after `rlx-cli` / `rlx-models-core`.
+
 ```bash
 cargo run -p rlx-fft --release -- --help
 ```
@@ -36,6 +38,38 @@ cargo run -p rlx-fft --features apple-silicon --release -- bench-welch-peaks \
 
 Sweep output ends with a **`k crossover`** table (rustfft / stream / rlx / picker ms per K). Combine with `--batch` for a full grid, e.g. `--batch 32,8192 --k 4,16,64`.
 
+### Fusion phase bench (IO + latency)
+
+Compare baseline interleaved readback, Phase 1 block layout, and Phase 2 fused `Op::WelchPeaks`:
+
+```bash
+cargo run -p rlx-fft --features dev,apple-silicon --release -- bench-fusion-phases \
+  --n-fft 256 --batch 8192 --k 16 --device metal --iters 15
+
+# Batch sweep + JSON
+cargo run -p rlx-fft --features dev,apple-silicon --release -- bench-fusion-phases \
+  --n-fft 256 --batch 32,1024,8192 --k 16 --device metal --iters 15 \
+  --json /tmp/fusion-phases.json
+```
+
+Output includes **IO profiles** (kernel launches, sync points, host readback bytes) and per-phase speedup vs baseline.
+
+```bash
+# WGPU (Vulkan/Metal/DX12 via wgpu)
+cargo run -p rlx-fft --features dev,gpu --release -- bench-fusion-phases \
+  --n-fft 256 --batch 8192 --k 16 --device wgpu --iters 15
+
+# CUDA (when NVIDIA toolkit + `rlx-runtime/cuda` available)
+cargo run -p rlx-fft --features dev,cuda --release -- bench-fusion-phases \
+  --n-fft 256 --batch 8192 --k 16 --device cuda --iters 15
+```
+
+| Phase | Path | What changes |
+|-------|------|--------------|
+| baseline | `baseline_interleaved_readback` | Full FFT spectrum readback + host top-K |
+| Phase 1 | `phase1_block_layout` | Block-layout FFT output; peaks on host |
+| Phase 2 | `phase2_fused_welch_peaks_op` | Fused graph; peaks-only readback (~32× less host_out at batch=8192). Metal runs peaks after a single GPU wait (no mid-graph sync). |
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--n-fft` | `256` | FFT size |
@@ -67,16 +101,18 @@ Use **`AutoWelchPeaks`** in Rust or **`--strategy`** on the CLI.
 | **rlx** | `rlx_compiled` | Large batch on GPU (Metal/CUDA/…) |
 | **learned** | `learned_compiled` | Large batch + sparse learned gates + trained model |
 
-#### Auto selection rules
+#### Auto selection (IO-aware picker)
 
-| Condition | Picked strategy |
-|-----------|-----------------|
-| `batch ≤ 256` on CPU, `≤ 128` on GPU | **ultra** (1 segment) |
-| Mid batch | **fast** (2 segments, streaming top-K) |
-| `batch ≥ 8192` on GPU | **rlx** (compiled `Op::Fft`) |
-| GPU + `batch ≥ 8192` + learned model with **&lt;25% active gates** | **learned** |
+Auto mode estimates each strategy with an **Ayala-style latency–bandwidth model** (`T ≈ L·M + S/W`) using `graph_io` profiles and per-device `BackendCostModel` (CPU rustfft paths vs fused `Op::WelchPeaks` on GPU). Fused GPU estimates apply a calibrated compute scale (~7.5× IO-only on Metal, from `bench-fusion-phases` phase-2); CPU rustfft gets a batch growth penalty when compared on GPU devices. It picks the lowest predicted cost.
 
-Threshold helpers: `rlx_crossover_batch(device)` → `8192` on GPU; `ultra_fast_max_batch(device)` → `256` CPU / `128` GPU.
+| Env | Effect |
+|-----|--------|
+| `RLX_FFT_PICKER_TRACE=1` | Log per-strategy predicted ms when constructing `AutoWelchPeaks` |
+| `RLX_FFT_LEGACY_PICKER=1` | Restore fixed thresholds (`8192` GPU crossover, etc.) |
+
+Calibrate with `bench-fusion-phases` (phase-2 fused vs IO-model line) and `bench-welch-peaks` (picker vs rustfft crossover). Metal/Mlx use unified-memory rustfft penalties; WGPU/Vulkan use lighter CPU rustfft adjustment (tail-host fused path is slower than rustfft until a native GPU `WelchPeaks` kernel lands).
+
+Legacy reference thresholds (used only with `RLX_FFT_LEGACY_PICKER`): `batch ≤ 256` CPU / `≤ 128` GPU → **ultra**; mid batch → **fast**; `batch ≥ 8192` GPU → **rlx**; sparse learned gates → **learned**.
 
 **Reference peaks** for training/bench error always use full 8-segment Welch; student paths use 1–2 segments.
 
@@ -160,5 +196,7 @@ cargo test -p rlx-fft peak --release
 |--------|------|
 | `peak` | `WelchPeakParams`, streaming top-K, `WelchPeaksScratch` |
 | `welch_peaks_picker` | `AutoWelchPeaks`, auto/forced strategy |
+| `welch_peaks_cost` | Ayala IO cost model, `estimate_welch_peaks_costs` |
 | `welch_peaks_compile` | `CompiledRlxWelchPeaks`, `CompiledLearnedWelchPeaks` |
-| `bench_welch_peaks` | CLI bench + batch sweep |
+| `bench_welch_peaks` | CLI bench + batch / K sweep |
+| `bench_fusion_phases` | Fusion phase bench (`--features dev`; baseline vs block layout vs fused op) |

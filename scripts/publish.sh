@@ -62,12 +62,15 @@
 #   4. Crates marked `publish = false` or in workspace.exclude (see SKIPPED)
 #      are not published — cargo skips them; this script lists the rest.
 #
-# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.4) from the RLX repo
+# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.5) from the RLX repo
 # before `rlx-models` path deps resolve on the registry.
 #
-# Recent tier additions: `rlx-fft`, `rlx-vad`, `rlx-clinicalbert`, `kitten_tts_mini_rlx`
-# (before `rlx-kittentts`), `rlx-qwen3-tts`, `rlx-voxtral` / `rlx-voxtral-tts`
-# (+ train crates), `rlx-locateanything`, `rlx-minicpm5` (after `rlx-llama32`).
+# 56 publishable workspace crates in 8 tiers (tier 7 = facade `rlx-models` last).
+# Notable ordering: `kitten_tts_mini_rlx` before `rlx-kittentts`; `rlx-whisper`
+# before `rlx-kittentts` (dev-dep for roundtrip tests); `rlx-llama32` / `rlx-gemma`
+# (tier 4) before `rlx-minicpm5` / `rlx-voxtral-tts-train` (tier 5–6).
+# Workspace / upstream pin: 0.2.5 — bump `[workspace.package].version` and
+# `[workspace.dependencies]` path `version =` fields before publishing.
 # Bump `[workspace.package].version`, per-crate `[package].version` when needed
 # (e.g. `rlx-models-core`), and `[workspace.dependencies]` pins before publishing.
 #
@@ -148,7 +151,7 @@ SKIPPED=(
 TIERS=(
     "rlx-diamond rlx-llama-base rlx-models-core rlx-onnx-decompose rlx-ssm rlx-tensor rlx-vlm-base"
     "rlx-bert rlx-cli rlx-llada2 rlx-mamba rlx-nomic rlx-sam-ir rlx-vision"
-    "rlx-clinicalbert rlx-dinov2 rlx-embed rlx-fft kitten_tts_mini_rlx rlx-kittentts rlx-lfm rlx-lfm-vl rlx-minimax rlx-ocr rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-vad rlx-vjepa2 rlx-wav2vec2-bert rlx-whisper"
+    "rlx-clinicalbert rlx-dinov2 rlx-embed rlx-fft kitten_tts_mini_rlx rlx-lfm rlx-lfm-vl rlx-minimax rlx-ocr rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-vad rlx-vjepa2 rlx-wav2vec2-bert rlx-whisper rlx-kittentts"
     "rlx-flux2 rlx-locateanything rlx-nemotron-omni rlx-omnicoder rlx-qwen3-tts rlx-qwen35 rlx-sam2 rlx-sam3"
     "rlx-gemma rlx-llama32 rlx-qwen3-tts-train"
     "rlx-bonsai rlx-cohere rlx-glm rlx-gpt-oss rlx-granite rlx-minicpm5 rlx-mistral rlx-nemotron rlx-neutts rlx-phi rlx-voxtral rlx-voxtral-tts"
@@ -305,16 +308,32 @@ def workspace_internal_keys(root: Path) -> set[str]:
 
 INTERNAL_KEYS = workspace_internal_keys(root)
 
-def parse_rlx_deps(toml_path: Path) -> set[str]:
+def is_internal_path_dep(line: str, key: str) -> bool:
+    if key in INTERNAL_KEYS:
+        return True
+    return bool(
+        re.search(
+            rf"^{re.escape(key)}\s*=\s*\{{[^}}]*path\s*=\s*(\"\.\.?/|\"crates/)",
+            line.strip(),
+        )
+    )
+
+def parse_rlx_deps(toml_path: Path, crate_name: str) -> set[str]:
     text = toml_path.read_text()
     deps: set[str] = set()
-    sm = re.search(r"\[dependencies\](.*?)(?=\n\[|\Z)", text, re.S)
-    if not sm:
-        return deps
-    for line in sm.group(1).splitlines():
-        m2 = re.match(r"^([a-zA-Z0-9_-]+)\s*=", line.strip())
-        if m2 and m2.group(1) in INTERNAL_KEYS:
-            deps.add(m2.group(1))
+    for sm in re.finditer(r"\[([^\]]+)\](.*?)(?=\n\[|\Z)", text, re.S):
+        section = sm.group(1)
+        if section != "dependencies" and "dependencies" not in section:
+            continue
+        for line in sm.group(2).splitlines():
+            m2 = re.match(r"^([a-zA-Z0-9_-]+)\s*=", line.strip())
+            if not m2:
+                continue
+            key = m2.group(1)
+            if key == crate_name:
+                continue
+            if is_internal_path_dep(line, key):
+                deps.add(key)
     return deps
 
 violations: list[str] = []
@@ -326,15 +345,17 @@ for toml in sorted((root / "crates").glob("*/Cargo.toml")):
         violations.append(f"{name} is publishable but missing from TIERS")
         continue
     my_tier, my_pos = crate_tier[name]
-    for dep in sorted(parse_rlx_deps(toml)):
+    for dep in sorted(parse_rlx_deps(toml, name)):
         dep = DEP_PACKAGE_ALIAS.get(dep, dep)
+        if dep == name:
+            continue
         if dep not in crate_tier:
             violations.append(f"{name}: path dep {dep} is not listed in TIERS")
             continue
         dep_tier, dep_pos = crate_tier[dep]
         if dep_tier > my_tier or (dep_tier == my_tier and dep_pos >= my_pos):
             violations.append(
-                f"{name} (tier {dep_tier} pos {dep_pos} needs {dep} before it): "
+                f"{name} (tier {my_tier} pos {my_pos} needs {dep} at tier {dep_tier} pos {dep_pos}): "
                 f"publish {dep} before {name}"
             )
 

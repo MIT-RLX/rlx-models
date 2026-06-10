@@ -7,6 +7,7 @@ license.workspace = true
 authors.workspace = true
 description = "Learned FFT via butterfly networks — train for reference precision, run compiled on RLX backends"
 repository.workspace = true
+build = "build.rs"
 
 [dependencies]
 rlx-cli = { workspace = true }
@@ -26,6 +27,8 @@ rustfft = "6"
 
 [features]
 default = ["cpu"]
+# Fusion phase bench (`bench-fusion-phases`); pair with metal/gpu/cuda for IO-model lines.
+dev = []
 cpu = ["rlx-runtime/cpu"]
 metal = ["rlx-runtime/metal"]
 mlx = ["rlx-runtime/mlx"]

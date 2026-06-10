@@ -2,7 +2,7 @@
 
 Shared config, weight loading, compile profiles, and packed GGUF prefill helpers for RLX model crates (published on crates.io as **`rlx-models-core`**; import as `rlx_core`).
 
-**Version 0.2.1** adds packed GGUF support:
+**Workspace 0.2.5** (crates.io `rlx-models-core`; depends on upstream `rlx*` 0.2.5). Packed GGUF support (since 0.2.1):
 
 | API | Role |
 |-----|------|

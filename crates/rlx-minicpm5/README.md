@@ -2,7 +2,7 @@
 
 [MiniCPM5](https://huggingface.co/openbmb/MiniCPM5-1B) edge LMs in RLX. The 1B checkpoint is **Llama-shaped** (`LlamaForCausalLM`, `general.architecture = llama` in GGUF). This crate validates HF/GGUF metadata and delegates inference to [`rlx-llama32`](../rlx-llama32).
 
-**Crate version:** `0.2.1` (depends on `rlx-llama32` 0.2.1). Publish via `scripts/publish.sh` tier 4 before facade `rlx-models` 0.2.1.
+**Crate version:** `0.2.5` (depends on `rlx-llama32` 0.2.5; workspace pins upstream `rlx*` 0.2.5). Publish via `scripts/publish.sh` tier 5 before facade `rlx-models` 0.2.5.
 
 ## Prerequisites
 
@@ -168,14 +168,14 @@ From a Mac/Linux dev machine with SSH to the rig ([`rig.sh`](../../../rlx/rig.sh
 
 ```sh
 cd ../rlx
-./rig.sh sync
-./rig.sh sync-minicpm5-gguf    # Q4_K_M from local HF cache or MINICPM5_GGUF_SRC
-./rig.sh test-minicpm5         # CPU + CUDA + WGPU (synthetic + real GGUF)
-./rig.sh --both test-minicpm5  # Windows MSVC, then WSL Ubuntu
-./rig.sh --wsl test-minicpm5   # WSL only (CUDA needs libcublas in WSL)
+./rig.sh sync-rlx-models              # source → H:/rlx-workspace/rlx-models
+./rig.sh sync-rlx-models-weights    # weights → H:/rlx-weights (rig-side download)
+./rig.sh test-rlx-models            # CPU + CUDA + WGPU backend matrix (Windows)
+./rig.sh sync-minicpm5-gguf         # MiniCPM5 Q4_K_M only (H:/rlx-weights)
+./rig.sh test-minicpm5              # MiniCPM5-only subset
 ```
 
-Set `MINICPM5_GGUF_SRC` or run `just fetch-minicpm5-gguf Q4_K_M` locally before `sync-minicpm5-gguf`. WSL builds use `~/rlx-workspace-mirror/rlx-models` (ext4); GGUF lands under `models/MiniCPM5-1B-Q4_K_M.gguf`.
+Everything lives on **H:** (`H:/rlx-workspace`, `H:/rlx-weights`, `H:/rlx-cargo-target`). Weights are downloaded on the rig to **H:/rlx-weights** only — never fetched or scp'd from the Mac.
 
 ## See also
 
