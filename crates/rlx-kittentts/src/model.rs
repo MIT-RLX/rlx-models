@@ -36,7 +36,7 @@ use crate::{
     assets::ModelLayout,
     backend_kind::BackendKind,
     npz::{NpyArray, load_npz},
-    tokenize::{ipa_content_len, ipa_style_index, ipa_text_style_index, ipa_to_ids, warn_unknown_ipa_chars},
+    tokenize::{ipa_content_len, ipa_style_index, ipa_to_ids, warn_unknown_ipa_chars},
 };
 
 #[cfg(feature = "onnx")]
@@ -390,6 +390,7 @@ impl KittenTTS {
         clean_text: bool,
     ) -> Result<Vec<f32>> {
         use crate::phonemize::phonemize_lang;
+        use crate::tokenize::ipa_text_style_index;
 
         let voice_key = self.resolve_voice(voice);
         if !self.has_voice(voice_key) {

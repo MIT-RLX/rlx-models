@@ -436,7 +436,7 @@ impl AutoWelchPeaks {
         match self.strategy {
             WelchPeaksStrategy::UltraFast | WelchPeaksStrategy::FastStreaming => {
                 welch_peaks_rustfft_with_scratch(
-                    &fast_signal,
+                    fast_signal,
                     self.batch,
                     self.peak_params,
                     Some(&mut self.scratch),
@@ -446,12 +446,12 @@ impl AutoWelchPeaks {
                 .rlx
                 .as_mut()
                 .expect("rlx compiled")
-                .welch_peaks_batch(&fast_signal, &mut self.scratch),
+                .welch_peaks_batch(fast_signal, &mut self.scratch),
             WelchPeaksStrategy::LearnedCompiled => self
                 .learned
                 .as_mut()
                 .expect("learned compiled")
-                .welch_peaks_batch(&fast_signal, &mut self.scratch),
+                .welch_peaks_batch(fast_signal, &mut self.scratch),
         }
     }
 }

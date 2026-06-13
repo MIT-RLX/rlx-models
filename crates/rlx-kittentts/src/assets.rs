@@ -43,14 +43,12 @@ impl ModelLayout {
         let onnx = dir.join(&config.model_file);
         let voices = dir.join(&config.voices);
         let native_weights = find_native_weights(&dir);
-        if !onnx.is_file() {
-            if native_weights.is_none() {
-                bail!(
-                    "ONNX model missing: {}\n\
-                     Fetch weights: `just fetch-kittentts` or set RLX_KITTENTTS_DIR",
-                    onnx.display()
-                );
-            }
+        if !onnx.is_file() && native_weights.is_none() {
+            bail!(
+                "ONNX model missing: {}\n\
+                 Fetch weights: `just fetch-kittentts` or set RLX_KITTENTTS_DIR",
+                onnx.display()
+            );
         }
         if !voices.is_file() {
             bail!("voices NPZ missing: {}", voices.display());
