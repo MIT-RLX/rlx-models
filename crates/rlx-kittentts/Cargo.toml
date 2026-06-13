@@ -66,10 +66,9 @@ ort-directml = ["ort/directml"]
 metal = [
     "rlx-runtime/metal",
     "rlx?/metal",
-    "ort-coreml",
     "kitten_tts_mini_rlx?/metal",
 ]
-mlx = ["rlx-runtime/mlx", "rlx?/mlx", "ort-coreml", "kitten_tts_mini_rlx?/mlx"]
+mlx = ["rlx-runtime/mlx", "rlx?/mlx", "kitten_tts_mini_rlx?/mlx"]
 cuda = [
     "rlx-runtime/cuda",
     "rlx?/cuda",
@@ -77,7 +76,14 @@ cuda = [
     "kitten_tts_mini_rlx?/cuda",
 ]
 rocm = ["rlx-runtime/rocm", "rlx?/rocm", "ort-rocm"]
-gpu = ["rlx-runtime/gpu", "rlx?/gpu", "ort-directml", "ort-cuda", "ort-coreml", "kitten_tts_mini_rlx?/gpu"]
+gpu = [
+    "rlx-runtime/gpu",
+    "rlx?/gpu",
+    "ort-directml",
+    "ort-cuda",
+    "ort-coreml",
+    "kitten_tts_mini_rlx?/gpu",
+]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu"]
 apple-silicon = ["metal", "mlx", "gpu"]
 full = ["onnx", "native", "rlx", "all-backends"]

@@ -12,6 +12,8 @@ cargo build -p rlx-kittentts --features native --release
 
 Primary path: `crates/kitten_tts_mini_rlx/weights/rlx_bundle/` (ONNX export + safetensors).
 
+For Hugging Face–only deployments, place `rlx_bundle/{graph.json,manifest.json,weights.safetensors}` under the KittenML checkpoint directory; ONNX on disk is optional when the native bundle is present.
+
 ```bash
 # From rlx-models root
 just export-kitten-rlx-bundle
@@ -30,7 +32,7 @@ rlx-onnx-decompose --bundle /path/to/rlx_bundle \
 |----------|---------|
 | `RLX_ONNX_BUNDLE` | Bundle directory (`manifest.json`, `graph.json`, `weights.safetensors`) |
 | `RLX_ONNX_SEQUENCE_LENGTH` | Active token count for compile-time LSTM/seq shapes |
-| `KITTEN_RLX_WEIGHTS` | Decomposed safetensors tree (`weights/`) |
+| `KITTEN_RLX_WEIGHTS` | Weights dir: `model.safetensors` or `rlx_bundle/graph.json` (HF bundle layout) |
 | `KITTEN_RLX_BUNDLE` | Legacy alias for `RLX_ONNX_BUNDLE` |
 | `KITTEN_SEQUENCE_LENGTH` | Legacy alias for `RLX_ONNX_SEQUENCE_LENGTH` |
 | `KITTEN_VOICES_NPZ` | Voice style table for parity tests |

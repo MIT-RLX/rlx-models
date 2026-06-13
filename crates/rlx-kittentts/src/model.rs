@@ -36,7 +36,7 @@ use crate::{
     assets::ModelLayout,
     backend_kind::BackendKind,
     npz::{NpyArray, load_npz},
-    tokenize::{ipa_content_len, ipa_style_index, ipa_to_ids, warn_unknown_ipa_chars},
+    tokenize::{ipa_content_len, ipa_style_index, ipa_text_style_index, ipa_to_ids, warn_unknown_ipa_chars},
 };
 
 #[cfg(feature = "onnx")]

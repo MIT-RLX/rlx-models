@@ -42,18 +42,21 @@ impl ModelLayout {
         let config = ModelConfig::load_from_dir(&dir)?;
         let onnx = dir.join(&config.model_file);
         let voices = dir.join(&config.voices);
+        let native_weights = find_native_weights(&dir);
         if !onnx.is_file() {
-            bail!(
-                "ONNX model missing: {}\n\
-                 Fetch weights: `just fetch-kittentts` or set RLX_KITTENTTS_DIR",
-                onnx.display()
-            );
+            if native_weights.is_none() {
+                bail!(
+                    "ONNX model missing: {}\n\
+                     Fetch weights: `just fetch-kittentts` or set RLX_KITTENTTS_DIR",
+                    onnx.display()
+                );
+            }
         }
         if !voices.is_file() {
             bail!("voices NPZ missing: {}", voices.display());
         }
         Ok(Self {
-            native_weights: find_native_weights(&dir),
+            native_weights,
             dir,
             config,
             onnx,
@@ -183,12 +186,15 @@ pub fn find_rlx_bundle(weights_dir: &Path) -> Option<PathBuf> {
 pub fn default_native_weights_dir() -> Option<PathBuf> {
     if let Ok(raw) = std::env::var("KITTEN_RLX_WEIGHTS") {
         let p = PathBuf::from(raw);
-        if p.join("model.safetensors").is_file() {
+        if p.join("model.safetensors").is_file() || p.join("rlx_bundle/graph.json").is_file() {
             return Some(p);
         }
     }
     let sibling = Path::new(env!("CARGO_MANIFEST_DIR")).join("../kitten_tts_mini_rlx/weights");
     if sibling.join("model.safetensors").is_file() && find_rlx_bundle(&sibling).is_some() {
+        return Some(sibling);
+    }
+    if find_rlx_bundle(&sibling).is_some() {
         return Some(sibling);
     }
     None
@@ -198,11 +204,14 @@ pub fn default_native_weights_dir() -> Option<PathBuf> {
 pub fn find_native_weights(model_dir: &Path) -> Option<PathBuf> {
     if let Ok(raw) = std::env::var("KITTEN_RLX_WEIGHTS") {
         let p = PathBuf::from(raw);
-        if p.join("model.safetensors").is_file() {
+        if p.join("model.safetensors").is_file() || p.join("rlx_bundle/graph.json").is_file() {
             return Some(p);
         }
     }
     if model_dir.join("model.safetensors").is_file() {
+        return Some(model_dir.to_path_buf());
+    }
+    if model_dir.join("rlx_bundle/graph.json").is_file() {
         return Some(model_dir.to_path_buf());
     }
     default_native_weights_dir()
