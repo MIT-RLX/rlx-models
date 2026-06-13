@@ -818,17 +818,11 @@ fn welch_peaks_for_backend(
                     inputs.model,
                 )?);
             }
-            truncate_peak_signal(
-                peak_params,
-                welch_signal,
-                inputs.batch,
-                welch_frame,
-                peak_fast_buf,
-            )?;
+            // Let the picker truncate to its own chosen layout (may differ from pipeline peak_params).
             auto_welch_peaks
                 .as_mut()
                 .expect("auto welch peaks")
-                .welch_peaks_batch_fast(peak_fast_buf)
+                .welch_peaks_batch(welch_signal)
         }
     }
 }

@@ -167,7 +167,7 @@ rlx-lfm-vl = { path = "crates/rlx-lfm-vl", version = "0.2.6" }
 rlx-nemotron-omni = { path = "crates/rlx-nemotron-omni", version = "0.2.6" }
 rlx-ocr = { path = "crates/rlx-ocr", version = "0.2.6" }
 rlx-neutts = { path = "crates/rlx-neutts", version = "0.2.6" }
-rlx-kittentts = { path = "crates/rlx-kittentts", version = "0.2.7" }
+rlx-kittentts = { path = "crates/rlx-kittentts", version = "0.2.8" }
 rlx-mamba = { path = "crates/rlx-mamba", version = "0.2.6" }
 rlx-fft = { path = "crates/rlx-fft", version = "0.2.7" }
 rlx-vad = { path = "crates/rlx-vad", version = "0.2.6" }
