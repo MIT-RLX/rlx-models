@@ -56,26 +56,66 @@ impl WelchParams {
         batch: usize,
         full_frame: usize,
     ) -> Result<Vec<f32>> {
+        let mut out = Vec::new();
+        self.truncate_batch_into(signal, batch, full_frame, &mut out)?;
+        Ok(out)
+    }
+
+    /// Like [`Self::truncate_batch`] but reuses `out` capacity (hot-path friendly).
+    pub fn truncate_batch_into(
+        self,
+        signal: &[f32],
+        batch: usize,
+        full_frame: usize,
+        out: &mut Vec<f32>,
+    ) -> Result<()> {
         let need = self.frame_len();
-        if need == full_frame {
-            return Ok(signal.to_vec());
-        }
         ensure!(
             signal.len() == batch * full_frame,
             "welch signal len {} != batch*full_frame {}",
             signal.len(),
             batch * full_frame
         );
-        let mut out = Vec::with_capacity(batch * need);
+        out.clear();
+        if need == full_frame {
+            out.extend_from_slice(signal);
+            return Ok(());
+        }
+        out.reserve(batch * need);
         for b in 0..batch {
             let base = b * full_frame;
             out.extend_from_slice(&signal[base..base + need]);
         }
-        Ok(out)
+        Ok(())
     }
 
     pub fn output_len(self, batch: usize) -> usize {
         batch * self.n_bins()
+    }
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::*;
+
+    #[test]
+    fn truncate_batch_into_reuses_capacity() {
+        let full = WelchParams::for_n_fft(256);
+        let fast = WelchParams {
+            n_fft: 256,
+            hop: 128,
+            n_segments: 2,
+        };
+        let batch = 4;
+        let signal: Vec<f32> = (0..batch * full.frame_len()).map(|i| i as f32).collect();
+        let mut buf = Vec::new();
+        fast.truncate_batch_into(&signal, batch, full.frame_len(), &mut buf)
+            .unwrap();
+        assert_eq!(buf.len(), batch * fast.frame_len());
+        let cap = buf.capacity();
+        fast.truncate_batch_into(&signal, batch, full.frame_len(), &mut buf)
+            .unwrap();
+        assert_eq!(buf.capacity(), cap);
     }
 }
 

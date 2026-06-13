@@ -112,7 +112,7 @@ Each model crate with a CLI has `src/cli.rs` (`pub fn run`) and `src/bin/rlx-<na
 
 **SAM unified runner:** `SamRunner` (SAM1/2/3) stays on the facade (`rlx-models/src/sam_runner.rs`) because `rlx-sam2` depends on `rlx-sam`. Per-arch CLIs are on `rlx-sam`, `rlx-sam2`, `rlx-sam3`.
 
-Published `rlx*` crates (`rlx-runtime`, `rlx-flow`, …) are pinned at **0.2.5** in root `[workspace.dependencies]`; every crate uses `{ workspace = true }`. **Local dev** with a sibling `../rlx` checkout: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored patches). **Publish / CI** uses crates.io only — no `.cargo/config.toml`, no `[patch.crates-io]` in committed `Cargo.toml`.
+Published `rlx*` crates (`rlx-runtime`, `rlx-flow`, …) are pinned at **0.2.6** in root `[workspace.dependencies]`; every crate uses `{ workspace = true }`. **Local dev** with a sibling `../rlx` checkout: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored patches). **Publish / CI** uses crates.io only — no `.cargo/config.toml`, no `[patch.crates-io]` in committed `Cargo.toml`.
 
 ## Running models
 
@@ -264,16 +264,16 @@ just fetch-minicpm5-gguf Q4_K_M
 
 ```toml
 [dependencies]
-rlx-models = "0.2.5"
+rlx-models = "0.2.6"
 ```
 
 HF-hub download:
 
 ```toml
-rlx-models = { version = "0.2.5", features = ["hf-download"] }
+rlx-models = { version = "0.2.6", features = ["hf-download"] }
 ```
 
-Workspace and published model crates are **0.2.5**, pinned to upstream **`rlx*`** **0.2.5** on crates.io (`[workspace.dependencies]`). Local sibling `../rlx`: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored).
+Workspace and published model crates are **0.2.6**, pinned to upstream **`rlx*`** **0.2.6** on crates.io (`[workspace.dependencies]`). Local sibling `../rlx`: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored).
 
 ## Quickstart — embeddings
 
@@ -697,11 +697,11 @@ burnembed (`/Users/Shared/burnembed`) re-exports `rlx_models::embed` with `--fea
 
 ### Publishing (crates.io)
 
-Prerequisite: upstream **`rlx*`** **0.2.5** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
+Prerequisite: upstream **`rlx*`** **0.2.6** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
 
 ```sh
 rm -f .cargo/config.toml
-cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.5, no path source
+cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.6, no path source
 ```
 
 Pre-flight (same gates as `scripts/publish.sh`):
@@ -762,7 +762,7 @@ Programmatic: [`rlx_models::run::check_path`](crates/rlx-cli/src/compat.rs), [`c
 | `qwen3` | yes | yes (Q4_K_M / Q5_K_M / Q6_K) | **yes** — [qwen3](https://huggingface.co/models?library=gguf&search=qwen3) (many); e.g. `unsloth/Qwen3-*-GGUF` | top-1 vs HF (`parity-candle` + weights) |
 | `qwen35` | — | yes | **yes** — same hub space; e.g. `unsloth/Qwen3.5-*-GGUF` | vs llama.cpp when `QWEN35_GGUF_PATH` / `parity-llama` |
 | `llama32` | yes | yes | **yes** — [llama-3.2](https://huggingface.co/models?library=gguf&search=llama-3.2) (~5k) | vs llama.cpp when `LLAMA32_GGUF_PATH` |
-| `minicpm5` | yes | yes (`llama`) | **yes** — [MiniCPM5-1B-GGUF](https://huggingface.co/openbmb/MiniCPM5-1B-GGUF) (Q4_K_M / Q8_0 / F16) | vs PyTorch (`minicpm5_parity`); `rlx-minicpm5` 0.2.5 on `rlx-llama32` 0.2.5; GGUF packed CPU/Metal |
+| `minicpm5` | yes | yes (`llama`) | **yes** — [MiniCPM5-1B-GGUF](https://huggingface.co/openbmb/MiniCPM5-1B-GGUF) (Q4_K_M / Q8_0 / F16) | vs PyTorch (`minicpm5_parity`); `rlx-minicpm5` 0.2.6 on `rlx-llama32` 0.2.6; GGUF packed CPU/Metal |
 | `llada2` | yes | — | **preview** — [llada2](https://huggingface.co/models?library=gguf&search=llada2) (1): [LLaDA2.0-mini-preview-GGUF](https://huggingface.co/wsbagnsv1/LLaDA2.0-mini-preview-GGUF) (`llada2`) | vs PyTorch when `LLADA2_MODEL_DIR` |
 | `flux2` | yes (BFL / NVFP4 safetensors) | yes (denoiser `.gguf`, `architecture: flux`; K-quant GGUF uses packed `DequantMatMul`; `Flux2Runner` + VAE/TE safetensors) | **yes** — [flux2](https://huggingface.co/models?library=gguf&search=flux2) (~53); e.g. [unsloth/FLUX.2-klein-9B-GGUF](https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF), [city96/FLUX.2-dev-gguf](https://huggingface.co/city96/FLUX.2-dev-gguf) | GGUF = denoiser only; VAE + Qwen3 TE still safetensors dirs |
 | `vjepa2` | yes | yes (`vjepa2` / `vjepa`, F32 drain) | **no** Hub GGUF yet — [vjepa](https://huggingface.co/models?library=gguf&search=vjepa) (0) | synthetic + optional weight checks |
@@ -785,7 +785,7 @@ Legend: ✅ supported · ⚠️ partial (host fallback or open runtime gap) · �
 | `sam`, `sam2`, `sam3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | SAM v1 also accepts `tpu`; CPU/Metal/MLX most exercised in CI |
 | `qwen3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | packed GGUF: CPU + Metal native; MLX/wgpu/CUDA prefill via CPU path (`rlx_core::packed_gguf_*`); MTP decode not wired |
 | `qwen35` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device` on all backends; some ops use host GDN/dequant on GPU; MoE offload may keep experts on host |
-| `llama32` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `rlx-llama32` 0.2.5: Metal decode guard + packed GGUF helpers; same packed rules as Qwen3 |
+| `llama32` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `rlx-llama32` 0.2.6: Metal decode guard + packed GGUF helpers; same packed rules as Qwen3 |
 | `minicpm5` | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Wraps `rlx-llama32`; safetensors decode on CPU/Metal; GGUF `--packed` parity on CPU/Metal (MLX/wgpu tests use CPU prefill path) |
 | `llada2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | MoE predictive expert offload on all standard backends (GPU uses resident experts + host fallback) |
 | `flux2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Full pipeline; text encoder compiled on Metal/MLX by default, host once on CUDA/ROCm/WGPU/Vulkan |

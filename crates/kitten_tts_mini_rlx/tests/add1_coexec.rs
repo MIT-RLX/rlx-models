@@ -31,6 +31,8 @@ fn attention_add1_matches_sum_of_inputs_in_one_run() {
     if !bundle_dir.join("manifest.json").exists() {
         return;
     }
+    let _seq = kitten_tts_mini_rlx::opts::CompileSequenceLengthGuard::set(8);
+    kitten_tts_mini_rlx::set_env_var("KITTEN_RLX_SKIP_FUSION", "1");
     let opts = GraphOptions {
         sequence_length: 8,
         max_waveform_samples: 24_000,
@@ -53,8 +55,6 @@ fn attention_add1_matches_sum_of_inputs_in_one_run() {
         .expect("compile");
     let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 0];
     let style = vec![0.0f32; 256];
-    kitten_tts_mini_rlx::set_env_var("KITTEN_RLX_SKIP_FUSION", "1");
-    kitten_tts_mini_rlx::opts::set_compile_sequence_length(8);
     let outs = run_parity_inputs(&mut graph, 8, &ids, &style);
     let a = probe_output_f32_at(&outs, 0).expect("emb");
     let b = probe_output_f32_at(&outs, 1).expect("dense");

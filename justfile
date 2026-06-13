@@ -1064,3 +1064,23 @@ test-real-weights-inference: fetch-real-weights
 test-net-hf:
     RLX_NET_TESTS=1 cargo test -p rlx-cli --features compat-net \
         --test hf_repo_check_live {{profile}} -- --nocapture
+
+# --- rlx-fft (learned FFT + Welch peaks) ---
+
+[private]
+run-rlx-fft *ARGS:
+    cargo run -p rlx-fft --bin rlx-fft {{profile}} {{feature_args}} -- {{ARGS}}
+
+# IO-aware Welch peaks picker bench. macOS: `just features=apple-silicon bench-welch-peaks -- --device metal`
+bench-welch-peaks *ARGS:
+    just run-rlx-fft bench-welch-peaks {{ARGS}}
+
+# Fusion phase bench (dev-only module). Override backends: `just features=dev,gpu bench-fusion-phases -- …`
+bench-fusion-phases *ARGS:
+    cargo run -p rlx-fft --bin rlx-fft {{profile}} --features dev,apple-silicon -- bench-fusion-phases {{ARGS}}
+
+test-rlx-fft-welch-peaks *ARGS:
+    cargo test -p rlx-fft welch_peaks {{profile}} {{feature_args}} {{ARGS}}
+
+test-rlx-fft-fusion-gate *ARGS:
+    cargo test -p rlx-fft --lib fusion_gate_batch_matrix io_gate --features apple-silicon {{profile}} {{ARGS}}

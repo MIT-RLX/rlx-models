@@ -62,14 +62,14 @@
 #   4. Crates marked `publish = false` or in workspace.exclude (see SKIPPED)
 #      are not published — cargo skips them; this script lists the rest.
 #
-# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.5) from the RLX repo
+# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.6) from the RLX repo
 # before `rlx-models` path deps resolve on the registry.
 #
 # 56 publishable workspace crates in 8 tiers (tier 7 = facade `rlx-models` last).
 # Notable ordering: `kitten_tts_mini_rlx` before `rlx-kittentts`; `rlx-whisper`
 # before `rlx-kittentts` (dev-dep for roundtrip tests); `rlx-llama32` / `rlx-gemma`
 # (tier 4) before `rlx-minicpm5` / `rlx-voxtral-tts-train` (tier 5–6).
-# Workspace / upstream pin: 0.2.5 — bump `[workspace.package].version` and
+# Workspace / upstream pin: 0.2.6 — bump `[workspace.package].version` and
 # `[workspace.dependencies]` path `version =` fields before publishing.
 # Bump `[workspace.package].version`, per-crate `[package].version` when needed
 # (e.g. `rlx-models-core`), and `[workspace.dependencies]` pins before publishing.

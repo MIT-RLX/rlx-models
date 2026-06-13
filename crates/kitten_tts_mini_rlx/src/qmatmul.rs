@@ -147,9 +147,37 @@ fn matmul_dims(act_shape: &[usize], w_shape: &[usize]) -> (usize, usize, usize) 
 mod tests {
     use super::*;
 
+    /// ORT dump fixtures under `/tmp/q1_*` and `/tmp/ffn_*` (optional dev-only).
+    fn skip_unless_tmp_fixtures(paths: &[&str]) -> bool {
+        if paths.iter().all(|p| std::path::Path::new(p).is_file()) {
+            return false;
+        }
+        eprintln!("skip: missing ORT dump fixture(s): {}", paths.join(", "));
+        true
+    }
+
+    fn q1_fixture_paths() -> [&'static str; 4] {
+        [
+            "/tmp/q1_act.bin",
+            "/tmp/q1_w.bin",
+            "/tmp/q1_ws.bin",
+            "/tmp/q1_wzp.bin",
+        ]
+    }
+
+    fn ffn_fixture_paths() -> [&'static str; 5] {
+        [
+            "/tmp/nat_ln2.bin",
+            "/tmp/nat_ffn.bin",
+            "/tmp/ffn_w.bin",
+            "/tmp/ffn_ws.bin",
+            "/tmp/ffn_wzp.bin",
+        ]
+    }
+
     #[test]
     fn clip_act_respects_runtime_sequence_length() {
-        crate::opts::set_compile_sequence_length(2);
+        let _seq = crate::opts::CompileSequenceLengthGuard::set(2);
         let act: Vec<f32> = (0..12).map(|i| i as f32).collect();
         let (clipped, shape) = super::clip_act_to_runtime_seq(&act, &[1, 6, 2]);
         assert_eq!(shape, vec![1, 2, 2]);
@@ -159,6 +187,9 @@ mod tests {
 
     #[test]
     fn qmatmul_ort_query1_fixture() {
+        if skip_unless_tmp_fixtures(&q1_fixture_paths()) {
+            return;
+        }
         let act: Vec<f32> = std::fs::read("/tmp/q1_act.bin")
             .unwrap()
             .chunks_exact(4)
@@ -186,6 +217,9 @@ mod tests {
 
     #[test]
     fn qmatmul_ffn_native_fixture() {
+        if skip_unless_tmp_fixtures(&ffn_fixture_paths()) {
+            return;
+        }
         let act: Vec<f32> = std::fs::read("/tmp/nat_ln2.bin")
             .unwrap()
             .chunks_exact(4)
@@ -237,17 +271,19 @@ mod tests {
             compile_probe_graph, import_from_bundle_cached, set_runtime_input_ids_shape,
         };
         use rlx_runtime::Device;
-        let bundle_dir = std::path::Path::new(
-            "/Users/Shared/rlx-models/crates/kitten_tts_mini_rlx/weights/rlx_bundle",
-        );
+        let bundle_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("weights/rlx_bundle");
         if !bundle_dir.join("manifest.json").exists() {
+            eprintln!("skip: {}", bundle_dir.display());
             return;
         }
+        let _seq = crate::opts::CompileSequenceLengthGuard::set(8);
+        crate::set_env_var("KITTEN_RLX_SKIP_FUSION", "1");
         let opts = GraphOptions {
             sequence_length: 8,
             max_waveform_samples: 24_000,
         };
-        let import = import_from_bundle_cached(bundle_dir, &opts).expect("import");
+        let import = import_from_bundle_cached(&bundle_dir, &opts).expect("import");
         let target = "/bert/encoder/albert_layer_groups.0/albert_layers.0/attention/query_1/MatMul_quant_f32";
         let node = import
             .hir
@@ -274,34 +310,33 @@ mod tests {
         );
         assert_eq!(import.hir.node(node.id).inputs.len(), 6);
         let mut graph =
-            compile_probe_graph(Device::Cpu, bundle_dir, &opts, &import, node.id, target)
+            compile_probe_graph(Device::Cpu, &bundle_dir, &opts, &import, node.id, target)
                 .expect("probe");
         set_runtime_input_ids_shape(&mut graph, 8).expect("shape");
         let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 0];
-        let style = {
-            let voices = std::path::Path::new(
-                "/Users/Shared/rlx-models/.cache/kittentts-mini-0.8/voices.npz",
-            );
-            if voices.is_file() {
-                let out = std::process::Command::new("python3")
-                    .args([
-                        "-c",
-                        "import numpy as np,sys; z=np.load(sys.argv[1]); sys.stdout.buffer.write(z['expr-voice-2-m'][6].astype('float32').tobytes())",
-                        voices.to_str().unwrap(),
-                    ])
-                    .output()
-                    .expect("style row");
-                out.stdout
-                    .chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                    .collect()
-            } else {
-                vec![0.0f32; 256]
-            }
+        let voices =
+            std::path::Path::new("/Users/Shared/rlx-models/.cache/kittentts-mini-0.8/voices.npz");
+        if !voices.is_file() {
+            eprintln!("skip: voices.npz not found at {}", voices.display());
+            return;
+        }
+        let style: Vec<f32> = {
+            let out = std::process::Command::new("python3")
+                .args([
+                    "-c",
+                    "import numpy as np,sys; z=np.load(sys.argv[1]); sys.stdout.buffer.write(z['expr-voice-2-m'][6].astype('float32').tobytes())",
+                    voices.to_str().unwrap(),
+                ])
+                .output()
+                .expect("style row");
+            out.stdout
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect()
         };
         let ln_id = import.hir.node(act_q.id).inputs[0];
         let mut ln_graph =
-            compile_probe_graph(Device::Cpu, bundle_dir, &opts, &import, ln_id, "ln_probe")
+            compile_probe_graph(Device::Cpu, &bundle_dir, &opts, &import, ln_id, "ln_probe")
                 .expect("ln probe");
         set_runtime_input_ids_shape(&mut ln_graph, 8).expect("shape");
         let inputs = [
@@ -347,6 +382,9 @@ mod tests {
 
     #[test]
     fn dynamic_quantize_matches_ort_query1() {
+        if skip_unless_tmp_fixtures(&["/tmp/q1_act.bin"]) {
+            return;
+        }
         let act: Vec<f32> = std::fs::read("/tmp/q1_act.bin")
             .unwrap()
             .chunks_exact(4)

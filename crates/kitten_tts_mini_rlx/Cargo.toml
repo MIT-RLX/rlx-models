@@ -1,8 +1,8 @@
-# Decomposed Kitten ONNX model — `rlx*` deps via workspace (crates.io 0.2.5).
+# Decomposed Kitten ONNX model — `rlx*` deps via workspace (crates.io 0.2.6).
 
 [package]
 name = "kitten_tts_mini_rlx"
-version.workspace = true
+version = "0.2.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

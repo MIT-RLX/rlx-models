@@ -38,6 +38,7 @@ use crate::welch_peaks_compile::{
     CompiledLearnedWelchPeaks, CompiledRlxWelchPeaks, compile_learned_welch_peaks,
     compile_rlx_welch_peaks,
 };
+use crate::welch_peaks_picker::AutoWelchPeaks;
 use anyhow::{Context, Result, ensure};
 use rand::prelude::*;
 use rlx_runtime::{CompiledGraph, Device};
@@ -89,6 +90,8 @@ pub enum E2eBackend {
     LearnedCompiled,
     LearnedDistilled,
     LearnedDistilledTernary,
+    /// IO-aware [`AutoWelchPeaks`] (adaptive fused / block RLX / rustfft).
+    WelchPeaksAuto,
 }
 
 impl E2eBackend {
@@ -103,6 +106,7 @@ impl E2eBackend {
             Self::LearnedCompiled => "learned_compiled",
             Self::LearnedDistilled => "learned_distilled",
             Self::LearnedDistilledTernary => "learned_distilled_ternary",
+            Self::WelchPeaksAuto => "welch_peaks_auto",
         }
     }
 }
@@ -208,7 +212,9 @@ pub fn run_e2e_bench(inputs: &E2eBenchInputs<'_>) -> Result<E2eBenchReport> {
     > = None;
     let mut compiled_rlx_peaks: Option<CompiledRlxWelchPeaks> = None;
     let mut compiled_learned_peaks: Option<CompiledLearnedWelchPeaks> = None;
+    let mut auto_welch_peaks: Option<AutoWelchPeaks> = None;
     let mut peak_scratch = WelchPeaksScratch::new(inputs.batch, peak_fast.n_bins());
+    let mut peak_fast_buf = Vec::with_capacity(inputs.batch * peak_fast.frame_len());
     let device_name = format!("{:?}", inputs.device).to_lowercase();
 
     let mut rows = Vec::new();
@@ -244,7 +250,12 @@ pub fn run_e2e_bench(inputs: &E2eBenchInputs<'_>) -> Result<E2eBenchReport> {
             E2eBackend::LearnedCompiled,
             E2eBackend::LearnedDistilled,
             E2eBackend::LearnedDistilledTernary,
+            E2eBackend::WelchPeaksAuto,
         ] {
+            // Auto picker targets the 2-segment fast layout (not 1-seg ultra reference).
+            if backend == E2eBackend::WelchPeaksAuto && pipeline != E2ePipeline::WelchPeaks {
+                continue;
+            }
             if matches!(
                 backend,
                 E2eBackend::LearnedModel
@@ -328,6 +339,8 @@ pub fn run_e2e_bench(inputs: &E2eBenchInputs<'_>) -> Result<E2eBenchReport> {
                 &mut compiled_rlx_peaks,
                 &mut compiled_learned_peaks,
                 &mut peak_scratch,
+                &mut peak_fast_buf,
+                &mut auto_welch_peaks,
             )?;
 
             rows.push(E2eBenchRow {
@@ -409,6 +422,8 @@ fn bench_backend(
     compiled_rlx_peaks: &mut Option<CompiledRlxWelchPeaks>,
     compiled_learned_peaks: &mut Option<CompiledLearnedWelchPeaks>,
     peak_scratch: &mut WelchPeaksScratch,
+    peak_fast_buf: &mut Vec<f32>,
+    auto_welch_peaks: &mut Option<AutoWelchPeaks>,
 ) -> Result<(f64, f32, Option<f32>)> {
     let welch_frame = welch_params.frame_len();
     let mut run = || -> Result<Vec<f32>> {
@@ -494,6 +509,7 @@ fn bench_backend(
                         | E2eBackend::LearnedCompiled
                         | E2eBackend::LearnedDistilled
                         | E2eBackend::LearnedDistilledTernary
+                        | E2eBackend::WelchPeaksAuto
                 ) =>
             {
                 welch_peaks_for_backend(
@@ -506,6 +522,8 @@ fn bench_backend(
                     compiled_rlx_peaks,
                     compiled_learned_peaks,
                     peak_scratch,
+                    peak_fast_buf,
+                    auto_welch_peaks,
                 )
             }
             (E2ePipeline::WelchPeaks | E2ePipeline::WelchPeaksUltra, _) => {
@@ -577,6 +595,10 @@ fn bench_backend(
                 .distilled_ternary
                 .expect("distilled_ternary")
                 .spectrum_batch_raw(signal, inputs.batch),
+
+            (_, E2eBackend::WelchPeaksAuto) => {
+                anyhow::bail!("welch_peaks_auto only runs on welch peaks pipelines")
+            }
         }
     };
 
@@ -621,6 +643,18 @@ fn bench_backend(
     Ok((ms, max_err, mean_gate))
 }
 
+fn truncate_peak_signal(
+    peak_params: WelchPeakParams,
+    welch_signal: &[f32],
+    batch: usize,
+    welch_frame: usize,
+    buf: &mut Vec<f32>,
+) -> Result<()> {
+    peak_params
+        .welch
+        .truncate_batch_into(welch_signal, batch, welch_frame, buf)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn welch_peaks_for_backend(
     backend: E2eBackend,
@@ -632,6 +666,8 @@ fn welch_peaks_for_backend(
     compiled_rlx_peaks: &mut Option<CompiledRlxWelchPeaks>,
     compiled_learned_peaks: &mut Option<CompiledLearnedWelchPeaks>,
     peak_scratch: &mut WelchPeaksScratch,
+    peak_fast_buf: &mut Vec<f32>,
+    auto_welch_peaks: &mut Option<AutoWelchPeaks>,
 ) -> Result<Vec<f32>> {
     if compiled_rlx_peaks
         .as_ref()
@@ -653,9 +689,13 @@ fn welch_peaks_for_backend(
             WelchPeakParams::reference_for_n_fft(inputs.n_fft, peak_params.k),
         ),
         E2eBackend::RlxOpFft => {
-            let sig = peak_params
-                .welch
-                .truncate_batch(welch_signal, inputs.batch, welch_frame)?;
+            truncate_peak_signal(
+                peak_params,
+                welch_signal,
+                inputs.batch,
+                welch_frame,
+                peak_fast_buf,
+            )?;
             if compiled_rlx_peaks.is_none() {
                 *compiled_rlx_peaks = Some(compile_rlx_welch_peaks(
                     inputs.batch,
@@ -666,13 +706,18 @@ fn welch_peaks_for_backend(
             compiled_rlx_peaks
                 .as_mut()
                 .expect("rlx peaks")
-                .welch_peaks_batch(&sig, peak_scratch)
+                .welch_peaks_batch(peak_fast_buf, peak_scratch)
         }
         E2eBackend::ButterflyEager => {
-            let sig = peak_params
-                .welch
-                .truncate_batch(welch_signal, inputs.batch, welch_frame)?;
-            let psd = crate::welch::welch_butterfly(&sig, tw, inputs.batch, peak_params.welch)?;
+            truncate_peak_signal(
+                peak_params,
+                welch_signal,
+                inputs.batch,
+                welch_frame,
+                peak_fast_buf,
+            )?;
+            let psd =
+                crate::welch::welch_butterfly(peak_fast_buf, tw, inputs.batch, peak_params.welch)?;
             Ok(crate::peak::peaks_from_psd_batch(
                 &psd,
                 inputs.batch,
@@ -681,28 +726,40 @@ fn welch_peaks_for_backend(
             ))
         }
         E2eBackend::LearnedModel | E2eBackend::LearnedQ8 => {
-            let sig = peak_params
-                .welch
-                .truncate_batch(welch_signal, inputs.batch, welch_frame)?;
+            truncate_peak_signal(
+                peak_params,
+                welch_signal,
+                inputs.batch,
+                welch_frame,
+                peak_fast_buf,
+            )?;
             inputs
                 .model
                 .expect("model")
-                .welch_peaks_batch(&sig, inputs.batch, peak_params)
+                .welch_peaks_batch(peak_fast_buf, inputs.batch, peak_params)
         }
         E2eBackend::LearnedHard => {
-            let sig = peak_params
-                .welch
-                .truncate_batch(welch_signal, inputs.batch, welch_frame)?;
+            truncate_peak_signal(
+                peak_params,
+                welch_signal,
+                inputs.batch,
+                welch_frame,
+                peak_fast_buf,
+            )?;
             hard_model(inputs.model.expect("model")).welch_peaks_batch(
-                &sig,
+                peak_fast_buf,
                 inputs.batch,
                 peak_params,
             )
         }
         E2eBackend::LearnedCompiled => {
-            let sig = peak_params
-                .welch
-                .truncate_batch(welch_signal, inputs.batch, welch_frame)?;
+            truncate_peak_signal(
+                peak_params,
+                welch_signal,
+                inputs.batch,
+                welch_frame,
+                peak_fast_buf,
+            )?;
             let model = inputs.model.expect("model");
             if compiled_learned_peaks.is_none() {
                 *compiled_learned_peaks = Some(compile_learned_welch_peaks(
@@ -716,25 +773,62 @@ fn welch_peaks_for_backend(
             compiled_learned_peaks
                 .as_mut()
                 .expect("learned peaks")
-                .welch_peaks_batch(&sig, peak_scratch)
+                .welch_peaks_batch(peak_fast_buf, peak_scratch)
         }
         E2eBackend::LearnedDistilled => {
-            let sig = peak_params
-                .welch
-                .truncate_batch(welch_signal, inputs.batch, welch_frame)?;
-            inputs
-                .distilled
-                .expect("distilled")
-                .welch_peaks_batch(&sig, inputs.batch, peak_params)
+            truncate_peak_signal(
+                peak_params,
+                welch_signal,
+                inputs.batch,
+                welch_frame,
+                peak_fast_buf,
+            )?;
+            inputs.distilled.expect("distilled").welch_peaks_batch(
+                peak_fast_buf,
+                inputs.batch,
+                peak_params,
+            )
         }
         E2eBackend::LearnedDistilledTernary => {
-            let sig = peak_params
-                .welch
-                .truncate_batch(welch_signal, inputs.batch, welch_frame)?;
+            truncate_peak_signal(
+                peak_params,
+                welch_signal,
+                inputs.batch,
+                welch_frame,
+                peak_fast_buf,
+            )?;
             inputs
                 .distilled_ternary
                 .expect("distilled_ternary")
-                .welch_peaks_batch(&sig, inputs.batch, peak_params)
+                .welch_peaks_batch(peak_fast_buf, inputs.batch, peak_params)
+        }
+        E2eBackend::WelchPeaksAuto => {
+            if auto_welch_peaks
+                .as_ref()
+                .is_some_and(|p| p.peak_params() != peak_params)
+            {
+                *auto_welch_peaks = None;
+            }
+            if auto_welch_peaks.is_none() {
+                *auto_welch_peaks = Some(AutoWelchPeaks::with_learned(
+                    inputs.batch,
+                    inputs.n_fft,
+                    peak_params.k,
+                    Some(&format!("{:?}", inputs.device).to_lowercase()),
+                    inputs.model,
+                )?);
+            }
+            truncate_peak_signal(
+                peak_params,
+                welch_signal,
+                inputs.batch,
+                welch_frame,
+                peak_fast_buf,
+            )?;
+            auto_welch_peaks
+                .as_mut()
+                .expect("auto welch peaks")
+                .welch_peaks_batch_fast(peak_fast_buf)
         }
     }
 }

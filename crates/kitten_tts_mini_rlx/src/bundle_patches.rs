@@ -41,9 +41,28 @@ pub fn patch_bundle_nodes(nodes: &mut [BundleNode], sequence_length: usize) {
 }
 
 fn patch_l_sin_gen_shapes(nodes: &mut [BundleNode], sequence_length: usize) {
-    // Decoder sine-gen tensors: ONNX shape inference leaves `[1,2,seq]`; force `[1,300,seq]`.
+    // Decoder sine-gen activations: ONNX inference often leaves `[1,2,seq]`. Force `[1,300,seq]`.
+    // Do not rewrite Shape/Concat/Where/etc. metadata — those ranks feed Expand and constant fold.
+    const SKIP_OPS: &[&str] = &[
+        "Shape",
+        "Concat",
+        "Where",
+        "Reshape",
+        "Constant",
+        "ConstantOfShape",
+        "Gather",
+        "Cast",
+        "Unsqueeze",
+        "Slice",
+        "Range",
+        "Expand",
+        "Equal",
+        "Greater",
+        "Less",
+        "Not",
+    ];
     let last = sequence_length;
-    let meta = serde_json::json!({
+    let patched = serde_json::json!({
         "shape": [1, 300, last],
         "dtype": "f32",
     });
@@ -51,11 +70,31 @@ fn patch_l_sin_gen_shapes(nodes: &mut [BundleNode], sequence_length: usize) {
         if !node.name.contains("l_sin_gen") && !node.name.contains("/decoder/generator/m_source/") {
             continue;
         }
+        if SKIP_OPS.contains(&node.op.as_str()) {
+            continue;
+        }
         if node.output_meta.is_empty() {
-            node.output_meta.push(meta.clone());
-        } else {
-            for slot in &mut node.output_meta {
-                *slot = meta.clone();
+            continue;
+        }
+        for slot in &mut node.output_meta {
+            let Some(dtype) = slot.get("dtype").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if dtype != "f32" {
+                continue;
+            }
+            let shape = slot.get("shape").and_then(|v| v.as_array());
+            let needs = match shape {
+                None => true,
+                Some(arr) if arr.len() == 2 => true,
+                Some(arr) if arr.len() == 3 => {
+                    arr.first().and_then(|v| v.as_u64()) == Some(1)
+                        && arr.get(1).and_then(|v| v.as_u64()) == Some(2)
+                }
+                _ => false,
+            };
+            if needs {
+                *slot = patched.clone();
             }
         }
     }

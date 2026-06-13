@@ -6,13 +6,12 @@ use crate::train::random_batch;
 use crate::welch_peaks_compile::{
     CompiledRlxWelchPeaksFused, build_welch_peaks_fused_graph, compile_rlx_welch_peaks,
 };
+use crate::welch_peaks_cost::welch_peaks_fusion_target;
 use anyhow::{Context, Result, ensure};
 use rand::prelude::*;
 use rlx_compile::fusion_benefit::fusion_benefit;
-#[cfg(feature = "metal")]
-use rlx_runtime::cost::MetalCostModel;
-#[cfg(any(feature = "metal", feature = "gpu", feature = "cuda"))]
-use rlx_runtime::cost::estimate_graph_cost_with_io;
+use rlx_compile::{FusionOptions, run_fusion_pipeline, supported_for_target, supports_op};
+use rlx_ir::OpKind;
 use rlx_runtime::graph_io::{GraphIoProfile, profile_graph_io};
 use rlx_runtime::{Device, Session};
 use serde::{Deserialize, Serialize};
@@ -41,6 +40,9 @@ pub struct FusionPhaseReport {
     pub fusion_sync_saved: isize,
     pub fusion_readback_saved: i64,
     pub fusion_gate_fuse: bool,
+    pub fusion_gate_score_ns: f64,
+    pub fusion_gate_min_gain_ns: f64,
+    pub fused_auto_viable: bool,
     pub rows: Vec<FusionPhaseRow>,
 }
 
@@ -127,14 +129,15 @@ pub fn run_fusion_phase_bench(
     let fused_graph = build_welch_peaks_fused_graph(batch, peak_params);
     let io_fft_raw = profile_graph_io(&fft_graph);
     let io_fused_raw = profile_graph_io(&fused_graph);
-    let io_fft = map_io(io_fft_raw);
-    let io_fused = map_io(io_fused_raw);
+    let gate_bd =
+        crate::welch_peaks_cost::welch_peaks_fusion_gate_breakdown(device, batch, n_fft, k);
+    let fusion_gate_fuse = gate_bd.should_fuse;
+    let (io_fft, io_fused) =
+        crate::welch_peaks_cost::welch_peaks_fusion_io_profiles(batch, n_fft, k, device);
     let benefit = fusion_benefit(&io_fft, &io_fused);
-    let fusion_target = fusion_target_for_device(device);
-    let gate = rlx_compile::io_fusion_gate_for_target(fusion_target);
-    let fusion_gate_fuse = gate.should_fuse(&io_fft, &io_fused);
 
-    let predicted_ns = fused_raw_io_model_ns(device, &fused_graph, &io_fused_raw);
+    let predicted_ns =
+        crate::welch_peaks_cost::estimate_fused_graph_ns(batch, peak_params, device, 1.0);
 
     let mut rows = Vec::new();
 
@@ -183,6 +186,47 @@ pub fn run_fusion_phase_bench(
         predicted_cost_ns: predicted_ns,
     });
 
+    let mut dual = build_welch_peaks_fused_graph(batch, peak_params);
+    let peaks_id = dual.outputs[0];
+    let spec_id = dual.node(peaks_id).inputs[0];
+    dual.set_outputs(vec![spec_id, peaks_id]);
+    let io_dual = profile_graph_io(&dual);
+    let target = welch_peaks_fusion_target(device);
+    let mut supported: Vec<OpKind> = supported_for_target(target).to_vec();
+    if !supports_op(&supported, OpKind::Fft) {
+        supported.push(OpKind::Fft);
+    }
+    if !supports_op(&supported, OpKind::WelchPeaks) {
+        supported.push(OpKind::WelchPeaks);
+    }
+    let optimized = run_fusion_pipeline(dual, target, &supported, FusionOptions::default());
+    let io_compile = profile_graph_io(&optimized);
+    rows.push(FusionPhaseRow {
+        phase: "phase3_compile_peaks_output_gate".into(),
+        batch,
+        k,
+        device: device_name.into(),
+        ms: 0.0,
+        io: io_compile,
+        predicted_cost_ns: 0.0,
+    });
+    if fusion_gate_fuse && io_dual.host_output_bytes > io_compile.host_output_bytes {
+        let mut exec = Session::new(device).compile(optimized);
+        let window = crate::welch::hann_window(peak_params.welch.n_fft);
+        let ms = time_iters(iters, || {
+            let segs =
+                crate::welch::welch_windowed_segments(&signal, batch, peak_params.welch, &window)?;
+            let _ = exec.run(&[("segs", &segs)]);
+            Ok(())
+        })?;
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|r| r.phase == "phase3_compile_peaks_output_gate")
+        {
+            row.ms = ms;
+        }
+    }
+
     let _ = Session::new(device);
 
     Ok(FusionPhaseReport {
@@ -196,6 +240,9 @@ pub fn run_fusion_phase_bench(
         fusion_sync_saved: benefit.sync_points_saved,
         fusion_readback_saved: benefit.host_readback_bytes_saved,
         fusion_gate_fuse,
+        fusion_gate_score_ns: gate_bd.score_ns,
+        fusion_gate_min_gain_ns: gate_bd.min_gain_ns,
+        fused_auto_viable: crate::welch_peaks_cost::fused_welch_peaks_auto_viable(device),
         rows,
     })
 }
@@ -220,11 +267,15 @@ pub fn print_fusion_phase_report(report: &FusionPhaseReport) {
         report.fused_graph.device_traffic_bytes,
     );
     eprintln!(
-        "  fusion benefit: launches_saved={} sync_saved={} readback_saved={} B gate_fuse={}",
+        "  fusion benefit: launches_saved={} sync_saved={} readback_saved={} B \
+         gate_score={:.3}ms min_gain={:.3}ms gate_fuse={} auto_viable={}",
         report.fusion_launches_saved,
         report.fusion_sync_saved,
         report.fusion_readback_saved,
+        report.fusion_gate_score_ns / 1e6,
+        report.fusion_gate_min_gain_ns / 1e6,
         report.fusion_gate_fuse,
+        report.fused_auto_viable,
     );
     let base = report.rows.first().map(|r| r.ms).unwrap_or(1.0).max(1e-9);
     for r in &report.rows {
@@ -248,6 +299,14 @@ pub fn print_fusion_phase_report(report: &FusionPhaseReport) {
                 "  phase2 IO-model: predicted={pred_ms:.3}ms measured={:.3}ms ratio={ratio:.2}x",
                 p2.ms,
             );
+            if let Ok(device) = resolve_train_device(Some(&report.device)) {
+                let cur = crate::welch_peaks_cost::fused_io_compute_scale_for_calibration(device);
+                eprintln!(
+                    "  suggested fused_io_compute_scale: {:.2} (current {:.2})",
+                    cur * ratio,
+                    cur,
+                );
+            }
         }
         let picker_pred_ms = crate::welch_peaks_cost::estimate_welch_peaks_costs(
             resolve_train_device(Some(&report.device)).unwrap_or(Device::Cpu),
@@ -271,8 +330,8 @@ pub fn print_fusion_phase_sweep_summary(sweep: &FusionPhaseSweepReport) {
     }
     eprintln!("=== Fusion phase crossover (speedup vs baseline) ===");
     eprintln!(
-        "{:>8} {:>8} {:>8} {:>12}",
-        "batch", "phase1", "phase2", "readback B"
+        "{:>8} {:>8} {:>8} {:>10} {:>6} {:>6}",
+        "batch", "phase1", "phase2", "gate_ms", "fuse", "auto"
     );
     for r in &sweep.reports {
         let base = r.rows.first().map(|x| x.ms).unwrap_or(1.0).max(1e-9);
@@ -289,8 +348,13 @@ pub fn print_fusion_phase_sweep_summary(sweep: &FusionPhaseSweepReport) {
             .map(|x| base / x.ms.max(1e-9))
             .unwrap_or(0.0);
         eprintln!(
-            "{:>8} {:>7.2}x {:>7.2}x {:>12}",
-            r.batch, p1, p2, r.fusion_readback_saved,
+            "{:>8} {:>7.2}x {:>7.2}x {:>9.2} {:>6} {:>6}",
+            r.batch,
+            p1,
+            p2,
+            r.fusion_gate_score_ns / 1e6,
+            r.fusion_gate_fuse,
+            r.fused_auto_viable,
         );
     }
     eprintln!();
@@ -313,57 +377,4 @@ pub fn write_fusion_phase_sweep_json(
     }
     std::fs::write(path, serde_json::to_vec_pretty(sweep)?)
         .with_context(|| format!("write {}", path.display()))
-}
-
-#[cfg(any(feature = "metal", feature = "gpu", feature = "cuda"))]
-fn fused_raw_io_model_ns(device: Device, graph: &rlx_ir::Graph, io: &GraphIoProfile) -> f64 {
-    #[cfg(feature = "metal")]
-    if device == Device::Metal {
-        let model = MetalCostModel::new();
-        return estimate_graph_cost_with_io(graph, &model, io);
-    }
-    #[cfg(feature = "gpu")]
-    if matches!(
-        device,
-        Device::Gpu | Device::Vulkan | Device::WebGpu | Device::DirectX | Device::OpenGl
-    ) {
-        let model = rlx_runtime::cost::WgpuCostModel::new();
-        return estimate_graph_cost_with_io(graph, &model, io);
-    }
-    #[cfg(feature = "cuda")]
-    if device == Device::Cuda {
-        let model = rlx_runtime::cost::CudaCostModel::new();
-        return estimate_graph_cost_with_io(graph, &model, io);
-    }
-    let _ = (device, graph, io);
-    0.0
-}
-
-#[cfg(not(any(feature = "metal", feature = "gpu", feature = "cuda")))]
-fn fused_raw_io_model_ns(_device: Device, _graph: &rlx_ir::Graph, _io: &GraphIoProfile) -> f64 {
-    0.0
-}
-
-fn map_io(p: GraphIoProfile) -> rlx_compile::fusion_benefit::GraphIoProfile {
-    rlx_compile::fusion_benefit::GraphIoProfile {
-        kernel_launches: p.kernel_launches,
-        sync_points: p.sync_points,
-        host_output_bytes: p.host_output_bytes,
-        device_traffic_bytes: p.device_traffic_bytes,
-    }
-}
-
-fn fusion_target_for_device(device: Device) -> rlx_compile::FusionTarget {
-    use rlx_compile::FusionTarget;
-    match device {
-        Device::Metal => FusionTarget::Metal,
-        Device::Mlx | Device::Ane => FusionTarget::Mlx,
-        Device::Cuda => FusionTarget::Cuda,
-        Device::Rocm => FusionTarget::Rocm,
-        Device::Gpu | Device::Vulkan | Device::WebGpu | Device::DirectX | Device::OpenGl => {
-            FusionTarget::Wgpu
-        }
-        Device::Tpu => FusionTarget::Tpu,
-        Device::Cpu => FusionTarget::Cpu,
-    }
 }

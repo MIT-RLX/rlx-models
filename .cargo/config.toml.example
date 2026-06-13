@@ -1,4 +1,4 @@
-# Local RLX development — patch crates.io 0.2.5 with a sibling checkout.
+# Local RLX development — patch crates.io 0.2.6 with a sibling checkout.
 #
 # Layout (recommended):
 #   rlx-workspace/
@@ -12,7 +12,7 @@
 #   rm .cargo/config.toml
 #
 # Rules:
-# - Root Cargo.toml `[workspace.dependencies]` pins `rlx*` at =0.2.5 (crates.io).
+# - Root Cargo.toml `[workspace.dependencies]` pins `rlx*` at =0.2.6 (crates.io).
 # - Every crate uses `{ workspace = true }` — no path deps to ../rlx in committed files.
 # - Patches apply only when `.cargo/config.toml` exists (gitignored).
 # - Patch ALL entries below together; a partial patch can break native `links` (e.g. mlx-sys).

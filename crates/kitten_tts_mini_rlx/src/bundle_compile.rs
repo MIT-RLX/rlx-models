@@ -361,7 +361,7 @@ pub fn set_runtime_input_ids_shape(graph: &mut CompiledGraph, seq: usize) -> Res
 }
 
 /// Bump when `rlx-onnx-import` lowering changes affect compiled graphs.
-const IMPORT_CACHE_TAG: &str = "kitten_cf_v55";
+const IMPORT_CACHE_TAG: &str = "kitten_cf_v56";
 
 /// Graph output index for per-token duration (after waveform).
 pub const DURATION_OUTPUT_INDEX: usize = 1;

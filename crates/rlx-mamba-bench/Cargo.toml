@@ -1,6 +1,6 @@
 [package]
 name = "rlx-mamba-bench"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 rust-version = "1.87"
 license = "GPL-3.0-only"

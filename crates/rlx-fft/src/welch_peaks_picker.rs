@@ -10,7 +10,7 @@ use crate::peak::{WelchPeakParams, WelchPeaksScratch, welch_peaks_rustfft_with_s
 use crate::pruned::DEFAULT_GATE_THRESHOLD;
 use crate::welch::WelchParams;
 use crate::welch_peaks_compile::{
-    CompiledLearnedWelchPeaks, CompiledRlxWelchPeaksFused, compile_learned_welch_peaks,
+    CompiledLearnedWelchPeaks, CompiledRlxWelchPeaksExec, compile_learned_welch_peaks,
     default_welch_peaks_hard_threshold,
 };
 use crate::welch_peaks_cost::{WelchPeaksCostEstimates, estimate_welch_peaks_costs, is_gpu_device};
@@ -244,7 +244,8 @@ pub struct AutoWelchPeaks {
     full_frame: usize,
     peak_params: WelchPeakParams,
     scratch: WelchPeaksScratch,
-    rlx: Option<CompiledRlxWelchPeaksFused>,
+    fast_buf: Vec<f32>,
+    rlx: Option<CompiledRlxWelchPeaksExec>,
     learned: Option<CompiledLearnedWelchPeaks>,
 }
 
@@ -311,13 +312,19 @@ impl AutoWelchPeaks {
                     f64::INFINITY
                 }
             }
+            let gate_bd =
+                crate::welch_peaks_cost::welch_peaks_fusion_gate_breakdown(device, batch, n_fft, k);
+            let fused_ok = crate::welch_peaks_cost::fused_welch_peaks_auto_viable(device);
             eprintln!(
                 "[welch-peaks] io pick batch={batch} device={device:?} \
-                 ultra={:.2}ms fast={:.2}ms rlx={:.2}ms learned={:.2}ms -> {}",
+                 ultra={:.2}ms fast={:.2}ms rlx={:.2}ms learned={:.2}ms \
+                 gate_score={:.2}ms gate_fuse={} fused_viable={fused_ok} -> {}",
                 ms(breakdown.costs.ultra_ns),
                 ms(breakdown.costs.fast_ns),
                 ms(breakdown.costs.rlx_ns),
                 ms(breakdown.costs.learned_ns),
+                gate_bd.score_ns / 1e6,
+                gate_bd.should_fuse,
                 strategy.label(),
             );
         }
@@ -332,16 +339,24 @@ impl AutoWelchPeaks {
         };
         let full_frame = WelchParams::for_n_fft(n_fft).frame_len();
         let scratch = WelchPeaksScratch::new(batch, peak_params.n_bins());
+        let fast_cap = batch * peak_params.frame_len();
+        let fast_buf = Vec::with_capacity(fast_cap);
 
         let mut rlx = None;
         let mut learned = None;
         match strategy {
             WelchPeaksStrategy::RlxCompiled => {
-                rlx = Some(CompiledRlxWelchPeaksFused::compile(
+                rlx = Some(CompiledRlxWelchPeaksExec::compile_adaptive(
                     batch,
                     peak_params,
                     device,
                 )?);
+                if rlx_ir::env::flag("RLX_FFT_PICKER_TRACE") {
+                    eprintln!(
+                        "[welch-peaks] rlx exec kind: {:?}",
+                        rlx.as_ref().map(|e| e.kind)
+                    );
+                }
             }
             WelchPeaksStrategy::LearnedCompiled => {
                 let m = model.expect("learned model required for LearnedCompiled");
@@ -365,6 +380,7 @@ impl AutoWelchPeaks {
             full_frame,
             peak_params,
             scratch,
+            fast_buf,
             rlx,
             learned,
         })
@@ -374,18 +390,49 @@ impl AutoWelchPeaks {
         self.strategy.label()
     }
 
+    /// Bench / log label including RLX exec kind when applicable.
+    pub fn picker_path_label(&self) -> String {
+        match self.rlx_exec_kind() {
+            Some(kind) => format!("{}_{}", self.strategy.label(), kind.label()),
+            None => self.strategy_label().to_string(),
+        }
+    }
+
     pub fn peak_params(&self) -> WelchPeakParams {
         self.peak_params
     }
 
-    /// Input `[batch, full_welch_frame]` (8-segment layout); returns packed top-K peaks.
-    pub fn welch_peaks_batch(&mut self, signal: &[f32]) -> Result<Vec<f32>> {
-        ensure!(signal.len() == self.batch * self.full_frame);
-        let fast_signal =
-            self.peak_params
-                .welch
-                .truncate_batch(signal, self.batch, self.full_frame)?;
+    /// RLX adaptive exec kind when strategy is [`WelchPeaksStrategy::RlxCompiled`].
+    pub fn rlx_exec_kind(&self) -> Option<crate::welch_peaks_compile::RlxWelchPeaksExecKind> {
+        self.rlx.as_ref().map(|e| e.kind)
+    }
 
+    /// Input `[batch, fast_frame]` when already truncated; skips layout copy.
+    pub fn welch_peaks_batch_fast(&mut self, fast_signal: &[f32]) -> Result<Vec<f32>> {
+        ensure!(fast_signal.len() == self.batch * self.peak_params.frame_len());
+        self.welch_peaks_on_fast(fast_signal)
+    }
+
+    /// Input `[batch, full_welch_frame]` or `[batch, fast_frame]`; returns packed top-K peaks.
+    pub fn welch_peaks_batch(&mut self, signal: &[f32]) -> Result<Vec<f32>> {
+        let fast_len = self.batch * self.peak_params.frame_len();
+        if signal.len() == fast_len {
+            return self.welch_peaks_on_fast(signal);
+        }
+        ensure!(signal.len() == self.batch * self.full_frame);
+        let mut fast_signal = std::mem::take(&mut self.fast_buf);
+        self.peak_params.welch.truncate_batch_into(
+            signal,
+            self.batch,
+            self.full_frame,
+            &mut fast_signal,
+        )?;
+        let out = self.welch_peaks_on_fast(&fast_signal)?;
+        self.fast_buf = fast_signal;
+        Ok(out)
+    }
+
+    fn welch_peaks_on_fast(&mut self, fast_signal: &[f32]) -> Result<Vec<f32>> {
         match self.strategy {
             WelchPeaksStrategy::UltraFast | WelchPeaksStrategy::FastStreaming => {
                 welch_peaks_rustfft_with_scratch(
@@ -399,7 +446,7 @@ impl AutoWelchPeaks {
                 .rlx
                 .as_mut()
                 .expect("rlx compiled")
-                .welch_peaks_batch(&fast_signal),
+                .welch_peaks_batch(&fast_signal, &mut self.scratch),
             WelchPeaksStrategy::LearnedCompiled => self
                 .learned
                 .as_mut()
@@ -464,15 +511,27 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "IO cost model picks RlxCompiled for large WGPU batches; revisit after WgpuCostModel calibration"]
-    fn wgpu_stays_rustfft_through_large_batch() {
-        for batch in [256usize, 1024, 4096, 8192] {
+    fn wgpu_picks_rustfft_small_batch_rlx_large() {
+        for batch in [256usize, 1024] {
             assert_eq!(
                 pick_welch_peaks_strategy(Device::Gpu, batch, 256, 16, false, None, 0),
                 WelchPeaksStrategy::FastStreaming,
                 "batch={batch}"
             );
         }
+        assert_eq!(
+            pick_welch_peaks_strategy(Device::Gpu, 8192, 256, 16, false, None, 0),
+            WelchPeaksStrategy::RlxCompiled,
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_large_batch_picks_rlx() {
+        assert_eq!(
+            pick_welch_peaks_strategy(Device::Cuda, 8192, 256, 16, false, None, 0),
+            WelchPeaksStrategy::RlxCompiled,
+        );
     }
 
     #[test]
@@ -494,6 +553,36 @@ mod tests {
             parse_welch_peaks_strategy("rlx").unwrap(),
             WelchPeaksPickMode::Force(WelchPeaksStrategy::RlxCompiled)
         );
+    }
+
+    #[test]
+    fn welch_peaks_batch_accepts_fast_layout() {
+        let batch = 8;
+        let n_fft = 256;
+        let k = 16;
+        let full = WelchParams::for_n_fft(n_fft);
+        let fast_params = WelchPeakParams::fast_for_n_fft(n_fft, k);
+        let full_frame = full.frame_len();
+        let fast_frame = fast_params.frame_len();
+        let signal: Vec<f32> = (0..batch * full_frame).map(|i| i as f32 * 1e-6).collect();
+        let fast_signal = fast_params
+            .welch
+            .truncate_batch(&signal, batch, full_frame)
+            .unwrap();
+        let mut picker = AutoWelchPeaks::with_strategy(
+            batch,
+            n_fft,
+            k,
+            Some("cpu"),
+            WelchPeaksStrategy::FastStreaming,
+        )
+        .unwrap();
+        let from_full = picker.welch_peaks_batch(&signal).unwrap();
+        let from_fast = picker.welch_peaks_batch(&fast_signal).unwrap();
+        let from_fast_api = picker.welch_peaks_batch_fast(&fast_signal).unwrap();
+        assert_eq!(from_full, from_fast);
+        assert_eq!(from_full, from_fast_api);
+        assert_eq!(fast_frame, fast_params.frame_len());
     }
 
     #[test]

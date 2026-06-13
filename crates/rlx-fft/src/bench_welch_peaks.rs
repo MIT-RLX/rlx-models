@@ -10,7 +10,8 @@ use crate::train::random_batch;
 use crate::train_e2e::{E2eTrainConfig, train_fast_learned_model};
 use crate::welch::{WelchParams, welch_rustfft};
 use crate::welch_peaks_compile::{
-    CompiledRlxWelchPeaksFused, compile_learned_welch_peaks, default_welch_peaks_hard_threshold,
+    CompiledRlxWelchPeaksExec, CompiledRlxWelchPeaksFused, compile_learned_welch_peaks,
+    default_welch_peaks_hard_threshold,
 };
 use crate::welch_peaks_cost::{algorithm_bandwidth_gbps, useful_bytes_touched};
 use crate::welch_peaks_picker::{AutoWelchPeaks, WelchPeaksPickMode, WelchPeaksStrategy};
@@ -316,7 +317,7 @@ pub fn run_welch_peaks_bench_opts(opts: &WelchPeaksBenchOpts) -> Result<WelchPea
             Ok(())
         })?;
         rows.push(WelchPeaksBenchRow {
-            path: format!("welch_peaks_picker_{}", auto.strategy_label()),
+            path: format!("welch_peaks_picker_{}", auto.picker_path_label()),
             n_fft: opts.n_fft,
             batch: opts.batch,
             k: opts.k,
@@ -330,9 +331,63 @@ pub fn run_welch_peaks_bench_opts(opts: &WelchPeaksBenchOpts) -> Result<WelchPea
                 ms,
             )),
         });
+
+        // Hot path when caller already holds the 2-segment fast layout (no truncate copy).
+        let pred_fastbuf = auto.welch_peaks_batch_fast(&fast_signal)?;
+        ensure!(pred_fastbuf == pred_auto);
+        let ms_fastbuf = time_iters(opts.iters, || {
+            let _ = auto.welch_peaks_batch_fast(&fast_signal)?;
+            Ok(())
+        })?;
+        rows.push(WelchPeaksBenchRow {
+            path: format!("welch_peaks_picker_fastbuf_{}", auto.picker_path_label()),
+            n_fft: opts.n_fft,
+            batch: opts.batch,
+            k: opts.k,
+            device: opts.device_name.clone(),
+            iters: opts.iters,
+            ms: ms_fastbuf,
+            output_len: auto.peak_params().output_len(opts.batch),
+            peak_err: Some(err_auto),
+            algo_bw_gbps: Some(algorithm_bandwidth_gbps(
+                useful_bytes_touched(opts.batch, auto.peak_params()),
+                ms_fastbuf,
+            )),
+        });
     }
 
     if opts.with_compiled {
+        if let Ok(mut adaptive) =
+            CompiledRlxWelchPeaksExec::compile_adaptive(opts.batch, fast, device)
+        {
+            let mut scratch_adaptive = WelchPeaksScratch::new(opts.batch, fast.n_bins());
+            let pred = adaptive.welch_peaks_batch(&fast_signal, &mut scratch_adaptive)?;
+            let err = peak_max_err(&pred, &ref_peaks);
+            let ms = time_iters(opts.iters, || {
+                let _ = adaptive.welch_peaks_batch(&fast_signal, &mut scratch_adaptive)?;
+                Ok(())
+            })?;
+            rows.push(WelchPeaksBenchRow {
+                path: format!(
+                    "welch_fast_peaks_rlx_adaptive_{}_{:?}",
+                    adaptive.kind.label(),
+                    device
+                )
+                .to_lowercase(),
+                n_fft: opts.n_fft,
+                batch: opts.batch,
+                k: opts.k,
+                device: opts.device_name.clone(),
+                iters: opts.iters,
+                ms,
+                output_len: fast.output_len(opts.batch),
+                peak_err: Some(err),
+                algo_bw_gbps: Some(algorithm_bandwidth_gbps(
+                    useful_bytes_touched(opts.batch, fast),
+                    ms,
+                )),
+            });
+        }
         if let Ok(mut compiled) = CompiledRlxWelchPeaksFused::compile(opts.batch, fast, device) {
             let pred = compiled.welch_peaks_batch(&fast_signal)?;
             let err = peak_max_err(&pred, &ref_peaks);
@@ -518,14 +573,25 @@ pub fn print_welch_peaks_table(report: &WelchPeaksBenchReport) {
                 .rows
                 .iter()
                 .find(|r| r.batch == *batch && r.path == "welch_fast_peaks_rustfft");
-            let picker = report
+            let picker_fastbuf = report
                 .rows
                 .iter()
-                .find(|r| r.batch == *batch && r.path.starts_with("welch_peaks_picker_"));
-            let rlx = report
-                .rows
-                .iter()
-                .find(|r| r.batch == *batch && r.path.starts_with("welch_fast_peaks_rlx_"));
+                .find(|r| r.batch == *batch && r.path.starts_with("welch_peaks_picker_fastbuf_"));
+            let picker = picker_fastbuf.or_else(|| {
+                report.rows.iter().find(|r| {
+                    r.batch == *batch
+                        && r.path.starts_with("welch_peaks_picker_")
+                        && !r.path.contains("fastbuf")
+                })
+            });
+            let adaptive = report.rows.iter().find(|r| {
+                r.batch == *batch && r.path.starts_with("welch_fast_peaks_rlx_adaptive_")
+            });
+            let rlx_fused = report.rows.iter().find(|r| {
+                r.batch == *batch
+                    && r.path.starts_with("welch_fast_peaks_rlx_")
+                    && !r.path.contains("adaptive")
+            });
             if let (Some(r), Some(p)) = (rust, picker) {
                 let ratio = r.ms / p.ms;
                 let pick = p
@@ -544,15 +610,33 @@ pub fn print_welch_peaks_table(report: &WelchPeaksBenchReport) {
                     }
                 );
             }
-            if let (Some(r), Some(x)) = (rust, rlx) {
+            if let (Some(r), Some(a)) = (rust, adaptive) {
+                let ratio = r.ms / a.ms;
+                let kind = a
+                    .path
+                    .strip_prefix("welch_fast_peaks_rlx_adaptive_")
+                    .unwrap_or(&a.path);
+                eprintln!(
+                    "  batch={batch:6} k={} rustfft={:.4}ms rlx_adaptive={:.4}ms ({kind}) ratio={ratio:.2}x {}",
+                    r.k,
+                    r.ms,
+                    a.ms,
+                    if ratio >= 1.0 {
+                        "adaptive wins"
+                    } else {
+                        "rustfft wins"
+                    }
+                );
+            }
+            if let (Some(r), Some(x)) = (rust, rlx_fused) {
                 let ratio = r.ms / x.ms;
                 eprintln!(
-                    "  batch={batch:6} k={} rustfft={:.4}ms rlx_fused={:.4}ms ratio={ratio:.2}x {}",
+                    "  batch={batch:6} k={} rustfft={:.4}ms rlx_fused_only={:.4}ms ratio={ratio:.2}x {}",
                     r.k,
                     r.ms,
                     x.ms,
                     if ratio >= 1.0 {
-                        "rlx wins"
+                        "fused wins"
                     } else {
                         "rustfft wins"
                     }
