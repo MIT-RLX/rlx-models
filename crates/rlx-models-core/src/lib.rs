@@ -18,7 +18,13 @@
 //! packed GGUF prefill guards ([`flow_bridge::packed_gguf_compile_guard`], etc.).
 
 pub mod arch_registry;
+pub mod asr_bench;
+pub mod asr_metrics;
+pub mod audio;
+pub mod audio_codec;
+pub mod audio_ops_ir;
 pub mod autoregressive;
+pub mod codec_bench;
 pub mod config;
 pub mod dataprocessing;
 pub mod device_capabilities;
@@ -29,6 +35,8 @@ pub mod gguf_config;
 pub mod gguf_resolve;
 pub mod gguf_support;
 pub mod gpu_kv;
+pub mod host_kernels;
+pub mod image_preprocess;
 pub mod lm;
 pub mod moe_weights;
 pub mod safetensors_checkpoint;
@@ -38,6 +46,14 @@ pub mod weight_map;
 pub mod weight_registry;
 pub mod weights;
 
+pub use asr_metrics::{
+    EditCounts, WerAccumulator, batch_to_stream_factor, character_error_rate, edit_distance,
+    normalize_words, rtfx, word_edit_counts, word_error_rate,
+};
+pub use audio::{resample_linear, resample_linear_interleaved};
+pub use audio_codec::{
+    AudioCodec, ChunkStreamer, CodecInfo, CompressStats, FileCodec, HierarchicalCodes, RvqCodes,
+};
 pub use device_capabilities::{
     STANDARD_DEVICE_NAMES, STANDARD_DEVICES, device_memory_for_moe_offload, is_standard_device,
     validate_sam_device, validate_standard_device,
@@ -64,12 +80,14 @@ pub use gguf_support::{
 };
 
 pub use autoregressive::{
-    KvCacheState, compile_cache_ensure_graph, infer_prefill_kv_seq, kv_from_prefill_outputs,
-    kv_from_prefill_outputs_per_layer, packed_prefill_active_extent_enabled, past_kv_input_names,
-    prefill_cache_key, run_bucketed_kv_decode, run_bucketed_kv_decode_graph_layers_scratch,
+    KvCacheState, compact_bucketed_kv_buffer, compile_cache_ensure_graph, infer_prefill_kv_seq,
+    kv_from_prefill_outputs, kv_from_prefill_outputs_per_layer,
+    packed_prefill_active_extent_enabled, past_kv_input_names, prefill_cache_key,
+    run_bucketed_kv_decode, run_bucketed_kv_decode_graph_layers_scratch,
     run_bucketed_kv_decode_hir, run_bucketed_kv_decode_hir_scratch,
-    run_bucketed_kv_decode_hir_uniform, run_bucketed_kv_decode_keyed, run_packed_prefill,
-    split_bucketed_decode_kv, split_bucketed_decode_kv_per_layer, split_decode_logits_kv,
+    run_bucketed_kv_decode_hir_uniform, run_bucketed_kv_decode_keyed,
+    run_bucketed_kv_decode_keyed_batched, run_packed_prefill, split_bucketed_decode_kv,
+    split_bucketed_decode_kv_per_layer, split_decode_logits_kv, split_decode_logits_kv_aux,
 };
 pub use config::{BertConfig, NomicBertConfig, NomicVisionConfig};
 pub use embedded_safetensors::EmbeddedSafetensors;
@@ -104,9 +122,9 @@ pub use gpu_kv::{
 pub use lm::{FlowBuildExt, into_compile_parts};
 pub use safetensors_checkpoint::SafetensorsCheckpoint;
 pub use weight_loader::{
-    GgufLoader, HfTranslatingLoader, WeightLoader, dequant_matmul_supported,
-    ggml_type_to_quant_scheme, gguf_to_hf_name, gguf_to_hf_name_for_arch, hf_to_gguf_name,
-    is_mtp_weight, load_from_path,
+    ArcCacheLoader, ArcF32Tensor, GgufLoader, HfTranslatingLoader, WeightLoader,
+    dequant_matmul_supported, ggml_type_to_quant_scheme, gguf_to_hf_name, gguf_to_hf_name_for_arch,
+    hf_to_gguf_name, hf_to_gguf_name_for_arch, is_mtp_weight, load_from_path,
 };
 pub use weight_map::{WeightDrainPolicy, WeightMap};
 pub use weight_registry::{

@@ -22,7 +22,7 @@ use rlx_core::weight_loader::GgufLoader;
 use rlx_qwen3::sampling::{SampleOpts, sample_token};
 
 /// How many vocab rows to score for sampling (partial LM head).
-pub fn sample_lm_cap(opts: SampleOpts, n_vocab: usize) -> usize {
+pub fn sample_lm_cap(opts: &SampleOpts, n_vocab: usize) -> usize {
     if opts.greedy {
         return 1;
     }
@@ -179,7 +179,7 @@ pub fn sample_lm_head_from_hidden(
     opts: SampleOpts,
 ) -> Result<u32> {
     let n_vocab = weights.lm_vocab_size(cfg);
-    let cap = sample_lm_cap(opts, n_vocab);
+    let cap = sample_lm_cap(&opts, n_vocab);
     if cap >= n_vocab {
         let (idx, val) = greedy_lm_head_argmax(weights, cfg, hidden, loader)?;
         if opts.greedy {

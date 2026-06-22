@@ -1,0 +1,77 @@
+# TinyTTS (https://github.com/tronghieuit/tiny-tts) — MeloTTS/VITS2 English TTS.
+# Runs the four exported ONNX subgraphs natively on every RLX backend via
+# rlx-onnx-import → rlx-ir HIR; the monotonic-alignment + sampling glue is in Rust.
+
+[package]
+name = "rlx-tiny-tts"
+version = "0.2.9"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "TinyTTS English text-to-speech (VITS2/MeloTTS, 44.1 kHz) for RLX — all backends"
+exclude = ["weights/**"]
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+ndarray = "0.16"
+hound = "3"
+dirs = "6"
+
+# RLX compiler + runtime (ONNX import → HIR → per-device compile → run).
+rlx-ir = { workspace = true }
+rlx-onnx-import = { workspace = true }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-cpu = { workspace = true }
+rlx-opt = { workspace = true }
+rlx-compile = { workspace = true }
+rlx-metal = { workspace = true, optional = true }
+rlx-mlx = { workspace = true, optional = true }
+
+# Reuse the (byte-identical MeloTTS) English text frontend; no graph stack
+# needed. `default-features = false` is set on the workspace dependency.
+rlx-inflect-nano = { workspace = true }
+
+[features]
+default = ["cpu"]
+cpu = ["rlx-runtime/cpu"]
+metal = ["rlx-runtime/metal", "dep:rlx-metal"]
+mlx = ["rlx-runtime/mlx", "dep:rlx-mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+# Apple CoreML (targets the Neural Engine / GPU / CPU); `--device ane`.
+coreml = ["rlx-runtime/coreml"]
+ane = ["coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+
+[[bin]]
+name = "rlx-tiny-tts"
+path = "src/bin/rlx_tiny_tts.rs"
+
+[[example]]
+name = "keystone"
+path = "examples/keystone.rs"
+
+[[example]]
+name = "flow_probe"
+path = "examples/flow_probe.rs"
+
+[[example]]
+name = "tenc_probe"
+path = "examples/tenc_probe.rs"
+
+[lints]
+workspace = true
+
+[[example]]
+name = "dec_probe"
+path = "examples/dec_probe.rs"

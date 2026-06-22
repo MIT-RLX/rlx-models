@@ -12,7 +12,6 @@ repository.workspace = true
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
 rlx-sam = { workspace = true }
-rlx-tensor = { workspace = true }
 rlx-ir = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-gguf = { workspace = true }

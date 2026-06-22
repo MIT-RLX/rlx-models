@@ -1,0 +1,46 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+
+# Object files and binaries
+*.o
+*.so
+*.a
+*.dylib
+*.exe
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model files (too large for git)
+*.bin
+*.txc
+*.opus
+models/
+
+# Temp
+/tmp/
+*.wav
+*.pcm
+
+# AI-LTC state (local only, not versioned)
+.ai/
+.sisyphus/
+releases/*
+tests/

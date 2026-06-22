@@ -127,6 +127,11 @@ fn tiny_gemma4_causal_cfg() -> GemmaConfig {
         num_global_key_value_heads: Some(1),
         attention_k_eq_v: true,
         use_bidirectional_attention: None,
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: 0,
+        num_kv_shared_layers: 0,
+        use_double_wide_mlp: false,
+        enable_moe_block: false,
     }
 }
 
@@ -364,6 +369,11 @@ fn tiny_gemma_legacy_base() -> GemmaConfig {
         num_global_key_value_heads: None,
         attention_k_eq_v: false,
         use_bidirectional_attention: None,
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: 0,
+        num_kv_shared_layers: 0,
+        use_double_wide_mlp: false,
+        enable_moe_block: false,
     }
 }
 

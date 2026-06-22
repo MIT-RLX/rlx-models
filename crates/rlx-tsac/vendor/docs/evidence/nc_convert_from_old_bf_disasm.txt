@@ -1,0 +1,80 @@
+
+/usr/lib/tsac/libnc.so：     文件格式 elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000061370 <nc_convert_from_old_bf@@Base>:
+   61370:	41 57                	push   %r15
+   61372:	41 56                	push   %r14
+   61374:	41 55                	push   %r13
+   61376:	41 54                	push   %r12
+   61378:	55                   	push   %rbp
+   61379:	48 89 fd             	mov    %rdi,%rbp
+   6137c:	53                   	push   %rbx
+   6137d:	48 83 ec 78          	sub    $0x78,%rsp
+   61381:	48 8b 47 30          	mov    0x30(%rdi),%rax
+   61385:	48 8b 78 18          	mov    0x18(%rax),%rdi
+   61389:	8d 42 f5             	lea    -0xb(%rdx),%eax
+   6138c:	83 f8 01             	cmp    $0x1,%eax
+   6138f:	0f 87 6a 01 00 00    	ja     614ff <nc_convert_from_old_bf@@Base+0x18f>
+   61395:	8b 4f 20             	mov    0x20(%rdi),%ecx
+   61398:	85 c9                	test   %ecx,%ecx
+   6139a:	0f 84 76 02 00 00    	je     61616 <nc_convert_from_old_bf@@Base+0x2a6>
+   613a0:	83 7d 64 02          	cmpl   $0x2,0x64(%rbp)
+   613a4:	0f 85 4d 02 00 00    	jne    615f7 <nc_convert_from_old_bf@@Base+0x287>
+   613aa:	83 7d 38 03          	cmpl   $0x3,0x38(%rbp)
+   613ae:	0f 85 24 02 00 00    	jne    615d8 <nc_convert_from_old_bf@@Base+0x268>
+   613b4:	80 7d 58 00          	cmpb   $0x0,0x58(%rbp)
+   613b8:	0f 84 fb 01 00 00    	je     615b9 <nc_convert_from_old_bf@@Base+0x249>
+   613be:	83 7e 64 02          	cmpl   $0x2,0x64(%rsi)
+   613c2:	49 89 f4             	mov    %rsi,%r12
+   613c5:	0f 85 cf 01 00 00    	jne    6159a <nc_convert_from_old_bf@@Base+0x22a>
+   613cb:	83 7e 38 01          	cmpl   $0x1,0x38(%rsi)
+   613cf:	0f 85 a6 01 00 00    	jne    6157b <nc_convert_from_old_bf@@Base+0x20b>
+   613d5:	80 7e 58 00          	cmpb   $0x0,0x58(%rsi)
+   613d9:	0f 84 7d 01 00 00    	je     6155c <nc_convert_from_old_bf@@Base+0x1ec>
+   613df:	83 fa 0c             	cmp    $0xc,%edx
+   613e2:	41 89 d0             	mov    %edx,%r8d
+   613e5:	48 8b 9d b0 00 00 00 	mov    0xb0(%rbp),%rbx
+   613ec:	41 0f 94 c6          	sete   %r14b
+   613f0:	c4 62 89 f7 bd a8 00 	shlx   %r14,0xa8(%rbp),%r15
+   613f7:	00 00 
+   613f9:	48 39 9e a8 00 00 00 	cmp    %rbx,0xa8(%rsi)
+   61400:	0f 85 37 01 00 00    	jne    6153d <nc_convert_from_old_bf@@Base+0x1cd>
+   61406:	4d 89 fd             	mov    %r15,%r13
+   61409:	49 c1 ed 05          	shr    $0x5,%r13
+   6140d:	4c 39 ae b0 00 00 00 	cmp    %r13,0xb0(%rsi)
+   61414:	0f 85 04 01 00 00    	jne    6151e <nc_convert_from_old_bf@@Base+0x1ae>
+   6141a:	44 89 c6             	mov    %r8d,%esi
+   6141d:	48 89 d9             	mov    %rbx,%rcx
+   61420:	4c 89 fa             	mov    %r15,%rdx
+   61423:	44 89 44 24 0c       	mov    %r8d,0xc(%rsp)
+   61428:	e8 43 51 fa ff       	call   6570 <nc_new_tensor_nz_2d@plt>
+   6142d:	44 8b 44 24 0c       	mov    0xc(%rsp),%r8d
+   61432:	48 8d 54 24 30       	lea    0x30(%rsp),%rdx
+   61437:	49 89 d9             	mov    %rbx,%r9
+   6143a:	48 89 04 24          	mov    %rax,(%rsp)
+   6143e:	48 8d 74 24 10       	lea    0x10(%rsp),%rsi
+   61443:	48 8d 7c 24 50       	lea    0x50(%rsp),%rdi
+   61448:	48 8b 48 40          	mov    0x40(%rax),%rcx
+   6144c:	41 50                	push   %r8
+   6144e:	4d 89 f8             	mov    %r15,%r8
+   61451:	6a 01                	push   $0x1
+   61453:	e8 b8 6e fa ff       	call   8310 <nc_reduce_sum_sqr@plt+0x13a0>
+   61458:	58                   	pop    %rax
+   61459:	5a                   	pop    %rdx
+   6145a:	48 85 db             	test   %rbx,%rbx
+   6145d:	74 3b                	je     6149a <nc_convert_from_old_bf@@Base+0x12a>
+   6145f:	c4 42 8b f7 ff       	shrx   %r14,%r15,%r15
+   61464:	45 31 f6             	xor    %r14d,%r14d
+   61467:	66 0f 1f 84 00 00 00 	nopw   0x0(%rax,%rax,1)
+   6146e:	00 00 
+   61470:	48 8b 7c 24 10       	mov    0x10(%rsp),%rdi
+   61475:	48 8b 75 50          	mov    0x50(%rbp),%rsi
+   61479:	4c 89 fa             	mov    %r15,%rdx
+   6147c:	49 0f af fe          	imul   %r14,%rdi
+   61480:	48 03 7c 24 50       	add    0x50(%rsp),%rdi
+   61485:	49 0f af f6          	imul   %r14,%rsi
+   61489:	49 ff c6             	inc    %r14
+   6148c:	48 03 75 40          	add    0x40(%rbp),%rsi

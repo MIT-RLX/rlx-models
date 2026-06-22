@@ -1,0 +1,70 @@
+[package]
+name = "rlx-inflect-nano"
+version = "0.2.9"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Inflect-Nano-v1 English text-to-speech (FastSpeech-style + Snake HiFi-GAN) for RLX"
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+ndarray = "0.16"
+hound = "3"
+once_cell = "1"
+regex = "1"
+tokenizers = { workspace = true }
+
+# rlx-ir graph path (multi-backend) + CLI registration are optional so the
+# host-eager CPU reference + tests build without the compiler/CLI stack.
+rlx-runtime = { workspace = true, optional = true, default-features = false, features = ["cpu"] }
+rlx = { workspace = true, optional = true, default-features = false }
+rlx-ir = { workspace = true, optional = true }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+# ONNX Runtime path (CoreML execution provider on Apple). Optional; only the
+# vocoder is run via ONNX — the acoustic stage stays host-eager.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-rustls",
+] }
+
+[features]
+default = ["rlx-graph"]
+# Build the rlx-ir graph backend (compiles per device → runs on every rlx backend).
+rlx-graph = ["dep:rlx", "dep:rlx-ir", "dep:rlx-runtime", "rlx/cpu", "rlx-runtime/cpu"]
+metal = ["rlx-graph", "rlx-runtime/metal", "rlx?/metal"]
+mlx = ["rlx-graph", "rlx-runtime/mlx", "rlx?/mlx"]
+cuda = ["rlx-graph", "rlx-runtime/cuda", "rlx?/cuda"]
+rocm = ["rlx-graph", "rlx-runtime/rocm", "rlx?/rocm"]
+gpu = ["rlx-graph", "rlx-runtime/gpu", "rlx?/gpu"]
+vulkan = ["rlx-graph", "rlx-runtime/vulkan", "rlx?/gpu"]
+# ONNX Runtime vocoder; `coreml` adds the Apple CoreML execution provider.
+onnx = ["dep:ort"]
+coreml = ["onnx", "ort/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+hf-download = ["dep:hf-hub"]
+
+[[bin]]
+name = "rlx-inflect-nano"
+path = "src/bin/rlx_inflect_nano.rs"
+
+# Whole-file `#![cfg(feature = "onnx")]`; skip building unless `onnx` is on.
+[[example]]
+name = "bench_coreml"
+required-features = ["onnx"]
+
+[lints]
+workspace = true

@@ -57,10 +57,10 @@ RUN sed -i 's|"rlx-metal",|# "rlx-metal",|; \
 # Strip rlx-models workspace members down to what rlx-mamba actually
 # needs. The full workspace depends on candle/burn/etc. via
 # `path = "../candle"`, which the .dockerignore excludes. rlx-mamba
-# itself only needs rlx-tensor + rlx-cpu + rlx-ir + rlx-rocm — the
+# itself only needs rlx-cpu + rlx-ir + rlx-rocm — the
 # rest of the workspace is irrelevant to this compile-check. Sed
 # comments out every `"crates/<x>",` line except the keep-list.
-RUN awk 'BEGIN{keep["crates/rlx-mamba"]=1; keep["crates/rlx-tensor"]=1; keep["crates/rlx-models-core"]=1} \
+RUN awk 'BEGIN{keep["crates/rlx-mamba"]=1; keep["crates/rlx-models-core"]=1} \
          { if (match($0, /"crates\/[a-zA-Z0-9_-]+"/)) { \
              name=substr($0, RSTART+1, RLENGTH-2); \
              if (!(name in keep)) { print "    # " $0; next } \

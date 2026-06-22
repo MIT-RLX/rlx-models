@@ -27,7 +27,9 @@ pub struct Vjepa2Config {
     pub hidden_size: usize,
     pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
-    #[serde(alias = "image_size")]
+    // HF configs carry both `crop_size` and `image_size` (equal); `image_size`
+    // is left as an ignored unknown field to avoid a serde duplicate-field error
+    // (do NOT add `alias = "image_size"` back — it collides with `crop_size`).
     pub crop_size: usize,
     pub patch_size: usize,
     pub tubelet_size: usize,

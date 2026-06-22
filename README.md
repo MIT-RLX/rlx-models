@@ -26,6 +26,7 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 - [Architecture](#architecture)
 - [Running models](#running-models)
 - [What's here](#whats-here)
+- [Text-to-speech (TTS)](#text-to-speech-tts)
 - [Install](#install)
 - [Quickstart — embeddings](#quickstart--embeddings)
 - [High-level runner API](#high-level-runner-api)
@@ -71,6 +72,7 @@ rlx-models/
 | `rlx-nomic` | NomicBERT |
 | `rlx-vision` | NomicVision |
 | `rlx-dinov2` | DINOv2 |
+| `rlx-bioclip2` | BioCLIP-2 (OpenCLIP ViT-L-14) |
 | `rlx-embed` | embedding runtime |
 | `rlx-sam` / `sam2` / `sam3` | SAM family |
 | `rlx-sam-ir` | shared mask-decoder IR |
@@ -83,7 +85,9 @@ rlx-models/
 | `rlx-flux2` | FLUX.2 |
 | `rlx-vjepa2` | V-JEPA 2 |
 | `rlx-wav2vec2-bert` | Wav2Vec2-BERT |
-| `rlx-whisper` | OpenAI Whisper ASR |
+| `rlx-wav2vec2-asr` | Wav2Vec2 CTC forced alignment (WhisperX-style word timestamps) |
+| `rlx-whisper` | OpenAI Whisper ASR (segment + word timestamps, optional diarization) |
+| `rlx-diarize` | Speaker diarization (embedding + clustering) |
 | [`rlx-fft`](crates/rlx-fft/README.md) | Learned butterfly FFT, Welch PSD, fast top-K spectral peaks |
 | [`rlx-vad`](crates/rlx-vad/README.md) | Earshot + Silero VAD (embedded weights, 16 kHz) |
 | `rlx-voxtral` | Mistral Voxtral speech LM |
@@ -112,7 +116,7 @@ Each model crate with a CLI has `src/cli.rs` (`pub fn run`) and `src/bin/rlx-<na
 
 **SAM unified runner:** `SamRunner` (SAM1/2/3) stays on the facade (`rlx-models/src/sam_runner.rs`) because `rlx-sam2` depends on `rlx-sam`. Per-arch CLIs are on `rlx-sam`, `rlx-sam2`, `rlx-sam3`.
 
-Published `rlx*` crates (`rlx-runtime`, `rlx-flow`, …) are pinned at **0.2.6** in root `[workspace.dependencies]`; every crate uses `{ workspace = true }`. **Local dev** with a sibling `../rlx` checkout: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored patches). **Publish / CI** uses crates.io only — no `.cargo/config.toml`, no `[patch.crates-io]` in committed `Cargo.toml`.
+Published `rlx*` crates (`rlx-runtime`, `rlx-flow`, …) are pinned at **0.2.8** in root `[workspace.dependencies]`; every crate uses `{ workspace = true }`. **Local dev** with a sibling `../rlx` checkout: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored patches). **Publish / CI** uses crates.io only — no `.cargo/config.toml`, no `[patch.crates-io]` in committed `Cargo.toml`.
 
 ## Running models
 
@@ -142,6 +146,7 @@ Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.m
 | `rlx-minicpm5` | `rlx-minicpm5` | `cargo run -p rlx-minicpm5 --features tokenizer --release -- --weights …/model.safetensors --prompt-ids 1,42` |
 | `rlx-gemma` | `rlx-gemma` | `cargo run -p rlx-gemma --bin rlx-gemma --release -- --weights model.gguf --prompt-ids 1,2,3` |
 | `rlx-dinov2` | `rlx-dinov2` | `cargo run -p rlx-dinov2 --bin rlx-dinov2 --release -- …` |
+| `rlx-bioclip2` | `rlx-bioclip2` | `cargo run -p rlx-bioclip2 --bin rlx-bioclip2 --release -- --model-dir weights/bioclip-2 --image photo.jpg --labels "cat,dog"` |
 | `rlx-vjepa2` | `rlx-vjepa2` | `cargo run -p rlx-vjepa2 --bin rlx-vjepa2 --release -- …` |
 | `rlx-wav2vec2-bert` | `rlx-wav2vec2-bert` | `cargo run -p rlx-wav2vec2-bert --bin rlx-wav2vec2-bert --release -- …` |
 | `rlx-whisper` | `rlx-whisper` | `cargo run -p rlx-whisper --bin rlx-whisper --release -- --weights model.safetensors --wav audio16k.wav` |
@@ -248,6 +253,7 @@ just fetch-minicpm5-gguf Q4_K_M
 - **`nomic`** — NomicBERT (RoPE + SwiGLU).
 - **`vision`** — NomicVision-style encoders.
 - **`dinov2`** — DINOv2 ViT (B/14, L/14, g/14).
+- **`bioclip2`** — BioCLIP-2, an OpenCLIP ViT-L-14 (image + text towers → shared 768-d embeddings, zero-shot). Pure-Rust PIL preprocessing; 100% parity vs `open_clip` on CPU/Metal/MLX/wgpu. CLI: `rlx-bioclip2`. See [crates/rlx-bioclip2/README.md](crates/rlx-bioclip2/README.md).
 - **`sam`**, **`sam2`**, **`sam3`** — Segment Anything encoders + mask decoders. Optional `sam.rlx.toml` next to weights (reference: `crates/rlx-sam/src/sam.rlx.toml`).
 - **`flux2`** — FLUX.2 rectified-flow denoiser. `rlx-flux2` CLI; presets `flux2_dev()`, `flux2_klein_4b()`, `flux2_klein_9b()`. VAE, CFG, img2img, LoRA, `hf-download`, `rlx-flux2-serve`. GPU backends via `rlx-models` features (`metal`, `cuda`, …).
 - **`embed`** — `RlxEmbed`, registry, tokenizers, pooling. `from_pretrained` with `hf-download`.
@@ -260,20 +266,82 @@ just fetch-minicpm5-gguf Q4_K_M
 - **`voxtral-tts`** — Voxtral-4B-TTS native inference (Tekken tokenizer, codec decode, compiled LM). **`voxtral-tts-train`** — RLX autodiff training for reference-audio cloning (codec encoder + full attention LoRA). See [Voxtral TTS](#voxtral-tts).
 - **`run`** — `Qwen3Runner`, `SamRunner`, … builders for one-call inference.
 
+## Text-to-speech (TTS)
+
+Nine inference crates cover lightweight edge models through multi‑billion‑parameter voice clones. Build GPU binaries with the same feature names as LMs (`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, `all-backends`, `apple-silicon`). Training crates are listed separately below.
+
+### Models
+
+| Model | Crate | Size | Rate | Weights | Voice modes | Streaming | CLI / `just` | Status |
+|---|---|---:|---:|---|---|---|---|---|
+| [Qwen3-TTS](crates/rlx-qwen3-tts/README.md) | `rlx-qwen3-tts` | 0.6B | 24 kHz | HF safetensors ([Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base), [CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice)) | ECAPA clone + preset speakers | progressive + batched PCM | `just qwen3-tts`, `jfk_voice_clone` | production — duplex voice chat, HF parity tests |
+| [Voxtral-4B-TTS](docker/voxtral-tts/README.md) | `rlx-voxtral-tts` | 4B | 24 kHz | HF safetensors ([Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603)) | preset voices + reference clone (train encoder) | — | `just voxtral-tts` | production — native RLX codec + compiled LM |
+| [KittenTTS mini](crates/rlx-kittentts/README.md) | `rlx-kittentts` | ~15M | 24 kHz | ONNX ([KittenML/kitten-tts-mini-0.8](https://huggingface.co/KittenML/kitten-tts-mini-0.8)) or native [`kitten_tts_mini_rlx`](crates/kitten_tts_mini_rlx/README.md) bundle | named voices (Jasper, …); IPA or `--features espeak` text | — | `just kittentts`, `just fetch-kittentts` | production — ONNX (ORT) or `--native` RLX graph |
+| [Orpheus](crates/rlx-orpheus/README.md) | `rlx-orpheus` | 3B | 24 kHz | GGUF LM + SNAC safetensors | 8 built-in + zero-shot clone (pretrained GGUF) | ~2k-sample PCM chunks | `just orpheus`, `just orpheus-demo` | production — Metal LM + eager or CoreML SNAC |
+| [NeuTTS](crates/rlx-neutts/) | `rlx-neutts` | Nano / Air | 24 kHz | llama-tagged GGUF + NeuCodec safetensors | reference-audio clone | — | library API (`NeuTTS::load_with_decoder_on`) | production backbone + eager NeuCodec; no standalone CLI yet |
+| [Kyutai TTS 1.6B](crates/rlx-kyutai-tts/README.md) | `rlx-kyutai-tts` | 1.6B | 24 kHz | HF safetensors ([tts-1.6b-en_fr](https://huggingface.co/kyutai/tts-1.6b-en_fr)) | `speaker_wavs` cross-attn conditioning | planned | `rlx-kyutai-tts --fetch` | scaffolding — Mimi codec + modules landed; `KyutaiTtsSession::generate` pending |
+| [Pocket TTS](crates/rlx-pocket-tts/README.md) | `rlx-pocket-tts` | ~100M | 24 kHz | safetensors ([ungated mirror](https://huggingface.co/Verylicious/pocket-tts-ungated)) | preset `audio_prompt` embeddings | flow LM (faster than realtime on CPU) | `cargo run -p rlx-pocket-tts --example generate --features hf-download` | production on CPU/Accelerate; optional RLX backends via `rlx` feature |
+| [TinyTTS](crates/rlx-tiny-tts/) | `rlx-tiny-tts` | VITS2 | 44.1 kHz | ONNX → RLX bundle (MeloTTS English frontend via `rlx-inflect-nano`) | MALE / FEMALE | — | `rlx-tiny-tts --data weights/tiny-tts-rlx --text "…"` | production — four compiled subgraphs on every RLX backend |
+| [Inflect-Nano](crates/rlx-inflect-nano/README.md) | `rlx-inflect-nano` | ~4.6M | 24 kHz | exported safetensors bundle | single speaker | — | `rlx-inflect-nano --text "…"` | production — standalone Rust frontend; vocoder on RLX graph or CoreML (ORT) |
+
+**Training (inference + finetune):**
+
+| Crate | Target | Backends | Entry |
+|---|---|---|---|
+| `rlx-qwen3-tts-train` | Qwen3-TTS talker LoRA (JFK custom voice) | Metal, MLX | `just qwen3-tts-train-jfk-metal`, `just qwen3-tts-train-jfk-mlx` |
+| `rlx-voxtral-tts-train` | Voxtral codec encoder + full-attention LoRA | all GPU backends | `just voxtral-tts-train-production`, [docker runbook](docker/voxtral-tts/README.md) |
+
+### Notable features
+
+| Model | Highlights |
+|---|---|
+| Qwen3-TTS | `VoiceClone` API, progressive streaming (`StreamMode::Progressive`), duplex voice chat (Whisper + Qwen3 LM), CustomVoice presets, optional `incremental-decode` / `speculative-decode` features |
+| Voxtral-4B-TTS | Tekken tokenizer, compiled Ministral LM, reference WAV clone after native encoder training |
+| KittenTTS | Smallest footprint; ONNX default or `--native` / `--features native-fast` for RLX graph without ORT |
+| Orpheus | Emotive tags (`<laugh>`, …), SNAC on Apple ANE (`--device coreml`), streaming decode, GGUF Q4_K_M |
+| NeuTTS | On-device clone; GGUF backbone via `rlx-llama32`; optional `burn-gpu` NeuCodec |
+| Kyutai TTS | Depth-multiplexed Helium + DepFormer, 32 codebooks, en/fr SPM; Mimi round-trip demos today |
+| Pocket TTS | Kyutai FlowLM + Mimi decoder path; Whisper-validated; CPU-first |
+| TinyTTS | VITS2 / MeloTTS at 44.1 kHz; monotonic alignment in Rust glue |
+| Inflect-Nano | FastSpeech-style acoustic + Snake HiFi-GAN vocoder; full G2P frontend in Rust |
+
+### Backends
+
+Legend: ✅ supported · ⚠️ partial (host fallback, ORT EP, or opt-in feature) · ❌ not wired
+
+| Model | cpu | metal | mlx | cuda | rocm | wgpu | vulkan | Notes |
+|---|---|---|---|---|---|---|---|---|
+| Qwen3-TTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Progressive speech decode uses CPU on Metal/MLX (GPU prefix-length mismatch) |
+| Voxtral-4B-TTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device` on all backends; compiled LM path |
+| KittenTTS (native) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | `kitten_tts_mini_rlx` graph; build `--features native` or `native-fast` |
+| KittenTTS (ONNX default) | ✅ | ⚠️ | ❌ | ⚠️ | ⚠️ | ⚠️ | ❌ | ONNX Runtime execution providers (`ort-cuda`, `ort-coreml`, …) |
+| Orpheus LM | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | ⚠️ | wgpu/Vulkan: CPU GGUF prefill+decode; MLX opt-in (`ORPHEUS_MLX_KV=1`) |
+| Orpheus SNAC | ✅ | — | — | — | — | — | — | Eager CPU default; CoreML ANE with `--features coreml` |
+| NeuTTS LM | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | ⚠️ | Same routing as `rlx-llama32` / GGUF packed rules |
+| NeuTTS codec | ✅ | — | — | — | — | ⚠️ | — | Eager ndarray; optional Burn wgpu (`burn-gpu`) |
+| Kyutai TTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Weights + Mimi decode; full LM generate loop not wired yet |
+| Pocket TTS | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | Default Accelerate/ndarray CPU; enable `rlx` + backend features for GPU graph |
+| TinyTTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device ane` with `--features coreml` |
+| Inflect-Nano | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | ❌ | Vocoder RLX graph; CoreML via static-shape ORT (`--features coreml`) |
+
+Quick checks: `just test-qwen3-tts-parity`, `just test-kittentts-e2e`, `just test-orpheus-whisper`, `just test-voxtral-tts-codec`, `cargo test -p rlx-inflect-nano --features all-backends`.
+
+Per-model runbooks: [Qwen3-TTS](#qwen3-tts), [Voxtral TTS](#voxtral-tts), and crate READMEs in [Per-crate READMEs](#per-crate-readmes).
+
 ## Install
 
 ```toml
 [dependencies]
-rlx-models = "0.2.6"
+rlx-models = "0.2.8"
 ```
 
 HF-hub download:
 
 ```toml
-rlx-models = { version = "0.2.6", features = ["hf-download"] }
+rlx-models = { version = "0.2.8", features = ["hf-download"] }
 ```
 
-Workspace and published model crates are **0.2.6**, pinned to upstream **`rlx*`** **0.2.6** on crates.io (`[workspace.dependencies]`). Local sibling `../rlx`: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored).
+Workspace and published model crates are **0.2.8**, pinned to upstream **`rlx*`** **0.2.8** on crates.io (`[workspace.dependencies]`). Local sibling `../rlx`: `cp .cargo/config.toml.example .cargo/config.toml` (gitignored).
 
 ## Quickstart — embeddings
 
@@ -552,6 +620,81 @@ Example: `just example run_minicpm5 --release` (or `cargo run -p rlx-models --ex
 
 Multiplexer: `cargo run -p rlx-models --bin rlx-run --features tokenizer -- minicpm5 --weights …`.
 
+## Whisper
+
+OpenAI Whisper ASR in `rlx-whisper` with native Rust segment timestamps, optional word alignment (DTW or Wav2Vec2 CTC), Silero VAD chunking, and speaker diarization — no Python runtime. Runbook: [crates/rlx-whisper/README.md](crates/rlx-whisper/README.md).
+
+### Subtitles and word timestamps
+
+```bash
+just fetch-whisper fetch-whisper-bench
+just whisper-subtitles   # JFK → SRT with segment + DTW word times
+just bench-whisper-subtitles -- --device metal --modes timestamps+dtw --runs 3
+just bench-whisper-subtitles-all-backends -- --modes timestamps+dtw
+```
+
+CLI flags on `rlx-whisper`:
+
+| Flag | Purpose |
+|------|---------|
+| `--timestamps` | Parse `<\|M.SS\|>` tokens → structured `WhisperTranscript` |
+| `--word-align dtw\|wav2vec2` | Word-level times (DTW default; Wav2Vec2 optional) |
+| `--silero-vad` | Chunk long audio with `rlx-vad` Silero |
+| `--diarize` | Speaker labels via `rlx-diarize` |
+| `--max-region-batch N` | Batched VAD-region encode width |
+| `--output PATH` | Write SRT, VTT, TSV, or JSON |
+
+Library API:
+
+```rust
+use rlx_whisper::{WhisperPipeline, WhisperPipelineOpts, WordAlignMode, WhisperRunner};
+
+let runner = WhisperRunner::builder()
+    .weights("model.safetensors")
+    .device(rlx_runtime::Device::Metal)
+    .timestamps(true)
+    .mel_frames_for_pcm(&pcm)
+    .build()?;
+
+let mut pipeline = WhisperPipeline::new(runner, WhisperPipelineOpts {
+    word_align: WordAlignMode::Dtw,
+    use_silero_vad: true,
+    max_region_batch: 4,
+    ..Default::default()
+});
+let transcript = pipeline.run(&pcm)?;
+```
+
+### Device routing (Metal)
+
+| Stage | Device |
+|-------|--------|
+| Mel encoder | Metal |
+| Cross / prefill / bucketed decode | CPU (parity gate) |
+| DTW align-hidden | Metal |
+
+On JFK + whisper-tiny (~11 s), `timestamps+dtw` is ~3.3 s total on Metal (RTF ~0.30) vs ~4.4 s on CPU; word alignment drops from ~580 ms to ~120 ms with the GPU align-hidden graph.
+
+### Features
+
+| Feature | Enables |
+|---------|---------|
+| `timestamps` (default) | Segment parse + SRT/VTT/JSON export |
+| `word-dtw` | Cross-attention + DTW word alignment |
+| `word-w2v` | `rlx-wav2vec2-asr` CTC forced alignment |
+| `silero-vad` | Silero VAD chunking |
+| `diarize` | `rlx-diarize` speaker labels |
+| `whisper-subtitles` (`rlx-models`) | Full stack for examples/tests |
+
+### Tests and benches
+
+| Command | What |
+|---------|------|
+| `just test-whisper-timestamps` | Segment parse, DTW units, wav2vec2/diarize crates |
+| `just test-whisper-e2e` | Greedy decode vs reference (needs weights) |
+| `just bench-whisper-subtitles` | Pipeline latency (ASR / align / Silero / diarize) |
+| `just bench-whisper-subtitles-all-backends` | Same bench on CPU, Metal, CUDA, MLX, … |
+
 ## LocateAnything
 
 [NVIDIA LocateAnything-3B](https://huggingface.co/nvidia/LocateAnything-3B) — MoonViT vision + `mlp1` projector + Qwen2.5-3B with MTP box decoding. Crate: `rlx-locateanything`; runbook: [crates/rlx-locateanything/README.md](crates/rlx-locateanything/README.md).
@@ -663,6 +806,20 @@ Periodic checkpoints during long runs: `CHECKPOINT_EVERY=500`. Resume: `--resume
 | `just test-voxtral-tts-train-backends` | Encoder/LoRA backward compile on all GPU backends |
 | `just test-voxtral-tts-codec` | Codec round-trip |
 | `just test-voxtral-tts-native-parity` | Native vs Docker reference export |
+
+## AEC (acoustic echo cancellation)
+
+[`rlx-aec`](crates/rlx-aec/README.md) — pure Rust **16 kHz** FDAF-NLMS (`rlx-fft` / `rustfft`) + optional per-bin RLX residual mask. Pre-ASR front-end for duplex voice chat.
+
+```sh
+cargo run -p rlx-aec --release -- \
+  --mic-wav echoed_mic.wav --ref-wav speaker_ref.wav --out-wav cleaned.wav
+just test-aec
+just bench-aec
+just bench-aec-parity   # Rust + Python NLMS baseline → /tmp/aec_compare.csv
+```
+
+Voice chat: `cargo run -p rlx-qwen3-tts --example bidirectional_voice_chat -- … --aec` feeds TTS playback into the far-end reference ring.
 
 ## VAD (Earshot + Silero)
 
@@ -782,6 +939,7 @@ Legend: ✅ supported · ⚠️ partial (host fallback or open runtime gap) · �
 |---|---|---|---|---|---|---|---|---|
 | `embed` (`bert`, `nomic`, `vision`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [`RlxEmbed::from_dir_on`](crates/rlx-embed/src/runtime.rs); `from_dir` defaults to CPU |
 | `dinov2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [`DinoV2Runner`](crates/rlx-dinov2/src/runner.rs) `--device` |
+| `bioclip2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [`BioClip2Runner`](crates/rlx-bioclip2/src/runner.rs) `--device`; 100% open_clip parity verified on cpu/metal/mlx/wgpu |
 | `sam`, `sam2`, `sam3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | SAM v1 also accepts `tpu`; CPU/Metal/MLX most exercised in CI |
 | `qwen3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | packed GGUF: CPU + Metal native; MLX/wgpu/CUDA prefill via CPU path (`rlx_core::packed_gguf_*`); MTP decode not wired |
 | `qwen35` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device` on all backends; some ops use host GDN/dequant on GPU; MoE offload may keep experts on host |
@@ -814,11 +972,16 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 |-------|--------|
 | `rlx-fft` | [crates/rlx-fft/README.md](crates/rlx-fft/README.md) |
 | `rlx-qwen3-tts` | [crates/rlx-qwen3-tts/README.md](crates/rlx-qwen3-tts/README.md) |
+| `rlx-kittentts` | [crates/rlx-kittentts/README.md](crates/rlx-kittentts/README.md) |
+| `rlx-orpheus` | [crates/rlx-orpheus/README.md](crates/rlx-orpheus/README.md) |
+| `rlx-kyutai-tts` | [crates/rlx-kyutai-tts/README.md](crates/rlx-kyutai-tts/README.md) |
+| `rlx-pocket-tts` | [crates/rlx-pocket-tts/README.md](crates/rlx-pocket-tts/README.md) |
+| `rlx-inflect-nano` | [crates/rlx-inflect-nano/README.md](crates/rlx-inflect-nano/README.md) |
+| `kitten_tts_mini_rlx` | [crates/kitten_tts_mini_rlx/README.md](crates/kitten_tts_mini_rlx/README.md) |
 | `rlx-gemma` | [crates/rlx-gemma/README.md](crates/rlx-gemma/README.md) |
 | `rlx-minicpm5` | [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md) |
 | `rlx-llama32` | [crates/rlx-llama32/README.md](crates/rlx-llama32/README.md) |
 | `rlx-locateanything` | [crates/rlx-locateanything/README.md](crates/rlx-locateanything/README.md) |
-| `rlx-kittentts` | [crates/rlx-kittentts/README.md](crates/rlx-kittentts/README.md) |
 | `rlx-vad` | [crates/rlx-vad/README.md](crates/rlx-vad/README.md) |
 | `rlx-mamba` | [crates/rlx-mamba/README.md](crates/rlx-mamba/README.md) |
 | `rlx-ssm` | [crates/rlx-ssm/README.md](crates/rlx-ssm/README.md) |
@@ -826,7 +989,6 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `rlx-clinicalbert` | [crates/rlx-clinicalbert/README.md](crates/rlx-clinicalbert/README.md) |
 | `rlx-onnx-import` | [crates/rlx-onnx-import/README.md](crates/rlx-onnx-import/README.md) |
 | `rlx-onnx-decompose` | [crates/rlx-onnx-decompose/README.md](crates/rlx-onnx-decompose/README.md) |
-| `kitten_tts_mini_rlx` | [crates/kitten_tts_mini_rlx/README.md](crates/kitten_tts_mini_rlx/README.md) |
 | Voxtral TTS training | [docker/voxtral-tts/README.md](docker/voxtral-tts/README.md) |
 
 Crates without a dedicated README are documented in [What's here](#whats-here) and the facade examples under `crates/rlx-models/examples/`.

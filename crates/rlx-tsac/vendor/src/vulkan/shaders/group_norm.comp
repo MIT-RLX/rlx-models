@@ -1,0 +1,56 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(binding = 0) readonly buffer InBuf  { float d[]; } inBuf;
+layout(binding = 1) readonly buffer WBuf   { float d[]; } wBuf;
+layout(binding = 2) readonly buffer BBuf   { float d[]; } bBuf;
+layout(binding = 3) buffer       OutBuf   { float d[]; } outBuf;
+
+layout(push_constant) uniform P {
+    int N;      // total elements
+    int G;      // number of groups
+    float eps;
+} p;
+
+shared float sh[512];
+
+void main() {
+    uint gtid = gl_GlobalInvocationID.x;
+    int gid = int(gtid) / (p.N / p.G);
+    int tid = int(gl_LocalInvocationID.x);
+    int E = p.N / p.G;  // elements per group
+
+    if (gid >= p.G) return;
+
+    /* Sum and sum-of-squares per group */
+    float s = 0.0, sq = 0.0;
+    for (int i = tid; i < E; i += int(gl_WorkGroupSize.x)) {
+        float v = inBuf.d[gid * E + i];
+        s += v; sq += v * v;
+    }
+    sh[tid] = s; sh[tid + 128] = sq;
+    barrier();
+
+    /* Reduction */
+    for (int r = 128; r > 0; r >>= 1) {
+        if (tid < r) { sh[tid] += sh[tid + r]; sh[tid+128] += sh[tid+128+r]; }
+        barrier();
+    }
+
+    if (tid == 0) {
+        float mn = sh[0] / E;
+        float vr = sh[128] / E - mn * mn;
+        sh[256] = 1.0 / sqrt(max(vr + p.eps, 1e-10));
+        sh[257] = mn;
+    }
+    barrier();
+
+    float is = sh[256], mn = sh[257];
+    float w = p.G > 0 ? wBuf.d[gid] : 1.0;
+    float b = p.G > 0 ? bBuf.d[gid] : 0.0;
+
+    for (int i = tid; i < E; i += int(gl_WorkGroupSize.x)) {
+        int idx = gid * E + i;
+        outBuf.d[idx] = (inBuf.d[idx] - mn) * is * w + b;
+    }
+}

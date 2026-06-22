@@ -15,6 +15,7 @@
 
 //! ASR auxiliary loss — mel proxy + optional Whisper CER.
 
+use rlx_core::asr_metrics::word_error_rate;
 use rlx_whisper::WhisperRunner;
 use rlx_whisper::audio::SAMPLE_RATE;
 use std::path::PathBuf;
@@ -86,35 +87,11 @@ pub fn whisper_mel_mse(recon: &[f32], target: &[f32]) -> f32 {
     sum / n as f32
 }
 
+/// Word-level error rate of `hypothesis` vs `reference` in `[0, 1]`. Thin
+/// wrapper over the shared [`word_error_rate`] metric (kept under this name for
+/// existing callers; the comparison has always been word-level).
 pub fn normalized_cer(reference: &str, hypothesis: &str) -> f32 {
-    let ref_t = normalize_words(reference);
-    let hyp_t = normalize_words(hypothesis);
-    if ref_t.is_empty() {
-        return 0.0;
-    }
-    let dist = levenshtein(&ref_t, &hyp_t);
-    (dist as f32 / ref_t.len() as f32).clamp(0.0, 1.0)
-}
-
-fn normalize_words(s: &str) -> Vec<String> {
-    s.to_lowercase()
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
-        .filter(|w| !w.is_empty())
-        .collect()
-}
-
-fn levenshtein(a: &[String], b: &[String]) -> usize {
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for (i, wa) in a.iter().enumerate() {
-        let mut cur = vec![i + 1; b.len() + 1];
-        for (j, wb) in b.iter().enumerate() {
-            let cost = if wa == wb { 0 } else { 1 };
-            cur[j + 1] = (cur[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost);
-        }
-        prev = cur;
-    }
-    prev[b.len()]
+    word_error_rate(reference, hypothesis) as f32
 }
 
 fn resample16k(pcm: &[f32]) -> Vec<f32> {

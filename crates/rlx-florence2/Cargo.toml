@@ -1,0 +1,52 @@
+[package]
+name = "rlx-florence2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Microsoft Florence-2 (DaViT + BART) vision-language model for RLX"
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-opt = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+safetensors = { workspace = true }
+half = { workspace = true }
+rayon = "1.10"
+tokenizers = { workspace = true }
+image = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[[bin]]
+name = "rlx-florence2"
+path = "src/bin/rlx_florence2.rs"
+
+[features]
+default = ["image-io"]
+image-io = ["dep:image"]
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[lints]
+workspace = true

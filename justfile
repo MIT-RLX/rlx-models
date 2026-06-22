@@ -273,6 +273,74 @@ fetch-gemma4-quants:
         hf download google/gemma-4-12B-it config.json tokenizer.json tokenizer_config.json \
             --local-dir .cache/gemma4-12B-it
 
+# Gemma 4 12B Coder GGUF (Composer 2.5 × Fable 5; ~7 GB Q4_K_M packed).
+fetch-gemma4-12b-coder-gguf:
+    mkdir -p .cache/gemma4-12b-coder
+    hf download yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF gemma4-coding-Q4_K_M.gguf \
+        --local-dir .cache/gemma4-12b-coder
+    test -f .cache/gemma4-12b-coder/tokenizer.json || \
+        hf download yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1 \
+            config.json tokenizer.json tokenizer_config.json chat_template.jinja \
+            --local-dir .cache/gemma4-12b-coder
+
+# All coder quants (env RLX_GEMMA4_CODER_QUANTS=Q2_K,Q3_K_M,...).
+fetch-gemma4-12b-coder-quants:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .cache/gemma4-12b-coder
+    quants="${RLX_GEMMA4_CODER_QUANTS:-Q2_K,Q3_K_M,Q4_K_M,Q6_K,Q8_0}"
+    IFS=',' read -ra qs <<< "$quants"
+    for q in "${qs[@]}"; do
+        q="$(echo "$q" | tr -d ' ')"
+        hf download yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF "gemma4-coding-${q}.gguf" \
+            --local-dir .cache/gemma4-12b-coder
+    done
+    test -f .cache/gemma4-12b-coder/tokenizer.json || \
+        hf download yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1 \
+            config.json tokenizer.json tokenizer_config.json chat_template.jinja \
+            --local-dir .cache/gemma4-12b-coder
+
+# Packed Q4_K_M coding demo (thinking chat template; temp 1.0 / top-p 0.95 per model card).
+gemma4-coder-demo *ARGS:
+    just gemma -- --weights .cache/gemma4-12b-coder/gemma4-coding-Q4_K_M.gguf \
+        --device auto --packed --max-seq 2048 --max-tokens 128 \
+        --temperature 1.0 --top-p 0.95 \
+        --prompt "Write a Python function that checks whether a string is a palindrome." {{ARGS}}
+
+test-gemma4-coder *ARGS:
+    RLX_GEMMA4_CODER_FIXTURE={{env_var_or_default('RLX_GEMMA4_CODER_FIXTURE', justfile_directory() + '/.cache/gemma4-12b-coder')}} \
+    cargo test -p rlx-gemma --release --features apple-silicon \
+        --test gemma4_coder_gguf -- --nocapture --test-threads=1 {{ARGS}}
+
+# Recursive llama.cpp checkout (submodules) for local parity / vendor builds.
+fetch-llama-cpp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="{{justfile_directory()}}/.cache/llama.cpp"
+    if [[ -d "$dir/.git" ]]; then
+        git -C "$dir" pull --ff-only
+        git -C "$dir" submodule update --init --recursive
+    else
+        git clone --recursive --depth 1 https://github.com/ggml-org/llama.cpp.git "$dir"
+    fi
+    echo "llama.cpp ready at $dir"
+
+# Gemma 4 12B Coder logits parity vs llama.cpp — run steps separately (lower peak RAM).
+gemma4-coder-parity-llama *ARGS:
+    just fetch-llama-cpp
+    cargo run -p rlx-gemma --release --features "tokenizer parity-llama" \
+        --example parity_check -- \
+        {{justfile_directory()}}/.cache/gemma4-12b-coder/gemma4-coding-Q4_K_M.gguf llama {{ARGS}}
+
+gemma4-coder-parity-rlx *ARGS:
+    cargo run -p rlx-gemma --release --features "tokenizer apple-silicon" \
+        --example parity_check -- \
+        {{justfile_directory()}}/.cache/gemma4-12b-coder/gemma4-coding-Q4_K_M.gguf rlx {{ARGS}}
+
+gemma4-coder-parity *ARGS:
+    just gemma4-coder-parity-llama {{ARGS}}
+    just gemma4-coder-parity-rlx {{ARGS}}
+
 # Speed + precision sweep across local Gemma 4 GGUF quants (Metal).
 test-gemma4-quant-sweep *ARGS:
     cargo test -p rlx-gemma --release --features apple-silicon \
@@ -311,14 +379,44 @@ fetch-whisper:
 fetch-whisper-base:
     huggingface-cli download openai/whisper-base.en --local-dir .cache/whisper-base.en
 
+# JFK clip + paired reference transcript for whisper bench / backend parity.
+fetch-whisper-bench:
+    bash scripts/fetch_whisper_bench.sh
+
+test-whisper-jfk *ARGS:
+    just fetch-whisper fetch-whisper-bench
+    cargo test -p rlx-models --test whisper_jfk_e2e --release {{ARGS}}
+
 test-whisper-parity *ARGS:
     cargo test -p rlx-models --test whisper_parity --features parity-candle whisper_synthetic --release {{ARGS}}
 
 test-whisper-backend-parity *ARGS:
+    just fetch-whisper fetch-whisper-bench
     cargo test -p rlx-models --test whisper_backend_parity --features "metal,mlx,gpu" --release {{ARGS}}
+
+test-whisper-all-backends *ARGS:
+    just fetch-whisper fetch-whisper-bench
+    cargo test -p rlx-models --test whisper_all_backends_e2e --features "metal,mlx,gpu" --release {{ARGS}}
 
 test-whisper-wgpu-gpu-kv *ARGS:
     cargo test -p rlx-models --test whisper_wgpu_gpu_kv --features gpu --release {{ARGS}}
+
+test-whisper-timestamps *ARGS:
+    cargo test -p rlx-models --test whisper_segment_timestamps --release {{ARGS}}
+    cargo test -p rlx-models --test whisper_word_dtw --release {{ARGS}}
+    cargo test -p rlx-whisper --features timestamps --release {{ARGS}}
+    cargo test -p rlx-wav2vec2-asr --release {{ARGS}}
+    cargo test -p rlx-diarize --release {{ARGS}}
+
+whisper-subtitles *ARGS:
+    just fetch-whisper fetch-whisper-bench
+    cargo run -p rlx-whisper --features "timestamps,word-dtw,silero-vad" --release -- \
+        --weights .cache/whisper-tiny/model.safetensors \
+        --config .cache/whisper-tiny/config.json \
+        --tokenizer .cache/whisper-tiny/tokenizer.json \
+        --wav .cache/whisper-bench/jfk_16k.wav \
+        --lang en --timestamps --word-align dtw --silero-vad \
+        --output-format srt {{ARGS}}
 
 bench-whisper *ARGS:
     cargo run -p rlx-models --example whisper_bench --features "metal,mlx,apple-silicon" --release -- {{ARGS}}
@@ -328,6 +426,14 @@ bench-whisper-precision *ARGS:
 
 bench-whisper-all-backends *ARGS:
     just bench-whisper --all-backends {{ARGS}}
+
+bench-whisper-subtitles *ARGS:
+    just fetch-whisper fetch-whisper-bench
+    cargo run -p rlx-models --example whisper_subtitles_bench --features "whisper-subtitles,metal,apple-silicon" --release -- {{ARGS}}
+
+bench-whisper-subtitles-all-backends *ARGS:
+    just fetch-whisper fetch-whisper-bench
+    cargo run -p rlx-models --example whisper_subtitles_bench --features "whisper-subtitles,all-backends" --release -- --all-backends {{ARGS}}
 
 # VAD (Earshot + Silero on assets/jfk)
 test-vad *ARGS:
@@ -346,6 +452,21 @@ bench-vad-jfk *ARGS:
 
 bench-vad-jfk-all-devices *ARGS:
     cargo run -p rlx-vad --example jfk_bench --release --features all-backends -- --devices all {{ARGS}}
+
+# AEC (16 kHz FDAF-NLMS + residual)
+test-aec *ARGS:
+    cargo test -p rlx-aec --release {{ARGS}}
+
+bench-aec *ARGS:
+    cargo run -p rlx-aec --example echo_bench --release -- {{ARGS}}
+
+bench-aec-parity *ARGS:
+    cargo run -p rlx-aec --example echo_bench --release -- --json-out /tmp/aec_rust.json {{ARGS}}
+    python3 scripts/aec_bench_speex.py --out /tmp/aec_python.json
+    python3 scripts/aec_bench_compare.py --rust-json /tmp/aec_rust.json --python-json /tmp/aec_python.json --csv-out /tmp/aec_compare.csv
+
+aec *ARGS:
+    just run-bin rlx-aec rlx-aec {{ARGS}}
 
 voxtral *ARGS:
     just run-bin rlx-voxtral rlx-voxtral {{ARGS}}
@@ -429,6 +550,60 @@ test-locateanything-parity-real: fetch-locateanything
     RLX_LOCATEANYTHING_DIR=${RLX_LOCATEANYTHING_DIR:-.cache/locateanything/LocateAnything-3B} \
     cargo test -p rlx-models --test locateanything_hf_parity --release -- _real --test-threads 1
 
+# ---- Florence-2 (DaViT + BART vision-language) ----
+
+florence2_dir := env_var_or_default("RLX_FLORENCE2_DIR", ".cache/florence2/Florence-2-large")
+
+# Download the Florence-2-large checkpoint (weights + tokenizer + config).
+fetch-florence2:
+    hf download microsoft/Florence-2-large --local-dir {{florence2_dir}}
+
+# Create the HF reference venv (.venv-florence2) for parity tests. Needs python3.11.
+florence2-ref-venv:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY="${FLORENCE2_PY:-python3.11}"
+    "$PY" -m venv .venv-florence2
+    .venv-florence2/bin/pip install --quiet --upgrade pip
+    .venv-florence2/bin/pip install --quiet "torch==2.4.1" "transformers==4.44.2" \
+        timm einops pillow "numpy<2" safetensors "tokenizers<0.20"
+
+# Run Florence-2 on an image. e.g. just florence2 -- --weights DIR --image img.jpg --task '<CAPTION>'
+florence2 *ARGS:
+    just run-bin rlx-florence2 rlx-florence2 {{ARGS}}
+
+# Caption demo on the bundled sample image (CPU).
+florence2-demo:
+    cargo run -p rlx-florence2 --release -- \
+        --weights {{florence2_dir}} \
+        --image crates/rlx-locateanything/fixtures/sample.jpg --task '<CAPTION>'
+
+florence2-all-backends *ARGS:
+    cargo run -p rlx-florence2 --release --features all-backends -- {{ARGS}}
+
+# Dump the HF reference fixtures (caption + OD) then run staged + e2e parity.
+test-florence2-parity:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DIR="$(cd {{florence2_dir}} && pwd)"
+    PY="${RLX_FLORENCE2_PYTHON:-.venv-florence2/bin/python}"
+    "$PY" scripts/florence2_hf_parity.py --model-dir "$DIR" --task '<CAPTION>' \
+        --out .cache/florence2/parity_caption.json
+    "$PY" scripts/florence2_hf_parity.py --model-dir "$DIR" --task '<OD>' \
+        --image crates/rlx-locateanything/fixtures/sample.jpg --max-new-tokens 96 \
+        --out .cache/florence2/parity_od.json
+    RLX_FLORENCE2_DIR="$DIR" \
+    RLX_FLORENCE2_FIXTURE="$(pwd)/.cache/florence2/parity_caption.json" \
+    RLX_FLORENCE2_OD_FIXTURE="$(pwd)/.cache/florence2/parity_od.json" \
+        cargo test -p rlx-florence2 --release --test florence2_hf_parity -- --nocapture --test-threads 1
+
+# Cross-backend parity (CPU vs Metal/MLX) on the real checkpoint.
+test-florence2-backends:
+    RLX_FLORENCE2_DIR="$(cd {{florence2_dir}} && pwd)" \
+    RLX_FLORENCE2_FIXTURE="$(pwd)/.cache/florence2/parity_caption.json" \
+        cargo test -p rlx-florence2 --release --features apple-silicon \
+        --test florence2_backend_parity -- --nocapture --test-threads 1
+
 voxtral-tts *ARGS:
     just run-bin rlx-voxtral-tts rlx-voxtral-tts {{ARGS}}
 
@@ -499,6 +674,42 @@ voice-chat-demo:
       --ref-wav "$ROOT/assets/jfk/jfk_voice_clone.wav" \
       --input-wav "$ROOT/crates/rlx-qwen3-tts/examples/audio/voice_chat_question.wav" \
       --out-dir /tmp/voice_chat_roundtrip
+
+# All-Qwen duplex chat: question WAV → Qwen3-ASR → Qwen3 LM → Qwen3-TTS reply.
+# Fastest RLX backends: Qwen3-ASR + TTS on Metal, Qwen3 LM on MLX (apple-silicon
+# builds in both). The LM auto-uses the Q4_K_M GGUF sibling (weights/Qwen3-0.6B-gguf)
+# when present. Prereqs:
+#   just fetch-qwen3 fetch-qwen3-gguf fetch-qwen3-asr fetch-qwen3-tts-base
+# Warm per-turn (M4 Pro): ASR ~0.5s · LM ~4s · TTS-TTFA ~1s → ~5.5s to first audio.
+qwen-voice-chat-demo:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT="{{justfile_directory()}}"
+    export RLX_QWEN3_ASR_DIR="${RLX_QWEN3_ASR_DIR:-$ROOT/.cache/qwen3-asr/Qwen3-ASR-0.6B}"
+    export RLX_QWEN3_WEIGHTS="${RLX_QWEN3_WEIGHTS:-$ROOT/weights/Qwen3-0.6B}"
+    export RLX_QWEN3_TTS_DIR="${RLX_QWEN3_TTS_DIR:-$ROOT/.cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base}"
+    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-qwen3-tts --features apple-silicon \
+      --example qwen_voice_chat -- --fast \
+      --device metal --qwen3-device mlx \
+      --ref-wav "$ROOT/assets/jfk/jfk_voice_clone.wav" \
+      --input-wav "$ROOT/crates/rlx-qwen3-tts/examples/audio/voice_chat_question.wav" \
+      --out-dir /tmp/qwen_voice_chat
+
+# Live talk-to-the-model: default microphone in, cloned-voice reply out the speaker.
+# Adds the `mic` feature (pulls in cpal). Speak, pause to send, Ctrl-C to quit.
+# Same prereqs as qwen-voice-chat-demo. Grant terminal mic permission on first run.
+qwen-voice-chat-mic:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT="{{justfile_directory()}}"
+    export RLX_QWEN3_ASR_DIR="${RLX_QWEN3_ASR_DIR:-$ROOT/.cache/qwen3-asr/Qwen3-ASR-0.6B}"
+    export RLX_QWEN3_WEIGHTS="${RLX_QWEN3_WEIGHTS:-$ROOT/weights/Qwen3-0.6B}"
+    export RLX_QWEN3_TTS_DIR="${RLX_QWEN3_TTS_DIR:-$ROOT/.cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base}"
+    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-qwen3-tts --features apple-silicon,mic \
+      --example qwen_voice_chat -- --fast --mic \
+      --device metal --qwen3-device mlx \
+      --ref-wav "$ROOT/assets/jfk/jfk_voice_clone.wav" \
+      --out-dir /tmp/qwen_voice_chat
 
 qwen3-tts-vivian-demo:
     #!/usr/bin/env bash
@@ -582,6 +793,262 @@ test-qwen3-tts-streaming *ARGS:
 fetch-kittentts:
     cargo run -p rlx-kittentts --features hf-download --release -- --download
 
+# Kyutai Mimi codec — https://huggingface.co/kyutai/mimi
+fetch-mimi:
+    cargo run -p rlx-mimi --features hf-download --release -- --fetch
+
+# Descript Audio Codec — https://github.com/descriptinc/descript-audio-codec
+fetch-dac MODEL="24khz":
+    cargo run -p rlx-dac --features hf-download --release -- --fetch --model-type {{MODEL}}
+
+dac *ARGS:
+    cargo run -p rlx-dac --features hf-download --release -- {{ARGS}}
+
+test-dac *ARGS:
+    export RLX_DAC_DIR="${RLX_DAC_DIR:-.cache/dac/24khz}"
+    cargo test -p rlx-dac --release -- {{ARGS}}
+
+mimi *ARGS:
+    cargo run -p rlx-mimi --features hf-download --release -- {{ARGS}}
+
+fetch-tsac:
+    cargo run -p rlx-tsac --features fetch --release -- --fetch
+
+tsac *ARGS:
+    cargo run -p rlx-tsac --features fetch --release -- {{ARGS}}
+
+test-tsac *ARGS:
+    export RLX_TSAC_DIR="${RLX_TSAC_DIR:-.cache/tsac}"
+    cargo test -p rlx-tsac --release -- {{ARGS}}
+
+bench-tsac-parity *ARGS:
+    just fetch-tsac
+    export RLX_TSAC_DIR="${RLX_TSAC_DIR:-.cache/tsac}"
+    export RLX_TSAC_PARITY=1
+    cargo test -p rlx-tsac --test bellard_parity --release --features "fetch,native-codec" -- --nocapture {{ARGS}}
+
+bench-tsac-parity-example *ARGS:
+    just fetch-tsac
+    export RLX_TSAC_DIR="${RLX_TSAC_DIR:-.cache/tsac}"
+    cargo run -p rlx-tsac --example bellard_parity_bench --release --features "fetch,native-codec" -- {{ARGS}}
+
+test-mimi *ARGS:
+    export RLX_MIMI_DIR="${RLX_MIMI_DIR:-.cache/mimi}"
+    cargo test -p rlx-mimi --release -- {{ARGS}}
+
+# HF transformers encode/decode parity (baked fixture on 24 kHz ask_not.wav)
+test-mimi-hf *ARGS:
+    python3 scripts/mimi_hf_parity.py \
+      --wav crates/rlx-qwen3-tts/examples/audio/ask_not.wav \
+      --out crates/rlx-mimi/tests/fixtures/hf_ask_not.json
+    export RLX_MIMI_DIR="${RLX_MIMI_DIR:-.cache/mimi}"
+    cargo test -p rlx-mimi --test hf_parity --release -- --nocapture {{ARGS}}
+
+test-mimi-whisper *ARGS:
+    just fetch-mimi
+    bash scripts/fetch_whisper_bench.sh
+    export RLX_MIMI_DIR="${RLX_MIMI_DIR:-.cache/mimi}"
+    cargo test -p rlx-mimi --test whisper_roundtrip --release -- --nocapture {{ARGS}}
+
+# Kyutai Moshi speech-to-speech — https://huggingface.co/kyutai/moshiko-candle-bf16
+fetch-moshi:
+    cargo run -p rlx-moshi --features hf-download --release -- --fetch
+
+fetch-moshi-q8:
+    cargo run -p rlx-moshi --features hf-download --release -- --fetch --checkpoint q8
+
+fetch-moshi-q4:
+    cargo run -p rlx-moshi --features hf-download --release -- --fetch --checkpoint q4
+
+fetch-moshi-mlx-bf16:
+    cargo run -p rlx-moshi --features hf-download --release -- --fetch --checkpoint mlx-bf16
+
+fetch-moshika:
+    cargo run -p rlx-moshi --features hf-download --release -- --fetch --variant moshika-one-way
+
+fetch-moshika-q4:
+    cargo run -p rlx-moshi --features hf-download --release -- --fetch --variant moshika-one-way --checkpoint q4
+
+fetch-moshika-mlx-bf16:
+    cargo run -p rlx-moshi --features hf-download --release -- --fetch --variant moshika-one-way --checkpoint mlx-bf16
+
+moshi *ARGS:
+    cargo run -p rlx-moshi --features "hf-download,gpu-lm,compiled-lm,mlx-lm,metal" --release -- {{ARGS}}
+
+# Audio-to-audio voice chat with Moshi (one full-duplex model — no ASR/LLM/TTS).
+# Batch: drive Moshi from a WAV, write its spoken reply. Needs full-duplex weights
+# + Mimi: `just fetch-mimi && just fetch-moshi` (or fetch-moshi-q8 + RLX_MOSHI_CHECKPOINT=q8).
+moshi-voice-chat *ARGS:
+    cargo run --release -p rlx-moshi --features "apple-silicon,hf-download" \
+      --example moshi_voice_chat -- --device metal {{ARGS}}
+
+# Live mic ↔ Moshi ↔ speaker, full-duplex. USE HEADPHONES (Moshi hears the mic
+# continuously). Needs a GPU for real-time (7B @ 12.5 Hz).
+moshi-voice-chat-mic *ARGS:
+    cargo run --release -p rlx-moshi --features "apple-silicon,hf-download,mic" \
+      --example moshi_voice_chat -- --device metal --mic {{ARGS}}
+
+test-moshi *ARGS:
+    export RLX_MOSHI_DIR="${RLX_MOSHI_DIR:-.cache/moshiko}"
+    export RLX_MIMI_DIR="${RLX_MIMI_DIR:-.cache/mimi}"
+    cargo test -p rlx-moshi --release -- {{ARGS}}
+
+test-moshi-weights *ARGS:
+    export RLX_MOSHI_DIR="${RLX_MOSHI_DIR:-.cache/moshiko}"
+    cargo test -p rlx-moshi --test weight_keys --release -- --nocapture {{ARGS}}
+
+test-moshi-e2e *ARGS:
+    just fetch-moshi
+    just fetch-mimi
+    export RLX_MOSHI_DIR="${RLX_MOSHI_DIR:-.cache/moshiko}"
+    export RLX_MIMI_DIR="${RLX_MIMI_DIR:-.cache/mimi}"
+    cargo test -p rlx-moshi --release -- --nocapture {{ARGS}}
+
+test-moshi-stream-whisper *ARGS:
+    just fetch-moshi
+    just fetch-mimi
+    bash scripts/fetch_whisper_bench.sh 2>/dev/null || just fetch-whisper-base
+    export RLX_MOSHI_DIR="${RLX_MOSHI_DIR:-.cache/moshiko}"
+    export RLX_MIMI_DIR="${RLX_MIMI_DIR:-.cache/mimi}"
+    export RLX_MOSHI_STREAM_E2E=1
+    cargo test -p rlx-moshi --test stream_whisper_roundtrip --features all-backends --release -- --nocapture {{ARGS}}
+
+moshi-ws *ARGS:
+    cargo run -p rlx-moshi --example ws_server --features "ws-server,hf-download,all-backends" --release -- {{ARGS}}
+
+# Orpheus TTS — unsloth/orpheus-3b-0.1-ft-GGUF (Q4_K_M default)
+fetch-orpheus QUANT="Q4_K_M":
+    cargo run -p rlx-orpheus --features "llama,hf-download" --release -- \
+      --download-orpheus --quant {{QUANT}}
+
+fetch-orpheus-snac:
+    cargo run -p rlx-orpheus --features "llama,hf-download" --release -- --download-snac
+
+export-orpheus-snac OUT="/tmp/rlx-weights/snac":
+    python3 scripts/export_snac_decoder.py --out {{OUT}}
+
+export-orpheus-audio-assets:
+    export ORPHEUS_SNAC_PATH="${ORPHEUS_SNAC_PATH:-/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors}"
+    test -f "$ORPHEUS_SNAC_PATH" || { echo "missing SNAC — run \`just export-orpheus-snac\`" >&2; exit 1; }
+    cargo run -p rlx-orpheus --example export_audio_assets --release --features "llama,coreml,metal"
+
+orpheus-coreml-demo: fetch-orpheus fetch-orpheus-snac export-orpheus-snac
+    export ORPHEUS_SNAC_PATH="/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors"
+    cargo run -p rlx-orpheus --release --features "llama,coreml" -- \
+      --weights /tmp/rlx-weights/orpheus/orpheus-3b-0.1-ft-Q4_K_M.gguf \
+      --device coreml \
+      --text "Hello from RLX on CoreML." \
+      --voice tara \
+      --max-tokens 120 \
+      --out /tmp/orpheus-coreml-demo.wav
+
+orpheus *ARGS:
+    cargo run -p rlx-orpheus --release -- {{ARGS}}
+
+orpheus-demo: fetch-orpheus fetch-orpheus-snac
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export ORPHEUS_SNAC_PATH="/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors"
+    just orpheus -- \
+      --weights /tmp/rlx-weights/orpheus/orpheus-3b-0.1-ft-Q4_K_M.gguf \
+      --text "Hello from RLX Orpheus." \
+      --voice tara \
+      --device auto \
+      --out /tmp/orpheus-demo.wav
+
+orpheus-wgpu-demo: fetch-orpheus fetch-orpheus-snac
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export ORPHEUS_SNAC_PATH="/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors"
+    cargo run -p rlx-orpheus --release --features "llama,gpu" -- \
+      --weights /tmp/rlx-weights/orpheus/orpheus-3b-0.1-ft-Q4_K_M.gguf \
+      --text "Hello from RLX on wgpu." \
+      --voice tara \
+      --device gpu \
+      --max-tokens 120 \
+      --out /tmp/orpheus-wgpu-demo.wav
+
+# Encode reference WAV -> JSON for Orpheus zero-shot clone (needs Python snac).
+orpheus-encode-ref WAV TRANSCRIPT OUT="/tmp/jfk_orpheus_ref.json":
+    python3 scripts/orpheus_encode_reference.py --wav "{{WAV}}" --transcript "{{TRANSCRIPT}}" --out "{{OUT}}"
+
+# Voice clone walkthrough (pretrained GGUF — set ORPHEUS_PRETRAINED_GGUF).
+orpheus-voice-clone REF_JSON="/tmp/jfk_orpheus_ref.json" *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export ORPHEUS_SNAC_PATH="${ORPHEUS_SNAC_PATH:-/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors}"
+    test -f "$ORPHEUS_SNAC_PATH" || { echo "missing SNAC — run \`just fetch-orpheus-snac\`" >&2; exit 1; }
+    cargo run -p rlx-orpheus --example voice_clone --release --features apple-silicon -- \
+      --ref-json "{{REF_JSON}}" {{ARGS}}
+
+test-orpheus *ARGS:
+    cargo test -p rlx-orpheus --release -- {{ARGS}}
+
+test-orpheus-whisper *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just fetch-whisper 2>/dev/null || true
+    export ORPHEUS_SNAC_PATH="${ORPHEUS_SNAC_PATH:-/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors}"
+    test -f "$ORPHEUS_SNAC_PATH" || { echo "missing SNAC — run \`just fetch-orpheus-snac\`" >&2; exit 1; }
+    cargo test -p rlx-orpheus --test whisper_roundtrip --features llama --release golden_codec_intelligible_via_whisper -- --nocapture {{ARGS}}
+
+test-orpheus-whisper-e2e *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just fetch-whisper 2>/dev/null || true
+    export ORPHEUS_SNAC_PATH="${ORPHEUS_SNAC_PATH:-/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors}"
+    export ORPHEUS_GGUF_PATH="${ORPHEUS_GGUF_PATH:-/tmp/rlx-weights/orpheus/orpheus-3b-0.1-ft-Q4_K_M.gguf}"
+    export ORPHEUS_WHISPER_E2E=1
+    test -f "$ORPHEUS_GGUF_PATH" || { echo "missing Orpheus GGUF — run \`just fetch-orpheus\`" >&2; exit 1; }
+    test -f "$ORPHEUS_SNAC_PATH" || { echo "missing SNAC — run \`just fetch-orpheus-snac\`" >&2; exit 1; }
+    cargo test -p rlx-orpheus --test whisper_roundtrip --features "llama,metal" --release roundtrip_text_via_whisper_e2e -- --ignored --nocapture {{ARGS}}
+
+test-orpheus-backends-whisper *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just fetch-whisper 2>/dev/null || true
+    export ORPHEUS_SNAC_PATH="${ORPHEUS_SNAC_PATH:-/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors}"
+    export ORPHEUS_GGUF_PATH="${ORPHEUS_GGUF_PATH:-/tmp/rlx-weights/orpheus/orpheus-3b-0.1-ft-Q4_K_M.gguf}"
+    test -f "$ORPHEUS_SNAC_PATH" || { echo "missing SNAC — run \`just fetch-orpheus-snac\`" >&2; exit 1; }
+    test -f "$ORPHEUS_GGUF_PATH" || { echo "missing Orpheus GGUF — run \`just fetch-orpheus\`" >&2; exit 1; }
+    cargo test -p rlx-orpheus --test backends_whisper --features all-backends --release -- --nocapture {{ARGS}}
+
+bench-orpheus *ARGS:
+    cargo run -p rlx-orpheus --example tts_bench --release --features apple-silicon -- {{ARGS}}
+
+bench-orpheus-all-devices *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just fetch-whisper 2>/dev/null || true
+    just bench-orpheus -- --devices all --whisper {{ARGS}}
+
+bench-orpheus-voice-clone *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just fetch-whisper 2>/dev/null || true
+    export ORPHEUS_SNAC_PATH="${ORPHEUS_SNAC_PATH:-/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors}"
+    export ORPHEUS_CLONE_REF_JSON="${ORPHEUS_CLONE_REF_JSON:-/tmp/jfk_orpheus_ref.json}"
+    test -f "$ORPHEUS_SNAC_PATH" || { echo "missing SNAC" >&2; exit 1; }
+    test -f "$ORPHEUS_CLONE_REF_JSON" || { echo "missing ref JSON — run \`just orpheus-encode-ref …\`" >&2; exit 1; }
+    just bench-orpheus -- --devices all --voice-clone --whisper --clone-ref "$ORPHEUS_CLONE_REF_JSON" {{ARGS}}
+
+# Generate demo WAVs (short/long voices + optional clone from jfk_ref.json in ORPHEUS_DEMO_DIR).
+orpheus-demos *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export ORPHEUS_GGUF_PATH="${ORPHEUS_GGUF_PATH:-/tmp/rlx-weights/orpheus/orpheus-3b-0.1-ft-Q4_K_M.gguf}"
+    export ORPHEUS_SNAC_PATH="${ORPHEUS_SNAC_PATH:-/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors}"
+    export ORPHEUS_DEMO_DIR="${ORPHEUS_DEMO_DIR:-/tmp/orpheus-demos}"
+    test -f "$ORPHEUS_GGUF_PATH" || { echo "missing Orpheus GGUF — run \`just fetch-orpheus\`" >&2; exit 1; }
+    test -f "$ORPHEUS_SNAC_PATH" || { echo "missing SNAC — export with scripts/export_snac_decoder.py" >&2; exit 1; }
+    cargo run -p rlx-orpheus --example batch_demos --release --features apple-silicon -- {{ARGS}}
+
+test-orpheus-clone-whisper *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export ORPHEUS_CLONE_BENCH=1
+    just test-orpheus-backends-whisper voice_clone_whisper -- --ignored --nocapture {{ARGS}}
+
 # Re-export Kitten ONNX → RLX bundle (graph.json + weights.safetensors).
 # Set KITTEN_ONNX_PATH to override the default HF cache snapshot.
 export-kitten-rlx-bundle:
@@ -591,6 +1058,33 @@ export-kitten-rlx-bundle:
     OUT="crates/kitten_tts_mini_rlx/weights/rlx_bundle"
     test -f "$ONNX" || { echo "missing ONNX: $ONNX (set KITTEN_ONNX_PATH)" >&2; exit 1; }
     python3 scripts/export_kitten_rlx_bundle.py "$ONNX" "$OUT"
+
+# Decompose ONNX → native Rust graph + model.safetensors (no graph.json at runtime).
+export-kitten-native-weights:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just export-kitten-rlx-bundle
+    cargo build -p rlx-onnx-decompose --release
+    rlx-onnx-decompose --bundle crates/kitten_tts_mini_rlx/weights/rlx_bundle \
+      -o crates/kitten_tts_mini_rlx --crate-name kitten_tts_mini_rlx \
+      --seq-len 128 --max-samples 48000
+
+# Optional GGUF weight container (requires: pip install gguf safetensors numpy in a venv).
+export-kitten-gguf:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test -f crates/kitten_tts_mini_rlx/weights/model.safetensors || just export-kitten-native-weights
+    python3 -c "import gguf" 2>/dev/null || {
+      echo "install: python3 -m venv .venv-kitten && .venv-kitten/bin/pip install gguf safetensors numpy" >&2
+      exit 1
+    }
+    python3 scripts/onnx_decompose_to_gguf.py \
+      crates/kitten_tts_mini_rlx/weights/model.safetensors \
+      crates/kitten_tts_mini_rlx/weights/model.gguf
+
+test-kitten-native-compile:
+    KITTEN_RLX_WEIGHTS=crates/kitten_tts_mini_rlx/weights \
+      cargo run -p kitten_tts_mini_rlx --example native_weights_compile_check --release --features native
 
 kittentts *ARGS:
     RLX_KITTENTTS_DIR=${RLX_KITTENTTS_DIR:-.cache/kittentts-mini-0.8} \
@@ -612,6 +1106,23 @@ kittentts-long-demo:
 kittentts-voices:
     just kittentts --list-voices
 
+# Export native + ONNX WAVs for all phrase fixtures → KITTEN_PHRASE_OUT_DIR (default /tmp/kitten_phrases)
+kittentts-export-phrases *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    OUT="${KITTEN_PHRASE_OUT_DIR:-/tmp/kitten_phrases}"
+    export KITTEN_RLX_INFER=production KITTEN_RLX_RNG_SEED=42 KITTEN_RLX_RNG_BACKEND=ort
+    export KITTENTTS_TAIL_TRIM=0
+    unset KITTEN_RLX_BUNDLE RLX_ONNX_BUNDLE KITTEN_RLX_WEIGHTS KITTEN_RLX_COMPILE_HEADROOM
+    unset KITTEN_RLX_ORT_DURATION_CARRY
+    export KITTEN_EXPORT_DEVICES="${KITTEN_EXPORT_DEVICES:-cpu}"
+    export KITTEN_PHRASE_OUT_DIR="$OUT"
+    cargo run -p rlx-kittentts --features native-fast,onnx --release --example export_phrase_audio -- {{ARGS}}
+    echo "phrase WAVs: $OUT"
+
+test-kittentts-native-production-whisper *ARGS:
+    cargo test -p rlx-kittentts --features native-fast,onnx --release --test native_production_whisper phrases_all_backends -- --test-threads=1 {{ARGS}}
+
 # Plain English via espeak-ng (build with --features espeak)
 kittentts-text-demo:
     #!/usr/bin/env bash
@@ -625,8 +1136,13 @@ test-kittentts-espeak *ARGS:
     cargo test -p rlx-kittentts --features "espeak,onnx" --release --test e2e_text -- {{ARGS}}
 
 test-kittentts-whisper *ARGS:
-    # Prefer whisper-base.en when present (override with RLX_WHISPER_DIR).
-    cargo test -p rlx-kittentts --features "espeak,onnx" --release --test e2e_whisper_roundtrip -- {{ARGS}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test -p rlx-kittentts --features "espeak,onnx" --release --test e2e_whisper_roundtrip -- "$@"
+
+test-kittentts-native-whisper-gate *ARGS:
+    # Native intelligibility: ONNX waveform parity (Whisper on short IPA is ORT-RNG sensitive).
+    cargo test -p rlx-kittentts --features "native,onnx" --release --test native_onnx_parity -- "$@"
 
 fetch-kittentts-whisper:
     just fetch-whisper-base
@@ -639,6 +1155,17 @@ test-kittentts-native *ARGS:
 
 test-kittentts-native-parity *ARGS:
     cargo test -p rlx-kittentts --features "native,onnx" --release --test native_onnx_parity -- {{ARGS}}
+
+test-kittentts-native-speed *ARGS:
+    cargo test -p rlx-kittentts --features "native-fast" --release --test native_infer_speed -- {{ARGS}}
+
+# Production vs legacy native RAM/timing (macOS: `/usr/bin/time -l` peak RSS)
+bench-kittentts-native-alloc PHRASE="hello":
+    KITTEN_RLX_SKIP_FUSION=1 KITTEN_RLX_PREFER_METAL=0 ./scripts/bench_kitten_native_alloc.sh {{PHRASE}}
+
+# Native weights-only vs RLX bundle (no ONNX Runtime)
+test-kittentts-native-weights-parity *ARGS:
+    cargo test -p rlx-kittentts --features native --release --test native_weights_parity -- {{ARGS}}
 
 # Fetch (if needed) + unit tests + ONNX/native E2E synthesis
 test-kittentts-e2e *ARGS:
@@ -658,7 +1185,9 @@ test-kittentts-e2e *ARGS:
     if [[ -f .cache/whisper-base.en/model.safetensors || -f .cache/whisper-tiny/model.safetensors ]]; then
       just test-kittentts-whisper
     fi
-    if [[ -f crates/kitten_tts_mini_rlx/weights/rlx_bundle/graph.json ]]; then
+    if [[ -f crates/kitten_tts_mini_rlx/weights/model.safetensors || -f crates/kitten_tts_mini_rlx/weights/rlx_bundle/graph.json ]]; then
+      just test-kittentts-native-parity
+      just test-kittentts-native-weights-parity
       cargo test -p rlx-kittentts --features native --release native_infer_smoke -- {{ARGS}}
       cargo test -p rlx-kittentts --features native --release native_long_sentence_smoke -- {{ARGS}}
       cargo run -p rlx-kittentts --features native --release -- \
@@ -867,9 +1396,11 @@ test-voxtral-tts-compiled-lm:
 fetch-voxtral:
     cargo run -p rlx-models --example voxtral_download --features hf-download --release
 
-test-voxtral-parity: fetch-voxtral
-    RLX_VOXTRAL_DIR=.cache/voxtral/Voxtral-Mini-3B-2507 \
-    RLX_VOXTRAL_PYTHON=.venv-voxtral/bin/python \
+# Native (Rust/RLX) Voxtral frontend parity vs a pre-dumped HF reference.
+# Skips cleanly if the reference JSON / wav are absent (no Python needed at test time).
+test-voxtral-parity:
+    RLX_VOXTRAL_REF=${RLX_VOXTRAL_REF:-$PWD/.cache/voxtral_ref_jfk.json} \
+    RLX_VOXTRAL_WAV=${RLX_VOXTRAL_WAV:-$PWD/.cache/whisper-bench/jfk_16k.wav} \
     cargo test -p rlx-models --test voxtral_hf_parity --release -- --nocapture --test-threads 1
 
 ocr *ARGS:
@@ -954,6 +1485,10 @@ fetch-qwen3 REPO="Qwen/Qwen3-0.6B":
     mkdir -p weights
     docker build -t rlx-qwen3-fetch docker/qwen3-fetch
     docker run --rm -v "$PWD/weights:/weights" rlx-qwen3-fetch {{REPO}}
+
+# Qwen3-ASR-0.6B safetensors + tokenizer for the all-Qwen voice chat example.
+fetch-qwen3-asr REPO="Qwen/Qwen3-ASR-0.6B":
+    huggingface-cli download {{REPO}} --local-dir .cache/qwen3-asr/Qwen3-ASR-0.6B
 
 # Q4_K_M GGUF for low-memory / non-MLX LM paths (voice chat defaults to safetensors on MLX).
 fetch-qwen3-gguf:

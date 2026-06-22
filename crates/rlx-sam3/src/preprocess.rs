@@ -57,16 +57,32 @@ pub(crate) fn extract_preprocess_weights(
             "trunk.patch_embed.proj.weight",
         ],
     )?;
-    ensure!(
-        proj_shape == vec![e, 3, ps, ps],
-        "SAM3 patch_embed.proj.weight expected [{e}, 3, {ps}, {ps}], got {proj_shape:?}"
-    );
-
+    // Accept either NCHW (PyTorch: `[e, 3, ps, ps]`) or NHWC (MLX → GGUF via
+    // sam3.cpp converter: `[e, ps, ps, 3]`). The output layout is
+    // `[pd, e]` with `pd = c * ps * ps + kh * ps + kw` (NCHW order).
     let mut patch_proj_w = vec![0f32; e * pd];
-    for ei in 0..e {
-        for d in 0..pd {
-            patch_proj_w[d * e + ei] = proj_raw[ei * pd + d];
+    if proj_shape == vec![e, 3, ps, ps] {
+        for ei in 0..e {
+            for d in 0..pd {
+                patch_proj_w[d * e + ei] = proj_raw[ei * pd + d];
+            }
         }
+    } else if proj_shape == vec![e, ps, ps, 3] {
+        for ei in 0..e {
+            for c in 0..3 {
+                for kh in 0..ps {
+                    for kw in 0..ps {
+                        let d = c * ps * ps + kh * ps + kw;
+                        let src = ei * (ps * ps * 3) + kh * (ps * 3) + kw * 3 + c;
+                        patch_proj_w[d * e + ei] = proj_raw[src];
+                    }
+                }
+            }
+        }
+    } else {
+        anyhow::bail!(
+            "SAM3 patch_embed.proj.weight expected [{e}, 3, {ps}, {ps}] (NCHW) or [{e}, {ps}, {ps}, 3] (NHWC), got {proj_shape:?}"
+        );
     }
 
     let patch_proj_b = if cfg.bias_patch_embed {

@@ -93,6 +93,19 @@ pub fn run(args: &[String]) -> Result<()> {
         enc.seq,
         enc.hidden
     );
+    {
+        let t = &enc.per_batch[0];
+        let n = t.len() as f32;
+        let nan = t.iter().filter(|x| !x.is_finite()).count();
+        let mean = t.iter().sum::<f32>() / n;
+        let std = (t.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / n).sqrt();
+        let (mn, mx) = t
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+        eprintln!(
+            "[rlx-vjepa2] output: nonfinite={nan} mean={mean:.4} std={std:.4} min={mn:.3} max={mx:.3}"
+        );
+    }
 
     if predict {
         if !runner.has_predictor() {

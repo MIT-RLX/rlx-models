@@ -1,0 +1,484 @@
+
+/usr/lib/tsac/libnc.so：     文件格式 elf64-x86-64
+
+
+Disassembly of section .text:
+
+000000000005dfd0 <nc_convert@@Base>:
+   5dfd0:	41 57                	push   r15
+   5dfd2:	49 89 ff             	mov    r15,rdi
+   5dfd5:	41 56                	push   r14
+   5dfd7:	41 55                	push   r13
+   5dfd9:	41 54                	push   r12
+   5dfdb:	55                   	push   rbp
+   5dfdc:	53                   	push   rbx
+   5dfdd:	48 81 ec 18 01 00 00 	sub    rsp,0x118
+   5dfe4:	44 8b 6f 38          	mov    r13d,DWORD PTR [rdi+0x38]
+   5dfe8:	41 39 f5             	cmp    r13d,esi
+   5dfeb:	0f 84 cf 02 00 00    	je     5e2c0 <nc_convert@@Base+0x2f0>
+   5dff1:	8d 46 f5             	lea    eax,[rsi-0xb]
+   5dff4:	89 f3                	mov    ebx,esi
+   5dff6:	83 f8 04             	cmp    eax,0x4
+   5dff9:	0f 86 a1 02 00 00    	jbe    5e2a0 <nc_convert@@Base+0x2d0>
+   5dfff:	48 8b 47 30          	mov    rax,QWORD PTR [rdi+0x30]
+   5e003:	4c 8b 70 18          	mov    r14,QWORD PTR [rax+0x18]
+   5e007:	41 8d 45 f5          	lea    eax,[r13-0xb]
+   5e00b:	83 f8 04             	cmp    eax,0x4
+   5e00e:	0f 87 b4 02 00 00    	ja     5e2c8 <nc_convert@@Base+0x2f8>
+   5e014:	83 fe 02             	cmp    esi,0x2
+   5e017:	0f 87 52 06 00 00    	ja     5e66f <nc_convert@@Base+0x69f>
+   5e01d:	8b 47 64             	mov    eax,DWORD PTR [rdi+0x64]
+   5e020:	83 f8 01             	cmp    eax,0x1
+   5e023:	0f 8e 65 06 00 00    	jle    5e68e <nc_convert@@Base+0x6be>
+   5e029:	bd 01 00 00 00       	mov    ebp,0x1
+   5e02e:	83 f8 02             	cmp    eax,0x2
+   5e031:	0f 84 55 01 00 00    	je     5e18c <nc_convert@@Base+0x1bc>
+   5e037:	8d 50 fd             	lea    edx,[rax-0x3]
+   5e03a:	8d 70 fe             	lea    esi,[rax-0x2]
+   5e03d:	83 fa 04             	cmp    edx,0x4
+   5e040:	0f 86 1a 06 00 00    	jbe    5e660 <nc_convert@@Base+0x690>
+   5e046:	89 f1                	mov    ecx,esi
+   5e048:	c5 fa 6f 87 b8 00 00 	vmovdqu xmm0,XMMWORD PTR [rdi+0xb8]
+   5e04f:	00 
+   5e050:	d1 e9                	shr    ecx,1
+   5e052:	83 f9 01             	cmp    ecx,0x1
+   5e055:	0f 84 a0 00 00 00    	je     5e0fb <nc_convert@@Base+0x12b>
+   5e05b:	c5 fa 6f 9f c8 00 00 	vmovdqu xmm3,XMMWORD PTR [rdi+0xc8]
+   5e062:	00 
+   5e063:	c5 e9 73 d0 20       	vpsrlq xmm2,xmm0,0x20
+   5e068:	c5 f1 73 d3 20       	vpsrlq xmm1,xmm3,0x20
+   5e06d:	c5 e1 f4 e0          	vpmuludq xmm4,xmm3,xmm0
+   5e071:	c5 f1 f4 c0          	vpmuludq xmm0,xmm1,xmm0
+   5e075:	c5 e9 f4 cb          	vpmuludq xmm1,xmm2,xmm3
+   5e079:	c5 f9 d4 c1          	vpaddq xmm0,xmm0,xmm1
+   5e07d:	c5 f9 73 f0 20       	vpsllq xmm0,xmm0,0x20
+   5e082:	c5 d9 d4 c0          	vpaddq xmm0,xmm4,xmm0
+   5e086:	83 f9 02             	cmp    ecx,0x2
+   5e089:	74 70                	je     5e0fb <nc_convert@@Base+0x12b>
+   5e08b:	c5 fa 6f 9f d8 00 00 	vmovdqu xmm3,XMMWORD PTR [rdi+0xd8]
+   5e092:	00 
+   5e093:	c5 e9 73 d0 20       	vpsrlq xmm2,xmm0,0x20
+   5e098:	c5 f1 73 d3 20       	vpsrlq xmm1,xmm3,0x20
+   5e09d:	c5 e1 f4 e0          	vpmuludq xmm4,xmm3,xmm0
+   5e0a1:	c5 f1 f4 c0          	vpmuludq xmm0,xmm1,xmm0
+   5e0a5:	c5 e9 f4 cb          	vpmuludq xmm1,xmm2,xmm3
+   5e0a9:	c5 f9 d4 c1          	vpaddq xmm0,xmm0,xmm1
+   5e0ad:	c5 f9 73 f0 20       	vpsllq xmm0,xmm0,0x20
+   5e0b2:	c5 d9 d4 c0          	vpaddq xmm0,xmm4,xmm0
+   5e0b6:	83 f9 03             	cmp    ecx,0x3
+   5e0b9:	74 40                	je     5e0fb <nc_convert@@Base+0x12b>
+   5e0bb:	31 d2                	xor    edx,edx
+   5e0bd:	48 89 d7             	mov    rdi,rdx
+   5e0c0:	c5 e9 73 d0 20       	vpsrlq xmm2,xmm0,0x20
+   5e0c5:	48 ff c2             	inc    rdx
+   5e0c8:	48 c1 e7 04          	shl    rdi,0x4
+   5e0cc:	c4 c1 7a 6f 9c 3f e8 	vmovdqu xmm3,XMMWORD PTR [r15+rdi*1+0xe8]
+   5e0d3:	00 00 00 
+   5e0d6:	8d 7a 03             	lea    edi,[rdx+0x3]
+   5e0d9:	c5 f1 73 d3 20       	vpsrlq xmm1,xmm3,0x20
+   5e0de:	c5 e1 f4 e0          	vpmuludq xmm4,xmm3,xmm0
+   5e0e2:	c5 f1 f4 c0          	vpmuludq xmm0,xmm1,xmm0
+   5e0e6:	c5 e9 f4 cb          	vpmuludq xmm1,xmm2,xmm3
+   5e0ea:	c5 f9 d4 c1          	vpaddq xmm0,xmm0,xmm1
+   5e0ee:	c5 f9 73 f0 20       	vpsllq xmm0,xmm0,0x20
+   5e0f3:	c5 d9 d4 c0          	vpaddq xmm0,xmm4,xmm0
+   5e0f7:	39 cf                	cmp    edi,ecx
+   5e0f9:	72 c2                	jb     5e0bd <nc_convert@@Base+0xed>
+   5e0fb:	c5 d9 73 d8 08       	vpsrldq xmm4,xmm0,0x8
+   5e100:	c5 e1 73 d0 20       	vpsrlq xmm3,xmm0,0x20
+   5e105:	89 f1                	mov    ecx,esi
+   5e107:	c5 f1 73 d4 20       	vpsrlq xmm1,xmm4,0x20
+   5e10c:	c5 d9 f4 d0          	vpmuludq xmm2,xmm4,xmm0
+   5e110:	83 e1 fe             	and    ecx,0xfffffffe
+   5e113:	c5 f1 f4 c0          	vpmuludq xmm0,xmm1,xmm0
+   5e117:	c5 e1 f4 cc          	vpmuludq xmm1,xmm3,xmm4
+   5e11b:	8d 51 02             	lea    edx,[rcx+0x2]
+   5e11e:	c5 f9 d4 c1          	vpaddq xmm0,xmm0,xmm1
+   5e122:	c5 f9 73 f0 20       	vpsllq xmm0,xmm0,0x20
+   5e127:	c5 e9 d4 c0          	vpaddq xmm0,xmm2,xmm0
+   5e12b:	c4 e1 f9 7e c5       	vmovq  rbp,xmm0
+   5e130:	39 ce                	cmp    esi,ecx
+   5e132:	74 58                	je     5e18c <nc_convert@@Base+0x1bc>
+   5e134:	48 63 ca             	movsxd rcx,edx
+   5e137:	49 0f af ac cf a8 00 	imul   rbp,QWORD PTR [r15+rcx*8+0xa8]
+   5e13e:	00 00 
+   5e140:	8d 4a 01             	lea    ecx,[rdx+0x1]
+   5e143:	39 c8                	cmp    eax,ecx
+   5e145:	7e 45                	jle    5e18c <nc_convert@@Base+0x1bc>
+   5e147:	48 63 c9             	movsxd rcx,ecx
+   5e14a:	49 0f af ac cf a8 00 	imul   rbp,QWORD PTR [r15+rcx*8+0xa8]
+   5e151:	00 00 
+   5e153:	8d 4a 02             	lea    ecx,[rdx+0x2]
+   5e156:	39 c8                	cmp    eax,ecx
+   5e158:	7e 32                	jle    5e18c <nc_convert@@Base+0x1bc>
+   5e15a:	48 63 c9             	movsxd rcx,ecx
+   5e15d:	49 0f af ac cf a8 00 	imul   rbp,QWORD PTR [r15+rcx*8+0xa8]
+   5e164:	00 00 
+   5e166:	8d 4a 03             	lea    ecx,[rdx+0x3]
+   5e169:	39 c8                	cmp    eax,ecx
+   5e16b:	7e 1f                	jle    5e18c <nc_convert@@Base+0x1bc>
+   5e16d:	48 63 c9             	movsxd rcx,ecx
+   5e170:	83 c2 04             	add    edx,0x4
+   5e173:	49 0f af ac cf a8 00 	imul   rbp,QWORD PTR [r15+rcx*8+0xa8]
+   5e17a:	00 00 
+   5e17c:	39 d0                	cmp    eax,edx
+   5e17e:	7e 0c                	jle    5e18c <nc_convert@@Base+0x1bc>
+   5e180:	48 63 d2             	movsxd rdx,edx
+   5e183:	49 0f af ac d7 a8 00 	imul   rbp,QWORD PTR [r15+rdx*8+0xa8]
+   5e18a:	00 00 
+   5e18c:	49 8b 87 a8 00 00 00 	mov    rax,QWORD PTR [r15+0xa8]
+   5e193:	48 89 44 24 08       	mov    QWORD PTR [rsp+0x8],rax
+   5e198:	49 8b 87 b0 00 00 00 	mov    rax,QWORD PTR [r15+0xb0]
+   5e19f:	48 89 04 24          	mov    QWORD PTR [rsp],rax
+   5e1a3:	41 83 fd 0d          	cmp    r13d,0xd
+   5e1a7:	0f 84 73 01 00 00    	je     5e320 <nc_convert@@Base+0x350>
+   5e1ad:	41 83 fd 0f          	cmp    r13d,0xf
+   5e1b1:	0f 84 e9 02 00 00    	je     5e4a0 <nc_convert@@Base+0x4d0>
+   5e1b7:	48 8d 54 24 70       	lea    rdx,[rsp+0x70]
+   5e1bc:	48 8d 74 24 50       	lea    rsi,[rsp+0x50]
+   5e1c1:	49 8b 4f 40          	mov    rcx,QWORD PTR [r15+0x40]
+   5e1c5:	48 8d bc 24 90 00 00 	lea    rdi,[rsp+0x90]
+   5e1cc:	00 
+   5e1cd:	41 55                	push   r13
+   5e1cf:	55                   	push   rbp
+   5e1d0:	4c 8b 4c 24 10       	mov    r9,QWORD PTR [rsp+0x10]
+   5e1d5:	4c 8b 44 24 18       	mov    r8,QWORD PTR [rsp+0x18]
+   5e1da:	e8 31 a1 fa ff       	call   8310 <nc_reduce_sum_sqr@plt+0x13a0>
+   5e1df:	41 8b 57 64          	mov    edx,DWORD PTR [r15+0x64]
+   5e1e3:	89 de                	mov    esi,ebx
+   5e1e5:	4c 89 f7             	mov    rdi,r14
+   5e1e8:	49 8d 8f a8 00 00 00 	lea    rcx,[r15+0xa8]
+   5e1ef:	e8 8c 87 fa ff       	call   6980 <nc_new_tensor_nz@plt>
+   5e1f4:	59                   	pop    rcx
+   5e1f5:	5e                   	pop    rsi
+   5e1f6:	49 89 c4             	mov    r12,rax
+   5e1f9:	41 83 fd 0d          	cmp    r13d,0xd
+   5e1fd:	0f 84 c9 04 00 00    	je     5e6cc <nc_convert@@Base+0x6fc>
+   5e203:	89 d8                	mov    eax,ebx
+   5e205:	41 83 fd 0e          	cmp    r13d,0xe
+   5e209:	0f 84 81 02 00 00    	je     5e490 <nc_convert@@Base+0x4c0>
+   5e20f:	41 83 fd 0c          	cmp    r13d,0xc
+   5e213:	0f 84 67 02 00 00    	je     5e480 <nc_convert@@Base+0x4b0>
+   5e219:	4d 8b 94 c6 70 05 00 	mov    r10,QWORD PTR [r14+rax*8+0x570]
+   5e220:	00 
+   5e221:	4c 8b 6c 24 78       	mov    r13,QWORD PTR [rsp+0x78]
+   5e226:	4c 8b 5c 24 58       	mov    r11,QWORD PTR [rsp+0x58]
+   5e22b:	31 c9                	xor    ecx,ecx
+   5e22d:	48 8b bc 24 98 00 00 	mov    rdi,QWORD PTR [rsp+0x98]
+   5e234:	00 
+   5e235:	48 8b 44 24 70       	mov    rax,QWORD PTR [rsp+0x70]
+   5e23a:	4c 8b 4c 24 50       	mov    r9,QWORD PTR [rsp+0x50]
+   5e23f:	4c 8b 84 24 90 00 00 	mov    r8,QWORD PTR [rsp+0x90]
+   5e246:	00 
+   5e247:	48 83 fd 01          	cmp    rbp,0x1
+   5e24b:	76 16                	jbe    5e263 <nc_convert@@Base+0x293>
+   5e24d:	41 8b 4c 24 38       	mov    ecx,DWORD PTR [r12+0x38]
+   5e252:	48 8b 15 4f ad 22 00 	mov    rdx,QWORD PTR [rip+0x22ad4f]        # 288fa8 <nc_job_exec@@Base+0x20d138>
+   5e259:	8b 0c 8a             	mov    ecx,DWORD PTR [rdx+rcx*4]
+   5e25c:	c4 c2 f3 f7 4c 24 78 	shrx   rcx,QWORD PTR [r12+0x78],rcx
+   5e263:	49 8b 54 24 50       	mov    rdx,QWORD PTR [r12+0x50]
+   5e268:	49 8b 74 24 40       	mov    rsi,QWORD PTR [r12+0x40]
+   5e26d:	53                   	push   rbx
+   5e26e:	55                   	push   rbp
+   5e26f:	ff 74 24 10          	push   QWORD PTR [rsp+0x10]
+   5e273:	ff 74 24 20          	push   QWORD PTR [rsp+0x20]
+   5e277:	41 55                	push   r13
+   5e279:	41 53                	push   r11
+   5e27b:	57                   	push   rdi
+   5e27c:	4c 89 f7             	mov    rdi,r14
+   5e27f:	50                   	push   rax
+   5e280:	41 ff d2             	call   r10
+   5e283:	48 83 c4 40          	add    rsp,0x40
+   5e287:	4c 89 ff             	mov    rdi,r15
+   5e28a:	e8 31 86 fa ff       	call   68c0 <nc_free_tensor@plt>
+   5e28f:	4c 89 f6             	mov    rsi,r14
+   5e292:	4c 89 e7             	mov    rdi,r12
+   5e295:	e8 26 8a fa ff       	call   6cc0 <nc_tensor_to_device@plt>
+   5e29a:	48 89 c3             	mov    rbx,rax
+   5e29d:	eb 0b                	jmp    5e2aa <nc_convert@@Base+0x2da>
+   5e29f:	90                   	nop
+   5e2a0:	31 d2                	xor    edx,edx
+   5e2a2:	e8 49 8a fa ff       	call   6cf0 <nc_convert_to_bf@plt>
+   5e2a7:	48 89 c3             	mov    rbx,rax
+   5e2aa:	48 81 c4 18 01 00 00 	add    rsp,0x118
+   5e2b1:	48 89 d8             	mov    rax,rbx
+   5e2b4:	5b                   	pop    rbx
+   5e2b5:	5d                   	pop    rbp
+   5e2b6:	41 5c                	pop    r12
+   5e2b8:	41 5d                	pop    r13
+   5e2ba:	41 5e                	pop    r14
+   5e2bc:	41 5f                	pop    r15
+   5e2be:	c3                   	ret
+   5e2bf:	90                   	nop
+   5e2c0:	48 89 fb             	mov    rbx,rdi
+   5e2c3:	eb e5                	jmp    5e2aa <nc_convert@@Base+0x2da>
+   5e2c5:	0f 1f 00             	nop    DWORD PTR [rax]
+   5e2c8:	8b 57 64             	mov    edx,DWORD PTR [rdi+0x64]
+   5e2cb:	48 8d 8f a8 00 00 00 	lea    rcx,[rdi+0xa8]
+   5e2d2:	4c 89 f7             	mov    rdi,r14
+   5e2d5:	e8 a6 86 fa ff       	call   6980 <nc_new_tensor_nz@plt>
+   5e2da:	4c 89 fe             	mov    rsi,r15
+   5e2dd:	48 89 c3             	mov    rbx,rax
+   5e2e0:	48 89 c7             	mov    rdi,rax
+   5e2e3:	e8 68 8c fa ff       	call   6f50 <nc_tensor_convert@plt>
+   5e2e8:	48 8d 53 20          	lea    rdx,[rbx+0x20]
+   5e2ec:	48 8d 73 18          	lea    rsi,[rbx+0x18]
+   5e2f0:	bf 02 00 00 00       	mov    edi,0x2
+   5e2f5:	48 8d 8c 24 f0 00 00 	lea    rcx,[rsp+0xf0]
+   5e2fc:	00 
+   5e2fd:	4c 89 bc 24 f0 00 00 	mov    QWORD PTR [rsp+0xf0],r15
+   5e304:	00 
+   5e305:	e8 16 e1 fe ff       	call   4c420 <nc_free_node@@Base+0x250>
+   5e30a:	48 85 c0             	test   rax,rax
+   5e30d:	74 07                	je     5e316 <nc_convert@@Base+0x346>
+   5e30f:	41 8b 57 38          	mov    edx,DWORD PTR [r15+0x38]
+   5e313:	89 50 38             	mov    DWORD PTR [rax+0x38],edx
+   5e316:	4c 89 ff             	mov    rdi,r15
+   5e319:	e8 a2 85 fa ff       	call   68c0 <nc_free_tensor@plt>
+   5e31e:	eb 8a                	jmp    5e2aa <nc_convert@@Base+0x2da>
+   5e320:	4c 89 ff             	mov    rdi,r15
+   5e323:	e8 58 88 fa ff       	call   6b80 <nc_tensor_to_cpu_device@plt>
+   5e328:	48 8d 54 24 70       	lea    rdx,[rsp+0x70]
+   5e32d:	48 8d 74 24 50       	lea    rsi,[rsp+0x50]
+   5e332:	49 89 c7             	mov    r15,rax
+   5e335:	48 8b 40 30          	mov    rax,QWORD PTR [rax+0x30]
+   5e339:	48 8d bc 24 90 00 00 	lea    rdi,[rsp+0x90]
+   5e340:	00 
+   5e341:	49 8b 4f 40          	mov    rcx,QWORD PTR [r15+0x40]
+   5e345:	4c 8b 68 18          	mov    r13,QWORD PTR [rax+0x18]
+   5e349:	6a 0d                	push   0xd
+   5e34b:	55                   	push   rbp
+   5e34c:	4c 8b 4c 24 10       	mov    r9,QWORD PTR [rsp+0x10]
+   5e351:	4c 8b 44 24 18       	mov    r8,QWORD PTR [rsp+0x18]
+   5e356:	e8 b5 9f fa ff       	call   8310 <nc_reduce_sum_sqr@plt+0x13a0>
+   5e35b:	41 8b 57 64          	mov    edx,DWORD PTR [r15+0x64]
+   5e35f:	31 f6                	xor    esi,esi
+   5e361:	4c 89 ef             	mov    rdi,r13
+   5e364:	49 8d 8f a8 00 00 00 	lea    rcx,[r15+0xa8]
+   5e36b:	e8 10 86 fa ff       	call   6980 <nc_new_tensor_nz@plt>
+   5e370:	41 59                	pop    r9
+   5e372:	41 5a                	pop    r10
+   5e374:	49 89 c4             	mov    r12,rax
+   5e377:	31 c0                	xor    eax,eax
+   5e379:	48 8b b4 24 a8 00 00 	mov    rsi,QWORD PTR [rsp+0xa8]
+   5e380:	00 
+   5e381:	48 8b 8c 24 80 00 00 	mov    rcx,QWORD PTR [rsp+0x80]
+   5e388:	00 
+   5e389:	89 c2                	mov    edx,eax
+   5e38b:	4d 8b 94 d5 b8 05 00 	mov    r10,QWORD PTR [r13+rdx*8+0x5b8]
+   5e392:	00 
+   5e393:	c4 c1 7a 10 47 48    	vmovss xmm0,DWORD PTR [r15+0x48]
+   5e399:	4c 8b 5c 24 68       	mov    r11,QWORD PTR [rsp+0x68]
+   5e39e:	4c 8b 4c 24 50       	mov    r9,QWORD PTR [rsp+0x50]
+   5e3a3:	48 89 74 24 10       	mov    QWORD PTR [rsp+0x10],rsi
+   5e3a8:	48 89 4c 24 18       	mov    QWORD PTR [rsp+0x18],rcx
+   5e3ad:	48 8b 74 24 60       	mov    rsi,QWORD PTR [rsp+0x60]
+   5e3b2:	48 8b 8c 24 a0 00 00 	mov    rcx,QWORD PTR [rsp+0xa0]
+   5e3b9:	00 
+   5e3ba:	48 8b bc 24 88 00 00 	mov    rdi,QWORD PTR [rsp+0x88]
+   5e3c1:	00 
+   5e3c2:	48 89 74 24 20       	mov    QWORD PTR [rsp+0x20],rsi
+   5e3c7:	48 8b 74 24 78       	mov    rsi,QWORD PTR [rsp+0x78]
+   5e3cc:	48 89 4c 24 28       	mov    QWORD PTR [rsp+0x28],rcx
+   5e3d1:	48 8b 4c 24 58       	mov    rcx,QWORD PTR [rsp+0x58]
+   5e3d6:	48 89 74 24 30       	mov    QWORD PTR [rsp+0x30],rsi
+   5e3db:	48 8b b4 24 98 00 00 	mov    rsi,QWORD PTR [rsp+0x98]
+   5e3e2:	00 
+   5e3e3:	48 89 4c 24 38       	mov    QWORD PTR [rsp+0x38],rcx
+   5e3e8:	48 8b 4c 24 70       	mov    rcx,QWORD PTR [rsp+0x70]
+   5e3ed:	48 89 74 24 40       	mov    QWORD PTR [rsp+0x40],rsi
+   5e3f2:	4c 8b 84 24 90 00 00 	mov    r8,QWORD PTR [rsp+0x90]
+   5e3f9:	00 
+   5e3fa:	48 89 4c 24 48       	mov    QWORD PTR [rsp+0x48],rcx
+   5e3ff:	31 c9                	xor    ecx,ecx
+   5e401:	48 83 fd 01          	cmp    rbp,0x1
+   5e405:	76 16                	jbe    5e41d <nc_convert@@Base+0x44d>
+   5e407:	41 8b 4c 24 38       	mov    ecx,DWORD PTR [r12+0x38]
+   5e40c:	48 8b 15 95 ab 22 00 	mov    rdx,QWORD PTR [rip+0x22ab95]        # 288fa8 <nc_job_exec@@Base+0x20d138>
+   5e413:	8b 0c 8a             	mov    ecx,DWORD PTR [rdx+rcx*4]
+   5e416:	c4 c2 f3 f7 4c 24 78 	shrx   rcx,QWORD PTR [r12+0x78],rcx
+   5e41d:	49 8b 54 24 50       	mov    rdx,QWORD PTR [r12+0x50]
+   5e422:	49 8b 74 24 40       	mov    rsi,QWORD PTR [r12+0x40]
+   5e427:	50                   	push   rax
+   5e428:	55                   	push   rbp
+   5e429:	ff 74 24 10          	push   QWORD PTR [rsp+0x10]
+   5e42d:	ff 74 24 20          	push   QWORD PTR [rsp+0x20]
+   5e431:	57                   	push   rdi
+   5e432:	4c 89 ef             	mov    rdi,r13
+   5e435:	41 53                	push   r11
+   5e437:	ff 74 24 40          	push   QWORD PTR [rsp+0x40]
+   5e43b:	ff 74 24 50          	push   QWORD PTR [rsp+0x50]
+   5e43f:	ff 74 24 60          	push   QWORD PTR [rsp+0x60]
+   5e443:	ff 74 24 70          	push   QWORD PTR [rsp+0x70]
+   5e447:	ff b4 24 80 00 00 00 	push   QWORD PTR [rsp+0x80]
+   5e44e:	ff b4 24 90 00 00 00 	push   QWORD PTR [rsp+0x90]
+   5e455:	ff b4 24 a0 00 00 00 	push   QWORD PTR [rsp+0xa0]
+   5e45c:	ff b4 24 b0 00 00 00 	push   QWORD PTR [rsp+0xb0]
+   5e463:	41 ff d2             	call   r10
+   5e466:	4c 89 e7             	mov    rdi,r12
+   5e469:	89 de                	mov    esi,ebx
+   5e46b:	48 83 c4 70          	add    rsp,0x70
+   5e46f:	e8 2c 84 fa ff       	call   68a0 <nc_convert@plt>
+   5e474:	49 89 c4             	mov    r12,rax
+   5e477:	e9 0b fe ff ff       	jmp    5e287 <nc_convert@@Base+0x2b7>
+   5e47c:	0f 1f 40 00          	nop    DWORD PTR [rax+0x0]
+   5e480:	4d 8b 94 c6 a0 05 00 	mov    r10,QWORD PTR [r14+rax*8+0x5a0]
+   5e487:	00 
+   5e488:	e9 94 fd ff ff       	jmp    5e221 <nc_convert@@Base+0x251>
+   5e48d:	0f 1f 00             	nop    DWORD PTR [rax]
+   5e490:	4d 8b 94 c6 88 05 00 	mov    r10,QWORD PTR [r14+rax*8+0x588]
+   5e497:	00 
+   5e498:	e9 84 fd ff ff       	jmp    5e221 <nc_convert@@Base+0x251>
+   5e49d:	0f 1f 00             	nop    DWORD PTR [rax]
+   5e4a0:	4c 89 ff             	mov    rdi,r15
+   5e4a3:	e8 d8 86 fa ff       	call   6b80 <nc_tensor_to_cpu_device@plt>
+   5e4a8:	48 8d 54 24 70       	lea    rdx,[rsp+0x70]
+   5e4ad:	48 8d 74 24 50       	lea    rsi,[rsp+0x50]
+   5e4b2:	49 89 c7             	mov    r15,rax
+   5e4b5:	48 8b 40 30          	mov    rax,QWORD PTR [rax+0x30]
+   5e4b9:	48 8d bc 24 90 00 00 	lea    rdi,[rsp+0x90]
+   5e4c0:	00 
+   5e4c1:	49 8b 4f 40          	mov    rcx,QWORD PTR [r15+0x40]
+   5e4c5:	4c 8b 60 18          	mov    r12,QWORD PTR [rax+0x18]
+   5e4c9:	6a 0f                	push   0xf
+   5e4cb:	55                   	push   rbp
+   5e4cc:	4c 8b 6c 24 18       	mov    r13,QWORD PTR [rsp+0x18]
+   5e4d1:	4c 8b 4c 24 10       	mov    r9,QWORD PTR [rsp+0x10]
+   5e4d6:	4d 89 e8             	mov    r8,r13
+   5e4d9:	e8 32 9e fa ff       	call   8310 <nc_reduce_sum_sqr@plt+0x13a0>
+   5e4de:	41 8b 57 64          	mov    edx,DWORD PTR [r15+0x64]
+   5e4e2:	4c 89 e7             	mov    rdi,r12
+   5e4e5:	49 8d 8f a8 00 00 00 	lea    rcx,[r15+0xa8]
+   5e4ec:	be 0e 00 00 00       	mov    esi,0xe
+   5e4f1:	e8 8a 84 fa ff       	call   6980 <nc_new_tensor_nz@plt>
+   5e4f6:	41 83 e5 03          	and    r13d,0x3
+   5e4fa:	48 89 44 24 20       	mov    QWORD PTR [rsp+0x20],rax
+   5e4ff:	5f                   	pop    rdi
+   5e500:	41 58                	pop    r8
+   5e502:	0f 85 a5 01 00 00    	jne    5e6ad <nc_convert@@Base+0x6dd>
+   5e508:	48 8b 44 24 10       	mov    rax,QWORD PTR [rsp+0x10]
+   5e50d:	48 8d 94 24 d0 00 00 	lea    rdx,[rsp+0xd0]
+   5e514:	00 
+   5e515:	48 8d b4 24 b0 00 00 	lea    rsi,[rsp+0xb0]
+   5e51c:	00 
+   5e51d:	48 8d bc 24 f0 00 00 	lea    rdi,[rsp+0xf0]
+   5e524:	00 
+   5e525:	48 8b 48 40          	mov    rcx,QWORD PTR [rax+0x40]
+   5e529:	8b 40 38             	mov    eax,DWORD PTR [rax+0x38]
+   5e52c:	50                   	push   rax
+   5e52d:	55                   	push   rbp
+   5e52e:	4c 8b 4c 24 10       	mov    r9,QWORD PTR [rsp+0x10]
+   5e533:	4c 8b 44 24 18       	mov    r8,QWORD PTR [rsp+0x18]
+   5e538:	e8 d3 9d fa ff       	call   8310 <nc_reduce_sum_sqr@plt+0x13a0>
+   5e53d:	58                   	pop    rax
+   5e53e:	5a                   	pop    rdx
+   5e53f:	48 85 ed             	test   rbp,rbp
+   5e542:	0f 84 fa 00 00 00    	je     5e642 <nc_convert@@Base+0x672>
+   5e548:	4c 8b 64 24 08       	mov    r12,QWORD PTR [rsp+0x8]
+   5e54d:	48 8b 0c 24          	mov    rcx,QWORD PTR [rsp]
+   5e551:	89 5c 24 20          	mov    DWORD PTR [rsp+0x20],ebx
+   5e555:	45 31 ed             	xor    r13d,r13d
+   5e558:	4c 89 74 24 08       	mov    QWORD PTR [rsp+0x8],r14
+   5e55d:	4c 89 e0             	mov    rax,r12
+   5e560:	48 8d 34 09          	lea    rsi,[rcx+rcx*1]
+   5e564:	4c 89 7c 24 18       	mov    QWORD PTR [rsp+0x18],r15
+   5e569:	49 c1 ec 08          	shr    r12,0x8
+   5e56d:	48 c1 e8 02          	shr    rax,0x2
+   5e571:	4d 89 ef             	mov    r15,r13
+   5e574:	49 89 ed             	mov    r13,rbp
+   5e577:	48 89 f5             	mov    rbp,rsi
+   5e57a:	49 89 c6             	mov    r14,rax
+   5e57d:	0f 1f 00             	nop    DWORD PTR [rax]
+   5e580:	48 8b 54 24 70       	mov    rdx,QWORD PTR [rsp+0x70]
+   5e585:	4c 8b 0c 24          	mov    r9,QWORD PTR [rsp]
+   5e589:	4d 89 f0             	mov    r8,r14
+   5e58c:	31 db                	xor    ebx,ebx
+   5e58e:	48 8b bc 24 d0 00 00 	mov    rdi,QWORD PTR [rsp+0xd0]
+   5e595:	00 
+   5e596:	b8 02 00 00 00       	mov    eax,0x2
+   5e59b:	c4 e2 fb f7 4c 24 50 	shrx   rcx,QWORD PTR [rsp+0x50],rax
+   5e5a2:	c4 e2 fb f7 b4 24 b0 	shrx   rsi,QWORD PTR [rsp+0xb0],rax
+   5e5a9:	00 00 00 
+   5e5ac:	49 0f af d7          	imul   rdx,r15
+   5e5b0:	48 03 94 24 90 00 00 	add    rdx,QWORD PTR [rsp+0x90]
+   5e5b7:	00 
+   5e5b8:	49 0f af ff          	imul   rdi,r15
+   5e5bc:	48 03 bc 24 f0 00 00 	add    rdi,QWORD PTR [rsp+0xf0]
+   5e5c3:	00 
+   5e5c4:	e8 a7 19 fc ff       	call   1ff70 <convert_f32_to_f16@@Base+0xe400>
+   5e5c9:	4d 85 e4             	test   r12,r12
+   5e5cc:	74 5a                	je     5e628 <nc_convert@@Base+0x658>
+   5e5ce:	66 90                	xchg   ax,ax
+   5e5d0:	48 8b 84 24 d8 00 00 	mov    rax,QWORD PTR [rsp+0xd8]
+   5e5d7:	00 
+   5e5d8:	48 8b 94 24 b8 00 00 	mov    rdx,QWORD PTR [rsp+0xb8]
+   5e5df:	00 
+   5e5e0:	49 0f af c7          	imul   rax,r15
+   5e5e4:	48 0f af d3          	imul   rdx,rbx
+   5e5e8:	48 01 d0             	add    rax,rdx
+   5e5eb:	48 8b 94 24 f8 00 00 	mov    rdx,QWORD PTR [rsp+0xf8]
+   5e5f2:	00 
+   5e5f3:	48 8d 3c 42          	lea    rdi,[rdx+rax*2]
+   5e5f7:	48 8b 44 24 78       	mov    rax,QWORD PTR [rsp+0x78]
+   5e5fc:	48 8b 54 24 58       	mov    rdx,QWORD PTR [rsp+0x58]
+   5e601:	49 0f af c7          	imul   rax,r15
+   5e605:	48 0f af d3          	imul   rdx,rbx
+   5e609:	48 ff c3             	inc    rbx
+   5e60c:	48 01 d0             	add    rax,rdx
+   5e60f:	48 8b 94 24 98 00 00 	mov    rdx,QWORD PTR [rsp+0x98]
+   5e616:	00 
+   5e617:	48 8d 34 42          	lea    rsi,[rdx+rax*2]
+   5e61b:	48 89 ea             	mov    rdx,rbp
+   5e61e:	e8 ed 82 fa ff       	call   6910 <memcpy@plt>
+   5e623:	4c 39 e3             	cmp    rbx,r12
+   5e626:	75 a8                	jne    5e5d0 <nc_convert@@Base+0x600>
+   5e628:	49 ff c7             	inc    r15
+   5e62b:	4d 39 ef             	cmp    r15,r13
+   5e62e:	0f 85 4c ff ff ff    	jne    5e580 <nc_convert@@Base+0x5b0>
+   5e634:	4c 8b 74 24 08       	mov    r14,QWORD PTR [rsp+0x8]
+   5e639:	4c 8b 7c 24 18       	mov    r15,QWORD PTR [rsp+0x18]
+   5e63e:	8b 5c 24 20          	mov    ebx,DWORD PTR [rsp+0x20]
+   5e642:	48 8b 7c 24 10       	mov    rdi,QWORD PTR [rsp+0x10]
+   5e647:	89 de                	mov    esi,ebx
+   5e649:	e8 52 82 fa ff       	call   68a0 <nc_convert@plt>
+   5e64e:	49 89 c4             	mov    r12,rax
+   5e651:	e9 31 fc ff ff       	jmp    5e287 <nc_convert@@Base+0x2b7>
+   5e656:	66 2e 0f 1f 84 00 00 	cs nop WORD PTR [rax+rax*1+0x0]
+   5e65d:	00 00 00 
+   5e660:	bd 01 00 00 00       	mov    ebp,0x1
+   5e665:	ba 02 00 00 00       	mov    edx,0x2
+   5e66a:	e9 c5 fa ff ff       	jmp    5e134 <nc_convert@@Base+0x164>
+   5e66f:	48 8d 0d 7a 05 02 00 	lea    rcx,[rip+0x2057a]        # 7ebf0 <nc_job_exec@@Base+0x2d80>
+   5e676:	ba 7c 2e 00 00       	mov    edx,0x2e7c
+   5e67b:	48 8d 35 7e d8 01 00 	lea    rsi,[rip+0x1d87e]        # 7bf00 <nc_job_exec@@Base+0x90>
+   5e682:	48 8d 3d 17 f1 01 00 	lea    rdi,[rip+0x1f117]        # 7d7a0 <nc_job_exec@@Base+0x1930>
+   5e689:	e8 22 80 fa ff       	call   66b0 <__assert_fail@plt>
+   5e68e:	48 8d 0d 5b 05 02 00 	lea    rcx,[rip+0x2055b]        # 7ebf0 <nc_job_exec@@Base+0x2d80>
+   5e695:	ba 7d 2e 00 00       	mov    edx,0x2e7d
+   5e69a:	48 8d 35 5f d8 01 00 	lea    rsi,[rip+0x1d85f]        # 7bf00 <nc_job_exec@@Base+0x90>
+   5e6a1:	48 8d 3d bc de 01 00 	lea    rdi,[rip+0x1debc]        # 7c564 <nc_job_exec@@Base+0x6f4>
+   5e6a8:	e8 03 80 fa ff       	call   66b0 <__assert_fail@plt>
+   5e6ad:	48 8d 0d 3c 05 02 00 	lea    rcx,[rip+0x2053c]        # 7ebf0 <nc_job_exec@@Base+0x2d80>
+   5e6b4:	ba b7 2e 00 00       	mov    edx,0x2eb7
+   5e6b9:	48 8d 35 40 d8 01 00 	lea    rsi,[rip+0x1d840]        # 7bf00 <nc_job_exec@@Base+0x90>
+   5e6c0:	48 8d 3d f9 de 01 00 	lea    rdi,[rip+0x1def9]        # 7c5c0 <nc_job_exec@@Base+0x750>
+   5e6c7:	e8 e4 7f fa ff       	call   66b0 <__assert_fail@plt>
+   5e6cc:	89 d8                	mov    eax,ebx
+   5e6ce:	4d 89 f5             	mov    r13,r14
+   5e6d1:	e9 a3 fc ff ff       	jmp    5e379 <nc_convert@@Base+0x3a9>
+   5e6d6:	66 2e 0f 1f 84 00 00 	cs nop WORD PTR [rax+rax*1+0x0]
+   5e6dd:	00 00 00 
+
+000000000005e6e0 <nc_reduce_sum@@Base>:
+   5e6e0:	41 57                	push   r15
+   5e6e2:	41 56                	push   r14
+   5e6e4:	41 55                	push   r13
+   5e6e6:	41 54                	push   r12
+   5e6e8:	55                   	push   rbp
+   5e6e9:	53                   	push   rbx
+   5e6ea:	48 81 ec 98 00 00 00 	sub    rsp,0x98
+   5e6f1:	8b 46 64             	mov    eax,DWORD PTR [rsi+0x64]
+   5e6f4:	39 d0                	cmp    eax,edx
+   5e6f6:	0f 8c ef 09 00 00    	jl     5f0eb <nc_reduce_sum@@Base+0xa0b>
+   5e6fc:	49 89 f6             	mov    r14,rsi
+   5e6ff:	8b                   	.byte 0x8b

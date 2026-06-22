@@ -64,6 +64,7 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result, bail, ensure};
+use rlx_aec::{AecConfig, AecSession};
 use rlx_cli::{
     ChatMessage, ChatTemplate, WeightsResolveCli, parse_standard_device, resolve_weights_cli,
 };
@@ -140,6 +141,8 @@ struct Args {
     streaming_asr: bool,
     /// Experimental native Metal talker decode (parity not guaranteed).
     metal_tts_native: bool,
+    /// Run mic chunks through rlx-aec; TTS playback feeds far-end reference.
+    aec: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +200,7 @@ struct Session {
     streaming_asr: bool,
     /// TTS/Whisper buckets compiled during preload.
     warmed: bool,
+    aec: Option<AecSession>,
 }
 
 /// Lightweight streaming gate: emit an utterance after `silence_ms` of quiet
@@ -368,6 +372,7 @@ fn parse_args() -> Result<Args> {
     let mut vad_gate = VadGate::Rms;
     let mut streaming_asr = false;
     let mut metal_tts_native = false;
+    let mut aec = false;
 
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -568,6 +573,10 @@ fn parse_args() -> Result<Args> {
                 metal_tts_native = true;
                 i += 1;
             }
+            "--aec" => {
+                aec = true;
+                i += 1;
+            }
             "--early-tts-words" => {
                 early_tts_words = raw[i + 1].parse().context("--early-tts-words")?;
                 i += 2;
@@ -630,6 +639,7 @@ fn parse_args() -> Result<Args> {
         vad_gate,
         streaming_asr,
         metal_tts_native,
+        aec,
     })
 }
 
@@ -647,8 +657,23 @@ fn print_help() {
   [--low-latency-tts|--no-low-latency-tts] \\
   [--skip-thinking|--allow-thinking] [--first-sentence-tts|--full-reply-tts] \\
   [--stream-lm-tokens|--no-stream-lm-tokens] \\
-  [--whisper-validate|--no-whisper-validate]"
+  [--whisper-validate|--no-whisper-validate] \\
+  [--aec]"
     );
+}
+
+fn push_tts_reference(aec: &mut AecSession, pcm_24k: &[f32]) {
+    let pcm_16k = resample_linear(pcm_24k, TTS_RATE, WHISPER_RATE as u32);
+    aec.push_reference(&pcm_16k);
+}
+
+fn process_mic_aec(aec: Option<&mut AecSession>, mic: &[f32]) -> Vec<f32> {
+    if let Some(aec) = aec {
+        if let Ok(Some(out)) = aec.process_mic(mic) {
+            return out;
+        }
+    }
+    mic.to_vec()
 }
 
 fn pick_device(name: &str) -> Result<Device> {
@@ -1128,11 +1153,15 @@ fn run_tts_batched(
     text: &str,
     turn_anchor: Instant,
     first_audio: &Arc<Mutex<Option<f64>>>,
+    aec: Option<&mut AecSession>,
 ) -> Result<TtsRun> {
     let text = prepare_tts_text(text);
     ensure!(!text.is_empty(), "TTS text empty after prepare");
     let t = Instant::now();
     let pcm = tts.generate(voice_ref, &text)?;
+    if let Some(aec) = aec {
+        push_tts_reference(aec, &pcm);
+    }
     emit_pcm_chunks(&pcm, turn_anchor, first_audio);
     let wall = t.elapsed().as_secs_f64();
     let audio_secs = pcm.len() as f64 / TTS_RATE as f64;
@@ -1156,6 +1185,7 @@ fn run_tts_streaming(
     stream_cfg: StreamConfig,
     turn_anchor: Instant,
     first_audio: &Arc<Mutex<Option<f64>>>,
+    aec: Option<&mut AecSession>,
 ) -> Result<TtsRun> {
     let text = prepare_tts_text(text);
     ensure!(!text.is_empty(), "TTS text empty after prepare");
@@ -1186,6 +1216,9 @@ fn run_tts_streaming(
         }
         StreamControl::Continue
     })?;
+    if let Some(aec) = aec {
+        push_tts_reference(aec, &pcm);
+    }
     Ok(TtsRun { stats, pcm })
 }
 
@@ -1197,11 +1230,20 @@ fn run_tts(
     streaming_tts: bool,
     turn_anchor: Instant,
     first_audio: &Arc<Mutex<Option<f64>>>,
+    aec: Option<&mut AecSession>,
 ) -> Result<TtsRun> {
     if streaming_tts {
-        run_tts_streaming(tts, voice_ref, text, stream_cfg, turn_anchor, first_audio)
+        run_tts_streaming(
+            tts,
+            voice_ref,
+            text,
+            stream_cfg,
+            turn_anchor,
+            first_audio,
+            aec,
+        )
     } else {
-        run_tts_batched(tts, voice_ref, text, turn_anchor, first_audio)
+        run_tts_batched(tts, voice_ref, text, turn_anchor, first_audio, aec)
     }
 }
 
@@ -1325,6 +1367,13 @@ impl Session {
             args.tts_max_frames,
         )?;
         let voice_ref = tts.extract_reference(&args.ref_wav)?;
+        let aec = if args.aec {
+            let s = AecSession::new(AecConfig::default()).context("aec session")?;
+            println!("  AEC: enabled (TTS playback → far-end reference)");
+            Some(s)
+        } else {
+            None
+        };
         let mut session = Self {
             whisper,
             whisper_stream,
@@ -1352,6 +1401,7 @@ impl Session {
             aggressive_early_tts: args.aggressive_early_tts,
             streaming_asr: args.streaming_asr,
             warmed: false,
+            aec,
         };
         println!(
             "opened whisper + Qwen3 ({:?}, {}) + TTS ({:?}) in {:.2}s",
@@ -1550,6 +1600,7 @@ impl Session {
             self.streaming_tts,
             turn_anchor,
             &first_audio,
+            self.aec.as_mut(),
         )?;
         let tts_secs = t_tts.elapsed().as_secs_f64();
         println!(
@@ -1692,6 +1743,7 @@ impl Session {
                 self.streaming_tts,
                 turn_anchor,
                 &first_audio,
+                self.aec.as_mut(),
             )?;
             pcm_all.extend(run.pcm);
             last_stats = Some(run.stats);
@@ -1841,6 +1893,7 @@ impl Session {
                 self.streaming_tts,
                 turn_anchor,
                 &first_audio,
+                self.aec.as_mut(),
             )?;
             pcm_all.extend(run.pcm);
             last_stats = Some(run.stats);
@@ -1999,17 +2052,18 @@ fn run_streaming_mic_turns(
     let mut pos = 0usize;
     let mut chunk_idx = 0usize;
     for chunk in input_pcm.chunks(chunk_samples.max(1)) {
+        let mic = process_mic_aec(session.aec.as_mut(), chunk);
         chunk_idx += 1;
-        let rms = chunk_rms(chunk);
+        let rms = chunk_rms(&mic);
         let speech = rms > 0.008;
         println!(
             "  mic chunk {chunk_idx:>3}: {pos:>6}–{:<6} samples  rms={rms:.4}  {}",
-            pos + chunk.len(),
+            pos + mic.len(),
             if speech { "speech" } else { "quiet" }
         );
-        pos += chunk.len();
+        pos += mic.len();
 
-        if let Some(utterance) = gate.push(chunk) {
+        if let Some(utterance) = gate.push(&mic) {
             turn_idx += 1;
             println!(
                 "  └─ utterance flushed: {:.2}s (end-of-turn)",

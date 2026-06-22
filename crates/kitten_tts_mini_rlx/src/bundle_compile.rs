@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, Once};
+use std::sync::{Mutex, Once, OnceLock};
 
 use anyhow::{Context, Result};
 use rlx_ir::hir::{HirGraphExt, HirModule, HirMut};
@@ -29,10 +29,12 @@ use rlx_onnx_import::{
     BundleNode, ImportOptions, ImportReport, build_hir_from_bundle, build_hir_from_parts,
     load_bundle,
 };
-use rlx_runtime::{AotCache, CompileOptions, CompiledGraph, DType, Device, Session};
+use rlx_runtime::{AotCache, CompileOptions, CompiledGraph, DType, Device, RngOptions, Session};
 
+use crate::compile_profile::{self, CompileProfile, optimized_split_graphs_enabled};
 use crate::kernels::register_native_kernels;
 use crate::opts::GraphOptions;
+use crate::seq_cache::{CachedSeqGraphs, SeqGraphCache};
 
 static KERNELS: Once = Once::new();
 fn import_cache() -> &'static Mutex<HashMap<(PathBuf, usize, usize, String), BundleImport>> {
@@ -48,15 +50,12 @@ fn probe_graph_cache() -> &'static Mutex<HashMap<String, CompiledGraph>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn bundle_dir_near_weights(weights: &Path) -> Option<PathBuf> {
-    for key in [crate::opts::ONNX_BUNDLE_ENV, crate::opts::LEGACY_BUNDLE_ENV] {
-        if let Ok(p) = std::env::var(key) {
-            let p = PathBuf::from(p);
-            if p.join("graph.json").is_file() {
-                return Some(p);
-            }
-        }
-    }
+fn probe_graph_cache_enabled() -> bool {
+    crate::compile_profile::infer_mode() == crate::compile_profile::InferMode::Parity
+        || env_flag("KITTEN_RLX_PROBE_GRAPH_CACHE")
+}
+
+fn bundle_dir_local(weights: &Path) -> Option<PathBuf> {
     let in_weights = weights.join("rlx_bundle");
     if in_weights.join("graph.json").is_file() {
         return Some(in_weights);
@@ -65,6 +64,24 @@ pub fn bundle_dir_near_weights(weights: &Path) -> Option<PathBuf> {
         .parent()
         .map(|p| p.join("rlx_bundle"))
         .filter(|p| p.join("graph.json").is_file())
+}
+
+pub fn bundle_dir_near_weights(weights: &Path) -> Option<PathBuf> {
+    let weights = weights
+        .canonicalize()
+        .unwrap_or_else(|_| weights.to_path_buf());
+    if let Some(local) = bundle_dir_local(&weights) {
+        return Some(local);
+    }
+    for key in [crate::opts::ONNX_BUNDLE_ENV, crate::opts::LEGACY_BUNDLE_ENV] {
+        if let Ok(p) = std::env::var(key) {
+            let p = PathBuf::from(p);
+            if p.join("graph.json").is_file() {
+                return p.canonicalize().ok().or(Some(p));
+            }
+        }
+    }
+    None
 }
 
 fn aot_cache_root() -> PathBuf {
@@ -76,27 +93,75 @@ fn aot_cache_root() -> PathBuf {
         .join("rlx/kitten_tts_aot")
 }
 
-fn ensure_compile_arena_policy() {
-    // Kitten's graph packs many small params next to `input_ids` (I64). With
-    // liveness reuse, occasional kernel tail writes have stomped the index
-    // buffer (word-embedding Gather read row ~118 instead of 0). Disabling
-    // slot reuse keeps compile memory higher but matches ORT numerics.
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| crate::set_env_var("RLX_ARENA_NO_REUSE", "1"));
+pub fn ensure_compile_arena_policy() {
+    if crate::compile_profile::arena_reuse_allowed_for_kitten() {
+        return;
+    }
+    crate::set_env_var("RLX_ARENA_NO_REUSE", "1");
 }
 
-fn skip_fusion_from_env() -> bool {
+pub fn skip_fusion_from_env() -> bool {
     std::env::var("KITTEN_RLX_SKIP_FUSION")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
 }
 
-/// Production compile options. Fusion stays off by default: dual waveform+duration
-/// outputs alias under fusion today. Set `KITTEN_RLX_ENABLE_FUSION=1` to opt in.
-pub fn compile_options_for(_device: Device) -> CompileOptions {
-    let mut opts = CompileOptions::default();
-    let enable_fusion = std::env::var("KITTEN_RLX_ENABLE_FUSION")
-        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"));
-    opts.fusion_opts.skip_fusion = !enable_fusion || skip_fusion_from_env();
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+}
+
+/// RNG policy for vocoder noise and other in-graph random ops.
+pub fn rng_options_from_env() -> RngOptions {
+    if env_flag("RLX_RNG_ZERO") {
+        return RngOptions::zero();
+    }
+    let seed = std::env::var("KITTEN_RLX_RNG_SEED")
+        .or_else(|_| std::env::var("RLX_RNG_SEED"))
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(42);
+    let backend = std::env::var("KITTEN_RLX_RNG_BACKEND")
+        .or_else(|_| std::env::var("RLX_RNG_BACKEND"))
+        .ok()
+        .as_deref()
+        .map(str::to_ascii_lowercase);
+    // Vocoder noise: match ONNX Runtime (Philox is quieter / mismatched vs ORT).
+    if backend.is_none() {
+        return RngOptions::ort(seed);
+    }
+    match backend.as_deref() {
+        Some("ort") | Some("onnx") | Some("onnxruntime") => RngOptions::ort(seed),
+        Some("zero") => RngOptions::zero(),
+        Some("philox") => RngOptions::philox(seed),
+        _ => RngOptions::philox(seed),
+    }
+}
+
+/// Production compile options. Fusion on by default for single-output profiles
+/// ([`CompileProfile::DurationRefinement`] / [`CompileProfile::WaveformOnly`]).
+pub fn compile_options_base(device: Device) -> CompileOptions {
+    use rlx_opt::{FusionOptions, FusionTarget};
+    use rlx_runtime::fusion_target_for;
+
+    let target = fusion_target_for(device);
+    let fusion_opts = match target {
+        FusionTarget::Metal => FusionOptions::for_metal(),
+        FusionTarget::Cpu => FusionOptions::for_cpu(),
+        FusionTarget::Wgpu => FusionOptions::for_wgpu(),
+        _ => FusionOptions::default(),
+    };
+    let mut opts = CompileOptions::default()
+        .fusion_target(target)
+        .fusion_opts(fusion_opts);
+    opts.fusion_opts.skip_fusion = skip_fusion_from_env();
+    opts.rng = rng_options_from_env();
+    opts
+}
+
+/// Dual-output full graph (legacy / parity).
+pub fn compile_options_for(device: Device) -> CompileOptions {
+    let mut opts = compile_options_base(device);
+    opts.fusion_opts.skip_fusion = true;
     opts
 }
 
@@ -143,15 +208,26 @@ pub fn import_from_bundle_cached(bundle_dir: &Path, opts: &GraphOptions) -> Resu
         return Ok(hit);
     }
     crate::opts::set_compile_sequence_length(opts.sequence_length);
+    crate::bundle_patches::set_import_max_waveform_samples(opts.max_waveform_samples);
     let mut bundle = load_bundle(bundle_dir).context("load RLX bundle")?;
-    crate::bundle_patches::patch_bundle_nodes(&mut bundle.nodes, opts.sequence_length);
+    crate::bundle_patches::patch_bundle_nodes(
+        &mut bundle.nodes,
+        opts.sequence_length,
+        opts.max_waveform_samples,
+    );
     let (hir, params, typed, _report) = build_hir_from_bundle(&bundle, import_opts(opts))?;
     let import = BundleImport { hir, params, typed };
-    import_cache()
-        .lock()
-        .expect("import cache")
-        .insert(key, import.clone());
+    import_cache_insert(key, import.clone());
     Ok(import)
+}
+
+fn import_cache_insert(key: (PathBuf, usize, usize, String), import: BundleImport) {
+    let cap = crate::compile_profile::seq_compile_cache_capacity();
+    let mut cache = import_cache().lock().expect("import cache");
+    if cache.len() >= cap && !cache.contains_key(&key) {
+        cache.clear();
+    }
+    cache.insert(key, import);
 }
 
 /// Copy probe tensors into a dedicated buffer so graph outputs are not aliased views.
@@ -214,24 +290,69 @@ pub fn run_parity_inputs(
     ids: &[i64],
     style: &[f32],
 ) -> Vec<(Vec<u8>, DType)> {
-    set_runtime_input_ids_shape(graph, seq).expect("input_ids shape");
+    let mut hello_dur = vec![19i64, 2, 1, 2, 3, 2, 3, 2];
+    if hello_dur.len() < seq {
+        hello_dur.resize(seq, 0);
+    } else {
+        hello_dur.truncate(seq);
+    }
+    let active = ids.len().min(seq);
+    run_parity_inputs_with_duration(graph, seq, active, ids, style, Some(&hello_dur))
+}
+
+/// Like [`run_parity_inputs`], but seeds duration carry from `duration` when provided.
+pub fn run_parity_inputs_with_duration(
+    graph: &mut CompiledGraph,
+    compile_seq: usize,
+    active_tokens: usize,
+    ids: &[i64],
+    style: &[f32],
+    duration: Option<&[i64]>,
+) -> Vec<(Vec<u8>, DType)> {
+    set_runtime_input_ids_shape(graph, compile_seq).expect("input_ids shape");
+    let active = active_tokens.min(compile_seq);
+    set_runtime_active_sequence(graph, active, compile_seq);
+    let mut dur: Vec<i64> = duration
+        .map(|d| {
+            let mut v = d.to_vec();
+            if v.len() < compile_seq {
+                v.resize(compile_seq, 0);
+            } else if v.len() > compile_seq {
+                v.truncate(compile_seq);
+            }
+            v
+        })
+        .unwrap_or_else(|| vec![19, 2, 1, 2, 3, 2, 3, 2]);
+    if dur.len() < compile_seq {
+        dur.resize(compile_seq, 0);
+    } else {
+        dur.truncate(compile_seq);
+    }
+    let dur_bytes: Vec<u8> = dur.iter().flat_map(|v| v.to_le_bytes()).collect();
+    reset_duration_carry(graph, compile_seq);
+    set_duration_carry(graph, &dur_bytes);
+    apply_alignment_hint(graph, &dur_bytes, active);
+    let ids_bytes: Vec<u8> = ids.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let style_bytes: Vec<u8> = style.iter().flat_map(|v| v.to_le_bytes()).collect();
     let speed = 1.0f32.to_le_bytes();
-    graph.run_typed(&[
-        (
-            "input_ids",
-            &ids.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
-            DType::I64,
-        ),
-        (
-            "style",
-            &style
-                .iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<_>>(),
-            DType::F32,
-        ),
+    let inputs: [(&str, &[u8], DType); 3] = [
+        ("input_ids", &ids_bytes, DType::I64),
+        ("style", &style_bytes, DType::F32),
         ("speed", &speed, DType::F32),
-    ])
+    ];
+    // ORT duration oracle: one forward with trusted carry + alignment (no native re-seed).
+    if duration.is_some() {
+        return graph.run_typed(&inputs);
+    }
+    let mut outs = run_with_duration_fixed_point_on_graph(graph, &inputs);
+    apply_alignment_hint(graph, &dur_bytes, active);
+    if active < 32 {
+        if let Some((carry, DType::I64)) = outs.iter().find(|(_, dt)| *dt == DType::I64) {
+            set_duration_carry(graph, carry);
+        }
+        outs = graph.run_typed(&inputs);
+    }
+    outs
 }
 
 fn sanitize_cache_token(s: &str) -> String {
@@ -279,28 +400,35 @@ pub fn compile_probe_graph(
     let _ = bundle_dir;
     ensure_kernels_registered();
     let key = probe_cache_key(device, opts, probe_name);
-    if let Some(hit) = probe_graph_cache()
-        .lock()
-        .expect("probe cache")
-        .get(&key)
-        .cloned()
-    {
-        return Ok(hit);
+    if probe_graph_cache_enabled() {
+        if let Some(hit) = probe_graph_cache()
+            .lock()
+            .expect("probe cache")
+            .get(&key)
+            .cloned()
+        {
+            return Ok(hit);
+        }
     }
     // Probes target runtime token width; headroom compile length breaks static ActCopy shapes.
     crate::opts::set_compile_sequence_length(opts.sequence_length);
-    let mut hir = import.hir.clone();
+    crate::bundle_patches::set_import_sequence_length(opts.sequence_length);
+    crate::bundle_patches::set_import_max_waveform_samples(opts.max_waveform_samples);
+    let (mut hir, params) =
+        prepare_hir_for_compile(import.hir.clone(), &import.params, &import.typed);
     let probe = materialize_probe_output(&mut hir, extra_output);
     hir.set_outputs(vec![probe]);
     let cache = AotCache::new(aot_cache_root());
     let mut compiled = cache
         .compile_hir_cached(&key, device, hir, &compile_options_probe())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    attach_params(&mut compiled, &import.params, &import.typed);
-    probe_graph_cache()
-        .lock()
-        .expect("probe cache")
-        .insert(key, compiled.clone());
+    attach_params(&mut compiled, &params, &import.typed);
+    if probe_graph_cache_enabled() {
+        probe_graph_cache()
+            .lock()
+            .expect("probe cache")
+            .insert(key, compiled.clone());
+    }
     Ok(compiled)
 }
 
@@ -320,16 +448,21 @@ pub fn compile_multi_probe_graph(
     }
     let labels: Vec<&str> = probes.iter().map(|(_, l)| *l).collect();
     let key = multi_probe_cache_key(device, opts, &labels);
-    if let Some(hit) = probe_graph_cache()
-        .lock()
-        .expect("probe cache")
-        .get(&key)
-        .cloned()
-    {
-        return Ok(hit);
+    if probe_graph_cache_enabled() {
+        if let Some(hit) = probe_graph_cache()
+            .lock()
+            .expect("probe cache")
+            .get(&key)
+            .cloned()
+        {
+            return Ok(hit);
+        }
     }
     crate::opts::set_compile_sequence_length(opts.sequence_length);
-    let mut hir = import.hir.clone();
+    crate::bundle_patches::set_import_sequence_length(opts.sequence_length);
+    crate::bundle_patches::set_import_max_waveform_samples(opts.max_waveform_samples);
+    let (mut hir, params) =
+        prepare_hir_for_compile(import.hir.clone(), &import.params, &import.typed);
     let mut outputs = Vec::with_capacity(probes.len());
     for (node_id, _) in probes {
         outputs.push(materialize_probe_output(&mut hir, *node_id));
@@ -339,11 +472,13 @@ pub fn compile_multi_probe_graph(
     let mut compiled = cache
         .compile_hir_cached(&key, device, hir, &compile_options_probe())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    attach_params(&mut compiled, &import.params, &import.typed);
-    probe_graph_cache()
-        .lock()
-        .expect("probe cache")
-        .insert(key, compiled.clone());
+    attach_params(&mut compiled, &params, &import.typed);
+    if probe_graph_cache_enabled() {
+        probe_graph_cache()
+            .lock()
+            .expect("probe cache")
+            .insert(key, compiled.clone());
+    }
     Ok(compiled)
 }
 
@@ -360,8 +495,49 @@ pub fn set_runtime_input_ids_shape(graph: &mut CompiledGraph, seq: usize) -> Res
     Ok(())
 }
 
+/// Hint backends (MLX) of active token rows vs compile slot width.
+pub fn set_runtime_active_sequence(
+    graph: &mut CompiledGraph,
+    active_tokens: usize,
+    compile_slots: usize,
+) {
+    crate::opts::set_runtime_active_tokens(active_tokens);
+    let _ = compile_slots;
+    // Kitten duration/vocoder epilogues use compile-slot tensors; active-extent
+    // dispatch scales row counts and corrupts wide-sequence duration (rlx #L1).
+    graph.set_active_extent(None);
+    // After clearing backend extent: `set_active_extent(None)` also clears onnx_active.
+    rlx_runtime::onnx_active::set_active_token_count(Some(active_tokens));
+}
+
+pub fn shape_all_graphs_for_infer(
+    graphs: &CachedSeqGraphs,
+    active_tokens: usize,
+    compile_slots: usize,
+) -> Result<()> {
+    {
+        let mut g = graphs.full.lock().expect("full graph");
+        set_runtime_input_ids_shape(&mut g, compile_slots)?;
+        set_runtime_active_sequence(&mut g, active_tokens, compile_slots);
+    }
+    if let Some(d) = &graphs.duration_refine {
+        let mut g = d.lock().expect("dur graph");
+        set_runtime_input_ids_shape(&mut g, compile_slots)?;
+        set_runtime_active_sequence(&mut g, active_tokens, compile_slots);
+    }
+    if let Some(w) = &graphs.waveform_only {
+        let mut g = w.lock().expect("wave graph");
+        set_runtime_input_ids_shape(&mut g, compile_slots)?;
+        set_runtime_active_sequence(&mut g, active_tokens, compile_slots);
+    }
+    Ok(())
+}
+
 /// Bump when `rlx-onnx-import` lowering changes affect compiled graphs.
-const IMPORT_CACHE_TAG: &str = "kitten_cf_v56";
+const IMPORT_CACHE_TAG: &str = "kitten_rlx_align_v118";
+
+/// Static alignment buffer multiplier (`seq * N`); must match import + HIR inject.
+pub const MAX_FRAMES_PER_TOKEN: usize = 64;
 
 /// Graph output index for per-token duration (after waveform).
 pub const DURATION_OUTPUT_INDEX: usize = 1;
@@ -374,9 +550,22 @@ pub fn run_with_duration_fixed_point(
     graph: &mut CompiledGraph,
     inputs: &[(&str, &[u8], DType)],
 ) -> Vec<(Vec<u8>, DType)> {
-    let mut prev_carry: Option<Vec<u8>> = None;
+    run_with_duration_fixed_point_on_graph(graph, inputs)
+}
+
+fn run_with_duration_fixed_point_on_graph(
+    graph: &mut CompiledGraph,
+    inputs: &[(&str, &[u8], DType)],
+) -> Vec<(Vec<u8>, DType)> {
+    let compile_seq = carry_len_from_inputs(inputs);
+    let active_tokens = crate::opts::runtime_active_tokens().unwrap_or(compile_seq);
+    let max_iters = duration_refine_iters(active_tokens);
     let mut outs = graph.run_typed(inputs);
-    for _ in 1..DURATION_FIXED_POINT_ITERS {
+    if max_iters == 1 {
+        return outs;
+    }
+    let mut prev_carry: Option<Vec<u8>> = None;
+    for _ in 1..max_iters {
         let Some((dur_bytes, DType::I64)) = outs.get(DURATION_OUTPUT_INDEX) else {
             break;
         };
@@ -388,6 +577,438 @@ pub fn run_with_duration_fixed_point(
         outs = graph.run_typed(inputs);
     }
     outs
+}
+
+fn carry_len_from_inputs(inputs: &[(&str, &[u8], DType)]) -> usize {
+    if let Some(active) = crate::opts::runtime_active_tokens() {
+        return compile_profile::compile_slot_length(active);
+    }
+    let token_len = inputs
+        .iter()
+        .find(|(name, _, _)| *name == "input_ids")
+        .map(|(_, bytes, _)| bytes.len() / 8)
+        .unwrap_or(1);
+    compile_profile::compile_slot_length(token_len.max(1))
+}
+
+/// Zero-initialize duration carry on a single graph (each infer starts fresh).
+pub fn reset_duration_carry(graph: &mut CompiledGraph, compile_seq: usize) {
+    let seed = compile_profile::duration_carry_seed_bytes(compile_seq);
+    graph.set_param_typed(crate::opts::DURATION_CARRY, &seed, DType::I64);
+}
+
+fn set_duration_carry(graph: &mut CompiledGraph, dur_bytes: &[u8]) {
+    graph.set_param_typed(crate::opts::DURATION_CARRY, dur_bytes, DType::I64);
+}
+
+fn duration_refine_iters(active_tokens: usize) -> usize {
+    if compile_profile::duration_external_fixed_point_enabled() {
+        return DURATION_FIXED_POINT_ITERS;
+    }
+    // Short utterances need multiple carry passes (single-pass diverges from ORT).
+    if active_tokens <= 32 {
+        return DURATION_FIXED_POINT_ITERS;
+    }
+    1
+}
+
+fn alignment_frames_from_duration_bytes(dur_bytes: &[u8], active_tokens: usize) -> usize {
+    let vals: Vec<i64> = dur_bytes
+        .chunks_exact(8)
+        .map(|c| i64::from_le_bytes(c.try_into().expect("i64")))
+        .collect();
+    crate::alignment::alignment_frame_count(&vals[..active_tokens.min(vals.len())])
+}
+
+fn set_alignment_frame_param(graph: &mut CompiledGraph, frames: usize) {
+    let v = frames.max(1) as i64;
+    graph.set_param_typed(
+        crate::opts::ALIGNMENT_FRAME_COUNT,
+        &v.to_le_bytes(),
+        DType::I64,
+    );
+}
+
+fn apply_alignment_hint(graph: &mut CompiledGraph, dur_bytes: &[u8], active_tokens: usize) {
+    let frames = alignment_frames_from_duration_bytes(dur_bytes, active_tokens);
+    if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
+        eprintln!("[kitten] alignment_frame_count={frames} active={active_tokens}");
+    }
+    set_alignment_frame_param(graph, frames);
+    crate::opts::set_runtime_mel_frames(frames);
+}
+
+fn apply_alignment_hint_preferred(
+    graph: &mut CompiledGraph,
+    active_tokens: usize,
+    alignment_duration: Option<&[u8]>,
+    fallback: Option<&[u8]>,
+) {
+    if let Some(hint) = alignment_duration {
+        apply_alignment_hint(graph, hint, active_tokens);
+    } else if let Some(fb) = fallback {
+        apply_alignment_hint(graph, fb, active_tokens);
+    }
+}
+
+pub(crate) fn attach_alignment_frame_param(compiled: &mut CompiledGraph) {
+    set_alignment_frame_param(compiled, 1);
+    crate::opts::set_runtime_mel_frames(1);
+}
+
+/// Optimized infer: waveform-only in production, or duration refine + waveform pass.
+///
+/// When `carry_seed` is set, it is written to [`DURATION_CARRY`] on the waveform graph
+/// (and skips duration refinement) so native vocoder length matches ORT exactly.
+pub fn run_kitten_inference(
+    graphs: &CachedSeqGraphs,
+    inputs: &[(&str, &[u8], DType)],
+    carry_seed: Option<&[u8]>,
+    alignment_duration: Option<&[u8]>,
+) -> Vec<(Vec<u8>, DType)> {
+    let compile_seq = carry_len_from_inputs(inputs);
+    let active_tokens = crate::opts::runtime_active_tokens().unwrap_or(compile_seq);
+    let _ = shape_all_graphs_for_infer(graphs, active_tokens, compile_seq);
+    // Refresh process-wide hint immediately before execute (bucket cache may clear it).
+    rlx_runtime::onnx_active::set_active_token_count(Some(active_tokens));
+
+    if let Some(seed) = carry_seed {
+        let mut g = graphs.lock_infer_graph();
+        g.set_param_typed(crate::opts::DURATION_CARRY, seed, DType::I64);
+        apply_alignment_hint_preferred(&mut g, active_tokens, alignment_duration, Some(seed));
+        if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
+            eprintln!(
+                "[kitten] carry infer active_tokens={active_tokens} compile_seq={compile_seq} onnx_active={:?}",
+                rlx_runtime::onnx_active::active_token_count()
+            );
+        }
+        // Waveform-only production graphs have no duration output; one ORT-seeded pass only.
+        if compile_profile::production_waveform_only_infer() {
+            return g.run_typed(inputs);
+        }
+        let mut outs = run_with_duration_fixed_point_on_graph(&mut g, inputs);
+        apply_alignment_hint_preferred(&mut g, active_tokens, alignment_duration, Some(seed));
+        if active_tokens < 32 {
+            if let Some((dur_bytes, DType::I64)) = outs
+                .iter()
+                .find(|(_, dt)| *dt == DType::I64)
+                .map(|(b, dt)| (b.as_slice(), *dt))
+            {
+                set_duration_carry(&mut g, dur_bytes);
+            }
+            outs = g.run_typed(inputs);
+        }
+        if outs.len() >= 2 {
+            return outs;
+        }
+        if let Some(wave_arc) = &graphs.waveform_only {
+            let mut wave = wave_arc.lock().expect("waveform graph");
+            wave.set_param_typed(crate::opts::DURATION_CARRY, seed, DType::I64);
+            apply_alignment_hint_preferred(
+                &mut wave,
+                active_tokens,
+                alignment_duration,
+                Some(seed),
+            );
+            return wave.run_typed(inputs);
+        }
+        return outs;
+    }
+
+    if let Some(wave_arc) = &graphs.waveform_only {
+        if compile_profile::production_waveform_only_infer() || graphs.duration_refine.is_none() {
+            let mut wave = wave_arc.lock().expect("waveform graph");
+            // Waveform-only graphs strip the duration loop; seed carry from ORT when available.
+            if let Some(hint) = alignment_duration {
+                set_duration_carry(&mut wave, hint);
+                apply_alignment_hint(&mut wave, hint, active_tokens);
+            } else {
+                reset_duration_carry(&mut wave, compile_seq);
+            }
+            return wave.run_typed(inputs);
+        }
+    }
+
+    if let (Some(dur_arc), Some(wave_arc)) = (&graphs.duration_refine, &graphs.waveform_only) {
+        let mut dur = dur_arc.lock().expect("duration refine graph");
+        reset_duration_carry(&mut dur, compile_seq);
+        let mut prev_carry: Option<Vec<u8>> = None;
+        let mut last_dur: Option<Vec<u8>> = None;
+        let max_iters = duration_refine_iters(active_tokens);
+        for _ in 0..max_iters {
+            let outs = dur.run_typed(inputs);
+            let Some((dur_bytes, DType::I64)) = outs.first() else {
+                break;
+            };
+            if prev_carry.as_deref() == Some(dur_bytes.as_slice()) {
+                last_dur = Some(dur_bytes.clone());
+                break;
+            }
+            last_dur = Some(dur_bytes.clone());
+            if max_iters == 1 {
+                break;
+            }
+            set_duration_carry(&mut dur, dur_bytes);
+            prev_carry = Some(dur_bytes.clone());
+        }
+        let wave_outs = {
+            let mut wave = wave_arc.lock().expect("waveform graph");
+            if let Some(dur_bytes) = &last_dur {
+                set_duration_carry(&mut wave, dur_bytes);
+            } else {
+                reset_duration_carry(&mut wave, compile_seq);
+            }
+            apply_alignment_hint_preferred(
+                &mut wave,
+                active_tokens,
+                alignment_duration,
+                last_dur.as_deref(),
+            );
+            wave.run_typed(inputs)
+        };
+        if let Some(dur) = last_dur {
+            let mut out = wave_outs;
+            out.push((dur, DType::I64));
+            return out;
+        }
+        return wave_outs;
+    }
+
+    let mut g = graphs.lock_infer_graph();
+    reset_duration_carry(&mut g, compile_seq);
+    if let Some(hint) = alignment_duration {
+        apply_alignment_hint(&mut g, hint, active_tokens);
+    }
+    if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
+        eprintln!(
+            "[kitten] infer active_tokens={active_tokens} compile_seq={compile_seq} onnx_active={:?}",
+            rlx_runtime::onnx_active::active_token_count()
+        );
+    }
+    let mut outs = run_with_duration_fixed_point_on_graph(&mut g, inputs);
+    if let Some(hint) = alignment_duration {
+        if active_tokens < 32 {
+            if let Some((dur_bytes, DType::I64)) = outs
+                .iter()
+                .find(|(_, dt)| *dt == DType::I64)
+                .map(|(b, dt)| (b.as_slice(), *dt))
+            {
+                set_duration_carry(&mut g, dur_bytes);
+            }
+            apply_alignment_hint(&mut g, hint, active_tokens);
+            outs = g.run_typed(inputs);
+        }
+    } else if active_tokens >= 32 && carry_seed.is_none() && alignment_duration.is_none() {
+        if let Some((dur_bytes, DType::I64)) = outs
+            .iter()
+            .find(|(_, dt)| *dt == DType::I64)
+            .map(|(b, dt)| (b.as_slice(), *dt))
+        {
+            if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
+                eprintln!(
+                    "[kitten] wide-seq second pass (duration bytes={})",
+                    dur_bytes.len()
+                );
+            }
+            apply_alignment_hint(&mut g, dur_bytes, active_tokens);
+            set_duration_carry(&mut g, dur_bytes);
+            outs = run_with_duration_fixed_point_on_graph(&mut g, inputs);
+        }
+    }
+    outs
+}
+
+fn compile_hir_profile(
+    device: Device,
+    key_prefix: &str,
+    profile: CompileProfile,
+    hir: rlx_ir::hir::HirModule,
+    params: &HashMap<String, Vec<f32>>,
+    typed: &HashMap<String, (Vec<u8>, DType)>,
+    carry_bytes: Option<&[u8]>,
+) -> Result<CompiledGraph> {
+    let key = format!(
+        "{key_prefix}_{}",
+        compile_profile::aot_cache_suffix(profile)
+    );
+    if mem_graph_cache_enabled() {
+        if let Some(hit) = mem_graph_cache().lock().expect("mem graph cache").get(&key) {
+            let mut compiled = hit.clone();
+            if let Some(carry) = carry_bytes {
+                compiled.set_param_typed(crate::opts::DURATION_CARRY, carry, DType::I64);
+            }
+            return Ok(compiled);
+        }
+    }
+    let (hir, params) = prepare_hir_for_compile(hir, params, typed);
+    let compile_opts = compile_profile::compile_options_for_profile(device, profile);
+    let mut compiled = compile_prepared_hir_cached(&key, device, hir, &params, &compile_opts)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    attach_params(&mut compiled, &params, typed);
+    if let Some(carry) = carry_bytes {
+        compiled.set_param_typed(crate::opts::DURATION_CARRY, carry, DType::I64);
+    }
+    attach_alignment_frame_param(&mut compiled);
+    if mem_graph_cache_enabled() {
+        mem_graph_cache_insert(key, compiled.clone());
+    }
+    Ok(compiled)
+}
+
+static MEM_GRAPH_CACHE: OnceLock<Mutex<HashMap<String, CompiledGraph>>> = OnceLock::new();
+
+fn mem_graph_cache() -> &'static Mutex<HashMap<String, CompiledGraph>> {
+    MEM_GRAPH_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn mem_graph_cache_enabled() -> bool {
+    env_flag("KITTEN_RLX_GRAPH_CACHE")
+}
+
+fn mem_graph_cache_insert(key: String, compiled: CompiledGraph) {
+    let cap = crate::compile_profile::seq_compile_cache_capacity();
+    let mut cache = mem_graph_cache().lock().expect("mem graph cache");
+    if cache.len() >= cap && !cache.contains_key(&key) {
+        cache.clear();
+    }
+    cache.insert(key, compiled);
+}
+
+pub fn build_cached_graphs_from_import(
+    device: Device,
+    key_prefix: &str,
+    import: &BundleImport,
+    carry_bytes: Option<&[u8]>,
+) -> Result<CachedSeqGraphs> {
+    if optimized_split_graphs_enabled() {
+        let compile_dur = compile_profile::compile_duration_refine_graph();
+        let params = import.params.clone();
+        let typed = import.typed.clone();
+        let carry_owned = carry_bytes.map(|b| b.to_vec());
+
+        let (dur, wave) = if compile_dur {
+            if compile_profile::env_flag("KITTEN_RLX_SERIAL_COMPILE") {
+                let mut hir_dur = import.hir.clone();
+                compile_profile::apply_profile(&mut hir_dur, CompileProfile::DurationRefinement);
+                let dur = compile_hir_profile(
+                    device,
+                    key_prefix,
+                    CompileProfile::DurationRefinement,
+                    hir_dur,
+                    &params,
+                    &typed,
+                    carry_bytes,
+                )?;
+                let mut hir_wave = import.hir.clone();
+                compile_profile::apply_profile(&mut hir_wave, CompileProfile::WaveformOnly);
+                let wave = compile_hir_profile(
+                    device,
+                    key_prefix,
+                    CompileProfile::WaveformOnly,
+                    hir_wave,
+                    &params,
+                    &typed,
+                    carry_bytes,
+                )?;
+                (Some(dur), wave)
+            } else {
+                let key_d = key_prefix.to_string();
+                let key_w = key_prefix.to_string();
+                let import_d = import.clone();
+                let import_w = import.clone();
+                let params_d = params.clone();
+                let params_w = params.clone();
+                let typed_d = typed.clone();
+                let typed_w = typed.clone();
+                let carry_d = carry_owned.clone();
+                let carry_w = carry_owned;
+                std::thread::scope(|scope| -> Result<(Option<CompiledGraph>, CompiledGraph)> {
+                    let dur_h = scope.spawn(move || {
+                        let mut hir_dur = import_d.hir;
+                        compile_profile::apply_profile(
+                            &mut hir_dur,
+                            CompileProfile::DurationRefinement,
+                        );
+                        compile_hir_profile(
+                            device,
+                            &key_d,
+                            CompileProfile::DurationRefinement,
+                            hir_dur,
+                            &params_d,
+                            &typed_d,
+                            carry_d.as_deref(),
+                        )
+                    });
+                    let wave_h = scope.spawn(move || {
+                        let mut hir_wave = import_w.hir;
+                        compile_profile::apply_profile(&mut hir_wave, CompileProfile::WaveformOnly);
+                        compile_hir_profile(
+                            device,
+                            &key_w,
+                            CompileProfile::WaveformOnly,
+                            hir_wave,
+                            &params_w,
+                            &typed_w,
+                            carry_w.as_deref(),
+                        )
+                    });
+                    let dur = dur_h.join().expect("duration compile thread")?;
+                    let wave = wave_h.join().expect("waveform compile thread")?;
+                    Ok((Some(dur), wave))
+                })?
+            }
+        } else {
+            let mut hir_wave = import.hir.clone();
+            compile_profile::apply_profile(&mut hir_wave, CompileProfile::WaveformOnly);
+            let wave = compile_hir_profile(
+                device,
+                key_prefix,
+                CompileProfile::WaveformOnly,
+                hir_wave,
+                &params,
+                &typed,
+                carry_bytes,
+            )?;
+            (None, wave)
+        };
+
+        let wave_arc = std::sync::Arc::new(std::sync::Mutex::new(wave));
+        let dur_arc = dur.map(|g| std::sync::Arc::new(std::sync::Mutex::new(g)));
+        let full_arc = if compile_profile::compile_split_full_fallback() {
+            let mut hir_full = import.hir.clone();
+            compile_profile::apply_profile(&mut hir_full, CompileProfile::Full);
+            let full = compile_hir_profile(
+                device,
+                key_prefix,
+                CompileProfile::Full,
+                hir_full,
+                &import.params,
+                &import.typed,
+                carry_bytes,
+            )?;
+            std::sync::Arc::new(std::sync::Mutex::new(full))
+        } else {
+            std::sync::Arc::clone(&wave_arc)
+        };
+        return Ok(CachedSeqGraphs {
+            full: full_arc,
+            duration_refine: dur_arc,
+            waveform_only: Some(wave_arc),
+        });
+    }
+
+    let mut hir = import.hir.clone();
+    compile_profile::apply_profile(&mut hir, CompileProfile::Full);
+    let full = compile_hir_profile(
+        device,
+        key_prefix,
+        CompileProfile::Full,
+        hir,
+        &import.params,
+        &import.typed,
+        carry_bytes,
+    )?;
+    Ok(CachedSeqGraphs::full(full))
 }
 
 /// Extra sequence slots when compiling so duration epilogue buffers do not alias
@@ -406,11 +1027,28 @@ fn cache_key(device: Device, opts: &GraphOptions) -> String {
     )
 }
 
-fn import_opts(opts: &GraphOptions) -> ImportOptions {
+pub(crate) fn import_opts(opts: &GraphOptions) -> ImportOptions {
     crate::bundle_patches::set_import_sequence_length(opts.sequence_length);
+    let duration_loop_lowering = if compile_profile::duration_external_fixed_point_enabled() {
+        rlx_onnx_import::DurationLoopLowering::RuntimeCarry
+    } else {
+        rlx_onnx_import::DurationLoopLowering::FusedKernel
+    };
+    let mel_full = crate::mel_align::import_mel_propagate_enabled(opts.sequence_length);
+    let mel_post = crate::mel_align::import_f0_feed_meta_enabled(opts.sequence_length);
     ImportOptions {
         sequence_length: opts.sequence_length,
         max_waveform_samples: opts.max_waveform_samples,
+        max_frames_per_token: MAX_FRAMES_PER_TOKEN,
+        duration_loop_lowering,
+        pre_shape_propagate: mel_full.then_some(crate::mel_align::pre_shape_propagate),
+        post_shape_propagate: if mel_full {
+            Some(crate::mel_align::post_shape_propagate)
+        } else if mel_post {
+            Some(crate::mel_align::post_shape_propagate_minimal)
+        } else {
+            None
+        },
         output_shape_fix: Some(crate::bundle_patches::import_output_shape_fix),
         ..ImportOptions::quant_bundle()
     }
@@ -420,7 +1058,7 @@ fn import_opts(opts: &GraphOptions) -> ImportOptions {
 /// graph still wires the `duration` input (idempotent when carry is pre-baked).
 pub fn build_hir_from_bundle_with_rewrites(
     bundle: &rlx_onnx_import::RlxBundle,
-    opts: ImportOptions,
+    mut opts: ImportOptions,
 ) -> Result<(
     HirModule,
     HashMap<String, Vec<f32>>,
@@ -428,12 +1066,26 @@ pub fn build_hir_from_bundle_with_rewrites(
     ImportReport,
 )> {
     crate::bundle_patches::set_import_sequence_length(opts.sequence_length);
+    crate::bundle_patches::set_import_max_waveform_samples(opts.max_waveform_samples);
     let mut nodes = bundle.nodes.clone();
-    crate::bundle_patches::patch_bundle_nodes(&mut nodes, opts.sequence_length);
-    let import_opts = import_opts(&GraphOptions {
+    crate::bundle_patches::patch_bundle_nodes(
+        &mut nodes,
+        opts.sequence_length,
+        opts.max_waveform_samples,
+    );
+    let defaults = import_opts(&GraphOptions {
         sequence_length: opts.sequence_length,
         max_waveform_samples: opts.max_waveform_samples,
     });
+    if opts.pre_shape_propagate.is_none() {
+        opts.pre_shape_propagate = defaults.pre_shape_propagate;
+    }
+    if opts.post_shape_propagate.is_none() {
+        opts.post_shape_propagate = defaults.post_shape_propagate;
+    }
+    if opts.output_shape_fix.is_none() {
+        opts.output_shape_fix = defaults.output_shape_fix;
+    }
     let mut params = HashMap::new();
     let mut init_shapes: HashMap<String, Vec<usize>> = HashMap::new();
     let st = bundle.weights()?;
@@ -463,12 +1115,6 @@ pub fn build_hir_from_bundle_with_rewrites(
         &mut params,
         &mut init_shapes,
     )?;
-    rlx_onnx_import::shape_propagate::propagate_shapes(
-        &mut nodes,
-        &bundle.manifest,
-        &init_shapes,
-        &opts,
-    );
     build_hir_from_parts(
         &bundle.manifest,
         nodes,
@@ -476,7 +1122,7 @@ pub fn build_hir_from_bundle_with_rewrites(
         typed_params,
         i64_params,
         &init_shapes,
-        import_opts,
+        opts,
     )
 }
 
@@ -525,14 +1171,16 @@ fn load_bundle_f32_param(
     Ok(out)
 }
 
-/// Break the duration feedback cycle for single-pass import (ORT uses stale `duration`).
+/// Break the duration feedback cycle: `/Expand_1` always reads stale carry; `/Where_1`
+/// keeps live `duration` in ORT single-pass mode (see [`patch_duration_where_input`]).
 pub fn rewrite_duration_carry(nodes: &mut [BundleNode]) {
     for node in nodes.iter_mut() {
-        if node.name == "/Expand_1" || node.name == "/Where_1" {
-            for inp in node.inputs.iter_mut() {
-                if inp == "duration" {
-                    *inp = crate::opts::DURATION_CARRY.to_string();
-                }
+        if node.name != "/Expand_1" {
+            continue;
+        }
+        for inp in node.inputs.iter_mut() {
+            if inp == "duration" {
+                *inp = crate::opts::DURATION_CARRY.to_string();
             }
         }
     }
@@ -549,6 +1197,70 @@ fn attach_params(
     for (name, (bytes, dtype)) in typed {
         compiled.set_param_typed(name.as_str(), bytes, *dtype);
     }
+    compiled.finalize_params();
+}
+
+fn compile_prepared_hir_cached(
+    key: &str,
+    device: Device,
+    hir: rlx_ir::hir::HirModule,
+    params: &HashMap<String, Vec<f32>>,
+    compile_opts: &CompileOptions,
+) -> Result<CompiledGraph, rlx_runtime::AotCacheError> {
+    let cache = AotCache::new(aot_cache_root());
+    if compile_profile::mir_qdq_fusion_enabled() {
+        let baked: HashMap<String, Vec<f32>> = params
+            .iter()
+            .filter(|(k, _)| k.ends_with(crate::qmatmul_bake::BAKED_SUFFIX))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut graph = hir
+            .lower_to_mir()
+            .map_err(rlx_runtime::AotCacheError::from)?
+            .into_graph();
+        let fused = crate::mir_qdq_fuse::fuse_graph_qmatmul_baked(&mut graph, &baked);
+        if compile_profile::env_flag("KITTEN_RLX_TIMING") && fused > 0 {
+            eprintln!("[kitten] MIR QDQ fuse: {fused} QMatMul → baked f32 weights");
+        }
+        return cache.compile_graph_cached(key, device, graph, compile_opts);
+    }
+    cache.compile_hir_cached(key, device, hir, compile_opts)
+}
+
+pub(crate) fn prepare_hir_for_compile(
+    mut hir: rlx_ir::hir::HirModule,
+    params: &HashMap<String, Vec<f32>>,
+    typed: &HashMap<String, (Vec<u8>, DType)>,
+) -> (rlx_ir::hir::HirModule, HashMap<String, Vec<f32>>) {
+    let seq = crate::bundle_patches::import_sequence_length();
+    let max_wave = crate::bundle_patches::import_max_waveform_samples();
+    let mut params = params.clone();
+    #[cfg(feature = "native")]
+    crate::native::flow::finish_bundle_hir_for_compile(&mut hir, &mut params, seq, max_wave);
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = crate::bundle_patches::inject_vocoder_dynamic_alignment(&mut hir, seq, max_wave);
+    }
+    if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
+        eprintln!(
+            "[kitten] hir inject wide_seq={} nodes={}",
+            crate::bundle_patches::import_sequence_length() >= 32,
+            hir.len()
+        );
+    }
+    let baked = crate::qmatmul_bake::bake_qmatmul_weights(typed, &params);
+    if !baked.is_empty() {
+        let fused = crate::hir_qdq_fuse::fuse_qmatmul_baked_weights(&mut hir, &baked);
+        if compile_profile::env_flag("KITTEN_RLX_TIMING") && fused > 0 {
+            eprintln!("[kitten] QDQ fuse: {fused} QMatMul → baked f32 weights");
+        }
+        for (name, data) in baked {
+            params.insert(name, data);
+        }
+        // Drop raw quant tensors from the compile param map once baked f32 weights exist.
+        params.retain(|k, _| !k.ends_with("_quantized"));
+    }
+    (hir, params)
 }
 
 /// LRU-ish cache of graphs compiled at exact sequence lengths (ORT-style `[1, seq]`).
@@ -557,9 +1269,7 @@ pub struct SeqCompileCache {
     bundle_dir: PathBuf,
     max_waveform_samples: usize,
     max_sequence_length: usize,
-    entries: Mutex<HashMap<usize, CompiledGraph>>,
-    order: Mutex<Vec<usize>>,
-    capacity: usize,
+    graphs: SeqGraphCache,
 }
 
 impl SeqCompileCache {
@@ -575,9 +1285,7 @@ impl SeqCompileCache {
             bundle_dir,
             max_waveform_samples,
             max_sequence_length,
-            entries: Mutex::new(HashMap::new()),
-            order: Mutex::new(Vec::new()),
-            capacity: capacity.max(1),
+            graphs: SeqGraphCache::new(capacity),
         }
     }
 
@@ -585,44 +1293,65 @@ impl SeqCompileCache {
         self.max_sequence_length
     }
 
-    pub fn graph_for_seq(&self, seq: usize) -> Result<CompiledGraph> {
+    pub fn prewarm(&self, buckets: &[usize]) -> Result<()> {
+        self.graphs
+            .prewarm(buckets, |seq| self.build_seq_graphs(seq))
+    }
+
+    pub fn cached_graphs_for_seq(&self, seq: usize) -> Result<CachedSeqGraphs> {
         if seq > self.max_sequence_length {
             anyhow::bail!(
                 "sequence {seq} exceeds compiled max {}",
                 self.max_sequence_length
             );
         }
+        if let Some(hit) = self.graphs.get(seq) {
+            return Ok(hit);
+        }
+        let graphs = self.build_seq_graphs(seq)?;
+        self.graphs.insert(seq, graphs.clone());
+        Ok(graphs)
+    }
+
+    /// Legacy: returns a clone of the full graph (prefer [`Self::cached_graphs_for_seq`]).
+    pub fn graph_for_seq(&self, seq: usize) -> Result<CompiledGraph> {
+        let graphs = self.cached_graphs_for_seq(seq)?;
+        let g = graphs.full.lock().expect("full graph").clone();
+        Ok(g)
+    }
+
+    fn build_seq_graphs(&self, seq: usize) -> Result<CachedSeqGraphs> {
+        // Compile at runtime token width; headroom is optional via env for arena experiments.
+        let compile_seq = compile_profile::compile_slot_length(seq);
+        // Scale vocoder arena to this bucket's token width; cap at engine max from load.
+        let max_waveform = compile_profile::compile_waveform_cap(seq, self.max_waveform_samples);
+        let opts = GraphOptions {
+            sequence_length: compile_seq,
+            max_waveform_samples: max_waveform,
+        };
+        ensure_compile_arena_policy();
+        ensure_kernels_registered();
+        let import = import_from_bundle_cached(&self.bundle_dir, &opts)?;
+        crate::opts::set_compile_sequence_length(compile_seq);
+        let key = format!("{}_seq{seq}", cache_key(self.device, &opts));
+        let carry = compile_profile::duration_carry_seed_bytes(compile_seq);
+        let graphs = build_cached_graphs_from_import(self.device, &key, &import, Some(&carry))?;
         {
-            let entries = self.entries.lock().expect("seq cache entries");
-            if let Some(g) = entries.get(&seq) {
-                return Ok(g.clone());
-            }
+            let mut g = graphs.full.lock().expect("full graph");
+            set_runtime_input_ids_shape(&mut g, compile_seq)?;
+            set_runtime_active_sequence(&mut g, seq, compile_seq);
         }
-        let compile_seq = seq;
-        let max_waveform = self
-            .max_waveform_samples
-            .max(compile_seq.saturating_mul(600).saturating_add(12_000));
-        let mut graph = compile_from_bundle(
-            self.device,
-            &self.bundle_dir,
-            &GraphOptions {
-                sequence_length: compile_seq,
-                max_waveform_samples: max_waveform,
-            },
-        )?;
-        set_runtime_input_ids_shape(&mut graph, compile_seq)?;
-        let mut entries = self.entries.lock().expect("seq cache entries");
-        let mut order = self.order.lock().expect("seq cache order");
-        if entries.len() >= self.capacity {
-            if let Some(evict) = order.first().copied() {
-                entries.remove(&evict);
-                order.retain(|&k| k != evict);
-            }
+        if let Some(d) = &graphs.duration_refine {
+            let mut g = d.lock().expect("dur graph");
+            set_runtime_input_ids_shape(&mut g, compile_seq)?;
+            set_runtime_active_sequence(&mut g, seq, compile_seq);
         }
-        entries.insert(seq, graph.clone());
-        order.retain(|&k| k != seq);
-        order.push(seq);
-        Ok(graph)
+        if let Some(w) = &graphs.waveform_only {
+            let mut g = w.lock().expect("wave graph");
+            set_runtime_input_ids_shape(&mut g, compile_seq)?;
+            set_runtime_active_sequence(&mut g, seq, compile_seq);
+        }
+        Ok(graphs)
     }
 }
 
@@ -634,14 +1363,35 @@ pub fn compile_from_bundle(
     ensure_compile_arena_policy();
     let import = import_from_bundle_cached(bundle_dir, opts)?;
     crate::opts::set_compile_sequence_length(opts.sequence_length);
+    let (hir, params) = prepare_hir_for_compile(import.hir.clone(), &import.params, &import.typed);
     let compile_opts = compile_options_for(device);
     let key = cache_key(device, opts);
-    let cache = AotCache::new(aot_cache_root());
-    let mut compiled = cache
-        .compile_hir_cached(&key, device, import.hir, &compile_opts)
+    let mut compiled = compile_prepared_hir_cached(&key, device, hir, &params, &compile_opts)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    attach_params(&mut compiled, &import.params, &import.typed);
+    attach_params(&mut compiled, &params, &import.typed);
     Ok(compiled)
+}
+
+fn compile_prepared_hir_fresh(
+    device: Device,
+    hir: rlx_ir::hir::HirModule,
+    params: &HashMap<String, Vec<f32>>,
+    compile_opts: &CompileOptions,
+) -> Result<CompiledGraph, rlx_ir::hir::LowerError> {
+    if compile_profile::mir_qdq_fusion_enabled() {
+        let baked: HashMap<String, Vec<f32>> = params
+            .iter()
+            .filter(|(k, _)| k.ends_with(crate::qmatmul_bake::BAKED_SUFFIX))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut graph = hir.lower_to_mir()?.into_graph();
+        let fused = crate::mir_qdq_fuse::fuse_graph_qmatmul_baked(&mut graph, &baked);
+        if compile_profile::env_flag("KITTEN_RLX_TIMING") && fused > 0 {
+            eprintln!("[kitten] MIR QDQ fuse: {fused} QMatMul → baked f32 weights");
+        }
+        return Ok(Session::new(device).compile_with(graph, compile_opts));
+    }
+    Session::new(device).compile_hir_with(hir, compile_opts)
 }
 
 /// Compile without disk cache (tests / benchmarking cold compile).
@@ -653,10 +1403,96 @@ pub fn compile_from_bundle_fresh(
     ensure_compile_arena_policy();
     let import = import_from_bundle_cached(bundle_dir, opts)?;
     crate::opts::set_compile_sequence_length(opts.sequence_length);
+    let (hir, params) = prepare_hir_for_compile(import.hir.clone(), &import.params, &import.typed);
     let compile_opts = compile_options_for(device);
-    let mut compiled = Session::new(device)
-        .compile_hir_with(import.hir, &compile_opts)
+    let mut compiled = compile_prepared_hir_fresh(device, hir, &params, &compile_opts)
         .map_err(|e| anyhow::anyhow!("{0}", e))?;
-    attach_params(&mut compiled, &import.params, &import.typed);
+    attach_params(&mut compiled, &params, &import.typed);
     Ok(compiled)
+}
+
+/// Waveform parity metrics for ONNX vs native (parity diagnostics).
+#[derive(Debug, Clone, Copy)]
+pub struct ParityOnnxMetrics {
+    pub native_samples: usize,
+    pub ort_samples: usize,
+    pub align_lag: usize,
+    pub max_abs_aligned: f32,
+}
+
+pub fn parity_onnx_metrics(
+    reference: &[f32],
+    candidate: &[f32],
+    max_lag: usize,
+) -> ParityOnnxMetrics {
+    let (align_lag, max_abs_aligned) = max_abs_best_lag(reference, candidate, max_lag);
+    ParityOnnxMetrics {
+        native_samples: candidate.len(),
+        ort_samples: reference.len(),
+        align_lag,
+        max_abs_aligned,
+    }
+}
+
+fn max_abs_best_lag(reference: &[f32], candidate: &[f32], max_lag: usize) -> (usize, f32) {
+    let n = reference.len().min(candidate.len());
+    if n == 0 {
+        return (0, 0.0);
+    }
+    let max_lag = max_lag.min(n.saturating_sub(1));
+    let mut best_lag = 0usize;
+    let mut best = f32::MAX;
+    for lag in 0..=max_lag {
+        let m = n - lag;
+        let mut peak = 0.0f32;
+        for i in 0..m {
+            peak = peak.max((reference[i] - candidate[i + lag]).abs());
+        }
+        if peak < best {
+            best = peak;
+            best_lag = lag;
+        }
+    }
+    (best_lag, best)
+}
+
+pub fn log_parity_onnx_metrics(label: &str, m: &ParityOnnxMetrics) {
+    eprintln!(
+        "[kitten] parity ONNX {label}: ort={} native={} lag={} max_abs_aligned={:.6}",
+        m.ort_samples, m.native_samples, m.align_lag, m.max_abs_aligned
+    );
+}
+
+/// One-shot full-graph infer with `RLX_METAL_THUNK_PROFILE=1` (parity diagnostics).
+pub fn run_parity_thunk_profile(
+    graphs: &CachedSeqGraphs,
+    token_len: usize,
+    compile_seq: usize,
+) -> Result<()> {
+    if !compile_profile::parity_thunk_profile_enabled() {
+        return Ok(());
+    }
+    crate::set_env_var("RLX_METAL_THUNK_PROFILE", "1");
+    let ids = vec![0i64; compile_seq];
+    let ids_bytes: Vec<u8> = ids.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let style = vec![0u8; 256 * 4];
+    let speed = 1.0f32.to_le_bytes().to_vec();
+    shape_all_graphs_for_infer(graphs, token_len, compile_seq)?;
+    let inputs: [(&str, &[u8], DType); 3] = [
+        ("input_ids", ids_bytes.as_slice(), DType::I64),
+        ("style", style.as_slice(), DType::F32),
+        ("speed", speed.as_slice(), DType::F32),
+    ];
+    let outs = run_kitten_inference(graphs, &inputs, None, None);
+    if let Some((wave, dt)) = outs.first() {
+        if *dt == DType::F32 {
+            let n = wave.len() / 4;
+            let peak = wave
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs())
+                .fold(0.0f32, f32::max);
+            eprintln!("[kitten] parity profile waveform: {n} samples peak={peak:.4}");
+        }
+    }
+    Ok(())
 }

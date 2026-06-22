@@ -54,7 +54,8 @@ pub use crate::multimodal::{
 pub use crate::multimodal_runner::{GemmaMultimodalRunner, MultimodalWeights};
 
 // ── Tokenizer (shared with rlx-qwen35) ──────────────────────────
-pub use rlx_qwen35::{encode_prompt, encode_prompt_auto, resolve_tokenizer_path};
+pub use crate::prompt::{decode_token_auto, encode_chat_prompt_auto};
+pub use rlx_qwen35::{decode_ids_auto, encode_prompt, encode_prompt_auto, resolve_tokenizer_path};
 
 // ── Devices + sampling (so callers don't need to import upstream)
 pub use rlx_qwen3::SampleOpts;

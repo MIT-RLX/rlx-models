@@ -14,7 +14,6 @@ categories.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-rlx-tensor = { workspace = true }
 rlx-cpu = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-ir = { workspace = true }

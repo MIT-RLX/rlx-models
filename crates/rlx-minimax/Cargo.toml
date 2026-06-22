@@ -1,6 +1,6 @@
 [package]
 name = "rlx-minimax"
-version = "0.2.6"
+version = "0.2.9"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

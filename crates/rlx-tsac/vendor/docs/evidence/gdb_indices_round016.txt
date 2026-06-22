@@ -1,0 +1,9 @@
+Ground truth: 54 decoded 10-bit indices from original tsac binary
+Captured at 0x4057c2 (decoder loop exit) during fast-mode decode of short_fast.txc
+GDB script: /tmp/gdb_cap_all.txt (break *0x4057c2, capture at r8d==54)
+
+442 572 1000 773 115 1003 113 645 168 779 575 241
+113 810 350 1019 166 98 651 489 196 426 824 557
+651 1016 196 549 981 947 651 454 346 632 654 659
+651 454 285 672 134 717 616 526 533 391 1016 71
+26 604 15 257 853 683

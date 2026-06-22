@@ -12,6 +12,7 @@ Vulkan), no Python.
 | Gemma 2 (`9b`, `27b`) | ✅ | Pre/post FFN RMS norms, attention soft-cap, logit soft-cap, alternating sliding-window mask. |
 | Gemma 3 (`1b`–`27b`) | ✅ | Stride-6 sliding-window pattern (5 sliding + 1 full causal). |
 | Gemma 4 (`E2B`, `E4B`, `12B` unified) | ✅ LM, ⚠️ multimodal | See below. |
+| Gemma 4 12B Coder GGUF ([Composer/Fable fine-tune](https://huggingface.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF)) | ✅ packed GGUF | Thinking chat template; `just fetch-gemma4-12b-coder-gguf`. |
 
 ### Gemma 4 unified (`google/gemma-4-12B`)
 
@@ -48,6 +49,25 @@ Multimodal status:
   `num_soft_tokens` is not yet wired (output shape is `[B, P,
   output_proj_dims]` today). Fix-in-place when reference projector weights are
   pinned — see [`build_vision_projection_hir`].
+
+### Gemma 4 12B Coder (GGUF)
+
+[yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF](https://huggingface.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF)
+is a Python-focused coding fine-tune with native thinking (Composer 2.5 + Fable 5
+chain-of-thought distillation). Same `gemma4` graph as the base 12B IT model.
+
+```bash
+just fetch-gemma4-12b-coder-gguf
+just gemma4-coder-demo
+```
+
+Packed `Q4_K_M` (~7 GB) is the practical default on 16 GB hosts. The CLI applies
+the embedded GGUF chat template (thought channel) by default; pass `--raw-prompt`
+to tokenize verbatim. Model-card sampling: `temp 1.0`, `top_p 0.95`, `top_k 64`.
+
+```bash
+just test-gemma4-coder   # env-gated; needs .cache/gemma4-12b-coder
+```
 
 ## Backend coverage
 

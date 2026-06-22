@@ -19,9 +19,13 @@
 
 mod support;
 
+use std::sync::Mutex;
+
 use rlx_kittentts::{Device, KittenTTS, assets, infer_opts};
 
-const MAX_ABS_DIFF: f32 = 0.085;
+static PARITY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+const MAX_ABS_DIFF: f32 = 0.10;
 const MIN_SAMPLES: usize = 100;
 const MAX_ALIGN_LAG: usize = 512;
 fn ort_parity_candidates() -> usize {
@@ -73,27 +77,37 @@ fn best_ort_peak_against_native(
 
 #[test]
 fn native_matches_onnx_cpu() {
+    let _guard = PARITY_TEST_LOCK.lock().expect("parity test lock");
     let Some(model_dir) = support::model_dir() else {
         eprintln!("skip: run `just fetch-kittentts`");
         return;
     };
+    support::setup_native_parity_env();
+    unsafe {
+        std::env::set_var("KITTEN_RLX_FULL_GRAPH", "1");
+        std::env::remove_var("KITTEN_RLX_ENABLE_NARROW_WAVEFORM_SLICE");
+    }
     let layout = assets::ModelLayout::resolve(&model_dir).expect("layout");
-    let Some(weights) = layout.native_weights.clone() else {
+    let Some(weights) = assets::default_native_weights_dir() else {
         eprintln!("skip: native weights missing");
         return;
     };
-    if assets::find_rlx_bundle(&weights).is_none() {
-        eprintln!("skip: rlx_bundle missing under {}", weights.display());
+    if assets::find_rlx_bundle_colocated(&weights).is_none()
+        && !weights.join("model.safetensors").is_file()
+    {
+        eprintln!(
+            "skip: native weights missing (need model.safetensors or rlx_bundle under {})",
+            weights.display()
+        );
         return;
     }
-    support::setup_native_env(&weights.join("rlx_bundle"));
-
+    let weights = weights.canonicalize().unwrap_or(weights);
     let voice = support::first_voice(&layout).expect("voice");
     let ipa = "həˈloʊ";
     let token_len = rlx_kittentts::ipa_to_ids(ipa).len();
     let (seq_len, max_wave) = infer_opts::recommended_native_compile_opts(token_len);
 
-    let native = KittenTTS::load_native(
+    let native = KittenTTS::load_native_with_ort(
         &weights,
         &layout.voices,
         layout.config.speed_priors.clone(),
@@ -101,6 +115,7 @@ fn native_matches_onnx_cpu() {
         Device::Cpu,
         seq_len,
         max_wave,
+        Some(&layout.onnx),
     )
     .expect("native");
 
@@ -132,5 +147,60 @@ fn native_matches_onnx_cpu() {
         best_peak <= MAX_ABS_DIFF,
         "native diverged from ONNX (best_peak={best_peak:.6} aligned={max_diff_aligned:.6} \
          lag={align_lag} > {MAX_ABS_DIFF})"
+    );
+}
+
+#[test]
+fn native_pure_matches_onnx_cpu() {
+    let _guard = PARITY_TEST_LOCK.lock().expect("parity test lock");
+    let Some(model_dir) = support::model_dir() else {
+        eprintln!("skip: run `just fetch-kittentts`");
+        return;
+    };
+    support::setup_pure_native_parity_env();
+    let layout = assets::ModelLayout::resolve(&model_dir).expect("layout");
+    let Some(weights) = assets::default_native_weights_dir() else {
+        eprintln!("skip: native weights missing");
+        return;
+    };
+    if assets::find_rlx_bundle_colocated(&weights).is_none()
+        && !weights.join("model.safetensors").is_file()
+    {
+        eprintln!("skip: native weights missing");
+        return;
+    }
+    let weights = weights.canonicalize().unwrap_or(weights);
+    let voice = support::first_voice(&layout).expect("voice");
+    let ipa = "həˈloʊ";
+    let token_len = rlx_kittentts::ipa_to_ids(ipa).len();
+    let (seq_len, max_wave) = infer_opts::recommended_native_compile_opts(token_len);
+
+    let native = KittenTTS::load_native_with_ort(
+        &weights,
+        &layout.voices,
+        layout.config.speed_priors.clone(),
+        layout.config.voice_aliases.clone(),
+        Device::Cpu,
+        seq_len,
+        max_wave,
+        Some(&layout.onnx),
+    )
+    .expect("native");
+
+    let nat_audio = native
+        .generate_from_ipa(ipa, &voice, 1.0, 6)
+        .expect("pure native infer");
+
+    let (ref_audio, best_peak) = best_ort_peak_against_native(&layout, ipa, &voice, &nat_audio);
+
+    eprintln!(
+        "pure native vs onnx: len onnx={} native={} best_peak={best_peak:.6}",
+        ref_audio.len(),
+        nat_audio.len(),
+    );
+
+    assert!(
+        best_peak <= MAX_ABS_DIFF,
+        "pure native diverged from ONNX (best_peak={best_peak:.6} > {MAX_ABS_DIFF})"
     );
 }

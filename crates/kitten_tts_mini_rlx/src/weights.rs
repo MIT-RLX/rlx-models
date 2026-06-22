@@ -14,12 +14,28 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Loaded initializer tensors from `model.safetensors`.
+/// Loaded initializer tensors from `model.safetensors` or `model.gguf`.
 pub struct LoadedWeights {
     pub f32: HashMap<String, (Vec<f32>, Vec<usize>)>,
     pub i64: HashMap<String, (Vec<i64>, Vec<usize>)>,
+}
+
+/// Whether `dir` contains native RLX weights (no ONNX bundle required).
+pub fn native_weights_available(dir: &Path) -> bool {
+    dir.join("model.safetensors").is_file() || dir.join("model.gguf").is_file()
+}
+
+/// Resolve `model.safetensors` or `model.gguf` under `dir`.
+pub fn resolve_weights_file(dir: &Path) -> Option<PathBuf> {
+    for name in ["model.safetensors", "model.gguf"] {
+        let path = dir.join(name);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn scale_for<'a>(f32: &'a HashMap<String, (Vec<f32>, Vec<usize>)>, name: &str) -> Option<&'a f32> {
@@ -41,9 +57,19 @@ fn zp_for(f32: &HashMap<String, (Vec<f32>, Vec<usize>)>, name: &str) -> f32 {
         .unwrap_or(0.0)
 }
 
-/// Load decomposed weights from `dir` (`model.safetensors`).
+/// Load decomposed weights from `dir` (`model.safetensors` or `model.gguf`).
 pub fn load_weights(dir: &Path) -> anyhow::Result<LoadedWeights> {
-    let path = dir.join("model.safetensors");
+    let path = resolve_weights_file(dir).ok_or_else(|| {
+        anyhow::anyhow!(
+            "missing model.safetensors or model.gguf in {}",
+            dir.display()
+        )
+    })?;
+    if path.extension().is_some_and(|e| e == "gguf") {
+        anyhow::bail!(
+            "model.gguf is not supported for Kitten decomposed weights; use model.safetensors"
+        );
+    }
     let bytes = std::fs::read(&path)?;
     let st = safetensors::SafeTensors::deserialize(&bytes)?;
     let mut f32 = HashMap::new();

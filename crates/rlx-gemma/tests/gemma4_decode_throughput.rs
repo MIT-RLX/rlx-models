@@ -92,6 +92,11 @@ fn tiny_cfg() -> GemmaConfig {
         num_global_key_value_heads: Some(1),
         attention_k_eq_v: true,
         use_bidirectional_attention: None,
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: 0,
+        num_kv_shared_layers: 0,
+        use_double_wide_mlp: false,
+        enable_moe_block: false,
     }
 }
 
@@ -342,6 +347,11 @@ fn bench_step_cached_metal_1024() {
         num_global_key_value_heads: Some(2),
         attention_k_eq_v: true,
         use_bidirectional_attention: Some("vision".into()),
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: 0,
+        num_kv_shared_layers: 0,
+        use_double_wide_mlp: false,
+        enable_moe_block: false,
     };
     let mut wm = synthetic_weights_gemma4(&cfg);
     let horizon = 32 + 128;

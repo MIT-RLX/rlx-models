@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.2.8 — model coverage expansion (2026-06-21)
+
+Workspace `[workspace.package].version` = **0.2.8**, pinned to upstream
+**`rlx*`** **0.2.8** on crates.io (`rlx-runtime`, `rlx-ir`, `rlx-flow`, …).
+Requires RLX **0.2.8** published from
+[MIT-RLX/rlx](https://github.com/MIT-RLX/rlx) first.
+
+### New model crates
+
+Audio codecs: `rlx-snac`, `rlx-encodec`, `rlx-speechtokenizer`,
+`rlx-wavtokenizer`, `rlx-xcodec`, `rlx-facodec`, `rlx-nanocodec`,
+`rlx-mimi`, `rlx-dac`, `rlx-tsac`.
+
+ASR / audio: `rlx-wav2vec2-asr`, `rlx-nemotron-asr`, `rlx-qwen3-asr`,
+`rlx-funasr`, `rlx-diarize`, `rlx-aec`.
+
+TTS / speech: `rlx-orpheus`, `rlx-kyutai-tts`, `rlx-pocket-tts`,
+`rlx-inflect-nano`, `rlx-tiny-tts`, `rlx-vibevoice`, `rlx-moshi`.
+
+Vision / VLM: `rlx-bioclip2`, `rlx-florence2`, `rlx-grounding-dino`.
+
+LM: `rlx-eagle3`.
+
+### Notable changes
+
+- Removed the `rlx-tensor-host` crate (the host-kernel shim that existed only
+  to dodge a crates.io name clash with the framework's `rlx-tensor`). Its host
+  kernels now live in `rlx_core::host_kernels` (math unchanged). `rlx-grounding-dino`
+  additionally moved its compute (Swin / text encoder / enhancer / decoder) onto
+  the `rlx` graph path, with `nn.rs` rebacked on `rlx_cpu::blas`.
+- `scripts/publish.sh` publish tiers regenerated from the workspace
+  dependency graph to cover all publishable crates.
+
 ## 0.2.6 — RLX runtime alignment (2026-06-13)
 
 Workspace and model runners now pin upstream **`rlx*`** **0.2.6** on crates.io

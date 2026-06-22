@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
     kitten_tts_mini_rlx::opts::set_compile_sequence_length(seq);
     kitten_tts_mini_rlx::kernels::register_native_kernels();
     let mut bundle = load_bundle(&bundle_dir)?;
-    kitten_tts_mini_rlx::bundle_patches::patch_bundle_nodes(&mut bundle.nodes, seq);
+    kitten_tts_mini_rlx::bundle_patches::patch_bundle_nodes(&mut bundle.nodes, seq, 12_000);
     let opts = ImportOptions {
         sequence_length: seq,
         max_waveform_samples: 12_000,

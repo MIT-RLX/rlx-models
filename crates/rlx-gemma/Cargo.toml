@@ -1,6 +1,6 @@
 [package]
 name = "rlx-gemma"
-version = "0.2.6"
+version = "0.2.9"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ repository.workspace = true
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
 rlx-qwen3 = { workspace = true }
-rlx-qwen35 = { workspace = true }
+rlx-qwen35 = { workspace = true, features = ["tokenizer"] }
 rlx-ir = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-runtime = { workspace = true }
@@ -21,6 +21,7 @@ rlx-gguf = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 safetensors = { workspace = true }
+half = { workspace = true }
 anyhow = { workspace = true }
 tokenizers = { workspace = true, optional = true }
 # Multimodal preprocessing for Gemma 4 unified — JPEG/PNG decoder.
@@ -50,6 +51,11 @@ portable-gpu = ["gpu"]
 [[bin]]
 name = "rlx-gemma"
 path = "src/bin/rlx_gemma.rs"
+
+# Uses the real Gemma tokenizer; only builds with the optional `tokenizer` feature.
+[[example]]
+name = "bench_q4_decode"
+required-features = ["tokenizer"]
 
 [lints]
 workspace = true

@@ -59,7 +59,19 @@ pub fn alignment_frame_count(duration_mask: &[i64]) -> usize {
 
 /// Upper bound on alignment frames for static compile shapes (`seq * max_frames_per_token`).
 pub fn alignment_frame_upper_bound(sequence_length: usize) -> usize {
-    sequence_length.saturating_mul(24)
+    sequence_length.saturating_mul(crate::bundle_compile::MAX_FRAMES_PER_TOKEN)
+}
+
+fn per_trip_scalars(data: &[i64], split_lens: &[i64], trip_count: usize) -> Vec<i64> {
+    if split_lens.len() <= 1 {
+        return (0..trip_count)
+            .map(|i| data.get(i).copied().unwrap_or(0))
+            .collect();
+    }
+    let splits = split_1d(data, split_lens);
+    (0..trip_count)
+        .map(|i| splits.get(i).and_then(|v| v.first().copied()).unwrap_or(0))
+        .collect()
 }
 
 /// Concatenate per-trip alignment rows (i64), matching Kitten ONNX Loop + ConcatFromSequence.
@@ -70,15 +82,12 @@ pub fn concat_alignment_durations(
     trip_count: usize,
     out: &mut [i64],
 ) {
-    let split0 = split_1d(duration_mask, split_lens);
-    let split1 = split_1d(range_ids, split_lens);
+    let trips = per_trip_scalars(duration_mask, split_lens, trip_count);
+    let ranges = per_trip_scalars(range_ids, split_lens, trip_count);
     let mut pos = 0usize;
     for i in 0..trip_count {
-        let duration = split0.get(i).and_then(|v| v.first().copied()).unwrap_or(0);
-        let rid = split1
-            .get(i)
-            .and_then(|v| v.first().copied())
-            .unwrap_or(i as i64);
+        let duration = trips.get(i).copied().unwrap_or(0);
+        let rid = ranges.get(i).copied().unwrap_or(i as i64);
         let row = loop_body_frame(duration, rid);
         for v in row {
             if pos < out.len() {
@@ -92,6 +101,42 @@ pub fn concat_alignment_durations(
     }
 }
 
+/// Build ONNX `/Concat_4` scatter index pairs `[token_row, mel_col]` for `frames` steps.
+pub fn alignment_scatter_index_pairs(token_ids: &[i64], frames: usize, out: &mut [i64]) {
+    let pairs = out.len() / 2;
+    let n = frames.min(pairs).min(token_ids.len());
+    for j in 0..n {
+        out[j * 2] = token_ids[j];
+        out[j * 2 + 1] = j as i64;
+    }
+    for slot in out.iter_mut().skip(n.saturating_mul(2)) {
+        *slot = 0;
+    }
+}
+
+#[cfg(test)]
+mod scatter_index_tests {
+    use super::*;
+
+    #[test]
+    fn scatter_pairs_match_ort_hello() {
+        let mask = vec![19i64, 2, 1, 2, 3, 2, 3, 2];
+        let range = (0i64..8).collect::<Vec<_>>();
+        let mut tokens = vec![0i64; 64];
+        concat_alignment_durations(&mask, &range, &[1i64; 8], 8, &mut tokens);
+        let mut idx = vec![0i64; 64 * 2];
+        alignment_scatter_index_pairs(&tokens, 34, &mut idx);
+        assert_eq!(idx[0], 0);
+        assert_eq!(idx[1], 0);
+        assert_eq!(idx[2], 0);
+        assert_eq!(idx[3], 1);
+        assert_eq!(idx[36], 0);
+        assert_eq!(idx[37], 18);
+        assert_eq!(idx[38], 1);
+        assert_eq!(idx[39], 19);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +145,17 @@ mod tests {
     fn loop_body_repeats_range_id_by_duration() {
         assert_eq!(loop_body_frame(19, 0), vec![0; 19]);
         assert_eq!(loop_body_frame(2, 1), vec![1, 1]);
+    }
+
+    #[test]
+    fn concat_broadcast_scalar_split_lens() {
+        let mask = vec![19i64, 2, 1, 2, 3, 2, 3, 2];
+        let range = (0i64..8).collect::<Vec<_>>();
+        let mut out_full = vec![0i64; 64];
+        concat_alignment_durations(&mask, &range, &[1i64; 8], 8, &mut out_full);
+        let mut out_scalar = vec![0i64; 64];
+        concat_alignment_durations(&mask, &range, &[1i64], 8, &mut out_scalar);
+        assert_eq!(out_scalar, out_full);
     }
 
     #[test]

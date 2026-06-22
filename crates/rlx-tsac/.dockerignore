@@ -1,0 +1,4 @@
+# Docker build context: crates/rlx-tsac/ only (see run.sh).
+target/
+.git/
+.cache/

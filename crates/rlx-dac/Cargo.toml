@@ -1,0 +1,63 @@
+[package]
+name = "rlx-dac"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Descript Audio Codec (DAC) neural audio codec for RLX"
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+ndarray = "0.16"
+hound = "3"
+safetensors = "0.4"
+rlx-cli = { workspace = true, optional = true }
+rlx-core = { workspace = true }
+rlx-cpu = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-metal = { workspace = true, optional = true }
+rlx-mlx = { workspace = true, optional = true }
+rlx-wgpu = { workspace = true, optional = true }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[features]
+default = ["cli"]
+cli = ["dep:rlx-cli"]
+hf-download = ["dep:hf-hub"]
+
+# Execution backends. CPU is always available; the rest forward to the
+# matching `rlx-runtime` backend and pull in the backend impl crate so its
+# registry entry is linked.
+cpu = ["rlx-runtime/cpu"]
+metal = ["rlx-runtime/metal", "dep:rlx-metal"]
+mlx = ["rlx-runtime/mlx", "dep:rlx-mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu", "dep:rlx-wgpu"]
+vulkan = ["rlx-runtime/vulkan", "dep:rlx-wgpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[[bin]]
+name = "rlx-dac"
+path = "src/bin/rlx_dac.rs"
+required-features = ["cli"]
+
+[[test]]
+name = "reference_parity"
+path = "tests/reference_parity.rs"
+
+[lints]
+workspace = true

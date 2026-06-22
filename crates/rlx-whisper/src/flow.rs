@@ -311,6 +311,31 @@ pub fn build_whisper_decoder_prefill_built_ext_opts(
     rlx_core::flow_util::built_from_hir_with_profile(hir, params, CompileProfile::llama32_prefill())
 }
 
+pub fn build_whisper_align_hidden_built_ext_opts(
+    cfg: &WhisperConfig,
+    weights: &mut WeightMap,
+    pfx: &WhisperWeightPrefix,
+    batch: usize,
+    dec_seq: usize,
+    enc_seq: usize,
+    max_layer: usize,
+    graph_opts: crate::builder::WhisperGraphOpts,
+    fused: Option<&crate::fused::FusedDecoderWeights>,
+) -> Result<BuiltModel> {
+    let (hir, params) = crate::builder::build_whisper_align_hidden_hir_ext_opts(
+        cfg,
+        &mut WeightMapSource(weights),
+        pfx,
+        batch,
+        dec_seq,
+        enc_seq,
+        max_layer,
+        graph_opts,
+        fused,
+    )?;
+    rlx_core::flow_util::built_from_hir_with_profile(hir, params, CompileProfile::llama32_prefill())
+}
+
 pub fn build_whisper_decode_step_built(
     cfg: &WhisperConfig,
     weights: &mut WeightMap,

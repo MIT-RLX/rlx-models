@@ -19,11 +19,9 @@ use std::sync::Arc;
 
 use rlx_cpu::op_registry::{CpuKernel, CpuTensorMut, CpuTensorRef, register_cpu_kernel};
 
-use crate::alignment::concat_alignment_durations;
 use crate::lstm::{LstmAttrs, dynamic_lstm_f32, dynamic_quantize_lstm};
-use crate::qmatmul::{dynamic_quantize_uint8, qmatmul_uint8_act_i8_weight};
-use crate::random::{fill_normal, fill_uniform, normal_seed, uniform_seed};
-use crate::scatter::{scatter_elements, scatter_nd_inplace};
+use crate::qmatmul::{qmatmul_uint8_act_f32_weight_into, qmatmul_uint8_act_i8_weight_into};
+use crate::scatter::{scatter_elements, scatter_nd_inplace_limited};
 
 pub const DYNAMIC_QUANTIZE_LSTM: &str = "onnx.DynamicQuantizeLSTM";
 pub const SCATTER_ND: &str = "onnx.ScatterND";
@@ -34,7 +32,13 @@ pub const CONCAT_FROM_SEQUENCE_ONNX: &str = "onnx.ConcatFromSequence";
 pub const RANDOM_NORMAL_LIKE: &str = "onnx.RandomNormalLike";
 pub const RANDOM_UNIFORM_LIKE: &str = "onnx.RandomUniformLike";
 pub const Q_MATMUL: &str = "onnx.QMatMul";
+pub const Q_MATMUL_BAKED: &str = "onnx.QMatMulBaked";
 pub const ACT_COPY: &str = "onnx.ActCopy";
+/// Copy F0 features into the `/If` stub buffer (batch row 0 → `[1,T]`).
+pub const F0_IF_BYPASS: &str = "onnx.F0IfBypass";
+/// Trim F0 cast to runtime mel length (`2 ×` alignment frames).
+pub const F0_IF_SELECT: &str = "onnx.F0IfSelect";
+pub const ALIGNMENT_SCATTER_INDICES: &str = "onnx.AlignmentScatterIndices";
 pub const DYNAMIC_QUANTIZE_LINEAR: &str = "onnx.DynamicQuantizeLinearExport";
 
 #[derive(Debug, Clone, Copy)]
@@ -128,6 +132,7 @@ impl CpuKernel for DynamicQuantizeLstmKernel {
         let b = inputs[3].expect_f32("B")?;
         let y = output.expect_f32_mut("Y")?;
         let runtime_seq = crate::opts::compile_sequence_length_from_env().filter(|&n| n > 0);
+        let runtime_mel = crate::opts::runtime_mel_frames();
         let x_dims_buf: Option<[usize; 3]> = if x_dims.len() == 3 && x_dims.iter().all(|&d| d > 0) {
             let (mut seq, mut batch) = if x_dims[0] >= x_dims[1] {
                 (x_dims[0], x_dims[1].max(1))
@@ -137,6 +142,12 @@ impl CpuKernel for DynamicQuantizeLstmKernel {
             let mut input_size = x_dims[2];
             if let Some(rt) = runtime_seq {
                 seq = seq.min(rt);
+            }
+            if let Some(mel) = runtime_mel {
+                // `/shared/Transpose` → LSTM X is `[mel, batch, 640]`; compile slots may be wider.
+                if input_size == 640 {
+                    seq = mel.min(seq);
+                }
             }
             if runtime_seq.is_none() && input_size * seq * batch != x.len() && !x.is_empty() {
                 let h = ka.hidden_size.max(1);
@@ -260,12 +271,46 @@ impl CpuKernel for ScatterNdKernel {
         let updates = inputs[2].expect_f32("updates")?;
         if let Some(data) = inputs[0].as_f32() {
             if !std::ptr::eq(data.as_ptr(), out.as_ptr()) {
-                out.copy_from_slice(data);
+                let n = data.len().min(out.len());
+                out[..n].copy_from_slice(&data[..n]);
             }
         }
         let data_shape = shape_for_buffer(out.len(), &shape_usize(inputs[0].shape()));
         let indices_shape = shape_for_buffer(indices.len(), &shape_usize(inputs[1].shape()));
-        scatter_nd_inplace(out, &data_shape, indices, &indices_shape, updates);
+        let index_depth = indices_shape
+            .last()
+            .copied()
+            .filter(|&d| d > 0)
+            .unwrap_or(1);
+        let max_updates = (index_depth == 2)
+            .then(crate::opts::runtime_mel_frames)
+            .flatten()
+            .filter(|&frames| {
+                indices_shape
+                    .first()
+                    .is_some_and(|&rows| rows > frames && rows > 32)
+            });
+        if std::env::var("KITTEN_RLX_DEBUG_SCATTER").is_ok_and(|v| v == "1") {
+            eprintln!(
+                "[scatter] data_shape={data_shape:?} indices_shape={indices_shape:?} \
+                 indices_len={} updates_len={} out_len={} max_updates={max_updates:?}",
+                indices.len(),
+                updates.len(),
+                out.len()
+            );
+            let show = (max_updates.unwrap_or(indices.len() / index_depth) * index_depth)
+                .min(indices.len())
+                .min(8);
+            eprintln!("[scatter] indices_t0={:?}", &indices[..show]);
+        }
+        scatter_nd_inplace_limited(
+            out,
+            &data_shape,
+            indices,
+            &indices_shape,
+            updates,
+            max_updates,
+        );
         Ok(())
     }
 }
@@ -315,7 +360,8 @@ impl CpuKernel for ScatterElementsKernel {
             let updates = inputs[2].expect_f32("updates")?;
             if let Some(data) = inputs[0].as_f32() {
                 if !std::ptr::eq(data.as_ptr(), out.as_ptr()) {
-                    out.copy_from_slice(data);
+                    let n = data.len().min(out.len());
+                    out[..n].copy_from_slice(&data[..n]);
                 }
             }
             let data_shape = shape_for_buffer(out.len(), &shape_usize(inputs[0].shape()));
@@ -361,10 +407,11 @@ impl CpuKernel for RandomNormalLikeKernel {
         };
         let tag = parse_tag(attrs);
         let out = output.expect_f32_mut("output")?;
-        if std::env::var("KITTEN_RLX_RNG_SEED").is_ok() {
-            fill_normal(out, mean, scale, normal_seed(tag));
-        } else {
+        let opts = crate::random::rng_options_from_env();
+        if matches!(opts.backend, rlx_ir::RngBackend::Zero) {
             out.fill(0.0);
+        } else {
+            crate::random::fill_normal_with_opts(out, mean, scale, opts, tag);
         }
         Ok(())
     }
@@ -398,75 +445,56 @@ impl CpuKernel for RandomUniformLikeKernel {
         };
         let tag = parse_tag(attrs);
         let out = output.expect_f32_mut("output")?;
-        if std::env::var("KITTEN_RLX_RNG_SEED").is_ok() {
-            fill_uniform(out, low, high, uniform_seed(tag));
-        } else {
+        let opts = crate::random::rng_options_from_env();
+        if matches!(opts.backend, rlx_ir::RngBackend::Zero) {
             out.fill(0.0);
+        } else {
+            crate::random::fill_uniform_with_opts(out, low, high, opts, tag);
         }
         Ok(())
-    }
-}
-
-struct ConcatFromSequenceKernel;
-
-impl ConcatFromSequenceKernel {
-    fn run(inputs: &[CpuTensorRef<'_>], output: CpuTensorMut<'_>) -> Result<(), String> {
-        if inputs.len() < 4 {
-            return Err(format!("expected 4 inputs, got {}", inputs.len()));
-        }
-        let duration_mask = inputs[0].expect_i64("duration_mask")?;
-        let range_ids = inputs[1].expect_i64("range_ids")?;
-        let split_lens = inputs[2].expect_i64("split_lens")?;
-        let trip = inputs[3].expect_i64("trip_count")?;
-        let out = output.expect_i64_mut("output")?;
-        let mut trip_count = trip.first().copied().unwrap_or(0).max(0) as usize;
-        if trip_count <= 1 {
-            if let Some(n) = crate::opts::compile_sequence_length_from_env() {
-                if n > 1 {
-                    trip_count = n;
-                }
-            }
-        }
-        trip_count = trip_count.min(out.len()).min(256);
-        out.fill(0);
-        concat_alignment_durations(duration_mask, range_ids, split_lens, trip_count, out);
-        Ok(())
-    }
-}
-
-impl CpuKernel for ConcatFromSequenceKernel {
-    fn name(&self) -> &str {
-        CONCAT_FROM_SEQUENCE
-    }
-
-    fn execute(
-        &self,
-        inputs: &[CpuTensorRef<'_>],
-        output: CpuTensorMut<'_>,
-        _attrs: &[u8],
-    ) -> Result<(), String> {
-        Self::run(inputs, output)
-    }
-}
-
-struct ConcatFromSequenceOnnxAlias;
-
-impl CpuKernel for ConcatFromSequenceOnnxAlias {
-    fn name(&self) -> &str {
-        CONCAT_FROM_SEQUENCE_ONNX
-    }
-
-    fn execute(
-        &self,
-        inputs: &[CpuTensorRef<'_>],
-        output: CpuTensorMut<'_>,
-        _attrs: &[u8],
-    ) -> Result<(), String> {
-        ConcatFromSequenceKernel::run(inputs, output)
     }
 }
 
 struct DynamicQuantizeLinearExportKernel;
+
+const F0_PREDICTOR_CHANNELS: usize = 256;
+
+fn dynamic_quantize_f0_mel_layout(act: &[f32], channels: usize, time: usize) -> (Vec<u8>, f32, u8) {
+    let mel = crate::opts::runtime_mel_frames().unwrap_or(time).min(time);
+    let mut prefix = Vec::with_capacity(channels * mel);
+    for h in 0..channels {
+        let base = h * time;
+        prefix.extend_from_slice(&act[base..base + mel]);
+    }
+    let (q_pre, scale, zp) = crate::qmatmul::dynamic_quantize_uint8(&prefix);
+    let mut q = vec![0u8; act.len()];
+    for h in 0..channels {
+        let base = h * time;
+        for i in 0..mel {
+            q[base + i] = q_pre[h * mel + i];
+        }
+    }
+    (q, scale, zp)
+}
+
+fn dynamic_quantize_f0_mel(act: &[f32]) -> (Vec<u8>, f32, u8) {
+    let t = act.len() / F0_PREDICTOR_CHANNELS;
+    let mel = crate::opts::runtime_mel_frames().unwrap_or(t).min(t);
+    let mut prefix = Vec::with_capacity(F0_PREDICTOR_CHANNELS * mel);
+    for h in 0..F0_PREDICTOR_CHANNELS {
+        let base = h * t;
+        prefix.extend_from_slice(&act[base..base + mel]);
+    }
+    let (q_pre, scale, zp) = crate::qmatmul::dynamic_quantize_uint8(&prefix);
+    let mut q = vec![0u8; act.len()];
+    for h in 0..F0_PREDICTOR_CHANNELS {
+        let base = h * t;
+        for i in 0..mel {
+            q[base + i] = q_pre[h * mel + i];
+        }
+    }
+    (q, scale, zp)
+}
 
 impl CpuKernel for DynamicQuantizeLinearExportKernel {
     fn name(&self) -> &str {
@@ -483,7 +511,24 @@ impl CpuKernel for DynamicQuantizeLinearExportKernel {
             return Err("DynamicQuantizeLinearExport expected 1 input".into());
         }
         let act = inputs[0].expect_f32("X")?;
-        let (q, scale, zp) = dynamic_quantize_uint8(act);
+        let dims = shape_usize(inputs[0].shape());
+        let (q, scale, zp) = if dims.len() == 3 {
+            let channels = dims[1];
+            let time = dims[2];
+            if (channels == 512 || channels == F0_PREDICTOR_CHANNELS)
+                && crate::opts::runtime_mel_frames().is_some()
+            {
+                dynamic_quantize_f0_mel_layout(act, channels, time)
+            } else {
+                crate::qmatmul::dynamic_quantize_uint8(act)
+            }
+        } else if act.len().is_multiple_of(F0_PREDICTOR_CHANNELS)
+            && crate::opts::runtime_mel_frames().is_some()
+        {
+            dynamic_quantize_f0_mel(act)
+        } else {
+            crate::qmatmul::dynamic_quantize_uint8(act)
+        };
         let which = attrs.first().copied().unwrap_or(0);
         match which {
             0 => {
@@ -508,6 +553,95 @@ impl CpuKernel for DynamicQuantizeLinearExportKernel {
 }
 
 struct ActCopyKernel;
+
+struct F0IfBypassKernel;
+
+struct F0IfSelectKernel;
+
+impl CpuKernel for F0IfSelectKernel {
+    fn name(&self) -> &str {
+        F0_IF_SELECT
+    }
+
+    fn execute(
+        &self,
+        inputs: &[CpuTensorRef<'_>],
+        output: CpuTensorMut<'_>,
+        _attrs: &[u8],
+    ) -> Result<(), String> {
+        let f0 = inputs
+            .first()
+            .ok_or("F0IfSelect: missing f0 input")?
+            .expect_f32("f0")?;
+        let align = inputs
+            .get(1)
+            .ok_or("F0IfSelect: missing alignment input")?
+            .expect_i64("align")?;
+        let mel = align.first().copied().unwrap_or(0).max(0) as usize;
+        let out = output.expect_f32_mut("out")?;
+        out.fill(0.0);
+        if f0.len() == out.len() {
+            let n = mel.min(f0.len());
+            out[..n].copy_from_slice(&f0[..n]);
+            return Ok(());
+        }
+        // `[1,1,T]` activations into `[1,1,T_stub]` (If stub from lower_if_stub).
+        if f0.len() > out.len() && !out.is_empty() && f0.len() % out.len() == 0 {
+            let chunk = f0.len() / out.len();
+            let frames = mel.min(out.len());
+            for (i, slot) in out.iter_mut().enumerate().take(frames) {
+                *slot = f0[i * chunk];
+            }
+            return Ok(());
+        }
+        if mel > out.len() {
+            let n = out.len().min(f0.len());
+            out[..n].copy_from_slice(&f0[..n]);
+            return Ok(());
+        }
+        let n = mel.min(f0.len()).min(out.len());
+        out[..n].copy_from_slice(&f0[..n]);
+        Ok(())
+    }
+}
+
+impl CpuKernel for F0IfBypassKernel {
+    fn name(&self) -> &str {
+        F0_IF_BYPASS
+    }
+
+    fn execute(
+        &self,
+        inputs: &[CpuTensorRef<'_>],
+        output: CpuTensorMut<'_>,
+        _attrs: &[u8],
+    ) -> Result<(), String> {
+        let x = inputs
+            .first()
+            .ok_or("F0IfBypass: missing f0 input")?
+            .expect_f32("f0")?;
+        let out = output.expect_f32_mut("out")?;
+        if x.len() == out.len() {
+            out.copy_from_slice(x);
+            return Ok(());
+        }
+        // `[1,1,T]` activations feeding a `[1,T]` If stub (same flat length when T matches).
+        if x.len() > out.len() && x.len() % out.len() == 0 {
+            let chunk = x.len() / out.len();
+            for (i, slot) in out.iter_mut().enumerate() {
+                *slot = x[i * chunk];
+            }
+            return Ok(());
+        }
+        Err(format!(
+            "F0IfBypass size {} != {} (squeeze {} -> {})",
+            x.len(),
+            out.len(),
+            x.len(),
+            out.len()
+        ))
+    }
+}
 
 impl CpuKernel for ActCopyKernel {
     fn name(&self) -> &str {
@@ -546,39 +680,122 @@ impl CpuKernel for QMatMulKernel {
         if inputs.len() < 6 {
             return Err(format!("QMatMul expected 6 inputs, got {}", inputs.len()));
         }
-        let act_q = inputs[0].expect_u8("act_q")?;
+        let act_q: &[u8] = match inputs[0].shape().dtype() {
+            rlx_ir::DType::U8 => inputs[0].expect_u8("act_q")?,
+            rlx_ir::DType::I8 => {
+                let i = inputs[0].expect_i8("act_q")?;
+                unsafe { std::slice::from_raw_parts(i.as_ptr() as *const u8, i.len()) }
+            }
+            dt => return Err(format!("act_q: expected U8/I8, got {dt:?}")),
+        };
         let act_scale = inputs[1].expect_f32("act_scale")?[0];
         let act_zp = read_zp_u8(&inputs[2], "act_zp")?;
+        let act_shape = shape_usize(inputs[0].shape());
+        let out = output.expect_f32_mut("out")?;
+        if inputs[3].shape().dtype() == rlx_ir::DType::F32 {
+            let w_f32 = inputs[3].expect_f32("w_baked")?;
+            let w_shape = shape_usize(inputs[3].shape());
+            qmatmul_uint8_act_f32_weight_into(
+                act_q, &act_shape, act_scale, act_zp, w_f32, &w_shape, out,
+            );
+            return Ok(());
+        }
         let w = inputs[3].expect_i8("w_quantized")?;
         let w_scale = inputs[4].expect_f32("w_scale")?[0];
         let w_zp = read_zp(&inputs[5], "w_zp")?[0];
+        let w_shape = shape_usize(inputs[3].shape());
+        if crate::qmatmul_gpu::try_qmatmul_uint8_gpu_into(
+            act_q, &act_shape, act_scale, act_zp, w, &w_shape, w_scale, w_zp, out,
+        ) {
+            return Ok(());
+        }
+        qmatmul_uint8_act_i8_weight_into(
+            act_q, &act_shape, act_scale, act_zp, w, &w_shape, w_scale, w_zp, out,
+        );
+        Ok(())
+    }
+}
+
+struct QMatMulBakedKernel;
+
+impl CpuKernel for QMatMulBakedKernel {
+    fn name(&self) -> &str {
+        Q_MATMUL_BAKED
+    }
+
+    fn execute(
+        &self,
+        inputs: &[CpuTensorRef<'_>],
+        output: CpuTensorMut<'_>,
+        _attrs: &[u8],
+    ) -> Result<(), String> {
+        if inputs.len() < 4 {
+            return Err(format!(
+                "QMatMulBaked expected 4 inputs, got {}",
+                inputs.len()
+            ));
+        }
+        let act_q: &[u8] = match inputs[0].shape().dtype() {
+            rlx_ir::DType::U8 => inputs[0].expect_u8("act_q")?,
+            rlx_ir::DType::I8 => {
+                let i = inputs[0].expect_i8("act_q")?;
+                unsafe { std::slice::from_raw_parts(i.as_ptr() as *const u8, i.len()) }
+            }
+            dt => return Err(format!("act_q: expected U8/I8, got {dt:?}")),
+        };
+        let act_scale = inputs[1].expect_f32("act_scale")?[0];
+        let act_zp = read_zp_u8(&inputs[2], "act_zp")?;
+        let w_f32 = inputs[3].expect_f32("w_baked")?;
         let act_shape = shape_usize(inputs[0].shape());
         let w_shape = shape_usize(inputs[3].shape());
         let out = output.expect_f32_mut("out")?;
-        let vals = qmatmul_uint8_act_i8_weight(
-            act_q, &act_shape, act_scale, act_zp, w, &w_shape, w_scale, w_zp,
+        qmatmul_uint8_act_f32_weight_into(
+            act_q, &act_shape, act_scale, act_zp, w_f32, &w_shape, out,
         );
-        if vals.len() != out.len() {
+        Ok(())
+    }
+}
+
+struct AlignmentScatterIndicesKernel;
+
+impl CpuKernel for AlignmentScatterIndicesKernel {
+    fn name(&self) -> &str {
+        ALIGNMENT_SCATTER_INDICES
+    }
+
+    fn execute(
+        &self,
+        inputs: &[CpuTensorRef<'_>],
+        output: CpuTensorMut<'_>,
+        _attrs: &[u8],
+    ) -> Result<(), String> {
+        if inputs.len() < 2 {
             return Err(format!(
-                "QMatMul size mismatch: computed {} vs output {}",
-                vals.len(),
-                out.len()
+                "AlignmentScatterIndices expected 2 inputs, got {}",
+                inputs.len()
             ));
         }
-        out.copy_from_slice(&vals);
+        let token_ids = inputs[0].expect_i64("token_ids")?;
+        let align = inputs[1].expect_i64("align")?;
+        let out = output.expect_i64_mut("indices")?;
+        let frames = align.first().copied().unwrap_or(0).max(0) as usize;
+        crate::alignment::alignment_scatter_index_pairs(token_ids, frames, out);
         Ok(())
     }
 }
 
 pub fn register_native_kernels() {
+    rlx_cpu::onnx_ref::register_onnx_reference_kernels();
     register_cpu_kernel(Arc::new(DynamicQuantizeLinearExportKernel));
     register_cpu_kernel(Arc::new(ActCopyKernel));
+    register_cpu_kernel(Arc::new(F0IfBypassKernel));
+    register_cpu_kernel(Arc::new(F0IfSelectKernel));
     register_cpu_kernel(Arc::new(QMatMulKernel));
+    register_cpu_kernel(Arc::new(QMatMulBakedKernel));
     register_cpu_kernel(Arc::new(DynamicQuantizeLstmKernel));
     register_cpu_kernel(Arc::new(ScatterNdKernel));
     register_cpu_kernel(Arc::new(ScatterElementsKernel));
-    register_cpu_kernel(Arc::new(ConcatFromSequenceKernel));
-    register_cpu_kernel(Arc::new(ConcatFromSequenceOnnxAlias));
+    register_cpu_kernel(Arc::new(AlignmentScatterIndicesKernel));
     register_cpu_kernel(Arc::new(RandomNormalLikeKernel));
     register_cpu_kernel(Arc::new(RandomUniformLikeKernel));
     crate::gpu_kernels::register_gpu_kernels();

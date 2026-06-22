@@ -41,7 +41,7 @@ use crate::rope::{resolve_inv_freq, rope_slice};
 use anyhow::{Context, Result};
 use rlx_core::autoregressive::{
     KvCacheState, kv_from_prefill_outputs_per_layer, run_bucketed_kv_decode_hir_scratch,
-    split_decode_logits_kv,
+    split_decode_logits_kv, split_decode_logits_kv_aux,
 };
 use rlx_core::flow_bridge::compile_options_from_profile;
 use rlx_core::gpu_kv::{
@@ -156,6 +156,17 @@ pub struct GemmaGenerator {
     /// Reused decode inputs (mask, padded K/V) to avoid per-step allocs.
     decode_scratch: DecodeKvScratch,
     decode_inputs: DecodeInputScratch,
+    /// EAGLE3-style aux hidden-state tap: when non-empty, decode steps
+    /// build a graph with `with_aux_hidden_layer_ids(...)` set,
+    /// extract the per-layer hidden states from the graph outputs,
+    /// and stash them in [`last_aux`] for the caller to retrieve.
+    /// Forces the `decode_step_oneshot` path (the bucketed compile
+    /// cache doesn't yet handle the extra outputs).
+    aux_hidden_layer_ids: Vec<usize>,
+    /// Aux hidden states from the most recent decode step. One
+    /// `Vec<f32>` per id in [`aux_hidden_layer_ids`], each of length
+    /// `batch * 1 * hidden_size`. Cleared by [`take_last_aux`].
+    last_aux: Option<Vec<Vec<f32>>>,
 }
 
 /// Reusable mask + rope slices for bucketed decode (no per-step alloc).
@@ -277,7 +288,40 @@ impl GemmaGenerator {
             gpu_kv_binding: GpuKvBinding::default(),
             decode_scratch: DecodeKvScratch::default(),
             decode_inputs: DecodeInputScratch::default(),
+            aux_hidden_layer_ids: Vec::new(),
+            last_aux: None,
         })
+    }
+
+    /// EAGLE3-style aux hidden state tap. When `ids` is non-empty,
+    /// every subsequent decode step builds the graph with
+    /// `with_aux_hidden_layer_ids(ids)` and extracts the per-layer
+    /// hidden states. Call [`take_last_aux`] after each
+    /// `step_cached` / `generate_cached_with` token to retrieve
+    /// them. Setting this disables the bucketed-decode fast path —
+    /// each step compiles via `decode_step_oneshot`.
+    pub fn set_aux_hidden_layer_ids(&mut self, ids: Vec<usize>) {
+        // The graph builder dedups + sorts the ids and filters OOB
+        // values. Mirror that here so `self.aux_hidden_layer_ids.len()`
+        // matches the number of aux outputs the graph actually emits.
+        let mut v: Vec<usize> = ids
+            .into_iter()
+            .filter(|i| *i < self.cfg.num_hidden_layers)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        self.aux_hidden_layer_ids = v;
+        self.last_aux = None;
+    }
+
+    /// Take + clear the most recent aux hidden states.
+    pub fn take_last_aux(&mut self) -> Option<Vec<Vec<f32>>> {
+        self.last_aux.take()
+    }
+
+    /// True if an aux tap is currently configured.
+    pub fn aux_enabled(&self) -> bool {
+        !self.aux_hidden_layer_ids.is_empty()
     }
 
     fn reset_gpu_kv_binding(&mut self) {
@@ -603,7 +647,15 @@ impl GemmaGenerator {
         }
         let input_tok = self.tokens[past_seq];
 
-        let (logits, new_k, new_v) = if self.decode_dynamic_cache.is_some() {
+        // EAGLE3 tap forces the always-correct oneshot path — the
+        // bucketed compile cache doesn't yet ingest the extra aux
+        // outputs.
+        let aux_active = self.aux_enabled();
+        let (logits, new_k, new_v) = if aux_active {
+            let (logits, k, v, aux) = self.decode_step_oneshot_with_aux(past_seq, input_tok)?;
+            self.last_aux = Some(aux);
+            (logits, k, v)
+        } else if self.decode_dynamic_cache.is_some() {
             self.decode_step_dynamic(past_seq, input_tok)?
         } else if self.decode_compile_cache.is_some()
             && self
@@ -665,6 +717,53 @@ impl GemmaGenerator {
 
         let outputs = compiled.run(&inputs);
         split_decode_logits_kv(outputs, self.cfg.num_hidden_layers)
+    }
+
+    /// EAGLE3 variant of [`decode_step_oneshot`]. Builds the decode
+    /// graph with `aux_hidden_layer_ids` set on `GemmaDecodeOpts` so
+    /// the per-layer pre-attention-norm hidden states are appended
+    /// to the graph's outputs. Returns `(logits, K, V, aux)` where
+    /// `aux.len() == self.aux_hidden_layer_ids.len()`.
+    #[allow(clippy::type_complexity)]
+    fn decode_step_oneshot_with_aux(
+        &mut self,
+        past_seq: usize,
+        input_tok: u32,
+    ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+        let cache = self.cache.as_ref().unwrap();
+        let aux_ids = self.aux_hidden_layer_ids.clone();
+        let num_aux = aux_ids.len();
+
+        let mut wm = WeightMap::from_tensors(self.weights_cache.clone());
+        let opts = crate::flow::GemmaDecodeOpts {
+            batch: 1,
+            past_seq,
+            dynamic_past: false,
+            use_custom_mask: false,
+            profile: None,
+            aux_hidden_layer_ids: aux_ids,
+        };
+        let (graph, params) = crate::flow::build_gemma_decode_graph(&self.cfg, &mut wm, &opts)?;
+        let session = Session::new(self.device);
+        let mut compiled = self.compile_graph_profiled_decode(&session, graph)?;
+        for (name, data) in &params {
+            compiled.set_param(name, data);
+        }
+
+        let input_ids_f32 = [input_tok as f32];
+        let key_strs: Vec<String> = (0..self.cfg.num_hidden_layers)
+            .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
+            .collect();
+        let mut inputs: Vec<(&str, &[f32])> =
+            Vec::with_capacity(1 + 2 * self.cfg.num_hidden_layers);
+        inputs.push(("input_ids", input_ids_f32.as_slice()));
+        for i in 0..self.cfg.num_hidden_layers {
+            inputs.push((&key_strs[2 * i], cache.layers_k[i].as_slice()));
+            inputs.push((&key_strs[2 * i + 1], cache.layers_v[i].as_slice()));
+        }
+
+        let outputs = compiled.run(&inputs);
+        split_decode_logits_kv_aux(outputs, self.cfg.num_hidden_layers, num_aux)
     }
 
     #[allow(clippy::type_complexity)]
@@ -1364,6 +1463,67 @@ mod tests {
         for t in &new_tokens {
             assert!((*t as usize) < cfg.vocab_size);
         }
+    }
+
+    #[test]
+    fn step_cached_with_aux_populates_last_aux() {
+        // EAGLE3 wiring smoke test: enabling the aux tap on a small
+        // synthetic config makes `step_cached` populate `last_aux`
+        // with one Vec<f32> per requested layer id, each of length
+        // `hidden_size`. `take_last_aux` clears it.
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let mut gn = GemmaGenerator::from_loader(cfg.clone(), &mut wm, Device::Cpu).unwrap();
+
+        // Pick up to 3 distinct layer ids from the tiny config —
+        // some tiny configs only have 2 layers, in which case the
+        // dedupe-and-clamp in set_aux_hidden_layer_ids collapses to
+        // 2 ids. Test against whatever survives.
+        let n_layers = cfg.num_hidden_layers;
+        let mut aux_ids: Vec<usize> = (0..n_layers).take(3).collect();
+        aux_ids.sort_unstable();
+        aux_ids.dedup();
+        gn.set_aux_hidden_layer_ids(aux_ids.clone());
+        assert!(gn.aux_enabled());
+
+        gn.prefill(&[1, 2, 3]);
+        // First step_cached runs prefill+sample (cache seed), not a
+        // decode step — no aux yet. The aux tap only fires on real
+        // decode-mode runs.
+        let _ = gn.step_cached(SampleOpts::greedy()).unwrap();
+        assert!(
+            gn.take_last_aux().is_none(),
+            "prefill-seed call should not populate aux"
+        );
+        // Second + third calls are proper decode steps.
+        let _ = gn.step_cached(SampleOpts::greedy()).unwrap();
+        let aux = gn.take_last_aux().expect("aux populated after decode step");
+        assert_eq!(aux.len(), aux_ids.len(), "one row per aux id");
+        for row in &aux {
+            assert_eq!(row.len(), cfg.hidden_size, "aux row = hidden_size f32s");
+            assert!(row.iter().all(|v| v.is_finite()));
+        }
+        assert!(
+            gn.take_last_aux().is_none(),
+            "take_last_aux consumes the buffer"
+        );
+
+        let _ = gn.step_cached(SampleOpts::greedy()).unwrap();
+        let aux2 = gn.take_last_aux().expect("aux on next step");
+        assert_eq!(aux2.len(), aux_ids.len());
+    }
+
+    #[test]
+    fn aux_disabled_after_clear_ids() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let mut gn = GemmaGenerator::from_loader(cfg, &mut wm, Device::Cpu).unwrap();
+        gn.set_aux_hidden_layer_ids(vec![0, 1]);
+        assert!(gn.aux_enabled());
+        gn.set_aux_hidden_layer_ids(Vec::new());
+        assert!(!gn.aux_enabled());
+        // last_aux is also cleared on set.
+        assert!(gn.take_last_aux().is_none());
     }
 
     #[test]

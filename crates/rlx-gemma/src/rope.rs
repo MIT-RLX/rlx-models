@@ -48,8 +48,13 @@ pub fn sliding_rope_params(cfg: &GemmaConfig) -> (f64, usize) {
 }
 
 /// `Some((theta, n_rot))` when Gemma 4 full-attention RoPE differs from sliding.
+///
+/// `layer_types` is empty when the config came from a GGUF (llama.cpp's GGUFs
+/// don't encode the per-layer list — the strided pattern is implicit). The
+/// per-layer helpers `is_full_attention_layer` / `layer_n_rot` / `layer_rope_theta`
+/// already fall back to the strided pattern, so we can ask them directly.
 pub fn global_rope_params(cfg: &GemmaConfig) -> Option<(f64, usize)> {
-    if cfg.arch != GemmaArch::Gemma4 || cfg.layer_types.is_empty() {
+    if cfg.arch != GemmaArch::Gemma4 {
         return None;
     }
     let fi = first_full_layer(cfg)?;
@@ -69,27 +74,45 @@ pub fn resolve_inv_freq(cfg: &GemmaConfig, rope_freq_factors: Option<&[f32]>) ->
 
 /// Global (full-attention) inverse frequencies for Gemma 4 proportional RoPE.
 ///
-/// GGUF checkpoints often ship `rope_freqs.weight` at `global_head_dim / 2`
-/// (256 for Gemma 4 12B) while the sliding table uses `sliding_n_rot / 2`
-/// (128). Factors apply to the global table only; sliding layers ignore them.
+/// **Proportional partial RoPE** (HF `_compute_proportional_rope_parameters`):
+/// only the leading `n_rot` of `head_dim` dimensions rotate, but the
+/// inverse-frequency exponent denominator is the **full** head_dim, NOT the
+/// rotary count — `inv_freq[i] = theta^(-2i/head_dim)` for `i in 0..n_rot/2`.
+/// Building the table with `default_inv_freq(theta, n_rot)` (denominator =
+/// n_rot) is wrong for partial RoPE; we must use the full head_dim then keep
+/// the leading `n_rot/2` pairs. For non-partial global RoPE `n_rot == head_dim`
+/// so this reduces to the plain table.
+///
+/// GGUF checkpoints ship `rope_freqs.weight` at `global_head_dim / 2`
+/// (256 for Gemma 4 12B). Factors apply to the global table only; sliding
+/// layers ignore them.
 pub fn resolve_global_inv_freq(
     cfg: &GemmaConfig,
     rope_freq_factors: Option<&[f32]>,
 ) -> Option<Vec<f64>> {
     let (theta, n_rot) = global_rope_params(cfg)?;
-    let base = default_inv_freq(theta, n_rot);
+    let fi = first_full_layer(cfg)?;
+    // Full head_dim of the full-attention layer (== global_head_dim when set).
+    let full_head_dim = cfg.layer_head_dim(fi);
+    // The cos/sin table MUST have `head_dim/2` columns per position: the RoPE
+    // kernel indexes rows with stride `head_dim/2` (`tab_half`) and rotates the
+    // leading `n_rot/2` pairs. For proportional partial RoPE the rotated freqs
+    // are `theta^(-2i/head_dim)` for `i in 0..n_rot/2` (denominator = full
+    // head_dim); the trailing `head_dim/2 - n_rot/2` entries are the unrotated
+    // (NoPE) dims — the kernel never reads them, but they keep the row stride
+    // correct. Truncating to `n_rot/2` (as before) gave a short row stride and
+    // made every position > 0 read the wrong table row.
+    let mut base = default_inv_freq(theta, full_head_dim); // len = head_dim/2
+    // Zero the unrotated tail so the table is unambiguous (kernel ignores it).
+    let rot = (n_rot / 2).min(base.len());
+    for v in base.iter_mut().skip(rot) {
+        *v = 0.0;
+    }
+    // llama.cpp / GGUF: `rope_freqs.weight` covers the full global rotary dim
+    // (length head_dim/2). Apply when sized to the table.
     if let Some(f) = rope_freq_factors.filter(|f| !f.is_empty()) {
         if f.len() == base.len() {
-            return Some(apply_rope_freq_factors(&base, Some(f)));
-        }
-        // llama.cpp / GGUF: factors cover the full global head rotary dim.
-        if let Some(gdh) = cfg.global_head_dim {
-            let full = default_inv_freq(theta, gdh);
-            if f.len() == full.len() {
-                let scaled = inv_freq_with_factors(&full, f);
-                let half = n_rot / 2;
-                return Some(scaled[..half.min(scaled.len())].to_vec());
-            }
+            base = inv_freq_with_factors(&base, f);
         }
     }
     Some(base)
@@ -165,6 +188,11 @@ mod tests {
             num_global_key_value_heads: Some(1),
             attention_k_eq_v: true,
             use_bidirectional_attention: Some("vision".into()),
+            hidden_size_per_layer_input: 0,
+            vocab_size_per_layer_input: 0,
+            num_kv_shared_layers: 0,
+            use_double_wide_mlp: false,
+            enable_moe_block: false,
         }
     }
 
@@ -177,13 +205,44 @@ mod tests {
     }
 
     #[test]
+    fn proportional_global_rope_uses_full_head_dim_denominator() {
+        // Gemma 4 full-attention layers: partial_rotary_factor=0.25, θ=1e6,
+        // head_dim=512 → rotate 128 dims (64 pairs) but with denominator 512.
+        let cfg = gemma4_12b_cfg();
+        let global = resolve_global_inv_freq(&cfg, None).expect("global table");
+        // Table row stride must be head_dim/2 = 256 (kernel's `tab_half`); the
+        // first 64 entries are the rotated proportional freqs, the trailing
+        // 192 are zero (unrotated / NoPE dims).
+        assert_eq!(global.len(), 256, "head_dim/2 columns");
+        assert!((global[0] - 1.0).abs() < 1e-12);
+        // inv_freq[1] must use the FULL head_dim (512) as denominator:
+        //   theta^(-2/512), NOT the buggy theta^(-2/128).
+        let theta = 1_000_000.0f64;
+        let expected = 1.0 / theta.powf(2.0 / 512.0);
+        let buggy = 1.0 / theta.powf(2.0 / 128.0);
+        assert!(
+            (global[1] - expected).abs() < 1e-9,
+            "global[1]={} expected {} (denom 512)",
+            global[1],
+            expected
+        );
+        assert!(
+            (global[1] - buggy).abs() > 1e-6,
+            "must not match the old denom-128 value"
+        );
+        // Rotated count = 0.25*512/2 = 64; entries past that are zeroed.
+        assert!((global[64]).abs() < 1e-12, "tail (NoPE dims) must be zero");
+        assert!(global[63].abs() > 0.0, "first 64 are rotated freqs");
+    }
+
+    #[test]
     fn gguf_rope_factors_sized_for_global_head_do_not_break_sliding() {
         let cfg = gemma4_12b_cfg();
         let factors = vec![1.0f32; 256];
         let sliding = resolve_inv_freq(&cfg, Some(&factors));
         assert_eq!(sliding.len(), 128);
         let global = resolve_global_inv_freq(&cfg, Some(&factors)).expect("global table");
-        assert_eq!(global.len(), 64);
+        assert_eq!(global.len(), 256); // head_dim/2 columns
     }
 
     #[test]

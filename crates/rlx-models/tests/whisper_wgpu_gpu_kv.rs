@@ -115,11 +115,17 @@ fn whisper_wgpu_greedy_decode_with_gpu_kv() -> Result<()> {
     }
     let dir = cache_root().join("whisper-tiny");
     let weights = dir.join("model.safetensors");
-    let wav = cache_root().join("whisper-bench/jfk_16k.wav");
-    if !weights.is_file() || !wav.is_file() {
+    if !weights.is_file() {
         eprintln!("skip: need weights + wav");
         return Ok(());
     }
+    let (wav, reference) = match rlx_models::whisper::ensure_jfk_fixture() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("skip: {e}");
+            return Ok(());
+        }
+    };
     let pcm = rlx_models::whisper::load_wav_mono_f32(&wav)?;
     let mut runner = rlx_models::whisper::WhisperRunner::builder()
         .weights(&weights)
@@ -131,10 +137,6 @@ fn whisper_wgpu_greedy_decode_with_gpu_kv() -> Result<()> {
     assert!(runner.uses_gpu_kv(), "wgpu runner should use GPU-KV");
     let (_, text) = runner.bench_greedy_pipeline(&pcm, 32, 0)?;
     eprintln!("wgpu gpu-kv transcript: {text:?}");
-    let lower = text.to_lowercase();
-    assert!(
-        lower.contains("whether") && lower.contains("wishes"),
-        "expected JFK-like transcript, got {text:?}"
-    );
+    rlx_models::whisper::assert_transcript_matches_reference(&text, &reference);
     Ok(())
 }

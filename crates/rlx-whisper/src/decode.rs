@@ -67,6 +67,9 @@ pub fn initial_prompt_opts(
 }
 
 /// View of batch row `b` in `[batch, dec_seq, vocab]` logits (last time step).
+///
+/// After the first bucketed decode step, `dec_seq` is `1` even though the token list
+/// grows — prefill uses `dec_seq = prompt.len()`.
 pub fn batched_logits_row(
     logits: &[f32],
     batch_ix: usize,
@@ -289,7 +292,7 @@ pub fn beam_search_decode_kv(
                 if beam.suffix.is_empty() && tok == eot_id {
                     continue;
                 }
-                let (next_logits, new_cache) = decode_step(tok, &beam.cache)?;
+                let (next_logits, mut new_cache) = decode_step(tok, &beam.cache)?;
                 let row = if next_logits.len() == vocab {
                     next_logits
                 } else {
@@ -297,12 +300,22 @@ pub fn beam_search_decode_kv(
                 };
                 let mut suffix = beam.suffix.clone();
                 suffix.push(tok);
+                let completed = tok == eot_id;
+                if completed {
+                    // A completed hypothesis is never extended again, but it survives in
+                    // `beams` and is cloned every remaining step. Drop its KV cache (only
+                    // `suffix`/`score` are ever read from it) to avoid repeated full-cache
+                    // clones — result-preserving.
+                    new_cache.layers_k.clear();
+                    new_cache.layers_v.clear();
+                    new_cache.past_len = 0;
+                }
                 candidates.push(BeamKvState {
                     suffix,
                     score: beam.score + logp,
                     cache: new_cache,
                     next_logits: row,
-                    completed: tok == eot_id,
+                    completed,
                 });
             }
         }

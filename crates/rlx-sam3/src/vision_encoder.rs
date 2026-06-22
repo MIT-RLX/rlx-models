@@ -137,6 +137,60 @@ pub fn extract_vision_encoder_weights(
     })
 }
 
+/// Run the 32 ViT-L transformer blocks on already-tokenized input
+/// `[grid*grid, embed_dim]`. Intended for parity tests against the IR path,
+/// which also operates on post-`ln_pre` tokens.
+pub fn forward_blocks_native(
+    weights: &Sam3VisionEncoderWeights,
+    gguf_packed: Option<&GgufPackedParams>,
+    cfg: &Sam3VitConfig,
+    tokens_in: &[f32],
+) -> Result<Vec<f32>> {
+    let e = cfg.embed_dim;
+    let grid = cfg.patch_grid();
+    let head_dim = e / cfg.num_heads;
+    ensure!(
+        head_dim * cfg.num_heads == e,
+        "embed_dim {e} not divisible by num_heads {}",
+        cfg.num_heads
+    );
+    ensure!(
+        tokens_in.len() == grid * grid * e,
+        "tokens_in expected {} got {}",
+        grid * grid * e,
+        tokens_in.len()
+    );
+    let rope_pt = if cfg.window_size > 0 {
+        cfg.window_size
+    } else {
+        grid
+    };
+    let global_set: std::collections::HashSet<usize> =
+        cfg.global_att_blocks.iter().copied().collect();
+    let rope_global = build_rope_freqs(head_dim, grid, grid, 10000.0, rope_pt as f32 / grid as f32);
+    let rope_window = build_rope_freqs(head_dim, cfg.window_size, cfg.window_size, 10000.0, 1.0);
+    let mut x = tokens_in.to_vec();
+    for (i, block) in weights.blocks.iter().enumerate() {
+        let is_global = global_set.contains(&i);
+        block_forward(
+            &mut x,
+            block,
+            gguf_packed,
+            cfg,
+            grid,
+            if is_global { 0 } else { cfg.window_size },
+            if is_global {
+                &rope_global
+            } else {
+                &rope_window
+            },
+            head_dim,
+            cfg.num_heads,
+        )?;
+    }
+    Ok(x)
+}
+
 pub fn encode_image_native(
     weights: &Sam3VisionEncoderWeights,
     gguf_packed: Option<&GgufPackedParams>,

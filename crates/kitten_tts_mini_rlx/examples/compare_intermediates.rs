@@ -128,18 +128,56 @@ print(json.dumps(out))
 fn main() -> anyhow::Result<()> {
     let filter = probe_filter();
     let bundle_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("weights/rlx_bundle");
-    let seq = 8usize;
     let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 0];
+    let token_len = ids.len();
+    let seq = 8usize.max(token_len.next_power_of_two());
+    let max_wave = token_len
+        .saturating_mul(600)
+        .saturating_mul(8)
+        .saturating_add(12_000)
+        .max(seq.saturating_mul(600).saturating_mul(2))
+        .max(24_000);
     let style = load_style_row();
 
     let graph_opts = GraphOptions {
         sequence_length: seq,
-        max_waveform_samples: seq.saturating_mul(600).saturating_add(12_000),
+        max_waveform_samples: max_wave,
     };
 
     let t0 = Instant::now();
     let import = import_from_bundle_cached(&bundle_dir, &graph_opts)?;
     eprintln!("import: {:.1}s", t0.elapsed().as_secs_f64());
+
+    {
+        let cache = kitten_tts_mini_rlx::bundle_compile::SeqCompileCache::new(
+            Device::Cpu,
+            bundle_dir.clone(),
+            seq,
+            graph_opts.max_waveform_samples,
+            2,
+        );
+        let graphs = cache.cached_graphs_for_seq(seq)?;
+        let mut g = graphs.full.lock().expect("seq cache graph");
+        let ort_dur: Vec<i64> = vec![19, 2, 1, 2, 3, 2, 3, 2];
+        let outs = kitten_tts_mini_rlx::bundle_compile::run_parity_inputs_with_duration(
+            &mut g,
+            seq,
+            ids.len(),
+            &ids,
+            &style,
+            Some(&ort_dur),
+        );
+        if let Some((wave, _)) = outs.first() {
+            let peak = wave
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()).abs())
+                .fold(0.0f32, f32::max);
+            eprintln!(
+                "seq_cache waveform peak={peak:.4e} samples={}",
+                wave.len() / 4
+            );
+        }
+    }
 
     let mut resolved = Vec::new();
     for (hir_name, ort_name) in WATCH {
@@ -181,6 +219,16 @@ fn main() -> anyhow::Result<()> {
     let t2 = Instant::now();
     kitten_tts_mini_rlx::opts::set_compile_sequence_length(seq);
     let outs = run_parity_inputs(&mut graph, seq, &ids, &style);
+    if let Some((wave, _)) = outs.first() {
+        let peak = wave
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!(
+            "graph output waveform peak={peak:.4e} samples={}",
+            wave.len() / 4
+        );
+    }
     eprintln!("run: {:.1}s", t2.elapsed().as_secs_f64());
 
     let ort_names: Vec<&str> = resolved
@@ -211,7 +259,9 @@ fn main() -> anyhow::Result<()> {
             continue;
         };
         let Some(ort_v) = ort.get(*ort_name) else {
-            eprintln!("{hir_name}: missing ort tensor");
+            let nat_max = nat.iter().copied().map(f32::abs).fold(0.0, f32::max);
+            let native_t0: Vec<f32> = nat.iter().take(4).copied().collect();
+            eprintln!("{hir_name}: ort missing; native max={nat_max:.4} nat0={native_t0:?}");
             continue;
         };
         let (max_abs, max_idx) = max_abs_diff(&nat, ort_v);

@@ -20,10 +20,25 @@
 //! layers, sinusoidal encoder positions, transformer encoder/decoder with cross-attention.
 //!
 //! Weights: HuggingFace `model.safetensors` + `config.json` (e.g. `openai/whisper-tiny`).
+//!
+//! # Subtitles pipeline
+//!
+//! Enable `timestamps`, `word-dtw`, and optionally `silero-vad` / `diarize`:
+//!
+//! - [`WhisperPipeline`] — ASR → segment timestamps → word alignment → speaker labels
+//! - [`WhisperTranscript`] — structured segments + [`WordTiming`] list
+//! - [`subtitles`] — SRT / VTT / TSV / JSON export
+//!
+//! GPU routing (Metal): mel encoder and DTW align-hidden on GPU; cross / prefill /
+//! bucketed decode on CPU until decoder parity lands. See [`backend::whisper_encoder_device`]
+//! and [`backend::whisper_decoder_device`].
+//!
+//! Runbook: [README.md](README.md).
 
 pub mod audio;
 pub mod backend;
 pub mod batch;
+pub mod bench_fixture;
 pub mod builder;
 pub mod cache;
 pub mod cli;
@@ -36,12 +51,36 @@ pub mod runner;
 pub mod vad;
 pub mod weights;
 
+pub mod alignment_heads;
+#[cfg(feature = "word-dtw")]
+pub mod cross_attn_align;
+#[cfg(feature = "diarize")]
+pub mod diarize;
+#[cfg(feature = "word-dtw")]
+pub mod dtw;
+#[cfg(feature = "word-w2v")]
+pub mod forced_align;
+#[cfg(feature = "timestamps")]
+pub mod pipeline;
+#[cfg(feature = "silero-vad")]
+pub mod silero_vad;
+#[cfg(feature = "timestamps")]
+pub mod subtitles;
+#[cfg(feature = "timestamps")]
+pub mod timestamp_parse;
+#[cfg(feature = "timestamps")]
+pub mod transcript;
+
 pub use audio::{
     EnergyVad, MelSpectrogram, N_FRAMES, N_SAMPLES, SAMPLE_RATE, SpeechSegment, load_wav_mono_f32,
     parse_wav_mono_f32, pcm_segments_by_vad, pcm_segments_by_vad_config, pcm_to_mel,
 };
 pub use backend::WhisperGraphCtx;
 pub use batch::{batched_prompt_f32, replicate_encoder_for_beams, stack_kv_caches};
+pub use bench_fixture::{
+    JFK_REFERENCE, assert_transcript_matches_reference, bench_cache_dir, ensure_jfk_fixture,
+    jfk_reference_path, jfk_wav_path, load_jfk_reference, normalize_transcript, transcripts_match,
+};
 pub use builder::WhisperGraphOpts;
 pub use cache::{WhisperCrossCache, WhisperKvCache};
 pub use config::WhisperConfig;
@@ -56,10 +95,19 @@ pub use flow::{
     build_whisper_encoder_graph_sized, default_mel_frames,
 };
 pub use fused::{FusedDecoderWeights, FusedEncoderWeights};
-pub use mel::{pcm_to_log_mel, stack_mels};
+pub use mel::{mel_geometry_frames_for_pcm, pcm_to_log_mel, stack_mels};
 pub use runner::{WhisperBenchReport, WhisperRunner, WhisperRunnerBuilder};
 pub use vad::{VadConfig, VadKind, segments_by_vad};
 pub use weights::WhisperWeightPrefix;
+
+#[cfg(feature = "diarize")]
+pub use diarize::assign_speakers;
+#[cfg(feature = "timestamps")]
+pub use pipeline::{WhisperPipeline, WhisperPipelineOpts};
+#[cfg(feature = "timestamps")]
+pub use subtitles::{SubtitleFormat, to_json_pretty, to_srt, to_tsv, to_vtt};
+#[cfg(feature = "timestamps")]
+pub use transcript::{TranscriptSegment, WhisperTranscript, WordAlignMode, WordTiming};
 
 #[cfg(test)]
 mod tests {

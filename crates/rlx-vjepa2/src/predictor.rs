@@ -19,7 +19,7 @@ use super::config::Vjepa2Config;
 use super::layers::{block_forward, gather_rows};
 use super::weights::Vjepa2PredictorWeights;
 use anyhow::{Result, ensure};
-use rlx_tensor::{layer_norm, linear};
+use rlx_core::host_kernels::{layer_norm, linear};
 
 /// Context / target patch indices for one batch element.
 #[derive(Debug, Clone, PartialEq, Eq)]

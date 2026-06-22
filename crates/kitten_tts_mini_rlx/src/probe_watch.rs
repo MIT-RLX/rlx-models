@@ -127,14 +127,88 @@ pub const WATCH: &[(&str, &str)] = &[
     ),
     ("/bert_encoder/Add", "/bert_encoder/Add_output_0"),
     ("/text_encoder_1/Expand", "/text_encoder_1/Expand_output_0"),
+    (
+        "/text_encoder/lstms.5/Mul_2",
+        "/text_encoder/lstms.5/Mul_2_output_0",
+    ),
+    (
+        "/text_encoder/lstms.5/Add_1",
+        "/text_encoder/lstms.5/Add_1_output_0",
+    ),
+    (
+        "/text_encoder/lstms.5/Add_2",
+        "/text_encoder/lstms.5/Add_2_output_0",
+    ),
     ("/text_encoder_1/Concat_4", "/text_encoder_1/Concat_4"),
+    ("/text_encoder_1/Where_4", "/text_encoder_1/Where_4"),
+    (
+        "/text_encoder_1/Where_4_output_0",
+        "/text_encoder_1/Where_4_output_0",
+    ),
     ("/lstm/Transpose", "/lstm/Transpose_output_0"),
+    ("/MatMul", "/MatMul_output_0"),
+    ("/shared/Transpose", "/shared/Transpose_output_0"),
+    ("/shared/LSTM_quant", "/shared/LSTM_output_0"),
+    ("/Transpose_1", "/Transpose_1_output_0"),
     (
         "/duration_proj/linear_layer/Add",
         "/duration_proj/linear_layer/Add_output_0",
     ),
     ("/Sigmoid", "/Sigmoid_output_0"),
     ("/ReduceSum", "/ReduceSum_output_0"),
+    (
+        "/F0_proj/Conv_output_0_Cast_to_float32_0",
+        "/F0_proj/Conv_output_0",
+    ),
+    ("/F0.2/Div", "/F0.2/Div_output_0"),
+    ("/F0.0/Div", "/F0.0/Div_output_0"),
+    ("/F0.1/Div", "/F0.1/Div_output_0"),
+    ("/N.2/Div", "/N.2/Div_output_0"),
+    ("/N.0/Div", "/N.0/Div_output_0"),
+    (
+        "/decoder/generator/Transpose",
+        "/decoder/generator/Transpose_output_0",
+    ),
+    (
+        "/N_proj/Conv_output_0_Cast_to_float32_0",
+        "/N_proj/Conv_output_0",
+    ),
+    (
+        "/decoder/generator/m_source/l_sin_gen/Sin",
+        "/decoder/generator/m_source/l_sin_gen/Sin_output_0",
+    ),
+    (
+        "/decoder/generator/m_source/l_sin_gen/RandomNormalLike",
+        "/decoder/generator/m_source/l_sin_gen/RandomNormalLike_output_0",
+    ),
+    (
+        "/decoder/generator/m_source/l_sin_gen/Div_2",
+        "/decoder/generator/m_source/l_sin_gen/Div_2_output_0",
+    ),
+    (
+        "/decoder/generator/m_source/l_sin_gen/Mul_14",
+        "/decoder/generator/m_source/l_sin_gen/Mul_14_output_0",
+    ),
+    (
+        "/decoder/generator/m_source/l_sin_gen/Mul_10",
+        "/decoder/generator/m_source/l_sin_gen/Mul_10_output_0",
+    ),
+    (
+        "/decoder/generator/m_source/l_sin_gen/Cast",
+        "/decoder/generator/m_source/l_sin_gen/Cast_output_0",
+    ),
+    (
+        "/decoder/generator/m_source/l_sin_gen/Greater",
+        "/decoder/generator/m_source/l_sin_gen/Greater_output_0",
+    ),
+    (
+        "/decoder/generator/m_source/l_sin_gen/Add_4",
+        "/decoder/generator/m_source/l_sin_gen/Add_4_output_0",
+    ),
+    (
+        "/decoder/generator/Slice_3",
+        "/decoder/generator/Slice_3_output_0",
+    ),
 ];
 
 pub fn matches_filter(hir_name: &str, filter: Option<&str>) -> bool {

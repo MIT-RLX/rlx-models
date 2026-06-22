@@ -1,0 +1,117 @@
+[package]
+name = "rlx-moshi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Kyutai Moshi speech-to-speech LM (Helium + depth transformer) for RLX"
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+ndarray = "0.16"
+hound = "3"
+rand = "0.8"
+sentencepiece = "0.11"
+
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-mimi = { workspace = true, features = ["gpu-codec"] }
+rlx-runtime = { workspace = true }
+
+# Kyutai moshi 0.6.4 pins candle 0.9.x (distinct from workspace 0.10 for parity tests).
+candle = { version = "0.9.2", default-features = false, optional = true, package = "candle-core" }
+candle-nn = { version = "0.9.2", optional = true }
+candle-transformers = { version = "0.9.2", optional = true }
+moshi = { version = "0.6.4", default-features = false, optional = true }
+# Non-optional: `mlx_weights` (always compiled + re-exported) imports it.
+safetensors = { version = "0.4.5" }
+
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "net"], optional = true }
+axum = { version = "0.8", features = ["ws"], optional = true }
+futures-util = { version = "0.3", optional = true }
+# Live mic capture + speaker playback for the `moshi_voice_chat` example.
+cpal = { version = "0.15", optional = true }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[features]
+default = ["cli", "tokio"]
+cli = []
+hf-download = ["dep:hf-hub"]
+tokio = ["dep:tokio"]
+ws-server = ["tokio", "dep:axum", "dep:futures-util"]
+gpu-lm = ["dep:candle", "dep:candle-nn", "dep:candle-transformers", "dep:moshi"]
+compiled-lm = ["gpu-lm"]
+mlx-lm = ["gpu-lm", "rlx-runtime/mlx"]
+
+metal = ["rlx-runtime/metal", "gpu-lm", "candle/metal", "candle-nn/metal", "moshi/metal"]
+mlx = ["rlx-runtime/mlx", "mlx-lm"]
+cuda = ["rlx-runtime/cuda", "gpu-lm", "candle/cuda", "candle-nn/cuda", "moshi/cuda"]
+rocm = ["rlx-runtime/rocm"]
+vulkan = ["rlx-runtime/vulkan"]
+gpu = ["rlx-runtime/gpu", "gpu-lm"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "compiled-lm"]
+apple-silicon = ["metal", "mlx", "gpu", "compiled-lm"]
+nvidia-gpu = ["cuda", "compiled-lm"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu", "vulkan"]
+# Live microphone input + speaker playback for `moshi_voice_chat`.
+mic = ["dep:cpal"]
+
+[[bin]]
+name = "rlx-moshi"
+path = "src/bin/rlx_moshi.rs"
+required-features = ["cli"]
+
+[[example]]
+name = "bench_one_way"
+path = "examples/bench_one_way.rs"
+
+[[example]]
+name = "moshi_voice_chat"
+path = "examples/moshi_voice_chat.rs"
+
+# Uses optional axum/futures-util; only builds with the `ws-server` feature.
+[[example]]
+name = "ws_server"
+required-features = ["ws-server"]
+
+[dev-dependencies]
+rlx-moshi = { path = ".", features = ["cli", "hf-download", "tokio", "gpu-lm", "compiled-lm", "metal"] }
+rlx-mimi = { workspace = true, features = ["hf-download"] }
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[[test]]
+name = "config_load"
+path = "tests/config_load.rs"
+
+[[test]]
+name = "weight_keys"
+path = "tests/weight_keys.rs"
+
+[[test]]
+name = "stream_whisper_roundtrip"
+path = "tests/stream_whisper_roundtrip.rs"
+
+[[test]]
+name = "gguf_keys"
+path = "tests/gguf_keys.rs"
+
+[[test]]
+name = "mlx_keys"
+path = "tests/mlx_keys.rs"
+
+[[test]]
+name = "gpu_smoke"
+path = "tests/gpu_smoke.rs"
+
+[lints]
+workspace = true

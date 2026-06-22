@@ -163,54 +163,68 @@ fn model_dir_from_bundle_manifest() -> Option<PathBuf> {
     layout_exists(&dir).then_some(dir)
 }
 
+/// RLX ONNX bundle colocated under `weights_dir/rlx_bundle`.
+pub fn find_rlx_bundle_colocated(weights_dir: &Path) -> Option<PathBuf> {
+    let weights_dir = weights_dir
+        .canonicalize()
+        .unwrap_or_else(|_| weights_dir.to_path_buf());
+    let in_dir = weights_dir.join("rlx_bundle");
+    if in_dir.join("graph.json").is_file() {
+        return in_dir.canonicalize().ok().or(Some(in_dir));
+    }
+    None
+}
+
 /// RLX ONNX bundle (`graph.json` + weights) under a native weights directory.
 pub fn find_rlx_bundle(weights_dir: &Path) -> Option<PathBuf> {
+    if let Some(dir) = find_rlx_bundle_colocated(weights_dir) {
+        return Some(dir);
+    }
     if let Ok(raw) =
         std::env::var("RLX_ONNX_BUNDLE").or_else(|_| std::env::var("KITTEN_RLX_BUNDLE"))
     {
         let p = PathBuf::from(raw);
         if p.join("graph.json").is_file() {
-            return Some(p);
+            return p.canonicalize().ok().or(Some(p));
         }
     }
-    let in_dir = weights_dir.join("rlx_bundle");
-    if in_dir.join("graph.json").is_file() {
-        return Some(in_dir);
-    }
     None
+}
+
+fn has_native_weight_file(dir: &Path) -> bool {
+    dir.join("model.safetensors").is_file() || dir.join("model.gguf").is_file()
 }
 
 /// Workspace decomposed weights (`crates/kitten_tts_mini_rlx/weights`).
 pub fn default_native_weights_dir() -> Option<PathBuf> {
     if let Ok(raw) = std::env::var("KITTEN_RLX_WEIGHTS") {
         let p = PathBuf::from(raw);
-        if p.join("model.safetensors").is_file() || p.join("rlx_bundle/graph.json").is_file() {
+        if has_native_weight_file(&p) || find_rlx_bundle_colocated(&p).is_some() {
             return Some(p);
         }
     }
     let sibling = Path::new(env!("CARGO_MANIFEST_DIR")).join("../kitten_tts_mini_rlx/weights");
-    if sibling.join("model.safetensors").is_file() && find_rlx_bundle(&sibling).is_some() {
-        return Some(sibling);
-    }
-    if find_rlx_bundle(&sibling).is_some() {
+    let sibling = sibling.canonicalize().unwrap_or(sibling);
+    if has_native_weight_file(&sibling) || find_rlx_bundle_colocated(&sibling).is_some() {
         return Some(sibling);
     }
     None
 }
 
-/// Decomposed RLX weights (`model.safetensors`), if present.
+/// Decomposed RLX weights (`model.safetensors` or `model.gguf`), if present.
 pub fn find_native_weights(model_dir: &Path) -> Option<PathBuf> {
     if let Ok(raw) = std::env::var("KITTEN_RLX_WEIGHTS") {
         let p = PathBuf::from(raw);
-        if p.join("model.safetensors").is_file() || p.join("rlx_bundle/graph.json").is_file() {
+        let p = p.canonicalize().unwrap_or(p);
+        if has_native_weight_file(&p) || find_rlx_bundle_colocated(&p).is_some() {
             return Some(p);
         }
     }
-    if model_dir.join("model.safetensors").is_file() {
-        return Some(model_dir.to_path_buf());
-    }
-    if model_dir.join("rlx_bundle/graph.json").is_file() {
-        return Some(model_dir.to_path_buf());
+    let model_dir = model_dir
+        .canonicalize()
+        .unwrap_or_else(|_| model_dir.to_path_buf());
+    if has_native_weight_file(&model_dir) || find_rlx_bundle_colocated(&model_dir).is_some() {
+        return Some(model_dir);
     }
     default_native_weights_dir()
 }

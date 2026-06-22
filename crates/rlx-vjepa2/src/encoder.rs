@@ -20,7 +20,7 @@ use super::layers::block_forward;
 use super::preprocess::conv3d_patch_embed;
 use super::weights::Vjepa2EncoderWeights;
 use anyhow::Result;
-use rlx_tensor::layer_norm;
+use rlx_core::host_kernels::layer_norm;
 
 pub struct Vjepa2EncoderOutput {
     pub tokens: Vec<f32>,

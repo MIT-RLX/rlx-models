@@ -52,6 +52,7 @@ pub fn opts_seq8() -> ImportOptions {
 /// Lower bundle → HIR with model-specific graph rewrites (duration carry).
 pub fn build_hir(bundle: &RlxBundle, mut opts: ImportOptions) -> anyhow::Result<HirBuildResult> {
     kitten_tts_mini_rlx::bundle_patches::set_import_sequence_length(opts.sequence_length);
+    kitten_tts_mini_rlx::bundle_patches::set_import_max_waveform_samples(opts.max_waveform_samples);
     opts.output_shape_fix = Some(kitten_tts_mini_rlx::bundle_patches::import_output_shape_fix);
     kitten_tts_mini_rlx::bundle_compile::build_hir_from_bundle_with_rewrites(bundle, opts)
 }

@@ -78,7 +78,23 @@ pub fn pad_or_trim_pcm(pcm: &[f32]) -> Vec<f32> {
 
 pub fn pcm_to_mel(cfg: &WhisperConfig, pcm: &[f32]) -> MelSpectrogram {
     let pcm = pad_or_trim_pcm(pcm);
-    pcm_to_log_mel(&pcm, cfg.num_mel_bins, N_FRAMES)
+    let frames = crate::mel::bucket_mel_frames(crate::mel::mel_frames_from_samples(pcm.len()));
+    pcm_to_log_mel(&pcm, cfg.num_mel_bins, frames)
+}
+
+/// Mel for a speech slice (no 30 s pad) — used for VAD/Silero regions.
+pub fn pcm_slice_to_mel(cfg: &WhisperConfig, pcm: &[f32]) -> MelSpectrogram {
+    let frames = crate::mel::bucket_mel_frames(crate::mel::mel_frames_from_samples(pcm.len()));
+    pcm_to_log_mel(pcm, cfg.num_mel_bins, frames)
+}
+
+/// Mel with fixed `mel_frames` (zero-pad PCM tail) — keeps encoder geometry stable across VAD regions.
+pub fn pcm_to_mel_sized(cfg: &WhisperConfig, pcm: &[f32], mel_frames: usize) -> MelSpectrogram {
+    let n_samples = crate::mel::samples_for_mel_frames(mel_frames);
+    let mut buf = vec![0f32; n_samples];
+    let n = pcm.len().min(n_samples);
+    buf[..n].copy_from_slice(&pcm[..n]);
+    pcm_to_log_mel(&buf, cfg.num_mel_bins, mel_frames)
 }
 
 pub fn load_wav_mono_f32(path: &Path) -> Result<Vec<f32>> {

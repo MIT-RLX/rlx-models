@@ -246,8 +246,16 @@ impl Llama32PackedForward {
                 .ok_or_else(|| anyhow!("non-utf8 weights path"))?,
         )?;
         let mut packed = std::collections::HashMap::new();
-        let (graph, params) =
-            build_llama32_graph_sized_packed(cfg, &mut loader, 1, seq, true, true, &mut packed)?;
+        let (graph, params) = build_llama32_graph_sized_packed(
+            cfg,
+            &mut loader,
+            1,
+            seq,
+            true,
+            true,
+            false,
+            &mut packed,
+        )?;
         let opts = rlx_core::flow_bridge::compile_options_for_packed_gguf_prefill(exec_device);
         let mut compiled = rlx_core::flow_bridge::packed_gguf_compile_guard(exec_device, || {
             Session::new(exec_device).compile_with(graph, &opts)

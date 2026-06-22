@@ -20,7 +20,7 @@ use super::weights::{
     RmsNormWeight,
 };
 use anyhow::Result;
-use rlx_tensor::{layer_norm, linear, matmul, matmul_bt};
+use rlx_core::host_kernels::{layer_norm, linear, matmul, matmul_bt};
 
 pub fn silu(x: &mut [f32]) {
     for v in x.iter_mut() {

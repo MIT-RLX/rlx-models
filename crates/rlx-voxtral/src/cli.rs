@@ -63,8 +63,8 @@ pub fn run(args: &[String]) -> Result<()> {
                        [--prompt-ids 1,24,24,...] [--transcribe] [--lang en]\n\
                        [--device cpu|metal|cuda|…] [--max-tokens N] [--dry]\n\
                      \n\
-                     --transcribe uses HF Whisper mel + Mistral transcription templates.\n\
-                     Set RLX_VOXTRAL_PYTHON to a venv python with transformers + mistral-common."
+                     --transcribe runs a fully native Rust/RLX frontend (Whisper log-mel\n\
+                     + Mistral transcription template) — no Python required."
                 );
                 return Ok(());
             }
@@ -102,11 +102,8 @@ pub fn run(args: &[String]) -> Result<()> {
     let tokens = if transcribe {
         runner.transcribe_wav(&wav, language.as_deref())?
     } else {
-        let (mel, _) = crate::audio::pcm_to_mel_and_prompt(
-            runner.model_dir(),
-            Some(&wav),
-            language.as_deref(),
-        )?;
+        let pcm = crate::audio::load_wav_mono_f32(&wav)?;
+        let mel = crate::audio::pcm_to_mel(&runner.config().audio_config, &pcm)?;
         let prompt =
             prompt_ids.ok_or_else(|| anyhow!("--prompt-ids required unless --transcribe"))?;
         runner.generate(&prompt, &mel)?

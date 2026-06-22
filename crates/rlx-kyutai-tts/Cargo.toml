@@ -1,0 +1,92 @@
+[package]
+name = "rlx-kyutai-tts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Kyutai TTS (1.6B en/fr) — depth-multiplexed Helium-style TTS + Mimi codec for RLX"
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+ndarray = "0.16"
+rand = "0.8"
+safetensors = { workspace = true }
+half = { workspace = true }
+
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-mimi = { workspace = true }
+rlx-runtime = { workspace = true }
+# NOTE: rlx-kyutai-tts implements all required architecture primitives natively
+# (see src/nn.rs, src/cross_attention.rs, src/conditioner.rs, etc.). We avoid
+# depending on rlx-moshi at runtime because workspace feature unification would
+# drag candle/moshi (rlx-moshi's optional gpu-lm path) into our runtime graph.
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[features]
+default = ["cli"]
+cli = []
+hf-download = ["dep:hf-hub", "rlx-mimi/hf-download"]
+
+metal = ["rlx-runtime/metal", "rlx-mimi/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-mimi/cuda"]
+rocm = ["rlx-runtime/rocm"]
+vulkan = ["rlx-runtime/vulkan"]
+gpu = ["rlx-runtime/gpu", "rlx-mimi/gpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu", "vulkan"]
+
+[[bin]]
+name = "rlx-kyutai-tts"
+path = "src/bin/rlx_kyutai_tts.rs"
+required-features = ["cli"]
+
+# Dev-only: upstream Kyutai `moshi` + Candle for parity checks against the
+# published `dsm_tts_*` checkpoint; `rlx-whisper` for ASR round-trip validation
+# of synthesised audio. NOT runtime dependencies.
+[dev-dependencies]
+rlx-kyutai-tts = { path = ".", features = ["cli", "hf-download"] }
+candle = { version = "0.9.2", default-features = false, package = "candle-core" }
+candle-nn = { version = "0.9.2" }
+moshi = { version = "0.6.4", default-features = false }
+safetensors = { workspace = true }
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+rlx-mimi = { workspace = true }
+anyhow = { workspace = true }
+criterion = { workspace = true }
+ndarray = "0.16"
+
+[[test]]
+name = "config_load"
+path = "tests/config_load.rs"
+
+[[test]]
+name = "whisper_validate"
+path = "tests/whisper_validate.rs"
+
+[[bench]]
+name = "kernels"
+harness = false
+
+[[bench]]
+name = "backbone_step"
+harness = false
+
+[[example]]
+name = "generate_wav"
+path = "examples/generate_wav.rs"
+
+[lints]
+workspace = true

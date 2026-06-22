@@ -99,6 +99,9 @@ pub enum GemmaLayerCtx<'a> {
         index: usize,
         spec: GemmaDecodeLayerSpec,
         kv_out: &'a SideOutputs,
+        /// EAGLE3-style pre-attention-norm input tap. `Some` only on
+        /// layers requested via [`GemmaFlow::with_aux_hidden_outputs`].
+        aux_in: Option<&'a SideOutputs>,
     },
 }
 
@@ -134,14 +137,17 @@ impl GemmaLayerCtx<'_> {
                 index,
                 spec,
                 kv_out,
-            } => FlowStage::Named {
-                name: format!("layer{index}"),
-                inner: Arc::new(FlowStage::GemmaDecodeLayer(GemmaDecodeLayerStage::layer(
-                    *index,
-                    spec.clone(),
-                    kv_out.inner(),
-                ))),
-            },
+                aux_in,
+            } => {
+                let mut stage = GemmaDecodeLayerStage::layer(*index, spec.clone(), kv_out.inner());
+                if let Some(sink) = aux_in {
+                    stage = stage.with_aux_input_tap(sink.inner());
+                }
+                FlowStage::Named {
+                    name: format!("layer{index}"),
+                    inner: Arc::new(FlowStage::GemmaDecodeLayer(stage)),
+                }
+            }
         }
     }
 }
@@ -173,6 +179,10 @@ pub struct GemmaFlow<'a> {
     dynamic_past: bool,
     with_lm_head: bool,
     with_kv_outputs: bool,
+    /// EAGLE3 layer-input tap: sorted, unique layer indices whose
+    /// pre-attention-norm hidden states should be exported as extra
+    /// graph outputs (one tensor per layer, in ascending order).
+    aux_hidden_layer_ids: Vec<usize>,
     last_logits_only: bool,
     use_custom_mask: bool,
     profile: Option<CompileProfile>,
@@ -220,6 +230,7 @@ impl<'a> GemmaFlow<'a> {
             dynamic_past: false,
             with_lm_head: false,
             with_kv_outputs: false,
+            aux_hidden_layer_ids: Vec::new(),
             last_logits_only: false,
             use_custom_mask: false,
             profile: None,
@@ -317,6 +328,27 @@ impl<'a> GemmaFlow<'a> {
 
     pub fn export_kv(mut self) -> Self {
         self.with_kv_outputs = true;
+        self
+    }
+
+    /// EAGLE3 layer-input tap. For each requested layer index, the
+    /// pre-attention-norm hidden state (`inpL`) is appended as an
+    /// extra graph output. Outputs come **after** the KV-cache
+    /// outputs, in **ascending layer-index order**, regardless of
+    /// the order the caller passes them in.
+    ///
+    /// Decode-only for now; calling this with `prefill()` has no
+    /// effect (the prefill path uses the composed
+    /// `gemma_prefill_layer_composed` recipe, which doesn't yet plumb
+    /// the tap — see PLAN.md).
+    ///
+    /// Layer indices ≥ `num_hidden_layers` are silently dropped at
+    /// build time.
+    pub fn with_aux_hidden_outputs(mut self, ids: impl IntoIterator<Item = usize>) -> Self {
+        let mut v: Vec<usize> = ids.into_iter().collect();
+        v.sort_unstable();
+        v.dedup();
+        self.aux_hidden_layer_ids = v;
         self
     }
 
@@ -653,6 +685,27 @@ impl<'a> GemmaFlow<'a> {
         let decode_sliding = cfg.sliding_window;
 
         let kv_out = SideOutputs::new();
+        // EAGLE3 aux tap. One SideOutputs sink shared across all tapped
+        // layers. Layer-construction order is ascending, which combined
+        // with `aux_hidden_layer_ids` being sorted gives ascending push
+        // order — so the drained vec is naturally indexed by `(idx of
+        // layer_id in aux_hidden_layer_ids)`.
+        let aux_in = SideOutputs::new();
+        let aux_layer_ids: Vec<usize> = self
+            .aux_hidden_layer_ids
+            .iter()
+            .copied()
+            .filter(|i| *i < cfg.num_hidden_layers)
+            .collect();
+        let aux_in_active = !aux_layer_ids.is_empty();
+        if aux_in_active && cfg.is_moe() {
+            anyhow::bail!(
+                "gemma: with_aux_hidden_outputs is not yet supported on MoE configs \
+                 (`is_moe()=true`). The MoE decode layer goes through \
+                 `gemma_moe_decode_layer_composed`, which does not yet plumb the tap. \
+                 Validate EAGLE3 against the dense Gemma 4 31B target."
+            );
+        }
 
         let rope_factors = weights.take("rope_freqs.weight").ok().map(|(data, _)| data);
         let inv_freq = resolve_inv_freq(cfg, rope_factors.as_deref());
@@ -748,7 +801,7 @@ impl<'a> GemmaFlow<'a> {
         }
 
         flow = flow
-            .bind_decode_inputs(cfg.num_hidden_layers, self.use_custom_mask)
+            .bind_decode_inputs(cfg.num_hidden_layers, self.use_custom_mask, true)
             .zero_beta_named("gemma.zero_beta.hidden", h)
             .token_embed()
             .raw_stage(FlowStage::EmbedScale(EmbedScaleStage::new(h)))
@@ -782,8 +835,15 @@ impl<'a> GemmaFlow<'a> {
         let moe_n_ff = cfg.expert_ffn_dim();
         flow = flow.repeat_layers(num_layers, {
             let sink = kv_out.clone();
+            let aux_sink = aux_in.clone();
+            let aux_ids = aux_layer_ids.clone();
             let hidden_shape = hidden_shape.clone();
             move |i| {
+                let aux_for_layer: Option<&SideOutputs> = if aux_ids.binary_search(&i).is_ok() {
+                    Some(&aux_sink)
+                } else {
+                    None
+                };
                 let mask = if use_custom_mask {
                     rlx_ir::op::MaskKind::Causal
                 } else {
@@ -825,6 +885,7 @@ impl<'a> GemmaFlow<'a> {
                         index: i,
                         spec: spec.clone(),
                         kv_out: &sink,
+                        aux_in: aux_for_layer,
                     });
                 }
                 if is_moe {
@@ -847,6 +908,7 @@ impl<'a> GemmaFlow<'a> {
                     index: i,
                     spec,
                     kv_out: &sink,
+                    aux_in: aux_for_layer,
                 }
                 .default_stage()
             }
@@ -871,10 +933,25 @@ impl<'a> GemmaFlow<'a> {
         if let Some(cap) = cfg.final_logit_softcapping {
             flow = flow.raw_stage(FlowStage::LogitSoftcap(LogitSoftcapStage::new(cap)));
         }
+        // Build must run first — stages only push their KV / aux
+        // HirNodeIds into the shared sinks during stage `emit()`,
+        // which fires inside `flow.build()`.
         let built = flow
             .output("logits")
-            .build(&mut WeightLoaderSource(weights))?
-            .with_extra_hir_outputs(kv_out.drain());
+            .build(&mut WeightLoaderSource(weights))?;
+        let mut extra_outputs = kv_out.drain();
+        if aux_in_active {
+            let aux = aux_in.drain();
+            debug_assert_eq!(
+                aux.len(),
+                aux_layer_ids.len(),
+                "aux tap pushed {} hidden states but {} layer ids were requested",
+                aux.len(),
+                aux_layer_ids.len()
+            );
+            extra_outputs.extend(aux);
+        }
+        let built = built.with_extra_hir_outputs(extra_outputs);
 
         Ok(built)
     }
@@ -1028,6 +1105,9 @@ impl<'a> GemmaFlow<'a> {
         if let Some(p) = o.profile.clone() {
             f = f.profile(p);
         }
+        if !o.aux_hidden_layer_ids.is_empty() {
+            f = f.with_aux_hidden_outputs(o.aux_hidden_layer_ids.iter().copied());
+        }
         f
     }
 }
@@ -1070,6 +1150,33 @@ pub struct GemmaDecodeOpts {
     pub dynamic_past: bool,
     pub use_custom_mask: bool,
     pub profile: Option<CompileProfile>,
+    /// EAGLE3 layer-input tap: target layer indices whose
+    /// pre-attention-norm hidden states should be emitted as extra
+    /// graph outputs after the KV outputs. Empty ⇒ disabled.
+    /// Mirrors [`GemmaFlow::with_aux_hidden_outputs`].
+    #[doc(alias = "eagle3")]
+    pub aux_hidden_layer_ids: Vec<usize>,
+}
+
+impl GemmaDecodeOpts {
+    /// Default decode opts (no aux tap). Mirrors what was the old
+    /// in-struct default before the EAGLE3 tap landed.
+    pub fn new(batch: usize, past_seq: usize) -> Self {
+        Self {
+            batch,
+            past_seq,
+            dynamic_past: false,
+            use_custom_mask: false,
+            profile: None,
+            aux_hidden_layer_ids: Vec::new(),
+        }
+    }
+
+    /// Enable EAGLE3 aux hidden-state outputs on this decode build.
+    pub fn with_aux_hidden_layer_ids(mut self, ids: impl IntoIterator<Item = usize>) -> Self {
+        self.aux_hidden_layer_ids = ids.into_iter().collect();
+        self
+    }
 }
 
 pub fn build_gemma_prefill_flow(
@@ -1166,9 +1273,11 @@ mod gemma4_tests {
         let cfg = gemma4_12b_like();
         let tables = secondary_rope_tables(&cfg, cfg.max_position_embeddings, None)
             .expect("Gemma 4 split rope_parameters should produce a secondary table");
-        // n_rot = 512 * 0.25 = 128 → half = 64.
-        assert_eq!(tables.half_dim, 64);
-        assert_eq!(tables.cos.len(), cfg.max_position_embeddings * 64);
+        // The cos/sin table row stride is head_dim/2 = 256 (the RoPE kernel's
+        // `tab_half`); only the leading n_rot/2 = 64 entries are rotated freqs,
+        // the rest are zeroed NoPE dims.
+        assert_eq!(tables.half_dim, 256);
+        assert_eq!(tables.cos.len(), cfg.max_position_embeddings * 256);
         assert_eq!(tables.sin.len(), tables.cos.len());
 
         // pos=0 row is always (1, 0) regardless of theta.
@@ -1176,12 +1285,19 @@ mod gemma4_tests {
         assert!(tables.sin[0].abs() < 1e-6);
         // The frequency exponent kicks in for dim>=1: at pos=1, dim=5
         // the two thetas should produce different cos values.
-        let global_inv = crate::rope::default_inv_freq(1_000_000.0, 128);
-        let sliding_inv = crate::rope::default_inv_freq(10_000.0, 128);
+        //
+        // Proportional partial RoPE: the global inv_freq exponent uses the
+        // FULL head_dim (512) as denominator even though only 128 dims rotate
+        // (HF `_compute_proportional_rope_parameters`). So the expected sample
+        // is from `default_inv_freq(theta, 512)`, NOT the rotary count 128.
+        let global_inv = crate::rope::default_inv_freq(1_000_000.0, 512);
+        let sliding_inv = crate::rope::default_inv_freq(10_000.0, 256);
         assert!((global_inv[5] - sliding_inv[5]).abs() > 1e-3);
         let global_cos_p1_d5 = (1.0 * global_inv[5]).cos();
-        let global_sample = tables.cos[64 + 5]; // pos=1, dim=5 (stride 64)
+        let global_sample = tables.cos[256 + 5]; // pos=1, dim=5 (stride head_dim/2=256)
         assert!((global_sample as f64 - global_cos_p1_d5).abs() < 1e-5);
+        // The rotated freqs occupy the first 64 cols; col 64+ is zeroed → cos=1.
+        assert!((tables.cos[256 + 64] - 1.0).abs() < 1e-6);
     }
 
     #[test]

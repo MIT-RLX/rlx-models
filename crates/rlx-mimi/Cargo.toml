@@ -1,0 +1,85 @@
+[package]
+name = "rlx-mimi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Kyutai Mimi neural audio codec (12.5 Hz, 24 kHz) for RLX"
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+ndarray = "0.16"
+hound = "3"
+rlx-cli = { workspace = true, optional = true }
+rlx-core = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-metal = { workspace = true, optional = true }
+rlx-mlx = { workspace = true, optional = true }
+rlx-wgpu = { workspace = true, optional = true }
+
+candle = { version = "0.9.2", default-features = false, optional = true, package = "candle-core" }
+candle-nn = { version = "0.9.2", optional = true }
+moshi = { version = "0.6.4", default-features = false, optional = true }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[features]
+default = ["cli"]
+cli = ["dep:rlx-cli"]
+hf-download = ["dep:hf-hub"]
+
+# Execution backends. The codec runs as an rlx-runtime graph natively on each
+# backend; CPU is always available. `gpu-codec` is the legacy candle/moshi path
+# (Metal/CUDA only), kept opt-in for cross-checking but no longer required.
+cpu = ["rlx-runtime/cpu"]
+metal = ["rlx-runtime/metal", "dep:rlx-metal"]
+mlx = ["rlx-runtime/mlx", "dep:rlx-mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu", "dep:rlx-wgpu"]
+vulkan = ["rlx-runtime/vulkan", "dep:rlx-wgpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+# Legacy candle/moshi GPU codec (Metal/CUDA), opt-in for parity cross-checks.
+gpu-codec = ["dep:candle", "dep:candle-nn", "dep:moshi"]
+candle-metal = ["gpu-codec", "candle/metal", "candle-nn/metal", "moshi/metal"]
+candle-cuda = ["gpu-codec", "candle/cuda", "candle-nn/cuda", "moshi/cuda"]
+
+[[bin]]
+name = "rlx-mimi"
+path = "src/bin/rlx_mimi.rs"
+required-features = ["cli"]
+
+[dev-dependencies]
+# GPU backends are opt-in for tests (run e.g. `cargo test -p rlx-mimi --features metal,mlx,gpu`)
+# so the default `cargo test` stays CPU-only and avoids cross-binary GPU contention.
+rlx-mimi = { path = ".", features = ["cli", "hf-download"] }
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+rlx-runtime = { workspace = true }
+
+[[test]]
+name = "whisper_roundtrip"
+path = "tests/whisper_roundtrip.rs"
+
+[[test]]
+name = "hf_parity"
+path = "tests/hf_parity.rs"
+
+[[test]]
+name = "gpu_codec_smoke"
+path = "tests/gpu_codec_smoke.rs"
+
+[lints]
+workspace = true

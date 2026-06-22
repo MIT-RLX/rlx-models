@@ -26,14 +26,20 @@ pub struct WhisperWeightPrefix {
 
 impl WhisperWeightPrefix {
     pub fn detect(weights: &WeightMap) -> Self {
-        let (encoder, decoder) = if weights.has("model.encoder.conv1.weight") {
+        Self::detect_with(|k| weights.has(k))
+    }
+
+    /// Detect prefixes from a key-existence predicate, avoiding a full [`WeightMap`]
+    /// clone when only key names are available (e.g. a raw snapshot `HashMap`).
+    pub fn detect_with(has: impl Fn(&str) -> bool) -> Self {
+        let (encoder, decoder) = if has("model.encoder.conv1.weight") {
             ("model.encoder".into(), "model.decoder".into())
-        } else if weights.has("encoder.conv1.weight") {
+        } else if has("encoder.conv1.weight") {
             ("encoder".into(), "decoder".into())
         } else {
             ("model.encoder".into(), "model.decoder".into())
         };
-        let hf_embed_names = weights.has(&format!("{decoder}.embed_tokens.weight"));
+        let hf_embed_names = has(&format!("{decoder}.embed_tokens.weight"));
         Self {
             encoder,
             decoder,

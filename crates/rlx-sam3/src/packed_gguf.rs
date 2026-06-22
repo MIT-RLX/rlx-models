@@ -23,7 +23,7 @@ use rlx_flow::{GgufPackedLinear, GgufPackedParams};
 use rlx_gguf::GgmlType;
 use rlx_ir::quant::QuantScheme;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// True when the GGUF file stores quant matmul weights (K-quant or Q4_0/Q8_0).
 pub fn gguf_has_packed_linears(path: &Path) -> Result<bool> {
@@ -60,66 +60,112 @@ fn dequant_gguf_bytes(bytes: &[u8], n: usize, scheme: QuantScheme) -> Result<Vec
 }
 
 /// Load SAM3 from GGUF: 2D quant linears stay packed; other quant tensors dequant to F32 in the map.
+///
+/// Honors an optional `<path>.tensor_map.json` sidecar produced by sam3.cpp's
+/// `convert_mlx_sam3_to_gguf.py`. The script hashes every tensor name to a
+/// 12-char SHA-1 prefix (`t_xxxxxxxxxxxx`) and stores the GGUF tensor under
+/// that opaque key, while the sidecar maps it back to the friendly name SAM3
+/// expects (`backbone.vision_backbone.trunk…`). When the sidecar is present
+/// we translate on the fly so the rest of the loader sees friendly names.
 pub fn load_sam3_from_gguf(path: &Path) -> Result<(WeightMap, GgufPackedParams)> {
     let path_str = path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("non-utf8 path {:?}", path))?;
     let mut loader = GgufLoader::from_file(path_str)?;
-    let keys = loader.remaining_keys();
+    let opaque_keys = loader.remaining_keys();
+
+    let name_map = load_sidecar_tensor_map(path)?;
+    // sam3.cpp's `convert_mlx_sam3_to_gguf.py` writes tensors in PyTorch
+    // convention (`weight.shape == [out, in]`); the legacy rlx-sam3 GGUFs
+    // wrote them in `[in, out]` order. The sidecar JSON is the converter's
+    // own marker, so its presence picks the layout.
+    let weight_is_out_in = name_map.is_some();
+    let resolve = |k: &str| -> String {
+        name_map
+            .as_ref()
+            .and_then(|m| m.get(k))
+            .cloned()
+            .unwrap_or_else(|| k.to_string())
+    };
+    let resolved: Vec<(String, String)> = opaque_keys
+        .iter()
+        .map(|k| (k.clone(), resolve(k)))
+        .collect();
 
     let mut linears = HashMap::new();
     let mut f32_tensors: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
 
-    for key in &keys {
-        if let Some(prefix) = key.strip_suffix(".weight") {
-            if let Some((bytes, scheme, shape)) = loader.take_packed(key)? {
-                let packed_dims = if shape.len() == 2 {
-                    Some((shape[0], shape[1]))
-                } else if shape.len() == 4 && shape[2] == 1 && shape[3] == 1 {
-                    // 1×1 conv [out_c, in_c, 1, 1] → packed 2D matmul
-                    Some((shape[1], shape[0]))
-                } else if shape.len() == 4 && shape[2] == 3 && shape[3] == 3 {
-                    // 3×3 conv [out_c, in_c, 3, 3] — stay packed (dequant per forward)
-                    Some((shape[1] * 9, shape[0]))
-                } else {
-                    None
-                };
-                if let Some((in_dim, out_dim)) = packed_dims {
-                    let bias_key = format!("{prefix}.bias");
-                    let bias = if keys.iter().any(|k| k == &bias_key) {
-                        let (b, bshape) = loader.take(&bias_key)?;
-                        ensure!(bshape == vec![out_dim], "{bias_key}: shape mismatch");
-                        b
-                    } else {
-                        vec![0.0f32; out_dim]
-                    };
-                    linears.insert(
-                        prefix.to_string(),
-                        GgufPackedLinear {
-                            w_q: bytes,
-                            scheme,
-                            in_dim,
-                            out_dim,
-                            bias,
-                        },
-                    );
-                    continue;
-                } else {
-                    let n: usize = shape.iter().product();
-                    let data = dequant_gguf_bytes(&bytes, n, scheme)?;
-                    f32_tensors.insert(key.clone(), (data, shape));
-                    continue;
-                }
-            }
+    for (opaque_key, friendly_key) in &resolved {
+        if friendly_key.strip_suffix(".weight").is_none() {
+            let (data, shape) = loader.take(opaque_key)?;
+            f32_tensors.insert(friendly_key.clone(), (data, shape));
+            continue;
         }
-        let (data, shape) = loader.take(key)?;
-        f32_tensors.insert(key.clone(), (data, shape));
+
+        let Some((bytes, scheme, shape)) = loader.take_packed(opaque_key)? else {
+            let (data, shape) = loader.take(opaque_key)?;
+            f32_tensors.insert(friendly_key.clone(), (data, shape));
+            continue;
+        };
+
+        let packed_dims = if shape.len() == 2 {
+            if weight_is_out_in {
+                Some((shape[1], shape[0])) // [out, in] → (in, out)
+            } else {
+                Some((shape[0], shape[1])) // [in, out]
+            }
+        } else if shape.len() == 4 && shape[2] == 1 && shape[3] == 1 {
+            // 1×1 conv [out_c, in_c, 1, 1] → packed 2D matmul.
+            Some((shape[1], shape[0]))
+        } else if shape.len() == 4 && shape[2] == 3 && shape[3] == 3 {
+            // 3×3 conv [out_c, in_c, 3, 3] — stay packed (dequant per forward).
+            Some((shape[1] * 9, shape[0]))
+        } else {
+            None
+        };
+
+        if let Some((in_dim, out_dim)) = packed_dims {
+            // The bias is taken on its own iteration (so the WeightMap also
+            // sees it for the few code paths that look it up directly); here
+            // we only embed an empty vector and let the lookup path resolve
+            // bias from the WeightMap via `take_linear_b`.
+            let bias = vec![0.0f32; out_dim];
+            linears.insert(
+                friendly_key.clone(),
+                GgufPackedLinear {
+                    w_q: bytes,
+                    scheme,
+                    in_dim,
+                    out_dim,
+                    bias,
+                },
+            );
+        } else {
+            let n: usize = shape.iter().product();
+            let data = dequant_gguf_bytes(&bytes, n, scheme)?;
+            f32_tensors.insert(friendly_key.clone(), (data, shape));
+        }
     }
 
     Ok((
         WeightMap::from_tensors(f32_tensors),
         GgufPackedParams { linears },
     ))
+}
+
+/// Read the sidecar `<gguf>.tensor_map.json` if present. Returns `Ok(None)`
+/// when the sidecar is absent (the GGUF likely uses friendly names directly),
+/// and `Err` only on a malformed file.
+fn load_sidecar_tensor_map(path: &Path) -> Result<Option<HashMap<String, String>>> {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".tensor_map.json");
+    let sidecar = PathBuf::from(s);
+    if !sidecar.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&sidecar)?;
+    let map: HashMap<String, String> = serde_json::from_str(&text)?;
+    Ok(Some(map))
 }
 
 /// Dequant a packed 2D GGUF linear to F32 row-major (`in_dim` × `out_dim`).
@@ -249,7 +295,7 @@ pub fn take_conv1x1_with_gguf_key(
     anyhow::bail!("missing weight: {key}")
 }
 
-/// F32 [`rlx_tensor::linear`] or fused [`rlx_cpu::gguf_matmul::gguf_matmul_bt`].
+/// F32 [`rlx_core::host_kernels::linear`] or fused [`rlx_cpu::gguf_matmul::gguf_matmul_bt`].
 pub fn linear_maybe_gguf(
     x: &[f32],
     m: usize,
@@ -260,7 +306,7 @@ pub fn linear_maybe_gguf(
     n: usize,
     b: &[f32],
 ) -> Result<Vec<f32>> {
-    use rlx_tensor::linear;
+    use rlx_core::host_kernels::linear;
 
     let gguf = gguf_key.and_then(|key| gguf_packed.and_then(|p| packed_linear(p, key)));
     let mut out = vec![0f32; m * n];

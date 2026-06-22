@@ -1965,7 +1965,7 @@ impl Qwen35Runner {
         let mut next_tokens = if self.fast_greedy_lm_head && opts.greedy {
             self.argmax_batch_from_hidden(&trunk)?
         } else if self.fast_greedy_lm_head
-            && sample_lm_cap(opts, self.lm_vocab_size()) < self.lm_vocab_size()
+            && sample_lm_cap(&opts, self.lm_vocab_size()) < self.lm_vocab_size()
         {
             self.sample_batch_from_hidden(&trunk, opts)?
         } else {
@@ -2140,7 +2140,7 @@ impl Qwen35Runner {
         let mut next_tokens = if self.fast_greedy_lm_head && opts.greedy {
             self.argmax_batch_from_hidden(&trunk)?
         } else if self.fast_greedy_lm_head
-            && sample_lm_cap(opts, self.lm_vocab_size()) < self.lm_vocab_size()
+            && sample_lm_cap(&opts, self.lm_vocab_size()) < self.lm_vocab_size()
         {
             self.sample_batch_from_hidden(&trunk, opts)?
         } else {
@@ -2486,7 +2486,7 @@ impl Qwen35Runner {
             if opts.greedy {
                 return self.argmax_batch_from_hidden(&trunk);
             }
-            if sample_lm_cap(opts, vocab) < vocab {
+            if sample_lm_cap(&opts, vocab) < vocab {
                 return self.sample_batch_from_hidden(&trunk, opts);
             }
         }

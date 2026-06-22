@@ -51,6 +51,17 @@ pub fn scatter_nd_inplace(
     indices_shape: &[usize],
     updates: &[f32],
 ) {
+    scatter_nd_inplace_limited(out, data_shape, indices, indices_shape, updates, None);
+}
+
+pub fn scatter_nd_inplace_limited(
+    out: &mut [f32],
+    data_shape: &[usize],
+    indices: &[i64],
+    indices_shape: &[usize],
+    updates: &[f32],
+    max_updates: Option<usize>,
+) {
     if out.is_empty() || indices.is_empty() {
         return;
     }
@@ -63,9 +74,13 @@ pub fn scatter_nd_inplace(
     if !indices.len().is_multiple_of(index_depth) {
         return;
     }
-    let num_updates = indices.len() / index_depth;
+    let mut num_updates = indices.len() / index_depth;
+    let full_updates = num_updates.max(1);
+    let update_elems = updates.len().checked_div(full_updates).unwrap_or(0);
+    if let Some(limit) = max_updates {
+        num_updates = num_updates.min(limit);
+    }
     let data_strides = row_major_strides(&data_shape);
-    let update_elems = updates.len().checked_div(num_updates).unwrap_or(0);
     for u in 0..num_updates {
         let base = u * index_depth;
         if base + index_depth > indices.len() {

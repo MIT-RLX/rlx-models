@@ -355,6 +355,45 @@ pub fn build_whisper_decoder_prefill_hir_ext_opts(
     Ok((hir, params))
 }
 
+/// Decoder forward through `max_layer` (self-attn only on the alignment layer); outputs hidden states.
+pub fn build_whisper_align_hidden_hir_ext_opts(
+    cfg: &WhisperConfig,
+    weights: &mut dyn WeightSource,
+    pfx: &WhisperWeightPrefix,
+    batch: usize,
+    dec_seq: usize,
+    enc_seq: usize,
+    max_layer: usize,
+    graph_opts: WhisperGraphOpts,
+    fused: Option<&FusedDecoderWeights>,
+) -> Result<(HirModule, HashMap<String, Vec<f32>>)> {
+    validate_cfg(cfg)?;
+    let f = DType::F32;
+    let h = cfg.d_model;
+    let mut hir = HirModule::new("whisper_align_hidden").with_fusion_policy(FusionPolicy::Direct);
+    let mut params = HashMap::new();
+    let token_ids = hir.input("token_ids", Shape::new(&[batch, dec_seq], f));
+    let mut cross_k = Vec::with_capacity(cfg.decoder_layers);
+    let mut cross_v = Vec::with_capacity(cfg.decoder_layers);
+    for i in 0..cfg.decoder_layers {
+        cross_k.push(hir.input(format!("cross_k_{i}"), Shape::new(&[batch, enc_seq, h], f)));
+        cross_v.push(hir.input(format!("cross_v_{i}"), Shape::new(&[batch, enc_seq, h], f)));
+    }
+    let mut b = make_builder(
+        &mut hir,
+        &mut params,
+        weights,
+        pfx,
+        batch,
+        graph_opts,
+        fused,
+    );
+    let hidden =
+        b.emit_align_hidden_inner(cfg, token_ids, &cross_k, &cross_v, dec_seq, max_layer)?;
+    hir.outputs = vec![hidden];
+    Ok((hir, params))
+}
+
 /// Single-token decode step with cached self-attention K/V.
 pub fn build_whisper_decode_step_hir(
     cfg: &WhisperConfig,
@@ -482,7 +521,9 @@ impl<'a> WhisperBuilder<'a> {
         mask_kind: MaskKind,
         out_shape: Shape,
     ) -> HirNodeId {
-        let scale = (head_dim as f32).powf(-0.25);
+        // Attention op applies `score_scale` once to qk^T, so the full softmax scale is
+        // head_dim^-0.5 (OpenAI scales q and k each by head_dim^-0.25 → product -0.5).
+        let scale = (head_dim as f32).powf(-0.5);
         self.g().attention_kind_opts(
             q,
             k,
@@ -506,7 +547,8 @@ impl<'a> WhisperBuilder<'a> {
         head_dim: usize,
         out_shape: Shape,
     ) -> HirNodeId {
-        let scale = (head_dim as f32).powf(-0.25);
+        // See `whisper_attention`: full softmax scale is head_dim^-0.5 (op scales qk^T once).
+        let scale = (head_dim as f32).powf(-0.5);
         self.hir.mir(
             rlx_ir::ops::attention::attention_kind_op(
                 n_head,
@@ -675,6 +717,76 @@ impl<'a> WhisperBuilder<'a> {
         x = self.layer_norm_f32(x, &self.pfx.dec_ln_w(), &self.pfx.dec_ln_b())?;
         let logits = self.emit_logits(x, dec_seq, embed_w)?;
         Ok((logits, kv))
+    }
+
+    /// Alignment forward: layers `0..max_layer` full, then self-attn only on `max_layer`.
+    fn emit_align_hidden_inner(
+        &mut self,
+        cfg: &WhisperConfig,
+        token_ids: HirNodeId,
+        cross_k: &[HirNodeId],
+        cross_v: &[HirNodeId],
+        dec_seq: usize,
+        max_layer: usize,
+    ) -> Result<HirNodeId> {
+        let d = cfg.d_model;
+        let embed_w = self.load_param(&self.pfx.dec_embed_tokens(), false)?;
+        let mut x = self.g().gather_(embed_w, token_ids, 0);
+        let pos_w = self.load_param(&self.pfx.dec_embed_positions(), false)?;
+        let pos = self.g().narrow_(pos_w, 0, 0, dec_seq);
+        let pos_bc = self.broadcast_pos(pos, dec_seq, d)?;
+        x = self.g().add(x, pos_bc);
+        let align_layer = max_layer.min(cfg.decoder_layers.saturating_sub(1));
+        for i in 0..align_layer {
+            let (x_out, _, _) = self.residual_block_kv(
+                cfg,
+                i,
+                x,
+                None,
+                Some(cross_k[i]),
+                Some(cross_v[i]),
+                dec_seq,
+                cfg.decoder_attention_heads,
+                MaskKind::Causal,
+                None,
+                None,
+                None,
+            )?;
+            x = x_out;
+        }
+        if align_layer < cfg.decoder_layers {
+            let layer = align_layer;
+            let layer_pfx = |suffix: &str| self.pfx.dec_layer(layer, suffix);
+            let hd = d / cfg.decoder_attention_heads;
+            let scale = (hd as f32).powf(-0.25);
+            let ln_x = self.layer_norm_f32(
+                x,
+                &layer_pfx("self_attn_layer_norm.weight"),
+                &layer_pfx("self_attn_layer_norm.bias"),
+            )?;
+            let (sa, _, _) = self.mha_kv(
+                ln_x,
+                ln_x,
+                &layer_pfx("self_attn.q_proj.weight"),
+                Some(layer_pfx("self_attn.q_proj.bias").as_str()),
+                &layer_pfx("self_attn.k_proj.weight"),
+                None,
+                &layer_pfx("self_attn.v_proj.weight"),
+                layer_pfx("self_attn.v_proj.bias").as_str(),
+                &layer_pfx("self_attn.out_proj.weight"),
+                layer_pfx("self_attn.out_proj.bias").as_str(),
+                dec_seq,
+                cfg.decoder_attention_heads,
+                hd,
+                scale,
+                MaskKind::Causal,
+                None,
+                None,
+                None,
+            )?;
+            x = self.g().add(x, sa);
+        }
+        Ok(x)
     }
 
     fn emit_decoder_step_inner(

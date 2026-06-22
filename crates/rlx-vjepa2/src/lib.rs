@@ -92,7 +92,12 @@ mod tests {
         let ts = cfg.tubelet_size;
         let ps = cfg.patch_size;
         let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
-        let z = |n: usize| vec![0.0f32; n];
+        // Deterministic small non-zero fill so native-vs-graph parity is meaningful.
+        let z = |n: usize| -> Vec<f32> {
+            (0..n)
+                .map(|i| (((i * 13 + 7) % 17) as f32 - 8.0) * 0.02)
+                .collect()
+        };
 
         t.insert(
             "encoder.embeddings.patch_embeddings.proj.weight".into(),
@@ -255,6 +260,53 @@ mod tests {
         let enc = extract_encoder_weights(&mut wm, &cfg).unwrap();
         let (g, _p, _pre) = build_vjepa2_encoder_graph_sized(&cfg, &enc, 1).unwrap();
         assert_eq!(g.outputs.len(), 1);
+    }
+
+    #[test]
+    fn encoder_graph_matches_native() {
+        use rlx_flow::CompileProfile;
+        use rlx_runtime::{Device, Session};
+
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_encoder_weights(&cfg);
+        let enc = extract_encoder_weights(&mut wm, &cfg).unwrap();
+
+        let n = 3 * cfg.frames_per_clip * cfg.crop_size * cfg.crop_size;
+        let video: Vec<f32> = (0..n).map(|i| ((i % 11) as f32 - 5.0) * 0.05).collect();
+
+        // Native (eager) reference.
+        let native = encode_video_native(&enc, &cfg, &video, 1).unwrap();
+
+        // Graph: host patch-embed → compiled encoder graph on CPU.
+        let hidden = conv3d_patch_embed(
+            &enc.patch,
+            &video,
+            cfg.frames_per_clip,
+            cfg.crop_size,
+            cfg.crop_size,
+        )
+        .unwrap();
+        let (graph, params, _pre) = build_vjepa2_encoder_graph_sized(&cfg, &enc, 1).unwrap();
+        let opts = rlx_core::flow_bridge::compile_options_for_profile(
+            &CompileProfile::encoder(),
+            Device::Cpu,
+        );
+        let mut compiled = Session::new(Device::Cpu).compile_with(graph, &opts);
+        Vjepa2GraphParams::from_f32(params).load(&mut compiled);
+        let graph_tokens = compiled
+            .run(&[("hidden", hidden.as_slice())])
+            .into_iter()
+            .next()
+            .expect("encoder graph output");
+
+        assert_eq!(native.tokens.len(), graph_tokens.len());
+        let e = native
+            .tokens
+            .iter()
+            .zip(&graph_tokens)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(e < 1e-3, "vjepa2 encoder graph vs native max_err={e}");
     }
 
     fn synthetic_pooler_weights(cfg: &Vjepa2Config) -> WeightMap {

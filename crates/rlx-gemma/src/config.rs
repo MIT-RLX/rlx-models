@@ -157,6 +157,29 @@ pub struct GemmaConfig {
     /// attention on sliding layers (Gemma 4 unified).
     #[serde(default)]
     pub use_bidirectional_attention: Option<String>,
+
+    // ── Gemma 4 E2B (mobile / edge) additions ──────────────────────
+    /// Per-Layer Embedding width per layer (Gemma 4 E2B: 256). `0` ⇒
+    /// the model has no Per-Layer Embeddings (flagship / GGUF path).
+    #[serde(default)]
+    pub hidden_size_per_layer_input: usize,
+    /// Vocabulary size of the per-layer embedding table. `0` ⇒ reuse
+    /// `vocab_size`. Gemma 4 E2B: 262144.
+    #[serde(default)]
+    pub vocab_size_per_layer_input: usize,
+    /// Number of trailing decoder layers that *reuse* (rather than
+    /// recompute) KV from an earlier same-type layer. `0` ⇒ every
+    /// layer computes its own KV (flagship). Gemma 4 E2B: 20.
+    #[serde(default)]
+    pub num_kv_shared_layers: usize,
+    /// When true, KV-shared layers double their MLP intermediate size
+    /// (Gemma 4 E2B: 6144 → 12288 on layers ≥ `first_kv_shared_layer`).
+    #[serde(default)]
+    pub use_double_wide_mlp: bool,
+    /// When true the (flagship / A4B) MoE block is active. Gemma 4 E2B
+    /// is dense (`false`).
+    #[serde(default)]
+    pub enable_moe_block: bool,
 }
 
 fn default_rms_norm_eps() -> f64 {
@@ -227,6 +250,70 @@ impl GemmaConfig {
         self.arch == GemmaArch::Gemma4 && self.num_experts > 0
     }
 
+    // ── Gemma 4 E2B: Per-Layer Embeddings + KV sharing ─────────────
+
+    /// Whether this checkpoint carries Per-Layer Embeddings (Gemma 4
+    /// E2B/E4B mobile). Drives the extra `embed_tokens_per_layer`,
+    /// `per_layer_*` projection/gate weights in the builder.
+    pub fn has_ple(&self) -> bool {
+        self.hidden_size_per_layer_input > 0
+    }
+
+    /// Width of one per-layer embedding slice (`0` when absent).
+    pub fn ple_width(&self) -> usize {
+        self.hidden_size_per_layer_input
+    }
+
+    /// Vocab of the per-layer embedding table (defaults to `vocab_size`).
+    pub fn ple_vocab_size(&self) -> usize {
+        if self.vocab_size_per_layer_input > 0 {
+            self.vocab_size_per_layer_input
+        } else {
+            self.vocab_size
+        }
+    }
+
+    /// Index of the first decoder layer that *reuses* (shares) KV from
+    /// an earlier layer. Layers `< first_kv_shared_layer` compute fresh
+    /// KV; layers `>=` it reuse. Returns `num_hidden_layers` (i.e. no
+    /// sharing) when `num_kv_shared_layers == 0`.
+    pub fn first_kv_shared_layer(&self) -> usize {
+        self.num_hidden_layers
+            .saturating_sub(self.num_kv_shared_layers)
+    }
+
+    /// Whether layer `i` reuses KV from an earlier same-type layer.
+    pub fn is_kv_shared_layer(&self, layer: usize) -> bool {
+        self.num_kv_shared_layers > 0 && layer >= self.first_kv_shared_layer()
+    }
+
+    /// The source layer whose KV a shared layer reuses: the last
+    /// *fresh* layer (`< first_kv_shared_layer`) of the **same**
+    /// attention kind (sliding vs full). Returns `layer` itself when
+    /// the layer is not shared (it computes its own KV).
+    pub fn kv_source_layer(&self, layer: usize) -> usize {
+        if !self.is_kv_shared_layer(layer) {
+            return layer;
+        }
+        let want_full = self.is_full_attention_layer(layer);
+        let boundary = self.first_kv_shared_layer();
+        (0..boundary)
+            .rev()
+            .find(|&src| self.is_full_attention_layer(src) == want_full)
+            .unwrap_or(layer)
+    }
+
+    /// MLP intermediate size for layer `i`. Gemma 4 E2B doubles the
+    /// intermediate width on KV-shared layers when `use_double_wide_mlp`
+    /// is set; all other layers use the base `intermediate_size`.
+    pub fn layer_intermediate_size(&self, layer: usize) -> usize {
+        if self.use_double_wide_mlp && self.is_kv_shared_layer(layer) {
+            self.intermediate_size * 2
+        } else {
+            self.intermediate_size
+        }
+    }
+
     /// Gemma 4 unified: bidirectional attention inside vision/audio spans.
     pub fn use_bidirectional_vision(&self) -> bool {
         self.use_bidirectional_attention.as_deref() == Some("vision")
@@ -243,7 +330,13 @@ impl GemmaConfig {
     pub fn attn_score_scale(&self) -> Option<f32> {
         match self.arch {
             GemmaArch::Gemma => None,
-            GemmaArch::Gemma2 | GemmaArch::Gemma3 | GemmaArch::Gemma4 => {
+            // llama.cpp gemma4.cpp:11 "Gemma4 uses self.scaling = 1.0
+            // (no pre-attn scaling)". Q is RMS-normed per-head before
+            // attention so Q·K is already bounded — applying the
+            // standard 1/sqrt(head_dim) on top *crushes* the scores
+            // (12B head_dim=256 → 16× too small). Use unit scale.
+            GemmaArch::Gemma4 => Some(1.0),
+            GemmaArch::Gemma2 | GemmaArch::Gemma3 => {
                 if let Some(s) = self.query_pre_attn_scalar {
                     Some(1.0 / s)
                 } else {
@@ -307,6 +400,11 @@ impl GemmaConfig {
             num_global_key_value_heads: None,
             attention_k_eq_v: false,
             use_bidirectional_attention: None,
+            hidden_size_per_layer_input: 0,
+            vocab_size_per_layer_input: 0,
+            num_kv_shared_layers: 0,
+            use_double_wide_mlp: false,
+            enable_moe_block: false,
         }
     }
 
@@ -341,6 +439,21 @@ impl GemmaConfig {
         } else {
             self.head_dim()
         }
+    }
+
+    /// Per-layer V-aliased-to-K flag. For Gemma 4 specifically:
+    /// SWA layers ship an independent v_proj weight; full-attention
+    /// layers (every 6th) omit v_proj and alias V to K. Other arches
+    /// fall back to the uniform `attention_k_eq_v`.
+    pub fn layer_k_eq_v(&self, layer: usize) -> bool {
+        if matches!(self.arch, GemmaArch::Gemma4) {
+            // HF `use_alternative_attention = attention_k_eq_v && !is_sliding`.
+            // The flagship (12B) sets `attention_k_eq_v=true` so full-attention
+            // layers alias V→K; E2B sets it false and ships a real v_proj on
+            // every layer, so it must NOT alias.
+            return self.attention_k_eq_v && self.is_full_attention_layer(layer);
+        }
+        self.attention_k_eq_v
     }
 
     /// Per-layer KV head count. Sliding layers use
@@ -436,6 +549,67 @@ fn infer_arch_from_json(raw: &str) -> GemmaArch {
     GemmaArch::Gemma
 }
 
+/// llama.cpp encodes Gemma 4 proportional (p-)RoPE in `rope_freqs.weight`:
+/// rotated dim pairs are `1.0`, unrotated pairs are ~`1e30` so RoPE skips
+/// them (see `conversion/gemma.py` `generate_extra_tensors`).
+fn infer_gemma4_full_partial_rotary(raw: &GgufFile, global_head_dim: usize) -> Option<f32> {
+    if global_head_dim == 0 {
+        return None;
+    }
+    let (factors, _) = raw.dequant_f32("rope_freqs.weight").ok()?;
+    if factors.is_empty() {
+        return None;
+    }
+    const SUPPRESS_THRESH: f32 = 1e20;
+    let rotated_pairs = factors.iter().filter(|&&f| f < SUPPRESS_THRESH).count();
+    if rotated_pairs == 0 || rotated_pairs >= factors.len() {
+        return None;
+    }
+    let n_rot = rotated_pairs * 2;
+    Some(n_rot as f32 / global_head_dim as f32)
+}
+
+/// Build [`GemmaRopeMap`] for Gemma 4 GGUF checkpoints.
+fn gemma4_rope_map_from_gguf(
+    raw: &GgufFile,
+    get_f32: &impl Fn(&str) -> Option<f32>,
+    get_u32_opt: &impl Fn(&str) -> Option<u32>,
+    swa_head_dim: Option<usize>,
+    global_head_dim: Option<usize>,
+) -> GemmaRopeMap {
+    let full_theta = get_f32("gemma.rope.freq_base");
+    let swa_theta = get_f32("gemma.rope.freq_base_swa");
+
+    let full_partial = global_head_dim.and_then(|ghd| {
+        infer_gemma4_full_partial_rotary(raw, ghd).or_else(|| {
+            // Flagship Gemma 4 12B/31B with distinct global head dim.
+            swa_head_dim.filter(|&swa| ghd > swa).map(|_| 0.25)
+        })
+    });
+
+    let swa_partial = match (swa_head_dim, get_u32_opt("gemma.rope.dimension_count_swa")) {
+        (Some(hd), Some(n_rot)) if (n_rot as usize) < hd => Some(n_rot as f32 / hd as f32),
+        _ => None,
+    };
+
+    GemmaRopeMap {
+        sliding_attention: swa_theta.map(|t| GemmaRopeParameters {
+            rope_theta: Some(t),
+            rope_type: Some(if swa_partial.is_some() {
+                GemmaRopeKind::Proportional
+            } else {
+                GemmaRopeKind::Default
+            }),
+            partial_rotary_factor: swa_partial,
+        }),
+        full_attention: full_theta.map(|t| GemmaRopeParameters {
+            rope_theta: Some(t),
+            rope_type: full_partial.map(|_| GemmaRopeKind::Proportional),
+            partial_rotary_factor: full_partial,
+        }),
+    }
+}
+
 pub fn gemma_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<GemmaConfig> {
     let arch_tag = raw
         .metadata
@@ -461,12 +635,26 @@ pub fn gemma_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<GemmaConfig> {
             .and_then(MetaValue::as_u32)
             .ok_or_else(|| anyhow::anyhow!("missing GGUF metadata key: {k}"))
     };
+    // Some Gemma 4 GGUF writers encode per-layer attention as an
+    // Array instead of a scalar — e.g. `gemma4.attention.head_count_kv`
+    // can be `[60 × i32]` (16 for sliding layers, 4 for global). For
+    // the uniform-attention `GemmaConfig` we take the first array
+    // element (typically the dominant sliding-layer value) and let
+    // the per-layer overrides on `GemmaConfig` (e.g.
+    // `num_global_key_value_heads`) capture the global-layer
+    // exception. Falls back to scalar `as_u32` for older writers.
+    let get_first_u32 = |k: &str| -> anyhow::Result<u32> {
+        get_meta(k)
+            .and_then(MetaValue::as_first_u32)
+            .ok_or_else(|| anyhow::anyhow!("missing GGUF metadata key: {k}"))
+    };
     let get_f32 = |k: &str| -> Option<f32> {
         get_meta(k).and_then(|v| match v {
             MetaValue::F32(x) => Some(*x),
             _ => None,
         })
     };
+    let get_u32_opt = |k: &str| -> Option<u32> { get_meta(k).and_then(MetaValue::as_u32) };
     let get_bool = |k: &str| -> Option<bool> {
         get_meta(k).and_then(|v| match v {
             MetaValue::Bool(b) => Some(*b),
@@ -475,20 +663,84 @@ pub fn gemma_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<GemmaConfig> {
     };
 
     let hidden_size = get_u32("gemma.embedding_length")? as usize;
-    let num_attention_heads = get_u32("gemma.attention.head_count")? as usize;
-    let head_dim = get_u32("gemma.attention.key_length")
+    let num_attention_heads = get_first_u32("gemma.attention.head_count")? as usize;
+    // Newer GGUF writers (Gemma 4) don't include `gemma.vocab_size`;
+    // infer it from the tokenizer.ggml.tokens array length when the
+    // scalar isn't present. Falls back to 256_000 only if neither
+    // path resolves.
+    let resolved_vocab_size: usize = get_u32("gemma.vocab_size")
         .ok()
-        .or_else(|| get_u32("gemma.rope.dimension_count").ok())
-        .map(|v| v as usize);
+        .map(|v| v as usize)
+        .or_else(|| {
+            raw.metadata
+                .get("tokenizer.ggml.tokens")
+                .and_then(MetaValue::as_array)
+                .map(|a| a.len())
+        })
+        .unwrap_or(256_000);
+    // Gemma 4 has TWO layer types with DIFFERENT head_dims:
+    //   - Sliding-window layers (majority): key_length_swa, e.g. 256
+    //   - Full-attention layers (every 6th): key_length, e.g. 512
+    // For non-Gemma-4 archs key_length is per-head directly.
+    let head_dim = if matches!(arch, GemmaArch::Gemma4) {
+        // SWA dim is the default; full layers get global_head_dim below.
+        get_first_u32("gemma.attention.key_length_swa")
+            .ok()
+            .or_else(|| get_first_u32("gemma.attention.key_length").ok())
+            .map(|v| v as usize)
+    } else {
+        get_first_u32("gemma.attention.key_length")
+            .ok()
+            .or_else(|| get_first_u32("gemma.rope.dimension_count").ok())
+            .map(|v| v as usize)
+    };
+
+    // Gemma 4: gather full-attention layer dims when distinct from SWA.
+    // The metadata stores head_count_kv as a 48-element array — find any
+    // value that differs from the first element; that's the global head
+    // count. Same for key_length (full head_dim).
+    let global_head_dim = if matches!(arch, GemmaArch::Gemma4) {
+        let swa = head_dim.unwrap_or(0);
+        let full = get_first_u32("gemma.attention.key_length")
+            .ok()
+            .map(|v| v as usize);
+        match full {
+            Some(f) if f != swa => Some(f),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let num_global_key_value_heads = if matches!(arch, GemmaArch::Gemma4) {
+        let sliding_kv = get_first_u32("gemma.attention.head_count_kv")
+            .ok()
+            .map(|v| v as usize);
+        let kv_array = raw
+            .metadata
+            .get(&format!("{arch_prefix}.attention.head_count_kv"))
+            .or_else(|| raw.metadata.get("gemma.attention.head_count_kv"))
+            .and_then(MetaValue::as_array);
+        if let (Some(swa_kv), Some(arr)) = (sliding_kv, kv_array) {
+            arr.iter().find_map(|v| match v {
+                MetaValue::I32(n) if (*n as usize) != swa_kv => Some(*n as usize),
+                MetaValue::U32(n) if (*n as usize) != swa_kv => Some(*n as usize),
+                _ => None,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     Ok(GemmaConfig {
         arch,
-        vocab_size: get_u32("gemma.vocab_size").unwrap_or(256_000) as usize,
+        vocab_size: resolved_vocab_size,
         hidden_size,
         intermediate_size: get_u32("gemma.feed_forward_length")? as usize,
         num_hidden_layers: get_u32("gemma.block_count")? as usize,
         num_attention_heads,
-        num_key_value_heads: get_u32("gemma.attention.head_count_kv")? as usize,
+        num_key_value_heads: get_first_u32("gemma.attention.head_count_kv")? as usize,
         max_position_embeddings: get_u32("gemma.context_length").unwrap_or(8192) as usize,
         rms_norm_eps: get_f32("gemma.attention.layer_norm_rms_epsilon").unwrap_or(1e-6) as f64,
         rope_theta: get_f32("gemma.rope.freq_base").unwrap_or(10_000.0) as f64,
@@ -513,11 +765,39 @@ pub fn gemma_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<GemmaConfig> {
         // uniform head dims that match every Gemma 4 GGUF currently
         // emitted by llama.cpp.
         layer_types: Vec::new(),
-        rope_parameters: GemmaRopeMap::default(),
-        global_head_dim: None,
-        num_global_key_value_heads: None,
-        attention_k_eq_v: false,
+        // Gemma 4 ships per-attention-kind rope params in the GGUF:
+        //   gemma4.rope.freq_base       = 1e6 (full-attention layers)
+        //   gemma4.rope.freq_base_swa   = 1e4 (sliding-window layers)
+        // Without populating this, layer_rope_theta returns the global
+        // freq_base for ALL layers — SWA layers RoPE with the wrong
+        // base → wrong K rotation → bad attention scores. Build the
+        // GemmaRopeMap from the metadata so layer_rope_theta(swa) and
+        // layer_rope_theta(full) split correctly.
+        rope_parameters: if matches!(arch, GemmaArch::Gemma4) {
+            gemma4_rope_map_from_gguf(raw, &get_f32, &get_u32_opt, head_dim, global_head_dim)
+        } else {
+            GemmaRopeMap::default()
+        },
+        global_head_dim,
+        num_global_key_value_heads,
+        // For Gemma 4, V-aliased-to-K is PER-LAYER: only full-attention
+        // layers omit v_proj. The base scalar stays true (matches the
+        // common case + existing tests + Gemma 4 12B/31B unified
+        // checkpoints where the dominant pattern is V-as-K). Callers in
+        // the graph builder should consult `cfg.layer_k_eq_v(i)` to
+        // pick up the SWA-layer V-independent case.
+        attention_k_eq_v: matches!(arch, GemmaArch::Gemma4),
         use_bidirectional_attention: None,
+        // Per-Layer Embeddings + KV sharing are Gemma 4 E2B (mobile)
+        // features that only ship in the HF safetensors checkpoint, not
+        // in any GGUF emitted by llama.cpp today. Default them off so the
+        // GGUF path keeps the flagship dense behavior.
+        hidden_size_per_layer_input: get_u32("gemma.embedding_length_per_layer_input").unwrap_or(0)
+            as usize,
+        vocab_size_per_layer_input: 0,
+        num_kv_shared_layers: get_u32("gemma.attention.shared_kv_layers").unwrap_or(0) as usize,
+        use_double_wide_mlp: get_bool("gemma.use_double_wide_mlp").unwrap_or(false),
+        enable_moe_block: get_u32("gemma.expert_count").unwrap_or(0) > 0,
     })
 }
 
@@ -595,6 +875,59 @@ mod tests {
         assert_eq!(cfg.arch.sliding_window_stride(), 6);
     }
 
+    /// Regression: Gemma 4 31B Q4_K_M GGUF (unsloth) encodes
+    /// `gemma4.attention.head_count_kv` as an `Array[60 × i32]`
+    /// (per-layer KV head count) and omits `gemma.vocab_size`
+    /// entirely — vocab_size comes from `tokenizer.ggml.tokens`
+    /// array length. `gemma_cfg_from_gguf` must:
+    ///   1. Read scalar/array uniformly via `MetaValue::as_first_u32`.
+    ///   2. Fall back to tokens-array length when the scalar is missing.
+    ///   3. Set `attention_k_eq_v = true` automatically on Gemma 4.
+    #[test]
+    fn gemma4_gguf_per_layer_array_and_tokens_vocab() {
+        use rlx_gguf::{GgufFile, GgufWriter, MetaValue};
+        let mut w = GgufWriter::new();
+        // Smallest field set the loader needs to succeed:
+        w.set_meta("general.architecture", MetaValue::String("gemma4".into()));
+        w.set_meta("gemma4.embedding_length", MetaValue::U32(5376));
+        w.set_meta("gemma4.feed_forward_length", MetaValue::U32(21_504));
+        w.set_meta("gemma4.block_count", MetaValue::U32(60));
+        // head_count: U32 scalar (matches unsloth's layout = global KV heads = 4).
+        w.set_meta("gemma4.attention.head_count", MetaValue::U32(4));
+        // head_count_kv: Array of per-layer i32 — first element is
+        // the sliding-layer KV count (16).
+        let layer_kv: Vec<MetaValue> = (0..60)
+            .map(|i| MetaValue::I32(if i == 5 { 4 } else { 16 }))
+            .collect();
+        w.set_meta("gemma4.attention.head_count_kv", MetaValue::Array(layer_kv));
+        // Tokens array — implies vocab_size = 262_144 without the
+        // scalar `gemma.vocab_size`.
+        let tokens: Vec<MetaValue> = (0..262_144)
+            .map(|_| MetaValue::String(String::new()))
+            .collect();
+        w.set_meta("tokenizer.ggml.tokens", MetaValue::Array(tokens));
+
+        let path = std::env::temp_dir().join("rlx_gemma_gemma4_array_kv_test.gguf");
+        w.write_to_path(&path).unwrap();
+        let raw = GgufFile::from_path(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let cfg = gemma_cfg_from_gguf(&raw).unwrap();
+        assert_eq!(cfg.arch, GemmaArch::Gemma4);
+        assert_eq!(cfg.vocab_size, 262_144, "vocab from tokens-array length");
+        assert_eq!(cfg.hidden_size, 5376);
+        assert_eq!(cfg.intermediate_size, 21_504);
+        assert_eq!(cfg.num_hidden_layers, 60);
+        assert_eq!(cfg.num_attention_heads, 4);
+        // First array element = 16 (sliding-layer KV heads).
+        assert_eq!(
+            cfg.num_key_value_heads, 16,
+            "as_first_u32 should pick array[0], not panic on Array variant"
+        );
+        // Gemma 4 implies attention_k_eq_v.
+        assert!(cfg.attention_k_eq_v, "Gemma 4 should default k_eq_v=true");
+    }
+
     #[test]
     fn hf_null_moe_fields_default_to_zero() {
         let json = r#"{"num_experts": null, "top_k_experts": null}"#;
@@ -602,6 +935,43 @@ mod tests {
         let obj = v.as_object().unwrap();
         assert_eq!(obj["num_experts"], 0);
         assert_eq!(obj["top_k_experts"], 0);
+    }
+
+    #[test]
+    fn infer_gemma4_partial_rotary_from_rope_freqs_pattern() {
+        use rlx_gguf::{GgmlType, GgufFile, GgufWriter, MetaValue};
+        let mut w = GgufWriter::new();
+        w.set_meta("general.architecture", MetaValue::String("gemma4".into()));
+        w.set_meta("gemma4.embedding_length", MetaValue::U32(3840));
+        w.set_meta("gemma4.feed_forward_length", MetaValue::U32(15_360));
+        w.set_meta("gemma4.block_count", MetaValue::U32(48));
+        w.set_meta("gemma4.attention.head_count", MetaValue::U32(16));
+        w.set_meta("gemma4.attention.head_count_kv", MetaValue::U32(8));
+        w.set_meta("gemma4.context_length", MetaValue::U32(8192));
+        w.set_meta("gemma4.rope.freq_base", MetaValue::F32(1_000_000.0));
+        w.set_meta("gemma4.rope.freq_base_swa", MetaValue::F32(10_000.0));
+        w.set_meta("gemma4.rope.dimension_count", MetaValue::U32(512));
+        w.set_meta("gemma4.rope.dimension_count_swa", MetaValue::U32(256));
+        w.set_meta("gemma4.attention.key_length", MetaValue::U32(512));
+        w.set_meta("gemma4.attention.key_length_swa", MetaValue::U32(256));
+        // Mimic llama.cpp Gemma 4 p-RoPE: 64 rotated pairs + 192 suppressed.
+        let mut factors = vec![1.0f32; 64];
+        factors.extend(std::iter::repeat_n(1e30f32, 192));
+        let factor_bytes: Vec<u8> = factors.iter().flat_map(|f| f.to_le_bytes()).collect();
+        w.add_tensor_bytes("rope_freqs.weight", vec![256], GgmlType::F32, factor_bytes)
+            .unwrap();
+        let path = std::env::temp_dir().join("rlx_gemma_gemma4_rope_freqs_test.gguf");
+        w.write_to_path(&path).unwrap();
+        let raw = GgufFile::from_path(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let cfg = gemma_cfg_from_gguf(&raw).unwrap();
+        assert_eq!(cfg.arch, GemmaArch::Gemma4);
+        assert_eq!(cfg.layer_n_rot(5), 128, "full layer p-RoPE from rope_freqs");
+        assert_eq!(cfg.layer_n_rot(0), 256, "swa layer full rotation");
+        let full = cfg.rope_parameters.full_attention.as_ref().unwrap();
+        assert_eq!(full.partial_rotary_factor, Some(0.25));
+        assert_eq!(full.rope_type, Some(GemmaRopeKind::Proportional));
     }
 
     #[test]
@@ -663,5 +1033,103 @@ mod tests {
             infer_arch_from_json(r#"{"model_type":"gemma3"}"#),
             GemmaArch::Gemma3,
         );
+    }
+
+    /// Trimmed `google/gemma-4-E2B-it` text_config — exercises the
+    /// Per-Layer-Embedding + KV-sharing + double-wide-MLP fields and the
+    /// helpers that drive the builder.
+    const GEMMA_4_E2B_CONFIG: &str = r#"{
+      "model_type": "gemma4",
+      "text_config": {
+        "model_type": "gemma4_text",
+        "vocab_size": 262144,
+        "hidden_size": 1536,
+        "intermediate_size": 6144,
+        "num_hidden_layers": 35,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 1,
+        "head_dim": 256,
+        "global_head_dim": 512,
+        "num_kv_shared_layers": 20,
+        "hidden_size_per_layer_input": 256,
+        "vocab_size_per_layer_input": 262144,
+        "use_double_wide_mlp": true,
+        "enable_moe_block": false,
+        "max_position_embeddings": 131072,
+        "rms_norm_eps": 1e-6,
+        "final_logit_softcapping": 30.0,
+        "sliding_window": 512,
+        "tie_word_embeddings": false,
+        "layer_types": [
+          "sliding_attention","sliding_attention","sliding_attention","sliding_attention","full_attention",
+          "sliding_attention","sliding_attention","sliding_attention","sliding_attention","full_attention",
+          "sliding_attention","sliding_attention","sliding_attention","sliding_attention","full_attention",
+          "sliding_attention","sliding_attention","sliding_attention","sliding_attention","full_attention",
+          "sliding_attention","sliding_attention","sliding_attention","sliding_attention","full_attention",
+          "sliding_attention","sliding_attention","sliding_attention","sliding_attention","full_attention",
+          "sliding_attention","sliding_attention","sliding_attention","sliding_attention","full_attention"
+        ],
+        "rope_parameters": {
+          "full_attention": {"partial_rotary_factor": 0.25, "rope_theta": 1000000.0, "rope_type": "proportional"},
+          "sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}
+        }
+      }
+    }"#;
+
+    #[test]
+    fn gemma_4_e2b_config_parses_ple_and_kv_sharing() {
+        let cfg: GemmaConfig = {
+            let value: serde_json::Value = serde_json::from_str(GEMMA_4_E2B_CONFIG).unwrap();
+            let lm = value.get("text_config").cloned().unwrap();
+            let mut c: GemmaConfig =
+                serde_json::from_value(normalize_hf_null_usize_fields(lm)).unwrap();
+            c.arch = infer_arch_from_json(GEMMA_4_E2B_CONFIG);
+            c
+        };
+        assert_eq!(cfg.arch, GemmaArch::Gemma4);
+        // PLE
+        assert!(cfg.has_ple());
+        assert_eq!(cfg.ple_width(), 256);
+        assert_eq!(cfg.ple_vocab_size(), 262144);
+        // KV sharing: 35 - 20 = 15
+        assert_eq!(cfg.first_kv_shared_layer(), 15);
+        for i in 0..15 {
+            assert!(!cfg.is_kv_shared_layer(i), "layer {i} should be fresh");
+            assert_eq!(cfg.kv_source_layer(i), i);
+        }
+        for i in 15..35 {
+            assert!(cfg.is_kv_shared_layer(i), "layer {i} should be shared");
+        }
+        // Full-attention layers sit at 4,9,14,...; last fresh full = 14,
+        // last fresh sliding = 13.
+        assert!(cfg.is_full_attention_layer(19));
+        assert_eq!(
+            cfg.kv_source_layer(19),
+            14,
+            "shared full reuses last fresh full"
+        );
+        assert_eq!(cfg.kv_source_layer(34), 14);
+        assert!(!cfg.is_full_attention_layer(15));
+        assert_eq!(
+            cfg.kv_source_layer(15),
+            13,
+            "shared sliding reuses last fresh sliding"
+        );
+        assert_eq!(cfg.kv_source_layer(20), 13);
+        // Double-wide MLP only on shared layers.
+        assert_eq!(cfg.layer_intermediate_size(0), 6144);
+        assert_eq!(cfg.layer_intermediate_size(14), 6144);
+        assert_eq!(cfg.layer_intermediate_size(15), 12288);
+        assert_eq!(cfg.layer_intermediate_size(34), 12288);
+    }
+
+    #[test]
+    fn non_e2b_config_has_no_ple_or_sharing() {
+        let cfg = GemmaConfig::tiny_test();
+        assert!(!cfg.has_ple());
+        assert_eq!(cfg.first_kv_shared_layer(), cfg.num_hidden_layers);
+        assert!(!cfg.is_kv_shared_layer(0));
+        assert_eq!(cfg.kv_source_layer(0), 0);
+        assert_eq!(cfg.layer_intermediate_size(0), cfg.intermediate_size);
     }
 }

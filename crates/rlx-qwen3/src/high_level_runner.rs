@@ -386,6 +386,10 @@ pub struct Qwen3Runner {
     generator: Option<Qwen3Generator>,
     cfg: Qwen3Config,
     sample: SampleOpts,
+    /// Retained for builder API compatibility. `generate_stoppable` now always
+    /// invokes the caller's per-token callback (it is the only token sink and
+    /// carries the EOS stop signal), so this no longer gates streaming.
+    #[allow(dead_code)]
     stream: bool,
     device: Device,
     /// Only `Some` when the builder ran `.packed_weights(true)`.
@@ -550,21 +554,15 @@ impl Qwen3Runner {
         // loop — the bucketed compile cache fires after the first
         // step, so the per-token graph compile that the older
         // `generate_cached(1, …)` × N loop incurred is gone.
-        // `stream(false)` only affects when the caller's callback
-        // sees the tokens (one-by-one vs all-at-end), not when the
-        // generator runs them.
-        let stream = self.stream;
-        generator.generate_cached_until(
-            n_new,
-            self.sample,
-            |tok| {
-                if stream {
-                    on_token(tok);
-                }
-                true
-            },
-            |_| {},
-        )
+        //
+        // The caller's `on_token` returns `false` to stop early (e.g. on
+        // EOS). It is the only sink for the streamed ids, so it must be
+        // called for every token regardless of `self.stream`, and its
+        // stop signal must be honored — otherwise `generate_stoppable`
+        // always runs the full `n_new` and ignores EOS (callers then have
+        // to bound latency with a tiny `max_tokens`, paying for unwanted
+        // tokens every turn).
+        generator.generate_cached_until(n_new, self.sample, on_token, |_| {})
     }
 }
 

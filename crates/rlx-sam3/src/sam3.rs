@@ -44,8 +44,9 @@ use super::text_encoder::{
 };
 use super::tracker::{Sam3TrackerWeights, extract_tracker_weights, tracker_forward_native};
 use super::vision_encoder::{
-    Sam3VisionEncoderWeights, encode_image_native, extract_vision_encoder_weights,
+    Sam3VisionEncoderWeights, Sam3VisionOutput, encode_image_native, extract_vision_encoder_weights,
 };
+use super::vision_encoder_ir::encode_image_ir_on_with_profile;
 use anyhow::{Context, Result, ensure};
 use rlx_flow::CompileProfile;
 use rlx_runtime::Device;
@@ -219,23 +220,60 @@ impl Sam3 {
         self.device
     }
 
+    /// Run the ViT-L trunk on a single preprocessed image. Routes through the
+    /// HIR graph when `RLX_SAM3_VISION_DEVICE=metal|mlx|cuda|cpu` is set; falls
+    /// back to the CPU-native path otherwise (the default — byte-identical to
+    /// pre-IR behavior). `RLX_SAM3_VISION_HOST=1` forces the host path even if
+    /// the device env var is also present.
+    fn encode_image_dispatch(&self, image_nchw: &[f32]) -> Result<Sam3VisionOutput> {
+        let vision = self
+            .vision
+            .as_ref()
+            .context("SAM3 encode_image requires native vision weights")?;
+        if rlx_ir::env::flag("RLX_SAM3_VISION_HOST") {
+            return encode_image_native(
+                vision,
+                self.gguf_packed.as_ref(),
+                &self.cfg.vit,
+                image_nchw,
+            );
+        }
+        let dev = match rlx_ir::env::var("RLX_SAM3_VISION_DEVICE").as_deref() {
+            Some("metal") => Device::Metal,
+            Some("mlx") => Device::Mlx,
+            Some("cuda") => Device::Cuda,
+            Some("cpu") => Device::Cpu,
+            _ => {
+                return encode_image_native(
+                    vision,
+                    self.gguf_packed.as_ref(),
+                    &self.cfg.vit,
+                    image_nchw,
+                );
+            }
+        };
+        encode_image_ir_on_with_profile(
+            vision,
+            self.gguf_packed.as_ref(),
+            &self.cfg.vit,
+            image_nchw,
+            dev,
+            &self.compile_profile,
+        )
+    }
+
     pub fn encode_image(
         &self,
         image_u8: &[u8],
         h_in: usize,
         w_in: usize,
     ) -> Result<Sam3EncodedImage> {
-        let vision = self
+        let _vision_check = self
             .vision
             .as_ref()
             .context("SAM3 encode_image requires native vision weights")?;
         let (image_nchw, resized_hw) = preprocess_image(image_u8, h_in, w_in);
-        let encoded = encode_image_native(
-            vision,
-            self.gguf_packed.as_ref(),
-            &self.cfg.vit,
-            &image_nchw,
-        )?;
+        let encoded = self.encode_image_dispatch(&image_nchw)?;
         Ok(Sam3EncodedImage {
             patch_tokens: encoded.tokens,
             grid: encoded.grid,
@@ -259,22 +297,16 @@ impl Sam3 {
         w_in: usize,
         tokens: &[u32],
     ) -> Result<Sam3ImagePrediction> {
-        let cfg = &self.cfg;
         let nq = 200;
         let seq_len = tokens.len();
 
         // Vision + neck.
-        let vision = self
+        let _vision_check = self
             .vision
             .as_ref()
             .context("predict_image_text requires native vision weights")?;
         let (image_nchw, resized_hw) = preprocess_image(image_u8, h_in, w_in);
-        let vision_out = super::vision_encoder::encode_image_native(
-            vision,
-            self.gguf_packed.as_ref(),
-            &cfg.vit,
-            &image_nchw,
-        )?;
+        let vision_out = self.encode_image_dispatch(&image_nchw)?;
         let levels = apply_neck_native(&mut self.neck, &vision_out)?;
         // Drop the last (scale=0.5) level per scalp=1.
         let kept = &levels[..3];
@@ -644,17 +676,12 @@ impl Sam3 {
         h_in: usize,
         w_in: usize,
     ) -> Result<Vec<super::neck::Sam3FeatureLevel>> {
-        let vision = self
+        let _vision_check = self
             .vision
             .as_ref()
             .context("SAM3 predict_neck requires native vision weights")?;
         let (image_nchw, _) = preprocess_image(image_u8, h_in, w_in);
-        let vision_out = super::vision_encoder::encode_image_native(
-            vision,
-            self.gguf_packed.as_ref(),
-            &self.cfg.vit,
-            &image_nchw,
-        )?;
+        let vision_out = self.encode_image_dispatch(&image_nchw)?;
         apply_neck_native(&mut self.neck, &vision_out)
     }
 
@@ -717,17 +744,12 @@ impl Sam3 {
             h_in * w_in * 3,
             image_u8.len()
         );
-        let vision = self
+        let _vision_check = self
             .vision
             .as_ref()
             .context("SAM3 predict_image requires native vision weights")?;
         let (image_nchw, resized_hw) = preprocess_image(image_u8, h_in, w_in);
-        let vision_out = encode_image_native(
-            vision,
-            self.gguf_packed.as_ref(),
-            &self.cfg.vit,
-            &image_nchw,
-        )?;
+        let vision_out = self.encode_image_dispatch(&image_nchw)?;
         let levels = apply_neck_native(&mut self.neck, &vision_out)?;
         let text = encode_text_native(
             &self.text,

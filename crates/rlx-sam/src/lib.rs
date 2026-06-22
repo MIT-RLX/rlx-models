@@ -155,13 +155,11 @@ mod tests {
             t.insert(format!("{lp}.mlp.lin2.bias"), (z(e), vec![e]));
         }
         // Neck
+        // Meta's SAM uses bias=False on neck convs — only weight tensors
+        // are present in the official safetensors.
         t.insert(
             "image_encoder.neck.0.weight".into(),
             (z(cfg.out_chans * e), vec![cfg.out_chans, e, 1, 1]),
-        );
-        t.insert(
-            "image_encoder.neck.0.bias".into(),
-            (z(cfg.out_chans), vec![cfg.out_chans]),
         );
         t.insert(
             "image_encoder.neck.1.weight".into(),

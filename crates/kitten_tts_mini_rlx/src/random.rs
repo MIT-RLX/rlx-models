@@ -13,39 +13,52 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! ONNX `Random*Like` reference fills (vocoder source noise).
+//! Legacy custom-kernel RNG fills — delegates to upstream [`rlx_ir`] helpers.
 //!
-//! Without `KITTEN_RLX_RNG_SEED`, kernels emit zeros (stable vs ORT stochastic vocoder).
-//! With the env var set, fills use counter-based Philox (same family as RLX weight init).
+//! Prefer [`CompileOptions::rng`](rlx_runtime::CompileOptions::rng) with native
+//! [`Op::RngNormal`] / [`Op::RngUniform`] when compiling; these remain for
+//! `Op::Custom` GPU/CPU kernel registration fallback.
 
-use rlx_ir::Philox4x32;
+use rlx_ir::{RngOptions, fill_normal_like, fill_uniform_like};
 
-fn seed_from_env() -> u64 {
-    std::env::var("KITTEN_RLX_RNG_SEED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(42)
-}
+pub use crate::bundle_compile::rng_options_from_env;
 
 /// Box–Muller normal samples (mean, scale).
 pub fn fill_normal(out: &mut [f32], mean: f32, scale: f32, seed: u64) {
-    let mut rng = Philox4x32::new(seed);
-    for v in out.iter_mut() {
-        *v = mean + scale * rng.normal();
-    }
+    let opts = RngOptions::philox(seed);
+    fill_normal_like(out, mean, scale, opts, 0, None);
 }
 
 pub fn fill_uniform(out: &mut [f32], low: f32, high: f32, seed: u64) {
-    let mut rng = Philox4x32::new(seed);
-    for v in out.iter_mut() {
-        *v = rng.uniform(low, high);
-    }
+    let opts = RngOptions::philox(seed);
+    fill_uniform_like(out, low, high, opts, 0, None);
+}
+
+pub fn fill_normal_with_opts(
+    out: &mut [f32],
+    mean: f32,
+    scale: f32,
+    opts: RngOptions,
+    node_tag: u64,
+) {
+    fill_normal_like(out, mean, scale, opts, node_tag, None);
+}
+
+pub fn fill_uniform_with_opts(
+    out: &mut [f32],
+    low: f32,
+    high: f32,
+    opts: RngOptions,
+    node_tag: u64,
+) {
+    fill_uniform_like(out, low, high, opts, node_tag, None);
 }
 
 pub fn normal_seed(node_tag: u64) -> u64 {
-    seed_from_env().wrapping_add(node_tag.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+    let opts = rng_options_from_env();
+    rlx_ir::combine_seed(opts.seed, node_tag)
 }
 
 pub fn uniform_seed(node_tag: u64) -> u64 {
-    seed_from_env().wrapping_add(node_tag.wrapping_mul(0x517C_C1B7_2722_0A95))
+    normal_seed(node_tag.wrapping_add(0xD1B5_4A32_D192_ED03))
 }

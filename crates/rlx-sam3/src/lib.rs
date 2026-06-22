@@ -41,11 +41,12 @@ pub mod segmentation_head;
 pub mod segmentation_pixel_ir;
 /// Host tensor kernels (shared with FLUX.2 / V-JEPA2 via `rlx-tensor`).
 pub mod tensor {
-    pub use rlx_tensor::*;
+    pub use rlx_core::host_kernels::*;
 }
 pub mod text_encoder;
 pub mod tracker;
 pub mod vision_encoder;
+pub mod vision_encoder_ir;
 
 pub use config::{
     SAM3_DET_DIM, SAM3_IMG_SIZE, SAM3_PATCH_GRID, SAM3_PATCH_SIZE, SAM3_PIXEL_MEAN, SAM3_PIXEL_STD,

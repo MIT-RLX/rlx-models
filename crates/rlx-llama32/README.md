@@ -2,7 +2,7 @@
 
 LLaMA 3.2–shaped causal LMs in RLX (runner, CLI, GGUF packed prefill).
 
-**Workspace 0.2.6** — Metal KV-decode compile guard (`RLX_DISABLE_MPSGRAPH` on decode); packed GGUF helpers re-exported via `rlx_core::flow_bridge` (used by `rlx-minicpm5`, `rlx-qwen3`, `rlx-gemma`).
+**Workspace 0.2.6** — Metal + GGUF prefill is configurable via [`MetalGgufPrefillMode`] (`auto`, `cpu`, `packed`, `metal`) on [`Llama32Generator::with_metal_gguf_prefill_mode`] or env (`RLX_METAL_PACKED_PREFILL`, `RLX_METAL_F32_PREFILL_CPU`). Default: CPU F32 (parity).
 
 ## CLI
 

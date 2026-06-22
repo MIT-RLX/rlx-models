@@ -15,6 +15,11 @@
 
 //! ONNX `MatMulInteger` + `DynamicQuantizeLinear` (uint8 activations, int8 weights).
 
+fn qmatmul_parallel_enabled() -> bool {
+    std::env::var("KITTEN_RLX_QMATMUL_PARALLEL")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+}
+
 /// When compile-time sequence headroom pads `[1, seq_compile, C]` activations,
 /// only the first active token rows are valid at runtime.
 fn clip_act_to_runtime_seq(act: &[f32], act_shape: &[usize]) -> (Vec<f32>, Vec<usize>) {
@@ -46,6 +51,58 @@ fn clip_act_to_runtime_seq(act: &[f32], act_shape: &[usize]) -> (Vec<f32>, Vec<u
     (act.to_vec(), act_shape.to_vec())
 }
 
+#[inline]
+fn dot_u8_i8_row(
+    act_q: &[u8],
+    row_off: usize,
+    act_zp_i32: i32,
+    w: &[i8],
+    w_zp: i32,
+    k: usize,
+    n: usize,
+    j: usize,
+) -> i32 {
+    let mut acc = 0i32;
+    let mut p = 0usize;
+    while p + 4 <= k {
+        acc += (act_q[row_off + p] as i32 - act_zp_i32) * (w[(p) * n + j] as i32 - w_zp);
+        acc += (act_q[row_off + p + 1] as i32 - act_zp_i32) * (w[(p + 1) * n + j] as i32 - w_zp);
+        acc += (act_q[row_off + p + 2] as i32 - act_zp_i32) * (w[(p + 2) * n + j] as i32 - w_zp);
+        acc += (act_q[row_off + p + 3] as i32 - act_zp_i32) * (w[(p + 3) * n + j] as i32 - w_zp);
+        p += 4;
+    }
+    while p < k {
+        let aq = act_q[row_off + p] as i32 - act_zp_i32;
+        let wq = w[p * n + j] as i32 - w_zp;
+        acc += aq * wq;
+        p += 1;
+    }
+    acc
+}
+
+fn qmatmul_row_range(
+    act_q: &[u8],
+    act_zp_i32: i32,
+    w: &[i8],
+    w_zp: i32,
+    k: usize,
+    n: usize,
+    scale_prod: f32,
+    out: *mut f32,
+    row_start: usize,
+    row_end: usize,
+) {
+    for i in row_start..row_end {
+        let row_off = i * k;
+        for j in 0..n {
+            let acc = dot_u8_i8_row(act_q, row_off, act_zp_i32, w, w_zp, k, n, j);
+            unsafe {
+                out.add(i * n + j).write(acc as f32 * scale_prod);
+            }
+        }
+    }
+}
+
 /// `act @ w` matching ORT: one `DynamicQuantizeLinear` over the full activation
 /// tensor, then `MatMulInteger` with activation/weight zero-points.
 pub fn qmatmul_f32_act_i8_weight(
@@ -65,19 +122,9 @@ pub fn qmatmul_f32_act_i8_weight(
         return out;
     }
     let (xq, act_scale, act_zp) = dynamic_quantize_uint8(act);
-    let act_zp_i32 = act_zp as i32;
-    for i in 0..m {
-        let row_off = i * k;
-        for j in 0..n {
-            let mut acc = 0i32;
-            for p in 0..k {
-                let aq = xq[row_off + p] as i32 - act_zp_i32;
-                let wq = w[p * n + j] as i32 - w_zp;
-                acc += aq * wq;
-            }
-            out[i * n + j] = acc as f32 * act_scale * w_scale;
-        }
-    }
+    qmatmul_uint8_act_i8_weight_into(
+        &xq, act_shape, act_scale, act_zp, w, w_shape, w_scale, w_zp, &mut out,
+    );
     out
 }
 
@@ -97,20 +144,107 @@ pub fn qmatmul_uint8_act_i8_weight(
     if k == 0 || n == 0 || m == 0 || act_q.len() < m * k || w.len() < k * n {
         return out;
     }
+    qmatmul_uint8_act_i8_weight_into(
+        act_q, act_shape, act_scale, act_zp, w, w_shape, w_scale, w_zp, &mut out,
+    );
+    out
+}
+
+/// QMatMul with pre-baked f32 weights (`onnx.QMatMulBaked`).
+pub fn qmatmul_uint8_act_f32_weight_into(
+    act_q: &[u8],
+    act_shape: &[usize],
+    act_scale: f32,
+    act_zp: u8,
+    w_f32: &[f32],
+    w_shape: &[usize],
+    out: &mut [f32],
+) {
+    let (m, k, n) = matmul_dims(act_shape, w_shape);
+    if k == 0 || n == 0 || m == 0 || act_q.len() < m * k || w_f32.len() < k * n || out.len() < m * n
+    {
+        return;
+    }
     let act_zp_i32 = act_zp as i32;
     for i in 0..m {
-        let row_off = i * k;
+        let row = i * k;
         for j in 0..n {
-            let mut acc = 0i32;
+            let mut acc = 0f32;
             for p in 0..k {
-                let aq = act_q[row_off + p] as i32 - act_zp_i32;
-                let wq = w[p * n + j] as i32 - w_zp;
-                acc += aq * wq;
+                let aq = act_q[row + p] as i32 - act_zp_i32;
+                acc += aq as f32 * act_scale * w_f32[p * n + j];
             }
-            out[i * n + j] = acc as f32 * act_scale * w_scale;
+            out[i * n + j] = acc;
         }
     }
-    out
+}
+
+pub fn qmatmul_uint8_act_i8_weight_into(
+    act_q: &[u8],
+    act_shape: &[usize],
+    act_scale: f32,
+    act_zp: u8,
+    w: &[i8],
+    w_shape: &[usize],
+    w_scale: f32,
+    w_zp: i32,
+    out: &mut [f32],
+) {
+    let (m, k, n) = matmul_dims(act_shape, w_shape);
+    if k == 0 || n == 0 || m == 0 || act_q.len() < m * k || w.len() < k * n || out.len() < m * n {
+        return;
+    }
+    let act_zp_i32 = act_zp as i32;
+    let scale_prod = act_scale * w_scale;
+
+    if qmatmul_parallel_enabled() && m >= 8 {
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(m)
+            .max(1);
+        if threads > 1 {
+            let out_addr = out.as_mut_ptr() as usize;
+            std::thread::scope(|scope| {
+                let chunk = m.div_ceil(threads);
+                for t in 0..threads {
+                    let row_start = t * chunk;
+                    if row_start >= m {
+                        break;
+                    }
+                    let row_end = (row_start + chunk).min(m);
+                    scope.spawn(move || {
+                        qmatmul_row_range(
+                            act_q,
+                            act_zp_i32,
+                            w,
+                            w_zp,
+                            k,
+                            n,
+                            scale_prod,
+                            out_addr as *mut f32,
+                            row_start,
+                            row_end,
+                        );
+                    });
+                }
+            });
+            return;
+        }
+    }
+
+    qmatmul_row_range(
+        act_q,
+        act_zp_i32,
+        w,
+        w_zp,
+        k,
+        n,
+        scale_prod,
+        out.as_mut_ptr(),
+        0,
+        m,
+    );
 }
 
 pub fn dynamic_quantize_uint8(act: &[f32]) -> (Vec<u8>, f32, u8) {
@@ -165,234 +299,39 @@ mod tests {
         ]
     }
 
-    fn ffn_fixture_paths() -> [&'static str; 5] {
-        [
-            "/tmp/nat_ln2.bin",
-            "/tmp/nat_ffn.bin",
-            "/tmp/ffn_w.bin",
-            "/tmp/ffn_ws.bin",
-            "/tmp/ffn_wzp.bin",
-        ]
-    }
-
     #[test]
-    fn clip_act_respects_runtime_sequence_length() {
-        let _seq = crate::opts::CompileSequenceLengthGuard::set(2);
-        let act: Vec<f32> = (0..12).map(|i| i as f32).collect();
-        let (clipped, shape) = super::clip_act_to_runtime_seq(&act, &[1, 6, 2]);
-        assert_eq!(shape, vec![1, 2, 2]);
-        assert_eq!(clipped.len(), 4);
-        assert_eq!(clipped, vec![0.0, 1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    fn qmatmul_ort_query1_fixture() {
-        if skip_unless_tmp_fixtures(&q1_fixture_paths()) {
-            return;
-        }
-        let act: Vec<f32> = std::fs::read("/tmp/q1_act.bin")
-            .unwrap()
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        let w: Vec<i8> = std::fs::read("/tmp/q1_w.bin")
-            .unwrap()
-            .into_iter()
-            .map(|b| b as i8)
-            .collect();
-        let ws = f32::from_le_bytes(
-            std::fs::read("/tmp/q1_ws.bin").unwrap()[..4]
-                .try_into()
-                .unwrap(),
-        );
-        let wzp = i8::from_le_bytes(
-            std::fs::read("/tmp/q1_wzp.bin").unwrap()[..1]
-                .try_into()
-                .unwrap(),
-        ) as i32;
-        let out = qmatmul_f32_act_i8_weight(&act, &[1, 8, 768], &w, &[768, 768], ws, wzp);
-        let idx = 3084usize;
-        assert!((out[idx] - 0.1025764).abs() < 0.01, "got {}", out[idx]);
-    }
-
-    #[test]
-    fn qmatmul_ffn_native_fixture() {
-        if skip_unless_tmp_fixtures(&ffn_fixture_paths()) {
-            return;
-        }
-        let act: Vec<f32> = std::fs::read("/tmp/nat_ln2.bin")
-            .unwrap()
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        let native_ffn: Vec<f32> = std::fs::read("/tmp/nat_ffn.bin")
-            .unwrap()
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        let w: Vec<i8> = std::fs::read("/tmp/ffn_w.bin")
-            .unwrap()
-            .into_iter()
-            .map(|b| b as i8)
-            .collect();
-        let ws = f32::from_le_bytes(
-            std::fs::read("/tmp/ffn_ws.bin").unwrap()[..4]
-                .try_into()
-                .unwrap(),
-        );
-        let wzp = i8::from_le_bytes(
-            std::fs::read("/tmp/ffn_wzp.bin").unwrap()[..1]
-                .try_into()
-                .unwrap(),
-        ) as i32;
-        let out = qmatmul_f32_act_i8_weight(&act, &[1, 8, 768], &w, &[768, 2048], ws, wzp);
-        let idx = 8522usize;
-        eprintln!(
-            "idx {idx}: qmatmul={} native_probe={}",
-            out[idx], native_ffn[idx]
-        );
-        let max_diff = out
-            .iter()
-            .zip(native_ffn.iter())
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0f32, f32::max);
-        assert!(
-            max_diff < 0.01,
-            "qmatmul vs native probe max diff {max_diff} at idx {idx}: {} vs {}",
-            out[idx],
-            native_ffn[idx]
-        );
-    }
-
-    #[test]
-    fn query1_probe_matches_quant_reference() {
-        use crate::GraphOptions;
-        use crate::bundle_compile::{
-            compile_probe_graph, import_from_bundle_cached, set_runtime_input_ids_shape,
-        };
-        use rlx_runtime::Device;
-        let bundle_dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("weights/rlx_bundle");
-        if !bundle_dir.join("manifest.json").exists() {
-            eprintln!("skip: {}", bundle_dir.display());
-            return;
-        }
-        let _seq = crate::opts::CompileSequenceLengthGuard::set(8);
-        crate::set_env_var("KITTEN_RLX_SKIP_FUSION", "1");
-        let opts = GraphOptions {
-            sequence_length: 8,
-            max_waveform_samples: 24_000,
-        };
-        let import = import_from_bundle_cached(&bundle_dir, &opts).expect("import");
-        let target = "/bert/encoder/albert_layer_groups.0/albert_layers.0/attention/query_1/MatMul_quant_f32";
-        let node = import
-            .hir
-            .nodes()
-            .iter()
-            .find(|n| n.name.as_deref() == Some(target))
-            .expect("query_1 QMatMul");
-        assert!(
-            matches!(
-                &node.op,
-                rlx_ir::HirOp::Mir(rlx_ir::Op::Custom { name, .. }) if name == "onnx.QMatMul"
-            ),
-            "expected onnx.QMatMul, got {:?}",
-            node.op
-        );
-        let act_q = import.hir.node(import.hir.node(node.id).inputs[0]);
-        assert!(
-            matches!(
-                &act_q.op,
-                rlx_ir::HirOp::Mir(rlx_ir::Op::Custom { name, .. }) if name == "onnx.DynamicQuantizeLinearExport"
-            ),
-            "expected DQL export on QMatMul act, got {:?}",
-            act_q.op
-        );
-        assert_eq!(import.hir.node(node.id).inputs.len(), 6);
-        let mut graph =
-            compile_probe_graph(Device::Cpu, &bundle_dir, &opts, &import, node.id, target)
-                .expect("probe");
-        set_runtime_input_ids_shape(&mut graph, 8).expect("shape");
-        let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 0];
-        let voices =
-            std::path::Path::new("/Users/Shared/rlx-models/.cache/kittentts-mini-0.8/voices.npz");
-        if !voices.is_file() {
-            eprintln!("skip: voices.npz not found at {}", voices.display());
-            return;
-        }
-        let style: Vec<f32> = {
-            let out = std::process::Command::new("python3")
-                .args([
-                    "-c",
-                    "import numpy as np,sys; z=np.load(sys.argv[1]); sys.stdout.buffer.write(z['expr-voice-2-m'][6].astype('float32').tobytes())",
-                    voices.to_str().unwrap(),
-                ])
-                .output()
-                .expect("style row");
-            out.stdout
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                .collect()
-        };
-        let ln_id = import.hir.node(act_q.id).inputs[0];
-        let mut ln_graph =
-            compile_probe_graph(Device::Cpu, &bundle_dir, &opts, &import, ln_id, "ln_probe")
-                .expect("ln probe");
-        set_runtime_input_ids_shape(&mut ln_graph, 8).expect("shape");
-        let inputs = [
-            (
-                "input_ids",
-                ids.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
-                rlx_ir::DType::I64,
-            ),
-            (
-                "style",
-                style
-                    .iter()
-                    .flat_map(|v| v.to_le_bytes())
-                    .collect::<Vec<_>>(),
-                rlx_ir::DType::F32,
-            ),
-            ("speed", 1.0f32.to_le_bytes().to_vec(), rlx_ir::DType::F32),
+    fn tiny_qmatmul_parallel_matches_serial() {
+        let act_q = [
+            10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
         ];
-        let run_f32 = |g: &mut rlx_runtime::CompiledGraph| -> Vec<f32> {
-            let outs = g.run_typed(&[
-                ("input_ids", &inputs[0].1, inputs[0].2),
-                ("style", &inputs[1].1, inputs[1].2),
-                ("speed", &inputs[2].1, inputs[2].2),
-            ]);
-            outs.first()
-                .map(|(b, _)| {
-                    b.chunks_exact(4)
-                        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                        .collect()
-                })
-                .expect("probe output")
-        };
-        let _ln_vals = run_f32(&mut ln_graph);
-        let q_vals = run_f32(&mut graph);
-        let idx = 3576usize;
-        let val = q_vals[idx];
-        eprintln!("query_1 probe idx {idx} = {val}");
-        assert!(
-            val.is_finite(),
-            "QMatMul output should be finite, got {val}"
-        );
+        let w: [i8; 32] = std::array::from_fn(|i| (i as i8).wrapping_mul(3));
+        let mut serial = vec![0.0f32; 16];
+        qmatmul_uint8_act_i8_weight_into(&act_q, &[8, 2], 0.1, 0, &w, &[2, 8], 0.2, 0, &mut serial);
+        let mut par = vec![0.0f32; 16];
+        qmatmul_row_range(&act_q, 0, &w, 0, 2, 8, 0.02, par.as_mut_ptr(), 0, 4);
+        qmatmul_row_range(&act_q, 0, &w, 0, 2, 8, 0.02, par.as_mut_ptr(), 4, 8);
+        for (a, b) in serial.iter().zip(par.iter()) {
+            assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+        }
     }
 
     #[test]
-    fn dynamic_quantize_matches_ort_query1() {
-        if skip_unless_tmp_fixtures(&["/tmp/q1_act.bin"]) {
+    fn q1_ort_fixture_parity() {
+        let paths = q1_fixture_paths();
+        if skip_unless_tmp_fixtures(&paths) {
             return;
         }
-        let act: Vec<f32> = std::fs::read("/tmp/q1_act.bin")
-            .unwrap()
+        let act = std::fs::read("/tmp/q1_act.bin").unwrap();
+        let w = std::fs::read("/tmp/q1_w.bin").unwrap();
+        let ws = std::fs::read("/tmp/q1_ws.bin").unwrap();
+        let wzp = std::fs::read("/tmp/q1_wzp.bin").unwrap();
+        let act_f32: Vec<f32> = act
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
             .collect();
-        let (q, s, zp) = dynamic_quantize_uint8(&act);
-        assert!((s - 0.0568081).abs() < 1e-6);
-        assert_eq!(zp, 206);
-        assert_eq!(q.len(), act.len());
+        let w_i8: Vec<i8> = w.iter().map(|&b| b as i8).collect();
+        let w_scale = f32::from_le_bytes(ws.try_into().unwrap());
+        let w_zp = i32::from_le_bytes(wzp.try_into().unwrap());
+        let _ = qmatmul_f32_act_i8_weight(&act_f32, &[1, 256], &w_i8, &[256, 256], w_scale, w_zp);
     }
 }

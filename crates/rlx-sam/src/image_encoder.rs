@@ -33,7 +33,7 @@
 use super::config::{SAM_EMBED_HW, SamEncoderConfig};
 use super::preprocess::{SamPreprocessWeights, extract_preprocess_weights};
 use anyhow::{Result, anyhow, ensure};
-use rlx_core::vision_ops_ir::{bhwc_to_nchw, conv2d_bias, conv2d_no_bias, layer_norm2d_nchw};
+use rlx_core::vision_ops_ir::{bhwc_to_nchw, conv2d_no_bias, layer_norm2d_nchw};
 use rlx_core::weight_map::WeightMap;
 use rlx_ir::HirGraphExt;
 use rlx_ir::hir::{HirModule, HirMut, HirNodeId};
@@ -161,24 +161,14 @@ pub fn build_sam_encoder_hir(
     }
 
     // ── Neck: BHWC → NCHW, 1×1 conv, LN2d, 3×3 conv, LN2d ──
+    // Meta's `segment_anything/modeling/image_encoder.py` uses
+    // `bias=False` on both neck Conv2ds, so the official safetensors
+    // (e.g. `sam_vit_b_01ec64`) only contain `neck.{0,2}.weight` — no
+    // biases. We mirror that here with `conv2d_no_bias`.
     let oc = cfg.out_chans;
     let nchw = bhwc_to_nchw(&mut b.m(), x, 1, hw, hw, e);
     let c1_w = load_p(&mut b, weights, "image_encoder.neck.0.weight", false)?;
-    let c1_b = load_p(&mut b, weights, "image_encoder.neck.0.bias", false)?;
-    let feat = conv2d_bias(
-        &mut b.m(),
-        nchw,
-        c1_w,
-        c1_b,
-        1,
-        oc,
-        1,
-        1,
-        [1, 1],
-        [0, 0],
-        hw,
-        hw,
-    );
+    let feat = conv2d_no_bias(&mut b.m(), nchw, c1_w, 1, oc, 1, 1, [1, 1], [0, 0], hw, hw);
     let ln1_g = load_p(&mut b, weights, "image_encoder.neck.1.weight", false)?;
     let ln1_b = load_p(&mut b, weights, "image_encoder.neck.1.bias", false)?;
     let feat = layer_norm2d_nchw(&mut b.m(), feat, ln1_g, ln1_b, eps);

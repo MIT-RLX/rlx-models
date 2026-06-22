@@ -1,6 +1,6 @@
 [package]
 name = "rlx-models"
-version = "0.2.6"
+version = "0.2.9"
 edition.workspace = true
 rust-version.workspace = true
 description = "Model loading for RLX — config parsing, safetensors weights, graph builders"
@@ -17,12 +17,12 @@ documentation.workspace = true
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
 rlx-sam-ir = { workspace = true }
-rlx-tensor = { workspace = true }
 rlx-bert = { workspace = true }
 rlx-clinicalbert = { workspace = true }
 rlx-nomic = { workspace = true }
 rlx-vision = { workspace = true }
 rlx-dinov2 = { workspace = true }
+rlx-bioclip2 = { workspace = true }
 rlx-embed = { workspace = true }
 rlx-sam = { workspace = true }
 rlx-sam2 = { workspace = true }
@@ -37,14 +37,24 @@ rlx-flux2 = { workspace = true }
 rlx-diamond = { workspace = true }
 rlx-vjepa2 = { workspace = true }
 rlx-wav2vec2-bert = { workspace = true }
-rlx-whisper = { workspace = true, features = ["tokenizer"] }
+rlx-wav2vec2-asr = { workspace = true }
+rlx-diarize = { workspace = true }
+rlx-whisper = { workspace = true, features = ["tokenizer", "timestamps"] }
 rlx-vad = { workspace = true }
+rlx-aec = { workspace = true }
 rlx-voxtral = { workspace = true }
+rlx-qwen3-asr = { workspace = true }
 rlx-locateanything = { workspace = true }
 rlx-voxtral-tts = { workspace = true }
 rlx-ocr = { workspace = true }
 rlx-neutts = { workspace = true }
+rlx-orpheus = { workspace = true }
 rlx-kittentts = { workspace = true }
+rlx-florence2 = { workspace = true }
+rlx-mimi = { workspace = true }
+rlx-tsac = { workspace = true }
+rlx-moshi = { workspace = true }
+rlx-kyutai-tts = { workspace = true }
 rlx-mistral = { workspace = true }
 rlx-bonsai = { workspace = true }
 rlx-minicpm5 = { workspace = true, features = ["tokenizer"] }
@@ -87,14 +97,18 @@ rlx-qwen3-vl = { workspace = true }
 rlx-lfm-vl = { workspace = true }
 rlx-nemotron-omni = { workspace = true }
 rlx-vlm-base = { workspace = true }
-rlx-whisper = { workspace = true, features = ["tokenizer"] }
+rlx-whisper = { workspace = true, features = ["tokenizer", "timestamps", "word-dtw"] }
 rlx-vad = { workspace = true }
 image = { workspace = true }
 
 [features]
 default = ["qwen35-tokenizer", "flux2-tokenizer", "flux2-image", "embed"]
 # Forward rlx-cli's `compat-net` so `rlx_models::run::check_hf_repo` works.
-compat-net = ["rlx-cli/compat-net"]
+whisper-subtitles = [
+    "rlx-whisper/word-dtw",
+    "rlx-whisper/silero-vad",
+    "rlx-whisper/diarize",
+]
 hf-download = [
     "dep:hf-hub",
     "rlx-embed/hf-download",
@@ -104,6 +118,8 @@ hf-download = [
     "rlx-locateanything/hf-download",
     "rlx-qwen3-tts/hf-download",
     "rlx-kittentts/hf-download",
+    "rlx-orpheus/hf-download",
+    "rlx-kyutai-tts/hf-download",
 ]
 embed = ["rlx-embed/embed"]
 qwen35-tokenizer = ["rlx-qwen35/tokenizer"]
@@ -118,6 +134,7 @@ metal = [
     "rlx-bonsai/metal",
     "rlx-cohere/metal",
     "rlx-dinov2/metal",
+    "rlx-bioclip2/metal",
     "rlx-embed/metal",
     "rlx-flux2/metal",
     "rlx-gemma/metal",
@@ -128,8 +145,11 @@ metal = [
     "rlx-locateanything/metal",
     "rlx-minicpm5/metal",
     "rlx-mistral/metal",
+    "rlx-moshi/metal",
+    "rlx-kyutai-tts/metal",
     "rlx-neutts/metal",
     "rlx-kittentts/metal",
+    "rlx-florence2/metal",
     "rlx-nomic/metal",
     "rlx-ocr/metal",
     "rlx-omnicoder/metal",
@@ -143,6 +163,7 @@ metal = [
     "rlx-vision/metal",
     "rlx-vjepa2/metal",
     "rlx-voxtral/metal",
+    "rlx-qwen3-asr/metal",
     "rlx-voxtral-tts/metal",
     "rlx-wav2vec2-bert/metal",
     "rlx-whisper/metal",
@@ -155,6 +176,7 @@ mlx = [
     "rlx-bonsai/mlx",
     "rlx-cohere/mlx",
     "rlx-dinov2/mlx",
+    "rlx-bioclip2/mlx",
     "rlx-embed/mlx",
     "rlx-flux2/mlx",
     "rlx-gemma/mlx",
@@ -165,8 +187,11 @@ mlx = [
     "rlx-locateanything/mlx",
     "rlx-minicpm5/mlx",
     "rlx-mistral/mlx",
+    "rlx-moshi/mlx",
+    "rlx-kyutai-tts/mlx",
     "rlx-neutts/mlx",
     "rlx-kittentts/mlx",
+    "rlx-florence2/mlx",
     "rlx-nomic/mlx",
     "rlx-ocr/mlx",
     "rlx-omnicoder/mlx",
@@ -180,6 +205,7 @@ mlx = [
     "rlx-vision/mlx",
     "rlx-vjepa2/mlx",
     "rlx-voxtral/mlx",
+    "rlx-qwen3-asr/mlx",
     "rlx-voxtral-tts/mlx",
     "rlx-wav2vec2-bert/mlx",
     "rlx-whisper/mlx",
@@ -191,6 +217,7 @@ gpu = [
     "rlx-bonsai/gpu",
     "rlx-cohere/gpu",
     "rlx-dinov2/gpu",
+    "rlx-bioclip2/gpu",
     "rlx-embed/gpu",
     "rlx-flux2/gpu",
     "rlx-gemma/gpu",
@@ -201,8 +228,11 @@ gpu = [
     "rlx-locateanything/gpu",
     "rlx-minicpm5/gpu",
     "rlx-mistral/gpu",
+    "rlx-moshi/gpu",
+    "rlx-kyutai-tts/gpu",
     "rlx-neutts/gpu",
     "rlx-kittentts/gpu",
+    "rlx-florence2/gpu",
     "rlx-nomic/gpu",
     "rlx-ocr/gpu",
     "rlx-omnicoder/gpu",
@@ -216,6 +246,7 @@ gpu = [
     "rlx-vision/gpu",
     "rlx-vjepa2/gpu",
     "rlx-voxtral/gpu",
+    "rlx-qwen3-asr/gpu",
     "rlx-voxtral-tts/gpu",
     "rlx-wav2vec2-bert/gpu",
     "rlx-whisper/gpu",
@@ -231,6 +262,7 @@ vulkan = [
     "rlx-bonsai/vulkan",
     "rlx-cohere/vulkan",
     "rlx-dinov2/vulkan",
+    "rlx-bioclip2/vulkan",
     "rlx-embed/vulkan",
     "rlx-flux2/vulkan",
     "rlx-gemma/vulkan",
@@ -241,6 +273,8 @@ vulkan = [
     "rlx-locateanything/vulkan",
     "rlx-minicpm5/vulkan",
     "rlx-mistral/vulkan",
+    "rlx-moshi/vulkan",
+    "rlx-kyutai-tts/vulkan",
     "rlx-neutts/vulkan",
     "rlx-nomic/vulkan",
     "rlx-ocr/vulkan",
@@ -255,6 +289,7 @@ vulkan = [
     "rlx-vision/vulkan",
     "rlx-vjepa2/vulkan",
     "rlx-voxtral/vulkan",
+    "rlx-qwen3-asr/vulkan",
     "rlx-voxtral-tts/vulkan",
     "rlx-wav2vec2-bert/vulkan",
     "rlx-whisper/vulkan",
@@ -266,6 +301,7 @@ cuda = [
     "rlx-bonsai/cuda",
     "rlx-cohere/cuda",
     "rlx-dinov2/cuda",
+    "rlx-bioclip2/cuda",
     "rlx-embed/cuda",
     "rlx-flux2/cuda",
     "rlx-gemma/cuda",
@@ -276,8 +312,11 @@ cuda = [
     "rlx-locateanything/cuda",
     "rlx-minicpm5/cuda",
     "rlx-mistral/cuda",
+    "rlx-moshi/cuda",
+    "rlx-kyutai-tts/cuda",
     "rlx-neutts/cuda",
     "rlx-kittentts/cuda",
+    "rlx-florence2/cuda",
     "rlx-nomic/cuda",
     "rlx-ocr/cuda",
     "rlx-omnicoder/cuda",
@@ -291,6 +330,7 @@ cuda = [
     "rlx-vision/cuda",
     "rlx-vjepa2/cuda",
     "rlx-voxtral/cuda",
+    "rlx-qwen3-asr/cuda",
     "rlx-voxtral-tts/cuda",
     "rlx-wav2vec2-bert/cuda",
     "rlx-whisper/cuda",
@@ -302,6 +342,7 @@ rocm = [
     "rlx-bonsai/rocm",
     "rlx-cohere/rocm",
     "rlx-dinov2/rocm",
+    "rlx-bioclip2/rocm",
     "rlx-embed/rocm",
     "rlx-flux2/rocm",
     "rlx-gemma/rocm",
@@ -312,8 +353,11 @@ rocm = [
     "rlx-locateanything/rocm",
     "rlx-minicpm5/rocm",
     "rlx-mistral/rocm",
+    "rlx-moshi/rocm",
+    "rlx-kyutai-tts/rocm",
     "rlx-neutts/rocm",
     "rlx-kittentts/rocm",
+    "rlx-florence2/rocm",
     "rlx-nomic/rocm",
     "rlx-ocr/rocm",
     "rlx-omnicoder/rocm",
@@ -327,6 +371,7 @@ rocm = [
     "rlx-vision/rocm",
     "rlx-vjepa2/rocm",
     "rlx-voxtral/rocm",
+    "rlx-qwen3-asr/rocm",
     "rlx-voxtral-tts/rocm",
     "rlx-wav2vec2-bert/rocm",
     "rlx-whisper/rocm",
@@ -404,6 +449,11 @@ path = "examples/minicpm5_forward_bench.rs"
 [[example]]
 name = "whisper_bench"
 path = "examples/whisper_bench.rs"
+
+[[example]]
+name = "whisper_subtitles_bench"
+path = "examples/whisper_subtitles_bench.rs"
+required-features = ["whisper-subtitles"]
 
 [[example]]
 name = "voxtral_tts_bench"

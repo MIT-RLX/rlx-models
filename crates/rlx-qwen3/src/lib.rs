@@ -55,7 +55,9 @@ pub use flow::{
 pub use generator::Qwen3Generator;
 pub use high_level_runner::{Precision, Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder};
 pub use profile::{QWEN3_PROFILE_FILE, qwen3_profile_default, qwen3_profile_near_weights};
-pub use sampling::{SampleOpts, sample_token, softmax_logits};
+pub use sampling::{
+    SampleOpts, apply_repetition_penalty, sample_token, sample_token_at, softmax_logits,
+};
 pub use spec::Qwen3Speculator;
 
 #[cfg(test)]

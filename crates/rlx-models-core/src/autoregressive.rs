@@ -111,7 +111,9 @@ fn run_bucketed_decode_on_compiled_metal_rows(
     specs: &[CacheRunInput<'_>],
     kv: &LayerKvCache,
     kv_dims: &[usize],
+    batch: usize,
 ) -> Result<DecodeLogitsKv> {
+    let batch = batch.max(1);
     let num_layers = kv_dims.len();
     let pairs: Vec<(&str, &[f32])> = specs.iter().map(|inp| (inp.name, inp.data)).collect();
 
@@ -123,21 +125,26 @@ fn run_bucketed_decode_on_compiled_metal_rows(
 
     let mut new_k = Vec::with_capacity(num_layers);
     let mut new_v = Vec::with_capacity(num_layers);
+    let slots = upper + 1;
     for layer in 0..num_layers {
         let kd = kv_dims[layer];
-        let row_k = compiled
-            .read_output_row(1 + 2 * layer, upper, kd)
-            .with_context(|| format!("Metal K row read layer {layer}"))?;
-        let row_v = compiled
-            .read_output_row(2 + 2 * layer, upper, kd)
-            .with_context(|| format!("Metal V row read layer {layer}"))?;
-        let need = (past_seq + 1) * kd;
+        let row_size = batch * kd;
+        let need = (past_seq + 1) * row_size;
         let mut k_out = Vec::with_capacity(need);
-        k_out.extend_from_slice(&kv.layers_k[layer]);
-        k_out.extend_from_slice(&row_k);
         let mut v_out = Vec::with_capacity(need);
+        k_out.extend_from_slice(&kv.layers_k[layer]);
         v_out.extend_from_slice(&kv.layers_v[layer]);
-        v_out.extend_from_slice(&row_v);
+        for b in 0..batch {
+            let row_ix = b * slots + upper;
+            let row_k = compiled
+                .read_output_row(1 + 2 * layer, row_ix, kd)
+                .with_context(|| format!("Metal K row read layer {layer} batch {b}"))?;
+            let row_v = compiled
+                .read_output_row(2 + 2 * layer, row_ix, kd)
+                .with_context(|| format!("Metal V row read layer {layer} batch {b}"))?;
+            k_out.extend_from_slice(&row_k);
+            v_out.extend_from_slice(&row_v);
+        }
         new_k.push(k_out);
         new_v.push(v_out);
     }
@@ -159,14 +166,16 @@ fn finish_bucketed_decode(
     output_inners: &[usize],
     kv: &LayerKvCache,
     kv_dims: &[usize],
+    batch: usize,
 ) -> Result<DecodeLogitsKv> {
     if compiled.device() == Device::Metal && !metal_full_kv_readback() {
         return run_bucketed_decode_on_compiled_metal_rows(
-            compiled, upper, past_seq, specs, kv, kv_dims,
+            compiled, upper, past_seq, specs, kv, kv_dims, batch,
         );
     }
-    let raw = run_bucketed_decode_on_compiled(compiled, upper, past_seq, specs, output_inners);
-    split_bucketed_decode_kv_per_layer(raw, past_seq, kv_dims, kv_dims.len(), 1)
+    let raw =
+        run_bucketed_decode_on_compiled(compiled, upper, past_seq, batch, specs, output_inners);
+    split_bucketed_decode_kv_per_layer(raw, past_seq, kv_dims, kv_dims.len(), batch)
 }
 
 /// Run a bucketed decode graph with correct active extent for pad-to-upper KV.
@@ -177,15 +186,21 @@ fn run_bucketed_decode_on_compiled(
     compiled: &mut CompiledGraph,
     upper: usize,
     _past_seq: usize,
+    batch: usize,
     specs: &[CacheRunInput<'_>],
     output_inners: &[usize],
 ) -> Vec<Vec<f32>> {
+    let batch = batch.max(1);
     let kv_cap = upper + 1;
+    let kv_rows = kv_cap * batch;
     let mut owned: Vec<(String, Vec<f32>)> = Vec::new();
     let mut use_owned = vec![false; specs.len()];
     for (i, inp) in specs.iter().enumerate() {
         if let Some(inner) = inp.row_inner {
-            if inp.data.len() != upper * inner {
+            let min_len = upper * inner;
+            if inp.data.len() >= min_len {
+                // Already padded (e.g. batched KV `[batch, upper, dim]` → `batch * upper` rows).
+            } else {
                 owned.push((
                     inp.name.to_string(),
                     pad_rows(inp.data, inner, upper as u64),
@@ -220,7 +235,7 @@ fn run_bucketed_decode_on_compiled(
         .enumerate()
         .map(|(i, out)| match output_inners.get(i).copied() {
             Some(0) | None => out,
-            Some(inner) => slice_rows(&out, inner, kv_cap),
+            Some(inner) => slice_rows(&out, inner, kv_rows),
         })
         .collect()
 }
@@ -250,6 +265,48 @@ pub fn split_decode_logits_kv(outputs: Vec<Vec<f32>>, num_layers: usize) -> Resu
         layers_v.push(iter.next().context("decode v missing")?);
     }
     Ok((logits, layers_k, layers_v))
+}
+
+/// Decoded outputs: `(logits, per-layer K, per-layer V, auxiliary hidden
+/// states)` — the return shape of [`split_decode_logits_kv_aux`].
+pub type DecodeLogitsKvAux = (Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>);
+
+/// Split decode graph outputs into logits + per-layer K/V + EAGLE3
+/// auxiliary hidden states. Output order is fixed by the build code:
+/// `logits, K_0, V_0, K_1, V_1, …, aux_0, aux_1, … aux_{N-1}` where
+/// `N == num_aux`.
+///
+/// Returns `(logits, [K_l], [V_l], [aux_l])`.
+pub fn split_decode_logits_kv_aux(
+    outputs: Vec<Vec<f32>>,
+    num_layers: usize,
+    num_aux: usize,
+) -> Result<DecodeLogitsKvAux> {
+    let expected = 1 + 2 * num_layers + num_aux;
+    if outputs.len() != expected {
+        anyhow::bail!(
+            "decode (+aux) graph produced {} outputs, expected {} \
+             ({} logits + {} KV + {} aux)",
+            outputs.len(),
+            expected,
+            1,
+            2 * num_layers,
+            num_aux,
+        );
+    }
+    let mut iter = outputs.into_iter();
+    let logits = iter.next().context("decode logits missing")?;
+    let mut layers_k = Vec::with_capacity(num_layers);
+    let mut layers_v = Vec::with_capacity(num_layers);
+    for _ in 0..num_layers {
+        layers_k.push(iter.next().context("decode k missing")?);
+        layers_v.push(iter.next().context("decode v missing")?);
+    }
+    let mut aux = Vec::with_capacity(num_aux);
+    for _ in 0..num_aux {
+        aux.push(iter.next().context("aux hidden state missing")?);
+    }
+    Ok((logits, layers_k, layers_v, aux))
 }
 
 /// Build KV state from prefill-with-cache outputs (`logits` + `2 * num_layers` tensors).
@@ -334,10 +391,11 @@ pub fn run_bucketed_kv_decode<F>(
 where
     F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>),
 {
-    run_bucketed_kv_decode_keyed(
+    run_bucketed_kv_decode_keyed_batched(
         cache,
         past_seq as u64,
         past_seq,
+        1,
         kv,
         kv_dim,
         num_layers,
@@ -347,7 +405,7 @@ where
     )
 }
 
-/// Like [`run_bucketed_kv_decode`] but indexes the compile bucket with `cache_key`
+/// Like [`run_bucketed_kv_decode_keyed`] but indexes the compile bucket with `cache_key`
 /// (e.g. Whisper `(batch << 32) | past_seq`).
 pub fn run_bucketed_kv_decode_keyed<F>(
     cache: &mut BucketedCompileCache,
@@ -363,12 +421,53 @@ pub fn run_bucketed_kv_decode_keyed<F>(
 where
     F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>),
 {
+    run_bucketed_kv_decode_keyed_batched(
+        cache,
+        cache_key,
+        past_seq,
+        1,
+        kv,
+        kv_dim,
+        num_layers,
+        fixed_inputs,
+        build,
+        options,
+    )
+}
+
+/// Batched decode: K/V tensors are `[batch, past_seq, kv_dim]` row-major (`batch * past_seq` rows).
+pub fn run_bucketed_kv_decode_keyed_batched<F>(
+    cache: &mut BucketedCompileCache,
+    cache_key: u64,
+    past_seq: usize,
+    batch: usize,
+    kv: &LayerKvCache,
+    kv_dim: usize,
+    num_layers: usize,
+    fixed_inputs: &[CacheRunInput<'_>],
+    build: F,
+    options: &CompileOptions,
+) -> Result<DecodeLogitsKv>
+where
+    F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>),
+{
+    let batch = batch.max(1);
     let (upper_u64, compiled) = cache
         .ensure_graph_with_params(cache_key, build, options)
         .ok_or_else(|| anyhow::anyhow!("cache_key {cache_key} outside decode buckets"))?;
     let upper = upper_u64 as usize;
 
-    let (padded_k, padded_v) = kv.pad_layers_to_upper(upper_u64, kv_dim);
+    let row_upper = upper_u64.saturating_mul(batch as u64);
+    let padded_k: Vec<Vec<f32>> = kv
+        .layers_k
+        .iter()
+        .map(|k| pad_rows(k, kv_dim, row_upper))
+        .collect();
+    let padded_v: Vec<Vec<f32>> = kv
+        .layers_v
+        .iter()
+        .map(|v| pad_rows(v, kv_dim, row_upper))
+        .collect();
     let key_names = past_kv_input_names(num_layers);
 
     let mut specs: Vec<CacheRunInput<'_>> = Vec::with_capacity(fixed_inputs.len() + 2 * num_layers);
@@ -402,6 +501,7 @@ where
         &output_inners,
         kv,
         &kv_dims,
+        batch,
     )
 }
 
@@ -459,6 +559,7 @@ where
         &output_inners,
         kv,
         &kv_dims,
+        1,
     )
 }
 pub fn run_bucketed_kv_decode_hir_layers<F>(
@@ -520,6 +621,7 @@ where
         &output_inners,
         kv,
         kv_dims,
+        1,
     )
 }
 
@@ -590,6 +692,7 @@ where
         &output_inners,
         kv,
         kv_dims,
+        1,
     )
 }
 
@@ -672,6 +775,7 @@ where
         &output_inners,
         kv,
         kv_dims,
+        1,
     )
 }
 
@@ -831,4 +935,51 @@ pub fn compile_cache_ensure_graph<'a>(
         || panic!("compile_cache_ensure_graph: missing {key}"),
         options,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_aux_returns_logits_kv_and_aux_in_order() {
+        // 2 layers, 3 aux → expect 1+4+3 = 8 outputs.
+        let outs = vec![
+            vec![0.0],  // logits
+            vec![1.0],  // K0
+            vec![2.0],  // V0
+            vec![3.0],  // K1
+            vec![4.0],  // V1
+            vec![10.0], // aux 0
+            vec![20.0], // aux 1
+            vec![30.0], // aux 2
+        ];
+        let (logits, ks, vs, aux) = split_decode_logits_kv_aux(outs, 2, 3).unwrap();
+        assert_eq!(logits, vec![0.0]);
+        assert_eq!(ks, vec![vec![1.0], vec![3.0]]);
+        assert_eq!(vs, vec![vec![2.0], vec![4.0]]);
+        assert_eq!(aux, vec![vec![10.0], vec![20.0], vec![30.0]]);
+    }
+
+    #[test]
+    fn split_aux_rejects_wrong_count() {
+        let outs = vec![vec![0.0]; 5];
+        let err = split_decode_logits_kv_aux(outs, 2, 3).unwrap_err();
+        assert!(
+            format!("{err}").contains("expected 8"),
+            "expected count error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn split_aux_zero_aux_matches_split_decode_logits_kv() {
+        let outs = vec![vec![0.0], vec![1.0], vec![2.0]];
+        let outs2 = outs.clone();
+        let (l1, k1, v1, a1) = split_decode_logits_kv_aux(outs, 1, 0).unwrap();
+        let (l2, k2, v2) = split_decode_logits_kv(outs2, 1).unwrap();
+        assert!(a1.is_empty());
+        assert_eq!(l1, l2);
+        assert_eq!(k1, k2);
+        assert_eq!(v1, v2);
+    }
 }

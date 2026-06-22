@@ -21,8 +21,8 @@ use super::weights::{
     Flux2TextEncoderWeights,
 };
 use anyhow::{Result, ensure};
+use rlx_core::host_kernels::{layer_norm, linear};
 use rlx_qwen3::Qwen3Config;
-use rlx_tensor::{layer_norm, linear};
 
 #[derive(Debug, Clone)]
 pub struct Flux2PromptOutput {

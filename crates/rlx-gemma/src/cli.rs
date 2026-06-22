@@ -27,6 +27,8 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut config: Option<PathBuf> = None;
     let mut format: Option<String> = None;
     let mut prompt: Option<String> = None;
+    let mut system: Option<String> = None;
+    let mut raw_prompt = false;
     let mut tokenizer: Option<PathBuf> = None;
     let mut prompt_ids: Option<Vec<u32>> = None;
     let mut max_tokens = 32usize;
@@ -46,6 +48,11 @@ pub fn run(args: &[String]) -> Result<()> {
             "--config" => config = Some(req(args, &mut i)?.into()),
             "--format" => format = Some(req(args, &mut i)?),
             "--prompt" => prompt = Some(req(args, &mut i)?),
+            "--system" => system = Some(req(args, &mut i)?),
+            "--raw-prompt" => {
+                raw_prompt = true;
+                i += 1;
+            }
             "--tokenizer" => tokenizer = Some(req(args, &mut i)?.into()),
             "--prompt-ids" => {
                 prompt_ids = Some(
@@ -122,7 +129,13 @@ pub fn run(args: &[String]) -> Result<()> {
     let ids = if let Some(ids) = prompt_ids {
         ids
     } else if let Some(text) = prompt {
-        crate::encode_prompt_auto(&weights, tokenizer.as_deref(), &text)?
+        crate::encode_chat_prompt_auto(
+            &weights,
+            tokenizer.as_deref(),
+            system.as_deref(),
+            &text,
+            !raw_prompt,
+        )?
     } else {
         vec![128000, 128006, 882, 128007, 271, 9906, 128009]
     };
@@ -148,7 +161,12 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     runner.generate(&ids, max_tokens, |tok| {
         if stream {
-            print!("{tok} ");
+            match crate::decode_token_auto(&weights, tokenizer.as_deref(), tok) {
+                Ok(piece) => {
+                    print!("{piece}");
+                }
+                Err(_) => print!("{tok} "),
+            }
             std::io::stdout().flush().ok();
         }
         printed += 1;

@@ -148,6 +148,10 @@ fn lstms5_add2_and_concat4_vs_ort() {
     };
     for (hir, ort) in [
         (
+            "/text_encoder/lstms.5/Mul_2",
+            "/text_encoder/lstms.5/Mul_2_output_0",
+        ),
+        (
             "/text_encoder/lstms.5/Add_2",
             "/text_encoder/lstms.5/Add_2_output_0",
         ),

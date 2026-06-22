@@ -375,7 +375,7 @@ pub fn build_qwen3_decode_built(
     }
 
     let built = flow
-        .bind_decode_inputs(cfg.num_hidden_layers, opts.use_custom_mask)
+        .bind_decode_inputs(cfg.num_hidden_layers, opts.use_custom_mask, true)
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh)
         .token_embed()
@@ -462,7 +462,7 @@ pub fn build_qwen3_decode_embeds_built(
     }
 
     let built = flow
-        .bind_decode_inputs(cfg.num_hidden_layers, opts.use_custom_mask)
+        .bind_decode_inputs(cfg.num_hidden_layers, opts.use_custom_mask, true)
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh)
         .repeat_layers(cfg.num_hidden_layers, {

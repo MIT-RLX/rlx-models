@@ -30,6 +30,7 @@
 //! | `full`  | all above   | all ORT EPs + RLX path deps |
 
 pub mod assets;
+pub mod audio_util;
 #[cfg(feature = "onnx")]
 pub mod backend;
 pub mod backend_kind;
@@ -42,7 +43,10 @@ pub mod model;
 #[cfg(feature = "native")]
 pub mod native;
 pub mod npz;
+#[cfg(all(feature = "native", feature = "onnx"))]
+pub mod ort_duration;
 pub mod phonemize;
+pub mod phrase_fixtures;
 #[cfg(feature = "espeak")]
 pub mod preprocess;
 pub mod tokenize;
@@ -60,7 +64,9 @@ pub use features::{
     metal_feature_enabled, mlx_feature_enabled, native_feature_enabled, onnx_feature_enabled,
     rlx_feature_enabled, rocm_feature_enabled,
 };
-pub use infer_opts::{SAMPLES_PER_DURATION_UNIT, recommended_native_compile_opts};
+pub use infer_opts::{
+    SAMPLES_PER_DURATION_UNIT, max_waveform_samples_for_tokens, recommended_native_compile_opts,
+};
 pub use model::{KittenTTS, MIN_AUDIBLE_PEAK, SAMPLE_RATE, peak_amplitude};
 pub use npz::{NpyArray, load_npz, parse_npy};
 pub use phonemize::{DEFAULT_LANG, is_espeak_available, phonemize, phonemize_lang, set_data_path};

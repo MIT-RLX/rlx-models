@@ -1,0 +1,118 @@
+[package]
+name = "rlx-tsac"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Fabrice Bellard TSAC very-low-bitrate audio codec (44.1 kHz) for RLX"
+repository.workspace = true
+readme = "README.md"
+build = "build.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+hound = "3"
+ndarray = "0.16"
+rlx-cli = { workspace = true, optional = true }
+rlx-core = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-dac = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
+
+[build-dependencies]
+cc = "1"
+
+[features]
+default = ["cli", "native-codec"]
+cli = ["dep:rlx-cli"]
+fetch = ["dep:ureq"]
+native-codec = []
+metal = ["rlx-runtime/metal", "rlx-dac/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-dac/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-dac/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+wgpu = ["gpu"]
+# Download the real Descript-DAC-44kHz as an oracle to validate q8 weight loading.
+oracle = ["rlx-dac/hf-download"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+
+[[bin]]
+name = "rlx-tsac"
+path = "src/bin/rlx_tsac.rs"
+required-features = ["cli"]
+
+[[test]]
+name = "platform"
+path = "tests/platform.rs"
+
+[[test]]
+name = "roundtrip"
+path = "tests/roundtrip.rs"
+
+[[test]]
+name = "bellard_parity"
+path = "tests/bellard_parity.rs"
+
+[[test]]
+name = "rlx_backend"
+path = "tests/rlx_backend.rs"
+required-features = ["native-codec"]
+
+[[example]]
+name = "bellard_parity_bench"
+path = "examples/bellard_parity_bench.rs"
+required-features = ["fetch", "native-codec"]
+
+[[example]]
+name = "perf_bench"
+path = "examples/perf_bench.rs"
+required-features = ["native-codec"]
+
+[[example]]
+name = "rlx_decode_check"
+path = "examples/rlx_decode_check.rs"
+required-features = ["native-codec"]
+
+[[example]]
+name = "rlx_dbg"
+path = "examples/rlx_dbg.rs"
+required-features = ["native-codec"]
+
+[[example]]
+name = "rlx_autoenc"
+path = "examples/rlx_autoenc.rs"
+required-features = ["native-codec"]
+
+[[example]]
+name = "oracle_cmp"
+path = "examples/oracle_cmp.rs"
+required-features = ["native-codec", "oracle"]
+
+[[example]]
+name = "cmp_wavs"
+path = "examples/cmp_wavs.rs"
+required-features = ["native-codec"]
+
+[[example]]
+name = "correct_roundtrip"
+path = "examples/correct_roundtrip.rs"
+required-features = ["native-codec", "oracle"]
+
+[[example]]
+name = "correct_perf"
+path = "examples/correct_perf.rs"
+required-features = ["native-codec", "oracle"]
+
+[[example]]
+name = "backends_audit"
+path = "examples/backends_audit.rs"
+required-features = ["native-codec", "oracle"]
+
+[lints]
+workspace = true

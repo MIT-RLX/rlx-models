@@ -13,11 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Fast native forward pass (bundle path). Use instead of lldb on the full parity test.
+//! Fast native forward pass (weights-only or bundle). Use instead of lldb on the full parity test.
 //!
 //! ```bash
-//! export KITTEN_RLX_BUNDLE=weights/rlx_bundle
-//! cargo run -p kitten_tts_mini_rlx --example native_quick --release
+//! export KITTEN_RLX_WEIGHTS=crates/kitten_tts_mini_rlx/weights
+//! cargo run -p kitten_tts_mini_rlx --example native_quick --release --features native
 //! ```
 
 use std::time::Instant;
@@ -26,11 +26,14 @@ use rlx_runtime::Device;
 
 fn main() -> anyhow::Result<()> {
     let weights = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("weights");
-    let bundle = weights.join("rlx_bundle");
-    if !bundle.join("graph.json").is_file() {
-        anyhow::bail!("missing bundle at {}", bundle.display());
+    if !kitten_tts_mini_rlx::native_weights_available(&weights)
+        && !weights.join("rlx_bundle/graph.json").is_file()
+    {
+        anyhow::bail!(
+            "missing model.safetensors or rlx_bundle under {}",
+            weights.display()
+        );
     }
-    kitten_tts_mini_rlx::set_env_var("KITTEN_RLX_BUNDLE", &bundle);
 
     let opts = kitten_tts_mini_rlx::GraphOptions {
         sequence_length: 128,

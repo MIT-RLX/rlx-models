@@ -1,0 +1,18 @@
+target/
+.git/
+.cache/
+**/.cache/
+.eagle3-bench/
+*.wav
+!crates/rlx-qwen3-tts/examples/audio/*.wav
+
+# Crate-local ignore list for `docker build --ignorefile` (see run.sh).
+target/
+.git/
+.cache/
+**/.cache/
+.eagle3-bench/
+*.wav
+!crates/rlx-qwen3-tts/examples/audio/*.wav
+# tsac-ng is downloaded in build.rs when absent
+crates/rlx-tsac/vendor/

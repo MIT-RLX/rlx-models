@@ -201,7 +201,7 @@ pub fn build_tts_backbone_decode_built_opts(
     }
 
     flow = flow
-        .bind_decode_inputs(llama.num_hidden_layers, opts.use_custom_mask)
+        .bind_decode_inputs(llama.num_hidden_layers, opts.use_custom_mask, true)
         .zero_beta_named("voxtral_tts.zero_beta.hidden", h)
         .repeat_layers(llama.num_hidden_layers, {
             let spec = decode_spec.clone();
@@ -447,7 +447,7 @@ pub fn build_tts_backbone_decode_shard_built_opts(
     }
 
     flow = flow
-        .bind_decode_inputs(n_shard, opts.use_custom_mask)
+        .bind_decode_inputs(n_shard, opts.use_custom_mask, true)
         .zero_beta_named("voxtral_tts.zero_beta.hidden", h)
         .repeat_layers(n_shard, {
             let spec = decode_spec.clone();

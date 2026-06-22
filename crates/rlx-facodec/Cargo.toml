@@ -1,0 +1,37 @@
+[package]
+name = "rlx-facodec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "FACodec (amphion/naturalspeech3_facodec) factorized codec for RLX — multi-backend HiFi-GAN/BigVGAN decoder"
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+rlx-core = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-metal = { workspace = true, optional = true }
+rlx-mlx = { workspace = true, optional = true }
+rlx-wgpu = { workspace = true, optional = true }
+
+[features]
+default = []
+cpu = ["rlx-runtime/cpu"]
+metal = ["rlx-runtime/metal", "dep:rlx-metal", "rlx-core/metal"]
+mlx = ["rlx-runtime/mlx", "dep:rlx-mlx", "rlx-core/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu", "dep:rlx-wgpu", "rlx-core/gpu"]
+vulkan = ["rlx-runtime/vulkan", "dep:rlx-wgpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+
+[lints]
+workspace = true

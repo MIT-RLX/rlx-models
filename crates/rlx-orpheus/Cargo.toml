@@ -1,0 +1,108 @@
+[package]
+name = "rlx-orpheus"
+version = "0.2.9"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Orpheus TTS — Llama-3B speech LM + SNAC decoder for RLX"
+repository.workspace = true
+readme = "README.md"
+exclude = ["weights/"]
+
+[dependencies]
+anyhow = { workspace = true }
+once_cell = "1"
+rand = "0.8"
+rand_distr = "0.4"
+regex = "1"
+safetensors = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+ndarray = "0.16"
+hound = "3"
+
+rlx-cli = { workspace = true, optional = true }
+rlx-llama-base = { workspace = true, optional = true }
+rlx-llama32 = { workspace = true, optional = true }
+rlx-gguf = { workspace = true, optional = true }
+rlx-qwen3 = { workspace = true, optional = true }
+rlx-qwen35 = { workspace = true, optional = true }
+rlx-core = { workspace = true, optional = true }
+rlx-runtime = { workspace = true, optional = true }
+rlx-ir = { workspace = true, optional = true }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[features]
+default = ["codec", "llama"]
+codec = []
+llama = [
+    "dep:rlx-llama-base",
+    "dep:rlx-llama32",
+    "dep:rlx-gguf",
+    "dep:rlx-qwen3",
+    "dep:rlx-qwen35",
+    "dep:rlx-runtime",
+    "dep:rlx-core",
+    "dep:rlx-cli",
+    "rlx-llama32/tokenizer",
+]
+hf-download = ["dep:hf-hub"]
+metal = ["rlx-llama32/metal"]
+mlx = ["rlx-llama32/mlx"]
+cuda = ["rlx-llama32/cuda"]
+rocm = ["rlx-llama32/rocm"]
+vulkan = ["rlx-llama32/vulkan"]
+gpu = ["rlx-llama32/gpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu", "vulkan"]
+coreml = ["codec", "dep:rlx-ir", "dep:rlx-runtime", "rlx-runtime/coreml"]
+
+[dev-dependencies]
+rlx-orpheus = { path = ".", features = ["codec", "llama", "metal", "mlx", "cuda", "gpu", "vulkan", "rocm", "coreml"] }
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+rlx-runtime = { workspace = true }
+rlx-cli = { workspace = true }
+anyhow = { workspace = true }
+
+[[bin]]
+name = "rlx-orpheus"
+path = "src/bin/rlx_orpheus.rs"
+required-features = ["llama"]
+
+[[example]]
+name = "voice_clone"
+required-features = ["llama"]
+
+[[example]]
+name = "tts_bench"
+required-features = ["llama"]
+
+[[example]]
+name = "compare_generation"
+required-features = ["llama"]
+
+[[example]]
+name = "batch_demos"
+required-features = ["llama"]
+
+[[example]]
+name = "decode_fixture"
+required-features = ["llama"]
+
+[[example]]
+name = "export_audio_assets"
+required-features = ["llama", "coreml"]
+
+[[example]]
+name = "prefill_logits_debug"
+required-features = ["llama"]
+
+[lints]
+workspace = true

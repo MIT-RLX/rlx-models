@@ -48,6 +48,10 @@ pub mod capabilities;
 pub mod cli;
 pub mod config;
 pub mod flow;
+pub mod gemma4_audio;
+pub mod gemma4_e2b_mm;
+pub mod gemma4_vision;
+pub mod gemma_e2b;
 pub mod generator;
 pub mod multimodal;
 pub mod multimodal_cli;
@@ -57,6 +61,9 @@ pub mod multimodal_mask;
 pub mod multimodal_runner;
 pub mod packed_session;
 pub mod prelude;
+pub mod prompt;
+pub mod qat;
+pub mod qat_loader;
 pub mod rope;
 pub mod runner;
 pub mod unified_preprocess;
@@ -75,6 +82,7 @@ pub use builder::{
 
 // ── Config + GGUF / HF parsing ────────────────────────────────────
 pub use config::{GemmaArch, GemmaConfig, gemma_cfg_from_gguf};
+pub use gemma_e2b::{compile_e2b_prefill, resolve_e2b_device, with_e2b_metal_guard};
 
 // ── Flow assembly (tier-0 reference, supports every Gemma variant) ─
 pub use flow::{
@@ -89,7 +97,8 @@ pub use packed_session::prefill_bucket_len;
 pub use runner::{GemmaConfigSource, GemmaRunner, GemmaRunnerBuilder};
 
 // ── Tokenizer re-exports (shared with rlx-qwen35) ─────────────────
-pub use rlx_qwen35::{encode_prompt, encode_prompt_auto, resolve_tokenizer_path};
+pub use prompt::{decode_token_auto, encode_chat_prompt_auto};
+pub use rlx_qwen35::{decode_ids_auto, encode_prompt, encode_prompt_auto, resolve_tokenizer_path};
 
 // ── Multimodal: configs + builders + preprocessing ────────────────
 pub use multimodal::{
@@ -116,4 +125,4 @@ pub use unified_projector::{
 pub use multimodal_cli::run as run_multimodal_cli;
 
 #[cfg(feature = "parity-llama")]
-pub use rlx_qwen35::llama_oracle;
+pub use rlx_qwen35::llama_reference;

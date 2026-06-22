@@ -15,6 +15,12 @@
 
 // RLX CLI
 use crate::WhisperRunner;
+#[cfg(feature = "timestamps")]
+use crate::pipeline::{WhisperPipeline, WhisperPipelineOpts};
+#[cfg(feature = "timestamps")]
+use crate::subtitles::SubtitleFormat;
+#[cfg(feature = "timestamps")]
+use crate::transcript::WordAlignMode;
 use anyhow::{Context, Result, anyhow, bail};
 use rlx_cli::{parse_standard_device, req};
 use std::path::PathBuf;
@@ -30,9 +36,26 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut beam_size = 0usize;
     let mut use_f16 = false;
     let mut use_vad = false;
+    #[cfg(feature = "silero-vad")]
+    let mut use_silero = false;
+    #[cfg(not(feature = "silero-vad"))]
+    let use_silero = false;
     let mut max_region_batch = 0usize;
     let mut encoder_attn_chunk = 0usize;
+    let mut no_pad = false;
     let mut dry = false;
+    #[cfg(feature = "timestamps")]
+    let mut use_timestamps = false;
+    #[cfg(feature = "timestamps")]
+    let mut word_align = WordAlignMode::Off;
+    #[cfg(feature = "diarize")]
+    let mut diarize = false;
+    #[cfg(all(feature = "timestamps", not(feature = "diarize")))]
+    let diarize = false;
+    #[cfg(feature = "timestamps")]
+    let mut output: Option<PathBuf> = None;
+    #[cfg(feature = "timestamps")]
+    let mut output_format = SubtitleFormat::Srt;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -57,6 +80,11 @@ pub fn run(args: &[String]) -> Result<()> {
                 use_vad = true;
                 i += 1;
             }
+            #[cfg(feature = "silero-vad")]
+            "--silero-vad" => {
+                use_silero = true;
+                i += 1;
+            }
             "--max-region-batch" => {
                 max_region_batch = req(args, &mut i)?
                     .parse()
@@ -67,6 +95,34 @@ pub fn run(args: &[String]) -> Result<()> {
                     .parse()
                     .context("--encoder-attn-chunk: usize")?;
             }
+            "--no-pad" => {
+                no_pad = true;
+                i += 1;
+            }
+            #[cfg(feature = "timestamps")]
+            "--timestamps" => {
+                use_timestamps = true;
+                i += 1;
+            }
+            #[cfg(feature = "timestamps")]
+            "--word-align" => {
+                let v = req(args, &mut i)?;
+                word_align = WordAlignMode::parse(&v)
+                    .ok_or_else(|| anyhow!("--word-align: expected off|dtw|wav2vec2"))?;
+            }
+            #[cfg(feature = "diarize")]
+            "--diarize" => {
+                diarize = true;
+                i += 1;
+            }
+            #[cfg(feature = "timestamps")]
+            "--output" | "-o" => output = Some(req(args, &mut i)?.into()),
+            #[cfg(feature = "timestamps")]
+            "--output-format" => {
+                let v = req(args, &mut i)?;
+                output_format = SubtitleFormat::parse(&v)
+                    .ok_or_else(|| anyhow!("--output-format: srt|vtt|tsv|json"))?;
+            }
             "--dry" => {
                 dry = true;
                 i += 1;
@@ -76,7 +132,12 @@ pub fn run(args: &[String]) -> Result<()> {
                     "rlx-whisper — OpenAI Whisper ASR\n\
                      Flags: --weights PATH [--config PATH] [--tokenizer PATH] [--wav PATH]\n\
                        [--device cpu|metal|cuda|…] [--lang en] [--translate] [--beam-size N]\n\
-                       [--f16] [--vad] [--max-region-batch N] [--encoder-attn-chunk N] [--dry]"
+                       [--f16] [--vad] [--silero-vad] [--max-region-batch N] [--encoder-attn-chunk N]\n\
+                       [--no-pad] [--timestamps] [--word-align off|dtw|wav2vec2] [--diarize]\n\
+                       [--output PATH] [--output-format srt|vtt|tsv|json] [--dry]\n\
+                     Speed/memory levers (diverge from the 30 s f32 reference; opt-in):\n\
+                       --f16    mixed-precision compute (f16 activations, f32 norms)\n\
+                       --no-pad skip OpenAI 30 s pad/trim; variable-length mel for short clips"
                 );
                 return Ok(());
             }
@@ -115,6 +176,13 @@ pub fn run(args: &[String]) -> Result<()> {
     if encoder_attn_chunk > 0 {
         builder = builder.encoder_attn_chunk(encoder_attn_chunk);
     }
+    if no_pad {
+        builder = builder.no_pad(true);
+    }
+    #[cfg(feature = "timestamps")]
+    if use_timestamps {
+        builder = builder.timestamps(true);
+    }
     let mut runner = builder.build()?;
     let cfg = runner.config().clone();
     eprintln!(
@@ -131,6 +199,47 @@ pub fn run(args: &[String]) -> Result<()> {
     if let Some(wav_path) = wav {
         let t0 = std::time::Instant::now();
         let pcm = crate::audio::load_wav_mono_f32(&wav_path)?;
+
+        #[cfg(feature = "timestamps")]
+        if use_timestamps {
+            let opts = WhisperPipelineOpts {
+                timestamps: true,
+                word_align,
+                diarize,
+                use_silero_vad: use_silero,
+                beam_size: if beam_size > 0 { beam_size } else { 1 },
+                max_region_batch: if max_region_batch > 0 {
+                    max_region_batch
+                } else {
+                    0
+                },
+                parallel_align: true,
+            };
+            let mut pipeline = WhisperPipeline::new(runner, opts);
+            #[cfg(feature = "diarize")]
+            if diarize {
+                pipeline = pipeline.with_diarizer(rlx_diarize::DiarizeSession::new(
+                    rlx_diarize::DiarizeConfig::default(),
+                ));
+            }
+            let transcript = pipeline.run(&pcm)?;
+            let rendered = output_format.render(&transcript)?;
+            if let Some(path) = output {
+                std::fs::write(&path, &rendered)?;
+                eprintln!(
+                    "[rlx-whisper] wrote {} in {:?}",
+                    path.display(),
+                    t0.elapsed()
+                );
+            } else {
+                eprintln!(
+                    "[rlx-whisper] transcribed in {:?}:\n{rendered}",
+                    t0.elapsed()
+                );
+            }
+            return Ok(());
+        }
+
         let text = if use_vad {
             runner.transcribe_with_vad(&pcm)?
         } else if beam_size > 1 {

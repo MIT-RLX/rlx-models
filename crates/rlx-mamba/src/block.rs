@@ -20,9 +20,9 @@
 //! [`rlx_cpu::blas`].
 //!
 //! Weight layout note: all linears here store weight as `[in, out]`
-//! row-major, since [`rlx_tensor::linear`] is written as `y = x @ W`
-//! (no internal transpose). The HF/PyTorch convention is `[out, in]`,
-//! so a loader is expected to transpose at load time.
+//! row-major, since [`sgemm_bias_safe`] / `rlx_cpu::blas::sgemm` compute
+//! `y = x @ W` (no internal transpose). The HF/PyTorch convention is
+//! `[out, in]`, so a loader is expected to transpose at load time.
 
 use crate::cache::Mamba1Cache;
 use crate::config::Mamba1Config;

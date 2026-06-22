@@ -15,6 +15,7 @@ documentation.workspace = true
 rlx-ir = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-runtime = { workspace = true }
+rlx-cpu = { workspace = true }
 rlx-opt = { workspace = true }
 rlx-gguf = { workspace = true }
 serde = { workspace = true }
@@ -23,8 +24,24 @@ safetensors = { workspace = true }
 half = { workspace = true }
 anyhow = { workspace = true }
 bytemuck = { workspace = true }
+image = { workspace = true }
 memmap2 = "0.9"
 rayon = "1.10"
+libc = "0.2"
+rlx-metal = { workspace = true, optional = true }
+rlx-mlx = { workspace = true, optional = true }
+rlx-wgpu = { workspace = true, optional = true }
+
+[features]
+# Opt-in execution backends, used by the audio_ops_ir cross-backend tests and
+# available to downstream crates that want core's helpers on a GPU. Off by
+# default — default builds of this universal crate stay CPU-only.
+metal = ["rlx-runtime/metal", "dep:rlx-metal"]
+mlx = ["rlx-runtime/mlx", "dep:rlx-mlx"]
+gpu = ["rlx-runtime/gpu", "dep:rlx-wgpu"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+vulkan = ["rlx-runtime/vulkan", "dep:rlx-wgpu"]
 
 [lints]
 workspace = true

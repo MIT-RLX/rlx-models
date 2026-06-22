@@ -4,13 +4,21 @@ members = [
     "crates/rlx-models",
     "crates/rlx-cli",
     "crates/rlx-models-core",
+    "crates/rlx-snac",
+    "crates/rlx-encodec",
+    "crates/rlx-speechtokenizer",
+    "crates/rlx-wavtokenizer",
+    "crates/rlx-xcodec",
+    "crates/rlx-facodec",
+    "crates/rlx-nanocodec",
+    "crates/rlx-vibevoice",
     "crates/rlx-sam-ir",
-    "crates/rlx-tensor",
     "crates/rlx-bert",
     "crates/rlx-clinicalbert",
     "crates/rlx-nomic",
     "crates/rlx-vision",
     "crates/rlx-dinov2",
+    "crates/rlx-bioclip2",
     "crates/rlx-embed",
     "crates/rlx-sam",
     "crates/rlx-sam2",
@@ -18,12 +26,15 @@ members = [
     "crates/rlx-qwen3",
     "crates/rlx-llama32",
     "crates/rlx-gemma",
+    "crates/rlx-eagle3",
     "crates/rlx-llada2",
     "crates/rlx-qwen35",
     "crates/rlx-flux2",
     "crates/rlx-vjepa2",
     "crates/rlx-wav2vec2-bert",
     "crates/rlx-whisper",
+    "crates/rlx-wav2vec2-asr",
+    "crates/rlx-diarize",
     "crates/rlx-voxtral",
     "crates/rlx-locateanything",
     "crates/rlx-voxtral-tts",
@@ -42,6 +53,7 @@ members = [
     "crates/rlx-minimax",
     "crates/rlx-gpt-oss",
     "crates/rlx-nemotron",
+    "crates/rlx-nemotron-asr",
     "crates/rlx-lfm",
     "crates/rlx-glm",
     "crates/rlx-ssm",
@@ -52,11 +64,25 @@ members = [
     "crates/rlx-ocr",
     "crates/rlx-neutts",
     "crates/rlx-kittentts",
+    "crates/rlx-florence2",
+    "crates/rlx-orpheus",
     "crates/rlx-onnx-decompose",
     "crates/kitten_tts_mini_rlx",
     "crates/rlx-mamba",
     "crates/rlx-fft",
     "crates/rlx-vad",
+    "crates/rlx-aec",
+    "crates/rlx-mimi",
+    "crates/rlx-dac",
+    "crates/rlx-tsac",
+    "crates/rlx-moshi",
+    "crates/rlx-kyutai-tts",
+    "crates/rlx-pocket-tts",
+    "crates/rlx-inflect-nano",
+    "crates/rlx-tiny-tts",
+    "crates/rlx-grounding-dino",
+    "crates/rlx-qwen3-asr",
+    "crates/rlx-funasr",
 ]
 
 # rlx-mamba-bench is an opt-in head-to-head bench against burn-mamba.
@@ -71,7 +97,7 @@ exclude = [
 ]
 
 [workspace.package]
-version       = "0.2.6"
+version       = "0.2.9"
 edition       = "2024"
 rust-version  = "1.87"
 license       = "GPL-3.0-only"
@@ -83,26 +109,26 @@ keywords      = ["ml", "tensor", "compiler", "neural-network"]
 categories    = ["science", "algorithms"]
 
 [workspace.dependencies]
-# Published `rlx*` (crates.io 0.2.6). Crates use `{ workspace = true }`.
+# Published `rlx*` (crates.io 0.2.9). Crates use `{ workspace = true }`.
 # Local ../rlx override: `.cargo/config.toml` from `.cargo/config.toml.example` (gitignored).
 # Publish / CI: no config.toml → resolves from crates.io only.
-rlx = { version = "=0.2.6", default-features = false, features = ["cpu"] }
-rlx-ir = { version = "=0.2.6" }
-rlx-flow = { version = "=0.2.6" }
-rlx-runtime = { version = "=0.2.6", default-features = false, features = ["cpu"] }
-rlx-opt = { version = "=0.2.6" }
-rlx-autodiff = { version = "=0.2.6" }
-rlx-compile = { version = "=0.2.6" }
-rlx-fusion = { version = "=0.2.6" }
-rlx-cpu = { version = "=0.2.6" }
-rlx-gguf = { version = "=0.2.6" }
-rlx-text = { version = "=0.2.6" }
-rlx-metal = { version = "=0.2.6" }
-rlx-mlx = { version = "=0.2.6" }
-rlx-cuda = { version = "=0.2.6" }
-rlx-wgpu = { version = "=0.2.6" }
-rlx-rocm = { version = "=0.2.6" }
-rlx-onnx-import = { version = "=0.2.6" }
+rlx = { version = "=0.2.9", default-features = false, features = ["cpu"] }
+rlx-ir = { version = "=0.2.9" }
+rlx-flow = { version = "=0.2.9" }
+rlx-runtime = { version = "=0.2.9", default-features = false, features = ["cpu"] }
+rlx-opt = { version = "=0.2.9" }
+rlx-autodiff = { version = "=0.2.9" }
+rlx-compile = { version = "=0.2.9" }
+rlx-fusion = { version = "=0.2.9" }
+rlx-cpu = { version = "=0.2.9" }
+rlx-gguf = { version = "=0.2.9" }
+rlx-text = { version = "=0.2.9" }
+rlx-metal = { version = "=0.2.9" }
+rlx-mlx = { version = "=0.2.9" }
+rlx-cuda = { version = "=0.2.9" }
+rlx-wgpu = { version = "=0.2.9" }
+rlx-rocm = { version = "=0.2.9" }
+rlx-onnx-import = { version = "=0.2.9" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 safetensors = "0.7"
@@ -121,60 +147,79 @@ rten = { version = "0.24", default-features = false }
 rten-tensor = { version = "0.24" }
 rten-imageproc = { version = "0.24" }
 ocrs = { version = "0.12.2", default-features = false }
+flate2 = "1"
 
-rlx-cli = { path = "crates/rlx-cli", version = "0.2.6" }
-rlx-core = { path = "crates/rlx-models-core", package = "rlx-models-core", version = "0.2.6" }
-kitten_tts_mini_rlx = { path = "crates/kitten_tts_mini_rlx", version = "0.2.7" }
-rlx-sam-ir = { path = "crates/rlx-sam-ir", version = "0.2.6" }
-rlx-tensor = { path = "crates/rlx-tensor", version = "0.2.6" }
-rlx-bert = { path = "crates/rlx-bert", version = "0.2.6" }
-rlx-clinicalbert = { path = "crates/rlx-clinicalbert", version = "0.2.6" }
-rlx-nomic = { path = "crates/rlx-nomic", version = "0.2.6" }
-rlx-vision = { path = "crates/rlx-vision", version = "0.2.6" }
-rlx-dinov2 = { path = "crates/rlx-dinov2", version = "0.2.6" }
-rlx-embed = { path = "crates/rlx-embed", version = "0.2.6" }
-rlx-sam = { path = "crates/rlx-sam", version = "0.2.6" }
-rlx-sam2 = { path = "crates/rlx-sam2", version = "0.2.6" }
-rlx-sam3 = { path = "crates/rlx-sam3", version = "0.2.6" }
-rlx-qwen3 = { path = "crates/rlx-qwen3", version = "0.2.6" }
-rlx-qwen3-tts = { path = "crates/rlx-qwen3-tts", version = "0.2.7" }
-rlx-llama32 = { path = "crates/rlx-llama32", version = "0.2.6" }
-rlx-gemma = { path = "crates/rlx-gemma", version = "0.2.6" }
-rlx-llada2 = { path = "crates/rlx-llada2", version = "0.2.6" }
-rlx-qwen35 = { path = "crates/rlx-qwen35", version = "0.2.6" }
-rlx-flux2 = { path = "crates/rlx-flux2", version = "0.2.6" }
-rlx-vjepa2 = { path = "crates/rlx-vjepa2", version = "0.2.6" }
-rlx-wav2vec2-bert = { path = "crates/rlx-wav2vec2-bert", version = "0.2.6" }
-rlx-whisper = { path = "crates/rlx-whisper", version = "0.2.6" }
-rlx-voxtral = { path = "crates/rlx-voxtral", version = "0.2.6" }
-rlx-locateanything = { path = "crates/rlx-locateanything", version = "0.2.6" }
-rlx-voxtral-tts = { path = "crates/rlx-voxtral-tts", version = "0.2.6" }
-rlx-voxtral-tts-train = { path = "crates/rlx-voxtral-tts-train", version = "0.2.6" }
-rlx-diamond = { path = "crates/rlx-diamond", version = "0.2.6" }
-rlx-mistral = { path = "crates/rlx-mistral", version = "0.2.6" }
-rlx-bonsai = { path = "crates/rlx-bonsai", version = "0.2.6" }
-rlx-minicpm5 = { path = "crates/rlx-minicpm5", version = "0.2.6" }
-rlx-phi = { path = "crates/rlx-phi", version = "0.2.6" }
-rlx-omnicoder = { path = "crates/rlx-omnicoder", version = "0.2.6" }
-rlx-granite = { path = "crates/rlx-granite", version = "0.2.6" }
-rlx-cohere = { path = "crates/rlx-cohere", version = "0.2.6" }
-rlx-llama-base = { path = "crates/rlx-llama-base", version = "0.2.6" }
-rlx-gpt-oss = { path = "crates/rlx-gpt-oss", version = "0.2.6" }
-rlx-glm = { path = "crates/rlx-glm", version = "0.2.6" }
-rlx-vlm-base = { path = "crates/rlx-vlm-base", version = "0.2.6" }
-rlx-qwen3-vl = { path = "crates/rlx-qwen3-vl", version = "0.2.6" }
-rlx-lfm-vl = { path = "crates/rlx-lfm-vl", version = "0.2.6" }
-rlx-nemotron-omni = { path = "crates/rlx-nemotron-omni", version = "0.2.6" }
-rlx-ocr = { path = "crates/rlx-ocr", version = "0.2.6" }
-rlx-neutts = { path = "crates/rlx-neutts", version = "0.2.6" }
-rlx-kittentts = { path = "crates/rlx-kittentts", version = "0.2.8" }
-rlx-mamba = { path = "crates/rlx-mamba", version = "0.2.6" }
-rlx-fft = { path = "crates/rlx-fft", version = "0.2.7" }
-rlx-vad = { path = "crates/rlx-vad", version = "0.2.6" }
-rlx-ssm = { path = "crates/rlx-ssm", version = "0.2.6" }
-rlx-lfm = { path = "crates/rlx-lfm", version = "0.2.6" }
-rlx-minimax = { path = "crates/rlx-minimax", version = "0.2.6" }
-rlx-nemotron = { path = "crates/rlx-nemotron", version = "0.2.6" }
+rlx-cli = { path = "crates/rlx-cli", version = "0.2.9" }
+rlx-core = { path = "crates/rlx-models-core", package = "rlx-models-core", version = "0.2.9" }
+kitten_tts_mini_rlx = { path = "crates/kitten_tts_mini_rlx", version = "0.2.9" }
+rlx-sam-ir = { path = "crates/rlx-sam-ir", version = "0.2.9" }
+rlx-bert = { path = "crates/rlx-bert", version = "0.2.9" }
+rlx-clinicalbert = { path = "crates/rlx-clinicalbert", version = "0.2.9" }
+rlx-nomic = { path = "crates/rlx-nomic", version = "0.2.9" }
+rlx-vision = { path = "crates/rlx-vision", version = "0.2.9" }
+rlx-dinov2 = { path = "crates/rlx-dinov2", version = "0.2.9" }
+rlx-grounding-dino = { path = "crates/rlx-grounding-dino", version = "0.2.9" }
+rlx-bioclip2 = { path = "crates/rlx-bioclip2", version = "0.2.9" }
+rlx-embed = { path = "crates/rlx-embed", version = "0.2.9" }
+rlx-sam = { path = "crates/rlx-sam", version = "0.2.9" }
+rlx-sam2 = { path = "crates/rlx-sam2", version = "0.2.9" }
+rlx-sam3 = { path = "crates/rlx-sam3", version = "0.2.9" }
+rlx-qwen3 = { path = "crates/rlx-qwen3", version = "0.2.9" }
+rlx-qwen3-tts = { path = "crates/rlx-qwen3-tts", version = "0.2.9" }
+rlx-llama32 = { path = "crates/rlx-llama32", version = "0.2.9" }
+rlx-gemma = { path = "crates/rlx-gemma", version = "0.2.9" }
+rlx-eagle3 = { path = "crates/rlx-eagle3", version = "0.2.9" }
+rlx-llada2 = { path = "crates/rlx-llada2", version = "0.2.9" }
+rlx-qwen35 = { path = "crates/rlx-qwen35", version = "0.2.9" }
+rlx-flux2 = { path = "crates/rlx-flux2", version = "0.2.9" }
+rlx-vjepa2 = { path = "crates/rlx-vjepa2", version = "0.2.9" }
+rlx-wav2vec2-bert = { path = "crates/rlx-wav2vec2-bert", version = "0.2.9" }
+rlx-whisper = { path = "crates/rlx-whisper", version = "0.2.9" }
+rlx-wav2vec2-asr = { path = "crates/rlx-wav2vec2-asr", version = "0.2.9" }
+rlx-diarize = { path = "crates/rlx-diarize", version = "0.2.9" }
+rlx-voxtral = { path = "crates/rlx-voxtral", version = "0.2.9" }
+rlx-qwen3-asr = { path = "crates/rlx-qwen3-asr", version = "0.2.9" }
+rlx-locateanything = { path = "crates/rlx-locateanything", version = "0.2.9" }
+rlx-voxtral-tts = { path = "crates/rlx-voxtral-tts", version = "0.2.9" }
+rlx-voxtral-tts-train = { path = "crates/rlx-voxtral-tts-train", version = "0.2.9" }
+rlx-diamond = { path = "crates/rlx-diamond", version = "0.2.9" }
+rlx-mistral = { path = "crates/rlx-mistral", version = "0.2.9" }
+rlx-bonsai = { path = "crates/rlx-bonsai", version = "0.2.9" }
+rlx-minicpm5 = { path = "crates/rlx-minicpm5", version = "0.2.9" }
+rlx-phi = { path = "crates/rlx-phi", version = "0.2.9" }
+rlx-omnicoder = { path = "crates/rlx-omnicoder", version = "0.2.9" }
+rlx-granite = { path = "crates/rlx-granite", version = "0.2.9" }
+rlx-cohere = { path = "crates/rlx-cohere", version = "0.2.9" }
+rlx-llama-base = { path = "crates/rlx-llama-base", version = "0.2.9" }
+rlx-gpt-oss = { path = "crates/rlx-gpt-oss", version = "0.2.9" }
+rlx-glm = { path = "crates/rlx-glm", version = "0.2.9" }
+rlx-vlm-base = { path = "crates/rlx-vlm-base", version = "0.2.9" }
+rlx-qwen3-vl = { path = "crates/rlx-qwen3-vl", version = "0.2.9" }
+rlx-lfm-vl = { path = "crates/rlx-lfm-vl", version = "0.2.9" }
+rlx-nemotron-omni = { path = "crates/rlx-nemotron-omni", version = "0.2.9" }
+rlx-ocr = { path = "crates/rlx-ocr", version = "0.2.9" }
+rlx-neutts = { path = "crates/rlx-neutts", version = "0.2.9" }
+rlx-florence2 = { path = "crates/rlx-florence2", version = "0.2.9" }
+rlx-kittentts = { path = "crates/rlx-kittentts", version = "0.2.9" }
+rlx-orpheus = { path = "crates/rlx-orpheus", version = "0.2.9" }
+rlx-mamba = { path = "crates/rlx-mamba", version = "0.2.9" }
+rlx-fft = { path = "crates/rlx-fft", version = "0.2.9" }
+rlx-vad = { path = "crates/rlx-vad", version = "0.2.9" }
+rlx-aec = { path = "crates/rlx-aec", version = "0.2.9" }
+rlx-mimi = { path = "crates/rlx-mimi", version = "0.2.9" }
+rlx-tsac = { path = "crates/rlx-tsac", version = "0.2.9" }
+rlx-dac = { path = "crates/rlx-dac", version = "0.2.9", default-features = false }
+rlx-moshi = { path = "crates/rlx-moshi", version = "0.2.9" }
+rlx-kyutai-tts = { path = "crates/rlx-kyutai-tts", version = "0.2.9" }
+rlx-ssm = { path = "crates/rlx-ssm", version = "0.2.9" }
+rlx-lfm = { path = "crates/rlx-lfm", version = "0.2.9" }
+rlx-minimax = { path = "crates/rlx-minimax", version = "0.2.9" }
+rlx-nemotron = { path = "crates/rlx-nemotron", version = "0.2.9" }
+rlx-nemotron-asr = { path = "crates/rlx-nemotron-asr", version = "0.2.9" }
+rlx-funasr = { path = "crates/rlx-funasr", version = "0.2.9" }
+rlx-nemo = { version = "=0.2.9" }
+rlx-inflect-nano = { path = "crates/rlx-inflect-nano", version = "0.2.9", default-features = false }
+rlx-tiny-tts = { path = "crates/rlx-tiny-tts", version = "0.2.9" }
 
 [workspace.lints.rust]
 unused = { level = "warn" }
@@ -184,6 +229,8 @@ all = { level = "warn", priority = -1 }
 manual_range_contains = "allow"
 needless_range_loop = "allow"
 too_many_arguments = "allow"
+type_complexity = "allow"           # graph/weight-loader signatures are intentionally rich
+large_enum_variant = "allow"        # cold model/session enums; boxing adds churn, no hot-path win
 upper_case_acronyms = "allow"
 
 # Decomposed Kitten graph is a single huge `graph.rs`; faster rebuilds than workspace defaults.

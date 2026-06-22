@@ -15,7 +15,9 @@
 
 //! CLI for IPA → WAV synthesis (ONNX Runtime or native RLX graph).
 
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use rlx_cli::{parse_standard_device, req};
@@ -64,13 +66,19 @@ pub fn run(args: &[String]) -> Result<()> {
 
     let dev = parsed.device;
     let (sequence_length, max_waveform) = native_compile_dims(
+        parsed.serve,
         parsed.native,
         &layout,
         parsed.sequence_length,
         parsed.max_waveform,
         parsed.ipa.as_deref(),
         parsed.text.as_deref(),
+        &parsed.lang,
     )?;
+    if parsed.serve {
+        return run_serve(parsed, &layout, sequence_length, max_waveform);
+    }
+
     let tts = load_tts(&layout, parsed.native, dev, sequence_length, max_waveform)?;
 
     if !tts.has_voice(tts.resolve_voice(&parsed.voice)) {
@@ -82,11 +90,15 @@ pub fn run(args: &[String]) -> Result<()> {
         );
     }
 
+    let voice = parsed.voice.clone();
+    let speed = parsed.speed;
+    let style_idx = parsed.style_idx;
     let out = parsed
         .out_wav
+        .clone()
         .unwrap_or_else(|| PathBuf::from("kittentts_out.wav"));
 
-    let audio = if let Some(text) = parsed.text {
+    let audio = if let Some(text) = parsed.text.as_deref() {
         if parsed.ipa.is_some() {
             bail!("use only one of --text or --ipa");
         }
@@ -104,32 +116,102 @@ pub fn run(args: &[String]) -> Result<()> {
                 bail!("--text must not be empty");
             }
             eprintln!("[kittentts] phonemizing (lang={})", parsed.lang);
-            tts.generate_from_text(&text, &parsed.voice, parsed.speed, &parsed.lang)?
+            tts.generate_from_text(text, &voice, speed, &parsed.lang)?
         }
     } else {
-        let ipa = parsed.ipa.context(
+        let ipa = parsed.ipa.as_deref().context(
             "--ipa or --text is required (or pass IPA as the first positional argument)",
         )?;
 
-        if ipa_content_len(&ipa) == 0 {
+        if ipa_content_len(ipa) == 0 {
             bail!(
                 "IPA input has no tokenizable phoneme characters. \
                  Use --text for plain English (needs `--features espeak`) or IPA symbols (e.g. həˈloʊ)."
             );
         }
 
-        let style = parsed.style_idx.unwrap_or_else(|| ipa_style_index(&ipa));
-        tts.generate_from_ipa(&ipa, &parsed.voice, parsed.speed, style)?
+        let style = style_idx.unwrap_or_else(|| ipa_style_index(ipa));
+        tts.generate_from_ipa(ipa, &voice, speed, style)?
     };
 
     tts.write_wav(&audio, &out)?;
     Ok(())
 }
 
+fn run_serve(
+    parsed: Cli,
+    layout: &ModelLayout,
+    sequence_length: usize,
+    max_waveform: usize,
+) -> Result<()> {
+    let t0 = Instant::now();
+    let tts = load_tts(
+        layout,
+        parsed.native,
+        parsed.device,
+        sequence_length,
+        max_waveform,
+    )?;
+    eprintln!(
+        "[kittentts] serve ready in {:.3}s (one line per request: IPA or IPA<TAB>out.wav; quit/exit to stop)",
+        t0.elapsed().as_secs_f64()
+    );
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("quit") || line.eq_ignore_ascii_case("exit") {
+            break;
+        }
+        let (ipa, out_path) = if let Some((ipa, path)) = line.split_once('\t') {
+            (ipa.trim().to_string(), PathBuf::from(path.trim()))
+        } else {
+            (line.to_string(), PathBuf::from("kittentts_serve.wav"))
+        };
+        if ipa_content_len(&ipa) == 0 {
+            writeln!(stdout, "err\tempty or invalid IPA")?;
+            stdout.flush()?;
+            continue;
+        }
+        let t1 = Instant::now();
+        match synthesize_ipa(&tts, &parsed, &ipa) {
+            Ok(audio) => {
+                if let Err(e) = tts.write_wav(&audio, &out_path) {
+                    writeln!(stdout, "err\t{e}")?;
+                } else {
+                    writeln!(
+                        stdout,
+                        "ok\t{}\t{}\t{:.3}",
+                        out_path.display(),
+                        audio.len(),
+                        t1.elapsed().as_secs_f64()
+                    )?;
+                }
+            }
+            Err(e) => writeln!(stdout, "err\t{e}")?,
+        }
+        stdout.flush()?;
+    }
+    Ok(())
+}
+
+fn synthesize_ipa(tts: &KittenTTS, parsed: &Cli, ipa: &str) -> Result<Vec<f32>> {
+    if !tts.has_voice(tts.resolve_voice(&parsed.voice)) {
+        bail!("unknown voice '{}'", parsed.voice);
+    }
+    let style = parsed.style_idx.unwrap_or_else(|| ipa_style_index(ipa));
+    tts.generate_from_ipa(ipa, &parsed.voice, parsed.speed, style)
+}
+
 struct Cli {
     help: bool,
     download: bool,
     list_voices: bool,
+    serve: bool,
     native: bool,
     model_dir: Option<PathBuf>,
     repo: Option<String>,
@@ -161,6 +243,7 @@ fn parse_cli(args: &[String]) -> Result<Cli> {
     let mut native = false;
     let mut download = false;
     let mut list_voices = false;
+    let mut serve = false;
     let mut help = false;
     let mut repo = None;
     let mut sequence_length = 128usize;
@@ -200,6 +283,10 @@ fn parse_cli(args: &[String]) -> Result<Cli> {
             "--device" => device = Some(req(args, &mut i)?),
             "--native" => {
                 native = true;
+                i += 1;
+            }
+            "--serve" => {
+                serve = true;
                 i += 1;
             }
             "--download" | "--fetch" => {
@@ -269,6 +356,7 @@ fn parse_cli(args: &[String]) -> Result<Cli> {
         help,
         download,
         list_voices,
+        serve,
         native,
         model_dir,
         repo,
@@ -286,12 +374,14 @@ fn parse_cli(args: &[String]) -> Result<Cli> {
 }
 
 fn native_compile_dims(
+    serve: bool,
     native: bool,
     layout: &ModelLayout,
     sequence_length: usize,
     max_waveform: usize,
     ipa: Option<&str>,
     text: Option<&str>,
+    lang: &str,
 ) -> Result<(usize, usize)> {
     let use_native = will_use_native(native, layout);
     if !use_native {
@@ -303,7 +393,9 @@ fn native_compile_dims(
     let token_len = if let Some(ipa) = ipa {
         ipa_to_ids(ipa).len()
     } else if let Some(text) = text {
-        text.len().max(8)
+        estimate_text_token_len(text, lang)
+    } else if serve {
+        8
     } else {
         return Ok((sequence_length, max_waveform));
     };
@@ -316,6 +408,19 @@ fn native_compile_dims(
          (from token_len={token_len}; set KITTENTTS_AUTO_NATIVE_OPTS=0 to disable)"
     );
     Ok((seq, wave))
+}
+
+#[cfg(feature = "espeak")]
+fn estimate_text_token_len(text: &str, lang: &str) -> usize {
+    crate::phonemize::phonemize_lang(lang, text)
+        .ok()
+        .map(|ipa| ipa_to_ids(&ipa).len())
+        .unwrap_or_else(|| text.len().max(8))
+}
+
+#[cfg(not(feature = "espeak"))]
+fn estimate_text_token_len(text: &str, _lang: &str) -> usize {
+    text.len().max(8)
 }
 
 fn will_use_native(native: bool, layout: &ModelLayout) -> bool {
@@ -397,6 +502,7 @@ fn print_help() {
          \n\
          Backends:\n\
            --native            decomposed RLX graph (needs model.safetensors)\n\
+           --serve             load once, read IPA lines from stdin (tab-separated out path)\n\
            --device NAME       cpu | metal | mlx | cuda | … (env: KITTENTTS_DEVICE)\n\
            KITTENTTS_FORCE_ONNX=1   skip auto-native when safetensors present\n\
          \n\

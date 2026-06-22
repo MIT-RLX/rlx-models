@@ -1,0 +1,98 @@
+[package]
+name = "rlx-pocket-tts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Pocket TTS — Kyutai's lightweight CPU TTS (FlowLM + Mimi codec) for RLX"
+repository.workspace = true
+readme = "README.md"
+build = "build.rs"
+exclude = ["weights/", "voices/"]
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+half = { workspace = true }
+ndarray = "0.16"
+hound = "3"
+rand = "0.8"
+rand_distr = "0.4"
+sentencepiece = "0.11"
+
+rlx-runtime = { workspace = true, optional = true, default-features = false }
+rlx = { workspace = true, optional = true, default-features = false }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[features]
+default = ["accelerate"]
+# macOS/iOS only: route `linear()` through the Accelerate framework's CBLAS sgemm.
+# No effect on other targets — `linear()` falls back to ndarray's dot product.
+accelerate = []
+hf-download = ["dep:hf-hub"]
+rlx = ["dep:rlx", "dep:rlx-runtime", "rlx/cpu", "rlx-runtime/cpu"]
+metal = ["rlx-runtime?/metal", "rlx?/metal"]
+mlx = ["rlx-runtime?/mlx", "rlx?/mlx"]
+cuda = ["rlx-runtime?/cuda", "rlx?/cuda"]
+rocm = ["rlx-runtime?/rocm", "rlx?/rocm"]
+gpu = ["rlx-runtime?/gpu", "rlx?/gpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu"]
+apple-silicon = ["metal", "mlx", "gpu"]
+
+[dev-dependencies]
+anyhow = { workspace = true }
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+
+[[example]]
+name = "generate"
+path = "examples/generate.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "bench"
+path = "examples/bench.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "whisper_check"
+path = "examples/whisper_check.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "probe"
+path = "examples/probe.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "probe_backbone"
+path = "examples/probe_backbone.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "probe_flow"
+path = "examples/probe_flow.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "probe_trajectory"
+path = "examples/probe_trajectory.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "probe_weights"
+path = "examples/probe_weights.rs"
+required-features = ["hf-download"]
+
+[[example]]
+name = "whisper_file"
+path = "examples/whisper_file.rs"
+
+[lints]
+workspace = true

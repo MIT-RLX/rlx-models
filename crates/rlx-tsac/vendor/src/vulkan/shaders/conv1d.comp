@@ -1,0 +1,40 @@
+#version 460
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 256) in;
+
+layout(binding = 0) readonly buffer InputBuf  { float data[]; } inputBuf;
+layout(binding = 1) readonly buffer WeightBuf { float data[]; } weightBuf;
+layout(binding = 2) readonly buffer BiasBuf   { float data[]; } biasBuf;
+layout(binding = 3) buffer       OutputBuf   { float data[]; } outputBuf;
+
+layout(push_constant) uniform Params {
+    int T;      // output timesteps
+    int K;      // kernel size
+    int Ci;     // input channels
+    int Co;     // output channels
+    int stride; // stride (always 1 for now)
+} params;
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    int oc = int(gid) / params.T;
+    int oi = int(gid) % params.T;
+    if (oc >= params.Co || oi >= params.T) return;
+
+    float sum = biasBuf.data[oc];
+    int P = params.K / 2;
+
+    for (int ic = 0; ic < params.Ci; ic++) {
+        for (int j = 0; j < params.K; j++) {
+            int ii = oi * params.stride + j - P;
+            if (ii >= 0 && ii < params.T) {
+                float x = inputBuf.data[ic * params.T + ii];
+                float w = weightBuf.data[oc * params.Ci * params.K + ic * params.K + j];
+                sum += x * w;
+            }
+        }
+    }
+
+    outputBuf.data[oc * params.T + oi] = sum;
+}

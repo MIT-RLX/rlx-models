@@ -134,6 +134,10 @@ impl GgufTensorNameResolver for Gemma2GgufResolver {
                     "post_attention_layernorm.weight" => Some("post_attention_norm.weight"),
                     "pre_feedforward_layernorm.weight" => Some("ffn_norm.weight"),
                     "post_feedforward_layernorm.weight" => Some("post_ffw_norm.weight"),
+                    // Inverse of `gguf_to_hf_name_for_arch` — Gemma 4 GGUF stores
+                    // per-layer output scalars as `layer_output_scale`, not HF
+                    // `self_attn.output_scale`.
+                    "self_attn.output_scale.weight" => Some("layer_output_scale.weight"),
                     _ => None,
                 };
                 if let Some(t) = gguf_tail {

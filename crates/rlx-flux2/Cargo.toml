@@ -14,7 +14,6 @@ rlx-core = { workspace = true }
 rlx-diamond = { workspace = true }
 rlx-gguf = { workspace = true }
 rlx-qwen3 = { workspace = true }
-rlx-tensor = { workspace = true }
 rlx-ir = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-runtime = { workspace = true }

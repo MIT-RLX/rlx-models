@@ -60,6 +60,9 @@ pub mod vision_flow {
 pub mod dinov2 {
     pub use rlx_dinov2::*;
 }
+pub mod bioclip2 {
+    pub use rlx_bioclip2::*;
+}
 pub mod embed {
     pub use rlx_embed::*;
 }
@@ -102,14 +105,26 @@ pub mod vjepa2 {
 pub mod wav2vec2_bert {
     pub use rlx_wav2vec2_bert::*;
 }
+pub mod wav2vec2_asr {
+    pub use rlx_wav2vec2_asr::*;
+}
+pub mod diarize {
+    pub use rlx_diarize::*;
+}
 pub mod whisper {
     pub use rlx_whisper::*;
 }
 pub mod vad {
     pub use rlx_vad::*;
 }
+pub mod aec {
+    pub use rlx_aec::*;
+}
 pub mod voxtral {
     pub use rlx_voxtral::*;
+}
+pub mod qwen3_asr {
+    pub use rlx_qwen3_asr::*;
 }
 pub mod voxtral_tts {
     pub use rlx_voxtral_tts::*;
@@ -127,8 +142,23 @@ pub mod ocr {
 pub mod neutts {
     pub use rlx_neutts::*;
 }
+pub mod orpheus {
+    pub use rlx_orpheus::*;
+}
 pub mod kittentts {
     pub use rlx_kittentts::*;
+}
+pub mod florence2 {
+    pub use rlx_florence2::*;
+}
+pub mod mimi {
+    pub use rlx_mimi::*;
+}
+pub mod tsac {
+    pub use rlx_tsac::*;
+}
+pub mod moshi {
+    pub use rlx_moshi::*;
 }
 pub use rlx_neutts::{
     BackboneModel, DEFAULT_N_CTX, GenerationConfig, NeuCodecDecoder, NeuCodecEncoder, NeuTTS,
@@ -196,6 +226,7 @@ pub use rlx_core::flow_util::{
 
 pub use bert::{build_bert_graph, build_bert_graph_sized};
 pub use bert_flow::{BertFlow, build_bert_built};
+pub use diarize::{DiarizeConfig, DiarizeSession, SpeakerTurn as DiarizeSpeakerTurn};
 pub use dinov2::{
     DinoV2Built, DinoV2Config, DinoV2Flow, DinoV2PreprocessWeights, build_dinov2_built,
     build_dinov2_graph_sized,
@@ -337,15 +368,18 @@ pub use voxtral_tts::{
     CodecDecoder, HF_MODEL_ID as VOXTRAL_TTS_HF_MODEL_ID, PRESET_VOICES as VOXTRAL_TTS_VOICES,
     VoxtralTtsBenchReport, VoxtralTtsConfig, VoxtralTtsRunner, VoxtralTtsWeightStore,
 };
+pub use wav2vec2_asr::{AlignSession, AlignedWord, Wav2Vec2AsrConfig, align_model_for_language};
 pub use wav2vec2_bert::{
     LogMelExtractor, LogMelFeatures, Wav2Vec2BertConfig, Wav2Vec2BertFlow,
     Wav2Vec2BertPreprocessConfig, build_wav2vec2_bert_built, build_wav2vec2_bert_graph_sized,
     load_wav_mono_f32,
 };
 pub use whisper::{
-    MelSpectrogram, WhisperConfig, WhisperDecoderFlow, WhisperEncoderFlow, WhisperKvCache,
-    WhisperRunner, WhisperRunnerBuilder, WhisperWeightPrefix, build_whisper_decode_step_built,
-    build_whisper_decoder_built, build_whisper_decoder_graph_sized,
-    build_whisper_decoder_prefill_built, build_whisper_encoder_built,
-    build_whisper_encoder_graph_sized, default_mel_frames, pcm_to_mel,
+    MelSpectrogram, SubtitleFormat, TranscriptSegment, WhisperConfig, WhisperDecoderFlow,
+    WhisperEncoderFlow, WhisperKvCache, WhisperPipeline, WhisperPipelineOpts, WhisperRunner,
+    WhisperRunnerBuilder, WhisperTranscript, WhisperWeightPrefix, WordAlignMode, WordTiming,
+    build_whisper_decode_step_built, build_whisper_decoder_built,
+    build_whisper_decoder_graph_sized, build_whisper_decoder_prefill_built,
+    build_whisper_encoder_built, build_whisper_encoder_graph_sized, default_mel_frames, pcm_to_mel,
+    to_json_pretty, to_srt, to_tsv, to_vtt,
 };

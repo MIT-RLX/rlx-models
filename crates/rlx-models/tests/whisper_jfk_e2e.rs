@@ -13,14 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Real-audio encoder + greedy transcript check (env-gated weights).
+//! Real-audio encoder + greedy transcript vs paired reference (`just fetch-whisper-bench`).
 //!
 //! ```sh
-//! cargo test -p rlx-models --test whisper_jfk_e2e --release -- --nocapture
+//! just test-whisper-jfk
 //! ```
 
 use anyhow::Result;
-use rlx_models::whisper::{WhisperRunner, load_wav_mono_f32, pcm_to_mel};
+use rlx_models::whisper::{
+    WhisperRunner, assert_transcript_matches_reference, ensure_jfk_fixture, load_wav_mono_f32,
+    pcm_to_mel,
+};
 use rlx_runtime::Device;
 use std::path::PathBuf;
 
@@ -32,23 +35,21 @@ fn tiny_dir() -> PathBuf {
         })
 }
 
-fn jfk_wav() -> PathBuf {
-    std::env::var("RLX_WHISPER_WAV")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache/whisper-bench/jfk_16k.wav")
-        })
-}
-
 #[test]
 fn whisper_jfk_encoder_and_transcript() -> Result<()> {
     let dir = tiny_dir();
     let weights = dir.join("model.safetensors");
-    let wav = jfk_wav();
-    if !weights.is_file() || !wav.is_file() {
-        eprintln!("skip: need weights + wav");
+    if !weights.is_file() {
+        eprintln!("skip: need weights (just fetch-whisper)");
         return Ok(());
     }
+    let (wav, reference) = match ensure_jfk_fixture() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("skip: {e}");
+            return Ok(());
+        }
+    };
 
     let pcm = load_wav_mono_f32(&wav)?;
     let mut runner = WhisperRunner::builder()
@@ -76,12 +77,9 @@ fn whisper_jfk_encoder_and_transcript() -> Result<()> {
 
     let text = runner.transcribe_greedy(&pcm)?;
     eprintln!("transcript={text:?}");
-    let lower = text.to_lowercase();
-    assert!(
-        lower.contains("whether") && lower.contains("wishes"),
-        "expected JFK-like transcript, got {text:?}"
-    );
-    let words: Vec<_> = lower.split_whitespace().collect();
+    eprintln!("reference={reference:?}");
+    assert_transcript_matches_reference(&text, &reference);
+    let words: Vec<_> = text.split_whitespace().collect();
     let repeats = words.windows(2).filter(|w| w[0] == w[1]).count();
     assert!(repeats < 2, "decode stuck repeating tokens: {text:?}");
     Ok(())

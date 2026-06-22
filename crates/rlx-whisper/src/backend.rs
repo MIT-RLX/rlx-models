@@ -18,8 +18,8 @@
 use crate::builder::WhisperGraphOpts;
 use crate::config::WhisperConfig;
 use crate::flow::{
-    WhisperEncoderFlow, build_whisper_cross_kv_built, build_whisper_decode_step_built_ext_opts,
-    build_whisper_decoder_prefill_built_ext_opts,
+    WhisperEncoderFlow, build_whisper_align_hidden_built_ext_opts, build_whisper_cross_kv_built,
+    build_whisper_decode_step_built_ext_opts, build_whisper_decoder_prefill_built_ext_opts,
 };
 use crate::fused::{FusedDecoderWeights, FusedEncoderWeights};
 use crate::weights::WhisperWeightPrefix;
@@ -43,6 +43,21 @@ type WhisperWeightMap = HashMap<String, WeightTensor>;
 /// Non-bucketed compile cache key (prefill graphs indexed by `(batch, dec_seq)`).
 pub fn decode_cache_key(batch: usize, seq: usize) -> u64 {
     ((batch as u64) << 32) | (seq as u64)
+}
+
+/// Encoder / cross graphs keyed by `(geometry_epoch, batch)`.
+pub fn geometry_cache_key(geometry_epoch: u64, batch: usize) -> u64 {
+    (geometry_epoch << 32) | batch as u64
+}
+
+/// Prefill graphs also depend on encoder sequence length (cross KV width).
+pub fn prefill_cache_key(geometry_epoch: u64, batch: usize, dec_seq: usize) -> u64 {
+    geometry_epoch ^ ((batch as u64) << 24) ^ (dec_seq as u64)
+}
+
+/// Align-hidden graphs keyed by `(geometry_epoch, dec_seq, max_layer)`.
+pub fn align_cache_key(geometry_epoch: u64, dec_seq: usize, max_layer: usize) -> u64 {
+    geometry_epoch ^ ((dec_seq as u64) << 20) ^ (max_layer as u64)
 }
 
 /// Power-of-two decode buckets; graphs take runtime `pos_ix` + bucket self-attn mask.
@@ -83,13 +98,15 @@ fn apply_f16_compute(opts: &mut CompileOptions, f16: bool) {
     }
 }
 
-/// Resolved compile options for encoder, cross, prefill, and bucketed decode.
+/// Resolved compile options for encoder, cross, prefill, bucketed decode, and align-hidden.
 #[derive(Debug, Clone)]
 pub struct WhisperCompileOpts {
     pub encoder: CompileOptions,
     pub cross: CompileOptions,
     pub prefill: CompileOptions,
     pub decode: CompileOptions,
+    /// Align-hidden forward (same profile as encoder; runs on [`whisper_encoder_device`]).
+    pub align: CompileOptions,
 }
 
 /// GPU-resident KV when decode runs on the same device (not CPU-decode fallback).
@@ -97,13 +114,30 @@ pub fn whisper_use_gpu_kv(lm_device: Device, decode_device: Device) -> bool {
     device_supports_gpu_kv(decode_device) && decode_device == lm_device
 }
 
-/// Device for encoder, cross, prefill, and bucketed decode.
+/// Device for decoder stages (cross, prefill, bucketed decode).
 ///
-/// Metal / MLX / Vulkan LM devices run these stages on CPU until graph parity
-/// matches the CPU reference (decoder attention + encoder conv/attn).
+/// Metal / MLX / Vulkan keep decoder graphs on CPU until attention parity
+/// matches the CPU reference; encoder may still run on the requested device.
+///
+/// On `--device metal`, typical routing is:
+///
+/// | Stage | Device |
+/// |-------|--------|
+/// | Mel encoder | Metal |
+/// | Cross / prefill / decode | CPU |
+/// | DTW align-hidden | Metal |
 pub fn whisper_decoder_device(lm_device: Device) -> Device {
     match lm_device {
         Device::Metal | Device::Mlx | Device::Vulkan => Device::Cpu,
+        other => other,
+    }
+}
+
+/// Device for the mel encoder graph.
+pub fn whisper_encoder_device(lm_device: Device) -> Device {
+    match lm_device {
+        // MLX encoder self-attn hits (1500,384) vs (1320,384) broadcast mismatch on JFK.
+        Device::Mlx => Device::Cpu,
         other => other,
     }
 }
@@ -147,6 +181,19 @@ mod tests {
         assert_eq!(cache.bucket_for(0), cache.bucket_for(1));
         assert_eq!(cache.bucket_for(5), cache.bucket_for(8));
     }
+
+    #[test]
+    fn stage_device_routing() {
+        assert_eq!(whisper_encoder_device(Device::Cpu), Device::Cpu);
+        assert_eq!(whisper_decoder_device(Device::Cpu), Device::Cpu);
+        assert_eq!(whisper_encoder_device(Device::Metal), Device::Metal);
+        assert_eq!(whisper_decoder_device(Device::Metal), Device::Cpu);
+        assert_eq!(whisper_encoder_device(Device::Mlx), Device::Cpu);
+        assert_eq!(whisper_decoder_device(Device::Mlx), Device::Cpu);
+        assert_eq!(whisper_encoder_device(Device::Gpu), Device::Gpu);
+        assert_eq!(whisper_decoder_device(Device::Gpu), Device::Gpu);
+        assert_eq!(whisper_decoder_device(Device::Vulkan), Device::Cpu);
+    }
 }
 
 impl WhisperCompileOpts {
@@ -166,11 +213,13 @@ impl WhisperCompileOpts {
         apply_f16_compute(&mut prefill, f16_compute);
         apply_f16_compute(&mut decode, f16_compute);
 
+        let align = encoder.clone();
         Self {
             encoder,
             cross,
             prefill,
             decode,
+            align,
         }
     }
 }
@@ -193,13 +242,44 @@ impl WhisperGraphCtx {
         WeightMap::from_tensors((*self.weights).clone())
     }
 
+    /// Clone only the tensors a build may need, dropping keys that *definitely* belong
+    /// to the other half. `build()` drains weights via `take()`, so the full map was
+    /// cloned on every build; this halves that transient allocation. Conservative —
+    /// any key not clearly encoder/decoder-only is kept in both subsets, so no build
+    /// can ever miss a tensor it needs.
+    fn weight_map_excluding(&self, exclude: impl Fn(&str) -> bool) -> WeightMap {
+        let mut m: WhisperWeightMap = HashMap::with_capacity(self.weights.len());
+        for (k, v) in self.weights.iter() {
+            if !exclude(k) {
+                m.insert(k.clone(), v.clone());
+            }
+        }
+        WeightMap::from_tensors(m)
+    }
+
+    /// Encoder-only subset (drops decoder + fused-decoder tensors).
+    fn weight_map_encoder(&self) -> WeightMap {
+        let dec = self.pfx.decoder.clone();
+        self.weight_map_excluding(move |k| k.starts_with(&dec) || k.starts_with("fused.dec"))
+    }
+
+    /// Decoder-family subset for cross / prefill / decode / align (drops encoder tensors).
+    fn weight_map_decoder(&self) -> WeightMap {
+        let enc = self.pfx.encoder.clone();
+        self.weight_map_excluding(move |k| k.starts_with(&enc) || k.starts_with("fused.enc"))
+    }
+
     pub fn build_encoder(&self, batch: usize) -> Result<BuiltModel> {
-        let mut wm = self.weight_map();
+        self.build_encoder_sized(batch, self.mel_frames)
+    }
+
+    pub fn build_encoder_sized(&self, batch: usize, mel_frames: usize) -> Result<BuiltModel> {
+        let mut wm = self.weight_map_encoder();
         WhisperEncoderFlow::new_opts(
             &self.cfg,
             &wm,
             batch,
-            self.mel_frames,
+            mel_frames,
             self.graph_opts,
             self.fused_enc.as_ref(),
         )
@@ -207,19 +287,32 @@ impl WhisperGraphCtx {
     }
 
     pub fn build_cross(&self, batch: usize) -> Result<BuiltModel> {
-        let mut wm = self.weight_map();
-        build_whisper_cross_kv_built(&self.cfg, &mut wm, &self.pfx, batch, self.enc_seq)
+        self.build_cross_sized(batch, self.enc_seq)
+    }
+
+    pub fn build_cross_sized(&self, batch: usize, enc_seq: usize) -> Result<BuiltModel> {
+        let mut wm = self.weight_map_decoder();
+        build_whisper_cross_kv_built(&self.cfg, &mut wm, &self.pfx, batch, enc_seq)
     }
 
     pub fn build_prefill(&self, batch: usize, dec_seq: usize) -> Result<BuiltModel> {
-        let mut wm = self.weight_map();
+        self.build_prefill_sized(batch, dec_seq, self.enc_seq)
+    }
+
+    pub fn build_prefill_sized(
+        &self,
+        batch: usize,
+        dec_seq: usize,
+        enc_seq: usize,
+    ) -> Result<BuiltModel> {
+        let mut wm = self.weight_map_decoder();
         build_whisper_decoder_prefill_built_ext_opts(
             &self.cfg,
             &mut wm,
             &self.pfx,
             batch,
             dec_seq,
-            self.enc_seq,
+            enc_seq,
             true,
             self.graph_opts,
             self.fused.as_ref(),
@@ -227,15 +320,46 @@ impl WhisperGraphCtx {
     }
 
     pub fn build_decode_step(&self, batch: usize, bucket_upper: usize) -> Result<BuiltModel> {
-        let mut wm = self.weight_map();
+        self.build_decode_step_sized(batch, bucket_upper, self.enc_seq)
+    }
+
+    pub fn build_decode_step_sized(
+        &self,
+        batch: usize,
+        bucket_upper: usize,
+        enc_seq: usize,
+    ) -> Result<BuiltModel> {
+        let mut wm = self.weight_map_decoder();
         build_whisper_decode_step_built_ext_opts(
             &self.cfg,
             &mut wm,
             &self.pfx,
             batch,
             bucket_upper,
-            self.enc_seq,
+            enc_seq,
             true,
+            self.graph_opts,
+            self.fused.as_ref(),
+        )
+    }
+
+    /// Compile align-hidden graph (decoder through alignment layer, self-attn only on last layer).
+    pub fn build_align_hidden_sized(
+        &self,
+        batch: usize,
+        dec_seq: usize,
+        enc_seq: usize,
+        max_layer: usize,
+    ) -> Result<BuiltModel> {
+        let mut wm = self.weight_map_decoder();
+        build_whisper_align_hidden_built_ext_opts(
+            &self.cfg,
+            &mut wm,
+            &self.pfx,
+            batch,
+            dec_seq,
+            enc_seq,
+            max_layer,
             self.graph_opts,
             self.fused.as_ref(),
         )

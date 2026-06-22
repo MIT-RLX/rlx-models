@@ -88,23 +88,7 @@ pub fn argmax_token(logits: &[f32]) -> u32 {
         .unwrap_or(0)
 }
 
-fn language_code_token_id(model_dir: Option<&Path>, lang: &str) -> Result<u32> {
-    #[cfg(feature = "tokenizer")]
-    {
-        if let Some(dir) = model_dir {
-            let tekken = dir.join("tekken.json");
-            if tekken.is_file() {
-                let tok = tokenizers::Tokenizer::from_file(&tekken)
-                    .map_err(|e| anyhow::anyhow!("load tekken tokenizer {tekken:?}: {e}"))?;
-                let enc = tok
-                    .encode(lang, false)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-                let ids = enc.get_ids();
-                ensure!(!ids.is_empty(), "empty tokenization for language {lang:?}");
-                return Ok(ids[0]);
-            }
-        }
-    }
+fn language_code_token_id(_model_dir: Option<&Path>, lang: &str) -> Result<u32> {
     match lang {
         "en" => Ok(1262),
         "fr" => Ok(7064),
@@ -145,12 +129,77 @@ pub fn decode_token_ids(model_dir: Option<&Path>, ids: &[u32]) -> Result<String>
     if let Some(dir) = model_dir {
         let tekken = dir.join("tekken.json");
         if tekken.is_file() {
-            let tok = tokenizers::Tokenizer::from_file(&tekken)
-                .map_err(|e| anyhow::anyhow!("load tekken tokenizer {tekken:?}: {e}"))?;
-            return tok.decode(ids, true).map_err(|e| anyhow::anyhow!("{e}"));
+            return tekken_decode(&tekken, ids);
         }
     }
     Ok(format!("{ids:?}"))
+}
+
+/// Decode token ids with a Mistral *tekken* (v7) tokenizer file.
+///
+/// HuggingFace `tokenizers` cannot parse tekken's schema, so this reads it
+/// natively: ids `< num_special_tokens` are control/special tokens (dropped
+/// from the rendered text, matching mistral-common's IGNORE policy); higher
+/// ids index `vocab[id - num_special_tokens].token_bytes` (base64 raw bytes),
+/// which are concatenated and rendered as UTF-8.
+#[cfg(feature = "tokenizer")]
+fn tekken_decode(tekken: &Path, ids: &[u32]) -> Result<String> {
+    use anyhow::Context;
+    let raw = std::fs::read_to_string(tekken).with_context(|| format!("read {tekken:?}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&raw).with_context(|| format!("parse {tekken:?}"))?;
+    let num_special = v["config"]["default_num_special_tokens"]
+        .as_u64()
+        .unwrap_or(1000) as usize;
+    let vocab = v["vocab"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("tekken: missing vocab array"))?;
+
+    let mut bytes: Vec<u8> = Vec::new();
+    for &id in ids {
+        let id = id as usize;
+        if id < num_special {
+            continue; // control/special token — not part of rendered text
+        }
+        let entry = vocab
+            .get(id - num_special)
+            .ok_or_else(|| anyhow::anyhow!("tekken: token id {id} out of vocab range"))?;
+        let b64 = entry["token_bytes"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("tekken: token_bytes missing for id {id}"))?;
+        base64_decode_into(b64, &mut bytes)?;
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Decode standard (RFC 4648) base64 into `out`. Stops at padding (`=`).
+#[cfg(feature = "tokenizer")]
+fn base64_decode_into(s: &str, out: &mut Vec<u8>) -> Result<()> {
+    fn sextet(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &c in s.as_bytes() {
+        if c == b'=' {
+            break;
+        }
+        let v = sextet(c).ok_or_else(|| anyhow::anyhow!("invalid base64 char {c:?}"))?;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Ok(())
 }
 
 pub fn validate_prompt_audio_match(

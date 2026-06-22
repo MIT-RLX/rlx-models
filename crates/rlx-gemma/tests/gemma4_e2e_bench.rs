@@ -232,6 +232,11 @@ fn scaled_gemma4_cfg(num_layers: usize) -> GemmaConfig {
         num_global_key_value_heads: global_nkv,
         attention_k_eq_v: true,
         use_bidirectional_attention: Some("vision".into()),
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: 0,
+        num_kv_shared_layers: 0,
+        use_double_wide_mlp: false,
+        enable_moe_block: false,
     }
 }
 

@@ -291,6 +291,7 @@ pub fn build_locateanything_mtp_kv_built(
         .raw_stage(FlowStage::BindDecodeInputs(BindDecodeInputsStage {
             num_layers: qcfg.num_hidden_layers,
             use_custom_mask: false,
+            need_past_kv: true,
         }))
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh)

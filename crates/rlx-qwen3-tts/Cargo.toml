@@ -1,6 +1,6 @@
 [package]
 name = "rlx-qwen3-tts"
-version = "0.2.7"
+version = "0.2.9"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -32,6 +32,9 @@ futures-channel = { version = "0.3", optional = true }
 # tokio runtime is opt-in; users on tokio can also just wrap the sync API in
 # `tokio::task::spawn_blocking` themselves without enabling this feature.
 tokio = { version = "1", features = ["sync", "rt"], optional = true, default-features = false }
+# Live mic capture + speaker playback for the `qwen_voice_chat` example. Optional:
+# off by default so the WAV-driven path (used by tests) needs no audio backend.
+cpal = { version = "0.15", optional = true }
 
 [[bin]]
 name = "rlx-qwen3-tts"
@@ -80,6 +83,12 @@ amd-gpu = ["rocm"]
 hf-download = ["dep:hf-hub"]
 async = ["dep:futures-core", "dep:futures-channel"]
 tokio = ["dep:tokio"]
+# Live microphone input + speaker playback for the `qwen_voice_chat` example.
+mic = ["dep:cpal"]
+# qwen_voice_chat: splice Qwen3-ASR transcript token ids straight into the LM
+# prompt (shared Qwen3 vocab) instead of detokenize→retokenize. Stateless turns
+# only (--history 0). Small latency win; removes the language-tag string hack.
+fused-tokens = []
 # True incremental decoder for live streaming: KV-cached pre-transformer +
 # per-stage causal-conv state, so the decoder runs in O(N) total instead of
 # O(N²/K) when called once per chunk in Progressive mode. Currently EXPERIMENTAL;
@@ -100,6 +109,9 @@ optional = true
 
 [dev-dependencies]
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
+rlx-aec = { workspace = true }
+# All-Qwen voice chat example (`qwen_voice_chat`): Qwen3-ASR in place of Whisper.
+rlx-qwen3-asr = { workspace = true }
 
 [[example]]
 name = "speculative_walkthrough"

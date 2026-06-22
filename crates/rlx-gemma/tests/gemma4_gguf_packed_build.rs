@@ -20,26 +20,18 @@
 //!   cargo test -p rlx-gemma --test gemma4_gguf_packed_build -- --nocapture
 //! ```
 
+mod gemma4_bench_common;
+
 use anyhow::Result;
+use gemma4_bench_common::{resolve_gemma4_config, resolve_gemma4_gguf};
 use rlx_core::weight_loader::GgufLoader;
 use rlx_gemma::build_gemma_decode_graph_sized_packed;
 use rlx_gemma::build_gemma_graph_sized_packed;
-use rlx_gemma::config::GemmaConfig;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn fixture_dir() -> Option<PathBuf> {
     std::env::var_os("RLX_GEMMA4_FIXTURE").map(PathBuf::from)
-}
-
-fn gguf_path(dir: &Path) -> Option<PathBuf> {
-    for name in ["gemma-4-12b-it-Q4_K_M.gguf", "model.gguf"] {
-        let p = dir.join(name);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
 }
 
 #[test]
@@ -48,15 +40,11 @@ fn gemma4_q4_packed_graph_builds_without_rope_panic() -> Result<()> {
         eprintln!("[gemma4 gguf build] RLX_GEMMA4_FIXTURE unset — skip");
         return Ok(());
     };
-    let Some(gguf) = gguf_path(&dir) else {
+    let Some(gguf) = resolve_gemma4_gguf(&dir) else {
         eprintln!("[gemma4 gguf build] no .gguf in fixture — skip");
         return Ok(());
     };
-    let config_path = dir.join("config.json");
-    if !config_path.is_file() {
-        anyhow::bail!("missing config.json");
-    }
-    let cfg = GemmaConfig::from_file(&config_path)?;
+    let cfg = resolve_gemma4_config(&dir, &gguf)?;
     let mut loader = GgufLoader::from_file(gguf.to_str().unwrap())?;
     let mut packed = HashMap::new();
     let (graph, _params) =
@@ -75,15 +63,11 @@ fn gemma4_q4_packed_decode_graph_builds() -> Result<()> {
         eprintln!("[gemma4 gguf decode build] RLX_GEMMA4_FIXTURE unset — skip");
         return Ok(());
     };
-    let Some(gguf) = gguf_path(&dir) else {
+    let Some(gguf) = resolve_gemma4_gguf(&dir) else {
         eprintln!("[gemma4 gguf decode build] no .gguf in fixture — skip");
         return Ok(());
     };
-    let config_path = dir.join("config.json");
-    if !config_path.is_file() {
-        anyhow::bail!("missing config.json");
-    }
-    let cfg = GemmaConfig::from_file(&config_path)?;
+    let cfg = resolve_gemma4_config(&dir, &gguf)?;
     let mut loader = GgufLoader::from_file(gguf.to_str().unwrap())?;
     let mut packed = HashMap::new();
     let (graph, _params) =

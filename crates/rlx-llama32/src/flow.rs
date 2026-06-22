@@ -49,7 +49,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use rlx_flow::blocks::{
-    LlamaDecodeLayerSpec, LlamaDecoderSpec, RopeTablesStage, llama_prefill_layer_fused,
+    DecodeRopeParamsStage, LlamaDecodeLayerSpec, LlamaDecoderSpec, RopeTablesStage,
+    llama_prefill_layer_fused,
 };
 use rlx_flow::{BuiltModel, CompileProfile, FlowStage, ModelFlow, SideOutputs};
 use rlx_ir::dynamic::sym;
@@ -59,7 +60,7 @@ use rlx_ir::shape::Dim;
 use rlx_ir::{DType, Graph, Shape};
 
 use super::config::Llama32Config;
-use super::rope::{build_rope_tables, resolve_inv_freq};
+use super::rope::{build_rope_tables, resolve_inv_freq, rope_slice};
 use rlx_core::flow_bridge::{WeightLoaderSource, load_compile_profile};
 use rlx_core::weight_loader::WeightLoader;
 
@@ -522,26 +523,51 @@ impl<'a> Llama32Flow<'a> {
             hidden_shape,
         };
 
+        let rope_factors = weights.take("rope_freqs.weight").ok().map(|(data, _)| data);
+        let inv_freq = resolve_inv_freq(cfg, rope_factors.as_deref());
+        let (cos_data, sin_data) = build_rope_tables(&inv_freq, cfg.max_position_embeddings);
+
         let kv_out = SideOutputs::new();
 
         let mut flow = ModelFlow::new("llama32_decode")
             .with_profile(profile)
-            .input("input_ids", Shape::new(&[self.batch, 1], DType::F32))
-            .input("rope_cos", Shape::new(&[1, half], f))
-            .input("rope_sin", Shape::new(&[1, half], f));
+            .input("input_ids", Shape::new(&[self.batch, 1], DType::F32));
 
         if self.use_custom_mask {
             flow = flow.input("mask", Shape::new(&[self.batch, self.past_seq + 1], f));
         }
 
         for layer_idx in 0..cfg.num_hidden_layers {
+            if self.past_seq > 0 || self.dynamic_past || self.use_custom_mask {
+                flow = flow
+                    .input(format!("past_k_{layer_idx}"), past_kv_shape.clone())
+                    .input(format!("past_v_{layer_idx}"), past_kv_shape.clone());
+            }
+        }
+
+        if self.dynamic_past || self.use_custom_mask {
+            flow = flow.input("position", Shape::new(&[1], DType::F32));
             flow = flow
-                .input(format!("past_k_{layer_idx}"), past_kv_shape.clone())
-                .input(format!("past_v_{layer_idx}"), past_kv_shape.clone());
+                .rope_tables(RopeTablesStage::param(
+                    cfg.max_position_embeddings,
+                    half,
+                    cos_data,
+                    sin_data,
+                ))
+                .gather_decode_rope(half);
+        } else {
+            let (cos_row, sin_row) = rope_slice(&inv_freq, self.past_seq);
+            flow = flow.raw_stage(FlowStage::DecodeRopeParams(DecodeRopeParamsStage::new(
+                cos_row, sin_row, half,
+            )));
         }
 
         flow = flow
-            .bind_decode_inputs(cfg.num_hidden_layers, self.use_custom_mask)
+            .bind_decode_inputs(
+                cfg.num_hidden_layers,
+                self.use_custom_mask,
+                self.past_seq > 0 || self.dynamic_past || self.use_custom_mask,
+            )
             .zero_beta_named("llama32.zero_beta.hidden", h)
             .token_embed()
             .raw_stages(self.before_layers.iter().cloned());

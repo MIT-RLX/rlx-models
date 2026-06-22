@@ -35,6 +35,17 @@ pub fn build_llama32_hir_sized(
     )
 }
 
+/// Static-seq prefill HIR (last-position logits + optional KV tap).
+pub fn build_llama32_prefill_hir_sized_ext(
+    cfg: &Llama32Config,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    seq: usize,
+    with_kv_outputs: bool,
+) -> Result<(HirModule, HashMap<String, Vec<f32>>)> {
+    build_llama32_hir_sized_impl(cfg, weights, batch, seq, true, with_kv_outputs, true, false)
+}
+
 /// Prefill HIR with symbolic seq dim (`sym::SEQ`) for dynamic compile cache.
 pub fn build_llama32_prefill_hir_dynamic_ext(
     cfg: &Llama32Config,
@@ -82,6 +93,16 @@ pub fn build_llama32_graph_sized_last_logits(
     with_kv_outputs: bool,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
     build_llama32_graph_sized_impl(cfg, weights, batch, seq, true, with_kv_outputs, true)
+}
+
+/// Prefill graph with per-layer KV side outputs only (no LM head).
+pub fn build_llama32_graph_sized_kv_tap(
+    cfg: &Llama32Config,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    seq: usize,
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    build_llama32_graph_sized_impl(cfg, weights, batch, seq, false, true, false)
 }
 
 fn build_llama32_graph_sized_impl(
@@ -361,6 +382,7 @@ pub fn build_llama32_graph_sized_packed(
     seq: usize,
     with_lm_head: bool,
     last_logits_only: bool,
+    with_kv_outputs: bool,
     packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
     use rlx_ir::quant::QuantScheme;
@@ -396,6 +418,11 @@ pub fn build_llama32_graph_sized_packed(
     params.insert("rope.sin".into(), sin_data);
 
     let input_ids = g.input("input_ids", Shape::new(&[batch, seq], DType::F32));
+    let last_token_idx = if last_logits_only {
+        Some(g.input("last_token_idx", Shape::new(&[batch], DType::F32)))
+    } else {
+        None
+    };
     let embed_w = load_p(
         &mut g,
         &mut params,
@@ -404,6 +431,7 @@ pub fn build_llama32_graph_sized_packed(
         false,
     )?;
     let mut h_id = g.gather_(embed_w, input_ids, 0);
+    let mut kv_outputs: Vec<(NodeId, NodeId)> = Vec::new();
 
     fn load_proj(
         g: &mut Graph,
@@ -494,6 +522,9 @@ pub fn build_llama32_graph_sized_packed(
 
         let q_rope = g.rope(q, cos_id, sin_id, dh);
         let k_rope = g.rope(k, cos_id, sin_id, dh);
+        if with_kv_outputs {
+            kv_outputs.push((k_rope, v));
+        }
 
         let k_rep = repeat_kv(&mut g, k_rope, nkv, dh, group);
         let v_rep = repeat_kv(&mut g, v, nkv, dh, group);
@@ -573,7 +604,9 @@ pub fn build_llama32_graph_sized_packed(
 
     let out = if with_lm_head {
         let head_input = if last_logits_only {
-            g.narrow_(hidden, 1, seq - 1, 1)
+            let idx = last_token_idx.expect("last_token_idx input");
+            let idx_2d = g.reshape_(idx, vec![batch as i64, 1]);
+            g.gather_(hidden, idx_2d, 1)
         } else {
             hidden
         };
@@ -616,6 +649,16 @@ pub fn build_llama32_graph_sized_packed(
         hidden
     };
 
-    g.set_outputs(vec![out]);
+    let mut outputs = Vec::new();
+    if with_lm_head || !with_kv_outputs {
+        outputs.push(out);
+    }
+    if with_kv_outputs {
+        for (k, v) in kv_outputs {
+            outputs.push(k);
+            outputs.push(v);
+        }
+    }
+    g.set_outputs(outputs);
     Ok((g, params))
 }

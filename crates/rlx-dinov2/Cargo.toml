@@ -20,10 +20,19 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
+image = { workspace = true }
 
 [[bin]]
 name = "rlx-dinov2"
 path = "src/bin/rlx_dinov2.rs"
+
+[[bin]]
+name = "rlx-dinov2-batch"
+path = "src/bin/rlx_dinov2_batch.rs"
+
+[[bin]]
+name = "rlx-dinov2-convert-hf"
+path = "src/bin/rlx_dinov2_convert_hf.rs"
 
 [lints]
 workspace = true

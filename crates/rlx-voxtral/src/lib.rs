@@ -32,10 +32,7 @@ pub mod projector;
 pub mod runner;
 pub mod weights;
 
-pub use audio::{
-    MelSpectrogram, N_FRAMES, N_SAMPLES, SAMPLE_RATE, mel_from_flat, pcm_to_mel,
-    pcm_to_mel_and_prompt,
-};
+pub use audio::{MelSpectrogram, N_FRAMES, N_SAMPLES, SAMPLE_RATE, mel_from_flat, pcm_to_mel};
 pub use config::{VoxtralAudioConfig, VoxtralConfig};
 pub use embed::{argmax_token, decode_token_ids, fuse_inputs_embeds, transcription_prompt_ids};
 pub use encoder::{

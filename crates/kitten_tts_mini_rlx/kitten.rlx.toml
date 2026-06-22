@@ -1,0 +1,31 @@
+# Kitten TTS tier-1 compile profile (reference — loader TBD).
+# Colocate with weights as `kitten.rlx.toml`.
+
+[fusion]
+policy = "direct"
+target = "auto"
+assert_clean = false
+skip = false
+
+[passes]
+dce = true
+constant_folding = true
+verbose = false
+
+[precision]
+compute = "f32"
+mixed = "none"
+
+[infer]
+# production | parity — mirrors KITTEN_RLX_INFER
+mode = "production"
+
+[backend.metal]
+skip_fusion = false
+
+[backend.cpu]
+skip_fusion = false
+
+# Upstream rlx-onnx-import `DurationLoopLowering` (set from infer mode):
+#   FusedKernel   — ORT single-pass (production)
+#   RuntimeCarry  — external duration fixed-point (parity)

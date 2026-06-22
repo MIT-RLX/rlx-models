@@ -18,7 +18,7 @@
 use super::rope::apply_vjepa2_rope;
 use super::weights::Vjepa2BlockWeights;
 use anyhow::Result;
-use rlx_tensor::{gelu_tanh, layer_norm, linear, matmul, matmul_bt, softmax_rows};
+use rlx_core::host_kernels::{gelu_tanh, layer_norm, linear, matmul, matmul_bt, softmax_rows};
 
 #[allow(clippy::too_many_arguments)]
 pub fn block_forward(

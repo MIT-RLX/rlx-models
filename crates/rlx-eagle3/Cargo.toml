@@ -1,0 +1,57 @@
+[package]
+name = "rlx-eagle3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "EAGLE3 speculative-decoding draft + scheduler primitives for RLX"
+
+# rlx-eagle3 ships the model-agnostic EAGLE3 primitives (config,
+# weights loader, d2t map, HIR draft graph, Speculator). Anything
+# that ties into a specific verifier model lives behind a per-model
+# feature flag so the core crate stays small and dep-light.
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+half = { workspace = true }
+bytemuck = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-flow = { workspace = true }
+
+# Dev-only deps used by the full-pipeline integration test
+# (tests/full_pipeline.rs is `#[cfg(feature = "gemma")]`).
+[dev-dependencies]
+rlx-core = { workspace = true }
+rlx-gemma = { workspace = true }
+rlx-qwen3 = { workspace = true }
+
+[features]
+default = []
+
+# Backend features — propagate to rlx-runtime so callers can pick the
+# right device for the HIR draft graph.
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+
+# Per-verifier integration features. Each pulls in the corresponding
+# `rlx-<model>` crate and enables the bridge module that adapts that
+# model's decode output to `VerifierHiddenSource`. None are on by
+# default — the crate's core EAGLE3 primitives work without any.
+gemma = []
+llama32 = []
+qwen3 = []
+
+# Whole-file `#![cfg(feature = "gemma")]`; skip building unless `gemma` is on.
+[[example]]
+name = "spec_decoder_end_to_end"
+required-features = ["gemma"]
+
+[lints]
+workspace = true

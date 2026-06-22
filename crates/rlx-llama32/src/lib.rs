@@ -15,6 +15,7 @@ pub mod cli;
 pub mod config;
 pub mod flow;
 pub mod generator;
+pub mod prefill_mode;
 pub mod rope;
 pub mod runner;
 
@@ -23,7 +24,7 @@ pub use builder::{
     build_llama32_decode_hir_dynamic_ext, build_llama32_decode_hir_sized,
     build_llama32_decode_hir_sized_ext, build_llama32_graph_sized,
     build_llama32_graph_sized_last_logits, build_llama32_graph_sized_packed,
-    build_llama32_prefill_hir_dynamic_ext,
+    build_llama32_prefill_hir_dynamic_ext, build_llama32_prefill_hir_sized_ext,
 };
 pub use capabilities::validate_device;
 pub use config::{Llama32Config, Llama32RopeScaling, Llama32RopeType, llama32_cfg_from_gguf};
@@ -33,6 +34,7 @@ pub use flow::{
     build_llama32_prefill_built, build_llama32_prefill_flow, llama32_profile_near_weights,
 };
 pub use generator::Llama32Generator;
+pub use prefill_mode::{MetalGgufPrefillMode, metal_use_packed_gguf_prefill, prefill_device_for};
 #[cfg(feature = "tokenizer")]
 pub use rlx_qwen35::decode_ids_auto;
 pub use rlx_qwen35::{encode_prompt, encode_prompt_auto, resolve_tokenizer_path};

@@ -2,27 +2,47 @@
 
 RLX native decomposition of [Kitten TTS mini](https://huggingface.co/KittenML/kitten-tts-mini-0.8) ONNX.
 
-Published on crates.io as **`kitten_tts_mini_rlx`** (`weights/**` excluded from the crate tarball — export or download the ONNX bundle locally).
+Published on crates.io as **`kitten_tts_mini_rlx`** (`weights/**` excluded from the crate tarball — export or download weights locally).
 
 ## Layout
 
 | Path | Purpose |
 |------|---------|
-| `weights/rlx_bundle/` | Exported ONNX bundle (`manifest.json`, `graph.json`, `weights.safetensors`) |
-| `src/bundle_compile.rs` | Bundle → HIR → compile (primary path) |
-| `src/kernels.rs` | Model-specific CPU kernels (`onnx.QMatMul`, `onnx.ConcatFromSequence`, …) |
-| `src/graph.rs` | Legacy hand-lowered graph (`--features generated-graph` only) |
+| `weights/model.safetensors` | Native weights (decomposed from ONNX) |
+| `weights/model.gguf` | Optional GGUF container (`just export-kitten-gguf`) |
+| `weights/rlx_bundle/` | Legacy ONNX bundle (`graph.json` + safetensors) |
+| `src/native/` | Native feature: config, compile cache, module map |
+| `src/graph.rs` | Full Rust HIR builder (`--features native`) |
+| `src/bundle_compile.rs` | Legacy bundle → HIR path |
+| `src/kernels.rs` | Model-specific CPU kernels (`onnx.QMatMul`, …) |
 | `decompose_report.json` | Op coverage from export |
 
-## Export bundle
+## Native weights (recommended)
+
+No `graph.json` at runtime — architecture lives in Rust (`graph.rs` + `native/flow`).
 
 ```bash
-# From rlx-models root (needs: pip install onnx onnxshape numpy safetensors)
-python3 scripts/export_kitten_rlx_bundle.py \
-  /path/to/kitten_tts_mini_v0_8.onnx \
-  crates/kitten_tts_mini_rlx/weights/rlx_bundle
+just export-kitten-native-weights   # bundle export + rlx-onnx-decompose
+just export-kitten-gguf             # optional GGUF copy of safetensors
+just test-kitten-native-compile     # compile check (needs weights/)
+```
 
-# Or via just (set KITTEN_ONNX_PATH if not in HF cache)
+Deploy layout:
+
+```text
+checkpoint/
+  model.safetensors   # or model.gguf
+  voices.npz
+  config.json
+```
+
+Build with `--features native`. `rlx-kittentts --features native` enables this path automatically when `model.safetensors` is present.
+
+Set `KITTEN_RLX_FORCE_BUNDLE=1` to keep using `rlx_bundle/graph.json` instead.
+
+## Legacy bundle export
+
+```bash
 just export-kitten-rlx-bundle
 ```
 
@@ -33,39 +53,33 @@ so RLX import matches ORT single-pass duration semantics.
 
 | Variable | Purpose |
 |----------|---------|
-| `RLX_ONNX_BUNDLE` | Override bundle directory (default: `weights/rlx_bundle`) |
+| `KITTEN_RLX_FORCE_BUNDLE` | Prefer `rlx_bundle/graph.json` over native weights |
+| `RLX_ONNX_BUNDLE` | Override bundle directory |
 | `RLX_ONNX_SEQUENCE_LENGTH` | Active token count for compile-time shape restoration |
 | `KITTEN_RLX_BUNDLE` | Legacy alias for `RLX_ONNX_BUNDLE` |
-| `KITTEN_SEQUENCE_LENGTH` | Legacy alias for `RLX_ONNX_SEQUENCE_LENGTH` |
 | `KITTEN_RLX_AOT_CACHE` | AOT compile cache directory |
 | `KITTEN_RLX_SKIP_FUSION` | Set `1` to disable fusion (debug / probes) |
-| `KITTEN_RLX_ENABLE_FUSION` | Set `1` to opt into fusion (off by default) |
-| `RLX_ARENA_NO_REUSE` | Set automatically by bundle compile (arena safety) |
 
 ## Usage
 
 ```rust
-use kitten_tts_mini_rlx::{bundle_compile, GraphOptions};
+use kitten_tts_mini_rlx::{compile, GraphOptions};
 use rlx_runtime::Device;
 
-let bundle = bundle_compile::bundle_dir_near_weights(weights_dir).unwrap();
-let graph = bundle_compile::compile_from_bundle(
+let graph = compile(
     Device::Cpu,
-    &bundle,
-    &GraphOptions { sequence_length: 8, max_waveform_samples: 24_000 },
+    weights_dir.as_ref(),
+    &GraphOptions { sequence_length: 128, max_waveform_samples: 24_000 },
 )?;
 ```
+
+## Module map
+
+See [`src/native/config.rs`](src/native/config.rs) (`ModuleKind`) and [`src/native/flow/modules.rs`](src/native/flow/modules.rs) for semantic boundaries (bert, text encoder, mel decoder, predictor, duration, vocoder).
 
 ## Tests
 
 ```bash
-cargo test -p kitten_tts_mini_rlx
+cargo test -p kitten_tts_mini_rlx --features native
+cargo test -p rlx-kittentts --features native native_infer_smoke
 ```
-
-`tests/bundle_hir.rs` — model-specific HIR lowering checks (ported from `rlx-onnx-import`).
-`tests/duration_alignment.rs` — `ConcatFromSequence` reference semantics.
-
-## Import options
-
-Bundle lowering uses `rlx_onnx_import::ImportOptions::quant_bundle()` (quant fusion rewrites,
-relaxed strict mode for control-flow stubs). Generic ONNX import stays in `rlx-onnx-import`.

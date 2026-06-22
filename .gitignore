@@ -13,6 +13,7 @@
 ./weights
 crates/kitten_tts_mini_rlx/weights/
 crates/rlx-neutts/models/
+crates/rlx-orpheus/weights/
 **/neucodec_decoder.safetensors
 
 # Qwen3-TTS parity fixtures (bake locally; see tests/qwen3_tts_*_parity)
@@ -39,3 +40,29 @@ AGENTS.md
 PLAN.md
 
 papers/*
+
+# rlx-snac large parity fixture (regenerate via crates/rlx-snac/scripts/gen_fixture.py)
+crates/rlx-snac/tests/fixtures/snac24_decoder.safetensors
+crates/rlx-encodec/tests/fixtures/encodec24.safetensors
+crates/rlx-speechtokenizer/tests/fixtures/*.safetensors
+crates/rlx-wavtokenizer/tests/fixtures/*.safetensors
+crates/rlx-xcodec/tests/fixtures/*.safetensors
+
+# eagle3 verifier bench weights (multi-GB GGUF; download/generate locally)
+.eagle3-bench/
+
+# Top-level parity-dump fixtures (regenerate via dump scripts/examples)
+/fixtures/
+
+# Local Cargo override backups (alongside .cargo/config.toml; see *.example)
+.cargo/config.toml.bak
+.cargo/config.toml.disabled
+
+# Regenerable parity / reference fixtures (gen via crates/*/scripts/gen_fixture.py).
+# Per-crate tests/fixtures/.gitignore files are tracked; these are repo-wide nets.
+crates/*/tests/fixtures/*.bin
+crates/*/tests/fixtures/*.json
+crates/*/tests/fixtures/*.txt
+crates/rlx-whisper/fixtures/
+# Required build asset (baked via include_str!), not a regenerable fixture:
+!crates/rlx-orpheus/tests/fixtures/orpheus_hi_codes.txt

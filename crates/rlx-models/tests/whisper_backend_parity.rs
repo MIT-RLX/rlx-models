@@ -23,7 +23,7 @@
 #![cfg(any(feature = "metal", feature = "mlx", feature = "gpu"))]
 
 use anyhow::Result;
-use rlx_models::whisper::{WhisperRunner, pcm_to_mel};
+use rlx_models::whisper::{WhisperRunner, jfk_wav_path, pcm_to_mel};
 use rlx_runtime::Device;
 use std::path::PathBuf;
 
@@ -38,9 +38,7 @@ fn tiny_dir() -> PathBuf {
 }
 
 fn jfk_wav() -> PathBuf {
-    std::env::var("RLX_WHISPER_WAV")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| cache_root().join("whisper-bench/jfk_16k.wav"))
+    jfk_wav_path()
 }
 
 fn max_abs(a: &[f32], b: &[f32]) -> f32 {

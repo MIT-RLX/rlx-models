@@ -74,6 +74,28 @@ impl SafetensorsCheckpoint {
         self.index.keys().map(|s| s.as_str())
     }
 
+    /// Whether a tensor name is present in the checkpoint index.
+    pub fn contains(&self, name: &str) -> bool {
+        self.index.contains_key(name)
+    }
+
+    /// Raw storage bytes + dtype + shape for one tensor, copied out of the
+    /// mmap. For custom codecs (e.g. integer-quant) that need the native
+    /// bytes rather than an F32 conversion. Bytes are in the file's storage
+    /// order (row-major, dtype-native).
+    pub fn tensor_raw(&self, name: &str) -> Result<(Vec<u8>, safetensors::Dtype, Vec<usize>)> {
+        let shard = self
+            .index
+            .get(name)
+            .with_context(|| format!("tensor {name} not in checkpoint index"))?;
+        let mmap = self.mmap_shard(shard)?;
+        let st = SafeTensors::deserialize(mmap.as_ref()).context("parse safetensors")?;
+        let view = st
+            .tensor(name)
+            .with_context(|| format!("tensor {name} missing in shard {shard}"))?;
+        Ok((view.data().to_vec(), view.dtype(), view.shape().to_vec()))
+    }
+
     /// Load selected rows from a rank-2 tensor without materializing the full matrix.
     pub fn load_tensor_rows_f32(
         &self,

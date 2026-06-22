@@ -22,7 +22,7 @@
 
 use anyhow::Context;
 use rlx_cli::parse_device;
-use rlx_models::whisper::{WhisperRunner, load_wav_mono_f32};
+use rlx_models::whisper::{WhisperRunner, jfk_wav_path, load_wav_mono_f32};
 use rlx_runtime::{Device, is_available};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -34,7 +34,7 @@ fn default_model_dir() -> PathBuf {
 }
 
 fn default_wav() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache/whisper-bench/jfk_16k.wav")
+    jfk_wav_path()
 }
 
 #[allow(clippy::vec_init_then_push)]

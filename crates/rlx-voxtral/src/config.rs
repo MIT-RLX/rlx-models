@@ -87,6 +87,9 @@ pub struct VoxtralConfig {
     pub text_config: Llama32Config,
     #[serde(default = "default_audio_token_id")]
     pub audio_token_id: u32,
+    /// End-of-stream token that halts generation (tekken `</s>` = 2).
+    #[serde(default = "default_eos_token_id")]
+    pub eos_token_id: u32,
     #[serde(default = "default_projector_act")]
     pub projector_hidden_act: String,
     pub vocab_size: usize,
@@ -94,6 +97,10 @@ pub struct VoxtralConfig {
 
 fn default_audio_token_id() -> u32 {
     24
+}
+
+fn default_eos_token_id() -> u32 {
+    2
 }
 
 fn default_projector_act() -> String {
@@ -142,6 +149,7 @@ impl VoxtralConfig {
                 rope_scaling: None,
             },
             audio_token_id: 24,
+            eos_token_id: 2,
             projector_hidden_act: "gelu".into(),
             vocab_size: 32,
         }
@@ -167,6 +175,7 @@ impl VoxtralConfig {
                 rope_scaling: None,
             },
             audio_token_id: 24,
+            eos_token_id: 2,
             projector_hidden_act: "gelu".into(),
             vocab_size: 131_072,
         }

@@ -1,0 +1,100 @@
+
+/usr/lib/tsac/libnc.so：     文件格式 elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000008310 <cpu_cmul_4d_f32@@Base-0x1cc0>:
+    8310:	41 56                	push   r14
+    8312:	49 89 d3             	mov    r11,rdx
+    8315:	41 55                	push   r13
+    8317:	41 54                	push   r12
+    8319:	55                   	push   rbp
+    831a:	53                   	push   rbx
+    831b:	8b 44 24 38          	mov    eax,DWORD PTR [rsp+0x38]
+    831f:	48 8b 5c 24 30       	mov    rbx,QWORD PTR [rsp+0x30]
+    8324:	83 f8 0d             	cmp    eax,0xd
+    8327:	0f 84 03 01 00 00    	je     8430 <nc_reduce_sum_sqr@plt+0x14c0>
+    832d:	44 8d 50 f5          	lea    r10d,[rax-0xb]
+    8331:	8d 50 f2             	lea    edx,[rax-0xe]
+    8334:	41 83 fa 01          	cmp    r10d,0x1
+    8338:	76 09                	jbe    8343 <nc_reduce_sum_sqr@plt+0x13d3>
+    833a:	83 fa 01             	cmp    edx,0x1
+    833d:	0f 87 75 02 00 00    	ja     85b8 <nc_reduce_sum_sqr@plt+0x1648>
+    8343:	83 f8 0c             	cmp    eax,0xc
+    8346:	0f 84 cc 00 00 00    	je     8418 <nc_reduce_sum_sqr@plt+0x14a8>
+    834c:	83 fa 02             	cmp    edx,0x2
+    834f:	4d 89 c2             	mov    r10,r8
+    8352:	4e 8d 24 8d 00 00 00 	lea    r12,[r9*4+0x0]
+    8359:	00 
+    835a:	4c 89 c2             	mov    rdx,r8
+    835d:	48 19 ed             	sbb    rbp,rbp
+    8360:	49 c1 ea 02          	shr    r10,0x2
+    8364:	49 0f af d1          	imul   rdx,r9
+    8368:	4d 0f af d4          	imul   r10,r12
+    836c:	81 e5 e0 00 00 00    	and    ebp,0xe0
+    8372:	48 83 c5 20          	add    rbp,0x20
+    8376:	83 f8 0f             	cmp    eax,0xf
+    8379:	4d 0f 45 e0          	cmovne r12,r8
+    837d:	49 0f 44 d2          	cmove  rdx,r10
+    8381:	48 89 d8             	mov    rax,rbx
+    8384:	4c 89 26             	mov    QWORD PTR [rsi],r12
+    8387:	48 0f af c2          	imul   rax,rdx
+    838b:	49 89 13             	mov    QWORD PTR [r11],rdx
+    838e:	48 05 ff 00 00 00    	add    rax,0xff
+    8394:	30 c0                	xor    al,al
+    8396:	49 89 c2             	mov    r10,rax
+    8399:	48 85 ff             	test   rdi,rdi
+    839c:	0f 84 4e 01 00 00    	je     84f0 <nc_reduce_sum_sqr@plt+0x1580>
+    83a2:	4c 89 c0             	mov    rax,r8
+    83a5:	31 d2                	xor    edx,edx
+    83a7:	49 83 c1 07          	add    r9,0x7
+    83ab:	48 89 0f             	mov    QWORD PTR [rdi],rcx
+    83ae:	48 f7 f5             	div    rbp
+    83b1:	49 83 e1 f8          	and    r9,0xfffffffffffffff8
+    83b5:	4c 01 d1             	add    rcx,r10
+    83b8:	4c 89 4e 08          	mov    QWORD PTR [rsi+0x8],r9
+    83bc:	49 0f af c1          	imul   rax,r9
+    83c0:	49 89 43 08          	mov    QWORD PTR [r11+0x8],rax
+    83c4:	48 0f af c3          	imul   rax,rbx
+    83c8:	48 89 4f 08          	mov    QWORD PTR [rdi+0x8],rcx
+    83cc:	48 c7 46 10 00 00 00 	mov    QWORD PTR [rsi+0x10],0x0
+    83d3:	00 
+    83d4:	48 8d 84 00 ff 00 00 	lea    rax,[rax+rax*1+0xff]
+    83db:	00 
+    83dc:	49 c7 43 10 00 00 00 	mov    QWORD PTR [r11+0x10],0x0
+    83e3:	00 
+    83e4:	30 c0                	xor    al,al
+    83e6:	48 c7 47 10 00 00 00 	mov    QWORD PTR [rdi+0x10],0x0
+    83ed:	00 
+    83ee:	4c 01 d0             	add    rax,r10
+    83f1:	48 c7 46 18 00 00 00 	mov    QWORD PTR [rsi+0x18],0x0
+    83f8:	00 
+    83f9:	49 c7 43 18 00 00 00 	mov    QWORD PTR [r11+0x18],0x0
+    8400:	00 
+    8401:	48 c7 47 18 00 00 00 	mov    QWORD PTR [rdi+0x18],0x0
+    8408:	00 
+    8409:	5b                   	pop    rbx
+    840a:	5d                   	pop    rbp
+    840b:	41 5c                	pop    r12
+    840d:	41 5d                	pop    r13
+    840f:	41 5e                	pop    r14
+    8411:	c3                   	ret
+    8412:	66 0f 1f 44 00 00    	nop    WORD PTR [rax+rax*1+0x0]
+    8418:	4d 89 c4             	mov    r12,r8
+    841b:	4c 89 ca             	mov    rdx,r9
+    841e:	bd 20 00 00 00       	mov    ebp,0x20
+    8423:	49 d1 ec             	shr    r12,1
+    8426:	49 0f af d4          	imul   rdx,r12
+    842a:	e9 52 ff ff ff       	jmp    8381 <nc_reduce_sum_sqr@plt+0x1411>
+    842f:	90                   	nop
+    8430:	4d 89 c6             	mov    r14,r8
+    8433:	4d 89 c5             	mov    r13,r8
+    8436:	4c 89 cd             	mov    rbp,r9
+    8439:	4d 89 ca             	mov    r10,r9
+    843c:	49 c1 ed 02          	shr    r13,0x2
+    8440:	49 c1 ee 06          	shr    r14,0x6
+    8444:	4d 89 cc             	mov    r12,r9
+    8447:	48 d1 ed             	shr    rbp,1
+    844a:	49 c1 ea 06          	shr    r10,0x6
+    844e:	4d 0f af f1          	imul   r14,r9

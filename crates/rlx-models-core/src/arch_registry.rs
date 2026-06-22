@@ -190,6 +190,11 @@ pub fn register_all() {
         family: ArchFamily::Other,
         description: "NeuTTS (Neuphonic) — voice-cloning TTS: GGUF backbone + NeuCodec FSQ/Vocos decoder.",
     });
+    register(ArchSpec {
+        name: "orpheus",
+        family: ArchFamily::Other,
+        description: "Orpheus TTS — Llama-3B speech LM (GGUF) + SNAC 24 kHz codec decoder.",
+    });
 }
 
 #[cfg(test)]

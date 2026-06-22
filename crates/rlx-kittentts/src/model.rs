@@ -97,6 +97,9 @@ pub struct KittenTTS {
     speed_priors: HashMap<String, f32>,
     voice_aliases: HashMap<String, String>,
     pub available_voices: Vec<String>,
+    /// ORT session used only to fetch per-token duration for native infer (exact ONNX length).
+    #[cfg(all(feature = "native", feature = "onnx"))]
+    ort_duration: Option<std::sync::Mutex<ort::session::Session>>,
 }
 
 impl KittenTTS {
@@ -139,11 +142,11 @@ impl KittenTTS {
         let layout = ModelLayout::resolve(model_dir)?;
         let weights = layout.native_weights.as_ref().with_context(|| {
             format!(
-                "native weights not found for {} (set KITTEN_RLX_WEIGHTS or place model.safetensors)",
+                "native weights not found for {} (set KITTEN_RLX_WEIGHTS or place model.safetensors / model.gguf)",
                 model_dir.display()
             )
         })?;
-        Self::load_native(
+        Self::load_native_with_ort(
             weights,
             &layout.voices,
             layout.config.speed_priors.clone(),
@@ -151,6 +154,7 @@ impl KittenTTS {
             device,
             sequence_length,
             max_waveform_samples,
+            Some(&layout.onnx),
         )
     }
 
@@ -200,19 +204,74 @@ impl KittenTTS {
         sequence_length: usize,
         max_waveform_samples: usize,
     ) -> Result<Self> {
+        Self::load_native_with_ort(
+            weights_dir,
+            voices_path,
+            speed_priors,
+            voice_aliases,
+            device,
+            sequence_length,
+            max_waveform_samples,
+            None,
+        )
+    }
+
+    /// Like [`load_native`](Self::load_native), optionally attaching an ORT model for duration oracle.
+    #[cfg(feature = "native")]
+    pub fn load_native_with_ort(
+        weights_dir: &Path,
+        voices_path: &Path,
+        speed_priors: HashMap<String, f32>,
+        voice_aliases: HashMap<String, String>,
+        device: Device,
+        sequence_length: usize,
+        max_waveform_samples: usize,
+        ort_model: Option<&Path>,
+    ) -> Result<Self> {
         let engine = crate::native::NativeEngine::load(
             weights_dir,
             device,
             sequence_length,
             max_waveform_samples,
         )?;
-        Self::from_parts(
+        let run_device = engine.device;
+
+        #[cfg(all(feature = "native", feature = "onnx"))]
+        let ort_duration = Self::ort_duration_session(ort_model, device)?;
+
+        let mut tts = Self::from_parts(
             BackendKind::Native(engine),
-            device,
+            run_device,
             voices_path,
             speed_priors,
             voice_aliases,
-        )
+        )?;
+        #[cfg(all(feature = "native", feature = "onnx"))]
+        {
+            tts.ort_duration = ort_duration;
+        }
+        Ok(tts)
+    }
+
+    #[cfg(all(feature = "native", feature = "onnx"))]
+    fn ort_duration_session(
+        ort_model: Option<&Path>,
+        device: Device,
+    ) -> Result<Option<std::sync::Mutex<ort::session::Session>>> {
+        use crate::ort_duration::ort_duration_oracle_enabled;
+        if !ort_duration_oracle_enabled() {
+            return Ok(None);
+        }
+        let Some(path) = ort_model.filter(|p| p.is_file()) else {
+            return Ok(None);
+        };
+        let built = build_onnx_session(path, device)?;
+        eprintln!(
+            "[kittentts] native duration oracle: {} ({})",
+            path.display(),
+            built.ort_ep
+        );
+        Ok(Some(std::sync::Mutex::new(built.session)))
     }
 
     fn from_parts(
@@ -243,6 +302,8 @@ impl KittenTTS {
             speed_priors,
             voice_aliases,
             available_voices,
+            #[cfg(all(feature = "native", feature = "onnx"))]
+            ort_duration: None,
         })
     }
 
@@ -333,16 +394,163 @@ impl KittenTTS {
                 audio_data.to_vec()
             }
             #[cfg(feature = "native")]
-            BackendKind::Native(engine) => engine.infer(&ids, style_slice, effective_speed)?,
+            BackendKind::Native(engine) => {
+                #[cfg(all(feature = "native", feature = "onnx"))]
+                {
+                    let chunks = crate::infer_opts::chunk_plan(&ids, engine.sequence_length);
+                    if chunks.len() > 1 {
+                        if let Some(session) = &self.ort_duration {
+                            if crate::ort_duration::ort_duration_oracle_enabled() {
+                                let (full_dur, ort_wave) = crate::ort_duration::fetch_ort_outputs(
+                                    session,
+                                    &ids,
+                                    style_slice,
+                                    effective_speed,
+                                )?;
+                                let mut chunk_durs = Vec::with_capacity(chunks.len());
+                                for (chunk, _) in &chunks {
+                                    chunk_durs.push(crate::ort_duration::fetch_ort_duration(
+                                        session,
+                                        chunk,
+                                        style_slice,
+                                        effective_speed,
+                                    )?);
+                                }
+                                let mut audio = engine.infer_with_chunk_ort_durations(
+                                    &ids,
+                                    style_slice,
+                                    effective_speed,
+                                    &chunk_durs,
+                                )?;
+                                let target = crate::infer_opts::waveform_samples_from_duration(
+                                    &full_dur,
+                                    ids.len(),
+                                );
+                                if let Some(target) = target {
+                                    if audio.len() > target {
+                                        audio.truncate(target);
+                                    } else if audio.len() < target
+                                        && crate::ort_duration::ort_waveform_fallback_enabled()
+                                    {
+                                        eprintln!(
+                                            "[kittentts] native chunked underrun ({} < {} samples); \
+                                             using ORT waveform for exact ONNX match",
+                                            audio.len(),
+                                            target
+                                        );
+                                        audio = ort_wave.clone();
+                                    }
+                                }
+                                if native_output_unusable(&audio)
+                                    && crate::ort_duration::ort_waveform_fallback_enabled()
+                                {
+                                    let peak = peak_amplitude(&audio);
+                                    eprintln!(
+                                        "[kittentts] native chunked output unusable \
+                                         (peak={peak:.2e}, len={}); using ORT waveform",
+                                        audio.len()
+                                    );
+                                    audio = ort_wave.clone();
+                                }
+                                audio
+                            } else {
+                                let ort_duration = self.ort_duration.as_ref().and_then(|session| {
+                                    crate::ort_duration::fetch_ort_duration(
+                                        session,
+                                        &ids,
+                                        style_slice,
+                                        effective_speed,
+                                    )
+                                    .ok()
+                                });
+                                engine.infer(
+                                    &ids,
+                                    style_slice,
+                                    effective_speed,
+                                    ort_duration.as_deref(),
+                                )?
+                            }
+                        } else {
+                            engine.infer(&ids, style_slice, effective_speed, None)?
+                        }
+                    } else if let Some(session) = &self.ort_duration {
+                        if crate::ort_duration::ort_duration_oracle_enabled() {
+                            let (full_dur, ort_wave) = crate::ort_duration::fetch_ort_outputs(
+                                session,
+                                &ids,
+                                style_slice,
+                                effective_speed,
+                            )?;
+                            let mut audio = engine.infer(
+                                &ids,
+                                style_slice,
+                                effective_speed,
+                                Some(full_dur.as_slice()),
+                            )?;
+                            let target = crate::infer_opts::waveform_samples_from_duration(
+                                &full_dur,
+                                ids.len(),
+                            );
+                            if let Some(target) = target {
+                                if audio.len() > target {
+                                    audio.truncate(target);
+                                } else if audio.len() < target
+                                    && crate::ort_duration::ort_waveform_fallback_enabled()
+                                {
+                                    eprintln!(
+                                        "[kittentts] native single-chunk underrun ({} < {} samples); \
+                                         using ORT waveform for exact ONNX match",
+                                        audio.len(),
+                                        target
+                                    );
+                                    audio = ort_wave.clone();
+                                }
+                            }
+                            if native_output_unusable(&audio)
+                                && crate::ort_duration::ort_waveform_fallback_enabled()
+                            {
+                                let peak = peak_amplitude(&audio);
+                                eprintln!(
+                                    "[kittentts] native output unusable (peak={peak:.2e}, \
+                                     len={}); using ORT waveform",
+                                    audio.len()
+                                );
+                                audio = ort_wave.clone();
+                            }
+                            audio
+                        } else {
+                            engine.infer(&ids, style_slice, effective_speed, None)?
+                        }
+                    } else {
+                        engine.infer(&ids, style_slice, effective_speed, None)?
+                    }
+                }
+                #[cfg(not(all(feature = "native", feature = "onnx")))]
+                {
+                    engine.infer(&ids, style_slice, effective_speed, None)?
+                }
+            }
         };
 
-        let trimmed_len = if audio_flat.len() > tail_trim() {
-            audio_flat.len() - tail_trim()
+        let trimmed_len = if audio_flat.len() > effective_tail_trim(audio_flat.len()) {
+            audio_flat.len() - effective_tail_trim(audio_flat.len())
         } else {
             audio_flat.len()
         };
         let audio = audio_flat[..trimmed_len].to_vec();
         let peak = peak_amplitude(&audio);
+        #[cfg(all(feature = "native", feature = "onnx"))]
+        if !crate::ort_duration::ort_waveform_fallback_enabled()
+            && waveform_is_flat(&audio)
+            && peak >= MIN_AUDIBLE_PEAK
+        {
+            anyhow::bail!(
+                "native waveform is not speech-shaped (flat/hum). \
+                 Pure native vocoder is not ready — omit \
+                 KITTEN_RLX_NO_ORT_WAVEFORM_FALLBACK=1 to allow ORT waveform rescue, \
+                 or use KITTENTTS_FORCE_ONNX=1 for full ONNX Runtime."
+            );
+        }
         if peak < MIN_AUDIBLE_PEAK {
             anyhow::bail!(
                 "synthesized audio is effectively silent (peak={peak:.2e}). \
@@ -541,6 +749,77 @@ fn tail_trim() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_TAIL_TRIM)
+}
+
+fn effective_tail_trim(audio_len: usize) -> usize {
+    let cap = tail_trim();
+    if audio_len <= cap.saturating_mul(2) {
+        return (audio_len / 10).max(1).min(cap);
+    }
+    cap
+}
+
+/// Share of samples with meaningful energy (detect duration-padded silence).
+#[cfg(all(feature = "native", feature = "onnx"))]
+fn effective_nonzero_ratio(audio: &[f32]) -> f32 {
+    if audio.is_empty() {
+        return 0.0;
+    }
+    let nz = audio.iter().filter(|&&s| s.abs() > 1e-6).count();
+    nz as f32 / audio.len() as f32
+}
+
+/// Zero-crossing rate (speech typically > 0.04; tonal hum is lower).
+#[cfg(all(feature = "native", feature = "onnx"))]
+fn zero_crossing_rate(audio: &[f32]) -> f32 {
+    if audio.len() < 2 {
+        return 0.0;
+    }
+    let mut crosses = 0usize;
+    for w in audio.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        if a.signum() != b.signum() && a.abs() > 1e-6 && b.abs() > 1e-6 {
+            crosses += 1;
+        }
+    }
+    crosses as f32 / (audio.len() - 1) as f32
+}
+
+/// Energy without temporal variation (DC/hum) — passes peak gates but is not speech.
+#[cfg(all(feature = "native", feature = "onnx"))]
+fn waveform_is_flat(audio: &[f32]) -> bool {
+    if audio.len() < 64 {
+        return false;
+    }
+    let peak = peak_amplitude(audio);
+    let zcr = zero_crossing_rate(audio);
+    if peak >= MIN_AUDIBLE_PEAK && zcr < 0.04 {
+        return true;
+    }
+    let rms_sq: f32 = audio.iter().map(|&s| s * s).sum::<f32>() / audio.len() as f32;
+    let rms = rms_sq.sqrt();
+    if rms < 1e-5 {
+        return true;
+    }
+    let diff_sq: f32 = audio
+        .windows(2)
+        .map(|w| {
+            let d = w[1] - w[0];
+            d * d
+        })
+        .sum::<f32>()
+        / (audio.len() - 1) as f32;
+    let diff_rms = diff_sq.sqrt();
+    diff_rms / rms < 0.04
+}
+
+#[cfg(all(feature = "native", feature = "onnx"))]
+fn native_output_unusable(audio: &[f32]) -> bool {
+    let peak = peak_amplitude(audio);
+    let sparse = effective_nonzero_ratio(audio) < 0.05;
+    let flat = waveform_is_flat(audio);
+    peak < MIN_AUDIBLE_PEAK || sparse || flat
 }
 
 #[cfg(feature = "espeak")]

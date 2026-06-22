@@ -17,7 +17,7 @@
 
 use crate::builder::{
     build_gemma_decode_graph_sized_packed_ext, build_gemma_graph_sized_packed_ext,
-    drain_gemma_packed_weights, precompute_packed_decode_tied_lm_head,
+    precompute_packed_decode_tied_lm_head,
 };
 use crate::generator::{decode_profile_for_device, metal_decode_compile_guard};
 use crate::rope::{resolve_global_inv_freq, resolve_inv_freq};
@@ -48,6 +48,12 @@ use std::time::Instant;
 use crate::config::GemmaConfig;
 
 const TIED_LM_HEAD: &str = "gemma.packed.decode.lm_head.tied_t";
+/// High bit set on prefill compile-cache keys for post-`model.norm` hidden graphs.
+const PREFILL_HIDDEN_TAG: u64 = 1u64 << 62;
+
+fn prefill_cache_key(seq: usize, hidden_only: bool) -> u64 {
+    seq as u64 | if hidden_only { PREFILL_HIDDEN_TAG } else { 0 }
+}
 
 /// Stub loader for cached graph builds (weights come from session caches).
 struct EmptyWeightLoader;
@@ -209,7 +215,7 @@ pub(crate) struct GemmaPackedSession {
     max_seq: usize,
     prefill_cache: CompileCache,
     prefill_opts: CompileOptions,
-    prefill_packed_loaded: HashSet<usize>,
+    prefill_packed_loaded: HashSet<u64>,
     decode_cache: BucketedCompileCache,
     decode_opts: CompileOptions,
     f32_params: Arc<HashMap<String, Vec<f32>>>,
@@ -225,6 +231,50 @@ pub(crate) struct GemmaPackedSession {
     decode_inputs: DecodeInputScratch,
     decode_scratch: DecodeKvScratch,
     prefill_logits: Option<Vec<f32>>,
+    /// Task #37: precomputed Q4K row size in bytes for the embed table when
+    /// the builder takes the lazy-embed path. `None` ⇒ legacy in-graph gather.
+    embed_row_bytes: Option<usize>,
+    /// Reusable buffer for prefill embedding rows (≤ bucket_size × hidden f32).
+    embed_scratch: Vec<f32>,
+}
+
+/// Dequant a single embed row from Q4K packed bytes — used by the lazy-embed
+/// path (task #37). The row layout is `[blocks_per_row × block_bytes]`, where
+/// each block decodes to `block_elems` f32 values. Q4K-only for now; extending
+/// to Q6K is a one-line `match` on `scheme`.
+fn gather_embed_row(
+    packed_bytes: &[u8],
+    scheme: rlx_ir::quant::QuantScheme,
+    hidden: usize,
+    token_id: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    use rlx_ir::quant::QuantScheme;
+    debug_assert_eq!(out.len(), hidden);
+    let block_elems = scheme.gguf_block_size() as usize;
+    let block_bytes = scheme.gguf_block_bytes() as usize;
+    if block_elems == 0 || !hidden.is_multiple_of(block_elems) {
+        bail!(
+            "gather_embed_row: scheme {scheme:?} block_elems={block_elems} doesn't divide hidden={hidden}"
+        );
+    }
+    let blocks_per_row = hidden / block_elems;
+    let row_bytes = blocks_per_row * block_bytes;
+    let off = token_id * row_bytes;
+    if off + row_bytes > packed_bytes.len() {
+        bail!(
+            "gather_embed_row: row offset {off}+{row_bytes} past packed bytes len {}",
+            packed_bytes.len()
+        );
+    }
+    let row = &packed_bytes[off..off + row_bytes];
+    let dequant = match scheme {
+        QuantScheme::GgufQ4K => rlx_gguf::dequant_q4_k(row, hidden)?,
+        QuantScheme::GgufQ6K => rlx_gguf::dequant_q6_k(row, hidden)?,
+        _ => bail!("gather_embed_row: unsupported scheme {scheme:?}"),
+    };
+    out.copy_from_slice(&dequant);
+    Ok(())
 }
 
 impl GemmaPackedSession {
@@ -246,15 +296,52 @@ impl GemmaPackedSession {
             .ok_or_else(|| anyhow!("non-utf8 weights path"))?
             .to_string();
 
+        let trace_init = std::env::var("RLX_GEMMA_TRACE_INIT").is_ok();
+        macro_rules! step {
+            ($t:expr, $msg:expr) => {
+                if trace_init {
+                    eprintln!(
+                        "[gemma-runner trace] {} {:.1}s",
+                        $msg,
+                        $t.elapsed().as_secs_f64()
+                    );
+                }
+            };
+        }
+        let t_load = Instant::now();
         let mut loader = GgufLoader::from_file(&path_str)?;
-        let (mut f32_params, packed) = drain_gemma_packed_weights(&cfg, &mut loader)?;
+        step!(t_load, "GgufLoader::from_file done at");
+        let t_drain = Instant::now();
+        // RoPE tables only need `max_seq` rows for prefill (decode uses a single
+        // `rope_slice` row computed on the fly). For Gemma 4 12B with default
+        // `max_seq=128` this caps the table at 128×256 elements instead of
+        // 262144×256 — frees ~1 GB of f32 cache at LOAD with no functional
+        // change. The `+16` buffer absorbs `prefill_bucket_len`'s next-pow2
+        // rounding for prompts near the bucket edge.
+        let rope_cap = max_seq.saturating_add(16);
+        let (mut f32_params, packed) =
+            crate::builder::drain_gemma_packed_weights_ext(&cfg, &mut loader, Some(rope_cap))?;
+        step!(t_drain, "drain_gemma_packed_weights done at");
+        if trace_init {
+            let f32_bytes: usize = f32_params.values().map(|v| v.len() * 4).sum();
+            let packed_bytes: usize = packed.values().map(|(b, _, _)| b.len()).sum();
+            eprintln!(
+                "[gemma-runner trace]   f32 params: {} entries, {:.2} GB; packed: {} entries, {:.2} GB",
+                f32_params.len(),
+                f32_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                packed.len(),
+                packed_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+            );
+        }
         if cfg.tie_word_embeddings {
+            let t_tied = Instant::now();
             if let Some(embed) = f32_params.get("model.embed_tokens.weight") {
                 f32_params.insert(
                     TIED_LM_HEAD.into(),
                     precompute_packed_decode_tied_lm_head(&cfg, embed)?,
                 );
             }
+            step!(t_tied, "precompute_packed_decode_tied_lm_head done at");
         }
 
         let t_build = Instant::now();
@@ -275,6 +362,18 @@ impl GemmaPackedSession {
 
         let f32_arc = Arc::new(f32_params);
         let packed_arc = Arc::new(packed);
+
+        // Task #37: when the packed embed bytes are present the graph builder
+        // takes the lazy path; remember the per-row byte count once so the
+        // hot `gather_embed_rows` call doesn't recompute it per token.
+        let embed_row_bytes = packed_arc
+            .get("model.embed_tokens.weight")
+            .map(|(_, scheme, _)| {
+                let block_elems = scheme.gguf_block_size() as usize;
+                let block_bytes = scheme.gguf_block_bytes() as usize;
+                let h = cfg.hidden_size;
+                (h / block_elems.max(1)) * block_bytes
+            });
 
         let mut session = Self {
             cfg,
@@ -299,11 +398,15 @@ impl GemmaPackedSession {
             decode_inputs: DecodeInputScratch::default(),
             decode_scratch: DecodeKvScratch::default(),
             prefill_logits: None,
+            embed_row_bytes,
+            embed_scratch: Vec::new(),
         };
 
         // Compile smallest prefill bucket; optional execute-warm (RLX_GEMMA_PACKED_WARM_PREFILL=1).
         let warm_seq = prefill_bucket_len(16, max_seq);
+        let t_compile = Instant::now();
         session.ensure_prefill_bucket(warm_seq)?;
+        step!(t_compile, "ensure_prefill_bucket(warm) done at");
         if prefill_prewarm_enabled() {
             session.prefill_execute_warm(warm_seq)?;
         }
@@ -324,6 +427,7 @@ impl GemmaPackedSession {
         f32_params: &HashMap<String, Vec<f32>>,
         packed_tensors: &PackedWeightMap,
         seq: usize,
+        hidden_only: bool,
     ) -> (Graph, HashMap<String, Vec<f32>>) {
         let mut loader = EmptyWeightLoader;
         let mut local_packed = HashMap::new();
@@ -332,9 +436,9 @@ impl GemmaPackedSession {
             &mut loader,
             1,
             seq,
-            true,
-            true,
-            true,
+            !hidden_only,
+            !hidden_only,
+            !hidden_only,
             &mut local_packed,
             Some(packed_tensors),
             Some(f32_params),
@@ -364,7 +468,16 @@ impl GemmaPackedSession {
     }
 
     fn ensure_prefill_bucket(&mut self, seq: usize) -> Result<()> {
-        let key = seq as u64;
+        self.ensure_prefill_bucket_kind(seq, false)
+    }
+
+    fn ensure_prefill_hidden_bucket(&mut self, seq: usize) -> Result<()> {
+        self.ensure_prefill_bucket_kind(seq, true)
+    }
+
+    fn ensure_prefill_bucket_kind(&mut self, seq: usize, hidden_only: bool) -> Result<()> {
+        let trace = std::env::var("RLX_GEMMA_TRACE_INIT").is_ok();
+        let key = prefill_cache_key(seq, hidden_only);
         if self.prefill_cache.contains(key) {
             return Ok(());
         }
@@ -375,17 +488,48 @@ impl GemmaPackedSession {
         let packed_loaded = &mut self.prefill_packed_loaded;
         let packed_for_upload = Arc::clone(&self.packed_tensors);
         packed_gguf_compile_guard(self.exec_device, || {
+            let t_graph = Instant::now();
             let (graph, params) =
-                Self::build_prefill_graph(&cfg, &f32_params, &packed_tensors, seq);
+                Self::build_prefill_graph(&cfg, &f32_params, &packed_tensors, seq, hidden_only);
+            if trace {
+                eprintln!(
+                    "[gemma-runner trace]   build_prefill_graph(seq={seq} hidden_only={hidden_only}) done at {:.1}s ({} param entries)",
+                    t_graph.elapsed().as_secs_f64(),
+                    params.len(),
+                );
+            }
+            let t_compile = Instant::now();
             let compiled = self
                 .prefill_cache
                 .get_or_compile_with_options(key, || graph, &opts);
+            if trace {
+                eprintln!(
+                    "[gemma-runner trace]   prefill compile done at {:.1}s",
+                    t_compile.elapsed().as_secs_f64()
+                );
+            }
+            let t_f32 = Instant::now();
             for (name, data) in &params {
                 compiled.set_param(name, data);
             }
-            if packed_loaded.insert(seq) {
+            if trace {
+                eprintln!(
+                    "[gemma-runner trace]   set_param f32 ({} entries) done at {:.1}s",
+                    params.len(),
+                    t_f32.elapsed().as_secs_f64()
+                );
+            }
+            if packed_loaded.insert(key) {
+                let t_packed = Instant::now();
+                let n_packed = packed_for_upload.len();
                 for (name, (bytes, _scheme, _shape)) in packed_for_upload.iter() {
                     compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+                }
+                if trace {
+                    eprintln!(
+                        "[gemma-runner trace]   set_param_typed packed ({n_packed} entries) done at {:.1}s",
+                        t_packed.elapsed().as_secs_f64()
+                    );
                 }
             }
         });
@@ -396,20 +540,41 @@ impl GemmaPackedSession {
         self.padded_ids.resize(seq, 0);
         self.ids_f32.resize(seq, 1.0);
         self.last_idx[0] = 0.0;
-        let key = seq as u64;
+        let key = prefill_cache_key(seq, false);
         let compiled = self.prefill_cache.get_or_compile_with_options(
             key,
             || unreachable!("warm bucket"),
             &self.prefill_opts,
         );
-        let _ = compiled.run(&[
-            ("input_ids", self.ids_f32.as_slice()),
-            ("last_token_idx", self.last_idx.as_slice()),
-        ]);
+        // Lazy-embed builds expect `input_embeddings` instead of `input_ids` —
+        // feed a zero buffer to warm without paying the dequant cost.
+        let h = self.cfg.hidden_size;
+        let lazy = self.embed_row_bytes.is_some();
+        if lazy {
+            self.embed_scratch.resize(seq * h, 0.0);
+            for v in self.embed_scratch.iter_mut() {
+                *v = 0.0;
+            }
+            let _ = compiled.run(&[
+                ("input_embeddings", self.embed_scratch.as_slice()),
+                ("last_token_idx", self.last_idx.as_slice()),
+            ]);
+        } else {
+            let _ = compiled.run(&[
+                ("input_ids", self.ids_f32.as_slice()),
+                ("last_token_idx", self.last_idx.as_slice()),
+            ]);
+        }
         Ok(())
     }
 
     fn prewarm_decode_buckets(&mut self) -> Result<()> {
+        // Each warmed bucket uploads a full copy of the packed Q4 weights to
+        // its compiled-graph param storage (~6.6 GB for 12B); warming every
+        // bucket up to max_seq blows past unified memory. Default keeps the
+        // single-bucket behaviour from `warm_past_seqs` and honours its env
+        // override (`RLX_GEMMA_PACKED_WARM_PAST=...`). Cross-bucket weight
+        // sharing is tracked separately — see [[follow-up]].
         for past in warm_past_seqs(self.max_seq) {
             self.prewarm_decode_bucket(past)?;
         }
@@ -477,23 +642,65 @@ impl GemmaPackedSession {
         }
         self.last_idx[0] = n.saturating_sub(1) as f32;
 
+        // Task #37 lazy-embed path: host-gather one row per padded token from
+        // the Q4K-packed embed bytes. Active rows (`< n`) get real values,
+        // padding rows stay zeroed (their attention positions are masked).
+        let h = self.cfg.hidden_size;
+        let lazy = self.embed_row_bytes.is_some();
+        if lazy {
+            self.embed_scratch.resize(seq_bucket * h, 0.0);
+            for v in self.embed_scratch.iter_mut() {
+                *v = 0.0;
+            }
+            let (bytes, scheme, _shape) = self
+                .packed_tensors
+                .get("model.embed_tokens.weight")
+                .expect("lazy embed: packed entry must be present");
+            for (i, &tok) in prompt_ids.iter().take(n).enumerate() {
+                let row_off = i * h;
+                gather_embed_row(
+                    bytes,
+                    *scheme,
+                    h,
+                    tok as usize,
+                    &mut self.embed_scratch[row_off..row_off + h],
+                )?;
+            }
+        }
+
         let t0 = Instant::now();
-        let key = seq_bucket as u64;
+        let key = prefill_cache_key(seq_bucket, false);
         let compiled = self.prefill_cache.get_or_compile_with_options(
             key,
             || unreachable!("prefill bucket"),
             &self.prefill_opts,
         );
-        let outputs = run_packed_prefill(
-            compiled,
-            self.exec_device,
-            n,
-            seq_bucket,
-            &[
-                ("input_ids", self.ids_f32.as_slice()),
-                ("last_token_idx", self.last_idx.as_slice()),
-            ],
-        );
+        let inputs_id_pair = ("input_ids", self.ids_f32.as_slice());
+        let inputs_emb_pair = if lazy {
+            Some(("input_embeddings", self.embed_scratch.as_slice()))
+        } else {
+            None
+        };
+        let last_pair = ("last_token_idx", self.last_idx.as_slice());
+        // Build the slice the runtime expects; one of input_ids /
+        // input_embeddings is unused depending on the build path.
+        let outputs = if let Some(emb_pair) = inputs_emb_pair {
+            run_packed_prefill(
+                compiled,
+                self.exec_device,
+                n,
+                seq_bucket,
+                &[emb_pair, last_pair],
+            )
+        } else {
+            run_packed_prefill(
+                compiled,
+                self.exec_device,
+                n,
+                seq_bucket,
+                &[inputs_id_pair, last_pair],
+            )
+        };
         if packed_timing_enabled() {
             let active = packed_prefill_active_extent_enabled(self.exec_device) && n < seq_bucket;
             eprintln!(
@@ -503,6 +710,70 @@ impl GemmaPackedSession {
         }
 
         let kv_dims = self.per_layer_kv_dims();
+        // RLX_TAP_L0: builder appended 11 layer-0 tap tensors as outputs after
+        // [logits, k0, v0, ...]. Print stats and drop them before the KV
+        // consumer (which expects exactly 1 + 2*num_layers slots).
+        let mut outputs = outputs;
+        if std::env::var("RLX_TAP_L0").ok().is_some() {
+            let expected_kv = 2 * self.cfg.num_hidden_layers;
+            let total_kv_logits = 1 + expected_kv;
+            if outputs.len() > total_kv_logits {
+                let tap_start = total_kv_logits;
+                let labels = [
+                    "1. h_id (embed*scale)",
+                    "2. input_layernorm(x)",
+                    "A. Q POST-PROJ (pre-norm)",
+                    "B. K POST-PROJ (pre-norm)",
+                    "C. V POST-PROJ (pre-norm)",
+                    "D. Q reshape 4D (pre-norm)",
+                    "E. Q after per-head rms_norm (4D)",
+                    "3. Q post-norm (reshape back)",
+                    "4. K post-norm",
+                    "5. V post-norm",
+                    "6. Q post-RoPE",
+                    "7. K post-RoPE",
+                    "F. K_rep (post repeat_kv) -> SDPA input",
+                    "G. V_rep (post repeat_kv) -> SDPA input",
+                    "8. attention out (pre-o_proj)",
+                    "9. attn_out post post_attn_norm",
+                    "10. residual h + attn_out",
+                    "11. layer 0 final h",
+                ];
+                eprintln!(
+                    "[rlx-tap-l0] device={:?} prompt_len={n} bucket={seq_bucket}",
+                    self.exec_device
+                );
+                for (i, t) in outputs[tap_start..].iter().enumerate() {
+                    let label = labels.get(i).copied().unwrap_or("?");
+                    let mut n_nan = 0usize;
+                    let mut n_finite = 0usize;
+                    let mut min = f32::INFINITY;
+                    let mut max = f32::NEG_INFINITY;
+                    let mut sumsq = 0f64;
+                    for &v in t {
+                        if v.is_nan() {
+                            n_nan += 1;
+                            continue;
+                        }
+                        n_finite += 1;
+                        if v < min {
+                            min = v;
+                        }
+                        if v > max {
+                            max = v;
+                        }
+                        sumsq += (v as f64) * (v as f64);
+                    }
+                    let rms = (sumsq / n_finite.max(1) as f64).sqrt();
+                    eprintln!(
+                        "[rlx-tap-l0]   tap {:<32} len={:>7} nan={n_nan:>5} finite={n_finite:>7} min={min:+.3e} max={max:+.3e} rms={rms:.3e}",
+                        label,
+                        t.len()
+                    );
+                }
+                outputs.truncate(total_kv_logits);
+            }
+        }
         let kv_seq = infer_prefill_kv_seq(&outputs, 1, &kv_dims, n, seq_bucket);
         let (logits, mut kv) = kv_from_prefill_outputs_per_layer(
             outputs,
@@ -544,11 +815,36 @@ impl GemmaPackedSession {
         }
 
         let input_ids_f32 = [input_tok as f32];
+        // Task #37 lazy embed: dequant the single decode token row host-side.
+        let h = self.cfg.hidden_size;
+        let lazy = self.embed_row_bytes.is_some();
+        if lazy {
+            self.embed_scratch.resize(h, 0.0);
+            let (bytes, scheme, _shape) = self
+                .packed_tensors
+                .get("model.embed_tokens.weight")
+                .expect("lazy embed: packed entry must be present");
+            gather_embed_row(
+                bytes,
+                *scheme,
+                h,
+                input_tok as usize,
+                &mut self.embed_scratch[..h],
+            )?;
+        }
         let mut fixed = vec![
-            CacheRunInput {
-                name: "input_ids",
-                data: &input_ids_f32,
-                row_inner: None,
+            if lazy {
+                CacheRunInput {
+                    name: "input_embeddings",
+                    data: self.embed_scratch.as_slice(),
+                    row_inner: None,
+                }
+            } else {
+                CacheRunInput {
+                    name: "input_ids",
+                    data: &input_ids_f32,
+                    row_inner: None,
+                }
             },
             CacheRunInput {
                 name: "rope_cos",
@@ -647,6 +943,85 @@ impl GemmaPackedSession {
         let logits = logits[..vocab].to_vec();
         self.prefill_logits = Some(logits.clone());
         Ok(logits)
+    }
+
+    /// Post-`model.norm` hidden vector for the last prompt token (3840 dims for 12B).
+    pub fn predict_last_hidden(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        let n = prompt_ids.len().min(self.max_seq);
+        let seq_bucket = prefill_bucket_len(n, self.max_seq);
+        self.ensure_prefill_hidden_bucket(seq_bucket)?;
+
+        self.padded_ids.resize(seq_bucket, 0);
+        self.ids_f32.resize(seq_bucket, 0.0);
+        self.padded_ids.fill(0);
+        for (i, &t) in prompt_ids.iter().take(n).enumerate() {
+            self.padded_ids[i] = t;
+        }
+        for (dst, &id) in self.ids_f32.iter_mut().zip(self.padded_ids.iter()) {
+            *dst = id as f32;
+        }
+
+        let h = self.cfg.hidden_size;
+        let lazy = self.embed_row_bytes.is_some();
+        if lazy {
+            self.embed_scratch.resize(seq_bucket * h, 0.0);
+            for v in self.embed_scratch.iter_mut() {
+                *v = 0.0;
+            }
+            let (bytes, scheme, _shape) = self
+                .packed_tensors
+                .get("model.embed_tokens.weight")
+                .expect("lazy embed: packed entry must be present");
+            for (i, &tok) in prompt_ids.iter().take(n).enumerate() {
+                let row_off = i * h;
+                gather_embed_row(
+                    bytes,
+                    *scheme,
+                    h,
+                    tok as usize,
+                    &mut self.embed_scratch[row_off..row_off + h],
+                )?;
+            }
+        }
+
+        let key = prefill_cache_key(seq_bucket, true);
+        let compiled = self.prefill_cache.get_or_compile_with_options(
+            key,
+            || unreachable!("prefill hidden bucket"),
+            &self.prefill_opts,
+        );
+        let outputs = if lazy {
+            run_packed_prefill(
+                compiled,
+                self.exec_device,
+                n,
+                seq_bucket,
+                &[("input_embeddings", self.embed_scratch.as_slice())],
+            )
+        } else {
+            run_packed_prefill(
+                compiled,
+                self.exec_device,
+                n,
+                seq_bucket,
+                &[("input_ids", self.ids_f32.as_slice())],
+            )
+        };
+        let hidden = outputs
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("prefill hidden graph returned no outputs"))?;
+        let last = n.saturating_sub(1);
+        let need = h;
+        let start = last * need;
+        let end = start + need;
+        if hidden.len() < end {
+            bail!(
+                "hidden short for last token: {} < {end} (n={n} bucket={seq_bucket})",
+                hidden.len()
+            );
+        }
+        Ok(hidden[start..end].to_vec())
     }
 
     fn prompt_prefill_ready(&self, prompt_ids: &[u32]) -> bool {

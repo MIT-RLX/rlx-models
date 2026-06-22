@@ -1,0 +1,4 @@
+# Golden SNAC code indices (4 frames) from SNAC parity ref_codes.json.
+# SNAC decode → Whisper fast loop; no 3B LM required.
+28
+100 10 1 2 20 3 4 200 30 5 6 40 7 8 300 50 9 10 60 11 12 400 70 13 14 80 15 16

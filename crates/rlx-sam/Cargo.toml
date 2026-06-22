@@ -21,10 +21,15 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
+image = { workspace = true }
 
 [[bin]]
 name = "rlx-sam1"
 path = "src/bin/rlx_sam1.rs"
+
+[[bin]]
+name = "rlx-sam-batch"
+path = "src/bin/rlx_sam_batch.rs"
 
 [lints]
 workspace = true

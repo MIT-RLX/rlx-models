@@ -661,3 +661,34 @@ fn kitten_lstm_reshape_meta_after_propagate() {
         }
     }
 }
+
+#[test]
+fn kitten_text_encoder_mir_shapes_seq14() {
+    use rlx_runtime::{CompileOptions, Device, stages};
+    kitten_tts_mini_rlx::kernels::register_native_kernels();
+    let dir = bundle_dir();
+    if !dir.join("manifest.json").exists() {
+        return;
+    }
+    let opts = ImportOptions {
+        sequence_length: 14,
+        max_waveform_samples: 14 * 600 + 12_000,
+        ..ImportOptions::quant_bundle()
+    };
+    let (hir, _, _, _) = build_hir(&load_bundle().unwrap(), opts).unwrap();
+    let mut co = CompileOptions::default();
+    co.fusion_opts.skip_fusion = true;
+    let result = stages::compile_hir_stages(Device::Cpu, hir, &co).expect("compile");
+    let g = stages::graph_from_lir(result.lir);
+    for node in g.nodes() {
+        let dims: Vec<_> = node
+            .shape
+            .dims()
+            .iter()
+            .map(|d| d.unwrap_static())
+            .collect();
+        if dims.contains(&640) || (dims.contains(&128) && dims.contains(&512)) {
+            eprintln!("MIR seq14 {:?} {:?} shape={dims:?}", node.name, node.op);
+        }
+    }
+}

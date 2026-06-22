@@ -43,7 +43,7 @@ def main() -> None:
         sys.exit(1)
 
     tensors = load_file(str(src))
-    writer = gguf.GGUFWriter(str(dst), "onnx-decompose")
+    writer = gguf.GGUFWriter(str(dst), "kitten-tts-mini")
     for name, arr in tensors.items():
         if arr.dtype != np.float32:
             arr = arr.astype(np.float32)

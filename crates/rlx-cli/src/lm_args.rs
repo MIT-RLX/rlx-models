@@ -119,14 +119,16 @@ impl LmCliArgs {
         Device::from_str(&self.device).map_err(|e| anyhow::anyhow!("--device {}: {e}", self.device))
     }
 
-    /// Build a sampling option set from the relevant flags.
+    /// Build a sampling option set from the relevant flags. Starts from
+    /// `SampleOpts::greedy()` so the new advanced-sampler fields take
+    /// their defaults; only the CLI-bound knobs are overwritten.
     pub fn sample_opts(&self) -> SampleOpts {
-        SampleOpts {
-            temperature: self.temperature,
-            top_p: self.top_p,
-            top_k: self.top_k,
-            repetition_penalty: self.repetition_penalty,
-        }
+        let mut s = SampleOpts::greedy();
+        s.temperature = self.temperature;
+        s.top_p = self.top_p;
+        s.top_k = self.top_k;
+        s.repetition_penalty = self.repetition_penalty;
+        s
     }
 
     /// Construct an [`LmRunnerBuilder`] pre-populated from the flags.

@@ -211,6 +211,14 @@ impl GemmaRunner {
         generator.prefill_get_last_logits(prompt_ids)
     }
 
+    /// Post-`model.norm` hidden for the last prompt token (packed GGUF path only).
+    pub fn predict_last_hidden(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        self.packed
+            .as_mut()
+            .ok_or_else(|| anyhow!("predict_last_hidden requires packed_weights(true)"))?
+            .predict_last_hidden(prompt_ids)
+    }
+
     pub fn generate_packed(
         &mut self,
         prompt_ids: &[u32],
@@ -251,6 +259,61 @@ impl GemmaRunner {
             toks
         };
         Ok(tokens)
+    }
+
+    /// EAGLE3-style generate with a per-step **aux hidden state**
+    /// callback. After each decoded token, `on_aux` receives the
+    /// per-layer pre-attention-norm hidden states from the layer
+    /// indices in `aux_hidden_layer_ids` (one `Vec<f32>` per id,
+    /// each of length `hidden_size`).
+    ///
+    /// This is the entry point the rlx-eagle3 verifier bridge
+    /// (`AuxStateBuffer::write`) consumes — wire it like:
+    ///
+    /// ```ignore
+    /// runner.generate_with_aux(prompt, n, vec![2, 30, 57],
+    ///     |tok| { ... },
+    ///     |aux| { aux_buffer.write(aux); });
+    /// ```
+    ///
+    /// **Not supported in `packed_weights(true)` mode** — packed
+    /// builds use a separate compile path that doesn't yet thread
+    /// the aux tap.
+    pub fn generate_with_aux(
+        &mut self,
+        prompt_ids: &[u32],
+        n_new: usize,
+        aux_hidden_layer_ids: Vec<usize>,
+        mut on_token: impl FnMut(u32),
+        mut on_aux: impl FnMut(Vec<Vec<f32>>),
+    ) -> Result<Vec<u32>> {
+        if self.packed.is_some() {
+            bail!("generate_with_aux is not supported with packed_weights(true)");
+        }
+        if aux_hidden_layer_ids.is_empty() {
+            // No aux ids → falls back to plain generate.
+            return self.generate(prompt_ids, n_new, on_token);
+        }
+        let generator = self
+            .generator
+            .as_mut()
+            .ok_or_else(|| anyhow!("F32 generator unavailable in packed_weights mode"))?;
+        generator.set_aux_hidden_layer_ids(aux_hidden_layer_ids);
+        generator.prefill(prompt_ids);
+        let sample = self.sample;
+        let mut emitted: Vec<u32> = Vec::with_capacity(n_new);
+        for _ in 0..n_new {
+            let tok = generator.step_cached(sample)?;
+            emitted.push(tok);
+            on_token(tok);
+            if let Some(aux) = generator.take_last_aux() {
+                on_aux(aux);
+            }
+        }
+        // Clear the tap so subsequent generate() calls go through
+        // the bucketed fast path again.
+        generator.set_aux_hidden_layer_ids(Vec::new());
+        Ok(emitted)
     }
 
     /// Generate after splicing vision/audio rows into pre-scaled text embeddings.

@@ -19,7 +19,7 @@ use super::config::Vjepa2Config;
 use super::layers::{attention_plain, cross_attention};
 use super::weights::{Vjepa2PoolerCrossWeights, Vjepa2PoolerSelfBlockWeights, Vjepa2PoolerWeights};
 use anyhow::Result;
-use rlx_tensor::{gelu_tanh, layer_norm, linear};
+use rlx_core::host_kernels::{gelu_tanh, layer_norm, linear};
 
 pub struct Vjepa2PoolerOutput {
     pub embedding: Vec<f32>,

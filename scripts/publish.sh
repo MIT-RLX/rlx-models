@@ -62,14 +62,14 @@
 #   4. Crates marked `publish = false` or in workspace.exclude (see SKIPPED)
 #      are not published — cargo skips them; this script lists the rest.
 #
-# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.6) from the RLX repo
+# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.9) from the RLX repo
 # before `rlx-models` path deps resolve on the registry.
 #
-# 56 publishable workspace crates in 8 tiers (tier 7 = facade `rlx-models` last).
+# 82 publishable workspace crates in 7 tiers (tier 6 = facade `rlx-models` last).
 # Notable ordering: `kitten_tts_mini_rlx` before `rlx-kittentts`; `rlx-whisper`
 # before `rlx-kittentts` (dev-dep for roundtrip tests); `rlx-llama32` / `rlx-gemma`
 # (tier 4) before `rlx-minicpm5` / `rlx-voxtral-tts-train` (tier 5–6).
-# Workspace / upstream pin: 0.2.6 — bump `[workspace.package].version` and
+# Workspace / upstream pin: 0.2.9 — bump `[workspace.package].version` and
 # `[workspace.dependencies]` path `version =` fields before publishing.
 # Bump `[workspace.package].version`, per-crate `[package].version` when needed
 # (e.g. `rlx-models-core`), and `[workspace.dependencies]` pins before publishing.
@@ -138,7 +138,6 @@ LAST_PUBLISH_ERR=""      # temp log from the last failed publish attempt
 # listed here for tier-coverage validation only).
 SKIPPED=(
     rlx-mamba-bench
-    bench_matmul_relu
     bench_matmul_rlx
 )
 
@@ -149,14 +148,13 @@ SKIPPED=(
 # and `[dev-dependencies]` (including optional) against crates.io. Within
 # a tier, list deps before dependents (e.g. rlx-cpu before rlx-splat).
 TIERS=(
-    "rlx-diamond rlx-llama-base rlx-models-core rlx-onnx-decompose rlx-ssm rlx-tensor rlx-vlm-base"
-    "rlx-bert rlx-cli rlx-llada2 rlx-mamba rlx-nomic rlx-sam-ir rlx-vision"
-    "rlx-clinicalbert rlx-dinov2 rlx-embed rlx-fft kitten_tts_mini_rlx rlx-lfm rlx-lfm-vl rlx-minimax rlx-ocr rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-vad rlx-vjepa2 rlx-wav2vec2-bert rlx-whisper rlx-kittentts"
-    "rlx-flux2 rlx-locateanything rlx-nemotron-omni rlx-omnicoder rlx-qwen3-tts rlx-qwen35 rlx-sam2 rlx-sam3"
-    "rlx-gemma rlx-llama32 rlx-qwen3-tts-train"
-    "rlx-bonsai rlx-cohere rlx-glm rlx-gpt-oss rlx-granite rlx-minicpm5 rlx-mistral rlx-nemotron rlx-neutts rlx-phi rlx-voxtral rlx-voxtral-tts"
-    "rlx-voxtral-tts-train"
-    "rlx-models"
+    "kitten_tts_mini_rlx rlx-diamond rlx-diarize rlx-inflect-nano rlx-llama-base rlx-models-core rlx-onnx-decompose rlx-ssm rlx-vlm-base rlx-wav2vec2-asr"
+    "rlx-bert rlx-cli rlx-encodec rlx-facodec rlx-llada2 rlx-mamba rlx-nanocodec rlx-nomic rlx-sam-ir rlx-snac rlx-speechtokenizer rlx-tiny-tts rlx-vibevoice rlx-vision rlx-wavtokenizer rlx-xcodec"
+    "rlx-bioclip2 rlx-clinicalbert rlx-dac rlx-dinov2 rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-grounding-dino rlx-lfm rlx-lfm-vl rlx-minimax rlx-nemotron-asr rlx-ocr rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-vad rlx-vjepa2 rlx-wav2vec2-bert"
+    "rlx-flux2 rlx-locateanything rlx-omnicoder rlx-qwen35 rlx-sam2 rlx-sam3 rlx-tsac rlx-whisper"
+    "rlx-aec rlx-gemma rlx-kittentts rlx-llama32 rlx-mimi rlx-nemotron-omni rlx-pocket-tts rlx-qwen3-asr"
+    "rlx-bonsai rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-kyutai-tts rlx-minicpm5 rlx-mistral rlx-moshi rlx-nemotron rlx-neutts rlx-orpheus rlx-phi rlx-qwen3-tts rlx-voxtral rlx-voxtral-tts"
+    "rlx-models rlx-qwen3-tts-train rlx-voxtral-tts-train"
 )
 
 usage() {
@@ -290,6 +288,10 @@ for i, line in enumerate(tier_lines):
 # Workspace dependency keys that differ from the published package name.
 DEP_PACKAGE_ALIAS = {"rlx-core": "rlx-models-core"}
 
+# Crate directory names that differ from the published package name
+# (TIERS lists package names, since `cargo publish --package` takes them).
+DIR_TO_PKG = {}
+
 def workspace_internal_keys(root: Path) -> set[str]:
     ws = (root / "Cargo.toml").read_text()
     sm = re.search(r"\[workspace\.dependencies\](.*?)(?=\n\[|\Z)", ws, re.S)
@@ -338,7 +340,7 @@ def parse_rlx_deps(toml_path: Path, crate_name: str) -> set[str]:
 
 violations: list[str] = []
 for toml in sorted((root / "crates").glob("*/Cargo.toml")):
-    name = toml.parent.name
+    name = DIR_TO_PKG.get(toml.parent.name, toml.parent.name)
     if re.search(r"^publish\s*=\s*false", toml.read_text(), re.M):
         continue
     if name not in crate_tier:
@@ -453,9 +455,6 @@ list_tiers() {
             rlx-mamba-bench)
                 echo "  - rlx-mamba-bench          (workspace.exclude; burn bench)"
                 ;;
-            bench_matmul_relu)
-                echo "  - bench_matmul_relu        (workspace.exclude; publish = false; ONNX bench)"
-                ;;
             bench_matmul_rlx)
                 echo "  - bench_matmul_rlx         (workspace.exclude; publish = false; matmul bench)"
                 ;;
@@ -479,9 +478,12 @@ if (( ! NO_GATE )); then
     bold "[2/3] cargo clippy --workspace --all-targets -- -D warnings"
     cargo clippy --workspace --all-targets -- -D warnings
 
-    bold "[3/3] cargo test --workspace --release"
+    bold "[3/3] cargo test --workspace --release --lib --tests"
     # `kitten_tts_mini_rlx` qmatmul tests need local ONNX fixture paths (optional weights/).
-    cargo test --workspace --release --exclude kitten_tts_mini_rlx
+    # `--lib --tests` skips building examples: many crates share example names (bench,
+    # bench_asr, …) that collide in the shared target/examples dir (cargo #6313). Examples
+    # are still compile-checked by the clippy `--all-targets` gate above.
+    cargo test --workspace --release --lib --tests --exclude kitten_tts_mini_rlx
     green "Pre-flight gates passed."
 fi
 

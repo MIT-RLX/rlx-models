@@ -218,9 +218,9 @@ mod families {
         note: "Gemma 3n (mobile/edge Matformer variant) — PLAN.md M2",
     };
     pub static GEMMA4: UnimplementedArch = UnimplementedArch {
-        family: "Gemma 4",
+        family: "Gemma 4 MoE (A4B)",
         milestone: "M2",
-        note: "Gemma 4 (flagship + edge E2B/E4B + MoE A4B) — PLAN.md M2 flagship",
+        note: "Gemma 4 MoE A4B routing block — dense + E2B/E4B run via the `gemma` runner — PLAN.md M2",
     };
     pub static QWEN3_VL: UnimplementedArch = UnimplementedArch {
         family: "Qwen3-VL",
@@ -302,10 +302,11 @@ static KNOWN_UNIMPLEMENTED: phf::Map<&'static str, &'static UnimplementedArch> =
     // Qwen variants we don't run yet
     "qwen3moe" => &families::QWEN3_MOE,
     "qwen3next" => &families::QWEN3_NEXT,
-    // Gemma 3+ — rlx-gemma currently targets gemma/gemma2 only.
+    // Gemma 3 / 3n still pending; Gemma 4 dense + E2B now route to the
+    // `gemma` runner (see `model_type_runner_name` / `arch_runner_name`).
+    // Only the MoE A4B variant remains unimplemented.
     "gemma3" => &families::GEMMA3,
     "gemma3n" => &families::GEMMA3N,
-    "gemma4" => &families::GEMMA4,
     "gemma4moe" => &families::GEMMA4,
     "qwen3vl" => &families::QWEN3_VL,
     "qwen3vlmoe" => &families::QWEN3_VL,
@@ -387,7 +388,18 @@ pub fn model_type_runner_name(model_type: &str) -> Option<&'static str> {
         // Qwen3.6 runs through the qwen35 trunk (PLAN.md M1).
         "qwen36" | "qwen3_6" | "qwen36_moe" | "qwen36moe" => Some("qwen35"),
         "llama" | "llama2" | "llama3" => Some("llama32"),
-        "gemma" | "gemma2" | "gemma3" | "gemma3n" => Some("gemma"),
+        // Gemma 4 dense + E2B/E4B mobile (PLE + KV-shared). The unified
+        // top-level model_type is `gemma4`; the text sub-config is
+        // `gemma4_text`. The MoE A4B variant (`gemma4moe`) stays in the
+        // unimplemented table until its routing block is validated.
+        "gemma"
+        | "gemma2"
+        | "gemma3"
+        | "gemma3n"
+        | "gemma4"
+        | "gemma4_text"
+        | "gemma4_unified"
+        | "gemma4_unified_text" => Some("gemma"),
         "dinov2" | "dinov2_with_registers" => Some("dinov2"),
         "vjepa2" | "vjepa" => Some("vjepa2"),
         "sam" | "sam_vit" | "mobile-sam" | "mobile_sam" => Some("sam1"),
@@ -635,6 +647,13 @@ mod tests {
         assert_eq!(model_type_runner_name("qwen3_moe"), Some("qwen3"));
         assert_eq!(model_type_runner_name("llama"), Some("llama32"));
         assert_eq!(model_type_runner_name("gemma3"), Some("gemma"));
+        // Gemma 4 dense + E2B mobile route to the gemma runner.
+        assert_eq!(model_type_runner_name("gemma4"), Some("gemma"));
+        assert_eq!(model_type_runner_name("gemma4_text"), Some("gemma"));
+        assert_eq!(model_type_runner_name("gemma4_unified"), Some("gemma"));
+        // Gemma 4 dense is no longer flagged unimplemented; MoE A4B still is.
+        assert!(known_unimplemented_arch("gemma4").is_none());
+        assert!(known_unimplemented_arch("gemma4moe").is_some());
         assert_eq!(
             model_type_runner_name("dinov2_with_registers"),
             Some("dinov2")

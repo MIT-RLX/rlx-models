@@ -55,27 +55,27 @@ fn main() -> anyhow::Result<()> {
     let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 0];
     let style = load_style_row();
 
-    let seq = ids.len();
+    let token_len = ids.len();
+    let compile_seq = kitten_tts_mini_rlx::compile_profile::compile_slot_length(token_len);
     let opts = kitten_tts_mini_rlx::GraphOptions {
-        sequence_length: seq,
-        max_waveform_samples: seq.saturating_mul(600).saturating_add(12_000),
+        sequence_length: compile_seq,
+        max_waveform_samples: token_len.saturating_mul(600).saturating_add(12_000),
     };
     let mut graph =
         kitten_tts_mini_rlx::bundle_compile::compile_from_bundle(Device::Cpu, &bundle, &opts)?;
 
-    let ids_bytes: Vec<u8> = ids.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let mut ids_padded = ids.clone();
+    ids_padded.resize(compile_seq, 0);
+    let ids_bytes: Vec<u8> = ids_padded.iter().flat_map(|v| v.to_le_bytes()).collect();
     let style_bytes: Vec<u8> = style.iter().flat_map(|v| v.to_le_bytes()).collect();
     let speed_bytes: Vec<u8> = 1.0f32.to_le_bytes().to_vec();
 
-    kitten_tts_mini_rlx::opts::set_compile_sequence_length(seq);
-    let shape_bytes: Vec<u8> = [1i64, seq as i64]
-        .iter()
-        .flat_map(|v| v.to_le_bytes())
-        .collect();
-    graph.set_param_typed(
-        kitten_tts_mini_rlx::opts::RUNTIME_INPUT_IDS_SHAPE,
-        &shape_bytes,
-        rlx_ir::DType::I64,
+    kitten_tts_mini_rlx::opts::set_compile_sequence_length(compile_seq);
+    kitten_tts_mini_rlx::bundle_compile::set_runtime_input_ids_shape(&mut graph, token_len)?;
+    kitten_tts_mini_rlx::bundle_compile::set_runtime_active_sequence(
+        &mut graph,
+        token_len,
+        compile_seq,
     );
 
     let outs = kitten_tts_mini_rlx::bundle_compile::run_with_duration_fixed_point(
@@ -93,8 +93,12 @@ fn main() -> anyhow::Result<()> {
             .chunks_exact(8)
             .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
             .collect();
-        let sum: i64 = dur.iter().sum();
-        eprintln!("native duration={dur:?} sum={sum}");
+        let sum: i64 = dur[..token_len.min(dur.len())]
+            .iter()
+            .copied()
+            .filter(|&d| d > 0 && d < 10_000)
+            .sum();
+        eprintln!("native duration={dur:?} active_sum={sum}");
         eprintln!(
             "native waveform raw len={wave_len} expected_trim={}",
             sum as usize * 600

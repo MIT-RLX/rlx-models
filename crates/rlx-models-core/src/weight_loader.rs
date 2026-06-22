@@ -28,8 +28,9 @@
 
 use anyhow::{Context, Result, anyhow};
 use rlx_gguf::MetaValue;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Walk the GGUF metadata for `{arch}.block_count -
 /// {arch}.nextn_predict_layers`. Returns `Some(main_layer_count)`
@@ -176,6 +177,18 @@ pub fn gguf_to_hf_name_for_arch(gguf: &str, arch: &str) -> Option<String> {
             "attn_k.weight" => "self_attn.k_proj.weight",
             "attn_v.weight" => "self_attn.v_proj.weight",
             "attn_output.weight" => "self_attn.o_proj.weight",
+            // Gemma 4 per-head Q/K RMSNorms — applied between
+            // q_proj/k_proj and RoPE. Without this mapping the drain
+            // stored the weights under their GGUF names and the
+            // packed builder's `model.layers.N.self_attn.{q,k}_norm`
+            // lookup missed, panicking with "packed cache miss …
+            // self_attn.q_norm.weight" once the builder started
+            // requesting them (task #50).
+            "attn_q_norm.weight" => "self_attn.q_norm.weight",
+            "attn_k_norm.weight" => "self_attn.k_norm.weight",
+            // Gemma 4 per-layer output scalar (shape [1]) — multiplied
+            // with the layer output before the residual add.
+            "layer_output_scale.weight" => "self_attn.output_scale.weight",
             "ffn_gate.weight" => "mlp.gate_proj.weight",
             "ffn_up.weight" => "mlp.up_proj.weight",
             "ffn_down.weight" => "mlp.down_proj.weight",
@@ -184,6 +197,47 @@ pub fn gguf_to_hf_name_for_arch(gguf: &str, arch: &str) -> Option<String> {
         return Some(format!("model.layers.{idx}.{hf_tail}"));
     }
     gguf_to_hf_name(gguf)
+}
+
+/// Arch-aware inverse of [`gguf_to_hf_name_for_arch`]. Used by
+/// [`crate::gguf_resolve::Gemma2GgufResolver`] when builders request
+/// HF tensor names against a Gemma 2/3/4 GGUF file.
+pub fn hf_to_gguf_name_for_arch(hf: &str, arch: &str) -> Option<String> {
+    if matches!(
+        arch,
+        "gemma2" | "gemma3" | "gemma3n" | "gemma4" | "gemma4moe"
+    ) {
+        match hf {
+            "model.embed_tokens.weight" => return Some("token_embd.weight".into()),
+            "model.norm.weight" => return Some("output_norm.weight".into()),
+            "lm_head.weight" => return Some("output.weight".into()),
+            _ => {}
+        }
+        let rest = hf.strip_prefix("model.layers.")?;
+        let dot = rest.find('.')?;
+        let (idx_str, tail_with_dot) = rest.split_at(dot);
+        let tail = &tail_with_dot[1..];
+        let idx: usize = idx_str.parse().ok()?;
+        let gguf_tail = match tail {
+            "input_layernorm.weight" => "attn_norm.weight",
+            "post_attention_layernorm.weight" => "post_attention_norm.weight",
+            "pre_feedforward_layernorm.weight" => "ffn_norm.weight",
+            "post_feedforward_layernorm.weight" => "post_ffw_norm.weight",
+            "self_attn.q_proj.weight" => "attn_q.weight",
+            "self_attn.k_proj.weight" => "attn_k.weight",
+            "self_attn.v_proj.weight" => "attn_v.weight",
+            "self_attn.o_proj.weight" => "attn_output.weight",
+            "self_attn.q_norm.weight" => "attn_q_norm.weight",
+            "self_attn.k_norm.weight" => "attn_k_norm.weight",
+            "self_attn.output_scale.weight" => "layer_output_scale.weight",
+            "mlp.gate_proj.weight" => "ffn_gate.weight",
+            "mlp.up_proj.weight" => "ffn_up.weight",
+            "mlp.down_proj.weight" => "ffn_down.weight",
+            _ => return hf_to_gguf_name(hf),
+        };
+        return Some(format!("blk.{idx}.{gguf_tail}"));
+    }
+    hf_to_gguf_name(hf)
 }
 
 /// Match GGUF tensor names that hold a Gemma RMSNorm gain. Covers all
@@ -354,6 +408,57 @@ impl WeightLoader for WeightMap {
     }
     fn remaining_keys(&self) -> Vec<String> {
         self.keys().map(|s| s.to_string()).collect()
+    }
+}
+
+/// F32 tensor stored in a shared host cache (`Arc` avoids cloning multi-GB
+/// weights on every graph build).
+pub type ArcF32Tensor = (Arc<Vec<f32>>, Vec<usize>);
+
+/// [`WeightLoader`] view over a frozen `HashMap` of [`ArcF32Tensor`].
+/// Graph builders [`take`](WeightLoader::take) tensors out of this view
+/// (one `Vec` copy per weight into compile params) without cloning the
+/// entire cache first.
+pub struct ArcCacheLoader<'a> {
+    cache: &'a HashMap<String, ArcF32Tensor>,
+}
+
+impl<'a> ArcCacheLoader<'a> {
+    pub fn new(cache: &'a HashMap<String, ArcF32Tensor>) -> Self {
+        Self { cache }
+    }
+}
+
+impl WeightLoader for ArcCacheLoader<'_> {
+    fn format_id(&self) -> &'static str {
+        "arc-cache"
+    }
+    fn len(&self) -> usize {
+        self.cache.len()
+    }
+    fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let (data, shape) = self
+            .cache
+            .get(key)
+            .ok_or_else(|| anyhow!("weight not found in arc cache: {key}"))?;
+        Ok((data.as_ref().clone(), shape.clone()))
+    }
+    fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let (data, shape) = self.take(key)?;
+        if shape.len() != 2 {
+            anyhow::bail!("transpose requires 2D, got {shape:?}");
+        }
+        let (rows, cols) = (shape[0], shape[1]);
+        let mut transposed = vec![0f32; data.len()];
+        for i in 0..rows {
+            for j in 0..cols {
+                transposed[j * rows + i] = data[i * cols + j];
+            }
+        }
+        Ok((transposed, vec![cols, rows]))
+    }
+    fn remaining_keys(&self) -> Vec<String> {
+        self.cache.keys().cloned().collect()
     }
 }
 
@@ -844,6 +949,19 @@ mod tests {
                 "mismatch for {hf}"
             );
         }
+    }
+
+    #[test]
+    fn hf_to_gguf_gemma4_output_scale() {
+        assert_eq!(
+            hf_to_gguf_name_for_arch("model.layers.5.self_attn.output_scale.weight", "gemma4")
+                .as_deref(),
+            Some("blk.5.layer_output_scale.weight")
+        );
+        assert_eq!(
+            gguf_to_hf_name_for_arch("blk.5.layer_output_scale.weight", "gemma4").as_deref(),
+            Some("model.layers.5.self_attn.output_scale.weight")
+        );
     }
 
     #[test]

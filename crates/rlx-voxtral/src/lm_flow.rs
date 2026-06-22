@@ -20,7 +20,10 @@ use crate::weights::LanguageModelPrefixLoader;
 use anyhow::Result;
 use rlx_core::flow_bridge::WeightLoaderSource;
 use rlx_core::weight_map::WeightMap;
-use rlx_flow::blocks::{LlamaDecoderSpec, RopeTablesStage, llama_prefill_layer_fused};
+use rlx_flow::blocks::{
+    LlamaDecoderSpec, RopeTablesStage, llama_prefill_layer_attn_only, llama_prefill_layer_composed,
+    llama_prefill_layer_fused, llama_prefill_layer_mlp_only,
+};
 use rlx_flow::{BuiltModel, CompileProfile, FlowStage, ModelFlow, SideOutputs};
 use rlx_ir::op::MaskKind;
 use rlx_ir::{DType, Shape};
@@ -69,8 +72,15 @@ pub fn build_voxtral_prefill_built(
         ))
         .zero_beta_named("voxtral.zero_beta.hidden", h);
 
+    // Debug bisection: RLX_VOXTRAL_NLAYERS caps the decoder layer count so we can
+    // split "layers" from the "final_norm + lm_head" tail (0 = head-only).
+    let n_layers = std::env::var("RLX_VOXTRAL_NLAYERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|n| n.min(llama.num_hidden_layers))
+        .unwrap_or(llama.num_hidden_layers);
     let export = with_kv_outputs;
-    flow = flow.repeat_layers(llama.num_hidden_layers, {
+    flow = flow.repeat_layers(n_layers, {
         let spec = decoder_spec.clone();
         let sink = kv_sink.clone();
         move |i| {
@@ -80,7 +90,20 @@ pub fn build_voxtral_prefill_built(
                     rlx_flow::blocks::LlamaKvTapStage::layer(i, dh, eps, sink.inner()),
                 ));
             }
-            stages.push(llama_prefill_layer_fused(i, spec.clone()));
+            // NOTE: the Metal garbage-logits bug is NOT in the fusion — the composed
+            // small-block path (RLX_VOXTRAL_COMPOSED) produces byte-identical wrong
+            // logits, so the culprit is a shared LM op on Metal (RoPE / RMSNorm /
+            // causal-mask SDPA), which the Whisper encoder doesn't use. CPU + MLX are
+            // correct. Kept the toggle for op-level bisection of the rlx-metal kernel.
+            if std::env::var("RLX_VOXTRAL_ATTNONLY").is_ok() {
+                stages.push(llama_prefill_layer_attn_only(i, spec.clone()));
+            } else if std::env::var("RLX_VOXTRAL_MLPONLY").is_ok() {
+                stages.push(llama_prefill_layer_mlp_only(i, spec.clone()));
+            } else if std::env::var("RLX_VOXTRAL_COMPOSED").is_ok() {
+                stages.push(llama_prefill_layer_composed(i, spec.clone()));
+            } else {
+                stages.push(llama_prefill_layer_fused(i, spec.clone()));
+            }
             if stages.len() == 1 {
                 stages.into_iter().next().unwrap()
             } else {
@@ -112,12 +135,13 @@ pub fn build_voxtral_decode_built(
     batch: usize,
     past_seq: usize,
     dynamic_past: bool,
+    use_custom_mask: bool,
 ) -> Result<BuiltModel> {
     let opts = Llama32DecodeOpts {
         batch,
         past_seq,
         dynamic_past,
-        use_custom_mask: false,
+        use_custom_mask,
         profile: None,
     };
     let mut prefixed = LanguageModelPrefixLoader::new(weights);
