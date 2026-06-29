@@ -64,15 +64,14 @@
 //! (e.g. Whisper round-trip in `tests/whisper_validate.rs`) and never enter
 //! the runtime dep graph.
 //!
-//! Generation state — `KyutaiTtsSession::generate` is currently a stub; every
-//! architectural primitive above is implemented and unit-tested, but the
-//! orchestration loop that composes them with loaded weights is not yet
-//! wired. The crate already produces real audio through the Mimi codec
-//! (see `examples/generate_wav.rs`); end-to-end native TTS is the next step.
+//! Generation is wired through [`KyutaiTtsSession::generate`] → [`backend::KyutaiTtsBackend`]
+//! (native RLX temporal backbone on `--device metal` / `cuda` / …; DepFormer eager).
+//! Set `RLX_KYUTAI_TTS_NATIVE=1` to force the RLX backbone on CPU.
 //!
 //! See [`KyutaiTtsConfig`] for the static architecture preset and
 //! [`download::fetch_kyutai_tts`] for weight fetching.
 
+pub mod backend;
 pub mod checkpoint;
 pub mod cli;
 pub mod conditioner;
@@ -80,14 +79,22 @@ pub mod config;
 pub mod cross_attention;
 pub mod delays;
 pub mod depformer;
+pub mod depformer_stream;
 pub mod device;
 pub mod download;
 pub mod fuser;
+pub mod generate;
 pub mod low_rank_embedding;
+pub mod model;
 pub mod nn;
+pub mod rlx_lm;
+pub mod rlx_model;
 pub mod sampling;
 pub mod session;
+pub mod state_machine;
+pub mod tokenizer;
 pub mod transformer;
+pub mod util;
 pub mod weights;
 
 pub use checkpoint::{KyutaiTtsCheckpoint, KyutaiTtsVoice};
@@ -106,7 +113,7 @@ pub use nn::{
     Embedding, RMS_EPS, apply_rope_vec, linear, rms_norm, rope_tables, silu, sin_pos_embed,
     softmax_last_dim, swiglu_mlp,
 };
-pub use sampling::{CfgSampler, LogitsProcessor, argmax};
+pub use sampling::{CfgSampler, LogitsProcessor, StreamSampler, argmax};
 pub use transformer::{
     AttnWeights, LayerWeights, StreamingTransformer, TransformerConfig as BackboneConfig,
 };
@@ -120,12 +127,24 @@ pub use weights::{
 // `conditioner::LutConditioner` and `conditioner::TensorConditioner`. Access
 // the config-side spec types via the `config` submodule, or destructure
 // [`ConditionerKind`] variants.
-pub use device::{device_ready, parse_kyutai_tts_device, test_devices};
-pub use download::{
-    HF_KYUTAI_TTS_REPO, MIMI_SIDECAR_FILE, SPM_TOKENIZER_FILE, TTS_WEIGHTS_FILE,
-    default_kyutai_tts_dir, default_mimi_dir, ensure_weights, fetch_kyutai_tts,
-    resolve_kyutai_tts_dir, tokenizer_path, tts_weights_path,
+pub use backend::{KyutaiTtsBackend, resolve_lm_device};
+pub use device::{
+    device_ready, parse_kyutai_tts_device, preferred_kyutai_device, resolve_kyutai_tts_device,
+    test_devices,
 };
+pub use download::{
+    DEFAULT_VOICE_NAME, HF_KYUTAI_TTS_REPO, HF_KYUTAI_TTS_VOICES_REPO, MIMI_SIDECAR_FILE,
+    SPM_TOKENIZER_FILE, TTS_WEIGHTS_FILE, default_kyutai_tts_dir, default_mimi_dir,
+    default_voices_dir, ensure_voice_embedding, ensure_weights, fetch_kyutai_tts,
+    fetch_voice_embedding, resolve_kyutai_tts_dir, tokenizer_path, tts_weights_path,
+    voice_embedding_path,
+};
+pub use generate::GenerateConfig as LmGenerateConfig;
+pub use model::{
+    KyutaiLm, KyutaiTtsModel, MAX_SPEAKER_CROSS_FRAMES, MAX_SPEAKER_SLOTS, SPEAKER_FRAMES_PER_SLOT,
+    load_speaker_embedding, load_voice_speaker_wavs,
+};
+pub use rlx_model::RlxKyutaiTtsModel;
 pub use session::{GenerationConfig, GenerationResult, KyutaiTtsSession};
 
 #[cfg(feature = "cli")]

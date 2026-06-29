@@ -74,7 +74,8 @@ Requires `ffmpeg` on PATH. Hi clips only need exported SNAC weights; sentence cl
 ```bash
 just fetch-orpheus              # GGUF → /tmp/rlx-weights/orpheus/
 just fetch-orpheus-snac         # PyTorch checkpoint → /tmp/rlx-weights/snac/
-just export-orpheus-snac        # safetensors + config JSON
+just export-orpheus-snac        # safetensors + config JSON (+ parity fixtures)
+just export-orpheus-snac -- --parity-layers   # also ref_stage_*.npy for layer tests
 export ORPHEUS_SNAC_PATH=/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors
 ```
 
@@ -188,6 +189,8 @@ Streaming: [`OrpheusTts::synthesize_stream`] — ~2048-sample PCM chunks after 4
 | `just test-orpheus-whisper` | SNAC golden → Whisper (fast) |
 | `just test-orpheus-whisper-e2e` | Full LM → Whisper (`#[ignore]`) |
 | `just test-orpheus-backends-whisper` | Per-backend + Whisper |
+| `ORPHEUS_CODES_PARITY=1 cargo test -p rlx-orpheus --test backends_codes_parity --features all-backends --release` | Greedy SNAC codes vs CPU on every backend |
+| `ORPHEUS_BACKENDS_BENCH=1 just test-orpheus-backends-whisper` | Whisper on all available accelerators |
 | `just bench-orpheus` / `bench-orpheus-all-devices` | Timing + optional Whisper |
 
 ## Tests
@@ -222,6 +225,7 @@ just test-orpheus-backends-whisper named_voice_whisper_wgpu
 | `ORPHEUS_LOW_MEM=1` | CPU F32 LM prefill + decode (lower RAM) |
 | `ORPHEUS_METAL_PREFILL` | `metal` \| `packed` \| `cpu` — Metal GGUF prefill mode |
 | `ORPHEUS_COMPILE_SEQ_CAP` | Compile bucket cap (default tuned for synthesis) |
+| `ORPHEUS_COMPILE_CACHE` | Prefill compile cache for bucket decode (`0` disables; default on when RAM allows) |
 | `ORPHEUS_BUCKET_DECODE=1` | Faster multi-step LM decode when RAM allows |
 | `ORPHEUS_MLX_KV=1` | Opt-in MLX LM KV decode |
 | `ORPHEUS_MASK_LOGITS` | Restrict LM logits to SNAC slot (`1` force on, `0` off; default on for wgpu/Vulkan **native GPU decode** only) |
@@ -233,4 +237,7 @@ just test-orpheus-backends-whisper named_voice_whisper_wgpu
 - **wgpu / Vulkan:** `--device gpu` selects the portable GPU backend; the 3B GGUF LM runs **CPU prefill + CPU decode** (GGUF parity, same sampling as Metal). SNAC stays CPU eager. Native wgpu LM decode is pending upstream KV parity (`ORPHEUS_MASK_LOGITS=1` only needed for that path).
 - **MLX:** not selected by `--device auto`; set `ORPHEUS_MLX_KV=1` to enable KV decode on MLX.
 - **Batch decode:** [`decode_orpheus_codes`] returns the full SNAC waveform; streaming uses 4-frame windows (2048-sample centers) and appends the remaining tail automatically.
-- **Parity:** SNAC `z_q` + PCM vs Python within ~1e-3 when noise fixtures exist; CoreML SNAC vs eager within ~0.08 max abs diff (fp16 on ANE).
+- **Multi-utterance:** reuse one [`OrpheusTts`] session and call [`OrpheusTts::synthesize_batch`] (same backbone load as [`examples/batch_demos.rs`]).
+- **Parity:** SNAC `z_q` + PCM vs Python within ~1e-3 when noise fixtures exist; per-decoder-stage parity with `export_snac_decoder.py --parity-layers`; CoreML SNAC vs eager within ~0.08 max abs diff (fp16 on ANE). LM: Metal `for_tts` greedy tokens match CPU synthesis reference (`metal_prefill_parity` tests).
+- **Serving / throughput:** Orpheus is autoregressive (one SNAC slot token per LM step) — unlike chat LLMs there is no prefill/decode asymmetry to exploit for continuous batching today. [`rlx-serve`](../../crates/rlx-serve) continuous + fused batching targets [`Qwen3Generator::forward_batch_decode`](../../crates/rlx-qwen3/src/generator.rs); **`Llama32Generator` has no batched decode yet**, so multi-request TTS throughput is **one utterance per backbone lock** until batched Llama decode lands. Reuse [`OrpheusTts::synthesize_batch`] or a job queue for now.
+- **Tensor parallel:** [`rlx-distributed`](../../crates/rlx-distributed) implements in-graph TP (Megatron MLP + head-sharded attention) for **Qwen3** blocks on the research path — **not wired for Llama-3B / Orpheus**. A 3B Orpheus model fits one Apple Silicon or consumer GPU; TP would help multi-node serving once Llama blocks expose the same collectives (see [distributed-inference-design.md](../../docs/distributed-inference-design.md)).

@@ -16,53 +16,60 @@ documentation.workspace = true
 [dependencies]
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
-rlx-sam-ir = { workspace = true }
-rlx-bert = { workspace = true }
-rlx-clinicalbert = { workspace = true }
-rlx-nomic = { workspace = true }
-rlx-vision = { workspace = true }
-rlx-dinov2 = { workspace = true }
-rlx-bioclip2 = { workspace = true }
-rlx-embed = { workspace = true }
-rlx-sam = { workspace = true }
-rlx-sam2 = { workspace = true }
-rlx-sam3 = { workspace = true }
-rlx-qwen3 = { workspace = true }
-rlx-qwen3-tts = { workspace = true }
-rlx-llama32 = { workspace = true }
-rlx-gemma = { workspace = true }
-rlx-llada2 = { workspace = true }
-rlx-qwen35 = { workspace = true }
-rlx-flux2 = { workspace = true }
-rlx-diamond = { workspace = true }
-rlx-vjepa2 = { workspace = true }
-rlx-wav2vec2-bert = { workspace = true }
-rlx-wav2vec2-asr = { workspace = true }
-rlx-diarize = { workspace = true }
-rlx-whisper = { workspace = true, features = ["tokenizer", "timestamps"] }
-rlx-vad = { workspace = true }
-rlx-aec = { workspace = true }
-rlx-voxtral = { workspace = true }
-rlx-qwen3-asr = { workspace = true }
-rlx-locateanything = { workspace = true }
-rlx-voxtral-tts = { workspace = true }
-rlx-ocr = { workspace = true }
-rlx-neutts = { workspace = true }
-rlx-orpheus = { workspace = true }
-rlx-kittentts = { workspace = true }
-rlx-florence2 = { workspace = true }
-rlx-mimi = { workspace = true }
-rlx-tsac = { workspace = true }
-rlx-moshi = { workspace = true }
-rlx-kyutai-tts = { workspace = true }
-rlx-mistral = { workspace = true }
-rlx-bonsai = { workspace = true }
-rlx-minicpm5 = { workspace = true, features = ["tokenizer"] }
-rlx-phi = { workspace = true }
-rlx-omnicoder = { workspace = true }
-rlx-granite = { workspace = true }
-rlx-cohere = { workspace = true }
-rlx-llama-base = { workspace = true }
+# ── Model families (opt-in) ─────────────────────────────────────────────────
+# Every model family below is an OPTIONAL dependency, surfaced through a
+# matching feature (see [features]). The default build pulls only the
+# embedding/tokenizer stack; consumers opt into the catalogue they need so the
+# heavy/native deps of unused families (e.g. candle via the kyutai/moshi codec)
+# never reach a binary that doesn't ask for them.
+rlx-sam-ir = { workspace = true, optional = true }
+rlx-bert = { workspace = true, optional = true }
+rlx-clinicalbert = { workspace = true, optional = true }
+rlx-nomic = { workspace = true, optional = true }
+rlx-vision = { workspace = true, optional = true }
+rlx-dinov2 = { workspace = true, optional = true }
+rlx-bioclip2 = { workspace = true, optional = true }
+rlx-embed = { workspace = true, optional = true }
+rlx-sam = { workspace = true, optional = true }
+rlx-sam2 = { workspace = true, optional = true }
+rlx-sam3 = { workspace = true, optional = true }
+rlx-qwen3 = { workspace = true, optional = true }
+rlx-qwen3-tts = { workspace = true, optional = true }
+rlx-llama32 = { workspace = true, optional = true }
+rlx-gemma = { workspace = true, optional = true }
+rlx-llada2 = { workspace = true, optional = true }
+rlx-qwen35 = { workspace = true, optional = true }
+rlx-qwen25-vl = { workspace = true, optional = true }
+rlx-flux2 = { workspace = true, optional = true }
+rlx-diamond = { workspace = true, optional = true }
+rlx-vjepa2 = { workspace = true, optional = true }
+rlx-wav2vec2-bert = { workspace = true, optional = true }
+rlx-wav2vec2-asr = { workspace = true, optional = true }
+rlx-diarize = { workspace = true, optional = true }
+rlx-whisper = { workspace = true, optional = true, features = ["tokenizer", "timestamps"] }
+rlx-vad = { workspace = true, optional = true }
+rlx-aec = { workspace = true, optional = true }
+rlx-voxtral = { workspace = true, optional = true }
+rlx-qwen3-asr = { workspace = true, optional = true }
+rlx-locateanything = { workspace = true, optional = true }
+rlx-voxtral-tts = { workspace = true, optional = true }
+rlx-ocr = { workspace = true, optional = true }
+rlx-neutts = { workspace = true, optional = true }
+rlx-orpheus = { workspace = true, optional = true }
+rlx-kittentts = { workspace = true, optional = true }
+rlx-florence2 = { workspace = true, optional = true }
+rlx-mimi = { workspace = true, optional = true }
+rlx-tsac = { workspace = true, optional = true }
+rlx-moshi = { workspace = true, optional = true }
+rlx-kyutai-tts = { workspace = true, optional = true }
+rlx-mistral = { workspace = true, optional = true }
+rlx-bonsai = { workspace = true, optional = true }
+rlx-minicpm5 = { workspace = true, optional = true, features = ["tokenizer"] }
+rlx-phi = { workspace = true, optional = true }
+rlx-omnicoder = { workspace = true, optional = true }
+rlx-granite = { workspace = true, optional = true }
+rlx-cohere = { workspace = true, optional = true }
+rlx-llama-base = { workspace = true, optional = true }
 
 rlx-ir = { workspace = true }
 rlx-flow = { workspace = true }
@@ -86,7 +93,7 @@ candle-core = { workspace = true, optional = true }
 candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
-rlx-lfm = { workspace = true }
+rlx-lfm = { workspace = true, optional = true }
 
 [dev-dependencies]
 ndarray = "0.16"
@@ -100,156 +107,271 @@ rlx-vlm-base = { workspace = true }
 rlx-whisper = { workspace = true, features = ["tokenizer", "timestamps", "word-dtw"] }
 rlx-vad = { workspace = true }
 image = { workspace = true }
+tempfile = "3"
+serde_json = { workspace = true }
+rlx-qwen25-vl = { workspace = true, features = ["tokenizer", "qwen25-vl-vision"] }
 
 [features]
+# Default pulls only the embedding/tokenizer stack — NOT the full catalogue.
+# Opt into model families via the per-family features below (or the `encoders`
+# / `llm` / `asr` / `tts` / `vision-models` / `all-models` groups).
 default = ["qwen35-tokenizer", "flux2-tokenizer", "flux2-image", "embed"]
+
+# ── Per-family features (each enables one optional family crate) ─────────────
+bert = ["dep:rlx-bert"]
+clinicalbert = ["dep:rlx-clinicalbert"]
+nomic = ["dep:rlx-nomic"]
+vision = ["dep:rlx-vision"]
+dinov2 = ["dep:rlx-dinov2"]
+bioclip2 = ["dep:rlx-bioclip2"]
+embed = ["dep:rlx-embed", "rlx-embed/embed"]
+flux2 = ["dep:rlx-flux2"]
+diamond = ["dep:rlx-diamond"]
+qwen3 = ["dep:rlx-qwen3"]
+qwen35 = ["dep:rlx-qwen35"]
+llama32 = ["dep:rlx-llama32"]
+llama-base = ["dep:rlx-llama-base"]
+gemma = ["dep:rlx-gemma"]
+llada2 = ["dep:rlx-llada2"]
+mistral = ["dep:rlx-mistral"]
+bonsai = ["dep:rlx-bonsai"]
+minicpm5 = ["dep:rlx-minicpm5"]
+phi = ["dep:rlx-phi"]
+omnicoder = ["dep:rlx-omnicoder"]
+granite = ["dep:rlx-granite"]
+cohere = ["dep:rlx-cohere"]
+lfm = ["dep:rlx-lfm"]
+sam = ["dep:rlx-sam", "sam-ir"]
+sam2 = ["dep:rlx-sam2", "sam-ir"]
+sam3 = ["dep:rlx-sam3", "sam-ir"]
+sam-ir = ["dep:rlx-sam-ir"]
+vjepa2 = ["dep:rlx-vjepa2"]
+florence2 = ["dep:rlx-florence2"]
+locateanything = ["dep:rlx-locateanything"]
+diarize = ["dep:rlx-diarize"]
+whisper = ["dep:rlx-whisper"]
+vad = ["dep:rlx-vad"]
+aec = ["dep:rlx-aec"]
+voxtral = ["dep:rlx-voxtral"]
+qwen3-asr = ["dep:rlx-qwen3-asr"]
+wav2vec2-bert = ["dep:rlx-wav2vec2-bert"]
+wav2vec2-asr = ["dep:rlx-wav2vec2-asr"]
+ocr = ["dep:rlx-ocr"]
+neutts = ["dep:rlx-neutts"]
+orpheus = ["dep:rlx-orpheus"]
+kittentts = ["dep:rlx-kittentts"]
+qwen3-tts = ["dep:rlx-qwen3-tts"]
+voxtral-tts = ["dep:rlx-voxtral-tts"]
+# kyutai-tts pulls the moshi/mimi neural codec, which is the ONLY path to candle
+# in this crate — keep it strictly opt-in.
+mimi = ["dep:rlx-mimi"]
+moshi = ["dep:rlx-moshi"]
+tsac = ["dep:rlx-tsac"]
+kyutai-tts = ["dep:rlx-kyutai-tts", "mimi", "moshi"]
+
+# The generic model runner (`rlx_models::run`, `LmRunner`) hard-references a set
+# of families; enabling it pulls exactly those.
+runner = [
+    "qwen3",
+    "qwen35",
+    "llama32",
+    "gemma",
+    "lfm",
+    "dinov2",
+    "vjepa2",
+    "flux2",
+    "sam",
+    "sam2",
+    "sam3",
+    "wav2vec2-bert",
+]
+
+# ── Capability groups ───────────────────────────────────────────────────────
+encoders = ["bert", "clinicalbert", "nomic", "vision", "embed", "dinov2", "bioclip2"]
+llm = [
+    "runner",
+    "qwen3",
+    "qwen35",
+    "llama32",
+    "gemma",
+    "phi",
+    "mistral",
+    "granite",
+    "cohere",
+    "lfm",
+    "llada2",
+    "minicpm5",
+    "omnicoder",
+    "bonsai",
+    "llama-base",
+]
+asr = ["whisper", "wav2vec2-bert", "wav2vec2-asr", "voxtral", "qwen3-asr", "vad", "diarize", "aec"]
+tts = ["kyutai-tts", "kittentts", "orpheus", "neutts", "qwen3-tts", "voxtral-tts", "tsac"]
+vision-models = [
+    "sam",
+    "sam2",
+    "sam3",
+    "florence2",
+    "vjepa2",
+    "locateanything",
+    "flux2",
+    "diamond",
+    "dinov2",
+    "bioclip2",
+]
+all-models = ["encoders", "llm", "asr", "tts", "vision-models", "ocr", "runner"]
+
 # Forward rlx-cli's `compat-net` so `rlx_models::run::check_hf_repo` works.
 whisper-subtitles = [
+    "whisper",
     "rlx-whisper/word-dtw",
     "rlx-whisper/silero-vad",
     "rlx-whisper/diarize",
 ]
+# hf-download is cross-cutting: it only adds the `hf-download` capability to the
+# families a consumer has already enabled (`?/` = don't force-enable the dep).
 hf-download = [
     "dep:hf-hub",
-    "rlx-embed/hf-download",
-    "rlx-llada2/hf-download",
-    "rlx-flux2/hf-download",
-    "rlx-minicpm5/hf-download",
-    "rlx-locateanything/hf-download",
-    "rlx-qwen3-tts/hf-download",
-    "rlx-kittentts/hf-download",
-    "rlx-orpheus/hf-download",
-    "rlx-kyutai-tts/hf-download",
+    "rlx-embed?/hf-download",
+    "rlx-llada2?/hf-download",
+    "rlx-flux2?/hf-download",
+    "rlx-minicpm5?/hf-download",
+    "rlx-locateanything?/hf-download",
+    "rlx-qwen3-tts?/hf-download",
+    "rlx-kittentts?/hf-download",
+    "rlx-orpheus?/hf-download",
+    "rlx-kyutai-tts?/hf-download",
 ]
-embed = ["rlx-embed/embed"]
-qwen35-tokenizer = ["rlx-qwen35/tokenizer"]
-qwen35-vlm = ["rlx-qwen35/qwen35-vlm"]
-flux2-tokenizer = ["rlx-flux2/flux2-tokenizer"]
-flux2-image = ["rlx-flux2/flux2-image"]
+qwen35-tokenizer = ["qwen35", "rlx-qwen35/tokenizer"]
+qwen35-vlm = ["qwen35", "rlx-qwen35/qwen35-vlm"]
+qwen25-vl = ["dep:rlx-qwen25-vl", "qwen25-vl-vision", "rlx-qwen25-vl/tokenizer"]
+qwen25-vl-vision = ["rlx-qwen25-vl/qwen25-vl-vision"]
+flux2-tokenizer = ["flux2", "rlx-flux2/flux2-tokenizer"]
+flux2-image = ["flux2", "rlx-flux2/flux2-image"]
 metal = [
     "rlx-runtime/metal",
     "dep:rlx-metal",
-    "rlx-bert/metal",
-    "rlx-clinicalbert/metal",
-    "rlx-bonsai/metal",
-    "rlx-cohere/metal",
-    "rlx-dinov2/metal",
-    "rlx-bioclip2/metal",
-    "rlx-embed/metal",
-    "rlx-flux2/metal",
-    "rlx-gemma/metal",
-    "rlx-granite/metal",
-    "rlx-llada2/metal",
-    "rlx-llama32/metal",
-    "rlx-lfm/metal",
-    "rlx-locateanything/metal",
-    "rlx-minicpm5/metal",
-    "rlx-mistral/metal",
-    "rlx-moshi/metal",
-    "rlx-kyutai-tts/metal",
-    "rlx-neutts/metal",
-    "rlx-kittentts/metal",
-    "rlx-florence2/metal",
-    "rlx-nomic/metal",
-    "rlx-ocr/metal",
-    "rlx-omnicoder/metal",
-    "rlx-phi/metal",
-    "rlx-qwen3/metal",
-    "rlx-qwen3-tts/metal",
-    "rlx-qwen35/metal",
-    "rlx-sam/metal",
-    "rlx-sam2/metal",
-    "rlx-sam3/metal",
-    "rlx-vision/metal",
-    "rlx-vjepa2/metal",
-    "rlx-voxtral/metal",
-    "rlx-qwen3-asr/metal",
-    "rlx-voxtral-tts/metal",
-    "rlx-wav2vec2-bert/metal",
-    "rlx-whisper/metal",
+    "rlx-bert?/metal",
+    "rlx-clinicalbert?/metal",
+    "rlx-bonsai?/metal",
+    "rlx-cohere?/metal",
+    "rlx-dinov2?/metal",
+    "rlx-bioclip2?/metal",
+    "rlx-embed?/metal",
+    "rlx-flux2?/metal",
+    "rlx-gemma?/metal",
+    "rlx-granite?/metal",
+    "rlx-llada2?/metal",
+    "rlx-llama32?/metal",
+    "rlx-lfm?/metal",
+    "rlx-locateanything?/metal",
+    "rlx-minicpm5?/metal",
+    "rlx-mistral?/metal",
+    "rlx-moshi?/metal",
+    "rlx-kyutai-tts?/metal",
+    "rlx-neutts?/metal",
+    "rlx-kittentts?/metal",
+    "rlx-florence2?/metal",
+    "rlx-nomic?/metal",
+    "rlx-ocr?/metal",
+    "rlx-omnicoder?/metal",
+    "rlx-phi?/metal",
+    "rlx-qwen3?/metal",
+    "rlx-qwen3-tts?/metal",
+    "rlx-qwen35?/metal",
+    "rlx-sam?/metal",
+    "rlx-sam2?/metal",
+    "rlx-sam3?/metal",
+    "rlx-vision?/metal",
+    "rlx-vjepa2?/metal",
+    "rlx-voxtral?/metal",
+    "rlx-qwen3-asr?/metal",
+    "rlx-voxtral-tts?/metal",
+    "rlx-wav2vec2-bert?/metal",
+    "rlx-whisper?/metal",
 ]
 mlx = [
     "rlx-runtime/mlx",
     "dep:rlx-mlx",
-    "rlx-bert/mlx",
-    "rlx-clinicalbert/mlx",
-    "rlx-bonsai/mlx",
-    "rlx-cohere/mlx",
-    "rlx-dinov2/mlx",
-    "rlx-bioclip2/mlx",
-    "rlx-embed/mlx",
-    "rlx-flux2/mlx",
-    "rlx-gemma/mlx",
-    "rlx-granite/mlx",
-    "rlx-llada2/mlx",
-    "rlx-llama32/mlx",
-    "rlx-lfm/mlx",
-    "rlx-locateanything/mlx",
-    "rlx-minicpm5/mlx",
-    "rlx-mistral/mlx",
-    "rlx-moshi/mlx",
-    "rlx-kyutai-tts/mlx",
-    "rlx-neutts/mlx",
-    "rlx-kittentts/mlx",
-    "rlx-florence2/mlx",
-    "rlx-nomic/mlx",
-    "rlx-ocr/mlx",
-    "rlx-omnicoder/mlx",
-    "rlx-phi/mlx",
-    "rlx-qwen3/mlx",
-    "rlx-qwen3-tts/mlx",
-    "rlx-qwen35/mlx",
-    "rlx-sam/mlx",
-    "rlx-sam2/mlx",
-    "rlx-sam3/mlx",
-    "rlx-vision/mlx",
-    "rlx-vjepa2/mlx",
-    "rlx-voxtral/mlx",
-    "rlx-qwen3-asr/mlx",
-    "rlx-voxtral-tts/mlx",
-    "rlx-wav2vec2-bert/mlx",
-    "rlx-whisper/mlx",
+    "rlx-bert?/mlx",
+    "rlx-clinicalbert?/mlx",
+    "rlx-bonsai?/mlx",
+    "rlx-cohere?/mlx",
+    "rlx-dinov2?/mlx",
+    "rlx-bioclip2?/mlx",
+    "rlx-embed?/mlx",
+    "rlx-flux2?/mlx",
+    "rlx-gemma?/mlx",
+    "rlx-granite?/mlx",
+    "rlx-llada2?/mlx",
+    "rlx-llama32?/mlx",
+    "rlx-lfm?/mlx",
+    "rlx-locateanything?/mlx",
+    "rlx-minicpm5?/mlx",
+    "rlx-mistral?/mlx",
+    "rlx-moshi?/mlx",
+    "rlx-kyutai-tts?/mlx",
+    "rlx-neutts?/mlx",
+    "rlx-kittentts?/mlx",
+    "rlx-florence2?/mlx",
+    "rlx-nomic?/mlx",
+    "rlx-ocr?/mlx",
+    "rlx-omnicoder?/mlx",
+    "rlx-phi?/mlx",
+    "rlx-qwen3?/mlx",
+    "rlx-qwen3-tts?/mlx",
+    "rlx-qwen35?/mlx",
+    "rlx-sam?/mlx",
+    "rlx-sam2?/mlx",
+    "rlx-sam3?/mlx",
+    "rlx-vision?/mlx",
+    "rlx-vjepa2?/mlx",
+    "rlx-voxtral?/mlx",
+    "rlx-qwen3-asr?/mlx",
+    "rlx-voxtral-tts?/mlx",
+    "rlx-wav2vec2-bert?/mlx",
+    "rlx-whisper?/mlx",
 ]
 gpu = [
     "rlx-runtime/gpu",
-    "rlx-bert/gpu",
-    "rlx-clinicalbert/gpu",
-    "rlx-bonsai/gpu",
-    "rlx-cohere/gpu",
-    "rlx-dinov2/gpu",
-    "rlx-bioclip2/gpu",
-    "rlx-embed/gpu",
-    "rlx-flux2/gpu",
-    "rlx-gemma/gpu",
-    "rlx-granite/gpu",
-    "rlx-llada2/gpu",
-    "rlx-llama32/gpu",
-    "rlx-lfm/gpu",
-    "rlx-locateanything/gpu",
-    "rlx-minicpm5/gpu",
-    "rlx-mistral/gpu",
-    "rlx-moshi/gpu",
-    "rlx-kyutai-tts/gpu",
-    "rlx-neutts/gpu",
-    "rlx-kittentts/gpu",
-    "rlx-florence2/gpu",
-    "rlx-nomic/gpu",
-    "rlx-ocr/gpu",
-    "rlx-omnicoder/gpu",
-    "rlx-phi/gpu",
-    "rlx-qwen3/gpu",
-    "rlx-qwen3-tts/gpu",
-    "rlx-qwen35/gpu",
-    "rlx-sam/gpu",
-    "rlx-sam2/gpu",
-    "rlx-sam3/gpu",
-    "rlx-vision/gpu",
-    "rlx-vjepa2/gpu",
-    "rlx-voxtral/gpu",
-    "rlx-qwen3-asr/gpu",
-    "rlx-voxtral-tts/gpu",
-    "rlx-wav2vec2-bert/gpu",
-    "rlx-whisper/gpu",
+    "rlx-bert?/gpu",
+    "rlx-clinicalbert?/gpu",
+    "rlx-bonsai?/gpu",
+    "rlx-cohere?/gpu",
+    "rlx-dinov2?/gpu",
+    "rlx-bioclip2?/gpu",
+    "rlx-embed?/gpu",
+    "rlx-flux2?/gpu",
+    "rlx-gemma?/gpu",
+    "rlx-granite?/gpu",
+    "rlx-llada2?/gpu",
+    "rlx-llama32?/gpu",
+    "rlx-lfm?/gpu",
+    "rlx-locateanything?/gpu",
+    "rlx-minicpm5?/gpu",
+    "rlx-mistral?/gpu",
+    "rlx-moshi?/gpu",
+    "rlx-kyutai-tts?/gpu",
+    "rlx-neutts?/gpu",
+    "rlx-kittentts?/gpu",
+    "rlx-florence2?/gpu",
+    "rlx-nomic?/gpu",
+    "rlx-ocr?/gpu",
+    "rlx-omnicoder?/gpu",
+    "rlx-phi?/gpu",
+    "rlx-qwen3?/gpu",
+    "rlx-qwen3-tts?/gpu",
+    "rlx-qwen35?/gpu",
+    "rlx-sam?/gpu",
+    "rlx-sam2?/gpu",
+    "rlx-sam3?/gpu",
+    "rlx-vision?/gpu",
+    "rlx-vjepa2?/gpu",
+    "rlx-voxtral?/gpu",
+    "rlx-qwen3-asr?/gpu",
+    "rlx-voxtral-tts?/gpu",
+    "rlx-wav2vec2-bert?/gpu",
+    "rlx-whisper?/gpu",
 ]
 apple-silicon = ["metal", "mlx", "gpu"]
 nvidia-gpu = ["cuda"]
@@ -257,124 +379,124 @@ amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
 vulkan = [
     "rlx-runtime/vulkan",
-    "rlx-bert/vulkan",
-    "rlx-clinicalbert/vulkan",
-    "rlx-bonsai/vulkan",
-    "rlx-cohere/vulkan",
-    "rlx-dinov2/vulkan",
-    "rlx-bioclip2/vulkan",
-    "rlx-embed/vulkan",
-    "rlx-flux2/vulkan",
-    "rlx-gemma/vulkan",
-    "rlx-granite/vulkan",
-    "rlx-llada2/vulkan",
-    "rlx-llama32/vulkan",
-    "rlx-lfm/vulkan",
-    "rlx-locateanything/vulkan",
-    "rlx-minicpm5/vulkan",
-    "rlx-mistral/vulkan",
-    "rlx-moshi/vulkan",
-    "rlx-kyutai-tts/vulkan",
-    "rlx-neutts/vulkan",
-    "rlx-nomic/vulkan",
-    "rlx-ocr/vulkan",
-    "rlx-omnicoder/vulkan",
-    "rlx-phi/vulkan",
-    "rlx-qwen3/vulkan",
-    "rlx-qwen3-tts/vulkan",
-    "rlx-qwen35/vulkan",
-    "rlx-sam/vulkan",
-    "rlx-sam2/vulkan",
-    "rlx-sam3/vulkan",
-    "rlx-vision/vulkan",
-    "rlx-vjepa2/vulkan",
-    "rlx-voxtral/vulkan",
-    "rlx-qwen3-asr/vulkan",
-    "rlx-voxtral-tts/vulkan",
-    "rlx-wav2vec2-bert/vulkan",
-    "rlx-whisper/vulkan",
+    "rlx-bert?/vulkan",
+    "rlx-clinicalbert?/vulkan",
+    "rlx-bonsai?/vulkan",
+    "rlx-cohere?/vulkan",
+    "rlx-dinov2?/vulkan",
+    "rlx-bioclip2?/vulkan",
+    "rlx-embed?/vulkan",
+    "rlx-flux2?/vulkan",
+    "rlx-gemma?/vulkan",
+    "rlx-granite?/vulkan",
+    "rlx-llada2?/vulkan",
+    "rlx-llama32?/vulkan",
+    "rlx-lfm?/vulkan",
+    "rlx-locateanything?/vulkan",
+    "rlx-minicpm5?/vulkan",
+    "rlx-mistral?/vulkan",
+    "rlx-moshi?/vulkan",
+    "rlx-kyutai-tts?/vulkan",
+    "rlx-neutts?/vulkan",
+    "rlx-nomic?/vulkan",
+    "rlx-ocr?/vulkan",
+    "rlx-omnicoder?/vulkan",
+    "rlx-phi?/vulkan",
+    "rlx-qwen3?/vulkan",
+    "rlx-qwen3-tts?/vulkan",
+    "rlx-qwen35?/vulkan",
+    "rlx-sam?/vulkan",
+    "rlx-sam2?/vulkan",
+    "rlx-sam3?/vulkan",
+    "rlx-vision?/vulkan",
+    "rlx-vjepa2?/vulkan",
+    "rlx-voxtral?/vulkan",
+    "rlx-qwen3-asr?/vulkan",
+    "rlx-voxtral-tts?/vulkan",
+    "rlx-wav2vec2-bert?/vulkan",
+    "rlx-whisper?/vulkan",
 ]
 cuda = [
     "rlx-runtime/cuda",
-    "rlx-bert/cuda",
-    "rlx-clinicalbert/cuda",
-    "rlx-bonsai/cuda",
-    "rlx-cohere/cuda",
-    "rlx-dinov2/cuda",
-    "rlx-bioclip2/cuda",
-    "rlx-embed/cuda",
-    "rlx-flux2/cuda",
-    "rlx-gemma/cuda",
-    "rlx-granite/cuda",
-    "rlx-llada2/cuda",
-    "rlx-llama32/cuda",
-    "rlx-lfm/cuda",
-    "rlx-locateanything/cuda",
-    "rlx-minicpm5/cuda",
-    "rlx-mistral/cuda",
-    "rlx-moshi/cuda",
-    "rlx-kyutai-tts/cuda",
-    "rlx-neutts/cuda",
-    "rlx-kittentts/cuda",
-    "rlx-florence2/cuda",
-    "rlx-nomic/cuda",
-    "rlx-ocr/cuda",
-    "rlx-omnicoder/cuda",
-    "rlx-phi/cuda",
-    "rlx-qwen3/cuda",
-    "rlx-qwen3-tts/cuda",
-    "rlx-qwen35/cuda",
-    "rlx-sam/cuda",
-    "rlx-sam2/cuda",
-    "rlx-sam3/cuda",
-    "rlx-vision/cuda",
-    "rlx-vjepa2/cuda",
-    "rlx-voxtral/cuda",
-    "rlx-qwen3-asr/cuda",
-    "rlx-voxtral-tts/cuda",
-    "rlx-wav2vec2-bert/cuda",
-    "rlx-whisper/cuda",
+    "rlx-bert?/cuda",
+    "rlx-clinicalbert?/cuda",
+    "rlx-bonsai?/cuda",
+    "rlx-cohere?/cuda",
+    "rlx-dinov2?/cuda",
+    "rlx-bioclip2?/cuda",
+    "rlx-embed?/cuda",
+    "rlx-flux2?/cuda",
+    "rlx-gemma?/cuda",
+    "rlx-granite?/cuda",
+    "rlx-llada2?/cuda",
+    "rlx-llama32?/cuda",
+    "rlx-lfm?/cuda",
+    "rlx-locateanything?/cuda",
+    "rlx-minicpm5?/cuda",
+    "rlx-mistral?/cuda",
+    "rlx-moshi?/cuda",
+    "rlx-kyutai-tts?/cuda",
+    "rlx-neutts?/cuda",
+    "rlx-kittentts?/cuda",
+    "rlx-florence2?/cuda",
+    "rlx-nomic?/cuda",
+    "rlx-ocr?/cuda",
+    "rlx-omnicoder?/cuda",
+    "rlx-phi?/cuda",
+    "rlx-qwen3?/cuda",
+    "rlx-qwen3-tts?/cuda",
+    "rlx-qwen35?/cuda",
+    "rlx-sam?/cuda",
+    "rlx-sam2?/cuda",
+    "rlx-sam3?/cuda",
+    "rlx-vision?/cuda",
+    "rlx-vjepa2?/cuda",
+    "rlx-voxtral?/cuda",
+    "rlx-qwen3-asr?/cuda",
+    "rlx-voxtral-tts?/cuda",
+    "rlx-wav2vec2-bert?/cuda",
+    "rlx-whisper?/cuda",
 ]
 rocm = [
     "rlx-runtime/rocm",
-    "rlx-bert/rocm",
-    "rlx-clinicalbert/rocm",
-    "rlx-bonsai/rocm",
-    "rlx-cohere/rocm",
-    "rlx-dinov2/rocm",
-    "rlx-bioclip2/rocm",
-    "rlx-embed/rocm",
-    "rlx-flux2/rocm",
-    "rlx-gemma/rocm",
-    "rlx-granite/rocm",
-    "rlx-llada2/rocm",
-    "rlx-llama32/rocm",
-    "rlx-lfm/rocm",
-    "rlx-locateanything/rocm",
-    "rlx-minicpm5/rocm",
-    "rlx-mistral/rocm",
-    "rlx-moshi/rocm",
-    "rlx-kyutai-tts/rocm",
-    "rlx-neutts/rocm",
-    "rlx-kittentts/rocm",
-    "rlx-florence2/rocm",
-    "rlx-nomic/rocm",
-    "rlx-ocr/rocm",
-    "rlx-omnicoder/rocm",
-    "rlx-phi/rocm",
-    "rlx-qwen3/rocm",
-    "rlx-qwen3-tts/rocm",
-    "rlx-qwen35/rocm",
-    "rlx-sam/rocm",
-    "rlx-sam2/rocm",
-    "rlx-sam3/rocm",
-    "rlx-vision/rocm",
-    "rlx-vjepa2/rocm",
-    "rlx-voxtral/rocm",
-    "rlx-qwen3-asr/rocm",
-    "rlx-voxtral-tts/rocm",
-    "rlx-wav2vec2-bert/rocm",
-    "rlx-whisper/rocm",
+    "rlx-bert?/rocm",
+    "rlx-clinicalbert?/rocm",
+    "rlx-bonsai?/rocm",
+    "rlx-cohere?/rocm",
+    "rlx-dinov2?/rocm",
+    "rlx-bioclip2?/rocm",
+    "rlx-embed?/rocm",
+    "rlx-flux2?/rocm",
+    "rlx-gemma?/rocm",
+    "rlx-granite?/rocm",
+    "rlx-llada2?/rocm",
+    "rlx-llama32?/rocm",
+    "rlx-lfm?/rocm",
+    "rlx-locateanything?/rocm",
+    "rlx-minicpm5?/rocm",
+    "rlx-mistral?/rocm",
+    "rlx-moshi?/rocm",
+    "rlx-kyutai-tts?/rocm",
+    "rlx-neutts?/rocm",
+    "rlx-kittentts?/rocm",
+    "rlx-florence2?/rocm",
+    "rlx-nomic?/rocm",
+    "rlx-ocr?/rocm",
+    "rlx-omnicoder?/rocm",
+    "rlx-phi?/rocm",
+    "rlx-qwen3?/rocm",
+    "rlx-qwen3-tts?/rocm",
+    "rlx-qwen35?/rocm",
+    "rlx-sam?/rocm",
+    "rlx-sam2?/rocm",
+    "rlx-sam3?/rocm",
+    "rlx-vision?/rocm",
+    "rlx-vjepa2?/rocm",
+    "rlx-voxtral?/rocm",
+    "rlx-qwen3-asr?/rocm",
+    "rlx-voxtral-tts?/rocm",
+    "rlx-wav2vec2-bert?/rocm",
+    "rlx-whisper?/rocm",
 ]
 tpu = ["rlx-runtime/tpu"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
@@ -496,6 +618,9 @@ path = "examples/skill_replacement.rs"
 [[bin]]
 name = "rlx-run"
 path = "src/bin/rlx_run.rs"
+# Drives each family's `cli::run`; needs the generic runner stack plus minicpm5.
+# Gated so the default (embeddings-only) build skips it.
+required-features = ["runner", "minicpm5"]
 
 [[bench]]
 name = "qwen3_inference"

@@ -24,8 +24,10 @@
 
 use crate::config::PositionalEmbedding;
 use crate::cross_attention::{CrossAttention, CrossKvCache};
-use crate::nn::{apply_rope_vec, linear, rms_norm, rope_tables, swiglu_mlp};
-use anyhow::Result;
+use crate::nn::{apply_rope_interleaved, layer_norm, linear, rms_norm, swiglu_mlp};
+use crate::util::{split_qkv, take_mat2, take_rms_alpha};
+use crate::weights::WeightMap;
+use anyhow::{Context, Result};
 use ndarray::{Array1, Array2, Array3};
 
 /// Static config for one transformer stack (backbone or DepFormer inner block).
@@ -65,7 +67,8 @@ pub struct LayerWeights {
     pub gate_in: Array2<f32>,
     pub gate_out: Array2<f32>,
     pub cross_attn: Option<CrossAttention>,
-    pub norm_cross_alpha: Option<Array1<f32>>,
+    pub norm_cross_weight: Option<Array1<f32>>,
+    pub norm_cross_bias: Option<Array1<f32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,8 +116,8 @@ fn self_attention(
     w: &AttnWeights,
     kv: &mut KvCache,
     x: &Array2<f32>,
-    rope_cos: Option<&Array2<f32>>,
-    rope_sin: Option<&Array2<f32>>,
+    base_pos: usize,
+    max_period: f32,
     causal: bool,
 ) -> Array2<f32> {
     let (t, d_model) = x.dim();
@@ -134,12 +137,13 @@ fn self_attention(
             }
         }
     }
-    if let (Some(cos), Some(sin)) = (rope_cos, rope_sin) {
+    if max_period > 0.0 {
         for ti in 0..t {
+            let pos = base_pos + ti;
             for hi in 0..h {
                 let mut qv = q.slice_mut(ndarray::s![hi, ti, ..]).to_vec();
                 let mut kv_ = k.slice_mut(ndarray::s![hi, ti, ..]).to_vec();
-                apply_rope_vec(&mut qv, &mut kv_, cos.row(ti), sin.row(ti));
+                apply_rope_interleaved(&mut qv, &mut kv_, pos, max_period);
                 for di in 0..hd {
                     q[[hi, ti, di]] = qv[di];
                     k[[hi, ti, di]] = kv_[di];
@@ -200,20 +204,28 @@ impl Layer {
     fn forward(
         &mut self,
         x: &Array2<f32>,
-        rope_cos: Option<&Array2<f32>>,
-        rope_sin: Option<&Array2<f32>>,
+        base_pos: usize,
+        max_period: f32,
         causal: bool,
         cross_kv: Option<&CrossKvCache>,
     ) -> Result<Array2<f32>> {
         let n1 = rms_norm(x.view(), &self.w.norm1_alpha);
-        let attn_out = self_attention(&self.w.attn, &mut self.kv, &n1, rope_cos, rope_sin, causal);
+        let attn_out = self_attention(
+            &self.w.attn,
+            &mut self.kv,
+            &n1,
+            base_pos,
+            max_period,
+            causal,
+        );
         let mut h = x + attn_out;
-        if let (Some(xa), Some(nx_a), Some(kv)) = (
+        if let (Some(xa), Some(nw), Some(nb), Some(kv)) = (
             self.w.cross_attn.as_ref(),
-            self.w.norm_cross_alpha.as_ref(),
+            self.w.norm_cross_weight.as_ref(),
+            self.w.norm_cross_bias.as_ref(),
             cross_kv,
         ) {
-            let n_cx = rms_norm(h.view(), nx_a);
+            let n_cx = layer_norm(h.view(), nw, nb);
             let mut cross_out = Array2::<f32>::zeros(h.dim());
             for ti in 0..n_cx.nrows() {
                 let row = n_cx.row(ti).to_owned();
@@ -241,6 +253,8 @@ pub struct StreamingTransformer {
     cfg: TransformerConfig,
     layers: Vec<Layer>,
     seq_len: usize,
+    /// Per-layer projected cross-attention K/V (one entry per backbone layer).
+    cross_kv: Option<Vec<CrossKvCache>>,
 }
 
 impl StreamingTransformer {
@@ -264,7 +278,29 @@ impl StreamingTransformer {
             cfg,
             layers,
             seq_len: 0,
+            cross_kv: None,
         })
+    }
+
+    /// Project the speaker cross context to per-layer K/V caches (each layer has
+    /// its own cross-attention weights).
+    pub fn set_cross_context(&mut self, ctx: Option<&Array2<f32>>) -> Result<()> {
+        self.cross_kv = match ctx {
+            None => None,
+            Some(ctx) => {
+                let mut caches = Vec::with_capacity(self.layers.len());
+                for layer in &self.layers {
+                    let xa = layer
+                        .w
+                        .cross_attn
+                        .as_ref()
+                        .context("backbone layer missing cross_attention weights")?;
+                    caches.push(xa.prepare_kv(ctx)?);
+                }
+                Some(caches)
+            }
+        };
+        Ok(())
     }
 
     /// Clear KV cache and step counter.
@@ -283,31 +319,80 @@ impl StreamingTransformer {
         self.seq_len
     }
 
+    /// Load backbone layer weights from a Kyutai TTS safetensors map.
+    pub fn load_layers(
+        cfg: &TransformerConfig,
+        weights: &WeightMap,
+        fuser_pos_emb: bool,
+        fuser_pos_emb_scale: f32,
+    ) -> anyhow::Result<Vec<LayerWeights>> {
+        let d = cfg.d_model;
+        let _ff = cfg.dim_feedforward;
+        let nh = cfg.num_heads;
+        let hd = d / nh;
+        let mut layers = Vec::with_capacity(cfg.num_layers);
+        for li in 0..cfg.num_layers {
+            let p = format!("transformer.layers.{li}.");
+            let in_proj = take_mat2(weights, &format!("{p}self_attn.in_proj_weight"))?;
+            let (q, k, v) = split_qkv(&in_proj, d)?;
+            let _ = (q, k, v);
+            let attn = AttnWeights {
+                in_proj,
+                out_proj: take_mat2(weights, &format!("{p}self_attn.out_proj.weight"))?,
+                num_heads: nh,
+                head_dim: hd,
+            };
+            let (cross_attn, norm_cross_weight, norm_cross_bias) = if cfg.cross_attention {
+                let in_proj = take_mat2(weights, &format!("{p}cross_attention.in_proj_weight"))?;
+                let xa = CrossAttention::from_fused_in_proj(
+                    d,
+                    nh,
+                    in_proj,
+                    take_mat2(weights, &format!("{p}cross_attention.out_proj.weight"))?,
+                    fuser_pos_emb,
+                    fuser_pos_emb_scale,
+                    cfg.max_period as f32,
+                )?;
+                (
+                    Some(xa),
+                    Some(crate::util::take_vec1(
+                        weights,
+                        &format!("{p}norm_cross.weight"),
+                    )?),
+                    Some(crate::util::take_vec1(
+                        weights,
+                        &format!("{p}norm_cross.bias"),
+                    )?),
+                )
+            } else {
+                (None, None, None)
+            };
+            layers.push(LayerWeights {
+                norm1_alpha: take_rms_alpha(weights, &format!("{p}norm1.alpha"))?,
+                norm2_alpha: take_rms_alpha(weights, &format!("{p}norm2.alpha"))?,
+                attn,
+                gate_in: take_mat2(weights, &format!("{p}gating.linear_in.weight"))?,
+                gate_out: take_mat2(weights, &format!("{p}gating.linear_out.weight"))?,
+                cross_attn,
+                norm_cross_weight,
+                norm_cross_bias,
+            });
+        }
+        Ok(layers)
+    }
+
     /// One forward step over `x: [t, d_model]`. Returns `[t, d_model]`.
-    pub fn forward(
-        &mut self,
-        x: &Array2<f32>,
-        cross_kv: Option<&CrossKvCache>,
-    ) -> Result<Array2<f32>> {
+    pub fn forward(&mut self, x: &Array2<f32>) -> Result<Array2<f32>> {
         let t = x.dim().0;
-        let positions: Vec<usize> = (self.seq_len..self.seq_len + t).collect();
-        let (rope_cos, rope_sin) = match self.cfg.positional_embedding {
-            PositionalEmbedding::Rope => {
-                let head_dim = self.cfg.d_model / self.cfg.num_heads;
-                let (cos, sin) = rope_tables(head_dim, self.cfg.max_period, &positions);
-                (Some(cos), Some(sin))
-            }
-            PositionalEmbedding::None | PositionalEmbedding::Sin => (None, None),
+        let base_pos = self.seq_len;
+        let max_period = match self.cfg.positional_embedding {
+            PositionalEmbedding::Rope => self.cfg.max_period as f32,
+            PositionalEmbedding::None | PositionalEmbedding::Sin => 0.0,
         };
         let mut h = x.clone();
-        for layer in &mut self.layers {
-            h = layer.forward(
-                &h,
-                rope_cos.as_ref(),
-                rope_sin.as_ref(),
-                self.cfg.causal,
-                cross_kv,
-            )?;
+        for (li, layer) in self.layers.iter_mut().enumerate() {
+            let cross_kv = self.cross_kv.as_ref().and_then(|v| v.get(li));
+            h = layer.forward(&h, base_pos, max_period, self.cfg.causal, cross_kv)?;
         }
         self.seq_len += t;
         Ok(h)
@@ -350,8 +435,13 @@ mod tests {
             gate_in: Array::zeros((2 * (ff / 2), d_model)),
             gate_out: Array::zeros((d_model, ff / 2)),
             cross_attn: zero_cross,
-            norm_cross_alpha: if with_cross {
+            norm_cross_weight: if with_cross {
                 Some(Array::ones(d_model))
+            } else {
+                None
+            },
+            norm_cross_bias: if with_cross {
+                Some(Array::zeros(d_model))
             } else {
                 None
             },
@@ -384,7 +474,7 @@ mod tests {
         let layers = vec![ones_layer(8, 2, 16, false), ones_layer(8, 2, 16, false)];
         let mut t = StreamingTransformer::new(cfg, layers).unwrap();
         let x = Array::ones((1, 8));
-        let y = t.forward(&x, None).unwrap();
+        let y = t.forward(&x).unwrap();
         assert_eq!(y.dim(), (1, 8));
         assert_eq!(t.seq_len(), 1);
     }
@@ -396,7 +486,7 @@ mod tests {
         let layers = (0..3).map(|_| ones_layer(8, 2, 16, false)).collect();
         let mut t = StreamingTransformer::new(cfg, layers).unwrap();
         let x = Array::from_shape_fn((1, 8), |(_, j)| j as f32);
-        let y = t.forward(&x, None).unwrap();
+        let y = t.forward(&x).unwrap();
         for j in 0..8 {
             assert!(
                 (y[[0, j]] - x[[0, j]]).abs() < 1e-3,
@@ -413,8 +503,8 @@ mod tests {
         let layers = vec![ones_layer(4, 2, 8, false)];
         let mut t = StreamingTransformer::new(cfg, layers).unwrap();
         let x = Array::ones((1, 4));
-        t.forward(&x, None).unwrap();
-        t.forward(&x, None).unwrap();
+        t.forward(&x).unwrap();
+        t.forward(&x).unwrap();
         assert_eq!(t.seq_len(), 2);
         t.reset_state();
         assert_eq!(t.seq_len(), 0);
@@ -426,15 +516,9 @@ mod tests {
         let layers = vec![ones_layer(8, 2, 16, true)];
         let mut t = StreamingTransformer::new(cfg, layers).unwrap();
         let ctx = Array::ones((3, 8));
-        let kv = t.layers[0]
-            .w
-            .cross_attn
-            .as_ref()
-            .unwrap()
-            .prepare_kv(&ctx)
-            .unwrap();
+        t.set_cross_context(Some(&ctx)).unwrap();
         let x = Array::from_shape_fn((1, 8), |(_, j)| j as f32);
-        let y = t.forward(&x, Some(&kv)).unwrap();
+        let y = t.forward(&x).unwrap();
         // Zero w_o on cross-attn → identity.
         for j in 0..8 {
             assert!((y[[0, j]] - x[[0, j]]).abs() < 1e-3);

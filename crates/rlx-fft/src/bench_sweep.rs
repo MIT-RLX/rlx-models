@@ -121,6 +121,7 @@ pub fn available_devices() -> Vec<&'static str> {
     for (name, dev) in [
         ("metal", Device::Metal),
         ("mlx", Device::Mlx),
+        ("ane", Device::Ane),
         ("cuda", Device::Cuda),
         ("rocm", Device::Rocm),
         ("wgpu", Device::Gpu),
@@ -158,6 +159,19 @@ pub fn run_sweep(
                         dir
                     );
                     let device = resolve_train_device(Some(device_name))?;
+                    // Skip batches beyond the device's hard ceiling (e.g. wgpu's
+                    // 65535 dispatch cap) instead of letting the backend panic.
+                    let cap = crate::max_batch::auto_max_fft_batch(
+                        device,
+                        crate::max_batch::FftProblem::f32(n_fft),
+                    );
+                    if batch > cap.max_batch {
+                        eprintln!(
+                            "[sweep] skip batch={batch} on {device_name}: exceeds max {} ({:?}-limited)",
+                            cap.max_batch, cap.limited_by
+                        );
+                        continue;
+                    }
                     let report = bench_all_dir(
                         n_fft,
                         batch,

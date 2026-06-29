@@ -30,9 +30,13 @@
 
 use rlx_ir::Philox4x32;
 use rlx_runtime::samplers::{
-    Dry, DynamicTemperature, MirostatV1, MirostatV2, RepetitionPenalty, SamplerChain, SamplerState,
-    Temperature, TopK, TopNSigma, TopP, TypicalP, Xtc,
+    Dry, DynamicTemperature, MinP, MirostatV1, MirostatV2, RepetitionPenalty, SamplerChain,
+    SamplerState, Temperature, TopK, TopNSigma, TopP, TypicalP, Xtc,
 };
+
+// Re-export the host-side logit-bias processor so callers (e.g. the server)
+// can apply OpenAI `logit_bias` to a raw logits row before sampling.
+pub use rlx_runtime::samplers::apply_logit_bias;
 
 /// Mirostat variant — mirrors `rlx_runtime::lm::MirostatMode` so callers
 /// don't need to import two enums.
@@ -78,6 +82,9 @@ pub struct SampleOpts {
     pub dynamic_temp_exponent: f32,
     pub typical_p: f32,
     pub top_n_sigma: f32,
+    /// Min-p cutoff (Nguyen et al. 2024): keep tokens with prob ≥ `min_p` ·
+    /// p_max. 0 ⇒ off.
+    pub min_p: f32,
     pub xtc_threshold: f32,
     pub xtc_prob: f32,
     pub dry_multiplier: f32,
@@ -112,6 +119,7 @@ impl SampleOpts {
             dynamic_temp_exponent: 1.0,
             typical_p: 1.0,
             top_n_sigma: 0.0,
+            min_p: 0.0,
             xtc_threshold: 0.0,
             xtc_prob: 0.0,
             dry_multiplier: 0.0,
@@ -173,6 +181,12 @@ impl SampleOpts {
         self
     }
 
+    pub fn with_min_p(mut self, p: f32) -> Self {
+        self.min_p = p;
+        self.greedy = false;
+        self
+    }
+
     pub fn with_xtc(mut self, threshold: f32, prob: f32) -> Self {
         self.xtc_threshold = threshold;
         self.xtc_prob = prob;
@@ -223,6 +237,7 @@ impl SampleOpts {
         self.dynamic_temp.is_none()
             && self.typical_p >= 1.0
             && self.top_n_sigma <= 0.0
+            && self.min_p <= 0.0
             && self.xtc_prob <= 0.0
             && self.dry_multiplier <= 0.0
             && self.mirostat == MirostatMode::Off
@@ -282,6 +297,12 @@ impl SampleOpts {
         if self.top_p < 1.0 && self.top_p > 0.0 {
             b = b.push(TopP {
                 p: self.top_p,
+                min_keep: self.min_keep,
+            });
+        }
+        if self.min_p > 0.0 {
+            b = b.push(MinP {
+                p: self.min_p,
                 min_keep: self.min_keep,
             });
         }
@@ -600,6 +621,25 @@ mod tests {
             .with_top_k(40)
             .with_top_p(0.9);
         assert!(opts.is_classic());
+    }
+
+    #[test]
+    fn min_p_routes_through_chain_and_truncates() {
+        // min_p engages the chain (not classic) and, on a peaked dist,
+        // keeps only the dominant token.
+        let mut logits = vec![-10.0f32; 16];
+        logits[7] = 10.0;
+        let opts = SampleOpts::temperature(1.0, 5).with_min_p(0.1);
+        assert!(!opts.is_classic());
+        assert_eq!(sample_token(&logits, opts), 7);
+    }
+
+    #[test]
+    fn logit_bias_steers_greedy() {
+        // Bias a non-max token above the current argmax → it wins.
+        let mut logits = vec![0.1, 0.5, 0.2, -1.0];
+        apply_logit_bias(&mut logits, &[(2, 1.0)]);
+        assert_eq!(sample_token(&logits, SampleOpts::greedy()), 2);
     }
 
     #[test]

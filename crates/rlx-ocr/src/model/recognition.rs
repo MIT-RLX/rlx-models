@@ -33,6 +33,15 @@ pub struct RecognitionGraphConfig {
     pub width: usize,
 }
 
+/// Where `build_recognition_graph_inner` stops emitting — the bisect/stage
+/// tests build prefixes of the full recognition graph.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    AfterG1,
+    AfterG2,
+    AfterLogits,
+}
+
 fn build_recognition_conv_front(
     b: &mut OcrGraphBuilder,
     wm: &mut WeightMap,
@@ -57,7 +66,7 @@ fn build_recognition_conv_front(
     h /= 2;
     w /= 2;
 
-    x = fused_conv_relu(
+    x = conv_relu(
         b,
         wm,
         x,
@@ -85,7 +94,7 @@ fn build_recognition_conv_front(
         h,
         w,
     )?;
-    x = fused_conv_relu(
+    x = conv_relu(
         b,
         wm,
         x,
@@ -112,7 +121,7 @@ fn build_recognition_conv_front(
         h,
         w,
     )?;
-    x = fused_conv_relu(
+    x = conv_relu(
         b,
         wm,
         x,
@@ -172,7 +181,7 @@ pub fn build_recognition_after_g1_graph(
     wm: &mut WeightMap,
     cfg: RecognitionGraphConfig,
 ) -> Result<(rlx_ir::Graph, std::collections::HashMap<String, Vec<f32>>)> {
-    build_recognition_graph_inner(wm, cfg, Some(1))
+    build_recognition_graph_inner(wm, cfg, Some(Stage::AfterG1))
 }
 
 /// Recognition graph ending after the second GRU (`[seq, batch, 512]`).
@@ -180,7 +189,7 @@ pub fn build_recognition_after_g2_graph(
     wm: &mut WeightMap,
     cfg: RecognitionGraphConfig,
 ) -> Result<(rlx_ir::Graph, std::collections::HashMap<String, Vec<f32>>)> {
-    build_recognition_graph_inner(wm, cfg, Some(2))
+    build_recognition_graph_inner(wm, cfg, Some(Stage::AfterG2))
 }
 
 /// Recognition graph ending after the linear head (`[seq, batch, classes]` logits).
@@ -188,7 +197,7 @@ pub fn build_recognition_after_logits_graph(
     wm: &mut WeightMap,
     cfg: RecognitionGraphConfig,
 ) -> Result<(rlx_ir::Graph, std::collections::HashMap<String, Vec<f32>>)> {
-    build_recognition_graph_inner(wm, cfg, Some(3))
+    build_recognition_graph_inner(wm, cfg, Some(Stage::AfterLogits))
 }
 
 pub fn build_recognition_graph(
@@ -201,7 +210,7 @@ pub fn build_recognition_graph(
 fn build_recognition_graph_inner(
     wm: &mut WeightMap,
     cfg: RecognitionGraphConfig,
-    stop_after_gru: Option<u8>,
+    stop: Option<Stage>,
 ) -> Result<(rlx_ir::Graph, std::collections::HashMap<String, Vec<f32>>)> {
     let mut b = OcrGraphBuilder::new("ocr_recognition");
     let batch = cfg.batch;
@@ -214,38 +223,43 @@ fn build_recognition_graph_inner(
 
     let (x, seq) = build_recognition_conv_front(&mut b, wm, image, batch, h, w)?;
 
-    // Drain GRU weights for parity with ocrs checkpoints, but do not
-    // lower a GRU op (not yet present in rlx-ir). For now, project/pad
-    // conv features to the expected `[seq, batch, 2*HIDDEN]`.
-    let _seq_lens = gru_seq_lens_param(&mut b, batch, seq)?;
-    let _init_h = gru_init_hidden_param(&mut b, batch, HIDDEN, 2)?;
-    let _w1 = b.load_param(wm, "onnx::GRU_422")?;
-    let _r1 = b.load_param(wm, "onnx::GRU_423")?;
-    let _b1 = b.load_param(wm, "onnx::GRU_421")?;
-
-    let pad = (2 * HIDDEN).saturating_sub(FEAT);
-    let g1 = if pad == 0 {
-        x
-    } else {
-        let key = format!("ocr.recognition.pad_{seq}_{batch}_{pad}");
-        let zeros = vec![0.0f32; seq * batch * pad];
-        let z = b
-            .m()
-            .param(&key, Shape::new(&[seq, batch, pad], DType::F32));
-        b.params.insert(key, zeros);
-        b.m().concat_(vec![x, z], 2)
-    };
-    if stop_after_gru == Some(1) {
+    // Two stacked bidirectional GRUs on the native rlx `Op::Gru`. The conv front
+    // is seq-first `[seq, batch, FEAT]`; rlx GRU is batch-first, so transpose
+    // around it. ocrs ships ONNX-layout GRU weights (gate order z,r,h) which
+    // `gru_layer` repacks to rlx/PyTorch layout.
+    let xb = b.m().transpose_(x, vec![1, 0, 2]); // [batch, seq, FEAT]
+    let g1b = gru_layer(
+        &mut b,
+        wm,
+        xb,
+        "onnx::GRU_422",
+        "onnx::GRU_423",
+        "onnx::GRU_421",
+        batch,
+        seq,
+        FEAT,
+        HIDDEN,
+    )?; // [batch, seq, 2*HIDDEN]
+    if stop == Some(Stage::AfterG1) {
+        let g1 = b.m().transpose_(g1b, vec![1, 0, 2]); // [seq, batch, 2*HIDDEN]
         b.m().set_outputs(vec![g1]);
         return b.finish();
     }
 
-    let _w2 = b.load_param(wm, "onnx::GRU_465")?;
-    let _r2 = b.load_param(wm, "onnx::GRU_466")?;
-    let _b2 = b.load_param(wm, "onnx::GRU_464")?;
-    let _init_h2 = gru_init_hidden_param(&mut b, batch, HIDDEN, 2)?;
-    let g2 = g1;
-    if stop_after_gru == Some(2) {
+    let g2b = gru_layer(
+        &mut b,
+        wm,
+        g1b,
+        "onnx::GRU_465",
+        "onnx::GRU_466",
+        "onnx::GRU_464",
+        batch,
+        seq,
+        2 * HIDDEN,
+        HIDDEN,
+    )?; // [batch, seq, 2*HIDDEN]
+    let g2 = b.m().transpose_(g2b, vec![1, 0, 2]); // [seq, batch, 2*HIDDEN]
+    if stop == Some(Stage::AfterG2) {
         b.m().set_outputs(vec![g2]);
         return b.finish();
     }
@@ -254,7 +268,7 @@ fn build_recognition_graph_inner(
     let head_b = b.load_param(wm, "output.0.bias")?;
     let logits = b.m().mm(g2, head_w);
     let logits = add_bias_seq(&mut b, logits, head_b, batch, seq, NUM_CLASSES)?;
-    if stop_after_gru == Some(3) {
+    if stop == Some(Stage::AfterLogits) {
         b.m().set_outputs(vec![logits]);
         return b.finish();
     }
@@ -329,37 +343,6 @@ fn fused_conv2x2(
     ))
 }
 
-fn fused_conv_relu(
-    b: &mut OcrGraphBuilder,
-    wm: &mut WeightMap,
-    x: HirNodeId,
-    w_key: &str,
-    bias_key: &str,
-    batch: usize,
-    out_c: usize,
-    _in_c: usize,
-    h: usize,
-    w: usize,
-) -> Result<HirNodeId> {
-    let weight = b.load_param(wm, w_key)?;
-    let bias = b.load_param(wm, bias_key)?;
-    let y = conv2d_bias(
-        &mut b.m(),
-        x,
-        weight,
-        bias,
-        batch,
-        out_c,
-        3,
-        3,
-        [1, 1],
-        [1, 1],
-        h,
-        w,
-    );
-    Ok(b.m().relu(y))
-}
-
 fn pool_2x1(
     g: &mut HirMut<'_>,
     x: HirNodeId,
@@ -385,28 +368,78 @@ fn pool_2x1(
     )
 }
 
-fn gru_seq_lens_param(b: &mut OcrGraphBuilder, batch: usize, seq: usize) -> Result<HirNodeId> {
-    let key = format!("ocr.gru.seq_lens.{batch}x{seq}");
-    let data = vec![seq as f32; batch];
-    let id = b.m().param(&key, Shape::new(&[batch], DType::F32));
+/// Insert a constant f32 param `[len]` and return its node.
+fn gru_param(b: &mut OcrGraphBuilder, key: String, len: usize, data: Vec<f32>) -> HirNodeId {
+    debug_assert_eq!(data.len(), len);
+    let id = b.m().param(&key, Shape::new(&[len], DType::F32));
     b.params.insert(key, data);
-    Ok(id)
+    id
 }
 
-fn gru_init_hidden_param(
+/// One bidirectional GRU layer via native `Op::Gru`. Loads ocrs ONNX-layout
+/// weights — `W` `[2,3h,in]`, `R` `[2,3h,h]`, `B` `[2,6h]`, gate order **z,r,h** —
+/// and repacks them to rlx's PyTorch layout (per-direction contiguous, gate order
+/// **r,z,n**, separate `b_ih`/`b_hh`). `x` is `[batch, seq, in]`; output
+/// `[batch, seq, 2*hidden]` (forward hidden then backward hidden).
+#[allow(clippy::too_many_arguments)]
+fn gru_layer(
     b: &mut OcrGraphBuilder,
+    wm: &mut WeightMap,
+    x: HirNodeId,
+    w_key: &str,
+    r_key: &str,
+    b_key: &str,
     batch: usize,
+    seq: usize,
+    in_size: usize,
     hidden: usize,
-    num_directions: usize,
 ) -> Result<HirNodeId> {
-    let key = format!("ocr.gru.init_h.{num_directions}x{batch}x{hidden}");
-    let n = num_directions * batch * hidden;
-    let id = b.m().param(
-        &key,
-        Shape::new(&[num_directions, batch, hidden], DType::F32),
-    );
-    b.params.insert(key, vec![0f32; n]);
-    Ok(id)
+    use anyhow::Context;
+    const NUM_DIR: usize = 2;
+    // ONNX gate order is [z, r, h]; rlx wants [r, z, n]: rlx gate i ← onnx MAP[i].
+    const MAP: [usize; 3] = [1, 0, 2];
+    let g3 = 3 * hidden;
+
+    let (w_data, _) = wm
+        .take(w_key)
+        .with_context(|| format!("missing weight {w_key}"))?;
+    let (r_data, _) = wm
+        .take(r_key)
+        .with_context(|| format!("missing weight {r_key}"))?;
+    let (b_data, _) = wm
+        .take(b_key)
+        .with_context(|| format!("missing weight {b_key}"))?;
+
+    let mut w_ih = vec![0f32; NUM_DIR * g3 * in_size];
+    let mut w_hh = vec![0f32; NUM_DIR * g3 * hidden];
+    let mut b_ih = vec![0f32; NUM_DIR * g3];
+    let mut b_hh = vec![0f32; NUM_DIR * g3];
+    for d in 0..NUM_DIR {
+        for rg in 0..3 {
+            let og = MAP[rg];
+            let wblk = hidden * in_size;
+            let (ws, wd) = ((d * 3 + og) * wblk, (d * 3 + rg) * wblk);
+            w_ih[wd..wd + wblk].copy_from_slice(&w_data[ws..ws + wblk]);
+            let rblk = hidden * hidden;
+            let (rs, rd) = ((d * 3 + og) * rblk, (d * 3 + rg) * rblk);
+            w_hh[rd..rd + rblk].copy_from_slice(&r_data[rs..rs + rblk]);
+            // B per direction = [Wb(3h) | Rb(3h)], each gate `[hidden]`.
+            let bd = (d * 3 + rg) * hidden;
+            let wb = d * 6 * hidden + og * hidden;
+            let rb = d * 6 * hidden + g3 + og * hidden;
+            b_ih[bd..bd + hidden].copy_from_slice(&b_data[wb..wb + hidden]);
+            b_hh[bd..bd + hidden].copy_from_slice(&b_data[rb..rb + hidden]);
+        }
+    }
+
+    let wih = gru_param(b, format!("{w_key}.rlx_wih"), w_ih.len(), w_ih);
+    let whh = gru_param(b, format!("{r_key}.rlx_whh"), w_hh.len(), w_hh);
+    let bih = gru_param(b, format!("{b_key}.rlx_bih"), b_ih.len(), b_ih);
+    let bhh = gru_param(b, format!("{b_key}.rlx_bhh"), b_hh.len(), b_hh);
+
+    let shape = Shape::new(&[batch, seq, NUM_DIR * hidden], DType::F32);
+    // `gru` lives on `HirModule` (the public `.0` of `HirMut`).
+    Ok(b.m().0.gru(x, wih, whh, bih, bhh, hidden, 1, true, shape))
 }
 
 /// RTen-compatible log-softmax on the last axis of a row-major `[outer, classes]` buffer.

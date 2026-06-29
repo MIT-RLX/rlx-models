@@ -32,7 +32,10 @@ fn dump_mlx_fused_graph() {
 
     eprintln!("=== Rope nodes (pre-compile) ===");
     for node in graph.nodes() {
-        if let Op::Rope { head_dim, n_rot } = &node.op {
+        if let Op::Rope {
+            head_dim, n_rot, ..
+        } = &node.op
+        {
             let x = graph.node(node.inputs[0]).shape.dims();
             let c = graph.node(node.inputs[1]).shape.dims();
             let s = graph.node(node.inputs[2]).shape.dims();

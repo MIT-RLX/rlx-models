@@ -16,9 +16,9 @@ mod support;
 use rlx_orpheus::{VoiceCloneReference, lm_kv_decode_supported};
 use rlx_runtime::{Device, is_available};
 use support::{
-    BenchRow, bench_named_voice, bench_text, bench_voice, bench_voice_clone, device_label,
-    orpheus_gguf_path, orpheus_pretrained_gguf_path, require_weights, synth_bench_to_row,
-    voice_clone_ref_path, whisper_asr_dir,
+    BenchRow, bench_min_audio_seconds, bench_min_codes, bench_named_voice, bench_text, bench_voice,
+    bench_voice_clone, device_label, orpheus_gguf_path, orpheus_pretrained_gguf_path,
+    require_weights, synth_bench_to_row, voice_clone_ref_path, whisper_asr_dir,
 };
 
 fn clone_target_text() -> String {
@@ -110,11 +110,19 @@ macro_rules! backend_named_voice_test {
             }
             let row = run_named_voice_bench($dev)?;
             row.print();
+            let text = bench_text();
             assert!(
-                row.codes >= 28,
-                "expected >= 28 SNAC codes on {:?}, got {}",
+                row.codes >= bench_min_codes(&text),
+                "expected >= {} SNAC codes on {:?} for {text:?}, got {}",
+                bench_min_codes(&text),
                 $dev,
                 row.codes
+            );
+            assert!(
+                row.audio_s >= bench_min_audio_seconds(&text) * 0.75,
+                "audio too short on {:?}: {:.2}s for {text:?}",
+                $dev,
+                row.audio_s
             );
             if whisper_asr_dir().is_some() {
                 assert!(
@@ -208,6 +216,11 @@ fn named_voice_whisper_metal_full() -> anyhow::Result<()> {
     Ok(())
 }
 backend_named_voice_test!(
+    named_voice_whisper_metal,
+    Device::Metal,
+    all(target_os = "macos", feature = "metal")
+);
+backend_named_voice_test!(
     named_voice_whisper_mlx,
     Device::Mlx,
     all(target_os = "macos", feature = "mlx")
@@ -232,3 +245,60 @@ backend_clone_test!(
     Device::Mlx,
     all(target_os = "macos", feature = "mlx")
 );
+
+#[test]
+fn named_voice_all_available_backends_summary() -> anyhow::Result<()> {
+    if std::env::var("ORPHEUS_BACKENDS_BENCH").ok().as_deref() != Some("1") {
+        eprintln!("skip all-backends bench: set ORPHEUS_BACKENDS_BENCH=1");
+        return Ok(());
+    }
+    if require_weights().is_none() {
+        eprintln!("skip: missing Orpheus weights");
+        return Ok(());
+    }
+    let text = bench_text();
+    eprintln!("sentence bench: voice={} text={text:?}", bench_voice());
+    BenchRow::print_header();
+    let mut ran = 0usize;
+    for dev in [
+        Device::Cpu,
+        Device::Metal,
+        Device::Mlx,
+        Device::Cuda,
+        Device::Rocm,
+        Device::Gpu,
+        Device::Vulkan,
+    ] {
+        if dev == Device::Cpu && std::env::var("ORPHEUS_CPU_BENCH").ok().as_deref() != Some("1") {
+            eprintln!("skip CPU: set ORPHEUS_CPU_BENCH=1 (slow packed path)");
+            continue;
+        }
+        if !is_available(dev) || !lm_kv_decode_supported(dev) {
+            continue;
+        }
+        let row = run_named_voice_bench(dev)?;
+        row.print();
+        assert!(
+            row.codes >= bench_min_codes(&text),
+            "too few codes on {:?}: {}",
+            dev,
+            row.codes
+        );
+        assert!(
+            row.audio_s >= bench_min_audio_seconds(&text) * 0.75,
+            "audio too short on {:?}: {:.2}s",
+            dev,
+            row.audio_s
+        );
+        if whisper_asr_dir().is_some() {
+            assert!(
+                row.whisper_ok,
+                "Whisper failed on {:?}\nref: {text}\ngot: {}",
+                dev, row.transcript
+            );
+        }
+        ran += 1;
+    }
+    eprintln!("named-voice bench: {ran} backend(s) ok for {text:?}");
+    Ok(())
+}

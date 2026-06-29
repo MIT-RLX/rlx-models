@@ -37,8 +37,8 @@ cli = ["dep:rlx-cli"]
 hf-download = ["dep:hf-hub"]
 
 # Execution backends. The codec runs as an rlx-runtime graph natively on each
-# backend; CPU is always available. `gpu-codec` is the legacy candle/moshi path
-# (Metal/CUDA only), kept opt-in for cross-checking but no longer required.
+# backend; CPU is always available. The candle/moshi codec is now ONLY a dev
+# parity oracle (`parity-mimi`), never a shipping backend.
 cpu = ["rlx-runtime/cpu"]
 metal = ["rlx-runtime/metal", "dep:rlx-metal"]
 mlx = ["rlx-runtime/mlx", "dep:rlx-mlx"]
@@ -52,10 +52,11 @@ nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
 
-# Legacy candle/moshi GPU codec (Metal/CUDA), opt-in for parity cross-checks.
-gpu-codec = ["dep:candle", "dep:candle-nn", "dep:moshi"]
-candle-metal = ["gpu-codec", "candle/metal", "candle-nn/metal", "moshi/metal"]
-candle-cuda = ["gpu-codec", "candle/cuda", "candle-nn/cuda", "moshi/cuda"]
+# Dev-only candle/moshi codec — kept ONLY as a parity oracle for cross-checking
+# the native rlx codec. NEVER shipped. See docs/native-parity-roadmap.md.
+parity-mimi = ["dep:candle", "dep:candle-nn", "dep:moshi"]
+parity-mimi-metal = ["parity-mimi", "candle/metal", "candle-nn/metal", "moshi/metal"]
+parity-mimi-cuda = ["parity-mimi", "candle/cuda", "candle-nn/cuda", "moshi/cuda"]
 
 [[bin]]
 name = "rlx-mimi"

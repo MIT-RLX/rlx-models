@@ -99,6 +99,6 @@ pub fn rlx_device_to_candle(device: Device) -> Result<candle::Device> {
         Device::Metal => candle::Device::new_metal(0).context("Metal device")?,
         Device::Cuda => candle::Device::new_cuda(0).context("CUDA device")?,
         Device::Mlx => candle::Device::new_metal(0).context("MLX→Metal mimi codec")?,
-        other => anyhow::bail!("mimi gpu-codec unsupported device {other:?}"),
+        other => anyhow::bail!("mimi parity-mimi codec unsupported device {other:?}"),
     })
 }

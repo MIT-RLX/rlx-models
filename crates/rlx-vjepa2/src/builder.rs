@@ -154,8 +154,15 @@ impl VjepaBuilder {
         n_rot: usize,
     ) -> HirNodeId {
         let shape = self.hir.node(x).shape.clone();
-        self.hir
-            .mir(Op::Rope { head_dim, n_rot }, vec![x, cos, sin], shape)
+        self.hir.mir(
+            Op::Rope {
+                head_dim,
+                n_rot,
+                style: rlx_ir::op::RopeStyle::NeoX,
+            },
+            vec![x, cos, sin],
+            shape,
+        )
     }
 
     #[allow(dead_code)]

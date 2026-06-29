@@ -26,6 +26,46 @@ use crate::tokens;
 #[cfg(feature = "llama")]
 use crate::backbone::{BackboneModel, DEFAULT_N_CTX};
 
+/// Best execution device for the convenience `load` / `load_with_decoder`
+/// entry points: honour `RLX_DEVICE`, else the fastest compiled-in GPU backend
+/// that's actually available, else CPU. This makes NeuTTS GPU-accelerated by
+/// default instead of silently running the backbone on a single CPU core.
+#[cfg(feature = "llama")]
+fn best_device() -> Device {
+    use rlx_runtime::device_ext::is_available;
+
+    if let Ok(name) = std::env::var("RLX_DEVICE") {
+        if let Some(d) = parse_device_name(&name) {
+            if matches!(d, Device::Cpu) || is_available(d) {
+                return d;
+            }
+        }
+    }
+    [
+        Device::Metal,
+        Device::Mlx,
+        Device::Cuda,
+        Device::Rocm,
+        Device::Gpu,
+    ]
+    .into_iter()
+    .find(|d| is_available(*d))
+    .unwrap_or(Device::Cpu)
+}
+
+#[cfg(feature = "llama")]
+fn parse_device_name(s: &str) -> Option<Device> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "cpu" => Some(Device::Cpu),
+        "metal" => Some(Device::Metal),
+        "mlx" => Some(Device::Mlx),
+        "cuda" => Some(Device::Cuda),
+        "rocm" => Some(Device::Rocm),
+        "gpu" | "vulkan" | "wgpu" => Some(Device::Gpu),
+        _ => None,
+    }
+}
+
 /// Generation hyper-parameters for the GGUF backbone.
 #[derive(Debug, Clone)]
 pub struct GenerationConfig {
@@ -56,7 +96,7 @@ impl NeuTTS {
         decoder_path: &Path,
         language: &str,
     ) -> Result<Self> {
-        Self::load_with_decoder_on(backbone_path, decoder_path, language, Device::Cpu)
+        Self::load_with_decoder_on(backbone_path, decoder_path, language, best_device())
     }
 
     #[cfg(feature = "llama")]
@@ -91,7 +131,7 @@ impl NeuTTS {
 
     #[cfg(feature = "llama")]
     pub fn load(backbone_path: &Path, language: &str) -> Result<Self> {
-        Self::load_on(backbone_path, language, Device::Cpu)
+        Self::load_on(backbone_path, language, best_device())
     }
 
     #[cfg(feature = "llama")]

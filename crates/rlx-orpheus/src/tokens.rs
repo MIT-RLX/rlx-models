@@ -68,9 +68,22 @@ pub fn is_snac_slot_token(token_id: u32, stream_index: usize) -> bool {
     token_id >= lo && token_id < hi
 }
 
+/// Process one LM token into a SNAC code (if any), advancing the stream index
+/// per upstream `orpheus_tts/decoder.py` (`count` increments only when code > 0).
+pub fn accept_orpheus_stream_token(tok: u32, stream_index: &mut usize) -> Option<i32> {
+    if !is_snac_slot_token(tok, *stream_index) {
+        return None;
+    }
+    let code = custom_token_id_to_code(tok, *stream_index)?;
+    if code > 0 {
+        *stream_index += 1;
+        Some(code)
+    } else {
+        None
+    }
+}
+
 /// Restrict LM logits to the SNAC codebook slice for `stream_index % 7` plus stop.
-///
-/// Opt-in via `ORPHEUS_MASK_LOGITS=1`; upstream Orpheus/vLLM does not mask logits.
 pub fn mask_logits_for_snac_slot(logits: &mut [f32], stream_index: usize) {
     let (lo, hi) = snac_slot_token_range(stream_index);
     for (i, v) in logits.iter_mut().enumerate() {
@@ -90,8 +103,12 @@ pub fn use_snac_logit_mask() -> bool {
     }
 }
 
-/// Like [`use_snac_logit_mask`] but defaults on for wgpu/Vulkan **native GPU decode**
-/// (logits drift without it). CPU host GGUF parity (`lm_decode_on_cpu`) matches Metal sampling.
+/// Opt-in via `ORPHEUS_MASK_LOGITS=1`; upstream Orpheus/vLLM does NOT mask logits.
+///
+/// Hard-masking every step to the active SNAC slot forces the LM out of its
+/// trained joint distribution and yields non-speech audio on accurate backends
+/// (CPU/Metal/CUDA/ROCm). It defaults on only for wgpu/Vulkan **native GPU
+/// decode**, whose kernels otherwise occasionally emit out-of-slot ids.
 pub fn use_snac_logit_mask_for(lm_device: rlx_runtime::Device, lm_decode_on_cpu: bool) -> bool {
     if use_snac_logit_mask() {
         return true;
@@ -279,12 +296,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snac_logit_mask_defaults_on_for_wgpu_gpu_decode() {
+    fn stream_index_advances_only_on_positive_code() {
+        let mut ix = 0usize;
+        // Slot 0, code 0 → index stays 0 (matches Python `count`).
+        let tok0 = SNAC_TOKEN_OFFSET; // custom_token_10 → code 0
+        assert_eq!(accept_orpheus_stream_token(tok0, &mut ix), None);
+        assert_eq!(ix, 0);
+        // Slot 0, code 1 → accepted, index → 1.
+        let tok1 = SNAC_TOKEN_OFFSET + 1;
+        assert_eq!(accept_orpheus_stream_token(tok1, &mut ix), Some(1));
+        assert_eq!(ix, 1);
+    }
+
+    #[test]
+    fn snac_logit_mask_off_by_default_on_accurate_backends() {
         let _guard = EnvGuard::unset("ORPHEUS_MASK_LOGITS");
+        // Accurate backends run unmasked (upstream parity) — masking them yields
+        // non-speech audio.
+        assert!(!use_snac_logit_mask_for(rlx_runtime::Device::Cpu, true));
+        assert!(!use_snac_logit_mask_for(rlx_runtime::Device::Metal, true));
+        assert!(!use_snac_logit_mask_for(rlx_runtime::Device::Metal, false));
+        assert!(!use_snac_logit_mask_for(rlx_runtime::Device::Cuda, false));
+        assert!(!use_snac_logit_mask_for(rlx_runtime::Device::Rocm, false));
+        // wgpu/Vulkan native GPU decode (decode not delegated to CPU) masks.
         assert!(use_snac_logit_mask_for(rlx_runtime::Device::Gpu, false));
         assert!(use_snac_logit_mask_for(rlx_runtime::Device::Vulkan, false));
         assert!(!use_snac_logit_mask_for(rlx_runtime::Device::Gpu, true));
-        assert!(!use_snac_logit_mask_for(rlx_runtime::Device::Metal, false));
     }
 
     /// Restore env after tests that set ORPHEUS_* vars.

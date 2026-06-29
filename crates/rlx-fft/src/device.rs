@@ -30,6 +30,9 @@ pub fn normalize_device_alias(name: &str) -> String {
         "wgu" | "wgpu" => "wgpu".into(),
         "mps" => "metal".into(),
         "hip" => "rocm".into(),
+        // CoreML / Apple Neural Engine: `parse_device` accepts `ane`/`neural-engine`
+        // (Device::Ane); map the user-facing `coreml` alias onto it too.
+        "coreml" | "neural-engine" | "neural_engine" => "ane".into(),
         other => other.into(),
     }
 }
@@ -53,7 +56,7 @@ pub fn parse_bench_device_list(csv: &str) -> Result<Vec<String>> {
     }
     if csv.eq_ignore_ascii_case("apple-silicon") {
         let mut out = vec!["cpu".to_string()];
-        for name in ["metal", "mlx", "wgpu"] {
+        for name in ["metal", "mlx", "wgpu", "ane"] {
             if let Ok(dev) = parse_device(name) {
                 if is_available(dev) {
                     out.push(bench_device_label(dev));
@@ -144,6 +147,16 @@ mod tests {
     fn normalize_wgu_alias() {
         assert_eq!(normalize_device_alias("wgu"), "wgpu");
         assert_eq!(normalize_device_alias("WGPU"), "wgpu");
+    }
+
+    #[test]
+    fn normalize_coreml_alias() {
+        // CoreML / ANE aliases all resolve to the `ane` name parse_device accepts.
+        assert_eq!(normalize_device_alias("coreml"), "ane");
+        assert_eq!(normalize_device_alias("CoreML"), "ane");
+        assert_eq!(normalize_device_alias("neural-engine"), "ane");
+        assert_eq!(normalize_device_alias("ane"), "ane");
+        assert!(parse_device(&normalize_device_alias("coreml")).is_ok());
     }
 
     #[test]

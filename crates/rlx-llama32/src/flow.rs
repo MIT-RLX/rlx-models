@@ -127,6 +127,7 @@ impl LlamaLayerCtx<'_> {
                             *head_dim,
                             *eps,
                             kv_sink.inner(),
+                            spec.rope_style,
                         ),
                     ));
                 }
@@ -405,6 +406,7 @@ impl<'a> Llama32Flow<'a> {
             eps,
             mask: MaskKind::Causal,
             hidden_shape: hidden_shape.clone(),
+            rope_style: cfg.rope_style,
         };
 
         let kv_sink = SideOutputs::new();
@@ -447,7 +449,13 @@ impl<'a> Llama32Flow<'a> {
                 let mut stages = Vec::new();
                 if export {
                     stages.push(FlowStage::LlamaKvTap(
-                        rlx_flow::blocks::LlamaKvTapStage::layer(i, dh, eps, sink.inner()),
+                        rlx_flow::blocks::LlamaKvTapStage::layer(
+                            i,
+                            dh,
+                            eps,
+                            sink.inner(),
+                            spec.rope_style,
+                        ),
                     ));
                 }
                 stages.push(llama_prefill_layer_fused(i, spec.clone()));
@@ -521,6 +529,7 @@ impl<'a> Llama32Flow<'a> {
             eps,
             use_custom_mask: self.use_custom_mask,
             hidden_shape,
+            rope_style: cfg.rope_style,
         };
 
         let rope_factors = weights.take("rope_freqs.weight").ok().map(|(data, _)| data);

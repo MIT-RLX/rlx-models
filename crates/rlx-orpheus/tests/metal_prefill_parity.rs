@@ -24,8 +24,10 @@ fn generate_masked_codes(
     sample: SampleOpts,
     steps: u64,
 ) -> Vec<i32> {
-    use rlx_orpheus::tokens::mask_logits_for_snac_slot;
-    use rlx_orpheus::tokens::{custom_token_id_to_code, is_snac_slot_token, use_snac_logit_mask};
+    use rlx_orpheus::tokens::{
+        accept_orpheus_stream_token, is_snac_slot_token, mask_logits_for_snac_slot,
+        use_snac_logit_mask,
+    };
     use rlx_qwen3::apply_repetition_penalty;
 
     let mut stream_index = 0usize;
@@ -44,13 +46,8 @@ fn generate_masked_codes(
                 }
             })
             .expect("decode step");
-        if let Some(code) = custom_token_id_to_code(tok, stream_index) {
-            if is_snac_slot_token(tok, stream_index) && code > 0 {
-                codes.push(code);
-            }
-        }
-        if is_snac_slot_token(tok, stream_index) {
-            stream_index += 1;
+        if let Some(code) = accept_orpheus_stream_token(tok, &mut stream_index) {
+            codes.push(code);
         }
         *token_counts.entry(tok).or_insert(0) += 1;
     }
@@ -270,7 +267,7 @@ fn generate_masked_tokens(
     sample: SampleOpts,
     steps: u64,
 ) -> Vec<u32> {
-    use rlx_orpheus::tokens::{is_custom_token_id, mask_logits_for_snac_slot};
+    use rlx_orpheus::tokens::{accept_orpheus_stream_token, mask_logits_for_snac_slot};
     use rlx_qwen3::apply_repetition_penalty;
 
     let mut stream_index = 0usize;
@@ -288,9 +285,7 @@ fn generate_masked_tokens(
             })
             .expect("decode step");
         tokens.push(tok);
-        if is_custom_token_id(tok) {
-            stream_index += 1;
-        }
+        let _ = accept_orpheus_stream_token(tok, &mut stream_index);
         *token_counts.entry(tok).or_insert(0) += 1;
     }
     tokens
@@ -360,6 +355,130 @@ fn metal_kv_masked_decode_matches_oneshot() {
     assert_eq!(
         bucketed_tokens, oneshot_tokens,
         "bucketed KV masked decode diverged from oneshot on Orpheus GGUF"
+    );
+}
+
+#[test]
+#[cfg(all(feature = "llama", feature = "metal"))]
+fn metal_prefill_snac_slot_argmax_matches_cpu() {
+    let Some(gguf) = support::orpheus_gguf_path() else {
+        eprintln!("skip: run `just fetch-orpheus`");
+        return;
+    };
+    if !rlx_runtime::is_available(Device::Metal) {
+        eprintln!("skip: Metal unavailable");
+        return;
+    }
+
+    use rlx_core::weight_loader::load_from_path;
+    use rlx_gguf::GgufFile;
+    use rlx_llama32::{Llama32Generator, MetalGgufPrefillMode, llama32_cfg_from_gguf};
+    use rlx_orpheus::DEFAULT_COMPILE_SEQ_CAP;
+
+    let prompt = build_prompt(&gguf, "Hi.", Some("tara")).expect("prompt");
+    let path = gguf.to_str().expect("utf8");
+    let cap = DEFAULT_COMPILE_SEQ_CAP as usize;
+
+    let mut loader = load_from_path(path).expect("open gguf");
+    let raw = GgufFile::from_path(&gguf).expect("parse gguf");
+    let cfg = llama32_cfg_from_gguf(&raw).expect("cfg");
+
+    let mut cpu_gen = Llama32Generator::from_loader(cfg.clone(), loader.as_mut(), Device::Cpu)
+        .expect("cpu generator")
+        .with_compile_seq_cap(cap);
+    let mut cpu_logits = cpu_gen
+        .prefill_get_last_logits(&prompt)
+        .expect("cpu prefill logits");
+
+    let mut loader = load_from_path(path).expect("open gguf");
+    let mut metal_gen = Llama32Generator::from_loader_at_mode(
+        cfg,
+        loader.as_mut(),
+        Device::Metal,
+        &gguf,
+        MetalGgufPrefillMode::CpuF32,
+    )
+    .expect("metal generator")
+    .with_compile_seq_cap(cap);
+    let mut metal_logits = metal_gen
+        .prefill_get_last_logits(&prompt)
+        .expect("metal prefill logits");
+
+    mask_logits_for_snac_slot(&mut cpu_logits, 0);
+    mask_logits_for_snac_slot(&mut metal_logits, 0);
+
+    let cpu_argmax = cpu_logits
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i as u32)
+        .unwrap();
+    let metal_argmax = metal_logits
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i as u32)
+        .unwrap();
+    eprintln!("prefill slot-0 argmax cpu={cpu_argmax} metal={metal_argmax}");
+    assert_eq!(
+        cpu_argmax, metal_argmax,
+        "Metal CpuF32 prefill diverged from CPU reference on SNAC slot-0 argmax"
+    );
+}
+
+#[test]
+#[cfg(all(feature = "llama", feature = "metal"))]
+fn backbone_for_tts_greedy_codes_match_reference_path() {
+    let Some(gguf) = support::orpheus_gguf_path() else {
+        eprintln!("skip: run `just fetch-orpheus`");
+        return;
+    };
+    if !rlx_runtime::is_available(Device::Metal) {
+        eprintln!("skip: Metal unavailable");
+        return;
+    }
+
+    use rlx_orpheus::backbone::{BackboneLoadOptions, BackboneModel, DEFAULT_N_CTX};
+    use rlx_orpheus::{GenerationConfig, tokens::build_prompt_ids};
+
+    let prompt = build_prompt_ids(&gguf, "tara: Hi.").expect("prompt");
+    let cfg = GenerationConfig {
+        greedy: true,
+        max_new_tokens: 28,
+        repetition_penalty: 1.0,
+        ..GenerationConfig::default()
+    };
+
+    let reference = BackboneModel::load_on_with(
+        &gguf,
+        DEFAULT_N_CTX,
+        Device::Cpu,
+        BackboneLoadOptions::synthesis(),
+    )
+    .expect("cpu backbone");
+    let optimized = BackboneModel::load_on_with(
+        &gguf,
+        DEFAULT_N_CTX,
+        Device::Metal,
+        BackboneLoadOptions::for_tts(Device::Metal),
+    )
+    .expect("metal backbone");
+
+    let ref_codes = reference
+        .generate_codes_from_prompt(&prompt, &cfg)
+        .expect("cpu codes");
+    let opt_codes = optimized
+        .generate_codes_from_prompt(&prompt, &cfg)
+        .expect("metal codes");
+    eprintln!(
+        "greedy codes cpu={} metal={} first={:?}",
+        ref_codes.len(),
+        opt_codes.len(),
+        &opt_codes[..opt_codes.len().min(8)]
+    );
+    assert_eq!(
+        ref_codes, opt_codes,
+        "for_tts Metal path diverged from CPU synthesis reference on greedy decode"
     );
 }
 

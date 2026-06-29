@@ -104,5 +104,9 @@ required-features = ["llama", "coreml"]
 name = "prefill_logits_debug"
 required-features = ["llama"]
 
+[[example]]
+name = "diag_decode"
+required-features = ["llama"]
+
 [lints]
 workspace = true

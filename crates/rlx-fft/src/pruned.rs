@@ -16,8 +16,9 @@
 //! Gated / pruned butterfly — skip butterflies via learnable gates (Tier D).
 
 use crate::butterfly::{
-    ParamSlot, apply_butterfly_stage_vectorized, bit_reverse, bit_reverse_permute,
-    merge_complex_planes, num_stages, split_complex_planes,
+    ParamSlot, apply_butterfly_stage_vectorized_mapped, bit_reverse, bit_reverse_permute,
+    build_stage_twiddles, merge_complex_planes, num_stages, packed_twiddle_param,
+    split_complex_planes,
 };
 use crate::config::FftLearnConfig;
 use crate::ternary_gates::GateMode;
@@ -450,7 +451,7 @@ fn apply_gated_butterfly_stage_vectorized(
     stage: usize,
     batch: usize,
     n: usize,
-    twiddle_nodes: &HashMap<(usize, usize), (NodeId, NodeId)>,
+    packed: NodeId,
     gate_nodes: &HashMap<(usize, usize), NodeId>,
     one: NodeId,
 ) -> (NodeId, NodeId) {
@@ -465,8 +466,7 @@ fn apply_gated_butterfly_stage_vectorized(
     let a_im = g.narrow_(im4, 2, 0, 1);
     let b_im = g.narrow_(im4, 2, 1, 1);
 
-    let (w_re, w_im) =
-        crate::butterfly::build_stage_twiddles(g, stage, groups, stride, twiddle_nodes);
+    let (w_re, w_im) = build_stage_twiddles(g, packed, stage, groups, stride);
     let gate = build_stage_gates(g, stage, groups, stride, gate_nodes);
     let inv_g = g.sub(one, gate);
 
@@ -511,6 +511,7 @@ pub(crate) fn append_gated_forward_butterfly(
     let n = cfg.n_fft;
     let batch = cfg.batch;
     let half = n / 2;
+    let stages = cfg.num_stages();
     let f = DType::F32;
     let one = g.param("const.one", Shape::new(&[1], f));
 
@@ -523,29 +524,15 @@ pub(crate) fn append_gated_forward_butterfly(
     state = g.concat_(reordered, 1);
     let (mut re, mut im) = split_complex_planes(g, state, batch, n);
 
-    let mut twiddle_nodes: HashMap<(usize, usize), (NodeId, NodeId)> = HashMap::new();
+    // Twiddles pack into one tensor; gates stay per-scalar (each is multiplied
+    // into a distinct stage/butterfly and bound individually by the loader).
+    let (packed, twiddle_slot) = packed_twiddle_param(g, tw_set, stages, half);
+    let twiddle_params = vec![twiddle_slot];
     let mut gate_nodes: HashMap<(usize, usize), NodeId> = HashMap::new();
-    let mut twiddle_params = Vec::new();
     let mut gate_params = Vec::new();
 
-    for s in 0..cfg.num_stages() {
+    for s in 0..stages {
         for b in 0..half {
-            let w_re_name = twiddle_name_set(tw_set, s, b, "re");
-            let w_im_name = twiddle_name_set(tw_set, s, b, "im");
-            let w_re = g.param(&w_re_name, Shape::new(&[1], f));
-            let w_im = g.param(&w_im_name, Shape::new(&[1], f));
-            twiddle_params.push(ParamSlot {
-                name: w_re_name,
-                param: w_re,
-                grad: None,
-            });
-            twiddle_params.push(ParamSlot {
-                name: w_im_name,
-                param: w_im,
-                grad: None,
-            });
-            twiddle_nodes.insert((s, b), (w_re, w_im));
-
             let gate_name = gate_param_name(s, b);
             let gate = g.param(&gate_name, Shape::new(&[1], f));
             gate_params.push(ParamSlot {
@@ -557,7 +544,7 @@ pub(crate) fn append_gated_forward_butterfly(
         }
     }
 
-    for s in 0..cfg.num_stages() {
+    for s in 0..stages {
         (re, im) = apply_gated_butterfly_stage_vectorized(
             g,
             re,
@@ -565,7 +552,7 @@ pub(crate) fn append_gated_forward_butterfly(
             s,
             batch,
             n,
-            &twiddle_nodes,
+            packed,
             &gate_nodes,
             one,
         );
@@ -980,7 +967,8 @@ pub fn append_ternary_butterfly_from_real_signal(
         }
         let (mut re, mut im) = split_complex_planes(g, state, batch, n);
         if stage_all_forward(gates, s, half) {
-            (re, im) = apply_butterfly_stage_vectorized(g, re, im, s, batch, n, &twiddle_map);
+            (re, im) =
+                apply_butterfly_stage_vectorized_mapped(g, re, im, s, batch, n, &twiddle_map);
         } else {
             (re, im) = apply_ternary_butterfly_stage_sparse(
                 g,

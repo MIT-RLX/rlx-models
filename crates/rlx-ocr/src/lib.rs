@@ -30,6 +30,7 @@ pub mod ctc;
 pub mod detection;
 pub mod engine;
 pub mod geom;
+pub mod host_resize;
 pub mod layout;
 pub mod model;
 pub mod preprocess;

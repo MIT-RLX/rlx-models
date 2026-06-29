@@ -77,7 +77,7 @@ fn estimate_rustfft_peaks_ns(batch: usize, params: WelchPeakParams) -> f64 {
         // Fallback constants (GB/s as bytes/ns units match runtime cost models).
         let dispatch = 50.0;
         let roundtrip = 0.0;
-        let bw = 50.0;
+        let bw: f64 = 50.0;
         let mut t = roundtrip;
         t += io.kernel_launches as f64 * dispatch;
         t += io.device_traffic_bytes as f64 / bw.max(1.0);
@@ -279,8 +279,9 @@ pub fn welch_peaks_fusion_target(device: Device) -> rlx_compile::FusionTarget {
         Device::Gpu | Device::Vulkan | Device::WebGpu | Device::DirectX | Device::OpenGl => {
             FusionTarget::Wgpu
         }
+        Device::OneApi => FusionTarget::Wgpu,
         Device::Tpu => FusionTarget::Tpu,
-        Device::Cpu => FusionTarget::Cpu,
+        Device::Cpu | Device::Hexagon => FusionTarget::Cpu,
     }
 }
 

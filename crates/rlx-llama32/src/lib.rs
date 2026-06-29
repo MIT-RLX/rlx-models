@@ -35,6 +35,9 @@ pub use flow::{
 };
 pub use generator::Llama32Generator;
 pub use prefill_mode::{MetalGgufPrefillMode, metal_use_packed_gguf_prefill, prefill_device_for};
+/// Re-exported so downstream crates building [`Llama32Config`] literals can set
+/// `rope_style` without a direct `rlx-ir` dependency.
+pub use rlx_ir::RopeStyle;
 #[cfg(feature = "tokenizer")]
 pub use rlx_qwen35::decode_ids_auto;
 pub use rlx_qwen35::{encode_prompt, encode_prompt_auto, resolve_tokenizer_path};
@@ -65,6 +68,7 @@ mod tests {
             attention_bias: false,
             head_dim: None,
             rope_scaling: None,
+            rope_style: rlx_ir::RopeStyle::NeoX,
         }
     }
 

@@ -57,6 +57,7 @@ pub fn build_voxtral_prefill_built(
         eps,
         mask: MaskKind::Causal,
         hidden_shape: hidden_shape.clone(),
+        rope_style: llama.rope_style,
     };
 
     let kv_sink = SideOutputs::new();
@@ -87,7 +88,13 @@ pub fn build_voxtral_prefill_built(
             let mut stages = Vec::new();
             if export {
                 stages.push(FlowStage::LlamaKvTap(
-                    rlx_flow::blocks::LlamaKvTapStage::layer(i, dh, eps, sink.inner()),
+                    rlx_flow::blocks::LlamaKvTapStage::layer(
+                        i,
+                        dh,
+                        eps,
+                        sink.inner(),
+                        spec.rope_style,
+                    ),
                 ));
             }
             // NOTE: the Metal garbage-logits bug is NOT in the fusion — the composed

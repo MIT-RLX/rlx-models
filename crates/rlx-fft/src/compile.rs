@@ -15,15 +15,45 @@
 
 //! Compile RLX training backward graphs on CPU / GPU backends.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rlx_ir::Graph;
-use rlx_runtime::{CompileOptions, CompiledGraph, Device, Session};
+use rlx_runtime::{CompileOptions, CompiledGraph, Device, Precision, Session};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 thread_local! {
     static METAL_GUARD_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Env knob (also set by the global `--precision` CLI flag) selecting the float
+/// dtype used when compiling FFT graphs. Default `f32`; `f16` lets the butterfly
+/// / mask / denoiser graph run on fp16 silicon (Apple Neural Engine via CoreML,
+/// Metal/MLX half), at the cost of accuracy — train a butterfly for the target
+/// precision to recover it.
+pub const PRECISION_ENV: &str = "RLX_FFT_PRECISION";
+
+/// Parse a precision string (`f32`/`f16`/`bf16` and common aliases).
+pub fn parse_precision(s: &str) -> Result<Precision> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "" | "f32" | "fp32" | "float32" | "single" => Ok(Precision::F32),
+        "f16" | "fp16" | "float16" | "half" => Ok(Precision::F16),
+        "bf16" | "bfloat16" | "brain" => Ok(Precision::BF16),
+        other => bail!("unknown precision '{other}' (try: f32, f16, bf16)"),
+    }
+}
+
+/// Set the compile precision for subsequent `try_compile_graph*` calls.
+pub fn set_compile_precision(p: Precision) {
+    rlx_ir::env::set(PRECISION_ENV, p.to_string());
+}
+
+/// Precision applied to FFT compiles, resolved from [`PRECISION_ENV`] (default F32).
+pub fn compile_precision() -> Precision {
+    rlx_ir::env::var(PRECISION_ENV)
+        .as_deref()
+        .and_then(|s| parse_precision(s).ok())
+        .unwrap_or(Precision::F32)
 }
 
 /// Metal: disable MPSGraph for graphs with many narrow/concat ops (butterfly FFT).
@@ -82,7 +112,7 @@ pub fn try_compile_graph_with_params(
     catch_unwind(AssertUnwindSafe(|| {
         metal_compile_guard(device, || {
             let session = Session::new(device);
-            let mut opts = CompileOptions::new();
+            let mut opts = CompileOptions::new().precision(compile_precision());
             if let Some(bindings) = param_bindings {
                 opts = opts.param_bindings(bindings);
             }

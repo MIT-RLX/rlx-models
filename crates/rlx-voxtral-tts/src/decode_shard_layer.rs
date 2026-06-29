@@ -173,6 +173,7 @@ mod tests {
             eps: 1e-5,
             use_custom_mask: true,
             hidden_shape: rlx_ir::Shape::new(&[1, 1, 3072], rlx_ir::DType::F32),
+            rope_style: rlx_ir::RopeStyle::NeoX,
         };
         let sink = SideOutputs::new();
         let stage = tts_decode_shard_layer_from_sink(12, 0, spec, &sink);

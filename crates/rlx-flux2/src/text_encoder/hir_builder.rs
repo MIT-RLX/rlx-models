@@ -415,6 +415,7 @@ impl<'a> TextEncoderHirBuilder<'a> {
             Op::Rope {
                 head_dim: self.cfg.head_dim,
                 n_rot: self.cfg.head_dim,
+                style: rlx_ir::op::RopeStyle::NeoX,
             },
             vec![x, cos, sin],
             shape,

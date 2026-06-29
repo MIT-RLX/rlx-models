@@ -6,7 +6,7 @@ pub fn resolve_codec_device(requested: Device) -> Device {
     if requested == Device::Cpu {
         return Device::Cpu;
     }
-    #[cfg(feature = "gpu-codec")]
+    #[cfg(feature = "parity-mimi")]
     {
         if candle_codec_available(requested) {
             return requested;
@@ -19,7 +19,7 @@ pub fn resolve_codec_device(requested: Device) -> Device {
     Device::Cpu
 }
 
-#[cfg(feature = "gpu-codec")]
+#[cfg(feature = "parity-mimi")]
 pub fn candle_codec_available(device: Device) -> bool {
     match device {
         Device::Metal => candle::utils::metal_is_available(),
@@ -37,7 +37,7 @@ pub fn candle_codec_available(device: Device) -> bool {
     }
 }
 
-#[cfg(not(feature = "gpu-codec"))]
+#[cfg(not(feature = "parity-mimi"))]
 pub fn candle_codec_available(_device: Device) -> bool {
     false
 }
@@ -102,7 +102,7 @@ pub fn device_ready(device: Device) -> bool {
     if device == Device::Cpu {
         return true;
     }
-    #[cfg(feature = "gpu-codec")]
+    #[cfg(feature = "parity-mimi")]
     {
         if candle_codec_available(device) {
             return true;

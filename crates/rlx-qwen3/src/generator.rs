@@ -32,6 +32,7 @@
 
 use crate::builder::{
     build_qwen3_decode_graph_sized, build_qwen3_decode_graph_sized_ext,
+    build_qwen3_decode_graph_sized_ragged, build_qwen3_graph_sized,
     build_qwen3_graph_sized_last_logits,
 };
 use crate::capabilities::validate_device;
@@ -53,6 +54,7 @@ use rlx_runtime::compile_cache::{BucketedCompileCache, CacheRunInput, CompileCac
 use rlx_runtime::{CompileOptions, Device, Session};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Stateful Qwen3 generation handle.
 ///
@@ -61,11 +63,13 @@ use std::path::Path;
 /// initial weight load; tokens stay in-memory between calls.
 pub struct Qwen3Generator {
     cfg: Qwen3Config,
-    /// Map of weight key → (f32 data, shape). Cloned on each step
-    /// into a fresh `WeightMap` because `WeightMap::take` is
-    /// destructive — see the cached-generator notes for the path
-    /// that avoids the clone.
-    weights_cache: HashMap<String, (Vec<f32>, Vec<usize>)>,
+    /// Map of weight key → (f32 data, shape), behind an `Arc` so the
+    /// per-step setup is an O(1) refcount bump, not a deep copy of every
+    /// weight. `WeightMap::take` is destructive, so a fresh `WeightMap` is
+    /// still materialized (`(*arc).clone()`) when a graph is *built* — but
+    /// with the bucketed decode cache that happens only on a compile miss,
+    /// not on every decode step (the hot path captures just the `Arc`).
+    weights_cache: Arc<HashMap<String, (Vec<f32>, Vec<usize>)>>,
     tokens: Vec<u32>,
     device: Device,
     /// Populated lazily on the first `step_cached` call (seeded from
@@ -82,6 +86,13 @@ pub struct Qwen3Generator {
     /// per-step mask so a single bucket serves every `past_seq` in
     /// its range. Opt in via [`Qwen3Generator::with_decode_cache`].
     decode_compile_cache: Option<BucketedCompileCache>,
+    /// Bucketed decode compile caches for **fused batched** decode, one per
+    /// batch size `B` (the decode graph shape is specialized on `B`). Built
+    /// lazily by [`Qwen3Generator::decode_batched_uniform`].
+    batched_decode_caches: HashMap<usize, BucketedCompileCache>,
+    /// Like [`Self::batched_decode_caches`] but for **ragged** batched decode
+    /// (per-sequence RoPE rows), keyed by batch size `B`.
+    batched_ragged_caches: HashMap<usize, BucketedCompileCache>,
     prefill_profile: CompileProfile,
     decode_profile: CompileProfile,
 }
@@ -113,7 +124,7 @@ impl Qwen3Generator {
         let max_past = cfg.max_position_embeddings.clamp(1, 4096);
         Ok(Self {
             cfg,
-            weights_cache,
+            weights_cache: Arc::new(weights_cache),
             tokens: Vec::new(),
             device,
             cache: None,
@@ -123,6 +134,8 @@ impl Qwen3Generator {
                 1,
                 max_past as u64,
             )),
+            batched_decode_caches: HashMap::new(),
+            batched_ragged_caches: HashMap::new(),
             prefill_profile: CompileProfile::qwen3_prefill(),
             decode_profile: CompileProfile::qwen3_decode(),
         })
@@ -261,7 +274,7 @@ impl Qwen3Generator {
             anyhow::bail!("step() called with empty token history; call prefill() first");
         }
         let seq = self.tokens.len();
-        let mut wm = WeightMap::from_tensors(self.weights_cache.clone());
+        let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
         let (graph, params) = build_qwen3_graph_sized_last_logits(
             &self.cfg, &mut wm, /*batch*/ 1, seq, /*with_kv_outputs*/ false,
         )?;
@@ -324,6 +337,8 @@ impl Qwen3Generator {
             // the last position, and appends the token. Return that
             // token directly — no decode step on this call.
             let tok = self.seed_cache_from_prompt(opts)?;
+            // Bound the prompt's cache to the window before the first decode.
+            self.rotate_cache_if_sliding();
             return Ok(tok);
         }
         let cache = self.cache.as_ref().unwrap();
@@ -338,7 +353,12 @@ impl Qwen3Generator {
                 past_seq
             );
         }
-        let input_tok = self.tokens[past_seq];
+        // The token to feed is always the most recent one, at its *absolute*
+        // position. With a rotated sliding-window cache `past_seq` (cache
+        // length) is smaller than `abs_pos`; for non-windowed models they are
+        // equal, so this is behavior-preserving.
+        let abs_pos = self.tokens.len() - 1;
+        let input_tok = self.tokens[abs_pos];
 
         // Branch: bucketed compile cache vs one-shot compile per step.
         let (logits, new_k, new_v) = if self.decode_compile_cache.is_some()
@@ -349,15 +369,17 @@ impl Qwen3Generator {
                 .bucket_for(past_seq as u64)
                 .is_some()
         {
-            self.decode_step_bucketed(past_seq, input_tok)?
+            self.decode_step_bucketed(past_seq, abs_pos, input_tok)?
         } else {
-            self.decode_step_oneshot(past_seq, input_tok)?
+            self.decode_step_oneshot(past_seq, abs_pos, input_tok)?
         };
 
         let cache_mut = self.cache.as_mut().unwrap();
         cache_mut.past_len = past_seq + 1;
         cache_mut.layers_k = new_k;
         cache_mut.layers_v = new_v;
+        // Sliding-window: keep only the last `window` cached positions.
+        self.rotate_cache_if_sliding();
 
         let vocab = self.cfg.vocab_size;
         if logits.len() != vocab {
@@ -368,12 +390,41 @@ impl Qwen3Generator {
         Ok(tok)
     }
 
+    /// For sliding-window models, trim the KV cache to its last `window`
+    /// positions (a rotating cache). With absolute-position RoPE in the decode
+    /// step, this gives windowed attention at O(window) memory instead of
+    /// O(sequence). A no-op for non-windowed models.
+    fn rotate_cache_if_sliding(&mut self) {
+        let w = match (self.cfg.use_sliding_window, self.cfg.sliding_window) {
+            (true, Some(w)) if w > 0 => w,
+            _ => return,
+        };
+        let kv_dim = self.cfg.kv_proj_dim();
+        if let Some(cache) = self.cache.as_mut() {
+            if cache.past_len > w {
+                let drop = (cache.past_len - w) * kv_dim;
+                for k in cache.layers_k.iter_mut() {
+                    k.drain(0..drop.min(k.len()));
+                }
+                for v in cache.layers_v.iter_mut() {
+                    v.drain(0..drop.min(v.len()));
+                }
+                cache.past_len = w;
+            }
+        }
+    }
+
     /// Decode path that compiles a fresh graph for the exact `past_seq`
     /// every call. Slower but always-correct fallback.
-    fn decode_step_oneshot(&mut self, past_seq: usize, input_tok: u32) -> Result<DecodeLogitsKv> {
+    fn decode_step_oneshot(
+        &mut self,
+        past_seq: usize,
+        abs_pos: usize,
+        input_tok: u32,
+    ) -> Result<DecodeLogitsKv> {
         let cache = self.cache.as_ref().unwrap();
 
-        let mut wm = WeightMap::from_tensors(self.weights_cache.clone());
+        let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
         let (graph, params) =
             build_qwen3_decode_graph_sized(&self.cfg, &mut wm, /*batch*/ 1, past_seq)?;
         let opts = self.profile_compile_options(true);
@@ -382,7 +433,7 @@ impl Qwen3Generator {
             compiled.set_param(name, data);
         }
 
-        let (cos, sin) = compute_rope_slice(&self.cfg, past_seq);
+        let (cos, sin) = compute_rope_slice(&self.cfg, abs_pos);
         let input_ids_f32 = [input_tok as f32];
         let key_strs: Vec<String> = (0..self.cfg.num_hidden_layers)
             .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
@@ -401,11 +452,18 @@ impl Qwen3Generator {
         split_decode_logits_kv(outputs, self.cfg.num_hidden_layers)
     }
 
-    fn decode_step_bucketed(&mut self, past_seq: usize, input_tok: u32) -> Result<DecodeLogitsKv> {
+    fn decode_step_bucketed(
+        &mut self,
+        past_seq: usize,
+        abs_pos: usize,
+        input_tok: u32,
+    ) -> Result<DecodeLogitsKv> {
         let kv = self.cache.as_ref().unwrap().clone();
         let kv_dim = self.cfg.kv_proj_dim();
         let n_layers = self.cfg.num_hidden_layers;
-        let (cos, sin) = compute_rope_slice(&self.cfg, past_seq);
+        // RoPE uses the token's *absolute* position; with a rotated
+        // (sliding-window) cache this differs from the cache length `past_seq`.
+        let (cos, sin) = compute_rope_slice(&self.cfg, abs_pos);
         let input_ids_f32 = [input_tok as f32];
         let decode_opts = self.profile_compile_options(true);
         let upper = self
@@ -421,6 +479,10 @@ impl Qwen3Generator {
                 })
             })
             .unwrap_or(past_seq);
+        // Standard full causal decode mask: every cached key is valid. For
+        // sliding-window models the cache is *rotated* to hold only the last
+        // `window` keys (see `rotate_cache_if_sliding`), so the windowing is
+        // already in the cache and the plain mask suffices.
         let mask = bucket_decode_mask(past_seq, upper);
         let fixed = [
             CacheRunInput {
@@ -455,12 +517,290 @@ impl Qwen3Generator {
             n_layers,
             &fixed,
             |upper| {
-                let mut wm = WeightMap::from_tensors(weights.clone());
+                // Deep-copy weights only when this bucket actually compiles
+                // (cache miss); steady-state decode captures just the `Arc`.
+                let mut wm = WeightMap::from_tensors((*weights).clone());
                 build_qwen3_decode_graph_sized_ext(&cfg, &mut wm, 1, upper as usize, true)
                     .expect("qwen3 bucketed decode graph")
             },
             &decode_opts,
         )
+    }
+
+    /// **Fused batched decode** — the throughput primitive for serving.
+    ///
+    /// Decodes `B = entries.len()` sequences in ONE forward, so every weight
+    /// matmul (QKV/O projections, MLP, LM head) runs once over the whole batch
+    /// instead of `B` times. Each `entries[i] = (token, kv)` gives sequence
+    /// `i`'s next input token and its cache; **all caches must share
+    /// `past_seq`** (the same `past_len`) and the same absolute position
+    /// `abs_pos`, because the decode graph's RoPE slice and causal-mask bucket
+    /// are per-step values shared across the batch. The continuous batcher
+    /// groups decode work by cache length to satisfy this.
+    ///
+    /// Returns, per input sequence, `(next_token_logits[vocab], advanced_kv)`
+    /// where `advanced_kv.past_len == past_seq + 1`.
+    ///
+    /// KV layout note: the decode graph reads/writes K/V **batch-major**
+    /// `[batch, seq_pos, kv_dim]` (each sequence's positions contiguous). We
+    /// pad each sequence to the compiled bucket `upper` and assemble that
+    /// layout directly, then run the cached graph and de-interleave the
+    /// `[batch, upper+1, kv_dim]` output (real positions `0..past_seq` plus the
+    /// new token at row `upper`). The bucketed primitive's host-side
+    /// pad/compact helpers are position-major and only coincide with this at
+    /// batch=1, so we drive the compiled graph directly. Logits are batch-major
+    /// `[batch, vocab]`.
+    pub fn decode_batched_uniform(
+        &mut self,
+        entries: &[(u32, &KvCacheState)],
+        abs_pos: usize,
+        past_seq: usize,
+    ) -> Result<Vec<(Vec<f32>, KvCacheState)>> {
+        let b = entries.len();
+        if b == 0 {
+            return Ok(Vec::new());
+        }
+        let kv_dim = self.cfg.kv_proj_dim();
+        let n_layers = self.cfg.num_hidden_layers;
+        let vocab = self.cfg.vocab_size;
+        let max_past = self.cfg.max_position_embeddings.clamp(1, 4096) as u64;
+        let device = self.device;
+        // Hoist every `self` read before the mutable cache borrow below.
+        let decode_opts = self.profile_compile_options(true);
+        let cfg = self.cfg.clone();
+        let weights = self.weights_cache.clone();
+
+        let input_ids_f32: Vec<f32> = entries.iter().map(|(t, _)| *t as f32).collect();
+        let (cos, sin) = compute_rope_slice(&cfg, abs_pos);
+
+        // One bucketed compile cache per batch size (graph shape depends on B).
+        // Fetch the compiled graph for this past_seq bucket and its `upper`.
+        let cache_b = self
+            .batched_decode_caches
+            .entry(b)
+            .or_insert_with(|| BucketedCompileCache::power_of_two_ladder(device, 1, max_past));
+        let (upper_u64, compiled) = cache_b
+            .ensure_graph_with_params(
+                past_seq as u64,
+                |upper| {
+                    let mut wm = WeightMap::from_tensors((*weights).clone());
+                    build_qwen3_decode_graph_sized_ext(&cfg, &mut wm, b, upper as usize, true)
+                        .expect("qwen3 batched decode graph")
+                },
+                &decode_opts,
+            )
+            .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?;
+        let upper = upper_u64 as usize;
+
+        // Batch-major padded KV `[batch, upper, kv_dim]`: each sequence's
+        // `past_seq` real positions followed by `upper - past_seq` zero rows.
+        let real = past_seq * kv_dim;
+        let mut padded_k: Vec<Vec<f32>> = Vec::with_capacity(n_layers);
+        let mut padded_v: Vec<Vec<f32>> = Vec::with_capacity(n_layers);
+        for l in 0..n_layers {
+            let mut pk = vec![0.0f32; b * upper * kv_dim];
+            let mut pv = vec![0.0f32; b * upper * kv_dim];
+            for (i, (_tok, kv)) in entries.iter().enumerate() {
+                debug_assert_eq!(
+                    kv.past_len, past_seq,
+                    "decode_batched_uniform: ragged past_len"
+                );
+                let base = i * upper * kv_dim;
+                pk[base..base + real].copy_from_slice(&kv.layers_k[l][..real]);
+                pv[base..base + real].copy_from_slice(&kv.layers_v[l][..real]);
+            }
+            padded_k.push(pk);
+            padded_v.push(pv);
+        }
+
+        // Per-row mask `[batch, upper + 1]`; rows are identical at uniform past_seq.
+        let row_mask = bucket_decode_mask(past_seq, upper);
+        let mut mask = Vec::with_capacity(b * row_mask.len());
+        for _ in 0..b {
+            mask.extend_from_slice(&row_mask);
+        }
+
+        let key_strs: Vec<String> = (0..n_layers)
+            .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
+            .collect();
+        let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4 + 2 * n_layers);
+        inputs.push(("input_ids", &input_ids_f32));
+        inputs.push(("rope_cos", &cos));
+        inputs.push(("rope_sin", &sin));
+        inputs.push(("mask", &mask));
+        for l in 0..n_layers {
+            inputs.push((&key_strs[2 * l], &padded_k[l]));
+            inputs.push((&key_strs[2 * l + 1], &padded_v[l]));
+        }
+
+        let raw = compiled.run(&inputs);
+        let (logits, new_k, new_v) = split_decode_logits_kv(raw, n_layers)?;
+
+        // De-interleave batch-major: logits `[batch, vocab]`; per layer the KV
+        // output is `[batch, upper+1, kv_dim]` — take positions `0..past_seq`
+        // and the new token at row `upper`.
+        let new_len = past_seq + 1;
+        let mut out = Vec::with_capacity(b);
+        for i in 0..b {
+            let lo = logits[i * vocab..(i + 1) * vocab].to_vec();
+            let mut kv = KvCacheState {
+                past_len: new_len,
+                layers_k: Vec::with_capacity(n_layers),
+                layers_v: Vec::with_capacity(n_layers),
+            };
+            for l in 0..n_layers {
+                let stride = (upper + 1) * kv_dim;
+                let base = i * stride;
+                let nt = base + upper * kv_dim;
+                let mut sk = vec![0.0f32; new_len * kv_dim];
+                let mut sv = vec![0.0f32; new_len * kv_dim];
+                sk[..real].copy_from_slice(&new_k[l][base..base + real]);
+                sv[..real].copy_from_slice(&new_v[l][base..base + real]);
+                sk[real..real + kv_dim].copy_from_slice(&new_k[l][nt..nt + kv_dim]);
+                sv[real..real + kv_dim].copy_from_slice(&new_v[l][nt..nt + kv_dim]);
+                kv.layers_k.push(sk);
+                kv.layers_v.push(sv);
+            }
+            out.push((lo, kv));
+        }
+        Ok(out)
+    }
+
+    /// **Ragged fused batched decode** — decodes `B = entries.len()` sequences
+    /// in ONE forward even when they sit at **different** cache lengths.
+    ///
+    /// Unlike [`Self::decode_batched_uniform`], each sequence carries its own
+    /// past length (`kv.past_len`) and absolute position. The decode graph is
+    /// built with per-sequence RoPE rows (`rope_cos`/`rope_sin` shaped
+    /// `[batch, head_dim/2]`) and a per-row causal mask, and every sequence's KV
+    /// is padded to the shared bucket `upper`. This is what lets a real server
+    /// fuse arbitrary concurrent requests (varied prompt lengths, staggered
+    /// arrivals) into a single batched forward — the full throughput win.
+    ///
+    /// Each `entries[i] = (token, kv)`; returns `(next_token_logits, advanced_kv)`
+    /// per sequence with `advanced_kv.past_len == kv.past_len + 1`. Assumes
+    /// non-sliding RoPE (absolute position == cache length).
+    pub fn decode_batched_ragged(
+        &mut self,
+        entries: &[(u32, &KvCacheState)],
+    ) -> Result<Vec<(Vec<f32>, KvCacheState)>> {
+        let b = entries.len();
+        if b == 0 {
+            return Ok(Vec::new());
+        }
+        // A single sequence has nothing to fuse and no ragged RoPE need — the
+        // shared-row uniform path is simpler and identical numerically.
+        if b == 1 {
+            let (tok, kv) = entries[0];
+            let past = kv.past_len;
+            return self.decode_batched_uniform(&[(tok, kv)], past, past);
+        }
+        let kv_dim = self.cfg.kv_proj_dim();
+        let n_layers = self.cfg.num_hidden_layers;
+        let vocab = self.cfg.vocab_size;
+        let half = self.cfg.head_dim / 2;
+        let max_past = self.cfg.max_position_embeddings.clamp(1, 4096) as u64;
+        let device = self.device;
+        let decode_opts = self.profile_compile_options(true);
+        let cfg = self.cfg.clone();
+        let weights = self.weights_cache.clone();
+
+        // Per-sequence input token, RoPE row (at the sequence's own position),
+        // and mask row (each sequence's own real past length).
+        let input_ids_f32: Vec<f32> = entries.iter().map(|(t, _)| *t as f32).collect();
+        let max_past_seq = entries.iter().map(|(_, kv)| kv.past_len).max().unwrap_or(0);
+
+        // Graph + bucket `upper` for the longest sequence in the batch.
+        let cache_b = self
+            .batched_ragged_caches
+            .entry(b)
+            .or_insert_with(|| BucketedCompileCache::power_of_two_ladder(device, 1, max_past));
+        let (upper_u64, compiled) = cache_b
+            .ensure_graph_with_params(
+                max_past_seq as u64,
+                |upper| {
+                    let mut wm = WeightMap::from_tensors((*weights).clone());
+                    build_qwen3_decode_graph_sized_ragged(&cfg, &mut wm, b, upper as usize)
+                        .expect("qwen3 ragged decode graph")
+                },
+                &decode_opts,
+            )
+            .ok_or_else(|| anyhow::anyhow!("past_seq {max_past_seq} outside decode buckets"))?;
+        let upper = upper_u64 as usize;
+
+        // Per-row RoPE `[batch, half]` and mask `[batch, upper+1]`.
+        let mut cos = Vec::with_capacity(b * half);
+        let mut sin = Vec::with_capacity(b * half);
+        let mut mask = Vec::with_capacity(b * (upper + 1));
+        for (_tok, kv) in entries {
+            let (c, s) = compute_rope_slice(&cfg, kv.past_len);
+            cos.extend_from_slice(&c);
+            sin.extend_from_slice(&s);
+            mask.extend_from_slice(&bucket_decode_mask(kv.past_len, upper));
+        }
+
+        // Batch-major padded KV `[batch, upper, kv_dim]`; each sequence's own
+        // `past_len` real rows then zero padding to `upper`.
+        let mut padded_k: Vec<Vec<f32>> = Vec::with_capacity(n_layers);
+        let mut padded_v: Vec<Vec<f32>> = Vec::with_capacity(n_layers);
+        for l in 0..n_layers {
+            let mut pk = vec![0.0f32; b * upper * kv_dim];
+            let mut pv = vec![0.0f32; b * upper * kv_dim];
+            for (i, (_tok, kv)) in entries.iter().enumerate() {
+                let real = kv.past_len * kv_dim;
+                let base = i * upper * kv_dim;
+                pk[base..base + real].copy_from_slice(&kv.layers_k[l][..real]);
+                pv[base..base + real].copy_from_slice(&kv.layers_v[l][..real]);
+            }
+            padded_k.push(pk);
+            padded_v.push(pv);
+        }
+
+        let key_strs: Vec<String> = (0..n_layers)
+            .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
+            .collect();
+        let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4 + 2 * n_layers);
+        inputs.push(("input_ids", &input_ids_f32));
+        inputs.push(("rope_cos", &cos));
+        inputs.push(("rope_sin", &sin));
+        inputs.push(("mask", &mask));
+        for l in 0..n_layers {
+            inputs.push((&key_strs[2 * l], &padded_k[l]));
+            inputs.push((&key_strs[2 * l + 1], &padded_v[l]));
+        }
+
+        let raw = compiled.run(&inputs);
+        let (logits, new_k, new_v) = split_decode_logits_kv(raw, n_layers)?;
+
+        // De-interleave per sequence: each has its own new length and the new
+        // token's K/V at the padded row `upper`.
+        let mut out = Vec::with_capacity(b);
+        for i in 0..b {
+            let past_i = entries[i].1.past_len;
+            let real = past_i * kv_dim;
+            let new_len = past_i + 1;
+            let lo = logits[i * vocab..(i + 1) * vocab].to_vec();
+            let mut kv = KvCacheState {
+                past_len: new_len,
+                layers_k: Vec::with_capacity(n_layers),
+                layers_v: Vec::with_capacity(n_layers),
+            };
+            for l in 0..n_layers {
+                let stride = (upper + 1) * kv_dim;
+                let base = i * stride;
+                let nt = base + upper * kv_dim;
+                let mut sk = vec![0.0f32; new_len * kv_dim];
+                let mut sv = vec![0.0f32; new_len * kv_dim];
+                sk[..real].copy_from_slice(&new_k[l][base..base + real]);
+                sv[..real].copy_from_slice(&new_v[l][base..base + real]);
+                sk[real..real + kv_dim].copy_from_slice(&new_k[l][nt..nt + kv_dim]);
+                sv[real..real + kv_dim].copy_from_slice(&new_v[l][nt..nt + kv_dim]);
+                kv.layers_k.push(sk);
+                kv.layers_v.push(sv);
+            }
+            out.push((lo, kv));
+        }
+        Ok(out)
     }
 
     /// Run prefill-with-cache and return the raw outputs. Uses the
@@ -475,14 +815,14 @@ impl Qwen3Generator {
         let prefill_opts = self.profile_compile_options(false);
         if let Some(cache) = &mut self.prefill_compile_cache {
             let key = prefill_cache_key(batch, seq);
-            let mut wm = WeightMap::from_tensors(self.weights_cache.clone());
+            let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
             let (graph, params) = build_qwen3_graph_sized_last_logits(
                 &self.cfg, &mut wm, batch, seq, /*with_kv_outputs*/ true,
             )?;
             let compiled = compile_cache_ensure_graph(cache, key, graph, params, &prefill_opts);
             Ok(compiled.run(&[("input_ids", ids_f32)]))
         } else {
-            let mut wm = WeightMap::from_tensors(self.weights_cache.clone());
+            let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
             let (graph, params) = build_qwen3_graph_sized_last_logits(
                 &self.cfg, &mut wm, batch, seq, /*with_kv_outputs*/ true,
             )?;
@@ -566,8 +906,112 @@ impl Qwen3Generator {
         &self.tokens
     }
 
+    /// One teacher-forced forward over `tokens`; returns the flattened
+    /// `[seq, vocab]` logits (row `i` predicts token `i+1`). A single graph
+    /// run — used by the eval harness instead of O(N) single decode steps.
+    pub fn sequence_logits(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
+        if tokens.is_empty() {
+            anyhow::bail!("sequence_logits: empty token sequence");
+        }
+        let seq = tokens.len();
+        let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
+        let (graph, params) = build_qwen3_graph_sized(
+            &self.cfg, &mut wm, 1, seq, /*with_lm_head*/ true, false,
+        )?;
+        let opts = self.profile_compile_options(false);
+        let mut compiled = Session::new(self.device).compile_with(graph, &opts);
+        for (name, data) in &params {
+            compiled.set_param(name, data);
+        }
+        let ids_f32: Vec<f32> = tokens.iter().map(|&i| i as f32).collect();
+        let mut out = compiled.run(&[("input_ids", &ids_f32)]);
+        out.drain(..)
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("sequence_logits: graph produced no output"))
+    }
+
+    /// Teacher-forced next-token log-probabilities: `log P(tokens[i+1] |
+    /// tokens[..=i])` for `i` in `0..seq-1`. One forward; host-side
+    /// log-softmax. Returns `seq - 1` values (empty for a 1-token input).
+    pub fn sequence_logprobs(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
+        let seq = tokens.len();
+        if seq < 2 {
+            return Ok(Vec::new());
+        }
+        let vocab = self.cfg.vocab_size;
+        let logits = self.sequence_logits(tokens)?;
+        if logits.len() < seq * vocab {
+            anyhow::bail!(
+                "sequence_logits len {} < seq*vocab {}",
+                logits.len(),
+                seq * vocab
+            );
+        }
+        let mut out = Vec::with_capacity(seq - 1);
+        for i in 0..seq - 1 {
+            let row = &logits[i * vocab..(i + 1) * vocab];
+            out.push(log_softmax_at(row, tokens[i + 1] as usize));
+        }
+        Ok(out)
+    }
+
+    /// Snapshot the seeded KV cache + token history for prompt-cache reuse.
+    /// `None` if no cache has been seeded yet (no `step_cached`/prefill-cache
+    /// call has run).
+    pub fn export_cache(&self) -> Option<(KvCacheState, Vec<u32>)> {
+        self.cache
+            .as_ref()
+            .map(|c| (c.clone(), self.tokens.clone()))
+    }
+
+    /// Restore a previously exported KV cache + token history so generation
+    /// resumes from a cached prefix instead of re-prefilling it.
+    pub fn restore_cache(&mut self, cache: KvCacheState, tokens: Vec<u32>) {
+        self.cache = Some(cache);
+        self.tokens = tokens;
+    }
+
+    /// Prefill `prompt`, **reusing** a `restored` KV cache that already covers
+    /// the first `reuse_len` tokens — only the suffix is processed (one decode
+    /// step per suffix token). Returns the last-position logits and leaves
+    /// `self.cache` seeded at `past_len == prompt.len()`, ready for decode.
+    ///
+    /// `reuse_len` is capped to `prompt.len() - 1` so the final prompt token
+    /// is always re-processed: its *next-token* prediction logits are not
+    /// stored in the cache, so we must recompute them. When the cache covers
+    /// more than the cap, it is trimmed to the reused row count.
+    pub fn prefill_with_reuse(
+        &mut self,
+        prompt: &[u32],
+        restored: KvCacheState,
+        reuse_len: usize,
+    ) -> Result<Vec<f32>> {
+        if prompt.is_empty() {
+            anyhow::bail!("prefill_with_reuse: empty prompt");
+        }
+        let kv_dim = self.cfg.kv_proj_dim();
+        let reuse = reuse_len.min(prompt.len() - 1).min(restored.past_len);
+        let kv = if reuse == restored.past_len {
+            restored
+        } else {
+            trim_kv(&restored, reuse, kv_dim)
+        };
+        self.cache = Some(kv);
+        self.tokens = prompt[..reuse].to_vec();
+        let mut logits = Vec::new();
+        for &t in &prompt[reuse..] {
+            logits = self.decode_get_logits(t)?;
+        }
+        Ok(logits)
+    }
+
     pub fn config(&self) -> &Qwen3Config {
         &self.cfg
+    }
+
+    /// The device this generator compiles + runs on.
+    pub fn device(&self) -> Device {
+        self.device
     }
 
     /// Low-level primitive: reset internal state, run prefill-with-cache
@@ -620,7 +1064,7 @@ impl Qwen3Generator {
         })?;
         let past_seq = cache.past_len;
 
-        let mut wm = WeightMap::from_tensors(self.weights_cache.clone());
+        let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
         let (graph, params) =
             build_qwen3_decode_graph_sized(&self.cfg, &mut wm, /*batch*/ 1, past_seq)?;
         let opts = self.profile_compile_options(true);
@@ -656,6 +1100,32 @@ impl Qwen3Generator {
         self.tokens.push(input);
 
         Ok(logits)
+    }
+}
+
+/// `log softmax(row)[idx]` computed stably (`row[idx] - logsumexp(row)`).
+fn log_softmax_at(row: &[f32], idx: usize) -> f32 {
+    let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let sumexp: f32 = row.iter().map(|&x| (x - max).exp()).sum();
+    let lse = max + sumexp.ln();
+    row.get(idx).copied().unwrap_or(f32::NEG_INFINITY) - lse
+}
+
+/// Trim a KV cache to its first `rows` sequence positions (uniform `kv_dim`).
+/// Each layer's `[past_len * kv_dim]` row-major buffer keeps its first
+/// `rows * kv_dim` elements.
+fn trim_kv(kv: &KvCacheState, rows: usize, kv_dim: usize) -> KvCacheState {
+    let take = rows * kv_dim;
+    let cut = |layers: &[Vec<f32>]| -> Vec<Vec<f32>> {
+        layers
+            .iter()
+            .map(|buf| buf[..take.min(buf.len())].to_vec())
+            .collect()
+    };
+    KvCacheState {
+        past_len: rows,
+        layers_k: cut(&kv.layers_k),
+        layers_v: cut(&kv.layers_v),
     }
 }
 
@@ -797,6 +1267,154 @@ mod tests {
         assert_eq!(gn.tokens().len(), 4);
     }
 
+    /// Fused batched decode must equal independent single-sequence decode,
+    /// token-for-token in logits AND in the advanced KV cache. This is the
+    /// throughput primitive's correctness oracle: it pins the position-major
+    /// `[seq, batch, kv_dim]` KV layout, the per-row mask, and the
+    /// bucket-padded custom-mask graph at batch > 1, all on CPU.
+    #[test]
+    fn batched_decode_matches_single_sequence() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let mut g = Qwen3Generator::from_loader(cfg.clone(), &mut wm, Device::Cpu).unwrap();
+
+        let close = |a: &[f32], b: &[f32], who: &str| {
+            assert_eq!(a.len(), b.len(), "{who}: length");
+            for (j, (x, y)) in a.iter().zip(b).enumerate() {
+                assert!(
+                    (x - y).abs() <= 1e-3 + 1e-3 * y.abs(),
+                    "{who} elem[{j}]: batched {x} vs single {y}"
+                );
+            }
+        };
+
+        // Cover several prompt lengths: len 4 → bucket 3..5 (upper 4, no pad);
+        // len 3 → bucket 3..5 (upper 4, ONE padded row, exercises the mask);
+        // len 2 → bucket 2..3 (upper 2, no pad).
+        for len in [2usize, 3, 4] {
+            let prompt_a: Vec<u32> = (1..=len as u32).collect();
+            let prompt_b: Vec<u32> = (1..=len as u32).map(|t| t + 5).collect();
+            let tok_a = 5u32;
+            let tok_b = 11u32;
+            let past = len;
+
+            // Reference A: single-seq decode + its advanced cache.
+            g.prefill_get_last_logits(&prompt_a).unwrap();
+            let (kv_a, _) = g.export_cache().unwrap();
+            let exp_a = g.decode_get_logits(tok_a).unwrap();
+            let (kv_a_next, _) = g.export_cache().unwrap();
+
+            // Reference B (fresh prefill resets the cache).
+            g.prefill_get_last_logits(&prompt_b).unwrap();
+            let (kv_b, _) = g.export_cache().unwrap();
+            let exp_b = g.decode_get_logits(tok_b).unwrap();
+            let (kv_b_next, _) = g.export_cache().unwrap();
+
+            // B=1 through the batched path must match single-seq decode exactly
+            // (isolates mask/rope/graph from the multi-sequence interleaving).
+            let solo = g
+                .decode_batched_uniform(&[(tok_a, &kv_a)], past, past)
+                .unwrap();
+            close(&solo[0].0, &exp_a, &format!("len{len} B=1 logits"));
+
+            // Fused: both sequences in ONE batched forward.
+            let out = g
+                .decode_batched_uniform(&[(tok_a, &kv_a), (tok_b, &kv_b)], past, past)
+                .unwrap();
+            assert_eq!(out.len(), 2);
+            close(&out[0].0, &exp_a, &format!("len{len} seq A logits"));
+            close(&out[1].0, &exp_b, &format!("len{len} seq B logits"));
+
+            // The de-interleaved KV must equal each single-seq advanced cache.
+            assert_eq!(out[0].1.past_len, past + 1);
+            assert_eq!(out[1].1.past_len, past + 1);
+            for l in 0..cfg.num_hidden_layers {
+                close(
+                    &out[0].1.layers_k[l],
+                    &kv_a_next.layers_k[l],
+                    &format!("len{len} A K"),
+                );
+                close(
+                    &out[0].1.layers_v[l],
+                    &kv_a_next.layers_v[l],
+                    &format!("len{len} A V"),
+                );
+                close(
+                    &out[1].1.layers_k[l],
+                    &kv_b_next.layers_k[l],
+                    &format!("len{len} B K"),
+                );
+                close(
+                    &out[1].1.layers_v[l],
+                    &kv_b_next.layers_v[l],
+                    &format!("len{len} B V"),
+                );
+            }
+        }
+    }
+
+    /// Ragged fused decode (sequences at DIFFERENT cache lengths) must equal
+    /// independent single-sequence decode — logits and advanced KV. This pins
+    /// the per-sequence RoPE table + per-row mask path that lets arbitrary
+    /// concurrent requests fuse into one forward.
+    #[test]
+    fn ragged_batched_decode_matches_single_sequence() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let mut g = Qwen3Generator::from_loader(cfg.clone(), &mut wm, Device::Cpu).unwrap();
+
+        let close = |a: &[f32], b: &[f32], who: &str| {
+            assert_eq!(a.len(), b.len(), "{who} len");
+            for (j, (x, y)) in a.iter().zip(b).enumerate() {
+                assert!(
+                    (x - y).abs() <= 1e-3 + 1e-3 * y.abs(),
+                    "{who}[{j}]: {x} vs {y}"
+                );
+            }
+        };
+
+        // Seq A at past_len 2, seq B at past_len 5 — different RoPE positions,
+        // different mask rows, padded to a shared bucket upper.
+        let prompt_a = vec![1u32, 2];
+        let prompt_b = vec![3u32, 4, 5, 6, 7];
+        let tok_a = 8u32;
+        let tok_b = 9u32;
+
+        g.prefill_get_last_logits(&prompt_a).unwrap();
+        let (kv_a, _) = g.export_cache().unwrap();
+        let exp_a = g.decode_get_logits(tok_a).unwrap();
+        let (kv_a_next, _) = g.export_cache().unwrap();
+
+        g.prefill_get_last_logits(&prompt_b).unwrap();
+        let (kv_b, _) = g.export_cache().unwrap();
+        let exp_b = g.decode_get_logits(tok_b).unwrap();
+        let (kv_b_next, _) = g.export_cache().unwrap();
+
+        let out = g
+            .decode_batched_ragged(&[(tok_a, &kv_a), (tok_b, &kv_b)])
+            .unwrap();
+        assert_eq!(out.len(), 2);
+        close(&out[0].0, &exp_a, "ragged A logits");
+        close(&out[1].0, &exp_b, "ragged B logits");
+
+        // Order-independence: swapping the batch must swap the outputs, not
+        // corrupt them (guards the per-sequence RoPE/mask indexing).
+        let sw = g
+            .decode_batched_ragged(&[(tok_b, &kv_b), (tok_a, &kv_a)])
+            .unwrap();
+        close(&sw[0].0, &exp_b, "swapped B logits");
+        close(&sw[1].0, &exp_a, "swapped A logits");
+
+        assert_eq!(out[0].1.past_len, prompt_a.len() + 1);
+        assert_eq!(out[1].1.past_len, prompt_b.len() + 1);
+        for l in 0..cfg.num_hidden_layers {
+            close(&out[0].1.layers_k[l], &kv_a_next.layers_k[l], "ragged A K");
+            close(&out[0].1.layers_v[l], &kv_a_next.layers_v[l], "ragged A V");
+            close(&out[1].1.layers_k[l], &kv_b_next.layers_k[l], "ragged B K");
+            close(&out[1].1.layers_v[l], &kv_b_next.layers_v[l], "ragged B V");
+        }
+    }
+
     #[test]
     fn generate_n_appends_n_tokens() {
         let cfg = tiny_cfg();
@@ -852,6 +1470,151 @@ mod tests {
             cached_tokens, naive_tokens,
             "cached vs naive token mismatch — KV cache or kernel-Lq!=Lk bug"
         );
+    }
+
+    #[test]
+    fn sliding_window_cached_decode_matches_naive() {
+        // With a sliding window, the KV-cached decode path (windowed custom
+        // mask) must reproduce naive prefill-recompute (SlidingWindow op),
+        // generating past the window so the masking actually bites.
+        let mut cfg = tiny_cfg();
+        cfg.use_sliding_window = true;
+        cfg.sliding_window = Some(3);
+        let prompt: Vec<u32> = vec![1, 2, 3, 5, 4];
+        let steps = 5;
+
+        let mut wm_n = synthetic_weights(&cfg);
+        let mut gn_naive =
+            Qwen3Generator::from_loader(cfg.clone(), &mut wm_n, Device::Cpu).unwrap();
+        gn_naive.prefill_compile_cache = None;
+        gn_naive.decode_compile_cache = None;
+        gn_naive.prefill(&prompt);
+        let naive = gn_naive.generate(steps, SampleOpts::greedy()).unwrap();
+
+        let mut wm_c = synthetic_weights(&cfg);
+        let mut gn_cached =
+            Qwen3Generator::from_loader(cfg.clone(), &mut wm_c, Device::Cpu).unwrap();
+        gn_cached.prefill(&prompt);
+        let cached = gn_cached
+            .generate_cached(steps, SampleOpts::greedy())
+            .unwrap();
+
+        assert_eq!(
+            cached, naive,
+            "windowed cached decode must match naive windowed prefill"
+        );
+    }
+
+    #[test]
+    fn sliding_window_rotates_cache_to_bound_memory() {
+        // The rotating cache stays at `window` rows no matter how long the
+        // prompt + generation get — O(window) memory instead of O(sequence).
+        let mut cfg = tiny_cfg();
+        cfg.use_sliding_window = true;
+        cfg.sliding_window = Some(3);
+        let mut wm = synthetic_weights(&cfg);
+        let mut gn = Qwen3Generator::from_loader(cfg, &mut wm, Device::Cpu).unwrap();
+        gn.prefill(&[1, 2, 3, 5, 4, 6, 7]); // prompt len 7 > window 3
+        let _ = gn.generate_cached(5, SampleOpts::greedy()).unwrap();
+        let cache = gn.cache.as_ref().unwrap();
+        assert_eq!(cache.past_len, 3, "cache must be bounded to the window");
+        // And each layer's K/V buffer holds exactly `window` rows.
+        let kv_dim = gn.cfg.kv_proj_dim();
+        assert_eq!(cache.layers_k[0].len(), 3 * kv_dim);
+    }
+
+    #[test]
+    fn sliding_window_reduces_to_causal_when_wide() {
+        // A sliding window ≥ seq must reproduce full causal attention; a
+        // narrow window must change the result (the mask actually restricts).
+        let prompt: Vec<u32> = vec![1, 2, 3, 5, 4];
+        let base = tiny_cfg();
+
+        let logits = |mut cfg: Qwen3Config, use_sw: bool, win: Option<usize>| {
+            cfg.use_sliding_window = use_sw;
+            cfg.sliding_window = win;
+            let mut wm = synthetic_weights(&cfg);
+            let mut g = Qwen3Generator::from_loader(cfg, &mut wm, Device::Cpu).unwrap();
+            g.sequence_logits(&prompt).unwrap()
+        };
+
+        let causal = logits(base.clone(), false, None);
+        let wide = logits(base.clone(), true, Some(100)); // ≥ seq
+        let narrow = logits(base.clone(), true, Some(2)); // < seq
+
+        assert_eq!(causal.len(), wide.len());
+        for (a, b) in causal.iter().zip(&wide) {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "wide window must equal causal: {a} vs {b}"
+            );
+        }
+        let diff: f32 = causal.iter().zip(&narrow).map(|(a, b)| (a - b).abs()).sum();
+        assert!(
+            diff > 1e-3,
+            "narrow window should differ from causal (sum |Δ|={diff})"
+        );
+    }
+
+    #[test]
+    fn sequence_logprobs_shape_and_consistency() {
+        let cfg = tiny_cfg();
+        let vocab = cfg.vocab_size;
+        let tokens: Vec<u32> = vec![1, 2, 3, 5, 4];
+        let mut wm = synthetic_weights(&cfg);
+        let mut g = Qwen3Generator::from_loader(cfg, &mut wm, Device::Cpu).unwrap();
+
+        let logits = g.sequence_logits(&tokens).unwrap();
+        assert_eq!(logits.len(), tokens.len() * vocab);
+
+        let lps = g.sequence_logprobs(&tokens).unwrap();
+        assert_eq!(lps.len(), tokens.len() - 1);
+        // All log-probs are <= 0 and finite.
+        assert!(lps.iter().all(|&x| x <= 1e-4 && x.is_finite()));
+        // Consistent with a hand log-softmax of the corresponding row.
+        let row0 = &logits[0..vocab];
+        let hand = log_softmax_at(row0, tokens[1] as usize);
+        assert!((lps[0] - hand).abs() < 1e-5);
+    }
+
+    #[test]
+    fn prefill_with_reuse_matches_full_prefill() {
+        // Reusing a cached prefix + decoding the suffix must predict the
+        // same next token as a full prefill of the whole prompt.
+        let cfg = tiny_cfg();
+        let prompt: Vec<u32> = vec![1, 2, 3, 5, 4, 6];
+
+        let mut wm_ref = synthetic_weights(&cfg);
+        let mut g_ref = Qwen3Generator::from_loader(cfg.clone(), &mut wm_ref, Device::Cpu)
+            .unwrap()
+            .with_decode_cache(64);
+        let ref_logits = g_ref.prefill_get_last_logits(&prompt).unwrap();
+        let ref_tok = sample_token(&ref_logits, SampleOpts::greedy());
+
+        // Build a prefix cache covering the first 3 tokens.
+        let mut wm_p = synthetic_weights(&cfg);
+        let mut g_pref = Qwen3Generator::from_loader(cfg.clone(), &mut wm_p, Device::Cpu)
+            .unwrap()
+            .with_decode_cache(64);
+        let _ = g_pref.prefill_get_last_logits(&prompt[..3]).unwrap();
+        let (prefix_kv, prefix_tokens) = g_pref.export_cache().unwrap();
+        assert_eq!(prefix_kv.past_len, 3);
+        assert_eq!(prefix_tokens, prompt[..3].to_vec());
+
+        // Reuse the prefix, prefill only the suffix.
+        let mut wm_r = synthetic_weights(&cfg);
+        let mut g_reuse = Qwen3Generator::from_loader(cfg.clone(), &mut wm_r, Device::Cpu)
+            .unwrap()
+            .with_decode_cache(64);
+        let reuse_logits = g_reuse.prefill_with_reuse(&prompt, prefix_kv, 3).unwrap();
+        let reuse_tok = sample_token(&reuse_logits, SampleOpts::greedy());
+
+        assert_eq!(
+            reuse_tok, ref_tok,
+            "suffix-prefill must predict the same next token as full prefill"
+        );
+        // Cache is left ready for decode at the full prompt length.
+        assert_eq!(g_reuse.cache.as_ref().unwrap().past_len, prompt.len());
     }
 
     #[test]

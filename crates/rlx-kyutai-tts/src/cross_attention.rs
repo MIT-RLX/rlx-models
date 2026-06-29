@@ -15,6 +15,7 @@
 //!   and reuse them on every step.
 
 use crate::nn::{linear, sin_pos_embed, softmax_inplace};
+use crate::util::split_qkv;
 use anyhow::{Result, bail};
 use ndarray::{Array1, Array2};
 
@@ -51,6 +52,32 @@ pub struct CrossAttention {
 }
 
 impl CrossAttention {
+    /// Build from the fused `in_proj_weight [3·d, d]` used in Kyutai checkpoints.
+    pub fn from_fused_in_proj(
+        d_model: usize,
+        num_heads: usize,
+        in_proj: Array2<f32>,
+        out_proj: Array2<f32>,
+        pos_emb: bool,
+        pos_emb_scale: f32,
+        pos_max_period: f32,
+    ) -> Result<Self> {
+        let head_dim = d_model / num_heads;
+        let (w_q, w_k, w_v) = split_qkv(&in_proj, d_model)?;
+        Ok(Self {
+            d_model,
+            num_heads,
+            head_dim,
+            w_q,
+            w_k,
+            w_v,
+            w_o: out_proj,
+            pos_emb,
+            pos_emb_scale,
+            pos_max_period,
+        })
+    }
+
     /// Project the cross context to a reusable K/V cache. Call once per voice.
     pub fn prepare_kv(&self, ctx: &Array2<f32>) -> Result<CrossKvCache> {
         let t = ctx.nrows();

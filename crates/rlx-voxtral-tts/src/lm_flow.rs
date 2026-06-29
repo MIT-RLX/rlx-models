@@ -78,6 +78,7 @@ pub fn build_tts_backbone_prefill_built_opts(
         eps,
         mask: MaskKind::Causal,
         hidden_shape: hidden_shape.clone(),
+        rope_style: llama.rope_style,
     };
 
     let kv_sink = SideOutputs::new();
@@ -105,6 +106,7 @@ pub fn build_tts_backbone_prefill_built_opts(
                     dh,
                     eps,
                     sink.inner(),
+                    spec.rope_style,
                 )));
             }
             stages.push(llama_prefill_layer_fused(i, spec.clone()));
@@ -180,6 +182,7 @@ pub fn build_tts_backbone_decode_built_opts(
         eps,
         use_custom_mask: opts.use_custom_mask,
         hidden_shape: hidden_shape.clone(),
+        rope_style: llama.rope_style,
     };
 
     let kv_out = SideOutputs::new();
@@ -301,6 +304,7 @@ pub fn build_tts_backbone_prefill_shard_built_opts(
         eps,
         mask: MaskKind::Causal,
         hidden_shape: hidden_shape.clone(),
+        rope_style: llama.rope_style,
     };
 
     let kv_sink = SideOutputs::new();
@@ -336,6 +340,7 @@ pub fn build_tts_backbone_prefill_shard_built_opts(
                     dh,
                     eps,
                     sink.inner(),
+                    spec.rope_style,
                 )));
             }
             stages.push(llama_prefill_layer_composed(i, spec.clone()));
@@ -424,6 +429,7 @@ pub fn build_tts_backbone_decode_shard_built_opts(
         eps,
         use_custom_mask: opts.use_custom_mask,
         hidden_shape: hidden_shape.clone(),
+        rope_style: llama.rope_style,
     };
 
     let kv_out = SideOutputs::new();

@@ -59,8 +59,23 @@ impl BackboneModel {
     }
 
     /// Load the GGUF backbone on a specific execution device.
+    ///
+    /// Packed-K-quant `Op::DequantMatMul` is numerically broken on GPU backends
+    /// (Metal/MLX/wgpu) in this rlx version — it runs fast but emits garbage
+    /// tokens. So on GPU we take the F32 (non-packed) greedy-parity path, which
+    /// is correct and still GPU-accelerated; CPU keeps the memory-efficient
+    /// packed-K-quant path. NeuTTS backbones (Nano/Air) are small, so the F32
+    /// working set is cheap.
     pub fn load_on(path: &Path, n_ctx: u32, device: Device) -> Result<Self> {
-        Self::load_inner(path, n_ctx, true, device, false)
+        if matches!(device, Device::Cpu) {
+            Self::load_inner(
+                path, n_ctx, /*packed*/ true, device, /*greedy_parity*/ false,
+            )
+        } else {
+            Self::load_inner(
+                path, n_ctx, /*packed*/ false, device, /*greedy_parity*/ true,
+            )
+        }
     }
 
     /// F32 dequant + incremental greedy (tail parity vs llama-cpp Q4).

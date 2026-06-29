@@ -24,8 +24,7 @@ use rlx_runtime::{
 
 use crate::runner::GenerationConfig;
 use crate::tokens::{
-    STOP_TOKEN_ID, custom_token_id_to_code, is_snac_slot_token, mask_logits_for_snac_slot,
-    use_snac_logit_mask_for,
+    STOP_TOKEN_ID, accept_orpheus_stream_token, mask_logits_for_snac_slot, use_snac_logit_mask_for,
 };
 
 pub const DEFAULT_N_CTX: u32 = 2048;
@@ -36,6 +35,9 @@ pub const DEFAULT_COMPILE_SEQ_CAP: u32 = 256;
 /// Default compile cap for synthesis when not in high-memory mode (speech tokens +
 /// short prompt fit in 128).
 pub const SYNTHESIS_COMPILE_SEQ_CAP: u32 = 128;
+
+/// Compile cap for [`BackboneLoadOptions::for_tts`] (bucket decode, full utterance).
+pub const TTS_COMPILE_SEQ_CAP: u32 = 512;
 
 enum DecodeStrategy {
     /// Power-of-two bucket ladder — fast multi-step decode, high compile RAM (~12 GiB peak).
@@ -74,12 +76,17 @@ fn log_soft_memory_budget() {
     }
 }
 
-/// Pick decode cache strategy. Default is **dynamic** decode (low RAM). Bucket
-/// ladder is opt-in via `ORPHEUS_BUCKET_DECODE=1` (tests / throughput).
+/// Pick decode cache strategy. Default is **bucket** decode (bounded compile RAM).
+/// Opt into per-step dynamic graphs with `ORPHEUS_DYNAMIC_DECODE=1` (saves peak
+/// compile RAM at the cost of repeated specialization / Metal buffer growth).
 fn synthesis_decode_plan(compile_cap: usize, opts: &BackboneLoadOptions) -> DecodeStrategy {
     let max_past = decode_bucket_max_past(compile_cap);
-    let want_bucket = env_flag("ORPHEUS_BUCKET_DECODE") == Some(true)
-        || (!opts.memory_efficient && env_flag("ORPHEUS_BUCKET_DECODE") != Some(false));
+    let want_bucket = match env_flag("ORPHEUS_BUCKET_DECODE") {
+        Some(false) => false,
+        Some(true) => true,
+        None if opts.memory_efficient => false,
+        None => env_flag("ORPHEUS_DYNAMIC_DECODE") != Some(true),
+    };
 
     if want_bucket {
         if would_exceed_soft_budget(llama_decode_bucket_compile_peak_bytes()) {
@@ -93,8 +100,8 @@ fn synthesis_decode_plan(compile_cap: usize, opts: &BackboneLoadOptions) -> Deco
             );
             return DecodeStrategy::Bucket { max_past };
         }
-    } else if env_flag("ORPHEUS_BUCKET_DECODE") == Some(false) {
-        eprintln!("[orpheus/backbone] ORPHEUS_BUCKET_DECODE=0 — dynamic decode");
+    } else if env_flag("ORPHEUS_DYNAMIC_DECODE") == Some(true) {
+        eprintln!("[orpheus/backbone] ORPHEUS_DYNAMIC_DECODE=1 — dynamic decode");
     }
 
     let cache_capacity = if low_mem_mode() || opts.memory_efficient {
@@ -108,12 +115,14 @@ fn synthesis_decode_plan(compile_cap: usize, opts: &BackboneLoadOptions) -> Deco
 fn compile_seq_cap_for(n_ctx: u32, opts: &BackboneLoadOptions) -> usize {
     let base = if env_flag("ORPHEUS_HIGH_MEM") == Some(true) {
         DEFAULT_COMPILE_SEQ_CAP
-    } else if low_mem_mode() {
+    } else if env_flag("ORPHEUS_LOW_MEM") == Some(true) {
         64
     } else if opts.memory_efficient {
         SYNTHESIS_COMPILE_SEQ_CAP
+    } else if low_mem_mode() {
+        64
     } else {
-        DEFAULT_COMPILE_SEQ_CAP
+        TTS_COMPILE_SEQ_CAP
     };
     std::env::var("ORPHEUS_COMPILE_SEQ_CAP")
         .ok()
@@ -133,7 +142,7 @@ fn decode_bucket_max_past(compile_cap: usize) -> usize {
     std::env::var("ORPHEUS_DECODE_CACHE_CAP")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(compile_cap.min(64))
+        .unwrap_or(compile_cap)
 }
 
 fn env_flag(name: &str) -> Option<bool> {
@@ -142,6 +151,38 @@ fn env_flag(name: &str) -> Option<bool> {
         Some("0") | Some("false") | Some("FALSE") => Some(false),
         _ => None,
     }
+}
+
+/// Effective GGUF prefill strategy for the KV generator.
+///
+/// * CPU: always CPU F32 (reference path).
+/// * Metal: decode is already native (packed Q4), so prefill also runs on the
+///   GPU via the packed `DequantMatMul` graph — avoiding the ~12 GiB CPU F32
+///   model dequant. `RLX_METAL_F32_PREFILL_CPU=1` forces the legacy CPU F32
+///   prefill (escape hatch / parity baseline). An explicit `PackedGguf` /
+///   `MetalF32` request is honored as-is.
+/// * Other accelerators (wgpu / Vulkan / CUDA / ROCm): unchanged — use the
+///   requested mode resolved against env.
+fn effective_prefill_mode(device: Device, opts: &BackboneLoadOptions) -> MetalGgufPrefillMode {
+    if device == Device::Cpu {
+        return MetalGgufPrefillMode::CpuF32;
+    }
+    if device == Device::Metal {
+        let resolved = opts.metal_prefill.resolve();
+        return match resolved {
+            MetalGgufPrefillMode::PackedGguf | MetalGgufPrefillMode::MetalF32 => resolved,
+            // Default (CpuF32 from `synthesis`/`for_tts`): move prefill onto the
+            // GPU unless explicitly forced back to CPU F32 via env.
+            _ => {
+                if env_flag("RLX_METAL_F32_PREFILL_CPU") == Some(true) {
+                    MetalGgufPrefillMode::CpuF32
+                } else {
+                    MetalGgufPrefillMode::PackedGguf
+                }
+            }
+        };
+    }
+    opts.metal_prefill.resolve()
 }
 
 fn sample_opts(cfg: &GenerationConfig) -> SampleOpts {
@@ -155,8 +196,12 @@ fn sample_opts(cfg: &GenerationConfig) -> SampleOpts {
 
 /// Metal KV path: prefill via [`MetalGgufPrefillMode`] on [`BackboneLoadOptions`]
 /// (CLI: `--metal-prefill auto|cpu|packed|metal`).
-fn use_compile_caches() -> bool {
-    env_flag("ORPHEUS_COMPILE_CACHE") == Some(true) && !low_mem_mode()
+fn use_prefill_compile_cache() -> bool {
+    match env_flag("ORPHEUS_COMPILE_CACHE") {
+        Some(false) => false,
+        Some(true) => !low_mem_mode(),
+        None => !low_mem_mode(),
+    }
 }
 
 fn metal_f32_kv_enabled() -> bool {
@@ -205,15 +250,8 @@ fn push_orpheus_stream_token(
     if tok == STOP_TOKEN_ID {
         return Ok(true);
     }
-    // Match `orpheus_tts/decoder.py`: only accept custom tokens for the active
-    // slot; skip code index 0 when building the SNAC buffer.
-    if is_snac_slot_token(tok, *stream_index) {
-        if let Some(code) = custom_token_id_to_code(tok, *stream_index) {
-            if code > 0 {
-                on_code(code)?;
-            }
-        }
-        *stream_index += 1;
+    if let Some(code) = accept_orpheus_stream_token(tok, stream_index) {
+        on_code(code)?;
     }
     Ok(false)
 }
@@ -254,7 +292,7 @@ impl BackboneModel {
     }
 
     pub fn load_on(path: &Path, n_ctx: u32, device: Device) -> Result<Self> {
-        Self::load_on_with(path, n_ctx, device, BackboneLoadOptions::for_device(device))
+        Self::load_on_with(path, n_ctx, device, BackboneLoadOptions::for_tts(device))
     }
 
     pub fn load_on_with(
@@ -271,15 +309,15 @@ impl BackboneModel {
         let compile_cap = compile_seq_cap_for(n_ctx, &opts);
         log_soft_memory_budget();
         let lm_device = device;
+        // Metal and wgpu (`Device::Gpu`) decode GGUF Llama natively via the packed
+        // Q4 graph (`Llama32Generator::gguf_cpu_decode_required` returns false;
+        // prefill stays CPU F32). Vulkan decodes natively only with
+        // `ORPHEUS_VULKAN_NATIVE=1` (else host-decode). CPU always host-decodes.
+        // This flag is a cosmetic log label; the real routing lives in
+        // `gguf_cpu_decode_required`.
         let lm_decode_on_cpu = matches!(lm_device, Device::Cpu)
-            || matches!(lm_device, Device::Gpu | Device::Vulkan)
-            || (lm_device == Device::Metal
-                && matches!(
-                    opts.metal_prefill.resolve(),
-                    MetalGgufPrefillMode::CpuF32
-                        | MetalGgufPrefillMode::Auto
-                        | MetalGgufPrefillMode::PackedGguf,
-                ));
+            || (matches!(lm_device, Device::Vulkan)
+                && std::env::var("ORPHEUS_VULKAN_NATIVE").ok().as_deref() != Some("1"));
 
         let engine = if use_fast_kv(lm_device, &opts) {
             let mut gguf = GgufLoader::from_file(path_str).context("open GGUF for KV generator")?;
@@ -291,16 +329,13 @@ impl BackboneModel {
                 );
             }
             let cfg = rlx_llama32::llama32_cfg_from_gguf(gguf.file())?;
+            let prefill_mode = effective_prefill_mode(lm_device, &opts);
             let mut generator = Llama32Generator::from_loader_at_mode(
                 cfg,
                 &mut gguf,
                 lm_device,
                 path,
-                if lm_device == Device::Cpu {
-                    MetalGgufPrefillMode::CpuF32
-                } else {
-                    opts.metal_prefill.resolve()
-                },
+                prefill_mode,
             )?
             .with_compile_seq_cap(compile_cap);
             let decode = synthesis_decode_plan(compile_cap, &opts);
@@ -311,18 +346,13 @@ impl BackboneModel {
                     generator.with_dynamic_decode_cache(cache_capacity)
                 }
             };
-            if use_bucket && use_compile_caches() {
+            if use_bucket && use_prefill_compile_cache() {
                 generator = generator.with_prefill_cache(prefill_cache_capacity());
             }
             let decode_on_cpu = lm_decode_on_cpu;
             eprintln!(
-                "[orpheus/backbone] kv-cache LM on {lm_device:?} {} (prefill={:?}, decode={}, compile_cap={compile_cap}, decode={})",
+                "[orpheus/backbone] kv-cache LM on {lm_device:?} {} (prefill={prefill_mode:?}, decode={}, compile_cap={compile_cap}, decode={})",
                 path.display(),
-                if lm_device == Device::Cpu {
-                    MetalGgufPrefillMode::CpuF32
-                } else {
-                    opts.metal_prefill.resolve()
-                },
                 if decode_on_cpu { "cpu" } else { "device" },
                 if use_bucket { "bucket" } else { "dynamic" },
             );
@@ -437,7 +467,10 @@ impl BackboneModel {
                             );
                         })
                         .context("Orpheus LM cached decode step")?;
-                    if step > 0 && step % 7 == 0 {
+                    if std::env::var("ORPHEUS_DEBUG_TOKENS").ok().as_deref() == Some("1")
+                        && step > 0
+                        && step % 56 == 0
+                    {
                         eprintln!(
                             "[orpheus/backbone] step {}/{} ({} tokens in history)",
                             step,
@@ -461,6 +494,7 @@ impl BackboneModel {
             }
             LmEngine::Packed(runner) => {
                 let sample = sample_opts(cfg);
+                let apply_penalty = cfg.repetition_penalty > 1.0;
                 let mut history = prompt_ids.to_vec();
                 let mut token_counts = std::collections::HashMap::<u32, u32>::new();
                 for step in 0..cfg.max_new_tokens {
@@ -471,7 +505,7 @@ impl BackboneModel {
                         slot_ix,
                         &token_counts,
                         cfg.repetition_penalty,
-                        true,
+                        apply_penalty,
                         lm_device,
                         lm_decode_on_cpu,
                     );
@@ -501,19 +535,21 @@ mod tests {
     use super::*;
     use crate::backbone::BackboneLoadOptions;
     use crate::tokens::STOP_TOKEN_ID;
+    use rlx_runtime::Device;
 
     #[test]
-    fn synthesis_defaults_to_dynamic_decode() {
-        let _guard = EnvGuard::unset("ORPHEUS_BUCKET_DECODE");
+    fn synthesis_prefers_dynamic_when_opted_in() {
+        let _guard = EnvGuard::set("ORPHEUS_DYNAMIC_DECODE", "1");
         let plan = synthesis_decode_plan(128, &BackboneLoadOptions::synthesis());
         assert!(matches!(plan, DecodeStrategy::Dynamic { .. }));
     }
 
     #[test]
-    fn reference_parity_allows_bucket_when_env_set() {
-        let _guard = EnvGuard::set("ORPHEUS_BUCKET_DECODE", "1");
-        let plan = synthesis_decode_plan(128, &BackboneLoadOptions::reference_parity());
-        // May be bucket or dynamic if soft budget denies — just must not panic.
+    fn tts_defaults_to_bucket_when_dynamic_not_set() {
+        let _dyn = EnvGuard::unset("ORPHEUS_DYNAMIC_DECODE");
+        let _bucket = EnvGuard::unset("ORPHEUS_BUCKET_DECODE");
+        let plan = synthesis_decode_plan(512, &BackboneLoadOptions::for_tts(Device::Metal));
+        // May fall back to dynamic if soft budget denies bucket — must not panic.
         let _ = plan;
     }
 

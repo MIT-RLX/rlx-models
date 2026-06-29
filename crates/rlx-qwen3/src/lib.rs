@@ -36,6 +36,8 @@ pub mod config;
 pub mod flow;
 pub mod generator;
 pub mod high_level_runner;
+pub mod pipeline;
+pub mod pipeline_decode;
 mod profile;
 pub mod sampling;
 pub mod spec;
@@ -54,6 +56,11 @@ pub use flow::{
 };
 pub use generator::Qwen3Generator;
 pub use high_level_runner::{Precision, Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder};
+pub use pipeline::{
+    BlockSpec, Qwen3PipelineStage, block_weight_filter, build_qwen3_block_built,
+    build_qwen3_block_graph,
+};
+pub use pipeline_decode::Qwen3PipelineDecodeStage;
 pub use profile::{QWEN3_PROFILE_FILE, qwen3_profile_default, qwen3_profile_near_weights};
 pub use sampling::{
     SampleOpts, apply_repetition_penalty, sample_token, sample_token_at, softmax_logits,

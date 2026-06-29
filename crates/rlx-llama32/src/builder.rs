@@ -4,7 +4,7 @@
 // LLaMA-3.2 graph builder — GQA + RoPE + SwiGLU, no QK-norm.
 
 use crate::config::Llama32Config;
-use crate::rope::{build_rope_tables, resolve_inv_freq};
+use crate::rope::{build_rope_tables, resolve_inv_freq, rope_slice};
 use anyhow::{Result, anyhow};
 use rlx_core::weight_loader::WeightLoader;
 use rlx_ir::hir::{HirGraphExt, HirModule, HirMut, HirNodeId};
@@ -372,6 +372,85 @@ fn synth_zero(
     id
 }
 
+/// Load a projection weight as packed (`Op::DequantMatMul`) when the GGUF
+/// loader exposes K-quant bytes for `key`, else as a transposed F32 param
+/// (plain `g.mm`). Shared by the packed prefill and decode builders.
+fn load_proj(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    weights: &mut rlx_core::weight_loader::GgufLoader,
+    key: &str,
+) -> Result<(NodeId, Option<rlx_ir::quant::QuantScheme>, Vec<usize>)> {
+    if let Some((bytes, scheme, shape)) = weights.take_packed(key)? {
+        let id = g.param(key, Shape::new(&[bytes.len()], DType::U8));
+        packed.insert(key.to_string(), (bytes, scheme, shape.clone()));
+        Ok((id, Some(scheme), shape))
+    } else {
+        let nid = load_p(g, params, weights, key, true)?;
+        Ok((nid, None, Vec::new()))
+    }
+}
+
+/// Emit a (possibly quantized) projection: `Op::DequantMatMul` when a scheme
+/// is present, else a plain matmul.
+fn emit_proj(
+    g: &mut Graph,
+    input: NodeId,
+    w: NodeId,
+    scheme: Option<rlx_ir::quant::QuantScheme>,
+    out_shape: Shape,
+) -> NodeId {
+    match scheme {
+        Some(s) => g.add_node(Op::DequantMatMul { scheme: s }, vec![input, w], out_shape),
+        None => g.mm(input, w),
+    }
+}
+
+/// Load the input-embedding table for a packed builder.
+///
+/// Mirrors rlx-gemma's lazy-embed pattern: when the GGUF stores
+/// `model.embed_tokens.weight` as K-quant bytes AND the checkpoint ties the LM
+/// head to it, the table stays PACKED. The input embedding is then gathered
+/// host-side at run time (see `generator.rs::dequant_embed_row`) and fed as the
+/// `input_embeddings` graph input, while the tied LM head reuses the same packed
+/// bytes via `Op::DequantMatMul`. This eliminates both the ~2 GB F32 embed table
+/// (vocab×hidden) and its ~2 GB transposed copy per session.
+///
+/// Returns `(h_in, tied_head)`:
+/// - `h_in` feeds the first transformer block: either the `input_embeddings`
+///   input (lazy path) or `gather(embed_f32, input_ids)` (F32 path).
+/// - `tied_head` is `Some((embed_node, scheme))` only on the lazy path AND when
+///   `want_head` — the U8 embed param node + its quant scheme for the tied
+///   head's `Op::DequantMatMul`. `None` otherwise; the caller's tied path then
+///   builds the transposed F32 copy (unchanged).
+///
+/// Gated on `tie_word_embeddings`: non-tied checkpoints keep the legacy F32
+/// gather + separate `lm_head.weight`, untouched.
+#[allow(clippy::too_many_arguments)]
+fn load_packed_embed(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    weights: &mut rlx_core::weight_loader::GgufLoader,
+    cfg: &Llama32Config,
+    batch: usize,
+    seq: usize,
+    want_head: bool,
+) -> Result<(NodeId, Option<(NodeId, rlx_ir::quant::QuantScheme)>)> {
+    // NOTE: an incomplete "lazy-embed" variant (feed host-gathered
+    // `input_embeddings` + tied LM head via the packed embed) was started here,
+    // but its runtime feeder was never wired — so `input_embeddings` went unfed
+    // and the packed (Metal) path got garbage embeddings (0 codes / divergence).
+    // Until the runtime side lands, always use the legacy in-graph F32 gather;
+    // the tied LM head then falls back to its F32 transpose copy.
+    let _ = (cfg, packed, want_head);
+    let key = "model.embed_tokens.weight";
+    let embed_w = load_p(g, params, weights, key, false)?;
+    let input_ids = g.input("input_ids", Shape::new(&[batch, seq], DType::F32));
+    Ok((g.gather_(embed_w, input_ids, 0), None))
+}
+
 /// Packed-weights prefill graph — K-quant matmuls stay in the arena via
 /// `Op::DequantMatMul` (mirrors [`rlx_qwen3::build_qwen3_graph_sized_packed`]).
 #[allow(clippy::too_many_arguments)]
@@ -385,8 +464,6 @@ pub fn build_llama32_graph_sized_packed(
     with_kv_outputs: bool,
     packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
-    use rlx_ir::quant::QuantScheme;
-
     validate_cfg(cfg)?;
 
     let mut g = Graph::new("llama32_packed");
@@ -417,51 +494,26 @@ pub fn build_llama32_graph_sized_packed(
     );
     params.insert("rope.sin".into(), sin_data);
 
-    let input_ids = g.input("input_ids", Shape::new(&[batch, seq], DType::F32));
+    // Keep the embed table PACKED (Q-quant) for tied checkpoints: input
+    // embedding gathered host-side (`input_embeddings`), tied LM head via
+    // `Op::DequantMatMul` on the packed bytes — no F32 embed/transpose copies.
+    // Non-tied / uncompressed embeds fall back to the F32 gather (unchanged).
+    let (mut h_id, tied_embed_head) = load_packed_embed(
+        &mut g,
+        &mut params,
+        packed,
+        weights,
+        cfg,
+        batch,
+        seq,
+        with_lm_head,
+    )?;
     let last_token_idx = if last_logits_only {
         Some(g.input("last_token_idx", Shape::new(&[batch], DType::F32)))
     } else {
         None
     };
-    let embed_w = load_p(
-        &mut g,
-        &mut params,
-        weights,
-        "model.embed_tokens.weight",
-        false,
-    )?;
-    let mut h_id = g.gather_(embed_w, input_ids, 0);
     let mut kv_outputs: Vec<(NodeId, NodeId)> = Vec::new();
-
-    fn load_proj(
-        g: &mut Graph,
-        params: &mut HashMap<String, Vec<f32>>,
-        packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
-        weights: &mut rlx_core::weight_loader::GgufLoader,
-        key: &str,
-    ) -> Result<(NodeId, Option<QuantScheme>, Vec<usize>)> {
-        if let Some((bytes, scheme, shape)) = weights.take_packed(key)? {
-            let id = g.param(key, Shape::new(&[bytes.len()], DType::U8));
-            packed.insert(key.to_string(), (bytes, scheme, shape.clone()));
-            Ok((id, Some(scheme), shape))
-        } else {
-            let nid = load_p(g, params, weights, key, true)?;
-            Ok((nid, None, Vec::new()))
-        }
-    }
-
-    fn emit_proj(
-        g: &mut Graph,
-        input: NodeId,
-        w: NodeId,
-        scheme: Option<QuantScheme>,
-        out_shape: Shape,
-    ) -> NodeId {
-        match scheme {
-            Some(s) => g.add_node(Op::DequantMatMul { scheme: s }, vec![input, w], out_shape),
-            None => g.mm(input, w),
-        }
-    }
 
     for layer_idx in 0..cfg.num_hidden_layers {
         let lp = format!("model.layers.{layer_idx}");
@@ -520,8 +572,12 @@ pub fn build_llama32_graph_sized_packed(
             Shape::new(&[batch, seq, kv_dim], f),
         );
 
-        let q_rope = g.rope(q, cos_id, sin_id, dh);
-        let k_rope = g.rope(k, cos_id, sin_id, dh);
+        // GGUF Llama → interleaved/GPT-J RoPE flavor (mirror the decode-packed
+        // builder `build_llama32_decode_graph_sized_packed`). Plain `g.rope`
+        // applies NeoX rotation, which corrupts packed-prefill KV for GGUF
+        // checkpoints and makes Metal-decode diverge from the CPU F32 reference.
+        let q_rope = g.rope_styled(q, cos_id, sin_id, dh, cfg.rope_style);
+        let k_rope = g.rope_styled(k, cos_id, sin_id, dh, cfg.rope_style);
         if with_kv_outputs {
             kv_outputs.push((k_rope, v));
         }
@@ -611,21 +667,28 @@ pub fn build_llama32_graph_sized_packed(
             hidden
         };
         let (lm_head_w, lm_head_scheme) = if cfg.tie_word_embeddings {
-            let embed = params
-                .get("model.embed_tokens.weight")
-                .ok_or_else(|| anyhow!("missing model.embed_tokens.weight for tied lm_head"))?;
-            let vocab = cfg.vocab_size;
-            let hidden_size = cfg.hidden_size;
-            let mut transposed = vec![0f32; embed.len()];
-            for v in 0..vocab {
-                for hi in 0..hidden_size {
-                    transposed[hi * vocab + v] = embed[v * hidden_size + hi];
+            if let Some((embed_node, scheme)) = tied_embed_head {
+                // Packed tied LM head: DequantMatMul against the Q-quant embed
+                // bytes (no ~2 GB transposed F32 copy).
+                (embed_node, Some(scheme))
+            } else {
+                // F32 tied LM head: transposed copy of the embed (unchanged).
+                let embed = params
+                    .get("model.embed_tokens.weight")
+                    .ok_or_else(|| anyhow!("missing model.embed_tokens.weight for tied lm_head"))?;
+                let vocab = cfg.vocab_size;
+                let hidden_size = cfg.hidden_size;
+                let mut transposed = vec![0f32; embed.len()];
+                for v in 0..vocab {
+                    for hi in 0..hidden_size {
+                        transposed[hi * vocab + v] = embed[v * hidden_size + hi];
+                    }
                 }
+                let name = "llama32.lm_head.tied_t";
+                let id = g.param(name, Shape::new(&[hidden_size, vocab], DType::F32));
+                params.insert(name.to_string(), transposed);
+                (id, None)
             }
-            let name = "llama32.lm_head.tied_t";
-            let id = g.param(name, Shape::new(&[hidden_size, vocab], DType::F32));
-            params.insert(name.to_string(), transposed);
-            (id, None)
         } else {
             let (id, scheme, _) =
                 load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
@@ -658,6 +721,294 @@ pub fn build_llama32_graph_sized_packed(
             outputs.push(k);
             outputs.push(v);
         }
+    }
+    g.set_outputs(outputs);
+    Ok((g, params))
+}
+
+/// Packed-weights *decode* graph — single-token KV-cache step that keeps
+/// K-quant matmuls in the arena via `Op::DequantMatMul`. Structural mirror of
+/// the F32 decode flow (`build_llama32_decode_flow`): `input_ids` of shape
+/// `[batch, 1]`, per-layer `past_k_{i}`/`past_v_{i}` inputs, single-row decode
+/// RoPE at position `past_seq`, `concat(past, new)` along the sequence axis,
+/// `MaskKind::Causal` attention, SwiGLU MLP, and LM head.
+///
+/// Outputs match the F32 flow decode: `[logits, k0_full, v0_full, k1_full, …]`
+/// where each `k*/v*` is the full `concat(past, new)` KV (length `past_seq+1`),
+/// so the generator's existing `split_decode_outputs` + cache-replace logic is
+/// reused verbatim.
+///
+/// GGUF Llama needs the interleaved/GPT-J RoPE flavor, so this uses
+/// `g.rope_styled(.., cfg.rope_style)` (not the NeoX `g.rope` used by the
+/// packed prefill builder).
+///
+/// `use_custom_mask` switches the graph from a per-position oneshot graph to a
+/// reusable bucketed-decode graph (mirrors `build_llama32_decode_flow`'s
+/// `use_custom_mask`):
+/// - cos/sin become runtime **inputs** (`cos`/`sin`, shape `[1, half]`) instead
+///   of baked params, so one compiled graph serves every position in a bucket.
+/// - a `mask` input of shape `[batch, past_seq + 1]` drives `MaskKind::Custom`
+///   attention (binary keep mask; see `bucket_decode_mask`), zeroing the
+///   `past_k`/`past_v` padding rows. `past_seq` is the bucket's upper bound.
+///
+/// With `use_custom_mask = false` the graph bakes the cos/sin row for the exact
+/// `past_seq` and uses `MaskKind::Causal` (the slow but always-correct fallback).
+#[allow(clippy::too_many_arguments)]
+pub fn build_llama32_decode_graph_sized_packed(
+    cfg: &Llama32Config,
+    weights: &mut rlx_core::weight_loader::GgufLoader,
+    batch: usize,
+    past_seq: usize,
+    use_custom_mask: bool,
+    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    validate_cfg(cfg)?;
+
+    let mut g = Graph::new("llama32_decode_packed");
+    let mut params: HashMap<String, Vec<f32>> = HashMap::new();
+    let f = DType::F32;
+
+    let h = cfg.hidden_size;
+    let nh = cfg.num_attention_heads;
+    let nkv = cfg.num_key_value_heads;
+    let dh = cfg.head_dim();
+    let group = cfg.kv_group_size();
+    let eps = cfg.rms_norm_eps as f32;
+    let kv_dim = cfg.kv_proj_dim();
+    let q_dim = nh * dh;
+
+    let zero_beta_hidden = synth_zero(&mut g, &mut params, "llama32.zero_beta.hidden", h);
+
+    // Single-row decode RoPE at absolute position `past_seq`.
+    // Bucketed decode feeds the cos/sin row as runtime inputs so one compiled
+    // graph serves every position in the bucket; oneshot bakes the exact row.
+    let rope_factors = take_rope_freqs(weights);
+    let inv_freq = resolve_inv_freq(cfg, rope_factors.as_deref());
+    let half = inv_freq.len();
+    let (cos_id, sin_id) = if use_custom_mask {
+        let cos_id = g.input("cos", Shape::new(&[1, half], f));
+        let sin_id = g.input("sin", Shape::new(&[1, half], f));
+        (cos_id, sin_id)
+    } else {
+        let (cos_row, sin_row) = rope_slice(&inv_freq, past_seq);
+        let cos_id = g.param("decode.rope.cos", Shape::new(&[1, half], f));
+        params.insert("decode.rope.cos".into(), cos_row);
+        let sin_id = g.param("decode.rope.sin", Shape::new(&[1, half], f));
+        params.insert("decode.rope.sin".into(), sin_row);
+        (cos_id, sin_id)
+    };
+
+    // Keep the embed table PACKED for tied checkpoints (see `load_packed_embed`):
+    // single-token input embedding gathered host-side (`input_embeddings`),
+    // tied LM head via `Op::DequantMatMul`. Decode always emits the LM head.
+    let (mut h_id, tied_embed_head) =
+        load_packed_embed(&mut g, &mut params, packed, weights, cfg, batch, 1, true)?;
+
+    // Per-layer past K/V cache inputs.
+    let mut past_k_ids: Vec<NodeId> = Vec::with_capacity(cfg.num_hidden_layers);
+    let mut past_v_ids: Vec<NodeId> = Vec::with_capacity(cfg.num_hidden_layers);
+    for i in 0..cfg.num_hidden_layers {
+        past_k_ids.push(g.input(
+            &format!("past_k_{i}"),
+            Shape::new(&[batch, past_seq, kv_dim], f),
+        ));
+        past_v_ids.push(g.input(
+            &format!("past_v_{i}"),
+            Shape::new(&[batch, past_seq, kv_dim], f),
+        ));
+    }
+
+    // Bucketed decode: binary keep mask over `concat(past_k, new_k)` positions.
+    let mask_id = if use_custom_mask {
+        Some(g.input("mask", Shape::new(&[batch, past_seq + 1], f)))
+    } else {
+        None
+    };
+
+    let mut kv_outputs: Vec<(NodeId, NodeId)> = Vec::new();
+
+    for layer_idx in 0..cfg.num_hidden_layers {
+        let lp = format!("model.layers.{layer_idx}");
+
+        let in_ln_g = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.input_layernorm.weight"),
+            false,
+        )?;
+        let normed_in = g.rms_norm(h_id, in_ln_g, zero_beta_hidden, eps);
+
+        let (q_w, q_s, _) = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.self_attn.q_proj.weight"),
+        )?;
+        let (k_w, k_s, _) = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.self_attn.k_proj.weight"),
+        )?;
+        let (v_w, v_s, _) = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.self_attn.v_proj.weight"),
+        )?;
+        let q = emit_proj(
+            &mut g,
+            normed_in,
+            q_w,
+            q_s,
+            Shape::new(&[batch, 1, q_dim], f),
+        );
+        let k = emit_proj(
+            &mut g,
+            normed_in,
+            k_w,
+            k_s,
+            Shape::new(&[batch, 1, kv_dim], f),
+        );
+        let v = emit_proj(
+            &mut g,
+            normed_in,
+            v_w,
+            v_s,
+            Shape::new(&[batch, 1, kv_dim], f),
+        );
+
+        // GGUF Llama → interleaved/GPT-J RoPE flavor.
+        let q_rope = g.rope_styled(q, cos_id, sin_id, dh, cfg.rope_style);
+        let k_rope = g.rope_styled(k, cos_id, sin_id, dh, cfg.rope_style);
+
+        // Append the new token to the cached KV, export the full buffers.
+        let new_k = g.concat_(vec![past_k_ids[layer_idx], k_rope], 1);
+        let new_v = g.concat_(vec![past_v_ids[layer_idx], v], 1);
+        kv_outputs.push((new_k, new_v));
+
+        let k_rep = repeat_kv(&mut g, new_k, nkv, dh, group);
+        let v_rep = repeat_kv(&mut g, new_v, nkv, dh, group);
+
+        let attn_shape = shape::attention_shape(g.shape(q_rope));
+        let attn = match mask_id {
+            Some(m) => g.attention(q_rope, k_rep, v_rep, m, nh, dh, attn_shape),
+            None => g.attention_kind(q_rope, k_rep, v_rep, nh, dh, MaskKind::Causal, attn_shape),
+        };
+
+        let (o_w, o_s, _) = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.self_attn.o_proj.weight"),
+        )?;
+        let attn_out = emit_proj(&mut g, attn, o_w, o_s, Shape::new(&[batch, 1, h], f));
+        let post_attn = g.add(h_id, attn_out);
+
+        let post_ln_g = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.post_attention_layernorm.weight"),
+            false,
+        )?;
+        let normed_post = g.rms_norm(post_attn, post_ln_g, zero_beta_hidden, eps);
+
+        let inter = cfg.intermediate_size;
+        let (gate_w, gate_s, _) = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.mlp.gate_proj.weight"),
+        )?;
+        let (up_w, up_s, _) = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.mlp.up_proj.weight"),
+        )?;
+        let (down_w, down_s, _) = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.mlp.down_proj.weight"),
+        )?;
+        let gate = emit_proj(
+            &mut g,
+            normed_post,
+            gate_w,
+            gate_s,
+            Shape::new(&[batch, 1, inter], f),
+        );
+        let up = emit_proj(
+            &mut g,
+            normed_post,
+            up_w,
+            up_s,
+            Shape::new(&[batch, 1, inter], f),
+        );
+        let gate_act = g.silu(gate);
+        let swiglu = g.mul(gate_act, up);
+        let ffn_out = emit_proj(
+            &mut g,
+            swiglu,
+            down_w,
+            down_s,
+            Shape::new(&[batch, 1, h], f),
+        );
+        h_id = g.add(post_attn, ffn_out);
+    }
+
+    let final_ln_g = load_p(&mut g, &mut params, weights, "model.norm.weight", false)?;
+    let hidden = g.rms_norm(h_id, final_ln_g, zero_beta_hidden, eps);
+
+    // Decode is always last-position (seq == 1), so no gather is needed.
+    let (lm_head_w, lm_head_scheme) = if cfg.tie_word_embeddings {
+        if let Some((embed_node, scheme)) = tied_embed_head {
+            // Packed tied LM head: DequantMatMul against the Q-quant embed bytes.
+            (embed_node, Some(scheme))
+        } else {
+            // F32 tied LM head: transposed copy of the embed (unchanged).
+            let embed = params
+                .get("model.embed_tokens.weight")
+                .ok_or_else(|| anyhow!("missing model.embed_tokens.weight for tied lm_head"))?;
+            let vocab = cfg.vocab_size;
+            let hidden_size = cfg.hidden_size;
+            let mut transposed = vec![0f32; embed.len()];
+            for v in 0..vocab {
+                for hi in 0..hidden_size {
+                    transposed[hi * vocab + v] = embed[v * hidden_size + hi];
+                }
+            }
+            let name = "llama32.lm_head.tied_t";
+            let id = g.param(name, Shape::new(&[hidden_size, vocab], DType::F32));
+            params.insert(name.to_string(), transposed);
+            (id, None)
+        }
+    } else {
+        let (id, scheme, _) = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
+        (id, scheme)
+    };
+    let out = emit_proj(
+        &mut g,
+        hidden,
+        lm_head_w,
+        lm_head_scheme,
+        Shape::new(&[batch, 1, cfg.vocab_size], f),
+    );
+
+    let mut outputs = vec![out];
+    for (k, v) in kv_outputs {
+        outputs.push(k);
+        outputs.push(v);
     }
     g.set_outputs(outputs);
     Ok((g, params))

@@ -1,5 +1,5 @@
-#[cfg(feature = "gpu-codec")]
+#[cfg(feature = "parity-mimi")]
 pub mod candle;
 
-#[cfg(feature = "gpu-codec")]
+#[cfg(feature = "parity-mimi")]
 pub use candle::GpuMimiCodec;

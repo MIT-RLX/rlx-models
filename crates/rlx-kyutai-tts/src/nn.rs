@@ -55,6 +55,30 @@ pub fn rms_norm(x: ArrayView2<f32>, alpha: &Array1<f32>) -> Array2<f32> {
     out
 }
 
+/// Affine layer norm over the last dim: `(x - mean) / std * weight + bias`.
+pub fn layer_norm(x: ArrayView2<f32>, weight: &Array1<f32>, bias: &Array1<f32>) -> Array2<f32> {
+    let (t, c) = x.dim();
+    let mut out = Array2::<f32>::zeros((t, c));
+    let inv_c = 1.0 / c as f32;
+    for ti in 0..t {
+        let row = x.row(ti);
+        let mean = row.iter().sum::<f32>() * inv_c;
+        let var = row
+            .iter()
+            .map(|v| {
+                let d = v - mean;
+                d * d
+            })
+            .sum::<f32>()
+            * inv_c;
+        let inv_std = 1.0 / (var + RMS_EPS).sqrt();
+        for ci in 0..c {
+            out[[ti, ci]] = (row[ci] - mean) * inv_std * weight[ci] + bias[ci];
+        }
+    }
+    out
+}
+
 /// SiLU / Swish gate.
 #[inline]
 pub fn silu(x: f32) -> f32 {
@@ -119,10 +143,10 @@ pub fn softmax_inplace(row: &mut [f32]) {
     }
 }
 
-/// Sinusoidal positional embedding table.
+/// Sinusoidal positional embedding table — matches Moshi `create_sin_embedding`.
 ///
-/// Returns `[len, dim]` with classic Transformer sin/cos interleaving.
-/// Used by Kyutai TTS's cross-attention when `fuser.cross_attention_pos_emb = true`.
+/// Layout: `[cos(phase_0..), sin(phase_0..)]` with
+/// `phase_i = pos / max_period^(i / (half - 1))`.
 pub fn sin_pos_embed(len: usize, dim: usize, max_period: f32) -> Array2<f32> {
     assert!(
         dim.is_multiple_of(2),
@@ -130,15 +154,36 @@ pub fn sin_pos_embed(len: usize, dim: usize, max_period: f32) -> Array2<f32> {
     );
     let half = dim / 2;
     let mut out = Array2::<f32>::zeros((len, dim));
+    let denom = (half as f32 - 1.0).max(1.0);
     for pos in 0..len {
         for i in 0..half {
-            let inv_freq = (max_period.ln() * i as f32 / half as f32).exp().recip();
-            let theta = pos as f32 * inv_freq;
-            out[[pos, i]] = theta.sin();
-            out[[pos, i + half]] = theta.cos();
+            let phase = pos as f32 / max_period.powf(i as f32 / denom);
+            out[[pos, i]] = phase.cos();
+            out[[pos, i + half]] = phase.sin();
         }
     }
     out
+}
+
+/// Interleaved RoPE (Moshi `apply_rope` with `interleave=True`) on one Q/K head vector.
+pub fn apply_rope_interleaved(q: &mut [f32], k: &mut [f32], pos: usize, max_period: f32) {
+    let d = q.len();
+    assert_eq!(d, k.len());
+    assert!(d.is_multiple_of(2));
+    for i in 0..(d / 2) {
+        let freq = max_period.powf(-2.0 * i as f32 / d as f32);
+        let f = pos as f32 * freq;
+        let rotr = f.cos();
+        let roti = f.sin();
+        let qr = q[2 * i];
+        let qi = q[2 * i + 1];
+        q[2 * i] = qr * rotr - qi * roti;
+        q[2 * i + 1] = qr * roti + qi * rotr;
+        let kr = k[2 * i];
+        let ki = k[2 * i + 1];
+        k[2 * i] = kr * rotr - ki * roti;
+        k[2 * i + 1] = kr * roti + ki * rotr;
+    }
 }
 
 /// Row sum: `y = x.sum(axis=0)`.
@@ -239,34 +284,23 @@ mod tests {
     }
 
     #[test]
-    fn sin_pos_embed_has_correct_shape() {
-        let pe = sin_pos_embed(4, 16, 10_000.0);
-        assert_eq!(pe.dim(), (4, 16));
-        // pos=0 → all sines are 0, all cosines are 1.
-        for i in 0..8 {
-            assert!(pe[[0, i]].abs() < 1e-6, "sin@0 must be 0");
-            assert!((pe[[0, 8 + i]] - 1.0).abs() < 1e-6, "cos@0 must be 1");
+    fn sin_pos_embed_matches_moshi_layout() {
+        let pe = sin_pos_embed(1, 8, 10_000.0);
+        assert_eq!(pe.dim(), (1, 8));
+        // pos=0 → cos=1 in first half, sin=0 in second half.
+        for i in 0..4 {
+            assert!((pe[[0, i]] - 1.0).abs() < 1e-6, "cos@0");
+            assert!(pe[[0, 4 + i]].abs() < 1e-6, "sin@0");
         }
     }
 
     #[test]
-    fn rope_tables_position_zero_is_identity() {
-        let (cos, sin) = rope_tables(8, 10_000, &[0]);
-        // At pos=0 every angle = 0 → cos=1, sin=0.
-        for i in 0..8 {
-            assert!((cos[[0, i]] - 1.0).abs() < 1e-6);
-            assert!(sin[[0, i]].abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn apply_rope_at_zero_is_identity() {
-        let (cos, sin) = rope_tables(4, 10_000, &[0]);
+    fn apply_rope_interleaved_at_zero_is_identity() {
         let mut q = vec![1.0, 2.0, 3.0, 4.0];
         let mut k = vec![5.0, 6.0, 7.0, 8.0];
         let q0 = q.clone();
         let k0 = k.clone();
-        apply_rope_vec(&mut q, &mut k, cos.row(0), sin.row(0));
+        apply_rope_interleaved(&mut q, &mut k, 0, 10_000.0);
         assert_eq!(q, q0);
         assert_eq!(k, k0);
     }

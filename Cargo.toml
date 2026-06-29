@@ -4,6 +4,11 @@ members = [
     "crates/rlx-models",
     "crates/rlx-cli",
     "crates/rlx-models-core",
+    "crates/rlx-distributed",
+    "crates/rlx-serve",
+    "crates/rlx-eval",
+    "crates/rlx-tune",
+    "crates/rlx-quant-calib",
     "crates/rlx-snac",
     "crates/rlx-encodec",
     "crates/rlx-speechtokenizer",
@@ -29,6 +34,7 @@ members = [
     "crates/rlx-eagle3",
     "crates/rlx-llada2",
     "crates/rlx-qwen35",
+    "crates/rlx-qwen25-vl",
     "crates/rlx-flux2",
     "crates/rlx-vjepa2",
     "crates/rlx-wav2vec2-bert",
@@ -109,26 +115,28 @@ keywords      = ["ml", "tensor", "compiler", "neural-network"]
 categories    = ["science", "algorithms"]
 
 [workspace.dependencies]
-# Published `rlx*` (crates.io 0.2.9). Crates use `{ workspace = true }`.
+# Published `rlx*` (crates.io 0.2.10; was 0.2.9). Crates use `{ workspace = true }`.
 # Local ../rlx override: `.cargo/config.toml` from `.cargo/config.toml.example` (gitignored).
-# Publish / CI: no config.toml → resolves from crates.io only.
-rlx = { version = "=0.2.9", default-features = false, features = ["cpu"] }
-rlx-ir = { version = "=0.2.9" }
-rlx-flow = { version = "=0.2.9" }
-rlx-runtime = { version = "=0.2.9", default-features = false, features = ["cpu"] }
-rlx-opt = { version = "=0.2.9" }
-rlx-autodiff = { version = "=0.2.9" }
-rlx-compile = { version = "=0.2.9" }
-rlx-fusion = { version = "=0.2.9" }
-rlx-cpu = { version = "=0.2.9" }
-rlx-gguf = { version = "=0.2.9" }
-rlx-text = { version = "=0.2.9" }
-rlx-metal = { version = "=0.2.9" }
-rlx-mlx = { version = "=0.2.9" }
-rlx-cuda = { version = "=0.2.9" }
-rlx-wgpu = { version = "=0.2.9" }
-rlx-rocm = { version = "=0.2.9" }
-rlx-onnx-import = { version = "=0.2.9" }
+# `rlx-distributed` needs rlx-driver 0.2.10+ (`ProcessGroup`, `TcpTransport`, …).
+# Publish / CI without patch: requires rlx 0.2.10 on crates.io.
+rlx = { version = "=0.2.10", default-features = false, features = ["cpu"] }
+rlx-ir = { version = "=0.2.10" }
+rlx-flow = { version = "=0.2.10" }
+rlx-runtime = { version = "=0.2.10", default-features = false, features = ["cpu"] }
+rlx-driver = { version = "=0.2.10" }
+rlx-opt = { version = "=0.2.10" }
+rlx-autodiff = { version = "=0.2.10" }
+rlx-compile = { version = "=0.2.10" }
+rlx-fusion = { version = "=0.2.10" }
+rlx-cpu = { version = "=0.2.10" }
+rlx-gguf = { version = "=0.2.10" }
+rlx-text = { version = "=0.2.10" }
+rlx-metal = { version = "=0.2.10" }
+rlx-mlx = { version = "=0.2.10" }
+rlx-cuda = { version = "=0.2.10" }
+rlx-wgpu = { version = "=0.2.10" }
+rlx-rocm = { version = "=0.2.10" }
+rlx-onnx-import = { version = "=0.2.10" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 safetensors = "0.7"
@@ -151,6 +159,8 @@ flate2 = "1"
 
 rlx-cli = { path = "crates/rlx-cli", version = "0.2.9" }
 rlx-core = { path = "crates/rlx-models-core", package = "rlx-models-core", version = "0.2.9" }
+rlx-distributed = { path = "crates/rlx-distributed", version = "0.2.9" }
+rlx-quant-calib = { path = "crates/rlx-quant-calib", version = "0.2.9" }
 kitten_tts_mini_rlx = { path = "crates/kitten_tts_mini_rlx", version = "0.2.9" }
 rlx-sam-ir = { path = "crates/rlx-sam-ir", version = "0.2.9" }
 rlx-bert = { path = "crates/rlx-bert", version = "0.2.9" }
@@ -171,6 +181,7 @@ rlx-gemma = { path = "crates/rlx-gemma", version = "0.2.9" }
 rlx-eagle3 = { path = "crates/rlx-eagle3", version = "0.2.9" }
 rlx-llada2 = { path = "crates/rlx-llada2", version = "0.2.9" }
 rlx-qwen35 = { path = "crates/rlx-qwen35", version = "0.2.9" }
+rlx-qwen25-vl = { path = "crates/rlx-qwen25-vl", version = "0.2.9" }
 rlx-flux2 = { path = "crates/rlx-flux2", version = "0.2.9" }
 rlx-vjepa2 = { path = "crates/rlx-vjepa2", version = "0.2.9" }
 rlx-wav2vec2-bert = { path = "crates/rlx-wav2vec2-bert", version = "0.2.9" }
@@ -217,7 +228,7 @@ rlx-minimax = { path = "crates/rlx-minimax", version = "0.2.9" }
 rlx-nemotron = { path = "crates/rlx-nemotron", version = "0.2.9" }
 rlx-nemotron-asr = { path = "crates/rlx-nemotron-asr", version = "0.2.9" }
 rlx-funasr = { path = "crates/rlx-funasr", version = "0.2.9" }
-rlx-nemo = { version = "=0.2.9" }
+rlx-nemo = { version = "=0.2.10" }
 rlx-inflect-nano = { path = "crates/rlx-inflect-nano", version = "0.2.9", default-features = false }
 rlx-tiny-tts = { path = "crates/rlx-tiny-tts", version = "0.2.9" }
 
@@ -242,3 +253,25 @@ codegen-units = 32
 [profile.release.package.kitten_tts_mini_rlx]
 opt-level = 2
 codegen-units = 32
+
+# TEMP (validation only): point rlx-* at the local sibling working tree so
+# rlx-models can test unreleased backend changes (e.g. the Nomic full-layer
+# fusion). Remove to go back to the published =0.2.10 crates.
+[patch.crates-io]
+rlx-ir = { path = "../rlx/crates/rlx-ir" }
+rlx-flow = { path = "../rlx/crates/rlx-flow" }
+rlx-runtime = { path = "../rlx/crates/rlx-runtime" }
+rlx-driver = { path = "../rlx/crates/rlx-driver" }
+rlx-opt = { path = "../rlx/crates/rlx-opt" }
+rlx-autodiff = { path = "../rlx/crates/rlx-autodiff" }
+rlx-compile = { path = "../rlx/crates/rlx-compile" }
+rlx-fusion = { path = "../rlx/crates/rlx-fusion" }
+rlx-cpu = { path = "../rlx/crates/rlx-cpu" }
+rlx-gguf = { path = "../rlx/crates/rlx-gguf" }
+rlx-text = { path = "../rlx/crates/rlx-text" }
+rlx-metal = { path = "../rlx/crates/rlx-metal" }
+rlx-mlx = { path = "../rlx/crates/rlx-mlx" }
+rlx-cuda = { path = "../rlx/crates/rlx-cuda" }
+rlx-wgpu = { path = "../rlx/crates/rlx-wgpu" }
+rlx-rocm = { path = "../rlx/crates/rlx-rocm" }
+rlx-onnx-import = { path = "../rlx/crates/rlx-onnx-import" }

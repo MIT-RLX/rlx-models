@@ -11,8 +11,8 @@ description = "RLX native model decomposed from ONNX (auto-generated)"
 
 [dependencies]
 anyhow = "1"
-rlx-ir = { version = "=0.2.9" }
-rlx-runtime = { version = "=0.2.9", default-features = false, features = ["cpu"] }
+rlx-ir = { version = "=0.2.10" }
+rlx-runtime = { version = "=0.2.10", default-features = false, features = ["cpu"] }
 safetensors = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

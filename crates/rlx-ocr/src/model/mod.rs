@@ -19,7 +19,7 @@ mod detection;
 mod recognition;
 pub mod weights;
 
-pub use detection::{DetectionGraphConfig, build_detection_graph};
+pub use detection::{DetectionGraphConfig, build_detection_graph, build_detection_graph_to_stage};
 pub use recognition::{
     NUM_CLASSES, RecognitionGraphConfig, build_recognition_after_g1_graph,
     build_recognition_after_g2_graph, build_recognition_after_logits_graph,

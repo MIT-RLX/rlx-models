@@ -25,13 +25,15 @@ pub use download::{
     DEFAULT_ORPHEUS_DIR, DEFAULT_ORPHEUS_QUANT, DEFAULT_SNAC_DIR, HF_ORPHEUS_FT_GGUF_REPO,
     HF_SNAC_REPO, SNAC_DECODER_SAFETENSORS, default_hf_cache_dir, default_orpheus_dir,
     default_snac_dir, fetch_default, fetch_orpheus_gguf, fetch_snac_raw, orpheus_gguf_filename,
-    print_snac_export_hint, snac_decoder_path,
+    print_snac_export_hint, resolve_orpheus_quant, snac_decoder_path,
 };
-pub use runner::{GenerationConfig, OrpheusTts, SynthesisResult, decode_orpheus_codes};
+pub use runner::{
+    GenerationConfig, OrpheusTts, SynthesisResult, decode_orpheus_codes, normalize_pcm_peak,
+};
 pub use tokens::{
     CUSTOM_TOKEN_BASE, SNAC_TOKEN_OFFSET, STOP_TOKEN_ID, VOICES, VoiceCloneReference,
-    custom_token_id_to_code, frame_codes_to_token_ids, is_custom_token_id,
-    orpheus_frame_codes_to_token_ids, pack_orpheus_codes,
+    accept_orpheus_stream_token, custom_token_id_to_code, frame_codes_to_token_ids,
+    is_custom_token_id, orpheus_frame_codes_to_token_ids, pack_orpheus_codes,
 };
 
 #[cfg(feature = "llama")]
@@ -43,7 +45,7 @@ pub use rlx_llama32::MetalGgufPrefillMode;
 #[cfg(feature = "llama")]
 pub use device::{
     OrpheusRuntimeDevice, lm_kv_decode_supported, parse_orpheus_device, preferred_synth_device,
-    resolve_orpheus_device, synth_device_for_tests,
+    preferred_synth_device_lenient, resolve_orpheus_device, synth_device_for_tests,
 };
 
 #[cfg(feature = "llama")]

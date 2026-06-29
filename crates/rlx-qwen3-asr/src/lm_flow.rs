@@ -64,6 +64,7 @@ pub fn build_asr_prefill_built(
         seq,
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
+        mask: rlx_ir::op::MaskKind::Causal,
     };
 
     let kv_sink = SideOutputs::new();
@@ -139,6 +140,7 @@ pub fn build_asr_decode_built_opts(
         past_seq,
         dynamic_past: false,
         use_custom_mask,
+        ragged_rope: false,
         profile,
     };
     build_qwen3_decode_built(cfg, weights, &opts)

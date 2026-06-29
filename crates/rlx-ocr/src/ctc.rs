@@ -47,6 +47,23 @@ impl CtcHypothesis {
 
 /// Decode a `[seq, classes]` log-probability matrix.
 pub fn decode(input_seq: NdTensorView<f32, 2>, method: DecodeMethod) -> CtcHypothesis {
+    // Debug knob: `OCR_DECODE=greedy` or `OCR_DECODE=beam:<width>` overrides the
+    // configured method (lets the benches A/B greedy vs beam without rewiring).
+    let method = std::env::var("OCR_DECODE")
+        .ok()
+        .and_then(|s| {
+            let s = s.trim();
+            if s.eq_ignore_ascii_case("greedy") {
+                Some(DecodeMethod::Greedy)
+            } else if let Some(w) = s.strip_prefix("beam:") {
+                Some(DecodeMethod::BeamSearch {
+                    width: w.trim().parse().ok()?,
+                })
+            } else {
+                None
+            }
+        })
+        .unwrap_or(method);
     match method {
         DecodeMethod::Greedy => decode_greedy(input_seq),
         DecodeMethod::BeamSearch { width } => {

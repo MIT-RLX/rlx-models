@@ -15,9 +15,12 @@
 
 //! DIF (decimation-in-frequency) Cooley–Tukey FFT — natural input, bit-reverse output.
 
-use crate::butterfly::{ParamSlot, bit_reverse, bit_reverse_permute, num_stages};
+use crate::butterfly::{
+    ParamSlot, bit_reverse, bit_reverse_permute, num_stages, packed_twiddle_param,
+    packed_twiddle_scalar,
+};
 use crate::config::FftLearnConfig;
-use crate::twiddle::{TwiddleSet, exact_twiddles, twiddle_index, twiddle_name_set};
+use crate::twiddle::{TwiddleSet, exact_twiddles, twiddle_index};
 use anyhow::{Result, ensure};
 use rlx_ir::infer::GraphExt;
 use rlx_ir::{DType, Graph, NodeId, Shape};
@@ -99,7 +102,7 @@ fn append_dif_butterfly(
 ) -> Result<(Vec<ParamSlot>, NodeId)> {
     let n = cfg.n_fft;
     let half = n / 2;
-    let f = DType::F32;
+    let stages = cfg.num_stages();
 
     let bits = cfg.num_stages();
     let mut reordered = Vec::with_capacity(n);
@@ -109,25 +112,14 @@ fn append_dif_butterfly(
     }
     state = g.concat_(reordered, 1);
 
+    // Single packed twiddle param; per-(stage,butterfly) scalars are narrowed out
+    // of it (DIF accesses individual twiddles). Unused slices are removed by DCE.
+    let (packed, slot) = packed_twiddle_param(g, tw_set, stages, half);
+    let params = vec![slot];
     let mut twiddle_nodes: HashMap<(usize, usize), (NodeId, NodeId)> = HashMap::new();
-    let mut params = Vec::new();
-    for s in 0..cfg.num_stages() {
+    for s in 0..stages {
         for b in 0..half {
-            let w_re_name = twiddle_name_set(tw_set, s, b, "re");
-            let w_im_name = twiddle_name_set(tw_set, s, b, "im");
-            let w_re = g.param(&w_re_name, Shape::new(&[1], f));
-            let w_im = g.param(&w_im_name, Shape::new(&[1], f));
-            params.push(ParamSlot {
-                name: w_re_name,
-                param: w_re,
-                grad: None,
-            });
-            params.push(ParamSlot {
-                name: w_im_name,
-                param: w_im,
-                grad: None,
-            });
-            twiddle_nodes.insert((s, b), (w_re, w_im));
+            twiddle_nodes.insert((s, b), packed_twiddle_scalar(g, packed, s, b));
         }
     }
 

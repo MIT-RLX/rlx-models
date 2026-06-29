@@ -31,10 +31,10 @@
 //!     numerical-parity test (cached vs recompute must match).
 
 use crate::builder::{
-    build_llama32_decode_hir_dynamic_ext, build_llama32_decode_hir_sized_ext,
-    build_llama32_graph_sized_kv_tap, build_llama32_graph_sized_last_logits,
-    build_llama32_graph_sized_packed, build_llama32_prefill_hir_dynamic_ext,
-    build_llama32_prefill_hir_sized_ext,
+    build_llama32_decode_graph_sized_packed, build_llama32_decode_hir_dynamic_ext,
+    build_llama32_decode_hir_sized_ext, build_llama32_graph_sized_kv_tap,
+    build_llama32_graph_sized_last_logits, build_llama32_graph_sized_packed,
+    build_llama32_prefill_hir_dynamic_ext, build_llama32_prefill_hir_sized_ext,
 };
 use crate::config::Llama32Config;
 use crate::prefill_mode::MetalGgufPrefillMode;
@@ -631,6 +631,7 @@ impl Llama32Generator {
         Ok(Some(p.run_logits(prompt_len, ids_f32)?))
     }
 
+    #[allow(dead_code)]
     fn try_packed_gguf_kv_only(
         &mut self,
         prompt_len: usize,
@@ -693,7 +694,10 @@ impl Llama32Generator {
         self.packed_gguf_prefill = None;
     }
 
-    /// Packed Metal KV + CPU F32 logits (Metal packed lm_head NaN on 156k vocab).
+    /// Packed Metal KV + CPU F32 logits (legacy hybrid). Retained as the
+    /// non-finite-logits fallback inside [`Self::seed_prefill_packed_gpu`] is
+    /// expressed inline; kept here for reference / A-B benchmarking.
+    #[allow(dead_code)]
     fn seed_prefill_packed_kv_cpu_logits(
         &mut self,
         batch: usize,
@@ -710,6 +714,39 @@ impl Llama32Generator {
         Ok((logits, layers_k, layers_v))
     }
 
+    /// Full GPU packed GGUF prefill on Metal: a single packed `DequantMatMul`
+    /// forward yields the last-token logits **and** per-layer KV directly on the
+    /// device, so the ~12 GiB CPU F32 model dequant is never materialized.
+    ///
+    /// Only if the packed lm_head emits non-finite logits (historically a risk
+    /// on the 156k-vocab Orpheus head) do we recompute the last-position logits
+    /// on CPU F32 — the GPU-packed KV stays valid for decode seeding.
+    fn seed_prefill_packed_gpu(
+        &mut self,
+        batch: usize,
+        seq: usize,
+        ids_f32: &[f32],
+    ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+        self.ensure_packed_prefill(seq)?;
+        let p = self.packed_gguf_prefill.as_mut().unwrap();
+        let (logits, layers_k, layers_v) = p.run(seq, ids_f32)?;
+        if logits.iter().all(|x| x.is_finite()) {
+            eprintln!(
+                "[llama32] packed GGUF prefill on {:?} (logits+KV on device, no host F32 dequant)",
+                self.device
+            );
+            return Ok((logits, layers_k, layers_v));
+        }
+        eprintln!(
+            "[llama32] packed GGUF prefill lm_head non-finite on {:?}; \
+             recomputing last-position logits on CPU F32 (KV stays on device)",
+            self.device
+        );
+        self.drop_packed_gguf_prefill();
+        let cpu_logits = self.run_prefill_last_logits_cpu_f32(batch, seq, ids_f32)?;
+        Ok((cpu_logits, layers_k, layers_v))
+    }
+
     fn prefill_seed_triple(
         &mut self,
         batch: usize,
@@ -724,7 +761,10 @@ impl Llama32Generator {
                 let outputs = self.run_prefill_with_cache_cpu_f32(batch, seq, ids_f32)?;
                 return self.split_prefill_outputs(outputs, batch, seq);
             }
-            let triple = self.seed_prefill_packed_kv_cpu_logits(batch, seq, ids_f32)?;
+            // Native decode (Metal): run the whole prefill forward on the GPU via
+            // the packed Q4 graph — logits and KV both — instead of dequantizing
+            // the full 3B model to ~12 GiB host F32.
+            let triple = self.seed_prefill_packed_gpu(batch, seq, ids_f32)?;
             self.drop_packed_gguf_prefill();
             return Ok(triple);
         }
@@ -891,13 +931,29 @@ impl Llama32Generator {
             return false;
         }
         match self.device {
-            Device::Metal => matches!(
-                self.metal_gguf_prefill_mode.resolve(),
-                MetalGgufPrefillMode::CpuF32
-                    | MetalGgufPrefillMode::Auto
-                    | MetalGgufPrefillMode::PackedGguf
-            ),
-            Device::Gpu | Device::Vulkan => true,
+            // Metal decodes GGUF Llama natively via the packed Q4 graph: its
+            // RoPE kernel now honors the interleaved/GPT-J flavor GGUF weights
+            // need (see rlx-metal `Op::Rope` lowering + `rope` kernel), and the
+            // Q4 GEMV thunk (`q4k_mv_f32_sg`) serves `Op::DequantMatMul`. Prefill
+            // stays on CPU F32 (see `prefill_device`); only DECODE runs on Metal.
+            Device::Metal => false,
+            // wgpu (`Device::Gpu`): RoPE-GptJ + native GGUF Q4 GEMV kernels are
+            // implemented and parity-verified, but native decode is blocked by a
+            // pre-existing wgpu >4 GB arena windowing bug (the ~10 GB Orpheus
+            // arena: F32 embed + tied-lm_head copy + 4x-inflated U8 weights).
+            // Decode produces the correct first token then diverges. Default to
+            // the CPU host path; opt into native wgpu decode (for testing the
+            // kernels / once the arena fix lands) via `ORPHEUS_WGPU_NATIVE=1`.
+            Device::Gpu => std::env::var("ORPHEUS_WGPU_NATIVE").ok().as_deref() != Some("1"),
+            // Vulkan (MoltenVK on Apple, native Vulkan on Linux): RoPE-GptJ
+            // (`rope.comp` style 1) + native GGUF Q4_K/Q6_K decode GEMV
+            // (`dequant_matmul.comp`, `m == 1`) kernels are implemented; prefill
+            // stays on CPU F32 (see `prefill_device`). Native on-device decode is
+            // opt-in until broadly validated — set `ORPHEUS_VULKAN_NATIVE=1`.
+            Device::Vulkan => std::env::var("ORPHEUS_VULKAN_NATIVE").ok().as_deref() != Some("1"),
+            // MLX decodes GGUF Llama natively: its RoPE kernel now honors the
+            // interleaved/GPT-J flavor that GGUF weights need (see rlx-mlx
+            // `Op::Rope` lowering), so no CPU host fallback is required.
             _ => false,
         }
     }
@@ -912,6 +968,34 @@ impl Llama32Generator {
         }
     }
 
+    /// Native-quantized decode gate: run the packed (`Op::DequantMatMul`)
+    /// decode graph instead of dequantizing the full model to F32. Enabled for
+    /// GGUF checkpoints decoding on CPU, MLX, Metal, wgpu (`Device::Gpu`), or
+    /// Vulkan — all have native DequantMatMul kernels.
+    fn use_packed_decode(&self) -> bool {
+        if !self.is_gguf_checkpoint() || self.weights_path.is_none() {
+            return false;
+        }
+        // A/B escape hatch for benchmarking Q4 vs F32 decode on the same binary.
+        if std::env::var("ORPHEUS_NO_PACKED").ok().as_deref() == Some("1") {
+            return false;
+        }
+        match self.decode_device() {
+            // GPU Q4 decode is memory-bandwidth-bound and faster than F32 here
+            // (Metal measured ~1.9x vs CPU); MLX uses its native quantized matmul.
+            // `Device::Gpu`/`Device::Vulkan` only reach here when `ORPHEUS_WGPU_NATIVE`/
+            // `ORPHEUS_VULKAN_NATIVE=1` made `gguf_cpu_decode_required` return false
+            // (else decode_device is Cpu and the F32 host path is used).
+            Device::Metal | Device::Mlx | Device::Gpu | Device::Vulkan => true,
+            // CPU: F32 via Accelerate AMX is faster than on-the-fly Q4 dequant
+            // (measured 104s vs 127s/100 tok), so default to the F32 flow path.
+            // Opt into packed Q4 only when memory-constrained (avoids the ~12 GB
+            // F32 model footprint) via `ORPHEUS_PACKED_DECODE=1`.
+            Device::Cpu => std::env::var("ORPHEUS_PACKED_DECODE").ok().as_deref() == Some("1"),
+            _ => false,
+        }
+    }
+
     fn decode_bucket_allowed(&self) -> bool {
         // Once a bucket graph is loaded this utterance, never switch to oneshot —
         // mixed paths corrupt KV and yield STOP after ~2 speech tokens.
@@ -919,6 +1003,20 @@ impl Llama32Generator {
             return true;
         }
         !would_exceed_soft_budget(llama_decode_bucket_compile_peak_bytes())
+    }
+
+    /// Whether the bucketed compile cache can serve `past_seq` (used by both
+    /// the F32 and packed-GGUF decode dispatch to pick the compile-once
+    /// bucketed path over the slow per-token oneshot path).
+    fn bucket_decode_eligible(&self, past_seq: usize) -> bool {
+        self.decode_compile_cache.is_some()
+            && self.decode_bucket_allowed()
+            && self
+                .decode_compile_cache
+                .as_ref()
+                .unwrap()
+                .bucket_for(past_seq as u64)
+                .is_some()
     }
 
     fn decode_oneshot_allowed(&self) -> Result<()> {
@@ -1191,17 +1289,30 @@ impl Llama32Generator {
         }
         let input_tok = self.tokens[past_seq];
 
-        let (mut logits, new_k, new_v) = if self.decode_dynamic_cache.is_some() {
+        // GPU-resident KV decode (Vulkan): K/V live in the device arena across
+        // steps, fed in-place from the decode output — no per-step host K/V
+        // upload/readback, logits-only readback. Returns logits only; the host
+        // `cache.layers_k/v` is left stale (synced back only on bucket change).
+        let resident =
+            self.vulkan_resident_decode_enabled() && self.bucket_decode_eligible(past_seq);
+
+        let (mut logits, new_k, new_v) = if resident {
+            (
+                self.decode_step_bucketed_packed_resident(past_seq, input_tok)?,
+                Vec::new(),
+                Vec::new(),
+            )
+        } else if self.use_packed_decode() {
+            // Packed (Q4) decode: reuse one compiled bucket graph across tokens
+            // when a bucket cache is available; else the slow per-token rebuild.
+            if self.bucket_decode_eligible(past_seq) {
+                self.decode_step_bucketed_packed(past_seq, input_tok)?
+            } else {
+                self.decode_step_packed(past_seq, input_tok)?
+            }
+        } else if self.decode_dynamic_cache.is_some() {
             self.decode_step_dynamic(past_seq, input_tok)?
-        } else if self.decode_compile_cache.is_some()
-            && self.decode_bucket_allowed()
-            && self
-                .decode_compile_cache
-                .as_ref()
-                .unwrap()
-                .bucket_for(past_seq as u64)
-                .is_some()
-        {
+        } else if self.bucket_decode_eligible(past_seq) {
             self.decode_step_bucketed(past_seq, input_tok)?
         } else {
             self.decode_oneshot_allowed()?;
@@ -1210,8 +1321,11 @@ impl Llama32Generator {
 
         let cache_mut = self.cache.as_mut().unwrap();
         cache_mut.past_seq = past_seq + 1;
-        cache_mut.layers_k = new_k;
-        cache_mut.layers_v = new_v;
+        if !resident {
+            // Resident path keeps K/V in the device arena; host cache untouched.
+            cache_mut.layers_k = new_k;
+            cache_mut.layers_v = new_v;
+        }
 
         let vocab = self.cfg.vocab_size;
         if logits.len() != vocab {
@@ -1269,6 +1383,210 @@ impl Llama32Generator {
 
         let outputs = compiled.run(&inputs);
         self.split_decode_outputs(outputs)
+    }
+
+    /// Native-quantized decode step. Builds a packed
+    /// (`Op::DequantMatMul`) decode graph for the exact `past_seq` from
+    /// the GGUF K-quant bytes — no full-model F32 drain — compiles it on
+    /// the decode device, attaches F32 params (`set_param`) + packed U8
+    /// params (`set_param_typed`), and runs it with the same input/output
+    /// contract as the F32 decode steps (`input_ids` + per-layer
+    /// `past_k`/`past_v`; outputs `logits` + full new KV). The KV-cache
+    /// update in the caller is therefore unchanged.
+    #[allow(clippy::type_complexity)]
+    fn decode_step_packed(
+        &mut self,
+        past_seq: usize,
+        input_tok: u32,
+    ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+        let path = self
+            .weights_path
+            .as_ref()
+            .context("packed decode needs gguf path")?;
+        let path_str = path.to_str().context("non-utf8 weights path")?;
+        let mut loader = GgufLoader::from_file(path_str)?;
+        let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
+            HashMap::new();
+        let (graph, params) = build_llama32_decode_graph_sized_packed(
+            &self.cfg,
+            &mut loader,
+            /*batch*/ 1,
+            past_seq,
+            /*use_custom_mask*/ false,
+            &mut packed,
+        )?;
+
+        let exec_device = packed_gguf_execution_device(self.decode_device());
+        let opts =
+            compile_options_for_packed_gguf_prefill_with_profile(&self.decode_profile, exec_device);
+        let mut compiled = packed_gguf_compile_guard(exec_device, || {
+            Session::new(exec_device).compile_with(graph, &opts)
+        });
+        for (name, data) in &params {
+            compiled.set_param(name, data);
+        }
+        for (name, (bytes, _scheme, _shape)) in &packed {
+            compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+        }
+
+        let cache = self.cache.as_ref().context("packed decode without cache")?;
+        let input_ids_f32 = [input_tok as f32];
+        let n_layers = self.cfg.num_hidden_layers;
+        let key_strs: Vec<String> = (0..n_layers)
+            .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
+            .collect();
+        let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(1 + 2 * n_layers);
+        inputs.push(("input_ids", input_ids_f32.as_slice()));
+        for i in 0..n_layers {
+            inputs.push((&key_strs[2 * i], cache.layers_k[i].as_slice()));
+            inputs.push((&key_strs[2 * i + 1], cache.layers_v[i].as_slice()));
+        }
+        let outputs = compiled.run(&inputs);
+        self.split_decode_outputs(outputs)
+    }
+
+    /// Native-quantized decode using the **bucketed** compile cache.
+    /// Same fast-path idea as [`decode_step_bucketed`] (compile one packed
+    /// graph per bucket, pad `past_k`/`past_v` to the bucket upper bound,
+    /// drive a custom keep-mask), but the graph keeps K-quant matmuls in the
+    /// arena via `Op::DequantMatMul`. cos/sin rows are fed as runtime inputs
+    /// so a single compiled graph serves every position in its bucket — no
+    /// per-token GGUF reload / rebuild / recompile (the slow path that
+    /// [`decode_step_packed`] takes). Numerically identical to
+    /// `decode_step_packed`: same inv_freq-derived RoPE row, same mask
+    /// semantics, same packed weights.
+    #[allow(clippy::type_complexity)]
+    fn decode_step_bucketed_packed(
+        &mut self,
+        past_seq: usize,
+        input_tok: u32,
+    ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+        let path = self
+            .weights_path
+            .as_ref()
+            .context("packed decode needs gguf path")?;
+        let path_str = path.to_str().context("non-utf8 weights path")?.to_string();
+
+        let cache_dec = self.decode_compile_cache.as_ref().unwrap();
+        let bucket_idx = cache_dec
+            .bucket_for(past_seq as u64)
+            .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside any bucket"))?;
+        let upper = cache_dec
+            .buckets()
+            .nth(bucket_idx)
+            .map(|r| r.end - 1)
+            .unwrap() as usize;
+
+        let kv_dim = self.cfg.kv_proj_dim();
+        let n_layers = self.cfg.num_hidden_layers;
+        let exec_device = packed_gguf_execution_device(self.decode_device());
+
+        // First-time-in-bucket: build the packed graph for `upper`, compile it
+        // through the bucketed cache, attach F32 + U8 packed params once. Later
+        // calls in the same bucket skip all of this and just `.run()`.
+        let needs_load = !self.decode_loaded_buckets.contains(&bucket_idx);
+        if needs_load {
+            if !self.decode_bucket_allowed() {
+                anyhow::bail!(
+                    "decode bucket compile would exceed soft RAM budget (~80% of physical RAM); \
+                     set RLX_SOFT_MEMORY_FRACTION or ORPHEUS_DECODE_CACHE_CAP lower"
+                );
+            }
+            if let Some(cache_mut) = self.decode_compile_cache.as_mut() {
+                cache_mut.evict_except(bucket_idx);
+            }
+            self.decode_loaded_buckets.clear();
+
+            let mut loader = GgufLoader::from_file(&path_str)?;
+            let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
+                HashMap::new();
+            let (graph, params) = build_llama32_decode_graph_sized_packed(
+                &self.cfg,
+                &mut loader,
+                /*batch*/ 1,
+                upper,
+                /*use_custom_mask*/ true,
+                &mut packed,
+            )?;
+
+            let opts = compile_options_for_packed_gguf_prefill_with_profile(
+                &self.decode_profile,
+                exec_device,
+            );
+            let cache_mut = self.decode_compile_cache.as_mut().unwrap();
+            packed_gguf_compile_guard(exec_device, || {
+                let (_u, compiled) = cache_mut
+                    .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
+                    .expect("bucket must exist; we just looked it up");
+                for (name, data) in &params {
+                    compiled.set_param(name, data);
+                }
+                for (name, (bytes, _scheme, _shape)) in &packed {
+                    compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+                }
+            });
+            self.decode_loaded_buckets.insert(bucket_idx);
+        }
+
+        // Per-token host inputs. cos/sin come from the same inv_freq the baked
+        // builder uses, so this is bit-for-bit the oneshot packed RoPE row.
+        let (cos_row, sin_row) = rope_slice(&self.inv_freq, past_seq);
+        let input_ids_f32 = [input_tok as f32];
+        let mask = bucket_decode_mask(past_seq, upper);
+
+        // Pad past_k / past_v to length `upper`.
+        let padded_k: Vec<Vec<f32>> = (0..n_layers)
+            .map(|i| {
+                let src = &self.cache.as_ref().unwrap().layers_k[i];
+                let mut out = vec![0f32; upper * kv_dim];
+                out[..src.len()].copy_from_slice(src);
+                out
+            })
+            .collect();
+        let padded_v: Vec<Vec<f32>> = (0..n_layers)
+            .map(|i| {
+                let src = &self.cache.as_ref().unwrap().layers_v[i];
+                let mut out = vec![0f32; upper * kv_dim];
+                out[..src.len()].copy_from_slice(src);
+                out
+            })
+            .collect();
+
+        let key_strs: Vec<String> = (0..n_layers)
+            .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
+            .collect();
+        let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4 + 2 * n_layers);
+        inputs.push(("input_ids", input_ids_f32.as_slice()));
+        inputs.push(("cos", cos_row.as_slice()));
+        inputs.push(("sin", sin_row.as_slice()));
+        inputs.push(("mask", mask.as_slice()));
+        for i in 0..n_layers {
+            inputs.push((&key_strs[2 * i], padded_k[i].as_slice()));
+            inputs.push((&key_strs[2 * i + 1], padded_v[i].as_slice()));
+        }
+
+        let cache_mut = self.decode_compile_cache.as_mut().unwrap();
+        let compiled = cache_mut
+            .compiled_for_key_mut(past_seq as u64)
+            .expect("bucket was just loaded above");
+        let raw_outputs = compiled.run(&inputs);
+
+        // Graph emits K/V at length `upper + 1` (padded past + new token at row
+        // `upper`). Compact to dense `[0..past_seq]` + the new row.
+        let mut iter = raw_outputs.into_iter();
+        let logits = iter
+            .next()
+            .context("bucketed packed decode logits missing")?;
+        let past_len = past_seq + 1;
+        let mut new_k = Vec::with_capacity(n_layers);
+        let mut new_v = Vec::with_capacity(n_layers);
+        for _ in 0..n_layers {
+            let k = iter.next().context("bucketed packed k missing")?;
+            let v = iter.next().context("bucketed packed v missing")?;
+            new_k.push(compact_bucketed_kv_buffer(&k, past_len, kv_dim, 1));
+            new_v.push(compact_bucketed_kv_buffer(&v, past_len, kv_dim, 1));
+        }
+        Ok((logits, new_k, new_v))
     }
 
     #[allow(clippy::type_complexity)]
@@ -1980,17 +2298,15 @@ impl Llama32Generator {
         })?;
         let past_seq = cache.past_seq;
 
-        let (logits, new_k, new_v) = if self.decode_dynamic_cache.is_some() {
+        let (logits, new_k, new_v) = if self.use_packed_decode() {
+            if self.bucket_decode_eligible(past_seq) {
+                self.decode_step_bucketed_packed(past_seq, input)?
+            } else {
+                self.decode_step_packed(past_seq, input)?
+            }
+        } else if self.decode_dynamic_cache.is_some() {
             self.decode_step_dynamic(past_seq, input)?
-        } else if self.decode_compile_cache.is_some()
-            && self.decode_bucket_allowed()
-            && self
-                .decode_compile_cache
-                .as_ref()
-                .unwrap()
-                .bucket_for(past_seq as u64)
-                .is_some()
-        {
+        } else if self.bucket_decode_eligible(past_seq) {
             self.decode_step_bucketed(past_seq, input)?
         } else {
             self.decode_oneshot_allowed()?;
@@ -2051,6 +2367,7 @@ mod tests {
             attention_bias: false,
             head_dim: Some(8),
             rope_scaling: None,
+            rope_style: rlx_ir::RopeStyle::NeoX,
         }
     }
 
@@ -2380,6 +2697,7 @@ mod tests {
             attention_bias: false,
             head_dim: Some(128),
             rope_scaling: None,
+            rope_style: rlx_ir::RopeStyle::NeoX,
         }
     }
 
@@ -2615,6 +2933,7 @@ mod tests {
                 attention_bias: false,
                 head_dim: Some(hd),
                 rope_scaling: None,
+                rope_style: rlx_ir::RopeStyle::NeoX,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
 
@@ -2663,6 +2982,7 @@ mod tests {
                 attention_bias: false,
                 head_dim: Some(hd),
                 rope_scaling: None,
+                rope_style: rlx_ir::RopeStyle::NeoX,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
 
@@ -2782,6 +3102,7 @@ mod tests {
                 attention_bias: false,
                 head_dim: Some(hd),
                 rope_scaling: None,
+                rope_style: rlx_ir::RopeStyle::NeoX,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
             let steps = 3;

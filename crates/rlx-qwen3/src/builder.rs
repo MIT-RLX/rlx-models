@@ -70,6 +70,7 @@ pub fn build_qwen3_graph_sized(
         seq,
         with_lm_head,
         with_kv_outputs,
+        with_qk_outputs: false,
         last_logits_only: false,
         profile: None,
         rope_cos: None,
@@ -92,6 +93,7 @@ pub fn build_qwen3_graph_sized_last_logits(
         seq,
         with_lm_head: true,
         with_kv_outputs,
+        with_qk_outputs: false,
         last_logits_only: true,
         profile: None,
         rope_cos: None,
@@ -100,6 +102,18 @@ pub fn build_qwen3_graph_sized_last_logits(
     rlx_core::flow_util::graph_from_built(crate::flow::build_qwen3_prefill_built(
         cfg, weights, &opts,
     )?)
+}
+
+/// Attention mask from config: a sliding window when the model enables one
+/// (Gemma / Mistral-style), else full causal. `Op::Attention` lowers
+/// `SlidingWindow` on CPU/Metal/MLX; a `window >= seq` is equivalent to
+/// causal. (CUDA/ROCm/wgpu decompose attention and currently honor only the
+/// causal mask — sliding window there is future work.)
+pub(crate) fn attn_mask_kind(cfg: &Qwen3Config) -> MaskKind {
+    match cfg.sliding_window {
+        Some(w) if cfg.use_sliding_window && w > 0 => MaskKind::SlidingWindow(w),
+        _ => MaskKind::Causal,
+    }
 }
 
 /// Per-head RMSNorm via reshape to `[B*S*heads, head_dim]`, norm with
@@ -240,6 +254,8 @@ pub fn build_qwen3_decode_hir_sized_ext(
         past_seq,
         dynamic_past: false,
         use_custom_mask,
+        ragged_rope: false,
+        export_qk: false,
         profile: None,
     };
     build_qwen3_decode_flow(cfg, weights, &opts)
@@ -270,6 +286,33 @@ pub fn build_qwen3_decode_graph_sized_ext(
         past_seq,
         dynamic_past: false,
         use_custom_mask,
+        ragged_rope: false,
+        export_qk: false,
+        profile: None,
+    };
+    build_qwen3_decode_graph(cfg, weights, &opts)
+}
+
+/// Decode builder for **ragged** batched decode: a per-sequence RoPE table
+/// (`rope_cos`/`rope_sin` shaped `[batch, head_dim/2]`) plus the custom mask, so
+/// each sequence in the batch may sit at a different absolute position / cache
+/// length. The graph is otherwise identical to
+/// [`build_qwen3_decode_graph_sized_ext`] with `use_custom_mask = true`.
+pub fn build_qwen3_decode_graph_sized_ragged(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    past_seq: usize,
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    use crate::flow::{Qwen3DecodeOpts, build_qwen3_decode_graph};
+
+    let opts = Qwen3DecodeOpts {
+        batch,
+        past_seq,
+        dynamic_past: false,
+        use_custom_mask: true,
+        ragged_rope: true,
+        export_qk: false,
         profile: None,
     };
     build_qwen3_decode_graph(cfg, weights, &opts)
@@ -596,7 +639,15 @@ pub fn build_qwen3_graph_sized_packed(
         let v_rep = repeat_kv(&mut g, v, nkv, dh, group);
 
         let attn_shape = shape::attention_shape(g.shape(q_rope));
-        let attn = g.attention_kind(q_rope, k_rep, v_rep, nh, dh, MaskKind::Causal, attn_shape);
+        let attn = g.attention_kind(
+            q_rope,
+            k_rep,
+            v_rep,
+            nh,
+            dh,
+            attn_mask_kind(cfg),
+            attn_shape,
+        );
 
         let (o_w, o_s, _) = load_proj(
             &mut g,

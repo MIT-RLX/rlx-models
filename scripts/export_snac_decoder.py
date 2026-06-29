@@ -35,6 +35,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="hubertsiuzdak/snac_24khz")
     parser.add_argument("--out", type=Path, default=Path("crates/rlx-orpheus/weights"))
+    parser.add_argument(
+        "--parity-layers",
+        action="store_true",
+        help="Write per-decoder-stage .npy activations for rlx-orpheus layer parity tests",
+    )
     args = parser.parse_args()
 
     try:
@@ -104,18 +109,62 @@ def main() -> int:
 
         torch.randn = capture_randn  # type: ignore[assignment]
         codes_path = args.out / "ref_codes.json"
+        if not codes_path.is_file():
+            fixture = Path(__file__).resolve().parent.parent / (
+                "crates/rlx-orpheus/tests/fixtures/snac_ref_codes.json"
+            )
+            if fixture.is_file():
+                codes_path.write_text(fixture.read_text())
+                print(f"seeded {codes_path} from {fixture.name}")
         if codes_path.is_file():
             codes = json.loads(codes_path.read_text())
             c0 = torch.tensor(codes["codes_0"])
             c1 = torch.tensor(codes["codes_1"])
             c2 = torch.tensor(codes["codes_2"])
+            stage_tensors: dict[str, object] = {}
+            hooks: list = []
+
+            def hook_stage(name: str):
+                def _hook(_module, _inputs, output):
+                    t = output[0] if isinstance(output, tuple) else output
+                    stage_tensors[name] = t.detach().cpu().numpy()
+
+                return _hook
+
+            if args.parity_layers:
+                dec = model.decoder.model
+                stage_names = [
+                    "init_dw",
+                    "init_pw",
+                    "block_0",
+                    "block_1",
+                    "block_2",
+                    "block_3",
+                    "final_snake",
+                    "final_conv",
+                ]
+                for idx, name in enumerate(stage_names):
+                    hooks.append(dec[idx].register_forward_hook(hook_stage(name)))
+
             with torch.inference_mode():
                 z_q = model.quantizer.from_codes([c0, c1, c2])
+                z_np = z_q.squeeze(0).detach().cpu().numpy()
+                np.save(args.out / "act_z_q.npy", z_np)
                 audio = model.decoder(z_q).squeeze().numpy()
             np.save(args.out / "ref_decode.npy", audio)
+            for hook in hooks:
+                hook.remove()
+            if args.parity_layers:
+                for name, arr in stage_tensors.items():
+                    np.save(args.out / f"ref_stage_{name}.npy", arr)
+                stage_tensors["output"] = audio
+                np.save(args.out / "ref_stage_output.npy", audio)
+                print(
+                    f"wrote layer parity: act_z_q.npy + {len(stage_tensors)} stage tensors"
+                )
             for i, n in enumerate(noises):
                 np.save(args.out / f"ref_noise_{i}.npy", n)
-            print(f"wrote parity fixtures: ref_decode.npy + {len(noises)} noise planes")
+            print(f"wrote parity fixtures: act_z_q.npy, ref_decode.npy + {len(noises)} noise planes")
     except Exception as e:
         print(f"note: parity fixtures skipped ({e})", file=sys.stderr)
     return 0

@@ -10,13 +10,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use rlx_orpheus::{
-    BackboneLoadOptions, GenerationConfig, OrpheusTts, SAMPLE_RATE, VoiceCloneReference,
-    lm_kv_decode_supported, synth_device_for_tests,
+    BackboneLoadOptions, GenerationConfig, OrpheusTts, SAMPLE_RATE, SAMPLES_PER_FRAME,
+    VoiceCloneReference, lm_kv_decode_supported, synth_device_for_tests,
 };
 use rlx_runtime::Device;
 use rlx_whisper::{SAMPLE_RATE as WHISPER_RATE, WhisperRunner};
 
-const MIN_AUDIBLE_PEAK: f32 = 1e-4;
+const MIN_AUDIBLE_PEAK: f32 = 0.01;
 
 pub struct SynthBenchResult {
     pub wall: Duration,
@@ -72,8 +72,16 @@ pub fn orpheus_gguf_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .filter(|p| p.is_file())
         .or_else(|| {
-            let p = PathBuf::from("/tmp/rlx-weights/orpheus/orpheus-3b-0.1-ft-Q4_K_M.gguf");
-            p.is_file().then_some(p)
+            for name in [
+                "orpheus-3b-0.1-ft-Q4_K_M.gguf",
+                "orpheus-3b-0.1-ft-Q8_0.gguf",
+            ] {
+                let p = PathBuf::from(format!("/tmp/rlx-weights/orpheus/{name}"));
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+            None
         })
 }
 
@@ -107,18 +115,74 @@ pub fn voice_clone_ref_path() -> Option<PathBuf> {
 }
 
 pub fn bench_text() -> String {
-    std::env::var("ORPHEUS_BENCH_TEXT").unwrap_or_else(|_| "Hi.".into())
+    std::env::var("ORPHEUS_BENCH_TEXT").unwrap_or_else(|_| "The weather is nice today.".into())
+}
+
+/// Minimum SNAC frames for `text` (one frame per ~word, at least four frames).
+pub fn bench_min_frames(text: &str) -> usize {
+    let words = normalize_words(text).len().max(1);
+    (words + 1).max(4)
+}
+
+pub fn bench_min_codes(text: &str) -> usize {
+    bench_min_frames(text) * 7
+}
+
+pub fn bench_min_audio_seconds(text: &str) -> f64 {
+    bench_min_frames(text) as f64 * SAMPLES_PER_FRAME as f64 / SAMPLE_RATE as f64
+}
+
+/// Assert SNAC code count and PCM length match a short sentence utterance.
+pub fn assert_synthesis_length(text: &str, code_count: usize, sample_count: usize) {
+    let min_frames = bench_min_frames(text);
+    let min_codes = min_frames * 7;
+    assert!(
+        code_count >= min_codes,
+        "expected >= {min_codes} codes ({min_frames} frames) for {text:?}, got {code_count}"
+    );
+    let frames = code_count / 7;
+    assert!(
+        frames >= min_frames,
+        "expected >= {min_frames} SNAC frames for {text:?}, got {frames} ({code_count} codes)"
+    );
+    let min_samples = min_frames * SAMPLES_PER_FRAME;
+    let max_samples = (frames + 1) * SAMPLES_PER_FRAME;
+    assert!(
+        sample_count >= min_samples * 3 / 4,
+        "audio too short for {text:?}: {sample_count} samples ({:.2}s), expected >= {:.2}s",
+        sample_count as f64 / SAMPLE_RATE as f64,
+        bench_min_audio_seconds(text),
+    );
+    assert!(
+        sample_count <= max_samples,
+        "audio too long for {frames} frames: {sample_count} samples (max {max_samples})"
+    );
 }
 
 pub fn bench_voice() -> String {
     std::env::var("ORPHEUS_BENCH_VOICE").unwrap_or_else(|_| "tara".into())
 }
 
+/// Whisper intelligibility benches sample by default (upstream Orpheus mode).
+/// Set `ORPHEUS_BENCH_GREEDY=1` to force greedy argmax (degenerate for this LM).
+pub fn bench_force_greedy() -> bool {
+    matches!(
+        std::env::var("ORPHEUS_BENCH_GREEDY").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE")
+    )
+}
+
 pub fn bench_max_tokens() -> u32 {
     std::env::var("ORPHEUS_BENCH_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(56)
+        .unwrap_or_else(|| bench_max_tokens_for(&bench_text()))
+}
+
+/// LM step budget scaled to utterance length (~2 SNAC frames per content word).
+pub fn bench_max_tokens_for(text: &str) -> u32 {
+    let words = normalize_words(text).len().max(1);
+    ((words * 14 + 28).min(512)) as u32
 }
 
 pub fn bench_warmup_iters() -> u32 {
@@ -179,9 +243,13 @@ pub fn bench_named_voice(
     whisper_dir: Option<&Path>,
 ) -> anyhow::Result<SynthBenchResult> {
     let mut tts = load_orpheus(gguf, snac, device)?;
+    // Sampling (upstream Orpheus defaults: temp 0.6 / top_p 0.8 / rep 1.3, seed 42).
+    // Greedy argmax is degenerate for this sampling-trained TTS LM and yields
+    // non-speech audio; the deterministic cross-backend comparison lives in the
+    // separate codes-parity test (`greedy_codes_on_device`).
     tts.config = GenerationConfig {
         max_new_tokens: bench_max_tokens(),
-        greedy: true,
+        greedy: bench_force_greedy(),
         ..GenerationConfig::default()
     };
     for _ in 0..bench_warmup_iters() {
@@ -195,6 +263,7 @@ pub fn bench_named_voice(
     let wall = t0.elapsed();
     let out = last.expect("measure iter");
     assert_audible(&out.samples, SAMPLE_RATE as usize / 8);
+    assert_synthesis_length(text, out.code_count, out.samples.len());
     let transcript = whisper_dir.map(|dir| transcribe_pcm_24k(&out.samples, dir));
     Ok(SynthBenchResult {
         wall,
@@ -215,7 +284,7 @@ pub fn bench_voice_clone(
     let mut tts = load_orpheus(gguf, snac, device)?;
     tts.config = GenerationConfig {
         max_new_tokens: bench_max_tokens(),
-        greedy: true,
+        greedy: bench_force_greedy(),
         ..GenerationConfig::default()
     };
     for _ in 0..bench_warmup_iters() {
@@ -318,7 +387,47 @@ pub fn parse_bench_devices(csv: &str) -> Vec<Device> {
 }
 
 pub fn load_orpheus(gguf: &Path, snac: &Path, device: Device) -> anyhow::Result<OrpheusTts> {
-    OrpheusTts::load_on_with_device(gguf, snac, device, BackboneLoadOptions::for_device(device))
+    let opts = if std::env::var("ORPHEUS_BENCH_FOR_TTS").ok().as_deref() == Some("1") {
+        BackboneLoadOptions::for_tts(device)
+    } else {
+        BackboneLoadOptions::synthesis()
+    };
+    OrpheusTts::load_on_with_device(gguf, snac, device, opts)
+}
+
+/// Backbone options for cross-backend **codes** parity tests.
+///
+/// Default: same dynamic decode path as CPU [`BackboneLoadOptions::synthesis`] on every
+/// device so GPU kernels are compared apples-to-apples. Set `ORPHEUS_FOR_TTS_PARITY=1`
+/// to exercise production [`BackboneLoadOptions::for_tts`] (bucket decode on Metal/CUDA).
+pub fn parity_backbone_opts(device: Device) -> BackboneLoadOptions {
+    if std::env::var("ORPHEUS_FOR_TTS_PARITY").ok().as_deref() == Some("1") {
+        BackboneLoadOptions::for_tts(device)
+    } else {
+        BackboneLoadOptions::synthesis()
+    }
+}
+
+/// Greedy SNAC codes for parity (CPU synthesis reference vs per-backend `for_tts`).
+pub fn greedy_codes_on_device(
+    gguf: &Path,
+    device: Device,
+    text: &str,
+    voice: &str,
+    max_tokens: u32,
+) -> anyhow::Result<Vec<i32>> {
+    use rlx_orpheus::{BackboneModel, DEFAULT_N_CTX, tokens::build_prompt_ids};
+
+    let prompt = build_prompt_ids(gguf, &format!("{voice}: {text}"))?;
+    let backbone =
+        BackboneModel::load_on_with(gguf, DEFAULT_N_CTX, device, parity_backbone_opts(device))?;
+    let cfg = GenerationConfig {
+        max_new_tokens: max_tokens,
+        greedy: true,
+        repetition_penalty: 1.0,
+        ..GenerationConfig::default()
+    };
+    backbone.generate_codes_from_prompt(&prompt, &cfg)
 }
 
 pub fn peak_amplitude(samples: &[f32]) -> f32 {

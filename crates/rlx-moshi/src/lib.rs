@@ -3,8 +3,8 @@
 //
 //! Native Rust inference for [Kyutai Moshi](https://github.com/kyutai-labs/moshi) speech-to-speech.
 //!
-//! - **LM**: eager CPU ndarray or Candle GPU (Metal/CUDA) via Kyutai `moshi`
-//! - **Codec**: [`rlx_mimi`] Mimi (CPU eager or GPU Candle sidecar weights)
+//! - **LM**: eager CPU ndarray ([`LmModel`]) or native RLX graphs ([`backend::MoshiLm`])
+//! - **Codec**: [`rlx_mimi`] Mimi (CPU eager or native RLX graph on GPU)
 //! - **Voices**: Moshiko / Moshika with per-preset HuggingFace routing ([`MoshiVoice`], [`MoshiCheckpoint`])
 //! - **Presets**: bf16, Q8 GGUF, MLX Q4/Q8/bf16 ([`MoshiCheckpoint`])
 //!
@@ -24,18 +24,14 @@ pub mod lm;
 pub mod mlx_dequant;
 pub mod mlx_weights;
 pub mod nn;
+pub mod rlx_gen;
+pub mod rlx_lm;
 pub mod sampling;
 pub mod session;
 pub mod stream;
 pub mod tokenizer;
 pub mod transformer;
 pub mod weights;
-
-#[cfg(feature = "gpu-lm")]
-pub mod gpu;
-
-#[cfg(feature = "compiled-lm")]
-pub mod compiled_lm;
 
 #[cfg(feature = "cli")]
 pub mod cli;
@@ -66,12 +62,6 @@ pub use weights::{
     expected_lm_keys, load_lm_weights, load_lm_weights_from_checkpoint, load_weight_map, open_lm,
     open_lm_from_checkpoint, open_lm_from_weights,
 };
-
-#[cfg(feature = "gpu-lm")]
-pub use gpu::{gpu_lm_available, rlx_device_to_candle};
-
-#[cfg(feature = "compiled-lm")]
-pub use compiled_lm::compiled_lm_available;
 
 #[cfg(feature = "tokio")]
 pub use stream::{TokioStreamHandle, spawn_duplex_tokio};

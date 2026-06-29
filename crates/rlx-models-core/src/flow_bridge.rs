@@ -173,13 +173,17 @@ where
 
 /// Device used to compile/run packed GGUF graphs.
 ///
-/// **CPU**, **Metal**, and **MLX** run natively. MLX uses host-side GGUF dequant per
-/// `DequantMatMul` with lazy eval (see [`packed_gguf_compile_guard`]). **wgpu / CUDA /
-/// ROCm** still fall back to CPU prefill until upstream GPU parity lands.
+/// **CPU**, **Metal**, **MLX**, **wgpu** (`Device::Gpu`), and **Vulkan** run natively.
+/// MLX uses host-side GGUF dequant per `DequantMatMul` with lazy eval (see
+/// [`packed_gguf_compile_guard`]); wgpu and Vulkan run native GGUF dequant + matmul
+/// on-device (`rlx_wgpu::gguf_gpu` / the `dequant_matmul` SPIR-V GEMV) — for Vulkan
+/// the fused kernel covers decode GEMV (`m == 1`); packed prefill (`m > 1`) host-falls
+/// back per-op like wgpu. **CUDA / ROCm** still fall back to CPU until upstream GPU
+/// parity lands.
 pub fn packed_gguf_execution_device(device: Device) -> Device {
     match device {
-        Device::Cpu | Device::Metal | Device::Mlx => device,
-        Device::Gpu | Device::Cuda | Device::Rocm | Device::Vulkan => Device::Cpu,
+        Device::Cpu | Device::Metal | Device::Mlx | Device::Gpu | Device::Vulkan => device,
+        Device::Cuda | Device::Rocm => Device::Cpu,
         _ => device,
     }
 }

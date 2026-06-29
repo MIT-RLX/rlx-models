@@ -30,7 +30,7 @@
 use anyhow::{Result, anyhow};
 use rlx_flow::blocks::{
     LmHeadStage, Qwen3DecodeLayerSpec, Qwen3DecoderSpec, RopeTablesStage, qwen3_decode_layer_fused,
-    qwen3_prefill_layer_fused, qwen3_prefill_layer_fused_kv,
+    qwen3_decode_layer_side, qwen3_prefill_layer_side,
 };
 use rlx_flow::{BuiltModel, CompileProfile, FlowStage, ModelFlow, SideOutputs};
 use rlx_ir::dynamic::sym;
@@ -53,6 +53,8 @@ pub struct Qwen3PrefillOpts {
     pub seq: usize,
     pub with_lm_head: bool,
     pub with_kv_outputs: bool,
+    /// Export post-RoPE Q and GQA-expanded K per layer (AIF / attention probe).
+    pub with_qk_outputs: bool,
     pub last_logits_only: bool,
     pub profile: Option<CompileProfile>,
     /// When set, use these tables (`[seq, head_dim/2]`) instead of config-derived RoPE.
@@ -67,6 +69,7 @@ impl Qwen3PrefillOpts {
             seq,
             with_lm_head: false,
             with_kv_outputs: false,
+            with_qk_outputs: false,
             last_logits_only: false,
             profile: None,
             rope_cos: None,
@@ -81,7 +84,29 @@ pub struct Qwen3DecodeOpts {
     pub past_seq: usize,
     pub dynamic_past: bool,
     pub use_custom_mask: bool,
+    /// When `true`, declare the RoPE inputs as `[batch, head_dim/2]` (one row
+    /// per sequence) instead of the default `[1, head_dim/2]` shared row. This
+    /// lets **ragged** batched decode give each sequence its own absolute
+    /// position — the rows of the cos/sin tables are indexed per batch element.
+    /// Requires `batch > 1` to differ from the shared default.
+    pub ragged_rope: bool,
+    /// Export post-RoPE Q and GQA-expanded K side outputs per layer (AIF decode probe).
+    pub export_qk: bool,
     pub profile: Option<CompileProfile>,
+}
+
+impl Default for Qwen3DecodeOpts {
+    fn default() -> Self {
+        Self {
+            batch: 1,
+            past_seq: 0,
+            dynamic_past: false,
+            use_custom_mask: false,
+            ragged_rope: false,
+            export_qk: false,
+            profile: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +119,7 @@ pub struct Qwen3Flow<'a> {
     dynamic_past: bool,
     with_lm_head: bool,
     with_kv_outputs: bool,
+    with_qk_outputs: bool,
     last_logits_only: bool,
     use_custom_mask: bool,
     profile: Option<CompileProfile>,
@@ -110,6 +136,7 @@ impl<'a> Qwen3Flow<'a> {
             dynamic_past: false,
             with_lm_head: false,
             with_kv_outputs: false,
+            with_qk_outputs: false,
             last_logits_only: false,
             use_custom_mask: false,
             profile: None,
@@ -174,6 +201,13 @@ impl<'a> Qwen3Flow<'a> {
         self
     }
 
+    /// Export per-layer Q/K side outputs (requires [`Self::export_kv`]).
+    pub fn export_qk(mut self) -> Self {
+        self.with_kv_outputs = true;
+        self.with_qk_outputs = true;
+        self
+    }
+
     pub fn custom_mask(mut self) -> Self {
         self.use_custom_mask = true;
         self
@@ -203,6 +237,7 @@ impl Qwen3Flow<'_> {
             seq: self.seq,
             with_lm_head: self.with_lm_head,
             with_kv_outputs: self.with_kv_outputs,
+            with_qk_outputs: self.with_qk_outputs,
             last_logits_only: self.last_logits_only,
             profile: self.profile,
             rope_cos: None,
@@ -216,6 +251,8 @@ impl Qwen3Flow<'_> {
             past_seq: self.past_seq,
             dynamic_past: self.dynamic_past,
             use_custom_mask: self.use_custom_mask,
+            ragged_rope: false,
+            export_qk: false,
             profile: self.profile,
         }
     }
@@ -253,9 +290,11 @@ pub fn build_qwen3_prefill_built(
         seq,
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
+        mask: crate::builder::attn_mask_kind(cfg),
     };
 
     let kv_sink = SideOutputs::new();
+    let qk_sink = SideOutputs::new();
 
     let mut flow = ModelFlow::new("qwen3")
         .with_profile(profile)
@@ -277,14 +316,10 @@ pub fn build_qwen3_prefill_built(
     flow = flow.repeat_layers(cfg.num_hidden_layers, {
         let spec = decoder_spec.clone();
         let sink = kv_sink.clone();
-        let export = opts.with_kv_outputs;
-        move |i| {
-            if export {
-                qwen3_prefill_layer_fused_kv(i, spec.clone(), sink.inner())
-            } else {
-                qwen3_prefill_layer_fused(i, spec.clone())
-            }
-        }
+        let qk = qk_sink.clone();
+        let export_kv = opts.with_kv_outputs;
+        let export_qk = opts.with_qk_outputs;
+        move |i| qwen3_prefill_layer_side(i, spec.clone(), &sink, &qk, export_kv, export_qk)
     });
 
     if opts.with_lm_head && opts.last_logits_only {
@@ -303,7 +338,11 @@ pub fn build_qwen3_prefill_built(
     };
 
     if opts.with_kv_outputs {
-        built = built.with_extra_hir_outputs(kv_sink.drain());
+        let mut extra = kv_sink.drain();
+        if opts.with_qk_outputs {
+            extra.extend(qk_sink.drain());
+        }
+        built = built.with_extra_hir_outputs(extra);
     }
     Ok(built)
 }
@@ -357,12 +396,16 @@ pub fn build_qwen3_decode_built(
     };
 
     let kv_out = SideOutputs::new();
+    let qk_out = SideOutputs::new();
 
+    // Ragged decode supplies one RoPE row per sequence (`[batch, half]`); the
+    // default shares a single row across the batch (`[1, half]`).
+    let rope_rows = if opts.ragged_rope { batch } else { 1 };
     let mut flow = ModelFlow::new("qwen3_decode")
         .with_profile(profile)
         .input("input_ids", Shape::new(&[batch, 1], DType::I32))
-        .input("rope_cos", Shape::new(&[1, half], f))
-        .input("rope_sin", Shape::new(&[1, half], f));
+        .input("rope_cos", Shape::new(&[rope_rows, half], f))
+        .input("rope_sin", Shape::new(&[rope_rows, half], f));
 
     if opts.use_custom_mask {
         flow = flow.input("mask", Shape::new(&[batch, opts.past_seq + 1], f));
@@ -374,6 +417,7 @@ pub fn build_qwen3_decode_built(
             .input(format!("past_v_{layer_idx}"), past_kv_shape.clone());
     }
 
+    let export_qk = opts.export_qk;
     let built = flow
         .bind_decode_inputs(cfg.num_hidden_layers, opts.use_custom_mask, true)
         .zero_beta_named("zero_beta", h)
@@ -381,16 +425,19 @@ pub fn build_qwen3_decode_built(
         .token_embed()
         .repeat_layers(cfg.num_hidden_layers, {
             let spec = decode_spec.clone();
-            let sink = kv_out.clone();
-            move |i| qwen3_decode_layer_fused(i, spec.clone(), sink.inner())
+            let kv = kv_out.clone();
+            let qk = qk_out.clone();
+            move |i| qwen3_decode_layer_side(i, spec.clone(), &kv, &qk, export_qk)
         })
         .final_norm(eps)
         .raw_stage(qwen3_lm_head_stage(cfg))
         .output("logits")
-        .build(&mut WeightLoaderSource(weights))?
-        .with_extra_hir_outputs(kv_out.drain());
-
-    Ok(built)
+        .build(&mut WeightLoaderSource(weights))?;
+    let mut extra = kv_out.drain();
+    if opts.export_qk {
+        extra.extend(qk_out.drain());
+    }
+    Ok(built.with_extra_hir_outputs(extra))
 }
 
 /// Decode one step from a precomputed embedding (`[batch, 1, hidden]`).
@@ -516,9 +563,11 @@ pub fn build_qwen3_prefill_embeds_built(
         seq,
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
+        mask: crate::builder::attn_mask_kind(cfg),
     };
 
     let kv_sink = SideOutputs::new();
+    let qk_sink = SideOutputs::new();
 
     let mut flow = ModelFlow::new("qwen3_prefill_embeds")
         .with_profile(profile)
@@ -535,14 +584,10 @@ pub fn build_qwen3_prefill_embeds_built(
     flow = flow.repeat_layers(cfg.num_hidden_layers, {
         let spec = decoder_spec.clone();
         let sink = kv_sink.clone();
-        let export = opts.with_kv_outputs;
-        move |i| {
-            if export {
-                qwen3_prefill_layer_fused_kv(i, spec.clone(), sink.inner())
-            } else {
-                qwen3_prefill_layer_fused(i, spec.clone())
-            }
-        }
+        let qk = qk_sink.clone();
+        let export_kv = opts.with_kv_outputs;
+        let export_qk = opts.with_qk_outputs;
+        move |i| qwen3_prefill_layer_side(i, spec.clone(), &sink, &qk, export_kv, export_qk)
     });
 
     if opts.last_logits_only {
@@ -556,7 +601,11 @@ pub fn build_qwen3_prefill_embeds_built(
         .build(&mut WeightLoaderSource(weights))?;
 
     if opts.with_kv_outputs {
-        built = built.with_extra_hir_outputs(kv_sink.drain());
+        let mut extra = kv_sink.drain();
+        if opts.with_qk_outputs {
+            extra.extend(qk_sink.drain());
+        }
+        built = built.with_extra_hir_outputs(extra);
     }
     Ok(built)
 }
@@ -621,7 +670,7 @@ pub fn build_qwen3_decode_hir(
     build_qwen3_decode_flow(cfg, weights, opts)
 }
 
-fn qwen3_lm_head_stage(cfg: &Qwen3Config) -> FlowStage {
+pub(crate) fn qwen3_lm_head_stage(cfg: &Qwen3Config) -> FlowStage {
     if cfg.tie_word_embeddings {
         FlowStage::LmHead(LmHeadStage {
             weight_key: None,
@@ -639,7 +688,7 @@ fn qwen3_lm_head_stage(cfg: &Qwen3Config) -> FlowStage {
     }
 }
 
-fn validate_cfg(cfg: &Qwen3Config) -> Result<()> {
+pub(crate) fn validate_cfg(cfg: &Qwen3Config) -> Result<()> {
     if !cfg
         .num_attention_heads
         .is_multiple_of(cfg.num_key_value_heads)
@@ -655,7 +704,7 @@ fn validate_cfg(cfg: &Qwen3Config) -> Result<()> {
     Ok(())
 }
 
-fn rope_tables(cfg: &Qwen3Config) -> (Vec<f32>, Vec<f32>) {
+pub(crate) fn rope_tables(cfg: &Qwen3Config) -> (Vec<f32>, Vec<f32>) {
     let dh = cfg.head_dim;
     let half = dh / 2;
     let mut cos_data = vec![0f32; cfg.max_position_embeddings * half];
@@ -770,6 +819,19 @@ mod tests {
     }
 
     #[test]
+    fn prefill_flow_export_kv_qk() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let built = Qwen3Flow::for_prefill(&cfg, 1, 4)
+            .export_qk()
+            .build(&mut wm)
+            .unwrap();
+        let hir = built.into_hir().unwrap();
+        // primary + K/V + Q/K per layer
+        assert_eq!(hir.outputs.len(), 1 + 4 * cfg.num_hidden_layers);
+    }
+
+    #[test]
     fn prefill_flow_export_kv() {
         let cfg = tiny_cfg();
         let mut wm = synthetic_weights(&cfg);
@@ -788,5 +850,20 @@ mod tests {
         let built = Qwen3Flow::for_decode(&cfg, 1, 4).build(&mut wm).unwrap();
         let hir = built.into_hir().unwrap();
         assert!(hir.outputs.len() >= 3, "logits + new K/V");
+    }
+
+    #[test]
+    fn decode_flow_export_qk() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let opts = Qwen3DecodeOpts {
+            batch: 1,
+            past_seq: 4,
+            export_qk: true,
+            ..Default::default()
+        };
+        let built = build_qwen3_decode_built(&cfg, &mut wm, &opts).unwrap();
+        let hir = built.into_hir().unwrap();
+        assert_eq!(hir.outputs.len(), 1 + 4 * cfg.num_hidden_layers);
     }
 }

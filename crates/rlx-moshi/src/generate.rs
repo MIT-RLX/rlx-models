@@ -17,14 +17,14 @@ pub struct GenerateState {
 }
 
 #[derive(Debug, Clone)]
-struct ForcedAudioTokens {
+pub(crate) struct ForcedAudioTokens {
     delay: usize,
     pad: u32,
     pattern: Vec<usize>,
 }
 
 impl ForcedAudioTokens {
-    fn new(delay: usize, pad: u32, pattern: &[usize]) -> Self {
+    pub(crate) fn new(delay: usize, pad: u32, pattern: &[usize]) -> Self {
         Self {
             delay,
             pad,
@@ -32,7 +32,7 @@ impl ForcedAudioTokens {
         }
     }
 
-    fn forced_tokens(&self, step: usize) -> Vec<Option<u32>> {
+    pub(crate) fn forced_tokens(&self, step: usize) -> Vec<Option<u32>> {
         if step >= self.delay {
             return vec![None; self.pattern.len()];
         }

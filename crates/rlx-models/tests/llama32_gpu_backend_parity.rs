@@ -42,6 +42,7 @@ fn tiny_cfg() -> Llama32Config {
         attention_bias: false,
         head_dim: None,
         rope_scaling: None,
+        rope_style: rlx_ir::RopeStyle::NeoX,
     }
 }
 

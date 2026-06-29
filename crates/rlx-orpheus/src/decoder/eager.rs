@@ -395,14 +395,19 @@ impl NoiseState {
 
     pub(crate) fn next_plane(&mut self, t: usize) -> Array1<f32> {
         if let Some(fixed) = &self.fixed {
-            let lane = &fixed[self.block.min(fixed.len() - 1)];
-            self.block += 1;
-            debug_assert!(
-                lane.len() >= t,
-                "reference noise lane too short: need {t}, have {}",
-                lane.len()
-            );
-            return Array1::from(lane[..t].to_vec());
+            if self.block < fixed.len() {
+                let lane = &fixed[self.block];
+                if lane.len() >= t {
+                    self.block += 1;
+                    return Array1::from(lane[..t].to_vec());
+                }
+            }
+            // Reference fixtures cover four SNAC blocks only — longer utterances need RNG noise.
+            self.fixed = None;
+            if self.rng.is_none() {
+                use rand::SeedableRng;
+                self.rng = Some(rand::rngs::StdRng::seed_from_u64(42));
+            }
         }
         let rng = self
             .rng
@@ -486,6 +491,20 @@ fn decode_latent(
     z_q: ArrayView2<f32>,
     noise: &mut NoiseState,
 ) -> Array2<f32> {
+    decode_latent_stages(inner, z_q, noise)
+        .into_iter()
+        .last()
+        .map(|(_, x)| x)
+        .expect("decode_latent_stages non-empty")
+}
+
+/// Decoder forward with named stage outputs (for Python layer parity tests).
+pub(crate) fn decode_latent_stages(
+    inner: &SnacDecoderInner,
+    z_q: ArrayView2<f32>,
+    noise: &mut NoiseState,
+) -> Vec<(&'static str, Array2<f32>)> {
+    let mut stages = Vec::new();
     let mut x = if inner.config.depthwise {
         conv1d(
             z_q,
@@ -505,6 +524,7 @@ fn decode_latent(
             1,
         )
     };
+    stages.push(("init_dw", x.clone()));
     x = conv1d(
         x.view(),
         inner.init_pw_w.view(),
@@ -513,10 +533,13 @@ fn decode_latent(
         1,
         1,
     );
-    for block in &inner.blocks {
+    stages.push(("init_pw", x.clone()));
+    for (i, block) in inner.blocks.iter().enumerate() {
         x = decoder_block_forward(x.view(), block, noise);
+        stages.push((DECODER_BLOCK_STAGE_NAMES[i], x.clone()));
     }
     x = snake1d(x.view(), inner.final_snake_alpha.view());
+    stages.push(("final_snake", x.clone()));
     x = conv1d(
         x.view(),
         inner.final_conv_w.view(),
@@ -525,8 +548,13 @@ fn decode_latent(
         1,
         1,
     );
-    x.mapv(|v| v.tanh())
+    stages.push(("final_conv", x.clone()));
+    x = x.mapv(|v| v.tanh());
+    stages.push(("output", x));
+    stages
 }
+
+const DECODER_BLOCK_STAGE_NAMES: [&str; 4] = ["block_0", "block_1", "block_2", "block_3"];
 
 fn config_path_for_weights(path: &Path) -> PathBuf {
     path.parent()
@@ -718,6 +746,72 @@ mod tests {
         );
         for (i, &s) in audio.iter().enumerate() {
             assert!(s.is_finite(), "non-finite sample at {i}: {s}");
+        }
+    }
+
+    #[test]
+    fn snac_decoder_stages_match_python_reference() {
+        let Some(weights) = super::super::decoder_weights_path_if_available() else {
+            eprintln!("skip snac_decoder_stages_match_python_reference: set ORPHEUS_SNAC_PATH");
+            return;
+        };
+        let Some(ref_dir) = ref_dir() else {
+            eprintln!("skip snac_decoder_stages_match_python_reference: set ORPHEUS_SNAC_REF_DIR");
+            return;
+        };
+
+        let codes_json: serde_json::Value =
+            serde_json::from_reader(std::fs::File::open(ref_dir.join("ref_codes.json")).unwrap())
+                .unwrap();
+        let c0: Vec<i32> = codes_json["codes_0"][0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap() as i32)
+            .collect();
+        let c1: Vec<i32> = codes_json["codes_1"][0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap() as i32)
+            .collect();
+        let c2: Vec<i32> = codes_json["codes_2"][0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap() as i32)
+            .collect();
+
+        let dec = SnacDecoder::from_file(&weights).expect("SnacDecoder::from_file");
+        let z_q = from_codes_inner(&dec.inner, &c0, &c1, &c2).expect("from_codes");
+        let mut noise = dec.make_noise_state().expect("noise");
+        let stages = decode_latent_stages(&dec.inner, z_q.view(), &mut noise);
+
+        for (name, got) in stages {
+            let path = ref_dir.join(format!("ref_stage_{name}.npy"));
+            if !path.is_file() {
+                eprintln!(
+                    "skip stage {name}: missing {} (re-run export with --parity-layers)",
+                    path.display()
+                );
+                continue;
+            }
+            let expect = load_npy_f32(&path).expect("stage npy");
+            assert_eq!(
+                got.len(),
+                expect.len(),
+                "stage {name} element count mismatch"
+            );
+            let max_diff = got
+                .iter()
+                .zip(expect.iter())
+                .map(|(a, e)| (a - e).abs())
+                .fold(0.0f32, f32::max);
+            eprintln!("stage {name} max abs diff vs python: {max_diff:.6}");
+            assert!(
+                max_diff < 1e-3,
+                "stage {name} parity failed: max diff {max_diff}"
+            );
         }
     }
 

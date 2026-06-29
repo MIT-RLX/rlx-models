@@ -20,6 +20,12 @@ use anyhow::Context;
 /// HuggingFace repo for the 1.6B en/fr Kyutai TTS model.
 pub const HF_KYUTAI_TTS_REPO: &str = "kyutai/tts-1.6b-en_fr";
 
+/// HuggingFace repo for pre-computed speaker embeddings (`speaker_wavs` tensors).
+pub const HF_KYUTAI_TTS_VOICES_REPO: &str = "kyutai/tts-voices";
+
+/// Default voice used in tests / examples when none is specified.
+pub const DEFAULT_VOICE_NAME: &str = "alba-mackenna/casual.wav";
+
 /// Primary backbone + DepFormer weights.
 pub const TTS_WEIGHTS_FILE: &str = "dsm_tts_1e68beda@240.safetensors";
 
@@ -42,6 +48,83 @@ pub fn default_kyutai_tts_dir() -> PathBuf {
 /// Default Mimi codec cache (delegates to `rlx-mimi`).
 pub fn default_mimi_dir() -> PathBuf {
     rlx_mimi::default_mimi_dir()
+}
+
+/// Default cache for `kyutai/tts-voices` embeddings.
+pub fn default_voices_dir() -> PathBuf {
+    std::env::var("RLX_KYUTAI_TTS_VOICES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(".cache/kyutai-tts-voices"))
+}
+
+/// Local path for a voice embedding file (may not exist until fetched).
+pub fn voice_embedding_path(
+    voices_dir: &Path,
+    checkpoint: KyutaiTtsCheckpoint,
+    voice_name: &str,
+) -> PathBuf {
+    voices_dir.join(checkpoint.voice_hf_filename(voice_name))
+}
+
+/// Ensure a voice embedding exists locally, fetching from HF when `hf-download` is enabled.
+pub fn ensure_voice_embedding(
+    voices_dir: &Path,
+    checkpoint: KyutaiTtsCheckpoint,
+    voice_name: &str,
+) -> Result<PathBuf> {
+    let dest = voice_embedding_path(voices_dir, checkpoint, voice_name);
+    if dest.is_file() {
+        return Ok(dest);
+    }
+    #[cfg(feature = "hf-download")]
+    {
+        fetch_voice_embedding(voices_dir, checkpoint, voice_name)?;
+        return Ok(dest);
+    }
+    #[cfg(not(feature = "hf-download"))]
+    {
+        anyhow::bail!(
+            "missing voice embedding {} — set RLX_KYUTAI_TTS_VOICES_DIR or rebuild with --features hf-download",
+            dest.display()
+        )
+    }
+}
+
+/// Download one voice embedding from [`HF_KYUTAI_TTS_VOICES_REPO`].
+#[cfg(feature = "hf-download")]
+pub fn fetch_voice_embedding(
+    voices_dir: &Path,
+    checkpoint: KyutaiTtsCheckpoint,
+    voice_name: &str,
+) -> Result<PathBuf> {
+    use hf_hub::api::sync::Api;
+    let filename = checkpoint.voice_hf_filename(voice_name);
+    std::fs::create_dir_all(voices_dir)
+        .with_context(|| format!("create {}", voices_dir.display()))?;
+    let api = Api::new()?;
+    let repo = api.model(checkpoint.voice_repo().to_string());
+    let path = repo
+        .get(&filename)
+        .with_context(|| format!("download voice {filename}"))?;
+    let dest = voices_dir.join(&filename);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if path != dest {
+        std::fs::copy(&path, &dest)
+            .with_context(|| format!("copy {} -> {}", path.display(), dest.display()))?;
+    }
+    eprintln!("fetched voice {}", dest.display());
+    Ok(dest)
+}
+
+#[cfg(not(feature = "hf-download"))]
+pub fn fetch_voice_embedding(
+    _voices_dir: &Path,
+    _checkpoint: KyutaiTtsCheckpoint,
+    _voice_name: &str,
+) -> Result<PathBuf> {
+    anyhow::bail!("rebuild with feature `hf-download` to fetch voices")
 }
 
 /// Use explicit path when provided, otherwise [`default_kyutai_tts_dir`].

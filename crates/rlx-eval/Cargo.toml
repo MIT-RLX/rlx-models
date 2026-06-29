@@ -1,0 +1,16 @@
+[package]
+name = "rlx-eval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Perplexity + multiple-choice evaluation for RLX language models"
+
+[dependencies]
+rlx-qwen3 = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

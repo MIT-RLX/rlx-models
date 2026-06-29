@@ -3,25 +3,22 @@
 //! Two opt-in modes:
 //!
 //! 1. **Static WAV mode** — point `RLX_KYUTAI_TTS_VALIDATE_WAV` at a WAV that
-//!    was synthesised against `kyutai/tts-1.6b-en_fr` (e.g. produced by the
-//!    upstream `moshi` Python pipeline, or by a future RLX generation path).
-//!    The test loads it, runs `rlx-whisper` greedy ASR, and asserts the
-//!    transcript is non-empty (and optionally contains words from
-//!    `RLX_KYUTAI_TTS_VALIDATE_PROMPT`). This is the immediately-useful path:
-//!    it lets you validate any synthesised audio against the same Whisper
-//!    pipeline the rest of the workspace uses for parity.
+//!    was synthesised against `kyutai/tts-1.6b-en_fr`. Runs `rlx-whisper` greedy
+//!    ASR and asserts the transcript is non-empty (optionally checks prompt words
+//!    via `RLX_KYUTAI_TTS_VALIDATE_PROMPT`).
 //!
-//! 2. **End-to-end mode** (placeholder) — when `RLX_KYUTAI_TTS_E2E=1` and
-//!    weights are on disk, would drive `KyutaiTtsSession` → Mimi WAV → Whisper.
-//!    Currently skipped: `KyutaiTtsSession::generate` returns "not yet wired"
-//!    because the depth-multiplexed Kyutai TTS architecture is not yet
-//!    implemented in the eager backbone (see crate docs).
+//! 2. **End-to-end mode** — `RLX_KYUTAI_TTS_E2E=1` with weights on disk drives
+//!    `KyutaiTtsSession::generate` → Mimi WAV → Whisper.
 //!
-//! Both modes skip silently when their preconditions aren't met so CI stays
-//! green without weights.
+//! Both modes skip when preconditions aren't met so CI stays green without weights.
 
 use anyhow::{Context, Result, ensure};
-use rlx_kyutai_tts::KyutaiTtsConfig;
+use rlx_kyutai_tts::{
+    GenerationConfig, KyutaiTtsConfig, KyutaiTtsSession,
+    checkpoint::KyutaiTtsVoice,
+    device::resolve_kyutai_tts_device,
+    download::{DEFAULT_VOICE_NAME, default_kyutai_tts_dir, default_mimi_dir},
+};
 use rlx_mimi::audio::load_wav_mono;
 use rlx_runtime::Device;
 use rlx_whisper::{SAMPLE_RATE as WHISPER_RATE, WhisperRunner, normalize_transcript};
@@ -73,8 +70,6 @@ fn build_whisper(dir: &Path, device: Device) -> Result<WhisperRunner> {
 fn transcribe_wav(wav_path: &Path) -> Result<String> {
     let whisper_dir = whisper_dir()
         .context("missing Whisper weights — set RLX_WHISPER_DIR or place under .cache/whisper-*")?;
-    // Kyutai TTS output is 24 kHz; `load_wav_mono` from rlx-mimi resamples
-    // to Whisper's 16 kHz target on the fly.
     let pcm_16k = load_wav_mono(wav_path, WHISPER_RATE as u32)
         .with_context(|| format!("load wav {}", wav_path.display()))?;
     ensure!(
@@ -145,28 +140,81 @@ fn whisper_validates_static_kyutai_tts_wav() -> Result<()> {
     Ok(())
 }
 
-/// Mode 2: end-to-end roundtrip (placeholder, currently always skipped).
+/// Mode 2: synthesise with native Kyutai TTS, then transcribe with Whisper.
 #[test]
 fn kyutai_tts_to_whisper_e2e_roundtrip() -> Result<()> {
     if std::env::var("RLX_KYUTAI_TTS_E2E").ok().as_deref() != Some("1") {
         eprintln!("skip: set RLX_KYUTAI_TTS_E2E=1 to drive Kyutai TTS → Whisper");
         return Ok(());
     }
-    // Confirm config still loads (defensive against drift between this test
-    // and `KyutaiTtsConfig`).
+
     let cfg = KyutaiTtsConfig::v1_6b_en_fr();
     ensure!(cfg.dim == 2048, "config drift: dim {}", cfg.dim);
     ensure!(cfg.n_q == 32, "config drift: n_q {}", cfg.n_q);
 
-    // `KyutaiTtsSession::generate` returns "not yet wired" — the
-    // depth-multiplexed architecture (per-step DepFormer + cross-attn
-    // conditioners + demuxed second stream) is not yet implemented.
-    // Once that lands, drive it here and feed the Mimi-decoded PCM through
-    // `transcribe_wav` (via a temp WAV) the same way Mode 1 does.
-    eprintln!(
-        "skip: KyutaiTtsSession::generate not yet wired — see crate docs. \
-         Use Mode 1 (RLX_KYUTAI_TTS_VALIDATE_WAV) with WAVs from the upstream \
-         moshi pipeline in the meantime."
+    let model_dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| default_kyutai_tts_dir());
+    let weights = model_dir.join("dsm_tts_1e68beda@240.safetensors");
+    if !weights.is_file() {
+        eprintln!(
+            "skip: missing LM weights at {} (fetch with --fetch)",
+            weights.display()
+        );
+        return Ok(());
+    }
+    let mimi_dir = std::env::var("RLX_MIMI_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| default_mimi_dir());
+    if !mimi_dir.join("model.safetensors").is_file()
+        && !mimi_dir
+            .join("tokenizer-e351c8d8-checkpoint125.safetensors")
+            .is_file()
+    {
+        eprintln!(
+            "skip: missing Mimi sidecar in {} (fetch with --fetch)",
+            mimi_dir.display()
+        );
+        return Ok(());
+    }
+    if whisper_dir().is_none() {
+        eprintln!("skip: set RLX_WHISPER_DIR or fetch whisper weights for e2e");
+        return Ok(());
+    }
+
+    let prompt =
+        std::env::var("RLX_KYUTAI_TTS_VALIDATE_PROMPT").unwrap_or_else(|_| "Hello.".into());
+    // Eager CPU LM is the default when device is Cpu (avoids GPU requirement in e2e rigs).
+    let device = std::env::var("RLX_KYUTAI_TTS_E2E_DEVICE")
+        .ok()
+        .map(|s| resolve_kyutai_tts_device(&s))
+        .transpose()?
+        .unwrap_or_else(|| resolve_kyutai_tts_device("auto").unwrap());
+    let mut session = KyutaiTtsSession::open_on(&model_dir, &mimi_dir, device)?;
+    session.set_voice(KyutaiTtsVoice::new(
+        std::env::var("RLX_KYUTAI_TTS_VOICE").unwrap_or_else(|_| DEFAULT_VOICE_NAME.into()),
+    ));
+    let gen_cfg = GenerationConfig {
+        max_steps: 80,
+        ..GenerationConfig::default()
+    };
+    eprintln!("e2e: synthesising {:?} on {device:?} …", prompt);
+    let result = session.generate(&prompt, &gen_cfg)?;
+    ensure!(
+        !result.samples.is_empty(),
+        "generation returned empty PCM ({} frames)",
+        result.audio_frames.len()
     );
+    let tmp = std::env::temp_dir().join("rlx-kyutai-tts-e2e.wav");
+    rlx_mimi::audio::write_wav_mono(&tmp, &result.samples, result.sample_rate)?;
+    eprintln!(
+        "e2e: wrote {} samples to {}",
+        result.samples.len(),
+        tmp.display()
+    );
+    let text = transcribe_wav(&tmp)?;
+    let norm = normalize_transcript(&text);
+    eprintln!("e2e transcript: {norm}");
+    ensure!(!norm.trim().is_empty(), "whisper returned empty transcript");
     Ok(())
 }

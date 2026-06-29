@@ -38,10 +38,13 @@ path = "src/bin/rlx_ocr_convert.rs"
 required-features = ["convert-rten"]
 
 [features]
-default = ["rlx", "tensor-ops"]
-# Native RLX detection + recognition graphs (safetensors weights).
+# Default is fully native: RLX graphs + host-side pad/resize (no RTen engine).
+default = ["rlx"]
+# Native RLX detection + recognition graphs (safetensors weights) + native
+# host pad/resize (`crate::host_resize`).
 rlx = []
-# NdTensor pad/resize traits (`rten::Operators`); not RTen graph inference.
+# Legacy `rten::Operators` pad/resize traits — only needed by the `rten-inference`
+# parity oracle now; the native `rlx` path no longer uses them.
 tensor-ops = ["dep:rten"]
 # Legacy RTen `.rten` graph inference (baseline / parity only).
 rten-inference = ["tensor-ops", "dep:rayon", "rten/rten_format"]
@@ -54,6 +57,8 @@ cuda = ["rlx-runtime/cuda"]
 rocm = ["rlx-runtime/rocm"]
 gpu = ["rlx-runtime/gpu"]
 vulkan = ["rlx-runtime/vulkan"]
+# CPU matmul/conv via Apple Accelerate (AMX) — fastest CPU path on Apple Silicon.
+blas-accelerate = ["rlx-runtime/blas-accelerate"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
 apple-silicon = ["metal", "mlx", "gpu"]
 nvidia-gpu = ["cuda"]

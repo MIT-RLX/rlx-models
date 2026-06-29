@@ -36,136 +36,183 @@ pub use rlx_core::{
 };
 pub use rlx_flow::{BuiltModel, CompileProfile};
 
+#[cfg(feature = "bert")]
 pub mod bert {
     pub use rlx_bert::bert::*;
 }
+#[cfg(feature = "bert")]
 pub mod bert_flow {
     pub use rlx_bert::flow::*;
 }
+#[cfg(feature = "clinicalbert")]
 pub mod clinicalbert {
     pub use rlx_clinicalbert::*;
 }
+#[cfg(feature = "nomic")]
 pub mod nomic {
     pub use rlx_nomic::nomic::*;
 }
+#[cfg(feature = "nomic")]
 pub mod nomic_flow {
     pub use rlx_nomic::flow::*;
 }
+#[cfg(feature = "vision")]
 pub mod vision {
     pub use rlx_vision::vision::*;
 }
+#[cfg(feature = "vision")]
 pub mod vision_flow {
     pub use rlx_vision::flow::*;
 }
+#[cfg(feature = "dinov2")]
 pub mod dinov2 {
     pub use rlx_dinov2::*;
 }
+#[cfg(feature = "bioclip2")]
 pub mod bioclip2 {
     pub use rlx_bioclip2::*;
 }
+#[cfg(feature = "embed")]
 pub mod embed {
     pub use rlx_embed::*;
 }
+#[cfg(feature = "flux2")]
 pub mod flux2 {
     pub use rlx_flux2::*;
 }
+#[cfg(feature = "diamond")]
 pub mod diamond {
     pub use rlx_diamond::*;
 }
+#[cfg(feature = "qwen3")]
 pub mod qwen3 {
     pub use rlx_qwen3::*;
 }
+#[cfg(feature = "qwen35")]
 pub mod qwen35 {
     pub use rlx_qwen35::*;
 }
+#[cfg(feature = "qwen25-vl")]
+pub mod qwen25_vl {
+    pub use rlx_qwen25_vl::*;
+}
+#[cfg(feature = "llama32")]
 pub mod llama32 {
     pub use rlx_llama32::*;
 }
+#[cfg(feature = "gemma")]
 pub mod gemma {
     pub use rlx_gemma::*;
 }
+#[cfg(feature = "llada2")]
 pub mod llada2 {
     pub use rlx_llada2::llada2::*;
 }
+#[cfg(feature = "llada2")]
 pub mod tide {
     pub use rlx_llada2::tide::*;
 }
+#[cfg(feature = "sam")]
 pub mod sam {
     pub use rlx_sam::*;
 }
+#[cfg(feature = "sam2")]
 pub mod sam2 {
     pub use rlx_sam2::*;
 }
+#[cfg(feature = "sam3")]
 pub mod sam3 {
     pub use rlx_sam3::*;
 }
+#[cfg(feature = "vjepa2")]
 pub mod vjepa2 {
     pub use rlx_vjepa2::*;
 }
+#[cfg(feature = "wav2vec2-bert")]
 pub mod wav2vec2_bert {
     pub use rlx_wav2vec2_bert::*;
 }
+#[cfg(feature = "wav2vec2-asr")]
 pub mod wav2vec2_asr {
     pub use rlx_wav2vec2_asr::*;
 }
+#[cfg(feature = "diarize")]
 pub mod diarize {
     pub use rlx_diarize::*;
 }
+#[cfg(feature = "whisper")]
 pub mod whisper {
     pub use rlx_whisper::*;
 }
+#[cfg(feature = "vad")]
 pub mod vad {
     pub use rlx_vad::*;
 }
+#[cfg(feature = "aec")]
 pub mod aec {
     pub use rlx_aec::*;
 }
+#[cfg(feature = "voxtral")]
 pub mod voxtral {
     pub use rlx_voxtral::*;
 }
+#[cfg(feature = "qwen3-asr")]
 pub mod qwen3_asr {
     pub use rlx_qwen3_asr::*;
 }
+#[cfg(feature = "voxtral-tts")]
 pub mod voxtral_tts {
     pub use rlx_voxtral_tts::*;
 }
 
+#[cfg(feature = "qwen3-tts")]
 pub mod qwen3_tts {
     pub use rlx_qwen3_tts::*;
 }
+#[cfg(feature = "locateanything")]
 pub mod locateanything {
     pub use rlx_locateanything::*;
 }
+#[cfg(feature = "ocr")]
 pub mod ocr {
     pub use rlx_ocr::*;
 }
+#[cfg(feature = "neutts")]
 pub mod neutts {
     pub use rlx_neutts::*;
 }
+#[cfg(feature = "orpheus")]
 pub mod orpheus {
     pub use rlx_orpheus::*;
 }
+#[cfg(feature = "kittentts")]
 pub mod kittentts {
     pub use rlx_kittentts::*;
 }
+#[cfg(feature = "florence2")]
 pub mod florence2 {
     pub use rlx_florence2::*;
 }
+#[cfg(feature = "mimi")]
 pub mod mimi {
     pub use rlx_mimi::*;
 }
+#[cfg(feature = "tsac")]
 pub mod tsac {
     pub use rlx_tsac::*;
 }
+#[cfg(feature = "moshi")]
 pub mod moshi {
     pub use rlx_moshi::*;
 }
+#[cfg(feature = "neutts")]
 pub use rlx_neutts::{
     BackboneModel, DEFAULT_N_CTX, GenerationConfig, NeuCodecDecoder, NeuCodecEncoder, NeuTTS,
     STOP_TOKEN, build_prompt, extract_ids,
 };
 
 #[deprecated(note = "use `rlx_models::ocr`")]
+#[cfg(feature = "ocr")]
 pub mod ocrs {
     pub use rlx_ocr::*;
 }
@@ -173,41 +220,54 @@ pub mod ocrs {
 // ── Stub families (PLAN.md M4 — no runner yet). Each exposes a
 // `*Runner::builder().build()` that returns an error pointing at the
 // milestone, so callers get a typed surface to wire against today.
+#[cfg(feature = "mistral")]
 pub mod mistral {
     pub use rlx_mistral::*;
 }
+#[cfg(feature = "bonsai")]
 pub mod bonsai {
     pub use rlx_bonsai::*;
 }
+#[cfg(feature = "minicpm5")]
 pub mod minicpm5 {
     pub use rlx_minicpm5::*;
 }
+#[cfg(feature = "phi")]
 pub mod phi {
     pub use rlx_phi::*;
 }
+#[cfg(feature = "omnicoder")]
 pub mod omnicoder {
     pub use rlx_omnicoder::*;
 }
+#[cfg(feature = "granite")]
 pub mod granite {
     pub use rlx_granite::*;
 }
+#[cfg(feature = "cohere")]
 pub mod cohere {
     pub use rlx_cohere::*;
 }
+#[cfg(feature = "sam-ir")]
 pub mod mask_hyper_matmul_ir {
     pub use rlx_sam_ir::mask_hyper_matmul_ir::*;
 }
+#[cfg(feature = "sam-ir")]
 pub mod mask_prompt_ir {
     pub use rlx_sam_ir::mask_prompt_ir::*;
 }
+#[cfg(feature = "sam-ir")]
 pub mod mlp_relu_ir {
     pub use rlx_sam_ir::mlp_relu_ir::*;
 }
+#[cfg(feature = "sam-ir")]
 pub mod twoway_transformer_ir {
     pub use rlx_sam_ir::twoway_transformer_ir::*;
 }
 
+#[cfg(feature = "runner")]
 pub mod run;
+#[cfg(feature = "runner")]
 mod sam_runner;
 
 pub use rlx_core::flow_bridge::{
@@ -224,18 +284,24 @@ pub use rlx_core::flow_util::{
     graph_from_hir,
 };
 
+#[cfg(feature = "bert")]
 pub use bert::{build_bert_graph, build_bert_graph_sized};
+#[cfg(feature = "bert")]
 pub use bert_flow::{BertFlow, build_bert_built};
+#[cfg(feature = "diarize")]
 pub use diarize::{DiarizeConfig, DiarizeSession, SpeakerTurn as DiarizeSpeakerTurn};
+#[cfg(feature = "dinov2")]
 pub use dinov2::{
     DinoV2Built, DinoV2Config, DinoV2Flow, DinoV2PreprocessWeights, build_dinov2_built,
     build_dinov2_graph_sized,
 };
+#[cfg(feature = "embed")]
 pub use embed::{
     Arch, BertTokenizer, EmbeddingModel, ImageEmbeddingModel, ModelArch, ModelInfo, Pooling,
     RlxBertModel, RlxEmbed, RlxNomicModel, RlxVisionModel, TokenizedBatch, assemble_vision_hidden,
     compile_model, detect_arch, embed_with_rlx, models_map,
 };
+#[cfg(feature = "flux2")]
 pub use flux2::{
     DEFAULT_TEXT_ENCODER_LAYERS, Flux2CfgCombineFlow, Flux2CfgCombineGraph, Flux2Checkpoint,
     Flux2Config, Flux2Flow, Flux2ForwardBuilt, Flux2ForwardGraph, Flux2ForwardInput,
@@ -254,16 +320,19 @@ pub use flux2::{
     prepare_latent_ids, prepare_text_ids, prepare_weight_map, resolve_text_encoder_dir,
     resolve_tokenizer_path, resolve_transformer_config, resolve_vae_dir, tiny_text_encoder_config,
 };
+#[cfg(feature = "gemma")]
 pub use gemma::{
     GemmaArch, GemmaConfig, GemmaFlow, GemmaGenerator, build_gemma_decode_graph_sized,
     build_gemma_graph_sized, build_gemma_graph_sized_last_logits, build_gemma_graph_sized_packed,
     encode_prompt as gemma_encode_prompt, encode_prompt_auto as gemma_encode_prompt_auto,
     gemma_cfg_from_gguf, resolve_tokenizer_path as gemma_resolve_tokenizer_path,
 };
+#[cfg(feature = "llada2")]
 pub use llada2::{
     LLaDA2MoeConfig, LLaDA2Runner, LLaDA2RunnerBuilder, LLaDA2Weights, build_llada2_forward_graph,
     default_memory_budget_bytes, validate_device as validate_llada2_device,
 };
+#[cfg(feature = "llama32")]
 pub use llama32::{
     Llama32Config, Llama32Flow, Llama32Generator, build_llama32_decode_graph_sized,
     build_llama32_graph_sized, build_llama32_graph_sized_last_logits,
@@ -271,22 +340,28 @@ pub use llama32::{
     encode_prompt_auto as llama32_encode_prompt_auto, llama32_cfg_from_gguf,
     resolve_tokenizer_path as llama32_resolve_tokenizer_path,
 };
+#[cfg(feature = "nomic")]
 pub use nomic::{build_nomic_diagnostic_graph, build_nomic_graph_sized};
+#[cfg(feature = "nomic")]
 pub use nomic_flow::{NomicFlow, build_nomic_built};
+#[cfg(feature = "ocr")]
 pub use ocr::{
     BLACK_VALUE, DEFAULT_ALPHABET, DecodeMethod, DetectionParams, DimOrder, HF_DETECTION_RTEN,
     HF_DETECTION_ST, HF_RECOGNITION_RTEN, HF_RECOGNITION_ST, ImageSource, OcrConfig, OcrEngine,
     OcrEngineParams, OcrInput, OcrOutput, OcrRunner, OcrRunnerBuilder, RotatedRect, TextChar,
     TextLine, TextWord, resolve_model_dir,
 };
+#[cfg(feature = "qwen3")]
 pub use qwen3::{
     Qwen3Config, Qwen3Flow, Qwen3Generator, Qwen3PrefillOpts, Qwen3Speculator, SampleOpts,
     build_qwen3_graph_sized, build_qwen3_prefill_built, sample_token,
 };
+#[cfg(feature = "qwen3-tts")]
 pub use qwen3_tts::{
     HF_MODEL_ID_06B_CUSTOM as QWEN3_TTS_HF_MODEL_ID, PRESET_SPEAKERS as QWEN3_TTS_SPEAKERS,
     Qwen3TtsBenchReport, Qwen3TtsConfig, Qwen3TtsRunner, Qwen3TtsWeightStore, TalkerEngine,
 };
+#[cfg(feature = "qwen35")]
 pub use qwen35::{
     ChatMessage, ChatRole, MatWeight, Qwen35Config, Qwen35FullAttnLayer, Qwen35LayerFfn,
     Qwen35LinearLayer, Qwen35MoeFfn, Qwen35MtpLayer, Qwen35PrefillOutput, Qwen35Runner,
@@ -300,7 +375,9 @@ pub use qwen35::{
     supports_multimodal_mrope, synth as qwen35_synth, text_section_pos, validate_device,
     zero_recurrent_inputs,
 };
+#[cfg(feature = "flux2")]
 pub use rlx_flux2::{Flux2Output, Flux2Runner, Flux2RunnerBuilder};
+#[cfg(feature = "runner")]
 pub use run::{
     ConfigSource, DinoV2Output, DinoV2Runner, DinoV2RunnerBuilder, DinoV2Variant, Llama32Runner,
     Llama32RunnerBuilder, LmRunner, ModelRunner, Precision, Qwen3Runner, Qwen3RunnerBuilder,
@@ -310,12 +387,14 @@ pub use run::{
     list_mtp_keys, open_gguf_loader, open_loader, open_loader_resolved, open_loader_with_format,
     register_runner, registered_runners, run_registered,
 };
+#[cfg(feature = "sam")]
 pub use sam::{
     NeckWeights as SamNeckWeights, SamConfig, SamEncoderBuilt, SamEncoderConfig, SamEncoderFlow,
     SamPreprocessWeights, apply_neck_host as sam_apply_neck_host,
     assemble_patch_tokens as sam_assemble_patch_tokens, build_sam_encoder_built,
     build_sam_encoder_graph, preprocess_image as sam_preprocess_image,
 };
+#[cfg(feature = "sam2")]
 pub use sam2::{
     FpnLevel as Sam2FpnLevel, FpnNeckWeights as Sam2FpnNeckWeights, Sam2, Sam2Config,
     Sam2DecoderConfig, Sam2FpnConfig, Sam2HieraConfig, Sam2ImageEncoderBuilt, Sam2ImageEncoderFlow,
@@ -332,6 +411,7 @@ pub use sam2::{
     prompt_encoder_forward as sam2_prompt_encoder_forward,
     two_way_transformer_forward as sam2_two_way_transformer_forward,
 };
+#[cfg(feature = "sam3")]
 pub use sam3::{
     Sam3, Sam3CompiledDecoder, Sam3Config, Sam3DetectorConfig, Sam3DetectorDecoderBuilt,
     Sam3DetectorDecoderFlow, Sam3DetectorEncoderFlow, Sam3EncodedImage, Sam3ImagePrediction,
@@ -341,13 +421,17 @@ pub use sam3::{
     build_sam3_detector_encoder_graph, forward_decoder_ir_on,
     preprocess_image as sam3_preprocess_image,
 };
+#[cfg(feature = "llada2")]
 pub use tide::{
     BlockDenoiseConfig, BlockDenoiseLoop, GenerateConfig, PredictiveOffloadInfo,
     PredictiveOffloadParams, TideOffloadStats, TideRunner, aggregate_offload_stats,
     refresh_experts,
 };
+#[cfg(feature = "vision")]
 pub use vision::{VisionPreprocessWeights, build_vision_graph_sized};
+#[cfg(feature = "vision")]
 pub use vision_flow::{NomicVisionBuilt, NomicVisionFlow, build_nomic_vision_built};
+#[cfg(feature = "vjepa2")]
 pub use vjepa2::{
     Vjepa2Config, Vjepa2EncoderBuilt, Vjepa2EncoderFlow, Vjepa2EncoderOutput, Vjepa2EncoderWeights,
     Vjepa2Masks, Vjepa2ModelWeights, Vjepa2PatchEmbedWeights, Vjepa2PoolerFlow,
@@ -357,6 +441,7 @@ pub use vjepa2::{
     extract_pooler_weights, extract_predictor_weights, normalize_video_hwc, pool_native,
     predict_native,
 };
+#[cfg(feature = "voxtral")]
 pub use voxtral::{
     FAMILY as VOXTRAL_FAMILY, HF_MODEL_ID_MINI_3B, LanguageModelPrefixLoader,
     MelSpectrogram as VoxtralMel, VoxtralAudioConfig, VoxtralConfig, VoxtralRunner,
@@ -364,16 +449,20 @@ pub use voxtral::{
     build_voxtral_encoder_built, build_voxtral_prefill_built, build_voxtral_projector_built,
     fuse_inputs_embeds, pcm_to_mel as voxtral_pcm_to_mel, transcription_prompt_ids,
 };
+#[cfg(feature = "voxtral-tts")]
 pub use voxtral_tts::{
     CodecDecoder, HF_MODEL_ID as VOXTRAL_TTS_HF_MODEL_ID, PRESET_VOICES as VOXTRAL_TTS_VOICES,
     VoxtralTtsBenchReport, VoxtralTtsConfig, VoxtralTtsRunner, VoxtralTtsWeightStore,
 };
+#[cfg(feature = "wav2vec2-asr")]
 pub use wav2vec2_asr::{AlignSession, AlignedWord, Wav2Vec2AsrConfig, align_model_for_language};
+#[cfg(feature = "wav2vec2-bert")]
 pub use wav2vec2_bert::{
     LogMelExtractor, LogMelFeatures, Wav2Vec2BertConfig, Wav2Vec2BertFlow,
     Wav2Vec2BertPreprocessConfig, build_wav2vec2_bert_built, build_wav2vec2_bert_graph_sized,
     load_wav_mono_f32,
 };
+#[cfg(feature = "whisper")]
 pub use whisper::{
     MelSpectrogram, SubtitleFormat, TranscriptSegment, WhisperConfig, WhisperDecoderFlow,
     WhisperEncoderFlow, WhisperKvCache, WhisperPipeline, WhisperPipelineOpts, WhisperRunner,

@@ -67,6 +67,7 @@ impl TextConfig {
             attention_bias: false,
             head_dim: Some(self.head_dim),
             rope_scaling: None,
+            rope_style: rlx_ir::RopeStyle::NeoX,
         }
     }
 }

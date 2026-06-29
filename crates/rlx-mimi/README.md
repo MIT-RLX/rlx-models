@@ -11,9 +11,9 @@ just fetch-mimi
 # Encode + decode roundtrip (CPU eager — HF safetensors layout)
 just mimi -- --model-dir .cache/mimi --in-wav speech.wav --out-wav /tmp/mimi-roundtrip.wav
 
-# GPU codec (Metal/CUDA) — needs Moshi Candle sidecar weights
+# Candle parity oracle (DEV ONLY) — cross-checks the native codec; needs Moshi sidecar weights
 export RLX_MOSHI_DIR=.cache/moshiko   # contains tokenizer-e351c8d8-checkpoint125.safetensors
-cargo run -p rlx-mimi --features "gpu-codec,metal" --release -- \
+cargo run -p rlx-mimi --features "parity-mimi-metal,metal" --release -- \
   --bench --in-wav speech.wav --device metal
 ```
 
@@ -21,12 +21,12 @@ cargo run -p rlx-mimi --features "gpu-codec,metal" --release -- \
 
 | Device | Engine |
 |--------|--------|
-| `cpu` | Native eager (HF `kyutai/mimi` weights) |
-| `metal` / `cuda` | Kyutai `moshi::mimi` on Candle |
-| `mlx` | Same as Metal (Apple GPU via Candle) |
-| `wgpu` / `vulkan` | CPU fallback until RLX compiled codec lands |
+| `cpu` | Native rlx graph (HF `kyutai/mimi` weights) |
+| `metal` / `mlx` / `cuda` | Native rlx graph |
+| `wgpu` / `vulkan` | Native rlx graph (`gpu`/`vulkan`) |
 
-Build: `cargo build -p rlx-mimi --features "gpu-codec,metal"`
+The candle/moshi codec is retained only as a dev parity oracle behind
+`parity-mimi` (cross-check the native graph): `cargo build -p rlx-mimi --features "parity-mimi-metal,metal"`.
 
 GPU path loads `tokenizer-e351c8d8-checkpoint125.safetensors` from `RLX_MOSHI_DIR` or the mimi dir (not `model.safetensors` HF layout).
 
@@ -57,5 +57,5 @@ export RLX_MIMI_DIR=.cache/mimi
 export RLX_MOSHI_DIR=.cache/moshiko
 cargo test -p rlx-mimi --release
 
-RLX_MIMI_GPU_SMOKE=1 cargo test -p rlx-mimi --test gpu_codec_smoke --features "gpu-codec,metal"
+RLX_MIMI_GPU_SMOKE=1 cargo test -p rlx-mimi --test gpu_codec_smoke --features "parity-mimi-metal,metal"
 ```

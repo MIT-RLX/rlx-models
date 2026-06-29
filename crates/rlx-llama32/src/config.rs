@@ -60,6 +60,13 @@ pub struct Llama32Config {
     pub head_dim: Option<usize>,
     #[serde(default)]
     pub rope_scaling: Option<Llama32RopeScaling>,
+    /// RoPE pairing flavor. GGUF Llama weights are permuted by the HF→GGUF
+    /// converter for llama.cpp's interleaved (`NORM`) RoPE, so GGUF-backed
+    /// inference must rotate with [`rlx_ir::RopeStyle::GptJ`]; HF-safetensors
+    /// checkpoints use [`rlx_ir::RopeStyle::NeoX`] (default). Not present in
+    /// HF `config.json`, so skipped during deserialization.
+    #[serde(skip)]
+    pub rope_style: rlx_ir::RopeStyle,
 }
 
 fn default_rms_norm_eps() -> f64 {
@@ -116,6 +123,7 @@ impl Llama32Config {
             attention_bias: false,
             head_dim: None,
             rope_scaling: None,
+            rope_style: rlx_ir::RopeStyle::NeoX,
         }
     }
 }
@@ -204,6 +212,8 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
         attention_bias: false,
         head_dim,
         rope_scaling,
+        // GGUF Llama weights are permuted for llama.cpp's interleaved RoPE.
+        rope_style: rlx_ir::RopeStyle::GptJ,
     })
 }
 

@@ -51,6 +51,8 @@ use rlx_runtime::Device;
 use std::path::PathBuf;
 
 pub fn run(args: &[String]) -> Result<()> {
+    let args = apply_global_precision(args)?;
+    let args = args.as_slice();
     if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
         print_help();
         return Ok(());
@@ -66,11 +68,14 @@ pub fn run(args: &[String]) -> Result<()> {
         "train-multi" => cmd_train_multi(&args[1..]),
         "bench-phased" => cmd_bench_phased(&args[1..]),
         "bench-sweep" => cmd_bench_sweep(&args[1..]),
+        "max-batch" => cmd_max_batch(&args[1..]),
         "report-html" => cmd_report_html(&args[1..]),
         "study-report" => cmd_study_report(&args[1..]),
         "ablation" => cmd_ablation(&args[1..]),
         "ablation-ternary" => cmd_ablation_ternary(&args[1..]),
         "train-e2e" => cmd_train_e2e(&args[1..]),
+        "train-matryoshka" => cmd_train_matryoshka(&args[1..]),
+        "precision-sweep" => cmd_precision_sweep(&args[1..]),
         "train-distill" => cmd_train_distill(&args[1..]),
         "train-distill-ternary" => cmd_train_distill_ternary(&args[1..]),
         "bench-e2e" => cmd_bench_e2e(&args[1..]),
@@ -83,6 +88,32 @@ pub fn run(args: &[String]) -> Result<()> {
         }
         other => bail!("unknown subcommand: {other} (try --help)"),
     }
+}
+
+/// Strip a global `--precision f32|f16|bf16` flag (accepted anywhere in the
+/// arg list) and apply it to the FFT compile path. Every subcommand that
+/// compiles a graph through `try_compile_graph*` then honors it — `f16` is what
+/// pushes the butterfly/mask/denoiser graph onto fp16 silicon (ANE/Metal/MLX).
+fn apply_global_precision(args: &[String]) -> Result<Vec<String>> {
+    use crate::compile::{parse_precision, set_compile_precision};
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--precision" {
+            let val = args
+                .get(i + 1)
+                .context("--precision needs a value (f32|f16|bf16)")?;
+            set_compile_precision(parse_precision(val)?);
+            i += 2;
+        } else if let Some(val) = args[i].strip_prefix("--precision=") {
+            set_compile_precision(parse_precision(val)?);
+            i += 1;
+        } else {
+            out.push(args[i].clone());
+            i += 1;
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(feature = "dev")]
@@ -106,16 +137,22 @@ fn print_help() {
            train-multi --n-fft 64,128,256 [--batch B] [--steps MAX] [--min-steps N] [--until-converged|--fixed-steps] [--schedules …] [--optimizer adam|sgd|diag_precond] [--grad-clip F] [--no-project-twiddles] [--eager-train] [--out DIR] [--json PATH] [--html PATH]\n\
            bench-phased --dir DIR --n-fft N [--batch B] [--iters N] [--device auto|cpu|metal|…] [--json PATH]\n\
            bench-sweep [--n-fft 64,256,…] [--batch 1,8,32,64,…] [--devices cpu,metal] [--all] [--iters N] [--both-dirs] [--with-butterfly-compiled] [--json PATH] [--md PATH] [--html PATH]\n\
+           max-batch [--n-fft N] [--devices cpu,metal,wgpu] [--dtype f16|f32|f64] [--limbs K]   # largest safe batch per device (memory + dispatch bounded)\n\
            report-html --json PATH --html PATH   # HTML from sweep, ablation, multi-train, or e2e JSON\n\
            study-report [--ablation-csv-dir DIR | --ablation-json PATH] [--ablation-csv-out DIR] [--train-json PATH] [--html PATH] [--run-ablation|--limit-sweep …] [--run-model-studies]\n\
            ablation [--n-fft 256,1024] [--batch 8,64,256] [--devices cpu,metal] [--iters N] [--train-steps N] [--with-compiled] [--both-dirs] [--forward-only] [--with-welch|--no-welch] [--json PATH] [--csv-dir DIR] [--html PATH]\n\
            ablation-ternary [--quick] [--n-fft 128,256] [--batch 8,32] [--devices auto|cpu,metal,…] [--iters N] [--teacher-steps N] [--distill-steps N] [--ternary-steps N] [--json PATH] [--csv PATH] [--html PATH]\n\
            train-e2e [--n-fft N] [--batch B] [--n-mels M] [--steps N] [--lr F] [--gate-lr F] [--sparsity-weight F] [--mel-weight F] [--welch-weight F] [--peak-weight F] [--peak-k K] [--spectrum-weight F] [--log-every N] [--no-q8] [--json PATH]\n\
+           train-matryoshka [--n-fft N] [--batch B] [--steps N] [--lr F] [--log-every N] [--f16-weight F] [--perturb F] [--seed N] [--json PATH] [--html PATH]   # QAT nested f16/f32 twiddles + reconstruction curve\n\
+           precision-sweep [--n-fft 256,1024] [--batch B] [--max-iters N] [--seed N] [--json PATH]   # f16-only precision recovery via iterative refinement\n\
            train-distill [--n-fft N] [--batch B] [--n-mels M] [--steps N] [--lr F] [--teacher-steps N] [--json PATH]\n\
            train-distill-ternary [--n-fft N] [--batch B] [--n-mels M] [--steps N] [--compute-weight F] [--teacher-steps N] [--json PATH]\n\
            bench-e2e [--n-fft N] [--batch B[,B2…]|1-1024] [--n-mels M] [--peak-k K] [--iters N] [--device all|cpu,metal,mlx,wgpu,wgu|apple-silicon|…] [--train-first] [--distill-first] [--ternary-distill] [--steps N] [--distill-steps N] [--compute-weight F] [--no-hard-gates] [--no-compiled] [--no-distilled] [--no-ternary-distilled] [--with-eager-learned] [--json PATH] [--html PATH]\n\
            bench-welch-peaks [--n-fft N] [--batch B[,B2…]|32-8192] [--k K[,K2…]|4-64] [--iters N] [--device auto|cpu|metal|…] [--strategy auto|ultra|fast|rlx|learned] [--train-steps N] [--seed N] [--no-compiled] [--no-ultra-fast] [--json PATH]\n\
            {FUSION_PHASES_HELP}\
+         \n\
+         Global flags:\n\
+           --precision f32|f16|bf16   # float dtype for compiled graphs (default f32; f16 → ANE/half silicon)\n\
          \n\
          Supported n_fft: {:?}",
         crate::config::SUPPORTED_N_FFT
@@ -128,6 +165,141 @@ fn parse_dir_flag(args: &[String], i: &mut usize) -> Result<Option<TransformDir>
         return Ok(Some(TransformDir::Inverse));
     }
     Ok(None)
+}
+
+fn cmd_precision_sweep(args: &[String]) -> Result<()> {
+    let mut n_ffts = vec![256usize];
+    let mut batch = 16usize;
+    let mut max_iters = 3usize;
+    let mut seed = 7u64;
+    let mut json: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--n-fft" => n_ffts = parse_csv_usize(&req(args, &mut i)?, "--n-fft")?,
+            "--batch" => batch = req(args, &mut i)?.parse().context("--batch")?,
+            "--max-iters" => max_iters = req(args, &mut i)?.parse().context("--max-iters")?,
+            "--seed" => seed = req(args, &mut i)?.parse().context("--seed")?,
+            "--json" => json = Some(req(args, &mut i)?.into()),
+            "--help" | "-h" => {
+                print_help();
+                return Ok(());
+            }
+            other => bail!("unknown flag: {other}"),
+        }
+    }
+
+    let mut reports = Vec::new();
+    for &n in &n_ffts {
+        let report = crate::precision_fft::precision_sweep(n, batch, max_iters, seed)?;
+        println!("\nn_fft={n} batch={batch}  (precision recovery on f16-only hardware)");
+        println!(
+            "  {:<18} {:>12} {:>8}  {}",
+            "scheme", "max_err", "passes", "output"
+        );
+        for row in &report.rows {
+            let passes = if row.passes.is_nan() {
+                "  —".to_string()
+            } else {
+                format!("{:.0}", row.passes)
+            };
+            println!(
+                "  {:<18} {:>12} {:>8}  {}",
+                row.scheme,
+                format!("{:.3e}", row.max_err),
+                passes,
+                if row.two_limb_out {
+                    "f16×2 (pair)"
+                } else {
+                    "f16/f32"
+                }
+            );
+        }
+        reports.push(report);
+    }
+
+    if let Some(path) = json {
+        std::fs::write(&path, serde_json::to_string_pretty(&reports)?)
+            .with_context(|| format!("write {}", path.display()))?;
+        eprintln!("wrote {}", path.display());
+    }
+    Ok(())
+}
+
+fn cmd_train_matryoshka(args: &[String]) -> Result<()> {
+    let mut n_fft = 256usize;
+    let mut batch = 16usize;
+    let mut steps = 400usize;
+    let mut lr = 5e-3f32;
+    let mut log_every = 20usize;
+    let mut f16_weight = 1.0f32;
+    let mut perturb = 0.0f32;
+    let mut seed = 42u64;
+    let mut json: Option<PathBuf> = None;
+    let mut html: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--n-fft" => n_fft = parse_n_fft(&req(args, &mut i)?)?,
+            "--batch" => batch = req(args, &mut i)?.parse().context("--batch")?,
+            "--steps" => steps = req(args, &mut i)?.parse().context("--steps")?,
+            "--lr" => lr = req(args, &mut i)?.parse().context("--lr")?,
+            "--log-every" => log_every = req(args, &mut i)?.parse().context("--log-every")?,
+            "--f16-weight" => f16_weight = req(args, &mut i)?.parse().context("--f16-weight")?,
+            "--perturb" => perturb = req(args, &mut i)?.parse().context("--perturb")?,
+            "--seed" => seed = req(args, &mut i)?.parse().context("--seed")?,
+            "--json" => json = Some(req(args, &mut i)?.into()),
+            "--html" => html = Some(req(args, &mut i)?.into()),
+            "--help" | "-h" => {
+                print_help();
+                return Ok(());
+            }
+            other => bail!("unknown flag: {other}"),
+        }
+    }
+
+    let result = crate::matryoshka::train_matryoshka(
+        n_fft, batch, steps, lr, log_every, f16_weight, perturb, seed,
+    )?;
+    let base = &result.points[0];
+    let last = result.points.last().unwrap();
+    eprintln!(
+        "matryoshka n_fft={n_fft} batch={batch} steps={steps} f16_weight={f16_weight}\n\
+         {:<14} {:>12} -> {:>12} ({:>5.1}x)\n\
+         {:<14} {:>12} -> {:>12} ({:>5.1}x)\n\
+         {:<14} {:>12} -> {:>12} ({:>5.1}x)\n\
+         {:<14} {:>12} -> {:>12} ({:>5.1}x)",
+        "encoder f16",
+        format!("{:.3e}", base.enc_err_f16),
+        format!("{:.3e}", last.enc_err_f16),
+        base.enc_err_f16 / last.enc_err_f16.max(1e-12),
+        "decoder f16",
+        format!("{:.3e}", base.recon_err_f16),
+        format!("{:.3e}", last.recon_err_f16),
+        base.recon_err_f16 / last.recon_err_f16.max(1e-12),
+        "encoder f32",
+        format!("{:.3e}", base.enc_err_f32),
+        format!("{:.3e}", last.enc_err_f32),
+        base.enc_err_f32 / last.enc_err_f32.max(1e-12),
+        "decoder f32",
+        format!("{:.3e}", base.recon_err_f32),
+        format!("{:.3e}", last.recon_err_f32),
+        base.recon_err_f32 / last.recon_err_f32.max(1e-12),
+    );
+
+    if let Some(path) = json {
+        std::fs::write(&path, serde_json::to_string_pretty(&result)?)
+            .with_context(|| format!("write {}", path.display()))?;
+        eprintln!("wrote {}", path.display());
+    }
+    if let Some(path) = html {
+        std::fs::write(&path, crate::matryoshka::render_curve_html(&result))
+            .with_context(|| format!("write {}", path.display()))?;
+        eprintln!("wrote {}", path.display());
+    }
+    Ok(())
 }
 
 fn cmd_train(args: &[String]) -> Result<()> {
@@ -785,6 +957,82 @@ fn cmd_bench_sweep(args: &[String]) -> Result<()> {
     if let Some(path) = html_out {
         write_sweep_html(&path, &report)?;
         eprintln!("wrote {}", path.display());
+    }
+    Ok(())
+}
+
+/// Report the largest FFT batch each device can run for a given `(n_fft, dtype,
+/// limbs)`, detecting the memory + dispatch ceilings from the live machine.
+fn cmd_max_batch(args: &[String]) -> Result<()> {
+    use crate::max_batch::{FftProblem, auto_max_fft_batch, detect_device_caps};
+
+    let mut n_fft = 256usize;
+    let mut devices_csv: Option<String> = None;
+    let mut elem_bytes = 4usize; // f32
+    let mut limbs = 1usize;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--n-fft" => n_fft = req(args, &mut i)?.parse().context("--n-fft")?,
+            "--devices" => devices_csv = Some(req(args, &mut i)?),
+            "--dtype" => {
+                elem_bytes = match req(args, &mut i)?.trim().to_ascii_lowercase().as_str() {
+                    "f16" | "bf16" => 2,
+                    "f32" => 4,
+                    "f64" => 8,
+                    other => bail!("--dtype f16|f32|f64 (got {other})"),
+                }
+            }
+            "--limbs" => limbs = req(args, &mut i)?.parse().context("--limbs")?,
+            "--help" | "-h" => {
+                eprintln!(
+                    "max-batch [--n-fft N] [--devices cpu,metal,wgpu] [--dtype f16|f32|f64] [--limbs K]\n\
+                     Reports the largest safe batch per device (memory- and dispatch-bounded).\n\
+                     Env: RLX_FFT_MEM_BUDGET_MB overrides the memory budget (discrete-GPU VRAM)."
+                );
+                return Ok(());
+            }
+            other => bail!("unknown flag: {other}"),
+        }
+    }
+
+    let device_names = if let Some(csv) = devices_csv {
+        crate::device::parse_bench_device_list(&csv)?
+    } else {
+        available_devices()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    };
+
+    let problem = FftProblem::new(n_fft, elem_bytes, limbs);
+    let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
+    eprintln!(
+        "max-batch: n_fft={n_fft} dtype={}B limbs={limbs} row={} B/batch",
+        elem_bytes,
+        problem.row_footprint_bytes()
+    );
+    eprintln!(
+        "  {:<8} {:>12} {:>11} {:>12} {:>12}  {:<10} {}",
+        "device", "mem budget", "dispatch", "mem cap", "MAX BATCH", "limited by", "mem source"
+    );
+    for name in &device_names {
+        let device = crate::device::resolve_train_device(Some(name))?;
+        let caps = detect_device_caps(device);
+        let cap = auto_max_fft_batch(device, problem);
+        eprintln!(
+            "  {:<8} {:>10.1} GB {:>11} {:>12} {:>12}  {:<10} {}",
+            name,
+            mb(caps.mem_budget_bytes) / 1024.0,
+            caps.dispatch_cap
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "—".into()),
+            cap.mem_cap,
+            cap.max_batch,
+            format!("{:?}", cap.limited_by),
+            caps.mem_source,
+        );
     }
     Ok(())
 }

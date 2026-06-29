@@ -39,6 +39,7 @@ pub mod host_kernels;
 pub mod image_preprocess;
 pub mod lm;
 pub mod moe_weights;
+pub mod prompt_cache;
 pub mod safetensors_checkpoint;
 pub mod vision_ops_ir;
 pub mod weight_loader;

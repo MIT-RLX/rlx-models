@@ -81,6 +81,13 @@ pub fn bench_all_dir(
 
     eprintln!("[bench] compiling native RLX Op::Fft on {device:?}…");
     let mut rlx_exec = crate::rlx_fft::compile_rlx_fft(&cfg, dir, device)?;
+    // Warm the pipeline: the first run() lazily builds the GPU PSO / first-dispatch
+    // shader on Metal/wgpu, which would otherwise pollute the small-batch cells.
+    if dir.is_forward() {
+        rlx_exec.run(&[("signal", &signal)]);
+    } else {
+        rlx_exec.run(&[(rlx_input_name, rlx_input.as_ref().expect("ifft block"))]);
+    }
     let rlx_fft_ms = time_iters(iters, || {
         if dir.is_forward() {
             rlx_exec.run(&[("signal", &signal)]);

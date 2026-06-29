@@ -17,10 +17,9 @@
 
 use crate::ctc::CtcHypothesis;
 use crate::geom::{downwards_line, leftmost_edge, rightmost_edge};
+use crate::host_resize::resize_bilinear;
 use crate::preprocess::BLACK_VALUE;
 use crate::text::{TextChar, TextLine};
-#[cfg(feature = "tensor-ops")]
-use rten::FloatOperators;
 use rten_imageproc::{BoundingRect, Line, Point, Polygon, Rect, RotatedRect};
 use rten_tensor::prelude::*;
 use rten_tensor::{NdTensor, NdTensorView, NdTensorViewMut};
@@ -93,10 +92,8 @@ pub fn prepare_text_line(
             grey_chan[[in_p.y as usize, in_p.x as usize]];
     }
 
-    let resized_line_img = line_img
-        .reshaped([1, 1, line_img.size(0), line_img.size(1)])
-        .resize_image([output_height, resized_width as usize])
-        .unwrap();
+    let reshaped = line_img.reshaped([1, 1, line_img.size(0), line_img.size(1)]);
+    let resized_line_img = resize_bilinear(reshaped.view(), output_height, resized_width as usize);
     let out_shape = [resized_line_img.size(2), resized_line_img.size(3)];
     resized_line_img.into_shape(out_shape)
 }

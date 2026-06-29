@@ -84,20 +84,27 @@ fn main() -> Result<()> {
         "Hello there.",
         28,
     )?;
-    synth_named(
-        &mut tts,
-        &out_dir.join("long-tara.wav"),
-        "tara",
-        "Hello from RLX Orpheus. This is a longer sample.",
-        56,
-    )?;
-    synth_named(
-        &mut tts,
-        &out_dir.join("long-mia.wav"),
-        "mia",
-        "The quick brown fox jumps over the lazy dog.",
-        56,
-    )?;
+    let batch = tts.synthesize_batch(&[
+        (
+            "Hello from RLX Orpheus. This is a longer sample.",
+            Some("tara"),
+        ),
+        ("The quick brown fox jumps over the lazy dog.", Some("mia")),
+    ])?;
+    for (i, result) in batch.into_iter().enumerate() {
+        let name = if i == 0 {
+            "long-tara.wav"
+        } else {
+            "long-mia.wav"
+        };
+        write_wav(&out_dir.join(name), &result.samples, result.sample_rate)?;
+        eprintln!(
+            "  -> {} {} codes, {:.2}s audio",
+            name,
+            result.code_count,
+            result.samples.len() as f64 / result.sample_rate as f64
+        );
+    }
 
     let ref_json = out_dir.join("jfk_ref.json");
     if ref_json.is_file() {

@@ -53,6 +53,42 @@ impl DepFormer {
         Ok(Self { slices })
     }
 
+    /// Like [`Self::sample`] but with fully forced conditioning, returning the raw
+    /// per-slice logits (no sampling). `forced[si]` is the token fed into slice
+    /// `si+1`. Used for deterministic numeric parity against the RLX DepFormer.
+    pub fn forced_logits(
+        &mut self,
+        temporal_hidden: &Array1<f32>,
+        text_token: Option<u32>,
+        forced: &[u32],
+        inherit: bool,
+    ) -> Result<Vec<Vec<f32>>> {
+        let mut out = Vec::with_capacity(self.slices.len());
+        let mut last_token = text_token;
+        let xs = Array2::from_shape_vec((1, temporal_hidden.len()), temporal_hidden.to_vec())?;
+        for si in 0..self.slices.len() {
+            if si == 0 || !inherit {
+                self.slices[si].transformer.reset_state();
+            } else {
+                let prev = self.slices[si - 1].transformer.clone_kv_snapshot();
+                self.slices[si].transformer.restore_kv_snapshot(&prev);
+            }
+            let slice = &mut self.slices[si];
+            let mut h = linear(xs.view(), &slice.linear_in);
+            if let Some(tok) = last_token {
+                let emb = slice.emb.forward_one(tok);
+                for di in 0..emb.len() {
+                    h[[0, di]] += emb[di];
+                }
+            }
+            let h = slice.transformer.forward(&h);
+            let logits = linear(h.view(), &slice.linear_out);
+            out.push(logits.row(0).to_vec());
+            last_token = forced.get(si).copied();
+        }
+        Ok(out)
+    }
+
     pub fn sample(
         &mut self,
         temporal_hidden: &Array1<f32>,

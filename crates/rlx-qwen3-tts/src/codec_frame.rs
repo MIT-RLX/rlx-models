@@ -81,6 +81,7 @@ pub fn build_qwen3_tts_decode_built(
             past_seq,
             dynamic_past: false,
             use_custom_mask: true,
+            ragged_rope: false,
             profile: Some(profile.clone()),
         },
     )
@@ -102,6 +103,7 @@ pub fn build_qwen3_tts_prefill_built(
             batch: 1,
             seq,
             with_kv_outputs: true,
+            with_qk_outputs: false,
             with_lm_head: false,
             last_logits_only: false,
             profile: Some(profile.clone()),

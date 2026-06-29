@@ -58,13 +58,24 @@ pub fn twiddle_name(stage: usize, butterfly: usize, part: &str) -> String {
     twiddle_name_set(TwiddleSet::Shared, stage, butterfly, part)
 }
 
-pub fn twiddle_name_set(set: TwiddleSet, stage: usize, butterfly: usize, part: &str) -> String {
-    let prefix = match set {
+/// Param-name prefix for a twiddle set (`twiddle` / `encoder.twiddle` / `decoder.twiddle`).
+pub fn twiddle_set_prefix(set: TwiddleSet) -> &'static str {
+    match set {
         TwiddleSet::Shared => "twiddle",
         TwiddleSet::Encoder => "encoder.twiddle",
         TwiddleSet::Decoder => "decoder.twiddle",
-    };
-    format!("{prefix}.s{stage}.b{butterfly}.{part}")
+    }
+}
+
+pub fn twiddle_name_set(set: TwiddleSet, stage: usize, butterfly: usize, part: &str) -> String {
+    format!("{}.s{stage}.b{butterfly}.{part}", twiddle_set_prefix(set))
+}
+
+/// Name of the single packed twiddle param/tensor for a set — shape
+/// `[stages, half, 2]`, data in canonical [`twiddle_index`] order. Replaces the
+/// `stages·half·2` per-scalar params on the dense butterfly/gated/stockham paths.
+pub fn twiddle_packed_name(set: TwiddleSet) -> String {
+    format!("{}.packed", twiddle_set_prefix(set))
 }
 
 pub fn twiddle_name_dir(dir: TransformDir, stage: usize, butterfly: usize, part: &str) -> String {

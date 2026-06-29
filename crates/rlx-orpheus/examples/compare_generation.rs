@@ -5,7 +5,7 @@ use rlx_llama32::{
     Llama32Generator, Llama32RunnerBuilder, MetalGgufPrefillMode, llama32_cfg_from_gguf,
 };
 use rlx_orpheus::tokens::{
-    build_prompt, is_snac_slot_token, mask_logits_for_snac_slot, use_snac_logit_mask,
+    accept_orpheus_stream_token, build_prompt, mask_logits_for_snac_slot, use_snac_logit_mask,
 };
 use rlx_orpheus::{DEFAULT_COMPILE_SEQ_CAP, SnacBackend, SnacLoadOptions, decode_orpheus_codes};
 use rlx_qwen3::{SampleOpts, apply_repetition_penalty, sample_token_at};
@@ -18,17 +18,11 @@ fn sample_opts() -> SampleOpts {
 }
 
 fn tokens_to_codes(tokens: &[u32]) -> Vec<i32> {
-    use rlx_orpheus::tokens::custom_token_id_to_code;
     let mut stream_index = 0usize;
     let mut codes = Vec::new();
     for &tok in tokens {
-        if let Some(code) = custom_token_id_to_code(tok, stream_index) {
-            if is_snac_slot_token(tok, stream_index) && code > 0 {
-                codes.push(code);
-            }
-        }
-        if is_snac_slot_token(tok, stream_index) {
-            stream_index += 1;
+        if let Some(code) = accept_orpheus_stream_token(tok, &mut stream_index) {
+            codes.push(code);
         }
     }
     codes
@@ -90,8 +84,8 @@ fn main() -> anyhow::Result<()> {
             }
             apply_repetition_penalty(logits, &token_counts, sample.repetition_penalty);
         })?;
-        if is_snac_slot_token(tok, stream_index) {
-            stream_index += 1;
+        if accept_orpheus_stream_token(tok, &mut stream_index).is_some() {
+            // index advanced inside helper
         }
         *token_counts.entry(tok).or_insert(0) += 1;
     }
@@ -127,8 +121,8 @@ fn main() -> anyhow::Result<()> {
         let tok = sample_token_at(&logits, sample, step) as u32;
         packed_tokens.push(tok);
         history.push(tok);
-        if is_snac_slot_token(tok, stream_index) {
-            stream_index += 1;
+        if accept_orpheus_stream_token(tok, &mut stream_index).is_some() {
+            // index advanced inside helper
         }
         *token_counts.entry(tok).or_insert(0) += 1;
     }
@@ -168,8 +162,8 @@ fn main() -> anyhow::Result<()> {
             }
             apply_repetition_penalty(logits, &token_counts, sample.repetition_penalty);
         })?;
-        if is_snac_slot_token(tok, stream_index) {
-            stream_index += 1;
+        if accept_orpheus_stream_token(tok, &mut stream_index).is_some() {
+            // index advanced inside helper
         }
         *token_counts.entry(tok).or_insert(0) += 1;
     }

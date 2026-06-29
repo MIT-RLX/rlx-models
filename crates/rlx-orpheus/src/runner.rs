@@ -31,6 +31,13 @@ pub struct GenerationConfig {
 
 impl Default for GenerationConfig {
     fn default() -> Self {
+        Self::long_form()
+    }
+}
+
+impl GenerationConfig {
+    /// Long-form / narration — high token ceiling (upstream default).
+    pub fn long_form() -> Self {
         Self {
             max_new_tokens: 1200,
             temperature: 0.6,
@@ -39,6 +46,14 @@ impl Default for GenerationConfig {
             repetition_penalty: 1.3,
             seed: 42,
             greedy: false,
+        }
+    }
+
+    /// Chat / assistant replies — lower ceiling for faster synthesis.
+    pub fn chat() -> Self {
+        Self {
+            max_new_tokens: 384,
+            ..Self::long_form()
         }
     }
 }
@@ -75,7 +90,7 @@ impl OrpheusTts {
                 lm: device,
                 snac_coreml: false,
             },
-            BackboneLoadOptions::for_device(device),
+            BackboneLoadOptions::for_tts(device),
         )
     }
 
@@ -94,7 +109,7 @@ impl OrpheusTts {
         Ok(Self {
             backbone,
             snac,
-            config: GenerationConfig::default(),
+            config: GenerationConfig::chat(),
         })
     }
 
@@ -126,6 +141,15 @@ impl OrpheusTts {
     pub fn load_with_env_decoder_on(backbone_path: &Path, device: Device) -> Result<Self> {
         let snac_path = decoder_weights_path()?;
         Self::load_on(backbone_path, &snac_path, device)
+    }
+
+    /// Synthesize multiple utterances reusing the loaded backbone + SNAC session.
+    #[cfg(feature = "llama")]
+    pub fn synthesize_batch(&self, items: &[(&str, Option<&str>)]) -> Result<Vec<SynthesisResult>> {
+        items
+            .iter()
+            .map(|(text, voice)| self.synthesize(text, *voice))
+            .collect()
     }
 
     /// Synthesize speech for `text` with an optional built-in voice prefix.
@@ -197,6 +221,7 @@ impl OrpheusTts {
             }
         }
 
+        normalize_pcm_peak(&mut pcm);
         Ok(SynthesisResult {
             samples: pcm,
             sample_rate: SAMPLE_RATE,
@@ -213,7 +238,8 @@ impl OrpheusTts {
             .generate_codes_from_prompt(prompt_ids, &self.config)
             .context("LM code generation")?;
 
-        let samples = self.decode_all_codes(&codes)?;
+        let mut samples = self.decode_all_codes(&codes)?;
+        normalize_pcm_peak(&mut samples);
         Ok(SynthesisResult {
             samples,
             sample_rate: SAMPLE_RATE,
@@ -274,6 +300,28 @@ pub fn decode_orpheus_codes(snac: &SnacBackend, codes: &[i32]) -> Result<Vec<f32
     snac.decode_codes(&c0, &c1, &c2)
 }
 
+const PCM_NORM_TARGET_PEAK: f32 = 0.95;
+const PCM_NORM_MIN_PEAK: f32 = 0.25;
+
+/// Boost quiet SNAC output toward full-scale (Whisper / playback friendly).
+///
+/// Default on when peak < 0.25; disable with `ORPHEUS_NORMALIZE_PCM=0`.
+pub fn normalize_pcm_peak(samples: &mut [f32]) {
+    if matches!(
+        std::env::var("ORPHEUS_NORMALIZE_PCM").ok().as_deref(),
+        Some("0") | Some("false") | Some("FALSE")
+    ) {
+        return;
+    }
+    let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    if peak > 1e-6 && peak < PCM_NORM_MIN_PEAK {
+        let gain = PCM_NORM_TARGET_PEAK / peak;
+        for s in samples.iter_mut() {
+            *s = (*s * gain).clamp(-1.0, 1.0);
+        }
+    }
+}
+
 /// Sliding-window starts for streaming (matches Python `tokens_decoder`).
 pub fn streaming_window_starts(num_codes: usize) -> Vec<usize> {
     if num_codes < WINDOW_CODES {
@@ -308,5 +356,12 @@ mod tests {
         let streaming_samples = streaming_window_starts(84).len() * SAMPLES_PER_FRAME;
         let full_samples = 12 * SAMPLES_PER_FRAME;
         assert_eq!(streaming_samples + 3 * SAMPLES_PER_FRAME, full_samples);
+    }
+
+    #[test]
+    fn chat_caps_tokens_below_long_form() {
+        assert!(
+            GenerationConfig::chat().max_new_tokens < GenerationConfig::long_form().max_new_tokens
+        );
     }
 }

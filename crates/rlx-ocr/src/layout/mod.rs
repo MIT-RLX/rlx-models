@@ -196,8 +196,84 @@ pub fn find_text_lines(words: &[RotatedRect]) -> Vec<Vec<RotatedRect>> {
         paragraphs.push(para);
     }
 
-    paragraphs
+    let lines = paragraphs
         .into_iter()
         .flat_map(|para| para.into_iter())
+        .collect();
+    drop_glyph_fragments(lines)
+}
+
+/// Discard isolated glyph fragments that belong to another line.
+///
+/// A wide, thin line can shed its tallest ascenders / lowest descenders as
+/// separate one-glyph "lines" directly above or below the body — the detector's
+/// connected components don't always bridge the gap. Left alone they recognize
+/// as stray single characters bracketing the real text (the "S … T" around a
+/// wide line). Such a fragment is already covered by the body line, so we drop
+/// a *narrow* line when it sits horizontally inside a much *wider* line's span
+/// and vertically within that line's glyph zone. (Merging it into the host
+/// instead enlarges the host's crop box vertically and distorts the recognition
+/// strip — so we remove it, not fold it in.) A real neighbouring text line
+/// spans a similar width, so it never matches the narrowness test; single-line
+/// inputs have nothing to drop — well-behaved pages don't regress.
+fn drop_glyph_fragments(mut lines: Vec<Vec<RotatedRect>>) -> Vec<Vec<RotatedRect>> {
+    if lines.len() < 2 {
+        return lines;
+    }
+    // (left, right, top, bottom) union of a line's word bounding rects.
+    fn bounds(line: &[RotatedRect]) -> Option<(f32, f32, f32, f32)> {
+        let mut iter = line.iter();
+        let first = iter.next()?.bounding_rect();
+        let (mut l, mut r, mut t, mut b) =
+            (first.left(), first.right(), first.top(), first.bottom());
+        for rect in iter {
+            let br = rect.bounding_rect();
+            l = l.min(br.left());
+            r = r.max(br.right());
+            t = t.min(br.top());
+            b = b.max(br.bottom());
+        }
+        Some((l, r, t, b))
+    }
+
+    let bnds: Vec<Option<(f32, f32, f32, f32)>> = lines.iter().map(|l| bounds(l)).collect();
+    let mut drop = vec![false; lines.len()];
+    for small in 0..lines.len() {
+        let Some((sl, sr, st, sb)) = bnds[small] else {
+            continue;
+        };
+        let s_cy = 0.5 * (st + sb);
+        let s_w = sr - sl;
+        for host in 0..lines.len() {
+            if host == small || drop[host] {
+                continue;
+            }
+            let Some((hl, hr, ht, hb)) = bnds[host] else {
+                continue;
+            };
+            let h_w = (hr - hl).max(1.0);
+            let h_h = (hb - ht).max(1.0);
+            // Narrow vs the host (a real neighbouring line spans a similar
+            // width, so it never matches).
+            if s_w > 0.3 * h_w {
+                continue;
+            }
+            // Horizontally inside the host's span (small slack).
+            let margin = 0.02 * h_w;
+            if sl < hl - margin || sr > hr + margin {
+                continue;
+            }
+            // Vertically within the host's glyph zone (body ± ~0.6 height).
+            if s_cy < ht - 0.6 * h_h || s_cy > hb + 0.6 * h_h {
+                continue;
+            }
+            drop[small] = true;
+            break;
+        }
+    }
+    lines
+        .into_iter()
+        .zip(drop)
+        .filter_map(|(line, d)| (!d).then_some(line))
         .collect()
 }

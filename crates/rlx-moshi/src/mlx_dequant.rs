@@ -1,8 +1,14 @@
 //! MLX grouped affine dequant (Kyutai `model.q4/q8.safetensors`).
 
 use anyhow::{Result, ensure};
+use rayon::prelude::*;
 
-/// Dequantize MLX affine grouped weights: `w = scale * code - bias`.
+/// Dequantize MLX affine grouped weights: `w = scale * code + bias`.
+///
+/// MLX (`mlx.core.quantize`) packs `32/bits` codes per `u32` **LSB-first** (code
+/// `s` occupies bits `[s*bits, (s+1)*bits)`) and dequantizes as
+/// `w = scale * code + bias` (bias = group min). Earlier this read MSB-first and
+/// subtracted the bias, which produced numerically wrong weights (garbage).
 pub fn dequantize_affine(
     packed: &[u32],
     packed_cols: usize,
@@ -42,25 +48,30 @@ pub fn dequantize_affine(
         out_rows * n_groups
     );
 
+    // Rows are independent → dequant them in parallel (the slow part of loading
+    // a multi-GB checkpoint). Each output row reads only its own packed codes +
+    // scales/biases.
+    let mask = (1u32 << bits_us) - 1;
     let mut out = vec![0f32; out_rows * out_cols];
-    for row in 0..out_rows {
-        for pcol in 0..packed_cols {
-            let word = packed[row * packed_cols + pcol];
-            for slot in 0..codes_per_u32 {
-                let col = pcol * codes_per_u32 + slot;
-                if col >= out_cols {
-                    break;
+    out.par_chunks_mut(out_cols)
+        .enumerate()
+        .for_each(|(row, out_row)| {
+            let prow = &packed[row * packed_cols..(row + 1) * packed_cols];
+            let srow = &scales_bf16[row * n_groups..(row + 1) * n_groups];
+            let brow = &biases_bf16[row * n_groups..(row + 1) * n_groups];
+            for (pcol, &word) in prow.iter().enumerate() {
+                for slot in 0..codes_per_u32 {
+                    let col = pcol * codes_per_u32 + slot;
+                    if col >= out_cols {
+                        break;
+                    }
+                    let shift = slot * bits_us; // MLX packs codes LSB-first
+                    let code = ((word >> shift) & mask) as f32;
+                    let g = col / group_size;
+                    out_row[col] = bf16_to_f32(srow[g]) * code + bf16_to_f32(brow[g]);
                 }
-                let shift = 32 - (slot + 1) * bits_us;
-                let mask = (1u32 << bits_us) - 1;
-                let code = ((word >> shift) & mask) as f32;
-                let g = col / group_size;
-                let scale = bf16_to_f32(scales_bf16[row * n_groups + g]);
-                let bias = bf16_to_f32(biases_bf16[row * n_groups + g]);
-                out[row * out_cols + col] = scale * code - bias;
             }
-        }
-    }
+        });
     Ok(out)
 }
 
@@ -84,5 +95,17 @@ mod tests {
         let biases = vec![f32_to_bf16(0.0); 1];
         let out = dequantize_affine(&packed, 4, &scales, &biases, 1, 32, 32, 4).unwrap();
         assert_eq!(out.len(), 32);
+    }
+
+    #[test]
+    fn dequant_lsb_first_plus_bias() {
+        // MLX packs codes LSB-first: 0x7654_3210 → codes 0,1,2,3,4,5,6,7 in order.
+        // Dequant is w = scale*code + bias.
+        let packed = vec![0x7654_3210u32];
+        let scales = vec![f32_to_bf16(2.0)];
+        let biases = vec![f32_to_bf16(-1.0)];
+        let out = dequantize_affine(&packed, 1, &scales, &biases, 1, 8, 8, 4).unwrap();
+        let expect: Vec<f32> = (0..8).map(|c| 2.0 * c as f32 - 1.0).collect();
+        assert_eq!(out, expect);
     }
 }

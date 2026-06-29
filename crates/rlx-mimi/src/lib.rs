@@ -17,7 +17,7 @@ pub mod rvq;
 pub mod seanet;
 pub mod transformer;
 
-#[cfg(feature = "gpu-codec")]
+#[cfg(feature = "parity-mimi")]
 pub mod gpu;
 
 #[cfg(feature = "cli")]

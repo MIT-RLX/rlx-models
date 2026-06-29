@@ -16,8 +16,9 @@
 //! Learnable Cooley–Tukey butterfly network (eager CPU + optional IR graph).
 
 use crate::config::{FftLearnConfig, TransformDir};
-use crate::twiddle::{TwiddleSet, twiddle_index, twiddle_name_set};
+use crate::twiddle::{TwiddleSet, twiddle_index, twiddle_packed_name};
 use anyhow::{Result, ensure};
+use half::f16;
 use rlx_ir::infer::GraphExt;
 use rlx_ir::{DType, Graph, NodeId, Shape};
 use std::collections::HashMap;
@@ -47,7 +48,48 @@ pub(crate) fn merge_complex_planes(
     g.concat_(vec![re3, im3], 2)
 }
 
+/// Slice the packed `[stages, half, 2]` twiddle tensor for one stage into the
+/// `[1, groups, 1, stride]` re/im operands the vectorized butterfly expects.
+/// (Replaces the former `concat` of `half` per-scalar twiddle param nodes.)
 pub(crate) fn build_stage_twiddles(
+    g: &mut Graph,
+    packed: NodeId,
+    stage: usize,
+    groups: usize,
+    stride: usize,
+) -> (NodeId, NodeId) {
+    let stage_slice = g.narrow_(packed, 0, stage, 1); // [1, half, 2]
+    let re = g.narrow_(stage_slice, 2, 0, 1); // [1, half, 1]
+    let im = g.narrow_(stage_slice, 2, 1, 1); // [1, half, 1]
+    let w_re = g.reshape_(re, vec![1, groups as i64, 1, stride as i64]);
+    let w_im = g.reshape_(im, vec![1, groups as i64, 1, stride as i64]);
+    (w_re, w_im)
+}
+
+/// Create the single packed twiddle param `[stages, half, 2]` for a set.
+pub(crate) fn packed_twiddle_param(
+    g: &mut Graph,
+    set: TwiddleSet,
+    stages: usize,
+    half: usize,
+) -> (NodeId, ParamSlot) {
+    let name = twiddle_packed_name(set);
+    let node = g.param(&name, Shape::new(&[stages, half, 2], DType::F32));
+    (
+        node,
+        ParamSlot {
+            name,
+            param: node,
+            grad: None,
+        },
+    )
+}
+
+/// Concat `half` per-scalar twiddle nodes into the `[1, groups, 1, stride]`
+/// stage operands. Used **only** by the ternary *deploy* path, whose twiddle
+/// params are intentionally sparse (skipped butterflies are omitted), so it
+/// cannot share the dense packed tensor. Dense paths use [`build_stage_twiddles`].
+pub(crate) fn build_stage_twiddles_mapped(
     g: &mut Graph,
     stage: usize,
     groups: usize,
@@ -71,7 +113,10 @@ pub(crate) fn build_stage_twiddles(
     (w_re, w_im)
 }
 
-pub(crate) fn apply_butterfly_stage_vectorized(
+/// Map-based dense stage application — the ternary deploy path's all-forward
+/// stages. Mirrors [`apply_butterfly_stage_vectorized`] but sources twiddles
+/// from a per-scalar map instead of the packed tensor.
+pub(crate) fn apply_butterfly_stage_vectorized_mapped(
     g: &mut Graph,
     re: NodeId,
     im: NodeId,
@@ -91,7 +136,65 @@ pub(crate) fn apply_butterfly_stage_vectorized(
     let a_im = g.narrow_(im4, 2, 0, 1);
     let b_im = g.narrow_(im4, 2, 1, 1);
 
-    let (w_re, w_im) = build_stage_twiddles(g, stage, groups, stride, twiddle_nodes);
+    let (w_re, w_im) = build_stage_twiddles_mapped(g, stage, groups, stride, twiddle_nodes);
+
+    let wb_re_a = g.mul(b_re, w_re);
+    let wb_re_b = g.mul(b_im, w_im);
+    let wb_re = g.sub(wb_re_a, wb_re_b);
+    let wb_im_a = g.mul(b_re, w_im);
+    let wb_im_b = g.mul(b_im, w_re);
+    let wb_im = g.add(wb_im_a, wb_im_b);
+
+    let top_re = g.add(a_re, wb_re);
+    let top_im = g.add(a_im, wb_im);
+    let bot_re = g.sub(a_re, wb_re);
+    let bot_im = g.sub(a_im, wb_im);
+
+    let out_re_cat = g.concat_(vec![top_re, bot_re], 2);
+    let out_im_cat = g.concat_(vec![top_im, bot_im], 2);
+    let out_re = g.reshape_(out_re_cat, vec![batch as i64, n as i64]);
+    let out_im = g.reshape_(out_im_cat, vec![batch as i64, n as i64]);
+    (out_re, out_im)
+}
+
+/// Slice one `[1]` (re, im) twiddle scalar out of the packed param — for paths
+/// (e.g. Stockham) that consume individual butterfly twiddles. Unused slices DCE.
+pub(crate) fn packed_twiddle_scalar(
+    g: &mut Graph,
+    packed: NodeId,
+    stage: usize,
+    butterfly: usize,
+) -> (NodeId, NodeId) {
+    let s_slice = g.narrow_(packed, 0, stage, 1); // [1, half, 2]
+    let b_slice = g.narrow_(s_slice, 1, butterfly, 1); // [1, 1, 2]
+    let re_n = g.narrow_(b_slice, 2, 0, 1);
+    let re = g.reshape_(re_n, vec![1]);
+    let im_n = g.narrow_(b_slice, 2, 1, 1);
+    let im = g.reshape_(im_n, vec![1]);
+    (re, im)
+}
+
+pub(crate) fn apply_butterfly_stage_vectorized(
+    g: &mut Graph,
+    re: NodeId,
+    im: NodeId,
+    stage: usize,
+    batch: usize,
+    n: usize,
+    packed: NodeId,
+) -> (NodeId, NodeId) {
+    let stride = 1usize << stage;
+    let groups = n / (2 * stride);
+
+    let re4 = g.reshape_(re, vec![batch as i64, groups as i64, 2, stride as i64]);
+    let im4 = g.reshape_(im, vec![batch as i64, groups as i64, 2, stride as i64]);
+
+    let a_re = g.narrow_(re4, 2, 0, 1);
+    let b_re = g.narrow_(re4, 2, 1, 1);
+    let a_im = g.narrow_(im4, 2, 0, 1);
+    let b_im = g.narrow_(im4, 2, 1, 1);
+
+    let (w_re, w_im) = build_stage_twiddles(g, packed, stage, groups, stride);
 
     let wb_re_a = g.mul(b_re, w_re);
     let wb_re_b = g.mul(b_im, w_im);
@@ -290,6 +393,110 @@ pub(crate) fn apply_conj(buf: &mut [f32], n_fft: usize) {
     for i in 0..n_fft {
         buf[i * 2 + 1] *= -1.0;
     }
+}
+
+/// Round an f32 to the nearest f16 and back — the unit fp16-simulation step.
+pub(crate) fn round_f16(x: f32) -> f32 {
+    f16::from_f32(x).to_f32()
+}
+
+/// Like [`apply_stage`] but simulates fp16: twiddles and butterfly outputs are
+/// rounded to f16 (compute stays f32 — matches f16-storage / f32-accumulate HW
+/// like the Apple Neural Engine).
+pub(crate) fn apply_stage_f16(
+    buf: &[f32],
+    next: &mut [f32],
+    twiddles: &[f32],
+    n_fft: usize,
+    stage: usize,
+) {
+    let half = n_fft / 2;
+    let stride = 1usize << stage;
+    for b in 0..half {
+        let group = b / stride;
+        let k = b % stride;
+        let i0 = (group * 2 * stride + k) * 2;
+        let i1 = i0 + stride * 2;
+        let w_base = twiddle_index(stage, b, half, 0);
+        let w_re = round_f16(twiddles[w_base]);
+        let w_im = round_f16(twiddles[w_base + 1]);
+        let (b_re, b_im) = cmul(buf[i1], buf[i1 + 1], w_re, w_im);
+        let (top_re, top_im) = cadd(buf[i0], buf[i0 + 1], b_re, b_im);
+        let (bot_re, bot_im) = csub(buf[i0], buf[i0 + 1], b_re, b_im);
+        next[i0] = round_f16(top_re);
+        next[i0 + 1] = round_f16(top_im);
+        next[i1] = round_f16(bot_re);
+        next[i1 + 1] = round_f16(bot_im);
+    }
+}
+
+/// fp16-simulated traced forward (rounds input, twiddles, and every stage
+/// output to f16). The trace carries the f16 operating point so the standard
+/// [`backward_butterfly_twiddles`] gives the straight-through (STE) gradient.
+pub(crate) fn forward_butterfly_traced_f16(
+    mut buf: Vec<f32>,
+    twiddles: &[f32],
+    n_fft: usize,
+    bit_reverse_input: bool,
+) -> Result<ButterflyTrace> {
+    ensure!(buf.len() == n_fft * 2);
+    if bit_reverse_input {
+        bit_reverse_permute(&mut buf, n_fft);
+    }
+    for v in buf.iter_mut() {
+        *v = round_f16(*v);
+    }
+    let stages = num_stages(n_fft);
+    let mut stage_inputs: Vec<(usize, Vec<f32>)> = Vec::with_capacity(stages);
+    for s in 0..stages {
+        stage_inputs.push((s, buf.clone()));
+        let mut next = vec![0f32; n_fft * 2];
+        apply_stage_f16(&buf, &mut next, twiddles, n_fft, s);
+        buf = next;
+    }
+    Ok(ButterflyTrace {
+        stage_inputs,
+        output: buf,
+    })
+}
+
+/// Batch fp16-simulated forward FFT (real input) — for measuring true f16 error.
+pub fn butterfly_forward_real_batch_f16(
+    signal: &[f32],
+    twiddles: &[f32],
+    batch: usize,
+    n_fft: usize,
+) -> Result<Vec<f32>> {
+    ensure!(signal.len() == batch * n_fft);
+    let mut out = vec![0f32; batch * n_fft * 2];
+    for b in 0..batch {
+        let mut complex = vec![0f32; n_fft * 2];
+        for i in 0..n_fft {
+            complex[i * 2] = signal[b * n_fft + i];
+        }
+        let trace = forward_butterfly_traced_f16(complex, twiddles, n_fft, true)?;
+        out[b * n_fft * 2..(b + 1) * n_fft * 2].copy_from_slice(&trace.output);
+    }
+    Ok(out)
+}
+
+/// Batch fp16-simulated inverse FFT (`conj(FFT_f16(conj(x)))`, unnormalized).
+pub fn butterfly_inverse_complex_batch_f16(
+    spectrum: &[f32],
+    twiddles: &[f32],
+    batch: usize,
+    n_fft: usize,
+) -> Result<Vec<f32>> {
+    ensure!(spectrum.len() == batch * n_fft * 2);
+    let mut out = vec![0f32; batch * n_fft * 2];
+    for b in 0..batch {
+        let mut conj = spectrum[b * n_fft * 2..(b + 1) * n_fft * 2].to_vec();
+        apply_conj(&mut conj, n_fft);
+        let mut y = forward_butterfly_traced_f16(conj, twiddles, n_fft, true)?.output;
+        apply_conj(&mut y, n_fft);
+        out[b * n_fft * 2..(b + 1) * n_fft * 2].copy_from_slice(&y);
+    }
+    Ok(out)
 }
 
 pub(crate) fn forward_butterfly_traced(
@@ -664,7 +871,7 @@ pub(crate) fn append_forward_butterfly(
     let n = cfg.n_fft;
     let batch = cfg.batch;
     let half = n / 2;
-    let f = DType::F32;
+    let stages = cfg.num_stages();
 
     let bits = cfg.num_stages();
     let mut reordered = Vec::with_capacity(n);
@@ -675,30 +882,11 @@ pub(crate) fn append_forward_butterfly(
     state = g.concat_(reordered, 1);
     let (mut re, mut im) = split_complex_planes(g, state, batch, n);
 
-    let mut twiddle_nodes: HashMap<(usize, usize), (NodeId, NodeId)> = HashMap::new();
-    let mut params = Vec::new();
-    for s in 0..cfg.num_stages() {
-        for b in 0..half {
-            let w_re_name = twiddle_name_set(tw_set, s, b, "re");
-            let w_im_name = twiddle_name_set(tw_set, s, b, "im");
-            let w_re = g.param(&w_re_name, Shape::new(&[1], f));
-            let w_im = g.param(&w_im_name, Shape::new(&[1], f));
-            params.push(ParamSlot {
-                name: w_re_name,
-                param: w_re,
-                grad: None,
-            });
-            params.push(ParamSlot {
-                name: w_im_name,
-                param: w_im,
-                grad: None,
-            });
-            twiddle_nodes.insert((s, b), (w_re, w_im));
-        }
-    }
+    let (packed, slot) = packed_twiddle_param(g, tw_set, stages, half);
+    let params = vec![slot];
 
-    for s in 0..cfg.num_stages() {
-        (re, im) = apply_butterfly_stage_vectorized(g, re, im, s, batch, n, &twiddle_nodes);
+    for s in 0..stages {
+        (re, im) = apply_butterfly_stage_vectorized(g, re, im, s, batch, n, packed);
     }
 
     Ok((params, merge_complex_planes(g, re, im, batch, n)))

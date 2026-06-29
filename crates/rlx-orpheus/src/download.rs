@@ -16,7 +16,18 @@ pub const HF_ORPHEUS_FT_GGUF_REPO: &str = "unsloth/orpheus-3b-0.1-ft-GGUF";
 /// SNAC 24 kHz codec (PyTorch checkpoint — export to safetensors separately).
 pub const HF_SNAC_REPO: &str = "hubertsiuzdak/snac_24khz";
 
-pub const DEFAULT_ORPHEUS_QUANT: &str = "Q4_K_M";
+/// Default GGUF quant for Orpheus TTS. Q8_0 is the best size/quality tradeoff on
+/// the CPU GGUF reference path; F16 is also supported via `ORPHEUS_QUANT`.
+pub const DEFAULT_ORPHEUS_QUANT: &str = "Q8_0";
+
+/// Quant tag for Hub download — `ORPHEUS_QUANT` overrides [`DEFAULT_ORPHEUS_QUANT`].
+pub fn resolve_orpheus_quant() -> String {
+    std::env::var("ORPHEUS_QUANT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_ORPHEUS_QUANT.to_string())
+}
 
 pub const DEFAULT_ORPHEUS_DIR: &str = "/tmp/rlx-weights/orpheus";
 pub const DEFAULT_SNAC_DIR: &str = "/tmp/rlx-weights/snac";
@@ -152,7 +163,7 @@ pub fn fetch_snac_raw(cache_dir: &Path, dest: &Path) -> Result<PathBuf> {
 #[cfg(feature = "hf-download")]
 pub fn fetch_default() -> Result<(PathBuf, PathBuf)> {
     let cache = default_hf_cache_dir();
-    let orpheus = fetch_orpheus_gguf(&cache, &default_orpheus_dir(), DEFAULT_ORPHEUS_QUANT)?;
+    let orpheus = fetch_orpheus_gguf(&cache, &default_orpheus_dir(), &resolve_orpheus_quant())?;
     let snac = fetch_snac_raw(&cache, &default_snac_dir())?;
     print_snac_export_hint(&snac);
     Ok((orpheus, snac))

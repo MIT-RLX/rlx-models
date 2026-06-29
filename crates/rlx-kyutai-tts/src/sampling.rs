@@ -14,17 +14,102 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-/// Argmax over a logits vector.
+/// Moshi runs the LM in bf16 and casts to f32 before sampling (`logits.float()`).
+#[inline]
+fn f32_from_bf16(x: f32) -> f32 {
+    half::bf16::from_f32(x).to_f32()
+}
+
+/// Argmax over a logits vector (bf16-rounded, matching Moshi tie-break).
 pub fn argmax(logits: &Array1<f32>) -> u32 {
     let mut best = 0usize;
     let mut bv = f32::NEG_INFINITY;
     for (i, &v) in logits.iter().enumerate() {
+        let v = f32_from_bf16(v);
         if v > bv {
             bv = v;
             best = i;
         }
     }
     best as u32
+}
+
+/// Moshi `LMGen` uses one global RNG for text and DepFormer audio draws.
+#[derive(Debug, Clone)]
+pub struct StreamSampler {
+    rng: StdRng,
+    pub text_temperature: f32,
+    pub audio_temperature: f32,
+}
+
+impl StreamSampler {
+    pub fn new(seed: u64, text_temperature: f32, audio_temperature: f32) -> Self {
+        Self {
+            rng: StdRng::seed_from_u64(seed),
+            text_temperature,
+            audio_temperature,
+        }
+    }
+
+    pub fn sample_text(&mut self, logits: &Array1<f32>) -> u32 {
+        sample_with(&mut self.rng, logits, self.text_temperature, 25)
+    }
+
+    pub fn sample_audio(&mut self, logits: &Array1<f32>) -> u32 {
+        sample_with(&mut self.rng, logits, self.audio_temperature, 250)
+    }
+}
+
+fn sample_with(rng: &mut StdRng, logits: &Array1<f32>, temperature: f32, top_k: usize) -> u32 {
+    if temperature <= 0.0 {
+        return argmax(logits);
+    }
+    // Moshi `sample_token`: softmax(logits / temp), then `sample_top_k` on probs.
+    let inv_t = 1.0 / temperature;
+    let max = logits
+        .iter()
+        .map(|&v| f32_from_bf16(v))
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut probs: Vec<(usize, f32)> = logits
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let v = f32_from_bf16(v);
+            let p = ((v * inv_t) - max * inv_t).exp();
+            (i, p)
+        })
+        .collect();
+    let mut sum = 0.0f32;
+    for (_, p) in probs.iter_mut() {
+        sum += *p;
+    }
+    let inv_sum = 1.0 / sum;
+    for (_, p) in probs.iter_mut() {
+        *p *= inv_sum;
+    }
+    if top_k > 0 && top_k < probs.len() {
+        probs.select_nth_unstable_by(top_k - 1, |a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        probs.truncate(top_k);
+        let sub_sum: f32 = probs.iter().map(|(_, p)| *p).sum();
+        let inv_sub = 1.0 / sub_sum;
+        for (_, p) in probs.iter_mut() {
+            *p *= inv_sub;
+        }
+    }
+    // Gumbel-max (`probs / exponential()`), matching Moshi `multinomial`.
+    let mut best_id = 0u32;
+    let mut best_score = f32::NEG_INFINITY;
+    for (id, p) in probs {
+        let u: f32 = rng.r#gen::<f32>().max(1e-10);
+        let score = p / (-u.ln());
+        if score > best_score {
+            best_score = score;
+            best_id = id as u32;
+        }
+    }
+    best_id
 }
 
 /// Temperature + top-k multinomial sampler with a seeded RNG.
@@ -46,45 +131,7 @@ impl LogitsProcessor {
 
     /// Sample one token id from a `[card]` logits vector.
     pub fn sample(&mut self, logits: &Array1<f32>) -> u32 {
-        if self.temperature <= 0.0 {
-            return argmax(logits);
-        }
-        let mut scored: Vec<(usize, f32)> = logits
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| (i, v / self.temperature))
-            .collect();
-        // Top-k: partial sort by descending score.
-        if self.top_k > 0 && self.top_k < scored.len() {
-            scored.select_nth_unstable_by(self.top_k - 1, |a, b| {
-                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            scored.truncate(self.top_k);
-        }
-        // Stable softmax over the candidate set.
-        let max = scored
-            .iter()
-            .map(|(_, v)| *v)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let mut sum = 0.0f32;
-        for (_, v) in scored.iter_mut() {
-            *v = (*v - max).exp();
-            sum += *v;
-        }
-        let inv = 1.0 / sum;
-        for (_, v) in scored.iter_mut() {
-            *v *= inv;
-        }
-        // Cumulative draw.
-        let u: f32 = self.rng.r#gen::<f32>();
-        let mut acc = 0.0f32;
-        for (id, p) in &scored {
-            acc += *p;
-            if u <= acc {
-                return *id as u32;
-            }
-        }
-        scored.last().map(|(id, _)| *id as u32).unwrap_or(0)
+        sample_with(&mut self.rng, logits, self.temperature, self.top_k)
     }
 }
 

@@ -408,6 +408,13 @@ impl Qwen3Runner {
         self.device
     }
 
+    /// Consume the runner and return its underlying F32 [`Qwen3Generator`] for
+    /// use with the fused continuous-batching path. Returns `None` for
+    /// packed/quantized weights, which don't build the F32 generator.
+    pub fn into_generator(self) -> Option<Qwen3Generator> {
+        self.generator
+    }
+
     /// Bypass the cached decode path; every generated token re-runs the full
     /// prefill graph from scratch. Slow (O(N²)) but a reference for numerical
     /// parity checks against the cached path.
@@ -586,6 +593,49 @@ impl LmRunner for Qwen3Runner {
         Qwen3Runner::generate(self, prompt_ids, n_new, |tok| {
             let _ = on_token(tok);
         })
+    }
+    /// Host-driven decode: delegate to the F32 generator's raw-logits path
+    /// (`prefill_get_last_logits` seeds the KV cache and returns the last
+    /// row). Unavailable in packed (GGUF-quantized) mode.
+    fn prefill_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        let g = self
+            .generator
+            .as_mut()
+            .ok_or_else(|| anyhow!("F32 generator unavailable (packed_weights mode)"))?;
+        g.prefill_get_last_logits(prompt_ids)
+    }
+    fn decode_logits(&mut self, token: u32) -> Result<Vec<f32>> {
+        let g = self
+            .generator
+            .as_mut()
+            .ok_or_else(|| anyhow!("F32 generator unavailable (packed_weights mode)"))?;
+        g.decode_get_logits(token)
+    }
+    fn prefill_logits_reusing(
+        &mut self,
+        prompt: &[u32],
+        snap: &rlx_runtime::lm::SessionSnapshot,
+        reuse_len: usize,
+    ) -> Result<Vec<f32>> {
+        let g = self
+            .generator
+            .as_mut()
+            .ok_or_else(|| anyhow!("F32 generator unavailable (packed_weights mode)"))?;
+        g.prefill_with_reuse(prompt, snap.kv.clone(), reuse_len)
+    }
+    fn export_session(&self) -> Option<rlx_runtime::lm::SessionSnapshot> {
+        let g = self.generator.as_ref()?;
+        let (kv, tokens) = g.export_cache()?;
+        Some(rlx_runtime::lm::SessionSnapshot { kv, tokens })
+    }
+    fn restore_session(&mut self, snap: &rlx_runtime::lm::SessionSnapshot) -> bool {
+        match self.generator.as_mut() {
+            Some(g) => {
+                g.restore_cache(snap.kv.clone(), snap.tokens.clone());
+                true
+            }
+            None => false,
+        }
     }
 }
 

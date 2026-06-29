@@ -252,7 +252,22 @@ impl KyutaiTtsConfig {
         }
     }
 
-    /// Backbone temporal transformer stack as a [`TransformerConfig`].
+    /// Backbone temporal transformer stack as a [`crate::transformer::TransformerConfig`].
+    pub fn backbone_runtime(&self) -> crate::transformer::TransformerConfig {
+        crate::transformer::TransformerConfig {
+            d_model: self.dim,
+            num_heads: self.num_heads,
+            num_layers: self.num_layers,
+            dim_feedforward: (self.dim as f32 * self.hidden_scale).round() as usize,
+            causal: self.causal,
+            context: self.context,
+            max_period: self.max_period,
+            positional_embedding: self.positional_embedding,
+            cross_attention: self.cross_attention,
+        }
+    }
+
+    /// Backbone preset as the config-json [`TransformerConfig`] shape.
     pub fn backbone(&self) -> TransformerConfig {
         TransformerConfig {
             d_model: self.dim,

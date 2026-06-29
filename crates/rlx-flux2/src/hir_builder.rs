@@ -952,6 +952,7 @@ impl<'a> Flux2HirBuilder<'a> {
             Op::Rope {
                 head_dim: self.head_dim,
                 n_rot: self.rope_dim.min(self.head_dim),
+                style: rlx_ir::op::RopeStyle::NeoX,
             },
             vec![x, cos, sin],
             shape,

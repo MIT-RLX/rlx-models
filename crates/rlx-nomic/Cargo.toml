@@ -18,6 +18,10 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
 
+[dev-dependencies]
+# Read the FusedNomicLayer fusion counter to prove the parity test is non-vacuous.
+rlx-cpu = { workspace = true }
+
 [lints]
 workspace = true
 

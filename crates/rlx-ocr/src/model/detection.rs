@@ -55,6 +55,18 @@ pub fn build_detection_graph(
     wm: &mut WeightMap,
     cfg: DetectionGraphConfig,
 ) -> Result<(rlx_ir::Graph, std::collections::HashMap<String, Vec<f32>>)> {
+    build_detection_graph_to_stage(wm, cfg, None)
+}
+
+/// Build the detection graph, optionally stopping early and emitting the
+/// intermediate feature map. Stage numbering: `0` = after in_conv, `1..=6` =
+/// after each encoder down-level, `7..=12` = after each decoder up-level,
+/// `None` = full (logits → sigmoid mask). Used by the Metal-vs-CPU bisect.
+pub fn build_detection_graph_to_stage(
+    wm: &mut WeightMap,
+    cfg: DetectionGraphConfig,
+    stop: Option<u8>,
+) -> Result<(rlx_ir::Graph, std::collections::HashMap<String, Vec<f32>>)> {
     let mut b = OcrGraphBuilder::new("ocr_detection");
     let f = DType::F32;
     let batch = cfg.batch;
@@ -62,6 +74,32 @@ pub fn build_detection_graph(
     let mut w = cfg.width;
 
     let image = b.m().input("image", Shape::new(&[batch, 1, h, w], f));
+
+    // Sub-op bisection of the in_conv (stages 50..=53: after dw0/pw0/dw1/pw1).
+    if matches!(stop, Some(50..=53)) {
+        let s = stop.unwrap();
+        let c0 = DEPTH_SCALE[0];
+        let mut x = depthwise_conv(&mut b, wm, image, DET_DW_KEYS[0], 1, batch, h, w)?;
+        if s == 50 {
+            b.m().set_outputs(vec![x]);
+            return b.finish();
+        }
+        let (pw0_w, pw0_b) = DET_ONNX_PW[0];
+        x = pointwise_relu(&mut b, wm, x, pw0_w, pw0_b, 1, c0, batch, h, w)?;
+        if s == 51 {
+            b.m().set_outputs(vec![x]);
+            return b.finish();
+        }
+        x = depthwise_conv(&mut b, wm, x, DET_DW_KEYS[1], c0, batch, h, w)?;
+        if s == 52 {
+            b.m().set_outputs(vec![x]);
+            return b.finish();
+        }
+        let (pw1_w, pw1_b) = DET_ONNX_PW[1];
+        x = pointwise_relu(&mut b, wm, x, pw1_w, pw1_b, c0, c0, batch, h, w)?;
+        b.m().set_outputs(vec![x]);
+        return b.finish();
+    }
 
     let mut block = 0usize;
     let mut x = double_conv(
@@ -75,6 +113,10 @@ pub fn build_detection_graph(
         h,
         w,
     )?;
+    if stop == Some(0) {
+        b.m().set_outputs(vec![x]);
+        return b.finish();
+    }
     let in_conv_skip = (x, h, w);
 
     let mut x_down: Vec<(HirNodeId, usize, usize)> = Vec::new();
@@ -86,11 +128,16 @@ pub fn build_detection_graph(
         h /= 2;
         w /= 2;
         x_down.push((x, h, w));
+        if stop == Some(1 + level as u8) {
+            b.m().set_outputs(vec![x]);
+            return b.finish();
+        }
     }
 
     let mut x_up = x;
     let mut up_h = h;
     let mut up_w = w;
+    let mut up_stage = 7u8;
     for up_idx in (0..DEPTH_SCALE.len() - 1).rev() {
         let out_c = DEPTH_SCALE[up_idx];
         let cross_c = DEPTH_SCALE[up_idx];
@@ -132,6 +179,11 @@ pub fn build_detection_graph(
             up_h,
             up_w,
         )?;
+        if stop == Some(up_stage) {
+            b.m().set_outputs(vec![x_up]);
+            return b.finish();
+        }
+        up_stage += 1;
     }
 
     let out_w = b.load_param(wm, "out_conv.0.weight")?;
@@ -150,10 +202,16 @@ pub fn build_detection_graph(
         up_h,
         up_w,
     );
+    if stop == Some(13) {
+        b.m().set_outputs(vec![logits]);
+        return b.finish();
+    }
     let mask = sigmoid_nchw(&mut b.m(), logits);
     b.m().set_outputs(vec![mask]);
 
-    assert_weights_drained(wm, "detection graph")?;
+    if stop.is_none() {
+        assert_weights_drained(wm, "detection graph")?;
+    }
     b.finish()
 }
 

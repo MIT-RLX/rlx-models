@@ -18,8 +18,8 @@
 use anyhow::{Context, Result, bail};
 use rlx_llama32::MetalGgufPrefillMode;
 use rlx_orpheus::{
-    BackboneLoadOptions, GenerationConfig, OrpheusTts, VoiceCloneReference, lm_kv_decode_supported,
-    preferred_synth_device,
+    BackboneLoadOptions, GenerationConfig, OrpheusTts, SAMPLES_PER_FRAME, VoiceCloneReference,
+    lm_kv_decode_supported, preferred_synth_device,
 };
 use rlx_runtime::{Device, is_available};
 use rlx_whisper::{SAMPLE_RATE as WHISPER_RATE, WhisperRunner};
@@ -112,6 +112,7 @@ fn main() -> Result<()> {
                     row.transcript
                 );
             }
+            assert_synthesis_length(&args.text, row.codes, row.samples)?;
         }
     }
     Ok(())
@@ -139,6 +140,7 @@ struct Row {
     audio_s: f64,
     rtf: f64,
     codes: usize,
+    samples: usize,
     whisper_ok: bool,
     transcript: String,
 }
@@ -180,7 +182,7 @@ fn parse_args() -> Result<Args> {
     let mut clone_target = "I write my software in Rust because it is fast.".to_string();
     let mut warmup = 1u32;
     let mut iters = 1u32;
-    let mut max_tokens = 56u32;
+    let mut max_tokens = 120u32;
     let mut metal_prefill = rlx_llama32::MetalGgufPrefillMode::CpuF32;
 
     let raw: Vec<String> = std::env::args().skip(1).collect();
@@ -326,11 +328,9 @@ fn bench_named(
     metal_prefill: MetalGgufPrefillMode,
     whisper_dir: Option<&Path>,
 ) -> Result<Row> {
-    let backbone_opts = BackboneLoadOptions {
-        metal_prefill,
-        ..Default::default()
-    };
+    let backbone_opts = BackboneLoadOptions::for_tts(device).with_metal_prefill(metal_prefill);
     let mut tts = OrpheusTts::load_on_with_device(gguf, snac, device, backbone_opts)?;
+    // Sampling (upstream Orpheus): greedy argmax is degenerate for this TTS LM.
     tts.config = GenerationConfig {
         max_new_tokens: max_tokens,
         ..GenerationConfig::default()
@@ -360,6 +360,37 @@ fn bench_named(
     ))
 }
 
+fn expected_min_frames(text: &str) -> usize {
+    let words = text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .count()
+        .max(1);
+    (words + 1).max(4)
+}
+
+fn assert_synthesis_length(text: &str, codes: usize, samples: usize) -> Result<()> {
+    let min_frames = expected_min_frames(text);
+    let min_codes = min_frames * 7;
+    if codes < min_codes {
+        bail!("expected >= {min_codes} SNAC codes ({min_frames} frames) for {text:?}, got {codes}");
+    }
+    let frames = codes / 7;
+    let min_samples = min_frames * SAMPLES_PER_FRAME;
+    let max_samples = (frames + 1) * SAMPLES_PER_FRAME;
+    if samples < min_samples * 3 / 4 {
+        bail!(
+            "audio too short for {text:?}: {samples} samples ({:.2}s), expected >= {:.2}s",
+            samples as f64 / SAMPLE_RATE as f64,
+            min_samples as f64 / SAMPLE_RATE as f64
+        );
+    }
+    if samples > max_samples {
+        bail!("audio too long for {frames} frames: {samples} samples (max {max_samples})");
+    }
+    Ok(())
+}
+
 fn bench_clone(
     gguf: &Path,
     snac: &Path,
@@ -373,11 +404,9 @@ fn bench_clone(
     whisper_dir: Option<&Path>,
 ) -> Result<Row> {
     let reference = VoiceCloneReference::load_json(ref_json)?;
-    let backbone_opts = BackboneLoadOptions {
-        metal_prefill,
-        ..Default::default()
-    };
+    let backbone_opts = BackboneLoadOptions::for_tts(device).with_metal_prefill(metal_prefill);
     let mut tts = OrpheusTts::load_on_with_device(gguf, snac, device, backbone_opts)?;
+    // Sampling (upstream Orpheus): greedy argmax is degenerate for this TTS LM.
     tts.config = GenerationConfig {
         max_new_tokens: max_tokens,
         ..GenerationConfig::default()
@@ -432,6 +461,7 @@ fn row_from(
         audio_s,
         rtf,
         codes,
+        samples,
         whisper_ok,
         transcript,
     }

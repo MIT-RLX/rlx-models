@@ -550,6 +550,129 @@ test-locateanything-parity-real: fetch-locateanything
     RLX_LOCATEANYTHING_DIR=${RLX_LOCATEANYTHING_DIR:-.cache/locateanything/LocateAnything-3B} \
     cargo test -p rlx-models --test locateanything_hf_parity --release -- _real --test-threads 1
 
+# ---- Qwen2.5-VL (AIF / VLMEvalKit target) ----
+
+qwen25_vl_hf_dir := env_var_or_default("RLX_QWEN25_VL_HF_DIR", ".cache/qwen25-vl/Qwen2.5-VL-7B-Instruct")
+qwen25_vl_gguf_dir := env_var_or_default("RLX_QWEN25_VL_GGUF_DIR", ".cache/qwen25-vl/gguf")
+qwen25_vl_sample := env_var_or_default("RLX_QWEN25_VL_IMAGE", "crates/rlx-locateanything/fixtures/sample.jpg")
+
+# LM + mmproj GGUF for native RLX (~4.7 GB + ~1.4 GB mmproj at Q4_K_M).
+fetch-qwen25-vl-gguf QUANT="Q4_K_M":
+    mkdir -p {{qwen25_vl_gguf_dir}}
+    hf download ggml-org/Qwen2.5-VL-7B-Instruct-GGUF \
+        --include "Qwen2.5-VL-7B-Instruct-{{QUANT}}.gguf" \
+        --local-dir {{qwen25_vl_gguf_dir}}
+    hf download ggml-org/Qwen2.5-VL-7B-Instruct-GGUF \
+        --include "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf" \
+        --local-dir {{qwen25_vl_gguf_dir}}
+    @echo "GGUF ready: {{qwen25_vl_gguf_dir}}"
+
+# HuggingFace safetensors checkpoint for Python reference dumps (~15 GB).
+fetch-qwen25-vl-hf:
+    hf download Qwen/Qwen2.5-VL-7B-Instruct --local-dir {{qwen25_vl_hf_dir}}
+    @echo "HF checkpoint ready: {{qwen25_vl_hf_dir}}"
+
+# GGUF + HF checkpoint (parity / AIF eval).
+fetch-qwen25-vl: fetch-qwen25-vl-gguf fetch-qwen25-vl-hf
+
+# Python venv for local HF reference dumps (alternative to Docker).
+qwen25-vl-ref-venv:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY="${QWEN25_VL_PY:-python3}"
+    "$PY" -m venv .venv-qwen25-vl
+    .venv-qwen25-vl/bin/pip install --quiet --upgrade pip
+    .venv-qwen25-vl/bin/pip install --quiet \
+        "torch>=2.4" "torchvision>=0.19" "transformers>=4.49" "accelerate" \
+        "numpy>=1.26,<2" "safetensors>=0.4" "huggingface_hub[cli]" \
+        "pillow" "qwen-vl-utils"
+
+# Download weights + venv, then run native AIF dynamics parity vs HF.
+test-qwen25-vl-aif-native-parity-full: fetch-qwen25-vl qwen25-vl-ref-venv
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    export RLX_QWEN25_VL_HF_DIR="$root/{{qwen25_vl_hf_dir}}"
+    export RLX_QWEN25_VL_PYTHON="$root/.venv-qwen25-vl/bin/python"
+    export RLX_QWEN25_VL_GGUF_PATH="$root/{{qwen25_vl_gguf_dir}}/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+    export RLX_QWEN25_VL_MMPROJ_PATH="$root/{{qwen25_vl_gguf_dir}}/mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf"
+    export RLX_QWEN25_VL_IMAGE="$root/{{qwen25_vl_sample}}"
+    cd "$root"
+    just test-qwen25-vl-aif-native-parity
+
+test-qwen25-vl-aif-decode-step-parity-full: fetch-qwen25-vl qwen25-vl-ref-venv
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    export RLX_QWEN25_VL_HF_DIR="$root/{{qwen25_vl_hf_dir}}"
+    export RLX_QWEN25_VL_PYTHON="$root/.venv-qwen25-vl/bin/python"
+    export RLX_QWEN25_VL_GGUF_PATH="$root/{{qwen25_vl_gguf_dir}}/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+    export RLX_QWEN25_VL_MMPROJ_PATH="$root/{{qwen25_vl_gguf_dir}}/mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf"
+    export RLX_QWEN25_VL_IMAGE="$root/{{qwen25_vl_sample}}"
+    cd "$root"
+    just test-qwen25-vl-aif-decode-step-parity
+
+# Build HuggingFace reference Docker image for parity tests.
+build-qwen25-vl-ref:
+    bash crates/rlx-models/tests/qwen25_vl_parity_helpers/build.sh
+
+# Synthetic VLM quick check (vision + mRoPE prefill + decode, no weights).
+test-qwen25-vl-quick-check *ARGS:
+    cargo test -p rlx-qwen25-vl --test vlm_quick_check --test aif_decode_quick_check {{ARGS}}
+    cargo test -p rlx-models --test qwen25_vlm_quick_check --features qwen25-vl {{ARGS}}
+
+# HF parity via Docker reference dump + RLX GGUF (needs weights + image).
+test-qwen25-vl-parity *ARGS:
+    cargo test -p rlx-models --test qwen25_vl_hf_parity --features qwen25-vl --release -- --nocapture {{ARGS}}
+
+# Vision tower only — mmproj + image (no LM GGUF).
+test-qwen25-vl-vision-parity *ARGS:
+    cargo test -p rlx-models --test qwen25_vl_hf_parity qwen25_vl_vision_embed_parity --features qwen25-vl --release -- --nocapture {{ARGS}}
+
+# AIF μ-guided decode vs HF reference (needs LM GGUF + docker/python reference with attentions).
+test-qwen25-vl-aif-parity *ARGS:
+    cargo test -p rlx-models --test qwen25_vl_hf_parity qwen25_vl_aif_mu_decode --features qwen25-vl --release -- --nocapture {{ARGS}}
+
+# Paper AIF algorithm unit tests (Eq. 3–5, no weights).
+test-qwen25-vl-aif-algo *ARGS:
+    cargo test -p rlx-qwen25-vl --test aif_paper_algo --test aif_decode_quick_check {{ARGS}}
+
+# Native AIF probe (graph Q/K vs CPU replay, synthetic).
+test-qwen25-vl-native-probe *ARGS:
+    cargo test -p rlx-qwen25-vl --test native_probe --test aif_paper_algo {{ARGS}}
+
+# Native AIF probe + masked decode on GPU backends (needs --features all-backends).
+test-qwen25-vl-aif-backends *ARGS:
+    cargo test -p rlx-qwen25-vl --test aif_backend_probe {{ARGS}}
+
+# Native AIF dynamics vs HF reference (needs LM GGUF + docker reference with attentions).
+test-qwen25-vl-aif-native-parity *ARGS:
+    cargo test -p rlx-models --test qwen25_vl_hf_parity qwen25_vl_aif_native_dynamics --features qwen25-vl --release -- --nocapture {{ARGS}}
+
+# Decode-step AIF dynamics vs HF (RLX_AIF_DYNAMICS=decode_step in reference dump).
+test-qwen25-vl-aif-decode-step-parity *ARGS:
+    cargo test -p rlx-models --test qwen25_vl_hf_parity qwen25_vl_aif_native_decode_step_dynamics --features qwen25-vl --release -- --nocapture {{ARGS}}
+
+# Export HF AIF probes for a VLMEvalKit JSONL (needs RLX_QWEN25_VL_HF_DIR).
+export-qwen25-vl-aif-probes *ARGS:
+    python3 scripts/aif_export_probes.py {{ARGS}}
+
+# Baseline vs AIF eval on JSONL (see examples/aif_eval.rs).
+eval-qwen25-vl-aif *ARGS:
+    cargo run -p rlx-qwen25-vl --example aif_eval --release -- {{ARGS}}
+
+# Native VLMEvalKit eval (RealWorldQA / TextVQA TSV or JSONL).
+eval-qwen25-vl-vlmevalkit *ARGS:
+    cargo run -p rlx-qwen25-vl --example vlmevalkit_eval --release -- {{ARGS}}
+
+# AIF decode-step probe unit tests (synthetic).
+test-qwen25-vl-aif-decode-step *ARGS:
+    cargo test -p rlx-qwen25-vl --test aif_decode_step {{ARGS}}
+
+# VLMEvalKit loader/scoring unit tests.
+test-qwen25-vl-vlmevalkit *ARGS:
+    cargo test -p rlx-qwen25-vl eval::vlmevalkit {{ARGS}}
+
 # ---- Florence-2 (DaViT + BART vision-language) ----
 
 florence2_dir := env_var_or_default("RLX_FLORENCE2_DIR", ".cache/florence2/Florence-2-large")

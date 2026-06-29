@@ -1,8 +1,7 @@
-//! GPU LM quick check (env `RLX_MOSHI_GPU_SMOKE=1`, Metal/CUDA weights).
+//! Native GPU LM quick check (env `RLX_MOSHI_GPU_SMOKE=1`, Metal/CUDA weights).
 
 use rlx_moshi::{
-    GenerationConfig, MoshiCheckpoint, MoshiSession, MoshiVariant, device_ready, gpu_lm_available,
-    parse_moshi_device,
+    GenerationConfig, MoshiCheckpoint, MoshiSession, MoshiVariant, device_ready, parse_moshi_device,
 };
 use rlx_runtime::Device;
 
@@ -14,7 +13,7 @@ fn gpu_one_way_smoke() {
     }
     let device_name = std::env::var("RLX_MOSHI_GPU_DEVICE").unwrap_or_else(|_| "metal".into());
     let device = parse_moshi_device(&device_name).expect("device");
-    if !device_ready(device) || !gpu_lm_available(device) {
+    if !device_ready(device) {
         eprintln!("skip: {device:?} not available");
         return;
     }

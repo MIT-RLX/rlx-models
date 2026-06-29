@@ -9,4 +9,4 @@ mod rlx;
 #[cfg(feature = "llama")]
 pub use options::BackboneLoadOptions;
 #[cfg(feature = "llama")]
-pub use rlx::{BackboneModel, DEFAULT_COMPILE_SEQ_CAP, DEFAULT_N_CTX};
+pub use rlx::{BackboneModel, DEFAULT_COMPILE_SEQ_CAP, DEFAULT_N_CTX, TTS_COMPILE_SEQ_CAP};

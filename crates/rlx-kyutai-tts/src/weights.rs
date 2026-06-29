@@ -98,6 +98,36 @@ pub fn decode_tensor(dtype: Dtype, raw: &[u8]) -> Result<Vec<f32>> {
     }
 }
 
+/// Storage dtype for safetensors round-trip tests (F32 / F16 / BF16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeightStorageDtype {
+    F32,
+    F16,
+    Bf16,
+}
+
+/// Widen f32 values through a narrower storage dtype (simulates checkpoint precision).
+pub fn roundtrip_f32_via_storage(data: &[f32], storage: WeightStorageDtype) -> Vec<f32> {
+    match storage {
+        WeightStorageDtype::F32 => data.to_vec(),
+        WeightStorageDtype::F16 => data.iter().map(|&v| f16::from_f32(v).to_f32()).collect(),
+        WeightStorageDtype::Bf16 => data.iter().map(|&v| bf16::from_f32(v).to_f32()).collect(),
+    }
+}
+
+/// Clone a weight map with every tensor cast through `storage` and back to f32.
+pub fn roundtrip_weight_map(weights: &WeightMap, storage: WeightStorageDtype) -> WeightMap {
+    weights
+        .iter()
+        .map(|(k, (data, shape))| {
+            (
+                k.clone(),
+                (roundtrip_f32_via_storage(data, storage), shape.clone()),
+            )
+        })
+        .collect()
+}
+
 /// Strip a leading prefix from every weight key, returning a fresh map.
 pub fn strip_prefix(weights: &WeightMap, prefix: &str) -> WeightMap {
     let mut out = WeightMap::new();
@@ -120,30 +150,21 @@ pub fn missing_keys(weights: &WeightMap, expected: &[String]) -> Vec<String> {
 
 /// Expected key inventory for the Kyutai TTS 1.6B en/fr checkpoint.
 ///
-/// This is the published key layout under
-/// `kyutai/tts-1.6b-en_fr/dsm_tts_1e68beda@240.safetensors`. Keys are derived
-/// directly from the architecture in [`crate::config::KyutaiTtsConfig`]:
-///
-/// - Text embedding + text out projection
-/// - Per-codebook input embeddings (low-rank pair `A` / `B`)
-/// - Backbone temporal layers (norm1, norm2, self_attn, gating, optional cross_attn + norm_cross)
-/// - DepFormer per-head transformer slices (in_proj, out_proj, FFN, RMSNorm)
-/// - Conditioner tables (LUT + tensor)
-/// - Output RMSNorm
-///
-/// The map is deterministic — useful for parity tests against any safetensors
-/// file you point at it.
+/// Matches `kyutai/tts-1.6b-en_fr/dsm_tts_1e68beda@240.safetensors` as loaded by
+/// [`crate::model::KyutaiTtsModel`], [`crate::depformer_stream::DepformerStream`],
+/// and [`crate::model::ConditionerBundle`].
 pub fn expected_kyutai_tts_keys(cfg: &crate::config::KyutaiTtsConfig) -> Vec<String> {
     let mut keys = Vec::new();
 
-    // Text embedding + output projection.
+    // Text embedding (demuxed second stream).
     keys.push("text_emb.weight".into());
+    keys.push("text_emb.out1.weight".into());
+    keys.push("text_emb.out2.weight".into());
     keys.push("text_linear.weight".into());
 
-    // Per-codebook low-rank input embeddings (A: [card, rank], B: [rank, dim]).
+    // Per-codebook backbone input embeddings (dense `[card, dim]`).
     for q in 0..cfg.n_q {
-        keys.push(format!("emb.{q}.low_rank.a"));
-        keys.push(format!("emb.{q}.low_rank.b"));
+        keys.push(format!("emb.{q}.weight"));
     }
 
     // Backbone temporal transformer layers.
@@ -156,36 +177,54 @@ pub fn expected_kyutai_tts_keys(cfg: &crate::config::KyutaiTtsConfig) -> Vec<Str
         keys.push(format!("{p}gating.linear_in.weight"));
         keys.push(format!("{p}gating.linear_out.weight"));
         if cfg.cross_attention {
-            keys.push(format!("{p}norm_cross.alpha"));
-            keys.push(format!("{p}cross_attention.in_proj_q.weight"));
-            keys.push(format!("{p}cross_attention.in_proj_k.weight"));
-            keys.push(format!("{p}cross_attention.in_proj_v.weight"));
+            keys.push(format!("{p}norm_cross.weight"));
+            keys.push(format!("{p}norm_cross.bias"));
+            keys.push(format!("{p}cross_attention.in_proj_weight"));
             keys.push(format!("{p}cross_attention.out_proj.weight"));
         }
     }
 
-    // DepFormer: distinct heads from the schedule (1.6B → 11 heads for 32 codebooks).
-    let mut heads: Vec<usize> = cfg.depformer.weights_per_step_schedule.clone();
-    heads.sort_unstable();
-    heads.dedup();
-    for h in heads {
-        let p = format!("depformer.heads.{h}.");
-        keys.push(format!("{p}in_proj.weight"));
-        keys.push(format!("{p}out_proj.weight"));
-        keys.push(format!("{p}gating.linear_in.weight"));
-        keys.push(format!("{p}gating.linear_out.weight"));
-        keys.push(format!("{p}norm.alpha"));
+    // DepFormer depth decoder.
+    let num_heads_unique = cfg
+        .depformer
+        .weights_per_step_schedule
+        .iter()
+        .copied()
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(11);
+    for h in 0..num_heads_unique {
+        keys.push(format!("depformer_in.{h}.weight"));
+    }
+    for cb in 0..cfg.dep_q {
+        keys.push(format!("linears.{cb}.weight"));
+    }
+    keys.push("depformer_text_emb.weight".into());
+    keys.push("depformer_text_emb.low_rank.weight".into());
+    for cb in 0..cfg.dep_q.saturating_sub(1) {
+        keys.push(format!("depformer_emb.{cb}.weight"));
+        keys.push(format!("depformer_emb.{cb}.low_rank.weight"));
+    }
+    for li in 0..cfg.depformer.num_layers {
+        let p = format!("depformer.layers.{li}.");
+        keys.push(format!("{p}norm1.alpha"));
+        keys.push(format!("{p}norm2.alpha"));
+        keys.push(format!("{p}self_attn.in_proj_weight"));
+        keys.push(format!("{p}self_attn.out_proj.weight"));
+        for h in 0..num_heads_unique {
+            keys.push(format!("{p}gating.{h}.linear_in.weight"));
+            keys.push(format!("{p}gating.{h}.linear_out.weight"));
+        }
     }
 
-    // Conditioner tables: one per named conditioner.
-    for name in cfg.conditioners.keys() {
-        // LUT and tensor conditioners both ship a `.weight` table for their
-        // embedding/projection, plus tensor conditioners include an
-        // optional `.output_proj.weight`.
-        keys.push(format!("conditioners.{name}.weight"));
-    }
+    // Conditioners (`condition_provider` prefix in the checkpoint).
+    let pfx = "condition_provider.conditioners.";
+    keys.push(format!("{pfx}cfg.embed.weight"));
+    keys.push(format!("{pfx}cfg.output_proj.weight"));
+    keys.push(format!("{pfx}control.embed.weight"));
+    keys.push(format!("{pfx}control.output_proj.weight"));
+    keys.push(format!("{pfx}speaker_wavs.output_proj.weight"));
 
-    // Final RMSNorm on the temporal stream.
     keys.push("out_norm.alpha".into());
 
     keys
@@ -273,32 +312,63 @@ mod tests {
     fn expected_keys_inventory_covers_published_config() {
         let cfg = crate::config::KyutaiTtsConfig::v1_6b_en_fr();
         let keys = expected_kyutai_tts_keys(&cfg);
-        // Spot-check: 33 codebooks would be wrong; n_q is 32 → 64 low-rank entries.
-        let low_rank_keys = keys.iter().filter(|k| k.starts_with("emb.")).count();
-        assert_eq!(low_rank_keys, 2 * cfg.n_q, "expected 2 keys per codebook");
-        // 16 backbone layers × {2 norms + 2 self-attn + 2 gate + (5 cross when enabled)}.
-        let per_layer = 6 + if cfg.cross_attention { 5 } else { 0 };
+        let emb_keys = keys.iter().filter(|k| k.starts_with("emb.")).count();
+        assert_eq!(emb_keys, cfg.n_q, "one dense emb per codebook");
+        let per_layer = 6 + if cfg.cross_attention { 4 } else { 0 };
         let backbone_keys = keys
             .iter()
             .filter(|k| k.starts_with("transformer.layers."))
             .count();
         assert_eq!(backbone_keys, cfg.num_layers * per_layer);
-        // DepFormer: 11 unique heads × 5 weights each = 55.
-        let head_keys = keys
+        let dep_layer_keys = keys
             .iter()
-            .filter(|k| k.starts_with("depformer.heads."))
+            .filter(|k| k.starts_with("depformer.layers."))
             .count();
-        assert_eq!(head_keys, 11 * 5);
-        // 3 conditioners.
-        let cond_keys = keys
-            .iter()
-            .filter(|k| k.starts_with("conditioners."))
-            .count();
-        assert_eq!(cond_keys, cfg.conditioners.len());
-        // text_emb + text_linear + out_norm.
-        for sentinel in ["text_emb.weight", "text_linear.weight", "out_norm.alpha"] {
+        assert_eq!(dep_layer_keys, cfg.depformer.num_layers * (4 + 11 * 2));
+        assert_eq!(
+            keys.iter()
+                .filter(|k| k.starts_with("depformer_in."))
+                .count(),
+            11
+        );
+        assert_eq!(
+            keys.iter().filter(|k| k.starts_with("linears.")).count(),
+            cfg.dep_q
+        );
+        for sentinel in [
+            "text_emb.out1.weight",
+            "text_linear.weight",
+            "out_norm.alpha",
+            "condition_provider.conditioners.cfg.embed.weight",
+        ] {
             assert!(keys.contains(&sentinel.to_string()), "missing {sentinel}");
         }
+    }
+
+    /// When real weights are on disk, every expected key must be present.
+    #[test]
+    fn expected_keys_match_checkpoint_when_present() {
+        let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| crate::download::default_kyutai_tts_dir());
+        let path = dir.join(crate::download::TTS_WEIGHTS_FILE);
+        if !path.is_file() {
+            eprintln!(
+                "skip: no weights at {} (fetch with --fetch)",
+                path.display()
+            );
+            return;
+        }
+        let cfg = crate::config::KyutaiTtsConfig::v1_6b_en_fr();
+        let weights = load_weight_map(&path).expect("load checkpoint");
+        let expected = expected_kyutai_tts_keys(&cfg);
+        let gaps = missing_keys(&weights, &expected);
+        assert!(
+            gaps.is_empty(),
+            "checkpoint missing {} expected keys (first 5: {:?})",
+            gaps.len(),
+            &gaps[..gaps.len().min(5)]
+        );
     }
 
     #[test]

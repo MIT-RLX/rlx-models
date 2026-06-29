@@ -73,7 +73,7 @@ impl GgufModelFamily {
             // explicit short tags for safetensors sidecars that name
             // them differently. Used by rlx-omnicoder which delegates
             // here. PLAN.md M4.
-            Self::Qwen3 => matches!(arch, "qwen3" | "qwen2" | "qwen25" | "qwen2_5"),
+            Self::Qwen3 => matches!(arch, "qwen3" | "qwen2" | "qwen25" | "qwen2_5" | "qwen2vl"),
             // Qwen3.6 reuses the Qwen3.5 trunk; `Qwen35Config::from_gguf`
             // reads its metadata keys under the `qwen36.*` prefix. Routes
             // through the same runner. PLAN.md M1.
@@ -199,7 +199,7 @@ pub fn gguf_safetensors_only_hint(runner: &str, path: &Path, arch: &str) -> Stri
 /// Map a GGUF architecture tag to the runner family that should load it.
 pub fn gguf_family_for_arch(arch: &str) -> Option<GgufModelFamily> {
     match arch {
-        "qwen3" | "qwen2" | "qwen25" | "qwen2_5" => Some(GgufModelFamily::Qwen3),
+        "qwen3" | "qwen2" | "qwen25" | "qwen2_5" | "qwen2vl" => Some(GgufModelFamily::Qwen3),
         "qwen35" | "qwen35moe" | "qwen36" | "qwen36moe" => Some(GgufModelFamily::Qwen35),
         // Only the plain `llama` arch tag is fully wired today. The
         // other Llama-shaped arches (mistral3/4, phi3/4, granite*,

@@ -14,8 +14,9 @@ pub struct BackboneLoadOptions {
     /// Force incremental KV decode vs packed runner. `None` uses env
     /// (`ORPHEUS_METAL_KV`, `ORPHEUS_PACKED_LM`, …).
     pub use_fast_kv: Option<bool>,
-    /// When true (default for [`Self::synthesis`]), use dynamic decode and skip
-    /// the bucket compile ladder unless `ORPHEUS_BUCKET_DECODE=1`.
+    /// When true, prefer dynamic per-`past_seq` decode (lower peak compile RAM).
+    /// When false (default for [`Self::for_tts`]), bucket decode is used when the
+    /// soft RAM budget allows — avoids unbounded Metal graph growth during TTS.
     pub memory_efficient: bool,
 }
 
@@ -47,15 +48,32 @@ impl BackboneLoadOptions {
 
     /// Pick GPU path when an accelerator is available and low-memory mode is off.
     pub fn for_device(device: Device) -> Self {
-        if super::rlx::low_mem_mode() || matches!(device, Device::Cpu) {
-            Self::synthesis()
-        } else if matches!(
-            device,
-            Device::Metal | Device::Cuda | Device::Rocm | Device::Gpu | Device::Vulkan
-        ) {
-            Self::gpu(device)
-        } else {
-            Self::synthesis()
+        Self::for_tts(device)
+    }
+
+    /// TTS-optimized load path for every RLX backend (Metal, CUDA, ROCm, wgpu, CPU).
+    ///
+    /// * CPU / low-RAM: [`Self::synthesis`] — CpuF32 prefill, incremental KV decode.
+    /// * Metal: CPU GGUF prefill + bucket decode (Q8_0 Metal HIR decode diverges today).
+    /// * CUDA / ROCm: on-device prefill + bucket decode (bounded compile RAM).
+    /// * wgpu / Vulkan: CPU GGUF prefill + portable GPU KV decode.
+    pub fn for_tts(device: Device) -> Self {
+        if super::rlx::low_mem_mode() {
+            return Self::synthesis();
+        }
+        match device {
+            Device::Cpu => Self::synthesis(),
+            Device::Metal | Device::Cuda | Device::Rocm => Self {
+                metal_prefill: metal_prefill_for_device(device),
+                use_fast_kv: Some(true),
+                memory_efficient: false,
+            },
+            Device::Gpu | Device::Vulkan => Self {
+                metal_prefill: MetalGgufPrefillMode::CpuF32,
+                use_fast_kv: Some(true),
+                memory_efficient: false,
+            },
+            _ => Self::synthesis(),
         }
     }
 
@@ -100,8 +118,8 @@ fn metal_prefill_for_device(device: Device) -> MetalGgufPrefillMode {
         }
     }
     match device {
-        Device::Metal => MetalGgufPrefillMode::MetalF32,
-        Device::Gpu | Device::Vulkan => MetalGgufPrefillMode::CpuF32,
+        // Default reference path: Llama32Generator routes GGUF to CPU HIR on Metal.
+        Device::Metal | Device::Gpu | Device::Vulkan => MetalGgufPrefillMode::CpuF32,
         _ => MetalGgufPrefillMode::Auto,
     }
 }
@@ -111,9 +129,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gpu_on_metal_uses_metal_f32_prefill() {
+    fn gpu_on_metal_uses_cpu_gguf_prefill() {
         let opts = BackboneLoadOptions::gpu(Device::Metal);
-        assert_eq!(opts.metal_prefill, MetalGgufPrefillMode::MetalF32);
+        assert_eq!(opts.metal_prefill, MetalGgufPrefillMode::CpuF32);
     }
 
     #[test]
@@ -121,5 +139,27 @@ mod tests {
         let opts = BackboneLoadOptions::for_device(Device::Gpu);
         assert_eq!(opts.metal_prefill, MetalGgufPrefillMode::CpuF32);
         assert_eq!(opts.use_fast_kv, Some(true));
+    }
+
+    #[test]
+    fn for_device_matches_for_tts() {
+        let opts = BackboneLoadOptions::for_device(Device::Metal);
+        let tts = BackboneLoadOptions::for_tts(Device::Metal);
+        assert_eq!(opts.metal_prefill, tts.metal_prefill);
+        assert_eq!(opts.memory_efficient, tts.memory_efficient);
+    }
+
+    #[test]
+    fn for_tts_enables_bucket_decode_budget_on_metal() {
+        let opts = BackboneLoadOptions::for_tts(Device::Metal);
+        assert_eq!(opts.metal_prefill, MetalGgufPrefillMode::CpuF32);
+        assert!(!opts.memory_efficient);
+    }
+
+    #[test]
+    fn for_tts_cpu_uses_synthesis() {
+        let opts = BackboneLoadOptions::for_tts(Device::Cpu);
+        assert!(opts.memory_efficient);
+        assert_eq!(opts.metal_prefill, MetalGgufPrefillMode::CpuF32);
     }
 }

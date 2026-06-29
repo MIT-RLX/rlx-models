@@ -5,6 +5,7 @@ use crate::backbone::BackboneLoadOptions;
 use crate::download::{
     DEFAULT_ORPHEUS_QUANT, default_hf_cache_dir, default_orpheus_dir, default_snac_dir,
     fetch_default, fetch_orpheus_gguf, fetch_snac_raw, print_snac_export_hint,
+    resolve_orpheus_quant,
 };
 use crate::{GenerationConfig, OrpheusTts, VOICES, resolve_orpheus_device};
 use anyhow::{Context, Result, anyhow, bail};
@@ -29,7 +30,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut download_all = false;
     let mut download_orpheus = false;
     let mut download_snac = false;
-    let mut download_quant = DEFAULT_ORPHEUS_QUANT.to_string();
+    let mut download_quant = resolve_orpheus_quant();
     let mut download_orpheus_dir: Option<PathBuf> = None;
     let mut download_snac_dir: Option<PathBuf> = None;
 
@@ -64,7 +65,13 @@ pub fn run(args: &[String]) -> Result<()> {
             "--seed" => {
                 seed = Some(req(args, &mut i)?.parse().context("--seed: u64")?);
             }
-            "--greedy" => greedy = true,
+            // No-value flags must advance `i` themselves — `req()` consumes a
+            // flag+value pair, but these set a bool, so without `i += 1` the
+            // arg loop spins forever (100% CPU, never reaches synthesis).
+            "--greedy" => {
+                greedy = true;
+                i += 1;
+            }
             "--metal-prefill" => {
                 let s = req(args, &mut i)?;
                 metal_prefill =
@@ -72,9 +79,18 @@ pub fn run(args: &[String]) -> Result<()> {
                         anyhow!("--metal-prefill: expected auto|cpu|packed|metal")
                     })?);
             }
-            "--download" | "--fetch" => download_all = true,
-            "--download-orpheus" | "--fetch-orpheus" => download_orpheus = true,
-            "--download-snac" | "--fetch-snac" => download_snac = true,
+            "--download" | "--fetch" => {
+                download_all = true;
+                i += 1;
+            }
+            "--download-orpheus" | "--fetch-orpheus" => {
+                download_orpheus = true;
+                i += 1;
+            }
+            "--download-snac" | "--fetch-snac" => {
+                download_snac = true;
+                i += 1;
+            }
             "--quant" => download_quant = req(args, &mut i)?,
             "--download-dir" | "--orpheus-dir" => {
                 download_orpheus_dir = Some(req(args, &mut i)?.into());
@@ -109,7 +125,7 @@ pub fn run(args: &[String]) -> Result<()> {
                      --download         Fetch Orpheus GGUF + SNAC raw weights from HF\n\
                      --download-orpheus Download finetune GGUF only\n\
                      --download-snac    Download SNAC PyTorch weights only\n\
-                     --quant Q4_K_M     GGUF quant for --download-orpheus (default Q4_K_M)\n\
+                     --quant Q8_0       GGUF quant for --download-orpheus (default Q8_0)\n\
                      --download-dir DIR Orpheus GGUF destination (default /tmp/rlx-weights/orpheus)\n\
                      --snac-dir DIR     SNAC raw weights destination (default /tmp/rlx-weights/snac)\n\
                      --list-voices"
@@ -147,7 +163,7 @@ pub fn run(args: &[String]) -> Result<()> {
         runtime.lm, runtime.snac_coreml
     );
 
-    let mut backbone_opts = BackboneLoadOptions::for_device(runtime.lm);
+    let mut backbone_opts = BackboneLoadOptions::for_tts(runtime.lm);
     if let Some(m) = metal_prefill {
         if m == rlx_llama32::MetalGgufPrefillMode::PackedGguf {
             backbone_opts = BackboneLoadOptions::fast_prefill();

@@ -2,15 +2,14 @@
 
 use crate::checkpoint::{KyutaiTtsCheckpoint, KyutaiTtsVoice};
 use crate::config::KyutaiTtsConfig;
-use crate::device::parse_kyutai_tts_device;
+use crate::device::resolve_kyutai_tts_device;
 use crate::download::{
-    default_kyutai_tts_dir, default_mimi_dir, ensure_weights_checkpoint,
+    default_kyutai_tts_dir, default_mimi_dir, default_voices_dir, ensure_weights_checkpoint,
     fetch_kyutai_tts_checkpoint,
 };
 use crate::session::{GenerationConfig, KyutaiTtsSession};
 use anyhow::{Context, Result};
 use rlx_mimi::audio::write_wav_mono;
-use rlx_runtime::Device;
 use std::env;
 use std::path::PathBuf;
 
@@ -25,12 +24,13 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut mode = Mode::Synthesize;
     let mut model_dir: Option<PathBuf> = None;
     let mut mimi_dir: Option<PathBuf> = None;
+    let mut voices_dir: Option<PathBuf> = None;
     let mut prompt = String::from("Hello from Kyutai TTS.");
     let mut out_wav: Option<PathBuf> = None;
     let mut max_steps = 100usize;
-    let mut device = Device::Cpu;
+    let mut device_name = String::from("auto");
     let mut checkpoint = KyutaiTtsCheckpoint::from_env_or_default();
-    let mut voice = KyutaiTtsVoice::unconditional();
+    let mut voice = KyutaiTtsVoice::new(crate::download::DEFAULT_VOICE_NAME);
 
     let mut i = 0;
     while i < args.len() {
@@ -46,7 +46,11 @@ pub fn run(args: &[String]) -> Result<()> {
             "--voice" => {
                 i += 1;
                 let name = args.get(i).context("--voice NAME")?;
-                voice = KyutaiTtsVoice::new(name.clone());
+                voice = if name.is_empty() {
+                    KyutaiTtsVoice::unconditional()
+                } else {
+                    KyutaiTtsVoice::new(name.clone())
+                };
             }
             "--model-dir" => {
                 i += 1;
@@ -55,6 +59,10 @@ pub fn run(args: &[String]) -> Result<()> {
             "--mimi-dir" => {
                 i += 1;
                 mimi_dir = Some(PathBuf::from(args.get(i).context("--mimi-dir path")?));
+            }
+            "--voices-dir" => {
+                i += 1;
+                voices_dir = Some(PathBuf::from(args.get(i).context("--voices-dir path")?));
             }
             "--prompt" => {
                 i += 1;
@@ -70,7 +78,7 @@ pub fn run(args: &[String]) -> Result<()> {
             }
             "--device" => {
                 i += 1;
-                device = parse_kyutai_tts_device(args.get(i).context("--device NAME")?)?;
+                device_name = args.get(i).context("--device NAME")?.clone();
             }
             "--help" | "-h" => {
                 print_help();
@@ -83,6 +91,9 @@ pub fn run(args: &[String]) -> Result<()> {
 
     let model_dir = model_dir.unwrap_or_else(default_kyutai_tts_dir);
     let mimi_dir = mimi_dir.unwrap_or_else(default_mimi_dir);
+    let voices_dir = voices_dir.unwrap_or_else(default_voices_dir);
+
+    let device = resolve_kyutai_tts_device(&device_name)?;
 
     eprintln!("kyutai-tts: {}", model_dir.display());
     eprintln!("mimi:       {}", mimi_dir.display());
@@ -111,6 +122,7 @@ pub fn run(args: &[String]) -> Result<()> {
 
             let mut session =
                 KyutaiTtsSession::open_with_checkpoint(&model_dir, &mimi_dir, device, checkpoint)?;
+            session.set_voices_dir(&voices_dir);
             session.set_voice(voice);
             let gen_cfg = GenerationConfig {
                 max_steps,
@@ -181,10 +193,11 @@ Usage:
 Options:
   --model-dir DIR   Kyutai TTS dir (default: .cache/kyutai-tts-1.6b-en_fr)
   --mimi-dir DIR    Mimi codec dir (default: RLX_MIMI_DIR or .cache/mimi)
+  --voices-dir DIR  Voice embedding cache (default: RLX_KYUTAI_TTS_VOICES_DIR or .cache/kyutai-tts-voices)
   --prompt TEXT     Text to synthesise
   --out-wav PATH    Output WAV (default: /tmp/kyutai-tts-out.wav)
   --max-steps N     Frames to generate (default: 100 ≈ 8 s @ 12.5 Hz)
-  --voice NAME      Voice embedding from kyutai/tts-voices (default: unconditional)
+  --voice NAME      Voice from kyutai/tts-voices (default: alba-mackenna/casual.wav; use \"\" for unconditional)
   --device NAME     Inference device (cpu, metal, cuda, auto, …)
   --checkpoint NAME Weight preset: 1.6b-en_fr (default)
   --fetch           Download checkpoint + Mimi codec
@@ -192,6 +205,7 @@ Options:
 
 Env:
   RLX_KYUTAI_TTS_DIR         Override model dir (skips default cache naming)
+  RLX_KYUTAI_TTS_VOICES_DIR  Voice embedding cache (kyutai/tts-voices)
   RLX_KYUTAI_TTS_CHECKPOINT  Default checkpoint preset (1.6b-en_fr)
 "
     );

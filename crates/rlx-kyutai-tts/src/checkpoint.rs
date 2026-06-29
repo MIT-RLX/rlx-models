@@ -85,6 +85,23 @@ impl KyutaiTtsCheckpoint {
             .and_then(|s| Self::parse(&s))
             .unwrap_or(Self::V1_6bEnFr)
     }
+
+    /// HuggingFace repo for pre-computed voice embeddings.
+    pub fn voice_repo(self) -> &'static str {
+        crate::download::HF_KYUTAI_TTS_VOICES_REPO
+    }
+
+    /// Filename suffix for voice `.safetensors` (matches upstream `model_id` in the LM checkpoint).
+    pub fn voice_embedding_suffix(self) -> &'static str {
+        match self {
+            Self::V1_6bEnFr => ".1e68beda@240.safetensors",
+        }
+    }
+
+    /// HF path for a voice name (e.g. `alba-mackenna/casual.wav.1e68beda@240.safetensors`).
+    pub fn voice_hf_filename(self, voice_name: &str) -> String {
+        format!("{}{}", voice_name, self.voice_embedding_suffix())
+    }
 }
 
 /// Voice identifier — resolved against `kyutai/tts-voices` (pre-computed 512-D embeddings).

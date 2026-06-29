@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
+rlx-distributed = { workspace = true }
 rlx-ir = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-runtime = { workspace = true }

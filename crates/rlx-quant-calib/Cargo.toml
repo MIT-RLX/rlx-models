@@ -1,0 +1,20 @@
+[package]
+name = "rlx-quant-calib"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Calibration / learned post-training quantization (AWQ, GPTQ, DWQ, dynamic) for RLX"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-gguf = { workspace = true }
+half = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

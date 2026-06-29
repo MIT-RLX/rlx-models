@@ -194,6 +194,7 @@ impl PreTransformerGpu {
                     batch: 1,
                     seq: t,
                     with_kv_outputs: false,
+                    with_qk_outputs: false,
                     with_lm_head: false,
                     last_logits_only: false,
                     profile: Some(profile),

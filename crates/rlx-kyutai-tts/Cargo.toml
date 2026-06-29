@@ -20,8 +20,11 @@ half = { workspace = true }
 
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
+rlx-ir = { workspace = true }
 rlx-mimi = { workspace = true }
 rlx-runtime = { workspace = true }
+sentencepiece = "0.11"
+rayon = "1.10"
 # NOTE: rlx-kyutai-tts implements all required architecture primitives natively
 # (see src/nn.rs, src/cross_attention.rs, src/conditioner.rs, etc.). We avoid
 # depending on rlx-moshi at runtime because workspace feature unification would
@@ -37,10 +40,10 @@ cli = []
 hf-download = ["dep:hf-hub", "rlx-mimi/hf-download"]
 
 metal = ["rlx-runtime/metal", "rlx-mimi/metal"]
-mlx = ["rlx-runtime/mlx"]
+mlx = ["rlx-runtime/mlx", "rlx-mimi/mlx"]
 cuda = ["rlx-runtime/cuda", "rlx-mimi/cuda"]
-rocm = ["rlx-runtime/rocm"]
-vulkan = ["rlx-runtime/vulkan"]
+rocm = ["rlx-runtime/rocm", "rlx-mimi/rocm"]
+vulkan = ["rlx-runtime/vulkan", "rlx-mimi/vulkan"]
 gpu = ["rlx-runtime/gpu", "rlx-mimi/gpu"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
 apple-silicon = ["metal", "mlx", "gpu"]
@@ -57,7 +60,7 @@ required-features = ["cli"]
 # published `dsm_tts_*` checkpoint; `rlx-whisper` for ASR round-trip validation
 # of synthesised audio. NOT runtime dependencies.
 [dev-dependencies]
-rlx-kyutai-tts = { path = ".", features = ["cli", "hf-download"] }
+rlx-kyutai-tts = { path = ".", features = ["cli", "hf-download", "all-backends"] }
 candle = { version = "0.9.2", default-features = false, package = "candle-core" }
 candle-nn = { version = "0.9.2" }
 moshi = { version = "0.6.4", default-features = false }
@@ -75,6 +78,34 @@ path = "tests/config_load.rs"
 [[test]]
 name = "whisper_validate"
 path = "tests/whisper_validate.rs"
+
+[[test]]
+name = "rlx_backend_parity"
+path = "tests/rlx_backend_parity.rs"
+
+[[test]]
+name = "rlx_backends_all"
+path = "tests/rlx_backends_all.rs"
+
+[[test]]
+name = "rlx_e2e_backends"
+path = "tests/rlx_e2e_backends.rs"
+
+[[test]]
+name = "mimi_codes_all_backends"
+path = "tests/mimi_codes_all_backends.rs"
+
+[[test]]
+name = "weights_precision_parity"
+path = "tests/weights_precision_parity.rs"
+
+[[test]]
+name = "gen_codes_parity"
+path = "tests/gen_codes_parity.rs"
+
+[[test]]
+name = "mimi_codes_parity"
+path = "tests/mimi_codes_parity.rs"
 
 [[bench]]
 name = "kernels"

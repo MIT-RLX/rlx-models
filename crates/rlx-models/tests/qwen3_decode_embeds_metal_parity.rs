@@ -143,6 +143,7 @@ fn synthetic_1l_decode_embeds_cpu_vs_metal() {
             past_seq: upper,
             dynamic_past: false,
             use_custom_mask: true,
+            ragged_rope: false,
             profile: None,
         },
     )
