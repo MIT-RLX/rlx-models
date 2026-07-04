@@ -508,8 +508,7 @@ pub fn build_locateanything_decode_built_ext(
         past_seq,
         dynamic_past,
         use_custom_mask,
-        ragged_rope: false,
-        profile: None,
+        ..Default::default()
     };
     let mut prefixed = LanguageModelPrefixLoader::new(weights);
     build_qwen3_decode_built(&qcfg, &mut prefixed, &opts)

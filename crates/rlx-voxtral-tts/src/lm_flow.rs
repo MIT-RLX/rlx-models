@@ -74,6 +74,7 @@ pub fn build_tts_backbone_prefill_built_opts(
     let decoder_spec = LlamaDecoderSpec {
         num_heads: llama.num_attention_heads,
         head_dim: dh,
+        n_rot: llama.n_rot(),
         num_kv_heads: llama.num_key_value_heads,
         eps,
         mask: MaskKind::Causal,
@@ -177,6 +178,7 @@ pub fn build_tts_backbone_decode_built_opts(
     let decode_spec = LlamaDecodeLayerSpec {
         num_heads: llama.num_attention_heads,
         head_dim: dh,
+        n_rot: llama.n_rot(),
         num_kv_heads: llama.num_key_value_heads,
         kv_group_size: llama.kv_group_size(),
         eps,
@@ -300,6 +302,7 @@ pub fn build_tts_backbone_prefill_shard_built_opts(
     let decoder_spec = LlamaDecoderSpec {
         num_heads: llama.num_attention_heads,
         head_dim: dh,
+        n_rot: llama.n_rot(),
         num_kv_heads: llama.num_key_value_heads,
         eps,
         mask: MaskKind::Causal,
@@ -424,6 +427,7 @@ pub fn build_tts_backbone_decode_shard_built_opts(
     let decode_spec = LlamaDecodeLayerSpec {
         num_heads: llama.num_attention_heads,
         head_dim: dh,
+        n_rot: llama.n_rot(),
         num_kv_heads: llama.num_key_value_heads,
         kv_group_size: llama.kv_group_size(),
         eps,

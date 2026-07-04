@@ -168,6 +168,7 @@ mod tests {
         let spec = LlamaDecodeLayerSpec {
             num_heads: 8,
             head_dim: 128,
+            n_rot: 128,
             num_kv_heads: 8,
             kv_group_size: 1,
             eps: 1e-5,

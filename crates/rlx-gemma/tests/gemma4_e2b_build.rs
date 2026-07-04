@@ -102,6 +102,7 @@ fn gemma4_e2b_decode_graph_builds_from_real_checkpoint() {
         /*batch*/ 1,
         /*past_seq*/ 8,
         /*use_custom_mask*/ false,
+        rlx_gemma::builder::PackedDecodeLmOutput::FullLogits,
         &mut packed,
         None,
         None,

@@ -17,12 +17,12 @@
 
 #![cfg(feature = "metal")]
 
-use rlx_fft::butterfly::build_butterfly_forward_graph;
-use rlx_fft::compile::try_compile_graph;
-use rlx_fft::config::FftLearnConfig;
-use rlx_fft::reference::{fft_real_batch, max_abs_error};
-use rlx_fft::twiddle::exact_twiddles;
-use rlx_fft::weights::WeightStore;
+use rlx_fft::exec::compile::try_compile_graph;
+use rlx_fft::model::butterfly::build_butterfly_forward_graph;
+use rlx_fft::model::config::FftLearnConfig;
+use rlx_fft::model::reference::{fft_real_batch, max_abs_error};
+use rlx_fft::model::twiddle::exact_twiddles;
+use rlx_fft::model::weights::WeightStore;
 use rlx_ir::Op;
 use rlx_runtime::Device;
 

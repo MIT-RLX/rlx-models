@@ -39,13 +39,24 @@ pub fn prefill_cache_key(batch: usize, seq: usize) -> u64 {
 
 /// Whether packed prefill should hint [`CompiledGraph::set_active_extent`].
 ///
-/// Skips padded rows when `actual_seq < upper_seq` on CPU, Metal (thunk path), and MLX.
-/// Set `RLX_DISABLE_ACTIVE_EXTENT=1` to force full-bucket compute.
+/// Skips padded rows when `actual_seq < upper_seq` on CPU, MLX, and wgpu/Vulkan.
+///
+/// **Metal is intentionally excluded.** Setting active-extent flips Metal prefill
+/// off the validated MPSGraph-hybrid path onto the per-op MSL thunk path, which
+/// trips a Gemma 3 Q4 `Op::Attention` → `o_proj` dequant arena-aliasing defect
+/// (task #50) → all-NaN logits on any padded bucket (prompts past the first
+/// bucket, e.g. multi-turn history). Leaving Metal on the full-bucket MPSGraph
+/// path both fixes that and lets pow2 bucketing reuse compiled prefill graphs
+/// across prompt lengths. Set `RLX_DISABLE_ACTIVE_EXTENT=1` to force full-bucket
+/// compute on the other backends too.
 pub fn packed_prefill_active_extent_enabled(device: Device) -> bool {
     if rlx_ir::env::var("RLX_DISABLE_ACTIVE_EXTENT").as_deref() == Some("1") {
         return false;
     }
-    matches!(device, Device::Cpu | Device::Metal | Device::Mlx)
+    matches!(
+        device,
+        Device::Cpu | Device::Mlx | Device::Gpu | Device::Vulkan
+    )
 }
 
 /// Run a packed prefill graph, trimming compute to `actual_seq` rows inside bucket `upper_seq`.
@@ -368,6 +379,7 @@ pub fn kv_from_prefill_outputs_per_layer(
         logits,
         LayerKvCache {
             past_len: seq,
+            layers_kv_base: vec![0; layers_k.len()],
             layers_k,
             layers_v,
         },
@@ -708,6 +720,7 @@ pub fn run_bucketed_kv_decode_graph_layers_scratch<F>(
     fixed_inputs: &[CacheRunInput<'_>],
     build: F,
     packed_upload: PackedUploadMap<'_>,
+    f32_param_keys: &std::collections::HashSet<String>,
     packed_loaded: &mut std::collections::HashSet<u64>,
     options: &CompileOptions,
 ) -> Result<DecodeLogitsKv>
@@ -723,6 +736,9 @@ where
         if let Some(packed) = packed_upload {
             if packed_loaded.insert(upper_u64) {
                 for (name, (bytes, _scheme, _shape)) in packed {
+                    if bytes.is_empty() || f32_param_keys.contains(name.as_str()) {
+                        continue;
+                    }
                     compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
                 }
             }

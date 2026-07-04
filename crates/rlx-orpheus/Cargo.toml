@@ -51,18 +51,21 @@ llama = [
     "rlx-llama32/tokenizer",
 ]
 hf-download = ["dep:hf-hub"]
-metal = ["rlx-llama32/metal"]
-mlx = ["rlx-llama32/mlx"]
+# Native RLX SNAC conv decoder (compiled HIR via AotCache) instead of the host
+# eager path — runs the vocoder on a GPU backend. Pulled in by each GPU feature.
+snac-rlx = ["codec", "dep:rlx-ir", "dep:rlx-runtime"]
+metal = ["rlx-llama32/metal", "snac-rlx"]
+mlx = ["rlx-llama32/mlx", "snac-rlx"]
 cuda = ["rlx-llama32/cuda"]
 rocm = ["rlx-llama32/rocm"]
 vulkan = ["rlx-llama32/vulkan"]
-gpu = ["rlx-llama32/gpu"]
+gpu = ["rlx-llama32/gpu", "snac-rlx"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
 apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu", "vulkan"]
-coreml = ["codec", "dep:rlx-ir", "dep:rlx-runtime", "rlx-runtime/coreml"]
+coreml = ["snac-rlx", "rlx-runtime/coreml"]
 
 [dev-dependencies]
 rlx-orpheus = { path = ".", features = ["codec", "llama", "metal", "mlx", "cuda", "gpu", "vulkan", "rocm", "coreml"] }

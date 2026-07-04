@@ -15,7 +15,7 @@ use rlx_llama32::{Llama32Generator, Llama32Runner, Llama32RunnerBuilder, MetalGg
 use crate::backbone::BackboneLoadOptions;
 use crate::device::lm_kv_decode_supported;
 use rlx_qwen3::{SampleOpts, apply_repetition_penalty, sample_token_at};
-use rlx_qwen35::encode_prompt_from_gguf;
+use crate::tokens::build_prompt_ids;
 use rlx_runtime::Device;
 use rlx_runtime::{
     llama_decode_bucket_compile_peak_bytes, llama_decode_oneshot_compile_peak_bytes,
@@ -161,28 +161,51 @@ fn env_flag(name: &str) -> Option<bool> {
 ///   model dequant. `RLX_METAL_F32_PREFILL_CPU=1` forces the legacy CPU F32
 ///   prefill (escape hatch / parity baseline). An explicit `PackedGguf` /
 ///   `MetalF32` request is honored as-is.
-/// * Other accelerators (wgpu / Vulkan / CUDA / ROCm): unchanged — use the
-///   requested mode resolved against env.
+/// * CUDA / ROCm: host F32 prefill by default (`CpuF32`); device packed prefill
+///   only when `ORPHEUS_CUDA_NATIVE_PREFILL=1` or explicit `packed` mode.
+///   `ORPHEUS_CUDA_NATIVE_DECODE=1` keeps decode on GPU but does not upgrade
+///   prefill (16 GiB GPUs cannot hold prefill + bucket decode graphs).
+/// * wgpu / Vulkan: use the requested mode resolved against env.
 fn effective_prefill_mode(device: Device, opts: &BackboneLoadOptions) -> MetalGgufPrefillMode {
     if device == Device::Cpu {
         return MetalGgufPrefillMode::CpuF32;
     }
-    if device == Device::Metal {
+    if matches!(device, Device::Cuda | Device::Rocm) {
         let resolved = opts.metal_prefill.resolve();
+        let native_prefill = match device {
+            Device::Cuda => env_flag("ORPHEUS_CUDA_NATIVE_PREFILL") == Some(true),
+            Device::Rocm => env_flag("ORPHEUS_ROCM_NATIVE_PREFILL") == Some(true),
+            _ => false,
+        };
+        if native_prefill || resolved == MetalGgufPrefillMode::PackedGguf {
+            return MetalGgufPrefillMode::PackedGguf;
+        }
+        if resolved == MetalGgufPrefillMode::CpuF32 {
+            return MetalGgufPrefillMode::CpuF32;
+        }
         return match resolved {
-            MetalGgufPrefillMode::PackedGguf | MetalGgufPrefillMode::MetalF32 => resolved,
-            // Default (CpuF32 from `synthesis`/`for_tts`): move prefill onto the
-            // GPU unless explicitly forced back to CPU F32 via env.
-            _ => {
-                if env_flag("RLX_METAL_F32_PREFILL_CPU") == Some(true) {
-                    MetalGgufPrefillMode::CpuF32
-                } else {
-                    MetalGgufPrefillMode::PackedGguf
-                }
-            }
+            MetalGgufPrefillMode::MetalF32 => MetalGgufPrefillMode::MetalF32,
+            _ => MetalGgufPrefillMode::CpuF32,
         };
     }
-    opts.metal_prefill.resolve()
+    if device == Device::Metal {
+        let resolved = opts.metal_prefill.resolve();
+        // Honor explicit CpuF32 from `for_tts`, `ORPHEUS_METAL_PREFILL=cpu`, etc.
+        if resolved == MetalGgufPrefillMode::CpuF32 {
+            return MetalGgufPrefillMode::CpuF32;
+        }
+        if matches!(resolved, MetalGgufPrefillMode::PackedGguf | MetalGgufPrefillMode::MetalF32) {
+            return resolved;
+        }
+        // Auto: GPU packed prefill unless forced to CPU F32 (parity baseline).
+        if env_flag("RLX_METAL_F32_PREFILL_CPU") == Some(true) {
+            MetalGgufPrefillMode::CpuF32
+        } else {
+            MetalGgufPrefillMode::PackedGguf
+        }
+    } else {
+        opts.metal_prefill.resolve()
+    }
 }
 
 fn sample_opts(cfg: &GenerationConfig) -> SampleOpts {
@@ -316,6 +339,12 @@ impl BackboneModel {
         // This flag is a cosmetic log label; the real routing lives in
         // `gguf_cpu_decode_required`.
         let lm_decode_on_cpu = matches!(lm_device, Device::Cpu)
+            || (lm_device == Device::Cuda
+                && std::env::var("ORPHEUS_CUDA_NATIVE_DECODE").ok().as_deref() == Some("0"))
+            || (lm_device == Device::Rocm
+                && std::env::var("ORPHEUS_ROCM_NATIVE_DECODE").ok().as_deref() == Some("0"))
+            || (matches!(lm_device, Device::Metal)
+                && effective_prefill_mode(lm_device, &opts) == MetalGgufPrefillMode::CpuF32)
             || (matches!(lm_device, Device::Vulkan)
                 && std::env::var("ORPHEUS_VULKAN_NATIVE").ok().as_deref() != Some("1"));
 
@@ -399,7 +428,7 @@ impl BackboneModel {
     }
 
     pub fn generate_codes(&self, prompt: &str, cfg: &GenerationConfig) -> Result<Vec<i32>> {
-        let prompt_ids = encode_prompt_from_gguf(&self.weights, prompt)
+        let prompt_ids = build_prompt_ids(&self.weights, prompt)
             .with_context(|| format!("tokenize prompt for {}", self.weights.display()))?;
         self.generate_codes_from_prompt(&prompt_ids, cfg)
     }
@@ -451,9 +480,12 @@ impl BackboneModel {
                     cfg.max_new_tokens,
                     prompt_ids.len()
                 );
+                let phase_t = std::env::var("ORPHEUS_PHASE_TIMING").ok().as_deref() == Some("1");
+                let mut step_ms: Vec<f64> = Vec::new();
                 for step in 0..cfg.max_new_tokens {
                     let penalty = cfg.repetition_penalty;
                     let slot_ix = stream_index;
+                    let ts = std::time::Instant::now();
                     let next = generator
                         .step_cached_adjust(sample, step as u64, |logits| {
                             adjust_orpheus_logits(
@@ -467,6 +499,9 @@ impl BackboneModel {
                             );
                         })
                         .context("Orpheus LM cached decode step")?;
+                    if phase_t {
+                        step_ms.push(ts.elapsed().as_secs_f64() * 1000.0);
+                    }
                     if std::env::var("ORPHEUS_DEBUG_TOKENS").ok().as_deref() == Some("1")
                         && step > 0
                         && step % 56 == 0
@@ -482,6 +517,22 @@ impl BackboneModel {
                         break;
                     }
                     *token_counts.entry(next).or_insert(0) += 1;
+                }
+                if phase_t && !step_ms.is_empty() {
+                    let n = step_ms.len();
+                    let total: f64 = step_ms.iter().sum();
+                    let mut sorted = step_ms.clone();
+                    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    let median = sorted[n / 2];
+                    let slow: Vec<String> = (0..n)
+                        .filter(|&i| step_ms[i] > 100.0)
+                        .map(|i| format!("#{i}={:.0}", step_ms[i]))
+                        .collect();
+                    eprintln!(
+                        "[lm-steps] n={n} total={total:.0}ms step0={:.0}ms median={median:.0}ms slow(>100ms)=[{}]",
+                        step_ms[0],
+                        slow.join(" ")
+                    );
                 }
                 if std::env::var("ORPHEUS_DEBUG_TOKENS").ok().as_deref() == Some("1") {
                     let generated = generator.tokens()[prompt_ids.len()..].to_vec();

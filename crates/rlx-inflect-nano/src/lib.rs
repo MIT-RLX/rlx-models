@@ -32,6 +32,12 @@ pub struct InflectNano {
     frontend: once_cell::sync::OnceCell<frontend::English>,
     #[cfg(feature = "onnx")]
     coreml_vocoder: once_cell::sync::OnceCell<std::sync::Mutex<onnx_vocoder::OnnxVocoder>>,
+    /// Compiled vocoder graphs keyed by `(device, bucketed_frame_count)`, so
+    /// callers that synthesize many short segments back-to-back reuse graphs
+    /// instead of recompiling per call. See [`InflectNano::synthesize_on_cached`].
+    #[cfg(feature = "rlx-graph")]
+    voc_graphs:
+        std::sync::Mutex<std::collections::HashMap<(rlx_runtime::Device, usize), graph::VocoderGraph>>,
 }
 
 /// Synthesized waveform.
@@ -92,6 +98,8 @@ impl InflectNano {
             frontend: once_cell::sync::OnceCell::new(),
             #[cfg(feature = "onnx")]
             coreml_vocoder: once_cell::sync::OnceCell::new(),
+            #[cfg(feature = "rlx-graph")]
+            voc_graphs: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -168,6 +176,71 @@ impl InflectNano {
             samples: audio::normalize_audio(&raw),
             sample_rate: self.cfg.sample_rate,
         })
+    }
+
+    /// Vocoder frame bucket granularity for [`Self::synthesize_on_cached`].
+    #[cfg(feature = "rlx-graph")]
+    pub const VOC_BUCKET_FRAMES: usize = 64;
+
+    /// Like [`Self::synthesize_on`] but reuses compiled vocoder graphs across
+    /// calls via a bucketed cache — the right choice when synthesizing many
+    /// short segments back-to-back (e.g. streaming a reply sentence-by-sentence),
+    /// where recompiling per segment otherwise dominates throughput.
+    ///
+    /// The mel is padded up to a bucket frame count (a multiple of
+    /// [`Self::VOC_BUCKET_FRAMES`]), vocoded by the cached graph for that bucket,
+    /// and the waveform trimmed back to the true length. Output matches
+    /// [`Self::synthesize_on`] except in a bounded (< bucket) tail region where
+    /// the trailing pad frames leak into the last samples — imperceptible at the
+    /// clause/sentence boundaries this is meant for. The first call per bucket
+    /// pays the compile; later calls of any length sharing that bucket are free.
+    #[cfg(feature = "rlx-graph")]
+    pub fn synthesize_on_cached(
+        &self,
+        text: &str,
+        opts: &InferOpts,
+        device: rlx_runtime::Device,
+    ) -> Result<Wav> {
+        let (phone, tone, lang) = self.text_to_ids(text)?;
+        let mel = self.mel_from_ids(&phone, &tone, &lang, self.cfg.default_speaker(), opts)?;
+        let raw = self.vocode_cached(&mel, device)?;
+        Ok(Wav {
+            samples: audio::normalize_audio(&raw),
+            sample_rate: self.cfg.sample_rate,
+        })
+    }
+
+    /// Bucketed, cached mel→wav: pad the mel to a bucket frame count, run (and
+    /// cache) the graph compiled for that bucket, then trim the waveform to the
+    /// real length. Trailing frames are edge-replicated — mel is log-scaled, so
+    /// zero-padding would not represent silence.
+    #[cfg(feature = "rlx-graph")]
+    fn vocode_cached(&self, mel: &Array2<f32>, device: rlx_runtime::Device) -> Result<Vec<f32>> {
+        use std::collections::hash_map::Entry;
+        let (channels, real_t) = mel.dim();
+        let bucket = real_t.max(1).div_ceil(Self::VOC_BUCKET_FRAMES) * Self::VOC_BUCKET_FRAMES;
+
+        let padded = if bucket == real_t {
+            mel.to_owned()
+        } else {
+            let mut out = Array2::<f32>::zeros((channels, bucket));
+            out.slice_mut(ndarray::s![.., ..real_t]).assign(mel);
+            let last = mel.slice(ndarray::s![.., real_t - 1..real_t]).to_owned();
+            for j in real_t..bucket {
+                out.slice_mut(ndarray::s![.., j..j + 1]).assign(&last);
+            }
+            out
+        };
+
+        let mut cache = self.voc_graphs.lock().expect("vocoder graph cache mutex");
+        let g = match cache.entry((device, bucket)) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => e.insert(self.compile_vocoder_graph(bucket, device)?),
+        };
+        let mut raw = g.forward(&padded)?;
+        let keep = real_t * self.cfg.vocoder.hop_size;
+        raw.truncate(keep.min(raw.len()));
+        Ok(raw)
     }
 
     /// Acoustic forward: token ids → mel `[80, T]`.

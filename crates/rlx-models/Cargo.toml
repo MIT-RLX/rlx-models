@@ -65,6 +65,7 @@ rlx-kyutai-tts = { workspace = true, optional = true }
 rlx-mistral = { workspace = true, optional = true }
 rlx-bonsai = { workspace = true, optional = true }
 rlx-minicpm5 = { workspace = true, optional = true, features = ["tokenizer"] }
+rlx-tinyllama = { workspace = true, optional = true, features = ["tokenizer"] }
 rlx-phi = { workspace = true, optional = true }
 rlx-omnicoder = { workspace = true, optional = true }
 rlx-granite = { workspace = true, optional = true }
@@ -136,6 +137,7 @@ llada2 = ["dep:rlx-llada2"]
 mistral = ["dep:rlx-mistral"]
 bonsai = ["dep:rlx-bonsai"]
 minicpm5 = ["dep:rlx-minicpm5"]
+tinyllama = ["dep:rlx-tinyllama"]
 phi = ["dep:rlx-phi"]
 omnicoder = ["dep:rlx-omnicoder"]
 granite = ["dep:rlx-granite"]
@@ -201,6 +203,7 @@ llm = [
     "lfm",
     "llada2",
     "minicpm5",
+    "tinyllama",
     "omnicoder",
     "bonsai",
     "llama-base",
@@ -236,6 +239,7 @@ hf-download = [
     "rlx-llada2?/hf-download",
     "rlx-flux2?/hf-download",
     "rlx-minicpm5?/hf-download",
+    "rlx-tinyllama?/hf-download",
     "rlx-locateanything?/hf-download",
     "rlx-qwen3-tts?/hf-download",
     "rlx-kittentts?/hf-download",
@@ -249,6 +253,8 @@ qwen25-vl-vision = ["rlx-qwen25-vl/qwen25-vl-vision"]
 flux2-tokenizer = ["flux2", "rlx-flux2/flux2-tokenizer"]
 flux2-image = ["flux2", "rlx-flux2/flux2-image"]
 metal = [
+    "embed",
+    "ocr",
     "rlx-runtime/metal",
     "dep:rlx-metal",
     "rlx-bert?/metal",
@@ -266,6 +272,7 @@ metal = [
     "rlx-lfm?/metal",
     "rlx-locateanything?/metal",
     "rlx-minicpm5?/metal",
+    "rlx-tinyllama?/metal",
     "rlx-mistral?/metal",
     "rlx-moshi?/metal",
     "rlx-kyutai-tts?/metal",
@@ -291,6 +298,8 @@ metal = [
     "rlx-whisper?/metal",
 ]
 mlx = [
+    "embed",
+    "ocr",
     "rlx-runtime/mlx",
     "dep:rlx-mlx",
     "rlx-bert?/mlx",
@@ -308,6 +317,7 @@ mlx = [
     "rlx-lfm?/mlx",
     "rlx-locateanything?/mlx",
     "rlx-minicpm5?/mlx",
+    "rlx-tinyllama?/mlx",
     "rlx-mistral?/mlx",
     "rlx-moshi?/mlx",
     "rlx-kyutai-tts?/mlx",
@@ -332,7 +342,23 @@ mlx = [
     "rlx-wav2vec2-bert?/mlx",
     "rlx-whisper?/mlx",
 ]
+coreml = [
+    "embed",
+    "ocr",
+    "rlx-runtime/coreml",
+    "rlx-core/coreml",
+    "rlx-gemma?/coreml",
+    "rlx-llama32?/coreml",
+    "rlx-minicpm5?/coreml",
+    "rlx-tinyllama?/coreml",
+    "rlx-phi?/coreml",
+    "rlx-qwen3?/coreml",
+    "rlx-qwen35?/coreml",
+    "rlx-whisper?/coreml",
+]
 gpu = [
+    "embed",
+    "ocr",
     "rlx-runtime/gpu",
     "rlx-bert?/gpu",
     "rlx-clinicalbert?/gpu",
@@ -349,6 +375,7 @@ gpu = [
     "rlx-lfm?/gpu",
     "rlx-locateanything?/gpu",
     "rlx-minicpm5?/gpu",
+    "rlx-tinyllama?/gpu",
     "rlx-mistral?/gpu",
     "rlx-moshi?/gpu",
     "rlx-kyutai-tts?/gpu",
@@ -373,11 +400,13 @@ gpu = [
     "rlx-wav2vec2-bert?/gpu",
     "rlx-whisper?/gpu",
 ]
-apple-silicon = ["metal", "mlx", "gpu"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
 vulkan = [
+    "embed",
+    "ocr",
     "rlx-runtime/vulkan",
     "rlx-bert?/vulkan",
     "rlx-clinicalbert?/vulkan",
@@ -394,6 +423,7 @@ vulkan = [
     "rlx-lfm?/vulkan",
     "rlx-locateanything?/vulkan",
     "rlx-minicpm5?/vulkan",
+    "rlx-tinyllama?/vulkan",
     "rlx-mistral?/vulkan",
     "rlx-moshi?/vulkan",
     "rlx-kyutai-tts?/vulkan",
@@ -417,6 +447,8 @@ vulkan = [
     "rlx-whisper?/vulkan",
 ]
 cuda = [
+    "embed",
+    "ocr",
     "rlx-runtime/cuda",
     "rlx-bert?/cuda",
     "rlx-clinicalbert?/cuda",
@@ -433,6 +465,7 @@ cuda = [
     "rlx-lfm?/cuda",
     "rlx-locateanything?/cuda",
     "rlx-minicpm5?/cuda",
+    "rlx-tinyllama?/cuda",
     "rlx-mistral?/cuda",
     "rlx-moshi?/cuda",
     "rlx-kyutai-tts?/cuda",
@@ -458,6 +491,8 @@ cuda = [
     "rlx-whisper?/cuda",
 ]
 rocm = [
+    "embed",
+    "ocr",
     "rlx-runtime/rocm",
     "rlx-bert?/rocm",
     "rlx-clinicalbert?/rocm",
@@ -474,6 +509,7 @@ rocm = [
     "rlx-lfm?/rocm",
     "rlx-locateanything?/rocm",
     "rlx-minicpm5?/rocm",
+    "rlx-tinyllama?/rocm",
     "rlx-mistral?/rocm",
     "rlx-moshi?/rocm",
     "rlx-kyutai-tts?/rocm",
@@ -499,7 +535,7 @@ rocm = [
     "rlx-whisper?/rocm",
 ]
 tpu = ["rlx-runtime/tpu"]
-all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
 parity-candle = [
     "dep:candle-core",
     "dep:candle-nn",
@@ -509,6 +545,11 @@ parity-candle = [
 parity-gemm = ["rlx-cpu/parity-gemm"]
 parity-pytorch = []
 parity-llama = ["dep:llama-cpp-2", "rlx-qwen35/parity-llama"]
+
+[[example]]
+name = "bench_small_lm"
+path = "examples/bench_small_lm.rs"
+required-features = ["gemma", "phi", "llama32", "metal", "mlx", "coreml"]
 
 [[example]]
 name = "qwen3_matrix"
@@ -537,6 +578,11 @@ path = "examples/minicpm5_download.rs"
 required-features = ["hf-download"]
 
 [[example]]
+name = "tinyllama_download"
+path = "examples/tinyllama_download.rs"
+required-features = ["hf-download", "tinyllama"]
+
+[[example]]
 name = "voxtral_download"
 path = "examples/voxtral_download.rs"
 required-features = ["hf-download"]
@@ -563,6 +609,11 @@ required-features = ["hf-download"]
 name = "minicpm5_gguf_download"
 path = "examples/minicpm5_gguf_download.rs"
 required-features = ["hf-download"]
+
+[[example]]
+name = "tinyllama_gguf_download"
+path = "examples/tinyllama_gguf_download.rs"
+required-features = ["hf-download", "tinyllama"]
 
 [[example]]
 name = "minicpm5_forward_bench"

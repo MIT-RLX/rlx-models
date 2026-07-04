@@ -48,8 +48,8 @@ fn main() -> Result<()> {
         &std::env::var("ORPHEUS_DEVICE").unwrap_or_else(|_| "auto".into()),
     )?;
     eprintln!(
-        "lm={:?} snac_coreml={} text={text:?} voice={voice:?} max_tokens={max_tokens}",
-        runtime.lm, runtime.snac_coreml
+        "lm={:?} snac={:?} text={text:?} voice={voice:?} max_tokens={max_tokens}",
+        runtime.lm, runtime.snac
     );
 
     let t0 = Instant::now();

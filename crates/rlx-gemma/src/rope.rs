@@ -39,7 +39,7 @@ fn first_full_layer(cfg: &GemmaConfig) -> Option<usize> {
 
 /// `(theta, n_rot)` for the default (sliding) RoPE table.
 pub fn sliding_rope_params(cfg: &GemmaConfig) -> (f64, usize) {
-    if cfg.arch == GemmaArch::Gemma4 {
+    if matches!(cfg.arch, GemmaArch::Gemma3 | GemmaArch::Gemma4) {
         if let Some(si) = first_sliding_layer(cfg) {
             return (cfg.layer_rope_theta(si), cfg.layer_n_rot(si));
         }
@@ -47,14 +47,14 @@ pub fn sliding_rope_params(cfg: &GemmaConfig) -> (f64, usize) {
     (cfg.rope_theta, cfg.head_dim())
 }
 
-/// `Some((theta, n_rot))` when Gemma 4 full-attention RoPE differs from sliding.
+/// `Some((theta, n_rot))` when full-attention RoPE differs from sliding.
 ///
 /// `layer_types` is empty when the config came from a GGUF (llama.cpp's GGUFs
 /// don't encode the per-layer list — the strided pattern is implicit). The
 /// per-layer helpers `is_full_attention_layer` / `layer_n_rot` / `layer_rope_theta`
 /// already fall back to the strided pattern, so we can ask them directly.
 pub fn global_rope_params(cfg: &GemmaConfig) -> Option<(f64, usize)> {
-    if cfg.arch != GemmaArch::Gemma4 {
+    if !matches!(cfg.arch, GemmaArch::Gemma3 | GemmaArch::Gemma4) {
         return None;
     }
     let fi = first_full_layer(cfg)?;

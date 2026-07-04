@@ -60,8 +60,20 @@ fn ane_snac_matches_eager() {
         return;
     };
 
-    let eager = SnacBackend::open(&path, SnacLoadOptions { coreml: false }).expect("eager");
-    let ane = SnacBackend::open(&path, SnacLoadOptions { coreml: true }).expect("ane");
+    let eager = SnacBackend::open(
+        &path,
+        SnacLoadOptions {
+            exec: rlx_orpheus::SnacExec::CpuEager,
+        },
+    )
+    .expect("eager");
+    let ane = SnacBackend::open(
+        &path,
+        SnacLoadOptions {
+            exec: rlx_orpheus::SnacExec::Ane,
+        },
+    )
+    .expect("ane");
     let ref_pcm = decode_orpheus_codes(&eager, &codes).expect("eager decode");
     let rlx_pcm = decode_orpheus_codes(&ane, &codes).expect("ane decode");
     assert_eq!(ref_pcm.len(), rlx_pcm.len(), "length mismatch");

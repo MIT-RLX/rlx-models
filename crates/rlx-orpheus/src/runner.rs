@@ -41,9 +41,9 @@ impl GenerationConfig {
         Self {
             max_new_tokens: 1200,
             temperature: 0.6,
-            top_p: 0.8,
+            top_p: 0.95,
             top_k: 0,
-            repetition_penalty: 1.3,
+            repetition_penalty: 1.1,
             seed: 42,
             greedy: false,
         }
@@ -88,7 +88,7 @@ impl OrpheusTts {
             snac_path,
             OrpheusRuntimeDevice {
                 lm: device,
-                snac_coreml: false,
+                snac: crate::device::default_snac_exec(device),
             },
             BackboneLoadOptions::for_tts(device),
         )
@@ -125,7 +125,7 @@ impl OrpheusTts {
             snac_path,
             OrpheusRuntimeDevice {
                 lm: device,
-                snac_coreml: false,
+                snac: crate::device::default_snac_exec(device),
             },
             backbone_opts,
         )
@@ -233,12 +233,24 @@ impl OrpheusTts {
     /// Synthesize from pre-built prompt token ids (incl. Orpheus control tokens).
     #[cfg(feature = "llama")]
     pub fn synthesize_from_prompt_ids(&self, prompt_ids: &[u32]) -> Result<SynthesisResult> {
+        let timing = std::env::var("ORPHEUS_PHASE_TIMING").ok().as_deref() == Some("1");
+        let t_lm = std::time::Instant::now();
         let codes = self
             .backbone
             .generate_codes_from_prompt(prompt_ids, &self.config)
             .context("LM code generation")?;
+        let lm_ms = t_lm.elapsed().as_secs_f64() * 1000.0;
 
+        let t_snac = std::time::Instant::now();
         let mut samples = self.decode_all_codes(&codes)?;
+        let snac_ms = t_snac.elapsed().as_secs_f64() * 1000.0;
+        if timing {
+            eprintln!(
+                "[phase-timing] LM(prefill+decode)={lm_ms:.0} ms ({} codes, {:.1} ms/code)  SNAC={snac_ms:.0} ms",
+                codes.len(),
+                if codes.is_empty() { 0.0 } else { lm_ms / codes.len() as f64 },
+            );
+        }
         normalize_pcm_peak(&mut samples);
         Ok(SynthesisResult {
             samples,

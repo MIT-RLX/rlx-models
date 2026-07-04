@@ -63,16 +63,48 @@ impl MetalGgufPrefillMode {
     }
 
     pub fn prefill_device(self, inference_device: Device) -> Device {
+        let mode = self.resolve();
         match inference_device {
-            Device::Metal => match self.resolve() {
+            Device::Metal => match mode {
                 Self::PackedGguf | Self::MetalF32 => Device::Metal,
                 Self::CpuF32 | Self::Auto => Device::Cpu,
             },
-            // GGUF Q4 prefill on wgpu/Vulkan lacks parity — seed KV on CPU (see
-            // `rlx_core::flow_bridge::packed_gguf_execution_device`).
+            // GGUF Q4 prefill on wgpu/Vulkan lacks parity — always seed KV on CPU.
             Device::Gpu | Device::Vulkan => Device::Cpu,
+            // CUDA/ROCm: default Auto/CpuF32 → host prefill (avoids 16 GiB OOM on
+            // Orpheus 3B); opt into device prefill via PackedGguf / MetalF32 mode.
+            Device::Cuda | Device::Rocm => match mode {
+                Self::PackedGguf | Self::MetalF32 => inference_device,
+                Self::CpuF32 | Self::Auto => Device::Cpu,
+            },
+            Device::Ane => Device::Cpu,
             other => other,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cuda_auto_prefill_routes_to_cpu() {
+        assert_eq!(
+            MetalGgufPrefillMode::Auto.prefill_device(Device::Cuda),
+            Device::Cpu
+        );
+        assert_eq!(
+            MetalGgufPrefillMode::CpuF32.prefill_device(Device::Cuda),
+            Device::Cpu
+        );
+    }
+
+    #[test]
+    fn cuda_packed_prefill_stays_on_device() {
+        assert_eq!(
+            MetalGgufPrefillMode::PackedGguf.prefill_device(Device::Cuda),
+            Device::Cuda
+        );
     }
 }
 

@@ -21,6 +21,7 @@ use rlx_core::gguf_support::{
     resolve_weights_file_with_options,
 };
 use rlx_qwen3::SampleOpts;
+use rlx_core::pick_lm_device;
 use rlx_runtime::Device;
 use std::path::{Path, PathBuf};
 
@@ -43,7 +44,8 @@ pub struct GemmaRunnerBuilder {
     stream: bool,
     sample: Option<SampleOpts>,
     format: Option<WeightFormat>,
-    packed_weights: bool,
+    /// `None` = auto (packed GGUF when file ≥ 256 MiB on disk).
+    packed_weights: Option<bool>,
 }
 
 impl GemmaRunnerBuilder {
@@ -92,10 +94,16 @@ impl GemmaRunnerBuilder {
     }
 
     /// Keep K-quant weights packed in the arena (`Op::DequantMatMul`).
-    /// GGUF only. Uses `Op::DequantMatMul` on the selected device.
+    /// GGUF only. When unset, large GGUF files (≥ 256 MiB) auto-enable packed paths.
     pub fn packed_weights(mut self, on: bool) -> Self {
-        self.packed_weights = on;
+        self.packed_weights = Some(on);
         self
+    }
+
+    fn gguf_auto_packed(path: &Path) -> bool {
+        std::fs::metadata(path)
+            .map(|m| m.len() >= 256 * 1024 * 1024)
+            .unwrap_or(false)
     }
 
     pub fn build(self) -> Result<GemmaRunner> {
@@ -110,7 +118,12 @@ impl GemmaRunnerBuilder {
             &resolve,
         )?;
         let format = WeightFormat::resolve(&weights_path, self.format)?;
-        let device = self.device.unwrap_or(Device::Cpu);
+        let device = self
+            .device
+            .unwrap_or_else(pick_lm_device);
+        if self.device.is_none() {
+            eprintln!("[gemma-runner] auto device → {device:?}");
+        }
         let max_seq = self.max_seq.unwrap_or(128);
         let stream = self.stream;
         let sample = self.sample.unwrap_or_else(SampleOpts::greedy);
@@ -131,12 +144,16 @@ impl GemmaRunnerBuilder {
             }
         }
 
-        crate::capabilities::validate_device(&cfg, device, self.packed_weights)?;
+        let use_packed = self.packed_weights.unwrap_or_else(|| {
+            matches!(format, WeightFormat::Gguf) && Self::gguf_auto_packed(&weights_path)
+        });
+
+        crate::capabilities::validate_device(&cfg, device, use_packed)?;
 
         let path_str = weights_path
             .to_str()
             .ok_or_else(|| anyhow!("non-utf8 weights path"))?;
-        let generator = if self.packed_weights {
+        let generator = if use_packed {
             None
         } else {
             Some(
@@ -145,12 +162,17 @@ impl GemmaRunnerBuilder {
             )
         };
 
-        let packed = if self.packed_weights {
+        let packed = if use_packed {
             if !matches!(format, WeightFormat::Gguf) {
                 bail!(
                     "packed_weights(true) requires a .gguf file; got {:?} for {:?}",
                     format,
                     weights_path
+                );
+            }
+            if self.packed_weights.is_none() {
+                eprintln!(
+                    "[gemma-runner] auto packed_weights=true (GGUF ≥ 256 MiB) on {device:?}"
                 );
             }
             eprintln!(

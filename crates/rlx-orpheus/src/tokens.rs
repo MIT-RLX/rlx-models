@@ -14,8 +14,13 @@ pub const CUSTOM_TOKEN_BASE: u32 = 128_256;
 /// `turn_token_into_id`: `id = CUSTOM_TOKEN_BASE + code + 10 + slot * 4096`).
 pub const SNAC_TOKEN_OFFSET: u32 = CUSTOM_TOKEN_BASE + 10;
 
-/// Generation stop token (matches Orpheus `stop_token_ids=[49158]`).
-pub const STOP_TOKEN_ID: u32 = 49_158;
+/// END_OF_SPEECH — `<custom_token_2>` (Orpheus 3B). Upstream `stop_token_ids=[128258]`.
+/// Do **not** use 49158 here — that id is ordinary text (`" rez"`) on the 3B vocab.
+pub const END_OF_SPEECH_ID: u32 = 128_258;
+pub const START_OF_SPEECH_ID: u32 = 128_257;
+
+/// Generation stop token (alias for [`END_OF_SPEECH_ID`]).
+pub const STOP_TOKEN_ID: u32 = END_OF_SPEECH_ID;
 
 /// Built-in English voices (finetune-prod / unsloth GGUF).
 pub const VOICES: &[&str] = &["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"];
@@ -66,6 +71,40 @@ pub fn is_snac_slot_token(token_id: u32, stream_index: usize) -> bool {
     }
     let (lo, hi) = snac_slot_token_range(stream_index);
     token_id >= lo && token_id < hi
+}
+
+/// Inclusive-exclusive id range for all seven SNAC codebook slots in GGUF vocab.
+pub fn snac_audio_token_range() -> (u32, u32) {
+    (SNAC_TOKEN_OFFSET, SNAC_TOKEN_OFFSET + 7 * 4096)
+}
+
+/// Extract interleaved SNAC codes from raw LM output (vLLM / llama.cpp post-process).
+///
+/// 1. Crop after the last [`START_OF_SPEECH_ID`] (128257).
+/// 2. Keep only ids in the SNAC audio range.
+/// 3. Map each token to a code via [`custom_token_id_to_code`], advancing the stream
+///    index only when code > 0 (matches `orpheus_tts/decoder.py`).
+pub fn generated_ids_to_snac_codes(token_ids: &[u32]) -> Vec<i32> {
+    let (audio_lo, audio_hi) = snac_audio_token_range();
+    let start = token_ids
+        .iter()
+        .rposition(|&id| id == START_OF_SPEECH_ID)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let mut codes = Vec::new();
+    let mut stream_index = 0usize;
+    for &tok in &token_ids[start..] {
+        if tok == END_OF_SPEECH_ID {
+            break;
+        }
+        if tok < audio_lo || tok >= audio_hi {
+            continue;
+        }
+        if let Some(code) = accept_orpheus_stream_token(tok, &mut stream_index) {
+            codes.push(code);
+        }
+    }
+    codes
 }
 
 /// Process one LM token into a SNAC code (if any), advancing the stream index
@@ -361,6 +400,23 @@ mod tests {
         assert_eq!(custom_token_str_to_code("<custom_token_10>", 0), Some(0));
         assert_eq!(custom_token_str_to_code("<custom_token_11>", 0), Some(1));
         assert_eq!(custom_token_str_to_code("<custom_token_4107>", 1), Some(1));
+    }
+
+    #[test]
+    fn generated_ids_crop_after_sos_and_stop_on_eos() {
+        let sos = START_OF_SPEECH_ID;
+        let eos = END_OF_SPEECH_ID;
+        let t0 = SNAC_TOKEN_OFFSET + 5; // slot 0 code 5
+        let t1 = SNAC_TOKEN_OFFSET + 4096 + 3; // slot 1 code 3
+        let ids = vec![999, sos, t0, 42, t1, eos, 1000];
+        let codes = generated_ids_to_snac_codes(&ids);
+        assert_eq!(codes, vec![5, 3]);
+    }
+
+    #[test]
+    fn end_of_speech_is_not_text_rez_token() {
+        assert_eq!(END_OF_SPEECH_ID, 128_258);
+        assert_ne!(END_OF_SPEECH_ID, 49_158);
     }
 
     #[test]

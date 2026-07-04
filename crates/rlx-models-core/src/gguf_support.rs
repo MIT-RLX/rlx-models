@@ -206,7 +206,7 @@ pub fn gguf_family_for_arch(arch: &str) -> Option<GgufModelFamily> {
         // command-r/cohere2, bonsai, omnicoder) need per-arch tensor-
         // name remap in `Llama32Weights::from_loader` before they can
         // flow through `auto_runner`. Tracked in M4.
-        "llama" => Some(GgufModelFamily::Llama32),
+        "llama" | "phi3" | "phi4" => Some(GgufModelFamily::Llama32),
         "gemma" | "gemma2" | "gemma3" | "gemma3n" | "gemma4" | "gemma4moe" | "gemma4_unified" => {
             Some(GgufModelFamily::Gemma)
         }

@@ -17,7 +17,7 @@
 
 use crate::config::Qwen35Config;
 use anyhow::Result;
-use rlx_core::validate_standard_device;
+use rlx_core::validate_lm_device;
 pub use rlx_core::{STANDARD_DEVICE_NAMES, STANDARD_DEVICES};
 use rlx_runtime::Device;
 
@@ -26,7 +26,7 @@ use rlx_runtime::Device;
 /// native runtime backend into the `rlx-qwen35` binary.
 pub fn validate_device(cfg: &Qwen35Config, device: Device, packed_weights: bool) -> Result<()> {
     let _ = (cfg, packed_weights);
-    validate_standard_device("qwen35", device)
+    validate_lm_device("qwen35", device)
 }
 
 #[cfg(test)]

@@ -6,13 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Phi 3 / Phi 4 runner — STUB (PLAN.md M4)"
+description = "Phi 3 / Phi 4 runner on rlx-llama32 (partial RoPE, NeoX GGUF)"
 
 [dependencies]
 anyhow = { workspace = true }
 rlx-llama-base = { workspace = true }
 rlx-llama32 = { workspace = true }
 rlx-cli = { workspace = true }
+rlx-runtime = { workspace = true }
 
 [features]
 default = []
@@ -23,7 +24,14 @@ cuda = ["rlx-llama32/cuda"]
 rocm = ["rlx-llama32/rocm"]
 gpu = ["rlx-llama32/gpu"]
 vulkan = ["rlx-llama32/vulkan"]
-all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+coreml = ["rlx-llama32/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["rlx-llama32/apple-silicon"]
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "rlx-phi"
+path = "src/bin/rlx_phi.rs"
+required-features = ["tokenizer"]

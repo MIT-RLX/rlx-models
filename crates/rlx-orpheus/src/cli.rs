@@ -158,10 +158,7 @@ pub fn run(args: &[String]) -> Result<()> {
     }
 
     let runtime = resolve_orpheus_device(&device)?;
-    eprintln!(
-        "[orpheus] lm={:?} snac_coreml={}",
-        runtime.lm, runtime.snac_coreml
-    );
+    eprintln!("[orpheus] lm={:?} snac={:?}", runtime.lm, runtime.snac);
 
     let mut backbone_opts = BackboneLoadOptions::for_tts(runtime.lm);
     if let Some(m) = metal_prefill {

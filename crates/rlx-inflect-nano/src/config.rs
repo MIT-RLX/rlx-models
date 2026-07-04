@@ -115,6 +115,10 @@ impl ExecutionMode {
 /// Inference controls (mirrors `MicroFastSpeech.infer` arguments + `synthesize`).
 #[derive(Debug, Clone)]
 pub struct InferOpts {
+    /// Relative speaking rate. `1.0` = model default; `< 1.0` slower; `> 1.0` faster.
+    /// Applied as `length_scale / speed` on predicted frame durations.
+    pub speed: f32,
+    /// Low-level duration multiplier (`> 1` slows, `< 1` speeds). Composes with [`Self::speed`].
     pub length_scale: f32,
     pub pitch_scale: f32,
     pub energy_scale: f32,
@@ -125,11 +129,39 @@ pub struct InferOpts {
 impl Default for InferOpts {
     fn default() -> Self {
         Self {
+            speed: 1.0,
             length_scale: 1.0,
             pitch_scale: 1.0,
             energy_scale: 1.0,
             min_duration: 1,
             max_duration: 80,
         }
+    }
+}
+
+impl InferOpts {
+    /// Shorthand: `1.0` = default rate; `0.85` ≈ 15% slower; `1.2` ≈ 20% faster.
+    pub fn with_speed(speed: f32) -> Self {
+        Self {
+            speed,
+            ..Self::default()
+        }
+    }
+
+    /// Duration multiplier passed to the acoustic model (`length_scale / speed`).
+    pub fn effective_length_scale(&self) -> f32 {
+        self.length_scale / self.speed.max(1e-3)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speed_scales_duration_inversely() {
+        assert!((InferOpts::default().effective_length_scale() - 1.0).abs() < 1e-6);
+        assert!((InferOpts::with_speed(0.85).effective_length_scale() - 1.0 / 0.85).abs() < 1e-5);
+        assert!((InferOpts::with_speed(1.2).effective_length_scale() - 1.0 / 1.2).abs() < 1e-5);
     }
 }

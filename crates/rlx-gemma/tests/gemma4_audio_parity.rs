@@ -250,29 +250,45 @@ fn audio_depthwise_isolated() {
     assert!(cv > 0.9999, "depthwise conv diverges: cos {cv}");
 }
 
-#[test]
-fn audio_full_parity_metal() {
-    if !is_available(Device::Metal) {
-        eprintln!("[audio full metal] no Metal — skip");
+fn run_audio_full(dev: Device, tag: &str) {
+    if !is_available(dev) {
+        eprintln!("[{tag}] {dev:?} unavailable — skip");
         return;
     }
     let Some(d) = dir() else {
-        eprintln!("[audio full metal] no ckpt — skip");
+        eprintln!("[{tag}] no ckpt — skip");
         return;
     };
     let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/gemma4_audio");
     let Some(feats) = rd(&fx.join("feats.bin")) else {
-        eprintln!("[audio full metal] no fixtures — skip");
+        eprintln!("[{tag}] no fixtures — skip");
         return;
     };
     let hf = rd(&fx.join("out.bin")).expect("out.bin");
     let cfg = AudioConfig::default();
-    let (out, seq) = run_tower_dev(Device::Metal, &d, &feats, &cfg, cfg.layers, true);
-    let worst = report("audio full metal", &out, &hf, cfg.out_dims, seq);
-    assert!(
-        worst > 0.99,
-        "audio tower on Metal diverges: worst cos {worst}"
-    );
+    let (out, seq) = run_tower_dev(dev, &d, &feats, &cfg, cfg.layers, true);
+    let worst = report(tag, &out, &hf, cfg.out_dims, seq);
+    assert!(worst > 0.99, "audio tower on {dev:?} diverges: worst cos {worst}");
+}
+
+#[test]
+fn audio_full_parity_metal() {
+    run_audio_full(Device::Metal, "audio full metal");
+}
+
+#[test]
+fn audio_full_parity_mlx() {
+    run_audio_full(Device::Mlx, "audio full mlx");
+}
+
+#[test]
+fn audio_full_parity_wgpu() {
+    run_audio_full(Device::Gpu, "audio full wgpu");
+}
+
+#[test]
+fn audio_full_parity_coreml() {
+    run_audio_full(Device::Ane, "audio full coreml");
 }
 
 #[test]

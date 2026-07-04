@@ -244,8 +244,9 @@ pub fn load_entry(path: &Path, fingerprint: u64) -> std::io::Result<Option<Cache
     }
     Ok(Some(CacheEntry {
         tokens,
-        kv: KvCacheState {
+        kv:         KvCacheState {
             past_len,
+            layers_kv_base: vec![0; layers],
             layers_k,
             layers_v,
         },
@@ -259,6 +260,7 @@ mod tests {
     fn kv(past: usize, fill: f32) -> KvCacheState {
         KvCacheState {
             past_len: past,
+            layers_kv_base: vec![0; 1],
             layers_k: vec![vec![fill; past * 2]],
             layers_v: vec![vec![fill; past * 2]],
         }

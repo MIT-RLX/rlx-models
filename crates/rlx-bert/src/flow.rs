@@ -18,10 +18,81 @@
 use anyhow::Result;
 use rlx_flow::{BertQkvStyle, BuiltModel, CompileProfile, ModelFlow};
 use rlx_ir::{DType, Shape};
+use std::borrow::Cow;
 
 use rlx_core::config::BertConfig;
 use rlx_core::flow_util::WeightMapSource;
 use rlx_core::weight_map::WeightMap;
+
+/// Fully-qualified weight-key naming for a BERT checkpoint.
+///
+/// Owns the detected `bert.` / `""` prefix and the Q/K/V layout, and hands out
+/// the embedding keys the flow needs. Centralizing the HF names here keeps a
+/// rename to a single edit (and makes detection unit-testable); returning a
+/// [`Cow`] avoids allocating in the common no-prefix (bare-encoder) case.
+#[derive(Debug, Clone)]
+struct BertKeys {
+    prefix: &'static str,
+    qkv_style: BertQkvStyle,
+}
+
+impl BertKeys {
+    // Weight-name suffixes (relative to the optional `bert.` prefix), each
+    // defined once and shared by `detect` + the accessors below.
+    const WORD_EMBEDDINGS: &'static str = "embeddings.word_embeddings.weight";
+    const POSITION_EMBEDDINGS: &'static str = "embeddings.position_embeddings.weight";
+    const TOKEN_TYPE_EMBEDDINGS: &'static str = "embeddings.token_type_embeddings.weight";
+    const LN_WEIGHT: &'static str = "embeddings.LayerNorm.weight";
+    const LN_BIAS: &'static str = "embeddings.LayerNorm.bias";
+    /// Presence of this key (under the detected prefix) selects the BERT
+    /// (vs MPNet) Q/K/V layout.
+    const QKV_PROBE: &'static str = "encoder.layer.0.attention.self.query.weight";
+
+    /// Detect the `bert.` prefix and Q/K/V weight layout from the checkpoint.
+    fn detect(weights: &WeightMap) -> Self {
+        let prefix = if weights.has(&format!("bert.{}", Self::WORD_EMBEDDINGS)) {
+            "bert."
+        } else {
+            ""
+        };
+        let qkv_style = if weights.has(&format!("{prefix}{}", Self::QKV_PROBE)) {
+            BertQkvStyle::Bert
+        } else {
+            BertQkvStyle::Mpnet
+        };
+        Self { prefix, qkv_style }
+    }
+
+    /// `prefix` + `suffix`, borrowing the static literal when there's no prefix.
+    fn k(&self, suffix: &'static str) -> Cow<'static, str> {
+        if self.prefix.is_empty() {
+            Cow::Borrowed(suffix)
+        } else {
+            Cow::Owned(format!("{}{suffix}", self.prefix))
+        }
+    }
+
+    fn word_embeddings(&self) -> Cow<'static, str> {
+        self.k(Self::WORD_EMBEDDINGS)
+    }
+    fn position_embeddings(&self) -> Cow<'static, str> {
+        self.k(Self::POSITION_EMBEDDINGS)
+    }
+    fn token_type_embeddings(&self) -> Cow<'static, str> {
+        self.k(Self::TOKEN_TYPE_EMBEDDINGS)
+    }
+    fn embeddings_ln_weight(&self) -> Cow<'static, str> {
+        self.k(Self::LN_WEIGHT)
+    }
+    fn embeddings_ln_bias(&self) -> Cow<'static, str> {
+        self.k(Self::LN_BIAS)
+    }
+
+    /// Prefix passed to `repeat_bert_layers` (no trailing dot): `"bert"` or `""`.
+    fn layer_prefix(&self) -> &'static str {
+        self.prefix.trim_end_matches('.')
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct BertFlow<'a> {
@@ -47,54 +118,26 @@ impl<'a> BertFlow<'a> {
     }
 
     pub fn build(self, weights: &mut WeightMap) -> Result<BuiltModel> {
-        let prefix = if weights.has("bert.embeddings.word_embeddings.weight") {
-            "bert."
-        } else {
-            ""
-        };
-        let qkv_style = if weights.has(&format!(
-            "{prefix}encoder.layer.0.attention.self.query.weight"
-        )) {
-            BertQkvStyle::Bert
-        } else {
-            BertQkvStyle::Mpnet
-        };
+        let keys = BertKeys::detect(weights);
 
-        let h = self.cfg.hidden_size;
         let f = DType::F32;
         let eps = self.cfg.layer_norm_eps as f32;
 
         let flow = ModelFlow::new("bert")
             .with_profile(self.profile)
-            .input("input_ids", Shape::new(&[self.batch, self.seq], DType::F32))
+            .input("input_ids", Shape::new(&[self.batch, self.seq], f))
             .input("attention_mask", Shape::new(&[self.batch, self.seq], f))
-            .input(
-                "token_type_ids",
-                Shape::new(&[self.batch, self.seq], DType::F32),
-            )
-            .input(
-                "position_ids",
-                Shape::new(&[self.batch, self.seq], DType::F32),
-            )
-            .embed(format!("{prefix}embeddings.word_embeddings.weight"))
-            .gather_add(
-                "position_ids",
-                format!("{prefix}embeddings.position_embeddings.weight"),
-            )
-            .gather_add(
-                "token_type_ids",
-                format!("{prefix}embeddings.token_type_embeddings.weight"),
-            )
-            .layer_norm(
-                format!("{prefix}embeddings.LayerNorm.weight"),
-                format!("{prefix}embeddings.LayerNorm.bias"),
-                eps,
-            )
+            .input("token_type_ids", Shape::new(&[self.batch, self.seq], f))
+            .input("position_ids", Shape::new(&[self.batch, self.seq], f))
+            .embed(keys.word_embeddings())
+            .gather_add("position_ids", keys.position_embeddings())
+            .gather_add("token_type_ids", keys.token_type_embeddings())
+            .layer_norm(keys.embeddings_ln_weight(), keys.embeddings_ln_bias(), eps)
             .repeat_bert_layers(
                 self.cfg.num_hidden_layers,
-                prefix.trim_end_matches('.'),
-                qkv_style,
-                h,
+                keys.layer_prefix(),
+                keys.qkv_style,
+                self.cfg.hidden_size,
                 self.cfg.num_attention_heads,
                 eps,
             )
@@ -116,8 +159,31 @@ pub fn build_bert_built(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{tiny_bert_weights, weights_with_keys};
     use rlx_core::config::BertConfig;
-    use std::collections::HashMap;
+
+    #[test]
+    fn bert_keys_detects_prefix_and_qkv_style() {
+        // Bare encoder, BERT-style Q/K/V.
+        let k = BertKeys::detect(&weights_with_keys(&[
+            "embeddings.word_embeddings.weight",
+            "encoder.layer.0.attention.self.query.weight",
+        ]));
+        assert_eq!(k.layer_prefix(), "");
+        assert_eq!(
+            k.word_embeddings().as_ref(),
+            "embeddings.word_embeddings.weight"
+        );
+        assert!(matches!(k.qkv_style, BertQkvStyle::Bert));
+
+        // `bert.`-prefixed, no BERT-style query key → Mpnet layout. The prefix
+        // is applied to every key — checked structurally, not by re-pinning a
+        // second full key literal.
+        let k2 = BertKeys::detect(&weights_with_keys(&["bert.embeddings.word_embeddings.weight"]));
+        assert_eq!(k2.layer_prefix(), "bert");
+        assert!(k2.embeddings_ln_bias().starts_with("bert."));
+        assert!(matches!(k2.qkv_style, BertQkvStyle::Mpnet));
+    }
 
     #[test]
     fn bert_flow_builds() {
@@ -132,72 +198,7 @@ mod tests {
             layer_norm_eps: 1e-12,
             hidden_act: "gelu".into(),
         };
-        let h = cfg.hidden_size;
-        let int_dim = cfg.intermediate_size;
-        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
-        let z = |n: usize| vec![0.0f32; n];
-        t.insert(
-            "embeddings.word_embeddings.weight".into(),
-            (z(cfg.vocab_size * h), vec![cfg.vocab_size, h]),
-        );
-        t.insert(
-            "embeddings.position_embeddings.weight".into(),
-            (
-                z(cfg.max_position_embeddings * h),
-                vec![cfg.max_position_embeddings, h],
-            ),
-        );
-        t.insert(
-            "embeddings.token_type_embeddings.weight".into(),
-            (z(cfg.type_vocab_size * h), vec![cfg.type_vocab_size, h]),
-        );
-        t.insert("embeddings.LayerNorm.weight".into(), (z(h), vec![h]));
-        t.insert("embeddings.LayerNorm.bias".into(), (z(h), vec![h]));
-        let lp = "encoder.layer.0";
-        t.insert(
-            format!("{lp}.attention.self.query.weight"),
-            (z(h * h), vec![h, h]),
-        );
-        t.insert(format!("{lp}.attention.self.query.bias"), (z(h), vec![h]));
-        t.insert(
-            format!("{lp}.attention.self.key.weight"),
-            (z(h * h), vec![h, h]),
-        );
-        t.insert(format!("{lp}.attention.self.key.bias"), (z(h), vec![h]));
-        t.insert(
-            format!("{lp}.attention.self.value.weight"),
-            (z(h * h), vec![h, h]),
-        );
-        t.insert(format!("{lp}.attention.self.value.bias"), (z(h), vec![h]));
-        t.insert(
-            format!("{lp}.attention.output.dense.weight"),
-            (z(h * h), vec![h, h]),
-        );
-        t.insert(format!("{lp}.attention.output.dense.bias"), (z(h), vec![h]));
-        t.insert(
-            format!("{lp}.attention.output.LayerNorm.weight"),
-            (z(h), vec![h]),
-        );
-        t.insert(
-            format!("{lp}.attention.output.LayerNorm.bias"),
-            (z(h), vec![h]),
-        );
-        t.insert(
-            format!("{lp}.intermediate.dense.weight"),
-            (z(int_dim * h), vec![int_dim, h]),
-        );
-        t.insert(
-            format!("{lp}.intermediate.dense.bias"),
-            (z(int_dim), vec![int_dim]),
-        );
-        t.insert(
-            format!("{lp}.output.dense.weight"),
-            (z(int_dim * h), vec![h, int_dim]),
-        );
-        t.insert(format!("{lp}.output.dense.bias"), (z(h), vec![h]));
-        t.insert(format!("{lp}.output.LayerNorm.weight"), (z(h), vec![h]));
-        t.insert(format!("{lp}.output.LayerNorm.bias"), (z(h), vec![h]));
-        let mut wm = WeightMap::from_tensors(t);
+        let mut wm = tiny_bert_weights(&cfg);
         let built = BertFlow::new(&cfg, 1, 4).build(&mut wm).unwrap();
         assert!(built.into_hir().unwrap().len() > 10);
     }

@@ -20,11 +20,12 @@ fn main() -> Result<()> {
     let Some(text) = opt("--text") else {
         eprintln!("usage: rlx-inflect-nano --data <bundle> --text <text> [--out out.wav]");
         eprintln!("       [--mode latency|precision|memory|hybrid] [--device cpu|metal|mlx|gpu]");
-        eprintln!("       [--length-scale 1.0] [--pitch-scale 1.0] [--energy-scale 1.0]");
+        eprintln!("       [--speed 1.0] [--length-scale 1.0] [--pitch-scale 1.0] [--energy-scale 1.0]");
         std::process::exit(2);
     };
     let out = opt("--out").unwrap_or_else(|| "inflect_nano_out.wav".to_string());
     let opts = InferOpts {
+        speed: opt("--speed").and_then(|s| s.parse().ok()).unwrap_or(1.0),
         length_scale: opt("--length-scale")
             .and_then(|s| s.parse().ok())
             .unwrap_or(1.0),

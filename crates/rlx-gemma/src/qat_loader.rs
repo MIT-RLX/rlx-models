@@ -400,6 +400,57 @@ impl WeightLoader for GemmaQatLoader {
         Ok((transpose_2d(&data, rows, cols), vec![cols, rows]))
     }
 
+    /// Repack a QAT int2/4 linear weight to GGUF **Q8_0** (near-lossless, ~1
+    /// byte/elem) so the E2B text arena stays low-bit. The f32-dequant arena is
+    /// 8.4 GiB, which exceeds wgpu's 4 GiB per-buffer cap; emitting a packed
+    /// `DequantMatMul` (the same path GGUF models use — works on every backend)
+    /// keeps it ~2 GiB. Only quantized 2D linears whose inner dim is a multiple
+    /// of the Q8_0 block (32); norms / odd shapes → `None` → the f32 path.
+    /// **Opt-in** via `RLX_GEMMA_QAT_PACK=1` (default: exact f32 weights). The
+    /// packed path works on CoreML/MLX (host dequant) but the GPU dequant
+    /// kernels currently NaN (Metal) / garbage (wgpu) on *repacked* Q4_K — GGUF
+    /// -file Q4_K works, so it's a repack-layout vs GPU-kernel mismatch, not the
+    /// packing itself (CoreML/MLX read it correctly). Kept for continuation.
+    fn take_packed(
+        &mut self,
+        key: &str,
+    ) -> Result<Option<rlx_core::weight_map::PackedWeightTensor>> {
+        if !rlx_ir::env::flag("RLX_GEMMA_QAT_PACK") {
+            return Ok(None);
+        }
+        let st = Self::remap(key);
+        // Peek the logical [out, in] WITHOUT consuming (`tensor_raw` doesn't mark
+        // `taken`, so the f32 fallback can still take it).
+        let Ok((_b, qdt, qshape)) = self.ckpt.tensor_raw(&st) else {
+            return Ok(None);
+        };
+        if !matches!(qdt, Dtype::U8 | Dtype::I8) || qshape.len() != 2 {
+            return Ok(None);
+        }
+        let module = st.strip_suffix(".weight").unwrap_or(&st);
+        let Some(bits) = self.plan.resolve_bits(module) else {
+            return Ok(None);
+        };
+        let out = qshape[0];
+        let inn = Self::unpacked_cols(qshape[1], bits);
+        // Q4_K super-block is 256 elems; the inner dim must divide it so the
+        // blocks align with GGUF [n=out, k=in] rows.
+        if inn % rlx_gguf::QK_K != 0 {
+            return Ok(None);
+        }
+        // Consume + dequant to f32 [out, inn] row-major, then repack to GGUF
+        // **Q4_K** — the most-tested `DequantMatMul` scheme (gemma2/3/4 use it,
+        // validated bit-exact on every backend this session). Q8_0 was a dead
+        // end: its GPU dequant kernel is unmapped on wgpu (garbage) and NaNs on
+        // Metal, though CoreML/MLX host-dequant handled it.
+        let (data, _shape) = self.take_impl(key)?;
+        // Use the same full-tensor packer the GPU DequantMatMul parity tests use
+        // (rlx-wgpu/tests/gguf_dequant_matmul_prefill_parity), which is validated
+        // on wgpu/Metal — rather than a hand-rolled quantize_q4_k_block loop.
+        let bytes = rlx_gguf::quantize(&data, rlx_gguf::GgmlType::Q4K)?;
+        Ok(Some((bytes, rlx_ir::quant::QuantScheme::GgufQ4K, vec![out, inn])))
+    }
+
     fn remaining_keys(&self) -> Vec<String> {
         self.ckpt
             .keys()

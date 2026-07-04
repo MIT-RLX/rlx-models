@@ -56,9 +56,14 @@ fn main() -> anyhow::Result<()> {
     let coreml = std::env::var("ORPHEUS_SNAC_COREML")
         .ok()
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "TRUE"));
+    let exec = if coreml {
+        rlx_orpheus::SnacExec::Ane
+    } else {
+        rlx_orpheus::SnacExec::CpuEager
+    };
     let snac_dec = rlx_orpheus::SnacBackend::open(
         std::path::Path::new(&snac),
-        rlx_orpheus::SnacLoadOptions { coreml },
+        rlx_orpheus::SnacLoadOptions { exec },
     )?;
     let samples = rlx_orpheus::decode_orpheus_codes(&snac_dec, &codes)?;
     write_wav(&out, &samples, rlx_orpheus::SAMPLE_RATE)?;

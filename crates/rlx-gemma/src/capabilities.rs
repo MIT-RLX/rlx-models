@@ -17,12 +17,13 @@
 
 use crate::config::GemmaConfig;
 use anyhow::Result;
-use rlx_core::validate_standard_device;
+use rlx_core::validate_lm_device;
+pub use rlx_core::{LM_DEVICE_NAMES, STANDARD_DEVICE_NAMES, STANDARD_DEVICES, pick_lm_device};
 use rlx_runtime::Device;
 
 pub fn validate_device(cfg: &GemmaConfig, device: Device, packed_weights: bool) -> Result<()> {
     let _ = (cfg, packed_weights);
-    validate_standard_device("gemma", device)
+    validate_lm_device("gemma", device)
 }
 
 #[cfg(test)]
@@ -41,5 +42,12 @@ mod tests {
             validate_device(&cfg, *dev, false).unwrap();
             validate_device(&cfg, *dev, true).unwrap();
         }
+    }
+
+    #[cfg(feature = "coreml")]
+    #[test]
+    fn coreml_ane_allowed() {
+        let cfg = tiny_cfg();
+        validate_device(&cfg, Device::Ane, true).unwrap();
     }
 }

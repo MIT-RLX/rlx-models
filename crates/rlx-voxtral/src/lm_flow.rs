@@ -53,6 +53,7 @@ pub fn build_voxtral_prefill_built(
     let decoder_spec = LlamaDecoderSpec {
         num_heads: llama.num_attention_heads,
         head_dim: dh,
+        n_rot: llama.n_rot(),
         num_kv_heads: llama.num_key_value_heads,
         eps,
         mask: MaskKind::Causal,

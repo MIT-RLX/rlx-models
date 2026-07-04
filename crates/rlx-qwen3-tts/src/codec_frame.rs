@@ -82,6 +82,7 @@ pub fn build_qwen3_tts_decode_built(
             dynamic_past: false,
             use_custom_mask: true,
             ragged_rope: false,
+            export_qk: false,
             profile: Some(profile.clone()),
         },
     )

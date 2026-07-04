@@ -62,13 +62,26 @@ pub fn inv_freq_with_factors(base: &[f64], factors: &[f32]) -> Vec<f64> {
         .collect()
 }
 
-/// Resolve inverse frequencies: optional GGUF tensor overrides HF config.
-pub fn resolve_inv_freq(cfg: &Llama32Config, rope_freq_factors: Option<&[f32]>) -> Vec<f64> {
-    let base = llama3_inv_freq(cfg);
+/// Resolve inverse frequencies for a given rotary width (`n_rot` dims rotated).
+pub fn resolve_inv_freq_n(
+    cfg: &Llama32Config,
+    rope_freq_factors: Option<&[f32]>,
+    n_rot: usize,
+) -> Vec<f64> {
+    let base = if n_rot < cfg.head_dim() {
+        default_inv_freq(cfg.rope_theta, n_rot)
+    } else {
+        llama3_inv_freq(cfg)
+    };
     match rope_freq_factors {
         Some(f) if !f.is_empty() => inv_freq_with_factors(&base, f),
         _ => base,
     }
+}
+
+/// Resolve inverse frequencies: optional GGUF tensor overrides HF config.
+pub fn resolve_inv_freq(cfg: &Llama32Config, rope_freq_factors: Option<&[f32]>) -> Vec<f64> {
+    resolve_inv_freq_n(cfg, rope_freq_factors, cfg.n_rot())
 }
 
 /// Build `[max_pos, head_dim/2]` cos/sin tables from inverse frequencies.

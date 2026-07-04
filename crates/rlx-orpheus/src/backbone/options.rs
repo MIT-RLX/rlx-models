@@ -112,15 +112,27 @@ impl BackboneLoadOptions {
 }
 
 fn metal_prefill_for_device(device: Device) -> MetalGgufPrefillMode {
-    if let Ok(s) = std::env::var("ORPHEUS_METAL_PREFILL") {
-        if let Some(m) = MetalGgufPrefillMode::parse(&s) {
-            return m;
+    for key in prefill_env_keys(device) {
+        if let Ok(s) = std::env::var(key) {
+            if let Some(m) = MetalGgufPrefillMode::parse(&s) {
+                return m;
+            }
         }
     }
     match device {
-        // Default reference path: Llama32Generator routes GGUF to CPU HIR on Metal.
-        Device::Metal | Device::Gpu | Device::Vulkan => MetalGgufPrefillMode::CpuF32,
+        // Host F32 GGUF prefill (parity + avoids 16 GiB CUDA OOM on Orpheus 3B).
+        Device::Metal | Device::Gpu | Device::Vulkan | Device::Cuda | Device::Rocm => {
+            MetalGgufPrefillMode::CpuF32
+        }
         _ => MetalGgufPrefillMode::Auto,
+    }
+}
+
+fn prefill_env_keys(device: Device) -> &'static [&'static str] {
+    match device {
+        Device::Cuda => &["ORPHEUS_CUDA_PREFILL", "ORPHEUS_METAL_PREFILL"],
+        Device::Rocm => &["ORPHEUS_ROCM_PREFILL", "ORPHEUS_METAL_PREFILL"],
+        _ => &["ORPHEUS_METAL_PREFILL"],
     }
 }
 
@@ -161,5 +173,12 @@ mod tests {
         let opts = BackboneLoadOptions::for_tts(Device::Cpu);
         assert!(opts.memory_efficient);
         assert_eq!(opts.metal_prefill, MetalGgufPrefillMode::CpuF32);
+    }
+
+    #[test]
+    fn for_tts_cuda_uses_host_prefill() {
+        let opts = BackboneLoadOptions::for_tts(Device::Cuda);
+        assert_eq!(opts.metal_prefill, MetalGgufPrefillMode::CpuF32);
+        assert!(!opts.memory_efficient);
     }
 }

@@ -256,7 +256,7 @@ fn run_rlx_greedy(gguf: &Path, prompt_ids: &[u32]) -> Result<Vec<u32>> {
     println!("\n— rlx-gemma greedy packed (SampleOpts::greedy / temp 0) —");
     let mut runner = GemmaRunnerBuilder::default()
         .weights(gguf.to_str().context("gguf path utf8")?)
-        .device(Device::Metal)
+        .device(Device::Cpu)
         .config(GemmaConfigSource::Embedded)
         .packed_weights(true)
         .max_seq(512)

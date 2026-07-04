@@ -146,16 +146,111 @@ max-batch: n_fft=256 dtype=4B limbs=1 row=6144 B/batch
 `bench-sweep` calls this automatically and **skips** any over-cap `(device, batch)` with a warning instead of panicking. In Rust:
 
 ```rust
-use rlx_fft::max_batch::{auto_max_fft_batch, clamp_batch, FftProblem};
+use rlx_fft::exec::max_batch::{auto_max_fft_batch, clamp_batch, FftProblem};
 use rlx_runtime::Device;
 
 let cap = auto_max_fft_batch(Device::Gpu, FftProblem::f32(256));   // → 65535, Dispatch-limited
 let (safe, lowered) = clamp_batch(Device::Gpu, FftProblem::new(256, 4, 2), 200_000);
 ```
 
-`max_fft_batch` is a pure function (unit-tested without hardware); `RLX_FFT_MEM_BUDGET_MB` overrides the budget for discrete-GPU VRAM, and `RLX_SOFT_MEMORY_FRACTION` tunes the unified-memory safety fraction (default 0.80). Source: [`src/max_batch.rs`](src/max_batch.rs).
+`max_fft_batch` is a pure function (unit-tested without hardware); `RLX_FFT_MEM_BUDGET_MB` overrides the budget for discrete-GPU VRAM, and `RLX_SOFT_MEMORY_FRACTION` tunes the unified-memory safety fraction (default 0.80). Source: [`src/exec/max_batch.rs`](src/exec/max_batch.rs).
 
-The compensated representations live in [`src/precision_fft.rs`](src/precision_fft.rs) (`dd_fft`/`f2_fft`/`ex_fft` + roundtrip-error harnesses); `Op::Fma` is native on CPU / WebGPU / Metal and falls back via the `LowerFma` pass on ANE (no MIL fma).
+The compensated representations live in [`src/model/precision_fft.rs`](src/model/precision_fft.rs) (`dd_fft`/`f2_fft`/`ex_fft` + roundtrip-error harnesses); `Op::Fma` is native on CPU / WebGPU / Metal and falls back via the `LowerFma` pass on ANE (no MIL fma).
+
+## CUDA backends
+
+Three FFT paths on NVIDIA GPUs, all running on the native RLX 2N planar
+(`[re | im]`) arena layout. Numbers below: **RTX 3080 Ti Laptop, CUDA 13.1**.
+
+| Build feature | Path | Best for |
+|---|---|---|
+| `cuda` (default) | native multi/single butterfly kernels | always available, no extra deps |
+| `native-cuda-fft` | single-kernel **Stockham** (radix-2/4/8/16) | pow-2 `n ≤ 4096` — fastest, no external dep |
+| `cufft` | NVIDIA **cuFFT** via [`cudarc`] (dynamically loaded) | very large / non-pow-2 `n` |
+
+### Native Stockham kernels (`native-cuda-fft`)
+
+A from-scratch single-kernel FFT: for pow-2 `n ≤ 4096` the whole transform runs
+in **one kernel** — one global load + one store, every butterfly on-chip —
+reading the planar arena straight into interleaved shared `float2` (no conversion
+pass). The kernel is **generated per size by NVRTC codegen** (cached by source
+hash on disk, the same trick cuFFT's templated kernels use): `n`, the block size,
+and every stage's radix/stride are compile-time literals, so ptxas fully unrolls
+the load/store/butterfly with no runtime stage loop or `switch(radix)`. The
+schedule is `[8]·⌊m/3⌋ + [2^(m%3)]` radix-8 stages (e.g. 2048 = 8×8×8×4) — radix-8
+is the sweet spot: radix-16 cuts a stage but its register pressure drops
+occupancy more than it saves (FFT is occupancy/memory-bound). The first stage
+reads the input straight from global into registers and the last stage writes
+results straight to global (no separate load/store, ‑2 shared round-trips, ‑2
+`__syncthreads`). Larger `n` falls back to the multi-kernel path. `RLX_FFT_GEN=0`
+uses precompiled radix-specialized kernels instead (for A/B).
+
+FFT **kernel** GPU time (ms, batch 1024, nsys), apples-to-apples complex C2C:
+
+| n | `cuda` (orig) | `cufft` path | pure cuFFT | `native-cuda-fft` | vs cuFFT | rel err |
+|---|---|---|---|---|---|---|
+| 256 | 0.015 | 0.018 | 0.0075 | **0.0069** | **0.92×** | 8.1e-6 |
+| 1024 | 0.067 | 0.111 | 0.0354 | **0.0379** | 1.07× | 2.3e-5 |
+| 2048 | 0.357 | 0.217 | 0.0716 | **0.0725** | **1.01×** | 3.8e-5 |
+| 4096 | 0.756 | 0.428 | 0.1413 | **0.1475** | **1.04×** | 5.9e-5 |
+
+The codegen reaches **cuFFT parity (1.01–1.07×) and beats it at n=256 (0.92×)**,
+float32-accurate — up to **5× faster than the original rlx kernels** (n=4096:
+0.756 → 0.148 ms), and closed the old n=2048 gap from 2.18× (pure radix-2) to
+1.01×. The per-size codegen is strictly better than hand-written dedicated kernels
+(it beat the radix-16 kernel at 256 and 4096). For a **real** input the fused path
+(below) reads half the data and **beats cuFFT C2C by 1.2–1.3×** (256: 0.0056,
+1024: 0.0295, 2048: 0.0550, 4096: 0.110 ms).
+
+#### Real-input fusion
+
+A forward FFT of a real signal builds the complex input as
+`Concat([signal, zeros])` — two memory-bound kernels (`Concat` + the `Sub` that
+makes the zeros) that on n=4096 b=1024 cost **0.217 ms, *more* than the FFT
+itself**. A schedule-level pass detects this pattern (when `signal` is a resident
+input) and drops both, having the codegen kernel read `signal` directly with
+`im = 0` (also reading half the data — n reals vs the 2N block). The real-FFT
+**pipeline GPU compute drops 0.368 → 0.129 ms (2.85×)** at n=4096, bit-identical
+output. Disable with `RLX_FFT_FUSE_REAL=0`. This matters for GPU-resident spectral
+pipelines (mel, Welch) where there's no per-FFT host readback to hide it.
+
+```bash
+cargo run -p rlx-fft --release --no-default-features --features native-cuda-fft -- \
+  bench --n-fft 4096 --batch 1024 --device cuda
+```
+
+### cuFFT (`cufft`)
+
+Routes the GPU FFT op through NVIDIA cuFFT (`cufftExecC2C`), packing the planar
+arena to/from interleaved `cufftComplex` (plans cached per `(n, batch)`). Because
+that conversion costs ~2 memory passes, the default only sends `n > 1024` to
+cuFFT.
+
+### Runtime selection & tuning
+
+Build with `--features cufft,native-cuda-fft` to compile all three and choose at
+runtime:
+
+| Env | Effect |
+|---|---|
+| *(default)* | native Stockham for `n ≤ 4096`, else cuFFT (`n > 1024`) / native multi-kernel |
+| `RLX_FFT_NATIVE=0` | disable Stockham (fall through to cuFFT / multi-kernel) |
+| `RLX_FFT_GEN=0` | use precompiled radix kernels instead of per-size codegen |
+| `RLX_FFT_FUSE_REAL=0` | disable the real→complex Concat/Sub fusion |
+| `RLX_FFT_CUFFT=always` | cuFFT for every eligible size |
+| `RLX_FFT_CUFFT=0` | disable cuFFT (use native) |
+| `RLX_CUDA_PINNED_IO=0` | pageable (non-pinned) host staging |
+
+> **Readback.** Output staging uses **cacheable** pinned host memory. cudarc's
+> default pinned alloc is write-combined — fast for H2D, but the D2H host read is
+> then uncached (~240 MB/s): a 33 MB readback took ~138 ms vs ~3 ms for the DMA.
+> Cacheable-pinned output keeps both sides fast.
+
+FFT here is memory/latency-bound (cuFFT on this GPU profiles at ~53% DRAM, ~15%
+compute, ~33% occupancy), so the win comes from minimizing DRAM passes; higher
+radix mainly saves shared-memory traffic and barriers.
+
+[`cudarc`]: https://crates.io/crates/cudarc
 
 ## Welch peaks (fast top-K spikes)
 

@@ -1,0 +1,52 @@
+[package]
+name = "rlx-gemma-inflect-nano"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Gemma 3 270M + Inflect-Nano TTS pairing demo (unpublished)"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-gemma = { workspace = true }
+rlx-inflect-nano = { workspace = true, features = ["rlx-graph"] }
+rlx-qwen3 = { workspace = true }
+rlx-qwen35 = { workspace = true, features = ["tokenizer"] }
+rlx-runtime = { workspace = true }
+# Cache the tokenizer once for fast per-token streaming decode (the `auto`
+# helpers reload tokenizer.json on every call — ~370ms/token otherwise).
+tokenizers = { workspace = true }
+
+[features]
+default = []
+metal = ["rlx-gemma/metal", "rlx-inflect-nano/metal", "rlx-runtime/metal"]
+mlx = ["rlx-gemma/mlx", "rlx-inflect-nano/mlx", "rlx-runtime/mlx"]
+cuda = ["rlx-gemma/cuda", "rlx-inflect-nano/cuda", "rlx-runtime/cuda"]
+rocm = ["rlx-gemma/rocm", "rlx-inflect-nano/rocm", "rlx-runtime/rocm"]
+gpu = ["rlx-gemma/gpu", "rlx-inflect-nano/gpu", "rlx-runtime/gpu"]
+vulkan = ["rlx-gemma/vulkan", "rlx-inflect-nano/vulkan", "rlx-runtime/vulkan"]
+coreml = ["rlx-gemma/coreml", "rlx-inflect-nano/coreml", "rlx-runtime/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml", "rlx-gemma/apple-silicon", "rlx-inflect-nano/apple-silicon"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[dev-dependencies]
+# Live streaming playback for the `chat` example (same backend rlx-moshi uses).
+cpal = "0.15"
+
+[[example]]
+name = "speak"
+path = "examples/speak.rs"
+
+[[example]]
+name = "chat"
+path = "examples/chat.rs"
+
+[lints]
+workspace = true

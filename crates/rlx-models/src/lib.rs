@@ -232,6 +232,10 @@ pub mod bonsai {
 pub mod minicpm5 {
     pub use rlx_minicpm5::*;
 }
+#[cfg(feature = "tinyllama")]
+pub mod tinyllama {
+    pub use rlx_tinyllama::*;
+}
 #[cfg(feature = "phi")]
 pub mod phi {
     pub use rlx_phi::*;

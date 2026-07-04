@@ -1,0 +1,57 @@
+[package]
+name = "rlx-tinyllama"
+version = "0.2.9"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "TinyLlama-1.1B causal LM runner (Llama-shaped; TinyLlama/TinyLlama-1.1B-Chat-v1.0)"
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-llama-base = { workspace = true }
+rlx-llama32 = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-text = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hf-hub = { workspace = true, optional = true }
+
+[features]
+default = []
+hf-download = ["dep:hf-hub"]
+tokenizer = ["rlx-llama32/tokenizer"]
+# Transformers-style one-liner API (`TextGeneration::from_pretrained`): text
+# in / text out, chat templates, streaming. Pulls the cached tokenizer +
+# chat-template engine (`rlx-text`) and the HF-hub downloader.
+pipeline = ["tokenizer", "hf-download", "dep:rlx-text"]
+metal = ["rlx-llama32/metal"]
+mlx = ["rlx-llama32/mlx"]
+cuda = ["rlx-llama32/cuda"]
+rocm = ["rlx-llama32/rocm"]
+gpu = ["rlx-llama32/gpu"]
+vulkan = ["rlx-llama32/vulkan"]
+coreml = ["rlx-llama32/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+
+[[bin]]
+name = "rlx-tinyllama"
+path = "src/bin/rlx_tinyllama.rs"
+required-features = ["tokenizer"]
+
+# Transformers-style one-liner CLI: `rlx-tinyllama-pipeline --model <id|path> --prompt "…"`.
+[[bin]]
+name = "rlx-tinyllama-pipeline"
+path = "src/bin/rlx_tinyllama_pipeline.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "pipeline"
+required-features = ["pipeline"]
+
+[lints]
+workspace = true

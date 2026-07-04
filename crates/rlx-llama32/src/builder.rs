@@ -5,7 +5,7 @@
 
 use crate::config::Llama32Config;
 use crate::rope::{build_rope_tables, resolve_inv_freq, rope_slice};
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use rlx_core::weight_loader::WeightLoader;
 use rlx_ir::hir::{HirGraphExt, HirModule, HirMut, HirNodeId};
 use rlx_ir::infer::GraphExt;
@@ -13,6 +13,29 @@ use rlx_ir::op::MaskKind;
 use rlx_ir::shape::{self};
 use rlx_ir::{DType, Graph, NodeId, Op, Shape};
 use std::collections::HashMap;
+
+fn apply_qk_rope(
+    g: &mut Graph,
+    q: NodeId,
+    k: NodeId,
+    cos_id: NodeId,
+    sin_id: NodeId,
+    cfg: &Llama32Config,
+) -> (NodeId, NodeId) {
+    let dh = cfg.head_dim();
+    let n_rot = cfg.n_rot();
+    if n_rot < dh {
+        (
+            g.rope_n_styled(q, cos_id, sin_id, dh, n_rot, cfg.rope_style),
+            g.rope_n_styled(k, cos_id, sin_id, dh, n_rot, cfg.rope_style),
+        )
+    } else {
+        (
+            g.rope_styled(q, cos_id, sin_id, dh, cfg.rope_style),
+            g.rope_styled(k, cos_id, sin_id, dh, cfg.rope_style),
+        )
+    }
+}
 
 /// Build a HIR-stage LLaMA-3.2 forward module (fusion-first).
 pub fn build_llama32_hir_sized(
@@ -372,14 +395,220 @@ fn synth_zero(
     id
 }
 
-/// Load a projection weight as packed (`Op::DequantMatMul`) when the GGUF
+/// Dequant a single embed row from packed GGUF bytes (Q4K / Q6K).
+pub(crate) fn gather_embed_row(
+    packed_bytes: &[u8],
+    scheme: rlx_ir::quant::QuantScheme,
+    hidden: usize,
+    token_id: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    use rlx_ir::quant::QuantScheme;
+    debug_assert_eq!(out.len(), hidden);
+    let block_elems = scheme.gguf_block_size() as usize;
+    let block_bytes = scheme.gguf_block_bytes() as usize;
+    if block_elems == 0 || !hidden.is_multiple_of(block_elems) {
+        bail!(
+            "gather_embed_row: scheme {scheme:?} block_elems={block_elems} doesn't divide hidden={hidden}"
+        );
+    }
+    let blocks_per_row = hidden / block_elems;
+    let row_bytes = blocks_per_row * block_bytes;
+    let off = token_id * row_bytes;
+    if off + row_bytes > packed_bytes.len() {
+        bail!(
+            "gather_embed_row: row offset {off}+{row_bytes} past packed bytes len {}",
+            packed_bytes.len()
+        );
+    }
+    let row = &packed_bytes[off..off + row_bytes];
+    let dequant = match scheme {
+        QuantScheme::GgufQ4K => rlx_gguf::dequant_q4_k(row, hidden)?,
+        QuantScheme::GgufQ6K => rlx_gguf::dequant_q6_k(row, hidden)?,
+        _ => bail!("gather_embed_row: unsupported scheme {scheme:?}"),
+    };
+    out.copy_from_slice(&dequant);
+    Ok(())
+}
+
+/// Host-gather prompt-token embedding rows for lazy packed prefill/decode.
+pub(crate) fn gather_embed_rows(
+    packed_bytes: &[u8],
+    scheme: rlx_ir::quant::QuantScheme,
+    hidden: usize,
+    token_ids: &[f32],
+    out: &mut [f32],
+) -> Result<()> {
+    let n = token_ids.len();
+    anyhow::ensure!(
+        out.len() == n * hidden,
+        "gather_embed_rows: out len {} != {} tokens × hidden {}",
+        out.len(),
+        n,
+        hidden
+    );
+    for (i, &tok) in token_ids.iter().enumerate() {
+        gather_embed_row(
+            packed_bytes,
+            scheme,
+            hidden,
+            tok as usize,
+            &mut out[i * hidden..(i + 1) * hidden],
+        )?;
+    }
+    Ok(())
+}
+
 /// loader exposes K-quant bytes for `key`, else as a transposed F32 param
 /// (plain `g.mm`). Shared by the packed prefill and decode builders.
+fn proj_available(
+    packed: &HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    weights: &dyn WeightLoader,
+    key: &str,
+) -> bool {
+    packed.contains_key(key) || weights.tensor_bytes_borrowed(key).is_some()
+}
+
+fn load_self_attn_qkv(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    weights: &mut dyn WeightLoader,
+    cfg: &Llama32Config,
+    lp: &str,
+    batch: usize,
+    seq: usize,
+    normed_in: NodeId,
+    f: DType,
+) -> Result<(NodeId, NodeId, NodeId)> {
+    let fused_key = format!("{lp}.self_attn.qkv.weight");
+    let q_dim = cfg.q_proj_dim();
+    let kv_dim = cfg.kv_proj_dim();
+    if cfg.is_phi_arch() || proj_available(packed, &*weights, &fused_key) {
+        let (w, s, _) = load_proj(g, params, packed, weights, &fused_key)?;
+        let total = q_dim + kv_dim + kv_dim;
+        let combined = emit_proj(
+            g,
+            normed_in,
+            w,
+            s,
+            Shape::new(&[batch, seq, total], f),
+        );
+        let q = g.narrow_(combined, 2, 0, q_dim);
+        let k = g.narrow_(combined, 2, q_dim, kv_dim);
+        let v = g.narrow_(combined, 2, q_dim + kv_dim, kv_dim);
+        Ok((q, k, v))
+    } else {
+        let (q_w, q_s, _) = load_proj(
+            g,
+            params,
+            packed,
+            weights,
+            &format!("{lp}.self_attn.q_proj.weight"),
+        )?;
+        let q = emit_proj(
+            g,
+            normed_in,
+            q_w,
+            q_s,
+            Shape::new(&[batch, seq, q_dim], f),
+        );
+        let (k_w, k_s, _) = load_proj(
+            g,
+            params,
+            packed,
+            weights,
+            &format!("{lp}.self_attn.k_proj.weight"),
+        )?;
+        let k = emit_proj(
+            g,
+            normed_in,
+            k_w,
+            k_s,
+            Shape::new(&[batch, seq, kv_dim], f),
+        );
+        let (v_w, v_s, _) = load_proj(
+            g,
+            params,
+            packed,
+            weights,
+            &format!("{lp}.self_attn.v_proj.weight"),
+        )?;
+        let v = emit_proj(
+            g,
+            normed_in,
+            v_w,
+            v_s,
+            Shape::new(&[batch, seq, kv_dim], f),
+        );
+        Ok((q, k, v))
+    }
+}
+
+fn load_swiglu_ffn(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    weights: &mut dyn WeightLoader,
+    cfg: &Llama32Config,
+    lp: &str,
+    batch: usize,
+    seq: usize,
+    normed_post: NodeId,
+    f: DType,
+) -> Result<(NodeId, NodeId)> {
+    let inter = cfg.intermediate_size;
+    let gate_up_key = format!("{lp}.mlp.gate_up.weight");
+    if cfg.is_phi_arch() || proj_available(packed, &*weights, &gate_up_key) {
+        let (gu_w, gu_s, _) = load_proj(g, params, packed, weights, &gate_up_key)?;
+        let combined = emit_proj(
+            g,
+            normed_post,
+            gu_w,
+            gu_s,
+            Shape::new(&[batch, seq, inter * 2], f),
+        );
+        let gate = g.narrow_(combined, 2, 0, inter);
+        let up = g.narrow_(combined, 2, inter, inter);
+        Ok((gate, up))
+    } else {
+        let (gate_w, gate_s, _) = load_proj(
+            g,
+            params,
+            packed,
+            weights,
+            &format!("{lp}.mlp.gate_proj.weight"),
+        )?;
+        let gate = emit_proj(
+            g,
+            normed_post,
+            gate_w,
+            gate_s,
+            Shape::new(&[batch, seq, inter], f),
+        );
+        let (up_w, up_s, _) = load_proj(
+            g,
+            params,
+            packed,
+            weights,
+            &format!("{lp}.mlp.up_proj.weight"),
+        )?;
+        let up = emit_proj(
+            g,
+            normed_post,
+            up_w,
+            up_s,
+            Shape::new(&[batch, seq, inter], f),
+        );
+        Ok((gate, up))
+    }
+}
+
 fn load_proj(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
-    weights: &mut rlx_core::weight_loader::GgufLoader,
+    weights: &mut dyn WeightLoader,
     key: &str,
 ) -> Result<(NodeId, Option<rlx_ir::quant::QuantScheme>, Vec<usize>)> {
     if let Some((bytes, scheme, shape)) = weights.take_packed(key)? {
@@ -432,23 +661,33 @@ fn load_packed_embed(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
-    weights: &mut rlx_core::weight_loader::GgufLoader,
+    weights: &mut dyn WeightLoader,
     cfg: &Llama32Config,
     batch: usize,
     seq: usize,
     want_head: bool,
+    embed_host: &mut Option<(Vec<u8>, rlx_ir::quant::QuantScheme)>,
 ) -> Result<(NodeId, Option<(NodeId, rlx_ir::quant::QuantScheme)>)> {
-    // NOTE: an incomplete "lazy-embed" variant (feed host-gathered
-    // `input_embeddings` + tied LM head via the packed embed) was started here,
-    // but its runtime feeder was never wired — so `input_embeddings` went unfed
-    // and the packed (Metal) path got garbage embeddings (0 codes / divergence).
-    // Until the runtime side lands, always use the legacy in-graph F32 gather;
-    // the tied LM head then falls back to its F32 transpose copy.
-    let _ = (cfg, packed, want_head);
     let key = "model.embed_tokens.weight";
-    let embed_w = load_p(g, params, weights, key, false)?;
-    let input_ids = g.input("input_ids", Shape::new(&[batch, seq], DType::F32));
-    Ok((g.gather_(embed_w, input_ids, 0), None))
+    if let Some((bytes, scheme, shape)) = weights.take_packed(key)? {
+        *embed_host = Some((bytes.clone(), scheme));
+        let h_in = g.input(
+            "input_embeddings",
+            Shape::new(&[batch, seq, cfg.hidden_size], DType::F32),
+        );
+        let tied = if want_head && cfg.tie_word_embeddings {
+            let id = g.param(key, Shape::new(&[bytes.len()], DType::U8));
+            packed.insert(key.to_string(), (bytes, scheme, shape));
+            Some((id, scheme))
+        } else {
+            None
+        };
+        Ok((h_in, tied))
+    } else {
+        let embed_w = load_p(g, params, weights, key, false)?;
+        let input_ids = g.input("input_ids", Shape::new(&[batch, seq], DType::F32));
+        Ok((g.gather_(embed_w, input_ids, 0), None))
+    }
 }
 
 /// Packed-weights prefill graph — K-quant matmuls stay in the arena via
@@ -456,13 +695,14 @@ fn load_packed_embed(
 #[allow(clippy::too_many_arguments)]
 pub fn build_llama32_graph_sized_packed(
     cfg: &Llama32Config,
-    weights: &mut rlx_core::weight_loader::GgufLoader,
+    weights: &mut dyn WeightLoader,
     batch: usize,
     seq: usize,
     with_lm_head: bool,
     last_logits_only: bool,
     with_kv_outputs: bool,
     packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    embed_host: &mut Option<(Vec<u8>, rlx_ir::quant::QuantScheme)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
     validate_cfg(cfg)?;
 
@@ -481,16 +721,17 @@ pub fn build_llama32_graph_sized_packed(
 
     let rope_factors = take_rope_freqs(weights);
     let inv_freq = resolve_inv_freq(cfg, rope_factors.as_deref());
-    let (cos_data, sin_data) = build_rope_tables(&inv_freq, cfg.max_position_embeddings);
+    let rope_rows = seq;
+    let (cos_data, sin_data) = build_rope_tables(&inv_freq, rope_rows);
     let half = inv_freq.len();
     let cos_id = g.param(
         "rope.cos",
-        Shape::new(&[cfg.max_position_embeddings, half], f),
+        Shape::new(&[rope_rows, half], f),
     );
     params.insert("rope.cos".into(), cos_data);
     let sin_id = g.param(
         "rope.sin",
-        Shape::new(&[cfg.max_position_embeddings, half], f),
+        Shape::new(&[rope_rows, half], f),
     );
     params.insert("rope.sin".into(), sin_data);
 
@@ -507,6 +748,7 @@ pub fn build_llama32_graph_sized_packed(
         batch,
         seq,
         with_lm_head,
+        embed_host,
     )?;
     let last_token_idx = if last_logits_only {
         Some(g.input("last_token_idx", Shape::new(&[batch], DType::F32)))
@@ -529,55 +771,24 @@ pub fn build_llama32_graph_sized_packed(
 
         let q_dim = nh * dh;
         let kv_dim = nkv * dh;
-        let (q_w, q_s, _) = load_proj(
+        let (q, k, v) = load_self_attn_qkv(
             &mut g,
             &mut params,
             packed,
             weights,
-            &format!("{lp}.self_attn.q_proj.weight"),
-        )?;
-        let (k_w, k_s, _) = load_proj(
-            &mut g,
-            &mut params,
-            packed,
-            weights,
-            &format!("{lp}.self_attn.k_proj.weight"),
-        )?;
-        let (v_w, v_s, _) = load_proj(
-            &mut g,
-            &mut params,
-            packed,
-            weights,
-            &format!("{lp}.self_attn.v_proj.weight"),
-        )?;
-        let q = emit_proj(
-            &mut g,
+            cfg,
+            &lp,
+            batch,
+            seq,
             normed_in,
-            q_w,
-            q_s,
-            Shape::new(&[batch, seq, q_dim], f),
-        );
-        let k = emit_proj(
-            &mut g,
-            normed_in,
-            k_w,
-            k_s,
-            Shape::new(&[batch, seq, kv_dim], f),
-        );
-        let v = emit_proj(
-            &mut g,
-            normed_in,
-            v_w,
-            v_s,
-            Shape::new(&[batch, seq, kv_dim], f),
-        );
+            f,
+        )?;
 
         // GGUF Llama → interleaved/GPT-J RoPE flavor (mirror the decode-packed
         // builder `build_llama32_decode_graph_sized_packed`). Plain `g.rope`
         // applies NeoX rotation, which corrupts packed-prefill KV for GGUF
         // checkpoints and makes Metal-decode diverge from the CPU F32 reference.
-        let q_rope = g.rope_styled(q, cos_id, sin_id, dh, cfg.rope_style);
-        let k_rope = g.rope_styled(k, cos_id, sin_id, dh, cfg.rope_style);
+        let (q_rope, k_rope) = apply_qk_rope(&mut g, q, k, cos_id, sin_id, cfg);
         if with_kv_outputs {
             kv_outputs.push((k_rope, v));
         }
@@ -607,20 +818,17 @@ pub fn build_llama32_graph_sized_packed(
         )?;
         let normed_post = g.rms_norm(post_attn, post_ln_g, zero_beta_hidden, eps);
 
-        let inter = cfg.intermediate_size;
-        let (gate_w, gate_s, _) = load_proj(
+        let (gate, up) = load_swiglu_ffn(
             &mut g,
             &mut params,
             packed,
             weights,
-            &format!("{lp}.mlp.gate_proj.weight"),
-        )?;
-        let (up_w, up_s, _) = load_proj(
-            &mut g,
-            &mut params,
-            packed,
-            weights,
-            &format!("{lp}.mlp.up_proj.weight"),
+            cfg,
+            &lp,
+            batch,
+            seq,
+            normed_post,
+            f,
         )?;
         let (down_w, down_s, _) = load_proj(
             &mut g,
@@ -629,20 +837,6 @@ pub fn build_llama32_graph_sized_packed(
             weights,
             &format!("{lp}.mlp.down_proj.weight"),
         )?;
-        let gate = emit_proj(
-            &mut g,
-            normed_post,
-            gate_w,
-            gate_s,
-            Shape::new(&[batch, seq, inter], f),
-        );
-        let up = emit_proj(
-            &mut g,
-            normed_post,
-            up_w,
-            up_s,
-            Shape::new(&[batch, seq, inter], f),
-        );
         let gate_act = g.silu(gate);
         let swiglu = g.mul(gate_act, up);
         let ffn_out = emit_proj(
@@ -715,6 +909,11 @@ pub fn build_llama32_graph_sized_packed(
     let mut outputs = Vec::new();
     if with_lm_head || !with_kv_outputs {
         outputs.push(out);
+    } else if last_logits_only {
+        // Host greedy prefill: last-token hidden + per-layer KV (skip vocab matmul).
+        let idx = last_token_idx.expect("last_token_idx input");
+        let idx_2d = g.reshape_(idx, vec![batch as i64, 1]);
+        outputs.push(g.gather_(hidden, idx_2d, 1));
     }
     if with_kv_outputs {
         for (k, v) in kv_outputs {
@@ -753,13 +952,16 @@ pub fn build_llama32_graph_sized_packed(
 ///
 /// With `use_custom_mask = false` the graph bakes the cos/sin row for the exact
 /// `past_seq` and uses `MaskKind::Causal` (the slow but always-correct fallback).
+/// Like [`build_llama32_decode_graph_sized_packed`] but can omit the in-graph
+/// vocab matmul (`with_lm_head = false` → post-norm hidden + KV outputs).
 #[allow(clippy::too_many_arguments)]
-pub fn build_llama32_decode_graph_sized_packed(
+pub fn build_llama32_decode_graph_sized_packed_ext(
     cfg: &Llama32Config,
-    weights: &mut rlx_core::weight_loader::GgufLoader,
+    weights: &mut dyn WeightLoader,
     batch: usize,
     past_seq: usize,
     use_custom_mask: bool,
+    with_lm_head: bool,
     packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
     validate_cfg(cfg)?;
@@ -801,8 +1003,9 @@ pub fn build_llama32_decode_graph_sized_packed(
     // Keep the embed table PACKED for tied checkpoints (see `load_packed_embed`):
     // single-token input embedding gathered host-side (`input_embeddings`),
     // tied LM head via `Op::DequantMatMul`. Decode always emits the LM head.
+    let mut embed_host = None;
     let (mut h_id, tied_embed_head) =
-        load_packed_embed(&mut g, &mut params, packed, weights, cfg, batch, 1, true)?;
+        load_packed_embed(&mut g, &mut params, packed, weights, cfg, batch, 1, with_lm_head, &mut embed_host)?;
 
     // Per-layer past K/V cache inputs.
     let mut past_k_ids: Vec<NodeId> = Vec::with_capacity(cfg.num_hidden_layers);
@@ -839,52 +1042,21 @@ pub fn build_llama32_decode_graph_sized_packed(
         )?;
         let normed_in = g.rms_norm(h_id, in_ln_g, zero_beta_hidden, eps);
 
-        let (q_w, q_s, _) = load_proj(
+        let (q, k, v) = load_self_attn_qkv(
             &mut g,
             &mut params,
             packed,
             weights,
-            &format!("{lp}.self_attn.q_proj.weight"),
-        )?;
-        let (k_w, k_s, _) = load_proj(
-            &mut g,
-            &mut params,
-            packed,
-            weights,
-            &format!("{lp}.self_attn.k_proj.weight"),
-        )?;
-        let (v_w, v_s, _) = load_proj(
-            &mut g,
-            &mut params,
-            packed,
-            weights,
-            &format!("{lp}.self_attn.v_proj.weight"),
-        )?;
-        let q = emit_proj(
-            &mut g,
+            cfg,
+            &lp,
+            batch,
+            1,
             normed_in,
-            q_w,
-            q_s,
-            Shape::new(&[batch, 1, q_dim], f),
-        );
-        let k = emit_proj(
-            &mut g,
-            normed_in,
-            k_w,
-            k_s,
-            Shape::new(&[batch, 1, kv_dim], f),
-        );
-        let v = emit_proj(
-            &mut g,
-            normed_in,
-            v_w,
-            v_s,
-            Shape::new(&[batch, 1, kv_dim], f),
-        );
+            f,
+        )?;
 
         // GGUF Llama → interleaved/GPT-J RoPE flavor.
-        let q_rope = g.rope_styled(q, cos_id, sin_id, dh, cfg.rope_style);
-        let k_rope = g.rope_styled(k, cos_id, sin_id, dh, cfg.rope_style);
+        let (q_rope, k_rope) = apply_qk_rope(&mut g, q, k, cos_id, sin_id, cfg);
 
         // Append the new token to the cached KV, export the full buffers.
         let new_k = g.concat_(vec![past_k_ids[layer_idx], k_rope], 1);
@@ -919,20 +1091,17 @@ pub fn build_llama32_decode_graph_sized_packed(
         )?;
         let normed_post = g.rms_norm(post_attn, post_ln_g, zero_beta_hidden, eps);
 
-        let inter = cfg.intermediate_size;
-        let (gate_w, gate_s, _) = load_proj(
+        let (gate, up) = load_swiglu_ffn(
             &mut g,
             &mut params,
             packed,
             weights,
-            &format!("{lp}.mlp.gate_proj.weight"),
-        )?;
-        let (up_w, up_s, _) = load_proj(
-            &mut g,
-            &mut params,
-            packed,
-            weights,
-            &format!("{lp}.mlp.up_proj.weight"),
+            cfg,
+            &lp,
+            batch,
+            1,
+            normed_post,
+            f,
         )?;
         let (down_w, down_s, _) = load_proj(
             &mut g,
@@ -941,20 +1110,6 @@ pub fn build_llama32_decode_graph_sized_packed(
             weights,
             &format!("{lp}.mlp.down_proj.weight"),
         )?;
-        let gate = emit_proj(
-            &mut g,
-            normed_post,
-            gate_w,
-            gate_s,
-            Shape::new(&[batch, 1, inter], f),
-        );
-        let up = emit_proj(
-            &mut g,
-            normed_post,
-            up_w,
-            up_s,
-            Shape::new(&[batch, 1, inter], f),
-        );
         let gate_act = g.silu(gate);
         let swiglu = g.mul(gate_act, up);
         let ffn_out = emit_proj(
@@ -970,40 +1125,45 @@ pub fn build_llama32_decode_graph_sized_packed(
     let final_ln_g = load_p(&mut g, &mut params, weights, "model.norm.weight", false)?;
     let hidden = g.rms_norm(h_id, final_ln_g, zero_beta_hidden, eps);
 
-    // Decode is always last-position (seq == 1), so no gather is needed.
-    let (lm_head_w, lm_head_scheme) = if cfg.tie_word_embeddings {
-        if let Some((embed_node, scheme)) = tied_embed_head {
-            // Packed tied LM head: DequantMatMul against the Q-quant embed bytes.
-            (embed_node, Some(scheme))
-        } else {
-            // F32 tied LM head: transposed copy of the embed (unchanged).
-            let embed = params
-                .get("model.embed_tokens.weight")
-                .ok_or_else(|| anyhow!("missing model.embed_tokens.weight for tied lm_head"))?;
-            let vocab = cfg.vocab_size;
-            let hidden_size = cfg.hidden_size;
-            let mut transposed = vec![0f32; embed.len()];
-            for v in 0..vocab {
-                for hi in 0..hidden_size {
-                    transposed[hi * vocab + v] = embed[v * hidden_size + hi];
+    let out = if with_lm_head {
+        // Decode is always last-position (seq == 1), so no gather is needed.
+        let (lm_head_w, lm_head_scheme) = if cfg.tie_word_embeddings {
+            if let Some((embed_node, scheme)) = tied_embed_head {
+                // Packed tied LM head: DequantMatMul against the Q-quant embed bytes.
+                (embed_node, Some(scheme))
+            } else {
+                // F32 tied LM head: transposed copy of the embed (unchanged).
+                let embed = params
+                    .get("model.embed_tokens.weight")
+                    .ok_or_else(|| anyhow!("missing model.embed_tokens.weight for tied lm_head"))?;
+                let vocab = cfg.vocab_size;
+                let hidden_size = cfg.hidden_size;
+                let mut transposed = vec![0f32; embed.len()];
+                for v in 0..vocab {
+                    for hi in 0..hidden_size {
+                        transposed[hi * vocab + v] = embed[v * hidden_size + hi];
+                    }
                 }
+                let name = "llama32.lm_head.tied_t";
+                let id = g.param(name, Shape::new(&[hidden_size, vocab], DType::F32));
+                params.insert(name.to_string(), transposed);
+                (id, None)
             }
-            let name = "llama32.lm_head.tied_t";
-            let id = g.param(name, Shape::new(&[hidden_size, vocab], DType::F32));
-            params.insert(name.to_string(), transposed);
-            (id, None)
-        }
+        } else {
+            let (id, scheme, _) =
+                load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
+            (id, scheme)
+        };
+        emit_proj(
+            &mut g,
+            hidden,
+            lm_head_w,
+            lm_head_scheme,
+            Shape::new(&[batch, 1, cfg.vocab_size], f),
+        )
     } else {
-        let (id, scheme, _) = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
-        (id, scheme)
+        hidden
     };
-    let out = emit_proj(
-        &mut g,
-        hidden,
-        lm_head_w,
-        lm_head_scheme,
-        Shape::new(&[batch, 1, cfg.vocab_size], f),
-    );
 
     let mut outputs = vec![out];
     for (k, v) in kv_outputs {
@@ -1012,4 +1172,24 @@ pub fn build_llama32_decode_graph_sized_packed(
     }
     g.set_outputs(outputs);
     Ok((g, params))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_llama32_decode_graph_sized_packed(
+    cfg: &Llama32Config,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    past_seq: usize,
+    use_custom_mask: bool,
+    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    build_llama32_decode_graph_sized_packed_ext(
+        cfg,
+        weights,
+        batch,
+        past_seq,
+        use_custom_mask,
+        true,
+        packed,
+    )
 }

@@ -42,7 +42,7 @@ pub use compat::{
     check_path, looks_like_hf_repo, run_check,
 };
 pub use device::{
-    parse_device, parse_gemma_device, parse_llada2_device, parse_llama32_device,
+    parse_device, parse_gemma_device, parse_lm_device, parse_llada2_device, parse_llama32_device,
     parse_qwen35_device, parse_sam_device, parse_standard_device,
 };
 pub use format::WeightFormat;

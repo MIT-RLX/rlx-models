@@ -11,15 +11,36 @@ use rlx_runtime::{Device, is_available};
 pub struct OrpheusRuntimeDevice {
     /// RLX GGUF backbone device (Metal on Apple Silicon by default).
     pub lm: Device,
-    /// When true, SNAC runs on native RLX CoreML ([`Device::Ane`]); LM uses [`Self::lm`].
-    pub snac_coreml: bool,
+    /// Where the SNAC conv decoder runs (defaults to follow the LM GPU).
+    pub snac: crate::decoder::SnacExec,
 }
 
 impl OrpheusRuntimeDevice {
     pub fn snac_load_options(self) -> crate::decoder::SnacLoadOptions {
-        crate::decoder::SnacLoadOptions {
-            coreml: self.snac_coreml,
+        crate::decoder::SnacLoadOptions { exec: self.snac }
+    }
+}
+
+/// Default SNAC execution target for an LM device: run the conv vocoder on the
+/// same GPU as the LM (Metal/MLX/wgpu) so codes never round-trip to a CPU
+/// vocoder. Override with `ORPHEUS_SNAC_DEVICE=cpu|metal|mlx|wgpu|ane`.
+pub fn default_snac_exec(lm: Device) -> crate::decoder::SnacExec {
+    use crate::decoder::SnacExec;
+    if let Ok(s) = std::env::var("ORPHEUS_SNAC_DEVICE") {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cpu" | "eager" => return SnacExec::CpuEager,
+            "metal" => return SnacExec::Metal,
+            "mlx" => return SnacExec::Mlx,
+            "wgpu" | "gpu" => return SnacExec::Wgpu,
+            "ane" | "coreml" => return SnacExec::Ane,
+            _ => {}
         }
+    }
+    match lm {
+        Device::Metal => SnacExec::Metal,
+        Device::Mlx => SnacExec::Mlx,
+        Device::Gpu => SnacExec::Wgpu,
+        _ => SnacExec::CpuEager,
     }
 }
 
@@ -107,9 +128,10 @@ pub fn parse_orpheus_device(s: &str) -> Result<OrpheusRuntimeDevice> {
 pub fn resolve_orpheus_device(s: &str) -> Result<OrpheusRuntimeDevice> {
     let s = s.trim();
     if s.eq_ignore_ascii_case("auto") {
+        let lm = preferred_synth_device();
         return Ok(OrpheusRuntimeDevice {
-            lm: preferred_synth_device(),
-            snac_coreml: false,
+            lm,
+            snac: default_snac_exec(lm),
         });
     }
     if s.eq_ignore_ascii_case("coreml") {
@@ -119,7 +141,7 @@ pub fn resolve_orpheus_device(s: &str) -> Result<OrpheusRuntimeDevice> {
         }
         return Ok(OrpheusRuntimeDevice {
             lm,
-            snac_coreml: true,
+            snac: crate::decoder::SnacExec::Ane,
         });
     }
     let lm = rlx_cli::parse_device(s)?;
@@ -131,7 +153,7 @@ pub fn resolve_orpheus_device(s: &str) -> Result<OrpheusRuntimeDevice> {
     };
     Ok(OrpheusRuntimeDevice {
         lm,
-        snac_coreml: false,
+        snac: default_snac_exec(lm),
     })
 }
 
@@ -158,7 +180,7 @@ mod tests {
     #[test]
     fn resolve_coreml_sets_snac_flag() {
         let rt = resolve_orpheus_device("coreml").unwrap();
-        assert!(rt.snac_coreml);
+        assert_eq!(rt.snac, crate::decoder::SnacExec::Ane);
     }
 
     #[test]

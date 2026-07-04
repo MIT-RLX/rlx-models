@@ -175,15 +175,18 @@ where
 ///
 /// **CPU**, **Metal**, **MLX**, **wgpu** (`Device::Gpu`), and **Vulkan** run natively.
 /// MLX uses host-side GGUF dequant per `DequantMatMul` with lazy eval (see
-/// [`packed_gguf_compile_guard`]); wgpu and Vulkan run native GGUF dequant + matmul
-/// on-device (`rlx_wgpu::gguf_gpu` / the `dequant_matmul` SPIR-V GEMV) — for Vulkan
-/// the fused kernel covers decode GEMV (`m == 1`); packed prefill (`m > 1`) host-falls
-/// back per-op like wgpu. **CUDA / ROCm** still fall back to CPU until upstream GPU
-/// parity lands.
+/// [`packed_gguf_compile_guard`]); wgpu and Vulkan run native GGUF dequant +
+/// matmul on-device. **CUDA / ROCm** use native GPU `DequantMatMul` (Q4_K / Q8_0 / …).
+///
+/// **CoreML** (`Device::Ane`): by default packed GGUF executes on **CPU**
+/// (host greedy lm_head, stable bucketed decode). Set `RLX_PACKED_GGUF_COREML_NATIVE=1`
+/// to compile/run on ANE when the graph passes CoreML support checks.
 pub fn packed_gguf_execution_device(device: Device) -> Device {
     match device {
-        Device::Cpu | Device::Metal | Device::Mlx | Device::Gpu | Device::Vulkan => device,
-        Device::Cuda | Device::Rocm => Device::Cpu,
+        Device::Ane if rlx_ir::env::flag("RLX_PACKED_GGUF_COREML_NATIVE") => Device::Ane,
+        Device::Ane => Device::Cpu,
+        Device::Cpu | Device::Metal | Device::Mlx | Device::Gpu | Device::Vulkan | Device::Cuda
+        | Device::Rocm => device,
         _ => device,
     }
 }

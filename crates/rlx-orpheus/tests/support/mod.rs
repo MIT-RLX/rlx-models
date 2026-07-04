@@ -179,10 +179,10 @@ pub fn bench_max_tokens() -> u32 {
         .unwrap_or_else(|| bench_max_tokens_for(&bench_text()))
 }
 
-/// LM step budget scaled to utterance length (~2 SNAC frames per content word).
+/// LM step budget scaled to utterance length (~5 SNAC frames per content word).
 pub fn bench_max_tokens_for(text: &str) -> u32 {
     let words = normalize_words(text).len().max(1);
-    ((words * 14 + 28).min(512)) as u32
+    ((words * 35 + 84).min(1200)) as u32
 }
 
 pub fn bench_warmup_iters() -> u32 {

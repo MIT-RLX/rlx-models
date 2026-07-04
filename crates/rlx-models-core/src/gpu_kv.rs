@@ -151,6 +151,7 @@ pub fn reinstall_gpu_kv_handles(
         past_len: kv.past_len,
         layers_k: Vec::with_capacity(num_layers),
         layers_v: Vec::with_capacity(num_layers),
+        layers_kv_base: kv.layers_kv_base.clone(),
     };
     for layer in 0..num_layers {
         tmp.layers_k.push(layer_host_rows(

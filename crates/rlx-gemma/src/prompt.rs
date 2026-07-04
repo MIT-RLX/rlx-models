@@ -47,7 +47,20 @@ pub fn encode_chat_prompt_auto(
     } else {
         user.to_string()
     };
-    encode_prompt_auto(weights, tokenizer, &text)
+    let mut ids = if use_chat_template && text.starts_with("<bos>") {
+        let body = text.strip_prefix("<bos>").unwrap_or(&text);
+        let mut v = encode_prompt_auto(weights, tokenizer, body)?;
+        if v.first() != Some(&2) {
+            v.insert(0, 2);
+        }
+        v
+    } else {
+        encode_prompt_auto(weights, tokenizer, &text)?
+    };
+    if ids.len() >= 2 && ids[0] == 107 && ids[1] == 2 {
+        ids.remove(0);
+    }
+    Ok(ids)
 }
 
 /// Decode one generated token id to a UTF-8 fragment (best-effort streaming).

@@ -13,8 +13,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+//! BERT encoder graph builder for RLX.
+//!
+//! Lowers a [`rlx_core::config::BertConfig`] + weights into an RLX IR graph via
+//! the shared `rlx_flow::ModelFlow` DSL. This crate only *builds* the graph;
+//! compiling and running it (tokenization, device dispatch, pooling) lives in
+//! consumer crates such as `rlx-embed` and `rlx-clinicalbert`. See the README.
+
 pub mod bert;
 pub mod flow;
 
-pub use bert::{build_bert_graph, build_bert_graph_sized};
+#[cfg(test)]
+mod test_support;
+
+pub use bert::build_bert_graph_sized;
 pub use flow::{BertFlow, build_bert_built};

@@ -135,11 +135,6 @@ mod families {
         milestone: "M4",
         note: "Llama-shaped with newer RoPE; share `rlx-llama-base` per PLAN.md M4",
     };
-    pub static PHI: UnimplementedArch = UnimplementedArch {
-        family: "Phi 3 / Phi 4",
-        milestone: "M4",
-        note: "Phi3/4 share llama.cpp arch tag — PLAN.md M4",
-    };
     pub static PHIMOE: UnimplementedArch = UnimplementedArch {
         family: "Phi MoE",
         milestone: "M4 + M5",
@@ -206,17 +201,6 @@ mod families {
         milestone: "M5",
         note: "Qwen3-Next variant — confirm arch deltas vs qwen3 — PLAN.md M5",
     };
-    pub static GEMMA3: UnimplementedArch = UnimplementedArch {
-        family: "Gemma 3",
-        milestone: "M2",
-        note: "Gemma 3 (270m / 4b / 12b / 27b) adds per-layer sliding window + new RoPE — \
-               needs rlx-gemma config branch — PLAN.md M2",
-    };
-    pub static GEMMA3N: UnimplementedArch = UnimplementedArch {
-        family: "Gemma 3n",
-        milestone: "M2",
-        note: "Gemma 3n (mobile/edge Matformer variant) — PLAN.md M2",
-    };
     pub static GEMMA4: UnimplementedArch = UnimplementedArch {
         family: "Gemma 4 MoE (A4B)",
         milestone: "M2",
@@ -273,11 +257,7 @@ static KNOWN_UNIMPLEMENTED: phf::Map<&'static str, &'static UnimplementedArch> =
     // Mistral / Ministral (real llama.cpp tags)
     "mistral3" => &families::MISTRAL,
     "mistral4" => &families::MISTRAL,
-    // Phi family — Llama32Family accepts the arch tag, but the GGUF
-    // tensor-name remap for `phi3`/`phi4` (e.g. `blk.*.attn_q.weight`
-    // → `model.layers.*.self_attn.q_proj.weight`) is M4 follow-up.
-    "phi3" => &families::PHI,
-    "phi4" => &families::PHI,
+    // Phi MoE — still pending.
     "phimoe" => &families::PHIMOE,
     // Catalog HF model_type aliases — same remap gap as phi3.
     "bonsai" => &families::BONSAI,
@@ -302,11 +282,8 @@ static KNOWN_UNIMPLEMENTED: phf::Map<&'static str, &'static UnimplementedArch> =
     // Qwen variants we don't run yet
     "qwen3moe" => &families::QWEN3_MOE,
     "qwen3next" => &families::QWEN3_NEXT,
-    // Gemma 3 / 3n still pending; Gemma 4 dense + E2B now route to the
-    // `gemma` runner (see `model_type_runner_name` / `arch_runner_name`).
+    // Gemma 3 / 3n route through `gemma` (see `model_type_runner_name`).
     // Only the MoE A4B variant remains unimplemented.
-    "gemma3" => &families::GEMMA3,
-    "gemma3n" => &families::GEMMA3N,
     "gemma4moe" => &families::GEMMA4,
     "qwen3vl" => &families::QWEN3_VL,
     "qwen3vlmoe" => &families::QWEN3_VL,
@@ -346,6 +323,10 @@ pub fn known_unimplemented_keys() -> impl Iterator<Item = (&'static str, &'stati
 /// catalog families that aren't implemented yet — those get a richer error
 /// via [`known_unimplemented_arch`] when sniffed.
 pub fn arch_runner_name(arch: &str) -> Option<&'static str> {
+    match arch {
+        "phi3" | "phi4" => return Some("phi"),
+        _ => {}
+    }
     if let Some(fam) = gguf_family_for_arch(arch) {
         return Some(fam.runner_name());
     }
@@ -528,8 +509,10 @@ mod tests {
         assert_eq!(arch_runner_name("qwen25"), Some("qwen3"));
         assert_eq!(arch_runner_name("qwen2_5"), Some("qwen3"));
         assert_eq!(arch_runner_name("llama"), Some("llama32"));
+        assert_eq!(arch_runner_name("phi3"), Some("phi"));
         assert_eq!(arch_runner_name("gemma"), Some("gemma"));
         assert_eq!(arch_runner_name("gemma2"), Some("gemma"));
+        assert_eq!(arch_runner_name("gemma3"), Some("gemma"));
     }
 
     #[test]
@@ -559,14 +542,10 @@ mod tests {
             known_unimplemented_arch("mistral3").map(|u| u.milestone),
             Some("M4")
         );
-        assert_eq!(
-            known_unimplemented_arch("phi3").map(|u| u.milestone),
-            Some("M4")
-        );
-        assert_eq!(
-            known_unimplemented_arch("phi4").map(|u| u.milestone),
-            Some("M4")
-        );
+        assert_eq!(known_unimplemented_arch("phi3"), None);
+        assert_eq!(known_unimplemented_arch("phi4"), None);
+        assert_eq!(known_unimplemented_arch("gemma3"), None);
+        assert_eq!(known_unimplemented_arch("gemma3n"), None);
         assert_eq!(
             known_unimplemented_arch("bonsai").map(|u| u.milestone),
             Some("M4")

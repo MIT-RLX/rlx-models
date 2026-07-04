@@ -31,10 +31,13 @@
 //!     numerical-parity test (cached vs recompute must match).
 
 use crate::builder::{
-    build_llama32_decode_graph_sized_packed, build_llama32_decode_hir_dynamic_ext,
-    build_llama32_decode_hir_sized_ext, build_llama32_graph_sized_kv_tap,
+    build_llama32_decode_graph_sized_packed, build_llama32_decode_graph_sized_packed_ext,
+    build_llama32_decode_hir_dynamic_ext,
+    build_llama32_decode_hir_sized_ext, build_llama32_graph_sized,
+    build_llama32_graph_sized_kv_tap,
     build_llama32_graph_sized_last_logits, build_llama32_graph_sized_packed,
     build_llama32_prefill_hir_dynamic_ext, build_llama32_prefill_hir_sized_ext,
+    gather_embed_row, gather_embed_rows,
 };
 use crate::config::Llama32Config;
 use crate::prefill_mode::MetalGgufPrefillMode;
@@ -45,19 +48,47 @@ use rlx_core::flow_bridge::{
     packed_gguf_compile_guard, packed_gguf_execution_device,
 };
 use rlx_core::weight_loader::{ArcCacheLoader, ArcF32Tensor, GgufLoader, WeightLoader};
-use rlx_core::{compact_bucketed_kv_buffer, infer_prefill_kv_seq, run_packed_prefill};
+use rlx_core::{
+    compact_bucketed_kv_buffer, infer_prefill_kv_seq, run_packed_prefill,
+};
 use rlx_flow::CompileProfile;
 use rlx_ir::DimBinding;
 use rlx_ir::logical_kernel::KernelDispatchConfig;
 use rlx_qwen3::sampling::{SampleOpts, sample_token, sample_token_at};
 use rlx_runtime::attn_mask::bucket_decode_mask;
-use rlx_runtime::compile_cache::{BucketedCompileCache, CompileCache, DynamicDimCompileCache};
+use rlx_runtime::compile_cache::{
+    BucketedCompileCache, CompileCache, DynamicDimCompileCache,
+};
 use rlx_runtime::{
     CompileOptions, CompiledGraph, Device, Session, llama_decode_bucket_compile_peak_bytes,
-    llama_decode_oneshot_compile_peak_bytes, would_exceed_soft_budget,
+    llama_decode_bucket_resident_bytes, llama_decode_oneshot_compile_peak_bytes,
+    trim_accelerator_arena_pool, would_exceed_soft_budget,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+fn gguf_has_block_quant_matmul(path: &Path) -> bool {
+    use rlx_gguf::{GgmlType, GgufFile};
+    match GgufFile::from_path(path) {
+        Ok(raw) => raw.tensors.values().any(|t| {
+            matches!(
+                t.dtype,
+                GgmlType::Q2K
+                    | GgmlType::Q3K
+                    | GgmlType::Q4K
+                    | GgmlType::Q5K
+                    | GgmlType::Q6K
+                    | GgmlType::Q8K
+                    | GgmlType::Q4_0
+                    | GgmlType::Q4_1
+                    | GgmlType::Q5_0
+                    | GgmlType::Q5_1
+                    | GgmlType::Q8_0
+            )
+        }),
+        Err(_) => false,
+    }
+}
 
 /// Metal F32 prefill on-device needs thunk lowering (no MPSGraph), fusion
 /// disabled, and scalar fp32 matmul. Only applied when prefill stays on Metal.
@@ -90,80 +121,183 @@ where
     out
 }
 
-/// Packed GGUF prefill: separate logits and KV graphs (Metal logits+KV in one
-/// graph diverges like F32 `LlamaKvTap`).
-struct PackedGgufPrefill {
-    upper_seq: usize,
-    logits: CompiledGraph,
-    kv: CompiledGraph,
-    exec_device: Device,
-    kv_dim: usize,
-    n_layers: usize,
-    ids_f32: Vec<f32>,
-    last_idx: [f32; 1],
+/// Device runs packed GGUF prefill graphs on-accelerator (Metal / CUDA / ROCm / MLX).
+fn uses_packed_gguf_gpu_prefill(device: Device, mode: MetalGgufPrefillMode) -> bool {
+    matches!(
+        device,
+        Device::Metal | Device::Cuda | Device::Rocm | Device::Mlx
+    ) && mode.use_packed_gguf()
 }
 
-impl PackedGgufPrefill {
-    fn build(
-        cfg: &Llama32Config,
-        path: &Path,
-        upper_seq: usize,
-        device: Device,
-        profile: &CompileProfile,
-    ) -> Result<Self> {
-        let exec_device = packed_gguf_execution_device(device);
-        let path_str = path.to_str().context("non-utf8 weights path")?;
-        let mut loader = GgufLoader::from_file(path_str)?;
-        let mut packed = HashMap::new();
-        let (logits_graph, params) = build_llama32_graph_sized_packed(
-            cfg,
-            &mut loader,
-            1,
+/// Phi 3/4 GGUF uses fused `attn_qkv` / `gate_up` tensors — the F32 flow path
+/// expects split Q/K/V and fails at load time.
+fn fused_phi_gguf_needs_packed_paths(cfg: &Llama32Config, is_gguf: bool) -> bool {
+    is_gguf && cfg.is_phi_arch()
+}
+
+/// Packed GGUF decode: skip in-graph vocab matmul; host argmax on tied Q4 embed.
+fn llama32_host_greedy_lm_enabled(
+    cfg: &Llama32Config,
+    exec_device: Device,
+    weights_deferred: bool,
+    is_gguf: bool,
+) -> bool {
+    if !is_gguf || !weights_deferred {
+        return false;
+    }
+    if rlx_ir::env::flag("RLX_LLAMA32_GRAPH_LM_HEAD") {
+        return false;
+    }
+    if !(cfg.tie_word_embeddings || cfg.is_phi_arch()) {
+        return false;
+    }
+    matches!(
+        exec_device,
+        Device::Cpu | Device::Ane | Device::Metal | Device::Cuda | Device::Rocm
+    )
+}
+
+/// CUDA / ROCm: GPU-packed KV + CPU F32 logits (packed lm_head diverges on device).
+/// Opt out with `ORPHEUS_CUDA_PACKED_KV=0`.
+fn cuda_packed_kv_cpu_logits_prefill_enabled() -> bool {
+    !matches!(
+        std::env::var("ORPHEUS_CUDA_PACKED_KV").ok().as_deref(),
+        Some("0") | Some("false") | Some("FALSE")
+    )
+}
+
+/// Experimental: seed KV from the device packed graph. Opt in with
+/// `ORPHEUS_CUDA_GPU_KV=1` (hybrid: device KV + CPU logits only).
+fn cuda_gpu_kv_prefill_enabled() -> bool {
+    std::env::var("ORPHEUS_CUDA_GPU_KV").ok().as_deref() == Some("1")
+}
+
+/// Force slow CPU F32 GGUF prefill on CUDA/ROCm (parity baseline).
+fn cuda_f32_prefill_forced() -> bool {
+    std::env::var("ORPHEUS_CUDA_F32_PREFILL").ok().as_deref() == Some("1")
+        || std::env::var("ORPHEUS_CUDA_PREFILL").ok().as_deref() == Some("cpu")
+}
+
+/// CUDA / ROCm resident decode: keep KV on device between steps and bulk-flush
+/// only when rebinding a wider bucket. Opt out with `ORPHEUS_CUDA_LAZY_KV=0`.
+fn cuda_lazy_kv_enabled(device: Device) -> bool {
+    if !matches!(device, Device::Cuda | Device::Rocm) {
+        return false;
+    }
+    !matches!(
+        std::env::var("ORPHEUS_CUDA_LAZY_KV").ok().as_deref(),
+        Some("0") | Some("false") | Some("FALSE")
+    )
+}
+
+/// CUDA / ROCm bucket rollover: defer evicting the outgoing bucket until after
+/// the wider bucket is compiled and resident K/V is rebound. Parity-safe today
+/// (flush + host-cache H2D bind, same as the default path). Opt in with
+/// `ORPHEUS_CUDA_KV_DEVICE_REBIND=1`. Pure D2D seed helpers live in `rlx-cuda`
+/// (`copy_resident_kv_rows_from`) for a future fast path.
+fn cuda_device_kv_rebind_enabled(device: Device) -> bool {
+    cuda_lazy_kv_enabled(device)
+        && std::env::var("ORPHEUS_CUDA_KV_DEVICE_REBIND").ok().as_deref() == Some("1")
+        && !matches!(
+            std::env::var("ORPHEUS_CUDA_KV_HOST_REBIND").ok().as_deref(),
+            Some("1") | Some("true") | Some("TRUE")
+        )
+}
+
+/// Metadata for pulling missing K/V rows off the outgoing decode bucket before
+/// rebinding a wider bucket.
+struct ResidentBucketFlushPlan {
+    prev_key: u64,
+    bucket_start: usize,
+    flush_upper: usize,
+}
+
+fn resident_bucket_flush_plan(cache_dec: &BucketedCompileCache, past_seq: usize) -> ResidentBucketFlushPlan {
+    let prev_key = past_seq.saturating_sub(1) as u64;
+    let prev_bucket_idx = cache_dec.bucket_for(prev_key).unwrap_or(0);
+    let bucket_start = cache_dec
+        .buckets()
+        .nth(prev_bucket_idx)
+        .map(|r| r.start as usize)
+        .unwrap_or(0);
+    let flush_upper = cache_dec
+        .buckets()
+        .nth(prev_bucket_idx)
+        .map(|r| r.end - 1)
+        .unwrap_or(0) as usize;
+    ResidentBucketFlushPlan {
+        prev_key,
+        bucket_start,
+        flush_upper,
+    }
+}
+
+fn maybe_flush_resident_kv_before_bucket(
+    compiled: &mut CompiledGraph,
+    cache: &mut KvCacheState,
+    plan: &ResidentBucketFlushPlan,
+    prefix_tokens: usize,
+    kv_dim: usize,
+    n_layers: usize,
+) -> Result<()> {
+    flush_missing_resident_kv_to_cache(
+        compiled,
+        cache,
+        prefix_tokens,
+        plan.bucket_start,
+        plan.flush_upper,
+        kv_dim,
+        n_layers,
+    )
+}
+
+/// Pad host K/V to bucket width and bind as resident GPU handles (one-time per bucket).
+fn bind_resident_kv_from_host_cache(
+    compiled: &mut CompiledGraph,
+    cache: &KvCacheState,
+    upper: usize,
+    kv_dim: usize,
+    n_layers: usize,
+) {
+    for i in 0..n_layers {
+        let kc = &cache.layers_k[i];
+        let vc = &cache.layers_v[i];
+        let mut kp = vec![0f32; upper * kv_dim];
+        let mut vp = vec![0f32; upper * kv_dim];
+        let nk = kc.len().min(kp.len());
+        let nv = vc.len().min(vp.len());
+        kp[..nk].copy_from_slice(&kc[..nk]);
+        vp[..nv].copy_from_slice(&vc[..nv]);
+        let k_name = format!("past_k_{i}");
+        let v_name = format!("past_v_{i}");
+        compiled.bind_gpu_handle(&k_name, &kp);
+        compiled.bind_gpu_handle(&v_name, &vp);
+        compiled.register_kv_row_feed(&k_name, 1 + 2 * i);
+        compiled.register_kv_row_feed(&v_name, 2 + 2 * i);
+    }
+}
+
+/// Host-side prefill inputs kept separate from compiled graphs so `run()`
+/// can borrow feed buffers and `CompiledGraph` mutably at the same time.
+struct PackedGgufPrefillFeed {
+    upper_seq: usize,
+    hidden: usize,
+    ids_f32: Vec<f32>,
+    last_idx: [f32; 1],
+    embed_lazy: Option<(Vec<u8>, rlx_ir::quant::QuantScheme)>,
+    embed_scratch: Vec<f32>,
+}
+
+impl PackedGgufPrefillFeed {
+    fn new(upper_seq: usize, hidden: usize, embed_lazy: Option<(Vec<u8>, rlx_ir::quant::QuantScheme)>) -> Self {
+        Self {
             upper_seq,
-            true,
-            true,
-            false,
-            &mut packed,
-        )?;
-        let mut loader2 = GgufLoader::from_file(path_str)?;
-        let mut packed_kv = HashMap::new();
-        let (kv_graph, params_kv) = build_llama32_graph_sized_packed(
-            cfg,
-            &mut loader2,
-            1,
-            upper_seq,
-            false,
-            false,
-            true,
-            &mut packed_kv,
-        )?;
-        let opts = compile_options_for_packed_gguf_prefill_with_profile(profile, exec_device);
-        let mut logits = packed_gguf_compile_guard(exec_device, || {
-            Session::new(exec_device).compile_with(logits_graph, &opts)
-        });
-        let mut kv = packed_gguf_compile_guard(exec_device, || {
-            Session::new(exec_device).compile_with(kv_graph, &opts)
-        });
-        for (name, data) in &params {
-            logits.set_param(name, data);
-        }
-        for (name, data) in &params_kv {
-            kv.set_param(name, data);
-        }
-        for (name, (bytes, _scheme, _shape)) in &packed {
-            logits.set_param_typed(name, bytes, rlx_ir::DType::U8);
-            kv.set_param_typed(name, bytes, rlx_ir::DType::U8);
-        }
-        Ok(Self {
-            upper_seq,
-            logits,
-            kv,
-            exec_device,
-            kv_dim: cfg.kv_proj_dim(),
-            n_layers: cfg.num_hidden_layers,
+            hidden,
             ids_f32: vec![0f32; upper_seq],
             last_idx: [0f32; 1],
-        })
+            embed_lazy,
+            embed_scratch: vec![0f32; upper_seq * hidden],
+        }
     }
 
     fn fill_inputs(&mut self, prompt_len: usize, ids_f32: &[f32]) -> usize {
@@ -178,17 +312,232 @@ impl PackedGgufPrefill {
         n
     }
 
+    fn fill_embed_inputs(&mut self, n: usize) -> Result<()> {
+        if let Some((bytes, scheme)) = &self.embed_lazy {
+            gather_embed_rows(
+                bytes,
+                *scheme,
+                self.hidden,
+                &self.ids_f32[..n],
+                &mut self.embed_scratch[..n * self.hidden],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn token_input(&self) -> (&str, &[f32]) {
+        if self.embed_lazy.is_some() {
+            ("input_embeddings", self.embed_scratch.as_slice())
+        } else {
+            ("input_ids", self.ids_f32.as_slice())
+        }
+    }
+
+    fn kv_run_inputs(&self) -> [(&str, &[f32]); 1] {
+        [self.token_input()]
+    }
+
+    fn logits_run_inputs(&self) -> [(&str, &[f32]); 2] {
+        [
+            self.token_input(),
+            ("last_token_idx", self.last_idx.as_slice()),
+        ]
+    }
+}
+
+/// Packed GGUF prefill: separate logits and KV graphs (Metal logits+KV in one
+/// graph diverges like F32 `LlamaKvTap`). When `host_greedy_prefill`, one graph
+/// emits last-token hidden + KV (no vocab matmul).
+struct PackedGgufPrefill {
+    feed: PackedGgufPrefillFeed,
+    logits: Option<CompiledGraph>,
+    kv: CompiledGraph,
+    exec_device: Device,
+    kv_dim: usize,
+    n_layers: usize,
+    host_greedy_prefill: bool,
+    /// Deferred logits compile (CUDA / ROCm — one graph at a time in VRAM).
+    logits_plan: Option<(Llama32Config, PathBuf, CompileProfile)>,
+}
+
+impl PackedGgufPrefill {
+    fn compile_logits(&mut self) -> Result<()> {
+        if self.host_greedy_prefill {
+            return Ok(());
+        }
+        if self.logits.is_some() {
+            return Ok(());
+        }
+        let (cfg, path, profile) = self
+            .logits_plan
+            .as_ref()
+            .context("packed logits compile plan missing")?;
+        let path_str = path.to_str().context("non-utf8 weights path")?;
+        let mut loader = GgufLoader::from_file(path_str)?;
+        let mut packed = HashMap::new();
+        let mut embed_host = None;
+        let (logits_graph, params) = build_llama32_graph_sized_packed(
+            cfg,
+            &mut loader,
+            1,
+            self.feed.upper_seq,
+            true,
+            true,
+            false,
+            &mut packed,
+            &mut embed_host,
+        )?;
+        let opts =
+            compile_options_for_packed_gguf_prefill_with_profile(profile, self.exec_device);
+        let mut logits = packed_gguf_compile_guard(self.exec_device, || {
+            Session::new(self.exec_device).compile_with(logits_graph, &opts)
+        });
+        for (name, data) in &params {
+            logits.set_param(name, data);
+        }
+        for (name, (bytes, _scheme, _shape)) in &packed {
+            logits.set_param_typed(name, bytes, rlx_ir::DType::U8);
+        }
+        if self.feed.embed_lazy.is_none() {
+            if let Some(host) = embed_host {
+                self.feed.embed_lazy = Some(host);
+                self.feed
+                    .embed_scratch
+                    .resize(self.feed.upper_seq * self.feed.hidden, 0.0);
+            }
+        }
+        self.logits = Some(logits);
+        Ok(())
+    }
+
+    fn build_hidden_with_kv(
+        cfg: &Llama32Config,
+        path: &Path,
+        upper_seq: usize,
+        device: Device,
+        profile: &CompileProfile,
+    ) -> Result<Self> {
+        let exec_device = packed_gguf_execution_device(device);
+        let path_str = path.to_str().context("non-utf8 weights path")?;
+        let mut loader = GgufLoader::from_file(path_str)?;
+        let mut packed = HashMap::new();
+        let mut embed_host = None;
+        let (graph, params) = build_llama32_graph_sized_packed(
+            cfg,
+            &mut loader,
+            1,
+            upper_seq,
+            false,
+            true,
+            true,
+            &mut packed,
+            &mut embed_host,
+        )?;
+        let opts = compile_options_for_packed_gguf_prefill_with_profile(profile, exec_device);
+        let mut kv = packed_gguf_compile_guard(exec_device, || {
+            Session::new(exec_device).compile_with(graph, &opts)
+        });
+        for (name, data) in &params {
+            kv.set_param(name, data);
+        }
+        for (name, (bytes, _scheme, _shape)) in &packed {
+            kv.set_param_typed(name, bytes, rlx_ir::DType::U8);
+        }
+        Ok(Self {
+            feed: PackedGgufPrefillFeed::new(upper_seq, cfg.hidden_size, embed_host),
+            logits: None,
+            kv,
+            exec_device,
+            kv_dim: cfg.kv_proj_dim(),
+            n_layers: cfg.num_hidden_layers,
+            host_greedy_prefill: true,
+            logits_plan: None,
+        })
+    }
+
+    fn build(
+        cfg: &Llama32Config,
+        path: &Path,
+        upper_seq: usize,
+        device: Device,
+        profile: &CompileProfile,
+    ) -> Result<Self> {
+        let mut out = Self::build_kv_only(cfg, path, upper_seq, device, profile)?;
+        if matches!(device, Device::Metal) {
+            out.compile_logits()?;
+        }
+        Ok(out)
+    }
+
+    /// KV graph only — half the compile RAM of [`Self::build`] (16 GiB CUDA).
+    fn build_kv_only(
+        cfg: &Llama32Config,
+        path: &Path,
+        upper_seq: usize,
+        device: Device,
+        profile: &CompileProfile,
+    ) -> Result<Self> {
+        let exec_device = packed_gguf_execution_device(device);
+        let path_str = path.to_str().context("non-utf8 weights path")?;
+        let mut loader = GgufLoader::from_file(path_str)?;
+        let mut packed_kv = HashMap::new();
+        let mut embed_host = None;
+        let (kv_graph, params_kv) = build_llama32_graph_sized_packed(
+            cfg,
+            &mut loader,
+            1,
+            upper_seq,
+            false,
+            false,
+            true,
+            &mut packed_kv,
+            &mut embed_host,
+        )?;
+        let opts = compile_options_for_packed_gguf_prefill_with_profile(profile, exec_device);
+        let mut kv = packed_gguf_compile_guard(exec_device, || {
+            Session::new(exec_device).compile_with(kv_graph, &opts)
+        });
+        for (name, data) in &params_kv {
+            kv.set_param(name, data);
+        }
+        for (name, (bytes, _scheme, _shape)) in &packed_kv {
+            kv.set_param_typed(name, bytes, rlx_ir::DType::U8);
+        }
+        Ok(Self {
+            feed: PackedGgufPrefillFeed::new(upper_seq, cfg.hidden_size, embed_host),
+            logits: None,
+            kv,
+            exec_device,
+            kv_dim: cfg.kv_proj_dim(),
+            n_layers: cfg.num_hidden_layers,
+            host_greedy_prefill: false,
+            logits_plan: Some((cfg.clone(), path.to_path_buf(), profile.clone())),
+        })
+    }
+
+    fn fill_inputs(&mut self, prompt_len: usize, ids_f32: &[f32]) -> usize {
+        self.feed.fill_inputs(prompt_len, ids_f32)
+    }
+
+    fn fill_embed_inputs(&mut self, n: usize) -> Result<()> {
+        self.feed.fill_embed_inputs(n)
+    }
+
     fn run_logits(&mut self, prompt_len: usize, ids_f32: &[f32]) -> Result<Vec<f32>> {
+        self.compile_logits()?;
         let n = self.fill_inputs(prompt_len, ids_f32);
+        self.fill_embed_inputs(n)?;
+        let logits = self
+            .logits
+            .as_mut()
+            .context("packed logits prefill not compiled")?;
+        let run_inputs = self.feed.logits_run_inputs();
         let outputs = run_packed_prefill(
-            &mut self.logits,
+            logits,
             self.exec_device,
             n,
-            self.upper_seq,
-            &[
-                ("input_ids", self.ids_f32.as_slice()),
-                ("last_token_idx", self.last_idx.as_slice()),
-            ],
+            self.feed.upper_seq,
+            &run_inputs,
         );
         outputs
             .into_iter()
@@ -202,14 +551,16 @@ impl PackedGgufPrefill {
         ids_f32: &[f32],
     ) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>)> {
         let n = self.fill_inputs(prompt_len, ids_f32);
+        self.fill_embed_inputs(n)?;
+        let run_inputs = self.feed.kv_run_inputs();
         let kv_outputs = run_packed_prefill(
             &mut self.kv,
             self.exec_device,
             n,
-            self.upper_seq,
-            &[("input_ids", self.ids_f32.as_slice())],
+            self.feed.upper_seq,
+            &run_inputs,
         );
-        let kv_seq = infer_prefill_kv_seq(&kv_outputs, 1, &[self.kv_dim], n, self.upper_seq);
+        let kv_seq = infer_prefill_kv_seq(&kv_outputs, 1, &[self.kv_dim], n, self.feed.upper_seq);
         let (mut layers_k, mut layers_v) =
             split_packed_kv_outputs(kv_outputs, 1, kv_seq, self.kv_dim, self.n_layers)?;
         if kv_seq > n {
@@ -222,21 +573,72 @@ impl PackedGgufPrefill {
         Ok((layers_k, layers_v))
     }
 
-    fn run(
+    fn run_hidden_with_kv(
         &mut self,
         prompt_len: usize,
         ids_f32: &[f32],
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
         let n = self.fill_inputs(prompt_len, ids_f32);
+        self.fill_embed_inputs(n)?;
+        let run_inputs = self.feed.logits_run_inputs();
+        let outputs = run_packed_prefill(
+            &mut self.kv,
+            self.exec_device,
+            n,
+            self.feed.upper_seq,
+            &run_inputs,
+        );
+        if outputs.len() != 1 + 2 * self.n_layers {
+            anyhow::bail!(
+                "packed hidden prefill produced {} outputs, expected {}",
+                outputs.len(),
+                1 + 2 * self.n_layers
+            );
+        }
+        let hidden = packed_prefill_last_hidden(&outputs[0], n, self.feed.hidden)?;
+        let kv_seq = infer_prefill_kv_seq(
+            &outputs[1..],
+            1,
+            &[self.kv_dim],
+            n,
+            self.feed.upper_seq,
+        );
+        let (mut layers_k, mut layers_v) =
+            split_packed_kv_outputs(outputs[1..].to_vec(), 1, kv_seq, self.kv_dim, self.n_layers)?;
+        if kv_seq > n {
+            let keep = n * self.kv_dim;
+            for i in 0..self.n_layers {
+                layers_k[i].truncate(keep);
+                layers_v[i].truncate(keep);
+            }
+        }
+        Ok((hidden, layers_k, layers_v))
+    }
+
+    fn run(
+        &mut self,
+        prompt_len: usize,
+        ids_f32: &[f32],
+    ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+        if self.host_greedy_prefill {
+            return self.run_hidden_with_kv(prompt_len, ids_f32);
+        }
+        let n = self.fill_inputs(prompt_len, ids_f32);
         let logits = self.run_logits(prompt_len, ids_f32)?;
+        if matches!(self.exec_device, Device::Cuda | Device::Rocm) {
+            self.logits = None;
+            trim_accelerator_arena_pool(self.exec_device);
+        }
+        self.fill_embed_inputs(n)?;
+        let run_inputs = self.feed.kv_run_inputs();
         let kv_outputs = run_packed_prefill(
             &mut self.kv,
             self.exec_device,
             n,
-            self.upper_seq,
-            &[("input_ids", self.ids_f32.as_slice())],
+            self.feed.upper_seq,
+            &run_inputs,
         );
-        let kv_seq = infer_prefill_kv_seq(&kv_outputs, 1, &[self.kv_dim], n, self.upper_seq);
+        let kv_seq = infer_prefill_kv_seq(&kv_outputs, 1, &[self.kv_dim], n, self.feed.upper_seq);
         let (mut layers_k, mut layers_v) =
             split_packed_kv_outputs(kv_outputs, 1, kv_seq, self.kv_dim, self.n_layers)?;
         if kv_seq > n {
@@ -248,6 +650,24 @@ impl PackedGgufPrefill {
         }
         Ok((logits, layers_k, layers_v))
     }
+}
+
+/// Slice the last prompt position from a packed prefill hidden tensor. CUDA may
+/// return either `[hidden]` (gathered) or `[seq, hidden]` (full sequence).
+fn packed_prefill_last_hidden(raw: &[f32], prompt_len: usize, hidden: usize) -> Result<Vec<f32>> {
+    if raw.len() == hidden {
+        return Ok(raw.to_vec());
+    }
+    let n = prompt_len.max(1);
+    let need = n * hidden;
+    if raw.len() >= need {
+        let start = (n - 1) * hidden;
+        return Ok(raw[start..start + hidden].to_vec());
+    }
+    anyhow::bail!(
+        "packed prefill hidden len {} (prompt_len={n}, hidden={hidden})",
+        raw.len()
+    );
 }
 
 fn split_packed_kv_outputs(
@@ -284,8 +704,133 @@ fn split_packed_kv_outputs(
     Ok((layers_k, layers_v))
 }
 
-/// Metal decode on real GGUF needs the same thunk / no-fusion / precise
-/// matmul path as F32 prefill (MPSGraph decode diverges on 3B Q4).
+fn push_packed_decode_token_input<'a>(
+    cfg: &Llama32Config,
+    input_tok: u32,
+    lazy_embed: Option<(&[u8], rlx_ir::quant::QuantScheme)>,
+    embed_scratch: &'a mut Vec<f32>,
+    inputs: &mut Vec<(&str, &'a [f32])>,
+    input_ids_f32: &'a [f32; 1],
+) -> Result<()> {
+    if let Some((bytes, scheme)) = lazy_embed {
+        embed_scratch.resize(cfg.hidden_size, 0.0);
+        gather_embed_row(
+            bytes,
+            scheme,
+            cfg.hidden_size,
+            input_tok as usize,
+            embed_scratch,
+        )?;
+        inputs.push(("input_embeddings", embed_scratch.as_slice()));
+    } else {
+        inputs.push(("input_ids", input_ids_f32.as_slice()));
+    }
+    Ok(())
+}
+
+fn packed_graph_uses_lazy_embed(
+    packed: &HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    params: &HashMap<String, Vec<f32>>,
+) -> bool {
+    packed.contains_key("model.embed_tokens.weight")
+        && !params.contains_key("model.embed_tokens.weight")
+}
+
+/// Bucketed packed decode: prefer logits-only + row readback (Metal/Vulkan/CUDA).
+/// Fall back to full K/V D2H when row readback is disabled or resident KV is off.
+fn packed_bucketed_cuda_full_kv_readback(device: Device) -> bool {
+    if !matches!(device, Device::Cuda | Device::Rocm) {
+        return false;
+    }
+    std::env::var("ORPHEUS_RESIDENT_KV").ok().as_deref() == Some("0")
+        || std::env::var("ORPHEUS_VULKAN_RESIDENT_KV").ok().as_deref() == Some("0")
+        || std::env::var("RLX_CUDA_FULL_KV_READBACK").ok().as_deref() == Some("1")
+}
+
+/// Bucketed packed decode: full K/V tensor readback instead of per-row
+/// `read_output_row` (CPU and CUDA paths).
+fn packed_bucketed_full_kv_readback(device: Device) -> bool {
+    packed_bucketed_cuda_full_kv_readback(device)
+        || matches!(device, Device::Cpu | Device::Mlx | Device::Ane)
+}
+
+/// Pull only the host-missing KV rows from the outgoing bucket's resident GPU
+/// state before rebinding a wider bucket. In-bucket steps keep KV on device.
+fn flush_missing_resident_kv_to_cache(
+    compiled: &rlx_runtime::CompiledGraph,
+    cache: &mut KvCacheState,
+    prefix_tokens: usize,
+    _bucket_start: usize,
+    outgoing_upper: usize,
+    kv_dim: usize,
+    n_layers: usize,
+) -> Result<()> {
+    let host_rows = cache
+        .layers_k
+        .first()
+        .map(|k| k.len() / kv_dim.max(1))
+        .unwrap_or(0);
+    if host_rows >= prefix_tokens {
+        return Ok(());
+    }
+    let top_global = outgoing_upper;
+    for g in host_rows..prefix_tokens {
+        let from_output = g == top_global;
+        for i in 0..n_layers {
+            let nk = if from_output {
+                compiled
+                    .read_output_row(1 + 2 * i, outgoing_upper, kv_dim)
+                    .with_context(|| format!("resident flush K output row layer {i}"))?
+            } else {
+                compiled
+                    .read_gpu_handle_row(&format!("past_k_{i}"), g, kv_dim)
+                    .with_context(|| format!("resident flush K handle row layer {i} row {g}"))?
+            };
+            let nv = if from_output {
+                compiled
+                    .read_output_row(2 + 2 * i, outgoing_upper, kv_dim)
+                    .with_context(|| format!("resident flush V output row layer {i}"))?
+            } else {
+                compiled
+                    .read_gpu_handle_row(&format!("past_v_{i}"), g, kv_dim)
+                    .with_context(|| format!("resident flush V handle row layer {i} row {g}"))?
+            };
+            cache.layers_k[i].extend_from_slice(&nk);
+            cache.layers_v[i].extend_from_slice(&nv);
+        }
+    }
+    Ok(())
+}
+
+/// Append one new K/V row per layer from bucketed packed decode outputs.
+fn append_packed_decode_kv_rows(
+    compiled: &CompiledGraph,
+    cache: &KvCacheState,
+    upper: usize,
+    kv_dim: usize,
+    n_layers: usize,
+) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+    let mut new_k = Vec::with_capacity(n_layers);
+    let mut new_v = Vec::with_capacity(n_layers);
+    for i in 0..n_layers {
+        let row_k = compiled
+            .read_output_row(1 + 2 * i, upper, kv_dim)
+            .with_context(|| format!("decode K row read layer {i}"))?;
+        let row_v = compiled
+            .read_output_row(2 + 2 * i, upper, kv_dim)
+            .with_context(|| format!("decode V row read layer {i}"))?;
+        let mut k_out = cache.layers_k[i].clone();
+        let mut v_out = cache.layers_v[i].clone();
+        k_out.extend_from_slice(&row_k);
+        v_out.extend_from_slice(&row_v);
+        new_k.push(k_out);
+        new_v.push(v_out);
+    }
+    Ok((new_k, new_v))
+}
+
+/// Metal packed-GGUF decode: thunk lowering (MPSGraph diverges on Q4 bucketed
+/// decode) while keeping tier-1 / `fuse_decode_mlp` enabled.
 fn metal_decode_compile_guard<R, F>(device: Device, gguf_parity: bool, decode: bool, f: F) -> R
 where
     F: FnOnce() -> R,
@@ -293,11 +838,18 @@ where
     if device != Device::Metal || !decode || !gguf_parity {
         return f();
     }
-    metal_f32_prefill_guard(Device::Metal, f)
+    let save_mps = rlx_ir::env::var("RLX_DISABLE_MPSGRAPH");
+    rlx_ir::env::set("RLX_DISABLE_MPSGRAPH", "1");
+    let out = f();
+    match save_mps {
+        Some(v) => rlx_ir::env::set("RLX_DISABLE_MPSGRAPH", v),
+        None => rlx_ir::env::unset("RLX_DISABLE_MPSGRAPH"),
+    }
+    out
 }
 
-/// GGUF on Metal/CPU: mmap weights and dequant per compile instead of draining
-/// the full model to host F32 at load (~12 GiB on Orpheus 3B).
+/// GGUF on Metal/CPU/CUDA packed: mmap weights and dequant per compile instead of
+/// draining the full model to host F32 at load (~12 GiB on Orpheus 3B).
 pub(crate) fn gguf_defers_f32_drain(
     device: Device,
     is_gguf: bool,
@@ -307,12 +859,16 @@ pub(crate) fn gguf_defers_f32_drain(
     if !is_gguf {
         return false;
     }
-    if device == Device::Cpu {
+    if matches!(device, Device::Cpu | Device::Mlx | Device::Ane) {
         return true;
     }
     // wgpu/Vulkan: mmap GGUF + CPU prefill/decode until GPU KV parity lands.
     if matches!(device, Device::Gpu | Device::Vulkan) {
         return true;
+    }
+    // CUDA / ROCm: defer the ~12 GiB F32 drain when running packed GGUF on device.
+    if matches!(device, Device::Cuda | Device::Rocm) {
+        return use_packed_gguf;
     }
     if device != Device::Metal {
         return false;
@@ -333,6 +889,30 @@ struct KvCacheState {
     past_seq: usize,
     layers_k: Vec<Vec<f32>>,
     layers_v: Vec<Vec<f32>>,
+}
+
+/// Per-session padded K/V upload buffers (resized when bucket upper changes).
+#[derive(Default)]
+struct DecodeKvScratch {
+    padded_k: Vec<Vec<f32>>,
+    padded_v: Vec<Vec<f32>>,
+}
+
+impl DecodeKvScratch {
+    fn ensure_bucket(&mut self, upper: usize, kv_dims: &[usize]) {
+        let n = kv_dims.len();
+        if self.padded_k.len() != n {
+            self.padded_k.resize_with(n, Vec::new);
+            self.padded_v.resize_with(n, Vec::new);
+        }
+        for (i, &kd) in kv_dims.iter().enumerate() {
+            let need = upper * kd;
+            if self.padded_k[i].len() != need {
+                self.padded_k[i].resize(need, 0.0);
+                self.padded_v[i].resize(need, 0.0);
+            }
+        }
+    }
 }
 
 /// Borrow cached F32 tensors or open a fresh GGUF loader per graph build.
@@ -374,6 +954,102 @@ impl WeightLoader for BuildWeightLoader<'_> {
     }
 }
 
+/// Memoizing GGUF loader for the packed decode path.
+///
+/// Bucketed/dynamic packed decode rebuilds the decode graph for each bucket
+/// bound (and per token in the oneshot path), and every build `take`s the model
+/// weights — re-reading and re-dequantizing the multi-GB GGUF each time
+/// (`take` is destructive, so the old code opened a fresh `GgufLoader` per
+/// build). This wrapper extracts each weight from the underlying loader exactly
+/// once, caches it behind an `Arc`, and serves cheap clones thereafter — so the
+/// GGUF is parsed/dequantized once per generator lifetime instead of once per
+/// bucket × per utterance. Held on [`Llama32Generator`] and reused across all
+/// packed decode builds.
+struct CachedGgufWeights {
+    inner: GgufLoader,
+    f32_take: HashMap<String, (std::sync::Arc<Vec<f32>>, Vec<usize>)>,
+    f32_take_t: HashMap<String, (std::sync::Arc<Vec<f32>>, Vec<usize>)>,
+    packed: HashMap<String, (std::sync::Arc<Vec<u8>>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+}
+
+impl CachedGgufWeights {
+    fn from_file(path: &str) -> Result<Self> {
+        Ok(Self {
+            inner: GgufLoader::from_file(path)?,
+            f32_take: HashMap::new(),
+            f32_take_t: HashMap::new(),
+            packed: HashMap::new(),
+        })
+    }
+
+    fn tied_packed_embed_bytes(&mut self) -> Result<(Vec<u8>, rlx_ir::quant::QuantScheme)> {
+        const KEY: &str = "model.embed_tokens.weight";
+        if let Some((b, sc, _)) = self.packed.get(KEY) {
+            return Ok((b.to_vec(), *sc));
+        }
+        match self.inner.take_packed(KEY)? {
+            Some((bytes, scheme, shape)) => {
+                let arc = std::sync::Arc::new(bytes);
+                self.packed
+                    .insert(KEY.to_string(), (arc.clone(), scheme, shape));
+                Ok(((*arc).clone(), scheme))
+            }
+            None => anyhow::bail!("host greedy lm_head: missing packed tied embed"),
+        }
+    }
+}
+
+impl WeightLoader for CachedGgufWeights {
+    fn format_id(&self) -> &'static str {
+        self.inner.format_id()
+    }
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+    fn arch_hint(&self) -> Option<&str> {
+        self.inner.arch_hint()
+    }
+    fn remaining_keys(&self) -> Vec<String> {
+        self.inner.remaining_keys()
+    }
+    fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        if let Some((d, s)) = self.f32_take.get(key) {
+            return Ok(((**d).clone(), s.clone()));
+        }
+        let (d, s) = self.inner.take(key)?;
+        let arc = std::sync::Arc::new(d);
+        self.f32_take.insert(key.to_string(), (arc.clone(), s.clone()));
+        Ok(((*arc).clone(), s))
+    }
+    fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        if let Some((d, s)) = self.f32_take_t.get(key) {
+            return Ok(((**d).clone(), s.clone()));
+        }
+        let (d, s) = self.inner.take_transposed(key)?;
+        let arc = std::sync::Arc::new(d);
+        self.f32_take_t.insert(key.to_string(), (arc.clone(), s.clone()));
+        Ok(((*arc).clone(), s))
+    }
+    fn take_packed(&mut self, key: &str) -> Result<Option<rlx_core::weight_map::PackedWeightTensor>> {
+        if let Some((b, sc, sh)) = self.packed.get(key) {
+            return Ok(Some(((**b).clone(), *sc, sh.clone())));
+        }
+        match self.inner.take_packed(key)? {
+            Some((bytes, scheme, shape)) => {
+                let arc = std::sync::Arc::new(bytes);
+                self.packed
+                    .insert(key.to_string(), (arc.clone(), scheme, shape.clone()));
+                Ok(Some(((*arc).clone(), scheme, shape)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
+        self.inner.tensor_bytes_borrowed(key)
+    }
+}
+
 /// Stateful LLaMA-3.2 generation handle.
 ///
 /// Holds the (config, weight bytes, token history) and rebuilds a
@@ -406,7 +1082,16 @@ pub struct Llama32Generator {
     /// Tracks which decode buckets have had params attached. The
     /// `BucketedCompileCache` API doesn't expose per-bucket compile
     /// status, so we maintain it here to avoid double-loading params.
+    /// Persists across utterances (compiled weights are model-constant)
+    /// so a warm utterance reuses buckets instead of recompiling them —
+    /// see [`Self::soft_release_decode_kv_bindings`].
     decode_loaded_buckets: HashSet<usize>,
+    /// Decode buckets whose resident GPU K/V handles hold the *current*
+    /// utterance's prefix (main resident path). Separate from
+    /// `decode_loaded_buckets` because K/V is per-utterance while the
+    /// compiled graph is not: cleared each `prefill` to force a fresh
+    /// [`bind_resident_kv_from_host_cache`] without discarding the graph.
+    decode_resident_bound: HashSet<usize>,
     /// Upper bound for dynamic HIR `SEQ` / `PAST_SEQ` (defaults to
     /// [`Llama32Config::max_position_embeddings`]).
     compile_seq_cap: Option<usize>,
@@ -429,10 +1114,25 @@ pub struct Llama32Generator {
     weights_path: Option<PathBuf>,
     /// Skip full F32 drain at construction; [`Self::ensure_weights`] loads on first decode.
     weights_deferred: bool,
+    /// Memoizing GGUF loader for packed decode builds — parses/dequantizes the
+    /// GGUF once and serves cached clones, so per-bucket / per-token graph
+    /// rebuilds don't re-read the multi-GB file. Lazily created on first use.
+    decode_weights_cache: Option<CachedGgufWeights>,
     /// Lazy packed GGUF prefill session (Metal default).
     packed_gguf_prefill: Option<PackedGgufPrefill>,
     /// Metal GGUF prefill strategy ([`MetalGgufPrefillMode::Auto`] reads env).
     metal_gguf_prefill_mode: MetalGgufPrefillMode,
+    /// GGUF block-quant (Q4/Q8/K) vs dense F16/F32 — packed decode is quant-only.
+    gguf_block_quant: bool,
+    /// CPU packed greedy: host tied-lm_head argmax (skip in-graph vocab matmul).
+    host_greedy_lm: bool,
+    /// Hidden-only decode graphs for [`Self::host_greedy_lm`].
+    decode_compile_cache_hidden: Option<BucketedCompileCache>,
+    decode_loaded_buckets_hidden: HashSet<usize>,
+    /// Hidden decode buckets with resident GPU K/V handles bound.
+    decode_resident_hidden_bound: HashSet<usize>,
+    decode_kv_scratch: DecodeKvScratch,
+    decode_embed_scratch: Vec<f32>,
 }
 
 impl Llama32Generator {
@@ -473,6 +1173,7 @@ impl Llama32Generator {
             decode_compile_cache: None,
             decode_dynamic_cache: None,
             decode_loaded_buckets: HashSet::new(),
+            decode_resident_bound: HashSet::new(),
             compile_seq_cap: None,
             inv_freq,
             prefill_profile: CompileProfile::llama32_prefill(),
@@ -480,8 +1181,16 @@ impl Llama32Generator {
             sample_step: 0,
             weights_path: None,
             weights_deferred: false,
+            decode_weights_cache: None,
             packed_gguf_prefill: None,
             metal_gguf_prefill_mode: MetalGgufPrefillMode::Auto,
+            gguf_block_quant: false,
+            host_greedy_lm: false,
+            decode_compile_cache_hidden: None,
+            decode_loaded_buckets_hidden: HashSet::new(),
+            decode_resident_hidden_bound: HashSet::new(),
+            decode_kv_scratch: DecodeKvScratch::default(),
+            decode_embed_scratch: Vec::new(),
         })
     }
 
@@ -504,6 +1213,7 @@ impl Llama32Generator {
             decode_compile_cache: None,
             decode_dynamic_cache: None,
             decode_loaded_buckets: HashSet::new(),
+            decode_resident_bound: HashSet::new(),
             compile_seq_cap: None,
             inv_freq,
             prefill_profile: CompileProfile::llama32_prefill(),
@@ -511,8 +1221,16 @@ impl Llama32Generator {
             sample_step: 0,
             weights_path: None,
             weights_deferred: true,
+            decode_weights_cache: None,
             packed_gguf_prefill: None,
             metal_gguf_prefill_mode: prefill_mode,
+            gguf_block_quant: false,
+            host_greedy_lm: false,
+            decode_compile_cache_hidden: None,
+            decode_loaded_buckets_hidden: HashSet::new(),
+            decode_resident_hidden_bound: HashSet::new(),
+            decode_kv_scratch: DecodeKvScratch::default(),
+            decode_embed_scratch: Vec::new(),
         })
     }
 
@@ -587,6 +1305,11 @@ impl Llama32Generator {
         if n >= cap {
             return cap;
         }
+        // CUDA / ROCm lack active-extent on DequantMatMul + attention, so a
+        // power-of-two bucket runs padded zero rows and corrupts logits/KV.
+        if matches!(self.device, Device::Cuda | Device::Rocm) {
+            return n;
+        }
         // Power-of-two bucket (same as CPU / Llama32Runner). Forcing compile_cap on
         // Metal breaks last_token_idx + active-extent trim (argmax → token 0).
         n.next_power_of_two().min(cap)
@@ -597,7 +1320,7 @@ impl Llama32Generator {
         let need = self
             .packed_gguf_prefill
             .as_ref()
-            .is_none_or(|p| p.upper_seq != upper);
+            .is_none_or(|p| p.feed.upper_seq != upper);
         if !need {
             return Ok(());
         }
@@ -605,7 +1328,39 @@ impl Llama32Generator {
             .weights_path
             .as_ref()
             .context("packed prefill needs gguf path")?;
-        self.packed_gguf_prefill = Some(PackedGgufPrefill::build(
+        self.packed_gguf_prefill = Some(if self.host_greedy_lm {
+            PackedGgufPrefill::build_hidden_with_kv(
+                &self.cfg,
+                path,
+                upper,
+                self.device,
+                &self.prefill_profile,
+            )?
+        } else {
+            PackedGgufPrefill::build(
+                &self.cfg,
+                path,
+                upper,
+                self.device,
+                &self.prefill_profile,
+            )?
+        });
+        Ok(())
+    }
+
+    fn ensure_packed_kv_prefill(&mut self, seq: usize) -> Result<()> {
+        let upper = self.packed_prefill_upper_seq(seq);
+        let need = self.packed_gguf_prefill.as_ref().is_none_or(|p| {
+            p.feed.upper_seq != upper || p.logits.is_some()
+        });
+        if !need {
+            return Ok(());
+        }
+        let path = self
+            .weights_path
+            .as_ref()
+            .context("packed kv prefill needs gguf path")?;
+        self.packed_gguf_prefill = Some(PackedGgufPrefill::build_kv_only(
             &self.cfg,
             path,
             upper,
@@ -620,7 +1375,13 @@ impl Llama32Generator {
         prompt_len: usize,
         ids_f32: &[f32],
     ) -> Result<Option<Vec<f32>>> {
-        if self.device != Device::Metal || !self.metal_gguf_prefill_mode().use_packed_gguf() {
+        if !uses_packed_gguf_gpu_prefill(self.device, self.metal_gguf_prefill_mode()) {
+            return Ok(None);
+        }
+        if matches!(self.device, Device::Cuda | Device::Rocm)
+            && cuda_packed_kv_cpu_logits_prefill_enabled()
+            && !cuda_gpu_kv_prefill_enabled()
+        {
             return Ok(None);
         }
         if self.weights_path.is_none() {
@@ -637,7 +1398,7 @@ impl Llama32Generator {
         prompt_len: usize,
         ids_f32: &[f32],
     ) -> Result<Option<(Vec<Vec<f32>>, Vec<Vec<f32>>)>> {
-        if self.device != Device::Metal || !self.metal_gguf_prefill_mode().use_packed_gguf() {
+        if !uses_packed_gguf_gpu_prefill(self.device, self.metal_gguf_prefill_mode()) {
             return Ok(None);
         }
         if self.weights_path.is_none() {
@@ -646,6 +1407,59 @@ impl Llama32Generator {
         self.ensure_packed_prefill(prompt_len)?;
         let p = self.packed_gguf_prefill.as_mut().unwrap();
         Ok(Some(p.run_kv_only(prompt_len, ids_f32)?))
+    }
+
+    /// CPU F32 last-position hidden (reference). Used by CUDA host-greedy native
+    /// prefill when device packed hidden is not parity-safe.
+    fn run_prefill_last_hidden_cpu_f32(
+        &mut self,
+        batch: usize,
+        seq: usize,
+        ids_f32: &[f32],
+    ) -> Result<Vec<f32>> {
+        self.ensure_weights()?;
+        let prefill_opts = compile_options_from_profile(
+            &self.prefill_profile,
+            Device::Cpu,
+            KernelDispatchConfig::default(),
+        );
+        let mut loader = self.build_weight_loader()?;
+        let (graph, params) = build_llama32_graph_sized(
+            &self.cfg,
+            &mut loader,
+            batch,
+            seq,
+            /*with_lm_head*/ false,
+            /*with_kv_outputs*/ false,
+        )?;
+        let session = Session::new(Device::Cpu);
+        let mut compiled = session.compile_with(graph, &prefill_opts);
+        for (name, data) in &params {
+            compiled.set_param(name, data);
+        }
+        let outputs = compiled.run(&[("input_ids", ids_f32)]);
+        let hidden = outputs
+            .into_iter()
+            .next()
+            .context("cpu f32 hidden prefill returned no outputs")?;
+        packed_prefill_last_hidden(&hidden, seq, self.cfg.hidden_size)
+    }
+
+    /// CUDA / ROCm host-greedy prefill with CPU F32 reference hidden + KV.
+    ///
+    /// Device packed prefill hidden/KV still diverge on Orpheus-scale GGUF; this
+    /// path keeps mmap'd weights (no ~12 GiB host F32 drain) while matching CPU
+    /// greedy parity. Used when `MetalGgufPrefillMode::PackedGguf` is selected
+    /// (`ORPHEUS_CUDA_NATIVE_PREFILL=1` in TTS).
+    fn seed_cuda_host_greedy_reference_prefill(
+        &mut self,
+        seq: usize,
+        ids_f32: &[f32],
+    ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+        let hidden = self.run_prefill_last_hidden_cpu_f32(1, seq, ids_f32)?;
+        let outputs = self.run_prefill_with_cache_cpu_f32(1, seq, ids_f32)?;
+        let (_, layers_k, layers_v) = self.split_prefill_outputs(outputs, 1, seq)?;
+        Ok((hidden, layers_k, layers_v))
     }
 
     /// CPU F32 last-position logits (reference). Used when Metal packed
@@ -691,24 +1505,25 @@ impl Llama32Generator {
     }
 
     fn drop_packed_gguf_prefill(&mut self) {
-        self.packed_gguf_prefill = None;
+        if self.packed_gguf_prefill.take().is_some() {
+            trim_accelerator_arena_pool(self.device);
+        }
     }
 
-    /// Packed Metal KV + CPU F32 logits (legacy hybrid). Retained as the
-    /// non-finite-logits fallback inside [`Self::seed_prefill_packed_gpu`] is
-    /// expressed inline; kept here for reference / A-B benchmarking.
-    #[allow(dead_code)]
+    /// Packed GPU KV + CPU F32 logits — seeds device KV for native CUDA/ROCm
+    /// decode without compiling the packed logits graph (16 GiB-safe).
     fn seed_prefill_packed_kv_cpu_logits(
         &mut self,
         batch: usize,
         seq: usize,
         ids_f32: &[f32],
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
-        // KV first while F32 weights are still deferred — avoids holding packed
-        // Metal graphs and the full host F32 drain at the same time.
+        self.ensure_packed_kv_prefill(seq)?;
         let (layers_k, layers_v) = self
-            .try_packed_gguf_kv_only(seq, ids_f32)?
-            .context("packed gguf kv prefill")?;
+            .packed_gguf_prefill
+            .as_mut()
+            .context("packed kv prefill")?
+            .run_kv_only(seq, ids_f32)?;
         self.drop_packed_gguf_prefill();
         let logits = self.run_prefill_last_logits_cpu_f32(batch, seq, ids_f32)?;
         Ok((logits, layers_k, layers_v))
@@ -753,10 +1568,65 @@ impl Llama32Generator {
         seq: usize,
         ids_f32: &[f32],
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
-        if self.device == Device::Metal && self.metal_gguf_prefill_mode().use_packed_gguf() {
+        if uses_packed_gguf_gpu_prefill(self.device, self.metal_gguf_prefill_mode()) {
             // Hybrid packed KV + CPU decode diverges after step 1; CPU decode needs
             // CPU F32 KV from the full prefill-with-cache graph.
             if self.decode_device() == Device::Cpu {
+                self.ensure_weights()?;
+                let outputs = self.run_prefill_with_cache_cpu_f32(batch, seq, ids_f32)?;
+                return self.split_prefill_outputs(outputs, batch, seq);
+            }
+            // CUDA / ROCm native decode: CPU F32 reference KV unless forced otherwise.
+            // Host-greedy uses [`Self::seed_cuda_host_greedy_reference_prefill`];
+            // non-greedy may use packed GPU logits+KV (`seed_prefill_packed_gpu`).
+            if matches!(self.device, Device::Cuda | Device::Rocm)
+                && self.decode_device() == self.device
+                && cuda_packed_kv_cpu_logits_prefill_enabled()
+            {
+                if cuda_gpu_kv_prefill_enabled() {
+                    eprintln!(
+                        "[llama32] packed GPU KV + CPU logits prefill on {:?} (ORPHEUS_CUDA_GPU_KV=1)",
+                        self.device
+                    );
+                    let triple = self.seed_prefill_packed_kv_cpu_logits(batch, seq, ids_f32)?;
+                    if std::env::var("ORPHEUS_PREFILL_PERSIST").ok().as_deref() != Some("1") {
+                        self.drop_packed_gguf_prefill();
+                    }
+                    return Ok(triple);
+                }
+                if !cuda_f32_prefill_forced()
+                    && std::env::var("ORPHEUS_CUDA_PACKED_KV_PREFILL").ok().as_deref() == Some("1")
+                {
+                    eprintln!(
+                        "[llama32] packed GPU KV + CPU logits prefill on {:?}",
+                        self.device
+                    );
+                    let triple = self.seed_prefill_packed_kv_cpu_logits(batch, seq, ids_f32)?;
+                    if std::env::var("ORPHEUS_PREFILL_PERSIST").ok().as_deref() != Some("1") {
+                        self.drop_packed_gguf_prefill();
+                    }
+                    return Ok(triple);
+                }
+                if !cuda_f32_prefill_forced()
+                    && std::env::var("ORPHEUS_CUDA_PACKED_PREFILL").ok().as_deref() != Some("0")
+                {
+                    if self.host_greedy_lm {
+                        let triple = self.seed_cuda_host_greedy_reference_prefill(seq, ids_f32)?;
+                        if std::env::var("ORPHEUS_PREFILL_PERSIST").ok().as_deref() != Some("1") {
+                            self.drop_packed_gguf_prefill();
+                        }
+                        return Ok(triple);
+                    }
+                    let triple = self.seed_prefill_packed_gpu(batch, seq, ids_f32)?;
+                    if std::env::var("ORPHEUS_PREFILL_PERSIST").ok().as_deref() != Some("1") {
+                        self.drop_packed_gguf_prefill();
+                    }
+                    return Ok(triple);
+                }
+                eprintln!(
+                    "[llama32] CPU F32 prefill-with-cache on {:?} (reference KV for native decode)",
+                    self.device
+                );
                 self.ensure_weights()?;
                 let outputs = self.run_prefill_with_cache_cpu_f32(batch, seq, ids_f32)?;
                 return self.split_prefill_outputs(outputs, batch, seq);
@@ -765,8 +1635,21 @@ impl Llama32Generator {
             // the packed Q4 graph — logits and KV both — instead of dequantizing
             // the full 3B model to ~12 GiB host F32.
             let triple = self.seed_prefill_packed_gpu(batch, seq, ids_f32)?;
-            self.drop_packed_gguf_prefill();
+            // Drop the packed prefill graph before decode unless explicitly retained
+            // (`ORPHEUS_PREFILL_PERSIST=1`). Keeping both prefill + decode compiled
+            // graphs resident peaks past ~50 GiB on Orpheus 3B Q4 Metal.
+            if std::env::var("ORPHEUS_PREFILL_PERSIST").ok().as_deref() != Some("1") {
+                self.drop_packed_gguf_prefill();
+            }
             return Ok(triple);
+        }
+        // CUDA/ROCm: same hybrid rule as Metal — never compile device decode graphs
+        // when `decode_device` fell back to CPU (16 GiB consumer GPUs OOM otherwise).
+        if matches!(self.device, Device::Cuda | Device::Rocm) && self.decode_device() == Device::Cpu
+        {
+            self.ensure_weights()?;
+            let outputs = self.run_prefill_with_cache_cpu_f32(batch, seq, ids_f32)?;
+            return self.split_prefill_outputs(outputs, batch, seq);
         }
         if let Some(triple) = self.try_packed_gguf_prefill(seq, ids_f32)? {
             return Ok(triple);
@@ -787,7 +1670,10 @@ impl Llama32Generator {
         prompt_len: usize,
         ids_f32: &[f32],
     ) -> Result<Option<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)>> {
-        if self.device != Device::Metal || !self.metal_gguf_prefill_mode().use_packed_gguf() {
+        if !uses_packed_gguf_gpu_prefill(self.device, self.metal_gguf_prefill_mode())
+            && !self.uses_packed_gguf_cpu_prefill()
+            && !self.uses_packed_gguf_mlx_prefill()
+        {
             return Ok(None);
         }
         if self.weights_path.is_none() {
@@ -861,6 +1747,15 @@ impl Llama32Generator {
             .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
         {
             g.weights_path = Some(weights_path.to_path_buf());
+            g.gguf_block_quant = gguf_has_block_quant_matmul(weights_path);
+            let exec = packed_gguf_execution_device(device);
+            g.host_greedy_lm =
+                llama32_host_greedy_lm_enabled(&g.cfg, exec, g.weights_deferred, is_gguf);
+            if g.host_greedy_lm {
+                eprintln!(
+                    "[llama32-runner] greedy decode: host tied-lm_head argmax (skip in-graph vocab matmul)"
+                );
+            }
         }
         Ok(g)
     }
@@ -922,6 +1817,20 @@ impl Llama32Generator {
         self.is_gguf_checkpoint()
             && self.prefill_device() == Device::Cpu
             && self.decode_device() == Device::Cpu
+            && !fused_phi_gguf_needs_packed_paths(&self.cfg, self.is_gguf_checkpoint())
+    }
+
+    fn uses_packed_gguf_cpu_prefill(&self) -> bool {
+        self.prefill_device() == Device::Cpu
+            && self.weights_deferred
+            && fused_phi_gguf_needs_packed_paths(&self.cfg, self.is_gguf_checkpoint())
+    }
+
+    /// Phi fused GGUF on MLX when packed GPU prefill is off (CpuF32 mode).
+    fn uses_packed_gguf_mlx_prefill(&self) -> bool {
+        self.device == Device::Mlx
+            && self.weights_deferred
+            && fused_phi_gguf_needs_packed_paths(&self.cfg, self.is_gguf_checkpoint())
     }
 
     /// GGUF KV decode on CPU when GPU prefill/decode would diverge (Metal CPU
@@ -931,12 +1840,25 @@ impl Llama32Generator {
             return false;
         }
         match self.device {
-            // Metal decodes GGUF Llama natively via the packed Q4 graph: its
-            // RoPE kernel now honors the interleaved/GPT-J flavor GGUF weights
-            // need (see rlx-metal `Op::Rope` lowering + `rope` kernel), and the
-            // Q4 GEMV thunk (`q4k_mv_f32_sg`) serves `Op::DequantMatMul`. Prefill
-            // stays on CPU F32 (see `prefill_device`); only DECODE runs on Metal.
-            Device::Metal => false,
+            // Native Metal decode only when prefill also ran on Metal (packed/F32).
+            // CPU F32 prefill seeds KV that diverges if decode stays on Metal
+            // (Orpheus 3B Q4_K_M / Q8_0 — see `decode_device` below).
+            Device::Metal => {
+                if std::env::var("ORPHEUS_METAL_NATIVE_DECODE").ok().as_deref() == Some("1") {
+                    false
+                } else {
+                    self.prefill_device() == Device::Cpu
+                }
+            }
+            Device::Ane => self.prefill_device() == Device::Cpu,
+            // CUDA / ROCm: native packed decode on by default (m=1 uses host GGUF
+            // dequant in rlx-cuda for parity). Opt out with ORPHEUS_CUDA_NATIVE_DECODE=0.
+            Device::Cuda => {
+                std::env::var("ORPHEUS_CUDA_NATIVE_DECODE").ok().as_deref() == Some("0")
+            }
+            Device::Rocm => {
+                std::env::var("ORPHEUS_ROCM_NATIVE_DECODE").ok().as_deref() == Some("0")
+            }
             // wgpu (`Device::Gpu`): RoPE-GptJ + native GGUF Q4 GEMV kernels are
             // implemented and parity-verified, but native decode is blocked by a
             // pre-existing wgpu >4 GB arena windowing bug (the ~10 GB Orpheus
@@ -976,6 +1898,9 @@ impl Llama32Generator {
         if !self.is_gguf_checkpoint() || self.weights_path.is_none() {
             return false;
         }
+        if !self.gguf_block_quant {
+            return false;
+        }
         // A/B escape hatch for benchmarking Q4 vs F32 decode on the same binary.
         if std::env::var("ORPHEUS_NO_PACKED").ok().as_deref() == Some("1") {
             return false;
@@ -986,12 +1911,17 @@ impl Llama32Generator {
             // `Device::Gpu`/`Device::Vulkan` only reach here when `ORPHEUS_WGPU_NATIVE`/
             // `ORPHEUS_VULKAN_NATIVE=1` made `gguf_cpu_decode_required` return false
             // (else decode_device is Cpu and the F32 host path is used).
-            Device::Metal | Device::Mlx | Device::Gpu | Device::Vulkan => true,
+            Device::Metal | Device::Mlx | Device::Gpu | Device::Vulkan | Device::Cuda | Device::Rocm => true,
             // CPU: F32 via Accelerate AMX is faster than on-the-fly Q4 dequant
             // (measured 104s vs 127s/100 tok), so default to the F32 flow path.
             // Opt into packed Q4 only when memory-constrained (avoids the ~12 GB
-            // F32 model footprint) via `ORPHEUS_PACKED_DECODE=1`.
-            Device::Cpu => std::env::var("ORPHEUS_PACKED_DECODE").ok().as_deref() == Some("1"),
+            // F32 model footprint) via `ORPHEUS_PACKED_DECODE=1`, or when Phi
+            // fused GGUF layout cannot use the split-projection F32 flow.
+            Device::Cpu => {
+                std::env::var("ORPHEUS_PACKED_DECODE").ok().as_deref() == Some("1")
+                    || (self.weights_deferred
+                        && fused_phi_gguf_needs_packed_paths(&self.cfg, self.is_gguf_checkpoint()))
+            }
             _ => false,
         }
     }
@@ -1003,6 +1933,18 @@ impl Llama32Generator {
             return true;
         }
         !would_exceed_soft_budget(llama_decode_bucket_compile_peak_bytes())
+    }
+
+    /// Bail if compiling another decode bucket would exceed the soft RAM
+    /// budget. Shared gate for the packed-decode compile sites.
+    fn ensure_decode_bucket_budget(&self) -> Result<()> {
+        if !self.decode_bucket_allowed() {
+            anyhow::bail!(
+                "decode bucket compile would exceed soft RAM budget (~80% of physical RAM); \
+                 set RLX_SOFT_MEMORY_FRACTION or ORPHEUS_DECODE_CACHE_CAP lower"
+            );
+        }
+        Ok(())
     }
 
     /// Whether the bucketed compile cache can serve `past_seq` (used by both
@@ -1135,6 +2077,15 @@ impl Llama32Generator {
         self.decode_compile_cache = Some(cache);
         self.decode_dynamic_cache = None;
         self.decode_loaded_buckets.clear();
+        if self.host_greedy_lm {
+            self.decode_compile_cache_hidden = Some(BucketedCompileCache::power_of_two_ladder(
+                packed_gguf_execution_device(self.decode_device()),
+                /*min*/ 1,
+                max_past.max(1) as u64,
+            ));
+            self.decode_loaded_buckets_hidden.clear();
+            self.decode_resident_hidden_bound.clear();
+        }
         self
     }
 
@@ -1180,21 +2131,42 @@ impl Llama32Generator {
     }
 
     /// Replace the token history with `prompt_ids`. Does not run the
-    /// model — the next [`step`] call processes the full sequence.
-    /// Clears any KV cache from a prior generation and drops heavy
-    /// compile caches so a new utterance stays under the soft RAM budget.
+    /// model — the next [`Self::step`] call processes the full sequence.
+    /// Clears the KV cache from a prior generation. By default it **keeps**
+    /// the compiled decode-bucket graphs resident across utterances (dropping
+    /// only the per-utterance K/V bindings) so a warm utterance skips the
+    /// recompile + weight upload — see [`Self::soft_release_decode_kv_bindings`].
+    /// The soft RAM budget trims buckets on constrained hardware; opt out of
+    /// reuse entirely with `ORPHEUS_KEEP_DECODE_GRAPHS=0` (full release, the old
+    /// behavior). CUDA/ROCm D2D-K/V modes always take the full release.
     pub fn prefill(&mut self, prompt_ids: &[u32]) {
         self.tokens.clear();
         self.tokens.extend_from_slice(prompt_ids);
         self.cache = None;
         self.sample_step = 0;
-        self.release_decode_graphs();
+        // Default: keep compiled decode-bucket graphs resident across
+        // utterances (drop only the per-utterance K/V bindings) so a warm
+        // utterance skips the multi-second recompile + weight upload. The
+        // soft memory budget trims buckets on constrained hardware. Opt out
+        // to the old full release with `ORPHEUS_KEEP_DECODE_GRAPHS=0`, and
+        // CUDA/ROCm D2D K/V modes also take the full release.
+        if self.cross_utterance_decode_reuse_enabled() {
+            self.soft_release_decode_kv_bindings();
+        } else {
+            self.release_decode_graphs();
+        }
     }
 
     /// Drop decode compile graphs between utterances (keep prefill cache).
     pub fn release_decode_graphs(&mut self) {
         self.decode_loaded_buckets.clear();
+        self.decode_resident_bound.clear();
+        self.decode_loaded_buckets_hidden.clear();
+        self.decode_resident_hidden_bound.clear();
         if let Some(cache) = self.decode_compile_cache.as_mut() {
+            cache.clear_compiled();
+        }
+        if let Some(cache) = self.decode_compile_cache_hidden.as_mut() {
             cache.clear_compiled();
         }
         if let Some(cache) = self.decode_dynamic_cache.as_mut() {
@@ -1209,6 +2181,86 @@ impl Llama32Generator {
             cache.clear();
         }
         self.drop_packed_gguf_prefill();
+    }
+
+    /// Between-utterance release that KEEPS the compiled decode-bucket graphs
+    /// (and their uploaded weights) resident so the next utterance reuses
+    /// them — the expensive per-bucket recompile + multi-GB weight upload
+    /// then happens only on the first utterance. Only the per-utterance K/V
+    /// *bindings* are dropped (`decode_resident_bound`), forcing a fresh
+    /// [`bind_resident_kv_from_host_cache`] from the new prompt's host cache.
+    ///
+    /// RAM-adaptive: buckets are trimmed to the soft memory budget
+    /// (highest-index first) so a memory-constrained machine does not
+    /// accumulate the whole ladder across utterances, while a roomy machine
+    /// keeps it all (zero cross-utterance recompiles). See
+    /// [`llama_decode_bucket_resident_bytes`] and `RLX_SOFT_MEMORY_FRACTION`.
+    ///
+    /// The host-greedy `*_hidden` decode path is not wired for
+    /// cross-utterance reuse, so its graphs are fully released here (its
+    /// original between-utterance behavior); it is unused when the resident
+    /// sampling path is active (the Orpheus default).
+    pub fn soft_release_decode_kv_bindings(&mut self) {
+        // K/V is per-utterance; force a fresh bind next utterance while the
+        // compiled graphs (and set params) stay put.
+        self.decode_resident_bound.clear();
+        self.trim_decode_buckets_to_budget(usize::MAX);
+
+        // Host-greedy hidden path: preserve full-release behavior.
+        self.decode_loaded_buckets_hidden.clear();
+        self.decode_resident_hidden_bound.clear();
+        if let Some(cache) = self.decode_compile_cache_hidden.as_mut() {
+            cache.clear_compiled();
+        }
+        if let Some(cache) = self.decode_dynamic_cache.as_mut() {
+            cache.clear();
+        }
+    }
+
+    /// Whether compiled decode-bucket graphs may be kept resident across
+    /// utterances (skip recompile + weight re-upload on warm utterances).
+    /// Only the plain resident path is wired for this; CUDA/ROCm D2D K/V
+    /// rebind modes keep their existing per-utterance release + single
+    /// resident bucket. Opt out entirely with `ORPHEUS_KEEP_DECODE_GRAPHS=0`.
+    fn cross_utterance_decode_reuse_enabled(&self) -> bool {
+        if std::env::var("ORPHEUS_KEEP_DECODE_GRAPHS").ok().as_deref() == Some("0") {
+            return false;
+        }
+        // Scope to the packed (Q4) decode paths that were audited for this:
+        // the resident and per-step-K/V bucketed paths. Non-packed (F32)
+        // bucketed decode keeps its original per-utterance release.
+        if !self.use_packed_decode() {
+            return false;
+        }
+        let exec = packed_gguf_execution_device(self.decode_device());
+        !(cuda_device_kv_rebind_enabled(exec) || cuda_lazy_kv_enabled(exec))
+    }
+
+    /// Evict resident decode buckets (highest index first, never `protect`)
+    /// while keeping one more would exceed the soft memory budget. Keeps the
+    /// `decode_loaded_buckets`/`decode_resident_bound` bookkeeping in sync so
+    /// an evicted bucket is recompiled + re-bound on next use. No-op on a
+    /// machine with headroom for the whole ladder.
+    fn trim_decode_buckets_to_budget(&mut self, protect: usize) {
+        let resident_bytes = llama_decode_bucket_resident_bytes();
+        loop {
+            let victim = {
+                let Some(cache) = self.decode_compile_cache.as_mut() else {
+                    return;
+                };
+                if cache.compiled_count() == 0 || !would_exceed_soft_budget(resident_bytes) {
+                    return;
+                }
+                cache.evict_one_except(protect)
+            };
+            match victim {
+                Some(v) => {
+                    self.decode_loaded_buckets.remove(&v);
+                    self.decode_resident_bound.remove(&v);
+                }
+                None => return,
+            }
+        }
     }
 
     /// Run one prefill over the current token history and sample the
@@ -1289,12 +2341,18 @@ impl Llama32Generator {
         }
         let input_tok = self.tokens[past_seq];
 
+        if self.host_greedy_lm_active(opts) {
+            let tok = self.decode_step_greedy_host(past_seq, input_tok, &mut adjust_logits)?;
+            self.tokens.push(tok);
+            return Ok(tok);
+        }
+
         // GPU-resident KV decode (Vulkan): K/V live in the device arena across
         // steps, fed in-place from the decode output — no per-step host K/V
         // upload/readback, logits-only readback. Returns logits only; the host
         // `cache.layers_k/v` is left stale (synced back only on bucket change).
         let resident =
-            self.vulkan_resident_decode_enabled() && self.bucket_decode_eligible(past_seq);
+            self.resident_kv_decode_enabled() && self.bucket_decode_eligible(past_seq);
 
         let (mut logits, new_k, new_v) = if resident {
             (
@@ -1399,17 +2457,22 @@ impl Llama32Generator {
         past_seq: usize,
         input_tok: u32,
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
-        let path = self
-            .weights_path
-            .as_ref()
-            .context("packed decode needs gguf path")?;
-        let path_str = path.to_str().context("non-utf8 weights path")?;
-        let mut loader = GgufLoader::from_file(path_str)?;
+        let path_str = {
+            let path = self
+                .weights_path
+                .as_ref()
+                .context("packed decode needs gguf path")?;
+            path.to_str().context("non-utf8 weights path")?.to_string()
+        };
+        if self.decode_weights_cache.is_none() {
+            self.decode_weights_cache = Some(CachedGgufWeights::from_file(&path_str)?);
+        }
+        let cfg = self.cfg.clone();
         let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
             HashMap::new();
         let (graph, params) = build_llama32_decode_graph_sized_packed(
-            &self.cfg,
-            &mut loader,
+            &cfg,
+            self.decode_weights_cache.as_mut().unwrap(),
             /*batch*/ 1,
             past_seq,
             /*use_custom_mask*/ false,
@@ -1419,6 +2482,7 @@ impl Llama32Generator {
         let exec_device = packed_gguf_execution_device(self.decode_device());
         let opts =
             compile_options_for_packed_gguf_prefill_with_profile(&self.decode_profile, exec_device);
+        trim_accelerator_arena_pool(exec_device);
         let mut compiled = packed_gguf_compile_guard(exec_device, || {
             Session::new(exec_device).compile_with(graph, &opts)
         });
@@ -1436,7 +2500,22 @@ impl Llama32Generator {
             .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
             .collect();
         let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(1 + 2 * n_layers);
-        inputs.push(("input_ids", input_ids_f32.as_slice()));
+        let mut embed_scratch = Vec::new();
+        push_packed_decode_token_input(
+            &self.cfg,
+            input_tok,
+            if packed_graph_uses_lazy_embed(&packed, &params) {
+                let (bytes, scheme, _) = packed
+                    .get("model.embed_tokens.weight")
+                    .expect("lazy decode embed");
+                Some((bytes.as_slice(), *scheme))
+            } else {
+                None
+            },
+            &mut embed_scratch,
+            &mut inputs,
+            &input_ids_f32,
+        )?;
         for i in 0..n_layers {
             inputs.push((&key_strs[2 * i], cache.layers_k[i].as_slice()));
             inputs.push((&key_strs[2 * i + 1], cache.layers_v[i].as_slice()));
@@ -1486,23 +2565,29 @@ impl Llama32Generator {
         // calls in the same bucket skip all of this and just `.run()`.
         let needs_load = !self.decode_loaded_buckets.contains(&bucket_idx);
         if needs_load {
-            if !self.decode_bucket_allowed() {
-                anyhow::bail!(
-                    "decode bucket compile would exceed soft RAM budget (~80% of physical RAM); \
-                     set RLX_SOFT_MEMORY_FRACTION or ORPHEUS_DECODE_CACHE_CAP lower"
-                );
+            trim_accelerator_arena_pool(exec_device);
+            // K/V is re-uploaded per step on this path, so keeping other
+            // buckets compiled across utterances is safe (no bind coupling).
+            if self.cross_utterance_decode_reuse_enabled() {
+                self.trim_decode_buckets_to_budget(bucket_idx);
+                self.ensure_decode_bucket_budget()?;
+            } else {
+                self.ensure_decode_bucket_budget()?;
+                if let Some(cache_mut) = self.decode_compile_cache.as_mut() {
+                    cache_mut.evict_except(bucket_idx);
+                }
+                self.decode_loaded_buckets.clear();
             }
-            if let Some(cache_mut) = self.decode_compile_cache.as_mut() {
-                cache_mut.evict_except(bucket_idx);
-            }
-            self.decode_loaded_buckets.clear();
 
-            let mut loader = GgufLoader::from_file(&path_str)?;
+            if self.decode_weights_cache.is_none() {
+                self.decode_weights_cache = Some(CachedGgufWeights::from_file(&path_str)?);
+            }
+            let cfg = self.cfg.clone();
             let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
                 HashMap::new();
             let (graph, params) = build_llama32_decode_graph_sized_packed(
-                &self.cfg,
-                &mut loader,
+                &cfg,
+                self.decode_weights_cache.as_mut().unwrap(),
                 /*batch*/ 1,
                 upper,
                 /*use_custom_mask*/ true,
@@ -1556,7 +2641,28 @@ impl Llama32Generator {
             .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
             .collect();
         let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4 + 2 * n_layers);
-        inputs.push(("input_ids", input_ids_f32.as_slice()));
+        let mut embed_scratch = Vec::new();
+        let lazy_embed = self
+            .decode_weights_cache
+            .as_ref()
+            .and_then(|cache| {
+                cache.packed.get("model.embed_tokens.weight").map(|(b, s, _)| {
+                    (b.as_slice(), *s)
+                })
+            })
+            .filter(|_| {
+                self.decode_weights_cache
+                    .as_ref()
+                    .is_some_and(|cache| cache.f32_take.get("model.embed_tokens.weight").is_none())
+            });
+        push_packed_decode_token_input(
+            &self.cfg,
+            input_tok,
+            lazy_embed,
+            &mut embed_scratch,
+            &mut inputs,
+            &input_ids_f32,
+        )?;
         inputs.push(("cos", cos_row.as_slice()));
         inputs.push(("sin", sin_row.as_slice()));
         inputs.push(("mask", mask.as_slice()));
@@ -1569,24 +2675,761 @@ impl Llama32Generator {
         let compiled = cache_mut
             .compiled_for_key_mut(past_seq as u64)
             .expect("bucket was just loaded above");
-        let raw_outputs = compiled.run(&inputs);
-
-        // Graph emits K/V at length `upper + 1` (padded past + new token at row
-        // `upper`). Compact to dense `[0..past_seq]` + the new row.
-        let mut iter = raw_outputs.into_iter();
-        let logits = iter
+        // CUDA / ROCm: per-row `read_output_row` after logits-only readback is
+        // unreliable today (bounds / stream visibility). Full K/V D2H matches the
+        // F32 bucketed path and is correct; row-only readback stays on Metal/Vulkan.
+        if packed_bucketed_full_kv_readback(exec_device) {
+            let raw_outputs = compiled.run(&inputs);
+            let mut iter = raw_outputs.into_iter();
+            let logits = iter.next().context("bucketed packed decode logits missing")?;
+            let past_len = past_seq + 1;
+            let mut new_k = Vec::with_capacity(n_layers);
+            let mut new_v = Vec::with_capacity(n_layers);
+            for _ in 0..n_layers {
+                let k = iter.next().context("bucketed packed k missing")?;
+                let v = iter.next().context("bucketed packed v missing")?;
+                new_k.push(compact_bucketed_kv_buffer(&k, past_len, kv_dim, 1));
+                new_v.push(compact_bucketed_kv_buffer(&v, past_len, kv_dim, 1));
+            }
+            return Ok((logits, new_k, new_v));
+        }
+        let cache_ref = self.cache.as_ref().context("packed decode without cache")?;
+        let logits = compiled
+            .run_read_outputs(&inputs, Some(&[0]))
+            .into_iter()
             .next()
             .context("bucketed packed decode logits missing")?;
-        let past_len = past_seq + 1;
-        let mut new_k = Vec::with_capacity(n_layers);
-        let mut new_v = Vec::with_capacity(n_layers);
-        for _ in 0..n_layers {
-            let k = iter.next().context("bucketed packed k missing")?;
-            let v = iter.next().context("bucketed packed v missing")?;
-            new_k.push(compact_bucketed_kv_buffer(&k, past_len, kv_dim, 1));
-            new_v.push(compact_bucketed_kv_buffer(&v, past_len, kv_dim, 1));
-        }
+        let (new_k, new_v) =
+            append_packed_decode_kv_rows(compiled, cache_ref, upper, kv_dim, n_layers)?;
         Ok((logits, new_k, new_v))
+    }
+
+    fn host_greedy_prefill_eligible(&self, opts: SampleOpts) -> bool {
+        self.host_greedy_lm && opts.greedy && opts.is_classic()
+    }
+
+    /// Host-greedy decode (packed Q4 graph + CPU tied-lm_head argmax).
+    fn host_greedy_lm_active(&self, opts: SampleOpts) -> bool {
+        self.host_greedy_prefill_eligible(opts) && self.use_packed_decode()
+    }
+
+    fn ensure_decode_weights_cache(&mut self) -> Result<()> {
+        if self.decode_weights_cache.is_some() {
+            return Ok(());
+        }
+        let path = self
+            .weights_path
+            .as_ref()
+            .context("packed decode needs gguf path")?;
+        let path_str = path.to_str().context("non-utf8 weights path")?;
+        self.decode_weights_cache = Some(CachedGgufWeights::from_file(path_str)?);
+        Ok(())
+    }
+
+    /// Host-side tied-`lm_head` argmax over the decode `hidden`, applying the
+    /// caller's logit adjustment (`adjust`) first. The full logit row is
+    /// materialized via the same GGUF matmul the in-graph `lm_head` lowers to
+    /// (`gguf_matmul_bt`) so `adjust` — e.g. Orpheus's SNAC-slot mask +
+    /// repetition penalty — can gate tokens *before* the argmax. This is
+    /// essential for correctness: a bare streaming argmax that skipped `adjust`
+    /// picks masked / repeated tokens and derails structured (audio-codebook)
+    /// decode.
+    fn host_greedy_argmax(
+        &mut self,
+        hidden: &[f32],
+        adjust: &mut dyn FnMut(&mut [f32]),
+    ) -> Result<u32> {
+        self.ensure_decode_weights_cache()?;
+        let h = self.cfg.hidden_size;
+        if hidden.len() < h {
+            anyhow::bail!("decode hidden short: {} < {h}", hidden.len());
+        }
+        let vocab = self.cfg.vocab_size;
+        let (bytes, scheme) = self
+            .decode_weights_cache
+            .as_mut()
+            .unwrap()
+            .tied_packed_embed_bytes()?;
+        let mut logits = vec![0f32; vocab];
+        rlx_cpu::gguf_matmul::gguf_matmul_bt_parallel(
+            &hidden[..h],
+            &bytes,
+            &mut logits,
+            1,
+            h,
+            vocab,
+            scheme,
+        );
+        adjust(&mut logits);
+        let mut best_idx = 0u32;
+        let mut best_val = f32::NEG_INFINITY;
+        for (i, &l) in logits.iter().enumerate() {
+            if l > best_val {
+                best_val = l;
+                best_idx = i as u32;
+            }
+        }
+        Ok(best_idx)
+    }
+
+    /// Host-greedy decode: run a hidden-only bucketed packed graph and pick the
+    /// next token with a host-side tied-`lm_head` argmax ([`Self::host_greedy_argmax`]),
+    /// skipping the in-graph vocab matmul. Delegates to
+    /// [`Self::decode_step_greedy_resident`] when resident-KV is enabled.
+    ///
+    /// Uses the same bucket conventions as [`Self::decode_step_bucketed_packed`]:
+    /// the binary keep-mask is [`bucket_decode_mask`] (real past `[0,past_seq)`
+    /// plus the newly-rope'd key at bucket-top `upper`), and the new K/V row is
+    /// gathered with [`compact_bucketed_kv_buffer`] (which takes the row at
+    /// `upper`, not a naive truncate that would drop it).
+    ///
+    /// `adjust` is the caller's per-step logit adjustment (e.g. Orpheus's
+    /// SNAC-slot mask + repetition penalty). It is applied to the full logit row
+    /// inside [`Self::host_greedy_argmax`] before argmax — the sampling path
+    /// applies the same closure, so host-greedy must too or it selects
+    /// masked/repeated tokens and derails structured decode.
+    fn decode_step_greedy_host(
+        &mut self,
+        past_seq: usize,
+        input_tok: u32,
+        adjust: &mut dyn FnMut(&mut [f32]),
+    ) -> Result<u32> {
+        if self.resident_kv_decode_enabled() && self.bucket_decode_eligible(past_seq) {
+            return self.decode_step_greedy_resident(past_seq, input_tok, adjust);
+        }
+        let decode_cache = self
+            .decode_compile_cache_hidden
+            .as_mut()
+            .context("host greedy lm_head requires decode_compile_cache_hidden")?;
+        let bucket_idx = decode_cache
+            .bucket_for(past_seq as u64)
+            .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside any bucket"))?;
+        let upper = decode_cache
+            .buckets()
+            .nth(bucket_idx)
+            .map(|r| r.end - 1)
+            .unwrap() as usize;
+
+        let kv_dim = self.cfg.kv_proj_dim();
+        let n_layers = self.cfg.num_hidden_layers;
+        let exec_device = packed_gguf_execution_device(self.decode_device());
+
+        let needs_load = !self.decode_loaded_buckets_hidden.contains(&bucket_idx);
+        if needs_load {
+            trim_accelerator_arena_pool(exec_device);
+            if !self.decode_bucket_allowed() {
+                anyhow::bail!(
+                    "decode bucket compile would exceed soft RAM budget (~80% of physical RAM); \
+                     set RLX_SOFT_MEMORY_FRACTION or ORPHEUS_DECODE_CACHE_CAP lower"
+                );
+            }
+            if let Some(cache_mut) = self.decode_compile_cache_hidden.as_mut() {
+                cache_mut.evict_except(bucket_idx);
+            }
+            self.decode_loaded_buckets_hidden.clear();
+
+            self.ensure_decode_weights_cache()?;
+            let cfg = self.cfg.clone();
+            let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
+                HashMap::new();
+            let (graph, params) = build_llama32_decode_graph_sized_packed_ext(
+                &cfg,
+                self.decode_weights_cache.as_mut().unwrap(),
+                /*batch*/ 1,
+                upper,
+                /*use_custom_mask*/ true,
+                /*with_lm_head*/ false,
+                &mut packed,
+            )?;
+
+            let opts = compile_options_for_packed_gguf_prefill_with_profile(
+                &self.decode_profile,
+                exec_device,
+            );
+            let cache_mut = self.decode_compile_cache_hidden.as_mut().unwrap();
+            packed_gguf_compile_guard(exec_device, || {
+                let (_u, compiled) = cache_mut
+                    .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
+                    .expect("bucket must exist; we just looked it up");
+                for (name, data) in &params {
+                    compiled.set_param(name, data);
+                }
+                for (name, (bytes, _scheme, _shape)) in &packed {
+                    if !bytes.is_empty() && !params.contains_key(name.as_str()) {
+                        compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+                    }
+                }
+            });
+            self.decode_loaded_buckets_hidden.insert(bucket_idx);
+        }
+
+        self.decode_kv_scratch
+            .ensure_bucket(upper, &vec![kv_dim; n_layers]);
+
+        let (cos_row, sin_row) = rope_slice(&self.inv_freq, past_seq);
+        // Same binary keep-mask the graph expects: real past keys `[0, past_seq)`
+        // plus the newly-rope'd key at bucket-top index `upper`. `fill_mask` here
+        // instead kept `past_seq` (zero padding) and masked `upper` (the token's
+        // own key) — inverted, which collapsed host-greedy decode to garbage.
+        let mask = bucket_decode_mask(past_seq, upper);
+        let input_ids_f32 = [input_tok as f32];
+        let cache = self.cache.as_ref().context("packed decode without cache")?;
+        let past_bytes = past_seq.saturating_mul(kv_dim);
+        for i in 0..n_layers {
+            let src_k = &cache.layers_k[i];
+            let src_v = &cache.layers_v[i];
+            let copy_k = past_bytes.min(src_k.len()).min(upper.saturating_mul(kv_dim));
+            let copy_v = past_bytes.min(src_v.len()).min(upper.saturating_mul(kv_dim));
+            self.decode_kv_scratch.padded_k[i].fill(0.0);
+            self.decode_kv_scratch.padded_v[i].fill(0.0);
+            self.decode_kv_scratch.padded_k[i][..copy_k]
+                .copy_from_slice(&src_k[..copy_k]);
+            self.decode_kv_scratch.padded_v[i][..copy_v]
+                .copy_from_slice(&src_v[..copy_v]);
+        }
+
+        let key_strs: Vec<String> = (0..n_layers)
+            .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
+            .collect();
+        let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4 + 2 * n_layers);
+        let lazy_embed = self
+            .decode_weights_cache
+            .as_ref()
+            .and_then(|c| {
+                c.packed.get("model.embed_tokens.weight").map(|(b, s, _)| {
+                    (b.as_slice(), *s)
+                })
+            })
+            .filter(|_| {
+                self.decode_weights_cache
+                    .as_ref()
+                    .is_some_and(|c| c.f32_take.get("model.embed_tokens.weight").is_none())
+            });
+        push_packed_decode_token_input(
+            &self.cfg,
+            input_tok,
+            lazy_embed,
+            &mut self.decode_embed_scratch,
+            &mut inputs,
+            &input_ids_f32,
+        )?;
+        inputs.push(("cos", cos_row.as_slice()));
+        inputs.push(("sin", sin_row.as_slice()));
+        inputs.push(("mask", mask.as_slice()));
+        for i in 0..n_layers {
+            inputs.push((&key_strs[2 * i], self.decode_kv_scratch.padded_k[i].as_slice()));
+            inputs.push((
+                &key_strs[2 * i + 1],
+                self.decode_kv_scratch.padded_v[i].as_slice(),
+            ));
+        }
+
+        let cache_mut = self.decode_compile_cache_hidden.as_mut().unwrap();
+        let compiled = cache_mut
+            .compiled_for_key_mut(past_seq as u64)
+            .expect("hidden decode bucket was just loaded");
+        let past_len = past_seq + 1;
+        let (hidden, new_k, new_v) = if packed_bucketed_full_kv_readback(exec_device) {
+            // Bucket layout: new K/V is at the bucket-top row (`upper`), not row
+            // `past_seq`. `compact_bucketed_kv_buffer` gathers real past
+            // `[0, past_seq)` + that new row into dense `past_len` rows — the
+            // same extraction `decode_step_bucketed_packed` uses. A naive
+            // truncate-to-`past_len` would drop the new K and keep a zero-pad
+            // row, collapsing decode to garbage.
+            let raw = compiled.run(&inputs);
+            let mut iter = raw.into_iter();
+            let hidden = iter.next().context("bucketed greedy hidden missing")?;
+            let mut new_k = Vec::with_capacity(n_layers);
+            let mut new_v = Vec::with_capacity(n_layers);
+            for _ in 0..n_layers {
+                let k = iter.next().context("bucketed greedy k missing")?;
+                let v = iter.next().context("bucketed greedy v missing")?;
+                new_k.push(compact_bucketed_kv_buffer(&k, past_len, kv_dim, 1));
+                new_v.push(compact_bucketed_kv_buffer(&v, past_len, kv_dim, 1));
+            }
+            (hidden, new_k, new_v)
+        } else {
+            let hidden = compiled
+                .run_read_outputs(&inputs, Some(&[0]))
+                .into_iter()
+                .next()
+                .context("bucketed packed decode hidden missing")?;
+            let (new_k, new_v) =
+                append_packed_decode_kv_rows(compiled, cache, upper, kv_dim, n_layers)?;
+            (hidden, new_k, new_v)
+        };
+
+        let cache_mut = self.cache.as_mut().unwrap();
+        cache_mut.past_seq = past_seq + 1;
+        cache_mut.layers_k = new_k;
+        cache_mut.layers_v = new_v;
+
+        self.host_greedy_argmax(&hidden, adjust)
+    }
+
+    /// GPU-resident K/V + hidden-only graph: no padded K/V upload, no vocab logits D2H.
+    fn decode_step_greedy_resident(
+        &mut self,
+        past_seq: usize,
+        input_tok: u32,
+        adjust: &mut dyn FnMut(&mut [f32]),
+    ) -> Result<u32> {
+        let path = self
+            .weights_path
+            .as_ref()
+            .context("packed decode needs gguf path")?;
+        let path_str = path.to_str().context("non-utf8 weights path")?.to_string();
+
+        let (bucket_idx, upper) = {
+            let cache_dec = self.decode_compile_cache_hidden.as_ref().unwrap();
+            let bucket_idx = cache_dec
+                .bucket_for(past_seq as u64)
+                .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside any bucket"))?;
+            let upper = cache_dec
+                .buckets()
+                .nth(bucket_idx)
+                .map(|r| r.end - 1)
+                .unwrap() as usize;
+            (bucket_idx, upper)
+        };
+
+        let kv_dim = self.cfg.kv_proj_dim();
+        let n_layers = self.cfg.num_hidden_layers;
+        let exec_device = packed_gguf_execution_device(self.decode_device());
+
+        let needs_bind = !self.decode_resident_hidden_bound.contains(&bucket_idx);
+        if needs_bind {
+            if !self.decode_bucket_allowed() {
+                anyhow::bail!(
+                    "decode bucket compile would exceed soft RAM budget (~80% of physical RAM); \
+                     set RLX_SOFT_MEMORY_FRACTION or ORPHEUS_DECODE_CACHE_CAP lower"
+                );
+            }
+            let device_kv_rebind =
+                cuda_device_kv_rebind_enabled(exec_device) && bucket_idx > 0;
+            let flush_plan = resident_bucket_flush_plan(
+                self.decode_compile_cache_hidden.as_ref().unwrap(),
+                past_seq,
+            );
+            if cuda_lazy_kv_enabled(exec_device) && bucket_idx > 0 {
+                if let Some(compiled) = self
+                    .decode_compile_cache_hidden
+                    .as_mut()
+                    .and_then(|c| c.compiled_for_key_mut(flush_plan.prev_key))
+                {
+                    if let Some(cache) = self.cache.as_mut() {
+                        maybe_flush_resident_kv_before_bucket(
+                            compiled,
+                            cache,
+                            &flush_plan,
+                            past_seq,
+                            kv_dim,
+                            n_layers,
+                        )?;
+                    }
+                }
+            }
+            if !device_kv_rebind {
+                if let Some(cache_mut) = self.decode_compile_cache_hidden.as_mut() {
+                    cache_mut.evict_except(bucket_idx);
+                }
+                self.decode_resident_hidden_bound.clear();
+            }
+
+            let needs_compile = !self.decode_loaded_buckets_hidden.contains(&bucket_idx);
+            if needs_compile {
+                self.ensure_decode_weights_cache()?;
+                let cfg = self.cfg.clone();
+                let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
+                    HashMap::new();
+                let (graph, params) = build_llama32_decode_graph_sized_packed_ext(
+                    &cfg,
+                    self.decode_weights_cache.as_mut().unwrap(),
+                    /*batch*/ 1,
+                    upper,
+                    /*use_custom_mask*/ true,
+                    /*with_lm_head*/ false,
+                    &mut packed,
+                )?;
+
+                let opts = compile_options_for_packed_gguf_prefill_with_profile(
+                    &self.decode_profile,
+                    exec_device,
+                );
+                let cache_mut = self.decode_compile_cache_hidden.as_mut().unwrap();
+                packed_gguf_compile_guard(exec_device, || {
+                    let (_u, compiled) = cache_mut
+                        .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
+                        .expect("bucket must exist; we just looked it up");
+                    for (name, data) in &params {
+                        compiled.set_param(name, data);
+                    }
+                    for (name, (bytes, _scheme, _shape)) in &packed {
+                        if !bytes.is_empty() && !params.contains_key(name.as_str()) {
+                            compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+                        }
+                    }
+                });
+                self.decode_loaded_buckets_hidden.insert(bucket_idx);
+            } else if self.decode_weights_cache.is_none() {
+                self.decode_weights_cache = Some(CachedGgufWeights::from_file(&path_str)?);
+            }
+
+            if device_kv_rebind {
+                if let Some(cache_mut) = self.decode_compile_cache_hidden.as_mut() {
+                    cache_mut.evict_except(bucket_idx);
+                }
+                self.decode_resident_hidden_bound.clear();
+            }
+            let cache_ref = self.cache.as_ref().context("resident decode without cache")?;
+            let cache_mut = self.decode_compile_cache_hidden.as_mut().unwrap();
+            packed_gguf_compile_guard(exec_device, || {
+                let compiled = cache_mut
+                    .compiled_for_key_mut(past_seq as u64)
+                    .expect("hidden decode bucket must exist for resident bind");
+                bind_resident_kv_from_host_cache(compiled, cache_ref, upper, kv_dim, n_layers);
+            });
+            self.decode_resident_hidden_bound.insert(bucket_idx);
+        }
+
+        let (cos_row, sin_row) = rope_slice(&self.inv_freq, past_seq);
+        let input_ids_f32 = [input_tok as f32];
+        let mask = bucket_decode_mask(past_seq, upper);
+
+        let lazy_embed = self
+            .decode_weights_cache
+            .as_ref()
+            .and_then(|cache| {
+                cache.packed.get("model.embed_tokens.weight").map(|(b, s, _)| {
+                    (b.as_slice(), *s)
+                })
+            })
+            .filter(|_| {
+                self.decode_weights_cache
+                    .as_ref()
+                    .is_some_and(|cache| cache.f32_take.get("model.embed_tokens.weight").is_none())
+            });
+        let mut embed_scratch = Vec::new();
+        let mut run_inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4);
+        push_packed_decode_token_input(
+            &self.cfg,
+            input_tok,
+            lazy_embed,
+            &mut embed_scratch,
+            &mut run_inputs,
+            &input_ids_f32,
+        )?;
+        run_inputs.push(("cos", cos_row.as_slice()));
+        run_inputs.push(("sin", sin_row.as_slice()));
+        run_inputs.push(("mask", mask.as_slice()));
+
+        let cache_mut = self.decode_compile_cache_hidden.as_mut().unwrap();
+        let compiled = cache_mut
+            .compiled_for_key_mut(past_seq as u64)
+            .expect("hidden resident bucket was just loaded");
+        let mut outs = compiled.run_read_outputs(&run_inputs, Some(&[0]));
+        compiled.feed_kv_row(upper, past_seq, kv_dim);
+
+        let lazy_kv = cuda_lazy_kv_enabled(exec_device);
+        let sync_host = !lazy_kv;
+        let mut new_rows: Vec<(Vec<f32>, Vec<f32>)> = Vec::with_capacity(n_layers);
+        if sync_host {
+            for i in 0..n_layers {
+                let nk = compiled
+                    .read_output_row(1 + 2 * i, upper, kv_dim)
+                    .with_context(|| format!("resident greedy decode K row layer {i}"))?;
+                let nv = compiled
+                    .read_output_row(2 + 2 * i, upper, kv_dim)
+                    .with_context(|| format!("resident greedy decode V row layer {i}"))?;
+                new_rows.push((nk, nv));
+            }
+        }
+        let hidden = outs
+            .drain(..)
+            .next()
+            .context("resident greedy decode hidden missing")?;
+
+        if sync_host {
+            if let Some(cache) = self.cache.as_mut() {
+                cache.past_seq = past_seq + 1;
+                for (i, (nk, nv)) in new_rows.into_iter().enumerate() {
+                    cache.layers_k[i].extend_from_slice(&nk);
+                    cache.layers_v[i].extend_from_slice(&nv);
+                }
+            }
+        } else if let Some(cache) = self.cache.as_mut() {
+            cache.past_seq = past_seq + 1;
+        }
+
+        self.host_greedy_argmax(&hidden, adjust)
+    }
+
+    /// GPU-resident KV bucketed packed decode (Metal/Vulkan/CUDA). Same compiled
+    /// graph and numerics as [`Self::decode_step_bucketed_packed`], but the
+    /// per-layer `past_k_*`/`past_v_*` are bound as resident device handles once
+    /// per bucket and the decode output's new-token row is folded back in-place
+    /// on the arena (`feed_kv_row`) — so no padded K/V is uploaded and only
+    /// logits are read back each step. The host `cache.layers_k/v` is synced
+    /// from the device only when a bucket change forces a rebuild.
+    ///
+    /// Two per-bucket concerns are tracked separately so a warm utterance can
+    /// reuse a compiled graph without replaying stale K/V (see
+    /// [`Self::soft_release_decode_kv_bindings`]):
+    /// - `needs_compile` (`decode_loaded_buckets`) — graph built + params
+    ///   uploaded; model-constant, so it **persists across utterances** and the
+    ///   expensive recompile + weight upload is skipped on warm runs.
+    /// - `needs_bind` (`decode_resident_bound`) — resident K/V holds *this*
+    ///   utterance's prefix; per-utterance, so `prefill` clears it to force a
+    ///   fresh [`bind_resident_kv_from_host_cache`]. Conflating the two (the
+    ///   original single `needs_load`) would skip the re-bind and decode stale
+    ///   K/V → STOP after ~2 tokens. On CUDA/ROCm the two sets move in lockstep
+    ///   (reuse disabled), reproducing the original behavior.
+    fn decode_step_bucketed_packed_resident(
+        &mut self,
+        past_seq: usize,
+        input_tok: u32,
+    ) -> Result<Vec<f32>> {
+        let path = self
+            .weights_path
+            .as_ref()
+            .context("packed decode needs gguf path")?;
+        let path_str = path.to_str().context("non-utf8 weights path")?.to_string();
+
+        let (bucket_idx, upper) = {
+            let cache_dec = self.decode_compile_cache.as_ref().unwrap();
+            let bucket_idx = cache_dec
+                .bucket_for(past_seq as u64)
+                .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside any bucket"))?;
+            let upper = cache_dec
+                .buckets()
+                .nth(bucket_idx)
+                .map(|r| r.end - 1)
+                .unwrap() as usize;
+            (bucket_idx, upper)
+        };
+
+        let kv_dim = self.cfg.kv_proj_dim();
+        let n_layers = self.cfg.num_hidden_layers;
+        let exec_device = packed_gguf_execution_device(self.decode_device());
+
+        // Two independent per-bucket concerns, tracked separately so a warm
+        // utterance can reuse a compiled graph without re-binding stale K/V:
+        //   • `needs_compile` — graph built + params uploaded? (model-constant,
+        //     persists across utterances → the expensive part is skipped warm)
+        //   • `needs_bind`    — resident K/V holds *this* utterance's prefix?
+        //     (per-utterance; `prefill` clears `decode_resident_bound`)
+        // On CUDA/ROCm both sets move in lockstep (reuse disabled), reproducing
+        // the original single-`needs_load` behavior.
+        let needs_bind = !self.decode_resident_bound.contains(&bucket_idx);
+        if needs_bind {
+            let reuse = self.cross_utterance_decode_reuse_enabled();
+            let needs_compile = !self.decode_loaded_buckets.contains(&bucket_idx);
+            let device_kv_rebind =
+                cuda_device_kv_rebind_enabled(exec_device) && bucket_idx > 0;
+            let flush_plan = resident_bucket_flush_plan(
+                self.decode_compile_cache.as_ref().unwrap(),
+                past_seq,
+            );
+            if cuda_lazy_kv_enabled(exec_device) && bucket_idx > 0 {
+                if let Some(compiled) = self
+                    .decode_compile_cache
+                    .as_mut()
+                    .and_then(|c| c.compiled_for_key_mut(flush_plan.prev_key))
+                {
+                    if let Some(cache) = self.cache.as_mut() {
+                        maybe_flush_resident_kv_before_bucket(
+                            compiled,
+                            cache,
+                            &flush_plan,
+                            past_seq,
+                            kv_dim,
+                            n_layers,
+                        )?;
+                    }
+                }
+            }
+
+            if needs_compile {
+                if reuse {
+                    // Free room for the new bucket BEFORE the budget gate so a
+                    // full resident ladder doesn't spuriously trip it; trim only
+                    // to fit so the rest of the ladder stays cached.
+                    if !device_kv_rebind {
+                        self.trim_decode_buckets_to_budget(bucket_idx);
+                    }
+                    self.ensure_decode_bucket_budget()?;
+                } else {
+                    // Original order: gate first, then collapse to the single
+                    // active bucket (the `!decode_loaded_buckets.is_empty()`
+                    // short-circuit keeps mid-utterance climbs allowed).
+                    self.ensure_decode_bucket_budget()?;
+                    if !device_kv_rebind {
+                        if let Some(cache_mut) = self.decode_compile_cache.as_mut() {
+                            cache_mut.evict_except(bucket_idx);
+                        }
+                        self.decode_loaded_buckets.clear();
+                        self.decode_resident_bound.clear();
+                    }
+                }
+
+                if self.decode_weights_cache.is_none() {
+                    self.decode_weights_cache = Some(CachedGgufWeights::from_file(&path_str)?);
+                }
+                let cfg = self.cfg.clone();
+                let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
+                    HashMap::new();
+                let (graph, params) = build_llama32_decode_graph_sized_packed(
+                    &cfg,
+                    self.decode_weights_cache.as_mut().unwrap(),
+                    /*batch*/ 1,
+                    upper,
+                    /*use_custom_mask*/ true,
+                    &mut packed,
+                )?;
+
+                let opts = compile_options_for_packed_gguf_prefill_with_profile(
+                    &self.decode_profile,
+                    exec_device,
+                );
+                let cache_mut = self.decode_compile_cache.as_mut().unwrap();
+                packed_gguf_compile_guard(exec_device, || {
+                    let (_u, compiled) = cache_mut
+                        .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
+                        .expect("bucket must exist; we just looked it up");
+                    for (name, data) in &params {
+                        compiled.set_param(name, data);
+                    }
+                    for (name, (bytes, _scheme, _shape)) in &packed {
+                        compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+                    }
+                });
+                self.decode_loaded_buckets.insert(bucket_idx);
+            } else if self.decode_weights_cache.is_none() {
+                // Reused compiled bucket: the graph + params are already
+                // resident, but the lazy-embed gather below still needs the
+                // weights cache.
+                self.decode_weights_cache = Some(CachedGgufWeights::from_file(&path_str)?);
+            }
+
+            if device_kv_rebind {
+                // CUDA D2D rebind ordering: collapse to the single active
+                // bucket after (re)compile, then bind K/V.
+                if let Some(cache_mut) = self.decode_compile_cache.as_mut() {
+                    cache_mut.evict_except(bucket_idx);
+                }
+                self.decode_loaded_buckets.clear();
+                self.decode_loaded_buckets.insert(bucket_idx);
+                self.decode_resident_bound.clear();
+            }
+            let cache_ref = self.cache.as_ref().context("resident decode without cache")?;
+            packed_gguf_compile_guard(exec_device, || {
+                let cache_mut = self.decode_compile_cache.as_mut().unwrap();
+                let compiled = cache_mut
+                    .compiled_for_key_mut(past_seq as u64)
+                    .expect("bucket must exist after compile");
+                bind_resident_kv_from_host_cache(compiled, cache_ref, upper, kv_dim, n_layers);
+            });
+            self.decode_resident_bound.insert(bucket_idx);
+        }
+
+        let (cos_row, sin_row) = rope_slice(&self.inv_freq, past_seq);
+        let input_ids_f32 = [input_tok as f32];
+        let mask = bucket_decode_mask(past_seq, upper);
+
+        let lazy_embed = self
+            .decode_weights_cache
+            .as_ref()
+            .and_then(|cache| {
+                cache.packed.get("model.embed_tokens.weight").map(|(b, s, _)| {
+                    (b.as_slice(), *s)
+                })
+            })
+            .filter(|_| {
+                self.decode_weights_cache
+                    .as_ref()
+                    .is_some_and(|cache| cache.f32_take.get("model.embed_tokens.weight").is_none())
+            });
+        let mut embed_scratch = Vec::new();
+        let mut run_inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4);
+        push_packed_decode_token_input(
+            &self.cfg,
+            input_tok,
+            lazy_embed,
+            &mut embed_scratch,
+            &mut run_inputs,
+            &input_ids_f32,
+        )?;
+        run_inputs.push(("cos", cos_row.as_slice()));
+        run_inputs.push(("sin", sin_row.as_slice()));
+        run_inputs.push(("mask", mask.as_slice()));
+
+        let cache_mut = self.decode_compile_cache.as_mut().unwrap();
+        let compiled = cache_mut
+            .compiled_for_key_mut(past_seq as u64)
+            .expect("bucket was just loaded above");
+        // Resident K/V: only the small per-token inputs are uploaded, only
+        // logits (output 0) are read back; K/V never leaves the arena.
+        let mut outs = compiled.run_read_outputs(&run_inputs, Some(&[0]));
+        // In-bucket residency: fold the new token row (output row `upper`) into
+        // the resident `past_*` slot at the active position, in-place on the
+        // arena — so the next in-bucket step needs no K/V re-upload. This is a
+        // no-op clamp when `past_seq == upper` (top of bucket); that boundary
+        // token is still carried forward via the host-cache append below.
+        compiled.feed_kv_row(upper, past_seq, kv_dim);
+
+        // Pull just the new-token K/V row (output row `upper`) back to host so
+        // `cache.layers_k/v` always reflects the full prefix — the bucket-change
+        // rebind seeds the next (wider) bucket from it, and it captures the
+        // top-of-bucket token the in-slot feed cannot store. One row per layer
+        // (~kv_dim) vs the legacy full-K/V upload+readback per step.
+        // CUDA lazy KV skips in-bucket row D2H and bulk-flushes on bucket change.
+        let lazy_kv = cuda_lazy_kv_enabled(exec_device);
+        let sync_host = !lazy_kv;
+        let mut new_rows: Vec<(Vec<f32>, Vec<f32>)> = Vec::with_capacity(n_layers);
+        if sync_host {
+            for i in 0..n_layers {
+                let nk = compiled
+                    .read_output_row(1 + 2 * i, upper, kv_dim)
+                    .with_context(|| format!("resident decode K row read layer {i}"))?;
+                let nv = compiled
+                    .read_output_row(2 + 2 * i, upper, kv_dim)
+                    .with_context(|| format!("resident decode V row read layer {i}"))?;
+                new_rows.push((nk, nv));
+            }
+        }
+        let logits = outs
+            .drain(..)
+            .next()
+            .context("resident decode logits missing")?;
+
+        if sync_host {
+            if let Some(cache) = self.cache.as_mut() {
+                for (i, (nk, nv)) in new_rows.into_iter().enumerate() {
+                    cache.layers_k[i].extend_from_slice(&nk);
+                    cache.layers_v[i].extend_from_slice(&nv);
+                }
+            }
+        }
+        Ok(logits)
+    }
+
+    /// Resident GPU-KV decode: K/V live in the device arena across steps, fed
+    /// in-place from the decode output (no per-step host K/V upload/readback).
+    /// Enabled for native GGUF packed bucket decode on backends with a
+    /// host-accessible arena + row-feed support (Vulkan, Metal). Opt out with
+    /// `ORPHEUS_RESIDENT_KV=0` (legacy `ORPHEUS_VULKAN_RESIDENT_KV=0` honored).
+    fn resident_kv_decode_enabled(&self) -> bool {
+        // CUDA / ROCm: resident KV via D2D `feed_kv_row` + logits-only readback.
+        let supported = matches!(
+            self.decode_device(),
+            Device::Vulkan | Device::Metal | Device::Cuda | Device::Rocm
+        );
+        let off = std::env::var("ORPHEUS_RESIDENT_KV").ok().as_deref() == Some("0")
+            || std::env::var("ORPHEUS_VULKAN_RESIDENT_KV").ok().as_deref() == Some("0");
+        supported
+            && !off
+            && self.use_packed_decode()
+            && self.decode_compile_cache.is_some()
     }
 
     #[allow(clippy::type_complexity)]
@@ -2132,6 +3975,28 @@ impl Llama32Generator {
         Ok(self.tokens[start..].to_vec())
     }
 
+    /// Like [`generate_cached_with`](Self::generate_cached_with) but the
+    /// callback returns whether to keep going. Returning `false` stops the
+    /// loop *after* the just-sampled token has been observed, so callers
+    /// can halt on an end-of-sequence id (or any other stop condition)
+    /// without wasting decode steps past it — the freshly sampled token is
+    /// still included in the returned slice.
+    pub fn generate_cached_until(
+        &mut self,
+        n: usize,
+        opts: SampleOpts,
+        mut keep_going: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        let start = self.tokens.len();
+        for _ in 0..n {
+            let tok = self.step_cached(opts)?;
+            if !keep_going(tok) {
+                break;
+            }
+        }
+        Ok(self.tokens[start..].to_vec())
+    }
+
     fn seed_prefill_metal_split(
         &mut self,
         batch: usize,
@@ -2216,6 +4081,9 @@ impl Llama32Generator {
         sample_index: u64,
         mut adjust_logits: impl FnMut(&mut [f32]),
     ) -> Result<u32> {
+        if self.host_greedy_prefill_eligible(opts) {
+            return self.seed_cache_from_prompt_host_greedy(&mut adjust_logits);
+        }
         let seq = self.tokens.len();
         let batch = 1usize;
 
@@ -2235,6 +4103,67 @@ impl Llama32Generator {
         let mut last_row = logits[..vocab].to_vec();
         adjust_logits(&mut last_row);
         let tok = sample_token_at(&last_row, opts, sample_index) as u32;
+        self.tokens.push(tok);
+        Ok(tok)
+    }
+
+    fn seed_cache_from_prompt_host_greedy(
+        &mut self,
+        adjust: &mut dyn FnMut(&mut [f32]),
+    ) -> Result<u32> {
+        let seq = self.tokens.len();
+        let ids_f32: Vec<f32> = self.tokens.iter().map(|&i| i as f32).collect();
+        let (hidden, layers_k, layers_v) = if self.uses_packed_gguf_cpu_prefill()
+            || self.uses_packed_gguf_mlx_prefill()
+        {
+            self.ensure_packed_prefill(seq)?;
+            self.packed_gguf_prefill
+                .as_mut()
+                .unwrap()
+                .run_hidden_with_kv(seq, &ids_f32)?
+        } else if uses_packed_gguf_gpu_prefill(self.device, self.metal_gguf_prefill_mode()) {
+            if matches!(self.device, Device::Cuda | Device::Rocm) && !cuda_f32_prefill_forced() {
+                self.seed_cuda_host_greedy_reference_prefill(seq, &ids_f32)?
+            } else {
+                self.ensure_packed_prefill(seq)?;
+                self.packed_gguf_prefill
+                    .as_mut()
+                    .unwrap()
+                    .run_hidden_with_kv(seq, &ids_f32)?
+            }
+        } else if self.host_greedy_lm {
+            let hidden = self.run_prefill_last_hidden_cpu_f32(1, seq, &ids_f32)?;
+            let outputs = self.run_prefill_with_cache_cpu_f32(1, seq, &ids_f32)?;
+            let (_, layers_k, layers_v) = self.split_prefill_outputs(outputs, 1, seq)?;
+            (hidden, layers_k, layers_v)
+        } else if let Some(triple) = self.try_packed_gguf_prefill(seq, &ids_f32)? {
+            let (logits, k, v) = triple;
+            let h = self.cfg.hidden_size;
+            if logits.len() >= h && logits.len() < self.cfg.vocab_size {
+                (logits[..h].to_vec(), k, v)
+            } else {
+                anyhow::bail!(
+                    "host greedy prefill expected hidden vector, got len {}",
+                    logits.len()
+                );
+            }
+        } else {
+            anyhow::bail!("host greedy lm_head requires packed GGUF prefill");
+        };
+        self.cache = Some(KvCacheState {
+            past_seq: seq,
+            layers_k,
+            layers_v,
+        });
+        let kv_dim = self.cfg.kv_proj_dim();
+        let keep = seq.saturating_mul(kv_dim);
+        if let Some(cache) = self.cache.as_mut() {
+            for i in 0..cache.layers_k.len() {
+                cache.layers_k[i].truncate(keep);
+                cache.layers_v[i].truncate(keep);
+            }
+        }
+        let tok = self.host_greedy_argmax(&hidden, adjust)?;
         self.tokens.push(tok);
         Ok(tok)
     }
@@ -2368,6 +4297,8 @@ mod tests {
             head_dim: Some(8),
             rope_scaling: None,
             rope_style: rlx_ir::RopeStyle::NeoX,
+        gguf_arch: None,
+        rope_dim: None,
         }
     }
 
@@ -2452,6 +4383,23 @@ mod tests {
             false,
             false,
             MetalGgufPrefillMode::MetalF32,
+        ));
+    }
+
+    #[test]
+    fn cuda_packed_gguf_defers_host_drain() {
+        use crate::prefill_mode::MetalGgufPrefillMode;
+        assert!(gguf_defers_f32_drain(
+            Device::Cuda,
+            true,
+            true,
+            MetalGgufPrefillMode::PackedGguf,
+        ));
+        assert!(!gguf_defers_f32_drain(
+            Device::Cuda,
+            true,
+            false,
+            MetalGgufPrefillMode::CpuF32,
         ));
     }
 
@@ -2698,6 +4646,8 @@ mod tests {
             head_dim: Some(128),
             rope_scaling: None,
             rope_style: rlx_ir::RopeStyle::NeoX,
+        gguf_arch: None,
+        rope_dim: None,
         }
     }
 
@@ -2934,6 +4884,8 @@ mod tests {
                 head_dim: Some(hd),
                 rope_scaling: None,
                 rope_style: rlx_ir::RopeStyle::NeoX,
+            gguf_arch: None,
+            rope_dim: None,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
 
@@ -2983,6 +4935,8 @@ mod tests {
                 head_dim: Some(hd),
                 rope_scaling: None,
                 rope_style: rlx_ir::RopeStyle::NeoX,
+            gguf_arch: None,
+            rope_dim: None,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
 
@@ -3103,6 +5057,8 @@ mod tests {
                 head_dim: Some(hd),
                 rope_scaling: None,
                 rope_style: rlx_ir::RopeStyle::NeoX,
+            gguf_arch: None,
+            rope_dim: None,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
             let steps = 3;

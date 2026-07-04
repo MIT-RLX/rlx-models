@@ -25,6 +25,7 @@ fn main() -> Result<()> {
     );
     let out = arg("--out", "inflect_nano_out.wav");
     let opts = InferOpts {
+        speed: arg("--speed", "1.0").parse().unwrap_or(1.0),
         length_scale: arg("--length-scale", "1.0").parse().unwrap_or(1.0),
         pitch_scale: arg("--pitch-scale", "1.0").parse().unwrap_or(1.0),
         energy_scale: arg("--energy-scale", "1.0").parse().unwrap_or(1.0),

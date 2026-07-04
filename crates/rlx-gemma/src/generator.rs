@@ -66,8 +66,8 @@ pub fn decode_profile_for_device(device: Device) -> CompileProfile {
 }
 
 /// When `RLX_GEMMA_METAL_THUNK_DECODE=1`, compile decode graphs with
-/// `RLX_DISABLE_MPSGRAPH=1` (Metal thunk path). Default: MPSGraph + tier-1
-/// fusion for throughput; use for parity/debug if bucketed decode miscompares.
+/// `RLX_DISABLE_MPSGRAPH=1` (Metal thunk path + `fuse_decode_mlp`). Default:
+/// MPSGraph (faster on Gemma 270M). Opt into thunks for fused MLP kernels.
 fn metal_thunk_decode_requested() -> bool {
     std::env::var("RLX_GEMMA_METAL_THUNK_DECODE")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
@@ -86,6 +86,30 @@ where
         } else {
             f()
         }
+    } else {
+        f()
+    }
+}
+
+/// Packed prefill on Metal: default to the thunk + fused Q4 path instead of
+/// whole-graph MPSGraph (often faster for small Gemma buckets on Apple Silicon).
+fn metal_prefill_thunk_enabled() -> bool {
+    match std::env::var("RLX_GEMMA_METAL_THUNK_PREFILL").ok().as_deref() {
+        Some("0") | Some("false") | Some("no") => false,
+        Some("1") | Some("true") | Some("yes") => true,
+        _ => true,
+    }
+}
+
+pub(crate) fn metal_prefill_compile_guard<R, F>(device: Device, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    if device == Device::Metal && metal_prefill_thunk_enabled() {
+        rlx_ir::env::set("RLX_DISABLE_MPSGRAPH", "1");
+        let out = f();
+        rlx_ir::env::unset("RLX_DISABLE_MPSGRAPH");
+        out
     } else {
         f()
     }

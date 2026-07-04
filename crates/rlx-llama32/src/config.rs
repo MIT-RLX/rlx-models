@@ -67,6 +67,12 @@ pub struct Llama32Config {
     /// HF `config.json`, so skipped during deserialization.
     #[serde(skip)]
     pub rope_style: rlx_ir::RopeStyle,
+    /// GGUF `general.architecture` tag when loaded from GGUF (`llama`, `phi3`, …).
+    #[serde(skip)]
+    pub gguf_arch: Option<String>,
+    /// Rotary dimension when it differs from [`head_dim`] (Phi-3 partial RoPE).
+    #[serde(skip)]
+    pub rope_dim: Option<usize>,
 }
 
 fn default_rms_norm_eps() -> f64 {
@@ -106,6 +112,25 @@ impl Llama32Config {
         self.num_key_value_heads * self.head_dim()
     }
 
+    /// Leading per-head dims that receive RoPE (equals [`head_dim`] for Llama;
+    /// may be smaller for Phi-3 partial RoPE).
+    pub fn n_rot(&self) -> usize {
+        self.rope_dim
+            .filter(|&r| r > 0 && r <= self.head_dim())
+            .unwrap_or_else(|| self.head_dim())
+    }
+
+    pub fn uses_partial_rope(&self) -> bool {
+        self.n_rot() < self.head_dim()
+    }
+
+    pub fn is_phi_arch(&self) -> bool {
+        matches!(
+            self.gguf_arch.as_deref(),
+            Some("phi3") | Some("phi4")
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn tiny_test() -> Self {
         Self {
@@ -124,6 +149,8 @@ impl Llama32Config {
             head_dim: None,
             rope_scaling: None,
             rope_style: rlx_ir::RopeStyle::NeoX,
+            gguf_arch: None,
+            rope_dim: None,
         }
     }
 }
@@ -165,10 +192,13 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
 
     let hidden_size = get_u32("llama.embedding_length")? as usize;
     let num_attention_heads = get_u32("llama.attention.head_count")? as usize;
-    let head_dim = get_u32("llama.attention.key_length")
+    let head_dim_key = get_u32("llama.attention.key_length")
         .ok()
-        .or_else(|| get_u32("llama.rope.dimension_count").ok())
         .map(|v| v as usize);
+    let rope_dim = get_u32("llama.rope.dimension_count")
+        .ok()
+        .map(|v| v as usize);
+    let head_dim = head_dim_key.or(rope_dim);
 
     let rope_scaling = match get_meta("llama.rope.scaling.type").and_then(MetaValue::as_str) {
         Some("none") | None => {
@@ -198,7 +228,7 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
     };
 
     Ok(Llama32Config {
-        vocab_size: get_u32("llama.vocab_size").unwrap_or(128_256) as usize,
+        vocab_size: infer_vocab_size_from_gguf(raw),
         hidden_size,
         intermediate_size: get_u32("llama.feed_forward_length")? as usize,
         num_hidden_layers: get_u32("llama.block_count")? as usize,
@@ -208,13 +238,49 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
         rms_norm_eps: get_f32("llama.attention.layer_norm_rms_epsilon").unwrap_or(1e-5) as f64,
         rope_theta: get_f32("llama.rope.freq_base").unwrap_or(500_000.0) as f64,
         hidden_act: "silu".into(),
-        tie_word_embeddings: get_bool("llama.tie_word_embeddings").unwrap_or(true),
+        tie_word_embeddings: get_bool("llama.tie_word_embeddings").unwrap_or_else(|| {
+            // Llama-2 / TinyLlama GGUF often omits the flag; untied checkpoints
+            // carry a separate `output.weight` tensor.
+            !raw.tensors.contains_key("output.weight")
+        }),
         attention_bias: false,
         head_dim,
         rope_scaling,
-        // GGUF Llama weights are permuted for llama.cpp's interleaved RoPE.
-        rope_style: rlx_ir::RopeStyle::GptJ,
+        // Phi-3/4 GGUF uses HF NeoX rotate-half; plain Llama GGUF is GPT-J.
+        rope_style: if matches!(arch_prefix, "phi3" | "phi4") {
+            rlx_ir::RopeStyle::NeoX
+        } else {
+            rlx_ir::RopeStyle::GptJ
+        },
+        gguf_arch: Some(arch_prefix.to_string()),
+        rope_dim: rope_dim.filter(|r| head_dim_key.is_some() && *r <= head_dim_key.unwrap()),
     })
+}
+
+/// Resolve vocab size from GGUF metadata / tensors. Llama-3 GGUF carries
+/// `llama.vocab_size`; older llama-tagged files (TinyLlama, SmolLM2, …) often
+/// only expose `tokenizer.ggml.tokens` or an embed row count.
+fn infer_vocab_size_from_gguf(raw: &GgufFile) -> usize {
+    if let Some(v) = raw
+        .metadata
+        .get("llama.vocab_size")
+        .and_then(MetaValue::as_u32)
+    {
+        return v as usize;
+    }
+    if let Some(MetaValue::Array(tokens)) = raw.metadata.get("tokenizer.ggml.tokens") {
+        if !tokens.is_empty() {
+            return tokens.len();
+        }
+    }
+    for name in ["token_embd.weight", "model.embed_tokens.weight"] {
+        if let Some(t) = raw.tensors.get(name) {
+            if !t.shape.is_empty() {
+                return t.shape[0] as usize;
+            }
+        }
+    }
+    128_256
 }
 
 #[cfg(test)]
@@ -246,5 +312,93 @@ mod tests {
         assert_eq!(cfg.head_dim(), 64);
         assert_eq!(cfg.kv_group_size(), 4);
         assert!(cfg.rope_scaling.is_some());
+    }
+
+    #[test]
+    fn gguf_vocab_inferred_from_tokenizer_tokens() {
+        use rlx_gguf::GgmlType;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "rlx_llama32_vocab_{}_{}_{}.gguf",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&rlx_gguf::GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&2u64.to_le_bytes()); // 2 tensors
+        buf.extend_from_slice(&9u64.to_le_bytes()); // metadata keys
+
+        let write_str = |buf: &mut Vec<u8>, k: &str, v: &str| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&8u32.to_le_bytes());
+            buf.extend_from_slice(&(v.len() as u64).to_le_bytes());
+            buf.extend_from_slice(v.as_bytes());
+        };
+        let write_u32 = |buf: &mut Vec<u8>, k: &str, v: u32| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&4u32.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        };
+        let write_string_array = |buf: &mut Vec<u8>, k: &str, items: &[String]| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&9u32.to_le_bytes());
+            buf.extend_from_slice(&8u32.to_le_bytes());
+            buf.extend_from_slice(&(items.len() as u64).to_le_bytes());
+            for s in items {
+                buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                buf.extend_from_slice(s.as_bytes());
+            }
+        };
+
+        write_str(&mut buf, "general.architecture", "llama");
+        write_u32(&mut buf, "llama.embedding_length", 2048);
+        write_u32(&mut buf, "llama.feed_forward_length", 5632);
+        write_u32(&mut buf, "llama.block_count", 22);
+        write_u32(&mut buf, "llama.attention.head_count", 32);
+        write_u32(&mut buf, "llama.attention.head_count_kv", 4);
+        write_u32(&mut buf, "llama.context_length", 2048);
+        write_u32(&mut buf, "llama.rope.freq_base", 10_000);
+        let vocab = 128u32;
+        let tokens: Vec<String> = (0..vocab).map(|i| format!("t{i}")).collect();
+        write_string_array(&mut buf, "tokenizer.ggml.tokens", &tokens);
+
+        let embed_bytes = vocab as u64 * 2048 * 4;
+        for (name, rows, cols, offset) in [
+            ("token_embd.weight", vocab as u64, 2048u64, 0u64),
+            ("output.weight", 2048u64, vocab as u64, embed_bytes),
+        ] {
+            buf.extend_from_slice(&(name.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name.as_bytes());
+            buf.extend_from_slice(&2u32.to_le_bytes());
+            buf.extend_from_slice(&rows.to_le_bytes());
+            buf.extend_from_slice(&cols.to_le_bytes());
+            buf.extend_from_slice(&(GgmlType::F32 as u32).to_le_bytes());
+            buf.extend_from_slice(&offset.to_le_bytes());
+        }
+        while !buf.len().is_multiple_of(rlx_gguf::DEFAULT_ALIGNMENT as usize) {
+            buf.push(0);
+        }
+        let n_floats = (vocab as usize * 2048) * 2;
+        for _ in 0..n_floats {
+            buf.extend_from_slice(&0f32.to_le_bytes());
+        }
+        std::fs::write(&path, &buf).unwrap();
+
+        let raw = rlx_gguf::GgufFile::from_path(&path).expect("parse tinyllama-like gguf");
+        let cfg = llama32_cfg_from_gguf(&raw).expect("llama32 config");
+        assert_eq!(cfg.vocab_size, vocab as usize);
+        assert!(!cfg.tie_word_embeddings);
+        std::fs::remove_file(path).ok();
     }
 }

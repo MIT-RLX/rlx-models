@@ -265,6 +265,8 @@ fn build_encoder_core(
     let f = DType::F32;
     let (h, nh, hd, eps) = (cfg.hidden, cfg.heads, cfg.head_dim, cfg.eps);
     let p = num_patches;
+    // Debug: RLX_VIS_TAP=<point> returns layer-0 intermediate for backend bisection.
+    let vis_tap = std::env::var("RLX_VIS_TAP").unwrap_or_default();
 
     let pixels = g.input("vision_pixels", Shape::new(&[batch, p, 3 * 16 * 16], f));
     let pos_embed = g.input("vision_pos_embed", Shape::new(&[batch, p, h], f));
@@ -276,6 +278,9 @@ fn build_encoder_core(
     let one = synth(g, params, "vis.one", vec![1.0], &[1]);
     let px2 = g.mul(pixels, two);
     let scaled = g.sub(px2, one); // 2x - 1
+    if vis_tap == "scaled" {
+        return Ok(scaled);
+    }
     let ip = load_t(
         g,
         params,
@@ -283,7 +288,13 @@ fn build_encoder_core(
         "model.vision_tower.patch_embedder.input_proj.weight",
     )?;
     let mut hs = g.mm(scaled, ip); // [B,P,768]
+    if vis_tap == "mm" {
+        return Ok(hs);
+    }
     hs = g.add(hs, pos_embed);
+    if vis_tap == "embed" {
+        return Ok(hs);
+    }
 
     for layer in 0..cfg.layers {
         let lp = format!("model.vision_tower.encoder.layers.{layer}");
@@ -297,6 +308,9 @@ fn build_encoder_core(
             h,
             eps,
         )?;
+        if layer == 0 && vis_tap == "norm" {
+            return Ok(normed);
+        }
         let q = {
             let w = load_t(
                 g,
@@ -338,6 +352,9 @@ fn build_encoder_core(
             eps,
             true,
         )?;
+        if layer == 0 && vis_tap == "qn" {
+            return Ok(q);
+        }
         let k = per_head_norm(
             g,
             params,
@@ -367,6 +384,9 @@ fn build_encoder_core(
         // 2-D RoPE on q, k.
         let q = apply_vision_rope_2d(g, q, rope_cos, rope_sin, batch, p, nh, hd, f);
         let k = apply_vision_rope_2d(g, k, rope_cos, rope_sin, batch, p, nh, hd, f);
+        if layer == 0 && vis_tap == "rope" {
+            return Ok(q);
+        }
         // bidirectional attention, scale = 1.0 (folded into q/k norm).
         let attn_shape = rlx_ir::shape::attention_shape(g.shape(q));
         let attn = g.attention_kind_opts(
@@ -380,6 +400,9 @@ fn build_encoder_core(
             Some(1.0),
             None,
         );
+        if layer == 0 && vis_tap == "attn" {
+            return Ok(attn);
+        }
         let o = {
             let w = load_t(
                 g,
@@ -399,6 +422,9 @@ fn build_encoder_core(
             eps,
         )?;
         hs = g.add(hs, o);
+        if layer == 0 && vis_tap == "res1" {
+            return Ok(hs);
+        }
         // pre_ffn → gelu-glu MLP → post_ffn → +res
         let normed = vrms(
             g,

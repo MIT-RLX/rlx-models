@@ -21,6 +21,9 @@ feature_args := if features != "" { "--features " + features } else { "" }
 # rlx-minicpm5 binary requires the `tokenizer` cargo feature (not a CLI flag).
 minicpm5_feature_args := if features != "" { "--features " + features + ",tokenizer" } else { "--features tokenizer" }
 
+# rlx-tinyllama binary requires the `tokenizer` cargo feature (not a CLI flag).
+tinyllama_feature_args := if features != "" { "--features " + features + ",tokenizer" } else { "--features tokenizer" }
+
 # Run a per-crate binary (fast link). Pass CLI flags after `--`.
 [private]
 run-bin package bin *ARGS:
@@ -29,6 +32,10 @@ run-bin package bin *ARGS:
 [private]
 run-minicpm5 *ARGS:
     cargo run -p rlx-minicpm5 --bin rlx-minicpm5 {{profile}} {{minicpm5_feature_args}} -- {{ARGS}}
+
+[private]
+run-tinyllama *ARGS:
+    cargo run -p rlx-tinyllama --bin rlx-tinyllama {{profile}} {{tinyllama_feature_args}} -- {{ARGS}}
 
 # Multiplexer (links all models). Subcommand is first arg after `--`.
 [private]
@@ -167,6 +174,18 @@ llama32 *ARGS:
 minicpm5 *ARGS:
     just run-minicpm5 {{ARGS}}
 
+tinyllama *ARGS:
+    just run-tinyllama {{ARGS}}
+
+# Transformers-style one-liner: text in / text out, auto-download, chat template.
+#   just tinyllama-pipeline -- --prompt "What is the capital of France?"
+#   just features=metal tinyllama-pipeline -- --model /path/to/ckpt --device metal --prompt "Hi"
+tinyllama-pipeline *ARGS:
+    cargo run -p rlx-tinyllama --bin rlx-tinyllama-pipeline {{profile}} {{ if features != "" { "--features " + features + ",pipeline" } else { "--features pipeline" } }} -- {{ARGS}}
+
+phi *ARGS:
+    just run-bin rlx-phi rlx-phi {{ARGS}}
+
 # Chat inference: HF chat template → rlx-minicpm5 (CPU fastest/reliable on Apple Silicon today).
 minicpm5-chat MESSAGE *ARGS:
     RLX_MODELS_ROOT={{justfile_directory()}} python3 crates/rlx-models/examples/minicpm5_chat.py "{{MESSAGE}}" {{ARGS}}
@@ -178,6 +197,16 @@ minicpm5-chat-fast MESSAGE *ARGS:
 
 test-minicpm5-backends *ARGS:
     cargo test -p rlx-models --test minicpm5_backend_parity {{profile}} {{feature_args}} {{ARGS}}
+
+test-tinyllama-backends *ARGS:
+    cargo test -p rlx-models --test tinyllama_backend_parity --features tinyllama,llama32 {{profile}} {{feature_args}} {{ARGS}}
+
+test-tinyllama-backends-all *ARGS:
+    just features=all-backends test-tinyllama-backends {{ARGS}}
+
+test-tinyllama-gguf-backends *ARGS:
+    RLX_TINYLLAMA_GGUF_DIR={{real_weights_dir}}/TinyLlama-1.1B-GGUF \
+        cargo test -p rlx-models --test tinyllama_backend_gguf_check --features all-backends,tinyllama,llama32 {{profile}} {{feature_args}} {{ARGS}}
 
 # Synthetic graph: CPU vs Metal/MLX/CUDA/WGPU/…
 test-minicpm5-backends-all *ARGS:
@@ -1567,6 +1596,12 @@ minicpm5-metal *ARGS:
 minicpm5-all-backends *ARGS:
     just features=all-backends run-minicpm5 {{ARGS}}
 
+tinyllama-metal *ARGS:
+    just features=metal run-tinyllama {{ARGS}}
+
+tinyllama-all-backends *ARGS:
+    just features=all-backends run-tinyllama {{ARGS}}
+
 llama32-metal *ARGS:
     just features=metal run-rlx llama32 {{ARGS}}
 
@@ -1656,10 +1691,86 @@ fetch-real-weights:
             'https://huggingface.co/unsloth/Llama-3.2-1B-Instruct/resolve/main/tokenizer.json'
     @echo "real weights ready in {{real_weights_dir}}"
 
+# Gemma 3 270M chat → Inflect-Nano TTS (needs fetch-gemma3-270m + Inflect bundle).
+gemma-inflect-speak *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT="{{justfile_directory()}}"
+    export RLX_GEMMA3_GGUF="${RLX_GEMMA3_GGUF:-{{real_weights_dir}}/gemma-3-270m.gguf}"
+    export RLX_INFLECT_NANO_DATA="${RLX_INFLECT_NANO_DATA:-$ROOT/weights/inflect-nano-rlx}"
+    just fetch-gemma3-270m
+    test -f "$RLX_INFLECT_NANO_DATA/config.json" || {
+        echo "missing Inflect bundle at $RLX_INFLECT_NANO_DATA — see crates/rlx-inflect-nano/README.md"
+        exit 1
+    }
+    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-gemma-inflect-nano --features apple-silicon \
+      --example speak -- --device metal --tts-device auto {{ARGS}}
+
+# Gemma 3 270M Q4_K_M (~250 MB) + HF tokenizer.json.
+fetch-gemma3-270m:
+    mkdir -p {{real_weights_dir}}
+    test -s {{real_weights_dir}}/gemma-3-270m.gguf || \
+        curl -L --create-dirs -C - -o {{real_weights_dir}}/gemma-3-270m.gguf \
+            'https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_K_M.gguf'
+    test -s {{real_weights_dir}}/gemma-3-270m.tokenizer.json || \
+        curl -L --create-dirs -C - -o {{real_weights_dir}}/gemma-3-270m.tokenizer.json \
+            'https://huggingface.co/unsloth/gemma-3-270m-it/resolve/main/tokenizer.json'
+
+test-gemma3-real: fetch-gemma3-270m
+    RLX_GEMMA3_GGUF={{real_weights_dir}}/gemma-3-270m.gguf \
+        cargo test -p rlx-models {{profile}} \
+            --test real_weights_gemma3 --features gemma,runner -- --nocapture
+
+test-gemma3-real-inference: fetch-gemma3-270m
+    RLX_GEMMA3_GGUF={{real_weights_dir}}/gemma-3-270m.gguf \
+    RLX_GEMMA3_RUN_INFERENCE=1 \
+        cargo test -p rlx-models {{profile}} \
+            --test real_weights_gemma3 forward_inference_real_weights --features gemma,runner -- --nocapture
+
+# Phi-3-mini-4k Q4_K_M (~2.3 GB).
+fetch-phi3-mini:
+    mkdir -p {{real_weights_dir}}
+    test -s {{real_weights_dir}}/Phi-3-mini-4k-instruct.gguf || \
+        curl -L --create-dirs -C - -o {{real_weights_dir}}/Phi-3-mini-4k-instruct.gguf \
+            'https://huggingface.co/bartowski/Phi-3-mini-4k-instruct-GGUF/resolve/main/Phi-3-mini-4k-instruct-Q4_K_M.gguf'
+
+test-phi3-real: fetch-phi3-mini
+    RLX_PHI3_GGUF={{real_weights_dir}}/Phi-3-mini-4k-instruct.gguf \
+        cargo test -p rlx-models {{profile}} \
+            --test real_weights_phi3 --features phi,llama32,runner -- --nocapture
+
+test-phi3-real-inference: fetch-phi3-mini
+    RLX_PHI3_GGUF={{real_weights_dir}}/Phi-3-mini-4k-instruct.gguf \
+    RLX_PHI3_RUN_INFERENCE=1 \
+        cargo test -p rlx-models {{profile}} \
+            --test real_weights_phi3 forward_inference_real_weights --features phi,llama32,runner -- --nocapture
+
 # MiniCPM5-1B via Hugging Face Hub (~2.1 GB safetensors + tokenizer).
 fetch-minicpm5:
     MINICPM5_MODEL_DIR={{real_weights_dir}}/MiniCPM5-1B \
         cargo run -p rlx-models --example minicpm5_download --features hf-download --release
+
+fetch-tinyllama:
+    TINYLLAMA_MODEL_DIR={{real_weights_dir}}/TinyLlama-1.1B-Chat-v1.0 \
+        cargo run -p rlx-models --example tinyllama_download --features hf-download,tinyllama --release
+
+fetch-tinyllama-gguf QUANT="Q4_K_M":
+    RLX_TINYLLAMA_GGUF_DIR={{real_weights_dir}}/TinyLlama-1.1B-GGUF \
+        cargo run -p rlx-models --example tinyllama_gguf_download --features hf-download,tinyllama --release -- {{QUANT}}
+
+fetch-tinyllama-gguf-all:
+    just fetch-tinyllama-gguf all
+
+test-tinyllama-real: fetch-tinyllama
+    RLX_TINYLLAMA_WEIGHTS={{real_weights_dir}}/TinyLlama-1.1B-Chat-v1.0/model-00001-of-00003.safetensors \
+        cargo test -p rlx-models {{profile}} \
+            --test real_weights_tinyllama --features tinyllama,llama32 -- --nocapture
+
+test-tinyllama-real-inference: fetch-tinyllama
+    RLX_TINYLLAMA_RUN_INFERENCE=1 \
+    RLX_TINYLLAMA_WEIGHTS={{real_weights_dir}}/TinyLlama-1.1B-Chat-v1.0/model-00001-of-00003.safetensors \
+        cargo test -p rlx-models {{profile}} \
+            --test real_weights_tinyllama forward_inference_tinyllama_1_1b --features tinyllama,llama32 -- --nocapture
 
 test-minicpm5-real: fetch-minicpm5
     RLX_MINICPM5_WEIGHTS={{real_weights_dir}}/MiniCPM5-1B/model-00000-of-00001.safetensors \

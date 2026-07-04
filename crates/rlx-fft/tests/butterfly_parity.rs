@@ -15,11 +15,11 @@
 
 //! Exact FFT / IFFT parity and training convergence checks.
 
-use rlx_fft::butterfly::{
+use rlx_fft::model::butterfly::{
     build_butterfly_forward_graph, build_butterfly_inverse_graph, butterfly_forward_eager,
     butterfly_forward_real_batch, butterfly_inverse_complex_batch,
 };
-use rlx_fft::stockham::stockham_forward_eager;
+use rlx_fft::model::stockham::stockham_forward_eager;
 use rlx_fft::{
     EncDecTrainConfig, FftLearnConfig, TrainConfig, TransformDir, exact_twiddles, reference,
     train_butterfly_eager, train_encdec_eager,
@@ -218,7 +218,7 @@ fn stockham_debug_vs_butterfly() {
 
 #[test]
 fn stockham_matches_rustfft() {
-    use rlx_fft::stockham::stockham_forward_real_batch;
+    use rlx_fft::model::stockham::stockham_forward_real_batch;
     for &n in &[64usize, 128, 256] {
         let cfg = FftLearnConfig::new(n, 2).unwrap();
         let tw = exact_twiddles(&cfg);
@@ -232,21 +232,26 @@ fn stockham_matches_rustfft() {
 
 #[test]
 fn butterfly_graph_builds() {
+    use rlx_fft::model::twiddle::{TwiddleSet, twiddle_packed_name};
+
+    // Twiddles live in a single packed `[stages, half, 2]` param per set.
     let cfg = FftLearnConfig::new(64, 2).unwrap();
     let fwd = build_butterfly_forward_graph(&cfg).unwrap();
-    assert_eq!(fwd.params.len(), cfg.twiddle_param_count());
+    assert_eq!(fwd.params.len(), 1);
+    assert_eq!(fwd.params[0].name, twiddle_packed_name(TwiddleSet::Shared));
     assert!(!fwd.graph.outputs.is_empty());
 
     let inv = build_butterfly_inverse_graph(&cfg).unwrap();
-    assert_eq!(inv.params.len(), cfg.twiddle_param_count());
+    assert_eq!(inv.params.len(), 1);
+    assert_eq!(inv.params[0].name, twiddle_packed_name(TwiddleSet::Shared));
     assert!(!inv.graph.outputs.is_empty());
 }
 
 #[test]
 fn butterfly_compiled_matches_eager() {
-    use rlx_fft::compile::try_compile_graph;
-    use rlx_fft::twiddle::exact_twiddles;
-    use rlx_fft::weights::WeightStore;
+    use rlx_fft::exec::compile::try_compile_graph;
+    use rlx_fft::model::twiddle::exact_twiddles;
+    use rlx_fft::model::weights::WeightStore;
     use rlx_runtime::Device;
 
     let cfg = FftLearnConfig::new(64, 2).unwrap();

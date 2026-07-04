@@ -22,14 +22,14 @@
 
 use crate::config::Qwen3Config;
 use anyhow::Result;
-use rlx_core::validate_standard_device;
-pub use rlx_core::{STANDARD_DEVICE_NAMES, STANDARD_DEVICES};
+use rlx_core::validate_lm_device;
+pub use rlx_core::{LM_DEVICE_NAMES, STANDARD_DEVICE_NAMES, STANDARD_DEVICES};
 use rlx_runtime::Device;
 
 /// Validate that `device` is in the workspace standard backend set.
 pub fn validate_device(cfg: &Qwen3Config, device: Device, packed_weights: bool) -> Result<()> {
     let _ = (cfg, packed_weights);
-    validate_standard_device("qwen3", device)
+    validate_lm_device("qwen3", device)
 }
 
 #[cfg(test)]
@@ -71,5 +71,12 @@ mod tests {
             validate_device(&cfg, *dev, false).unwrap();
             validate_device(&cfg, *dev, true).unwrap();
         }
+    }
+
+    #[cfg(feature = "coreml")]
+    #[test]
+    fn coreml_ane_allowed() {
+        let cfg = tiny_cfg();
+        validate_device(&cfg, Device::Ane, true).unwrap();
     }
 }

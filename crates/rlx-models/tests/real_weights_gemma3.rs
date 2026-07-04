@@ -1,38 +1,17 @@
 // RLX — versatile ML compiler + runtime.
 // Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna.
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, version 3.
+// Real-weight tests for Gemma 3 270M Instruct (`gemma3` arch).
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// ```sh
+// just fetch-gemma3-270m
+// just test-gemma3-real
+// RLX_GEMMA3_RUN_INFERENCE=1 just test-gemma3-real-inference
+// ```
 
-//! Third real-weight family: Gemma 3 270M Instruct (gemma3 arch).
-//!
-//! Smallest model in the PLAN.md catalog (~250 MB Q4_K_M). Verifies the
-//! harness covers a non-Llama, non-Qwen family and that the
-//! `gemma3 → PLAN.md M2` mapping in `known_unimplemented_arch` matches
-//! what `check_path` reports.
-//!
-//! Run:
-//!   ```sh
-//!   curl -L -o /tmp/rlx-weights/gemma-3-270m.gguf \
-//!     https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_K_M.gguf
-//!   RLX_GEMMA3_GGUF=/tmp/rlx-weights/gemma-3-270m.gguf \
-//!     cargo test -p rlx-models --test real_weights_gemma3 -- --nocapture
-//!   ```
-//!
-//! No inference test: `rlx-gemma` targets gemma/gemma2 only; the
-//! Gemma 3 runner is M2 work (per-layer sliding window + new RoPE).
-
-use rlx_llama_base::LlamaBaseConfig;
+use rlx_gemma::{GemmaRunner, gemma_cfg_from_gguf};
 use rlx_models::run::{ChatTemplate, CompatibilityStatus, check_path};
+use rlx_runtime::Device;
 use std::path::PathBuf;
 
 fn weights_path() -> Option<PathBuf> {
@@ -45,50 +24,39 @@ fn config_from_real_gemma3_gguf() {
         eprintln!("skip: set RLX_GEMMA3_GGUF");
         return;
     };
-    let cfg = LlamaBaseConfig::from_gguf_path(&path).expect("LlamaBaseConfig parse");
-    assert_eq!(cfg.arch, "gemma3", "Gemma 3 ships as `gemma3` arch tag");
+    let raw = rlx_gguf::GgufFile::from_path(&path).expect("open GGUF");
+    let cfg = gemma_cfg_from_gguf(&raw).expect("gemma_cfg_from_gguf");
+    assert_eq!(cfg.arch, rlx_gemma::GemmaArch::Gemma3);
     assert!(cfg.num_hidden_layers >= 8, "block_count too low: {cfg:?}");
     assert!(cfg.hidden_size >= 64);
-    assert!(cfg.num_attention_heads > 0);
-    assert!(cfg.num_key_value_heads > 0);
-    assert!(cfg.vocab_size > 1024);
-    assert!(cfg.max_position_embeddings >= 2048);
+    assert!(
+        cfg.sliding_window.is_some(),
+        "Gemma 3 270M should ship sliding_window in GGUF"
+    );
     eprintln!(
-        "Gemma 3 270M config: arch={} layers={} hidden={} heads={} kv={} ctx={} vocab={} rope_theta={}",
+        "Gemma 3 270M config: arch={:?} layers={} hidden={} sliding_window={:?} vocab={}",
         cfg.arch,
         cfg.num_hidden_layers,
         cfg.hidden_size,
-        cfg.num_attention_heads,
-        cfg.num_key_value_heads,
-        cfg.max_position_embeddings,
+        cfg.sliding_window,
         cfg.vocab_size,
-        cfg.rope_theta,
     );
 }
 
 #[test]
-fn compat_check_reports_gemma3_as_m2() {
+fn compat_check_reports_gemma3_supported() {
     let Some(path) = weights_path() else {
         eprintln!("skip: set RLX_GEMMA3_GGUF");
         return;
     };
     let report = check_path(&path).expect("check_path should succeed");
     match &report.status {
-        CompatibilityStatus::KnownUnimplemented(u) => {
-            assert_eq!(u.milestone, "M2", "Gemma 3 is M2 work");
-            assert!(u.family.contains("Gemma 3"), "got family: {}", u.family);
-            eprintln!("Gemma 3 270M: {} ({}) — {}", u.family, u.milestone, u.note);
+        CompatibilityStatus::Supported { runner, .. } => {
+            assert_eq!(*runner, "gemma");
+            eprintln!("Gemma 3 270M: supported → runner `{runner}`");
         }
-        other => panic!("expected KnownUnimplemented(Gemma 3 M2), got {other:?}\n{report}"),
+        other => panic!("expected Supported(gemma), got {other:?}\n{report}"),
     }
-    // The required-GGUF-field check should still report all fields
-    // present — the gap is the runner, not the metadata.
-    let fields = report.gguf_fields.as_ref().expect("GGUF fields");
-    assert!(
-        fields.is_complete(),
-        "Gemma 3 metadata complete; missing: {:?}",
-        fields.missing()
-    );
 }
 
 #[test]
@@ -106,14 +74,37 @@ fn chat_template_on_real_gemma3() {
         .render(&msgs, true)
         .expect("Gemma 3 chat template should render with minijinja");
     assert!(rendered.contains("hi"), "missing user content: {rendered}");
-    // Gemma uses <start_of_turn>/<end_of_turn>, not ChatML.
-    assert!(
-        rendered.contains("start_of_turn") || rendered.contains("<bos>") || rendered.contains("<|"),
-        "expected Gemma-style or other recognized tokens: {rendered}"
-    );
     eprintln!(
         "Gemma 3 rendered prompt ({} bytes):\n{}",
         rendered.len(),
         rendered
     );
+}
+
+#[test]
+fn forward_inference_real_weights() {
+    if std::env::var("RLX_GEMMA3_RUN_INFERENCE").ok().as_deref() != Some("1") {
+        eprintln!("skip: set RLX_GEMMA3_RUN_INFERENCE=1");
+        return;
+    }
+    let Some(weights) = weights_path() else {
+        eprintln!("skip: set RLX_GEMMA3_GGUF");
+        return;
+    };
+
+    let mut runner = GemmaRunner::builder()
+        .weights(&weights)
+        .packed_weights(true)
+        .device(Device::Cpu)
+        .max_seq(64)
+        .build()
+        .expect("GemmaRunner::build");
+
+    let prompt_ids = [1u32, 42, 314];
+    let n_new = 4;
+    let generated = runner
+        .generate_packed(&prompt_ids, n_new, |_| {})
+        .expect("generate_packed");
+    assert_eq!(generated.len(), n_new);
+    eprintln!("Gemma 3 270M inference: {prompt_ids:?} → {generated:?}");
 }

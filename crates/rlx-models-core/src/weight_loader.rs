@@ -196,6 +196,29 @@ pub fn gguf_to_hf_name_for_arch(gguf: &str, arch: &str) -> Option<String> {
         };
         return Some(format!("model.layers.{idx}.{hf_tail}"));
     }
+    if matches!(arch, "phi3" | "phi4") {
+        match gguf {
+            "token_embd.weight" => return Some("model.embed_tokens.weight".into()),
+            "output_norm.weight" => return Some("model.norm.weight".into()),
+            "output.weight" => return Some("lm_head.weight".into()),
+            _ => {}
+        }
+        let rest = gguf.strip_prefix("blk.")?;
+        let dot = rest.find('.')?;
+        let (idx_str, tail_with_dot) = rest.split_at(dot);
+        let tail = &tail_with_dot[1..];
+        let idx: usize = idx_str.parse().ok()?;
+        let hf_tail = match tail {
+            "attn_norm.weight" => "input_layernorm.weight",
+            "ffn_norm.weight" => "post_attention_layernorm.weight",
+            "attn_qkv.weight" => "self_attn.qkv.weight",
+            "attn_output.weight" => "self_attn.o_proj.weight",
+            "ffn_up.weight" => "mlp.gate_up.weight",
+            "ffn_down.weight" => "mlp.down_proj.weight",
+            _ => return None,
+        };
+        return Some(format!("model.layers.{idx}.{hf_tail}"));
+    }
     gguf_to_hf_name(gguf)
 }
 
@@ -237,14 +260,41 @@ pub fn hf_to_gguf_name_for_arch(hf: &str, arch: &str) -> Option<String> {
         };
         return Some(format!("blk.{idx}.{gguf_tail}"));
     }
+    if matches!(arch, "phi3" | "phi4") {
+        match hf {
+            "model.embed_tokens.weight" => return Some("token_embd.weight".into()),
+            "model.norm.weight" => return Some("output_norm.weight".into()),
+            "lm_head.weight" => return Some("output.weight".into()),
+            _ => {}
+        }
+        let rest = hf.strip_prefix("model.layers.")?;
+        let dot = rest.find('.')?;
+        let (idx_str, tail_with_dot) = rest.split_at(dot);
+        let tail = &tail_with_dot[1..];
+        let idx: usize = idx_str.parse().ok()?;
+        let gguf_tail = match tail {
+            "input_layernorm.weight" => "attn_norm.weight",
+            "post_attention_layernorm.weight" => "ffn_norm.weight",
+            "self_attn.qkv.weight" => "attn_qkv.weight",
+            "self_attn.o_proj.weight" => "attn_output.weight",
+            "mlp.gate_up.weight" => "ffn_up.weight",
+            "mlp.down_proj.weight" => "ffn_down.weight",
+            _ => return hf_to_gguf_name(hf),
+        };
+        return Some(format!("blk.{idx}.{gguf_tail}"));
+    }
     hf_to_gguf_name(hf)
 }
 
 /// Match GGUF tensor names that hold a Gemma RMSNorm gain. Covers all
 /// four per-layer norms in the V2/V3/V4 sandwich (attn / post_attention
-/// / ffn / post_ffw) plus the final `output_norm`, in both GGUF-native
-/// and HF spellings — drain order is undefined, so we may see either
-/// convention at the call site.
+/// / ffn / post_ffw), per-head Q/K norms, plus the final `output_norm`,
+/// in both GGUF-native and HF spellings — drain order is undefined, so
+/// we may see either convention at the call site.
+///
+/// `convert_hf_to_gguf` / `gemma.py` bakes `(1 + gamma)` into every
+/// `*norm.weight` (including `attn_q_norm` / `attn_k_norm`). Subtract
+/// 1 on `take` so `gemma_rms`'s `1 + w` matches llama.cpp for all norms.
 fn is_gemma_norm_weight(name: &str) -> bool {
     if name == "output_norm.weight" || name == "model.norm.weight" {
         return true;
@@ -259,6 +309,8 @@ fn is_gemma_norm_weight(name: &str) -> bool {
                 | "post_attention_norm.weight"
                 | "ffn_norm.weight"
                 | "post_ffw_norm.weight"
+                | "attn_q_norm.weight"
+                | "attn_k_norm.weight"
         );
     }
     if let Some(rest) = name
@@ -271,6 +323,8 @@ fn is_gemma_norm_weight(name: &str) -> bool {
                 | "post_attention_layernorm.weight"
                 | "pre_feedforward_layernorm.weight"
                 | "post_feedforward_layernorm.weight"
+                | "self_attn.q_norm.weight"
+                | "self_attn.k_norm.weight"
         );
     }
     false
@@ -303,6 +357,7 @@ pub fn ggml_type_to_quant_scheme(dtype: rlx_gguf::GgmlType) -> Option<QuantSchem
         GgmlType::Q6K => Some(QuantScheme::GgufQ6K),
         GgmlType::Q8K => Some(QuantScheme::GgufQ8K),
         GgmlType::Q4_0 => Some(QuantScheme::GgufQ4_0),
+        GgmlType::Q5_0 => Some(QuantScheme::GgufQ5_0),
         GgmlType::Q8_0 => Some(QuantScheme::GgufQ8_0),
         _ => None,
     }
@@ -708,8 +763,8 @@ impl GgufLoader {
             .file
             .get(&real)
             .ok_or_else(|| anyhow!("tensor missing: {real}"))?;
-        // Map ggml dtype → our QuantScheme. K-quants and Q4_0/Q8_0 can stay
-        // packed on CPU; Q4_1/Q5_* + uncompressed F32/F16/BF16 fall through
+        // Map ggml dtype → our QuantScheme. K-quants and Q4_0/Q5_0/Q8_0 can stay
+        // packed on CPU; Q4_1/Q5_1 + uncompressed F32/F16/BF16 fall through
         // F32/F16/BF16 fall through to the dequant path (return
         // None — caller switches to `take`).
         let Some(scheme) = ggml_type_to_quant_scheme(t.dtype) else {
@@ -836,6 +891,12 @@ impl WeightLoader for GgufLoader {
         // After the safetensors normalization in `take`, this matches
         // the WeightMap implementation byte-for-byte.
         let (data, shape) = self.take(key)?;
+        // A 1D tensor (e.g. Gemma 4's AltUp/Laurel/per-layer scale vectors that
+        // live under .self_attn./.mlp. namespaces) transposes to itself — return
+        // as-is instead of erroring so the packed drain doesn't abort.
+        if shape.len() == 1 {
+            return Ok((data, shape));
+        }
         if shape.len() != 2 {
             return Err(anyhow!("transpose requires 2D, got {shape:?}"));
         }
@@ -892,6 +953,15 @@ mod tests {
             Err(e) => assert!(e.to_string().contains("unsupported")),
             Ok(_) => panic!("expected error"),
         }
+    }
+
+    #[test]
+    fn gemma_qk_norm_names_get_gguf_gamma_unbake() {
+        assert!(is_gemma_norm_weight("blk.0.attn_q_norm.weight"));
+        assert!(is_gemma_norm_weight("blk.7.attn_k_norm.weight"));
+        assert!(is_gemma_norm_weight("model.layers.0.self_attn.q_norm.weight"));
+        assert!(is_gemma_norm_weight("model.layers.3.self_attn.k_norm.weight"));
+        assert!(!is_gemma_norm_weight("blk.0.attn_q.weight"));
     }
 
     #[test]
@@ -986,11 +1056,15 @@ mod tests {
     /// DeepSeek-V3 convention — substring-based `is_mtp_weight`
     /// alone wouldn't catch it.
     #[test]
-    fn ggml_q4_0_maps_to_packed_scheme() {
+    fn ggml_block_quants_map_to_packed_scheme() {
         use rlx_gguf::GgmlType;
         assert_eq!(
             ggml_type_to_quant_scheme(GgmlType::Q4_0),
             Some(rlx_ir::quant::QuantScheme::GgufQ4_0)
+        );
+        assert_eq!(
+            ggml_type_to_quant_scheme(GgmlType::Q5_0),
+            Some(rlx_ir::quant::QuantScheme::GgufQ5_0)
         );
         assert_eq!(
             ggml_type_to_quant_scheme(GgmlType::Q8_0),

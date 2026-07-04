@@ -72,7 +72,12 @@ fn export_snac_mp4(
     stem: &str,
     out_dir: &Path,
 ) -> Result<()> {
-    let backend = SnacBackend::open(snac, SnacLoadOptions { coreml })?;
+    let exec = if coreml {
+        rlx_orpheus::SnacExec::Ane
+    } else {
+        rlx_orpheus::SnacExec::CpuEager
+    };
+    let backend = SnacBackend::open(snac, SnacLoadOptions { exec })?;
     let samples = decode_orpheus_codes(&backend, codes)?;
     let wav = out_dir.join(format!("{stem}.wav"));
     let mp4 = out_dir.join(format!("{stem}.mp4"));

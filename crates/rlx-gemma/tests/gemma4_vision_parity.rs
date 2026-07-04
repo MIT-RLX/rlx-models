@@ -98,6 +98,61 @@ fn vision_encoder_parity() {
     assert!(worst > 0.99, "vision encoder diverges: worst cos {worst}");
 }
 
+/// Localize the wgpu vision-encoder garbage: run N layers on CPU vs wgpu
+/// (N from RLX_VIS_LAYERS, default 1) and report cos + wgpu magnitude. If N=1
+/// already diverges, the bug is a layer-0 op (norm / 2-D RoPE / attention / mm).
+#[test]
+fn vision_wgpu_bisect() {
+    let Some(d) = dir() else {
+        eprintln!("[vis bisect] no ckpt — skip");
+        return;
+    };
+    if !is_available(Device::Gpu) {
+        eprintln!("[vis bisect] no wgpu — skip");
+        return;
+    }
+    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/gemma4_vision");
+    let Some(pixels) = rd(&fx.join("pixels.bin")) else {
+        eprintln!("[vis bisect] no fixtures — skip");
+        return;
+    };
+    let pos_embed = rd(&fx.join("pos_embed.bin")).expect("pos_embed");
+    let posi = rd_i32(&fx.join("positions.bin")).expect("positions");
+    let mut cfg = VisionConfig::default();
+    cfg.layers = std::env::var("RLX_VIS_LAYERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let p = posi.len() / 2;
+    let positions: Vec<(u32, u32)> = (0..p)
+        .map(|i| (posi[2 * i] as u32, posi[2 * i + 1] as u32))
+        .collect();
+    let (rcos, rsin) = vision_rope_tables(&cfg, &positions);
+    let run = |dev: Device| -> Vec<f32> {
+        let mut l = GemmaQatLoader::open(&d).unwrap();
+        let (g, params) = build_vision_encoder(&cfg, &mut l, 1, p).unwrap();
+        let mut c = compile_graph_gemma_prefill_with_params(dev, g, params).unwrap();
+        c.run(&[
+            ("vision_pixels", pixels.as_slice()),
+            ("vision_pos_embed", pos_embed.as_slice()),
+            ("vision_rope_cos", rcos.as_slice()),
+            ("vision_rope_sin", rsin.as_slice()),
+        ])[0]
+            .clone()
+    };
+    let oc = run(Device::Cpu);
+    let og = run(Device::Gpu);
+    let maxg = og.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let maxc = oc.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let n = oc.len().min(og.len());
+    let gcos = cos(&oc[..n], &og[..n]); // global cos, robust to any tap width
+    let tap = std::env::var("RLX_VIS_TAP").unwrap_or_else(|_| "full".into());
+    eprintln!(
+        "[vis bisect L={} tap={tap}] cpu-vs-wgpu cos = {gcos:.6}, cpu maxabs = {maxc:.4}, wgpu maxabs = {maxg:.4}, len {}/{}",
+        cfg.layers, oc.len(), og.len()
+    );
+}
+
 #[test]
 fn vision_features_parity() {
     run_vision_features(Device::Cpu, "vision feats");
@@ -110,6 +165,33 @@ fn vision_features_parity_metal() {
         return;
     }
     run_vision_features(Device::Metal, "vision feats metal");
+}
+
+#[test]
+fn vision_features_parity_mlx() {
+    if !is_available(Device::Mlx) {
+        eprintln!("[vision feats mlx] no MLX — skip");
+        return;
+    }
+    run_vision_features(Device::Mlx, "vision feats mlx");
+}
+
+#[test]
+fn vision_features_parity_wgpu() {
+    if !is_available(Device::Gpu) {
+        eprintln!("[vision feats wgpu] no wgpu — skip");
+        return;
+    }
+    run_vision_features(Device::Gpu, "vision feats wgpu");
+}
+
+#[test]
+fn vision_features_parity_coreml() {
+    if !is_available(Device::Ane) {
+        eprintln!("[vision feats coreml] no CoreML/ANE — skip");
+        return;
+    }
+    run_vision_features(Device::Ane, "vision feats coreml");
 }
 
 fn run_vision_features(dev: Device, tag: &str) {

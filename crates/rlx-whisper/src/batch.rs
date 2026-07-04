@@ -65,6 +65,7 @@ pub fn slice_cross_cache(
     }
     Ok(WhisperCrossCache {
         past_len: cross.past_len,
+        layers_kv_base: vec![0; n_layers],
         layers_k,
         layers_v,
     })
@@ -100,6 +101,7 @@ pub fn stack_kv_caches(caches: &[WhisperKvCache]) -> Result<WhisperKvCache, Stri
     }
     Ok(WhisperKvCache {
         past_len,
+        layers_kv_base: vec![0; n_layers],
         layers_k,
         layers_v,
     })
@@ -126,6 +128,7 @@ pub fn unstack_kv_cache(cache: &WhisperKvCache, n: usize) -> Result<Vec<WhisperK
         }
         out.push(WhisperKvCache {
             past_len: cache.past_len,
+            layers_kv_base: vec![0; n_layers],
             layers_k,
             layers_v,
         });
@@ -163,6 +166,7 @@ pub fn reorder_kv_beams(
     }
     Ok(WhisperKvCache {
         past_len: cache.past_len,
+        layers_kv_base: vec![0; n_layers],
         layers_k,
         layers_v,
     })
@@ -199,6 +203,7 @@ pub fn stack_cross_caches(
     }
     Ok(crate::cache::WhisperCrossCache {
         past_len: caches[0].past_len,
+        layers_kv_base: vec![0; n_layers],
         layers_k,
         layers_v,
     })

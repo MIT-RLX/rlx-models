@@ -56,8 +56,9 @@ pub use audio_codec::{
     AudioCodec, ChunkStreamer, CodecInfo, CompressStats, FileCodec, HierarchicalCodes, RvqCodes,
 };
 pub use device_capabilities::{
-    STANDARD_DEVICE_NAMES, STANDARD_DEVICES, device_memory_for_moe_offload, is_standard_device,
-    validate_sam_device, validate_standard_device,
+    LM_DEVICE_NAMES, LM_INFERENCE_DEVICE_PRIORITY, STANDARD_DEVICE_NAMES, STANDARD_DEVICES,
+    device_memory_for_moe_offload, is_lm_device, is_standard_device, pick_lm_device,
+    resolve_lm_device_str, validate_lm_device, validate_sam_device, validate_standard_device,
 };
 
 pub use gguf_config::{

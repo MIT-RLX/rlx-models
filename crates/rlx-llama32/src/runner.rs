@@ -13,13 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::prefill_mode::MetalGgufPrefillMode;
 use crate::{Llama32Config, Llama32Generator, llama32_cfg_from_gguf};
 use anyhow::{Context, Result, anyhow, bail};
 use rlx_cli::{LmRunner, WeightFormat};
-use rlx_core::weight_loader::GgufLoader;
 use rlx_gguf::{GgufFile, MetaValue};
 use rlx_qwen3::SampleOpts;
-use rlx_runtime::{Device, Session};
+use rlx_runtime::Device;
 use std::path::{Path, PathBuf};
 
 // ────────────────────────────────────────────────────────────────
@@ -168,48 +168,49 @@ impl Llama32RunnerBuilder {
 
         crate::validate_device(&cfg, device, use_packed)?;
 
+        if use_packed && !matches!(format, WeightFormat::Gguf) {
+            bail!(
+                "packed_weights(true) requires a .gguf file; got {:?} for {:?}",
+                format,
+                weights_path
+            );
+        }
+
+        let prefill_mode = if use_packed {
+            if matches!(
+                device,
+                Device::Metal | Device::Cuda | Device::Rocm | Device::Mlx
+            ) {
+                MetalGgufPrefillMode::PackedGguf
+            } else {
+                MetalGgufPrefillMode::CpuF32
+            }
+        } else {
+            MetalGgufPrefillMode::Auto
+        };
+
+        if use_packed {
+            eprintln!(
+                "[llama32-runner] packed_weights=true — Q4 prefill + bucketed decode on {device:?}"
+            );
+        }
+
         let path_str = weights_path
             .to_str()
             .ok_or_else(|| anyhow!("non-utf8 weights path"))?;
-        let generator = if use_packed {
-            None
-        } else {
-            let mut loader = rlx_core::weight_loader::load_from_path(path_str)?;
-            let mut generator = Llama32Generator::from_loader_at(
-                cfg.clone(),
-                loader.as_mut(),
-                device,
-                &weights_path,
-            )?
-            .with_compile_seq_cap(max_seq)
-            .with_prefill_cache(8);
-            if self.bucketed_decode_cache {
-                generator = generator.with_decode_cache(max_seq.saturating_add(16).max(64));
-            }
-            Some(generator)
-        };
-
-        let packed = if use_packed {
-            if !matches!(format, WeightFormat::Gguf) {
-                bail!(
-                    "packed_weights(true) requires a .gguf file; got {:?} for {:?}",
-                    format,
-                    weights_path
-                );
-            }
-            eprintln!(
-                "[llama32-runner] packed_weights=true — compiling prefill graph with \
-                 Op::DequantMatMul on {device:?}"
-            );
-            Some(Llama32PackedForward::build(
-                &cfg,
-                &weights_path,
-                max_seq,
-                device,
-            )?)
-        } else {
-            None
-        };
+        let mut loader = rlx_core::weight_loader::load_from_path(path_str)?;
+        let mut generator = Llama32Generator::from_loader_at_mode(
+            cfg.clone(),
+            loader.as_mut(),
+            device,
+            &weights_path,
+            prefill_mode,
+        )?
+        .with_compile_seq_cap(max_seq)
+        .with_prefill_cache(8);
+        if self.bucketed_decode_cache {
+            generator = generator.with_decode_cache(max_seq.saturating_add(16).max(64));
+        }
 
         Ok(Llama32Runner {
             generator,
@@ -217,72 +218,18 @@ impl Llama32RunnerBuilder {
             sample,
             stream,
             device,
-            packed,
-        })
-    }
-}
-
-struct Llama32PackedForward {
-    compiled: rlx_runtime::CompiledGraph,
-    seq: usize,
-    padded_ids: Vec<u32>,
-    ids_f32: Vec<f32>,
-    last_idx: [f32; 1],
-}
-
-impl Llama32PackedForward {
-    fn build(cfg: &Llama32Config, weights_path: &Path, seq: usize, device: Device) -> Result<Self> {
-        use crate::build_llama32_graph_sized_packed;
-        let exec_device = rlx_core::flow_bridge::packed_gguf_execution_device(device);
-        if exec_device != device {
-            eprintln!(
-                "[llama32-runner] packed GGUF on {device:?}: prefill executes on {exec_device:?} \
-                 until {device:?} packed parity is fixed upstream"
-            );
-        }
-        let mut loader = GgufLoader::from_file(
-            weights_path
-                .to_str()
-                .ok_or_else(|| anyhow!("non-utf8 weights path"))?,
-        )?;
-        let mut packed = std::collections::HashMap::new();
-        let (graph, params) = build_llama32_graph_sized_packed(
-            cfg,
-            &mut loader,
-            1,
-            seq,
-            true,
-            true,
-            false,
-            &mut packed,
-        )?;
-        let opts = rlx_core::flow_bridge::compile_options_for_packed_gguf_prefill(exec_device);
-        let mut compiled = rlx_core::flow_bridge::packed_gguf_compile_guard(exec_device, || {
-            Session::new(exec_device).compile_with(graph, &opts)
-        });
-        for (name, data) in &params {
-            compiled.set_param(name, data);
-        }
-        for (name, (bytes, _scheme, _shape)) in &packed {
-            compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-        }
-        Ok(Self {
-            compiled,
-            seq,
-            padded_ids: vec![0u32; seq],
-            ids_f32: vec![0f32; seq],
-            last_idx: [0f32; 1],
+            packed_weights: use_packed,
         })
     }
 }
 
 pub struct Llama32Runner {
-    generator: Option<Llama32Generator>,
+    generator: Llama32Generator,
     cfg: Llama32Config,
     sample: SampleOpts,
     stream: bool,
     device: Device,
-    packed: Option<Llama32PackedForward>,
+    packed_weights: bool,
 }
 
 impl Llama32Runner {
@@ -298,65 +245,35 @@ impl Llama32Runner {
         self.device
     }
 
+    /// Current sampling options used by [`generate`](Self::generate) and
+    /// [`generate_until`](Self::generate_until).
+    pub fn sample_opts(&self) -> &SampleOpts {
+        &self.sample
+    }
+
+    /// Override the sampling options for subsequent generations. Lets a
+    /// long-lived runner switch between greedy / temperature / top-p on a
+    /// per-request basis without rebuilding (weights + compile caches stay
+    /// warm).
+    pub fn set_sample(&mut self, opts: SampleOpts) {
+        self.sample = opts;
+    }
+
     /// Single prefill forward; returns last-position logits `[vocab]`.
     pub fn predict_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
-        if let Some(p) = self.packed.as_mut() {
-            let n = prompt_ids.len().min(p.seq);
-            p.padded_ids.fill(0);
-            for (i, &t) in prompt_ids.iter().take(n).enumerate() {
-                p.padded_ids[i] = t;
-            }
-            for (dst, &id) in p.ids_f32.iter_mut().zip(p.padded_ids.iter()) {
-                *dst = id as f32;
-            }
-            p.last_idx[0] = n.saturating_sub(1) as f32;
-            let exec_device = p.compiled.device();
-            let out = rlx_core::run_packed_prefill(
-                &mut p.compiled,
-                exec_device,
-                n,
-                p.seq,
-                &[
-                    ("input_ids", p.ids_f32.as_slice()),
-                    ("last_token_idx", p.last_idx.as_slice()),
-                ],
-            );
-            let logits = out
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow!("packed forward returned no output"))?;
-            let vocab = self.cfg.vocab_size;
-            if logits.len() < vocab {
-                bail!("logits short: {} < {vocab}", logits.len());
-            }
-            return Ok(logits[..vocab].to_vec());
-        }
-        let generator = self
-            .generator
-            .as_mut()
-            .ok_or_else(|| anyhow!("F32 generator unavailable in packed_weights mode"))?;
-        generator.prefill_get_last_logits(prompt_ids)
+        self.generator.prefill_get_last_logits(prompt_ids)
     }
 
     pub fn generate_packed(
         &mut self,
         prompt_ids: &[u32],
         n_new: usize,
-        mut on_token: impl FnMut(u32),
+        on_token: impl FnMut(u32),
     ) -> Result<Vec<u32>> {
-        if self.packed.is_none() {
+        if !self.packed_weights {
             bail!("generate_packed() only works in packed_weights(true) mode");
         }
-        let mut history: Vec<u32> = prompt_ids.to_vec();
-        let mut out = Vec::with_capacity(n_new);
-        for _ in 0..n_new {
-            let logits = self.predict_logits(&history)?;
-            let next = rlx_qwen3::sample_token(&logits, self.sample) as u32;
-            on_token(next);
-            history.push(next);
-            out.push(next);
-        }
-        Ok(out)
+        self.generate(prompt_ids, n_new, on_token)
     }
 
     pub fn generate(
@@ -365,24 +282,34 @@ impl Llama32Runner {
         n_new: usize,
         mut on_token: impl FnMut(u32),
     ) -> Result<Vec<u32>> {
-        if self.packed.is_some() {
-            return self.generate_packed(prompt_ids, n_new, on_token);
-        }
-        let generator = self
-            .generator
-            .as_mut()
-            .ok_or_else(|| anyhow!("F32 generator unavailable in packed_weights mode"))?;
-        generator.prefill(prompt_ids);
+        self.generator.prefill(prompt_ids);
         let tokens = if self.stream {
-            generator.generate_cached_with(n_new, self.sample, &mut on_token)?
+            self.generator
+                .generate_cached_with(n_new, self.sample, &mut on_token)?
         } else {
-            let toks = generator.generate_cached(n_new, self.sample)?;
+            let toks = self.generator.generate_cached(n_new, self.sample)?;
             for &t in &toks {
                 on_token(t);
             }
             toks
         };
         Ok(tokens)
+    }
+
+    /// KV-cached generation with an early stop. `keep_going` is called with
+    /// each freshly sampled id and returns whether to continue; returning
+    /// `false` halts generation *after* that token (which is included in the
+    /// result). Use it to stop on an end-of-sequence id instead of always
+    /// decoding the full `n_new` budget.
+    pub fn generate_until(
+        &mut self,
+        prompt_ids: &[u32],
+        n_new: usize,
+        keep_going: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        self.generator.prefill(prompt_ids);
+        self.generator
+            .generate_cached_until(n_new, self.sample, keep_going)
     }
 }
 
@@ -418,9 +345,10 @@ fn load_llama32_gguf_config(
         .get("general.architecture")
         .and_then(MetaValue::as_str)
         .unwrap_or("llama");
-    if arch != "llama" {
+    const LLAMA_SHAPED_GGUF_ARCHES: &[&str] = &["llama", "phi3", "phi4"];
+    if !LLAMA_SHAPED_GGUF_ARCHES.contains(&arch) {
         bail!(
-            "{path:?} has architecture {arch:?}; Llama32Runner expects general.architecture=llama"
+            "{path:?} has architecture {arch:?}; Llama32Runner expects general.architecture ∈ {LLAMA_SHAPED_GGUF_ARCHES:?}"
         );
     }
     let cfg = match override_src {

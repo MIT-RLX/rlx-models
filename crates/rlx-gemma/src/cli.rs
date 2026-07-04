@@ -17,13 +17,14 @@
 use crate::{GemmaConfigSource, GemmaRunner};
 use anyhow::{Context, Result, anyhow, bail};
 use rlx_cli::{WeightFormat, WeightsResolveCli, parse_gemma_device, req, resolve_weights_cli};
+use rlx_core::LM_DEVICE_NAMES;
 use rlx_qwen3::SampleOpts;
 use std::io::Write;
 use std::path::PathBuf;
 
 pub fn run(args: &[String]) -> Result<()> {
     let mut weights: Option<PathBuf> = None;
-    let mut device = "cpu".to_string();
+    let mut device = "auto".to_string();
     let mut config: Option<PathBuf> = None;
     let mut format: Option<String> = None;
     let mut prompt: Option<String> = None;
@@ -90,7 +91,9 @@ pub fn run(args: &[String]) -> Result<()> {
                     Some(req(args, &mut i)?.parse().context("--gguf-index: usize")?);
             }
             "--help" | "-h" => {
-                eprintln!("rlx-gemma — see README for flags");
+                eprintln!(
+                    "rlx-gemma — see README for flags; --device accepts {LM_DEVICE_NAMES}"
+                );
                 return Ok(());
             }
             other => bail!("unknown flag: {other}"),
@@ -103,6 +106,15 @@ pub fn run(args: &[String]) -> Result<()> {
     )?;
     let device = parse_gemma_device(&device)?;
     let format = format.as_deref().map(WeightFormat::parse).transpose()?;
+    let fmt = match format {
+        Some(f) => f,
+        None => WeightFormat::from_path(&weights)?,
+    };
+    let use_packed = packed
+        || (matches!(fmt, WeightFormat::Gguf)
+            && std::fs::metadata(&weights)
+                .map(|m| m.len() >= 256 * 1024 * 1024)
+                .unwrap_or(false));
     let sample = SampleOpts {
         temperature,
         top_p,
@@ -115,10 +127,8 @@ pub fn run(args: &[String]) -> Result<()> {
         .max_seq(max_seq)
         .stream(stream)
         .sample(sample)
-        .packed_weights(packed);
-    if let Some(fmt) = format {
-        b = b.format(fmt);
-    }
+        .packed_weights(use_packed)
+        .format(fmt);
     if let Some(p) = config {
         b = b.config(GemmaConfigSource::JsonFile(p));
     }
@@ -142,7 +152,7 @@ pub fn run(args: &[String]) -> Result<()> {
 
     eprintln!(
         "[rlx-gemma] gemma: weights={weights:?} device={device:?} max_seq={max_seq} \
-         stream={stream} packed={packed}"
+         stream={stream} packed={use_packed}"
     );
     let mut runner = b.build()?;
     eprintln!(
@@ -154,7 +164,7 @@ pub fn run(args: &[String]) -> Result<()> {
 
     let t0 = std::time::Instant::now();
     let mut printed = 0;
-    if packed {
+    if use_packed {
         eprintln!(
             "[rlx-gemma] packed streaming: each token costs ~one full prefill (low-memory path)"
         );

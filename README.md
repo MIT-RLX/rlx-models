@@ -80,6 +80,7 @@ rlx-models/
 | `rlx-qwen35` | Qwen3.5 / 3.6 |
 | `rlx-llama32` | LLaMA 3.2 |
 | `rlx-minicpm5` | MiniCPM5 (Llama-shaped; [openbmb/MiniCPM5-1B](https://huggingface.co/openbmb/MiniCPM5-1B)) |
+| `rlx-tinyllama` | TinyLlama-1.1B (Llama-shaped; [TinyLlama/TinyLlama-1.1B-Chat-v1.0](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)) |
 | `rlx-gemma` | Gemma / Gemma 2 |
 | `rlx-llada2` | LLaDA2 + TIDE offload |
 | `rlx-flux2` | FLUX.2 |
@@ -144,6 +145,7 @@ Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.m
 | `rlx-qwen35` | `rlx-qwen35` | `cargo run -p rlx-qwen35 --bin rlx-qwen35 --release -- …` |
 | `rlx-llama32` | `rlx-llama32` | `cargo run -p rlx-llama32 --bin rlx-llama32 --release -- …` |
 | `rlx-minicpm5` | `rlx-minicpm5` | `cargo run -p rlx-minicpm5 --features tokenizer --release -- --weights …/model.safetensors --prompt-ids 1,42` |
+| `rlx-tinyllama` | `rlx-tinyllama` | `cargo run -p rlx-tinyllama --features tokenizer --release -- --weights …/model.safetensors --prompt-ids 1,42` |
 | `rlx-gemma` | `rlx-gemma` | `cargo run -p rlx-gemma --bin rlx-gemma --release -- --weights model.gguf --prompt-ids 1,2,3` |
 | `rlx-dinov2` | `rlx-dinov2` | `cargo run -p rlx-dinov2 --bin rlx-dinov2 --release -- …` |
 | `rlx-bioclip2` | `rlx-bioclip2` | `cargo run -p rlx-bioclip2 --bin rlx-bioclip2 --release -- --model-dir weights/bioclip-2 --image photo.jpg --labels "cat,dog"` |
@@ -262,6 +264,7 @@ just fetch-minicpm5-gguf Q4_K_M
 - **`mamba`** — Mamba1 SSM block (`rlx-mamba`); SSM via `rlx-ssm` + `SelectiveScan`. See [crates/rlx-mamba/README.md](crates/rlx-mamba/README.md).
 - **`lfm`**, **`minimax`**, **`nemotron`** — hybrid runners using `rlx-ssm` decode-step stages.
 - **`minicpm5`** — MiniCPM5 edge LMs (Llama-shaped 1B). Wraps `Llama32Runner`; safetensors + GGUF. See [MiniCPM5](#minicpm5) and [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md).
+- **`tinyllama`** — TinyLlama-1.1B (Llama-shaped; 2048 hidden, 22 layers). Wraps `Llama32Runner`; safetensors + GGUF. See [TinyLlama](#tinyllama) and [crates/rlx-tinyllama/README.md](crates/rlx-tinyllama/README.md).
 - **`qwen3-tts`** — Qwen3-TTS Base (voice clone) + CustomVoice. ECAPA x-vector, 28-layer talker, 16-group code predictor, 12 Hz Mimi decode. [`VoiceClone`](crates/rlx-qwen3-tts/README.md#library-api) API, progressive streaming, and `bidirectional_voice_chat` (Whisper → Qwen3-0.6B → TTS). See [Qwen3-TTS](#qwen3-tts).
 - **`voxtral-tts`** — Voxtral-4B-TTS native inference (Tekken tokenizer, codec decode, compiled LM). **`voxtral-tts-train`** — RLX autodiff training for reference-audio cloning (codec encoder + full attention LoRA). See [Voxtral TTS](#voxtral-tts).
 - **`run`** — `Qwen3Runner`, `SamRunner`, … builders for one-call inference.
@@ -620,6 +623,38 @@ Example: `just example run_minicpm5 --release` (or `cargo run -p rlx-models --ex
 
 Multiplexer: `cargo run -p rlx-models --bin rlx-run --features tokenizer -- minicpm5 --weights …`.
 
+## TinyLlama
+
+[TinyLlama/TinyLlama-1.1B-Chat-v1.0](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0) — 1.1B Llama-2-style decoder (2048 hidden, 22 layers, vocab 32000). Implemented in `rlx-tinyllama` on top of `rlx-llama32`. **Full runbook:** [crates/rlx-tinyllama/README.md](crates/rlx-tinyllama/README.md).
+
+### Download
+
+```sh
+just fetch-tinyllama                              # safetensors → /tmp/rlx-weights/TinyLlama-1.1B-Chat-v1.0
+just fetch-tinyllama-gguf Q4_K_M                  # GGUF → …/TinyLlama-1.1B-GGUF (TheBloke)
+```
+
+### CLI
+
+Same flags as `rlx-llama32`. Build with `tokenizer` for decode; pass `tokenizer.json` for text (GGUF SentencePiece alone is not enough):
+
+```sh
+W=/tmp/rlx-weights/TinyLlama-1.1B-Chat-v1.0/model-00001-of-00003.safetensors
+
+just tinyllama -- --weights "$W" --device cpu --prompt-ids 1,42,314 --max-tokens 16
+
+just tinyllama -- --weights /tmp/rlx-weights/TinyLlama-1.1B-GGUF/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
+  --packed --device metal --prompt-ids 1,42 --max-tokens 8
+```
+
+### Tests
+
+| Command | What |
+|---------|------|
+| `just test-tinyllama-gguf-backends` | Real Q4_K_M GGUF packed prefill vs CPU |
+| `just test-tinyllama-backends-all` | Synthetic 1.1B-shaped graph, all backends |
+| `just test-tinyllama-real` | Safetensors config + runner build |
+
 ## Whisper
 
 OpenAI Whisper ASR in `rlx-whisper` with native Rust segment timestamps, optional word alignment (DTW or Wav2Vec2 CTC), Silero VAD chunking, and speaker diarization — no Python runtime. Runbook: [crates/rlx-whisper/README.md](crates/rlx-whisper/README.md).
@@ -920,6 +955,7 @@ Programmatic: [`rlx_models::run::check_path`](crates/rlx-cli/src/compat.rs), [`c
 | `qwen35` | — | yes | **yes** — same hub space; e.g. `unsloth/Qwen3.5-*-GGUF` | vs llama.cpp when `QWEN35_GGUF_PATH` / `parity-llama` |
 | `llama32` | yes | yes | **yes** — [llama-3.2](https://huggingface.co/models?library=gguf&search=llama-3.2) (~5k) | vs llama.cpp when `LLAMA32_GGUF_PATH` |
 | `minicpm5` | yes | yes (`llama`) | **yes** — [MiniCPM5-1B-GGUF](https://huggingface.co/openbmb/MiniCPM5-1B-GGUF) (Q4_K_M / Q8_0 / F16) | vs PyTorch (`minicpm5_parity`); `rlx-minicpm5` 0.2.6 on `rlx-llama32` 0.2.6; GGUF packed CPU/Metal |
+| `tinyllama` | yes | yes (`llama`) | **yes** — [TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF](https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF) (Q4_K_M / Q8_0 / Q6_K) | real-weight GGUF packed prefill vs CPU (`tinyllama_backend_gguf_check`); wraps `rlx-llama32` |
 | `llada2` | yes | — | **preview** — [llada2](https://huggingface.co/models?library=gguf&search=llada2) (1): [LLaDA2.0-mini-preview-GGUF](https://huggingface.co/wsbagnsv1/LLaDA2.0-mini-preview-GGUF) (`llada2`) | vs PyTorch when `LLADA2_MODEL_DIR` |
 | `flux2` | yes (BFL / NVFP4 safetensors) | yes (denoiser `.gguf`, `architecture: flux`; K-quant GGUF uses packed `DequantMatMul`; `Flux2Runner` + VAE/TE safetensors) | **yes** — [flux2](https://huggingface.co/models?library=gguf&search=flux2) (~53); e.g. [unsloth/FLUX.2-klein-9B-GGUF](https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF), [city96/FLUX.2-dev-gguf](https://huggingface.co/city96/FLUX.2-dev-gguf) | GGUF = denoiser only; VAE + Qwen3 TE still safetensors dirs |
 | `vjepa2` | yes | yes (`vjepa2` / `vjepa`, F32 drain) | **no** Hub GGUF yet — [vjepa](https://huggingface.co/models?library=gguf&search=vjepa) (0) | synthetic + optional weight checks |
@@ -945,6 +981,7 @@ Legend: ✅ supported · ⚠️ partial (host fallback or open runtime gap) · �
 | `qwen35` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device` on all backends; some ops use host GDN/dequant on GPU; MoE offload may keep experts on host |
 | `llama32` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `rlx-llama32` 0.2.6: Metal decode guard + packed GGUF helpers; same packed rules as Qwen3 |
 | `minicpm5` | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Wraps `rlx-llama32`; safetensors decode on CPU/Metal; GGUF `--packed` parity on CPU/Metal (MLX/wgpu tests use CPU prefill path) |
+| `tinyllama` | ✅ | ✅ | ✅ | ⚠️ | — | ⚠️ | — | Wraps `rlx-llama32`; GGUF `--packed` parity CPU/Metal/MLX; CUDA prefill on CPU; wgpu buffer limits on some GPUs |
 | `llada2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | MoE predictive expert offload on all standard backends (GPU uses resident experts + host fallback) |
 | `flux2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Full pipeline; text encoder compiled on Metal/MLX by default, host once on CUDA/ROCm/WGPU/Vulkan |
 | `vjepa2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Runner `--device` |
@@ -955,7 +992,7 @@ Multi-tenant serving (paged KV, continuous batching) lives in `rlx_runtime::page
 ## Gotchas
 
 - Safetensors names ≠ IR `Param` names — `weight_map.rs` renames; GGUF uses `GgufLoader`.
-- **GGUF LMs** (`qwen3`, `qwen35`, `llama32`, `minicpm5`): pass a `.gguf` file or a directory with one `.gguf` / `model.safetensors`. Wrong-family files get a redirect (`rlx_core::assert_gguf_family`). Shared helpers: `resolve_weights_file`, `WeightFormat::resolve`, `open_loader_resolved`. MiniCPM5 expects `general.architecture = llama` and HF `model_type = llama`.
+- **GGUF LMs** (`qwen3`, `qwen35`, `llama32`, `minicpm5`, `tinyllama`): pass a `.gguf` file or a directory with one `.gguf` / `model.safetensors`. Wrong-family files get a redirect (`rlx_core::assert_gguf_family`). Shared helpers: `resolve_weights_file`, `WeightFormat::resolve`, `open_loader_resolved`. MiniCPM5 and TinyLlama expect `general.architecture = llama` and HF `model_type = llama`; TinyLlama also checks 2048×22 dims.
 - **Packed GGUF prefill** (`--packed`, K-quant): use `rlx_core::{packed_gguf_compile_guard, compile_options_for_packed_gguf_prefill_with_profile, packed_gguf_execution_device}` in `rlx-llama32`, `rlx-qwen3`, `rlx-gemma`, and `rlx-minicpm5`. Metal sets `RLX_DISABLE_MPSGRAPH=1` during compile; MLX uses `RLX_MLX_MODE=lazy` (host GGUF dequant); wgpu/CUDA/ROCm disable fusion and may run prefill on CPU until upstream GPU parity.
 - **GGUF elsewhere on HF** (embed, FLUX, SAM3, …) does not imply rlx support — see [Weights and parity](#weights-and-parity) column *GGUF on Hugging Face*.
 - **GGUF shapes** are innermost-first labels; byte layout matches safetensors row-major — do not transpose in `take`.
@@ -980,6 +1017,7 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `kitten_tts_mini_rlx` | [crates/kitten_tts_mini_rlx/README.md](crates/kitten_tts_mini_rlx/README.md) |
 | `rlx-gemma` | [crates/rlx-gemma/README.md](crates/rlx-gemma/README.md) |
 | `rlx-minicpm5` | [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md) |
+| `rlx-tinyllama` | [crates/rlx-tinyllama/README.md](crates/rlx-tinyllama/README.md) |
 | `rlx-llama32` | [crates/rlx-llama32/README.md](crates/rlx-llama32/README.md) |
 | `rlx-locateanything` | [crates/rlx-locateanything/README.md](crates/rlx-locateanything/README.md) |
 | `rlx-vad` | [crates/rlx-vad/README.md](crates/rlx-vad/README.md) |

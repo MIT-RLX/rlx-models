@@ -141,10 +141,8 @@ fn synthetic_1l_decode_embeds_cpu_vs_metal() {
         &Qwen3DecodeOpts {
             batch: 1,
             past_seq: upper,
-            dynamic_past: false,
             use_custom_mask: true,
-            ragged_rope: false,
-            profile: None,
+            ..Default::default()
         },
     )
     .expect("build decode");

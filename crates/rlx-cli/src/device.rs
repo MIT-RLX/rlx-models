@@ -33,12 +33,17 @@ pub fn parse_standard_device(family: &str, s: &str) -> Result<Device> {
     Ok(d)
 }
 
+/// Parse a causal-LM CLI device name (standard backends + CoreML / ANE + `auto`).
+pub fn parse_lm_device(family: &str, s: &str) -> Result<Device> {
+    rlx_core::resolve_lm_device_str(family, s)
+}
+
 pub fn parse_llama32_device(s: &str) -> Result<Device> {
-    parse_standard_device("llama32", s)
+    parse_lm_device("llama32", s)
 }
 
 pub fn parse_gemma_device(s: &str) -> Result<Device> {
-    parse_standard_device("gemma", s)
+    parse_lm_device("gemma", s)
 }
 
 pub fn parse_qwen35_device(s: &str) -> Result<Device> {
@@ -57,4 +62,24 @@ pub fn parse_sam_device(family: &str, s: &str) -> Result<Device> {
     };
     validate_sam_device(family, d)?;
     Ok(d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "coreml")]
+    #[test]
+    fn parse_gemma_coreml_device() {
+        assert_eq!(parse_gemma_device("coreml").unwrap(), Device::Ane);
+        assert_eq!(parse_gemma_device("ane").unwrap(), Device::Ane);
+    }
+
+    #[test]
+    fn parse_gemma_auto_device() {
+        assert_eq!(
+            parse_gemma_device("auto").unwrap(),
+            rlx_core::pick_lm_device()
+        );
+    }
 }

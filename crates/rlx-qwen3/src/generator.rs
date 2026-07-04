@@ -647,6 +647,7 @@ impl Qwen3Generator {
                 past_len: new_len,
                 layers_k: Vec::with_capacity(n_layers),
                 layers_v: Vec::with_capacity(n_layers),
+                layers_kv_base: vec![0; n_layers],
             };
             for l in 0..n_layers {
                 let stride = (upper + 1) * kv_dim;
@@ -784,6 +785,7 @@ impl Qwen3Generator {
                 past_len: new_len,
                 layers_k: Vec::with_capacity(n_layers),
                 layers_v: Vec::with_capacity(n_layers),
+                layers_kv_base: vec![0; n_layers],
             };
             for l in 0..n_layers {
                 let stride = (upper + 1) * kv_dim;
@@ -1126,6 +1128,7 @@ fn trim_kv(kv: &KvCacheState, rows: usize, kv_dim: usize) -> KvCacheState {
         past_len: rows,
         layers_k: cut(&kv.layers_k),
         layers_v: cut(&kv.layers_v),
+        layers_kv_base: kv.layers_kv_base.clone(),
     }
 }
 

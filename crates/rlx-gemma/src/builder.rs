@@ -28,6 +28,18 @@ type F32WeightMap = HashMap<String, Vec<f32>>;
 type PackedWeightMap = HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>;
 type PackedDrainResult = (F32WeightMap, PackedWeightMap);
 
+/// Decode-graph lm_head output mode for packed GGUF graphs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PackedDecodeLmOutput {
+    /// Final hidden state only (host tied-lm argmax or sampling elsewhere).
+    #[default]
+    HiddenOnly,
+    /// Full vocab logits D2H (~1 MiB/step for Gemma 3).
+    FullLogits,
+    /// In-graph tied lm_head + argmax; read back one f32 token id.
+    GreedyToken,
+}
+
 pub fn build_gemma_graph_sized(
     cfg: &GemmaConfig,
     weights: &mut dyn WeightLoader,
@@ -256,6 +268,17 @@ fn slice_rope_table(table: &[f32], half: usize, rows: usize) -> Vec<f32> {
     }
 }
 
+/// GGUF stores 2D projection weights as `[in_features, out_features]`; RLX
+/// matmul expects `[out_features, in_features]`.
+fn should_transpose_gemma_drain_weight(canonical: &str) -> bool {
+    canonical.ends_with(".weight")
+        && !canonical.contains("norm")
+        && !canonical.starts_with("rope.")
+        && (canonical.contains(".self_attn.")
+            || canonical.contains(".mlp.")
+            || canonical.ends_with("lm_head.weight"))
+}
+
 /// Drain GGUF weights + RoPE tables for packed session init (no layer graph).
 pub fn drain_gemma_packed_weights(
     cfg: &GemmaConfig,
@@ -277,7 +300,6 @@ pub fn drain_gemma_packed_weights_ext(
     max_rope_rows: Option<usize>,
 ) -> Result<PackedDrainResult> {
     use crate::rope::{build_rope_tables, resolve_global_inv_freq, resolve_inv_freq};
-    use rlx_core::weight_map::{WeightDrainPolicy, WeightMap};
 
     let rope_rows = max_rope_rows.unwrap_or(cfg.max_position_embeddings);
     let rope_factors = loader.take("rope_freqs.weight").ok().map(|(d, _)| d);
@@ -326,13 +348,28 @@ pub fn drain_gemma_packed_weights_ext(
         }
     }
 
-    let (mut wm, packed_list) =
-        WeightMap::drain_loader(loader, WeightDrainPolicy::AllF32WarnUnused)?;
-    for key in wm.keys().map(str::to_string).collect::<Vec<_>>() {
-        let (data, _shape) = wm.take(&key)?;
+    let keys = loader.remaining_keys();
+    let mut f32_shapes: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut packed_list: Vec<(String, Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> = Vec::new();
+    for key in keys {
         let canonical = rlx_core::weight_loader::gguf_to_hf_name_for_arch(&key, &arch)
             .unwrap_or_else(|| key.clone());
-        f32_params.insert(canonical, data);
+        // RMSNorm / QK-norm weights stay F32 in the graph (delta-gamma path);
+        // mixed-quant GGUF may still expose them as Q5_0 etc.
+        let force_f32 = canonical.contains("layernorm") || canonical.contains("_norm.weight");
+        if !force_f32 {
+            if let Some((bytes, scheme, shape)) = loader.take_packed(&key)? {
+                packed_list.push((key, bytes, scheme, shape));
+                continue;
+            }
+        }
+        let (data, shape) = if should_transpose_gemma_drain_weight(&canonical) {
+            loader.take_transposed(&key)?
+        } else {
+            loader.take(&key)?
+        };
+        f32_params.insert(canonical.clone(), data);
+        f32_shapes.insert(canonical, shape);
     }
     f32_params.insert("rope.cos".into(), cos_data);
     f32_params.insert("rope.sin".into(), sin_data);
@@ -353,6 +390,13 @@ pub fn drain_gemma_packed_weights_ext(
     // ~4 GB transposed f32 constant per session.
     if let Some((bytes, scheme, shape)) = embed_packed {
         packed.insert("model.embed_tokens.weight".into(), (bytes, scheme, shape));
+    }
+    // Weights materialized to F32 at drain (norms, unsupported quants) get empty
+    // packed sentinels so cached graph rebuilds can resolve shape + f32 bytes.
+    for (canonical, shape) in f32_shapes {
+        packed
+            .entry(canonical)
+            .or_insert_with(|| (Vec::new(), QuantScheme::GgufQ4_0, shape));
     }
 
     // Per-layer projection fusion. Each row of a Q4K weight is an
@@ -379,7 +423,12 @@ pub fn drain_gemma_packed_weights_ext(
                 let gate_k = gate_shape.get(1).copied().unwrap_or(0);
                 let up_n = up_shape.first().copied().unwrap_or(0);
                 let up_k = up_shape.get(1).copied().unwrap_or(0);
-                if gate_scheme == up_scheme && gate_k > 0 && gate_k == up_k {
+                if gate_scheme == up_scheme
+                    && gate_k > 0
+                    && gate_k == up_k
+                    && !gate_bytes.is_empty()
+                    && !up_bytes.is_empty()
+                {
                     let mut fused = Vec::with_capacity(gate_bytes.len() + up_bytes.len());
                     fused.extend_from_slice(&gate_bytes);
                     fused.extend_from_slice(&up_bytes);
@@ -409,7 +458,7 @@ pub fn drain_gemma_packed_weights_ext(
                 let q_k_dim = q_shape.get(1).copied().unwrap_or(0);
                 let k_n = k_shape.first().copied().unwrap_or(0);
                 let k_k_dim = k_shape.get(1).copied().unwrap_or(0);
-                if q_scheme == k_scheme && q_k_dim > 0 && q_k_dim == k_k_dim {
+                if q_scheme == k_scheme && q_k_dim > 0 && q_k_dim == k_k_dim && !q_bytes.is_empty() && !k_bytes.is_empty() {
                     let mut fused = Vec::with_capacity(
                         q_bytes.len()
                             + k_bytes.len()
@@ -421,7 +470,7 @@ pub fn drain_gemma_packed_weights_ext(
                     if let Some((v_bytes, v_scheme, v_shape)) = v_entry.as_ref() {
                         let v_n = v_shape.first().copied().unwrap_or(0);
                         let v_k_dim = v_shape.get(1).copied().unwrap_or(0);
-                        if *v_scheme == q_scheme && v_k_dim == q_k_dim {
+                        if *v_scheme == q_scheme && v_k_dim == q_k_dim && !v_bytes.is_empty() {
                             fused.extend_from_slice(v_bytes);
                             total_n += v_n;
                         } else {
@@ -761,7 +810,10 @@ pub fn build_gemma_graph_sized_packed_ext(
     // and the per-bucket embed param upload.
     let embed_lazy = known_packed
         .map(|m| m.contains_key("model.embed_tokens.weight"))
-        .unwrap_or(false);
+        .unwrap_or(false)
+        && !known_f32
+            .map(|m| m.contains_key("model.embed_tokens.weight"))
+            .unwrap_or(false);
     // Multimodal: when the caller marks `__media_bias__`, attention uses an
     // additive bias tensor `[batch, heads, seq, seq]` (`MaskKind::Bias`) instead
     // of the fused causal/sliding `MaskKind` — letting bidirectional image/audio
@@ -995,7 +1047,7 @@ pub fn build_gemma_graph_sized_packed_ext(
         // builder for full rationale + task #50). Same fix applied
         // here so predict_logits (prefill path) doesn't produce
         // all-NaN logits.
-        let (q, k, v) = if matches!(cfg.arch, GemmaArch::Gemma4) {
+        let (q, k, v) = if matches!(cfg.arch, GemmaArch::Gemma3 | GemmaArch::Gemma4) {
             let q_norm_key = format!("{lp}.self_attn.q_norm.weight");
             let k_norm_key = format!("{lp}.self_attn.k_norm.weight");
             let q_4d = g.reshape_(
@@ -1043,30 +1095,31 @@ pub fn build_gemma_graph_sized_packed_ext(
                     eps,
                 )?;
                 let k = g.reshape_(k_normed, vec![batch as i64, seq as i64, kv_dim as i64]);
-                // V RMS-norm with no learnable scale — matches llama.cpp
-                // gemma4.cpp:256 `ggml_rms_norm(Vcur, f_norm_rms_eps)`.
-                // Without this V grows unbounded → attention output blows
-                // up over 48 layers → NaN logits.
-                let v_4d = g.reshape_(
-                    v,
-                    vec![batch as i64, seq as i64, layer_kv as i64, layer_dh as i64],
-                );
-                let v_ones = synth_const(
-                    &mut g,
-                    &mut params,
-                    &format!("{lp}.self_attn.v_norm.ones"),
-                    vec![1.0f32; layer_dh],
-                    &[layer_dh],
-                );
-                let v_zeros = synth_const(
-                    &mut g,
-                    &mut params,
-                    &format!("{lp}.self_attn.v_norm.zeros"),
-                    vec![0.0f32; layer_dh],
-                    &[layer_dh],
-                );
-                let v_normed = g.rms_norm(v_4d, v_ones, v_zeros, eps);
-                let v = g.reshape_(v_normed, vec![batch as i64, seq as i64, kv_dim as i64]);
+                // Gemma 4 applies per-head V RMS-norm; Gemma 3 matches llama.cpp (V unchanged).
+                let v = if matches!(cfg.arch, GemmaArch::Gemma4) {
+                    let v_4d = g.reshape_(
+                        v,
+                        vec![batch as i64, seq as i64, layer_kv as i64, layer_dh as i64],
+                    );
+                    let v_ones = synth_const(
+                        &mut g,
+                        &mut params,
+                        &format!("{lp}.self_attn.v_norm.ones"),
+                        vec![1.0f32; layer_dh],
+                        &[layer_dh],
+                    );
+                    let v_zeros = synth_const(
+                        &mut g,
+                        &mut params,
+                        &format!("{lp}.self_attn.v_norm.zeros"),
+                        vec![0.0f32; layer_dh],
+                        &[layer_dh],
+                    );
+                    let v_normed = g.rms_norm(v_4d, v_ones, v_zeros, eps);
+                    g.reshape_(v_normed, vec![batch as i64, seq as i64, kv_dim as i64])
+                } else {
+                    v
+                };
                 (k, v)
             };
             (q, k, v)
@@ -1117,36 +1170,54 @@ pub fn build_gemma_graph_sized_packed_ext(
 
         let k_rep = repeat_kv_packed(&mut g, k_rope, layer_kv, layer_dh, group);
         let v_rep = repeat_kv_packed(&mut g, v, layer_kv, layer_dh, group);
-        if tap_l0 && layer == 0 {
+        if tap_l0 && layer == tap_layer {
             l0_taps.push(k_rep); // tap F: K_rep
             l0_taps.push(v_rep); // tap G: V_rep
         }
 
+        // Gemma 2/3: llama.cpp scales Q before SDPA and passes 1.0 as attn scale.
+        let (q_attn, layer_attn_scale) = if matches!(cfg.arch, GemmaArch::Gemma2 | GemmaArch::Gemma3) {
+            if let Some(scale) = attn_score_scale {
+                let q_scale = synth_const(
+                    &mut g,
+                    &mut params,
+                    &format!("{lp}.attn.q_score_scale"),
+                    vec![scale],
+                    &[1],
+                );
+                (g.mul(q_rope, q_scale), Some(1.0f32))
+            } else {
+                (q_rope, attn_score_scale)
+            }
+        } else {
+            (q_rope, attn_score_scale)
+        };
+
         // Per-layer mask.
         let (mask_kind, _, _) = cfg.layer_attn_options(layer);
-        let attn_shape = rlx_ir::shape::attention_shape(g.shape(q_rope));
+        let attn_shape = rlx_ir::shape::attention_shape(g.shape(q_attn));
         let attn = if let Some(bias) = media_bias_id {
             g.attention_bias_opts(
-                q_rope,
+                q_attn,
                 k_rep,
                 v_rep,
                 bias,
                 nh,
                 layer_dh,
                 attn_shape,
-                attn_score_scale,
+                layer_attn_scale,
                 attn_softcap,
             )
         } else {
             g.attention_kind_opts(
-                q_rope,
+                q_attn,
                 k_rep,
                 v_rep,
                 nh,
                 layer_dh,
                 mask_kind,
                 attn_shape,
-                attn_score_scale,
+                layer_attn_scale,
                 attn_softcap,
             )
         };
@@ -1169,7 +1240,10 @@ pub fn build_gemma_graph_sized_packed_ext(
         // contribution grows unbounded across 48 layers — task #50 NaN
         // root cause. Maps GGUF blk.N.post_attention_norm.weight via
         // gguf_to_hf_name_for_arch.
-        let attn_out = if matches!(cfg.arch, GemmaArch::Gemma3 | GemmaArch::Gemma4) {
+        // Post-attention norm: Gemma 2/3/4 all have it (only Gemma 1 lacks it),
+        // matching the post_feedforward_layernorm gate below. Dropping it for
+        // Gemma 2 corrupted the whole forward (hidden cos ~0.35 vs llama.cpp).
+        let attn_out = if cfg.arch != GemmaArch::Gemma {
             gemma_rms(
                 &mut g,
                 &mut params,
@@ -1403,15 +1477,23 @@ pub fn build_gemma_graph_sized_packed_ext(
             )?;
             h_id = g.mul(h_id, ls);
         } else if matches!(cfg.arch, GemmaArch::Gemma4) {
-            let scale_w = load_p_cached(
+            // [1] output_scale scalar → full [hidden] vector. A [1]-param
+            // broadcast multiply mis-reads on the CUDA backend (garbage slot →
+            // hidden explodes to ~1e11 → NaN → flat logits); the last-dim
+            // [hidden] broadcast is the proven norm-gamma path. Bit-identical
+            // to CPU (same scalar, just materialised across the row).
+            let okey = format!("{lp}.self_attn.output_scale.weight");
+            let sval = match known_f32.and_then(|m| m.get(&okey)) {
+                Some(v) => v.first().copied().unwrap_or(1.0),
+                None => weights.take(&okey)?.0.first().copied().unwrap_or(1.0),
+            };
+            let scale_w = synth_const(
                 &mut g,
                 &mut params,
-                weights,
-                known_f32,
-                &format!("{lp}.self_attn.output_scale.weight"),
-                &[1],
-                false,
-            )?;
+                &format!("{okey}.bh"),
+                vec![sval; cfg.hidden_size],
+                &[cfg.hidden_size],
+            );
             h_id = g.mul(h_id, scale_w);
         }
         if tap_l0 && layer == tap_layer {
@@ -1586,6 +1668,7 @@ pub fn build_gemma_decode_graph_sized_packed(
         batch,
         past_seq,
         use_custom_mask,
+        PackedDecodeLmOutput::FullLogits,
         packed,
         None,
         None,
@@ -1601,6 +1684,7 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
     batch: usize,
     past_seq: usize,
     use_custom_mask: bool,
+    lm_output: PackedDecodeLmOutput,
     packed: &mut PackedWeightMap,
     known_packed: Option<&PackedWeightMap>,
     known_f32: Option<&F32WeightMap>,
@@ -1787,7 +1871,10 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
     // Skips the per-decode-bucket embed param upload (≈ 540 MB Q4K for 12B).
     let embed_lazy = known_packed
         .map(|m| m.contains_key("model.embed_tokens.weight"))
-        .unwrap_or(false);
+        .unwrap_or(false)
+        && !known_f32
+            .map(|m| m.contains_key("model.embed_tokens.weight"))
+            .unwrap_or(false);
     let mut h_id = if embed_lazy {
         g.input("input_embeddings", Shape::new(&[batch, seq, h], DType::F32))
     } else {
@@ -1972,7 +2059,7 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
         // Q·K·V grows unbounded → softmax overflow → NaN at layer 0.
         // V-norm matches llama.cpp gemma4.cpp:256 — plain RMSNorm with
         // gamma=1, beta=0 (just normalizes V to unit-RMS per head).
-        let (q, k, v) = if matches!(cfg.arch, GemmaArch::Gemma4) {
+        let (q, k, v) = if matches!(cfg.arch, GemmaArch::Gemma3 | GemmaArch::Gemma4) {
             let q_norm_key = format!("{lp}.self_attn.q_norm.weight");
             let k_norm_key = format!("{lp}.self_attn.k_norm.weight");
             // q: [B, S, nh*dh] → [B, S, nh, dh] for per-head norm.
@@ -2013,28 +2100,31 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
                     eps,
                 )?;
                 let k = g.reshape_(k_normed, vec![batch as i64, seq as i64, kv_dim as i64]);
-                // V RMS-norm with no learnable scale — matches llama.cpp
-                // gemma4.cpp:256 `ggml_rms_norm(Vcur, f_norm_rms_eps)`.
-                let v_4d = g.reshape_(
-                    v,
-                    vec![batch as i64, seq as i64, layer_kv as i64, layer_dh as i64],
-                );
-                let v_ones = synth_const(
-                    &mut g,
-                    &mut params,
-                    &format!("{lp}.self_attn.v_norm.ones"),
-                    vec![1.0f32; layer_dh],
-                    &[layer_dh],
-                );
-                let v_zeros = synth_const(
-                    &mut g,
-                    &mut params,
-                    &format!("{lp}.self_attn.v_norm.zeros"),
-                    vec![0.0f32; layer_dh],
-                    &[layer_dh],
-                );
-                let v_normed = g.rms_norm(v_4d, v_ones, v_zeros, eps);
-                let v = g.reshape_(v_normed, vec![batch as i64, seq as i64, kv_dim as i64]);
+                // Gemma 4 applies per-head V RMS-norm; Gemma 3 matches llama.cpp (V unchanged).
+                let v = if matches!(cfg.arch, GemmaArch::Gemma4) {
+                    let v_4d = g.reshape_(
+                        v,
+                        vec![batch as i64, seq as i64, layer_kv as i64, layer_dh as i64],
+                    );
+                    let v_ones = synth_const(
+                        &mut g,
+                        &mut params,
+                        &format!("{lp}.self_attn.v_norm.ones"),
+                        vec![1.0f32; layer_dh],
+                        &[layer_dh],
+                    );
+                    let v_zeros = synth_const(
+                        &mut g,
+                        &mut params,
+                        &format!("{lp}.self_attn.v_norm.zeros"),
+                        vec![0.0f32; layer_dh],
+                        &[layer_dh],
+                    );
+                    let v_normed = g.rms_norm(v_4d, v_ones, v_zeros, eps);
+                    g.reshape_(v_normed, vec![batch as i64, seq as i64, kv_dim as i64])
+                } else {
+                    v
+                };
                 (k, v)
             };
             (q, k, v)
@@ -2079,20 +2169,48 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
         let k_rep = repeat_kv_packed(&mut g, new_k, layer_kv, layer_dh, group);
         let v_rep = repeat_kv_packed(&mut g, new_v, layer_kv, layer_dh, group);
 
+        let (q_attn, layer_attn_scale) = if matches!(cfg.arch, GemmaArch::Gemma2 | GemmaArch::Gemma3) {
+            if let Some(scale) = attn_score_scale {
+                let q_scale = synth_const(
+                    &mut g,
+                    &mut params,
+                    &format!("{lp}.attn.q_score_scale"),
+                    vec![scale],
+                    &[1],
+                );
+                (g.mul(q_rope, q_scale), Some(1.0f32))
+            } else {
+                (q_rope, attn_score_scale)
+            }
+        } else {
+            (q_rope, attn_score_scale)
+        };
+
         let attn = if let Some(mask) = mask_id {
-            g.attention_(q_rope, k_rep, v_rep, mask, nh, layer_dh)
+            let attn_shape = rlx_ir::shape::attention_shape(g.shape(q_attn));
+            g.attention_opts(
+                q_attn,
+                k_rep,
+                v_rep,
+                mask,
+                nh,
+                layer_dh,
+                attn_shape,
+                layer_attn_scale,
+                attn_softcap,
+            )
         } else {
             let (mask_kind, _, _) = cfg.layer_attn_options(layer);
-            let attn_shape = rlx_ir::shape::attention_shape(g.shape(q_rope));
+            let attn_shape = rlx_ir::shape::attention_shape(g.shape(q_attn));
             g.attention_kind_opts(
-                q_rope,
+                q_attn,
                 k_rep,
                 v_rep,
                 nh,
                 layer_dh,
                 mask_kind,
                 attn_shape,
-                attn_score_scale,
+                layer_attn_scale,
                 attn_softcap,
             )
         };
@@ -2112,7 +2230,10 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
         // contribution grows unbounded across 48 layers — task #50 NaN
         // root cause. Maps GGUF blk.N.post_attention_norm.weight via
         // gguf_to_hf_name_for_arch.
-        let attn_out = if matches!(cfg.arch, GemmaArch::Gemma3 | GemmaArch::Gemma4) {
+        // Post-attention norm: Gemma 2/3/4 all have it (only Gemma 1 lacks it),
+        // matching the post_feedforward_layernorm gate below. Dropping it for
+        // Gemma 2 corrupted the whole forward (hidden cos ~0.35 vs llama.cpp).
+        let attn_out = if cfg.arch != GemmaArch::Gemma {
             gemma_rms(
                 &mut g,
                 &mut params,
@@ -2313,15 +2434,20 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
             )?;
             g.mul(layer_out, ls)
         } else if matches!(cfg.arch, GemmaArch::Gemma4) {
-            let scale_w = load_p_cached(
+            // See prefill: a [1] output_scale broadcast mis-reads on CUDA; bake
+            // the scalar into a [hidden] vector and use the last-dim broadcast.
+            let okey = format!("{lp}.self_attn.output_scale.weight");
+            let sval = match known_f32.and_then(|m| m.get(&okey)) {
+                Some(v) => v.first().copied().unwrap_or(1.0),
+                None => weights.take(&okey)?.0.first().copied().unwrap_or(1.0),
+            };
+            let scale_w = synth_const(
                 &mut g,
                 &mut params,
-                weights,
-                known_f32,
-                &format!("{lp}.self_attn.output_scale.weight"),
-                &[1],
-                false,
-            )?;
+                &format!("{okey}.bh"),
+                vec![sval; cfg.hidden_size],
+                &[cfg.hidden_size],
+            );
             g.mul(layer_out, scale_w)
         } else {
             layer_out
@@ -2341,80 +2467,99 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
     )?;
 
     const TIED_LM_HEAD: &str = "gemma.packed.decode.lm_head.tied_t";
-    // Task #36: prefer packed DequantMatMul on the original Q4K-packed embed
-    // bytes — skips the ~4 GB transposed-f32 constant per decode bucket
-    // (≈ 4 GB × num_decode_buckets if recompiled per bucket).
-    let packed_embed_scheme = known_packed
-        .and_then(|m| m.get("model.embed_tokens.weight"))
-        .map(|(_, scheme, _)| *scheme);
-    let mut logits = if let Some(scheme) = packed_embed_scheme.filter(|_| cfg.tie_word_embeddings) {
-        let (w_id, _) = load_proj(
-            &mut g,
-            &mut params,
-            packed,
-            weights,
-            known_packed,
-            known_f32,
-            "model.embed_tokens.weight",
-        )?;
-        let logits_shape = Shape::new(&[batch, seq, vocab], f);
-        g.add_node(
-            Op::DequantMatMul { scheme },
-            vec![hidden, w_id],
-            logits_shape,
-        )
-    } else {
-        let lm_head_w = if cfg.tie_word_embeddings {
-            if let Some(tied) = known_f32.and_then(|m| m.get(TIED_LM_HEAD)) {
-                synth_const(&mut g, &mut params, TIED_LM_HEAD, tied.clone(), &[h, vocab])
-            } else {
-                let embed = params
-                    .get("model.embed_tokens.weight")
-                    .ok_or_else(|| anyhow!("missing model.embed_tokens.weight for tied lm_head"))?
-                    .clone();
-                synth_const(
-                    &mut g,
-                    &mut params,
-                    TIED_LM_HEAD,
-                    precompute_packed_decode_tied_lm_head(cfg, &embed)?,
-                    &[h, vocab],
-                )
-            }
-        } else {
-            load_p_cached(
+    let with_lm_head = !matches!(lm_output, PackedDecodeLmOutput::HiddenOnly);
+    let mut outputs = if with_lm_head {
+        // Task #36: prefer packed DequantMatMul on the original Q4K-packed embed
+        // bytes — skips the ~4 GB transposed-f32 constant per decode bucket
+        // (≈ 4 GB × num_decode_buckets if recompiled per bucket).
+        let packed_embed_scheme = known_packed
+            .and_then(|m| m.get("model.embed_tokens.weight"))
+            .map(|(_, scheme, _)| *scheme);
+        let mut logits = if let Some(scheme) = packed_embed_scheme.filter(|_| cfg.tie_word_embeddings)
+        {
+            let (w_id, _) = load_proj(
                 &mut g,
                 &mut params,
+                packed,
                 weights,
+                known_packed,
                 known_f32,
-                "lm_head.weight",
-                &[vocab, h],
-                true,
-            )?
+                "model.embed_tokens.weight",
+            )?;
+            let logits_shape = Shape::new(&[batch, seq, vocab], f);
+            g.add_node(
+                Op::DequantMatMul { scheme },
+                vec![hidden, w_id],
+                logits_shape,
+            )
+        } else {
+            let lm_head_w = if cfg.tie_word_embeddings {
+                if let Some(tied) = known_f32.and_then(|m| m.get(TIED_LM_HEAD)) {
+                    synth_const(&mut g, &mut params, TIED_LM_HEAD, tied.clone(), &[h, vocab])
+                } else {
+                    let embed = params
+                        .get("model.embed_tokens.weight")
+                        .ok_or_else(|| anyhow!("missing model.embed_tokens.weight for tied lm_head"))?
+                        .clone();
+                    synth_const(
+                        &mut g,
+                        &mut params,
+                        TIED_LM_HEAD,
+                        precompute_packed_decode_tied_lm_head(cfg, &embed)?,
+                        &[h, vocab],
+                    )
+                }
+            } else {
+                load_p_cached(
+                    &mut g,
+                    &mut params,
+                    weights,
+                    known_f32,
+                    "lm_head.weight",
+                    &[vocab, h],
+                    true,
+                )?
+            };
+            g.mm(hidden, lm_head_w)
         };
-        g.mm(hidden, lm_head_w)
+        if let Some(cap) = cfg.final_logit_softcapping {
+            let inv = synth_const(
+                &mut g,
+                &mut params,
+                &format!("gemma.packed.decode.softcap.inv.{cap}"),
+                vec![1.0 / cap],
+                &[1],
+            );
+            let cap_id = synth_const(
+                &mut g,
+                &mut params,
+                &format!("gemma.packed.decode.softcap.cap.{cap}"),
+                vec![cap],
+                &[1],
+            );
+            let scaled = g.mul(logits, inv);
+            let scaled_shape = g.shape(scaled).clone();
+            let t = g.add_node(Op::Activation(Activation::Tanh), vec![scaled], scaled_shape);
+            logits = g.mul(t, cap_id);
+        }
+        if lm_output == PackedDecodeLmOutput::GreedyToken {
+            let logits_shape = g.shape(logits).clone();
+            let vocab_axis = logits_shape.rank().saturating_sub(1);
+            let argmax = g.add_node(
+                Op::ArgMax {
+                    axis: vocab_axis,
+                    keep_dim: false,
+                },
+                vec![logits],
+                Shape::new(&[batch, seq], f),
+            );
+            vec![argmax]
+        } else {
+            vec![logits]
+        }
+    } else {
+        vec![hidden]
     };
-    if let Some(cap) = cfg.final_logit_softcapping {
-        let inv = synth_const(
-            &mut g,
-            &mut params,
-            &format!("gemma.packed.decode.softcap.inv.{cap}"),
-            vec![1.0 / cap],
-            &[1],
-        );
-        let cap_id = synth_const(
-            &mut g,
-            &mut params,
-            &format!("gemma.packed.decode.softcap.cap.{cap}"),
-            vec![cap],
-            &[1],
-        );
-        let scaled = g.mul(logits, inv);
-        let scaled_shape = g.shape(scaled).clone();
-        let t = g.add_node(Op::Activation(Activation::Tanh), vec![scaled], scaled_shape);
-        logits = g.mul(t, cap_id);
-    }
-
-    let mut outputs = vec![logits];
     for (k, v) in new_kv_outputs {
         outputs.push(k);
         outputs.push(v);

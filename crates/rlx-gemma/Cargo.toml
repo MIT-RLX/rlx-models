@@ -16,6 +16,7 @@ rlx-qwen35 = { workspace = true, features = ["tokenizer"] }
 rlx-ir = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-runtime = { workspace = true }
+rlx-cpu = { workspace = true }
 rlx-opt = { workspace = true }
 rlx-gguf = { workspace = true }
 serde = { workspace = true }
@@ -42,8 +43,9 @@ cuda = ["rlx-runtime/cuda"]
 rocm = ["rlx-runtime/rocm"]
 gpu = ["rlx-runtime/gpu"]
 vulkan = ["rlx-runtime/vulkan"]
-all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+coreml = ["rlx-runtime/coreml", "rlx-core/coreml", "rlx-cli/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]

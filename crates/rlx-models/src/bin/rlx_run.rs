@@ -23,6 +23,23 @@ fn register_builtins() {
         "Run MiniCPM5 (Llama-shaped; openbmb/MiniCPM5-1B)",
         rlx_minicpm5::cli_run,
     );
+    #[cfg(feature = "tinyllama")]
+    register_cli(
+        "tinyllama",
+        "Run TinyLlama-1.1B (Llama-shaped; TinyLlama/TinyLlama-1.1B-Chat-v1.0)",
+        rlx_tinyllama::cli_run,
+    );
+    register_cli(
+        "gemma",
+        "Run Gemma / Gemma 2 / Gemma 3 / Gemma 4 LM (safetensors or gguf)",
+        rlx_gemma::cli::run,
+    );
+    #[cfg(feature = "phi")]
+    register_cli(
+        "phi",
+        "Run Phi 3 / Phi 4 LM (gguf)",
+        rlx_phi::cli_run,
+    );
     register_cli(
         "qwen35",
         "Run a Qwen3.5 / Qwen3.6 GGUF (hybrid gated-DeltaNet + attention)",

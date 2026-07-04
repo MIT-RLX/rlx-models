@@ -14,10 +14,10 @@ mod config;
 mod eager;
 mod ops;
 
-#[cfg(feature = "coreml")]
+#[cfg(feature = "snac-rlx")]
 mod compiled;
 
-pub use backend::{SnacBackend, SnacLoadOptions};
+pub use backend::{SnacBackend, SnacExec, SnacLoadOptions};
 pub use config::SnacConfig;
 pub use eager::{SAMPLE_RATE, SAMPLES_PER_FRAME, SnacDecoder};
 

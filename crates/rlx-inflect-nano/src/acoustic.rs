@@ -216,7 +216,7 @@ impl<'a> Acoustic<'a> {
             let pd = (log_dur[[i, 0]]
                 .exp_m1()
                 .clamp(0.0, opts.max_duration as f32))
-                * opts.length_scale;
+                * opts.effective_length_scale();
             let r = pd.round_ties_even() as i64;
             durations[i] = r.max(opts.min_duration);
         }

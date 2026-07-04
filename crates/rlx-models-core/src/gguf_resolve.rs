@@ -18,7 +18,7 @@
 use rlx_gguf::GgufFile;
 use std::sync::{Mutex, OnceLock};
 
-use crate::weight_loader::{gguf_to_hf_name, hf_to_gguf_name};
+use crate::weight_loader::{gguf_to_hf_name, gguf_to_hf_name_for_arch, hf_to_gguf_name, hf_to_gguf_name_for_arch};
 
 /// Resolve a builder-requested tensor name to the name stored in a GGUF file.
 pub trait GgufTensorNameResolver: Send + Sync {
@@ -35,6 +35,8 @@ impl GgufTensorNameResolver for LlamaFamilyGgufResolver {
             arch,
             "llama"
                 | "llama4"
+                | "phi3"
+                | "phi4"
                 | "qwen3"
                 | "qwen2"
                 | "qwen35"
@@ -154,6 +156,34 @@ impl GgufTensorNameResolver for Gemma2GgufResolver {
     }
 }
 
+/// Phi 3 / 4: fused `attn_qkv` and `ffn_up` (gate∥up) tensors.
+pub struct Phi3GgufResolver;
+
+impl GgufTensorNameResolver for Phi3GgufResolver {
+    fn matches_arch(&self, arch: &str) -> bool {
+        matches!(arch, "phi3" | "phi4")
+    }
+
+    fn resolve(&self, file: &GgufFile, key: &str) -> Option<String> {
+        if file.tensors.contains_key(key) {
+            return Some(key.to_string());
+        }
+        for arch in ["phi3", "phi4"] {
+            if let Some(g) = hf_to_gguf_name_for_arch(key, arch) {
+                if file.tensors.contains_key(&g) {
+                    return Some(g);
+                }
+            }
+            if let Some(h) = gguf_to_hf_name_for_arch(key, arch) {
+                if file.tensors.contains_key(&h) {
+                    return Some(h);
+                }
+            }
+        }
+        None
+    }
+}
+
 /// Qwen3.5 native `blk.N.*` names; also accept HF aliases via the Llama mapper.
 pub struct Qwen35NativeGgufResolver;
 
@@ -178,6 +208,7 @@ fn builtin_resolvers() -> &'static Vec<Box<dyn GgufTensorNameResolver>> {
         vec![
             Box::new(Qwen35NativeGgufResolver),
             Box::new(Gemma2GgufResolver),
+            Box::new(Phi3GgufResolver),
             Box::new(LlamaFamilyGgufResolver),
             Box::new(PrefixStripGgufResolver),
         ]

@@ -180,6 +180,17 @@ pub struct GemmaConfig {
     /// is dense (`false`).
     #[serde(default)]
     pub enable_moe_block: bool,
+    /// End-of-generation token ids (from GGUF + llama.cpp EOG set). When
+    /// non-empty, [`Self::is_eog_token`] matches greedy stop semantics.
+    #[serde(default)]
+    pub eog_token_ids: Vec<u32>,
+}
+
+impl GemmaConfig {
+    /// Whether `tok` ends generation (llama.cpp `is_eog_token` parity).
+    pub fn is_eog_token(&self, tok: u32) -> bool {
+        self.eog_token_ids.contains(&tok)
+    }
 }
 
 fn default_rms_norm_eps() -> f64 {
@@ -338,7 +349,8 @@ impl GemmaConfig {
             GemmaArch::Gemma4 => Some(1.0),
             GemmaArch::Gemma2 | GemmaArch::Gemma3 => {
                 if let Some(s) = self.query_pre_attn_scalar {
-                    Some(1.0 / s)
+                    // HF / llama.cpp / mlx: `query_pre_attn_scalar**-0.5` (scale Q, not 1/s).
+                    Some(1.0 / s.sqrt())
                 } else {
                     Some(1.0 / (self.head_dim() as f32).sqrt())
                 }
@@ -355,6 +367,30 @@ impl GemmaConfig {
     /// - Gemma 3 / 4 → strided pattern via
     ///   [`gemma_strided_layer_mask`] (stride-6: every 6th layer is
     ///   full causal, others are sliding-window).
+    /// Sliding-window size for layer `i`'s KV ring buffer during decode
+    /// (Gemma 3/4 ISWA). `None` for full-attention / non-sliding layers.
+    pub fn layer_sliding_kv_window(&self, layer: usize) -> Option<usize> {
+        match (self.arch, self.sliding_window) {
+            (GemmaArch::Gemma3 | GemmaArch::Gemma4, Some(w)) if !self.is_full_attention_layer(layer) => {
+                Some(w)
+            }
+            (GemmaArch::Gemma2, Some(w)) if layer % 2 == 0 => Some(w),
+            _ => None,
+        }
+    }
+
+    /// Per-layer `(kv_dim, window)` trim spec for [`LayerKvCache::trim_sliding_window_per_layer`].
+    pub fn sliding_kv_trim_spec(&self, kv_dims: &[usize]) -> Vec<Option<(usize, usize)>> {
+        (0..self.num_hidden_layers)
+            .map(|layer| {
+                let kd = kv_dims.get(layer).copied().unwrap_or_else(|| {
+                    self.layer_num_kv_heads(layer) * self.layer_head_dim(layer)
+                });
+                self.layer_sliding_kv_window(layer).map(|w| (kd, w))
+            })
+            .collect()
+    }
+
     pub fn layer_attn_options(&self, layer: usize) -> (MaskKind, Option<f32>, Option<f32>) {
         let scale = self.attn_score_scale();
         let softcap = self.attn_logit_softcapping;
@@ -405,6 +441,7 @@ impl GemmaConfig {
             num_kv_shared_layers: 0,
             use_double_wide_mlp: false,
             enable_moe_block: false,
+            eog_token_ids: Vec::new(),
         }
     }
 
@@ -567,6 +604,25 @@ fn infer_gemma4_full_partial_rotary(raw: &GgufFile, global_head_dim: usize) -> O
     }
     let n_rot = rotated_pairs * 2;
     Some(n_rot as f32 / global_head_dim as f32)
+}
+
+/// Build [`GemmaRopeMap`] for Gemma 3 GGUF checkpoints.
+///
+/// HF / llama.cpp use `rope_theta=1e4` on sliding-window layers and
+/// `rope_theta=1e6` on strided full-attention layers. GGUF often ships only
+/// `gemma3.rope.freq_base` (the global value); sliding layers default to 10k.
+fn gemma3_rope_map_from_gguf(get_f32: &impl Fn(&str) -> Option<f32>) -> GemmaRopeMap {
+    let full_theta = get_f32("gemma.rope.freq_base");
+    let swa_theta = get_f32("gemma.rope.freq_base_swa").or(Some(10_000.0));
+    let mk = |theta: f32| GemmaRopeParameters {
+        rope_theta: Some(theta),
+        rope_type: Some(GemmaRopeKind::Default),
+        partial_rotary_factor: None,
+    };
+    GemmaRopeMap {
+        sliding_attention: swa_theta.map(mk),
+        full_attention: full_theta.map(mk),
+    }
 }
 
 /// Build [`GemmaRopeMap`] for Gemma 4 GGUF checkpoints.
@@ -747,7 +803,13 @@ pub fn gemma_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<GemmaConfig> {
         tie_word_embeddings: get_bool("gemma.tie_word_embeddings").unwrap_or(true),
         attention_bias: get_bool("gemma.attention.bias").unwrap_or(false),
         head_dim,
-        attn_logit_softcapping: get_f32("gemma.attn_logit_softcapping"),
+        attn_logit_softcapping: if std::env::var("RLX_GEMMA_NO_ATTN_SOFTCAP").as_deref() == Ok("1") {
+            None
+        } else if let Ok(v) = std::env::var("RLX_GEMMA_ATTN_SOFTCAP_FORCE") {
+            v.parse::<f32>().ok()
+        } else {
+            get_f32("gemma.attn_logit_softcapping")
+        },
         final_logit_softcapping: get_f32("gemma.final_logit_softcapping"),
         sliding_window: get_u32("gemma.attention.sliding_window")
             .ok()
@@ -775,6 +837,8 @@ pub fn gemma_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<GemmaConfig> {
         // layer_rope_theta(full) split correctly.
         rope_parameters: if matches!(arch, GemmaArch::Gemma4) {
             gemma4_rope_map_from_gguf(raw, &get_f32, &get_u32_opt, head_dim, global_head_dim)
+        } else if matches!(arch, GemmaArch::Gemma3) {
+            gemma3_rope_map_from_gguf(&get_f32)
         } else {
             GemmaRopeMap::default()
         },
@@ -798,7 +862,29 @@ pub fn gemma_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<GemmaConfig> {
         num_kv_shared_layers: get_u32("gemma.attention.shared_kv_layers").unwrap_or(0) as usize,
         use_double_wide_mlp: get_bool("gemma.use_double_wide_mlp").unwrap_or(false),
         enable_moe_block: get_u32("gemma.expert_count").unwrap_or(0) > 0,
+        eog_token_ids: gemma_eog_tokens_from_gguf(raw, arch),
     })
+}
+
+/// llama.cpp EOG tokens for Gemma chat models (see load log `EOG token`).
+fn gemma_eog_tokens_from_gguf(raw: &GgufFile, arch: GemmaArch) -> Vec<u32> {
+    let mut ids = match arch {
+        GemmaArch::Gemma2 | GemmaArch::Gemma3 | GemmaArch::Gemma4 => vec![1, 106, 212],
+        _ => Vec::new(),
+    };
+    if let Some(eos) = raw
+        .metadata
+        .get("tokenizer.ggml.eos_token_id")
+        .and_then(MetaValue::as_u32)
+    {
+        let eos = eos as u32;
+        if !ids.contains(&eos) {
+            ids.push(eos);
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 #[cfg(test)]
@@ -999,6 +1085,74 @@ mod tests {
 
         // Last layer (index 47, 1-indexed 48) is also full-attention.
         assert!(cfg.is_full_attention_layer(47));
+    }
+
+    #[test]
+    fn gemma3_gguf_rope_map_splits_swa_and_full_theta() {
+        use rlx_gguf::{GgufFile, GgufWriter, MetaValue};
+        let mut w = GgufWriter::new();
+        w.set_meta("general.architecture", MetaValue::String("gemma3".into()));
+        w.set_meta("gemma3.block_count", MetaValue::U32(18));
+        w.set_meta("gemma3.embedding_length", MetaValue::U32(640));
+        w.set_meta("gemma3.feed_forward_length", MetaValue::U32(2048));
+        w.set_meta("gemma3.attention.head_count", MetaValue::U32(4));
+        w.set_meta("gemma3.attention.head_count_kv", MetaValue::U32(1));
+        w.set_meta("gemma3.attention.key_length", MetaValue::U32(256));
+        w.set_meta("gemma3.attention.sliding_window", MetaValue::U32(512));
+        w.set_meta("gemma3.rope.freq_base", MetaValue::F32(1_000_000.0));
+        w.set_meta(
+            "gemma3.attention.layer_norm_rms_epsilon",
+            MetaValue::F32(1e-6),
+        );
+        w.set_meta(
+            "tokenizer.ggml.tokens",
+            MetaValue::Array(vec![MetaValue::String("a".into())]),
+        );
+        let path = std::env::temp_dir().join("rlx_gemma3_rope_map_test.gguf");
+        w.write_to_path(&path).unwrap();
+        let raw = GgufFile::from_path(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let cfg = gemma_cfg_from_gguf(&raw).unwrap();
+        assert_eq!(cfg.arch, GemmaArch::Gemma3);
+        assert!((cfg.layer_rope_theta(0) - 10_000.0).abs() < 1e-3);
+        assert!((cfg.layer_rope_theta(5) - 1_000_000.0).abs() < 1e-3);
+        assert_eq!(cfg.attn_score_scale(), Some(1.0 / 16.0));
+    }
+
+    #[test]
+    fn gemma3_sliding_kv_trim_spec_marks_stride_layers_only() {
+        use rlx_gguf::{GgufFile, GgufWriter, MetaValue};
+        let mut w = GgufWriter::new();
+        w.set_meta("general.architecture", MetaValue::String("gemma3".into()));
+        w.set_meta("gemma3.block_count", MetaValue::U32(18));
+        w.set_meta("gemma3.embedding_length", MetaValue::U32(640));
+        w.set_meta("gemma3.feed_forward_length", MetaValue::U32(2048));
+        w.set_meta("gemma3.attention.head_count", MetaValue::U32(4));
+        w.set_meta("gemma3.attention.head_count_kv", MetaValue::U32(1));
+        w.set_meta("gemma3.attention.key_length", MetaValue::U32(256));
+        w.set_meta("gemma3.attention.sliding_window", MetaValue::U32(512));
+        w.set_meta("gemma3.rope.freq_base", MetaValue::F32(1_000_000.0));
+        w.set_meta(
+            "gemma3.attention.layer_norm_rms_epsilon",
+            MetaValue::F32(1e-6),
+        );
+        w.set_meta(
+            "tokenizer.ggml.tokens",
+            MetaValue::Array(vec![MetaValue::String("a".into())]),
+        );
+        let path = std::env::temp_dir().join("rlx_gemma3_iswa_trim_test.gguf");
+        w.write_to_path(&path).unwrap();
+        let raw = GgufFile::from_path(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let cfg = gemma_cfg_from_gguf(&raw).unwrap();
+        let kv_dims: Vec<usize> = (0..cfg.num_hidden_layers)
+            .map(|l| cfg.layer_num_kv_heads(l) * cfg.layer_head_dim(l))
+            .collect();
+        let spec = cfg.sliding_kv_trim_spec(&kv_dims);
+        assert_eq!(spec.len(), 18);
+        assert_eq!(spec[0], Some((256, 512)));
+        assert_eq!(spec[5], None);
+        assert_eq!(spec[17], None);
     }
 
     #[test]

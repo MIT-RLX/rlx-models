@@ -50,7 +50,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use rlx_flow::blocks::{
     DecodeRopeParamsStage, LlamaDecodeLayerSpec, LlamaDecoderSpec, RopeTablesStage,
-    llama_prefill_layer_fused,
+    llama_prefill_layer_composed, llama_prefill_layer_fused,
 };
 use rlx_flow::{BuiltModel, CompileProfile, FlowStage, ModelFlow, SideOutputs};
 use rlx_ir::dynamic::sym;
@@ -391,6 +391,7 @@ impl<'a> Llama32Flow<'a> {
         let h = cfg.hidden_size;
         let eps = cfg.rms_norm_eps as f32;
         let dh = cfg.head_dim();
+        let n_rot = cfg.n_rot();
 
         let hidden_shape = prefill_hidden_shape(self.batch, self.seq, h, self.dynamic_seq, f);
         let input_shape = prefill_input_shape(self.batch, self.seq, self.dynamic_seq);
@@ -402,6 +403,7 @@ impl<'a> Llama32Flow<'a> {
         let decoder_spec = LlamaDecoderSpec {
             num_heads: cfg.num_attention_heads,
             head_dim: dh,
+            n_rot,
             num_kv_heads: cfg.num_key_value_heads,
             eps,
             mask: MaskKind::Causal,
@@ -458,7 +460,11 @@ impl<'a> Llama32Flow<'a> {
                         ),
                     ));
                 }
-                stages.push(llama_prefill_layer_fused(i, spec.clone()));
+                stages.push(if n_rot < dh {
+                    llama_prefill_layer_composed(i, spec.clone())
+                } else {
+                    llama_prefill_layer_fused(i, spec.clone())
+                });
                 if stages.len() == 1 {
                     stages.into_iter().next().unwrap()
                 } else {
@@ -504,8 +510,9 @@ impl<'a> Llama32Flow<'a> {
         let h = cfg.hidden_size;
         let eps = cfg.rms_norm_eps as f32;
         let dh = cfg.head_dim();
+        let n_rot = cfg.n_rot();
         let kv_dim = cfg.kv_proj_dim();
-        let half = dh / 2;
+        let half = n_rot / 2;
 
         let hidden_shape = Shape::new(&[self.batch, 1, h], f);
         let past_kv_shape = if self.dynamic_past {
@@ -524,6 +531,7 @@ impl<'a> Llama32Flow<'a> {
         let decode_spec = LlamaDecodeLayerSpec {
             num_heads: cfg.num_attention_heads,
             head_dim: dh,
+            n_rot,
             num_kv_heads: cfg.num_key_value_heads,
             kv_group_size: cfg.kv_group_size(),
             eps,

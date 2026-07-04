@@ -38,6 +38,19 @@ pub fn top_k_logits(path: &Path, prompt_ids: &[u32], top_k: usize) -> Result<Vec
     Ok(pairs)
 }
 
+/// Tokenize `text` with the GGUF's embedded tokenizer (BOS prepended) so
+/// parity tests can feed a *valid* prompt to both llama.cpp and rlx.
+pub fn tokenize(path: &Path, text: &str) -> Result<Vec<u32>> {
+    let backend = LlamaBackend::init().context("LlamaBackend::init")?;
+    let model_params = LlamaModelParams::default().with_n_gpu_layers(0);
+    let model = LlamaModel::load_from_file(&backend, path, &model_params)
+        .with_context(|| format!("load GGUF {}", path.display()))?;
+    let toks = model
+        .str_to_token(text, llama_cpp_2::model::AddBos::Always)
+        .context("str_to_token")?;
+    Ok(toks.into_iter().map(|t| t.0 as u32).collect())
+}
+
 /// Full last-token logit vector (length = model vocab).
 pub fn last_token_logits(path: &Path, prompt_ids: &[u32]) -> Result<Vec<f32>> {
     anyhow::ensure!(!prompt_ids.is_empty(), "prompt_ids must be non-empty");

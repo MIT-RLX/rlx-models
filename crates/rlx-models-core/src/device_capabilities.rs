@@ -36,11 +36,53 @@ pub const STANDARD_DEVICES: &[Device] = &[
 ];
 
 /// CLI / help string for `--device`.
-pub const STANDARD_DEVICE_NAMES: &str = "cpu|metal|mps|mlx|cuda|rocm|hip|gpu|wgpu|vulkan";
+pub const STANDARD_DEVICE_NAMES: &str = "auto|cpu|metal|mps|mlx|cuda|rocm|hip|gpu|wgpu|vulkan";
+
+/// [`STANDARD_DEVICE_NAMES`] plus CoreML / ANE when the `coreml` feature is enabled.
+pub const LM_DEVICE_NAMES: &str =
+    "auto|cpu|metal|mps|mlx|cuda|rocm|hip|gpu|wgpu|vulkan|coreml|ane";
+
+/// Preferred causal-LM inference order on this host (excludes ANE — request `coreml` explicitly).
+pub const LM_INFERENCE_DEVICE_PRIORITY: &[Device] = &[
+    Device::Cuda,
+    Device::Rocm,
+    Device::Mlx,
+    Device::Metal,
+    Device::Gpu,
+    Device::Vulkan,
+    Device::Cpu,
+];
+
+/// Best available accelerator for text LM inference (CUDA → ROCm → MLX → Metal → … → CPU).
+pub fn pick_lm_device() -> Device {
+    let avail = rlx_runtime::available_devices();
+    for &d in LM_INFERENCE_DEVICE_PRIORITY {
+        if avail.contains(&d) {
+            return d;
+        }
+    }
+    Device::Cpu
+}
+
+/// Parse `--device auto` (or empty) via [`pick_lm_device`]; otherwise delegate to `FromStr`.
+pub fn resolve_lm_device_str(family: &str, s: &str) -> Result<Device> {
+    let key = s.trim().to_ascii_lowercase();
+    if key == "auto" || key.is_empty() {
+        return Ok(pick_lm_device());
+    }
+    let d = std::str::FromStr::from_str(s.trim()).map_err(|e| anyhow::anyhow!("{e}"))?;
+    validate_lm_device(family, d)?;
+    Ok(d)
+}
 
 /// True when `device` is in [`STANDARD_DEVICES`].
 pub fn is_standard_device(device: Device) -> bool {
     STANDARD_DEVICES.contains(&device)
+}
+
+/// Causal LM runners: standard backends plus CoreML (`Device::Ane`) with `coreml`.
+pub fn is_lm_device(device: Device) -> bool {
+    is_standard_device(device) || device == Device::Ane
 }
 
 /// Fail fast on exotic runtime devices (TPU, ANE, OpenGL, …).
@@ -53,6 +95,20 @@ pub fn validate_standard_device(family: &str, device: Device) -> Result<()> {
              (use {STANDARD_DEVICE_NAMES})"
         )
     }
+}
+
+/// Like [`validate_standard_device`], but allows `Device::Ane` when built with `coreml`.
+pub fn validate_lm_device(family: &str, device: Device) -> Result<()> {
+    if device == Device::Ane {
+        #[cfg(feature = "coreml")]
+        return Ok(());
+        #[cfg(not(feature = "coreml"))]
+        bail!(
+            "{family}: device Ane requires the `coreml` feature \
+             (enable `coreml` or `apple-silicon` on this crate)"
+        );
+    }
+    validate_standard_device(family, device)
 }
 
 /// `(free_bytes, total_bytes)` for TIDE MoE VRAM budget sizing.
@@ -78,7 +134,9 @@ pub fn device_memory_for_moe_offload(device: Device) -> Option<(usize, usize)> {
         }
     }
     match device {
-        Device::Metal | Device::Mlx => memory_estimate::available_unified_memory().map(|t| (t, t)),
+        Device::Metal | Device::Mlx | Device::Ane => {
+            memory_estimate::available_unified_memory().map(|t| (t, t))
+        }
         Device::Cuda | Device::Rocm | Device::Gpu | Device::Vulkan => {
             memory_estimate::available_unified_memory().map(|t| (t, t))
         }
@@ -108,5 +166,18 @@ mod tests {
             assert!(is_standard_device(*dev));
         }
         assert!(!is_standard_device(Device::Tpu));
+    }
+
+    #[test]
+    fn pick_lm_device_is_available() {
+        let picked = pick_lm_device();
+        assert!(rlx_runtime::is_available(picked));
+        assert!(is_lm_device(picked));
+    }
+
+    #[test]
+    fn resolve_auto_picks_fastest() {
+        let d = resolve_lm_device_str("test", "auto").unwrap();
+        assert_eq!(d, pick_lm_device());
     }
 }

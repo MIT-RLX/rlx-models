@@ -139,6 +139,8 @@ LAST_PUBLISH_ERR=""      # temp log from the last failed publish attempt
 SKIPPED=(
     rlx-mamba-bench
     bench_matmul_rlx
+    rlx-gemma-inflect-nano
+    rlx-narma10
 )
 
 # Tier definitions. Each array entry is a single tier; space-separated
@@ -153,7 +155,7 @@ TIERS=(
     "rlx-bioclip2 rlx-clinicalbert rlx-dac rlx-dinov2 rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-grounding-dino rlx-lfm rlx-lfm-vl rlx-minimax rlx-nemotron-asr rlx-ocr rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-vad rlx-vjepa2 rlx-wav2vec2-bert"
     "rlx-flux2 rlx-locateanything rlx-omnicoder rlx-qwen35 rlx-sam2 rlx-sam3 rlx-tsac rlx-whisper"
     "rlx-aec rlx-gemma rlx-kittentts rlx-llama32 rlx-mimi rlx-nemotron-omni rlx-pocket-tts rlx-qwen3-asr"
-    "rlx-bonsai rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-kyutai-tts rlx-minicpm5 rlx-mistral rlx-moshi rlx-nemotron rlx-neutts rlx-orpheus rlx-phi rlx-qwen3-tts rlx-voxtral rlx-voxtral-tts"
+    "rlx-bonsai rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-kyutai-tts rlx-minicpm5 rlx-mistral rlx-moshi rlx-nemotron rlx-neutts rlx-orpheus rlx-phi rlx-qwen3-tts rlx-tinyllama rlx-voxtral rlx-voxtral-tts"
     "rlx-models rlx-qwen3-tts-train rlx-voxtral-tts-train"
 )
 
@@ -457,6 +459,12 @@ list_tiers() {
                 ;;
             bench_matmul_rlx)
                 echo "  - bench_matmul_rlx         (workspace.exclude; publish = false; matmul bench)"
+                ;;
+            rlx-gemma-inflect-nano)
+                echo "  - rlx-gemma-inflect-nano   (publish = false; Gemma + Inflect demo)"
+                ;;
+            rlx-narma10)
+                echo "  - rlx-narma10              (publish = false; NARMA-10 reference)"
                 ;;
             *)
                 echo "  - $s"

@@ -17,24 +17,23 @@
 //!
 //! Phi-3 and Phi-4 ship as `general.architecture = phi3` in their GGUF
 //! converters (Phi-4 reuses the Phi-3 arch tag upstream — there's no
-//! separate `phi4` enum in llama.cpp). This crate is a thin wrapper
-//! over [`rlx_llama32::Llama32Runner`] with arch validation.
-//!
-//! **Caveat:** Phi-3's per-layer LayerNorm placement and partial-RoPE
-//! split aren't yet implemented in `rlx-llama32` — runs will produce
-//! *some* tokens but won't match the upstream reference until those
-//! land. PLAN.md M4 follow-up.
+//! separate `phi4` enum in llama.cpp). Inference is implemented in
+//! [`rlx_llama32::Llama32Runner`] with Phi-specific partial RoPE and
+//! NeoX pairing.
 
 use anyhow::{Context, Result, bail};
 use rlx_llama_base::LlamaBaseConfig;
+use rlx_runtime::Device;
 use std::path::{Path, PathBuf};
 
-pub use rlx_llama32::{Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder};
+pub use rlx_llama32::{
+    Llama32Config, Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder, RopeStyle,
+};
 
 pub const PLAN_MILESTONE: &str = "M4";
 pub const FAMILY: &str = "Phi 3 / Phi 4";
 
-const ACCEPTED_ARCHES: &[&str] = &["phi3"];
+const ACCEPTED_ARCHES: &[&str] = &["phi3", "phi4"];
 
 pub struct PhiRunner {
     inner: Llama32Runner,
@@ -53,6 +52,17 @@ impl PhiRunner {
     }
     pub fn inner_mut(&mut self) -> &mut Llama32Runner {
         &mut self.inner
+    }
+    pub fn predict_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        self.inner.predict_logits(prompt_ids)
+    }
+    pub fn generate(
+        &mut self,
+        prompt_ids: &[u32],
+        n_new: usize,
+        on_token: impl FnMut(u32),
+    ) -> Result<Vec<u32>> {
+        self.inner.generate(prompt_ids, n_new, on_token)
     }
     pub fn generate_packed(
         &mut self,
@@ -75,6 +85,10 @@ impl PhiRunnerBuilder {
         let p: PathBuf = path.into();
         self.weights = Some(p.clone());
         self.inner = self.inner.weights(p);
+        self
+    }
+    pub fn device(mut self, d: Device) -> Self {
+        self.inner = self.inner.device(d);
         self
     }
     pub fn max_seq(mut self, n: usize) -> Self {

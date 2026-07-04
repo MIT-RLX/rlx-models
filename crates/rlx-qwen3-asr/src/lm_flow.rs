@@ -138,10 +138,9 @@ pub fn build_asr_decode_built_opts(
     let opts = Qwen3DecodeOpts {
         batch,
         past_seq,
-        dynamic_past: false,
         use_custom_mask,
-        ragged_rope: false,
         profile,
+        ..Default::default()
     };
     build_qwen3_decode_built(cfg, weights, &opts)
 }

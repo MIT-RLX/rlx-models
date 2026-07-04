@@ -15,35 +15,35 @@
 
 //! CLI for training, evaluation, and benchmarking learned FFT / IFFT.
 
-use crate::ablation::{print_ablation_table, run_ablation, tier_summary, write_ablation_json};
-use crate::ablation_html::{read_ablation_json, write_ablation_html};
-use crate::ablation_ternary::{
+use crate::ablation::html::{read_ablation_json, write_ablation_html};
+use crate::ablation::ternary::{
     TernaryAblationOpts, print_ternary_ablation_table, quick_ablation_opts, run_ternary_ablation,
     write_ternary_ablation_csv, write_ternary_ablation_json,
 };
-use crate::ablation_ternary_html::write_ternary_ablation_html;
+use crate::ablation::ternary_html::write_ternary_ablation_html;
+use crate::ablation::{print_ablation_table, run_ablation, tier_summary, write_ablation_json};
 use crate::bench::bench_all;
-use crate::bench_encdec::{
+use crate::bench::e2e_html::{read_e2e_json, write_e2e_html};
+use crate::bench::encdec::{
     bench_exact_baseline, bench_phased_dir, print_encdec_bench_table, write_encdec_bench_json,
 };
-use crate::bench_sweep::{
+use crate::bench::sweep::{
     available_devices, parse_batch_spec, parse_csv_usize, parse_k_spec, print_sweep_chart,
     run_sweep, sweep_markdown_chart, write_sweep_json,
 };
-use crate::bench_sweep_html::{read_sweep_json, write_sweep_html};
-use crate::config::{
+use crate::bench::sweep_html::{read_sweep_json, write_sweep_html};
+use crate::exec::runner::FftLearnRunner;
+use crate::learned::model::FastLearnedFftModel;
+use crate::model::config::{
     EncDecTrainConfig, FftLearnConfig, MultiTrainConfig, MultiTrainSchedule, PhasedTrainConfig,
     SUPPORTED_N_FFT, TrainConfig, TransformDir, parse_n_fft, parse_transform_dir,
 };
-use crate::e2e_bench_html::{read_e2e_json, write_e2e_html};
-use crate::learned_model::FastLearnedFftModel;
-use crate::runner::FftLearnRunner;
-use crate::study_html::write_study_html;
+use crate::model::weights::load_safetensors;
+use crate::study::html::write_study_html;
+use crate::train::multi::{print_multi_train_table, run_multi_train};
+use crate::train::multi_html::write_multi_train_html;
+use crate::train::phased::train_phased_encdec;
 use crate::train::{evaluate_weights_dir, random_complex_batch, train_butterfly_dir, train_encdec};
-use crate::train_multi::{print_multi_train_table, run_multi_train};
-use crate::train_multi_html::write_multi_train_html;
-use crate::train_phased::train_phased_encdec;
-use crate::weights::load_safetensors;
 use anyhow::{Context, Result, bail, ensure};
 use rand::prelude::*;
 use rlx_cli::{parse_device, req};
@@ -95,7 +95,7 @@ pub fn run(args: &[String]) -> Result<()> {
 /// compiles a graph through `try_compile_graph*` then honors it — `f16` is what
 /// pushes the butterfly/mask/denoiser graph onto fp16 silicon (ANE/Metal/MLX).
 fn apply_global_precision(args: &[String]) -> Result<Vec<String>> {
-    use crate::compile::{parse_precision, set_compile_precision};
+    use crate::exec::compile::{parse_precision, set_compile_precision};
     let mut out = Vec::with_capacity(args.len());
     let mut i = 0;
     while i < args.len() {
@@ -155,7 +155,7 @@ fn print_help() {
            --precision f32|f16|bf16   # float dtype for compiled graphs (default f32; f16 → ANE/half silicon)\n\
          \n\
          Supported n_fft: {:?}",
-        crate::config::SUPPORTED_N_FFT
+        crate::model::config::SUPPORTED_N_FFT
     );
 }
 
@@ -192,11 +192,11 @@ fn cmd_precision_sweep(args: &[String]) -> Result<()> {
 
     let mut reports = Vec::new();
     for &n in &n_ffts {
-        let report = crate::precision_fft::precision_sweep(n, batch, max_iters, seed)?;
+        let report = crate::model::precision_fft::precision_sweep(n, batch, max_iters, seed)?;
         println!("\nn_fft={n} batch={batch}  (precision recovery on f16-only hardware)");
         println!(
-            "  {:<18} {:>12} {:>8}  {}",
-            "scheme", "max_err", "passes", "output"
+            "  {:<18} {:>12} {:>8}  output",
+            "scheme", "max_err", "passes"
         );
         for row in &report.rows {
             let passes = if row.passes.is_nan() {
@@ -260,7 +260,7 @@ fn cmd_train_matryoshka(args: &[String]) -> Result<()> {
         }
     }
 
-    let result = crate::matryoshka::train_matryoshka(
+    let result = crate::model::matryoshka::train_matryoshka(
         n_fft, batch, steps, lr, log_every, f16_weight, perturb, seed,
     )?;
     let base = &result.points[0];
@@ -295,7 +295,7 @@ fn cmd_train_matryoshka(args: &[String]) -> Result<()> {
         eprintln!("wrote {}", path.display());
     }
     if let Some(path) = html {
-        std::fs::write(&path, crate::matryoshka::render_curve_html(&result))
+        std::fs::write(&path, crate::model::matryoshka::render_curve_html(&result))
             .with_context(|| format!("write {}", path.display()))?;
         eprintln!("wrote {}", path.display());
     }
@@ -587,7 +587,7 @@ fn cmd_roundtrip(args: &[String]) -> Result<()> {
         .collect();
     let spectrum = fft.forward_eager(&signal)?;
     let recovered = ifft.forward_eager(&spectrum)?;
-    let scale = crate::reference::roundtrip_scale(n_fft);
+    let scale = crate::model::reference::roundtrip_scale(n_fft);
     let mut max_err = 0f32;
     for b in 0..batch {
         for i in 0..n_fft {
@@ -760,7 +760,7 @@ fn cmd_train_multi(args: &[String]) -> Result<()> {
 
     let n_ffts = parse_csv_usize(&n_fft_csv, "--n-fft")?;
     let schedules = MultiTrainSchedule::parse_csv(&schedules_csv)?;
-    let optimizer = crate::second_order::TwiddleOptimizer::parse(&optimizer)?;
+    let optimizer = crate::train::second_order::TwiddleOptimizer::parse(&optimizer)?;
     let cfg = MultiTrainConfig {
         n_ffts,
         batch,
@@ -785,11 +785,11 @@ fn cmd_train_multi(args: &[String]) -> Result<()> {
 
     let report = run_multi_train(&cfg)?;
     print_multi_train_table(&report);
-    let winners = crate::train_multi::best_regime_per_eval(&report);
+    let winners = crate::train::multi::best_regime_per_eval(&report);
     eprintln!("Best learned regime per eval n_fft: {winners:?}");
 
     if let Some(path) = json_out {
-        crate::train_multi::write_multi_train_json(&path, &report)?;
+        crate::train::multi::write_multi_train_json(&path, &report)?;
         eprintln!("wrote {}", path.display());
     }
     if let Some(path) = html_out {
@@ -915,7 +915,7 @@ fn cmd_bench_sweep(args: &[String]) -> Result<()> {
     let n_ffts = parse_csv_usize(&n_fft_csv, "--n-fft")?;
     let batches = parse_csv_usize(&batch_csv, "--batch")?;
     let device_names = if let Some(csv) = devices_csv {
-        crate::device::parse_bench_device_list(&csv)?
+        crate::exec::device::parse_bench_device_list(&csv)?
     } else {
         available_devices()
             .into_iter()
@@ -964,7 +964,7 @@ fn cmd_bench_sweep(args: &[String]) -> Result<()> {
 /// Report the largest FFT batch each device can run for a given `(n_fft, dtype,
 /// limbs)`, detecting the memory + dispatch ceilings from the live machine.
 fn cmd_max_batch(args: &[String]) -> Result<()> {
-    use crate::max_batch::{FftProblem, auto_max_fft_batch, detect_device_caps};
+    use crate::exec::max_batch::{FftProblem, auto_max_fft_batch, detect_device_caps};
 
     let mut n_fft = 256usize;
     let mut devices_csv: Option<String> = None;
@@ -998,7 +998,7 @@ fn cmd_max_batch(args: &[String]) -> Result<()> {
     }
 
     let device_names = if let Some(csv) = devices_csv {
-        crate::device::parse_bench_device_list(&csv)?
+        crate::exec::device::parse_bench_device_list(&csv)?
     } else {
         available_devices()
             .into_iter()
@@ -1014,11 +1014,11 @@ fn cmd_max_batch(args: &[String]) -> Result<()> {
         problem.row_footprint_bytes()
     );
     eprintln!(
-        "  {:<8} {:>12} {:>11} {:>12} {:>12}  {:<10} {}",
-        "device", "mem budget", "dispatch", "mem cap", "MAX BATCH", "limited by", "mem source"
+        "  {:<8} {:>12} {:>11} {:>12} {:>12}  {:<10} mem source",
+        "device", "mem budget", "dispatch", "mem cap", "MAX BATCH", "limited by"
     );
     for name in &device_names {
-        let device = crate::device::resolve_train_device(Some(name))?;
+        let device = crate::exec::device::resolve_train_device(Some(name))?;
         let caps = detect_device_caps(device);
         let cap = auto_max_fft_batch(device, problem);
         eprintln!(
@@ -1091,7 +1091,7 @@ fn cmd_report_html(args: &[String]) -> Result<()> {
                 .and_then(|r0| r0.get("variant"))
                 .is_some());
     if is_multi_train {
-        let report = crate::train_multi_html::read_multi_train_json(&json_path)?;
+        let report = crate::train::multi_html::read_multi_train_json(&json_path)?;
         write_multi_train_html(&html_path, &report)?;
     } else if is_ablation {
         let report = read_ablation_json(&json_path)?;
@@ -1102,7 +1102,7 @@ fn cmd_report_html(args: &[String]) -> Result<()> {
         let report = if reports.len() == 1 {
             reports.into_iter().next().unwrap()
         } else {
-            crate::e2e_bench::merge_e2e_reports(&reports)?
+            crate::bench::e2e::merge_e2e_reports(&reports)?
         };
         write_e2e_html(&html_path, &report)?;
     } else {
@@ -1243,7 +1243,7 @@ fn cmd_study_report(args: &[String]) -> Result<()> {
             "[study-report] loading ablation CSV from {}",
             path.display()
         );
-        Some(crate::ablation_csv::read_ablation_csv_dir(path)?)
+        Some(crate::ablation::csv::read_ablation_csv_dir(path)?)
     } else if let Some(path) = &ablation_json {
         Some(read_ablation_json(path)?)
     } else {
@@ -1251,7 +1251,7 @@ fn cmd_study_report(args: &[String]) -> Result<()> {
     };
 
     let multi_train = if let Some(path) = &train_json {
-        Some(crate::train_multi_html::read_multi_train_json(path)?)
+        Some(crate::train::multi_html::read_multi_train_json(path)?)
     } else {
         None
     };
@@ -1265,7 +1265,7 @@ fn cmd_study_report(args: &[String]) -> Result<()> {
         eprintln!(
             "[study-report] collecting model telemetry n_fft={model_study_n_fft} steps={model_study_steps}"
         );
-        Some(crate::study_collect::collect_study_telemetry(
+        Some(crate::study::collect::collect_study_telemetry(
             model_study_n_fft,
             8,
             model_study_steps,
@@ -1285,11 +1285,11 @@ fn cmd_study_report(args: &[String]) -> Result<()> {
             let csv_dir = ablation_csv_out
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("/tmp/rlx-fft-study-csv"));
-            crate::ablation_csv::write_ablation_csv_dir(&csv_dir, report)?;
+            crate::ablation::csv::write_ablation_csv_dir(&csv_dir, report)?;
         }
     }
 
-    let inputs = crate::study_html::StudyInputs {
+    let inputs = crate::study::html::StudyInputs {
         ablation,
         multi_train,
         telemetry,
@@ -1362,7 +1362,7 @@ fn cmd_ablation_ternary(args: &[String]) -> Result<()> {
                 .map(str::to_string)
                 .collect();
         } else {
-            opts.devices = crate::device::parse_bench_device_list(&csv)?;
+            opts.devices = crate::exec::device::parse_bench_device_list(&csv)?;
         }
     }
 
@@ -1440,7 +1440,7 @@ fn cmd_ablation(args: &[String]) -> Result<()> {
     let n_ffts = parse_csv_usize(&n_fft_csv, "--n-fft")?;
     let batches = parse_csv_usize(&batch_csv, "--batch")?;
     let device_names = if let Some(csv) = devices_csv {
-        crate::device::parse_bench_device_list(&csv)?
+        crate::exec::device::parse_bench_device_list(&csv)?
     } else {
         available_devices()
             .into_iter()
@@ -1472,7 +1472,7 @@ fn cmd_ablation(args: &[String]) -> Result<()> {
         let csv_dir = csv_dir_out
             .clone()
             .unwrap_or_else(|| PathBuf::from("/tmp/rlx-fft-ablation-csv"));
-        crate::ablation_csv::write_ablation_csv_dir(&csv_dir, &report)?;
+        crate::ablation::csv::write_ablation_csv_dir(&csv_dir, &report)?;
     }
     if let Some(path) = html_out {
         write_ablation_html(&path, &report)?;
@@ -1482,7 +1482,7 @@ fn cmd_ablation(args: &[String]) -> Result<()> {
 }
 
 fn cmd_train_e2e(args: &[String]) -> Result<()> {
-    let mut cfg = crate::train_e2e::E2eTrainConfig::default();
+    let mut cfg = crate::train::e2e::E2eTrainConfig::default();
     let mut json_out: Option<PathBuf> = None;
 
     let mut i = 0;
@@ -1525,7 +1525,7 @@ fn cmd_train_e2e(args: &[String]) -> Result<()> {
         }
     }
 
-    let (_model, report) = crate::train_e2e::train_fast_learned_model(&cfg)?;
+    let (_model, report) = crate::train::e2e::train_fast_learned_model(&cfg)?;
     eprintln!(
         "train-e2e done: spec_err={:.3e} mel_err={:.3e} welch_err={:.3e} peak_err={:.3e} mean_gate={:.3} active_gates={} q8={} ({:.1} ms)",
         report.final_spectrum_max_err,
@@ -1545,8 +1545,8 @@ fn cmd_train_e2e(args: &[String]) -> Result<()> {
 }
 
 fn cmd_train_distill(args: &[String]) -> Result<()> {
-    let mut cfg = crate::train_distill::DistillTrainConfig::default();
-    let mut teacher_cfg = crate::train_e2e::E2eTrainConfig::default();
+    let mut cfg = crate::train::distill::DistillTrainConfig::default();
+    let mut teacher_cfg = crate::train::e2e::E2eTrainConfig::default();
     let mut json_out: Option<PathBuf> = None;
     let mut teacher_steps: Option<usize> = None;
 
@@ -1582,13 +1582,13 @@ fn cmd_train_distill(args: &[String]) -> Result<()> {
         "[train-distill] training teacher ({} steps)…",
         teacher_cfg.steps
     );
-    let (teacher, trep) = crate::train_e2e::train_fast_learned_model(&teacher_cfg)?;
+    let (teacher, trep) = crate::train::e2e::train_fast_learned_model(&teacher_cfg)?;
     eprintln!(
         "[train-distill] teacher mel_err={:.3e} welch_err={:.3e}",
         trep.final_mel_max_err, trep.final_welch_max_err
     );
 
-    let (student, rep) = crate::train_distill::distill_from_teacher(&teacher, &cfg)?;
+    let (student, rep) = crate::train::distill::distill_from_teacher(&teacher, &cfg)?;
     eprintln!(
         "train-distill done: mel_vs_teacher={:.3e} welch_vs_teacher={:.3e} mel_vs_ref={:.3e} ({:.1} ms)",
         rep.final_mel_err_vs_teacher,
@@ -1610,8 +1610,8 @@ fn cmd_train_distill(args: &[String]) -> Result<()> {
 }
 
 fn cmd_train_distill_ternary(args: &[String]) -> Result<()> {
-    let mut cfg = crate::train_distill_ternary::DistillTernaryTrainConfig::default();
-    let mut teacher_cfg = crate::train_e2e::E2eTrainConfig::default();
+    let mut cfg = crate::train::distill_ternary::DistillTernaryTrainConfig::default();
+    let mut teacher_cfg = crate::train::e2e::E2eTrainConfig::default();
     let mut json_out: Option<PathBuf> = None;
     let mut teacher_steps: Option<usize> = None;
 
@@ -1650,14 +1650,14 @@ fn cmd_train_distill_ternary(args: &[String]) -> Result<()> {
         "[train-distill-ternary] training teacher ({} steps)…",
         teacher_cfg.steps
     );
-    let (teacher, trep) = crate::train_e2e::train_fast_learned_model(&teacher_cfg)?;
+    let (teacher, trep) = crate::train::e2e::train_fast_learned_model(&teacher_cfg)?;
     eprintln!(
         "[train-distill-ternary] teacher mel_err={:.3e} welch_err={:.3e}",
         trep.final_mel_max_err, trep.final_welch_max_err
     );
 
     let (student, rep) =
-        crate::train_distill_ternary::distill_ternary_from_teacher(&teacher, &cfg)?;
+        crate::train::distill_ternary::distill_ternary_from_teacher(&teacher, &cfg)?;
     eprintln!(
         "train-distill-ternary done: mel_vs_teacher={:.3e} welch_vs_teacher={:.3e} mel_vs_ref={:.3e} compute={:.3} skip={} fwd={} rev={} ({:.1} ms)",
         rep.final_mel_err_vs_teacher,
@@ -1687,7 +1687,7 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
     let mut n_fft = 256usize;
     let mut batch_csv = "8".to_string();
     let mut n_mels = 40usize;
-    let mut peak_k = crate::peak::DEFAULT_PEAK_K;
+    let mut peak_k = crate::spectral::peak::DEFAULT_PEAK_K;
     let mut iters = 20usize;
     let mut device_csv = "all".to_string();
     let mut train_first = false;
@@ -1778,15 +1778,15 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
     }
 
     let batches = parse_batch_spec(&batch_csv, "--batch")?;
-    let device_names = crate::device::parse_bench_device_list(&device_csv)?;
+    let device_names = crate::exec::device::parse_bench_device_list(&device_csv)?;
     eprintln!("[bench-e2e] devices: {}", device_names.join(", "));
 
-    let mut merged = crate::e2e_bench::E2eBenchReport {
+    let mut merged = crate::bench::e2e::E2eBenchReport {
         n_mels,
         iters,
         elapsed_ms: 0.0,
         rows: Vec::new(),
-        meta: crate::e2e_bench::E2eBenchMeta {
+        meta: crate::bench::e2e::E2eBenchMeta {
             n_fft,
             seed,
             devices: device_names.clone(),
@@ -1810,7 +1810,7 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
     let started = std::time::Instant::now();
 
     for &batch in &batches {
-        let mut batch_meta = crate::e2e_bench::E2eBatchTrainMeta {
+        let mut batch_meta = crate::bench::e2e::E2eBatchTrainMeta {
             batch,
             teacher: None,
             distill: None,
@@ -1818,16 +1818,16 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
 
         let trained = if train_first || distill_first {
             eprintln!("[bench-e2e] training teacher batch={batch} steps={train_steps}");
-            let train_cfg = crate::train_e2e::E2eTrainConfig {
+            let train_cfg = crate::train::e2e::E2eTrainConfig {
                 n_fft,
                 batch,
                 n_mels,
                 steps: train_steps,
                 seed: seed.wrapping_add(batch as u64),
                 peak_k,
-                ..crate::train_e2e::E2eTrainConfig::default()
+                ..crate::train::e2e::E2eTrainConfig::default()
             };
-            let (m, rep) = crate::train_e2e::train_fast_learned_model(&train_cfg)?;
+            let (m, rep) = crate::train::e2e::train_fast_learned_model(&train_cfg)?;
             eprintln!(
                 "[bench-e2e] batch={batch} spec_err={:.3e} mel_err={:.3e} welch_err={:.3e} mean_gate={:.3} active_gates={}",
                 rep.final_spectrum_max_err,
@@ -1845,15 +1845,15 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
         let distilled = if distill_first {
             if let Some(teacher) = trained.as_ref() {
                 eprintln!("[bench-e2e] distilling student batch={batch} steps={distill_steps}");
-                let dcfg = crate::train_distill::DistillTrainConfig {
+                let dcfg = crate::train::distill::DistillTrainConfig {
                     n_fft,
                     batch,
                     n_mels,
                     steps: distill_steps,
                     seed: seed.wrapping_add(batch as u64).wrapping_add(1),
-                    ..crate::train_distill::DistillTrainConfig::default()
+                    ..crate::train::distill::DistillTrainConfig::default()
                 };
-                let (d, rep) = crate::train_distill::distill_from_teacher(teacher, &dcfg)?;
+                let (d, rep) = crate::train::distill::distill_from_teacher(teacher, &dcfg)?;
                 eprintln!(
                     "[bench-e2e] batch={batch} mel_vs_teacher={:.3e} welch_vs_teacher={:.3e} mel_vs_ref={:.3e}",
                     rep.final_mel_err_vs_teacher,
@@ -1868,7 +1868,7 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
         } else if train_first {
             trained
                 .as_ref()
-                .map(crate::distill_model::DistilledFftModel::from_teacher)
+                .map(crate::distill::model::DistilledFftModel::from_teacher)
         } else {
             None
         };
@@ -1878,7 +1878,7 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
                 eprintln!(
                     "[bench-e2e] ternary distilling batch={batch} steps={distill_steps} compute_weight={compute_weight}"
                 );
-                let dcfg = crate::train_distill_ternary::DistillTernaryTrainConfig {
+                let dcfg = crate::train::distill_ternary::DistillTernaryTrainConfig {
                     n_fft,
                     batch,
                     n_mels,
@@ -1886,14 +1886,14 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
                     compute_weight,
                     target_compute_fraction,
                     seed: seed.wrapping_add(batch as u64).wrapping_add(3),
-                    ..crate::train_distill_ternary::DistillTernaryTrainConfig::default()
+                    ..crate::train::distill_ternary::DistillTernaryTrainConfig::default()
                 };
                 let (d, rep) = if let Some(base) = distilled.as_ref() {
-                    crate::train_distill_ternary::distill_ternary_from_distilled(
+                    crate::train::distill_ternary::distill_ternary_from_distilled(
                         base, teacher, &dcfg,
                     )?
                 } else {
-                    crate::train_distill_ternary::distill_ternary_from_teacher(teacher, &dcfg)?
+                    crate::train::distill_ternary::distill_ternary_from_teacher(teacher, &dcfg)?
                 };
                 eprintln!(
                     "[bench-e2e] batch={batch} ternary mel_vs_teacher={:.3e} spec_vs_ref={:.3e} compute={:.3} skip={} fwd={} rev={}",
@@ -1910,7 +1910,7 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
             }
         } else if distill_first {
             distilled.as_ref().map(|d| {
-                crate::distill_ternary_model::DistilledTernaryFftModel::from_distilled(
+                crate::distill::ternary_model::DistilledTernaryFftModel::from_distilled(
                     d,
                     trained.as_ref().expect("teacher"),
                 )
@@ -1918,7 +1918,7 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
         } else if train_first {
             trained
                 .as_ref()
-                .map(crate::distill_ternary_model::DistilledTernaryFftModel::from_teacher)
+                .map(crate::distill::ternary_model::DistilledTernaryFftModel::from_teacher)
         } else {
             None
         };
@@ -1933,16 +1933,16 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
         };
         let bench_model = trained.as_ref().or(fallback.as_ref());
         let distilled_fallback =
-            bench_model.map(crate::distill_model::DistilledFftModel::from_teacher);
+            bench_model.map(crate::distill::model::DistilledFftModel::from_teacher);
         let bench_distilled = distilled.as_ref().or(distilled_fallback.as_ref());
         let ternary_fallback =
-            bench_model.map(crate::distill_ternary_model::DistilledTernaryFftModel::from_teacher);
+            bench_model.map(crate::distill::ternary_model::DistilledTernaryFftModel::from_teacher);
         let bench_distilled_ternary = distilled_ternary.as_ref().or(ternary_fallback.as_ref());
 
         for dev_name in &device_names {
-            let dev = parse_device(&crate::device::normalize_device_alias(dev_name))?;
-            crate::device::ensure_backend_ready(dev)?;
-            let inputs = crate::e2e_bench::E2eBenchInputs {
+            let dev = parse_device(&crate::exec::device::normalize_device_alias(dev_name))?;
+            crate::exec::device::ensure_backend_ready(dev)?;
+            let inputs = crate::bench::e2e::E2eBenchInputs {
                 n_fft,
                 batch,
                 n_mels,
@@ -1959,7 +1959,7 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
                 with_eager_learned,
                 peak_k,
             };
-            let report = crate::e2e_bench::run_e2e_bench(&inputs)?;
+            let report = crate::bench::e2e::run_e2e_bench(&inputs)?;
             merged.rows.extend(report.rows);
         }
     }
@@ -1970,9 +1970,9 @@ fn cmd_bench_e2e(args: &[String]) -> Result<()> {
     }
     merged.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-    crate::e2e_bench::print_e2e_table(&merged);
+    crate::bench::e2e::print_e2e_table(&merged);
     if let Some(path) = json_out {
-        crate::e2e_bench::write_e2e_json(&path, &merged)?;
+        crate::bench::e2e::write_e2e_json(&path, &merged)?;
         eprintln!("wrote {}", path.display());
     }
     if let Some(path) = html_out {
@@ -1993,7 +1993,7 @@ fn cmd_bench_welch_peaks(args: &[String]) -> Result<()> {
     let mut seed = 42u64;
     let mut with_compiled = true;
     let mut with_ultra_fast = true;
-    let mut pick_mode = crate::welch_peaks_picker::WelchPeaksPickMode::Auto;
+    let mut pick_mode = crate::spectral::welch_peaks_picker::WelchPeaksPickMode::Auto;
     let mut json_out: Option<PathBuf> = None;
 
     let mut i = 0;
@@ -2004,8 +2004,9 @@ fn cmd_bench_welch_peaks(args: &[String]) -> Result<()> {
             "--k" | "--peak-k" => k_csv = req(args, &mut i)?,
             "--device" => device = req(args, &mut i)?,
             "--strategy" => {
-                pick_mode =
-                    crate::welch_peaks_picker::parse_welch_peaks_strategy(&req(args, &mut i)?)?;
+                pick_mode = crate::spectral::welch_peaks_picker::parse_welch_peaks_strategy(&req(
+                    args, &mut i,
+                )?)?;
             }
             "--iters" => iters = req(args, &mut i)?.parse().context("--iters")?,
             "--train-steps" => train_steps = req(args, &mut i)?.parse().context("--train-steps")?,
@@ -2036,7 +2037,7 @@ fn cmd_bench_welch_peaks(args: &[String]) -> Result<()> {
         && !k_csv.contains(',')
         && !k_csv.contains('-');
 
-    let opts = crate::bench_welch_peaks::WelchPeaksBenchOpts {
+    let opts = crate::bench::welch_peaks::WelchPeaksBenchOpts {
         n_fft,
         batch: batches[0],
         k: ks[0],
@@ -2049,13 +2050,13 @@ fn cmd_bench_welch_peaks(args: &[String]) -> Result<()> {
         pick_mode,
     };
     let report = if single {
-        crate::bench_welch_peaks::run_welch_peaks_bench_opts(&opts)?
+        crate::bench::welch_peaks::run_welch_peaks_bench_opts(&opts)?
     } else {
-        crate::bench_welch_peaks::run_welch_peaks_sweep(&opts, &batch_csv, &k_csv)?
+        crate::bench::welch_peaks::run_welch_peaks_sweep(&opts, &batch_csv, &k_csv)?
     };
-    crate::bench_welch_peaks::print_welch_peaks_table(&report);
+    crate::bench::welch_peaks::print_welch_peaks_table(&report);
     if let Some(path) = json_out {
-        crate::bench_welch_peaks::write_welch_peaks_json(&path, &report)?;
+        crate::bench::welch_peaks::write_welch_peaks_json(&path, &report)?;
         eprintln!("wrote {}", path.display());
     }
     Ok(())
@@ -2093,24 +2094,24 @@ fn cmd_bench_fusion_phases(args: &[String]) -> Result<()> {
     let single = batches.len() == 1 && !batch_csv.contains(',') && !batch_csv.contains('-');
 
     if single {
-        let report = crate::bench_fusion_phases::run_fusion_phase_bench(
+        let report = crate::bench::fusion_phases::run_fusion_phase_bench(
             n_fft, batches[0], k, &device, iters, seed,
         )?;
-        crate::bench_fusion_phases::print_fusion_phase_report(&report);
+        crate::bench::fusion_phases::print_fusion_phase_report(&report);
         if let Some(path) = json_out {
-            crate::bench_fusion_phases::write_fusion_phase_json(&path, &report)?;
+            crate::bench::fusion_phases::write_fusion_phase_json(&path, &report)?;
             eprintln!("wrote {}", path.display());
         }
     } else {
-        let sweep = crate::bench_fusion_phases::run_fusion_phase_sweep(
+        let sweep = crate::bench::fusion_phases::run_fusion_phase_sweep(
             n_fft, &batch_csv, k, &device, iters, seed,
         )?;
         for report in &sweep.reports {
-            crate::bench_fusion_phases::print_fusion_phase_report(report);
+            crate::bench::fusion_phases::print_fusion_phase_report(report);
         }
-        crate::bench_fusion_phases::print_fusion_phase_sweep_summary(&sweep);
+        crate::bench::fusion_phases::print_fusion_phase_sweep_summary(&sweep);
         if let Some(path) = json_out {
-            crate::bench_fusion_phases::write_fusion_phase_sweep_json(&path, &sweep)?;
+            crate::bench::fusion_phases::write_fusion_phase_sweep_json(&path, &sweep)?;
             eprintln!("wrote {}", path.display());
         }
     }

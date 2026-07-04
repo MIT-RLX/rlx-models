@@ -119,7 +119,7 @@ cargo run -p rlx-orpheus --release --features "llama,coreml,metal" -- \
 
 Built-in voices: `tara`, `leah`, `jess`, `leo`, `dan`, `mia`, `zac`, `zoe`.
 
-Sampling defaults: temperature 0.6, top-p 0.8, repetition penalty 1.3, stop token 49158. Override via `--temperature`, `--top-p`, `--greedy`, etc.
+Sampling defaults: temperature 0.6, top-p 0.95, repetition penalty 1.1, stop token 128258 (`<custom_token_2>` / END_OF_SPEECH). Override via `--temperature`, `--top-p`, `--greedy`, etc.
 
 ### Voice cloning (pretrained checkpoint)
 

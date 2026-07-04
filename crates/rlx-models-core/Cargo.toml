@@ -42,6 +42,7 @@ gpu = ["rlx-runtime/gpu", "dep:rlx-wgpu"]
 cuda = ["rlx-runtime/cuda"]
 rocm = ["rlx-runtime/rocm"]
 vulkan = ["rlx-runtime/vulkan", "dep:rlx-wgpu"]
+coreml = ["rlx-runtime/coreml"]
 
 [lints]
 workspace = true

@@ -23,6 +23,7 @@ ureq = { version = "~2.12", features = ["json"], optional = true }
 default = []
 # Enable network-backed compatibility checks (hf-repo fetches).
 compat-net = ["dep:ureq"]
+coreml = ["rlx-core/coreml"]
 
 [dev-dependencies]
 # Used by tests/chat_templates.rs to deserialize fixture JSON.

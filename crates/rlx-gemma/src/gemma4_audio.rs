@@ -192,11 +192,17 @@ fn norm_gamma(
     key: &str,
     dim: usize,
 ) -> Result<(NodeId, NodeId)> {
-    let (wv, _) = load_raw(g, params, w, key)?;
     let gamma = if key.ends_with("norm.weight") {
-        let ones = synth(g, params, &format!("{key}.ones"), vec![1.0f32; dim], &[dim]);
-        g.add(ones, wv)
+        // Delta-gamma bridge: the loader stored (w-1), so gamma = 1 + (w-1) = w.
+        // Fold the +1 HOST-SIDE (not an in-graph `add`) so gamma is a plain
+        // const param. CoreML's layer_norm/rms_norm requires a const gamma —
+        // an Add-op result is rejected ("gamma must be const"). Bit-identical
+        // to the previous `g.add(ones, wv)` on every other backend.
+        let (data, shape) = w.take(key)?;
+        let g1: Vec<f32> = data.iter().map(|v| v + 1.0).collect();
+        synth(g, params, &format!("{key}.gamma"), g1, &shape)
     } else {
+        let (wv, _) = load_raw(g, params, w, key)?;
         wv
     };
     let beta = synth(g, params, &format!("{key}.beta"), vec![0.0f32; dim], &[dim]);
