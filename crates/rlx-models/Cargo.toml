@@ -1,6 +1,6 @@
 [package]
 name = "rlx-models"
-version = "0.2.9"
+version = "0.2.11"
 edition.workspace = true
 rust-version.workspace = true
 description = "Model loading for RLX — config parsing, safetensors weights, graph builders"
@@ -557,14 +557,17 @@ required-features = ["parity-candle"]
 
 [[example]]
 name = "llada2_run"
+required-features = ["llada2"]
 path = "examples/llada2_run.rs"
 
 [[example]]
 name = "llada2_e2e_compare"
+required-features = ["llada2"]
 path = "examples/llada2_e2e_compare.rs"
 
 [[example]]
 name = "llada2_compare"
+required-features = ["llada2"]
 path = "examples/llada2_compare.rs"
 
 [[example]]
@@ -594,10 +597,12 @@ required-features = ["hf-download"]
 
 [[example]]
 name = "locateanything_ground"
+required-features = ["locateanything"]
 path = "examples/locateanything_ground.rs"
 
 [[example]]
 name = "locateanything_bench"
+required-features = ["locateanything"]
 path = "examples/locateanything_bench.rs"
 
 [[example]]
@@ -617,10 +622,12 @@ required-features = ["hf-download", "tinyllama"]
 
 [[example]]
 name = "minicpm5_forward_bench"
+required-features = ["minicpm5"]
 path = "examples/minicpm5_forward_bench.rs"
 
 [[example]]
 name = "whisper_bench"
+required-features = ["whisper"]
 path = "examples/whisper_bench.rs"
 
 [[example]]
@@ -630,6 +637,7 @@ required-features = ["whisper-subtitles"]
 
 [[example]]
 name = "voxtral_tts_bench"
+required-features = ["voxtral-tts"]
 path = "examples/voxtral_tts_bench.rs"
 
 [[example]]
@@ -648,22 +656,27 @@ path = "examples/qwen3_tts_jfk_manifest.rs"
 
 [[example]]
 name = "qwen3_tts_bench"
+required-features = ["qwen3-tts"]
 path = "examples/qwen3_tts_bench.rs"
 
 [[example]]
 name = "qwen3_tts_cp_ab"
+required-features = ["qwen3-tts"]
 path = "examples/qwen3_tts_cp_ab.rs"
 
 [[example]]
 name = "qwen3_tts_fusion_ab"
+required-features = ["qwen3-tts"]
 path = "examples/qwen3_tts_fusion_ab.rs"
 
 [[example]]
 name = "run_minicpm5"
+required-features = ["minicpm5"]
 path = "examples/run_minicpm5.rs"
 
 [[example]]
 name = "skill_replacement"
+required-features = ["runner"]
 path = "examples/skill_replacement.rs"
 
 [[bin]]
@@ -675,10 +688,12 @@ required-features = ["runner", "minicpm5"]
 
 [[bench]]
 name = "qwen3_inference"
+required-features = ["qwen3"]
 harness = false
 
 [[bench]]
 name = "minicpm5_inference"
+required-features = ["llama32", "minicpm5"]
 harness = false
 
 [[bench]]
@@ -690,6 +705,434 @@ required-features = ["parity-candle"]
 name = "sam_vs_candle"
 harness = false
 required-features = ["parity-candle"]
+
+[[test]]
+name = "diamond_methods"
+required-features = ["diamond", "flux2"]
+
+[[test]]
+name = "diamond_unit"
+required-features = ["diamond"]
+
+[[test]]
+name = "flux2_diamond_guidance"
+required-features = ["diamond", "flux2"]
+
+[[test]]
+name = "gemma_backend_quick_check"
+required-features = ["gemma", "qwen3"]
+
+[[test]]
+name = "gemma_gpu_backend_parity"
+required-features = ["gemma", "qwen3"]
+
+[[test]]
+name = "llada2_backend_parity"
+required-features = ["llada2"]
+
+[[test]]
+name = "llada2_e2e_parity"
+required-features = ["llada2"]
+
+[[test]]
+name = "llada2_forward_check"
+required-features = ["llada2"]
+
+[[test]]
+name = "llada2_gate_parity"
+required-features = ["llada2"]
+
+[[test]]
+name = "llada2_generate_parity"
+required-features = ["llada2"]
+
+[[test]]
+name = "llada2_numerical_parity"
+required-features = ["llada2"]
+
+[[test]]
+name = "llama32_apple_parity"
+required-features = ["llama32"]
+
+[[test]]
+name = "llama32_backend_gguf_parity"
+required-features = ["runner"]
+
+[[test]]
+name = "llama32_gpu_backend_parity"
+required-features = ["llama32"]
+
+[[test]]
+name = "locateanything_checkpoint"
+required-features = ["locateanything"]
+
+[[test]]
+name = "locateanything_hf_parity"
+required-features = ["locateanything"]
+
+[[test]]
+name = "m4_stubs_real_arch"
+required-features = ["bonsai", "cohere", "granite", "mistral", "omnicoder", "phi", "qwen35"]
+
+[[test]]
+name = "minicpm5_backend_gguf_check"
+required-features = ["minicpm5"]
+
+[[test]]
+name = "minicpm5_backend_parity"
+required-features = ["llama32", "minicpm5"]
+
+[[test]]
+name = "minicpm5_bench_report"
+required-features = ["llama32", "minicpm5"]
+
+[[test]]
+name = "minicpm5_quant_matrix"
+required-features = ["minicpm5"]
+
+[[test]]
+name = "qwen25_vlm_quick_check"
+required-features = ["qwen25-vl"]
+
+[[test]]
+name = "qwen35_backend_gguf_bench"
+required-features = ["qwen3", "qwen35"]
+
+[[test]]
+name = "qwen35_backend_quick_check"
+required-features = ["qwen3", "qwen35"]
+
+[[test]]
+name = "qwen35_batch_gguf_bench"
+required-features = ["qwen3", "qwen35"]
+
+[[test]]
+name = "qwen35_batch_gguf_quick_check"
+required-features = ["qwen3", "qwen35"]
+
+[[test]]
+name = "qwen35_decode_parity"
+required-features = ["qwen3", "qwen35"]
+
+[[example]]
+name = "qwen35_forward_bench"
+required-features = ["qwen3", "qwen35"]
+
+[[test]]
+name = "qwen35_forward_check"
+required-features = ["qwen3", "qwen35"]
+
+[[test]]
+name = "qwen35_gguf_support"
+required-features = ["qwen3", "qwen35"]
+
+[[test]]
+name = "qwen35_vlm_gguf_quick_check"
+required-features = ["qwen3", "qwen35"]
+
+[[test]]
+name = "qwen3_backend_quick_check"
+required-features = ["qwen3"]
+
+[[test]]
+name = "qwen3_decode_embeds_metal_parity"
+required-features = ["qwen3"]
+
+[[example]]
+name = "qwen3_demo"
+required-features = ["qwen3"]
+
+[[example]]
+name = "qwen3_forward_bench"
+required-features = ["qwen3"]
+
+[[example]]
+name = "qwen3_gguf_inference"
+required-features = ["qwen3"]
+
+[[test]]
+name = "qwen3_gpu_backend_parity"
+required-features = ["qwen3"]
+
+[[example]]
+name = "qwen3_packed_inference"
+required-features = ["qwen3"]
+
+[[test]]
+name = "qwen3_tts_backend_quick_check"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_codec_frame_fused_parity"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_cp_compiled_hidden"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_cp_eager_dump"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_cp_eager_vs_compiled"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_cp_metal_bisect"
+required-features = ["qwen3", "qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_cp_metal_upstream_repro"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_cp_prefill_parity"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_debug_first"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_embeds_diff"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_hf_parity"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_layer0_attn"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_layer0_intermediates"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_layer0_isolate"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_layer0_qk"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_layer1_isolate"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_layer2_isolate"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_mlx_greedy_parity"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_one_decode"
+required-features = ["qwen3-tts"]
+
+[[example]]
+name = "qwen3_tts_rtf_bench"
+required-features = ["qwen3-tts"]
+
+[[example]]
+name = "qwen3_tts_session_bench"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_speech_decode_golden"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_speech_pt_mlx_parity"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_talker_eager_vs_compiled"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_talker_layers"
+required-features = ["qwen3-tts"]
+
+[[test]]
+name = "qwen3_tts_whisper_roundtrip"
+required-features = ["qwen3-tts", "whisper"]
+
+[[test]]
+name = "real_weights_bonsai_stub"
+required-features = ["bonsai", "llama32"]
+
+[[test]]
+name = "real_weights_gemma3"
+required-features = ["gemma", "runner"]
+
+[[test]]
+name = "real_weights_llama32_1b"
+required-features = ["llama-base", "llama32", "runner"]
+
+[[test]]
+name = "real_weights_minicpm5"
+required-features = ["llama32", "minicpm5", "runner"]
+
+[[test]]
+name = "real_weights_phi3"
+required-features = ["llama-base", "phi", "runner"]
+
+[[test]]
+name = "real_weights_qwen25"
+required-features = ["llama-base", "qwen35", "runner"]
+
+[[test]]
+name = "real_weights_smollm2"
+required-features = ["llama-base", "llama32", "runner"]
+
+[[test]]
+name = "real_weights_tinyllama"
+required-features = ["llama32", "runner", "tinyllama"]
+
+[[example]]
+name = "run_dinov2"
+required-features = ["runner"]
+
+[[example]]
+name = "run_qwen3_gguf"
+required-features = ["runner"]
+
+[[example]]
+name = "run_qwen3_safetensors"
+required-features = ["runner"]
+
+[[example]]
+name = "run_sam1"
+required-features = ["runner"]
+
+[[example]]
+name = "run_sam2"
+required-features = ["runner"]
+
+[[example]]
+name = "run_sam3"
+required-features = ["runner"]
+
+[[example]]
+name = "sam3_attn_isolation"
+required-features = ["sam3"]
+
+[[example]]
+name = "sam3_bench"
+required-features = ["sam3"]
+
+[[example]]
+name = "sam3_decoder_backend_check"
+required-features = ["sam3"]
+
+[[example]]
+name = "sam3_decoder_profile"
+required-features = ["sam3"]
+
+[[example]]
+name = "sam3_encoder_bench"
+required-features = ["sam3"]
+
+[[test]]
+name = "tide_parity"
+required-features = ["llada2", "qwen35"]
+
+[[test]]
+name = "tinyllama_backend_gguf_check"
+required-features = ["tinyllama"]
+
+[[test]]
+name = "tinyllama_backend_parity"
+required-features = ["llama32", "tinyllama"]
+
+[[test]]
+name = "vision_gguf_compile"
+required-features = ["dinov2", "flux2", "runner", "sam3"]
+
+[[test]]
+name = "vjepa2_check"
+required-features = ["vjepa2"]
+
+[[test]]
+name = "vjepa2_cuda_check"
+required-features = ["vjepa2"]
+
+[[test]]
+name = "vjepa2_gpu_check"
+required-features = ["vjepa2"]
+
+[[test]]
+name = "vjepa2_metal_check"
+required-features = ["vjepa2"]
+
+[[test]]
+name = "vjepa2_mlx_check"
+required-features = ["vjepa2"]
+
+[[test]]
+name = "vjepa2_rocm_check"
+required-features = ["vjepa2"]
+
+[[test]]
+name = "voxtral_hf_parity"
+required-features = ["voxtral"]
+
+[[test]]
+name = "voxtral_tts_codec"
+required-features = ["voxtral-tts"]
+
+[[test]]
+name = "voxtral_tts_encoder_seed"
+required-features = ["voxtral-tts"]
+
+[[test]]
+name = "voxtral_tts_native_parity"
+required-features = ["voxtral-tts"]
+
+[[test]]
+name = "voxtral_tts_parity"
+required-features = ["voxtral-tts"]
+
+[[test]]
+name = "wav2vec2_bert_gpu_check"
+required-features = ["wav2vec2-bert"]
+
+[[test]]
+name = "wav2vec2_bert_hf_parity"
+required-features = ["runner", "wav2vec2-bert"]
+
+[[test]]
+name = "wav2vec2_bert_metal_check"
+required-features = ["wav2vec2-bert"]
+
+[[test]]
+name = "wav2vec2_bert_mlx_check"
+required-features = ["wav2vec2-bert"]
+
+[[test]]
+name = "wav2vec2_bert_preprocess_parity"
+required-features = ["wav2vec2-bert"]
+
+[[test]]
+name = "wav2vec2_bert_vulkan_check"
+required-features = ["wav2vec2-bert"]
+
+[[test]]
+name = "whisper_decode_path_parity"
+required-features = ["whisper"]
+
+[[test]]
+name = "whisper_greedy_tokens"
+required-features = ["whisper"]
+
+[[test]]
+name = "whisper_jfk_e2e"
+required-features = ["whisper"]
 
 [lints]
 workspace = true

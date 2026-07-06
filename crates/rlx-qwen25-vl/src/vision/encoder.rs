@@ -203,12 +203,3 @@ pub fn load_vision_encoder(
 ) -> Result<Qwen25VlVisionEncoder> {
     Qwen25VlVisionEncoder::from_mmproj(PathBuf::from(mmproj_path), img_w, img_h)
 }
-
-#[cfg(feature = "qwen25-vl-vision")]
-pub fn encode_image_file(
-    encoder: &mut Qwen25VlVisionEncoder,
-    path: &str,
-) -> Result<VisionEncodeOutput> {
-    let (rgb, w, h) = super::preprocess::load_rgb_image(path)?;
-    encoder.encode_rgb(&rgb, w, h)
-}

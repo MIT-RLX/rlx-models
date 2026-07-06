@@ -99,9 +99,9 @@ pub fn validate_hf_config(weights_or_dir: &Path) -> Result<()> {
     let hidden_size = probe
         .hidden_size
         .ok_or_else(|| anyhow::anyhow!("rlx-tinyllama: {cfg_path:?} missing hidden_size"))?;
-    let num_hidden_layers = probe.num_hidden_layers.ok_or_else(|| {
-        anyhow::anyhow!("rlx-tinyllama: {cfg_path:?} missing num_hidden_layers")
-    })?;
+    let num_hidden_layers = probe
+        .num_hidden_layers
+        .ok_or_else(|| anyhow::anyhow!("rlx-tinyllama: {cfg_path:?} missing num_hidden_layers"))?;
     validate_tinyllama_1_1b_dims(hidden_size, num_hidden_layers)
 }
 
@@ -143,8 +143,8 @@ pub fn tinyllama_1_1b_preset() -> Llama32Config {
         head_dim: None,
         rope_scaling: None,
         rope_style: rlx_llama32::RopeStyle::NeoX,
-    gguf_arch: None,
-    rope_dim: None,
+        gguf_arch: None,
+        rope_dim: None,
     }
 }
 

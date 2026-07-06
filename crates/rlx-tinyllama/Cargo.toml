@@ -1,12 +1,14 @@
 [package]
 name = "rlx-tinyllama"
-version = "0.2.9"
+version = "0.2.11"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "TinyLlama-1.1B causal LM runner (Llama-shaped; TinyLlama/TinyLlama-1.1B-Chat-v1.0)"
+keywords.workspace = true
+categories.workspace = true
 readme = "README.md"
 
 [dependencies]

@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "EAGLE3 speculative-decoding draft + scheduler primitives for RLX"
+keywords.workspace = true
+categories.workspace = true
 
 # rlx-eagle3 ships the model-agnostic EAGLE3 primitives (config,
 # weights loader, d2t map, HIR draft graph, Speculator). Anything

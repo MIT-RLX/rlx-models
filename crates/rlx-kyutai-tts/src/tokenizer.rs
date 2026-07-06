@@ -28,7 +28,7 @@ impl KyutaiTokenizer {
             .sp
             .encode(word)
             .with_context(|| format!("encode {word:?}"))?;
-        Ok(ids.into_iter().map(|id| id.id as u32).collect())
+        Ok(ids.into_iter().map(|id| id.id).collect())
     }
 
     pub fn encode_prompt_words(&self, prompt: &str) -> Result<Vec<Vec<u32>>> {

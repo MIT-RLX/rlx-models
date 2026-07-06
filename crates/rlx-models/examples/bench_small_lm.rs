@@ -94,12 +94,7 @@ fn phase_tps(token_times: &[f32], n_prompt: usize) -> (f32, f32) {
     (prefill_tps, decode_tps)
 }
 
-fn try_bench(
-    model: &str,
-    device: Device,
-    label: &str,
-    weights: &str,
-) -> Option<ResultRow> {
+fn try_bench(model: &str, device: Device, label: &str, weights: &str) -> Option<ResultRow> {
     if !is_available(device) {
         eprintln!("[{model}/{label}] not available — skip");
         return None;
@@ -147,7 +142,10 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| "all".into())
         .to_ascii_lowercase();
 
-    println!("→ bench_small_lm model={model} weights={weights_str} n_new={}", n_new());
+    println!(
+        "→ bench_small_lm model={model} weights={weights_str} n_new={}",
+        n_new()
+    );
     println!("   prompt_ids={PROMPT_IDS:?}\n");
 
     let backends: &[(&str, Device)] = &[

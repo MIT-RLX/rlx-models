@@ -67,8 +67,13 @@ fn make_layer(seed_base: u64, with_cross: bool) -> LayerWeights {
         gate_in: rand_mat(2 * FF, D, seed_base + 5),
         gate_out: rand_mat(D, FF, seed_base + 6),
         cross_attn: cross,
-        norm_cross_alpha: if with_cross {
+        norm_cross_weight: if with_cross {
             Some(rand_vec(D, seed_base + 7))
+        } else {
+            None
+        },
+        norm_cross_bias: if with_cross {
+            Some(rand_vec(D, seed_base + 8))
         } else {
             None
         },
@@ -95,7 +100,7 @@ fn make_backbone(with_cross: bool) -> StreamingTransformer {
 
 fn warm_up(t: &mut StreamingTransformer, x: &Array2<f32>, steps: usize) {
     for _ in 0..steps {
-        let _ = t.forward(x, None).unwrap();
+        let _ = t.forward(x).unwrap();
     }
 }
 
@@ -106,7 +111,7 @@ fn bench_backbone_step_no_cross(c: &mut Criterion) {
 
     c.bench_function("backbone_step/16L_d2048_h16_no_cross", |b| {
         b.iter(|| {
-            let y = t.forward(black_box(&x), None).unwrap();
+            let y = t.forward(black_box(&x)).unwrap();
             black_box(y);
         });
     });
@@ -117,24 +122,15 @@ fn bench_backbone_step_with_cross(c: &mut Criterion) {
     let x = rand_mat(1, D, 42);
     let speaker_ctx = rand_mat(SPEAKER_CTX_FRAMES, D, 99);
 
-    // Prepare K/V cache from the first layer's cross-attn weights — we reuse
-    // it across every layer for the benchmark (in practice each layer has its
-    // own KV cache; this still measures the dominant cost of `forward_step`).
-    let kv = {
-        // grab the cross-attn out of the (cloned) layer 0 to prep KV — we
-        // can't directly reach inside the transformer's private layers, so
-        // re-instantiate one CrossAttention with the same weights as the
-        // backbone uses for layer 0.
-        let xa_layer0 = make_layer(0, true);
-        let xa = xa_layer0.cross_attn.unwrap();
-        xa.prepare_kv(&speaker_ctx).unwrap()
-    };
+    // Project the speaker context into every layer's cross-attn K/V cache once;
+    // each subsequent `forward` step reuses it (the steady-state decode path).
+    t.set_cross_context(Some(&speaker_ctx)).unwrap();
 
     warm_up(&mut t, &x, 5);
 
     c.bench_function("backbone_step/16L_d2048_h16_cross_16frames", |b| {
         b.iter(|| {
-            let y = t.forward(black_box(&x), Some(black_box(&kv))).unwrap();
+            let y = t.forward(black_box(&x)).unwrap();
             black_box(y);
         });
     });
@@ -146,7 +142,7 @@ fn bench_backbone_step_short_context(c: &mut Criterion) {
         b.iter_batched(
             || (make_backbone(false), rand_mat(1, D, 7)),
             |(mut t, x)| {
-                let y = t.forward(black_box(&x), None).unwrap();
+                let y = t.forward(black_box(&x)).unwrap();
                 black_box(y);
             },
             criterion::BatchSize::PerIteration,

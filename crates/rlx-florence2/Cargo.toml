@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Microsoft Florence-2 (DaViT + BART) vision-language model for RLX"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 readme = "README.md"
 

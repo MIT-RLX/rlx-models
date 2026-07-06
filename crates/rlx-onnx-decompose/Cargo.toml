@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Decompose ONNX models into generated RLX Rust source + safetensors/GGUF weights"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 
 [dependencies]

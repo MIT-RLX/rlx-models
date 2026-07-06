@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Perplexity + multiple-choice evaluation for RLX language models"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 rlx-qwen3 = { workspace = true }

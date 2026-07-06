@@ -5,7 +5,7 @@
 
 //! Reference ESN loop (Nakajima-style) vs crate predictors.
 
-use rlx_narma10::host::{Rng, generate, nrmse, ORDER};
+use rlx_narma10::host::{ORDER, Rng, generate, nrmse};
 use rlx_narma10::{EsnRidge, Narma10Predictor, TrainConfig};
 
 fn reference_esn_nrmse(seed: u64, n: usize, washout: usize, train_frac: f64) -> (f64, f64) {
@@ -49,7 +49,13 @@ fn reference_esn_nrmse(seed: u64, n: usize, washout: usize, train_frac: f64) -> 
         let row = &w[i * n_units..(i + 1) * n_units];
         out[i] = row.iter().zip(&v).map(|(a, b)| a * b).sum();
     }
-    let radius = out.iter().zip(&v).map(|(a, b)| a * b).sum::<f64>().abs().max(1e-12);
+    let radius = out
+        .iter()
+        .zip(&v)
+        .map(|(a, b)| a * b)
+        .sum::<f64>()
+        .abs()
+        .max(1e-12);
     let scale = sr / radius;
     for x in &mut w {
         *x *= scale;
@@ -209,9 +215,5 @@ fn esn_ridge_near_reference_nrmse() {
         "train NRMSE {:.4} too high",
         report.train_nrmse
     );
-    assert!(
-        test_nrmse < 0.35,
-        "test NRMSE {:.4} too high",
-        test_nrmse
-    );
+    assert!(test_nrmse < 0.35, "test NRMSE {:.4} too high", test_nrmse);
 }

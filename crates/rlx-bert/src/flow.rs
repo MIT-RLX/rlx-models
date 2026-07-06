@@ -179,7 +179,9 @@ mod tests {
         // `bert.`-prefixed, no BERT-style query key → Mpnet layout. The prefix
         // is applied to every key — checked structurally, not by re-pinning a
         // second full key literal.
-        let k2 = BertKeys::detect(&weights_with_keys(&["bert.embeddings.word_embeddings.weight"]));
+        let k2 = BertKeys::detect(&weights_with_keys(&[
+            "bert.embeddings.word_embeddings.weight",
+        ]));
         assert_eq!(k2.layer_prefix(), "bert");
         assert!(k2.embeddings_ln_bias().starts_with("bert."));
         assert!(matches!(k2.qkv_style, BertQkvStyle::Mpnet));

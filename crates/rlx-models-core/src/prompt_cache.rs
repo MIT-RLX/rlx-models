@@ -244,7 +244,7 @@ pub fn load_entry(path: &Path, fingerprint: u64) -> std::io::Result<Option<Cache
     }
     Ok(Some(CacheEntry {
         tokens,
-        kv:         KvCacheState {
+        kv: KvCacheState {
             past_len,
             layers_kv_base: vec![0; layers],
             layers_k,

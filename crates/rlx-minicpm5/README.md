@@ -2,7 +2,7 @@
 
 [MiniCPM5](https://huggingface.co/openbmb/MiniCPM5-1B) edge LMs in RLX. The 1B checkpoint is **Llama-shaped** (`LlamaForCausalLM`, `general.architecture = llama` in GGUF). This crate validates HF/GGUF metadata and delegates inference to [`rlx-llama32`](../rlx-llama32).
 
-**Crate version:** `0.2.6` (depends on `rlx-llama32` 0.2.6; workspace pins upstream `rlx*` 0.2.6). Publish via `scripts/publish.sh` tier 5 before facade `rlx-models` 0.2.6.
+**Crate version:** `0.2.11` (depends on `rlx-llama32` 0.2.11; workspace pins upstream `rlx*` 0.2.11). Publish via `scripts/publish.sh` tier 5 before facade `rlx-models` 0.2.11.
 
 ## Prerequisites
 

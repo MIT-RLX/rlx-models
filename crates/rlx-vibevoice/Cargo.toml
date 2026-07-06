@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "VibeVoice (microsoft/VibeVoice) acoustic σ-VAE codec for RLX — multi-backend ConvNeXt decoder"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 readme = "README.md"
 

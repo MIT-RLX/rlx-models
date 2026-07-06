@@ -254,7 +254,8 @@ fn run_mm_generate(dev: Device, tag: &str, steps: usize) {
         eprintln!("[{tag}] no image_token_id — skip");
         return;
     };
-    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/gemma4_vision/feat_out.bin");
+    let fx =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/gemma4_vision/feat_out.bin");
     let Some(image_soft) = rd(&fx) else {
         eprintln!("[{tag}] no vision fixture — skip");
         return;
@@ -264,7 +265,7 @@ fn run_mm_generate(dev: Device, tag: &str, steps: usize) {
     // Prompt: BOS + <image> placeholders. Bucketed sequence, zero-padded.
     let seq = 32usize;
     let mut prompt = vec![2u32];
-    prompt.extend(std::iter::repeat(img_tok).take(n_img));
+    prompt.extend(std::iter::repeat_n(img_tok, n_img));
     let mut real_len = prompt.len();
     let mut ids = vec![0u32; seq];
     ids[..real_len].copy_from_slice(&prompt);
@@ -276,10 +277,9 @@ fn run_mm_generate(dev: Device, tag: &str, steps: usize) {
 
     let mut generated: Vec<u32> = Vec::new();
     let mut first_logits: Option<Vec<f32>> = None;
-    for _ in 0..steps {
-        if real_len >= seq {
-            break;
-        }
+    // Autoregress until the bucket fills or we hit the step budget; `generated`
+    // grows by one per iteration, so its length is the step counter.
+    while real_len < seq && generated.len() < steps {
         let emb =
             e2b_fused_inputs_embeds_prescale(&loader, &cfg, &mm_cfg, &ids, &image_soft, &[], &[])
                 .unwrap();
@@ -307,7 +307,10 @@ fn run_mm_generate(dev: Device, tag: &str, steps: usize) {
         generated
     );
     let fl = first_logits.expect("no logits produced");
-    assert!(fl.iter().all(|v| v.is_finite()), "[{tag}] non-finite logits");
+    assert!(
+        fl.iter().all(|v| v.is_finite()),
+        "[{tag}] non-finite logits"
+    );
 
     // CPU writes the first-token reference (before any other assert so it's
     // always available); GPU backends cross-check their fused-media prefill.
@@ -319,12 +322,18 @@ fn run_mm_generate(dev: Device, tag: &str, steps: usize) {
     } else if let Some(cpu) = rd(&ref_path) {
         let c = cos(&cpu, &fl);
         eprintln!("[{tag}] first-token logits cos vs CPU = {c:.6}");
-        assert!(c > 0.99, "[{tag}] fused-media prefill diverges from CPU: cos {c}");
+        assert!(
+            c > 0.99,
+            "[{tag}] fused-media prefill diverges from CPU: cos {c}"
+        );
     }
 
     // Degeneracy only meaningful when we actually decoded several tokens.
     if generated.len() > 2 {
-        assert!(uniq.len() > 2, "[{tag}] degenerate generation: {generated:?}");
+        assert!(
+            uniq.len() > 2,
+            "[{tag}] degenerate generation: {generated:?}"
+        );
     }
 }
 

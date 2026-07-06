@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "OmniCoder Qwen3-coder-shaped runner — STUB (PLAN.md M4)"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }

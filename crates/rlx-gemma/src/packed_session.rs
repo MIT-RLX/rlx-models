@@ -16,10 +16,12 @@
 //! Packed GGUF inference with bucketed prefill + bucketed decode KV cache.
 
 use crate::builder::{
-    build_gemma_decode_graph_sized_packed_ext, build_gemma_graph_sized_packed_ext,
-    precompute_packed_decode_tied_lm_head, PackedDecodeLmOutput,
+    PackedDecodeLmOutput, build_gemma_decode_graph_sized_packed_ext,
+    build_gemma_graph_sized_packed_ext, precompute_packed_decode_tied_lm_head,
 };
-use crate::generator::{decode_profile_for_device, metal_decode_compile_guard, metal_prefill_compile_guard};
+use crate::generator::{
+    decode_profile_for_device, metal_decode_compile_guard, metal_prefill_compile_guard,
+};
 use crate::rope::{resolve_global_inv_freq, resolve_inv_freq};
 use anyhow::{Context, Result, anyhow, bail};
 use rlx_core::flow_bridge::{
@@ -174,7 +176,10 @@ fn gemma_packed_gpu_kv_enabled(device: Device, exec_device: Device) -> bool {
     match std::env::var("RLX_GEMMA_PACKED_GPU_KV").ok().as_deref() {
         Some("0") | Some("false") | Some("no") => false,
         Some("1") | Some("true") | Some("yes") => true,
-        _ => matches!(device, Device::Metal | Device::Mlx | Device::Cuda | Device::Rocm),
+        _ => matches!(
+            device,
+            Device::Metal | Device::Mlx | Device::Cuda | Device::Rocm
+        ),
     }
 }
 
@@ -182,7 +187,10 @@ fn gemma_packed_gpu_kv_enabled(device: Device, exec_device: Device) -> bool {
 /// native regressions. Native is default (rlx-metal disables GeGLU fusion by
 /// default; set `RLX_METAL_FUSE_DECODE_GELU=1` to re-enable).
 fn gemma_packed_metal_cpu_graphs_enabled(cfg: &GemmaConfig) -> bool {
-    if !matches!(cfg.arch, crate::config::GemmaArch::Gemma2 | crate::config::GemmaArch::Gemma3) {
+    if !matches!(
+        cfg.arch,
+        crate::config::GemmaArch::Gemma2 | crate::config::GemmaArch::Gemma3
+    ) {
         return false;
     }
     rlx_ir::env::flag("RLX_GEMMA_METAL_CPU_PACKED")
@@ -190,7 +198,10 @@ fn gemma_packed_metal_cpu_graphs_enabled(cfg: &GemmaConfig) -> bool {
 
 /// Optional CPU exec for wgpu/Vulkan packed Gemma 2/3 (debug fallback).
 fn gemma_packed_portable_gpu_cpu_graphs_enabled(cfg: &GemmaConfig) -> bool {
-    if !matches!(cfg.arch, crate::config::GemmaArch::Gemma2 | crate::config::GemmaArch::Gemma3) {
+    if !matches!(
+        cfg.arch,
+        crate::config::GemmaArch::Gemma2 | crate::config::GemmaArch::Gemma3
+    ) {
         return false;
     }
     rlx_ir::env::flag("RLX_GEMMA_PORTABLE_GPU_CPU_PACKED")
@@ -311,14 +322,16 @@ fn packed_timing_enabled() -> bool {
 }
 
 fn decode_prewarm_enabled(device: Device) -> bool {
-    match std::env::var("RLX_GEMMA_PACKED_WARM_DECODE").ok().as_deref() {
+    match std::env::var("RLX_GEMMA_PACKED_WARM_DECODE")
+        .ok()
+        .as_deref()
+    {
         Some("0") | Some("false") | Some("no") => false,
         Some("1") | Some("true") | Some("yes") => true,
         _ => {
             // Skip eager multi-bucket compile on CUDA unless requested — first
             // decode still compiles lazily; saves ~2s session init on small LMs.
-            !matches!(device, Device::Cuda | Device::Rocm)
-                && gpu_greedy_lm_supported(device)
+            !matches!(device, Device::Cuda | Device::Rocm) && gpu_greedy_lm_supported(device)
         }
     }
 }
@@ -334,7 +347,10 @@ enum GreedyLmMode {
 }
 
 fn gpu_greedy_lm_supported(device: Device) -> bool {
-    matches!(device, Device::Metal | Device::Mlx | Device::Cuda | Device::Rocm)
+    matches!(
+        device,
+        Device::Metal | Device::Mlx | Device::Cuda | Device::Rocm
+    )
 }
 
 fn resolve_greedy_lm_mode(
@@ -353,10 +369,7 @@ fn resolve_greedy_lm_mode(
     if rlx_ir::env::flag("RLX_GEMMA_HOST_GREEDY_LM") {
         return GreedyLmMode::HostCpu;
     }
-    if use_gpu_kv
-        && device == exec_device
-        && gpu_greedy_lm_supported(device)
-    {
+    if use_gpu_kv && device == exec_device && gpu_greedy_lm_supported(device) {
         return GreedyLmMode::GpuArgmax;
     }
     if matches!(exec_device, Device::Cpu | Device::Cuda | Device::Rocm) {
@@ -367,7 +380,10 @@ fn resolve_greedy_lm_mode(
 
 /// Materialize f32 vocab once for device `input_ids` gather (CUDA/Metal/MLX).
 fn gpu_gather_embed_enabled(cfg: &GemmaConfig, device: Device) -> bool {
-    if !matches!(device, Device::Metal | Device::Mlx | Device::Cuda | Device::Rocm) {
+    if !matches!(
+        device,
+        Device::Metal | Device::Mlx | Device::Cuda | Device::Rocm
+    ) {
         return false;
     }
     if rlx_ir::env::flag("RLX_GEMMA_HOST_EMBED_GATHER") {
@@ -440,7 +456,9 @@ fn slice_has_nan(x: &[f32]) -> bool {
 }
 
 fn prefill_logits_nan(logits: &[f32], vocab: usize) -> bool {
-    logits.get(..vocab.min(logits.len())).is_some_and(slice_has_nan)
+    logits
+        .get(..vocab.min(logits.len()))
+        .is_some_and(slice_has_nan)
 }
 
 pub(crate) struct GemmaPackedSession {
@@ -644,13 +662,8 @@ impl GemmaPackedSession {
         let use_gpu_kv = gemma_packed_gpu_kv_enabled(device, exec_device);
 
         let has_tied_packed_embed = packed_arc.contains_key("model.embed_tokens.weight");
-        let greedy_lm_mode = resolve_greedy_lm_mode(
-            &cfg,
-            device,
-            exec_device,
-            use_gpu_kv,
-            has_tied_packed_embed,
-        );
+        let greedy_lm_mode =
+            resolve_greedy_lm_mode(&cfg, device, exec_device, use_gpu_kv, has_tied_packed_embed);
         let decode_cache_hidden = matches!(greedy_lm_mode, GreedyLmMode::HostCpu).then(|| {
             BucketedCompileCache::power_of_two_ladder(exec_device, 1, decode_horizon as u64)
         });
@@ -681,12 +694,14 @@ impl GemmaPackedSession {
         let decode_input_ids_embed = gpu_gather_embed_enabled(&cfg, device);
 
         // Lazy host row gather for prefill; decode may use GPU input_ids gather instead.
-        let embed_row_bytes = packed_arc.get("model.embed_tokens.weight").map(|(_, scheme, _)| {
-            let block_elems = scheme.gguf_block_size() as usize;
-            let block_bytes = scheme.gguf_block_bytes() as usize;
-            let h = cfg.hidden_size;
-            (h / block_elems.max(1)) * block_bytes
-        });
+        let embed_row_bytes = packed_arc
+            .get("model.embed_tokens.weight")
+            .map(|(_, scheme, _)| {
+                let block_elems = scheme.gguf_block_size() as usize;
+                let block_bytes = scheme.gguf_block_bytes() as usize;
+                let h = cfg.hidden_size;
+                (h / block_elems.max(1)) * block_bytes
+            });
 
         let mut session = Self {
             cfg,
@@ -925,57 +940,57 @@ impl GemmaPackedSession {
         let packed_for_upload = Arc::clone(&self.packed_tensors);
         packed_gguf_compile_guard(self.exec_device, || {
             metal_prefill_compile_guard(self.exec_device, || {
-            let t_graph = Instant::now();
-            let (graph, params) =
-                Self::build_prefill_graph(&cfg, &f32_params, &packed_tensors, seq, hidden_only);
-            if trace {
-                eprintln!(
-                    "[gemma-runner trace]   build_prefill_graph(seq={seq} hidden_only={hidden_only}) done at {:.1}s ({} param entries)",
-                    t_graph.elapsed().as_secs_f64(),
-                    params.len(),
-                );
-            }
-            let t_compile = Instant::now();
-            let compiled = self
-                .prefill_cache
-                .get_or_compile_with_options(key, || graph, &opts);
-            if trace {
-                eprintln!(
-                    "[gemma-runner trace]   prefill compile done at {:.1}s",
-                    t_compile.elapsed().as_secs_f64()
-                );
-            }
-            let t_f32 = Instant::now();
-            for (name, data) in &params {
-                compiled.set_param(name, data);
-            }
-            if trace {
-                eprintln!(
-                    "[gemma-runner trace]   set_param f32 ({} entries) done at {:.1}s",
-                    params.len(),
-                    t_f32.elapsed().as_secs_f64()
-                );
-            }
-            if packed_loaded.insert(key) {
-                let t_packed = Instant::now();
-                let n_packed = packed_for_upload.len();
-                for (name, (bytes, _scheme, _shape)) in packed_for_upload.iter() {
-                    // Graph F32 params (norms, rope) must not be overwritten by
-                    // stale packed-map entries for the same key.
-                    if !bytes.is_empty()
-                        && !params.contains_key(name.as_str())
-                        && !f32_params.contains_key(name.as_str())
-                    {
-                        compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-                    }
+                let t_graph = Instant::now();
+                let (graph, params) =
+                    Self::build_prefill_graph(&cfg, &f32_params, &packed_tensors, seq, hidden_only);
+                if trace {
+                    eprintln!(
+                        "[gemma-runner trace]   build_prefill_graph(seq={seq} hidden_only={hidden_only}) done at {:.1}s ({} param entries)",
+                        t_graph.elapsed().as_secs_f64(),
+                        params.len(),
+                    );
+                }
+                let t_compile = Instant::now();
+                let compiled = self
+                    .prefill_cache
+                    .get_or_compile_with_options(key, || graph, &opts);
+                if trace {
+                    eprintln!(
+                        "[gemma-runner trace]   prefill compile done at {:.1}s",
+                        t_compile.elapsed().as_secs_f64()
+                    );
+                }
+                let t_f32 = Instant::now();
+                for (name, data) in &params {
+                    compiled.set_param(name, data);
                 }
                 if trace {
                     eprintln!(
-                        "[gemma-runner trace]   set_param_typed packed ({n_packed} entries) done at {:.1}s",
-                        t_packed.elapsed().as_secs_f64()
+                        "[gemma-runner trace]   set_param f32 ({} entries) done at {:.1}s",
+                        params.len(),
+                        t_f32.elapsed().as_secs_f64()
                     );
                 }
-            }
+                if packed_loaded.insert(key) {
+                    let t_packed = Instant::now();
+                    let n_packed = packed_for_upload.len();
+                    for (name, (bytes, _scheme, _shape)) in packed_for_upload.iter() {
+                        // Graph F32 params (norms, rope) must not be overwritten by
+                        // stale packed-map entries for the same key.
+                        if !bytes.is_empty()
+                            && !params.contains_key(name.as_str())
+                            && !f32_params.contains_key(name.as_str())
+                        {
+                            compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+                        }
+                    }
+                    if trace {
+                        eprintln!(
+                            "[gemma-runner trace]   set_param_typed packed ({n_packed} entries) done at {:.1}s",
+                            t_packed.elapsed().as_secs_f64()
+                        );
+                    }
+                }
             });
         });
         Ok(())
@@ -1174,7 +1189,10 @@ impl GemmaPackedSession {
         self.run_prefill_bucketed(prompt_ids, false)
     }
 
-    fn run_prefill_hidden_with_cache(&mut self, prompt_ids: &[u32]) -> Result<(Vec<f32>, LayerKvCache)> {
+    fn run_prefill_hidden_with_cache(
+        &mut self,
+        prompt_ids: &[u32],
+    ) -> Result<(Vec<f32>, LayerKvCache)> {
         self.run_prefill_bucketed(prompt_ids, true)
     }
 
@@ -1201,8 +1219,7 @@ impl GemmaPackedSession {
         hidden_only: bool,
         on_cpu: bool,
     ) -> Result<(Vec<f32>, LayerKvCache)> {
-        let on_cpu = on_cpu
-            || (self.metal_decode_via_cpu && self.exec_device == Device::Metal);
+        let on_cpu = on_cpu || (self.metal_decode_via_cpu && self.exec_device == Device::Metal);
         let n = prompt_ids.len().min(self.max_seq);
         let seq_bucket = prefill_bucket_len_device(n, self.max_seq, self.exec_device);
         if on_cpu {
@@ -1247,7 +1264,11 @@ impl GemmaPackedSession {
             }
         }
 
-        let run_device = if on_cpu { Device::Cpu } else { self.exec_device };
+        let run_device = if on_cpu {
+            Device::Cpu
+        } else {
+            self.exec_device
+        };
         let t0 = Instant::now();
         let key = prefill_cache_key(seq_bucket, hidden_only);
         let outputs = if on_cpu {
@@ -1345,9 +1366,7 @@ impl GemmaPackedSession {
                     "12. residual after FFN (pre-scale)",
                     "11. layer 0 final h (post output_scale)",
                 ];
-                eprintln!(
-                    "[rlx-tap-l0] device={run_device:?} prompt_len={n} bucket={seq_bucket}",
-                );
+                eprintln!("[rlx-tap-l0] device={run_device:?} prompt_len={n} bucket={seq_bucket}",);
                 for (i, t) in outputs[tap_start..].iter().enumerate() {
                     let label = labels.get(i).copied().unwrap_or("?");
                     let mut n_nan = 0usize;
@@ -1396,10 +1415,7 @@ impl GemmaPackedSession {
         }
         kv.past_len = n;
         Self::trim_sliding_kv_cache(&self.cfg, &mut kv, &kv_dims)?;
-        if !on_cpu
-            && self.exec_device == Device::Metal
-            && self.prefill_cache_cpu.is_some()
-        {
+        if !on_cpu && self.exec_device == Device::Metal && self.prefill_cache_cpu.is_some() {
             let vocab = self.cfg.vocab_size;
             let bad = if hidden_only {
                 slice_has_nan(&logits)
@@ -1417,7 +1433,10 @@ impl GemmaPackedSession {
         Ok((logits, kv))
     }
 
-    fn prefill_hidden_greedy_first_token(&mut self, prompt_ids: &[u32]) -> Result<(u32, LayerKvCache)> {
+    fn prefill_hidden_greedy_first_token(
+        &mut self,
+        prompt_ids: &[u32],
+    ) -> Result<(u32, LayerKvCache)> {
         let n = prompt_ids.len().min(self.max_seq);
         let (hidden, kv) = self.run_prefill_hidden_with_cache(prompt_ids)?;
         let h = self.cfg.hidden_size;
@@ -1444,7 +1463,11 @@ impl GemmaPackedSession {
 
     /// Bucketed packed decode with GPU-resident K/V (Metal / MLX / CUDA). Binds
     /// `past_k_*`/`past_v_*` once per bucket; per-step logits + one K/V row readback.
-    fn decode_step_bucketed_resident(&mut self, past_seq: usize, input_tok: u32) -> Result<Vec<f32>> {
+    fn decode_step_bucketed_resident(
+        &mut self,
+        past_seq: usize,
+        input_tok: u32,
+    ) -> Result<Vec<f32>> {
         let kv_dims = self.per_layer_kv_dims();
         let n_layers = self.cfg.num_hidden_layers;
         let bucket_idx = self
@@ -1480,7 +1503,10 @@ impl GemmaPackedSession {
             let f32_params = self.ensure_decode_f32_overlay()?;
             let packed_tensors = Arc::clone(&self.packed_tensors);
             let f32_param_keys: HashSet<String> = f32_params.keys().cloned().collect();
-            let cache = self.cache.as_ref().context("resident decode without cache")?;
+            let cache = self
+                .cache
+                .as_ref()
+                .context("resident decode without cache")?;
             let (graph, params) = Self::build_decode_graph(
                 &cfg,
                 &f32_params,
@@ -1581,13 +1607,7 @@ impl GemmaPackedSession {
 
         if let Some(cache) = self.cache.as_mut() {
             advance_resident_kv_host(
-                &self.cfg,
-                compiled,
-                cache,
-                &kv_dims,
-                n_layers,
-                upper,
-                past_seq,
+                &self.cfg, compiled, cache, &kv_dims, n_layers, upper, past_seq,
             )?;
         }
 
@@ -1648,7 +1668,10 @@ impl GemmaPackedSession {
             let f32_params = self.ensure_decode_f32_overlay()?;
             let packed_tensors = Arc::clone(&self.packed_tensors);
             let f32_param_keys: HashSet<String> = f32_params.keys().cloned().collect();
-            let cache = self.cache.as_ref().context("resident decode without cache")?;
+            let cache = self
+                .cache
+                .as_ref()
+                .context("resident decode without cache")?;
             let (graph, params) = Self::build_decode_graph(
                 &cfg,
                 &f32_params,
@@ -1680,12 +1703,7 @@ impl GemmaPackedSession {
                         .set_param(name, data);
                 }
             });
-            self.upload_decode_packed_params(
-                upper_u64,
-                past_seq as u64,
-                &params,
-                &f32_param_keys,
-            );
+            self.upload_decode_packed_params(upper_u64, past_seq as u64, &params, &f32_param_keys);
             packed_decode_compile_guard(self.device, self.exec_device, || {
                 let compiled = self
                     .decode_cache
@@ -1749,13 +1767,7 @@ impl GemmaPackedSession {
 
         if let Some(cache) = self.cache.as_mut() {
             advance_resident_kv_host(
-                &self.cfg,
-                compiled,
-                cache,
-                &kv_dims,
-                n_layers,
-                upper,
-                past_seq,
+                &self.cfg, compiled, cache, &kv_dims, n_layers, upper, past_seq,
             )?;
         }
 
@@ -1788,11 +1800,7 @@ impl GemmaPackedSession {
         let upper = self
             .decode_cache_hidden
             .as_ref()
-            .and_then(|c| {
-                c.buckets()
-                    .nth(bucket_idx)
-                    .map(|r| (r.end - 1) as usize)
-            })
+            .and_then(|c| c.buckets().nth(bucket_idx).map(|r| (r.end - 1) as usize))
             .unwrap_or(past_seq);
         let upper_u64 = upper as u64;
         let next_upper = self
@@ -1817,7 +1825,10 @@ impl GemmaPackedSession {
             let f32_params = self.ensure_decode_f32_overlay()?;
             let packed_tensors = Arc::clone(&self.packed_tensors);
             let f32_param_keys: HashSet<String> = f32_params.keys().cloned().collect();
-            let cache = self.cache.as_ref().context("resident decode without cache")?;
+            let cache = self
+                .cache
+                .as_ref()
+                .context("resident decode without cache")?;
             let (graph, params) = Self::build_decode_graph(
                 &cfg,
                 &f32_params,
@@ -1917,13 +1928,7 @@ impl GemmaPackedSession {
 
         if let Some(cache) = self.cache.as_mut() {
             advance_resident_kv_host(
-                &self.cfg,
-                compiled,
-                cache,
-                &kv_dims,
-                n_layers,
-                upper,
-                past_seq,
+                &self.cfg, compiled, cache, &kv_dims, n_layers, upper, past_seq,
             )?;
         }
 
@@ -1948,13 +1953,8 @@ impl GemmaPackedSession {
             .packed_tensors
             .get("model.embed_tokens.weight")
             .context("host greedy lm_head: missing packed embed")?;
-        let (tok, _) = rlx_cpu::lm_head::gguf_tied_lm_argmax_parallel(
-            &hidden[..h],
-            bytes,
-            h,
-            vocab,
-            *scheme,
-        );
+        let (tok, _) =
+            rlx_cpu::lm_head::gguf_tied_lm_argmax_parallel(&hidden[..h], bytes, h, vocab, *scheme);
         Ok(tok)
     }
 
@@ -2083,33 +2083,32 @@ impl GemmaPackedSession {
             &mut self.packed_buckets_loaded
         };
 
-        let (logits, new_k, new_v) =
-            packed_decode_compile_guard(self.device, decode_exec, || {
-                let f32_params = Arc::clone(&f32_params);
-                run_bucketed_kv_decode_graph_layers_scratch(
-                    decode_cache_ref,
-                    past_seq,
-                    kv_cache,
-                    &kv_dims,
-                    n_layers,
-                    &mut self.decode_scratch.padded_k,
-                    &mut self.decode_scratch.padded_v,
-                    &fixed,
-                    move |upper_u64| {
-                        Self::build_decode_graph(
-                            &cfg,
-                            &f32_params,
-                            &packed_tensors,
-                            upper_u64 as usize,
-                            PackedDecodeLmOutput::FullLogits,
-                        )
-                    },
-                    Some(packed_upload.as_ref()),
-                    &f32_param_keys,
-                    packed_loaded,
-                    &decode_opts,
-                )
-            })?;
+        let (logits, new_k, new_v) = packed_decode_compile_guard(self.device, decode_exec, || {
+            let f32_params = Arc::clone(&f32_params);
+            run_bucketed_kv_decode_graph_layers_scratch(
+                decode_cache_ref,
+                past_seq,
+                kv_cache,
+                &kv_dims,
+                n_layers,
+                &mut self.decode_scratch.padded_k,
+                &mut self.decode_scratch.padded_v,
+                &fixed,
+                move |upper_u64| {
+                    Self::build_decode_graph(
+                        &cfg,
+                        &f32_params,
+                        &packed_tensors,
+                        upper_u64 as usize,
+                        PackedDecodeLmOutput::FullLogits,
+                    )
+                },
+                Some(packed_upload.as_ref()),
+                &f32_param_keys,
+                packed_loaded,
+                &decode_opts,
+            )
+        })?;
 
         if packed_timing_enabled() {
             eprintln!(
@@ -2294,13 +2293,8 @@ impl GemmaPackedSession {
             .packed_tensors
             .get("model.embed_tokens.weight")
             .context("host greedy lm_head: missing packed embed")?;
-        let (tok, _) = rlx_cpu::lm_head::gguf_tied_lm_argmax_parallel(
-            &hidden[..h],
-            bytes,
-            h,
-            vocab,
-            *scheme,
-        );
+        let (tok, _) =
+            rlx_cpu::lm_head::gguf_tied_lm_argmax_parallel(&hidden[..h], bytes, h, vocab, *scheme);
         Ok(tok)
     }
 

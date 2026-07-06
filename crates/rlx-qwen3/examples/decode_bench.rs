@@ -60,7 +60,7 @@ fn run(world: u32, cached: bool, cfg: &Qwen3Config, w: &Tensors, prompt: &[u32],
                 let mut tokens = (*prompt).clone();
                 let t0 = Instant::now();
                 coord
-                    .generate(&mut stage, &mut tokens, n, |l| argmax(l), |_| false)
+                    .generate(&mut stage, &mut tokens, n, argmax, |_| false)
                     .unwrap();
                 t0.elapsed().as_secs_f64()
             })

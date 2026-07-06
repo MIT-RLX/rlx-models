@@ -1,11 +1,13 @@
 [package]
 name = "rlx-inflect-nano"
-version = "0.2.9"
+version = "0.2.11"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Inflect-Nano-v1 English text-to-speech (FastSpeech-style + Snake HiFi-GAN) for RLX"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 
 [dependencies]

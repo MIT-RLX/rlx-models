@@ -118,11 +118,13 @@ fn vision_wgpu_bisect() {
     };
     let pos_embed = rd(&fx.join("pos_embed.bin")).expect("pos_embed");
     let posi = rd_i32(&fx.join("positions.bin")).expect("positions");
-    let mut cfg = VisionConfig::default();
-    cfg.layers = std::env::var("RLX_VIS_LAYERS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
+    let cfg = VisionConfig {
+        layers: std::env::var("RLX_VIS_LAYERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1),
+        ..VisionConfig::default()
+    };
     let p = posi.len() / 2;
     let positions: Vec<(u32, u32)> = (0..p)
         .map(|i| (posi[2 * i] as u32, posi[2 * i + 1] as u32))
@@ -149,7 +151,9 @@ fn vision_wgpu_bisect() {
     let tap = std::env::var("RLX_VIS_TAP").unwrap_or_else(|_| "full".into());
     eprintln!(
         "[vis bisect L={} tap={tap}] cpu-vs-wgpu cos = {gcos:.6}, cpu maxabs = {maxc:.4}, wgpu maxabs = {maxg:.4}, len {}/{}",
-        cfg.layers, oc.len(), og.len()
+        cfg.layers,
+        oc.len(),
+        og.len()
     );
 }
 

@@ -39,8 +39,7 @@ pub const STANDARD_DEVICES: &[Device] = &[
 pub const STANDARD_DEVICE_NAMES: &str = "auto|cpu|metal|mps|mlx|cuda|rocm|hip|gpu|wgpu|vulkan";
 
 /// [`STANDARD_DEVICE_NAMES`] plus CoreML / ANE when the `coreml` feature is enabled.
-pub const LM_DEVICE_NAMES: &str =
-    "auto|cpu|metal|mps|mlx|cuda|rocm|hip|gpu|wgpu|vulkan|coreml|ane";
+pub const LM_DEVICE_NAMES: &str = "auto|cpu|metal|mps|mlx|cuda|rocm|hip|gpu|wgpu|vulkan|coreml|ane";
 
 /// Preferred causal-LM inference order on this host (excludes ANE — request `coreml` explicitly).
 pub const LM_INFERENCE_DEVICE_PRIORITY: &[Device] = &[

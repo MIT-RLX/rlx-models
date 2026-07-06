@@ -91,9 +91,7 @@ pub fn run(args: &[String]) -> Result<()> {
                     Some(req(args, &mut i)?.parse().context("--gguf-index: usize")?);
             }
             "--help" | "-h" => {
-                eprintln!(
-                    "rlx-gemma — see README for flags; --device accepts {LM_DEVICE_NAMES}"
-                );
+                eprintln!("rlx-gemma — see README for flags; --device accepts {LM_DEVICE_NAMES}");
                 return Ok(());
             }
             other => bail!("unknown flag: {other}"),

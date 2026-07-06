@@ -15,6 +15,10 @@ impl VisionKeySpan {
         self.end.saturating_sub(self.start)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn contains_key(&self, key_idx: usize) -> bool {
         (self.start..self.end).contains(&key_idx)
     }

@@ -693,7 +693,7 @@ mod tests {
                             let coord = PipelineCoordinator::new(ProcessGroup::new(Arc::new(t)));
                             let mut tokens = (*prompt).clone();
                             coord
-                                .generate(&mut stage, &mut tokens, n, |l| argmax(l), |_| false)
+                                .generate(&mut stage, &mut tokens, n, argmax, |_| false)
                                 .unwrap()
                         })
                     })

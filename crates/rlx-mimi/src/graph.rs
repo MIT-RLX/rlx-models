@@ -734,7 +734,8 @@ mod tests {
     }
 
     fn devices() -> Vec<Device> {
-        let v = vec![Device::Cpu];
+        #[allow(unused_mut)] // push()es below are cfg-gated on backend features
+        let mut v = vec![Device::Cpu];
         #[cfg(feature = "metal")]
         if rlx_runtime::is_available(Device::Metal) {
             v.push(Device::Metal);

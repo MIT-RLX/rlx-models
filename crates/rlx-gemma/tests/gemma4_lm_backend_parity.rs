@@ -132,6 +132,7 @@ fn tiny_gemma4_causal_cfg() -> GemmaConfig {
         num_kv_shared_layers: 0,
         use_double_wide_mlp: false,
         enable_moe_block: false,
+        eog_token_ids: Vec::new(),
     }
 }
 
@@ -374,6 +375,7 @@ fn tiny_gemma_legacy_base() -> GemmaConfig {
         num_kv_shared_layers: 0,
         use_double_wide_mlp: false,
         enable_moe_block: false,
+        eog_token_ids: Vec::new(),
     }
 }
 

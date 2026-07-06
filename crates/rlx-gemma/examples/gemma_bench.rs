@@ -26,13 +26,13 @@ fn weights() -> PathBuf {
 }
 
 fn build(dev: Device) -> Result<GemmaRunner> {
-    Ok(GemmaRunner::builder()
-        .weights(&weights())
+    GemmaRunner::builder()
+        .weights(weights())
         .packed_weights(true)
         .device(dev)
         .max_seq(512)
         .sample(SampleOpts::greedy())
-        .build()?)
+        .build()
 }
 
 fn cos_maxabs(a: &[f32], b: &[f32]) -> (f32, f32) {
@@ -64,11 +64,17 @@ struct Row {
     toks: Vec<u32>,
 }
 
-fn bench(dev: Device, label: &'static str, cpu_logits: Option<&[f32]>, cpu_hidden: Option<&[f32]>) -> Result<Row> {
+fn bench(
+    dev: Device,
+    label: &'static str,
+    cpu_logits: Option<&[f32]>,
+    cpu_hidden: Option<&[f32]>,
+) -> Result<Row> {
     // Phase 1 — precision + prefill timing (one runner, dropped before phase 2).
     let mut best = f64::INFINITY;
     let mut logits = Vec::new();
-    let mut hidden = Vec::new();
+    // Assigned exactly once inside the block below; deferred to avoid a dead init.
+    let hidden;
     {
         let mut r = build(dev)?;
         let _ = r.predict_logits(HF_CHAT_IDS)?; // warm compile
@@ -152,7 +158,10 @@ fn main() -> Result<()> {
     }
 
     println!("\n=== Gemma 3 270M — per-backend timing + precision (vs CPU) ===");
-    println!("{:<8} {:>11} {:>10} {:>8} {:>11} {:>12} {:>11}", "backend", "prefill_ms", "dec_tok/s", "dec_tok", "hidden_cos", "logit_cos", "logit_maxabs");
+    println!(
+        "{:<8} {:>11} {:>10} {:>8} {:>11} {:>12} {:>11}",
+        "backend", "prefill_ms", "dec_tok/s", "dec_tok", "hidden_cos", "logit_cos", "logit_maxabs"
+    );
     for r in &rows {
         println!(
             "{:<8} {:>11.2} {:>10.1} {:>8} {:>11.6} {:>12.6} {:>11.4}",

@@ -487,13 +487,7 @@ fn load_self_attn_qkv(
     if cfg.is_phi_arch() || proj_available(packed, &*weights, &fused_key) {
         let (w, s, _) = load_proj(g, params, packed, weights, &fused_key)?;
         let total = q_dim + kv_dim + kv_dim;
-        let combined = emit_proj(
-            g,
-            normed_in,
-            w,
-            s,
-            Shape::new(&[batch, seq, total], f),
-        );
+        let combined = emit_proj(g, normed_in, w, s, Shape::new(&[batch, seq, total], f));
         let q = g.narrow_(combined, 2, 0, q_dim);
         let k = g.narrow_(combined, 2, q_dim, kv_dim);
         let v = g.narrow_(combined, 2, q_dim + kv_dim, kv_dim);
@@ -506,13 +500,7 @@ fn load_self_attn_qkv(
             weights,
             &format!("{lp}.self_attn.q_proj.weight"),
         )?;
-        let q = emit_proj(
-            g,
-            normed_in,
-            q_w,
-            q_s,
-            Shape::new(&[batch, seq, q_dim], f),
-        );
+        let q = emit_proj(g, normed_in, q_w, q_s, Shape::new(&[batch, seq, q_dim], f));
         let (k_w, k_s, _) = load_proj(
             g,
             params,
@@ -520,13 +508,7 @@ fn load_self_attn_qkv(
             weights,
             &format!("{lp}.self_attn.k_proj.weight"),
         )?;
-        let k = emit_proj(
-            g,
-            normed_in,
-            k_w,
-            k_s,
-            Shape::new(&[batch, seq, kv_dim], f),
-        );
+        let k = emit_proj(g, normed_in, k_w, k_s, Shape::new(&[batch, seq, kv_dim], f));
         let (v_w, v_s, _) = load_proj(
             g,
             params,
@@ -534,13 +516,7 @@ fn load_self_attn_qkv(
             weights,
             &format!("{lp}.self_attn.v_proj.weight"),
         )?;
-        let v = emit_proj(
-            g,
-            normed_in,
-            v_w,
-            v_s,
-            Shape::new(&[batch, seq, kv_dim], f),
-        );
+        let v = emit_proj(g, normed_in, v_w, v_s, Shape::new(&[batch, seq, kv_dim], f));
         Ok((q, k, v))
     }
 }
@@ -724,15 +700,9 @@ pub fn build_llama32_graph_sized_packed(
     let rope_rows = seq;
     let (cos_data, sin_data) = build_rope_tables(&inv_freq, rope_rows);
     let half = inv_freq.len();
-    let cos_id = g.param(
-        "rope.cos",
-        Shape::new(&[rope_rows, half], f),
-    );
+    let cos_id = g.param("rope.cos", Shape::new(&[rope_rows, half], f));
     params.insert("rope.cos".into(), cos_data);
-    let sin_id = g.param(
-        "rope.sin",
-        Shape::new(&[rope_rows, half], f),
-    );
+    let sin_id = g.param("rope.sin", Shape::new(&[rope_rows, half], f));
     params.insert("rope.sin".into(), sin_data);
 
     // Keep the embed table PACKED (Q-quant) for tied checkpoints: input
@@ -769,8 +739,6 @@ pub fn build_llama32_graph_sized_packed(
         )?;
         let normed_in = g.rms_norm(h_id, in_ln_g, zero_beta_hidden, eps);
 
-        let q_dim = nh * dh;
-        let kv_dim = nkv * dh;
         let (q, k, v) = load_self_attn_qkv(
             &mut g,
             &mut params,
@@ -977,7 +945,6 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
     let group = cfg.kv_group_size();
     let eps = cfg.rms_norm_eps as f32;
     let kv_dim = cfg.kv_proj_dim();
-    let q_dim = nh * dh;
 
     let zero_beta_hidden = synth_zero(&mut g, &mut params, "llama32.zero_beta.hidden", h);
 
@@ -1004,19 +971,28 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
     // single-token input embedding gathered host-side (`input_embeddings`),
     // tied LM head via `Op::DequantMatMul`. Decode always emits the LM head.
     let mut embed_host = None;
-    let (mut h_id, tied_embed_head) =
-        load_packed_embed(&mut g, &mut params, packed, weights, cfg, batch, 1, with_lm_head, &mut embed_host)?;
+    let (mut h_id, tied_embed_head) = load_packed_embed(
+        &mut g,
+        &mut params,
+        packed,
+        weights,
+        cfg,
+        batch,
+        1,
+        with_lm_head,
+        &mut embed_host,
+    )?;
 
     // Per-layer past K/V cache inputs.
     let mut past_k_ids: Vec<NodeId> = Vec::with_capacity(cfg.num_hidden_layers);
     let mut past_v_ids: Vec<NodeId> = Vec::with_capacity(cfg.num_hidden_layers);
     for i in 0..cfg.num_hidden_layers {
         past_k_ids.push(g.input(
-            &format!("past_k_{i}"),
+            format!("past_k_{i}"),
             Shape::new(&[batch, past_seq, kv_dim], f),
         ));
         past_v_ids.push(g.input(
-            &format!("past_v_{i}"),
+            format!("past_v_{i}"),
             Shape::new(&[batch, past_seq, kv_dim], f),
         ));
     }

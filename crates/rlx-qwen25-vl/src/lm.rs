@@ -97,11 +97,7 @@ pub fn qwen25_vl_lm_from_gguf(raw: &GgufFile) -> Result<Qwen3Config> {
 
     let hidden_size = get_u32("qwen3.embedding_length")? as usize;
     let num_attention_heads = get_u32("qwen3.attention.head_count")? as usize;
-    let head_dim_default = if num_attention_heads > 0 {
-        hidden_size / num_attention_heads
-    } else {
-        128
-    };
+    let head_dim_default = hidden_size.checked_div(num_attention_heads).unwrap_or(128);
 
     Ok(Qwen3Config {
         vocab_size: get_u32("qwen3.vocab_size").unwrap_or(151_936) as usize,

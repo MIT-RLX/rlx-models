@@ -137,8 +137,7 @@ pub fn build_detection_graph_to_stage(
     let mut x_up = x;
     let mut up_h = h;
     let mut up_w = w;
-    let mut up_stage = 7u8;
-    for up_idx in (0..DEPTH_SCALE.len() - 1).rev() {
+    for (up_stage, up_idx) in (7u8..).zip((0..DEPTH_SCALE.len() - 1).rev()) {
         let out_c = DEPTH_SCALE[up_idx];
         let cross_c = DEPTH_SCALE[up_idx];
         let (skip, skip_h, skip_w) = if up_idx == 0 {
@@ -183,7 +182,6 @@ pub fn build_detection_graph_to_stage(
             b.m().set_outputs(vec![x_up]);
             return b.finish();
         }
-        up_stage += 1;
     }
 
     let out_w = b.load_param(wm, "out_conv.0.weight")?;

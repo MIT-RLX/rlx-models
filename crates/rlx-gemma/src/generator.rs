@@ -94,7 +94,10 @@ where
 /// Packed prefill on Metal: default to the thunk + fused Q4 path instead of
 /// whole-graph MPSGraph (often faster for small Gemma buckets on Apple Silicon).
 fn metal_prefill_thunk_enabled() -> bool {
-    match std::env::var("RLX_GEMMA_METAL_THUNK_PREFILL").ok().as_deref() {
+    match std::env::var("RLX_GEMMA_METAL_THUNK_PREFILL")
+        .ok()
+        .as_deref()
+    {
         Some("0") | Some("false") | Some("no") => false,
         Some("1") | Some("true") | Some("yes") => true,
         _ => true,

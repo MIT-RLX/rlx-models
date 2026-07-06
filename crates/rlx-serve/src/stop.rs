@@ -38,11 +38,12 @@ pub fn pending_holdback(text: &str, stops: &[String]) -> usize {
         let mut k = max;
         while k > 0 {
             // Respect char boundaries.
-            if text.is_char_boundary(text.len() - k) && s.is_char_boundary(k) {
-                if text[text.len() - k..] == s[..k] {
-                    hold = hold.max(k);
-                    break;
-                }
+            if text.is_char_boundary(text.len() - k)
+                && s.is_char_boundary(k)
+                && text[text.len() - k..] == s[..k]
+            {
+                hold = hold.max(k);
+                break;
             }
             k -= 1;
         }

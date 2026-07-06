@@ -27,7 +27,9 @@ fn prompt_ids() -> Vec<u32> {
 }
 
 fn main() -> Result<()> {
-    let path: PathBuf = std::env::var("RLX_GEMMA3_GGUF").expect("RLX_GEMMA3_GGUF").into();
+    let path: PathBuf = std::env::var("RLX_GEMMA3_GGUF")
+        .expect("RLX_GEMMA3_GGUF")
+        .into();
     let dev = match std::env::var("RLX_GEMMA_CHECK_DEVICE").as_deref() {
         Ok("cuda") => Device::Cuda,
         Ok("metal") => Device::Metal,
@@ -54,7 +56,10 @@ fn main() -> Result<()> {
     let mut ranked: Vec<(usize, f32)> = slice.iter().enumerate().map(|(i, &v)| (i, v)).collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     let top5: Vec<usize> = ranked.iter().take(5).map(|(i, _)| *i).collect();
-    println!("prefill: finite={finite} argmax={} top5={top5:?}", ranked[0].0);
+    println!(
+        "prefill: finite={finite} argmax={} top5={top5:?}",
+        ranked[0].0
+    );
 
     if std::env::var("RLX_GEMMA_CHECK_NOGEN").is_ok() {
         println!("greedy skipped (RLX_GEMMA_CHECK_NOGEN)");
@@ -62,7 +67,12 @@ fn main() -> Result<()> {
     }
     let toks = r.generate(&ids, 24, |_| {})?;
     let uniq: std::collections::HashSet<u32> = toks.iter().copied().collect();
-    println!("greedy({} toks, {} unique) = {:?}", toks.len(), uniq.len(), toks);
+    println!(
+        "greedy({} toks, {} unique) = {:?}",
+        toks.len(),
+        uniq.len(),
+        toks
+    );
     println!(
         "verdict: {}",
         if finite && uniq.len() > 3 {

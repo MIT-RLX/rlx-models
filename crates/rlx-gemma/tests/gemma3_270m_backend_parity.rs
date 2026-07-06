@@ -42,6 +42,8 @@ fn cpu_reference_greedy() -> Vec<u32> {
     greedy_on(Device::Cpu)
 }
 
+// Exercised only by backend-feature-gated tests below; dead under default features.
+#[allow(dead_code)]
 fn prefill_top1(device: Device) -> u32 {
     let weights = weights().expect("RLX_GEMMA3_GGUF");
     let mut runner = GemmaRunner::builder()
@@ -62,6 +64,8 @@ fn prefill_top1(device: Device) -> u32 {
         .unwrap_or(0)
 }
 
+// Only invoked under backend-feature cfgs; unused under default features.
+#[allow(unused_macros)]
 macro_rules! backend_greedy_matches_cpu {
     ($name:ident, $device:expr, $label:literal) => {
         #[test]
@@ -81,7 +85,8 @@ macro_rules! backend_greedy_matches_cpu {
             eprintln!("cpu greedy   = {:?}", cpu);
             assert_eq!(
                 other, cpu,
-                "packed Gemma 3 270M greedy on {} must match CPU", $label
+                "packed Gemma 3 270M greedy on {} must match CPU",
+                $label
             );
         }
     };
@@ -107,25 +112,13 @@ backend_greedy_matches_cpu!(
 );
 
 #[cfg(feature = "mlx")]
-backend_greedy_matches_cpu!(
-    gemma3_270m_greedy_matches_cpu_on_mlx,
-    Device::Mlx,
-    "MLX"
-);
+backend_greedy_matches_cpu!(gemma3_270m_greedy_matches_cpu_on_mlx, Device::Mlx, "MLX");
 
 #[cfg(feature = "gpu")]
-backend_greedy_matches_cpu!(
-    gemma3_270m_greedy_matches_cpu_on_wgpu,
-    Device::Gpu,
-    "wgpu"
-);
+backend_greedy_matches_cpu!(gemma3_270m_greedy_matches_cpu_on_wgpu, Device::Gpu, "wgpu");
 
 #[cfg(feature = "cuda")]
-backend_greedy_matches_cpu!(
-    gemma3_270m_greedy_matches_cpu_on_cuda,
-    Device::Cuda,
-    "CUDA"
-);
+backend_greedy_matches_cpu!(gemma3_270m_greedy_matches_cpu_on_cuda, Device::Cuda, "CUDA");
 
 #[cfg(feature = "coreml")]
 backend_greedy_matches_cpu!(

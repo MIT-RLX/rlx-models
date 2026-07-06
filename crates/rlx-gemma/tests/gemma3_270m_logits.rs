@@ -32,6 +32,8 @@ fn greedy_argmax(logits: &[f32]) -> u32 {
         .unwrap_or(0)
 }
 
+// Used only by backend-feature-gated parity tests; dead under default features.
+#[allow(dead_code)]
 fn top_k_indices(logits: &[f32], k: usize) -> Vec<u32> {
     let mut ranked: Vec<(u32, f32)> = logits
         .iter()
@@ -197,10 +199,7 @@ fn gemma3_270m_prefill_top32_and_logit_stats_match_llama() {
     );
 
     let rlx_set: std::collections::HashSet<_> = rlx_top32.iter().copied().collect();
-    let overlap = llama_top32
-        .iter()
-        .filter(|t| rlx_set.contains(t))
-        .count();
+    let overlap = llama_top32.iter().filter(|t| rlx_set.contains(t)).count();
     assert!(
         overlap >= 28,
         "top-32 token sets should largely agree (overlap={overlap}/32)"
@@ -235,9 +234,7 @@ fn gemma3_270m_hidden_cosine_matches_llama() {
         .build()
         .expect("build");
 
-    let rlx_h = runner
-        .predict_last_hidden(HF_CHAT_IDS)
-        .expect("rlx hidden");
+    let rlx_h = runner.predict_last_hidden(HF_CHAT_IDS).expect("rlx hidden");
     let llama_h =
         rlx_gemma::llama_reference::last_token_hidden(&weights, HF_CHAT_IDS).expect("llama hidden");
     assert_eq!(rlx_h.len(), llama_h.len());

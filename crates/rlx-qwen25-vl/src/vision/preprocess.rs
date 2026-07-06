@@ -16,7 +16,6 @@
 //! RGB preprocessing + Qwen2.5-VL vision-side window / mRoPE host inputs.
 
 use super::config::MmProjConfig;
-use rlx_flow::rope;
 
 /// Default window size used by llama.cpp Qwen2.5-VL (`attn_window_size = 112`).
 pub const DEFAULT_ATTN_WINDOW_SIZE: usize = 112;
@@ -68,29 +67,9 @@ fn floor_by_factor(x: f32, f: usize) -> usize {
     (x / f as f32).floor() as usize * f
 }
 
-pub fn resize_rgb_nearest(rgb: &[u8], w: usize, h: usize, out_w: usize, out_h: usize) -> Vec<u8> {
-    resize_rgb(rgb, w, h, out_w, out_h, ResizeFilter::Nearest)
-}
-
 /// Bicubic-ish resize (Catmull-Rom) — matches HF `PILImageResampling.BICUBIC` closely enough.
+/// Without the `qwen25-vl-vision` feature (no `image` dep) it falls back to nearest-neighbor.
 pub fn resize_rgb_bicubic(rgb: &[u8], w: usize, h: usize, out_w: usize, out_h: usize) -> Vec<u8> {
-    resize_rgb(rgb, w, h, out_w, out_h, ResizeFilter::Bicubic)
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ResizeFilter {
-    Nearest,
-    Bicubic,
-}
-
-fn resize_rgb(
-    rgb: &[u8],
-    w: usize,
-    h: usize,
-    out_w: usize,
-    out_h: usize,
-    filter: ResizeFilter,
-) -> Vec<u8> {
     if w == 0 || h == 0 {
         return vec![0u8; out_w * out_h * 3];
     }
@@ -102,20 +81,21 @@ fn resize_rgb(
         use image::{ImageBuffer, Rgb};
         let img = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(w as u32, h as u32, rgb.to_vec())
             .expect("rgb buffer");
-        let filter = match filter {
-            ResizeFilter::Nearest => image::imageops::FilterType::Nearest,
-            ResizeFilter::Bicubic => image::imageops::FilterType::CatmullRom,
-        };
-        let resized = image::imageops::resize(&img, out_w as u32, out_h as u32, filter);
-        return resized.into_raw();
+        let resized = image::imageops::resize(
+            &img,
+            out_w as u32,
+            out_h as u32,
+            image::imageops::FilterType::CatmullRom,
+        );
+        resized.into_raw()
     }
     #[cfg(not(feature = "qwen25-vl-vision"))]
     {
-        let _ = filter;
         resize_rgb_nearest_impl(rgb, w, h, out_w, out_h)
     }
 }
 
+#[cfg(not(feature = "qwen25-vl-vision"))]
 fn resize_rgb_nearest_impl(rgb: &[u8], w: usize, h: usize, out_w: usize, out_h: usize) -> Vec<u8> {
     let mut out = vec![0u8; out_w * out_h * 3];
     for oy in 0..out_h {
@@ -187,11 +167,6 @@ pub fn build_spatial_merge_gather_idx(ph: usize, pw: usize, merge: usize) -> Vec
     idx
 }
 
-/// Raster row-major patch index `(y, x) -> y * pw + x`.
-pub fn patch_raster_index(y: usize, x: usize, pw: usize) -> usize {
-    y * pw + x
-}
-
 #[cfg(feature = "qwen25-vl-vision")]
 pub fn load_rgb_image(path: &str) -> anyhow::Result<(Vec<u8>, usize, usize)> {
     let img = image::open(path).map_err(|e| anyhow::anyhow!("open {path}: {e}"))?;
@@ -201,7 +176,9 @@ pub fn load_rgb_image(path: &str) -> anyhow::Result<(Vec<u8>, usize, usize)> {
 }
 
 /// Vision-side mRoPE position ids (i32), layout `[4 * n_pos]` (llama.cpp `positions`).
-pub fn build_vision_positions(img_w: usize, img_h: usize, cfg: &MmProjConfig) -> Vec<i32> {
+/// Retained as a test oracle for [`build_spatial_merge_gather_idx`] token order.
+#[cfg(test)]
+fn build_vision_positions(img_w: usize, img_h: usize, cfg: &MmProjConfig) -> Vec<i32> {
     let patch = cfg.patch_size;
     let merge = cfg.n_merge;
     let pw = img_w / patch;
@@ -317,46 +294,14 @@ pub fn reorder_seq_by_window_inv(
     data.copy_from_slice(&tmp);
 }
 
-fn vision_mrope_sections(head_dim: usize) -> [usize; 4] {
-    let q = head_dim / 4;
-    [q, q, q, q]
-}
-
-/// Legacy llama.cpp 4-section mRoPE tables (`[n_pos, head_half]`).
-pub fn vision_mrope_feeds(
-    positions: &[i32],
-    n_pos: usize,
-    head_dim: usize,
-) -> (Vec<f32>, Vec<f32>) {
-    let head_half = head_dim / 2;
-    let sections = vision_mrope_sections(head_dim);
-    let mut cos = vec![0f32; n_pos * head_half];
-    let mut sin = vec![0f32; n_pos * head_half];
-    for t in 0..n_pos {
-        let sec = [
-            positions[t] as usize,
-            positions[n_pos + t] as usize,
-            positions[2 * n_pos + t] as usize,
-            positions[3 * n_pos + t] as usize,
-        ];
-        let (c_row, s_row) =
-            rope::mrope_row_for_sections(10_000.0, head_dim, sections, sec, head_half);
-        let row = t * head_half;
-        cos[row..row + head_half].copy_from_slice(&c_row);
-        sin[row..row + head_half].copy_from_slice(&s_row);
-    }
-    (cos, sin)
-}
-
 #[derive(Debug, Clone)]
 pub struct WindowAttnInputs {
     /// Maps merged window order → original token index (`f32` for gather).
     pub inv_window_idx: Vec<f32>,
     /// Restores original order after merger (`f32` for gather).
     pub window_idx: Vec<f32>,
-    /// Cumulative token boundaries per window (`cu_window_seqlens`).
-    pub cu_window_seqlens: Vec<i32>,
-    /// `[n_pos, n_pos]` additive mask — legacy; prefer [`Self::cu_window_seqlens`].
+    /// `[n_pos, n_pos]` additive mask built from the per-window
+    /// `cu_window_seqlens` boundaries.
     pub window_mask: Vec<f32>,
 }
 
@@ -450,7 +395,6 @@ pub fn build_window_attn_inputs(
     WindowAttnInputs {
         inv_window_idx: inv_idx,
         window_idx: idx,
-        cu_window_seqlens: cu_seqlens,
         window_mask: mask,
     }
 }

@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "GLM 5.1 runner (delegates to rlx-llama32; GLM-specific RoPE/RMSNorm pending)"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }

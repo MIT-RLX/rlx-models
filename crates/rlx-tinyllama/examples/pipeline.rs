@@ -35,8 +35,8 @@ use std::io::Write;
 use rlx_tinyllama::pipeline::{ChatMessage, GenerationConfig, TextGeneration};
 
 fn main() -> anyhow::Result<()> {
-    let model = std::env::var("MODEL")
-        .unwrap_or_else(|_| "TinyLlama/TinyLlama-1.1B-Chat-v1.0".to_string());
+    let model =
+        std::env::var("MODEL").unwrap_or_else(|_| "TinyLlama/TinyLlama-1.1B-Chat-v1.0".to_string());
 
     println!("loading {model} …");
     let mut pipe = TextGeneration::from_pretrained(&model)?;
@@ -48,7 +48,9 @@ fn main() -> anyhow::Result<()> {
 
     // ── chat, streamed token-by-token ─────────────────────────────
     println!("\n[chat] (streaming)");
-    let messages = [ChatMessage::user("Name three primary colors, comma separated.")];
+    let messages = [ChatMessage::user(
+        "Name three primary colors, comma separated.",
+    )];
     print!("assistant: ");
     std::io::stdout().flush().ok();
     pipe.chat_stream(&messages, &cfg, |piece| {

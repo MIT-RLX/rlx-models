@@ -101,7 +101,7 @@ pub fn e2e_on_device(device: Device, label: &str) -> Result<bool> {
     ensure!(!result.samples.is_empty(), "{label}: empty PCM");
     let wav = std::env::temp_dir().join(format!(
         "rlx-kyutai-e2e-{}-{}.wav",
-        label.replace('/', "_").replace(' ', "_"),
+        label.replace(['/', ' '], "_"),
         std::process::id()
     ));
     write_wav_mono(&wav, &result.samples, result.sample_rate)?;

@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "RLX autodiff training for Voxtral voice cloning — codec encoder + LoRA"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 
 [dependencies]

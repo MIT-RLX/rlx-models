@@ -14,14 +14,9 @@ use anyhow::Result;
 ///
 /// Reservoir: [`ReservoirConfig::local_lcesn`] (800 units, 20×40 toroidal grid, kernel 7).
 /// Use [`TrainConfig::lcesn`] for the paper protocol (washout 1000, 12k train).
+#[derive(Default)]
 pub struct LocalEsn {
     inner: Option<ReadoutTrainer>,
-}
-
-impl Default for LocalEsn {
-    fn default() -> Self {
-        Self { inner: None }
-    }
 }
 
 impl LocalEsn {

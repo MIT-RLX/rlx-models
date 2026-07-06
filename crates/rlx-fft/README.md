@@ -2,7 +2,7 @@
 
 Learned butterfly FFT + spectral pipelines (mel, Welch PSD, top-K Welch peaks), compiled via RLX.
 
-**Workspace 0.2.9** — depends on upstream `rlx*` 0.2.10. Publish tier 2 (`scripts/publish.sh`), after `rlx-cli` / `rlx-models-core`.
+**Workspace 0.2.11** — depends on upstream `rlx*` 0.2.11. Publish tier 2 (`scripts/publish.sh`), after `rlx-cli` / `rlx-models-core`.
 
 ```bash
 cargo run -p rlx-fft --release -- --help

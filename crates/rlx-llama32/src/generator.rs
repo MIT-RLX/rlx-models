@@ -32,12 +32,11 @@
 
 use crate::builder::{
     build_llama32_decode_graph_sized_packed, build_llama32_decode_graph_sized_packed_ext,
-    build_llama32_decode_hir_dynamic_ext,
-    build_llama32_decode_hir_sized_ext, build_llama32_graph_sized,
-    build_llama32_graph_sized_kv_tap,
+    build_llama32_decode_hir_dynamic_ext, build_llama32_decode_hir_sized_ext,
+    build_llama32_graph_sized, build_llama32_graph_sized_kv_tap,
     build_llama32_graph_sized_last_logits, build_llama32_graph_sized_packed,
-    build_llama32_prefill_hir_dynamic_ext, build_llama32_prefill_hir_sized_ext,
-    gather_embed_row, gather_embed_rows,
+    build_llama32_prefill_hir_dynamic_ext, build_llama32_prefill_hir_sized_ext, gather_embed_row,
+    gather_embed_rows,
 };
 use crate::config::Llama32Config;
 use crate::prefill_mode::MetalGgufPrefillMode;
@@ -48,17 +47,13 @@ use rlx_core::flow_bridge::{
     packed_gguf_compile_guard, packed_gguf_execution_device,
 };
 use rlx_core::weight_loader::{ArcCacheLoader, ArcF32Tensor, GgufLoader, WeightLoader};
-use rlx_core::{
-    compact_bucketed_kv_buffer, infer_prefill_kv_seq, run_packed_prefill,
-};
+use rlx_core::{compact_bucketed_kv_buffer, infer_prefill_kv_seq, run_packed_prefill};
 use rlx_flow::CompileProfile;
 use rlx_ir::DimBinding;
 use rlx_ir::logical_kernel::KernelDispatchConfig;
 use rlx_qwen3::sampling::{SampleOpts, sample_token, sample_token_at};
 use rlx_runtime::attn_mask::bucket_decode_mask;
-use rlx_runtime::compile_cache::{
-    BucketedCompileCache, CompileCache, DynamicDimCompileCache,
-};
+use rlx_runtime::compile_cache::{BucketedCompileCache, CompileCache, DynamicDimCompileCache};
 use rlx_runtime::{
     CompileOptions, CompiledGraph, Device, Session, llama_decode_bucket_compile_peak_bytes,
     llama_decode_bucket_resident_bytes, llama_decode_oneshot_compile_peak_bytes,
@@ -197,7 +192,10 @@ fn cuda_lazy_kv_enabled(device: Device) -> bool {
 /// (`copy_resident_kv_rows_from`) for a future fast path.
 fn cuda_device_kv_rebind_enabled(device: Device) -> bool {
     cuda_lazy_kv_enabled(device)
-        && std::env::var("ORPHEUS_CUDA_KV_DEVICE_REBIND").ok().as_deref() == Some("1")
+        && std::env::var("ORPHEUS_CUDA_KV_DEVICE_REBIND")
+            .ok()
+            .as_deref()
+            == Some("1")
         && !matches!(
             std::env::var("ORPHEUS_CUDA_KV_HOST_REBIND").ok().as_deref(),
             Some("1") | Some("true") | Some("TRUE")
@@ -212,7 +210,10 @@ struct ResidentBucketFlushPlan {
     flush_upper: usize,
 }
 
-fn resident_bucket_flush_plan(cache_dec: &BucketedCompileCache, past_seq: usize) -> ResidentBucketFlushPlan {
+fn resident_bucket_flush_plan(
+    cache_dec: &BucketedCompileCache,
+    past_seq: usize,
+) -> ResidentBucketFlushPlan {
     let prev_key = past_seq.saturating_sub(1) as u64;
     let prev_bucket_idx = cache_dec.bucket_for(prev_key).unwrap_or(0);
     let bucket_start = cache_dec
@@ -289,7 +290,11 @@ struct PackedGgufPrefillFeed {
 }
 
 impl PackedGgufPrefillFeed {
-    fn new(upper_seq: usize, hidden: usize, embed_lazy: Option<(Vec<u8>, rlx_ir::quant::QuantScheme)>) -> Self {
+    fn new(
+        upper_seq: usize,
+        hidden: usize,
+        embed_lazy: Option<(Vec<u8>, rlx_ir::quant::QuantScheme)>,
+    ) -> Self {
         Self {
             upper_seq,
             hidden,
@@ -387,8 +392,7 @@ impl PackedGgufPrefill {
             &mut packed,
             &mut embed_host,
         )?;
-        let opts =
-            compile_options_for_packed_gguf_prefill_with_profile(profile, self.exec_device);
+        let opts = compile_options_for_packed_gguf_prefill_with_profile(profile, self.exec_device);
         let mut logits = packed_gguf_compile_guard(self.exec_device, || {
             Session::new(self.exec_device).compile_with(logits_graph, &opts)
         });
@@ -596,13 +600,7 @@ impl PackedGgufPrefill {
             );
         }
         let hidden = packed_prefill_last_hidden(&outputs[0], n, self.feed.hidden)?;
-        let kv_seq = infer_prefill_kv_seq(
-            &outputs[1..],
-            1,
-            &[self.kv_dim],
-            n,
-            self.feed.upper_seq,
-        );
+        let kv_seq = infer_prefill_kv_seq(&outputs[1..], 1, &[self.kv_dim], n, self.feed.upper_seq);
         let (mut layers_k, mut layers_v) =
             split_packed_kv_outputs(outputs[1..].to_vec(), 1, kv_seq, self.kv_dim, self.n_layers)?;
         if kv_seq > n {
@@ -969,7 +967,14 @@ struct CachedGgufWeights {
     inner: GgufLoader,
     f32_take: HashMap<String, (std::sync::Arc<Vec<f32>>, Vec<usize>)>,
     f32_take_t: HashMap<String, (std::sync::Arc<Vec<f32>>, Vec<usize>)>,
-    packed: HashMap<String, (std::sync::Arc<Vec<u8>>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    packed: HashMap<
+        String,
+        (
+            std::sync::Arc<Vec<u8>>,
+            rlx_ir::quant::QuantScheme,
+            Vec<usize>,
+        ),
+    >,
 }
 
 impl CachedGgufWeights {
@@ -1018,7 +1023,8 @@ impl WeightLoader for CachedGgufWeights {
         }
         let (d, s) = self.inner.take(key)?;
         let arc = std::sync::Arc::new(d);
-        self.f32_take.insert(key.to_string(), (arc.clone(), s.clone()));
+        self.f32_take
+            .insert(key.to_string(), (arc.clone(), s.clone()));
         Ok(((*arc).clone(), s))
     }
     fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
@@ -1027,10 +1033,14 @@ impl WeightLoader for CachedGgufWeights {
         }
         let (d, s) = self.inner.take_transposed(key)?;
         let arc = std::sync::Arc::new(d);
-        self.f32_take_t.insert(key.to_string(), (arc.clone(), s.clone()));
+        self.f32_take_t
+            .insert(key.to_string(), (arc.clone(), s.clone()));
         Ok(((*arc).clone(), s))
     }
-    fn take_packed(&mut self, key: &str) -> Result<Option<rlx_core::weight_map::PackedWeightTensor>> {
+    fn take_packed(
+        &mut self,
+        key: &str,
+    ) -> Result<Option<rlx_core::weight_map::PackedWeightTensor>> {
         if let Some((b, sc, sh)) = self.packed.get(key) {
             return Ok(Some(((**b).clone(), *sc, sh.clone())));
         }
@@ -1337,22 +1347,17 @@ impl Llama32Generator {
                 &self.prefill_profile,
             )?
         } else {
-            PackedGgufPrefill::build(
-                &self.cfg,
-                path,
-                upper,
-                self.device,
-                &self.prefill_profile,
-            )?
+            PackedGgufPrefill::build(&self.cfg, path, upper, self.device, &self.prefill_profile)?
         });
         Ok(())
     }
 
     fn ensure_packed_kv_prefill(&mut self, seq: usize) -> Result<()> {
         let upper = self.packed_prefill_upper_seq(seq);
-        let need = self.packed_gguf_prefill.as_ref().is_none_or(|p| {
-            p.feed.upper_seq != upper || p.logits.is_some()
-        });
+        let need = self
+            .packed_gguf_prefill
+            .as_ref()
+            .is_none_or(|p| p.feed.upper_seq != upper || p.logits.is_some());
         if !need {
             return Ok(());
         }
@@ -1595,7 +1600,10 @@ impl Llama32Generator {
                     return Ok(triple);
                 }
                 if !cuda_f32_prefill_forced()
-                    && std::env::var("ORPHEUS_CUDA_PACKED_KV_PREFILL").ok().as_deref() == Some("1")
+                    && std::env::var("ORPHEUS_CUDA_PACKED_KV_PREFILL")
+                        .ok()
+                        .as_deref()
+                        == Some("1")
                 {
                     eprintln!(
                         "[llama32] packed GPU KV + CPU logits prefill on {:?}",
@@ -1911,7 +1919,12 @@ impl Llama32Generator {
             // `Device::Gpu`/`Device::Vulkan` only reach here when `ORPHEUS_WGPU_NATIVE`/
             // `ORPHEUS_VULKAN_NATIVE=1` made `gguf_cpu_decode_required` return false
             // (else decode_device is Cpu and the F32 host path is used).
-            Device::Metal | Device::Mlx | Device::Gpu | Device::Vulkan | Device::Cuda | Device::Rocm => true,
+            Device::Metal
+            | Device::Mlx
+            | Device::Gpu
+            | Device::Vulkan
+            | Device::Cuda
+            | Device::Rocm => true,
             // CPU: F32 via Accelerate AMX is faster than on-the-fly Q4 dequant
             // (measured 104s vs 127s/100 tok), so default to the F32 flow path.
             // Opt into packed Q4 only when memory-constrained (avoids the ~12 GB
@@ -2351,8 +2364,7 @@ impl Llama32Generator {
         // steps, fed in-place from the decode output — no per-step host K/V
         // upload/readback, logits-only readback. Returns logits only; the host
         // `cache.layers_k/v` is left stale (synced back only on bucket change).
-        let resident =
-            self.resident_kv_decode_enabled() && self.bucket_decode_eligible(past_seq);
+        let resident = self.resident_kv_decode_enabled() && self.bucket_decode_eligible(past_seq);
 
         let (mut logits, new_k, new_v) = if resident {
             (
@@ -2646,14 +2658,15 @@ impl Llama32Generator {
             .decode_weights_cache
             .as_ref()
             .and_then(|cache| {
-                cache.packed.get("model.embed_tokens.weight").map(|(b, s, _)| {
-                    (b.as_slice(), *s)
-                })
+                cache
+                    .packed
+                    .get("model.embed_tokens.weight")
+                    .map(|(b, s, _)| (b.as_slice(), *s))
             })
             .filter(|_| {
                 self.decode_weights_cache
                     .as_ref()
-                    .is_some_and(|cache| cache.f32_take.get("model.embed_tokens.weight").is_none())
+                    .is_some_and(|cache| !cache.f32_take.contains_key("model.embed_tokens.weight"))
             });
         push_packed_decode_token_input(
             &self.cfg,
@@ -2681,7 +2694,9 @@ impl Llama32Generator {
         if packed_bucketed_full_kv_readback(exec_device) {
             let raw_outputs = compiled.run(&inputs);
             let mut iter = raw_outputs.into_iter();
-            let logits = iter.next().context("bucketed packed decode logits missing")?;
+            let logits = iter
+                .next()
+                .context("bucketed packed decode logits missing")?;
             let past_len = past_seq + 1;
             let mut new_k = Vec::with_capacity(n_layers);
             let mut new_v = Vec::with_capacity(n_layers);
@@ -2878,14 +2893,16 @@ impl Llama32Generator {
         for i in 0..n_layers {
             let src_k = &cache.layers_k[i];
             let src_v = &cache.layers_v[i];
-            let copy_k = past_bytes.min(src_k.len()).min(upper.saturating_mul(kv_dim));
-            let copy_v = past_bytes.min(src_v.len()).min(upper.saturating_mul(kv_dim));
+            let copy_k = past_bytes
+                .min(src_k.len())
+                .min(upper.saturating_mul(kv_dim));
+            let copy_v = past_bytes
+                .min(src_v.len())
+                .min(upper.saturating_mul(kv_dim));
             self.decode_kv_scratch.padded_k[i].fill(0.0);
             self.decode_kv_scratch.padded_v[i].fill(0.0);
-            self.decode_kv_scratch.padded_k[i][..copy_k]
-                .copy_from_slice(&src_k[..copy_k]);
-            self.decode_kv_scratch.padded_v[i][..copy_v]
-                .copy_from_slice(&src_v[..copy_v]);
+            self.decode_kv_scratch.padded_k[i][..copy_k].copy_from_slice(&src_k[..copy_k]);
+            self.decode_kv_scratch.padded_v[i][..copy_v].copy_from_slice(&src_v[..copy_v]);
         }
 
         let key_strs: Vec<String> = (0..n_layers)
@@ -2896,14 +2913,14 @@ impl Llama32Generator {
             .decode_weights_cache
             .as_ref()
             .and_then(|c| {
-                c.packed.get("model.embed_tokens.weight").map(|(b, s, _)| {
-                    (b.as_slice(), *s)
-                })
+                c.packed
+                    .get("model.embed_tokens.weight")
+                    .map(|(b, s, _)| (b.as_slice(), *s))
             })
             .filter(|_| {
                 self.decode_weights_cache
                     .as_ref()
-                    .is_some_and(|c| c.f32_take.get("model.embed_tokens.weight").is_none())
+                    .is_some_and(|c| !c.f32_take.contains_key("model.embed_tokens.weight"))
             });
         push_packed_decode_token_input(
             &self.cfg,
@@ -2917,7 +2934,10 @@ impl Llama32Generator {
         inputs.push(("sin", sin_row.as_slice()));
         inputs.push(("mask", mask.as_slice()));
         for i in 0..n_layers {
-            inputs.push((&key_strs[2 * i], self.decode_kv_scratch.padded_k[i].as_slice()));
+            inputs.push((
+                &key_strs[2 * i],
+                self.decode_kv_scratch.padded_k[i].as_slice(),
+            ));
             inputs.push((
                 &key_strs[2 * i + 1],
                 self.decode_kv_scratch.padded_v[i].as_slice(),
@@ -3005,8 +3025,7 @@ impl Llama32Generator {
                      set RLX_SOFT_MEMORY_FRACTION or ORPHEUS_DECODE_CACHE_CAP lower"
                 );
             }
-            let device_kv_rebind =
-                cuda_device_kv_rebind_enabled(exec_device) && bucket_idx > 0;
+            let device_kv_rebind = cuda_device_kv_rebind_enabled(exec_device) && bucket_idx > 0;
             let flush_plan = resident_bucket_flush_plan(
                 self.decode_compile_cache_hidden.as_ref().unwrap(),
                 past_seq,
@@ -3081,7 +3100,10 @@ impl Llama32Generator {
                 }
                 self.decode_resident_hidden_bound.clear();
             }
-            let cache_ref = self.cache.as_ref().context("resident decode without cache")?;
+            let cache_ref = self
+                .cache
+                .as_ref()
+                .context("resident decode without cache")?;
             let cache_mut = self.decode_compile_cache_hidden.as_mut().unwrap();
             packed_gguf_compile_guard(exec_device, || {
                 let compiled = cache_mut
@@ -3100,14 +3122,15 @@ impl Llama32Generator {
             .decode_weights_cache
             .as_ref()
             .and_then(|cache| {
-                cache.packed.get("model.embed_tokens.weight").map(|(b, s, _)| {
-                    (b.as_slice(), *s)
-                })
+                cache
+                    .packed
+                    .get("model.embed_tokens.weight")
+                    .map(|(b, s, _)| (b.as_slice(), *s))
             })
             .filter(|_| {
                 self.decode_weights_cache
                     .as_ref()
-                    .is_some_and(|cache| cache.f32_take.get("model.embed_tokens.weight").is_none())
+                    .is_some_and(|cache| !cache.f32_take.contains_key("model.embed_tokens.weight"))
             });
         let mut embed_scratch = Vec::new();
         let mut run_inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4);
@@ -3224,12 +3247,9 @@ impl Llama32Generator {
         if needs_bind {
             let reuse = self.cross_utterance_decode_reuse_enabled();
             let needs_compile = !self.decode_loaded_buckets.contains(&bucket_idx);
-            let device_kv_rebind =
-                cuda_device_kv_rebind_enabled(exec_device) && bucket_idx > 0;
-            let flush_plan = resident_bucket_flush_plan(
-                self.decode_compile_cache.as_ref().unwrap(),
-                past_seq,
-            );
+            let device_kv_rebind = cuda_device_kv_rebind_enabled(exec_device) && bucket_idx > 0;
+            let flush_plan =
+                resident_bucket_flush_plan(self.decode_compile_cache.as_ref().unwrap(), past_seq);
             if cuda_lazy_kv_enabled(exec_device) && bucket_idx > 0 {
                 if let Some(compiled) = self
                     .decode_compile_cache
@@ -3321,7 +3341,10 @@ impl Llama32Generator {
                 self.decode_loaded_buckets.insert(bucket_idx);
                 self.decode_resident_bound.clear();
             }
-            let cache_ref = self.cache.as_ref().context("resident decode without cache")?;
+            let cache_ref = self
+                .cache
+                .as_ref()
+                .context("resident decode without cache")?;
             packed_gguf_compile_guard(exec_device, || {
                 let cache_mut = self.decode_compile_cache.as_mut().unwrap();
                 let compiled = cache_mut
@@ -3340,14 +3363,15 @@ impl Llama32Generator {
             .decode_weights_cache
             .as_ref()
             .and_then(|cache| {
-                cache.packed.get("model.embed_tokens.weight").map(|(b, s, _)| {
-                    (b.as_slice(), *s)
-                })
+                cache
+                    .packed
+                    .get("model.embed_tokens.weight")
+                    .map(|(b, s, _)| (b.as_slice(), *s))
             })
             .filter(|_| {
                 self.decode_weights_cache
                     .as_ref()
-                    .is_some_and(|cache| cache.f32_take.get("model.embed_tokens.weight").is_none())
+                    .is_some_and(|cache| !cache.f32_take.contains_key("model.embed_tokens.weight"))
             });
         let mut embed_scratch = Vec::new();
         let mut run_inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4);
@@ -3426,10 +3450,7 @@ impl Llama32Generator {
         );
         let off = std::env::var("ORPHEUS_RESIDENT_KV").ok().as_deref() == Some("0")
             || std::env::var("ORPHEUS_VULKAN_RESIDENT_KV").ok().as_deref() == Some("0");
-        supported
-            && !off
-            && self.use_packed_decode()
-            && self.decode_compile_cache.is_some()
+        supported && !off && self.use_packed_decode() && self.decode_compile_cache.is_some()
     }
 
     #[allow(clippy::type_complexity)]
@@ -4297,8 +4318,8 @@ mod tests {
             head_dim: Some(8),
             rope_scaling: None,
             rope_style: rlx_ir::RopeStyle::NeoX,
-        gguf_arch: None,
-        rope_dim: None,
+            gguf_arch: None,
+            rope_dim: None,
         }
     }
 
@@ -4629,6 +4650,8 @@ mod tests {
         assert_eq!(ta, tb);
     }
 
+    // Used only by feature-gated (`metal`/etc.) tests; dead under default features.
+    #[allow(dead_code)]
     fn llama3ish_cfg() -> Llama32Config {
         Llama32Config {
             vocab_size: 128,
@@ -4646,11 +4669,12 @@ mod tests {
             head_dim: Some(128),
             rope_scaling: None,
             rope_style: rlx_ir::RopeStyle::NeoX,
-        gguf_arch: None,
-        rope_dim: None,
+            gguf_arch: None,
+            rope_dim: None,
         }
     }
 
+    #[allow(dead_code)]
     fn synthetic_weights_map(cfg: &Llama32Config) -> HashMap<String, (Vec<f32>, Vec<usize>)> {
         let mut wm = synthetic_weights(cfg);
         let keys: Vec<String> = wm.keys().map(|s| s.to_string()).collect();
@@ -4884,8 +4908,8 @@ mod tests {
                 head_dim: Some(hd),
                 rope_scaling: None,
                 rope_style: rlx_ir::RopeStyle::NeoX,
-            gguf_arch: None,
-            rope_dim: None,
+                gguf_arch: None,
+                rope_dim: None,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
 
@@ -4935,8 +4959,8 @@ mod tests {
                 head_dim: Some(hd),
                 rope_scaling: None,
                 rope_style: rlx_ir::RopeStyle::NeoX,
-            gguf_arch: None,
-            rope_dim: None,
+                gguf_arch: None,
+                rope_dim: None,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
 
@@ -5057,8 +5081,8 @@ mod tests {
                 head_dim: Some(hd),
                 rope_scaling: None,
                 rope_style: rlx_ir::RopeStyle::NeoX,
-            gguf_arch: None,
-            rope_dim: None,
+                gguf_arch: None,
+                rope_dim: None,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
             let steps = 3;

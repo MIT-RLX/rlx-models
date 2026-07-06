@@ -78,9 +78,7 @@ impl StateMachine {
             ids.pad
         };
 
-        if !state.queued.is_empty() {
-            token = ids.pad;
-        } else if state.forced_padding > 0 {
+        if !state.queued.is_empty() || state.forced_padding > 0 {
             token = ids.pad;
         } else if state.remaining_padding == 0 {
             token = ids.new_word;
@@ -132,7 +130,7 @@ impl StateMachine {
             } else if let Some(tok) = state.lookahead_queued.pop_front() {
                 second = tok as i32;
             }
-            output = (second + 1) as u32 * ids.card + output;
+            output += (second + 1) as u32 * ids.card;
         }
 
         output
@@ -169,8 +167,7 @@ pub fn script_to_entries_with_options(
     let normalized = prompt
         .replace('’', "'")
         .replace(':', " ")
-        .replace('(', "")
-        .replace(')', "");
+        .replace(['(', ')'], "");
     let words = tokenizer.encode_prompt_words(&normalized)?;
     let mut first_content = true;
     Ok(words

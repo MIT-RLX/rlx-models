@@ -1,12 +1,14 @@
 [package]
 name = "rlx-nemotron"
-version = "0.2.9"
+version = "0.2.11"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "NVIDIA Nemotron 3 Nano runner — text + hybrid Mamba2/attention LM"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }

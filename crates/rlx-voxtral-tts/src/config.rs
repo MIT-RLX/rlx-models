@@ -68,6 +68,8 @@ impl TextConfig {
             head_dim: Some(self.head_dim),
             rope_scaling: None,
             rope_style: rlx_ir::RopeStyle::NeoX,
+            gguf_arch: None,
+            rope_dim: None,
         }
     }
 }

@@ -185,7 +185,12 @@ pub fn packed_gguf_execution_device(device: Device) -> Device {
     match device {
         Device::Ane if rlx_ir::env::flag("RLX_PACKED_GGUF_COREML_NATIVE") => Device::Ane,
         Device::Ane => Device::Cpu,
-        Device::Cpu | Device::Metal | Device::Mlx | Device::Gpu | Device::Vulkan | Device::Cuda
+        Device::Cpu
+        | Device::Metal
+        | Device::Mlx
+        | Device::Gpu
+        | Device::Vulkan
+        | Device::Cuda
         | Device::Rocm => device,
         _ => device,
     }

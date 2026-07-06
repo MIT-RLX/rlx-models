@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Qwen3-VL runner (vision + Qwen3 MoE LM) — STUB (PLAN.md M7)"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }

@@ -46,13 +46,7 @@ fn gemma_rms_per_head(x: &mut [f32], gamma: &[f32], eps: f32, heads: usize, dh: 
     }
 }
 
-fn matmul_seq(
-    x: &[f32],
-    seq: usize,
-    in_dim: usize,
-    w: &[f32],
-    out_dim: usize,
-) -> Vec<f32> {
+fn matmul_seq(x: &[f32], seq: usize, in_dim: usize, w: &[f32], out_dim: usize) -> Vec<f32> {
     let mut out = vec![0f32; seq * out_dim];
     for t in 0..seq {
         let xrow = &x[t * in_dim..(t + 1) * in_dim];
@@ -71,7 +65,7 @@ fn matmul_seq(
 fn gelu_approx(x: f32) -> f32 {
     // tanh approximation used by Gemma / llama.cpp
     let x3 = x * x * x;
-    0.5 * x * (1.0 + (0.7978845608 * (x + 0.044715 * x3)).tanh())
+    0.5 * x * (1.0 + (0.797_884_6 * (x + 0.044715 * x3)).tanh())
 }
 
 fn rope_neox(q: &mut [f32], cos: &[f32], sin: &[f32], pos: usize, nh: usize, dh: usize) {
@@ -221,7 +215,9 @@ fn forward_with_embed(
     let (swa_cos, swa_sin) = build_rope_tables(10_000.0, dh, seq);
     let (full_cos, full_sin) = build_rope_tables(1_000_000.0, dh, seq);
 
-    let n_layers = max_layers.unwrap_or(cfg.num_hidden_layers).min(cfg.num_hidden_layers);
+    let n_layers = max_layers
+        .unwrap_or(cfg.num_hidden_layers)
+        .min(cfg.num_hidden_layers);
 
     for layer in 0..n_layers {
         let lp = format!("model.layers.{layer}");
@@ -231,11 +227,7 @@ fn forward_with_embed(
         } else {
             (&swa_cos, &swa_sin)
         };
-        let mask = if is_full {
-            None
-        } else {
-            sliding_w
-        };
+        let mask = if is_full { None } else { sliding_w };
 
         let attn_norm = take_w(loader, &format!("{lp}.input_layernorm.weight"))?;
         let mut normed = hidden.clone();
@@ -310,11 +302,7 @@ fn lm_head_tied(hidden_last: &[f32], embed: &[f32], vocab: usize, h: usize) -> V
     let mut logits = vec![0f32; vocab];
     for v in 0..vocab {
         let row = &embed[v * h..(v + 1) * h];
-        logits[v] = hidden_last
-            .iter()
-            .zip(row)
-            .map(|(a, b)| a * b)
-            .sum();
+        logits[v] = hidden_last.iter().zip(row).map(|(a, b)| a * b).sum();
     }
     logits
 }
@@ -354,7 +342,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut normed = hidden;
+    let normed = hidden;
     let logits = lm_head_tied(
         &normed[(ids.len() - 1) * h..ids.len() * h],
         &embed,
@@ -362,7 +350,10 @@ fn main() -> Result<()> {
         h,
     );
     let (top, val) = argmax(&logits);
-    println!("host top1={top} ({val:.4}) logit[11634]={:.4}", logits[11634]);
+    println!(
+        "host top1={top} ({val:.4}) logit[11634]={:.4}",
+        logits[11634]
+    );
 
     #[cfg(feature = "parity-llama")]
     {

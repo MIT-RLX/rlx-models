@@ -144,7 +144,7 @@ CUDA, ROCm) via the shared `rlx_cpu` compute.
   `on_device_decoder_matches_native` test confirms the full model's detections
   match the native path on `Cpu`.
 
-> **Build note.** The pinned engine version (`rlx* = =0.2.8`) is not yet on
+> **Build note.** The pinned engine version (`rlx* = =0.2.11`) is not yet on
 > crates.io, so the workspace builds against a sibling `../rlx` checkout via
 > `.cargo/config.toml` (copied from `.cargo/config.toml.example`). The GPU engine
 > kernels added for the deformable op live in that checkout.

@@ -135,11 +135,7 @@ impl SeriesRunner {
 }
 
 /// Generate NARMA-10 on an RLX backend (host RNG for `u`, device recurrence).
-pub fn generate_on_device(
-    device: Device,
-    n_timesteps: usize,
-    seed: u64,
-) -> Result<Series> {
+pub fn generate_on_device(device: Device, n_timesteps: usize, seed: u64) -> Result<Series> {
     generate_on_device_with_coeff(device, n_timesteps, seed, Coefficients::default())
 }
 

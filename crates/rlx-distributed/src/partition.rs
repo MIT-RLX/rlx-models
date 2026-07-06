@@ -110,7 +110,7 @@ mod tests {
         assert_eq!(pipeline_layer_range(10, 3, 4), 0..3);
 
         // Reassembled in rank order (world-1 down to 0) covers [0,10) once.
-        let mut covered = vec![0u8; 10];
+        let mut covered = [0u8; 10];
         for r in 0..4u32 {
             for i in pipeline_layer_range(10, r, 4) {
                 covered[i] += 1;

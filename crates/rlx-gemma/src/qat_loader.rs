@@ -448,7 +448,11 @@ impl WeightLoader for GemmaQatLoader {
         // (rlx-wgpu/tests/gguf_dequant_matmul_prefill_parity), which is validated
         // on wgpu/Metal — rather than a hand-rolled quantize_q4_k_block loop.
         let bytes = rlx_gguf::quantize(&data, rlx_gguf::GgmlType::Q4K)?;
-        Ok(Some((bytes, rlx_ir::quant::QuantScheme::GgufQ4K, vec![out, inn])))
+        Ok(Some((
+            bytes,
+            rlx_ir::quant::QuantScheme::GgufQ4K,
+            vec![out, inn],
+        )))
     }
 
     fn remaining_keys(&self) -> Vec<String> {

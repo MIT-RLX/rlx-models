@@ -4,8 +4,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::host::{ORDER, Series, nrmse};
-use crate::ridge::{fit_ridge, predict};
 use crate::reservoir::Reservoir;
+use crate::ridge::{fit_ridge, predict};
 use anyhow::Result;
 
 /// Quick-check timesteps (Nakajima-style dense ESN).

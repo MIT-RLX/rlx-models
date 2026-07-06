@@ -33,7 +33,10 @@ pub fn compute_dynamics_eq2_prefill(inp: &NativePrefillProbeInputs<'_>) -> Resul
         inp.seq,
         h
     );
-    ensure!(inp.vision.len() > 0, "native probe requires vision tokens");
+    ensure!(
+        !inp.vision.is_empty(),
+        "native probe requires vision tokens"
+    );
     ensure!(
         inp.vision.end <= inp.seq,
         "vision span {}..{} exceeds seq {}",
@@ -146,9 +149,9 @@ fn forward_layer_probe_qk(
     for t in 0..seq {
         let row = &hidden[t * h..(t + 1) * h];
         let normed = rms_norm_row(row, in_ln, lm.rms_norm_eps as f32);
-        let q_row = linear_row(&normed, q_w.0, q_w.1, q_bias.as_deref())?;
-        let k_row = linear_row(&normed, k_w.0, k_w.1, k_bias.as_deref())?;
-        let v_row = linear_row(&normed, v_w.0, v_w.1, v_bias.as_deref())?;
+        let q_row = linear_row(&normed, q_w.0, q_w.1, q_bias)?;
+        let k_row = linear_row(&normed, k_w.0, k_w.1, k_bias)?;
+        let v_row = linear_row(&normed, v_w.0, v_w.1, v_bias)?;
         q[t * q_dim..(t + 1) * q_dim].copy_from_slice(&q_row);
         k[t * kv_dim..(t + 1) * kv_dim].copy_from_slice(&k_row);
         v[t * kv_dim..(t + 1) * kv_dim].copy_from_slice(&v_row);

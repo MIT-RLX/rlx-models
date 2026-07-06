@@ -151,7 +151,7 @@ impl Qwen25VlRunnerBuilder {
                 .mmproj
                 .map(|p| {
                     let path_str = p.to_str().context("mmproj path utf8")?;
-                    let mut loader = GgufLoader::from_file(path_str)?;
+                    let loader = GgufLoader::from_file(path_str)?;
                     let cfg = crate::vision::MmProjConfig::from_gguf(loader.file())?;
                     let side = cfg.image_size.max(cfg.patch_size * cfg.n_merge * 2);
                     Qwen25VlVisionEncoder::from_mmproj_device(p, side, side, device)
@@ -703,6 +703,7 @@ impl Qwen25VlRunner {
         let logits = self.lm_head_logits(&hidden)?;
         let kv = KvCacheState {
             past_len: seq,
+            layers_kv_base: vec![0; layers_k.len()],
             layers_k,
             layers_v,
         };

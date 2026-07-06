@@ -34,7 +34,10 @@ pub(crate) fn tiny_bert_weights(cfg: &BertConfig) -> WeightMap {
     };
 
     // Embeddings.
-    add("embeddings.word_embeddings.weight".into(), vec![cfg.vocab_size, h]);
+    add(
+        "embeddings.word_embeddings.weight".into(),
+        vec![cfg.vocab_size, h],
+    );
     add(
         "embeddings.position_embeddings.weight".into(),
         vec![cfg.max_position_embeddings, h],

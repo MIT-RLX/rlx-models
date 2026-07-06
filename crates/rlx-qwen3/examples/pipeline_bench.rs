@@ -97,7 +97,7 @@ fn run_pipeline(
                 let t0 = Instant::now();
                 let mut tokens = (*prompt).clone();
                 let toks = coord
-                    .generate(&mut stage, &mut tokens, n, |l| argmax(l), |_| false)
+                    .generate(&mut stage, &mut tokens, n, argmax, |_| false)
                     .unwrap();
                 (toks, t0.elapsed().as_secs_f64())
             })

@@ -19,7 +19,7 @@ use rlx_narma10::{generate, generate_on_device, max_abs_diff};
 use rlx_runtime::{Device, is_available};
 
 const N: usize = 256;
-const SEED: u64 = 0x4e_41524d_41;
+const SEED: u64 = 0x4e_41_52_4d_41; // "NARMA" in ASCII
 const TOL: f64 = 1e-4;
 
 fn assert_backend_matches_cpu_reference(device: Device) {

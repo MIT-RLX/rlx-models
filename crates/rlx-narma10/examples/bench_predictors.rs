@@ -51,8 +51,7 @@ fn main() {
     cfg.washout = washout;
     cfg.seed = seed;
     if protocol.as_str() == "lcesn" && steps != LCESN_TIMESTEPS {
-        cfg.train_frac =
-            TrainConfig::train_frac_for_collected(steps, washout, LCESN_TRAIN_SAMPLES);
+        cfg.train_frac = TrainConfig::train_frac_for_collected(steps, washout, LCESN_TRAIN_SAMPLES);
     }
 
     let series = generate(steps, seed);

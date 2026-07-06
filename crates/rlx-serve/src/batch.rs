@@ -189,10 +189,12 @@ impl SessionKv {
                     layers_k.push(k);
                     layers_v.push(v);
                 }
+                let layers_kv_base = vec![0; layers_k.len()];
                 Ok(LayerKvCache {
                     past_len: q.past_len(),
                     layers_k,
                     layers_v,
+                    layers_kv_base,
                 })
             }
         }
@@ -821,6 +823,7 @@ mod tests {
                     past_len: self.tokens.len(),
                     layers_k: vec![],
                     layers_v: vec![],
+                    layers_kv_base: vec![],
                 },
                 tokens: self.tokens.clone(),
             })

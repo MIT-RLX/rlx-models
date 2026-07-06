@@ -137,7 +137,6 @@ fn generate_whisper_and_spectral_diag() -> Result<()> {
         centroid > 300.0 && centroid < 3500.0,
         "centroid {centroid} Hz out of speech band"
     );
-    let lower = prompt.to_lowercase();
     ensure!(
         text.to_lowercase().contains("hello") || text.to_lowercase().contains("world"),
         "whisper {text:?} did not match prompt {prompt:?}"

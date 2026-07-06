@@ -14,8 +14,8 @@ use rlx_llama32::{Llama32Generator, Llama32Runner, Llama32RunnerBuilder, MetalGg
 
 use crate::backbone::BackboneLoadOptions;
 use crate::device::lm_kv_decode_supported;
-use rlx_qwen3::{SampleOpts, apply_repetition_penalty, sample_token_at};
 use crate::tokens::build_prompt_ids;
+use rlx_qwen3::{SampleOpts, apply_repetition_penalty, sample_token_at};
 use rlx_runtime::Device;
 use rlx_runtime::{
     llama_decode_bucket_compile_peak_bytes, llama_decode_oneshot_compile_peak_bytes,
@@ -194,7 +194,10 @@ fn effective_prefill_mode(device: Device, opts: &BackboneLoadOptions) -> MetalGg
         if resolved == MetalGgufPrefillMode::CpuF32 {
             return MetalGgufPrefillMode::CpuF32;
         }
-        if matches!(resolved, MetalGgufPrefillMode::PackedGguf | MetalGgufPrefillMode::MetalF32) {
+        if matches!(
+            resolved,
+            MetalGgufPrefillMode::PackedGguf | MetalGgufPrefillMode::MetalF32
+        ) {
             return resolved;
         }
         // Auto: GPU packed prefill unless forced to CPU F32 (parity baseline).

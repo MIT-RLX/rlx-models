@@ -65,9 +65,9 @@ fn run() -> anyhow::Result<()> {
                 device = parse_device(&next(&args, &mut i)?)?;
             }
             "--max-new-tokens" | "-n" => {
-                max_new_tokens = next(&args, &mut i)?.parse().map_err(|_| {
-                    anyhow::anyhow!("--max-new-tokens expects an integer")
-                })?;
+                max_new_tokens = next(&args, &mut i)?
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--max-new-tokens expects an integer"))?;
             }
             "--temperature" | "-t" => {
                 temperature = next(&args, &mut i)?

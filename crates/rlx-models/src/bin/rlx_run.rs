@@ -35,11 +35,7 @@ fn register_builtins() {
         rlx_gemma::cli::run,
     );
     #[cfg(feature = "phi")]
-    register_cli(
-        "phi",
-        "Run Phi 3 / Phi 4 LM (gguf)",
-        rlx_phi::cli_run,
-    );
+    register_cli("phi", "Run Phi 3 / Phi 4 LM (gguf)", rlx_phi::cli_run);
     register_cli(
         "qwen35",
         "Run a Qwen3.5 / Qwen3.6 GGUF (hybrid gated-DeltaNet + attention)",

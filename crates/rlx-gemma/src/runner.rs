@@ -20,8 +20,8 @@ use rlx_core::gguf_support::{
     GgufModelFamily, ResolveWeightsOptions, assert_gguf_family, gguf_f32_bytes_estimate,
     resolve_weights_file_with_options,
 };
-use rlx_qwen3::SampleOpts;
 use rlx_core::pick_lm_device;
+use rlx_qwen3::SampleOpts;
 use rlx_runtime::Device;
 use std::path::{Path, PathBuf};
 
@@ -118,9 +118,7 @@ impl GemmaRunnerBuilder {
             &resolve,
         )?;
         let format = WeightFormat::resolve(&weights_path, self.format)?;
-        let device = self
-            .device
-            .unwrap_or_else(pick_lm_device);
+        let device = self.device.unwrap_or_else(pick_lm_device);
         if self.device.is_none() {
             eprintln!("[gemma-runner] auto device → {device:?}");
         }
@@ -171,9 +169,7 @@ impl GemmaRunnerBuilder {
                 );
             }
             if self.packed_weights.is_none() {
-                eprintln!(
-                    "[gemma-runner] auto packed_weights=true (GGUF ≥ 256 MiB) on {device:?}"
-                );
+                eprintln!("[gemma-runner] auto packed_weights=true (GGUF ≥ 256 MiB) on {device:?}");
             }
             eprintln!(
                 "[gemma-runner] packed_weights=true — Q4 prefill + bucketed decode on {device:?}"

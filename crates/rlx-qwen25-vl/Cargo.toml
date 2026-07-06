@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Qwen2.5-VL vision-language model for RLX (AIF / VLMEvalKit target)"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 
 [dependencies]

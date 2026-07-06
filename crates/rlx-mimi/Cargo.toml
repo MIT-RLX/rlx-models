@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Kyutai Mimi neural audio codec (12.5 Hz, 24 kHz) for RLX"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 readme = "README.md"
 

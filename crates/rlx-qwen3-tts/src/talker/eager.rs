@@ -229,6 +229,7 @@ impl TalkerEagerModel {
             past_len: self.past_len,
             layers_k: self.kv.iter().map(|l| l.k.clone()).collect(),
             layers_v: self.kv.iter().map(|l| l.v.clone()).collect(),
+            layers_kv_base: vec![0; self.kv.len()],
         }
     }
 

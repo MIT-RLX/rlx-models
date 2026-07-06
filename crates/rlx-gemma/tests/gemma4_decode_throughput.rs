@@ -97,6 +97,7 @@ fn tiny_cfg() -> GemmaConfig {
         num_kv_shared_layers: 0,
         use_double_wide_mlp: false,
         enable_moe_block: false,
+        eog_token_ids: Vec::new(),
     }
 }
 
@@ -352,6 +353,7 @@ fn bench_step_cached_metal_1024() {
         num_kv_shared_layers: 0,
         use_double_wide_mlp: false,
         enable_moe_block: false,
+        eog_token_ids: Vec::new(),
     };
     let mut wm = synthetic_weights_gemma4(&cfg);
     let horizon = 32 + 128;

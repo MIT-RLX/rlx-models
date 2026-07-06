@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "NARMA-10 reference generator, ESN predictors, and RLX backend parity (unpublished)"
+keywords.workspace = true
+categories.workspace = true
 publish = false
 
 [dependencies]

@@ -599,6 +599,7 @@ pub fn kv_state_from_runner(
     }
     Ok(KvCacheState {
         past_len,
+        layers_kv_base: vec![0; layers_k.len()],
         layers_k,
         layers_v,
     })
@@ -638,6 +639,7 @@ pub fn truncate_kv_state(
     }
     Ok(KvCacheState {
         past_len: want,
+        layers_kv_base: vec![0; layers_k.len()],
         layers_k,
         layers_v,
     })

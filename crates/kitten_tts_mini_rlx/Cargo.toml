@@ -2,13 +2,15 @@
 
 [package]
 name = "kitten_tts_mini_rlx"
-version = "0.2.9"
+version = "0.2.11"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "RLX native KittenTTS graph decomposed from ONNX (weights downloaded separately)"
+keywords.workspace = true
+categories.workspace = true
 exclude = [
     "weights/**",
     "decompose_report.json",

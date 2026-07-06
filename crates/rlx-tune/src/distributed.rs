@@ -61,7 +61,7 @@ impl<T: SymmetricTransport> GradComm for RdmaGradComm<T> {
         if n <= 1 || v.is_empty() {
             return;
         }
-        if v.len() % n as usize == 0 {
+        if v.len().is_multiple_of(n as usize) {
             // Bandwidth-optimal ring (the RDMA collective); its per-step
             // barriers also serialize heap reuse. Mailbox at heap offset 0.
             ring_all_reduce(&self.transport, 0, v, ReduceKind::Mean).expect("ring all_reduce_mean");

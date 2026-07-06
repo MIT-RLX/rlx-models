@@ -104,13 +104,7 @@ fn main() -> Result<()> {
         "[speak] gemma={gemma_gguf:?} inflect={inflect_data:?} lm={lm_device:?} tts={tts_dev:?} packed={packed}"
     );
 
-    let prompt_ids = encode_chat_prompt_auto(
-        &gemma_gguf,
-        tok,
-        system.as_deref(),
-        &user,
-        true,
-    )?;
+    let prompt_ids = encode_chat_prompt_auto(&gemma_gguf, tok, system.as_deref(), &user, true)?;
     eprintln!("[speak] user: {user}");
     eprintln!("[speak] prompt tokens: {}", prompt_ids.len());
 

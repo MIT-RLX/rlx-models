@@ -143,6 +143,7 @@ impl CpCompiledEngine {
                 past_len: 0,
                 layers_k: vec![Vec::new(); n_layers],
                 layers_v: vec![Vec::new(); n_layers],
+                layers_kv_base: vec![0; n_layers],
             },
             prefill_cache: CompileCache::new(compile_device, 4),
             decode_cache: BucketedCompileCache::power_of_two_ladder(
@@ -224,6 +225,7 @@ impl CpCompiledEngine {
             past_len: 0,
             layers_k: vec![Vec::new(); self.n_layers],
             layers_v: vec![Vec::new(); self.n_layers],
+            layers_kv_base: vec![0; self.n_layers],
         };
     }
 

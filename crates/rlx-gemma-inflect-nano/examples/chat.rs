@@ -93,7 +93,9 @@ fn main() -> Result<()> {
             }
             "--speed" => speed = req(&args, &mut i)?.parse().context("--speed: f32")?,
             "--sentence-pause" => {
-                sentence_pause = req(&args, &mut i)?.parse().context("--sentence-pause: f32")?;
+                sentence_pause = req(&args, &mut i)?
+                    .parse()
+                    .context("--sentence-pause: f32")?;
             }
             "--packed" => {
                 packed = true;
@@ -239,9 +241,17 @@ fn main() -> Result<()> {
             }
             shown = text;
             // Speak each finished sentence immediately (split on . ! ? / newline).
-            if !no_audio && !(first_sentence && spoke) {
+            if !(no_audio || first_sentence && spoke) {
                 for sent in drain_sentences(&mut pending) {
-                    synth_emit(&inflect, &opts, tts_dev, &sent, sentence_pause, &player, &mut fallback);
+                    synth_emit(
+                        &inflect,
+                        &opts,
+                        tts_dev,
+                        &sent,
+                        sentence_pause,
+                        &player,
+                        &mut fallback,
+                    );
                     spoke = true;
                     if first_sentence {
                         pending.clear();
@@ -262,10 +272,18 @@ fn main() -> Result<()> {
         history.push(ChatMessage::assistant(reply.clone()));
 
         // Speak the trailing partial sentence, then drain playback to the end.
-        if !no_audio && !(first_sentence && spoke) {
+        if !(no_audio || first_sentence && spoke) {
             let tail = pending.trim();
             if !tail.is_empty() {
-                synth_emit(&inflect, &opts, tts_dev, tail, sentence_pause, &player, &mut fallback);
+                synth_emit(
+                    &inflect,
+                    &opts,
+                    tts_dev,
+                    tail,
+                    sentence_pause,
+                    &player,
+                    &mut fallback,
+                );
             }
         }
         if let Some(p) = &player {
@@ -334,7 +352,7 @@ fn enqueue(
 /// stays on the sentence so the acoustic model keeps its natural intonation.
 fn drain_sentences(buf: &mut String) -> Vec<String> {
     let mut out = Vec::new();
-    while let Some(pos) = buf.find(|c: char| matches!(c, '.' | '!' | '?' | '\n')) {
+    while let Some(pos) = buf.find(['.', '!', '?', '\n']) {
         let end = pos + buf[pos..].chars().next().map_or(1, |c| c.len_utf8());
         let sentence = buf[..end].trim().to_string();
         *buf = buf[end..].to_string();

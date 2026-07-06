@@ -367,14 +367,17 @@ impl GemmaConfig {
     /// - Gemma 3 / 4 → strided pattern via
     ///   [`gemma_strided_layer_mask`] (stride-6: every 6th layer is
     ///   full causal, others are sliding-window).
+    ///
     /// Sliding-window size for layer `i`'s KV ring buffer during decode
     /// (Gemma 3/4 ISWA). `None` for full-attention / non-sliding layers.
     pub fn layer_sliding_kv_window(&self, layer: usize) -> Option<usize> {
         match (self.arch, self.sliding_window) {
-            (GemmaArch::Gemma3 | GemmaArch::Gemma4, Some(w)) if !self.is_full_attention_layer(layer) => {
+            (GemmaArch::Gemma3 | GemmaArch::Gemma4, Some(w))
+                if !self.is_full_attention_layer(layer) =>
+            {
                 Some(w)
             }
-            (GemmaArch::Gemma2, Some(w)) if layer % 2 == 0 => Some(w),
+            (GemmaArch::Gemma2, Some(w)) if layer.is_multiple_of(2) => Some(w),
             _ => None,
         }
     }
@@ -383,9 +386,10 @@ impl GemmaConfig {
     pub fn sliding_kv_trim_spec(&self, kv_dims: &[usize]) -> Vec<Option<(usize, usize)>> {
         (0..self.num_hidden_layers)
             .map(|layer| {
-                let kd = kv_dims.get(layer).copied().unwrap_or_else(|| {
-                    self.layer_num_kv_heads(layer) * self.layer_head_dim(layer)
-                });
+                let kd = kv_dims
+                    .get(layer)
+                    .copied()
+                    .unwrap_or_else(|| self.layer_num_kv_heads(layer) * self.layer_head_dim(layer));
                 self.layer_sliding_kv_window(layer).map(|w| (kd, w))
             })
             .collect()
@@ -803,7 +807,8 @@ pub fn gemma_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<GemmaConfig> {
         tie_word_embeddings: get_bool("gemma.tie_word_embeddings").unwrap_or(true),
         attention_bias: get_bool("gemma.attention.bias").unwrap_or(false),
         head_dim,
-        attn_logit_softcapping: if std::env::var("RLX_GEMMA_NO_ATTN_SOFTCAP").as_deref() == Ok("1") {
+        attn_logit_softcapping: if std::env::var("RLX_GEMMA_NO_ATTN_SOFTCAP").as_deref() == Ok("1")
+        {
             None
         } else if let Ok(v) = std::env::var("RLX_GEMMA_ATTN_SOFTCAP_FORCE") {
             v.parse::<f32>().ok()
@@ -877,7 +882,6 @@ fn gemma_eog_tokens_from_gguf(raw: &GgufFile, arch: GemmaArch) -> Vec<u32> {
         .get("tokenizer.ggml.eos_token_id")
         .and_then(MetaValue::as_u32)
     {
-        let eos = eos as u32;
         if !ids.contains(&eos) {
             ids.push(eos);
         }

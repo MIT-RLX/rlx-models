@@ -1,11 +1,13 @@
 [package]
 name = "rlx-kittentts"
-version = "0.2.9"
+version = "0.2.11"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "KittenTTS ONNX text-to-speech for RLX"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 
 [dependencies]

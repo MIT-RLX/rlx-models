@@ -102,6 +102,7 @@ fn whisper_wgpu_decode_binds_past_kv() -> Result<()> {
         past_len: 1,
         layers_k: vec![vec![0.0; d_model]; layers],
         layers_v: vec![vec![0.0; d_model]; layers],
+        layers_kv_base: vec![0; layers],
     };
     install_gpu_kv_handles(cg, &kv, 1, upper, d_model, layers)?;
     Ok(())

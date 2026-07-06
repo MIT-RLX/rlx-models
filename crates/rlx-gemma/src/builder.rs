@@ -350,7 +350,8 @@ pub fn drain_gemma_packed_weights_ext(
 
     let keys = loader.remaining_keys();
     let mut f32_shapes: HashMap<String, Vec<usize>> = HashMap::new();
-    let mut packed_list: Vec<(String, Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> = Vec::new();
+    let mut packed_list: Vec<(String, Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
+        Vec::new();
     for key in keys {
         let canonical = rlx_core::weight_loader::gguf_to_hf_name_for_arch(&key, &arch)
             .unwrap_or_else(|| key.clone());
@@ -458,7 +459,12 @@ pub fn drain_gemma_packed_weights_ext(
                 let q_k_dim = q_shape.get(1).copied().unwrap_or(0);
                 let k_n = k_shape.first().copied().unwrap_or(0);
                 let k_k_dim = k_shape.get(1).copied().unwrap_or(0);
-                if q_scheme == k_scheme && q_k_dim > 0 && q_k_dim == k_k_dim && !q_bytes.is_empty() && !k_bytes.is_empty() {
+                if q_scheme == k_scheme
+                    && q_k_dim > 0
+                    && q_k_dim == k_k_dim
+                    && !q_bytes.is_empty()
+                    && !k_bytes.is_empty()
+                {
                     let mut fused = Vec::with_capacity(
                         q_bytes.len()
                             + k_bytes.len()
@@ -1176,22 +1182,23 @@ pub fn build_gemma_graph_sized_packed_ext(
         }
 
         // Gemma 2/3: llama.cpp scales Q before SDPA and passes 1.0 as attn scale.
-        let (q_attn, layer_attn_scale) = if matches!(cfg.arch, GemmaArch::Gemma2 | GemmaArch::Gemma3) {
-            if let Some(scale) = attn_score_scale {
-                let q_scale = synth_const(
-                    &mut g,
-                    &mut params,
-                    &format!("{lp}.attn.q_score_scale"),
-                    vec![scale],
-                    &[1],
-                );
-                (g.mul(q_rope, q_scale), Some(1.0f32))
+        let (q_attn, layer_attn_scale) =
+            if matches!(cfg.arch, GemmaArch::Gemma2 | GemmaArch::Gemma3) {
+                if let Some(scale) = attn_score_scale {
+                    let q_scale = synth_const(
+                        &mut g,
+                        &mut params,
+                        &format!("{lp}.attn.q_score_scale"),
+                        vec![scale],
+                        &[1],
+                    );
+                    (g.mul(q_rope, q_scale), Some(1.0f32))
+                } else {
+                    (q_rope, attn_score_scale)
+                }
             } else {
                 (q_rope, attn_score_scale)
-            }
-        } else {
-            (q_rope, attn_score_scale)
-        };
+            };
 
         // Per-layer mask.
         let (mask_kind, _, _) = cfg.layer_attn_options(layer);
@@ -2169,22 +2176,23 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
         let k_rep = repeat_kv_packed(&mut g, new_k, layer_kv, layer_dh, group);
         let v_rep = repeat_kv_packed(&mut g, new_v, layer_kv, layer_dh, group);
 
-        let (q_attn, layer_attn_scale) = if matches!(cfg.arch, GemmaArch::Gemma2 | GemmaArch::Gemma3) {
-            if let Some(scale) = attn_score_scale {
-                let q_scale = synth_const(
-                    &mut g,
-                    &mut params,
-                    &format!("{lp}.attn.q_score_scale"),
-                    vec![scale],
-                    &[1],
-                );
-                (g.mul(q_rope, q_scale), Some(1.0f32))
+        let (q_attn, layer_attn_scale) =
+            if matches!(cfg.arch, GemmaArch::Gemma2 | GemmaArch::Gemma3) {
+                if let Some(scale) = attn_score_scale {
+                    let q_scale = synth_const(
+                        &mut g,
+                        &mut params,
+                        &format!("{lp}.attn.q_score_scale"),
+                        vec![scale],
+                        &[1],
+                    );
+                    (g.mul(q_rope, q_scale), Some(1.0f32))
+                } else {
+                    (q_rope, attn_score_scale)
+                }
             } else {
                 (q_rope, attn_score_scale)
-            }
-        } else {
-            (q_rope, attn_score_scale)
-        };
+            };
 
         let attn = if let Some(mask) = mask_id {
             let attn_shape = rlx_ir::shape::attention_shape(g.shape(q_attn));
@@ -2475,53 +2483,55 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
         let packed_embed_scheme = known_packed
             .and_then(|m| m.get("model.embed_tokens.weight"))
             .map(|(_, scheme, _)| *scheme);
-        let mut logits = if let Some(scheme) = packed_embed_scheme.filter(|_| cfg.tie_word_embeddings)
-        {
-            let (w_id, _) = load_proj(
-                &mut g,
-                &mut params,
-                packed,
-                weights,
-                known_packed,
-                known_f32,
-                "model.embed_tokens.weight",
-            )?;
-            let logits_shape = Shape::new(&[batch, seq, vocab], f);
-            g.add_node(
-                Op::DequantMatMul { scheme },
-                vec![hidden, w_id],
-                logits_shape,
-            )
-        } else {
-            let lm_head_w = if cfg.tie_word_embeddings {
-                if let Some(tied) = known_f32.and_then(|m| m.get(TIED_LM_HEAD)) {
-                    synth_const(&mut g, &mut params, TIED_LM_HEAD, tied.clone(), &[h, vocab])
-                } else {
-                    let embed = params
-                        .get("model.embed_tokens.weight")
-                        .ok_or_else(|| anyhow!("missing model.embed_tokens.weight for tied lm_head"))?
-                        .clone();
-                    synth_const(
-                        &mut g,
-                        &mut params,
-                        TIED_LM_HEAD,
-                        precompute_packed_decode_tied_lm_head(cfg, &embed)?,
-                        &[h, vocab],
-                    )
-                }
-            } else {
-                load_p_cached(
+        let mut logits =
+            if let Some(scheme) = packed_embed_scheme.filter(|_| cfg.tie_word_embeddings) {
+                let (w_id, _) = load_proj(
                     &mut g,
                     &mut params,
+                    packed,
                     weights,
+                    known_packed,
                     known_f32,
-                    "lm_head.weight",
-                    &[vocab, h],
-                    true,
-                )?
+                    "model.embed_tokens.weight",
+                )?;
+                let logits_shape = Shape::new(&[batch, seq, vocab], f);
+                g.add_node(
+                    Op::DequantMatMul { scheme },
+                    vec![hidden, w_id],
+                    logits_shape,
+                )
+            } else {
+                let lm_head_w = if cfg.tie_word_embeddings {
+                    if let Some(tied) = known_f32.and_then(|m| m.get(TIED_LM_HEAD)) {
+                        synth_const(&mut g, &mut params, TIED_LM_HEAD, tied.clone(), &[h, vocab])
+                    } else {
+                        let embed = params
+                            .get("model.embed_tokens.weight")
+                            .ok_or_else(|| {
+                                anyhow!("missing model.embed_tokens.weight for tied lm_head")
+                            })?
+                            .clone();
+                        synth_const(
+                            &mut g,
+                            &mut params,
+                            TIED_LM_HEAD,
+                            precompute_packed_decode_tied_lm_head(cfg, &embed)?,
+                            &[h, vocab],
+                        )
+                    }
+                } else {
+                    load_p_cached(
+                        &mut g,
+                        &mut params,
+                        weights,
+                        known_f32,
+                        "lm_head.weight",
+                        &[vocab, h],
+                        true,
+                    )?
+                };
+                g.mm(hidden, lm_head_w)
             };
-            g.mm(hidden, lm_head_w)
-        };
         if let Some(cap) = cfg.final_logit_softcapping {
             let inv = synth_const(
                 &mut g,

@@ -423,7 +423,6 @@ pub fn infer_dataset(path: &Path) -> Result<VlmevalkitDataset> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn mcq_letter_extraction() {

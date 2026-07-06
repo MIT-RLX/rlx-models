@@ -16,6 +16,9 @@ use rlx_runtime::Device;
 
 const CRATE: &str = "rlx-mimi";
 
+// `candidates` is seeded empty then extended via cfg-gated push()es (below),
+// which can't be folded into the vec![] literal across feature combos.
+#[allow(clippy::vec_init_then_push)]
 fn main() -> Result<()> {
     let (dur, iters) = cb::parse_dur_iters();
     let dir = std::env::var_os("RLX_MIMI_DIR")
@@ -29,7 +32,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let candidates = vec![];
+    #[allow(unused_mut)] // push()es below are cfg-gated on backend features
+    let mut candidates = vec![];
     #[cfg(feature = "metal")]
     candidates.push(Device::Metal);
     #[cfg(feature = "mlx")]

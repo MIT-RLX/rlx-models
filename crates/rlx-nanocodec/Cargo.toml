@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "NVIDIA NanoCodec (nvidia/nemo-nano-codec) FSQ codec for RLX — multi-backend causal HiFi-GAN decoder"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 readme = "README.md"
 

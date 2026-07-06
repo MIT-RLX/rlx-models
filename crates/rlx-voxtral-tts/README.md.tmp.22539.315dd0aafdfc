@@ -1,0 +1,61 @@
+# rlx-voxtral-tts
+
+Mistral **Voxtral-4B-TTS** ([mistralai/Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603)) for RLX — a native Rust port of the vLLM-Omni `VoxtralTTSAudioGeneration` pipeline (Ministral LM + acoustic flow matching + codec decode), with no Python at inference.
+
+## Quick start
+
+```bash
+just voxtral-tts -- \
+  --model-dir .cache/voxtral/Voxtral-4B-TTS-2603 \
+  --text "Hello from Voxtral." --voice neutral_female -o out.wav
+
+# Or directly:
+cargo run -p rlx-voxtral-tts --release -- --model-dir DIR --text "..." -o out.wav
+```
+
+Fetch the checkpoint with `just fetch-voxtral-tts`. Key CLI flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--model-dir` / `--weights` | Voxtral-4B-TTS checkpoint dir |
+| `--text` / `-o` | Prompt text / output WAV |
+| `--voice` / `-v` | Preset voice name (`--list-voices`) |
+| `--reference-wav` | Clone from mono reference audio (needs encoder in checkpoint) |
+| `--encode-reference` / `--voice-embedding` | Save / reuse a pre-encoded `.f32` voice |
+| `--decode-codes` | Decode a saved codes file straight to WAV |
+| `--cfg-alpha` / `--seed` / `--max-frames` | Generation controls |
+| `--eager-lm` / `--eager-acoustic` | Hand-ported CPU stacks (parity / debug) |
+| `--device` | `cpu` (default) or a compiled GPU backend |
+
+## Public API
+
+```rust
+use rlx_voxtral_tts::{VoxtralTtsRunner, GenerationConfig, PRESET_VOICES};
+use rlx_runtime::Device;
+
+let mut runner = VoxtralTtsRunner::builder()
+    .model_dir("Voxtral-4B-TTS-2603")
+    .device(Device::Metal)
+    .build()?;
+
+let gen = GenerationConfig::default();
+// Preset voice → WAV (tokenize text yourself, or use the CLI end-to-end).
+runner.synthesize_native(&prompt_tokens, "neutral_female", out_wav, &gen)?;
+
+// Voice cloning from a reference clip:
+runner.synthesize_cloned_with_text("Some new text.", reference_wav, out_wav, &gen)?;
+```
+
+Preset names are in [`PRESET_VOICES`]. Other entry points: `synthesize_native_with_voice`,
+`synthesize_native_from_token_file`, `decode_codes_to_pcm`, and the voice-clone helpers
+in `voice_clone` (`encode_reference_wav`, `clone_from_reference_audio`).
+
+## How it fits
+
+- Backbone LM (Ministral) via [rlx-llama32](../rlx-llama32); compiled through [rlx-flow](../rlx-flow) / [rlx-ir](../rlx-ir).
+- Acoustic flow-matching head + codec decoder are native (`acoustic`, `codec` modules).
+- Fine-tune / voice-clone training lives in [rlx-voxtral-tts-train](../rlx-voxtral-tts-train)
+  (codec encoder + LoRA, injected back into `consolidated.safetensors`).
+
+Feature bundles `metal`/`mlx`/`cuda`/`rocm`/`gpu`/`vulkan` (and `apple-silicon`,
+`all-backends`, …) forward the device to `rlx-runtime`.

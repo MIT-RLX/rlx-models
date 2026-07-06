@@ -51,9 +51,9 @@ pub use host::{
     scale_inputs_for_reservoir, step,
 };
 pub use models::{
-    BenchRow, EsnRidge, LocalEsn, Narma10Predictor, PolyReadoutEsn, TrainConfig, TrainReport,
-    bench_predictors, persistence_nrmse, LCESN_TEST_SAMPLES, LCESN_TIMESTEPS, LCESN_TRAIN_SAMPLES,
-    LCESN_WASHOUT, QUICK_TIMESTEPS, QUICK_WASHOUT,
+    BenchRow, EsnRidge, LCESN_TEST_SAMPLES, LCESN_TIMESTEPS, LCESN_TRAIN_SAMPLES, LCESN_WASHOUT,
+    LocalEsn, Narma10Predictor, PolyReadoutEsn, QUICK_TIMESTEPS, QUICK_WASHOUT, TrainConfig,
+    TrainReport, bench_predictors, persistence_nrmse,
 };
 pub use reservoir::{Reservoir, ReservoirConfig};
 pub use rlx::{

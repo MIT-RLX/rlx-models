@@ -959,8 +959,12 @@ mod tests {
     fn gemma_qk_norm_names_get_gguf_gamma_unbake() {
         assert!(is_gemma_norm_weight("blk.0.attn_q_norm.weight"));
         assert!(is_gemma_norm_weight("blk.7.attn_k_norm.weight"));
-        assert!(is_gemma_norm_weight("model.layers.0.self_attn.q_norm.weight"));
-        assert!(is_gemma_norm_weight("model.layers.3.self_attn.k_norm.weight"));
+        assert!(is_gemma_norm_weight(
+            "model.layers.0.self_attn.q_norm.weight"
+        ));
+        assert!(is_gemma_norm_weight(
+            "model.layers.3.self_attn.k_norm.weight"
+        ));
         assert!(!is_gemma_norm_weight("blk.0.attn_q.weight"));
     }
 

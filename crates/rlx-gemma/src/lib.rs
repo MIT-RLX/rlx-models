@@ -71,9 +71,8 @@ pub mod unified_projector;
 
 // ── Graph builders (thin wrappers over `flow`) ─────────────────────
 pub use builder::{
-    build_gemma_decode_graph_sized, build_gemma_decode_graph_sized_ext,
+    PackedDecodeLmOutput, build_gemma_decode_graph_sized, build_gemma_decode_graph_sized_ext,
     build_gemma_decode_graph_sized_packed, build_gemma_decode_graph_sized_packed_ext,
-    PackedDecodeLmOutput,
     build_gemma_decode_hir_dynamic_ext, build_gemma_decode_hir_sized,
     build_gemma_decode_hir_sized_ext, build_gemma_graph_sized, build_gemma_graph_sized_last_logits,
     build_gemma_graph_sized_packed, build_gemma_graph_sized_packed_ext,

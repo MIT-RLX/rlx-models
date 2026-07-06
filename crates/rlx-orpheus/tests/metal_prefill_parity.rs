@@ -25,8 +25,7 @@ fn generate_masked_codes(
     steps: u64,
 ) -> Vec<i32> {
     use rlx_orpheus::tokens::{
-        accept_orpheus_stream_token, is_snac_slot_token, mask_logits_for_snac_slot,
-        use_snac_logit_mask,
+        accept_orpheus_stream_token, mask_logits_for_snac_slot, use_snac_logit_mask,
     };
     use rlx_qwen3::apply_repetition_penalty;
 

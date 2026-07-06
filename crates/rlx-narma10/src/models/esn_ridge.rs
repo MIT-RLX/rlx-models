@@ -14,14 +14,9 @@ use anyhow::Result;
 ///
 /// Reservoir: [`ReservoirConfig::dense_standard`] (N=300, ρ=0.9, Nakajima RC-tutorial /
 /// Kodali et al. 2025 NARMA-10 baseline).
+#[derive(Default)]
 pub struct EsnRidge {
     inner: Option<ReadoutTrainer>,
-}
-
-impl Default for EsnRidge {
-    fn default() -> Self {
-        Self { inner: None }
-    }
 }
 
 impl EsnRidge {

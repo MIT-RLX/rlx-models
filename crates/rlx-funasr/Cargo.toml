@@ -7,6 +7,8 @@ license.workspace      = true
 authors.workspace      = true
 repository.workspace   = true
 description = "FunASR (Paraformer, SenseVoiceSmall, FSMN-VAD, CT-Transformer punctuation, CAM++ speaker) ported to Rust on RLX — all backends"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 anyhow       = { workspace = true }

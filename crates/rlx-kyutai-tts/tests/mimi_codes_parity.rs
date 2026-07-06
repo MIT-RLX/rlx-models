@@ -10,7 +10,7 @@
 //! RLX_KYUTAI_TTS_DIR=/path/to/weights cargo test -p rlx-kyutai-tts --test mimi_codes_parity -- --nocapture
 //! ```
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, bail};
 use rlx_kyutai_tts::checkpoint::KyutaiTtsCheckpoint;
 use rlx_kyutai_tts::config::KyutaiTtsConfig;
 use rlx_kyutai_tts::download::{

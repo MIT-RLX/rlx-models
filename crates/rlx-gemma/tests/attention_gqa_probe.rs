@@ -26,9 +26,15 @@ fn run_case(nh: usize, nkv: usize, hd: usize, seq: usize, mode: u32) -> Option<f
     // the sharp-softmax regime (Gemma4 scale=1.0 → logits ≈ hd).
     let mag = ((mode >> 4).max(1)) as f32;
     let mode = mode & 0xF;
-    let q: Vec<f32> = (0..b * seq * q_dim).map(|i| ((i as f32) * 0.011).sin() * mag).collect();
-    let k: Vec<f32> = (0..b * seq * kv_dim).map(|i| ((i as f32) * 0.013).cos() * mag).collect();
-    let v: Vec<f32> = (0..b * seq * kv_dim).map(|i| ((i as f32) * 0.017).sin()).collect();
+    let q: Vec<f32> = (0..b * seq * q_dim)
+        .map(|i| ((i as f32) * 0.011).sin() * mag)
+        .collect();
+    let k: Vec<f32> = (0..b * seq * kv_dim)
+        .map(|i| ((i as f32) * 0.013).cos() * mag)
+        .collect();
+    let v: Vec<f32> = (0..b * seq * kv_dim)
+        .map(|i| ((i as f32) * 0.017).sin())
+        .collect();
 
     let mut g = Graph::new("attn");
     let qi = g.input("q", Shape::new(&[b, seq, q_dim], DType::F32));
@@ -82,7 +88,9 @@ fn run_rope(nh: usize, hd: usize, n_rot: usize, seq: usize) -> Option<f32> {
     let b = 1usize;
     let dim = nh * hd;
     let half = hd / 2; // cos/sin row stride is head_dim/2 (matches CPU tab_half)
-    let x: Vec<f32> = (0..b * seq * dim).map(|i| ((i as f32) * 0.011).sin()).collect();
+    let x: Vec<f32> = (0..b * seq * dim)
+        .map(|i| ((i as f32) * 0.011).sin())
+        .collect();
     let cs: Vec<f32> = (0..seq * half).map(|i| ((i as f32) * 0.02).cos()).collect();
     let sn: Vec<f32> = (0..seq * half).map(|i| ((i as f32) * 0.02).sin()).collect();
     let mut g = Graph::new("rope");
@@ -116,7 +124,9 @@ fn run_rms(nh: usize, hd: usize, seq: usize) -> Option<f32> {
         return None;
     }
     let b = 1usize;
-    let x: Vec<f32> = (0..b * seq * nh * hd).map(|i| ((i as f32) * 0.011).sin()).collect();
+    let x: Vec<f32> = (0..b * seq * nh * hd)
+        .map(|i| ((i as f32) * 0.011).sin())
+        .collect();
     let gamma: Vec<f32> = (0..hd).map(|i| 1.0 + ((i as f32) * 0.001).sin()).collect();
     let beta: Vec<f32> = vec![0.0; hd];
     let mut g = Graph::new("rms");
@@ -149,7 +159,10 @@ fn run_rms(nh: usize, hd: usize, seq: usize) -> Option<f32> {
 fn wgpu_rms_norm_head_dim() {
     for &hd in &[256usize, 512] {
         if let Some(ma) = run_rms(8, hd, 5) {
-            eprintln!("  -> rms hd={hd}: {}", if ma <= 1e-2 { "OK" } else { "FAIL" });
+            eprintln!(
+                "  -> rms hd={hd}: {}",
+                if ma <= 1e-2 { "OK" } else { "FAIL" }
+            );
         }
     }
 }

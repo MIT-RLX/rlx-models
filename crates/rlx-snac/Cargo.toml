@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "SNAC multi-scale neural audio codec (hubertsiuzdak/snac) for RLX — multi-backend"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 readme = "README.md"
 

@@ -122,11 +122,9 @@ fn all_backends_greedy_codes_match_cpu_summary() -> anyhow::Result<()> {
     }
     let mut tested = 0usize;
     for &(dev, label) in backend_common::BACKENDS {
-        if dev != Device::Cpu {
-            if !is_available(dev) || !lm_kv_decode_supported(dev) {
-                eprintln!("{label}: skipped");
-                continue;
-            }
+        if dev != Device::Cpu && (!is_available(dev) || !lm_kv_decode_supported(dev)) {
+            eprintln!("{label}: skipped");
+            continue;
         }
         parity_on_device(dev, label)?;
         tested += 1;

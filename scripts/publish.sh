@@ -62,14 +62,15 @@
 #   4. Crates marked `publish = false` or in workspace.exclude (see SKIPPED)
 #      are not published — cargo skips them; this script lists the rest.
 #
-# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.9) from the RLX repo
+# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.11) from the RLX repo
 # before `rlx-models` path deps resolve on the registry.
 #
-# 82 publishable workspace crates in 7 tiers (tier 6 = facade `rlx-models` last).
+# 89 publishable workspace crates in 7 tiers (tier 6 = facade `rlx-models` last).
 # Notable ordering: `kitten_tts_mini_rlx` before `rlx-kittentts`; `rlx-whisper`
 # before `rlx-kittentts` (dev-dep for roundtrip tests); `rlx-llama32` / `rlx-gemma`
-# (tier 4) before `rlx-minicpm5` / `rlx-voxtral-tts-train` (tier 5–6).
-# Workspace / upstream pin: 0.2.9 — bump `[workspace.package].version` and
+# (tier 4) before `rlx-minicpm5` / `rlx-voxtral-tts-train` (tier 5–6);
+# `rlx-quant-calib` before `rlx-tune`; `rlx-distributed` before `rlx-qwen3`.
+# Workspace / upstream pin: 0.2.11 — bump `[workspace.package].version` and
 # `[workspace.dependencies]` path `version =` fields before publishing.
 # Bump `[workspace.package].version`, per-crate `[package].version` when needed
 # (e.g. `rlx-models-core`), and `[workspace.dependencies]` pins before publishing.
@@ -150,10 +151,10 @@ SKIPPED=(
 # and `[dev-dependencies]` (including optional) against crates.io. Within
 # a tier, list deps before dependents (e.g. rlx-cpu before rlx-splat).
 TIERS=(
-    "kitten_tts_mini_rlx rlx-diamond rlx-diarize rlx-inflect-nano rlx-llama-base rlx-models-core rlx-onnx-decompose rlx-ssm rlx-vlm-base rlx-wav2vec2-asr"
-    "rlx-bert rlx-cli rlx-encodec rlx-facodec rlx-llada2 rlx-mamba rlx-nanocodec rlx-nomic rlx-sam-ir rlx-snac rlx-speechtokenizer rlx-tiny-tts rlx-vibevoice rlx-vision rlx-wavtokenizer rlx-xcodec"
+    "kitten_tts_mini_rlx rlx-diamond rlx-diarize rlx-distributed rlx-inflect-nano rlx-llama-base rlx-models-core rlx-onnx-decompose rlx-quant-calib rlx-ssm rlx-vlm-base rlx-wav2vec2-asr"
+    "rlx-bert rlx-cli rlx-encodec rlx-facodec rlx-llada2 rlx-mamba rlx-nanocodec rlx-nomic rlx-sam-ir rlx-snac rlx-speechtokenizer rlx-tiny-tts rlx-tune rlx-vibevoice rlx-vision rlx-wavtokenizer rlx-xcodec"
     "rlx-bioclip2 rlx-clinicalbert rlx-dac rlx-dinov2 rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-grounding-dino rlx-lfm rlx-lfm-vl rlx-minimax rlx-nemotron-asr rlx-ocr rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-vad rlx-vjepa2 rlx-wav2vec2-bert"
-    "rlx-flux2 rlx-locateanything rlx-omnicoder rlx-qwen35 rlx-sam2 rlx-sam3 rlx-tsac rlx-whisper"
+    "rlx-eval rlx-flux2 rlx-locateanything rlx-omnicoder rlx-qwen25-vl rlx-qwen35 rlx-sam2 rlx-sam3 rlx-serve rlx-tsac rlx-whisper"
     "rlx-aec rlx-gemma rlx-kittentts rlx-llama32 rlx-mimi rlx-nemotron-omni rlx-pocket-tts rlx-qwen3-asr"
     "rlx-bonsai rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-kyutai-tts rlx-minicpm5 rlx-mistral rlx-moshi rlx-nemotron rlx-neutts rlx-orpheus rlx-phi rlx-qwen3-tts rlx-tinyllama rlx-voxtral rlx-voxtral-tts"
     "rlx-models rlx-qwen3-tts-train rlx-voxtral-tts-train"
@@ -486,12 +487,18 @@ if (( ! NO_GATE )); then
     bold "[2/3] cargo clippy --workspace --all-targets -- -D warnings"
     cargo clippy --workspace --all-targets -- -D warnings
 
-    bold "[3/3] cargo test --workspace --release --lib --tests"
-    # `kitten_tts_mini_rlx` qmatmul tests need local ONNX fixture paths (optional weights/).
-    # `--lib --tests` skips building examples: many crates share example names (bench,
-    # bench_asr, …) that collide in the shared target/examples dir (cargo #6313). Examples
-    # are still compile-checked by the clippy `--all-targets` gate above.
-    cargo test --workspace --release --lib --tests --exclude kitten_tts_mini_rlx
+    bold "[3/3] cargo test --workspace --release --lib"
+    # Publish gate runs LIB UNIT TESTS ONLY — the fast, deterministic checks of
+    # core library logic. Integration tests (`tests/`) are intentionally NOT run
+    # here: the bulk are real-weight / cross-backend / GPU / e2e parity suites that
+    # need local checkpoints, GPUs, or network, so they only self-skip in a clean
+    # publish env while adding large compile+run time. Run them separately with
+    # `cargo test --workspace --release --tests` (with checkpoints/GPUs available).
+    #
+    # `kitten_tts_mini_rlx` is still excluded: its 16 lib unit tests need local
+    # ONNX fixture paths (optional weights/) absent in a clean checkout.
+    # Examples/benches are compile-checked by the clippy `--all-targets` gate above.
+    cargo test --workspace --release --lib --exclude kitten_tts_mini_rlx
     green "Pre-flight gates passed."
 fi
 

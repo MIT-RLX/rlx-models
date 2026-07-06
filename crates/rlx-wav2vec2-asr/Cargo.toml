@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Wav2Vec2 CTC forced alignment for WhisperX-style word timestamps"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 
 [dependencies]

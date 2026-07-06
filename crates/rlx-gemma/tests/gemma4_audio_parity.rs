@@ -268,7 +268,10 @@ fn run_audio_full(dev: Device, tag: &str) {
     let cfg = AudioConfig::default();
     let (out, seq) = run_tower_dev(dev, &d, &feats, &cfg, cfg.layers, true);
     let worst = report(tag, &out, &hf, cfg.out_dims, seq);
-    assert!(worst > 0.99, "audio tower on {dev:?} diverges: worst cos {worst}");
+    assert!(
+        worst > 0.99,
+        "audio tower on {dev:?} diverges: worst cos {worst}"
+    );
 }
 
 #[test]

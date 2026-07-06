@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "XCodec2 (HKUSTAudio/xcodec2) decoder for RLX — multi-backend RoFormer-Vocos decoder"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 readme = "README.md"
 

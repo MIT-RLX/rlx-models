@@ -216,7 +216,7 @@ pub fn find_text_lines(words: &[RotatedRect]) -> Vec<Vec<RotatedRect>> {
 /// strip — so we remove it, not fold it in.) A real neighbouring text line
 /// spans a similar width, so it never matches the narrowness test; single-line
 /// inputs have nothing to drop — well-behaved pages don't regress.
-fn drop_glyph_fragments(mut lines: Vec<Vec<RotatedRect>>) -> Vec<Vec<RotatedRect>> {
+fn drop_glyph_fragments(lines: Vec<Vec<RotatedRect>>) -> Vec<Vec<RotatedRect>> {
     if lines.len() < 2 {
         return lines;
     }

@@ -83,6 +83,16 @@ impl MetalGgufPrefillMode {
     }
 }
 
+/// Back-compat: env-only packed check ([`MetalGgufPrefillMode::Auto`]).
+pub fn metal_use_packed_gguf_prefill() -> bool {
+    MetalGgufPrefillMode::Auto.use_packed_gguf()
+}
+
+/// Back-compat: env-only prefill device ([`MetalGgufPrefillMode::Auto`]).
+pub fn prefill_device_for(device: Device) -> Device {
+    MetalGgufPrefillMode::Auto.prefill_device(device)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,14 +116,4 @@ mod tests {
             Device::Cuda
         );
     }
-}
-
-/// Back-compat: env-only packed check ([`MetalGgufPrefillMode::Auto`]).
-pub fn metal_use_packed_gguf_prefill() -> bool {
-    MetalGgufPrefillMode::Auto.use_packed_gguf()
-}
-
-/// Back-compat: env-only prefill device ([`MetalGgufPrefillMode::Auto`]).
-pub fn prefill_device_for(device: Device) -> Device {
-    MetalGgufPrefillMode::Auto.prefill_device(device)
 }

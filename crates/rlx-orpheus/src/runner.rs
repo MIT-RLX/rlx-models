@@ -248,7 +248,11 @@ impl OrpheusTts {
             eprintln!(
                 "[phase-timing] LM(prefill+decode)={lm_ms:.0} ms ({} codes, {:.1} ms/code)  SNAC={snac_ms:.0} ms",
                 codes.len(),
-                if codes.is_empty() { 0.0 } else { lm_ms / codes.len() as f64 },
+                if codes.is_empty() {
+                    0.0
+                } else {
+                    lm_ms / codes.len() as f64
+                },
             );
         }
         normalize_pcm_peak(&mut samples);

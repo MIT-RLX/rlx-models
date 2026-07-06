@@ -59,7 +59,7 @@ pub fn awq_quantize(
                 err += act_scale[c] * act_scale[c] * d * d;
             }
         }
-        if best.as_ref().map_or(true, |(e, _, _)| err < *e) {
+        if best.as_ref().is_none_or(|(e, _, _)| err < *e) {
             best = Some((err, q, s));
         }
     }

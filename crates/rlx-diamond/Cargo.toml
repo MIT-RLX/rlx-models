@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Diamond Maps reward alignment — flow matching value functions and GLASS sampling (arXiv:2602.05993)"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 
 [dependencies]

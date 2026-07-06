@@ -1,11 +1,13 @@
 [package]
 name = "rlx-fft"
-version = "0.2.9"
+version = "0.2.11"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Learned FFT via butterfly networks — train for reference precision, run compiled on RLX backends"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 build = "build.rs"
 

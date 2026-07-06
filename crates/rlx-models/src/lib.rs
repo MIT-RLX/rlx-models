@@ -289,7 +289,7 @@ pub use rlx_core::flow_util::{
 };
 
 #[cfg(feature = "bert")]
-pub use bert::{build_bert_graph, build_bert_graph_sized};
+pub use bert::build_bert_graph_sized;
 #[cfg(feature = "bert")]
 pub use bert_flow::{BertFlow, build_bert_built};
 #[cfg(feature = "diarize")]

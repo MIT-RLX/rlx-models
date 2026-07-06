@@ -92,7 +92,7 @@ pub struct Qwen25VlHfConfig {
 impl Qwen25VlHfConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path).with_context(|| format!("read {path:?}"))?;
-        Ok(serde_json::from_str(&data).with_context(|| format!("parse {path:?}"))?)
+        serde_json::from_str(&data).with_context(|| format!("parse {path:?}"))
     }
 
     pub fn into_runtime(self) -> Result<Qwen25VlConfig> {

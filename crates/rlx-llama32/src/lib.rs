@@ -21,9 +21,8 @@ pub mod runner;
 
 pub use builder::{
     build_llama32_decode_graph_sized, build_llama32_decode_graph_sized_ext,
-    build_llama32_decode_graph_sized_packed_ext,
-    build_llama32_decode_hir_dynamic_ext, build_llama32_decode_hir_sized,
-    build_llama32_decode_hir_sized_ext, build_llama32_graph_sized,
+    build_llama32_decode_graph_sized_packed_ext, build_llama32_decode_hir_dynamic_ext,
+    build_llama32_decode_hir_sized, build_llama32_decode_hir_sized_ext, build_llama32_graph_sized,
     build_llama32_graph_sized_last_logits, build_llama32_graph_sized_packed,
     build_llama32_prefill_hir_dynamic_ext, build_llama32_prefill_hir_sized_ext,
 };
@@ -39,14 +38,14 @@ pub use prefill_mode::{MetalGgufPrefillMode, metal_use_packed_gguf_prefill, pref
 /// Re-exported so downstream crates building [`Llama32Config`] literals can set
 /// `rope_style` without a direct `rlx-ir` dependency.
 pub use rlx_ir::RopeStyle;
-#[cfg(feature = "tokenizer")]
-pub use rlx_qwen35::decode_ids_auto;
-pub use rlx_qwen35::{encode_prompt, encode_prompt_auto, resolve_tokenizer_path};
-pub use runner::{Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder};
 /// Re-exported sampling knobs so downstream runners (e.g. `rlx-tinyllama`)
 /// can construct greedy / temperature / top-p configs without a direct
 /// `rlx-runtime` dependency.
 pub use rlx_qwen3::SampleOpts;
+#[cfg(feature = "tokenizer")]
+pub use rlx_qwen35::decode_ids_auto;
+pub use rlx_qwen35::{encode_prompt, encode_prompt_auto, resolve_tokenizer_path};
+pub use runner::{Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder};
 
 #[cfg(feature = "parity-llama")]
 pub use rlx_qwen35::llama_oracle;

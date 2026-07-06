@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Shared Llama-shaped arch config + GGUF reader (Mistral, Phi, Bonsai, OmniCoder, Granite, Cohere — PLAN.md M4 foundation)"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }

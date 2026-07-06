@@ -35,11 +35,7 @@ fn config_from_real_gemma3_gguf() {
     );
     eprintln!(
         "Gemma 3 270M config: arch={:?} layers={} hidden={} sliding_window={:?} vocab={}",
-        cfg.arch,
-        cfg.num_hidden_layers,
-        cfg.hidden_size,
-        cfg.sliding_window,
-        cfg.vocab_size,
+        cfg.arch, cfg.num_hidden_layers, cfg.hidden_size, cfg.sliding_window, cfg.vocab_size,
     );
 }
 

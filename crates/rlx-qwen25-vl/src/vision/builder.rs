@@ -219,8 +219,6 @@ pub fn build_qwen25_vl_vision_built(
     img_w: usize,
     img_h: usize,
 ) -> Result<rlx_flow::BuiltModel> {
-    let ps = cfg.patch_size;
-    let n_pos = (img_h / ps) * (img_w / ps);
     let position_hw = super::preprocess::build_vision_position_hw(img_w, img_h, cfg);
     let head_dim = cfg.n_embd / cfg.n_head;
     let (rope_cos, rope_sin) = vision_rope_feeds(&position_hw, head_dim);

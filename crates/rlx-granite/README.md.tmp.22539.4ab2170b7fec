@@ -1,0 +1,27 @@
+# rlx-granite
+
+Runner scaffold for **[IBM Granite](https://www.ibm.com/granite)** on RLX. A thin wrapper over [`rlx-llama32`](../rlx-llama32)'s `Llama32Runner` that validates the GGUF `general.architecture` tag (`granite` / `granitemoe` / `granitehybrid`) and delegates decode.
+
+> **Status: stub (PLAN.md M4 + M5).** Granite's `attention.scale` and `embedding.scale` multipliers are not yet read or applied in `rlx-llama32`, so runs emit *some* tokens but will **not** match the upstream reference until those land. `granitemoe` / `granitehybrid` additionally need MoE / hybrid wiring.
+
+## Public API
+
+```rust
+use rlx_granite::GraniteRunner;
+
+let mut runner = GraniteRunner::builder()
+    .weights("granite-3b.gguf")
+    .max_seq(512)
+    .packed_weights(true)      // low-memory packed-GGUF path
+    .build()?;                 // errors unless arch ∈ {granite, granitemoe, granitehybrid}
+
+let prompt_ids: Vec<u32> = /* tokenize */ vec![];
+let out = runner.generate_packed(&prompt_ids, 64, |tok| print!("{tok} "))?;
+# anyhow::Ok(())
+```
+
+`GraniteRunner` also exposes `config() -> &LlamaBaseConfig` and `inner()` / `inner_mut()` to reach the full `Llama32Runner` API. `cli_run(&args)` re-checks the arch tag and forwards to the shared `rlx-llama32` CLI (no dedicated binary is built yet). The crate re-exports `Llama32ConfigSource`, `Llama32Runner`, and `Llama32RunnerBuilder`.
+
+## How it fits
+
+Inference and config parsing live in [`rlx-llama32`](../rlx-llama32) and [`rlx-llama-base`](../rlx-llama-base); this crate is just the arch gate. Sibling GGUF-arch runners built the same way: [`rlx-phi`](../rlx-phi) (working), [`rlx-mistral`](../rlx-mistral), [`rlx-cohere`](../rlx-cohere), [`rlx-glm`](../rlx-glm), [`rlx-gpt-oss`](../rlx-gpt-oss).

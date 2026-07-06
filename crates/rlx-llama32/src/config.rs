@@ -125,10 +125,7 @@ impl Llama32Config {
     }
 
     pub fn is_phi_arch(&self) -> bool {
-        matches!(
-            self.gguf_arch.as_deref(),
-            Some("phi3") | Some("phi4")
-        )
+        matches!(self.gguf_arch.as_deref(), Some("phi3") | Some("phi4"))
     }
 
     #[cfg(test)]
@@ -276,7 +273,7 @@ fn infer_vocab_size_from_gguf(raw: &GgufFile) -> usize {
     for name in ["token_embd.weight", "model.embed_tokens.weight"] {
         if let Some(t) = raw.tensors.get(name) {
             if !t.shape.is_empty() {
-                return t.shape[0] as usize;
+                return t.shape[0];
             }
         }
     }
@@ -386,7 +383,10 @@ mod tests {
             buf.extend_from_slice(&(GgmlType::F32 as u32).to_le_bytes());
             buf.extend_from_slice(&offset.to_le_bytes());
         }
-        while !buf.len().is_multiple_of(rlx_gguf::DEFAULT_ALIGNMENT as usize) {
+        while !buf
+            .len()
+            .is_multiple_of(rlx_gguf::DEFAULT_ALIGNMENT as usize)
+        {
             buf.push(0);
         }
         let n_floats = (vocab as usize * 2048) * 2;

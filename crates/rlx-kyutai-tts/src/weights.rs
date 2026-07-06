@@ -154,13 +154,13 @@ pub fn missing_keys(weights: &WeightMap, expected: &[String]) -> Vec<String> {
 /// [`crate::model::KyutaiTtsModel`], [`crate::depformer_stream::DepformerStream`],
 /// and [`crate::model::ConditionerBundle`].
 pub fn expected_kyutai_tts_keys(cfg: &crate::config::KyutaiTtsConfig) -> Vec<String> {
-    let mut keys = Vec::new();
-
     // Text embedding (demuxed second stream).
-    keys.push("text_emb.weight".into());
-    keys.push("text_emb.out1.weight".into());
-    keys.push("text_emb.out2.weight".into());
-    keys.push("text_linear.weight".into());
+    let mut keys = vec![
+        "text_emb.weight".into(),
+        "text_emb.out1.weight".into(),
+        "text_emb.out2.weight".into(),
+        "text_linear.weight".into(),
+    ];
 
     // Per-codebook backbone input embeddings (dense `[card, dim]`).
     for q in 0..cfg.n_q {

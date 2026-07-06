@@ -6,7 +6,6 @@
 
 use anyhow::Result;
 use rlx_orpheus::{BackboneLoadOptions, GenerationConfig, OrpheusTts};
-use rlx_runtime::Device;
 use std::path::PathBuf;
 
 fn write_wav(path: &str, samples: &[f32], sr: u32) {

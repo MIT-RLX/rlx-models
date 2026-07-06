@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Qwen3-ASR speech recognition for RLX (Qwen3-Omni audio encoder + Qwen3 decoder)"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 
 [dependencies]

@@ -147,6 +147,7 @@ fn padded_kv_for_warmup(
         past_len: sim_past,
         layers_k: vec![vec![0f32; n]; n_layers],
         layers_v: vec![vec![0f32; n]; n_layers],
+        layers_kv_base: vec![0; n_layers],
     };
     let base_n = base.past_len * kv_dim;
     for layer in 0..n_layers {
@@ -288,6 +289,7 @@ impl TalkerEngine {
                 past_len: 0,
                 layers_k: vec![Vec::new(); n_layers],
                 layers_v: vec![Vec::new(); n_layers],
+                layers_kv_base: vec![0; n_layers],
             },
             prefill_cache: CompileCache::new(prefill_compile_device, 16),
             prefill_cache_cpu: if crate::compile_opts::talker_metal_cpu_prefill(device) {
@@ -746,6 +748,7 @@ impl TalkerEngine {
             past_len: 0,
             layers_k: vec![Vec::new(); self.n_layers],
             layers_v: vec![Vec::new(); self.n_layers],
+            layers_kv_base: vec![0; self.n_layers],
         };
         self.gpu_kv_binding = GpuKvBinding::default();
     }

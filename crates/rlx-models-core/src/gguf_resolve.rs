@@ -18,7 +18,9 @@
 use rlx_gguf::GgufFile;
 use std::sync::{Mutex, OnceLock};
 
-use crate::weight_loader::{gguf_to_hf_name, gguf_to_hf_name_for_arch, hf_to_gguf_name, hf_to_gguf_name_for_arch};
+use crate::weight_loader::{
+    gguf_to_hf_name, gguf_to_hf_name_for_arch, hf_to_gguf_name, hf_to_gguf_name_for_arch,
+};
 
 /// Resolve a builder-requested tensor name to the name stored in a GGUF file.
 pub trait GgufTensorNameResolver: Send + Sync {

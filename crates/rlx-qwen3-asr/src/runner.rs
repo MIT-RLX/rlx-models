@@ -349,6 +349,7 @@ impl AsrRunner {
             }
             kv = KvCacheState {
                 past_len: past_seq + 1,
+                layers_kv_base: vec![0; new_k.len()],
                 layers_k: new_k,
                 layers_v: new_v,
             };

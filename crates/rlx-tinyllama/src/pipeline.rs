@@ -222,10 +222,8 @@ impl TextGeneration {
     /// Render `messages` through the chat template into the raw prompt string
     /// (with a trailing generation prompt), without generating.
     pub fn apply_chat_template(&self, messages: &[ChatMessage]) -> Result<String> {
-        self.chat_template.render_with_options(
-            messages,
-            ChatRenderOptions::user_turn(true),
-        )
+        self.chat_template
+            .render_with_options(messages, ChatRenderOptions::user_turn(true))
     }
 
     /// The cached tokenizer (encode/decode without re-reading `tokenizer.json`).
@@ -268,7 +266,10 @@ impl TextGeneration {
 
         let mut ids = prompt_ids.to_vec();
         // Byte offset already accounted for = the decoded prompt length.
-        let mut emitted = tokenizer.decode(&ids, skip).context("decoding prompt")?.len();
+        let mut emitted = tokenizer
+            .decode(&ids, skip)
+            .context("decoding prompt")?
+            .len();
         let mut generated = String::new();
         let mut decode_err: Option<anyhow::Error> = None;
 
@@ -445,9 +446,9 @@ fn find_weights_in_dir(dir: &Path) -> Result<PathBuf> {
             first_gguf = Some(p);
         }
     }
-    first_st.or(first_gguf).ok_or_else(|| {
-        anyhow!("no .safetensors or .gguf weights found in directory {dir:?}")
-    })
+    first_st
+        .or(first_gguf)
+        .ok_or_else(|| anyhow!("no .safetensors or .gguf weights found in directory {dir:?}"))
 }
 
 #[cfg(feature = "hf-download")]
@@ -465,10 +466,7 @@ fn resolve_hf(model: &str) -> Result<ResolvedSource> {
     let config = repo
         .get("config.json")
         .with_context(|| format!("downloading config.json from {model}"))?;
-    let dir = config
-        .parent()
-        .context("snapshot dir")?
-        .to_path_buf();
+    let dir = config.parent().context("snapshot dir")?.to_path_buf();
 
     // Best-effort auxiliary files.
     let tokenizer_json = repo.get("tokenizer.json").ok();
@@ -621,7 +619,10 @@ fn read_json(path: &Path) -> Option<Json> {
 fn json_token(v: Option<&Json>) -> Option<String> {
     match v? {
         Json::String(s) => Some(s.clone()),
-        Json::Object(map) => map.get("content").and_then(Json::as_str).map(str::to_string),
+        Json::Object(map) => map
+            .get("content")
+            .and_then(Json::as_str)
+            .map(str::to_string),
         _ => None,
     }
 }
@@ -654,10 +655,7 @@ mod tests {
             .with_tokens(Some("<s>".into()), Some("</s>".into()));
         let out = t
             .render_with_options(
-                &[
-                    ChatMessage::system("Be brief."),
-                    ChatMessage::user("Hi"),
-                ],
+                &[ChatMessage::system("Be brief."), ChatMessage::user("Hi")],
                 ChatRenderOptions::user_turn(true),
             )
             .unwrap();

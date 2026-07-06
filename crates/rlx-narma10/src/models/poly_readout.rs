@@ -13,14 +13,9 @@ use anyhow::Result;
 /// Dense ESN with quadratic feature readout (HCNN-inspired nonlinear readout).
 ///
 /// Reservoir: [`ReservoirConfig::dense_poly`] (N=400). Appends `x²` features before ridge.
+#[derive(Default)]
 pub struct PolyReadoutEsn {
     inner: Option<ReadoutTrainer>,
-}
-
-impl Default for PolyReadoutEsn {
-    fn default() -> Self {
-        Self { inner: None }
-    }
 }
 
 impl PolyReadoutEsn {

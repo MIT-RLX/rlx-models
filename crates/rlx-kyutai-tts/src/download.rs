@@ -79,7 +79,7 @@ pub fn ensure_voice_embedding(
     #[cfg(feature = "hf-download")]
     {
         fetch_voice_embedding(voices_dir, checkpoint, voice_name)?;
-        return Ok(dest);
+        Ok(dest)
     }
     #[cfg(not(feature = "hf-download"))]
     {

@@ -3,9 +3,8 @@
 
 use crate::backbone::BackboneLoadOptions;
 use crate::download::{
-    DEFAULT_ORPHEUS_QUANT, default_hf_cache_dir, default_orpheus_dir, default_snac_dir,
-    fetch_default, fetch_orpheus_gguf, fetch_snac_raw, print_snac_export_hint,
-    resolve_orpheus_quant,
+    default_hf_cache_dir, default_orpheus_dir, default_snac_dir, fetch_default, fetch_orpheus_gguf,
+    fetch_snac_raw, print_snac_export_hint, resolve_orpheus_quant,
 };
 use crate::{GenerationConfig, OrpheusTts, VOICES, resolve_orpheus_device};
 use anyhow::{Context, Result, anyhow, bail};

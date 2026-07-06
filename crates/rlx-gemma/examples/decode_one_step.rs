@@ -15,11 +15,7 @@ const HF_CHAT_IDS: &[u32] = &[
 ];
 
 fn top5(logits: &[f32]) -> Vec<(usize, f32)> {
-    let mut v: Vec<(usize, f32)> = logits
-        .iter()
-        .enumerate()
-        .map(|(i, &x)| (i, x))
-        .collect();
+    let mut v: Vec<(usize, f32)> = logits.iter().enumerate().map(|(i, &x)| (i, x)).collect();
     v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     v.truncate(5);
     v

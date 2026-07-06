@@ -1,8 +1,8 @@
 //! Greedy token parity: CPU reference vs CUDA decode paths.
 use rlx_core::weight_loader::GgufLoader;
 use rlx_llama32::{Llama32Generator, MetalGgufPrefillMode, llama32_cfg_from_gguf};
-use rlx_qwen35::encode_prompt_from_gguf;
 use rlx_qwen3::SampleOpts;
+use rlx_qwen35::encode_prompt_from_gguf;
 use rlx_runtime::Device;
 
 const PROMPT_START_ID: u32 = 128_259;
@@ -21,7 +21,13 @@ fn build_prompt_ids(gguf: &std::path::Path, body: &str) -> anyhow::Result<Vec<u3
     Ok(out)
 }
 
-fn generate_tokens(device: Device, prefill: MetalGgufPrefillMode, gguf: &str, prompt: &[u32], n: usize) -> anyhow::Result<Vec<u32>> {
+fn generate_tokens(
+    device: Device,
+    prefill: MetalGgufPrefillMode,
+    gguf: &str,
+    prompt: &[u32],
+    n: usize,
+) -> anyhow::Result<Vec<u32>> {
     let mut loader = GgufLoader::from_file(gguf)?;
     let cfg = llama32_cfg_from_gguf(loader.file())?;
     let path = std::path::Path::new(gguf);
@@ -44,9 +50,13 @@ fn generate_tokens(device: Device, prefill: MetalGgufPrefillMode, gguf: &str, pr
 fn main() -> anyhow::Result<()> {
     let gguf = std::env::var("ORPHEUS_GGUF_PATH")
         .unwrap_or_else(|_| "/tmp/rlx-weights/orpheus/orpheus-3b-0.1-ft-Q4_K_M.gguf".into());
-    let text = std::env::var("ORPHEUS_TEXT").unwrap_or_else(|_| "The weather is nice today.".into());
+    let text =
+        std::env::var("ORPHEUS_TEXT").unwrap_or_else(|_| "The weather is nice today.".into());
     let voice = std::env::var("ORPHEUS_VOICE").unwrap_or_else(|_| "tara".into());
-    let n: usize = std::env::var("ORPHEUS_STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
+    let n: usize = std::env::var("ORPHEUS_STEPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8);
     let prompt = build_prompt_ids(std::path::Path::new(&gguf), &format!("{voice}: {text}"))?;
     eprintln!("prompt len={}", prompt.len());
 

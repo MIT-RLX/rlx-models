@@ -1,11 +1,13 @@
 [package]
 name = "rlx-gemma"
-version = "0.2.9"
+version = "0.2.11"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Gemma / Gemma 2 causal LMs for RLX"
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 
 [dependencies]
@@ -58,6 +60,11 @@ path = "src/bin/rlx_gemma.rs"
 [[example]]
 name = "bench_q4_decode"
 required-features = ["tokenizer"]
+
+# Uses `rlx_gemma::llama_reference`, only re-exported under `parity-llama`.
+[[example]]
+name = "gemma_llama_parity"
+required-features = ["parity-llama"]
 
 [lints]
 workspace = true

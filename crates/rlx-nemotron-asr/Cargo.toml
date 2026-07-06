@@ -7,6 +7,8 @@ license.workspace      = true
 authors.workspace      = true
 repository.workspace   = true
 description = "NVIDIA Nemotron 3.5 ASR Streaming (cache-aware FastConformer + RNN-T) runner for RLX, loaded natively from .nemo"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 anyhow       = { workspace = true }

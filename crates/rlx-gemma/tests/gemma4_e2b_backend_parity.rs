@@ -125,6 +125,14 @@ fn check_e2b(dev: Device, tag: &str) {
         eprintln!("[{tag}] {dev:?} unavailable — skip");
         return;
     }
+    if dev == Device::Gpu {
+        // Gemma 4 E2B's text arena (~8.4 GiB) exceeds wgpu's 4 GiB max_buffer_size
+        // (rlx-wgpu has no arena partitioning on the text path yet), so buffer
+        // planning panics. Skip *before* building — attempting the plan just to
+        // catch the panic leaves wgpu in a state that hangs on teardown.
+        eprintln!("[{tag}] E2B text arena exceeds wgpu 4 GiB buffer cap — skip");
+        return;
+    }
     let cfg = GemmaConfig::from_file(&d.join("config.json")).expect("config");
     let cpu = cpu_hidden(&d, &cfg);
     let resolved = hidden_last_token(dev, &d, &cfg).expect("resolved forward");

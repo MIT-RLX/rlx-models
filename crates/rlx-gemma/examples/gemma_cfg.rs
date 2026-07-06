@@ -31,13 +31,20 @@ fn main() -> Result<()> {
     println!("=== PLE-related tensors present in GGUF ===");
     for (name, t) in raw.tensors.iter() {
         let lname = name.to_lowercase();
-        if lname.contains("per_layer") || lname.contains("per-layer") || lname.contains("_layer_input") {
+        if lname.contains("per_layer")
+            || lname.contains("per-layer")
+            || lname.contains("_layer_input")
+        {
             println!("  {name}  shape={:?} dtype={:?}", t.shape, t.dtype);
         }
     }
     let n = cfg.num_hidden_layers;
     let full: Vec<usize> = (0..n).filter(|&l| cfg.is_full_attention_layer(l)).collect();
     println!("full_attention_layers = {full:?}");
-    println!("layer0 head_dim/kv    = {}/{}", cfg.layer_head_dim(0), cfg.layer_num_kv_heads(0));
+    println!(
+        "layer0 head_dim/kv    = {}/{}",
+        cfg.layer_head_dim(0),
+        cfg.layer_num_kv_heads(0)
+    );
     Ok(())
 }

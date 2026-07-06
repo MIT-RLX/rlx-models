@@ -44,8 +44,8 @@ use rlx_runtime::Device;
 use std::path::{Path, PathBuf};
 
 pub use config::{
-    TINYLLAMA_1_1B_HIDDEN_SIZE, TINYLLAMA_1_1B_NUM_LAYERS, config_json_path,
-    llama_config_from_hf, tinyllama_1_1b_preset,
+    TINYLLAMA_1_1B_HIDDEN_SIZE, TINYLLAMA_1_1B_NUM_LAYERS, config_json_path, llama_config_from_hf,
+    tinyllama_1_1b_preset,
 };
 #[cfg(feature = "hf-download")]
 pub use download::{

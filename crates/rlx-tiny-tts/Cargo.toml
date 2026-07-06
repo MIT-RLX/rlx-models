@@ -4,13 +4,15 @@
 
 [package]
 name = "rlx-tiny-tts"
-version = "0.2.9"
+version = "0.2.11"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "TinyTTS English text-to-speech (VITS2/MeloTTS, 44.1 kHz) for RLX — all backends"
+keywords.workspace = true
+categories.workspace = true
 exclude = ["weights/**"]
 
 [dependencies]

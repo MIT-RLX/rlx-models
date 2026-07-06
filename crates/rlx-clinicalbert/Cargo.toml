@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "ClinicalBERT encoder runner (Huang / Bio_ClinicalBERT) on top of rlx-bert"
+keywords.workspace = true
+categories.workspace = true
 readme = "README.md"
 
 [dependencies]

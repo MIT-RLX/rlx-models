@@ -182,9 +182,7 @@ impl GenerateState {
         self.text_tokens[self.step_idx] = sampled;
         for (cb, &tok) in audio_frame.iter().enumerate().take(self.cfg.n_q) {
             let cb_delay = self.layout.audio_delay(cb) as usize;
-            let stored = if offset < cb_delay + self.stream_delay {
-                zero
-            } else if tok == UNGENERATED {
+            let stored = if offset < cb_delay + self.stream_delay || tok == UNGENERATED {
                 zero
             } else {
                 tok

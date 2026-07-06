@@ -36,8 +36,9 @@ pub struct InflectNano {
     /// callers that synthesize many short segments back-to-back reuse graphs
     /// instead of recompiling per call. See [`InflectNano::synthesize_on_cached`].
     #[cfg(feature = "rlx-graph")]
-    voc_graphs:
-        std::sync::Mutex<std::collections::HashMap<(rlx_runtime::Device, usize), graph::VocoderGraph>>,
+    voc_graphs: std::sync::Mutex<
+        std::collections::HashMap<(rlx_runtime::Device, usize), graph::VocoderGraph>,
+    >,
 }
 
 /// Synthesized waveform.

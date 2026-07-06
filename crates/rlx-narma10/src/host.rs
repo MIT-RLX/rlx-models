@@ -106,10 +106,7 @@ pub fn step(coeff: Coefficients, y_hist: &[f64], u_hist: &[f64], t: usize) -> f6
     } else {
         0.0
     };
-    coeff.alpha * yt
-        + coeff.beta * yt * sum
-        + coeff.gamma * u_lag * u_t
-        + coeff.delta
+    coeff.alpha * yt + coeff.beta * yt * sum + coeff.gamma * u_lag * u_t + coeff.delta
 }
 
 /// Generate a reproducible NARMA-10 dataset.
