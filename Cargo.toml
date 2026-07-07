@@ -127,10 +127,10 @@ keywords      = ["ml", "tensor", "compiler", "neural-network"]
 categories    = ["science", "algorithms"]
 
 [workspace.dependencies]
-# Published `rlx*` (crates.io 0.2.10; was 0.2.9). Crates use `{ workspace = true }`.
+# Published `rlx*` (crates.io 0.2.12). Crates use `{ workspace = true }`.
 # Local ../rlx override: `.cargo/config.toml` from `.cargo/config.toml.example` (gitignored).
-# `rlx-distributed` needs rlx-driver 0.2.10+ (`ProcessGroup`, `TcpTransport`, …).
-# Publish / CI without patch: requires rlx 0.2.10 on crates.io.
+# `rlx-distributed` needs rlx-driver 0.2.12+ (`ProcessGroup`, `TcpTransport`, …).
+# Publish / CI without patch: requires rlx 0.2.12 on crates.io.
 rlx = { version = "=0.2.12", default-features = false, features = ["cpu"] }
 rlx-ir = { version = "=0.2.12" }
 rlx-flow = { version = "=0.2.12" }
