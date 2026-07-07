@@ -1,6 +1,6 @@
 [package]
 name = "rlx-models"
-version = "0.2.11"
+version = "0.2.12"
 edition.workspace = true
 rust-version.workspace = true
 description = "Model loading for RLX — config parsing, safetensors weights, graph builders"
@@ -57,6 +57,14 @@ rlx-ocr = { workspace = true, optional = true }
 rlx-neutts = { workspace = true, optional = true }
 rlx-orpheus = { workspace = true, optional = true }
 rlx-kittentts = { workspace = true, optional = true }
+rlx-kokoro = { workspace = true, optional = true }
+rlx-supertonic = { workspace = true, optional = true }
+rlx-luxtts = { workspace = true, optional = true }
+rlx-zipvoice = { workspace = true, optional = true }
+rlx-moss-nano = { workspace = true, optional = true }
+rlx-maya1 = { workspace = true, optional = true }
+rlx-f5tts = { workspace = true, optional = true }
+rlx-piper = { workspace = true, optional = true }
 rlx-florence2 = { workspace = true, optional = true }
 rlx-mimi = { workspace = true, optional = true }
 rlx-tsac = { workspace = true, optional = true }
@@ -162,6 +170,14 @@ ocr = ["dep:rlx-ocr"]
 neutts = ["dep:rlx-neutts"]
 orpheus = ["dep:rlx-orpheus"]
 kittentts = ["dep:rlx-kittentts"]
+kokoro = ["dep:rlx-kokoro"]
+supertonic = ["dep:rlx-supertonic"]
+luxtts = ["dep:rlx-luxtts"]
+zipvoice = ["dep:rlx-zipvoice"]
+moss-nano = ["dep:rlx-moss-nano"]
+maya1 = ["dep:rlx-maya1"]
+f5tts = ["dep:rlx-f5tts"]
+piper = ["dep:rlx-piper"]
 qwen3-tts = ["dep:rlx-qwen3-tts"]
 voxtral-tts = ["dep:rlx-voxtral-tts"]
 # kyutai-tts pulls the moshi/mimi neural codec, which is the ONLY path to candle
@@ -209,7 +225,7 @@ llm = [
     "llama-base",
 ]
 asr = ["whisper", "wav2vec2-bert", "wav2vec2-asr", "voxtral", "qwen3-asr", "vad", "diarize", "aec"]
-tts = ["kyutai-tts", "kittentts", "orpheus", "neutts", "qwen3-tts", "voxtral-tts", "tsac"]
+tts = ["kyutai-tts", "kittentts", "kokoro", "supertonic", "luxtts", "zipvoice", "moss-nano", "maya1", "f5tts", "piper", "orpheus", "neutts", "qwen3-tts", "voxtral-tts", "tsac"]
 vision-models = [
     "sam",
     "sam2",
@@ -243,6 +259,11 @@ hf-download = [
     "rlx-locateanything?/hf-download",
     "rlx-qwen3-tts?/hf-download",
     "rlx-kittentts?/hf-download",
+    "rlx-kokoro?/hf-download",
+    "rlx-supertonic?/hf-download",
+    "rlx-luxtts?/hf-download",
+    "rlx-f5tts?/hf-download",
+    "rlx-piper?/hf-download",
     "rlx-orpheus?/hf-download",
     "rlx-kyutai-tts?/hf-download",
 ]
@@ -278,6 +299,14 @@ metal = [
     "rlx-kyutai-tts?/metal",
     "rlx-neutts?/metal",
     "rlx-kittentts?/metal",
+    "rlx-kokoro?/metal",
+    "rlx-supertonic?/metal",
+    "rlx-luxtts?/metal",
+    "rlx-zipvoice?/metal",
+    "rlx-moss-nano?/metal",
+    "rlx-maya1?/metal",
+    "rlx-f5tts?/metal",
+    "rlx-piper?/metal",
     "rlx-florence2?/metal",
     "rlx-nomic?/metal",
     "rlx-ocr?/metal",
@@ -323,6 +352,14 @@ mlx = [
     "rlx-kyutai-tts?/mlx",
     "rlx-neutts?/mlx",
     "rlx-kittentts?/mlx",
+    "rlx-kokoro?/mlx",
+    "rlx-supertonic?/mlx",
+    "rlx-luxtts?/mlx",
+    "rlx-zipvoice?/mlx",
+    "rlx-moss-nano?/mlx",
+    "rlx-maya1?/mlx",
+    "rlx-f5tts?/mlx",
+    "rlx-piper?/mlx",
     "rlx-florence2?/mlx",
     "rlx-nomic?/mlx",
     "rlx-ocr?/mlx",
@@ -381,6 +418,14 @@ gpu = [
     "rlx-kyutai-tts?/gpu",
     "rlx-neutts?/gpu",
     "rlx-kittentts?/gpu",
+    "rlx-kokoro?/gpu",
+    "rlx-supertonic?/gpu",
+    "rlx-luxtts?/gpu",
+    "rlx-zipvoice?/gpu",
+    "rlx-moss-nano?/gpu",
+    "rlx-maya1?/gpu",
+    "rlx-f5tts?/gpu",
+    "rlx-piper?/gpu",
     "rlx-florence2?/gpu",
     "rlx-nomic?/gpu",
     "rlx-ocr?/gpu",
@@ -471,6 +516,14 @@ cuda = [
     "rlx-kyutai-tts?/cuda",
     "rlx-neutts?/cuda",
     "rlx-kittentts?/cuda",
+    "rlx-kokoro?/cuda",
+    "rlx-supertonic?/cuda",
+    "rlx-luxtts?/cuda",
+    "rlx-zipvoice?/cuda",
+    "rlx-moss-nano?/cuda",
+    "rlx-maya1?/cuda",
+    "rlx-f5tts?/cuda",
+    "rlx-piper?/cuda",
     "rlx-florence2?/cuda",
     "rlx-nomic?/cuda",
     "rlx-ocr?/cuda",
@@ -515,6 +568,8 @@ rocm = [
     "rlx-kyutai-tts?/rocm",
     "rlx-neutts?/rocm",
     "rlx-kittentts?/rocm",
+    "rlx-kokoro?/rocm",
+    "rlx-supertonic?/rocm",
     "rlx-florence2?/rocm",
     "rlx-nomic?/rocm",
     "rlx-ocr?/rocm",

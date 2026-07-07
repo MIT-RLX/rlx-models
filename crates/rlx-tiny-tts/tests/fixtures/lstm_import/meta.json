@@ -1,0 +1,14 @@
+{
+  "seq": 5,
+  "batch": 1,
+  "input": 3,
+  "hidden": 4,
+  "dirs": 2,
+  "direction": "bidirectional",
+  "y_shape": [
+    5,
+    2,
+    1,
+    4
+  ]
+}

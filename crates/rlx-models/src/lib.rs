@@ -189,6 +189,38 @@ pub mod orpheus {
 pub mod kittentts {
     pub use rlx_kittentts::*;
 }
+#[cfg(feature = "kokoro")]
+pub mod kokoro {
+    pub use rlx_kokoro::*;
+}
+#[cfg(feature = "supertonic")]
+pub mod supertonic {
+    pub use rlx_supertonic::*;
+}
+#[cfg(feature = "luxtts")]
+pub mod luxtts {
+    pub use rlx_luxtts::*;
+}
+#[cfg(feature = "zipvoice")]
+pub mod zipvoice {
+    pub use rlx_zipvoice::*;
+}
+#[cfg(feature = "moss-nano")]
+pub mod moss_nano {
+    pub use rlx_moss_nano::*;
+}
+#[cfg(feature = "maya1")]
+pub mod maya1 {
+    pub use rlx_maya1::*;
+}
+#[cfg(feature = "f5tts")]
+pub mod f5tts {
+    pub use rlx_f5tts::*;
+}
+#[cfg(feature = "piper")]
+pub mod piper {
+    pub use rlx_piper::*;
+}
 #[cfg(feature = "florence2")]
 pub mod florence2 {
     pub use rlx_florence2::*;

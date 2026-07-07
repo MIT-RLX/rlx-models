@@ -18,6 +18,10 @@
 //! packed GGUF prefill guards ([`flow_bridge::packed_gguf_compile_guard`], etc.).
 
 pub mod arch_registry;
+/// Versatile model-asset loading, re-exported from the lean `rlx-assets` crate
+/// so `rlx_core::asset_source::…` keeps working while lean crates can depend on
+/// `rlx-assets` directly (no rlx compiler/runtime stack).
+pub use rlx_assets as asset_source;
 pub mod asr_bench;
 pub mod asr_metrics;
 pub mod audio;
@@ -90,6 +94,9 @@ pub use autoregressive::{
     run_bucketed_kv_decode_hir_uniform, run_bucketed_kv_decode_keyed,
     run_bucketed_kv_decode_keyed_batched, run_packed_prefill, split_bucketed_decode_kv,
     split_bucketed_decode_kv_per_layer, split_decode_logits_kv, split_decode_logits_kv_aux,
+};
+pub use asset_source::{
+    AssetProvider, AssetSource, LocalDir, SourceSpec, load_materialized,
 };
 pub use config::{BertConfig, NomicBertConfig, NomicVisionConfig};
 pub use embedded_safetensors::EmbeddedSafetensors;

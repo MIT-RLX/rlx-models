@@ -1,0 +1,73 @@
+[package]
+name = "rlx-supertonic"
+version = "0.2.12"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Supertonic-3 (flow-matching latent TTS) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+hound = "3"
+unicode-normalization = "0.1"
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+# Reuse the ONNX Runtime execution-provider selector from rlx-kittentts (both are
+# ort Stage-1 TTS crates). Char-level tokenizer here, so no espeak dependency.
+rlx-kittentts = { path = "../rlx-kittentts", default-features = false }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "pkg-config",
+    "download-binaries",
+    "tls-rustls",
+] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-rustls",
+] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-rustls",
+    "copy-dylibs",
+] }
+
+[features]
+default = ["onnx"]
+onnx = ["dep:ort", "rlx-kittentts/onnx"]
+metal = ["rlx-runtime/metal", "rlx-kittentts/metal", "rlx-kittentts/ort-coreml"]
+mlx = ["rlx-runtime/mlx", "rlx-kittentts/mlx", "rlx-kittentts/ort-coreml"]
+cuda = ["rlx-runtime/cuda", "rlx-kittentts/cuda", "rlx-kittentts/ort-cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-kittentts/rocm", "rlx-kittentts/ort-rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-kittentts/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+hf-download = ["dep:hf-hub"]
+
+[dev-dependencies]
+rlx-whisper = { workspace = true }
+
+[[bin]]
+name = "rlx-supertonic"
+path = "src/bin/rlx_supertonic.rs"
+required-features = ["onnx"]
+
+[lints]
+workspace = true

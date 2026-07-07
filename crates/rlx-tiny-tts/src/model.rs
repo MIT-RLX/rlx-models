@@ -72,6 +72,17 @@ fn as_f32((bytes, dt): &(Vec<u8>, DType)) -> Result<Vec<f32>> {
 
 impl TinyModel {
     pub fn new(onnx_dir: PathBuf, cfg: BundleConfig) -> Self {
+        // TinyTTS is dominated by its HiFi-GAN decoder convolutions. On CPU the
+        // rlx-cpu default is a scalar reference conv (~20× slower here); the
+        // im2col+Accelerate path (`RLX_FAST_CONV`) takes the CPU decoder from
+        // ~17 s to ~0.7 s (0.1× → ~2× RT). Default it on via the thread-safe
+        // rlx-ir code override (no global `set_var`), only when the caller hasn't
+        // pinned it in the process env — so `RLX_FAST_CONV=0` still forces the
+        // bit-exact reference. Set at construction, before any conv runs (the
+        // rlx-cpu flag is read + cached on first use).
+        if std::env::var_os("RLX_FAST_CONV").is_none() {
+            rlx_ir::env::set("RLX_FAST_CONV", "1");
+        }
         Self {
             onnx_dir,
             cfg,
@@ -96,6 +107,34 @@ impl TinyModel {
             .expect("graph cache")
             .insert(key, compiled.clone());
         Ok(compiled)
+    }
+
+    /// Run one cached subgraph **in place** (no per-call clone): compile + cache
+    /// on first use, then reuse the same `CompiledGraph`. This is the hot path —
+    /// `graph()` hands out a `.clone()`, but on Metal `CompiledGraph::clone`
+    /// re-compiles a fresh arena (~0.55 s/utterance for flow+decoder); reusing
+    /// the instance eliminates that. MLX/CPU/wgpu clone cheaply but still benefit.
+    /// The run holds the cache lock, so concurrent `synthesize` calls on one
+    /// model serialize (each `run_typed` returns owned output bytes).
+    pub fn run_graph(
+        &self,
+        component: &'static str,
+        device: Device,
+        length: usize,
+        inputs: &[(&str, &[u8], DType)],
+    ) -> Result<Vec<(Vec<u8>, DType)>> {
+        let key = (component, device, length);
+        // Compile outside the run lock so a cold compile doesn't block lookups.
+        if !self.cache.lock().expect("graph cache").contains_key(&key) {
+            let compiled = self.compile(component, device, length)?;
+            self.cache
+                .lock()
+                .expect("graph cache")
+                .insert(key, compiled);
+        }
+        let mut cache = self.cache.lock().expect("graph cache");
+        let g = cache.get_mut(&key).expect("graph just cached");
+        Ok(g.run_typed(inputs))
     }
 
     fn compile(&self, component: &str, device: Device, length: usize) -> Result<CompiledGraph> {
@@ -143,7 +182,23 @@ impl TinyModel {
         let c = self.cfg.inter_channels; // latent channels (== g/m_p channel width)
 
         // ── 1. Text encoder ──────────────────────────────────────────────
-        let mut enc = self.graph("text_encoder", device, t)?;
+        let stage_dbg = std::env::var("RLX_TTS_STAGE").is_ok();
+        let time_dbg = std::env::var("RLX_TTS_TIME").is_ok();
+        macro_rules! tick {
+            () => {
+                std::time::Instant::now()
+            };
+        }
+        macro_rules! tock {
+            ($t:expr, $label:literal) => {
+                if time_dbg {
+                    eprintln!("[time] {:<22} {:>8.1} ms", $label, $t.elapsed().as_secs_f64() * 1e3);
+                }
+            };
+        }
+        if stage_dbg {
+            eprintln!("[stage] text_encoder t={t}");
+        }
         let phone_b = i64_bytes(phone);
         let tone_b = i64_bytes(tone);
         let lang_b = i64_bytes(lang);
@@ -158,15 +213,22 @@ impl TinyModel {
         dbg_dump("tone", &tone.iter().map(|&x| x as f32).collect::<Vec<_>>());
         dbg_dump("lang", &lang.iter().map(|&x| x as f32).collect::<Vec<_>>());
         dbg_dump("sid", &[speaker as f32]);
-        let enc_out = enc.run_typed(&[
-            ("phone_ids", &phone_b, DType::I64),
-            ("phone_lengths", &len_b, DType::I64),
-            ("tone_ids", &tone_b, DType::I64),
-            ("language_ids", &lang_b, DType::I64),
-            ("bert", &bert_b, DType::F32),
-            ("ja_bert", &ja_bert_b, DType::F32),
-            ("speaker_id", &sid_b, DType::I64),
-        ]);
+        let _t = tick!();
+        let enc_out = self.run_graph(
+            "text_encoder",
+            device,
+            t,
+            &[
+                ("phone_ids", &phone_b, DType::I64),
+                ("phone_lengths", &len_b, DType::I64),
+                ("tone_ids", &tone_b, DType::I64),
+                ("language_ids", &lang_b, DType::I64),
+                ("bert", &bert_b, DType::F32),
+                ("ja_bert", &ja_bert_b, DType::F32),
+                ("speaker_id", &sid_b, DType::I64),
+            ],
+        )?;
+        tock!(_t, "text_encoder");
         anyhow::ensure!(
             enc_out.len() >= 5,
             "text_encoder returned {} outputs",
@@ -184,13 +246,22 @@ impl TinyModel {
         let x_mask = vec![1.0f32; t];
 
         // ── 2. Duration predictor ────────────────────────────────────────
-        let mut dp = self.graph("duration_predictor", device, t)?;
+        if stage_dbg {
+            eprintln!("[stage] duration_predictor t={t}");
+        }
         let x_mask_b = f32_bytes(&x_mask);
-        let dp_out = dp.run_typed(&[
-            ("x", x_enc, DType::F32),
-            ("x_mask", &x_mask_b, DType::F32),
-            ("g", &g_bytes, DType::F32),
-        ]);
+        let _t = tick!();
+        let dp_out = self.run_graph(
+            "duration_predictor",
+            device,
+            t,
+            &[
+                ("x", x_enc, DType::F32),
+                ("x_mask", &x_mask_b, DType::F32),
+                ("g", &g_bytes, DType::F32),
+            ],
+        )?;
+        tock!(_t, "dur_pred");
         anyhow::ensure!(!dp_out.is_empty(), "duration_predictor returned no output");
         let logw = as_f32(&dp_out[0])?; // [1,1,T] → T values
         dbg_mag("m_p", &m_p);
@@ -216,14 +287,23 @@ impl TinyModel {
         let y_mask = vec![1.0f32; y_len]; // frame count == sum of durations → all ones
 
         // ── 4. Flow (reverse) ────────────────────────────────────────────
-        let mut flow = self.graph("flow", device, y_len)?;
+        if stage_dbg {
+            eprintln!("[stage] flow y_len={y_len}");
+        }
         let z_p_b = f32_bytes(&z_p);
         let y_mask_b = f32_bytes(&y_mask);
-        let flow_out = flow.run_typed(&[
-            ("z_p", &z_p_b, DType::F32),
-            ("y_mask", &y_mask_b, DType::F32),
-            ("g", &g_bytes, DType::F32),
-        ]);
+        let _t = tick!();
+        let flow_out = self.run_graph(
+            "flow",
+            device,
+            y_len,
+            &[
+                ("z_p", &z_p_b, DType::F32),
+                ("y_mask", &y_mask_b, DType::F32),
+                ("g", &g_bytes, DType::F32),
+            ],
+        )?;
+        tock!(_t, "flow");
         anyhow::ensure!(!flow_out.is_empty(), "flow returned no output");
         let z = as_f32(&flow_out[0])?; // [1, c, y_len]
         dbg_mag("z(flow)", &z);
@@ -235,9 +315,18 @@ impl TinyModel {
 
         // ── 5. Decoder (z·y_mask → waveform) ─────────────────────────────
         // y_mask is all ones here, so masking is the identity.
-        let mut dec = self.graph("decoder", device, y_len)?;
+        if stage_dbg {
+            eprintln!("[stage] decoder y_len={y_len}");
+        }
         let z_b = f32_bytes(&z);
-        let dec_out = dec.run_typed(&[("z", &z_b, DType::F32), ("g", &g_bytes, DType::F32)]);
+        let _t = tick!();
+        let dec_out = self.run_graph(
+            "decoder",
+            device,
+            y_len,
+            &[("z", &z_b, DType::F32), ("g", &g_bytes, DType::F32)],
+        )?;
+        tock!(_t, "decoder");
         anyhow::ensure!(!dec_out.is_empty(), "decoder returned no output");
         let wav = as_f32(&dec_out[0])?; // [1, 1, samples]
         dbg_mag("dec_out", &wav);

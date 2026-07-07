@@ -945,6 +945,53 @@ test-qwen3-tts-streaming *ARGS:
 fetch-kittentts:
     cargo run -p rlx-kittentts --features hf-download --release -- --download
 
+# Kokoro-82M ONNX bundle — https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
+fetch-kokoro:
+    cargo run -p rlx-kokoro --features hf-download --release -- --download
+
+# One-command demo after `just fetch-kokoro`
+kokoro-demo:
+    cargo run -p rlx-kokoro --release -- --text "Hello from Kokoro." --voice af_heart --out /tmp/kokoro_demo.wav
+
+# Supertonic-3 flow-matching TTS — https://huggingface.co/Supertone/supertonic-3
+fetch-supertonic:
+    cargo run -p rlx-supertonic --features hf-download --release -- --download
+
+# One-command demo after `just fetch-supertonic`
+supertonic-demo:
+    cargo run -p rlx-supertonic --release -- --text "Hello from Supertonic." --voice F1 --out /tmp/supertonic_demo.wav
+
+# LuxTTS voice-cloning TTS — https://huggingface.co/YatharthS/LuxTTS
+# After downloading, export the Vocos spectral head once (needs a venv with `vocos onnxscript`):
+#   python crates/rlx-luxtts/scripts/export_vocoder.py weights/tts/luxtts/vocoder/vocos.bin weights/tts/luxtts/onnx/vocoder_spec.onnx
+luxtts-demo PROMPT_WAV PROMPT_TEXT TEXT:
+    cargo run -p rlx-luxtts --release -- --prompt-wav "{{PROMPT_WAV}}" --prompt-text "{{PROMPT_TEXT}}" --text "{{TEXT}}" --out /tmp/luxtts_demo.wav
+
+# F5-TTS voice cloning — https://huggingface.co/huggingfacess/F5-TTS-ONNX (weights CC-BY-NC)
+# Needs F5_{Preprocess,Transformer,Decode}.onnx + vocab.txt in weights/tts/f5tts
+f5tts-demo REF_WAV REF_TEXT TEXT:
+    cargo run -p rlx-f5tts --release -- --ref-wav "{{REF_WAV}}" --ref-text "{{REF_TEXT}}" --text "{{TEXT}}" --out /tmp/f5tts_demo.wav
+
+# Piper VITS TTS — voices at https://huggingface.co/rhasspy/piper-voices (MIT)
+# Place <voice>.onnx + <voice>.onnx.json in weights/tts/piper/
+piper-demo:
+    cargo run -p rlx-piper --release -- --text "The quick brown fox jumps over the lazy dog." --out /tmp/piper_demo.wav
+
+# ZipVoice voice cloning — k2-fsa/ZipVoice (Apache); reuses the LuxTTS runtime.
+# Download zipvoice_distill/ + export vocoder (scripts/export_vocoder.py) into weights/tts/zipvoice-distill
+zipvoice-demo REF_WAV REF_TEXT TEXT:
+    cargo run -p rlx-zipvoice --release -- --prompt-wav "{{REF_WAV}}" --prompt-text "{{REF_TEXT}}" --text "{{TEXT}}" --out /tmp/zipvoice_demo.wav
+
+# MOSS-TTS-Nano — OpenMOSS hierarchical AR codec-LM (Apache, 48kHz). See crate README
+# for weights setup (2 HF repos + scripts/convert_tokenizer.py). --list-voices for voices.
+moss-nano-demo TEXT VOICE="Trump":
+    cargo run -p rlx-moss-nano --release -- --text "{{TEXT}}" --voice "{{VOICE}}" --out /tmp/moss_nano_demo.wav
+
+# Maya1 — expressive voice-design TTS (Llama-3B + SNAC, Apache). Reuses rlx-orpheus.
+# Needs a Maya1 GGUF in weights/tts/maya1 + ORPHEUS_SNAC_PATH (see crate README).
+maya1-demo TEXT DESC="Realistic female voice in her 20s with a British accent. Warm timbre, conversational pacing.":
+    cargo run -p rlx-maya1 --release -- --description "{{DESC}}" --text "{{TEXT}}" --out /tmp/maya1_demo.wav
+
 # Kyutai Mimi codec — https://huggingface.co/kyutai/mimi
 fetch-mimi:
     cargo run -p rlx-mimi --features hf-download --release -- --fetch

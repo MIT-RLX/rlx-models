@@ -11,6 +11,10 @@
 # Local weight caches (GGUF / safetensors trees used by env-gated tests)
 /weights
 ./weights
+# Centralized TTS weights (downloaded + generated) — staged for a standalone
+# Hugging Face weights repo; never committed to the main repo.
+/weights/tts/
+weights/tts/
 crates/kitten_tts_mini_rlx/weights/
 crates/rlx-neutts/models/
 crates/rlx-orpheus/weights/

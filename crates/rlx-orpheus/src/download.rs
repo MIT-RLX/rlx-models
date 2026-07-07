@@ -7,7 +7,9 @@
 
 #[cfg(feature = "hf-download")]
 use anyhow::Context;
-use anyhow::{Result, bail};
+use anyhow::Result;
+#[cfg(not(feature = "hf-download"))]
+use anyhow::bail;
 use std::path::{Path, PathBuf};
 
 /// Finetune-prod Orpheus GGUF (named voices).

@@ -1,0 +1,37 @@
+[package]
+name = "rlx-zipvoice"
+version = "0.2.12"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "ZipVoice (k2-fsa flow-matching voice cloning) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+hound = "3"
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+# ZipVoice and LuxTTS share the exact ZipVoice runtime (LuxTTS is ZipVoice-distill
+# fine-tuned); reuse the rlx-luxtts runner + DSP wholesale.
+rlx-luxtts = { path = "../rlx-luxtts" }
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-luxtts/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-luxtts/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-luxtts/cuda"]
+gpu = ["rlx-runtime/gpu", "rlx-luxtts/gpu"]
+all-backends = ["metal", "mlx", "cuda", "gpu"]
+
+[dev-dependencies]
+rlx-whisper = { workspace = true }
+
+[[bin]]
+name = "rlx-zipvoice"
+path = "src/bin/rlx_zipvoice.rs"
+
+[lints]
+workspace = true

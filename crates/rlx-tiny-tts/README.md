@@ -19,11 +19,11 @@ With no `--device`, the bin picks the best available accelerator (Metal → MLX 
 ```rust
 use rlx_tiny_tts::{TinyTts, InferOpts, Device};
 
-let model = TinyTts::load_from_dir(std::path::Path::new("weights/tiny-tts-rlx"))?;
+let model = TinyTts::load("weights/tiny-tts-rlx")?;   // dir, .rlxpack file, or any AssetSource
 let opts = InferOpts::from_config(model.config());
 
 // Full pipeline: raw text → 44.1 kHz mono waveform, every graph on `device`.
-let wav = model.synthesize_on("Hello, world!", Device::Metal, &opts)?;
+let wav = model.synthesize_on("Hello, world!", Device::Mlx, &opts)?;
 // or `model.synthesize(text, &opts)` for the CPU backend.
 println!("{} samples @ {} Hz", wav.samples.len(), wav.sample_rate);
 ```
@@ -32,6 +32,36 @@ println!("{} samples @ {} Hz", wav.samples.len(), wav.sample_rate);
 `(phone, tone, lang)` ids. The English text frontend (CMUdict + g2p_en + tagger + BERT)
 is reused byte-identically from [rlx-inflect-nano](../rlx-inflect-nano)
 (re-exported as `rlx_tiny_tts::frontend`).
+
+### Versatile loading (`AssetSource`)
+
+`TinyTts::load` accepts anything convertible to an [`AssetSource`], so the same
+bundle loads from a directory, a single packed file, memory, or a config — with
+byte-identical output (see `examples/load_sources.rs`):
+
+```rust
+use rlx_tiny_tts::{TinyTts, AssetSource, SourceSpec};
+
+TinyTts::load("weights/tiny-tts-rlx")?;             // directory (auto-detected)
+TinyTts::load("tiny-tts.rlxpack")?;                 // single packed file (auto-detected)
+TinyTts::load(AssetSource::pack_file("m.rlxpack")?)?;
+TinyTts::load(AssetSource::pack_bytes(bytes)?)?;    // in-memory pack (no disk)
+TinyTts::load(AssetSource::memory(name_to_bytes))?; // in-memory asset map
+TinyTts::load_from_spec(&spec)?;                    // {"source":"pack","path":"…"} from JSON
+```
+
+`AssetSource` (in `rlx-core`) also takes a custom `AssetProvider` (HTTP cache,
+zip, embedded VFS…). Directory sources load in place; every other source is
+materialized to a self-cleaning temp dir only when a sub-loader needs a real
+path. Package a bundle into one distributable file with:
+
+```bash
+cargo run -p rlx-tiny-tts --release -- --pack weights/tiny-tts-rlx --out tiny-tts.rlxpack
+# then: --data tiny-tts.rlxpack  works anywhere --data <dir> did
+```
+
+Adopt the same loaders in any model crate with one line —
+`rlx_core::asset_source::load_materialized(src, Self::load_from_dir)`.
 
 ## Backends
 

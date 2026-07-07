@@ -1,0 +1,38 @@
+[package]
+name = "rlx-maya1"
+version = "0.2.12"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Maya1 (Llama-3B + SNAC expressive voice-design TTS, Apache-2.0) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+hound = "3"
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+# Maya1 is Orpheus-family (Llama-3B + SNAC, byte-identical SNAC token layout):
+# reuse the rlx-orpheus GGUF backbone + SNAC decoder + prompt builder wholesale.
+rlx-orpheus = { workspace = true }
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-orpheus/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-orpheus/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-orpheus/cuda"]
+gpu = ["rlx-runtime/gpu", "rlx-orpheus/gpu"]
+all-backends = ["metal", "mlx", "cuda", "gpu"]
+hf-download = ["rlx-orpheus/hf-download"]
+
+[dev-dependencies]
+rlx-whisper = { workspace = true }
+
+[[bin]]
+name = "rlx-maya1"
+path = "src/bin/rlx_maya1.rs"
+
+[lints]
+workspace = true

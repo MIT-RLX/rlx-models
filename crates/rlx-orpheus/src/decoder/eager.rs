@@ -459,7 +459,7 @@ pub(crate) fn load_npy_f32(path: &Path) -> Result<Vec<f32>> {
 }
 
 /// Audio samples after the full decoder stack for `t_latent` latent steps.
-#[cfg(feature = "coreml")]
+#[cfg(any(feature = "coreml", feature = "snac-rlx"))]
 pub(crate) fn audio_len_for_latent(decoder_rates: &[usize], t_latent: usize) -> usize {
     let mut t = t_latent;
     for &stride in decoder_rates {
@@ -472,7 +472,7 @@ pub(crate) fn audio_len_for_latent(decoder_rates: &[usize], t_latent: usize) -> 
 }
 
 /// Time width after each decoder block upsample (noise plane lengths).
-#[cfg(feature = "coreml")]
+#[cfg(any(feature = "coreml", feature = "snac-rlx"))]
 pub(crate) fn decoder_block_times(decoder_rates: &[usize], t_latent: usize) -> [usize; 4] {
     let mut t = t_latent;
     let mut out = [0usize; 4];
@@ -655,7 +655,7 @@ impl SnacDecoder {
         self.decode_codes(&c0, &c1, &c2)
     }
 
-    #[cfg(feature = "coreml")]
+    #[cfg(any(feature = "coreml", feature = "snac-rlx"))]
     pub(crate) fn inner(&self) -> &SnacDecoderInner {
         &self.inner
     }

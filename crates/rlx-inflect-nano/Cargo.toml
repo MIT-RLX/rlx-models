@@ -1,6 +1,6 @@
 [package]
 name = "rlx-inflect-nano"
-version = "0.2.11"
+version = "0.2.12"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -26,6 +26,10 @@ tokenizers = { workspace = true }
 rlx-runtime = { workspace = true, optional = true, default-features = false, features = ["cpu"] }
 rlx = { workspace = true, optional = true, default-features = false }
 rlx-ir = { workspace = true, optional = true }
+# Versatile bundle loading (dir / packed file / in-memory). Optional: only the
+# heavier graph build (which already pulls the rlx stack) exposes `load`; the
+# lean host-eager build keeps just `load_from_dir`.
+rlx-core = { workspace = true, optional = true }
 
 [dependencies.hf-hub]
 workspace = true
@@ -43,7 +47,7 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 [features]
 default = ["rlx-graph"]
 # Build the rlx-ir graph backend (compiles per device → runs on every rlx backend).
-rlx-graph = ["dep:rlx", "dep:rlx-ir", "dep:rlx-runtime", "rlx/cpu", "rlx-runtime/cpu"]
+rlx-graph = ["dep:rlx", "dep:rlx-ir", "dep:rlx-runtime", "dep:rlx-core", "rlx/cpu", "rlx-runtime/cpu"]
 metal = ["rlx-graph", "rlx-runtime/metal", "rlx?/metal"]
 mlx = ["rlx-graph", "rlx-runtime/mlx", "rlx?/mlx"]
 cuda = ["rlx-graph", "rlx-runtime/cuda", "rlx?/cuda"]
@@ -67,6 +71,10 @@ path = "src/bin/rlx_inflect_nano.rs"
 [[example]]
 name = "bench_coreml"
 required-features = ["onnx"]
+
+[[example]]
+name = "load_sources"
+required-features = ["rlx-graph"]
 
 [lints]
 workspace = true

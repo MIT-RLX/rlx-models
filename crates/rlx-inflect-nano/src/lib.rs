@@ -39,6 +39,12 @@ pub struct InflectNano {
     voc_graphs: std::sync::Mutex<
         std::collections::HashMap<(rlx_runtime::Device, usize), graph::VocoderGraph>,
     >,
+    /// Keeps a materialized temp bundle alive for the model's lifetime when
+    /// [`InflectNano::load`] is given a non-directory source (pack / in-memory)
+    /// — the g2p frontend and CoreML vocoder read their assets lazily by path.
+    /// Type-erased so the field exists even in the lean (no-`rlx-graph`) build.
+    #[allow(dead_code)]
+    _assets: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 /// Synthesized waveform.
@@ -101,7 +107,29 @@ impl InflectNano {
             coreml_vocoder: once_cell::sync::OnceCell::new(),
             #[cfg(feature = "rlx-graph")]
             voc_graphs: std::sync::Mutex::new(std::collections::HashMap::new()),
+            _assets: None,
         })
+    }
+
+    /// Load an Inflect-Nano bundle from anywhere: a directory, a packed
+    /// `.rlxpack` file, in-memory bytes, or any custom [`AssetSource`]
+    /// (`rlx_core::AssetSource`). Additive alongside [`InflectNano::load_from_dir`];
+    /// requires the `rlx-graph` feature (which pulls the shared loader). Directory
+    /// sources load in place; other sources materialize to a self-cleaning temp
+    /// dir kept alive for the model's lifetime (lazy frontend/CoreML path reads).
+    #[cfg(feature = "rlx-graph")]
+    pub fn load(src: impl Into<rlx_core::AssetSource>) -> Result<Self> {
+        let (mut m, keep) =
+            rlx_core::asset_source::load_materialized(src, Self::load_from_dir)?;
+        m._assets = keep.map(|g| Box::new(g) as Box<dyn std::any::Any + Send + Sync>);
+        Ok(m)
+    }
+
+    /// Load an Inflect-Nano bundle described by a [`rlx_core::SourceSpec`]
+    /// (`{"source":"dir|pack","path":"…"}`, typically from a JSON config).
+    #[cfg(feature = "rlx-graph")]
+    pub fn load_from_spec(spec: &rlx_core::SourceSpec) -> Result<Self> {
+        Self::load(rlx_core::AssetSource::from_spec(spec)?)
     }
 
     pub fn asset_dir(&self) -> &Path {

@@ -4,7 +4,7 @@
 
 [package]
 name = "rlx-tiny-tts"
-version = "0.2.11"
+version = "0.2.12"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -23,6 +23,9 @@ safetensors = { workspace = true }
 ndarray = "0.16"
 hound = "3"
 dirs = "6"
+
+# Versatile bundle loading (dir / packed file / in-memory / config spec).
+rlx-core = { workspace = true }
 
 # RLX compiler + runtime (ONNX import → HIR → per-device compile → run).
 rlx-ir = { workspace = true }
@@ -77,3 +80,15 @@ workspace = true
 [[example]]
 name = "dec_probe"
 path = "examples/dec_probe.rs"
+
+[[example]]
+name = "bench_rtf"
+path = "examples/bench_rtf.rs"
+
+[[example]]
+name = "load_sources"
+path = "examples/load_sources.rs"
+
+[[example]]
+name = "reuse_probe"
+path = "examples/reuse_probe.rs"
