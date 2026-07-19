@@ -29,7 +29,9 @@ cargo run --release --example generate_wav -p rlx-kyutai-tts -- \
     --frames 64 --out /tmp/synthetic.wav
 ```
 
-> **Status:** scaffolding + all architectural primitives + audio output landed; the depth-multiplexed generation loop (`KyutaiTtsSession::generate`) is the remaining wiring task. Every native module composed by that loop is unit-tested.
+> **Status:** end-to-end TTS works — `KyutaiTtsSession::generate` runs the DSM
+> loop (Helium temporal LM on RLX backends + eager DepFormer) and Mimi decode
+> to 24 kHz PCM. Whisper E2E: `RLX_KYUTAI_TTS_E2E=1 cargo test -p rlx-kyutai-tts --test whisper_validate`.
 >
 > The upstream Kyutai `moshi` 0.6.4 + Candle crates are dev-only (parity / validation tests; see `tests/whisper_validate.rs`) and are NOT in the runtime dep graph.
 
@@ -90,12 +92,14 @@ cargo run --release --example generate_wav -p rlx-kyutai-tts -- \
     --reference assets/jfk/jfk_rust_speech.wav \
     --out /tmp/kyutai-tts.wav
 
-# (planned) Native TTS synthesis once `KyutaiTtsSession::generate` is wired
-cargo run -p rlx-kyutai-tts -- \
+# Native TTS synthesis (`KyutaiTtsSession::generate`)
+cargo run -p rlx-kyutai-tts --release --features "hf-download,apple-silicon" -- \
     --prompt "Bonjour, comment ça va ?" \
     --voice expresso/ex03-ex01_happy_001 \
     --out-wav /tmp/kyutai.wav \
     --device metal
+
+# Or: just kyutai-tts / just kyutai-tts-e2e
 ```
 
 ## Benches
@@ -149,6 +153,8 @@ Skips silently when env / weights are missing — CI stays green.
 ## Voices
 
 Voice conditioning uses pre-computed 512-D embeddings from [`kyutai/tts-voices`](https://huggingface.co/kyutai/tts-voices) — see [`KyutaiTtsVoice`](src/checkpoint.rs). Voices are not separate checkpoints; they fill the `speaker_wavs` cross-attention slot at inference time.
+
+[`KyutaiTtsSession`](src/session.rs) defaults to `alba-mackenna/casual.wav` (same as the CLI). Unconditional generation is quieter / less intelligible on short prompts — call `set_voice(KyutaiTtsVoice::unconditional())` to opt out.
 
 ## Runtime dep graph (verified)
 

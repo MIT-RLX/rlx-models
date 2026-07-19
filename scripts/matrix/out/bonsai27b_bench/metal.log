@@ -1,0 +1,15 @@
+[rlx-qwen35] qwen35: tokenized prompt → 155 ids
+[rlx-qwen35] qwen35: weights="/Users/Shared/rlx-models/weights/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf" device=metal batch=1 max_seq=272 mtp=false spec_decode=false packed=true dynamic_prefill=false dynamic_decode=false mmproj=none
+[qwen35] loaded GGUF metadata in 1.39s (layers=64, hidden=5120, ssm_state=128)
+[qwen35] read weights (packed) in 998.23ms
+[qwen35] prefill-cache stages: flow_build=231.36ms, hir+backend=4.32s (params=0, packed=496)
+[qwen35] compiled prefill-cache via BuiltModel in 4.55s (params=0, packed=496)
+[qwen35] uploaded prefill-cache 0 F32 + 496 packed params in 812.42ms
+[rlx-qwen35] qwen35: compiled (hidden=5120, layers=64, ssm_state=128, dt_rank=48)
+[rlx-qwen35] qwen35: generating 16 tokens (temp=0, top_p=1)…
+279 4087 369 220 16 15 15 15 15 15 15 15 15 15 15 15 [qwen35][bench] device=Metal prompt_tokens=155 new_tokens=16 prefill_ms=30522.3 decode_ms=19239.9 total_ms=49762.2 ms/tok=1202.5 tok/s=0.832
+
+[rlx-qwen35] qwen35: generated: [279, 4087, 369, 220, 16, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15]
+[rlx-qwen35] qwen35: text: "the answer is 100000000000"
+[rlx-qwen35] qwen35: text>
+the answer is 100000000000

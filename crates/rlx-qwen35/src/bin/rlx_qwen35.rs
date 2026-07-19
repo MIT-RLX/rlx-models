@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+//! `rlx-qwen35` — generate from Qwen3.5 / Qwen3.6 GGUF (`--help` for flags).
+
 use rlx_qwen35::cli;
 use std::process::ExitCode;
 

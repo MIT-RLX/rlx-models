@@ -12,6 +12,84 @@ use rlx_runtime::{AotCache, CompileOptions, CompiledGraph, DType, Device};
 use crate::config::BundleConfig;
 use crate::glue::{self, Rng};
 
+/// Kernel-variant / numeric-precision policy for the compiled TTS graphs.
+///
+/// Mirrors the per-op kernel selection in `../rlx` (Metal `SgemmVariant`, CUDA
+/// TF32, CPU conv), but exposes it as a single per-model / per-call knob instead
+/// of raw `RLX_*` env vars. [`KernelVariant::apply`] installs the corresponding
+/// `rlx_ir::env` **code overrides** — which take precedence over the process
+/// environment and are read by the backends at dispatch time — so no
+/// process-global `std::env` mutation is needed and the same compiled graph can
+/// run fast or precise kernels without recompiling.
+///
+/// The knobs are read at dispatch, so applying a variant affects every
+/// subsequent compile/run in the process (last-writer-wins across concurrent
+/// models). Set it once per process for a consistent policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KernelVariant {
+    /// Backend-default kernels — highest throughput. Metal picks its SIMD
+    /// matmul (e.g. `simd4x4`) via the cost model; CPU uses the fast im2col
+    /// conv; CUDA allows TF32. Best for production synthesis.
+    #[default]
+    Fast,
+    /// Precision / parity kernels — leans bit-exact vs onnxruntime. Metal forces
+    /// the scalar fp32 `naive` matmul (`RLX_METAL_PRECISE`); CPU uses the exact
+    /// conv path; CUDA disables TF32 (`RLX_CUDA_NO_TF32` + `RLX_CUDA_PARITY`).
+    /// Slower; for parity validation and precision-critical work.
+    Precise,
+    /// Leave all kernel-selection knobs untouched — honor the caller's own
+    /// `RLX_*` env / `rlx_ir::env` overrides.
+    Inherit,
+}
+
+impl KernelVariant {
+    /// Parse `RLX_TTS_KERNEL` (`fast` | `precise` | `inherit`); `Fast` otherwise.
+    pub fn from_env() -> Self {
+        match std::env::var("RLX_TTS_KERNEL")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "precise" | "exact" | "parity" => Self::Precise,
+            "inherit" | "env" | "none" => Self::Inherit,
+            _ => Self::Fast,
+        }
+    }
+
+    /// Install the backend kernel-selection overrides for this variant via
+    /// `rlx_ir::env` (code-side, precedence over process env).
+    pub fn apply(self) {
+        use rlx_ir::env;
+        match self {
+            Self::Fast => {
+                // Let the Metal cost model pick the fast SIMD matmul; ensure the
+                // precise override isn't left on from a prior Precise run.
+                env::set("RLX_METAL_PRECISE", "0");
+                env::set("RLX_FAST_CONV", "1");
+                env::set("RLX_FFT_FAST", "1");
+                env::set("RLX_CUDA_CONV_TF32", "1");
+                env::set("RLX_CUDA_NO_TF32", "0");
+                env::set("RLX_CUDA_PARITY", "0");
+                env::set("RLX_WGPU_MATMUL_F32_ONLY", "0");
+                env::set("RLX_WGPU_NO_F16_MIRROR", "0");
+            }
+            Self::Precise => {
+                env::set("RLX_METAL_PRECISE", "1");
+                env::set("RLX_FAST_CONV", "0");
+                env::set("RLX_FFT_FAST", "0");
+                env::set("RLX_CUDA_CONV_TF32", "0");
+                env::set("RLX_CUDA_NO_TF32", "1");
+                env::set("RLX_CUDA_PARITY", "1");
+                // wgpu: skip f16 weight mirrors / coop shortcuts for ODE-sensitive
+                // graphs (F5 DiT). Still not Metal-class; prefer Metal DiT on Apple.
+                env::set("RLX_WGPU_MATMUL_F32_ONLY", "1");
+                env::set("RLX_WGPU_NO_F16_MIRROR", "1");
+            }
+            Self::Inherit => {}
+        }
+    }
+}
+
 /// Per-call synthesis controls.
 #[derive(Debug, Clone)]
 pub struct InferOpts {
@@ -21,6 +99,9 @@ pub struct InferOpts {
     pub noise_scale: f32,
     /// RNG seed for the latent sampling (reproducible synthesis).
     pub seed: u64,
+    /// Kernel-variant / precision policy applied to the compiled graphs. Drives
+    /// the `../rlx` backend kernel selection (see [`KernelVariant`]).
+    pub kernel: KernelVariant,
 }
 
 impl InferOpts {
@@ -29,19 +110,41 @@ impl InferOpts {
             length_scale: cfg.length_scale,
             noise_scale: cfg.noise_scale,
             seed: 1234,
+            kernel: KernelVariant::from_env(),
         }
     }
 }
 
 /// Bump when the import/compile pipeline changes in a way that invalidates the
 /// on-disk AOT cache for these graphs.
-const CACHE_TAG: &str = "tiny_tts_v1";
+const CACHE_TAG: &str = "tiny_tts_v3_ct";
+
+/// Whether to lower ONNX `ConvTranspose` as zero-insert + forward `Conv`.
+///
+/// Metal keeps the inflate+Conv form (proven F5 e2e). ANE has no native CT.
+/// MLX / CPU / wgpu / CUDA emit [`rlx_ir::Op::ConvTranspose2d`] — MLX host-evals
+/// that op (native MLX CT is wrong for Vocos ISTFT; the inflate+Conv form
+/// forced a ~627 GB im2col). Zero-insert Constants were also replaced with
+/// Expand(scalar) when decompose is still used.
+fn should_decompose_conv_transpose(device: Device) -> bool {
+    matches!(device, Device::Ane | Device::Metal)
+}
 
 pub struct TinyModel {
     onnx_dir: PathBuf,
     cfg: BundleConfig,
     /// Compiled graphs keyed by `(component, device, length)`.
     cache: Mutex<HashMap<(&'static str, Device, usize), CompiledGraph>>,
+}
+
+/// Tiny FNV-1a hash for cache-key disambiguation (tap set → stable short tag).
+fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 fn aot_root() -> PathBuf {
@@ -51,6 +154,28 @@ fn aot_root() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("rlx/tiny_tts_aot")
+}
+
+/// Short tag that changes whenever the running binary is relinked — e.g. after
+/// any `../rlx` rebuild (importer / backend / memory-planner changes). Keyed on
+/// the executable's mtime: a rebuild relinks the consumer and bumps mtime, so a
+/// stale on-disk AOT graph compiled by an *older* rlx is never silently reused;
+/// an unchanged binary keeps the disk cache warm. Prevents the class of bug
+/// where an importer fix was masked by a cached pre-fix graph (which previously
+/// required a manual `rm -rf ~/Library/Caches/rlx/tiny_tts_aot` after every rlx
+/// change). Override / pin for reproducibility via `TINY_TTS_BUILD_TAG`.
+fn build_tag() -> String {
+    if let Ok(t) = std::env::var("TINY_TTS_BUILD_TAG") {
+        return t;
+    }
+    let mtime = std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{:08x}", fnv1a(&mtime.to_string()) & 0xffff_ffff)
 }
 
 fn i64_bytes(v: &[i64]) -> Vec<u8> {
@@ -137,17 +262,140 @@ impl TinyModel {
         Ok(g.run_typed(inputs))
     }
 
-    fn compile(&self, component: &str, device: Device, length: usize) -> Result<CompiledGraph> {
+    /// Compile one graph binding distinct ONNX `dim_param` names to concrete
+    /// lengths (`named`). For cross-attention CFM/DiT decoders whose `text_length`
+    /// and `latent_length` differ — a single `length` would collapse them. The
+    /// returned graph is *not* cached in the in-memory tuple cache (its key can't
+    /// express the named pair); the AOT disk cache still keys on the named tag, so
+    /// repeated calls with the same names skip recompilation. Callers reuse the
+    /// returned `CompiledGraph` across an ODE loop.
+    pub fn compile_named(
+        &self,
+        component: &str,
+        device: Device,
+        length: usize,
+        named: &[(&str, usize)],
+    ) -> Result<CompiledGraph> {
+        self.compile_named_with_options(component, device, length, named, CompileOptions::default())
+    }
+
+    /// Compile one graph with caller-selected runtime compile options.
+    pub fn compile_named_with_options(
+        &self,
+        component: &str,
+        device: Device,
+        length: usize,
+        named: &[(&str, usize)],
+        mut copts: CompileOptions,
+    ) -> Result<CompiledGraph> {
+        if matches!(device, Device::Ane) {
+            crate::coreml::ensure_coreml_units_for_tts();
+        }
         let path = self.onnx_dir.join(format!("{component}.onnx"));
         anyhow::ensure!(path.is_file(), "missing graph {}", path.display());
-        // Decompose every ConvTranspose into zero-insert + a regular Conv. The
-        // decomposition is bit-exact against onnxruntime (verified on the decoder's
-        // five HiFi-GAN upsamplers), whereas the backends' native transposed-conv
-        // kernels (CPU/MLX) are numerically wrong here — so we route ALL devices
-        // through it. It also unblocks wgpu/CoreML, which lack a native kernel.
-        let _ = device;
-        let decompose_ct = true;
-        let (hir, params, report) = import_graph(&path, component, length, decompose_ct)?;
+        let _t_imp = std::time::Instant::now();
+        let (hir, mut params, report) = import_graph_named(
+            &path,
+            component,
+            length,
+            should_decompose_conv_transpose(device),
+            named,
+        )?;
+        if std::env::var_os("RLX_PHASE_TIMING").is_some() {
+            eprintln!(
+                "[phase] import({component}) = {}ms",
+                _t_imp.elapsed().as_millis()
+            );
+        }
+        if report.stubbed > 0 || !report.unsupported.is_empty() {
+            eprintln!(
+                "[tiny-tts] warn: {component} import stubbed={} unsupported={:?}",
+                report.stubbed, report.unsupported
+            );
+        }
+        let named_tag = named
+            .iter()
+            .map(|(k, v)| format!("{k}{v}"))
+            .collect::<Vec<_>>()
+            .join("_");
+        // Fold RLX_ONNX_TAP into the key: taps append extra graph outputs, so a
+        // cached graph with a different (or empty) tap set must not be reused.
+        let tap_tag = std::env::var("RLX_ONNX_TAP")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("_tap{:016x}", fnv1a(&s)))
+            .unwrap_or_default();
+        // RLX_NO_OPT disables DCE/constant-folding/fusion so a tapped graph
+        // (extra outputs) compiles the SAME node set as the untapped graph —
+        // makes RLX_ONNX_TAP intermediates a faithful mirror of the real run for
+        // debugging (otherwise DCE/fusion differ per output set).
+        let no_opt = std::env::var("RLX_NO_OPT").is_ok();
+        if no_opt {
+            copts.dce = false;
+            copts.constant_folding = false;
+            copts.fusion_target = None;
+            copts.fusion_opts.skip_fusion = true;
+        }
+        // Bake uniform-fill ONNX initializers (affine-free LN γ=1/β=0, scalar 1
+        // for adaLN `(1+scale)`) into Constants before fusion so FuseAdaLayerNorm
+        // can match F5/FLUX DiT graphs. Real weights stay Params → set_param.
+        let uniform = uniform_fill_bindings(&params);
+        let uni_n = uniform.len();
+        if uni_n > 0 {
+            copts = copts.param_bindings(uniform);
+        }
+        // Cache key must reflect opt flags — otherwise AOT reuse silently
+        // ignores RLX_BISECT_OPTS / skip_fusion / dce toggles.
+        let opt_tag = format!(
+            "_dce{}_fold{}_fuse{}_uni{uni_n}",
+            copts.dce as u8,
+            copts.constant_folding as u8,
+            (!copts.fusion_opts.skip_fusion) as u8
+        );
+        let mps_tag = if copts.disable_mpsgraph { "_nomps" } else { "" };
+        let cml_tag = if matches!(device, Device::Ane) {
+            crate::coreml::coreml_units_cache_tag()
+        } else {
+            String::new()
+        };
+        let cache_key = format!(
+            "{CACHE_TAG}_b{}_{component}_{device:?}_s{length}_{named_tag}{tap_tag}{opt_tag}{mps_tag}{cml_tag}{}",
+            build_tag(),
+            if no_opt { "_noopt" } else { "" }
+        );
+        let cache = AotCache::new(aot_root());
+        let _t_cmp = std::time::Instant::now();
+        let mut compiled = cache
+            .compile_hir_cached(&cache_key, device, hir, &copts)
+            .map_err(|e| anyhow::anyhow!("compile {component}: {e}"))?;
+        if std::env::var_os("RLX_PHASE_TIMING").is_some() {
+            eprintln!(
+                "[phase] rlx_compile({component}) = {}ms",
+                _t_cmp.elapsed().as_millis()
+            );
+        }
+        // DRAIN (not borrow) so each weight Vec is freed the moment it is copied
+        // into the compiled graph — peak memory is one arena copy, not the import
+        // params map AND the arena copy held together. For a 664 MB f16 DiT (→~1.3 GB
+        // f32) that halves peak (~2.6 → ~1.3 GB), the difference between OOM and not
+        // on a RAM-pressured host (F5-TTS transformer).
+        for (name, data) in params.drain() {
+            compiled.set_param(&name, &data);
+        }
+        compiled.finalize_params();
+        Ok(compiled)
+    }
+
+    fn compile(&self, component: &str, device: Device, length: usize) -> Result<CompiledGraph> {
+        if matches!(device, Device::Ane) {
+            crate::coreml::ensure_coreml_units_for_tts();
+        }
+        let path = self.onnx_dir.join(format!("{component}.onnx"));
+        anyhow::ensure!(path.is_file(), "missing graph {}", path.display());
+        // Metal/ANE: decompose CT. MLX/CPU/wgpu/CUDA: native Op::ConvTranspose2d
+        // (MLX host-evals CT — see rlx-mlx; avoids ~627 GB im2col on Vocos ISTFT).
+        let decompose_ct = should_decompose_conv_transpose(device);
+        let (hir, mut params, report) = import_graph(&path, component, length, decompose_ct)?;
         if report.stubbed > 0 || !report.unsupported.is_empty() {
             eprintln!(
                 "[tiny-tts] warn: {component} import stubbed={} unsupported={:?}",
@@ -155,13 +403,27 @@ impl TinyModel {
             );
         }
 
-        let cache_key = format!("{CACHE_TAG}_{component}_{device:?}_s{length}");
+        let cml_tag = if matches!(device, Device::Ane) {
+            crate::coreml::coreml_units_cache_tag()
+        } else {
+            String::new()
+        };
+        let cache_key = format!(
+            "{CACHE_TAG}_b{}_{component}_{device:?}_s{length}{cml_tag}",
+            build_tag()
+        );
         let cache = AotCache::new(aot_root());
+        let uniform = uniform_fill_bindings(&params);
+        let mut copts = CompileOptions::default();
+        if !uniform.is_empty() {
+            copts = copts.param_bindings(uniform);
+        }
         let mut compiled = cache
-            .compile_hir_cached(&cache_key, device, hir, &CompileOptions::default())
+            .compile_hir_cached(&cache_key, device, hir, &copts)
             .map_err(|e| anyhow::anyhow!("compile {component}: {e}"))?;
-        for (name, data) in &params {
-            compiled.set_param(name, data);
+        // Drain so each weight is freed as it's copied into the arena (see compile_named).
+        for (name, data) in params.drain() {
+            compiled.set_param(&name, &data);
         }
         compiled.finalize_params();
         Ok(compiled)
@@ -179,6 +441,9 @@ impl TinyModel {
     ) -> Result<Vec<f32>> {
         let t = phone.len();
         anyhow::ensure!(t > 0, "empty phoneme sequence");
+        // Install the requested kernel-variant / precision policy before any
+        // graph compiles or runs (backends read these knobs at dispatch).
+        opts.kernel.apply();
         let c = self.cfg.inter_channels; // latent channels (== g/m_p channel width)
 
         // ── 1. Text encoder ──────────────────────────────────────────────
@@ -192,7 +457,11 @@ impl TinyModel {
         macro_rules! tock {
             ($t:expr, $label:literal) => {
                 if time_dbg {
-                    eprintln!("[time] {:<22} {:>8.1} ms", $label, $t.elapsed().as_secs_f64() * 1e3);
+                    eprintln!(
+                        "[time] {:<22} {:>8.1} ms",
+                        $label,
+                        $t.elapsed().as_secs_f64() * 1e3
+                    );
                 }
             };
         }
@@ -336,6 +605,11 @@ impl TinyModel {
                 dbg_dump(&format!("dec_out_{i}"), &v);
             }
         }
+        // Catch the MSI wgpu/vulkan failure mode: duration collapse → y_len=1 →
+        // exactly 512 samples of near-silence after the 512× HiFi-GAN upsample.
+        crate::audio::ensure_audible(&wav).with_context(|| {
+            format!("device={device:?} y_len={y_len} (decoder upsample is 512× per frame)")
+        })?;
         Ok(wav)
     }
 }
@@ -389,12 +663,34 @@ pub fn import_graph(
     HashMap<String, Vec<f32>>,
     rlx_onnx_import::ImportReport,
 )> {
+    import_graph_named(path, component, length, decompose_conv_transpose, &[])
+}
+
+/// Like [`import_graph`], but binds specific ONNX `dim_param` names to distinct
+/// concrete lengths (`named_lengths`). Lets a single graph carry two+ dynamic
+/// lengths — e.g. a CFM cross-attention decoder whose `text_length` and
+/// `latent_length` differ. Names not listed fall back to `length`.
+pub fn import_graph_named(
+    path: &Path,
+    component: &str,
+    length: usize,
+    decompose_conv_transpose: bool,
+    named_lengths: &[(&str, usize)],
+) -> Result<(
+    rlx_ir::hir::HirModule,
+    HashMap<String, Vec<f32>>,
+    rlx_onnx_import::ImportReport,
+)> {
     use rlx_onnx_import::{
         ImportOptions, build_hir_from_parts, prepare_onnx_file, tensor_data::TypedParams,
     };
 
     let opts = ImportOptions {
         sequence_length: length,
+        named_lengths: named_lengths
+            .iter()
+            .map(|(k, v)| (k.to_string(), *v))
+            .collect(),
         max_waveform_samples: (length * 1024).max(48_000),
         use_quantized_kernels: false,
         strict: false,
@@ -403,8 +699,31 @@ pub fn import_graph(
         ..ImportOptions::default()
     };
 
-    let (manifest, mut nodes, params, i64_params, init_shapes) =
+    let (manifest, mut nodes, params, mut i64_params, init_shapes) =
         prepare_onnx_file(path).with_context(|| format!("prepare {}", path.display()))?;
+    // Bind scalar-INPUT *values* from `named_lengths`. Some graphs (e.g. F5-TTS's
+    // `F5_Preprocess`) build tensor SHAPES from a runtime scalar input —
+    // `max_duration → Unsqueeze → Concat → ConstantOfShape / Range → noise/rope`.
+    // The lowerer folds those chains via `eval_static_shape_vector`, which reads
+    // `i64_params` first; without the value the fold defaults to a garbage length
+    // and every derived tensor (noise, rope) collapses. When a named_length key is
+    // also a scalar (rank-0 or all-1) graph input, seed its value here so the whole
+    // shape-arithmetic subgraph resolves to the concrete compile-time length.
+    for io in &manifest.inputs {
+        if let Some(&v) = opts.named_lengths.get(&io.name) {
+            let scalar = io.meta.shape.is_empty()
+                || io
+                    .meta
+                    .shape
+                    .iter()
+                    .all(|d| d.as_i64() == Some(1) || d.as_u64() == Some(1));
+            if scalar {
+                i64_params
+                    .entry(io.name.clone())
+                    .or_insert_with(|| vec![v as i64]);
+            }
+        }
+    }
     // `prepare_onnx_file` propagates shapes with a fixed default `sequence_length`
     // (128), inconsistent with our per-call compile length. Reset each meta entry
     // to an empty placeholder (keeping one entry per output so re-propagation — which
@@ -416,6 +735,10 @@ pub fn import_graph(
             *meta = serde_json::json!({});
         }
     }
+    // Give shape inference the folded i64 constant VALUES (axes/shape tensors) so
+    // opset-13+ Unsqueeze/Squeeze/Reduce with input-form axes resolve the new/removed
+    // dim position correctly (else e.g. a `[-1]` mask unsqueeze mis-places to axis 1).
+    rlx_onnx_import::shape_propagate::set_shape_i64_consts(i64_params.clone());
     rlx_onnx_import::shape_propagate::propagate_shapes(&mut nodes, &manifest, &init_shapes, &opts);
     let (hir, params, _typed, report) = build_hir_from_parts(
         &manifest,
@@ -428,6 +751,23 @@ pub fn import_graph(
     )
     .with_context(|| format!("lower {}", path.display()))?;
     Ok((hir, params, report))
+}
+
+/// Params whose values are a single repeated fill (affine-free LN γ=1 / β=0,
+/// scalar `1` for adaLN). Baking these to Constants before fusion unlocks
+/// [`FuseAdaLayerNorm`] on ONNX DiT graphs (F5/FLUX).
+fn uniform_fill_bindings(params: &HashMap<String, Vec<f32>>) -> HashMap<String, Vec<f32>> {
+    params
+        .iter()
+        .filter_map(|(name, data)| {
+            let first = *data.first()?;
+            if data.iter().all(|&x| x == first) {
+                Some((name.clone(), data.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Standalone keystone helper: import + compile one graph (used by the example).

@@ -25,6 +25,13 @@ pub mod config;
 pub mod model;
 pub mod tokenize;
 
+#[cfg(feature = "native")]
+pub mod native;
+#[cfg(feature = "native")]
+pub mod sdp;
+
 pub use config::{DEFAULT_HF_REPO, DEFAULT_LOCAL_DIR, PiperConfig, find_voice};
 pub use model::{Piper, peak_amplitude};
+#[cfg(feature = "native")]
+pub use native::NativeVits;
 pub use rlx_runtime::{Device, parse_device};

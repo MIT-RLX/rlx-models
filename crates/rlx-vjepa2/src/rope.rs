@@ -107,28 +107,36 @@ pub fn apply_vjepa2_rope(
 }
 
 /// In-place RoPE on `row[off..off+seg_dim]` with scalar position `pos`.
-/// Matches Meta / HF `rotate_queries_or_keys` (including the duplicated
-/// frequency broadcast for checkpoint compatibility).
+///
+/// Matches Meta / HF `rotate_queries_or_keys` exactly. HF broadcasts the
+/// `[seg_dim/2]` cos/sin tables across the segment with `.repeat(..., 2)`
+/// (i.e. **tiled**, `[c0..c_{h-1}, c0..c_{h-1}]`, NOT `repeat_interleave`), so
+/// element `j` uses frequency index `j % (seg_dim/2)`, while the rotate step
+/// pairs *adjacent* elements `(2m, 2m+1)`:
+///   `y[2m] = -x[2m+1]`, `y[2m+1] = x[2m]`, `out = x*cos + y*sin`.
+/// This deliberately gives the two elements of a pair *different* angles — it is
+/// the V-JEPA2 checkpoint's actual (quirky) convention. A textbook "clean"
+/// rotation (shared angle per pair) does NOT match the trained weights.
 fn rotate_segment(row: &mut [f32], off: usize, seg_dim: usize, pos: f32) {
     if seg_dim == 0 {
         return;
     }
-    let pairs = seg_dim / 2;
-    let mut omega = vec![0f32; pairs];
-    for k in 0..pairs {
+    let half = seg_dim / 2;
+    let orig: Vec<f32> = row[off..off + seg_dim].to_vec();
+    for j in 0..seg_dim {
+        let k = j % half;
         let exp = (2 * k) as f32 / seg_dim as f32;
-        omega[k] = 1.0 / 10_000.0f32.powf(exp);
-    }
-    for k in 0..pairs {
-        let ang = pos * omega[k];
+        let omega = 1.0 / 10_000.0f32.powf(exp);
+        let ang = pos * omega;
         let c = ang.cos();
         let s = ang.sin();
-        let i0 = off + 2 * k;
-        let i1 = off + 2 * k + 1;
-        let x0 = row[i0];
-        let x1 = row[i1];
-        row[i0] = x0 * c - x1 * s;
-        row[i1] = x1 * c + x0 * s;
+        // y_full (HF `stack((-y2, y1)).flatten`): even j → -x[j+1]; odd j → x[j-1].
+        let y = if j % 2 == 0 {
+            -orig[j + 1]
+        } else {
+            orig[j - 1]
+        };
+        row[off + j] = orig[j] * c + y * s;
     }
 }
 

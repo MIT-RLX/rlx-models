@@ -29,7 +29,7 @@ fn collected_frames_use_multiple_codebooks() {
         audio_temperature: 0.0,
         seed: 7,
     };
-    let (frames, end) =
+    let (frames, end, _) =
         generate_codes(&mut m, &tokenizer, "Hello world.", gen_cfg, None).expect("gen");
     eprintln!("frames: {} end_step: {end:?}", frames.len());
     let uniq: std::collections::HashSet<_> = frames

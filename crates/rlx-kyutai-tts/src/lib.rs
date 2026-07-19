@@ -66,6 +66,8 @@
 //!
 //! Generation is wired through [`KyutaiTtsSession::generate`] → [`backend::KyutaiTtsBackend`]
 //! (native RLX temporal backbone on `--device metal` / `cuda` / …; DepFormer eager).
+//! Sessions default to the conditioned voice [`download::DEFAULT_VOICE_NAME`]
+//! (`alba-mackenna/casual.wav`); use [`KyutaiTtsVoice::unconditional`] to opt out.
 //! Set `RLX_KYUTAI_TTS_NATIVE=1` to force the RLX backbone on CPU.
 //!
 //! See [`KyutaiTtsConfig`] for the static architecture preset and

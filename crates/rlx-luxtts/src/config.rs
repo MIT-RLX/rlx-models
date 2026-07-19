@@ -69,6 +69,12 @@ impl Tokens {
 pub struct Layout {
     pub dir: PathBuf,
     pub text_encoder: PathBuf,
+    /// Single-input encoder BODY (native path): `[/Pad_output_0 [1,S]] →
+    /// encoder output [1,S,100]`. Produced by `scripts/export_encoder_body.py`
+    /// from `text_encoder.onnx` (splits off the derived-length token concat+pad
+    /// and the scalar length regulator so the graph runs natively; both are
+    /// re-done in Rust). Optional — absent when only the ort path is used.
+    pub encoder_body: Option<PathBuf>,
     pub fm_decoder: PathBuf,
     pub vocoder_spec: PathBuf,
 }
@@ -83,8 +89,12 @@ impl Layout {
                 .find(|p| p.is_file())
                 .with_context(|| format!("missing any of {names:?} in {}", dir.display()))
         };
+        let opt = |names: &[&str]| -> Option<PathBuf> {
+            names.iter().map(|n| dir.join(n)).find(|p| p.is_file())
+        };
         Ok(Self {
             text_encoder: find(&["text_encoder.onnx"])?,
+            encoder_body: opt(&["encoder_body.onnx", "onnx/encoder_body.onnx"]),
             fm_decoder: find(&["fm_decoder.onnx"])?,
             vocoder_spec: find(&["onnx/vocoder_spec.onnx", "vocoder_spec.onnx"])?,
             dir,

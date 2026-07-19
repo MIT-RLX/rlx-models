@@ -44,8 +44,10 @@ mlx = ["rlx-runtime?/mlx", "rlx?/mlx"]
 cuda = ["rlx-runtime?/cuda", "rlx?/cuda"]
 rocm = ["rlx-runtime?/rocm", "rlx?/rocm"]
 gpu = ["rlx-runtime?/gpu", "rlx?/gpu"]
-all-backends = ["metal", "mlx", "cuda", "rocm", "gpu"]
-apple-silicon = ["metal", "mlx", "gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+coreml = ["rlx-runtime/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 
 [dev-dependencies]
 anyhow = { workspace = true }

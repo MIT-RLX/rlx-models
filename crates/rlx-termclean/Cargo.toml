@@ -1,0 +1,104 @@
+[package]
+name = "rlx-termclean"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Fast TUI text extraction: strip chrome from terminal screens, classify line types, and reconstruct scrolled documents (pure-std, batched, multicore; optional Metal tagger)"
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+# The data engine (default build) is intentionally dependency-free (pure std):
+# fast compile, never perturbs workspace resolution. The optional `train`
+# feature pulls the rlx tensor/autodiff/optim stack + Metal backend for the
+# Phase-0 training spike (and, later, the real encoder-decoder).
+[dependencies]
+# Base features are inference-only (`eval-metal` → CPU+Metal forward). The
+# `train` feature unifies `optim` on top for the autodiff/optimizer stack; the
+# DEFAULT build pulls neither (pure-std, zero-dep).
+rlx-tensor = { path = "../../../rlx/crates/core/rlx-tensor", version = "0.2.13", optional = true, default-features = false, features = ["eval-metal"] }
+# Optional: rayon work-stealing pool as an alternative to the pure-std thread fan-out.
+rayon = { version = "1", optional = true }
+# Inference/serving deps (only compiled with the `infer` feature).
+serde_json = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"], optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+
+[features]
+default = []
+# Phase-0: bidirectional-attention encoder + per-token head trained on Metal.
+# Unifies `optim` onto rlx-tensor's base `eval-metal` for autodiff + optimizer.
+train = ["dep:rlx-tensor", "rlx-tensor/optim"]
+# Inference: load the trained tagger bundle and tag/clean frames (forward-only).
+infer = ["dep:rlx-tensor", "dep:serde_json", "serve"]
+# HTTP serving deps, pulled in by `infer` (kept as a sub-list for clarity).
+serve = ["dep:axum", "dep:tokio", "dep:serde", "dep:tower-http", "dep:serde_json"]
+# Opt-in rayon parallel variants (work-stealing pool); default stays pure-std.
+rayon = ["dep:rayon"]
+
+[[bin]]
+name = "rlx-termclean-gen"
+path = "src/bin/gen_data.rs"
+
+[[bin]]
+name = "rlx-termclean-bench-clean"
+path = "src/bin/bench_clean.rs"
+
+[[bin]]
+name = "rlx-termclean-bench-type"
+path = "src/bin/bench_type.rs"
+
+[[bin]]
+name = "rlx-termclean-stitch"
+path = "src/bin/stitch.rs"
+
+[[bin]]
+name = "rlx-termclean-bench-stitch"
+path = "src/bin/bench_stitch.rs"
+
+[[bin]]
+name = "rlx-termclean-ablation-par"
+path = "src/bin/ablation_par.rs"
+
+[[bin]]
+name = "rlx-termclean-train-spike"
+path = "src/bin/train_spike.rs"
+required-features = ["train"]
+
+[[bin]]
+name = "rlx-termclean-train-tagger"
+path = "src/bin/train_tagger.rs"
+required-features = ["train"]
+
+[[bin]]
+name = "rlx-termclean-train-seq2seq"
+path = "src/bin/train_seq2seq.rs"
+required-features = ["train"]
+
+[[bin]]
+name = "rlx-termclean-train-htop"
+path = "src/bin/train_htop.rs"
+required-features = ["train"]
+
+[[bin]]
+name = "rlx-termclean-train-multi"
+path = "src/bin/train_multi.rs"
+required-features = ["train"]
+
+[[bin]]
+name = "rlx-termclean-train-type"
+path = "src/bin/train_type.rs"
+required-features = ["train"]
+
+[[bin]]
+name = "rlx-termclean-serve"
+path = "src/bin/serve.rs"
+required-features = ["infer"]
+
+[lints]
+workspace = true

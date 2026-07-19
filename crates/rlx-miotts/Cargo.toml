@@ -1,0 +1,86 @@
+[package]
+name = "rlx-miotts"
+version = "0.2.13"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MioTTS-0.6B (Qwen3 + MioCodec 25Hz/24kHz, Apache-2.0) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-qwen3 = { workspace = true }
+rlx-xcodec = { path = "../rlx-xcodec", default-features = false, features = ["cpu"] }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false }
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+tokenizers = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+hound = "3"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-qwen3/metal", "rlx-tiny-tts/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-qwen3/mlx", "rlx-tiny-tts/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-qwen3/cuda", "rlx-tiny-tts/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-qwen3/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-qwen3/gpu", "rlx-tiny-tts/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-qwen3/vulkan", "rlx-tiny-tts/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-qwen3/coreml", "rlx-tiny-tts/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+
+[[bin]]
+name = "rlx-miotts"
+path = "src/bin/rlx_miotts.rs"
+
+[[example]]
+name = "backend_matrix"
+path = "examples/backend_matrix.rs"
+
+[[example]]
+name = "gather_probe"
+path = "examples/gather_probe.rs"
+
+[[example]]
+name = "prenet_probe"
+path = "examples/prenet_probe.rs"
+
+[[example]]
+name = "prenet_tap"
+path = "examples/prenet_tap.rs"
+
+[lints]
+workspace = true
+
+[[example]]
+name = "trilu_probe"
+path = "examples/trilu_probe.rs"
+
+[[example]]
+name = "body_probe"
+path = "examples/body_probe.rs"
+
+[[example]]
+name = "body_tap"
+path = "examples/body_tap.rs"
+
+[[example]]
+name = "stage_tap"
+path = "examples/stage_tap.rs"
+
+[[example]]
+name = "norm1_probe"
+path = "examples/norm1_probe.rs"
+
+[[example]]
+name = "in_only_probe"
+path = "examples/in_only_probe.rs"

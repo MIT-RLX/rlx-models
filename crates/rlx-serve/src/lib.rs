@@ -10,6 +10,7 @@
 //! seam is host-side and `Device`-agnostic — the model runs wherever its
 //! `LmRunner` runs (CPU / Metal / MLX).
 
+pub mod backend;
 pub mod batch;
 pub mod engine;
 pub mod openai;
@@ -17,6 +18,7 @@ pub mod routes;
 pub mod sampling_map;
 pub mod stop;
 
+pub use backend::{ModelBackend, RegistryBackend, SingleBackend};
 pub use batch::{
     BatchRunner, BatchedEngine, ContinuousBatcher, FusedBatchRunner, RunnerBatchRunner,
 };
@@ -30,17 +32,25 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_http::cors::CorsLayer;
 
-/// Shared server state handed to every route.
+/// Shared server state handed to every route. Holds a [`ModelBackend`] so one
+/// server can route requests across several models by their `model` field.
 #[derive(Clone)]
 pub struct AppState {
-    pub engine: Arc<dyn Engine>,
+    pub backend: Arc<dyn ModelBackend>,
     pub default_max_tokens: usize,
 }
 
-/// Build the axum router for an engine.
+/// Build the axum router for a single engine — wraps it in a
+/// [`SingleBackend`] so existing single-model callers are unchanged.
 pub fn build_router(engine: Arc<dyn Engine>, default_max_tokens: usize) -> Router {
+    build_router_backend(Arc::new(SingleBackend::new(engine)), default_max_tokens)
+}
+
+/// Build the axum router over a [`ModelBackend`] (multi-model routing). Each
+/// request's `model` field selects the engine via [`ModelBackend::resolve`].
+pub fn build_router_backend(backend: Arc<dyn ModelBackend>, default_max_tokens: usize) -> Router {
     let state = AppState {
-        engine,
+        backend,
         default_max_tokens,
     };
     Router::new()

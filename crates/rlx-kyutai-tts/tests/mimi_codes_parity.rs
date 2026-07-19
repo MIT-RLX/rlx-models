@@ -69,13 +69,14 @@ fn rust_codes(dir: &Path) -> Result<(Vec<Vec<u32>>, Option<usize>)> {
         "alba-mackenna/casual.wav",
     )?;
     let spk = load_voice_speaker_wavs(&voice)?;
-    generate_codes(
+    let (frames, end, _) = generate_codes(
         &mut m,
         &tokenizer,
         "Hello world, this is a test of the Kyutai text to speech system.",
         gen_cfg(),
         Some(&spk),
-    )
+    )?;
+    Ok((frames, end))
 }
 
 #[test]

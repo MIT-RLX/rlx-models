@@ -4,7 +4,7 @@
 
 [package]
 name = "rlx-tiny-tts"
-version = "0.2.12"
+version = "0.2.13"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -92,3 +92,7 @@ path = "examples/load_sources.rs"
 [[example]]
 name = "reuse_probe"
 path = "examples/reuse_probe.rs"
+
+[[example]]
+name = "backend_matrix"
+path = "examples/backend_matrix.rs"

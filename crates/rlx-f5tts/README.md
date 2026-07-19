@@ -6,17 +6,31 @@ F5-TTS voice-cloning text-to-speech for RLX — a **flow-matching DiT** (330M,
 > **License:** the F5-TTS weights are **CC-BY-NC-4.0 (non-commercial)**; the code
 > is MIT. Use accordingly.
 
-Runs the community [DakeQQ](https://github.com/DakeQQ/F5-TTS-ONNX) 3-file ONNX
-export (`F5_Preprocess`, `F5_Transformer`, `F5_Decode`, all **f16**) with a thin
-Rust orchestrator — everything numeric lives in the ONNX:
+**Default path is native RLX** (ONNX graphs → rlx-ir → compile → run; no ONNX
+Runtime). Optional `--features onnx` keeps the ORT reference (`F5Tts` /
+`examples/ort_clone`).
+
+Three subgraphs:
 
 1. `preprocess(audio, text_ids, max_duration)` → noise + RoPE + CFG conditioning
-2. **NFE denoising loop** (default 32): the DiT does classifier-free guidance +
-   the ODE step internally; just feed the latent back with the step index
-3. `decode(latent, ref_len)` → 24 kHz audio (Vocos vocoder + ISTFT folded in)
+2. **NFE denoising loop** (default 32 in `InferOpts`; demos use **16**): DiT does CFG + ODE step internally
+3. `decode(latent, ref_len)` → 24 kHz audio (Vocos + ISTFT folded in)
 
-The Rust side is only text tokenization (char-level over `vocab.txt`), F5's
-duration estimate, and the loop.
+## Backend status (fox pangram, NFE=32, Whisper ≥4/6)
+
+| backend | status | notes |
+|---------|--------|-------|
+| **CPU** | ✅ | 6/6 fox; speech/HF ≈22 dB (PyTorch-class) |
+| **Metal** | ✅ on-device | DiT on Metal; fox 6/6 @ NFE=32 (NFE=8 under-denoises on CPU too) |
+| **MLX** | ✅ on-device | fox 6/6, traj cos≈1.0 vs CPU |
+| **wgpu** | ✅ on-device | Apple `--device gpu` still routes DiT to Metal by default. True wgpu DiT (`RLX_F5_WGPU_DIT=1`): traj mad≈1e-8 vs CPU, fox **6/6** @ NFE=32 (Transpose(Param) bind fixed in `rlx-wgpu`). |
+| **CUDA** | ✅ on-device | RoPE `ScatterNd` via `force_indices_f32` |
+| **CoreML** | ✅ on-device | `Device::Ane`; MIL `scatter_nd`; `RLX_COREML_UNITS=gpu` via `resolve_tts_device` |
+| **Vulkan** | ✅ wired | `--device vulkan` on `all-backends`; DiT stays on-device |
+
+
+
+Matrix WAVs: `tmp/f5tts_wavs/matrix_{cpu,cuda,metal,mlx,wgpu}.wav`.
 
 ## Setup
 
@@ -25,30 +39,49 @@ and the vocab ([`SWivid/F5-TTS`](https://huggingface.co/SWivid/F5-TTS) →
 `F5TTS_v1_Base/vocab.txt`) into `weights/tts/f5tts/`:
 `F5_Preprocess.onnx`, `F5_Transformer.onnx`, `F5_Decode.onnx`, `vocab.txt`.
 
+```bash
+just fetch-f5tts
+```
+
 ## Usage
 
 ```bash
-cargo run -p rlx-f5tts --release --bin rlx-f5tts -- \
-    --ref-wav reference.wav \
-    --ref-text "transcript of the reference audio" \
-    --text "Text to speak in the cloned voice." \
-    --out out.wav
+just f5tts                 # writes /tmp/f5tts.wav
+just f5tts-whisper         # writes + Whisper-gates tmp/f5tts_wavs/validated.wav
+just f5tts-backends        # matrix + per-backend WAVs under tmp/f5tts_wavs/
 ```
 
-`--nfe` (default 32; lower = faster, rougher), `--speed` (1.0), `--device`.
+`just f5tts-whisper` **fails** unless Whisper hears ≥4/6 fox words. That is the
+speech bar — do not treat other files in `tmp/f5tts_wavs/` (Metal noise, NFE=8,
+truncated refs) as validated.
 
-## Performance
+```bash
+cargo run -p rlx-f5tts --release --features apple-silicon -- \
+  --ref-wav crates/rlx-f5tts/tests/fixtures/prompt.wav \
+  --ref-text "Hello from Kokoro. This is a test of speech synthesis in Rust." \
+  --text "The quick brown fox jumps over the lazy dog." \
+  --nfe 16 --device metal --out /tmp/f5tts.wav
+```
 
-NFE-32 over the 664 MB DiT is compute-heavy on CPU (~40–50 s for a short
-utterance). Use `--nfe 16` for a faster, slightly rougher preview, or a GPU
-execution provider (`metal`/`cuda`).
+`--nfe` (default 32; lower = faster), `--speed` (1.0), `--device`.
 
-## Backends
+## Notes
 
-Runs the three ONNX subgraphs on ONNX Runtime (CPU, plus CoreML / CUDA /
-DirectML via `metal`/`mlx`/`cuda`/`gpu`).
+- DiT runs on the requested device. Opt out to CPU with `RLX_F5_CPU_DIT=1`.
+  Metal keeps output-ancestor arena pin when the graph has ScatterNd (F5 RoPE)
+  even above the 4 GiB MPS cliff — unpinning saved almost nothing and could
+  corrupt the ODE. Apple `--device gpu` routes DiT to Metal unless
+  `RLX_F5_WGPU_DIT=1`. True wgpu DiT matches Metal/CPU after the
+  `Transpose(Param)` bind-window fix in `rlx-wgpu`.
 
-## Note
-
-English is char-level over `vocab.txt` (no phonemizer). Chinese needs pinyin
-(`jieba`/`pypinyin`) conversion, which is not yet ported.
+- DiT import fuses `Op::AdaLayerNorm` / `Op::GatedResidual` (uniform ONNX fills
+  specialized before fusion; F5 Reshape broadcast peeled like Expand).
+- NFE defaults to **32** (export schedule). The DiT loop runs **NFE−1** Euler
+  steps (`delta_t` length); demos should keep `--nfe 32`. NFE=16 under-denoises
+  this ONNX bundle and sounds hissy.
+- Reference audio is silence-trimmed + 50 ms padded, and ref text is normalized
+  to end with `". "` — same as official `f5_tts` before duration estimation.
+- Decode may keep the full padded length after onnx-import; native post-crops the
+  reference hop prefix so WAVs match ORT (gen-only).
+- Preprocess noise is stochastic — native↔PyTorch cosine is not a parity metric;
+  Whisper fox coverage + speech/HF ratio are.

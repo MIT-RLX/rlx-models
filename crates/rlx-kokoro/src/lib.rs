@@ -36,14 +36,20 @@
 //!
 //! The default path runs the exported ONNX graph on ONNX Runtime (CPU, plus
 //! CoreML / CUDA / DirectML execution providers via the `metal` / `mlx` /
-//! `cuda` / `gpu` features). A native rlx-ir graph path (Metal / MLX / wgpu via
-//! the RLX compiler) is planned — StyleTTS2's LSTM and STFT operators are not
-//! yet covered by `rlx-onnx-import`, so that path requires a hand-decomposed
-//! graph analogous to `kitten_tts_mini_rlx`.
+//! `cuda` / `gpu` features).
+//!
+//! The **`native`** feature adds an ort-free RLX path: the monolithic graph is
+//! split into `encoder.onnx` + `decoder_raw.onnx` (via `scripts/split_kokoro.py`)
+//! with the data-dependent length regulator and ISTFT overlap-add done in Rust;
+//! both subgraphs import through `rlx-onnx-import` → rlx-ir and run on any RLX
+//! backend (cpu / metal / mlx / wgpu). See [`native::NativeKokoro`]. The split
+//! decomposition is verified bit-exact against the monolithic model.
 
 pub mod config;
 pub mod download;
 pub mod model;
+#[cfg(feature = "native")]
+pub mod native;
 pub mod tokenize;
 pub mod voices;
 
@@ -52,6 +58,8 @@ pub use config::{
 };
 pub use download::{ENGLISH_VOICES, fetch_default};
 pub use model::{Kokoro, MIN_AUDIBLE_PEAK, peak_amplitude, write_wav};
+#[cfg(feature = "native")]
+pub use native::{NativeKokoro, resolve_native_device};
 pub use rlx_runtime::{Device, is_available, parse_device};
 pub use tokenize::{MAX_PHONEME_LEN, PAD_ID, Vocab};
 pub use voices::{STYLE_DIM, Voice, VoiceBank};

@@ -1,0 +1,16 @@
+$ /home/user/rlx-models/target/release/rlx-gepard --weights weights/tts/gepard --seed 54 --text The quick brown fox jumps over the lazy dog near the river bank. --device vulkan --out /home/user/rlx-models/scripts/matrix/out/artifacts/gepard.vulkan.wav
+
+--- stdout ---
+
+--- stderr ---
+[rlx-gepard] weights:  weights/tts/gepard
+[rlx-gepard] text:     The quick brown fox jumps over the lazy dog near the river bank.
+[rlx-gepard] voice:    
+[rlx-gepard] device:   vulkan
+[rlx-gepard] output:   /home/user/rlx-models/scripts/matrix/out/artifacts/gepard.vulkan.wav
+[qwen35] built prefill-cache IR in 2.67s (params=214, packed=0)
+[qwen35] dynamic prefill template ready (compile on first prompt)
+[qwen35] uploaded prefill-cache 214 F32 + 0 packed params in 6.94µs
+[gepard] compiled AR 137 frames (max=137 stop_th=0.5 temp=0.4 rep=1) prefill=23680ms ar=142345ms (1.0 fps)
+[rlx-gepard] generated 140288 samples (6.36 s) device=Vulkan
+[rlx-gepard] saved /home/user/rlx-models/scripts/matrix/out/artifacts/gepard.vulkan.wav

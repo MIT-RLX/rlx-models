@@ -8,8 +8,8 @@ mod backend_common;
 
 use anyhow::{Context, Result, ensure};
 use rlx_kyutai_tts::{
-    GenerationConfig, KyutaiTtsSession,
-    download::{default_kyutai_tts_dir, default_mimi_dir},
+    GenerationConfig, KyutaiTtsSession, KyutaiTtsVoice,
+    download::{DEFAULT_VOICE_NAME, default_kyutai_tts_dir, default_mimi_dir},
 };
 use rlx_mimi::audio::{load_wav_mono, write_wav_mono};
 use rlx_runtime::{Device, is_available};
@@ -91,6 +91,7 @@ pub fn e2e_on_device(device: Device, label: &str) -> Result<bool> {
         std::env::var("RLX_KYUTAI_TTS_VALIDATE_PROMPT").unwrap_or_else(|_| "Hello.".into());
     eprintln!("{label}: synthesising {prompt:?} on {device:?} …");
     let mut session = KyutaiTtsSession::open_on(&model_dir, &mimi_dir, device)?;
+    session.set_voice(KyutaiTtsVoice::new(DEFAULT_VOICE_NAME));
     let result = session.generate(
         &prompt,
         &GenerationConfig {

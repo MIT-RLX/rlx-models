@@ -42,7 +42,9 @@ pub fn fetch_default() -> Result<PathBuf> {
     if dest.join("onnx/tts.json").is_file() && dest.join("onnx/vocoder.onnx").is_file() {
         return Ok(dest);
     }
-    let api = hf_hub::api::sync::ApiBuilder::new().build().context("hf_hub ApiBuilder")?;
+    let api = hf_hub::api::sync::ApiBuilder::new()
+        .build()
+        .context("hf_hub ApiBuilder")?;
     let repo = api.model(DEFAULT_HF_REPO.to_string());
     std::fs::create_dir_all(dest.join("onnx"))?;
     std::fs::create_dir_all(dest.join("voice_styles"))?;

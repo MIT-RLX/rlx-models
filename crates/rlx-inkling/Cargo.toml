@@ -1,0 +1,33 @@
+[package]
+name = "rlx-inkling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Inkling multimodal MoE (thinkingmachines/Inkling) for RLX"
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-gguf = { workspace = true }
+hf-hub = { workspace = true, optional = true }
+ureq = { version = "2.12", default-features = false, features = ["tls"], optional = true }
+
+[features]
+default = []
+# Hub JSON + HTTP Range probes (safetensors headers and/or Unsloth GGUF prefixes).
+hf-probe = ["dep:hf-hub", "dep:ureq"]
+
+[[bin]]
+name = "rlx-inkling"
+path = "src/bin/rlx_inkling.rs"
+
+[lints]
+workspace = true

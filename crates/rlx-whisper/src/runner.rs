@@ -32,7 +32,7 @@ use crate::cache::{
 use crate::config::WhisperConfig;
 use crate::decode::{
     EOT_TOKEN, SuppressionMask, batched_logits_row_owned, beam_search_decode_kv,
-    beam_search_decode_kv_batched, initial_prompt_opts, last_logits_row,
+    beam_search_decode_kv_batched, initial_prompt_opts_ex, last_logits_row,
 };
 use crate::fused::{FusedDecoderWeights, FusedEncoderWeights};
 use crate::mel::stack_mels;
@@ -1505,11 +1505,13 @@ impl WhisperRunner {
             .tokenizer
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("tokenizer not loaded"))?;
-        initial_prompt_opts(
+        let english_only = !self.graph_ctx.cfg.is_multilingual();
+        initial_prompt_opts_ex(
             tok,
             self.language.as_deref(),
             self.translate,
             self.timestamps,
+            english_only,
         )
     }
 
@@ -1907,7 +1909,14 @@ impl WhisperRunner {
             .tokenizer
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("tokenizer not loaded"))?;
-        initial_prompt_opts(tok, self.language.as_deref(), self.translate, true)
+        let english_only = !self.graph_ctx.cfg.is_multilingual();
+        initial_prompt_opts_ex(
+            tok,
+            self.language.as_deref(),
+            self.translate,
+            true,
+            english_only,
+        )
     }
 
     #[cfg(feature = "tokenizer")]

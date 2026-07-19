@@ -15,16 +15,22 @@
 
 //! F5-TTS — flow-matching DiT voice-cloning TTS for RLX.
 //!
-//! Runs the community DakeQQ 3-file ONNX export (`F5_Preprocess`,
-//! `F5_Transformer`, `F5_Decode`, all f16) with a thin Rust orchestrator: text
-//! tokenization (char-level over `vocab.txt`), F5's duration estimate, and the
-//! NFE denoising loop. The DiT does classifier-free guidance + the ODE step
-//! internally; the decoder folds in the Vocos vocoder. Weights are CC-BY-NC.
+//! **Default path is native RLX** ([`F5Native`]: ONNX graphs → rlx-ir → compile →
+//! run; no ONNX Runtime). Optional `--features onnx` keeps the ORT reference
+//! ([`F5Tts`]). Weights are CC-BY-NC.
 
 pub mod config;
+pub mod dsp;
 pub mod model;
+/// Native RLX path (no ONNX Runtime): the 3 F5 graphs imported + compiled + run.
+pub mod native;
 pub mod tokenize;
 
 pub use config::{DEFAULT_HF_REPO, DEFAULT_LOCAL_DIR, Layout, SAMPLE_RATE, Vocab};
-pub use model::{F5Tts, InferOpts, peak_amplitude};
+pub use dsp::{preprocess_ref_audio, soft_peak_limit};
+#[cfg(feature = "onnx")]
+pub use model::F5Tts;
+pub use model::{InferOpts, peak_amplitude, write_wav};
+pub use native::F5Native;
 pub use rlx_runtime::{Device, parse_device};
+pub use tokenize::normalize_ref_text;

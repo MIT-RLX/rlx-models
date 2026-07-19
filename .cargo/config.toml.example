@@ -25,6 +25,7 @@ rlx-flow = { path = "../rlx/crates/core/rlx-flow" }
 rlx-runtime = { path = "../rlx/crates/core/rlx-runtime" }
 rlx-compile = { path = "../rlx/crates/core/rlx-compile" }
 rlx-opt = { path = "../rlx/crates/core/rlx-opt" }
+rlx-optim = { path = "../rlx/crates/core/rlx-optim" }
 rlx-autodiff = { path = "../rlx/crates/core/rlx-autodiff" }
 rlx-fusion = { path = "../rlx/crates/core/rlx-fusion" }
 rlx-driver = { path = "../rlx/crates/core/rlx-driver" }
@@ -38,4 +39,6 @@ rlx-mlx = { path = "../rlx/crates/backends/rlx-mlx" }
 rlx-mlx-sys = { path = "../rlx/crates/backends/rlx-mlx-sys" }
 rlx-cuda = { path = "../rlx/crates/backends/rlx-cuda" }
 rlx-wgpu = { path = "../rlx/crates/backends/rlx-wgpu" }
+rlx-vulkan = { path = "../rlx/crates/backends/rlx-vulkan" }
+rlx-gpu-host = { path = "../rlx/crates/backends/rlx-gpu-host" }
 rlx-rocm = { path = "../rlx/crates/backends/rlx-rocm" }

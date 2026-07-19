@@ -47,7 +47,10 @@ pub fn parse_gemma_device(s: &str) -> Result<Device> {
 }
 
 pub fn parse_qwen35_device(s: &str) -> Result<Device> {
-    parse_standard_device("qwen35", s)
+    // qwen35 is a causal LM — allow CoreML/ANE (`coreml`/`ane`) like
+    // gemma/llama32, not just the standard backend set. The MIL lowering
+    // now supports the model's ops incl. on-device Q1_0 dequant.
+    parse_lm_device("qwen35", s)
 }
 
 pub fn parse_llada2_device(s: &str) -> Result<Device> {

@@ -1,0 +1,10 @@
+[rlx-qwen35] qwen35: tokenized prompt → 155 ids
+[rlx-qwen35] qwen35: weights="weights/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf" device=gpu batch=1 max_seq=272 mtp=false spec_decode=false packed=true dynamic_prefill=false dynamic_decode=false mmproj=none
+[qwen35] loaded GGUF metadata in 944.15ms (layers=64, hidden=5120, ssm_state=128)
+[qwen35] read weights (packed) in 618.92ms
+[rlx-wgpu] sharded arena: logical=14.773 GiB → 4 × 4.000 GiB shards
+
+thread 'main' (20163811) panicked at /Users/Shared/rlx/crates/backends/rlx-wgpu/src/buffer.rs:495:13:
+rlx-wgpu: op span [11832000000,15781795488) crosses shard boundary at 12884901120 (shard_size=4294967040). Keep max_seq smaller or improve packing.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+EXIT:101

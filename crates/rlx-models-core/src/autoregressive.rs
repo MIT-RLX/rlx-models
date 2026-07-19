@@ -47,8 +47,13 @@ pub fn prefill_cache_key(batch: usize, seq: usize) -> u64 {
 /// (task #50) → all-NaN logits on any padded bucket (prompts past the first
 /// bucket, e.g. multi-turn history). Leaving Metal on the full-bucket MPSGraph
 /// path both fixes that and lets pow2 bucketing reuse compiled prefill graphs
-/// across prompt lengths. Set `RLX_DISABLE_ACTIVE_EXTENT=1` to force full-bucket
-/// compute on the other backends too.
+/// across prompt lengths.
+///
+/// **CUDA is excluded for Qwen3.5/Bonsai** — enabling it scaled elementwise /
+/// GDN correctly but Q1 packed prefill still diverged (zero tokens). Prefer a
+/// tight `prefill_seq` compile for short CUDA prompts instead.
+/// Set `RLX_DISABLE_ACTIVE_EXTENT=1` to force full-bucket compute on the other
+/// backends too.
 pub fn packed_prefill_active_extent_enabled(device: Device) -> bool {
     if rlx_ir::env::var("RLX_DISABLE_ACTIVE_EXTENT").as_deref() == Some("1") {
         return false;

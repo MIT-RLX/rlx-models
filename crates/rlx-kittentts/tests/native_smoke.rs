@@ -194,7 +194,7 @@ fn native_long_sentence_smoke() {
 #[test]
 #[cfg(feature = "onnx")]
 fn native_long_sentence_pure_smoke() {
-    let Some(weights) = assets::default_native_weights_dir() else {
+    let Some(_weights) = assets::default_native_weights_dir() else {
         eprintln!("skip native_long_sentence_pure_smoke: no decomposed weights");
         return;
     };
@@ -228,7 +228,6 @@ fn native_long_sentence_pure_smoke() {
         .generate_from_ipa(LONG_IPA, &voice, 1.0, style)
         .expect("pure long infer");
 
-    let layout = assets::ModelLayout::resolve(&dir).expect("layout");
     let ort = KittenTTS::load_from_dir(&dir, Device::Cpu).expect("ort");
     let ort_audio = ort
         .generate_from_ipa(LONG_IPA, &voice, 1.0, style)

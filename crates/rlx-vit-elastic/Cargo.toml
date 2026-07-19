@@ -1,0 +1,47 @@
+[package]
+name = "rlx-vit-elastic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SnapViT elastic structured pruning + GLARE continual SSL pre-training for ViTs on RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-autodiff = { workspace = true }
+rlx-uni2 = { workspace = true }
+rlx-tune = { path = "../rlx-tune", version = "0.2.13" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+image = { workspace = true }
+
+[dev-dependencies]
+safetensors = { workspace = true }
+
+[[bin]]
+name = "rlx-vit-elastic"
+path = "src/bin/rlx_vit_elastic.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-tune/metal", "rlx-uni2/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-uni2/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-tune/cuda", "rlx-uni2/cuda"]
+gpu = ["rlx-runtime/gpu", "rlx-tune/gpu", "rlx-uni2/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-uni2/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+portable-gpu = ["gpu"]

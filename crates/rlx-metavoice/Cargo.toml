@@ -1,0 +1,47 @@
+[package]
+name = "rlx-metavoice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MetaVoice-1B (1.2B) zero-shot voice cloning TTS for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-encodec = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+hound = "3"
+regex = { package = "fancy-regex", version = "0.14" }
+base64 = "0.22"
+ndarray = "0.16"
+rustfft = "6"
+
+[[bin]]
+name = "rlx-metavoice"
+path = "src/bin/rlx_metavoice.rs"
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-encodec/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-encodec/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-encodec/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-encodec/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-encodec/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-encodec/vulkan"]
+coreml = ["rlx-runtime/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+
+[dev-dependencies]
+rlx-whisper = { workspace = true }

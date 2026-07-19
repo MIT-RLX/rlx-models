@@ -1,0 +1,8 @@
+$ /Users/Shared/rlx-models/target/release/rlx-kokoro --data weights/tts/kokoro-82m --voice af_heart --text The quick brown fox jumps over the lazy dog near the river bank. --device coreml --out /Users/Shared/rlx-models/scripts/matrix/out/artifacts/kokoro.coreml.wav
+
+--- stdout ---
+Wrote 106800 samples (4.45s @ 24000 Hz) to /Users/Shared/rlx-models/scripts/matrix/out/artifacts/kokoro.coreml.wav [voice=af_heart, backend=native, device=Ane]
+
+--- stderr ---
+[tiny-tts] CoreML: set RLX_COREML_UNITS=gpu (pins f16 TTS graphs off Neural-Engine BNNS; fp32 already defaults to CPU+GPU in rlx-coreml)
+[kokoro] encoder on onnxruntime/cpu (decoder on rlx/Ane); set RLX_KOKORO_NATIVE_ENC=1 for full-native

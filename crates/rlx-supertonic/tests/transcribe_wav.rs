@@ -33,7 +33,9 @@ fn transcribe_env_wav() {
         hound::SampleFormat::Float => r.samples::<f32>().map(|s| s.unwrap()).collect(),
         hound::SampleFormat::Int => {
             let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-            r.samples::<i32>().map(|s| s.unwrap() as f32 / max).collect()
+            r.samples::<i32>()
+                .map(|s| s.unwrap() as f32 / max)
+                .collect()
         }
     };
     // resample to 16k

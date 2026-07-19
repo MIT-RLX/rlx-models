@@ -31,7 +31,7 @@ fn codes_from_weights(
     let tokenizer = KyutaiTokenizer::load(tokenizer_path(dir))?;
     let mut m = KyutaiTtsModel::from_weights(cfg, weights, Device::Cpu)?;
     let spk = load_speaker(dir)?;
-    generate_codes(&mut m, &tokenizer, prompt, parity_gen_cfg(), Some(&spk)).map(|(f, _)| f)
+    generate_codes(&mut m, &tokenizer, prompt, parity_gen_cfg(), Some(&spk)).map(|(f, _, _)| f)
 }
 
 #[test]

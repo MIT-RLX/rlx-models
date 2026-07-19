@@ -13,8 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Supertonic-3 runner: four chained ONNX subgraphs + Rust glue, mirroring the
-//! reference `TextToSpeech` (`py/helper.py`):
+//! Supertonic-3 runner: four chained subgraphs + Rust glue, mirroring the
+//! reference `TextToSpeech` (`py/helper.py`). **Runs natively on RLX** — each
+//! subgraph is imported to rlx-ir via `rlx-onnx-import` and compiled per-device
+//! through the shared [`TinyModel`] engine (no ONNX Runtime on the default
+//! path; `ort` is an opt-in `onnx` feature for parity validation only).
 //!
 //! 1. `duration_predictor(text_ids, style_dp, text_mask)` → total duration (s)
 //! 2. `text_encoder(text_ids, style_ttl, text_mask)` → text embedding `[1,256,T]`
@@ -24,13 +27,16 @@
 //! 5. `vocoder(xt)` → waveform, trimmed to `dur·sr` samples.
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use rlx_runtime::Device;
+use rlx_runtime::{DType, Device};
+use rlx_tiny_tts::BundleConfig;
+use rlx_tiny_tts::model::TinyModel;
 
 #[cfg(feature = "onnx")]
 use ort::{session::Session, value::Tensor};
+#[cfg(feature = "onnx")]
+use std::sync::Mutex;
 
 use crate::config::StConfig;
 use crate::tokenize::UnicodeIndexer;
@@ -45,7 +51,45 @@ pub const DEFAULT_SPEED: f32 = 1.05;
 pub const MIN_AUDIBLE_PEAK: f32 = 1e-3;
 
 pub fn peak_amplitude(a: &[f32]) -> f32 {
-    a.iter().filter(|s| s.is_finite()).map(|s| s.abs()).fold(0.0, f32::max)
+    a.iter()
+        .filter(|s| s.is_finite())
+        .map(|s| s.abs())
+        .fold(0.0, f32::max)
+}
+
+fn f32_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+fn i64_bytes(v: &[i64]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+fn as_f32(b: &[u8]) -> Vec<f32> {
+    b.chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+/// A throwaway [`TinyModel`] config: only its ONNX dir + graph cache are used
+/// (we drive the subgraphs via `compile_named`/`run_typed`, never tiny-tts's
+/// VITS synthesize glue), so these fields are irrelevant.
+fn tiny_config(sample_rate: u32) -> BundleConfig {
+    BundleConfig {
+        model: String::new(),
+        sample_rate,
+        add_blank: true,
+        language: "EN".into(),
+        speakers: Default::default(),
+        default_speaker: None,
+        noise_scale: 0.667,
+        noise_scale_w: 0.8,
+        length_scale: 1.0,
+        inter_channels: 144,
+        gin_channels: 256,
+    }
+}
+
+fn resolve_exec_device(requested: Device) -> Device {
+    requested
 }
 
 /// Deterministic Gaussian source (xorshift128+ → Box–Muller).
@@ -65,7 +109,11 @@ impl Rng {
             x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             x ^ (x >> 31)
         };
-        Self { s0: next() | 1, s1: next() | 1, spare: None }
+        Self {
+            s0: next() | 1,
+            s1: next() | 1,
+            spare: None,
+        }
     }
     fn next_u64(&mut self) -> u64 {
         let mut s1 = self.s0;
@@ -104,15 +152,23 @@ pub struct InferOpts {
 
 impl Default for InferOpts {
     fn default() -> Self {
-        Self { total_step: DEFAULT_TOTAL_STEP, speed: DEFAULT_SPEED, seed: 0 }
+        Self {
+            total_step: DEFAULT_TOTAL_STEP,
+            speed: DEFAULT_SPEED,
+            seed: 0,
+        }
     }
 }
 
-/// A loaded Supertonic-3 model (four ONNX sessions).
+/// A loaded Supertonic-3 model. The four subgraphs run natively on RLX via
+/// [`TinyModel`]; `ort` sessions are built only under the `onnx` feature for
+/// parity validation (`synthesize_ort`).
 pub struct Supertonic {
     device: Device,
     cfg: StConfig,
     indexer: UnicodeIndexer,
+    /// Native rlx-ir runner for the four subgraphs (import → compile → run).
+    model: TinyModel,
     #[cfg(feature = "onnx")]
     dp: Mutex<Session>,
     #[cfg(feature = "onnx")]
@@ -121,31 +177,45 @@ pub struct Supertonic {
     vector_est: Mutex<Session>,
     #[cfg(feature = "onnx")]
     vocoder: Mutex<Session>,
+    #[cfg(feature = "onnx")]
     ort_ep: String,
 }
 
 impl Supertonic {
-    /// Load all four subgraphs from `<dir>/onnx/` on CPU.
+    /// Load all four subgraphs from `<dir>/onnx/` on CPU (native RLX).
     pub fn load_from_dir(dir: &Path) -> Result<Self> {
         Self::load_on(dir, Device::Cpu)
     }
 
-    /// Load on a specific device (ONNX Runtime EP with CPU fallback).
+    /// Load on a specific device. The native path compiles the subgraphs on
+    /// `device` through `TinyModel`; under the `onnx` feature, ONNX Runtime
+    /// sessions are also built (CPU EP) for validation.
     pub fn load_on(dir: &Path, device: Device) -> Result<Self> {
-        let onnx_dir = if dir.join("onnx").is_dir() { dir.join("onnx") } else { dir.to_path_buf() };
+        let device = rlx_tiny_tts::resolve_tts_device(resolve_exec_device(device));
+        let onnx_dir = if dir.join("onnx").is_dir() {
+            dir.join("onnx")
+        } else {
+            dir.to_path_buf()
+        };
         let cfg = StConfig::load(&onnx_dir)?;
         let indexer = UnicodeIndexer::load(&onnx_dir)?;
+        let model = TinyModel::new(onnx_dir.clone(), tiny_config(cfg.sample_rate));
 
         #[cfg(not(feature = "onnx"))]
         {
-            let _ = (device, &cfg, &indexer);
-            anyhow::bail!("rlx-supertonic built without the `onnx` feature");
+            eprintln!("[supertonic] loaded 4 subgraphs on rlx-native/{device:?}");
+            Ok(Self {
+                device,
+                cfg,
+                indexer,
+                model,
+            })
         }
         #[cfg(feature = "onnx")]
         {
             let load = |name: &str| -> Result<(Session, String)> {
                 let path = onnx_dir.join(name);
-                let built = rlx_kittentts::build_onnx_session(&path, device)
+                let built = rlx_kittentts::build_onnx_session(&path, Device::Cpu)
                     .with_context(|| format!("build session {name}"))?;
                 Ok((built.session, built.ort_ep))
             };
@@ -153,11 +223,14 @@ impl Supertonic {
             let (text_enc, _) = load("text_encoder.onnx")?;
             let (vector_est, _) = load("vector_estimator.onnx")?;
             let (vocoder, _) = load("vocoder.onnx")?;
-            eprintln!("[supertonic] loaded 4 subgraphs on {device:?} (ep={ep})");
+            eprintln!(
+                "[supertonic] loaded 4 subgraphs on rlx-native/{device:?} (+ort {ep} for validation)"
+            );
             Ok(Self {
                 device,
                 cfg,
                 indexer,
+                model,
                 dp: Mutex::new(dp),
                 text_enc: Mutex::new(text_enc),
                 vector_est: Mutex::new(vector_est),
@@ -173,19 +246,170 @@ impl Supertonic {
     pub fn sample_rate(&self) -> u32 {
         self.cfg.sample_rate
     }
-    pub fn ort_ep(&self) -> &str {
-        &self.ort_ep
+    /// Backend label for CLI reporting (native rlx execution provider).
+    pub fn ort_ep(&self) -> String {
+        format!("rlx-native/{:?}", self.device)
     }
 
-    /// Synthesize `text` (single utterance, no sentence chunking) with `voice`.
+    /// Run one native subgraph (compile via the AOT-cached `TinyModel`, then
+    /// execute), returning the first output as `f32`. `named` binds the graph's
+    /// distinct symbolic length dims (e.g. `text_length`, `latent_length`).
+    fn run1(
+        &self,
+        comp: &'static str,
+        length: usize,
+        named: &[(&str, usize)],
+        inputs: &[(&str, &[u8], DType)],
+    ) -> Result<Vec<f32>> {
+        let mut g = self
+            .model
+            .compile_named(comp, self.device, length, named)
+            .map_err(|e| anyhow::anyhow!("compile {comp}: {e:#}"))?;
+        let out = g.run_typed(inputs);
+        let (bytes, _dt) = out
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("{comp}: no output"))?;
+        Ok(as_f32(&bytes))
+    }
+
+    /// Synthesize `text` (single utterance, no sentence chunking) with `voice`,
+    /// natively on RLX.
+    pub fn synthesize(
+        &self,
+        text: &str,
+        lang: &str,
+        voice: &Voice,
+        opts: &InferOpts,
+    ) -> Result<Vec<f32>> {
+        let ids = self.indexer.encode(text, lang)?;
+        anyhow::ensure!(!ids.is_empty(), "text tokenized to empty sequence");
+        let t = ids.len();
+        let text_mask = vec![1.0f32; t];
+        let ids_b = i64_bytes(&ids);
+        let tm_b = f32_bytes(&text_mask);
+
+        // 1. duration predictor → total seconds (text_ids, style_dp, text_mask).
+        let dp_out = self.run1(
+            "duration_predictor",
+            t,
+            &[("text_length", t)],
+            &[
+                ("text_ids", &ids_b, DType::I64),
+                ("style_dp", &f32_bytes(&voice.dp.data), DType::F32),
+                ("text_mask", &tm_b, DType::F32),
+            ],
+        )?;
+        anyhow::ensure!(!dp_out.is_empty(), "duration predictor returned no value");
+        let duration = (dp_out[0] / opts.speed).max(0.05);
+
+        // 2. text encoder → [1, 256, T] (text_ids, style_ttl, text_mask).
+        let style_ttl_b = f32_bytes(&voice.ttl.data);
+        let text_emb = self.run1(
+            "text_encoder",
+            t,
+            &[("text_length", t)],
+            &[
+                ("text_ids", &ids_b, DType::I64),
+                ("style_ttl", &style_ttl_b, DType::F32),
+                ("text_mask", &tm_b, DType::F32),
+            ],
+        )?;
+
+        // 3. sample noisy latent [1, 144, L] and its (all-ones) mask.
+        let l = self.cfg.latent_len(duration);
+        let ch = self.cfg.latent_channels();
+        let mut rng = Rng::new(opts.seed);
+        let mut xt: Vec<f32> = (0..ch * l).map(|_| rng.randn()).collect();
+        let latent_mask = vec![1.0f32; l];
+        let total = opts.total_step.max(1);
+
+        // Parity dump (dev): write the exact subgraph inputs (incl. the sampled
+        // noise) so a Python onnxruntime run can be compared bit-for-bit.
+        if let Some(dir) = std::env::var_os("RLX_ST_PARITY_DUMP") {
+            let dir = std::path::PathBuf::from(dir);
+            let _ = std::fs::create_dir_all(&dir);
+            dump_f32(&dir.join("style_dp.f32"), &voice.dp.data);
+            dump_f32(&dir.join("style_ttl.f32"), &voice.ttl.data);
+            dump_f32(&dir.join("noise.f32"), &xt);
+            dump_i64(&dir.join("ids.i64"), &ids);
+            let meta = format!(
+                "{{\"t\":{t},\"l\":{l},\"ch\":{ch},\"duration\":{duration},\"total\":{total},\"dp_rows\":{},\"dp_cols\":{},\"ttl_rows\":{},\"ttl_cols\":{}}}",
+                voice.dp.rows, voice.dp.cols, voice.ttl.rows, voice.ttl.cols
+            );
+            let _ = std::fs::write(dir.join("meta.json"), meta);
+        }
+
+        // 4. flow-matching ODE loop. The estimator integrates internally (it maps
+        //    xt→x_{t+1}); the caller just feeds xt back. Compile once, run total×.
+        let mut ve = self
+            .model
+            .compile_named(
+                "vector_estimator",
+                self.device,
+                l,
+                &[("text_length", t), ("latent_length", l)],
+            )
+            .map_err(|e| anyhow::anyhow!("compile vector_estimator: {e:#}"))?;
+        let text_emb_b = f32_bytes(&text_emb);
+        let lm_b = f32_bytes(&latent_mask);
+        let ts_b = f32_bytes(&[total as f32]);
+        for step in 0..total {
+            let nl_b = f32_bytes(&xt);
+            let cs_b = f32_bytes(&[step as f32]);
+            let out = ve.run_typed(&[
+                ("noisy_latent", &nl_b, DType::F32),
+                ("text_emb", &text_emb_b, DType::F32),
+                ("style_ttl", &style_ttl_b, DType::F32),
+                ("latent_mask", &lm_b, DType::F32),
+                ("text_mask", &tm_b, DType::F32),
+                ("current_step", &cs_b, DType::F32),
+                ("total_step", &ts_b, DType::F32),
+            ]);
+            let (bytes, _dt) = out
+                .into_iter()
+                .next()
+                .context("vector_estimator: no output")?;
+            xt = as_f32(&bytes);
+        }
+
+        // 5. vocoder → waveform, trim to dur·sr.
+        let wav = self.run1(
+            "vocoder",
+            l,
+            &[("latent_length", l)],
+            &[("latent", &f32_bytes(&xt), DType::F32)],
+        )?;
+        let n = ((duration * self.cfg.sample_rate as f32) as usize).min(wav.len());
+        let audio = wav[..n.max(1)].to_vec();
+
+        if let Some(dir) = std::env::var_os("RLX_ST_PARITY_DUMP") {
+            dump_f32(&std::path::PathBuf::from(dir).join("audio_rlx.f32"), &audio);
+        }
+
+        let peak = peak_amplitude(&audio);
+        anyhow::ensure!(
+            peak >= MIN_AUDIBLE_PEAK,
+            "synthesized audio is silent (peak={peak:.2e})"
+        );
+        Ok(audio)
+    }
+
+    /// Validation-only reference path through ONNX Runtime (CPU EP). Mirrors
+    /// `synthesize` op-for-op; used by parity tests to check the native path.
     #[cfg(feature = "onnx")]
-    pub fn synthesize(&self, text: &str, lang: &str, voice: &Voice, opts: &InferOpts) -> Result<Vec<f32>> {
+    pub fn synthesize_ort(
+        &self,
+        text: &str,
+        lang: &str,
+        voice: &Voice,
+        opts: &InferOpts,
+    ) -> Result<Vec<f32>> {
         let ids = self.indexer.encode(text, lang)?;
         anyhow::ensure!(!ids.is_empty(), "text tokenized to empty sequence");
         let t = ids.len();
         let text_mask = vec![1.0f32; t];
 
-        // 1. duration predictor → total seconds (input order: text_ids, style_dp, text_mask).
         let (_ds, dp_out) = {
             let a = i64_t(&[1, t], ids.clone())?;
             let b = f32_t(&[1, voice.dp.rows, voice.dp.cols], voice.dp.data.clone())?;
@@ -195,7 +419,6 @@ impl Supertonic {
         };
         let duration = (dp_out[0] / opts.speed).max(0.05);
 
-        // 2. text encoder → [1, 256, T] (order: text_ids, style_ttl, text_mask).
         let (emb_shape, text_emb) = {
             let a = i64_t(&[1, t], ids.clone())?;
             let b = f32_t(&[1, voice.ttl.rows, voice.ttl.cols], voice.ttl.data.clone())?;
@@ -205,31 +428,12 @@ impl Supertonic {
         };
         let emb_shape = shape_usize(&emb_shape);
 
-        // 3. sample noisy latent [1, 144, L] and its (all-ones) mask.
         let l = self.cfg.latent_len(duration);
         let ch = self.cfg.latent_channels();
         let mut rng = Rng::new(opts.seed);
         let mut xt: Vec<f32> = (0..ch * l).map(|_| rng.randn()).collect();
         let latent_mask = vec![1.0f32; l];
-
-        // 4. flow-matching ODE loop (estimator integrates internally). Input order:
-        //    noisy_latent, text_emb, style_ttl, latent_mask, text_mask, current_step, total_step.
         let total = opts.total_step.max(1);
-        // Parity dump: write the exact ONNX inputs (incl. the sampled noise) so a
-        // Python onnxruntime run can be compared bit-for-bit (see tests/parity).
-        if let Some(dir) = std::env::var_os("RLX_ST_PARITY_DUMP") {
-            let dir = std::path::PathBuf::from(dir);
-            let _ = std::fs::create_dir_all(&dir);
-            dump_i64(&dir.join("ids.i64"), &ids);
-            dump_f32(&dir.join("style_dp.f32"), &voice.dp.data);
-            dump_f32(&dir.join("style_ttl.f32"), &voice.ttl.data);
-            dump_f32(&dir.join("noise.f32"), &xt);
-            let meta = format!(
-                "{{\"t\":{t},\"l\":{l},\"ch\":{ch},\"duration\":{duration},\"total\":{total},\"dp_rows\":{},\"dp_cols\":{},\"ttl_rows\":{},\"ttl_cols\":{}}}",
-                voice.dp.rows, voice.dp.cols, voice.ttl.rows, voice.ttl.cols
-            );
-            let _ = std::fs::write(dir.join("meta.json"), meta);
-        }
         for step in 0..total {
             let nl = f32_t(&[1, ch, l], xt)?;
             let te = f32_t(&emb_shape, text_emb.clone())?;
@@ -239,26 +443,19 @@ impl Supertonic {
             let cs = f32_t(&[1], vec![step as f32])?;
             let ts = f32_t(&[1], vec![total as f32])?;
             let mut s = self.vector_est.lock().expect("ort poisoned");
-            let out = s.run(ort::inputs![nl, te, st, lm, tm, cs, ts]).context("vector_estimator")?;
+            let out = s
+                .run(ort::inputs![nl, te, st, lm, tm, cs, ts])
+                .context("vector_estimator")?;
             xt = extract0(&out)?.1;
         }
 
-        // 5. vocoder → waveform, trim to dur·sr.
         let wav = {
             let a = f32_t(&[1, ch, l], xt)?;
             let mut s = self.vocoder.lock().expect("ort poisoned");
             extract0(&s.run(ort::inputs![a]).context("vocoder")?)?.1
         };
         let n = ((duration * self.cfg.sample_rate as f32) as usize).min(wav.len());
-        let audio = wav[..n.max(1)].to_vec();
-
-        if let Some(dir) = std::env::var_os("RLX_ST_PARITY_DUMP") {
-            dump_f32(&std::path::PathBuf::from(dir).join("audio_rlx.f32"), &audio);
-        }
-
-        let peak = peak_amplitude(&audio);
-        anyhow::ensure!(peak >= MIN_AUDIBLE_PEAK, "synthesized audio is silent (peak={peak:.2e})");
-        Ok(audio)
+        Ok(wav[..n.max(1)].to_vec())
     }
 
     /// Write mono 16-bit PCM WAV at the model sample rate.
@@ -307,6 +504,8 @@ fn dump_i64(path: &Path, data: &[i64]) {
 /// Extract the first output of an ORT run as `(shape, f32 data)`.
 #[cfg(feature = "onnx")]
 fn extract0(outputs: &ort::session::SessionOutputs) -> Result<(Vec<i64>, Vec<f32>)> {
-    let (shape, data) = outputs[0].try_extract_tensor::<f32>().context("extract f32 output")?;
+    let (shape, data) = outputs[0]
+        .try_extract_tensor::<f32>()
+        .context("extract f32 output")?;
     Ok((shape.to_vec(), data.to_vec()))
 }

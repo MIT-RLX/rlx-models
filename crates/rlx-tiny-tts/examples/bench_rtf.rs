@@ -34,7 +34,11 @@ fn main() -> anyhow::Result<()> {
         let wav = model.synthesize_on(&text, device, &opts)?;
         let synth = t0.elapsed().as_secs_f32();
         let secs_audio = wav.samples.len() as f32 / wav.sample_rate as f32;
-        let tag = if i == 0 { "cold (import+compile)" } else { "warm (in-mem cache)  " };
+        let tag = if i == 0 {
+            "cold (import+compile)"
+        } else {
+            "warm (in-mem cache)  "
+        };
         println!(
             "iter {i} {tag}: {secs_audio:.2}s audio, {synth:.3}s synth → {:.1}× RT",
             secs_audio / synth.max(1e-6)

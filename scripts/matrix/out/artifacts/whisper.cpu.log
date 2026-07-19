@@ -1,0 +1,9 @@
+$ /home/user/rlx-models/target/release/rlx-whisper --weights .cache/whisper-tiny/model.safetensors --config .cache/whisper-tiny/config.json --tokenizer .cache/whisper-tiny/tokenizer.json --wav assets/harness/jfk_16k.wav --device cpu --language en --output /home/user/rlx-models/scripts/matrix/out/artifacts/whisper.cpu.txt
+
+--- stdout ---
+
+--- stderr ---
+[rlx-whisper] weights=".cache/whisper-tiny/model.safetensors" device=Cpu wav=Some("assets/harness/jfk_16k.wav") lang=Some("en")
+[rlx-whisper] compiled encoder — d_model=384 enc_layers=4 dec_layers=4 mel=80
+[rlx-whisper] transcribed in 19.156798648s:
+ Ask not what your country can do for you. Ask what you can do for your country.

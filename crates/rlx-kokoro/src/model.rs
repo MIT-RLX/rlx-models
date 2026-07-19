@@ -34,9 +34,9 @@ use crate::tokenize::Vocab;
 use crate::voices::VoiceBank;
 
 #[cfg(feature = "onnx")]
-use std::sync::Mutex;
-#[cfg(feature = "onnx")]
 use ort::{session::Session, value::Tensor};
+#[cfg(feature = "onnx")]
+use std::sync::Mutex;
 
 /// Peak amplitude below this is treated as silent (failed) output.
 pub const MIN_AUDIBLE_PEAK: f32 = 1e-3;
@@ -156,7 +156,10 @@ impl Kokoro {
         );
         let unknown = self.vocab.unknown_chars(phonemes);
         if !unknown.is_empty() {
-            eprintln!("[kokoro] warning: dropped {} unknown phoneme chars: {unknown:?}", unknown.len());
+            eprintln!(
+                "[kokoro] warning: dropped {} unknown phoneme chars: {unknown:?}",
+                unknown.len()
+            );
         }
 
         let ids = self.vocab.to_input_ids(phonemes);

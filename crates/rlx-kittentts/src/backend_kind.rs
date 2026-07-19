@@ -37,6 +37,13 @@ pub enum BackendKind {
 
 impl BackendKind {
     pub fn backend_label(&self) -> &str {
+        // Pure-frontend build (neither `onnx` nor `native`): `BackendKind` is an
+        // uninhabited enum — a consumer that reuses only the espeak phonemizer
+        // (e.g. rlx-kokoro's native path) can then depend on this crate without
+        // pulling an inference backend.
+        #[cfg(not(any(feature = "onnx", feature = "native")))]
+        match *self {}
+        #[cfg(any(feature = "onnx", feature = "native"))]
         match self {
             #[cfg(feature = "onnx")]
             Self::Onnx { ort_ep, .. } => ort_ep,

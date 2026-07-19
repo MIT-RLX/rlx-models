@@ -36,10 +36,22 @@ fn register_builtins() {
     );
     #[cfg(feature = "phi")]
     register_cli("phi", "Run Phi 3 / Phi 4 LM (gguf)", rlx_phi::cli_run);
+    #[cfg(feature = "bonsai")]
+    register_cli(
+        "bonsai",
+        "Run Bonsai — llama-arch 1.7B–8B or prism-ml Bonsai/Ternary-Bonsai-27B (qwen35 Q1_0/Q2_0); auto-dispatches by arch",
+        rlx_bonsai::cli_run,
+    );
     register_cli(
         "qwen35",
         "Run a Qwen3.5 / Qwen3.6 GGUF (hybrid gated-DeltaNet + attention)",
         rlx_qwen35::cli::run,
+    );
+    #[cfg(feature = "inkling")]
+    register_cli(
+        "inkling",
+        "Inspect Inkling HF config / run synth text forward (thinkingmachines/Inkling)",
+        rlx_inkling::cli::run,
     );
     register_cli("sam1", "Segment Anything v1", rlx_sam::cli::run_sam1);
     register_cli("sam2", "Segment Anything v2", rlx_sam2::cli::run);
@@ -53,6 +65,24 @@ fn register_builtins() {
         "DINOv2 ViT encoder / classifier",
         rlx_dinov2::cli::run,
     );
+    #[cfg(feature = "uni2")]
+    register_cli(
+        "uni2",
+        "UNI2-h pathology ViT-H/14 encoder (packed SwiGLU + registers)",
+        rlx_uni2::cli::run,
+    );
+    #[cfg(feature = "dinov3")]
+    register_cli(
+        "dinov3",
+        "DINOv3 ViT encoder (2D-axial RoPE, registers, LayerScale)",
+        rlx_dinov3::cli::run,
+    );
+    #[cfg(feature = "trellis2")]
+    register_cli(
+        "trellis2",
+        "TRELLIS.2-4B image-to-3D (host DiT/VAE path)",
+        rlx_trellis2::cli::run,
+    );
     register_cli(
         "vjepa2",
         "V-JEPA2 video ViT encoder (ViT-G)",
@@ -64,6 +94,12 @@ fn register_builtins() {
         rlx_wav2vec2_bert::cli::run,
     );
     register_cli("flux2", "FLUX.2 denoiser transformer", rlx_flux2::cli::run);
+    #[cfg(feature = "hoct")]
+    register_cli(
+        "hoct",
+        "HOCT cell tracking (Higher-Order Cell Tracking Transformer)",
+        rlx_hoct::cli::run,
+    );
     register_cli(
         "flux2-serve",
         "FLUX.2 persistent server (JSON-lines on stdin)",

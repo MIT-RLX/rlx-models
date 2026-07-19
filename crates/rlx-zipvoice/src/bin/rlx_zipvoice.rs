@@ -46,11 +46,15 @@ fn read_wav_24k(path: &Path) -> Result<Vec<f32>> {
         hound::SampleFormat::Float => r.samples::<f32>().map(|s| s.unwrap_or(0.0)).collect(),
         hound::SampleFormat::Int => {
             let m = (1i64 << (spec.bits_per_sample - 1)) as f32;
-            r.samples::<i32>().map(|s| s.unwrap_or(0) as f32 / m).collect()
+            r.samples::<i32>()
+                .map(|s| s.unwrap_or(0) as f32 / m)
+                .collect()
         }
     };
     let mono: Vec<f32> = if spec.channels > 1 {
-        raw.chunks(spec.channels as usize).map(|c| c.iter().sum::<f32>() / c.len() as f32).collect()
+        raw.chunks(spec.channels as usize)
+            .map(|c| c.iter().sum::<f32>() / c.len() as f32)
+            .collect()
     } else {
         raw
     };
@@ -113,7 +117,8 @@ fn run() -> Result<()> {
     let text = text.context("--text is required")?;
 
     let device = parse_device(&device_str).with_context(|| format!("device '{device_str}'"))?;
-    let tts = ZipVoice::load_on(&data, device).with_context(|| format!("load from {}", data.display()))?;
+    let tts = ZipVoice::load_on(&data, device)
+        .with_context(|| format!("load from {}", data.display()))?;
     let pw = read_wav_24k(&prompt_wav)?;
     let audio = tts.synthesize(&text, &pw, &prompt_text, &opts)?;
 

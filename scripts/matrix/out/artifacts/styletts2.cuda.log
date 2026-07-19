@@ -1,0 +1,9 @@
+$ /home/user/rlx-models/target/release/rlx-styletts2 --model-dir weights/tts/kokoro-82m --voice af_heart --text The quick brown fox jumps over the lazy dog near the river bank. --device cuda --output /home/user/rlx-models/scripts/matrix/out/artifacts/styletts2.cuda.wav
+
+--- stdout ---
+
+--- stderr ---
+[kokoro] encoder on onnxruntime/cpu (decoder on rlx/Cuda); set RLX_KOKORO_NATIVE_ENC=1 for full-native
+StyleTTS2 native text="The quick brown fox jumps over the lazy dog near the river bank." voice=af_heart requested=Cuda speed=1
+rlx-cuda: cuDNN unavailable (libcudnn.so not loadable) — convolutions use the ~10× slower im2col path. Put libcudnn.so on the loader path (e.g. LD_LIBRARY_PATH), or set RLX_CUDA_NO_CUDNN=1 to silence this.
+wrote /home/user/rlx-models/scripts/matrix/out/artifacts/styletts2.cuda.wav (106800 samples @ 24000 Hz)

@@ -1,0 +1,6 @@
+# Generated datasets are large (~19 MB) and reproducible byte-for-byte from
+# --seed, so we don't track them. Keep the small manifest + preview.
+/data/*.jsonl
+
+# Trained weight bundles are build artifacts (regenerable from training).
+/weights/*/

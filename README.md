@@ -72,7 +72,12 @@ rlx-models/
 | `rlx-nomic` | NomicBERT |
 | `rlx-vision` | NomicVision |
 | `rlx-dinov2` | DINOv2 |
+| [`rlx-dinov3`](crates/rlx-dinov3/README.md) | DINOv3 ViT (2-D axial RoPE, registers, LayerScale, optional gated MLP) |
+| [`rlx-trellis2`](crates/rlx-trellis2/README.md) | TRELLIS.2-4B image→3D (flow DiTs + sparse VAEs + dual-grid mesh) |
+| [`rlx-uni2`](crates/rlx-uni2/README.md) | UNI2-h pathology ViT-H/14 (packed SwiGLU + registers) |
+| [`rlx-hoct`](crates/rlx-hoct/README.md) | HOCT cell tracking (regionprops → edge transformer → ILP) |
 | `rlx-bioclip2` | BioCLIP-2 (OpenCLIP ViT-L-14) |
+| [`rlx-siglip2`](crates/rlx-siglip2/README.md) | SigLIP 2 (fixed-resolution + NaFlex) |
 | `rlx-embed` | embedding runtime |
 | `rlx-sam` / `sam2` / `sam3` | SAM family |
 | `rlx-sam-ir` | shared mask-decoder IR |
@@ -81,6 +86,7 @@ rlx-models/
 | `rlx-llama32` | LLaMA 3.2 |
 | `rlx-minicpm5` | MiniCPM5 (Llama-shaped; [openbmb/MiniCPM5-1B](https://huggingface.co/openbmb/MiniCPM5-1B)) |
 | `rlx-tinyllama` | TinyLlama-1.1B (Llama-shaped; [TinyLlama/TinyLlama-1.1B-Chat-v1.0](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)) |
+| [`rlx-inkling`](crates/rlx-inkling/README.md) | Inkling multimodal MoE ([thinkingmachines/Inkling](https://huggingface.co/thinkingmachines/Inkling)); config + weight map + synth text forward |
 | `rlx-gemma` | Gemma / Gemma 2 |
 | `rlx-llada2` | LLaDA2 + TIDE offload |
 | `rlx-flux2` | FLUX.2 |
@@ -148,7 +154,11 @@ Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.m
 | `rlx-tinyllama` | `rlx-tinyllama` | `cargo run -p rlx-tinyllama --features tokenizer --release -- --weights …/model.safetensors --prompt-ids 1,42` |
 | `rlx-gemma` | `rlx-gemma` | `cargo run -p rlx-gemma --bin rlx-gemma --release -- --weights model.gguf --prompt-ids 1,2,3` |
 | `rlx-dinov2` | `rlx-dinov2` | `cargo run -p rlx-dinov2 --bin rlx-dinov2 --release -- …` |
+| `rlx-dinov3` | `rlx-dinov3` | `cargo run -p rlx-dinov3 --bin rlx-dinov3 --release -- --weights dinov3-vitb16.safetensors --variant vitb16 --image cat.jpg` ([docs](crates/rlx-dinov3/README.md)) |
+| `rlx-uni2` | `rlx-uni2` | `cargo run -p rlx-uni2 --bin rlx-uni2 --release -- --weights uni2h.safetensors --image tile.png` ([docs](crates/rlx-uni2/README.md)) |
+| `rlx-hoct` | `rlx-hoct` | `just fetch-hoct && just hoct -- track -m .cache/hoct/general_v0.safetensors --labels labels.raw -o /tmp/out` ([docs](crates/rlx-hoct/README.md)) |
 | `rlx-bioclip2` | `rlx-bioclip2` | `cargo run -p rlx-bioclip2 --bin rlx-bioclip2 --release -- --model-dir weights/bioclip-2 --image photo.jpg --labels "cat,dog"` |
+| `rlx-siglip2` | `rlx-siglip2` | `cargo run -p rlx-siglip2 --bin rlx-siglip2 --release -- --model-dir weights/siglip2-base-224 --image photo.jpg --labels "cat,dog"` |
 | `rlx-vjepa2` | `rlx-vjepa2` | `cargo run -p rlx-vjepa2 --bin rlx-vjepa2 --release -- …` |
 | `rlx-wav2vec2-bert` | `rlx-wav2vec2-bert` | `cargo run -p rlx-wav2vec2-bert --bin rlx-wav2vec2-bert --release -- …` |
 | `rlx-whisper` | `rlx-whisper` | `cargo run -p rlx-whisper --bin rlx-whisper --release -- --weights model.safetensors --wav audio16k.wav` |
@@ -255,7 +265,12 @@ just fetch-minicpm5-gguf Q4_K_M
 - **`nomic`** — NomicBERT (RoPE + SwiGLU).
 - **`vision`** — NomicVision-style encoders.
 - **`dinov2`** — DINOv2 ViT (B/14, L/14, g/14).
+- **`dinov3`** — [DINOv3](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m) ViT (2-D axial RoPE, separate q/k/v/o, LayerScale, register tokens, optional gated GeGLU MLP). CLI: `rlx-dinov3`. Bit-exact vs HF on CPU/Metal/MLX/wgpu. Gated weights. See [crates/rlx-dinov3/README.md](crates/rlx-dinov3/README.md).
+- **`trellis2`** — [TRELLIS.2-4B](https://huggingface.co/microsoft/TRELLIS.2-4B) image→3D (structure/shape/texture flow DiTs + sparse VAEs + dual-grid mesh). Host DiT/VAE path + `Trellis2Runner`; CLI: `rlx-trellis2` / `just trellis2`. See [crates/rlx-trellis2/README.md](crates/rlx-trellis2/README.md).
+- **`uni2`** — [MahmoodLab/UNI2-h](https://huggingface.co/MahmoodLab/UNI2-h) pathology ViT-H/14 (packed SwiGLU MLP, 8 register tokens, `no_embed_class`). CLI: `rlx-uni2`. Gated CC-BY-NC-ND weights. See [crates/rlx-uni2/README.md](crates/rlx-uni2/README.md).
+- **`hoct`** — Higher-Order Cell Tracking Transformer ([arXiv:2607.11754](https://arxiv.org/abs/2607.11754)): regionprops → kNN graph → edge transformer → HiGHS ILP → CTC/GEFF. CLI: `rlx-hoct`. See [crates/rlx-hoct/README.md](crates/rlx-hoct/README.md).
 - **`bioclip2`** — BioCLIP-2, an OpenCLIP ViT-L-14 (image + text towers → shared 768-d embeddings, zero-shot). Pure-Rust PIL preprocessing; 100% parity vs `open_clip` on CPU/Metal/MLX/wgpu. CLI: `rlx-bioclip2`. See [crates/rlx-bioclip2/README.md](crates/rlx-bioclip2/README.md).
+- **`siglip2`** — [SigLIP 2](https://huggingface.co/blog/siglip2) sigmoid-loss image + text encoder (attention-pooling MAP head, `gelu_pytorch_tanh`, multilingual Gemma tokenizer, sigmoid zero-shot). Both the **fixed-resolution** (`siglip2-base-patch16-224`, …) and **NaFlex** (variable resolution/aspect ratio) families. Pure-Rust preprocessing; HuggingFace parity (cos = 1.0) on CPU/Metal/MLX/wgpu/CUDA. CLI: `rlx-siglip2`. See [crates/rlx-siglip2/README.md](crates/rlx-siglip2/README.md).
 - **`sam`**, **`sam2`**, **`sam3`** — Segment Anything encoders + mask decoders. Optional `sam.rlx.toml` next to weights (reference: `crates/rlx-sam/src/sam.rlx.toml`).
 - **`flux2`** — FLUX.2 rectified-flow denoiser. `rlx-flux2` CLI; presets `flux2_dev()`, `flux2_klein_4b()`, `flux2_klein_9b()`. VAE, CFG, img2img, LoRA, `hf-download`, `rlx-flux2-serve`. GPU backends via `rlx-models` features (`metal`, `cuda`, …).
 - **`embed`** — `RlxEmbed`, registry, tokenizers, pooling. `from_pretrained` with `hf-download`.
@@ -271,7 +286,7 @@ just fetch-minicpm5-gguf Q4_K_M
 
 ## Text-to-speech (TTS)
 
-Nine inference crates cover lightweight edge models through multi‑billion‑parameter voice clones. Build GPU binaries with the same feature names as LMs (`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, `all-backends`, `apple-silicon`). Training crates are listed separately below.
+Nine inference crates cover lightweight edge models through multi‑billion‑parameter voice clones. Build GPU binaries with the same feature names as LMs (`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, `all-backends`, `apple-silicon`). Training crates are listed separately below. Cross-backend Whisper/RTF notes: [TTS_BACKENDS.md](TTS_BACKENDS.md).
 
 ### Models
 
@@ -279,10 +294,10 @@ Nine inference crates cover lightweight edge models through multi‑billion‑pa
 |---|---|---:|---:|---|---|---|---|---|
 | [Qwen3-TTS](crates/rlx-qwen3-tts/README.md) | `rlx-qwen3-tts` | 0.6B | 24 kHz | HF safetensors ([Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base), [CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice)) | ECAPA clone + preset speakers | progressive + batched PCM | `just qwen3-tts`, `jfk_voice_clone` | production — duplex voice chat, HF parity tests |
 | [Voxtral-4B-TTS](docker/voxtral-tts/README.md) | `rlx-voxtral-tts` | 4B | 24 kHz | HF safetensors ([Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603)) | preset voices + reference clone (train encoder) | — | `just voxtral-tts` | production — native RLX codec + compiled LM |
-| [KittenTTS mini](crates/rlx-kittentts/README.md) | `rlx-kittentts` | ~15M | 24 kHz | ONNX ([KittenML/kitten-tts-mini-0.8](https://huggingface.co/KittenML/kitten-tts-mini-0.8)) or native [`kitten_tts_mini_rlx`](crates/kitten_tts_mini_rlx/README.md) bundle | named voices (Jasper, …); IPA or `--features espeak` text | — | `just kittentts`, `just fetch-kittentts` | production — ONNX (ORT) or `--native` RLX graph |
+| [KittenTTS mini](crates/rlx-kittentts/README.md) | `rlx-kittentts` | ~15M | 24 kHz | native [`kitten_tts_mini_rlx`](crates/kitten_tts_mini_rlx/README.md) bundle or optional ONNX ([KittenML/kitten-tts-mini-0.8](https://huggingface.co/KittenML/kitten-tts-mini-0.8)) | named voices (Jasper, …); IPA or `--features espeak` text | — | `just kittentts`, `just fetch-kittentts` | production — native RLX graph default; optional ORT (`--features onnx`) |
 | [Orpheus](crates/rlx-orpheus/README.md) | `rlx-orpheus` | 3B | 24 kHz | GGUF LM + SNAC safetensors | 8 built-in + zero-shot clone (pretrained GGUF) | ~2k-sample PCM chunks | `just orpheus`, `just orpheus-demo` | production — Metal LM + eager or CoreML SNAC |
 | [NeuTTS](crates/rlx-neutts/) | `rlx-neutts` | Nano / Air | 24 kHz | llama-tagged GGUF + NeuCodec safetensors | reference-audio clone | — | library API (`NeuTTS::load_with_decoder_on`) | production backbone + eager NeuCodec; no standalone CLI yet |
-| [Kyutai TTS 1.6B](crates/rlx-kyutai-tts/README.md) | `rlx-kyutai-tts` | 1.6B | 24 kHz | HF safetensors ([tts-1.6b-en_fr](https://huggingface.co/kyutai/tts-1.6b-en_fr)) | `speaker_wavs` cross-attn conditioning | planned | `rlx-kyutai-tts --fetch` | scaffolding — Mimi codec + modules landed; `KyutaiTtsSession::generate` pending |
+| [Kyutai TTS 1.6B](crates/rlx-kyutai-tts/README.md) | `rlx-kyutai-tts` | 1.6B | 24 kHz | HF safetensors ([tts-1.6b-en_fr](https://huggingface.co/kyutai/tts-1.6b-en_fr)) | `speaker_wavs` cross-attn conditioning | planned | `just kyutai-tts` | production — DSM generate + Mimi; DepFormer eager |
 | [Pocket TTS](crates/rlx-pocket-tts/README.md) | `rlx-pocket-tts` | ~100M | 24 kHz | safetensors ([ungated mirror](https://huggingface.co/Verylicious/pocket-tts-ungated)) | preset `audio_prompt` embeddings | flow LM (faster than realtime on CPU) | `cargo run -p rlx-pocket-tts --example generate --features hf-download` | production on CPU/Accelerate; optional RLX backends via `rlx` feature |
 | [TinyTTS](crates/rlx-tiny-tts/) | `rlx-tiny-tts` | VITS2 | 44.1 kHz | ONNX → RLX bundle (MeloTTS English frontend via `rlx-inflect-nano`) | MALE / FEMALE | — | `rlx-tiny-tts --data weights/tiny-tts-rlx --text "…"` | production — four compiled subgraphs on every RLX backend |
 | [Inflect-Nano](crates/rlx-inflect-nano/README.md) | `rlx-inflect-nano` | ~4.6M | 24 kHz | exported safetensors bundle | single speaker | — | `rlx-inflect-nano --text "…"` | production — standalone Rust frontend; vocoder on RLX graph or CoreML (ORT) |
@@ -300,10 +315,10 @@ Nine inference crates cover lightweight edge models through multi‑billion‑pa
 |---|---|
 | Qwen3-TTS | `VoiceClone` API, progressive streaming (`StreamMode::Progressive`), duplex voice chat (Whisper + Qwen3 LM), CustomVoice presets, optional `incremental-decode` / `speculative-decode` features |
 | Voxtral-4B-TTS | Tekken tokenizer, compiled Ministral LM, reference WAV clone after native encoder training |
-| KittenTTS | Smallest footprint; ONNX default or `--native` / `--features native-fast` for RLX graph without ORT |
+| KittenTTS | Smallest footprint; **native RLX default** (`kitten_tts_mini_rlx`); optional ORT via `--features onnx` / `native-fast` for Metal |
 | Orpheus | Emotive tags (`<laugh>`, …), SNAC on Apple ANE (`--device coreml`), streaming decode, GGUF Q4_K_M |
 | NeuTTS | On-device clone; GGUF backbone via `rlx-llama32`; optional `burn-gpu` NeuCodec |
-| Kyutai TTS | Depth-multiplexed Helium + DepFormer, 32 codebooks, en/fr SPM; Mimi round-trip demos today |
+| Kyutai TTS | Depth-multiplexed Helium + DepFormer, 32 codebooks, en/fr SPM; `KyutaiTtsSession::generate` → Mimi PCM |
 | Pocket TTS | Kyutai FlowLM + Mimi decoder path; Whisper-validated; CPU-first |
 | TinyTTS | VITS2 / MeloTTS at 44.1 kHz; monotonic alignment in Rust glue |
 | Inflect-Nano | FastSpeech-style acoustic + Snake HiFi-GAN vocoder; full G2P frontend in Rust |
@@ -316,13 +331,13 @@ Legend: ✅ supported · ⚠️ partial (host fallback, ORT EP, or opt-in featur
 |---|---|---|---|---|---|---|---|---|
 | Qwen3-TTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Progressive speech decode uses CPU on Metal/MLX (GPU prefix-length mismatch) |
 | Voxtral-4B-TTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device` on all backends; compiled LM path |
-| KittenTTS (native) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | `kitten_tts_mini_rlx` graph; build `--features native` or `native-fast` |
-| KittenTTS (ONNX default) | ✅ | ⚠️ | ❌ | ⚠️ | ⚠️ | ⚠️ | ❌ | ONNX Runtime execution providers (`ort-cuda`, `ort-coreml`, …) |
+| KittenTTS (native, default) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | `kitten_tts_mini_rlx` graph; auto-selected when `model.safetensors` present |
+| KittenTTS (ONNX optional) | ✅ | ⚠️ | ❌ | ⚠️ | ⚠️ | ⚠️ | ❌ | `--features onnx`; ONNX Runtime execution providers |
 | Orpheus LM | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | ⚠️ | wgpu/Vulkan: CPU GGUF prefill+decode; MLX opt-in (`ORPHEUS_MLX_KV=1`) |
 | Orpheus SNAC | ✅ | — | — | — | — | — | — | Eager CPU default; CoreML ANE with `--features coreml` |
 | NeuTTS LM | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | ⚠️ | Same routing as `rlx-llama32` / GGUF packed rules |
 | NeuTTS codec | ✅ | — | — | — | — | ⚠️ | — | Eager ndarray; optional Burn wgpu (`burn-gpu`) |
-| Kyutai TTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Weights + Mimi decode; full LM generate loop not wired yet |
+| Kyutai TTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Temporal LM on RLX; DepFormer eager; Mimi decode |
 | Pocket TTS | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | Default Accelerate/ndarray CPU; enable `rlx` + backend features for GPU graph |
 | TinyTTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device ane` with `--features coreml` |
 | Inflect-Nano | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | ❌ | Vocoder RLX graph; CoreML via static-shape ORT (`--features coreml`) |
@@ -889,11 +904,11 @@ burnembed (`/Users/Shared/burnembed`) re-exports `rlx_models::embed` with `--fea
 
 ### Publishing (crates.io)
 
-Prerequisite: upstream **`rlx*`** **0.2.6** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
+Prerequisite: upstream **`rlx*`** **0.2.13** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
 
 ```sh
 rm -f .cargo/config.toml
-cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.6, no path source
+cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.13, no path source
 ```
 
 Pre-flight (same gates as `scripts/publish.sh`):
@@ -975,6 +990,7 @@ Legend: ✅ supported · ⚠️ partial (host fallback or open runtime gap) · �
 |---|---|---|---|---|---|---|---|---|
 | `embed` (`bert`, `nomic`, `vision`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [`RlxEmbed::from_dir_on`](crates/rlx-embed/src/runtime.rs); `from_dir` defaults to CPU |
 | `dinov2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [`DinoV2Runner`](crates/rlx-dinov2/src/runner.rs) `--device` |
+| `uni2` | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | ⚠️ | [`Uni2Runner`](crates/rlx-uni2/src/runner.rs) `--device`; **CPU/Metal/MLX/wgpu bit-exact vs timm (cosine 1.0)**; wgpu correct via auto no-reuse workaround (open rlx-wgpu executor reuse bug); CUDA/ROCm/Vulkan untested (no local hw) |
 | `bioclip2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [`BioClip2Runner`](crates/rlx-bioclip2/src/runner.rs) `--device`; 100% open_clip parity verified on cpu/metal/mlx/wgpu |
 | `sam`, `sam2`, `sam3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | SAM v1 also accepts `tpu`; CPU/Metal/MLX most exercised in CI |
 | `qwen3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | packed GGUF: CPU + Metal native; MLX/wgpu/CUDA prefill via CPU path (`rlx_core::packed_gguf_*`); MTP decode not wired |
@@ -1020,6 +1036,7 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `rlx-tinyllama` | [crates/rlx-tinyllama/README.md](crates/rlx-tinyllama/README.md) |
 | `rlx-llama32` | [crates/rlx-llama32/README.md](crates/rlx-llama32/README.md) |
 | `rlx-locateanything` | [crates/rlx-locateanything/README.md](crates/rlx-locateanything/README.md) |
+| `rlx-trellis2` | [crates/rlx-trellis2/README.md](crates/rlx-trellis2/README.md) |
 | `rlx-vad` | [crates/rlx-vad/README.md](crates/rlx-vad/README.md) |
 | `rlx-mamba` | [crates/rlx-mamba/README.md](crates/rlx-mamba/README.md) |
 | `rlx-ssm` | [crates/rlx-ssm/README.md](crates/rlx-ssm/README.md) |

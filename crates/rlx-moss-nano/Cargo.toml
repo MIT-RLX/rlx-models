@@ -1,6 +1,6 @@
 [package]
 name = "rlx-moss-nano"
-version = "0.2.12"
+version = "0.2.13"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -23,6 +23,8 @@ tokenizers = { workspace = true }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # ONNX Runtime execution-provider selector reused from rlx-kittentts.
 rlx-kittentts = { path = "../rlx-kittentts", default-features = false }
+# Native RLX runtime: imports the ONNX graphs → rlx-ir → compiled graphs (no ORT).
+rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false }
 
 [dependencies.hf-hub]
 workspace = true
@@ -37,14 +39,18 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 ] }
 
 [features]
-default = ["onnx"]
+# Native (rlx-onnx-import → rlx runtime, NO ort) is always available. `onnx` opts
+# into the ORT reference path (`MossNano`) for parity checks.
+default = []
 onnx = ["dep:ort", "rlx-kittentts/onnx"]
-metal = ["rlx-runtime/metal", "rlx-kittentts/metal", "rlx-kittentts/ort-coreml"]
-mlx = ["rlx-runtime/mlx", "rlx-kittentts/mlx", "rlx-kittentts/ort-coreml"]
+metal = ["rlx-runtime/metal", "rlx-tiny-tts/metal", "rlx-kittentts/metal", "rlx-kittentts/ort-coreml"]
+mlx = ["rlx-runtime/mlx", "rlx-tiny-tts/mlx", "rlx-kittentts/mlx", "rlx-kittentts/ort-coreml"]
 cuda = ["rlx-runtime/cuda", "rlx-kittentts/cuda", "rlx-kittentts/ort-cuda"]
-gpu = ["rlx-runtime/gpu", "rlx-kittentts/gpu"]
-all-backends = ["metal", "mlx", "cuda", "gpu"]
-apple-silicon = ["metal", "mlx", "gpu"]
+gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu", "rlx-kittentts/gpu"]
+coreml = ["rlx-runtime/coreml", "rlx-tiny-tts/coreml"]
+vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 hf-download = ["dep:hf-hub"]
 
 [dev-dependencies]
@@ -53,7 +59,10 @@ rlx-whisper = { workspace = true }
 [[bin]]
 name = "rlx-moss-nano"
 path = "src/bin/rlx_moss_nano.rs"
-required-features = ["onnx"]
+
+[[example]]
+name = "backend_matrix"
+required-features = ["cuda"]
 
 [lints]
 workspace = true

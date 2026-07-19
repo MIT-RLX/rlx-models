@@ -1,6 +1,20 @@
 # Qwen3.5 performance notes
 
-Hardware reference: **Apple M4 Pro, 64 GB** (Mac mini).
+Hardware notes below are from development machines (Apple Silicon and MSI RTX
+3080 Ti). Re-measure locally with `RLX_QWEN35_BENCH=1`.
+
+## Quick CLI bench
+
+```bash
+RLX_QWEN35_BENCH=1 cargo run -p rlx-qwen35 --release --features apple-silicon -- \
+  --weights model.gguf --packed --device metal --fast \
+  --temperature 0.0 --seed 0 --max-tokens 16 \
+  --prompt "What is the capital of France?"
+```
+
+`--fast` sets `prefill_seq` to the prompt length and a tight decode `max_seq`.
+On short contexts (≤128), Metal / MLX / CUDA keep the prefill arena and warm
+one decode bucket automatically.
 
 ## Methodology
 

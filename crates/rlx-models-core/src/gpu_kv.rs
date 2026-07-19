@@ -24,7 +24,27 @@ use rlx_runtime::{CompileOptions, CompiledGraph, Device};
 use std::collections::HashMap;
 
 /// Backends that support persistent K/V handles + selective logits readback.
+///
+/// `RLX_DISABLE_GPU_KV=1` forces the host K/V path (read decode outputs back to
+/// host, re-feed as inputs) — a diagnostic/fallback for backends whose on-GPU KV
+/// handle propagation is broken (e.g. wgpu native GGUF decode stuck-token bug).
+/// Optionally scope it to one backend: `RLX_DISABLE_GPU_KV=wgpu|cuda|vulkan|...`.
 pub fn device_supports_gpu_kv(device: Device) -> bool {
+    if let Some(v) = rlx_ir::env::var("RLX_DISABLE_GPU_KV") {
+        let v = v.trim().to_ascii_lowercase();
+        let name = match device {
+            Device::Gpu => "wgpu",
+            Device::Cuda => "cuda",
+            Device::Vulkan => "vulkan",
+            Device::Metal => "metal",
+            Device::Mlx => "mlx",
+            Device::Rocm => "rocm",
+            _ => "",
+        };
+        if v == "1" || v == "true" || v == name {
+            return false;
+        }
+    }
     matches!(
         device,
         Device::Mlx | Device::Metal | Device::Cuda | Device::Rocm | Device::Gpu | Device::Vulkan

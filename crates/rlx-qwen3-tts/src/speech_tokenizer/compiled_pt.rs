@@ -123,6 +123,11 @@ pub struct PreTransformerGpu {
     prefill_cache: CompileCache,
     profile: CompileProfile,
     inv_freq: Vec<f64>,
+    /// When set (via [`Self::warmup`]), every forward pads/truncates to this
+    /// sequence length so progressive partial-decodes and one-shot decode share
+    /// one compiled graph. Causal attention makes right-pad zeros a no-op on the
+    /// real prefix — required for Metal/MLX progressive parity.
+    pad_to: Option<usize>,
 }
 
 impl PreTransformerGpu {
@@ -153,6 +158,7 @@ impl PreTransformerGpu {
             prefill_cache: CompileCache::new(device, 32),
             profile: qwen3_profile_near_weights(model_dir, false),
             inv_freq,
+            pad_to: None,
         })
     }
 
@@ -161,7 +167,8 @@ impl PreTransformerGpu {
     }
 
     pub fn warmup(&mut self, seq: usize) -> Result<()> {
-        let seq = seq.clamp(1, 32);
+        let seq = seq.clamp(1, PT_MAX_SEQ);
+        self.pad_to = Some(seq);
         let mut h = Array2::<f32>::zeros((seq, self.qwen3.hidden_size));
         h[[0, 0]] = 1e-5;
         let _ = self.forward(h.view())?;
@@ -173,7 +180,18 @@ impl PreTransformerGpu {
         let (t, h) = seq.dim();
         ensure!(h == self.qwen3.hidden_size, "pt hidden mismatch");
         ensure!(t <= PT_MAX_SEQ, "pt seq {t} > {PT_MAX_SEQ}");
-        let flat: Vec<f32> = seq.iter().copied().collect();
+        let pad_t = self.pad_to.unwrap_or(t).clamp(t, PT_MAX_SEQ);
+        let flat: Vec<f32> = if pad_t == t {
+            seq.iter().copied().collect()
+        } else {
+            let mut v = vec![0f32; pad_t * h];
+            for i in 0..t {
+                for j in 0..h {
+                    v[i * h + j] = seq[[i, j]];
+                }
+            }
+            v
+        };
         let rope_table_len = self.qwen3.max_position_embeddings;
         let (rope_cos, rope_sin) = crate::talker::rope::rope_tables_full(
             &self.inv_freq,
@@ -181,7 +199,7 @@ impl PreTransformerGpu {
             self.qwen3.head_dim,
         );
         let opts = talker_compile_options(&self.profile, self.device);
-        let key = ((1u64) << 32) | (t as u64);
+        let key = ((1u64) << 32) | (pad_t as u64);
         let qwen3 = self.qwen3.clone();
         let weights = self.weights.clone();
         let profile = self.profile.clone();
@@ -192,7 +210,7 @@ impl PreTransformerGpu {
                 &mut wm,
                 &Qwen3PrefillOpts {
                     batch: 1,
-                    seq: t,
+                    seq: pad_t,
                     with_kv_outputs: false,
                     with_qk_outputs: false,
                     with_lm_head: false,
@@ -208,7 +226,12 @@ impl PreTransformerGpu {
         })?;
         let mut outputs = compiled.run(&[("inputs_embeds", flat.as_slice())]);
         let hidden = outputs.pop().context("pt gpu forward: no hidden output")?;
-        Ok(Array2::from_shape_vec((t, h), hidden)?)
+        let full = Array2::from_shape_vec((pad_t, h), hidden)?;
+        if pad_t == t {
+            Ok(full)
+        } else {
+            Ok(full.slice(ndarray::s![..t, ..]).to_owned())
+        }
     }
 }
 

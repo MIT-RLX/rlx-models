@@ -87,11 +87,27 @@ pub fn speech_conv_gpu_default() -> bool {
         && speech_compiled_default()
 }
 
-/// Device for progressive partial speech decode. Metal/MLX compiled speech paths can
-/// disagree across prefix lengths; CPU decode keeps causal prefix stability.
+/// Device for progressive partial speech decode.
+///
+/// Metal/MLX compiled speech historically disagreed across prefix lengths; the
+/// speech `PreTransformerGpu` now pads every forward to the warmup length so
+/// progressive and one-shot share one compiled graph. Default remains CPU on
+/// Apple until `streaming_pcm_parity` is green with
+/// `RLX_QWEN3_TTS_PROGRESSIVE_SPEECH_GPU=1`. CUDA/ROCm always stay on the
+/// session device.
 pub fn progressive_speech_decode_device(device: Device) -> Device {
     match device {
-        Device::Metal | Device::Mlx => Device::Cpu,
+        Device::Metal | Device::Mlx => {
+            if std::env::var("RLX_QWEN3_TTS_PROGRESSIVE_SPEECH_GPU")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                device
+            } else {
+                Device::Cpu
+            }
+        }
         other => other,
     }
 }
@@ -143,5 +159,28 @@ mod tests {
             std::env::remove_var("RLX_QWEN3_TTS_METAL_DECODE_NATIVE");
         }
         assert!(talker_eager_decode_default(Device::Metal));
+    }
+
+    #[test]
+    fn progressive_speech_metal_defaults_to_cpu() {
+        unsafe {
+            std::env::remove_var("RLX_QWEN3_TTS_PROGRESSIVE_SPEECH_GPU");
+        }
+        assert_eq!(progressive_speech_decode_device(Device::Metal), Device::Cpu);
+        assert_eq!(progressive_speech_decode_device(Device::Cuda), Device::Cuda);
+    }
+
+    #[test]
+    fn progressive_speech_metal_opt_in_gpu() {
+        unsafe {
+            std::env::set_var("RLX_QWEN3_TTS_PROGRESSIVE_SPEECH_GPU", "1");
+        }
+        assert_eq!(
+            progressive_speech_decode_device(Device::Metal),
+            Device::Metal
+        );
+        unsafe {
+            std::env::remove_var("RLX_QWEN3_TTS_PROGRESSIVE_SPEECH_GPU");
+        }
     }
 }

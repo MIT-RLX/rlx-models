@@ -54,7 +54,16 @@ fn main() -> anyhow::Result<()> {
         w1.samples.len(),
         w2.samples.len()
     );
-    for name in ["x_enc", "m_p", "logs_p", "x_mask_graph", "g_enc", "logw", "z", "dec_out"] {
+    for name in [
+        "x_enc",
+        "m_p",
+        "logs_p",
+        "x_mask_graph",
+        "g_enc",
+        "logw",
+        "z",
+        "dec_out",
+    ] {
         let a = read_f32(s1, name);
         let b = read_f32(s2, name);
         if a.is_empty() && b.is_empty() {

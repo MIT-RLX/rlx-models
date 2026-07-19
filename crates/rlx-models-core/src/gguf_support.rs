@@ -28,6 +28,8 @@ pub enum GgufModelFamily {
     Gemma,
     /// LiquidAI LFM2.5 text variants (`lfm2` / `lfm` / `lfm25` / `lfm2_5`).
     Lfm,
+    /// Thinking Machines Inkling (`inkling` — Unsloth / llama.cpp converters).
+    Inkling,
 }
 
 impl GgufModelFamily {
@@ -38,6 +40,7 @@ impl GgufModelFamily {
             Self::Llama32 => "rlx-llama32",
             Self::Gemma => "rlx-gemma",
             Self::Lfm => "rlx-lfm",
+            Self::Inkling => "rlx-inkling",
         }
     }
 
@@ -51,6 +54,7 @@ impl GgufModelFamily {
             Self::Llama32 => "llama32",
             Self::Gemma => "gemma",
             Self::Lfm => "lfm",
+            Self::Inkling => "inkling",
         }
     }
 
@@ -61,6 +65,7 @@ impl GgufModelFamily {
             Self::Llama32 => "`rlx_models::Llama32Runner::builder()...build()`",
             Self::Gemma => "`rlx_models::GemmaRunner::builder()...build()`",
             Self::Lfm => "`rlx_lfm::LfmRunner::builder()...build()`",
+            Self::Inkling => "`rlx_inkling::InklingRunner::builder()...build()`",
         }
     }
 
@@ -121,6 +126,8 @@ impl GgufModelFamily {
                     | "gemma4_unified"
             ),
             Self::Lfm => matches!(arch, "lfm2" | "lfm" | "lfm25" | "lfm2_5"),
+            // Unsloth / llama.cpp: `general.architecture = inkling`
+            Self::Inkling => matches!(arch, "inkling" | "inkling_mm_model"),
         }
     }
 }
@@ -211,6 +218,7 @@ pub fn gguf_family_for_arch(arch: &str) -> Option<GgufModelFamily> {
             Some(GgufModelFamily::Gemma)
         }
         "lfm2" | "lfm" | "lfm25" | "lfm2_5" => Some(GgufModelFamily::Lfm),
+        "inkling" | "inkling_mm_model" => Some(GgufModelFamily::Inkling),
         _ => None,
     }
 }
@@ -375,8 +383,27 @@ pub fn gguf_split_siblings(path: &Path) -> Result<Option<Vec<PathBuf>>> {
 }
 
 /// Open a GGUF file, merging multi-part splits when all siblings are present in the directory.
+/// True when the low-footprint compile/load mode is requested via
+/// `RLX_LOW_MEM_COMPILE`. In this mode large GGUFs are `mmap`-ed instead
+/// of slurped, weights are stream-uploaded and dropped, and redundant
+/// F32 param copies are elided — trading a little speed for a much lower
+/// peak RSS (targets constrained machines / iOS-class RAM).
+pub fn low_mem_compile() -> bool {
+    matches!(
+        std::env::var("RLX_LOW_MEM_COMPILE").ok().as_deref(),
+        Some("1") | Some("true") | Some("on") | Some("yes")
+    )
+}
+
 pub fn load_gguf_file(path: &Path) -> Result<GgufFile> {
-    let raw = GgufFile::from_path(path).with_context(|| format!("opening GGUF {path:?}"))?;
+    // Low-mem: mmap the file (data segment paged on demand, reclaimable)
+    // rather than reading the whole thing into RSS. Splits fall through to
+    // the owned merge path below (mmap is single-file).
+    let raw = if low_mem_compile() {
+        GgufFile::from_path_mmap(path).with_context(|| format!("mmap GGUF {path:?}"))?
+    } else {
+        GgufFile::from_path(path).with_context(|| format!("opening GGUF {path:?}"))?
+    };
     let count = raw
         .metadata
         .get("split.count")

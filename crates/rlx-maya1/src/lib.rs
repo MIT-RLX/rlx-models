@@ -38,17 +38,18 @@ pub use rlx_runtime::{Device, parse_device};
 pub const DEFAULT_HF_REPO: &str = "mradermacher/maya1-GGUF";
 pub const DEFAULT_LOCAL_DIR: &str = "weights/tts/maya1";
 pub const SAMPLE_RATE: u32 = 24000;
+pub const DEFAULT_MAX_NEW_TOKENS: u32 = 16;
 
 /// Maya1's generation defaults (README: temperature 0.4, top_p 0.9).
 pub fn maya1_config() -> GenerationConfig {
     GenerationConfig {
-        max_new_tokens: 2048,
+        max_new_tokens: DEFAULT_MAX_NEW_TOKENS,
         temperature: 0.4,
         top_p: 0.9,
         top_k: 0,
         repetition_penalty: 1.1,
         seed: 0,
-        greedy: false,
+        greedy: true,
     }
 }
 
@@ -79,7 +80,10 @@ impl Maya1 {
         let body = format!("<description=\"{description}\"> {text}");
         let prompt_ids = build_prompt_ids(self.orpheus.backbone.weights_path(), &body)
             .context("build Maya1 prompt")?;
-        Ok(self.orpheus.synthesize_from_prompt_ids(&prompt_ids)?.samples)
+        Ok(self
+            .orpheus
+            .synthesize_from_prompt_ids(&prompt_ids)?
+            .samples)
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -98,7 +102,8 @@ impl Maya1 {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        let mut w = hound::WavWriter::create(path, spec).with_context(|| format!("create {}", path.display()))?;
+        let mut w = hound::WavWriter::create(path, spec)
+            .with_context(|| format!("create {}", path.display()))?;
         for &s in audio {
             w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
         }
@@ -110,4 +115,16 @@ impl Maya1 {
 /// Peak absolute amplitude (audibility check).
 pub fn peak_amplitude(audio: &[f32]) -> f32 {
     audio.iter().fold(0.0f32, |m, &x| m.max(x.abs()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quick_check_default_uses_short_generation() {
+        let cfg = maya1_config();
+        assert!(cfg.max_new_tokens <= 16);
+        assert!(cfg.greedy);
+    }
 }

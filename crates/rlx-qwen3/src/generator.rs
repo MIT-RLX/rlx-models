@@ -374,6 +374,30 @@ impl Qwen3Generator {
             self.decode_step_oneshot(past_seq, abs_pos, input_tok)?
         };
 
+        let (kv_dbg, kv_newrow0) = if std::env::var("RLX_QWEN3_DUMP_DECODE").is_ok() {
+            let total: f64 = new_k
+                .iter()
+                .flat_map(|l| l.iter())
+                .map(|v| v.abs() as f64)
+                .sum();
+            // Per-layer magnitude of ONLY the current token's new K row — pinpoints
+            // which layer the decode hidden state collapses at on a broken backend.
+            let kv_dim = self.cfg.kv_proj_dim();
+            let per_layer: Vec<String> = new_k
+                .iter()
+                .map(|k| {
+                    let s = k.len().saturating_sub(kv_dim);
+                    format!("{:.0}", k[s..].iter().map(|v| v.abs() as f64).sum::<f64>())
+                })
+                .collect();
+            if std::env::var("RLX_QWEN3_DUMP_LAYERS").is_ok() {
+                eprintln!("[decode-newk-per-layer] {}", per_layer.join(","));
+            }
+            let newrow0 = per_layer.first().cloned().unwrap_or_default();
+            (total, newrow0)
+        } else {
+            (0.0, String::new())
+        };
         let cache_mut = self.cache.as_mut().unwrap();
         cache_mut.past_len = past_seq + 1;
         cache_mut.layers_k = new_k;
@@ -384,6 +408,23 @@ impl Qwen3Generator {
         let vocab = self.cfg.vocab_size;
         if logits.len() != vocab {
             anyhow::bail!("decode logits length {} != vocab {}", logits.len(), vocab);
+        }
+        if std::env::var("RLX_QWEN3_DUMP_DECODE").is_ok() {
+            let (mut mi, mut mv) = (0usize, f32::MIN);
+            for (i, &v) in logits.iter().enumerate() {
+                if v > mv {
+                    mv = v;
+                    mi = i;
+                }
+            }
+            let s: f32 = logits.iter().map(|v| v.abs()).sum();
+            eprintln!(
+                "[decode-dump] past={past_seq} pos={abs_pos} in_tok={input_tok} argmax={mi} \
+                 max={mv:.4} sum|l|={s:.2} kv_sum={kv_dbg:.2} kv_newrow0={kv_newrow0} l[358]={:.4} l[21122]={:.4} l[0]={:.4}",
+                logits.get(358).copied().unwrap_or(0.0),
+                logits.get(21122).copied().unwrap_or(0.0),
+                logits.first().copied().unwrap_or(0.0),
+            );
         }
         let tok = sample_token(&logits, opts) as u32;
         self.tokens.push(tok);

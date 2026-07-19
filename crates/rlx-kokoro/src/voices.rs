@@ -44,9 +44,7 @@ impl Voice {
         }
         let n = bytes.len() / 4;
         if n % STYLE_DIM != 0 {
-            bail!(
-                "voice element count {n} not divisible by style dim {STYLE_DIM}"
-            );
+            bail!("voice element count {n} not divisible by style dim {STYLE_DIM}");
         }
         let ncols = STYLE_DIM;
         let nrows = n / ncols;

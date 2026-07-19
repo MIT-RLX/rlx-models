@@ -1,6 +1,6 @@
 [package]
 name = "rlx-luxtts"
-version = "0.2.12"
+version = "0.2.13"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -17,6 +17,9 @@ serde_json = { workspace = true }
 hound = "3"
 rustfft = "6"
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+# Native RLX runner engine (import → compile_named → run_typed) for the 3 luxtts
+# subgraphs — same engine as rlx-supertonic.
+rlx-tiny-tts = { workspace = true }
 # Bundled espeak-ng phonemizer + ONNX Runtime EP selector (reused; LuxTTS is a
 # char-level espeak-IPA tokenizer like KittenTTS).
 rlx-kittentts = { path = "../rlx-kittentts", default-features = false }
@@ -34,15 +37,21 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 ] }
 
 [features]
-default = ["onnx", "espeak"]
+# Native RLX by default (espeak frontend for tokenization). `onnx` is opt-in for
+# parity validation only (dev), pulling ONNX Runtime.
+default = ["espeak"]
 onnx = ["dep:ort", "rlx-kittentts/onnx"]
-espeak = ["rlx-kittentts/espeak"]
-metal = ["rlx-runtime/metal", "rlx-kittentts/metal", "rlx-kittentts/ort-coreml"]
-mlx = ["rlx-runtime/mlx", "rlx-kittentts/mlx", "rlx-kittentts/ort-coreml"]
-cuda = ["rlx-runtime/cuda", "rlx-kittentts/cuda", "rlx-kittentts/ort-cuda"]
-gpu = ["rlx-runtime/gpu", "rlx-kittentts/gpu"]
-all-backends = ["metal", "mlx", "cuda", "gpu"]
-apple-silicon = ["metal", "mlx", "gpu"]
+# We only use rlx-kittentts's espeak phonemizer, but its `BackendKind` requires a
+# backend feature to compile; `native` is the ort-free one (we don't call it).
+espeak = ["rlx-kittentts/espeak", "rlx-kittentts/native"]
+metal = ["rlx-runtime/metal", "rlx-tiny-tts/metal", "rlx-kittentts/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-tiny-tts/mlx", "rlx-kittentts/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-tiny-tts/cuda", "rlx-kittentts/cuda"]
+gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu", "rlx-kittentts/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-tiny-tts/coreml"]
+all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 hf-download = ["dep:hf-hub"]
 
 [dev-dependencies]

@@ -6,8 +6,8 @@ use crate::backend::{KyutaiTtsBackend, resolve_lm_device};
 use crate::checkpoint::{KyutaiTtsCheckpoint, KyutaiTtsVoice};
 use crate::config::KyutaiTtsConfig;
 use crate::download::{
-    default_mimi_dir, default_voices_dir, ensure_voice_embedding, ensure_weights_checkpoint,
-    tokenizer_path,
+    DEFAULT_VOICE_NAME, default_mimi_dir, default_voices_dir, ensure_voice_embedding,
+    ensure_weights_checkpoint, tokenizer_path,
 };
 use crate::generate::GenerateConfig;
 use crate::model::load_voice_speaker_wavs;
@@ -119,7 +119,10 @@ impl KyutaiTtsSession {
             mimi_dir,
             voices_dir: default_voices_dir(),
             device,
-            voice: KyutaiTtsVoice::unconditional(),
+            // Conditioned default matches the CLI (`alba-mackenna/casual.wav`).
+            // Unconditional generation is lower quality for short prompts; call
+            // `set_voice(KyutaiTtsVoice::unconditional())` to opt out.
+            voice: KyutaiTtsVoice::new(DEFAULT_VOICE_NAME),
             backend: None,
             mimi: None,
             tokenizer: None,
@@ -216,7 +219,8 @@ impl KyutaiTtsSession {
         let gen_cfg = GenerateConfig::from_session(cfg, &self.cfg);
         let tokenizer = self.tokenizer.as_ref().unwrap();
         let backend = self.backend.as_mut().unwrap();
-        let frames = backend.synthesize_codes(tokenizer, prompt, gen_cfg, self.speaker.as_ref())?;
+        let (frames, text_tokens) =
+            backend.synthesize_codes(tokenizer, prompt, gen_cfg, self.speaker.as_ref())?;
         if frames.is_empty() {
             bail!("generation produced no audio frames (try a longer --max-steps)");
         }
@@ -231,7 +235,7 @@ impl KyutaiTtsSession {
         Ok(GenerationResult {
             samples,
             sample_rate: MIMI_RATE,
-            text_tokens: vec![],
+            text_tokens,
             audio_frames: frames,
         })
     }

@@ -1,0 +1,53 @@
+[package]
+name = "rlx-hoct"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Higher-Order Cell Tracking Transformer (HOCT) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-opt = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+safetensors = { workspace = true }
+ndarray = "0.16"
+good_lp = { version = "1.14", default-features = false, features = ["highs"] }
+byteorder = "1"
+tiff = { version = "0.9", optional = true }
+
+[[bin]]
+name = "rlx-hoct"
+path = "src/bin/rlx_hoct.rs"
+
+[dev-dependencies]
+ndarray-npy = "0.9"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+tiff-io = ["dep:tiff"]
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

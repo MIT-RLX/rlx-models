@@ -25,6 +25,31 @@ use rlx_flow::{BuiltModel, CompileProfile, FlowStage, ModelFlow, plugin_named};
 use rlx_ir::hir::{HirGraphExt, HirModule, HirMut};
 use rlx_ir::{DType, Dim, HirNodeId, Shape, sym};
 
+/// Whether to gather token embeddings on the host and feed them as
+/// `inputs_embeds`, instead of uploading the full `[vocab, hidden]` F32 table
+/// as a resident device param.
+///
+/// - `RLX_QWEN35_HOST_EMBED=1` / `0` — force on / off
+/// - unset — auto-on when `table_nbytes ≥ 1 GiB` (Bonsai-27B: 4.7 GiB), so
+///   16 GB CUDA boxes don't OOM parking the table in the arena
+///
+/// The runner must feed `inputs_embeds` when this is set.
+#[allow(dead_code)] // public helper; call sites prefer `_for_bytes`
+pub(crate) fn host_embed_enabled() -> bool {
+    host_embed_enabled_for_bytes(0)
+}
+
+/// Like [`host_embed_enabled`], but passes the F32 table byte size so auto
+/// mode can kick in without an env override.
+pub(crate) fn host_embed_enabled_for_bytes(table_nbytes: usize) -> bool {
+    match rlx_ir::env::var("RLX_QWEN35_HOST_EMBED").as_deref() {
+        Some("0") | Some("false") | Some("off") => false,
+        Some("1") | Some("true") | Some("on") | Some("yes") => true,
+        Some(_) => true,
+        None => table_nbytes >= (1usize << 30),
+    }
+}
+
 use super::builder::{
     PackedParams, Qwen35BsLayout, emit_qwen35_decode_trunk_layer,
     emit_qwen35_full_attn_prefill_layer, emit_qwen35_gather_last_token,
@@ -368,7 +393,15 @@ impl<'a> Qwen35Flow<'a> {
         }
 
         if self.with_embed {
-            flow = flow.embed("token_embd.weight");
+            // Off-load the (large-vocab) F32 embedding table to host RAM and
+            // feed gathered rows as `inputs_embeds` when host-embed is on
+            // (Bonsai-27B: token_embd [248320,5120] F32 = 4.7 GiB — auto).
+            let emb_bytes = cfg.vocab_size.saturating_mul(h).saturating_mul(4);
+            flow = if host_embed_enabled_for_bytes(emb_bytes) {
+                flow.embed_host("token_embd.weight", h)
+            } else {
+                flow.embed("token_embd.weight")
+            };
         } else {
             flow = flow.input("hidden", hidden.clone());
         }
@@ -724,14 +757,18 @@ impl<'a> Qwen35DecodeFlow<'a> {
     }
 
     pub fn build(self) -> Result<(BuiltModel, PackedParams)> {
-        build_qwen35_decode_built(self.cfg, self.weights.clone(), &self.opts)
+        build_qwen35_decode_built(
+            self.cfg,
+            std::sync::Arc::new(self.weights.clone()),
+            &self.opts,
+        )
     }
 }
 
 /// Native decode assembly via [`ModelFlow`] plugins + shared [`super::builder`] emit helpers.
 pub fn build_qwen35_decode_model_flow(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: std::sync::Arc<Qwen35Weights>,
     opts: &Qwen35DecodeOpts,
 ) -> Result<(
     HirModule,
@@ -767,10 +804,24 @@ pub fn build_qwen35_decode_model_flow(
         flow = flow.input("mask", Shape::new(&[batch, past_len + seq], f));
     }
 
+    // Host-gathered embeddings: decode's new-token embedding is fed as
+    // `inputs_embeds` instead of registering the full F32 token_embd table
+    // (Bonsai-27B 4.7 GiB) into the decode arena — which, being >4 GiB,
+    // otherwise mis-addresses the u32 gather offset.
+    let host_embed = host_embed_enabled_for_bytes(weights_c.token_embd.len() * 4);
+    if host_embed {
+        flow = flow.input("inputs_embeds", hidden.clone());
+    }
+
     let weights_embed = weights_c.clone();
     let cfg_embed = cfg_c.clone();
     flow = flow.plugin_named("qwen35.decode.embed", move |emit, _| {
         let ids = emit.flow_input("input_ids")?.hir_id();
+        if host_embed {
+            let e = emit.flow_input("inputs_embeds")?.hir_id();
+            emit.set_named("qwen35.decode.input_ids", ids);
+            return Ok(Some(emit.wrap(e, hidden.clone())));
+        }
         let hir = emit
             .module
             .as_hir_mut()
@@ -782,7 +833,7 @@ pub fn build_qwen35_decode_model_flow(
             &mut gb,
             emit.params,
             "token_embd.weight",
-            weights_embed.token_embd.clone(),
+            weights_embed.token_embd.to_vec(),
             Shape::new(&[n_vocab, n_embd], f),
         );
         let h = gb.gather_(embed_w, ids, 0);
@@ -800,7 +851,8 @@ pub fn build_qwen35_decode_model_flow(
         let weights = weights_layers.clone();
         let recur = recur.clone();
         let packed_arc = packed_arc.clone();
-        let layer = weights.trunk_layers[il].clone();
+        // Borrow layer via Arc — avoid cloning the full weight bundle per layer.
+        let layer_il = il;
         let out_shape = hidden_shape(batch, seq, cfg.hidden_size);
         plugin_named(format!("qwen35.decode.l{il}"), move |emit, input| {
             let hidden = input.ok_or_else(|| anyhow::anyhow!("decode layer requires hidden"))?;
@@ -823,8 +875,8 @@ pub fn build_qwen35_decode_model_flow(
                 emit.params,
                 &mut packed,
                 &cfg,
-                il,
-                &layer,
+                layer_il,
+                &weights.trunk_layers[layer_il],
                 Qwen35BsLayout::new(batch, seq, false),
                 hidden.hir_id(),
                 cos,
@@ -912,19 +964,19 @@ pub fn build_qwen35_decode_model_flow(
 
 pub fn build_qwen35_decode_flow(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     opts: &Qwen35DecodeOpts,
 ) -> Result<(
     HirModule,
     std::collections::HashMap<String, Vec<f32>>,
     PackedParams,
 )> {
-    build_qwen35_decode_model_flow(cfg, weights, opts)
+    build_qwen35_decode_model_flow(cfg, weights.into(), opts)
 }
 
 pub fn build_qwen35_decode_built(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     opts: &Qwen35DecodeOpts,
 ) -> Result<(BuiltModel, PackedParams)> {
     let (hir, params, packed) = build_qwen35_decode_flow(cfg, weights, opts)?;
@@ -970,15 +1022,19 @@ impl Qwen35PrefillCacheOpts {
 #[derive(Clone)]
 pub struct Qwen35PrefillCacheFlow<'a> {
     cfg: &'a Qwen35Config,
-    weights: Qwen35Weights,
+    weights: std::sync::Arc<Qwen35Weights>,
     opts: Qwen35PrefillCacheOpts,
 }
 
 impl<'a> Qwen35PrefillCacheFlow<'a> {
-    pub fn new(cfg: &'a Qwen35Config, weights: Qwen35Weights, seq: usize) -> Self {
+    pub fn new(
+        cfg: &'a Qwen35Config,
+        weights: impl Into<std::sync::Arc<Qwen35Weights>>,
+        seq: usize,
+    ) -> Self {
         Self {
             cfg,
-            weights,
+            weights: weights.into(),
             opts: Qwen35PrefillCacheOpts::static_cache(1, seq),
         }
     }
@@ -1011,7 +1067,7 @@ impl<'a> Qwen35PrefillCacheFlow<'a> {
 /// Native prefill-cache assembly via [`ModelFlow`] (GDN + full-attn K/V export).
 pub fn build_qwen35_prefill_cache_model_flow(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: std::sync::Arc<Qwen35Weights>,
     opts: &Qwen35PrefillCacheOpts,
 ) -> Result<(
     HirModule,
@@ -1062,6 +1118,15 @@ pub fn build_qwen35_prefill_cache_model_flow(
     if !prefill_from_hidden || enable_mtp {
         flow = flow.input("input_ids", ids_shape.clone());
     }
+    // Host-gathered embeddings: feed `inputs_embeds` instead of uploading the
+    // full `[vocab, hidden]` F32 token_embd table as a resident device param
+    // (Bonsai-27B: [248320,5120] = 4.7 GiB). input_ids stays declared — it's
+    // still used for positions/masking downstream.
+    let host_embed =
+        host_embed_enabled_for_bytes(weights_c.token_embd.len() * 4) && !prefill_from_hidden;
+    if host_embed {
+        flow = flow.input("inputs_embeds", hidden_shape_val.clone());
+    }
     if prefill_from_hidden {
         flow = flow.input("prefill_hidden", hidden_shape_val.clone());
     }
@@ -1100,20 +1165,20 @@ pub fn build_qwen35_prefill_cache_model_flow(
             .expect("qwen35 prefill-cache flow requires HIR stage");
         let mut gb = HirMut::new(hir);
         let h = if prefill_from_hidden {
+            // Hidden states are host-built and fed as `prefill_hidden`. Do **not**
+            // register `token_embd.weight` into the compiled graph — that table is
+            // unused on this path and costs hundreds of MiB–1 GiB on CUDA.
             if weights_embed.token_embd.is_empty() {
                 return Err(anyhow::anyhow!(
                     "qwen35: prefill_from_hidden requires token_embd"
                 ));
             }
-            let n_vocab = weights_embed.lm_vocab_size(&cfg_embed);
-            super::builder::register_param(
-                &mut gb,
-                emit.params,
-                "token_embd.weight",
-                weights_embed.token_embd.clone(),
-                Shape::new(&[n_vocab, n_embd], f),
-            );
+            let _ = weights_embed.lm_vocab_size(&cfg_embed);
             prefill_h.expect("prefill_hidden")
+        } else if host_embed {
+            // Embeddings gathered on the host, fed as `inputs_embeds` — the
+            // token_embd table never becomes a resident device param.
+            emit.flow_input("inputs_embeds")?.hir_id()
         } else {
             let ids = ids_opt.expect("input_ids");
             let n_vocab = weights_embed.lm_vocab_size(&cfg_embed);
@@ -1121,7 +1186,7 @@ pub fn build_qwen35_prefill_cache_model_flow(
                 &mut gb,
                 emit.params,
                 "token_embd.weight",
-                weights_embed.token_embd.clone(),
+                weights_embed.token_embd.to_vec(),
                 Shape::new(&[n_vocab, n_embd], f),
             );
             gb.gather_(embed_w, ids, 0)
@@ -1168,7 +1233,8 @@ pub fn build_qwen35_prefill_cache_model_flow(
         let weights = weights_layers.clone();
         let recur = recur.clone();
         let packed_arc = packed_arc.clone();
-        let layer = weights.trunk_layers[il].clone();
+        // Borrow layer via Arc — avoid cloning the full weight bundle per layer.
+        let layer_il = il;
         let layer_out = hidden_shape_val.clone();
         plugin_named(format!("qwen35.prefill_cache.l{il}"), move |emit, input| {
             let hidden =
@@ -1196,8 +1262,8 @@ pub fn build_qwen35_prefill_cache_model_flow(
                 emit.params,
                 &mut packed,
                 &cfg,
-                il,
-                &layer,
+                layer_il,
+                &weights.trunk_layers[layer_il],
                 Qwen35BsLayout::new(batch, seq, dynamic_seq),
                 h_in,
                 cos,
@@ -1304,19 +1370,19 @@ pub fn build_qwen35_prefill_cache_model_flow(
 
 pub fn build_qwen35_prefill_cache_flow(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     opts: &Qwen35PrefillCacheOpts,
 ) -> Result<(
     HirModule,
     std::collections::HashMap<String, Vec<f32>>,
     PackedParams,
 )> {
-    build_qwen35_prefill_cache_model_flow(cfg, weights, opts)
+    build_qwen35_prefill_cache_model_flow(cfg, weights.into(), opts)
 }
 
 pub fn build_qwen35_prefill_cache_built(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     opts: &Qwen35PrefillCacheOpts,
 ) -> Result<(BuiltModel, PackedParams)> {
     let (hir, params, packed) = build_qwen35_prefill_cache_flow(cfg, weights, opts)?;
@@ -1428,10 +1494,18 @@ pub fn build_qwen35_trunk_export_model_flow(
     let max_pos = cfg.max_position_embeddings;
     let trunk_count = weights_c.trunk_layers.len();
 
-    let mut flow = ModelFlow::new("qwen35_trunk_export")
+    let flow_base = ModelFlow::new("qwen35_trunk_export")
         .input("input_ids", Shape::new(&[batch, seq], f))
-        .input("last_token_idx", Shape::new(&[batch], f))
-        .embed("token_embd.weight");
+        .input("last_token_idx", Shape::new(&[batch], f));
+    // Large-vocab models (Bonsai-27B: token_embd [248320,5120] F32 = 4.7 GiB)
+    // otherwise keep the whole embedding table resident on the device just to
+    // gather the prompt's rows. Host-embed (auto ≥1 GiB / env override) gathers
+    // those rows host-side and feeds them as `inputs_embeds`.
+    let mut flow = if host_embed_enabled_for_bytes(weights_c.token_embd.len() * 4) {
+        flow_base.embed_host("token_embd.weight", n_embd)
+    } else {
+        flow_base.embed("token_embd.weight")
+    };
 
     let cfg_rope = cfg_c.clone();
     flow = flow
@@ -1910,7 +1984,7 @@ impl rlx_flow::WeightSource for InlineQwen35Weights<'_> {
         if key == "token_embd.weight" {
             let h = self.cfg.hidden_size;
             let v = self.weights.lm_vocab_size(self.cfg);
-            return Ok((self.weights.token_embd.clone(), vec![v, h]));
+            return Ok((self.weights.token_embd.to_vec(), vec![v, h]));
         }
         if transpose {
             bail!("inline qwen35 weights: transpose not supported for `{key}`");
@@ -2047,7 +2121,7 @@ mod tests {
         };
 
         Qwen35Weights {
-            token_embd: ramp(n_vocab * n_embd, 0.001),
+            token_embd: std::sync::Arc::from(ramp(n_vocab * n_embd, 0.001)),
             output_norm: vec![1.0f32; n_embd],
             output: None,
             token_embd_lm: None,
@@ -2060,7 +2134,7 @@ mod tests {
     fn one_gdn_layer_flow_builds() {
         let cfg = tiny_cfg();
         let empty = Qwen35Weights {
-            token_embd: vec![],
+            token_embd: std::sync::Arc::from([]),
             output_norm: vec![],
             output: None,
             token_embd_lm: None,
@@ -2128,10 +2202,11 @@ mod tests {
         let past_seq = 8;
         let opts = Qwen35DecodeOpts::step(1, past_seq);
         let (hir_flow, _, _) =
-            build_qwen35_decode_model_flow(&cfg, weights.clone(), &opts).unwrap();
+            build_qwen35_decode_model_flow(&cfg, std::sync::Arc::new(weights.clone()), &opts)
+                .unwrap();
         let (hir_ref, _, _) = crate::builder::build_qwen35_decode_hir_assembled(
             &cfg,
-            weights,
+            std::sync::Arc::new(weights),
             1,
             true,
             true,
@@ -2240,10 +2315,25 @@ mod tests {
         let cfg = tiny_cfg();
         let weights = synth_weights(&cfg);
         let opts = Qwen35PrefillCacheOpts::static_cache(1, 4);
-        let (hir_flow, _, _) =
-            build_qwen35_prefill_cache_model_flow(&cfg, weights.clone(), &opts).unwrap();
+        let (hir_flow, _, _) = build_qwen35_prefill_cache_model_flow(
+            &cfg,
+            std::sync::Arc::new(weights.clone()),
+            &opts,
+        )
+        .unwrap();
         let (hir_ref, _, _) = crate::builder::build_qwen35_prefill_cache_hir_assembled(
-            &cfg, weights, 1, 4, true, true, false, false, false, false, false, false,
+            &cfg,
+            std::sync::Arc::new(weights),
+            1,
+            4,
+            true,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
         )
         .unwrap();
         assert_eq!(

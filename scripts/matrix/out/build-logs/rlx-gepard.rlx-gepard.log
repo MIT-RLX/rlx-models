@@ -1,0 +1,81 @@
+
+warning: unused import: `Context`
+  --> crates/rlx-gepard/src/backbone.rs:31:14
+   |
+31 | use anyhow::{Context, Result};
+   |              ^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Context`
+  --> crates/rlx-gepard/src/qformer.rs:34:14
+   |
+34 | use anyhow::{Context, Result};
+   |              ^^^^^^^
+
+warning: unused import: `matvec`
+  --> crates/rlx-gepard/src/qformer.rs:37:23
+   |
+37 | use crate::backbone::{matvec, rms_norm, silu};
+   |                       ^^^^^^
+
+warning: unused import: `FSQ_LEVELS`
+  --> crates/rlx-gepard/src/qformer.rs:38:42
+   |
+38 | use crate::codec_ops::{dequantize_frame, FSQ_LEVELS, NUM_CHANNELS};
+   |                                          ^^^^^^^^^^
+
+warning: unused imports: `CHANNELS_PER_GROUP`, `NUM_GROUPS`, `dequantize_frame`, and `samples_per_frame`
+  --> crates/rlx-gepard/src/synthesis.rs:19:24
+   |
+19 | use crate::codec_ops::{dequantize_frame, samples_per_frame, NUM_CHANNELS, NUM_GROUPS, CHANNELS_PER_GROUP};
+   |                        ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^                ^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashMap`
+  --> crates/rlx-gepard/src/training.rs:14:5
+   |
+14 | use std::collections::HashMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `i`
+   --> crates/rlx-gepard/src/training.rs:300:20
+    |
+300 |             .map(|(i, word)| {
+    |                    ^ help: if this is intentional, prefix it with an underscore: `_i`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `wav_path`
+   --> crates/rlx-gepard/src/training.rs:290:27
+    |
+290 |     fn load_sample(&self, wav_path: &Path, text_path: &Path) -> Result<TrainingBatch> {
+    |                           ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_wav_path`
+
+warning: unused variable: `val_dir`
+   --> crates/rlx-gepard/src/training.rs:380:5
+    |
+380 |     val_dir: Option<&Path>,
+    |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_val_dir`
+
+warning: methods `synthesize_with_model` and `synthesize_eager` are never used
+   --> crates/rlx-gepard/src/synthesis.rs:455:8
+    |
+218 | impl GepardSynthesizer {
+    | ---------------------- methods in this implementation
+...
+455 |     fn synthesize_with_model(
+    |        ^^^^^^^^^^^^^^^^^^^^^
+...
+468 |     fn synthesize_eager(
+    |        ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable `K` should have a snake case name
+   --> crates/rlx-gepard/src/qformer.rs:273:9
+    |
+273 |     let K = w.num_queries;
+    |         ^ help: convert the identifier to snake case (notice the capitalization): `k`
+    |
+    = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+

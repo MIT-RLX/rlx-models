@@ -36,6 +36,8 @@ pub use rlx_gemma::{GemmaConfigSource, GemmaRunner, GemmaRunnerBuilder};
 pub use rlx_llama32::{Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder};
 pub use rlx_qwen3::{Precision, Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder};
 pub use rlx_qwen35::{Qwen35ConfigSource, Qwen35Runner, Qwen35RunnerBuilder};
+#[cfg(feature = "uni2")]
+pub use rlx_uni2::{Uni2Output, Uni2Runner, Uni2RunnerBuilder};
 pub use rlx_vjepa2::{
     Vjepa2Output, Vjepa2PoolOutput, Vjepa2PredictOutput, Vjepa2Runner, Vjepa2RunnerBuilder,
 };

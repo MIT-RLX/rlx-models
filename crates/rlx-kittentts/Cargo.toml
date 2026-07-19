@@ -1,11 +1,11 @@
 [package]
 name = "rlx-kittentts"
-version = "0.2.12"
+version = "0.2.13"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "KittenTTS ONNX text-to-speech for RLX"
+description = "KittenTTS native RLX / optional ONNX text-to-speech"
 keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
@@ -57,7 +57,7 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 ] }
 
 [features]
-default = ["onnx", "rlx"]
+default = ["native", "rlx"]
 onnx = ["dep:ort"]
 native = ["dep:kitten_tts_mini_rlx", "dep:rlx-ir", "kitten_tts_mini_rlx/cpu", "kitten_tts_mini_rlx/native"]
 native-fast = ["native", "kitten_tts_mini_rlx/native-fast", "metal"]
@@ -87,8 +87,10 @@ gpu = [
     "ort-coreml",
     "kitten_tts_mini_rlx?/gpu",
 ]
-all-backends = ["metal", "mlx", "cuda", "rocm", "gpu"]
-apple-silicon = ["metal", "mlx", "gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+coreml = ["rlx-runtime/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 full = ["onnx", "native", "rlx", "all-backends"]
 hf-download = ["dep:hf-hub"]
 espeak = ["dep:espeak-ng", "dep:fancy-regex"]
@@ -99,7 +101,7 @@ rlx-whisper = { workspace = true }
 [[bin]]
 name = "rlx-kittentts"
 path = "src/bin/rlx_kittentts.rs"
-required-features = ["onnx"]
+required-features = ["native"]
 
 [[example]]
 name = "export_phrase_audio"

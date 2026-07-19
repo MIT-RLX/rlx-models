@@ -4,45 +4,62 @@
 0.1B multilingual **hierarchical autoregressive** codec-LM TTS for RLX
 (**Apache-2.0**, 48 kHz stereo, en/zh/ja).
 
-A pure "audio-tokenizer + LLM" pipeline, run fully on ONNX Runtime:
+**Default path is native RLX** (ONNX graphs → rlx-ir → compile → run; no ONNX
+Runtime at inference). Optional `--features onnx` keeps the ORT reference.
 
-- a **global** 12-layer transformer (`prefill` + KV-cached `decode_step`),
-- a fused **local** graph (`fixed_sampled_frame`) that samples the 16
-  audio-codebook tokens per frame (sampling done inside ONNX via random-uniform
-  inputs + a repetition-seen mask),
-- the separate **MOSS-Audio-Tokenizer** (`decode_full`) that turns codes into
-  48 kHz stereo audio.
+Pipeline:
 
-Voice cloning uses 18 builtin voices (pre-computed reference codes ship in the
-manifest — no reference audio needed).
+- **global** 12-layer transformer (`prefill`, re-run on the growing padded sequence)
+- fused **local** graph (`fixed_sampled_frame`) → 16 audio-codebook tokens / frame
+- **MOSS-Audio-Tokenizer** (`decode_full`) → 48 kHz stereo
+
+Voice cloning uses 18 builtin voices (pre-computed reference codes in the
+manifest — no reference audio needed). The local sampler is pinned to CPU so the
+code stream (hence the waveform) stays bit-identical across backends.
+
+## Backend status (fox pangram, Trump, Whisper ≥5/6)
+
+| backend | status | notes |
+|---------|--------|-------|
+| **CPU** | ✅ | reference |
+| **Metal** | ✅ | prefill + sampler on CPU; codec on Metal |
+| **MLX** | ✅ | sampler on CPU; cos 1.0 vs CPU |
+| **wgpu** | ✅ | prefill + sampler on CPU; codec on wgpu |
+| **CUDA** | ✅ | msi: prefill on CUDA by default; codec on CPU (`RLX_MOSS_CODEC_DEVICE=gpu` to force) |
 
 ## Setup
 
-Download two repos into `weights/tts/moss-nano/`:
-
 ```bash
-# LM (prefill / decode / local + external .data + tokenizer.model + manifest)
+# LM (prefill / local + external .data + tokenizer + manifest)
 huggingface-cli download OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX --local-dir weights/tts/moss-nano
 # codec → weights/tts/moss-nano/codec/
 huggingface-cli download OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX --local-dir weights/tts/moss-nano/codec
-# convert the BPE tokenizer.model → tokenizer.json (pure-Rust loadable; see note)
+# BPE tokenizer.model → tokenizer.json (pure-Rust loadable)
 python crates/rlx-moss-nano/scripts/convert_tokenizer.py weights/tts/moss-nano
 ```
 
 ## Usage
 
 ```bash
-cargo run -p rlx-moss-nano --bin rlx-moss-nano -- \
-    --text "The quick brown fox jumps over the lazy dog." --voice Trump --out out.wav
-cargo run -p rlx-moss-nano --bin rlx-moss-nano -- --list-voices
+just moss-nano
+just moss-nano-whisper
+just moss-nano-backends
 ```
 
-`--seed`, `--max-frames`, `--device cpu|metal|mlx|cuda|gpu`.
+```bash
+cargo run -p rlx-moss-nano --release --features apple-silicon -- \
+  --text "The quick brown fox jumps over the lazy dog." \
+  --voice Trump --device metal --out /tmp/moss.wav
+```
+
+`--seed`, `--max-frames`, `--device cpu|metal|mlx|cuda|gpu`, `--list-voices`.
 
 ## Notes
 
-- **Tokenizer**: we convert `tokenizer.model` (a BPE SentencePiece model) to a
-  `tokenizer.json` loaded by the pure-Rust `tokenizers` crate. We must **not**
-  link the C++ `sentencepiece` crate: it statically bundles its own protobuf,
-  which clashes (ODR) with ONNX Runtime's protobuf and breaks ORT model loading.
-- Whisper round-trip: 1.00 coverage on English (`tests/whisper_roundtrip.rs`).
+- **Tokenizer**: convert `tokenizer.model` (SentencePiece BPE) to `tokenizer.json`
+  for the pure-Rust `tokenizers` crate. Do **not** link the C++ `sentencepiece`
+  crate when using the optional `onnx` feature — it clashes with ORT's protobuf.
+- Override sampler device with `RLX_MOSS_SAMPLER_DEVICE=gpu` (may break cross-backend
+  token identity).
+- Output PCM is pause-polished by default: lead/trail trim + internal holes
+  ≥150 ms clamped to 100 ms (`--max-pause-ms`, `--no-tighten`).

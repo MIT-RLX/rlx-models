@@ -4,11 +4,36 @@ use std::path::Path;
 
 use anyhow::Result;
 
+/// Minimum peak absolute amplitude treated as audible speech (not silence).
+pub const MIN_AUDIBLE_PEAK: f32 = 1e-3;
+
+/// Decoder upsamples 512× per latent frame; `y_len=1` (broken duration / CT) yields
+/// exactly 512 samples — reject anything shorter than ~36 ms @ 44.1 kHz.
+pub const MIN_AUDIBLE_SAMPLES: usize = 1600;
+
+/// Peak absolute amplitude.
+pub fn peak_amplitude(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0f32, |m, &x| m.max(x.abs()))
+}
+
+/// Fail loudly on silent / collapsed waveforms (MSI wgpu/vulkan used to emit
+/// 512 samples when duration collapsed to `y_len=1`).
+pub fn ensure_audible(samples: &[f32]) -> Result<()> {
+    let peak = peak_amplitude(samples);
+    anyhow::ensure!(
+        samples.len() >= MIN_AUDIBLE_SAMPLES && peak >= MIN_AUDIBLE_PEAK,
+        "synthesized audio is silent/empty (samples={}, peak={peak:.2e}); \
+         check ConvTranspose / AOT cache (CACHE_TAG tiny_tts_v3_ct)",
+        samples.len()
+    );
+    Ok(())
+}
+
 /// Peak-normalize to avoid clipping while preserving relative dynamics. TinyTTS
 /// already emits `tanh`-bounded audio in `[-1, 1]`, so this only trims rare
 /// overshoot; it is a no-op when the peak is already within range.
 pub fn normalize_audio(samples: &[f32]) -> Vec<f32> {
-    let peak = samples.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+    let peak = peak_amplitude(samples);
     if peak <= 1.0 || peak == 0.0 {
         return samples.to_vec();
     }

@@ -1,0 +1,94 @@
+[package]
+name = "rlx-chatterbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "ChatterBox (Resemble AI 0.5B Llama + S3Gen) zero-shot voice-cloning TTS for RLX (MIT)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+hound = "3"
+half = { workspace = true }
+ndarray = "0.17"
+tokenizers = { workspace = true }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+# Native (ort-free) path: import the ONNX graphs → rlx-ir HIR → compile → run.
+rlx-ir = { workspace = true, optional = true }
+rlx-onnx-import = { workspace = true, optional = true }
+# Hand-authored native T3 LM (rlx-llama32 graph, NOT ONNX-imported) + WeightMap.
+rlx-llama32 = { workspace = true, optional = true }
+rlx-core = { workspace = true, optional = true }
+# ONNX Runtime EP selector reused from rlx-kittentts (ORT parity path only).
+rlx-kittentts = { path = "../rlx-kittentts", default-features = false, optional = true }
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "pkg-config",
+    "download-binaries",
+    "tls-rustls",
+    "half",
+    "ndarray",
+] }
+
+[dev-dependencies]
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+
+[[bin]]
+name = "rlx-chatterbox"
+path = "src/bin/rlx_chatterbox.rs"
+required-features = ["native"]
+
+[[example]]
+name = "native_smoke"
+required-features = ["native"]
+
+[[example]]
+name = "native_t3_parity"
+required-features = ["native"]
+
+[[example]]
+name = "native_t3_kv_parity"
+required-features = ["native"]
+
+[[example]]
+name = "backend_matrix"
+required-features = ["native"]
+
+[[test]]
+name = "whisper_roundtrip"
+path = "tests/whisper_roundtrip.rs"
+required-features = ["native"]
+
+[features]
+default = ["native"]
+# Native ort-free runtime (rlx-onnx-import → compile → run). Backend-agnostic;
+# pair with metal/mlx/… for GPU binaries.
+native = ["dep:rlx-onnx-import", "dep:rlx-ir", "dep:rlx-llama32", "dep:rlx-core"]
+# Optional ONNX Runtime path for parity / A/B.
+onnx = ["dep:ort", "dep:rlx-kittentts", "rlx-kittentts/onnx"]
+metal = ["native", "rlx-runtime/metal"]
+mlx = ["native", "rlx-runtime/mlx"]
+cuda = ["native", "rlx-runtime/cuda"]
+rocm = ["native", "rlx-runtime/rocm"]
+gpu = ["native", "rlx-runtime/gpu"]
+vulkan = ["native", "rlx-runtime/vulkan"]
+coreml = ["native", "rlx-runtime/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+# Legacy aliases used by older recipes / docs.
+native-metal = ["metal"]
+native-mlx = ["mlx"]
+native-cuda = ["cuda"]
+native-coreml = ["coreml"]
+native-gpu = ["gpu"]
+native-all = ["native-metal", "native-mlx", "native-gpu"]
+
+[lints]
+workspace = true

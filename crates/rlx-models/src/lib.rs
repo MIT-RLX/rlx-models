@@ -68,6 +68,22 @@ pub mod vision_flow {
 pub mod dinov2 {
     pub use rlx_dinov2::*;
 }
+#[cfg(feature = "dinov3")]
+pub mod dinov3 {
+    pub use rlx_dinov3::*;
+}
+#[cfg(feature = "trellis2")]
+pub mod trellis2 {
+    pub use rlx_trellis2::*;
+}
+#[cfg(feature = "uni2")]
+pub mod uni2 {
+    pub use rlx_uni2::*;
+}
+#[cfg(feature = "hoct")]
+pub mod hoct {
+    pub use rlx_hoct::*;
+}
 #[cfg(feature = "bioclip2")]
 pub mod bioclip2 {
     pub use rlx_bioclip2::*;
@@ -213,6 +229,10 @@ pub mod moss_nano {
 pub mod maya1 {
     pub use rlx_maya1::*;
 }
+#[cfg(feature = "miratts")]
+pub mod miratts {
+    pub use rlx_miratts::*;
+}
 #[cfg(feature = "f5tts")]
 pub mod f5tts {
     pub use rlx_f5tts::*;
@@ -279,6 +299,10 @@ pub mod omnicoder {
 #[cfg(feature = "granite")]
 pub mod granite {
     pub use rlx_granite::*;
+}
+#[cfg(feature = "inkling")]
+pub mod inkling {
+    pub use rlx_inkling::*;
 }
 #[cfg(feature = "cohere")]
 pub mod cohere {
@@ -463,6 +487,8 @@ pub use tide::{
     PredictiveOffloadParams, TideOffloadStats, TideRunner, aggregate_offload_stats,
     refresh_experts,
 };
+#[cfg(feature = "uni2")]
+pub use uni2::{Uni2Built, Uni2Config, Uni2Flow, Uni2Output, Uni2Runner, build_uni2_built};
 #[cfg(feature = "vision")]
 pub use vision::{VisionPreprocessWeights, build_vision_graph_sized};
 #[cfg(feature = "vision")]

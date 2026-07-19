@@ -24,8 +24,8 @@ use rlx_ir::hir::HirModule;
 use rlx_runtime::{AotCache, CompiledGraph, DType, Device, Session};
 
 use crate::bundle_compile::{
-    compile_options_for, compile_sequence_length, ensure_compile_arena_policy,
-    ensure_kernels_registered, set_runtime_active_sequence, set_runtime_input_ids_shape,
+    compile_options_for, ensure_compile_arena_policy, ensure_kernels_registered,
+    set_runtime_active_sequence, set_runtime_input_ids_shape,
 };
 use crate::compile_profile::{self, CompileProfile, optimized_split_graphs_enabled};
 use crate::kernels::register_native_kernels;

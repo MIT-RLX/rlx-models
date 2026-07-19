@@ -1,0 +1,17 @@
+[rlx-qwen35] qwen35: tokenized prompt → 155 ids
+[rlx-qwen35] qwen35: weights="/Users/Shared/rlx-models/weights/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf" device=gpu batch=1 max_seq=272 mtp=false spec_decode=false packed=true dynamic_prefill=false dynamic_decode=false mmproj=none
+[qwen35] loaded GGUF metadata in 1.19s (layers=64, hidden=5120, ssm_state=128)
+[qwen35] read weights (packed) in 854.41ms
+[rlx-wgpu] sharded arena: logical=20.000 GiB → 5 × 4.000 GiB shards
+[qwen35] prefill-cache stages: flow_build=183.38ms, hir+backend=889.14ms (params=0, packed=497)
+[qwen35] compiled prefill-cache via BuiltModel in 1.07s (params=0, packed=497)
+[qwen35] uploaded prefill-cache 0 F32 + 497 packed params in 611.35ms
+[rlx-qwen35] qwen35: compiled (hidden=5120, layers=64, ssm_state=128, dt_rank=48)
+[rlx-qwen35] qwen35: generating 16 tokens (temp=0, top_p=1)…
+[qwen35] dropped prefill cache (free VRAM for decode)
+271 13784 11 279 1156 6587 264 31838 9522 421 25 318 16 8 79439 37972 [qwen35][bench] device=Gpu prompt_tokens=155 new_tokens=16 prefill_ms=94476.9 decode_ms=30879.6 total_ms=125356.5 ms/tok=1930.0 tok/s=0.518
+
+[rlx-qwen35] qwen35: generated: [271, 13784, 11, 279, 1156, 6587, 264, 31838, 9522, 421, 25, 318, 16, 8, 79439, 37972]
+[rlx-qwen35] qwen35: text: "Wait, the user wants a structured brief that: (1) contrasts latency"
+[rlx-qwen35] qwen35: text>
+Wait, the user wants a structured brief that: (1) contrasts latency

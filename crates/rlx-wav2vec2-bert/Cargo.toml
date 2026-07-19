@@ -21,6 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
+rustfft = "6"
 
 [[bin]]
 name = "rlx-wav2vec2-bert"

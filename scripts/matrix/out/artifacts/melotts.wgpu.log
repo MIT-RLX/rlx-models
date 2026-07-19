@@ -1,0 +1,6 @@
+$ /home/user/rlx-models/target/release/rlx-melotts --data weights/tiny-tts-rlx --text The quick brown fox jumps over the lazy dog near the river bank. --device gpu --out /home/user/rlx-models/scripts/matrix/out/artifacts/melotts.wgpu.wav
+
+--- stdout ---
+Wrote 512 samples (0.01s @ 44100 Hz) to /home/user/rlx-models/scripts/matrix/out/artifacts/melotts.wgpu.wav
+
+--- stderr ---

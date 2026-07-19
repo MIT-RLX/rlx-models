@@ -30,7 +30,7 @@ CoreML is **native RLX** (no ONNX). The RVQ lookup stays on the host; only the c
 | `llama` (default) | GGUF backbone + CLI |
 | `codec` (default) | SNAC decoder (eager) |
 | `coreml` | SNAC on `Device::Ane` (macOS; pulls `rlx-ir`, `rlx-runtime/coreml`) |
-| `metal` / `mlx` / `cuda` / … | Forwarded to `rlx-llama32` for LM backends |
+| `metal` / `mlx` / `cuda` / `gpu` / … | Forwarded to `rlx-llama32` for LM; **`cuda` also enables `snac-rlx`** so SNAC conv follows the LM GPU (`SnacExec::Cuda`) |
 | `apple-silicon` | `metal` + `mlx` + `gpu` + `coreml` |
 | `hf-download` | `--download` flags via `hf-hub` |
 
@@ -102,8 +102,9 @@ just orpheus -- \
 
 | `--device` | LM | SNAC |
 |------------|-----|------|
-| `auto` | Best GPU (Metal on Apple Silicon, else CUDA/ROCm/wgpu/Vulkan) | Eager CPU |
-| `metal` / `cuda` / `rocm` / `gpu` / `wgpu` / `vulkan` | Selected RLX backend (KV decode on GPU) | Eager CPU |
+| `auto` | Best GPU (Metal on Apple Silicon, else CUDA/ROCm/wgpu/Vulkan) | Same GPU when `snac-rlx` (Metal/MLX/wgpu/CUDA); else eager CPU |
+| `metal` / `mlx` / `gpu` / `wgpu` | Selected RLX backend (KV decode on GPU) | Native RLX SNAC on that device |
+| `cuda` / `rocm` | Selected RLX backend | Native RLX SNAC on CUDA (`ORPHEUS_SNAC_DEVICE=cpu` forces eager) |
 | `coreml` | Metal (or best Apple GPU) | Native RLX `Device::Ane` |
 
 CoreML needs `--features coreml` at build time:
@@ -205,6 +206,10 @@ cargo test -p rlx-orpheus --features codec --lib decode_matches_reference_when_w
 ORPHEUS_SNAC_PATH=/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors \
 ORPHEUS_SNAC_REF_DIR=/tmp/rlx-weights/snac \
 cargo test -p rlx-orpheus --features coreml --test coreml_snac_parity --release
+
+# Native CUDA SNAC vs eager (Linux+GPU; auto-loads ref_codes.json beside SNAC weights)
+ORPHEUS_SNAC_PATH=weights/tts/snac_24khz/snac_24khz_decoder.safetensors \
+cargo test -p rlx-orpheus --features "cuda,codec,llama,snac-rlx" --test cuda_snac_parity --release -- --nocapture
 
 just fetch-orpheus-snac fetch-whisper
 just test-orpheus-whisper

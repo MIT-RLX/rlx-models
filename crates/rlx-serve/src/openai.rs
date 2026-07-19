@@ -66,6 +66,19 @@ pub struct ChatCompletionRequest {
     pub logprobs: bool,
     #[serde(default)]
     pub top_logprobs: Option<usize>,
+    /// OpenAI-style tool/function definitions. Validated by rlx-guardrails
+    /// (reserved-name collisions rejected). Accepted for API compatibility;
+    /// the model only *uses* them once the chat template gains tool support.
+    #[serde(default)]
+    pub tools: Option<Vec<rlx_guardrails::ToolDef>>,
+    /// OpenAI `tool_choice` (`"auto"` / `"none"` / a named tool). Passed
+    /// through; kept as raw JSON since it's advisory to the model.
+    #[serde(default)]
+    pub tool_choice: Option<serde_json::Value>,
+    /// Optional context budget (tokens). When set, older non-system messages
+    /// are dropped (via rlx-guardrails compaction) to fit before templating.
+    #[serde(default)]
+    pub max_context_tokens: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -121,6 +134,40 @@ impl ChatCompletionRequest {
                 content: m.content.clone(),
             })
             .collect()
+    }
+
+    /// Reject tool definitions that collide with rlx's reserved (`_rlx_*`)
+    /// tool names. Returns a client-facing message on violation.
+    pub fn validate_tools(&self) -> Result<(), String> {
+        if let Some(tools) = &self.tools {
+            if rlx_guardrails::tools_collide_with_reserved(tools) {
+                return Err("tool definitions collide with reserved rlx_* tool names".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// Messages as [`ChatTurn`]s, compacted to `max_context_tokens` when set:
+    /// oldest non-system turns are dropped (tool results first) to fit the
+    /// budget. Without a budget this is exactly [`turns`](Self::turns).
+    pub fn compacted_turns(&self) -> Vec<ChatTurn> {
+        match self.max_context_tokens {
+            Some(budget) => {
+                let msgs: Vec<rlx_guardrails::Message> = self
+                    .messages
+                    .iter()
+                    .map(|m| rlx_guardrails::Message::new(m.role.clone(), m.content.clone()))
+                    .collect();
+                rlx_guardrails::compact_messages(msgs, budget)
+                    .into_iter()
+                    .map(|m| ChatTurn {
+                        role: m.role,
+                        content: m.content,
+                    })
+                    .collect()
+            }
+            None => self.turns(),
+        }
     }
     pub fn want_logprobs(&self) -> Option<usize> {
         if self.logprobs {
@@ -338,5 +385,65 @@ mod tests {
         let json = r#"{"model":"m","messages":[],"logprobs":true,"top_logprobs":5}"#;
         let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.want_logprobs(), Some(5));
+    }
+
+    fn chat(v: serde_json::Value) -> ChatCompletionRequest {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn reserved_tool_name_is_rejected() {
+        let req = chat(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "_rlx_respond"}}],
+        }));
+        assert!(req.validate_tools().is_err());
+    }
+
+    #[test]
+    fn ordinary_tools_validate_ok() {
+        let req = chat(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {"name": "get_weather", "parameters": {"type": "object"}}
+            }],
+            "tool_choice": "auto",
+        }));
+        assert!(req.validate_tools().is_ok());
+        assert!(req.tools.is_some());
+        assert!(req.tool_choice.is_some());
+    }
+
+    #[test]
+    fn compaction_keeps_system_and_newest_within_budget() {
+        let req = chat(serde_json::json!({
+            "model": "m",
+            "max_context_tokens": 20,
+            "messages": [
+                {"role": "system", "content": "you are a helpful assistant"},
+                {"role": "user", "content": "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa"},
+                {"role": "assistant", "content": "bbbb bbbb bbbb bbbb bbbb bbbb bbbb"},
+                {"role": "user", "content": "hi"}
+            ],
+        }));
+        let turns = req.compacted_turns();
+        assert!(turns.iter().any(|t| t.role == "system"), "system survives");
+        assert!(turns.len() < 4, "some older turn was dropped to fit budget");
+        assert_eq!(turns.last().unwrap().content, "hi", "newest turn kept");
+    }
+
+    #[test]
+    fn no_budget_is_passthrough() {
+        let req = chat(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "yo"}
+            ],
+        }));
+        assert_eq!(req.compacted_turns().len(), 2);
     }
 }

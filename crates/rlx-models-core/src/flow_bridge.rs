@@ -80,6 +80,29 @@ pub fn apply_compile_profile(profile: &CompileProfile, opts: &mut CompileOptions
         MixedPrecisionKind::None => None,
         MixedPrecisionKind::Auto => Some(PrecisionPolicy::AutoMixed),
     };
+    // Opt-in f16 residual stream (Metal / packed Q1 decode).
+    //   RLX_QWEN35_AMP=1 | RLX_METAL_AMP=1           → AutoMixed (residual+RMS f16)
+    //   RLX_QWEN35_AMP=conservative | RLX_METAL_AMP=conservative
+    //                                                 → AutoMixedConservative (RMS f32)
+    // GatedDeltaNet + packed DequantMatMul prefill (m>1) stay f32 inside the
+    // AMP pass. Isolated Q1 decode GEMV+residual f16 is parity-checked in
+    // rlx-metal; full Bonsai-27B AMP is still experimental (default off).
+    match rlx_ir::env::var("RLX_QWEN35_AMP")
+        .or_else(|| rlx_ir::env::var("RLX_METAL_AMP"))
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("1") | Some("auto") | Some("full") => {
+            opts.policy = Some(PrecisionPolicy::AutoMixed);
+        }
+        Some("conservative") | Some("c") => {
+            opts.policy = Some(PrecisionPolicy::AutoMixedConservative);
+        }
+        _ if rlx_ir::env::flag("RLX_QWEN35_AMP") || rlx_ir::env::flag("RLX_METAL_AMP") => {
+            opts.policy = Some(PrecisionPolicy::AutoMixed);
+        }
+        _ => {}
+    }
 }
 
 /// Dynamic HIR template/specialize — default passes only (matches legacy [`DynamicDimCompileCache`]).
@@ -173,25 +196,33 @@ where
 
 /// Device used to compile/run packed GGUF graphs.
 ///
-/// **CPU**, **Metal**, **MLX**, **wgpu** (`Device::Gpu`), and **Vulkan** run natively.
-/// MLX uses host-side GGUF dequant per `DequantMatMul` with lazy eval (see
-/// [`packed_gguf_compile_guard`]); wgpu and Vulkan run native GGUF dequant +
-/// matmul on-device. **CUDA / ROCm** use native GPU `DequantMatMul` (Q4_K / Q8_0 / …).
+/// **CPU**, **Metal**, **MLX**, **CUDA / ROCm**, **wgpu**, **Vulkan**, and
+/// **CoreML** (`Device::Ane`) run natively (incl. Q1_0). MLX uses host-side
+/// GGUF dequant per `DequantMatMul` with lazy eval for most schemes (see
+/// [`packed_gguf_compile_guard`]); **Q1_0** expands on-device via
+/// `dequant_q1_0.metal` (no f32 weight cache — Bonsai-27B blow-up).
+/// wgpu keeps packed weights in a separate buffer when the activation
+/// arena would exceed WebGPU's ~4 GiB `max_buffer_size`, and runs
+/// GatedDeltaNet on-device (set `RLX_WGPU_GDN_HOST=1` for the old
+/// readback path).
 ///
-/// **CoreML** (`Device::Ane`): by default packed GGUF executes on **CPU**
-/// (host greedy lm_head, stable bucketed decode). Set `RLX_PACKED_GGUF_COREML_NATIVE=1`
-/// to compile/run on ANE when the graph passes CoreML support checks.
+/// Vulkan keeps Q1_0 / Q4_K / Q6_K `DequantMatMul` on-device (row-loop GEMV
+/// for prefill); GatedDeltaNet still uses the Vulkan host segment.
+///
+/// CoreML Q1_0 defaults to `RLX_COREML_Q1_MODE=lut` (1-bit palettization);
+/// `MODE=f32` OOMs disk on 27B-class models.
+///
+/// Force CPU with `RLX_PACKED_GGUF_WGPU_HOST=1`,
+/// `RLX_PACKED_GGUF_VULKAN_HOST=1`, or `RLX_PACKED_GGUF_COREML_HOST=1`.
 pub fn packed_gguf_execution_device(device: Device) -> Device {
     match device {
-        Device::Ane if rlx_ir::env::flag("RLX_PACKED_GGUF_COREML_NATIVE") => Device::Ane,
-        Device::Ane => Device::Cpu,
-        Device::Cpu
-        | Device::Metal
-        | Device::Mlx
-        | Device::Gpu
-        | Device::Vulkan
-        | Device::Cuda
-        | Device::Rocm => device,
+        Device::Ane if rlx_ir::env::flag("RLX_PACKED_GGUF_COREML_HOST") => Device::Cpu,
+        Device::Ane => Device::Ane,
+        Device::Gpu if rlx_ir::env::flag("RLX_PACKED_GGUF_WGPU_HOST") => Device::Cpu,
+        Device::Gpu => Device::Gpu,
+        Device::Vulkan if rlx_ir::env::flag("RLX_PACKED_GGUF_VULKAN_HOST") => Device::Cpu,
+        Device::Vulkan => Device::Vulkan,
+        Device::Cpu | Device::Metal | Device::Mlx | Device::Cuda | Device::Rocm => device,
         _ => device,
     }
 }
@@ -369,11 +400,10 @@ pub fn compile_built_with_config(
     let binding = config.dim_binding();
     let device = pipeline.device();
     let (hir, params) = built.into_parts()?;
-    // Pipeline caches the variant; owned graphs for GPU backends cannot use
-    // `CompiledGraph::clone` (only CPU implements `clone_box` today).
-    if !pipeline.contains(key) {
-        pipeline.get_or_compile(key, &binding, || hir.clone(), options)?;
-    }
+    // CPU executables are cloneable — fill the pipeline cache then clone.
+    // Discrete-GPU backends cannot `clone_box`, so a prior `get_or_compile`
+    // followed by `Session::compile_hir_with` was compiling the same graph
+    // twice (≈2× wall time on packed Qwen35 CUDA). Compile once for GPU.
     let mut compiled = if device == Device::Cpu {
         pipeline
             .get_or_compile(key, &binding, || hir.clone(), options)?

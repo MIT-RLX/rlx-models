@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use rlx_luxtts::dsp::{VocosFbank, istft};
 
 fn fx(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
 }
 
 fn read_f32(name: &str) -> Vec<f32> {
@@ -23,7 +25,11 @@ fn cosine(a: &[f32], b: &[f32]) -> (f32, f32) {
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
     let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let maxabs = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+    let maxabs = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
     (dot / (na * nb + 1e-12), maxabs)
 }
 

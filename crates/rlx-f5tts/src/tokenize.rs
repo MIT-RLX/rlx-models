@@ -20,10 +20,27 @@
 
 use crate::config::Vocab;
 
+/// Match official `preprocess_ref_audio_text`: ref must end with `". "` or `"。"`.
+pub fn normalize_ref_text(ref_text: &str) -> String {
+    let t = ref_text.trim_end();
+    if t.ends_with(". ") || t.ends_with('。') {
+        t.to_string()
+    } else if t.ends_with('.') {
+        format!("{t} ")
+    } else {
+        format!("{t}. ")
+    }
+}
+
 /// Encode `ref_text + gen_text` to token ids (English char-level).
+/// `ref_text` is normalized first (trailing `". "`).
 pub fn encode(ref_text: &str, gen_text: &str, vocab: &Vocab) -> Vec<i32> {
+    let ref_text = normalize_ref_text(ref_text);
     let combined = format!("{ref_text}{gen_text}");
-    combined.chars().map(|c| vocab.id_of(&c.to_string())).collect()
+    combined
+        .chars()
+        .map(|c| vocab.id_of(&c.to_string()))
+        .collect()
 }
 
 /// Byte length + Chinese-punctuation weighting used by F5's duration estimate.

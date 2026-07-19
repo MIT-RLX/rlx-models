@@ -1,0 +1,51 @@
+[package]
+name = "rlx-openvoice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "OpenVoice v2 (~100M) zero-shot voice-cloning TTS for RLX (MIT) — native on all RLX backends"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+hound = "3"
+rustfft = "6"
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+# Base TTS is MeloTTS via the shared rlx-tiny-tts engine; the tone converter +
+# extractor run natively too (imported to rlx-ir via rlx-onnx-import, compiled
+# per-device through TinyModel). No ONNX Runtime at runtime.
+rlx-tiny-tts = { workspace = true }
+
+[dev-dependencies]
+rlx-whisper = { workspace = true }
+# ONNX Runtime is a DEV-ONLY dependency: used solely by the parity test to check
+# the native tone_extract/tone_color against the reference ONNX graphs.
+ort = { version = "=2.0.0-rc.11", default-features = false, features = [
+    "std",
+    "ndarray",
+    "download-binaries",
+    "tls-rustls",
+] }
+
+[[bin]]
+name = "rlx-openvoice"
+path = "src/bin/rlx_openvoice.rs"
+
+[features]
+default = ["cpu"]
+cpu = ["rlx-runtime/cpu", "rlx-tiny-tts/cpu"]
+metal = ["rlx-runtime/metal", "rlx-tiny-tts/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-tiny-tts/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-tiny-tts/cuda"]
+gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-tiny-tts/coreml"]
+all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+
+[lints]
+workspace = true

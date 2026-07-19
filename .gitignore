@@ -15,9 +15,10 @@
 # Hugging Face weights repo; never committed to the main repo.
 /weights/tts/
 weights/tts/
-crates/kitten_tts_mini_rlx/weights/
+# Per-crate model-weight dirs (blobs live outside git). Matches crate-level
+# `weights/` only — source `src/weights/` (rlx-ocr) and `weights.rs` stay tracked.
+crates/*/weights/
 crates/rlx-neutts/models/
-crates/rlx-orpheus/weights/
 **/neucodec_decoder.safetensors
 
 # Qwen3-TTS parity fixtures (bake locally; see tests/qwen3_tts_*_parity)
@@ -38,6 +39,28 @@ crates/rlx-qwen3-tts/tests/fixtures/speaker_parity.safetensors
 
 # Ad-hoc audio at repo root (crate examples/audio/ is tracked)
 /*.wav
+
+# Ad-hoc Whisper / subtitle dumps at repo root (from local TTS runs)
+/*.srt
+/*.tsv
+/*.vtt
+# Named JSON/TXT dumps from Whisper / ORT harness runs (not package manifests)
+/cpu_*.json
+/cpu_*.txt
+/ort_*.json
+/ort_*.txt
+/f5_*.json
+/f5_*.txt
+/mimi_*.json
+/mimi_*.txt
+/sesame_*.json
+/sesame_*.txt
+/soprano*.json
+/soprano*.txt
+
+# Local scratch (wavs, dumps, notebooks)
+/scratchpad/
+/tmp/
 
 # Local agent docs — keep out of the repo
 AGENTS.md

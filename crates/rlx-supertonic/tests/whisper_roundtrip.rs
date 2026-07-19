@@ -16,8 +16,8 @@
 //! Supertonic-3 synthesis → resample → Whisper ASR round-trip (intelligibility).
 //! Skips gracefully when weights are absent. Point at them with
 //! `RLX_SUPERTONIC_DIR` and `RLX_WHISPER_DIR` (or `.cache/whisper-*.en`).
-
-#![cfg(feature = "onnx")]
+//!
+//! Runs on the default (native RLX) synthesis path — no ONNX Runtime needed.
 
 use std::path::PathBuf;
 
@@ -34,7 +34,7 @@ fn supertonic_dir() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let p = PathBuf::from("weights/tts/supertonic-3");
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/supertonic-3");
     p.join("onnx/tts.json").is_file().then_some(p)
 }
 
@@ -43,9 +43,14 @@ fn whisper_dir() -> Option<PathBuf> {
         return ready(PathBuf::from(d));
     }
     let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");
-    ["whisper-base.en", "whisper-small.en", "whisper-tiny.en"]
-        .into_iter()
-        .find_map(|n| ready(cache.join(n)))
+    [
+        "whisper-base.en",
+        "whisper-small.en",
+        "whisper-tiny.en",
+        "whisper-tiny",
+    ]
+    .into_iter()
+    .find_map(|n| ready(cache.join(n)))
 }
 
 fn ready(d: PathBuf) -> Option<PathBuf> {
@@ -93,7 +98,10 @@ fn supertonic_text_roundtrip_via_whisper() {
     let audio = tts
         .synthesize(TEXT, "en", &voice, &InferOpts::default())
         .expect("synthesize");
-    assert!(rlx_supertonic::peak_amplitude(&audio) > 0.05, "audio not audible");
+    assert!(
+        rlx_supertonic::peak_amplitude(&audio) > 0.05,
+        "audio not audible"
+    );
 
     let pcm16k = resample(&audio, tts.sample_rate(), WHISPER_RATE as u32);
     let mut w = WhisperRunner::builder()
@@ -108,8 +116,14 @@ fn supertonic_text_roundtrip_via_whisper() {
 
     let refs = words(TEXT);
     let heard = words(&transcript);
-    let hits = refs.iter().filter(|x| heard.iter().any(|h| h == *x || h.contains(x.as_str()))).count();
+    let hits = refs
+        .iter()
+        .filter(|x| heard.iter().any(|h| h == *x || h.contains(x.as_str())))
+        .count();
     let cov = hits as f32 / refs.len() as f32;
     eprintln!("reference: {TEXT}\nwhisper:   {transcript}\ncoverage:  {cov:.2}");
-    assert!(cov >= 0.6, "coverage {cov:.2} too low.\nref: {TEXT}\ngot: {transcript}");
+    assert!(
+        cov >= 0.6,
+        "coverage {cov:.2} too low.\nref: {TEXT}\ngot: {transcript}"
+    );
 }

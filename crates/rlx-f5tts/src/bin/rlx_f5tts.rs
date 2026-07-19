@@ -13,17 +13,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! `rlx-f5tts` — F5-TTS voice-cloning CLI.
+//! `rlx-f5tts` — F5-TTS voice-cloning CLI (native RLX by default).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
-use rlx_f5tts::{F5Tts, InferOpts, config::DEFAULT_LOCAL_DIR};
-use rlx_runtime::parse_device;
+use rlx_f5tts::{
+    F5Native, InferOpts, SAMPLE_RATE, config::DEFAULT_LOCAL_DIR, parse_device, write_wav,
+};
 
 const HELP: &str = "\
 rlx-f5tts — F5-TTS flow-matching voice-cloning TTS (CC-BY-NC weights)
+            native RLX path (no ONNX Runtime)
 
 USAGE: rlx-f5tts --ref-wav ref.wav --ref-text \"...\" --text \"...\"
 
@@ -46,11 +49,15 @@ fn read_wav_24k(path: &Path) -> Result<Vec<f32>> {
         hound::SampleFormat::Float => r.samples::<f32>().map(|s| s.unwrap_or(0.0)).collect(),
         hound::SampleFormat::Int => {
             let m = (1i64 << (spec.bits_per_sample - 1)) as f32;
-            r.samples::<i32>().map(|s| s.unwrap_or(0) as f32 / m).collect()
+            r.samples::<i32>()
+                .map(|s| s.unwrap_or(0) as f32 / m)
+                .collect()
         }
     };
     let mono: Vec<f32> = if spec.channels > 1 {
-        raw.chunks(spec.channels as usize).map(|c| c.iter().sum::<f32>() / c.len() as f32).collect()
+        raw.chunks(spec.channels as usize)
+            .map(|c| c.iter().sum::<f32>() / c.len() as f32)
+            .collect()
     } else {
         raw
     };
@@ -113,26 +120,28 @@ fn run() -> Result<()> {
     let text = text.context("--text is required")?;
 
     let device = parse_device(&device_str).with_context(|| format!("device '{device_str}'"))?;
-    let tts = F5Tts::load_on(&data, device).with_context(|| format!("load from {}", data.display()))?;
+    let t0 = Instant::now();
+    let tts = F5Native::load_on(&data, device)
+        .with_context(|| format!("load from {}", data.display()))?;
+    let exec = tts.execution_device();
+    let dit = tts.dit_device();
     let rw = read_wav_24k(&ref_wav)?;
-
-    #[cfg(feature = "onnx")]
     let audio = tts.synthesize(&text, &rw, &ref_text, &opts)?;
-    #[cfg(not(feature = "onnx"))]
-    let audio: Vec<f32> = {
-        let _ = (&rw, &ref_text);
-        anyhow::bail!("rlx-f5tts needs the `onnx` feature");
-    };
+    let synth_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-    tts.write_wav(&audio, &out)?;
-    let secs = audio.len() as f32 / tts.sample_rate() as f32;
+    write_wav(&audio, SAMPLE_RATE, &out)?;
+    let secs = audio.len() as f32 / SAMPLE_RATE as f32;
+    let rtf = if secs > 0.0 {
+        (synth_ms / 1000.0) / secs as f64
+    } else {
+        0.0
+    };
     println!(
-        "Wrote {} samples ({secs:.2}s @ {} Hz) to {} [nfe={}, ep={}]",
+        "Wrote {} samples ({secs:.2}s @ {} Hz) to {} [native/{device:?} pre/dec={exec:?} dit={dit:?}, nfe={}] synth={synth_ms:.0}ms ({rtf:.2}× RT)",
         audio.len(),
-        tts.sample_rate(),
+        SAMPLE_RATE,
         out.display(),
         opts.nfe,
-        tts.ort_ep()
     );
     Ok(())
 }

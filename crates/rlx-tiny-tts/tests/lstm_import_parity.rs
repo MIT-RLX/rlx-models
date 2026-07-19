@@ -78,5 +78,8 @@ fn onnx_lstm_imports_with_onnxruntime_parity() {
 
     eprintln!("LSTM import parity: cosine={cosine:.6}, max_abs_diff={max_abs:.3e}");
     assert!(cosine > 0.9999, "cosine {cosine} below parity threshold");
-    assert!(max_abs < 1e-4, "max_abs_diff {max_abs} above parity threshold");
+    assert!(
+        max_abs < 1e-4,
+        "max_abs_diff {max_abs} above parity threshold"
+    );
 }

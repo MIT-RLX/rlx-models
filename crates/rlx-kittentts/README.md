@@ -24,8 +24,12 @@ cargo run -p rlx-kittentts --features espeak --release -- \
 # Explicit flags
 just kittentts -- --ipa "həˈloʊ" --device metal
 
-# Native RLX graph (no ORT) — see NATIVE.md
-just kittentts -- --native --ipa "həˈloʊ" --out-wav out.wav
+# Native RLX graph (default) — see NATIVE.md
+just kittentts -- --ipa "həˈloʊ" --out-wav out.wav
+
+# Optional ONNX Runtime path
+cargo run -p rlx-kittentts --features onnx --release -- \
+  --ipa "həˈloʊ" --out-wav out.wav
 ```
 
 **Path resolution** (first match wins):
@@ -50,9 +54,9 @@ let audio = tts.generate_from_ipa("həˈloʊ", "Jasper", 1.0, 6)?;
 
 | Feature | Purpose |
 |---------|---------|
-| `onnx` (default) | ONNX Runtime inference |
+| `native` (default) | Decomposed `kitten_tts_mini_rlx` graph |
+| `onnx` | Optional ONNX Runtime inference |
 | `espeak` | Plain text → IPA via `espeak-ng` 0.1.2 (`bundled-data-en`; GPL-3.0) |
-| `native` | Decomposed `kitten_tts_mini_rlx` graph |
 | `hf-download` | `--download` via Hugging Face Hub |
 | `metal` / `cuda` / … | Backend forwarding to ORT + RLX runtime |
 

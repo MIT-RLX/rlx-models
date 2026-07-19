@@ -1,0 +1,7 @@
+$ /home/user/rlx-models/target/release/rlx-f5tts --data weights/tts/f5tts --ref-wav assets/jfk/jfk_voice_clone.wav --ref-text And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. --text The quick brown fox jumps over the lazy dog near the river bank. --device cpu --out /home/user/rlx-models/scripts/matrix/out/artifacts/f5tts.cpu.wav
+
+--- stdout ---
+
+--- stderr ---
+
+[TIMEOUT]

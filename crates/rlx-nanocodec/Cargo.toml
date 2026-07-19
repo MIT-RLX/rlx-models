@@ -13,6 +13,7 @@ readme = "README.md"
 
 [dependencies]
 anyhow = { workspace = true }
+hound = "3"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 safetensors = { workspace = true }

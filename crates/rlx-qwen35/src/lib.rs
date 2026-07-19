@@ -15,14 +15,13 @@
 
 //! Qwen3.5 / Qwen3.6 — hybrid Gated DeltaNet + attention architecture.
 //!
-//! **Status:** dense `qwen35` and `qwen35moe` GGUF forward is wired end-to-end on CPU
-//! (prefill, bucketed decode cache, optional MTP head, packed K-quants).
-//! Every standard RLX backend accepts `--device` when the matching feature is
-//! enabled (`cpu`, `metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`; build with
-//! `all-backends`). Some GPU paths still run GDN or dequant matmul on the host
-//! while the graph executes on the selected device. Numerical parity vs llama.cpp is env-gated
-//! (`QWEN35_GGUF_PATH`, optional `parity-llama` feature).
-//! See `PLAN.md` § Qwen3.5 for the remaining gap list (MoE, VLM parity hardening, …).
+//! Dense `qwen35` / `qwen36` and MoE `qwen35moe` GGUF forward (prefill, bucketed
+//! decode, optional MTP, packed K-quants / Q1_0) runs on CPU and on GPU backends
+//! when the matching feature is enabled (`metal`, `mlx`, `cuda`, `rocm`, `gpu`,
+//! `vulkan`; or `all-backends`). Some ops may still use a host path on a given
+//! device. Numerical parity vs llama.cpp is env-gated (`QWEN35_GGUF_PATH`,
+//! optional `parity-llama`). See crate `README.md` for CLI / env, and `PLAN.md`
+//! § Qwen3.5 for remaining MoE / VLM gaps.
 //!
 //! # Architecture
 //!
@@ -59,6 +58,7 @@
 //!   incremental generation with GDN + KV cache
 //! - [`Qwen35Runner`] — high-level prefill / generate / spec-decode API
 //! - [`validate_device`] — CPU, Metal, MLX, CUDA, ROCm, WGPU, Vulkan
+//! - [`cli`] — `rlx-qwen35` binary (`--fast`, ChatML, MTP, …)
 
 mod builder;
 mod cache;
@@ -79,6 +79,7 @@ mod runner;
 mod spec;
 mod spec_runner;
 mod tokenizer;
+mod trace;
 mod vision;
 mod weights;
 
@@ -86,8 +87,9 @@ mod weights;
 pub mod synth;
 
 pub use chat::{
-    ChatMessage, ChatRole, encode_chat, encode_chat_auto, format_chatml, messages_from_prompt,
-    parse_messages_json,
+    ChatFormatOpts, ChatMessage, ChatRole, EMPTY_THINK_BLOCK, SpecialTokenIds, THINK_BUDGET_CLOSE,
+    ThinkingBudgetWatch, encode_chat, encode_chat_auto, encode_chat_auto_with, format_chatml,
+    format_chatml_with, messages_from_prompt, parse_messages_json, split_thinking,
 };
 pub use tokenizer::{
     decode_ids, decode_ids_auto, decode_ids_from_gguf, encode_prompt, encode_prompt_auto,

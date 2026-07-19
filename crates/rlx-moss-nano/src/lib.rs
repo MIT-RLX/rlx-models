@@ -15,19 +15,24 @@
 
 //! MOSS-TTS-Nano — OpenMOSS 0.1B hierarchical AR codec-LM TTS for RLX (Apache-2.0).
 //!
-//! A pure-autoregressive "audio-tokenizer + LLM" TTS exported to ONNX. A global
-//! 12-layer transformer (prefill + KV-cached `decode_step`) drives a fused local
-//! sampled-frame graph that emits 16 audio-codebook tokens per frame; a separate
-//! MOSS-Audio-Tokenizer decodes the codes to 48 kHz stereo audio. Runs on
-//! ONNX Runtime (CPU + CoreML/CUDA EPs). Voice cloning via 18 builtin voices.
+//! A pure-autoregressive "audio-tokenizer + LLM" TTS. A global 12-layer
+//! transformer (`prefill`, re-run padded) drives a fused local sampled-frame
+//! graph that emits 16 audio-codebook tokens per frame; a separate
+//! MOSS-Audio-Tokenizer decodes the codes to 48 kHz stereo. **Default path is
+//! native RLX** ([`MossNative`] — no ONNX Runtime). Optional `onnx` keeps the
+//! ORT reference. Voice cloning via 18 builtin voices.
 
 pub mod config;
+pub mod dsp;
 #[cfg(feature = "onnx")]
 pub mod model;
+pub mod native;
 
 pub use config::{BuiltinVoice, CodecInfo, Manifest, TtsConfig};
+pub use dsp::{TightenOpts, tighten_pauses};
 #[cfg(feature = "onnx")]
 pub use model::{MossNano, SynthOpts};
+pub use native::{MossNative, NativeOpts};
 pub use rlx_runtime::{Device, parse_device};
 
 /// Weights repo (Apache-2.0). Also needs the codec repo

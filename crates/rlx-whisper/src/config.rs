@@ -51,6 +51,15 @@ impl WhisperConfig {
         self.d_model / self.decoder_attention_heads
     }
 
+    /// True for multilingual Whisper checkpoints (`vocab_size == 51865`).
+    ///
+    /// English-only models (`*.en`, vocab 51864) must not insert `<|en|>` /
+    /// `<|transcribe|>` into the decoder prompt — those tokens exist in the
+    /// tokenizer but collapse greedy decode to a single word.
+    pub fn is_multilingual(&self) -> bool {
+        self.vocab_size >= 51865
+    }
+
     /// Encoder sequence length after the two conv layers (stride-2 on the second).
     pub fn encoder_seq_len(&self, mel_frames: usize) -> usize {
         let after_conv1 = mel_frames;

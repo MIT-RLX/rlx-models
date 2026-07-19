@@ -62,15 +62,17 @@
 #   4. Crates marked `publish = false` or in workspace.exclude (see SKIPPED)
 #      are not published — cargo skips them; this script lists the rest.
 #
-# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.11) from the RLX repo
+# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.13) from the RLX repo
 # before `rlx-models` path deps resolve on the registry.
 #
-# 89 publishable workspace crates in 7 tiers (tier 6 = facade `rlx-models` last).
+# Publishable workspace crates in 7 tiers (tier 6 = facade `rlx-models` last).
 # Notable ordering: `kitten_tts_mini_rlx` before `rlx-kittentts`; `rlx-whisper`
 # before `rlx-kittentts` (dev-dep for roundtrip tests); `rlx-llama32` / `rlx-gemma`
 # (tier 4) before `rlx-minicpm5` / `rlx-voxtral-tts-train` (tier 5–6);
-# `rlx-quant-calib` before `rlx-tune`; `rlx-distributed` before `rlx-qwen3`.
-# Workspace / upstream pin: 0.2.11 — bump `[workspace.package].version` and
+# `rlx-guardrails` before `rlx-serve`; `rlx-kokoro` before `rlx-styletts2`;
+# `rlx-luxtts` before `rlx-zipvoice`; `rlx-quant-calib` before `rlx-tune`;
+# `rlx-distributed` before `rlx-qwen3`.
+# Workspace / upstream pin: 0.2.13 — bump `[workspace.package].version` and
 # `[workspace.dependencies]` path `version =` fields before publishing.
 # Bump `[workspace.package].version`, per-crate `[package].version` when needed
 # (e.g. `rlx-models-core`), and `[workspace.dependencies]` pins before publishing.
@@ -142,6 +144,9 @@ SKIPPED=(
     bench_matmul_rlx
     rlx-gemma-inflect-nano
     rlx-narma10
+    rlx-tts-bench
+    rlx-vision-bench
+    rlx-termclean
 )
 
 # Tier definitions. Each array entry is a single tier; space-separated
@@ -151,12 +156,12 @@ SKIPPED=(
 # and `[dev-dependencies]` (including optional) against crates.io. Within
 # a tier, list deps before dependents (e.g. rlx-cpu before rlx-splat).
 TIERS=(
-    "kitten_tts_mini_rlx rlx-diamond rlx-diarize rlx-distributed rlx-inflect-nano rlx-llama-base rlx-models-core rlx-onnx-decompose rlx-quant-calib rlx-ssm rlx-vlm-base rlx-wav2vec2-asr"
+    "kitten_tts_mini_rlx rlx-assets rlx-diamond rlx-diarize rlx-distributed rlx-guardrails rlx-llama-base rlx-model-hub rlx-models-core rlx-inflect-nano rlx-onnx-decompose rlx-protocol rlx-quant-calib rlx-ssm rlx-vlm-base rlx-wav2vec2-asr"
     "rlx-bert rlx-cli rlx-encodec rlx-facodec rlx-llada2 rlx-mamba rlx-nanocodec rlx-nomic rlx-sam-ir rlx-snac rlx-speechtokenizer rlx-tiny-tts rlx-tune rlx-vibevoice rlx-vision rlx-wavtokenizer rlx-xcodec"
-    "rlx-bioclip2 rlx-clinicalbert rlx-dac rlx-dinov2 rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-grounding-dino rlx-lfm rlx-lfm-vl rlx-minimax rlx-nemotron-asr rlx-ocr rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-vad rlx-vjepa2 rlx-wav2vec2-bert"
-    "rlx-eval rlx-flux2 rlx-locateanything rlx-omnicoder rlx-qwen25-vl rlx-qwen35 rlx-sam2 rlx-sam3 rlx-serve rlx-tsac rlx-whisper"
-    "rlx-aec rlx-gemma rlx-kittentts rlx-llama32 rlx-mimi rlx-nemotron-omni rlx-pocket-tts rlx-qwen3-asr"
-    "rlx-bonsai rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-kyutai-tts rlx-minicpm5 rlx-mistral rlx-moshi rlx-nemotron rlx-neutts rlx-orpheus rlx-phi rlx-qwen3-tts rlx-tinyllama rlx-voxtral rlx-voxtral-tts"
+    "rlx-bioclip2 rlx-clinicalbert rlx-dac rlx-dinov2 rlx-dinov3 rlx-hoct rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-grounding-dino rlx-lfm rlx-lfm-vl rlx-minimax rlx-nemotron-asr rlx-ocr rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-siglip2 rlx-uni2 rlx-vad rlx-vjepa2 rlx-wav2vec2-bert"
+    "rlx-eval rlx-flux2 rlx-locateanything rlx-omnicoder rlx-qwen25-vl rlx-qwen35 rlx-sam2 rlx-sam3 rlx-serve rlx-trellis2 rlx-tsac rlx-vit-elastic rlx-whisper"
+    "rlx-aec rlx-gemma rlx-kittentts rlx-llama32 rlx-mimi rlx-nemotron-omni rlx-pocket-tts rlx-qwen3-asr rlx-chatterbox rlx-f5tts rlx-gepard rlx-kokoro rlx-luxtts rlx-melotts rlx-metavoice rlx-miotts rlx-miratts rlx-moss-nano rlx-openvoice rlx-parlertts rlx-piper rlx-sesame rlx-soprano rlx-supertonic rlx-zonos"
+    "rlx-bonsai rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-inkling rlx-kyutai-tts rlx-minicpm5 rlx-mistral rlx-moshi rlx-nemotron rlx-neutts rlx-orpheus rlx-maya1 rlx-phi rlx-qwen3-tts rlx-styletts2 rlx-tinyllama rlx-voxtral rlx-voxtral-tts rlx-zipvoice"
     "rlx-models rlx-qwen3-tts-train rlx-voxtral-tts-train"
 )
 
@@ -466,6 +471,15 @@ list_tiers() {
                 ;;
             rlx-narma10)
                 echo "  - rlx-narma10              (publish = false; NARMA-10 reference)"
+                ;;
+            rlx-tts-bench)
+                echo "  - rlx-tts-bench            (publish = false; unified TTS bench harness)"
+                ;;
+            rlx-vision-bench)
+                echo "  - rlx-vision-bench         (publish = false; vision train/bench harness)"
+                ;;
+            rlx-termclean)
+                echo "  - rlx-termclean            (publish = false; terminal cleanup helper)"
                 ;;
             *)
                 echo "  - $s"

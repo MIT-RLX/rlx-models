@@ -1,6 +1,6 @@
 [package]
 name = "rlx-models"
-version = "0.2.12"
+version = "0.2.13"
 edition.workspace = true
 rust-version.workspace = true
 description = "Model loading for RLX — config parsing, safetensors weights, graph builders"
@@ -28,6 +28,10 @@ rlx-clinicalbert = { workspace = true, optional = true }
 rlx-nomic = { workspace = true, optional = true }
 rlx-vision = { workspace = true, optional = true }
 rlx-dinov2 = { workspace = true, optional = true }
+rlx-dinov3 = { workspace = true, optional = true }
+rlx-trellis2 = { workspace = true, optional = true }
+rlx-uni2 = { workspace = true, optional = true }
+rlx-hoct = { workspace = true, optional = true }
 rlx-bioclip2 = { workspace = true, optional = true }
 rlx-embed = { workspace = true, optional = true }
 rlx-sam = { workspace = true, optional = true }
@@ -63,6 +67,7 @@ rlx-luxtts = { workspace = true, optional = true }
 rlx-zipvoice = { workspace = true, optional = true }
 rlx-moss-nano = { workspace = true, optional = true }
 rlx-maya1 = { workspace = true, optional = true }
+rlx-miratts = { workspace = true, optional = true }
 rlx-f5tts = { workspace = true, optional = true }
 rlx-piper = { workspace = true, optional = true }
 rlx-florence2 = { workspace = true, optional = true }
@@ -70,6 +75,12 @@ rlx-mimi = { workspace = true, optional = true }
 rlx-tsac = { workspace = true, optional = true }
 rlx-moshi = { workspace = true, optional = true }
 rlx-kyutai-tts = { workspace = true, optional = true }
+rlx-melotts = { workspace = true, optional = true }
+rlx-gepard  = { workspace = true, optional = true }
+rlx-openvoice = { workspace = true, optional = true }
+rlx-parlertts = { workspace = true, optional = true }
+rlx-metavoice = { workspace = true, optional = true }
+rlx-chatterbox = { workspace = true, optional = true }
 rlx-mistral = { workspace = true, optional = true }
 rlx-bonsai = { workspace = true, optional = true }
 rlx-minicpm5 = { workspace = true, optional = true, features = ["tokenizer"] }
@@ -77,6 +88,7 @@ rlx-tinyllama = { workspace = true, optional = true, features = ["tokenizer"] }
 rlx-phi = { workspace = true, optional = true }
 rlx-omnicoder = { workspace = true, optional = true }
 rlx-granite = { workspace = true, optional = true }
+rlx-inkling = { workspace = true, optional = true }
 rlx-cohere = { workspace = true, optional = true }
 rlx-llama-base = { workspace = true, optional = true }
 
@@ -132,6 +144,10 @@ clinicalbert = ["dep:rlx-clinicalbert"]
 nomic = ["dep:rlx-nomic"]
 vision = ["dep:rlx-vision"]
 dinov2 = ["dep:rlx-dinov2"]
+dinov3 = ["dep:rlx-dinov3"]
+trellis2 = ["dep:rlx-trellis2"]
+uni2 = ["dep:rlx-uni2"]
+hoct = ["dep:rlx-hoct"]
 bioclip2 = ["dep:rlx-bioclip2"]
 embed = ["dep:rlx-embed", "rlx-embed/embed"]
 flux2 = ["dep:rlx-flux2"]
@@ -149,6 +165,7 @@ tinyllama = ["dep:rlx-tinyllama"]
 phi = ["dep:rlx-phi"]
 omnicoder = ["dep:rlx-omnicoder"]
 granite = ["dep:rlx-granite"]
+inkling = ["dep:rlx-inkling"]
 cohere = ["dep:rlx-cohere"]
 lfm = ["dep:rlx-lfm"]
 sam = ["dep:rlx-sam", "sam-ir"]
@@ -171,13 +188,19 @@ neutts = ["dep:rlx-neutts"]
 orpheus = ["dep:rlx-orpheus"]
 kittentts = ["dep:rlx-kittentts"]
 kokoro = ["dep:rlx-kokoro"]
+# Native (ort-free) Kokoro path — graph-split encoder + decoder_raw on RLX backends.
+kokoro-native = ["kokoro", "rlx-kokoro/native"]
 supertonic = ["dep:rlx-supertonic"]
 luxtts = ["dep:rlx-luxtts"]
 zipvoice = ["dep:rlx-zipvoice"]
 moss-nano = ["dep:rlx-moss-nano"]
 maya1 = ["dep:rlx-maya1"]
+miratts = ["dep:rlx-miratts"]
 f5tts = ["dep:rlx-f5tts"]
 piper = ["dep:rlx-piper"]
+# Native (ort-free) piper over rlx-onnx-import + rlx-ir (enc_p + flow_dec split,
+# stochastic duration predictor in Rust).
+piper-native = ["piper", "rlx-piper/native"]
 qwen3-tts = ["dep:rlx-qwen3-tts"]
 voxtral-tts = ["dep:rlx-voxtral-tts"]
 # kyutai-tts pulls the moshi/mimi neural codec, which is the ONLY path to candle
@@ -186,6 +209,12 @@ mimi = ["dep:rlx-mimi"]
 moshi = ["dep:rlx-moshi"]
 tsac = ["dep:rlx-tsac"]
 kyutai-tts = ["dep:rlx-kyutai-tts", "mimi", "moshi"]
+melotts    = ["dep:rlx-melotts"]
+gepard     = ["dep:rlx-gepard"]
+openvoice = ["dep:rlx-openvoice"]
+parlertts = ["dep:rlx-parlertts"]
+metavoice = ["dep:rlx-metavoice"]
+chatterbox = ["dep:rlx-chatterbox"]
 
 # The generic model runner (`rlx_models::run`, `LmRunner`) hard-references a set
 # of families; enabling it pulls exactly those.
@@ -196,6 +225,8 @@ runner = [
     "gemma",
     "lfm",
     "dinov2",
+    "dinov3",
+    "uni2",
     "vjepa2",
     "flux2",
     "sam",
@@ -205,7 +236,7 @@ runner = [
 ]
 
 # ── Capability groups ───────────────────────────────────────────────────────
-encoders = ["bert", "clinicalbert", "nomic", "vision", "embed", "dinov2", "bioclip2"]
+encoders = ["bert", "clinicalbert", "nomic", "vision", "embed", "dinov2", "uni2", "bioclip2"]
 llm = [
     "runner",
     "qwen3",
@@ -222,10 +253,11 @@ llm = [
     "tinyllama",
     "omnicoder",
     "bonsai",
+    "inkling",
     "llama-base",
 ]
 asr = ["whisper", "wav2vec2-bert", "wav2vec2-asr", "voxtral", "qwen3-asr", "vad", "diarize", "aec"]
-tts = ["kyutai-tts", "kittentts", "kokoro", "supertonic", "luxtts", "zipvoice", "moss-nano", "maya1", "f5tts", "piper", "orpheus", "neutts", "qwen3-tts", "voxtral-tts", "tsac"]
+tts = ["kyutai-tts", "kittentts", "kokoro", "supertonic", "luxtts", "zipvoice", "moss-nano", "maya1", "miratts", "f5tts", "piper", "orpheus", "neutts", "qwen3-tts", "voxtral-tts", "tsac", "melotts", "openvoice", "parlertts", "metavoice", "chatterbox", "gepard"]
 vision-models = [
     "sam",
     "sam2",
@@ -236,6 +268,7 @@ vision-models = [
     "flux2",
     "diamond",
     "dinov2",
+    "uni2",
     "bioclip2",
 ]
 all-models = ["encoders", "llm", "asr", "tts", "vision-models", "ocr", "runner"]
@@ -283,6 +316,10 @@ metal = [
     "rlx-bonsai?/metal",
     "rlx-cohere?/metal",
     "rlx-dinov2?/metal",
+    "rlx-dinov3?/metal",
+    "rlx-trellis2?/metal",
+    "rlx-uni2?/metal",
+    "rlx-hoct?/metal",
     "rlx-bioclip2?/metal",
     "rlx-embed?/metal",
     "rlx-flux2?/metal",
@@ -305,6 +342,7 @@ metal = [
     "rlx-zipvoice?/metal",
     "rlx-moss-nano?/metal",
     "rlx-maya1?/metal",
+    "rlx-miratts?/metal",
     "rlx-f5tts?/metal",
     "rlx-piper?/metal",
     "rlx-florence2?/metal",
@@ -336,6 +374,10 @@ mlx = [
     "rlx-bonsai?/mlx",
     "rlx-cohere?/mlx",
     "rlx-dinov2?/mlx",
+    "rlx-dinov3?/mlx",
+    "rlx-trellis2?/mlx",
+    "rlx-uni2?/mlx",
+    "rlx-hoct?/mlx",
     "rlx-bioclip2?/mlx",
     "rlx-embed?/mlx",
     "rlx-flux2?/mlx",
@@ -358,6 +400,7 @@ mlx = [
     "rlx-zipvoice?/mlx",
     "rlx-moss-nano?/mlx",
     "rlx-maya1?/mlx",
+    "rlx-miratts?/mlx",
     "rlx-f5tts?/mlx",
     "rlx-piper?/mlx",
     "rlx-florence2?/mlx",
@@ -392,6 +435,7 @@ coreml = [
     "rlx-qwen3?/coreml",
     "rlx-qwen35?/coreml",
     "rlx-whisper?/coreml",
+    "rlx-piper?/coreml",
 ]
 gpu = [
     "embed",
@@ -402,6 +446,10 @@ gpu = [
     "rlx-bonsai?/gpu",
     "rlx-cohere?/gpu",
     "rlx-dinov2?/gpu",
+    "rlx-dinov3?/gpu",
+    "rlx-trellis2?/gpu",
+    "rlx-uni2?/gpu",
+    "rlx-hoct?/gpu",
     "rlx-bioclip2?/gpu",
     "rlx-embed?/gpu",
     "rlx-flux2?/gpu",
@@ -424,6 +472,7 @@ gpu = [
     "rlx-zipvoice?/gpu",
     "rlx-moss-nano?/gpu",
     "rlx-maya1?/gpu",
+    "rlx-miratts?/gpu",
     "rlx-f5tts?/gpu",
     "rlx-piper?/gpu",
     "rlx-florence2?/gpu",
@@ -458,6 +507,10 @@ vulkan = [
     "rlx-bonsai?/vulkan",
     "rlx-cohere?/vulkan",
     "rlx-dinov2?/vulkan",
+    "rlx-dinov3?/vulkan",
+    "rlx-trellis2?/vulkan",
+    "rlx-uni2?/vulkan",
+    "rlx-hoct?/vulkan",
     "rlx-bioclip2?/vulkan",
     "rlx-embed?/vulkan",
     "rlx-flux2?/vulkan",
@@ -500,6 +553,10 @@ cuda = [
     "rlx-bonsai?/cuda",
     "rlx-cohere?/cuda",
     "rlx-dinov2?/cuda",
+    "rlx-dinov3?/cuda",
+    "rlx-trellis2?/cuda",
+    "rlx-uni2?/cuda",
+    "rlx-hoct?/cuda",
     "rlx-bioclip2?/cuda",
     "rlx-embed?/cuda",
     "rlx-flux2?/cuda",
@@ -522,6 +579,7 @@ cuda = [
     "rlx-zipvoice?/cuda",
     "rlx-moss-nano?/cuda",
     "rlx-maya1?/cuda",
+    "rlx-miratts?/cuda",
     "rlx-f5tts?/cuda",
     "rlx-piper?/cuda",
     "rlx-florence2?/cuda",
@@ -552,6 +610,10 @@ rocm = [
     "rlx-bonsai?/rocm",
     "rlx-cohere?/rocm",
     "rlx-dinov2?/rocm",
+    "rlx-dinov3?/rocm",
+    "rlx-trellis2?/rocm",
+    "rlx-uni2?/rocm",
+    "rlx-hoct?/rocm",
     "rlx-bioclip2?/rocm",
     "rlx-embed?/rocm",
     "rlx-flux2?/rocm",
@@ -570,6 +632,7 @@ rocm = [
     "rlx-kittentts?/rocm",
     "rlx-kokoro?/rocm",
     "rlx-supertonic?/rocm",
+    "rlx-miratts?/rocm",
     "rlx-florence2?/rocm",
     "rlx-nomic?/rocm",
     "rlx-ocr?/rocm",
@@ -698,12 +761,12 @@ path = "examples/voxtral_tts_bench.rs"
 [[example]]
 name = "qwen3_tts_download"
 path = "examples/qwen3_tts_download.rs"
-required-features = ["hf-download"]
+required-features = ["hf-download", "qwen3-tts"]
 
 [[example]]
 name = "qwen3_tts_download_base"
 path = "examples/qwen3_tts_download_base.rs"
-required-features = ["hf-download"]
+required-features = ["hf-download", "qwen3-tts"]
 
 [[example]]
 name = "qwen3_tts_jfk_manifest"
@@ -1020,6 +1083,14 @@ required-features = ["qwen3-tts", "whisper"]
 [[test]]
 name = "real_weights_bonsai_stub"
 required-features = ["bonsai", "llama32"]
+
+[[test]]
+name = "real_weights_bonsai27b"
+required-features = ["bonsai", "qwen35"]
+
+[[test]]
+name = "real_weights_ternary_bonsai27b"
+required-features = ["bonsai", "qwen35"]
 
 [[test]]
 name = "real_weights_gemma3"

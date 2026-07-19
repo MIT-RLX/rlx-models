@@ -9,6 +9,7 @@
 
 pub mod audio;
 pub mod config;
+pub mod coreml;
 pub mod glue;
 pub mod model;
 
@@ -16,8 +17,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+pub use audio::{
+    MIN_AUDIBLE_PEAK, MIN_AUDIBLE_SAMPLES, ensure_audible, normalize_audio, peak_amplitude,
+    write_wav,
+};
 pub use config::BundleConfig;
-pub use model::{InferOpts, TinyModel};
+pub use coreml::{ensure_coreml_units_for_tts, resolve_tts_device};
+pub use model::{InferOpts, KernelVariant, TinyModel};
 pub use rlx_runtime::Device;
 
 /// Re-export the versatile bundle-loading types so callers can build an

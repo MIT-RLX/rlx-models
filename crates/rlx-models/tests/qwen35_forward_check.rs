@@ -228,8 +228,18 @@ fn qwen35_prefill_cache_and_decode_graphs_run() {
         ("rope_cos", cos.as_slice()),
         ("rope_sin", sin.as_slice()),
     ];
-    let owned = decode_step_feeds(&cfg, &cache, &[token as u32], &cos, &sin, None, &[0usize])
-        .expect("feeds");
+    let owned = decode_step_feeds(
+        &cfg,
+        &cache,
+        &[token as u32],
+        &cos,
+        &sin,
+        None,
+        &[0usize],
+        None,
+        None,
+    )
+    .expect("feeds");
     for (name, data) in &owned {
         dec_feeds.push((name, data.as_slice()));
     }
@@ -281,8 +291,18 @@ fn qwen35_prefill_cache_batch2_decode_runs() {
     let head_half = cfg.key_length / 2;
     let (cos, sin) = mrope_slice_at_pos(&cfg, past_seq, head_half);
     let tokens = vec![9u32, 10u32];
-    let owned = decode_step_feeds(&cfg, &cache, &tokens, &cos, &sin, None, &[0usize, 0usize])
-        .expect("feeds");
+    let owned = decode_step_feeds(
+        &cfg,
+        &cache,
+        &tokens,
+        &cos,
+        &sin,
+        None,
+        &[0usize, 0usize],
+        None,
+        None,
+    )
+    .expect("feeds");
     let dec_feeds: Vec<(&str, &[f32])> = owned
         .iter()
         .map(|(name, data)| (name.as_str(), data.as_slice()))

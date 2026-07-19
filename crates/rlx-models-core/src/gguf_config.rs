@@ -151,6 +151,9 @@ pub fn gguf_runner_hint(arch: &str) -> &'static str {
                 "rlx-gemma (`--packed` for large K-quant GGUF)"
             }
             crate::gguf_support::GgufModelFamily::Lfm => "rlx-lfm (`LfmRunner::builder().weights`)",
+            crate::gguf_support::GgufModelFamily::Inkling => {
+                "rlx-inkling (`--weights` GGUF sniff; RLX eager on --synth/--fixture)"
+            }
         };
     }
     "unknown — register a custom GgufTensorNameResolver or WeightFormatRegistration"
@@ -169,7 +172,12 @@ pub fn gguf_memory_footprint(raw: &GgufFile) -> GgufMemoryFootprint {
     for t in raw.tensors.values() {
         let n = t.n_elements() as u64;
         f32_bytes += n * 4;
-        packed_file_bytes += raw.tensor_bytes(t).map(|b| b.len() as u64).unwrap_or(n * 4);
+        // Canonical on-disk block size for the dtype (correct even on a
+        // header-only read where the data segment isn't loaded — e.g. the
+        // 1-bit Q1_0 Bonsai-27B, which is ~1.125 bpw, not F32-sized).
+        packed_file_bytes += rlx_gguf::bytes_for_public(t.dtype, t.n_elements())
+            .map(|b| b as u64)
+            .unwrap_or(n * 4);
     }
     GgufMemoryFootprint {
         f32_bytes,

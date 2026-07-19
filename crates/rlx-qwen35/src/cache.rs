@@ -28,12 +28,83 @@ pub enum Qwen35LayerState {
         ssm_state: Vec<f32>,
     },
     /// Standard attention block — pre-GQA K/V cache.
+    /// Only allocated for full-attention trunk layers (`full_attention_interval`).
     FullAttn {
         /// `[batch, past_seq, n_kv * head_dim]`, post-RoPE K.
+        /// Empty when [`Self::FullAttn::packed`] is set (dequant on feed).
         past_k: Vec<f32>,
         /// `[batch, past_seq, n_kv * head_dim]`, pre-GQA V.
         past_v: Vec<f32>,
+        /// Optional host-side quantized KV (`RLX_QWEN35_KV_QUANT=f16|q4_0|q8_0`).
+        /// Cuts long-context RAM; graph feeds still receive f32.
+        packed: Option<Box<rlx_runtime::quantized_kv::QuantizedKvLayer>>,
     },
+}
+
+/// Parse `RLX_QWEN35_KV_QUANT` → scheme (full-attn layers only).
+fn kv_quant_from_env() -> Option<rlx_runtime::quantized_kv::KvQuant> {
+    use rlx_runtime::quantized_kv::KvQuant;
+    match std::env::var("RLX_QWEN35_KV_QUANT")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("f16") | Some("fp16") => Some(KvQuant::F16),
+        Some("q4_0") | Some("q4") => Some(KvQuant::Q4_0),
+        Some("q8_0") | Some("q8") => Some(KvQuant::Q8_0),
+        Some("q5_0") | Some("q5") => Some(KvQuant::Q5_0),
+        _ => None,
+    }
+}
+
+fn maybe_pack_full_attn_kv(
+    past_k: Vec<f32>,
+    past_v: Vec<f32>,
+    kv_cols: usize,
+) -> anyhow::Result<Qwen35LayerState> {
+    use anyhow::{Context, bail};
+    use rlx_runtime::quantized_kv::QuantizedKvLayer;
+
+    let Some(scheme) = kv_quant_from_env() else {
+        return Ok(Qwen35LayerState::FullAttn {
+            past_k,
+            past_v,
+            packed: None,
+        });
+    };
+    if past_k.len() != past_v.len() {
+        bail!("pack kv: k/v len mismatch");
+    }
+    if !past_k.len().is_multiple_of(kv_cols) {
+        bail!(
+            "pack kv: len {} not multiple of kv_cols {kv_cols}",
+            past_k.len()
+        );
+    }
+    let mut layer = QuantizedKvLayer::new(kv_cols, scheme).context("QuantizedKvLayer::new")?;
+    layer.append_rows(&past_k, &past_v).context("append_rows")?;
+    Ok(Qwen35LayerState::FullAttn {
+        past_k: Vec::new(),
+        past_v: Vec::new(),
+        packed: Some(Box::new(layer)),
+    })
+}
+
+fn full_attn_kv_f32(layer: &Qwen35LayerState) -> anyhow::Result<(Vec<f32>, Vec<f32>)> {
+    use anyhow::{Context, bail};
+    match layer {
+        Qwen35LayerState::FullAttn {
+            past_k,
+            past_v,
+            packed: None,
+        } => Ok((past_k.clone(), past_v.clone())),
+        Qwen35LayerState::FullAttn {
+            packed: Some(q), ..
+        } => q.read_all().context("quantized kv read_all"),
+        _ => bail!("full_attn_kv_f32: not a FullAttn layer"),
+    }
 }
 
 /// Host-side decode cache seeded from a prefill-with-states forward.
@@ -127,7 +198,12 @@ fn linear_conv_channels(cfg: &Qwen35Config) -> usize {
 }
 
 /// Build `[batch, bucket_upper + 1]` attention mask for bucketed decode.
-/// Positions before each row's valid prefix (prompt + generated) are 1.0.
+///
+/// Bucketed decode concatenates padded `past_k` `[B, upper, kv]` with the new
+/// token → `[B, upper + 1, kv]`; the new K/V row lives at index `upper`, not
+/// `past_seq`. Mask ones at `i < past_seq` (valid prefix only) and at
+/// `i == bucket_upper` (current query slot). Matches Metal bucketed-decode
+/// parity tests (`metal_bucketed_decode_attn_parity.rs`).
 pub fn build_decode_attention_mask(
     batch: usize,
     past_seq: usize,
@@ -141,9 +217,11 @@ pub fn build_decode_attention_mask(
         let valid = prompt_lens.get(b).copied().unwrap_or(past_seq)
             + generated_per_row.get(b).copied().unwrap_or(0);
         let base = b * mask_len;
-        for t in 0..=past_seq.min(bucket_upper) {
-            if t < valid {
-                mask[base + t] = 1.0;
+        for i in 0..mask_len {
+            if i == bucket_upper {
+                mask[base + i] = 1.0;
+            } else if i < past_seq && i < valid {
+                mask[base + i] = 1.0;
             }
         }
     }
@@ -168,7 +246,16 @@ pub fn pad_kv_to_bucket(
     out
 }
 
-/// Slice bucketed K/V outputs back to `[batch, actual_past, kv_cols]`.
+/// Slice bucketed K/V outputs back to dense `[batch, actual_past, kv_cols]`.
+///
+/// **Decode layout** (`concat(past_k_padded[upper], new_k[1], dim=1)`):
+/// buffer is `[batch, upper + 1, kv]` with the new token at index `upper`, not
+/// at `past_seq`. Copying a contiguous prefix of length `past_seq + 1` would
+/// keep the zero pad at `past_seq` and drop the real new K/V — every cached
+/// step then absorbs padding and sequential AR drifts.
+///
+/// **Prefill / dense pad**: when `src` is only `[batch, src_seq, kv]` (no
+/// trailing new-token row), take the contiguous valid prefix.
 pub fn slice_kv_from_bucket(
     src: &[f32],
     batch: usize,
@@ -177,23 +264,46 @@ pub fn slice_kv_from_bucket(
     kv_cols: usize,
 ) -> anyhow::Result<Vec<f32>> {
     use anyhow::bail;
-    // Decode graphs concat padded `past_k` `[batch, bucket_upper, kv]` with the
-    // new token → `[batch, bucket_upper + 1, kv]` row-major layout.
-    let out_seq = bucket_upper.saturating_add(1);
+    if actual_past == 0 {
+        return Ok(Vec::new());
+    }
+    let decode_seq = bucket_upper.saturating_add(1);
+    let decode_len = batch * decode_seq * kv_cols;
+    if src.len() >= decode_len {
+        let mut out = vec![0f32; batch * actual_past * kv_cols];
+        let old_past = actual_past - 1;
+        for b in 0..batch {
+            let src_base = b * decode_seq * kv_cols;
+            let dst_base = b * actual_past * kv_cols;
+            let prefix = old_past * kv_cols;
+            if prefix > 0 {
+                out[dst_base..dst_base + prefix].copy_from_slice(&src[src_base..src_base + prefix]);
+            }
+            let src_new = src_base + bucket_upper * kv_cols;
+            let dst_new = dst_base + old_past * kv_cols;
+            out[dst_new..dst_new + kv_cols].copy_from_slice(&src[src_new..src_new + kv_cols]);
+        }
+        return Ok(out);
+    }
+
+    let src_seq = if batch == 0 || kv_cols == 0 {
+        0
+    } else {
+        src.len() / (batch * kv_cols)
+    };
+    if src_seq < actual_past {
+        bail!(
+            "slice_kv_from_bucket: need at least {actual_past} rows, got {src_seq} \
+             (batch={batch}, bucket_upper={bucket_upper}, src.len={})",
+            src.len()
+        );
+    }
     let mut out = vec![0f32; batch * actual_past * kv_cols];
     for b in 0..batch {
-        let src_base = b * out_seq * kv_cols;
+        let src_base = b * src_seq * kv_cols;
         let dst_base = b * actual_past * kv_cols;
         let copy_len = actual_past * kv_cols;
-        let end = src_base + copy_len;
-        if end > src.len() {
-            bail!(
-                "slice_kv_from_bucket: need {end} floats in bucket output, got {} \
-                 (batch={batch}, actual_past={actual_past}, bucket_upper={bucket_upper})",
-                src.len()
-            );
-        }
-        out[dst_base..dst_base + copy_len].copy_from_slice(&src[src_base..end]);
+        out[dst_base..dst_base + copy_len].copy_from_slice(&src[src_base..src_base + copy_len]);
     }
     Ok(out)
 }
@@ -211,7 +321,12 @@ pub fn zero_prompt_padding_kv(
         if !kinds[il] {
             continue;
         }
-        if let Qwen35LayerState::FullAttn { past_k, past_v } = layer {
+        if let Qwen35LayerState::FullAttn {
+            past_k,
+            past_v,
+            packed: None,
+        } = layer
+        {
             for b in 0..cache.batch {
                 let prompt_len = cache.prompt_lens.get(b).copied().unwrap_or(padded_seq);
                 if prompt_len >= padded_seq {
@@ -223,6 +338,13 @@ pub fn zero_prompt_padding_kv(
                     past_v[start..start + kv_cols].fill(0.0);
                 }
             }
+        } else if let Qwen35LayerState::FullAttn {
+            packed: Some(_), ..
+        } = layer
+        {
+            // Quantized host KV: padding zeros are applied on the f32 feed path
+            // via mask; packed rows stay dense for the actual past_seq.
+            let _ = kv_cols;
         }
     }
 }
@@ -239,6 +361,12 @@ pub fn decode_step_feeds(
     rope_sin: &[f32],
     bucket_upper: Option<usize>,
     generated_per_row: &[usize],
+    // `Some(token_embd)` under RLX_QWEN35_HOST_EMBED: gather each new token's
+    // embedding row host-side and feed `inputs_embeds`, so the decode graph
+    // never registers the full `[vocab, hidden]` F32 table (Bonsai-27B 4.7 GiB).
+    host_embed_table: Option<&[f32]>,
+    // When set, feed flat `[batch * hidden]` as `inputs_embeds` (Gepard audio frames).
+    custom_embed: Option<&[f32]>,
 ) -> anyhow::Result<Vec<(String, Vec<f32>)>> {
     use anyhow::bail;
 
@@ -257,6 +385,19 @@ pub fn decode_step_feeds(
         ("rope_cos".into(), rope_cos.to_vec()),
         ("rope_sin".into(), rope_sin.to_vec()),
     ];
+    if let Some(embed) = custom_embed {
+        feeds.push(("inputs_embeds".into(), embed.to_vec()));
+    } else if let Some(tbl) = host_embed_table {
+        let n_embd = cfg.hidden_size;
+        let mut e = vec![0f32; tokens.len() * n_embd];
+        for (b, &t) in tokens.iter().enumerate() {
+            let src = (t as usize) * n_embd;
+            if src + n_embd <= tbl.len() {
+                e[b * n_embd..b * n_embd + n_embd].copy_from_slice(&tbl[src..src + n_embd]);
+            }
+        }
+        feeds.push(("inputs_embeds".into(), e));
+    }
     if let Some(upper) = bucket_upper {
         let mask = build_decode_attention_mask(
             cache.batch,
@@ -283,19 +424,20 @@ pub fn decode_step_feeds(
                 feeds.push((format!("conv_state_l{il}"), conv_state.clone()));
                 feeds.push((format!("ssm_state_l{il}"), ssm_state.clone()));
             }
-            (Qwen35LayerState::FullAttn { past_k, past_v }, true) => {
+            (Qwen35LayerState::FullAttn { .. }, true) => {
+                let (past_k, past_v) = full_attn_kv_f32(layer)?;
                 if let Some(upper) = bucket_upper {
                     feeds.push((
                         format!("past_k_l{il}"),
-                        pad_kv_to_bucket(past_k, cache.batch, cache.past_seq, upper, kv_cols),
+                        pad_kv_to_bucket(&past_k, cache.batch, cache.past_seq, upper, kv_cols),
                     ));
                     feeds.push((
                         format!("past_v_l{il}"),
-                        pad_kv_to_bucket(past_v, cache.batch, cache.past_seq, upper, kv_cols),
+                        pad_kv_to_bucket(&past_v, cache.batch, cache.past_seq, upper, kv_cols),
                     ));
                 } else {
-                    feeds.push((format!("past_k_l{il}"), past_k.clone()));
-                    feeds.push((format!("past_v_l{il}"), past_v.clone()));
+                    feeds.push((format!("past_k_l{il}"), past_k));
+                    feeds.push((format!("past_v_l{il}"), past_v));
                 }
             }
             _ => {}
@@ -419,7 +561,7 @@ pub fn seed_cache_from_outputs(
                     v.len()
                 );
             };
-            layers.push(Qwen35LayerState::FullAttn { past_k, past_v });
+            layers.push(maybe_pack_full_attn_kv(past_k, past_v, kv_cols)?);
         } else {
             let conv = iter.next().context("conv_state missing")?;
             let ssm = iter.next().context("ssm_state missing")?;
@@ -533,10 +675,7 @@ pub fn advance_cache_from_decode_outputs(
                     v.len()
                 );
             }
-            new_layers.push(Qwen35LayerState::FullAttn {
-                past_k: k,
-                past_v: v,
-            });
+            new_layers.push(maybe_pack_full_attn_kv(k, v, kv_cols)?);
             let _ = layer;
         } else {
             let conv = iter.next().context("conv_state missing")?;
@@ -660,6 +799,7 @@ mod tests {
             layers: vec![Qwen35LayerState::FullAttn {
                 past_k: vec![0.0; batch * past_seq * kv_cols],
                 past_v: vec![0.0; batch * past_seq * kv_cols],
+                packed: None,
             }],
         };
 
@@ -686,7 +826,11 @@ mod tests {
         assert_eq!(mtp.unwrap(), mtp_logits);
         assert_eq!(cache.past_seq, new_past);
         match &cache.layers[0] {
-            Qwen35LayerState::FullAttn { past_k, past_v } => {
+            Qwen35LayerState::FullAttn {
+                past_k,
+                past_v,
+                packed: None,
+            } => {
                 assert_eq!(past_k, &new_k);
                 assert_eq!(past_v, &new_v);
             }
@@ -716,6 +860,7 @@ mod tests {
             layers: vec![Qwen35LayerState::FullAttn {
                 past_k: vec![0.0; batch * kv_cols],
                 past_v: vec![0.0; batch * kv_cols],
+                packed: None,
             }],
         };
 
@@ -729,5 +874,43 @@ mod tests {
             advance_cache_from_decode_outputs(&cfg, &mut cache, outputs, None, true, false, false)
                 .unwrap();
         assert!(mtp.is_none());
+    }
+
+    #[test]
+    fn decode_attention_mask_enables_upper_slot() {
+        let past_seq = 17usize;
+        let upper = 32usize;
+        let mask = build_decode_attention_mask(1, past_seq, upper, &[35], &[1]);
+        assert_eq!(mask.len(), upper + 1);
+        for (i, &v) in mask.iter().enumerate() {
+            let want = if i < past_seq || i == upper { 1.0 } else { 0.0 };
+            assert_eq!(v, want, "mask[{i}]");
+        }
+    }
+
+    #[test]
+    fn slice_kv_from_bucket_keeps_new_row_at_upper() {
+        // past_seq=2, upper=4 → output rows [p0, p1, pad, pad, new]
+        let batch = 1;
+        let past_seq = 2usize;
+        let upper = 4usize;
+        let kv_cols = 3usize;
+        let new_past = past_seq + 1;
+        let mut src = vec![0f32; batch * (upper + 1) * kv_cols];
+        // past rows
+        src[0..3].copy_from_slice(&[1.0, 1.0, 1.0]);
+        src[3..6].copy_from_slice(&[2.0, 2.0, 2.0]);
+        // new token at upper
+        src[upper * kv_cols..(upper + 1) * kv_cols].copy_from_slice(&[9.0, 9.0, 9.0]);
+        let out = slice_kv_from_bucket(&src, batch, new_past, upper, kv_cols).unwrap();
+        assert_eq!(out, vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 9.0, 9.0, 9.0]);
+    }
+
+    #[test]
+    fn slice_kv_from_bucket_prefix_when_no_decode_pad() {
+        let src = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0, 0.0];
+        // batch=1, src_seq=4, kv=2, take first 3 rows
+        let out = slice_kv_from_bucket(&src, 1, 3, 4, 2).unwrap();
+        assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 }

@@ -219,10 +219,10 @@ pub struct Qwen35MtpLayer {
 /// Top-level Qwen3.5 / Qwen3.6 weight bundle.
 #[derive(Debug, Clone)]
 pub struct Qwen35Weights {
-    /// `[n_vocab, n_embd]`. Kept as `Vec<f32>` because the embed
-    /// table is always materialized for the `Op::Gather` lookup
-    /// (no packed-gather kernel today).
-    pub token_embd: Vec<f32>,
+    /// `[n_vocab, n_embd]`. Shared via [`Arc`] so graph-build clones are
+    /// cheap — Bonsai-27B's table is ~4.7 GiB; deep-copying it on every
+    /// `weights.clone()` dominated packed CUDA compile wall time.
+    pub token_embd: std::sync::Arc<[f32]>,
     /// `[n_embd]`
     pub output_norm: Vec<f32>,
     /// `[n_vocab, n_embd]` — optional; tied to `token_embd` if absent.
@@ -291,7 +291,7 @@ impl Qwen35Weights {
         let interval = cfg.full_attention_interval.max(1);
 
         let token_embd_lm = pack_via.and_then(|p| peek_gguf_packed_mat(p, "token_embd.weight"));
-        let token_embd = take_f32(loader, "token_embd.weight")?;
+        let token_embd = std::sync::Arc::<[f32]>::from(take_f32(loader, "token_embd.weight")?);
         let output_norm = take_f32(loader, "output_norm.weight")?;
         let output = take_mat(loader, "output.weight", pack_via).ok();
 
@@ -335,6 +335,8 @@ fn peek_gguf_packed_mat(loader: *mut GgufLoader, key: &str) -> Option<MatWeight>
         GgmlType::Q5K => QuantScheme::GgufQ5K,
         GgmlType::Q6K => QuantScheme::GgufQ6K,
         GgmlType::Q8K => QuantScheme::GgufQ8K,
+        GgmlType::Q1_0 => QuantScheme::GgufQ1_0,
+        GgmlType::Q2_0 => QuantScheme::GgufQ2_0,
         _ => return None,
     };
     let mut shape = t.shape.clone();

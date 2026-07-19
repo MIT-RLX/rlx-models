@@ -1,5 +1,5 @@
 //! SNAC decode backend — host eager safetensors, or native RLX conv decoder on
-//! a GPU backend (Metal / MLX / wgpu / CoreML) via the compiled HIR path.
+//! a GPU backend (Metal / MLX / wgpu / CUDA / CoreML) via the compiled HIR path.
 
 use std::path::Path;
 
@@ -23,6 +23,8 @@ pub enum SnacExec {
     Mlx,
     /// Native RLX wgpu (`Device::Gpu`).
     Wgpu,
+    /// Native RLX CUDA.
+    Cuda,
 }
 
 /// Load options for [`SnacBackend::open`].
@@ -50,6 +52,7 @@ impl SnacBackend {
                 SnacExec::Metal => Some(Device::Metal),
                 SnacExec::Mlx => Some(Device::Mlx),
                 SnacExec::Wgpu => Some(Device::Gpu),
+                SnacExec::Cuda => Some(Device::Cuda),
             };
             if let Some(dev) = device {
                 if is_available(dev) {

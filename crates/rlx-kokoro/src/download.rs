@@ -17,19 +17,43 @@
 
 use std::path::PathBuf;
 
-#[cfg(feature = "hf-download")]
-use anyhow::{Context, Result};
 #[cfg(not(feature = "hf-download"))]
 use anyhow::Result;
+#[cfg(feature = "hf-download")]
+use anyhow::{Context, Result};
 
 use crate::config::{DEFAULT_HF_REPO, DEFAULT_LOCAL_DIR};
 
 /// English voice packs shipped with the v1.0 ONNX repo (American + British).
 pub const ENGLISH_VOICES: &[&str] = &[
-    "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", "af_kore", "af_nicole",
-    "af_nova", "af_river", "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric", "am_fenrir",
-    "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa", "bf_alice", "bf_emma",
-    "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+    "af_heart",
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
 ];
 
 /// HF cache root (respects `HF_HOME` / `HUGGINGFACE_HUB_CACHE`).
@@ -52,7 +76,11 @@ pub fn hf_hub_root() -> PathBuf {
 /// Download the default Kokoro bundle (`model_file` + English voices) into
 /// `dest`, matching the on-disk layout the loader expects.
 #[cfg(feature = "hf-download")]
-pub fn fetch_to_local_dir(repo_id: &str, model_file: &str, dest: &std::path::Path) -> Result<PathBuf> {
+pub fn fetch_to_local_dir(
+    repo_id: &str,
+    model_file: &str,
+    dest: &std::path::Path,
+) -> Result<PathBuf> {
     let api = hf_hub::api::sync::ApiBuilder::new()
         .with_cache_dir(hf_hub_root())
         .build()
@@ -68,7 +96,9 @@ pub fn fetch_to_local_dir(repo_id: &str, model_file: &str, dest: &std::path::Pat
         std::fs::copy(&src, dest.join(name))?;
     }
     let onnx_rel = format!("onnx/{model_file}");
-    let src = repo.get(&onnx_rel).with_context(|| format!("download {onnx_rel}"))?;
+    let src = repo
+        .get(&onnx_rel)
+        .with_context(|| format!("download {onnx_rel}"))?;
     std::fs::copy(&src, dest.join(&onnx_rel))?;
 
     // Voices (English set; others need non-English espeak data).

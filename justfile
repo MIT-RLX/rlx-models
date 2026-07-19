@@ -168,6 +168,50 @@ qwen3 *ARGS:
 qwen35 *ARGS:
     just run-bin rlx-qwen35 rlx-qwen35 {{ARGS}}
 
+# prism-ml/Bonsai-27B (qwen35 arch, Q1_0 packed). Downloads to weights/Bonsai-27B-gguf/.
+fetch-bonsai27b:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="{{real_weights_dir}}/Bonsai-27B-gguf"
+    mkdir -p "$dest"
+    gguf="$dest/Bonsai-27B-Q1_0.gguf"
+    if [ ! -s "$gguf" ]; then
+      echo ">> downloading Bonsai-27B-Q1_0.gguf → $gguf"
+      curl -L -C - --retry 5 -o "$gguf" \
+        "https://huggingface.co/prism-ml/Bonsai-27B-gguf/resolve/main/Bonsai-27B-Q1_0.gguf"
+    fi
+    ls -lh "$gguf"
+
+# prism-ml/Ternary-Bonsai-27B (qwen35 arch, Q2_0_g128 packed). ~7.2 GB.
+fetch-ternary-bonsai27b:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="{{real_weights_dir}}/Ternary-Bonsai-27B-gguf"
+    mkdir -p "$dest"
+    gguf="$dest/Ternary-Bonsai-27B-Q2_0.gguf"
+    if [ ! -s "$gguf" ]; then
+      echo ">> downloading Ternary-Bonsai-27B-Q2_0.gguf → $gguf"
+      curl -L -C - --retry 5 -o "$gguf" \
+        "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-Q2_0.gguf"
+    fi
+    ls -lh "$gguf"
+
+# Dispatch CLI: sniffs GGUF arch (qwen35 → Qwen35Runner). Always pass --packed for 27B.
+bonsai *ARGS:
+    cargo run -p rlx-models --bin rlx-run {{profile}} \
+      {{ if features != "" { "--features " + features + ",bonsai,qwen35,llama32" } else { "--features bonsai,qwen35,llama32" } }} \
+      -- bonsai {{ARGS}}
+
+# Real-weight header/config check (env RLX_BONSAI27B_GGUF or default path).
+test-bonsai27b *ARGS:
+    RLX_BONSAI27B_GGUF="${RLX_BONSAI27B_GGUF:-{{real_weights_dir}}/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf}" \
+      cargo test -p rlx-models --features "bonsai,qwen35" --test real_weights_bonsai27b {{profile}} {{ARGS}}
+
+# Ternary Bonsai-27B header/config check (env RLX_TERNARY_BONSAI27B_GGUF or default).
+test-ternary-bonsai27b *ARGS:
+    RLX_TERNARY_BONSAI27B_GGUF="${RLX_TERNARY_BONSAI27B_GGUF:-{{real_weights_dir}}/Ternary-Bonsai-27B-gguf/Ternary-Bonsai-27B-Q2_0.gguf}" \
+      cargo test -p rlx-models --features "bonsai,qwen35" --test real_weights_ternary_bonsai27b {{profile}} {{ARGS}}
+
 llama32 *ARGS:
     just run-bin rlx-llama32 rlx-llama32 {{ARGS}}
 
@@ -185,6 +229,25 @@ tinyllama-pipeline *ARGS:
 
 phi *ARGS:
     just run-bin rlx-phi rlx-phi {{ARGS}}
+
+# thinkingmachines/Inkling — multimodal MoE scaffold (config / weight map / synth text forward).
+inkling *ARGS:
+    just run-bin rlx-inkling rlx-inkling {{ARGS}}
+
+test-inkling *ARGS:
+    cargo test -p rlx-inkling {{profile}} {{ARGS}}
+
+# Eager text forward vs checked-in transformers tiny dump (no Hub download).
+test-inkling-parity *ARGS:
+    cargo test -p rlx-inkling --test hf_tiny_parity {{profile}} {{ARGS}}
+
+# Header-only shape probe against the Hub (config+index + Range GETs; no shard payload).
+inkling-probe-remote *ARGS:
+    cargo run -p rlx-inkling --features hf-probe {{profile}} -- --probe-remote {{ARGS}}
+
+# Unsloth GGUF header sniff (meta + first weight shard; Range only — no IQ payload).
+inkling-probe-gguf *ARGS:
+    cargo run -p rlx-inkling --features hf-probe {{profile}} -- --probe-gguf-remote {{ARGS}}
 
 # Chat inference: HF chat template → rlx-minicpm5 (CPU fastest/reliable on Apple Silicon today).
 minicpm5-chat MESSAGE *ARGS:
@@ -383,6 +446,42 @@ gemma4-decode-bench-metal *ARGS:
 dinov2 *ARGS:
     just run-bin rlx-dinov2 rlx-dinov2 {{ARGS}}
 
+hoct *ARGS:
+    just run-bin rlx-hoct rlx-hoct {{ARGS}}
+
+fetch-hoct:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    CACHE="${HOCT_CACHE_DIR:-.cache/hoct}"
+    mkdir -p "$CACHE"
+    PT="$CACHE/general_v0.pt"
+    ST="$CACHE/general_v0.safetensors"
+    if [[ ! -s "$PT" ]]; then
+      curl -fsSL -o "$PT" \
+        "https://github.com/royerlab/hoct/releases/download/weights-v0/general_v0.pt"
+    fi
+    if [[ ! -s "$ST" ]]; then
+      python3 crates/rlx-hoct/scripts/export_jit_safetensors.py "$PT" -o "$ST"
+    fi
+    echo "HOCT weights: $ST"
+
+test-hoct-parity:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just fetch-hoct
+    export HOCT_WEIGHTS="${HOCT_CACHE_DIR:-.cache/hoct}/general_v0.safetensors"
+    # Refresh JIT reference dumps when Torch is available (optional).
+    if [[ -f "${HOCT_CACHE_DIR:-.cache/hoct}/general_v0.pt" ]] && python3 -c "import torch" 2>/dev/null; then
+      python3 crates/rlx-hoct/scripts/dump_jit_reference.py \
+        --pt "${HOCT_CACHE_DIR:-.cache/hoct}/general_v0.pt" \
+        --out-prefix /tmp/hoct_ref_logits || true
+    fi
+    python3 crates/rlx-hoct/scripts/dump_pipeline_fixtures.py || true
+    cargo test -p rlx-hoct --release -- --nocapture
+
+test-hoct-backends *ARGS:
+    cargo test -p rlx-hoct --test backend_parity --features all-backends --release -- --nocapture {{ARGS}}
+
 vjepa2 *ARGS:
     just run-bin rlx-vjepa2 rlx-vjepa2 {{ARGS}}
 
@@ -407,6 +506,17 @@ fetch-whisper:
 
 fetch-whisper-base:
     huggingface-cli download openai/whisper-base.en --local-dir .cache/whisper-base.en
+
+fetch-tts-validation-bundles:
+    # Lightweight placeholders for crates whose full weights are not yet fetched.
+    # Real Parler / MeloTTS / OpenVoice / ChatterBox / MetaVoice live under weights/tts/
+    # (gitignored). Prefer the per-model `just fetch-*` / Hugging Face downloads.
+    mkdir -p weights/tts/melotts weights/tts/openvoice weights/tts/parlertts weights/tts/metavoice weights/tts/chatterbox
+    for d in weights/tts/melotts weights/tts/openvoice weights/tts/parlertts weights/tts/metavoice weights/tts/chatterbox; do \
+        if [ ! -f "$d/manifest.json" ]; then \
+            printf '{"model_id":"placeholder","note":"use real HF weights under weights/tts"}\n' > "$d/manifest.json"; \
+        fi; \
+    done
 
 # JFK clip + paired reference transcript for whisper bench / backend parity.
 fetch-whisper-bench:
@@ -764,10 +874,10 @@ bench-voxtral-tts *ARGS:
     cargo run -p rlx-models --example voxtral_tts_bench --features "metal,mlx,apple-silicon" --release -- {{ARGS}}
 
 fetch-qwen3-tts:
-    cargo run -p rlx-models --example qwen3_tts_download --features hf-download --release
+    cargo run -p rlx-models --example qwen3_tts_download --features "hf-download,qwen3-tts" --release
 
 fetch-qwen3-tts-base:
-    cargo run -p rlx-models --example qwen3_tts_download_base --features hf-download --release
+    cargo run -p rlx-models --example qwen3_tts_download_base --features "hf-download,qwen3-tts" --release
 
 # JFK clips + train_raw.jsonl (default: reference transcript alignment; JFK_TRANSCRIPT_MODE=whisper|hybrid)
 qwen3-tts-jfk-prep:
@@ -949,9 +1059,162 @@ fetch-kittentts:
 fetch-kokoro:
     cargo run -p rlx-kokoro --features hf-download --release -- --download
 
+# Parler-TTS Mini v1 — https://huggingface.co/parler-tts/parler-tts-mini-v1
+# Needs ONNX under weights/tts/parlertts/onnx (see crates/rlx-parlertts/scripts/export_onnx.py)
+# and Descript DAC at weights/tts/parler-dac.
+fetch-parler-dac:
+    huggingface-cli download parler-tts/dac_44khz --local-dir weights/tts/parler-dac
+
+# Soprano 1.1 ONNX (KV backbone + vocoder) — https://huggingface.co/KevinAHM/soprano-1.1-onnx
+fetch-soprano:
+    huggingface-cli download KevinAHM/soprano-1.1-onnx --local-dir weights/tts/soprano
+
+soprano-demo TEXT="The quick brown fox jumps over the lazy dog." DEVICE="metal":
+    cargo run -p rlx-soprano --release --features apple-silicon -- \
+        --text "{{TEXT}}" --device {{DEVICE}} --output /tmp/soprano_demo.wav
+
+# Apple: CPU / Metal / MLX / … via RLX_DEVICES (e.g. RLX_DEVICES=CPU,Metal)
+soprano-matrix:
+    RLX_GREEDY=1 cargo run -p rlx-soprano --release --example backend_matrix --features apple-silicon
+
+# Text-in → Soprano → Whisper text-out (CPU/Metal/MLX, …). Env: RLX_DEVICES,
+# RLX_ORT_LATENTS=1 (ORT backbone latents → native Vocos only).
+soprano-whisper TEXT="The quick brown fox jumps over the lazy dog.":
+    RLX_TEXT="{{TEXT}}" RLX_GREEDY=1 cargo run -p rlx-soprano --release --example whisper_roundtrip --features apple-silicon
+
+# Brand/name check (longer phrase — short “Hello from Soprano.” → Whisper “Suprano”).
+soprano-whisper-brand TEXT="Hello from the Soprano model.":
+    RLX_TEXT="{{TEXT}}" RLX_GREEDY=1 cargo run -p rlx-soprano --release --example whisper_roundtrip --features apple-silicon
+
+# Zonos v0.1 transformer (espeak → AR → DAC 44.1 kHz)
+fetch-zonos:
+    hf download Zyphra/Zonos-v0.1-transformer --local-dir weights/tts/zonos
+
+zonos-demo TEXT="Hello from Zonos." OUT="zonos.wav" DEVICE="mlx":
+    cargo run -p rlx-zonos --release --features "espeak,metal,mlx" -- \
+        --text "{{TEXT}}" --device "{{DEVICE}}" --output "{{OUT}}"
+
+zonos-whisper TEXT="Hello from Zonos.":
+    RLX_TEXT="{{TEXT}}" RLX_MAX_TOKENS=256 cargo run -p rlx-zonos --release --example whisper_roundtrip --features "espeak,metal,mlx"
+
+# Sentence across CPU/Metal/MLX (compiled backbone + DAC).
+zonos-backends TEXT="The quick brown fox jumps over the lazy dog.":
+    RLX_TEXT="{{TEXT}}" RLX_MAX_TOKENS=256 cargo run -p rlx-zonos --release --example backend_matrix --features "espeak,apple-silicon"
+
+# Gepard (~556M) — Qwen3.5 FA backbone + NanoCodec FSQ @ 22.05 kHz
+fetch-gepard:
+    huggingface-cli download nineninesix/gepard-1.0 --local-dir weights/tts/gepard
+    @echo "Also need nano_dec_1.89kbps.safetensors under weights/tts/gepard (see rlx-gepard README)."
+
+gepard-demo TEXT="The quick brown fox jumps over the lazy dog." DEVICE="metal" OUT="/tmp/gepard_demo.wav":
+    cargo run -p rlx-gepard --release --features apple-silicon -- \
+        --weights weights/tts/gepard --text "{{TEXT}}" --device {{DEVICE}} --out "{{OUT}}"
+
+gepard-whisper:
+    cargo test -p rlx-gepard --release --features apple-silicon --test whisper_roundtrip test_gepard_whisper_fox -- --nocapture
+
+gepard-whisper-long:
+    cargo test -p rlx-gepard --release --features apple-silicon --test whisper_roundtrip test_gepard_whisper_long -- --nocapture
+
+gepard-backends TEXT="The quick brown fox jumps over the lazy dog.":
+    RLX_TEXT="{{TEXT}}" cargo run -p rlx-gepard --release --example backend_matrix --features all-backends
+
+gepard-parity:
+    cargo test -p rlx-gepard --release --features apple-silicon --test whisper_roundtrip test_gepard_compiled_cpu_prefill_parity -- --nocapture
+
+gepard-bench DEVICE="metal" TEXT="The quick brown fox jumps over the lazy dog.":
+    RLX_TEXT="{{TEXT}}" cargo run -p rlx-gepard --release --example bench_timing --features all-backends -- --device {{DEVICE}}
+
+gepard-validate-cuda:
+    bash scripts/gepard_cuda_validate.sh
+
+# Sesame CSM-1B — Llama-3.2-1B + depth → Mimi @ 24 kHz
+fetch-sesame:
+    mkdir -p weights/tts/sesame
+    .venv-hf/bin/hf download unsloth/csm-1b --local-dir weights/tts/sesame
+    @echo "CSM weights in weights/tts/sesame (also need: just fetch-mimi)"
+
+sesame TEXT="The quick brown fox jumps over the lazy dog." DEVICE="cpu" OUT="/tmp/sesame.wav" SEED="42":
+    cargo run -p rlx-sesame --release --features apple-silicon -- \
+        --model-dir weights/tts/sesame --mimi-dir .cache/mimi \
+        --text "{{TEXT}}" --device {{DEVICE}} --seed {{SEED}} --output "{{OUT}}"
+
+sesame-whisper:
+    cargo test -p rlx-sesame --release --features apple-silicon --test whisper_roundtrip test_sesame_whisper_fox -- --nocapture
+
+sesame-whisper-long:
+    cargo test -p rlx-sesame --release --features apple-silicon --test whisper_roundtrip test_sesame_whisper_long -- --nocapture
+
+# Mimi decode + Whisper across available backends (LM codes cached after first run).
+sesame-backends TEXT="The quick brown fox jumps over the lazy dog.":
+    RLX_TEXT="{{TEXT}}" cargo run -p rlx-sesame --release --example backend_matrix --features all-backends
+
+sesame-backends-long:
+    RLX_TEXT="The quick brown fox jumps over the lazy dog. Courage and kindness matter more than cleverness alone when people face hard times together and choose to help each other without waiting for perfect conditions." \
+    RLX_CODES_CACHE=/tmp/sesame_long_codes.json \
+    RLX_SEED="${RLX_SESAME_LONG_SEED:-42}" \
+    cargo run -p rlx-sesame --release --example backend_matrix --features all-backends
+
+# Sesame CUDA on ssh msi (sync + fetch weights on remote + fox/long + cpu,cuda matrix).
+sesame-validate-cuda:
+    bash scripts/sesame_cuda_validate.sh --remote
+
+# MioTTS-0.6B — Qwen3 LM + MioCodec (ORT) @ 24 kHz
+fetch-miotts:
+    mkdir -p weights/tts/miotts weights/tts/miocodec
+    .venv-hf/bin/hf download Aratako/MioTTS-0.6B --local-dir weights/tts/miotts
+    .venv-hf/bin/hf download Aratako/MioCodec-25Hz-24kHz --local-dir weights/tts/miocodec
+    @echo "MioTTS in weights/tts/miotts + MioCodec in weights/tts/miocodec"
+    @echo "Then: .venv-miotts/bin/python crates/rlx-miotts/scripts/export_miocodec_decode.py"
+
+export-miocodec:
+    .venv-miotts/bin/python crates/rlx-miotts/scripts/export_miocodec_decode.py
+
+miotts TEXT="The quick brown fox jumps over the lazy dog." DEVICE="cpu" OUT="/tmp/miotts.wav" SEED="42" PRESET="en_female":
+    cargo run -p rlx-miotts --release --features apple-silicon -- \
+        --model-dir weights/tts/miotts --codec-dir weights/tts/miocodec \
+        --text "{{TEXT}}" --device {{DEVICE}} --seed {{SEED}} --preset {{PRESET}} --output "{{OUT}}"
+
+miotts-whisper:
+    cargo test -p rlx-miotts --release --features apple-silicon --test whisper_roundtrip test_miotts_whisper_fox -- --nocapture
+
+miotts-backends TEXT="The quick brown fox jumps over the lazy dog.":
+    RLX_TEXT="{{TEXT}}" cargo run -p rlx-miotts --release --example backend_matrix --features all-backends
+
+gepard-whisper-cuda-long:
+    cargo run -p rlx-gepard --release --features nvidia-gpu -- \
+        --weights weights/tts/gepard \
+        --text "The quick brown fox jumps over the lazy dog. Courage and kindness matter more than cleverness alone when people face hard times together and choose to help each other without waiting for perfect conditions." \
+        --device cuda --seed 4 --out /tmp/gepard_long_cuda.wav
+
+parlertts-demo TEXT="Hello from Parler.":
+    cargo run -p rlx-parlertts --release -- \
+        --text "{{TEXT}}" \
+        --voice "A clear female voice speaks slowly." \
+        --output /tmp/parlertts_demo.wav
+
+# MetaVoice-1B — first/second-stage eager + EnCodec on --device
+metavoice-demo TEXT="The quick brown fox jumps over the lazy dog." DEVICE="metal":
+    cargo run -p rlx-metavoice --release --features apple-silicon -- \
+        --text "{{TEXT}}" --max-tokens 448 --device {{DEVICE}} --output /tmp/metavoice_demo.wav
+
+metavoice-matrix:
+    cargo run -p rlx-metavoice --release --example backend_matrix --features apple-silicon
+
 # One-command demo after `just fetch-kokoro`
 kokoro-demo:
     cargo run -p rlx-kokoro --release -- --text "Hello from Kokoro." --voice af_heart --out /tmp/kokoro_demo.wav
+
+# StyleTTS2-family = Kokoro-82M thin facade (`rlx-styletts2` → native Kokoro)
+styletts2 TEXT="The quick brown fox jumps over the lazy dog." DEVICE="cpu" OUT="/tmp/styletts2.wav" VOICE="af_heart":
+    cargo run -p rlx-styletts2 --release --features apple-silicon -- \
+        --text "{{TEXT}}" --voice "{{VOICE}}" --device {{DEVICE}} --output "{{OUT}}"
+
+styletts2-whisper:
+    cargo test -p rlx-styletts2 --release --features apple-silicon --test whisper_roundtrip test_styletts2_whisper_fox -- --nocapture
+
+styletts2-backends TEXT="The quick brown fox jumps over the lazy dog.":
+    RLX_TEXT="{{TEXT}}" cargo run -p rlx-styletts2 --release --example backend_matrix --features apple-silicon
 
 # Supertonic-3 flow-matching TTS — https://huggingface.co/Supertone/supertonic-3
 fetch-supertonic:
@@ -969,13 +1232,35 @@ luxtts-demo PROMPT_WAV PROMPT_TEXT TEXT:
 
 # F5-TTS voice cloning — https://huggingface.co/huggingfacess/F5-TTS-ONNX (weights CC-BY-NC)
 # Needs F5_{Preprocess,Transformer,Decode}.onnx + vocab.txt in weights/tts/f5tts
+fetch-f5tts:
+    mkdir -p weights/tts/f5tts
+    .venv-hf/bin/hf download huggingfacess/F5-TTS-ONNX --local-dir weights/tts/f5tts
+    @echo "F5-TTS ONNX in weights/tts/f5tts (add vocab.txt from SWivid/F5-TTS if missing)"
+
+f5tts TEXT="The quick brown fox jumps over the lazy dog." DEVICE="cpu" NFE="32" OUT="/tmp/f5tts.wav" REF="crates/rlx-f5tts/tests/fixtures/prompt.wav" REF_TEXT="Hello from Kokoro. This is a test of speech synthesis in Rust.":
+    cargo run -p rlx-f5tts --release --features apple-silicon -- \
+      --ref-wav "{{REF}}" --ref-text "{{REF_TEXT}}" --text "{{TEXT}}" \
+      --nfe "{{NFE}}" --device "{{DEVICE}}" --out "{{OUT}}"
+
+f5tts-whisper OUT="tmp/f5tts_wavs/validated.wav":
+    mkdir -p tmp/f5tts_wavs
+    RLX_F5TTS_DIR=weights/tts/f5tts RLX_WHISPER_DIR=.cache/whisper-base.en NFE=32 OUT="{{OUT}}" \
+      cargo run -p rlx-f5tts --release --features apple-silicon --quiet --example native_clone
+
+f5tts-backends TEXT="The quick brown fox jumps over the lazy dog.":
+    RLX_TEXT="{{TEXT}}" RLX_NFE=32 cargo run -p rlx-f5tts --release --example backend_matrix --features apple-silicon
+
 f5tts-demo REF_WAV REF_TEXT TEXT:
-    cargo run -p rlx-f5tts --release -- --ref-wav "{{REF_WAV}}" --ref-text "{{REF_TEXT}}" --text "{{TEXT}}" --out /tmp/f5tts_demo.wav
+    cargo run -p rlx-f5tts --release --features apple-silicon -- \
+      --ref-wav "{{REF_WAV}}" --ref-text "{{REF_TEXT}}" --text "{{TEXT}}" --nfe 32 --out /tmp/f5tts_demo.wav
 
 # Piper VITS TTS — voices at https://huggingface.co/rhasspy/piper-voices (MIT)
 # Place <voice>.onnx + <voice>.onnx.json in weights/tts/piper/
 piper-demo:
     cargo run -p rlx-piper --release -- --text "The quick brown fox jumps over the lazy dog." --out /tmp/piper_demo.wav
+
+piper-backends:
+    RLX_PIPER_DETERMINISTIC=1 RLX_ITERS=1 cargo run -p rlx-piper --release --example backend_matrix --features apple-silicon -- weights/tts/piper
 
 # ZipVoice voice cloning — k2-fsa/ZipVoice (Apache); reuses the LuxTTS runtime.
 # Download zipvoice_distill/ + export vocoder (scripts/export_vocoder.py) into weights/tts/zipvoice-distill
@@ -984,17 +1269,79 @@ zipvoice-demo REF_WAV REF_TEXT TEXT:
 
 # MOSS-TTS-Nano — OpenMOSS hierarchical AR codec-LM (Apache, 48kHz). See crate README
 # for weights setup (2 HF repos + scripts/convert_tokenizer.py). --list-voices for voices.
+fetch-moss-nano:
+    mkdir -p weights/tts/moss-nano/codec
+    .venv-hf/bin/hf download OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX --local-dir weights/tts/moss-nano
+    .venv-hf/bin/hf download OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX --local-dir weights/tts/moss-nano/codec
+    python3 crates/rlx-moss-nano/scripts/convert_tokenizer.py weights/tts/moss-nano
+    @echo "MOSS-TTS-Nano in weights/tts/moss-nano"
+
+moss-nano TEXT="The quick brown fox jumps over the lazy dog." VOICE="Trump" DEVICE="cpu" OUT="/tmp/moss_nano.wav":
+    cargo run -p rlx-moss-nano --release --features apple-silicon -- \
+      --text "{{TEXT}}" --voice "{{VOICE}}" --device "{{DEVICE}}" --out "{{OUT}}"
+
+moss-nano-whisper:
+    cargo run -p rlx-moss-nano --release --features apple-silicon --quiet --example native_whisper
+
+moss-nano-backends TEXT="The quick brown fox jumps over the lazy dog.":
+    RLX_TEXT="{{TEXT}}" cargo run -p rlx-moss-nano --release --example backend_matrix --features apple-silicon
+
 moss-nano-demo TEXT VOICE="Trump":
-    cargo run -p rlx-moss-nano --release -- --text "{{TEXT}}" --voice "{{VOICE}}" --out /tmp/moss_nano_demo.wav
+    cargo run -p rlx-moss-nano --release --features apple-silicon -- --text "{{TEXT}}" --voice "{{VOICE}}" --out /tmp/moss_nano_demo.wav
 
 # Maya1 — expressive voice-design TTS (Llama-3B + SNAC, Apache). Reuses rlx-orpheus.
 # Needs a Maya1 GGUF in weights/tts/maya1 + ORPHEUS_SNAC_PATH (see crate README).
 maya1-demo TEXT DESC="Realistic female voice in her 20s with a British accent. Warm timbre, conversational pacing.":
     cargo run -p rlx-maya1 --release -- --description "{{DESC}}" --text "{{TEXT}}" --out /tmp/maya1_demo.wav
 
+# MeloTTS — VITS2 multilingual TTS (MIT). Real inference via rlx-tiny-tts engine.
+melotts-demo TEXT:
+    cargo run -p rlx-melotts --release --features apple-silicon -- --text "{{TEXT}}" --out /tmp/melotts_demo.wav
+
+# TinyTTS/MeloTTS cross-backend parity (cos≥0.95). Override: RLX_DEVICES=cpu,gpu
+melotts-backends *ARGS:
+    cargo run -p rlx-tiny-tts --release --example backend_matrix --features apple-silicon -- weights/tts/melotts {{ARGS}}
+
+tiny-tts-backends *ARGS:
+    cargo run -p rlx-tiny-tts --release --example backend_matrix --features apple-silicon -- weights/tiny-tts-rlx {{ARGS}}
+
+# OpenVoice v2 — zero-shot cloning (MIT). MeloTTS base + ONNX tone-color converter.
+openvoice-demo REF_WAV TEXT:
+    cargo run -p rlx-openvoice --release -- --ref-wav "{{REF_WAV}}" --text "{{TEXT}}" --out /tmp/openvoice_demo.wav
+
+# ChatterBox — Resemble AI 0.5B Llama T3 + S3Gen zero-shot cloning (MIT, native RLX).
+fetch-chatterbox:
+    mkdir -p weights/tts/chatterbox
+    .venv-hf/bin/hf download synath/chatterbox-ONNX --local-dir weights/tts/chatterbox
+    @echo "ChatterBox in weights/tts/chatterbox"
+
+chatterbox TEXT="The quick brown fox jumps over the lazy dog." DEVICE="cpu" OUT="/tmp/chatterbox.wav" REF="crates/rlx-luxtts/tests/fixtures/prompt.wav":
+    cargo run -p rlx-chatterbox --release --features apple-silicon -- \
+        --ref-wav "{{REF}}" --text "{{TEXT}}" --device "{{DEVICE}}" --greedy --out "{{OUT}}"
+
+chatterbox-whisper:
+    cargo test -p rlx-chatterbox --release --features apple-silicon --test whisper_roundtrip test_chatterbox_whisper_fox -- --nocapture
+
+chatterbox-backends TEXT="The quick brown fox jumps over the lazy dog.":
+    RLX_TEXT="{{TEXT}}" cargo run -p rlx-chatterbox --release --example backend_matrix --features apple-silicon
+
+chatterbox-demo REF_WAV TEXT:
+    cargo run -p rlx-chatterbox --release --features apple-silicon -- --ref-wav "{{REF_WAV}}" --text "{{TEXT}}" --greedy --out /tmp/chatterbox_demo.wav
+
 # Kyutai Mimi codec — https://huggingface.co/kyutai/mimi
 fetch-mimi:
     cargo run -p rlx-mimi --features hf-download --release -- --fetch
+
+# Kyutai TTS 1.6B — https://huggingface.co/kyutai/tts-1.6b-en_fr
+fetch-kyutai-tts:
+    cargo run -p rlx-kyutai-tts --features hf-download --release -- --fetch
+
+kyutai-tts PROMPT="Hello from Kyutai." DEVICE="cpu" OUT="/tmp/kyutai_tts.wav":
+    cargo run -p rlx-kyutai-tts --release --features "hf-download,apple-silicon" -- \
+        --prompt "{{PROMPT}}" --device "{{DEVICE}}" --out-wav "{{OUT}}"
+
+kyutai-tts-e2e:
+    RLX_KYUTAI_TTS_E2E=1 cargo test -p rlx-kyutai-tts --release --features "hf-download,apple-silicon" --test whisper_validate -- --nocapture
 
 # Descript Audio Codec — https://github.com/descriptinc/descript-audio-codec
 fetch-dac MODEL="24khz":
@@ -1116,12 +1463,32 @@ moshi-ws *ARGS:
     cargo run -p rlx-moshi --example ws_server --features "ws-server,hf-download,all-backends" --release -- {{ARGS}}
 
 # Orpheus TTS — unsloth/orpheus-3b-0.1-ft-GGUF (Q4_K_M default)
+# Writes /tmp/rlx-weights/orpheus/… and links into weights/tts/orpheus/.
 fetch-orpheus QUANT="Q4_K_M":
     cargo run -p rlx-orpheus --features "llama,hf-download" --release -- \
       --download-orpheus --quant {{QUANT}}
+    mkdir -p weights/tts/orpheus
+    ln -sfn /tmp/rlx-weights/orpheus/orpheus-3b-0.1-ft-{{QUANT}}.gguf \
+        weights/tts/orpheus/orpheus-3b-0.1-ft-{{QUANT}}.gguf
+    @echo "Orpheus GGUF → weights/tts/orpheus/orpheus-3b-0.1-ft-{{QUANT}}.gguf"
 
+# Prefer already-exported decoder under weights/tts/snac_24khz when present.
 fetch-orpheus-snac:
-    cargo run -p rlx-orpheus --features "llama,hf-download" --release -- --download-snac
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p weights/tts/snac /tmp/rlx-weights/snac
+    if [[ -f weights/tts/snac_24khz/snac_24khz_decoder.safetensors ]]; then
+      ln -sfn "$(pwd)/weights/tts/snac_24khz/snac_24khz_decoder.safetensors" \
+          weights/tts/snac/snac_24khz_decoder.safetensors
+      ln -sfn "$(pwd)/weights/tts/snac_24khz/snac_24khz_decoder.safetensors" \
+          /tmp/rlx-weights/snac/snac_24khz_decoder.safetensors
+      echo "SNAC decoder → weights/tts/snac/ (from snac_24khz)"
+    else
+      cargo run -p rlx-orpheus --features "llama,hf-download" --release -- --download-snac
+      just export-orpheus-snac
+      ln -sfn /tmp/rlx-weights/snac/snac_24khz_decoder.safetensors \
+          weights/tts/snac/snac_24khz_decoder.safetensors
+    fi
 
 export-orpheus-snac OUT="/tmp/rlx-weights/snac":
     python3 scripts/export_snac_decoder.py --out {{OUT}}
@@ -1617,6 +1984,9 @@ sam3 *ARGS:
 flux2 *ARGS:
     just run-bin rlx-flux2 rlx-flux2 {{ARGS}}
 
+trellis2 *ARGS:
+    just run-bin rlx-trellis2 rlx-trellis2 {{ARGS}}
+
 flux2-serve *ARGS:
     just run-bin rlx-flux2 rlx-flux2-serve {{ARGS}}
 
@@ -1900,3 +2270,64 @@ test-rlx-fft-welch-peaks *ARGS:
 
 test-rlx-fft-fusion-gate *ARGS:
     cargo test -p rlx-fft --lib fusion_gate_batch_matrix io_gate --features apple-silicon {{profile}} {{ARGS}}
+
+# --- cross-backend model harness (scripts/matrix) ---
+
+# Run the harness on msi: sync both trees -> build+run per backend -> pull report back.
+#   just matrix-remote                     # Tier-1, all host backends
+#   just matrix-remote ONLY=qwen3-0.6b     # one model
+#   just matrix-remote TIER=all ALL=1      # everything incl. Tier-2/NC/gated
+#   just matrix-remote BACKENDS=cpu,cuda   # subset of backends
+matrix-remote TIER="1" ONLY="" BACKENDS="" ALL="0":
+    bash scripts/matrix/msi_run.sh "{{TIER}}" "{{ONLY}}" "{{BACKENDS}}" "{{ALL}}"
+
+# Run the harness on THIS host (auto-detects local backends; no ssh/sync).
+matrix TIER="1" ONLY="" BACKENDS="" ALL="0":
+    TIER="{{TIER}}" ONLY="{{ONLY}}" BACKENDS="{{BACKENDS}}" ALL="{{ALL}}" python3 scripts/matrix/run_matrix.py
+
+# Just sync the two working trees to msi (no run).
+matrix-sync:
+    bash scripts/matrix/sync_to_msi.sh
+
+# --- unified TTS bench (crates/rlx-tts-bench) ---
+
+# Full matrix → HTML under --out-dir. Isolation/resume are on by default for `run`.
+#   just tts-bench run --models all --devices auto --phrases short,long --whisper --spectral --noise --clone
+#   just tts-bench run --models all --devices auto --resume   # continue after kill/abort
+tts-bench *ARGS:
+    cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} {{feature_args}} -- {{ARGS}}
+
+# CPU + short phrase only (fast local preflight; fake adapter if no weights).
+tts-bench-quick *ARGS:
+    cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} --features matrix-onnx -- \
+        run -m fake -d cpu --phrases short --noise --out-dir /tmp/tts-bench-quick {{ARGS}}
+
+# Apple Silicon backends for compiled-in adapters.
+#   just tts-bench-apple run --models all --devices auto --phrases short,long --whisper --spectral --noise --clone --resume
+tts-bench-apple *ARGS:
+    cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} --features "all-models,apple-silicon" -- {{ARGS}}
+
+tts-bench-list:
+    cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} {{feature_args}} -- list
+
+# ── Local rlx development (sibling ../rlx checkout) ──────────────────────────
+# Toggle the gitignored `.cargo/config.toml` [patch.crates-io] override that
+# points every rlx-* crate at ../rlx. The committed Cargo.toml never carries a
+# patch — this is the one, one-command way to build against local rlx edits.
+#
+#   just link-local   # edit rlx in ../rlx and build/test rlx-models against it
+#   just unlink       # revert to the published =0.2.x crates (CI / publish state)
+#   just relink       # refresh after editing config.toml.example
+
+# Point rlx-* at the local sibling ../rlx working tree.
+link-local:
+    cp .cargo/config.toml.example .cargo/config.toml
+    @echo "linked: rlx-* -> ../rlx via .cargo/config.toml (gitignored). 'just unlink' reverts."
+
+# Revert to the published crates.io rlx-* (same as CI / `cargo publish`).
+unlink:
+    rm -f .cargo/config.toml
+    @echo "unlinked: rlx-* now resolve to the published =0.2.x crates."
+
+# Re-link from a freshly edited example (unlink, then link).
+relink: unlink link-local

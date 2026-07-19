@@ -2,7 +2,7 @@
 
 [package]
 name = "kitten_tts_mini_rlx"
-version = "0.2.12"
+version = "0.2.13"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -69,10 +69,10 @@ metal = ["rlx-runtime/metal", "dep:rlx-metal", "dep:metal"]
 mlx = ["rlx-runtime/mlx", "dep:rlx-mlx"]
 gpu = ["rlx-runtime/gpu"]
 rocm = ["rlx-runtime/rocm"]
-# Native Rust graph + safetensors/GGUF (no graph.json at runtime).
+# Data-driven native path: safetensors/GGUF weights + `rlx_bundle/graph.json`
+# imported via rlx-onnx-import (no ONNX Runtime). This is the sole native path;
+# the ~100k-line transpiled `graph.rs` fallback was removed (git history has it).
 native = ["dep:rlx-gguf"]
-# Legacy alias.
-generated-graph = ["native"]
 # Production infer defaults (`KITTEN_RLX_INFER=production` without env).
 native-fast = []
 

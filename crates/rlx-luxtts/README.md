@@ -46,8 +46,19 @@ cargo run -p rlx-luxtts --bin rlx-luxtts -- \
 
 ## Backends
 
-Runs the three ONNX subgraphs on ONNX Runtime (CPU, plus CoreML / CUDA /
-DirectML via `metal`/`mlx`/`cuda`/`gpu`); the mel + ISTFT run in Rust.
+**Default path is native RLX** (`encoder_body` + `fm_decoder` + `vocoder_spec` via
+`rlx-tiny-tts`). Mel + ISTFT stay in Rust. Optional `--features onnx` keeps an
+ORT reference path for parity.
+
+`Device::Ane` / CoreML runs **end-to-end** on all three subgraphs. Upstream
+`rlx-coreml` defaults **fp32** graphs to CPU+GPU compute units (Neural-Engine
+BNNS AOT SIGSEGVs on these CFM graphs). TinyModel also pins
+`RLX_COREML_UNITS=gpu` when unset so f16 edges stay off ANE. Override with
+`RLX_COREML_UNITS=all|cpu|ane` if needed. Metal / MLX / wgpu / CUDA remain
+available for non-CoreML GPU.
+
+**CUDA (msi):** RTF ≈1.4×, cos **0.99979** vs CPU, whisper **0.85** (same known
+espeak coverage as Apple backends).
 
 ## Known limitation
 

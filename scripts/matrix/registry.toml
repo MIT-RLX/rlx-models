@@ -1,0 +1,312 @@
+# Cross-backend harness registry — the single source of truth.
+#
+# Each [[models]] stanza is PLATFORM-NEUTRAL: it only describes what is intrinsic to
+# the model (package, kind, invocation, weights). The driver (run_matrix.py) decides
+# which backends to run from the *host* (host_backends ∩ the crate's declared cargo
+# features) — so the same registry runs on the Mac and on msi with no edits.
+#
+# tier 1 = curated, reliably builds+runs on a Linux+CUDA box (default set).
+# tier 2 = attempted only with ALL=1 (NC license / big-VRAM / needs extra assets).
+#
+# Notes on backends:
+#  - Native-rlx models (qwen3, whisper, melotts, dinov2) truly exercise cpu/wgpu/cuda/vulkan.
+#  - ORT-backed TTS (kokoro/supertonic/piper/luxtts/zipvoice/moss-nano) are CPU-centric;
+#    GPU device strings may be rejected at runtime — the harness records that honestly.
+
+[defaults]
+text = "The quick brown fox jumps over the lazy dog near the river bank."
+ref = "assets/jfk/jfk_voice_clone.wav"
+ref_text = "And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country."
+wav = "assets/jfk/jfk_voice_clone.wav"
+max_tokens = "24"
+
+[templates]
+tts_text  = "{extra} --text \"{text}\" --device {device} --out {out}"
+tts_clone = "{extra} --prompt-wav {ref} --prompt-text \"{ref_text}\" --text \"{text}\" --device {device} --out {out}"
+# clap bins that use --output / --model-dir instead of --out / --data
+tts_output = "{extra} --text \"{text}\" --device {device} --output {out}"
+tts_styletts2 = "{extra} --text \"{text}\" --device {device} --output {out}"
+tts_sesame = "{extra} --text \"{text}\" --device {device} --output {out}"
+tts_chatterbox = "{extra} --ref-wav {ref} --text \"{text}\" --device {device} --out {out}"
+tts_f5 = "{extra} --ref-wav {ref} --ref-text \"{ref_text}\" --text \"{text}\" --device {device} --out {out}"
+# stream tokens to stdout (no --no-stream): the callback only prints when streaming,
+# which is what the lm validator parses for non-degeneracy + cpu-vs-gpu token parity.
+lm        = "--weights {weights} --device {device} {extra} --max-tokens {max_tokens}"
+asr       = "--weights {weights} {extra} --wav {wav} --device {device} --language en --output {out}"
+vision    = "--weights {weights} --device {device} {extra}"
+
+# =========================================================================== LM (native rlx)
+[[models]]
+name = "qwen3-0.6b"
+package = "rlx-qwen3"
+kind = "lm"
+tier = 1
+bin = "rlx-qwen3"
+template = "lm"
+features_base = []
+weights = { path = "weights/Qwen3-0.6B-gguf/Qwen3-0.6B-Q4_K_M.gguf" }
+download = { mode = "none" }
+extra = "--prompt-ids 9707,11,1879"
+# cuda needs --packed (keeps GGUF weights quantized via Op::DequantMatMul so the
+# arena fits 16GB VRAM; the f32-weight path OOMs once decode buckets stack up).
+# vulkan handles the f32 path fine and is far faster there, so it stays non-packed.
+# wgpu is left non-packed: the packed prefill binding crash was fixed (rlx-wgpu
+# gguf_gpu.rs gemv reroute), but wgpu qwen3 still has a pre-existing numerical bug
+# and the packed path is too slow, so it fails either way — non-packed fails fast.
+gpu_extra = { cuda = "--packed" }
+validate = { rule = "lm", min_new_tokens = 8, parity_prefix = 8 }
+license = { nc = false, gated = false }
+
+# =========================================================================== ASR (native rlx)
+[[models]]
+name = "whisper"
+package = "rlx-whisper"
+kind = "asr"
+tier = 1
+bin = "rlx-whisper"
+template = "asr"
+features_base = ["tokenizer"]
+weights = { path = ".cache/whisper-tiny/model.safetensors" }
+download = { mode = "none" }
+# cli derives config as <weights-parent>/config.json, so pass them explicitly.
+extra = "--config .cache/whisper-tiny/config.json --tokenizer .cache/whisper-tiny/tokenizer.json"
+# whisper requires 16 kHz; the bundled jfk clips are 24 kHz (jfk_16k.wav is resampled).
+inputs = { wav = "assets/harness/jfk_16k.wav" }
+validate = { rule = "asr", wer_pass = 0.20, wer_warn = 0.50 }
+license = { nc = false, gated = false }
+
+# =========================================================================== TTS native rlx
+[[models]]
+name = "melotts"
+package = "rlx-melotts"
+kind = "tts"
+tier = 1
+bin = "rlx-melotts"
+template = "tts_text"
+features_base = []
+# rlx-melotts is a thin wrapper over the tiny-tts engine → uses the tiny-tts bundle.
+weights = { path = "weights/tts/melotts" }
+download = { mode = "none" }
+extra = "--data weights/tts/melotts"
+validate = { rule = "tts", coverage_pass = 0.6, coverage_warn = 0.4, cosine_pass = 0.95, cosine_warn = 0.70 }
+license = { nc = false, gated = false }
+
+[[models]]
+name = "tiny-tts"
+package = "rlx-tiny-tts"
+kind = "tts"
+tier = 1
+bin = "rlx-tiny-tts"
+template = "tts_text"
+features_base = []
+weights = { path = "weights/tiny-tts-rlx" }
+download = { mode = "none" }
+extra = "--data weights/tiny-tts-rlx"
+validate = { rule = "tts", coverage_pass = 0.6, coverage_warn = 0.4, cosine_pass = 0.95, cosine_warn = 0.70 }
+license = { nc = false, gated = false }
+
+# =========================================================================== TTS (ORT-backed)
+[[models]]
+name = "kokoro"
+package = "rlx-kokoro"
+kind = "tts"
+tier = 1
+bin = "rlx-kokoro"
+template = "tts_text"
+features_base = ["hf-download", "espeak"]
+weights = { path = "weights/tts/kokoro-82m" }
+download = { mode = "flag" }
+extra = "--data weights/tts/kokoro-82m --voice af_heart"
+validate = { rule = "tts", coverage_pass = 0.6, coverage_warn = 0.4, cosine_pass = 0.90, cosine_warn = 0.70 }
+license = { nc = false, gated = false }
+
+[[models]]
+name = "supertonic"
+package = "rlx-supertonic"
+kind = "tts"
+tier = 1
+bin = "rlx-supertonic"
+template = "tts_text"
+features_base = ["hf-download"]
+weights = { path = "weights/tts/supertonic-3" }
+download = { mode = "flag" }
+extra = "--data weights/tts/supertonic-3"
+# Force true Vulkan (default remaps Vulkan→CUDA). Expected fail until numerics match.
+env = { vulkan = { RLX_SUPERTONIC_VULKAN = "1" } }
+validate = { rule = "tts", coverage_pass = 0.6, coverage_warn = 0.4, cosine_pass = 0.90, cosine_warn = 0.70 }
+license = { nc = false, gated = false }
+
+[[models]]
+name = "piper"
+package = "rlx-piper"
+kind = "tts"
+tier = 1
+bin = "rlx-piper"
+template = "tts_text"
+features_base = []
+weights = { path = "weights/tts/piper" }
+download = { mode = "none" }
+extra = "--data weights/tts/piper"
+# Zero SDP/z noise so CPU↔GPU cosine is meaningful (noise is seeded but ceil(dur) amplifies).
+env = { RLX_PIPER_DETERMINISTIC = "1" }
+validate = { rule = "tts", coverage_pass = 0.5, coverage_warn = 0.3, cosine_pass = 0.90, cosine_warn = 0.70 }
+license = { nc = false, gated = false }
+
+[[models]]
+name = "moss-nano"
+package = "rlx-moss-nano"
+kind = "tts"
+tier = 1
+bin = "rlx-moss-nano"
+template = "tts_text"
+features_base = ["onnx"]
+weights = { path = "weights/tts/moss-nano" }
+download = { mode = "none" }
+# CPU prefill is multi-minute on fox; short text + compact voice keeps the
+# harness under timeout while still exercising CUDA prefill + codec.
+inputs = { text = "Hi there friends." }
+extra = "--data weights/tts/moss-nano --voice Saki --max-frames 32"
+validate = { rule = "tts", coverage_pass = 0.5, coverage_warn = 0.3, cosine_pass = 0.90, cosine_warn = 0.70 }
+license = { nc = false, gated = false }
+notes = "CUDA prefill on-device by default; codec CPU unless RLX_MOSS_CODEC_DEVICE=gpu"
+
+# =========================================================================== TTS voice-clone (ORT)
+[[models]]
+name = "luxtts"
+package = "rlx-luxtts"
+kind = "tts"
+tier = 1
+bin = "rlx-luxtts"
+template = "tts_clone"
+features_base = ["onnx"]
+weights = { path = "weights/tts/luxtts" }
+download = { mode = "none" }
+extra = "--data weights/tts/luxtts"
+validate = { rule = "tts", coverage_pass = 0.5, coverage_warn = 0.3, cosine_pass = 0.85, cosine_warn = 0.65 }
+license = { nc = false, gated = false }
+
+[[models]]
+name = "zipvoice"
+package = "rlx-zipvoice"
+kind = "tts"
+tier = 1
+bin = "rlx-zipvoice"
+template = "tts_clone"
+features_base = []
+weights = { path = "weights/tts/zipvoice" }
+download = { mode = "none" }
+extra = "--data weights/tts/zipvoice"
+validate = { rule = "tts", coverage_pass = 0.5, coverage_warn = 0.3, cosine_pass = 0.85, cosine_warn = 0.65 }
+license = { nc = false, gated = false }
+
+# =========================================================================== Tier-2 (ALL=1)
+# f5tts: CC-BY-NC (Tier-2). Vulkan feature now present; still slow on CPU.
+[[models]]
+name = "f5tts"
+package = "rlx-f5tts"
+kind = "tts"
+tier = 2
+bin = "rlx-f5tts"
+template = "tts_f5"
+features_base = ["hf-download"]
+weights = { path = "weights/tts/f5tts" }
+download = { mode = "flag" }
+extra = "--data weights/tts/f5tts"
+validate = { rule = "tts", coverage_pass = 0.5, coverage_warn = 0.3, cosine_pass = 0.85, cosine_warn = 0.65 }
+license = { nc = true, gated = false }
+notes = "CC-BY-NC; DiT on-device CUDA/Vulkan; Apple gpu→Metal DiT unless RLX_F5_WGPU_DIT=1"
+
+[[models]]
+name = "styletts2"
+package = "rlx-styletts2"
+kind = "tts"
+tier = 1
+bin = "rlx-styletts2"
+template = "tts_styletts2"
+features_base = []
+weights = { path = "weights/tts/kokoro-82m" }
+download = { mode = "none" }
+extra = "--model-dir weights/tts/kokoro-82m --voice af_heart"
+validate = { rule = "tts", coverage_pass = 0.6, coverage_warn = 0.4, cosine_pass = 0.90, cosine_warn = 0.70 }
+license = { nc = false, gated = false }
+notes = "Kokoro-82M native facade"
+
+[[models]]
+name = "chatterbox"
+package = "rlx-chatterbox"
+kind = "tts"
+tier = 1
+bin = "rlx-chatterbox"
+template = "tts_chatterbox"
+features_base = []
+weights = { path = "weights/tts/chatterbox" }
+download = { mode = "none" }
+extra = "--data weights/tts/chatterbox --greedy --seed 42"
+validate = { rule = "tts", coverage_pass = 0.5, coverage_warn = 0.3, cosine_pass = 0.85, cosine_warn = 0.65 }
+license = { nc = false, gated = false }
+
+[[models]]
+name = "sesame"
+package = "rlx-sesame"
+kind = "tts"
+tier = 1
+bin = "rlx-sesame"
+template = "tts_sesame"
+features_base = []
+weights = { path = "weights/tts/sesame" }
+download = { mode = "none" }
+extra = "--model-dir weights/tts/sesame --seed 42 --temperature 0"
+validate = { rule = "tts", coverage_pass = 0.5, coverage_warn = 0.3, cosine_pass = 0.85, cosine_warn = 0.65 }
+license = { nc = false, gated = false }
+notes = "Eager CPU AR; Mimi codec on --device"
+
+[[models]]
+name = "gepard"
+package = "rlx-gepard"
+kind = "tts"
+tier = 2
+bin = "rlx-gepard"
+template = "tts_text"
+features_base = []
+weights = { path = "weights/tts/gepard" }
+download = { mode = "none" }
+extra = "--weights weights/tts/gepard --seed 54"
+validate = { rule = "tts", coverage_pass = 0.5, coverage_warn = 0.3, cosine_pass = 0.80, cosine_warn = 0.50 }
+license = { nc = false, gated = false }
+notes = "Default CUDA keeps AR on CPU (RLX_GEPARD_CUDA_AR=1 forces CUDA AR)"
+
+# orpheus: 3B Llama+SNAC — VRAM pressure on 16GB; Tier-2.
+[[models]]
+name = "orpheus"
+package = "rlx-orpheus"
+kind = "tts"
+tier = 2
+bin = "rlx-orpheus"
+template = "tts_text"
+features_base = ["hf-download"]
+weights = { path = "weights/orpheus" }
+download = { mode = "flag" }
+extra = "--voice tara"
+validate = { rule = "tts", coverage_pass = 0.4, coverage_warn = 0.25, cosine_pass = 0.85, cosine_warn = 0.6 }
+license = { nc = false, gated = false }
+notes = "3B; big VRAM; verify flags before enabling"
+
+# =========================================================================== LM (Bonsai-27B Q1_0)
+[[models]]
+name = "bonsai-27b"
+package = "rlx-qwen35"
+kind = "lm"
+tier = 2
+bin = "rlx-qwen35"
+template = "lm"
+features_base = []
+weights = { path = "weights/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf" }
+download = { mode = "none" }
+extra = "--packed --prompt \"Question: What is the capital of France? Answer:\""
+# 16GB laptop: keep packed + short max-seq so the decode arena fits.
+gpu_extra = { cuda = "--max-seq 32" }
+max_tokens = "16"
+validate = { rule = "lm", min_new_tokens = 4, parity_prefix = 4 }
+license = { nc = false, gated = false }
+notes = "prism-ml Q1_0 packed; needs ~16GB+ CUDA; sync weights separately"
+

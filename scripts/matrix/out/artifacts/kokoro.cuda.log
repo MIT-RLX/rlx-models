@@ -1,0 +1,8 @@
+$ /home/user/rlx-models/target/release/rlx-kokoro --data weights/tts/kokoro-82m --voice af_heart --text The quick brown fox jumps over the lazy dog near the river bank. --device cuda --out /home/user/rlx-models/scripts/matrix/out/artifacts/kokoro.cuda.wav
+
+--- stdout ---
+Wrote 106800 samples (4.45s @ 24000 Hz) to /home/user/rlx-models/scripts/matrix/out/artifacts/kokoro.cuda.wav [voice=af_heart, backend=native, device=Cuda]
+
+--- stderr ---
+[kokoro] encoder on onnxruntime/cpu (decoder on rlx/Cuda); set RLX_KOKORO_NATIVE_ENC=1 for full-native
+rlx-cuda: cuDNN unavailable (libcudnn.so not loadable) — convolutions use the ~10× slower im2col path. Put libcudnn.so on the loader path (e.g. LD_LIBRARY_PATH), or set RLX_CUDA_NO_CUDNN=1 to silence this.

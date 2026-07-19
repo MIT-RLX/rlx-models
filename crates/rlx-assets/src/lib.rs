@@ -88,9 +88,7 @@ impl AssetSource {
 
     /// Load assets from a filesystem directory (the classic layout).
     pub fn dir(path: impl Into<PathBuf>) -> Self {
-        Self::new(DirProvider {
-            root: path.into(),
-        })
+        Self::new(DirProvider { root: path.into() })
     }
 
     /// Load assets from an in-memory name → bytes map.
@@ -340,9 +338,9 @@ struct DirProvider {
 impl AssetProvider for DirProvider {
     fn read_bytes(&self, name: &str) -> Result<Cow<'_, [u8]>> {
         let path = self.root.join(name);
-        Ok(Cow::Owned(std::fs::read(&path).with_context(|| {
-            format!("read {}", path.display())
-        })?))
+        Ok(Cow::Owned(
+            std::fs::read(&path).with_context(|| format!("read {}", path.display()))?,
+        ))
     }
     fn exists(&self, name: &str) -> bool {
         self.root.join(name).exists()
@@ -622,7 +620,10 @@ mod tests {
         assert_eq!(src.read_to_string("frontend/vocab.txt").unwrap(), "a\nb\n");
         let mut names = src.names().unwrap();
         names.sort();
-        assert_eq!(names, ["config.json", "frontend/vocab.txt", "onnx/decoder.onnx"]);
+        assert_eq!(
+            names,
+            ["config.json", "frontend/vocab.txt", "onnx/decoder.onnx"]
+        );
         assert!(src.dir_path().is_none());
     }
 
@@ -638,10 +639,17 @@ mod tests {
     fn pack_round_trips_in_memory() {
         let entries = sample();
         let mut buf = Vec::new();
-        pack::write(entries.iter().map(|(k, v)| (k.clone(), v.as_slice())), &mut buf).unwrap();
+        pack::write(
+            entries.iter().map(|(k, v)| (k.clone(), v.as_slice())),
+            &mut buf,
+        )
+        .unwrap();
         let src = AssetSource::pack_bytes(Arc::<[u8]>::from(buf)).unwrap();
         assert_eq!(&*src.read("onnx/decoder.onnx").unwrap(), &[1, 2, 3, 4]);
-        assert_eq!(src.read_to_string("config.json").unwrap(), r#"{"model":"x"}"#);
+        assert_eq!(
+            src.read_to_string("config.json").unwrap(),
+            r#"{"model":"x"}"#
+        );
         assert!(src.exists("frontend/vocab.txt"));
         assert_eq!(src.names().unwrap().len(), 3);
     }

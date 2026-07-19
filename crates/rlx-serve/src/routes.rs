@@ -23,7 +23,7 @@ pub async fn health() -> &'static str {
 pub async fn models(State(st): State<AppState>) -> Json<ModelList> {
     let created = now_unix();
     let data = st
-        .engine
+        .backend
         .model_cards()
         .into_iter()
         .map(|c| ModelEntry {
@@ -59,9 +59,13 @@ pub async fn chat_completions(
     State(st): State<AppState>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<Response, ApiError> {
-    let engine = st.engine.clone();
+    let engine = st
+        .backend
+        .resolve(&req.model)
+        .ok_or_else(|| ApiError::bad_request(format!("unknown model: {}", req.model)))?;
+    req.validate_tools().map_err(|e| ApiError::bad_request(e))?;
     let prompt_ids = engine
-        .encode_chat(&req.turns())
+        .encode_chat(&req.compacted_turns())
         .map_err(|e| ApiError::bad_request(format!("encode chat: {e}")))?;
     let (opts, bias) = to_sample_opts(&req.sampling(), req.logit_bias.as_ref());
     let want_lp = req.want_logprobs();
@@ -220,7 +224,10 @@ pub async fn completions(
     State(st): State<AppState>,
     Json(req): Json<CompletionRequest>,
 ) -> Result<Json<CompletionResponse>, ApiError> {
-    let engine = st.engine.clone();
+    let engine = st
+        .backend
+        .resolve(&req.model)
+        .ok_or_else(|| ApiError::bad_request(format!("unknown model: {}", req.model)))?;
     let prompt_ids = engine
         .encode_text(&req.prompt)
         .map_err(|e| ApiError::bad_request(format!("encode prompt: {e}")))?;

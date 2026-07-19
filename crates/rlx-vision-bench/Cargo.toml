@@ -1,0 +1,50 @@
+[package]
+name = "rlx-vision-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "RLX vision training + benchmark harness: MNIST/Fashion/CIFAR/ImageNet/COCO × MLP/CNN, single-machine or distributed (in-graph gradient all-reduce, TCP/iroh)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+# Harness only — depends on unpublished local `rlx-collectives` path.
+publish = false
+
+[dependencies]
+# Patched to the local ../rlx workspace via the root [patch.crates-io].
+rlx-ir = "0.2.13"
+# Explicit (not workspace) so we can add native backends per-platform: the
+# intra-node `--alldev` path spins up a lane per live backend, so the binary
+# must actually compile them in. cpu everywhere; metal+gpu on macOS.
+rlx-runtime = { version = "0.2.13", default-features = false, features = ["cpu"] }
+rlx-autodiff = { workspace = true }
+rlx-driver = { workspace = true }
+# Direct path (not published): the in-graph collective ops + mesh live here.
+# Cargo unifies its rlx-* path deps with the patched crates above (same paths).
+rlx-collectives = { path = "../../../rlx/crates/core/rlx-collectives" }
+
+# Native GPU backends so `--alldev` has real lanes (cargo unions feature sets).
+[target.'cfg(target_os = "macos")'.dependencies]
+rlx-runtime = { version = "0.2.13", default-features = false, features = ["metal"] }
+
+# Every native Linux backend so `--alldev` / `RLX_DEVICE=…` can exercise the
+# full MSI-class matrix (CUDA + wgpu + Vulkan + OneAPI). `cuda`/`gpu`/`vulkan`/
+# `oneapi` each pull `cpu` transitively via rlx-runtime.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+rlx-runtime = { version = "0.2.13", default-features = false, features = ["cuda", "gpu", "vulkan", "oneapi"] }
+
+[features]
+# NAT-traversing distributed training: build the multi-node ProcessGroup over
+# iroh (`TOPOLOGY=iroh`) instead of TCP/Thunderbolt, so a data-parallel run can
+# cross NAT / the internet (relays + pkarr discovery) rather than needing every
+# rank on one routable LAN. Off by default — only this path pulls in iroh.
+iroh = ["rlx-driver/iroh"]
+
+[[bin]]
+name = "rlx-vision-bench"
+path = "src/main.rs"
+
+[lints]
+workspace = true

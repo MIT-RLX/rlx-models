@@ -1,0 +1,264 @@
+{
+  "host": "Linux",
+  "backends": [
+    "cuda",
+    "vulkan"
+  ],
+  "adapters": {
+    "cuda": "NVIDIA GeForce RTX 3080 Ti Laptop GPU",
+    "vulkan": "NVIDIA GeForce RTX 3080 Ti Laptop GPU",
+    "wgpu": "NVIDIA GeForce RTX 3080 Ti Laptop GPU"
+  },
+  "rows": [
+    {
+      "model": "melotts",
+      "kind": "tts",
+      "package": "rlx-melotts",
+      "backend": "cuda",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 184320
+      },
+      "ms": 3356
+    },
+    {
+      "model": "melotts",
+      "kind": "tts",
+      "package": "rlx-melotts",
+      "backend": "vulkan",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 184320
+      },
+      "ms": 10361
+    },
+    {
+      "model": "tiny-tts",
+      "kind": "tts",
+      "package": "rlx-tiny-tts",
+      "backend": "cuda",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 184320
+      },
+      "ms": 3302
+    },
+    {
+      "model": "tiny-tts",
+      "kind": "tts",
+      "package": "rlx-tiny-tts",
+      "backend": "vulkan",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 184320
+      },
+      "ms": 7509
+    },
+    {
+      "model": "kokoro",
+      "kind": "tts",
+      "package": "rlx-kokoro",
+      "backend": "cuda",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 106800
+      },
+      "ms": 5026
+    },
+    {
+      "model": "kokoro",
+      "kind": "tts",
+      "package": "rlx-kokoro",
+      "backend": "vulkan",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 106800
+      },
+      "ms": 17083
+    },
+    {
+      "model": "supertonic",
+      "kind": "tts",
+      "package": "rlx-supertonic",
+      "backend": "cuda",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 189847
+      },
+      "ms": 4991
+    },
+    {
+      "model": "supertonic",
+      "kind": "tts",
+      "package": "rlx-supertonic",
+      "backend": "vulkan",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 189847
+      },
+      "ms": 5727
+    },
+    {
+      "model": "moss-nano",
+      "kind": "tts",
+      "package": "rlx-moss-nano",
+      "backend": "cuda",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 43680
+      },
+      "ms": 18059
+    },
+    {
+      "model": "moss-nano",
+      "kind": "tts",
+      "package": "rlx-moss-nano",
+      "backend": "vulkan",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 43680
+      },
+      "ms": 10932
+    },
+    {
+      "model": "luxtts",
+      "kind": "tts",
+      "package": "rlx-luxtts",
+      "backend": "cuda",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 30464
+      },
+      "ms": 11633
+    },
+    {
+      "model": "luxtts",
+      "kind": "tts",
+      "package": "rlx-luxtts",
+      "backend": "vulkan",
+      "status": "fail",
+      "detail": "panic: rlx-vulkan: no offset for node",
+      "metrics": {},
+      "ms": 21602
+    },
+    {
+      "model": "f5tts",
+      "kind": "tts",
+      "package": "rlx-f5tts",
+      "backend": "cuda",
+      "status": "skip",
+      "detail": "tier-2 (ALL=1 to run)",
+      "metrics": {},
+      "ms": 0
+    },
+    {
+      "model": "f5tts",
+      "kind": "tts",
+      "package": "rlx-f5tts",
+      "backend": "vulkan",
+      "status": "skip",
+      "detail": "tier-2 (ALL=1 to run)",
+      "metrics": {},
+      "ms": 0
+    },
+    {
+      "model": "styletts2",
+      "kind": "tts",
+      "package": "rlx-styletts2",
+      "backend": "cuda",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 106800
+      },
+      "ms": 5152
+    },
+    {
+      "model": "styletts2",
+      "kind": "tts",
+      "package": "rlx-styletts2",
+      "backend": "vulkan",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 106800
+      },
+      "ms": 15263
+    },
+    {
+      "model": "chatterbox",
+      "kind": "tts",
+      "package": "rlx-chatterbox",
+      "backend": "cuda",
+      "status": "fail",
+      "detail": "error: compile speech_encoder: invalid value: integer `3`, expected variant index 0 <= i < 2",
+      "metrics": {},
+      "ms": 1746
+    },
+    {
+      "model": "chatterbox",
+      "kind": "tts",
+      "package": "rlx-chatterbox",
+      "backend": "vulkan",
+      "status": "fail",
+      "detail": "error: compile speech_encoder: invalid value: integer `3`, expected variant index 0 <= i < 2",
+      "metrics": {},
+      "ms": 1940
+    },
+    {
+      "model": "sesame",
+      "kind": "tts",
+      "package": "rlx-sesame",
+      "backend": "cuda",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 82560
+      },
+      "ms": 147295
+    },
+    {
+      "model": "sesame",
+      "kind": "tts",
+      "package": "rlx-sesame",
+      "backend": "vulkan",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 82560
+      },
+      "ms": 151616
+    },
+    {
+      "model": "gepard",
+      "kind": "tts",
+      "package": "rlx-gepard",
+      "backend": "cuda",
+      "status": "skip",
+      "detail": "tier-2 (ALL=1 to run)",
+      "metrics": {},
+      "ms": 0
+    },
+    {
+      "model": "gepard",
+      "kind": "tts",
+      "package": "rlx-gepard",
+      "backend": "vulkan",
+      "status": "skip",
+      "detail": "tier-2 (ALL=1 to run)",
+      "metrics": {},
+      "ms": 0
+    }
+  ]
+}

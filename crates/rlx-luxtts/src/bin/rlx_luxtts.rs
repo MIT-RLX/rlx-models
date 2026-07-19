@@ -48,12 +48,16 @@ fn read_wav_24k(path: &std::path::Path) -> Result<Vec<f32>> {
         hound::SampleFormat::Float => r.samples::<f32>().map(|s| s.unwrap_or(0.0)).collect(),
         hound::SampleFormat::Int => {
             let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-            r.samples::<i32>().map(|s| s.unwrap_or(0) as f32 / max).collect()
+            r.samples::<i32>()
+                .map(|s| s.unwrap_or(0) as f32 / max)
+                .collect()
         }
     };
     // downmix if needed
     let mono: Vec<f32> = if spec.channels > 1 {
-        mono.chunks(spec.channels as usize).map(|c| c.iter().sum::<f32>() / c.len() as f32).collect()
+        mono.chunks(spec.channels as usize)
+            .map(|c| c.iter().sum::<f32>() / c.len() as f32)
+            .collect()
     } else {
         mono
     };
@@ -118,7 +122,8 @@ fn run() -> Result<()> {
     let text = text.context("--text is required")?;
 
     let device = parse_device(&device_str).with_context(|| format!("device '{device_str}'"))?;
-    let tts = LuxTts::load_on(&data, device).with_context(|| format!("load from {}", data.display()))?;
+    let tts =
+        LuxTts::load_on(&data, device).with_context(|| format!("load from {}", data.display()))?;
     let pw = read_wav_24k(&prompt_wav)?;
 
     #[cfg(feature = "espeak")]

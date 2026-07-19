@@ -1,0 +1,7 @@
+$ /home/user/rlx-models/target/release/rlx-f5tts --data weights/tts/f5tts --ref-wav assets/jfk/jfk_voice_clone.wav --ref-text And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. --text The quick brown fox jumps over the lazy dog near the river bank. --device cuda --out /home/user/rlx-models/scripts/matrix/out/artifacts/f5tts.cuda.wav
+
+--- stdout ---
+Wrote 71424 samples (2.98s @ 24000 Hz) to /home/user/rlx-models/scripts/matrix/out/artifacts/f5tts.cuda.wav [native/Cuda pre/dec=Cuda dit=Cuda, nfe=32] synth=15284ms (5.14× RT)
+
+--- stderr ---
+rlx-cuda: cuDNN unavailable (libcudnn.so not loadable) — convolutions use the ~10× slower im2col path. Put libcudnn.so on the loader path (e.g. LD_LIBRARY_PATH), or set RLX_CUDA_NO_CUDNN=1 to silence this.

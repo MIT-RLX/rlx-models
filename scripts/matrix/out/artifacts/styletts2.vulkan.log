@@ -1,0 +1,8 @@
+$ /home/user/rlx-models/target/release/rlx-styletts2 --model-dir weights/tts/kokoro-82m --voice af_heart --text The quick brown fox jumps over the lazy dog near the river bank. --device vulkan --output /home/user/rlx-models/scripts/matrix/out/artifacts/styletts2.vulkan.wav
+
+--- stdout ---
+
+--- stderr ---
+[kokoro] encoder on onnxruntime/cpu (decoder on rlx/Vulkan); set RLX_KOKORO_NATIVE_ENC=1 for full-native
+StyleTTS2 native text="The quick brown fox jumps over the lazy dog near the river bank." voice=af_heart requested=Vulkan speed=1
+wrote /home/user/rlx-models/scripts/matrix/out/artifacts/styletts2.vulkan.wav (106800 samples @ 24000 Hz)

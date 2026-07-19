@@ -1,0 +1,18 @@
+[rlx-qwen35] qwen35: tokenized prompt → 155 ids
+[rlx-qwen35] qwen35: weights="/Users/Shared/rlx-models/weights/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf" device=mlx batch=1 max_seq=272 mtp=false spec_decode=false packed=true dynamic_prefill=false dynamic_decode=false mmproj=none
+[qwen35] loaded GGUF metadata in 1.20s (layers=64, hidden=5120, ssm_state=128)
+[qwen35] read weights (packed) in 896.48ms
+rlx-mlx: falling back to MlxMode::Lazy — compile mode unsupported for this graph: graph has 7081 nodes (limit 1536); mlx::compile_simplify is unbounded on large TTS/vocoder graphs — set RLX_MLX_COMPILE_MAX_NODES=0 to force Compiled
+[qwen35] prefill-cache stages: flow_build=183.34ms, hir+backend=165.80ms (params=0, packed=496)
+[qwen35] compiled prefill-cache via BuiltModel in 349.20ms (params=0, packed=496)
+[qwen35] uploaded prefill-cache 0 F32 + 496 packed params in 420.53ms
+[rlx-qwen35] qwen35: compiled (hidden=5120, layers=64, ssm_state=128, dt_rank=48)
+[rlx-qwen35] qwen35: generating 16 tokens (temp=0, top_p=1)…
+271 rlx-mlx: falling back to MlxMode::Lazy — compile mode unsupported for this graph: graph has 7140 nodes (limit 1536); mlx::compile_simplify is unbounded on large TTS/vocoder graphs — set RLX_MLX_COMPILE_MAX_NODES=0 to force Compiled
+248068 198 8160 579 264 31838 9522 421 25 318 16 8 79439 37972 5972 [qwen35][bench] device=Mlx prompt_tokens=155 new_tokens=16 prefill_ms=8498.7 decode_ms=21886.7 total_ms=30385.5 ms/tok=1367.9 tok/s=0.731
+
+[rlx-qwen35] qwen35: generated: [271, 248068, 198, 8160, 579, 264, 31838, 9522, 421, 25, 318, 16, 8, 79439, 37972, 5972]
+[rlx-qwen35] qwen35: text: "<think>\nHere's a structured brief that: (1) contrasts latency vs"
+[rlx-qwen35] qwen35: text>
+<think>
+Here's a structured brief that: (1) contrasts latency vs

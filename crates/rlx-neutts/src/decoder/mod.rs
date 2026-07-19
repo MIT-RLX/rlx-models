@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 
 mod eager;
+mod encoder;
 
 #[cfg(feature = "burn")]
 mod burn;
@@ -63,6 +64,32 @@ pub fn decoder_weights_path() -> Result<PathBuf> {
 /// Like [`decoder_weights_path`], but returns `None` when unset or missing (for tests).
 pub fn decoder_weights_path_if_available() -> Option<PathBuf> {
     let path = std::env::var("NEUTTS_DECODER_PATH")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)?;
+    if path.exists() { Some(path) } else { None }
+}
+
+/// Resolve NeuCodec encoder weights from `NEUTTS_ENCODER_PATH`.
+pub fn encoder_weights_path() -> Result<PathBuf> {
+    let path = std::env::var("NEUTTS_ENCODER_PATH")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEUTTS_ENCODER_PATH is not set (NeuCodec encoder weights are not bundled in rlx-neutts)"
+            )
+        })?;
+    if !path.exists() {
+        bail!("NEUTTS_ENCODER_PATH does not exist: {}", path.display());
+    }
+    Ok(path)
+}
+
+/// Like [`encoder_weights_path`], but returns `None` when unset or missing (for tests).
+pub fn encoder_weights_path_if_available() -> Option<PathBuf> {
+    let path = std::env::var("NEUTTS_ENCODER_PATH")
         .ok()
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)?;

@@ -86,11 +86,16 @@ impl Manifest {
     }
 
     pub fn voice(&self, name: &str) -> Option<&BuiltinVoice> {
-        self.builtin_voices.iter().find(|v| v.voice.eq_ignore_ascii_case(name))
+        self.builtin_voices
+            .iter()
+            .find(|v| v.voice.eq_ignore_ascii_case(name))
     }
 
     pub fn voice_names(&self) -> Vec<String> {
-        self.builtin_voices.iter().map(|v| v.voice.clone()).collect()
+        self.builtin_voices
+            .iter()
+            .map(|v| v.voice.clone())
+            .collect()
     }
 }
 
@@ -103,6 +108,9 @@ pub struct CodecInfo {
 
 impl Default for CodecInfo {
     fn default() -> Self {
-        Self { sample_rate: 48000, channels: 2 }
+        Self {
+            sample_rate: 48000,
+            channels: 2,
+        }
     }
 }

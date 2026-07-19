@@ -1,0 +1,39 @@
+
+warning: variable does not need to be mutable
+   --> /home/user/rlx/crates/backends/rlx-vulkan/src/device.rs:134:13
+    |
+134 |         let mut inst_ext: Vec<*const c_char> = Vec::new();
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `-W unused-mut` implied by `-W unused`
+    = help: to override `-W unused` add `#[allow(unused_mut)]`
+
+warning: variable does not need to be mutable
+   --> /home/user/rlx/crates/backends/rlx-vulkan/src/device.rs:135:13
+    |
+135 |         let mut inst_flags = vk::InstanceCreateFlags::empty();
+    |             ----^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unreachable pattern
+    --> /home/user/rlx/crates/backends/rlx-wgpu/src/backend/mod.rs:1177:15
+     |
+1176 |         | Step::Conv2dBackwardInputHost { .. }
+     |           ------------------------------------ matches all the relevant values
+1177 |             | Step::Conv2dBackwardInputHost { .. }
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no value can reach this
+     |
+     = note: `-W unreachable-patterns` implied by `-W unused`
+     = help: to override `-W unused` add `#[allow(unreachable_patterns)]`
+
+warning: unreachable pattern
+    --> /home/user/rlx/crates/backends/rlx-wgpu/src/backend/run.rs:1689:23
+     |
+1688 |                         | Step::Conv2dBackwardInputHost { .. }
+     |                           ------------------------------------ matches all the relevant values
+1689 |                     | Step::Conv2dBackwardInputHost { .. }
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no value can reach this
+

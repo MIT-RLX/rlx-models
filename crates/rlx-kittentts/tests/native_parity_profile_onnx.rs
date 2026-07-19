@@ -13,7 +13,6 @@ mod support;
 
 use kitten_tts_mini_rlx::bundle_compile::{log_parity_onnx_metrics, parity_onnx_metrics};
 use rlx_kittentts::{Device, KittenTTS, SAMPLE_RATE as TTS_RATE, assets, infer_opts};
-use rlx_runtime::is_available;
 use rlx_whisper::{SAMPLE_RATE as WHISPER_RATE, WhisperRunner};
 use support::{assert_audible, resample_linear, whisper_asr_dir};
 

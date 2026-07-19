@@ -16,6 +16,7 @@
 //! Piper VITS runner (single ONNX): `input` / `input_lengths` / `scales`.
 
 use std::path::Path;
+#[cfg(feature = "onnx")]
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
@@ -27,7 +28,10 @@ use crate::config::{PiperConfig, find_voice};
 use ort::{session::Session, value::Tensor};
 
 pub fn peak_amplitude(a: &[f32]) -> f32 {
-    a.iter().filter(|s| s.is_finite()).map(|s| s.abs()).fold(0.0, f32::max)
+    a.iter()
+        .filter(|s| s.is_finite())
+        .map(|s| s.abs())
+        .fold(0.0, f32::max)
 }
 
 /// A loaded Piper voice.
@@ -54,8 +58,20 @@ impl Piper {
         }
         #[cfg(feature = "onnx")]
         {
-            let built = rlx_kittentts::build_onnx_session(&onnx, device).context("session")?;
-            eprintln!("[piper] loaded {} on {device:?} (ep={})", onnx.display(), built.ort_ep);
+            // Piper's VITS graph crashes ORT's CoreML EP (metal/mlx); the CPU EP
+            // is the validated path, so fall back to it for GPU devices.
+            let ort_device = if matches!(device, Device::Cpu) {
+                device
+            } else {
+                eprintln!("[piper] CoreML EP is unstable for this VITS model; using CPU EP");
+                Device::Cpu
+            };
+            let built = rlx_kittentts::build_onnx_session(&onnx, ort_device).context("session")?;
+            eprintln!(
+                "[piper] loaded {} on {ort_device:?} (ep={})",
+                onnx.display(),
+                built.ort_ep
+            );
             Ok(Self {
                 device,
                 cfg,
@@ -87,7 +103,11 @@ impl Piper {
     }
 
     /// Synthesize directly from espeak phonemes (skips G2P).
-    pub fn synthesize_phonemes(&self, phonemes: &str, length_scale: Option<f32>) -> Result<Vec<f32>> {
+    pub fn synthesize_phonemes(
+        &self,
+        phonemes: &str,
+        length_scale: Option<f32>,
+    ) -> Result<Vec<f32>> {
         let ids = crate::tokenize::phonemes_to_ids(phonemes, &self.cfg);
         anyhow::ensure!(ids.len() > 2, "no phonemes");
         self.run(&ids, length_scale)
@@ -102,16 +122,22 @@ impl Piper {
             self.cfg.noise_w,
         ];
         let input = Tensor::<i64>::from_array(([1usize, n], ids.to_vec())).context("input")?;
-        let lengths = Tensor::<i64>::from_array(([1usize], vec![n as i64])).context("input_lengths")?;
+        let lengths =
+            Tensor::<i64>::from_array(([1usize], vec![n as i64])).context("input_lengths")?;
         let scales_t = Tensor::<f32>::from_array(([3usize], scales)).context("scales")?;
 
         let mut s = self.session.lock().expect("poisoned");
-        let out = s.run(ort::inputs![input, lengths, scales_t]).context("piper inference")?;
+        let out = s
+            .run(ort::inputs![input, lengths, scales_t])
+            .context("piper inference")?;
         let (_shape, audio) = out[0].try_extract_tensor::<f32>().context("output")?;
 
         let audio = audio.to_vec();
         let peak = peak_amplitude(&audio);
-        anyhow::ensure!(peak >= 1e-3, "synthesized audio is silent (peak={peak:.2e})");
+        anyhow::ensure!(
+            peak >= 1e-3,
+            "synthesized audio is silent (peak={peak:.2e})"
+        );
         Ok(audio)
     }
 

@@ -62,10 +62,10 @@ pub struct StConfig {
 impl StConfig {
     pub fn load(onnx_dir: &Path) -> Result<Self> {
         let path = onnx_dir.join("tts.json");
-        let bytes = std::fs::read(&path)
-            .with_context(|| format!("read tts.json: {}", path.display()))?;
-        let raw: RawConfig = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parse {}", path.display()))?;
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("read tts.json: {}", path.display()))?;
+        let raw: RawConfig =
+            serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
         Ok(Self {
             sample_rate: raw.ae.sample_rate,
             base_chunk_size: raw.ae.base_chunk_size,

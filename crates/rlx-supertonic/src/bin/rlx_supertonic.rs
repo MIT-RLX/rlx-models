@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use rlx_supertonic::{InferOpts, Supertonic, Voice, config::DEFAULT_LOCAL_DIR, list_voices};
 use rlx_runtime::parse_device;
+use rlx_supertonic::{InferOpts, Supertonic, Voice, config::DEFAULT_LOCAL_DIR, list_voices};
 
 const HELP: &str = "\
 rlx-supertonic — Supertonic-3 flow-matching TTS
@@ -103,7 +103,8 @@ fn run() -> Result<()> {
     }
 
     let device = parse_device(&device_str).with_context(|| format!("device '{device_str}'"))?;
-    let tts = Supertonic::load_on(&dir, device).with_context(|| format!("load from {}", dir.display()))?;
+    let tts = Supertonic::load_on(&dir, device)
+        .with_context(|| format!("load from {}", dir.display()))?;
     let voice_obj = Voice::load(&dir.join("voice_styles").join(format!("{voice}.json")))
         .with_context(|| format!("load voice '{voice}'"))?;
 
@@ -123,5 +124,6 @@ fn run() -> Result<()> {
 }
 
 fn next(a: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {
-    a.next().with_context(|| format!("missing value for {flag}"))
+    a.next()
+        .with_context(|| format!("missing value for {flag}"))
 }

@@ -27,14 +27,15 @@ rlx-maya1 — Maya1 expressive voice-design TTS (Llama-3B + SNAC, Apache-2.0, 24
 USAGE: rlx-maya1 --gguf maya1.Q4_K_M.gguf --description \"...\" --text \"...\"
 
 OPTIONS:
-    --gguf <FILE>        Maya1 GGUF (default: weights/tts/maya1/maya1.Q4_K_M.gguf)
-    --snac <FILE>        SNAC decoder weights (else rlx-orpheus default/env)
-    --description <T>    Natural-language voice design (age/gender/accent/emotion)
-    --text <T>           Text to speak (inline tags like <laugh>, <whisper> ok)
-    --seed <N>           Sampling seed
-    --device <DEV>       cpu | metal | mlx | cuda | gpu (default: cpu)
-    --out <FILE>         Output WAV (default: maya1.wav)
-    -h, --help           Show help
+    --gguf <FILE>              Maya1 GGUF (default: weights/tts/maya1/maya1.Q4_K_M.gguf)
+    --snac <FILE>              SNAC decoder weights (else rlx-orpheus default/env)
+    --description <T>          Natural-language voice design (age/gender/accent/emotion)
+    --text <T>                 Text to speak (inline tags like <laugh>, <whisper> ok)
+    --seed <N>                 Sampling seed
+    --max-new-tokens <N>       Maximum SNAC tokens to generate (default: 16)
+    --device <DEV>             cpu | metal | mlx | coreml | cuda | gpu (default: mlx on macOS)
+    --out <FILE>               Output WAV (default: maya1.wav)
+    -h, --help                 Show help
 ";
 
 fn find_gguf(dir: &Path) -> Option<PathBuf> {
@@ -42,9 +43,11 @@ fn find_gguf(dir: &Path) -> Option<PathBuf> {
     if preferred.is_file() {
         return Some(preferred);
     }
-    std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
-        p.extension().is_some_and(|x| x == "gguf")
-    })
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "gguf"))
 }
 
 fn main() -> ExitCode {
@@ -63,7 +66,12 @@ fn run() -> Result<()> {
     let mut description = "Realistic male voice in his 30s with an American accent. Normal pitch, warm timbre, conversational pacing.".to_string();
     let mut text: Option<String> = None;
     let mut seed: Option<u64> = None;
-    let mut device_str = "cpu".to_string();
+    let mut max_new_tokens: Option<u32> = None;
+    let mut device_str = if cfg!(target_os = "macos") {
+        "mlx".to_string()
+    } else {
+        "cpu".to_string()
+    };
     let mut out = PathBuf::from("maya1.wav");
 
     let mut a = std::env::args().skip(1);
@@ -75,6 +83,9 @@ fn run() -> Result<()> {
             "--description" => description = next()?,
             "--text" => text = Some(next()?),
             "--seed" => seed = Some(next()?.parse().context("--seed")?),
+            "--max-new-tokens" => {
+                max_new_tokens = Some(next()?.parse().context("--max-new-tokens")?)
+            }
             "--device" => device_str = next()?,
             "--out" => out = PathBuf::from(next()?),
             "-h" | "--help" => {
@@ -97,6 +108,9 @@ fn run() -> Result<()> {
     };
     if let Some(s) = seed {
         tts.config_mut().seed = s;
+    }
+    if let Some(n) = max_new_tokens {
+        tts.config_mut().max_new_tokens = n;
     }
     let audio = tts.synthesize(&description, &text)?;
 

@@ -293,20 +293,44 @@ fn run_scatter_elements(
     let indices = decode_i64_indices(inputs[1].0, inputs[1].1)?;
     unsafe {
         if inputs[0].1.dtype() == DType::I64 {
-            let out = typed_mut::<i64>(output.0, output.1, DType::I64, "output")?;
             let updates = typed::<i64>(inputs[2].0, inputs[2].1, DType::I64, "updates")?;
-            if inputs[0].1.dtype() == DType::I64 {
-                let data = typed::<i64>(inputs[0].0, inputs[0].1, DType::I64, "data")?;
-                if !std::ptr::eq(data.as_ptr(), out.as_ptr()) {
-                    let n = data.len().min(out.len());
-                    out[..n].copy_from_slice(&data[..n]);
-                }
-            }
-            let n = out.len().min(indices.len()).min(updates.len());
+            let data = typed::<i64>(inputs[0].0, inputs[0].1, DType::I64, "data")?;
+            // Compute the scatter in i64, then write into whatever dtype the
+            // output arena slot actually is. On the GPU/arena backends (Metal
+            // f32-uniform) the importer types this scatter's output F32, so a
+            // hard `typed_mut::<i64>` fails ("output: expected I64, got F32").
+            let mut res: Vec<i64> = data.to_vec();
+            let n = res.len().min(indices.len()).min(updates.len());
             for i in 0..n {
                 let j = indices[i].max(0) as usize;
-                if j < out.len() {
-                    out[j] = updates[i];
+                if j < res.len() {
+                    res[j] = updates[i];
+                }
+            }
+            match output.1.dtype() {
+                DType::I64 => {
+                    let out = typed_mut::<i64>(output.0, output.1, DType::I64, "output")?;
+                    let n = res.len().min(out.len());
+                    out[..n].copy_from_slice(&res[..n]);
+                }
+                DType::I32 => {
+                    let out = typed_mut::<i32>(output.0, output.1, DType::I32, "output")?;
+                    let n = res.len().min(out.len());
+                    for k in 0..n {
+                        out[k] = res[k] as i32;
+                    }
+                }
+                DType::F32 => {
+                    let out = typed_mut::<f32>(output.0, output.1, DType::F32, "output")?;
+                    let n = res.len().min(out.len());
+                    for k in 0..n {
+                        out[k] = res[k] as f32;
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "ScatterElements: unsupported output dtype {other:?} for i64 data"
+                    ));
                 }
             }
             let _ = axis;

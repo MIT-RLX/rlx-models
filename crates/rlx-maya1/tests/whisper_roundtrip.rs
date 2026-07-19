@@ -38,14 +38,20 @@ fn gguf_path() -> Option<PathBuf> {
     if pref.is_file() {
         return Some(pref);
     }
-    std::fs::read_dir(&dir).ok()?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "gguf"))
+    std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "gguf"))
 }
 fn whisper_dir() -> Option<PathBuf> {
     if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
         return ready(PathBuf::from(d));
     }
     let c = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");
-    ["whisper-base.en", "whisper-small.en"].into_iter().find_map(|n| ready(c.join(n)))
+    ["whisper-base.en", "whisper-small.en"]
+        .into_iter()
+        .find_map(|n| ready(c.join(n)))
 }
 fn ready(d: PathBuf) -> Option<PathBuf> {
     (d.join("model.safetensors").is_file() && d.join("tokenizer.json").is_file()).then_some(d)
@@ -70,7 +76,10 @@ fn maya1_roundtrip_via_whisper() {
     }
     let tts = Maya1::load_on(&gguf, Device::Cpu).expect("load maya1");
     let audio = tts.synthesize(DESC, TEXT).expect("synthesize");
-    assert!(rlx_maya1::peak_amplitude(&audio) > 0.03, "audio not audible");
+    assert!(
+        rlx_maya1::peak_amplitude(&audio) > 0.03,
+        "audio not audible"
+    );
 
     let n = (audio.len() as u64 * WR as u64 / SAMPLE_RATE as u64).max(1) as usize;
     let pcm: Vec<f32> = (0..n)
@@ -94,8 +103,14 @@ fn maya1_roundtrip_via_whisper() {
     let transcript = w.transcribe_greedy(&pcm).expect("transcribe");
 
     let (refs, heard) = (words(TEXT), words(&transcript));
-    let hits = refs.iter().filter(|x| heard.iter().any(|h| h == *x || h.contains(x.as_str()))).count();
+    let hits = refs
+        .iter()
+        .filter(|x| heard.iter().any(|h| h == *x || h.contains(x.as_str())))
+        .count();
     let cov = hits as f32 / refs.len() as f32;
     eprintln!("target:  {TEXT}\nwhisper: {transcript}\ncoverage: {cov:.2}");
-    assert!(cov >= 0.6, "coverage {cov:.2} too low.\ntarget: {TEXT}\ngot: {transcript}");
+    assert!(
+        cov >= 0.6,
+        "coverage {cov:.2} too low.\ntarget: {TEXT}\ngot: {transcript}"
+    );
 }

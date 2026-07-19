@@ -85,6 +85,7 @@ pub use gguf_support::{
     resolve_weights_file_with_options,
 };
 
+pub use asset_source::{AssetProvider, AssetSource, LocalDir, SourceSpec, load_materialized};
 pub use autoregressive::{
     KvCacheState, compact_bucketed_kv_buffer, compile_cache_ensure_graph, infer_prefill_kv_seq,
     kv_from_prefill_outputs, kv_from_prefill_outputs_per_layer,
@@ -94,9 +95,6 @@ pub use autoregressive::{
     run_bucketed_kv_decode_hir_uniform, run_bucketed_kv_decode_keyed,
     run_bucketed_kv_decode_keyed_batched, run_packed_prefill, split_bucketed_decode_kv,
     split_bucketed_decode_kv_per_layer, split_decode_logits_kv, split_decode_logits_kv_aux,
-};
-pub use asset_source::{
-    AssetProvider, AssetSource, LocalDir, SourceSpec, load_materialized,
 };
 pub use config::{BertConfig, NomicBertConfig, NomicVisionConfig};
 pub use embedded_safetensors::EmbeddedSafetensors;

@@ -127,7 +127,7 @@ pub fn greedy_lm_head_argmax(
             let bytes = loader
                 .and_then(|l| l.tensor_bytes_borrowed(key))
                 .ok_or_else(|| anyhow!("packed lm_head: bytes missing for {key}"))?;
-            let (idx, val) = rlx_cpu::lm_head::gguf_tied_lm_argmax(
+            let (idx, val) = rlx_cpu::lm_head::gguf_tied_lm_argmax_parallel(
                 hidden,
                 bytes,
                 expected_in,
@@ -143,7 +143,7 @@ pub fn greedy_lm_head_argmax(
                 let bytes = loader
                     .and_then(|l| l.tensor_bytes_borrowed(key))
                     .ok_or_else(|| anyhow!("packed tied lm_head: bytes missing for {key}"))?;
-                let (idx, val) = rlx_cpu::lm_head::gguf_tied_lm_argmax(
+                let (idx, val) = rlx_cpu::lm_head::gguf_tied_lm_argmax_parallel(
                     hidden,
                     bytes,
                     expected_in,

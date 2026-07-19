@@ -119,8 +119,7 @@ impl InflectNano {
     /// dir kept alive for the model's lifetime (lazy frontend/CoreML path reads).
     #[cfg(feature = "rlx-graph")]
     pub fn load(src: impl Into<rlx_core::AssetSource>) -> Result<Self> {
-        let (mut m, keep) =
-            rlx_core::asset_source::load_materialized(src, Self::load_from_dir)?;
+        let (mut m, keep) = rlx_core::asset_source::load_materialized(src, Self::load_from_dir)?;
         m._assets = keep.map(|g| Box::new(g) as Box<dyn std::any::Any + Send + Sync>);
         Ok(m)
     }

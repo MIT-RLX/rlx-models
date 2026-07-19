@@ -43,7 +43,9 @@ fn whisper_dir() -> Option<PathBuf> {
         return ready(PathBuf::from(d));
     }
     let c = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");
-    ["whisper-base.en", "whisper-small.en"].into_iter().find_map(|n| ready(c.join(n)))
+    ["whisper-base.en", "whisper-small.en"]
+        .into_iter()
+        .find_map(|n| ready(c.join(n)))
 }
 fn ready(d: PathBuf) -> Option<PathBuf> {
     (d.join("model.safetensors").is_file() && d.join("tokenizer.json").is_file()).then_some(d)
@@ -53,7 +55,9 @@ fn read_prompt() -> Vec<f32> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/prompt.wav");
     let mut r = hound::WavReader::open(p).expect("prompt.wav");
     let max = (1i64 << (r.spec().bits_per_sample - 1)) as f32;
-    r.samples::<i32>().map(|s| s.unwrap() as f32 / max).collect()
+    r.samples::<i32>()
+        .map(|s| s.unwrap() as f32 / max)
+        .collect()
 }
 
 fn words(s: &str) -> Vec<String> {
@@ -74,7 +78,10 @@ fn f5tts_clone_roundtrip_via_whisper() {
     let audio = tts
         .synthesize(TEXT, &read_prompt(), REF_TEXT, &InferOpts::default())
         .expect("synthesize");
-    assert!(rlx_f5tts::peak_amplitude(&audio) > 0.05, "audio not audible");
+    assert!(
+        rlx_f5tts::peak_amplitude(&audio) > 0.05,
+        "audio not audible"
+    );
 
     let n = (audio.len() as u64 * WR as u64 / tts.sample_rate() as u64).max(1) as usize;
     let pcm: Vec<f32> = (0..n)
@@ -98,8 +105,14 @@ fn f5tts_clone_roundtrip_via_whisper() {
     let transcript = w.transcribe_greedy(&pcm).expect("transcribe");
 
     let (refs, heard) = (words(TEXT), words(&transcript));
-    let hits = refs.iter().filter(|x| heard.iter().any(|h| h == *x || h.contains(x.as_str()))).count();
+    let hits = refs
+        .iter()
+        .filter(|x| heard.iter().any(|h| h == *x || h.contains(x.as_str())))
+        .count();
     let cov = hits as f32 / refs.len() as f32;
     eprintln!("target:  {TEXT}\nwhisper: {transcript}\ncoverage: {cov:.2}");
-    assert!(cov >= 0.6, "coverage {cov:.2} too low.\ntarget: {TEXT}\ngot: {transcript}");
+    assert!(
+        cov >= 0.6,
+        "coverage {cov:.2} too low.\ntarget: {TEXT}\ngot: {transcript}"
+    );
 }

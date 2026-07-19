@@ -1,6 +1,6 @@
 [package]
 name = "rlx-neutts"
-version = "0.2.12"
+version = "0.2.13"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -23,6 +23,7 @@ rustfft = "6"
 ndarray = "0.16"
 memmap2 = "0.9"
 encoding_rs = "0.8"
+rlx-wav2vec2-bert = { workspace = true, optional = true }
 
 # RLX Llama-shaped backbone (rlx-models).
 rlx-llama-base = { workspace = true, optional = true }
@@ -45,6 +46,7 @@ features = ["std", "wgpu", "ndarray"]
 [features]
 default = ["codec", "fast", "llama"]
 codec = []
+w2v-bert = ["dep:rlx-wav2vec2-bert", "dep:rlx-core", "dep:rlx-runtime"]
 # Production backbone: rlx-llama32 (+ GGUF vocab encode/decode from rlx-qwen35).
 llama = [
     "dep:rlx-llama-base",
@@ -71,8 +73,9 @@ vulkan = ["rlx-llama32/vulkan"]
 gpu = ["rlx-llama32/gpu"]
 # Burn wgpu for NeuCodec + RLX backbone device features (orthogonal stacks).
 burn-gpu = ["burn", "wgpu"]
-all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "burn-gpu"]
-apple-silicon = ["metal", "mlx", "gpu"]
+coreml = ["rlx-runtime/coreml", "rlx-llama32/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "burn-gpu", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu", "vulkan"]

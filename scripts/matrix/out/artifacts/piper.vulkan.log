@@ -1,0 +1,6 @@
+$ /home/user/rlx-models/target/release/rlx-piper --data weights/tts/piper --text The quick brown fox jumps over the lazy dog near the river bank. --device vulkan --out /home/user/rlx-models/scripts/matrix/out/artifacts/piper.vulkan.wav
+
+--- stdout ---
+Wrote 71424 samples (3.24s @ 22050 Hz) to /home/user/rlx-models/scripts/matrix/out/artifacts/piper.vulkan.wav [backend=native, device=Vulkan]
+
+--- stderr ---

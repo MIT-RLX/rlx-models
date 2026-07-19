@@ -285,14 +285,15 @@ impl GenerateState {
     }
 }
 
-/// Run generation to completion and return Mimi-ready code frames + `end_step`.
+/// Run generation to completion and return Mimi-ready code frames, `end_step`,
+/// and sampled text token ids (padding/`UNGENERATED` stripped).
 pub fn generate_codes(
     model: &mut impl KyutaiLm,
     tokenizer: &KyutaiTokenizer,
     prompt: &str,
     cfg: GenerateConfig,
     speaker: Option<&Array2<f32>>,
-) -> Result<(Vec<Vec<u32>>, Option<usize>)> {
+) -> Result<(Vec<Vec<u32>>, Option<usize>, Vec<u32>)> {
     model.reset_state();
     model.set_generation_conditions(cfg.cfg_alpha, speaker)?;
     let mut state = GenerateState::new(model.config(), tokenizer, prompt, cfg)?;
@@ -305,6 +306,12 @@ pub fn generate_codes(
         }
         state.step(model)?;
     }
+    let text_tokens: Vec<u32> = state
+        .text_tokens()
+        .iter()
+        .copied()
+        .filter(|&t| t != UNGENERATED)
+        .collect();
     Ok((
         GenerateState::trim_for_mimi(
             &state.lm_frames,
@@ -314,5 +321,6 @@ pub fn generate_codes(
             state.layout.audio_pad,
         ),
         state.tts_state.end_step,
+        text_tokens,
     ))
 }

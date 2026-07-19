@@ -12,20 +12,22 @@ categories.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+rlx-gguf = { workspace = true }
 rlx-llama-base = { workspace = true }
 rlx-llama32 = { workspace = true }
+rlx-qwen35 = { path = "../rlx-qwen35", default-features = false }
 rlx-cli = { workspace = true }
 rlx-runtime = { workspace = true }
 
 [features]
 default = []
-tokenizer = ["rlx-llama32/tokenizer"]
-metal = ["rlx-llama32/metal"]
-mlx = ["rlx-llama32/mlx"]
-cuda = ["rlx-llama32/cuda"]
-rocm = ["rlx-llama32/rocm"]
-gpu = ["rlx-llama32/gpu"]
-vulkan = ["rlx-llama32/vulkan"]
+tokenizer = ["rlx-llama32/tokenizer", "rlx-qwen35/tokenizer"]
+metal = ["rlx-llama32/metal", "rlx-qwen35/metal"]
+mlx = ["rlx-llama32/mlx", "rlx-qwen35/mlx"]
+cuda = ["rlx-llama32/cuda", "rlx-qwen35/cuda"]
+rocm = ["rlx-llama32/rocm", "rlx-qwen35/rocm"]
+gpu = ["rlx-llama32/gpu", "rlx-qwen35/gpu"]
+vulkan = ["rlx-llama32/vulkan", "rlx-qwen35/vulkan"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
 
 [lints]

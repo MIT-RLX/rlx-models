@@ -1,0 +1,20 @@
+[package]
+name = "rlx-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Staged-inference wire protocol (activation frames + stage control) and topology planner for RLX"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+half = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

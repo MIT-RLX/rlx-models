@@ -1,6 +1,6 @@
 [package]
 name = "rlx-supertonic"
-version = "0.2.12"
+version = "0.2.13"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -17,9 +17,12 @@ serde_json = { workspace = true }
 hound = "3"
 unicode-normalization = "0.1"
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
-# Reuse the ONNX Runtime execution-provider selector from rlx-kittentts (both are
-# ort Stage-1 TTS crates). Char-level tokenizer here, so no espeak dependency.
-rlx-kittentts = { path = "../rlx-kittentts", default-features = false }
+# Native runtime: the four subgraphs are imported to rlx-ir via rlx-onnx-import
+# and compiled per-device through TinyModel (same engine as rlx-tiny-tts /
+# rlx-openvoice) — no ONNX Runtime on the default path.
+rlx-tiny-tts = { workspace = true }
+# ONNX Runtime execution-provider selector (dev/validation only; `onnx` feature).
+rlx-kittentts = { path = "../rlx-kittentts", default-features = false, optional = true }
 
 [dependencies.hf-hub]
 workspace = true
@@ -49,16 +52,19 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 ] }
 
 [features]
-default = ["onnx"]
-onnx = ["dep:ort", "rlx-kittentts/onnx"]
-metal = ["rlx-runtime/metal", "rlx-kittentts/metal", "rlx-kittentts/ort-coreml"]
-mlx = ["rlx-runtime/mlx", "rlx-kittentts/mlx", "rlx-kittentts/ort-coreml"]
-cuda = ["rlx-runtime/cuda", "rlx-kittentts/cuda", "rlx-kittentts/ort-cuda"]
-rocm = ["rlx-runtime/rocm", "rlx-kittentts/rocm", "rlx-kittentts/ort-rocm"]
-gpu = ["rlx-runtime/gpu", "rlx-kittentts/gpu"]
-vulkan = ["rlx-runtime/vulkan"]
-all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+# Native RLX is the default runtime; `onnx` (ONNX Runtime) is opt-in for
+# dev/validation parity only. Native backends forward to the shared TinyModel.
+default = []
+onnx = ["dep:ort", "dep:rlx-kittentts", "rlx-kittentts/onnx"]
+metal = ["rlx-runtime/metal", "rlx-tiny-tts/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-tiny-tts/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-tiny-tts/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-tiny-tts/coreml"]
+all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 hf-download = ["dep:hf-hub"]
 
 [dev-dependencies]
@@ -67,7 +73,6 @@ rlx-whisper = { workspace = true }
 [[bin]]
 name = "rlx-supertonic"
 path = "src/bin/rlx_supertonic.rs"
-required-features = ["onnx"]
 
 [lints]
 workspace = true

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use rlx_piper::{Piper, config::DEFAULT_LOCAL_DIR};
+use rlx_piper::config::DEFAULT_LOCAL_DIR;
 use rlx_runtime::parse_device;
 
 const HELP: &str = "\
@@ -34,6 +34,8 @@ OPTIONS:
     --device <DEV>    cpu | metal | mlx | cuda | gpu (default: cpu)
     --out <FILE>      Output WAV (default: piper.wav)
     -h, --help        Show help
+
+Native (default): needs `rlx-split/` from `scripts/split_piper.py` beside the voice ONNX.
 ";
 
 fn main() -> ExitCode {
@@ -71,24 +73,59 @@ fn run() -> Result<()> {
     }
     let text = text.context("--text is required")?;
     let device = parse_device(&device_str).with_context(|| format!("device '{device_str}'"))?;
-    let tts = Piper::load_on(&data, device).with_context(|| format!("load from {}", data.display()))?;
 
-    #[cfg(feature = "espeak")]
-    let audio = tts.synthesize(&text, length)?;
-    #[cfg(not(feature = "espeak"))]
-    let audio: Vec<f32> = {
-        let _ = (&text, length);
-        anyhow::bail!("rlx-piper needs the `espeak` feature");
-    };
+    #[cfg(feature = "native")]
+    {
+        use rlx_piper::NativeVits;
 
-    tts.write_wav(&audio, &out)?;
-    let secs = audio.len() as f32 / tts.sample_rate() as f32;
-    println!(
-        "Wrote {} samples ({secs:.2}s @ {} Hz) to {} [ep={}]",
-        audio.len(),
-        tts.sample_rate(),
-        out.display(),
-        tts.ort_ep()
-    );
+        let tts = NativeVits::load(&data, device)
+            .with_context(|| format!("load native piper from {}", data.display()))?;
+        #[cfg(feature = "espeak")]
+        let audio = tts.synthesize(&text, length)?;
+        #[cfg(not(feature = "espeak"))]
+        let audio: Vec<f32> = {
+            let _ = (&text, length);
+            anyhow::bail!("rlx-piper needs the `espeak` feature");
+        };
+        let sample_rate = tts.sample_rate();
+        tts.write_wav(&audio, &out)?;
+        let secs = audio.len() as f32 / sample_rate as f32;
+        println!(
+            "Wrote {} samples ({secs:.2}s @ {sample_rate} Hz) to {} [backend=native, device={device:?}]",
+            audio.len(),
+            out.display(),
+        );
+        return Ok(());
+    }
+
+    #[cfg(all(feature = "onnx", not(feature = "native")))]
+    {
+        use rlx_piper::Piper;
+
+        let tts = Piper::load_on(&data, device)
+            .with_context(|| format!("load from {}", data.display()))?;
+        #[cfg(feature = "espeak")]
+        let audio = tts.synthesize(&text, length)?;
+        #[cfg(not(feature = "espeak"))]
+        let audio: Vec<f32> = {
+            let _ = (&text, length);
+            anyhow::bail!("rlx-piper needs the `espeak` feature");
+        };
+        tts.write_wav(&audio, &out)?;
+        let secs = audio.len() as f32 / tts.sample_rate() as f32;
+        println!(
+            "Wrote {} samples ({secs:.2}s @ {} Hz) to {} [ep={}]",
+            audio.len(),
+            tts.sample_rate(),
+            out.display(),
+            tts.ort_ep()
+        );
+        return Ok(());
+    }
+
+    #[cfg(not(any(feature = "native", feature = "onnx")))]
+    compile_error!("rlx-piper CLI requires `native` or `onnx` feature");
+
+    #[allow(unreachable_code)]
     Ok(())
 }

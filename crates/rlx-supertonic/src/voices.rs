@@ -65,7 +65,11 @@ fn flatten(v: &serde_json::Value, out: &mut Vec<f32>) {
 
 impl StyleTensor {
     fn from_raw(raw: RawStyle) -> Result<Self> {
-        anyhow::ensure!(raw.dims.len() == 3, "expected 3-D style dims, got {:?}", raw.dims);
+        anyhow::ensure!(
+            raw.dims.len() == 3,
+            "expected 3-D style dims, got {:?}",
+            raw.dims
+        );
         let rows = raw.dims[1];
         let cols = raw.dims[2];
         let mut data = Vec::with_capacity(rows * cols);

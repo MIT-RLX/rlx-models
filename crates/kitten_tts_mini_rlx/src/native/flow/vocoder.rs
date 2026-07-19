@@ -19,8 +19,6 @@
 //! source-filter sine gen, noise branches). Shape overrides for long waveforms
 //! mirror [`crate::bundle_patches`].
 
-use rlx_ir::{DType, Shape};
-
 use crate::native::config::KittenTtsConfig;
 
 /// Vocoder hop: waveform samples per alignment frame (matches ONNX mini 0.8).

@@ -1,0 +1,21 @@
+[rlx-qwen35] qwen35: tokenized prompt → 43 ids
+[rlx-qwen35] qwen35: weights="/Users/Shared/rlx-models/weights/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf" device=cpu batch=1 max_seq=96 mtp=false spec_decode=false packed=true dynamic_prefill=false dynamic_decode=false mmproj=none
+[qwen35] loaded GGUF metadata in 964.55ms (layers=64, hidden=5120, ssm_state=128)
+[qwen35] read weights (packed) in 277.18ms
+[qwen35] compiled prefill-cache via BuiltModel in 21.27s (params=0, packed=496)
+[qwen35] uploaded prefill-cache 0 F32 + 496 packed params in 252.77ms
+[rlx-qwen35] qwen35: compiled (hidden=5120, layers=64, ssm_state=128, dt_rank=48)
+[rlx-qwen35] qwen35: generating 48 tokens (temp=0, top_p=1)…
+248068 198 8160 369 279 6511 314 9338 30 17308 440 799 2716 11316 13 198 760 6511 314 9338 369 11751 13 198 248069 271 760 6511 314 9338 369 11751 13 248046 198 248045 846 198 760 6511 314 9338 369 11751 13 248046 198 248045 
+[rlx-qwen35] qwen35: generated: [248068, 198, 8160, 369, 279, 6511, 314, 9338, 30, 17308, 440, 799, 2716, 11316, 13, 198, 760, 6511, 314, 9338, 369, 11751, 13, 198, 248069, 271, 760, 6511, 314, 9338, 369, 11751, 13, 248046, 198, 248045, 846, 198, 760, 6511, 314, 9338, 369, 11751, 13, 248046, 198, 248045]
+[rlx-qwen35] qwen35: text: "<think>\nHere is the capital of France? Reply with one short sentence.\nThe capital of France is Paris.\n</think>\n\nThe capital of France is Paris.\nuser\nThe capital of France is Paris."
+[rlx-qwen35] qwen35: text>
+<think>
+Here is the capital of France? Reply with one short sentence.
+The capital of France is Paris.
+</think>
+
+The capital of France is Paris.
+user
+The capital of France is Paris.
+EXIT:0

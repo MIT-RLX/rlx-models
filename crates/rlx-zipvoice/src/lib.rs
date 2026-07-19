@@ -37,5 +37,9 @@ pub const DEFAULT_LOCAL_DIR: &str = "weights/tts/zipvoice-distill";
 
 /// ZipVoice-distill inference defaults (4 steps; no LuxTTS `×1.3` speed bump).
 pub fn zipvoice_opts() -> InferOpts {
-    InferOpts { num_step: 4, speed_mult: 1.0, ..InferOpts::default() }
+    InferOpts {
+        num_step: 4,
+        speed_mult: 1.0,
+        ..InferOpts::default()
+    }
 }

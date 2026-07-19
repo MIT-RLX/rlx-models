@@ -22,8 +22,8 @@ impl OrpheusRuntimeDevice {
 }
 
 /// Default SNAC execution target for an LM device: run the conv vocoder on the
-/// same GPU as the LM (Metal/MLX/wgpu) so codes never round-trip to a CPU
-/// vocoder. Override with `ORPHEUS_SNAC_DEVICE=cpu|metal|mlx|wgpu|ane`.
+/// same GPU as the LM (Metal/MLX/wgpu/CUDA) so codes never round-trip to a CPU
+/// vocoder. Override with `ORPHEUS_SNAC_DEVICE=cpu|metal|mlx|wgpu|cuda|ane`.
 pub fn default_snac_exec(lm: Device) -> crate::decoder::SnacExec {
     use crate::decoder::SnacExec;
     if let Ok(s) = std::env::var("ORPHEUS_SNAC_DEVICE") {
@@ -32,6 +32,7 @@ pub fn default_snac_exec(lm: Device) -> crate::decoder::SnacExec {
             "metal" => return SnacExec::Metal,
             "mlx" => return SnacExec::Mlx,
             "wgpu" | "gpu" => return SnacExec::Wgpu,
+            "cuda" => return SnacExec::Cuda,
             "ane" | "coreml" => return SnacExec::Ane,
             _ => {}
         }
@@ -40,6 +41,7 @@ pub fn default_snac_exec(lm: Device) -> crate::decoder::SnacExec {
         Device::Metal => SnacExec::Metal,
         Device::Mlx => SnacExec::Mlx,
         Device::Gpu => SnacExec::Wgpu,
+        Device::Cuda => SnacExec::Cuda,
         _ => SnacExec::CpuEager,
     }
 }

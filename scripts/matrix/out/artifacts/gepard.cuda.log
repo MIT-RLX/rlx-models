@@ -1,0 +1,14 @@
+$ /home/user/rlx-models/target/release/rlx-gepard --weights weights/tts/gepard --seed 54 --text The quick brown fox jumps over the lazy dog near the river bank. --device cuda --out /home/user/rlx-models/scripts/matrix/out/artifacts/gepard.cuda.wav
+
+--- stdout ---
+
+--- stderr ---
+[rlx-gepard] weights:  weights/tts/gepard
+[rlx-gepard] text:     The quick brown fox jumps over the lazy dog near the river bank.
+[rlx-gepard] voice:    
+[rlx-gepard] device:   cuda
+[rlx-gepard] output:   /home/user/rlx-models/scripts/matrix/out/artifacts/gepard.cuda.wav
+[gepard] AR 126 frames (max=137 stop_th=0.5 temp=0.4 rep=1)
+rlx-cuda: cuDNN unavailable (libcudnn.so not loadable) — convolutions use the ~10× slower im2col path. Put libcudnn.so on the loader path (e.g. LD_LIBRARY_PATH), or set RLX_CUDA_NO_CUDNN=1 to silence this.
+[rlx-gepard] generated 129024 samples (5.85 s) device=Cuda
+[rlx-gepard] saved /home/user/rlx-models/scripts/matrix/out/artifacts/gepard.cuda.wav

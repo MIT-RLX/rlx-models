@@ -1,0 +1,51 @@
+[package]
+name = "rlx-sesame"
+version = "0.2.13"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Sesame CSM-1B (Llama-3.2-1B backbone + depth decoder → Mimi) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-cpu = { workspace = true }
+rlx-core = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-mimi = { workspace = true }
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+tokenizers = { workspace = true }
+hound = "3"
+fastrand = "2"
+clap = { version = "4", features = ["derive"] }
+memmap2 = "0.9"
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-mimi/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-mimi/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-mimi/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-mimi/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-mimi/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-mimi/vulkan"]
+coreml = ["rlx-runtime/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+
+[[bin]]
+name = "rlx-sesame"
+path = "src/bin/rlx_sesame.rs"
+
+[lints]
+workspace = true

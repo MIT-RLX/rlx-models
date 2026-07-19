@@ -53,7 +53,11 @@ struct Inference {
 }
 impl Default for Inference {
     fn default() -> Self {
-        Self { noise_scale: def_noise(), length_scale: def_length(), noise_w: def_noisew() }
+        Self {
+            noise_scale: def_noise(),
+            length_scale: def_length(),
+            noise_w: def_noisew(),
+        }
     }
 }
 fn def_noise() -> f32 {
@@ -79,8 +83,8 @@ pub struct PiperConfig {
 
 impl PiperConfig {
     pub fn load(json_path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(json_path)
-            .with_context(|| format!("read {}", json_path.display()))?;
+        let bytes =
+            std::fs::read(json_path).with_context(|| format!("read {}", json_path.display()))?;
         let raw: RawConfig = serde_json::from_slice(&bytes)
             .with_context(|| format!("parse {}", json_path.display()))?;
         Ok(Self {
@@ -95,7 +99,9 @@ impl PiperConfig {
 
     /// The single id for a special/phoneme symbol, if mapped.
     pub fn id_of(&self, sym: &str) -> Option<i64> {
-        self.phoneme_id_map.get(sym).and_then(|v| v.first().copied())
+        self.phoneme_id_map
+            .get(sym)
+            .and_then(|v| v.first().copied())
     }
 }
 
@@ -107,7 +113,9 @@ pub fn find_voice(dir: &Path) -> Result<(PathBuf, PathBuf)> {
         .map(|e| e.path())
         .find(|p| {
             p.extension().and_then(|x| x.to_str()) == Some("onnx")
-                && p.to_str().map(|s| !s.ends_with(".onnx.json")).unwrap_or(false)
+                && p.to_str()
+                    .map(|s| !s.ends_with(".onnx.json"))
+                    .unwrap_or(false)
         })
         .with_context(|| format!("no .onnx voice in {}", dir.display()))?;
     let json = PathBuf::from(format!("{}.json", onnx.display()));

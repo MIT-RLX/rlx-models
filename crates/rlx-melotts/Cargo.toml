@@ -1,0 +1,42 @@
+[package]
+name = "rlx-melotts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MeloTTS (~52M) multi-lingual VITS2 text-to-speech for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+# MeloTTS/VITS2 inference is provided by the shared rlx-tiny-tts engine
+# (ONNX-imported → native rlx-ir graphs, all backends whisper-validated).
+rlx-tiny-tts = { workspace = true }
+
+[dev-dependencies]
+rlx-whisper = { workspace = true }
+
+[[bin]]
+name = "rlx-melotts"
+path = "src/bin/rlx_melotts.rs"
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-tiny-tts/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-tiny-tts/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-tiny-tts/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-tiny-tts/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
+coreml = ["rlx-tiny-tts/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+
+[lints]
+workspace = true

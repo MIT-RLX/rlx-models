@@ -370,6 +370,15 @@ impl KittenTTS {
         let ids = ipa_to_ids(ipa);
         let style_slice = voice_data.style_row(style_idx);
 
+        // Pure-frontend build (no `onnx`/`native` backend): `self.backend` is
+        // uninhabited, so no acoustic model can run — a consumer reusing only the
+        // phonemizer (e.g. rlx-kokoro's native path) never calls this.
+        #[cfg(not(any(feature = "onnx", feature = "native")))]
+        let audio_flat: Vec<f32> = {
+            let _ = (&ids, style_slice, effective_speed);
+            anyhow::bail!("rlx-kittentts built without an inference backend (frontend only)");
+        };
+        #[cfg(any(feature = "onnx", feature = "native"))]
         let audio_flat = match &self.backend {
             #[cfg(feature = "onnx")]
             BackendKind::Onnx { session, .. } => {

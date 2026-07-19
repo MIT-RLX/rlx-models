@@ -23,7 +23,9 @@
 //!
 //! **High-level API** — [`VoiceClone`] (Base checkpoint): `extract_reference` + `generate` /
 //! [`VoiceClone::generate_stream`] with [`StreamMode::Batched`] or [`StreamMode::Progressive`].
-//! Progressive partial-decode runs speech conv on CPU for Metal/MLX (GPU prefix-length mismatch).
+//! Progressive partial-decode: Metal/MLX default to CPU speech
+//! (`progressive_speech_decode_device`); set `RLX_QWEN3_TTS_PROGRESSIVE_SPEECH_GPU=1`
+//! for on-device progressive once prefix parity holds.
 //!
 //! **Examples** — `bidirectional_voice_chat` (Whisper → Qwen3 LM → TTS), `jfk_voice_clone`,
 //! `streaming_walkthrough`. Run `just voice-chat-demo` from the repo root for a bundled roundtrip.

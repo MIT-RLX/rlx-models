@@ -421,7 +421,7 @@ pub fn build_qwen35_hir_sized_ext(
 /// Prefill-cache HIR fed by runtime hidden states (VLM: vision rows spliced on host).
 pub fn build_qwen35_prefill_hidden_cache_hir_dynamic_ext(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     batch: usize,
     max_seq: usize,
     runtime_mrope: bool,
@@ -458,7 +458,7 @@ pub fn build_qwen35_prefill_cache_graph(
 /// Prefill-cache HIR with optional runtime MRoPE inputs (multimodal).
 pub fn build_qwen35_prefill_cache_hir_ext(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     batch: usize,
     seq: usize,
     runtime_mrope: bool,
@@ -485,7 +485,7 @@ pub fn build_qwen35_prefill_cache_hir_ext(
 /// Prefill-cache HIR with symbolic seq dim (`sym::SEQ`) for dynamic compile cache.
 pub fn build_qwen35_prefill_cache_hir_dynamic_ext(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     batch: usize,
     max_seq: usize,
     runtime_mrope: bool,
@@ -550,7 +550,7 @@ pub fn build_qwen35_decode_graph(
 /// Decode HIR with symbolic past length (`sym::PAST_SEQ`) for dynamic compile cache.
 pub fn build_qwen35_decode_hir_dynamic_ext(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     batch: usize,
     max_past_seq: usize,
     enable_mtp_head: bool,
@@ -574,7 +574,7 @@ pub fn build_qwen35_decode_hir_dynamic_ext(
 /// Decode HIR graph with optional custom attention mask (bucketed cache).
 pub fn build_qwen35_decode_hir_ext(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     batch: usize,
     past_seq: usize,
     use_custom_mask: bool,
@@ -626,7 +626,7 @@ pub fn build_qwen35_decode_graph_ext(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_qwen35_decode_hir_assembled(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     batch: usize,
     with_lm_head: bool,
     _last_logits_only: bool,
@@ -648,14 +648,14 @@ pub(crate) fn build_qwen35_decode_hir_assembled(
         fast_greedy_lm_head: !with_lm_head,
         profile: None,
     };
-    crate::flow::build_qwen35_decode_model_flow(cfg, weights, &opts)
+    crate::flow::build_qwen35_decode_model_flow(cfg, weights.into(), &opts)
 }
 
 /// Prefill-cache HIR (delegates to native [`crate::flow::build_qwen35_prefill_cache_model_flow`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_qwen35_prefill_cache_hir_assembled(
     cfg: &Qwen35Config,
-    weights: Qwen35Weights,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
     batch: usize,
     seq: usize,
     with_lm_head: bool,
@@ -679,7 +679,7 @@ pub(crate) fn build_qwen35_prefill_cache_hir_assembled(
         fast_greedy_lm_head: export_normed_hidden,
         profile: None,
     };
-    crate::flow::build_qwen35_prefill_cache_model_flow(cfg, weights, &opts)
+    crate::flow::build_qwen35_prefill_cache_model_flow(cfg, weights.into(), &opts)
 }
 
 /// Trunk layer-export HIR (delegates to [`crate::flow::build_qwen35_trunk_export_model_flow`]).
@@ -966,7 +966,7 @@ fn build_qwen35_hir_fallback_assembled(
             &mut g,
             &mut params,
             "token_embd.weight",
-            weights.token_embd.clone(),
+            weights.token_embd.to_vec(),
             Shape::new(&[n_vocab, n_embd], DType::F32),
         );
 
@@ -982,7 +982,7 @@ fn build_qwen35_hir_fallback_assembled(
             &mut g,
             &mut params,
             "token_embd.weight",
-            weights.token_embd.clone(),
+            weights.token_embd.to_vec(),
             Shape::new(&[n_vocab, n_embd], DType::F32),
         );
     }
@@ -1515,7 +1515,8 @@ pub(crate) fn build_linear_layer(
         // Template bakes max_seq; `sync_narrow_ops` reclamps after dim bind.
         let new_conv = g.narrow_(padded, 1, seq, k_conv - 1);
         recur_out.push(new_conv);
-        recur_out.push(rec.ssm_state);
+        // SSM state is exported after GatedDeltaNet below (must run after the
+        // in-place carry update — see materialize there).
         (out, padded)
     } else if bs.dynamic {
         (
@@ -1585,7 +1586,7 @@ pub(crate) fn build_linear_layer(
     // GatedDeltaNet scan: returns [batch, seq, n_v_heads, n_state].
     let scan_out_shape = bs.bs4_shape(n_v_heads, n_state, DType::F32);
     let scan_out = if let Some(rec) = recurrent {
-        g.gated_delta_net_carry(
+        let y = g.gated_delta_net_carry(
             q_rep,
             k_rep,
             v_heads,
@@ -1594,7 +1595,20 @@ pub(crate) fn build_linear_layer(
             rec.ssm_state,
             n_state,
             scan_out_shape,
-        )
+        );
+        // Materialize post-update SSM state into a new buffer ordered after the
+        // scan. Exporting the raw input node is unreliable on discrete GPUs:
+        // D2H of an Input-as-output can observe the pre-upload zeros even when
+        // GDN mutated the arena in place (CPU/Metal unified memory hides this).
+        // `ssm * (1 + 0*sum(y))` is a broadcast mul that depends on `y`.
+        let scan_sum = g.sum(y, vec![0, 1, 2, 3], false);
+        let one = scalar_const(g, 1.0);
+        let zero = scalar_const(g, 0.0);
+        let zero_dep = g.mul(scan_sum, zero);
+        let scale = g.add(one, zero_dep);
+        let ssm_out = g.mul(rec.ssm_state, scale);
+        recur_out.push(ssm_out);
+        y
     } else {
         g.gated_delta_net(
             q_rep,
@@ -2977,13 +2991,10 @@ fn l2_norm(g: &mut HirMut, x: NodeId, eps: f32) -> NodeId {
     let sumsq = g.sum(sq, vec![last], true);
     let rms = g.sqrt(sumsq);
     let eps_p = scalar_const(g, eps);
-    // max(rms, eps) = (rms + eps + |rms - eps|) / 2
+    // max(rms, eps) = eps + relu(rms - eps) — fewer ops than the abs form.
     let diff = g.sub(rms, eps_p);
-    let abs_diff = activation(g, Activation::Abs, diff);
-    let sum = g.add(rms, eps_p);
-    let num = g.add(sum, abs_diff);
-    let half = scalar_const(g, 0.5);
-    let denom = g.mul(num, half);
+    let relu = activation(g, Activation::Relu, diff);
+    let denom = g.add(eps_p, relu);
     g.div(x, denom)
 }
 

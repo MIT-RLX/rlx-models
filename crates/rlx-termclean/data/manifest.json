@@ -1,0 +1,25 @@
+{
+  "generated_by": "rlx-termclean-gen",
+  "seed": 13907095858416211576,
+  "counts": { "train": 20000, "val": 2500, "test": 2500, "total": 25000 },
+  "total_bytes": 22860035,
+  "ansi_samples": 7385,
+  "schema": {
+    "input": "raw rendered terminal screen (chrome + content + ANSI)",
+    "target": "clean reflowed text",
+    "tags": "one marker per input char: C=content, X=chrome",
+    "fields": ["id","kind","content_type","width","ansi","style","input","target","tags"]
+  },
+  "kind_distribution": {"code": 2251, "keyvalue": 2818, "list": 2458, "panel": 4454, "progress": 994, "split": 1262, "statusbar": 2246, "table": 3047, "truncate": 1721, "wrap": 3749},
+  "content_type_distribution": {"code": 3345, "kv": 3907, "label": 994, "list": 2458, "log": 1159, "prose": 10090, "table": 3047},
+  "symbol_inventory": {
+    "box_styles": ["light", "heavy", "double", "rounded", "ascii", "dashed"],
+    "box_style_count": 6,
+    "bullets": 12,
+    "arrows": 13,
+    "shades": 4,
+    "partial_blocks": 8,
+    "spinner_sets": 5,
+    "sgr_params": 30
+  }
+}

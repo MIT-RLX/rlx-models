@@ -1,0 +1,229 @@
+rlx-termclean preview — INPUT is the raw screen (ANSI/box-drawing),
+TARGET is the clean text, TAGS mark each input char C=content X=chrome.
+
+════ #0 kind=panel ct=prose ansi=true style=box=double ════
+--- INPUT ------------------------------------------------------
+╔═══════════════════════════════════╗
+║ [4mEvery dynamic cache migrates a[0m    ║
+║ [37matomic gateway, after allocator[0m   ║
+║ [92mbuffers piña. Every remote record[0m ║
+║ [94mparses every legacy worker. Each[0m  ║
+║ [1;32mfrozen tensor resolves a stale[0m    ║
+║ [48;5;236mvolume, because compiler spawns.[0m  ║
+╚═══════════════════════════════════╝
+--- TARGET -----------------------------------------------------
+Every dynamic cache migrates a atomic gateway, after allocator buffers piña. Every remote record parses every legacy worker. Each frozen tensor resolves a stale volume, because compiler spawns.
+--- TAGS -------------------------------------------------------
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+════ #1 kind=panel ct=kv ansi=false style=box=ascii ════
+--- INPUT ------------------------------------------------------
++------------------+
+| port: 9653       |
+| os: darwin 24.1  |
+| version: 4.17.33 |
+| disk: 46G / 697G |
+| status: running  |
++------------------+
+--- TARGET -----------------------------------------------------
+port: 9653
+os: darwin 24.1
+version: 4.17.33
+disk: 46G / 697G
+status: running
+--- TAGS -------------------------------------------------------
+XXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCXXXXXXXXXXXCCCCCCCCCCCCCCCXXXXXXCCCCCCCCCCCCCCCCXXXXXCCCCCCCCCCCCCCCCXXXXXCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXX
+
+════ #2 kind=wrap ct=prose ansi=false style=none ════
+--- INPUT ------------------------------------------------------
+The secure listener dispatches
+this dynamic compiler. The
+secure daemon encodes a
+corrupt shard, although
+listener restarts α-decay.
+This verbose socket spawns
+every opaque request π≈3.14.
+This frozen pipeline
+compresses a hidden request
+résumé.
+--- TARGET -----------------------------------------------------
+The secure listener dispatches this dynamic compiler. The secure daemon encodes a corrupt shard, although listener restarts α-decay. This verbose socket spawns every opaque request π≈3.14. This frozen pipeline compresses a hidden request résumé.
+--- TAGS -------------------------------------------------------
+CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCC
+
+════ #3 kind=statusbar ct=prose ansi=true style=editor ════
+--- INPUT ------------------------------------------------------
+[7m COMMAND  record.json                                        [0m
+Each atomic vector throttles a partial scheduler, until token
+throttles. Each fast allocator flushes every atomic record
+‘tag’.
+[7m ^S Save   ^Q Quit   ^F Find   ^G Help                       [0m
+--- TARGET -----------------------------------------------------
+Each atomic vector throttles a partial scheduler, until token throttles. Each fast allocator flushes every atomic record ‘tag’.
+--- TAGS -------------------------------------------------------
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+════ #4 kind=panel ct=code ansi=true style=box=dashed ════
+--- INPUT ------------------------------------------------------
+┌┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
+┆ [36mfn parse(s: &str) -> Result<i32, Error> {[0m   ┆
+┆ [36m#[derive(Clone, Debug)][0m                     ┆
+┆ [36mpub struct Node { next: Option<Box<Node>> }[0m ┆
+┆ [36mlet v: Vec<u8> = vec![0; cap];[0m              ┆
+┆ [36mprintln!("{}: {}", name, count);[0m            ┆
+┆ [36m#[derive(Clone, Debug)][0m                     ┆
+└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+--- TARGET -----------------------------------------------------
+fn parse(s: &str) -> Result<i32, Error> {
+#[derive(Clone, Debug)]
+pub struct Node { next: Option<Box<Node>> }
+let v: Vec<u8> = vec![0; cap];
+println!("{}: {}", name, count);
+#[derive(Clone, Debug)]
+--- TAGS -------------------------------------------------------
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+════ #5 kind=wrap ct=prose ansi=false style=none ════
+--- INPUT ------------------------------------------------------
+Every idle compiler parses this
+broken pipeline x≠y. Every
+nested system encodes each
+nested session β-test. Every
+legacy buffer queues the virtual
+volume. A partial cluster
+compresses each stale daemon
+3×4. Its corrupt cache throttles
+this stale payload.
+--- TARGET -----------------------------------------------------
+Every idle compiler parses this broken pipeline x≠y. Every nested system encodes each nested session β-test. Every legacy buffer queues the virtual volume. A partial cluster compresses each stale daemon 3×4. Its corrupt cache throttles this stale payload.
+--- TAGS -------------------------------------------------------
+CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCC
+
+════ #6 kind=statusbar ct=prose ansi=true style=editor ════
+--- INPUT ------------------------------------------------------
+[7m COMMAND  server.log                           [0m
+The remote registry allocates a corrupt
+compiler. Its corrupt thread encodes this
+verbose cluster, before shard reconnects.
+[7m ^S Save   ^Q Quit   ^F Find   ^G Help         [0m
+--- TARGET -----------------------------------------------------
+The remote registry allocates a corrupt compiler. Its corrupt thread encodes this verbose cluster, before shard reconnects.
+--- TAGS -------------------------------------------------------
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+════ #7 kind=code ct=code ansi=true style=gutter ════
+--- INPUT ------------------------------------------------------
+ 1 ┃ data.iter().filter(|&&x| x != 0).sum()
+ 2 ┃ data.iter().filter(|&&x| x != 0).sum()
+ 3 ┃ [35mlet[0m v: Vec<u8> = vec![0; cap];
+ 4 ┃ [35mmatch[0m opt { Some(v) => v, None => 0 }
+ 5 ┃ assert_eq!(result, expected);
+ 6 ┃ [35mwhile[0m queue.len() > 0 { pop(); }
+ 7 ┃ [35mfn[0m parse(s: &str) -> Result<i32, Error> {
+ 8 ┃ [35mfor[0m i in 0..n { total += arr[i]; }
+ 9 ┃ [35muse[0m std::collections::HashMap;
+--- TARGET -----------------------------------------------------
+data.iter().filter(|&&x| x != 0).sum()
+data.iter().filter(|&&x| x != 0).sum()
+let v: Vec<u8> = vec![0; cap];
+match opt { Some(v) => v, None => 0 }
+assert_eq!(result, expected);
+while queue.len() > 0 { pop(); }
+fn parse(s: &str) -> Result<i32, Error> {
+for i in 0..n { total += arr[i]; }
+use std::collections::HashMap;
+--- TAGS -------------------------------------------------------
+XXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXCCCXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXCCCCCXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXCCCCCXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXCCXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXCCCXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXCCCXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCX
+
+════ #8 kind=statusbar ct=prose ansi=true style=editor ════
+--- INPUT ------------------------------------------------------
+[7m INSERT  shard.log                       [0m
+Each corrupt module parses a atomic
+index. Its fast compiler encodes every
+pinned shard, although packet restarts.
+[7m ^S Save   ^Q Quit   ^F Find   ^G Help   [0m
+--- TARGET -----------------------------------------------------
+Each corrupt module parses a atomic index. Its fast compiler encodes every pinned shard, although packet restarts.
+--- TAGS -------------------------------------------------------
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+════ #9 kind=panel ct=kv ansi=false style=box=double ════
+--- INPUT ------------------------------------------------------
+╔═════════════════════╗
+║ cpu: 53%            ║
+║ version: 2.10.27    ║
+║ ip: 203.179.242.126 ║
+║ status: running     ║
+║ uptime: 32d 7h      ║
+╚═════════════════════╝
+--- TARGET -----------------------------------------------------
+cpu: 53%
+version: 2.10.27
+ip: 203.179.242.126
+status: running
+uptime: 32d 7h
+--- TAGS -------------------------------------------------------
+XXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCXXXXXXXXCCCCCCCCCCCCCCCCCCCXXXXXCCCCCCCCCCCCCCCXXXXXXXXXCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+════ #10 kind=panel ct=log ansi=false style=box=dashed ════
+--- INPUT ------------------------------------------------------
+┌┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
+┆ 2025-11-04T15:07:47Z WARN  router: request 7039 handled in 193ms ┆
+┆ 2025-11-04T17:40:35Z WARN  db: request 9254 handled in 487ms     ┆
+┆ 2025-11-04T06:32:33Z ERROR auth: request 525 handled in 375ms    ┆
+┆ 2025-11-04T00:50:38Z DEBUG api: request 8808 handled in 784ms    ┆
+┆ 2025-11-04T09:15:34Z ERROR server: request 1984 handled in 399ms ┆
+└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+--- TARGET -----------------------------------------------------
+2025-11-04T15:07:47Z WARN  router: request 7039 handled in 193ms
+2025-11-04T17:40:35Z WARN  db: request 9254 handled in 487ms
+2025-11-04T06:32:33Z ERROR auth: request 525 handled in 375ms
+2025-11-04T00:50:38Z DEBUG api: request 8808 handled in 784ms
+2025-11-04T09:15:34Z ERROR server: request 1984 handled in 399ms
+--- TAGS -------------------------------------------------------
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+════ #11 kind=code ct=code ansi=false style=gutter ════
+--- INPUT ------------------------------------------------------
+ 1 │ self.buf[idx] = (b >> 4) & 0x0F;
+ 2 │ println!("{}: {}", name, count);
+ 3 │ data.iter().filter(|&&x| x != 0).sum()
+ 4 │ match opt { Some(v) => v, None => 0 }
+--- TARGET -----------------------------------------------------
+self.buf[idx] = (b >> 4) & 0x0F;
+println!("{}: {}", name, count);
+data.iter().filter(|&&x| x != 0).sum()
+match opt { Some(v) => v, None => 0 }
+--- TAGS -------------------------------------------------------
+XXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCX
+
+════ #12 kind=statusbar ct=prose ansi=true style=editor ════
+--- INPUT ------------------------------------------------------
+[7m NORMAL  record.md                                 [0m
+Each nested request throttles a broken scheduler,
+before handler throttles. Its secure matrix streams
+the active index. Its dynamic tensor restarts the
+secure server.
+[7m ^S Save   ^Q Quit   ^F Find   ^G Help             [0m
+--- TARGET -----------------------------------------------------
+Each nested request throttles a broken scheduler, before handler throttles. Its secure matrix streams the active index. Its dynamic tensor restarts the secure server.
+--- TAGS -------------------------------------------------------
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCXCCCCCCCCCCCCCCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+════ #13 kind=keyvalue ct=kv ansi=false style=aligned ════
+--- INPUT ------------------------------------------------------
+memory : 15.0 GiB
+os     : darwin 24.1
+kernel : 6.7.68
+ip     : 125.12.219.95
+uptime : 58d 16h
+port   : 37621
+--- TARGET -----------------------------------------------------
+memory: 15.0 GiB
+os: darwin 24.1
+kernel: 6.7.68
+ip: 125.12.219.95
+uptime: 58d 16h
+port: 37621
+--- TAGS -------------------------------------------------------
+CCCCCCXCCCCCCCCCCXCCXXXXXCCCCCCCCCCCCCXCCCCCCXCCCCCCCCXCCXXXXXCCCCCCCCCCCCCCCXCCCCCCXCCCCCCCCCXCCCCXXXCCCCCCCX

@@ -72,7 +72,7 @@ pub(crate) const FSQ_BASIS: [i32; 8] = [1, 4, 16, 64, 256, 1_024, 4_096, 16_384]
 
 // ─── Tensor helpers ───────────────────────────────────────────────────────────
 
-fn load_f32(st: &SafeTensors<'_>, name: &str) -> Result<Vec<f32>> {
+pub(crate) fn load_f32(st: &SafeTensors<'_>, name: &str) -> Result<Vec<f32>> {
     let view = st
         .tensor(name)
         .with_context(|| format!("Missing weight: {name}"))?;
@@ -124,7 +124,7 @@ fn load_f32(st: &SafeTensors<'_>, name: &str) -> Result<Vec<f32>> {
     })
 }
 
-fn shape_of(st: &SafeTensors<'_>, name: &str) -> Result<Vec<usize>> {
+pub(crate) fn shape_of(st: &SafeTensors<'_>, name: &str) -> Result<Vec<usize>> {
     Ok(st
         .tensor(name)
         .with_context(|| format!("Missing weight: {name}"))?
@@ -132,15 +132,15 @@ fn shape_of(st: &SafeTensors<'_>, name: &str) -> Result<Vec<usize>> {
         .to_vec())
 }
 
-fn as1d(data: Vec<f32>, n: usize) -> Array1<f32> {
+pub(crate) fn as1d(data: Vec<f32>, n: usize) -> Array1<f32> {
     Array1::from_shape_vec(n, data).expect("1-D shape mismatch")
 }
 
-fn as2d(data: Vec<f32>, rows: usize, cols: usize) -> Array2<f32> {
+pub(crate) fn as2d(data: Vec<f32>, rows: usize, cols: usize) -> Array2<f32> {
     Array2::from_shape_vec((rows, cols), data).expect("2-D shape mismatch")
 }
 
-fn as3d(data: Vec<f32>, d0: usize, d1: usize, d2: usize) -> Array3<f32> {
+pub(crate) fn as3d(data: Vec<f32>, d0: usize, d1: usize, d2: usize) -> Array3<f32> {
     Array3::from_shape_vec((d0, d1, d2), data).expect("3-D shape mismatch")
 }
 
@@ -152,7 +152,11 @@ fn as3d(data: Vec<f32>, d0: usize, d1: usize, d2: usize) -> Array3<f32> {
 /// * `w`: \[out_dim, in_dim\]  (PyTorch row-major convention)
 /// * `b`: \[out_dim\]  (optional)
 /// * returns: \[T, out_dim\]
-fn linear(x: ArrayView2<f32>, w: ArrayView2<f32>, b: Option<ArrayView1<f32>>) -> Array2<f32> {
+pub(crate) fn linear(
+    x: ArrayView2<f32>,
+    w: ArrayView2<f32>,
+    b: Option<ArrayView1<f32>>,
+) -> Array2<f32> {
     let mut out = x.dot(&w.t()); // [T, out_dim]
     if let Some(b) = b {
         out += &b;
@@ -346,6 +350,37 @@ fn fsq_decode(
 
     // project_out: [T, 8] @ [8, out_dim] + [out_dim]
     linear(digits.view(), proj_w, Some(proj_b))
+}
+
+/// Encode continuous latents → integer FSQ codes (inverse of [`fsq_decode`]).
+///
+/// 1. Apply `project_in` linear (2048 → 8).
+/// 2. Round each dimension to the nearest FSQ level digit ∈ {0,1,2,3}.
+/// 3. Pack digits into a single code with [`FSQ_BASIS`].
+///
+/// * `latent`: \[T, fsq_in_dim\]  (typically 2048)
+/// * `proj_w`: \[8, fsq_in_dim\]  (`generator.quantizer.project_in.weight`)
+/// * `proj_b`: \[8\]
+pub(crate) fn fsq_encode(
+    latent: ArrayView2<f32>,
+    proj_w: ArrayView2<f32>,
+    proj_b: ArrayView1<f32>,
+) -> Vec<i32> {
+    let z = linear(latent, proj_w, Some(proj_b)); // [T, 8]
+    let t = z.shape()[0];
+    let mut codes = Vec::with_capacity(t);
+    for ti in 0..t {
+        let mut code = 0i32;
+        for (j, &levels) in FSQ_LEVELS.iter().enumerate() {
+            let scaled = z[[ti, j]];
+            // Inverse of digits[[i,j]] = d/1.5 - 1
+            let max_d = (levels - 1) as f32;
+            let d = ((scaled + 1.0) * (max_d / 2.0)).round().clamp(0.0, max_d) as i32;
+            code += d * FSQ_BASIS[j];
+        }
+        codes.push(code);
+    }
+    codes
 }
 
 // ─── RoPE sin/cos dispatch ────────────────────────────────────────────────────
@@ -1159,59 +1194,264 @@ impl NeuCodecDecoder {
     }
 }
 
-// ─── Encoder (stub) ───────────────────────────────────────────────────────────
+// ─── Encoder weights ──────────────────────────────────────────────────────────
+
+#[cfg(feature = "w2v-bert")]
+pub(crate) use super::encoder::W2vSemanticRunner;
+pub(crate) use super::encoder::{
+    EncoderWeights, acoustic_token_len, encode_forward, load_encoder_weights,
+    stub_semantic_features,
+};
+
+/// Load mono PCM from a WAV file and resample to `target_hz` when needed.
+fn load_mono_wav(path: &Path, target_hz: u32) -> Result<Vec<f32>> {
+    let data = std::fs::read(path)
+        .with_context(|| format!("Failed to read WAV file {}", path.display()))?;
+    let (pcm, sample_rate) = decode_wav_mono(&data)
+        .with_context(|| format!("Failed to parse WAV {}", path.display()))?;
+    if sample_rate == target_hz {
+        Ok(pcm)
+    } else {
+        Ok(resample(&pcm, sample_rate, target_hz))
+    }
+}
+
+/// Minimal RIFF/WAVE reader for mono PCM (16-bit int or 32-bit float).
+fn decode_wav_mono(data: &[u8]) -> Result<(Vec<f32>, u32)> {
+    if data.len() < 44 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+        bail!("not a RIFF/WAVE file");
+    }
+
+    let mut pos = 12usize;
+    let mut sample_rate = 0u32;
+    let mut bits_per_sample = 0u16;
+    let mut audio_format = 0u16;
+    let mut channels = 0u16;
+    let mut pcm_bytes: Option<&[u8]> = None;
+
+    while pos + 8 <= data.len() {
+        let chunk_id = &data[pos..pos + 4];
+        let chunk_len = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        pos += 8;
+        let chunk_end = pos.saturating_add(chunk_len).min(data.len());
+        let chunk = &data[pos..chunk_end];
+
+        if chunk_id == b"fmt " && chunk.len() >= 16 {
+            audio_format = u16::from_le_bytes(chunk[0..2].try_into().unwrap());
+            channels = u16::from_le_bytes(chunk[2..4].try_into().unwrap());
+            sample_rate = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
+            bits_per_sample = u16::from_le_bytes(chunk[14..16].try_into().unwrap());
+        } else if chunk_id == b"data" {
+            pcm_bytes = Some(chunk);
+        }
+
+        pos = chunk_end + (chunk_len % 2);
+    }
+
+    if channels != 1 {
+        bail!("WAV must be mono (got {channels} channels)");
+    }
+    let pcm_raw = pcm_bytes.ok_or_else(|| anyhow::anyhow!("WAV missing data chunk"))?;
+    if sample_rate == 0 {
+        bail!("WAV missing sample rate");
+    }
+
+    let pcm = match (audio_format, bits_per_sample) {
+        (1, 16) => pcm_raw
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+            .collect(),
+        (3, 32) => pcm_raw
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect(),
+        (af, bps) => bail!("unsupported WAV format: audio_format={af} bits={bps}"),
+    };
+
+    Ok((pcm, sample_rate))
+}
+
+// ─── Encoder ──────────────────────────────────────────────────────────────────
 
 /// NeuCodec encoder: converts a 16 kHz audio waveform to speech token IDs.
 ///
-/// **Note**: The full NeuCodec encoder requires Wav2Vec2BertModel (~600 MB)
-/// as a semantic feature extractor.  Encoder support is not yet implemented
-/// in this pure-Rust build.
+/// ## Architecture (encode path)
 ///
-/// For reference audio encoding, use the Python `neucodec` package:
-/// ```python
-/// from neucodec import NeuCodec
-/// model = NeuCodec.from_pretrained("neuphonic/neucodec")
-/// codes = model.encode_code(waveform)   # → i32 array
+/// ```text
+/// 16 kHz PCM ──┬──► Wav2Vec2-BERT (layer 16) ──► SemanticEncoder_module ──┐
+///              │                                                           ├──► fc_prior ──► FSQ ──► codes
+///              └──► CodecEnc (BigCodec, strides [2,2,4,4,5]) ─────────────┘
 /// ```
-/// Then save the codes as a `.npy` file and pass via `--ref-codes` to the
-/// synthesis examples.
-pub struct NeuCodecEncoder;
+///
+/// Weights: `neucodec_encoder.safetensors` from [`scripts/export_neucodec_encoder.py`].
+/// Set `NEUTTS_ENCODER_PATH` before [`NeuCodecEncoder::new`].
+///
+/// ## Status
+///
+/// * **Done**: weight load, CodecEnc + SemanticEncoder eager forward, fc_prior fusion,
+///   FSQ quantize ([`fsq_encode`]), WAV ingest, optional W2V-BERT tap (`w2v-bert` feature).
+pub struct NeuCodecEncoder {
+    path: PathBuf,
+    weights: EncoderWeights,
+    #[cfg(feature = "w2v-bert")]
+    w2v: Option<W2vSemanticRunner>,
+}
 
 impl NeuCodecEncoder {
-    /// Always returns an error — encoder not yet implemented.
+    /// Load from `NEUTTS_ENCODER_PATH`.
     pub fn new() -> Result<Self> {
-        bail!(
-            "The NeuCodec encoder is not yet implemented in the pure-Rust build.\n\
-             \n\
-             To encode reference audio, use the Python neucodec package:\n\
-             \n\
-             \tpip install neucodec huggingface_hub\n\
-             \tpython scripts/encode_reference.py --audio reference.wav --out ref.npy\n\
-             \n\
-             Then pass the .npy file via --ref-codes to the synthesis examples."
-        )
+        let path = super::encoder_weights_path()?;
+        Self::load(&path)
     }
 
-    /// Always returns an error — encoder not yet implemented.
-    pub fn load(_path: &Path) -> Result<Self> {
-        Self::new()
+    /// Load encoder weights from an explicit safetensors path.
+    pub fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            bail!(
+                "NeuCodec encoder weights not found: {}\n\
+                 Export with scripts/export_neucodec_encoder.py and set NEUTTS_ENCODER_PATH.",
+                path.display()
+            );
+        }
+
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("Failed to open {}", path.display()))?;
+        let mmap = unsafe {
+            memmap2::Mmap::map(&file)
+                .with_context(|| format!("Failed to mmap {}", path.display()))?
+        };
+        let bytes: &[u8] = &mmap;
+
+        let (_, file_meta) = SafeTensors::read_metadata(bytes)
+            .with_context(|| format!("Failed to parse safetensors header: {}", path.display()))?;
+        let user_meta = file_meta.metadata().clone();
+
+        let st = SafeTensors::deserialize(bytes)
+            .with_context(|| format!("Failed to parse safetensors: {}", path.display()))?;
+
+        let weights = load_encoder_weights(&st, &user_meta)
+            .with_context(|| format!("Failed to load encoder weights from {}", path.display()))?;
+
+        drop(st);
+        drop(mmap);
+
+        println!(
+            "NeuCodec encoder: CodecEnc tensors={}, semantic tensors={}, \
+             strides={:?}, w2v_layer={}",
+            weights.codec_enc_tensors,
+            weights.semantic_enc_tensors,
+            weights.codec_enc_strides,
+            weights.semantic_w2v_layer,
+        );
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            #[cfg(feature = "w2v-bert")]
+            w2v: W2vSemanticRunner::try_from_env(weights.semantic_w2v_layer)?,
+            weights,
+        })
     }
 
-    /// Encode a WAV file to speech token IDs (not implemented).
-    pub fn encode_wav(&self, _path: &Path) -> Result<Vec<i32>> {
-        bail!("Encoder not implemented — see NeuCodecEncoder docs")
+    /// Quantize a pre-fused latent `[T, 2048]` to FSQ speech token IDs.
+    ///
+    /// Useful once the acoustic + semantic pipeline produces latents; mirrors
+    /// Python `generator.quantizer` encode.
+    pub fn quantize_latent(&self, latent: ArrayView2<f32>) -> Result<Vec<i32>> {
+        let in_dim = self.weights.fsq_proj_in_w.shape()[1];
+        if latent.shape()[1] != in_dim {
+            bail!(
+                "latent dim {} != expected fsq in_dim {}",
+                latent.shape()[1],
+                in_dim
+            );
+        }
+        Ok(fsq_encode(
+            latent,
+            self.weights.fsq_proj_in_w.view(),
+            self.weights.fsq_proj_in_b.view(),
+        ))
+    }
+
+    /// Encode 16 kHz mono PCM to speech token IDs.
+    pub fn encode_pcm(&mut self, pcm_16k: &[f32]) -> Result<Vec<i32>> {
+        if pcm_16k.is_empty() {
+            bail!("empty PCM input");
+        }
+        let semantic = self.semantic_features(pcm_16k)?;
+        encode_forward(pcm_16k, &self.weights, semantic.view())
+    }
+
+    fn semantic_features(&mut self, pcm_16k: &[f32]) -> Result<Array2<f32>> {
+        let token_len = acoustic_token_len(pcm_16k.len());
+        let hidden = 1024usize;
+
+        #[cfg(feature = "w2v-bert")]
+        if let Some(w2v) = self.w2v.as_mut() {
+            return w2v.encode_pcm(pcm_16k);
+        }
+
+        if std::env::var("NEUTTS_ENCODER_STUB_SEMANTIC")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            eprintln!("NeuCodec encoder: NEUTTS_ENCODER_STUB_SEMANTIC=1 — zero semantic features");
+            return Ok(stub_semantic_features(token_len, hidden));
+        }
+
+        #[cfg(feature = "w2v-bert")]
+        {
+            bail!(
+                "Wav2Vec2-BERT weights required for semantic encoding.\n\
+                 Set RLX_W2V_BERT_DIR to a facebook/w2v-bert-2.0 snapshot (config.json + model.safetensors),\n\
+                 or NEUTTS_ENCODER_STUB_SEMANTIC=1 to exercise the acoustic path only."
+            );
+        }
+        #[cfg(not(feature = "w2v-bert"))]
+        {
+            bail!(
+                "NeuCodec encoder needs semantic features from Wav2Vec2-BERT layer {}.\n\
+                 Rebuild with --features w2v-bert and set RLX_W2V_BERT_DIR,\n\
+                 or NEUTTS_ENCODER_STUB_SEMANTIC=1 to exercise the acoustic path only.",
+                self.weights.semantic_w2v_layer
+            );
+        }
+    }
+
+    /// Encode a mono WAV file (any common rate; resampled to 16 kHz) to speech tokens.
+    pub fn encode_wav(&mut self, path: &Path) -> Result<Vec<i32>> {
+        let pcm = load_mono_wav(path, ENCODER_SAMPLE_RATE)?;
+        self.encode_pcm(&pcm)
+    }
+
+    /// Path from which encoder weights were loaded.
+    pub fn weights_path(&self) -> &Path {
+        &self.path
+    }
+
+    /// BigCodec downsample strides from export metadata.
+    pub fn codec_enc_strides(&self) -> [usize; 5] {
+        self.weights.codec_enc_strides
+    }
+
+    /// Wav2Vec2-BERT layer index for semantic features.
+    pub fn semantic_w2v_layer(&self) -> usize {
+        self.weights.semantic_w2v_layer
     }
 
     /// Backend name.
-    pub fn backend_name(&self) -> &str {
-        "not available"
+    pub fn backend_name(&self) -> &'static str {
+        #[cfg(feature = "w2v-bert")]
+        if self.w2v.is_some() {
+            return "codec/encoder+w2v-bert";
+        }
+        "codec/encoder-eager"
     }
 }
 
 // ─── Resample helper ──────────────────────────────────────────────────────────
 
 /// Naive linear resampler: changes sample rate of `samples` from `from_hz` to `to_hz`.
-#[allow(dead_code)]
 pub fn resample(samples: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
     if from_hz == to_hz {
         return samples.to_vec();
@@ -1266,6 +1506,43 @@ mod tests {
         for v in out.iter() {
             assert!((*v - 1.0).abs() < 1e-5, "expected 1.0, got {v}");
         }
+    }
+
+    #[test]
+    fn test_fsq_roundtrip_identity() {
+        let w = Array2::eye(8);
+        let b = Array1::zeros(8);
+        let codes = vec![0i32, 42, 1000, 65535];
+        let emb = fsq_decode(&codes, w.view(), b.view());
+        let back = fsq_encode(emb.view(), w.view(), b.view());
+        assert_eq!(codes, back);
+    }
+
+    #[test]
+    fn test_decode_wav_mono_int16() {
+        let samples: Vec<i16> = vec![0, 16384, -16384, 32767];
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        let data_len = 44 - 8 + samples.len() * 2;
+        wav.extend_from_slice(&(data_len as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&(16u32).to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&(32000u32).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        let data_size = (samples.len() * 2) as u32;
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        for s in &samples {
+            wav.extend_from_slice(&s.to_le_bytes());
+        }
+        let (pcm, rate) = decode_wav_mono(&wav).expect("parse wav");
+        assert_eq!(rate, 16000);
+        assert_eq!(pcm.len(), 4);
+        assert!((pcm[1] - 0.5).abs() < 1e-4);
     }
 
     #[test]

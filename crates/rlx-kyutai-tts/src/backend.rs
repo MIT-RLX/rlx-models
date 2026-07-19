@@ -58,10 +58,16 @@ impl KyutaiTtsBackend {
         prompt: &str,
         cfg: GenerateConfig,
         speaker: Option<&Array2<f32>>,
-    ) -> Result<Vec<Vec<u32>>> {
+    ) -> Result<(Vec<Vec<u32>>, Vec<u32>)> {
         match self {
-            Self::Eager(m) => generate_codes(m, tokenizer, prompt, cfg, speaker).map(|(f, _)| f),
-            Self::Rlx(m) => generate_codes(m, tokenizer, prompt, cfg, speaker).map(|(f, _)| f),
+            Self::Eager(m) => {
+                let (frames, _, text) = generate_codes(m, tokenizer, prompt, cfg, speaker)?;
+                Ok((frames, text))
+            }
+            Self::Rlx(m) => {
+                let (frames, _, text) = generate_codes(m, tokenizer, prompt, cfg, speaker)?;
+                Ok((frames, text))
+            }
         }
     }
 }

@@ -8,6 +8,7 @@
 cargo run -p rlx-tiny-tts --release -- \
   --data weights/tiny-tts-rlx --text "The weather is nice today." --out out.wav
 # [--device cpu|metal|mlx|cuda|rocm|gpu] [--speaker MALE] [--speed 1.0] [--seed 1234]
+# [--kernel fast|precise|inherit]
 ```
 
 `--data` is an RLX TinyTTS bundle (see `scripts/export_tiny_tts.py`): `config.json`,
@@ -32,6 +33,30 @@ println!("{} samples @ {} Hz", wav.samples.len(), wav.sample_rate);
 `(phone, tone, lang)` ids. The English text frontend (CMUdict + g2p_en + tagger + BERT)
 is reused byte-identically from [rlx-inflect-nano](../rlx-inflect-nano)
 (re-exported as `rlx_tiny_tts::frontend`).
+
+### Kernel variants (precision vs throughput)
+
+`InferOpts.kernel` selects the backend kernel-variant policy, mirroring the
+per-op kernel selection in `../rlx` (Metal `SgemmVariant`, CUDA TF32, CPU conv)
+but as one knob instead of raw `RLX_*` env vars:
+
+```rust
+use rlx_tiny_tts::KernelVariant;
+let mut opts = InferOpts::from_config(model.config());
+opts.kernel = KernelVariant::Precise;   // parity/precision kernels
+```
+
+| Variant | Metal | CPU | CUDA | Use |
+|---|---|---|---|---|
+| `Fast` (default) | cost-model SIMD matmul (e.g. `simd4x4`) | fast im2col conv | TF32 allowed | production |
+| `Precise` | scalar fp32 `naive` (`RLX_METAL_PRECISE`) | exact conv | TF32 off (`RLX_CUDA_PARITY`) | bit-exact parity vs onnxruntime |
+| `Inherit` | — | — | — | honor your own `RLX_*` env (e.g. a specific `RLX_METAL_SGEMM_VARIANT=mps\|tiled\|…`) |
+
+Applied via `rlx_ir::env` **code overrides** (precedence over process env, read
+by the backends at dispatch), so the same compiled graph runs fast or precise
+kernels without recompiling. CLI: `--kernel fast|precise|inherit`; env:
+`RLX_TTS_KERNEL`. The override is process-global (last-writer-wins across
+concurrent models) — set one policy per process.
 
 ### Versatile loading (`AssetSource`)
 
@@ -74,7 +99,7 @@ The ONNX graphs compile per device, so TinyTTS runs on every RLX backend:
 | `mlx` | `mlx` | Apple MLX |
 | `cuda` / `rocm` | `cuda` / `rocm` | NVIDIA / AMD |
 | `gpu` / `vulkan` | `gpu` | wgpu (Metal / Vulkan / DX12) |
-| `coreml` | `ane` | Apple CoreML (ANE / GPU / CPU) |
+| `coreml` | `ane` / `coreml` | Apple CoreML — auto `RLX_COREML_UNITS=gpu` (Neural-Engine BNNS crashes on many TTS graphs) |
 
 Convenience bundles: `apple-silicon`, `nvidia-gpu`, `amd-gpu`, `all-backends`.
 

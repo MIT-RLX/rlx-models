@@ -359,6 +359,10 @@ pub fn ggml_type_to_quant_scheme(dtype: rlx_gguf::GgmlType) -> Option<QuantSchem
         GgmlType::Q4_0 => Some(QuantScheme::GgufQ4_0),
         GgmlType::Q5_0 => Some(QuantScheme::GgufQ5_0),
         GgmlType::Q8_0 => Some(QuantScheme::GgufQ8_0),
+        // PrismML Bonsai 1-bit / Ternary 2-bit — keep packed so the
+        // 27B never expands to ~108 GB of F32 weights.
+        GgmlType::Q1_0 => Some(QuantScheme::GgufQ1_0),
+        GgmlType::Q2_0 => Some(QuantScheme::GgufQ2_0),
         _ => None,
     }
 }
@@ -1074,6 +1078,22 @@ mod tests {
             ggml_type_to_quant_scheme(GgmlType::Q8_0),
             Some(rlx_ir::quant::QuantScheme::GgufQ8_0)
         );
+        // PrismML Bonsai Q1_0 / Ternary Q2_0 stay packed for
+        // DequantMatMul instead of expanding to ~108 GB of F32.
+        assert_eq!(
+            ggml_type_to_quant_scheme(GgmlType::Q1_0),
+            Some(rlx_ir::quant::QuantScheme::GgufQ1_0)
+        );
+        assert_eq!(
+            ggml_type_to_quant_scheme(GgmlType::Q2_0),
+            Some(rlx_ir::quant::QuantScheme::GgufQ2_0)
+        );
+        assert!(dequant_matmul_supported(
+            rlx_ir::quant::QuantScheme::GgufQ1_0
+        ));
+        assert!(dequant_matmul_supported(
+            rlx_ir::quant::QuantScheme::GgufQ2_0
+        ));
     }
 
     #[test]

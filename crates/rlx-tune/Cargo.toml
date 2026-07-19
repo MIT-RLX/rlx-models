@@ -17,8 +17,17 @@ serde_json = { workspace = true }
 rlx-ir = { workspace = true }
 rlx-autodiff = { workspace = true }
 rlx-runtime = { workspace = true }
+rlx-optim = { workspace = true, features = ["parallel"] }
 rlx-driver = { workspace = true }
 rlx-quant-calib = { workspace = true }
+
+# GPU training: forward+backward compile to a GPU backend. Opt-in so the
+# default (CPU) build stays dependency-light and cross-platform.
+[features]
+default = []
+metal = ["rlx-runtime/metal"] # Apple Silicon GPU
+cuda = ["rlx-runtime/cuda"]   # NVIDIA GPU
+gpu = ["rlx-runtime/gpu"]     # wgpu (Metal/Vulkan/DX)
 
 [lints]
 workspace = true

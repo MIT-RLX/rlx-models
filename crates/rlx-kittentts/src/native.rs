@@ -325,6 +325,10 @@ impl NativeEngine {
             ("speed", speed_bytes.as_slice(), DType::F32),
         ];
 
+        // The ort→native duration carry-seed only exists when the ort duration
+        // model is compiled in; without the `onnx` feature there's nothing to
+        // carry (native-only builds — e.g. espeak-frontend consumers).
+        #[cfg(feature = "onnx")]
         let carry_seed = ort_duration.and_then(|d| {
             if crate::ort_duration::ort_duration_carry_seed_enabled(compile_seq) {
                 Some(crate::infer_opts::duration_carry_bytes(d, compile_seq))
@@ -332,6 +336,8 @@ impl NativeEngine {
                 None
             }
         });
+        #[cfg(not(feature = "onnx"))]
+        let carry_seed: Option<Vec<u8>> = None;
         let align_bytes =
             ort_duration.map(|d| crate::infer_opts::duration_carry_bytes(d, compile_seq));
 

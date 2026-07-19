@@ -15,7 +15,6 @@
 
 //! Native HIR builders for Kitten TTS mini (weights-only path).
 
-mod duration;
 pub mod modules;
 mod rng;
 pub mod vocoder;
@@ -30,30 +29,18 @@ use rlx_ir::hir::HirModule;
 use crate::opts::GraphOptions;
 use crate::weights::LoadedWeights;
 
-/// Build the full native Kitten graph from decomposed weights (no `graph.json`).
+/// Weights-only native build (no `rlx_bundle/graph.json`) is no longer supported:
+/// the transpiled `graph.rs` HIR builder was removed in favour of the data-driven
+/// bundle path. `compile()` prefers the bundle whenever it is present; this stub
+/// only fires in the (unshipped) bundle-absent fallback.
 pub fn build_native_hir(
-    weights: &LoadedWeights,
-    opts: &GraphOptions,
+    _weights: &LoadedWeights,
+    _opts: &GraphOptions,
 ) -> Result<(HirModule, HashMap<String, Vec<f32>>, Vec<u8>)> {
-    let graph_opts = crate::graph::GraphOptions {
-        sequence_length: opts.sequence_length,
-        max_waveform_samples: opts.max_waveform_samples,
-    };
-    let (mut hir, mut params) = crate::graph::build_hir(weights, &graph_opts)?;
-    crate::bundle_patches::apply_hir_patches(
-        &mut hir,
-        opts.sequence_length,
-        opts.max_waveform_samples,
-    );
-    crate::bundle_patches::inject_vocoder_dynamic_alignment(
-        &mut hir,
-        opts.sequence_length,
-        opts.max_waveform_samples,
-    );
-    let carry_bytes = duration::inject_duration_carry(&mut hir, opts.sequence_length);
-    rng::inject_vocoder_rng(&mut hir);
-    params.remove(rng::VOCODER_RNG_STUB);
-    Ok((hir, params, carry_bytes))
+    anyhow::bail!(
+        "no rlx_bundle/graph.json found: the weights-only transpiled path was removed; \
+         ship the rlx_bundle (graph.json + weights) for the native data-driven path"
+    )
 }
 
 /// Post-import HIR fixes for bundle compile (RNG + F0 bypass; duration carry is already

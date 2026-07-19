@@ -28,6 +28,10 @@ pub const SAMPLE_RATE: u32 = 24000;
 pub const HOP_LENGTH: usize = 256;
 /// Default number of function evaluations (denoising steps).
 pub const DEFAULT_NFE: usize = 32;
+/// Soft cap on DiT `max_duration` (mel frames). Longer text is sentence-chunked
+/// so a single Transformer compile stays within ~GPU/CPU RAM (short fox ≈11 GiB
+/// peak; uncapped long paragraphs were SIGKILL'd at exit 137).
+pub const DEFAULT_MAX_DURATION: usize = 1024;
 
 /// `vocab.txt` char → id table (line index = id, matching the F5 reference).
 #[derive(Debug, Clone)]
@@ -41,8 +45,11 @@ impl Vocab {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("read vocab.txt: {}", path.display()))?;
         // Reference: `for i, char in enumerate(f): vocab[char[:-1]] = i`.
-        let map: HashMap<String, i32> =
-            text.lines().enumerate().map(|(i, l)| (l.to_string(), i as i32)).collect();
+        let map: HashMap<String, i32> = text
+            .lines()
+            .enumerate()
+            .map(|(i, l)| (l.to_string(), i as i32))
+            .collect();
         anyhow::ensure!(!map.is_empty(), "empty vocab.txt");
         Ok(Self { map })
     }
@@ -74,7 +81,9 @@ impl Layout {
         let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
         let need = |n: &str| -> Result<PathBuf> {
             let p = dir.join(n);
-            p.is_file().then_some(p).with_context(|| format!("missing {n} in {}", dir.display()))
+            p.is_file()
+                .then_some(p)
+                .with_context(|| format!("missing {n} in {}", dir.display()))
         };
         Ok(Self {
             preprocess: need("F5_Preprocess.onnx")?,

@@ -80,7 +80,7 @@ pub fn eager_codes(dir: &Path, cfg: &GenerateConfig, prompt: &str) -> Result<Vec
     let tokenizer = KyutaiTokenizer::load(tokenizer_path(dir))?;
     let mut m = KyutaiTtsModel::open(dir, model_cfg, Device::Cpu)?;
     let spk = load_speaker(dir)?;
-    generate_codes(&mut m, &tokenizer, prompt, cfg.clone(), Some(&spk)).map(|(f, _)| f)
+    generate_codes(&mut m, &tokenizer, prompt, cfg.clone(), Some(&spk)).map(|(f, _, _)| f)
 }
 
 pub fn rlx_codes(
@@ -93,7 +93,7 @@ pub fn rlx_codes(
     let tokenizer = KyutaiTokenizer::load(tokenizer_path(dir))?;
     let mut m = RlxKyutaiTtsModel::open(dir, model_cfg.clone(), device, model_cfg.context)?;
     let spk = load_speaker(dir)?;
-    generate_codes(&mut m, &tokenizer, prompt, cfg.clone(), Some(&spk)).map(|(f, _)| f)
+    generate_codes(&mut m, &tokenizer, prompt, cfg.clone(), Some(&spk)).map(|(f, _, _)| f)
 }
 
 pub fn assert_frames_match(label: &str, reference: &[Vec<u32>], actual: &[Vec<u32>]) -> Result<()> {

@@ -101,7 +101,7 @@ fn load_token_embd(path: &Path) -> (Qwen35Config, Vec<f32>, bool) {
     let cfg = Qwen35Config::from_gguf(loader.file()).expect("cfg");
     let weights = Qwen35Weights::from_loader(&mut loader, &cfg).expect("f32 weights");
     let has_output = weights.output.is_some();
-    (cfg, weights.token_embd, has_output)
+    (cfg, weights.token_embd.to_vec(), has_output)
 }
 
 #[cfg(feature = "parity-llama")]

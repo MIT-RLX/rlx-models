@@ -1,0 +1,7 @@
+$ /home/user/rlx-models/target/release/rlx-moss-nano --data weights/tts/moss-nano --text The quick brown fox jumps over the lazy dog near the river bank. --device gpu --out /home/user/rlx-models/scripts/matrix/out/artifacts/moss-nano.wgpu.wav
+
+--- stdout ---
+Wrote 353280 samples (3.68s @ 48000 Hz, 2ch) to /home/user/rlx-models/scripts/matrix/out/artifacts/moss-nano.wgpu.wav [voice=Trump, ep=cpu]
+
+--- stderr ---
+[moss-nano] CoreML EP is unstable for this model; using CPU EP

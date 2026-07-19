@@ -46,10 +46,11 @@ Weights: [`Supertone/supertonic-3`](https://huggingface.co/Supertone/supertonic-
 
 ## Backends
 
-Default path runs the four ONNX subgraphs on ONNX Runtime (CPU, plus CoreML /
-CUDA / DirectML execution providers via the `metal` / `mlx` / `cuda` / `gpu`
-features). Select with `--device`. A native rlx-ir path (import each subgraph
-via `rlx-onnx-import`, like `rlx-tiny-tts`) is the planned Stage-2.
+Default path is **native RLX** (import each ONNX subgraph via `rlx-onnx-import`).
+Optional `--features onnx` keeps the ORT reference.
+
+Cross-backend matrix (`examples/backend_matrix.rs`): Apple backends bit-identical
+vs CPU (whisper 1.00). **CUDA** (msi): RTF ≈2.4×, cos ≈0.965 vs CPU, whisper 1.00.
 
 ## Notes
 

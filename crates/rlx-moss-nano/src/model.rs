@@ -40,7 +40,10 @@ pub struct SynthOpts {
 
 impl Default for SynthOpts {
     fn default() -> Self {
-        Self { seed: 0, max_frames: None }
+        Self {
+            seed: 0,
+            max_frames: None,
+        }
     }
 }
 
@@ -79,8 +82,16 @@ impl MossNano {
     /// `codec/moss_audio_tokenizer_decode_full.onnx`, `tokenizer.model`,
     /// `browser_poc_manifest.json` (+ their `.data` external weights).
     pub fn load_on(dir: &Path, device: Device) -> Result<Self> {
+        // The hierarchical AR graphs misbehave on ORT's CoreML EP (metal/mlx);
+        // the CPU EP is the validated path, so fall back to it for GPU devices.
+        let ort_device = if matches!(device, Device::Cpu) {
+            device
+        } else {
+            eprintln!("[moss-nano] CoreML EP is unstable for this model; using CPU EP");
+            Device::Cpu
+        };
         let build = |p: PathBuf| -> Result<(Session, String)> {
-            let b = rlx_kittentts::build_onnx_session(&p, device)
+            let b = rlx_kittentts::build_onnx_session(&p, ort_device)
                 .with_context(|| format!("load onnx {}", p.display()))?;
             Ok((b.session, b.ort_ep))
         };
@@ -145,7 +156,12 @@ impl MossNano {
         push_text(c.audio_start_token_id, &mut rows);
         // section 2: reference audio rows (user slot)
         for frame in voice_codes {
-            anyhow::ensure!(frame.len() == c.n_vq, "voice frame width {} != n_vq {}", frame.len(), c.n_vq);
+            anyhow::ensure!(
+                frame.len() == c.n_vq,
+                "voice frame width {} != n_vq {}",
+                frame.len(),
+                c.n_vq
+            );
             rows.push(c.audio_user_slot_token_id);
             rows.extend_from_slice(frame);
         }
@@ -178,24 +194,40 @@ impl MossNano {
     }
 
     /// Run the AR loop → `[n_frames][n_vq]` audio codes.
-    fn generate_codes(&self, text: &str, voice_codes: &[Vec<i32>], opts: &SynthOpts) -> Result<Vec<Vec<i32>>> {
+    fn generate_codes(
+        &self,
+        text: &str,
+        voice_codes: &[Vec<i32>],
+        opts: &SynthOpts,
+    ) -> Result<Vec<Vec<i32>>> {
         let c = self.manifest.tts_config.clone();
         let rw = c.row_width();
         let (input_ids, seq) = self.build_input_ids(text, voice_codes)?;
-        let max_frames = opts.max_frames.unwrap_or(self.manifest.generation_defaults.max_new_frames);
+        let max_frames = opts
+            .max_frames
+            .unwrap_or(self.manifest.generation_defaults.max_new_frames);
 
         // ---- prefill ----
         let (mut hidden, mut kv) = {
             let mut s = self.prefill.lock().unwrap();
             let ids = Tensor::<i32>::from_array(([1, seq, rw], input_ids)).context("input_ids")?;
             let mask = Tensor::<i32>::from_array(([1, seq], vec![1i32; seq])).context("mask")?;
-            let out = s.run(ort::inputs!["input_ids" => ids, "attention_mask" => mask]).context("prefill")?;
-            let (hshape, hdata) = out[0].try_extract_tensor::<f32>().context("global_hidden")?;
+            let out = s
+                .run(ort::inputs!["input_ids" => ids, "attention_mask" => mask])
+                .context("prefill")?;
+            let (hshape, hdata) = out[0]
+                .try_extract_tensor::<f32>()
+                .context("global_hidden")?;
             let hidden = last_row(hdata, &hshape); // [HIDDEN]
             let mut kv = Vec::with_capacity(2 * N_LAYERS);
             for i in 1..=2 * N_LAYERS {
-                let (shape, data) = out[i].try_extract_tensor::<f32>().with_context(|| format!("kv {i}"))?;
-                kv.push((shape.iter().map(|&d| d as usize).collect::<Vec<_>>(), data.to_vec()));
+                let (shape, data) = out[i]
+                    .try_extract_tensor::<f32>()
+                    .with_context(|| format!("kv {i}"))?;
+                kv.push((
+                    shape.iter().map(|&d| d as usize).collect::<Vec<_>>(),
+                    data.to_vec(),
+                ));
             }
             (hidden, kv)
         };
@@ -209,8 +241,10 @@ impl MossNano {
             // ---- fused local sampled frame ----
             let (should, frame) = {
                 let mut s = self.local.lock().unwrap();
-                let h = Tensor::<f32>::from_array(([1, HIDDEN], hidden.clone())).context("hidden")?;
-                let rm = Tensor::<i32>::from_array(([1, c.n_vq, 1024], rep_mask.clone())).context("rep_mask")?;
+                let h =
+                    Tensor::<f32>::from_array(([1, HIDDEN], hidden.clone())).context("hidden")?;
+                let rm = Tensor::<i32>::from_array(([1, c.n_vq, 1024], rep_mask.clone()))
+                    .context("rep_mask")?;
                 let aru = Tensor::<f32>::from_array(([1], vec![rng.uniform()])).context("aru")?;
                 let au: Vec<f32> = (0..c.n_vq).map(|_| rng.uniform()).collect();
                 let aut = Tensor::<f32>::from_array(([1, c.n_vq], au)).context("au")?;
@@ -220,8 +254,15 @@ impl MossNano {
                         "assistant_random_u" => aru, "audio_random_u" => aut
                     ])
                     .context("local")?;
-                let should = out[0].try_extract_tensor::<i32>().context("should_continue")?.1[0];
-                let frame: Vec<i32> = out[1].try_extract_tensor::<i32>().context("frame_token_ids")?.1.to_vec();
+                let should = out[0]
+                    .try_extract_tensor::<i32>()
+                    .context("should_continue")?
+                    .1[0];
+                let frame: Vec<i32> = out[1]
+                    .try_extract_tensor::<i32>()
+                    .context("frame_token_ids")?
+                    .1
+                    .to_vec();
                 (should, frame)
             };
             if should == 0 {
@@ -240,7 +281,8 @@ impl MossNano {
             row[1..].copy_from_slice(&frame);
             let (nh, nkv) = {
                 let mut s = self.decode.lock().unwrap();
-                let mut ins: Vec<(Cow<'static, str>, SessionInputValue)> = Vec::with_capacity(2 + 2 * N_LAYERS);
+                let mut ins: Vec<(Cow<'static, str>, SessionInputValue)> =
+                    Vec::with_capacity(2 + 2 * N_LAYERS);
                 let row_t = Tensor::<i32>::from_array(([1, 1, rw], row)).context("row")?;
                 let pvl = Tensor::<i32>::from_array(([1], vec![past_len])).context("pvl")?;
                 ins.push(("input_ids".into(), SessionInputValue::from(row_t)));
@@ -248,18 +290,30 @@ impl MossNano {
                 for i in 0..N_LAYERS {
                     let (ks, kd) = &kv[2 * i];
                     let (vs, vd) = &kv[2 * i + 1];
-                    let kt = Tensor::<f32>::from_array((ks.clone(), kd.clone())).context("past_key")?;
-                    let vt = Tensor::<f32>::from_array((vs.clone(), vd.clone())).context("past_value")?;
+                    let kt =
+                        Tensor::<f32>::from_array((ks.clone(), kd.clone())).context("past_key")?;
+                    let vt = Tensor::<f32>::from_array((vs.clone(), vd.clone()))
+                        .context("past_value")?;
                     ins.push((format!("past_key_{i}").into(), SessionInputValue::from(kt)));
-                    ins.push((format!("past_value_{i}").into(), SessionInputValue::from(vt)));
+                    ins.push((
+                        format!("past_value_{i}").into(),
+                        SessionInputValue::from(vt),
+                    ));
                 }
                 let out = s.run(ins).context("decode_step")?;
-                let (hshape, hdata) = out[0].try_extract_tensor::<f32>().context("decode hidden")?;
+                let (hshape, hdata) = out[0]
+                    .try_extract_tensor::<f32>()
+                    .context("decode hidden")?;
                 let nh = last_row(hdata, &hshape);
                 let mut nkv = Vec::with_capacity(2 * N_LAYERS);
                 for i in 1..=2 * N_LAYERS {
-                    let (shape, data) = out[i].try_extract_tensor::<f32>().with_context(|| format!("kv {i}"))?;
-                    nkv.push((shape.iter().map(|&d| d as usize).collect::<Vec<_>>(), data.to_vec()));
+                    let (shape, data) = out[i]
+                        .try_extract_tensor::<f32>()
+                        .with_context(|| format!("kv {i}"))?;
+                    nkv.push((
+                        shape.iter().map(|&d| d as usize).collect::<Vec<_>>(),
+                        data.to_vec(),
+                    ));
                 }
                 (nh, nkv)
             };
@@ -308,7 +362,8 @@ impl MossNano {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        let mut w = hound::WavWriter::create(path, spec).with_context(|| format!("create {}", path.display()))?;
+        let mut w = hound::WavWriter::create(path, spec)
+            .with_context(|| format!("create {}", path.display()))?;
         for &s in audio {
             w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
         }

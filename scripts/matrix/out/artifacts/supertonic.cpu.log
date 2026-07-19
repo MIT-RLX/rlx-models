@@ -1,0 +1,7 @@
+$ /home/user/rlx-models/target/release/rlx-supertonic --data weights/tts/supertonic-3 --text The quick brown fox jumps over the lazy dog near the river bank. --device cpu --out /home/user/rlx-models/scripts/matrix/out/artifacts/supertonic.cpu.wav
+
+--- stdout ---
+Wrote 189847 samples (4.30s @ 44100 Hz) to /home/user/rlx-models/scripts/matrix/out/artifacts/supertonic.cpu.wav [voice=F1, lang=en, steps=8, ep=rlx-native/Cpu]
+
+--- stderr ---
+[supertonic] loaded 4 subgraphs on rlx-native/Cpu

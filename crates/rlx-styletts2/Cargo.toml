@@ -1,0 +1,50 @@
+[package]
+name = "rlx-styletts2"
+version = "0.2.13"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "StyleTTS2-family TTS for RLX (native Kokoro-82M over RLX backends)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-kokoro = { path = "../rlx-kokoro", default-features = false, features = ["native", "espeak", "onnx"] }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+hound = "3"
+
+[dev-dependencies]
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-kokoro/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-kokoro/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-kokoro/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-kokoro/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-kokoro/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-kokoro/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-kokoro/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+
+[[bin]]
+name = "rlx-styletts2"
+path = "src/bin/rlx_styletts2.rs"
+
+[[example]]
+name = "backend_matrix"
+path = "examples/backend_matrix.rs"
+
+[[test]]
+name = "whisper_roundtrip"
+path = "tests/whisper_roundtrip.rs"
+
+[lints]
+workspace = true

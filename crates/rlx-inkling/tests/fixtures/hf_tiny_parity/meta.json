@@ -1,0 +1,14 @@
+{
+  "input_ids": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "vocab_size": 32,
+  "hidden_size": 16,
+  "num_hidden_layers": 3,
+  "transformers_version": "5.14.0",
+  "logits_sum": -0.002642051549628377,
+  "logits_max": 0.0030986268538981676
+}

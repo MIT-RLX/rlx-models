@@ -33,30 +33,46 @@ pub fn initial_prompt(
 }
 
 /// Like [`initial_prompt`] but omits `<|notimestamps|>` when `timestamps` is true.
+///
+/// When `english_only` is true, language and task tokens are skipped (OpenAI
+/// `.en` checkpoints); only SOT (+ optional notimestamps) is used.
 pub fn initial_prompt_opts(
     tokenizer: &tokenizers::Tokenizer,
     language: Option<&str>,
     translate: bool,
     timestamps: bool,
 ) -> anyhow::Result<Vec<u32>> {
+    initial_prompt_opts_ex(tokenizer, language, translate, timestamps, false)
+}
+
+/// Extended prompt builder with an English-only flag.
+pub fn initial_prompt_opts_ex(
+    tokenizer: &tokenizers::Tokenizer,
+    language: Option<&str>,
+    translate: bool,
+    timestamps: bool,
+    english_only: bool,
+) -> anyhow::Result<Vec<u32>> {
     let mut ids = vec![
         tokenizer
             .token_to_id(SOT_TOKEN)
             .ok_or_else(|| anyhow::anyhow!("tokenizer missing {SOT_TOKEN}"))?,
     ];
-    if let Some(lang) = language {
-        let tok = format!("<|{lang}|>");
-        if let Some(id) = tokenizer.token_to_id(&tok) {
+    if !english_only {
+        if let Some(lang) = language {
+            let tok = format!("<|{lang}|>");
+            if let Some(id) = tokenizer.token_to_id(&tok) {
+                ids.push(id);
+            }
+        }
+        let task = if translate {
+            TRANSLATE_TOKEN
+        } else {
+            TRANSCRIBE_TOKEN
+        };
+        if let Some(id) = tokenizer.token_to_id(task) {
             ids.push(id);
         }
-    }
-    let task = if translate {
-        TRANSLATE_TOKEN
-    } else {
-        TRANSCRIBE_TOKEN
-    };
-    if let Some(id) = tokenizer.token_to_id(task) {
-        ids.push(id);
     }
     if !timestamps {
         if let Some(id) = tokenizer.token_to_id(NO_TIMESTAMPS_TOKEN) {

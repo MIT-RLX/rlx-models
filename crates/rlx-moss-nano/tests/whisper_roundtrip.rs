@@ -16,6 +16,8 @@
 //! MOSS-TTS-Nano synthesis (builtin voice) → Whisper round-trip. Skips without
 //! weights. Set RLX_MOSS_NANO_DIR (or weights/tts/moss-nano) + RLX_WHISPER_DIR.
 
+#![cfg(feature = "onnx")]
+
 use std::path::PathBuf;
 
 use rlx_moss_nano::{MossNano, SynthOpts};
@@ -39,7 +41,9 @@ fn whisper_dir() -> Option<PathBuf> {
         return ready(PathBuf::from(d));
     }
     let c = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");
-    ["whisper-base.en", "whisper-small.en"].into_iter().find_map(|n| ready(c.join(n)))
+    ["whisper-base.en", "whisper-small.en"]
+        .into_iter()
+        .find_map(|n| ready(c.join(n)))
 }
 fn ready(d: PathBuf) -> Option<PathBuf> {
     (d.join("model.safetensors").is_file() && d.join("tokenizer.json").is_file()).then_some(d)
@@ -59,14 +63,25 @@ fn moss_nano_roundtrip_via_whisper() {
         return;
     };
     let tts = MossNano::load_on(&dir, Device::Cpu).expect("load moss-nano");
-    let voice = tts.voice_names().into_iter().find(|v| v == "Trump").unwrap_or_else(|| tts.voice_names()[0].clone());
-    let audio = tts.synthesize(TEXT, &voice, &SynthOpts::default()).expect("synthesize");
-    assert!(rlx_moss_nano::peak_amplitude(&audio) > 0.05, "audio not audible");
+    let voice = tts
+        .voice_names()
+        .into_iter()
+        .find(|v| v == "Trump")
+        .unwrap_or_else(|| tts.voice_names()[0].clone());
+    let audio = tts
+        .synthesize(TEXT, &voice, &SynthOpts::default())
+        .expect("synthesize");
+    assert!(
+        rlx_moss_nano::peak_amplitude(&audio) > 0.05,
+        "audio not audible"
+    );
 
     // interleaved stereo @ 48 kHz → mono 16 kHz
     let ch = tts.channels() as usize;
     let frames = audio.len() / ch;
-    let mono: Vec<f32> = (0..frames).map(|i| (0..ch).map(|c| audio[i * ch + c]).sum::<f32>() / ch as f32).collect();
+    let mono: Vec<f32> = (0..frames)
+        .map(|i| (0..ch).map(|c| audio[i * ch + c]).sum::<f32>() / ch as f32)
+        .collect();
     let n = (frames as u64 * WR as u64 / tts.sample_rate() as u64).max(1) as usize;
     let pcm: Vec<f32> = (0..n)
         .map(|i| {
@@ -89,8 +104,14 @@ fn moss_nano_roundtrip_via_whisper() {
     let transcript = w.transcribe_greedy(&pcm).expect("transcribe");
 
     let (refs, heard) = (words(TEXT), words(&transcript));
-    let hits = refs.iter().filter(|x| heard.iter().any(|h| h == *x || h.contains(x.as_str()))).count();
+    let hits = refs
+        .iter()
+        .filter(|x| heard.iter().any(|h| h == *x || h.contains(x.as_str())))
+        .count();
     let cov = hits as f32 / refs.len() as f32;
     eprintln!("target:  {TEXT}\nwhisper: {transcript}\ncoverage: {cov:.2}");
-    assert!(cov >= 0.6, "coverage {cov:.2} too low.\ntarget: {TEXT}\ngot: {transcript}");
+    assert!(
+        cov >= 0.6,
+        "coverage {cov:.2} too low.\ntarget: {TEXT}\ngot: {transcript}"
+    );
 }

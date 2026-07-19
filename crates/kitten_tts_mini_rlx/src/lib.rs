@@ -37,9 +37,10 @@ pub mod scatter;
 pub mod seq_cache;
 pub mod weights;
 
-#[cfg(feature = "native")]
-pub mod graph;
-
+// The native path is data-driven: `bundle_compile` imports `rlx_bundle/graph.json`
+// via rlx-onnx-import (the path `compile()` prefers). The old ~100k-line transpiled
+// `graph.rs` HIR builder was removed — it was legacy, unreliable for some sequence
+// lengths, and made native builds enormous/slow. (Recoverable from git history.)
 #[cfg(feature = "native")]
 pub mod native;
 
@@ -64,9 +65,6 @@ pub fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K,
     // SAFETY: compile paths and tests set env before graph build / worker threads.
     unsafe { std::env::set_var(key, value) }
 }
-
-#[cfg(feature = "native")]
-pub use graph::build_hir;
 
 #[cfg(feature = "native")]
 pub use native::{NativeSeqCompileCache, build_native_hir, compile_native, compile_native_fresh};

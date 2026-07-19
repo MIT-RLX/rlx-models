@@ -1,0 +1,50 @@
+[package]
+name = "rlx-zonos"
+version = "0.2.13"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Zonos v0.1 (1.6B transformer + DAC 44kHz, Apache-2.0) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-core = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-dac = { workspace = true }
+rlx-kittentts = { workspace = true, optional = true }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+hound = "3"
+matrixmultiply = "0.3"
+
+[dev-dependencies]
+rlx-whisper = { workspace = true }
+
+[[bin]]
+name = "rlx-zonos"
+path = "src/bin/rlx_zonos.rs"
+
+[features]
+default = ["espeak"]
+espeak = ["dep:rlx-kittentts", "rlx-kittentts/espeak"]
+metal = ["rlx-runtime/metal", "rlx-dac/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-dac/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-dac/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-dac/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-dac/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-dac/vulkan"]
+coreml = ["rlx-runtime/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+
+[lints]
+workspace = true

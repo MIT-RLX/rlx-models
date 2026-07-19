@@ -15,6 +15,7 @@ rlx-runtime = { workspace = true }
 rlx-text = { workspace = true }
 rlx-qwen3 = { workspace = true }
 rlx-core = { workspace = true }
+rlx-guardrails = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

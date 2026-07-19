@@ -8,7 +8,7 @@ Shared config, weight loading, compile profiles, and packed GGUF prefill helpers
 |-----|------|
 | [`packed_gguf_compile_guard`](src/flow_bridge.rs) | Metal `RLX_DISABLE_MPSGRAPH`, MLX `RLX_MLX_MODE=lazy` during compile |
 | [`compile_options_for_packed_gguf_prefill_with_profile`](src/flow_bridge.rs) | Fusion off on wgpu/CUDA/ROCm for `FusedResidualRmsNorm` gaps |
-| [`packed_gguf_execution_device`](src/flow_bridge.rs) | Native CPU/Metal/MLX packed; wgpu/CUDA/ROCm → CPU prefill |
+| [`packed_gguf_execution_device`](src/flow_bridge.rs) | Native CPU/Metal/MLX/CUDA/wgpu/Vulkan/CoreML packed; `*_HOST=1` forces CPU |
 | [`run_packed_prefill`](src/autoregressive.rs) | Active-extent packed prefill execute (`actual_seq` inside bucket) |
 | [`EmbeddedSafetensors`](src/embedded_safetensors.rs) | Parse HF safetensors from `include_bytes!` / memory; `tensor_f32(name)` |
 | [`tensor_view_to_f32`](src/safetensors_checkpoint.rs) | Decode F32/F16/BF16 safetensor views to `Vec<f32>` |

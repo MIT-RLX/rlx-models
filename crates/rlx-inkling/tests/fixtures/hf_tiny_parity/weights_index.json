@@ -1,0 +1,266 @@
+{
+  "embed": {
+    "offset": 0,
+    "len": 512
+  },
+  "embed_norm": {
+    "offset": 512,
+    "len": 16
+  },
+  "layers.0.attn_norm": {
+    "offset": 528,
+    "len": 16
+  },
+  "layers.0.attn_sconv": {
+    "offset": 544,
+    "len": 48
+  },
+  "layers.0.down": {
+    "offset": 592,
+    "len": 512
+  },
+  "layers.0.gate": {
+    "offset": 1104,
+    "len": 512
+  },
+  "layers.0.k_norm": {
+    "offset": 1616,
+    "len": 4
+  },
+  "layers.0.k_sconv": {
+    "offset": 1620,
+    "len": 24
+  },
+  "layers.0.mlp_global_scale": {
+    "offset": 1644,
+    "len": 1
+  },
+  "layers.0.mlp_norm": {
+    "offset": 1645,
+    "len": 16
+  },
+  "layers.0.mlp_sconv": {
+    "offset": 1661,
+    "len": 48
+  },
+  "layers.0.q_norm": {
+    "offset": 1709,
+    "len": 4
+  },
+  "layers.0.rel_proj": {
+    "offset": 1713,
+    "len": 16
+  },
+  "layers.0.up": {
+    "offset": 1729,
+    "len": 512
+  },
+  "layers.0.v_sconv": {
+    "offset": 2241,
+    "len": 24
+  },
+  "layers.0.wk": {
+    "offset": 2265,
+    "len": 128
+  },
+  "layers.0.wo": {
+    "offset": 2393,
+    "len": 256
+  },
+  "layers.0.wq": {
+    "offset": 2649,
+    "len": 256
+  },
+  "layers.0.wr": {
+    "offset": 2905,
+    "len": 256
+  },
+  "layers.0.wv": {
+    "offset": 3161,
+    "len": 128
+  },
+  "layers.1.attn_norm": {
+    "offset": 3289,
+    "len": 16
+  },
+  "layers.1.attn_sconv": {
+    "offset": 3305,
+    "len": 48
+  },
+  "layers.1.expert_w13": {
+    "offset": 3353,
+    "len": 2048
+  },
+  "layers.1.expert_w2": {
+    "offset": 5401,
+    "len": 1024
+  },
+  "layers.1.gate_bias": {
+    "offset": 6425,
+    "len": 4
+  },
+  "layers.1.gate_global_scale": {
+    "offset": 6429,
+    "len": 1
+  },
+  "layers.1.gate_weight": {
+    "offset": 6430,
+    "len": 80
+  },
+  "layers.1.k_norm": {
+    "offset": 6510,
+    "len": 4
+  },
+  "layers.1.k_sconv": {
+    "offset": 6514,
+    "len": 24
+  },
+  "layers.1.mlp_norm": {
+    "offset": 6538,
+    "len": 16
+  },
+  "layers.1.mlp_sconv": {
+    "offset": 6554,
+    "len": 48
+  },
+  "layers.1.q_norm": {
+    "offset": 6602,
+    "len": 4
+  },
+  "layers.1.rel_proj": {
+    "offset": 6606,
+    "len": 16
+  },
+  "layers.1.shared_down": {
+    "offset": 6622,
+    "len": 256
+  },
+  "layers.1.shared_gate": {
+    "offset": 6878,
+    "len": 256
+  },
+  "layers.1.shared_up": {
+    "offset": 7134,
+    "len": 256
+  },
+  "layers.1.v_sconv": {
+    "offset": 7390,
+    "len": 24
+  },
+  "layers.1.wk": {
+    "offset": 7414,
+    "len": 128
+  },
+  "layers.1.wo": {
+    "offset": 7542,
+    "len": 256
+  },
+  "layers.1.wq": {
+    "offset": 7798,
+    "len": 256
+  },
+  "layers.1.wr": {
+    "offset": 8054,
+    "len": 256
+  },
+  "layers.1.wv": {
+    "offset": 8310,
+    "len": 128
+  },
+  "layers.2.attn_norm": {
+    "offset": 8438,
+    "len": 16
+  },
+  "layers.2.attn_sconv": {
+    "offset": 8454,
+    "len": 48
+  },
+  "layers.2.expert_w13": {
+    "offset": 8502,
+    "len": 2048
+  },
+  "layers.2.expert_w2": {
+    "offset": 10550,
+    "len": 1024
+  },
+  "layers.2.gate_bias": {
+    "offset": 11574,
+    "len": 4
+  },
+  "layers.2.gate_global_scale": {
+    "offset": 11578,
+    "len": 1
+  },
+  "layers.2.gate_weight": {
+    "offset": 11579,
+    "len": 80
+  },
+  "layers.2.k_norm": {
+    "offset": 11659,
+    "len": 4
+  },
+  "layers.2.k_sconv": {
+    "offset": 11663,
+    "len": 24
+  },
+  "layers.2.mlp_norm": {
+    "offset": 11687,
+    "len": 16
+  },
+  "layers.2.mlp_sconv": {
+    "offset": 11703,
+    "len": 48
+  },
+  "layers.2.q_norm": {
+    "offset": 11751,
+    "len": 4
+  },
+  "layers.2.rel_proj": {
+    "offset": 11755,
+    "len": 32
+  },
+  "layers.2.shared_down": {
+    "offset": 11787,
+    "len": 256
+  },
+  "layers.2.shared_gate": {
+    "offset": 12043,
+    "len": 256
+  },
+  "layers.2.shared_up": {
+    "offset": 12299,
+    "len": 256
+  },
+  "layers.2.v_sconv": {
+    "offset": 12555,
+    "len": 24
+  },
+  "layers.2.wk": {
+    "offset": 12579,
+    "len": 128
+  },
+  "layers.2.wo": {
+    "offset": 12707,
+    "len": 256
+  },
+  "layers.2.wq": {
+    "offset": 12963,
+    "len": 256
+  },
+  "layers.2.wr": {
+    "offset": 13219,
+    "len": 256
+  },
+  "layers.2.wv": {
+    "offset": 13475,
+    "len": 128
+  },
+  "norm": {
+    "offset": 13603,
+    "len": 16
+  },
+  "unembed": {
+    "offset": 13619,
+    "len": 512
+  }
+}

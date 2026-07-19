@@ -1,0 +1,10 @@
+[rlx-qwen35] qwen35: tokenized prompt → 35 ids
+[rlx-qwen35] qwen35: weights="/Users/Shared/rlx-models/weights/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf" device=mlx batch=1 max_seq=48 mtp=false spec_decode=false packed=true dynamic_prefill=false dynamic_decode=false mmproj=none
+[qwen35] loaded GGUF metadata in 989.03ms (layers=64, hidden=5120, ssm_state=128)
+[qwen35] read weights (packed) in 298.07ms
+rlx-mlx: falling back to MlxMode::Lazy — compile mode unsupported for this graph: mlx error: rlx-mlx: graph contains `DequantMatMul[GGUF|NVFP4] (host dequant)` whose lowering evaluates a tensor on the host; mlx::compile forbids eval inside its trace. Use MlxMode::Lazy for this graph, or pre-dequantize the affected weights at load time.
+[qwen35] compiled prefill-cache via BuiltModel in 32.44s (params=0, packed=496)
+[qwen35] uploaded prefill-cache 0 F32 + 496 packed params in 1.88s
+[rlx-qwen35] qwen35: compiled (hidden=5120, layers=64, ssm_state=128, dt_rank=48)
+[rlx-qwen35] qwen35: generating 24 tokens (temp=0, top_p=1)…
+248068 198 8160 369 279 6511 314 9338 30 198 760 6511 314 rlx-run: qwen35: decode cache reached max_seq=48

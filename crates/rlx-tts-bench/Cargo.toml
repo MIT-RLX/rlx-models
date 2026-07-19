@@ -1,0 +1,172 @@
+[package]
+name = "rlx-tts-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Unified TTS bench CLI: multi-model matrix, Whisper/spectral/noise metrics, HTML report"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "rlx-tts-bench"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+hound = "3"
+rustfft = "6"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-whisper = { workspace = true, features = ["tokenizer"] }
+
+# matrix-onnx
+rlx-chatterbox = { path = "../rlx-chatterbox", default-features = false, features = ["native"], optional = true }
+rlx-supertonic = { path = "../rlx-supertonic", optional = true }
+rlx-piper = { path = "../rlx-piper", optional = true }
+rlx-luxtts = { path = "../rlx-luxtts", default-features = false, features = ["espeak"], optional = true }
+rlx-styletts2 = { path = "../rlx-styletts2", optional = true }
+rlx-f5tts = { path = "../rlx-f5tts", optional = true }
+rlx-moss-nano = { path = "../rlx-moss-nano", optional = true }
+rlx-soprano = { path = "../rlx-soprano", optional = true }
+
+# matrix-ar
+rlx-sesame = { path = "../rlx-sesame", optional = true }
+rlx-zonos = { path = "../rlx-zonos", optional = true }
+rlx-gepard = { path = "../rlx-gepard", optional = true }
+rlx-metavoice = { path = "../rlx-metavoice", optional = true }
+
+# lm-tts
+rlx-orpheus = { path = "../rlx-orpheus", optional = true }
+rlx-kittentts = { path = "../rlx-kittentts", default-features = false, features = ["native", "espeak"], optional = true }
+rlx-qwen3-tts = { path = "../rlx-qwen3-tts", optional = true }
+rlx-kyutai-tts = { path = "../rlx-kyutai-tts", optional = true }
+
+[features]
+default = ["matrix-onnx"]
+matrix-onnx = [
+    "dep:rlx-chatterbox",
+    "dep:rlx-supertonic",
+    "dep:rlx-piper",
+    "dep:rlx-luxtts",
+    "dep:rlx-styletts2",
+    "dep:rlx-f5tts",
+    "dep:rlx-moss-nano",
+    "dep:rlx-soprano",
+]
+matrix-ar = [
+    "dep:rlx-sesame",
+    "dep:rlx-zonos",
+    "dep:rlx-gepard",
+    "dep:rlx-metavoice",
+]
+lm-tts = [
+    "dep:rlx-orpheus",
+    "dep:rlx-kittentts",
+    "dep:rlx-qwen3-tts",
+]
+# kyutai is separate: rlx-kyutai-tts pulls C++ sentencepiece, whose statically
+# linked protobuf collides with ort_sys (matrix-onnx) at link time. Keep it out
+# of `lm-tts` so the ort adapters can build without it (hard link error on
+# Linux/CUDA). Opt in via `kyutai` or `all-models`.
+kyutai = ["dep:rlx-kyutai-tts"]
+all-models = ["matrix-onnx", "matrix-ar", "lm-tts", "kyutai"]
+
+metal = [
+    "rlx-runtime/metal",
+    "rlx-whisper/metal",
+    "rlx-chatterbox?/metal",
+    "rlx-supertonic?/metal",
+    "rlx-piper?/metal",
+    "rlx-luxtts?/metal",
+    "rlx-styletts2?/metal",
+    "rlx-f5tts?/metal",
+    "rlx-moss-nano?/metal",
+    "rlx-soprano?/metal",
+    "rlx-sesame?/metal",
+    "rlx-zonos?/metal",
+    "rlx-gepard?/metal",
+    "rlx-metavoice?/metal",
+    "rlx-orpheus?/metal",
+    "rlx-kittentts?/metal",
+    "rlx-qwen3-tts?/metal",
+    "rlx-kyutai-tts?/metal",
+]
+mlx = [
+    "rlx-runtime/mlx",
+    "rlx-whisper/mlx",
+    "rlx-chatterbox?/mlx",
+    "rlx-supertonic?/mlx",
+    "rlx-piper?/mlx",
+    "rlx-luxtts?/mlx",
+    "rlx-styletts2?/mlx",
+    "rlx-f5tts?/mlx",
+    "rlx-moss-nano?/mlx",
+    "rlx-soprano?/mlx",
+    "rlx-sesame?/mlx",
+    "rlx-zonos?/mlx",
+    "rlx-gepard?/mlx",
+    "rlx-metavoice?/mlx",
+    "rlx-orpheus?/mlx",
+    "rlx-kittentts?/mlx",
+    "rlx-qwen3-tts?/mlx",
+    "rlx-kyutai-tts?/mlx",
+]
+cuda = [
+    "rlx-runtime/cuda",
+    "rlx-whisper/cuda",
+    "rlx-chatterbox?/cuda",
+    "rlx-supertonic?/cuda",
+    "rlx-piper?/cuda",
+    "rlx-luxtts?/cuda",
+    "rlx-styletts2?/cuda",
+    "rlx-f5tts?/cuda",
+    "rlx-moss-nano?/cuda",
+    "rlx-soprano?/cuda",
+    "rlx-sesame?/cuda",
+    "rlx-zonos?/cuda",
+    "rlx-gepard?/cuda",
+    "rlx-metavoice?/cuda",
+    "rlx-orpheus?/cuda",
+    "rlx-kittentts?/cuda",
+    "rlx-qwen3-tts?/cuda",
+    "rlx-kyutai-tts?/cuda",
+]
+gpu = [
+    "rlx-runtime/gpu",
+    "rlx-whisper/gpu",
+    "rlx-chatterbox?/gpu",
+    "rlx-supertonic?/gpu",
+    "rlx-piper?/gpu",
+    "rlx-luxtts?/gpu",
+    "rlx-styletts2?/gpu",
+    "rlx-f5tts?/gpu",
+    "rlx-moss-nano?/gpu",
+    "rlx-soprano?/gpu",
+    "rlx-sesame?/gpu",
+    "rlx-zonos?/gpu",
+    "rlx-gepard?/gpu",
+    "rlx-metavoice?/gpu",
+    "rlx-orpheus?/gpu",
+    "rlx-kittentts?/gpu",
+    "rlx-qwen3-tts?/gpu",
+    "rlx-kyutai-tts?/gpu",
+]
+coreml = [
+    "rlx-runtime/coreml",
+    "rlx-supertonic?/coreml",
+    "rlx-piper?/coreml",
+    "rlx-luxtts?/coreml",
+]
+apple-silicon = ["metal", "mlx", "gpu"]
+all-backends = ["metal", "mlx", "cuda", "gpu", "coreml"]
+
+[lints]
+workspace = true

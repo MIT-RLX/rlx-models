@@ -1,0 +1,46 @@
+[package]
+name = "rlx-miratts"
+version = "0.2.13"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MiraTTS (0.5B, Qwen2-based LLM + 48kHz neural codec, CC-BY-NC-SA-4.0) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+# Step 2 (LM) wired via rlx-qwen3 (Qwen2 = Qwen3 with qk_norm=false,
+# attention_bias=true). The codec (steps 3–4) will add rlx Vocos/ISTFT + WavLM.
+[dependencies]
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-qwen3 = { workspace = true }
+# Native codec decode: import + compile + run detokenizer.onnx (codes → waveform).
+rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false }
+tokenizers = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+hound = "3"
+
+[dev-dependencies]
+# Intelligibility round-trip: decode → Whisper ASR (native RLX, no ort at runtime).
+rlx-whisper = { workspace = true }
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-qwen3/metal", "rlx-tiny-tts/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-qwen3/mlx", "rlx-tiny-tts/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-qwen3/cuda", "rlx-tiny-tts/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-qwen3/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-qwen3/gpu", "rlx-tiny-tts/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-qwen3/vulkan", "rlx-tiny-tts/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-qwen3/coreml", "rlx-tiny-tts/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+
+[[bin]]
+name = "rlx-miratts"
+path = "src/bin/rlx_miratts.rs"
+
+[lints]
+workspace = true

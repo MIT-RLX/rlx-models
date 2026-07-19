@@ -1,6 +1,6 @@
 [package]
 name = "rlx-kokoro"
-version = "0.2.12"
+version = "0.2.13"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -22,6 +22,10 @@ rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # are StyleTTS2-family models with the same 3-input ONNX interface. Referenced by
 # path (not workspace inheritance) so its default features can be disabled.
 rlx-kittentts = { path = "../rlx-kittentts", default-features = false }
+# Native RLX inference path (ort-free): reuse the generic ONNX→rlx-ir→run harness
+# (`compile_named`/`run_typed`) from rlx-tiny-tts to run the graph-split
+# encoder + decoder_raw subgraphs on any RLX backend. Optional (feature `native`).
+rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false, features = ["cpu"], optional = true }
 
 [dependencies.hf-hub]
 workspace = true
@@ -51,21 +55,28 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 ] }
 
 [features]
-default = ["onnx", "espeak"]
+# `onnx` enables the ORT encoder fallback used by native StyleTTS2/Kokoro (duration
+# LSTM parity). Full-native encoder: `RLX_KOKORO_NATIVE_ENC=1`.
+default = ["native", "espeak", "onnx"]
 # ONNX Runtime inference path (ort) + shared ORT session builder from kittentts.
 onnx = ["dep:ort", "rlx-kittentts/onnx"]
+# Native RLX inference path: graph-split encoder + decoder_raw run through
+# rlx-onnx-import → rlx-ir on any RLX backend (cpu/metal/mlx/wgpu/…).
+native = ["dep:rlx-tiny-tts"]
 # espeak-ng phonemizer + text preprocessor (English bundled data).
 espeak = ["rlx-kittentts/espeak"]
 # RLX runtime backends. Apple GPU inference for the ONNX path goes through the
-# CoreML execution provider; NVIDIA through CUDA; Windows through DirectML.
-metal = ["rlx-runtime/metal", "rlx-kittentts/metal", "rlx-kittentts/ort-coreml"]
-mlx = ["rlx-runtime/mlx", "rlx-kittentts/mlx", "rlx-kittentts/ort-coreml"]
-cuda = ["rlx-runtime/cuda", "rlx-kittentts/cuda", "rlx-kittentts/ort-cuda"]
-rocm = ["rlx-runtime/rocm", "rlx-kittentts/rocm", "rlx-kittentts/ort-rocm"]
-gpu = ["rlx-runtime/gpu", "rlx-kittentts/gpu"]
-vulkan = ["rlx-runtime/vulkan"]
-all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+# CoreML execution provider; NVIDIA through CUDA; Windows through DirectML. The
+# native path forwards each backend to rlx-tiny-tts's runtime.
+metal = ["rlx-runtime/metal", "rlx-kittentts/metal", "rlx-kittentts/ort-coreml", "rlx-tiny-tts?/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-kittentts/mlx", "rlx-kittentts/ort-coreml", "rlx-tiny-tts?/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-kittentts/cuda", "rlx-kittentts/ort-cuda", "rlx-tiny-tts?/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-kittentts/rocm", "rlx-kittentts/ort-rocm", "rlx-tiny-tts?/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-kittentts/gpu", "rlx-tiny-tts?/gpu"]
+coreml = ["rlx-runtime/coreml", "rlx-tiny-tts?/coreml"]
+vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts?/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 hf-download = ["dep:hf-hub"]
 
 [dev-dependencies]
@@ -74,6 +85,14 @@ rlx-whisper = { workspace = true }
 [[bin]]
 name = "rlx-kokoro"
 path = "src/bin/rlx_kokoro.rs"
+required-features = ["native", "espeak"]
+
+[[example]]
+name = "native_synthesize"
+required-features = ["native", "espeak"]
+
+[[example]]
+name = "ort_synthesize"
 required-features = ["onnx"]
 
 [lints]

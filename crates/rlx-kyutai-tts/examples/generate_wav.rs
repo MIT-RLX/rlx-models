@@ -119,7 +119,7 @@ fn parse_args() -> Result<Args> {
     })
 }
 
-/// Path 1: native TTS through the (currently stubbed) `KyutaiTtsSession`.
+/// Path 1: native TTS through `KyutaiTtsSession::generate`.
 fn try_native_tts(args: &Args) -> Result<Option<Vec<f32>>> {
     if !args
         .tts_dir

@@ -22,20 +22,44 @@
 //! loop.
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use rlx_runtime::Device;
 
-use crate::config::{HOP_LENGTH, Layout, SAMPLE_RATE, Vocab};
+use crate::config::{Layout, SAMPLE_RATE, Vocab};
 
+#[cfg(feature = "onnx")]
+use crate::config::HOP_LENGTH;
 #[cfg(feature = "onnx")]
 use half::f16;
 #[cfg(feature = "onnx")]
 use ort::{session::Session, value::Tensor};
+#[cfg(feature = "onnx")]
+use std::sync::Mutex;
 
 pub fn peak_amplitude(a: &[f32]) -> f32 {
-    a.iter().filter(|s| s.is_finite()).map(|s| s.abs()).fold(0.0, f32::max)
+    a.iter()
+        .filter(|s| s.is_finite())
+        .map(|s| s.abs())
+        .fold(0.0, f32::max)
+}
+
+/// Write mono f32 PCM to a 16-bit WAV at `sample_rate`.
+pub fn write_wav(audio: &[f32], sample_rate: u32, path: &Path) -> Result<()> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(path, spec)
+        .with_context(|| format!("create {}", path.display()))?;
+    for &s in audio {
+        w.write_sample((s * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+            .context("wav write")?;
+    }
+    w.finalize().context("wav finalize")?;
+    Ok(())
 }
 
 /// Per-call options.
@@ -46,13 +70,17 @@ pub struct InferOpts {
 }
 impl Default for InferOpts {
     fn default() -> Self {
-        Self { nfe: crate::config::DEFAULT_NFE, speed: 1.0 }
+        Self {
+            nfe: crate::config::DEFAULT_NFE,
+            speed: 1.0,
+        }
     }
 }
 
 /// A loaded F5-TTS model (preprocess / transformer / decode sessions).
 pub struct F5Tts {
     device: Device,
+    #[cfg(feature = "onnx")]
     vocab: Vocab,
     ort_ep: String,
     #[cfg(feature = "onnx")]
@@ -78,15 +106,23 @@ impl F5Tts {
         }
         #[cfg(feature = "onnx")]
         {
+            // The DiT/f16 graphs crash ORT's CoreML EP (metal/mlx); the CPU EP is
+            // the validated path, so fall back to it for GPU devices.
+            let ort_device = if matches!(device, Device::Cpu) {
+                device
+            } else {
+                eprintln!("[f5tts] CoreML EP is unstable for this model; using CPU EP");
+                Device::Cpu
+            };
             let build = |p: &Path| -> Result<(Session, String)> {
-                let b = rlx_kittentts::build_onnx_session(p, device)
+                let b = rlx_kittentts::build_onnx_session(p, ort_device)
                     .with_context(|| format!("session {}", p.display()))?;
                 Ok((b.session, b.ort_ep))
             };
             let (preprocess, ep) = build(&layout.preprocess)?;
             let (transformer, _) = build(&layout.transformer)?;
             let (decode, _) = build(&layout.decode)?;
-            eprintln!("[f5tts] loaded on {device:?} (ep={ep})");
+            eprintln!("[f5tts] loaded on {ort_device:?} (ep={ep})");
             Ok(Self {
                 device,
                 vocab,
@@ -118,15 +154,18 @@ impl F5Tts {
         ref_text: &str,
         opts: &InferOpts,
     ) -> Result<Vec<f32>> {
-        use crate::tokenize::{encode, text_len};
+        use crate::dsp::{preprocess_ref_audio, soft_peak_limit};
+        use crate::tokenize::{encode, normalize_ref_text, text_len};
 
-        let text_ids = encode(ref_text, gen_text, &self.vocab);
+        let ref_text = normalize_ref_text(ref_text);
+        let ref_audio = preprocess_ref_audio(ref_audio, SAMPLE_RATE);
+        let text_ids = encode(&ref_text, gen_text, &self.vocab);
         anyhow::ensure!(!text_ids.is_empty(), "empty text");
         let n = ref_audio.len();
 
-        // Duration estimate (reference formula).
+        // Duration estimate (ONNX export uses hop+1).
         let ref_audio_len = (n / HOP_LENGTH + 1) as f64;
-        let ref_tl = text_len(ref_text).max(1) as f64;
+        let ref_tl = text_len(&ref_text).max(1) as f64;
         let gen_tl = text_len(gen_text) as f64;
         let max_duration =
             (ref_audio_len + (ref_audio_len / ref_tl * gen_tl / opts.speed as f64)) as i64;
@@ -135,8 +174,10 @@ impl F5Tts {
         let (mut noise, rope_cos, rope_sin, cat_mel, cat_mel_drop, qk_empty, ref_signal_len) = {
             let audio: Vec<f16> = ref_audio.iter().map(|&x| f16::from_f32(x)).collect();
             let a = Tensor::<f16>::from_array(([1usize, 1, n], audio)).context("audio")?;
-            let ti = Tensor::<i32>::from_array(([1usize, text_ids.len()], text_ids.clone())).context("text_ids")?;
-            let md = Tensor::<i64>::from_array((Vec::<usize>::new(), vec![max_duration])).context("max_duration")?;
+            let ti = Tensor::<i32>::from_array(([1usize, text_ids.len()], text_ids.clone()))
+                .context("text_ids")?;
+            let md = Tensor::<i64>::from_array((Vec::<usize>::new(), vec![max_duration]))
+                .context("max_duration")?;
             let mut s = self.preprocess.lock().expect("poisoned");
             let out = s.run(ort::inputs![a, ti, md]).context("preprocess")?;
             (
@@ -146,12 +187,16 @@ impl F5Tts {
                 ef16(&out, 3)?,
                 ef16(&out, 4)?,
                 ef16(&out, 5)?,
-                out[6].try_extract_tensor::<i64>().context("ref_signal_len")?.1[0],
+                out[6]
+                    .try_extract_tensor::<i64>()
+                    .context("ref_signal_len")?
+                    .1[0],
             )
         };
 
-        // 2. flow-matching loop — the transformer folds in CFG + the ODE step.
-        for step in 0..opts.nfe {
+        // 2. flow-matching loop — NFE-1 ODE steps (baked delta_t length).
+        let ode_steps = opts.nfe.saturating_sub(1).max(1);
+        for step in 0..ode_steps {
             let denoised = {
                 let noi = f16_t(&noise.0, noise.1.clone())?;
                 let rc = f16_t(&rope_cos.0, rope_cos.1.clone())?;
@@ -159,44 +204,39 @@ impl F5Tts {
                 let cm = f16_t(&cat_mel.0, cat_mel.1.clone())?;
                 let cmd = f16_t(&cat_mel_drop.0, cat_mel_drop.1.clone())?;
                 let qk = f16_t(&qk_empty.0, qk_empty.1.clone())?;
-                let ts = Tensor::<i32>::from_array((Vec::<usize>::new(), vec![step as i32])).context("time_step")?;
+                let ts = Tensor::<i32>::from_array((Vec::<usize>::new(), vec![step as i32]))
+                    .context("time_step")?;
                 let mut s = self.transformer.lock().expect("poisoned");
-                let out = s.run(ort::inputs![noi, rc, rs, cm, cmd, qk, ts]).context("transformer")?;
+                let out = s
+                    .run(ort::inputs![noi, rc, rs, cm, cmd, qk, ts])
+                    .context("transformer")?;
                 ef16(&out, 0)?
             };
             noise = denoised;
         }
 
         // 3. decode → waveform.
-        let wav = {
+        let mut wav = {
             let d = f16_t(&noise.0, noise.1.clone())?;
-            let rl = Tensor::<i64>::from_array((Vec::<usize>::new(), vec![ref_signal_len])).context("ref_signal_len")?;
+            let rl = Tensor::<i64>::from_array((Vec::<usize>::new(), vec![ref_signal_len]))
+                .context("ref_signal_len")?;
             let mut s = self.decode.lock().expect("poisoned");
             let out = s.run(ort::inputs![d, rl]).context("decode")?;
             let (_shape, data) = out[0].try_extract_tensor::<f16>().context("output_audio")?;
             data.iter().map(|h| h.to_f32()).collect::<Vec<f32>>()
         };
+        soft_peak_limit(&mut wav, 0.95);
 
         let peak = peak_amplitude(&wav);
-        anyhow::ensure!(peak >= 1e-3, "synthesized audio is silent (peak={peak:.2e})");
+        anyhow::ensure!(
+            peak >= 1e-3,
+            "synthesized audio is silent (peak={peak:.2e})"
+        );
         Ok(wav)
     }
 
     pub fn write_wav(&self, audio: &[f32], path: &Path) -> Result<()> {
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: SAMPLE_RATE,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut w = hound::WavWriter::create(path, spec)
-            .with_context(|| format!("create {}", path.display()))?;
-        for &s in audio {
-            w.write_sample((s * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
-                .context("wav write")?;
-        }
-        w.finalize().context("wav finalize")?;
-        Ok(())
+        write_wav(audio, SAMPLE_RATE, path)
     }
 }
 
@@ -208,6 +248,11 @@ fn f16_t(shape: &[usize], data: Vec<f16>) -> Result<Tensor<f16>> {
 /// Extract output `i` as `(shape, f16 data)`.
 #[cfg(feature = "onnx")]
 fn ef16(out: &ort::session::SessionOutputs, i: usize) -> Result<(Vec<usize>, Vec<f16>)> {
-    let (shape, data) = out[i].try_extract_tensor::<f16>().with_context(|| format!("output {i}"))?;
-    Ok((shape.iter().map(|&d| d.max(0) as usize).collect(), data.to_vec()))
+    let (shape, data) = out[i]
+        .try_extract_tensor::<f16>()
+        .with_context(|| format!("output {i}"))?;
+    Ok((
+        shape.iter().map(|&d| d.max(0) as usize).collect(),
+        data.to_vec(),
+    ))
 }

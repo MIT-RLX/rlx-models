@@ -3,11 +3,10 @@
 Index of the text-to-speech models ported to RLX, their reported throughput, and
 the **Gemma 3 270M + Inflect-Nano** local voice-chat pairing built on top of them.
 
-> Unlike [ASR.md](ASR.md), there is **no unified TTS benchmark harness** yet, so
-> per-model numbers below are **as reported by each crate's own README/notes**
-> (backend + hardware vary). Numbers explicitly marked *(verified here)* were
-> measured this session on Apple Silicon / Metal against the local
-> `gemma-3-270m` GGUF + `weights/inflect-nano-rlx` bundle.
+> **Unified harness:** [`crates/rlx-tts-bench`](crates/rlx-tts-bench/README.md)
+> (`just tts-bench-apple run …`) produces `results.jsonl`, `report.html`, and
+> `BACKENDS.md` (model × device RTF / cosine / Whisper). Cross-backend notes and
+> historical matrices live in [`TTS_BACKENDS.md`](TTS_BACKENDS.md).
 
 ## Models
 
@@ -21,7 +20,9 @@ the **Gemma 3 270M + Inflect-Nano** local voice-chat pairing built on top of the
 | **Tiny-TTS (VITS2/MeloTTS)** | `rlx-tiny-tts` | — | — | CPU/MLX/wgpu/CoreML | bit-exact across all 4 backends |
 | **NeuTTS** | `rlx-neutts` | Nano/Air | — | — | no reported RTF |
 | **Voxtral-TTS** | `rlx-voxtral-tts` | 4B | — | — | no reported RTF |
-| **Kyutai-TTS** | `rlx-kyutai-tts` | 1.6B | — (scaffolding) | — | generation loop not wired yet |
+| **Kyutai-TTS** | `rlx-kyutai-tts` | 1.6B | — | — | see crate README |
+| **Gepard** | `rlx-gepard` | ~556M | — | Metal→MLX AR + NanoCodec | fox 6/6; see TTS_BACKENDS |
+| **ChatterBox / Supertonic / LuxTTS / Piper / …** | see TTS_BACKENDS | — | — | multi-backend | unified matrix via `rlx-tts-bench` |
 
 ## Leaderboard
 

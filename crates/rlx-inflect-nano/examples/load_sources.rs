@@ -7,13 +7,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use rlx_core::asset_source::pack;
 use rlx_core::AssetSource;
+use rlx_core::asset_source::pack;
 use rlx_inflect_nano::{InferOpts, InflectNano};
 
 fn synth(m: &InflectNano) -> anyhow::Result<Vec<f32>> {
     let opts = InferOpts::default();
-    Ok(m.synthesize("Hello from a versatile loader.", &opts)?.samples)
+    Ok(m.synthesize("Hello from a versatile loader.", &opts)?
+        .samples)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -43,7 +44,10 @@ fn main() -> anyhow::Result<()> {
     println!("mem map  : {} samples", mmap.len());
 
     let ok = file == reference && mem == reference && mmap == reference;
-    println!("\nall sources byte-identical: {}", if ok { "YES ✓" } else { "NO ✗" });
+    println!(
+        "\nall sources byte-identical: {}",
+        if ok { "YES ✓" } else { "NO ✗" }
+    );
     let _ = std::fs::remove_file(&pack_path);
     anyhow::ensure!(ok, "source outputs diverged");
     Ok(())

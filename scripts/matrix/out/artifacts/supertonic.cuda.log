@@ -1,0 +1,8 @@
+$ /home/user/rlx-models/target/release/rlx-supertonic --data weights/tts/supertonic-3 --text The quick brown fox jumps over the lazy dog near the river bank. --device cuda --out /home/user/rlx-models/scripts/matrix/out/artifacts/supertonic.cuda.wav
+
+--- stdout ---
+Wrote 189847 samples (4.30s @ 44100 Hz) to /home/user/rlx-models/scripts/matrix/out/artifacts/supertonic.cuda.wav [voice=F1, lang=en, steps=8, ep=rlx-native/Cuda]
+
+--- stderr ---
+[supertonic] loaded 4 subgraphs on rlx-native/Cuda
+rlx-cuda: cuDNN unavailable (libcudnn.so not loadable) — convolutions use the ~10× slower im2col path. Put libcudnn.so on the loader path (e.g. LD_LIBRARY_PATH), or set RLX_CUDA_NO_CUDNN=1 to silence this.

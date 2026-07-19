@@ -1,0 +1,8 @@
+$ /home/user/rlx-models/target/release/rlx-piper --data weights/tts/piper --text The quick brown fox jumps over the lazy dog near the river bank. --device gpu --out /home/user/rlx-models/scripts/matrix/out/artifacts/piper.wgpu.wav
+
+--- stdout ---
+Wrote 74240 samples (3.37s @ 22050 Hz) to /home/user/rlx-models/scripts/matrix/out/artifacts/piper.wgpu.wav [ep=cpu]
+
+--- stderr ---
+[piper] CoreML EP is unstable for this VITS model; using CPU EP
+[piper] loaded weights/tts/piper/en_US-lessac-medium.onnx on Cpu (ep=cpu)

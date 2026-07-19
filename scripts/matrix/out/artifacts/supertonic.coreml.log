@@ -1,0 +1,21 @@
+$ /Users/Shared/rlx-models/target/release/rlx-supertonic --data weights/tts/supertonic-3 --text The quick brown fox jumps over the lazy dog near the river bank. --device coreml --out /Users/Shared/rlx-models/scripts/matrix/out/artifacts/supertonic.coreml.wav
+
+--- stdout ---
+
+--- stderr ---
+[tiny-tts] CoreML: set RLX_COREML_UNITS=gpu (pins f16 TTS graphs off Neural-Engine BNNS; fp32 already defaults to CPU+GPU in rlx-coreml)
+[supertonic] loaded 4 subgraphs on rlx-native/Ane
+
+thread 'main' (28632731) panicked at /Users/Shared/rlx/crates/core/rlx-runtime/src/backend/coreml_backend.rs:104:33:
+CoreML finalize failed: CoreML runtime error: CoreML load failed: Failed to parse the model specification. Error: Unable to parse ML Program: in operation v103: KernelChannels (1) != InputChannels (384) / Group (512)
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <rlx_runtime::backend::coreml_backend::CoremlExecutableWrapper as rlx_runtime::backend::ExecutableGraph>::finalize_params::{{closure}}
+   3: <rlx_runtime::backend::coreml_backend::CoremlExecutableWrapper as rlx_runtime::backend::ExecutableGraph>::finalize_params
+   4: rlx_tiny_tts::model::TinyModel::compile_named_with_options
+   5: rlx_tiny_tts::model::TinyModel::compile_named
+   6: rlx_supertonic::model::Supertonic::run1
+   7: rlx_supertonic::model::Supertonic::synthesize
+   8: rlx_supertonic::main
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.

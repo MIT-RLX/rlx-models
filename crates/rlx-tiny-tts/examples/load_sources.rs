@@ -11,7 +11,9 @@ use rlx_tiny_tts::{AssetSource, InferOpts, TinyTts, asset_source::pack};
 
 fn synth(model: &TinyTts) -> anyhow::Result<Vec<f32>> {
     let opts = InferOpts::from_config(model.config());
-    Ok(model.synthesize("Hello from a versatile loader.", &opts)?.samples)
+    Ok(model
+        .synthesize("Hello from a versatile loader.", &opts)?
+        .samples)
 }
 
 fn main() -> anyhow::Result<()> {

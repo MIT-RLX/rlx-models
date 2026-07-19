@@ -37,8 +37,8 @@ impl UnicodeIndexer {
         let path = onnx_dir.join("unicode_indexer.json");
         let bytes = std::fs::read(&path)
             .with_context(|| format!("read unicode_indexer.json: {}", path.display()))?;
-        let table: Vec<i64> = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parse {}", path.display()))?;
+        let table: Vec<i64> =
+            serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
         anyhow::ensure!(!table.is_empty(), "empty unicode_indexer");
         Ok(Self { table })
     }
@@ -171,7 +171,10 @@ mod tests {
 
     #[test]
     fn wraps_and_adds_period() {
-        assert_eq!(preprocess("Hello world", "en").unwrap(), "<en>Hello world.</en>");
+        assert_eq!(
+            preprocess("Hello world", "en").unwrap(),
+            "<en>Hello world.</en>"
+        );
     }
 
     #[test]
@@ -191,7 +194,9 @@ mod tests {
 
     #[test]
     fn indexer_oov_is_negative_one() {
-        let idx = UnicodeIndexer { table: vec![0; 65536] };
+        let idx = UnicodeIndexer {
+            table: vec![0; 65536],
+        };
         // codepoint 0 maps to table[0]=0 here; a value we didn't set stays 0,
         // but an explicit -1 slot returns -1.
         let mut t = vec![0i64; 65536];

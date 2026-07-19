@@ -1,6 +1,6 @@
 [package]
 name = "rlx-orpheus"
-version = "0.2.12"
+version = "0.2.13"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -58,7 +58,7 @@ hf-download = ["dep:hf-hub"]
 snac-rlx = ["codec", "dep:rlx-ir", "dep:rlx-runtime"]
 metal = ["rlx-llama32/metal", "snac-rlx"]
 mlx = ["rlx-llama32/mlx", "snac-rlx"]
-cuda = ["rlx-llama32/cuda"]
+cuda = ["rlx-llama32/cuda", "snac-rlx", "rlx-runtime/cuda"]
 rocm = ["rlx-llama32/rocm"]
 vulkan = ["rlx-llama32/vulkan"]
 gpu = ["rlx-llama32/gpu", "snac-rlx"]

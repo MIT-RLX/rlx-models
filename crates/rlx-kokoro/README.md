@@ -28,7 +28,8 @@ cargo run -p rlx-kokoro --bin rlx-kokoro -- --ipa "həlˈoʊ" --voice am_michael
 ```
 
 Set `RLX_KOKORO_DIR` to point at a model directory, or pass `--data <dir>`.
-The default directory is `.cache/kokoro-82m`.
+The default directory is `.cache/kokoro-82m`. The default **native** CLI path needs
+`onnx/rlx-split/` (one-time: `python crates/rlx-kokoro/scripts/split_kokoro.py …`).
 
 ## Model directory layout
 
@@ -45,21 +46,55 @@ Weights: [`onnx-community/Kokoro-82M-v1.0-ONNX`](https://huggingface.co/onnx-com
 
 | Feature | Path | Devices |
 |---------|------|---------|
-| `onnx` (default) | ONNX Runtime | CPU |
+| **`native`** (default) | **native RLX (ort-free)** | **cpu / metal / mlx / wgpu / coreml** |
+| `onnx` | ONNX Runtime (optional) | CPU |
 | `metal` / `mlx`  | ONNX Runtime | CoreML execution provider (macOS) |
 | `cuda`           | ONNX Runtime | CUDA execution provider |
 | `gpu`            | ONNX Runtime | DirectML / CUDA / CoreML |
 
-Select the device with `--device cpu|metal|mlx|cuda|gpu`; the requested EP is
-tried first with a CPU fallback.
+For the ort path, select the device with `--device cpu|metal|mlx|cuda|gpu`; the
+requested EP is tried first with a CPU fallback.
 
-### Native rlx-ir multi-backend (planned)
+### Native / hybrid multi-backend (`native`)
 
-A fully native RLX graph path (Metal / MLX / wgpu via the RLX compiler) is
-planned. StyleTTS2 uses LSTM and STFT operators that `rlx-onnx-import` does not
-yet cover, so — like `kitten_tts_mini_rlx` for KittenTTS — it needs a
-hand-decomposed rlx-ir graph. Until then the ONNX Runtime path above is the
-supported route.
+The `native` feature runs the graph-split decoder on the RLX compiler. With
+`onnx` (default), the duration/prosody **encoder** prefers onnxruntime on CPU
+(fast path); set `RLX_KOKORO_NATIVE_ENC=1` for a fully native RLX encoder
+(also Whisper fox 6/6). The monolithic graph has a data-dependent length
+regulator and an ISTFT (`NonZero`/`ScatterND` overlap-add) that don't fit one
+static-shape compile, so it is **graph-split** into two fixed-shape subgraphs
+with the dynamic pieces in Rust — verified **bit-exact** (cosine 1.0, max_abs 0)
+against the monolithic model, and whisper-validated end-to-end (coverage 1.00
+on CPU):
+
+```text
+encoder.onnx   [input_ids, style, speed] → prosody[1,640,seq], text[1,512,seq], dur[1,seq]
+  ── Rust length regulator: repeat_interleave columns by dur → en[1,640,F], asr[1,512,F] ──
+decoder_raw.onnx  [en, asr, style] → raw waveform
+  ── Rust ISTFT overlap-add normalization (window_sum, ×n_fft/hop, crop n_fft/2) ──
+                → 24 kHz waveform
+```
+
+Both subgraphs import through `rlx-onnx-import` → rlx-ir (StyleTTS2's LSTM/STFT
+and the ALBERT duration predictor are all covered) and run on any RLX backend.
+Produce the split bundle once, then synthesize:
+
+```bash
+# one-time: split the monolithic model into the native bundle (onnx/rlx-split/)
+python crates/rlx-kokoro/scripts/split_kokoro.py \
+  weights/tts/kokoro-82m/onnx/model.onnx weights/tts/kokoro-82m/onnx/rlx-split
+
+cargo run -p rlx-kokoro --no-default-features --features native,espeak \
+  --example native_synthesize -- \
+  --model weights/tts/kokoro-82m --voice af_heart \
+  --text "Hello from native Kokoro." --out out.wav [--device cpu|metal|mlx|gpu|coreml|vulkan]
+```
+
+CoreML (`--device coreml` / `ane`) auto-sets `RLX_COREML_UNITS=gpu` via
+`rlx_tiny_tts::resolve_tts_device` — the default Neural-Engine path crashes BNNS
+on these graphs. Vulkan is available with `--features vulkan` / `all-backends`.
+`NativeKokoro::load(model_dir, device)` is a drop-in for the ort `Kokoro` with
+the same `generate_from_text` / `infer_phonemes` entry points.
 
 ## Voices & languages
 

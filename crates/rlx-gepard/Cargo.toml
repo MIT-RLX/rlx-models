@@ -1,0 +1,54 @@
+[package]
+name = "rlx-gepard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+authors.workspace = true
+description = "Gepard (~556M) autoregressive decoder-only TTS — Qwen3.5 backbone + NanoCodec FSQ"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+rlx-cli  = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir   = { workspace = true }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-qwen35 = { workspace = true }
+rlx-whisper = { workspace = true }
+rlx-nanocodec = { path = "../rlx-nanocodec" }
+anyhow      = { workspace = true }
+serde       = { workspace = true, features = ["derive"] }
+serde_json  = { workspace = true }
+safetensors = { workspace = true }
+tokenizers  = { workspace = true }
+hound       = "3"
+fastrand    = "2"
+tokio       = { version = "1", features = ["full"] }
+clap        = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+
+[[bin]]
+name = "rlx-gepard"
+path = "src/bin/rlx_gepard.rs"
+
+[[bin]]
+name = "rlx-gepard-train"
+path = "src/bin/rlx_gepard_train.rs"
+
+[features]
+default = []
+metal      = ["rlx-runtime/metal", "rlx-qwen35/metal"]
+mlx        = ["rlx-runtime/mlx", "rlx-qwen35/mlx"]
+cuda       = ["rlx-runtime/cuda", "rlx-qwen35/cuda"]
+rocm       = ["rlx-runtime/rocm", "rlx-qwen35/rocm"]
+gpu        = ["rlx-runtime/gpu", "rlx-qwen35/gpu"]
+vulkan     = ["rlx-runtime/vulkan", "rlx-qwen35/vulkan"]
+coreml     = ["rlx-runtime/coreml", "rlx-core/coreml", "rlx-qwen35/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda", "rlx-qwen35/nvidia-gpu"]
+amd-gpu    = ["rocm", "rlx-qwen35/amd-gpu"]

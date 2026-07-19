@@ -186,6 +186,7 @@ pub struct Llama32Flow<'a> {
     with_kv_outputs: bool,
     last_logits_only: bool,
     use_custom_mask: bool,
+    inputs_embeds: bool,
     profile: Option<CompileProfile>,
     before_layers: Vec<FlowStage>,
     after_layers: Vec<FlowStage>,
@@ -206,6 +207,7 @@ impl fmt::Debug for Llama32Flow<'_> {
             .field("with_kv_outputs", &self.with_kv_outputs)
             .field("last_logits_only", &self.last_logits_only)
             .field("use_custom_mask", &self.use_custom_mask)
+            .field("inputs_embeds", &self.inputs_embeds)
             .field("profile", &self.profile)
             .field("before_layers", &self.before_layers.len())
             .field("after_layers", &self.after_layers.len())
@@ -229,6 +231,7 @@ impl<'a> Llama32Flow<'a> {
             with_kv_outputs: false,
             last_logits_only: false,
             use_custom_mask: false,
+            inputs_embeds: false,
             profile: None,
             before_layers: Vec::new(),
             after_layers: Vec::new(),
@@ -287,6 +290,17 @@ impl<'a> Llama32Flow<'a> {
     /// Symbolic past dim (`sym::PAST_SEQ`) for dynamic decode specialization.
     pub fn dynamic_past(mut self) -> Self {
         self.dynamic_past = true;
+        self
+    }
+
+    /// Feed precomputed `inputs_embeds [batch, seq, hidden]` directly instead of
+    /// `input_ids`, skipping the token-embedding gather. For embeds-driven LMs
+    /// (ChatterBox T3, Orpheus/Sesame-style prompts) whose entry is a
+    /// concatenation of audio / text / conditioning embeddings rather than token
+    /// ids. Works in both prefill and decode modes; the first graph input becomes
+    /// `inputs_embeds` with the hidden shape.
+    pub fn inputs_embeds(mut self) -> Self {
+        self.inputs_embeds = true;
         self
     }
 
@@ -413,9 +427,12 @@ impl<'a> Llama32Flow<'a> {
 
         let kv_sink = SideOutputs::new();
 
-        let mut flow = ModelFlow::new("llama32")
-            .with_profile(profile)
-            .input("input_ids", input_shape);
+        let mut flow = ModelFlow::new("llama32").with_profile(profile);
+        flow = if self.inputs_embeds {
+            flow.input("inputs_embeds", hidden_shape.clone())
+        } else {
+            flow.input("input_ids", input_shape)
+        };
 
         if self.dynamic_seq && self.with_lm_head && self.last_logits_only {
             flow = flow.input("last_token_idx", Shape::new(&[self.batch], DType::F32));
@@ -428,9 +445,11 @@ impl<'a> Llama32Flow<'a> {
                 cos_data,
                 sin_data,
             ))
-            .zero_beta_named("llama32.zero_beta.hidden", h)
-            .token_embed()
-            .raw_stages(self.before_layers.iter().cloned());
+            .zero_beta_named("llama32.zero_beta.hidden", h);
+        if !self.inputs_embeds {
+            flow = flow.token_embed();
+        }
+        flow = flow.raw_stages(self.before_layers.iter().cloned());
 
         let layer_fn = self.layer_fn.clone();
         let export = self.with_kv_outputs;
@@ -546,9 +565,12 @@ impl<'a> Llama32Flow<'a> {
 
         let kv_out = SideOutputs::new();
 
-        let mut flow = ModelFlow::new("llama32_decode")
-            .with_profile(profile)
-            .input("input_ids", Shape::new(&[self.batch, 1], DType::F32));
+        let mut flow = ModelFlow::new("llama32_decode").with_profile(profile);
+        flow = if self.inputs_embeds {
+            flow.input("inputs_embeds", Shape::new(&[self.batch, 1, h], f))
+        } else {
+            flow.input("input_ids", Shape::new(&[self.batch, 1], DType::F32))
+        };
 
         if self.use_custom_mask {
             flow = flow.input("mask", Shape::new(&[self.batch, self.past_seq + 1], f));
@@ -585,9 +607,11 @@ impl<'a> Llama32Flow<'a> {
                 self.use_custom_mask,
                 self.past_seq > 0 || self.dynamic_past || self.use_custom_mask,
             )
-            .zero_beta_named("llama32.zero_beta.hidden", h)
-            .token_embed()
-            .raw_stages(self.before_layers.iter().cloned());
+            .zero_beta_named("llama32.zero_beta.hidden", h);
+        if !self.inputs_embeds {
+            flow = flow.token_embed();
+        }
+        flow = flow.raw_stages(self.before_layers.iter().cloned());
 
         let layer_fn = self.layer_fn.clone();
         flow = flow.repeat_layers(cfg.num_hidden_layers, {
