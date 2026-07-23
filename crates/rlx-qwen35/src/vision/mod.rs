@@ -25,19 +25,21 @@ mod weights;
 
 pub use builder::{build_qwen35_vision_graph, build_qwen35_vision_hir};
 pub use config::MmProjConfig;
-pub use encoder::{Qwen35VisionEncoder, VisionEncodeOutput, load_vision_encoder};
-pub use flow::{Qwen35VisionFlow, build_qwen35_vision_built};
+pub use encoder::{load_vision_encoder, Qwen35VisionEncoder, VisionEncodeOutput};
+pub use flow::{build_qwen35_vision_built, Qwen35VisionFlow};
 pub use multimodal::{
-    MEDIA_MARKER, MultimodalPrefill, MultimodalPrompt, VISION_END, VISION_START,
     build_multimodal_mrope_sections, image_chunk_n_pos, image_decoder_pos,
-    merge_text_and_vision_embd,
+    merge_text_and_vision_embd, MultimodalPrefill, MultimodalPrompt, MEDIA_MARKER, VISION_END,
+    VISION_START,
 };
 pub use preprocess::{build_vision_positions, preprocess_rgb};
 pub use weights::MmProjWeights;
 
 #[cfg(feature = "qwen35-vlm")]
+#[allow(unused_imports)] // public API re-exports
 pub use preprocess::{resize_rgb_nearest, rgb_to_nchw_f32, smart_resize};
 #[cfg(feature = "qwen35-vlm")]
+#[allow(unused_imports)] // public API re-exports
 pub use weights::{DeepstackWeights, VisionBlockWeights};
 
 #[cfg(feature = "qwen35-vlm")]
@@ -97,7 +99,14 @@ mod tests {
         let (nchw, tw, th) = preprocess_rgb(&rgb, img_w, img_h, &cfg);
         assert_eq!((tw, th), (4, 4));
 
-        let outs = compiled.run(&[("image", &nchw)]);
+        let position_hw = preprocess::build_vision_position_hw(tw, th, &cfg);
+        let (rope_cos, rope_sin) =
+            preprocess::vision_rope_feeds(&position_hw, cfg.n_embd / cfg.n_head);
+        let outs = compiled.run(&[
+            ("image", &nchw),
+            ("vision_rope_cos", &rope_cos),
+            ("vision_rope_sin", &rope_sin),
+        ]);
         let emb = &outs[0];
         assert_eq!(emb.len(), cfg.n_out_tokens(tw, th) * cfg.llm_hidden_size);
         assert!(emb.iter().all(|v| v.is_finite()), "non-finite embedding");

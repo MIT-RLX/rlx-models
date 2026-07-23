@@ -1,8 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-sesame --model-dir weights/tts/sesame --seed 42 --temperature 0 --text The quick brown fox jumps over the lazy dog near the river bank. --device cuda --output /home/user/rlx-models/scripts/matrix/out/artifacts/sesame.cuda.wav
-
---- stdout ---
-
---- stderr ---
-sesame: loading model=weights/tts/sesame mimi=.cache/mimi device=Cuda
-rlx-cuda: cuDNN unavailable (libcudnn.so not loadable) — convolutions use the ~10× slower im2col path. Put libcudnn.so on the loader path (e.g. LD_LIBRARY_PATH), or set RLX_CUDA_NO_CUDNN=1 to silence this.
-sesame: wrote /home/user/rlx-models/scripts/matrix/out/artifacts/sesame.cuda.wav (43 frames, 3.44s @ 24000 Hz)

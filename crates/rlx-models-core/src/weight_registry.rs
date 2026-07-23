@@ -35,6 +35,20 @@ pub struct WeightFormatRegistration {
 }
 
 fn open_safetensors(path: &Path) -> Result<Box<dyn WeightLoader>> {
+    // HuggingFace sharded checkpoints: prefer mmap index over a single shard file
+    // so callers can pass either the directory or any shard path.
+    let dir = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.to_path_buf())
+    };
+    if dir.join("model.safetensors.index.json").is_file() {
+        return Ok(Box::new(
+            crate::safetensors_checkpoint::SafetensorsMmapLoader::open(&dir)?,
+        ));
+    }
     let path_str = path
         .to_str()
         .ok_or_else(|| anyhow!("non-utf8 path {:?}", path))?;
@@ -126,6 +140,32 @@ pub fn format_for_extension(ext: &str) -> Option<&'static str> {
 
 /// Open a single file via the format registry.
 pub fn open_weight_loader(path: &Path) -> Result<Box<dyn WeightLoader>> {
+    // HF model directories (sharded safetensors) have no extension — detect by index.
+    if path.is_dir() {
+        if path.join("model.safetensors.index.json").is_file()
+            || path.join("model.safetensors").is_file()
+        {
+            return open_safetensors(path)
+                .with_context(|| format!("opening {:?} as format safetensors", path));
+        }
+        // Prefer a lone .gguf in the directory.
+        if let Ok(rd) = std::fs::read_dir(path) {
+            let ggufs: Vec<PathBuf> = rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
+                })
+                .collect();
+            if ggufs.len() == 1 {
+                return open_gguf(&ggufs[0])
+                    .with_context(|| format!("opening {:?} as format gguf", ggufs[0]));
+            }
+        }
+    }
+
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     for reg in formats() {
         if reg.extensions.contains(&ext) {
@@ -268,6 +308,18 @@ pub fn load_weights_resolved(path: &Path, opts: LoadWeightsOptions<'_>) -> Resul
     let file = resolve_weights_file_with_options(path, &opts.resolve)?;
     // Split GGUF merge happens inside GgufLoader::from_file / load_gguf_file.
     let ext = file.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if ext == "gguf" && opts.into_map {
+        let arch = crate::gguf_support::gguf_architecture_from_path(&file)?;
+        if arch == "laguna" && !crate::gguf_support::laguna_allow_f32_expand() {
+            anyhow::bail!(
+                "F32 expand disabled for Laguna GGUF ({file:?}): \
+                 WeightMap drain widens every quant to host F32. \
+                 Prefer `rlx-laguna --packed-load`, or opt in with \
+                 `RLX_LAGUNA_ALLOW_F32_EXPAND=1` / `--allow-f32-expand` \
+                 (see `--weights` sniff for `F32-expand≈`)."
+            );
+        }
+    }
     let format_id = format_for_extension(ext)
         .ok_or_else(|| anyhow!("no registered loader for extension `.{ext}`"))?;
     let mut loader = open_weight_loader(&file)?;

@@ -288,13 +288,28 @@ fn main() -> Result<()> {
         );
     }
 
-    // ---- decoder (fixed decoder_input_ids of BOS) ----
+    // ---- decoder (fixed decoder_input_ids of BOS + transcript prompt) ----
+    // New 4-input export: prompt_input_ids (the transcript) → embed_prompts →
+    // prompt_hidden prefix. Output logits are [9, PT+DEC_T, 1088].
+    let prompt_ids: Vec<i64> = {
+        let mut p: Vec<i64> = tok
+            .encode("Hello there.", false)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .get_ids()
+            .iter()
+            .map(|&i| i as i64)
+            .collect();
+        p.push(1); // eos
+        p
+    };
+    let pt = prompt_ids.len();
     let dids: Vec<i64> = vec![1025i64; 9 * DEC_T]; // [1,9,T] all BOS
     let nat_dec = nat.run(
         "decoder",
         &[
             ("t", DEC_T),
             ("et", ENC_LEN),
+            ("pt", pt),
             ("sequence_length", DEC_T),
             ("encoder_sequence_length", ENC_LEN),
         ],
@@ -303,6 +318,7 @@ fn main() -> Result<()> {
             ("decoder_input_ids", &i64_le(&dids), DType::I64),
             ("encoder_hidden_states", &f32_le(&ort_hs), DType::F32),
             ("encoder_attention_mask", &i64_le(&mask), DType::I64),
+            ("prompt_input_ids", &i64_le(&prompt_ids), DType::I64),
         ],
     )?;
     let nat_lg = as_f32(&nat_dec[0].0);
@@ -312,9 +328,11 @@ fn main() -> Result<()> {
     let od = dec.run(ort::inputs![
         "decoder_input_ids" => Tensor::<i64>::from_array(([1usize, 9, DEC_T], dids))?,
         "encoder_hidden_states" => Tensor::<f32>::from_array(([1usize, ENC_LEN, 1024], ort_hs))?,
-        "encoder_attention_mask" => Tensor::<i64>::from_array(([1usize, ENC_LEN], mask))?
+        "encoder_attention_mask" => Tensor::<i64>::from_array(([1usize, ENC_LEN], mask))?,
+        "prompt_input_ids" => Tensor::<i64>::from_array(([1usize, pt], prompt_ids))?
     ])?;
     let ort_lg = od[0].try_extract_tensor::<f32>()?.1.to_vec();
+    println!("[decoder] pt={pt} DEC_T={DEC_T} → expect logits len 9*{}*1088={}", pt + DEC_T, 9 * (pt + DEC_T) * 1088);
     let c = cosine(&nat_lg, &ort_lg);
     println!(
         "[decoder] native {} vs ort {} → cosine={:.6}",

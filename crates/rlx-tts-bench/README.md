@@ -30,6 +30,7 @@ cargo build -p rlx-tts-bench --release --features "all-models,apple-silicon"
 | `matrix-onnx` (default) | chatterbox, moss-nano, styletts2, piper, supertonic, luxtts, f5tts, soprano |
 | `matrix-ar` | sesame, gepard, zonos, metavoice |
 | `lm-tts` | orpheus, qwen3-tts, kyutai, kittentts |
+| `rlx-tts` | RLX TTS Gryphon native RLX (`.cache/rlx-tts-rlx`) |
 | `all-models` | union |
 | `apple-silicon` / `all-backends` | forward Metal/MLX/GPU/CUDA to deps |
 
@@ -59,6 +60,29 @@ cargo run -p rlx-tts-bench --release --features apple-silicon -- \
   run -m chatterbox,supertonic,luxtts -d cpu,metal \
   --phrases short --iters 1 --out-dir /tmp/quick
 ```
+
+## RLX TTS stress (≥1000 synthetic prompts)
+
+Deterministic combinatorial English corpus → synthesize with RLX TTS → validate with Whisper
+coverage/CER. Optionally synthesize the same lines with another RLX TTS (`--ref-model piper`)
+for spectral cosine.
+
+```bash
+# Preflight (20 phrases)
+just tts-rlx-tts-stress -- --n 20 --out-dir /tmp/rlx-tts-stress-pre
+
+# Full 1000 + Whisper (resume-safe; WaveRNN is slow — expect a long run)
+just tts-rlx-tts-stress -- --n 1000 --resume --out-dir /tmp/rlx-tts-stress
+
+# With Piper reference audio + spectral
+just tts-rlx-tts-stress -- --n 1000 --ref-model piper --spectral --resume
+
+# Custom corpus file (plain lines or JSONL {"text":"..."})
+cargo run -p rlx-tts-bench --release --features rlx-tts,matrix-onnx -- \
+  stress --target rlx-tts --corpus-file prompts.txt --n 500 --whisper
+```
+
+Artifacts under `--out-dir`: `corpus.jsonl`, `stress_results.jsonl`, `stress_summary.json`, optional `wav/`.
 
 ### Flags
 

@@ -1,0 +1,51 @@
+[package]
+name = "rlx-tts"
+version = "0.2.13"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "RLX FastSpeech2 + WaveRNN text-to-speech (local GGUF or directory bundle)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+exclude = ["weights/", ".rlx-extracted-*"]
+
+[dependencies]
+anyhow = { workspace = true }
+half = { workspace = true }
+hound = "3"
+ndarray = "0.16"
+once_cell = "1"
+regex = "1"
+rlx-ir = { workspace = true }
+rlx-cpu = { workspace = true }
+rlx-fft = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[features]
+default = []
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+coreml = ["rlx-runtime/coreml"]
+vulkan = ["rlx-runtime/vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "coreml", "vulkan"]
+
+[[bin]]
+name = "rlx-tts"
+path = "src/bin/rlx_tts.rs"
+
+[[example]]
+name = "backend_matrix"
+path = "examples/backend_matrix.rs"
+
+[lints]
+workspace = true

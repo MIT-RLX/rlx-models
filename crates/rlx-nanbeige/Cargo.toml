@@ -1,0 +1,59 @@
+[package]
+name = "rlx-nanbeige"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Nanbeige4.2 Looped Transformer LM ([Nanbeige/Nanbeige4.2-3B](https://huggingface.co/Nanbeige/Nanbeige4.2-3B))"
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-llama-base = { workspace = true }
+rlx-llama32 = { workspace = true }
+rlx-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hf-hub = { workspace = true, optional = true }
+
+[features]
+default = []
+hf-download = ["dep:hf-hub"]
+tokenizer = ["rlx-llama32/tokenizer"]
+metal = ["rlx-llama32/metal"]
+mlx = ["rlx-llama32/mlx"]
+cuda = ["rlx-llama32/cuda"]
+rocm = ["rlx-llama32/rocm"]
+gpu = ["rlx-llama32/gpu"]
+vulkan = ["rlx-llama32/vulkan"]
+coreml = ["rlx-llama32/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+
+[[bin]]
+name = "rlx-nanbeige"
+path = "src/bin/rlx_nanbeige.rs"
+required-features = ["tokenizer"]
+
+[[example]]
+name = "fetch_nanbeige"
+required-features = ["hf-download"]
+
+[[example]]
+name = "backend_matrix"
+# Enable whichever backends you want at build time, e.g. `--features all-backends`
+# or `--features apple-silicon`.
+
+[[example]]
+name = "backend_bench"
+# OOM-aware synth (+ optional real weights) timing across backends.
+
+[lints]
+workspace = true

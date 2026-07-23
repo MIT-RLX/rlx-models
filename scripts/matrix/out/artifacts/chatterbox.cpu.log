@@ -1,7 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-chatterbox --data weights/tts/chatterbox --greedy --seed 42 --ref-wav assets/jfk/jfk_voice_clone.wav --text The quick brown fox jumps over the lazy dog near the river bank. --device cpu --out /home/user/rlx-models/scripts/matrix/out/artifacts/chatterbox.cpu.wav
-
---- stdout ---
-
---- stderr ---
-
-[TIMEOUT]

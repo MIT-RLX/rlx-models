@@ -98,33 +98,8 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    #[cfg(all(feature = "onnx", not(feature = "native")))]
-    {
-        use rlx_piper::Piper;
-
-        let tts = Piper::load_on(&data, device)
-            .with_context(|| format!("load from {}", data.display()))?;
-        #[cfg(feature = "espeak")]
-        let audio = tts.synthesize(&text, length)?;
-        #[cfg(not(feature = "espeak"))]
-        let audio: Vec<f32> = {
-            let _ = (&text, length);
-            anyhow::bail!("rlx-piper needs the `espeak` feature");
-        };
-        tts.write_wav(&audio, &out)?;
-        let secs = audio.len() as f32 / tts.sample_rate() as f32;
-        println!(
-            "Wrote {} samples ({secs:.2}s @ {} Hz) to {} [ep={}]",
-            audio.len(),
-            tts.sample_rate(),
-            out.display(),
-            tts.ort_ep()
-        );
-        return Ok(());
-    }
-
-    #[cfg(not(any(feature = "native", feature = "onnx")))]
-    compile_error!("rlx-piper CLI requires `native` or `onnx` feature");
+    #[cfg(not(feature = "native"))]
+    compile_error!("rlx-piper CLI requires the `native` feature");
 
     #[allow(unreachable_code)]
     Ok(())

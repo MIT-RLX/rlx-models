@@ -31,12 +31,15 @@ impl WeightFormat {
             if !list_gguf_files_in_dir(path)?.is_empty() {
                 return Ok(Self::Gguf);
             }
-            if path.join("model.safetensors").is_file() {
+            if path.join("model.safetensors").is_file()
+                || path.join("model.safetensors.index.json").is_file()
+            {
                 return Ok(Self::Safetensors);
             }
             return Err(anyhow!(
-                "directory {path:?} has no .gguf files and no model.safetensors; \
-                 pass a concrete file or run `rlx-inspect {path:?}`"
+                "directory {path:?} has no .gguf files and no model.safetensors \
+                 (or model.safetensors.index.json); pass a concrete file or run \
+                 `rlx-inspect {path:?}`"
             ));
         }
         Self::from_path(path)

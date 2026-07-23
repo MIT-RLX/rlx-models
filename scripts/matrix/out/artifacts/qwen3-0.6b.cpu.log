@@ -1,9 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-qwen3 --weights weights/Qwen3-0.6B-gguf/Qwen3-0.6B-Q4_K_M.gguf --device cpu --prompt-ids 9707,11,1879 --max-tokens 24
-
---- stdout ---
-0 358 2776 264 220 17 15 4666 6284 11 358 2776 264 5458 11 323 358 2776 20956 304 279 2070 315 6366 
-
---- stderr ---
-[rlx-qwen3] weights="weights/Qwen3-0.6B-gguf/Qwen3-0.6B-Q4_K_M.gguf" device=Cpu max_seq=128 precision=F32 stream=true
-[rlx-qwen3] compiled — vocab=151936 hidden=1024 layers=28
-[rlx-qwen3] generated 24 tokens in 50.86s (0.5 tok/s)

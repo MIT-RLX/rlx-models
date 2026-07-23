@@ -14,11 +14,11 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Cross-backend parity + RTF matrix for LuxTTS (ZipVoice-distill CFM voice
-//! cloning), plus rlx-native-vs-onnxruntime. See rlx-supertonic's
-//! `backend_matrix.rs` for the methodology.
+//! cloning), rlx-native only. See rlx-supertonic's `backend_matrix.rs` for the
+//! methodology.
 //!
 //!   cargo run --release --example backend_matrix \
-//!     --features "metal,mlx,gpu,coreml,onnx" -- weights/tts/luxtts
+//!     --features "metal,mlx,gpu,coreml" -- weights/tts/luxtts
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -138,8 +138,6 @@ fn main() -> anyhow::Result<()> {
         "{:<8} {:>8} {:>7} {:>10} {:>9}",
         "backend", "rtf", "ms", "cos_vs_cpu", "whisper"
     );
-    #[cfg(feature = "onnx")]
-    let mut native_cpu_ms = f64::NAN;
     for (dev, label) in backends() {
         if dev != Device::Cpu && !is_available(dev) {
             println!(
@@ -167,10 +165,6 @@ fn main() -> anyhow::Result<()> {
             times.push(t0.elapsed().as_secs_f64() * 1000.0);
         }
         let ms = median(times);
-        #[cfg(feature = "onnx")]
-        if dev == Device::Cpu {
-            native_cpu_ms = ms;
-        }
         let rtf = audio_s / (ms / 1000.0);
         let cos = cosine(&cpu_ref, &wav);
         let whisp = whisper
@@ -181,30 +175,6 @@ fn main() -> anyhow::Result<()> {
         println!("{label:<8} {rtf:>7.1}x {ms:>7.0} {cos:>10.5} {whisp:>9}");
     }
 
-    println!("\n== (c) rlx-native vs onnxruntime (original) ==");
-    #[cfg(feature = "onnx")]
-    {
-        let _ = cpu.synthesize_ort(TEXT, &prompt, PROMPT_TEXT, &opts)?;
-        let mut times = Vec::new();
-        for _ in 0..iters() {
-            let t0 = Instant::now();
-            let _ = cpu.synthesize_ort(TEXT, &prompt, PROMPT_TEXT, &opts)?;
-            times.push(t0.elapsed().as_secs_f64() * 1000.0);
-        }
-        let ort_ms = median(times);
-        println!(
-            "onnxruntime (CPU EP, original): {ort_ms:.0} ms ({:.1}x RT)",
-            audio_s / (ort_ms / 1000.0)
-        );
-        if native_cpu_ms.is_finite() {
-            println!(
-                "rlx native CPU:                 {native_cpu_ms:.0} ms → {:.2}x vs ort",
-                ort_ms / native_cpu_ms
-            );
-        }
-    }
-    #[cfg(not(feature = "onnx"))]
-    println!("build with --features onnx to time the original ONNX Runtime path.");
     Ok(())
 }
 

@@ -108,6 +108,10 @@ pub mod qwen3 {
 pub mod qwen35 {
     pub use rlx_qwen35::*;
 }
+#[cfg(feature = "fara")]
+pub mod fara {
+    pub use rlx_fara::*;
+}
 #[cfg(feature = "qwen25-vl")]
 pub mod qwen25_vl {
     pub use rlx_qwen25_vl::*;
@@ -176,6 +180,10 @@ pub mod voxtral {
 pub mod qwen3_asr {
     pub use rlx_qwen3_asr::*;
 }
+#[cfg(feature = "conformer-ctc")]
+pub mod conformer_ctc {
+    pub use rlx_conformer_ctc::*;
+}
 #[cfg(feature = "voxtral-tts")]
 pub mod voxtral_tts {
     pub use rlx_voxtral_tts::*;
@@ -189,9 +197,23 @@ pub mod qwen3_tts {
 pub mod locateanything {
     pub use rlx_locateanything::*;
 }
+#[cfg(feature = "unlimited-ocr")]
+pub mod unlimited_ocr {
+    pub use rlx_unlimited_ocr::*;
+}
 #[cfg(feature = "ocr")]
 pub mod ocr {
     pub use rlx_ocr::*;
+}
+/// RLX streaming Conformer ASR (`rlx-asr`). Enable feature `streaming-asr`.
+#[cfg(feature = "streaming-asr")]
+pub mod streaming_asr {
+    pub use rlx_asr::*;
+}
+/// PP-OCRv6 tiny/small OCR (native HIR + safetensors). Enable feature `ppocrv6`.
+#[cfg(feature = "ppocrv6")]
+pub mod ppocrv6 {
+    pub use rlx_ppocrv6::*;
 }
 #[cfg(feature = "neutts")]
 pub mod neutts {
@@ -204,6 +226,12 @@ pub mod orpheus {
 #[cfg(feature = "kittentts")]
 pub mod kittentts {
     pub use rlx_kittentts::*;
+}
+/// RLX FastSpeech2 + WaveRNN (`rlx-tts`). Enable feature `rlx-tts`.
+/// Local pack: `weights/tts/rlx-tts/rlx-tts.gguf` (or `RLX_TTS_BUNDLE`).
+#[cfg(feature = "rlx-tts")]
+pub mod tts {
+    pub use rlx_tts::*;
 }
 #[cfg(feature = "kokoro")]
 pub mod kokoro {
@@ -284,6 +312,10 @@ pub mod bonsai {
 pub mod minicpm5 {
     pub use rlx_minicpm5::*;
 }
+#[cfg(feature = "nanbeige")]
+pub mod nanbeige {
+    pub use rlx_nanbeige::*;
+}
 #[cfg(feature = "tinyllama")]
 pub mod tinyllama {
     pub use rlx_tinyllama::*;
@@ -303,6 +335,10 @@ pub mod granite {
 #[cfg(feature = "inkling")]
 pub mod inkling {
     pub use rlx_inkling::*;
+}
+#[cfg(feature = "laguna")]
+pub mod laguna {
+    pub use rlx_laguna::*;
 }
 #[cfg(feature = "cohere")]
 pub mod cohere {
@@ -395,10 +431,10 @@ pub use llada2::{
 #[cfg(feature = "llama32")]
 pub use llama32::{
     Llama32Config, Llama32Flow, Llama32Generator, build_llama32_decode_graph_sized,
-    build_llama32_graph_sized, build_llama32_graph_sized_last_logits,
-    build_llama32_graph_sized_packed, encode_prompt as llama32_encode_prompt,
-    encode_prompt_auto as llama32_encode_prompt_auto, llama32_cfg_from_gguf,
-    resolve_tokenizer_path as llama32_resolve_tokenizer_path,
+    build_llama32_decode_graph_sized_ext, build_llama32_graph_sized,
+    build_llama32_graph_sized_last_logits, build_llama32_graph_sized_packed,
+    encode_prompt as llama32_encode_prompt, encode_prompt_auto as llama32_encode_prompt_auto,
+    llama32_cfg_from_gguf, resolve_tokenizer_path as llama32_resolve_tokenizer_path,
 };
 #[cfg(feature = "nomic")]
 pub use nomic::{build_nomic_diagnostic_graph, build_nomic_graph_sized};

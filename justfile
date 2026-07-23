@@ -21,6 +21,9 @@ feature_args := if features != "" { "--features " + features } else { "" }
 # rlx-minicpm5 binary requires the `tokenizer` cargo feature (not a CLI flag).
 minicpm5_feature_args := if features != "" { "--features " + features + ",tokenizer" } else { "--features tokenizer" }
 
+# rlx-nanbeige binary requires the `tokenizer` cargo feature (not a CLI flag).
+nanbeige_feature_args := if features != "" { "--features " + features + ",tokenizer" } else { "--features tokenizer" }
+
 # rlx-tinyllama binary requires the `tokenizer` cargo feature (not a CLI flag).
 tinyllama_feature_args := if features != "" { "--features " + features + ",tokenizer" } else { "--features tokenizer" }
 
@@ -32,6 +35,10 @@ run-bin package bin *ARGS:
 [private]
 run-minicpm5 *ARGS:
     cargo run -p rlx-minicpm5 --bin rlx-minicpm5 {{profile}} {{minicpm5_feature_args}} -- {{ARGS}}
+
+[private]
+run-nanbeige *ARGS:
+    cargo run -p rlx-nanbeige --bin rlx-nanbeige {{profile}} {{nanbeige_feature_args}} -- {{ARGS}}
 
 [private]
 run-tinyllama *ARGS:
@@ -70,8 +77,18 @@ test-quick:
 test-qwen3-backends *ARGS:
     cargo test -p rlx-models --test qwen3_backend_quick_check --test qwen3_gpu_backend_parity {{profile}} {{feature_args}} {{ARGS}}
 
+# Synthetic tiny Qwen3.5 on each backend (cheap RAM). Prefer this for matrix coverage.
+#   just features=all-backends,qwen35,qwen3 test-qwen35-backends
 test-qwen35-backends *ARGS:
-    cargo test -p rlx-models --test qwen35_backend_quick_check {{profile}} {{feature_args}} {{ARGS}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    feats="${features:-all-backends}"
+    case ",$feats," in
+      *,qwen35,*) ;;
+      *) feats="${feats},qwen35,qwen3" ;;
+    esac
+    echo "==> qwen35_backend_quick_check (features=$feats)"
+    cargo test -p rlx-models --test qwen35_backend_quick_check --release --features "$feats" {{ARGS}}
 
 # Gemma synthetic prefill + generator on each backend.
 #   just features=all-backends test-gemma-backends
@@ -168,6 +185,114 @@ qwen3 *ARGS:
 qwen35 *ARGS:
     just run-bin rlx-qwen35 rlx-qwen35 {{ARGS}}
 
+# Microsoft Fara1.5 computer-use agent (Qwen3.5 multimodal safetensors).
+fara *ARGS:
+    just features={{features}} run-bin rlx-fara rlx-fara {{ARGS}}
+
+fetch-fara-4b:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    local=".cache/fara/4b"
+    mkdir -p "$local" .cache/fara
+    if [ -f "$local/config.json" ] && ls "$local"/*.safetensors >/dev/null 2>&1; then
+      echo ">> Fara1.5-4B already at $local"
+      echo "$local" > .cache/fara/.rlx_fara_4b_snapshot
+      exit 0
+    fi
+    if ! command -v hf >/dev/null 2>&1; then
+      echo "error: need \`hf\` (pip install -U huggingface_hub[cli])" >&2
+      exit 1
+    fi
+    echo ">> downloading microsoft/Fara1.5-4B → $local"
+    hf download microsoft/Fara1.5-4B --local-dir "$local"
+    echo "$local" > .cache/fara/.rlx_fara_4b_snapshot
+    echo ">> ready: $local"
+
+fetch-fara-9b:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    local=".cache/fara/9b"
+    mkdir -p "$local" .cache/fara
+    if [ -f "$local/config.json" ] && ls "$local"/*.safetensors >/dev/null 2>&1; then
+      echo ">> Fara1.5-9B already at $local"
+      echo "$local" > .cache/fara/.rlx_fara_9b_snapshot
+      exit 0
+    fi
+    if ! command -v hf >/dev/null 2>&1; then
+      echo "error: need \`hf\` (pip install -U huggingface_hub[cli])" >&2
+      exit 1
+    fi
+    echo ">> downloading microsoft/Fara1.5-9B → $local"
+    hf download microsoft/Fara1.5-9B --local-dir "$local"
+    echo "$local" > .cache/fara/.rlx_fara_9b_snapshot
+    echo ">> ready: $local"
+
+fara-demo *ARGS:
+    just fara --model-dir .cache/fara/4b --size 4b {{ARGS}}
+
+# Fara-4B text ChatML probe (top-1 must be HF id 760 "The").
+# RAM-heavy: default DEVICES=cpu. One GPU at a time, e.g. `DEVICES=metal just test-fara-backends`.
+# Full backend matrix without Fara weights: `just test-qwen35-backends`.
+# Needs `.cache/fara/4b` (`just fetch-fara-4b`). Skips unavailable backends.
+test-fara-backends *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    model="${FARA_MODEL_DIR:-.cache/fara/4b}"
+    if [ ! -f "$model/config.json" ]; then
+      echo "error: missing $model (just fetch-fara-4b)" >&2
+      exit 1
+    fi
+    IFS=',' read -r -a devices <<< "${DEVICES:-cpu}"
+    expect_id="${FARA_EXPECT_TOP1:-760}"
+    fail=0
+    ran=0
+    feats="${features:-apple-silicon}"
+    echo "==> building fara_text_probe (features=$feats)"
+    echo "    note: Fara-4B is RAM-heavy; run one GPU device per invocation"
+    cargo build -p rlx-qwen35 --example fara_text_probe --release --features "$feats"
+    bin="target/release/examples/fara_text_probe"
+    for d in "${devices[@]}"; do
+      d="$(echo "$d" | tr -d '[:space:]')"
+      [ -n "$d" ] || continue
+      echo ""
+      echo "==> fara text probe --device $d"
+      log="/tmp/fara_probe_${d}.log"
+      /usr/bin/purge >/dev/null 2>&1 || true
+      set +e
+      "$bin" --model-dir "$model" --device "$d" {{ARGS}} >"$log" 2>&1
+      rc=$?
+      set -e
+      if [ "$rc" -ne 0 ]; then
+        if rg -q "backend not available|not available" "$log"; then
+          echo "  skip $d (unavailable)"
+          continue
+        fi
+        if rg -q "Killed|Cannot allocate|out of memory|OOM" "$log" || [ "$rc" -eq 137 ]; then
+          echo "  FAIL $d (OOM — free RAM and retry alone: DEVICES=$d just test-fara-backends)"
+          fail=1
+          continue
+        fi
+        echo "  FAIL $d (probe exited $rc)"
+        tail -40 "$log"
+        fail=1
+        continue
+      fi
+      ran=$((ran + 1))
+      top1="$(rg -o 'id=[0-9]+' "$log" | head -1 | cut -d= -f2 || true)"
+      echo "  top1 id=${top1:-?} (expect $expect_id)"
+      rg -n "top5:|id=" "$log" | head -8
+      if [ "$top1" != "$expect_id" ]; then
+        echo "  FAIL $d: top1=$top1 want $expect_id"
+        fail=1
+      else
+        echo "  ok $d"
+      fi
+    done
+    echo ""
+    echo "==> fara backends: ran=$ran fail=$fail"
+    [ "$ran" -gt 0 ] || { echo "error: no backends ran" >&2; exit 1; }
+    [ "$fail" -eq 0 ]
+
 # prism-ml/Bonsai-27B (qwen35 arch, Q1_0 packed). Downloads to weights/Bonsai-27B-gguf/.
 fetch-bonsai27b:
     #!/usr/bin/env bash
@@ -218,6 +343,9 @@ llama32 *ARGS:
 minicpm5 *ARGS:
     just run-minicpm5 {{ARGS}}
 
+nanbeige *ARGS:
+    just run-nanbeige {{ARGS}}
+
 tinyllama *ARGS:
     just run-tinyllama {{ARGS}}
 
@@ -249,7 +377,37 @@ inkling-probe-remote *ARGS:
 inkling-probe-gguf *ARGS:
     cargo run -p rlx-inkling --features hf-probe {{profile}} -- --probe-gguf-remote {{ARGS}}
 
-# Chat inference: HF chat template → rlx-minicpm5 (CPU fastest/reliable on Apple Silicon today).
+# poolside Laguna MoE — packed GGUF generate (KV cache); Metal: `just features=apple-silicon laguna -- … --device metal`
+laguna *ARGS:
+    just run-bin rlx-laguna rlx-laguna {{ARGS}}
+
+test-laguna *ARGS:
+    cargo test -p rlx-laguna {{profile}} {{ARGS}}
+
+laguna-probe-gguf *ARGS:
+    cargo run -p rlx-laguna --features hf-probe {{profile}} -- --probe-gguf-remote {{ARGS}}
+
+# OpenAI-compatible HTTP (`--serve`); greedy decode. Prefer central multi-model:
+#   just features=apple-silicon,laguna openai-serve -- \
+#     --engine laguna --weights …gguf --tokenizer-dir … --device metal
+# Example (single-model convenience):
+#   just features=apple-silicon laguna-serve -- \
+#     --weights .cache/laguna-xs/Laguna-XS-2.1-Q4_K_M.gguf \
+#     --tokenizer-dir .cache/laguna-xs --device metal --host 127.0.0.1 --port 8080
+laguna-serve *ARGS:
+    cargo run -p rlx-laguna --bin rlx-laguna {{profile}} {{feature_args}} --features serve -- --serve {{ARGS}}
+
+# Central OpenAI server (multi-model RegistryBackend). Example:
+#   just features=apple-silicon,laguna openai-serve -- \
+#     --engine laguna --weights .cache/laguna-xs/Laguna-XS-2.1-Q4_K_M.gguf \
+#     --tokenizer-dir .cache/laguna-xs --device metal --model-id laguna
+openai-serve *ARGS:
+    cargo run -p rlx-openai --bin rlx-openai {{profile}} {{feature_args}} -- {{ARGS}}
+
+# Packed DequantMatMul backend speed + parity (CPU / Metal / MLX / …).
+laguna-backend-bench *ARGS:
+    cargo run -p rlx-laguna --example backend_bench --features apple-silicon {{profile}} -- {{ARGS}}
+
 minicpm5-chat MESSAGE *ARGS:
     RLX_MODELS_ROOT={{justfile_directory()}} python3 crates/rlx-models/examples/minicpm5_chat.py "{{MESSAGE}}" {{ARGS}}
 
@@ -260,6 +418,22 @@ minicpm5-chat-fast MESSAGE *ARGS:
 
 test-minicpm5-backends *ARGS:
     cargo test -p rlx-models --test minicpm5_backend_parity {{profile}} {{feature_args}} {{ARGS}}
+
+test-nanbeige-backends *ARGS:
+    cargo test -p rlx-models --test nanbeige_backend_parity --features nanbeige,llama32 {{profile}} {{feature_args}} {{ARGS}}
+
+test-nanbeige-backends-all *ARGS:
+    just features=all-backends test-nanbeige-backends {{ARGS}}
+
+nanbeige-backend-matrix *ARGS:
+    cargo run -p rlx-nanbeige --example backend_matrix --features all-backends --release -- {{ARGS}}
+
+# Synth (default) or real weights: `just bench-nanbeige-backends -- --weights /tmp/rlx-weights/Nanbeige4.2-3B`
+bench-nanbeige-backends *ARGS:
+    cargo run -p rlx-nanbeige --example backend_bench {{profile}} {{feature_args}} -- {{ARGS}}
+
+bench-nanbeige-backends-all *ARGS:
+    just features=all-backends bench-nanbeige-backends {{ARGS}}
 
 test-tinyllama-backends *ARGS:
     cargo test -p rlx-models --test tinyllama_backend_parity --features tinyllama,llama32 {{profile}} {{feature_args}} {{ARGS}}
@@ -491,6 +665,26 @@ wav2vec2 *ARGS:
 whisper *ARGS:
     just run-bin rlx-whisper rlx-whisper {{ARGS}}
 
+# NVIDIA Conformer-CTC small (EncDecCTC / .nemo) — https://huggingface.co/nvidia/stt_en_conformer_ctc_small
+fetch-conformer-ctc:
+    mkdir -p .cache/conformer-ctc
+    test -s .cache/conformer-ctc/stt_en_conformer_ctc_small.nemo || \
+        hf download nvidia/stt_en_conformer_ctc_small --local-dir .cache/conformer-ctc
+
+conformer-ctc *ARGS:
+    just run-bin rlx-conformer-ctc rlx-conformer-ctc {{ARGS}}
+
+test-conformer-ctc *ARGS:
+    cargo test -p rlx-conformer-ctc --release {{ARGS}}
+
+# Cross-backend Conformer-CTC transcription (skips unavailable devices).
+test-conformer-ctc-backends *ARGS:
+    cargo run -p rlx-conformer-ctc --release --example backend_matrix --features all-backends {{ARGS}}
+
+# CUDA on ssh msi (sync trees + nemo/wav, then cpu+cuda matrix).
+conformer-ctc-cuda-msi:
+    bash scripts/conformer_ctc_cuda_validate.sh --remote
+
 fetch-whisper:
     # Minimal RLX Whisper layout (safetensors + config + tokenizer).
     mkdir -p .cache/whisper-tiny
@@ -613,11 +807,36 @@ voxtral *ARGS:
 locateanything *ARGS:
     just run-bin rlx-locateanything rlx-locateanything {{ARGS}}
 
-# GPU build (Metal on Apple Silicon). Default `locateanything` is CPU-only → very slow for 3B.
+unlimited-ocr *ARGS:
+    just run-bin rlx-unlimited-ocr rlx-unlimited-ocr {{ARGS}}
+
+unlimited-ocr-metal *ARGS:
+    just features=metal run-bin rlx-unlimited-ocr rlx-unlimited-ocr {{ARGS}}
+
+fetch-unlimited-ocr:
+    cargo run -p rlx-unlimited-ocr --features hf-download --release -- --download
+
+test-unlimited-ocr-backends *ARGS:
+    cargo test -p rlx-unlimited-ocr --test backend_quick_check {{profile}} {{feature_args}} {{ARGS}}
+    cargo test -p rlx-unlimited-ocr --test backend_token_parity {{profile}} {{feature_args}} -- --test-threads 1 {{ARGS}}
+
+# Full-checkpoint greedy token IDs vs CPU (needs ~tens of GB RAM + weights).
+test-unlimited-ocr-token-parity *ARGS:
+    RLX_UNLIMITED_OCR_TOKEN_PARITY=1 cargo test -p rlx-unlimited-ocr --test backend_token_parity --release {{feature_args}} -- --test-threads 1 {{ARGS}}
+
+test-unlimited-ocr-parity *ARGS:
+    # Uses HF cache / RLX_UNLIMITED_OCR_DIR via default_model_dir(); optional
+    # RLX_UNLIMITED_OCR_PYTHON for exact HF e2e (needs transformers≈4.46 + addict/einops/…).
+    cargo test -p rlx-unlimited-ocr --test hf_parity --release -- --test-threads 1 {{ARGS}}
+
+# Pack + compile + prefill/decode across lm-precision modes (F32/F16/Q8/Q4).
+# Tiny synthetic by default; `-- --full` uses the HF checkpoint LM only.
+bench-unlimited-ocr-lm-precision *ARGS:
+    cargo run -p rlx-unlimited-ocr --example bench_lm_precision --release {{feature_args}} -- {{ARGS}}
+
 locateanything-metal *ARGS:
     just features=metal run-bin rlx-locateanything rlx-locateanything {{ARGS}}
 
-# Ground "person" — Apple Silicon: Metal + MLX; Linux: CUDA when available.
 locateanything-demo:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -883,7 +1102,6 @@ fetch-qwen3-tts-base:
 qwen3-tts-jfk-prep:
     bash scripts/qwen3_tts_prep_jfk.sh
 
-# Metal (Apple MPS): HF SFT on JFK chunks → speaker `jfk`.
 qwen3-tts-train-jfk-metal *ARGS:
     BACKEND=metal bash scripts/qwen3_tts_finetune_jfk.sh {{ARGS}}
 
@@ -1073,7 +1291,6 @@ soprano-demo TEXT="The quick brown fox jumps over the lazy dog." DEVICE="metal":
     cargo run -p rlx-soprano --release --features apple-silicon -- \
         --text "{{TEXT}}" --device {{DEVICE}} --output /tmp/soprano_demo.wav
 
-# Apple: CPU / Metal / MLX / … via RLX_DEVICES (e.g. RLX_DEVICES=CPU,Metal)
 soprano-matrix:
     RLX_GREEDY=1 cargo run -p rlx-soprano --release --example backend_matrix --features apple-silicon
 
@@ -1652,6 +1869,84 @@ test-kitten-native-compile:
     KITTEN_RLX_WEIGHTS=crates/kitten_tts_mini_rlx/weights \
       cargo run -p kitten_tts_mini_rlx --example native_weights_compile_check --release --features native
 
+# Ensure the private RLX TTS bundle lives under weights/tts/rlx-tts (gitignored).
+# Optional: just tts-prepare SRC=/path/to/bundle
+tts-prepare SRC="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="weights/tts/rlx-tts"
+    mkdir -p "$dest"
+    if [[ -n "{{SRC}}" ]]; then
+      src="{{SRC}}"
+      echo "syncing $src → $dest"
+      rsync -a --delete "$src"/ "$dest"/
+    fi
+    if [[ -f "$dest/gryphon.cfg" && ! -f "$dest/post.cfg" ]]; then
+      cp "$dest/gryphon.cfg" "$dest/post.cfg"
+    fi
+    rm -f "$dest/gryphon.cfg"
+    # Drop Apple-compare fixtures and unused frontend blobs if present.
+    rm -rf "$dest/fixtures"
+    rm -f "$dest/.DS_Store" "$dest/frontend.cfg" "$dest/gryphon.cfg"
+    rm -f "$dest/frontend/gprm" "$dest/frontend/g2p_seq2seq.bin" \
+      "$dest/frontend/g2p_seq2seq.arch.json" "$dest/frontend/g2p_seq2seq.stack.json" \
+      "$dest/frontend/g2p_seq2seq.inventory.json" "$dest/frontend/g2p_seq2seq.meta.json" \
+      "$dest/frontend/phbk" "$dest/frontend/phonetic/to_xsampa.json" \
+      "$dest/frontend/phonetic/symbols.json"
+    rm -rf "$dest"/.rlx-extracted-*
+    rm -rf .cache/simone-rlx
+    if [[ -f "$dest/manifest.json" ]]; then
+      cargo run -p rlx-tts --quiet -- --sanitize-manifest "$dest/manifest.json"
+    fi
+    mkdir -p .cache
+    ln -sfn ../weights/tts/rlx-tts .cache/rlx-tts
+    if [[ -f "$dest/rlx-tts.gguf" ]]; then
+      echo "RLX TTS bundle ready (GGUF): $dest/rlx-tts.gguf ($(du -sh "$dest/rlx-tts.gguf" | awk '{print $1}'))"
+    else
+      test -f "$dest/manifest.json"
+      test -f "$dest/encoder.safetensors"
+      test -f "$dest/decoder.safetensors"
+      test -f "$dest/wavernn.safetensors"
+      echo "RLX TTS bundle ready: $dest ($(du -sh "$dest" | awk '{print $1}'))"
+    fi
+
+# Drop loose safetensors/frontend once rlx-tts.gguf exists (single-file layout).
+tts-pack-only:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="weights/tts/rlx-tts"
+    test -f "$dest/rlx-tts.gguf" || { echo "missing $dest/rlx-tts.gguf — run just export-rlx-tts-gguf first" >&2; exit 1; }
+    # Keep the GGUF; remove duplicated unpacked assets.
+    find "$dest" -mindepth 1 -maxdepth 1 ! -name 'rlx-tts.gguf' -exec rm -rf {} +
+    echo "kept $dest/rlx-tts.gguf ($(du -sh "$dest/rlx-tts.gguf" | awk '{print $1}'))"
+
+# Pack directory bundle → single runnable GGUF (excludes fixtures/). Pure Rust — no Python.
+export-rlx-tts-gguf BUNDLE="weights/tts/rlx-tts" OUT="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="{{OUT}}"
+    if [[ -z "$out" ]]; then
+      cargo run -p rlx-tts --release -- --pack-gguf --bundle "{{BUNDLE}}"
+    else
+      cargo run -p rlx-tts --release -- --pack-gguf --bundle "{{BUNDLE}}" --out "$out"
+    fi
+
+# Alias
+tts-extract *ARGS:
+    just tts-prepare {{ARGS}}
+
+tts-native *ARGS:
+    cargo run -p rlx-tts --release -- {{ARGS}}
+
+tts-probe:
+    cargo run -p rlx-tts --release -- --probe-bundle
+
+tts-demo:
+    cargo run -p rlx-tts --release -- --text "Hello from RLX." --out /tmp/rlx_tts_demo.wav
+
+test-tts *ARGS:
+    cargo test -p rlx-tts --release -- {{ARGS}}
+
 kittentts *ARGS:
     RLX_KITTENTTS_DIR=${RLX_KITTENTTS_DIR:-.cache/kittentts-mini-0.8} \
     just run-bin rlx-kittentts rlx-kittentts {{ARGS}}
@@ -1672,23 +1967,6 @@ kittentts-long-demo:
 kittentts-voices:
     just kittentts --list-voices
 
-# Export native + ONNX WAVs for all phrase fixtures → KITTEN_PHRASE_OUT_DIR (default /tmp/kitten_phrases)
-kittentts-export-phrases *ARGS:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    OUT="${KITTEN_PHRASE_OUT_DIR:-/tmp/kitten_phrases}"
-    export KITTEN_RLX_INFER=production KITTEN_RLX_RNG_SEED=42 KITTEN_RLX_RNG_BACKEND=ort
-    export KITTENTTS_TAIL_TRIM=0
-    unset KITTEN_RLX_BUNDLE RLX_ONNX_BUNDLE KITTEN_RLX_WEIGHTS KITTEN_RLX_COMPILE_HEADROOM
-    unset KITTEN_RLX_ORT_DURATION_CARRY
-    export KITTEN_EXPORT_DEVICES="${KITTEN_EXPORT_DEVICES:-cpu}"
-    export KITTEN_PHRASE_OUT_DIR="$OUT"
-    cargo run -p rlx-kittentts --features native-fast,onnx --release --example export_phrase_audio -- {{ARGS}}
-    echo "phrase WAVs: $OUT"
-
-test-kittentts-native-production-whisper *ARGS:
-    cargo test -p rlx-kittentts --features native-fast,onnx --release --test native_production_whisper phrases_all_backends -- --test-threads=1 {{ARGS}}
-
 # Plain English via espeak-ng (build with --features espeak)
 kittentts-text-demo:
     #!/usr/bin/env bash
@@ -1698,42 +1976,39 @@ kittentts-text-demo:
     cargo run -p rlx-kittentts --features espeak --bin rlx-kittentts --release -- \
       --text "$TEXT" --voice Jasper --out-wav /tmp/kittentts_text_demo.wav
 
-test-kittentts-espeak *ARGS:
-    cargo test -p rlx-kittentts --features "espeak,onnx" --release --test e2e_text -- {{ARGS}}
-
-test-kittentts-whisper *ARGS:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo test -p rlx-kittentts --features "espeak,onnx" --release --test e2e_whisper_roundtrip -- "$@"
-
-test-kittentts-native-whisper-gate *ARGS:
-    # Native intelligibility: ONNX waveform parity (Whisper on short IPA is ORT-RNG sensitive).
-    cargo test -p rlx-kittentts --features "native,onnx" --release --test native_onnx_parity -- "$@"
-
 fetch-kittentts-whisper:
     just fetch-whisper-base
 
-test-kittentts-backends *ARGS:
-    cargo test -p rlx-kittentts --test backend_quick_check --features all-backends --release -- {{ARGS}}
-
 test-kittentts-native *ARGS:
-    cargo test -p rlx-kittentts --features native --release native_infer_smoke -- {{ARGS}}
-
-test-kittentts-native-parity *ARGS:
-    cargo test -p rlx-kittentts --features "native,onnx" --release --test native_onnx_parity -- {{ARGS}}
+    cargo test -p rlx-kittentts --features native --release --test native_smoke -- {{ARGS}}
 
 test-kittentts-native-speed *ARGS:
     cargo test -p rlx-kittentts --features "native-fast" --release --test native_infer_speed -- {{ARGS}}
+
+# Short+long IPA × every available RLX backend (RTF = wall/audio).
+# NVIDIA: `just features=native,gpu,cuda,vulkan bench-kittentts-backends`
+bench-kittentts-backends *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    feats="{{features}}"
+    if [[ -z "$feats" ]]; then
+      case "$(uname -s)" in
+        Darwin) feats="native,apple-silicon" ;;
+        *)      feats="native,gpu,cuda,vulkan" ;;
+      esac
+    fi
+    cargo test -p rlx-kittentts --features "$feats" --release \
+      --test native_backend_bench -- --nocapture --test-threads=1 {{ARGS}}
 
 # Production vs legacy native RAM/timing (macOS: `/usr/bin/time -l` peak RSS)
 bench-kittentts-native-alloc PHRASE="hello":
     KITTEN_RLX_SKIP_FUSION=1 KITTEN_RLX_PREFER_METAL=0 ./scripts/bench_kitten_native_alloc.sh {{PHRASE}}
 
-# Native weights-only vs RLX bundle (no ONNX Runtime)
+# Native weights-only vs RLX bundle
 test-kittentts-native-weights-parity *ARGS:
     cargo test -p rlx-kittentts --features native --release --test native_weights_parity -- {{ARGS}}
 
-# Fetch (if needed) + unit tests + ONNX/native E2E synthesis
+# Fetch (if needed) + unit tests + native E2E synthesis
 test-kittentts-e2e *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1741,21 +2016,13 @@ test-kittentts-e2e *ARGS:
       just fetch-kittentts
     fi
     cargo test -p rlx-kittentts --features "hf-download" --release -- {{ARGS}}
-    cargo test -p rlx-kittentts --features "hf-download,onnx" --release --test e2e_onnx -- {{ARGS}}
-    cargo test -p rlx-kittentts --features "hf-download,onnx" --release --test e2e_long_sentence -- {{ARGS}}
     just kittentts-demo
     just kittentts-long-demo
-    python3 -c "import struct,sys; p='/tmp/kittentts_long_demo.wav'; f=open(p,'rb'); f.read(44); d=f.read(); n=len(d)//2; peak=max(abs(struct.unpack('<h',d[i:i+2])[0]/32768) for i in range(0,len(d)-1,2)); assert n>=80000 and peak>=1e-3, f'long demo failed: {n} samples peak={peak:.2e}'; print(f'long demo ok: {n} samples peak={peak:.3f}')"
+    python3 -c "import struct,sys; p='/tmp/kittentts_long_demo.wav'; f=open(p,'rb'); f.read(44); d=f.read(); n=len(d)//2; peak=max(abs(struct.unpack('<h',d[i:i+2])[0])/32768) for i in range(0,len(d)-1,2)); assert n>=80000 and peak>=1e-3, f'long demo failed: {n} samples peak={peak:.2e}'; print(f'long demo ok: {n} samples peak={peak:.3f}')"
     just kittentts-text-demo
-    just test-kittentts-espeak
-    if [[ -f .cache/whisper-base.en/model.safetensors || -f .cache/whisper-tiny/model.safetensors ]]; then
-      just test-kittentts-whisper
-    fi
     if [[ -f crates/kitten_tts_mini_rlx/weights/model.safetensors || -f crates/kitten_tts_mini_rlx/weights/rlx_bundle/graph.json ]]; then
-      just test-kittentts-native-parity
       just test-kittentts-native-weights-parity
-      cargo test -p rlx-kittentts --features native --release native_infer_smoke -- {{ARGS}}
-      cargo test -p rlx-kittentts --features native --release native_long_sentence_smoke -- {{ARGS}}
+      just test-kittentts-native {{ARGS}}
       cargo run -p rlx-kittentts --features native --release -- \
         --native --ipa "ðɪs ɪz ə lɔŋɡɚ sɛntəns fɔɹ tɛstɪŋ ðə kɪtən tɛkst tə spitʃ sɪstəm ɪn ɹʌst" \
         --voice Jasper --seq-len 256 --max-waveform-samples 200000 \
@@ -1972,6 +2239,164 @@ test-voxtral-parity:
 ocr *ARGS:
     just run-bin rlx-ocr rlx-ocr {{ARGS}}
 
+# PP-OCRv6 tiny/small — download ONNX, rewrite, export safetensors for native RLX.
+fetch-ppocrv6-tiny:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 - <<'PY'
+    from huggingface_hub import hf_hub_download, list_repo_files
+    import os, subprocess, sys
+    from pathlib import Path
+    base = Path(".cache/ppocrv6/tiny")
+    for repo, sub in [
+        ("PaddlePaddle/PP-OCRv6_tiny_det_onnx", "det"),
+        ("PaddlePaddle/PP-OCRv6_tiny_rec_onnx", "rec"),
+    ]:
+        dest = base / sub
+        dest.mkdir(parents=True, exist_ok=True)
+        for f in list_repo_files(repo):
+            if f.endswith((".onnx", ".yml", ".json")):
+                hf_hub_download(repo_id=repo, filename=f, local_dir=str(dest))
+        subprocess.check_call([
+            sys.executable, "scripts/export_ppocrv6_onnx_weights.py",
+            str(dest / "inference.onnx"), str(dest),
+            "--stem", f"ppocrv6_tiny_{sub}",
+        ])
+    # copy bundled dict
+    import shutil
+    shutil.copy("crates/rlx-ppocrv6/assets/dicts/tiny_keys.txt", base / "rec" / "keys.txt")
+    print("ready", base)
+    PY
+
+fetch-ppocrv6-small:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 - <<'PY'
+    from huggingface_hub import hf_hub_download, list_repo_files
+    import os, subprocess, sys, shutil
+    from pathlib import Path
+    base = Path(".cache/ppocrv6/small")
+    for repo, sub in [
+        ("PaddlePaddle/PP-OCRv6_small_det_onnx", "det"),
+        ("PaddlePaddle/PP-OCRv6_small_rec_onnx", "rec"),
+    ]:
+        dest = base / sub
+        dest.mkdir(parents=True, exist_ok=True)
+        for f in list_repo_files(repo):
+            if f.endswith((".onnx", ".yml", ".json")):
+                hf_hub_download(repo_id=repo, filename=f, local_dir=str(dest))
+        subprocess.check_call([
+            sys.executable, "scripts/export_ppocrv6_onnx_weights.py",
+            str(dest / "inference.onnx"), str(dest),
+            "--stem", f"ppocrv6_small_{sub}",
+        ])
+    shutil.copy("crates/rlx-ppocrv6/assets/dicts/small_keys.txt", base / "rec" / "keys.txt")
+    print("ready", base)
+    PY
+
+ppocrv6 *ARGS:
+    just run-bin rlx-ppocrv6 rlx-ppocrv6 {{ARGS}}
+
+test-ppocrv6-backends *ARGS:
+    cargo test -p rlx-ppocrv6 --test ppocrv6_backend_quick_check --release {{ARGS}}
+
+asr *ARGS:
+    just run-bin rlx-asr rlx-asr {{ARGS}}
+
+# Materialize GGUF-only weights/asr (prune sidecars; pack fills model.gguf)
+asr-weights-sync *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ASR="${RLX_ASR_DIR:-$PWD/weights/asr}"
+    SRC="${RLX_ASR_PACK_SRC:-$PWD/.cache/asr}"
+    mkdir -p "$ASR"
+    prune() {
+      local d="$1"
+      find "$d" -mindepth 1 -maxdepth 1 ! -name 'model.gguf' ! -name 'manifest.json' -exec rm -rf {} +
+      find "$d" -name '.DS_Store' -delete 2>/dev/null || true
+    }
+    prune "$ASR"
+    if [[ -d "$SRC" ]] || [[ -f "$ASR/model.gguf" ]]; then
+      cargo run -p rlx-asr --release --bin rlx-asr-pack-gguf -- --dir "$ASR" --out "$ASR/model.gguf" {{ARGS}} || true
+    fi
+    prune "$ASR"
+    python3 - <<PY
+import json, pathlib
+asr = pathlib.Path("$ASR")
+gguf = asr / "model.gguf"
+man = {
+  "format": "rlx-asr-weights-v3",
+  "root": str(asr),
+  "source": "$SRC",
+  "gguf": str(gguf) if gguf.is_file() else None,
+  "gguf_bytes": gguf.stat().st_size if gguf.is_file() else 0,
+  "note": "GGUF-only publish; sidecars embedded in model.gguf",
+}
+(asr / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
+print(json.dumps({"dst": str(asr), "gguf_mb": round(man["gguf_bytes"]/(1024*1024), 1)}, indent=2))
+PY
+
+asr-pack-gguf *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ASR="${RLX_ASR_DIR:-$PWD/weights/asr}"
+    export RLX_ASR_PACK_SRC="${RLX_ASR_PACK_SRC:-$PWD/.cache/asr}"
+    cargo run -p rlx-asr --release --bin rlx-asr-pack-gguf -- --dir "$ASR" --out "$ASR/model.gguf" {{ARGS}}
+
+asr-check *ARGS:
+    cargo test -p rlx-asr --release {{ARGS}}
+
+test-asr *ARGS:
+    cargo test -p rlx-asr --release {{ARGS}}
+
+# Folded native batch E2E: mel → body residual R → CTC beam
+# Example: just asr-e2e-native -- --mode folded --wav .cache/conformer-ctc/sample.wav
+asr-e2e-native *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY="${PWD}/.venv-asr312/bin/python"
+    [[ -x "$PY" ]] || PY="$(command -v python3)"
+    ASR="${RLX_ASR_DIR:-$PWD/weights/asr}"
+    OUT="$ASR/e2e_native"
+    ARGS=({{ARGS}})
+    if [[ ${#ARGS[@]} -gt 0 && "${ARGS[0]}" == "--" ]]; then ARGS=("${ARGS[@]:1}"); fi
+    if [[ ! -f "$ASR/model.gguf" ]]; then
+      echo "soft skip: missing $ASR/model.gguf (run: just asr-weights-sync && just asr-pack-gguf)" >&2
+      exit 0
+    fi
+    if [[ ${#ARGS[@]} -eq 0 ]] || [[ "${ARGS[0]}" == --* ]]; then
+      WAVS=()
+      for w in \
+        "$PWD/.cache/conformer-ctc/sample.wav" \
+        "$PWD/.cache/rlx-tts/fixtures/hello_native.wav"
+      do
+        [[ -f "$w" ]] && WAVS+=("$w")
+      done
+      if [[ ${#WAVS[@]} -eq 0 ]]; then
+        echo "soft skip: no default wavs found" >&2
+        exit 0
+      fi
+      "$PY" crates/rlx-asr/tools/e2e_native_whole.py \
+        --out "$OUT" \
+        --mode folded \
+        --wav "${WAVS[@]}" \
+        ${ARGS[@]+"${ARGS[@]}"}
+    else
+      WAVS=(); FLAGS=()
+      for a in "${ARGS[@]}"; do
+        if [[ "$a" == --* ]]; then FLAGS+=("$a"); else WAVS+=("$a"); fi
+      done
+      has_mode=0
+      for f in ${FLAGS[@]+"${FLAGS[@]}"}; do
+        [[ "$f" == --mode ]] && has_mode=1
+      done
+      if [[ $has_mode -eq 0 ]]; then FLAGS+=(--mode folded); fi
+      "$PY" crates/rlx-asr/tools/e2e_native_whole.py \
+        --out "$OUT" \
+        --wav "${WAVS[@]}" \
+        ${FLAGS[@]+"${FLAGS[@]}"}
+    fi
+
 sam1 *ARGS:
     just run-bin rlx-sam rlx-sam1 {{ARGS}}
 
@@ -2167,6 +2592,11 @@ fetch-minicpm5:
     MINICPM5_MODEL_DIR={{real_weights_dir}}/MiniCPM5-1B \
         cargo run -p rlx-models --example minicpm5_download --features hf-download --release
 
+# Nanbeige4.2-3B (~8 GB BF16 safetensors). Override dest with NANBEIGE_MODEL_DIR=.
+fetch-nanbeige:
+    NANBEIGE_MODEL_DIR={{real_weights_dir}}/Nanbeige4.2-3B \
+        cargo run -p rlx-nanbeige --example fetch_nanbeige --features hf-download --release
+
 fetch-tinyllama:
     TINYLLAMA_MODEL_DIR={{real_weights_dir}}/TinyLlama-1.1B-Chat-v1.0 \
         cargo run -p rlx-models --example tinyllama_download --features hf-download,tinyllama --release
@@ -2297,14 +2727,32 @@ matrix-sync:
 tts-bench *ARGS:
     cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} {{feature_args}} -- {{ARGS}}
 
+# Optional Piper reference for spectral: just tts-stress -- --ref-model piper --spectral
+# Preflight: just tts-stress -- --n 20
+# Full + resume: just tts-stress -- --n 1000 --resume
+tts-stress *ARGS:
+    cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} --features "rlx-tts,matrix-onnx" -- \
+        stress --target rlx-tts --device cpu --whisper --write-corpus \
+        --out-dir /tmp/rlx-tts-stress {{ARGS}}
+
+# Probe every RLX device; product synth runs on host CPU (others skip until Device kernels).
+#   just tts-backends
+#   RLX_ITERS=5 just tts-backends
+tts-backends *ARGS:
+    cargo run -p rlx-tts --release --example backend_matrix --features apple-silicon -- {{ARGS}}
+
+# Unified matrix: rlx-tts × available devices + Whisper (non-CPU cells skip).
+tts-backends-whisper *ARGS:
+    cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} --features "rlx-tts,matrix-onnx,apple-silicon" -- \
+        run -m rlx-tts -d auto --phrases short,long --whisper --noise --no-isolate \
+        --out-dir /tmp/rlx-tts-backends {{ARGS}}
+
 # CPU + short phrase only (fast local preflight; fake adapter if no weights).
 tts-bench-quick *ARGS:
     cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} --features matrix-onnx -- \
         run -m fake -d cpu --phrases short --noise --out-dir /tmp/tts-bench-quick {{ARGS}}
 
-# Apple Silicon backends for compiled-in adapters.
-#   just tts-bench-apple run --models all --devices auto --phrases short,long --whisper --spectral --noise --clone --resume
-tts-bench-apple *ARGS:
+tts-bench-metal *ARGS:
     cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} --features "all-models,apple-silicon" -- {{ARGS}}
 
 tts-bench-list:

@@ -42,7 +42,7 @@ use rlx_tiny_tts::BundleConfig;
 use rlx_tiny_tts::model::TinyModel;
 
 use crate::config::{PiperConfig, find_voice};
-use crate::model::peak_amplitude;
+use crate::peak_amplitude;
 use crate::sdp::Sdp;
 
 const ENC_P: &str = "enc_p";
@@ -54,7 +54,7 @@ pub const SPLIT_SUBDIR: &str = "rlx-split";
 
 /// Native (ort-free) piper runner: `enc_p` + `flow_dec` subgraphs on an RLX
 /// backend, with the stochastic duration predictor + length regulator in Rust.
-/// A drop-in for the ort [`crate::Piper`] with the same `synthesize` entry point.
+/// The same `synthesize` entry point as the original ort-backed runner.
 pub struct NativeVits {
     model: TinyModel,
     sdp: Sdp,

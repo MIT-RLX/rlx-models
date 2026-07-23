@@ -93,3 +93,4 @@ crates/*/tests/fixtures/*.txt
 crates/rlx-whisper/fixtures/
 # Required build asset (baked via include_str!), not a regenerable fixture:
 !crates/rlx-orpheus/tests/fixtures/orpheus_hi_codes.txt
+weights/asr/

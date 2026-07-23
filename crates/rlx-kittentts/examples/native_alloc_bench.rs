@@ -164,10 +164,6 @@ fn run_mode(mode: BenchMode, ipa: &str, device: Device) -> Result<()> {
 
     let weights = assets::default_native_weights_dir().context("native weights dir")?;
     let voices = voices_npz()?;
-    let ort_model = assets::default_model_dir().ok().and_then(|d| {
-        let onnx = d.join("kitten_tts_mini_v0_8.onnx");
-        if onnx.is_file() { Some(onnx) } else { None }
-    });
     let token_len = ipa_to_ids(ipa).len();
     let (seq_len, max_wave) = mode.compile_dims(token_len);
     let chunks = infer_opts::chunk_plan(ipa_to_ids(ipa).as_slice(), seq_len);
@@ -179,7 +175,7 @@ fn run_mode(mode: BenchMode, ipa: &str, device: Device) -> Result<()> {
     );
 
     let load_t0 = Instant::now();
-    let tts = KittenTTS::load_native_with_ort(
+    let tts = KittenTTS::load_native(
         &weights,
         &voices,
         Default::default(),
@@ -187,7 +183,6 @@ fn run_mode(mode: BenchMode, ipa: &str, device: Device) -> Result<()> {
         device,
         seq_len,
         max_wave,
-        ort_model.as_deref(),
     )
     .with_context(|| format!("load_native mode={}", mode.name()))?;
     let load_secs = load_t0.elapsed().as_secs_f64();

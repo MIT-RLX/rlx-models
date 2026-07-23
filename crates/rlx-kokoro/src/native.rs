@@ -34,28 +34,20 @@
 //!                 → waveform [24 kHz mono]
 //! ```
 //!
-//! With the `onnx` feature (default), the encoder prefers onnxruntime on CPU
-//! (fast duration/prosody path); the decoder stays on RLX. Force the RLX
-//! encoder with `RLX_KOKORO_NATIVE_ENC=1` (Whisper-gated fox 6/6 on CPU).
+//! The encoder runs on CPU by default (duration rounding); the decoder runs on
+//! the requested RLX device. Both subgraphs import through `rlx-onnx-import` →
+//! rlx-ir via rlx-tiny-tts's `compile_named`/`run_typed` harness — no ONNX
+//! Runtime anywhere on this path.
 //!
 //! The split bundle (`encoder.onnx`, `decoder_raw.onnx`, `window_sum.f32`) is
-//! produced by `scripts/split_kokoro.py`. Decoder (and optional RLX encoder)
-//! import through `rlx-onnx-import` → rlx-ir via rlx-tiny-tts's
-//! `compile_named`/`run_typed` harness.
+//! produced by `scripts/split_kokoro.py`.
 
 use std::path::{Path, PathBuf};
-#[cfg(feature = "onnx")]
-use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use rlx_runtime::{CompileOptions, DType, Device};
 use rlx_tiny_tts::BundleConfig;
 use rlx_tiny_tts::model::TinyModel;
-
-#[cfg(feature = "onnx")]
-use ort::session::Session;
-#[cfg(feature = "onnx")]
-use ort::value::Tensor;
 
 use crate::config::{ModelLayout, SAMPLE_RATE};
 use crate::model::{MIN_AUDIBLE_PEAK, peak_amplitude};
@@ -73,12 +65,10 @@ pub const SPLIT_SUBDIR: &str = "rlx-split";
 const OVERLAP_FACTOR: f32 = 4.0; // n_fft(20) / hop(5)
 const ISTFT_CROP: usize = 10; // n_fft / 2
 
-/// Native Kokoro runner: graph-split subgraphs on an RLX backend, plus optional
-/// ORT encoder when the `onnx` feature is enabled.
+/// Native Kokoro runner: graph-split subgraphs on an RLX backend.
 ///
-/// With `onnx`, the encoder defaults to ORT CPU (cheap; bit-close to the
-/// export) while the heavy decoder stays on the requested RLX device. Force
-/// the RLX encoder with `RLX_KOKORO_NATIVE_ENC=1` (also Whisper-valid).
+/// The encoder runs on CPU by default (cheap; duration rounding) while the
+/// heavy decoder runs on the requested RLX device.
 pub struct NativeKokoro {
     model: TinyModel,
     /// ISTFT overlap-add normalization window (`window_sum`, len n_fft=20).
@@ -86,10 +76,8 @@ pub struct NativeKokoro {
     vocab: Vocab,
     voices: VoiceBank,
     device: Device,
-    /// Device for the RLX encoder graph (when not using ORT encoder).
+    /// Device for the RLX encoder graph.
     enc_device: Device,
-    #[cfg(feature = "onnx")]
-    ort_encoder: Option<Mutex<Session>>,
 }
 
 /// Map a CLI/requested device onto the device graphs actually run on.
@@ -160,34 +148,6 @@ impl NativeKokoro {
             Ok("gpu") | Ok("device") => device,
             _ => Device::Cpu,
         };
-        #[cfg(feature = "onnx")]
-        let ort_encoder = {
-            let force_native = matches!(
-                std::env::var("RLX_KOKORO_NATIVE_ENC").as_deref(),
-                Ok("1") | Ok("true") | Ok("on")
-            );
-            if force_native {
-                None
-            } else {
-                let enc_path = dir.join(format!("{ENCODER}.onnx"));
-                match rlx_kittentts::build_onnx_session(&enc_path, Device::Cpu) {
-                    Ok(b) => {
-                        eprintln!(
-                            "[kokoro] encoder on onnxruntime/{} (decoder on rlx/{device:?}); \
-                             set RLX_KOKORO_NATIVE_ENC=1 for full-native",
-                            b.ort_ep
-                        );
-                        Some(Mutex::new(b.session))
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "[kokoro] ORT encoder unavailable ({e:#}); using RLX encoder on {enc_device:?}"
-                        );
-                        None
-                    }
-                }
-            }
-        };
         Ok(Self {
             model: TinyModel::new(dir, cfg),
             window_sum,
@@ -195,8 +155,6 @@ impl NativeKokoro {
             voices,
             device,
             enc_device,
-            #[cfg(feature = "onnx")]
-            ort_encoder,
         })
     }
 
@@ -348,10 +306,6 @@ impl NativeKokoro {
         style: &[f32],
         speed: f32,
     ) -> Result<(Vec<f32>, Vec<f32>, Vec<usize>)> {
-        #[cfg(feature = "onnx")]
-        if let Some(enc) = &self.ort_encoder {
-            return self.encode_ort(enc, ids, style, speed);
-        }
         self.encode_rlx(ids, style, speed)
     }
 
@@ -379,33 +333,6 @@ impl NativeKokoro {
         let prosody = as_f32(&enc_out[0].0);
         let text = as_f32(&enc_out[1].0);
         let dur = read_usize_dyn(&enc_out[2].0, enc_out[2].1);
-        Ok((prosody, text, dur))
-    }
-
-    #[cfg(feature = "onnx")]
-    fn encode_ort(
-        &self,
-        enc: &Mutex<Session>,
-        ids: &[i64],
-        style: &[f32],
-        speed: f32,
-    ) -> Result<(Vec<f32>, Vec<f32>, Vec<usize>)> {
-        let seq = ids.len();
-        let mut session = enc.lock().unwrap_or_else(|e| e.into_inner());
-        let ids_t =
-            Tensor::from_array(([1usize, seq], ids.to_vec())).context("ort encoder input_ids")?;
-        let style_t = Tensor::from_array(([1usize, 256], style.to_vec())).context("ort style")?;
-        let speed_t = Tensor::from_array(([1usize], vec![speed])).context("ort speed")?;
-        let outs = session
-            .run(ort::inputs![
-                "input_ids" => ids_t,
-                "style" => style_t,
-                "speed" => speed_t,
-            ])
-            .context("ort encoder run")?;
-        let prosody = tensor_f32(&outs[0])?;
-        let text = tensor_f32(&outs[1])?;
-        let dur = tensor_usize(&outs[2])?;
         Ok((prosody, text, dur))
     }
 }
@@ -500,28 +427,6 @@ fn soft_peak_limit(wav: &mut [f32], ceiling: f32) {
             *x *= s;
         }
     }
-}
-
-#[cfg(feature = "onnx")]
-fn tensor_f32(v: &ort::value::DynValue) -> Result<Vec<f32>> {
-    let (_shape, data) = v
-        .try_extract_tensor::<f32>()
-        .context("extract ort f32 tensor")?;
-    Ok(data.to_vec())
-}
-
-#[cfg(feature = "onnx")]
-fn tensor_usize(v: &ort::value::DynValue) -> Result<Vec<usize>> {
-    if let Ok((_shape, data)) = v.try_extract_tensor::<i64>() {
-        return Ok(data.iter().map(|&x| x.max(0) as usize).collect());
-    }
-    if let Ok((_shape, data)) = v.try_extract_tensor::<i32>() {
-        return Ok(data.iter().map(|&x| x.max(0) as usize).collect());
-    }
-    if let Ok((_shape, data)) = v.try_extract_tensor::<f32>() {
-        return Ok(data.iter().map(|&x| x.round().max(0.0) as usize).collect());
-    }
-    anyhow::bail!("duration tensor: unsupported ort dtype")
 }
 
 /// Default location for a native split bundle beside a model directory.

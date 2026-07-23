@@ -1,0 +1,48 @@
+[package]
+name = "rlx-fara"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Microsoft Fara1.5 computer-use agent (Qwen3.5 multimodal) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-qwen35 = { path = "../rlx-qwen35", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+image = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+hf-hub = { workspace = true, optional = true }
+
+[features]
+default = ["tokenizer", "qwen35-vlm"]
+tokenizer = ["dep:tokenizers", "rlx-qwen35/tokenizer"]
+qwen35-vlm = ["dep:image", "rlx-qwen35/qwen35-vlm"]
+hf-download = ["dep:hf-hub"]
+metal = ["rlx-runtime/metal", "rlx-qwen35/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-qwen35/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-qwen35/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-qwen35/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-qwen35/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-qwen35/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-qwen35/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[[bin]]
+name = "rlx-fara"
+path = "src/bin/rlx_fara.rs"
+
+[lints]
+workspace = true

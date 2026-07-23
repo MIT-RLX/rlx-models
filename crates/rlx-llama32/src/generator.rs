@@ -396,9 +396,7 @@ impl PackedGgufPrefill {
         let mut logits = packed_gguf_compile_guard(self.exec_device, || {
             Session::new(self.exec_device).compile_with(logits_graph, &opts)
         });
-        for (name, data) in &params {
-            logits.set_param(name, data);
-        }
+        attach_f32_params(&mut logits, params);
         for (name, (bytes, _scheme, _shape)) in &packed {
             logits.set_param_typed(name, bytes, rlx_ir::DType::U8);
         }
@@ -441,9 +439,7 @@ impl PackedGgufPrefill {
         let mut kv = packed_gguf_compile_guard(exec_device, || {
             Session::new(exec_device).compile_with(graph, &opts)
         });
-        for (name, data) in &params {
-            kv.set_param(name, data);
-        }
+        attach_f32_params(&mut kv, params);
         for (name, (bytes, _scheme, _shape)) in &packed {
             kv.set_param_typed(name, bytes, rlx_ir::DType::U8);
         }
@@ -453,7 +449,7 @@ impl PackedGgufPrefill {
             kv,
             exec_device,
             kv_dim: cfg.kv_proj_dim(),
-            n_layers: cfg.num_hidden_layers,
+            n_layers: cfg.kv_layers(),
             host_greedy_prefill: true,
             logits_plan: None,
         })
@@ -501,9 +497,7 @@ impl PackedGgufPrefill {
         let mut kv = packed_gguf_compile_guard(exec_device, || {
             Session::new(exec_device).compile_with(kv_graph, &opts)
         });
-        for (name, data) in &params_kv {
-            kv.set_param(name, data);
-        }
+        attach_f32_params(&mut kv, params_kv);
         for (name, (bytes, _scheme, _shape)) in &packed_kv {
             kv.set_param_typed(name, bytes, rlx_ir::DType::U8);
         }
@@ -513,7 +507,7 @@ impl PackedGgufPrefill {
             kv,
             exec_device,
             kv_dim: cfg.kv_proj_dim(),
-            n_layers: cfg.num_hidden_layers,
+            n_layers: cfg.kv_layers(),
             host_greedy_prefill: false,
             logits_plan: Some((cfg.clone(), path.to_path_buf(), profile.clone())),
         })
@@ -880,6 +874,31 @@ pub(crate) fn gguf_defers_f32_drain(
         )
 }
 
+/// Dense HF safetensors (BF16→F32 on take): skip the eager host drain that
+/// otherwise doubles RSS with the device copy (Nanbeige 3B ≈ 15 GiB × 2).
+/// Override with `RLX_LLAMA32_DEFER_SAFETENSORS=0|1`.
+pub(crate) fn safetensors_defers_f32_drain(device: Device, is_safetensors: bool) -> bool {
+    if !is_safetensors {
+        return false;
+    }
+    match rlx_ir::env::var("RLX_LLAMA32_DEFER_SAFETENSORS").as_deref() {
+        Some("0") | Some("false") | Some("off") => false,
+        Some("1") | Some("true") | Some("on") => true,
+        _ => matches!(
+            device,
+            Device::Metal | Device::Mlx | Device::Cuda | Device::Rocm
+        ),
+    }
+}
+
+/// Upload F32 compile params then drop each host `Vec` immediately so peak RSS
+/// stays near one model copy + the growing device arena (not params∪device).
+fn attach_f32_params(compiled: &mut CompiledGraph, mut params: HashMap<String, Vec<f32>>) {
+    for (name, data) in params.drain() {
+        compiled.set_param(&name, &data);
+    }
+}
+
 /// Per-layer KV cache state for incremental decoding. Each `Vec<f32>`
 /// is a flat `[batch, past_seq, kv_proj_dim]` tensor.
 #[derive(Clone)]
@@ -913,10 +932,12 @@ impl DecodeKvScratch {
     }
 }
 
-/// Borrow cached F32 tensors or open a fresh GGUF loader per graph build.
+/// Borrow cached F32 tensors, open a fresh GGUF loader, or mmap safetensors
+/// (deferred dense HF path — F32 only on `take`).
 enum BuildWeightLoader<'a> {
     Cached(ArcCacheLoader<'a>),
     Gguf(GgufLoader),
+    Live(Box<dyn WeightLoader + 'a>),
 }
 
 impl WeightLoader for BuildWeightLoader<'_> {
@@ -924,30 +945,35 @@ impl WeightLoader for BuildWeightLoader<'_> {
         match self {
             Self::Cached(l) => l.format_id(),
             Self::Gguf(l) => l.format_id(),
+            Self::Live(l) => l.format_id(),
         }
     }
     fn len(&self) -> usize {
         match self {
             Self::Cached(l) => l.len(),
             Self::Gguf(l) => l.len(),
+            Self::Live(l) => l.len(),
         }
     }
     fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         match self {
             Self::Cached(l) => l.take(key),
             Self::Gguf(l) => l.take(key),
+            Self::Live(l) => l.take(key),
         }
     }
     fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         match self {
             Self::Cached(l) => l.take_transposed(key),
             Self::Gguf(l) => l.take_transposed(key),
+            Self::Live(l) => l.take_transposed(key),
         }
     }
     fn remaining_keys(&self) -> Vec<String> {
         match self {
             Self::Cached(l) => l.remaining_keys(),
             Self::Gguf(l) => l.remaining_keys(),
+            Self::Live(l) => l.remaining_keys(),
         }
     }
 }
@@ -1250,9 +1276,19 @@ impl Llama32Generator {
         cache: &'a HashMap<String, ArcF32Tensor>,
     ) -> Result<BuildWeightLoader<'a>> {
         if deferred {
-            let path = path.as_ref().context("deferred weights need gguf path")?;
+            let path = path.as_ref().context("deferred weights need weights path")?;
             let path_str = path.to_str().context("non-utf8 weights path")?;
-            Ok(BuildWeightLoader::Gguf(GgufLoader::from_file(path_str)?))
+            let is_gguf = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+            if is_gguf {
+                Ok(BuildWeightLoader::Gguf(GgufLoader::from_file(path_str)?))
+            } else {
+                Ok(BuildWeightLoader::Live(
+                    rlx_core::weight_loader::load_from_path(path_str)?,
+                ))
+            }
         } else {
             Ok(BuildWeightLoader::Cached(ArcCacheLoader::new(cache)))
         }
@@ -1263,16 +1299,11 @@ impl Llama32Generator {
     }
 
     fn build_weight_loader(&self) -> Result<BuildWeightLoader<'_>> {
-        if self.weights_deferred {
-            let path = self
-                .weights_path
-                .as_ref()
-                .context("deferred weights need gguf path")?;
-            let path_str = path.to_str().context("non-utf8 weights path")?;
-            Ok(BuildWeightLoader::Gguf(GgufLoader::from_file(path_str)?))
-        } else {
-            Ok(BuildWeightLoader::Cached(self.cached_weight_loader()))
-        }
+        Self::build_weight_loader_from(
+            self.weights_deferred,
+            &self.weights_path,
+            &self.weights_cache,
+        )
     }
 
     fn ensure_weights(&mut self) -> Result<()> {
@@ -1281,7 +1312,7 @@ impl Llama32Generator {
         }
         self.weights_path
             .as_ref()
-            .context("deferred weights need gguf path")?;
+            .context("deferred weights need weights path")?;
         Ok(())
     }
 
@@ -1303,9 +1334,7 @@ impl Llama32Generator {
         )?;
         let session = Session::new(Device::Cpu);
         let mut compiled = self.compile_hir_profiled(&session, hir, false)?;
-        for (name, data) in &params {
-            compiled.set_param(name, data);
-        }
+        attach_f32_params(&mut compiled, params);
         Ok(compiled.run(&[("input_ids", ids_f32)]))
     }
 
@@ -1439,9 +1468,7 @@ impl Llama32Generator {
         )?;
         let session = Session::new(Device::Cpu);
         let mut compiled = session.compile_with(graph, &prefill_opts);
-        for (name, data) in &params {
-            compiled.set_param(name, data);
-        }
+        attach_f32_params(&mut compiled, params);
         let outputs = compiled.run(&[("input_ids", ids_f32)]);
         let hidden = outputs
             .into_iter()
@@ -1494,9 +1521,7 @@ impl Llama32Generator {
         )?;
         let session = Session::new(Device::Cpu);
         let mut compiled = session.compile_with(graph, &prefill_opts);
-        for (name, data) in &params {
-            compiled.set_param(name, data);
-        }
+        attach_f32_params(&mut compiled, params);
         let outputs = compiled.run(&[("input_ids", ids_f32)]);
         let logits = outputs
             .into_iter()
@@ -1734,12 +1759,18 @@ impl Llama32Generator {
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+        let is_safetensors = !is_gguf
+            && (weights_path.is_dir()
+                || weights_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("safetensors")));
         let defer_f32_drain = gguf_defers_f32_drain(
             device,
             is_gguf,
             prefill_mode.use_packed_gguf(),
             prefill_mode,
-        );
+        ) || safetensors_defers_f32_drain(device, is_safetensors);
         let mut g = if defer_f32_drain {
             Self::from_loader_deferred(cfg, loader, device, prefill_mode)?
         } else {
@@ -1749,12 +1780,9 @@ impl Llama32Generator {
         };
         g.prefill_profile = crate::llama32_profile_near_weights(weights_path, false);
         g.decode_profile = crate::llama32_profile_near_weights(weights_path, true);
-        if weights_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
-        {
-            g.weights_path = Some(weights_path.to_path_buf());
+        // Always retain the path for deferred mmap reloads (GGUF or safetensors).
+        g.weights_path = Some(weights_path.to_path_buf());
+        if is_gguf {
             g.gguf_block_quant = gguf_has_block_quant_matmul(weights_path);
             let exec = packed_gguf_execution_device(device);
             g.host_greedy_lm =
@@ -1764,6 +1792,10 @@ impl Llama32Generator {
                     "[llama32-runner] greedy decode: host tied-lm_head argmax (skip in-graph vocab matmul)"
                 );
             }
+        } else if g.weights_deferred {
+            eprintln!(
+                "[llama32-runner] safetensors mmap-on-take (no eager F32 drain) on {device:?}"
+            );
         }
         Ok(g)
     }
@@ -2428,15 +2460,13 @@ impl Llama32Generator {
         )?;
         let session = Session::new(self.decode_device());
         let mut compiled = self.compile_hir_profiled(&session, hir, true)?;
-        for (name, data) in &params {
-            compiled.set_param(name, data);
-        }
+        attach_f32_params(&mut compiled, params);
 
         let position = decode_position_input(past_seq);
         let input_ids_f32 = [input_tok as f32];
         let mask_len = past_seq + 1;
         let mask = vec![1.0f32; mask_len];
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
         let key_strs: Vec<String> = (0..n_layers)
             .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
             .collect();
@@ -2498,16 +2528,15 @@ impl Llama32Generator {
         let mut compiled = packed_gguf_compile_guard(exec_device, || {
             Session::new(exec_device).compile_with(graph, &opts)
         });
-        for (name, data) in &params {
-            compiled.set_param(name, data);
-        }
+        let lazy_embed = packed_graph_uses_lazy_embed(&packed, &params);
+        attach_f32_params(&mut compiled, params);
         for (name, (bytes, _scheme, _shape)) in &packed {
             compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
         }
 
         let cache = self.cache.as_ref().context("packed decode without cache")?;
         let input_ids_f32 = [input_tok as f32];
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
         let key_strs: Vec<String> = (0..n_layers)
             .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
             .collect();
@@ -2516,7 +2545,7 @@ impl Llama32Generator {
         push_packed_decode_token_input(
             &self.cfg,
             input_tok,
-            if packed_graph_uses_lazy_embed(&packed, &params) {
+            if lazy_embed {
                 let (bytes, scheme, _) = packed
                     .get("model.embed_tokens.weight")
                     .expect("lazy decode embed");
@@ -2569,7 +2598,7 @@ impl Llama32Generator {
             .unwrap() as usize;
 
         let kv_dim = self.cfg.kv_proj_dim();
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
         let exec_device = packed_gguf_execution_device(self.decode_device());
 
         // First-time-in-bucket: build the packed graph for `upper`, compile it
@@ -2615,9 +2644,7 @@ impl Llama32Generator {
                 let (_u, compiled) = cache_mut
                     .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
                     .expect("bucket must exist; we just looked it up");
-                for (name, data) in &params {
-                    compiled.set_param(name, data);
-                }
+                attach_f32_params(compiled, params);
                 for (name, (bytes, _scheme, _shape)) in &packed {
                     compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
                 }
@@ -2826,7 +2853,7 @@ impl Llama32Generator {
             .unwrap() as usize;
 
         let kv_dim = self.cfg.kv_proj_dim();
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
         let exec_device = packed_gguf_execution_device(self.decode_device());
 
         let needs_load = !self.decode_loaded_buckets_hidden.contains(&bucket_idx);
@@ -2866,11 +2893,9 @@ impl Llama32Generator {
                 let (_u, compiled) = cache_mut
                     .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
                     .expect("bucket must exist; we just looked it up");
-                for (name, data) in &params {
-                    compiled.set_param(name, data);
-                }
+                attach_f32_params(compiled, params);
                 for (name, (bytes, _scheme, _shape)) in &packed {
-                    if !bytes.is_empty() && !params.contains_key(name.as_str()) {
+                    if !bytes.is_empty() {
                         compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
                     }
                 }
@@ -3014,7 +3039,7 @@ impl Llama32Generator {
         };
 
         let kv_dim = self.cfg.kv_proj_dim();
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
         let exec_device = packed_gguf_execution_device(self.decode_device());
 
         let needs_bind = !self.decode_resident_hidden_bound.contains(&bucket_idx);
@@ -3080,11 +3105,10 @@ impl Llama32Generator {
                     let (_u, compiled) = cache_mut
                         .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
                         .expect("bucket must exist; we just looked it up");
-                    for (name, data) in &params {
-                        compiled.set_param(name, data);
-                    }
+                    let f32_keys: HashSet<String> = params.keys().cloned().collect();
+                    attach_f32_params(compiled, params);
                     for (name, (bytes, _scheme, _shape)) in &packed {
-                        if !bytes.is_empty() && !params.contains_key(name.as_str()) {
+                        if !bytes.is_empty() && !f32_keys.contains(name.as_str()) {
                             compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
                         }
                     }
@@ -3232,7 +3256,7 @@ impl Llama32Generator {
         };
 
         let kv_dim = self.cfg.kv_proj_dim();
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
         let exec_device = packed_gguf_execution_device(self.decode_device());
 
         // Two independent per-bucket concerns, tracked separately so a warm
@@ -3316,9 +3340,7 @@ impl Llama32Generator {
                     let (_u, compiled) = cache_mut
                         .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
                         .expect("bucket must exist; we just looked it up");
-                    for (name, data) in &params {
-                        compiled.set_param(name, data);
-                    }
+                    attach_f32_params(compiled, params);
                     for (name, (bytes, _scheme, _shape)) in &packed {
                         compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
                     }
@@ -3500,21 +3522,19 @@ impl Llama32Generator {
                 Self::build_weight_loader_from(weights_deferred, &weights_path, &weights_cache)?;
             let (_, params) =
                 build_llama32_decode_hir_dynamic_ext(&self.cfg, &mut loader, 1, max_past)?;
-            for (name, data) in &params {
-                compiled.set_param(name, data);
-            }
+            attach_f32_params(compiled, params);
         }
 
         let position = decode_position_input(past_seq);
         let input_ids_f32 = [input_tok as f32];
-        let key_strs: Vec<String> = (0..self.cfg.num_hidden_layers)
+        let key_strs: Vec<String> = (0..self.cfg.kv_layers())
             .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
             .collect();
         let mut inputs: Vec<(&str, &[f32])> =
-            Vec::with_capacity(4 + 2 * self.cfg.num_hidden_layers);
+            Vec::with_capacity(4 + 2 * self.cfg.kv_layers());
         inputs.push(("input_ids", input_ids_f32.as_slice()));
         inputs.push(("position", position.as_slice()));
-        for i in 0..self.cfg.num_hidden_layers {
+        for i in 0..self.cfg.kv_layers() {
             inputs.push((&key_strs[2 * i], cache.layers_k[i].as_slice()));
             inputs.push((&key_strs[2 * i + 1], cache.layers_v[i].as_slice()));
         }
@@ -3546,7 +3566,7 @@ impl Llama32Generator {
             .unwrap() as usize;
 
         let kv_dim = self.cfg.kv_proj_dim();
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
 
         // First-time-in-bucket: build the graph + compile + attach
         // params, then mark the bucket as loaded. Subsequent calls skip
@@ -3563,14 +3583,16 @@ impl Llama32Generator {
                 cache_mut.evict_except(bucket_idx);
             }
             self.decode_loaded_buckets.clear();
-            let mut loader = self.build_weight_loader()?;
-            let (hir, params) = build_llama32_decode_hir_sized_ext(
-                &self.cfg,
-                &mut loader,
-                /*batch*/ 1,
-                upper,
-                /*use_custom_mask*/ true,
-            )?;
+            let (hir, params) = {
+                let mut loader = self.build_weight_loader()?;
+                build_llama32_decode_hir_sized_ext(
+                    &self.cfg,
+                    &mut loader,
+                    /*batch*/ 1,
+                    upper,
+                    /*use_custom_mask*/ true,
+                )?
+            };
             {
                 let decode_opts = self.profile_compile_options(true);
                 let gguf_parity = self.metal_gguf_parity();
@@ -3584,9 +3606,7 @@ impl Llama32Generator {
                             &decode_opts,
                         )
                         .expect("bucket must exist; we just looked it up");
-                    for (name, data) in &params {
-                        compiled.set_param(name, data);
-                    }
+                    attach_f32_params(compiled, params);
                 });
             }
             self.decode_loaded_buckets.insert(bucket_idx);
@@ -3730,9 +3750,7 @@ impl Llama32Generator {
                 {
                     let compiled =
                         prefill_cache.get_or_compile_with_options(key, || graph, &prefill_opts);
-                    for (name, data) in &params {
-                        compiled.set_param(name, data);
-                    }
+                    attach_f32_params(compiled, params);
                 }
             }
             let compiled = prefill_cache.get_or_compile_with_options(
@@ -3753,9 +3771,7 @@ impl Llama32Generator {
             )?;
             let session = Session::new(self.prefill_device());
             let mut compiled = self.compile_graph_profiled(&session, graph)?;
-            for (name, data) in &params {
-                compiled.set_param(name, data);
-            }
+            attach_f32_params(&mut compiled, params);
             compiled.run(&[("input_ids", ids_f32)])
         };
         outputs
@@ -3786,7 +3802,7 @@ impl Llama32Generator {
         let weights_path = self.weights_path.clone();
         let weights_cache = self.weights_cache.clone();
         const TAG_KV: u64 = 1;
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
         let prefill_opts = self.profile_compile_options(false);
         let outputs = if let Some(prefill_cache) = self.prefill_compile_cache.as_mut() {
             let key = Self::prefill_cache_key(batch, seq, TAG_KV);
@@ -3801,9 +3817,7 @@ impl Llama32Generator {
                 {
                     let compiled =
                         prefill_cache.get_or_compile_with_options(key, || graph, &prefill_opts);
-                    for (name, data) in &params {
-                        compiled.set_param(name, data);
-                    }
+                    attach_f32_params(compiled, params);
                 }
             }
             let compiled = prefill_cache.get_or_compile_with_options(
@@ -3819,9 +3833,7 @@ impl Llama32Generator {
                 build_llama32_graph_sized_kv_tap(&self.cfg, &mut loader, batch, seq)?;
             let session = Session::new(self.prefill_device());
             let mut compiled = self.compile_graph_profiled(&session, graph)?;
-            for (name, data) in &params {
-                compiled.set_param(name, data);
-            }
+            attach_f32_params(&mut compiled, params);
             compiled.run(&[("input_ids", ids_f32)])
         };
         if outputs.len() != 1 + 2 * n_layers {
@@ -3889,9 +3901,7 @@ impl Llama32Generator {
                     max_seq,
                     true,
                 )?;
-                for (name, data) in &params {
-                    compiled.set_param(name, data);
-                }
+                attach_f32_params(compiled, params);
             }
             let last_idx = vec![(seq - 1) as f32];
             Ok(compiled.run(&[("input_ids", ids_f32), ("last_token_idx", &last_idx)]))
@@ -3914,9 +3924,7 @@ impl Llama32Generator {
                 {
                     let compiled =
                         prefill_cache.get_or_compile_hir_with_options(key, || hir, &prefill_opts);
-                    for (name, data) in &params {
-                        compiled.set_param(name, data);
-                    }
+                    attach_f32_params(compiled, params);
                 }
             }
             let compiled = prefill_cache.get_or_compile_hir_with_options(
@@ -3937,9 +3945,7 @@ impl Llama32Generator {
             )?;
             let session = Session::new(self.prefill_device());
             let mut compiled = self.compile_hir_profiled(&session, hir, false)?;
-            for (name, data) in &params {
-                compiled.set_param(name, data);
-            }
+            attach_f32_params(&mut compiled, params);
             Ok(compiled.run(&[("input_ids", ids_f32)]))
         }
     }
@@ -3952,7 +3958,7 @@ impl Llama32Generator {
         &self,
         outputs: Vec<Vec<f32>>,
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
         if outputs.len() != 1 + 2 * n_layers {
             anyhow::bail!(
                 "decode graph produced {} outputs, expected {}",
@@ -4026,7 +4032,7 @@ impl Llama32Generator {
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
         let logits = self.run_prefill_logits_graph(batch, seq, ids_f32)?;
         let kv = self.run_prefill_kv_tap_graph(batch, seq, ids_f32)?;
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
         let kv_dim = self.cfg.kv_proj_dim();
         let expected_kv_len = batch * seq * kv_dim;
         if kv.len() != 2 * n_layers {
@@ -4061,7 +4067,7 @@ impl Llama32Generator {
         batch: usize,
         seq: usize,
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
-        let n_layers = self.cfg.num_hidden_layers;
+        let n_layers = self.cfg.kv_layers();
         if outputs.len() != 1 + 2 * n_layers {
             anyhow::bail!(
                 "prefill-with-cache produced {} outputs, expected {}",
@@ -4317,6 +4323,8 @@ mod tests {
             attention_bias: false,
             head_dim: Some(8),
             rope_scaling: None,
+            num_loops: 1,
+            skip_loop_final_norm: false,
             rope_style: rlx_ir::RopeStyle::NeoX,
             gguf_arch: None,
             rope_dim: None,
@@ -4668,6 +4676,8 @@ mod tests {
             attention_bias: false,
             head_dim: Some(128),
             rope_scaling: None,
+            num_loops: 1,
+            skip_loop_final_norm: false,
             rope_style: rlx_ir::RopeStyle::NeoX,
             gguf_arch: None,
             rope_dim: None,
@@ -4705,9 +4715,7 @@ mod tests {
             let (hir, params) = build_llama32_decode_hir_sized(&cfg, &mut wm, 1, past_seq).unwrap();
             let session = Session::new(device);
             let mut compiled = session.compile_hir(hir).expect("compile");
-            for (name, data) in &params {
-                compiled.set_param(name, data);
-            }
+            attach_f32_params(&mut compiled, params);
             compiled.run(&[("input_ids", &[tok as f32][..])]).remove(0)
         };
 
@@ -4907,6 +4915,8 @@ mod tests {
                 attention_bias: false,
                 head_dim: Some(hd),
                 rope_scaling: None,
+                num_loops: 1,
+                skip_loop_final_norm: false,
                 rope_style: rlx_ir::RopeStyle::NeoX,
                 gguf_arch: None,
                 rope_dim: None,
@@ -4958,6 +4968,8 @@ mod tests {
                 attention_bias: false,
                 head_dim: Some(hd),
                 rope_scaling: None,
+                num_loops: 1,
+                skip_loop_final_norm: false,
                 rope_style: rlx_ir::RopeStyle::NeoX,
                 gguf_arch: None,
                 rope_dim: None,
@@ -5080,6 +5092,8 @@ mod tests {
                 attention_bias: false,
                 head_dim: Some(hd),
                 rope_scaling: None,
+                num_loops: 1,
+                skip_loop_final_norm: false,
                 rope_style: rlx_ir::RopeStyle::NeoX,
                 gguf_arch: None,
                 rope_dim: None,

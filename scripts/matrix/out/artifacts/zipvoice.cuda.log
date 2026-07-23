@@ -1,6 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-zipvoice --data weights/tts/zipvoice --prompt-wav assets/jfk/jfk_voice_clone.wav --prompt-text And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. --text The quick brown fox jumps over the lazy dog near the river bank. --device cuda --out /home/user/rlx-models/scripts/matrix/out/artifacts/zipvoice.cuda.wav
-
---- stdout ---
-
---- stderr ---
-error: load from weights/tts/zipvoice: encoder_body.onnx not found under /home/user/rlx-models/weights/tts/zipvoice — generate it with `python crates/rlx-luxtts/scripts/export_encoder_body.py /home/user/rlx-models/weights/tts/zipvoice/text_encoder.onnx /home/user/rlx-models/weights/tts/zipvoice/encoder_body.onnx`

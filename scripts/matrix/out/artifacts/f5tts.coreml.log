@@ -1,7 +1,0 @@
-$ /Users/Shared/rlx-models/target/release/rlx-f5tts --data weights/tts/f5tts --ref-wav assets/jfk/jfk_voice_clone.wav --ref-text And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. --text The quick brown fox jumps over the lazy dog near the river bank. --device coreml --out /Users/Shared/rlx-models/scripts/matrix/out/artifacts/f5tts.coreml.wav
-
---- stdout ---
-Wrote 71424 samples (2.98s @ 24000 Hz) to /Users/Shared/rlx-models/scripts/matrix/out/artifacts/f5tts.coreml.wav [native/Ane pre/dec=Ane dit=Ane, nfe=32] synth=26454ms (8.89× RT)
-
---- stderr ---
-[tiny-tts] CoreML: set RLX_COREML_UNITS=gpu (pins f16 TTS graphs off Neural-Engine BNNS; fp32 already defaults to CPU+GPU in rlx-coreml)

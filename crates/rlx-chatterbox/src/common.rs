@@ -13,8 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Pure-Rust ChatterBox glue shared by the ort (`model`) and native (`native`)
-//! runtimes: token layout, sampling, PRNG, resampling. No backend deps.
+//! Pure-Rust ChatterBox glue used by the native (`native`) runtime:
+//! token layout, sampling, PRNG, resampling. No backend deps.
 
 use std::collections::HashSet;
 

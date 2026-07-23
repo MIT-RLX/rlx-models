@@ -20,27 +20,18 @@ rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # Native RLX runner engine (import → compile_named → run_typed) for the 3 luxtts
 # subgraphs — same engine as rlx-supertonic.
 rlx-tiny-tts = { workspace = true }
-# Bundled espeak-ng phonemizer + ONNX Runtime EP selector (reused; LuxTTS is a
-# char-level espeak-IPA tokenizer like KittenTTS).
+# Bundled espeak-ng phonemizer only (reused; LuxTTS is a char-level espeak-IPA
+# tokenizer like KittenTTS).
 rlx-kittentts = { path = "../rlx-kittentts", default-features = false }
 
 [dependencies.hf-hub]
 workspace = true
 optional = true
 
-[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
-ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
-    "std",
-    "pkg-config",
-    "download-binaries",
-    "tls-rustls",
-] }
-
 [features]
-# Native RLX by default (espeak frontend for tokenization). `onnx` is opt-in for
-# parity validation only (dev), pulling ONNX Runtime.
+# Native RLX only (espeak frontend for tokenization). The former `onnx` feature
+# (ONNX Runtime reference path) has been removed — the crate runs natively.
 default = ["espeak"]
-onnx = ["dep:ort", "rlx-kittentts/onnx"]
 # We only use rlx-kittentts's espeak phonemizer, but its `BackendKind` requires a
 # backend feature to compile; `native` is the ort-free one (we don't call it).
 espeak = ["rlx-kittentts/espeak", "rlx-kittentts/native"]
@@ -60,7 +51,7 @@ rlx-whisper = { workspace = true }
 [[bin]]
 name = "rlx-luxtts"
 path = "src/bin/rlx_luxtts.rs"
-required-features = ["onnx"]
+required-features = ["espeak"]
 
 [lints]
 workspace = true

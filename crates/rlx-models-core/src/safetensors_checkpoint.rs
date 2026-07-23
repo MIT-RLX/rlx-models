@@ -96,6 +96,22 @@ impl SafetensorsCheckpoint {
         Ok((view.data().to_vec(), view.dtype(), view.shape().to_vec()))
     }
 
+    /// Dequantize one tensor to F32 without loading the rest of the shard.
+    pub fn load_tensor_f32(&self, name: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let shard = self
+            .index
+            .get(name)
+            .with_context(|| format!("tensor {name} not in checkpoint index"))?;
+        let mmap = self.mmap_shard(shard)?;
+        let st = SafeTensors::deserialize(mmap.as_ref()).context("parse safetensors")?;
+        let view = st
+            .tensor(name)
+            .with_context(|| format!("tensor {name} missing in shard {shard}"))?;
+        let shape = view.shape().to_vec();
+        let data = tensor_view_to_f32(name, view)?;
+        Ok((data, shape))
+    }
+
     /// Load selected rows from a rank-2 tensor without materializing the full matrix.
     pub fn load_tensor_rows_f32(
         &self,
@@ -316,4 +332,74 @@ pub fn tensor_view_to_f32(
         safetensors::Dtype::C64 => return Ok(vec![]),
         other => anyhow::bail!("{name}: unsupported dtype {other:?}"),
     })
+}
+
+/// [`WeightLoader`] that keeps shards mmap'd and only materializes F32 on
+/// [`WeightLoader::take`]. Avoids the ~2× RAM spike of
+/// [`WeightMap::from_safetensors_dir`] (full BF16→F32 HashMap before drain).
+pub struct SafetensorsMmapLoader {
+    ckpt: SafetensorsCheckpoint,
+    taken: HashSet<String>,
+}
+
+impl SafetensorsMmapLoader {
+    pub fn open(dir: &Path) -> Result<Self> {
+        Ok(Self {
+            ckpt: SafetensorsCheckpoint::open(dir)?,
+            taken: HashSet::new(),
+        })
+    }
+
+    pub fn checkpoint(&self) -> &SafetensorsCheckpoint {
+        &self.ckpt
+    }
+
+    pub fn has(&self, key: &str) -> bool {
+        self.ckpt.contains(key) && !self.taken.contains(key)
+    }
+}
+
+impl crate::weight_loader::WeightLoader for SafetensorsMmapLoader {
+    fn format_id(&self) -> &'static str {
+        "safetensors-mmap"
+    }
+
+    fn len(&self) -> usize {
+        self.ckpt
+            .keys()
+            .filter(|k| !self.taken.contains(*k))
+            .count()
+    }
+
+    fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        if self.taken.contains(key) {
+            bail!("weight already taken: {key}");
+        }
+        let (data, shape) = self.ckpt.load_tensor_f32(key)?;
+        self.taken.insert(key.to_string());
+        Ok((data, shape))
+    }
+
+    fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let (data, shape) = self.take(key)?;
+        if shape.len() != 2 {
+            bail!("transpose requires 2D, got {shape:?}");
+        }
+        let (rows, cols) = (shape[0], shape[1]);
+        let mut transposed = vec![0f32; data.len()];
+        for i in 0..rows {
+            for j in 0..cols {
+                transposed[j * rows + i] = data[i * cols + j];
+            }
+        }
+        Ok((transposed, vec![cols, rows]))
+    }
+
+    fn remaining_keys(&self) -> Vec<String> {
+        self.ckpt
+            .keys()
+            .filter(|k| !self.taken.contains(*k))
+            .map(|s| s.to_string())
+            .collect()
+    }
 }

@@ -3,20 +3,14 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! `rlx-serve` binary: load a Qwen3 model and serve the OpenAI API.
+//! `rlx-serve` binary: Qwen3-only OpenAI server (compatibility).
+//!
+//! Prefer [`rlx-openai`](../../rlx-openai) for multi-model hosting:
+//! `rlx-openai --engine qwen3 --weights …`.
 //!
 //! ```sh
 //! cargo run -p rlx-serve --release -- \
 //!   --model /path/to/qwen3 --host 127.0.0.1 --port 8080 --device cpu --eos 151645
-//! # fused continuous batching (shared-matmul throughput across the batch),
-//! # with q8_0 KV-cache storage (~2× more concurrent contexts):
-//! cargo run -p rlx-serve --release -- \
-//!   --model /path/to/qwen3 --continuous-batching --fused --max-batch 16 \
-//!   --batch-tokens 4096 --kv-bits 8
-//! # then:
-//! curl localhost:8080/v1/models
-//! curl localhost:8080/v1/chat/completions -d \
-//!   '{"model":"rlx","messages":[{"role":"user","content":"hi"}],"stream":true}'
 //! ```
 
 use anyhow::{Context, Result};
@@ -184,11 +178,9 @@ async fn main() -> Result<()> {
     };
     let app = build_router(engine, max_tokens);
 
-    let addr = format!("{host}:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .with_context(|| format!("binding {addr}"))?;
-    eprintln!("[rlx-serve] listening on http://{addr}");
-    axum::serve(listener, app).await?;
-    Ok(())
+    eprintln!(
+        "[rlx-serve] Qwen3-only binary — prefer `rlx-openai --engine qwen3 …` \
+         for multi-model OpenAI serve"
+    );
+    rlx_serve::serve_http(app, &host, port).await
 }

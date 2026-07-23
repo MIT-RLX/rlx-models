@@ -17,7 +17,7 @@
 
 use super::config::MmProjConfig;
 use super::flow::build_qwen35_vision_built;
-use super::preprocess::{build_vision_positions, preprocess_rgb};
+use super::preprocess::{build_vision_position_hw, preprocess_rgb, vision_rope_feeds};
 use super::weights::MmProjWeights;
 use anyhow::{Context, Result};
 use rlx_core::flow_util::compile_built;
@@ -84,10 +84,15 @@ impl Qwen35VisionEncoder {
         let (gx, gy) = self.cfg.output_grid(tw, th);
         let n_tokens = gx * gy;
         let proj = self.cfg.llm_hidden_size;
+        let position_hw = build_vision_position_hw(tw, th, &self.cfg);
+        let head_dim = self.cfg.n_embd / self.cfg.n_head;
+        let (rope_cos, rope_sin) = vision_rope_feeds(&position_hw, head_dim);
 
-        let _positions = build_vision_positions(tw, th, &self.cfg);
-
-        let outs = self.compiled.run(&[("image", &nchw)]);
+        let outs = self.compiled.run(&[
+            ("image", &nchw),
+            ("vision_rope_cos", &rope_cos),
+            ("vision_rope_sin", &rope_sin),
+        ]);
         let emb = outs
             .into_iter()
             .next()

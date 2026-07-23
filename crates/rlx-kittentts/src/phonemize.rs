@@ -29,7 +29,8 @@ use once_cell::sync::OnceCell;
 static DATA_PATH: OnceCell<PathBuf> = OnceCell::new();
 
 /// Default espeak voice / language tag for [`phonemize`].
-pub const DEFAULT_LANG: &str = "en";
+/// Matches KittenTTS phonemizer (`EspeakBackend(language="en-us", …)`).
+pub const DEFAULT_LANG: &str = "en-us";
 
 /// Set the espeak-ng data directory before the first [`phonemize`] call.
 ///
@@ -59,8 +60,9 @@ mod inner {
             let cache_dir = std::env::temp_dir().join("rlx-kittentts-espeak-ng-data");
             std::fs::create_dir_all(&cache_dir)
                 .map_err(|e| anyhow!("failed to create espeak-ng data dir: {e}"))?;
-            espeak_ng::install_bundled_language(&cache_dir, DEFAULT_LANG).map_err(|e| {
-                anyhow!("failed to install bundled espeak-ng data for {DEFAULT_LANG}: {e}")
+            // Bundled pack is tagged `en`; `en-us` / `en-gb` voices share that dict data.
+            espeak_ng::install_bundled_language(&cache_dir, "en").map_err(|e| {
+                anyhow!("failed to install bundled espeak-ng data for en: {e}")
             })?;
             Ok(cache_dir)
         })
@@ -81,6 +83,8 @@ mod inner {
             return Ok(String::new());
         }
         let engine = create_engine(lang)?;
+        // KittenTTS uses phonemizer with preserve_punctuation + strip; match that
+        // (not raw espeak-ng --ipa, which drops punctuation and emits clause newlines).
         let ipa = engine
             .text_to_phonemes(text)
             .map_err(|e| anyhow!("espeak-ng phonemize ({lang}) failed: {e}"))?;
@@ -138,6 +142,19 @@ mod tests {
         assert!(
             ipa.contains('h') || ipa.contains('l') || ipa.contains('w'),
             "unexpected IPA: {ipa}"
+        );
+    }
+
+    #[test]
+    fn phonemize_preserves_punctuation() {
+        let ipa = phonemize("Hello world,").expect("phonemize");
+        assert!(
+            ipa.trim_end().ends_with(','),
+            "expected trailing comma (phonemizer mode), got: {ipa:?}"
+        );
+        assert!(
+            !ipa.contains('\n'),
+            "expected flattened clauses, got: {ipa:?}"
         );
     }
 }

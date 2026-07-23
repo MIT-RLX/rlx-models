@@ -81,7 +81,7 @@ pub use gguf_support::{
     GgufModelFamily, ResolveWeightsOptions, assert_gguf_family, gguf_architecture_from_path,
     gguf_architecture_str, gguf_f32_bytes_estimate, gguf_family_for_arch,
     gguf_safetensors_only_hint, gguf_split_hint, gguf_split_siblings, gguf_validate_arch,
-    list_gguf_files_in_dir, load_gguf_file, resolve_weights_file,
+    laguna_allow_f32_expand, list_gguf_files_in_dir, load_gguf_file, resolve_weights_file,
     resolve_weights_file_with_options,
 };
 
@@ -127,11 +127,12 @@ pub use gpu_kv::{
     sync_gpu_kv_to_host,
 };
 pub use lm::{FlowBuildExt, into_compile_parts};
-pub use safetensors_checkpoint::SafetensorsCheckpoint;
+pub use safetensors_checkpoint::{SafetensorsCheckpoint, SafetensorsMmapLoader};
 pub use weight_loader::{
     ArcCacheLoader, ArcF32Tensor, GgufLoader, HfTranslatingLoader, WeightLoader,
-    dequant_matmul_supported, ggml_type_to_quant_scheme, gguf_to_hf_name, gguf_to_hf_name_for_arch,
-    hf_to_gguf_name, hf_to_gguf_name_for_arch, is_mtp_weight, load_from_path,
+    dequant_matmul_supported, ggml_type_to_quant_scheme, gguf_to_hf_name, gguf_to_hf_name_candidates,
+    gguf_to_hf_name_for_arch, gguf_to_hf_qwen35_name, hf_to_gguf_name, hf_to_gguf_name_for_arch,
+    is_mtp_weight, is_native_float_ggml, load_from_path,
 };
 pub use weight_map::{WeightDrainPolicy, WeightMap};
 pub use weight_registry::{

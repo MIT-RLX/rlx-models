@@ -1,9 +1,8 @@
 //! StyleTTS2-family TTS for RLX — Kokoro-82M.
 //!
-//! Defaults to the **native** graph-split RLX path (decoder on the requested
-//! device; encoder on ORT CPU unless `RLX_KOKORO_NATIVE_ENC=1`). Force the
-//! monolithic onnxruntime graph with `RLX_STYLETTS2_ORT=1` (or legacy
-//! `RLX_STYLETTS2_NATIVE=0`).
+//! Runs the ort-free graph-split RLX path ([`NativeKokoro`]): the decoder runs
+//! on the requested device and the encoder on CPU (set `RLX_KOKORO_ENC_DEVICE=gpu`
+//! to move it, `RLX_KOKORO_NATIVE_ENC` is a no-op — the encoder is always native).
 //!
 //! ```bash
 //! just styletts2
@@ -14,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use rlx_kokoro::{Kokoro, NativeKokoro, SAMPLE_RATE, write_wav};
+use rlx_kokoro::{NativeKokoro, SAMPLE_RATE, write_wav};
 use serde::{Deserialize, Serialize};
 
 pub use rlx_kokoro::{SAMPLE_RATE as STYLETTS2_SAMPLE_RATE, peak_amplitude, resolve_native_device};
@@ -23,21 +22,6 @@ pub use rlx_runtime::{Device, is_available, parse_device};
 /// Default Kokoro-82M bundle used for StyleTTS2-family synthesis.
 pub fn default_model_dir() -> PathBuf {
     PathBuf::from("weights/tts/kokoro-82m")
-}
-
-fn prefer_native() -> bool {
-    // Native graph-split is the default. Force monolithic ORT with
-    // RLX_STYLETTS2_ORT=1 (or legacy RLX_STYLETTS2_NATIVE=0).
-    if matches!(
-        std::env::var("RLX_STYLETTS2_ORT").as_deref(),
-        Ok("1") | Ok("true") | Ok("on")
-    ) {
-        return false;
-    }
-    !matches!(
-        std::env::var("RLX_STYLETTS2_NATIVE").as_deref(),
-        Ok("0") | Ok("false") | Ok("off")
-    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,44 +42,24 @@ impl Default for StyleTTS2Config {
     }
 }
 
-enum Backend {
-    Ort(Kokoro),
-    Native(NativeKokoro),
-}
-
-/// StyleTTS2-family session backed by Kokoro-82M.
+/// StyleTTS2-family session backed by Kokoro-82M (native graph-split RLX path).
 pub struct StyleTTS2 {
-    backend: Backend,
+    inner: NativeKokoro,
     config: StyleTTS2Config,
     requested: Device,
 }
 
 impl StyleTTS2 {
-    /// Load Kokoro. Native graph-split by default; monolithic ORT when
-    /// `RLX_STYLETTS2_ORT=1` (or `RLX_STYLETTS2_NATIVE=0`).
+    /// Load Kokoro via the native graph-split RLX path.
     pub fn load(model_dir: &Path, device: Device) -> Result<Self> {
-        if prefer_native() {
-            Self::load_native(model_dir, device)
-        } else {
-            Self::load_ort(model_dir, device)
-        }
-    }
-
-    /// Full onnxruntime Kokoro graph (`RLX_STYLETTS2_ORT=1`).
-    pub fn load_ort(model_dir: &Path, device: Device) -> Result<Self> {
-        let inner = Kokoro::load_on(model_dir, "model.onnx", device)?;
-        Ok(Self {
-            backend: Backend::Ort(inner),
-            config: StyleTTS2Config::default(),
-            requested: device,
-        })
+        Self::load_native(model_dir, device)
     }
 
     /// Graph-split RLX path (see [`NativeKokoro`]).
     pub fn load_native(model_dir: &Path, device: Device) -> Result<Self> {
         let inner = NativeKokoro::load(model_dir, device)?;
         Ok(Self {
-            backend: Backend::Native(inner),
+            inner,
             config: StyleTTS2Config::default(),
             requested: device,
         })
@@ -105,19 +69,13 @@ impl StyleTTS2 {
         Self::load(&default_model_dir(), device)
     }
 
-    /// `"native"` (default) or `"ort"` (`RLX_STYLETTS2_ORT=1`).
+    /// Always `"native"` (the RLX graph-split path).
     pub fn path(&self) -> &'static str {
-        match self.backend {
-            Backend::Ort(_) => "ort",
-            Backend::Native(_) => "native",
-        }
+        "native"
     }
 
     pub fn generate(&self, text: &str, voice: &str, speed: f32) -> Result<Vec<f32>> {
-        match &self.backend {
-            Backend::Ort(k) => k.generate_from_text(text, voice, speed),
-            Backend::Native(k) => k.generate_from_text(text, voice, speed),
-        }
+        self.inner.generate_from_text(text, voice, speed)
     }
 
     pub fn synthesize(&self, text: &str) -> Result<Vec<f32>> {
@@ -133,10 +91,7 @@ impl StyleTTS2 {
     }
 
     pub fn voice_names(&self) -> Vec<String> {
-        match &self.backend {
-            Backend::Ort(k) => k.voice_names(),
-            Backend::Native(k) => k.voice_names(),
-        }
+        self.inner.voice_names()
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -144,10 +99,7 @@ impl StyleTTS2 {
     }
 
     pub fn device(&self) -> Device {
-        match &self.backend {
-            Backend::Ort(k) => k.device(),
-            Backend::Native(k) => k.device(),
-        }
+        self.inner.device()
     }
 
     pub fn requested_device(&self) -> Device {

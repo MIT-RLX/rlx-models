@@ -59,15 +59,20 @@ fn compile_waveform_cap(runtime_tokens: usize, engine_cap: usize) -> usize {
 /// (matches `kitten_tts_mini_rlx::bundle_compile::DURATION_COMPILE_HEADROOM`).
 const DURATION_COMPILE_HEADROOM: usize = 6;
 
-/// Graphs compiled at this slot count or above use the wide-seq vocoder path.
-pub const WIDE_COMPILE_SLOT_THRESHOLD: usize = 32;
+/// Graphs compiled at this slot count or above *may* use the wide-seq vocoder path.
+///
+/// Historically we chunked above 32 because F0_conv/N_conv were stub-sized on wide
+/// imports (Concat ASR∥F0∥N collapsed). After `repair_f0n_conv_shapes`, single-pass
+/// at ~75 tokens is Whisper-intelligible; keep a higher ceiling so long phrases do
+/// not get sliced into tiny exploding tail chunks.
+pub const WIDE_COMPILE_SLOT_THRESHOLD: usize = 128;
 
 /// Padded id length → compile slot length (`+ DURATION_COMPILE_HEADROOM`).
 pub fn compile_slot_length(padded_len: usize) -> usize {
     padded_len.saturating_add(DURATION_COMPILE_HEADROOM)
 }
 
-/// Wide-seq vocoder import is unreliable; chunk long inputs into narrow compile slots.
+/// Wide-seq vocoder: chunk only when compile slot would exceed [`WIDE_COMPILE_SLOT_THRESHOLD`].
 pub fn needs_narrow_vocoder_chunking(padded_len: usize) -> bool {
     compile_slot_length(padded_len) >= WIDE_COMPILE_SLOT_THRESHOLD
 }
@@ -80,22 +85,115 @@ pub fn narrow_chunk_slots() -> usize {
         .max(MIN_NATIVE_SEQUENCE_LENGTH)
 }
 
-/// Chunk width for this utterance (narrow vocoder vs length cap).
-pub fn effective_chunk_slots(sequence_length: usize, padded_len: usize) -> usize {
-    if needs_narrow_vocoder_chunking(padded_len) {
-        narrow_chunk_slots().min(infer_chunk_slots(sequence_length))
-    } else {
-        infer_chunk_slots(sequence_length).max(padded_len)
+/// Typical duration units/token for wave-budget chunk sizing (hello is ~2–3;
+/// worst-case compile uses 8). Was 4 — quiet long audio under 48 k Vulkan.
+/// **3** packs ~17 tokens into the 32 k wgpu cap / ~44 into 80 k Vulkan.
+/// Do not drop to 2: denser packing overflows the compile wave buffer
+/// (truncated audio / collapsed peak on MSI).
+const CHUNK_DURATION_UNITS_PER_TOKEN: usize = 3;
+
+/// Minimum padded ids we try to keep when merging a tiny tail chunk.
+const MIN_CHUNK_IDS: usize = 12;
+
+/// Max padded ids whose *typical* wave estimate fits in `max_wave`.
+pub fn tokens_for_waveform_budget(max_wave: usize) -> usize {
+    let per = SAMPLES_PER_DURATION_UNIT.saturating_mul(CHUNK_DURATION_UNITS_PER_TOKEN);
+    if per == 0 {
+        return 8;
     }
+    (max_wave / per).clamp(8, MAX_NATIVE_CHUNK_SLOTS)
 }
 
-/// Split ids into infer chunks (narrow vocoder path when compile slot would be ≥ 32).
+/// Typical-duration sample estimate for `token_len` padded ids.
+#[inline]
+fn typical_wave_samples(token_len: usize) -> usize {
+    token_len
+        .saturating_mul(SAMPLES_PER_DURATION_UNIT)
+        .saturating_mul(CHUNK_DURATION_UNITS_PER_TOKEN)
+}
+
+/// Chunk width for this utterance (narrow vocoder vs length / wave caps).
+pub fn effective_chunk_slots(sequence_length: usize, padded_len: usize) -> usize {
+    effective_chunk_slots_with_wave(sequence_length, padded_len, usize::MAX)
+}
+
+/// Like [`effective_chunk_slots`], but also caps by waveform compile buffer.
+pub fn effective_chunk_slots_with_wave(
+    sequence_length: usize,
+    padded_len: usize,
+    max_wave: usize,
+) -> usize {
+    let engine = infer_chunk_slots(sequence_length).min(sequence_length.max(1));
+    let wave_limited = max_wave != 0 && max_wave != usize::MAX;
+    let wave_cap = if wave_limited {
+        tokens_for_waveform_budget(max_wave)
+    } else {
+        usize::MAX
+    };
+
+    if needs_narrow_vocoder_chunking(padded_len) {
+        return narrow_chunk_slots().min(engine).min(wave_cap);
+    }
+
+    // Single-pass when the compiled engine holds the utterance and the wave
+    // buffer covers a typical-duration estimate.
+    if padded_len <= sequence_length {
+        if !wave_limited || typical_wave_samples(padded_len) <= max_wave {
+            return padded_len;
+        }
+    }
+
+    engine.min(wave_cap).max(1)
+}
+
+/// Split ids into infer chunks (wide-seq, engine length, or wave-buffer limits).
 pub fn chunk_plan(ids: &[i64], sequence_length: usize) -> Vec<(Vec<i64>, usize)> {
-    let slots = effective_chunk_slots(sequence_length, ids.len());
+    chunk_plan_with_wave(ids, sequence_length, usize::MAX)
+}
+
+/// Like [`chunk_plan`], capping chunk width so each piece fits `max_wave`.
+pub fn chunk_plan_with_wave(
+    ids: &[i64],
+    sequence_length: usize,
+    max_wave: usize,
+) -> Vec<(Vec<i64>, usize)> {
+    let slots = effective_chunk_slots_with_wave(sequence_length, ids.len(), max_wave);
     if ids.len() <= slots {
         return vec![(ids.to_vec(), 0)];
     }
-    chunk_padded_ids_with_offsets(ids, slots)
+    merge_tiny_tail_chunks(chunk_padded_ids_with_offsets(ids, slots), slots)
+}
+
+/// Merge a too-small final chunk into the previous one when the merge still
+/// fits `slots` (tiny vocoder tails are unstable).
+fn merge_tiny_tail_chunks(
+    mut chunks: Vec<(Vec<i64>, usize)>,
+    slots: usize,
+) -> Vec<(Vec<i64>, usize)> {
+    while chunks.len() > 1 {
+        let last_len = chunks.last().map(|(c, _)| c.len()).unwrap_or(0);
+        if last_len >= MIN_CHUNK_IDS {
+            break;
+        }
+        let (tail, tail_start) = chunks.pop().unwrap();
+        let (prev, prev_start) = chunks.pop().unwrap();
+        let mut merged = Vec::with_capacity(prev.len() + tail.len());
+        merged.push(0);
+        if prev.len() > 2 {
+            merged.extend_from_slice(&prev[1..prev.len() - 1]);
+        }
+        if tail.len() > 2 {
+            merged.extend_from_slice(&tail[1..tail.len() - 1]);
+        }
+        merged.push(0);
+        if merged.len() > slots {
+            chunks.push((prev, prev_start));
+            chunks.push((tail, tail_start));
+            break;
+        }
+        chunks.push((merged, prev_start));
+    }
+    chunks
 }
 
 pub fn native_compile_token_cap(token_len: usize) -> usize {
@@ -215,19 +313,53 @@ mod tests {
     }
 
     #[test]
-    fn long_phrase_compile_opts_use_chunk_width() {
+    fn long_phrase_compile_opts_no_forced_chunk() {
+        // LONG_IPA ~75 tokens: single-pass after F0_conv fix (threshold 128).
         let (seq, wave) = recommended_native_compile_opts(74);
-        assert_eq!(seq, narrow_chunk_slots());
+        assert_eq!(seq, 74);
         assert!(
-            wave < 200_000,
-            "wave buffer should be chunk-sized, got {wave}"
+            wave >= 74 * SAMPLES_PER_DURATION_UNIT,
+            "wave buffer should cover the full utterance, got {wave}"
         );
+        assert!(!needs_narrow_vocoder_chunking(74));
     }
 
     #[test]
-    fn chunk_plan_splits_wide_compile_slots() {
+    fn wave_budget_forces_chunk_under_wgpu_cap() {
         let ids: Vec<i64> = std::iter::once(0)
-            .chain(1..=72i64)
+            .chain(1..=73i64)
+            .chain(std::iter::once(0))
+            .collect();
+        assert_eq!(ids.len(), 75);
+        // Full wave → single pass when engine is wide enough.
+        let one = chunk_plan_with_wave(&ids, 128, 400_000);
+        assert_eq!(one.len(), 1);
+        // Discrete wgpu safe cap → multiple chunks that fit the sample budget.
+        for &cap_wave in &[24_000usize, 32_000] {
+            let many = chunk_plan_with_wave(&ids, 128, cap_wave);
+            assert!(
+                many.len() > 1,
+                "expected chunking under {cap_wave} wave, got {}",
+                many.len()
+            );
+            let tok_cap = tokens_for_waveform_budget(cap_wave);
+            assert!(
+                many.iter().all(|(c, _)| c.len() <= tok_cap),
+                "chunk wider than wave budget {tok_cap} at {cap_wave}: {:?}",
+                many.iter().map(|(c, _)| c.len()).collect::<Vec<_>>()
+            );
+            assert!(
+                typical_wave_samples(tok_cap) <= cap_wave
+                    || tok_cap == 8,
+                "token budget {tok_cap} exceeds wave {cap_wave}"
+            );
+        }
+    }
+
+    #[test]
+    fn chunk_plan_splits_only_above_wide_threshold() {
+        let ids: Vec<i64> = std::iter::once(0)
+            .chain(1..=200i64)
             .chain(std::iter::once(0))
             .collect();
         assert!(needs_narrow_vocoder_chunking(ids.len()));
@@ -236,7 +368,8 @@ mod tests {
         assert!(
             chunks
                 .iter()
-                .all(|(c, _)| compile_slot_length(c.len()) < WIDE_COMPILE_SLOT_THRESHOLD)
+                .all(|(c, _)| compile_slot_length(c.len()) < WIDE_COMPILE_SLOT_THRESHOLD
+                    || c.len() >= 12)
         );
     }
 

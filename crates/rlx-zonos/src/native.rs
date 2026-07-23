@@ -94,7 +94,18 @@ impl NativeZonos {
         cfg.validate()?;
         let weights = WeightMap::load(dir.join("model.safetensors"))
             .with_context(|| format!("load weights under {}", dir.display()))?;
-        let dac = DacCodec::open_on(dac_dir.as_ref(), device)
+        // DAC decode backend. On CUDA/ROCm the rlx-dac decode path is unvalidated
+        // and diverges (backbone is fine — correct on CPU); `RLX_ZONOS_DAC_DEVICE`
+        // overrides (cpu|gpu). Localize/repair cuda DAC, then flip the default.
+        let dac_device = match std::env::var("RLX_ZONOS_DAC_DEVICE").as_deref() {
+            Ok("cpu") => Device::Cpu,
+            Ok("gpu") | Ok("device") => device,
+            _ => device,
+        };
+        if dac_device != device {
+            eprintln!("[zonos] DAC decode on {dac_device:?} (backbone on {device:?})");
+        }
+        let dac = DacCodec::open_on(dac_dir.as_ref(), dac_device)
             .with_context(|| format!("open DAC at {}", dac_dir.as_ref().display()))?;
         Ok(Self {
             dir,
@@ -212,7 +223,16 @@ impl NativeZonos {
             },
         };
 
-        let codes = if engine::prefer_eager() {
+        // The compiled backbone diverges on CUDA/ROCm (garbage output; correct on
+        // CPU/Metal/MLX) — a not-yet-fixed cuda kernel bug in flow.rs (GptJ RoPE /
+        // GQA attention / mask). Fall back to the host-f32 reference there so the
+        // output is correct (slower). `RLX_ZONOS_EAGER=1|0` forces on/off.
+        let use_eager = match std::env::var("RLX_ZONOS_EAGER").as_deref() {
+            Ok("1") | Ok("true") | Ok("yes") => true,
+            Ok("0") | Ok("false") | Ok("no") => false,
+            _ => matches!(self.device, Device::Cuda | Device::Rocm),
+        };
+        let codes = if use_eager {
             generate::generate_codes_eager(&self.cfg, &self.weights, &ids, &gopts)
                 .context("Zonos eager AR")?
         } else {

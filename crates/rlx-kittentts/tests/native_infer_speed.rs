@@ -23,9 +23,6 @@ use std::time::Instant;
 
 use rlx_kittentts::{Device, KittenTTS, assets, infer_opts};
 
-#[cfg(feature = "onnx")]
-use rlx_kittentts::assets::ModelLayout;
-
 fn max_warm_infer_secs() -> f64 {
     std::env::var("KITTEN_RLX_SPEED_TEST_MAX_SECS")
         .ok()
@@ -111,77 +108,5 @@ fn native_production_warm_infer_speed() {
         elapsed <= limit,
         "production warm infer too slow: {elapsed:.3}s > {limit:.1}s \
          (override with KITTEN_RLX_SPEED_TEST_MAX_SECS)"
-    );
-}
-
-#[cfg(feature = "onnx")]
-#[test]
-fn native_production_faster_than_onnx_warm_cpu() {
-    let Some(weights) = assets::default_native_weights_dir() else {
-        eprintln!("skip: no native weights");
-        return;
-    };
-    let Some(model_dir) = assets::default_model_dir().ok() else {
-        eprintln!("skip: run `just fetch-kittentts`");
-        return;
-    };
-    let layout = ModelLayout::resolve(&model_dir).expect("layout");
-    setup_production_speed_env();
-
-    let ipa = "həˈloʊ";
-    let token_len = rlx_kittentts::ipa_to_ids(ipa).len();
-    let (seq_len, max_wave) = infer_opts::recommended_native_compile_opts(token_len);
-
-    let native = KittenTTS::load_native(
-        &weights,
-        &layout.voices,
-        layout.config.speed_priors.clone(),
-        layout.config.voice_aliases.clone(),
-        Device::Cpu,
-        seq_len,
-        max_wave,
-    )
-    .expect("load_native");
-    let ort = KittenTTS::load_on(
-        &layout.onnx,
-        &layout.voices,
-        layout.config.speed_priors.clone(),
-        layout.config.voice_aliases.clone(),
-        Device::Cpu,
-    )
-    .expect("ort");
-
-    let voice = native.voice_names().first().expect("voice").clone();
-
-    let _ = native
-        .generate_from_ipa(ipa, &voice, 1.0, 6)
-        .expect("native warmup");
-    let _ = ort
-        .generate_from_ipa(ipa, &voice, 1.0, 6)
-        .expect("ort warmup");
-
-    let t0 = Instant::now();
-    let nat_audio = native
-        .generate_from_ipa(ipa, &voice, 1.0, 6)
-        .expect("native warm");
-    let native_secs = t0.elapsed().as_secs_f64();
-
-    let t1 = Instant::now();
-    let ort_audio = ort
-        .generate_from_ipa(ipa, &voice, 1.0, 6)
-        .expect("ort warm");
-    let ort_secs = t1.elapsed().as_secs_f64();
-
-    support::assert_audible(&nat_audio, 500);
-    support::assert_audible(&ort_audio, 500);
-
-    eprintln!(
-        "warm infer cpu: native={native_secs:.3}s onnx={ort_secs:.3}s ratio={:.2}",
-        native_secs / ort_secs.max(1e-9)
-    );
-
-    assert!(
-        native_secs < ort_secs,
-        "native warm infer ({native_secs:.3}s) should be faster than ONNX ({ort_secs:.3}s) on CPU"
     );
 }

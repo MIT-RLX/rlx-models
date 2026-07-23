@@ -245,6 +245,113 @@ impl Qwen35Weights {
         }
         self.token_embd.len() / cfg.hidden_size
     }
+
+    /// True when trunk/MTP projections still hold host F32 mats (vs packed-only).
+    pub fn has_dense_f32_projections(&self) -> bool {
+        fn mat_dense(m: &MatWeight) -> bool {
+            matches!(m, MatWeight::F32(v) if !v.is_empty())
+        }
+        fn ffn_dense(ffn: &Qwen35LayerFfn) -> bool {
+            match ffn {
+                Qwen35LayerFfn::Dense { gate, up, down } => {
+                    mat_dense(gate) || mat_dense(up) || mat_dense(down)
+                }
+                Qwen35LayerFfn::Moe(m) => {
+                    mat_dense(&m.router)
+                        || mat_dense(&m.gate_exps)
+                        || mat_dense(&m.up_exps)
+                        || mat_dense(&m.down_exps)
+                        || mat_dense(&m.shared_gate)
+                        || mat_dense(&m.shared_up)
+                        || mat_dense(&m.shared_down)
+                }
+            }
+        }
+        fn full_dense(t: &Qwen35FullAttnLayer) -> bool {
+            mat_dense(&t.attn_q_gate)
+                || mat_dense(&t.attn_k)
+                || mat_dense(&t.attn_v)
+                || mat_dense(&t.attn_output)
+                || ffn_dense(&t.ffn)
+        }
+        self.trunk_layers.iter().any(|l| match l {
+            Qwen35TrunkLayer::Linear(t) => {
+                mat_dense(&t.attn_qkv)
+                    || mat_dense(&t.attn_gate)
+                    || mat_dense(&t.ssm_beta)
+                    || mat_dense(&t.ssm_alpha)
+                    || mat_dense(&t.ssm_out)
+                    || ffn_dense(&t.ffn)
+            }
+            Qwen35TrunkLayer::FullAttn(t) => full_dense(t),
+        }) || self.mtp_layers.iter().any(|m| {
+            full_dense(&m.base)
+                || mat_dense(&m.eh_proj)
+                || m.embed_tokens.as_ref().is_some_and(mat_dense)
+                || m.shared_head_head.as_ref().is_some_and(mat_dense)
+        }) || self.output.as_ref().is_some_and(mat_dense)
+    }
+
+    /// Drop host F32 projection storage after device upload (keeps norms / embd).
+    pub fn clear_dense_f32_projections(&mut self) {
+        fn clear_mat(m: &mut MatWeight) {
+            if let MatWeight::F32(v) = m {
+                v.clear();
+                v.shrink_to_fit();
+            }
+        }
+        fn clear_ffn(ffn: &mut Qwen35LayerFfn) {
+            match ffn {
+                Qwen35LayerFfn::Dense { gate, up, down } => {
+                    clear_mat(gate);
+                    clear_mat(up);
+                    clear_mat(down);
+                }
+                Qwen35LayerFfn::Moe(m) => {
+                    clear_mat(&mut m.router);
+                    clear_mat(&mut m.gate_exps);
+                    clear_mat(&mut m.up_exps);
+                    clear_mat(&mut m.down_exps);
+                    clear_mat(&mut m.shared_gate);
+                    clear_mat(&mut m.shared_up);
+                    clear_mat(&mut m.shared_down);
+                }
+            }
+        }
+        fn clear_full(t: &mut Qwen35FullAttnLayer) {
+            clear_mat(&mut t.attn_q_gate);
+            clear_mat(&mut t.attn_k);
+            clear_mat(&mut t.attn_v);
+            clear_mat(&mut t.attn_output);
+            clear_ffn(&mut t.ffn);
+        }
+        for layer in &mut self.trunk_layers {
+            match layer {
+                Qwen35TrunkLayer::Linear(t) => {
+                    clear_mat(&mut t.attn_qkv);
+                    clear_mat(&mut t.attn_gate);
+                    clear_mat(&mut t.ssm_beta);
+                    clear_mat(&mut t.ssm_alpha);
+                    clear_mat(&mut t.ssm_out);
+                    clear_ffn(&mut t.ffn);
+                }
+                Qwen35TrunkLayer::FullAttn(t) => clear_full(t),
+            }
+        }
+        for m in &mut self.mtp_layers {
+            clear_full(&mut m.base);
+            clear_mat(&mut m.eh_proj);
+            if let Some(e) = m.embed_tokens.as_mut() {
+                clear_mat(e);
+            }
+            if let Some(h) = m.shared_head_head.as_mut() {
+                clear_mat(h);
+            }
+        }
+        if let Some(o) = self.output.as_mut() {
+            clear_mat(o);
+        }
+    }
 }
 
 impl Qwen35Weights {
@@ -718,6 +825,8 @@ mod tests {
             rope_theta: 10_000_000.0,
             rope_dim_count: 64,
             rope_dim_sections: vec![],
+            mrope_interleaved: false,
+            rms_norm_offset: false,
             full_attention_interval: 4,
             ssm_conv_kernel: 4,
             ssm_group_count: 16,

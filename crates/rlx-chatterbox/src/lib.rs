@@ -16,17 +16,13 @@
 //! ChatterBox — Resemble AI's zero-shot voice-cloning TTS for RLX (MIT, 24 kHz).
 //!
 //! A 0.5B-Llama **T3** (text→speech-token) backbone + **S3Gen** flow vocoder.
-//! The default path is **native RLX** (ONNX graphs imported to rlx-ir, compiled
-//! per backend — no ONNX Runtime at inference). Optional `onnx` feature keeps
-//! the ORT reference path for parity.
+//! The runtime is **native RLX** (ONNX graphs imported to rlx-ir, compiled
+//! per backend — no ONNX Runtime at inference).
 //!
 //! Pipeline: reference audio → `speech_encoder` → conditioning; T3 AR samples
 //! speech tokens; `conditional_decoder` / HiFT → 24 kHz PCM.
 
 pub mod common;
-
-#[cfg(feature = "onnx")]
-pub mod model;
 
 /// Native ort-free runtime — imports the ONNX graphs → rlx-ir → compile → run
 /// on any RLX backend (cpu/metal/mlx/wgpu/coreml).
@@ -34,9 +30,6 @@ pub mod model;
 pub mod native;
 
 pub use common::{SAMPLE_RATE, SynthOpts, peak_amplitude, polish_onset};
-
-#[cfg(feature = "onnx")]
-pub use model::ChatterBox;
 
 #[cfg(feature = "native")]
 pub use native::NativeChatterBox;

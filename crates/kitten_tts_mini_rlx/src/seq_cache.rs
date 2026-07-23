@@ -27,6 +27,10 @@ pub struct CachedSeqGraphs {
     pub full: Arc<Mutex<CompiledGraph>>,
     pub duration_refine: Option<Arc<Mutex<CompiledGraph>>>,
     pub waveform_only: Option<Arc<Mutex<CompiledGraph>>>,
+    /// True when `duration_refine` was compiled for CPU (safe to share via the
+    /// process-wide duration parity cache). GPU-computed durations must not be
+    /// reused by other backends.
+    pub duration_on_cpu: bool,
 }
 
 impl CachedSeqGraphs {
@@ -35,6 +39,7 @@ impl CachedSeqGraphs {
             full: Arc::new(Mutex::new(full)),
             duration_refine: None,
             waveform_only: None,
+            duration_on_cpu: false,
         }
     }
 
@@ -47,6 +52,7 @@ impl CachedSeqGraphs {
             full: Arc::new(Mutex::new(full)),
             duration_refine: Some(Arc::new(Mutex::new(duration_refine))),
             waveform_only: Some(Arc::new(Mutex::new(waveform_only))),
+            duration_on_cpu: false,
         }
     }
 
@@ -114,5 +120,6 @@ fn clone_entry(entry: &CachedSeqGraphs) -> CachedSeqGraphs {
         full: Arc::clone(&entry.full),
         duration_refine: entry.duration_refine.as_ref().map(Arc::clone),
         waveform_only: entry.waveform_only.as_ref().map(Arc::clone),
+        duration_on_cpu: entry.duration_on_cpu,
     }
 }

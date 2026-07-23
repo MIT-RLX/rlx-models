@@ -14,10 +14,11 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Qwen3.5 VLM mmproj config — parsed from GGUF `clip.*` metadata keys
-//! (llama.cpp `tools/mtmd/clip-impl.h`).
+//! (llama.cpp `tools/mtmd/clip-impl.h`) or HF `vision_config`.
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use rlx_gguf::{GgufFile, MetaValue};
+use std::path::Path;
 
 /// Vision / mmproj hyperparameters from a Qwen3-VL `mmproj` GGUF.
 #[derive(Debug, Clone)]
@@ -144,6 +145,91 @@ impl MmProjConfig {
             n_ff: u32k("clip.vision.feed_forward_length")? as usize,
             deepstack_layers: arr_bool_layers("clip.vision.is_deepstack_layers"),
         })
+    }
+
+    /// Read `vision_config` from a HuggingFace Qwen3.5 / Fara multimodal
+    /// `config.json`. Image mean/std default to the Qwen3-VL preprocessor
+    /// constants (`0.5`).
+    pub fn from_hf_config_json(path: &Path) -> Result<Self> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| anyhow!("qwen35 vision: read {path:?}: {e}"))?;
+        let v: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| anyhow!("qwen35 vision: parse {path:?}: {e}"))?;
+        Self::from_hf_config_value(&v, path)
+    }
+
+    /// Parse vision hyperparameters from an already-decoded HF config.
+    pub fn from_hf_config_value(v: &serde_json::Value, path: &Path) -> Result<Self> {
+        let top = v
+            .as_object()
+            .ok_or_else(|| anyhow!("qwen35 vision: {path:?} is not a JSON object"))?;
+        let vc = top
+            .get("vision_config")
+            .and_then(|c| c.as_object())
+            .ok_or_else(|| anyhow!("qwen35 vision: missing vision_config in {path:?}"))?;
+        let u =
+            |k: &str| -> Option<usize> { vc.get(k).and_then(|x| x.as_u64()).map(|n| n as usize) };
+        let f = |k: &str| -> Option<f64> { vc.get(k).and_then(|x| x.as_f64()) };
+
+        let patch_size = u("patch_size").unwrap_or(16);
+        let n_embd = u("hidden_size")
+            .ok_or_else(|| anyhow!("qwen35 vision: missing hidden_size in {path:?}"))?;
+        let n_head = u("num_heads")
+            .or_else(|| u("num_attention_heads"))
+            .unwrap_or(16);
+        let n_layer = u("depth")
+            .or_else(|| u("num_hidden_layers"))
+            .ok_or_else(|| anyhow!("qwen35 vision: missing depth in {path:?}"))?;
+        let n_merge = u("spatial_merge_size").unwrap_or(2);
+        let n_ff = u("intermediate_size").unwrap_or(n_embd * 4);
+        let llm_hidden_size = u("out_hidden_size").unwrap_or(n_embd);
+        let num_pos = u("num_position_embeddings").unwrap_or(2304);
+        // `num_position_embeddings` is a square grid (e.g. 48² = 2304).
+        let grid = (num_pos as f64).sqrt().round() as usize;
+        let image_size = grid.saturating_mul(patch_size).max(patch_size);
+
+        let deepstack_layers = vc
+            .get("deepstack_visual_indexes")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_u64().map(|n| n as usize))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let mut cfg = Self {
+            patch_size,
+            n_embd,
+            n_head,
+            n_layer,
+            image_size,
+            image_min_pixels: 1024 * n_merge * n_merge * patch_size * patch_size,
+            image_max_pixels: 4096 * n_merge * n_merge * patch_size * patch_size,
+            n_merge,
+            eps: f("rms_norm_eps")
+                .or_else(|| f("layer_norm_eps"))
+                .unwrap_or(1e-6),
+            projector_type: "qwen3vl".into(),
+            image_mean: [0.5, 0.5, 0.5],
+            image_std: [0.5, 0.5, 0.5],
+            spatial_merge_size: n_merge,
+            llm_hidden_size,
+            n_ff,
+            deepstack_layers,
+        };
+        // Low-mem / short-ctx overrides (Fara BF16 otherwise upscales to ≥1M pixels).
+        if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MIN_PIXELS") {
+            if let Ok(n) = v.parse::<usize>() {
+                cfg.image_min_pixels = n.max(1);
+            }
+        }
+        if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MAX_PIXELS") {
+            if let Ok(n) = v.parse::<usize>() {
+                cfg.image_max_pixels = n.max(cfg.image_min_pixels);
+            }
+        }
+        Ok(cfg)
     }
 
     /// Alignment factor for smart resize (`patch_size * n_merge`).

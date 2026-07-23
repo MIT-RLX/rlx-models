@@ -16,11 +16,6 @@
 //! Compile-time feature probes and backend labels.
 
 #[inline]
-pub fn onnx_feature_enabled() -> bool {
-    cfg!(feature = "onnx")
-}
-
-#[inline]
 pub fn rlx_feature_enabled() -> bool {
     cfg!(feature = "rlx")
 }
@@ -62,9 +57,6 @@ pub fn gpu_feature_enabled() -> bool {
 
 pub fn enabled_backend_labels() -> Vec<&'static str> {
     let mut v = Vec::new();
-    if onnx_feature_enabled() {
-        v.push("onnx/ort");
-    }
     if native_feature_enabled() {
         v.push("rlx/native");
     }
@@ -72,21 +64,21 @@ pub fn enabled_backend_labels() -> Vec<&'static str> {
         v.push("espeak/phonemize");
     }
     if rlx_feature_enabled() {
-        v.push("rlx/onnx-parity");
+        v.push("rlx/runtime");
         if metal_feature_enabled() {
-            v.push("onnx/metal");
+            v.push("rlx/metal");
         }
         if mlx_feature_enabled() {
-            v.push("onnx/mlx");
+            v.push("rlx/mlx");
         }
         if cuda_feature_enabled() {
-            v.push("onnx/cuda");
+            v.push("rlx/cuda");
         }
         if rocm_feature_enabled() {
-            v.push("onnx/rocm");
+            v.push("rlx/rocm");
         }
         if gpu_feature_enabled() {
-            v.push("onnx/gpu");
+            v.push("rlx/gpu");
         }
     }
     v

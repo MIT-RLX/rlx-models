@@ -87,7 +87,8 @@ mod weights;
 pub mod synth;
 
 pub use chat::{
-    ChatFormatOpts, ChatMessage, ChatRole, EMPTY_THINK_BLOCK, SpecialTokenIds, THINK_BUDGET_CLOSE,
+    ChatFormatOpts, ChatMessage, ChatRole, EMPTY_THINK_BLOCK, OPEN_THINK_PREFIX, SpecialTokenIds,
+    THINK_BUDGET_CLOSE,
     ThinkingBudgetWatch, encode_chat, encode_chat_auto, encode_chat_auto_with, format_chatml,
     format_chatml_with, messages_from_prompt, parse_messages_json, split_thinking,
 };
@@ -102,7 +103,8 @@ pub use builder::{
     build_qwen35_graph_sized_ext, build_qwen35_hir_sized_ext, build_qwen35_layer_probe_graph,
     build_qwen35_prefill_cache_graph, build_qwen35_prefill_cache_graph_ext,
     build_qwen35_prefill_cache_hir_dynamic_ext, build_qwen35_prefill_cache_hir_ext,
-    build_qwen35_prefill_hidden_cache_hir_dynamic_ext, build_qwen35_prefix_graph,
+    build_qwen35_prefill_hidden_cache_hir_dynamic_ext, build_qwen35_prefill_hidden_cache_hir_ext,
+    build_qwen35_prefix_graph,
     build_qwen35_trunk_export_graph, emit_qwen35_full_attn_prefill_layer,
     emit_qwen35_gdn_prefill_layer, emit_qwen35_prefill_tail,
 };

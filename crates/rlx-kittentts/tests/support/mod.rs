@@ -17,10 +17,8 @@
 
 #![allow(dead_code)]
 
-use std::path::Path;
-
 use rlx_kittentts::{
-    Device, KittenTTS, MIN_AUDIBLE_PEAK, SAMPLE_RATE, assets, ipa_style_index, peak_amplitude,
+    MIN_AUDIBLE_PEAK, SAMPLE_RATE, assets, ipa_style_index, peak_amplitude,
 };
 
 // Aliased (not `pub use`, which test binaries strip as unused) so integration
@@ -29,10 +27,6 @@ pub const LONG_IPA: &str = rlx_kittentts::phrase_fixtures::LONG_IPA;
 
 pub fn model_dir() -> Option<std::path::PathBuf> {
     assets::default_model_dir().ok()
-}
-
-pub fn load_model_on(dir: &Path, device: Device) -> Result<KittenTTS, Box<dyn std::error::Error>> {
-    Ok(KittenTTS::load_from_dir(dir, device)?)
 }
 
 pub fn assert_audible(audio: &[f32], min_samples: usize) {
@@ -52,94 +46,6 @@ pub fn style_for(ipa: &str) -> usize {
     ipa_style_index(ipa)
 }
 
-#[cfg(all(feature = "native", feature = "onnx"))]
-pub fn setup_native_env() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| unsafe {
-        std::env::set_var("KITTENTTS_ORT_INTRA_THREADS", "1");
-        std::env::remove_var("KITTEN_RLX_BUNDLE");
-        std::env::remove_var("RLX_ONNX_BUNDLE");
-        std::env::remove_var("KITTEN_RLX_WEIGHTS");
-        std::env::remove_var("KITTEN_RLX_FORCE_BUNDLE");
-        std::env::remove_var("KITTEN_RLX_FORCE_WEIGHTS");
-        std::env::remove_var("KITTEN_RLX_SPLIT_GRAPHS");
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let aot = std::env::temp_dir().join(format!("kitten_aot_{}_{nonce}", std::process::id()));
-        std::env::set_var("KITTEN_RLX_AOT_CACHE", &aot);
-    });
-}
-
-/// Parity tests: zero vocoder noise + isolated AOT cache.
-#[cfg(all(feature = "native", feature = "onnx"))]
-pub fn setup_native_parity_env() {
-    setup_native_env();
-    setup_native_parity_flags();
-    unsafe {
-        std::env::remove_var("KITTEN_RLX_GRAPH_CACHE");
-    }
-}
-
-/// Weights-only native path (no `rlx_bundle` env).
-#[cfg(all(feature = "native", feature = "onnx"))]
-pub fn setup_native_parity_env_weights_only() {
-    unsafe {
-        std::env::set_var("KITTENTTS_ORT_INTRA_THREADS", "1");
-        std::env::remove_var("KITTEN_RLX_BUNDLE");
-        std::env::remove_var("RLX_ONNX_BUNDLE");
-        let aot = std::env::temp_dir().join(format!("kitten_aot_{}", std::process::id()));
-        std::env::set_var("KITTEN_RLX_AOT_CACHE", &aot);
-    }
-    setup_native_parity_flags();
-}
-
-/// Production native + ORT duration oracle (Whisper round-trip tests).
-#[cfg(all(feature = "native", feature = "onnx"))]
-pub fn setup_native_production_whisper_env() {
-    setup_native_env();
-    unsafe {
-        std::env::set_var("KITTEN_RLX_INFER", "production");
-        std::env::remove_var("KITTEN_RLX_PARITY");
-        std::env::remove_var("KITTEN_RLX_FULL_GRAPH");
-        std::env::remove_var("KITTEN_RLX_SINGLE_PASS");
-        std::env::remove_var("KITTEN_RLX_RNG_SEED");
-        std::env::remove_var("KITTEN_RLX_RNG_BACKEND");
-        std::env::remove_var("KITTEN_RLX_ORT_DURATION_CARRY");
-        std::env::remove_var("KITTEN_RLX_COMPILE_HEADROOM");
-        std::env::set_var("KITTENTTS_TAIL_TRIM", "0");
-    }
-}
-
-#[cfg(all(feature = "native", feature = "onnx"))]
-pub fn setup_pure_native_parity_env() {
-    setup_native_parity_env();
-    unsafe {
-        std::env::set_var("KITTEN_RLX_NO_ORT_WAVEFORM_FALLBACK", "1");
-        // Split graphs so mel pre/post propagate runs (see mel_shape_propagate_enabled).
-        std::env::remove_var("KITTEN_RLX_FULL_GRAPH");
-        std::env::remove_var("KITTEN_RLX_ENABLE_NARROW_WAVEFORM_SLICE");
-        std::env::set_var("KITTEN_RLX_SKIP_PREWARM", "1");
-    }
-}
-
-#[cfg(all(feature = "native", feature = "onnx"))]
-fn setup_native_parity_flags() {
-    unsafe {
-        std::env::set_var("KITTEN_RLX_INFER", "parity");
-        std::env::set_var("KITTEN_RLX_PARITY", "1");
-        std::env::set_var("KITTEN_RLX_SINGLE_PASS", "1");
-        std::env::remove_var("KITTEN_RLX_NO_ORT_DURATION");
-        std::env::remove_var("KITTEN_RLX_NO_ORT_WAVEFORM_FALLBACK");
-        std::env::remove_var("KITTEN_RLX_COMPILE_HEADROOM");
-        std::env::remove_var("KITTEN_RLX_ARENA_ALLOW_REUSE");
-        std::env::remove_var("KITTEN_RLX_RNG_SEED");
-        std::env::remove_var("KITTEN_RLX_ORT_DURATION_CARRY");
-        std::env::set_var("KITTENTTS_TAIL_TRIM", "0");
-    }
-}
-
 /// Native smokes: production infer + compile headroom (wide-seq single pass).
 #[cfg(feature = "native")]
 pub fn setup_native_smoke_env() {
@@ -154,20 +60,6 @@ pub fn setup_native_smoke_env() {
         let aot = std::env::temp_dir().join(format!("kitten_smoke_aot_{}", std::process::id()));
         std::env::set_var("KITTEN_RLX_AOT_CACHE", &aot);
     }
-}
-
-#[cfg(all(feature = "native", feature = "onnx"))]
-pub fn first_voice(
-    layout: &rlx_kittentts::assets::ModelLayout,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let ort = rlx_kittentts::KittenTTS::load_on(
-        &layout.onnx,
-        &layout.voices,
-        layout.config.speed_priors.clone(),
-        layout.config.voice_aliases.clone(),
-        Device::Cpu,
-    )?;
-    Ok(ort.voice_names().first().expect("voice").clone())
 }
 
 /// Slice `candidate` at the lag that best aligns with `reference` (for ASR after parity metrics).

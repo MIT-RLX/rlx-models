@@ -1,4 +1,0 @@
-[rlx-qwen35] qwen35: tokenized prompt → 8 ids
-[rlx-qwen35] qwen35: weights="/Users/Shared/rlx-models/weights/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf" device=cpu batch=1 max_seq=48 mtp=false spec_decode=false packed=true dynamic_prefill=false dynamic_decode=false mmproj=none
-[qwen35] loaded GGUF metadata in 1.08s (layers=64, hidden=5120, ssm_state=128)
-[qwen35] read weights (packed) in 305.95ms

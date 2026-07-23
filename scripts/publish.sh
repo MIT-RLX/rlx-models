@@ -69,7 +69,8 @@
 # Notable ordering: `kitten_tts_mini_rlx` before `rlx-kittentts`; `rlx-whisper`
 # before `rlx-kittentts` (dev-dep for roundtrip tests); `rlx-llama32` / `rlx-gemma`
 # (tier 4) before `rlx-minicpm5` / `rlx-voxtral-tts-train` (tier 5–6);
-# `rlx-guardrails` before `rlx-serve`; `rlx-kokoro` before `rlx-styletts2`;
+# `rlx-guardrails` before `rlx-serve`; `rlx-openai` after `rlx-serve` + LM crates
+# (`rlx-qwen3`, `rlx-laguna`, …); `rlx-kokoro` before `rlx-styletts2`;
 # `rlx-luxtts` before `rlx-zipvoice`; `rlx-quant-calib` before `rlx-tune`;
 # `rlx-distributed` before `rlx-qwen3`.
 # Workspace / upstream pin: 0.2.13 — bump `[workspace.package].version` and
@@ -158,11 +159,11 @@ SKIPPED=(
 TIERS=(
     "kitten_tts_mini_rlx rlx-assets rlx-diamond rlx-diarize rlx-distributed rlx-guardrails rlx-llama-base rlx-model-hub rlx-models-core rlx-inflect-nano rlx-onnx-decompose rlx-protocol rlx-quant-calib rlx-ssm rlx-vlm-base rlx-wav2vec2-asr"
     "rlx-bert rlx-cli rlx-encodec rlx-facodec rlx-llada2 rlx-mamba rlx-nanocodec rlx-nomic rlx-sam-ir rlx-snac rlx-speechtokenizer rlx-tiny-tts rlx-tune rlx-vibevoice rlx-vision rlx-wavtokenizer rlx-xcodec"
-    "rlx-bioclip2 rlx-clinicalbert rlx-dac rlx-dinov2 rlx-dinov3 rlx-hoct rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-grounding-dino rlx-lfm rlx-lfm-vl rlx-minimax rlx-nemotron-asr rlx-ocr rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-siglip2 rlx-uni2 rlx-vad rlx-vjepa2 rlx-wav2vec2-bert"
-    "rlx-eval rlx-flux2 rlx-locateanything rlx-omnicoder rlx-qwen25-vl rlx-qwen35 rlx-sam2 rlx-sam3 rlx-serve rlx-trellis2 rlx-tsac rlx-vit-elastic rlx-whisper"
-    "rlx-aec rlx-gemma rlx-kittentts rlx-llama32 rlx-mimi rlx-nemotron-omni rlx-pocket-tts rlx-qwen3-asr rlx-chatterbox rlx-f5tts rlx-gepard rlx-kokoro rlx-luxtts rlx-melotts rlx-metavoice rlx-miotts rlx-miratts rlx-moss-nano rlx-openvoice rlx-parlertts rlx-piper rlx-sesame rlx-soprano rlx-supertonic rlx-zonos"
-    "rlx-bonsai rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-inkling rlx-kyutai-tts rlx-minicpm5 rlx-mistral rlx-moshi rlx-nemotron rlx-neutts rlx-orpheus rlx-maya1 rlx-phi rlx-qwen3-tts rlx-styletts2 rlx-tinyllama rlx-voxtral rlx-voxtral-tts rlx-zipvoice"
-    "rlx-models rlx-qwen3-tts-train rlx-voxtral-tts-train"
+    "rlx-bioclip2 rlx-clinicalbert rlx-conformer-ctc rlx-dac rlx-dinov2 rlx-dinov3 rlx-hoct rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-grounding-dino rlx-lfm rlx-lfm-vl rlx-minimax rlx-nemotron-asr rlx-ocr rlx-ocr2 rlx-asr rlx-ppocrv6 rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-siglip2 rlx-uni2 rlx-vad rlx-vjepa2 rlx-wav2vec2-bert"
+    "rlx-eval rlx-flux2 rlx-locateanything rlx-unlimited-ocr rlx-omnicoder rlx-qwen25-vl rlx-qwen35 rlx-fara rlx-sam2 rlx-sam3 rlx-serve rlx-trellis2 rlx-tsac rlx-vit-elastic rlx-whisper"
+    "rlx-aec rlx-gemma rlx-kittentts rlx-tts rlx-llama32 rlx-mimi rlx-nemotron-omni rlx-pocket-tts rlx-qwen3-asr rlx-chatterbox rlx-f5tts rlx-gepard rlx-kokoro rlx-luxtts rlx-melotts rlx-metavoice rlx-miotts rlx-miratts rlx-moss-nano rlx-openvoice rlx-parlertts rlx-piper rlx-sesame rlx-soprano rlx-supertonic rlx-zonos"
+    "rlx-bonsai rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-inkling rlx-laguna rlx-kyutai-tts rlx-minicpm5 rlx-nanbeige rlx-mistral rlx-moshi rlx-nemotron rlx-neutts rlx-orpheus rlx-maya1 rlx-phi rlx-qwen3-tts rlx-styletts2 rlx-tinyllama rlx-voxtral rlx-voxtral-tts rlx-zipvoice"
+    "rlx-openai rlx-models rlx-qwen3-tts-train rlx-voxtral-tts-train"
 )
 
 usage() {

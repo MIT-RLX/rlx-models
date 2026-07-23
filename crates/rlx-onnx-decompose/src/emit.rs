@@ -388,6 +388,35 @@ fn emit_graph_rs(plan: &DecomposePlan) -> String {
             e.line("id");
         });
         e.line("}");
+        e.line("fn i64_data(&self, name: &str) -> Result<&[i64]> {");
+        e.block(|e| {
+            e.line("self.i64_params.get(name).map(|v| v.as_slice()).with_context(|| format!(\"i64 tensor {:?}\", name))");
+        });
+        e.line("}");
+    });
+    e.line("}");
+    e.line("");
+    e.line("fn reshape_dims_from_i64(numel: usize, raw: &[i64], input_dims: &[usize]) -> Vec<i64> {");
+    e.block(|e| {
+        e.line("let mut dims: Vec<i64> = raw.to_vec();");
+        e.line("// ONNX: 0 means copy from the corresponding input dimension.");
+        e.line("for (i, d) in dims.iter_mut().enumerate() {");
+        e.block(|e| {
+            e.line("if *d == 0 {");
+            e.block(|e| {
+                e.line("if let Some(&id) = input_dims.get(i) { *d = id as i64; }");
+            });
+            e.line("}");
+        });
+        e.line("}");
+        e.line("if let Some(neg) = dims.iter().position(|&d| d < 0) {");
+        e.block(|e| {
+            e.line("let known: i64 = dims.iter().filter(|&&d| d > 0).product();");
+            e.line("let known = known.max(1) as usize;");
+            e.line("dims[neg] = (numel / known.max(1)) as i64;");
+        });
+        e.line("}");
+        e.line("dims");
     });
     e.line("}");
     e.line("");
@@ -529,15 +558,28 @@ fn emit_shape_helper(e: &mut Emitter) {
     e.line("}");
     e.line("");
     e.line(
-        "fn binary_infer(m: &mut HirMut, op: BinaryOp, a: HirNodeId, b: HirNodeId) -> HirNodeId {",
+        "fn binary_infer(m: &mut HirMut, op: BinaryOp, a: HirNodeId, b: HirNodeId, _site: &str) -> HirNodeId {",
+    );
+    e.block(|e| {
+        e.line("binary_infer_inner(m, op, a, b)");
+    });
+    e.line("}");
+    e.line("");
+    e.line(
+        "fn binary_infer_inner(m: &mut HirMut, op: BinaryOp, a: HirNodeId, b: HirNodeId) -> HirNodeId {",
     );
     e.block(|e| {
         e.line("let mut a_in = a;");
         e.line("let mut b_in = b;");
         e.line("let sa0 = m.shape(a_in).clone();");
         e.line("let sb0 = m.shape(b_in).clone();");
-        e.line("if sa0.rank() == 1 && sb0.rank() >= 2 { a_in = broadcast_param_channels(m, a_in, b_in); }");
-        e.line("else if sb0.rank() == 1 && sa0.rank() >= 2 { b_in = broadcast_param_channels(m, b_in, a_in); }");
+        e.line("if (sa0.rank() == 0 || sa0.rank() == 1) && sb0.rank() >= 2 {");
+        e.line("  let a1 = if sa0.rank() == 0 { m.reshape_(a_in, vec![1]) } else { a_in };");
+        e.line("  a_in = broadcast_param_channels(m, a1, b_in);");
+        e.line("} else if (sb0.rank() == 0 || sb0.rank() == 1) && sa0.rank() >= 2 {");
+        e.line("  let b1 = if sb0.rank() == 0 { m.reshape_(b_in, vec![1]) } else { b_in };");
+        e.line("  b_in = broadcast_param_channels(m, b1, a_in);");
+        e.line("}");
         e.line("let sa = m.shape(a_in).clone();");
         e.line("let sb = m.shape(b_in).clone();");
         e.line("if let Ok(sh) = shape::binary_shape(&sa, &sb) {");
@@ -577,6 +619,45 @@ fn emit_shape_helper(e: &mut Emitter) {
         e.line("m.add_node(rlx_ir::Op::Binary(op), vec![a_in, b_in], sh)");
     });
     e.line("}");
+    e.line("");
+    // Abramowitz–Stegun 7.1.26 erf (same as rlx-onnx-import lower_erf).
+    e.line("fn hir_erf(b: &mut Builder, x: HirNodeId, site: &str) -> HirNodeId {");
+    e.block(|e| {
+        e.line("let s = { let m = HirMut::new(&mut b.hir); m.shape(x).clone() };");
+        e.line("let sc = |b: &mut Builder, tag: &str, v: f32| -> HirNodeId {");
+        e.line("  let key = format!(\"__erf_{tag}__/{site}\");");
+        e.line("  b.bind_param(&key, &[1], vec![v])");
+        e.line("};");
+        e.line("let one = sc(b, \"one\", 1.0);");
+        e.line("let p = sc(b, \"p\", 0.327_591_1);");
+        e.line("let a5 = sc(b, \"a5\", 1.061_405_4);");
+        e.line("let a0 = sc(b, \"a0\", -1.453_152_1);");
+        e.line("let a1 = sc(b, \"a1\", 1.421_413_8);");
+        e.line("let a2 = sc(b, \"a2\", -0.284_496_72);");
+        e.line("let a3 = sc(b, \"a3\", 0.254_829_6);");
+        e.line("let tiny = sc(b, \"tiny\", 1e-20);");
+        e.line("let mut m = HirMut::new(&mut b.hir);");
+        e.line("let ax = m.add_node(rlx_ir::Op::Activation(Activation::Abs), vec![x], s.clone());");
+        e.line("let pax = m.add_node(rlx_ir::Op::Binary(BinaryOp::Mul), vec![ax, p], s.clone());");
+        e.line("let denom = m.add_node(rlx_ir::Op::Binary(BinaryOp::Add), vec![pax, one], s.clone());");
+        e.line("let t = m.add_node(rlx_ir::Op::Binary(BinaryOp::Div), vec![one, denom], s.clone());");
+        e.line("let mut acc = a5;");
+        e.line("for coef in [a0, a1, a2, a3] {");
+        e.line("  let tm = m.add_node(rlx_ir::Op::Binary(BinaryOp::Mul), vec![t, acc], s.clone());");
+        e.line("  acc = m.add_node(rlx_ir::Op::Binary(BinaryOp::Add), vec![tm, coef], s.clone());");
+        e.line("}");
+        e.line("let poly = m.add_node(rlx_ir::Op::Binary(BinaryOp::Mul), vec![t, acc], s.clone());");
+        e.line("let x2 = m.add_node(rlx_ir::Op::Binary(BinaryOp::Mul), vec![x, x], s.clone());");
+        e.line("let negx2 = m.add_node(rlx_ir::Op::Activation(Activation::Neg), vec![x2], s.clone());");
+        e.line("let ex = m.add_node(rlx_ir::Op::Activation(Activation::Exp), vec![negx2], s.clone());");
+        e.line("let pe = m.add_node(rlx_ir::Op::Binary(BinaryOp::Mul), vec![poly, ex], s.clone());");
+        e.line("let y = m.add_node(rlx_ir::Op::Binary(BinaryOp::Sub), vec![one, pe], s.clone());");
+        e.line("let x2t = m.add_node(rlx_ir::Op::Binary(BinaryOp::Add), vec![x2, tiny], s.clone());");
+        e.line("let inv = m.add_node(rlx_ir::Op::Activation(Activation::Rsqrt), vec![x2t], s.clone());");
+        e.line("let sign = m.add_node(rlx_ir::Op::Binary(BinaryOp::Mul), vec![x, inv], s.clone());");
+        e.line("m.add_node(rlx_ir::Op::Binary(BinaryOp::Mul), vec![sign, y], s)");
+    });
+    e.line("}");
 }
 
 fn emit_node(
@@ -591,6 +672,9 @@ fn emit_node(
     for name in &node.inputs {
         if inits.contains(name.as_str()) && !node.outputs.is_empty() {
             if let Some(shape) = plan.init_shapes.get(name) {
+                // RLX has no rank-0; promote ONNX scalar `dims=[]` to `[1]`
+                // (same as rlx-onnx-import lowerer) so Binary broadcast works.
+                let shape: &[usize] = if shape.is_empty() { &[1] } else { shape };
                 let shape_lit = format!(
                     "&[{}]",
                     shape
@@ -656,6 +740,231 @@ fn emit_node(
         }
         e.line(format!("b.bind({}, {});", rust_str_lit(val_out), val_ident));
         e.line(format!("b.bind({}, {});", rust_str_lit(idx_out), idx_ident));
+    } else if node.op == "Shape" && !node.inputs.is_empty() && !node.outputs.is_empty() {
+        let out = &node.outputs[0];
+        let out_ident = format!("n_{}", sanitize_ident(out));
+        // Bind under the ONNX output name so later Slice/Concat/Reshape can fold i64 vectors.
+        e.line(format!(
+            "let {out_ident} = {{ let x = b.tensor({})?; let mut m = HirMut::new(&mut b.hir); \
+             let s = m.shape(x).clone(); \
+             let data: Vec<i64> = (0..s.rank()).map(|i| s.dim(i).unwrap_static() as i64).collect(); \
+             b.bind_param_i64({}, &[data.len()], data) }};",
+            rust_str_lit(&node.inputs[0]),
+            rust_str_lit(out),
+        ));
+        e.line(format!("b.bind({}, {});", rust_str_lit(out), out_ident));
+    } else if node.op == "Slice"
+        && node.inputs.len() >= 3
+        && !node.outputs.is_empty()
+        && plan.i64_params.contains_key(node.inputs[1].as_str())
+        && plan.i64_params.contains_key(node.inputs[2].as_str())
+    {
+        let out = &node.outputs[0];
+        let out_ident = format!("n_{}", sanitize_ident(out));
+        let starts = &plan.i64_params[&node.inputs[1]];
+        let ends = &plan.i64_params[&node.inputs[2]];
+        let axes = node
+            .inputs
+            .get(3)
+            .and_then(|n| plan.i64_params.get(n.as_str()))
+            .cloned()
+            .unwrap_or_else(|| vec![0]);
+        let axis = axes.first().copied().unwrap_or(0).max(0) as usize;
+        let start = starts.first().copied().unwrap_or(0).max(0) as usize;
+        let end = ends.first().copied().unwrap_or(start as i64 + 1);
+        // Prefer constant-fold when slicing an i64 shape vector (SVTR reshape path).
+        e.line(format!(
+            "let {out_ident} = {{ \
+             let src = b.i64_data({}).ok().map(|s| s.to_vec()); \
+             if let Some(data) = src {{ \
+             let end_i: i64 = {end}; \
+             let dim = data.len(); \
+             let end = if end_i < 0 {{ dim.saturating_sub((-end_i) as usize) }} else {{ (end_i as usize).min(dim) }}; \
+             let sliced = data.get({start}..end).unwrap_or(&[]).to_vec(); \
+             b.bind_param_i64({}, &[sliced.len().max(1)], if sliced.is_empty() {{ vec![0] }} else {{ sliced }}) \
+             }} else {{ \
+             let x = b.tensor({})?; let mut m = HirMut::new(&mut b.hir); \
+             let dim = m.shape(x).dim({axis}).unwrap_static(); \
+             let end_i: i64 = {end}; \
+             let end = if end_i < 0 {{ dim.saturating_sub((-end_i) as usize) }} else {{ (end_i as usize).min(dim) }}; \
+             let len = end.saturating_sub({start}).max(1); \
+             m.narrow_(x, {axis}, {start}, len) }} }};",
+            rust_str_lit(&node.inputs[0]),
+            rust_str_lit(out),
+            rust_str_lit(&node.inputs[0]),
+        ));
+        e.line(format!("b.bind({}, {});", rust_str_lit(out), out_ident));
+    } else if node.op == "Concat" && !node.outputs.is_empty() {
+        // Constant-fold Concat of i64 shape pieces when every input has i64 data.
+        let out = &node.outputs[0];
+        let out_ident = format!("n_{}", sanitize_ident(out));
+        let axis = node
+            .attrs
+            .get("axis")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if axis == 0 {
+            let gets: String = node
+                .inputs
+                .iter()
+                .map(|n| format!("b.i64_data({}).ok().map(|s| s.to_vec())", rust_str_lit(n)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let prefetch: String = node
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    format!(
+                        "let __t_{out_ident}_{i} = b.tensor({})?;",
+                        rust_str_lit(n)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let ids: String = (0..node.inputs.len())
+                .map(|i| format!("__t_{out_ident}_{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            e.line(format!(
+                "let {out_ident} = {{ \
+                 let parts: Vec<Option<Vec<i64>>> = vec![{gets}]; \
+                 if parts.iter().all(|p| p.is_some()) {{ \
+                   let mut data = Vec::new(); \
+                   for p in parts {{ data.extend(p.unwrap()); }} \
+                   b.bind_param_i64({}, &[data.len()], data) \
+                 }} else {{ \
+                   {prefetch} \
+                   let mut m = HirMut::new(&mut b.hir); \
+                   m.add_node(rlx_ir::Op::Concat {{ axis: 0 }}, vec![{ids}], Shape::new(&[{}], DType::I64)) \
+                 }} }};",
+                rust_str_lit(out),
+                node.inputs.len().max(1),
+            ));
+            e.line(format!("b.bind({}, {});", rust_str_lit(out), out_ident));
+        } else {
+            for line in rlx_onnx_import::emit_codegen::emit_node_body(node, &out_ident) {
+                e.line(line);
+            }
+            e.line(format!("b.bind({}, {});", rust_str_lit(out), out_ident));
+        }
+    } else if (node.op == "Identity" || node.op == "Cast")
+        && !node.outputs.is_empty()
+        && !node.inputs.is_empty()
+    {
+        // Alias i64 shape vectors through Identity/Cast so later Reshape can fold.
+        let out = &node.outputs[0];
+        let out_ident = format!("n_{}", sanitize_ident(out));
+        let inp = &node.inputs[0];
+        e.line(format!(
+            "let {out_ident} = {{ \
+             if let Some(data) = b.i64_data({}).ok().map(|s| s.to_vec()) {{ \
+               b.bind_param_i64({}, &[data.len()], data) \
+             }} else {{ \
+               b.tensor({})? \
+             }} }};",
+            rust_str_lit(inp),
+            rust_str_lit(out),
+            rust_str_lit(inp),
+        ));
+        e.line(format!("b.bind({}, {});", rust_str_lit(out), out_ident));
+    } else if (node.op == "Squeeze" || node.op == "Unsqueeze")
+        && !node.outputs.is_empty()
+        && !node.inputs.is_empty()
+    {
+        let out = &node.outputs[0];
+        let out_ident = format!("n_{}", sanitize_ident(out));
+        let inp = &node.inputs[0];
+        if node.op == "Squeeze" {
+            let axes: Vec<i64> = node
+                .attrs
+                .get("axes")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+                .unwrap_or_default();
+            let axes_lit = format!(
+                "[{}]",
+                axes.iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            e.line(format!(
+                "let {out_ident} = {{ \
+                 if let Some(data) = b.i64_data({}).ok().map(|s| s.to_vec()) {{ \
+                   b.bind_param_i64({}, &[data.len().max(1)], if data.is_empty() {{ vec![0] }} else {{ data }}) \
+                 }} else {{ \
+                   let x = b.tensor({})?; let mut m = HirMut::new(&mut b.hir); \
+                   let sh = m.shape(x).clone(); \
+                   let axes: &[i64] = &{axes_lit}; \
+                   let mut dims: Vec<i64> = Vec::new(); \
+                   for i in 0..sh.rank() {{ \
+                     let d = sh.dim(i).unwrap_static() as i64; \
+                     let axis_i = i as i64; \
+                     let drop = if axes.is_empty() {{ d == 1 }} else {{ axes.contains(&axis_i) && d == 1 }}; \
+                     if !drop {{ dims.push(d); }} \
+                   }} \
+                   if dims.is_empty() {{ dims.push(1); }} \
+                   m.reshape_(x, dims) \
+                 }} }};",
+                rust_str_lit(inp),
+                rust_str_lit(out),
+                rust_str_lit(inp),
+            ));
+        } else {
+            // Unsqueeze: wrap scalar i64 as length-1 vector.
+            e.line(format!(
+                "let {out_ident} = {{ \
+                 if let Some(data) = b.i64_data({}).ok().map(|s| s.to_vec()) {{ \
+                   let v = if data.is_empty() {{ 0 }} else {{ data[0] }}; \
+                   b.bind_param_i64({}, &[1], vec![v]) \
+                 }} else {{ \
+                   let x = b.tensor({})?; let sh = shape_from_meta({}, opts); \
+                   let dims: Vec<i64> = sh.dims().iter().map(|d| d.unwrap_static() as i64).collect(); \
+                   let mut m = HirMut::new(&mut b.hir); m.reshape_(x, dims) \
+                 }} }};",
+                rust_str_lit(inp),
+                rust_str_lit(out),
+                rust_str_lit(inp),
+                node.output_meta
+                    .first()
+                    .map(|m| format!("&serde_json::json!({m})"))
+                    .unwrap_or_else(|| {
+                        "&serde_json::json!({\"dtype\":\"i64\",\"shape\":[1]})".into()
+                    }),
+            ));
+        }
+        e.line(format!("b.bind({}, {});", rust_str_lit(out), out_ident));
+    } else if node.op == "Reshape" && node.inputs.len() >= 2 && !node.outputs.is_empty() {
+        let out = &node.outputs[0];
+        let out_ident = format!("n_{}", sanitize_ident(out));
+        let meta_fallback = node
+            .output_meta
+            .first()
+            .map(|m| format!("&serde_json::json!({})", m))
+            .unwrap_or_else(|| {
+                "&serde_json::json!({\"dtype\":\"f32\",\"shape\":[1]})".into()
+            });
+        e.line(format!(
+            "let {out_ident} = {{ \
+             let raw_shape = b.i64_data({}).ok().map(|s| s.to_vec()); \
+             let x = b.tensor({})?; \
+             if let Some(raw) = raw_shape {{ \
+               let mut m = HirMut::new(&mut b.hir); \
+               let in_s = m.shape(x).clone(); \
+               let numel = in_s.num_elements().unwrap_or(1); \
+               let input_dims: Vec<usize> = (0..in_s.rank()).map(|i| in_s.dim(i).unwrap_static()).collect(); \
+               let dims = reshape_dims_from_i64(numel, &raw, &input_dims); \
+               m.reshape_(x, dims) \
+             }} else {{ \
+               let sh = shape_from_meta({meta_fallback}, opts); \
+               let dims: Vec<i64> = sh.dims().iter().map(|d| d.unwrap_static() as i64).collect(); \
+               let mut m = HirMut::new(&mut b.hir); m.reshape_(x, dims) \
+             }} }};",
+            rust_str_lit(&node.inputs[1]),
+            rust_str_lit(&node.inputs[0]),
+        ));
+        e.line(format!("b.bind({}, {});", rust_str_lit(out), out_ident));
     } else {
         let out = node.outputs.first().map(String::as_str).unwrap_or("out");
         let out_ident = format!("n_{}", sanitize_ident(out));

@@ -15,8 +15,8 @@
 
 //! Model-specific bundle graph patches before `rlx-onnx-import` lowering.
 
-use std::cell::Cell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rlx_ir::hir::{HirGraphExt, HirModule, HirMut, HirNodeId, HirOp};
 use rlx_ir::op::BinaryOp;
@@ -25,6 +25,8 @@ use rlx_onnx_import::BundleNode;
 
 use crate::kernels::{
     ALIGNMENT_SCATTER_INDICES, CONCAT_FROM_SEQUENCE, CONCAT_FROM_SEQUENCE_ONNX, F0_IF_SELECT,
+    F0_NCHW_UNSQUEEZE,
+    F0_NEAREST_UPSAMPLE,
 };
 use crate::mel_align;
 use crate::opts::{ALIGNMENT_FRAME_COUNT, CONCAT_SEQUENCE_STUB, RANGE_2_STUB};
@@ -45,7 +47,7 @@ fn max_alignment_frames(sequence_length: usize, max_waveform_samples: usize) -> 
     mel_align::compile_mel_cap(
         sequence_length,
         max_waveform_samples,
-        crate::bundle_compile::MAX_FRAMES_PER_TOKEN,
+        crate::bundle_compile::max_frames_per_token(),
     )
 }
 
@@ -328,6 +330,37 @@ pub(crate) fn inject_if_proj_bypass(hir: &mut HirModule, stub: &str, proj_id: Hi
     };
     let align_id = ensure_alignment_frame_param(hir);
     let stub_shape = hir.node(if_id).shape.clone();
+    // Prefer the live F0/N proj axis (`2·mel_cap`). That length is what ORT feeds through
+    // Unsqueeze→F0_conv/N_conv (stride 2) into `/decoder/Concat` alongside MatMul_1 at
+    // `mel_cap`. Using wave `frame_cap` (= max_wave/300) starved F0_conv (~92 vs 576) and
+    // left Concat ASR∥F0∥N unintelligible even with correct F0_proj values.
+    //
+    // NSF `f0_upsamp` still works: F0NearestUpsample writes into a fixed `[1,max_wave,1]`
+    // buffer and only consumes the first `max_wave/300` input frames (active `2·mel` prefix
+    // is real F0; the rest is zero pad).
+    let max_wave = import_max_waveform_samples();
+    let seq = import_sequence_length().max(1);
+    let mel_cap = mel_align::compile_mel_cap(
+        seq,
+        max_wave.max(1),
+        crate::bundle_compile::max_frames_per_token(),
+    );
+    let f0_frames = mel_cap.saturating_mul(2).max(frame_cap(max_wave));
+    if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+        eprintln!(
+            "[if_inject] stub={} stub_shape={:?} max_wave={} mel_cap={mel_cap} f0_frames={f0_frames}",
+            stub,
+            stub_shape.dims(),
+            max_wave
+        );
+    }
+    let dtype = stub_shape.dtype();
+    let new_shape = match stub_shape.dims().len() {
+        3 => Some(Shape::new(&[1, 1, f0_frames], dtype)),
+        2 => Some(Shape::new(&[1, f0_frames], dtype)),
+        1 => Some(Shape::new(&[f0_frames], dtype)),
+        _ => None,
+    };
     let node = hir.node_mut(if_id);
     node.op = HirOp::Mir(Op::Custom {
         name: F0_IF_SELECT.to_string(),
@@ -335,8 +368,7 @@ pub(crate) fn inject_if_proj_bypass(hir: &mut HirModule, stub: &str, proj_id: Hi
         attrs: vec![],
     });
     node.inputs = vec![proj_id, align_id];
-    // Keep `lower_if_stub` output shape — runtime `F0IfSelect` trims/pads inside the buffer.
-    node.shape = stub_shape;
+    node.shape = new_shape.unwrap_or(stub_shape);
     true
 }
 
@@ -352,6 +384,362 @@ pub(crate) fn inject_if_n_bypass(hir: &mut HirModule) -> bool {
         return false;
     };
     inject_if_proj_bypass(hir, IF_1_OUTPUT_STUB, n_id)
+}
+
+/// Replace F0/N projection compute with named Params (ORT-prosody → native-vocoder partition).
+///
+/// Call **after** [`inject_if_f0_bypass`] / [`inject_if_n_bypass`] so `F0IfSelect` already
+/// points at these nodes. Pads `f0`/`n` (ORT live length) into the compiled proj axis with
+/// trailing zeros. Returns the Param names + element counts written into `params`.
+pub fn replace_f0n_proj_with_params(
+    hir: &mut HirModule,
+    params: &mut HashMap<String, Vec<f32>>,
+    f0: &[f32],
+    n: &[f32],
+) -> Option<(String, usize, String, usize)> {
+    use crate::opts::{ORT_F0_PROJ_PARAM, ORT_N_PROJ_PARAM};
+
+    let f0_id = find_f0_proj_cast(hir)?;
+    let n_id = find_n_proj_cast(hir)?;
+    let f0_len: usize = hir
+        .node(f0_id)
+        .shape
+        .dims()
+        .iter()
+        .map(|d| d.unwrap_static())
+        .product();
+    let n_len: usize = hir
+        .node(n_id)
+        .shape
+        .dims()
+        .iter()
+        .map(|d| d.unwrap_static())
+        .product();
+    let mut f0_buf = vec![0.0f32; f0_len];
+    let mut n_buf = vec![0.0f32; n_len];
+    let f0_copy = f0.len().min(f0_len);
+    let n_copy = n.len().min(n_len);
+    f0_buf[..f0_copy].copy_from_slice(&f0[..f0_copy]);
+    n_buf[..n_copy].copy_from_slice(&n[..n_copy]);
+
+    {
+        let node = hir.node_mut(f0_id);
+        node.op = HirOp::Mir(Op::Param {
+            name: ORT_F0_PROJ_PARAM.to_string(),
+        });
+        node.inputs.clear();
+    }
+    {
+        let node = hir.node_mut(n_id);
+        node.op = HirOp::Mir(Op::Param {
+            name: ORT_N_PROJ_PARAM.to_string(),
+        });
+        node.inputs.clear();
+    }
+    params.insert(ORT_F0_PROJ_PARAM.to_string(), f0_buf);
+    params.insert(ORT_N_PROJ_PARAM.to_string(), n_buf);
+    Some((
+        ORT_F0_PROJ_PARAM.to_string(),
+        f0_len,
+        ORT_N_PROJ_PARAM.to_string(),
+        n_len,
+    ))
+}
+
+fn hir_numel(hir: &HirModule, id: HirNodeId) -> usize {
+    hir.node(id)
+        .shape
+        .dims()
+        .iter()
+        .map(|d| d.unwrap_static())
+        .product()
+}
+
+/// Largest HIR node named `name` (skip aliased scalar/helper stubs).
+fn find_largest_named(hir: &HirModule, name: &str) -> Option<HirNodeId> {
+    let mut best: Option<(usize, HirNodeId)> = None;
+    for idx in 0..hir.len() {
+        let id = HirNodeId(idx as u32);
+        if hir.node(id).name.as_deref() != Some(name) {
+            continue;
+        }
+        let n = hir_numel(hir, id);
+        if best.is_none_or(|(bn, _)| n > bn) {
+            best = Some((n, id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Replace `/decoder/Concat` (ASR∥F0∥N → encode) with an ORT Param.
+///
+/// ORT live shape is `[1, C, mel]`; native pad is `[1, C, mel_cap]`. Copies each channel's
+/// active frames into the padded axis (not a flat prefix — that would scramble channels).
+pub fn replace_decoder_concat_with_param(
+    hir: &mut HirModule,
+    params: &mut HashMap<String, Vec<f32>>,
+    concat: &[f32],
+    ort_channels: usize,
+    ort_frames: usize,
+) -> Option<(String, usize)> {
+    use crate::opts::ORT_DECODER_CONCAT_PARAM;
+    let id = find_largest_named(hir, "/decoder/Concat")?;
+    let dims: Vec<usize> = hir
+        .node(id)
+        .shape
+        .dims()
+        .iter()
+        .map(|d| d.unwrap_static())
+        .collect();
+    if dims.len() != 3 {
+        return None;
+    }
+    let (n, c, t) = (dims[0], dims[1], dims[2]);
+    let len = n * c * t;
+    let mut buf = vec![0.0f32; len];
+    let c_copy = ort_channels.min(c);
+    let t_copy = ort_frames.min(t);
+    for ci in 0..c_copy {
+        let src = ci * ort_frames;
+        let dst = ci * t;
+        if src + t_copy <= concat.len() && dst + t_copy <= buf.len() {
+            buf[dst..dst + t_copy].copy_from_slice(&concat[src..src + t_copy]);
+        }
+    }
+    {
+        let node = hir.node_mut(id);
+        node.op = HirOp::Mir(Op::Param {
+            name: ORT_DECODER_CONCAT_PARAM.to_string(),
+        });
+        node.inputs.clear();
+    }
+    params.insert(ORT_DECODER_CONCAT_PARAM.to_string(), buf);
+    Some((ORT_DECODER_CONCAT_PARAM.to_string(), len))
+}
+
+/// Replace `/MatMul_1` (aligned ASR → decoder Concat) with an ORT Param.
+///
+/// ORT live `[1, C, mel]` → native `[1, C, mel_cap]` with per-channel time pad.
+pub fn replace_matmul1_with_param(
+    hir: &mut HirModule,
+    params: &mut HashMap<String, Vec<f32>>,
+    matmul1: &[f32],
+    ort_channels: usize,
+    ort_frames: usize,
+) -> Option<(String, usize)> {
+    use crate::opts::ORT_MATMUL1_PARAM;
+    let id = find_largest_named(hir, "/MatMul_1")?;
+    let dims: Vec<usize> = hir
+        .node(id)
+        .shape
+        .dims()
+        .iter()
+        .map(|d| d.unwrap_static())
+        .collect();
+    if dims.len() != 3 {
+        return None;
+    }
+    let (n, c, t) = (dims[0], dims[1], dims[2]);
+    let len = n * c * t;
+    let mut buf = vec![0.0f32; len];
+    let c_copy = ort_channels.min(c);
+    let t_copy = ort_frames.min(t);
+    for ci in 0..c_copy {
+        let src = ci * ort_frames;
+        let dst = ci * t;
+        if src + t_copy <= matmul1.len() && dst + t_copy <= buf.len() {
+            buf[dst..dst + t_copy].copy_from_slice(&matmul1[src..src + t_copy]);
+        }
+    }
+    {
+        let node = hir.node_mut(id);
+        node.op = HirOp::Mir(Op::Param {
+            name: ORT_MATMUL1_PARAM.to_string(),
+        });
+        node.inputs.clear();
+    }
+    params.insert(ORT_MATMUL1_PARAM.to_string(), buf);
+    Some((ORT_MATMUL1_PARAM.to_string(), len))
+}
+
+/// Replace the dead `__resize__/f0_upsamp` Param (and voicing-mask shapes) after F0 If bypass.
+///
+/// Lower bakes Unsqueeze/Resize from the seq-width If stub into a zero Param; F0IfSelect alone
+/// cannot revive that. Rebuild ×`MEL_DIV` nearest upsample from the live `/If` F0IfSelect.
+fn inject_f0_nearest_upsample(hir: &mut HirModule, max_waveform_samples: usize) -> bool {
+    let if_id = find_node_by_name(hir, "/If").or_else(|| {
+        (0..hir.len()).find_map(|idx| {
+            let id = HirNodeId(idx as u32);
+            match &hir.node(id).op {
+                HirOp::Mir(Op::Custom { name, .. }) if name == F0_IF_SELECT => Some(id),
+                _ => None,
+            }
+        })
+    });
+    let Some(if_id) = if_id else {
+        return false;
+    };
+    // Only repair after F0 If bypass landed.
+    let is_f0_select = matches!(
+        &hir.node(if_id).op,
+        HirOp::Mir(Op::Custom { name, .. }) if name == F0_IF_SELECT
+    );
+    if !is_f0_select {
+        return false;
+    }
+    let Some(resize_id) = find_node_by_name(hir, "/decoder/generator/f0_upsamp/Resize") else {
+        return false;
+    };
+    let max_wave = max_waveform_samples
+        .max(import_max_waveform_samples())
+        .max(1);
+    // BLC `[1, max_wave, 1]` matches ORT Transpose→Greater (Transpose is often dropped).
+    let wave_blc = Shape::new(&[1, max_wave, 1], DType::F32);
+    {
+        let node = hir.node_mut(resize_id);
+        node.op = HirOp::Mir(Op::Custom {
+            name: F0_NEAREST_UPSAMPLE.to_string(),
+            num_inputs: 1,
+            attrs: (MEL_DIV as u32).to_le_bytes().to_vec(),
+        });
+        node.inputs = vec![if_id];
+        node.shape = wave_blc.clone();
+        if node.name.is_none() {
+            node.name = Some("/decoder/generator/f0_upsamp/Resize".into());
+        }
+    }
+    if let Some(unsq) = find_node_by_name(hir, "/decoder/Unsqueeze") {
+        let seq = import_sequence_length().max(1);
+        let mel_cap = mel_align::compile_mel_cap(
+            seq,
+            max_wave,
+            crate::bundle_compile::max_frames_per_token(),
+        );
+        let f0_frames = mel_cap.saturating_mul(2).max(frame_cap(max_wave));
+        let node = hir.node_mut(unsq);
+        node.op = HirOp::Mir(Op::Custom {
+            name: F0_NCHW_UNSQUEEZE.to_string(),
+            num_inputs: 1,
+            attrs: vec![],
+        });
+        node.inputs = vec![if_id];
+        node.shape = Shape::new(&[1, 1, 1, f0_frames], DType::F32);
+    }
+    if let Some(unsq) = find_node_by_name(hir, "/decoder/Unsqueeze_1") {
+        let seq = import_sequence_length().max(1);
+        let mel_cap = mel_align::compile_mel_cap(
+            seq,
+            max_wave,
+            crate::bundle_compile::max_frames_per_token(),
+        );
+        let f0_frames = mel_cap.saturating_mul(2).max(frame_cap(max_wave));
+        // N path: same 2·mel_cap axis as F0 (feeds N_conv stride-2 → mel_cap for Concat).
+        let n_if = find_node_by_name(hir, "/If_1").unwrap_or(if_id);
+        let node = hir.node_mut(unsq);
+        node.op = HirOp::Mir(Op::Custom {
+            name: F0_NCHW_UNSQUEEZE.to_string(),
+            num_inputs: 1,
+            attrs: vec![],
+        });
+        node.inputs = vec![n_if];
+        node.shape = Shape::new(&[1, 1, 1, f0_frames], DType::F32);
+    }
+    for idx in 0..hir.len() {
+        let id = HirNodeId(idx as u32);
+        let name = hir.node(id).name.as_deref().unwrap_or("");
+        if name != "/decoder/generator/m_source/l_sin_gen/Greater"
+            && name != "/decoder/generator/m_source/l_sin_gen/Cast"
+        {
+            continue;
+        }
+        match &hir.node(id).op {
+            HirOp::Mir(Op::Expand { .. }) => {
+                let dt = hir.node(id).shape.dtype();
+                hir.node_mut(id).op = HirOp::Mir(Op::Expand {
+                    target_shape: vec![1, max_wave as i64, 1],
+                });
+                hir.node_mut(id).shape = Shape::new(&[1, max_wave, 1], dt);
+            }
+            HirOp::Mir(Op::Compare(_)) | HirOp::Mir(Op::Cast { .. }) => {
+                let dt = hir.node(id).shape.dtype();
+                hir.node_mut(id).shape = Shape::new(&[1, max_wave, 1], dt);
+            }
+            _ => {}
+        }
+    }
+    if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+        eprintln!("[f0_upsamp_repair] Resize→F0NearestUpsample×{MEL_DIV} out=[1,{max_wave},1]");
+    }
+    repair_f0n_conv_shapes(hir, max_wave);
+    true
+}
+
+/// Fix `/decoder/F0_conv` + `/decoder/N_conv` after If/Unsqueeze grow to `2·mel_cap`.
+///
+/// Lower leaves these Conv chains at a stub width (~5) from the seq-sized If. Concat and
+/// MatMul_1 expect `mel_cap` on the time axis; ORT runs F0_conv with stride 2 on the live
+/// `2·mel` curve → `mel` frames. Patch Conv `[1,1,1,mel_cap]` and the squeeze/Add to
+/// `[1,1,mel_cap]`.
+fn repair_f0n_conv_shapes(hir: &mut HirModule, max_wave: usize) {
+    let seq = import_sequence_length().max(1);
+    let mel_cap = mel_align::compile_mel_cap(
+        seq,
+        max_wave.max(1),
+        crate::bundle_compile::max_frames_per_token(),
+    );
+    let f0_frames = mel_cap.saturating_mul(2);
+    for name in ["/decoder/Unsqueeze", "/decoder/Unsqueeze_1"] {
+        if let Some(id) = find_node_by_name(hir, name) {
+            // Feed conv2d as NCHW `[1,1,1,W]` via a host Custom — do not use Reshape.
+            // MLX `mlx_fix_reshape_shape` used to rewrite batch `1→seq` when the
+            // producer buffer was `seq·W` elems, then F0_conv failed on the fat tensor.
+            let node = hir.node_mut(id);
+            node.op = HirOp::Mir(Op::Custom {
+                name: F0_NCHW_UNSQUEEZE.to_string(),
+                num_inputs: 1,
+                attrs: vec![],
+            });
+            node.shape = Shape::new(&[1, 1, 1, f0_frames], DType::F32);
+        }
+    }
+    for conv_name in ["/decoder/F0_conv/Conv", "/decoder/N_conv/Conv"] {
+        let mut conv_id: Option<HirNodeId> = None;
+        let mut reshape_id: Option<HirNodeId> = None;
+        let mut add_id: Option<HirNodeId> = None;
+        for idx in 0..hir.len() {
+            let id = HirNodeId(idx as u32);
+            if hir.node(id).name.as_deref() != Some(conv_name) {
+                continue;
+            }
+            match &hir.node(id).op {
+                HirOp::Mir(Op::Conv { .. }) => conv_id = Some(id),
+                HirOp::Mir(Op::Reshape { new_shape }) if new_shape.len() == 3 => {
+                    // Post-conv squeeze to rank-3 (weight reshape is `[1,1,1,3]`).
+                    reshape_id = Some(id);
+                }
+                HirOp::Mir(Op::Binary(BinaryOp::Add)) => add_id = Some(id),
+                _ => {}
+            }
+        }
+        if let Some(id) = conv_id {
+            hir.node_mut(id).shape = Shape::new(&[1, 1, 1, mel_cap], DType::F32);
+        }
+        if let Some(id) = reshape_id {
+            let node = hir.node_mut(id);
+            node.op = HirOp::Mir(Op::Reshape {
+                new_shape: vec![1, 1, mel_cap as i64],
+            });
+            node.shape = Shape::new(&[1, 1, mel_cap], DType::F32);
+        }
+        if let Some(id) = add_id {
+            hir.node_mut(id).shape = Shape::new(&[1, 1, mel_cap], DType::F32);
+        }
+        if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+            eprintln!(
+                "[f0n_conv_repair] {conv_name} → Conv[1,1,1,{mel_cap}] Add[1,1,{mel_cap}] (was stub ~5)"
+            );
+        }
+    }
 }
 
 fn ensure_alignment_frame_param(hir: &mut HirModule) -> HirNodeId {
@@ -505,6 +893,12 @@ pub fn inject_vocoder_dynamic_alignment(
     if inject_if_n_bypass(hir) {
         patched = true;
     }
+    if inject_f0_nearest_upsample(hir, max_waveform_samples) {
+        patched = true;
+    }
+    if fix_sine_broadcast_reshapes(hir) {
+        patched = true;
+    }
     if sequence_length < 32
         && crate::compile_profile::env_flag("KITTEN_RLX_ENABLE_NARROW_WAVEFORM_SLICE")
         && inject_vocoder_waveform_slice(hir, max_waveform_samples)
@@ -514,25 +908,102 @@ pub fn inject_vocoder_dynamic_alignment(
     patched
 }
 
-thread_local! {
-    static IMPORT_SEQUENCE_LENGTH: Cell<usize> = const { Cell::new(128) };
-    static IMPORT_MAX_WAVEFORM: Cell<usize> = const { Cell::new(48_000) };
+/// Materialize the NSF sine-gen broadcast operands.
+///
+/// The importer lowers the rad-chain broadcasting `Mul`/`Div`/`Sub` (e.g. `f0[1,T,1] ×
+/// harmonics[1,1,9]`) by *reshaping* both operands to the output shape `[1,T,9]`. A `Reshape`
+/// only ALIASES its input buffer, so when the operand is a small constant/param (harmonics =
+/// 9 elems, sample-rate = 1 elem) the aliased view claims `[1,T,9]` while the buffer holds 9 →
+/// the consuming op reads far past the buffer, into uninitialized arena memory (NaN poison).
+/// That NaN flows the whole sine chain → `Sin` NaN → dead vocoder harmonic source.
+///
+/// Fix: rewrite each sine-gen broadcast `Reshape` (declared output strictly larger than its
+/// input, and numpy-broadcast-compatible) into an `Expand`, which ALLOCATES a full output
+/// buffer and replicates — so every rad-chain buffer is fully written.
+fn fix_sine_broadcast_reshapes(hir: &mut HirModule) -> bool {
+    const PREFIX: &str = "/decoder/generator/";
+    // input broadcasts to target iff, right-aligned, each input dim is 1 or == target dim.
+    fn broadcastable(inp: &[usize], target: &[usize]) -> bool {
+        if inp.len() > target.len() {
+            return false;
+        }
+        let off = target.len() - inp.len();
+        inp.iter()
+            .enumerate()
+            .all(|(i, &d)| d == 1 || d == target[off + i])
+    }
+    let mut fixed = 0usize;
+    for idx in 0..hir.len() {
+        let id = HirNodeId(idx as u32);
+        let n = hir.node(id);
+        if !n.name.as_deref().is_some_and(|nm| nm.starts_with(PREFIX)) {
+            continue;
+        }
+        if !matches!(n.op, HirOp::Mir(Op::Reshape { .. })) || n.inputs.is_empty() {
+            continue;
+        }
+        let out_dims: Vec<usize> = n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
+        if out_dims.iter().any(|&d| d == 0) {
+            continue;
+        }
+        let out_nel: usize = out_dims.iter().product();
+        let in_dims: Vec<usize> = hir
+            .node(n.inputs[0])
+            .shape
+            .dims()
+            .iter()
+            .map(|d| d.unwrap_static())
+            .collect();
+        let in_nel: usize = in_dims.iter().product();
+        if out_nel <= in_nel || !broadcastable(&in_dims, &out_dims) {
+            continue;
+        }
+        let target: Vec<i64> = out_dims.iter().map(|&d| d as i64).collect();
+        hir.node_mut(id).op = HirOp::Mir(Op::Expand {
+            target_shape: target,
+        });
+        fixed += 1;
+    }
+    fixed > 0
 }
 
+// Process-global (not thread-local): split-graph compile spawns worker threads that call
+// `prepare_hir_for_compile` / inject. Thread-locals kept the default 48k wave cap on those
+// workers while the engine compiled for 55.2k → F0NearestUpsample×300 at the wrong length
+// and a dead NSF sine path (DC mush).
+static IMPORT_SEQUENCE_LENGTH: AtomicUsize = AtomicUsize::new(128);
+static IMPORT_MAX_WAVEFORM: AtomicUsize = AtomicUsize::new(48_000);
+
 pub fn set_import_sequence_length(seq: usize) {
-    IMPORT_SEQUENCE_LENGTH.with(|c| c.set(seq));
+    IMPORT_SEQUENCE_LENGTH.store(seq, Ordering::Release);
 }
 
 pub fn set_import_max_waveform_samples(samples: usize) {
-    IMPORT_MAX_WAVEFORM.with(|c| c.set(samples));
+    IMPORT_MAX_WAVEFORM.store(samples, Ordering::Release);
+    // Compile paths call `set_compile_sequence_length` immediately before this, so the compile
+    // seq is already in the env. Record the mel cap into a process-global so the active-frame
+    // InstanceNorm kernel (on rayon executors) can scale its window for the upsampled prosody
+    // blocks. Skip when either dim is unknown (probe/warmup) to avoid poisoning the global.
+    if let Some(seq) = crate::opts::compile_sequence_length_from_env() {
+        if samples > 0 && seq > 0 {
+            let cap = mel_align::compile_mel_cap(
+                seq,
+                samples,
+                crate::bundle_compile::max_frames_per_token(),
+            );
+            crate::opts::set_runtime_mel_cap(cap);
+            // Wave-rate generator AdaINs scale by the wave-frame cap, not the mel cap.
+            crate::opts::set_runtime_wave_cap(samples.div_ceil(SAMPLES_PER_ALIGNMENT_FRAME));
+        }
+    }
 }
 
 pub(crate) fn import_sequence_length() -> usize {
-    IMPORT_SEQUENCE_LENGTH.with(|c| c.get())
+    IMPORT_SEQUENCE_LENGTH.load(Ordering::Acquire)
 }
 
 pub(crate) fn import_max_waveform_samples() -> usize {
-    IMPORT_MAX_WAVEFORM.with(|c| c.get())
+    IMPORT_MAX_WAVEFORM.load(Ordering::Acquire)
 }
 
 fn frame_cap(max_wave: usize) -> usize {
@@ -583,7 +1054,7 @@ pub fn patch_bundle_nodes(
         nodes,
         sequence_length,
         max_waveform_samples,
-        crate::bundle_compile::MAX_FRAMES_PER_TOKEN,
+        crate::bundle_compile::max_frames_per_token(),
         sequence_length < 32,
     );
 }
@@ -656,6 +1127,17 @@ fn explicit_vocoder_shape(node_name: &str, max_wave: usize) -> Option<Vec<usize>
     let frames = frame_cap(max_wave);
     let table: HashMap<&str, Vec<usize>> = HashMap::from([
         ("/decoder/generator/f0_upsamp/Resize", vec![1, 1, max_wave]),
+        // Voicing mask: Greater(F0_upsampled, 10) → Cast → [1, max_wave, 1]. Empty meta
+        // previously collapsed to `[1,1,300,seq]` and zeroed the NSF sine source.
+        ("/decoder/generator/Transpose", vec![1, max_wave, 1]),
+        (
+            "/decoder/generator/m_source/l_sin_gen/Greater",
+            vec![1, max_wave, 1],
+        ),
+        (
+            "/decoder/generator/m_source/l_sin_gen/Cast",
+            vec![1, max_wave, 1],
+        ),
         (
             "/decoder/generator/m_source/l_sin_gen/Resize",
             vec![1, HARMONICS, frames],
@@ -736,6 +1218,14 @@ fn explicit_vocoder_shape(node_name: &str, max_wave: usize) -> Option<Vec<usize>
             "/decoder/generator/m_source/l_sin_gen/Floor",
             vec![1, max_wave, HARMONICS],
         ),
+        // `Mul_1 = Floor(Div/c)·c` is the second half of the rad `%1` mod (`Sub = Div - Mul_1`).
+        // It was MISSING from this table while every neighbor (Div/Div_1/Floor/Sub) is pinned to
+        // `[1, max_wave, HARMONICS]`, so it fell to a wrong default → `Sub` read a mis-sized /
+        // uninitialized operand → the whole rad/phase chain went NaN → dead NSF sine source.
+        (
+            "/decoder/generator/m_source/l_sin_gen/Mul_1",
+            vec![1, max_wave, HARMONICS],
+        ),
         (
             "/decoder/generator/m_source/l_sin_gen/Sin",
             vec![1, max_wave, HARMONICS],
@@ -781,11 +1271,28 @@ fn explicit_vocoder_shape(node_name: &str, max_wave: usize) -> Option<Vec<usize>
 }
 
 fn narrow_wave_vocoder_shape(node_name: &str, max_wave: usize) -> Option<Vec<usize>> {
+    // The sine-source (`l_sin_gen`) phase chain is waveform-rate, not mel-rate. The full
+    // override table (`explicit_vocoder_shape`) has the correct `max_wave`/`frames` split (and
+    // the `Mul_1` entry) and is what the wide (seq≥32) path uses, so reuse it here too —
+    // otherwise the narrow table's mel-rate pre-Resize shapes collapse the phase `CumSum`
+    // axis and the sine source goes dead / NaN.
+    if let Some(shape) = explicit_vocoder_shape(node_name, max_wave) {
+        return Some(shape);
+    }
     let frames = frame_cap(max_wave);
     let seq = import_sequence_length();
     let h = HARMONICS;
     let table: &[(&str, &[usize])] = &[
         ("/decoder/generator/f0_upsamp/Resize", &[1, 1, max_wave]),
+        ("/decoder/generator/Transpose", &[1, max_wave, 1]),
+        (
+            "/decoder/generator/m_source/l_sin_gen/Greater",
+            &[1, max_wave, 1],
+        ),
+        (
+            "/decoder/generator/m_source/l_sin_gen/Cast",
+            &[1, max_wave, 1],
+        ),
         (
             "/decoder/generator/m_source/l_sin_gen/Resize_1",
             &[1, h, max_wave],
@@ -876,7 +1383,26 @@ fn patch_narrow_wave_vocoder_shapes(nodes: &mut [BundleNode], max_wave: usize) {
         if SKIP_OPS.contains(&node.op.as_str()) {
             continue;
         }
-        let meta = serde_json::json!({ "shape": shape, "dtype": "f32" });
+        // Preserve bool for Greater; forcing f32 meta made import ignore the wave shape.
+        let dtype = node
+            .output_meta
+            .first()
+            .and_then(|m| m.get("dtype"))
+            .and_then(|v| v.as_str())
+            .filter(|d| *d == "bool" || *d == "f32" || *d == "i64")
+            .unwrap_or("f32");
+        let meta = serde_json::json!({ "shape": shape, "dtype": dtype });
+        if std::env::var("RLX_KITTEN_SHAPE_DEBUG").is_ok()
+            && (node.name.contains("l_sin_gen/Cast")
+                || node.name.contains("l_sin_gen/Greater")
+                || node.name.contains("generator/Transpose")
+                || node.name.contains("f0_upsamp/Resize"))
+        {
+            eprintln!(
+                "[shape_patch] {} op={} -> {:?} dtype={dtype}",
+                node.name, node.op, shape
+            );
+        }
         if node.output_meta.is_empty() {
             node.output_meta.push(meta);
         } else {
@@ -986,7 +1512,7 @@ pub fn output_shape_fix(node_name: &str, shape: &Shape, sequence_length: usize) 
         let mel_cap = mel_align::compile_mel_cap(
             sequence_length,
             max_wave,
-            crate::bundle_compile::MAX_FRAMES_PER_TOKEN,
+            crate::bundle_compile::max_frames_per_token(),
         );
         if let Some(fixed) = mel_align::explicit_mel_hir_shape(node_name, mel_cap, shape.dtype()) {
             if fixed.dims() != shape.dims() {
@@ -1098,12 +1624,14 @@ mod f0_bypass_tests {
         let mel = mel_align::compile_mel_cap(
             opts.sequence_length,
             opts.max_waveform_samples,
-            crate::bundle_compile::MAX_FRAMES_PER_TOKEN,
+            crate::bundle_compile::max_frames_per_token(),
         );
         let (hir, _) = crate::bundle_compile::prepare_hir_for_compile(
             import.hir.clone(),
             &import.params,
             &import.typed,
+            opts.sequence_length,
+            opts.max_waveform_samples,
         );
         for name in [
             "/Transpose_1",
@@ -1275,7 +1803,7 @@ mod f0_bypass_tests {
         let mel_cap = crate::mel_align::compile_mel_cap(
             8,
             50_400,
-            crate::bundle_compile::MAX_FRAMES_PER_TOKEN,
+            crate::bundle_compile::max_frames_per_token(),
         );
         let f0 = nodes
             .iter()
@@ -1307,7 +1835,7 @@ mod f0_bypass_tests {
         let mel_cap = crate::mel_align::compile_mel_cap(
             8,
             50_400,
-            crate::bundle_compile::MAX_FRAMES_PER_TOKEN,
+            crate::bundle_compile::max_frames_per_token(),
         );
         let f0 = nodes
             .iter()
@@ -1344,7 +1872,7 @@ mod f0_bypass_tests {
         let mel_cap = crate::mel_align::compile_mel_cap(
             opts.sequence_length,
             opts.max_waveform_samples,
-            crate::bundle_compile::MAX_FRAMES_PER_TOKEN,
+            crate::bundle_compile::max_frames_per_token(),
         );
         let mut nodes = rlx_onnx_import::load_bundle(&dir).expect("bundle").nodes;
         let import_opts = crate::bundle_compile::import_opts(&opts);

@@ -38,8 +38,9 @@ use crate::alignment::concat_alignment_durations;
 ))]
 use crate::kernels::{
     ACT_COPY, ALIGNMENT_SCATTER_INDICES, CONCAT_FROM_SEQUENCE, CONCAT_FROM_SEQUENCE_ONNX,
-    DYNAMIC_QUANTIZE_LINEAR, DYNAMIC_QUANTIZE_LSTM, F0_IF_BYPASS, F0_IF_SELECT, Q_MATMUL,
-    Q_MATMUL_BAKED, RANDOM_NORMAL_LIKE, RANDOM_UNIFORM_LIKE, SCATTER_ELEMENTS, SCATTER_ND,
+    DYNAMIC_QUANTIZE_LINEAR, DYNAMIC_QUANTIZE_LSTM, F0_IF_BYPASS, F0_IF_SELECT,
+    F0_NCHW_UNSQUEEZE, F0_NEAREST_UPSAMPLE, Q_MATMUL, Q_MATMUL_BAKED, RANDOM_NORMAL_LIKE,
+    RANDOM_UNIFORM_LIKE, SCATTER_ELEMENTS, SCATTER_ND,
 };
 use crate::lstm::{LstmAttrs, dynamic_lstm_f32, dynamic_quantize_lstm};
 #[cfg(any(
@@ -117,7 +118,17 @@ fn decode_i64_indices(bytes: &[u8], shape: &rlx_ir::Shape) -> Result<Vec<i64>, S
             .collect()),
         (DType::F32, 4) | (_, 4) => Ok(bytes
             .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()).round() as i64)
+            .map(|c| {
+                let f = f32::from_le_bytes(c.try_into().unwrap());
+                // Prefer float-encoded integers (Metal f32-uniform arena).
+                // Fall back to i32 bitcast when the slot still holds raw
+                // integer bits (legacy uploads → denormals like 4e-45 for 3).
+                if f.is_finite() && f.abs() < 1.0e7 && (f - f.round()).abs() < 1.0e-3 {
+                    f.round() as i64
+                } else {
+                    i32::from_le_bytes(c.try_into().unwrap()) as i64
+                }
+            })
             .collect()),
         (DType::I64, _) if bytes.len() >= n * 8 => Ok(bytes
             .chunks_exact(8)
@@ -358,25 +369,53 @@ fn run_concat_from_sequence(
     if inputs.len() < 4 {
         return Err(format!("expected 4 inputs, got {}", inputs.len()));
     }
+    // Metal/MLX f32-uniform arenas often type i64 duration tensors as F32.
+    // Decode flexibly — same strategy as ScatterElements / `decode_i64_indices`.
+    let duration_mask = decode_i64_indices(inputs[0].0, inputs[0].1)?;
+    let range_ids = decode_i64_indices(inputs[1].0, inputs[1].1)?;
+    let split_lens = decode_i64_indices(inputs[2].0, inputs[2].1)?;
+    let trip = decode_i64_indices(inputs[3].0, inputs[3].1)?;
+    let trip_count = rlx_cpu::onnx_control_flow::resolve_concat_trip_count(
+        &trip,
+        duration_mask.len(),
+        split_lens.len(),
+    );
+    let out_len = output.1.num_elements().unwrap_or(0).max(1);
+    let mut res = vec![0i64; out_len];
+    concat_alignment_durations(
+        &duration_mask,
+        &range_ids,
+        &split_lens,
+        trip_count,
+        &mut res,
+    );
     unsafe {
-        let duration_mask = typed::<i64>(inputs[0].0, inputs[0].1, DType::I64, "duration_mask")?;
-        let range_ids = typed::<i64>(inputs[1].0, inputs[1].1, DType::I64, "range_ids")?;
-        let split_lens = typed::<i64>(inputs[2].0, inputs[2].1, DType::I64, "split_lens")?;
-        let trip = typed::<i64>(inputs[3].0, inputs[3].1, DType::I64, "trip_count")?;
-        let out = typed_mut::<i64>(output.0, output.1, DType::I64, "output")?;
-        let trip_count = rlx_cpu::onnx_control_flow::resolve_concat_trip_count(
-            trip,
-            duration_mask.len(),
-            split_lens.len(),
-        );
-        out.fill(0);
-        rlx_cpu::onnx_control_flow::concat_alignment_durations(
-            duration_mask,
-            range_ids,
-            split_lens,
-            trip_count,
-            out,
-        );
+        match output.1.dtype() {
+            DType::I64 => {
+                let out = typed_mut::<i64>(output.0, output.1, DType::I64, "output")?;
+                let n = res.len().min(out.len());
+                out[..n].copy_from_slice(&res[..n]);
+            }
+            DType::F32 => {
+                let out = typed_mut::<f32>(output.0, output.1, DType::F32, "output")?;
+                let n = res.len().min(out.len());
+                for k in 0..n {
+                    out[k] = res[k] as f32;
+                }
+            }
+            DType::I32 => {
+                let out = typed_mut::<i32>(output.0, output.1, DType::I32, "output")?;
+                let n = res.len().min(out.len());
+                for k in 0..n {
+                    out[k] = res[k] as i32;
+                }
+            }
+            other => {
+                return Err(format!(
+                    "ConcatFromSequence: unsupported output dtype {other:?}"
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -509,20 +548,41 @@ fn run_f0_if_select(
             inputs.len()
         ));
     }
+    let align = decode_i64_indices(inputs[1].0, inputs[1].1)?;
+    let mel_from_align = align.first().copied().unwrap_or(0).max(0) as usize;
+    let mel = if mel_from_align > 0 {
+        mel_from_align
+    } else {
+        crate::opts::runtime_mel_frames().unwrap_or(0)
+    };
+    let valid = mel.saturating_mul(2);
     unsafe {
         let f0 = typed::<f32>(inputs[0].0, inputs[0].1, DType::F32, "f0")?;
-        let align = typed::<i64>(inputs[1].0, inputs[1].1, DType::I64, "align")?;
-        let mel = align.first().copied().unwrap_or(0).max(0) as usize;
         let out = typed_mut::<f32>(output.0, output.1, DType::F32, "out")?;
+        if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+            let s: Vec<String> = [0usize, 10, 20, 35, 70, 128, 130, 256, 640, 1000]
+                .iter()
+                .filter(|&&i| i < f0.len())
+                .map(|&i| format!("[{i}]={:.1}", f0[i]))
+                .collect();
+            eprintln!(
+                "[f0if-gpu] mel={mel} mel_cap={:?} wave_cap={:?} valid={valid} f0.len={} out.len={} samples: {}",
+                crate::opts::runtime_mel_cap(),
+                crate::opts::runtime_wave_cap(),
+                f0.len(),
+                out.len(),
+                s.join(" ")
+            );
+        }
         out.fill(0.0);
         if f0.len() == out.len() {
-            let n = mel.min(f0.len());
+            let n = valid.min(f0.len());
             out[..n].copy_from_slice(&f0[..n]);
             return Ok(());
         }
         if f0.len() > out.len() && !out.is_empty() && f0.len() % out.len() == 0 {
             let chunk = f0.len() / out.len();
-            let frames = mel.min(out.len());
+            let frames = valid.min(out.len());
             for (i, slot) in out.iter_mut().enumerate().take(frames) {
                 *slot = f0[i * chunk];
             }
@@ -533,8 +593,70 @@ fn run_f0_if_select(
             out[..n].copy_from_slice(&f0[..n]);
             return Ok(());
         }
-        let n = mel.min(f0.len()).min(out.len());
+        let n = valid.min(f0.len()).min(out.len());
         out[..n].copy_from_slice(&f0[..n]);
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    all(feature = "metal", target_os = "macos"),
+    all(feature = "mlx", target_os = "macos")
+))]
+fn run_f0_nchw_unsqueeze(
+    inputs: &[(&[u8], &rlx_ir::Shape)],
+    output: (&mut [u8], &rlx_ir::Shape),
+    _attrs: &[u8],
+) -> Result<(), String> {
+    if inputs.is_empty() {
+        return Err("F0NchwUnsqueeze: missing input".into());
+    }
+    unsafe {
+        let x = typed::<f32>(inputs[0].0, inputs[0].1, DType::F32, "f0")?;
+        let out = typed_mut::<f32>(output.0, output.1, DType::F32, "out")?;
+        out.fill(0.0);
+        let n = x.len().min(out.len());
+        out[..n].copy_from_slice(&x[..n]);
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    all(feature = "metal", target_os = "macos"),
+    all(feature = "mlx", target_os = "macos")
+))]
+fn run_f0_nearest_upsample(
+    inputs: &[(&[u8], &rlx_ir::Shape)],
+    output: (&mut [u8], &rlx_ir::Shape),
+    attrs: &[u8],
+) -> Result<(), String> {
+    if inputs.is_empty() {
+        return Err("F0NearestUpsample: missing input".into());
+    }
+    let scale = if attrs.len() >= 4 {
+        u32::from_le_bytes(attrs[0..4].try_into().unwrap()) as usize
+    } else {
+        300
+    }
+    .max(1);
+    unsafe {
+        let x = typed::<f32>(inputs[0].0, inputs[0].1, DType::F32, "f0")?;
+        let out = typed_mut::<f32>(output.0, output.1, DType::F32, "out")?;
+        out.fill(0.0);
+        let t_out = out.len();
+        for (i, &v) in x.iter().enumerate() {
+            let base = i.saturating_mul(scale);
+            if base >= t_out {
+                break;
+            }
+            for k in 0..scale {
+                let j = base + k;
+                if j >= t_out {
+                    break;
+                }
+                out[j] = v;
+            }
+        }
     }
     Ok(())
 }
@@ -683,12 +805,38 @@ fn run_alignment_scatter_indices(
             inputs.len()
         ));
     }
+    let token_ids = decode_i64_indices(inputs[0].0, inputs[0].1)?;
+    let align = decode_i64_indices(inputs[1].0, inputs[1].1)?;
+    let frames = align.first().copied().unwrap_or(0).max(0) as usize;
+    let mut res = vec![0i64; output.1.num_elements().unwrap_or(0).max(1)];
+    crate::alignment::alignment_scatter_index_pairs(&token_ids, frames, &mut res);
     unsafe {
-        let token_ids = typed::<i64>(inputs[0].0, inputs[0].1, DType::I64, "token_ids")?;
-        let align = typed::<i64>(inputs[1].0, inputs[1].1, DType::I64, "align")?;
-        let out = typed_mut::<i64>(output.0, output.1, DType::I64, "indices")?;
-        let frames = align.first().copied().unwrap_or(0).max(0) as usize;
-        crate::alignment::alignment_scatter_index_pairs(token_ids, frames, out);
+        match output.1.dtype() {
+            DType::I64 => {
+                let out = typed_mut::<i64>(output.0, output.1, DType::I64, "indices")?;
+                let n = res.len().min(out.len());
+                out[..n].copy_from_slice(&res[..n]);
+            }
+            DType::F32 => {
+                let out = typed_mut::<f32>(output.0, output.1, DType::F32, "indices")?;
+                let n = res.len().min(out.len());
+                for k in 0..n {
+                    out[k] = res[k] as f32;
+                }
+            }
+            DType::I32 => {
+                let out = typed_mut::<i32>(output.0, output.1, DType::I32, "indices")?;
+                let n = res.len().min(out.len());
+                for k in 0..n {
+                    out[k] = res[k] as i32;
+                }
+            }
+            other => {
+                return Err(format!(
+                    "AlignmentScatterIndices: unsupported output dtype {other:?}"
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -818,6 +966,16 @@ mod metal {
     metal_kernel!(ActCopyMetal, ACT_COPY, run_act_copy);
     metal_kernel!(F0IfBypassMetal, F0_IF_BYPASS, run_f0_if_bypass);
     metal_kernel!(F0IfSelectMetal, F0_IF_SELECT, run_f0_if_select);
+    metal_kernel!(
+        F0NearestUpsampleMetal,
+        F0_NEAREST_UPSAMPLE,
+        run_f0_nearest_upsample
+    );
+    metal_kernel!(
+        F0NchwUnsqueezeMetal,
+        F0_NCHW_UNSQUEEZE,
+        run_f0_nchw_unsqueeze
+    );
     metal_kernel!(QMatMulMetal, Q_MATMUL, run_qmatmul);
     metal_kernel!(QMatMulBakedMetal, Q_MATMUL_BAKED, run_qmatmul_baked);
     metal_kernel!(
@@ -842,6 +1000,8 @@ mod metal {
         register_metal_kernel(Arc::new(ActCopyMetal));
         register_metal_kernel(Arc::new(F0IfBypassMetal));
         register_metal_kernel(Arc::new(F0IfSelectMetal));
+        register_metal_kernel(Arc::new(F0NearestUpsampleMetal));
+        register_metal_kernel(Arc::new(F0NchwUnsqueezeMetal));
         register_metal_kernel(Arc::new(QMatMulMetal));
         register_metal_kernel(Arc::new(QMatMulBakedMetal));
         register_metal_kernel(Arc::new(RandomNormalLikeMetal));
@@ -965,6 +1125,16 @@ mod mlx {
     mlx_kernel!(ActCopyMlx, ACT_COPY, run_act_copy);
     mlx_kernel!(F0IfBypassMlx, F0_IF_BYPASS, run_f0_if_bypass);
     mlx_kernel!(F0IfSelectMlx, F0_IF_SELECT, run_f0_if_select);
+    mlx_kernel!(
+        F0NearestUpsampleMlx,
+        F0_NEAREST_UPSAMPLE,
+        run_f0_nearest_upsample
+    );
+    mlx_kernel!(
+        F0NchwUnsqueezeMlx,
+        F0_NCHW_UNSQUEEZE,
+        run_f0_nchw_unsqueeze
+    );
     mlx_kernel!(QMatMulMlx, Q_MATMUL, run_qmatmul);
     mlx_kernel!(QMatMulBakedMlx, Q_MATMUL_BAKED, run_qmatmul_baked);
     mlx_kernel!(
@@ -989,6 +1159,8 @@ mod mlx {
         register_mlx_kernel(Arc::new(ActCopyMlx));
         register_mlx_kernel(Arc::new(F0IfBypassMlx));
         register_mlx_kernel(Arc::new(F0IfSelectMlx));
+        register_mlx_kernel(Arc::new(F0NearestUpsampleMlx));
+        register_mlx_kernel(Arc::new(F0NchwUnsqueezeMlx));
         register_mlx_kernel(Arc::new(QMatMulMlx));
         register_mlx_kernel(Arc::new(QMatMulBakedMlx));
         register_mlx_kernel(Arc::new(RandomNormalLikeMlx));
@@ -1001,6 +1173,151 @@ pub fn register_gpu_kernels() {
     metal::register();
     #[cfg(all(feature = "mlx", target_os = "macos"))]
     mlx::register();
+    #[cfg(feature = "cuda")]
+    cuda::register();
     // WGPU/Vulkan: custom kitten ops dispatch via the shared CPU kernel registry
     // during host segments; no separate wgpu shader pack yet.
+}
+
+/// Cuda raw-GPU customs (no D2H). Takes precedence over the CPU host kernels.
+#[cfg(feature = "cuda")]
+mod cuda {
+    use super::*;
+    use rlx_cuda::cuda_gpu_kernels::{CudaGpuKernel, register_cuda_gpu_kernel};
+    use rlx_ir::Shape;
+    use std::sync::Arc;
+
+    /// Rank-3 InstanceNorm over the active time window only (AdaIN).
+    ///
+    /// Inputs: X `[N,C,T]`, gamma `[C]`, beta `[C]`.
+    /// Extras: `e0=N, e1=C, e2=T, e3=active` (resolved at launch from Kitten opts).
+    ///
+    /// Launch: **one block per (n,c) row**; threads cooperate on mean/var over
+    /// `active`, then write all `T` in parallel. The old one-thread-per-row
+    /// serial scan was ~5 ms/call on large generator axes.
+    const INORM_CU: &str = r#"
+extern "C" __global__ void rlx_custom(
+    float* arena,
+    unsigned out_off, unsigned out_len, unsigned n_inputs,
+    unsigned in0_off, unsigned in0_len,
+    unsigned in1_off, unsigned in1_len,
+    unsigned in2_off, unsigned in2_len,
+    unsigned in3_off, unsigned in3_len,
+    unsigned e0, unsigned e1, unsigned e2, unsigned e3)
+{
+    (void)n_inputs; (void)in0_len; (void)in1_len; (void)in2_len;
+    (void)in3_off; (void)in3_len; (void)out_len;
+    unsigned N = e0;
+    unsigned C = e1;
+    unsigned T = e2;
+    unsigned active = e3;
+    if (N == 0 || C == 0 || T == 0 || active == 0) return;
+    if (active > T) active = T;
+    unsigned row = blockIdx.x;
+    unsigned rows = N * C;
+    if (row >= rows) return;
+    unsigned ni = row / C;
+    unsigned ci = row % C;
+    unsigned base = (ni * C + ci) * T;
+    float* x = arena + in0_off + base;
+    float* y = arena + out_off + base;
+    unsigned tid = threadIdx.x;
+    unsigned bdim = blockDim.x;
+    __shared__ float smem[256];
+
+    // Mean over active (strided + block reduce).
+    float partial = 0.f;
+    for (unsigned j = tid; j < active; j += bdim) partial += x[j];
+    smem[tid] = partial;
+    __syncthreads();
+    for (unsigned s = bdim >> 1; s > 0; s >>= 1) {
+        if (tid < s) smem[tid] += smem[tid + s];
+        __syncthreads();
+    }
+    float mean = smem[0] / (float)active;
+    __syncthreads();
+
+    // Variance over active.
+    partial = 0.f;
+    for (unsigned j = tid; j < active; j += bdim) {
+        float d = x[j] - mean;
+        partial += d * d;
+    }
+    smem[tid] = partial;
+    __syncthreads();
+    for (unsigned s = bdim >> 1; s > 0; s >>= 1) {
+        if (tid < s) smem[tid] += smem[tid + s];
+        __syncthreads();
+    }
+    float inv = rsqrtf(smem[0] / (float)active + 1e-5f);
+    float g = arena[in1_off + ci];
+    float b = arena[in2_off + ci];
+    // Apply active-window stats to the full axis (matches CPU kernel).
+    for (unsigned j = tid; j < T; j += bdim) {
+        y[j] = (x[j] - mean) * inv * g + b;
+    }
+}
+"#;
+
+    #[derive(Debug)]
+    struct KittenInstanceNormActiveCuda;
+
+    impl CudaGpuKernel for KittenInstanceNormActiveCuda {
+        fn name(&self) -> &str {
+            crate::kernels::KITTEN_INSTANCE_NORM_ACTIVE
+        }
+        fn cuda_c(&self) -> &str {
+            INORM_CU
+        }
+        fn block_size(&self) -> u32 {
+            256
+        }
+        fn extras(&self, attrs: &[u8], out_shape: &Shape) -> [u32; 4] {
+            let dims = out_shape.dims();
+            if dims.len() != 3 {
+                return [0, 0, 0, 0];
+            }
+            let n = dims[0].unwrap_static().max(1) as u32;
+            let c = dims[1].unwrap_static().max(1) as u32;
+            let t = dims[2].unwrap_static() as u32;
+            let is_generator = attrs.get(4).copied().unwrap_or(0) != 0;
+            let active =
+                crate::kernels::instance_norm_resolve_active(t as usize, is_generator) as u32;
+            [n, c, t, active.max(1)]
+        }
+        fn launch_elems(&self, _out_len: u32, extras: [u32; 4]) -> u32 {
+            // One cooperative block per (n, c) row.
+            extras[0].saturating_mul(extras[1]).max(1)
+        }
+        fn grid_blocks(&self, launch_elems: u32, _block_size: u32) -> u32 {
+            launch_elems.max(1)
+        }
+    }
+
+    pub fn register() {
+        register_cuda_gpu_kernel(Arc::new(KittenInstanceNormActiveCuda));
+        // Active-seq clamp for on-device DynamicQuantizeLSTM (matches CPU kernel).
+        rlx_cuda::dyn_quant_lstm_gpu::set_seq_resolver(kitten_lstm_active_seq);
+    }
+
+    fn kitten_lstm_active_seq(raw_seq: usize, input_size: usize) -> usize {
+        let runtime_seq = crate::opts::compile_sequence_length_from_env().filter(|&n| n > 0);
+        let runtime_mel = crate::opts::runtime_mel_frames();
+        let mut seq = raw_seq;
+        if let Some(rt) = runtime_seq {
+            if input_size == 640 && raw_seq > rt {
+                seq = runtime_mel.map_or(raw_seq, |mel| mel.min(raw_seq));
+            } else {
+                let active = crate::opts::runtime_active_tokens()
+                    .filter(|&a| a > 0)
+                    .unwrap_or(rt);
+                seq = seq.min(active);
+            }
+        } else if let Some(mel) = runtime_mel {
+            if input_size == 640 {
+                seq = mel.min(seq);
+            }
+        }
+        seq.clamp(1, raw_seq.max(1))
+    }
 }

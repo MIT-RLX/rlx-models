@@ -136,7 +136,13 @@ impl Llama32RunnerBuilder {
             .ok_or_else(|| anyhow!("weights path required (call .weights(...))"))?;
         let format = match self.format {
             Some(f) => f,
-            None => WeightFormat::from_path(&weights_path)?,
+            None => {
+                if weights_path.is_dir() {
+                    WeightFormat::detect(&weights_path)?
+                } else {
+                    WeightFormat::from_path(&weights_path)?
+                }
+            }
         };
         let device = self.device.unwrap_or(Device::Cpu);
         let max_seq = self.max_seq.unwrap_or(128);
@@ -206,9 +212,18 @@ impl Llama32RunnerBuilder {
             &weights_path,
             prefill_mode,
         )?
-        .with_compile_seq_cap(max_seq)
-        .with_prefill_cache(8);
-        if self.bucketed_decode_cache {
+        .with_compile_seq_cap(max_seq);
+        // Large dense safetensors: keep at most one compiled graph's worth of
+        // device weights (prefill+decode would ~2× Nanbeige 3B ≈ 31 GiB).
+        let large_dense_st = matches!(format, WeightFormat::Safetensors)
+            && total_bytes_estimate >= 2 * 1024 * 1024 * 1024;
+        if !large_dense_st {
+            generator = generator.with_prefill_cache(8);
+        }
+        // Prefer a decode cache for large dense ST even if the caller left
+        // bucketed_decode off — oneshot re-attaches the full F32 model each
+        // token and usually trips the soft RAM gate after Compiled prefill.
+        if self.bucketed_decode_cache || large_dense_st {
             generator = generator.with_decode_cache(max_seq.saturating_add(16).max(64));
         }
 
@@ -389,5 +404,20 @@ fn load_llama32_safetensors_config(
 }
 
 fn default_st_size_estimate(path: &Path) -> u64 {
+    if path.is_dir() {
+        let mut sum = 0u64;
+        if let Ok(rd) = std::fs::read_dir(path) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("safetensors"))
+                {
+                    sum = sum.saturating_add(std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0));
+                }
+            }
+        }
+        return sum;
+    }
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }

@@ -9,10 +9,18 @@ KITTEN_RLX_INFER=production just kittentts -- --native --ipa "həˈloʊ" --out-w
 
 Tier-1 compile profile sample: [`kitten.rlx.toml`](../kitten_tts_mini_rlx/kitten.rlx.toml) (loader TBD).
 
+Policy for placement, wave caps, and QMatMul lives in
+[`kitten_tts_mini_rlx::device_policy`](../kitten_tts_mini_rlx/src/device_policy.rs)
+(`NativeEngine::load` → `prepare`).
+
 ## Build
 
 ```bash
 cargo build -p rlx-kittentts --features native --release
+# NVIDIA MSI-style: cuda + wgpu + vulkan
+cargo build -p rlx-kittentts --release --features native,cuda,gpu,vulkan
+# Apple: metal / mlx / apple-silicon
+cargo build -p rlx-kittentts --release --features native,apple-silicon
 ```
 
 ## Weights (recommended)
@@ -34,6 +42,97 @@ checkpoint/
 ```
 
 Legacy bundle path (`rlx_bundle/graph.json`) remains available; set `KITTEN_RLX_FORCE_BUNDLE=1` to prefer it.
+
+## Backends
+
+| Device | Duration graph | Wave / vocoder | Notes |
+|--------|----------------|----------------|-------|
+| `cpu` | on-device | on-device | Reference; native QMatMul on |
+| `cuda` / `rocm` | on-device | on-device | Fastest long IPA on NVIDIA; native QMatMul on |
+| `metal` / `mlx` | on-device | on-device | Native QMatMul **off** (zeros Metal wave) |
+| `gpu` (wgpu) | **CPU** | **CPU** (default) | Upgrades to **Cuda** when available; else CPU wave. `GPU_WAVE=1` → Vulkan |
+| `vulkan` | on-device | on-device | Prefer for native GPU when CUDA is unavailable |
+| `ane` | CPU | CPU | Pinned off-device |
+
+Force duration/wave placement:
+
+| Variable | Effect |
+|----------|--------|
+| `KITTEN_RLX_CPU_DURATION=1` | Pin duration to CPU |
+| `KITTEN_RLX_CPU_DURATION=0` / `RLX_KITTEN_GPU_DURATION=1` | Keep duration on the request device |
+| `KITTEN_RLX_CPU_WAVE=1` | Pin vocoder to CPU |
+| `KITTEN_RLX_GPU_WAVE=1` | On-device vocoder; without Cuda, discrete `gpu` uses **Vulkan** (`=wgpu` for slow wgpu) |
+| `KITTEN_RLX_FORCE_WGPU=1` | Keep discrete `gpu` on wgpu (disable Cuda upgrade) |
+
+## Discrete NVIDIA (`Gpu` / `Vulkan`)
+
+Act arenas must stay **unsharded** (one storage-buffer bind window). Sharded Vulkan
+no longer crashes, but audio collapses (near-silent NSF). Policy is applied once
+at load via `device_policy::prepare`.
+
+| Setting | `Device::Gpu` (wgpu) | `Device::Vulkan` | Why |
+|------|----------------------|------------------|-----|
+| Wave default | **→ Cuda** when available; else CPU / `GPU_WAVE`→Vulkan | on-device | Cuda single-pass long ~0.22 s peak 0.64 |
+| Wave compile cap | **80 000** via Vulkan when `GPU_WAVE=1`; **32 000** if `GPU_WAVE=wgpu` | **80 000** | Caps &gt;80 k mush on MSI (peak ~0.05); keep 80 k |
+| Mel frames/token | import default (CPU wave); **8** when on-device | **8** | Keep unsharded |
+| Stage reserve MiB | 64 (`RLX_WGPU_SHARD_STAGE_MIB`) | 64 (`RLX_VULKAN_SHARD_STAGE_MIB`) | Avoid 2×4 GiB snap from a 576 MiB default |
+| `RLX_WGPU_NO_F16_SHADOW` | `1` | — | Skip +2 GiB f16 mirror |
+| Native QMatMul | **on** (non-macOS) | **on** | ~3× faster long Vulkan vs QDQ host round-trips |
+
+Long IPA is **wave-aware chunked** so each piece fits the cap when wave is on-device
+(`infer_opts::chunk_plan_with_wave`, ~3 duration units/token × 600 samples).
+Multi-chunk infer pads every piece to the same compile width so
+`SeqCompileCache` hits once (avoids recompiling per chunk length).
+Prefer **`cuda`** for a single-pass long waveform; **`vulkan`** or
+`gpu` + `KITTEN_RLX_GPU_WAVE=1` for native GPU when CUDA is unavailable
+(~1 s hello / ~11 s long, peak ~0.55). Default **`gpu`** keeps the vocoder on CPU.
+
+### Override caps
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `KITTEN_RLX_WGPU_WAVEFORM_CAP` | 32000 | `0` / `off` disables; floor 24000 if set |
+| `KITTEN_RLX_VULKAN_WAVEFORM_CAP` | 80000 | same |
+| `KITTEN_RLX_MAX_FRAMES_PER_TOKEN` | 8 on Vulkan | Hard-capped by import `MAX_FRAMES_PER_TOKEN`; not auto-set on Gpu |
+| `RLX_WGPU_SHARD_STAGE_MIB` | 64 (Kitten default) | Upstream default is 576 |
+| `RLX_VULKAN_SHARD_STAGE_MIB` | 64 (Kitten default) | Upstream default is 576 |
+| `RLX_WGPU_SHARD_GPU=1` | off | Force GPU kernels on discrete wgpu — **mush** (do not use for Kitten) |
+| `RLX_WGPU_FORCE_HOST=1` | off | Force packed host fallbacks |
+| `RLX_CUDA_CONV_TF32` | `1` on Cuda | Kitten default; opt out with `0` |
+| `RLX_CUDA_CONV_FWD_CUDNN` | `1` on Cuda | Force cuDNN for 1×k / grouped fwd (HiFi-GAN); opt out with `0` |
+| `RLX_CUDA_CONV_T_KERNEL` | off | Force naive ConvTranspose kernel (skip cuDNN) |
+| `RLX_CUDA_DYN_LSTM_HOST` | off | Force host DynamicQuantizeLSTM (skip on-device path) |
+| `RLX_CUDA_LSTM_CUDNN` | **on** | cuDNN LSTM for DynQuant (Kitten); set `0` to use hand kernel |
+| `KITTEN_RLX_RNG_BACKEND` | **philox** on Cuda | On-device Philox; set `ort` for ORT-matching host noise |
+
+### Validated peaks (RTX 3080 Ti, Jasper, production)
+
+| Backend | Prompt | Wall (approx) | Peak |
+|---------|--------|---------------|------|
+| **Gpu → Cuda** (auto) | hello | **~0.17 s** infer | ~0.27 |
+| **Gpu → Cuda** (auto) | long (single-pass) | **~0.22 s** infer | **~0.64** |
+| Cuda (explicit) | long | ~0.22 s infer | ~0.64 |
+| Gpu (no CUDA / `FORCE_WGPU`) | long (CPU wave) | ~4.4 s infer | ~0.63 |
+| Gpu + `GPU_WAVE=1` (no CUDA) | hello → Vulkan | ~1.4 s infer | ~0.20 |
+| Gpu + `GPU_WAVE=1` (no CUDA) | long → Vulkan 2×80 k | ~5.5 s infer | ~0.55 |
+| Gpu + `GPU_WAVE=wgpu` | hello (wgpu host) | ~17 s | ~0.32 |
+
+## Native QMatMul
+
+Rewrites quantized ALBERT `onnx.QMatMul` (+ activation QDQ) into f32 GEMM
+(`hir_qdq_fuse::rewrite_qmatmul_to_native_f32`). On f32-uniform GPU arenas the
+quantized path is ~200 host round-trips per forward.
+
+| Device | Default |
+|--------|---------|
+| Cpu, Cuda, Rocm, Vulkan | **on** |
+| Gpu (non-macOS wgpu) | **on** |
+| Metal, Mlx, Ane, macOS Gpu | **off** (zeros / garbles Metal wave) |
+
+| Variable | Effect |
+|----------|--------|
+| `KITTEN_RLX_NATIVE_QMATMUL=1` | Force on |
+| `KITTEN_RLX_NATIVE_QMATMUL=0` | Force off |
 
 ## Environment
 
@@ -88,7 +187,7 @@ an optional full dual-output fallback (`KITTEN_RLX_COMPILE_FULL_FALLBACK`).
 | `KITTEN_RLX_ENABLE_NARROW_WAVEFORM_SLICE` | Opt-in alignment-driven `VocoderWaveformSlice` for narrow seq (default: static ONNX `Slice_3` + ORT duration trim) |
 | `KITTEN_RLX_SPLIT_GRAPHS` | Split duration refine + waveform-only graphs (slow cold compile; waveform path seeds carry from ORT duration) |
 | `KITTEN_RLX_NATIVE_DURATION_LOOP` | Force native duration refine loop instead of ORT carry seed on wide compile slots |
-| `KITTEN_RLX_SPLIT_GRAPHS` | Opt out of production split compile (`KITTEN_RLX_FULL_GRAPH=1`) |
+| `KITTEN_RLX_CHUNK_SLOTS` | Override padded-id chunk width for long IPA |
 
 **Pure native** (`KITTEN_RLX_NO_ORT_WAVEFORM_FALLBACK=1`): no ORT waveform rescue. Requires ORT duration oracle for alignment unless `KITTEN_RLX_NO_ORT_DURATION=1`. After graph changes, bump `IMPORT_CACHE_TAG` or use a fresh `KITTEN_RLX_AOT_CACHE`.
 
@@ -103,6 +202,8 @@ KITTEN_RLX_INFER=production KITTEN_RLX_WEIGHTS=crates/kitten_tts_mini_rlx/weight
 # then: həˈloʊ<TAB>/tmp/out.wav
 ```
 
+| Variable | Purpose |
+|----------|---------|
 | `KITTEN_RLX_DURATION_REFINE` | Opt in to duration-refine graph in production (two-pass infer) |
 | `KITTEN_RLX_WAVEFORM_ONLY_INFER` | Force single waveform graph (skip duration refine) |
 | `KITTEN_RLX_PREFER_METAL` | Set `0` to keep CPU when `--device cpu` on macOS (production auto-picks Metal) |
@@ -132,9 +233,16 @@ let tts = KittenTTS::load_native(
 let audio = tts.generate_from_ipa("həˈloʊ", "default", 1.0, 6)?;
 ```
 
-## Test
+On discrete NVIDIA, pass a large `--max-waveform-samples` if you like; `prepare`
+clamps it (and logs) to the safe cap. Wave-aware chunking still covers long IPA.
+
+## Bench / verify
 
 ```bash
+# All available backends, short + long IPA, RTF
+just bench-kittentts-backends
+# Filter: KITTEN_TTS_BENCH_DEVICES=cpu,cuda,vulkan,gpu
+
 export KITTEN_RLX_WEIGHTS=crates/kitten_tts_mini_rlx/weights
 export KITTEN_VOICES_NPZ=/path/to/voices.npz
 just test-kitten-native-compile
@@ -142,3 +250,9 @@ cargo test -p rlx-kittentts --features native --release native_infer_smoke -- --
 just test-kittentts-native-parity
 just test-kittentts-native-weights-parity
 ```
+
+## See also
+
+- [`device_policy.rs`](../kitten_tts_mini_rlx/src/device_policy.rs) — placement, caps, QMatMul
+- [`kitten_tts_mini_rlx/README.md`](../kitten_tts_mini_rlx/README.md) — bundle / weights layout
+- Upstream: `rlx-vulkan` host staging (`host_stage.rs`), `rlx-wgpu` `wgpu_prefer_host_fallback`

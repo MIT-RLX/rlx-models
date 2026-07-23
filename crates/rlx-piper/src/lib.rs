@@ -22,7 +22,6 @@
 //! runner.
 
 pub mod config;
-pub mod model;
 pub mod tokenize;
 
 #[cfg(feature = "native")]
@@ -31,7 +30,14 @@ pub mod native;
 pub mod sdp;
 
 pub use config::{DEFAULT_HF_REPO, DEFAULT_LOCAL_DIR, PiperConfig, find_voice};
-pub use model::{Piper, peak_amplitude};
 #[cfg(feature = "native")]
 pub use native::NativeVits;
 pub use rlx_runtime::{Device, parse_device};
+
+/// Peak absolute amplitude of a signal, ignoring non-finite samples.
+pub fn peak_amplitude(a: &[f32]) -> f32 {
+    a.iter()
+        .filter(|s| s.is_finite())
+        .map(|s| s.abs())
+        .fold(0.0, f32::max)
+}

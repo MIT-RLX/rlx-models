@@ -20,8 +20,8 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use kitten_tts_mini_rlx::compile_profile::{
-    InferMode, apply_device_runtime_defaults, infer_mode, prefer_metal_device, prewarm_buckets,
-    prewarm_enabled, seq_compile_cache_capacity,
+    InferMode, infer_mode, prefer_metal_device, prewarm_buckets, prewarm_enabled,
+    seq_compile_cache_capacity,
 };
 use kitten_tts_mini_rlx::{CachedSeqGraphs, native_weights_available};
 use rlx_runtime::{DType, Device};
@@ -55,7 +55,7 @@ impl NativeEngine {
         let weights_dir = weights_dir
             .canonicalize()
             .with_context(|| format!("resolve native weights dir {weights_dir:?}"))?;
-        let device = prefer_metal_device(device);
+        let device = kitten_tts_mini_rlx::device_policy::resolve_device(prefer_metal_device(device));
         if !rlx_runtime::is_available(device) {
             anyhow::bail!(
                 "native device {device:?} is not available in this build — rebuild with \
@@ -63,7 +63,8 @@ impl NativeEngine {
                  (or pass `--device cpu`)"
             );
         }
-        apply_device_runtime_defaults(device);
+        let (device, max_waveform_samples) =
+            kitten_tts_mini_rlx::device_policy::prepare(device, max_waveform_samples);
 
         let force_bundle = std::env::var("KITTEN_RLX_FORCE_BUNDLE").is_ok_and(|v| {
             v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
@@ -194,7 +195,16 @@ impl NativeEngine {
         speed: f32,
         chunk_durations: &[Vec<i64>],
     ) -> Result<Vec<f32>> {
-        let chunks = crate::infer_opts::chunk_plan(ids, self.sequence_length);
+        let slots = crate::infer_opts::effective_chunk_slots_with_wave(
+            self.sequence_length,
+            ids.len(),
+            self.max_waveform_samples,
+        );
+        let chunks = crate::infer_opts::chunk_plan_with_wave(
+            ids,
+            self.sequence_length,
+            self.max_waveform_samples,
+        );
         if chunks.len() != chunk_durations.len() {
             anyhow::bail!(
                 "chunk duration count {} != chunk count {}",
@@ -210,9 +220,18 @@ impl NativeEngine {
             })
             .filter(|&n| n > 0);
 
+        // Multi-chunk: compile once at `slots` so every piece hits the same cache key.
+        let compile_width = (chunks.len() > 1).then_some(slots);
+
         let mut audio = Vec::new();
         for ((chunk, _start), chunk_dur) in chunks.iter().zip(chunk_durations.iter()) {
-            let part = self.infer_chunk(chunk, style, speed, Some(chunk_dur.as_slice()))?;
+            let part = self.infer_chunk(
+                chunk,
+                style,
+                speed,
+                Some(chunk_dur.as_slice()),
+                compile_width,
+            )?;
             audio.extend_from_slice(&part);
         }
 
@@ -235,21 +254,38 @@ impl NativeEngine {
         speed: f32,
         ort_duration: Option<&[i64]>,
     ) -> Result<Vec<f32>> {
-        let chunks = crate::infer_opts::chunk_plan(ids, self.sequence_length);
+        let slots = crate::infer_opts::effective_chunk_slots_with_wave(
+            self.sequence_length,
+            ids.len(),
+            self.max_waveform_samples,
+        );
+        let chunks = crate::infer_opts::chunk_plan_with_wave(
+            ids,
+            self.sequence_length,
+            self.max_waveform_samples,
+        );
         let exact_target = ort_duration
             .and_then(|d| crate::infer_opts::waveform_samples_from_duration(d, ids.len()));
+
+        let compile_width = (chunks.len() > 1).then_some(slots);
 
         let mut audio = if chunks.len() == 1 {
             let (chunk, start) = &chunks[0];
             let chunk_dur =
                 ort_duration.map(|d| crate::infer_opts::ort_duration_slice(d, *start, chunk.len()));
-            self.infer_chunk(chunk, style, speed, chunk_dur.as_deref())?
+            self.infer_chunk(chunk, style, speed, chunk_dur.as_deref(), None)?
         } else {
             let mut audio = Vec::new();
             for (chunk, start) in &chunks {
                 let chunk_dur = ort_duration
                     .map(|d| crate::infer_opts::ort_duration_slice(d, *start, chunk.len()));
-                let part = self.infer_chunk(chunk, style, speed, chunk_dur.as_deref())?;
+                let part = self.infer_chunk(
+                    chunk,
+                    style,
+                    speed,
+                    chunk_dur.as_deref(),
+                    compile_width,
+                )?;
                 if ort_duration.is_some() {
                     audio.extend_from_slice(&part);
                 } else {
@@ -273,6 +309,8 @@ impl NativeEngine {
         style: &[f32],
         speed: f32,
         ort_duration: Option<&[i64]>,
+        // Multi-chunk: pad/compile to this width so all pieces share one cache entry.
+        compile_width: Option<usize>,
     ) -> Result<Vec<f32>> {
         if ids.len() > self.sequence_length {
             anyhow::bail!(
@@ -285,7 +323,14 @@ impl NativeEngine {
             anyhow::bail!("style dim {} != expected {}", style.len(), self.style_dim);
         }
 
-        let compile_seq = kitten_tts_mini_rlx::compile_profile::compile_slot_length(ids.len());
+        let graph_seq = compile_width.unwrap_or(ids.len()).max(ids.len());
+        if graph_seq > self.sequence_length {
+            anyhow::bail!(
+                "compile width {graph_seq} exceeds sequence_length {}",
+                self.sequence_length
+            );
+        }
+        let compile_seq = kitten_tts_mini_rlx::compile_profile::compile_slot_length(graph_seq);
         let active_tokens = ids.len();
         let mut ids_padded: Vec<i64> = ids.to_vec();
         if compile_seq > ids.len() {
@@ -309,7 +354,7 @@ impl NativeEngine {
         let style_bytes = self.style_bytes.lock().expect("style_bytes mutex");
         let speed_bytes = self.speed_bytes.lock().expect("speed_bytes mutex");
 
-        let graphs = self.graphs_for_token_len(ids.len())?;
+        let graphs = self.graphs_for_token_len(graph_seq)?;
 
         kitten_tts_mini_rlx::bundle_compile::shape_all_graphs_for_infer(
             &graphs,
@@ -325,21 +370,11 @@ impl NativeEngine {
             ("speed", speed_bytes.as_slice(), DType::F32),
         ];
 
-        // The ort→native duration carry-seed only exists when the ort duration
-        // model is compiled in; without the `onnx` feature there's nothing to
-        // carry (native-only builds — e.g. espeak-frontend consumers).
-        #[cfg(feature = "onnx")]
-        let carry_seed = ort_duration.and_then(|d| {
-            if crate::ort_duration::ort_duration_carry_seed_enabled(compile_seq) {
-                Some(crate::infer_opts::duration_carry_bytes(d, compile_seq))
-            } else {
-                None
-            }
-        });
-        #[cfg(not(feature = "onnx"))]
-        let carry_seed: Option<Vec<u8>> = None;
-        let align_bytes =
-            ort_duration.map(|d| crate::infer_opts::duration_carry_bytes(d, compile_seq));
+        // When an external duration oracle is provided, seed the duration carry so the
+        // vocoder alignment matches (native fixed-point alone still diverges on token-0).
+        let carry_seed: Option<Vec<u8>> = ort_duration
+            .map(|d| crate::infer_opts::duration_carry_bytes(d, compile_seq));
+        let align_bytes = carry_seed.clone();
 
         let outputs = kitten_tts_mini_rlx::bundle_compile::run_kitten_inference(
             &graphs,
@@ -374,7 +409,7 @@ impl NativeEngine {
 
         if kitten_tts_mini_rlx::compile_profile::env_flag("KITTEN_RLX_TIMING") {
             eprintln!(
-                "[kittentts] native infer {:.3}s (seq={})",
+                "[kittentts] native infer {:.3}s (seq={} compile={compile_seq})",
                 infer_t0.elapsed().as_secs_f64(),
                 ids.len()
             );
@@ -398,8 +433,19 @@ impl NativeEngine {
         if let Some(dur) = ort_duration {
             trim_waveform_exact(&mut audio, dur, ids.len());
         } else if let Some((dur_bytes, dur_dt)) = outputs.get(1) {
-            if *dur_dt == DType::I64 {
-                trim_waveform_from_duration(&mut audio, dur_bytes, ids.len());
+            // Metal/MLX f32-uniform arenas often type the duration output as F32
+            // (values stored as floats). Decode either layout before trimming.
+            match *dur_dt {
+                DType::I64 => {
+                    trim_waveform_from_duration(&mut audio, dur_bytes, ids.len());
+                }
+                DType::F32 => {
+                    trim_waveform_from_duration_f32(&mut audio, dur_bytes, ids.len());
+                }
+                DType::I32 => {
+                    trim_waveform_from_duration_i32(&mut audio, dur_bytes, ids.len());
+                }
+                _ => {}
             }
         }
         Ok(audio)
@@ -430,9 +476,34 @@ fn decode_i64_tensor(bytes: &[u8]) -> Vec<i64> {
         .collect()
 }
 
+fn decode_duration_f32(bytes: &[u8]) -> Vec<i64> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).round() as i64)
+        .collect()
+}
+
+fn decode_duration_i32(bytes: &[u8]) -> Vec<i64> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as i64)
+        .collect()
+}
+
 /// ONNX emits `sum(duration[:seq]) * 600` waveform samples (24 kHz vocoder hop).
 fn trim_waveform_from_duration(audio: &mut Vec<f32>, dur_bytes: &[u8], token_len: usize) -> bool {
-    let duration = decode_i64_tensor(dur_bytes);
+    trim_waveform_with_decoded(audio, &decode_i64_tensor(dur_bytes), token_len)
+}
+
+fn trim_waveform_from_duration_f32(audio: &mut Vec<f32>, dur_bytes: &[u8], token_len: usize) -> bool {
+    trim_waveform_with_decoded(audio, &decode_duration_f32(dur_bytes), token_len)
+}
+
+fn trim_waveform_from_duration_i32(audio: &mut Vec<f32>, dur_bytes: &[u8], token_len: usize) -> bool {
+    trim_waveform_with_decoded(audio, &decode_duration_i32(dur_bytes), token_len)
+}
+
+fn trim_waveform_with_decoded(audio: &mut Vec<f32>, duration: &[i64], token_len: usize) -> bool {
     let n = token_len.min(duration.len());
     let sum: i64 = duration[..n]
         .iter()
@@ -444,7 +515,7 @@ fn trim_waveform_from_duration(audio: &mut Vec<f32>, dur_bytes: &[u8], token_len
     if sum <= 0 || sum > token_len as i64 * MAX_AVG_DURATION_PER_TOKEN {
         return false;
     }
-    let Some(len) = crate::infer_opts::waveform_samples_from_duration(&duration, token_len) else {
+    let Some(len) = crate::infer_opts::waveform_samples_from_duration(duration, token_len) else {
         return false;
     };
     if len < audio.len() {

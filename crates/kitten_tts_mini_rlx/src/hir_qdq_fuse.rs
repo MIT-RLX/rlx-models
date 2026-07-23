@@ -74,3 +74,57 @@ pub fn fuse_qmatmul_baked_weights(hir: &mut HirModule, baked: &HashMap<String, V
     }
     fused
 }
+
+/// Rewrite baked-weight `onnx.QMatMul` / `onnx.QMatMulBaked` nodes into native
+/// `Op::MatMul(x_f32, w_f32)`, dropping the activation `DynamicQuantizeLinear`.
+///
+/// The baked kernel computes `dequant(quant(x)) @ W`; since `dequant(quant(x)) ≈ x`,
+/// this is (a slightly more accurate) `x @ W`. Feeding the pre-quant f32 activation
+/// straight into a native GEMM lets the ALBERT encoder linears run on-device on
+/// f32-uniform GPU arenas (CUDA/ROCm) instead of paying a host round-trip per
+/// matmul (+ per `DynamicQuantizeLinear` slot). The orphaned quantize nodes are
+/// removed by dead-code elimination during compile.
+///
+/// Only rewrites nodes whose weight (input 3) is already an f32 param (produced by
+/// [`fuse_qmatmul_baked_weights`] / the baked companion) and whose activation
+/// (input 0) is a `DynamicQuantizeLinear` fed by an f32 source. Returns the count.
+pub fn rewrite_qmatmul_to_native_f32(hir: &mut HirModule) -> usize {
+    let ids: Vec<HirNodeId> = hir.nodes().iter().map(|n| n.id).collect();
+    let mut rewritten = 0usize;
+    for id in ids {
+        let node = hir.node(id);
+        let HirOp::Mir(Op::Custom { name, .. }) = &node.op else {
+            continue;
+        };
+        if name != crate::kernels::Q_MATMUL && name != Q_MATMUL_BAKED {
+            continue;
+        }
+        let inputs = node.inputs.clone();
+        if inputs.len() < 4 {
+            continue;
+        }
+        // Weight must already be baked to f32 (else we'd need runtime dequant).
+        if hir.node(inputs[3]).shape.dtype() != DType::F32 {
+            continue;
+        }
+        // Activation must be the pre-quant f32 source behind a DynamicQuantizeLinear.
+        let act_node = hir.node(inputs[0]);
+        let HirOp::Mir(Op::Custom { name: act_name, .. }) = &act_node.op else {
+            continue;
+        };
+        if act_name != crate::kernels::DYNAMIC_QUANTIZE_LINEAR {
+            continue;
+        }
+        let Some(&x_f32) = act_node.inputs.first() else {
+            continue;
+        };
+        if hir.node(x_f32).shape.dtype() != DType::F32 {
+            continue;
+        }
+        let node_mut = hir.node_mut(id);
+        node_mut.op = HirOp::Mir(Op::MatMul);
+        node_mut.inputs = vec![x_f32, inputs[3]];
+        rewritten += 1;
+    }
+    rewritten
+}

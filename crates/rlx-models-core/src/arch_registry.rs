@@ -171,9 +171,19 @@ pub fn register_all() {
         description: "LLaMA-3.2 (Meta) — GQA + Llama 3 RoPE scaling + SwiGLU, no QK-norm. Safetensors + GGUF via rlx-run llama32.",
     });
     register(ArchSpec {
+        name: "nanbeige",
+        family: ArchFamily::CausalLLM,
+        description: "Nanbeige4.2 — Looped Transformer (shared-weight layer reuse + per-loop KV); Llama-shaped via rlx-nanbeige / rlx-llama32.",
+    });
+    register(ArchSpec {
         name: "gemma",
         family: ArchFamily::CausalLLM,
         description: "Gemma / Gemma 2 (Google) — GQA + RoPE + GeGLU + embed scaling + tied weights. Safetensors + GGUF via rlx-run gemma.",
+    });
+    register(ArchSpec {
+        name: "laguna",
+        family: ArchFamily::CausalLLM,
+        description: "Laguna (Poolside) — hybrid SWA MoE; packed GGUF generate (KV cache, optional Metal/MLX) via rlx-laguna; F32 expand off by default.",
     });
     register(ArchSpec {
         name: "wav2vec2-bert",

@@ -1,8 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-kokoro --data weights/tts/kokoro-82m --voice af_heart --text The quick brown fox jumps over the lazy dog near the river bank. --device gpu --out /home/user/rlx-models/scripts/matrix/out/artifacts/kokoro.wgpu.wav
-
---- stdout ---
-Wrote 106800 samples (4.45s @ 24000 Hz) to /home/user/rlx-models/scripts/matrix/out/artifacts/kokoro.wgpu.wav [voice=af_heart, ep=cuda]
-
---- stderr ---
-[kittentts] loaded Gpu via ORT EP chain 'cuda+cpu'
-[kokoro] loaded 4 voices on Gpu (ort_ep=cuda)

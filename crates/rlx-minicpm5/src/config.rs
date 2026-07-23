@@ -115,6 +115,8 @@ pub fn minicpm5_1b_preset() -> Llama32Config {
         attention_bias: false,
         head_dim: Some(128),
         rope_scaling: None,
+        num_loops: 1,
+        skip_loop_final_norm: false,
         rope_style: rlx_llama32::RopeStyle::NeoX,
         gguf_arch: None,
         rope_dim: None,

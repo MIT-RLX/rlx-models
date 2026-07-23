@@ -38,7 +38,8 @@
 //! modality `[p,p,p,0]` implemented in `rope.rs`.
 //!
 //! **Deviations from llama.cpp** (verify via `qwen35_llama_parity` test):
-//! - `ssm_conv1d` uses manual k=4 unroll (not `Op::Conv`)
+//! - `ssm_conv1d` is `Op::Conv` depthwise on `[N,C,L,1]` with kernel `[k,1]`
+//!   (length on H — MPSGraph / CPU / MLX agree on this 1D layout)
 //! - GQA via narrow+concat (not `ggml_repeat`)
 //!
 //! Memory: F32 path dequantizes all weights at load; use packed mode
@@ -415,6 +416,33 @@ pub fn build_qwen35_hir_sized_ext(
         false,
         false,
         false,
+    )
+}
+
+/// Prefill-cache HIR fed by runtime hidden states (VLM: vision rows spliced on host).
+pub fn build_qwen35_prefill_hidden_cache_hir_ext(
+    cfg: &Qwen35Config,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
+    batch: usize,
+    seq: usize,
+    runtime_mrope: bool,
+    enable_mtp_head: bool,
+    fast_mtp: bool,
+    fast_greedy_lm_head: bool,
+) -> Result<(HirModule, HashMap<String, Vec<f32>>, PackedParams)> {
+    build_qwen35_prefill_cache_hir_assembled(
+        cfg,
+        weights,
+        batch,
+        seq,
+        !fast_greedy_lm_head,
+        true,
+        enable_mtp_head,
+        runtime_mrope,
+        false,
+        true,
+        fast_mtp,
+        fast_greedy_lm_head,
     )
 }
 
@@ -1152,7 +1180,7 @@ fn build_qwen35_hir_fallback_assembled(
         &mut g,
         &mut params,
         "output_norm.weight",
-        weights.output_norm.clone(),
+        offset_rms_gamma(cfg, &weights.output_norm),
         Shape::new(&[n_embd], DType::F32),
     );
     let out_norm_beta = synth_zero(&mut g, &mut params, "output_norm.beta", n_embd);
@@ -1382,9 +1410,10 @@ pub(crate) fn build_linear_layer(
     let ssm_a_p = param(g, params, &name(il, "ssm_a"), &lin.ssm_a, &[n_v_heads]);
 
     // attn_norm (pre-norm)
-    let attn_norm_w = param(
+    let attn_norm_w = param_rms(
         g,
         params,
+        cfg,
         &name(il, "attn_norm.weight"),
         &lin.attn_norm,
         &[n_embd],
@@ -1471,11 +1500,15 @@ pub(crate) fn build_linear_layer(
     );
     let beta = activation(g, Activation::Sigmoid, beta_pre);
 
-    // gate_g = softplus(alpha + ssm_dt_bias) * ssm_a
-    //   ssm_dt_bias: [n_v_heads], broadcast over [batch*seq, n_v_heads].
+    // gate_g = -exp(A_log) * softplus(alpha + dt_bias)
+    // Kernel applies state *= exp(gate_g), so gate_g must be ≤ 0 (Qwen3-Next /
+    // Qwen3.5 GatedDeltaNet). Raw `A_log * softplus` is wrong: A_log can be
+    // positive, which makes exp(gate)>1 and explodes the recurrent state.
     let alpha_biased = g.add(alpha, dt_bias);
     let alpha_softplus = softplus(g, alpha_biased);
-    let gate_g = g.mul(alpha_softplus, ssm_a_p);
+    let a_exp = activation(g, Activation::Exp, ssm_a_p);
+    let neg_a = activation(g, Activation::Neg, a_exp);
+    let gate_g = g.mul(neg_a, alpha_softplus);
 
     // Reshape gate/beta to [batch, seq, n_v_heads] for the
     // GatedDeltaNet kernel signature.
@@ -1709,9 +1742,10 @@ pub(crate) fn build_full_attn_layer(
     let kv_dim = n_head * head_dim;
 
     // pre-norm
-    let attn_norm_w = param(
+    let attn_norm_w = param_rms(
         g,
         params,
+        cfg,
         &name(il, "attn_norm.weight"),
         &fa.attn_norm,
         &[n_embd],
@@ -1789,6 +1823,7 @@ pub(crate) fn build_full_attn_layer(
     let q_normed = per_head_rms(
         g,
         params,
+        cfg,
         &name(il, "attn_q_norm"),
         &fa.attn_q_norm,
         q_packed,
@@ -1800,6 +1835,7 @@ pub(crate) fn build_full_attn_layer(
     let k_normed = per_head_rms(
         g,
         params,
+        cfg,
         &name(il, "attn_k_norm"),
         &fa.attn_k_norm,
         k_packed,
@@ -1997,9 +2033,10 @@ fn build_mtp_head(
         2 * n_embd,
         n_embd,
     );
-    let fa_attn_norm_w = param(
+    let fa_attn_norm_w = param_rms(
         g,
         params,
+        cfg,
         &name(il, "attn_norm.weight"),
         &fa.attn_norm,
         &[n_embd],
@@ -2034,17 +2071,19 @@ fn build_mtp_head(
         n_embd,
         kv_cols,
     );
-    let fa_q_norm_w = param(
+    let fa_q_norm_w = param_rms(
         g,
         params,
+        cfg,
         &name(il, "attn_q_norm.weight"),
         &fa.attn_q_norm,
         &[head_dim],
     );
     let fa_q_norm_b = synth_zero(g, params, &name(il, "attn_q_norm.beta"), head_dim);
-    let fa_k_norm_w = param(
+    let fa_k_norm_w = param_rms(
         g,
         params,
+        cfg,
         &name(il, "attn_k_norm.weight"),
         &fa.attn_k_norm,
         &[head_dim],
@@ -2060,9 +2099,10 @@ fn build_mtp_head(
         kv_dim,
         n_embd,
     );
-    let fa_post_norm_w = param(
+    let fa_post_norm_w = param_rms(
         g,
         params,
+        cfg,
         &name(il, "attn_post_norm.weight"),
         &fa.attn_post_norm,
         &[n_embd],
@@ -2288,9 +2328,10 @@ fn build_ffn(
     packed: &mut PackedParams,
 ) -> Result<NodeId> {
     let n_embd = cfg.hidden_size;
-    let post_norm_w = param(
+    let post_norm_w = param_rms(
         g,
         params,
+        cfg,
         &name(il, "post_attention_norm.weight"),
         attn_post_norm,
         &[n_embd],
@@ -2393,9 +2434,10 @@ fn build_moe_ffn(
     let top_k = cfg.num_experts_used.max(1);
     let scale = cfg.expert_weights_scale;
 
-    let post_norm_w = param(
+    let post_norm_w = param_rms(
         g,
         params,
+        cfg,
         &name(il, "post_attention_norm.weight"),
         attn_post_norm,
         &[n_embd],
@@ -2852,26 +2894,30 @@ fn depthwise_conv1d_op(
     k: usize,
 ) -> Result<NodeId> {
     debug_assert_eq!(width, out_seq + k - 1);
+    // Layout: BSC → BCW → NCHW `[N,C,L,1]` with kernel `[k,1]` (length on H).
     let bcw = g.transpose_(padded_bsc, vec![0, 2, 1]);
-    let nchw = g.reshape_(bcw, vec![batch as i64, channels as i64, 1, width as i64]);
+    let nchw = g.reshape_(
+        bcw,
+        vec![batch as i64, channels as i64, width as i64, 1],
+    );
     let w_data = pack_depthwise_conv_weight(weight, k, channels);
     let w = register_param(
         g,
         params,
         name,
         w_data,
-        Shape::new(&[channels, 1, 1, k], DType::F32),
+        Shape::new(&[channels, 1, k, 1], DType::F32),
     );
     let conv = g.add_node(
         Op::Conv {
-            kernel_size: vec![1, k],
+            kernel_size: vec![k, 1],
             stride: vec![1, 1],
             padding: vec![0, 0],
             dilation: vec![1, 1],
             groups: channels,
         },
         vec![nchw, w],
-        Shape::new(&[batch, channels, 1, out_seq], DType::F32),
+        Shape::new(&[batch, channels, out_seq, 1], DType::F32),
     );
     let bcs = g.reshape_(conv, vec![batch as i64, channels as i64, out_seq as i64]);
     Ok(g.transpose_(bcs, vec![0, 2, 1]))
@@ -2921,6 +2967,10 @@ fn depthwise_conv1d_causal(
 }
 
 /// Depthwise causal conv with symbolic `sym::SEQ` (dynamic prefill specialization).
+///
+/// Same `[N,C,L,1]` + kernel `[k,1]` layout as the static path. Causal pad is
+/// still a concat of `Static(k-1)` zeros + `Dynamic(SEQ)` input; after
+/// `bind_graph`, `sync_concat_shapes` expands the axis to `SEQ+k-1`.
 fn depthwise_conv1d_op_dynamic(
     g: &mut HirMut,
     params: &mut HashMap<String, Vec<f32>>,
@@ -2932,18 +2982,18 @@ fn depthwise_conv1d_op_dynamic(
     k: usize,
 ) -> Result<NodeId> {
     let bcw = g.transpose_(padded_bsc, vec![0, 2, 1]);
-    let nchw = g.reshape_(bcw, vec![batch as i64, channels as i64, 1, -1]);
+    let nchw = g.reshape_(bcw, vec![batch as i64, channels as i64, -1, 1]);
     let w_data = pack_depthwise_conv_weight(weight, k, channels);
     let w = register_param(
         g,
         params,
         name,
         w_data,
-        Shape::new(&[channels, 1, 1, k], DType::F32),
+        Shape::new(&[channels, 1, k, 1], DType::F32),
     );
     let conv = g.add_node(
         Op::Conv {
-            kernel_size: vec![1, k],
+            kernel_size: vec![k, 1],
             stride: vec![1, 1],
             padding: vec![0, 0],
             dilation: vec![1, 1],
@@ -2954,8 +3004,8 @@ fn depthwise_conv1d_op_dynamic(
             &[
                 Dim::Static(batch),
                 Dim::Static(channels),
-                Dim::Static(1),
                 Dim::Dynamic(sym::SEQ),
+                Dim::Static(1),
             ],
             DType::F32,
         ),
@@ -3033,6 +3083,7 @@ fn repeat_heads_packed(
 fn per_head_rms(
     g: &mut HirMut,
     params: &mut HashMap<String, Vec<f32>>,
+    cfg: &Qwen35Config,
     weight_name: &str,
     weight: &[f32],
     x: NodeId,
@@ -3042,9 +3093,10 @@ fn per_head_rms(
     eps: f32,
 ) -> NodeId {
     let r = g.reshape_(x, bs.bsh4(heads, head_dim));
-    let gamma = param(
+    let gamma = param_rms(
         g,
         params,
+        cfg,
         &format!("{weight_name}.weight"),
         weight,
         &[head_dim],
@@ -3186,6 +3238,27 @@ fn param(
         data.to_vec(),
         Shape::new(shape, DType::F32),
     )
+}
+
+/// HF Qwen3.5 `RMSNorm`: `(1 + weight) * rms(x)`. GGUF already bakes `+1`.
+fn offset_rms_gamma(cfg: &Qwen35Config, w: &[f32]) -> Vec<f32> {
+    if cfg.rms_norm_offset {
+        w.iter().map(|x| x + 1.0).collect()
+    } else {
+        w.to_vec()
+    }
+}
+
+fn param_rms(
+    g: &mut HirMut,
+    params: &mut HashMap<String, Vec<f32>>,
+    cfg: &Qwen35Config,
+    name: &str,
+    data: &[f32],
+    shape: &[usize],
+) -> NodeId {
+    let data = offset_rms_gamma(cfg, data);
+    param(g, params, name, &data, shape)
 }
 
 pub(crate) fn register_param(
@@ -3543,7 +3616,7 @@ pub fn emit_qwen35_prefill_tail(
         g,
         params,
         "output_norm.weight",
-        weights.output_norm.clone(),
+        offset_rms_gamma(cfg, &weights.output_norm),
         Shape::new(&[n_embd], DType::F32),
     );
     let out_norm_beta = synth_zero(g, params, "output_norm.beta", n_embd);

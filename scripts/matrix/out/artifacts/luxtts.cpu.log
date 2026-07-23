@@ -1,7 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-luxtts --data weights/tts/luxtts --prompt-wav assets/jfk/jfk_voice_clone.wav --prompt-text And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. --text The quick brown fox jumps over the lazy dog near the river bank. --device cpu --out /home/user/rlx-models/scripts/matrix/out/artifacts/luxtts.cpu.wav
-
---- stdout ---
-Wrote 30464 samples (1.27s @ 24000 Hz) to /home/user/rlx-models/scripts/matrix/out/artifacts/luxtts.cpu.wav [steps=4, ep=rlx-native/Cpu]
-
---- stderr ---
-[luxtts] loaded 3 subgraphs on rlx-native/Cpu

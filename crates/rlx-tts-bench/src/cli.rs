@@ -9,6 +9,7 @@ use crate::devices::{filter_available, parse_device_list};
 use crate::isolate::{is_worker, run_isolated};
 use crate::phrases::{DEFAULT_LONG, DEFAULT_SHORT};
 use crate::report::{write_html, write_markdown, write_results_jsonl, write_summary_json};
+use crate::stress::{StressConfig, run_stress};
 use crate::suite::{RunConfig, gate_failed, list_adapters, run_suite, select_models};
 
 #[derive(Parser, Debug)]
@@ -27,6 +28,8 @@ pub enum Command {
     List,
     /// Run the bench matrix
     Run(RunArgs),
+    /// Large synthetic corpus (≥1000) → optional ref TTS → rlx-tts validate (+ Whisper)
+    Stress(StressArgs),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -106,6 +109,74 @@ pub struct RunArgs {
     pub timeout_secs: u64,
 }
 
+#[derive(Parser, Debug, Clone)]
+pub struct StressArgs {
+    /// How many synthetic phrases to validate (default 1000).
+    #[arg(long = "n", default_value_t = 1000)]
+    pub n: usize,
+
+    /// Skip the first N generated phrases (paging / resume windows).
+    #[arg(long = "offset", default_value_t = 0)]
+    pub offset: usize,
+
+    /// Deterministic corpus seed.
+    #[arg(long = "seed", default_value_t = 42)]
+    pub seed: u64,
+
+    #[arg(long = "target", default_value = "rlx-tts")]
+    pub target: String,
+
+    /// Optional reference TTS for spectral compare (e.g. piper, kittentts, fake).
+    #[arg(long = "ref-model")]
+    pub ref_model: Option<String>,
+
+    #[arg(long = "device", default_value = "cpu")]
+    pub device: String,
+
+    /// Whisper greedy ASR coverage + CER on target audio.
+    #[arg(long = "whisper", default_value_t = true)]
+    pub whisper: bool,
+
+    /// Disable Whisper even if weights are present.
+    #[arg(long = "no-whisper", default_value_t = false)]
+    pub no_whisper: bool,
+
+    /// Spectral cosine vs `--ref-model` when set.
+    #[arg(long = "spectral", default_value_t = false)]
+    pub spectral: bool,
+
+    /// Write every target WAV under `out-dir/wav/`.
+    #[arg(long = "save-wav", default_value_t = false)]
+    pub save_wav: bool,
+
+    /// Also write every Nth WAV (0 = off) even without `--save-wav`.
+    #[arg(long = "save-wav-every", default_value_t = 50)]
+    pub save_wav_every: usize,
+
+    /// Dump the planned corpus JSONL before running.
+    #[arg(long = "write-corpus", default_value_t = true)]
+    pub write_corpus: bool,
+
+    /// Optional plain-text / JSONL corpus file (overrides synthetic generator).
+    #[arg(long = "corpus-file")]
+    pub corpus_file: Option<PathBuf>,
+
+    #[arg(long = "out-dir", default_value = "/tmp/rlx-tts-stress")]
+    pub out_dir: PathBuf,
+
+    /// Skip ids already present in `stress_results.jsonl`.
+    #[arg(long = "resume", default_value_t = false)]
+    pub resume: bool,
+
+    /// Exit non-zero if median Whisper coverage falls below this.
+    #[arg(long = "fail-under-coverage")]
+    pub fail_under_coverage: Option<f64>,
+
+    /// Exit non-zero if ok/(ok+err) falls below this (e.g. 0.95).
+    #[arg(long = "fail-under-ok-rate")]
+    pub fail_under_ok_rate: Option<f64>,
+}
+
 pub fn entry(cli: Cli) -> Result<()> {
     match cli.cmd {
         Command::List => {
@@ -113,7 +184,37 @@ pub fn entry(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Run(args) => run(args),
+        Command::Stress(args) => stress(args),
     }
+}
+
+fn stress(args: StressArgs) -> Result<()> {
+    let devices = filter_available(&parse_device_list(&args.device)?);
+    let device = *devices
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("no runnable device from --device {}", args.device))?;
+    let whisper = args.whisper && !args.no_whisper;
+    let spectral = args.spectral || args.ref_model.is_some();
+    let cfg = StressConfig {
+        n: args.n,
+        seed: args.seed,
+        target_model: args.target,
+        ref_model: args.ref_model,
+        device,
+        whisper,
+        spectral,
+        save_wav: args.save_wav,
+        save_wav_every: args.save_wav_every,
+        out_dir: args.out_dir,
+        resume: args.resume,
+        offset: args.offset,
+        fail_under_coverage: args.fail_under_coverage,
+        fail_under_ok_rate: args.fail_under_ok_rate,
+        corpus_file: args.corpus_file,
+        write_corpus: args.write_corpus,
+    };
+    let _ = run_stress(&cfg)?;
+    Ok(())
 }
 
 fn run(args: RunArgs) -> Result<()> {

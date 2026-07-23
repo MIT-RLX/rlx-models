@@ -95,18 +95,19 @@ existing = {{o.name for o in model.graph.output}}
 want = {ort_names:?}
 for name in want:
     if name not in existing:
-        model.graph.output.append(helper.make_tensor_value_info(name, TensorProto.FLOAT, None))
+        vi = model.graph.output.add()
+        vi.name = name
 onnx.save(model, '/tmp/kitten_cmp.onnx')
 voices = np.load({voices:?})
 style = voices['expr-voice-2-m'][6:7].astype(np.float32)
-ids = np.array([[0,50,83,156,54,57,135,0]], dtype=np.int64)
+ids = np.array([[0,50,83,156,54,57,135,10,0]], dtype=np.int64)
 speed = np.array([1.0], dtype=np.float32)
 sess = ort.InferenceSession('/tmp/kitten_cmp.onnx', providers=['CPUExecutionProvider'])
 outs = sess.run(None, {{'input_ids': ids, 'style': style, 'speed': speed}})
 out = {{}}
 for n, a in zip([o.name for o in sess.get_outputs()], outs):
     a = np.asarray(a)
-    if a.dtype == np.float32:
+    if a.dtype in (np.float32, np.float16):
         out[n] = a.astype(np.float32).reshape(-1).tolist()
 print(json.dumps(out))
 "#
@@ -128,9 +129,16 @@ print(json.dumps(out))
 fn main() -> anyhow::Result<()> {
     let filter = probe_filter();
     let bundle_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("weights/rlx_bundle");
-    let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 0];
+    // Kitten framing: `[pad] + phonemes + [ellipsis=10] + [pad]` (həˈloʊ).
+    let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 10, 0];
     let token_len = ids.len();
-    let seq = 8usize.max(token_len.next_power_of_two());
+    // `KITTEN_CMP_EXACT=1` compiles at the exact token width (production / whisper-test path,
+    // no pad tokens). Default keeps the legacy power-of-two headroom slot.
+    let seq = if std::env::var("KITTEN_CMP_EXACT").is_ok() {
+        token_len
+    } else {
+        8usize.max(token_len.next_power_of_two())
+    };
     let max_wave = token_len
         .saturating_mul(600)
         .saturating_mul(8)
@@ -158,7 +166,8 @@ fn main() -> anyhow::Result<()> {
         );
         let graphs = cache.cached_graphs_for_seq(seq)?;
         let mut g = graphs.full.lock().expect("seq cache graph");
-        let ort_dur: Vec<i64> = vec![19, 2, 1, 2, 3, 2, 3, 2];
+        // ORT duration for framed həˈloʊ (Jasper style row 6); sum=34 alignment frames.
+        let ort_dur: Vec<i64> = vec![3, 2, 2, 3, 4, 4, 13, 2, 1];
         let outs = kitten_tts_mini_rlx::bundle_compile::run_parity_inputs_with_duration(
             &mut g,
             seq,
@@ -197,6 +206,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     let t1 = Instant::now();
+    // Aliased ONNX names map to several HIR nodes (compute output + Resize scale/roi params,
+    // Const helpers, …). Tap the largest non-empty tensor so probes read the real op output,
+    // not a scalar helper — otherwise sine-chain Muls report their constant operand.
     let all_probes: Vec<_> = WATCH
         .iter()
         .filter_map(|(hir, _)| {
@@ -204,7 +216,14 @@ fn main() -> anyhow::Result<()> {
                 .hir
                 .nodes()
                 .iter()
-                .find(|n| n.name.as_deref() == Some(*hir))
+                .filter(|n| n.name.as_deref() == Some(*hir))
+                .max_by_key(|n| {
+                    n.shape
+                        .dims()
+                        .iter()
+                        .map(|d| d.unwrap_static())
+                        .product::<usize>()
+                })
                 .map(|n| (n.id, *hir))
         })
         .collect();

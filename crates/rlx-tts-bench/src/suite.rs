@@ -80,14 +80,28 @@ pub fn run_suite(cfg: &RunConfig) -> Result<Vec<BenchRow>> {
             let adapter = match make_adapter(model, device) {
                 Ok(a) => a,
                 Err(e) => {
+                    let msg = e.to_string();
+                    let skip = msg.contains("host CPU only")
+                        || msg.contains("not supported")
+                        || msg.contains("unavailable");
                     for (phrase_id, _) in &cfg.phrases {
-                        let row = failed_row(
-                            model,
-                            device_label(device),
-                            phrase_id,
-                            "plain",
-                            e.to_string(),
-                        );
+                        let row = if skip {
+                            skipped_row(
+                                model,
+                                device_label(device),
+                                phrase_id,
+                                "plain",
+                                msg.clone(),
+                            )
+                        } else {
+                            failed_row(
+                                model,
+                                device_label(device),
+                                phrase_id,
+                                "plain",
+                                msg.clone(),
+                            )
+                        };
                         push_row(cfg, &mut rows, row);
                     }
                     continue;

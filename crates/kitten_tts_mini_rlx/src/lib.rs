@@ -21,6 +21,7 @@ pub mod alignment;
 pub mod bundle_compile;
 pub mod bundle_patches;
 pub mod compile_profile;
+pub mod device_policy;
 pub mod gpu_kernels;
 pub mod hir_qdq_fuse;
 pub mod kernels;
@@ -52,6 +53,11 @@ pub use compile_profile::{
     mir_qdq_fusion_enabled, optimized_split_graphs_enabled, parity_onnx_profile_enabled,
     parity_thunk_profile_enabled, prewarm_buckets, prewarm_enabled, qdq_fusion_enabled,
     seq_compile_cache_capacity,
+};
+pub use device_policy::{
+    DISCRETE_MAX_FRAMES_PER_TOKEN, DISCRETE_VULKAN_WAVEFORM_CAP, DISCRETE_WGPU_MAX_FRAMES_PER_TOKEN,
+    DISCRETE_WGPU_WAVEFORM_CAP, VULKAN_WAVEFORM_CAP, WGPU_WAVEFORM_CAP, clamp_waveform,
+    clamp_waveform_for_device, max_frames_per_token, prepare, prepare_device, resolve_device,
 };
 pub use mel_align::{
     ALIGNMENT_MASK_NODES, F0_FEED_PROBE_NODES, compile_mel_cap, import_mel_propagate_enabled,

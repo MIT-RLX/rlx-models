@@ -59,7 +59,7 @@ pub fn alignment_frame_count(duration_mask: &[i64]) -> usize {
 
 /// Upper bound on alignment frames for static compile shapes (`seq * max_frames_per_token`).
 pub fn alignment_frame_upper_bound(sequence_length: usize) -> usize {
-    sequence_length.saturating_mul(crate::bundle_compile::MAX_FRAMES_PER_TOKEN)
+    sequence_length.saturating_mul(crate::bundle_compile::max_frames_per_token())
 }
 
 fn per_trip_scalars(data: &[i64], split_lens: &[i64], trip_count: usize) -> Vec<i64> {

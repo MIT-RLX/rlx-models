@@ -1,0 +1,55 @@
+[package]
+name = "rlx-laguna"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Laguna MoE (poolside Laguna S/XS) for RLX — packed GGUF generate + synth reference"
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-cpu = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-text = { workspace = true }
+hf-hub = { workspace = true, optional = true }
+ureq = { version = "2.12", default-features = false, features = ["tls"], optional = true }
+rlx-serve = { workspace = true, optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net"], optional = true }
+
+[features]
+default = []
+# Hub JSON + HTTP Range probes (GGUF headers / safetensors index).
+hf-probe = ["dep:hf-hub", "dep:ureq"]
+# OpenAI engine (`LagunaEngine`) + optional `--serve` (prefer `rlx-openai`).
+serve = ["dep:rlx-serve", "dep:tokio"]
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-core/coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
+
+[[bin]]
+name = "rlx-laguna"
+path = "src/bin/rlx_laguna.rs"
+
+[[example]]
+name = "backend_bench"
+path = "examples/backend_bench.rs"
+
+[lints]
+workspace = true

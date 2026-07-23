@@ -1,6 +1,0 @@
-warning: patch `rlx-umap v0.2.12 (/Users/Shared/rlx/crates/numerics/rlx-umap)` was not used in the crate graph
-help: Check that the patched package version and available features are compatible
-      with the dependency requirements. If the patch has a different version from
-      what is locked in the Cargo.lock file, run `cargo update` to use the new
-      version. This may also occur with an optional dependency that is not enabled.
-    Finished `release` profile [optimized] target(s) in 0.23s

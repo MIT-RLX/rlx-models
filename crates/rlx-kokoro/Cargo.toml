@@ -17,10 +17,10 @@ serde_json = { workspace = true }
 hound = "3"
 once_cell = "1"
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
-# Shared StyleTTS2 frontend (espeak phonemizer + text preprocessor) and the
-# ONNX Runtime execution-provider selector are reused from rlx-kittentts — both
-# are StyleTTS2-family models with the same 3-input ONNX interface. Referenced by
-# path (not workspace inheritance) so its default features can be disabled.
+# Shared StyleTTS2 frontend (espeak phonemizer + text preprocessor) reused from
+# rlx-kittentts — both are StyleTTS2-family models with the same espeak→IPA
+# frontend. Referenced by path (not workspace inheritance) so its default
+# features can be disabled.
 rlx-kittentts = { path = "../rlx-kittentts", default-features = false }
 # Native RLX inference path (ort-free): reuse the generic ONNX→rlx-ir→run harness
 # (`compile_named`/`run_typed`) from rlx-tiny-tts to run the graph-split
@@ -31,48 +31,20 @@ rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false, features = 
 workspace = true
 optional = true
 
-[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
-ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
-    "std",
-    "pkg-config",
-    "download-binaries",
-    "tls-rustls",
-] }
-
-[target.'cfg(target_os = "ios")'.dependencies]
-ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
-    "std",
-    "download-binaries",
-    "tls-rustls",
-] }
-
-[target.'cfg(target_os = "android")'.dependencies]
-ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
-    "std",
-    "download-binaries",
-    "tls-rustls",
-    "copy-dylibs",
-] }
-
 [features]
-# `onnx` enables the ORT encoder fallback used by native StyleTTS2/Kokoro (duration
-# LSTM parity). Full-native encoder: `RLX_KOKORO_NATIVE_ENC=1`.
-default = ["native", "espeak", "onnx"]
-# ONNX Runtime inference path (ort) + shared ORT session builder from kittentts.
-onnx = ["dep:ort", "rlx-kittentts/onnx"]
+default = ["native", "espeak"]
 # Native RLX inference path: graph-split encoder + decoder_raw run through
 # rlx-onnx-import → rlx-ir on any RLX backend (cpu/metal/mlx/wgpu/…).
 native = ["dep:rlx-tiny-tts"]
 # espeak-ng phonemizer + text preprocessor (English bundled data).
 espeak = ["rlx-kittentts/espeak"]
-# RLX runtime backends. Apple GPU inference for the ONNX path goes through the
-# CoreML execution provider; NVIDIA through CUDA; Windows through DirectML. The
-# native path forwards each backend to rlx-tiny-tts's runtime.
-metal = ["rlx-runtime/metal", "rlx-kittentts/metal", "rlx-kittentts/ort-coreml", "rlx-tiny-tts?/metal"]
-mlx = ["rlx-runtime/mlx", "rlx-kittentts/mlx", "rlx-kittentts/ort-coreml", "rlx-tiny-tts?/mlx"]
-cuda = ["rlx-runtime/cuda", "rlx-kittentts/cuda", "rlx-kittentts/ort-cuda", "rlx-tiny-tts?/cuda"]
-rocm = ["rlx-runtime/rocm", "rlx-kittentts/rocm", "rlx-kittentts/ort-rocm", "rlx-tiny-tts?/rocm"]
-gpu = ["rlx-runtime/gpu", "rlx-kittentts/gpu", "rlx-tiny-tts?/gpu"]
+# RLX runtime backends. The native path forwards each backend to rlx-tiny-tts's
+# runtime (kittentts is used only for the CPU espeak/phonemize frontend).
+metal = ["rlx-runtime/metal", "rlx-tiny-tts?/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-tiny-tts?/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-tiny-tts?/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-tiny-tts?/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-tiny-tts?/gpu"]
 coreml = ["rlx-runtime/coreml", "rlx-tiny-tts?/coreml"]
 vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts?/vulkan"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
@@ -90,10 +62,6 @@ required-features = ["native", "espeak"]
 [[example]]
 name = "native_synthesize"
 required-features = ["native", "espeak"]
-
-[[example]]
-name = "ort_synthesize"
-required-features = ["onnx"]
 
 [lints]
 workspace = true

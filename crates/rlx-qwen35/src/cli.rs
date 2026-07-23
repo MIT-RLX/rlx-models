@@ -471,8 +471,13 @@ pub fn run(args: &[String]) -> Result<()> {
             )?;
             println!("\n[rlx-qwen35] qwen35: generated: {generated:?}");
         } else {
-            let mut think_watch =
-                thinking_budget.map(|b| crate::ThinkingBudgetWatch::new(specials.clone(), b));
+            let mut think_watch = thinking_budget.map(|b| {
+                if enable_thinking {
+                    crate::ThinkingBudgetWatch::new_already_thinking(specials.clone(), b)
+                } else {
+                    crate::ThinkingBudgetWatch::new(specials.clone(), b)
+                }
+            });
             let mut new_ids = runner.generate_with_opts(&prompt_ids, max_tokens, opts, |t| {
                 if specials.is_stop(t) {
                     return false;

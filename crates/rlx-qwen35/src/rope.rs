@@ -60,12 +60,13 @@ pub fn build_mrope_tables(
     let mut sin = vec![0f32; max_pos * head_half];
 
     for pos in 0..max_pos {
-        let (cos_row, sin_row) = rlx_flow::rope::mrope_row_for_sections(
+        let (cos_row, sin_row) = rlx_flow::rope::mrope_row_for_sections_ex(
             cfg.rope_theta,
             n_rot,
             sections,
             text_section_pos(pos),
             head_half,
+            cfg.mrope_interleaved,
         );
         let row = pos * head_half;
         cos[row..row + head_half].copy_from_slice(&cos_row);
@@ -91,12 +92,13 @@ pub fn mrope_row_for_sections(
     section_pos: [usize; 4],
     head_half: usize,
 ) -> (Vec<f32>, Vec<f32>) {
-    rlx_flow::rope::mrope_row_for_sections(
+    rlx_flow::rope::mrope_row_for_sections_ex(
         cfg.rope_theta,
         cfg.rope_dim_count,
         sections4(cfg),
         section_pos,
         head_half,
+        cfg.mrope_interleaved,
     )
 }
 
@@ -150,6 +152,8 @@ mod tests {
             rope_theta: 10_000.0,
             rope_dim_count: 8,
             rope_dim_sections: sections,
+            mrope_interleaved: false,
+            rms_norm_offset: false,
             full_attention_interval: 3,
             ssm_conv_kernel: 4,
             ssm_group_count: 2,

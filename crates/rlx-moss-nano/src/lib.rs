@@ -24,14 +24,10 @@
 
 pub mod config;
 pub mod dsp;
-#[cfg(feature = "onnx")]
-pub mod model;
 pub mod native;
 
 pub use config::{BuiltinVoice, CodecInfo, Manifest, TtsConfig};
 pub use dsp::{TightenOpts, tighten_pauses};
-#[cfg(feature = "onnx")]
-pub use model::{MossNano, SynthOpts};
 pub use native::{MossNative, NativeOpts};
 pub use rlx_runtime::{Device, parse_device};
 

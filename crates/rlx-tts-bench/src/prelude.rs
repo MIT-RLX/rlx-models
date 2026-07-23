@@ -29,8 +29,12 @@ pub use crate::suite::{
 pub use crate::devices::{auto_devices, device_label, filter_available, parse_device_list};
 pub use rlx_runtime::{Device, is_available};
 
-// ── Phrases ──────────────────────────────────────────────────────
+// ── Phrases / corpus ─────────────────────────────────────────────
+pub use crate::corpus::{CorpusItem, generate_corpus, load_corpus_file};
 pub use crate::phrases::{DEFAULT_LONG, DEFAULT_SHORT, FOX_WORDS, content_words};
+
+// ── Stress bench ─────────────────────────────────────────────────
+pub use crate::stress::{StressConfig, StressRow, StressSummary, char_error_rate, run_stress};
 
 // ── Metrics ──────────────────────────────────────────────────────
 pub use crate::metrics::{

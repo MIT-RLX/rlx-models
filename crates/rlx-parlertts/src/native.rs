@@ -9,11 +9,15 @@
 //! and run on any rlx backend (CPU/Metal/MLX/wgpu/CoreML). ort is a DEV-dependency
 //! only (parity validation in `examples/native_parity.rs`), never at runtime.
 //!
-//! The decoder has NO KV cache and no separate transcript input (this export
-//! conditions purely through the T5 encoder). Rather than recompile per step
-//! (re-prefill), we compile the decoder ONCE at a fixed `max_steps` length and
-//! refill a padded `[1,9,max]` buffer each step — the baked causal mask (`Trilu`)
-//! makes `logits[:, step, :]` identical to the growing-prefix result.
+//! Conditioning (true Parler): the DESCRIPTION → T5 encoder → `encoder_hidden_states`
+//! (voice/style); the TRANSCRIPT → `prompt_input_ids` on the decoder, which runs
+//! `embed_prompts` internally and prepends a `prompt_hidden_states` prefix (length
+//! `pt`) before the codebook stream.
+//!
+//! The decoder has NO KV cache. Rather than recompile per step (re-prefill), we
+//! compile it ONCE at a fixed `max_steps` length and refill a padded `[1,9,max]`
+//! buffer each step — the baked causal mask (`Trilu`) makes `logits[:, pt+step, :]`
+//! identical to the growing-prefix result.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -50,7 +54,9 @@ pub struct InferOpts {
 impl Default for InferOpts {
     fn default() -> Self {
         Self {
-            max_steps: 172,
+            // ~86 DAC frames/s (44100/512); 420 ≈ 4.9s, enough for a full sentence
+            // (the model emits EOS earlier). 172 truncated multi-word utterances.
+            max_steps: 420,
             temperature: 1.0,
             top_k: 50,
             seed: 0x50415254,
@@ -129,14 +135,8 @@ impl NativeParler {
         Ok(g)
     }
 
-    /// Encode a string through the T5 encoder → flat `[enc_len * d_model]`.
-    ///
-    /// The current ONNX export has no separate `prompt_input_ids` input on the
-    /// decoder (true Parler routes the transcript as a prompt prefix and the
-    /// voice description through T5). We therefore feed the **transcript** to
-    /// the encoder so the AR loop has content to speak; `description` still
-    /// seeds sampling for voice variety until a re-export lands prompt embeds.
-    fn encode(&self, text: &str) -> Result<(Vec<f32>, usize)> {
+    /// Tokenize a string with the Parler (T5) tokenizer + trailing eos → i64 ids.
+    fn tokenize(&self, text: &str) -> Result<Vec<i64>> {
         let mut ids: Vec<i64> = self
             .tok
             .encode(text, false)
@@ -145,7 +145,18 @@ impl NativeParler {
             .iter()
             .map(|&i| i as i64)
             .collect();
-        ids.push(1); // T5 eos
+        ids.push(1); // T5 eos (</s>)
+        Ok(ids)
+    }
+
+    /// Encode the **voice description** through the T5 encoder → flat
+    /// `[enc_len * d_model]` `encoder_hidden_states` (the style conditioning).
+    ///
+    /// True Parler conditioning: the description (voice/style prompt) goes here,
+    /// while the transcript (words to speak) is fed as `prompt_input_ids` to the
+    /// decoder — see [`Self::synthesize`].
+    fn encode(&self, description: &str) -> Result<(Vec<f32>, usize)> {
+        let ids = self.tokenize(description)?;
         let n = ids.len();
         let mask: Vec<i64> = vec![1; n];
         let mut enc = self.compile("text_encoder", &[("sequence_length", n), ("t", n)], n)?;
@@ -162,11 +173,22 @@ impl NativeParler {
         if text.is_empty() {
             return Err(anyhow!("empty transcript"));
         }
-        let (hs, enc_len) = self.encode(text)?;
+        // Style conditioning: the DESCRIPTION → T5 encoder → encoder_hidden_states.
+        let (hs, enc_len) = self.encode(description)?;
         let hs_bytes = f32_le(&hs);
         let emask: Vec<i64> = vec![1; enc_len];
         let emask_bytes = i64_le(&emask);
+        // Content conditioning: the TRANSCRIPT → prompt_input_ids. The decoder
+        // runs `embed_prompts(prompt_input_ids)` internally and prepends it as a
+        // `prompt_hidden_states` prefix (length `pt`) before the codebook stream.
+        let prompt_ids = self.tokenize(text)?;
+        let pt = prompt_ids.len();
+        let prompt_bytes = i64_le(&prompt_ids);
         let t = opts.max_steps;
+        // Because the prompt prefix is prepended internally, the decoder's total
+        // sequence is `pt + t`; logits come back as [9, pt + t, VOCAB] and the
+        // code position for generation `step` lives at seq index `pt + step`.
+        let full = pt + t;
 
         // Decoder compiled ONCE at fixed length `t`; refilled each step.
         let mut dec = self.compile(
@@ -174,6 +196,7 @@ impl NativeParler {
             &[
                 ("t", t),
                 ("et", enc_len),
+                ("pt", pt),
                 ("sequence_length", t),
                 ("encoder_sequence_length", enc_len),
             ],
@@ -185,8 +208,8 @@ impl NativeParler {
         for k in 0..K {
             dids[k * t] = BOS; // [k, 0]
         }
-        // Mix description into the RNG seed so voice strings change sampling without
-        // requiring the (not-yet-exported) prompt-embed path.
+        // Description already conditions content+voice through the encoder + prompt;
+        // seed sampling deterministically (mix description for reproducible variety).
         let seed = opts.seed ^ hash64(description);
         let mut rng = Rng::new(seed);
         // per-generation-step codes [9] (delayed, as fed to the decoder)
@@ -197,8 +220,10 @@ impl NativeParler {
                 ("decoder_input_ids", &i64_le(&dids), DType::I64),
                 ("encoder_hidden_states", &hs_bytes, DType::F32),
                 ("encoder_attention_mask", &emask_bytes, DType::I64),
+                ("prompt_input_ids", &prompt_bytes, DType::I64),
             ]);
-            // logits: [9, t, VOCAB] = [codebook, seq, vocab]; take position `step`.
+            // logits: [9, pt + t, VOCAB] = [codebook, seq, vocab]. The code we
+            // sample at generation `step` is predicted at seq index `pt + step`.
             let logits = as_f32(&out[0].0);
             let mut nxt = [PAD; K];
             for k in 0..K {
@@ -206,7 +231,7 @@ impl NativeParler {
                     nxt[k] = BOS; // delay: codebook k not real until step >= k
                     continue;
                 }
-                let base = k * t * VOCAB + step * VOCAB;
+                let base = k * full * VOCAB + (pt + step) * VOCAB;
                 let row = &logits[base..base + VOCAB];
                 nxt[k] = if opts.greedy {
                     argmax(row) as i64

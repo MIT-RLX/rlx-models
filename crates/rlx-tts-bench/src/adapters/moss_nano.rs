@@ -26,11 +26,24 @@ pub fn make(device: Device) -> Result<Box<dyn TtsAdapter>> {
         .resolve_dir()
         .ok_or_else(|| anyhow::anyhow!(meta().hints.missing_reason()))?;
     let inner = MossNative::load_on(&dir, device).context("load moss-nano")?;
-    let voice = inner
-        .voice_names()
-        .into_iter()
-        .next()
+    // The FIRST builtin voice is Chinese ("Junhao"), which garbles English text
+    // on every backend. Prefer an English voice ("Trump" is the validated one),
+    // overridable via RLX_MOSS_VOICE.
+    let voices = inner.voice_names();
+    let voice = std::env::var("RLX_MOSS_VOICE")
+        .ok()
+        .filter(|v| voices.iter().any(|n| n == v))
+        .or_else(|| {
+            ["Trump", "Alice", "Bob", "en", "English"].iter().find_map(|w| {
+                voices
+                    .iter()
+                    .find(|n| n.eq_ignore_ascii_case(w) || n.to_lowercase().contains(&w.to_lowercase()))
+                    .cloned()
+            })
+        })
+        .or_else(|| voices.first().cloned())
         .unwrap_or_else(|| "default".into());
+    eprintln!("[moss-nano] voice={voice}");
     Ok(Box::new(MossAdapter { inner, voice }))
 }
 
@@ -51,7 +64,15 @@ impl TtsAdapter for MossAdapter {
     }
 
     fn synthesize(&mut self, req: SynthRequest<'_>) -> Result<SynthResult> {
-        let opts = NativeOpts::default();
+        // Validated backend_matrix uses max_frames=64 (NativeOpts::default is 96,
+        // which garbles). Override via RLX_MOSS_FRAMES.
+        let opts = NativeOpts {
+            max_frames: std::env::var("RLX_MOSS_FRAMES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(64),
+            ..NativeOpts::default()
+        };
         let t0 = Instant::now();
         let stereo = self.inner.synthesize(req.text, &self.voice, &opts)?;
         let ch = self.inner.channels().max(1) as usize;

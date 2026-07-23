@@ -1,6 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-moss-nano --data weights/tts/moss-nano --voice Saki --max-frames 32 --text Hi there friends. --device vulkan --out /home/user/rlx-models/scripts/matrix/out/artifacts/moss-nano.vulkan.wav
-
---- stdout ---
-Wrote 87360 samples (0.91s @ 48000 Hz, 2ch) to /home/user/rlx-models/scripts/matrix/out/artifacts/moss-nano.vulkan.wav [native/Vulkan, voice=Saki] synth=10785ms (11.85× RT)
-
---- stderr ---

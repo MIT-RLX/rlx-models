@@ -23,7 +23,7 @@ fn main() -> anyhow::Result<()> {
     let devices = parse_devices();
 
     println!(
-        "== StyleTTS2 Kokoro cross-backend (native default; RLX_STYLETTS2_ORT=1 for monolithic ORT) =="
+        "== StyleTTS2 Kokoro cross-backend (native graph-split RLX path) =="
     );
     println!("text: {text:?}  voice={voice}");
     println!("model={}", model.display());

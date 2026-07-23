@@ -52,7 +52,7 @@ fn main() -> anyhow::Result<()> {
     let bundle = weights.join("rlx_bundle");
     kitten_tts_mini_rlx::set_env_var("KITTEN_RLX_BUNDLE", &bundle);
 
-    let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 0];
+    let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 10, 0];
     let style = load_style_row();
 
     let token_len = ids.len();
@@ -110,7 +110,7 @@ import onnx, numpy as np, onnxruntime as ort
 model = onnx.load('.cache/kittentts-mini-0.8/kitten_tts_mini_v0_8.onnx')
 voices = np.load('.cache/kittentts-mini-0.8/voices.npz')
 style = voices['expr-voice-2-m'][6:7].astype(np.float32)
-ids = np.array([[0,50,83,156,54,57,135,0]], dtype=np.int64)
+ids = np.array([[0,50,83,156,54,57,135,10,0]], dtype=np.int64)
 speed = np.array([1.0], dtype=np.float32)
 sess = ort.InferenceSession(model.SerializeToString(), providers=['CPUExecutionProvider'])
 wave, dur = sess.run(None, {'input_ids': ids, 'style': style, 'speed': speed})

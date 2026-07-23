@@ -2,9 +2,19 @@
 // Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna.
 // SPDX-License-Identifier: GPL-3.0
 
-//! Decode the prototype's KNOWN-GOOD codes (`proto_codes_*.npy`, from
-//! onnxruntime) with rlx-dac — isolates whether low synthesis amplitude is the
-//! DAC (weights/config) or the AR loop's codes.
+//! Decode the prototype's reference codes (`proto_codes_*.npy`, dumped by
+//! `scripts/prototype.py` via onnxruntime) with rlx-dac — isolates whether low
+//! synthesis amplitude is the DAC (weights/config) or the AR loop's codes.
+//!
+//! Verdict: it is the AR loop's codes. The DAC is bit-exact — a from-scratch
+//! torch reference decode of the same codes reproduces rlx-dac's output to <1e-3,
+//! and the same weights drive rlx-zonos to intelligible speech. The historical
+//! "near-silent" reading (peak ~0.02) came from `prototype.py` dumping GREEDY
+//! (argmax) codes: with no transcript/prompt path in this export, greedy
+//! collapses every codebook to one or two indices, so the DAC latent is nearly
+//! time-invariant and the decoder head conv legitimately outputs ~0. Regenerating
+//! the codes with sampling (what the Rust runtime does by default) restores code
+//! diversity and audible amplitude (peak ~0.26–0.29).
 //!
 //! ```text
 //! RLX_DAC_DIR=weights/tts/parler-dac cargo run -p rlx-parlertts --example dac_check --features native -- weights/tts/parlertts/proto_codes_description.npy

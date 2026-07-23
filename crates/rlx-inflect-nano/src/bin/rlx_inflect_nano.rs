@@ -102,10 +102,6 @@ fn synthesize_device(
     opts: &InferOpts,
     device: &str,
 ) -> Result<rlx_inflect_nano::Wav> {
-    #[cfg(feature = "onnx")]
-    if device == "coreml" {
-        return model.synthesize_coreml(text, opts);
-    }
     #[cfg(feature = "rlx-graph")]
     if device != "cpu" {
         return model.synthesize_on(text, opts, rlx_inflect_nano::graph::device_from_str(device));

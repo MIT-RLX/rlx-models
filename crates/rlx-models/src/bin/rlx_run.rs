@@ -23,6 +23,12 @@ fn register_builtins() {
         "Run MiniCPM5 (Llama-shaped; openbmb/MiniCPM5-1B)",
         rlx_minicpm5::cli_run,
     );
+    #[cfg(feature = "nanbeige")]
+    register_cli(
+        "nanbeige",
+        "Run Nanbeige4.2 Looped Transformer (Nanbeige/Nanbeige4.2-3B)",
+        rlx_nanbeige::cli_run,
+    );
     #[cfg(feature = "tinyllama")]
     register_cli(
         "tinyllama",
@@ -47,11 +53,23 @@ fn register_builtins() {
         "Run a Qwen3.5 / Qwen3.6 GGUF (hybrid gated-DeltaNet + attention)",
         rlx_qwen35::cli::run,
     );
+    #[cfg(feature = "fara")]
+    register_cli(
+        "fara",
+        "Run Microsoft Fara1.5 computer-use agent (Qwen3.5 multimodal)",
+        rlx_fara::cli::run,
+    );
     #[cfg(feature = "inkling")]
     register_cli(
         "inkling",
         "Inspect Inkling HF config / run synth text forward (thinkingmachines/Inkling)",
         rlx_inkling::cli::run,
+    );
+    #[cfg(feature = "laguna")]
+    register_cli(
+        "laguna",
+        "Inspect Laguna HF/GGUF config / run synth text forward (poolside Laguna)",
+        rlx_laguna::cli::run,
     );
     register_cli("sam1", "Segment Anything v1", rlx_sam::cli::run_sam1);
     register_cli("sam2", "Segment Anything v2", rlx_sam2::cli::run);

@@ -110,19 +110,37 @@ fn build_native_cached_graphs(
 
     if optimized_split_graphs_enabled() {
         let compile_dur = compile_profile::compile_duration_refine_graph();
+        // Duration may pin to CPU on wgpu/Vulkan/ANE (see `device_policy::duration_device`);
+        // the vocoder stays on the wave device from `device_policy::wave_device`.
+        let dur_device = crate::device_policy::duration_device(device);
+        let wave_device = crate::device_policy::wave_device(device);
+        let dur_key = if dur_device == device {
+            key.clone()
+        } else {
+            format!("{key}_dur{dur_device:?}")
+        };
+        let wave_key = if wave_device == device {
+            key.clone()
+        } else {
+            format!("{key}_wave{wave_device:?}")
+        };
+        // Parallel dur/wave compile races on process-global mel/wave caps when devices differ.
+        let serial = dur_device != device
+            || wave_device != device
+            || compile_profile::env_flag("KITTEN_RLX_SERIAL_COMPILE");
         let (dur, wave) = if compile_dur {
-            if compile_profile::env_flag("KITTEN_RLX_SERIAL_COMPILE") {
+            if serial {
                 let dur = compile_hir_profile_native(
-                    device,
-                    &key,
+                    dur_device,
+                    &dur_key,
                     CompileProfile::DurationRefinement,
                     base_hir.clone(),
                     &params,
                     &carry_bytes,
                 )?;
                 let wave = compile_hir_profile_native(
-                    device,
-                    &key,
+                    wave_device,
+                    &wave_key,
                     CompileProfile::WaveformOnly,
                     base_hir.clone(),
                     &params,
@@ -130,8 +148,8 @@ fn build_native_cached_graphs(
                 )?;
                 (Some(dur), wave)
             } else {
-                let key_d = key.clone();
-                let key_w = key.clone();
+                let key_d = dur_key.clone();
+                let key_w = wave_key.clone();
                 let hir_d = base_hir.clone();
                 let hir_w = base_hir.clone();
                 let params_d = params.clone();
@@ -141,7 +159,7 @@ fn build_native_cached_graphs(
                 std::thread::scope(|scope| -> Result<(Option<CompiledGraph>, CompiledGraph)> {
                     let dur_h = scope.spawn(move || {
                         compile_hir_profile_native(
-                            device,
+                            dur_device,
                             &key_d,
                             CompileProfile::DurationRefinement,
                             hir_d,
@@ -151,7 +169,7 @@ fn build_native_cached_graphs(
                     });
                     let wave_h = scope.spawn(move || {
                         compile_hir_profile_native(
-                            device,
+                            wave_device,
                             &key_w,
                             CompileProfile::WaveformOnly,
                             hir_w,
@@ -159,15 +177,16 @@ fn build_native_cached_graphs(
                             &carry_w,
                         )
                     });
-                    let dur = dur_h.join().expect("duration compile thread")?;
-                    let wave = wave_h.join().expect("waveform compile thread")?;
+                    let dur = crate::bundle_compile::join_compile("duration compile thread", dur_h)?;
+                    let wave =
+                        crate::bundle_compile::join_compile("waveform compile thread", wave_h)?;
                     Ok((Some(dur), wave))
                 })?
             }
         } else {
             let wave = compile_hir_profile_native(
-                device,
-                &key,
+                wave_device,
+                &wave_key,
                 CompileProfile::WaveformOnly,
                 base_hir.clone(),
                 &params,
@@ -194,12 +213,19 @@ fn build_native_cached_graphs(
             full: full_arc,
             duration_refine: dur_arc,
             waveform_only: Some(wave_arc),
+            duration_on_cpu: dur_device == Device::Cpu,
         });
     }
 
+    let full_device = crate::device_policy::wave_device(device);
+    let full_key = if full_device == device {
+        key.clone()
+    } else {
+        format!("{key}_wave{full_device:?}")
+    };
     let full = compile_hir_profile_native(
-        device,
-        &key,
+        full_device,
+        &full_key,
         CompileProfile::Full,
         base_hir,
         &params,
@@ -287,6 +313,10 @@ impl NativeSeqCompileCache {
                 self.max_sequence_length
             );
         }
+        let compile_seq = compile_profile::compile_slot_length(seq);
+        let max_waveform = compile_profile::compile_waveform_cap(seq, self.max_waveform_samples);
+        crate::opts::set_compile_sequence_length(compile_seq);
+        crate::bundle_patches::set_import_max_waveform_samples(max_waveform);
         if let Some(hit) = self.graphs.get(seq) {
             return Ok(hit);
         }

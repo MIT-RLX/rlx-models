@@ -75,6 +75,21 @@ pub fn gen_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4().simple())
 }
 
+/// Bind and run an axum OpenAI router until the server exits.
+pub async fn serve_http(app: Router, host: &str, port: u16) -> anyhow::Result<()> {
+    let addr = format!("{host}:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("binding {addr}: {e}"))?;
+    eprintln!("rlx-serve listening on http://{addr}");
+    eprintln!("  GET  /health  /v1/models");
+    eprintln!("  POST /v1/chat/completions  /v1/completions");
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| anyhow::anyhow!("axum serve: {e}"))?;
+    Ok(())
+}
+
 /// An error rendered as an OpenAI-style error envelope.
 pub struct ApiError {
     pub status: StatusCode,

@@ -5,10 +5,11 @@ ISTFTNet vocoder (82M parameters, Apache-2.0, 24 kHz output, 8 languages /
 50+ voices).
 
 Kokoro is in the same StyleTTS2 family as [`rlx-kittentts`](../rlx-kittentts),
-so it reuses that crate's espeak-ng → IPA phonemizer, text preprocessor and
-ONNX Runtime execution-provider selector. The Kokoro-specific pieces here are
-the misaki phoneme vocabulary (loaded from `tokenizer.json`), the `[510, 256]`
-voice-style packs, and the `input_ids` / `style` / `speed` → `waveform` runner.
+so it reuses that crate's espeak-ng → IPA phonemizer and text preprocessor. The
+Kokoro-specific pieces here are the misaki phoneme vocabulary (loaded from
+`tokenizer.json`), the `[510, 256]` voice-style packs, and the `input_ids` /
+`style` / `speed` → `waveform` runner. Inference is ort-free: the exported graph
+is imported through `rlx-onnx-import` → rlx-ir and run on any RLX backend.
 
 ## Quick start
 
@@ -47,20 +48,16 @@ Weights: [`onnx-community/Kokoro-82M-v1.0-ONNX`](https://huggingface.co/onnx-com
 | Feature | Path | Devices |
 |---------|------|---------|
 | **`native`** (default) | **native RLX (ort-free)** | **cpu / metal / mlx / wgpu / coreml** |
-| `onnx` | ONNX Runtime (optional) | CPU |
-| `metal` / `mlx`  | ONNX Runtime | CoreML execution provider (macOS) |
-| `cuda`           | ONNX Runtime | CUDA execution provider |
-| `gpu`            | ONNX Runtime | DirectML / CUDA / CoreML |
+| `metal` / `mlx` / `cuda` / `rocm` / `gpu` / `coreml` / `vulkan` | native RLX | selects the matching RLX backend |
 
-For the ort path, select the device with `--device cpu|metal|mlx|cuda|gpu`; the
-requested EP is tried first with a CPU fallback.
+Select the device with `--device cpu|metal|mlx|cuda|gpu|coreml|vulkan`.
 
-### Native / hybrid multi-backend (`native`)
+### Native multi-backend (`native`)
 
-The `native` feature runs the graph-split decoder on the RLX compiler. With
-`onnx` (default), the duration/prosody **encoder** prefers onnxruntime on CPU
-(fast path); set `RLX_KOKORO_NATIVE_ENC=1` for a fully native RLX encoder
-(also Whisper fox 6/6). The monolithic graph has a data-dependent length
+Inference runs entirely on the RLX compiler (no ONNX Runtime). The
+duration/prosody **encoder** runs on CPU by default (set
+`RLX_KOKORO_ENC_DEVICE=gpu` to move it onto the requested device); the decoder
+runs on the requested backend. The monolithic graph has a data-dependent length
 regulator and an ISTFT (`NonZero`/`ScatterND` overlap-add) that don't fit one
 static-shape compile, so it is **graph-split** into two fixed-shape subgraphs
 with the dynamic pieces in Rust — verified **bit-exact** (cosine 1.0, max_abs 0)
@@ -93,8 +90,8 @@ cargo run -p rlx-kokoro --no-default-features --features native,espeak \
 CoreML (`--device coreml` / `ane`) auto-sets `RLX_COREML_UNITS=gpu` via
 `rlx_tiny_tts::resolve_tts_device` — the default Neural-Engine path crashes BNNS
 on these graphs. Vulkan is available with `--features vulkan` / `all-backends`.
-`NativeKokoro::load(model_dir, device)` is a drop-in for the ort `Kokoro` with
-the same `generate_from_text` / `infer_phonemes` entry points.
+`NativeKokoro::load(model_dir, device)` exposes the `generate_from_text` /
+`infer_phonemes` entry points.
 
 ## Voices & languages
 
@@ -106,9 +103,9 @@ English; non-English voices require the corresponding espeak language data.
 ## API
 
 ```rust
-use rlx_kokoro::Kokoro;
+use rlx_kokoro::{NativeKokoro, write_wav};
 
-let tts = Kokoro::load_from_dir(std::path::Path::new(".cache/kokoro-82m"))?;
+let tts = NativeKokoro::load_from_dir(std::path::Path::new(".cache/kokoro-82m"))?;
 let audio = tts.generate_from_text("Hello from Kokoro.", "af_heart", 1.0)?;
-tts.write_wav(&audio, std::path::Path::new("out.wav"))?;
+write_wav(&audio, std::path::Path::new("out.wav"))?;
 ```

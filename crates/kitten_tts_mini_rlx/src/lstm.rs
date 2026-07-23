@@ -85,6 +85,25 @@ fn lstm_direction(
     y_dir: &mut [f32],
 ) -> Result<(), String> {
     let h4 = hidden_size * 4;
+    // ONNX Runtime contrib `DynamicQuantizeLSTM` stores W/R input-major:
+    //   W: [input_size, 4*hidden], R: [hidden_size, 4*hidden]
+    // (the gate index is the *last* axis, pre-transposed for its int8 matmul).
+    // The `gemv` below indexes gate-major `[4*hidden, k]`, so transpose once
+    // per direction into `[4*hidden, input_size]` / `[4*hidden, hidden_size]`.
+    let transpose_to_gate_major = |src: &[f32], rows: usize, cols: usize| -> Vec<f32> {
+        // src is `[rows, cols]` row-major → out is `[cols, rows]` row-major.
+        let mut out = vec![0.0f32; rows * cols];
+        for rr in 0..rows {
+            let base = rr * cols;
+            for cc in 0..cols {
+                out[cc * rows + rr] = src[base + cc];
+            }
+        }
+        out
+    };
+    let w = transpose_to_gate_major(w, input_size, h4);
+    let r = transpose_to_gate_major(r, hidden_size, h4);
+    let (w, r) = (w.as_slice(), r.as_slice());
     let mut h = vec![0.0f32; hidden_size];
     let mut c = vec![0.0f32; hidden_size];
     let mut gates = vec![0.0f32; h4];

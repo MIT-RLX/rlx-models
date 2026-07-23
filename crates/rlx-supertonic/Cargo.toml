@@ -21,8 +21,6 @@ rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # and compiled per-device through TinyModel (same engine as rlx-tiny-tts /
 # rlx-openvoice) — no ONNX Runtime on the default path.
 rlx-tiny-tts = { workspace = true }
-# ONNX Runtime execution-provider selector (dev/validation only; `onnx` feature).
-rlx-kittentts = { path = "../rlx-kittentts", default-features = false, optional = true }
 
 [dependencies.hf-hub]
 workspace = true
@@ -55,7 +53,7 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 # Native RLX is the default runtime; `onnx` (ONNX Runtime) is opt-in for
 # dev/validation parity only. Native backends forward to the shared TinyModel.
 default = []
-onnx = ["dep:ort", "dep:rlx-kittentts", "rlx-kittentts/onnx"]
+onnx = ["dep:ort"]
 metal = ["rlx-runtime/metal", "rlx-tiny-tts/metal"]
 mlx = ["rlx-runtime/mlx", "rlx-tiny-tts/mlx"]
 cuda = ["rlx-runtime/cuda", "rlx-tiny-tts/cuda"]

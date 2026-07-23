@@ -43,6 +43,7 @@ rlx-llama32 = { workspace = true, optional = true }
 rlx-gemma = { workspace = true, optional = true }
 rlx-llada2 = { workspace = true, optional = true }
 rlx-qwen35 = { workspace = true, optional = true }
+rlx-fara = { workspace = true, optional = true }
 rlx-qwen25-vl = { workspace = true, optional = true }
 rlx-flux2 = { workspace = true, optional = true }
 rlx-diamond = { workspace = true, optional = true }
@@ -55,12 +56,17 @@ rlx-vad = { workspace = true, optional = true }
 rlx-aec = { workspace = true, optional = true }
 rlx-voxtral = { workspace = true, optional = true }
 rlx-qwen3-asr = { workspace = true, optional = true }
+rlx-conformer-ctc = { workspace = true, optional = true }
 rlx-locateanything = { workspace = true, optional = true }
+rlx-unlimited-ocr = { workspace = true, optional = true }
 rlx-voxtral-tts = { workspace = true, optional = true }
 rlx-ocr = { workspace = true, optional = true }
+rlx-asr = { workspace = true, optional = true }
+rlx-ppocrv6 = { workspace = true, optional = true }
 rlx-neutts = { workspace = true, optional = true }
 rlx-orpheus = { workspace = true, optional = true }
 rlx-kittentts = { workspace = true, optional = true }
+rlx-tts = { workspace = true, optional = true }
 rlx-kokoro = { workspace = true, optional = true }
 rlx-supertonic = { workspace = true, optional = true }
 rlx-luxtts = { workspace = true, optional = true }
@@ -84,11 +90,13 @@ rlx-chatterbox = { workspace = true, optional = true }
 rlx-mistral = { workspace = true, optional = true }
 rlx-bonsai = { workspace = true, optional = true }
 rlx-minicpm5 = { workspace = true, optional = true, features = ["tokenizer"] }
+rlx-nanbeige = { workspace = true, optional = true, features = ["tokenizer"] }
 rlx-tinyllama = { workspace = true, optional = true, features = ["tokenizer"] }
 rlx-phi = { workspace = true, optional = true }
 rlx-omnicoder = { workspace = true, optional = true }
 rlx-granite = { workspace = true, optional = true }
 rlx-inkling = { workspace = true, optional = true }
+rlx-laguna = { workspace = true, optional = true }
 rlx-cohere = { workspace = true, optional = true }
 rlx-llama-base = { workspace = true, optional = true }
 
@@ -154,6 +162,7 @@ flux2 = ["dep:rlx-flux2"]
 diamond = ["dep:rlx-diamond"]
 qwen3 = ["dep:rlx-qwen3"]
 qwen35 = ["dep:rlx-qwen35"]
+fara = ["dep:rlx-fara", "qwen35"]
 llama32 = ["dep:rlx-llama32"]
 llama-base = ["dep:rlx-llama-base"]
 gemma = ["dep:rlx-gemma"]
@@ -161,11 +170,14 @@ llada2 = ["dep:rlx-llada2"]
 mistral = ["dep:rlx-mistral"]
 bonsai = ["dep:rlx-bonsai"]
 minicpm5 = ["dep:rlx-minicpm5"]
+nanbeige = ["dep:rlx-nanbeige"]
 tinyllama = ["dep:rlx-tinyllama"]
 phi = ["dep:rlx-phi"]
 omnicoder = ["dep:rlx-omnicoder"]
 granite = ["dep:rlx-granite"]
 inkling = ["dep:rlx-inkling"]
+laguna = ["dep:rlx-laguna"]
+laguna-serve = ["laguna", "rlx-laguna/serve"]
 cohere = ["dep:rlx-cohere"]
 lfm = ["dep:rlx-lfm"]
 sam = ["dep:rlx-sam", "sam-ir"]
@@ -175,18 +187,25 @@ sam-ir = ["dep:rlx-sam-ir"]
 vjepa2 = ["dep:rlx-vjepa2"]
 florence2 = ["dep:rlx-florence2"]
 locateanything = ["dep:rlx-locateanything"]
+unlimited-ocr = ["dep:rlx-unlimited-ocr"]
 diarize = ["dep:rlx-diarize"]
 whisper = ["dep:rlx-whisper"]
 vad = ["dep:rlx-vad"]
 aec = ["dep:rlx-aec"]
 voxtral = ["dep:rlx-voxtral"]
 qwen3-asr = ["dep:rlx-qwen3-asr"]
+conformer-ctc = ["dep:rlx-conformer-ctc"]
 wav2vec2-bert = ["dep:rlx-wav2vec2-bert"]
 wav2vec2-asr = ["dep:rlx-wav2vec2-asr"]
 ocr = ["dep:rlx-ocr"]
+# RLX streaming Conformer ASR (`rlx-asr`).
+streaming-asr = ["dep:rlx-asr"]
+ppocrv6 = ["dep:rlx-ppocrv6"]
 neutts = ["dep:rlx-neutts"]
 orpheus = ["dep:rlx-orpheus"]
 kittentts = ["dep:rlx-kittentts"]
+# RLX FastSpeech2 + WaveRNN TTS (private local bundle).
+rlx-tts = ["dep:rlx-tts"]
 kokoro = ["dep:rlx-kokoro"]
 # Native (ort-free) Kokoro path — graph-split encoder + decoder_raw on RLX backends.
 kokoro-native = ["kokoro", "rlx-kokoro/native"]
@@ -241,6 +260,7 @@ llm = [
     "runner",
     "qwen3",
     "qwen35",
+    "fara",
     "llama32",
     "gemma",
     "phi",
@@ -250,14 +270,16 @@ llm = [
     "lfm",
     "llada2",
     "minicpm5",
+    "nanbeige",
     "tinyllama",
     "omnicoder",
     "bonsai",
     "inkling",
+    "laguna",
     "llama-base",
 ]
-asr = ["whisper", "wav2vec2-bert", "wav2vec2-asr", "voxtral", "qwen3-asr", "vad", "diarize", "aec"]
-tts = ["kyutai-tts", "kittentts", "kokoro", "supertonic", "luxtts", "zipvoice", "moss-nano", "maya1", "miratts", "f5tts", "piper", "orpheus", "neutts", "qwen3-tts", "voxtral-tts", "tsac", "melotts", "openvoice", "parlertts", "metavoice", "chatterbox", "gepard"]
+asr = ["whisper", "wav2vec2-bert", "wav2vec2-asr", "voxtral", "qwen3-asr", "conformer-ctc", "vad", "diarize", "aec"]
+tts = ["kyutai-tts", "kittentts", "rlx-tts", "kokoro", "supertonic", "luxtts", "zipvoice", "moss-nano", "maya1", "miratts", "f5tts", "piper", "orpheus", "neutts", "qwen3-tts", "voxtral-tts", "tsac", "melotts", "openvoice", "parlertts", "metavoice", "chatterbox", "gepard"]
 vision-models = [
     "sam",
     "sam2",
@@ -265,6 +287,7 @@ vision-models = [
     "florence2",
     "vjepa2",
     "locateanything",
+    "unlimited-ocr",
     "flux2",
     "diamond",
     "dinov2",
@@ -288,8 +311,10 @@ hf-download = [
     "rlx-llada2?/hf-download",
     "rlx-flux2?/hf-download",
     "rlx-minicpm5?/hf-download",
+    "rlx-nanbeige?/hf-download",
     "rlx-tinyllama?/hf-download",
     "rlx-locateanything?/hf-download",
+    "rlx-unlimited-ocr?/hf-download",
     "rlx-qwen3-tts?/hf-download",
     "rlx-kittentts?/hf-download",
     "rlx-kokoro?/hf-download",
@@ -329,13 +354,16 @@ metal = [
     "rlx-llama32?/metal",
     "rlx-lfm?/metal",
     "rlx-locateanything?/metal",
+    "rlx-unlimited-ocr?/metal",
     "rlx-minicpm5?/metal",
+    "rlx-nanbeige?/metal",
     "rlx-tinyllama?/metal",
     "rlx-mistral?/metal",
     "rlx-moshi?/metal",
     "rlx-kyutai-tts?/metal",
     "rlx-neutts?/metal",
     "rlx-kittentts?/metal",
+    "rlx-tts?/metal",
     "rlx-kokoro?/metal",
     "rlx-supertonic?/metal",
     "rlx-luxtts?/metal",
@@ -348,11 +376,13 @@ metal = [
     "rlx-florence2?/metal",
     "rlx-nomic?/metal",
     "rlx-ocr?/metal",
+    "rlx-asr?/metal",
     "rlx-omnicoder?/metal",
     "rlx-phi?/metal",
     "rlx-qwen3?/metal",
     "rlx-qwen3-tts?/metal",
     "rlx-qwen35?/metal",
+    "rlx-fara?/metal",
     "rlx-sam?/metal",
     "rlx-sam2?/metal",
     "rlx-sam3?/metal",
@@ -360,6 +390,7 @@ metal = [
     "rlx-vjepa2?/metal",
     "rlx-voxtral?/metal",
     "rlx-qwen3-asr?/metal",
+    "rlx-conformer-ctc?/metal",
     "rlx-voxtral-tts?/metal",
     "rlx-wav2vec2-bert?/metal",
     "rlx-whisper?/metal",
@@ -387,13 +418,16 @@ mlx = [
     "rlx-llama32?/mlx",
     "rlx-lfm?/mlx",
     "rlx-locateanything?/mlx",
+    "rlx-unlimited-ocr?/mlx",
     "rlx-minicpm5?/mlx",
+    "rlx-nanbeige?/mlx",
     "rlx-tinyllama?/mlx",
     "rlx-mistral?/mlx",
     "rlx-moshi?/mlx",
     "rlx-kyutai-tts?/mlx",
     "rlx-neutts?/mlx",
     "rlx-kittentts?/mlx",
+    "rlx-tts?/mlx",
     "rlx-kokoro?/mlx",
     "rlx-supertonic?/mlx",
     "rlx-luxtts?/mlx",
@@ -406,11 +440,13 @@ mlx = [
     "rlx-florence2?/mlx",
     "rlx-nomic?/mlx",
     "rlx-ocr?/mlx",
+    "rlx-asr?/mlx",
     "rlx-omnicoder?/mlx",
     "rlx-phi?/mlx",
     "rlx-qwen3?/mlx",
     "rlx-qwen3-tts?/mlx",
     "rlx-qwen35?/mlx",
+    "rlx-fara?/mlx",
     "rlx-sam?/mlx",
     "rlx-sam2?/mlx",
     "rlx-sam3?/mlx",
@@ -418,6 +454,7 @@ mlx = [
     "rlx-vjepa2?/mlx",
     "rlx-voxtral?/mlx",
     "rlx-qwen3-asr?/mlx",
+    "rlx-conformer-ctc?/mlx",
     "rlx-voxtral-tts?/mlx",
     "rlx-wav2vec2-bert?/mlx",
     "rlx-whisper?/mlx",
@@ -430,10 +467,12 @@ coreml = [
     "rlx-gemma?/coreml",
     "rlx-llama32?/coreml",
     "rlx-minicpm5?/coreml",
+    "rlx-nanbeige?/coreml",
     "rlx-tinyllama?/coreml",
     "rlx-phi?/coreml",
     "rlx-qwen3?/coreml",
     "rlx-qwen35?/coreml",
+    "rlx-fara?/coreml",
     "rlx-whisper?/coreml",
     "rlx-piper?/coreml",
 ]
@@ -459,13 +498,16 @@ gpu = [
     "rlx-llama32?/gpu",
     "rlx-lfm?/gpu",
     "rlx-locateanything?/gpu",
+    "rlx-unlimited-ocr?/gpu",
     "rlx-minicpm5?/gpu",
+    "rlx-nanbeige?/gpu",
     "rlx-tinyllama?/gpu",
     "rlx-mistral?/gpu",
     "rlx-moshi?/gpu",
     "rlx-kyutai-tts?/gpu",
     "rlx-neutts?/gpu",
     "rlx-kittentts?/gpu",
+    "rlx-tts?/gpu",
     "rlx-kokoro?/gpu",
     "rlx-supertonic?/gpu",
     "rlx-luxtts?/gpu",
@@ -478,11 +520,13 @@ gpu = [
     "rlx-florence2?/gpu",
     "rlx-nomic?/gpu",
     "rlx-ocr?/gpu",
+    "rlx-asr?/gpu",
     "rlx-omnicoder?/gpu",
     "rlx-phi?/gpu",
     "rlx-qwen3?/gpu",
     "rlx-qwen3-tts?/gpu",
     "rlx-qwen35?/gpu",
+    "rlx-fara?/gpu",
     "rlx-sam?/gpu",
     "rlx-sam2?/gpu",
     "rlx-sam3?/gpu",
@@ -490,6 +534,7 @@ gpu = [
     "rlx-vjepa2?/gpu",
     "rlx-voxtral?/gpu",
     "rlx-qwen3-asr?/gpu",
+    "rlx-conformer-ctc?/gpu",
     "rlx-voxtral-tts?/gpu",
     "rlx-wav2vec2-bert?/gpu",
     "rlx-whisper?/gpu",
@@ -520,19 +565,24 @@ vulkan = [
     "rlx-llama32?/vulkan",
     "rlx-lfm?/vulkan",
     "rlx-locateanything?/vulkan",
+    "rlx-unlimited-ocr?/vulkan",
     "rlx-minicpm5?/vulkan",
+    "rlx-nanbeige?/vulkan",
     "rlx-tinyllama?/vulkan",
     "rlx-mistral?/vulkan",
     "rlx-moshi?/vulkan",
     "rlx-kyutai-tts?/vulkan",
     "rlx-neutts?/vulkan",
+    "rlx-tts?/vulkan",
     "rlx-nomic?/vulkan",
     "rlx-ocr?/vulkan",
+    "rlx-asr?/vulkan",
     "rlx-omnicoder?/vulkan",
     "rlx-phi?/vulkan",
     "rlx-qwen3?/vulkan",
     "rlx-qwen3-tts?/vulkan",
     "rlx-qwen35?/vulkan",
+    "rlx-fara?/vulkan",
     "rlx-sam?/vulkan",
     "rlx-sam2?/vulkan",
     "rlx-sam3?/vulkan",
@@ -540,6 +590,7 @@ vulkan = [
     "rlx-vjepa2?/vulkan",
     "rlx-voxtral?/vulkan",
     "rlx-qwen3-asr?/vulkan",
+    "rlx-conformer-ctc?/vulkan",
     "rlx-voxtral-tts?/vulkan",
     "rlx-wav2vec2-bert?/vulkan",
     "rlx-whisper?/vulkan",
@@ -566,13 +617,16 @@ cuda = [
     "rlx-llama32?/cuda",
     "rlx-lfm?/cuda",
     "rlx-locateanything?/cuda",
+    "rlx-unlimited-ocr?/cuda",
     "rlx-minicpm5?/cuda",
+    "rlx-nanbeige?/cuda",
     "rlx-tinyllama?/cuda",
     "rlx-mistral?/cuda",
     "rlx-moshi?/cuda",
     "rlx-kyutai-tts?/cuda",
     "rlx-neutts?/cuda",
     "rlx-kittentts?/cuda",
+    "rlx-tts?/cuda",
     "rlx-kokoro?/cuda",
     "rlx-supertonic?/cuda",
     "rlx-luxtts?/cuda",
@@ -585,11 +639,13 @@ cuda = [
     "rlx-florence2?/cuda",
     "rlx-nomic?/cuda",
     "rlx-ocr?/cuda",
+    "rlx-asr?/cuda",
     "rlx-omnicoder?/cuda",
     "rlx-phi?/cuda",
     "rlx-qwen3?/cuda",
     "rlx-qwen3-tts?/cuda",
     "rlx-qwen35?/cuda",
+    "rlx-fara?/cuda",
     "rlx-sam?/cuda",
     "rlx-sam2?/cuda",
     "rlx-sam3?/cuda",
@@ -597,6 +653,7 @@ cuda = [
     "rlx-vjepa2?/cuda",
     "rlx-voxtral?/cuda",
     "rlx-qwen3-asr?/cuda",
+    "rlx-conformer-ctc?/cuda",
     "rlx-voxtral-tts?/cuda",
     "rlx-wav2vec2-bert?/cuda",
     "rlx-whisper?/cuda",
@@ -623,13 +680,16 @@ rocm = [
     "rlx-llama32?/rocm",
     "rlx-lfm?/rocm",
     "rlx-locateanything?/rocm",
+    "rlx-unlimited-ocr?/rocm",
     "rlx-minicpm5?/rocm",
+    "rlx-nanbeige?/rocm",
     "rlx-tinyllama?/rocm",
     "rlx-mistral?/rocm",
     "rlx-moshi?/rocm",
     "rlx-kyutai-tts?/rocm",
     "rlx-neutts?/rocm",
     "rlx-kittentts?/rocm",
+    "rlx-tts?/rocm",
     "rlx-kokoro?/rocm",
     "rlx-supertonic?/rocm",
     "rlx-miratts?/rocm",
@@ -641,6 +701,7 @@ rocm = [
     "rlx-qwen3?/rocm",
     "rlx-qwen3-tts?/rocm",
     "rlx-qwen35?/rocm",
+    "rlx-fara?/rocm",
     "rlx-sam?/rocm",
     "rlx-sam2?/rocm",
     "rlx-sam3?/rocm",
@@ -648,6 +709,8 @@ rocm = [
     "rlx-vjepa2?/rocm",
     "rlx-voxtral?/rocm",
     "rlx-qwen3-asr?/rocm",
+    "rlx-conformer-ctc?/rocm",
+    "rlx-asr?/rocm",
     "rlx-voxtral-tts?/rocm",
     "rlx-wav2vec2-bert?/rocm",
     "rlx-whisper?/rocm",
@@ -899,6 +962,10 @@ required-features = ["minicpm5"]
 [[test]]
 name = "minicpm5_backend_parity"
 required-features = ["llama32", "minicpm5"]
+
+[[test]]
+name = "nanbeige_backend_parity"
+required-features = ["llama32", "nanbeige"]
 
 [[test]]
 name = "minicpm5_bench_report"

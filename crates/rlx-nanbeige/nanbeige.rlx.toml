@@ -1,0 +1,45 @@
+# Nanbeige / Looped-Transformer compile profile (optional sidecar next to weights).
+# Load via CompileProfile::near_weights(..., "llama32", ...) — Nanbeige reuses llama32 presets.
+
+[fusion]
+policy = "direct"
+target = "auto"
+assert_clean = false
+skip = false
+
+[passes]
+dce = true
+constant_folding = true
+verbose = false
+
+[precision]
+compute = "f32"
+mixed = "none"
+
+# Metal / MLX: keep fusion on — loop-unrolled GQA + SwiGLU benefits.
+[backend.metal]
+skip_fusion = false
+unfuse_regions = false
+
+[backend.mlx]
+skip_fusion = false
+unfuse_regions = false
+
+# CUDA / ROCm: fusion on; watch KV (num_loops=2 → 2× past tensors).
+[backend.cuda]
+skip_fusion = false
+
+[backend.rocm]
+skip_fusion = false
+
+# wgpu / Vulkan: prefer unfused regions for large loop-unrolled graphs.
+[backend.wgpu]
+skip_fusion = false
+unfuse_regions = true
+
+[backend.vulkan]
+skip_fusion = false
+unfuse_regions = true
+
+[backend.cpu]
+unfuse_regions = true

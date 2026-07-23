@@ -215,9 +215,17 @@ impl Supertonic {
         {
             let load = |name: &str| -> Result<(Session, String)> {
                 let path = onnx_dir.join(name);
-                let built = rlx_kittentts::build_onnx_session(&path, Device::Cpu)
+                // Dev/validation ORT parity path: CPU-only session. (The shared
+                // rlx-kittentts execution-provider selector was removed along with
+                // that crate's ONNX Runtime support; supertonic already carries its
+                // own optional `ort` dependency for this validation-only path.)
+                let session = Session::builder()
+                    .context("ORT session builder")?
+                    .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
+                    .context("ORT optimization level")?
+                    .commit_from_file(&path)
                     .with_context(|| format!("build session {name}"))?;
-                Ok((built.session, built.ort_ep))
+                Ok((session, "cpu".to_string()))
             };
             let (dp, ep) = load("duration_predictor.onnx")?;
             let (text_enc, _) = load("text_encoder.onnx")?;

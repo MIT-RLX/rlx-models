@@ -768,6 +768,8 @@ mod tests {
             rope_theta: 10_000.0,
             rope_dim_count: 2,
             rope_dim_sections: vec![],
+            mrope_interleaved: false,
+            rms_norm_offset: false,
             full_attention_interval: 1,
             ssm_conv_kernel: 4,
             ssm_group_count: 2,

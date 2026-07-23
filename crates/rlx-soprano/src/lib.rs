@@ -14,6 +14,7 @@
 //! ```
 
 pub mod native;
+pub mod native_qwen3;
 
 pub use native::{
     DEFAULT_LOCAL_DIR, HIDDEN, InferOpts, NativeSoprano, SAMPLE_RATE, format_prompt, peak_amplitude,

@@ -22,14 +22,6 @@ rlx-tiny-tts = { workspace = true }
 
 [dev-dependencies]
 rlx-whisper = { workspace = true }
-# ONNX Runtime is a DEV-ONLY dependency: used solely by the parity test to check
-# the native tone_extract/tone_color against the reference ONNX graphs.
-ort = { version = "=2.0.0-rc.11", default-features = false, features = [
-    "std",
-    "ndarray",
-    "download-binaries",
-    "tls-rustls",
-] }
 
 [[bin]]
 name = "rlx-openvoice"

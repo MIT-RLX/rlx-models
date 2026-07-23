@@ -13,26 +13,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! KittenTTS — lightweight ONNX text-to-speech for RLX.
+//! KittenTTS — lightweight native RLX text-to-speech.
 //!
 //! ## Backends
 //!
-//! | Feature | RLX runtime | ONNX Runtime EP        |
-//! |---------|-------------|------------------------|
-//! | `onnx`  | —           | CPU (default)          |
-//! | `native`| RLX runtime | Decomposed `kitten_tts_mini_rlx` graph (no ORT) |
-//! | `rlx`   | RLX runtime | ORT inference + RLX path deps for future parity |
-//! | `metal` | Metal       | CoreML (macOS / iOS)   |
-//! | `mlx`   | MLX         | CoreML (Apple GPU)     |
-//! | `cuda`  | CUDA        | CUDA                   |
-//! | `rocm`  | ROCm        | ROCm                   |
-//! | `gpu`   | wgpu        | DirectML / CUDA / CoreML |
-//! | `full`  | all above   | all ORT EPs + RLX path deps |
+//! | Feature  | RLX runtime |
+//! |----------|-------------|
+//! | `native` | Decomposed `kitten_tts_mini_rlx` graph on the RLX runtime |
+//! | `rlx`    | RLX runtime path deps |
+//! | `metal`  | Metal       |
+//! | `mlx`    | MLX         |
+//! | `cuda`   | CUDA        |
+//! | `rocm`   | ROCm        |
+//! | `gpu`    | wgpu        |
+//! | `full`   | all of the above |
 
 pub mod assets;
 pub mod audio_util;
-#[cfg(feature = "onnx")]
-pub mod backend;
 pub mod backend_kind;
 pub mod cli;
 pub mod config;
@@ -43,8 +40,6 @@ pub mod model;
 #[cfg(feature = "native")]
 pub mod native;
 pub mod npz;
-#[cfg(all(feature = "native", feature = "onnx"))]
-pub mod ort_duration;
 pub mod phonemize;
 pub mod phrase_fixtures;
 #[cfg(feature = "espeak")]
@@ -55,14 +50,12 @@ pub use assets::{
     DEFAULT_LOCAL_DIR, ModelLayout, default_model_dir, default_native_weights_dir,
     find_native_weights, find_rlx_bundle,
 };
-#[cfg(feature = "onnx")]
-pub use backend::{OrtSession, build_onnx_session, execution_providers_for, validate_device};
 pub use config::{DEFAULT_HF_REPO, ModelConfig};
 pub use download::{fetch_default, fetch_to_local_dir};
 pub use features::{
     cuda_feature_enabled, enabled_backend_labels, espeak_feature_enabled, gpu_feature_enabled,
-    metal_feature_enabled, mlx_feature_enabled, native_feature_enabled, onnx_feature_enabled,
-    rlx_feature_enabled, rocm_feature_enabled,
+    metal_feature_enabled, mlx_feature_enabled, native_feature_enabled, rlx_feature_enabled,
+    rocm_feature_enabled,
 };
 pub use infer_opts::{
     SAMPLES_PER_DURATION_UNIT, max_waveform_samples_for_tokens, recommended_native_compile_opts,

@@ -1,7 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-piper --data weights/tts/piper --text The quick brown fox jumps over the lazy dog near the river bank. --device cuda --out /home/user/rlx-models/scripts/matrix/out/artifacts/piper.cuda.wav
-
---- stdout ---
-Wrote 71424 samples (3.24s @ 22050 Hz) to /home/user/rlx-models/scripts/matrix/out/artifacts/piper.cuda.wav [backend=native, device=Cuda]
-
---- stderr ---
-rlx-cuda: cuDNN unavailable (libcudnn.so not loadable) — convolutions use the ~10× slower im2col path. Put libcudnn.so on the loader path (e.g. LD_LIBRARY_PATH), or set RLX_CUDA_NO_CUDNN=1 to silence this.

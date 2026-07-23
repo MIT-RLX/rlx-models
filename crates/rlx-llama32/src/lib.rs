@@ -26,7 +26,9 @@ pub use builder::{
     build_llama32_graph_sized_last_logits, build_llama32_graph_sized_packed,
     build_llama32_prefill_hir_dynamic_ext, build_llama32_prefill_hir_sized_ext,
 };
-pub use capabilities::validate_device;
+pub use capabilities::{
+    LM_DEVICE_NAMES, STANDARD_DEVICE_NAMES, STANDARD_DEVICES, validate_device,
+};
 pub use config::{Llama32Config, Llama32RopeScaling, Llama32RopeType, llama32_cfg_from_gguf};
 pub use flow::{
     LLAMA32_PROFILE_FILE, Llama32DecodeOpts, Llama32Flow, Llama32Mode, Llama32PrefillOpts,
@@ -72,6 +74,8 @@ mod tests {
             attention_bias: false,
             head_dim: None,
             rope_scaling: None,
+            num_loops: 1,
+            skip_loop_final_norm: false,
             rope_style: rlx_ir::RopeStyle::NeoX,
             gguf_arch: None,
             rope_dim: None,
@@ -186,7 +190,7 @@ mod tests {
             .build(&mut wm)
             .unwrap();
         let (hir, _params) = built.into_parts().unwrap();
-        assert_eq!(hir.outputs.len(), 1 + 2 * cfg.num_hidden_layers);
+        assert_eq!(hir.outputs.len(), 1 + 2 * cfg.kv_layers());
     }
 
     #[test]
@@ -234,7 +238,7 @@ mod tests {
             profile: None,
         };
         let (hir, _params) = build_llama32_decode_flow(&cfg, &mut wm, &opts).unwrap();
-        assert_eq!(hir.outputs.len(), 1 + 2 * cfg.num_hidden_layers);
+        assert_eq!(hir.outputs.len(), 1 + 2 * cfg.kv_layers());
     }
 
     #[test]
@@ -305,5 +309,36 @@ mod tests {
             }
         }
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn looped_config_unrolls_kv_layers() {
+        let mut cfg = tiny_cfg();
+        cfg.num_loops = 2;
+        cfg.skip_loop_final_norm = false;
+        assert_eq!(cfg.physical_layers(), 2);
+        assert_eq!(cfg.kv_layers(), 4);
+        assert_eq!(cfg.weight_layer_index(0), 0);
+        assert_eq!(cfg.weight_layer_index(2), 0);
+        assert_eq!(cfg.weight_layer_index(3), 1);
+    }
+
+    #[test]
+    fn looped_prefill_reuses_physical_weights() {
+        let mut cfg = tiny_cfg();
+        cfg.num_loops = 2;
+        cfg.skip_loop_final_norm = false;
+        let mut wm = synthetic_weights(&cfg);
+        let built = Llama32Flow::new(&cfg)
+            .prefill()
+            .batch(1)
+            .seq(4)
+            .profile_prefill()
+            .build(&mut wm)
+            .unwrap();
+        let (hir, _params) = built.into_parts().unwrap();
+        assert_eq!(hir.outputs.len(), 1);
+        // Shared weights: physical layer tensors are taken once despite two loops.
+        assert_eq!(wm.len(), 0);
     }
 }

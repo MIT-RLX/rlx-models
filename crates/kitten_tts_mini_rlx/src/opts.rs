@@ -14,6 +14,26 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// Global mirror of the runtime mel-frame hint. The thread-local is set on the caller thread
+// (duration fixed-point / alignment), but the compiled graph's kernels execute on the rayon
+// pool, which does NOT inherit thread-locals — so `KittenInstanceNormActive` would see
+// `runtime_mel_frames() == None` and fall back to the padded axis. Mirroring into a process
+// global makes the active-frame hint visible on every executor thread.
+static RUNTIME_MEL_GLOBAL: AtomicUsize = AtomicUsize::new(0);
+
+// Process-global compiled mel-time cap (F0.0/N.0 padded axis width). The prosody AdaIN stack
+// upsamples 2× at its second block, so later blocks (F0.1/F0.2/F0_proj) run at `2·mel_cap` and
+// their active region is `2·mel_frames`. `KittenInstanceNormActive` scales the active window by
+// `t / mel_cap` to track that; set at compile time (main thread) so it is visible on executors.
+static RUNTIME_MEL_CAP_GLOBAL: AtomicUsize = AtomicUsize::new(0);
+
+// Process-global compiled *wave*-frame cap = `compile_max_wave / SAMPLES_PER_ALIGNMENT_FRAME`.
+// Generator AdaINs pad from `max_wave` (not prosody `mel_cap` ≈ seq·64). Active fraction is
+// `runtime_mel_frames / wave_cap` (`runtime_mel_frames` = alignment-frame sum). Using mel_cap
+// under-counted ~mel_cap/wave_cap (~11×). Set at compile time for executor threads.
+static RUNTIME_WAVE_CAP_GLOBAL: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     /// Per-thread runtime seq for tests/probes; wins over process env when set.
@@ -29,6 +49,15 @@ pub use rlx_onnx_import::control_flow::DURATION_CARRY;
 
 /// Runtime param holding alignment frame count for `/Gather_5` (replaces stale `/Shape_8` stub).
 pub const ALIGNMENT_FRAME_COUNT: &str = "__onnx_runtime__/alignment_frame_count";
+
+/// Param name for ORT `F0_proj` injection (diagnostic: native vocoder + ORT prosody).
+pub const ORT_F0_PROJ_PARAM: &str = "__kitten_ort__/F0_proj";
+/// Param name for ORT `N_proj` injection (diagnostic: native vocoder + ORT prosody).
+pub const ORT_N_PROJ_PARAM: &str = "__kitten_ort__/N_proj";
+/// Param name for ORT `/decoder/Concat` injection (ASR+F0+N into encode).
+pub const ORT_DECODER_CONCAT_PARAM: &str = "__kitten_ort__/decoder_Concat";
+/// Param name for ORT `/MatMul_1` injection (aligned ASR features into decoder Concat).
+pub const ORT_MATMUL1_PARAM: &str = "__kitten_ort__/MatMul_1";
 
 /// Decomposed-graph stub for `/Range_2` (filled each infer with `0..frames`).
 pub const RANGE_2_STUB: &str = "__stub__//Range_2_output_0";
@@ -83,11 +112,39 @@ pub fn set_runtime_active_tokens(active: usize) {
 
 /// Active mel length for F0/N stacks (`2 ×` alignment frames).
 pub fn set_runtime_mel_frames(mel: usize) {
-    RUNTIME_MEL_FRAMES.with(|c| c.set(Some(mel.max(1))));
+    let m = mel.max(1);
+    RUNTIME_MEL_FRAMES.with(|c| c.set(Some(m)));
+    RUNTIME_MEL_GLOBAL.store(m, Ordering::Relaxed);
 }
 
 pub fn runtime_mel_frames() -> Option<usize> {
-    RUNTIME_MEL_FRAMES.with(|c| c.get())
+    RUNTIME_MEL_FRAMES.with(|c| c.get()).or_else(|| {
+        let g = RUNTIME_MEL_GLOBAL.load(Ordering::Relaxed);
+        (g > 0).then_some(g)
+    })
+}
+
+/// Compiled mel-time cap (F0.0 padded axis width); set once per compile config.
+pub fn set_runtime_mel_cap(cap: usize) {
+    RUNTIME_MEL_CAP_GLOBAL.store(cap.max(1), Ordering::Relaxed);
+}
+
+/// Compiled mel-time cap, if known — used to scale the active InstanceNorm window on
+/// the upsampled prosody blocks (`t / mel_cap`).
+pub fn runtime_mel_cap() -> Option<usize> {
+    let g = RUNTIME_MEL_CAP_GLOBAL.load(Ordering::Relaxed);
+    (g > 0).then_some(g)
+}
+
+/// Compiled wave-frame cap (`max_wave / SAMPLES_PER_ALIGNMENT_FRAME`); set once per compile.
+pub fn set_runtime_wave_cap(cap: usize) {
+    RUNTIME_WAVE_CAP_GLOBAL.store(cap.max(1), Ordering::Relaxed);
+}
+
+/// Compiled wave-frame cap, if known — scales the active window for wave-rate generator AdaINs.
+pub fn runtime_wave_cap() -> Option<usize> {
+    let g = RUNTIME_WAVE_CAP_GLOBAL.load(Ordering::Relaxed);
+    (g > 0).then_some(g)
 }
 
 /// Active token width for alignment kernels; falls back to compile env when unset.

@@ -40,6 +40,8 @@ mod mlx_tests {
             attention_bias: false,
             head_dim: None,
             rope_scaling: None,
+            num_loops: 1,
+            skip_loop_final_norm: false,
             rope_style: rlx_ir::RopeStyle::NeoX,
             gguf_arch: None,
             rope_dim: None,

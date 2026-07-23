@@ -1,6 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-chatterbox --data weights/tts/chatterbox --greedy --seed 42 --ref-wav assets/jfk/jfk_voice_clone.wav --text The quick brown fox jumps over the lazy dog near the river bank. --device cuda --out /home/user/rlx-models/scripts/matrix/out/artifacts/chatterbox.cuda.wav
-
---- stdout ---
-
---- stderr ---
-error: compile speech_encoder: invalid value: integer `3`, expected variant index 0 <= i < 2

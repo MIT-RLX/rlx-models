@@ -27,22 +27,55 @@ use crate::lm_head::{
 };
 use crate::moe_offload::{MoeOffloadState, build_moe_offload};
 use crate::moe_store::{build_moe_expert_store, moe_host_bind_from_store};
-use crate::rope::{mrope_prefill_feeds, mrope_slice_at_pos};
+use crate::rope::{mrope_prefill_feeds, mrope_row_for_sections, text_section_pos};
 use crate::vision::{
     MmProjConfig, MmProjWeights, MultimodalPrefill, MultimodalPrompt, Qwen35VisionEncoder,
     load_vision_encoder,
 };
 use crate::weights::Qwen35Weights;
+use rlx_core::WeightLoader;
 use crate::{
     PackedParams, build_qwen35_decode_hir_dynamic_ext, build_qwen35_decode_hir_ext,
     build_qwen35_hir_sized_ext, build_qwen35_prefill_cache_hir_dynamic_ext,
-    build_qwen35_prefill_hidden_cache_hir_dynamic_ext,
+    build_qwen35_prefill_cache_hir_ext, build_qwen35_prefill_hidden_cache_hir_dynamic_ext,
+    build_qwen35_prefill_hidden_cache_hir_ext,
 };
 use rlx_runtime::MoeExpertStore;
 
 fn push_moe_residency(compiled: &mut rlx_runtime::CompiledGraph, layers: &[Vec<bool>]) {
     let refs: Vec<&[bool]> = layers.iter().map(|m| m.as_slice()).collect();
     compiled.set_moe_resident_experts_per_layer(&refs);
+}
+
+/// Minimal NumPy `.npy` writer for F32 row-major dumps (layer parity).
+fn write_npy_f32_row_major(
+    path: &Path,
+    rows: usize,
+    cols: usize,
+    data: &[f32],
+) -> Result<()> {
+    use std::io::Write;
+    anyhow::ensure!(
+        data.len() == rows * cols,
+        "npy len {} != {rows}*{cols}",
+        data.len()
+    );
+    let header = format!(
+        "{{'descr': '<f4', 'fortran_order': False, 'shape': ({rows}, {cols}), }}"
+    );
+    let mut header_bytes = header.into_bytes();
+    while (10 + header_bytes.len() + 1) % 16 != 0 {
+        header_bytes.push(b' ');
+    }
+    header_bytes.push(b'\n');
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(b"\x93NUMPY\x01\x00")?;
+    file.write_all(&(header_bytes.len() as u16).to_le_bytes())?;
+    file.write_all(&header_bytes)?;
+    for &x in data {
+        file.write_all(&x.to_le_bytes())?;
+    }
+    Ok(())
 }
 
 fn refresh_moe_from_capture(
@@ -85,7 +118,7 @@ use rlx_runtime::compile_cache::BucketedCompileCache;
 use rlx_runtime::{AotCache, CompileOptions, Device, Session, trim_accelerator_arena_pool};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -140,6 +173,8 @@ pub struct Qwen35RunnerBuilder {
     mmproj: Option<PathBuf>,
     /// Inline mmproj weights (tests; mutually exclusive with [`Self::mmproj`]).
     inline_mmproj: Option<(crate::vision::MmProjConfig, crate::vision::MmProjWeights)>,
+    /// Skip auto-loading HF `model.visual.*` (text-only / low-mem probes).
+    skip_auto_mmproj: bool,
     /// Override tier-1 prefill profile (else `qwen35.rlx.toml` or defaults).
     prefill_profile: Option<CompileProfile>,
     /// Override tier-1 decode profile.
@@ -300,6 +335,12 @@ impl Qwen35RunnerBuilder {
         self
     }
 
+    /// Do not auto-attach HF vision weights from the model dir (text-only).
+    pub fn skip_auto_mmproj(mut self, on: bool) -> Self {
+        self.skip_auto_mmproj = on;
+        self
+    }
+
     /// Supply mmproj config + weights directly (tests; no mmproj GGUF on disk).
     pub fn inline_mmproj(
         mut self,
@@ -378,7 +419,8 @@ impl Qwen35RunnerBuilder {
         }
 
         // PLAN.md M1: safetensors load path for HauhauCS catalog rows
-        // (and any other Qwen3.5 / 3.6 HF safetensors checkpoint).
+        // (and any other Qwen3.5 / 3.6 HF safetensors checkpoint,
+        // including nested multimodal Fara / Qwen3.5-VL model dirs).
         // When the caller picks `JsonFile(p)` or `Explicit(cfg)`, we
         // detect a safetensors weights path, parse the HF config (or
         // use the explicit one), open the file via the weight registry,
@@ -393,24 +435,10 @@ impl Qwen35RunnerBuilder {
                 .as_ref()
                 .ok_or_else(|| anyhow!("weights path required (call .weights(...))"))?
                 .clone();
-            let resolved = resolve_weights_file(&weights_path)?;
-            let ext = resolved
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if ext == "gguf" {
-                bail!(
-                    "qwen35: Qwen35ConfigSource::{:?} supplied with a GGUF weights file at \
-                     {:?} — drop the config source (use the default Embedded) so the GGUF \
-                     metadata is the source of truth",
-                    src,
-                    resolved
-                );
-            }
             if self.packed_weights == Some(true) {
                 bail!("qwen35: packed_weights requires GGUF; safetensors path is dequant-only");
             }
+            let (model_dir, resolved, mut mmap_loader) = load_hf_mmap_loader(&weights_path)?;
             let cfg = match src {
                 Qwen35ConfigSource::Embedded => unreachable!(),
                 Qwen35ConfigSource::JsonFile(p) => Qwen35Config::from_hf_config_json(p)
@@ -424,17 +452,53 @@ impl Qwen35RunnerBuilder {
                 );
             }
             validate_device(&cfg, device, false)?;
-            let path_str = resolved
-                .to_str()
-                .ok_or_else(|| anyhow!("non-utf8 weights path"))?;
-            let inner_map = rlx_core::weight_map::WeightMap::from_file(path_str)
-                .with_context(|| format!("qwen35: load safetensors {resolved:?}"))?;
-            let mut loader = rlx_core::HfTranslatingLoader::new(inner_map);
+
+            // Auto-attach HF vision tower when present and the caller
+            // did not already supply mmproj / inline_mmproj.
+            let mut inline_mmproj = self.inline_mmproj.clone();
+            let mmproj_path = self.mmproj.clone();
+            if !self.skip_auto_mmproj && mmproj_path.is_none() && inline_mmproj.is_none() {
+                let cfg_path = match src {
+                    Qwen35ConfigSource::JsonFile(p) => Some(p.clone()),
+                    _ => {
+                        let p = model_dir.join("config.json");
+                        p.is_file().then_some(p)
+                    }
+                };
+                if let Some(cp) = cfg_path.as_ref()
+                    && let Ok(vcfg) = crate::vision::MmProjConfig::from_hf_config_json(cp)
+                {
+                    let has_visual = mmap_loader
+                        .remaining_keys()
+                        .iter()
+                        .any(|k| k.starts_with("model.visual."));
+                    if has_visual {
+                        let t_vis = std::time::Instant::now();
+                        let vweights = crate::vision::MmProjWeights::from_hf_visual(
+                            &vcfg, &mut mmap_loader,
+                        )
+                        .with_context(|| {
+                            format!("qwen35: load HF vision from {}", model_dir.display())
+                        })?;
+                        eprintln!(
+                            "[qwen35] read HF vision weights in {:.2?} \
+                             (layers={}, n_embd={}, llm_hidden={})",
+                            t_vis.elapsed(),
+                            vcfg.n_layer,
+                            vcfg.n_embd,
+                            vcfg.llm_hidden_size,
+                        );
+                        inline_mmproj = Some((vcfg, vweights));
+                    }
+                }
+            }
+
+            let mut loader = rlx_core::HfTranslatingLoader::new(mmap_loader);
             let t = std::time::Instant::now();
             let weights = Qwen35Weights::from_loader(&mut loader, &cfg)?;
             eprintln!(
                 "[qwen35] read safetensors weights in {:.2?} \
-                 (layers={}, hidden={})",
+                 (layers={}, hidden={}) [mmap-on-take]",
                 t.elapsed(),
                 cfg.num_hidden_layers,
                 cfg.hidden_size,
@@ -459,8 +523,8 @@ impl Qwen35RunnerBuilder {
                 self.aot_cache_dir.clone(),
                 self.dynamic_prefill,
                 self.dynamic_decode,
-                self.mmproj.clone(),
-                self.inline_mmproj,
+                mmproj_path,
+                inline_mmproj,
                 self.prefill_profile,
                 self.decode_profile,
                 self.max_gpu_experts_per_layer,
@@ -679,6 +743,24 @@ fn make_qwen35_dyn_cache(
     }
 }
 
+fn trunk_has_dense_f32_mats(weights: &Qwen35Weights) -> bool {
+    weights.has_dense_f32_projections()
+}
+
+/// Drop host F32 projections after param extract / Metal upload (default on
+/// for dense HF checkpoints on Metal/MLX). Override with
+/// `RLX_QWEN35_RELEASE_HOST_WEIGHTS=0|1`.
+fn release_host_dense_enabled(device: Device, weights: &Qwen35Weights) -> bool {
+    match rlx_ir::env::var("RLX_QWEN35_RELEASE_HOST_WEIGHTS").as_deref() {
+        Some("0") | Some("false") | Some("off") => false,
+        Some("1") | Some("true") | Some("on") => true,
+        _ => {
+            weights.has_dense_f32_projections()
+                && matches!(device, Device::Metal | Device::Mlx)
+        }
+    }
+}
+
 /// Static prefill-cache compile via tier-0 [`BuiltModel`] + [`Qwen35CompileCache`].
 fn compile_static_prefill_cache(
     cfg: &Qwen35Config,
@@ -748,6 +830,52 @@ fn compile_static_prefill_cache(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Open a HuggingFace safetensors checkpoint via mmap (F32 on take only).
+fn load_hf_mmap_loader(
+    weights_path: &Path,
+) -> Result<(PathBuf, PathBuf, rlx_core::SafetensorsMmapLoader)> {
+    if weights_path.is_dir() {
+        let loader = rlx_core::SafetensorsMmapLoader::open(weights_path)
+            .with_context(|| format!("qwen35: open safetensors dir {weights_path:?}"))?;
+        return Ok((weights_path.to_path_buf(), weights_path.to_path_buf(), loader));
+    }
+    let resolved = resolve_weights_file(weights_path)?;
+    let ext = resolved
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "gguf" {
+        bail!(
+            "qwen35: non-Embedded config source supplied with a GGUF weights file at \
+             {resolved:?} — drop the config source (use the default Embedded) so the GGUF \
+             metadata is the source of truth"
+        );
+    }
+    let parent = resolved
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    // Sharded sibling layout: prefer loading the whole directory when an
+    // index is present next to the resolved shard.
+    if parent.join("model.safetensors.index.json").is_file() || weights_path.is_file() {
+        let dir = if parent.join("model.safetensors.index.json").is_file() {
+            parent.clone()
+        } else {
+            // Single-file: open the parent if it only has this shard, else
+            // fall back to a temp dir view via index_from_dir on parent.
+            parent.clone()
+        };
+        let loader = rlx_core::SafetensorsMmapLoader::open(&dir)
+            .with_context(|| format!("qwen35: open safetensors dir {dir:?}"))?;
+        return Ok((dir, resolved, loader));
+    }
+    let loader = rlx_core::SafetensorsMmapLoader::open(&parent)
+        .with_context(|| format!("qwen35: open safetensors {resolved:?}"))?;
+    Ok((parent, resolved, loader))
+}
+
 fn finish_build(
     cfg: Qwen35Config,
     weights: Qwen35Weights,
@@ -837,7 +965,11 @@ fn finish_build(
             224,
         )?)
     } else if let Some((vcfg, vweights)) = inline_mmproj {
-        Some(Qwen35VisionEncoder::from_parts(vcfg, vweights, 4, 4)?)
+        // Placeholder compile size — `encode_rgb` recompiles for the real
+        // smart-resized dims. Must satisfy `patch_size * 2` (HF Fara uses 16→32).
+        let step = vcfg.patch_size.saturating_mul(2).max(2);
+        let side = 224usize.next_multiple_of(step).max(step);
+        Some(Qwen35VisionEncoder::from_parts(vcfg, vweights, side, side)?)
     } else {
         None
     };
@@ -854,22 +986,36 @@ fn finish_build(
     let aot = aot_cache_dir.as_ref().map(AotCache::new);
     let (cache_params, cache_packed, mut prefill_cache, prefill_dynamic_cache) = if dynamic_prefill
     {
-        let (_cache_hir, cache_params, cache_packed) = build_qwen35_prefill_cache_hir_dynamic_ext(
-            &cfg,
-            weights.clone(),
-            batch,
-            max_seq,
-            runtime_mrope,
-            mtp_logits_path,
-            fast_mtp,
-            fast_greedy_lm_head,
-        )?;
-        eprintln!(
-            "[qwen35] built prefill-cache IR in {:.2?} (params={}, packed={})",
-            t.elapsed(),
-            cache_params.len(),
-            cache_packed.len(),
-        );
+        // Dense F32 (HF BF16→F32) already lives in `weights`. Eagerly
+        // extracting the same tensors into `cache_params` doubles host RAM
+        // (~17 GiB extra for Fara-4B). Defer extract to first specialize.
+        let dense_f32 = trunk_has_dense_f32_mats(&weights);
+        let (cache_params, cache_packed) = if dense_f32 {
+            eprintln!(
+                "[qwen35] dynamic prefill: deferring F32 param extract \
+                 (avoids duplicating host weights)"
+            );
+            (HashMap::new(), HashMap::new())
+        } else {
+            let (_cache_hir, cache_params, cache_packed) =
+                build_qwen35_prefill_cache_hir_dynamic_ext(
+                    &cfg,
+                    weights.clone(),
+                    batch,
+                    max_seq,
+                    runtime_mrope,
+                    mtp_logits_path,
+                    fast_mtp,
+                    fast_greedy_lm_head,
+                )?;
+            eprintln!(
+                "[qwen35] built prefill-cache IR in {:.2?} (params={}, packed={})",
+                t.elapsed(),
+                cache_params.len(),
+                cache_packed.len(),
+            );
+            (cache_params, cache_packed)
+        };
         eprintln!("[qwen35] dynamic prefill template ready (compile on first prompt)");
         (
             cache_params,
@@ -902,18 +1048,28 @@ fn finish_build(
 
     let (prefill_hidden_dynamic_cache, prefill_hidden_cache_params, prefill_hidden_cache_packed) =
         if vision_encoder.is_some() || hidden_prefill {
-            let (hidden_hir, hidden_params, hidden_packed) =
-                build_qwen35_prefill_hidden_cache_hir_dynamic_ext(
-                    &cfg,
-                    weights.clone(),
-                    batch,
-                    max_seq,
-                    runtime_mrope,
-                    mtp_logits_path,
-                    fast_mtp,
-                    fast_greedy_lm_head,
-                )?;
-            let _ = hidden_hir;
+            let dense_f32 = trunk_has_dense_f32_mats(&weights);
+            let (hidden_params, hidden_packed) = if dense_f32 {
+                eprintln!(
+                    "[qwen35] hidden prefill: deferring F32 param extract \
+                     (avoids duplicating host weights)"
+                );
+                (HashMap::new(), HashMap::new())
+            } else {
+                let (hidden_hir, hidden_params, hidden_packed) =
+                    build_qwen35_prefill_hidden_cache_hir_dynamic_ext(
+                        &cfg,
+                        weights.clone(),
+                        batch,
+                        max_seq,
+                        runtime_mrope,
+                        mtp_logits_path,
+                        fast_mtp,
+                        fast_greedy_lm_head,
+                    )?;
+                let _ = hidden_hir;
+                (hidden_params, hidden_packed)
+            };
             (
                 Some(make_qwen35_dyn_cache(device, 32, aot_cache_dir.as_deref())),
                 hidden_params,
@@ -1239,15 +1395,79 @@ impl Qwen35Runner {
     }
 
     /// Drop the static prefill compiled graph to free its device arena.
+    /// Free prefill device arena before decode when both arenas may not fit.
     ///
     /// Packed Bonsai-27B prefill is ~4 GiB; keeping it while compiling a
-    /// decode bucket OOMs 16 GB CUDA cards. Prefill is rebuilt lazily on the
-    /// next [`Self::prefill_seed_decode_cache`] call.
+    /// decode bucket OOMs 16 GB CUDA cards. Dense HF F32 (Fara-4B ~17 GiB)
+    /// has the same problem on unified memory. Prefill is rebuilt lazily on
+    /// the next [`Self::prefill_seed_decode_cache`] call.
     pub fn drop_prefill_cache(&mut self) {
+        let mut dropped = false;
         if self.prefill_cache.take().is_some() {
+            dropped = true;
+        }
+        if let Some(cache) = self.prefill_dynamic_cache.as_mut() {
+            let device = cache.device();
+            *cache = Qwen35CompileCache::new(device, 32);
+            dropped = true;
+        }
+        // VLM path specializes into this cache; leaving it live with decode
+        // doubles dense F32 residency on unified memory (Fara-4B ≈ +17 GiB).
+        if let Some(cache) = self.prefill_hidden_dynamic_cache.as_mut() {
+            let device = cache.device();
+            *cache = Qwen35CompileCache::new(device, 32);
+            dropped = true;
+        }
+        if dropped {
             trim_accelerator_arena_pool(self.device);
             eprintln!("[qwen35] dropped prefill cache (free VRAM for decode)");
         }
+    }
+
+    /// Reload dense F32 projections from the safetensors dir when they were
+    /// released after a prior Metal/MLX upload.
+    fn ensure_dense_projections_resident(&mut self) -> Result<()> {
+        if self.weights.has_dense_f32_projections() {
+            return Ok(());
+        }
+        if self.weights_path.as_os_str().is_empty() || !self.weights_path.is_dir() {
+            bail!(
+                "qwen35: host F32 projections were released and cannot be \
+                 reloaded (need a safetensors model dir)"
+            );
+        }
+        let emb = std::sync::Arc::clone(&self.weights.token_embd);
+        let t = Instant::now();
+        let (_model_dir, _resolved, mmap_loader) = load_hf_mmap_loader(&self.weights_path)?;
+        let mut loader = rlx_core::HfTranslatingLoader::new(mmap_loader);
+        let mut fresh = Qwen35Weights::from_loader(&mut loader, &self.cfg)?;
+        // Keep the live embedding table (host-embed / multimodal splice).
+        fresh.token_embd = emb;
+        self.weights = std::sync::Arc::new(fresh);
+        eprintln!(
+            "[qwen35] reloaded host F32 projections from {} in {:.2?}",
+            self.weights_path.display(),
+            t.elapsed()
+        );
+        Ok(())
+    }
+
+    fn clear_host_dense_projections(&mut self) {
+        if !self.weights.has_dense_f32_projections() {
+            return;
+        }
+        let Some(w) = std::sync::Arc::get_mut(&mut self.weights) else {
+            eprintln!(
+                "[qwen35] skip host F32 release (weights Arc still shared; \
+                 avoid weights.clone() across extract)"
+            );
+            return;
+        };
+        w.clear_dense_f32_projections();
+        eprintln!(
+            "[qwen35] released host F32 projections (device keeps uploaded copy; \
+             set RLX_QWEN35_RELEASE_HOST_WEIGHTS=0 to keep host)"
+        );
     }
 
     fn ensure_static_prefill_cache(&mut self) -> Result<()> {
@@ -1600,8 +1820,7 @@ impl Qwen35Runner {
             return self.decode_step_dynamic_raw(cache, tokens, generated_per_row, custom_embed);
         }
         let past_seq = cache.past_seq;
-        let head_half = self.cfg.key_length / 2;
-        let (cos, sin) = mrope_slice_at_pos(&self.cfg, past_seq, head_half);
+        let (cos, sin) = self.mrope_decode_rope_at_past(past_seq);
         let use_bucket = self
             .decode_compile_cache
             .as_ref()
@@ -1713,8 +1932,7 @@ impl Qwen35Runner {
         custom_embed: Option<&[f32]>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>)> {
         let past_seq = cache.past_seq;
-        let head_half = self.cfg.key_length / 2;
-        let (cos, sin) = mrope_slice_at_pos(&self.cfg, past_seq, head_half);
+        let (cos, sin) = self.mrope_decode_rope_at_past(past_seq);
         let feeds_owned = decode_step_feeds(
             &self.cfg,
             cache,
@@ -1830,14 +2048,49 @@ impl Qwen35Runner {
     /// share runs before peer eviction so weights are not re-uploaded.
     fn ensure_decode_bucket_compiled(&mut self, key: u64) -> Result<usize> {
         let key = self.decode_bucket_key(key);
+        let upper = {
+            let cache = self
+                .decode_compile_cache
+                .as_ref()
+                .ok_or_else(|| anyhow!("bucketed decode without cache"))?;
+            cache
+                .bucket_upper_for_key(key)
+                .ok_or_else(|| anyhow!("past_seq {key} outside decode buckets"))?
+        };
+        if self
+            .decode_compile_cache
+            .as_ref()
+            .and_then(|c| c.compiled_for_upper(upper))
+            .is_some()
+        {
+            return Ok(upper as usize);
+        }
+
+        self.ensure_dense_projections_resident()?;
+        let release = release_host_dense_enabled(self.device, &self.weights);
         let decode_opts = self.bucketed_decode_compile_options();
         let cfg = self.cfg.clone();
-        let weights = self.weights.clone();
         let batch = self.batch;
         let mtp_logits_path = self.mtp_logits_path;
         let fast_mtp = self.fast_mtp;
         let fast_greedy = self.fast_greedy_lm_head;
-        let packed_slot = RefCell::new(None::<PackedParams>);
+        let (hir, params, packed) = build_qwen35_decode_hir_ext(
+            &cfg,
+            std::sync::Arc::clone(&self.weights),
+            batch,
+            upper as usize,
+            true,
+            mtp_logits_path,
+            fast_mtp,
+            fast_greedy,
+        )
+        .context("qwen35 decode HIR")?;
+        if release {
+            self.clear_host_dense_projections();
+        }
+        let hir_cell = RefCell::new(Some(hir));
+        let params_cell = RefCell::new(Some(params));
+        let packed_slot = RefCell::new(Some(packed));
         let mut packed_nbytes = 0usize;
         let upper = {
             let cache_mut = self
@@ -1847,31 +2100,24 @@ impl Qwen35Runner {
             let (upper, _) = cache_mut
                 .ensure_hir_with_params(
                     key,
-                    |upper| {
-                        let (hir, params, packed) = build_qwen35_decode_hir_ext(
-                            &cfg,
-                            weights.clone(),
-                            batch,
-                            upper as usize,
-                            true,
-                            mtp_logits_path,
-                            fast_mtp,
-                            fast_greedy,
+                    |_upper| {
+                        (
+                            hir_cell
+                                .borrow_mut()
+                                .take()
+                                .expect("decode HIR already taken"),
+                            params_cell
+                                .borrow_mut()
+                                .take()
+                                .expect("decode params already taken"),
                         )
-                        .expect("qwen35 decode HIR");
-                        *packed_slot.borrow_mut() = Some(packed);
-                        (hir, params)
                     },
                     &decode_opts,
                 )
                 .ok_or_else(|| anyhow!("past_seq {key} outside decode buckets"))?;
             if let Some(packed) = packed_slot.take() {
                 if !packed.is_empty() {
-                    // Prefer sharing the previous rung's weight buffer — climbing
-                    // the power-of-two ladder used to re-upload the full Q1_0 pack.
                     if cache_mut.try_share_params_from_donor(upper) {
-                        // Still count pack size so MAX_RESIDENT eviction frees
-                        // the previous activation arena (weights stay via share).
                         packed_nbytes = packed_param_bytes(self.gguf_loader.as_ref(), &packed);
                     } else {
                         let compiled = cache_mut
@@ -2090,11 +2336,39 @@ impl Qwen35Runner {
         let prompt_lens: Vec<usize> = batch_prompts.iter().map(|p| p.len()).collect();
         let last_idx = last_token_indices(&prompt_lens);
 
+        // Match decode/prefill: when the predict graph uses host embed
+        // (Fara BF16 / large vocab), gather rows here — do not leave
+        // `inputs_embeds` unset (that yields all-zero logits).
+        let n_embd = self.cfg.hidden_size;
+        let host_embeds: Vec<f32> = if self.host_embed && !self.weights.token_embd.is_empty() {
+            let tbl = &self.weights.token_embd;
+            let mut v = vec![0f32; padded.len() * n_embd];
+            for (pos, &id_f) in padded.iter().enumerate() {
+                let src = (id_f as usize) * n_embd;
+                if src + n_embd <= tbl.len() {
+                    v[pos * n_embd..pos * n_embd + n_embd]
+                        .copy_from_slice(&tbl[src..src + n_embd]);
+                }
+            }
+            v
+        } else {
+            Vec::new()
+        };
+
         let mut feeds: Vec<(&str, &[f32])> = vec![("input_ids", padded.as_slice())];
         if self.last_logits_only {
             feeds.push(("last_token_idx", last_idx.as_slice()));
         }
-        let rope_owned = self.mrope_prefill_rope_feeds(max_prompt);
+        if !host_embeds.is_empty() {
+            feeds.push(("inputs_embeds", host_embeds.as_slice()));
+        }
+        let zero_in = zero_recurrent_inputs(&self.cfg, self.batch);
+        for (name, data) in &zero_in {
+            feeds.push((name, data.as_slice()));
+        }
+        // Prefill RoPE table must cover the compiled sequence extent
+        // (`max_seq`), not only the unpadded prompt length.
+        let rope_owned = self.mrope_prefill_rope_feeds(self.max_seq);
         for (name, data) in &rope_owned {
             feeds.push((name.as_str(), data.as_slice()));
         }
@@ -2108,11 +2382,20 @@ impl Qwen35Runner {
         // here so the next debugger can locate which layer first emits
         // zero/NaN values without re-running the entire 18-min cycle.
         if std::env::var("RLX_QWEN35_DEBUG_LAYERS").as_deref() == Ok("1") {
-            // Output layout (when debug_layers is on):
-            //   outs[0] = logits           [batch, vocab]
-            //   outs[1..] = trunk_layer_hiddens (one per decoder layer)
-            //               each [batch, n_embd]
+            // When `export_trunk_layer_hiddens` is on, builder emits:
+            //   outs[0] = post-embed last token [batch, n_embd]
+            //   outs[1..n_layers] = after trunk layers 0..n_layers-1
+            //   outs[n_layers+1] = logits [batch, vocab]
+            // (layer hiddens are pushed *before* the LM head — see builder).
             let n_layers = self.cfg.num_hidden_layers - self.cfg.nextn_predict_layers;
+            let n_embd = self.cfg.hidden_size;
+            let dump_dir = std::env::var("RLX_QWEN35_DUMP_LAYERS").ok().map(PathBuf::from);
+            if let Some(ref dir) = dump_dir {
+                std::fs::create_dir_all(dir).with_context(|| {
+                    format!("create RLX_QWEN35_DUMP_LAYERS dir {}", dir.display())
+                })?;
+            }
+            let n_hidden_outs = n_layers + 1; // embed + one per layer
             for i in 0..outs.len() {
                 let v = &outs[i];
                 let mut min = f32::INFINITY;
@@ -2137,12 +2420,17 @@ impl Qwen35Runner {
                     }
                 }
                 let mean = sum / v.len().max(1) as f64;
-                let label = if i == 0 {
-                    "logits".to_string()
-                } else if i - 1 < n_layers {
-                    format!("layer_{:02}", i - 1)
+                let is_logits = i >= n_hidden_outs;
+                let label = if is_logits {
+                    if i == n_hidden_outs {
+                        "logits".to_string()
+                    } else {
+                        format!("extra_{:02}", i - n_hidden_outs)
+                    }
+                } else if i == 0 {
+                    "embed".to_string()
                 } else {
-                    format!("extra_{:02}", i - 1 - n_layers)
+                    format!("layer_{:02}", i - 1)
                 };
                 eprintln!(
                     "[qwen35][debug-layers] {label}: len={} nnz={} nan={} min={} max={} mean={:.6}",
@@ -2153,15 +2441,45 @@ impl Qwen35Runner {
                     max,
                     mean
                 );
+                if let Some(ref dir) = dump_dir {
+                    let path = dir.join(format!("{label}.npy"));
+                    let (rows, cols) = if is_logits {
+                        (self.batch, v.len() / self.batch.max(1))
+                    } else {
+                        (self.batch, n_embd)
+                    };
+                    write_npy_f32_row_major(&path, rows, cols, v).with_context(|| {
+                        format!("write layer dump {}", path.display())
+                    })?;
+                }
+            }
+            if let Some(ref dir) = dump_dir {
+                eprintln!(
+                    "[qwen35][debug-layers] wrote {} tensors under {}",
+                    outs.len(),
+                    dir.display()
+                );
             }
         }
-        let vocab_size = if self.last_logits_only {
-            outs[0].len() / self.batch
+        let n_layers = self.cfg.num_hidden_layers - self.cfg.nextn_predict_layers;
+        // With DEBUG_LAYERS, layer hiddens precede logits in `outs`.
+        let logits_idx = if std::env::var("RLX_QWEN35_DEBUG_LAYERS").as_deref() == Ok("1") {
+            n_layers + 1
         } else {
-            outs[0].len() / (self.batch * self.max_seq)
+            0
+        };
+        anyhow::ensure!(
+            logits_idx < outs.len(),
+            "qwen35: missing logits output (idx={logits_idx}, outs={})",
+            outs.len()
+        );
+        let vocab_size = if self.last_logits_only {
+            outs[logits_idx].len() / self.batch
+        } else {
+            outs[logits_idx].len() / (self.batch * self.max_seq)
         };
         let sample_vocab = self.effective_vocab(vocab_size);
-        let mtp_logits = if self.enable_mtp && outs.len() >= 2 {
+        let mtp_logits = if self.enable_mtp && outs.len() >= 2 && logits_idx == 0 {
             Some(outs[1].clone())
         } else {
             None
@@ -2169,7 +2487,7 @@ impl Qwen35Runner {
         let mut per_batch = Vec::with_capacity(self.batch);
         for b in 0..self.batch {
             let start = b * vocab_size;
-            let mut row = outs[0][start..start + vocab_size].to_vec();
+            let mut row = outs[logits_idx][start..start + vocab_size].to_vec();
             row.truncate(sample_vocab);
             per_batch.push(Qwen35PrefillOutput {
                 logits: row,
@@ -2505,6 +2823,16 @@ impl Qwen35Runner {
                 .ok_or_else(|| anyhow!("qwen35: prefill_multimodal requires .mmproj(...)"))?;
             enc.encode_rgb(rgb, img_w, img_h)?
         };
+        eprintln!(
+            "[qwen35] vision encode: grid={}x{} tokens={} (src={}x{})",
+            vision.grid_x, vision.grid_y, vision.n_tokens, img_w, img_h
+        );
+        // Vision tower is only needed for encode; drop it before the dense
+        // LLM graphs so its F32 param clone is not resident with prefill.
+        if release_host_dense_enabled(self.device, &self.weights) {
+            self.vision_encoder = None;
+            eprintln!("[qwen35] dropped vision encoder after encode (low-mem)");
+        }
         if self.weights.token_embd.is_empty() {
             bail!("qwen35: multimodal prefill requires token_embd weights");
         }
@@ -2523,6 +2851,11 @@ impl Qwen35Runner {
             n_embd,
             0,
         )?;
+        eprintln!(
+            "[qwen35] multimodal seq={} (vision_tokens={})",
+            prefill.seq.len(),
+            vision.n_tokens
+        );
         self.mrope_section_positions = Some(prefill.mrope_sections.clone());
         let (trunk, _, mtp_logits) = self.prefill_seed_from_hidden(prefill)?;
         Ok((trunk, mtp_logits))
@@ -2555,6 +2888,25 @@ impl Qwen35Runner {
             .decode_cache
             .take()
             .ok_or_else(|| anyhow!("qwen35: multimodal prefill did not seed decode cache"))?;
+        if rlx_ir::env::flag("RLX_QWEN35_DEBUG_LOGITS") {
+            let n_embd = self.cfg.hidden_size;
+            let h = &trunk[..n_embd.min(trunk.len())];
+            let (norm_sq, abs_max) = h.iter().fold((0f32, 0f32), |(s, m), &x| {
+                (s + x * x, m.max(x.abs()))
+            });
+            eprintln!(
+                "[qwen35][debug] trunk_l2={:.4} absmax={:.4} n_embd={} mrope_interleaved={}",
+                norm_sq.sqrt(),
+                abs_max,
+                n_embd,
+                self.cfg.mrope_interleaved
+            );
+            if let Ok((idx, score)) =
+                greedy_lm_head_argmax(&self.weights, &self.cfg, h, self.lm_loader())
+            {
+                eprintln!("[qwen35][debug] lm_argmax id={idx} score={score:.4}");
+            }
+        }
         let mut next_tokens = if self.fast_greedy_lm_head && opts.greedy {
             self.argmax_batch_from_hidden(&trunk)?
         } else if self.fast_greedy_lm_head
@@ -2722,6 +3074,10 @@ impl Qwen35Runner {
                 let mtp_logits_path = self.mtp_logits_path;
                 let fast_mtp = self.fast_mtp;
                 let fast_greedy = self.fast_greedy_lm_head;
+                let need_extract = self.prefill_cache_params.is_empty()
+                    && self.prefill_cache_packed.is_empty();
+                let captured =
+                    std::cell::RefCell::new(None::<(HashMap<String, Vec<f32>>, PackedParams)>);
                 let cache_params = &self.prefill_cache_params;
                 let cache_packed = &self.prefill_cache_packed;
                 let gguf_loader = &mut self.gguf_loader;
@@ -2730,9 +3086,11 @@ impl Qwen35Runner {
                     cache,
                     &config,
                     || {
-                        build_qwen35_prefill_cache_hir_dynamic_ext(
+                        // Concrete-seq static HIR: avoids Dynamic(SEQ)+Static(k-1)
+                        // causal-pad concat, which MPSGraph mis-sizes.
+                        let (hir, params, packed) = build_qwen35_prefill_cache_hir_ext(
                             &cfg,
-                            weights,
+                            weights.clone(),
                             1,
                             seq,
                             runtime_mrope,
@@ -2740,16 +3098,32 @@ impl Qwen35Runner {
                             fast_mtp,
                             fast_greedy,
                         )
-                        .expect("dynamic prefill HIR")
-                        .0
+                        .expect("static prefill HIR at concrete seq");
+                        if need_extract {
+                            *captured.borrow_mut() = Some((params, packed));
+                        }
+                        hir
                     },
                     &compile_opts,
                     |c| {
-                        for (name, data) in cache_params {
-                            c.set_param(name, data);
-                        }
-                        upload_packed_opt(c, gguf_loader.as_mut(), cache_packed, packed_bytes_cache)
+                        if let Some((params, packed)) = captured.borrow_mut().take() {
+                            for (name, data) in &params {
+                                c.set_param(name, data);
+                            }
+                            upload_packed_opt(c, gguf_loader.as_mut(), &packed, packed_bytes_cache)
+                                .map(|_| ())
+                        } else {
+                            for (name, data) in cache_params {
+                                c.set_param(name, data);
+                            }
+                            upload_packed_opt(
+                                c,
+                                gguf_loader.as_mut(),
+                                cache_packed,
+                                packed_bytes_cache,
+                            )
                             .map(|_| ())
+                        }
                     },
                 )?
             };
@@ -2826,7 +3200,7 @@ impl Qwen35Runner {
                     && matches!(self.device, Device::Metal | Device::Mlx | Device::Cuda)
             }
         };
-        if self.gguf_loader.is_some()
+        if !keep_prefill
             && matches!(
                 self.device,
                 Device::Cuda
@@ -2836,7 +3210,6 @@ impl Qwen35Runner {
                     | Device::Metal
                     | Device::Mlx
             )
-            && !keep_prefill
         {
             self.drop_prefill_cache();
         }
@@ -2890,45 +3263,68 @@ impl Qwen35Runner {
 
         let config = self.execution_config(hidden_prefill_config(self.batch, seq));
         let compile_opts = self.dyn_compile_options(&config);
-        let cache = self
+        let already = self
             .prefill_hidden_dynamic_cache
-            .as_mut()
-            .ok_or_else(|| anyhow!("qwen35: hidden prefill cache missing (mmproj not loaded?)"))?;
-        let cfg = self.cfg.clone();
-        let weights = self.weights.clone();
-        let runtime_mrope = self.runtime_mrope;
-        let mtp_logits_path = self.mtp_logits_path;
-        let fast_mtp = self.fast_mtp;
-        let fast_greedy = self.fast_greedy_lm_head;
-        let hidden_params = &self.prefill_hidden_cache_params;
-        let hidden_packed = &self.prefill_hidden_cache_packed;
-        let gguf_loader = &mut self.gguf_loader;
-        let packed_bytes_cache = &mut self.packed_bytes_cache;
+            .as_ref()
+            .is_some_and(|c| c.contains(&config));
+        if !already {
+            self.ensure_dense_projections_resident()?;
+            let release = release_host_dense_enabled(self.device, &self.weights);
+            let (hir, params, packed) = build_qwen35_prefill_hidden_cache_hir_ext(
+                &self.cfg,
+                std::sync::Arc::clone(&self.weights),
+                1,
+                seq,
+                self.runtime_mrope,
+                self.mtp_logits_path,
+                self.fast_mtp,
+                self.fast_greedy_lm_head,
+            )
+            .context("static hidden prefill HIR at concrete seq")?;
+            // Free host before Metal compile; decode reloads from mmap after
+            // prefill arena is dropped.
+            if release {
+                self.clear_host_dense_projections();
+            }
+            let hir_cell = std::cell::RefCell::new(Some(hir));
+            let capt = std::cell::RefCell::new(Some((params, packed)));
+            let gguf_loader = &mut self.gguf_loader;
+            let packed_bytes_cache = &mut self.packed_bytes_cache;
+            let cache = self.prefill_hidden_dynamic_cache.as_mut().ok_or_else(|| {
+                anyhow!("qwen35: hidden prefill cache missing (mmproj not loaded?)")
+            })?;
+            get_or_specialize_hir_with_options(
+                cache,
+                &config,
+                || {
+                    hir_cell
+                        .borrow_mut()
+                        .take()
+                        .expect("hidden prefill HIR already taken")
+                },
+                &compile_opts,
+                |c| {
+                    let (params, packed) = capt
+                        .borrow_mut()
+                        .take()
+                        .expect("hidden prefill params already taken");
+                    for (name, data) in params {
+                        c.set_param(&name, &data);
+                    }
+                    upload_packed_opt(c, gguf_loader.as_mut(), &packed, packed_bytes_cache)
+                        .map(|_| ())
+                },
+            )?;
+        }
+        let cache = self.prefill_hidden_dynamic_cache.as_mut().ok_or_else(|| {
+            anyhow!("qwen35: hidden prefill cache missing (mmproj not loaded?)")
+        })?;
         let compiled = get_or_specialize_hir_with_options(
             cache,
             &config,
-            || {
-                build_qwen35_prefill_hidden_cache_hir_dynamic_ext(
-                    &cfg,
-                    weights,
-                    1,
-                    seq,
-                    runtime_mrope,
-                    mtp_logits_path,
-                    fast_mtp,
-                    fast_greedy,
-                )
-                .expect("dynamic hidden prefill HIR")
-                .0
-            },
+            || panic!("qwen35: hidden prefill cache miss after low-mem specialize"),
             &compile_opts,
-            |c| {
-                for (name, data) in hidden_params {
-                    c.set_param(name, data);
-                }
-                upload_packed_opt(c, gguf_loader.as_mut(), hidden_packed, packed_bytes_cache)
-                    .map(|_| ())
-            },
+            |_| Ok(()),
         )?;
         let outs = compiled.run(&feeds);
         let prompt_lens = vec![seq];
@@ -2943,6 +3339,31 @@ impl Qwen35Runner {
         )?;
         zero_prompt_padding_kv(&self.cfg, &mut cache, seq);
         self.decode_cache = Some(cache.clone());
+        // Same policy as token-id prefill: free the specialized hidden-prefill
+        // arena before decode so dense F32 Metal/MLX builds fit in RAM.
+        // Note: host projections may already be cleared — do not gate on
+        // `has_dense_f32_projections()` here.
+        let keep_prefill = match rlx_ir::env::var("RLX_QWEN35_KEEP_PREFILL").as_deref() {
+            Some("1") | Some("true") | Some("on") => true,
+            Some("0") | Some("false") | Some("off") => false,
+            _ => {
+                self.max_seq <= 128
+                    && matches!(self.device, Device::Metal | Device::Mlx | Device::Cuda)
+            }
+        };
+        if !keep_prefill
+            && matches!(
+                self.device,
+                Device::Cuda
+                    | Device::Rocm
+                    | Device::Gpu
+                    | Device::Vulkan
+                    | Device::Metal
+                    | Device::Mlx
+            )
+        {
+            self.drop_prefill_cache();
+        }
         Ok((trunk, cache, mtp_logits))
     }
 
@@ -3066,8 +3487,7 @@ impl Qwen35Runner {
         want_mtp: bool,
     ) -> Result<Vec<f32>> {
         let past_seq = cache.past_seq;
-        let head_half = self.cfg.key_length / 2;
-        let (cos, sin) = mrope_slice_at_pos(&self.cfg, past_seq, head_half);
+        let (cos, sin) = self.mrope_decode_rope_at_past(past_seq);
 
         let use_bucket = self
             .decode_compile_cache
@@ -3254,6 +3674,31 @@ impl Qwen35Runner {
         let sections = self.mrope_section_positions.as_deref();
         let (cos, sin) = mrope_prefill_feeds(&self.cfg, seq, sections, head_half);
         vec![("rope_cos".into(), cos), ("rope_sin".into(), sin)]
+    }
+
+    /// Decode-step MRoPE at the next absolute position after the multimodal
+    /// (or text) prefix. Vision tokens compress positions (`max(nx,ny)` for
+    /// `nx*ny` tokens); using raw `past_seq` desyncs queries from cached K.
+    fn mrope_decode_rope_at_past(&self, past_seq: usize) -> (Vec<f32>, Vec<f32>) {
+        let head_half = self.cfg.key_length / 2;
+        let next_sec = if let Some(sections) = self.mrope_section_positions.as_deref() {
+            if past_seq == 0 {
+                text_section_pos(0)
+            } else if let Some(last) = sections.get(past_seq.saturating_sub(1)) {
+                // Continue from the last prefill/decode section's temporal pos.
+                let t = last[0] + 1;
+                [t, t, t, 0]
+            } else {
+                // Past the assembled prefix: step from the last known section.
+                let last = sections.last().copied().unwrap_or(text_section_pos(0));
+                let extra = past_seq.saturating_sub(sections.len()) + 1;
+                let t = last[0] + extra;
+                [t, t, t, 0]
+            }
+        } else {
+            text_section_pos(past_seq)
+        };
+        mrope_row_for_sections(&self.cfg, next_sec, head_half)
     }
 }
 

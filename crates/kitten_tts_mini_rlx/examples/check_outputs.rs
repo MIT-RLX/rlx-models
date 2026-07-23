@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // "həˈloʊ" — matches rlx-kittentts `ipa_to_ids`
-    let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 0];
+    let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 10, 0];
     let ids_use: Vec<i64> = if ids.len() <= seq {
         ids.clone()
     } else {

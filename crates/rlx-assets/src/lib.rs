@@ -73,8 +73,7 @@ impl std::fmt::Debug for AssetSource {
 }
 
 fn normalize(name: &str) -> String {
-    let n = name.trim_start_matches('/').replace('\\', "/");
-    n
+    name.trim_start_matches('/').replace('\\', "/")
 }
 
 impl AssetSource {

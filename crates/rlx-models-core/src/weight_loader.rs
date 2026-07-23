@@ -145,6 +145,78 @@ pub fn gguf_to_hf_name(gguf: &str) -> Option<String> {
     Some(format!("model.layers.{idx}.{hf_tail}"))
 }
 
+/// GGUF → HuggingFace name for Qwen3.5 / Qwen3.5-VL / Fara multimodal
+/// safetensors (`model.language_model.*` + gated DeltaNet `linear_attn.*`).
+///
+/// Tried by [`HfTranslatingLoader`] after the Llama-family
+/// [`gguf_to_hf_name`] mapping misses.
+pub fn gguf_to_hf_qwen35_name(gguf: &str) -> Option<String> {
+    match gguf {
+        "token_embd.weight" => {
+            return Some("model.language_model.embed_tokens.weight".into());
+        }
+        "output_norm.weight" => return Some("model.language_model.norm.weight".into()),
+        // Tied checkpoints omit lm_head; untied 9B-class may ship it here.
+        "output.weight" => return Some("lm_head.weight".into()),
+        _ => {}
+    }
+    let rest = gguf.strip_prefix("blk.")?;
+    let (idx_str, tail) = rest.split_once('.')?;
+    let idx: usize = idx_str.parse().ok()?;
+    let hf_tail = match tail {
+        "attn_norm.weight" => "input_layernorm.weight",
+        // Qwen3.5 GGUF uses `post_attention_norm` for the pre-FFN RMSNorm
+        // on both linear and full-attn trunk layers.
+        "post_attention_norm.weight" | "ffn_norm.weight" => "post_attention_layernorm.weight",
+        // Full attention.
+        "attn_q.weight" => "self_attn.q_proj.weight",
+        "attn_k.weight" => "self_attn.k_proj.weight",
+        "attn_v.weight" => "self_attn.v_proj.weight",
+        "attn_output.weight" => "self_attn.o_proj.weight",
+        "attn_q_norm.weight" => "self_attn.q_norm.weight",
+        "attn_k_norm.weight" => "self_attn.k_norm.weight",
+        // Gated DeltaNet / linear attention.
+        "attn_qkv.weight" => "linear_attn.in_proj_qkv.weight",
+        "attn_gate.weight" => "linear_attn.in_proj_z.weight",
+        "ssm_conv1d.weight" => "linear_attn.conv1d.weight",
+        "ssm_dt.bias" => "linear_attn.dt_bias",
+        "ssm_a" => "linear_attn.A_log",
+        "ssm_beta.weight" => "linear_attn.in_proj_b.weight",
+        "ssm_alpha.weight" => "linear_attn.in_proj_a.weight",
+        "ssm_norm.weight" => "linear_attn.norm.weight",
+        "ssm_out.weight" => "linear_attn.out_proj.weight",
+        // Dense MLP.
+        "ffn_gate.weight" => "mlp.gate_proj.weight",
+        "ffn_up.weight" => "mlp.up_proj.weight",
+        "ffn_down.weight" => "mlp.down_proj.weight",
+        _ => return None,
+    };
+    Some(format!("model.language_model.layers.{idx}.{hf_tail}"))
+}
+
+/// Candidate HF names for a GGUF-style key (Llama flat + Qwen3.5 nested).
+pub fn gguf_to_hf_name_candidates(gguf: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(3);
+    if let Some(h) = gguf_to_hf_name(gguf) {
+        out.push(h);
+    }
+    if let Some(h) = gguf_to_hf_qwen35_name(gguf) {
+        if !out.iter().any(|x| x == &h) {
+            out.push(h);
+        }
+    }
+    // Untied multimodal checkpoints sometimes nest lm_head under language_model.
+    if gguf == "output.weight" {
+        let nested = "model.language_model.embed_tokens.weight".to_string();
+        let alt = "model.language_model.lm_head.weight".to_string();
+        if !out.iter().any(|x| x == &alt) {
+            out.push(alt);
+        }
+        let _ = nested;
+    }
+    out
+}
+
 /// Arch-aware variant of [`gguf_to_hf_name`]. Falls back to the
 /// generic mapping when `arch` doesn't carry overrides; for arches
 /// whose 1↔1 alias disagrees with the Llama convention (Gemma 2/3/4:
@@ -344,6 +416,15 @@ fn is_gemma_norm_weight(name: &str) -> bool {
 /// trailing `blk.*` indices accordingly.
 pub fn is_mtp_weight(name: &str) -> bool {
     name.contains("mtp_") || name.contains(".mtp") || name.starts_with("mtp")
+}
+
+/// True when the tensor is already host float storage (not a block quant).
+///
+/// Copying these to `Vec<f32>` is not a Q4→F32 *expand* — used by Laguna's
+/// packed path for norms / biases while forbidding quant dequant.
+pub fn is_native_float_ggml(dtype: rlx_gguf::GgmlType) -> bool {
+    use rlx_gguf::GgmlType;
+    matches!(dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)
 }
 
 /// Map GGML storage type to RLX packed matmul scheme (K-quants only).
@@ -562,22 +643,26 @@ impl<L: WeightLoader> WeightLoader for HfTranslatingLoader<L> {
     fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         match self.inner.take(key) {
             Ok(v) => Ok(v),
-            Err(_) => {
-                if let Some(hf) = gguf_to_hf_name(key) {
-                    return self.inner.take(&hf);
+            Err(first) => {
+                for hf in gguf_to_hf_name_candidates(key) {
+                    if let Ok(v) = self.inner.take(&hf) {
+                        return Ok(v);
+                    }
                 }
-                self.inner.take(key)
+                Err(first)
             }
         }
     }
     fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         match self.inner.take_transposed(key) {
             Ok(v) => Ok(v),
-            Err(_) => {
-                if let Some(hf) = gguf_to_hf_name(key) {
-                    return self.inner.take_transposed(&hf);
+            Err(first) => {
+                for hf in gguf_to_hf_name_candidates(key) {
+                    if let Ok(v) = self.inner.take_transposed(&hf) {
+                        return Ok(v);
+                    }
                 }
-                self.inner.take_transposed(key)
+                Err(first)
             }
         }
     }
@@ -791,6 +876,45 @@ impl GgufLoader {
         Ok(Some((bytes, scheme, shape)))
     }
 
+    /// Copy an already-uncompressed float tensor to host `Vec<f32>`.
+    ///
+    /// Accepts only [`GgmlType`] F32 / F16 / BF16. Quantized tensors error
+    /// (Laguna: "F32 expand FORBIDDEN") — use [`Self::take_packed`] /
+    /// [`Self::take_packed_metadata`] instead.
+    pub fn take_native_f32(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let real = self.resolve(key)?;
+        if self.taken.contains(&real) {
+            return Err(anyhow!("weight already taken: {key} (→ {real})"));
+        }
+        if !self.include_mtp && self.is_mtp_tensor(&real) {
+            return Err(anyhow!(
+                "refusing to take MTP weight `{real}` without include_mtp(true)"
+            ));
+        }
+        let t = self
+            .file
+            .get(&real)
+            .ok_or_else(|| anyhow!("tensor missing: {real}"))?;
+        if !is_native_float_ggml(t.dtype) {
+            return Err(anyhow!(
+                "F32 expand FORBIDDEN (`{key}` → {real}, arch={}, {:?}): \
+                 quantized tensors must stay packed (`take_packed` / \
+                 `take_packed_metadata`). Only native F32/F16/BF16 may copy \
+                 to host float via take_native_f32.",
+                self.arch,
+                t.dtype
+            ));
+        }
+        let (data, raw_shape) = self
+            .file
+            .dequant_f32(&real)
+            .with_context(|| format!("native float copy for {real}"))?;
+        self.taken.insert(real);
+        let mut shape = raw_shape;
+        shape.reverse();
+        Ok((data, shape))
+    }
+
     /// Take a single MTP weight by name. Bypasses the `include_mtp`
     /// filter so callers can grab specific heads without flipping
     /// the global visibility. Returns an error if the name isn't a
@@ -804,6 +928,19 @@ impl GgufLoader {
         }
         if self.taken.contains(key) {
             return Err(anyhow!("MTP weight already taken: {key}"));
+        }
+        if self.arch == "laguna" {
+            let t = self
+                .file
+                .get(key)
+                .ok_or_else(|| anyhow!("MTP weight not found in GGUF: {key}"))?;
+            if !is_native_float_ggml(t.dtype) && !crate::gguf_support::laguna_allow_f32_expand()
+            {
+                return Err(anyhow!(
+                    "F32 expand disabled for Laguna GGUF (`{key}` / take_mtp); \
+                     set RLX_LAGUNA_ALLOW_F32_EXPAND=1 to opt in"
+                ));
+            }
         }
         let (data, raw_shape) = self.file.dequant_f32(key)?;
         self.taken.insert(key.to_string());
@@ -853,6 +990,24 @@ impl WeightLoader for GgufLoader {
                  use loader.take_mtp(...) for explicit MTP grabs or \
                  loader.include_mtp(true) to include them in drains"
             ));
+        }
+        if self.arch == "laguna" {
+            let t = self
+                .file
+                .get(&real)
+                .ok_or_else(|| anyhow!("tensor missing: {real}"))?;
+            if !is_native_float_ggml(t.dtype) && !crate::gguf_support::laguna_allow_f32_expand()
+            {
+                return Err(anyhow!(
+                    "F32 expand disabled for Laguna GGUF (`{key}` → {real}, {:?}): \
+                     use packed/mmap (`take_packed` / `take_packed_metadata` / \
+                     `rlx-laguna --packed-load`), or opt in with \
+                     `RLX_LAGUNA_ALLOW_F32_EXPAND=1` / `--allow-f32-expand` \
+                     (see header sniff `F32-expand≈`). \
+                     Native F32/F16/BF16 side tensors may use `take` / `take_native_f32`.",
+                    t.dtype
+                ));
+            }
         }
         let (mut data, raw_shape) = self.file.dequant_f32(&real)?;
         self.taken.insert(real.clone());
@@ -1046,6 +1201,75 @@ mod tests {
     fn hf_to_gguf_unknown_returns_none() {
         assert!(hf_to_gguf_name("model.layers.0.some_new_thing.weight").is_none());
         assert!(hf_to_gguf_name("model.layers.foo.input_layernorm.weight").is_none());
+    }
+
+    #[test]
+    fn qwen35_hf_aliases_cover_linear_attn_and_nested_prefix() {
+        assert_eq!(
+            gguf_to_hf_qwen35_name("token_embd.weight").as_deref(),
+            Some("model.language_model.embed_tokens.weight")
+        );
+        assert_eq!(
+            gguf_to_hf_qwen35_name("output_norm.weight").as_deref(),
+            Some("model.language_model.norm.weight")
+        );
+        let cases = [
+            (
+                "blk.0.attn_qkv.weight",
+                "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+            ),
+            (
+                "blk.0.attn_gate.weight",
+                "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+            ),
+            (
+                "blk.0.ssm_conv1d.weight",
+                "model.language_model.layers.0.linear_attn.conv1d.weight",
+            ),
+            (
+                "blk.0.ssm_dt.bias",
+                "model.language_model.layers.0.linear_attn.dt_bias",
+            ),
+            (
+                "blk.0.ssm_a",
+                "model.language_model.layers.0.linear_attn.A_log",
+            ),
+            (
+                "blk.0.ssm_beta.weight",
+                "model.language_model.layers.0.linear_attn.in_proj_b.weight",
+            ),
+            (
+                "blk.0.ssm_alpha.weight",
+                "model.language_model.layers.0.linear_attn.in_proj_a.weight",
+            ),
+            (
+                "blk.0.ssm_norm.weight",
+                "model.language_model.layers.0.linear_attn.norm.weight",
+            ),
+            (
+                "blk.0.ssm_out.weight",
+                "model.language_model.layers.0.linear_attn.out_proj.weight",
+            ),
+            (
+                "blk.0.post_attention_norm.weight",
+                "model.language_model.layers.0.post_attention_layernorm.weight",
+            ),
+            (
+                "blk.11.attn_q.weight",
+                "model.language_model.layers.11.self_attn.q_proj.weight",
+            ),
+        ];
+        for (gguf, hf) in cases {
+            assert_eq!(
+                gguf_to_hf_qwen35_name(gguf).as_deref(),
+                Some(hf),
+                "mismatch for {gguf}"
+            );
+            assert!(
+                gguf_to_hf_name_candidates(gguf).iter().any(|c| c == hf),
+                "candidates missing {hf}"
+            );
+        }
     }
 
     #[test]
@@ -1310,5 +1534,68 @@ mod tests {
         // not from the dispatcher.
         let r = load_from_path("/tmp/no-such-thing-rlx-gguf-test.gguf");
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn laguna_gguf_f32_take_is_forbidden() {
+        use rlx_gguf::{GgmlType, GgufWriter, MetaValue, bytes_for_public};
+        // SAFETY: isolate from opt-in left by another test.
+        unsafe { std::env::remove_var("RLX_LAGUNA_ALLOW_F32_EXPAND") };
+        let path = std::env::temp_dir().join("rlx_laguna_forbid_f32_take.gguf");
+        let mut w = GgufWriter::new();
+        w.set_arch("laguna");
+        w.set_meta("laguna.block_count", MetaValue::U32(1));
+        w.set_meta("laguna.embedding_length", MetaValue::U32(16));
+        let n = 256usize;
+        let nbytes = bytes_for_public(GgmlType::Q4K, n).unwrap();
+        w.add_tensor_bytes(
+            "blk.0.ffn_down.weight",
+            vec![16, 16],
+            GgmlType::Q4K,
+            vec![0u8; nbytes],
+        )
+        .unwrap();
+        let bias = vec![1.0f32, 2.0, 3.0, 4.0];
+        let bias_bytes: Vec<u8> = bytemuck::cast_slice(&bias).to_vec();
+        w.add_tensor_bytes(
+            "blk.0.exp_probs_b.bias",
+            vec![4],
+            GgmlType::F32,
+            bias_bytes,
+        )
+        .unwrap();
+        w.write_to_path(&path).unwrap();
+
+        let mut loader = GgufLoader::from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(loader.architecture(), "laguna");
+        let err = loader.take("blk.0.ffn_down.weight").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("disabled") || msg.contains("FORBIDDEN"),
+            "expected Laguna F32 forbid, got: {msg}"
+        );
+        let err2 = loader
+            .take_native_f32("blk.0.ffn_down.weight")
+            .unwrap_err();
+        assert!(
+            format!("{err2:#}").contains("FORBIDDEN"),
+            "take_native_f32 must refuse Q4K"
+        );
+        let (data, shape) = loader.take_native_f32("blk.0.exp_probs_b.bias").unwrap();
+        assert_eq!(shape, vec![4]);
+        assert_eq!(data, bias);
+        // take() on native F32 is allowed for Laguna.
+        let mut loader2 = GgufLoader::from_file(path.to_str().unwrap()).unwrap();
+        let (data2, _) = loader2.take("blk.0.exp_probs_b.bias").unwrap();
+        assert_eq!(data2, bias);
+
+        // Opt-in: quant take succeeds.
+        unsafe { std::env::set_var("RLX_LAGUNA_ALLOW_F32_EXPAND", "1") };
+        let mut loader3 = GgufLoader::from_file(path.to_str().unwrap()).unwrap();
+        let (qdata, _) = loader3.take("blk.0.ffn_down.weight").unwrap();
+        assert_eq!(qdata.len(), 256);
+        unsafe { std::env::remove_var("RLX_LAGUNA_ALLOW_F32_EXPAND") };
+
+        std::fs::remove_file(&path).ok();
     }
 }

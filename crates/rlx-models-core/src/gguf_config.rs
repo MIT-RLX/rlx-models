@@ -154,6 +154,10 @@ pub fn gguf_runner_hint(arch: &str) -> &'static str {
             crate::gguf_support::GgufModelFamily::Inkling => {
                 "rlx-inkling (`--weights` GGUF sniff; RLX eager on --synth/--fixture)"
             }
+            crate::gguf_support::GgufModelFamily::Laguna => {
+                "rlx-laguna (packed mmap generate; F32 expand off by default — \
+                 RLX_LAGUNA_ALLOW_F32_EXPAND=1 to opt in)"
+            }
         };
     }
     "unknown — register a custom GgufTensorNameResolver or WeightFormatRegistration"

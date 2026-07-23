@@ -35,6 +35,7 @@ pub fn gepard_backbone_to_qwen35_config(bb: &BackboneConfig) -> Qwen35Config {
         rope_theta: bb.rope_theta,
         rope_dim_count: head_dim,
         rope_dim_sections: Vec::new(),
+        mrope_interleaved: false,
         full_attention_interval: 1,
         ssm_conv_kernel: 4,
         ssm_group_count: 1,

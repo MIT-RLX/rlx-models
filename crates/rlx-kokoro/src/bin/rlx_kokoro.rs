@@ -30,7 +30,7 @@ USAGE:
 
 OPTIONS:
     --data <DIR>       Model directory (default: $RLX_KOKORO_DIR or .cache/kokoro-82m)
-    --model <FILE>     ONNX variant filename (ort path only; default: model.onnx)
+    --model <FILE>     ONNX variant filename (ignored on native path; default: model.onnx)
     --text <TEXT>      Text to synthesize (English; espeak-ng G2P)
     --ipa <PHONEMES>   Synthesize directly from an IPA/phoneme string
     --voice <NAME>     Voice name (default: af_heart)
@@ -138,35 +138,8 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    #[cfg(all(feature = "onnx", not(feature = "native")))]
-    {
-        use rlx_kokoro::Kokoro;
-
-        let tts = Kokoro::load_on(&data_dir, &model_file, device)
-            .with_context(|| format!("load Kokoro from {}", data_dir.display()))?;
-
-        if list_voices {
-            println!("Available voices ({}):", tts.voice_names().len());
-            for v in tts.voice_names() {
-                println!("  {v}");
-            }
-            return Ok(());
-        }
-
-        let audio = synthesize(&tts, ipa.as_deref(), text.as_deref(), &voice, speed)?;
-        tts.write_wav(&audio, &out)?;
-        let secs = audio.len() as f32 / SAMPLE_RATE as f32;
-        println!(
-            "Wrote {} samples ({secs:.2}s @ {SAMPLE_RATE} Hz) to {} [voice={voice}, ep={}]",
-            audio.len(),
-            out.display(),
-            tts.ort_ep()
-        );
-        return Ok(());
-    }
-
-    #[cfg(not(any(feature = "native", feature = "onnx")))]
-    compile_error!("rlx-kokoro CLI requires `native` or `onnx` feature");
+    #[cfg(not(feature = "native"))]
+    compile_error!("rlx-kokoro CLI requires the `native` feature");
 
     #[allow(unreachable_code)]
     Ok(())
@@ -175,29 +148,6 @@ fn run() -> Result<()> {
 #[cfg(feature = "native")]
 fn synthesize(
     tts: &rlx_kokoro::NativeKokoro,
-    ipa: Option<&str>,
-    text: Option<&str>,
-    voice: &str,
-    speed: f32,
-) -> Result<Vec<f32>> {
-    if let Some(ipa) = ipa {
-        return tts.infer_phonemes(ipa, voice, speed);
-    }
-    if let Some(text) = text {
-        #[cfg(feature = "espeak")]
-        return tts.generate_from_text(text, voice, speed);
-        #[cfg(not(feature = "espeak"))]
-        {
-            let _ = text;
-            anyhow::bail!("--text requires the `espeak` feature; use --ipa instead");
-        }
-    }
-    anyhow::bail!("provide --text \"<text>\" or --ipa \"<phonemes>\"\n\n{HELP}")
-}
-
-#[cfg(all(feature = "onnx", not(feature = "native")))]
-fn synthesize(
-    tts: &rlx_kokoro::Kokoro,
     ipa: Option<&str>,
     text: Option<&str>,
     voice: &str,

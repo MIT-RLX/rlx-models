@@ -7,7 +7,7 @@ use rlx_styletts2::{StyleTTS2, default_model_dir, parse_device};
 #[derive(Parser, Debug)]
 #[command(
     name = "rlx-styletts2",
-    about = "StyleTTS2-family TTS via Kokoro-82M (ORT default; RLX_STYLETTS2_NATIVE=1 for native)"
+    about = "StyleTTS2-family TTS via Kokoro-82M (native graph-split RLX path)"
 )]
 struct Args {
     #[arg(long, default_value = "The quick brown fox jumps over the lazy dog.")]

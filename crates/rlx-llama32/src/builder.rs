@@ -373,6 +373,10 @@ fn load_p(
     key: &str,
     transpose: bool,
 ) -> Result<NodeId> {
+    // Shared across Looped-Transformer iterations (Nanbeige `num_loops` > 1).
+    if let Some(id) = g.param_id(key) {
+        return Ok(id);
+    }
     let (data, shape) = if transpose {
         weights.take_transposed(key)?
     } else {
@@ -587,6 +591,12 @@ fn load_proj(
     weights: &mut dyn WeightLoader,
     key: &str,
 ) -> Result<(NodeId, Option<rlx_ir::quant::QuantScheme>, Vec<usize>)> {
+    if let Some(id) = g.param_id(key) {
+        if let Some((_bytes, scheme, shape)) = packed.get(key) {
+            return Ok((id, Some(*scheme), shape.clone()));
+        }
+        return Ok((id, None, Vec::new()));
+    }
     if let Some((bytes, scheme, shape)) = weights.take_packed(key)? {
         let id = g.param(key, Shape::new(&[bytes.len()], DType::U8));
         packed.insert(key.to_string(), (bytes, scheme, shape.clone()));
@@ -726,9 +736,12 @@ pub fn build_llama32_graph_sized_packed(
         None
     };
     let mut kv_outputs: Vec<(NodeId, NodeId)> = Vec::new();
+    let physical = cfg.physical_layers();
+    let kv_layers = cfg.kv_layers();
 
-    for layer_idx in 0..cfg.num_hidden_layers {
-        let lp = format!("model.layers.{layer_idx}");
+    for exec_idx in 0..kv_layers {
+        let weight_idx = cfg.weight_layer_index(exec_idx);
+        let lp = format!("model.layers.{weight_idx}");
 
         let in_ln_g = load_p(
             &mut g,
@@ -815,6 +828,13 @@ pub fn build_llama32_graph_sized_packed(
             Shape::new(&[batch, seq, h], f),
         );
         h_id = g.add(post_attn, ffn_out);
+
+        let loop_end = physical > 0 && (exec_idx + 1) % physical == 0;
+        let last_exec = exec_idx + 1 == kv_layers;
+        if loop_end && !cfg.skip_loop_final_norm && !last_exec {
+            let mid_ln = load_p(&mut g, &mut params, weights, "model.norm.weight", false)?;
+            h_id = g.rms_norm(h_id, mid_ln, zero_beta_hidden, eps);
+        }
     }
 
     let final_ln_g = load_p(&mut g, &mut params, weights, "model.norm.weight", false)?;
@@ -983,10 +1003,12 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
         &mut embed_host,
     )?;
 
-    // Per-layer past K/V cache inputs.
-    let mut past_k_ids: Vec<NodeId> = Vec::with_capacity(cfg.num_hidden_layers);
-    let mut past_v_ids: Vec<NodeId> = Vec::with_capacity(cfg.num_hidden_layers);
-    for i in 0..cfg.num_hidden_layers {
+    // Per-layer past K/V cache inputs (unrolled across loops).
+    let kv_layers = cfg.kv_layers();
+    let physical = cfg.physical_layers();
+    let mut past_k_ids: Vec<NodeId> = Vec::with_capacity(kv_layers);
+    let mut past_v_ids: Vec<NodeId> = Vec::with_capacity(kv_layers);
+    for i in 0..kv_layers {
         past_k_ids.push(g.input(
             format!("past_k_{i}"),
             Shape::new(&[batch, past_seq, kv_dim], f),
@@ -1006,8 +1028,9 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
 
     let mut kv_outputs: Vec<(NodeId, NodeId)> = Vec::new();
 
-    for layer_idx in 0..cfg.num_hidden_layers {
-        let lp = format!("model.layers.{layer_idx}");
+    for exec_idx in 0..kv_layers {
+        let weight_idx = cfg.weight_layer_index(exec_idx);
+        let lp = format!("model.layers.{weight_idx}");
 
         let in_ln_g = load_p(
             &mut g,
@@ -1035,8 +1058,8 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
         let (q_rope, k_rope) = apply_qk_rope(&mut g, q, k, cos_id, sin_id, cfg);
 
         // Append the new token to the cached KV, export the full buffers.
-        let new_k = g.concat_(vec![past_k_ids[layer_idx], k_rope], 1);
-        let new_v = g.concat_(vec![past_v_ids[layer_idx], v], 1);
+        let new_k = g.concat_(vec![past_k_ids[exec_idx], k_rope], 1);
+        let new_v = g.concat_(vec![past_v_ids[exec_idx], v], 1);
         kv_outputs.push((new_k, new_v));
 
         let k_rep = repeat_kv(&mut g, new_k, nkv, dh, group);
@@ -1096,6 +1119,13 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
             Shape::new(&[batch, 1, h], f),
         );
         h_id = g.add(post_attn, ffn_out);
+
+        let loop_end = physical > 0 && (exec_idx + 1) % physical == 0;
+        let last_exec = exec_idx + 1 == kv_layers;
+        if loop_end && !cfg.skip_loop_final_norm && !last_exec {
+            let mid_ln = load_p(&mut g, &mut params, weights, "model.norm.weight", false)?;
+            h_id = g.rms_norm(h_id, mid_ln, zero_beta_hidden, eps);
+        }
     }
 
     let final_ln_g = load_p(&mut g, &mut params, weights, "model.norm.weight", false)?;

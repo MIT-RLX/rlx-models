@@ -19,10 +19,14 @@ pub const VISION_START: &str = "<|vision_start|>";
 pub const VISION_END: &str = "<|vision_end|>";
 pub const MEDIA_MARKER: &str = "<__media__>";
 
-/// Decoder MRoPE position for vision token `i` (llama.cpp `mtmd_image_tokens_get_decoder_pos`).
+/// Decoder MRoPE position for vision token `i`.
+///
+/// HF `mrope_section` is `[temporal, height, width]`. Tokens are row-major over
+/// the output grid (`i / nx` = row/y, `i % nx` = col/x), matching Qwen2/3-VL
+/// `get_rope_index` spatial layout (not llama.cpp's swapped sections).
 pub fn image_decoder_pos(nx: usize, ny: usize, pos_0: usize, i: usize) -> [usize; 4] {
     let _ = ny;
-    [pos_0, pos_0 + (i % nx), pos_0 + (i / nx), 0]
+    [pos_0, pos_0 + (i / nx), pos_0 + (i % nx), 0]
 }
 
 /// Positions consumed by one image chunk in the decoder (M-RoPE path).
@@ -183,7 +187,9 @@ mod tests {
     fn mrope_sections_length_matches_tokens() {
         let sec = build_multimodal_mrope_sections(2, 2, 2, 1, 0);
         assert_eq!(sec.len(), 2 + 4 + 1);
+        // Vision token i=0 at pos_0=2: [t, h=0, w=0]
         assert_eq!(sec[2], [2, 2, 2, 0]);
-        assert_eq!(sec[3], [2, 3, 2, 0]);
+        // i=1 (row 0, col 1): width section advances
+        assert_eq!(sec[3], [2, 2, 3, 0]);
     }
 }

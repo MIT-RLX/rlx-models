@@ -19,7 +19,7 @@ just orpheus-coreml-demo             # Metal LM + native RLX Ane SNAC (macOS, --
 |-------|---------------------------|-------------------|
 | Llama-3B LM | Metal GGUF prefill + KV decode | Metal GGUF (same) |
 | SNAC quantizer | CPU eager (safetensors) | CPU eager |
-| SNAC conv decoder | CPU eager (ndarray) | Native RLX [`Device::Ane`](https://github.com/eugenehp/rlx) via `rlx-ir` |
+| SNAC conv decoder | CPU eager (ndarray) | Native RLX [`Device::Ane`](https://github.com/MIT-RLX/rlx) via `rlx-ir` |
 
 CoreML is **native RLX** (no ONNX). The RVQ lookup stays on the host; only the conv decoder stack is compiled per latent-length bucket and cached (`ORPHEUS_SNAC_AOT`).
 

@@ -37,6 +37,9 @@ const IM_END: &str = "<|im_end|>";
 /// Empty think block used to disable reasoning (HF hard switch).
 pub const EMPTY_THINK_BLOCK: &str = "<think>\n\n</think>\n\n";
 
+/// Open think prefix when thinking is enabled (HF `enable_thinking=True`).
+pub const OPEN_THINK_PREFIX: &str = "<think>\n";
+
 /// Early-stop cue when a thinking budget is exhausted mid-`<think>`.
 pub const THINK_BUDGET_CLOSE: &str = "\nConsidering the limited time by the user, I have to give the solution based on the thinking directly now.\n</think>\n\n";
 
@@ -126,7 +129,11 @@ pub fn format_chatml_with(messages: &[ChatMessage], opts: ChatFormatOpts) -> Str
     out.push_str(IM_START);
     out.push_str("assistant");
     out.push('\n');
-    if !opts.enable_thinking {
+    if opts.enable_thinking {
+        // Match HF chat_template: assistant turn already opens `<think>\n`
+        // so generation continues inside the think block.
+        out.push_str(OPEN_THINK_PREFIX);
+    } else {
         out.push_str(EMPTY_THINK_BLOCK);
     }
     out
@@ -284,6 +291,19 @@ impl ThinkingBudgetWatch {
         }
     }
 
+    /// Like [`Self::new`], but already inside an open `<think>` (HF primes
+    /// `<think>\n` into the assistant turn when thinking is enabled).
+    pub fn new_already_thinking(specials: SpecialTokenIds, budget: usize) -> Self {
+        Self {
+            specials,
+            budget,
+            in_think: true,
+            think_tokens: 0,
+            closed: false,
+            budget_hit: false,
+        }
+    }
+
     /// Observe one generated token. Returns `false` when the thinking
     /// budget is exhausted while still inside `<think>` (caller should
     /// stop and continue after a forced close).
@@ -319,9 +339,22 @@ mod tests {
     fn chatml_format_matches_qwen_convention() {
         let msgs = messages_from_prompt(Some("Be brief."), "Hi");
         let s = format_chatml(&msgs);
-        assert!(s.starts_with("<|im_start|>system\nBe brief.\n<|im_end|>"));
-        assert!(s.contains("<|im_start|>user\nHi\n<|im_end|>"));
-        assert!(s.ends_with("<|im_start|>assistant\n"));
+        assert!(s.starts_with("<|im_start|>system\nBe brief.<|im_end|>"));
+        assert!(s.contains("<|im_start|>user\nHi<|im_end|>"));
+        assert!(s.ends_with("<|im_start|>assistant\n<think>\n"));
+    }
+
+    #[test]
+    fn think_enabled_primes_open_block() {
+        let msgs = messages_from_prompt(None, "Hi");
+        let s = format_chatml_with(
+            &msgs,
+            ChatFormatOpts {
+                enable_thinking: true,
+            },
+        );
+        assert!(s.ends_with(OPEN_THINK_PREFIX));
+        assert!(!s.contains("</think>"));
     }
 
     #[test]

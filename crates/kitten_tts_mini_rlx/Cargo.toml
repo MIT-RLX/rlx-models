@@ -31,6 +31,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 rlx-metal = { workspace = true, optional = true }
 rlx-mlx = { workspace = true, optional = true }
+rlx-cuda = { workspace = true, optional = true }
 rlx-gguf = { workspace = true, optional = true }
 metal = { version = "0.30", optional = true }
 
@@ -61,10 +62,23 @@ path = "examples/dump_lir_shapes.rs"
 name = "compare_intermediates"
 path = "examples/compare_intermediates.rs"
 
+[[example]]
+name = "cpu_device_probe"
+path = "examples/cpu_device_probe.rs"
+
+[[example]]
+name = "qmatmul_probe"
+path = "examples/qmatmul_probe.rs"
+
+[[example]]
+name = "ort_prosody_inject"
+path = "examples/ort_prosody_inject.rs"
+required-features = ["native"]
+
 [features]
 default = ["cpu"]
 cpu = ["rlx-runtime/cpu"]
-cuda = ["rlx-runtime/cuda"]
+cuda = ["rlx-runtime/cuda", "dep:rlx-cuda"]
 metal = ["rlx-runtime/metal", "dep:rlx-metal", "dep:metal"]
 mlx = ["rlx-runtime/mlx", "dep:rlx-mlx"]
 gpu = ["rlx-runtime/gpu"]
@@ -89,3 +103,5 @@ anyhow = { workspace = true }
 
 [lints]
 workspace = true
+
+

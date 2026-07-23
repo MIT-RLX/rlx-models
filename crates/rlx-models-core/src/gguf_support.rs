@@ -30,6 +30,8 @@ pub enum GgufModelFamily {
     Lfm,
     /// Thinking Machines Inkling (`inkling` — Unsloth / llama.cpp converters).
     Inkling,
+    /// Poolside Laguna MoE (`laguna` — Unsloth / llama.cpp converters).
+    Laguna,
 }
 
 impl GgufModelFamily {
@@ -41,6 +43,7 @@ impl GgufModelFamily {
             Self::Gemma => "rlx-gemma",
             Self::Lfm => "rlx-lfm",
             Self::Inkling => "rlx-inkling",
+            Self::Laguna => "rlx-laguna",
         }
     }
 
@@ -55,6 +58,7 @@ impl GgufModelFamily {
             Self::Gemma => "gemma",
             Self::Lfm => "lfm",
             Self::Inkling => "inkling",
+            Self::Laguna => "laguna",
         }
     }
 
@@ -66,6 +70,7 @@ impl GgufModelFamily {
             Self::Gemma => "`rlx_models::GemmaRunner::builder()...build()`",
             Self::Lfm => "`rlx_lfm::LfmRunner::builder()...build()`",
             Self::Inkling => "`rlx_inkling::InklingRunner::builder()...build()`",
+            Self::Laguna => "`rlx_laguna::LagunaRunner::builder()...build()`",
         }
     }
 
@@ -128,6 +133,8 @@ impl GgufModelFamily {
             Self::Lfm => matches!(arch, "lfm2" | "lfm" | "lfm25" | "lfm2_5"),
             // Unsloth / llama.cpp: `general.architecture = inkling`
             Self::Inkling => matches!(arch, "inkling" | "inkling_mm_model"),
+            // Unsloth / llama.cpp: `general.architecture = laguna` (PR #25165)
+            Self::Laguna => matches!(arch, "laguna"),
         }
     }
 }
@@ -160,8 +167,12 @@ pub fn gguf_validate_arch(path: &Path, allowed: &[&str]) -> Result<()> {
 }
 
 /// `general.architecture` for a GGUF file on disk.
+///
+/// Header-only — never slurps the tensor-data segment (safe for 20GB+ Laguna
+/// / large K-quant files when callers only need the arch tag).
 pub fn gguf_architecture_from_path(path: &Path) -> Result<String> {
-    let raw = GgufFile::from_path(path).with_context(|| format!("opening GGUF {path:?}"))?;
+    let raw = GgufFile::header_from_path(path)
+        .with_context(|| format!("opening GGUF header {path:?}"))?;
     Ok(gguf_architecture_str(&raw).unwrap_or("unknown").to_string())
 }
 
@@ -219,13 +230,23 @@ pub fn gguf_family_for_arch(arch: &str) -> Option<GgufModelFamily> {
         }
         "lfm2" | "lfm" | "lfm25" | "lfm2_5" => Some(GgufModelFamily::Lfm),
         "inkling" | "inkling_mm_model" => Some(GgufModelFamily::Inkling),
+        "laguna" => Some(GgufModelFamily::Laguna),
         _ => None,
     }
 }
 
 /// Open the file and ensure `general.architecture` matches `expected`.
+///
+/// For [`GgufModelFamily::Laguna`], opens **header-only** (F32 expand and
+/// full payload slurp are forbidden for that family). Other families keep
+/// the historical full open.
 pub fn assert_gguf_family(path: &Path, expected: GgufModelFamily) -> Result<GgufFile> {
-    let raw = GgufFile::from_path(path).with_context(|| format!("opening GGUF {path:?}"))?;
+    let raw = if expected == GgufModelFamily::Laguna {
+        GgufFile::header_from_path(path)
+            .with_context(|| format!("opening Laguna GGUF header {path:?}"))?
+    } else {
+        GgufFile::from_path(path).with_context(|| format!("opening GGUF {path:?}"))?
+    };
     let arch = gguf_architecture_str(&raw).unwrap_or("unknown");
     if expected.accepts_arch(arch) {
         return Ok(raw);
@@ -326,9 +347,13 @@ pub fn resolve_weights_file_with_options(
     if st.is_file() {
         return Ok(st);
     }
+    let index = path.join("model.safetensors.index.json");
+    if index.is_file() {
+        return Ok(path.to_path_buf());
+    }
     bail!(
-        "directory {path:?} has no .gguf file and no model.safetensors; \
-         pass a .gguf or .safetensors path"
+        "directory {path:?} has no .gguf file and no model.safetensors \
+         (or model.safetensors.index.json); pass a .gguf or .safetensors path"
     );
 }
 
@@ -395,12 +420,42 @@ pub fn low_mem_compile() -> bool {
     )
 }
 
+/// Opt-in Laguna quant→F32 expand. **Off by default.**
+///
+/// Set `RLX_LAGUNA_ALLOW_F32_EXPAND` to `1` / `true` / `on` / `yes`, or pass
+/// `rlx-laguna --allow-f32-expand`. Prefer packed mmap; use `--weights` sniff
+/// for the per-file `F32-expand≈` estimate before draining.
+pub fn laguna_allow_f32_expand() -> bool {
+    matches!(
+        std::env::var("RLX_LAGUNA_ALLOW_F32_EXPAND").ok().as_deref(),
+        Some("1") | Some("true") | Some("on") | Some("yes")
+    )
+}
+
 pub fn load_gguf_file(path: &Path) -> Result<GgufFile> {
-    // Low-mem: mmap the file (data segment paged on demand, reclaimable)
+    // Laguna: never Owned-slurp Q4/IQ payloads into RSS. Always mmap (or
+    // header-only for split discovery). F32 expand is separately forbidden
+    // in `GgufLoader::take`.
+    let header = GgufFile::header_from_path(path)
+        .with_context(|| format!("opening GGUF header {path:?}"))?;
+    let arch = gguf_architecture_str(&header).unwrap_or("unknown");
+    let force_mmap = arch == "laguna" || low_mem_compile();
+
+    // Low-mem / Laguna: mmap the file (data segment paged on demand, reclaimable)
     // rather than reading the whole thing into RSS. Splits fall through to
-    // the owned merge path below (mmap is single-file).
-    let raw = if low_mem_compile() {
-        GgufFile::from_path_mmap(path).with_context(|| format!("mmap GGUF {path:?}"))?
+    // the owned merge path below (mmap is single-file) — Laguna splits still
+    // refuse F32 expand at `take` time.
+    let raw = if force_mmap {
+        match GgufFile::from_path_mmap(path) {
+            Ok(f) => f,
+            Err(e) if arch == "laguna" => {
+                bail!(
+                    "Laguna GGUF must be mmap'd (F32 expand / full RSS slurp forbidden): \
+                     {path:?}: {e:#}"
+                );
+            }
+            Err(e) => return Err(e).with_context(|| format!("mmap GGUF {path:?}")),
+        }
     } else {
         GgufFile::from_path(path).with_context(|| format!("opening GGUF {path:?}"))?
     };
@@ -411,6 +466,13 @@ pub fn load_gguf_file(path: &Path) -> Result<GgufFile> {
         .unwrap_or(1);
     if count <= 1 {
         return Ok(raw);
+    }
+    if arch == "laguna" {
+        bail!(
+            "Laguna multi-part GGUF merge into an owned buffer is FORBIDDEN \
+             ({path:?} is split.count={count}): that would RSS-slurp Q4 payloads. \
+             Use a single-file quant (e.g. XS Q4_K_M) or a future per-shard mmap packed path."
+        );
     }
     let siblings = gguf_split_siblings(path)?;
     match siblings {
@@ -560,6 +622,14 @@ mod tests {
         assert_eq!(
             gguf_family_for_arch("gemma4_unified"),
             Some(GgufModelFamily::Gemma)
+        );
+        assert_eq!(
+            gguf_family_for_arch("inkling"),
+            Some(GgufModelFamily::Inkling)
+        );
+        assert_eq!(
+            gguf_family_for_arch("laguna"),
+            Some(GgufModelFamily::Laguna)
         );
         assert!(gguf_family_for_arch("clip").is_none());
     }

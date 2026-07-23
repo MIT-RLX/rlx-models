@@ -1,0 +1,57 @@
+[package]
+name = "rlx-unlimited-ocr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "baidu/Unlimited-OCR (SAM + CLIP DeepEncoder + MoE LM) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-gguf = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+half = { workspace = true }
+image = { workspace = true }
+tokenizers = { workspace = true, optional = true }
+hf-hub = { workspace = true, optional = true }
+
+[features]
+default = ["tokenizer", "hf-cache", "hf-download"]
+tokenizer = ["dep:tokenizers"]
+hf-cache = ["dep:hf-hub"]
+hf-download = ["hf-cache"]
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[[bin]]
+name = "rlx-unlimited-ocr"
+path = "src/bin/rlx_unlimited_ocr.rs"
+
+[dev-dependencies]
+anyhow = { workspace = true }
+image = { workspace = true }
+rlx-core = { workspace = true }
+serde_json = { workspace = true }
+rlx-runtime = { workspace = true }
+
+[lints]
+workspace = true

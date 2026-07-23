@@ -1,0 +1,88 @@
+[package]
+name = "rlx-openai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Central OpenAI-compatible HTTP server for RLX language models"
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-serve = { workspace = true }
+rlx-text = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-qwen3 = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net"] }
+rlx-laguna = { workspace = true, optional = true, features = ["serve"] }
+rlx-qwen35 = { workspace = true, optional = true }
+rlx-gemma = { workspace = true, optional = true }
+rlx-llama32 = { workspace = true, optional = true }
+rlx-lfm = { workspace = true, optional = true }
+
+[features]
+default = []
+laguna = ["dep:rlx-laguna"]
+qwen35 = ["dep:rlx-qwen35"]
+gemma = ["dep:rlx-gemma"]
+llama32 = ["dep:rlx-llama32"]
+lfm = ["dep:rlx-lfm"]
+# All chat LM engines known to this binary.
+all-engines = ["laguna", "qwen35", "gemma", "llama32", "lfm"]
+metal = [
+    "rlx-qwen3/metal",
+    "rlx-runtime/metal",
+    "rlx-laguna?/metal",
+    "rlx-qwen35?/metal",
+    "rlx-gemma?/metal",
+    "rlx-llama32?/metal",
+    "rlx-lfm?/metal",
+]
+mlx = [
+    "rlx-qwen3/mlx",
+    "rlx-runtime/mlx",
+    "rlx-laguna?/mlx",
+    "rlx-qwen35?/mlx",
+    "rlx-gemma?/mlx",
+    "rlx-llama32?/mlx",
+    "rlx-lfm?/mlx",
+]
+cuda = [
+    "rlx-qwen3/cuda",
+    "rlx-runtime/cuda",
+    "rlx-laguna?/cuda",
+    "rlx-qwen35?/cuda",
+    "rlx-gemma?/cuda",
+    "rlx-llama32?/cuda",
+    "rlx-lfm?/cuda",
+]
+gpu = [
+    "rlx-qwen3/gpu",
+    "rlx-runtime/gpu",
+    "rlx-laguna?/gpu",
+    "rlx-qwen35?/gpu",
+    "rlx-gemma?/gpu",
+    "rlx-llama32?/gpu",
+    "rlx-lfm?/gpu",
+]
+coreml = [
+    "rlx-qwen3/coreml",
+    "rlx-runtime/coreml",
+    "rlx-laguna?/coreml",
+    "rlx-qwen35?/coreml",
+    "rlx-gemma?/coreml",
+    "rlx-llama32?/coreml",
+]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+all-backends = ["metal", "mlx", "cuda", "gpu", "coreml"]
+
+[[bin]]
+name = "rlx-openai"
+path = "src/main.rs"
+
+[lints]
+workspace = true

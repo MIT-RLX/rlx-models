@@ -26,6 +26,7 @@ serde_json = { workspace = true }
 
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
+rlx-tts = { path = "../rlx-tts", optional = true }
 
 # matrix-onnx
 rlx-chatterbox = { path = "../rlx-chatterbox", default-features = false, features = ["native"], optional = true }
@@ -51,6 +52,8 @@ rlx-kyutai-tts = { path = "../rlx-kyutai-tts", optional = true }
 
 [features]
 default = ["matrix-onnx"]
+# RLX FastSpeech2 + WaveRNN (private `.cache/rlx-tts` bundle).
+rlx-tts = ["dep:rlx-tts"]
 matrix-onnx = [
     "dep:rlx-chatterbox",
     "dep:rlx-supertonic",
@@ -77,7 +80,7 @@ lm-tts = [
 # of `lm-tts` so the ort adapters can build without it (hard link error on
 # Linux/CUDA). Opt in via `kyutai` or `all-models`.
 kyutai = ["dep:rlx-kyutai-tts"]
-all-models = ["matrix-onnx", "matrix-ar", "lm-tts", "kyutai"]
+all-models = ["matrix-onnx", "matrix-ar", "lm-tts", "kyutai", "rlx-tts"]
 
 metal = [
     "rlx-runtime/metal",

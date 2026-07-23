@@ -15,7 +15,6 @@ readme = "README.md"
 anyhow = { workspace = true }
 hound = "3"
 half = { workspace = true }
-ndarray = "0.17"
 tokenizers = { workspace = true }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # Native (ort-free) path: import the ONNX graphs → rlx-ir HIR → compile → run.
@@ -24,18 +23,6 @@ rlx-onnx-import = { workspace = true, optional = true }
 # Hand-authored native T3 LM (rlx-llama32 graph, NOT ONNX-imported) + WeightMap.
 rlx-llama32 = { workspace = true, optional = true }
 rlx-core = { workspace = true, optional = true }
-# ONNX Runtime EP selector reused from rlx-kittentts (ORT parity path only).
-rlx-kittentts = { path = "../rlx-kittentts", default-features = false, optional = true }
-
-[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
-ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
-    "std",
-    "pkg-config",
-    "download-binaries",
-    "tls-rustls",
-    "half",
-    "ndarray",
-] }
 
 [dev-dependencies]
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
@@ -71,8 +58,6 @@ default = ["native"]
 # Native ort-free runtime (rlx-onnx-import → compile → run). Backend-agnostic;
 # pair with metal/mlx/… for GPU binaries.
 native = ["dep:rlx-onnx-import", "dep:rlx-ir", "dep:rlx-llama32", "dep:rlx-core"]
-# Optional ONNX Runtime path for parity / A/B.
-onnx = ["dep:ort", "dep:rlx-kittentts", "rlx-kittentts/onnx"]
 metal = ["native", "rlx-runtime/metal"]
 mlx = ["native", "rlx-runtime/mlx"]
 cuda = ["native", "rlx-runtime/cuda"]

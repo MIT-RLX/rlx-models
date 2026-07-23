@@ -49,8 +49,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use rlx_flow::blocks::{
-    DecodeRopeParamsStage, LlamaDecodeLayerSpec, LlamaDecoderSpec, RopeTablesStage,
-    llama_prefill_layer_composed, llama_prefill_layer_fused,
+    DecodeRopeParamsStage, LlamaDecodeLayerSpec, LlamaDecoderSpec, LlamaDecoderStage,
+    RmsNormStage, RopeTablesStage, llama_prefill_layer_composed, llama_prefill_layer_fused,
 };
 use rlx_flow::{BuiltModel, CompileProfile, FlowStage, ModelFlow, SideOutputs};
 use rlx_ir::dynamic::sym;
@@ -87,7 +87,10 @@ pub enum Llama32Mode {
 /// Per-layer context for `.layer()` overrides — defaults preserve stock LLaMA blocks.
 pub enum LlamaLayerCtx<'a> {
     Prefill {
+        /// Execution / KV-cache slot index (unrolled across loops).
         index: usize,
+        /// Weight prefix index (`model.layers.{weight_index}`).
+        weight_index: usize,
         spec: &'a LlamaDecoderSpec,
         kv_sink: &'a SideOutputs,
         export_kv: bool,
@@ -95,7 +98,10 @@ pub enum LlamaLayerCtx<'a> {
         eps: f32,
     },
     Decode {
+        /// Execution / KV-cache slot index (unrolled across loops).
         index: usize,
+        /// Weight prefix index (`model.layers.{weight_index}`).
+        weight_index: usize,
         spec: &'a LlamaDecodeLayerSpec,
         kv_out: &'a SideOutputs,
     },
@@ -108,11 +114,18 @@ impl LlamaLayerCtx<'_> {
         }
     }
 
+    pub fn weight_index(&self) -> usize {
+        match self {
+            Self::Prefill { weight_index, .. } | Self::Decode { weight_index, .. } => *weight_index,
+        }
+    }
+
     /// Stock fused LLaMA layer for this mode (what `.layer()` falls back to).
     pub fn default_stage(&self) -> FlowStage {
         match self {
             Self::Prefill {
                 index,
+                weight_index,
                 spec,
                 kv_sink,
                 export_kv,
@@ -121,40 +134,49 @@ impl LlamaLayerCtx<'_> {
             } => {
                 let mut stages = Vec::new();
                 if *export_kv {
-                    stages.push(FlowStage::LlamaKvTap(
-                        rlx_flow::blocks::LlamaKvTapStage::layer(
-                            *index,
-                            *head_dim,
-                            *eps,
-                            kv_sink.inner(),
-                            spec.rope_style,
-                        ),
-                    ));
+                    let mut tap = rlx_flow::blocks::LlamaKvTapStage::layer(
+                        *weight_index,
+                        *head_dim,
+                        *eps,
+                        kv_sink.inner(),
+                        spec.rope_style,
+                    );
+                    // Keep weight prefix on the physical layer; execution order
+                    // still appends K/V into the side-output sink sequentially.
+                    tap.layer_prefix = format!("model.layers.{weight_index}");
+                    stages.push(FlowStage::LlamaKvTap(tap));
                 }
+                let mut decoder = LlamaDecoderStage::layer(*weight_index, (*spec).clone());
+                decoder.layer_prefix = format!("model.layers.{weight_index}");
                 stages.push(FlowStage::Named {
                     name: format!("layer{index}"),
-                    inner: Arc::new(FlowStage::LlamaDecoder(
-                        rlx_flow::blocks::LlamaDecoderStage::layer(*index, (*spec).clone()),
-                    )),
+                    inner: Arc::new(FlowStage::LlamaDecoder(decoder)),
                 });
                 FlowStage::Sequence(stages)
             }
             Self::Decode {
                 index,
+                weight_index,
                 spec,
                 kv_out,
-            } => FlowStage::Named {
-                name: format!("layer{index}"),
-                inner: Arc::new(FlowStage::LlamaDecodeLayer(
-                    rlx_flow::blocks::LlamaDecodeLayerStage::layer(
-                        *index,
-                        (*spec).clone(),
-                        kv_out.inner(),
-                    ),
-                )),
+            } => {
+                let mut decode = rlx_flow::blocks::LlamaDecodeLayerStage::layer(
+                    *index,
+                    (*spec).clone(),
+                    kv_out.inner(),
+                );
+                decode.layer_prefix = format!("model.layers.{weight_index}");
+                FlowStage::Named {
+                    name: format!("layer{index}"),
+                    inner: Arc::new(FlowStage::LlamaDecodeLayer(decode)),
+                }
             },
         }
     }
+}
+
+fn loop_mid_norm_stage(eps: f32) -> FlowStage {
+    FlowStage::RmsNorm(RmsNormStage::new("model.norm.weight", eps))
 }
 
 type LayerFn = Arc<dyn Fn(LlamaLayerCtx<'_>) -> FlowStage + Send + Sync>;
@@ -453,41 +475,67 @@ impl<'a> Llama32Flow<'a> {
 
         let layer_fn = self.layer_fn.clone();
         let export = self.with_kv_outputs;
-        flow = flow.repeat_layers(cfg.num_hidden_layers, {
+        let physical = cfg.physical_layers();
+        let kv_layers = cfg.kv_layers();
+        let skip_loop_final_norm = cfg.skip_loop_final_norm;
+        flow = flow.repeat_layers(kv_layers, {
             let spec = decoder_spec.clone();
             let sink = kv_sink.clone();
-            move |i| {
-                if let Some(ref f) = layer_fn {
-                    return f(LlamaLayerCtx::Prefill {
-                        index: i,
+            move |exec_idx| {
+                let weight_idx = if physical == 0 {
+                    0
+                } else {
+                    exec_idx % physical
+                };
+                let base = if let Some(ref f) = layer_fn {
+                    f(LlamaLayerCtx::Prefill {
+                        index: exec_idx,
+                        weight_index: weight_idx,
                         spec: &spec,
                         kv_sink: &sink,
                         export_kv: export,
                         head_dim: dh,
                         eps,
-                    });
-                }
-                let mut stages = Vec::new();
-                if export {
-                    stages.push(FlowStage::LlamaKvTap(
-                        rlx_flow::blocks::LlamaKvTapStage::layer(
-                            i,
+                    })
+                } else {
+                    let mut stages = Vec::new();
+                    if export {
+                        let mut tap = rlx_flow::blocks::LlamaKvTapStage::layer(
+                            weight_idx,
                             dh,
                             eps,
                             sink.inner(),
                             spec.rope_style,
-                        ),
-                    ));
-                }
-                stages.push(if n_rot < dh {
-                    llama_prefill_layer_composed(i, spec.clone())
+                        );
+                        tap.layer_prefix = format!("model.layers.{weight_idx}");
+                        stages.push(FlowStage::LlamaKvTap(tap));
+                    }
+                    // Partial RoPE (Phi) needs the composed path; fused HIR
+                    // composite covers the full-RoPE Llama case.
+                    let layer = if n_rot < dh {
+                        llama_prefill_layer_composed(weight_idx, spec.clone())
+                    } else {
+                        llama_prefill_layer_fused(weight_idx, spec.clone())
+                    };
+                    stages.push(FlowStage::Named {
+                        name: format!("layer{exec_idx}"),
+                        inner: Arc::new(layer),
+                    });
+                    if stages.len() == 1 {
+                        stages.into_iter().next().unwrap()
+                    } else {
+                        FlowStage::Sequence(stages)
+                    }
+                };
+
+                // Nanbeige-style loop norm after each completed loop except the
+                // last (stock `final_norm` covers the final pass).
+                let loop_end = physical > 0 && (exec_idx + 1) % physical == 0;
+                let last_exec = exec_idx + 1 == kv_layers;
+                if loop_end && !skip_loop_final_norm && !last_exec {
+                    FlowStage::Sequence(vec![base, loop_mid_norm_stage(eps)])
                 } else {
-                    llama_prefill_layer_fused(i, spec.clone())
-                });
-                if stages.len() == 1 {
-                    stages.into_iter().next().unwrap()
-                } else {
-                    FlowStage::Sequence(stages)
+                    base
                 }
             }
         });
@@ -576,7 +624,7 @@ impl<'a> Llama32Flow<'a> {
             flow = flow.input("mask", Shape::new(&[self.batch, self.past_seq + 1], f));
         }
 
-        for layer_idx in 0..cfg.num_hidden_layers {
+        for layer_idx in 0..cfg.kv_layers() {
             if self.past_seq > 0 || self.dynamic_past || self.use_custom_mask {
                 flow = flow
                     .input(format!("past_k_{layer_idx}"), past_kv_shape.clone())
@@ -603,7 +651,7 @@ impl<'a> Llama32Flow<'a> {
 
         flow = flow
             .bind_decode_inputs(
-                cfg.num_hidden_layers,
+                cfg.kv_layers(),
                 self.use_custom_mask,
                 self.past_seq > 0 || self.dynamic_past || self.use_custom_mask,
             )
@@ -614,23 +662,42 @@ impl<'a> Llama32Flow<'a> {
         flow = flow.raw_stages(self.before_layers.iter().cloned());
 
         let layer_fn = self.layer_fn.clone();
-        flow = flow.repeat_layers(cfg.num_hidden_layers, {
+        let physical = cfg.physical_layers();
+        let kv_layers = cfg.kv_layers();
+        let skip_loop_final_norm = cfg.skip_loop_final_norm;
+        flow = flow.repeat_layers(kv_layers, {
             let spec = decode_spec.clone();
             let sink = kv_out.clone();
-            move |i| {
-                if let Some(ref f) = layer_fn {
-                    return f(LlamaLayerCtx::Decode {
-                        index: i,
+            move |exec_idx| {
+                let weight_idx = if physical == 0 {
+                    0
+                } else {
+                    exec_idx % physical
+                };
+                let base = if let Some(ref f) = layer_fn {
+                    f(LlamaLayerCtx::Decode {
+                        index: exec_idx,
+                        weight_index: weight_idx,
                         spec: &spec,
                         kv_out: &sink,
-                    });
+                    })
+                } else {
+                    LlamaLayerCtx::Decode {
+                        index: exec_idx,
+                        weight_index: weight_idx,
+                        spec: &spec,
+                        kv_out: &sink,
+                    }
+                    .default_stage()
+                };
+
+                let loop_end = physical > 0 && (exec_idx + 1) % physical == 0;
+                let last_exec = exec_idx + 1 == kv_layers;
+                if loop_end && !skip_loop_final_norm && !last_exec {
+                    FlowStage::Sequence(vec![base, loop_mid_norm_stage(eps)])
+                } else {
+                    base
                 }
-                LlamaLayerCtx::Decode {
-                    index: i,
-                    spec: &spec,
-                    kv_out: &sink,
-                }
-                .default_stage()
             }
         });
 

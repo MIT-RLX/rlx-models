@@ -1,7 +1,0 @@
-$ /Users/Shared/rlx-models/target/release/rlx-melotts --data weights/tts/melotts --text The quick brown fox jumps over the lazy dog near the river bank. --device coreml --out /Users/Shared/rlx-models/scripts/matrix/out/artifacts/melotts.coreml.wav
-
---- stdout ---
-Wrote 184320 samples (4.18s @ 44100 Hz, peak=0.438) to /Users/Shared/rlx-models/scripts/matrix/out/artifacts/melotts.coreml.wav [device=Ane]
-
---- stderr ---
-[tiny-tts] CoreML: set RLX_COREML_UNITS=gpu (pins f16 TTS graphs off Neural-Engine BNNS; fp32 already defaults to CPU+GPU in rlx-coreml)

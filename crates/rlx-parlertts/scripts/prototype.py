@@ -20,8 +20,30 @@ PAD = 1024              # pad_token_id (== eos)
 VOCAB = 1088            # per-codebook vocab (codes 0..1023 + specials)
 MAX_STEPS = int(sys.argv[2]) if len(sys.argv) > 2 else 120
 
-TEXT = sys.argv[1] if len(sys.argv) > 1 else "The quick brown fox jumps over the lazy dog."
+# GREEDY argmax collapses this export (no transcript/prompt path) into a
+# near-constant code stream: every codebook repeats one or two indices, the DAC
+# latent is nearly time-invariant, and the decoder head conv legitimately outputs
+# ~0 → the wav is silent (peak ~0.02). This misled a past diagnosis into blaming
+# the DAC; the DAC is bit-exact (see `examples/dac_check.rs`). Sampling — exactly
+# what the Rust runtime does by default (`InferOpts.greedy = false`) — restores
+# code diversity (~90 unique/codebook over ~100 frames) and audible amplitude
+# (peak ~0.2–0.4). Pass `--greedy` to reproduce the old degenerate behaviour.
+GREEDY = "--greedy" in sys.argv[1:]
+TEMP, TOP_K, SEED = 1.0, 50, 0x50415254
+
+TEXT = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") \
+    else "The quick brown fox jumps over the lazy dog."
 DESC = "A clear female voice speaks slowly."
+
+
+def _sample(logits, rng):
+    """Top-k + temperature multinomial over a `[VOCAB]` logit row (matches the
+    Rust `sample()` in `src/native.rs`)."""
+    l = logits / max(TEMP, 1e-4)
+    idx = np.argpartition(-l, TOP_K - 1)[:TOP_K]
+    p = np.exp(l[idx] - l[idx].max())
+    p /= p.sum()
+    return int(idx[rng.choice(len(idx), p=p)])
 
 tok = Tokenizer.from_file(str(W / "tokenizer.json"))
 enc_sess = ort.InferenceSession(str(W / "onnx/text_encoder.onnx"))
@@ -49,6 +71,7 @@ def build_delay(codes):
 
 
 def run(enc_text, label):
+    rng = np.random.default_rng(SEED)
     hs, emask = encode(enc_text)
     # decoder_input_ids [1, 9, 1] all BOS
     dids = np.full((1, K, 1), BOS, dtype=np.int64)
@@ -60,7 +83,11 @@ def run(enc_text, label):
         )
         # logits: [9, T, 1088] = [codebook, seq, vocab]; take last position
         lg = np.asarray(logits)  # [9, T, 1088]
-        nxt = lg[:, -1, :].argmax(-1).astype(np.int64)  # [9] greedy per codebook
+        last = lg[:, -1, :]
+        if GREEDY:
+            nxt = last.argmax(-1).astype(np.int64)  # [9] argmax per codebook
+        else:
+            nxt = np.array([_sample(last[k], rng) for k in range(K)], dtype=np.int64)
         # delay: codebook k only real once step>=k; else feed BOS/pad
         for k in range(K):
             if step < k:

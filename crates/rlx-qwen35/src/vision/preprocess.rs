@@ -136,29 +136,81 @@ pub fn load_rgb_image(path: &str) -> anyhow::Result<(Vec<u8>, usize, usize)> {
     Ok((rgb, w as usize, h as usize))
 }
 
-/// Build Qwen3-VL vision-side MRoPE `positions` input (i32, 4 × n_pos).
-pub fn build_vision_positions(img_w: usize, img_h: usize, cfg: &MmProjConfig) -> Vec<i32> {
-    let patch = cfg.patch_size;
-    let merge = cfg.n_merge;
-    let pw = img_w / patch;
-    let ph = img_h / patch;
-    let n_pos = pw * ph;
-    let mut positions = vec![0i32; n_pos * 4];
-    let mut ptr = 0usize;
+/// Build patch-grid indices in merge-block order:
+/// `[y0x0, y0x1, y1x0, y1x1, ...]`.
+pub fn build_spatial_merge_gather_idx(ph: usize, pw: usize, merge: usize) -> Vec<f32> {
+    let mut idx = Vec::with_capacity(ph * pw);
     for y in (0..ph).step_by(merge) {
         for x in (0..pw).step_by(merge) {
-            for dy in 0..2 {
-                for dx in 0..2 {
-                    positions[ptr] = (y + dy) as i32;
-                    positions[n_pos + ptr] = (x + dx) as i32;
-                    positions[2 * n_pos + ptr] = (y + dy) as i32;
-                    positions[3 * n_pos + ptr] = (x + dx) as i32;
-                    ptr += 1;
+            for dy in 0..merge {
+                for dx in 0..merge {
+                    let py = y + dy;
+                    let px = x + dx;
+                    if py < ph && px < pw {
+                        idx.push((py * pw + px) as f32);
+                    }
                 }
             }
         }
     }
+    idx
+}
+
+/// `(row, col)` patch coordinates in merge-block order.
+pub fn build_vision_position_hw(img_w: usize, img_h: usize, cfg: &MmProjConfig) -> Vec<(i32, i32)> {
+    let patch = cfg.patch_size;
+    let merge = cfg.n_merge;
+    let pw = img_w / patch;
+    let ph = img_h / patch;
+    build_spatial_merge_gather_idx(ph, pw, merge)
+        .into_iter()
+        .map(|i| {
+            let i = i as usize;
+            ((i / pw) as i32, (i % pw) as i32)
+        })
+        .collect()
+}
+
+/// Build Qwen3-VL vision-side MRoPE `positions` input (i32, 4 × n_pos).
+pub fn build_vision_positions(img_w: usize, img_h: usize, cfg: &MmProjConfig) -> Vec<i32> {
+    let position_hw = build_vision_position_hw(img_w, img_h, cfg);
+    let n_pos = position_hw.len();
+    let mut positions = vec![0i32; n_pos * 4];
+    for (i, &(y, x)) in position_hw.iter().enumerate() {
+        positions[i] = y;
+        positions[n_pos + i] = x;
+        positions[2 * n_pos + i] = y;
+        positions[3 * n_pos + i] = x;
+    }
     positions
+}
+
+/// Per-token cosine and sine tables for the Qwen vision axial RoPE.
+///
+/// The vision encoder uses half of each attention head for row and half for
+/// column frequencies, then duplicates the result for rotate-half RoPE.
+pub fn vision_rope_feeds(position_hw: &[(i32, i32)], head_dim: usize) -> (Vec<f32>, Vec<f32>) {
+    let half = head_dim / 2;
+    let axis_dim = half / 2;
+    let inv_freq: Vec<f64> = (0..axis_dim)
+        .map(|j| 1.0 / 10_000f64.powf((2 * j) as f64 / half as f64))
+        .collect();
+    let mut cos = vec![0.0; position_hw.len() * head_dim];
+    let mut sin = vec![0.0; position_hw.len() * head_dim];
+    for (t, &(y, x)) in position_hw.iter().enumerate() {
+        for j in 0..axis_dim {
+            for (pos, offset) in [(y, j), (x, axis_dim + j)] {
+                let angle = pos as f64 * inv_freq[j];
+                let (s, c) = angle.sin_cos();
+                let i = t * head_dim + offset;
+                cos[i] = c as f32;
+                cos[i + half] = c as f32;
+                sin[i] = s as f32;
+                sin[i + half] = s as f32;
+            }
+        }
+    }
+    (cos, sin)
 }
 
 #[cfg(test)]
@@ -194,5 +246,16 @@ mod tests {
         assert_eq!(th % cfg.align_size(), 0);
         assert!(tw * th >= cfg.image_min_pixels);
         assert!(tw * th <= cfg.image_max_pixels);
+    }
+
+    #[test]
+    fn spatial_merge_order_groups_two_by_two_raster_blocks() {
+        assert_eq!(
+            build_spatial_merge_gather_idx(4, 4, 2),
+            vec![
+                0.0, 1.0, 4.0, 5.0, 2.0, 3.0, 6.0, 7.0, 8.0, 9.0, 12.0, 13.0, 10.0, 11.0, 14.0,
+                15.0
+            ]
+        );
     }
 }

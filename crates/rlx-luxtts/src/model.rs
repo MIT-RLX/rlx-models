@@ -19,8 +19,6 @@
 //! spectral head (ONNX) + Rust ISTFT.
 
 use std::path::Path;
-#[cfg(feature = "onnx")]
-use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use rlx_runtime::{DType, Device};
@@ -29,9 +27,6 @@ use rlx_tiny_tts::model::TinyModel;
 
 use crate::config::{Layout, Tokens};
 use crate::dsp::{self, N_MELS, VocosFbank};
-
-#[cfg(feature = "onnx")]
-use ort::{session::Session, value::Tensor};
 
 fn f32_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
@@ -173,7 +168,7 @@ fn rms_norm(wav: &[f32], target: f32) -> (Vec<f32>, f32) {
 /// compiled per-device via [`TinyModel`] (no ONNX Runtime on the default path).
 /// The derived-length token concat+pad and the scalar length regulator that the
 /// original single `text_encoder` graph did internally are re-done in Rust
-/// (see `synthesize`). `ort` is an opt-in `onnx` feature for parity validation.
+/// (see `synthesize`).
 pub struct LuxTts {
     /// Device for CFM (`encoder_body` + `fm_decoder`).
     device: Device,
@@ -186,12 +181,6 @@ pub struct LuxTts {
     root_model: TinyModel,
     /// native runner for `vocoder_spec.onnx` (usually an `onnx/` subdir).
     voc_model: TinyModel,
-    #[cfg(feature = "onnx")]
-    text_encoder: Mutex<Session>,
-    #[cfg(feature = "onnx")]
-    fm_decoder_ort: Mutex<Session>,
-    #[cfg(feature = "onnx")]
-    vocoder_ort: Mutex<Session>,
 }
 
 impl LuxTts {
@@ -236,42 +225,14 @@ impl LuxTts {
             );
         }
 
-        #[cfg(not(feature = "onnx"))]
-        {
-            Ok(Self {
-                device,
-                voc_device,
-                tokens,
-                fbank,
-                root_model,
-                voc_model,
-            })
-        }
-        #[cfg(feature = "onnx")]
-        {
-            // ORT sessions are only for synthesize_ort parity. CoreML EP often
-            // fails on text_encoder — fall back those sessions to CPU.
-            let ort_device = device;
-            let build = |p: &Path| -> Result<(Session, String)> {
-                let b = rlx_kittentts::build_onnx_session(p, ort_device)
-                    .with_context(|| format!("session {}", p.display()))?;
-                Ok((b.session, b.ort_ep))
-            };
-            let (text_encoder, _ep) = build(&layout.text_encoder)?;
-            let (fm_decoder_ort, _) = build(&layout.fm_decoder)?;
-            let (vocoder_ort, _) = build(&layout.vocoder_spec)?;
-            Ok(Self {
-                device,
-                voc_device,
-                tokens,
-                fbank,
-                root_model,
-                voc_model,
-                text_encoder: Mutex::new(text_encoder),
-                fm_decoder_ort: Mutex::new(fm_decoder_ort),
-                vocoder_ort: Mutex::new(vocoder_ort),
-            })
-        }
+        Ok(Self {
+            device,
+            voc_device,
+            tokens,
+            fbank,
+            root_model,
+            voc_model,
+        })
     }
 
     pub fn device(&self) -> Device {
@@ -459,113 +420,6 @@ impl LuxTts {
         Ok(wav)
     }
 
-    /// ONNX-Runtime reference path (parity validation only). Mirrors the native
-    /// `synthesize` op-for-op but drives the original single `text_encoder`
-    /// graph + ort `fm_decoder`/`vocoder` sessions.
-    #[cfg(all(feature = "onnx", feature = "espeak"))]
-    pub fn synthesize_ort(
-        &self,
-        text: &str,
-        prompt_wav: &[f32],
-        prompt_text: &str,
-        opts: &InferOpts,
-    ) -> Result<Vec<f32>> {
-        let (pw, prompt_rms) = rms_norm(prompt_wav, TARGET_RMS);
-        let (mel, tp) = self.fbank.log_mel(&pw);
-        anyhow::ensure!(tp > 0, "prompt audio too short");
-        let prompt_feat = transpose_scale(&mel, N_MELS, tp, FEAT_SCALE);
-
-        let tokens = crate::tokenize::encode(text, &self.tokens, crate::tokenize::DEFAULT_LANG)?;
-        let ptokens =
-            crate::tokenize::encode(prompt_text, &self.tokens, crate::tokenize::DEFAULT_LANG)?;
-        anyhow::ensure!(!tokens.is_empty(), "text tokenized to empty");
-
-        let (tc_shape, text_condition) = {
-            let a = i64_t(&[1, tokens.len()], tokens.clone())?;
-            let b = i64_t(
-                &[1, ptokens.len().max(1)],
-                if ptokens.is_empty() {
-                    vec![0]
-                } else {
-                    ptokens.clone()
-                },
-            )?;
-            let c = i64_scalar(tp as i64)?;
-            let d = f32_scalar(opts.speed * opts.speed_mult)?;
-            let mut s = self.text_encoder.lock().expect("poisoned");
-            extract1(&s.run(ort::inputs![a, b, c, d]).context("text_encoder")?)?
-        };
-        let num_frames = tc_shape[1] as usize;
-        anyhow::ensure!(num_frames > tp, "num_frames {num_frames} <= prompt {tp}");
-
-        let mut rng = Rng::new(opts.seed);
-        let mut x: Vec<f32> = (0..num_frames * N_MELS).map(|_| rng.randn()).collect();
-        let mut speech_cond = vec![0f32; num_frames * N_MELS];
-        speech_cond[..tp * N_MELS].copy_from_slice(&prompt_feat);
-
-        let ts = time_steps(opts.num_step, opts.t_shift);
-        for step in 0..opts.num_step {
-            let (t_cur, t_next) = (ts[step], ts[step + 1]);
-            let v = {
-                let t = f32_scalar(t_cur)?;
-                let xt = f32_t(&[1, num_frames, N_MELS], x.clone())?;
-                let tc = f32_t(&[1, num_frames, N_MELS], text_condition.clone())?;
-                let sc = f32_t(&[1, num_frames, N_MELS], speech_cond.clone())?;
-                let g = f32_scalar(opts.guidance_scale)?;
-                let mut s = self.fm_decoder_ort.lock().expect("poisoned");
-                extract1(
-                    &s.run(ort::inputs![t, xt, tc, sc, g])
-                        .context("fm_decoder")?,
-                )?
-                .1
-            };
-            for i in 0..x.len() {
-                let x1 = x[i] + (1.0 - t_cur) * v[i];
-                let x0 = x[i] - t_cur * v[i];
-                x[i] = if step < opts.num_step - 1 {
-                    (1.0 - t_next) * x0 + t_next * x1
-                } else {
-                    x1
-                };
-            }
-        }
-
-        let l = num_frames - tp;
-        let generated = &x[tp * N_MELS..];
-        let mut mel_lm = vec![0f32; N_MELS * l];
-        for t in 0..l {
-            for m in 0..N_MELS {
-                mel_lm[m * l + t] = generated[t * N_MELS + m] / FEAT_SCALE;
-            }
-        }
-
-        let (real, imag) = {
-            let m = f32_t(&[1, N_MELS, l], mel_lm)?;
-            let mut s = self.vocoder_ort.lock().expect("poisoned");
-            let out = s.run(ort::inputs![m]).context("vocoder")?;
-            (
-                out[0]
-                    .try_extract_tensor::<f32>()
-                    .context("real")?
-                    .1
-                    .to_vec(),
-                out[1]
-                    .try_extract_tensor::<f32>()
-                    .context("imag")?
-                    .1
-                    .to_vec(),
-            )
-        };
-        let mut wav = dsp::istft(&real, &imag, l);
-        if prompt_rms < TARGET_RMS {
-            let g = prompt_rms / TARGET_RMS;
-            for sm in &mut wav {
-                *sm *= g;
-            }
-        }
-        Ok(wav)
-    }
-
     /// Write mono 16-bit PCM WAV at 24 kHz.
     pub fn write_wav(&self, audio: &[f32], path: &Path) -> Result<()> {
         let spec = hound::WavSpec {
@@ -595,30 +449,4 @@ fn transpose_scale(src: &[f32], rows: usize, cols: usize, scale: f32) -> Vec<f32
         }
     }
     out
-}
-
-#[cfg(feature = "onnx")]
-fn f32_t(shape: &[usize], data: Vec<f32>) -> Result<Tensor<f32>> {
-    Tensor::from_array((shape.to_vec(), data)).context("f32 tensor")
-}
-#[cfg(feature = "onnx")]
-fn i64_t(shape: &[usize], data: Vec<i64>) -> Result<Tensor<i64>> {
-    Tensor::from_array((shape.to_vec(), data)).context("i64 tensor")
-}
-#[cfg(feature = "onnx")]
-fn f32_scalar(v: f32) -> Result<Tensor<f32>> {
-    Tensor::from_array((Vec::<usize>::new(), vec![v])).context("f32 scalar")
-}
-#[cfg(feature = "onnx")]
-fn i64_scalar(v: i64) -> Result<Tensor<i64>> {
-    Tensor::from_array((Vec::<usize>::new(), vec![v])).context("i64 scalar")
-}
-
-/// Extract the first output as `(shape, data)`.
-#[cfg(feature = "onnx")]
-fn extract1(outputs: &ort::session::SessionOutputs) -> Result<(Vec<i64>, Vec<f32>)> {
-    let (shape, data) = outputs[0]
-        .try_extract_tensor::<f32>()
-        .context("extract output")?;
-    Ok((shape.to_vec(), data.to_vec()))
 }

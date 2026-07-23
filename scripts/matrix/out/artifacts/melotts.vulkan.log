@@ -1,6 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-melotts --data weights/tts/melotts --text The quick brown fox jumps over the lazy dog near the river bank. --device vulkan --out /home/user/rlx-models/scripts/matrix/out/artifacts/melotts.vulkan.wav
-
---- stdout ---
-Wrote 184320 samples (4.18s @ 44100 Hz, peak=0.438) to /home/user/rlx-models/scripts/matrix/out/artifacts/melotts.vulkan.wav [device=Vulkan]
-
---- stderr ---

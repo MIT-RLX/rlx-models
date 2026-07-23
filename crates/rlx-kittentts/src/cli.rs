@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! CLI for IPA → WAV synthesis (ONNX Runtime or native RLX graph).
+//! CLI for IPA → WAV synthesis (native RLX graph).
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -234,7 +234,7 @@ fn parse_cli(args: &[String]) -> Result<Cli> {
     let mut weights_dir: Option<PathBuf> = None;
     let mut ipa: Option<String> = None;
     let mut text: Option<String> = None;
-    let mut lang = String::from("en");
+    let mut lang = String::from(crate::phonemize::DEFAULT_LANG);
     let mut voice = String::from("Jasper");
     let mut speed = 1.0f32;
     let mut style_idx = None;
@@ -458,21 +458,11 @@ fn load_tts(
         }
     }
 
-    #[cfg(not(feature = "onnx"))]
-    {
-        let _ = (layout, device);
-        bail!("ONNX backend unavailable; rebuild with `onnx` feature or pass --native");
-    }
-    #[cfg(feature = "onnx")]
-    {
-        KittenTTS::load_on(
-            &layout.onnx,
-            &layout.voices,
-            layout.config.speed_priors.clone(),
-            layout.config.voice_aliases.clone(),
-            device,
-        )
-    }
+    let _ = (layout, device, sequence_length, max_waveform);
+    bail!(
+        "no native weights found for this checkpoint; rlx-kittentts requires the native RLX \
+         backend (place model.safetensors / rlx_bundle and build with `--features native`)"
+    )
 }
 
 fn print_help() {
@@ -490,7 +480,7 @@ fn print_help() {
          \n\
          Phonemization (feature espeak):\n\
            --text STR   plain text → espeak-ng → KittenTTS\n\
-           --lang TAG   espeak voice (default en)\n\
+           --lang TAG   espeak voice (default en-us)\n\
          \n\
          Paths (auto if omitted):\n\
            --model-dir DIR     RLX_KITTENTTS_DIR / .cache/kittentts-mini-0.8 / HF cache\n\

@@ -59,6 +59,13 @@ pub struct Qwen35Config {
     pub rope_theta: f64,
     pub rope_dim_count: usize,
     pub rope_dim_sections: Vec<usize>,
+    /// HF `rope_parameters.mrope_interleaved` — Qwen3.5 / Qwen3-VL default.
+    /// When true, rotary pairs cycle THWTHW… instead of contiguous TTT…HHH…WWW.
+    pub mrope_interleaved: bool,
+    /// HF Qwen3.5 RMSNorm is `(1 + weight) * rms(x)` (zero-init weight).
+    /// Bake `+1` into gamma at graph build when true. GGUF converters
+    /// (llama.cpp) already add 1 except `linear_attn.norm` — leave false.
+    pub rms_norm_offset: bool,
     /// Some Qwen3.5 layers do full attention every N blocks
     /// (interspersed with the Mamba-style blocks). Read but not yet
     /// acted on.
@@ -175,6 +182,8 @@ impl Qwen35Config {
             rope_theta: f32k("rope.freq_base").unwrap_or(10_000_000.0) as f64,
             rope_dim_count: u32k_opt("rope.dimension_count").unwrap_or(64) as usize,
             rope_dim_sections: arr_u32k("rope.dimension_sections"),
+            mrope_interleaved: false,
+            rms_norm_offset: false,
             full_attention_interval: u32k_opt("full_attention_interval").unwrap_or(0) as usize,
             ssm_conv_kernel: u32k_opt("ssm.conv_kernel").unwrap_or(4) as usize,
             ssm_group_count: u32k_opt("ssm.group_count").unwrap_or(0) as usize,
@@ -246,14 +255,37 @@ impl Qwen35Config {
             std::fs::read_to_string(path).map_err(|e| anyhow!("qwen35: read {path:?}: {e}"))?;
         let v: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| anyhow!("qwen35: parse {path:?}: {e}"))?;
-        let obj = v
+        Self::from_hf_config_value(&v, path)
+    }
+
+    /// Parse HF config JSON (flat or nested `text_config` as in Fara / Qwen3.5-VL).
+    pub fn from_hf_config_value(v: &serde_json::Value, path: &Path) -> Result<Self> {
+        let top = v
             .as_object()
             .ok_or_else(|| anyhow!("qwen35: {path:?} is not a JSON object"))?;
+        // Multimodal checkpoints nest LM hyperparams under `text_config`.
+        let text = top
+            .get("text_config")
+            .and_then(|t| t.as_object())
+            .unwrap_or(top);
 
-        let u =
-            |k: &str| -> Option<usize> { obj.get(k).and_then(|v| v.as_u64()).map(|n| n as usize) };
-        let f = |k: &str| -> Option<f64> { obj.get(k).and_then(|v| v.as_f64()) };
-        let b = |k: &str| -> Option<bool> { obj.get(k).and_then(|v| v.as_bool()) };
+        let u = |k: &str| -> Option<usize> {
+            text.get(k)
+                .or_else(|| top.get(k))
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+        };
+        let f = |k: &str| -> Option<f64> {
+            text.get(k)
+                .or_else(|| top.get(k))
+                .and_then(|v| v.as_f64())
+        };
+        let b = |k: &str| -> Option<bool> {
+            text.get(k)
+                .or_else(|| top.get(k))
+                .and_then(|v| v.as_bool())
+        };
+        let tie_top = top.get("tie_word_embeddings").and_then(|v| v.as_bool());
 
         let hidden_size =
             u("hidden_size").ok_or_else(|| anyhow!("qwen35: missing hidden_size in {path:?}"))?;
@@ -261,14 +293,73 @@ impl Qwen35Config {
             .ok_or_else(|| anyhow!("qwen35: missing intermediate_size in {path:?}"))?;
         let num_hidden_layers = u("num_hidden_layers")
             .ok_or_else(|| anyhow!("qwen35: missing num_hidden_layers in {path:?}"))?;
+        // Multimodal trunks often ship MTP blocks that must not run as decoder layers.
+        let nextn_predict_layers = u("mtp_num_hidden_layers")
+            .or_else(|| u("nextn_predict_layers"))
+            .unwrap_or(0);
+        // Prefer trunk-only depth when present (Fara / Qwen3.5-VL).
+        let num_hidden_layers = u("num_hidden_layers")
+            .map(|n| n.saturating_sub(nextn_predict_layers))
+            .unwrap_or(num_hidden_layers);
         let num_attention_heads = u("num_attention_heads")
             .ok_or_else(|| anyhow!("qwen35: missing num_attention_heads in {path:?}"))?;
         let num_key_value_heads = u("num_key_value_heads").unwrap_or(num_attention_heads);
-        let head_dim = u("head_dim").unwrap_or(hidden_size / num_attention_heads);
-        let nextn_predict_layers = u("nextn_predict_layers").unwrap_or(0);
-        let is_moe = obj.contains_key("num_experts")
-            || obj.contains_key("num_experts_per_tok")
-            || obj.contains_key("expert_count");
+        let head_dim = u("head_dim").unwrap_or(hidden_size / num_attention_heads.max(1));
+
+        let rope_obj = text
+            .get("rope_parameters")
+            .or_else(|| text.get("rope_scaling"))
+            .or_else(|| top.get("rope_parameters"))
+            .or_else(|| top.get("rope_scaling"));
+        let rope_dim_sections = rope_obj
+            .and_then(|s| s.get("mrope_section"))
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_u64().map(|n| n as usize))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mrope_interleaved = rope_obj
+            .and_then(|s| s.get("mrope_interleaved"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let partial_rotary = rope_obj
+            .and_then(|s| s.get("partial_rotary_factor"))
+            .and_then(|v| v.as_f64())
+            .or_else(|| f("partial_rotary_factor"))
+            .unwrap_or(1.0);
+        let rope_dim_count = u("rope_dim_count").unwrap_or_else(|| {
+            if partial_rotary > 0.0 && partial_rotary < 1.0 {
+                ((head_dim as f64) * partial_rotary).round() as usize
+            } else {
+                head_dim
+            }
+        });
+        let rope_theta = rope_obj
+            .and_then(|s| s.get("rope_theta"))
+            .and_then(|v| v.as_f64())
+            .or_else(|| f("rope_theta"))
+            .unwrap_or(10_000_000.0);
+
+        let linear_key_heads = u("linear_num_key_heads");
+        let linear_key_dim = u("linear_key_head_dim");
+        let linear_value_heads = u("linear_num_value_heads");
+        let linear_value_dim = u("linear_value_head_dim");
+        let ssm_conv_kernel = u("linear_conv_kernel_dim").or_else(|| u("ssm_conv_kernel")).unwrap_or(4);
+        let ssm_group_count = linear_key_heads.unwrap_or(0);
+        let ssm_state_size = linear_key_dim.unwrap_or(0);
+        let ssm_inner_size = u("ssm_inner_size").unwrap_or_else(|| {
+            match (linear_value_heads, linear_value_dim) {
+                (Some(nh), Some(dh)) => nh.saturating_mul(dh),
+                _ => 0,
+            }
+        });
+        // Must be value heads (not key heads) — matches GDN A_log / dt_bias length.
+        let ssm_time_step_rank = u("ssm_time_step_rank")
+            .or(linear_value_heads)
+            .unwrap_or(0);
+
         let num_experts = u("num_experts").or_else(|| u("expert_count")).unwrap_or(0);
         let num_experts_used = u("num_experts_per_tok")
             .or_else(|| u("expert_used_count"))
@@ -279,41 +370,31 @@ impl Qwen35Config {
         let shared_expert_ffn_size = u("shared_expert_intermediate_size")
             .or_else(|| u("expert_shared_feed_forward_length"))
             .unwrap_or(0);
-        let rope_dim_sections = obj
-            .get("rope_scaling")
-            .and_then(|s| s.get("mrope_section"))
-            .and_then(|a| a.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_u64().map(|n| n as usize))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        let _ = is_moe; // num_experts already captures the gate.
 
         Ok(Self {
-            vocab_size: u("vocab_size").unwrap_or(151_936),
+            vocab_size: u("vocab_size").unwrap_or(248_320),
             hidden_size,
             intermediate_size,
             num_hidden_layers,
-            nextn_predict_layers,
+            nextn_predict_layers: 0, // trunk-only for multimodal HF dirs
             num_attention_heads,
             num_key_value_heads,
             key_length: head_dim,
             value_length: head_dim,
-            max_position_embeddings: u("max_position_embeddings").unwrap_or(40_960),
+            max_position_embeddings: u("max_position_embeddings").unwrap_or(262_144),
             rms_norm_eps: f("rms_norm_eps").unwrap_or(1e-6),
-            rope_theta: f("rope_theta").unwrap_or(10_000_000.0),
-            rope_dim_count: u("rope_dim_count").unwrap_or(head_dim),
+            rope_theta,
+            rope_dim_count,
             rope_dim_sections,
+            mrope_interleaved,
+            rms_norm_offset: true,
             full_attention_interval: u("full_attention_interval").unwrap_or(0),
-            ssm_conv_kernel: u("ssm_conv_kernel").unwrap_or(4),
-            ssm_group_count: u("ssm_group_count").unwrap_or(0),
-            ssm_inner_size: u("ssm_inner_size").unwrap_or(0),
-            ssm_state_size: u("ssm_state_size").unwrap_or(0),
-            ssm_time_step_rank: u("ssm_time_step_rank").unwrap_or(0),
-            tie_word_embeddings: b("tie_word_embeddings").unwrap_or(true),
+            ssm_conv_kernel,
+            ssm_group_count,
+            ssm_inner_size,
+            ssm_state_size,
+            ssm_time_step_rank,
+            tie_word_embeddings: tie_top.or_else(|| b("tie_word_embeddings")).unwrap_or(true),
             num_experts,
             num_experts_used,
             expert_ffn_size,

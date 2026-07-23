@@ -12,6 +12,8 @@ mod luxtts;
 mod moss_nano;
 #[cfg(feature = "matrix-onnx")]
 mod piper;
+#[cfg(feature = "rlx-tts")]
+mod rlx_tts;
 #[cfg(feature = "matrix-onnx")]
 mod soprano;
 #[cfg(feature = "matrix-onnx")]
@@ -48,6 +50,10 @@ use crate::adapter::{AdapterFactory, AdapterMeta, TtsAdapter};
 
 pub fn catalog() -> Vec<AdapterMeta> {
     let mut v = vec![fake::meta()];
+    #[cfg(feature = "rlx-tts")]
+    {
+        v.push(rlx_tts::meta());
+    }
     #[cfg(feature = "matrix-onnx")]
     {
         v.push(chatterbox::meta());
@@ -82,6 +88,8 @@ pub fn catalog() -> Vec<AdapterMeta> {
 pub fn factory_for(id: &str) -> Option<AdapterFactory> {
     match id {
         "fake" => Some(fake::make),
+        #[cfg(feature = "rlx-tts")]
+        "rlx-tts" => Some(rlx_tts::make),
         #[cfg(feature = "matrix-onnx")]
         "chatterbox" => Some(chatterbox::make),
         #[cfg(feature = "matrix-onnx")]

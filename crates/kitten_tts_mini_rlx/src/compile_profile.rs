@@ -192,6 +192,11 @@ const TYPICAL_MAX_DURATION_UNITS_PER_TOKEN: usize = 8;
 const COMPILE_WAVEFORM_HEADROOM: usize = 12_000;
 const COMPILE_WAVEFORM_FLOOR: usize = 24_000;
 
+/// Re-export discrete wave cap (see [`crate::device_policy`]).
+pub use crate::device_policy::{
+    WGPU_WAVEFORM_CAP as WGPU_ACT_SAFE_WAVEFORM_CAP, clamp_waveform_for_device,
+};
+
 /// Per-bucket waveform compile cap from runtime token width, bounded by [`engine_cap`].
 pub fn compile_waveform_cap(runtime_tokens: usize, engine_cap: usize) -> usize {
     let est = runtime_tokens
@@ -215,11 +220,26 @@ pub fn seq_compile_cache_capacity() -> usize {
     }
 }
 
+/// Effective alignment frames/token — see [`crate::device_policy::max_frames_per_token`].
+#[inline]
+pub fn max_frames_per_token() -> usize {
+    crate::device_policy::max_frames_per_token()
+}
+
 /// Device-specific defaults before compile cache construction.
 pub fn apply_device_runtime_defaults(device: rlx_runtime::Device) {
+    // Metal's dual-output parity/full graph still zeros the wave after the
+    // f32-uniform duration-carry fix; split production graphs are the
+    // validated on-device path. Prefer production when the user did not
+    // pin `KITTEN_RLX_INFER` explicitly.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if device == rlx_runtime::Device::Metal && std::env::var("KITTEN_RLX_INFER").is_err() {
+        crate::set_env_var("KITTEN_RLX_INFER", "production");
+    }
     if infer_mode() == InferMode::Production && std::env::var("KITTEN_RLX_SINGLE_PASS").is_err() {
         crate::set_env_var("KITTEN_RLX_SINGLE_PASS", "1");
     }
+    crate::device_policy::apply_defaults(device);
     // Do not set KITTEN_RLX_FULL_GRAPH here — that forces the largest dual-output compile.
     if infer_mode() == InferMode::Production || infer_mode() == InferMode::Parity {
         if std::env::var("KITTEN_RLX_QMATMUL_PARALLEL").is_err() {
@@ -301,12 +321,17 @@ pub fn arena_reuse_allowed_for_kitten() -> bool {
     infer_mode() == InferMode::Production
 }
 
-/// Graph compile slot count: runtime token width + duration epilogue headroom (default).
+/// Graph compile slot count.
+///
+/// Default is the **exact** runtime token width. Adding duration headroom without a pad
+/// attention mask lets BERT attend to zero pads and inflates duration token-0 (~19 vs ORT ~3).
+/// Opt into headroom with `KITTEN_RLX_COMPILE_HEADROOM=1` for arena experiments.
 pub fn compile_slot_length(token_len: usize) -> usize {
-    if env_flag("KITTEN_RLX_COMPILE_EXACT") {
-        return token_len.max(1);
+    let n = token_len.max(1);
+    if env_flag("KITTEN_RLX_COMPILE_HEADROOM") && !env_flag("KITTEN_RLX_COMPILE_EXACT") {
+        return crate::bundle_compile::compile_sequence_length(n);
     }
-    crate::bundle_compile::compile_sequence_length(token_len.max(1))
+    n
 }
 
 /// Trim HIR outputs for a compile profile (in-place).

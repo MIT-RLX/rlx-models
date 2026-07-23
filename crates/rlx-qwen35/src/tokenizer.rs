@@ -24,6 +24,12 @@ pub fn resolve_tokenizer_path(weights: &Path, explicit: Option<&Path>) -> Option
     if let Some(p) = explicit {
         return Some(p.to_path_buf());
     }
+    if weights.is_dir() {
+        let in_dir = weights.join("tokenizer.json");
+        if in_dir.is_file() {
+            return Some(in_dir);
+        }
+    }
     let sibling = weights.with_extension("tokenizer.json");
     if sibling.is_file() {
         return Some(sibling);

@@ -71,7 +71,7 @@ if name not in existing:
 onnx.save(model, '/tmp/kitten_one.onnx')
 voices = np.load({voices:?})
 style = voices['expr-voice-2-m'][6:7].astype(np.float32)
-ids = np.array([[0,50,83,156,54,57,135,0]], dtype=np.int64)
+ids = np.array([[0,50,83,156,54,57,135,10,0]], dtype=np.int64)
 sess = ort.InferenceSession('/tmp/kitten_one.onnx', providers=['CPUExecutionProvider'])
 outs = dict(zip([o.name for o in sess.get_outputs()], sess.run(None, {{'input_ids': ids, 'style': style, 'speed': np.array([1.0], np.float32)}})))
 a = np.asarray(outs[name]).astype(np.float32).reshape(-1)
@@ -135,10 +135,13 @@ fn main() -> anyhow::Result<()> {
     }
 
     let bundle_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("weights/rlx_bundle");
-    let seq = 8usize;
+    let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 10, 0];
+    // Match production slot length (not next_power_of_two) so attention masks align with ORT.
+    let seq = kitten_tts_mini_rlx::compile_profile::compile_slot_length(ids.len());
+    let max_wave = 55_200usize;
     let graph_opts = GraphOptions {
         sequence_length: seq,
-        max_waveform_samples: seq.saturating_mul(600).saturating_add(12_000),
+        max_waveform_samples: max_wave,
     };
     let import = import_from_bundle_cached(&bundle_dir, &graph_opts)?;
 
@@ -155,11 +158,13 @@ fn main() -> anyhow::Result<()> {
     let idx = resolve_watch_index(&target)
         .ok_or_else(|| anyhow::anyhow!("{target} not in probe_watch::WATCH; use --list"))?;
     let (hir_name, ort_name) = WATCH[idx];
+    // Prefer the Custom KittenInstanceNormActive (or other non-Reshape) when names collide.
     let node = import
         .hir
         .nodes()
         .iter()
-        .find(|n| n.name.as_deref() == Some(hir_name))
+        .filter(|n| n.name.as_deref() == Some(hir_name))
+        .max_by_key(|n| n.shape.dims().iter().map(|d| d.unwrap_static()).product::<usize>())
         .ok_or_else(|| anyhow::anyhow!("HIR node missing: {hir_name}"))?;
 
     let probes: Vec<_> = WATCH
@@ -169,12 +174,12 @@ fn main() -> anyhow::Result<()> {
                 .hir
                 .nodes()
                 .iter()
-                .find(|n| n.name.as_deref() == Some(*hir))
+                .filter(|n| n.name.as_deref() == Some(*hir))
+                .max_by_key(|n| n.shape.dims().iter().map(|d| d.unwrap_static()).product::<usize>())
                 .map(|n| (n.id, *hir))
         })
         .collect();
 
-    let ids: Vec<i64> = vec![0, 50, 83, 156, 54, 57, 135, 0];
     let style = load_style_row();
     kitten_tts_mini_rlx::opts::set_compile_sequence_length(seq);
 

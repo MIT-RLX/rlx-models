@@ -1,7 +1,0 @@
-$ /Users/Shared/rlx-models/target/release/rlx-tiny-tts --data weights/tiny-tts-rlx --text The quick brown fox jumps over the lazy dog near the river bank. --device coreml --out /Users/Shared/rlx-models/scripts/matrix/out/artifacts/tiny-tts.coreml.wav
-
---- stdout ---
-[tiny-tts] device=Ane "The quick brown fox jumps over the lazy dog near the river bank." → /Users/Shared/rlx-models/scripts/matrix/out/artifacts/tiny-tts.coreml.wav  (4.18s audio @ 44100 Hz, peak=0.438, 2.79s synth, 1.5× RT)
-
---- stderr ---
-[tiny-tts] CoreML: set RLX_COREML_UNITS=gpu (pins f16 TTS graphs off Neural-Engine BNNS; fp32 already defaults to CPU+GPU in rlx-coreml)

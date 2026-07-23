@@ -1,6 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-luxtts --data weights/tts/luxtts --prompt-wav assets/jfk/jfk_voice_clone.wav --prompt-text And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. --text The quick brown fox jumps over the lazy dog near the river bank. --device gpu --out /home/user/rlx-models/scripts/matrix/out/artifacts/luxtts.wgpu.wav
-
---- stdout ---
-
---- stderr ---
-error: load from weights/tts/luxtts: encoder_body.onnx not found under /home/user/rlx-models/weights/tts/luxtts — generate it with `python crates/rlx-luxtts/scripts/export_encoder_body.py /home/user/rlx-models/weights/tts/luxtts/text_encoder.onnx /home/user/rlx-models/weights/tts/luxtts/encoder_body.onnx`

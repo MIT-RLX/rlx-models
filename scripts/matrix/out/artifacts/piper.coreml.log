@@ -1,7 +1,0 @@
-$ /Users/Shared/rlx-models/target/release/rlx-piper --data weights/tts/piper --text The quick brown fox jumps over the lazy dog near the river bank. --device coreml --out /Users/Shared/rlx-models/scripts/matrix/out/artifacts/piper.coreml.wav
-
---- stdout ---
-Wrote 71424 samples (3.24s @ 22050 Hz) to /Users/Shared/rlx-models/scripts/matrix/out/artifacts/piper.coreml.wav [backend=native, device=Ane]
-
---- stderr ---
-[tiny-tts] CoreML: set RLX_COREML_UNITS=gpu (pins f16 TTS graphs off Neural-Engine BNNS; fp32 already defaults to CPU+GPU in rlx-coreml)

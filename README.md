@@ -83,10 +83,14 @@ rlx-models/
 | `rlx-sam-ir` | shared mask-decoder IR |
 | `rlx-qwen3` | Qwen3 LM |
 | `rlx-qwen35` | Qwen3.5 / 3.6 |
+| [`rlx-fara`](crates/rlx-fara/README.md) | Microsoft Fara1.5 CUA ([Fara1.5-4B](https://huggingface.co/microsoft/Fara1.5-4B) / [9B](https://huggingface.co/microsoft/Fara1.5-9B); Qwen3.5 multimodal) |
 | `rlx-llama32` | LLaMA 3.2 |
 | `rlx-minicpm5` | MiniCPM5 (Llama-shaped; [openbmb/MiniCPM5-1B](https://huggingface.co/openbmb/MiniCPM5-1B)) |
+| [`rlx-nanbeige`](crates/rlx-nanbeige/README.md) | Nanbeige4.2 Looped Transformer ([Nanbeige/Nanbeige4.2-3B](https://huggingface.co/Nanbeige/Nanbeige4.2-3B)) |
 | `rlx-tinyllama` | TinyLlama-1.1B (Llama-shaped; [TinyLlama/TinyLlama-1.1B-Chat-v1.0](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)) |
 | [`rlx-inkling`](crates/rlx-inkling/README.md) | Inkling multimodal MoE ([thinkingmachines/Inkling](https://huggingface.co/thinkingmachines/Inkling)); config + weight map + synth text forward |
+| [`rlx-laguna`](crates/rlx-laguna/README.md) | Laguna MoE ([poolside/Laguna-S-2.1](https://huggingface.co/poolside/Laguna-S-2.1) / XS / [GGUF](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF)); packed mmap generate (KV cache, optional Metal/MLX); `--tokenizer-dir` / OpenAI via [`rlx-openai`](crates/rlx-openai/README.md) |
+| [`rlx-openai`](crates/rlx-openai/README.md) | Central OpenAI HTTP server (`RegistryBackend`); `--engine qwen3\|laguna\|qwen35\|…` |
 | `rlx-gemma` | Gemma / Gemma 2 |
 | `rlx-llada2` | LLaDA2 + TIDE offload |
 | `rlx-flux2` | FLUX.2 |
@@ -94,6 +98,7 @@ rlx-models/
 | `rlx-wav2vec2-bert` | Wav2Vec2-BERT |
 | `rlx-wav2vec2-asr` | Wav2Vec2 CTC forced alignment (WhisperX-style word timestamps) |
 | `rlx-whisper` | OpenAI Whisper ASR (segment + word timestamps, optional diarization) |
+| [`rlx-conformer-ctc`](crates/rlx-conformer-ctc/README.md) | NVIDIA NeMo Conformer-CTC (`stt_en_conformer_ctc_small`, native `.nemo`) |
 | `rlx-diarize` | Speaker diarization (embedding + clustering) |
 | [`rlx-fft`](crates/rlx-fft/README.md) | Learned butterfly FFT, Welch PSD, fast top-K spectral peaks |
 | [`rlx-vad`](crates/rlx-vad/README.md) | Earshot + Silero VAD (embedded weights, 16 kHz) |
@@ -101,7 +106,11 @@ rlx-models/
 | `rlx-voxtral-tts` | Voxtral-4B-TTS inference (codec + Ministral LM) |
 | `rlx-voxtral-tts-train` | Native RLX voice-clone training (encoder + LoRA) |
 | [`rlx-qwen3-tts`](crates/rlx-qwen3-tts/README.md) | Qwen3-TTS — voice clone + CustomVoice TTS, progressive streaming, duplex voice chat (Whisper + Qwen3 LM). [JFK samples + roundtrip audio](crates/rlx-qwen3-tts/examples/audio/) ship in the crate. |
+| [`rlx-tts`](crates/rlx-tts/README.md) | RLX FastSpeech2 + WaveRNN TTS (local `rlx-tts.gguf`) |
 | `rlx-locateanything` | NVIDIA LocateAnything-3B VLM (grounding) |
+| [`rlx-unlimited-ocr`](crates/rlx-unlimited-ocr/README.md) | Baidu Unlimited-OCR VLM (SAM+CLIP DeepEncoder + MoE LM) |
+| [`rlx-ppocrv6`](crates/rlx-ppocrv6/README.md) | PP-OCRv6 tiny/small OCR — native HIR + safetensors (no runtime ONNX) |
+| [`rlx-asr`](crates/rlx-asr/README.md) | RLX streaming Conformer ASR (`weights/asr/model.gguf`); facade `streaming-asr` |
 | `rlx-cli` | shared CLI helpers + `rlx-inspect` |
 | `rlx-models` | facade (re-exports) + optional `rlx-run` multiplexer |
 
@@ -139,6 +148,11 @@ just qwen3-metal -- --weights model.gguf --device metal --prompt-ids 1,2,3
 just fetch-minicpm5
 just minicpm5 -- --weights /tmp/rlx-weights/MiniCPM5-1B/model-00000-of-00001.safetensors --device cpu --prompt-ids 1,42 --max-tokens 16
 just minicpm5-chat "Hello from MiniCPM5"
+just fetch-nanbeige
+just nanbeige -- --weights /tmp/rlx-weights/Nanbeige4.2-3B --device cpu --prompt-ids 1,42 --max-tokens 16
+just features=all-backends test-nanbeige-backends
+just nanbeige-backend-matrix
+just features=all-backends bench-nanbeige-backends
 ```
 
 Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md) and [MiniCPM5](#minicpm5). GPU backends: `just features=all-backends qwen3 -- --device metal`, `just qwen35-all-backends -- …`, or per-crate `qwen3-all-backends` / `qwen35-all-backends`.
@@ -149,6 +163,7 @@ Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.m
 |--------|-------|---------|
 | `rlx-qwen3` | `rlx-qwen3` | `cargo run -p rlx-qwen3 --bin rlx-qwen3 --release -- --weights model.gguf --prompt-ids 1,2,3` |
 | `rlx-qwen35` | `rlx-qwen35` | `cargo run -p rlx-qwen35 --bin rlx-qwen35 --release -- …` |
+| `rlx-fara` | `rlx-fara` | `just fetch-fara-4b && just fara --model-dir .cache/fara/4b --image shot.png --goal "…" --device cpu` |
 | `rlx-llama32` | `rlx-llama32` | `cargo run -p rlx-llama32 --bin rlx-llama32 --release -- …` |
 | `rlx-minicpm5` | `rlx-minicpm5` | `cargo run -p rlx-minicpm5 --features tokenizer --release -- --weights …/model.safetensors --prompt-ids 1,42` |
 | `rlx-tinyllama` | `rlx-tinyllama` | `cargo run -p rlx-tinyllama --features tokenizer --release -- --weights …/model.safetensors --prompt-ids 1,42` |
@@ -295,6 +310,7 @@ Nine inference crates cover lightweight edge models through multi‑billion‑pa
 | [Qwen3-TTS](crates/rlx-qwen3-tts/README.md) | `rlx-qwen3-tts` | 0.6B | 24 kHz | HF safetensors ([Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base), [CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice)) | ECAPA clone + preset speakers | progressive + batched PCM | `just qwen3-tts`, `jfk_voice_clone` | production — duplex voice chat, HF parity tests |
 | [Voxtral-4B-TTS](docker/voxtral-tts/README.md) | `rlx-voxtral-tts` | 4B | 24 kHz | HF safetensors ([Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603)) | preset voices + reference clone (train encoder) | — | `just voxtral-tts` | production — native RLX codec + compiled LM |
 | [KittenTTS mini](crates/rlx-kittentts/README.md) | `rlx-kittentts` | ~15M | 24 kHz | native [`kitten_tts_mini_rlx`](crates/kitten_tts_mini_rlx/README.md) bundle or optional ONNX ([KittenML/kitten-tts-mini-0.8](https://huggingface.co/KittenML/kitten-tts-mini-0.8)) | named voices (Jasper, …); IPA or `--features espeak` text | — | `just kittentts`, `just fetch-kittentts` | production — native RLX graph default; optional ORT (`--features onnx`) |
+| [RLX TTS](crates/rlx-tts/README.md) | `rlx-tts` | FastSpeech2 + WaveRNN h448 | 24 kHz | local `weights/tts/rlx-tts/rlx-tts.gguf` | product path | — | `just tts-demo` / `just export-rlx-tts-gguf` | production — packed GGUF + native RLX |
 | [Orpheus](crates/rlx-orpheus/README.md) | `rlx-orpheus` | 3B | 24 kHz | GGUF LM + SNAC safetensors | 8 built-in + zero-shot clone (pretrained GGUF) | ~2k-sample PCM chunks | `just orpheus`, `just orpheus-demo` | production — Metal LM + eager or CoreML SNAC |
 | [NeuTTS](crates/rlx-neutts/) | `rlx-neutts` | Nano / Air | 24 kHz | llama-tagged GGUF + NeuCodec safetensors | reference-audio clone | — | library API (`NeuTTS::load_with_decoder_on`) | production backbone + eager NeuCodec; no standalone CLI yet |
 | [Kyutai TTS 1.6B](crates/rlx-kyutai-tts/README.md) | `rlx-kyutai-tts` | 1.6B | 24 kHz | HF safetensors ([tts-1.6b-en_fr](https://huggingface.co/kyutai/tts-1.6b-en_fr)) | `speaker_wavs` cross-attn conditioning | planned | `just kyutai-tts` | production — DSM generate + Mimi; DepFormer eager |
@@ -331,7 +347,7 @@ Legend: ✅ supported · ⚠️ partial (host fallback, ORT EP, or opt-in featur
 |---|---|---|---|---|---|---|---|---|
 | Qwen3-TTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Progressive speech decode uses CPU on Metal/MLX (GPU prefix-length mismatch) |
 | Voxtral-4B-TTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device` on all backends; compiled LM path |
-| KittenTTS (native, default) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | `kitten_tts_mini_rlx` graph; auto-selected when `model.safetensors` present |
+| KittenTTS (native, default) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `kitten_tts_mini_rlx`; discrete wgpu/Vulkan wave-capped — [NATIVE.md](crates/rlx-kittentts/NATIVE.md) |
 | KittenTTS (ONNX optional) | ✅ | ⚠️ | ❌ | ⚠️ | ⚠️ | ⚠️ | ❌ | `--features onnx`; ONNX Runtime execution providers |
 | Orpheus LM | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | ⚠️ | wgpu/Vulkan: CPU GGUF prefill+decode; MLX opt-in (`ORPHEUS_MLX_KV=1`) |
 | Orpheus SNAC | ✅ | — | — | — | — | — | — | Eager CPU default; CoreML ANE with `--features coreml` |
@@ -771,6 +787,30 @@ just locateanything -- --model-dir $RLX_LOCATEANYTHING_DIR \
 
 Weights are HF safetensors only (770 tensors: vision / projector / `language_model.*`).
 
+## Unlimited-OCR
+
+[baidu/Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) — SAM-ViT-B + CLIP-L/14 deep encoder, linear projector, DeepSeek-V2 MoE LM with ring-window decode. Crate: `rlx-unlimited-ocr`; runbook: [crates/rlx-unlimited-ocr/README.md](crates/rlx-unlimited-ocr/README.md). Vision stays host-f32; MoE LM compiles on RLX backends. Host pack defaults to **`--lm-precision auto`** (F32→F16→Q8→Q4 by RAM); Q8/Q4 stay packed in IR.
+
+```bash
+just fetch-unlimited-ocr
+# optional: export RLX_UNLIMITED_OCR_DIR=/path/to/snapshot
+
+just unlimited-ocr -- --image page.png --device auto
+just unlimited-ocr -- --image page.png --mode base --lm-precision q8_0
+just unlimited-ocr -- --images page1.png,page2.png
+just unlimited-ocr -- --pdf document.pdf --max-tokens 8192
+```
+
+| Command | What |
+|---------|------|
+| `just fetch-unlimited-ocr` | Download checkpoint into Hugging Face cache |
+| `just unlimited-ocr -- …` | Single / multi / PDF OCR CLI |
+| `just unlimited-ocr-metal -- …` | Same with Metal feature build |
+| `just test-unlimited-ocr-backends` | Tiny MoE compile+run (incl. Q8/Q4 packed IR) |
+| `just test-unlimited-ocr-token-parity` | Full-checkpoint greedy tokens vs CPU (env-gated) |
+| `just test-unlimited-ocr-parity` | Checkpoint inventory + tokenizer + greedy e2e (HF Python optional) |
+| `just bench-unlimited-ocr-lm-precision` | Host MiB / latency / accuracy vs F32 |
+
 ## Qwen3-TTS
 
 [Qwen3-TTS-12Hz-0.6B](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base) — native Rust voice clone and CustomVoice synthesis in `rlx-qwen3-tts`. Full runbook: [crates/rlx-qwen3-tts/README.md](crates/rlx-qwen3-tts/README.md).
@@ -1026,6 +1066,7 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `rlx-fft` | [crates/rlx-fft/README.md](crates/rlx-fft/README.md) |
 | `rlx-qwen3-tts` | [crates/rlx-qwen3-tts/README.md](crates/rlx-qwen3-tts/README.md) |
 | `rlx-kittentts` | [crates/rlx-kittentts/README.md](crates/rlx-kittentts/README.md) |
+| `rlx-tts` | [crates/rlx-tts/README.md](crates/rlx-tts/README.md) |
 | `rlx-orpheus` | [crates/rlx-orpheus/README.md](crates/rlx-orpheus/README.md) |
 | `rlx-kyutai-tts` | [crates/rlx-kyutai-tts/README.md](crates/rlx-kyutai-tts/README.md) |
 | `rlx-pocket-tts` | [crates/rlx-pocket-tts/README.md](crates/rlx-pocket-tts/README.md) |
@@ -1036,6 +1077,8 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `rlx-tinyllama` | [crates/rlx-tinyllama/README.md](crates/rlx-tinyllama/README.md) |
 | `rlx-llama32` | [crates/rlx-llama32/README.md](crates/rlx-llama32/README.md) |
 | `rlx-locateanything` | [crates/rlx-locateanything/README.md](crates/rlx-locateanything/README.md) |
+| `rlx-fara` | [crates/rlx-fara/README.md](crates/rlx-fara/README.md) |
+| `rlx-ppocrv6` | [crates/rlx-ppocrv6/README.md](crates/rlx-ppocrv6/README.md) |
 | `rlx-trellis2` | [crates/rlx-trellis2/README.md](crates/rlx-trellis2/README.md) |
 | `rlx-vad` | [crates/rlx-vad/README.md](crates/rlx-vad/README.md) |
 | `rlx-mamba` | [crates/rlx-mamba/README.md](crates/rlx-mamba/README.md) |

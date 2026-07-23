@@ -20,6 +20,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Once, OnceLock};
+use std::thread::ScopedJoinHandle;
 
 use anyhow::{Context, Result};
 use rlx_ir::hir::{HirGraphExt, HirModule, HirMut};
@@ -53,6 +54,25 @@ fn probe_graph_cache() -> &'static Mutex<HashMap<String, CompiledGraph>> {
 fn probe_graph_cache_enabled() -> bool {
     crate::compile_profile::infer_mode() == crate::compile_profile::InferMode::Parity
         || env_flag("KITTEN_RLX_PROBE_GRAPH_CACHE")
+}
+
+/// Join a compile worker, turning a thread panic into an `anyhow` error so callers
+/// (and the multi-backend bench) see the real message instead of `Any { .. }`.
+pub(crate) fn join_compile<'scope, T>(
+    name: &str,
+    handle: ScopedJoinHandle<'scope, Result<T>>,
+) -> Result<T> {
+    match handle.join() {
+        Ok(r) => r,
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "panicked".to_string());
+            anyhow::bail!("{name}: {msg}")
+        }
+    }
 }
 
 fn bundle_dir_local(weights: &Path) -> Option<PathBuf> {
@@ -165,6 +185,23 @@ pub fn compile_options_for(device: Device) -> CompileOptions {
     opts
 }
 
+/// Device the duration-refine graph should compile/run on.
+///
+/// See [`crate::device_policy::duration_device`].
+#[inline]
+pub fn parity_duration_device(target: Device) -> Device {
+    crate::device_policy::duration_device(target)
+}
+
+/// Device the waveform graph should compile/run on.
+///
+/// See [`crate::device_policy::wave_device`]. Discrete Gpu/Vulkan stay on-device
+/// with wave caps from [`crate::device_policy::prepare`].
+#[inline]
+pub fn parity_wave_device(target: Device) -> Device {
+    crate::device_policy::wave_device(target)
+}
+
 /// Debug graphs with extra intermediate outputs: fusion off to avoid buffer aliasing.
 pub fn compile_options_probe() -> CompileOptions {
     let mut opts = CompileOptions::default();
@@ -173,6 +210,12 @@ pub fn compile_options_probe() -> CompileOptions {
 }
 
 pub fn ensure_kernels_registered() {
+    // Route rank-3 InstanceNorms (F0/N AdaIN) to the active-mel-frame host kernel so they
+    // don't normalize over the padded mel slot. `rlx-onnx-import` reads this at lower time,
+    // so it must be set before any bundle import. Callers may pre-set it; keep idempotent.
+    if std::env::var("RLX_KITTEN_INORM_ACTIVE").is_err() {
+        crate::set_env_var("RLX_KITTEN_INORM_ACTIVE", "1");
+    }
     KERNELS.call_once(register_native_kernels);
 }
 
@@ -198,6 +241,10 @@ fn import_cache_key(bundle_dir: &Path, opts: &GraphOptions) -> (PathBuf, usize, 
 /// Import ONNX bundle → HIR once per `(bundle, seq, max_waveform)`; reused by debug tools.
 pub fn import_from_bundle_cached(bundle_dir: &Path, opts: &GraphOptions) -> Result<BundleImport> {
     ensure_kernels_registered();
+    // Always rebind mel/wave caps — import/AOT cache hits used to skip this, leaving
+    // `KittenInstanceNormActive` with stale or zero caps on a fresh process.
+    crate::opts::set_compile_sequence_length(opts.sequence_length);
+    crate::bundle_patches::set_import_max_waveform_samples(opts.max_waveform_samples);
     let key = import_cache_key(bundle_dir, opts);
     if let Some(hit) = import_cache()
         .lock()
@@ -207,8 +254,6 @@ pub fn import_from_bundle_cached(bundle_dir: &Path, opts: &GraphOptions) -> Resu
     {
         return Ok(hit);
     }
-    crate::opts::set_compile_sequence_length(opts.sequence_length);
-    crate::bundle_patches::set_import_max_waveform_samples(opts.max_waveform_samples);
     let mut bundle = load_bundle(bundle_dir).context("load RLX bundle")?;
     crate::bundle_patches::patch_bundle_nodes(
         &mut bundle.nodes,
@@ -290,7 +335,8 @@ pub fn run_parity_inputs(
     ids: &[i64],
     style: &[f32],
 ) -> Vec<(Vec<u8>, DType)> {
-    let mut hello_dur = vec![19i64, 2, 1, 2, 3, 2, 3, 2];
+    // ORT duration for framed həˈloʊ (`…` token 10); pad/truncate to `seq`.
+    let mut hello_dur = vec![3i64, 2, 2, 3, 4, 4, 13, 2, 1];
     if hello_dur.len() < seq {
         hello_dur.resize(seq, 0);
     } else {
@@ -322,7 +368,7 @@ pub fn run_parity_inputs_with_duration(
             }
             v
         })
-        .unwrap_or_else(|| vec![19, 2, 1, 2, 3, 2, 3, 2]);
+        .unwrap_or_else(|| vec![3, 2, 2, 3, 4, 4, 13, 2, 1]);
     if dur.len() < compile_seq {
         dur.resize(compile_seq, 0);
     } else {
@@ -332,7 +378,13 @@ pub fn run_parity_inputs_with_duration(
     reset_duration_carry(graph, compile_seq);
     set_duration_carry(graph, &dur_bytes);
     apply_alignment_hint(graph, &dur_bytes, active);
-    let ids_bytes: Vec<u8> = ids.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let mut ids_padded = ids.to_vec();
+    if ids_padded.len() < compile_seq {
+        ids_padded.resize(compile_seq, 0);
+    } else if ids_padded.len() > compile_seq {
+        ids_padded.truncate(compile_seq);
+    }
+    let ids_bytes: Vec<u8> = ids_padded.iter().flat_map(|v| v.to_le_bytes()).collect();
     let style_bytes: Vec<u8> = style.iter().flat_map(|v| v.to_le_bytes()).collect();
     let speed = 1.0f32.to_le_bytes();
     let inputs: [(&str, &[u8], DType); 3] = [
@@ -347,8 +399,8 @@ pub fn run_parity_inputs_with_duration(
     let mut outs = run_with_duration_fixed_point_on_graph(graph, &inputs);
     apply_alignment_hint(graph, &dur_bytes, active);
     if active < 32 {
-        if let Some((carry, DType::I64)) = outs.iter().find(|(_, dt)| *dt == DType::I64) {
-            set_duration_carry(graph, carry);
+        if let Some(carry) = first_duration_i64_bytes(&outs) {
+            set_duration_carry(graph, &carry);
         }
         outs = graph.run_typed(&inputs);
     }
@@ -411,11 +463,13 @@ pub fn compile_probe_graph(
         }
     }
     // Probes target runtime token width; headroom compile length breaks static ActCopy shapes.
-    crate::opts::set_compile_sequence_length(opts.sequence_length);
-    crate::bundle_patches::set_import_sequence_length(opts.sequence_length);
-    crate::bundle_patches::set_import_max_waveform_samples(opts.max_waveform_samples);
-    let (mut hir, params) =
-        prepare_hir_for_compile(import.hir.clone(), &import.params, &import.typed);
+    let (mut hir, params) = prepare_hir_for_compile(
+        import.hir.clone(),
+        &import.params,
+        &import.typed,
+        opts.sequence_length,
+        opts.max_waveform_samples,
+    );
     let probe = materialize_probe_output(&mut hir, extra_output);
     hir.set_outputs(vec![probe]);
     let cache = AotCache::new(aot_cache_root());
@@ -458,11 +512,13 @@ pub fn compile_multi_probe_graph(
             return Ok(hit);
         }
     }
-    crate::opts::set_compile_sequence_length(opts.sequence_length);
-    crate::bundle_patches::set_import_sequence_length(opts.sequence_length);
-    crate::bundle_patches::set_import_max_waveform_samples(opts.max_waveform_samples);
-    let (mut hir, params) =
-        prepare_hir_for_compile(import.hir.clone(), &import.params, &import.typed);
+    let (mut hir, params) = prepare_hir_for_compile(
+        import.hir.clone(),
+        &import.params,
+        &import.typed,
+        opts.sequence_length,
+        opts.max_waveform_samples,
+    );
     let mut outputs = Vec::with_capacity(probes.len());
     for (node_id, _) in probes {
         outputs.push(materialize_probe_output(&mut hir, *node_id));
@@ -534,16 +590,48 @@ pub fn shape_all_graphs_for_infer(
 }
 
 /// Bump when `rlx-onnx-import` lowering changes affect compiled graphs.
-const IMPORT_CACHE_TAG: &str = "kitten_rlx_align_v118";
+const IMPORT_CACHE_TAG: &str = "kitten_rlx_align_v127_wgpu_mel16";
 
 /// Static alignment buffer multiplier (`seq * N`); must match import + HIR inject.
+///
+/// Default 64 is very conservative (long IPA ≈ 3 frames/token). On NVIDIA wgpu the
+/// mel axis dominates the act arena — use [`max_frames_per_token`] (Gpu defaults to 16).
 pub const MAX_FRAMES_PER_TOKEN: usize = 64;
+
+/// Effective `max_frames_per_token` for import / mel caps.
+#[inline]
+pub fn max_frames_per_token() -> usize {
+    crate::device_policy::max_frames_per_token()
+}
 
 /// Graph output index for per-token duration (after waveform).
 pub const DURATION_OUTPUT_INDEX: usize = 1;
 
 /// Max fixed-point iterations for the duration feedback loop (`Expand_1` / `Where_1`).
 pub const DURATION_FIXED_POINT_ITERS: usize = 24;
+
+/// Process-wide cache of refined duration carries so Metal/MLX backends in the same
+/// process reuse the exact CPU-computed i64 durations (avoids multi-stable fixed points
+/// from leftover mel-frame globals across sequential backend loads).
+fn duration_parity_cache() -> &'static Mutex<HashMap<u64, Vec<u8>>> {
+    static CACHE: OnceLock<Mutex<HashMap<u64, Vec<u8>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn duration_parity_cache_enabled() -> bool {
+    !compile_profile::env_flag("KITTEN_RLX_NO_DURATION_CACHE")
+}
+
+fn inputs_fingerprint(inputs: &[(&str, &[u8], DType)]) -> u64 {
+    let mut h = DefaultHasher::new();
+    for (name, bytes, dt) in inputs {
+        name.hash(&mut h);
+        bytes.hash(&mut h);
+        format!("{dt:?}").hash(&mut h);
+    }
+    crate::opts::runtime_active_tokens().unwrap_or(0).hash(&mut h);
+    h.finish()
+}
 
 /// Run graph with duration carry updated from the prior `duration` output until stable.
 pub fn run_with_duration_fixed_point(
@@ -566,14 +654,17 @@ fn run_with_duration_fixed_point_on_graph(
     }
     let mut prev_carry: Option<Vec<u8>> = None;
     for _ in 1..max_iters {
-        let Some((dur_bytes, DType::I64)) = outs.get(DURATION_OUTPUT_INDEX) else {
+        let Some((raw, dt)) = outs.get(DURATION_OUTPUT_INDEX) else {
+            break;
+        };
+        let Some(dur_bytes) = duration_output_as_i64_bytes(raw, *dt) else {
             break;
         };
         if prev_carry.as_deref() == Some(dur_bytes.as_slice()) {
             break;
         }
-        graph.set_param_typed(crate::opts::DURATION_CARRY, dur_bytes, DType::I64);
-        prev_carry = Some(dur_bytes.clone());
+        set_duration_carry(graph, &dur_bytes);
+        prev_carry = Some(dur_bytes);
         outs = graph.run_typed(inputs);
     }
     outs
@@ -601,13 +692,64 @@ fn set_duration_carry(graph: &mut CompiledGraph, dur_bytes: &[u8]) {
     graph.set_param_typed(crate::opts::DURATION_CARRY, dur_bytes, DType::I64);
 }
 
+/// Metal/MLX f32-uniform arenas often type the duration output as F32. Normalize to
+/// little-endian i64 bytes so carry / alignment / trim all share one layout.
+fn duration_output_as_i64_bytes(bytes: &[u8], dtype: DType) -> Option<Vec<u8>> {
+    match dtype {
+        DType::I64 => Some(bytes.to_vec()),
+        DType::F32 => {
+            let vals: Vec<i64> = bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).round() as i64)
+                .collect();
+            Some(vals.iter().flat_map(|v| v.to_le_bytes()).collect())
+        }
+        DType::I32 => {
+            let vals: Vec<i64> = bytes
+                .chunks_exact(4)
+                .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as i64)
+                .collect();
+            Some(vals.iter().flat_map(|v| v.to_le_bytes()).collect())
+        }
+        _ => None,
+    }
+}
+
+fn first_duration_i64_bytes(outs: &[(Vec<u8>, DType)]) -> Option<Vec<u8>> {
+    // Prefer a real I64 duration tensor (CPU / typed arenas).
+    if let Some((b, dt)) = outs.iter().find(|(_, dt)| *dt == DType::I64) {
+        return duration_output_as_i64_bytes(b, *dt);
+    }
+    // Metal/MLX: duration is often F32. Full graphs keep waveform at slot 0 and
+    // duration at slot 1; duration-refine graphs expose duration alone at slot 0.
+    let idx = if outs.len() >= 2 {
+        DURATION_OUTPUT_INDEX
+    } else {
+        0
+    };
+    outs.get(idx)
+        .and_then(|(b, dt)| duration_output_as_i64_bytes(b, *dt))
+}
+
 fn duration_refine_iters(active_tokens: usize) -> usize {
     if compile_profile::duration_external_fixed_point_enabled() {
         return DURATION_FIXED_POINT_ITERS;
     }
-    // Short utterances need multiple carry passes (single-pass diverges from ORT).
+    // Short utterances need a few carry passes (true single-pass diverges from ORT).
+    // Cap well below the parity fixed-point budget — early-exit still applies.
     if active_tokens <= 32 {
-        return DURATION_FIXED_POINT_ITERS;
+        if let Ok(raw) = std::env::var("KITTEN_RLX_DURATION_ITERS") {
+            if let Ok(n) = raw.parse::<usize>() {
+                return n.max(1).min(DURATION_FIXED_POINT_ITERS);
+            }
+        }
+        // Production: 4 is enough for hello-class IPA on CPU/Cuda/Vulkan (peak-held).
+        // Parity keeps the full 24-iter budget.
+        return if compile_profile::infer_mode() == compile_profile::InferMode::Production {
+            4
+        } else {
+            DURATION_FIXED_POINT_ITERS
+        };
     }
     1
 }
@@ -689,12 +831,8 @@ pub fn run_kitten_inference(
         let mut outs = run_with_duration_fixed_point_on_graph(&mut g, inputs);
         apply_alignment_hint_preferred(&mut g, active_tokens, alignment_duration, Some(seed));
         if active_tokens < 32 {
-            if let Some((dur_bytes, DType::I64)) = outs
-                .iter()
-                .find(|(_, dt)| *dt == DType::I64)
-                .map(|(b, dt)| (b.as_slice(), *dt))
-            {
-                set_duration_carry(&mut g, dur_bytes);
+            if let Some(dur_bytes) = first_duration_i64_bytes(&outs) {
+                set_duration_carry(&mut g, &dur_bytes);
             }
             outs = g.run_typed(inputs);
         }
@@ -730,27 +868,74 @@ pub fn run_kitten_inference(
     }
 
     if let (Some(dur_arc), Some(wave_arc)) = (&graphs.duration_refine, &graphs.waveform_only) {
-        let mut dur = dur_arc.lock().expect("duration refine graph");
-        reset_duration_carry(&mut dur, compile_seq);
-        let mut prev_carry: Option<Vec<u8>> = None;
-        let mut last_dur: Option<Vec<u8>> = None;
-        let max_iters = duration_refine_iters(active_tokens);
-        for _ in 0..max_iters {
-            let outs = dur.run_typed(inputs);
-            let Some((dur_bytes, DType::I64)) = outs.first() else {
-                break;
-            };
-            if prev_carry.as_deref() == Some(dur_bytes.as_slice()) {
+        let fp = inputs_fingerprint(inputs);
+        // Cache refined duration for any backend (CPU was the original parity
+        // case). Cuda/Vulkan benefit on repeated phrases / warm benches.
+        let cached = if duration_parity_cache_enabled() {
+            duration_parity_cache()
+                .lock()
+                .expect("duration parity cache")
+                .get(&fp)
+                .cloned()
+        } else {
+            None
+        };
+        let timing = compile_profile::env_flag("KITTEN_RLX_TIMING");
+        let dur_t0 = timing.then(std::time::Instant::now);
+        let mut dur_iters_used = 0usize;
+        let last_dur = if let Some(dur_bytes) = cached {
+            if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
+                eprintln!("[kitten] duration cache hit fp={fp:#x} bytes={}", dur_bytes.len());
+            }
+            let frames = alignment_frames_from_duration_bytes(&dur_bytes, active_tokens);
+            crate::opts::set_runtime_mel_frames(frames.max(1));
+            Some(dur_bytes)
+        } else {
+            if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
+                eprintln!("[kitten] duration cache miss fp={fp:#x}");
+            }
+            let mut dur = dur_arc.lock().expect("duration refine graph");
+            reset_duration_carry(&mut dur, compile_seq);
+            // Prosody AdaIN reads process-global `runtime_mel_frames` (= alignment-frame sum, NOT
+            // 2×). Leftover values from another backend's prewarm/infer make the (CPU-compiled)
+            // duration graph yield device-varying durations. Reset to a deterministic seed, then
+            // self-update from each iteration's own alignment sum so the fixed point is shared
+            // across CPU / Metal / MLX.
+            crate::opts::set_runtime_mel_frames(1);
+            let mut prev_carry: Option<Vec<u8>> = None;
+            let mut last_dur: Option<Vec<u8>> = None;
+            let max_iters = duration_refine_iters(active_tokens);
+            for _ in 0..max_iters {
+                dur_iters_used += 1;
+                let outs = dur.run_typed(inputs);
+                let Some(dur_bytes) = first_duration_i64_bytes(&outs) else {
+                    break;
+                };
+                let frames = alignment_frames_from_duration_bytes(&dur_bytes, active_tokens);
+                crate::opts::set_runtime_mel_frames(frames.max(1));
+                if prev_carry.as_deref() == Some(dur_bytes.as_slice()) {
+                    last_dur = Some(dur_bytes);
+                    break;
+                }
                 last_dur = Some(dur_bytes.clone());
-                break;
+                if max_iters == 1 {
+                    break;
+                }
+                set_duration_carry(&mut dur, &dur_bytes);
+                prev_carry = Some(dur_bytes);
             }
-            last_dur = Some(dur_bytes.clone());
-            if max_iters == 1 {
-                break;
+            if duration_parity_cache_enabled() {
+                if let Some(ref d) = last_dur {
+                    duration_parity_cache()
+                        .lock()
+                        .expect("duration parity cache")
+                        .insert(fp, d.clone());
+                }
             }
-            set_duration_carry(&mut dur, dur_bytes);
-            prev_carry = Some(dur_bytes.clone());
-        }
+            last_dur
+        };
+        let dur_secs = dur_t0.map(|t| t.elapsed().as_secs_f64());
+        let wave_t0 = timing.then(std::time::Instant::now);
         let wave_outs = {
             let mut wave = wave_arc.lock().expect("waveform graph");
             if let Some(dur_bytes) = &last_dur {
@@ -766,6 +951,12 @@ pub fn run_kitten_inference(
             );
             wave.run_typed(inputs)
         };
+        if let (Some(d), Some(t0)) = (dur_secs, wave_t0) {
+            eprintln!(
+                "[kitten] stage duration={d:.3}s (iters={dur_iters_used}) wave={:.3}s",
+                t0.elapsed().as_secs_f64()
+            );
+        }
         if let Some(dur) = last_dur {
             let mut out = wave_outs;
             out.push((dur, DType::I64));
@@ -788,30 +979,22 @@ pub fn run_kitten_inference(
     let mut outs = run_with_duration_fixed_point_on_graph(&mut g, inputs);
     if let Some(hint) = alignment_duration {
         if active_tokens < 32 {
-            if let Some((dur_bytes, DType::I64)) = outs
-                .iter()
-                .find(|(_, dt)| *dt == DType::I64)
-                .map(|(b, dt)| (b.as_slice(), *dt))
-            {
-                set_duration_carry(&mut g, dur_bytes);
+            if let Some(dur_bytes) = first_duration_i64_bytes(&outs) {
+                set_duration_carry(&mut g, &dur_bytes);
             }
             apply_alignment_hint(&mut g, hint, active_tokens);
             outs = g.run_typed(inputs);
         }
     } else if active_tokens >= 32 && carry_seed.is_none() && alignment_duration.is_none() {
-        if let Some((dur_bytes, DType::I64)) = outs
-            .iter()
-            .find(|(_, dt)| *dt == DType::I64)
-            .map(|(b, dt)| (b.as_slice(), *dt))
-        {
+        if let Some(dur_bytes) = first_duration_i64_bytes(&outs) {
             if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
                 eprintln!(
                     "[kitten] wide-seq second pass (duration bytes={})",
                     dur_bytes.len()
                 );
             }
-            apply_alignment_hint(&mut g, dur_bytes, active_tokens);
-            set_duration_carry(&mut g, dur_bytes);
+            apply_alignment_hint(&mut g, &dur_bytes, active_tokens);
+            set_duration_carry(&mut g, &dur_bytes);
             outs = run_with_duration_fixed_point_on_graph(&mut g, inputs);
         }
     }
@@ -826,6 +1009,8 @@ fn compile_hir_profile(
     params: &HashMap<String, Vec<f32>>,
     typed: &HashMap<String, (Vec<u8>, DType)>,
     carry_bytes: Option<&[u8]>,
+    sequence_length: usize,
+    max_waveform_samples: usize,
 ) -> Result<CompiledGraph> {
     let key = format!(
         "{key_prefix}_{}",
@@ -840,7 +1025,19 @@ fn compile_hir_profile(
             return Ok(compiled);
         }
     }
-    let (hir, params) = prepare_hir_for_compile(hir, params, typed);
+    let (mut hir, params) = prepare_hir_for_compile(
+        hir,
+        params,
+        typed,
+        sequence_length,
+        max_waveform_samples,
+    );
+    if crate::device_policy::native_qmatmul(device) {
+        let n = crate::hir_qdq_fuse::rewrite_qmatmul_to_native_f32(&mut hir);
+        if n > 0 && compile_profile::env_flag("KITTEN_RLX_TIMING") {
+            eprintln!("[kitten] native QMatMul: {n} quantized matmul(s) → on-device GEMM ({device:?})");
+        }
+    }
     let compile_opts = compile_profile::compile_options_for_profile(device, profile);
     let mut compiled = compile_prepared_hir_cached(&key, device, hir, &params, &compile_opts)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -879,41 +1076,72 @@ pub fn build_cached_graphs_from_import(
     key_prefix: &str,
     import: &BundleImport,
     carry_bytes: Option<&[u8]>,
+    sequence_length: usize,
+    max_waveform_samples: usize,
 ) -> Result<CachedSeqGraphs> {
+    // Bind before split-graph worker threads run `prepare_hir_for_compile`.
+    crate::opts::set_compile_sequence_length(sequence_length);
+    crate::bundle_patches::set_import_sequence_length(sequence_length);
+    crate::bundle_patches::set_import_max_waveform_samples(max_waveform_samples);
     if optimized_split_graphs_enabled() {
         let compile_dur = compile_profile::compile_duration_refine_graph();
+        // Duration/alignment is an integer subgraph. On GPU (Metal/MLX) it runs through the
+        // f32-uniform arena and diverges a few frames from CPU (e.g. sum 39→45), which shifts
+        // the whole prosody/alignment envelope and flips ASR on short clips. Compile the
+        // duration-refine graph on CPU so both backends share the exact same i64 durations;
+        // the GPU vocoder is then seeded from that carry (see `run_kitten_inference`).
+        let dur_device = parity_duration_device(device);
+        let wave_device = parity_wave_device(device);
+        let dur_key = if dur_device == device {
+            key_prefix.to_string()
+        } else {
+            format!("{key_prefix}_dur{dur_device:?}")
+        };
+        let wave_key = if wave_device == device {
+            key_prefix.to_string()
+        } else {
+            format!("{key_prefix}_wave{wave_device:?}")
+        };
         let params = import.params.clone();
         let typed = import.typed.clone();
         let carry_owned = carry_bytes.map(|b| b.to_vec());
+        // Parallel dur/wave compile races on process-global mel/wave caps when devices differ.
+        let serial = dur_device != device
+            || wave_device != device
+            || compile_profile::env_flag("KITTEN_RLX_SERIAL_COMPILE");
 
         let (dur, wave) = if compile_dur {
-            if compile_profile::env_flag("KITTEN_RLX_SERIAL_COMPILE") {
+            if serial {
                 let mut hir_dur = import.hir.clone();
                 compile_profile::apply_profile(&mut hir_dur, CompileProfile::DurationRefinement);
                 let dur = compile_hir_profile(
-                    device,
-                    key_prefix,
+                    dur_device,
+                    &dur_key,
                     CompileProfile::DurationRefinement,
                     hir_dur,
                     &params,
                     &typed,
                     carry_bytes,
+                    sequence_length,
+                    max_waveform_samples,
                 )?;
                 let mut hir_wave = import.hir.clone();
                 compile_profile::apply_profile(&mut hir_wave, CompileProfile::WaveformOnly);
                 let wave = compile_hir_profile(
-                    device,
-                    key_prefix,
+                    wave_device,
+                    &wave_key,
                     CompileProfile::WaveformOnly,
                     hir_wave,
                     &params,
                     &typed,
                     carry_bytes,
+                    sequence_length,
+                    max_waveform_samples,
                 )?;
                 (Some(dur), wave)
             } else {
-                let key_d = key_prefix.to_string();
-                let key_w = key_prefix.to_string();
+                let key_d = dur_key.clone();
+                let key_w = wave_key.clone();
                 let import_d = import.clone();
                 let import_w = import.clone();
                 let params_d = params.clone();
@@ -930,30 +1158,34 @@ pub fn build_cached_graphs_from_import(
                             CompileProfile::DurationRefinement,
                         );
                         compile_hir_profile(
-                            device,
+                            dur_device,
                             &key_d,
                             CompileProfile::DurationRefinement,
                             hir_dur,
                             &params_d,
                             &typed_d,
                             carry_d.as_deref(),
+                            sequence_length,
+                            max_waveform_samples,
                         )
                     });
                     let wave_h = scope.spawn(move || {
                         let mut hir_wave = import_w.hir;
                         compile_profile::apply_profile(&mut hir_wave, CompileProfile::WaveformOnly);
                         compile_hir_profile(
-                            device,
+                            wave_device,
                             &key_w,
                             CompileProfile::WaveformOnly,
                             hir_wave,
                             &params_w,
                             &typed_w,
                             carry_w.as_deref(),
+                            sequence_length,
+                            max_waveform_samples,
                         )
                     });
-                    let dur = dur_h.join().expect("duration compile thread")?;
-                    let wave = wave_h.join().expect("waveform compile thread")?;
+                    let dur = join_compile("duration compile thread", dur_h)?;
+                    let wave = join_compile("waveform compile thread", wave_h)?;
                     Ok((Some(dur), wave))
                 })?
             }
@@ -961,13 +1193,15 @@ pub fn build_cached_graphs_from_import(
             let mut hir_wave = import.hir.clone();
             compile_profile::apply_profile(&mut hir_wave, CompileProfile::WaveformOnly);
             let wave = compile_hir_profile(
-                device,
-                key_prefix,
+                wave_device,
+                &wave_key,
                 CompileProfile::WaveformOnly,
                 hir_wave,
                 &params,
                 &typed,
                 carry_bytes,
+                sequence_length,
+                max_waveform_samples,
             )?;
             (None, wave)
         };
@@ -985,6 +1219,8 @@ pub fn build_cached_graphs_from_import(
                 &import.params,
                 &import.typed,
                 carry_bytes,
+                sequence_length,
+                max_waveform_samples,
             )?;
             std::sync::Arc::new(std::sync::Mutex::new(full))
         } else {
@@ -994,19 +1230,28 @@ pub fn build_cached_graphs_from_import(
             full: full_arc,
             duration_refine: dur_arc,
             waveform_only: Some(wave_arc),
+            duration_on_cpu: dur_device == Device::Cpu,
         });
     }
 
     let mut hir = import.hir.clone();
     compile_profile::apply_profile(&mut hir, CompileProfile::Full);
+    let full_device = parity_wave_device(device);
+    let full_key = if full_device == device {
+        key_prefix.to_string()
+    } else {
+        format!("{key_prefix}_wave{full_device:?}")
+    };
     let full = compile_hir_profile(
-        device,
-        key_prefix,
+        full_device,
+        &full_key,
         CompileProfile::Full,
         hir,
         &import.params,
         &import.typed,
         carry_bytes,
+        sequence_length,
+        max_waveform_samples,
     )?;
     Ok(CachedSeqGraphs::full(full))
 }
@@ -1039,7 +1284,7 @@ pub(crate) fn import_opts(opts: &GraphOptions) -> ImportOptions {
     ImportOptions {
         sequence_length: opts.sequence_length,
         max_waveform_samples: opts.max_waveform_samples,
-        max_frames_per_token: MAX_FRAMES_PER_TOKEN,
+        max_frames_per_token: max_frames_per_token(),
         duration_loop_lowering,
         pre_shape_propagate: mel_full.then_some(crate::mel_align::pre_shape_propagate),
         post_shape_propagate: if mel_full {
@@ -1227,24 +1472,38 @@ fn compile_prepared_hir_cached(
     cache.compile_hir_cached(key, device, hir, compile_opts)
 }
 
-pub(crate) fn prepare_hir_for_compile(
+pub fn prepare_hir_for_compile(
     mut hir: rlx_ir::hir::HirModule,
     params: &HashMap<String, Vec<f32>>,
     typed: &HashMap<String, (Vec<u8>, DType)>,
+    sequence_length: usize,
+    max_waveform_samples: usize,
 ) -> (rlx_ir::hir::HirModule, HashMap<String, Vec<f32>>) {
-    let seq = crate::bundle_patches::import_sequence_length();
-    let max_wave = crate::bundle_patches::import_max_waveform_samples();
+    // Rebind on the calling thread (split-graph workers included) before inject.
+    crate::opts::set_compile_sequence_length(sequence_length);
+    crate::bundle_patches::set_import_sequence_length(sequence_length);
+    crate::bundle_patches::set_import_max_waveform_samples(max_waveform_samples);
     let mut params = params.clone();
     #[cfg(feature = "native")]
-    crate::native::flow::finish_bundle_hir_for_compile(&mut hir, &mut params, seq, max_wave);
+    crate::native::flow::finish_bundle_hir_for_compile(
+        &mut hir,
+        &mut params,
+        sequence_length,
+        max_waveform_samples,
+    );
     #[cfg(not(feature = "native"))]
     {
-        let _ = crate::bundle_patches::inject_vocoder_dynamic_alignment(&mut hir, seq, max_wave);
+        let _ = crate::bundle_patches::inject_vocoder_dynamic_alignment(
+            &mut hir,
+            sequence_length,
+            max_waveform_samples,
+        );
     }
     if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
         eprintln!(
-            "[kitten] hir inject wide_seq={} nodes={}",
-            crate::bundle_patches::import_sequence_length() >= 32,
+            "[kitten] hir inject wide_seq={} max_wave={} nodes={}",
+            sequence_length >= 32,
+            max_waveform_samples,
             hir.len()
         );
     }
@@ -1305,6 +1564,12 @@ impl SeqCompileCache {
                 self.max_sequence_length
             );
         }
+        // Rebind InstanceNorm caps even on in-memory graph hits (AOT cold start after
+        // process restart otherwise leaves wave_cap=0 → generator AdaIN full-axis mush).
+        let compile_seq = compile_profile::compile_slot_length(seq);
+        let max_waveform = compile_profile::compile_waveform_cap(seq, self.max_waveform_samples);
+        crate::opts::set_compile_sequence_length(compile_seq);
+        crate::bundle_patches::set_import_max_waveform_samples(max_waveform);
         if let Some(hit) = self.graphs.get(seq) {
             return Ok(hit);
         }
@@ -1335,7 +1600,14 @@ impl SeqCompileCache {
         crate::opts::set_compile_sequence_length(compile_seq);
         let key = format!("{}_seq{seq}", cache_key(self.device, &opts));
         let carry = compile_profile::duration_carry_seed_bytes(compile_seq);
-        let graphs = build_cached_graphs_from_import(self.device, &key, &import, Some(&carry))?;
+        let graphs = build_cached_graphs_from_import(
+            self.device,
+            &key,
+            &import,
+            Some(&carry),
+            compile_seq,
+            max_waveform,
+        )?;
         {
             let mut g = graphs.full.lock().expect("full graph");
             set_runtime_input_ids_shape(&mut g, compile_seq)?;
@@ -1362,13 +1634,178 @@ pub fn compile_from_bundle(
 ) -> Result<CompiledGraph> {
     ensure_compile_arena_policy();
     let import = import_from_bundle_cached(bundle_dir, opts)?;
-    crate::opts::set_compile_sequence_length(opts.sequence_length);
-    let (hir, params) = prepare_hir_for_compile(import.hir.clone(), &import.params, &import.typed);
+    let (hir, params) = prepare_hir_for_compile(
+        import.hir.clone(),
+        &import.params,
+        &import.typed,
+        opts.sequence_length,
+        opts.max_waveform_samples,
+    );
     let compile_opts = compile_options_for(device);
     let key = cache_key(device, opts);
     let mut compiled = compile_prepared_hir_cached(&key, device, hir, &params, &compile_opts)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     attach_params(&mut compiled, &params, &import.typed);
+    Ok(compiled)
+}
+
+/// Compile full waveform graph with F0/N projection replaced by ORT curves.
+///
+/// Diagnostic partition: if this yields intelligible audio while free-run native does not,
+/// the vocoder is fine and the bug is in the native F0/N (prosody) predictor.
+pub fn compile_from_bundle_with_ort_f0n(
+    device: Device,
+    bundle_dir: &Path,
+    opts: &GraphOptions,
+    f0: &[f32],
+    n: &[f32],
+) -> Result<CompiledGraph> {
+    ensure_compile_arena_policy();
+    ensure_kernels_registered();
+    let import = import_from_bundle_cached(bundle_dir, opts)?;
+    let (mut hir, mut params) = prepare_hir_for_compile(
+        import.hir.clone(),
+        &import.params,
+        &import.typed,
+        opts.sequence_length,
+        opts.max_waveform_samples,
+    );
+    let Some((f0_name, f0_len, n_name, n_len)) =
+        crate::bundle_patches::replace_f0n_proj_with_params(&mut hir, &mut params, f0, n)
+    else {
+        anyhow::bail!("replace_f0n_proj_with_params: F0/N proj nodes not found in HIR");
+    };
+    eprintln!(
+        "[ort_f0n] injected {f0_name}[{f0_len}] (live={}) {n_name}[{n_len}] (live={})",
+        f0.len(),
+        n.len()
+    );
+    let compile_opts = compile_options_for(device);
+    // Unique key so AOT cache never mixes free-run and injected graphs.
+    let key = format!(
+        "{}_ort_f0n_v1",
+        cache_key(device, opts)
+    );
+    let mut compiled = compile_prepared_hir_fresh(device, hir, &params, &compile_opts)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let _ = key; // fresh compile; key kept for future disk-cache option
+    attach_params(&mut compiled, &params, &import.typed);
+    attach_alignment_frame_param(&mut compiled);
+    Ok(compiled)
+}
+
+/// Compile with ORT `/decoder/Concat` + F0/N injected (upstream bypass for encode *and* NSF).
+pub fn compile_from_bundle_with_ort_concat(
+    device: Device,
+    bundle_dir: &Path,
+    opts: &GraphOptions,
+    concat: &[f32],
+    ort_channels: usize,
+    ort_frames: usize,
+    f0: &[f32],
+    n: &[f32],
+) -> Result<CompiledGraph> {
+    ensure_compile_arena_policy();
+    ensure_kernels_registered();
+    let import = import_from_bundle_cached(bundle_dir, opts)?;
+    let (mut hir, mut params) = prepare_hir_for_compile(
+        import.hir.clone(),
+        &import.params,
+        &import.typed,
+        opts.sequence_length,
+        opts.max_waveform_samples,
+    );
+    let Some((name, len)) = crate::bundle_patches::replace_decoder_concat_with_param(
+        &mut hir,
+        &mut params,
+        concat,
+        ort_channels,
+        ort_frames,
+    ) else {
+        anyhow::bail!("replace_decoder_concat_with_param: /decoder/Concat not found");
+    };
+    // NSF sine still reads F0/N via F0IfSelect (not via Concat) — inject those too.
+    let _ = crate::bundle_patches::replace_f0n_proj_with_params(&mut hir, &mut params, f0, n);
+    eprintln!(
+        "[ort_concat] injected {name}[{len}] (live={} C={ort_channels} T={ort_frames}) + F0/N",
+        concat.len()
+    );
+    let compile_opts = compile_options_for(device);
+    let mut compiled = compile_prepared_hir_fresh(device, hir, &params, &compile_opts)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    attach_params(&mut compiled, &params, &import.typed);
+    attach_alignment_frame_param(&mut compiled);
+    Ok(compiled)
+}
+
+/// Compile with ORT `/MatMul_1` injected (ASR-only bypass; native F0/N→conv).
+pub fn compile_from_bundle_with_ort_matmul1(
+    device: Device,
+    bundle_dir: &Path,
+    opts: &GraphOptions,
+    matmul1: &[f32],
+    ort_channels: usize,
+    ort_frames: usize,
+) -> Result<CompiledGraph> {
+    compile_from_bundle_with_ort_matmul1_opts(
+        device,
+        bundle_dir,
+        opts,
+        matmul1,
+        ort_channels,
+        ort_frames,
+        None,
+        None,
+    )
+}
+
+/// Like [`compile_from_bundle_with_ort_matmul1`], optionally also injecting ORT F0/N.
+pub fn compile_from_bundle_with_ort_matmul1_opts(
+    device: Device,
+    bundle_dir: &Path,
+    opts: &GraphOptions,
+    matmul1: &[f32],
+    ort_channels: usize,
+    ort_frames: usize,
+    f0: Option<&[f32]>,
+    n: Option<&[f32]>,
+) -> Result<CompiledGraph> {
+    ensure_compile_arena_policy();
+    ensure_kernels_registered();
+    let import = import_from_bundle_cached(bundle_dir, opts)?;
+    let (mut hir, mut params) = prepare_hir_for_compile(
+        import.hir.clone(),
+        &import.params,
+        &import.typed,
+        opts.sequence_length,
+        opts.max_waveform_samples,
+    );
+    let Some((name, len)) = crate::bundle_patches::replace_matmul1_with_param(
+        &mut hir,
+        &mut params,
+        matmul1,
+        ort_channels,
+        ort_frames,
+    ) else {
+        anyhow::bail!("replace_matmul1_with_param: /MatMul_1 not found");
+    };
+    if let (Some(f0), Some(n)) = (f0, n) {
+        let _ = crate::bundle_patches::replace_f0n_proj_with_params(&mut hir, &mut params, f0, n);
+        eprintln!(
+            "[ort_matmul1] injected {name}[{len}] (live={} C={ort_channels} T={ort_frames}) + F0/N",
+            matmul1.len()
+        );
+    } else {
+        eprintln!(
+            "[ort_matmul1] injected {name}[{len}] (live={} C={ort_channels} T={ort_frames})",
+            matmul1.len()
+        );
+    }
+    let compile_opts = compile_options_for(device);
+    let mut compiled = compile_prepared_hir_fresh(device, hir, &params, &compile_opts)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    attach_params(&mut compiled, &params, &import.typed);
+    attach_alignment_frame_param(&mut compiled);
     Ok(compiled)
 }
 
@@ -1402,8 +1839,13 @@ pub fn compile_from_bundle_fresh(
 ) -> Result<CompiledGraph> {
     ensure_compile_arena_policy();
     let import = import_from_bundle_cached(bundle_dir, opts)?;
-    crate::opts::set_compile_sequence_length(opts.sequence_length);
-    let (hir, params) = prepare_hir_for_compile(import.hir.clone(), &import.params, &import.typed);
+    let (hir, params) = prepare_hir_for_compile(
+        import.hir.clone(),
+        &import.params,
+        &import.typed,
+        opts.sequence_length,
+        opts.max_waveform_samples,
+    );
     let compile_opts = compile_options_for(device);
     let mut compiled = compile_prepared_hir_fresh(device, hir, &params, &compile_opts)
         .map_err(|e| anyhow::anyhow!("{0}", e))?;

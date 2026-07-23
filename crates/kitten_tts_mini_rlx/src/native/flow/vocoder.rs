@@ -44,6 +44,15 @@ pub fn explicit_output_shape(
     let h = cfg.harmonics;
     let table: &[(&str, &[usize])] = &[
         ("/decoder/generator/f0_upsamp/Resize", &[1, 1, max_wave]),
+        ("/decoder/generator/Transpose", &[1, max_wave, 1]),
+        (
+            "/decoder/generator/m_source/l_sin_gen/Greater",
+            &[1, max_wave, 1],
+        ),
+        (
+            "/decoder/generator/m_source/l_sin_gen/Cast",
+            &[1, max_wave, 1],
+        ),
         (
             "/decoder/generator/m_source/l_sin_gen/Resize",
             &[1, h, frames],

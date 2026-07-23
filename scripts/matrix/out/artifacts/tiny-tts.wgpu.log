@@ -1,6 +1,0 @@
-$ /home/user/rlx-models/target/release/rlx-tiny-tts --data weights/tiny-tts-rlx --text The quick brown fox jumps over the lazy dog near the river bank. --device gpu --out /home/user/rlx-models/scripts/matrix/out/artifacts/tiny-tts.wgpu.wav
-
---- stdout ---
-[tiny-tts] device=Gpu "The quick brown fox jumps over the lazy dog near the river bank." → /home/user/rlx-models/scripts/matrix/out/artifacts/tiny-tts.wgpu.wav  (0.01s audio @ 44100 Hz, 2.74s synth, 0.0× RT)
-
---- stderr ---

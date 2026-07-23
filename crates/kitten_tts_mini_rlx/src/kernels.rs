@@ -38,8 +38,18 @@ pub const ACT_COPY: &str = "onnx.ActCopy";
 pub const F0_IF_BYPASS: &str = "onnx.F0IfBypass";
 /// Trim F0 cast to runtime mel length (`2 ×` alignment frames).
 pub const F0_IF_SELECT: &str = "onnx.F0IfSelect";
+/// Nearest upsample of F0/N curves by `attrs` scale (default 300) for NSF sine voicing.
+pub const F0_NEAREST_UPSAMPLE: &str = "onnx.F0NearestUpsample";
+/// Flatten F0/N curve into NCHW `[1,1,1,W]` for `/decoder/F0_conv` / `N_conv`.
+///
+/// Host-side copy avoids MLX `mlx_fix_reshape_shape` rewriting batch `1→N` when a
+/// producer buffer is accidentally `N·W` elems (abs-diff ≤16 looked like a “small” mel pad).
+pub const F0_NCHW_UNSQUEEZE: &str = "onnx.F0NchwUnsqueeze";
 pub const ALIGNMENT_SCATTER_INDICES: &str = "onnx.AlignmentScatterIndices";
 pub const DYNAMIC_QUANTIZE_LINEAR: &str = "onnx.DynamicQuantizeLinearExport";
+/// Rank-3 InstanceNorm that reduces over the active mel frames only (see kernel doc).
+/// Emitted by `rlx-onnx-import` when `RLX_KITTEN_INORM_ACTIVE` is set.
+pub const KITTEN_INSTANCE_NORM_ACTIVE: &str = "onnx.KittenInstanceNormActive";
 
 #[derive(Debug, Clone, Copy)]
 struct LstmKernelAttrs {
@@ -140,10 +150,24 @@ impl CpuKernel for DynamicQuantizeLstmKernel {
                 (x_dims[1], x_dims[0].max(1))
             };
             let mut input_size = x_dims[2];
+            let raw_seq = seq;
             if let Some(rt) = runtime_seq {
-                seq = seq.min(rt);
-            }
-            if let Some(mel) = runtime_mel {
+                // Two different 640-input LSTMs share this kernel:
+                //   * token LSTMs (text_encoder / duration `/lstm`) compile to the TOKEN slot
+                //     (`raw_seq == rt`) and must clamp to the active token count;
+                //   * the vocoder `/shared` LSTM compiles to a WIDER mel slot (`raw_seq > rt`)
+                //     and clamps to the runtime mel-frame count.
+                // Clamping the duration LSTM to `runtime_mel` (stale/1 before alignment)
+                // collapses it to a single step → flat, near-uniform durations → dead prosody.
+                if input_size == 640 && raw_seq > rt {
+                    seq = runtime_mel.map_or(raw_seq, |mel| mel.min(raw_seq));
+                } else {
+                    let active = crate::opts::runtime_active_tokens()
+                        .filter(|&a| a > 0)
+                        .unwrap_or(rt);
+                    seq = seq.min(active);
+                }
+            } else if let Some(mel) = runtime_mel {
                 // `/shared/Transpose` → LSTM X is `[mel, batch, 640]`; compile slots may be wider.
                 if input_size == 640 {
                     seq = mel.min(seq);
@@ -558,6 +582,79 @@ struct F0IfBypassKernel;
 
 struct F0IfSelectKernel;
 
+struct F0NearestUpsampleKernel;
+
+struct F0NchwUnsqueezeKernel;
+
+impl CpuKernel for F0NearestUpsampleKernel {
+    fn name(&self) -> &str {
+        F0_NEAREST_UPSAMPLE
+    }
+
+    fn execute(
+        &self,
+        inputs: &[CpuTensorRef<'_>],
+        output: CpuTensorMut<'_>,
+        attrs: &[u8],
+    ) -> Result<(), String> {
+        let x = inputs
+            .first()
+            .ok_or("F0NearestUpsample: missing input")?
+            .expect_f32("f0")?;
+        let scale = if attrs.len() >= 4 {
+            u32::from_le_bytes(attrs[0..4].try_into().unwrap()) as usize
+        } else {
+            300
+        }
+        .max(1);
+        let out = output.expect_f32_mut("out")?;
+        out.fill(0.0);
+        // Input is `[1,1,T]` (or flat `T`); output is `[1, T·scale, 1]` / `[1,1,T·scale]`.
+        let t_in = x.len();
+        let t_out = out.len();
+        for (i, &v) in x.iter().enumerate() {
+            let base = i.saturating_mul(scale);
+            for k in 0..scale {
+                let j = base + k;
+                if j >= t_out {
+                    break;
+                }
+                out[j] = v;
+            }
+            if base >= t_out {
+                break;
+            }
+        }
+        let _ = t_in;
+        Ok(())
+    }
+}
+
+impl CpuKernel for F0NchwUnsqueezeKernel {
+    fn name(&self) -> &str {
+        F0_NCHW_UNSQUEEZE
+    }
+
+    fn execute(
+        &self,
+        inputs: &[CpuTensorRef<'_>],
+        output: CpuTensorMut<'_>,
+        _attrs: &[u8],
+    ) -> Result<(), String> {
+        let x = inputs
+            .first()
+            .ok_or("F0NchwUnsqueeze: missing input")?
+            .expect_f32("f0")?;
+        let out = output.expect_f32_mut("out")?;
+        out.fill(0.0);
+        // Flat prefix copy: if the producer is accidentally `[N,1,W]` row-major, the
+        // first `W` elems are batch-0 (the live F0/N curve).
+        let n = x.len().min(out.len());
+        out[..n].copy_from_slice(&x[..n]);
+        Ok(())
+    }
+}
+
 impl CpuKernel for F0IfSelectKernel {
     fn name(&self) -> &str {
         F0_IF_SELECT
@@ -577,29 +674,51 @@ impl CpuKernel for F0IfSelectKernel {
             .get(1)
             .ok_or("F0IfSelect: missing alignment input")?
             .expect_i64("align")?;
-        let mel = align.first().copied().unwrap_or(0).max(0) as usize;
+        // The `ALIGNMENT_FRAME_COUNT` param wired to this node is frequently UNBOUND (0) at
+        // runtime for the F0/N `If` bypass — which zeroed the entire F0/N curve → dead NSF sine
+        // source → the vocoder emits only its conv biases (uniform ~0.047 DC mush). Fall back to
+        // the runtime mel-frame hint (set during alignment; mirrored into a process global so it
+        // is visible on the rayon executor threads) when the param is not bound.
+        let mel_from_align = align.first().copied().unwrap_or(0).max(0) as usize;
+        let mel = if mel_from_align > 0 {
+            mel_from_align
+        } else {
+            crate::opts::runtime_mel_frames().unwrap_or(0)
+        };
         let out = output.expect_f32_mut("out")?;
         out.fill(0.0);
+        // StyleTTS2's `F0_proj`/`N_proj` produce a curve at 2× the alignment/mel grid, so the
+        // active region is the first `2·mel` frames. `f0` (padded to the F0 mel cap) and `out`
+        // (padded to the `If`-stub cap) share this 2×-mel time base, so copy the active prefix.
+        let valid = mel.saturating_mul(2);
+        if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+            let s: Vec<String> = [0usize, 10, 20, 35, 70, 128, 130, 256, 640, 1000]
+                .iter()
+                .filter(|&&i| i < f0.len())
+                .map(|&i| format!("[{i}]={:.1}", f0[i]))
+                .collect();
+            eprintln!(
+                "[f0if] mel={mel} mel_cap={:?} wave_cap={:?} valid={valid} f0.len={} out.len={} samples: {}",
+                crate::opts::runtime_mel_cap(),
+                crate::opts::runtime_wave_cap(),
+                f0.len(), out.len(), s.join(" ")
+            );
+        }
         if f0.len() == out.len() {
-            let n = mel.min(f0.len());
+            let n = valid.min(f0.len());
             out[..n].copy_from_slice(&f0[..n]);
             return Ok(());
         }
         // `[1,1,T]` activations into `[1,1,T_stub]` (If stub from lower_if_stub).
         if f0.len() > out.len() && !out.is_empty() && f0.len() % out.len() == 0 {
             let chunk = f0.len() / out.len();
-            let frames = mel.min(out.len());
+            let frames = valid.min(out.len());
             for (i, slot) in out.iter_mut().enumerate().take(frames) {
                 *slot = f0[i * chunk];
             }
             return Ok(());
         }
-        if mel > out.len() {
-            let n = out.len().min(f0.len());
-            out[..n].copy_from_slice(&f0[..n]);
-            return Ok(());
-        }
-        let n = mel.min(f0.len()).min(out.len());
+        let n = valid.min(f0.len()).min(out.len());
         out[..n].copy_from_slice(&f0[..n]);
         Ok(())
     }
@@ -656,10 +775,13 @@ impl CpuKernel for ActCopyKernel {
     ) -> Result<(), String> {
         let x = inputs[0].expect_f32("x")?;
         let out = output.expect_f32_mut("out")?;
-        if x.len() != out.len() {
-            return Err(format!("ActCopy size {} != {}", x.len(), out.len()));
-        }
-        out.copy_from_slice(x);
+        // Parity-probe ActCopy outputs are compiled at a headroom length that can
+        // exceed the live activation width; copy the overlap and zero the tail rather
+        // than hard-failing so the probe still captures the live values. Real inference
+        // always has matching sizes, so this is a no-op there.
+        let n = x.len().min(out.len());
+        out[..n].copy_from_slice(&x[..n]);
+        out[n..].fill(0.0);
         Ok(())
     }
 }
@@ -784,12 +906,143 @@ impl CpuKernel for AlignmentScatterIndicesKernel {
     }
 }
 
+/// Active mel-frame count for a rank-3 InstanceNorm time axis of width `t`.
+///
+/// The prosody F0/N AdaIN tensors are compiled to a padded mel slot (`compile_mel_cap`,
+/// ~28× the real frames), but only `runtime_mel_frames` (= sum of durations) are real. A
+/// plain InstanceNorm reduces mean/variance over the whole padded axis, so the zero padding
+/// dilutes the stats → each of the three stacked F0 AdaIN blocks over-normalizes ~2× →
+/// compounding ~10× inflation → NaN sine source → DC-mush vocoder. Reduce over the active
+/// frames only.
+///
+/// StyleTTS2's F0/N predictors upsample 2× at their second AdaIN block (`F0[1]`/`N[1]` have
+/// `upsample=True`), so `F0.1`/`F0.2`/`F0_proj` run at `2·mel_cap` with `2·mel_frames` active.
+/// Scale the active window by `t / mel_cap` so the upsampled blocks normalize over their real
+/// (doubled) region instead of just the first `mel_frames` — otherwise they over-normalize,
+/// F0_proj explodes (~98 vs ORT −1.3) and the NSF sine goes NaN → DC-mush. Falls back to the
+/// full axis when no hint is bound (parity / warmup passes).
+pub fn instance_norm_active_frames_with_cap(t: usize, cap: Option<usize>) -> usize {
+    let Some(mel) = crate::opts::runtime_mel_frames() else {
+        return t.max(1);
+    };
+    let active = match cap {
+        // Scale the active window to this block's rate: `active = round(t · mel / cap)`.
+        Some(cap) if cap > 0 => ((t as u64 * mel as u64 + cap as u64 / 2) / cap as u64) as usize,
+        _ => mel,
+    };
+    active.clamp(1, t.max(1))
+}
+
+pub fn instance_norm_active_frames(t: usize) -> usize {
+    instance_norm_active_frames_with_cap(t, crate::opts::runtime_mel_cap())
+}
+
+/// Resolve the active time window for [`KITTEN_INSTANCE_NORM_ACTIVE`] (shared by
+/// CPU host and CudaGpuKernel paths).
+pub fn instance_norm_resolve_active(t: usize, is_generator: bool) -> usize {
+    let gen_full_axis = std::env::var("RLX_KITTEN_INORM_GEN_FULL").is_ok();
+    if is_generator && gen_full_axis {
+        return t.max(1);
+    }
+    if is_generator {
+        if let Ok(m) = std::env::var("RLX_KITTEN_GEN_ACTIVE_MULT") {
+            let mult = m.parse::<f64>().unwrap_or(2.0);
+            let base = instance_norm_active_frames(t);
+            return ((base as f64 * mult).round() as usize).clamp(1, t.max(1));
+        }
+        return instance_norm_active_frames_with_cap(t, crate::opts::runtime_wave_cap());
+    }
+    instance_norm_active_frames(t)
+}
+
+struct KittenInstanceNormActiveKernel;
+
+impl CpuKernel for KittenInstanceNormActiveKernel {
+    fn name(&self) -> &str {
+        KITTEN_INSTANCE_NORM_ACTIVE
+    }
+
+    fn execute(
+        &self,
+        inputs: &[CpuTensorRef<'_>],
+        output: CpuTensorMut<'_>,
+        attrs: &[u8],
+    ) -> Result<(), String> {
+        let x = inputs[0].expect_f32("X")?;
+        let gamma = inputs[1].expect_f32("gamma")?;
+        let beta = inputs[2].expect_f32("beta")?;
+        let eps = if attrs.len() >= 4 {
+            f32::from_le_bytes(attrs[0..4].try_into().unwrap())
+        } else {
+            1e-5
+        };
+        // attrs[4] flags a vocoder-generator AdaIN. Prosody (F0/N) axes pad to `mel_cap`;
+        // generator (noise_res/resblocks) axes pad from `max_wave` / `wave_cap`. Normalizing the
+        // generator over the full padded axis lets the zero tail dominate → ~0.047 DC-mush.
+        // Set `RLX_KITTEN_INORM_GEN_FULL=1` to restore the old full-axis behavior.
+        let is_generator = attrs.get(4).copied().unwrap_or(0) != 0;
+        let dims = shape_usize(output.shape());
+        if dims.len() != 3 {
+            return Err(format!(
+                "KittenInstanceNormActive expects rank-3 [N,C,T], got {dims:?}"
+            ));
+        }
+        let (n, c, t) = (dims[0].max(1), dims[1].max(1), dims[2]);
+        let out = output.expect_f32_mut("Y")?;
+        if t == 0 || x.len() < n * c * t || out.len() < n * c * t {
+            return Err(format!(
+                "KittenInstanceNormActive size mismatch dims={dims:?} x={} out={}",
+                x.len(),
+                out.len()
+            ));
+        }
+        let active = instance_norm_resolve_active(t, is_generator);
+        if is_generator && std::env::var("RLX_KITTEN_INORM_DEBUG").is_ok() {
+            eprintln!(
+                "[inorm] gen t={t} mel={:?} wave_cap={:?} mel_cap={:?} active={active}",
+                crate::opts::runtime_mel_frames(),
+                crate::opts::runtime_wave_cap(),
+                crate::opts::runtime_mel_cap()
+            );
+        }
+        for ni in 0..n {
+            for ci in 0..c {
+                let base = (ni * c + ci) * t;
+                let xs = &x[base..base + t];
+                let mut mean = 0.0f32;
+                for &v in &xs[..active] {
+                    mean += v;
+                }
+                mean /= active as f32;
+                let mut var = 0.0f32;
+                for &v in &xs[..active] {
+                    let d = v - mean;
+                    var += d * d;
+                }
+                var /= active as f32;
+                let inv = 1.0 / (var + eps).sqrt();
+                let g = gamma.get(ci).copied().unwrap_or(1.0);
+                let bb = beta.get(ci).copied().unwrap_or(0.0);
+                // Apply the normalization (using the active-frame stats) to all frames: the
+                // padded tail is trimmed downstream by the alignment/waveform slice, and the
+                // stats above never include it, so its post-norm value cannot skew later blocks.
+                for j in 0..t {
+                    out[base + j] = (xs[j] - mean) * inv * g + bb;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 pub fn register_native_kernels() {
     rlx_cpu::onnx_ref::register_onnx_reference_kernels();
     register_cpu_kernel(Arc::new(DynamicQuantizeLinearExportKernel));
     register_cpu_kernel(Arc::new(ActCopyKernel));
     register_cpu_kernel(Arc::new(F0IfBypassKernel));
     register_cpu_kernel(Arc::new(F0IfSelectKernel));
+    register_cpu_kernel(Arc::new(F0NearestUpsampleKernel));
+    register_cpu_kernel(Arc::new(F0NchwUnsqueezeKernel));
     register_cpu_kernel(Arc::new(QMatMulKernel));
     register_cpu_kernel(Arc::new(QMatMulBakedKernel));
     register_cpu_kernel(Arc::new(DynamicQuantizeLstmKernel));
@@ -798,6 +1051,7 @@ pub fn register_native_kernels() {
     register_cpu_kernel(Arc::new(AlignmentScatterIndicesKernel));
     register_cpu_kernel(Arc::new(RandomNormalLikeKernel));
     register_cpu_kernel(Arc::new(RandomUniformLikeKernel));
+    register_cpu_kernel(Arc::new(KittenInstanceNormActiveKernel));
     crate::gpu_kernels::register_gpu_kernels();
 }
 

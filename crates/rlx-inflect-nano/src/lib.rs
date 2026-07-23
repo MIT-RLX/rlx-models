@@ -10,8 +10,6 @@ pub mod config;
 pub mod frontend;
 #[cfg(feature = "rlx-graph")]
 pub mod graph;
-#[cfg(feature = "onnx")]
-pub mod onnx_vocoder;
 pub mod ops;
 pub mod vocoder;
 pub mod weights;
@@ -30,8 +28,6 @@ pub struct InflectNano {
     vocoder_w: weights::Weights,
     dir: PathBuf,
     frontend: once_cell::sync::OnceCell<frontend::English>,
-    #[cfg(feature = "onnx")]
-    coreml_vocoder: once_cell::sync::OnceCell<std::sync::Mutex<onnx_vocoder::OnnxVocoder>>,
     /// Compiled vocoder graphs keyed by `(device, bucketed_frame_count)`, so
     /// callers that synthesize many short segments back-to-back reuse graphs
     /// instead of recompiling per call. See [`InflectNano::synthesize_on_cached`].
@@ -41,7 +37,7 @@ pub struct InflectNano {
     >,
     /// Keeps a materialized temp bundle alive for the model's lifetime when
     /// [`InflectNano::load`] is given a non-directory source (pack / in-memory)
-    /// — the g2p frontend and CoreML vocoder read their assets lazily by path.
+    /// — the g2p frontend reads its assets lazily by path.
     /// Type-erased so the field exists even in the lean (no-`rlx-graph`) build.
     #[allow(dead_code)]
     _assets: Option<Box<dyn std::any::Any + Send + Sync>>,
@@ -103,8 +99,6 @@ impl InflectNano {
             vocoder_w,
             dir: dir.to_path_buf(),
             frontend: once_cell::sync::OnceCell::new(),
-            #[cfg(feature = "onnx")]
-            coreml_vocoder: once_cell::sync::OnceCell::new(),
             #[cfg(feature = "rlx-graph")]
             voc_graphs: std::sync::Mutex::new(std::collections::HashMap::new()),
             _assets: None,
@@ -116,7 +110,7 @@ impl InflectNano {
     /// (`rlx_core::AssetSource`). Additive alongside [`InflectNano::load_from_dir`];
     /// requires the `rlx-graph` feature (which pulls the shared loader). Directory
     /// sources load in place; other sources materialize to a self-cleaning temp
-    /// dir kept alive for the model's lifetime (lazy frontend/CoreML path reads).
+    /// dir kept alive for the model's lifetime (lazy frontend path reads).
     #[cfg(feature = "rlx-graph")]
     pub fn load(src: impl Into<rlx_core::AssetSource>) -> Result<Self> {
         let (mut m, keep) = rlx_core::asset_source::load_materialized(src, Self::load_from_dir)?;
@@ -355,41 +349,6 @@ impl InflectNano {
             } else {
                 0.0
             },
-        })
-    }
-
-    /// Vocoder via ONNX Runtime with the CoreML execution provider (Apple).
-    /// The acoustic stage runs host-eager; the vocoder runs through `vocoder.onnx`.
-    #[cfg(feature = "onnx")]
-    pub fn vocode_onnx(&self, mel: &Array2<f32>, coreml: bool) -> Result<Vec<f32>> {
-        let mut voc =
-            onnx_vocoder::OnnxVocoder::load(&self.dir, self.cfg.vocoder.hop_size, coreml)?;
-        voc.forward(mel)
-    }
-
-    /// Cached CoreML vocoder session — the ORT session (and the one-time CoreML
-    /// model compilation) is built on first use and reused across calls.
-    #[cfg(feature = "onnx")]
-    fn coreml_vocoder(&self) -> Result<&std::sync::Mutex<onnx_vocoder::OnnxVocoder>> {
-        self.coreml_vocoder.get_or_try_init(|| {
-            onnx_vocoder::OnnxVocoder::load(&self.dir, self.cfg.vocoder.hop_size, true)
-                .map(std::sync::Mutex::new)
-        })
-    }
-
-    /// Full pipeline with the vocoder on ONNX Runtime (CoreML EP). The CoreML
-    /// session is cached, so only the first call pays the model-compile cost.
-    #[cfg(feature = "onnx")]
-    pub fn synthesize_coreml(&self, text: &str, opts: &InferOpts) -> Result<Wav> {
-        let (phone, tone, lang) = self.text_to_ids(text)?;
-        let mel = self.mel_from_ids(&phone, &tone, &lang, self.cfg.default_speaker(), opts)?;
-        let raw = {
-            let mut voc = self.coreml_vocoder()?.lock().expect("coreml vocoder mutex");
-            voc.forward(&mel)?
-        };
-        Ok(Wav {
-            samples: audio::normalize_audio(&raw),
-            sample_rate: self.cfg.sample_rate,
         })
     }
 

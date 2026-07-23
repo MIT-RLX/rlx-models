@@ -60,6 +60,16 @@ pub struct Llama32Config {
     pub head_dim: Option<usize>,
     #[serde(default)]
     pub rope_scaling: Option<Llama32RopeScaling>,
+    /// Looped Transformer depth multiplier (Nanbeige). Layers are applied
+    /// [`num_loops`] times with **shared** weights and **separate** KV slots
+    /// per loop iteration. Default `1` = standard single pass.
+    #[serde(default = "default_num_loops")]
+    pub num_loops: usize,
+    /// When `false` (Nanbeige default), apply `model.norm` after every loop
+    /// pass. When `true`, only the final norm after the last loop runs
+    /// (standard Llama).
+    #[serde(default)]
+    pub skip_loop_final_norm: bool,
     /// RoPE pairing flavor. GGUF Llama weights are permuted by the HF→GGUF
     /// converter for llama.cpp's interleaved (`NORM`) RoPE, so GGUF-backed
     /// inference must rotate with [`rlx_ir::RopeStyle::GptJ`]; HF-safetensors
@@ -73,6 +83,10 @@ pub struct Llama32Config {
     /// Rotary dimension when it differs from [`head_dim`] (Phi-3 partial RoPE).
     #[serde(skip)]
     pub rope_dim: Option<usize>,
+}
+
+fn default_num_loops() -> usize {
+    1
 }
 
 fn default_rms_norm_eps() -> f64 {
@@ -128,6 +142,22 @@ impl Llama32Config {
         matches!(self.gguf_arch.as_deref(), Some("phi3") | Some("phi4"))
     }
 
+    /// Physical decoder blocks stored in the checkpoint.
+    pub fn physical_layers(&self) -> usize {
+        self.num_hidden_layers
+    }
+
+    /// KV-cache / execution depth after unrolling [`num_loops`].
+    pub fn kv_layers(&self) -> usize {
+        self.num_hidden_layers.saturating_mul(self.num_loops.max(1))
+    }
+
+    /// Map an execution-slot index to the shared weight layer index.
+    pub fn weight_layer_index(&self, exec_idx: usize) -> usize {
+        let n = self.num_hidden_layers.max(1);
+        exec_idx % n
+    }
+
     #[cfg(test)]
     pub(crate) fn tiny_test() -> Self {
         Self {
@@ -145,6 +175,8 @@ impl Llama32Config {
             attention_bias: false,
             head_dim: None,
             rope_scaling: None,
+            num_loops: 1,
+            skip_loop_final_norm: false,
             rope_style: rlx_ir::RopeStyle::NeoX,
             gguf_arch: None,
             rope_dim: None,
@@ -243,6 +275,8 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
         attention_bias: false,
         head_dim,
         rope_scaling,
+        num_loops: get_u32("llama.num_loops").map(|v| v as usize).unwrap_or(1),
+        skip_loop_final_norm: get_bool("llama.skip_loop_final_norm").unwrap_or(false),
         // Phi-3/4 GGUF uses HF NeoX rotate-half; plain Llama GGUF is GPT-J.
         rope_style: if matches!(arch_prefix, "phi3" | "phi4") {
             rlx_ir::RopeStyle::NeoX

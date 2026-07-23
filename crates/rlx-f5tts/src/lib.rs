@@ -15,9 +15,8 @@
 
 //! F5-TTS — flow-matching DiT voice-cloning TTS for RLX.
 //!
-//! **Default path is native RLX** ([`F5Native`]: ONNX graphs → rlx-ir → compile →
-//! run; no ONNX Runtime). Optional `--features onnx` keeps the ORT reference
-//! ([`F5Tts`]). Weights are CC-BY-NC.
+//! The runtime is native RLX ([`F5Native`]: ONNX graphs → rlx-ir → compile →
+//! run; no ONNX Runtime). Weights are CC-BY-NC.
 
 pub mod config;
 pub mod dsp;
@@ -28,8 +27,6 @@ pub mod tokenize;
 
 pub use config::{DEFAULT_HF_REPO, DEFAULT_LOCAL_DIR, Layout, SAMPLE_RATE, Vocab};
 pub use dsp::{preprocess_ref_audio, soft_peak_limit};
-#[cfg(feature = "onnx")]
-pub use model::F5Tts;
 pub use model::{InferOpts, peak_amplitude, write_wav};
 pub use native::F5Native;
 pub use rlx_runtime::{Device, parse_device};
