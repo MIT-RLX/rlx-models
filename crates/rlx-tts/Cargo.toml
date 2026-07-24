@@ -23,6 +23,8 @@ rlx-ir = { workspace = true }
 rlx-cpu = { workspace = true }
 rlx-fft = { workspace = true }
 rlx-gguf = { workspace = true }
+rlx-pkg = { workspace = true }
+rlx-assets = { workspace = true, features = ["rlxp"] }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

@@ -37,6 +37,7 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 - [Qwen3-TTS](#qwen3-tts)
 - [Voxtral TTS](#voxtral-tts)
 - [VAD (Earshot + Silero)](#vad-earshot--silero)
+- [Wake-word](#wake-word)
 - [Build and test](#build-and-test)
 - [Publishing (crates.io)](#publishing-cratesio)
 - [Status](#status)
@@ -102,15 +103,23 @@ rlx-models/
 | `rlx-diarize` | Speaker diarization (embedding + clustering) |
 | [`rlx-fft`](crates/rlx-fft/README.md) | Learned butterfly FFT, Welch PSD, fast top-K spectral peaks |
 | [`rlx-vad`](crates/rlx-vad/README.md) | Earshot + Silero VAD (embedded weights, 16 kHz) |
+| [`rlx-wake`](crates/rlx-wake/README.md) | Shared wake-word API / mel / WakeCnn / ternary |
+| [`rlx-wakeword-core`](crates/rlx-wakeword-core/README.md) | `no_std` mel + WakeCnn + ternary (embedded-ready) |
+| [`rlx-wakeword`](crates/rlx-wakeword/README.md) | First-party event-streaming wakeword product |
+| [`rlx-wakeword-wasm`](crates/rlx-wakeword-wasm/README.md) | WASM / Web Worker bindings (`wasm-pack`, not crates.io) |
+| [`rlx-openwakeword`](crates/rlx-openwakeword/README.md) | Native openWakeWord (ONNX parity optional) |
+| [`rlx-nanowakeword`](crates/rlx-nanowakeword/README.md) | Native nanowakeword CNN / lite |
+| [`rlx-porcupine`](crates/rlx-porcupine/README.md) | Porcupine-style wake CNN on RLX (no `.ppn`) |
+| [`rlx-voxrt`](crates/rlx-voxrt/README.md) | VoxRT-style wake CNN on RLX (no `.vxrt`) |
 | `rlx-voxtral` | Mistral Voxtral speech LM |
 | `rlx-voxtral-tts` | Voxtral-4B-TTS inference (codec + Ministral LM) |
 | `rlx-voxtral-tts-train` | Native RLX voice-clone training (encoder + LoRA) |
 | [`rlx-qwen3-tts`](crates/rlx-qwen3-tts/README.md) | Qwen3-TTS — voice clone + CustomVoice TTS, progressive streaming, duplex voice chat (Whisper + Qwen3 LM). [JFK samples + roundtrip audio](crates/rlx-qwen3-tts/examples/audio/) ship in the crate. |
-| [`rlx-tts`](crates/rlx-tts/README.md) | RLX FastSpeech2 + WaveRNN TTS (local `rlx-tts.gguf`) |
+| [`rlx-tts`](crates/rlx-tts/README.md) | RLX FastSpeech2 + WaveRNN TTS (Hub `rlx-tts.rlxp`) |
 | `rlx-locateanything` | NVIDIA LocateAnything-3B VLM (grounding) |
 | [`rlx-unlimited-ocr`](crates/rlx-unlimited-ocr/README.md) | Baidu Unlimited-OCR VLM (SAM+CLIP DeepEncoder + MoE LM) |
 | [`rlx-ppocrv6`](crates/rlx-ppocrv6/README.md) | PP-OCRv6 tiny/small OCR — native HIR + safetensors (no runtime ONNX) |
-| [`rlx-asr`](crates/rlx-asr/README.md) | RLX streaming Conformer ASR (`weights/asr/model.gguf`); facade `streaming-asr` |
+| [`rlx-asr`](crates/rlx-asr/README.md) | RLX streaming Conformer ASR (`weights/asr/model.rlxp`); facade `streaming-asr` |
 | `rlx-cli` | shared CLI helpers + `rlx-inspect` |
 | `rlx-models` | facade (re-exports) + optional `rlx-run` multiplexer |
 
@@ -179,6 +188,11 @@ Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.m
 | `rlx-whisper` | `rlx-whisper` | `cargo run -p rlx-whisper --bin rlx-whisper --release -- --weights model.safetensors --wav audio16k.wav` |
 | `rlx-fft` | `rlx-fft` | `cargo run -p rlx-fft --release -- bench-welch-peaks --n-fft 256 --batch 32 --strategy auto` ([docs](crates/rlx-fft/README.md)) |
 | `rlx-vad` | `rlx-vad` | `cargo run -p rlx-vad --release -- --backend silero --wav audio16k.wav` ([docs](crates/rlx-vad/README.md)) |
+| `rlx-wakeword` | `rlx-wakeword` | `just wakeword-demo -- --wav clip.wav --hop-ms 40` |
+| `rlx-openwakeword` | `rlx-openwakeword` | `just openwakeword-demo -- --wav clip.wav` |
+| `rlx-nanowakeword` | `rlx-nanowakeword` | `just nanowakeword-demo -- --wav clip.wav` |
+| `rlx-porcupine` | `rlx-porcupine` | `just porcupine-demo -- --wav clip.wav` |
+| `rlx-voxrt` | `rlx-voxrt` | `just voxrt-demo -- --wav clip.wav` |
 | `rlx-voxtral` | `rlx-voxtral` | `cargo run -p rlx-voxtral --bin rlx-voxtral --release -- --weights model_dir --wav audio16k.wav --transcribe` |
 | `rlx-voxtral-tts` | `rlx-voxtral-tts` | `just voxtral-tts -- --model-dir DIR --text "Hello" --voice neutral_female -o out.wav` |
 | `rlx-voxtral-tts-train` | `rlx-voxtral-tts-train` | `just voxtral-tts-train-production -- --model-dir DIR --wav-dir WAVS --device auto` |
@@ -310,12 +324,14 @@ Nine inference crates cover lightweight edge models through multi‑billion‑pa
 | [Qwen3-TTS](crates/rlx-qwen3-tts/README.md) | `rlx-qwen3-tts` | 0.6B | 24 kHz | HF safetensors ([Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base), [CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice)) | ECAPA clone + preset speakers | progressive + batched PCM | `just qwen3-tts`, `jfk_voice_clone` | production — duplex voice chat, HF parity tests |
 | [Voxtral-4B-TTS](docker/voxtral-tts/README.md) | `rlx-voxtral-tts` | 4B | 24 kHz | HF safetensors ([Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603)) | preset voices + reference clone (train encoder) | — | `just voxtral-tts` | production — native RLX codec + compiled LM |
 | [KittenTTS mini](crates/rlx-kittentts/README.md) | `rlx-kittentts` | ~15M | 24 kHz | native [`kitten_tts_mini_rlx`](crates/kitten_tts_mini_rlx/README.md) bundle or optional ONNX ([KittenML/kitten-tts-mini-0.8](https://huggingface.co/KittenML/kitten-tts-mini-0.8)) | named voices (Jasper, …); IPA or `--features espeak` text | — | `just kittentts`, `just fetch-kittentts` | production — native RLX graph default; optional ORT (`--features onnx`) |
-| [RLX TTS](crates/rlx-tts/README.md) | `rlx-tts` | FastSpeech2 + WaveRNN h448 | 24 kHz | local `weights/tts/rlx-tts/rlx-tts.gguf` | product path | — | `just tts-demo` / `just export-rlx-tts-gguf` | production — packed GGUF + native RLX |
+| [RLX TTS](crates/rlx-tts/README.md) | `rlx-tts` | FastSpeech2 + WaveRNN h448 | 24 kHz | [`eugenehp/rlx-tts`](https://huggingface.co/eugenehp/rlx-tts) `rlx-tts.rlxp` | product path | — | `just fetch-rlx-tts` / `just tts-demo` | production — packed `.rlxp` + native RLX |
 | [Orpheus](crates/rlx-orpheus/README.md) | `rlx-orpheus` | 3B | 24 kHz | GGUF LM + SNAC safetensors | 8 built-in + zero-shot clone (pretrained GGUF) | ~2k-sample PCM chunks | `just orpheus`, `just orpheus-demo` | production — Metal LM + eager or CoreML SNAC |
 | [NeuTTS](crates/rlx-neutts/) | `rlx-neutts` | Nano / Air | 24 kHz | llama-tagged GGUF + NeuCodec safetensors | reference-audio clone | — | library API (`NeuTTS::load_with_decoder_on`) | production backbone + eager NeuCodec; no standalone CLI yet |
 | [Kyutai TTS 1.6B](crates/rlx-kyutai-tts/README.md) | `rlx-kyutai-tts` | 1.6B | 24 kHz | HF safetensors ([tts-1.6b-en_fr](https://huggingface.co/kyutai/tts-1.6b-en_fr)) | `speaker_wavs` cross-attn conditioning | planned | `just kyutai-tts` | production — DSM generate + Mimi; DepFormer eager |
 | [Pocket TTS](crates/rlx-pocket-tts/README.md) | `rlx-pocket-tts` | ~100M | 24 kHz | safetensors ([ungated mirror](https://huggingface.co/Verylicious/pocket-tts-ungated)) | preset `audio_prompt` embeddings | flow LM (faster than realtime on CPU) | `cargo run -p rlx-pocket-tts --example generate --features hf-download` | production on CPU/Accelerate; optional RLX backends via `rlx` feature |
-| [TinyTTS](crates/rlx-tiny-tts/) | `rlx-tiny-tts` | VITS2 | 44.1 kHz | ONNX → RLX bundle (MeloTTS English frontend via `rlx-inflect-nano`) | MALE / FEMALE | — | `rlx-tiny-tts --data weights/tiny-tts-rlx --text "…"` | production — four compiled subgraphs on every RLX backend |
+| [TinyTTS](crates/rlx-tiny-tts/) / [MeloTTS](crates/rlx-melotts/) | `rlx-tiny-tts` | VITS2 | 44.1 kHz | [`eugenehp/tiny-tts-rlx`](https://huggingface.co/eugenehp/tiny-tts-rlx) `tiny-tts.rlxp` | MALE / FEMALE | — | `just fetch-tiny-tts` / `just melotts-demo` | production — nested graphs; MeloTTS is an alias |
+| [Soprano 1.1](crates/rlx-soprano/README.md) | `rlx-soprano` | ~80M | 32 kHz | [`eugenehp/soprano`](https://huggingface.co/eugenehp/soprano) `soprano.rlxp` | single voice | — | `just fetch-soprano` / `just soprano-demo` | production — nested backbone + Vocos; no Hub ONNX |
+| [MOSS-TTS-Nano](crates/rlx-moss-nano/README.md) | `rlx-moss-nano` | 0.1B | 48 kHz stereo | [`eugenehp/moss-nano`](https://huggingface.co/eugenehp/moss-nano) `moss-nano.rlxp` | 18 builtin voices | — | `just fetch-moss-nano` / `just moss-nano` | production — hierarchical AR + codec; no Hub ONNX |
 | [Inflect-Nano](crates/rlx-inflect-nano/README.md) | `rlx-inflect-nano` | ~4.6M | 24 kHz | exported safetensors bundle | single speaker | — | `rlx-inflect-nano --text "…"` | production — standalone Rust frontend; vocoder on RLX graph or CoreML (ORT) |
 
 **Training (inference + finetune):**
@@ -336,7 +352,9 @@ Nine inference crates cover lightweight edge models through multi‑billion‑pa
 | NeuTTS | On-device clone; GGUF backbone via `rlx-llama32`; optional `burn-gpu` NeuCodec |
 | Kyutai TTS | Depth-multiplexed Helium + DepFormer, 32 codebooks, en/fr SPM; `KyutaiTtsSession::generate` → Mimi PCM |
 | Pocket TTS | Kyutai FlowLM + Mimi decoder path; Whisper-validated; CPU-first |
-| TinyTTS | VITS2 / MeloTTS at 44.1 kHz; monotonic alignment in Rust glue |
+| TinyTTS / MeloTTS | VITS2 at 44.1 kHz; nested `graphs/*.rlxp`; monotonic alignment in Rust glue |
+| Soprano | ~80M Qwen3 AR + Vocos @ 32 kHz; nested `.rlxp`; Whisper-validated |
+| MOSS-TTS-Nano | Hierarchical AR codec-LM @ 48 kHz stereo; 18 builtin voices; nested `.rlxp` |
 | Inflect-Nano | FastSpeech-style acoustic + Snake HiFi-GAN vocoder; full G2P frontend in Rust |
 
 ### Backends
@@ -928,6 +946,30 @@ Regenerate Silero embed: `python3 scripts/export_silero_onnx_weights.py …` (se
 
 Shared loader: `rlx_core::embedded_safetensors::EmbeddedSafetensors`.
 
+## Wake-word
+
+First-party product [`rlx-wakeword`](crates/rlx-wakeword/README.md): event API (20–40 ms hops), multi-phrase train/pack, optional VAD + speaker-id, ternary weights for bake TQ2 / fused kernels. Shared math in [`rlx-wake`](crates/rlx-wake/README.md) / [`rlx-wakeword-core`](crates/rlx-wakeword-core/README.md). WASM / Web Worker: [`rlx-wakeword-wasm`](crates/rlx-wakeword-wasm/README.md) (local `wasm-pack` only). Compat engines remain for parity.
+
+| Crate | Notes |
+|-------|-------|
+| [`rlx-wakeword`](crates/rlx-wakeword/README.md) | Product session + train/pack |
+| [`rlx-wakeword-core`](crates/rlx-wakeword-core/README.md) | `no_std` mel + CNN + ternary |
+| [`rlx-wakeword-wasm`](crates/rlx-wakeword-wasm/README.md) | Node / browser / Web Worker (not on crates.io) |
+| [`rlx-wake`](crates/rlx-wake/README.md) | Shared API / train CNN / ternary helpers |
+| [`rlx-openwakeword`](crates/rlx-openwakeword/README.md) | Mel → embedding → phrase head |
+| [`rlx-nanowakeword`](crates/rlx-nanowakeword/README.md) | Native CNN / lite |
+| [`rlx-porcupine`](crates/rlx-porcupine/README.md) | Porcupine-style wake CNN |
+| [`rlx-voxrt`](crates/rlx-voxrt/README.md) | VoxRT-style wake CNN |
+
+```sh
+just wakeword-train -- --synth --phrase hey_rlx --out-dir /tmp/wake_bundle --ternary
+just features=all-backends wakeword-demo -- --wav clip.wav --bundle /tmp/wake_bundle --hop-ms 40 --device all
+just wakeword-multi-bench
+just wakeword-wasm-bench
+just test-wakeword
+just test-wakeword-backends
+```
+
 ## Build and test
 
 ```sh
@@ -996,6 +1038,25 @@ rlx-run auto <weights> [args...]     # sniffs arch, dispatches to the right runn
 Programmatic: [`rlx_models::run::check_path`](crates/rlx-cli/src/compat.rs), [`check_hf_repo`](crates/rlx-cli/src/compat.rs) (requires `compat-net` feature), [`auto_dispatch`](crates/rlx-cli/src/auto_dispatch.rs), [`ChatTemplate::from_gguf`](crates/rlx-cli/src/chat.rs). Implements the same load-time-field predicate llama.cpp uses (`general.architecture` + `<arch>.context_length` + `<arch>.embedding_length` + `<arch>.block_count` + `tokenizer.ggml.{model,tokens}`).
 
 ## Status
+
+### Weights on Hugging Face (RLX packs)
+
+Local staging lives under gitignored `weights/` (`vision/`, `lm/`, `tts/`, `asr/`, `audio/`). Each publishable directory maps to one Hub model under [`eugenehp`](https://huggingface.co/eugenehp).
+
+| Hub primary | Examples |
+|-------------|---------|
+| Nested / outer **`.rlxp`** | `eugenehp/tiny-tts-rlx`, `soprano`, `moss-nano`, `rlx-tts`, `rlx-asr` |
+| ONNX / safetensors / GGUF | Other TTS and vision redistribs (kokoro, chatterbox, bioclip, …) |
+
+Native RLXP Hub repos ship **no** pack-time `.onnx`. Bake locally, then:
+
+```bash
+python3 scripts/prepare_weights_hf.py --cleanup          # cards / LICENSE / .gitattributes
+python3 scripts/publish_weights_hf.py --dry-run          # list jobs
+python3 scripts/publish_weights_hf.py --only moss-nano,soprano,tiny-tts-rlx,rlx-tts,rlx-asr
+```
+
+Asset helpers: [`rlx-assets`](crates/rlx-assets/README.md) (`native-pack` feature).
 
 ### Weights and parity
 
@@ -1081,6 +1142,14 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `rlx-ppocrv6` | [crates/rlx-ppocrv6/README.md](crates/rlx-ppocrv6/README.md) |
 | `rlx-trellis2` | [crates/rlx-trellis2/README.md](crates/rlx-trellis2/README.md) |
 | `rlx-vad` | [crates/rlx-vad/README.md](crates/rlx-vad/README.md) |
+| `rlx-wake` | [crates/rlx-wake/README.md](crates/rlx-wake/README.md) |
+| `rlx-wakeword-core` | [crates/rlx-wakeword-core/README.md](crates/rlx-wakeword-core/README.md) |
+| `rlx-wakeword` | [crates/rlx-wakeword/README.md](crates/rlx-wakeword/README.md) |
+| `rlx-wakeword-wasm` | [crates/rlx-wakeword-wasm/README.md](crates/rlx-wakeword-wasm/README.md) |
+| `rlx-openwakeword` | [crates/rlx-openwakeword/README.md](crates/rlx-openwakeword/README.md) |
+| `rlx-nanowakeword` | [crates/rlx-nanowakeword/README.md](crates/rlx-nanowakeword/README.md) |
+| `rlx-porcupine` | [crates/rlx-porcupine/README.md](crates/rlx-porcupine/README.md) |
+| `rlx-voxrt` | [crates/rlx-voxrt/README.md](crates/rlx-voxrt/README.md) |
 | `rlx-mamba` | [crates/rlx-mamba/README.md](crates/rlx-mamba/README.md) |
 | `rlx-ssm` | [crates/rlx-ssm/README.md](crates/rlx-ssm/README.md) |
 | `rlx-models-core` (`rlx-core`) | [crates/rlx-models-core/README.md](crates/rlx-models-core/README.md) |

@@ -1,0 +1,47 @@
+[package]
+name = "rlx-porcupine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Porcupine-style wake-word CNN on RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-wake = { workspace = true }
+rlx-runtime = { workspace = true }
+anyhow = { workspace = true }
+
+[features]
+default = []
+all-backends = ["rlx-wake/all-backends", "metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+metal = ["rlx-runtime/metal", "rlx-wake/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-wake/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-wake/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-wake/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-wake/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-wake/vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+
+[[bin]]
+name = "rlx-porcupine"
+path = "src/bin/rlx_porcupine.rs"
+
+[[test]]
+name = "native_quick"
+path = "tests/native_quick.rs"
+
+[[test]]
+name = "backend_quick_check"
+path = "tests/backend_quick_check.rs"
+
+[[test]]
+name = "backend_parity"
+path = "tests/backend_parity.rs"
+
+[lints]
+workspace = true

@@ -21,6 +21,8 @@ serde_json = { workspace = true }
 # model parsing ("Protobuf parsing failed").
 tokenizers = { workspace = true }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-gguf = { workspace = true }
+rlx-assets = { workspace = true, features = ["rlxp", "native-pack"] }
 # Native RLX runtime: imports the ONNX graphs → rlx-ir → compiled graphs (no ORT).
 rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false }
 

@@ -16,7 +16,12 @@ pub fn meta() -> AdapterMeta {
         hints: WeightHints {
             default_dir: PathBuf::from(DEFAULT_LOCAL_DIR),
             env_keys: vec!["RLX_SOPRANO_DIR"],
-            marker_files: vec!["tokenizer.json"],
+            marker_files: vec![
+                "soprano.rlxp",
+                "soprano.rlx",
+                "soprano.gguf",
+                "tokenizer.json",
+            ],
         },
     }
 }

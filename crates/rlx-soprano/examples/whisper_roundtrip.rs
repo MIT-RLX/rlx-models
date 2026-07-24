@@ -22,15 +22,24 @@ const DEFAULT_TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 /// “Suprano” by Whisper-tiny; grounding the name in a longer phrase helps.
 const BRAND_TEXT: &str = "Hello from the Soprano model.";
 
+fn soprano_bundle_present(dir: &std::path::Path) -> bool {
+    dir.join("soprano.rlxp").is_file()
+        || dir.join("soprano.gguf").is_file()
+        || dir
+            .join("graphs/soprano_backbone_kv_fp32.rlxp")
+            .is_file()
+        || dir
+            .join("onnx/soprano_backbone_kv_fp32.onnx")
+            .is_file()
+}
+
 fn main() -> anyhow::Result<()> {
     let dir = std::env::var("RLX_SOPRANO_DIR")
         .map(PathBuf::from)
         .ok()
         .or_else(|| {
             let p = PathBuf::from(DEFAULT_LOCAL_DIR);
-            p.join("onnx/soprano_backbone_kv_fp32.onnx")
-                .is_file()
-                .then_some(p)
+            soprano_bundle_present(&p).then_some(p)
         })
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/soprano")
@@ -49,8 +58,8 @@ fn main() -> anyhow::Result<()> {
     let ort_latents = std::env::var_os("RLX_ORT_LATENTS").is_some();
 
     anyhow::ensure!(
-        dir.join("onnx/soprano_backbone_kv_fp32.onnx").is_file(),
-        "missing backbone under {}",
+        soprano_bundle_present(&dir),
+        "missing soprano.rlxp / nested graphs / legacy onnx under {}",
         dir.display()
     );
 

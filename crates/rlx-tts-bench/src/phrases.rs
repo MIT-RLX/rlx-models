@@ -1,6 +1,7 @@
 //! Fixed bench phrases (override via CLI).
 
-pub const DEFAULT_SHORT: &str = "The quick brown fox jumps over the lazy dog near the river bank.";
+pub const DEFAULT_SHORT: &str =
+    "The quick brown fox jumps over the lazy dog near the riverbank at sunrise.";
 
 pub const DEFAULT_LONG: &str = "\
 Once upon a time in a quiet valley, a traveler paused by the river and listened \

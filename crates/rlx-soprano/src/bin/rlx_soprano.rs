@@ -13,7 +13,10 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use rlx_runtime::Device;
-use rlx_soprano::{DEFAULT_LOCAL_DIR, InferOpts, NativeSoprano, parse_device, peak_amplitude};
+use rlx_soprano::{
+    DEFAULT_GGUF_NAME, DEFAULT_LOCAL_DIR, DEFAULT_RLXP_NAME, InferOpts, NativeSoprano,
+    pack_directory, pack_rlxp, parse_device, peak_amplitude,
+};
 
 fn main() -> Result<()> {
     let mut text: Option<String> = None;
@@ -21,6 +24,8 @@ fn main() -> Result<()> {
     let mut model_dir = PathBuf::from(DEFAULT_LOCAL_DIR);
     let mut device = Device::Cpu;
     let mut opts = InferOpts::default();
+    let mut pack_gguf: Option<PathBuf> = None;
+    let mut pack_rlxp_out: Option<PathBuf> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -29,6 +34,13 @@ fn main() -> Result<()> {
             "--output" | "-o" => output = PathBuf::from(args.next().context("missing --output")?),
             "--model-dir" | "--weights" => {
                 model_dir = PathBuf::from(args.next().context("missing --model-dir")?)
+            }
+            "--pack-rlxp" => {
+                pack_rlxp_out =
+                    Some(PathBuf::from(args.next().context("missing --pack-rlxp PATH")?))
+            }
+            "--pack-gguf" => {
+                pack_gguf = Some(PathBuf::from(args.next().context("missing --pack-gguf PATH")?))
             }
             "--max-tokens" => {
                 opts.max_new_tokens = args
@@ -59,6 +71,8 @@ fn main() -> Result<()> {
             "-h" | "--help" => {
                 println!("Usage: rlx-soprano --text TEXT [--output FILE]");
                 println!("  --model-dir DIR   default: {DEFAULT_LOCAL_DIR}");
+                println!("  --pack-rlxp PATH  pack loose dir → {DEFAULT_RLXP_NAME} (or PATH)");
+                println!("  --pack-gguf PATH  pack loose dir → {DEFAULT_GGUF_NAME} (legacy)");
                 println!("  --max-tokens N    AR steps (default 256)");
                 println!("  --device NAME     cpu|metal|mlx|wgpu|coreml|cuda");
                 println!("  --greedy          argmax sampling");
@@ -67,7 +81,30 @@ fn main() -> Result<()> {
             other => anyhow::bail!("unknown argument: {other}"),
         }
     }
-    let text = text.context("--text is required")?;
+
+    if let Some(out) = pack_rlxp_out {
+        let report = pack_rlxp(&model_dir, &out)?;
+        println!(
+            "packed {} ({} bytes, {} blobs)",
+            report.path.display(),
+            report.bytes,
+            report.blob_count
+        );
+        return Ok(());
+    }
+    if let Some(out) = pack_gguf {
+        let report = pack_directory(&model_dir, &out)?;
+        println!(
+            "packed {} ({} bytes, {} text KV, {} blobs)",
+            report.path.display(),
+            report.bytes,
+            report.file_kv,
+            report.blob_count
+        );
+        return Ok(());
+    }
+
+    let text = text.context("--text is required (or use --pack-rlxp)")?;
 
     let t0 = Instant::now();
     let model = NativeSoprano::open(&model_dir, device)

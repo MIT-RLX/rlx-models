@@ -1,0 +1,69 @@
+[package]
+name = "rlx-wakeword"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "First-party RLX wakeword: event session, multi-phrase train/pack, ternary, optional VAD/speaker-id"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-wakeword-core = { workspace = true }
+rlx-wake = { workspace = true }
+rlx-vad = { workspace = true, optional = true }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+rlx-openwakeword = { workspace = true }
+rlx-nanowakeword = { workspace = true }
+rlx-porcupine = { workspace = true }
+rlx-voxrt = { workspace = true }
+rlx-runtime = { workspace = true }
+
+[[example]]
+name = "compare_bench"
+path = "examples/compare_bench.rs"
+
+[features]
+default = ["earshot"]
+earshot = ["dep:rlx-vad"]
+## Optional speaker enrollment gate (cosine over enrolled embeddings).
+speaker-id = []
+all-backends = ["rlx-wake/all-backends", "metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+metal = ["rlx-wake/metal"]
+mlx = ["rlx-wake/mlx"]
+cuda = ["rlx-wake/cuda"]
+rocm = ["rlx-wake/rocm"]
+gpu = ["rlx-wake/gpu"]
+vulkan = ["rlx-wake/vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+
+[[bin]]
+name = "rlx-wakeword"
+path = "src/bin/rlx_wakeword.rs"
+
+[[bin]]
+name = "rlx-wakeword-train"
+path = "src/bin/rlx_wakeword_train.rs"
+
+[[example]]
+name = "multi_phrase_bench"
+path = "examples/multi_phrase_bench.rs"
+
+[[test]]
+name = "session_quick"
+path = "tests/session_quick.rs"
+
+[[test]]
+name = "backend_quick_check"
+path = "tests/backend_quick_check.rs"
+
+[lints]
+workspace = true

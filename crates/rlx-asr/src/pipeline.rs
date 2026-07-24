@@ -108,40 +108,40 @@ impl AsrSession {
     /// Loose sidecars are optional pack leftovers.
     pub fn load(dir: &Path) -> Result<Self> {
         let paths = crate::AsrPaths::new(dir);
-        let gguf = paths
-            .gguf()
-            .and_then(|p| crate::gguf_io::AsrGguf::open(p).ok());
+        let pack = paths
+            .pack()
+            .and_then(|p| crate::gguf_io::AsrPack::open(p).ok());
 
-        let units = if let Some(ref g) = gguf {
+        let units = if let Some(ref g) = pack {
             if let Some(pieces) = g.units() {
                 Units::from_pieces(pieces)
             } else if paths.units_txt().is_file() {
                 Units::load(&paths.units_txt())?
             } else {
-                bail!("rlx-asr.units missing in GGUF and no units.txt under {}", dir.display());
+                bail!("units missing in pack and no units.txt under {}", dir.display());
             }
         } else {
             Units::load(&paths.units_txt())
                 .with_context(|| format!("units.txt under {}", dir.display()))?
         };
 
-        let hammer = if let Some(ref g) = gguf {
+        let hammer = if let Some(ref g) = pack {
             g.load_hammer("en_US").unwrap_or(Hammer { fsts: Vec::new() })
         } else if let Some(tp) = paths.tp_dir() {
             Hammer::load_dir(&tp, "en_US")?
         } else {
             Hammer { fsts: Vec::new() }
         };
-        let etiquette = if let Some(ref g) = gguf {
+        let etiquette = if let Some(ref g) = pack {
             g.etiquette_json()
-                .map(|s| Etiquette::from_json_str(s))
+                .map(|s| Etiquette::from_json_str(&s))
                 .transpose()?
         } else if let Some(p) = paths.etiquette_json() {
             Some(Etiquette::load(&p)?)
         } else {
             None
         };
-        let decoder = if let Some(ref g) = gguf {
+        let decoder = if let Some(ref g) = pack {
             g.load_effective_step1().ok()
         } else {
             EffectiveStep1::load_bins(&paths.decoder_dir()).ok()

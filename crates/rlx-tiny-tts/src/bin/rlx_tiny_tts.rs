@@ -21,10 +21,10 @@ fn opt(flag: &str) -> Option<String> {
 fn main() -> Result<()> {
     let data = opt("--data").unwrap_or_else(|| "weights/tiny-tts-rlx".to_string());
 
-    // `--pack <dir> --out bundle.rlxpack`: package a bundle directory into a
-    // single distributable file (loadable via `--data bundle.rlxpack`).
+    // `--pack <dir> --out bundle.rlxp`: package a bundle directory into a
+    // single distributable `.rlxp` (loadable via `--data bundle.rlxp`).
     if let Some(src_dir) = opt("--pack") {
-        let out = opt("--out").unwrap_or_else(|| "tiny-tts.rlxpack".to_string());
+        let out = opt("--out").unwrap_or_else(|| "tiny-tts.rlxp".to_string());
         rlx_tiny_tts::asset_source::pack::write_dir(&src_dir, &out)
             .with_context(|| format!("pack {src_dir} → {out}"))?;
         let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
@@ -47,8 +47,8 @@ fn main() -> Result<()> {
         None => TinyTts::preferred_device(),
     };
 
-    // Accepts a directory, a packed `.rlxpack` file, or any path `AssetSource`
-    // auto-detects — `--data bundle/` or `--data tiny-tts.rlxpack` both work.
+    // Accepts a directory, a packed `.rlxp` file, or any path `AssetSource`
+    // auto-detects — `--data bundle/` or `--data tiny-tts.rlxp` both work.
     let model = TinyTts::load(PathBuf::from(&data))
         .with_context(|| format!("load TinyTTS bundle from {data}"))?;
 

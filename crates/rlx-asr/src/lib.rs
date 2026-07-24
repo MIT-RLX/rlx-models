@@ -19,9 +19,10 @@
 //! audio → 80-mel frontend → energy VAD → encoder → CTC beam → AED → text
 //! ```
 //!
-//! **Weights:** single file `weights/asr/model.gguf` (`RLX_ASR_DIR`,
-//! `just asr-pack-gguf`). Units, silence fbank, etiquette, TP FSTs, AED, and
-//! folded encoder tensors live inside the GGUF.
+//! **Weights:** single file `weights/asr/model.rlxp` (legacy `model.gguf`; `RLX_ASR_DIR`,
+//! `just fetch-rlx-asr` from [eugenehp/rlx-asr](https://huggingface.co/eugenehp/rlx-asr),
+//! or `just asr-pack-rlxp`). Units, silence fbank, etiquette, TP FSTs, AED, and
+//! folded encoder tensors live inside the pack.
 //!
 //! The Rust CLI uses a stub encoder until the folded Conformer graph is wired;
 //! Python `tools/e2e_native_whole.py` runs the folded CTC path from the same GGUF.
@@ -43,10 +44,16 @@ pub mod units;
 pub mod vad;
 pub(crate) mod weights;
 
+/// Hugging Face model id for the packed ASR GGUF (`model.gguf`).
+pub const HF_REPO: &str = "eugenehp/rlx-asr";
+
 pub use beam::StreamingCtcBeam;
 pub use effective_decoder::EffectiveStep1;
 pub use env::{asr_dir, asr_dir_env, timing, AsrPaths};
-pub use gguf_io::{pack_asr_gguf, resolve_gguf_path, AsrGguf, DEFAULT_GGUF_NAME};
+pub use gguf_io::{
+    pack_asr_gguf, pack_asr_rlxp, resolve_gguf_path, resolve_pack_path, resolve_rlxp_path,
+    AsrGguf, AsrPack, AsrRlxp, DEFAULT_GGUF_NAME, DEFAULT_RLXP_NAME,
+};
 pub use k_codebook::{affine_group, KCodebook, TextKLayer, TEXT_K_LAYERS};
 pub use ls_projections::{LsProjections, LsVLayer, ATT_V_HEAD_DIM, ATT_V_OUT};
 pub use pipeline::{AsrSession, StreamingAsr, Transcript};

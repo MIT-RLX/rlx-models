@@ -20,6 +20,7 @@ fn usage() -> ! {
     eprintln!("  rlx-asr transcribe [--dir DIR] --wav audio.wav");
     eprintln!();
     eprintln!("env: RLX_ASR_DIR  RLX_ASR_TIMING=1  RLX_ASR_GGUF=path");
+    eprintln!("weights: just fetch-rlx-asr  →  weights/asr/model.gguf ({})", rlx_asr::HF_REPO);
     std::process::exit(2);
 }
 

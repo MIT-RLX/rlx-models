@@ -1,4 +1,4 @@
-//! RLX TTS adapter (private `.cache/rlx-tts` bundle).
+//! RLX TTS adapter (`weights/tts/rlx-tts/rlx-tts.gguf` or loose bundle).
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -17,7 +17,13 @@ pub fn meta() -> AdapterMeta {
         hints: WeightHints {
             default_dir: PathBuf::from(rlx_tts::DEFAULT_BUNDLE_DIR),
             env_keys: vec!["RLX_TTS_BUNDLE"],
-            marker_files: vec!["manifest.json", "wavernn.safetensors"],
+            marker_files: vec![
+                "rlx-tts.rlxp",
+                "rlx-tts.rlx",
+                "rlx-tts.gguf",
+                "manifest.json",
+                "wavernn.safetensors",
+            ],
         },
     }
 }

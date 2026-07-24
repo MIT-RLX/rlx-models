@@ -114,6 +114,14 @@ members = [
     "crates/rlx-mamba",
     "crates/rlx-fft",
     "crates/rlx-vad",
+    "crates/rlx-wake",
+    "crates/rlx-wakeword-core",
+    "crates/rlx-wakeword",
+    "crates/rlx-wakeword-wasm",
+    "crates/rlx-openwakeword",
+    "crates/rlx-nanowakeword",
+    "crates/rlx-porcupine",
+    "crates/rlx-voxrt",
     "crates/rlx-aec",
     "crates/rlx-mimi",
     "crates/rlx-dac",
@@ -178,6 +186,7 @@ rlx-compile = { version = "^0.2.13" }
 rlx-fusion = { version = "^0.2.13" }
 rlx-cpu = { version = "^0.2.13" }
 rlx-gguf = { version = "^0.2.13" }
+rlx-pkg = { version = "^0.2.13" }
 rlx-text = { version = "^0.2.13" }
 rlx-metal = { version = "^0.2.13" }
 rlx-mlx = { version = "^0.2.13" }
@@ -292,6 +301,14 @@ rlx-orpheus = { path = "crates/rlx-orpheus", version = "0.2.13" }
 rlx-mamba = { path = "crates/rlx-mamba", version = "0.2.13" }
 rlx-fft = { path = "crates/rlx-fft", version = "0.2.13" }
 rlx-vad = { path = "crates/rlx-vad", version = "0.2.13" }
+rlx-wake = { path = "crates/rlx-wake", version = "0.2.13" }
+rlx-wakeword-core = { path = "crates/rlx-wakeword-core", version = "0.2.13" }
+rlx-wakeword = { path = "crates/rlx-wakeword", version = "0.2.13" }
+rlx-wakeword-wasm = { path = "crates/rlx-wakeword-wasm", version = "0.2.13" }
+rlx-openwakeword = { path = "crates/rlx-openwakeword", version = "0.2.13" }
+rlx-nanowakeword = { path = "crates/rlx-nanowakeword", version = "0.2.13" }
+rlx-porcupine = { path = "crates/rlx-porcupine", version = "0.2.13" }
+rlx-voxrt = { path = "crates/rlx-voxrt", version = "0.2.13" }
 rlx-aec = { path = "crates/rlx-aec", version = "0.2.13" }
 rlx-mimi = { path = "crates/rlx-mimi", version = "0.2.13" }
 rlx-encodec = { path = "crates/rlx-encodec", version = "0.2.13" }

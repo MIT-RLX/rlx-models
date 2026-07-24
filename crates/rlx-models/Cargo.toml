@@ -53,6 +53,13 @@ rlx-wav2vec2-asr = { workspace = true, optional = true }
 rlx-diarize = { workspace = true, optional = true }
 rlx-whisper = { workspace = true, optional = true, features = ["tokenizer", "timestamps"] }
 rlx-vad = { workspace = true, optional = true }
+rlx-wake = { workspace = true, optional = true }
+rlx-wakeword-core = { workspace = true, optional = true }
+rlx-wakeword = { workspace = true, optional = true }
+rlx-openwakeword = { workspace = true, optional = true }
+rlx-nanowakeword = { workspace = true, optional = true }
+rlx-porcupine = { workspace = true, optional = true }
+rlx-voxrt = { workspace = true, optional = true }
 rlx-aec = { workspace = true, optional = true }
 rlx-voxtral = { workspace = true, optional = true }
 rlx-qwen3-asr = { workspace = true, optional = true }
@@ -191,6 +198,12 @@ unlimited-ocr = ["dep:rlx-unlimited-ocr"]
 diarize = ["dep:rlx-diarize"]
 whisper = ["dep:rlx-whisper"]
 vad = ["dep:rlx-vad"]
+wake = ["dep:rlx-wake"]
+wakeword = ["dep:rlx-wakeword", "dep:rlx-wakeword-core", "wake"]
+openwakeword = ["dep:rlx-openwakeword", "wake"]
+nanowakeword = ["dep:rlx-nanowakeword", "wake"]
+porcupine = ["dep:rlx-porcupine", "wake"]
+voxrt = ["dep:rlx-voxrt", "wake"]
 aec = ["dep:rlx-aec"]
 voxtral = ["dep:rlx-voxtral"]
 qwen3-asr = ["dep:rlx-qwen3-asr"]
@@ -278,7 +291,7 @@ llm = [
     "laguna",
     "llama-base",
 ]
-asr = ["whisper", "wav2vec2-bert", "wav2vec2-asr", "voxtral", "qwen3-asr", "conformer-ctc", "vad", "diarize", "aec"]
+asr = ["whisper", "wav2vec2-bert", "wav2vec2-asr", "voxtral", "qwen3-asr", "conformer-ctc", "vad", "diarize", "aec", "wakeword", "openwakeword", "nanowakeword", "porcupine", "voxrt"]
 tts = ["kyutai-tts", "kittentts", "rlx-tts", "kokoro", "supertonic", "luxtts", "zipvoice", "moss-nano", "maya1", "miratts", "f5tts", "piper", "orpheus", "neutts", "qwen3-tts", "voxtral-tts", "tsac", "melotts", "openvoice", "parlertts", "metavoice", "chatterbox", "gepard"]
 vision-models = [
     "sam",
@@ -394,6 +407,12 @@ metal = [
     "rlx-voxtral-tts?/metal",
     "rlx-wav2vec2-bert?/metal",
     "rlx-whisper?/metal",
+    "rlx-wake?/metal",
+    "rlx-wakeword?/metal",
+    "rlx-openwakeword?/metal",
+    "rlx-nanowakeword?/metal",
+    "rlx-porcupine?/metal",
+    "rlx-voxrt?/metal",
 ]
 mlx = [
     "embed",
@@ -458,6 +477,12 @@ mlx = [
     "rlx-voxtral-tts?/mlx",
     "rlx-wav2vec2-bert?/mlx",
     "rlx-whisper?/mlx",
+    "rlx-wake?/mlx",
+    "rlx-wakeword?/mlx",
+    "rlx-openwakeword?/mlx",
+    "rlx-nanowakeword?/mlx",
+    "rlx-porcupine?/mlx",
+    "rlx-voxrt?/mlx",
 ]
 coreml = [
     "embed",
@@ -538,6 +563,12 @@ gpu = [
     "rlx-voxtral-tts?/gpu",
     "rlx-wav2vec2-bert?/gpu",
     "rlx-whisper?/gpu",
+    "rlx-wake?/gpu",
+    "rlx-wakeword?/gpu",
+    "rlx-openwakeword?/gpu",
+    "rlx-nanowakeword?/gpu",
+    "rlx-porcupine?/gpu",
+    "rlx-voxrt?/gpu",
 ]
 apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
@@ -594,6 +625,12 @@ vulkan = [
     "rlx-voxtral-tts?/vulkan",
     "rlx-wav2vec2-bert?/vulkan",
     "rlx-whisper?/vulkan",
+    "rlx-wake?/vulkan",
+    "rlx-wakeword?/vulkan",
+    "rlx-openwakeword?/vulkan",
+    "rlx-nanowakeword?/vulkan",
+    "rlx-porcupine?/vulkan",
+    "rlx-voxrt?/vulkan",
 ]
 cuda = [
     "embed",
@@ -657,6 +694,12 @@ cuda = [
     "rlx-voxtral-tts?/cuda",
     "rlx-wav2vec2-bert?/cuda",
     "rlx-whisper?/cuda",
+    "rlx-wake?/cuda",
+    "rlx-wakeword?/cuda",
+    "rlx-openwakeword?/cuda",
+    "rlx-nanowakeword?/cuda",
+    "rlx-porcupine?/cuda",
+    "rlx-voxrt?/cuda",
 ]
 rocm = [
     "embed",
@@ -714,6 +757,12 @@ rocm = [
     "rlx-voxtral-tts?/rocm",
     "rlx-wav2vec2-bert?/rocm",
     "rlx-whisper?/rocm",
+    "rlx-wake?/rocm",
+    "rlx-wakeword?/rocm",
+    "rlx-openwakeword?/rocm",
+    "rlx-nanowakeword?/rocm",
+    "rlx-porcupine?/rocm",
+    "rlx-voxrt?/rocm",
 ]
 tpu = ["rlx-runtime/tpu"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]

@@ -1,0 +1,34 @@
+[package]
+name = "rlx-wakeword-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "no_std-ready mel + WakeCnn for RLX wakeword (f32 + optional ternary fused kernels)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+
+[dev-dependencies]
+rlx-wake = { workspace = true }
+
+[[test]]
+name = "parity_wake"
+path = "tests/parity_wake.rs"
+required-features = ["std"]
+
+[[test]]
+name = "ternary_quick"
+path = "tests/ternary_quick.rs"
+required-features = ["std"]
+
+[lints]
+workspace = true

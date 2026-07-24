@@ -128,6 +128,13 @@ impl FirstStage {
                 sample_top_p(&mut logits, top_p, &mut rng)
             };
             tokens.push(next);
+            if step == 0 || (step + 1) % 16 == 0 || next == EOS_AUDIO || step + 1 == max_new {
+                eprintln!(
+                    "[metavoice] first-stage AR {}/{} (CPU eager; EnCodec uses --device)",
+                    step + 1,
+                    max_new
+                );
+            }
             if next == EOS_AUDIO || tokens.len() >= self.args.block_size {
                 break;
             }

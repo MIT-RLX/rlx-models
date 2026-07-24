@@ -8,12 +8,17 @@
 //! - optional `gprm_index.json` prompt-text index
 
 mod gprm;
+mod lexicon_seed;
 mod lhp_map;
 mod phbk;
 mod rewrite;
 mod rule_dat;
 mod tn;
 mod torchn;
+
+use lexicon_seed::{
+    load_lexicon, load_nashville_isym_phones, seed_builtin_lexicon, seed_roundtrip_overrides,
+};
 
 pub use gprm::GprmIndex;
 pub use lhp_map::LhpAlphabet;
@@ -236,9 +241,10 @@ impl HydraLite {
                 load_lexicon(&lex_path, &mut lexicon)?;
             }
         }
-        // overrides last so neural-adapter fixes win (`from`, `will`, …).
+        // Later seeds win: Nashville JSON → adapter hardcodes → round-trip OOVs.
         load_nashville_isym_phones(&frontend_dir.join("nashville_isym_phones.json"), &mut lexicon);
         seed_nashville_lexicon(&mut lexicon);
+        seed_roundtrip_overrides(&mut lexicon);
 
         // TorchN G2P: load sidecars by default when present (Softmax pronounce
         // is confidence-gated; lexicon still wins for known words). Opt out:
@@ -586,76 +592,6 @@ fn digit_word(ch: char) -> &'static str {
     }
 }
 
-fn seed_builtin_lexicon(lexicon: &mut HashMap<String, Vec<String>>) {
-    // LHP orthography for digits + common spoken content words. Bundle
-    // `lexicon.txt` overlays these when present.
-    let entries: &[(&str, &[&str])] = &[
-        ("zero", &["z", "i", "r", "o"]),
-        ("one", &["w", "a", "n"]),
-        ("two", &["t", "u"]),
-        ("three", &["T", "r", "i"]),
-        ("four", &["f", "o", "r"]),
-        ("five", &["f", "a", "i", "v"]),
-        ("six", &["s", "i", "k", "s"]),
-        ("seven", &["s", "e", "v", "e", "n"]),
-        ("eight", &["e", "i", "t"]),
-        ("nine", &["n", "a", "i", "n"]),
-        ("mister", &["m", "i", "s", "t", "e", "r"]),
-        ("missus", &["m", "i", "s", "e", "s"]),
-        ("miz", &["m", "i", "z"]),
-        ("doctor", &["d", "a", "k", "t", "e", "r"]),
-        ("saint", &["s", "e", "i", "n", "t"]),
-        ("and", &["a", "n", "d"]),
-        ("percent", &["p", "e", "r", "s", "e", "n", "t"]),
-        ("at", &["a", "t"]),
-        ("number", &["n", "a", "m", "b", "e", "r"]),
-        ("hi", &["h", "a", "i"]),
-        ("hello", &["h", "e", "l", "o"]),
-        ("from", &["f", "r", "o", "m"]),
-        ("call", &["k", "o", "l"]),
-    ];
-    for (word, phones) in entries {
-        lexicon
-            .entry((*word).to_string())
-            .or_insert_with(|| phones.iter().map(|p| (*p).to_string()).collect());
-    }
-}
-
-/// `examples/harvest_nashville_isyms` (`nashville_isym_phones.json`).
-fn load_nashville_isym_phones(path: &Path, lexicon: &mut HashMap<String, Vec<String>>) {
-    if !path.is_file() {
-        return;
-    }
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return;
-    };
-    let Some(phones) = v.get("phones").and_then(|p| p.as_object()) else {
-        return;
-    };
-    for (word, seq) in phones {
-        let Some(arr) = seq.as_array() else {
-            continue;
-        };
-        let toks: Vec<String> = arr
-            .iter()
-            .filter_map(|t| t.as_str().map(|s| s.to_string()))
-            .filter(|s| {
-                !s.is_empty()
-                    && !matches!(
-                        s.as_str(),
-                        "." | "!" | "?" | "_" | "#" | "~" | "," | ";" | ":"
-                    )
-            })
-            .collect();
-        if !toks.is_empty() {
-            lexicon.insert(word.to_ascii_lowercase(), toks);
-        }
-    }
-}
-
 /// common corpus words (local fixture-backed; improves portable G2P until
 /// TorchN weight decode lands).
 fn seed_nashville_lexicon(lexicon: &mut HashMap<String, Vec<String>>) {
@@ -905,29 +841,6 @@ fn seed_nashville_lexicon(lexicon: &mut HashMap<String, Vec<String>>) {
             phones.iter().map(|p| (*p).to_string()).collect(),
         );
     }
-}
-
-fn load_lexicon(path: &Path, lexicon: &mut HashMap<String, Vec<String>>) -> Result<()> {
-    for line in std::fs::read_to_string(path)?.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (word, rest) = if let Some((w, r)) = line.split_once('\t') {
-            (w.to_string(), r.to_string())
-        } else {
-            let mut parts = line.split_whitespace();
-            let Some(w) = parts.next() else {
-                continue;
-            };
-            (w.to_string(), parts.collect::<Vec<_>>().join(" "))
-        };
-        let phones: Vec<String> = rest.split_whitespace().map(|s| s.to_string()).collect();
-        if !phones.is_empty() {
-            lexicon.insert(word.to_ascii_lowercase(), phones);
-        }
-    }
-    Ok(())
 }
 
 fn apply_neural_adapter_params(opts: &mut NeuralAdapterOpts, params: &serde_json::Value) {

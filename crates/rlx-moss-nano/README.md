@@ -4,8 +4,9 @@
 0.1B multilingual **hierarchical autoregressive** codec-LM TTS for RLX
 (**Apache-2.0**, 48 kHz stereo, en/zh/ja).
 
-**Default path is native RLX** (ONNX graphs → rlx-ir → compile → run; no ONNX
-Runtime at inference). Optional `--features onnx` keeps the ORT reference.
+**Distribution:** single [`moss-nano.rlxp`](https://huggingface.co/eugenehp/moss-nano)
+with nested native `graphs/*.rlxp` (hot tensors + `graph.json`). Runtime materializes
+the outer pack and lowers each subgraph to HIR (no ONNX Runtime, no `.onnx` on Hub).
 
 Pipeline:
 
@@ -30,11 +31,15 @@ code stream (hence the waveform) stays bit-identical across backends.
 ## Setup
 
 ```bash
-# LM (prefill / local + external .data + tokenizer + manifest)
+just fetch-moss-nano          # eugenehp/moss-nano moss-nano.rlxp
+just export-moss-nano-rlxp    # pack from local ONNX tree → nested graphs
+```
+
+Loose ONNX (dev / pack source only — not published):
+
+```bash
 huggingface-cli download OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX --local-dir weights/tts/moss-nano
-# codec → weights/tts/moss-nano/codec/
 huggingface-cli download OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX --local-dir weights/tts/moss-nano/codec
-# BPE tokenizer.model → tokenizer.json (pure-Rust loadable)
 python crates/rlx-moss-nano/scripts/convert_tokenizer.py weights/tts/moss-nano
 ```
 
@@ -52,13 +57,13 @@ cargo run -p rlx-moss-nano --release --features apple-silicon -- \
   --voice Trump --device metal --out /tmp/moss.wav
 ```
 
-`--seed`, `--max-frames`, `--device cpu|metal|mlx|cuda|gpu`, `--list-voices`.
+`--seed`, `--max-frames`, `--device cpu|metal|mlx|cuda|gpu`, `--list-voices`,
+`--pack-rlxp` (and legacy `--pack-gguf`).
 
 ## Notes
 
 - **Tokenizer**: convert `tokenizer.model` (SentencePiece BPE) to `tokenizer.json`
-  for the pure-Rust `tokenizers` crate. Do **not** link the C++ `sentencepiece`
-  crate when using the optional `onnx` feature — it clashes with ORT's protobuf.
+  for the pure-Rust `tokenizers` crate when packing from loose ONNX.
 - Override sampler device with `RLX_MOSS_SAMPLER_DEVICE=gpu` (may break cross-backend
   token identity).
 - Output PCM is pause-polished by default: lead/trail trim + internal holes

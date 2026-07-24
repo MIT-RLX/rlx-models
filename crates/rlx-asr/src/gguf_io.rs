@@ -1,7 +1,7 @@
 // RLX — versatile ML compiler + runtime.
 // Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna. GPLv3.
 
-//! Pack / load ASR weights as a single GGUF (`weights/asr/model.gguf`).
+//! Pack / load ASR weights as `.rlxp` (preferred) or legacy GGUF (`weights/asr/model.rlxp`).
 //!
 //! Tensor naming (`general.architecture = "rlx-asr"`):
 //! - `encoder.<npz_key>` — folded whole-model float tensors
@@ -18,6 +18,8 @@ use crate::spec::{DECODER_DIM, VOCAB};
 use crate::weights::read_f32_bin;
 use anyhow::{bail, Context, Result};
 use rlx_gguf::{GgmlType, GgufFile, GgufWriter, MetaValue};
+use rlx_ir::Graph;
+use rlx_pkg::{ContainerKind, Package, PackedWeight, WriteOptions, write_package};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,6 +27,7 @@ use std::path::{Path, PathBuf};
 pub const ASR_GGUF_ARCH: &str = "rlx-asr";
 pub const ASR_GGUF_FORMAT: &str = "rlx-asr-gguf-v1";
 pub const DEFAULT_GGUF_NAME: &str = "model.gguf";
+pub const DEFAULT_RLXP_NAME: &str = "model.rlxp";
 
 #[derive(Debug, Default)]
 pub struct PackReport {
@@ -276,6 +279,138 @@ pub fn pack_asr_gguf(root: &Path, out: &Path) -> Result<PackReport> {
         bytes,
         skipped,
     })
+}
+
+/// Pack ASR tensors into one `.rlxp` (tensors + `units.txt` / `etiquette.json` sidecars).
+///
+/// Prefer converting an existing `model.gguf` in `root` when present; otherwise
+/// build a temporary GGUF from loose pack sources then convert.
+pub fn pack_asr_rlxp(root: &Path, out: &Path) -> Result<PackReport> {
+    if let Some(gguf) = resolve_gguf_path(root) {
+        return pack_asr_rlxp_from_gguf(&gguf, out, root);
+    }
+    let tmp = std::env::temp_dir().join(format!("rlx-asr-pack-{}.gguf", std::process::id()));
+    let gguf_report = pack_asr_gguf(root, &tmp)?;
+    let mut report = pack_asr_rlxp_from_gguf(&tmp, out, root)?;
+    report.skipped = gguf_report.skipped;
+    let _ = fs::remove_file(&tmp);
+    Ok(report)
+}
+
+fn pack_asr_rlxp_from_gguf(gguf_path: &Path, out: &Path, root: &Path) -> Result<PackReport> {
+    let file = GgufFile::from_path(gguf_path)
+        .with_context(|| format!("open GGUF {}", gguf_path.display()))?;
+    let mut weights = Vec::new();
+    for name in file.keys() {
+        let t = file.get(name).with_context(|| format!("tensor {name}"))?;
+        let (scheme, data) = if t.dtype == GgmlType::I8 {
+            ("i8".to_string(), file.tensor_bytes(t)?.to_vec())
+        } else {
+            let (f32s, _) = file.dequant_f32(name).with_context(|| format!("dequant {name}"))?;
+            let bytes: Vec<u8> = f32s.iter().flat_map(|x| x.to_le_bytes()).collect();
+            ("f32".to_string(), bytes)
+        };
+        weights.push(PackedWeight::hot(
+            name,
+            t.shape.clone(),
+            scheme,
+            "row_major",
+            data,
+        ));
+    }
+
+    let mut sidecars = Vec::new();
+    let sources = pack_source_roots(root);
+    if let Some(units_path) = first_existing(
+        &sources
+            .iter()
+            .flat_map(|s| [s.join("units.txt"), s.join("misc/units.txt")])
+            .collect::<Vec<_>>(),
+    ) {
+        sidecars.push((
+            "units.txt".into(),
+            "text/plain".into(),
+            fs::read(&units_path)?,
+        ));
+    } else if let Some(units) = units_from_gguf_metadata(&file) {
+        sidecars.push(("units.txt".into(), "text/plain".into(), units));
+    }
+
+    if let Some(eti_path) = first_existing(
+        &sources
+            .iter()
+            .map(|s| s.join("etiquette.json"))
+            .collect::<Vec<_>>(),
+    ) {
+        sidecars.push((
+            "etiquette.json".into(),
+            "application/json".into(),
+            fs::read(eti_path)?,
+        ));
+    } else if let Some(MetaValue::String(eti)) = file.metadata.get("rlx-asr.etiquette_json") {
+        sidecars.push((
+            "etiquette.json".into(),
+            "application/json".into(),
+            eti.as_bytes().to_vec(),
+        ));
+    }
+
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let opts = WriteOptions {
+        name: "rlx-asr".into(),
+        producer: Some("rlx-asr".into()),
+        features: vec!["rlx-asr".into()],
+        container: ContainerKind::Flat,
+        sidecars,
+        include_graph: false,
+        compress_sidecars: true,
+        ..WriteOptions::default()
+    };
+    let graph = Graph::new("rlx-asr");
+    write_package(out, &graph, &weights, &opts)
+        .with_context(|| format!("write {}", out.display()))?;
+    let bytes = fs::metadata(out)?.len();
+    Ok(PackReport {
+        path: out.to_path_buf(),
+        n_tensors: weights.len(),
+        bytes,
+        skipped: Vec::new(),
+    })
+}
+
+fn units_from_gguf_metadata(file: &GgufFile) -> Option<Vec<u8>> {
+    let mv = file.metadata.get("rlx-asr.units")?;
+    let MetaValue::Array(items) = mv else {
+        return None;
+    };
+    let lines: Vec<String> = items
+        .iter()
+        .filter_map(|v| match v {
+            MetaValue::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(lines.join("\n").into_bytes())
+}
+
+fn parse_units_sidecar(bytes: &[u8]) -> Vec<String> {
+    bytes
+        .split(|b| *b == b'\n')
+        .map(|line| {
+            std::str::from_utf8(line)
+                .unwrap_or("")
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Roots searched for pack sources (published tree + optional cache).
@@ -577,6 +712,190 @@ impl AsrGguf {
     }
 }
 
+/// Opened ASR `.rlxp` with helpers matching [`AsrGguf`].
+pub struct AsrRlxp {
+    pub path: PathBuf,
+    pack: Package,
+}
+
+impl AsrRlxp {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let pack = Package::open(&path).with_context(|| format!("open {}", path.display()))?;
+        Ok(Self { path, pack })
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.pack.weight_entry(name).is_ok()
+    }
+
+    pub fn f32_tensor(&self, name: &str) -> Result<Vec<f32>> {
+        self.pack.tensor_f32(name)
+    }
+
+    pub fn i8_tensor(&self, name: &str) -> Result<Vec<i8>> {
+        let bytes = self.pack.tensor_bytes(name)?;
+        Ok(bytes.iter().map(|&b| b as i8).collect())
+    }
+
+    pub fn blob(&self, name: &str) -> Result<Vec<u8>> {
+        self.pack.tensor_bytes(name)
+    }
+
+    pub fn load_hammer(&self, locale: &str) -> Result<crate::textproc::Hammer> {
+        crate::textproc::Hammer::load_from_blobs(|stem| {
+            let key = format!("tp.{stem}");
+            self.blob(&key).ok()
+        }, locale)
+    }
+
+    pub fn units(&self) -> Option<Vec<String>> {
+        let bytes = self.pack.sidecar("units.txt").ok()?;
+        let pieces = parse_units_sidecar(&bytes);
+        if pieces.is_empty() {
+            None
+        } else {
+            Some(pieces)
+        }
+    }
+
+    pub fn etiquette_json(&self) -> Option<String> {
+        self.pack
+            .sidecar("etiquette.json")
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+    }
+
+    pub fn silence_fbank(&self) -> Result<Vec<f32>> {
+        self.f32_tensor("silence_fbank")
+    }
+
+    pub fn load_effective_step1(&self) -> Result<crate::effective_decoder::EffectiveStep1> {
+        let embed = self.f32_tensor("decoder.embed")?;
+        let ah = self
+            .f32_tensor("decoder.effective_Ah_tok")
+            .or_else(|_| self.f32_tensor("decoder.effective_Ah"))?;
+        let w_out = self.f32_tensor("decoder.W_out")?;
+        let b_out = self.f32_tensor("decoder.b_out")?;
+        if embed.len() != VOCAB * DECODER_DIM {
+            bail!("embed len {}", embed.len());
+        }
+        if ah.len() != DECODER_DIM * DECODER_DIM {
+            bail!("Ah len {}", ah.len());
+        }
+        if w_out.len() != VOCAB * DECODER_DIM {
+            bail!("W_out len {}", w_out.len());
+        }
+        if b_out.len() != VOCAB {
+            bail!("b_out len {}", b_out.len());
+        }
+        Ok(crate::effective_decoder::EffectiveStep1 {
+            embed,
+            ah_tok: ah,
+            w_out,
+            b_out,
+            ak: self.f32_tensor("decoder.effective_Ak").ok(),
+            av: self.f32_tensor("decoder.effective_Av").ok(),
+            we: self.f32_tensor("decoder.effective_We").ok(),
+            wc: self.f32_tensor("decoder.effective_Wc").ok(),
+            b_h: self.f32_tensor("decoder.effective_bh").ok(),
+        })
+    }
+}
+
+/// Unified ASR weight pack (`.rlxp` or legacy GGUF).
+pub enum AsrPack {
+    Gguf(AsrGguf),
+    Rlxp(AsrRlxp),
+}
+
+impl AsrPack {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("rlxp"))
+        {
+            return Ok(Self::Rlxp(AsrRlxp::open(path)?));
+        }
+        Ok(Self::Gguf(AsrGguf::open(path)?))
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        match self {
+            Self::Gguf(g) => g.has(name),
+            Self::Rlxp(p) => p.has(name),
+        }
+    }
+
+    pub fn f32_tensor(&self, name: &str) -> Result<Vec<f32>> {
+        match self {
+            Self::Gguf(g) => g.f32_tensor(name),
+            Self::Rlxp(p) => p.f32_tensor(name),
+        }
+    }
+
+    pub fn i8_tensor(&self, name: &str) -> Result<Vec<i8>> {
+        match self {
+            Self::Gguf(g) => g.i8_tensor(name),
+            Self::Rlxp(p) => p.i8_tensor(name),
+        }
+    }
+
+    pub fn blob(&self, name: &str) -> Result<Vec<u8>> {
+        match self {
+            Self::Gguf(g) => g.blob(name),
+            Self::Rlxp(p) => p.blob(name),
+        }
+    }
+
+    pub fn load_hammer(&self, locale: &str) -> Result<crate::textproc::Hammer> {
+        match self {
+            Self::Gguf(g) => g.load_hammer(locale),
+            Self::Rlxp(p) => p.load_hammer(locale),
+        }
+    }
+
+    pub fn units(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Gguf(g) => g.units(),
+            Self::Rlxp(p) => p.units(),
+        }
+    }
+
+    pub fn etiquette_json(&self) -> Option<String> {
+        match self {
+            Self::Gguf(g) => g.etiquette_json().map(str::to_string),
+            Self::Rlxp(p) => p.etiquette_json(),
+        }
+    }
+
+    pub fn silence_fbank(&self) -> Result<Vec<f32>> {
+        match self {
+            Self::Gguf(g) => g.silence_fbank(),
+            Self::Rlxp(p) => p.silence_fbank(),
+        }
+    }
+
+    pub fn load_effective_step1(&self) -> Result<crate::effective_decoder::EffectiveStep1> {
+        match self {
+            Self::Gguf(g) => g.load_effective_step1(),
+            Self::Rlxp(p) => p.load_effective_step1(),
+        }
+    }
+}
+
+/// Resolve `model.rlxp` under an ASR root.
+pub fn resolve_rlxp_path(root: &Path) -> Option<PathBuf> {
+    for name in [DEFAULT_RLXP_NAME, "asr.rlxp", "rlx-asr.rlxp"] {
+        let p = root.join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// Resolve `model.gguf` under an ASR root (or `RLX_ASR_GGUF`).
 pub fn resolve_gguf_path(root: &Path) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("RLX_ASR_GGUF") {
@@ -594,6 +913,11 @@ pub fn resolve_gguf_path(root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Prefer `.rlxp`, then legacy GGUF (`RLX_ASR_GGUF` or under `root`).
+pub fn resolve_pack_path(root: &Path) -> Option<PathBuf> {
+    resolve_rlxp_path(root).or_else(|| resolve_gguf_path(root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,11 +925,11 @@ mod tests {
     #[test]
     fn published_gguf_has_units_and_aed() {
         let root = crate::asr_dir();
-        let Some(path) = resolve_gguf_path(&root) else {
+        let Some(path) = resolve_pack_path(&root) else {
             return;
         };
-        let g = AsrGguf::open(&path).expect("open model.gguf");
-        let units = g.units().expect("rlx-asr.units");
+        let g = AsrPack::open(&path).expect("open weight pack");
+        let units = g.units().expect("units");
         assert!(units.len() >= 6000, "units={}", units.len());
         assert!(g.has("silence_fbank"));
         assert!(g.has("decoder.embed"));

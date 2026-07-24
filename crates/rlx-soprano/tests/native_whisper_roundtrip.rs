@@ -5,7 +5,7 @@
 //! Fox sentence intelligibility: ORT backbone AR latents → native RLX Vocos
 //! decoder → Whisper-tiny with **100%** content-word coverage.
 //!
-//! Also smokes full `NativeSoprano::synthesize` (non-silent). Backbone attention
+//! Also runs full `NativeSoprano::synthesize` (non-silent). Backbone attention
 //! vs ORT is still WIP — see README.
 //!
 //! Needs `weights/tts/soprano`, Whisper cache, and
@@ -33,7 +33,12 @@ fn env_dir(var: &str, default: &str) -> Option<PathBuf> {
     candidates
         .into_iter()
         .flatten()
-        .find(|d| d.join("onnx/soprano_backbone_kv_fp32.onnx").is_file())
+        .find(|d| {
+            d.join("soprano.rlxp").is_file()
+                || d.join("soprano.gguf").is_file()
+                || d.join("graphs/soprano_backbone_kv_fp32.rlxp").is_file()
+                || d.join("onnx/soprano_backbone_kv_fp32.onnx").is_file()
+        })
 }
 
 fn whisper_dir() -> Option<PathBuf> {

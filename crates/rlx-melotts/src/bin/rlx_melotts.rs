@@ -20,7 +20,8 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use rlx_melotts::{
-    DEFAULT_LOCAL_DIR, InferOpts, MeloTts, normalize_audio, parse_device, peak_amplitude, write_wav,
+    DEFAULT_LOCAL_DIR, InferOpts, MeloTts, is_bundle_dir, normalize_audio, parse_device,
+    peak_amplitude, resolve_bundle_dir, write_wav,
 };
 
 const HELP: &str = "\
@@ -29,7 +30,7 @@ rlx-melotts — MeloTTS (VITS2) multilingual TTS (MIT, native rlx backends)
 USAGE: rlx-melotts --text \"...\" [--data weights/tts/melotts]
 
 OPTIONS:
-    --data <DIR>        MeloTTS bundle dir (default: weights/tts/melotts)
+    --data <DIR>        MeloTTS/TinyTTS bundle dir (default: auto-resolve)
     --text <T>          Text to speak
     --speed <F>         Speaking rate (default: 1.0; maps to 1/length_scale)
     --noise <F>         Flow noise scale (default: model config)
@@ -50,7 +51,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let mut data = PathBuf::from(DEFAULT_LOCAL_DIR);
+    let mut data: Option<PathBuf> = None;
     let mut text: Option<String> = None;
     let (mut speed, mut noise, mut seed): (Option<f32>, Option<f32>, Option<u64>) =
         (None, None, None);
@@ -61,7 +62,7 @@ fn run() -> Result<()> {
     while let Some(arg) = a.next() {
         let mut next = || a.next().with_context(|| format!("missing value for {arg}"));
         match arg.as_str() {
-            "--data" => data = PathBuf::from(next()?),
+            "--data" => data = Some(PathBuf::from(next()?)),
             "--text" => text = Some(next()?),
             "--speed" => speed = Some(next()?.parse().context("--speed")?),
             "--noise" => noise = Some(next()?.parse().context("--noise")?),
@@ -78,6 +79,15 @@ fn run() -> Result<()> {
 
     let text = text.context("--text is required")?;
     let device = parse_device(&device_str).with_context(|| format!("device '{device_str}'"))?;
+
+    let data = match data {
+        Some(p) if is_bundle_dir(&p) || p.is_file() => p,
+        Some(p) => anyhow::bail!(
+            "not a MeloTTS/TinyTTS bundle at {} (need config.json + onnx/); default is {DEFAULT_LOCAL_DIR}",
+            p.display()
+        ),
+        None => resolve_bundle_dir()?,
+    };
 
     let tts =
         MeloTts::load(&data).with_context(|| format!("load MeloTTS from {}", data.display()))?;

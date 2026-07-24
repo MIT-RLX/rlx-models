@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>rlx-wakeword Web Worker</title>
+  <style>
+    :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; }
+    body { max-width: 52rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+    h1 { font-size: 1.35rem; margin: 0 0 0.5rem; }
+    p { color: #333; }
+    button { margin: 0.25rem 0.35rem 0.25rem 0; padding: 0.4rem 0.75rem; }
+    pre {
+      background: #111; color: #e8e8e8; padding: 0.85rem 1rem; overflow: auto;
+      font-size: 0.78rem; border-radius: 6px; min-height: 8rem;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin: 0.75rem 0; }
+    label { font-size: 0.9rem; }
+    select, input { padding: 0.3rem 0.45rem; }
+    .ok { color: #0a7; }
+    .err { color: #c22; }
+  </style>
+</head>
+<body>
+  <h1>rlx-wakeword · Web Worker</h1>
+  <p>Runs WASM off the main thread via a module worker (<code>wake_worker.js</code>).</p>
+
+  <div class="row">
+    <button id="btn-init">Init worker</button>
+    <button id="btn-smoke" disabled>Quick check</button>
+    <button id="btn-session" disabled>New session</button>
+    <button id="btn-push" disabled>Push 1s tone</button>
+    <button id="btn-bench" disabled>Bench N=2..4</button>
+  </div>
+  <div class="row">
+    <label>mode
+      <select id="mode">
+        <option value="f32">f32</option>
+        <option value="tern-fc">tern-fc</option>
+        <option value="tern-all" selected>tern-all</option>
+      </select>
+    </label>
+    <label>phrases <input id="n" type="number" min="1" max="10" value="2" style="width:3.5rem" /></label>
+    <label>hop ms
+      <select id="hop">
+        <option>20</option>
+        <option selected>40</option>
+        <option>80</option>
+      </select>
+    </label>
+  </div>
+  <pre id="log">idle</pre>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

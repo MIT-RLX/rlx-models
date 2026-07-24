@@ -13,13 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Native (RLX, NO onnxruntime) MOSS-TTS-Nano synthesis. The three ONNX graphs
-//! are imported to rlx-ir and run bit-exact vs onnxruntime (verified): the global
-//! `prefill` transformer, the fused `local_fixed_sampled_frame` sampler, and the
-//! `moss_audio_tokenizer_decode_full` codec. The between-frame global update reuses
-//! `prefill` on the growing sequence padded to a fixed compile length (`attention_
-//! mask` masks the pad; the last real position's `global_hidden` is bit-identical
-//! to the KV-cached `decode_step` — verified) so nothing needs dynamic-shape KV.
+//! Native (RLX, no onnxruntime) MOSS-TTS-Nano synthesis. Three nested subgraphs
+//! (`prefill`, `local_fixed_sampled_frame`, `moss_audio_tokenizer_decode_full`)
+//! lower to rlx-ir. The between-frame global update reuses `prefill` on the
+//! growing sequence padded to a fixed compile length (`attention_mask` masks the
+//! pad; the last real position's `global_hidden` matches a KV-cached
+//! `decode_step`) so nothing needs dynamic-shape KV.
 
 use std::path::{Path, PathBuf};
 
@@ -126,10 +125,13 @@ impl MossNative {
         Self::load_on(dir, Device::Cpu)
     }
 
-    /// Load the manifest + tokenizer and compile the per-frame sampler on `device`.
-    /// `prefill` is compiled per-`synthesize` (sized to that utterance's prompt +
-    /// max_frames); the codec is compiled per-call (sized to the frame count).
+    /// Prefer `moss-nano.rlxp`, then legacy `moss-nano.gguf`, else a materialized dir.
     pub fn load_on(dir: &Path, device: Device) -> Result<Self> {
+        crate::gguf_bundle::open_path(dir, device)
+    }
+
+    /// Load from an already-materialized directory (`graphs/*.rlxp` or legacy ONNX).
+    pub fn load_loose(dir: &Path, device: Device) -> Result<Self> {
         let device = resolve_exec_device(rlx_tiny_tts::resolve_tts_device(device));
         let cfg = || BundleConfig {
             model: String::new(),
@@ -145,7 +147,17 @@ impl MossNative {
             gin_channels: 0,
         };
         let moss = TinyModel::new(dir.to_path_buf(), cfg());
-        let codec = TinyModel::new(dir.join("codec"), cfg());
+        // Codec graph lives under top-level `graphs/` in native packs (and under
+        // `codec/` for legacy ONNX). Prefer the shared root so one resolve path works.
+        let codec_root = if dir
+            .join("graphs/moss_audio_tokenizer_decode_full.rlxp")
+            .is_file()
+        {
+            dir.to_path_buf()
+        } else {
+            dir.join("codec")
+        };
+        let codec = TinyModel::new(codec_root, cfg());
         let manifest = Manifest::load(&dir.join("browser_poc_manifest.json"))?;
         let tokenizer = Tokenizer::from_file(dir.join("tokenizer.json"))
             .map_err(|e| anyhow::anyhow!("open tokenizer.json: {e}"))?;

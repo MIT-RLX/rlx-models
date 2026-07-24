@@ -6,17 +6,28 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Versatile model-asset loading for RLX (directory / packed file / in-memory / config / custom provider)"
+description = "Versatile model-asset loading for RLX (directory / .rlxp pack / in-memory); optional native-pack ONNX→nested graphs"
 keywords.workspace = true
 categories.workspace = true
 
-# Deliberately lean — no rlx compiler/runtime deps — so any model crate (even
-# host-eager / iOS builds) can adopt versatile bundle loading cheaply.
+# Deliberately lean by default — no rlx compiler/runtime deps — so any model
+# crate (even host-eager / iOS builds) can adopt versatile bundle loading cheaply.
+# Optional `rlxp` enables official `.rlxp` flat packages via `rlx-pkg`.
 [dependencies]
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 memmap2 = "0.9"
+rlx-pkg = { workspace = true, optional = true }
+rlx-ir = { workspace = true, optional = true }
+rlx-onnx-import = { workspace = true, optional = true }
+
+[features]
+default = []
+# Official RLX package format (`.rlxp` / RLXPFLAT) — sidecar asset bundles.
+rlxp = ["dep:rlx-pkg", "dep:rlx-ir"]
+# Pack-time ONNX → nested subgraph `.rlxp` (hot tensors + graph.json) + outer pack.
+native-pack = ["rlxp", "dep:rlx-onnx-import"]
 
 [lints]
 workspace = true

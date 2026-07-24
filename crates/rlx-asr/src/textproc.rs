@@ -379,11 +379,11 @@ mod tests {
 
     #[test]
     fn const_fst_loads_from_gguf() {
-        let Some(gguf) = crate::AsrPaths::resolve().gguf() else {
-            eprintln!("skip: no model.gguf");
+        let Some(path) = crate::AsrPaths::resolve().pack() else {
+            eprintln!("skip: no model.rlxp / model.gguf");
             return;
         };
-        let g = crate::gguf_io::AsrGguf::open(&gguf).expect("open gguf");
+        let g = crate::gguf_io::AsrPack::open(&path).expect("open weight pack");
         let data = g.blob("tp.common2ca").expect("tp.common2ca");
         let f = Fst::from_bytes(&data).expect("parse fst");
         assert_eq!(f.start, 86);

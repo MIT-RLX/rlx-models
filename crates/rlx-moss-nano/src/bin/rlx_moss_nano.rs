@@ -20,16 +20,21 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use rlx_moss_nano::{DEFAULT_LOCAL_DIR, MossNative, NativeOpts, TightenOpts, parse_device};
+use rlx_moss_nano::{
+    DEFAULT_GGUF_NAME, DEFAULT_LOCAL_DIR, DEFAULT_RLXP_NAME, MossNative, NativeOpts, TightenOpts,
+    pack_directory, pack_rlxp, parse_device,
+};
 
 const HELP: &str = "\
 rlx-moss-nano — MOSS-TTS-Nano hierarchical AR TTS (OpenMOSS, Apache-2.0, 48 kHz)
-                native RLX path (no ONNX Runtime)
+                native RLX path (no ONNX Runtime); prefer moss-nano.rlxp
 
 USAGE: rlx-moss-nano --text \"...\" [--voice Trump]
+       rlx-moss-nano --pack-rlxp [--data DIR] [--out FILE]
+       rlx-moss-nano --pack-gguf [--data DIR] [--out FILE]
 
 OPTIONS:
-    --data <DIR>     Model dir (default: weights/tts/moss-nano)
+    --data <DIR>     Model dir or .rlxp/.gguf (default: weights/tts/moss-nano)
     --text <T>       Text to speak
     --voice <NAME>   Builtin voice (default: Trump). Use --list-voices to see all
     --seed <N>       Sampling seed (default: 0)
@@ -37,7 +42,9 @@ OPTIONS:
     --max-pause-ms <N> Max internal silence kept (default: 100; 0 = trim edges only)
     --no-tighten     Skip pause polish entirely
     --device <DEV>   cpu | metal | mlx | cuda | gpu (default: cpu)
-    --out <FILE>     Output WAV (default: moss_nano.wav)
+    --out <FILE>     Output WAV (default: moss_nano.wav); pack path when packing
+    --pack-rlxp      Pack loose dir → moss-nano.rlxp
+    --pack-gguf      Pack loose dir → moss-nano.gguf (legacy)
     --list-voices    Print builtin voices and exit
     -h, --help       Show help
 ";
@@ -59,7 +66,10 @@ fn run() -> Result<()> {
     let mut opts = NativeOpts::default();
     let mut device_str = "cpu".to_string();
     let mut out = PathBuf::from("moss_nano.wav");
+    let mut out_set = false;
     let mut list_voices = false;
+    let mut pack_gguf = false;
+    let mut pack_rlxp_flag = false;
     let mut max_pause_ms: Option<u32> = None;
     let mut no_tighten = false;
 
@@ -75,7 +85,12 @@ fn run() -> Result<()> {
             "--max-pause-ms" => max_pause_ms = Some(next()?.parse().context("--max-pause-ms")?),
             "--no-tighten" => no_tighten = true,
             "--device" => device_str = next()?,
-            "--out" => out = PathBuf::from(next()?),
+            "--out" => {
+                out = PathBuf::from(next()?);
+                out_set = true;
+            }
+            "--pack-rlxp" => pack_rlxp_flag = true,
+            "--pack-gguf" => pack_gguf = true,
             "--list-voices" => list_voices = true,
             "-h" | "--help" => {
                 print!("{HELP}");
@@ -83,6 +98,34 @@ fn run() -> Result<()> {
             }
             other => anyhow::bail!("unknown argument: {other}\n\n{HELP}"),
         }
+    }
+
+    if pack_rlxp_flag || pack_gguf {
+        let dir = if data.is_dir() {
+            data
+        } else {
+            PathBuf::from(DEFAULT_LOCAL_DIR)
+        };
+        let pack_out = if out_set {
+            out
+        } else if pack_rlxp_flag {
+            dir.join(DEFAULT_RLXP_NAME)
+        } else {
+            dir.join(DEFAULT_GGUF_NAME)
+        };
+        let report = if pack_rlxp_flag {
+            pack_rlxp(&dir, &pack_out)?
+        } else {
+            pack_directory(&dir, &pack_out)?
+        };
+        println!(
+            "packed {} ({:.1} MiB, file_kv={}, blobs={})",
+            report.path.display(),
+            report.bytes as f64 / (1024.0 * 1024.0),
+            report.file_kv,
+            report.blob_count
+        );
+        return Ok(());
     }
 
     if no_tighten {

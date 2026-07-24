@@ -4,9 +4,8 @@
 
 //! Native (ort-free) Soprano 1.1: Qwen3 AR backbone (KV) + 32 kHz vocoder.
 //!
-//! ONNX from [`KevinAHM/soprano-1.1-onnx`](https://huggingface.co/KevinAHM/soprano-1.1-onnx),
-//! imported via `rlx-onnx-import`. Prompt format matches the web demo:
-//! `[STOP][TEXT]…[START]`.
+//! Nested `graphs/*.rlxp` (or legacy local ONNX) lowered via `rlx-onnx-import`.
+//! Prompt format matches the web demo: `[STOP][TEXT]…[START]`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +13,6 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result, anyhow};
 use rlx_ir::DType;
-use rlx_onnx_import::{ImportOptions, build_hir_from_onnx_file};
 use rlx_runtime::{AotCache, CompileOptions, CompiledGraph, Device};
 use tokenizers::Tokenizer;
 
@@ -31,6 +29,10 @@ pub const RECEPTIVE_FIELD: usize = 4;
 
 const BACKBONE: &str = "soprano_backbone_kv_fp32";
 const DECODER: &str = "soprano_decoder_fp32";
+
+fn should_decompose_decoder_ct(device: Device) -> bool {
+    matches!(device, Device::Ane | Device::Metal)
+}
 
 /// Backbone full-recompute is finite only for `seq ≤ 32` and `seq == 128` (RLX
 /// import/runtime quirk). Pad anything in between up to 128.
@@ -93,8 +95,14 @@ pub fn format_prompt(text: &str) -> String {
 }
 
 impl NativeSoprano {
+    /// Prefer `soprano.rlxp`, then legacy `soprano.gguf`, else a materialized dir.
     pub fn open(dir: impl AsRef<Path>, device: Device) -> Result<Self> {
-        // Vocos ISTFT overlap-add uses ONNX ScatterElements.
+        crate::gguf_bundle::open_path(dir.as_ref(), device)
+    }
+
+    /// Load from an already-materialized directory (`graphs/*.rlxp` or legacy ONNX).
+    pub fn open_loose(dir: impl AsRef<Path>, device: Device) -> Result<Self> {
+        // Vocos ISTFT overlap-add uses ScatterElements (registered for HIR lower).
         rlx_onnx_import::onnx_scatter::register_onnx_scatter_elements_kernel();
         let dir = dir.as_ref().to_path_buf();
         let tok = Tokenizer::from_file(dir.join("tokenizer.json"))
@@ -141,21 +149,21 @@ impl NativeSoprano {
     }
 
     fn compile_backbone(&self, past: usize, seq: usize) -> Result<CompiledGraph> {
-        let path = self.dir.join("onnx").join(format!("{BACKBONE}.onnx"));
-        let total = past + seq;
-        let mut named: HashMap<String, usize> = HashMap::new();
-        named.insert("batch_size".into(), 1);
-        named.insert("sequence_length".into(), seq);
-        named.insert("past_sequence_length".into(), past);
-        named.insert("past_sequence_length + sequence_length".into(), total);
-        let opts = ImportOptions {
-            sequence_length: seq.max(1),
-            named_lengths: named,
-            strict: false,
-            ..Default::default()
-        };
-        let (hir, mut params, _r, _m) = build_hir_from_onnx_file(&path, opts)
-            .with_context(|| format!("import {BACKBONE} past={past} seq={seq}"))?;
+        let path = rlx_tiny_tts::model::resolve_component_path(&self.dir, BACKBONE)?;
+        let named: Vec<(&str, usize)> = vec![
+            ("batch_size", 1),
+            ("sequence_length", seq),
+            ("past_sequence_length", past),
+            ("past_sequence_length + sequence_length", past + seq),
+        ];
+        let (hir, mut params, _r) = rlx_tiny_tts::model::import_graph_named(
+            &path,
+            BACKBONE,
+            seq.max(1),
+            false,
+            &named,
+        )
+        .with_context(|| format!("import {BACKBONE} past={past} seq={seq}"))?;
         let key = format!("sop_{BACKBONE}_{:?}_p{past}_s{seq}", self.device);
         let mut g = self
             .cache
@@ -169,25 +177,25 @@ impl NativeSoprano {
     }
 
     fn compile_decoder(&self, t: usize) -> Result<CompiledGraph> {
-        let path = self.dir.join("onnx").join(format!("{DECODER}.onnx"));
+        let path = rlx_tiny_tts::model::resolve_component_path(&self.dir, DECODER)?;
         let audio_len = TOKEN_SIZE.saturating_mul(t.saturating_sub(1));
         let buf_len = TOKEN_SIZE * t;
         let frames = 4 * t - 3;
-        let mut named: HashMap<String, usize> = HashMap::new();
-        named.insert("s53".into(), t);
-        named.insert("2048*s53".into(), buf_len);
-        named.insert("2048*s53 - 2048".into(), audio_len);
-        named.insert("4*s53 - 3".into(), frames);
-        named.insert("8192*s53 - 6144".into(), 8192 * t - 6144);
-        let opts = ImportOptions {
-            sequence_length: t.max(1),
-            named_lengths: named,
-            max_waveform_samples: audio_len.max(TOKEN_SIZE),
-            strict: false,
-            ..Default::default()
-        };
-        let (hir, mut params, _r, _m) = build_hir_from_onnx_file(&path, opts)
-            .with_context(|| format!("import {DECODER} t={t}"))?;
+        let named: Vec<(&str, usize)> = vec![
+            ("s53", t),
+            ("2048*s53", buf_len),
+            ("2048*s53 - 2048", audio_len),
+            ("4*s53 - 3", frames),
+            ("8192*s53 - 6144", 8192 * t - 6144),
+        ];
+        let (hir, mut params, _r) = rlx_tiny_tts::model::import_graph_named(
+            &path,
+            DECODER,
+            t.max(1),
+            should_decompose_decoder_ct(self.dec_device),
+            &named,
+        )
+        .with_context(|| format!("import {DECODER} t={t}"))?;
         let key = format!("sop_{DECODER}_{:?}_t{t}", self.dec_device);
         let mut g = self
             .cache
@@ -449,12 +457,59 @@ impl NativeSoprano {
     }
 
     /// Full synthesis: text → AR audio tokens/latents → PCM @ 32 kHz.
+    ///
+    /// Long prompts are sentence-/word-chunked: the ONNX full-recompute backbone
+    /// only supports `seq ≤ 128`, so a long prompt can leave zero room for AR
+    /// and yield empty latents.
     pub fn synthesize(&self, text: &str, opts: &InferOpts) -> Result<Vec<f32>> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(anyhow!("empty text"));
+        }
+        const MAX_PROMPT_TOKENS: usize = 80;
+        let prompt_len = self.encode_prompt(text)?.len();
+        if prompt_len > MAX_PROMPT_TOKENS {
+            return self.synthesize_chunked(text, opts, MAX_PROMPT_TOKENS);
+        }
         let (latents, _) = self.generate_latents(text, opts)?;
         if latents.is_empty() {
-            return Err(anyhow!("no audio latents produced"));
+            return Err(anyhow!(
+                "no audio latents produced (prompt_tokens={prompt_len}; first sample may be EOS)"
+            ));
         }
         self.decode_latents(&latents, true)
+    }
+
+    fn synthesize_chunked(
+        &self,
+        text: &str,
+        opts: &InferOpts,
+        max_prompt_tokens: usize,
+    ) -> Result<Vec<f32>> {
+        let chunks = split_utterances(text, max_prompt_tokens, |chunk| {
+            self.encode_prompt(chunk).map(|ids| ids.len()).unwrap_or(usize::MAX)
+        });
+        anyhow::ensure!(!chunks.is_empty(), "soprano: no text chunks after split");
+        let mut pcm = Vec::new();
+        let gap = (SAMPLE_RATE as usize) / 20; // ~50 ms between clauses
+        for (i, chunk) in chunks.iter().enumerate() {
+            let (latents, _) = self
+                .generate_latents(chunk, opts)
+                .with_context(|| format!("soprano chunk {}/{}: {chunk:?}", i + 1, chunks.len()))?;
+            if latents.is_empty() {
+                return Err(anyhow!(
+                    "no audio latents produced for chunk {}/{}: {chunk:?}",
+                    i + 1,
+                    chunks.len()
+                ));
+            }
+            let part = self.decode_latents(&latents, true)?;
+            if !pcm.is_empty() {
+                pcm.extend(std::iter::repeat_n(0.0f32, gap));
+            }
+            pcm.extend(part);
+        }
+        Ok(pcm)
     }
 
     pub fn write_wav(audio: &[f32], path: impl AsRef<Path>, sample_rate: u32) -> Result<()> {
@@ -472,6 +527,86 @@ impl NativeSoprano {
         w.finalize()?;
         Ok(())
     }
+}
+
+/// Split `text` into chunks whose prompt token count stays under `max_prompt_tokens`.
+/// Prefers sentence boundaries, then commas, then words.
+fn split_utterances(
+    text: &str,
+    max_prompt_tokens: usize,
+    prompt_tokens: impl Fn(&str) -> usize,
+) -> Vec<String> {
+    let mut sentences: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    for ch in text.chars() {
+        buf.push(ch);
+        if matches!(ch, '.' | '?' | '!') {
+            let t = buf.trim();
+            if !t.is_empty() {
+                sentences.push(t.to_string());
+            }
+            buf.clear();
+        }
+    }
+    let t = buf.trim();
+    if !t.is_empty() {
+        sentences.push(t.to_string());
+    }
+    if sentences.is_empty() {
+        sentences.push(text.trim().to_string());
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    for sent in sentences {
+        if prompt_tokens(&sent) <= max_prompt_tokens {
+            out.push(sent);
+            continue;
+        }
+        let clauses: Vec<&str> = sent
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let mut cur = String::new();
+        for clause in clauses {
+            let trial = if cur.is_empty() {
+                clause.to_string()
+            } else {
+                format!("{cur}, {clause}")
+            };
+            if !cur.is_empty() && prompt_tokens(&trial) > max_prompt_tokens {
+                out.push(std::mem::take(&mut cur));
+                cur = clause.to_string();
+            } else {
+                cur = trial;
+            }
+            if prompt_tokens(&cur) > max_prompt_tokens {
+                let words: Vec<String> =
+                    cur.split_whitespace().map(str::to_string).collect();
+                cur.clear();
+                let mut pack = String::new();
+                for w in words {
+                    let trial = if pack.is_empty() {
+                        w.clone()
+                    } else {
+                        format!("{pack} {w}")
+                    };
+                    if !pack.is_empty() && prompt_tokens(&trial) > max_prompt_tokens {
+                        out.push(std::mem::take(&mut pack));
+                        pack = w;
+                    } else {
+                        pack = trial;
+                    }
+                }
+                cur = pack;
+            }
+        }
+        let t = cur.trim();
+        if !t.is_empty() {
+            out.push(t.to_string());
+        }
+    }
+    out.into_iter().filter(|s| !s.trim().is_empty()).collect()
 }
 
 fn argmax(v: &[f32]) -> usize {

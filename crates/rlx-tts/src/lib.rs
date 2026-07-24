@@ -15,8 +15,8 @@
 
 //! RLX FastSpeech2 + WaveRNN text-to-speech.
 //!
-//! Load [`weights/tts/rlx-tts/rlx-tts.gguf`](DEFAULT_BUNDLE_DIR) (or `RLX_TTS_BUNDLE`).
-//! A loose safetensors + `frontend/` directory still works; GGUF is preferred.
+//! Load [`weights/tts/rlx-tts/rlx-tts.rlxp`](DEFAULT_BUNDLE_DIR) (or `RLX_TTS_BUNDLE`).
+//! Legacy `rlx-tts.gguf` and loose safetensors + `frontend/` still work.
 //! Never commit or redistribute private weights.
 //!
 //! WaveRNN GRU uses fused activations via `rlx_cpu::vmath` (`vvexpf`):
@@ -27,7 +27,9 @@ pub mod fastspeech2;
 pub mod frontend;
 mod gguf_bundle;
 mod gru_rlx;
-pub use gguf_bundle::{PackReport, pack_directory, sanitize_manifest};
+pub use gguf_bundle::{
+    DEFAULT_RLXP_NAME, PackReport, pack_directory, pack_rlxp, resolve_rlxp_path, sanitize_manifest,
+};
 pub use gru_rlx::{eval as gru_rlx_eval, eval_mode as gru_rlx_eval_mode};
 pub mod metrics;
 pub mod native;
@@ -41,7 +43,7 @@ pub use metrics::{
     SpectralMetrics, apply_leading_silence_ms, apply_output_volume, apply_wavernn_mulaw_iir,
     spectral_vs_ref,
 };
-pub use native::{BUNDLE_EXTRACT_HINT, DEFAULT_BUNDLE_DIR, RlxTts};
+pub use native::{BUNDLE_EXTRACT_HINT, DEFAULT_BUNDLE_DIR, HF_REPO, RlxTts};
 pub use wav::{read_wav_f32, write_wav};
 pub use wavernn::{WaveRnnOpts, WaveRnnRng};
 

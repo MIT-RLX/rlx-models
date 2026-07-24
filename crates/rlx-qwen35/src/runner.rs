@@ -700,7 +700,12 @@ impl Qwen35RunnerBuilder {
                 // Packed GPU/accelerator: host tied-head Q1 vocab scan is far
                 // slower than a fused on-device DequantMatMul + argmax (Metal
                 // host path was ~1–2 tok/s vs Prism ~26 on M4 Pro). Keep host
-                // fast-greedy for CPU / CoreML only.
+                // fast-greedy for CPU / CoreML / MLX.
+                //
+                // MLX: in-graph packed LM head (tied Q4_K embd ≈ vocab×hidden)
+                // currently yields all-zero logits on large GGUFs (trunk layers
+                // match; only the final DequantMatMul collapses). Use host
+                // tied-head until that path is fixed.
                 !(packed
                     && matches!(
                         device,
@@ -709,7 +714,6 @@ impl Qwen35RunnerBuilder {
                             | Device::Gpu
                             | Device::Vulkan
                             | Device::Metal
-                            | Device::Mlx
                     ))
             }),
             self.aot_cache_dir.clone(),
@@ -748,14 +752,17 @@ fn trunk_has_dense_f32_mats(weights: &Qwen35Weights) -> bool {
 }
 
 /// Drop host F32 projections after param extract / Metal upload (default on
-/// for dense HF checkpoints on Metal/MLX). Override with
-/// `RLX_QWEN35_RELEASE_HOST_WEIGHTS=0|1`.
+/// for **dense HF** checkpoints on Metal/MLX that can remmap from a model dir).
+/// Packed GGUF keeps a few host-F32 side projections (`ssm_alpha`, …) that later
+/// HIR rebuilds still need — auto-release is off when any packed mat remains.
+/// Override with `RLX_QWEN35_RELEASE_HOST_WEIGHTS=0|1`.
 fn release_host_dense_enabled(device: Device, weights: &Qwen35Weights) -> bool {
     match rlx_ir::env::var("RLX_QWEN35_RELEASE_HOST_WEIGHTS").as_deref() {
         Some("0") | Some("false") | Some("off") => false,
         Some("1") | Some("true") | Some("on") => true,
         _ => {
             weights.has_dense_f32_projections()
+                && !weights.has_packed_projections()
                 && matches!(device, Device::Metal | Device::Mlx)
         }
     }
@@ -1424,20 +1431,54 @@ impl Qwen35Runner {
         }
     }
 
-    /// Reload dense F32 projections from the safetensors dir when they were
-    /// released after a prior Metal/MLX upload.
+    /// Reload dense F32 projections when they were released after a prior
+    /// Metal/MLX upload. Supports safetensors model dirs and packed GGUF files.
     fn ensure_dense_projections_resident(&mut self) -> Result<()> {
         if self.weights.has_dense_f32_projections() {
             return Ok(());
         }
-        if self.weights_path.as_os_str().is_empty() || !self.weights_path.is_dir() {
+        if !self.weights.has_cleared_f32_projection_shells() {
+            return Ok(());
+        }
+        if self.weights_path.as_os_str().is_empty() {
             bail!(
                 "qwen35: host F32 projections were released and cannot be \
-                 reloaded (need a safetensors model dir)"
+                 reloaded (no weights path)"
             );
         }
         let emb = std::sync::Arc::clone(&self.weights.token_embd);
         let t = Instant::now();
+        if self.weights_path.is_file()
+            && self
+                .weights_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
+        {
+            let mut loader = GgufLoader::from_file(
+                self.weights_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("non-utf8 weights path"))?,
+            )?;
+            loader.include_mtp(true);
+            let mut fresh = Qwen35Weights::from_loader_packed(&mut loader, &self.cfg)?;
+            fresh.token_embd = emb;
+            self.weights = std::sync::Arc::new(fresh);
+            // Keep the live GGUF loader in sync for packed byte uploads.
+            self.gguf_loader = Some(loader);
+            eprintln!(
+                "[qwen35] reloaded host F32 projections from GGUF {} in {:.2?}",
+                self.weights_path.display(),
+                t.elapsed()
+            );
+            return Ok(());
+        }
+        if !self.weights_path.is_dir() {
+            bail!(
+                "qwen35: host F32 projections were released and cannot be \
+                 reloaded (need a safetensors model dir or .gguf file)"
+            );
+        }
         let (_model_dir, _resolved, mmap_loader) = load_hf_mmap_loader(&self.weights_path)?;
         let mut loader = rlx_core::HfTranslatingLoader::new(mmap_loader);
         let mut fresh = Qwen35Weights::from_loader(&mut loader, &self.cfg)?;
@@ -2220,20 +2261,26 @@ impl Qwen35Runner {
         let debug_layers = std::env::var("RLX_QWEN35_DEBUG_LAYERS")
             .map(|v| v == "1")
             .unwrap_or(false);
+        self.ensure_dense_projections_resident()?;
         let t = Instant::now();
+        // Predict graph must match the runner's LM-head mode: when
+        // `fast_greedy_lm_head` is on, emit normed hidden and score on host
+        // (see generate path). Hard-coding `with_lm_head=true` here made
+        // `RLX_QWEN35_FAST_GREEDY_LM=1` a no-op for `predict_logits`.
+        let with_lm_head = !self.fast_greedy_lm_head;
         let (hir, params, packed) = build_qwen35_hir_sized_ext(
             &self.cfg,
             (*self.weights).clone(),
             self.batch,
             self.max_seq,
-            true,
+            with_lm_head,
             self.last_logits_only,
             self.enable_mtp,
             false,
             None,
             self.runtime_mrope,
             self.fast_mtp,
-            false,
+            self.fast_greedy_lm_head,
             debug_layers,
         )?;
         eprintln!(
@@ -2473,6 +2520,35 @@ impl Qwen35Runner {
             "qwen35: missing logits output (idx={logits_idx}, outs={})",
             outs.len()
         );
+
+        // Host tied-head: graph emitted normed hidden; score against the
+        // F32 embedding table (or packed GGUF LM head via lm_loader).
+        if self.fast_greedy_lm_head {
+            let n_embd = self.cfg.hidden_size;
+            let hidden = &outs[logits_idx];
+            anyhow::ensure!(
+                hidden.len() == self.batch * n_embd,
+                "qwen35: fast_greedy predict expected hidden [{}, {}], got len={}",
+                self.batch,
+                n_embd,
+                hidden.len()
+            );
+            let mut per_batch = Vec::with_capacity(self.batch);
+            for b in 0..self.batch {
+                let h = &hidden[b * n_embd..(b + 1) * n_embd];
+                let row = lm_head_logits_row(&self.weights, &self.cfg, h, self.lm_loader())?;
+                let sample_vocab = self.effective_vocab(row.len());
+                let mut row = row;
+                row.truncate(sample_vocab);
+                per_batch.push(Qwen35PrefillOutput {
+                    logits: row,
+                    mtp_logits: None,
+                    vocab_size: sample_vocab,
+                });
+            }
+            return Ok(per_batch);
+        }
+
         let vocab_size = if self.last_logits_only {
             outs[logits_idx].len() / self.batch
         } else {

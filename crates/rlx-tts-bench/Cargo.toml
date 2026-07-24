@@ -49,12 +49,20 @@ rlx-orpheus = { path = "../rlx-orpheus", optional = true }
 rlx-kittentts = { path = "../rlx-kittentts", default-features = false, features = ["native", "espeak"], optional = true }
 rlx-qwen3-tts = { path = "../rlx-qwen3-tts", optional = true }
 rlx-kyutai-tts = { path = "../rlx-kyutai-tts", optional = true }
+# Extra native engines (no ONNX Runtime).
+rlx-pocket-tts = { path = "../rlx-pocket-tts", optional = true }
+rlx-parlertts = { path = "../rlx-parlertts", optional = true }
+rlx-miotts = { path = "../rlx-miotts", optional = true }
+rlx-miratts = { path = "../rlx-miratts", optional = true }
+rlx-melotts = { path = "../rlx-melotts", optional = true }
+rlx-voxtral-tts = { path = "../rlx-voxtral-tts", optional = true }
 
 [features]
-default = ["matrix-onnx"]
+default = ["matrix-native"]
 # RLX FastSpeech2 + WaveRNN (private `.cache/rlx-tts` bundle).
 rlx-tts = ["dep:rlx-tts"]
-matrix-onnx = [
+# Native RLX engines (rlx-ir / rlx-onnx-import → compile). Never enables `ort`.
+matrix-native = [
     "dep:rlx-chatterbox",
     "dep:rlx-supertonic",
     "dep:rlx-piper",
@@ -63,7 +71,15 @@ matrix-onnx = [
     "dep:rlx-f5tts",
     "dep:rlx-moss-nano",
     "dep:rlx-soprano",
+    "dep:rlx-pocket-tts",
+    "dep:rlx-parlertts",
+    "dep:rlx-miotts",
+    "dep:rlx-miratts",
+    "dep:rlx-melotts",
+    "dep:rlx-voxtral-tts",
 ]
+# Deprecated alias — same as matrix-native (no ONNX Runtime).
+matrix-onnx = ["matrix-native"]
 matrix-ar = [
     "dep:rlx-sesame",
     "dep:rlx-zonos",
@@ -76,11 +92,10 @@ lm-tts = [
     "dep:rlx-qwen3-tts",
 ]
 # kyutai is separate: rlx-kyutai-tts pulls C++ sentencepiece, whose statically
-# linked protobuf collides with ort_sys (matrix-onnx) at link time. Keep it out
-# of `lm-tts` so the ort adapters can build without it (hard link error on
-# Linux/CUDA). Opt in via `kyutai` or `all-models`.
+# linked protobuf collides with ort_sys when ORT is also linked. Keep it out
+# of `lm-tts` so mixed builds stay clean. Opt in via `kyutai` or `all-models`.
 kyutai = ["dep:rlx-kyutai-tts"]
-all-models = ["matrix-onnx", "matrix-ar", "lm-tts", "kyutai", "rlx-tts"]
+all-models = ["matrix-native", "matrix-ar", "lm-tts", "kyutai", "rlx-tts"]
 
 metal = [
     "rlx-runtime/metal",
@@ -93,6 +108,12 @@ metal = [
     "rlx-f5tts?/metal",
     "rlx-moss-nano?/metal",
     "rlx-soprano?/metal",
+    "rlx-pocket-tts?/metal",
+    "rlx-parlertts?/metal",
+    "rlx-miotts?/metal",
+    "rlx-miratts?/metal",
+    "rlx-melotts?/metal",
+    "rlx-voxtral-tts?/metal",
     "rlx-sesame?/metal",
     "rlx-zonos?/metal",
     "rlx-gepard?/metal",
@@ -113,6 +134,12 @@ mlx = [
     "rlx-f5tts?/mlx",
     "rlx-moss-nano?/mlx",
     "rlx-soprano?/mlx",
+    "rlx-pocket-tts?/mlx",
+    "rlx-parlertts?/mlx",
+    "rlx-miotts?/mlx",
+    "rlx-miratts?/mlx",
+    "rlx-melotts?/mlx",
+    "rlx-voxtral-tts?/mlx",
     "rlx-sesame?/mlx",
     "rlx-zonos?/mlx",
     "rlx-gepard?/mlx",
@@ -133,6 +160,12 @@ cuda = [
     "rlx-f5tts?/cuda",
     "rlx-moss-nano?/cuda",
     "rlx-soprano?/cuda",
+    "rlx-pocket-tts?/cuda",
+    "rlx-parlertts?/cuda",
+    "rlx-miotts?/cuda",
+    "rlx-miratts?/cuda",
+    "rlx-melotts?/cuda",
+    "rlx-voxtral-tts?/cuda",
     "rlx-sesame?/cuda",
     "rlx-zonos?/cuda",
     "rlx-gepard?/cuda",
@@ -153,6 +186,12 @@ gpu = [
     "rlx-f5tts?/gpu",
     "rlx-moss-nano?/gpu",
     "rlx-soprano?/gpu",
+    "rlx-pocket-tts?/gpu",
+    "rlx-parlertts?/gpu",
+    "rlx-miotts?/gpu",
+    "rlx-miratts?/gpu",
+    "rlx-melotts?/gpu",
+    "rlx-voxtral-tts?/gpu",
     "rlx-sesame?/gpu",
     "rlx-zonos?/gpu",
     "rlx-gepard?/gpu",

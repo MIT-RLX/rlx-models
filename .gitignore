@@ -37,6 +37,10 @@ crates/rlx-qwen3-tts/tests/fixtures/speaker_parity.safetensors
 # Editor / agent scratch
 .claude/
 
+# wasm-pack output
+crates/rlx-wakeword-wasm/pkg/
+crates/rlx-wakeword-wasm/web/pkg-web/
+
 # Ad-hoc audio at repo root (crate examples/audio/ is tracked)
 /*.wav
 

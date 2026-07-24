@@ -233,8 +233,14 @@ fn run(args: RunArgs) -> Result<()> {
         return Ok(());
     }
 
-    let short = args.text_short.unwrap_or_else(|| DEFAULT_SHORT.to_string());
-    let long = args.text_long.unwrap_or_else(|| DEFAULT_LONG.to_string());
+    let short = args
+        .text_short
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_SHORT.to_string());
+    let long = args
+        .text_long
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_LONG.to_string());
     let mut phrases = Vec::new();
     for p in args.phrases.split(',') {
         match p.trim() {

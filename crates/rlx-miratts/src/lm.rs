@@ -27,9 +27,22 @@ use rlx_qwen3::{
     Qwen3Config, Qwen3Generator, Qwen3RunnerBuilder, SampleOpts, apply_repetition_penalty,
     sample_token_at,
 };
-use rlx_runtime::Device;
+use rlx_runtime::{Device, parse_device};
 
 use crate::{MiraConfig, tokens};
+
+fn resolve_lm_device(requested: Device) -> Device {
+    if let Ok(v) = std::env::var("RLX_MIRATTS_LM_DEVICE") {
+        if let Ok(d) = parse_device(v.trim()) {
+            return d;
+        }
+    }
+    // GPU graph compile for the 0.5B AR is slow/fragile on first use; keep LM on host.
+    match requested {
+        Device::Cuda | Device::Gpu | Device::Vulkan | Device::Metal | Device::Mlx => Device::Cpu,
+        other => other,
+    }
+}
 
 /// Build the `rlx-qwen3` config for the MiraTTS Qwen2-0.5B LM. The two flags
 /// that distinguish Qwen2 from Qwen3 (`qk_norm`, `attention_bias`) are absent
@@ -68,16 +81,29 @@ pub struct MiraLm {
 
 impl MiraLm {
     /// Load `model.safetensors` + the Qwen2 config from a model directory.
+    ///
+    /// The LM defaults to **CPU** when the requested device is a GPU accelerator:
+    /// compiling the Qwen2-0.5B AR graph for CUDA/wgpu is slow and often hangs
+    /// the first bench cell. Codec + speaker encoder still use `device`.
+    /// Override with `RLX_MIRATTS_LM_DEVICE=cuda|gpu|cpu`.
     pub fn load(dir: &Path, cfg: &MiraConfig, device: Device) -> Result<Self> {
+        let lm_device = resolve_lm_device(device);
+        if lm_device != device {
+            eprintln!(
+                "[miratts] LM on {lm_device:?} (codec/speaker default CPU; set RLX_MIRATTS_LM_DEVICE to override)"
+            );
+        }
+        eprintln!("[miratts] loading Qwen2 LM from {} on {lm_device:?}…", dir.display());
         let runner = Qwen3RunnerBuilder::default()
             .weights(dir)
             .config_value(qwen2_config(cfg))
-            .device(device)
+            .device(lm_device)
             .build()
             .context("build MiraTTS Qwen2 runner")?;
         let generator = runner
             .into_generator()
             .context("MiraTTS: f32 generator unavailable")?;
+        eprintln!("[miratts] LM ready");
         Ok(Self { generator })
     }
 
@@ -108,6 +134,10 @@ impl MiraLm {
             .with_top_k(50)
             .with_top_p(0.95)
             .with_min_p(0.05);
+        eprintln!(
+            "[miratts] AR speech codes: prompt_len={} max_new={max_new}",
+            prompt_ids.len()
+        );
         let mut logits = self.generator.prefill_get_last_logits(prompt_ids)?;
         let mut counts: HashMap<u32, u32> = HashMap::new();
         let mut codes = Vec::new();
@@ -122,6 +152,9 @@ impl MiraLm {
                 codes.push(next - tokens::SPEECH_BASE);
             }
             *counts.entry(next).or_insert(0) += 1;
+            if step == 0 || (step + 1) % 16 == 0 || step + 1 == max_new {
+                eprintln!("[miratts] AR {}/{max_new} (codes={})", step + 1, codes.len());
+            }
             logits = self.generator.decode_get_logits(next)?;
         }
         Ok(codes)

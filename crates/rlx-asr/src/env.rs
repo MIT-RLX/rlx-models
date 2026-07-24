@@ -4,8 +4,9 @@
 //! Env knobs and weight layout for `rlx-asr`.
 //!
 //! ```text
-//! weights/asr/
-//!   model.gguf       # sole runtime asset (`just asr-pack-gguf`)
+//! weights/asr/ (`just fetch-rlx-asr` → [eugenehp/rlx-asr](https://huggingface.co/eugenehp/rlx-asr))
+//!   model.rlxp       # sole runtime asset (`just asr-pack-rlxp`)
+//!   model.gguf       # legacy GGUF pack
 //!   manifest.json    # optional listing
 //! ```
 //!
@@ -26,7 +27,9 @@ pub fn asr_dir_env() -> Option<PathBuf> {
 }
 
 fn looks_like_asr_root(p: &Path) -> bool {
-    p.join("model.gguf").is_file() || p.join("manifest.json").is_file()
+    p.join("model.rlxp").is_file()
+        || p.join("model.gguf").is_file()
+        || p.join("manifest.json").is_file()
 }
 
 pub fn default_asr_roots() -> Vec<PathBuf> {
@@ -76,7 +79,12 @@ impl AsrPaths {
         &self.root
     }
 
-    /// Preferred single-file weight pack.
+    /// Preferred single-file weight pack (`.rlxp` or legacy GGUF).
+    pub fn pack(&self) -> Option<PathBuf> {
+        crate::gguf_io::resolve_pack_path(&self.root)
+    }
+
+    /// Legacy GGUF-only resolver.
     pub fn gguf(&self) -> Option<PathBuf> {
         crate::gguf_io::resolve_gguf_path(&self.root)
     }

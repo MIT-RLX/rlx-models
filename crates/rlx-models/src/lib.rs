@@ -168,6 +168,30 @@ pub mod whisper {
 pub mod vad {
     pub use rlx_vad::*;
 }
+#[cfg(feature = "wake")]
+pub mod wake {
+    pub use rlx_wake::*;
+}
+#[cfg(feature = "wakeword")]
+pub mod wakeword {
+    pub use rlx_wakeword::*;
+}
+#[cfg(feature = "openwakeword")]
+pub mod openwakeword {
+    pub use rlx_openwakeword::*;
+}
+#[cfg(feature = "nanowakeword")]
+pub mod nanowakeword {
+    pub use rlx_nanowakeword::*;
+}
+#[cfg(feature = "porcupine")]
+pub mod porcupine {
+    pub use rlx_porcupine::*;
+}
+#[cfg(feature = "voxrt")]
+pub mod voxrt {
+    pub use rlx_voxrt::*;
+}
 #[cfg(feature = "aec")]
 pub mod aec {
     pub use rlx_aec::*;

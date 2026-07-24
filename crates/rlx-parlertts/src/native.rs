@@ -222,16 +222,36 @@ impl NativeParler {
                 ("encoder_attention_mask", &emask_bytes, DType::I64),
                 ("prompt_input_ids", &prompt_bytes, DType::I64),
             ]);
-            // logits: [9, pt + t, VOCAB] = [codebook, seq, vocab]. The code we
-            // sample at generation `step` is predicted at seq index `pt + step`.
+            // logits: [9, seq, VOCAB]. Some exports include the prompt prefix
+            // (`seq == pt + t`, sample at `pt + step`); the Hub ONNX used here
+            // returns only the codebook stream (`seq == t`, sample at `step`).
             let logits = as_f32(&out[0].0);
+            let seq = logits.len() / (K * VOCAB);
+            anyhow::ensure!(
+                seq > 0 && logits.len() == seq * K * VOCAB,
+                "decoder logits len {} not divisible by {K}×{VOCAB}",
+                logits.len()
+            );
+            let seq_idx = if seq == full {
+                pt + step
+            } else if seq == t {
+                step
+            } else {
+                return Err(anyhow!(
+                    "unexpected decoder seq length {seq} (expected {t} or {full})"
+                ));
+            };
+            anyhow::ensure!(
+                seq_idx < seq,
+                "seq_idx {seq_idx} out of range for logits seq {seq}"
+            );
             let mut nxt = [PAD; K];
             for k in 0..K {
                 if step < k {
                     nxt[k] = BOS; // delay: codebook k not real until step >= k
                     continue;
                 }
-                let base = k * full * VOCAB + (pt + step) * VOCAB;
+                let base = k * seq * VOCAB + seq_idx * VOCAB;
                 let row = &logits[base..base + VOCAB];
                 nxt[k] = if opts.greedy {
                     argmax(row) as i64

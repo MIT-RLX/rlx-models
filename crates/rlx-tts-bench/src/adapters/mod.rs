@@ -2,24 +2,37 @@
 
 mod fake;
 
-#[cfg(feature = "matrix-onnx")]
+// `matrix-onnx` is a deprecated alias of `matrix-native` (both enable the deps).
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
 mod chatterbox;
-#[cfg(feature = "matrix-onnx")]
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
 mod f5tts;
-#[cfg(feature = "matrix-onnx")]
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
 mod luxtts;
-#[cfg(feature = "matrix-onnx")]
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+mod melotts;
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+mod miotts;
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+mod miratts;
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
 mod moss_nano;
-#[cfg(feature = "matrix-onnx")]
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+mod parlertts;
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
 mod piper;
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+mod pocket_tts;
 #[cfg(feature = "rlx-tts")]
 mod rlx_tts;
-#[cfg(feature = "matrix-onnx")]
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
 mod soprano;
-#[cfg(feature = "matrix-onnx")]
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
 mod styletts2;
-#[cfg(feature = "matrix-onnx")]
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
 mod supertonic;
+#[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+mod voxtral_tts;
 
 #[cfg(feature = "matrix-ar")]
 mod gepard;
@@ -54,7 +67,7 @@ pub fn catalog() -> Vec<AdapterMeta> {
     {
         v.push(rlx_tts::meta());
     }
-    #[cfg(feature = "matrix-onnx")]
+    #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
     {
         v.push(chatterbox::meta());
         v.push(supertonic::meta());
@@ -63,6 +76,12 @@ pub fn catalog() -> Vec<AdapterMeta> {
         v.push(styletts2::meta());
         v.push(f5tts::meta());
         v.push(moss_nano::meta());
+        v.push(pocket_tts::meta());
+        v.push(parlertts::meta());
+        v.push(miotts::meta());
+        v.push(miratts::meta());
+        v.push(melotts::meta());
+        v.push(voxtral_tts::meta());
         v.push(soprano::meta());
     }
     #[cfg(feature = "matrix-ar")]
@@ -90,21 +109,33 @@ pub fn factory_for(id: &str) -> Option<AdapterFactory> {
         "fake" => Some(fake::make),
         #[cfg(feature = "rlx-tts")]
         "rlx-tts" => Some(rlx_tts::make),
-        #[cfg(feature = "matrix-onnx")]
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
         "chatterbox" => Some(chatterbox::make),
-        #[cfg(feature = "matrix-onnx")]
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
         "supertonic" => Some(supertonic::make),
-        #[cfg(feature = "matrix-onnx")]
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
         "piper" => Some(piper::make),
-        #[cfg(feature = "matrix-onnx")]
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
         "luxtts" => Some(luxtts::make),
-        #[cfg(feature = "matrix-onnx")]
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
         "styletts2" => Some(styletts2::make),
-        #[cfg(feature = "matrix-onnx")]
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
         "f5tts" => Some(f5tts::make),
-        #[cfg(feature = "matrix-onnx")]
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
         "moss-nano" => Some(moss_nano::make),
-        #[cfg(feature = "matrix-onnx")]
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+        "pocket-tts" => Some(pocket_tts::make),
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+        "parlertts" => Some(parlertts::make),
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+        "miotts" => Some(miotts::make),
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+        "miratts" => Some(miratts::make),
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+        "melotts" => Some(melotts::make),
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
+        "voxtral-tts" => Some(voxtral_tts::make),
+        #[cfg(any(feature = "matrix-native", feature = "matrix-onnx"))]
         "soprano" => Some(soprano::make),
         #[cfg(feature = "matrix-ar")]
         "sesame" => Some(sesame::make),

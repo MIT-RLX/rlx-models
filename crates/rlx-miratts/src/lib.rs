@@ -56,7 +56,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rlx_runtime::Device;
+use rlx_runtime::{Device, parse_device};
 use serde::{Deserialize, Serialize};
 use tokenizers::Tokenizer;
 
@@ -233,11 +233,18 @@ impl MiraTts {
         if self.lm.is_none() {
             self.lm = Some(lm::MiraLm::load(&self.dir, &self.config, self.device)?);
         }
+        let codec_dev = resolve_codec_device(self.device);
         if self.codec.is_none() {
-            self.codec = Some(codec::MiraCodec::load(&dec, self.device)?);
+            if codec_dev != self.device {
+                eprintln!(
+                    "[miratts] codec/speaker on {codec_dev:?} (requested {:?}; set RLX_MIRATTS_CODEC_DEVICE to override)",
+                    self.device
+                );
+            }
+            self.codec = Some(codec::MiraCodec::load(&dec, codec_dev)?);
         }
         if self.speaker.is_none() {
-            self.speaker = Some(encoder::MiraSpeakerEncoder::load(&dec, self.device)?);
+            self.speaker = Some(encoder::MiraSpeakerEncoder::load(&dec, codec_dev)?);
         }
         Ok(())
     }
@@ -280,7 +287,8 @@ impl MiraTts {
         let prompt = tokens::build_tts_prompt(&text_ids, semantic_context);
         self.ensure_loaded()?;
         let lm = self.lm.as_mut().context("lm loaded")?;
-        let speech_codes = lm.generate_speech_codes(&prompt, MAX_SPEECH_FRAMES, seed)?;
+        let max_frames = resolve_max_speech_frames();
+        let speech_codes = lm.generate_speech_codes(&prompt, max_frames, seed)?;
         anyhow::ensure!(
             !speech_codes.is_empty(),
             "MiraTTS LM produced no acoustic codes for {text:?}"
@@ -288,6 +296,31 @@ impl MiraTts {
         let codec = self.codec.as_ref().context("codec loaded")?;
         codec.decode(&speech_codes, global_tokens)
     }
+}
+
+/// FastBiCodec ONNX→RLX compile on CUDA/wgpu often stalls the first cell with
+/// VRAM held and 0% util. Default codec+speaker to CPU; override with
+/// `RLX_MIRATTS_CODEC_DEVICE=cuda|gpu`.
+fn resolve_codec_device(requested: Device) -> Device {
+    if let Ok(v) = std::env::var("RLX_MIRATTS_CODEC_DEVICE") {
+        if let Ok(d) = parse_device(v.trim()) {
+            return d;
+        }
+    }
+    match requested {
+        Device::Cuda | Device::Gpu | Device::Vulkan | Device::Metal | Device::Mlx => Device::Cpu,
+        other => other,
+    }
+}
+
+/// Cap AR length for smoke/bench. Default [`MAX_SPEECH_FRAMES`]; override with
+/// `RLX_MIRATTS_MAX_SPEECH` (clamped to `1..=MAX_SPEECH_FRAMES`).
+fn resolve_max_speech_frames() -> usize {
+    std::env::var("RLX_MIRATTS_MAX_SPEECH")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .map(|n: usize| n.clamp(1, MAX_SPEECH_FRAMES))
+        .unwrap_or(MAX_SPEECH_FRAMES)
 }
 
 #[cfg(test)]

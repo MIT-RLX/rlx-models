@@ -1,18 +1,29 @@
 # rlx-tiny-tts
 
-**TinyTTS** ([tronghieuit/tiny-tts](https://github.com/tronghieuit/tiny-tts)) — a MeloTTS / VITS2-style English text-to-speech model — running natively on RLX at 44.1 kHz. The four exported ONNX subgraphs (`text_encoder`, `duration_predictor`, `flow`, `decoder`) are imported into rlx-ir HIR and compiled per device; the monotonic-alignment + latent-sampling glue is reimplemented in Rust.
+**TinyTTS** ([tronghieuit/tiny-tts](https://github.com/tronghieuit/tiny-tts)) — a MeloTTS / VITS2-style English text-to-speech model — running natively on RLX at 44.1 kHz.
+
+**Distribution:** single [`tiny-tts.rlxp`](https://huggingface.co/eugenehp/tiny-tts-rlx) with nested
+`graphs/*.rlxp` (hot weight tensors + `graph.json`). Runtime materializes the outer pack and lowers
+each subgraph to rlx-ir HIR per utterance length. Monotonic-alignment + latent-sampling glue is in Rust.
+Hub ships **no** `.onnx`.
+
+Same bundle powers [`rlx-melotts`](../rlx-melotts) (`weights/tts/melotts` → this tree).
 
 ## Quick start
 
 ```bash
-cargo run -p rlx-tiny-tts --release -- \
-  --data weights/tiny-tts-rlx --text "The weather is nice today." --out out.wav
-# [--device cpu|metal|mlx|cuda|rocm|gpu] [--speaker MALE] [--speed 1.0] [--seed 1234]
-# [--kernel fast|precise|inherit]
+just fetch-tiny-tts          # eugenehp/tiny-tts-rlx → tiny-tts.rlxp
+just tiny-tts-backends       # CPU / Metal / MLX cosine vs CPU
+just export-tiny-tts-rlxp    # pack from local sources → nested graphs
+
+cargo run -p rlx-tiny-tts --release --features apple-silicon -- \
+  --data weights/tts/tiny-tts-rlx --text "The weather is nice today." \
+  --device metal --out out.wav
+# or: --data weights/tts/tiny-tts-rlx/tiny-tts.rlxp
 ```
 
-`--data` is an RLX TinyTTS bundle (see `scripts/export_tiny_tts.py`): `config.json`,
-`onnx/{text_encoder,duration_predictor,flow,decoder}.onnx`, and a `frontend/` asset dir.
+`--data` is an RLX TinyTTS bundle: `config.json`, nested `graphs/{text_encoder,duration_predictor,flow,decoder}.rlxp`,
+and a `frontend/` asset dir (or a packed `.rlxp`). Legacy local `onnx/*.onnx` still packs/loads for rebuilds.
 With no `--device`, the bin picks the best available accelerator (Metal → MLX → wgpu, else CPU).
 
 ## Public API
@@ -20,7 +31,7 @@ With no `--device`, the bin picks the best available accelerator (Metal → MLX 
 ```rust
 use rlx_tiny_tts::{TinyTts, InferOpts, Device};
 
-let model = TinyTts::load("weights/tiny-tts-rlx")?;   // dir, .rlxpack file, or any AssetSource
+let model = TinyTts::load("weights/tts/tiny-tts-rlx")?;   // dir, .rlxp file, or any AssetSource
 let opts = InferOpts::from_config(model.config());
 
 // Full pipeline: raw text → 44.1 kHz mono waveform, every graph on `device`.
@@ -38,7 +49,7 @@ is reused byte-identically from [rlx-inflect-nano](../rlx-inflect-nano)
 
 `InferOpts.kernel` selects the backend kernel-variant policy, mirroring the
 per-op kernel selection in `../rlx` (Metal `SgemmVariant`, CUDA TF32, CPU conv)
-but as one knob instead of raw `RLX_*` env vars:
+but as one option instead of raw `RLX_*` env vars:
 
 ```rust
 use rlx_tiny_tts::KernelVariant;
@@ -67,22 +78,18 @@ byte-identical output (see `examples/load_sources.rs`):
 ```rust
 use rlx_tiny_tts::{TinyTts, AssetSource, SourceSpec};
 
-TinyTts::load("weights/tiny-tts-rlx")?;             // directory (auto-detected)
-TinyTts::load("tiny-tts.rlxpack")?;                 // single packed file (auto-detected)
-TinyTts::load(AssetSource::pack_file("m.rlxpack")?)?;
-TinyTts::load(AssetSource::pack_bytes(bytes)?)?;    // in-memory pack (no disk)
-TinyTts::load(AssetSource::memory(name_to_bytes))?; // in-memory asset map
-TinyTts::load_from_spec(&spec)?;                    // {"source":"pack","path":"…"} from JSON
+TinyTts::load("weights/tts/tiny-tts-rlx")?;             // directory (auto-detected)
+TinyTts::load("tiny-tts.rlxp")?;                        // single packed file (auto-detected)
+TinyTts::load(AssetSource::pack_file("m.rlxp")?)?;
+TinyTts::load(AssetSource::pack_bytes(bytes)?)?;        // in-memory pack (no disk)
 ```
 
-`AssetSource` (in `rlx-core`) also takes a custom `AssetProvider` (HTTP cache,
-zip, embedded VFS…). Directory sources load in place; every other source is
-materialized to a self-cleaning temp dir only when a sub-loader needs a real
-path. Package a bundle into one distributable file with:
+Pack / in-memory sources materialize to a self-cleaning temp dir only when a
+sub-loader needs a real path. Package a bundle into one distributable file with:
 
 ```bash
-cargo run -p rlx-tiny-tts --release -- --pack weights/tiny-tts-rlx --out tiny-tts.rlxpack
-# then: --data tiny-tts.rlxpack  works anywhere --data <dir> did
+just export-tiny-tts-rlxp
+# then: --data weights/tts/tiny-tts-rlx/tiny-tts.rlxp
 ```
 
 Adopt the same loaders in any model crate with one line —
@@ -90,7 +97,7 @@ Adopt the same loaders in any model crate with one line —
 
 ## Backends
 
-The ONNX graphs compile per device, so TinyTTS runs on every RLX backend:
+Subgraphs compile per device, so TinyTTS runs on every RLX backend:
 
 | Feature | `--device` | Backend |
 |---------|-----------|---------|
@@ -105,5 +112,5 @@ Convenience bundles: `apple-silicon`, `nvidia-gpu`, `amd-gpu`, `all-backends`.
 
 ## Examples
 
-`keystone`, `flow_probe`, `tenc_probe`, `dec_probe`, `compile_all`, `debug_shapes` under
-`examples/` exercise individual subgraphs (single-stage parity / shape debugging).
+`keystone`, `flow_probe`, `tenc_probe`, `dec_probe`, `compile_all`, `debug_shapes`,
+`pack_rlxp` under `examples/` exercise packing and individual subgraphs.

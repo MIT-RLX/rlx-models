@@ -15,6 +15,8 @@ exclude = ["tools/__pycache__", "**/.DS_Store"]
 [dependencies]
 rlx-runtime = { workspace = true }
 rlx-gguf = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-pkg = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }

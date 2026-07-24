@@ -1,6 +1,7 @@
-//! ONNX-graph engine: import each TinyTTS subgraph into rlx-ir HIR, compile it
-//! per `(component, device, length)` with on-disk + in-memory caching, run it,
-//! and orchestrate the full VITS pipeline with the Rust [`crate::glue`] stage.
+//! Subgraph engine: lower each TinyTTS nested `.rlxp` (or legacy ONNX) into
+//! rlx-ir HIR, compile per `(component, device, length)` with on-disk +
+//! in-memory caching, run it, and orchestrate the full VITS pipeline with the
+//! Rust [`crate::glue`] stage.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,14 +16,14 @@ use crate::glue::{self, Rng};
 /// Kernel-variant / numeric-precision policy for the compiled TTS graphs.
 ///
 /// Mirrors the per-op kernel selection in `../rlx` (Metal `SgemmVariant`, CUDA
-/// TF32, CPU conv), but exposes it as a single per-model / per-call knob instead
-/// of raw `RLX_*` env vars. [`KernelVariant::apply`] installs the corresponding
-/// `rlx_ir::env` **code overrides** — which take precedence over the process
-/// environment and are read by the backends at dispatch time — so no
-/// process-global `std::env` mutation is needed and the same compiled graph can
-/// run fast or precise kernels without recompiling.
+/// TF32, CPU conv), but exposes it as a single per-model / per-call option
+/// instead of raw `RLX_*` env vars. [`KernelVariant::apply`] installs the
+/// corresponding `rlx_ir::env` **code overrides** — which take precedence over
+/// the process environment and are read by the backends at dispatch time — so
+/// no process-global `std::env` mutation is needed and the same compiled graph
+/// can run fast or precise kernels without recompiling.
 ///
-/// The knobs are read at dispatch, so applying a variant affects every
+/// Overrides are read at dispatch, so applying a variant affects every
 /// subsequent compile/run in the process (last-writer-wins across concurrent
 /// models). Set it once per process for a consistent policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -37,7 +38,7 @@ pub enum KernelVariant {
     /// conv path; CUDA disables TF32 (`RLX_CUDA_NO_TF32` + `RLX_CUDA_PARITY`).
     /// Slower; for parity validation and precision-critical work.
     Precise,
-    /// Leave all kernel-selection knobs untouched — honor the caller's own
+    /// Leave all kernel-selection settings untouched — honor the caller's own
     /// `RLX_*` env / `rlx_ir::env` overrides.
     Inherit,
 }
@@ -131,7 +132,8 @@ fn should_decompose_conv_transpose(device: Device) -> bool {
 }
 
 pub struct TinyModel {
-    onnx_dir: PathBuf,
+    /// Bundle root (contains `graphs/<component>.rlxp` and/or legacy `onnx/*.onnx`).
+    root: PathBuf,
     cfg: BundleConfig,
     /// Compiled graphs keyed by `(component, device, length)`.
     cache: Mutex<HashMap<(&'static str, Device, usize), CompiledGraph>>,
@@ -196,7 +198,7 @@ fn as_f32((bytes, dt): &(Vec<u8>, DType)) -> Result<Vec<f32>> {
 }
 
 impl TinyModel {
-    pub fn new(onnx_dir: PathBuf, cfg: BundleConfig) -> Self {
+    pub fn new(root: PathBuf, cfg: BundleConfig) -> Self {
         // TinyTTS is dominated by its HiFi-GAN decoder convolutions. On CPU the
         // rlx-cpu default is a scalar reference conv (~20× slower here); the
         // im2col+Accelerate path (`RLX_FAST_CONV`) takes the CPU decoder from
@@ -209,10 +211,15 @@ impl TinyModel {
             rlx_ir::env::set("RLX_FAST_CONV", "1");
         }
         Self {
-            onnx_dir,
+            root,
             cfg,
             cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Resolve a component to a native `graphs/<name>.rlxp` or legacy `.onnx`.
+    pub fn component_path(&self, component: &str) -> Result<PathBuf> {
+        resolve_component_path(&self.root, component)
     }
 
     /// Import + compile one subgraph for a given symbolic length, with caching.
@@ -291,8 +298,12 @@ impl TinyModel {
         if matches!(device, Device::Ane) {
             crate::coreml::ensure_coreml_units_for_tts();
         }
-        let path = self.onnx_dir.join(format!("{component}.onnx"));
-        anyhow::ensure!(path.is_file(), "missing graph {}", path.display());
+        let path = self.component_path(component)?;
+        anyhow::ensure!(
+            path.is_file() || path.join("manifest.json").is_file(),
+            "missing graph {}",
+            path.display()
+        );
         let _t_imp = std::time::Instant::now();
         let (hir, mut params, report) = import_graph_named(
             &path,
@@ -390,8 +401,12 @@ impl TinyModel {
         if matches!(device, Device::Ane) {
             crate::coreml::ensure_coreml_units_for_tts();
         }
-        let path = self.onnx_dir.join(format!("{component}.onnx"));
-        anyhow::ensure!(path.is_file(), "missing graph {}", path.display());
+        let path = self.component_path(component)?;
+        anyhow::ensure!(
+            path.is_file() || path.join("manifest.json").is_file(),
+            "missing graph {}",
+            path.display()
+        );
         // Metal/ANE: decompose CT. MLX/CPU/wgpu/CUDA: native Op::ConvTranspose2d
         // (MLX host-evals CT — see rlx-mlx; avoids ~627 GB im2col on Vocos ISTFT).
         let decompose_ct = should_decompose_conv_transpose(device);
@@ -442,7 +457,7 @@ impl TinyModel {
         let t = phone.len();
         anyhow::ensure!(t > 0, "empty phoneme sequence");
         // Install the requested kernel-variant / precision policy before any
-        // graph compiles or runs (backends read these knobs at dispatch).
+        // graph compiles or runs (backends read these settings at dispatch).
         opts.kernel.apply();
         let c = self.cfg.inter_channels; // latent channels (== g/m_p channel width)
 
@@ -643,16 +658,19 @@ fn dbg_mag(name: &str, v: &[f32]) {
     );
 }
 
-/// Import one ONNX subgraph into HIR for a given symbolic length.
+/// Resolve `graphs/<component>.rlxp` (native) or legacy ONNX under `root`.
+pub fn resolve_component_path(root: &Path, component: &str) -> Result<PathBuf> {
+    rlx_assets::native_pack::resolve_component_path(root, component)
+}
+
+/// Import one subgraph into HIR for a given symbolic length.
+///
+/// `path` may be a nested native `.rlxp` (`graphs/<name>.rlxp`), a loose
+/// exported graph dir, or a legacy `.onnx` file.
 ///
 /// The decoder upsamples its length 512× through five `ConvTranspose` layers.
-/// `prepare_onnx_file` runs the importer's shape heuristic (which assumes a
-/// channel-first tensor's length equals `sequence_length`) and bakes the result
-/// into every node's `output_meta`; for the decoder that collapses all upsampled
-/// lengths back to the input length. We clear the decoder's `output_meta` so the
-/// lowering recomputes each conv/transpose length from its actual input shape.
-/// The other three graphs keep length `T` throughout, where the heuristic is
-/// already correct.
+/// Shape meta from a default-length prepare can collapse those axes — we clear
+/// `output_meta` and re-propagate at the real compile length.
 pub fn import_graph(
     path: &Path,
     component: &str,
@@ -666,10 +684,7 @@ pub fn import_graph(
     import_graph_named(path, component, length, decompose_conv_transpose, &[])
 }
 
-/// Like [`import_graph`], but binds specific ONNX `dim_param` names to distinct
-/// concrete lengths (`named_lengths`). Lets a single graph carry two+ dynamic
-/// lengths — e.g. a CFM cross-attention decoder whose `text_length` and
-/// `latent_length` differ. Names not listed fall back to `length`.
+/// Like [`import_graph`], but binds specific dim names to distinct concrete lengths.
 pub fn import_graph_named(
     path: &Path,
     component: &str,
@@ -699,16 +714,39 @@ pub fn import_graph_named(
         ..ImportOptions::default()
     };
 
-    let (manifest, mut nodes, params, mut i64_params, init_shapes) =
-        prepare_onnx_file(path).with_context(|| format!("prepare {}", path.display()))?;
-    // Bind scalar-INPUT *values* from `named_lengths`. Some graphs (e.g. F5-TTS's
-    // `F5_Preprocess`) build tensor SHAPES from a runtime scalar input —
-    // `max_duration → Unsqueeze → Concat → ConstantOfShape / Range → noise/rope`.
-    // The lowerer folds those chains via `eval_static_shape_vector`, which reads
-    // `i64_params` first; without the value the fold defaults to a garbage length
-    // and every derived tensor (noise, rope) collapses. When a named_length key is
-    // also a scalar (rank-0 or all-1) graph input, seed its value here so the whole
-    // shape-arithmetic subgraph resolves to the concrete compile-time length.
+    let is_native_rlxp = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("rlxp"));
+    let is_native_dir = path.is_dir() && path.join("manifest.json").is_file();
+
+    // Keep If/scalar TLS payloads so we can reinstall after shape propagation
+    // without reopening the nested pack (`build_hir_from_parts` drains TLS).
+    let mut native_tls: Option<(
+        std::collections::HashMap<String, (Vec<rlx_onnx_import::BundleNode>, Vec<rlx_onnx_import::BundleNode>)>,
+        std::collections::HashSet<String>,
+    )> = None;
+    let (manifest, mut nodes, params, mut i64_params, init_shapes) = if is_native_rlxp {
+        let g = rlx_assets::native_pack::load_native_subgraph_rlxp(path)
+            .with_context(|| format!("load native subgraph {}", path.display()))?;
+        rlx_assets::native_pack::install_native_subgraph_tls(&g);
+        native_tls = Some((g.if_branches.clone(), g.scalar_consts.clone()));
+        (
+            g.manifest,
+            g.nodes,
+            g.params,
+            g.i64_params,
+            g.init_shapes,
+        )
+    } else if is_native_dir {
+        anyhow::bail!(
+            "loose graph dir {} is unsupported — use graphs/<name>.rlxp",
+            path.display()
+        );
+    } else {
+        prepare_onnx_file(path).with_context(|| format!("prepare {}", path.display()))?
+    };
+
     for io in &manifest.inputs {
         if let Some(&v) = opts.named_lengths.get(&io.name) {
             let scalar = io.meta.shape.is_empty()
@@ -724,22 +762,21 @@ pub fn import_graph_named(
             }
         }
     }
-    // `prepare_onnx_file` propagates shapes with a fixed default `sequence_length`
-    // (128), inconsistent with our per-call compile length. Reset each meta entry
-    // to an empty placeholder (keeping one entry per output so re-propagation — which
-    // skips nodes with too few meta entries — still visits every node), then
-    // re-propagate at the real compile length.
     let _ = component;
     for node in &mut nodes {
         for meta in &mut node.output_meta {
             *meta = serde_json::json!({});
         }
     }
-    // Give shape inference the folded i64 constant VALUES (axes/shape tensors) so
-    // opset-13+ Unsqueeze/Squeeze/Reduce with input-form axes resolve the new/removed
-    // dim position correctly (else e.g. a `[-1]` mask unsqueeze mis-places to axis 1).
     rlx_onnx_import::shape_propagate::set_shape_i64_consts(i64_params.clone());
     rlx_onnx_import::shape_propagate::propagate_shapes(&mut nodes, &manifest, &init_shapes, &opts);
+
+    if let Some((if_branches, scalar_consts)) = native_tls {
+        use rlx_onnx_import::{install_if_branches, install_scalar_consts};
+        install_if_branches(if_branches);
+        install_scalar_consts(scalar_consts);
+    }
+
     let (hir, params, _typed, report) = build_hir_from_parts(
         &manifest,
         nodes,
@@ -772,7 +809,7 @@ fn uniform_fill_bindings(params: &HashMap<String, Vec<f32>>) -> HashMap<String, 
 
 /// Standalone keystone helper: import + compile one graph (used by the example).
 pub fn compile_graph(
-    onnx_dir: &Path,
+    root: &Path,
     component: &'static str,
     device: Device,
     length: usize,
@@ -790,6 +827,6 @@ pub fn compile_graph(
         inter_channels: 80,
         gin_channels: 80,
     };
-    let m = TinyModel::new(onnx_dir.to_path_buf(), cfg);
+    let m = TinyModel::new(root.to_path_buf(), cfg);
     m.compile(component, device, length)
 }

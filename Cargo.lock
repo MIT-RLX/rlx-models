@@ -7209,6 +7209,8 @@ version = "0.2.13"
 dependencies = [
  "anyhow",
  "rlx-gguf",
+ "rlx-ir",
+ "rlx-pkg",
  "rlx-runtime",
  "serde_json",
  "zip 2.4.2",
@@ -7220,6 +7222,9 @@ version = "0.2.13"
 dependencies = [
  "anyhow",
  "memmap2",
+ "rlx-ir",
+ "rlx-onnx-import",
+ "rlx-pkg",
  "serde",
  "serde_json",
 ]
@@ -8436,17 +8441,20 @@ dependencies = [
  "rlx-moshi",
  "rlx-moss-nano",
  "rlx-nanbeige",
+ "rlx-nanowakeword",
  "rlx-nemotron-omni",
  "rlx-neutts",
  "rlx-nomic",
  "rlx-ocr",
  "rlx-omnicoder",
  "rlx-openvoice",
+ "rlx-openwakeword",
  "rlx-opt",
  "rlx-orpheus",
  "rlx-parlertts",
  "rlx-phi",
  "rlx-piper",
+ "rlx-porcupine",
  "rlx-ppocrv6",
  "rlx-qwen25-vl",
  "rlx-qwen3",
@@ -8471,8 +8479,12 @@ dependencies = [
  "rlx-vision",
  "rlx-vjepa2",
  "rlx-vlm-base",
+ "rlx-voxrt",
  "rlx-voxtral",
  "rlx-voxtral-tts",
+ "rlx-wake",
+ "rlx-wakeword",
+ "rlx-wakeword-core",
  "rlx-wav2vec2-asr",
  "rlx-wav2vec2-bert",
  "rlx-whisper",
@@ -8544,6 +8556,8 @@ dependencies = [
  "anyhow",
  "hf-hub",
  "hound",
+ "rlx-assets",
+ "rlx-gguf",
  "rlx-runtime",
  "rlx-tiny-tts",
  "rlx-whisper",
@@ -8583,6 +8597,16 @@ dependencies = [
  "safetensors 0.7.0",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rlx-nanowakeword"
+version = "0.2.13"
+dependencies = [
+ "anyhow",
+ "ort",
+ "rlx-runtime",
+ "rlx-wake",
 ]
 
 [[package]]
@@ -8833,6 +8857,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-openwakeword"
+version = "0.2.13"
+dependencies = [
+ "anyhow",
+ "ort",
+ "rlx-nanowakeword",
+ "rlx-porcupine",
+ "rlx-runtime",
+ "rlx-voxrt",
+ "rlx-wake",
+]
+
+[[package]]
 name = "rlx-opt"
 version = "0.2.13"
 dependencies = [
@@ -8925,6 +8962,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-pkg"
+version = "0.2.13"
+dependencies = [
+ "anyhow",
+ "bincode 1.3.3",
+ "memmap2",
+ "rayon",
+ "rlx-gguf",
+ "rlx-ir",
+ "serde",
+ "serde_json",
+ "xxhash-rust",
+ "zip 2.4.2",
+ "zstd",
+]
+
+[[package]]
 name = "rlx-pocket-tts"
 version = "0.2.13"
 dependencies = [
@@ -8942,6 +8996,15 @@ dependencies = [
  "sentencepiece",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rlx-porcupine"
+version = "0.2.13"
+dependencies = [
+ "anyhow",
+ "rlx-runtime",
+ "rlx-wake",
 ]
 
 [[package]]
@@ -9169,6 +9232,7 @@ dependencies = [
  "rlx-mlx",
  "rlx-oneapi",
  "rlx-opt",
+ "rlx-pkg",
  "rlx-rocm",
  "rlx-tpu",
  "rlx-vulkan",
@@ -9337,12 +9401,15 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "hound",
+ "rlx-assets",
  "rlx-cli",
+ "rlx-gguf",
  "rlx-ir",
  "rlx-models-core",
  "rlx-onnx-import",
  "rlx-qwen3",
  "rlx-runtime",
+ "rlx-tiny-tts",
  "rlx-whisper",
  "serde",
  "serde_json",
@@ -9448,6 +9515,7 @@ dependencies = [
  "dirs 6.0.0",
  "hound",
  "ndarray 0.16.1",
+ "rlx-assets",
  "rlx-compile",
  "rlx-cpu",
  "rlx-inflect-nano",
@@ -9542,10 +9610,12 @@ dependencies = [
  "ndarray 0.16.1",
  "once_cell",
  "regex",
+ "rlx-assets",
  "rlx-cpu",
  "rlx-fft",
  "rlx-gguf",
  "rlx-ir",
+ "rlx-pkg",
  "rlx-runtime",
  "serde",
  "serde_json",
@@ -9564,10 +9634,15 @@ dependencies = [
  "rlx-kittentts",
  "rlx-kyutai-tts",
  "rlx-luxtts",
+ "rlx-melotts",
  "rlx-metavoice",
+ "rlx-miotts",
+ "rlx-miratts",
  "rlx-moss-nano",
  "rlx-orpheus",
+ "rlx-parlertts",
  "rlx-piper",
+ "rlx-pocket-tts",
  "rlx-qwen3-tts",
  "rlx-runtime",
  "rlx-sesame",
@@ -9575,6 +9650,7 @@ dependencies = [
  "rlx-styletts2",
  "rlx-supertonic",
  "rlx-tts",
+ "rlx-voxtral-tts",
  "rlx-whisper",
  "rlx-zonos",
  "rustfft",
@@ -9738,6 +9814,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-voxrt"
+version = "0.2.13"
+dependencies = [
+ "anyhow",
+ "rlx-runtime",
+ "rlx-wake",
+]
+
+[[package]]
 name = "rlx-voxtral"
 version = "0.2.13"
 dependencies = [
@@ -9820,6 +9905,52 @@ dependencies = [
  "rlx-ir",
  "rlx-opt",
  "rlx-unfuse",
+]
+
+[[package]]
+name = "rlx-wake"
+version = "0.2.13"
+dependencies = [
+ "anyhow",
+ "rlx-cli",
+ "rlx-cpu",
+ "rlx-models-core",
+ "rlx-runtime",
+ "safetensors 0.7.0",
+]
+
+[[package]]
+name = "rlx-wakeword"
+version = "0.2.13"
+dependencies = [
+ "anyhow",
+ "rlx-nanowakeword",
+ "rlx-openwakeword",
+ "rlx-porcupine",
+ "rlx-runtime",
+ "rlx-vad",
+ "rlx-voxrt",
+ "rlx-wake",
+ "rlx-wakeword-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rlx-wakeword-core"
+version = "0.2.13"
+dependencies = [
+ "rlx-wake",
+]
+
+[[package]]
+name = "rlx-wakeword-wasm"
+version = "0.2.13"
+dependencies = [
+ "js-sys",
+ "rlx-wakeword-core",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -13322,6 +13453,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "xxhash-rust"
+version = "0.8.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
+
+[[package]]
 name = "yoke"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13510,6 +13647,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "zstd"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.0.16+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
+
+[[package]]
 name = "zune-core"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13523,7 +13688,3 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "rlx-umap"
-version = "0.2.13"

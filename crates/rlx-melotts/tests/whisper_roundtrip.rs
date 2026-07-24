@@ -28,13 +28,15 @@ fn model_dir() -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     for cand in [
         std::env::var("RLX_MELOTTS_DIR").ok().map(PathBuf::from),
+        std::env::var("RLX_TINY_TTS_DIR").ok().map(PathBuf::from),
         Some(root.join("weights/tts/melotts")),
+        Some(root.join("weights/tts/tiny-tts-rlx")),
         Some(root.join("weights/tiny-tts-rlx")),
     ]
     .into_iter()
     .flatten()
     {
-        if cand.join("config.json").is_file() {
+        if cand.join("config.json").is_file() && cand.join("onnx/decoder.onnx").is_file() {
             return Some(cand);
         }
     }

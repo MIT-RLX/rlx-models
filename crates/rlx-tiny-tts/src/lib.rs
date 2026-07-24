@@ -1,10 +1,10 @@
 //! TinyTTS English text-to-speech for RLX.
 //!
 //! TinyTTS (<https://github.com/tronghieuit/tiny-tts>) is a MeloTTS / VITS2-style
-//! model exported as four ONNX subgraphs — `text_encoder`, `duration_predictor`,
-//! `flow` and `decoder` — with a small NumPy "glue" stage (monotonic alignment +
-//! latent sampling) connecting them. RLX imports each ONNX graph into the rlx-ir
-//! HIR and runs it on any backend (CPU / Metal / MLX / CUDA / ROCm / wgpu); the
+//! model with four subgraphs — `text_encoder`, `duration_predictor`, `flow`, and
+//! `decoder` — plus a small NumPy "glue" stage (monotonic alignment + latent
+//! sampling). Hub packs ship nested `graphs/*.rlxp`; RLX lowers each to rlx-ir
+//! HIR and runs on any backend (CPU / Metal / MLX / CUDA / ROCm / wgpu). The
 //! glue stage is reimplemented in Rust (see [`glue`]).
 
 pub mod audio;
@@ -34,7 +34,7 @@ pub use rlx_core::asset_source::{self, AssetProvider, AssetSource, LocalDir, Sou
 /// Reuse the byte-identical MeloTTS English frontend from rlx-inflect-nano.
 pub use rlx_inflect_nano::frontend;
 
-/// A loaded TinyTTS model: config + four compiled-on-demand ONNX graphs + frontend.
+/// A loaded TinyTTS model: config + four compiled-on-demand subgraphs + frontend.
 pub struct TinyTts {
     cfg: BundleConfig,
     dir: PathBuf,
@@ -52,34 +52,33 @@ pub struct Wav {
 }
 
 impl TinyTts {
-    /// Load a TinyTTS bundle from anywhere: a directory, a packed `.rlxpack`
-    /// file, an in-memory byte map, or any custom [`AssetSource`] provider.
+    /// Load a TinyTTS bundle from anywhere: a directory, a packed `.rlxp`
+    /// (or legacy `.rlxpack`), an in-memory byte map, or any custom [`AssetSource`].
     ///
     /// ```no_run
     /// # use rlx_tiny_tts::{TinyTts, AssetSource};
     /// let a = TinyTts::load("weights/tiny-tts-rlx")?;         // directory
-    /// let b = TinyTts::load("tiny-tts.rlxpack")?;             // packed file
+    /// let b = TinyTts::load("tiny-tts.rlxp")?;                // packed file
     /// let c = TinyTts::load(std::path::Path::new("bundle"))?; // &Path / PathBuf
-    /// let bytes: std::sync::Arc<[u8]> = std::fs::read("tiny-tts.rlxpack")?.into();
+    /// let bytes: std::sync::Arc<[u8]> = std::fs::read("tiny-tts.rlxp")?.into();
     /// let d = TinyTts::load(AssetSource::pack_bytes(bytes)?)?;// in-memory pack
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     ///
-    /// The bundle contains `config.json`,
-    /// `onnx/{text_encoder,duration_predictor,flow,decoder}.onnx` and a
-    /// `frontend/` asset dir (see `scripts/export_tiny_tts.py`).
+    /// The bundle contains `config.json`, nested `graphs/*.rlxp` (or legacy
+    /// local `onnx/*.onnx` for rebuilds), and a `frontend/` asset dir.
     pub fn load(src: impl Into<AssetSource>) -> Result<Self> {
         Self::load_from_source(src.into())
     }
 
     /// Load from a resolved [`AssetSource`]. Directory sources load in place;
     /// pack / in-memory sources materialize the bundle to a temp directory that
-    /// lives as long as the returned model (the ONNX importer and the g2p
-    /// frontend both consume real paths).
+    /// lives as long as the returned model (graph loaders and the g2p frontend
+    /// both consume real paths).
     pub fn load_from_source(src: AssetSource) -> Result<Self> {
         let (mut this, keep) = rlx_core::asset_source::load_materialized(src, Self::load_from_dir)
             .context("materialize TinyTTS bundle assets")?;
-        this._local = keep; // keep a materialized temp bundle alive (lazy onnx/frontend reads)
+        this._local = keep; // keep a materialized temp bundle alive (lazy graph/frontend reads)
         Ok(this)
     }
 
@@ -90,15 +89,14 @@ impl TinyTts {
         Self::load_from_source(AssetSource::from_spec(spec)?)
     }
 
-    /// Load an RLX TinyTTS bundle from a filesystem directory (see
-    /// `scripts/export_tiny_tts.py`): `config.json`,
-    /// `onnx/{text_encoder,duration_predictor,flow,decoder}.onnx` and a
-    /// `frontend/` asset dir. Prefer [`TinyTts::load`] for source flexibility.
+    /// Load an RLX TinyTTS bundle from a filesystem directory: `config.json`,
+    /// `graphs/{text_encoder,duration_predictor,flow,decoder}.rlxp` (or legacy
+    /// `onnx/*.onnx`) and a `frontend/` asset dir. Prefer [`TinyTts::load`].
     pub fn load_from_dir(dir: &Path) -> Result<Self> {
         let cfg_s = std::fs::read_to_string(dir.join("config.json"))
             .with_context(|| format!("read {}/config.json", dir.display()))?;
         let cfg = BundleConfig::from_json(&cfg_s)?;
-        let model = model::TinyModel::new(dir.join("onnx"), cfg.clone());
+        let model = model::TinyModel::new(dir.to_path_buf(), cfg.clone());
         Ok(Self {
             cfg,
             dir: dir.to_path_buf(),

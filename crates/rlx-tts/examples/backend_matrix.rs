@@ -15,7 +15,7 @@ use std::time::Instant;
 use rlx_runtime::{Device, is_available};
 use rlx_tts::{RlxTts, VarianceControls, WaveRnnOpts};
 
-const TEXT: &str = "The quick brown fox jumps over the lazy dog near the river bank.";
+const TEXT: &str = "The quick brown fox jumps over the lazy dog near the riverbank at sunrise.";
 const LONG: &str = "\
 Once upon a time in a quiet valley, a traveler paused by the river and listened \
 to the wind in the trees.";

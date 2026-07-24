@@ -59,8 +59,8 @@ impl EffectiveStep1 {
     /// Load from `weights/asr/decoder/` bins, or from sibling `model.gguf` when present.
     pub fn load(dir: &Path) -> Result<Self> {
         if let Some(root) = dir.parent() {
-            if let Some(gguf) = crate::gguf_io::resolve_gguf_path(root) {
-                if let Ok(g) = crate::gguf_io::AsrGguf::open(&gguf) {
+            if let Some(pack_path) = crate::gguf_io::resolve_pack_path(root) {
+                if let Ok(g) = crate::gguf_io::AsrPack::open(&pack_path) {
                     if g.has("decoder.embed") {
                         return g.load_effective_step1();
                     }

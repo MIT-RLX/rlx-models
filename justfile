@@ -786,6 +786,178 @@ bench-vad-jfk *ARGS:
 bench-vad-jfk-all-devices *ARGS:
     cargo run -p rlx-vad --example jfk_bench --release --features all-backends -- --devices all {{ARGS}}
 
+# --- Wake-word (openWakeWord / nanowakeword / porcupine / voxrt) ---
+
+fetch-openwakeword:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .cache/openwakeword/onnx crates/rlx-openwakeword/weights
+    python3 scripts/wake_export/export_openwakeword_weights.py \
+      --onnx-dir .cache/openwakeword/onnx \
+      --out-dir crates/rlx-openwakeword/weights
+
+fetch-nanowakeword:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .cache/nanowakeword crates/rlx-nanowakeword/weights
+    python3 scripts/wake_export/export_nanowakeword_weights.py \
+      --out crates/rlx-nanowakeword/weights/model_lite.safetensors
+
+openwakeword-demo *ARGS:
+    just run-bin rlx-openwakeword rlx-openwakeword {{ARGS}}
+
+nanowakeword-demo *ARGS:
+    just run-bin rlx-nanowakeword rlx-nanowakeword {{ARGS}}
+
+porcupine-demo *ARGS:
+    just run-bin rlx-porcupine rlx-porcupine {{ARGS}}
+
+voxrt-demo *ARGS:
+    just run-bin rlx-voxrt rlx-voxrt {{ARGS}}
+
+# Sweep every available RLX backend for all four engines (stub weights).
+#   just features=all-backends wake-all-backends -- --wav clip.wav
+wake-all-backends *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=({{ARGS}})
+    if [[ ${#args[@]} -gt 0 && "${args[0]}" == "--" ]]; then
+      args=("${args[@]:1}")
+    fi
+    cargo run -p rlx-openwakeword --bin rlx-openwakeword {{profile}} {{feature_args}} -- --device all "${args[@]}"
+    cargo run -p rlx-nanowakeword --bin rlx-nanowakeword {{profile}} {{feature_args}} -- --device all "${args[@]}"
+    cargo run -p rlx-porcupine --bin rlx-porcupine {{profile}} {{feature_args}} -- --device all "${args[@]}"
+    cargo run -p rlx-voxrt --bin rlx-voxrt {{profile}} {{feature_args}} -- --device all "${args[@]}"
+
+test-wake *ARGS:
+    cargo test -p rlx-wake --release {{ARGS}}
+    cargo test -p rlx-openwakeword --release {{ARGS}}
+    cargo test -p rlx-nanowakeword --release {{ARGS}}
+    cargo test -p rlx-porcupine --release {{ARGS}}
+    cargo test -p rlx-voxrt --release {{ARGS}}
+
+test-wake-backends *ARGS:
+    cargo test -p rlx-wake --test backend_quick_check --features all-backends --release {{ARGS}}
+    cargo test -p rlx-wake --test train_backends --features all-backends --release {{ARGS}}
+    cargo test -p rlx-openwakeword --test backend_quick_check --features all-backends --release {{ARGS}}
+    cargo test -p rlx-nanowakeword --test backend_quick_check --features all-backends --release {{ARGS}}
+    cargo test -p rlx-porcupine --test backend_quick_check --features all-backends --release {{ARGS}}
+    cargo test -p rlx-voxrt --test backend_quick_check --features all-backends --release {{ARGS}}
+    just test-wake-parity {{ARGS}}
+
+openwakeword-onnx-parity *ARGS:
+    cargo test -p rlx-openwakeword --features onnx --test onnx_parity --release {{ARGS}}
+
+nanowakeword-onnx-parity *ARGS:
+    cargo test -p rlx-nanowakeword --features onnx --test onnx_parity --release {{ARGS}}
+
+bench-wake *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run -p rlx-wake --example wake_bench --release --features all-backends -- {{ARGS}}
+    cargo run -p rlx-openwakeword --example engines_bench --release --features all-backends -- {{ARGS}}
+    cargo run -p rlx-wakeword --example compare_bench --release --features all-backends -- {{ARGS}}
+
+test-wake-parity *ARGS:
+    cargo test -p rlx-wake --test backend_parity --features all-backends --release -- --nocapture {{ARGS}}
+    cargo test -p rlx-openwakeword --test backend_parity --features all-backends --release -- --nocapture {{ARGS}}
+    cargo test -p rlx-nanowakeword --test backend_parity --features all-backends --release -- --nocapture {{ARGS}}
+    cargo test -p rlx-porcupine --test backend_parity --features all-backends --release -- --nocapture {{ARGS}}
+    cargo test -p rlx-voxrt --test backend_parity --features all-backends --release -- --nocapture {{ARGS}}
+
+# Train custom wake words in RLX only (no PyTorch / upstream trainers).
+# Pass backends via features=, e.g. `just features=all-backends wake-train-cnn -- --device all …`
+wake-train-synth *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=({{ARGS}})
+    if [[ ${#args[@]} -gt 0 && "${args[0]}" == "--" ]]; then args=("${args[@]:1}"); fi
+    cargo run -p rlx-wake --bin rlx-wake-train {{profile}} {{feature_args}} -- synth "${args[@]}"
+
+wake-train-cnn *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=({{ARGS}})
+    if [[ ${#args[@]} -gt 0 && "${args[0]}" == "--" ]]; then args=("${args[@]:1}"); fi
+    cargo run -p rlx-wake --bin rlx-wake-train {{profile}} {{feature_args}} -- cnn "${args[@]}"
+
+wake-train-mlp *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=({{ARGS}})
+    if [[ ${#args[@]} -gt 0 && "${args[0]}" == "--" ]]; then args=("${args[@]:1}"); fi
+    cargo run -p rlx-wake --bin rlx-wake-train {{profile}} {{feature_args}} -- mlp "${args[@]}"
+
+wake-train-phrase *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=({{ARGS}})
+    if [[ ${#args[@]} -gt 0 && "${args[0]}" == "--" ]]; then args=("${args[@]:1}"); fi
+    cargo run -p rlx-openwakeword --bin rlx-openwakeword-train {{profile}} {{feature_args}} -- "${args[@]}"
+
+test-wake-train *ARGS:
+    cargo test -p rlx-wake --test train_quick --release {{ARGS}}
+    cargo test -p rlx-wake --test train_backends --features all-backends --release {{ARGS}}
+
+# CUDA on ssh msi (sync trees, then cpu+cuda wake matrix).
+wake-cuda-msi:
+    bash scripts/wake_cuda_validate.sh --remote
+
+# --- First-party wakeword product (event API, multi-phrase, VAD gate) ---
+
+wakeword-demo *ARGS:
+    just run-bin rlx-wakeword rlx-wakeword {{ARGS}}
+
+wakeword-train *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=({{ARGS}})
+    if [[ ${#args[@]} -gt 0 && "${args[0]}" == "--" ]]; then args=("${args[@]:1}"); fi
+    cargo run -p rlx-wakeword --bin rlx-wakeword-train {{profile}} {{feature_args}} -- "${args[@]}"
+
+# Scale bench: N=2..10 phrase heads (latency / size / RAM table)
+wakeword-multi-bench *ARGS:
+    cargo run -p rlx-wakeword --example multi_phrase_bench --release -- {{ARGS}}
+
+# WASM (wasm-bindgen → Node): smoke + multi-phrase f32/ternary table
+wakeword-wasm-bench *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    wasm-pack build crates/rlx-wakeword-wasm --target nodejs --release --out-dir pkg
+    node crates/rlx-wakeword-wasm/run_bench.mjs {{ARGS}}
+
+# Browser / Web Worker package (ES module, no window/DOM required)
+wakeword-wasm-web:
+    wasm-pack build crates/rlx-wakeword-wasm --target web --release --out-dir web/pkg-web
+
+# Serve worker demo (build web target first if needed)
+wakeword-wasm-worker-serve *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -f crates/rlx-wakeword-wasm/web/pkg-web/rlx_wakeword_wasm.js ]]; then
+      just wakeword-wasm-web
+    fi
+    echo "open http://127.0.0.1:8765/"
+    python3 -m http.server 8765 --directory crates/rlx-wakeword-wasm/web {{ARGS}}
+
+# Node worker_threads smoke (same protocol as browser module worker)
+wakeword-wasm-worker-smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -f crates/rlx-wakeword-wasm/web/pkg-web/rlx_wakeword_wasm.js ]]; then
+      just wakeword-wasm-web
+    fi
+    node crates/rlx-wakeword-wasm/run_worker_smoke.mjs
+
+test-wakeword *ARGS:
+    cargo test -p rlx-wakeword-core --release {{ARGS}}
+    cargo test -p rlx-wakeword --release {{ARGS}}
+
+test-wakeword-backends *ARGS:
+    cargo test -p rlx-wakeword-core --test parity_wake --release {{ARGS}}
+    cargo test -p rlx-wakeword --test backend_quick_check --features all-backends --release {{ARGS}}
+    cargo test -p rlx-wakeword --test session_quick --release {{ARGS}}
+
 # AEC (16 kHz FDAF-NLMS + residual)
 test-aec *ARGS:
     cargo test -p rlx-aec --release {{ARGS}}
@@ -1285,7 +1457,15 @@ fetch-parler-dac:
 
 # Soprano 1.1 ONNX (KV backbone + vocoder) — https://huggingface.co/KevinAHM/soprano-1.1-onnx
 fetch-soprano:
-    huggingface-cli download KevinAHM/soprano-1.1-onnx --local-dir weights/tts/soprano
+    mkdir -p weights/tts/soprano
+    .venv-hf/bin/hf download eugenehp/soprano soprano.rlxp --local-dir weights/tts/soprano
+    @echo "Soprano in weights/tts/soprano (soprano.rlxp)"
+
+export-soprano-rlxp DIR="weights/tts/soprano" OUT="weights/tts/soprano/soprano.rlxp":
+    cargo run -p rlx-soprano --release -- --pack-rlxp "{{OUT}}" --model-dir "{{DIR}}"
+
+export-soprano-gguf DIR="weights/tts/soprano" OUT="weights/tts/soprano/soprano.gguf":
+    cargo run -p rlx-soprano --release -- --pack-gguf "{{OUT}}" --model-dir "{{DIR}}"
 
 soprano-demo TEXT="The quick brown fox jumps over the lazy dog." DEVICE="metal":
     cargo run -p rlx-soprano --release --features apple-silicon -- \
@@ -1488,10 +1668,14 @@ zipvoice-demo REF_WAV REF_TEXT TEXT:
 # for weights setup (2 HF repos + scripts/convert_tokenizer.py). --list-voices for voices.
 fetch-moss-nano:
     mkdir -p weights/tts/moss-nano/codec
-    .venv-hf/bin/hf download OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX --local-dir weights/tts/moss-nano
-    .venv-hf/bin/hf download OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX --local-dir weights/tts/moss-nano/codec
-    python3 crates/rlx-moss-nano/scripts/convert_tokenizer.py weights/tts/moss-nano
-    @echo "MOSS-TTS-Nano in weights/tts/moss-nano"
+    .venv-hf/bin/hf download eugenehp/moss-nano moss-nano.rlxp --local-dir weights/tts/moss-nano
+    @echo "MOSS-TTS-Nano in weights/tts/moss-nano (moss-nano.rlxp)"
+
+export-moss-nano-rlxp DIR="weights/tts/moss-nano" OUT="weights/tts/moss-nano/moss-nano.rlxp":
+    cargo run -p rlx-moss-nano --release -- --pack-rlxp --data "{{DIR}}" --out "{{OUT}}"
+
+export-moss-nano-gguf DIR="weights/tts/moss-nano" OUT="weights/tts/moss-nano/moss-nano.gguf":
+    cargo run -p rlx-moss-nano --release -- --pack-gguf --data "{{DIR}}" --out "{{OUT}}"
 
 moss-nano TEXT="The quick brown fox jumps over the lazy dog." VOICE="Trump" DEVICE="cpu" OUT="/tmp/moss_nano.wav":
     cargo run -p rlx-moss-nano --release --features apple-silicon -- \
@@ -1520,7 +1704,26 @@ melotts-backends *ARGS:
     cargo run -p rlx-tiny-tts --release --example backend_matrix --features apple-silicon -- weights/tts/melotts {{ARGS}}
 
 tiny-tts-backends *ARGS:
-    cargo run -p rlx-tiny-tts --release --example backend_matrix --features apple-silicon -- weights/tiny-tts-rlx {{ARGS}}
+    cargo run -p rlx-tiny-tts --release --example backend_matrix --features apple-silicon -- weights/tts/tiny-tts-rlx {{ARGS}}
+
+fetch-tiny-tts:
+    mkdir -p weights/tts/tiny-tts-rlx
+    .venv-hf/bin/hf download eugenehp/tiny-tts-rlx tiny-tts.rlxp --local-dir weights/tts/tiny-tts-rlx
+    @echo "TinyTTS in weights/tts/tiny-tts-rlx (tiny-tts.rlxp)"
+
+# MeloTTS shares the TinyTTS Hub pack (local symlink).
+fetch-melotts: fetch-tiny-tts
+    mkdir -p weights/tts
+    ln -sfn tiny-tts-rlx weights/tts/melotts
+    @echo "MeloTTS alias → weights/tts/melotts → tiny-tts-rlx"
+
+# Pack TinyTTS/MeloTTS dir → official flat `.rlxp` (RLXPFLAT sidecars).
+export-tiny-tts-rlxp DIR="weights/tts/tiny-tts-rlx" OUT="weights/tts/tiny-tts-rlx/tiny-tts.rlxp":
+    cargo run -p rlx-tiny-tts --release --example pack_rlxp -- "{{DIR}}" "{{OUT}}"
+
+# Legacy alias (same as export-tiny-tts-rlxp).
+export-tiny-tts-rlxpack DIR="weights/tts/tiny-tts-rlx" OUT="weights/tts/tiny-tts-rlx/tiny-tts.rlxp":
+    just export-tiny-tts-rlxp "{{DIR}}" "{{OUT}}"
 
 # OpenVoice v2 — zero-shot cloning (MIT). MeloTTS base + ONNX tone-color converter.
 openvoice-demo REF_WAV TEXT:
@@ -1910,17 +2113,38 @@ tts-prepare SRC="":
       echo "RLX TTS bundle ready: $dest ($(du -sh "$dest" | awk '{print $1}'))"
     fi
 
-# Drop loose safetensors/frontend once rlx-tts.gguf exists (single-file layout).
+# Drop loose assets once rlx-tts.rlxp (or legacy gguf) exists.
 tts-pack-only:
     #!/usr/bin/env bash
     set -euo pipefail
     dest="weights/tts/rlx-tts"
-    test -f "$dest/rlx-tts.gguf" || { echo "missing $dest/rlx-tts.gguf — run just export-rlx-tts-gguf first" >&2; exit 1; }
-    # Keep the GGUF; remove duplicated unpacked assets.
-    find "$dest" -mindepth 1 -maxdepth 1 ! -name 'rlx-tts.gguf' -exec rm -rf {} +
-    echo "kept $dest/rlx-tts.gguf ($(du -sh "$dest/rlx-tts.gguf" | awk '{print $1}'))"
+    if [[ -f "$dest/rlx-tts.rlxp" ]]; then
+      keep="rlx-tts.rlxp"
+    elif [[ -f "$dest/rlx-tts.gguf" ]]; then
+      keep="rlx-tts.gguf"
+    else
+      echo "missing $dest/rlx-tts.rlxp — run just export-rlx-tts-rlxp first" >&2
+      exit 1
+    fi
+    find "$dest" -mindepth 1 -maxdepth 1 ! -name "$keep" ! -name 'README.md' ! -name 'LICENSE' ! -name '.gitattributes' -exec rm -rf {} +
+    echo "kept $dest/$keep ($(du -sh "$dest/$keep" | awk '{print $1}'))"
 
-# Pack directory bundle → single runnable GGUF (excludes fixtures/). Pure Rust — no Python.
+export-rlx-tts-rlxp BUNDLE="weights/tts/rlx-tts" OUT="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="{{OUT}}"
+    if [[ -z "$out" ]]; then
+      cargo run -p rlx-tts --release -- --pack-rlxp --bundle "{{BUNDLE}}"
+    else
+      cargo run -p rlx-tts --release -- --pack-rlxp --bundle "{{BUNDLE}}" --out "$out"
+    fi
+
+fetch-rlx-tts:
+    mkdir -p weights/tts/rlx-tts
+    .venv-hf/bin/hf download eugenehp/rlx-tts rlx-tts.rlxp --local-dir weights/tts/rlx-tts
+    @echo "RLX TTS in weights/tts/rlx-tts (rlx-tts.rlxp)"
+
+# Pack directory bundle → single runnable GGUF (legacy). Pure Rust — no Python.
 export-rlx-tts-gguf BUNDLE="weights/tts/rlx-tts" OUT="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -2303,7 +2527,12 @@ test-ppocrv6-backends *ARGS:
 asr *ARGS:
     just run-bin rlx-asr rlx-asr {{ARGS}}
 
-# Materialize GGUF-only weights/asr (prune sidecars; pack fills model.gguf)
+fetch-rlx-asr:
+    mkdir -p weights/asr
+    .venv-hf/bin/hf download eugenehp/rlx-asr model.rlxp --local-dir weights/asr
+    @echo "RLX ASR in weights/asr (model.rlxp)"
+
+# Materialize pack-only weights/asr (prune sidecars; prefer model.rlxp)
 asr-weights-sync *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -2320,21 +2549,7 @@ asr-weights-sync *ARGS:
       cargo run -p rlx-asr --release --bin rlx-asr-pack-gguf -- --dir "$ASR" --out "$ASR/model.gguf" {{ARGS}} || true
     fi
     prune "$ASR"
-    python3 - <<PY
-import json, pathlib
-asr = pathlib.Path("$ASR")
-gguf = asr / "model.gguf"
-man = {
-  "format": "rlx-asr-weights-v3",
-  "root": str(asr),
-  "source": "$SRC",
-  "gguf": str(gguf) if gguf.is_file() else None,
-  "gguf_bytes": gguf.stat().st_size if gguf.is_file() else 0,
-  "note": "GGUF-only publish; sidecars embedded in model.gguf",
-}
-(asr / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
-print(json.dumps({"dst": str(asr), "gguf_mb": round(man["gguf_bytes"]/(1024*1024), 1)}, indent=2))
-PY
+    RLX_ASR_DIR="$ASR" RLX_ASR_PACK_SRC="$SRC" python3 scripts/asr_weights_manifest.py "$ASR"
 
 asr-pack-gguf *ARGS:
     #!/usr/bin/env bash
@@ -2342,6 +2557,13 @@ asr-pack-gguf *ARGS:
     ASR="${RLX_ASR_DIR:-$PWD/weights/asr}"
     export RLX_ASR_PACK_SRC="${RLX_ASR_PACK_SRC:-$PWD/.cache/asr}"
     cargo run -p rlx-asr --release --bin rlx-asr-pack-gguf -- --dir "$ASR" --out "$ASR/model.gguf" {{ARGS}}
+
+asr-pack-rlxp *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ASR="${RLX_ASR_DIR:-$PWD/weights/asr}"
+    export RLX_ASR_PACK_SRC="${RLX_ASR_PACK_SRC:-$PWD/.cache/asr}"
+    cargo run -p rlx-asr --release --bin rlx-asr-pack-gguf -- --rlxp --dir "$ASR" --out "$ASR/model.rlxp" {{ARGS}}
 
 asr-check *ARGS:
     cargo test -p rlx-asr --release {{ARGS}}

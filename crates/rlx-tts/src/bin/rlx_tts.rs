@@ -12,8 +12,8 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use rlx_tts::{
-    BUNDLE_EXTRACT_HINT, DEFAULT_BUNDLE_DIR, RlxTts, VarianceControls, WaveRnnOpts,
-    pack_directory, sanitize_manifest, write_wav,
+    BUNDLE_EXTRACT_HINT, DEFAULT_BUNDLE_DIR, DEFAULT_RLXP_NAME, RlxTts, VarianceControls,
+    WaveRnnOpts, pack_directory, pack_rlxp, sanitize_manifest, write_wav,
 };
 
 const HELP: &str = "\
@@ -23,25 +23,27 @@ USAGE:
     rlx-tts --text \"<text>\" [--out FILE] [--bundle DIR]
     rlx-tts --phones \"p h o n e s\" [--out FILE] [--bundle DIR]
     rlx-tts --probe-bundle [--bundle DIR]
+    rlx-tts --pack-rlxp [--bundle DIR] [--out FILE]
     rlx-tts --pack-gguf [--bundle DIR] [--out FILE]
     rlx-tts --sanitize-manifest PATH
 
 OPTIONS:
     --text <TEXT>       Synthesize from text (Hydra frontend)
     --phones <PHONES>   Space-separated LHP phone symbols or integer ids
-    --bundle <PATH>     Bundle dir or rlx-tts.gguf (default: weights/tts/rlx-tts)
-    --out <FILE>        Output WAV path (default: out.wav); GGUF path when packing
+    --bundle <PATH>     Bundle dir, rlx-tts.rlxp, or legacy rlx-tts.gguf (default: weights/tts/rlx-tts)
+    --out <FILE>        Output WAV path (default: out.wav); pack output when packing
     --seed <U64>        WaveRNN seed (default: 0 → 16807 with NativeBnns on macOS)
     --greedy            Argmax WaveRNN bits (no Gumbel noise)
     --duration-scale <F>  Duration variance scale (default: 1)
     --probe-bundle      Open bundle, print tensor counts, exit
-    --pack-gguf         Pack loose directory bundle → rlx-tts.gguf (no Python)
+    --pack-rlxp         Pack loose directory (or re-pack GGUF) → rlx-tts.rlxp
+    --pack-gguf         Pack loose directory → legacy rlx-tts.gguf (no Python)
     --sanitize-manifest <PATH>  Normalize loose-bundle manifest.json
     -h, --help          Show this help
 
 BUNDLE:
-    Prefer weights/tts/rlx-tts/rlx-tts.gguf (single-file pack).
-    A loose safetensors + frontend/ directory still works if present.
+    Prefer weights/tts/rlx-tts/rlx-tts.rlxp (single-file pack).
+    Legacy rlx-tts.gguf and loose safetensors + frontend/ still load.
 ";
 
 fn main() -> ExitCode {
@@ -65,6 +67,7 @@ fn run() -> Result<()> {
     let mut duration_scale = 1.0f32;
     let mut probe_bundle = false;
     let mut pack_gguf = false;
+    let mut pack_rlxp_flag = false;
     let mut sanitize: Option<PathBuf> = None;
 
     let mut args = std::env::args().skip(1);
@@ -85,6 +88,7 @@ fn run() -> Result<()> {
                     .context("parse --duration-scale")?
             }
             "--probe-bundle" => probe_bundle = true,
+            "--pack-rlxp" => pack_rlxp_flag = true,
             "--pack-gguf" => pack_gguf = true,
             "--sanitize-manifest" => {
                 sanitize = Some(PathBuf::from(next(&mut args, "--sanitize-manifest")?))
@@ -100,6 +104,25 @@ fn run() -> Result<()> {
     if let Some(path) = sanitize {
         sanitize_manifest(&path)?;
         println!("sanitized {}", path.display());
+        return Ok(());
+    }
+
+    if pack_rlxp_flag {
+        let dir = bundle.unwrap_or_else(|| PathBuf::from(DEFAULT_BUNDLE_DIR));
+        let rlxp_out = if out_set {
+            out
+        } else {
+            dir.join(DEFAULT_RLXP_NAME)
+        };
+        let report = pack_rlxp(&dir, &rlxp_out)?;
+        println!(
+            "wrote {} ({:.1} MiB; tensors={}, file_kvs={}, blobs={})",
+            report.path.display(),
+            report.bytes as f64 / (1024.0 * 1024.0),
+            report.tensor_count,
+            report.file_kv,
+            report.blob_count
+        );
         return Ok(());
     }
 
@@ -162,7 +185,7 @@ fn run() -> Result<()> {
         (Some(t), None) => model.synthesize_text(&t, &ctrl, &vocoder)?,
         (None, Some(p)) => model.synthesize_phone_string(&p, &ctrl, &vocoder)?,
         (Some(_), Some(_)) => bail!("pass only one of --text or --phones"),
-        (None, None) => bail!("pass --text, --phones, --probe-bundle, or --pack-gguf\n\n{HELP}"),
+        (None, None) => bail!("pass --text, --phones, --probe-bundle, --pack-rlxp, or --pack-gguf\n\n{HELP}"),
     };
 
     write_wav(&audio, &out)?;

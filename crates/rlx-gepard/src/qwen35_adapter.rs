@@ -48,6 +48,7 @@ pub fn gepard_backbone_to_qwen35_config(bb: &BackboneConfig) -> Qwen35Config {
         expert_ffn_size: 0,
         shared_expert_ffn_size: 0,
         expert_weights_scale: 1.0,
+        rms_norm_offset: false,
     }
 }
 

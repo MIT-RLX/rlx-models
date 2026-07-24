@@ -203,6 +203,23 @@ fn qwen35_real_gguf_runs_on_mlx() {
 }
 
 #[test]
+#[cfg(feature = "gpu")]
+fn qwen35_real_gguf_runs_on_wgpu() {
+    let path = match gguf_path() {
+        Some(p) => p,
+        None => return,
+    };
+    if !rlx_runtime::is_available(Device::Gpu) {
+        eprintln!("skip qwen35_real_gguf_runs_on_wgpu: wgpu unavailable");
+        return;
+    }
+
+    let (cpu_logits, _cpu_ms) = run_predict(&path, Device::Cpu);
+    let (wgpu_logits, wgpu_ms) = run_predict(&path, Device::Gpu);
+    assert_backend_matches_cpu("wgpu", &cpu_logits, &wgpu_logits, wgpu_ms);
+}
+
+#[test]
 fn qwen35_mtp_gguf_trunk_check_cpu() {
     let path = match mtp_gguf_path() {
         Some(p) => p,

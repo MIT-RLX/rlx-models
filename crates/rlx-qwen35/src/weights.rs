@@ -292,6 +292,103 @@ impl Qwen35Weights {
         }) || self.output.as_ref().is_some_and(mat_dense)
     }
 
+    /// True when any matmul weight is still K-quant packed (`MatWeight::Packed`).
+    ///
+    /// Packed GGUF loads often keep a few small projections as host F32
+    /// (e.g. `ssm_alpha`); those must stay resident for later HIR rebuilds
+    /// because GGUF host-release cannot remmap the way safetensors dirs can.
+    pub fn has_packed_projections(&self) -> bool {
+        fn mat_packed(m: &MatWeight) -> bool {
+            m.is_packed()
+        }
+        fn ffn_packed(ffn: &Qwen35LayerFfn) -> bool {
+            match ffn {
+                Qwen35LayerFfn::Dense { gate, up, down } => {
+                    mat_packed(gate) || mat_packed(up) || mat_packed(down)
+                }
+                Qwen35LayerFfn::Moe(m) => {
+                    mat_packed(&m.router)
+                        || mat_packed(&m.gate_exps)
+                        || mat_packed(&m.up_exps)
+                        || mat_packed(&m.down_exps)
+                        || mat_packed(&m.shared_gate)
+                        || mat_packed(&m.shared_up)
+                        || mat_packed(&m.shared_down)
+                }
+            }
+        }
+        fn full_packed(t: &Qwen35FullAttnLayer) -> bool {
+            mat_packed(&t.attn_q_gate)
+                || mat_packed(&t.attn_k)
+                || mat_packed(&t.attn_v)
+                || mat_packed(&t.attn_output)
+                || ffn_packed(&t.ffn)
+        }
+        self.trunk_layers.iter().any(|l| match l {
+            Qwen35TrunkLayer::Linear(t) => {
+                mat_packed(&t.attn_qkv)
+                    || mat_packed(&t.attn_gate)
+                    || mat_packed(&t.ssm_beta)
+                    || mat_packed(&t.ssm_alpha)
+                    || mat_packed(&t.ssm_out)
+                    || ffn_packed(&t.ffn)
+            }
+            Qwen35TrunkLayer::FullAttn(t) => full_packed(t),
+        }) || self.mtp_layers.iter().any(|m| {
+            full_packed(&m.base)
+                || mat_packed(&m.eh_proj)
+                || m.embed_tokens.as_ref().is_some_and(mat_packed)
+                || m.shared_head_head.as_ref().is_some_and(mat_packed)
+        }) || self.output.as_ref().is_some_and(mat_packed)
+            || self.token_embd_lm.as_ref().is_some_and(mat_packed)
+    }
+
+    /// Empty `MatWeight::F32` shells left after [`Self::clear_dense_f32_projections`].
+    pub fn has_cleared_f32_projection_shells(&self) -> bool {
+        fn empty_f32(m: &MatWeight) -> bool {
+            matches!(m, MatWeight::F32(v) if v.is_empty())
+        }
+        fn ffn_empty(ffn: &Qwen35LayerFfn) -> bool {
+            match ffn {
+                Qwen35LayerFfn::Dense { gate, up, down } => {
+                    empty_f32(gate) || empty_f32(up) || empty_f32(down)
+                }
+                Qwen35LayerFfn::Moe(m) => {
+                    empty_f32(&m.router)
+                        || empty_f32(&m.gate_exps)
+                        || empty_f32(&m.up_exps)
+                        || empty_f32(&m.down_exps)
+                        || empty_f32(&m.shared_gate)
+                        || empty_f32(&m.shared_up)
+                        || empty_f32(&m.shared_down)
+                }
+            }
+        }
+        fn full_empty(t: &Qwen35FullAttnLayer) -> bool {
+            empty_f32(&t.attn_q_gate)
+                || empty_f32(&t.attn_k)
+                || empty_f32(&t.attn_v)
+                || empty_f32(&t.attn_output)
+                || ffn_empty(&t.ffn)
+        }
+        self.trunk_layers.iter().any(|l| match l {
+            Qwen35TrunkLayer::Linear(t) => {
+                empty_f32(&t.attn_qkv)
+                    || empty_f32(&t.attn_gate)
+                    || empty_f32(&t.ssm_beta)
+                    || empty_f32(&t.ssm_alpha)
+                    || empty_f32(&t.ssm_out)
+                    || ffn_empty(&t.ffn)
+            }
+            Qwen35TrunkLayer::FullAttn(t) => full_empty(t),
+        }) || self.mtp_layers.iter().any(|m| {
+            full_empty(&m.base)
+                || empty_f32(&m.eh_proj)
+                || m.embed_tokens.as_ref().is_some_and(empty_f32)
+                || m.shared_head_head.as_ref().is_some_and(empty_f32)
+        }) || self.output.as_ref().is_some_and(empty_f32)
+    }
+
     /// Drop host F32 projection storage after device upload (keeps norms / embd).
     pub fn clear_dense_f32_projections(&mut self) {
         fn clear_mat(m: &mut MatWeight) {

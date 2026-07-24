@@ -80,7 +80,7 @@ pub fn run_suite(cfg: &RunConfig) -> Result<Vec<BenchRow>> {
             let adapter = match make_adapter(model, device) {
                 Ok(a) => a,
                 Err(e) => {
-                    let msg = e.to_string();
+                    let msg = format!("{e:#}");
                     let skip = msg.contains("host CPU only")
                         || msg.contains("not supported")
                         || msg.contains("unavailable");
@@ -132,7 +132,7 @@ pub fn run_suite(cfg: &RunConfig) -> Result<Vec<BenchRow>> {
                             device_label(device),
                             phrase_id,
                             scenario,
-                            e.to_string(),
+                            format!("{e:#}"),
                         ),
                         Err(payload) => failed_row(
                             model,
@@ -263,7 +263,7 @@ fn run_one(
                     device_label(device),
                     phrase_id,
                     scenario,
-                    e.to_string(),
+                    format!("{e:#}"),
                 ));
             }
         }

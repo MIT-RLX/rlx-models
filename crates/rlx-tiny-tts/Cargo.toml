@@ -26,6 +26,7 @@ dirs = "6"
 
 # Versatile bundle loading (dir / packed file / in-memory / config spec).
 rlx-core = { workspace = true }
+rlx-assets = { workspace = true, features = ["rlxp", "native-pack"] }
 
 # RLX compiler + runtime (ONNX import → HIR → per-device compile → run).
 rlx-ir = { workspace = true }
@@ -96,3 +97,11 @@ path = "examples/reuse_probe.rs"
 [[example]]
 name = "backend_matrix"
 path = "examples/backend_matrix.rs"
+
+[[example]]
+name = "pack_rlxp"
+path = "examples/pack_rlxp.rs"
+
+[[example]]
+name = "pack_rlxpack"
+path = "examples/pack_rlxpack.rs"

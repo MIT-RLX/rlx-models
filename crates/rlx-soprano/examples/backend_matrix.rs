@@ -20,15 +20,24 @@ use rlx_soprano::{DEFAULT_LOCAL_DIR, InferOpts, NativeSoprano, peak_amplitude};
 
 const DEFAULT_TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 
+fn soprano_loose_or_pack(dir: &std::path::Path) -> bool {
+    dir.join("soprano.rlxp").is_file()
+        || dir.join("soprano.gguf").is_file()
+        || dir
+            .join("graphs/soprano_backbone_kv_fp32.rlxp")
+            .is_file()
+        || dir
+            .join("onnx/soprano_backbone_kv_fp32.onnx")
+            .is_file()
+}
+
 fn main() -> anyhow::Result<()> {
     let dir = std::env::var("RLX_SOPRANO_DIR")
         .map(PathBuf::from)
         .ok()
         .or_else(|| {
             let p = PathBuf::from(DEFAULT_LOCAL_DIR);
-            p.join("onnx/soprano_backbone_kv_fp32.onnx")
-                .is_file()
-                .then_some(p)
+            soprano_loose_or_pack(&p).then_some(p)
         })
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/soprano")
@@ -39,8 +48,8 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(96);
 
-    if !dir.join("onnx/soprano_backbone_kv_fp32.onnx").is_file() {
-        anyhow::bail!("missing backbone under {}", dir.display());
+    if !soprano_loose_or_pack(&dir) {
+        anyhow::bail!("missing soprano.rlxp / nested graphs under {}", dir.display());
     }
 
     let devices = parse_devices();

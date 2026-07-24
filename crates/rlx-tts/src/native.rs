@@ -15,9 +15,13 @@ use crate::weights::Weights;
 use crate::{AudioOutput, DEFAULT_VOICE_ID};
 
 pub const DEFAULT_BUNDLE_DIR: &str = "weights/tts/rlx-tts";
+/// Hugging Face model id for the packed bundle (`rlx-tts.rlxp`).
+pub const HF_REPO: &str = "eugenehp/rlx-tts";
 pub const BUNDLE_EXTRACT_HINT: &str = "\
 RLX TTS bundle not found. Place weights under weights/tts/rlx-tts/ (or set RLX_TTS_BUNDLE):
-  rlx-tts.gguf  (preferred; just export-rlx-tts-gguf)
+  just fetch-rlx-tts          # → weights/tts/rlx-tts/rlx-tts.rlxp (eugenehp/rlx-tts)
+  rlx-tts.rlxp               # preferred single-file pack
+  rlx-tts.gguf               # legacy GGUF pack
   — or loose manifest.json + encoder/decoder/wavernn.safetensors + frontend/";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -209,19 +213,8 @@ impl RlxTts {
         candidates.push(PathBuf::from(".cache/rlx-tts"));
         candidates.push(manifest_dir.join("../../.cache/rlx-tts"));
         for c in &candidates {
-            // Prefer packed GGUF when present (single-file product layout).
-            if let Some(gguf) = crate::gguf_bundle::resolve_gguf_path(c) {
-                return crate::gguf_bundle::open_gguf(&gguf);
-            }
-            if c.is_file()
-                && c
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
-            {
-                return crate::gguf_bundle::open_gguf(c);
-            }
-            if c.join("manifest.json").is_file() && c.join("encoder.safetensors").is_file() {
-                return Self::open_dir_bundle(c);
+            if let Ok(m) = crate::gguf_bundle::open_path(c) {
+                return Ok(m);
             }
         }
         bail!("{BUNDLE_EXTRACT_HINT}")

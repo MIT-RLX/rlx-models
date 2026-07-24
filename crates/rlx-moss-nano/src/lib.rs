@@ -19,21 +19,26 @@
 //! transformer (`prefill`, re-run padded) drives a fused local sampled-frame
 //! graph that emits 16 audio-codebook tokens per frame; a separate
 //! MOSS-Audio-Tokenizer decodes the codes to 48 kHz stereo. **Default path is
-//! native RLX** ([`MossNative`] — no ONNX Runtime). Optional `onnx` keeps the
-//! ORT reference. Voice cloning via 18 builtin voices.
+//! native RLX** ([`MossNative`] — no ONNX Runtime; Hub ships nested `.rlxp`
+//! graphs only). Voice cloning via 18 builtin voices.
 
 pub mod config;
 pub mod dsp;
+pub mod gguf_bundle;
 pub mod native;
 
 pub use config::{BuiltinVoice, CodecInfo, Manifest, TtsConfig};
 pub use dsp::{TightenOpts, tighten_pauses};
+pub use gguf_bundle::{
+    DEFAULT_GGUF_NAME, DEFAULT_RLXP_NAME, FORMAT as GGUF_FORMAT, HF_REPO, PackReport, open_gguf,
+    open_rlxp, pack_directory, pack_rlxp, resolve_gguf_path, resolve_rlxp_path,
+};
 pub use native::{MossNative, NativeOpts};
 pub use rlx_runtime::{Device, parse_device};
 
-/// Weights repo (Apache-2.0). Also needs the codec repo
-/// `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX` under `codec/`.
-pub const DEFAULT_HF_REPO: &str = "OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX";
+/// Weights repo (Apache-2.0). Prefer packed `moss-nano.rlxp` from [`HF_REPO`].
+/// Legacy `moss-nano.gguf` and local loose ONNX still load for rebuilds.
+pub const DEFAULT_HF_REPO: &str = HF_REPO;
 pub const DEFAULT_LOCAL_DIR: &str = "weights/tts/moss-nano";
 
 /// Peak absolute amplitude (audibility check).

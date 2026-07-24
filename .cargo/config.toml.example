@@ -31,6 +31,7 @@ rlx-fusion = { path = "../rlx/crates/core/rlx-fusion" }
 rlx-driver = { path = "../rlx/crates/core/rlx-driver" }
 rlx-cpu = { path = "../rlx/crates/backends/rlx-cpu" }
 rlx-gguf = { path = "../rlx/crates/io/rlx-gguf" }
+rlx-pkg = { path = "../rlx/crates/io/rlx-pkg" }
 rlx-nemo = { path = "../rlx/crates/io/rlx-nemo" }
 rlx-text = { path = "../rlx/crates/io/rlx-text" }
 rlx-onnx-import = { path = "../rlx/crates/io/rlx-onnx-import" }

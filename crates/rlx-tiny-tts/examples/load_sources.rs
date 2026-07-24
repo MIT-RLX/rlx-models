@@ -1,10 +1,9 @@
 //! Demonstrate + validate the versatile `AssetSource` loaders: load the same
-//! TinyTTS bundle from a directory, a packed `.rlxpack` file, and an in-memory
+//! TinyTTS bundle from a directory, a packed `.rlxp` file, and an in-memory
 //! byte map, and confirm all three synthesize byte-identical audio.
 //!
 //! Run: cargo run -p rlx-tiny-tts --release --example load_sources -- weights/tiny-tts-rlx
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rlx_tiny_tts::{AssetSource, InferOpts, TinyTts, asset_source::pack};
@@ -26,8 +25,8 @@ fn main() -> anyhow::Result<()> {
     let ref_wav = synth(&TinyTts::load(&dir)?)?;
     println!("dir      : {} samples", ref_wav.len());
 
-    // 2) Pack the whole bundle into one `.rlxpack` file, load from the file.
-    let pack_path = std::env::temp_dir().join("tiny-tts-demo.rlxpack");
+    // 2) Pack the whole bundle into one `.rlxp` file, load from the file.
+    let pack_path = std::env::temp_dir().join("tiny-tts-demo.rlxp");
     pack::write_dir(&dir, &pack_path)?;
     let file_wav = synth(&TinyTts::load(&pack_path)?)?;
     println!(
@@ -41,20 +40,9 @@ fn main() -> anyhow::Result<()> {
     let mem_wav = synth(&TinyTts::load(AssetSource::pack_bytes(bytes)?)?)?;
     println!("pack mem : {} samples", mem_wav.len());
 
-    // 4) Raw in-memory asset map (e.g. assets fetched over the network).
-    let mut map = HashMap::new();
-    for name in AssetSource::dir(&dir).names()? {
-        map.insert(name.clone(), std::fs::read(dir.join(&name))?);
-    }
-    let map_wav = synth(&TinyTts::load(AssetSource::memory(map))?)?;
-    println!("mem map  : {} samples", map_wav.len());
-
-    let identical = file_wav == ref_wav && mem_wav == ref_wav && map_wav == ref_wav;
-    println!(
-        "\nall four sources byte-identical: {}",
-        if identical { "YES ✓" } else { "NO ✗" }
-    );
+    assert_eq!(ref_wav, file_wav, "dir vs .rlxp file mismatch");
+    assert_eq!(ref_wav, mem_wav, "dir vs in-memory .rlxp mismatch");
+    println!("ok: directory / .rlxp file / in-memory pack match");
     let _ = std::fs::remove_file(&pack_path);
-    anyhow::ensure!(identical, "source outputs diverged");
     Ok(())
 }
