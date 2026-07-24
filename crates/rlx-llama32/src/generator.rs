@@ -1294,10 +1294,6 @@ impl Llama32Generator {
         }
     }
 
-    fn cached_weight_loader(&self) -> ArcCacheLoader<'_> {
-        ArcCacheLoader::new(&self.weights_cache)
-    }
-
     fn build_weight_loader(&self) -> Result<BuildWeightLoader<'_>> {
         Self::build_weight_loader_from(
             self.weights_deferred,
