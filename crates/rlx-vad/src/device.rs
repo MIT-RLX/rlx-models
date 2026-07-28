@@ -35,6 +35,7 @@ pub fn bench_device_label(device: Device) -> &'static str {
         Device::Mlx => "mlx",
         Device::Cuda => "cuda",
         Device::Rocm => "rocm",
+        Device::Xdna => "xdna",
         Device::Gpu => "wgpu",
         Device::Vulkan => "vulkan",
         Device::Tpu => "tpu",
