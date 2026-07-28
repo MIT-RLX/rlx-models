@@ -218,9 +218,7 @@ pub fn build_decode_attention_mask(
             + generated_per_row.get(b).copied().unwrap_or(0);
         let base = b * mask_len;
         for i in 0..mask_len {
-            if i == bucket_upper {
-                mask[base + i] = 1.0;
-            } else if i < past_seq && i < valid {
+            if i == bucket_upper || (i < past_seq && i < valid) {
                 mask[base + i] = 1.0;
             }
         }

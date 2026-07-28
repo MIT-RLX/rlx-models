@@ -531,7 +531,7 @@ impl Trellis2Runner {
             // Zero image cond / few Euler steps often yield an empty occupancy
             // field. Seed a small centered cube so shape DiT → VAE → mesh still
             // exercise the rest of the pipeline.
-            let side = (target_res / 8).max(2).min(4);
+            let side = (target_res / 8).clamp(2, 4);
             let lo = ((target_res - side) / 2) as i32;
             eprintln!(
                 "rlx-trellis2: empty occupancy — seeding {side}³ cube at ({lo},{lo},{lo}) for pipeline continuation"

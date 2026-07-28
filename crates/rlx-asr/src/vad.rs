@@ -3,7 +3,7 @@
 
 //! Energy-based VAD / endpointing (RLX-native; no external speech assets).
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// Default RMS energy threshold on float PCM.
 pub const ENERGY_THRESH: f32 = 1e-4;

@@ -64,7 +64,11 @@ impl Lexicon {
             }
             nodes[cur as usize].is_word = true;
         }
-        Ok(Self { nodes, oov_penalty: -1.0, prefix_penalty: -0.35 })
+        Ok(Self {
+            nodes,
+            oov_penalty: -1.0,
+            prefix_penalty: -0.35,
+        })
     }
 
     /// Classify one lowercased word against the trie: 0 (word) / prefix / off-trie.
@@ -76,14 +80,21 @@ impl Lexicon {
                 None => return self.oov_penalty, // diverges from every word path
             }
         }
-        if self.nodes[cur as usize].is_word { 0.0 } else { self.prefix_penalty }
+        if self.nodes[cur as usize].is_word {
+            0.0
+        } else {
+            self.prefix_penalty
+        }
     }
 
     /// Sum of per-word trie scores. Only multi-letter alphabetic words are judged (digits,
     /// punctuation, single letters and mixed alphanumerics are exempt so codes/URLs survive).
     pub fn score(&self, text: &str) -> f32 {
         let mut s = 0.0;
-        for w in text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {
+        for w in text
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+        {
             if w.chars().all(|c| c.is_alphabetic()) && w.chars().count() > 1 {
                 s += self.word_score(&w.to_lowercase());
             }
@@ -121,11 +132,27 @@ impl Rescorer {
     /// trie-validity score (0/prefix/off-trie per word) so the lexicon acts as a soft
     /// constraint (~3 nats valid-vs-off-trie), strong enough to correct a confident
     /// recogniser's single-character slips. Override: OCR2_LEX_W.
-    pub fn new(ngram: Option<NgramModel>, word_ngram: Option<NgramModel>, lexicon: Option<Lexicon>) -> Self {
+    pub fn new(
+        ngram: Option<NgramModel>,
+        word_ngram: Option<NgramModel>,
+        lexicon: Option<Lexicon>,
+    ) -> Self {
         let unk_tok = 0;
-        let num_tok = ngram.as_ref().and_then(|c| c.token_for("xNUMBx")).unwrap_or(3);
+        let num_tok = ngram
+            .as_ref()
+            .and_then(|c| c.token_for("xNUMBx"))
+            .unwrap_or(3);
         let w_lex = crate::env::lex_weight(3.0);
-        Self { ngram, word_ngram, lexicon, w_ngram: 0.225, w_word: 0.0, w_lex, unk_tok, num_tok }
+        Self {
+            ngram,
+            word_ngram,
+            lexicon,
+            w_ngram: 0.225,
+            w_word: 0.0,
+            w_lex,
+            unk_tok,
+            num_tok,
+        }
     }
 
     /// Map a string to n-gram tokens: punctuation/class tokens map directly; digits →
@@ -147,7 +174,12 @@ impl Rescorer {
 
     fn word_tokens(text: &str, model: &NgramModel) -> Vec<u32> {
         text.split_whitespace()
-            .map(|w| model.token_for(w).or_else(|| model.token_for(&w.to_lowercase())).unwrap_or(0))
+            .map(|w| {
+                model
+                    .token_for(w)
+                    .or_else(|| model.token_for(&w.to_lowercase()))
+                    .unwrap_or(0)
+            })
             .collect()
     }
 

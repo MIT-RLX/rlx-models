@@ -15,23 +15,33 @@ use std::collections::HashMap;
 
 use kitten_tts_mini_rlx::GraphOptions;
 use kitten_tts_mini_rlx::bundle_compile::import_from_bundle_cached;
-use rlx_ir::hir::{HirModule, HirNodeId, HirOp};
 use rlx_ir::Op;
+use rlx_ir::hir::{HirModule, HirNodeId, HirOp};
 
 fn producer_desc(hir: &HirModule, id: HirNodeId) -> String {
     let n = hir.node(id);
     let kind = match &n.op {
         HirOp::Param { name } => format!("Param({name})"),
-        HirOp::Mir(Op::Custom { name, num_inputs, .. }) => {
+        HirOp::Mir(Op::Custom {
+            name, num_inputs, ..
+        }) => {
             format!("Custom({name},ni={num_inputs})")
         }
         HirOp::Mir(op) => format!("Mir({op:?})"),
         other => format!("{other:?}"),
     };
-    let kind = if kind.len() > 60 { kind[..60].to_string() } else { kind };
+    let kind = if kind.len() > 60 {
+        kind[..60].to_string()
+    } else {
+        kind
+    };
     format!(
         "{kind} shape={:?} dtype={:?}",
-        n.shape.dims().iter().map(|d| d.unwrap_static()).collect::<Vec<_>>(),
+        n.shape
+            .dims()
+            .iter()
+            .map(|d| d.unwrap_static())
+            .collect::<Vec<_>>(),
         n.shape.dtype()
     )
 }
@@ -49,7 +59,8 @@ fn main() -> anyhow::Result<()> {
 
     // Mirror compile: bake + fuse.
     let mut hir = import.hir.clone();
-    let baked = kitten_tts_mini_rlx::qmatmul_bake::bake_qmatmul_weights(&import.typed, &import.params);
+    let baked =
+        kitten_tts_mini_rlx::qmatmul_bake::bake_qmatmul_weights(&import.typed, &import.params);
     let fused = kitten_tts_mini_rlx::hir_qdq_fuse::fuse_qmatmul_baked_weights(&mut hir, &baked);
     eprintln!("baked {} weights, fused {fused} QMatMul→Baked", baked.len());
 
@@ -58,7 +69,10 @@ fn main() -> anyhow::Result<()> {
     let ids_all: Vec<HirNodeId> = hir.nodes().iter().map(|n| n.id).collect();
     for id in ids_all {
         let node = hir.node(id);
-        let HirOp::Mir(Op::Custom { name, num_inputs, .. }) = &node.op else {
+        let HirOp::Mir(Op::Custom {
+            name, num_inputs, ..
+        }) = &node.op
+        else {
             continue;
         };
         if name != "onnx.QMatMul" && name != "onnx.QMatMulBaked" {
@@ -68,9 +82,22 @@ fn main() -> anyhow::Result<()> {
         if printed < 24 {
             printed += 1;
             let inputs = node.inputs.clone();
-            let act = inputs.first().map(|i| producer_desc(&hir, *i)).unwrap_or_default();
-            let w = inputs.get(3).map(|i| producer_desc(&hir, *i)).unwrap_or_default();
-            eprintln!("--- {name} ni={num_inputs} out_shape={:?}", node.shape.dims().iter().map(|d| d.unwrap_static()).collect::<Vec<_>>());
+            let act = inputs
+                .first()
+                .map(|i| producer_desc(&hir, *i))
+                .unwrap_or_default();
+            let w = inputs
+                .get(3)
+                .map(|i| producer_desc(&hir, *i))
+                .unwrap_or_default();
+            eprintln!(
+                "--- {name} ni={num_inputs} out_shape={:?}",
+                node.shape
+                    .dims()
+                    .iter()
+                    .map(|d| d.unwrap_static())
+                    .collect::<Vec<_>>()
+            );
             eprintln!("    act[0]: {act}");
             eprintln!("    w  [3]: {w}");
             // If act producer is DQL, show its input producer (the real f32 activation).

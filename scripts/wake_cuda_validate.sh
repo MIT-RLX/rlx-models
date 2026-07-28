@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Wake-word CUDA validation on NVIDIA host (e.g. ssh msi).
+# Wake-word CUDA validation on NVIDIA host (set RLX_CUDA_HOST; e.g. ssh your-cuda-host).
 # From Mac: scripts/wake_cuda_validate.sh --remote
-# On msi:   scripts/wake_cuda_validate.sh --local
+# On the CUDA host:   scripts/wake_cuda_validate.sh --local
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOST="${MSI_HOST:-msi}"
+HOST="${RLX_CUDA_HOST:?set RLX_CUDA_HOST to your CUDA host, e.g. user@host}"
 REMOTE_MODELS="${REMOTE_MODELS:-rlx-models}"
 FEAT="${WAKE_CUDA_FEATURES:-cuda}"
 
 remote_run() {
   echo ">> sync trees to $HOST"
-  bash "$ROOT/scripts/matrix/sync_to_msi.sh"
+  bash "$ROOT/scripts/matrix/sync_to_remote.sh"
   echo ">> running wake CUDA validate on $HOST"
   ssh "$HOST" "cd $REMOTE_MODELS && bash scripts/wake_cuda_validate.sh --local"
 }

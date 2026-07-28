@@ -57,6 +57,26 @@ default:
 check:
     cargo check --workspace
 
+# Auto-format the workspace.
+fmt:
+    cargo fmt --all
+
+# Fail if formatting drifts (same bar as CI / publish).
+fmt-check:
+    cargo fmt --all -- --check
+
+# Clippy with warnings as errors (same bar as CI / publish).
+lint:
+    ./scripts/rust-lint-gate.sh --workspace
+
+# fmt-check + clippy (-D warnings).
+lint-all: fmt-check lint
+
+# Point this clone at committed hooks under `.githooks/` (local git config only).
+install-hooks:
+    git config core.hooksPath .githooks
+    @echo "core.hooksPath=.githooks (pre-commit runs scripts/rust-lint-gate.sh --staged)"
+
 publish-list:
     ./scripts/publish.sh --list
 
@@ -176,6 +196,11 @@ build:
 
 inspect PATH:
     cargo run -p rlx-cli --bin rlx-inspect {{profile}} -- {{PATH}}
+
+# Scan LM Studio / Ollama / HF / Lemonade / RLX local caches for weight files.
+# Extra args after `--`: e.g. `just weights-scan -- --query qwen --json`
+weights-scan *ARGS:
+    cargo run -p rlx-cli --bin rlx-inspect {{profile}} -- scan {{ARGS}}
 
 # --- per-model CLIs (preferred) ---
 
@@ -377,6 +402,52 @@ inkling-probe-remote *ARGS:
 inkling-probe-gguf *ARGS:
     cargo run -p rlx-inkling --features hf-probe {{profile}} -- --probe-gguf-remote {{ARGS}}
 
+# Unsloth Laguna-S GGUF (nested UD-Q4_K_M shards) + Poolside tokenizer → .cache/laguna-s
+# Override quant folder: `just fetch-laguna QUANT=UD-Q4_K_XL`
+# RAM: S UD-Q4_K_M ≈73 GB packed — needs ≫64 GB host RAM (mmap + KV + OS).
+# On ≤64 GB machines prefer `just fetch-laguna-xs` (~20 GB Q4_K_M).
+fetch-laguna QUANT="UD-Q4_K_M":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest=".cache/laguna-s"
+    mkdir -p "$dest"
+    echo ">> note: Laguna-S {{QUANT}} is large (~50–75+ GB depending on quant); ≤64 GB hosts should use \`just fetch-laguna-xs\`"
+    hf download unsloth/Laguna-S-2.1-GGUF --include "{{QUANT}}/*" --local-dir "$dest"
+    hf download poolside/Laguna-S-2.1 \
+        config.json tokenizer.json tokenizer_config.json \
+        --local-dir "$dest"
+    # Optional chat template sidecars (name varies by revision).
+    hf download poolside/Laguna-S-2.1 --include "chat_template*" --include "*.jinja" \
+        --local-dir "$dest" 2>/dev/null || true
+    shard=$(find "$dest/{{QUANT}}" -name '*-00001-of-*.gguf' -type f 2>/dev/null | head -n1 || true)
+    if [[ -z "$shard" ]]; then
+        shard=$(find "$dest/{{QUANT}}" -name '*.gguf' -type f 2>/dev/null | sort | head -n1 || true)
+    fi
+    echo ">> Laguna-S ready under $dest"
+    if [[ -n "$shard" ]]; then
+        echo ">> first shard: $shard"
+        echo ">> sniff:  just laguna -- --weights $dest --prefer Q4_K_M"
+        echo ">> generate: just features=apple-silicon laguna -- --weights $dest --prefer Q4_K_M --packed-load --device metal --tokenizer-dir $dest --prompt \"Say hello\" --max-tokens 8"
+    fi
+
+fetch-laguna-s QUANT="UD-Q4_K_M":
+    just fetch-laguna QUANT={{QUANT}}
+
+# Optional XS single-file GGUF + tokenizer (lighter bring-up; docs historically used .cache/laguna-xs).
+fetch-laguna-xs QUANT="Q4_K_M":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest=".cache/laguna-xs"
+    mkdir -p "$dest"
+    hf download poolside/Laguna-XS-2.1-GGUF --include "*{{QUANT}}*" --local-dir "$dest"
+    hf download poolside/Laguna-XS-2.1 \
+        config.json tokenizer.json tokenizer_config.json \
+        --local-dir "$dest"
+    hf download poolside/Laguna-XS-2.1 --include "chat_template*" --include "*.jinja" \
+        --local-dir "$dest" 2>/dev/null || true
+    gguf=$(find "$dest" -maxdepth 1 -name '*.gguf' -type f | sort | head -n1 || true)
+    echo ">> Laguna-XS ready under $dest${gguf:+ ($gguf)}"
+
 # poolside Laguna MoE — packed GGUF generate (KV cache); Metal: `just features=apple-silicon laguna -- … --device metal`
 laguna *ARGS:
     just run-bin rlx-laguna rlx-laguna {{ARGS}}
@@ -389,18 +460,18 @@ laguna-probe-gguf *ARGS:
 
 # OpenAI-compatible HTTP (`--serve`); greedy decode. Prefer central multi-model:
 #   just features=apple-silicon,laguna openai-serve -- \
-#     --engine laguna --weights …gguf --tokenizer-dir … --device metal
+#     --engine laguna --weights .cache/laguna-s --prefer Q4_K_M --tokenizer-dir .cache/laguna-s --device metal
 # Example (single-model convenience):
 #   just features=apple-silicon laguna-serve -- \
-#     --weights .cache/laguna-xs/Laguna-XS-2.1-Q4_K_M.gguf \
-#     --tokenizer-dir .cache/laguna-xs --device metal --host 127.0.0.1 --port 8080
+#     --weights .cache/laguna-s --prefer Q4_K_M \
+#     --tokenizer-dir .cache/laguna-s --device metal --host 127.0.0.1 --port 8080
 laguna-serve *ARGS:
     cargo run -p rlx-laguna --bin rlx-laguna {{profile}} {{feature_args}} --features serve -- --serve {{ARGS}}
 
 # Central OpenAI server (multi-model RegistryBackend). Example:
 #   just features=apple-silicon,laguna openai-serve -- \
-#     --engine laguna --weights .cache/laguna-xs/Laguna-XS-2.1-Q4_K_M.gguf \
-#     --tokenizer-dir .cache/laguna-xs --device metal --model-id laguna
+#     --engine laguna --weights .cache/laguna-s --prefer Q4_K_M \
+#     --tokenizer-dir .cache/laguna-s --device metal --model-id laguna
 openai-serve *ARGS:
     cargo run -p rlx-openai --bin rlx-openai {{profile}} {{feature_args}} -- {{ARGS}}
 
@@ -681,8 +752,8 @@ test-conformer-ctc *ARGS:
 test-conformer-ctc-backends *ARGS:
     cargo run -p rlx-conformer-ctc --release --example backend_matrix --features all-backends {{ARGS}}
 
-# CUDA on ssh msi (sync trees + nemo/wav, then cpu+cuda matrix).
-conformer-ctc-cuda-msi:
+# CUDA on the remote host — set RLX_CUDA_HOST (sync trees + nemo/wav, then cpu+cuda matrix).
+conformer-ctc-cuda-remote:
     bash scripts/conformer_ctc_cuda_validate.sh --remote
 
 fetch-whisper:
@@ -899,8 +970,8 @@ test-wake-train *ARGS:
     cargo test -p rlx-wake --test train_quick --release {{ARGS}}
     cargo test -p rlx-wake --test train_backends --features all-backends --release {{ARGS}}
 
-# CUDA on ssh msi (sync trees, then cpu+cuda wake matrix).
-wake-cuda-msi:
+# CUDA on the remote host — set RLX_CUDA_HOST (sync trees, then cpu+cuda wake matrix).
+wake-cuda-remote:
     bash scripts/wake_cuda_validate.sh --remote
 
 # --- First-party wakeword product (event API, multi-phrase, VAD gate) ---
@@ -1552,7 +1623,7 @@ sesame-backends-long:
     RLX_SEED="${RLX_SESAME_LONG_SEED:-42}" \
     cargo run -p rlx-sesame --release --example backend_matrix --features all-backends
 
-# Sesame CUDA on ssh msi (sync + fetch weights on remote + fox/long + cpu,cuda matrix).
+# Sesame CUDA on the remote host — set RLX_CUDA_HOST (sync + fetch weights on remote + fox/long + cpu,cuda matrix).
 sesame-validate-cuda:
     bash scripts/sesame_cuda_validate.sh --remote
 
@@ -2925,21 +2996,21 @@ test-rlx-fft-fusion-gate *ARGS:
 
 # --- cross-backend model harness (scripts/matrix) ---
 
-# Run the harness on msi: sync both trees -> build+run per backend -> pull report back.
+# Run the harness on the remote host (set RLX_CUDA_HOST): sync both trees -> build+run per backend -> pull report back.
 #   just matrix-remote                     # Tier-1, all host backends
 #   just matrix-remote ONLY=qwen3-0.6b     # one model
 #   just matrix-remote TIER=all ALL=1      # everything incl. Tier-2/NC/gated
 #   just matrix-remote BACKENDS=cpu,cuda   # subset of backends
 matrix-remote TIER="1" ONLY="" BACKENDS="" ALL="0":
-    bash scripts/matrix/msi_run.sh "{{TIER}}" "{{ONLY}}" "{{BACKENDS}}" "{{ALL}}"
+    bash scripts/matrix/remote_run.sh "{{TIER}}" "{{ONLY}}" "{{BACKENDS}}" "{{ALL}}"
 
 # Run the harness on THIS host (auto-detects local backends; no ssh/sync).
 matrix TIER="1" ONLY="" BACKENDS="" ALL="0":
     TIER="{{TIER}}" ONLY="{{ONLY}}" BACKENDS="{{BACKENDS}}" ALL="{{ALL}}" python3 scripts/matrix/run_matrix.py
 
-# Just sync the two working trees to msi (no run).
+# Just sync the two working trees to the remote host (no run).
 matrix-sync:
-    bash scripts/matrix/sync_to_msi.sh
+    bash scripts/matrix/sync_to_remote.sh
 
 # --- unified TTS bench (crates/rlx-tts-bench) ---
 

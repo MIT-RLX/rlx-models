@@ -194,6 +194,13 @@ mod tests {
             use_double_wide_mlp: false,
             enable_moe_block: false,
             eog_token_ids: Vec::new(),
+            activation_sparsity_pattern: Vec::new(),
+            altup_num_inputs: 0,
+            altup_active_idx: 0,
+            altup_coef_clip: None,
+            altup_correct_scale: false,
+            laurel_rank: 0,
+            rope_local_base_freq: 10_000.0,
         }
     }
 

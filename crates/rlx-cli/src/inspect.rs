@@ -19,6 +19,9 @@ use rlx_core::gguf_config::{gguf_memory_footprint, gguf_runner_hint};
 use rlx_core::weight_loader::GgufLoader;
 use rlx_core::weight_registry::list_registered_formats;
 use rlx_core::weights::{ResolveOpts, gguf_dir_guide};
+use rlx_core::weights_discover::{
+    DiscoverOpts, DiscoveredWeight, WeightSourceKind, resolve_weight_query, scan_weights,
+};
 use rlx_gguf::GgufFile;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -118,16 +121,33 @@ fn print_usage() {
     eprintln!(
         "usage: rlx-inspect <path> [--prefer Q4_K_M] [--list-formats]\n\
          \n\
+                rlx-inspect scan [--source lmstudio,ollama,hf,…] [--query SUB] [--prefer Q4_K_M] [--json] [--sniff]\n\
+                rlx-inspect resolve <query> [--prefer Q4_K_M] [--json]\n\
+         \n\
          Examples:\n\
            rlx-inspect model.gguf\n\
            rlx-inspect weights/              # lists .gguf files in a directory\n\
            rlx-inspect weights/ --prefer Q4_K_M\n\
            rlx-inspect --list-formats        # show registered weight extensions\n\
-           rlx-inspect model.gguf --json   # machine-readable summary"
+           rlx-inspect model.gguf --json     # machine-readable summary\n\
+           rlx-inspect scan --query qwen3\n\
+           rlx-inspect resolve qwen3-0.6b --prefer Q4_K_M"
     );
 }
 
 pub fn run_inspect(args: &[String]) -> Result<()> {
+    if let Some(cmd) = args.first().map(String::as_str) {
+        match cmd {
+            "scan" => return run_scan(&args[1..]),
+            "resolve" => return run_resolve(&args[1..]),
+            "--help" | "-h" => {
+                print_usage();
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     let parsed = parse_inspect_args(args)?;
     if parsed.list_formats {
         if parsed.json {
@@ -221,6 +241,220 @@ pub fn run_inspect(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn run_scan(args: &[String]) -> Result<()> {
+    let mut sources: Option<Vec<WeightSourceKind>> = None;
+    let mut query: Option<String> = None;
+    let mut prefer: Option<String> = None;
+    let mut json = false;
+    let mut sniff = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--source" | "--sources" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .ok_or_else(|| anyhow!("--source needs a comma-separated list"))?;
+                let mut list = Vec::new();
+                for part in raw.split(',') {
+                    let t = part.trim();
+                    if !t.is_empty() {
+                        list.push(WeightSourceKind::parse(t)?);
+                    }
+                }
+                sources = Some(list);
+                i += 1;
+            }
+            "--query" | "-q" => {
+                i += 1;
+                query = Some(
+                    args.get(i)
+                        .ok_or_else(|| anyhow!("--query needs a substring"))?
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--prefer" | "-p" => {
+                i += 1;
+                prefer = Some(
+                    args.get(i)
+                        .ok_or_else(|| anyhow!("--prefer needs a substring"))?
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--sniff" => {
+                sniff = true;
+                i += 1;
+            }
+            "--help" | "-h" => {
+                print_usage();
+                return Ok(());
+            }
+            s if s.starts_with('-') => {
+                return Err(anyhow!("unknown scan flag `{s}`"));
+            }
+            s => {
+                if query.is_some() {
+                    return Err(anyhow!("unexpected argument `{s}`"));
+                }
+                query = Some(s.to_string());
+                i += 1;
+            }
+        }
+    }
+    let opts = DiscoverOpts {
+        sources,
+        query,
+        prefer_quant: prefer,
+        sniff_arch: sniff,
+        ..DiscoverOpts::default()
+    };
+    let hits = scan_weights(&opts)?;
+    if json {
+        print_discovered_json(&hits);
+    } else {
+        print_discovered_table(&hits);
+    }
+    Ok(())
+}
+
+fn run_resolve(args: &[String]) -> Result<()> {
+    let mut query: Option<String> = None;
+    let mut prefer: Option<String> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--prefer" | "-p" => {
+                i += 1;
+                prefer = Some(
+                    args.get(i)
+                        .ok_or_else(|| anyhow!("--prefer needs a substring"))?
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--help" | "-h" => {
+                print_usage();
+                return Ok(());
+            }
+            s if s.starts_with('-') => {
+                return Err(anyhow!("unknown resolve flag `{s}`"));
+            }
+            s => {
+                if query.is_some() {
+                    return Err(anyhow!("unexpected argument `{s}`"));
+                }
+                query = Some(s.to_string());
+                i += 1;
+            }
+        }
+    }
+    let query = query.ok_or_else(|| anyhow!("resolve needs a query (try --help)"))?;
+    let opts = DiscoverOpts {
+        prefer_quant: prefer,
+        ..DiscoverOpts::default()
+    };
+    let path = resolve_weight_query(&query, &opts)?;
+    if json {
+        println!(
+            "{{\"query\":\"{}\",\"path\":\"{}\"}}",
+            json_escape(&query),
+            json_escape(&path.display().to_string())
+        );
+    } else {
+        println!("{}", path.display());
+    }
+    Ok(())
+}
+
+fn print_discovered_table(hits: &[DiscoveredWeight]) {
+    if hits.is_empty() {
+        println!("(no local weights found)");
+        return;
+    }
+    println!(
+        "{:<18}  {:<40}  {:<10}  {:>10}  path",
+        "source", "name", "quant", "size"
+    );
+    for w in hits {
+        let srcs: Vec<&str> = w.sources.iter().map(|s| s.as_str()).collect();
+        let quant = w.quant_hint.as_deref().unwrap_or("-");
+        let size = w
+            .size_bytes
+            .map(fmt_bytes)
+            .unwrap_or_else(|| "-".to_string());
+        let name = truncate_display(&w.display_name, 40);
+        println!(
+            "{:<18}  {:<40}  {:<10}  {:>10}  {}",
+            truncate_display(&srcs.join("+"), 18),
+            name,
+            quant,
+            size,
+            w.path.display()
+        );
+    }
+    println!("{} weight(s)", hits.len());
+}
+
+fn truncate_display(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn print_discovered_json(hits: &[DiscoveredWeight]) {
+    print!("[");
+    for (i, w) in hits.iter().enumerate() {
+        if i > 0 {
+            print!(",");
+        }
+        let srcs: Vec<String> = w
+            .sources
+            .iter()
+            .map(|s| format!("\"{}\"", s.as_str()))
+            .collect();
+        let quant = w
+            .quant_hint
+            .as_ref()
+            .map(|q| format!("\"{}\"", json_escape(q)))
+            .unwrap_or_else(|| "null".to_string());
+        let arch = w
+            .arch_hint
+            .as_ref()
+            .map(|a| format!("\"{}\"", json_escape(a)))
+            .unwrap_or_else(|| "null".to_string());
+        let size = w
+            .size_bytes
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "null".to_string());
+        print!(
+            "{{\"path\":\"{}\",\"sources\":[{}],\"display_name\":\"{}\",\"format\":\"{}\",\
+\"size_bytes\":{},\"quant_hint\":{},\"arch_hint\":{}}}",
+            json_escape(&w.path.display().to_string()),
+            srcs.join(","),
+            json_escape(&w.display_name),
+            w.format.as_str(),
+            size,
+            quant,
+            arch
+        );
+    }
+    println!("]");
+}
+
 fn inspect_gguf(pb: &Path, json: bool) -> Result<()> {
     let raw = GgufFile::from_path(pb)?;
     println!("version:  {}", raw.version);
@@ -309,7 +543,7 @@ fn inspect_gguf(pb: &Path, json: bool) -> Result<()> {
         }
         _ => {
             println!(
-                "compat:   unknown — extend via register_gguf_tensor_resolver / WeightFormatRegistration::register"
+                "compat:   unknown — extend via `rlx_core::model_registry::register_gguf_model`"
             );
         }
     }

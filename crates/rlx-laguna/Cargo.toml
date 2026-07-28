@@ -23,6 +23,7 @@ rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true }
 rlx-gguf = { workspace = true }
 rlx-text = { workspace = true }
+rayon = "1.10"
 hf-hub = { workspace = true, optional = true }
 ureq = { version = "2.12", default-features = false, features = ["tls"], optional = true }
 rlx-serve = { workspace = true, optional = true }

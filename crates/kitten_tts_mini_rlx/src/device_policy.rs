@@ -64,21 +64,18 @@ static DISCRETE_DEFAULTS_APPLIED: AtomicBool = AtomicBool::new(false);
 // ---------------------------------------------------------------------------
 
 fn env_truthy(key: &str) -> bool {
-    std::env::var(key).is_ok_and(|v| {
-        v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
-    })
+    std::env::var(key)
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
 }
 
 fn env_falsy(key: &str) -> bool {
-    std::env::var(key).is_ok_and(|v| {
-        v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("no")
-    })
+    std::env::var(key)
+        .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("no"))
 }
 
 fn env_disabled(key: &str) -> bool {
-    std::env::var(key).is_ok_and(|v| {
-        v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off")
-    })
+    std::env::var(key)
+        .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
 }
 
 fn env_usize(key: &str) -> Option<usize> {
@@ -167,7 +164,7 @@ pub fn resolve_device(requested: Device) -> Device {
 ///
 /// Default: CPU on discrete wgpu / ANE (integer duration drifts on those
 /// f32-uniform arenas). Vulkan, Metal, MLX, and CUDA keep on-device duration
-/// (Whisper / peak-validated on MSI for Vulkan). When discrete `Gpu` wave is
+/// (Whisper / peak-validated on NVIDIA for Vulkan). When discrete `Gpu` wave is
 /// routed to Vulkan (`KITTEN_RLX_GPU_WAVE=1`), duration follows so both graphs
 /// share one backend. Force GPU with `KITTEN_RLX_CPU_DURATION=0` or
 /// `RLX_KITTEN_GPU_DURATION=1`; force CPU with `KITTEN_RLX_CPU_DURATION=1`.
@@ -367,7 +364,9 @@ pub fn apply_defaults(device: Device) {
             &DISCRETE_MAX_FRAMES_PER_TOKEN.to_string(),
         )
     {
-        notes.push(format!("max_frames_per_token={DISCRETE_MAX_FRAMES_PER_TOKEN}"));
+        notes.push(format!(
+            "max_frames_per_token={DISCRETE_MAX_FRAMES_PER_TOKEN}"
+        ));
     }
     if !notes.is_empty() {
         let label = if cuda {
@@ -482,7 +481,9 @@ mod tests {
     #[test]
     fn frames_respect_hard_max() {
         assert!(max_frames_per_token() <= crate::bundle_compile::MAX_FRAMES_PER_TOKEN);
-        assert!(DISCRETE_MAX_FRAMES_PER_TOKEN <= crate::bundle_compile::MAX_FRAMES_PER_TOKEN);
+        const {
+            assert!(DISCRETE_MAX_FRAMES_PER_TOKEN <= crate::bundle_compile::MAX_FRAMES_PER_TOKEN);
+        }
     }
 
     #[test]

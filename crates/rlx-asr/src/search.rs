@@ -4,7 +4,9 @@
 //! Joint CTC / AED beam search + rescoring scales.
 
 use crate::beam::ctc_beam_nbest;
-use crate::spec::{AED_SCALE, BEAM, BLANK, CTC_SCALE, EOS, RESCORE_AED_SCALE, RESCORE_CTC_SCALE, SOS, VOCAB};
+use crate::spec::{
+    AED_SCALE, BEAM, BLANK, CTC_SCALE, EOS, RESCORE_AED_SCALE, RESCORE_CTC_SCALE, SOS, VOCAB,
+};
 
 /// First-pass CTC hypotheses.
 pub fn ctc_first_pass(wp_logprob: &[f32], n_frames: usize) -> Vec<(Vec<usize>, f32)> {
@@ -28,7 +30,7 @@ pub fn aed_start_tokens() -> [u32; BEAM] {
 
 /// True if any beam has emitted EOS.
 pub fn any_eos(tokens: &[u32]) -> bool {
-    tokens.iter().any(|&t| t == EOS)
+    tokens.contains(&EOS)
 }
 
 /// Argmax of one beam's logprob row.

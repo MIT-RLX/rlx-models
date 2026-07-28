@@ -10,8 +10,8 @@
 //! Pack sources: published tree, `RLX_ASR_PACK_SRC`, or `.cache/asr`.
 
 use anyhow::Result;
-use rlx_asr::gguf_io::{pack_asr_gguf, pack_asr_rlxp, DEFAULT_GGUF_NAME, DEFAULT_RLXP_NAME};
 use rlx_asr::AsrPaths;
+use rlx_asr::gguf_io::{DEFAULT_GGUF_NAME, DEFAULT_RLXP_NAME, pack_asr_gguf, pack_asr_rlxp};
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -54,7 +54,11 @@ fn run() -> Result<()> {
             DEFAULT_GGUF_NAME
         })
     });
-    let report = if rlxp || out.extension().is_some_and(|e| e.eq_ignore_ascii_case("rlxp")) {
+    let report = if rlxp
+        || out
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("rlxp"))
+    {
         pack_asr_rlxp(&root, &out)?
     } else {
         pack_asr_gguf(&root, &out)?

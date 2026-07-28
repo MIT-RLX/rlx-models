@@ -11,10 +11,10 @@
 
 use anyhow::{Result, bail};
 use rlx_wake::cnn::{WakeCnnConfig, WakeCnnWeights};
+use rlx_wake::train::cnn::{CnnTrainConfig, train_wake_cnn};
 use rlx_wake::train::dataset::{load_pos_neg_dirs, synth_pos_neg_dataset, write_synth_corpus};
 use rlx_wake::train::mlp::{MlpConfig, MlpWeights, clips_to_mel_features, train_mlp};
 use rlx_wake::train::sgd::SgdConfig;
-use rlx_wake::train::cnn::{CnnTrainConfig, train_wake_cnn};
 use rlx_wake::weights_io::save_f32_map;
 use rlx_wake::{bench_device_label, bind_streaming_device, parse_device_list};
 use std::collections::HashMap;
@@ -133,7 +133,10 @@ fn cmd_cnn(args: &[String]) -> Result<()> {
     // Bind every requested backend slot, then train once (CPU BLAS numerics).
     for d in &devices {
         let (_, label) = bind_streaming_device(*d)?;
-        eprintln!("[rlx-wake-train cnn] device={label} keyword={}", cfg.keyword);
+        eprintln!(
+            "[rlx-wake-train cnn] device={label} keyword={}",
+            cfg.keyword
+        );
     }
     let report = train_wake_cnn(&mut w, &clips, &cfg);
     w.save(&out)?;

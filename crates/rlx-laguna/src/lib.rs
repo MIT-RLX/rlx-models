@@ -36,6 +36,8 @@ pub mod gguf_layout;
 #[cfg(feature = "hf-probe")]
 pub mod gguf_probe;
 pub mod memory;
+pub mod mlx_affine;
+pub mod mlx_load;
 pub mod packed;
 pub mod packed_forward;
 pub mod runner;
@@ -61,7 +63,9 @@ pub use memory::{
     ALLOW_F32_EXPAND, GgufRamEstimate, PACKED_ONLY_POLICY, allow_f32_expand, estimate_ram,
     open_gguf_header_only, refuse_f32_expand,
 };
-pub use packed::{LagunaPackedFfn, LagunaPackedLayer, LagunaPackedWeights, MatWeight, PackedParams};
+pub use packed::{
+    LagunaPackedFfn, LagunaPackedLayer, LagunaPackedWeights, MatWeight, PackedParams,
+};
 pub use packed_forward::{LayerKvCache, PackedKvCache};
 pub use runner::{LagunaPackedRunner, LagunaRunner, LagunaRunnerBuilder};
 #[cfg(feature = "serve")]

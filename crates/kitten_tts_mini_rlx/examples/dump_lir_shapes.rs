@@ -17,7 +17,6 @@
 
 use kitten_tts_mini_rlx::GraphOptions;
 use kitten_tts_mini_rlx::bundle_compile::{import_from_bundle_cached, prepare_hir_for_compile};
-use rlx_ir::hir::HirGraphExt;
 
 fn main() -> anyhow::Result<()> {
     let bundle_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("weights/rlx_bundle");
@@ -51,7 +50,10 @@ fn main() -> anyhow::Result<()> {
             .iter()
             .map(|&id| {
                 let input = g.node(id);
-                (input.name.as_deref().unwrap_or(""), input.shape.dims().to_vec())
+                (
+                    input.name.as_deref().unwrap_or(""),
+                    input.shape.dims().to_vec(),
+                )
             })
             .collect();
         eprintln!(

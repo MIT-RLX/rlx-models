@@ -264,13 +264,13 @@ pub fn gen_typed_line(rng: &mut Rng, t: CType) -> String {
             let n2 = rng.pick_str(corpus::NOUNS);
             match rng.below(6) {
                 0 => format!(
-                    "drwxr-xr-x  {} macmini staff  {} Jul 10 15:0{} {f}",
+                    "drwxr-xr-x  {} user staff  {} Jul 10 15:0{} {f}",
                     rng.range(1, 20),
                     rng.range(100, 9999),
                     rng.below(10)
                 ),
                 1 => format!(
-                    "-rw-r--r--  1 macmini staff  {}K Jul 10 {f}",
+                    "-rw-r--r--  1 user staff  {}K Jul 10 {f}",
                     rng.range(1, 999)
                 ),
                 2 => format!("/usr/local/{n1}/{n2}/{f}"),
@@ -286,7 +286,7 @@ pub fn gen_typed_line(rng: &mut Rng, t: CType) -> String {
             let b = *rng.pick(crate::symbols::BOX_STYLES);
             match rng.below(7) {
                 0 => format!("{}{}{}", b.tl, b.h.repeat(rng.range(10, 40)), b.tr),
-                1 => "  macmini@mm4 /Users/Shared/rlx-models | ctx: 3% used".to_string(),
+                1 => "  user@host ~/project | ctx: 3% used".to_string(),
                 2 => format!(
                     "CPU [{}{}] {}%",
                     "█".repeat(rng.range(1, 8)),

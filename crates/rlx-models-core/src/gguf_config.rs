@@ -114,53 +114,10 @@ pub enum EmbedGgufKind {
 
 /// Suggested runner / crate for a GGUF architecture tag (for CLI and errors).
 pub fn gguf_runner_hint(arch: &str) -> &'static str {
-    if is_embed_gguf_arch(arch) {
-        return "rlx-embed (`RlxEmbed::from_weights`)";
+    if let Some(hint) = crate::model_registry::hint_for_gguf_arch(arch) {
+        return hint;
     }
-    if is_flux_gguf_arch(arch) {
-        return "rlx-flux2 denoiser (`Flux2Runner::builder().weights`) — VAE/TE stay safetensors";
-    }
-    if is_dinov2_gguf_arch(arch) {
-        return "rlx-dinov2 (`DinoV2Runner::builder().weights`)";
-    }
-    if is_sam3_gguf_arch(arch) {
-        return "rlx-sam3 (`Sam3::from_checkpoint_on`)";
-    }
-    if is_sam2_gguf_arch(arch) {
-        return "rlx-sam2 (`Sam2::from_safetensors_on`)";
-    }
-    if is_sam_gguf_arch(arch) {
-        return "rlx-sam (`Sam::from_safetensors_on`) — MobileSAM uses `mobile-sam` arch";
-    }
-    if is_vjepa2_gguf_arch(arch) {
-        return "rlx-vjepa2 (`Vjepa2Runner::builder().weights`)";
-    }
-    if is_w2v_bert_gguf_arch(arch) {
-        return "rlx-wav2vec2-bert (`Wav2Vec2BertRunner::builder().weights`; keep config.json beside GGUF)";
-    }
-    if let Some(fam) = crate::gguf_support::gguf_family_for_arch(arch) {
-        return match fam {
-            crate::gguf_support::GgufModelFamily::Qwen3 => {
-                "rlx-qwen3 (use `--packed` for large K-quant GGUF)"
-            }
-            crate::gguf_support::GgufModelFamily::Qwen35 => "rlx-qwen35 (`--packed` recommended)",
-            crate::gguf_support::GgufModelFamily::Llama32 => {
-                "rlx-llama32 (`--packed` for large K-quant GGUF)"
-            }
-            crate::gguf_support::GgufModelFamily::Gemma => {
-                "rlx-gemma (`--packed` for large K-quant GGUF)"
-            }
-            crate::gguf_support::GgufModelFamily::Lfm => "rlx-lfm (`LfmRunner::builder().weights`)",
-            crate::gguf_support::GgufModelFamily::Inkling => {
-                "rlx-inkling (`--weights` GGUF sniff; RLX eager on --synth/--fixture)"
-            }
-            crate::gguf_support::GgufModelFamily::Laguna => {
-                "rlx-laguna (packed mmap generate; F32 expand off by default — \
-                 RLX_LAGUNA_ALLOW_F32_EXPAND=1 to opt in)"
-            }
-        };
-    }
-    "unknown — register a custom GgufTensorNameResolver or WeightFormatRegistration"
+    "unknown — register via `rlx_core::model_registry::register_gguf_model`"
 }
 
 /// Estimated RAM if every tensor is dequantized to F32 vs kept packed on disk.

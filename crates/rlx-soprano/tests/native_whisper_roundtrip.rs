@@ -30,15 +30,12 @@ fn env_dir(var: &str, default: &str) -> Option<PathBuf> {
                 .join(default),
         ),
     ];
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|d| {
-            d.join("soprano.rlxp").is_file()
-                || d.join("soprano.gguf").is_file()
-                || d.join("graphs/soprano_backbone_kv_fp32.rlxp").is_file()
-                || d.join("onnx/soprano_backbone_kv_fp32.onnx").is_file()
-        })
+    candidates.into_iter().flatten().find(|d| {
+        d.join("soprano.rlxp").is_file()
+            || d.join("soprano.gguf").is_file()
+            || d.join("graphs/soprano_backbone_kv_fp32.rlxp").is_file()
+            || d.join("onnx/soprano_backbone_kv_fp32.onnx").is_file()
+    })
 }
 
 fn whisper_dir() -> Option<PathBuf> {

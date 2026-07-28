@@ -128,6 +128,10 @@ pub fn validate_weights_kind(weights: &Path) -> Result<()> {
 /// Reference dims for [TinyLlama/TinyLlama-1.1B-Chat-v1.0](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0).
 pub fn tinyllama_1_1b_preset() -> Llama32Config {
     Llama32Config {
+        embedding_scale: None,
+        residual_scale: None,
+        attention_scale: None,
+        logit_scale: None,
         vocab_size: 32_000,
         hidden_size: TINYLLAMA_1_1B_HIDDEN_SIZE,
         intermediate_size: 5632,

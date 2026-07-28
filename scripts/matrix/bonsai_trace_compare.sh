@@ -5,7 +5,7 @@
 #    RLX_QWEN35_TAP_PATH=/tmp/bonsai_metal_tap.jsonl \\
 #      scripts/matrix/bonsai_trace_compare.sh metal
 #
-# 2) On MSI (CUDA), after sync:
+# 2) On the CUDA host, after sync:
 #    scripts/matrix/bonsai_trace_compare.sh cuda
 #
 # 3) Diff first mismatched step:
@@ -20,7 +20,7 @@ SYSTEM="${BONSAI_SYSTEM:-You are a helpful assistant. Answer clearly in English.
 PROMPT="${BONSAI_PROMPT:-What is the capital of France? Reply with one short sentence.}"
 MAX_SEQ="${BONSAI_MAX_SEQ:-64}"
 MAX_TOKENS="${BONSAI_MAX_TOKENS:-8}"
-HOST="${MSI_HOST:-msi}"
+HOST="${RLX_CUDA_HOST:?set RLX_CUDA_HOST to your CUDA host, e.g. user@host}"
 REMOTE_MODELS="${REMOTE_MODELS:-rlx-models}"
 
 common_env() {
@@ -62,7 +62,7 @@ case "$cmd" in
     run_local metal "$RLX_QWEN35_TAP_PATH"
     ;;
   cuda)
-    bash "$HERE/sync_to_msi.sh"
+    bash "$HERE/sync_to_remote.sh"
     TAP_REMOTE="${RLX_QWEN35_TAP_PATH:-/tmp/bonsai_cuda_tap.jsonl}"
     ssh "$HOST" bash -s <<EOF
 set -euo pipefail

@@ -114,7 +114,7 @@ impl SecondStage {
         h0.extend_from_slice(c0);
         h0.push(PAD);
         let mut h1 = Vec::with_capacity(bs);
-        h1.extend(std::iter::repeat(PAD).take(text_ids.len()));
+        h1.extend(std::iter::repeat_n(PAD, text_ids.len()));
         h1.extend_from_slice(c1);
         h1.push(PAD);
         anyhow::ensure!(h0.len() == h1.len(), "hierarchy length mismatch");
@@ -280,8 +280,8 @@ fn erf_approx(x: f32) -> f32 {
     let ax = x.abs();
     let t = 1.0 / (1.0 + 0.3275911 * ax);
     let y = 1.0
-        - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t
-            + 0.254829592)
+        - (((((1.061_405_4 * t - 1.453_152_1) * t) + 1.421_413_8) * t - 0.284_496_72) * t
+            + 0.254_829_6)
             * t
             * (-ax * ax).exp();
     sign * y

@@ -89,7 +89,7 @@ pub fn number_to_words(n: i64) -> String {
         return "zero".to_string();
     }
     // X00-X999 (not multiples of 1000): read as "X hundred"
-    if n >= 100 && n <= 9999 && n % 100 == 0 && n % 1000 != 0 {
+    if n >= 100 && n <= 9999 && n.is_multiple_of(100) && !n.is_multiple_of(1000) {
         let hundreds = n / 100;
         if hundreds < 20 {
             return format!("{} hundred", ONES[hundreds as usize]);
@@ -193,7 +193,7 @@ fn ordinal_suffix(n: i64) -> String {
             if last.ends_with('t') {
                 format!("{}h", last)
             } else if last.ends_with('e') {
-                format!("{}th", &last[..last.len() - 1])
+                format!("{}th", last.strip_suffix('e').unwrap())
             } else {
                 format!("{}th", last)
             }
@@ -458,11 +458,7 @@ pub fn expand_units(text: &str) -> String {
             let raw = &caps[1];
             let unit = &caps[2];
             let expanded = unit_expansion(unit);
-            let expanded = if expanded.is_empty() {
-                unit.as_ref()
-            } else {
-                expanded
-            };
+            let expanded = if expanded.is_empty() { unit } else { expanded };
             let num = if raw.contains('.') {
                 float_to_words(raw)
             } else {
@@ -729,16 +725,9 @@ impl Default for PreprocessorConfig {
 }
 
 /// Full text preprocessing pipeline — mirrors Python's `TextPreprocessor`.
+#[derive(Default)]
 pub struct TextPreprocessor {
     pub config: PreprocessorConfig,
-}
-
-impl Default for TextPreprocessor {
-    fn default() -> Self {
-        Self {
-            config: PreprocessorConfig::default(),
-        }
-    }
 }
 
 impl TextPreprocessor {
@@ -903,7 +892,10 @@ mod tests {
     fn test_full_pipeline() {
         let pp = TextPreprocessor::new();
         let out = pp.process("GPT-4 scored 90% in 3.5 seconds at 1e-4 lr.");
-        assert!(out.contains("ninety percent") || out.contains("90"), "got: {out}");
+        assert!(
+            out.contains("ninety percent") || out.contains("90"),
+            "got: {out}"
+        );
         assert!(
             out.chars().any(|c| c.is_lowercase()),
             "expected lowercasing, got: {out}"

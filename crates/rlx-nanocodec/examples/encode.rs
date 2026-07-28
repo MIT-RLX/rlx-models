@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Frame-based encoding: 512 samples per frame (roughly 23ms at 22kHz)
     let frame_size = 512usize;
     let num_channels = spec.channels as usize;
-    let num_frames = (samples.len() / num_channels + frame_size - 1) / frame_size;
+    let num_frames = (samples.len() / num_channels).div_ceil(frame_size);
 
     eprintln!("  {} frames at 512 samples/frame", num_frames);
 
@@ -96,12 +96,12 @@ fn encode_frame_to_fsq(samples: &[i32], fsq_levels: &[u32]) -> Vec<u32> {
         / samples.len() as f64;
 
     // Normalize energy to [0, 1]
-    let norm_energy = (energy / 32768.0).min(1.0).max(0.0);
+    let norm_energy = (energy / 32768.0).clamp(0.0, 1.0);
 
     // Generate codes from energy features
     // Use simple strategy: encode the same energy pattern across all codes
     for i in 0..32 {
-        let level = fsq_levels[i] as u32;
+        let level = fsq_levels[i];
         let code = ((norm_energy * (level - 1) as f64).round() as u32).min(level - 1);
         codes.push(code);
     }

@@ -629,7 +629,9 @@ fn inputs_fingerprint(inputs: &[(&str, &[u8], DType)]) -> u64 {
         bytes.hash(&mut h);
         format!("{dt:?}").hash(&mut h);
     }
-    crate::opts::runtime_active_tokens().unwrap_or(0).hash(&mut h);
+    crate::opts::runtime_active_tokens()
+        .unwrap_or(0)
+        .hash(&mut h);
     h.finish()
 }
 
@@ -740,7 +742,7 @@ fn duration_refine_iters(active_tokens: usize) -> usize {
     if active_tokens <= 32 {
         if let Ok(raw) = std::env::var("KITTEN_RLX_DURATION_ITERS") {
             if let Ok(n) = raw.parse::<usize>() {
-                return n.max(1).min(DURATION_FIXED_POINT_ITERS);
+                return n.clamp(1, DURATION_FIXED_POINT_ITERS);
             }
         }
         // Production: 4 is enough for hello-class IPA on CPU/Cuda/Vulkan (peak-held).
@@ -885,7 +887,10 @@ pub fn run_kitten_inference(
         let mut dur_iters_used = 0usize;
         let last_dur = if let Some(dur_bytes) = cached {
             if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
-                eprintln!("[kitten] duration cache hit fp={fp:#x} bytes={}", dur_bytes.len());
+                eprintln!(
+                    "[kitten] duration cache hit fp={fp:#x} bytes={}",
+                    dur_bytes.len()
+                );
             }
             let frames = alignment_frames_from_duration_bytes(&dur_bytes, active_tokens);
             crate::opts::set_runtime_mel_frames(frames.max(1));
@@ -1025,17 +1030,14 @@ fn compile_hir_profile(
             return Ok(compiled);
         }
     }
-    let (mut hir, params) = prepare_hir_for_compile(
-        hir,
-        params,
-        typed,
-        sequence_length,
-        max_waveform_samples,
-    );
+    let (mut hir, params) =
+        prepare_hir_for_compile(hir, params, typed, sequence_length, max_waveform_samples);
     if crate::device_policy::native_qmatmul(device) {
         let n = crate::hir_qdq_fuse::rewrite_qmatmul_to_native_f32(&mut hir);
         if n > 0 && compile_profile::env_flag("KITTEN_RLX_TIMING") {
-            eprintln!("[kitten] native QMatMul: {n} quantized matmul(s) → on-device GEMM ({device:?})");
+            eprintln!(
+                "[kitten] native QMatMul: {n} quantized matmul(s) → on-device GEMM ({device:?})"
+            );
         }
     }
     let compile_opts = compile_profile::compile_options_for_profile(device, profile);
@@ -1682,10 +1684,7 @@ pub fn compile_from_bundle_with_ort_f0n(
     );
     let compile_opts = compile_options_for(device);
     // Unique key so AOT cache never mixes free-run and injected graphs.
-    let key = format!(
-        "{}_ort_f0n_v1",
-        cache_key(device, opts)
-    );
+    let key = format!("{}_ort_f0n_v1", cache_key(device, opts));
     let mut compiled = compile_prepared_hir_fresh(device, hir, &params, &compile_opts)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let _ = key; // fresh compile; key kept for future disk-cache option

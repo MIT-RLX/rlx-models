@@ -133,14 +133,20 @@ impl Weights {
 fn decode_f32(dtype: &str, raw: &[u8]) -> Result<Vec<f32>> {
     match dtype {
         "F32" => {
-            ensure!(raw.len() % 4 == 0, "F32 byte length not multiple of 4");
+            ensure!(
+                raw.len().is_multiple_of(4),
+                "F32 byte length not multiple of 4"
+            );
             Ok(raw
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect())
         }
         "F16" => {
-            ensure!(raw.len() % 2 == 0, "F16 byte length not multiple of 2");
+            ensure!(
+                raw.len().is_multiple_of(2),
+                "F16 byte length not multiple of 2"
+            );
             Ok(raw
                 .chunks_exact(2)
                 .map(|c| {

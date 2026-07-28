@@ -63,7 +63,7 @@ pub async fn chat_completions(
         .backend
         .resolve(&req.model)
         .ok_or_else(|| ApiError::bad_request(format!("unknown model: {}", req.model)))?;
-    req.validate_tools().map_err(|e| ApiError::bad_request(e))?;
+    req.validate_tools().map_err(ApiError::bad_request)?;
     let prompt_ids = engine
         .encode_chat(&req.compacted_turns())
         .map_err(|e| ApiError::bad_request(format!("encode chat: {e}")))?;

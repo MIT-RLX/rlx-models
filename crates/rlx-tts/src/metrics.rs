@@ -1,4 +1,3 @@
-
 use rlx_fft::reference::fft_real_batch;
 
 const COMPARE_SR: u32 = 16_000;
@@ -231,12 +230,7 @@ fn mulaw_expand_class(class: f32) -> f32 {
     sign * ((8.0 * x.abs()).exp2() - 1.0) * (1.0 / 255.0)
 }
 
-pub fn apply_output_volume(
-    pcm: &mut [f32],
-    global: f32,
-    peak_ratio: f32,
-    smoothing_window: usize,
-) {
+pub fn apply_output_volume(pcm: &mut [f32], global: f32, peak_ratio: f32, smoothing_window: usize) {
     if pcm.is_empty() {
         return;
     }

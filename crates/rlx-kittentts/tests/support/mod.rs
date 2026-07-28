@@ -17,9 +17,7 @@
 
 #![allow(dead_code)]
 
-use rlx_kittentts::{
-    MIN_AUDIBLE_PEAK, SAMPLE_RATE, assets, ipa_style_index, peak_amplitude,
-};
+use rlx_kittentts::{MIN_AUDIBLE_PEAK, SAMPLE_RATE, assets, ipa_style_index, peak_amplitude};
 
 // Aliased (not `pub use`, which test binaries strip as unused) so integration
 // tests can reference `support::LONG_IPA`.

@@ -334,22 +334,58 @@ struct PackedForward {
 
 impl PackedForward {
     fn build(cfg: &Qwen3Config, weights_path: &Path, seq: usize, device: Device) -> Result<Self> {
-        let exec_device = rlx_core::flow_bridge::packed_gguf_execution_device(device);
-        if exec_device != device {
-            eprintln!(
-                "[qwen3-runner] packed GGUF on {device:?}: prefill executes on {exec_device:?} \
-                 until {device:?} packed parity is fixed upstream"
-            );
-        }
         let mut loader = GgufLoader::from_file(
             weights_path
                 .to_str()
                 .ok_or_else(|| anyhow!("non-utf8 weights path"))?,
         )?;
+        Self::build_from_loader(cfg, &mut loader, seq, device, "GGUF")
+    }
+
+    /// Build the packed prefill graph from an mlx-community weight
+    /// directory (`config.json` + packed safetensors). Weights stay
+    /// packed in the arena; affine linears lower to 4-input
+    /// `Op::DequantMatMul { MlxAffine }`.
+    fn build_mlx(cfg: &Qwen3Config, dir: &Path, seq: usize, device: Device) -> Result<Self> {
+        // CoreML/ANE has no native MLX `DequantMatMul` kernel and its host path
+        // is f32-only (can't read the packed U8 weight), so the packed graph
+        // executes on the CPU host — CoreML-requested MLX runs still produce
+        // correct output. (Set RLX_PACKED_GGUF_COREML_HOST or wait for a
+        // rlx-coreml MLX host-delegate for native ANE segments.)
+        let device = if matches!(device, Device::Ane) {
+            eprintln!(
+                "[qwen3-runner] MLX packed on CoreML/ANE: no native MLX dequant kernel; \
+                 executing the packed graph on CPU"
+            );
+            Device::Cpu
+        } else {
+            device
+        };
+        let mut loader = rlx_core::weight_loader::MlxLoader::open(
+            dir.to_str()
+                .ok_or_else(|| anyhow!("non-utf8 weights path"))?,
+        )?;
+        Self::build_from_loader(cfg, &mut loader, seq, device, "MLX")
+    }
+
+    fn build_from_loader(
+        cfg: &Qwen3Config,
+        loader: &mut dyn rlx_core::weight_loader::WeightLoader,
+        seq: usize,
+        device: Device,
+        tag: &str,
+    ) -> Result<Self> {
+        let exec_device = rlx_core::flow_bridge::packed_gguf_execution_device(device);
+        if exec_device != device {
+            eprintln!(
+                "[qwen3-runner] packed {tag} on {device:?}: prefill executes on {exec_device:?} \
+                 until {device:?} packed parity is fixed upstream"
+            );
+        }
         let mut packed = std::collections::HashMap::new();
         let (graph, params) = build_qwen3_graph_sized_packed(
             cfg,
-            &mut loader,
+            loader,
             /*batch*/ 1,
             seq,
             /*with_lm_head*/ true,
@@ -367,7 +403,17 @@ impl PackedForward {
             compiled.set_param(name, data);
         }
         for (name, (bytes, _scheme, _shape)) in &packed {
-            compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+            // Empty bytes = GGUF zero-copy marker: borrow the packed blob straight
+            // from the loader's mmap instead of a materialized buffer. Owned MLX
+            // arrays are non-empty and used as-is.
+            let slice = if bytes.is_empty() {
+                loader
+                    .tensor_bytes_borrowed(name)
+                    .expect("packed weight bytes unavailable at attach")
+            } else {
+                bytes.as_slice()
+            };
+            compiled.set_param_typed(name, slice, rlx_ir::DType::U8);
         }
         Ok(Self {
             compiled,
@@ -406,6 +452,29 @@ impl Qwen3Runner {
     }
     pub fn device(&self) -> Device {
         self.device
+    }
+
+    /// Build a packed-weights runner directly from an mlx-community model
+    /// directory (`config.json` + packed `*.safetensors`, e.g.
+    /// `mlx-community/Qwen3-0.6B-4bit`). Weights stay 4-bit-packed in the
+    /// arena; affine linears lower to `Op::DequantMatMul { MlxAffine }`.
+    /// Use [`generate_packed`](Self::generate_packed) /
+    /// [`predict_logits`](Self::predict_logits). Greedy sampling by default.
+    pub fn from_mlx_packed(
+        cfg: Qwen3Config,
+        dir: &Path,
+        max_seq: usize,
+        device: Device,
+    ) -> Result<Self> {
+        let packed = PackedForward::build_mlx(&cfg, dir, max_seq, device)?;
+        Ok(Self {
+            generator: None,
+            cfg,
+            sample: SampleOpts::greedy(),
+            stream: false,
+            device,
+            packed: Some(packed),
+        })
     }
 
     /// Consume the runner and return its underlying F32 [`Qwen3Generator`] for
@@ -753,7 +822,13 @@ fn qwen3_cfg_from_gguf(raw: &GgufFile) -> Result<Qwen3Config> {
         max_position_embeddings: get_u32("qwen3.context_length").unwrap_or(40_960) as usize,
         sliding_window: None,
         max_window_layers: 0,
-        tie_word_embeddings: get_bool("qwen3.tie_word_embeddings").unwrap_or(true),
+        // Honor an explicit `tie_word_embeddings` key; otherwise infer from the
+        // presence of a separate `output.weight` tensor — llama.cpp's own rule.
+        // Converters (e.g. Fermion's fermion-fv5 fork for Neutrino-8B) often omit
+        // the key, and defaulting to tied would wrongly reuse `token_embd` as the
+        // LM head on untied models like Qwen3-8B / Neutrino-8B.
+        tie_word_embeddings: get_bool("qwen3.tie_word_embeddings")
+            .unwrap_or_else(|| !raw.tensors.contains_key("output.weight")),
         rope_theta: get_f32("qwen3.rope.freq_base").unwrap_or(1_000_000.0) as f64,
         rms_norm_eps: get_f32("qwen3.attention.layer_norm_rms_epsilon").unwrap_or(1e-6) as f64,
         use_sliding_window: false,

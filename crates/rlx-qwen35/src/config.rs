@@ -276,14 +276,10 @@ impl Qwen35Config {
                 .map(|n| n as usize)
         };
         let f = |k: &str| -> Option<f64> {
-            text.get(k)
-                .or_else(|| top.get(k))
-                .and_then(|v| v.as_f64())
+            text.get(k).or_else(|| top.get(k)).and_then(|v| v.as_f64())
         };
         let b = |k: &str| -> Option<bool> {
-            text.get(k)
-                .or_else(|| top.get(k))
-                .and_then(|v| v.as_bool())
+            text.get(k).or_else(|| top.get(k)).and_then(|v| v.as_bool())
         };
         let tie_top = top.get("tie_word_embeddings").and_then(|v| v.as_bool());
 
@@ -346,19 +342,18 @@ impl Qwen35Config {
         let linear_key_dim = u("linear_key_head_dim");
         let linear_value_heads = u("linear_num_value_heads");
         let linear_value_dim = u("linear_value_head_dim");
-        let ssm_conv_kernel = u("linear_conv_kernel_dim").or_else(|| u("ssm_conv_kernel")).unwrap_or(4);
+        let ssm_conv_kernel = u("linear_conv_kernel_dim")
+            .or_else(|| u("ssm_conv_kernel"))
+            .unwrap_or(4);
         let ssm_group_count = linear_key_heads.unwrap_or(0);
         let ssm_state_size = linear_key_dim.unwrap_or(0);
-        let ssm_inner_size = u("ssm_inner_size").unwrap_or_else(|| {
-            match (linear_value_heads, linear_value_dim) {
+        let ssm_inner_size =
+            u("ssm_inner_size").unwrap_or_else(|| match (linear_value_heads, linear_value_dim) {
                 (Some(nh), Some(dh)) => nh.saturating_mul(dh),
                 _ => 0,
-            }
-        });
+            });
         // Must be value heads (not key heads) — matches GDN A_log / dt_bias length.
-        let ssm_time_step_rank = u("ssm_time_step_rank")
-            .or(linear_value_heads)
-            .unwrap_or(0);
+        let ssm_time_step_rank = u("ssm_time_step_rank").or(linear_value_heads).unwrap_or(0);
 
         let num_experts = u("num_experts").or_else(|| u("expert_count")).unwrap_or(0);
         let num_experts_used = u("num_experts_per_tok")

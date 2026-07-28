@@ -1,6 +1,6 @@
 [package]
 name = "rlx-neutts"
-version = "0.2.13"
+version = "0.2.14"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -84,6 +84,8 @@ portable-gpu = ["gpu", "vulkan"]
 # parity-llama-cpp only for tests/llama_greedy_parity.rs (see that file's required-features).
 rlx-neutts = { path = ".", features = ["codec", "fast", "llama", "rlx"] }
 rlx-qwen35 = { workspace = true }
+# examples/synth_metal.rs: discover the backbone GGUF via the HF hub (no hard-coded cache path).
+hf-hub = { workspace = true }
 
 [lints]
 workspace = true

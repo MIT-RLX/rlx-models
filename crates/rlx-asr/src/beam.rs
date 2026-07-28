@@ -59,11 +59,14 @@ impl StreamingCtcBeam {
             .filter(|&c| c != self.blank && row[c] > thresh)
             .collect();
         let mut next: HashMap<Vec<usize>, (f32, f32)> = HashMap::new();
-        let bump = |map: &mut HashMap<Vec<usize>, (f32, f32)>, key: Vec<usize>, db: f32, dnb: f32| {
-            let e = map.entry(key).or_insert((f32::NEG_INFINITY, f32::NEG_INFINITY));
-            e.0 = logsumexp(e.0, db);
-            e.1 = logsumexp(e.1, dnb);
-        };
+        let bump =
+            |map: &mut HashMap<Vec<usize>, (f32, f32)>, key: Vec<usize>, db: f32, dnb: f32| {
+                let e = map
+                    .entry(key)
+                    .or_insert((f32::NEG_INFINITY, f32::NEG_INFINITY));
+                e.0 = logsumexp(e.0, db);
+                e.1 = logsumexp(e.1, dnb);
+            };
         for (prefix, &(pb, pnb)) in &self.beams {
             bump(
                 &mut next,
@@ -88,8 +91,8 @@ impl StreamingCtcBeam {
         }
         let mut v: Vec<(Vec<usize>, (f32, f32))> = next.into_iter().collect();
         v.sort_by(|a, b| {
-            logsumexp(b.1 .0, b.1 .1)
-                .partial_cmp(&logsumexp(a.1 .0, a.1 .1))
+            logsumexp(b.1.0, b.1.1)
+                .partial_cmp(&logsumexp(a.1.0, a.1.1))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         v.truncate(self.beam);
@@ -132,15 +135,25 @@ pub fn ctc_beam_nbest(
         let row = &logp[t * classes..(t + 1) * classes];
         let maxlp = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let thresh = maxlp - PRUNE_MARGIN;
-        let cands: Vec<usize> = (0..classes).filter(|&c| c != blank && row[c] > thresh).collect();
+        let cands: Vec<usize> = (0..classes)
+            .filter(|&c| c != blank && row[c] > thresh)
+            .collect();
         let mut next: HashMap<Vec<usize>, (f32, f32)> = HashMap::new();
-        let bump = |map: &mut HashMap<Vec<usize>, (f32, f32)>, key: Vec<usize>, db: f32, dnb: f32| {
-            let e = map.entry(key).or_insert((f32::NEG_INFINITY, f32::NEG_INFINITY));
-            e.0 = logsumexp(e.0, db);
-            e.1 = logsumexp(e.1, dnb);
-        };
+        let bump =
+            |map: &mut HashMap<Vec<usize>, (f32, f32)>, key: Vec<usize>, db: f32, dnb: f32| {
+                let e = map
+                    .entry(key)
+                    .or_insert((f32::NEG_INFINITY, f32::NEG_INFINITY));
+                e.0 = logsumexp(e.0, db);
+                e.1 = logsumexp(e.1, dnb);
+            };
         for (prefix, &(pb, pnb)) in &beams {
-            bump(&mut next, prefix.clone(), logsumexp(pb, pnb) + row[blank], f32::NEG_INFINITY);
+            bump(
+                &mut next,
+                prefix.clone(),
+                logsumexp(pb, pnb) + row[blank],
+                f32::NEG_INFINITY,
+            );
             let last = prefix.last().copied();
             for &c in &cands {
                 let lp = row[c];
@@ -158,15 +171,17 @@ pub fn ctc_beam_nbest(
         }
         let mut v: Vec<(Vec<usize>, (f32, f32))> = next.into_iter().collect();
         v.sort_by(|a, b| {
-            logsumexp(b.1 .0, b.1 .1)
-                .partial_cmp(&logsumexp(a.1 .0, a.1 .1))
+            logsumexp(b.1.0, b.1.1)
+                .partial_cmp(&logsumexp(a.1.0, a.1.1))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         v.truncate(beam.max(1));
         beams = v.into_iter().collect();
     }
-    let mut out: Vec<(Vec<usize>, f32)> =
-        beams.into_iter().map(|(p, (pb, pnb))| (p, logsumexp(pb, pnb))).collect();
+    let mut out: Vec<(Vec<usize>, f32)> = beams
+        .into_iter()
+        .map(|(p, (pb, pnb))| (p, logsumexp(pb, pnb)))
+        .collect();
     out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     out
 }

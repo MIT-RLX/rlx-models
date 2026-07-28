@@ -31,12 +31,9 @@
 //! - **Image preprocessing** ([`Qwen3VlImagePreprocessor`]) — bicubic
 //!   resize + SigLIP normalization (mean/std = 0.5) + host-side
 //!   patch embedding.
-//! - **LM integration** — text path uses the existing [`rlx_qwen3`]
-//!   runner (MoE A3B routing already in tree). The
-//!   `Qwen3VlVisionRunner` produces `[num_patches, lm_hidden]`
-//!   embeddings that the caller interleaves with text-token embeds at
-//!   the `<|image_pad|>` positions. Glue code for this interleave
-//!   lives in [`rlx_cli::mtmd`] (in progress).
+//! - **LM integration** — [`Qwen3VlRunner`] composes [`rlx_qwen3::Qwen3Runner`]
+//!   with [`Qwen3VlVisionRunner`], implements [`rlx_cli::LmRunner`] (including
+//!   `generate_multimodal`), and is wired through `auto_runner_with_mmproj`.
 //! - **MoE block** (`rlx_flow::blocks::moe::MoeFfnStage`) — already
 //!   landed via PLAN.md M5.
 
@@ -46,16 +43,23 @@ use std::path::Path;
 
 pub mod config;
 pub mod flow;
+pub mod multimodal;
 pub mod preprocess;
 pub mod runner;
+pub mod vl_runner;
 
 pub use config::Qwen3VlVisionConfig;
 pub use flow::{Qwen3VlVisionBuilt, build_qwen3_vl_vision, build_qwen3_vl_vision_with_packed};
+pub use multimodal::{
+    IMAGE_PAD, MEDIA_MARKER, MultimodalPrefill, MultimodalPrompt, VISION_END, VISION_START,
+    VisionEncodeOutput, normalize_media_prompt,
+};
 pub use preprocess::{
     Qwen3VlImagePreprocessor, Qwen3VlPreprocessWeights, assemble_hidden,
     extract_preprocess_weights, image_to_patch_tensor,
 };
 pub use runner::{Qwen3VlIdentityProjector, Qwen3VlVisionRunner, Qwen3VlVisionRunnerBuilder};
+pub use vl_runner::{Qwen3VlRunner, Qwen3VlRunnerBuilder};
 
 pub const PLAN_MILESTONE: &str = "M7";
 pub const FAMILY: &str = "Qwen3-VL";

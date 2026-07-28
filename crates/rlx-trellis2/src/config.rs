@@ -231,8 +231,8 @@ impl SparseVaeConfig {
         })
     }
 
-    /// FlexiDualGrid decoder emits 7 channels (vertex offset 3 + intersected 3
-    /// + quad-lerp 1); the texture decoder emits `out_channels` (6). Encoders
+    /// FlexiDualGrid decoder emits 7 channels (vertex offset 3, intersected 3,
+    /// and quad-lerp 1); the texture decoder emits `out_channels` (6). Encoders
     /// have no meaningful output-channel here.
     pub fn decoder_out_channels(&self) -> usize {
         match self.kind {

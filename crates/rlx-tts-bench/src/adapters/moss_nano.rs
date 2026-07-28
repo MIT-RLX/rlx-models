@@ -41,12 +41,17 @@ pub fn make(device: Device) -> Result<Box<dyn TtsAdapter>> {
         .ok()
         .filter(|v| voices.iter().any(|n| n == v))
         .or_else(|| {
-            ["Trump", "Alice", "Bob", "en", "English"].iter().find_map(|w| {
-                voices
-                    .iter()
-                    .find(|n| n.eq_ignore_ascii_case(w) || n.to_lowercase().contains(&w.to_lowercase()))
-                    .cloned()
-            })
+            ["Trump", "Alice", "Bob", "en", "English"]
+                .iter()
+                .find_map(|w| {
+                    voices
+                        .iter()
+                        .find(|n| {
+                            n.eq_ignore_ascii_case(w)
+                                || n.to_lowercase().contains(&w.to_lowercase())
+                        })
+                        .cloned()
+                })
         })
         .or_else(|| voices.first().cloned())
         .unwrap_or_else(|| "default".into());

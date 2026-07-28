@@ -396,9 +396,9 @@ mod tests {
         let (out, oh, ow) = conv2d(&input, 2, 2, 2, &weight, 3, 1, 1, 0, None);
         assert_eq!((oh, ow), (2, 2));
         // pixel (0,0): in = [1, 5] -> out channels [1*1, 1*5, 1+5] = [1, 5, 6].
-        assert_eq!(out[0 * 4], 1.0);
-        assert_eq!(out[1 * 4], 5.0);
-        assert_eq!(out[2 * 4], 6.0);
+        assert_eq!(out[0], 1.0);
+        assert_eq!(out[4], 5.0);
+        assert_eq!(out[8], 6.0);
     }
 
     #[test]

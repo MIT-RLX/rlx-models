@@ -17,9 +17,12 @@ documentation.workspace = true
 rlx-ir = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-runtime = { workspace = true }
+# Model-agnostic multi-node pipeline API (graph partition + ParamSource seam).
+rlx-distributed = { workspace = true }
 rlx-cpu = { workspace = true }
 rlx-opt = { workspace = true }
 rlx-gguf = { workspace = true }
+rlx-mlx-io = { workspace = true }
 # Versatile bundle loading lives in the lean rlx-assets crate; re-exported here
 # as `rlx_core::asset_source` / `rlx_core::{AssetSource,…}` for back-compat.
 # `rlxp` enables official `.rlxp` packs (TinyTTS / MeloTTS / other asset bundles).

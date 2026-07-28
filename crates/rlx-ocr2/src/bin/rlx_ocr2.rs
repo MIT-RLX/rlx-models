@@ -70,10 +70,17 @@ fn main() -> Result<()> {
             let lexicon = a.get(8).map(Path::new).filter(|p| p.is_file());
             if ngram.is_some() || lexicon.is_some() {
                 ocr = ocr.with_rescorer(rlx_ocr2::Rescorer::load_en(ngram, lexicon)?);
-                eprintln!("[correction: ngram={} lexicon={}]", ngram.is_some(), lexicon.is_some());
+                eprintln!(
+                    "[correction: ngram={} lexicon={}]",
+                    ngram.is_some(),
+                    lexicon.is_some()
+                );
             }
             // OCR2_REPEAT=N re-runs in-process (iter 1 = cold compile, 2+ = warm/cached).
-            let reps: usize = std::env::var("OCR2_REPEAT").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            let reps: usize = std::env::var("OCR2_REPEAT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
             let mut lines = Vec::new();
             for _ in 0..reps {
                 lines = ocr.recognize_image(Path::new(&a[6]))?;

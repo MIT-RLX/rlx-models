@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Pre-commit: cargo fmt + clippy on staged Rust files (warnings as errors).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
+exec ./scripts/rust-lint-gate.sh --staged

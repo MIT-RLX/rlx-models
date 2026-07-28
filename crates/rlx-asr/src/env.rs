@@ -66,9 +66,7 @@ pub struct AsrPaths {
 
 impl AsrPaths {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-        }
+        Self { root: root.into() }
     }
 
     pub fn resolve() -> Self {
@@ -92,8 +90,11 @@ impl AsrPaths {
     // --- legacy pack-source paths (usually absent in a GGUF-only tree) ---
 
     pub fn units_txt(&self) -> PathBuf {
-        first_file(&[self.root.join("units.txt"), self.root.join("misc/units.txt")])
-            .unwrap_or_else(|| self.root.join("units.txt"))
+        first_file(&[
+            self.root.join("units.txt"),
+            self.root.join("misc/units.txt"),
+        ])
+        .unwrap_or_else(|| self.root.join("units.txt"))
     }
 
     pub fn silence_fbank_txt(&self) -> PathBuf {

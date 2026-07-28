@@ -23,12 +23,8 @@ const DEFAULT_TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 fn soprano_loose_or_pack(dir: &std::path::Path) -> bool {
     dir.join("soprano.rlxp").is_file()
         || dir.join("soprano.gguf").is_file()
-        || dir
-            .join("graphs/soprano_backbone_kv_fp32.rlxp")
-            .is_file()
-        || dir
-            .join("onnx/soprano_backbone_kv_fp32.onnx")
-            .is_file()
+        || dir.join("graphs/soprano_backbone_kv_fp32.rlxp").is_file()
+        || dir.join("onnx/soprano_backbone_kv_fp32.onnx").is_file()
 }
 
 fn main() -> anyhow::Result<()> {
@@ -49,7 +45,10 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(96);
 
     if !soprano_loose_or_pack(&dir) {
-        anyhow::bail!("missing soprano.rlxp / nested graphs under {}", dir.display());
+        anyhow::bail!(
+            "missing soprano.rlxp / nested graphs under {}",
+            dir.display()
+        );
     }
 
     let devices = parse_devices();

@@ -42,7 +42,7 @@ impl EmbeddingWeights {
         let mut fill = |n: usize| -> Vec<f32> { (0..n).map(|_| next()).collect() };
         Self {
             n_mels,
-            conv1_w: fill(c1 * 1 * 3 * 3),
+            conv1_w: fill(c1 * 3 * 3),
             conv1_b: vec![0.0; c1],
             conv2_w: fill(c2 * c1 * 3 * 3),
             conv2_b: vec![0.0; c2],
@@ -58,7 +58,15 @@ impl EmbeddingWeights {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         let mut map = HashMap::new();
-        map.insert("embed.cfg".into(), vec![self.n_mels as f32, self.c1 as f32, self.c2 as f32, self.c3 as f32]);
+        map.insert(
+            "embed.cfg".into(),
+            vec![
+                self.n_mels as f32,
+                self.c1 as f32,
+                self.c2 as f32,
+                self.c3 as f32,
+            ],
+        );
         map.insert("embed.conv1.weight".into(), self.conv1_w.clone());
         map.insert("embed.conv1.bias".into(), self.conv1_b.clone());
         map.insert("embed.conv2.weight".into(), self.conv2_w.clone());

@@ -13,10 +13,10 @@
 //!
 //! Metadata: `rlx-asr.units` (string array), optional `rlx-asr.etiquette_json`.
 
-use crate::npy_io::{load_npy, load_npz, read_f32_txt, NpyArray, NpyDType};
+use crate::npy_io::{NpyArray, NpyDType, load_npy, load_npz, read_f32_txt};
 use crate::spec::{DECODER_DIM, VOCAB};
 use crate::weights::read_f32_bin;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rlx_gguf::{GgmlType, GgufFile, GgufWriter, MetaValue};
 use rlx_ir::Graph;
 use rlx_pkg::{ContainerKind, Package, PackedWeight, WriteOptions, write_package};
@@ -50,10 +50,7 @@ pub fn pack_asr_gguf(root: &Path, out: &Path) -> Result<PackReport> {
         "general.description",
         MetaValue::String("Native RLX streaming Conformer ASR weights".into()),
     );
-    w.set_meta(
-        "rlx-asr.format",
-        MetaValue::String(ASR_GGUF_FORMAT.into()),
-    );
+    w.set_meta("rlx-asr.format", MetaValue::String(ASR_GGUF_FORMAT.into()));
     w.set_meta("rlx-asr.vocab_size", MetaValue::U32(VOCAB as u32));
     w.set_meta("rlx-asr.decoder_dim", MetaValue::U32(DECODER_DIM as u32));
 
@@ -77,7 +74,10 @@ pub fn pack_asr_gguf(root: &Path, out: &Path) -> Result<PackReport> {
                 MetaValue::String(piece)
             })
             .collect();
-        w.set_meta("rlx-asr.vocab_size_units", MetaValue::U32(pieces.len() as u32));
+        w.set_meta(
+            "rlx-asr.vocab_size_units",
+            MetaValue::U32(pieces.len() as u32),
+        );
         if !pieces.is_empty() {
             w.set_meta("rlx-asr.units", MetaValue::Array(pieces));
         }
@@ -99,7 +99,12 @@ pub fn pack_asr_gguf(root: &Path, out: &Path) -> Result<PackReport> {
     if let Some(silence) = first_existing(
         &sources
             .iter()
-            .flat_map(|s| [s.join("silence-fbank.txt"), s.join("misc/silence-fbank.txt")])
+            .flat_map(|s| {
+                [
+                    s.join("silence-fbank.txt"),
+                    s.join("misc/silence-fbank.txt"),
+                ]
+            })
             .collect::<Vec<_>>(),
     ) {
         let v = read_f32_txt(&silence)?;
@@ -306,7 +311,9 @@ fn pack_asr_rlxp_from_gguf(gguf_path: &Path, out: &Path, root: &Path) -> Result<
         let (scheme, data) = if t.dtype == GgmlType::I8 {
             ("i8".to_string(), file.tensor_bytes(t)?.to_vec())
         } else {
-            let (f32s, _) = file.dequant_f32(name).with_context(|| format!("dequant {name}"))?;
+            let (f32s, _) = file
+                .dequant_f32(name)
+                .with_context(|| format!("dequant {name}"))?;
             let bytes: Vec<u8> = f32s.iter().flat_map(|x| x.to_le_bytes()).collect();
             ("f32".to_string(), bytes)
         };
@@ -459,11 +466,7 @@ fn resolve_body_residual_candidates(root: &Path) -> Vec<PathBuf> {
 fn resolve_decoder_dirs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for s in pack_source_roots(root) {
-        for p in [
-            s.join("decoder"),
-            s.join("asr_weights"),
-            s.clone(),
-        ] {
+        for p in [s.join("decoder"), s.join("asr_weights"), s.clone()] {
             if p.is_dir() {
                 out.push(p);
             }
@@ -608,7 +611,8 @@ pub struct AsrGguf {
 impl AsrGguf {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let file = GgufFile::from_path(&path).with_context(|| format!("open {}", path.display()))?;
+        let file =
+            GgufFile::from_path(&path).with_context(|| format!("open {}", path.display()))?;
         Ok(Self { path, file })
     }
 
@@ -645,10 +649,13 @@ impl AsrGguf {
 
     /// Locale Hammer FSTs embedded as `tp.<stem>` blobs.
     pub fn load_hammer(&self, locale: &str) -> Result<crate::textproc::Hammer> {
-        crate::textproc::Hammer::load_from_blobs(|stem| {
-            let key = format!("tp.{stem}");
-            self.blob(&key).ok()
-        }, locale)
+        crate::textproc::Hammer::load_from_blobs(
+            |stem| {
+                let key = format!("tp.{stem}");
+                self.blob(&key).ok()
+            },
+            locale,
+        )
     }
 
     pub fn units(&self) -> Option<Vec<String>> {
@@ -743,10 +750,13 @@ impl AsrRlxp {
     }
 
     pub fn load_hammer(&self, locale: &str) -> Result<crate::textproc::Hammer> {
-        crate::textproc::Hammer::load_from_blobs(|stem| {
-            let key = format!("tp.{stem}");
-            self.blob(&key).ok()
-        }, locale)
+        crate::textproc::Hammer::load_from_blobs(
+            |stem| {
+                let key = format!("tp.{stem}");
+                self.blob(&key).ok()
+            },
+            locale,
+        )
     }
 
     pub fn units(&self) -> Option<Vec<String>> {

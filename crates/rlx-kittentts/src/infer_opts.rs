@@ -89,7 +89,7 @@ pub fn narrow_chunk_slots() -> usize {
 /// worst-case compile uses 8). Was 4 — quiet long audio under 48 k Vulkan.
 /// **3** packs ~17 tokens into the 32 k wgpu cap / ~44 into 80 k Vulkan.
 /// Do not drop to 2: denser packing overflows the compile wave buffer
-/// (truncated audio / collapsed peak on MSI).
+/// (truncated audio / collapsed peak on NVIDIA).
 const CHUNK_DURATION_UNITS_PER_TOKEN: usize = 3;
 
 /// Minimum padded ids we try to keep when merging a tiny tail chunk.
@@ -137,10 +137,10 @@ pub fn effective_chunk_slots_with_wave(
 
     // Single-pass when the compiled engine holds the utterance and the wave
     // buffer covers a typical-duration estimate.
-    if padded_len <= sequence_length {
-        if !wave_limited || typical_wave_samples(padded_len) <= max_wave {
-            return padded_len;
-        }
+    if padded_len <= sequence_length
+        && (!wave_limited || typical_wave_samples(padded_len) <= max_wave)
+    {
+        return padded_len;
     }
 
     engine.min(wave_cap).max(1)
@@ -349,8 +349,7 @@ mod tests {
                 many.iter().map(|(c, _)| c.len()).collect::<Vec<_>>()
             );
             assert!(
-                typical_wave_samples(tok_cap) <= cap_wave
-                    || tok_cap == 8,
+                typical_wave_samples(tok_cap) <= cap_wave || tok_cap == 8,
                 "token budget {tok_cap} exceeds wave {cap_wave}"
             );
         }
@@ -365,12 +364,9 @@ mod tests {
         assert!(needs_narrow_vocoder_chunking(ids.len()));
         let chunks = chunk_plan(&ids, 256);
         assert!(chunks.len() > 1);
-        assert!(
-            chunks
-                .iter()
-                .all(|(c, _)| compile_slot_length(c.len()) < WIDE_COMPILE_SLOT_THRESHOLD
-                    || c.len() >= 12)
-        );
+        assert!(chunks.iter().all(|(c, _)| compile_slot_length(c.len())
+            < WIDE_COMPILE_SLOT_THRESHOLD
+            || c.len() >= 12));
     }
 
     #[test]

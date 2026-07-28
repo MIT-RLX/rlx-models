@@ -285,6 +285,7 @@ fn batch_rms_norm(x: &[f32], w: &[f32], n: usize, d: usize, eps: f32) -> Vec<f32
 ///
 /// - `ref_codes`: `[t_ref * NUM_CHANNELS]` integer codes (already unfolded, 32 ch)
 /// - `t_ref`: number of reference frames
+///
 /// Returns `[K * d_model]` prefix tokens.
 pub fn qformer_forward(
     ref_codes: &[u32],

@@ -1,4 +1,3 @@
-
 use ndarray::{Array2, ArrayView2, Axis};
 
 pub fn view2<'a>(data: &'a [f32], rows: usize, cols: usize) -> ArrayView2<'a, f32> {
@@ -255,7 +254,7 @@ pub fn conv1d(
                 }
             }
         }
-        return y;
+        y
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -334,14 +333,7 @@ fn softmax_row(row: &mut [f32]) {
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn vDSP_maxv(a: *const f32, ia: isize, result: *mut f32, n: usize);
-    fn vDSP_vsadd(
-        a: *const f32,
-        ia: isize,
-        b: *const f32,
-        c: *mut f32,
-        ic: isize,
-        n: usize,
-    );
+    fn vDSP_vsadd(a: *const f32, ia: isize, b: *const f32, c: *mut f32, ic: isize, n: usize);
     fn vDSP_sve(a: *const f32, ia: isize, result: *mut f32, n: usize);
 }
 

@@ -20,8 +20,24 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::gguf_support::{ResolveWeightsOptions, resolve_weights_file_with_options};
-use crate::weight_loader::{GgufLoader, WeightLoader};
+use crate::weight_loader::{GgufLoader, MlxLoader, WeightLoader};
 use crate::weight_map::{WeightDrainPolicy, WeightMap};
+
+/// True when `dir/config.json` declares an mlx-lm `quantization` block
+/// (`{group_size, bits[, mode]}`). This is the mlx-community discriminator;
+/// GPTQ/AWQ use `quantization_config` (with `quant_method`) instead and are
+/// left to the safetensors path.
+pub fn dir_is_mlx_quant(dir: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(dir.join("config.json")) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    v.get("quantization")
+        .and_then(|q| q.as_object())
+        .is_some_and(|q| q.contains_key("bits") || q.contains_key("group_size"))
+}
 
 /// Opens a file path into a [`WeightLoader`].
 pub type WeightLoaderFactory = fn(&Path) -> Result<Box<dyn WeightLoader>>;
@@ -142,6 +158,15 @@ pub fn format_for_extension(ext: &str) -> Option<&'static str> {
 pub fn open_weight_loader(path: &Path) -> Result<Box<dyn WeightLoader>> {
     // HF model directories (sharded safetensors) have no extension — detect by index.
     if path.is_dir() {
+        // mlx-community quantized dirs are safetensors dirs whose `.weight`
+        // tensors are packed uint32 + `.scales`/`.biases` sidecars — the plain
+        // safetensors loader can't dequant them. Route to the MLX loader.
+        if dir_is_mlx_quant(path) {
+            let p = path
+                .to_str()
+                .ok_or_else(|| anyhow!("non-utf8 path {:?}", path))?;
+            return Ok(Box::new(MlxLoader::open(p)?));
+        }
         if path.join("model.safetensors.index.json").is_file()
             || path.join("model.safetensors").is_file()
         {

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # RLX cross-backend model harness — driver.
 #
-# Runs ON whatever host invokes it (Mac or the msi Linux+CUDA box). For each model
+# Runs ON whatever host invokes it (Mac or the remote Linux+CUDA box). For each model
 # in registry.toml it: resolves the backends this host supports, builds the crate
 # once, ensures weights, runs real inference on every backend, and validates that
 # the output is correct (semantic check + cross-backend parity vs the CPU baseline).
 #
-# Platform logic lives in ONE place (`host_backends` / `resolve`). msi is just a
+# Platform logic lives in ONE place (`host_backends` / `resolve`). The CUDA host is just a
 # host that happens to report {cpu, wgpu, cuda, vulkan}. Stdlib only (tomllib +
 # subprocess + wave) — no numpy/torch needed on the host.
 #

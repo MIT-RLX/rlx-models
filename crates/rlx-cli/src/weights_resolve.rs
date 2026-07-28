@@ -13,11 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Shared `--weights` resolution for model CLIs (directory quants, split hints).
+//! Shared `--weights` resolution for model CLIs (directory quants, split hints,
+//! and short-name discovery across local LLM app caches).
 
 use anyhow::{Result, anyhow};
+use rlx_core::ResolveWeightsOptions;
 use rlx_core::gguf_support::DEFAULT_GGUF_PREFER_SUBSTR;
-use rlx_core::{ResolveWeightsOptions, resolve_weights_file_with_options};
+use rlx_core::weights_discover::{DiscoverOpts, resolve_weights_path_or_query};
 use std::path::{Path, PathBuf};
 
 /// CLI options for resolving a weights path (file or directory).
@@ -69,6 +71,15 @@ impl WeightsResolveCli {
 }
 
 /// Resolve `path` using CLI defaults (`Q4_K_M` preference in multi-`.gguf` dirs).
+///
+/// If `path` does not exist and looks like a short name (no `/` or `\`), scans
+/// local LM Studio / Ollama / HF / Lemonade / RLX caches via
+/// [`resolve_weights_path_or_query`].
 pub fn resolve_weights_cli(path: &Path, cli: &WeightsResolveCli) -> Result<PathBuf> {
-    resolve_weights_file_with_options(path, &cli.to_resolve_opts())
+    let resolve = cli.to_resolve_opts();
+    let mut discover = DiscoverOpts::default();
+    if let Some(pref) = resolve.prefer_gguf_substring {
+        discover.prefer_quant = Some(pref.to_string());
+    }
+    resolve_weights_path_or_query(path, &resolve, &discover)
 }

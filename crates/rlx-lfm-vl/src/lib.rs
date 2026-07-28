@@ -44,6 +44,7 @@ pub mod config;
 pub mod flow;
 pub mod preprocess;
 pub mod runner;
+pub mod vl_runner;
 
 pub use config::LfmVlVisionConfig;
 pub use flow::{LfmVlVisionBuilt, build_lfm_vl_vision, build_lfm_vl_vision_with_packed};
@@ -52,6 +53,7 @@ pub use preprocess::{
     image_to_patch_tensor,
 };
 pub use runner::{LfmVlIdentityProjector, LfmVlVisionRunner, LfmVlVisionRunnerBuilder};
+pub use vl_runner::{IMAGE_MARKER, LfmVlRunner, LfmVlRunnerBuilder, MEDIA_MARKER};
 
 pub const PLAN_MILESTONE: &str = "M7";
 pub const FAMILY: &str = "LFM2.5-VL";

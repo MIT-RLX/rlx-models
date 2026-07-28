@@ -39,11 +39,11 @@ pub struct Voice {
 impl Voice {
     /// Parse a raw voice `.bin` (row-major `float32`, `ncols` = [`STYLE_DIM`]).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() % 4 != 0 {
+        if !bytes.len().is_multiple_of(4) {
             bail!("voice byte length {} is not a multiple of 4", bytes.len());
         }
         let n = bytes.len() / 4;
-        if n % STYLE_DIM != 0 {
+        if !n.is_multiple_of(STYLE_DIM) {
             bail!("voice element count {n} not divisible by style dim {STYLE_DIM}");
         }
         let ncols = STYLE_DIM;

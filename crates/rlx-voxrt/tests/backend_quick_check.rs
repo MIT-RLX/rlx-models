@@ -1,6 +1,5 @@
 use rlx_voxrt::{
-    VoxrtEngine, VoxrtWeights, WakeConfig, available_devices, bind_streaming_device,
-    score_wav,
+    VoxrtEngine, VoxrtWeights, WakeConfig, available_devices, bind_streaming_device, score_wav,
 };
 use rlx_wake::bench_device_label;
 
@@ -10,11 +9,8 @@ fn backends_accept_stub() {
         let (exec, label) = bind_streaming_device(device).unwrap();
         assert_eq!(exec, device);
         assert_eq!(label, bench_device_label(device));
-        let mut eng = VoxrtEngine::new(
-            VoxrtWeights::stub("hey assistant"),
-            WakeConfig::default(),
-        )
-        .with_device_label(label);
+        let mut eng = VoxrtEngine::new(VoxrtWeights::stub("hey assistant"), WakeConfig::default())
+            .with_device_label(label);
         assert!(
             !score_wav(&mut eng, &vec![0.0f32; 1280 * 2])
                 .unwrap()

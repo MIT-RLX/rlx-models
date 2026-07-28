@@ -3,8 +3,8 @@
 
 use anyhow::{Result, bail};
 use rlx_wake::{
-    SAMPLE_RATE_16K, WakeConfig, WakeEngine, bind_streaming_device, load_wav_mono_f32, parse_device_list,
-    peak_score, resample_linear, score_wav,
+    SAMPLE_RATE_16K, WakeConfig, WakeEngine, bind_streaming_device, load_wav_mono_f32,
+    parse_device_list, peak_score, resample_linear, score_wav,
 };
 use std::path::PathBuf;
 
@@ -85,8 +85,7 @@ pub fn run(args: &[String]) -> Result<()> {
     };
     for device in devices {
         let (_, label) = bind_streaming_device(device)?;
-        let mut eng =
-            PorcupineEngine::new(w.clone(), cfg.clone()).with_device_label(label);
+        let mut eng = PorcupineEngine::new(w.clone(), cfg.clone()).with_device_label(label);
         let steps = score_wav(&mut eng, &pcm)?;
         println!(
             "engine=porcupine keyword={} device={} peak={:.4} fires={}",

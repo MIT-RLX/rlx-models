@@ -59,8 +59,7 @@ pub fn download_nanbeige42_3b(cache: &str, dest: &Path) -> Result<PathBuf> {
         let src = repo.get(name).with_context(|| format!("download {name}"))?;
         let dst = dest.join(name);
         if !dst.exists() {
-            std::fs::copy(&src, &dst)
-                .with_context(|| format!("copy {src:?} → {dst:?}"))?;
+            std::fs::copy(&src, &dst).with_context(|| format!("copy {src:?} → {dst:?}"))?;
         }
     }
     for name in optional {

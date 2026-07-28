@@ -63,8 +63,7 @@ pub fn extract_tool_call_bodies(text: &str) -> Vec<String> {
 pub fn parse_tool_call_body(body: &str) -> Result<ToolCall> {
     let trimmed = body.trim();
     if trimmed.starts_with('{') {
-        let v: Value = serde_json::from_str(trimmed)
-            .map_err(|e| anyhow!("tool_call JSON: {e}"))?;
+        let v: Value = serde_json::from_str(trimmed).map_err(|e| anyhow!("tool_call JSON: {e}"))?;
         return tool_call_from_json(&v);
     }
     parse_function_xml(trimmed)
@@ -82,10 +81,7 @@ pub fn parse_tool_calls(text: &str) -> Result<Vec<ToolCall>> {
 
 /// Text before the first `<tool_call>` (chain-of-thought / commentary).
 pub fn text_before_tool_calls(text: &str) -> &str {
-    text.split("<tool_call>")
-        .next()
-        .unwrap_or(text)
-        .trim_end()
+    text.split("<tool_call>").next().unwrap_or(text).trim_end()
 }
 
 /// Wrap a tool observation for the next user turn.

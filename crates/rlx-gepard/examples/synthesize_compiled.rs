@@ -136,7 +136,7 @@ fn save_wav(path: &str, samples: &[f32]) -> Result<()> {
 
     // Audio samples
     for sample in samples {
-        let pcm = (sample.max(-1.0).min(1.0) * 32767.0) as i16;
+        let pcm = (sample.clamp(-1.0, 1.0) * 32767.0) as i16;
         writer.write_all(&pcm.to_le_bytes())?;
     }
 

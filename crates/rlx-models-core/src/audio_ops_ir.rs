@@ -477,6 +477,11 @@ impl<'a, 'b> AudioGraph<'a, 'b> {
         self.g.gelu(x)
     }
 
+    /// ReLU activation.
+    pub fn relu(&mut self, x: HirNodeId) -> HirNodeId {
+        self.g.relu(x)
+    }
+
     /// LeakyReLU(x, slope) = relu(x) - slope*relu(-x), for HiFi-GAN-style decoders.
     pub fn leaky_relu(&mut self, x: HirNodeId, c: usize, t: usize, slope: f32) -> HirNodeId {
         let shape = Shape::new(&[1, c, t, 1], F32);
@@ -532,6 +537,51 @@ impl<'a, 'b> AudioGraph<'a, 'b> {
         let g = self.param(gamma.to_vec(), &[c]);
         let b = self.param(beta.to_vec(), &[c]);
         self.g.ln(x, g, b, eps)
+    }
+
+    /// RMSNorm over the **channel** axis of a `[1, C, T, 1]` (channel-major)
+    /// tensor, returning `[1, C, T, 1]`. Computes the per-timestep mean-square
+    /// over C with a 1×1 conv (sum over C) — no transpose, so it is immune to
+    /// the lazy-transpose / last-axis-reduction mismatch that afflicts feeding a
+    /// transposed `[T, C]` view into [`rms_norm`](Self::rms_norm).
+    pub fn rms_norm_ch(
+        &mut self,
+        x: HirNodeId,
+        c: usize,
+        t: usize,
+        gamma: &[f32],
+        eps: f32,
+    ) -> HirNodeId {
+        let sq = self.mul(x, x); // [1,C,T,1]
+        // sum over C via a 1×1 conv with all-ones weight → [1,1,T,1].
+        let (sumc, _, _) = self.conv1d(
+            sq,
+            t,
+            &Conv1d {
+                weight: &vec![1.0f32; c],
+                bias: None,
+                c_out: 1,
+                c_in: c,
+                k: 1,
+                stride: 1,
+                dilation: 1,
+                groups: 1,
+                pad_left: 0,
+                pad_right: 0,
+                pad_mode: PadMode::Constant,
+            },
+        );
+        let inv_c = self.scalar(1.0 / c as f32, &[1, 1, t, 1]);
+        let meansq = self.mul(sumc, inv_c); // [1,1,T,1]
+        let epsn = self.scalar(eps, &[1, 1, t, 1]);
+        let denom = self.add(meansq, epsn);
+        let denom = self.g.sqrt(denom);
+        let inv = self.g.recip(denom); // [1,1,T,1]
+        let inv_e = self.expand(inv, &[1, c, t, 1]);
+        let xn = self.mul(x, inv_e); // normalized [1,C,T,1]
+        let g = self.param(gamma.to_vec(), &[1, c, 1, 1]);
+        let ge = self.expand(g, &[1, c, t, 1]);
+        self.mul(xn, ge)
     }
 
     /// RMSNorm over the last axis of a `[T, C]` tensor (weight-only, no bias).

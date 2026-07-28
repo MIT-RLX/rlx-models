@@ -89,17 +89,9 @@ fn box_score_fast(prob: NdTensorView<f32, 2>, rect: &RotatedRect) -> f32 {
     let xs: Vec<f32> = corners.iter().map(|c| c.x).collect();
     let ys: Vec<f32> = corners.iter().map(|c| c.y).collect();
     let min_x = xs.iter().cloned().fold(f32::INFINITY, f32::min).floor() as isize;
-    let max_x = xs
-        .iter()
-        .cloned()
-        .fold(f32::NEG_INFINITY, f32::max)
-        .ceil() as isize;
+    let max_x = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max).ceil() as isize;
     let min_y = ys.iter().cloned().fold(f32::INFINITY, f32::min).floor() as isize;
-    let max_y = ys
-        .iter()
-        .cloned()
-        .fold(f32::NEG_INFINITY, f32::max)
-        .ceil() as isize;
+    let max_y = ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max).ceil() as isize;
     let x0 = min_x.clamp(0, w as isize - 1) as usize;
     let x1 = max_x.clamp(0, w as isize) as usize;
     let y0 = min_y.clamp(0, h as isize - 1) as usize;
@@ -115,9 +107,5 @@ fn box_score_fast(prob: NdTensorView<f32, 2>, rect: &RotatedRect) -> f32 {
             count += 1;
         }
     }
-    if count == 0 {
-        0.0
-    } else {
-        sum / count as f32
-    }
+    if count == 0 { 0.0 } else { sum / count as f32 }
 }

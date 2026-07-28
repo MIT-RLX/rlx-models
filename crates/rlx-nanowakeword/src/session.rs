@@ -3,8 +3,8 @@
 
 use anyhow::Result;
 use rlx_wake::{
-    MelConfig, MelFrontend, OWW_CHUNK_SAMPLES, WakeCnn, WakeCnnConfig, WakeCnnWeights,
-    WakeConfig, WakeEngine, WakeStep,
+    MelConfig, MelFrontend, OWW_CHUNK_SAMPLES, WakeCnn, WakeCnnConfig, WakeCnnWeights, WakeConfig,
+    WakeEngine, WakeStep,
 };
 use std::path::Path;
 

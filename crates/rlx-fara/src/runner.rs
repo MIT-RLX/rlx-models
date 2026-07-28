@@ -37,24 +37,13 @@ pub struct FaraRunner {
     model_dir: PathBuf,
 }
 
+#[derive(Default)]
 pub struct FaraRunnerBuilder {
     model_dir: Option<PathBuf>,
     size: Option<FaraSize>,
     device: Option<Device>,
     max_seq: Option<usize>,
     prefill_seq: Option<usize>,
-}
-
-impl Default for FaraRunnerBuilder {
-    fn default() -> Self {
-        Self {
-            model_dir: None,
-            size: None,
-            device: None,
-            max_seq: None,
-            prefill_seq: None,
-        }
-    }
 }
 
 impl FaraRunnerBuilder {
@@ -97,9 +86,9 @@ impl FaraRunnerBuilder {
         // + rms_norm_offset aligned with the Microsoft checkpoint.
         let mut b = Qwen35RunnerBuilder::default()
             .weights(&model_dir)
-            .config(Qwen35ConfigSource::Explicit(crate::config::fara_qwen35_config(
-                size,
-            )))
+            .config(Qwen35ConfigSource::Explicit(
+                crate::config::fara_qwen35_config(size),
+            ))
             .device(device)
             .max_seq(max_seq)
             .runtime_mrope(true)
@@ -181,12 +170,10 @@ impl FaraRunner {
         tokenizer_path: Option<&Path>,
     ) -> Result<FaraStep> {
         let prompt = format_fara_multimodal_prompt(self.size, goal);
-        let tok = tokenizer_path
-            .map(PathBuf::from)
-            .or_else(|| {
-                let p = self.model_dir.join("tokenizer.json");
-                p.is_file().then_some(p)
-            });
+        let tok = tokenizer_path.map(PathBuf::from).or_else(|| {
+            let p = self.model_dir.join("tokenizer.json");
+            p.is_file().then_some(p)
+        });
         let new_ids = self.inner.generate_multimodal_with_opts(
             &prompt,
             rgb,

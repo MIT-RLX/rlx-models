@@ -62,8 +62,8 @@ fn main() -> anyhow::Result<()> {
     };
 
     println!(
-        "{:<8} {:>8} {:>7} {:>8} {:>8}  {}",
-        "backend", "ms", "peak", "fox", "cos", "ep"
+        "{:<8} {:>8} {:>7} {:>8} {:>8}  ep",
+        "backend", "ms", "peak", "fox", "cos"
     );
 
     let mut cpu_wav: Option<Vec<f32>> = None;

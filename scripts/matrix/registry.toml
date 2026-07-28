@@ -3,7 +3,7 @@
 # Each [[models]] stanza is PLATFORM-NEUTRAL: it only describes what is intrinsic to
 # the model (package, kind, invocation, weights). The driver (run_matrix.py) decides
 # which backends to run from the *host* (host_backends ∩ the crate's declared cargo
-# features) — so the same registry runs on the Mac and on msi with no edits.
+# features) — so the same registry runs on the Mac and on the CUDA host with no edits.
 #
 # tier 1 = curated, reliably builds+runs on a Linux+CUDA box (default set).
 # tier 2 = attempted only with ALL=1 (NC license / big-VRAM / needs extra assets).

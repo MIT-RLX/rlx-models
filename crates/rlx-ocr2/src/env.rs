@@ -48,5 +48,8 @@ pub fn rescore_debug() -> bool {
 
 /// Lexicon rescoring weight, overridable via `OCR2_LEX_W` (falls back to `default`).
 pub fn lex_weight(default: f32) -> f32 {
-    std::env::var("OCR2_LEX_W").ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var("OCR2_LEX_W")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }

@@ -87,7 +87,11 @@ pub fn run(args: &[String]) -> Result<()> {
                     .context("--max-tokens")?;
             }
             "--max-seq" => {
-                max_seq = it.next().context("--max-seq")?.parse().context("--max-seq")?;
+                max_seq = it
+                    .next()
+                    .context("--max-seq")?
+                    .parse()
+                    .context("--max-seq")?;
             }
             "--tokenizer" => {
                 tokenizer = Some(PathBuf::from(it.next().context("--tokenizer")?));
@@ -128,7 +132,9 @@ pub fn run(args: &[String]) -> Result<()> {
     };
     #[cfg(not(feature = "qwen35-vlm"))]
     {
-        let _ = (image, dir, goal, device, max_tokens, max_seq, tokenizer, size);
+        let _ = (
+            image, dir, goal, device, max_tokens, max_seq, tokenizer, size,
+        );
         bail!("rlx-fara: rebuild with `--features qwen35-vlm` for --image");
     }
     #[cfg(feature = "qwen35-vlm")]
@@ -146,14 +152,7 @@ pub fn run(args: &[String]) -> Result<()> {
             .device(device)
             .max_seq(max_seq)
             .build()?;
-        let step = runner.step(
-            &goal,
-            &rgb,
-            w,
-            h,
-            max_tokens,
-            tokenizer.as_deref(),
-        )?;
+        let step = runner.step(&goal, &rgb, w, h, max_tokens, tokenizer.as_deref())?;
         println!("{}", step.raw_text);
         if !step.tool_calls.is_empty() {
             eprintln!("[rlx-fara] parsed {} tool call(s):", step.tool_calls.len());

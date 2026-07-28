@@ -11,11 +11,11 @@
 
 mod compile_support;
 
-use rlx_nanbeige::nanbeige42_3b_preset;
 use rlx_models::weight_map::WeightMap;
 use rlx_models::{
     Llama32Config, build_llama32_decode_graph_sized_ext, build_llama32_graph_sized_last_logits,
 };
+use rlx_nanbeige::nanbeige42_3b_preset;
 use rlx_runtime::Device;
 use std::collections::HashMap;
 
@@ -129,8 +129,8 @@ fn run_decode_logits(device: Device) -> Vec<f32> {
     let cfg = tiny_looped_cfg();
     let past_seq = 4usize;
     let mut wm = synthetic_weights(&cfg);
-    let (graph, params) =
-        build_llama32_decode_graph_sized_ext(&cfg, &mut wm, 1, past_seq, false).expect("decode build");
+    let (graph, params) = build_llama32_decode_graph_sized_ext(&cfg, &mut wm, 1, past_seq, false)
+        .expect("decode build");
     let mut compiled = compile_support::compile_llama32_decode(device, graph, params);
 
     let kv_dim = cfg.kv_proj_dim();

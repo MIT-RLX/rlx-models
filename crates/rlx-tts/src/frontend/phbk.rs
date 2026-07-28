@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -28,7 +27,8 @@ pub struct Phbk {
 impl Phbk {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
     }
 

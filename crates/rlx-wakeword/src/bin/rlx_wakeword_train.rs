@@ -31,8 +31,9 @@ fn main() -> Result<()> {
         print_help();
         return Ok(());
     }
-    let out_dir =
-        PathBuf::from(flag(&args, "--out-dir").ok_or_else(|| anyhow::anyhow!("--out-dir required"))?);
+    let out_dir = PathBuf::from(
+        flag(&args, "--out-dir").ok_or_else(|| anyhow::anyhow!("--out-dir required"))?,
+    );
     let mut opts = TrainOpts::default();
     opts.epochs = flag(&args, "--epochs")
         .and_then(|s| s.parse().ok())
@@ -78,7 +79,9 @@ fn main() -> Result<()> {
         train_phrases(&[PhraseTrainSpec::synth(id)], &opts, Some(&out_dir))?
     } else {
         if specs.is_empty() {
-            bail!("provide --synth-n N, --synth, --phrase ID=POS:NEG (repeatable), or --phrases-dir DIR");
+            bail!(
+                "provide --synth-n N, --synth, --phrase ID=POS:NEG (repeatable), or --phrases-dir DIR"
+            );
         }
         train_phrases(&specs, &opts, Some(&out_dir))?
     };

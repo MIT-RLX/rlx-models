@@ -13,7 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{GemmaConfig, GemmaGenerator, gemma_cfg_from_gguf};
+use crate::multimodal::{GemmaMultimodalConfig, IMAGE_MARKER, IMAGE_MARKER_HF};
+use crate::multimodal_runner::{GemmaMultimodalRunner, MultimodalWeights};
+use crate::{GemmaConfig, GemmaGenerator, encode_prompt_auto, gemma_cfg_from_gguf};
 use anyhow::{Context, Result, anyhow, bail};
 use rlx_cli::{LmRunner, WeightFormat};
 use rlx_core::gguf_support::{
@@ -46,6 +48,11 @@ pub struct GemmaRunnerBuilder {
     format: Option<WeightFormat>,
     /// `None` = auto (packed GGUF when file ≥ 256 MiB on disk).
     packed_weights: Option<bool>,
+    /// Optional llama.cpp-style mmproj GGUF (enables multimodal).
+    mmproj: Option<PathBuf>,
+    /// Optional HF `config.json` for `GemmaMultimodalConfig` (vision/audio token ids).
+    /// When unset, looks next to weights; falls back to Gemma-4 defaults if mmproj is set.
+    mm_config: Option<PathBuf>,
 }
 
 impl GemmaRunnerBuilder {
@@ -95,8 +102,21 @@ impl GemmaRunnerBuilder {
 
     /// Keep K-quant weights packed in the arena (`Op::DequantMatMul`).
     /// GGUF only. When unset, large GGUF files (≥ 256 MiB) auto-enable packed paths.
+    /// Forced off when `.mmproj(...)` is set (multimodal needs the F32 embed path).
     pub fn packed_weights(mut self, on: bool) -> Self {
         self.packed_weights = Some(on);
+        self
+    }
+
+    /// Attach a llama.cpp-style mmproj GGUF (vision / audio projector).
+    pub fn mmproj(mut self, path: impl Into<PathBuf>) -> Self {
+        self.mmproj = Some(path.into());
+        self
+    }
+
+    /// HF `config.json` providing `vision_config` / media token ids.
+    pub fn mm_config(mut self, path: impl Into<PathBuf>) -> Self {
+        self.mm_config = Some(path.into());
         self
     }
 
@@ -142,9 +162,15 @@ impl GemmaRunnerBuilder {
             }
         }
 
-        let use_packed = self.packed_weights.unwrap_or_else(|| {
-            matches!(format, WeightFormat::Gguf) && Self::gguf_auto_packed(&weights_path)
-        });
+        let mmproj_path = self.mmproj.clone();
+        // Multimodal fuse needs `model.embed_tokens` via the F32 generator.
+        let use_packed = if mmproj_path.is_some() {
+            false
+        } else {
+            self.packed_weights.unwrap_or_else(|| {
+                matches!(format, WeightFormat::Gguf) && Self::gguf_auto_packed(&weights_path)
+            })
+        };
 
         crate::capabilities::validate_device(&cfg, device, use_packed)?;
 
@@ -184,6 +210,49 @@ impl GemmaRunnerBuilder {
             None
         };
 
+        let multimodal = match mmproj_path {
+            Some(mp) => {
+                let mm_weights = MultimodalWeights::from_mmproj_gguf(&mp)
+                    .with_context(|| format!("gemma: load mmproj {mp:?}"))?;
+                let mm_cfg = resolve_mm_config(
+                    self.mm_config.as_deref(),
+                    &weights_path,
+                    self.config.as_ref(),
+                )?;
+                if !mm_cfg.has_vision() && !mm_cfg.has_audio() {
+                    bail!(
+                        "gemma: mmproj attached but no vision_config/audio_config found \
+                         (pass .mm_config(config.json) or place config.json next to weights)"
+                    );
+                }
+                let max_soft = mm_cfg
+                    .vision
+                    .as_ref()
+                    .map(|v| v.num_soft_tokens)
+                    .unwrap_or(280);
+                let mut mm_runner = GemmaMultimodalRunner::new(
+                    mm_cfg.clone(),
+                    cfg.hidden_size,
+                    device,
+                    Some(max_soft),
+                    None,
+                )?;
+                // Warm vision graph for default soft-token budget.
+                if mm_cfg.has_vision() {
+                    mm_runner.compile_vision(max_soft)?;
+                    mm_runner.load_vision_weights(&mm_weights)?;
+                }
+                eprintln!("[gemma-runner] multimodal enabled mmproj={mp:?} soft_tokens={max_soft}");
+                Some(GemmaMultimodalState {
+                    mm_cfg,
+                    mm_weights,
+                    mm_runner,
+                    max_side_patches: 32,
+                })
+            }
+            None => None,
+        };
+
         Ok(GemmaRunner {
             generator,
             cfg,
@@ -191,8 +260,17 @@ impl GemmaRunnerBuilder {
             stream,
             device,
             packed,
+            weights_path,
+            multimodal,
         })
     }
+}
+
+struct GemmaMultimodalState {
+    mm_cfg: GemmaMultimodalConfig,
+    mm_weights: MultimodalWeights,
+    mm_runner: GemmaMultimodalRunner,
+    max_side_patches: usize,
 }
 
 pub struct GemmaRunner {
@@ -202,6 +280,8 @@ pub struct GemmaRunner {
     stream: bool,
     device: Device,
     packed: Option<crate::packed_session::GemmaPackedSession>,
+    weights_path: PathBuf,
+    multimodal: Option<GemmaMultimodalState>,
 }
 
 impl GemmaRunner {
@@ -215,6 +295,11 @@ impl GemmaRunner {
 
     pub fn device(&self) -> Device {
         self.device
+    }
+
+    /// Whether an mmproj vision/audio projector was attached at build time.
+    pub fn has_mmproj(&self) -> bool {
+        self.multimodal.is_some()
     }
 
     /// Single prefill forward; returns last-position logits `[vocab]`.
@@ -423,6 +508,61 @@ impl GemmaRunner {
         };
         Ok(tokens)
     }
+
+    /// End-to-end multimodal generate from RGB pixels (LmRunner / skill path).
+    ///
+    /// Accepts prompts containing `<image>`, `<|image|>`, or Qwen-style
+    /// `<__media__>` markers. When none are present, appends one `<image>`
+    /// marker so a single attached frame still lands in the soft-token span.
+    pub fn generate_multimodal_rgb(
+        &mut self,
+        prompt: &str,
+        rgb: &[u8],
+        img_w: usize,
+        img_h: usize,
+        tokenizer: Option<&Path>,
+        n_new: usize,
+        mut on_token: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        let mm = self
+            .multimodal
+            .as_mut()
+            .ok_or_else(|| anyhow!("gemma: generate_multimodal requires .mmproj(...)"))?;
+        if rgb.len() != img_w.saturating_mul(img_h).saturating_mul(3) {
+            bail!("gemma: rgb len {} != {img_w}×{img_h}×3", rgb.len());
+        }
+
+        let tmp = write_rgb_temp_png(rgb, img_w, img_h)?;
+        let soft_count = mm
+            .mm_runner
+            .image_soft_token_count(&tmp)
+            .unwrap_or_else(|_| {
+                mm.mm_cfg
+                    .vision
+                    .as_ref()
+                    .map(|v| v.num_soft_tokens)
+                    .unwrap_or(280)
+            });
+        let image_soft =
+            mm.mm_runner
+                .project_image_file(&tmp, &mm.mm_weights, mm.max_side_patches)?;
+        let _ = std::fs::remove_file(&tmp);
+
+        let prompt = normalize_gemma_media_prompt(prompt);
+        let weights = self.weights_path.clone();
+        let encode = |s: &str| -> Result<Vec<u32>> { encode_prompt_auto(&weights, tokenizer, s) };
+        let token_ids = mm
+            .mm_runner
+            .tokenize_prompt(&prompt, &[soft_count], &[], &[], encode)?;
+
+        let mm_cfg = mm.mm_cfg.clone();
+        let mut keep_going = true;
+        self.generate_multimodal(&mm_cfg, &token_ids, &image_soft, &[], &[], n_new, |tok| {
+            if keep_going {
+                keep_going = on_token(tok);
+            }
+        })
+    }
 }
 
 impl LmRunner for GemmaRunner {
@@ -446,6 +586,94 @@ impl LmRunner for GemmaRunner {
             let _ = on_token(tok);
         })
     }
+
+    fn supports_multimodal(&self) -> bool {
+        self.has_mmproj()
+    }
+
+    fn generate_multimodal(
+        &mut self,
+        prompt: &str,
+        rgb: &[u8],
+        img_w: usize,
+        img_h: usize,
+        tokenizer: Option<&Path>,
+        n_new: usize,
+        on_token: &mut dyn FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        self.generate_multimodal_rgb(prompt, rgb, img_w, img_h, tokenizer, n_new, on_token)
+    }
+}
+
+fn normalize_gemma_media_prompt(prompt: &str) -> String {
+    const QWEN_MEDIA: &str = "<__media__>";
+    let mut p = prompt.replace(QWEN_MEDIA, IMAGE_MARKER);
+    if !p.contains(IMAGE_MARKER) && !p.contains(IMAGE_MARKER_HF) {
+        if !p.is_empty() && !p.ends_with(|c: char| c.is_whitespace()) {
+            p.push(' ');
+        }
+        p.push_str(IMAGE_MARKER);
+    }
+    p
+}
+
+fn write_rgb_temp_png(rgb: &[u8], w: usize, h: usize) -> Result<PathBuf> {
+    use image::{ImageBuffer, Rgb};
+    let img: ImageBuffer<Rgb<u8>, _> = ImageBuffer::from_raw(w as u32, h as u32, rgb.to_vec())
+        .ok_or_else(|| anyhow!("gemma: failed to wrap rgb buffer as ImageBuffer"))?;
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!(
+        "rlx-gemma-mm-{}-{}.png",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    img.save(&path)
+        .with_context(|| format!("gemma: write temp png {path:?}"))?;
+    Ok(path)
+}
+
+/// Resolve multimodal HF config: explicit path → weights sidecar → LM JsonFile → Gemma-4 defaults.
+fn resolve_mm_config(
+    explicit: Option<&Path>,
+    weights_path: &Path,
+    lm_config: Option<&GemmaConfigSource>,
+) -> Result<GemmaMultimodalConfig> {
+    let candidates: Vec<PathBuf> = {
+        let mut v = Vec::new();
+        if let Some(p) = explicit {
+            v.push(p.to_path_buf());
+        }
+        if let Some(parent) = weights_path.parent() {
+            v.push(parent.join("config.json"));
+        }
+        if let Some(GemmaConfigSource::JsonFile(p)) = lm_config {
+            v.push(p.clone());
+        }
+        v
+    };
+    for p in &candidates {
+        if p.is_file() {
+            let cfg = GemmaMultimodalConfig::from_file(p)
+                .with_context(|| format!("gemma: read multimodal config {p:?}"))?;
+            if cfg.has_vision() || cfg.has_audio() {
+                return Ok(cfg);
+            }
+        }
+    }
+    // Gemma-4 defaults (token ids from google/gemma-4-E2B-it).
+    Ok(GemmaMultimodalConfig {
+        vision: Some(crate::multimodal::GemmaVisionConfig::default()),
+        audio: None,
+        image_token_id: Some(258_880),
+        audio_token_id: Some(258_881),
+        video_token_id: Some(258_884),
+        boi_token_id: Some(255_999),
+        eoi_token_id: Some(256_000),
+        ..Default::default()
+    })
 }
 
 fn load_gemma_gguf_config(

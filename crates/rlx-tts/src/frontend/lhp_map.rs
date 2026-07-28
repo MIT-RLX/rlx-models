@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -16,7 +15,8 @@ pub struct LhpAlphabet {
 impl LhpAlphabet {
     pub fn load_to_lhp(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let map: HashMap<String, String> = serde_json::from_str(&text)?;
         let mut compact_to_phone = HashMap::new();
         for (phone, compact) in &map {

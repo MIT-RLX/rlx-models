@@ -61,12 +61,12 @@ impl TtsAdapter for VoxtralAdapter {
         let prompt_tokens = tok
             .encode_speech(req.text, &self.voice)
             .with_context(|| format!("tokenize for voice {:?}", self.voice))?;
-        let mut gen_cfg = GenerationConfig::default();
-        gen_cfg.seed = req.seed;
-        let tmp = std::env::temp_dir().join(format!(
-            "rlx-tts-bench-voxtral-{}.wav",
-            std::process::id()
-        ));
+        let gen_cfg = GenerationConfig {
+            seed: req.seed,
+            ..Default::default()
+        };
+        let tmp =
+            std::env::temp_dir().join(format!("rlx-tts-bench-voxtral-{}.wav", std::process::id()));
         let t0 = Instant::now();
         self.inner
             .synthesize_native(&prompt_tokens, &self.voice, &tmp, &gen_cfg)?;

@@ -4,7 +4,7 @@
 
 ## Status
 
-**Vision host + compiled MoE LM on device:** SAM/CLIP/projector stay eager host-f32. The MoE decoder runs as a compiled RLX graph. Host LM pack defaults to **`LmWeightPrecision::Auto`**: F32 when RAM allows (parity), else F16, then GGUF **Q8_0**, then **Q4_0**. Override via code or CLI `--lm-precision f32|f16|bf16|q8_0|q4_0|auto`. F16/BF16 widen to F32 IR params; **Q8_0/Q4_0 stay packed in IR** via `DequantMatMul` / `DequantGroupedMatMul` + U8 typed params (same pattern as Qwen35). For **Q4_0**, attention, `lm_head`, dense MLP, and shared experts stay **F16** (routed experts stay Q4) so full-checkpoint logits stay usable (~0.997 corr vs F32 on Metal); prefer **Q8_0** when quality matters most. On Metal + Q4, the session disables fused grouped GEMV by default (crates.io `rlx` 0.2.13 `q4_0_mv_f32` nibble order); set `RLX_METAL_GROUPED_GEMV_DISABLE=0` only after upgrading to an RLX build that includes the split-nibble GEMV fix.
+**Vision host + compiled MoE LM on device:** SAM/CLIP/projector stay eager host-f32. The MoE decoder runs as a compiled RLX graph. Host LM pack defaults to **`LmWeightPrecision::Auto`**: F32 when RAM allows (parity), else F16, then GGUF **Q8_0**, then **Q4_0**. Override via code or CLI `--lm-precision f32|f16|bf16|q8_0|q4_0|auto`. F16/BF16 widen to F32 IR params; **Q8_0/Q4_0 stay packed in IR** via `DequantMatMul` / `DequantGroupedMatMul` + U8 typed params (same pattern as Qwen35). For **Q4_0**, attention, `lm_head`, dense MLP, and shared experts stay **F16** (routed experts stay Q4) so full-checkpoint logits stay usable (~0.997 corr vs F32 on Metal); prefer **Q8_0** when quality matters most. On Metal + Q4, the session disables fused grouped GEMV by default (crates.io `rlx` 0.2.14 `q4_0_mv_f32` nibble order); set `RLX_METAL_GROUPED_GEMV_DISABLE=0` only after upgrading to an RLX build that includes the split-nibble GEMV fix.
 
 Checkpoint inventory, tokenizer assembly, and greedy decode checks pass against the published HF weights (`just test-unlimited-ocr-parity`). Exact HF token/text e2e needs a Python env with `transformers≈4.46` (the checkpoint’s `transformers_version`) plus `addict` / `einops` / `easydict` / `torchvision` — set `RLX_UNLIMITED_OCR_PYTHON` to that interpreter. Newer transformers builds fail to import the custom `modeling_deepseekv2.py`.
 
@@ -110,14 +110,14 @@ cargo check -p rlx-unlimited-ocr --features all-backends
 just test-unlimited-ocr-parity   # needs RLX_UNLIMITED_OCR_DIR (+ optional RLX_UNLIMITED_OCR_PYTHON)
 ```
 
-## Release notes (0.2.13)
+## Release notes (0.2.14)
 
 - MoE LM on RLX backends (vision host); `--lm-precision auto|f32|f16|bf16|q8_0|q4_0`
 - Q8/Q4 packed IR; Q4 soft-packs attn/`lm_head`/dense/shared as F16
 - Metal+Q4 disables fused grouped GEMV by default until upstream ships the split-nibble `q4_0_mv_f32` fix (set `RLX_METAL_GROUPED_GEMV_DISABLE=0` on a fixed RLX build)
 - Bench: `just features=apple-silicon bench-unlimited-ocr-lm-precision --full --device metal --greedy-steps 4`
 
-Publish: upstream `rlx*` **0.2.13** is on crates.io; this repo’s `rlx-cli` / `rlx-models-core` **0.2.13** are not yet — `./scripts/publish.sh` from tier 0 (`--list`). `rlx-unlimited-ocr` is tier 3.
+Publish: upstream `rlx*` **0.2.14** is on crates.io; this repo’s `rlx-cli` / `rlx-models-core` **0.2.14** are not yet — `./scripts/publish.sh` from tier 0 (`--list`). `rlx-unlimited-ocr` is tier 3.
 
 HF reference helper: [`scripts/hf_reference_unlimited_ocr.py`](scripts/hf_reference_unlimited_ocr.py).
 

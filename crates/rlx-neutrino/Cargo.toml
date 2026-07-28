@@ -1,0 +1,46 @@
+[package]
+name = "rlx-neutrino"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Neutrino-8B (Fermion Research) — Qwen3 topology with FV5 ternary weights for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-qwen3 = { workspace = true }
+rlx-gguf = { workspace = true }
+# Tokenizer + ChatML helpers (Qwen3 byte-level BPE, GGUF-embedded vocab).
+rlx-qwen35 = { workspace = true, optional = true }
+
+[[bin]]
+name = "rlx-neutrino"
+path = "src/bin/rlx_neutrino.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = ["tokenizer"]
+# Text prompts + chat template + detokenize. Without it the CLI is ids-only
+# (which is exactly the reference `fermion-greedy` parity harness).
+tokenizer = ["dep:rlx-qwen35", "rlx-qwen35/tokenizer"]
+# FV5 is a CPU-only ggml type (the fermion-fv5 fork ships no GPU kernel), so
+# these backend passthroughs exist for API symmetry with the other LM crates;
+# the FV5 DequantMatMul still executes on CPU regardless of device.
+metal = ["rlx-qwen3/metal"]
+mlx = ["rlx-qwen3/mlx"]
+cuda = ["rlx-qwen3/cuda"]
+rocm = ["rlx-qwen3/rocm"]
+gpu = ["rlx-qwen3/gpu"]
+vulkan = ["rlx-qwen3/vulkan"]
+coreml = ["rlx-qwen3/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

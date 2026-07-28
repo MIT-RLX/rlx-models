@@ -42,13 +42,8 @@ fn prefer_weights_dir(task_dir: &Path, tier: Tier, task: &str) -> Result<PathBuf
     let named = task_dir.join(format!("ppocrv6_{}_{}.safetensors", tier.as_str(), task));
     if named.is_file() {
         // Native loaders expect `model.safetensors` in the directory.
-        std::fs::copy(&named, &model).map_err(|e| {
-            anyhow!(
-                "copy {} → {}: {e}",
-                named.display(),
-                model.display()
-            )
-        })?;
+        std::fs::copy(&named, &model)
+            .map_err(|e| anyhow!("copy {} → {}: {e}", named.display(), model.display()))?;
         return Ok(task_dir.to_path_buf());
     }
     Err(anyhow!(

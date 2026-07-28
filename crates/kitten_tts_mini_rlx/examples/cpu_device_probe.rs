@@ -84,7 +84,8 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> (f32, usize) {
 }
 
 fn main() -> anyhow::Result<()> {
-    let device = parse_device(&std::env::var("KITTEN_PROBE_DEVICE").unwrap_or_else(|_| "cuda".into()));
+    let device =
+        parse_device(&std::env::var("KITTEN_PROBE_DEVICE").unwrap_or_else(|_| "cuda".into()));
     let filter = std::env::var("PROBE_FILTER").ok();
     let bundle_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("weights/rlx_bundle");
 
@@ -115,19 +116,37 @@ fn main() -> anyhow::Result<()> {
     if std::env::var("KITTEN_PROBE_WAVEFORM").is_ok() {
         kitten_tts_mini_rlx::opts::set_compile_sequence_length(seq);
         let cpu_g = build_cached_graphs_from_import(
-            Device::Cpu, "probe_cpu", &import, None, seq, max_wave,
+            Device::Cpu,
+            "probe_cpu",
+            &import,
+            None,
+            seq,
+            max_wave,
         )?;
-        let dev_g = build_cached_graphs_from_import(
-            device, "probe_dev", &import, None, seq, max_wave,
-        )?;
+        let dev_g =
+            build_cached_graphs_from_import(device, "probe_dev", &import, None, seq, max_wave)?;
         let cpu_wave = {
             let mut g = cpu_g.full.lock().unwrap();
-            let o = run_parity_inputs_with_duration(&mut g, seq, ids.len(), &ids, &style, Some(&ort_dur));
+            let o = run_parity_inputs_with_duration(
+                &mut g,
+                seq,
+                ids.len(),
+                &ids,
+                &style,
+                Some(&ort_dur),
+            );
             f32_out(&o, 0)
         };
         let dev_wave = {
             let mut g = dev_g.full.lock().unwrap();
-            let o = run_parity_inputs_with_duration(&mut g, seq, ids.len(), &ids, &style, Some(&ort_dur));
+            let o = run_parity_inputs_with_duration(
+                &mut g,
+                seq,
+                ids.len(),
+                &ids,
+                &style,
+                Some(&ort_dur),
+            );
             f32_out(&o, 0)
         };
         let peak = |w: &[f32]| w.iter().copied().map(f32::abs).fold(0.0f32, f32::max);
@@ -173,11 +192,23 @@ fn main() -> anyhow::Result<()> {
         compile_multi_probe_graph(device, &bundle_dir, &graph_opts, &import, &all_probes)?;
 
     kitten_tts_mini_rlx::opts::set_compile_sequence_length(seq);
-    let cpu_outs =
-        run_parity_inputs_with_duration(&mut cpu_graph, seq, ids.len(), &ids, &style, Some(&ort_dur));
+    let cpu_outs = run_parity_inputs_with_duration(
+        &mut cpu_graph,
+        seq,
+        ids.len(),
+        &ids,
+        &style,
+        Some(&ort_dur),
+    );
     kitten_tts_mini_rlx::opts::set_compile_sequence_length(seq);
-    let dev_outs =
-        run_parity_inputs_with_duration(&mut dev_graph, seq, ids.len(), &ids, &style, Some(&ort_dur));
+    let dev_outs = run_parity_inputs_with_duration(
+        &mut dev_graph,
+        seq,
+        ids.len(),
+        &ids,
+        &style,
+        Some(&ort_dur),
+    );
 
     struct Row {
         label: String,

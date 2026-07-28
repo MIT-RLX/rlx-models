@@ -23,8 +23,9 @@ use crate::runner::{LagunaPackedRunner, LagunaRunner};
 use crate::synth::{synthetic_text_weights, tiny_cfg};
 use crate::weights::expected_hf_keys;
 use anyhow::{Context, Result, bail};
+use rlx_cli::{WeightsResolveCli, resolve_weights_cli};
 use rlx_text::chat::ChatMessage;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {
     args.iter()
@@ -34,6 +35,22 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 
 fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
+}
+
+/// Cap Rayon width for Laguna MoE unless the user already set `RLX_WORKERS`.
+///
+/// Expert-parallel decode + attention-head parallel oversubscribe easily on
+/// full logical CPU counts; 4–8 workers measured fastest on Apple Silicon.
+fn ensure_moe_worker_default() {
+    if std::env::var_os("RLX_WORKERS").is_some() {
+        return;
+    }
+    let hint = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
+    let w = (hint / 2).clamp(4, 8);
+    // SAFETY: CLI entry before any rlx-cpu Rayon pool init.
+    unsafe { std::env::set_var("RLX_WORKERS", w.to_string()) };
 }
 
 fn parse_prompt_ids(args: &[String], default: &[u32]) -> Result<Vec<u32>> {
@@ -54,6 +71,24 @@ fn parse_max_tokens(args: &[String]) -> Result<Option<usize>> {
         .transpose()
 }
 
+/// Resolve `--weights` (file or dir) with optional `--prefer` / `--gguf-index`.
+/// Unsloth Laguna-S trees nest quants (`UD-Q4_K_M/*-00001-of-*.gguf`); prefer
+/// substring picks the first split shard under one child dir.
+fn resolve_weights_arg(args: &[String], path: &str) -> Result<PathBuf> {
+    let mut resolve = WeightsResolveCli::default();
+    if let Some(pref) = flag_value(args, "--prefer")
+        .or_else(|| flag_value(args, "--prefer-quant"))
+        .or_else(|| flag_value(args, "-p"))
+    {
+        resolve.prefer_gguf = Some(pref);
+    }
+    if let Some(idx) = flag_value(args, "--gguf-index") {
+        resolve.gguf_index = Some(idx.parse().context("--gguf-index")?);
+    }
+    resolve_weights_cli(Path::new(path), &resolve)
+}
+
+#[allow(dead_code)] // used by OpenAI serve / future HTTP flags
 fn parse_u16(args: &[String], name: &str, default: u16) -> Result<u16> {
     Ok(flag_value(args, name)
         .map(|s| s.parse::<u16>().with_context(|| name.to_string()))
@@ -61,7 +96,11 @@ fn parse_u16(args: &[String], name: &str, default: u16) -> Result<u16> {
         .unwrap_or(default))
 }
 
-fn resolve_prompt_ids(args: &[String], chat: Option<&LagunaChat>, default: &[u32]) -> Result<Vec<u32>> {
+fn resolve_prompt_ids(
+    args: &[String],
+    chat: Option<&LagunaChat>,
+    default: &[u32],
+) -> Result<Vec<u32>> {
     if let Some(text) = flag_value(args, "--prompt") {
         let chat = chat.ok_or_else(|| {
             anyhow::anyhow!("--prompt requires --tokenizer-dir DIR (with tokenizer.json)")
@@ -80,6 +119,7 @@ fn resolve_prompt_ids(args: &[String], chat: Option<&LagunaChat>, default: &[u32
 }
 
 pub fn run(args: &[String]) -> Result<()> {
+    ensure_moe_worker_default();
     if has_flag(args, "--help") || has_flag(args, "-h") {
         print_help();
         return Ok(());
@@ -103,10 +143,29 @@ pub fn run(args: &[String]) -> Result<()> {
     }
 
     if let Some(path) = flag_value(args, "--weights") {
-        if has_flag(args, "--packed-load") {
-            return packed_load_gguf(PathBuf::from(path), args);
+        // mlx-community directory (HF config.json + affine safetensors) → native
+        // affine load + KV-cached generate (no GGUF). Detected before GGUF resolve.
+        // Accept either the dir itself or a `.safetensors` shard inside it (the
+        // auto-dispatch / resolver may hand us the single-file form).
+        let raw = Path::new(&path);
+        let mlx_dir: Option<PathBuf> = if raw.is_dir() && raw.join("config.json").exists() {
+            Some(raw.to_path_buf())
+        } else if raw.is_file()
+            && raw.extension().and_then(|e| e.to_str()) == Some("safetensors")
+            && raw.parent().is_some_and(|p| p.join("config.json").exists())
+        {
+            raw.parent().map(Path::to_path_buf)
+        } else {
+            None
+        };
+        if let Some(dir) = mlx_dir {
+            return run_mlx_dir(dir, args);
         }
-        return sniff_gguf(PathBuf::from(path));
+        let path = resolve_weights_arg(args, &path)?;
+        if has_flag(args, "--packed-load") {
+            return packed_load_gguf(path, args);
+        }
+        return sniff_gguf(path);
     }
 
     if has_flag(args, "--probe-gguf-remote") {
@@ -132,8 +191,67 @@ pub fn run(args: &[String]) -> Result<()> {
     }
 
     bail!(
-        "rlx-laguna: pass --synth, --weights GGUF [--packed-load], --serve, --config FILE, or --list-hf-keys (see --help)"
+        "rlx-laguna: pass --synth, --weights GGUF [--packed-load] | MLX_DIR, --serve, --config FILE, or --list-hf-keys (see --help)"
     );
+}
+
+/// Load an **mlx-community** Laguna directory (HF `config.json` + affine
+/// safetensors) natively — no GGUF — and KV-decode. Mirrors the GGUF
+/// [`packed_load_gguf`] generate loop but sources packed weights from
+/// [`LagunaPackedRunner::from_mlx_dir`] (mlx-affine dequant) and reuses the
+/// same tokenizer/chat-template plumbing. This is the reference wiring for
+/// dispatching a dedicated-crate model straight from an mlx-community dir.
+fn run_mlx_dir(dir: PathBuf, args: &[String]) -> Result<()> {
+    println!("{FAMILY} mlx-community affine load: {}", dir.display());
+    let t0 = std::time::Instant::now();
+    let runner = LagunaPackedRunner::from_mlx_dir(&dir)?;
+    println!("  loaded in {:.1?}", t0.elapsed());
+    print_config_summary(runner.config());
+
+    let max_tokens = parse_max_tokens(args)?.unwrap_or(0);
+    if max_tokens == 0 {
+        println!("  (pass --max-tokens N to run mlx-affine greedy generate)");
+        return Ok(());
+    }
+
+    // Tokenizer/chat template: --tokenizer-dir, else the mlx dir itself
+    // (mlx-community ships tokenizer.json alongside config.json).
+    let chat = load_chat(args)?.or_else(|| LagunaChat::from_dir(&dir).ok());
+    let bos = runner.config().bos_token_id.max(1);
+    let ids = resolve_prompt_ids(args, chat.as_ref(), &[bos])?;
+
+    let t1 = std::time::Instant::now();
+    let mut new_toks = Vec::new();
+    let out = runner.generate(&ids, max_tokens, |t| {
+        if let Some(ref c) = chat {
+            print!("{}", c.decode_token(t));
+        } else {
+            print!("{t} ");
+        }
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        new_toks.push(t);
+    })?;
+    let elapsed = t1.elapsed();
+    println!();
+    if let Some(ref c) = chat {
+        println!(
+            "  decoded: {}",
+            c.decode(&new_toks, true).unwrap_or_default()
+        );
+    } else {
+        println!("  generate -> {out:?} (new={new_toks:?})");
+    }
+    println!(
+        "  wall_time={:.2}s  tokens_new={}  ms/token={:.1}",
+        elapsed.as_secs_f64(),
+        new_toks.len(),
+        if new_toks.is_empty() {
+            0.0
+        } else {
+            elapsed.as_secs_f64() * 1000.0 / new_toks.len() as f64
+        }
+    );
+    Ok(())
 }
 
 fn load_chat(args: &[String]) -> Result<Option<LagunaChat>> {
@@ -153,6 +271,7 @@ fn run_serve(args: &[String]) -> Result<()> {
     {
         let weights = flag_value(args, "--weights")
             .ok_or_else(|| anyhow::anyhow!("--serve requires --weights PATH.gguf"))?;
+        let weights = resolve_weights_arg(args, &weights)?;
         let tok_dir = flag_value(args, "--tokenizer-dir").ok_or_else(|| {
             anyhow::anyhow!("--serve requires --tokenizer-dir DIR (tokenizer.json + template)")
         })?;
@@ -162,7 +281,7 @@ fn run_serve(args: &[String]) -> Result<()> {
         let default_max = parse_max_tokens(args)?.unwrap_or(256);
         let device_s = flag_value(args, "--device").unwrap_or_else(|| "cpu".into());
 
-        let runner = LagunaPackedRunner::from_gguf_packed(weights)?;
+        let runner = LagunaPackedRunner::from_gguf_packed(&weights)?;
         let chat = LagunaChat::from_dir(tok_dir)?;
         if chat.used_fallback_template {
             eprintln!("rlx-laguna: using in-crate chat template fallback");
@@ -227,7 +346,8 @@ fn packed_load_gguf(path: PathBuf, args: &[String]) -> Result<()> {
         w.packed_params.len()
     );
     println!("  layers_loaded={}", w.layers.len());
-    println!("  F32 expand: {} (default off; --allow-f32-expand / RLX_LAGUNA_ALLOW_F32_EXPAND=1)",
+    println!(
+        "  F32 expand: {} (default off; --allow-f32-expand / RLX_LAGUNA_ALLOW_F32_EXPAND=1)",
         if crate::memory::allow_f32_expand() {
             "ENABLED"
         } else {
@@ -247,20 +367,65 @@ fn packed_load_gguf(path: PathBuf, args: &[String]) -> Result<()> {
     if max_tokens > 0 {
         let ids = resolve_prompt_ids(args, chat.as_ref(), &[cfg.bos_token_id.max(1)])?;
         let device_s = flag_value(args, "--device").unwrap_or_else(|| "cpu".into());
+        let force_device = has_flag(args, "--force-device")
+            || matches!(
+                std::env::var("RLX_LAGUNA_FORCE_DEVICE").as_deref(),
+                Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
+            );
+        if has_flag(args, "--batched-moe") {
+            unsafe { std::env::set_var("RLX_LAGUNA_BATCHED_MOE", "1") };
+        }
+        if has_flag(args, "--device-moe") {
+            unsafe { std::env::set_var("RLX_LAGUNA_DEVICE_MOE", "1") };
+        }
+        if has_flag(args, "--no-device-moe") {
+            unsafe { std::env::set_var("RLX_LAGUNA_DEVICE_MOE_DISABLE", "1") };
+        }
+        let batched_host = matches!(
+            std::env::var("RLX_LAGUNA_BATCHED_MOE").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
+        );
+        let device_moe = matches!(
+            std::env::var("RLX_LAGUNA_DEVICE_MOE").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
+        ) && !matches!(
+            std::env::var("RLX_LAGUNA_DEVICE_MOE_DISABLE").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
+        );
         let mut accel = match crate::device_matmul::parse_device(&device_s)? {
-            Some(d) => {
+            Some(d) if force_device || ids.len() >= crate::packed_forward::DEVICE_MATMUL_MIN_M => {
                 let a = crate::device_matmul::DeviceMatmul::try_new(d)?;
+                let moe = if device_moe {
+                    "grouped-moe-resident"
+                } else {
+                    "attn/shared-only"
+                };
                 println!(
-                    "  packed generate device={} exec={:?} prompt_len={} max_tokens={max_tokens}",
-                    format!("{d:?}"),
+                    "  packed generate device={d:?} exec={:?} moe={moe} prompt_len={} max_tokens={max_tokens}{}",
                     a.exec(),
-                    ids.len()
+                    ids.len(),
+                    if force_device { " (force-device)" } else { "" }
                 );
                 Some(a)
             }
-            None => {
+            Some(d) => {
+                // Opening Metal/MLX still costs (GPU power + sync) even when
+                // short-seq MoE never launches DequantMatMul — stay on host.
                 println!(
-                    "  packed generate device=HostKernel prompt_len={} max_tokens={max_tokens}",
+                    "  packed generate device=HostKernel ({d:?} skipped: prompt_len={} < min_m={}; MoE chat/decode is faster on host; pass --force-device to override) max_tokens={max_tokens}",
+                    ids.len(),
+                    crate::packed_forward::DEVICE_MATMUL_MIN_M,
+                );
+                None
+            }
+            None => {
+                let moe = if batched_host {
+                    "batched-host"
+                } else {
+                    "per-expert-int8"
+                };
+                println!(
+                    "  packed generate device=HostKernel moe={moe} prompt_len={} max_tokens={max_tokens}",
                     ids.len()
                 );
                 None
@@ -269,21 +434,16 @@ fn packed_load_gguf(path: PathBuf, args: &[String]) -> Result<()> {
         let rss_g0 = process_rss_bytes();
         let t0 = std::time::Instant::now();
         let mut new_toks = Vec::new();
-        let out = runner.generate_with_device(
-            &ids,
-            max_tokens,
-            accel.as_mut(),
-            &mut |t| {
-                if let Some(ref c) = chat {
-                    let piece = c.decode_token(t);
-                    print!("{piece}");
-                } else {
-                    print!("{t} ");
-                }
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-                new_toks.push(t);
-            },
-        )?;
+        let out = runner.generate_with_device(&ids, max_tokens, accel.as_mut(), &mut |t| {
+            if let Some(ref c) = chat {
+                let piece = c.decode_token(t);
+                print!("{piece}");
+            } else {
+                print!("{t} ");
+            }
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            new_toks.push(t);
+        })?;
         let elapsed = t0.elapsed();
         println!();
         let rss_g1 = process_rss_bytes();
@@ -324,7 +484,10 @@ fn sniff_gguf(path: PathBuf) -> Result<()> {
     let cfg = LagunaConfig::from_gguf(&raw)?;
     let est = crate::memory::estimate_ram(&raw);
 
-    println!("{FAMILY} GGUF header ok (packed-only, no tensor payload): {}", path.display());
+    println!(
+        "{FAMILY} GGUF header ok (packed-only, no tensor payload): {}",
+        path.display()
+    );
     print_config_summary(&cfg);
     println!();
     println!("{}", crate::memory::PACKED_ONLY_POLICY);
@@ -336,17 +499,16 @@ fn sniff_gguf(path: PathBuf) -> Result<()> {
             est.f32_gb(),
             est.expand_ratio()
         );
-        println!("  F32 expand: {} (default off; --allow-f32-expand / RLX_LAGUNA_ALLOW_F32_EXPAND=1)",
-        if crate::memory::allow_f32_expand() {
-            "ENABLED"
-        } else {
-            "disabled"
-        }
-    );
-    } else {
         println!(
-            "  tensors=0 in this shard (split meta-only?) — siblings hold weight payloads"
+            "  F32 expand: {} (default off; --allow-f32-expand / RLX_LAGUNA_ALLOW_F32_EXPAND=1)",
+            if crate::memory::allow_f32_expand() {
+                "ENABLED"
+            } else {
+                "disabled"
+            }
         );
+    } else {
+        println!("  tensors=0 in this shard (split meta-only?) — siblings hold weight payloads");
     }
     println!();
     println!("{LAYOUT_NOTES}");
@@ -423,19 +585,31 @@ fn print_help() {
 Usage:
   rlx-laguna --synth [--prompt-ids 1,2,3] [--max-tokens N]
   rlx-laguna --config PATH/config.json
-  rlx-laguna --weights PATH.gguf                 # header-only sniff
-  rlx-laguna --weights PATH.gguf --packed-load [--device metal|mlx|cpu|auto]
+  rlx-laguna --weights PATH.gguf|DIR                 # header-only sniff
+  rlx-laguna --weights MLX_DIR [--tokenizer-dir DIR] --prompt TEXT --max-tokens N
+             # mlx-community affine dir (config.json + safetensors) → native load + KV-decode
+  rlx-laguna --weights PATH.gguf|DIR --packed-load [--device metal|mlx|gpu|wgpu|coreml|cpu|auto]
+             [--prefer Q4_K_M] [--gguf-index N] [--force-device]
+             [--batched-moe] [--device-moe] [--no-device-moe]
              [--prompt-ids … | --tokenizer-dir DIR --prompt TEXT [--system …]]
              [--max-tokens N]   # KV-cached packed generate
   rlx-laguna --allow-f32-expand …   # opt in to quant→F32 (off by default; see sniff F32-expand≈)
-  rlx-laguna --serve --weights PATH.gguf --tokenizer-dir DIR
-             [--device metal|mlx|cpu|auto] [--host 127.0.0.1] [--port 8080]
-             [--model-id laguna] [--max-tokens 256]
+  rlx-laguna --serve --weights PATH.gguf|DIR --tokenizer-dir DIR
+             [--prefer Q4_K_M] [--device metal|mlx|gpu|wgpu|coreml|cpu|auto]
+             [--host 127.0.0.1] [--port 8080] [--model-id laguna] [--max-tokens 256]
              # needs --features serve; prefer: rlx-openai --engine laguna …
   rlx-laguna --list-hf-keys [--config …]
   rlx-laguna --probe-gguf-remote [--quant UD-Q4_K_XL]   # needs --features hf-probe
 
-Metal/MLX: build with --features apple-silicon (or metal / mlx).
+Weights dirs: Unsloth nests quants (e.g. UD-Q4_K_M/*-00001-of-00003.gguf).
+  `--prefer Q4_K_M` (alias --prefer-quant) picks the first split shard under a
+  matching child dir; default prefer is Q4_K_M when multiple .gguf match.
+Device: short MoE chat/decode stays on host fused kernels (faster); pass
+  `--force-device` (or RLX_LAGUNA_FORCE_DEVICE=1) to always open Metal/MLX/GPU/CoreML
+  for attn/shared mats. Opt in to resident MoE with `--device-moe` /
+  RLX_LAGUNA_DEVICE_MOE=1 (expert stacks stay on GPU after first upload per layer).
+  Host batched MoE: `--batched-moe` / RLX_LAGUNA_BATCHED_MOE=1.
+Metal/MLX/wgpu/CoreML: build with --features all-backends (or apple-silicon).
 F32 expand: off by default; RLX_LAGUNA_ALLOW_F32_EXPAND=1 or --allow-f32-expand.
 OpenAI: prefer `rlx-openai` (just openai-serve).
 

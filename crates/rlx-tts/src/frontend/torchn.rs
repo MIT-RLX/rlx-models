@@ -66,13 +66,11 @@ impl TorchnG2p {
 
     pub fn load_bpe_json(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let v: serde_json::Value =
             serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
-        let num_bpe = v
-            .get("num_bpe")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0) as usize;
+        let num_bpe = v.get("num_bpe").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
         let merges = v
             .get("merges")
             .and_then(|x| x.as_array())
@@ -172,7 +170,11 @@ impl TorchnG2p {
         }
         // Whole-word lookup (primary path — isyms is a 19k wordpiece/lexicon table).
         let mut ids = None;
-        for cand in [w.to_string(), w.to_ascii_lowercase(), w.to_ascii_uppercase()] {
+        for cand in [
+            w.to_string(),
+            w.to_ascii_lowercase(),
+            w.to_ascii_uppercase(),
+        ] {
             if let Some(id) = self.input_symbols.get(&cand) {
                 ids = Some(vec![id]);
                 break;
@@ -351,16 +353,13 @@ impl QatLinear {
         // Wide FFN QATs (42) store `zp = -4`. Default: any negative zp → 0
         // (sentinel). `RLX_TTS_TORCHN_ZP_LITERAL=1` keeps the stored value;
         // `RLX_TTS_TORCHN_ZP_FFN_LITERAL=1` keeps only zp≤-4 (FFN) literal.
-        let zp = if std::env::var_os("RLX_TTS_TORCHN_ZP_LITERAL").is_some() {
+        let keep_literal = std::env::var_os("RLX_TTS_TORCHN_ZP_LITERAL").is_some()
+            || (std::env::var_os("RLX_TTS_TORCHN_ZP_FFN_LITERAL").is_some()
+                && self.zero_point <= -4);
+        let zp = if keep_literal || self.zero_point >= 0 {
             self.zero_point as f32
-        } else if std::env::var_os("RLX_TTS_TORCHN_ZP_FFN_LITERAL").is_some()
-            && self.zero_point <= -4
-        {
-            self.zero_point as f32
-        } else if self.zero_point < 0 {
-            0.0
         } else {
-            self.zero_point as f32
+            0.0
         };
         // Bundle stores row-major `[out, in]`. `RLX_TTS_TORCHN_QAT_TRANSPOSE=1`
         // treats storage as `[in, out]` instead (A/B).
@@ -428,7 +427,9 @@ pub fn load_qat(path: &Path, index: usize) -> Result<QatLinear> {
         .get(&format!("qat.{index}.weight"))
         .context("weight")?;
     let (b_raw, _) = tensors.get(&format!("qat.{index}.bias")).context("bias")?;
-    let (s_raw, _) = tensors.get(&format!("qat.{index}.scale")).context("scale")?;
+    let (s_raw, _) = tensors
+        .get(&format!("qat.{index}.scale"))
+        .context("scale")?;
     let (z_raw, _) = tensors
         .get(&format!("qat.{index}.zero_point"))
         .context("zp")?;
@@ -482,7 +483,10 @@ pub fn probe_ffn_block(path: &Path, up_qat: usize, down_qat: usize, ln: usize) -
     let down = load_qat(path, down_qat)?;
     let ln = load_ln(path, ln)?;
     ensure!(up.in_features == 256 && up.out_features == 1024, "up shape");
-    ensure!(down.in_features == 1024 && down.out_features == 256, "down shape");
+    ensure!(
+        down.in_features == 1024 && down.out_features == 256,
+        "down shape"
+    );
     let x = ndarray::Array2::<f32>::ones((2, 256));
     let h = ln.forward(&x)?;
     let mut h = up.forward(&h)?;
@@ -575,7 +579,7 @@ impl TorchnSelfAttention {
         let addq_input = std::env::var_os("RLX_TTS_TORCHN_ADDQ_INPUT").is_some();
         let addq_both = std::env::var_os("RLX_TTS_TORCHN_ADDQ_BOTH").is_some();
         if self.add_query && !no_addq && addq_before_o {
-            ctx = ctx + &q;
+            ctx += &q;
         }
         let mut y = self.output.forward(&ctx)?;
         if self.add_query && !no_addq {
@@ -583,10 +587,10 @@ impl TorchnSelfAttention {
                 // `O(attn[+Q]) + Q + x`
                 y = y + &q + x;
             } else if addq_input {
-                y = y + x;
+                y += x;
             } else if !addq_before_o {
                 // Default: `O(attn) + Q`
-                y = y + &q;
+                y += &q;
             }
             // `ADDQ_BEFORE_O` alone: already folded into `ctx` before `O`.
         }
@@ -813,7 +817,7 @@ impl TorchnEncoderBlock {
             if (res_scale - 1.0).abs() > 1e-8 {
                 h.mapv_inplace(|v| v * res_scale);
             }
-            h = h + x;
+            h += x;
         }
         let h = self.ln_attn.forward(&h)?;
         let mut ff = self.up.forward(&h)?;
@@ -896,7 +900,9 @@ impl TorchnEmbedding {
                 "embed.output.scale_hi".into(),
             ],
         )?;
-        let (w_raw, shape) = tensors.get("embed.output.weight").context("output weight")?;
+        let (w_raw, shape) = tensors
+            .get("embed.output.weight")
+            .context("output weight")?;
         ensure!(shape.len() == 2, "embed rank");
         Ok(Self {
             vocab: shape[0],
@@ -1096,16 +1102,16 @@ impl TorchnDecoderBlock {
         let addq_input = std::env::var_os("RLX_TTS_TORCHN_ADDQ_INPUT").is_some();
         let addq_both = std::env::var_os("RLX_TTS_TORCHN_ADDQ_BOTH").is_some();
         if self.add_query && !no_addq && addq_before_o {
-            ctx = ctx + &q;
+            ctx += &q;
         }
         let mut y = self.output.forward(&ctx)?;
         if self.add_query && !no_addq {
             if addq_both {
                 y = y + &q + h;
             } else if addq_input {
-                y = y + h;
+                y += h;
             } else if !addq_before_o {
-                y = y + &q;
+                y += &q;
             }
         }
         Ok(y)
@@ -1176,7 +1182,12 @@ pub fn probe_greedy_debug(
         out_emb.project(&h)?
     };
     let row = logits.row(0);
-    let mut scored: Vec<(f32, usize)> = row.iter().copied().enumerate().map(|(i, v)| (v, i)).collect();
+    let mut scored: Vec<(f32, usize)> = row
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(i, v)| (v, i))
+        .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut top = Vec::new();
     for (v, i) in scored.into_iter().take(5) {
@@ -1438,7 +1449,10 @@ fn read_named_tensors(
         if name == "__metadata__" || !want.contains_key(name.as_str()) {
             continue;
         }
-        let dtype = info.get("dtype").and_then(|v| v.as_str()).context("dtype")?;
+        let dtype = info
+            .get("dtype")
+            .and_then(|v| v.as_str())
+            .context("dtype")?;
         let shape: Vec<usize> = info
             .get("shape")
             .and_then(|v| v.as_array())
@@ -1459,12 +1473,16 @@ fn read_named_tensors(
         let _ = dtype;
         out.insert(name.clone(), (raw, shape));
     }
-    ensure!(out.len() == names.len(), "missing tensors in {}", path.display());
+    ensure!(
+        out.len() == names.len(),
+        "missing tensors in {}",
+        path.display()
+    );
     Ok(out)
 }
 
 fn decode_f32_bytes(raw: &[u8]) -> Result<Vec<f32>> {
-    ensure!(raw.len() % 4 == 0, "F32 len");
+    ensure!(raw.len().is_multiple_of(4), "F32 len");
     Ok(raw
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -1480,13 +1498,12 @@ fn decode_u8(raw: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn decode_i32(raw: &[u8]) -> Result<Vec<i32>> {
-    ensure!(raw.len() % 4 == 0, "I32 len");
+    ensure!(raw.len().is_multiple_of(4), "I32 len");
     Ok(raw
         .chunks_exact(4)
         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
-
 
 /// Count `qat.{i}.weight` entries in a TorchN safetensors header (no full load).
 fn count_qat_tensors(path: &Path) -> Result<usize> {
@@ -1517,7 +1534,10 @@ fn symbol_table_from_json(v: Option<&serde_json::Value>, name: &str) -> Result<S
             if !sym.is_ascii() || sym.chars().any(|c| c.is_control()) {
                 continue;
             }
-            let id = idv.as_u64().or_else(|| idv.as_i64().map(|x| x as u64)).unwrap_or(0) as u32;
+            let id = idv
+                .as_u64()
+                .or_else(|| idv.as_i64().map(|x| x as u64))
+                .unwrap_or(0) as u32;
             if id > 100_000 {
                 continue;
             }
@@ -1528,7 +1548,10 @@ fn symbol_table_from_json(v: Option<&serde_json::Value>, name: &str) -> Result<S
             sym_to_id.insert(sym.clone(), id);
         }
     }
-    ensure!(!sym_to_id.is_empty(), "empty symbol table {name} in g2p_bpe.json");
+    ensure!(
+        !sym_to_id.is_empty(),
+        "empty symbol table {name} in g2p_bpe.json"
+    );
     Ok(SymbolTable {
         name: name.into(),
         id_to_sym,
@@ -1572,8 +1595,7 @@ fn extract_after_tag(bytes: &[u8], tag: &[u8]) -> Option<String> {
 }
 
 fn parse_num_bpe(bytes: &[u8]) -> Result<usize> {
-    let i = find_subslice(bytes, b"<NumBpe>")
-        .context("missing <NumBpe>")?;
+    let i = find_subslice(bytes, b"<NumBpe>").context("missing <NumBpe>")?;
     let mut start = i + b"<NumBpe>".len();
     while start < bytes.len() && bytes[start].is_ascii_whitespace() {
         start += 1;
@@ -1593,12 +1615,8 @@ fn parse_num_bpe(bytes: &[u8]) -> Result<usize> {
 }
 
 fn parse_symbol_table(bytes: &[u8], has_tag: &[u8], name_hint: &[u8]) -> Result<SymbolTable> {
-    let i = find_subslice(bytes, has_tag).with_context(|| {
-        format!(
-            "missing {}",
-            String::from_utf8_lossy(has_tag)
-        )
-    })?;
+    let i = find_subslice(bytes, has_tag)
+        .with_context(|| format!("missing {}", String::from_utf8_lossy(has_tag)))?;
     let end = (i + 2_000_000).min(bytes.len());
     let region = &bytes[i..end];
     let name_at = find_subslice(region, name_hint).context("symbol table name")?;
@@ -1738,7 +1756,10 @@ mod tests {
             assert!(enc.is_finite(), "encoder mean={enc}");
             let ids = g2p.encode_word("hello");
             let (mean, t) = probe_encode_ids(&st, &ids).expect("full encoder");
-            assert!(mean.is_finite() && t == ids.len(), "full enc mean={mean} t={t}");
+            assert!(
+                mean.is_finite() && t == ids.len(),
+                "full enc mean={mean} t={t}"
+            );
             let phones = probe_greedy_phones(&st, &g2p, "hi", 8).expect("greedy");
             assert!(phones.len() <= 8);
         }
@@ -1828,7 +1849,9 @@ mod tests {
                 .to_string();
             let m = mean.row(0).to_vec();
             let norm = m.iter().map(|v| v * v).sum::<f32>().sqrt();
-            eprintln!("{w}: peak={peak:.3} ||m||={norm:.3} gold_rank={rank} g={gscore:.3} top1={top}");
+            eprintln!(
+                "{w}: peak={peak:.3} ||m||={norm:.3} gold_rank={rank} g={gscore:.3} top1={top}"
+            );
             vecs.push(m);
         }
         let cos = |a: &[f32], b: &[f32]| {
@@ -1901,10 +1924,8 @@ mod tests {
             }
             dot / (na.sqrt() * nb.sqrt()).max(1e-12)
         };
-        let peak = |y: &ndarray::Array2<f32>| {
-            y.iter().cloned().fold(0.0f32, |a, v| a.max(v.abs()))
-        };
-        let m0: Vec<_> = xs.iter().map(|x| mean(x)).collect();
+        let peak = |y: &ndarray::Array2<f32>| y.iter().cloned().fold(0.0f32, |a, v| a.max(v.abs()));
+        let m0: Vec<_> = xs.iter().map(&mean).collect();
         eprintln!(
             "L=0 (embed): cos h/hi={:.4} h/st={:.4} peak={:.3}",
             cos(&m0[0], &m0[1]),
@@ -1915,7 +1936,7 @@ mod tests {
             for x in xs.iter_mut() {
                 *x = block.forward(x).expect("fwd");
             }
-            let ms: Vec<_> = xs.iter().map(|x| mean(x)).collect();
+            let ms: Vec<_> = xs.iter().map(&mean).collect();
             eprintln!(
                 "L={}: cos h/hi={:.4} h/st={:.4} peak_h={:.3} ||h||={:.3}",
                 li + 1,

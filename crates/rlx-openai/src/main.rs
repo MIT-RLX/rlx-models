@@ -65,10 +65,7 @@ fn parse_args(args: &[String]) -> Result<(String, u16, usize, Vec<EngineSpec>)> 
             }
             "--host" => {
                 i += 1;
-                host = args
-                    .get(i)
-                    .cloned()
-                    .context("--host requires a value")?;
+                host = args.get(i).cloned().context("--host requires a value")?;
             }
             "--port" => {
                 i += 1;
@@ -89,18 +86,12 @@ fn parse_args(args: &[String]) -> Result<(String, u16, usize, Vec<EngineSpec>)> 
             "--engine" => {
                 flush(&mut engines, &mut cur);
                 i += 1;
-                let kind = args
-                    .get(i)
-                    .cloned()
-                    .context("--engine requires KIND")?;
+                let kind = args.get(i).cloned().context("--engine requires KIND")?;
                 cur = Some(EngineSpec::new(kind));
             }
             "--weights" | "--model" => {
                 i += 1;
-                let path = args
-                    .get(i)
-                    .cloned()
-                    .context("--weights requires PATH")?;
+                let path = args.get(i).cloned().context("--weights requires PATH")?;
                 let spec = cur
                     .as_mut()
                     .ok_or_else(|| anyhow::anyhow!("--weights must follow --engine KIND"))?;
@@ -112,9 +103,9 @@ fn parse_args(args: &[String]) -> Result<(String, u16, usize, Vec<EngineSpec>)> 
                     .get(i)
                     .cloned()
                     .context("--tokenizer-dir requires DIR")?;
-                let spec = cur.as_mut().ok_or_else(|| {
-                    anyhow::anyhow!("--tokenizer-dir must follow --engine KIND")
-                })?;
+                let spec = cur
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("--tokenizer-dir must follow --engine KIND"))?;
                 spec.tokenizer_dir = Some(path.into());
             }
             "--model-id" => {
@@ -130,10 +121,7 @@ fn parse_args(args: &[String]) -> Result<(String, u16, usize, Vec<EngineSpec>)> 
             }
             "--device" => {
                 i += 1;
-                let d = args
-                    .get(i)
-                    .cloned()
-                    .context("--device requires a value")?;
+                let d = args.get(i).cloned().context("--device requires a value")?;
                 let spec = cur
                     .as_mut()
                     .ok_or_else(|| anyhow::anyhow!("--device must follow --engine KIND"))?;
@@ -193,9 +181,9 @@ fn parse_args(args: &[String]) -> Result<(String, u16, usize, Vec<EngineSpec>)> 
                     .ok_or_else(|| anyhow::anyhow!("--batch-tokens requires a value"))?
                     .parse()
                     .context("--batch-tokens")?;
-                let spec = cur.as_mut().ok_or_else(|| {
-                    anyhow::anyhow!("--batch-tokens must follow --engine KIND")
-                })?;
+                let spec = cur
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("--batch-tokens must follow --engine KIND"))?;
                 spec.batch_tokens = n;
             }
             "--kv-bits" => {

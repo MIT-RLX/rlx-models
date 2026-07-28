@@ -25,8 +25,7 @@ use rlx_onnx_import::BundleNode;
 
 use crate::kernels::{
     ALIGNMENT_SCATTER_INDICES, CONCAT_FROM_SEQUENCE, CONCAT_FROM_SEQUENCE_ONNX, F0_IF_SELECT,
-    F0_NCHW_UNSQUEEZE,
-    F0_NEAREST_UPSAMPLE,
+    F0_NCHW_UNSQUEEZE, F0_NEAREST_UPSAMPLE,
 };
 use crate::mel_align;
 use crate::opts::{ALIGNMENT_FRAME_COUNT, CONCAT_SEQUENCE_STUB, RANGE_2_STUB};
@@ -943,7 +942,7 @@ fn fix_sine_broadcast_reshapes(hir: &mut HirModule) -> bool {
             continue;
         }
         let out_dims: Vec<usize> = n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
-        if out_dims.iter().any(|&d| d == 0) {
+        if out_dims.contains(&0) {
             continue;
         }
         let out_nel: usize = out_dims.iter().product();

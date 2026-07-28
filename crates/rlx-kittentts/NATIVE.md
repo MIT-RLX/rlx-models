@@ -17,7 +17,7 @@ Policy for placement, wave caps, and QMatMul lives in
 
 ```bash
 cargo build -p rlx-kittentts --features native --release
-# NVIDIA MSI-style: cuda + wgpu + vulkan
+# NVIDIA-style: cuda + wgpu + vulkan
 cargo build -p rlx-kittentts --release --features native,cuda,gpu,vulkan
 # Apple: metal / mlx / apple-silicon
 cargo build -p rlx-kittentts --release --features native,apple-silicon
@@ -73,7 +73,7 @@ at load via `device_policy::prepare`.
 | Setting | `Device::Gpu` (wgpu) | `Device::Vulkan` | Why |
 |------|----------------------|------------------|-----|
 | Wave default | **→ Cuda** when available; else CPU / `GPU_WAVE`→Vulkan | on-device | Cuda single-pass long ~0.22 s peak 0.64 |
-| Wave compile cap | **80 000** via Vulkan when `GPU_WAVE=1`; **32 000** if `GPU_WAVE=wgpu` | **80 000** | Caps &gt;80 k mush on MSI (peak ~0.05); keep 80 k |
+| Wave compile cap | **80 000** via Vulkan when `GPU_WAVE=1`; **32 000** if `GPU_WAVE=wgpu` | **80 000** | Caps &gt;80 k mush on NVIDIA (peak ~0.05); keep 80 k |
 | Mel frames/token | import default (CPU wave); **8** when on-device | **8** | Keep unsharded |
 | Stage reserve MiB | 64 (`RLX_WGPU_SHARD_STAGE_MIB`) | 64 (`RLX_VULKAN_SHARD_STAGE_MIB`) | Avoid 2×4 GiB snap from a 576 MiB default |
 | `RLX_WGPU_NO_F16_SHADOW` | `1` | — | Skip +2 GiB f16 mirror |

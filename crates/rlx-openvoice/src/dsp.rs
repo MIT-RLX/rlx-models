@@ -53,6 +53,12 @@ pub struct Spectrogram {
     fft: Arc<dyn Fft<f32>>,
 }
 
+impl Default for Spectrogram {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Spectrogram {
     pub fn new() -> Self {
         Self {

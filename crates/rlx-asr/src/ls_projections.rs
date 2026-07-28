@@ -4,13 +4,13 @@
 //! Head-padded `[512,512]` embeds each head's 16-d V into the first 16 of the
 //! 64-wide head slot (zeros elsewhere) so existing `[out,in]=512` matvecs work.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::k_codebook::TEXT_K_LAYERS;
-use crate::spec::{DECODER_DIM, DECODER_HEADS, DECODER_HEAD_DIM};
+use crate::spec::{DECODER_DIM, DECODER_HEAD_DIM, DECODER_HEADS};
 use crate::weights::read_f32_bin;
 
 /// `d_v` per head in the teacher att_v cache.

@@ -14,11 +14,11 @@ publish = false
 
 [dependencies]
 # Patched to the local ../rlx workspace via the root [patch.crates-io].
-rlx-ir = "0.2.13"
+rlx-ir = "0.2.14"
 # Explicit (not workspace) so we can add native backends per-platform: the
 # intra-node `--alldev` path spins up a lane per live backend, so the binary
 # must actually compile them in. cpu everywhere; metal+gpu on macOS.
-rlx-runtime = { version = "0.2.13", default-features = false, features = ["cpu"] }
+rlx-runtime = { version = "0.2.14", default-features = false, features = ["cpu"] }
 rlx-autodiff = { workspace = true }
 rlx-driver = { workspace = true }
 # Direct path (not published): the in-graph collective ops + mesh live here.
@@ -27,13 +27,13 @@ rlx-collectives = { path = "../../../rlx/crates/core/rlx-collectives" }
 
 # Native GPU backends so `--alldev` has real lanes (cargo unions feature sets).
 [target.'cfg(target_os = "macos")'.dependencies]
-rlx-runtime = { version = "0.2.13", default-features = false, features = ["metal"] }
+rlx-runtime = { version = "0.2.14", default-features = false, features = ["metal"] }
 
 # Every native Linux backend so `--alldev` / `RLX_DEVICE=…` can exercise the
-# full MSI-class matrix (CUDA + wgpu + Vulkan + OneAPI). `cuda`/`gpu`/`vulkan`/
+# full discrete-GPU matrix (CUDA + wgpu + Vulkan + OneAPI). `cuda`/`gpu`/`vulkan`/
 # `oneapi` each pull `cpu` transitively via rlx-runtime.
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
-rlx-runtime = { version = "0.2.13", default-features = false, features = ["cuda", "gpu", "vulkan", "oneapi"] }
+rlx-runtime = { version = "0.2.14", default-features = false, features = ["cuda", "gpu", "vulkan", "oneapi"] }
 
 [features]
 # NAT-traversing distributed training: build the multi-node ProcessGroup over

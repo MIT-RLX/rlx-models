@@ -165,7 +165,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -176,7 +176,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -542,7 +542,7 @@ dependencies = [
  "arrayvec",
  "cc",
  "cfg-if",
- "constant_time_eq",
+ "constant_time_eq 0.4.2",
  "cpufeatures 0.3.0",
 ]
 
@@ -962,6 +962,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bzip2"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdb116a6ef3f6c3698828873ad02c3014b3c85cadb88496095628e3ef1e347f8"
+dependencies = [
+ "bzip2-sys",
+ "libc",
+]
+
+[[package]]
+name = "bzip2-sys"
+version = "0.1.13+1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "225bff33b2141874fe80d71e07d6eec4f85c5c216453dd96388240f96e1acc14"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
+
+[[package]]
 name = "candle-core"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1346,7 +1366,7 @@ checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -1357,7 +1377,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -1372,7 +1392,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -1460,6 +1480,12 @@ dependencies = [
  "once_cell",
  "tiny-keccak",
 ]
+
+[[package]]
+name = "constant_time_eq"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
 
 [[package]]
 name = "constant_time_eq"
@@ -2355,7 +2381,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -2474,6 +2500,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer 0.10.4",
  "crypto-common 0.1.7",
+ "subtle",
 ]
 
 [[package]]
@@ -2526,7 +2553,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2788,7 +2815,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3421,8 +3448,8 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
+ "windows-link 0.1.3",
+ "windows-result 0.3.4",
 ]
 
 [[package]]
@@ -3596,7 +3623,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.18",
- "windows 0.62.2",
+ "windows 0.54.0",
 ]
 
 [[package]]
@@ -3836,6 +3863,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "hmac-sha256"
 version = "1.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3974,7 +4010,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -4396,7 +4432,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4584,7 +4620,7 @@ dependencies = [
 
 [[package]]
 name = "kitten_tts_mini_rlx"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -5600,6 +5636,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "npyz"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f0e759e014e630f90af745101b614f761306ddc541681e546649068e25ec1b9"
+dependencies = [
+ "byteorder",
+ "half",
+ "num-bigint",
+ "py_literal",
+ "zip 0.6.6",
+]
+
+[[package]]
 name = "ntapi"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5614,7 +5663,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6099,10 +6148,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "password-hash"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7676374caaee8a325c9e7a2ae557f216c5563a171d6997b0ef8a65af35147700"
+dependencies = [
+ "base64ct",
+ "rand_core 0.6.4",
+ "subtle",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pbkdf2"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83a0692ec44e4cf1ef28ca317f14f8f07da2d95ec3fa01f86e4467b725e60917"
+dependencies = [
+ "digest 0.10.7",
+ "hmac",
+ "password-hash",
+ "sha2 0.10.9",
+]
 
 [[package]]
 name = "pem-rfc7468"
@@ -6528,7 +6600,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "once_cell",
@@ -6561,7 +6633,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -7174,7 +7246,7 @@ dependencies = [
 
 [[package]]
 name = "rlx"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-driver",
@@ -7187,7 +7259,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-aec"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "fdaf-aec",
@@ -7205,7 +7277,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-asr"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-gguf",
@@ -7218,7 +7290,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-assets"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "memmap2",
@@ -7231,7 +7303,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-autodiff"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "half",
  "rlx-fusion",
@@ -7240,7 +7312,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-bert"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-flow",
@@ -7254,7 +7326,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-bioclip2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -7273,7 +7345,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-bonsai"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -7286,7 +7358,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-chatterbox"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -7302,7 +7374,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-cli"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -7318,7 +7390,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-clinicalbert"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "candle-core 0.10.2",
@@ -7340,7 +7412,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-cohere"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -7350,7 +7422,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-collectives"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "rlx-cpu",
  "rlx-driver",
@@ -7359,7 +7431,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-compile"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "rlx-autodiff",
  "rlx-fusion",
@@ -7368,7 +7440,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-conformer-ctc"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -7382,7 +7454,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-coreml"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "bytemuck",
  "cc",
@@ -7393,24 +7465,26 @@ dependencies = [
  "rlx-cpu",
  "rlx-gguf",
  "rlx-ir",
+ "rlx-mlx-io",
  "rlx-opt",
 ]
 
 [[package]]
 name = "rlx-cpu"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "gemm 0.19.0",
  "half",
  "rayon",
  "rlx-gguf",
  "rlx-ir",
+ "rlx-mlx-io",
  "rlx-opt",
 ]
 
 [[package]]
 name = "rlx-cuda"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "bytemuck",
  "cudarc 0.19.7",
@@ -7428,7 +7502,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-dac"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -7448,12 +7522,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-dduf"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "half",
+ "safetensors 0.7.0",
+ "serde_json",
+ "zip 2.4.2",
+]
+
+[[package]]
+name = "rlx-deepseek"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "half",
+ "rlx-cli",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-llada2",
+ "rlx-models-core",
+ "rlx-runtime",
+ "safetensors 0.7.0",
+ "serde",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
 name = "rlx-diamond"
-version = "0.2.13"
+version = "0.2.14"
 
 [[package]]
 name = "rlx-diarize"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "serde",
@@ -7461,7 +7564,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-dinov2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "image",
@@ -7479,7 +7582,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-dinov3"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "image",
@@ -7496,17 +7599,20 @@ dependencies = [
 
 [[package]]
 name = "rlx-distributed"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-driver",
+ "rlx-ir",
+ "rlx-runtime",
  "serde",
  "serde_json",
+ "toml 0.8.23",
 ]
 
 [[package]]
 name = "rlx-driver"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "half",
  "iroh",
@@ -7516,7 +7622,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-eagle3"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -7534,7 +7640,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-embed"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -7556,7 +7662,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-encodec"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -7573,7 +7679,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-eval"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-qwen3",
@@ -7581,7 +7687,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-f5tts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -7596,7 +7702,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-facodec"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -7612,7 +7718,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-fara"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -7628,7 +7734,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-fft"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "getrandom 0.3.4",
@@ -7651,7 +7757,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-florence2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -7671,7 +7777,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-flow"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -7681,7 +7787,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-flux2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -7706,7 +7812,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-funasr"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -7727,14 +7833,14 @@ dependencies = [
 
 [[package]]
 name = "rlx-fusion"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "rlx-ir",
 ]
 
 [[package]]
 name = "rlx-gemma"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -7744,6 +7850,7 @@ dependencies = [
  "rlx-flow",
  "rlx-gguf",
  "rlx-ir",
+ "rlx-mlx-io",
  "rlx-models-core",
  "rlx-opt",
  "rlx-qwen3",
@@ -7757,7 +7864,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-gemma-inflect-nano"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "cpal",
@@ -7772,7 +7879,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-gepard"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -7795,7 +7902,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-gguf"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -7806,41 +7913,62 @@ dependencies = [
 
 [[package]]
 name = "rlx-glm"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
  "rlx-llama-base",
  "rlx-llama32",
+]
+
+[[package]]
+name = "rlx-glm4moe"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "rlx-cli",
+ "rlx-deepseek",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-models-core",
+ "rlx-runtime",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "rlx-gpt-oss"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
  "rlx-llama-base",
  "rlx-llama32",
+ "serde_json",
 ]
 
 [[package]]
 name = "rlx-gpu-host"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "bytemuck",
+ "half",
  "rlx-compile",
  "rlx-cpu",
  "rlx-ir",
+ "rlx-mlx-io",
 ]
 
 [[package]]
 name = "rlx-gpu-kernels"
-version = "0.2.13"
+version = "0.2.14"
+dependencies = [
+ "rlxsl",
+]
 
 [[package]]
 name = "rlx-granite"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -7850,7 +7978,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-grounding-dino"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -7873,7 +8001,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-guardrails"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "serde",
@@ -7882,7 +8010,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-hoct"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -7903,7 +8031,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-inflect-nano"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -7923,7 +8051,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-inkling"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -7936,7 +8064,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-ir"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "aes 0.9.1",
  "bincode 1.3.3",
@@ -7946,8 +8074,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-jamba"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "rlx-cli",
+ "rlx-deepseek",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-models-core",
+ "rlx-runtime",
+ "rlx-ssm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rlx-kittentts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "espeak-ng",
@@ -7969,7 +8113,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-kokoro"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -7985,7 +8129,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-kyutai-tts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "candle-core 0.9.2",
@@ -8012,10 +8156,11 @@ dependencies = [
 
 [[package]]
 name = "rlx-laguna"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
+ "rayon",
  "rlx-cli",
  "rlx-cpu",
  "rlx-flow",
@@ -8033,7 +8178,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-lfm"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -8047,11 +8192,12 @@ dependencies = [
  "rlx-ssm",
  "serde",
  "serde_json",
+ "tokenizers",
 ]
 
 [[package]]
 name = "rlx-lfm-vl"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "image",
@@ -8059,8 +8205,10 @@ dependencies = [
  "rlx-flow",
  "rlx-gguf",
  "rlx-ir",
+ "rlx-lfm",
  "rlx-llama-base",
  "rlx-models-core",
+ "rlx-qwen35",
  "rlx-runtime",
  "rlx-vlm-base",
  "serde",
@@ -8069,7 +8217,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-llada2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -8089,7 +8237,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-llama-base"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-gguf",
@@ -8099,7 +8247,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-llama32"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -8119,8 +8267,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-llama4"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "half",
+ "image",
+ "rlx-cli",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-models-core",
+ "rlx-runtime",
+ "safetensors 0.7.0",
+ "serde",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
 name = "rlx-locateanything"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -8138,7 +8304,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-luxtts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -8154,7 +8320,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-macros"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8163,7 +8329,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mamba"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "criterion",
@@ -8182,7 +8348,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-maya1"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hound",
@@ -8193,7 +8359,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-melotts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-runtime",
@@ -8203,7 +8369,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-metal"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "bytemuck",
  "core-graphics-types 0.1.3",
@@ -8216,13 +8382,14 @@ dependencies = [
  "rlx-gpu-host",
  "rlx-ir",
  "rlx-opt",
+ "rlxsl",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "rlx-metavoice"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8242,7 +8409,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mimi"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "candle-core 0.9.2",
@@ -8266,7 +8433,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-minicpm5"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -8280,7 +8447,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-minimax"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -8298,7 +8465,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-miotts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -8315,7 +8482,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-miratts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hound",
@@ -8330,17 +8497,54 @@ dependencies = [
 
 [[package]]
 name = "rlx-mistral"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
  "rlx-llama-base",
  "rlx-llama32",
+ "rlx-runtime",
+]
+
+[[package]]
+name = "rlx-mistral-vl"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "image",
+ "rlx-cli",
+ "rlx-flow",
+ "rlx-gguf",
+ "rlx-ir",
+ "rlx-llama32",
+ "rlx-mistral",
+ "rlx-models-core",
+ "rlx-qwen35",
+ "rlx-runtime",
+]
+
+[[package]]
+name = "rlx-mllama"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "half",
+ "image",
+ "rlx-cli",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-llama32",
+ "rlx-models-core",
+ "rlx-runtime",
+ "safetensors 0.7.0",
+ "serde",
+ "serde_json",
+ "tokenizers",
 ]
 
 [[package]]
 name = "rlx-mlx"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "half",
  "libc",
@@ -8348,6 +8552,7 @@ dependencies = [
  "rlx-driver",
  "rlx-gguf",
  "rlx-ir",
+ "rlx-mlx-io",
  "rlx-mlx-sys",
  "rlx-opt",
  "serde",
@@ -8355,8 +8560,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-mlx-io"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "half",
+ "libc",
+ "memmap2",
+ "npyz",
+ "rayon",
+ "rlx-ir",
+ "safetensors 0.7.0",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rlx-mlx-sys"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "cc",
  "cmake",
@@ -8364,7 +8585,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-model-hub"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -8375,7 +8596,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-models"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -8410,6 +8631,7 @@ dependencies = [
  "rlx-florence2",
  "rlx-flow",
  "rlx-flux2",
+ "rlx-funasr",
  "rlx-gemma",
  "rlx-gepard",
  "rlx-gguf",
@@ -8426,6 +8648,7 @@ dependencies = [
  "rlx-llada2",
  "rlx-llama-base",
  "rlx-llama32",
+ "rlx-llama4",
  "rlx-locateanything",
  "rlx-luxtts",
  "rlx-maya1",
@@ -8434,15 +8657,20 @@ dependencies = [
  "rlx-metavoice",
  "rlx-mimi",
  "rlx-minicpm5",
+ "rlx-minimax",
  "rlx-miratts",
  "rlx-mistral",
+ "rlx-mistral-vl",
+ "rlx-mllama",
  "rlx-mlx",
  "rlx-models-core",
  "rlx-moshi",
  "rlx-moss-nano",
  "rlx-nanbeige",
  "rlx-nanowakeword",
+ "rlx-nemotron-asr",
  "rlx-nemotron-omni",
+ "rlx-neutrino",
  "rlx-neutts",
  "rlx-nomic",
  "rlx-ocr",
@@ -8498,7 +8726,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-models-core"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -8509,11 +8737,13 @@ dependencies = [
  "rayon",
  "rlx-assets",
  "rlx-cpu",
+ "rlx-distributed",
  "rlx-flow",
  "rlx-gguf",
  "rlx-ir",
  "rlx-metal",
  "rlx-mlx",
+ "rlx-mlx-io",
  "rlx-opt",
  "rlx-runtime",
  "rlx-wgpu",
@@ -8524,7 +8754,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-moshi"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "axum",
@@ -8551,7 +8781,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-moss-nano"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -8568,7 +8798,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nanbeige"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -8584,7 +8814,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nanocodec"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hound",
@@ -8601,7 +8831,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nanowakeword"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "ort",
@@ -8611,7 +8841,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-narma10"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -8620,17 +8850,18 @@ dependencies = [
 
 [[package]]
 name = "rlx-nemo"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "flate2",
  "half",
+ "rlx-ir",
  "serde_yaml",
 ]
 
 [[package]]
 name = "rlx-nemotron"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -8649,7 +8880,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nemotron-asr"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -8667,7 +8898,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nemotron-omni"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "image",
@@ -8685,12 +8916,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-neutrino"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "rlx-gguf",
+ "rlx-qwen3",
+ "rlx-qwen35",
+]
+
+[[package]]
 name = "rlx-neutts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "burn",
  "encoding_rs",
+ "hf-hub",
  "llama-cpp-2",
  "memmap2",
  "ndarray 0.16.1",
@@ -8713,7 +8955,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nomic"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cpu",
@@ -8728,7 +8970,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-ocr"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -8753,7 +8995,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-ocr2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -8770,7 +9012,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-omnicoder"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -8780,7 +9022,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-oneapi"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "half",
  "libloading 0.8.9",
@@ -8790,11 +9032,12 @@ dependencies = [
  "rlx-ir",
  "rlx-opt",
  "rlx-unfuse",
+ "rlxsl",
 ]
 
 [[package]]
 name = "rlx-onnx-decompose"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-onnx-import",
@@ -8805,7 +9048,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-onnx-import"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -8822,14 +9065,14 @@ dependencies = [
 
 [[package]]
 name = "rlx-onnx-proto"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "protobuf",
 ]
 
 [[package]]
 name = "rlx-openai"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-gemma",
@@ -8846,7 +9089,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-openvoice"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hound",
@@ -8858,7 +9101,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-openwakeword"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "ort",
@@ -8871,7 +9114,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-opt"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "rlx-autodiff",
  "rlx-compile",
@@ -8881,14 +9124,14 @@ dependencies = [
 
 [[package]]
 name = "rlx-optim"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "rayon",
 ]
 
 [[package]]
 name = "rlx-orpheus"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -8916,7 +9159,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-parlertts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hound",
@@ -8937,7 +9180,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-phi"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -8948,7 +9191,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-piper"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -8963,24 +9206,28 @@ dependencies = [
 
 [[package]]
 name = "rlx-pkg"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bincode 1.3.3",
  "memmap2",
  "rayon",
+ "rlx-dduf",
  "rlx-gguf",
  "rlx-ir",
+ "rlx-mlx-io",
+ "rlx-nemo",
  "serde",
  "serde_json",
+ "serde_yaml",
  "xxhash-rust",
  "zip 2.4.2",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
 name = "rlx-pocket-tts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -9000,7 +9247,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-porcupine"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-runtime",
@@ -9009,7 +9256,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-ppocrv6"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -9030,7 +9277,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-protocol"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -9040,7 +9287,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-quant-calib"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -9050,7 +9297,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen25-vl"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "image",
@@ -9069,7 +9316,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen3"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -9087,7 +9334,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen3-asr"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -9106,7 +9353,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen3-tts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "cpal",
@@ -9137,7 +9384,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen3-tts-train"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -9159,7 +9406,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen3-vl"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "image",
@@ -9169,6 +9416,8 @@ dependencies = [
  "rlx-ir",
  "rlx-llama-base",
  "rlx-models-core",
+ "rlx-qwen3",
+ "rlx-qwen35",
  "rlx-runtime",
  "rlx-vlm-base",
  "serde",
@@ -9177,7 +9426,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-qwen35"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "image",
@@ -9200,10 +9449,11 @@ dependencies = [
 
 [[package]]
 name = "rlx-rocm"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "libloading 0.8.9",
  "rlx-cpu",
+ "rlx-gguf",
  "rlx-gpu-host",
  "rlx-gpu-kernels",
  "rlx-ir",
@@ -9215,7 +9465,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-runtime"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -9224,12 +9474,14 @@ dependencies = [
  "rlx-coreml",
  "rlx-cpu",
  "rlx-cuda",
+ "rlx-dduf",
  "rlx-driver",
  "rlx-gguf",
  "rlx-ir",
  "rlx-macros",
  "rlx-metal",
  "rlx-mlx",
+ "rlx-mlx-io",
  "rlx-oneapi",
  "rlx-opt",
  "rlx-pkg",
@@ -9244,7 +9496,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-sam"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "image",
@@ -9263,7 +9515,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-sam-ir"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cpu",
@@ -9276,7 +9528,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-sam2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -9295,7 +9547,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-sam3"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -9314,7 +9566,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-serve"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "axum",
@@ -9337,7 +9589,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-sesame"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -9360,7 +9612,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-siglip2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -9379,7 +9631,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-snac"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "ndarray 0.16.1",
@@ -9396,7 +9648,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-soprano"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -9418,7 +9670,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-speechtokenizer"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -9434,7 +9686,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-ssm"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cpu",
@@ -9444,7 +9696,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-styletts2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -9457,7 +9709,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-supertonic"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -9473,7 +9725,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tensor"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "rlx-autodiff",
  "rlx-ir",
@@ -9483,7 +9735,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-termclean"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "axum",
  "rayon",
@@ -9496,7 +9748,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-text"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "minijinja",
@@ -9509,7 +9761,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tiny-tts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -9533,7 +9785,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tinyllama"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -9548,7 +9800,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tpu"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "libloading 0.8.9",
  "prost 0.13.5",
@@ -9560,12 +9812,13 @@ dependencies = [
  "rlx-fusion",
  "rlx-gguf",
  "rlx-ir",
+ "rlx-mlx-io",
  "rlx-opt",
 ]
 
 [[package]]
 name = "rlx-trellis2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -9587,7 +9840,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tsac"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "cc",
@@ -9602,7 +9855,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -9623,7 +9876,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tts-bench"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -9660,7 +9913,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tune"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-autodiff",
@@ -9675,14 +9928,14 @@ dependencies = [
 
 [[package]]
 name = "rlx-unfuse"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "rlx-ir",
 ]
 
 [[package]]
 name = "rlx-uni2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "image",
@@ -9699,7 +9952,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-unlimited-ocr"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -9718,7 +9971,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-vad"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -9732,7 +9985,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-vibevoice"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -9747,8 +10000,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-vibevoice-asr"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "rlx-flow",
+ "rlx-gguf",
+ "rlx-ir",
+ "rlx-models-core",
+ "rlx-qwen3",
+ "rlx-runtime",
+ "serde",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
 name = "rlx-vision"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-flow",
@@ -9762,7 +10031,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-vision-bench"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "rlx-autodiff",
  "rlx-collectives",
@@ -9773,7 +10042,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-vit-elastic"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "image",
@@ -9791,7 +10060,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-vjepa2"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -9808,14 +10077,14 @@ dependencies = [
 
 [[package]]
 name = "rlx-vlm-base"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "rlx-voxrt"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-runtime",
@@ -9824,7 +10093,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-voxtral"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -9843,7 +10112,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-voxtral-tts"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -9868,7 +10137,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-voxtral-tts-train"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "half",
@@ -9893,7 +10162,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-vulkan"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "ash",
  "bytemuck",
@@ -9905,11 +10174,12 @@ dependencies = [
  "rlx-ir",
  "rlx-opt",
  "rlx-unfuse",
+ "rlxsl",
 ]
 
 [[package]]
 name = "rlx-wake"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -9921,7 +10191,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-wakeword"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-nanowakeword",
@@ -9938,14 +10208,14 @@ dependencies = [
 
 [[package]]
 name = "rlx-wakeword-core"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "rlx-wake",
 ]
 
 [[package]]
 name = "rlx-wakeword-wasm"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "js-sys",
  "rlx-wakeword-core",
@@ -9955,7 +10225,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-wav2vec2-asr"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "serde",
@@ -9964,7 +10234,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-wav2vec2-bert"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-cli",
@@ -9981,7 +10251,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-wavtokenizer"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -9997,7 +10267,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-webgl"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "js-sys",
  "rlx-autodiff",
@@ -10011,7 +10281,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-wgpu"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "bytemuck",
  "half",
@@ -10023,6 +10293,7 @@ dependencies = [
  "rlx-ir",
  "rlx-opt",
  "rlx-unfuse",
+ "rlxsl",
  "serde",
  "serde_json",
  "wgpu 30.0.0",
@@ -10030,7 +10301,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-whisper"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rayon",
@@ -10052,7 +10323,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-xcodec"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -10068,7 +10339,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-zipvoice"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hound",
@@ -10079,7 +10350,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-zonos"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "hound",
@@ -10094,6 +10365,13 @@ dependencies = [
  "safetensors 0.7.0",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rlxsl"
+version = "0.2.14"
+dependencies = [
+ "rlx-ir",
 ]
 
 [[package]]
@@ -10267,7 +10545,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10325,7 +10603,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10456,7 +10734,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10808,7 +11086,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -11168,7 +11446,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -12675,7 +12953,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -13398,8 +13676,8 @@ dependencies = [
  "log",
  "serde",
  "thiserror 2.0.18",
- "windows 0.62.2",
- "windows-core 0.62.2",
+ "windows 0.61.3",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -13601,6 +13879,26 @@ dependencies = [
 
 [[package]]
 name = "zip"
+version = "0.6.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "760394e246e4c28189f19d488c058bf16f564016aefac5d32bb1f3b51d5e9261"
+dependencies = [
+ "aes 0.8.4",
+ "byteorder",
+ "bzip2",
+ "constant_time_eq 0.1.5",
+ "crc32fast",
+ "crossbeam-utils",
+ "flate2",
+ "hmac",
+ "pbkdf2",
+ "sha1",
+ "time",
+ "zstd 0.11.2+zstd.1.5.2",
+]
+
+[[package]]
+name = "zip"
 version = "2.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
@@ -13648,11 +13946,30 @@ dependencies = [
 
 [[package]]
 name = "zstd"
+version = "0.11.2+zstd.1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20cc960326ece64f010d2d2107537f26dc589a6573a316bd5b1dba685fa5fde4"
+dependencies = [
+ "zstd-safe 5.0.2+zstd.1.5.2",
+]
+
+[[package]]
+name = "zstd"
 version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 7.2.4",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "5.0.2+zstd.1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d2a5585e04f9eea4b2a3d1eca508c4dee9592a89ef6f450c11719da0726f4db"
+dependencies = [
+ "libc",
+ "zstd-sys",
 ]
 
 [[package]]
@@ -13691,8 +14008,8 @@ dependencies = [
 
 [[patch.unused]]
 name = "rlx-umap"
-version = "0.2.13"
+version = "0.2.14"
 
 [[patch.unused]]
 name = "rlx-umap"
-version = "0.2.13"
+version = "0.2.14"

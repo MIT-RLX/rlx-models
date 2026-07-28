@@ -72,9 +72,8 @@ impl WakeCnnWeights {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
             ((rng >> 33) as f32 / u32::MAX as f32) * 0.02 - 0.01
         };
-        let fill = |n: usize, f: &mut dyn FnMut() -> f32| -> Vec<f32> {
-            (0..n).map(|_| f()).collect()
-        };
+        let fill =
+            |n: usize, f: &mut dyn FnMut() -> f32| -> Vec<f32> { (0..n).map(|_| f()).collect() };
         let k = cfg.k;
         Self {
             conv1_w: fill(cfg.c1 * cfg.n_mels * k, &mut next),

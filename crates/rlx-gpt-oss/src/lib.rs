@@ -24,6 +24,9 @@ use anyhow::{Context, Result, bail};
 use rlx_llama_base::LlamaBaseConfig;
 use std::path::{Path, PathBuf};
 
+pub mod gpt_oss_ops;
+pub use gpt_oss_ops::{GptOssConfig, clamped_swiglu, softmax_with_sink};
+
 pub use rlx_llama32::{Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder};
 
 pub const PLAN_MILESTONE: &str = "M4";

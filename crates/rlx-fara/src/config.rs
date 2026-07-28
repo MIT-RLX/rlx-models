@@ -201,12 +201,7 @@ pub fn is_model_dir(dir: &Path) -> bool {
                 .into_iter()
                 .flatten()
                 .filter_map(|e| e.ok())
-                .any(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        == Some("safetensors")
-                }))
+                .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("safetensors")))
 }
 
 #[cfg(test)]

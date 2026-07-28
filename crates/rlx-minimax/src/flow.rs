@@ -65,7 +65,7 @@ pub fn minimax_decode_layer_plugin(
 }
 
 /// Variant of [`minimax_decode_layer_plugin`] that also pushes the
-/// per-layer state-out HirNodeId into a [`SideOutputs`]-shaped sink so
+/// per-layer state-out HirNodeId into a `SideOutputs`-shaped sink so
 /// the runner can declare them as extra graph outputs after build.
 pub fn minimax_decode_layer_plugin_with_sink(
     cfg: MiniMaxConfig,

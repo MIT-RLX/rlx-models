@@ -259,9 +259,7 @@ fn main() -> anyhow::Result<()> {
         sequence_length: seq.max(token_len),
         max_waveform_samples: max_wave,
     };
-    eprintln!(
-        "seq={seq} token_len={token_len} mel={mel} trim={trim} max_wave={max_wave}"
-    );
+    eprintln!("seq={seq} token_len={token_len} mel={mel} trim={trim} max_wave={max_wave}");
 
     eprintln!("fetching ORT F0/N + reference wave…");
     let ort = fetch_ort_prosody()?;
@@ -288,8 +286,7 @@ fn main() -> anyhow::Result<()> {
     // --- B) ORT F0+N → native vocoder ---
     eprintln!("compiling native + ORT F0/N inject…");
     let t1 = Instant::now();
-    let mut injected =
-        compile_from_bundle_with_ort_f0n(device, &bundle, &opts, &ort.f0, &ort.n)?;
+    let mut injected = compile_from_bundle_with_ort_f0n(device, &bundle, &opts, &ort.f0, &ort.n)?;
     eprintln!("  compile {:.1}s", t1.elapsed().as_secs_f64());
     let outs = run_parity_inputs_with_duration(
         &mut injected,

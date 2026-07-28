@@ -210,12 +210,7 @@ fn load_qwen3(spec: &EngineSpec) -> Result<Arc<dyn Engine>> {
             spec.max_batch,
         )));
     }
-    Ok(single_lm(
-        Box::new(runner),
-        spec,
-        tokenizer,
-        chat_template,
-    ))
+    Ok(single_lm(Box::new(runner), spec, tokenizer, chat_template))
 }
 
 fn load_laguna(spec: &EngineSpec) -> Result<Arc<dyn Engine>> {
@@ -226,11 +221,14 @@ fn load_laguna(spec: &EngineSpec) -> Result<Arc<dyn Engine>> {
     }
     #[cfg(feature = "laguna")]
     {
-        use rlx_laguna::{DeviceMatmul, LagunaChat, LagunaEngine, LagunaPackedRunner, parse_device};
+        use rlx_laguna::{
+            DeviceMatmul, LagunaChat, LagunaEngine, LagunaPackedRunner, parse_device,
+        };
 
-        let tok_dir = spec.tokenizer_dir.clone().ok_or_else(|| {
-            anyhow::anyhow!("--engine laguna requires --tokenizer-dir DIR")
-        })?;
+        let tok_dir = spec
+            .tokenizer_dir
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--engine laguna requires --tokenizer-dir DIR"))?;
         eprintln!(
             "[rlx-openai] loading laguna {} as {} (device={})",
             spec.weights.display(),
@@ -273,12 +271,7 @@ fn load_qwen35(spec: &EngineSpec) -> Result<Arc<dyn Engine>> {
             .context("building Qwen35Runner")?;
         let (tokenizer, chat_template) =
             load_tokenizer_and_template(&spec.tok_path(), &spec.template_dir())?;
-        Ok(single_lm(
-            Box::new(runner),
-            spec,
-            tokenizer,
-            chat_template,
-        ))
+        Ok(single_lm(Box::new(runner), spec, tokenizer, chat_template))
     }
 }
 
@@ -303,12 +296,7 @@ fn load_gemma(spec: &EngineSpec) -> Result<Arc<dyn Engine>> {
             .context("building GemmaRunner")?;
         let (tokenizer, chat_template) =
             load_tokenizer_and_template(&spec.tok_path(), &spec.template_dir())?;
-        Ok(single_lm(
-            Box::new(runner),
-            spec,
-            tokenizer,
-            chat_template,
-        ))
+        Ok(single_lm(Box::new(runner), spec, tokenizer, chat_template))
     }
 }
 
@@ -333,12 +321,7 @@ fn load_llama32(spec: &EngineSpec) -> Result<Arc<dyn Engine>> {
             .context("building Llama32Runner")?;
         let (tokenizer, chat_template) =
             load_tokenizer_and_template(&spec.tok_path(), &spec.template_dir())?;
-        Ok(single_lm(
-            Box::new(runner),
-            spec,
-            tokenizer,
-            chat_template,
-        ))
+        Ok(single_lm(Box::new(runner), spec, tokenizer, chat_template))
     }
 }
 
@@ -363,11 +346,6 @@ fn load_lfm(spec: &EngineSpec) -> Result<Arc<dyn Engine>> {
             .context("building LfmRunner")?;
         let (tokenizer, chat_template) =
             load_tokenizer_and_template(&spec.tok_path(), &spec.template_dir())?;
-        Ok(single_lm(
-            Box::new(runner),
-            spec,
-            tokenizer,
-            chat_template,
-        ))
+        Ok(single_lm(Box::new(runner), spec, tokenizer, chat_template))
     }
 }

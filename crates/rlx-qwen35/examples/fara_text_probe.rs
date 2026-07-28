@@ -16,10 +16,10 @@
 
 use anyhow::{Context, Result};
 use rlx_qwen35::{
-    format_chatml_with, ChatFormatOpts, ChatMessage, Qwen35Config, Qwen35ConfigSource,
-    Qwen35RunnerBuilder,
+    ChatFormatOpts, ChatMessage, Qwen35Config, Qwen35ConfigSource, Qwen35RunnerBuilder,
+    format_chatml_with,
 };
-use rlx_runtime::{parse_device, Device};
+use rlx_runtime::{Device, parse_device};
 use std::env;
 use std::io::Write;
 use std::path::PathBuf;
@@ -65,9 +65,7 @@ fn write_npy_f32(path: &std::path::Path, rows: usize, cols: usize, data: &[f32])
         rows,
         cols
     );
-    let header = format!(
-        "{{'descr': '<f4', 'fortran_order': False, 'shape': ({rows}, {cols}), }}"
-    );
+    let header = format!("{{'descr': '<f4', 'fortran_order': False, 'shape': ({rows}, {cols}), }}");
     let mut header_bytes = header.into_bytes();
     while (10 + header_bytes.len() + 1) % 16 != 0 {
         header_bytes.push(b' ');

@@ -16,7 +16,7 @@ pub fn peak_amplitude(samples: &[f32]) -> f32 {
     samples.iter().fold(0.0f32, |m, &x| m.max(x.abs()))
 }
 
-/// Fail loudly on silent / collapsed waveforms (MSI wgpu/vulkan used to emit
+/// Fail loudly on silent / collapsed waveforms (NVIDIA wgpu/vulkan used to emit
 /// 512 samples when duration collapsed to `y_len=1`).
 pub fn ensure_audible(samples: &[f32]) -> Result<()> {
     let peak = peak_amplitude(samples);

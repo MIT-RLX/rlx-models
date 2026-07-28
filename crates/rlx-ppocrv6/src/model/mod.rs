@@ -18,7 +18,12 @@ pub struct NativeGraph {
     pub input_name: String,
 }
 
-pub fn build_detection(tier: Tier, weights_dir: &Path, height: usize, width: usize) -> Result<NativeGraph> {
+pub fn build_detection(
+    tier: Tier,
+    weights_dir: &Path,
+    height: usize,
+    width: usize,
+) -> Result<NativeGraph> {
     match tier {
         Tier::Tiny => {
             let w = tiny_det::load_weights(weights_dir)
@@ -38,8 +43,9 @@ pub fn build_detection(tier: Tier, weights_dir: &Path, height: usize, width: usi
             })
         }
         Tier::Small => {
-            let w = small_det::load_weights(weights_dir)
-                .with_context(|| format!("load small det weights from {}", weights_dir.display()))?;
+            let w = small_det::load_weights(weights_dir).with_context(|| {
+                format!("load small det weights from {}", weights_dir.display())
+            })?;
             let opts = small_det::GraphOptions {
                 height,
                 width,
@@ -82,8 +88,9 @@ pub fn build_recognition(
             })
         }
         Tier::Small => {
-            let w = small_rec::load_weights(weights_dir)
-                .with_context(|| format!("load small rec weights from {}", weights_dir.display()))?;
+            let w = small_rec::load_weights(weights_dir).with_context(|| {
+                format!("load small rec weights from {}", weights_dir.display())
+            })?;
             let opts = small_rec::GraphOptions {
                 height,
                 width,

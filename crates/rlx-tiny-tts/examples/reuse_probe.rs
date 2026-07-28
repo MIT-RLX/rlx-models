@@ -35,7 +35,7 @@ fn main() -> anyhow::Result<()> {
     let device = rlx_runtime::parse_device(&dev).map_err(|e| anyhow::anyhow!("{e}"))?;
     let text = "The quick brown fox jumps over the lazy dog while the sun sets slowly behind the distant mountains.";
 
-    let model = TinyTts::load(&PathBuf::from(&dir))?;
+    let model = TinyTts::load(PathBuf::from(&dir))?;
     let opts = InferOpts::from_config(model.config());
     let base = std::env::temp_dir();
     let d1 = base.join("reuse_run1");

@@ -7,7 +7,7 @@
 use rlx_moss_nano::{MossNative, NativeOpts};
 use rlx_runtime::Device;
 use rlx_whisper::{SAMPLE_RATE as WR, WhisperRunner};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn parse_device(s: &str) -> Device {
     match s.to_lowercase().as_str() {
@@ -125,7 +125,7 @@ fn spectral_metrics(a: &[f32], b: &[f32], rate: usize) -> (f64, f64) {
     (sc, lsd)
 }
 
-fn transcribe(wd: &PathBuf, audio: &[f32], ch: usize, rate: u32) -> anyhow::Result<String> {
+fn transcribe(wd: &Path, audio: &[f32], ch: usize, rate: u32) -> anyhow::Result<String> {
     let m = mono(audio, ch);
     let n = (m.len() as u64 * WR as u64 / rate as u64).max(1) as usize;
     let pcm: Vec<f32> = (0..n)
@@ -145,7 +145,7 @@ fn transcribe(wd: &PathBuf, audio: &[f32], ch: usize, rate: u32) -> anyhow::Resu
         .device(Device::Cpu)
         .language("en")
         .build()?;
-    Ok(w.transcribe_greedy(&pcm)?)
+    w.transcribe_greedy(&pcm)
 }
 
 fn coverage(text: &str, heard: &str) -> f32 {

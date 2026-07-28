@@ -751,7 +751,7 @@ fn build_ranked_table(inputs: &FullStudyInputs) -> String {
             r.device,
             r.n_fft,
             r.batch,
-            &r.status,
+            r.status,
             r.param_count,
         ));
     }

@@ -4,9 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
-use rlx_assets::pack::{
-    ResolveBundleOpts, ResolvedBundlePath, is_rlxp_file, resolve_bundle_path,
-};
+use rlx_assets::pack::{ResolveBundleOpts, ResolvedBundlePath, is_rlxp_file, resolve_bundle_path};
 use rlx_gguf::{GgmlType, GgufFile, GgufWriter, MetaValue};
 use rlx_ir::Graph;
 use rlx_pkg::{ContainerKind, Package, PackedWeight, WriteOptions, write_package};
@@ -147,15 +145,13 @@ pub fn open_gguf(gguf_path: &Path) -> Result<RlxTts> {
 }
 
 pub fn open_rlxp(rlxp_path: &Path) -> Result<RlxTts> {
-    let pack = Package::open(rlxp_path)
-        .with_context(|| format!("open RLXP {}", rlxp_path.display()))?;
+    let pack =
+        Package::open(rlxp_path).with_context(|| format!("open RLXP {}", rlxp_path.display()))?;
     let extract_dir = rlx_assets::pack::extract_dir_for(rlxp_path, "rlx-tts-rlxp");
     materialize_rlxp_sidecars(&pack, &extract_dir)
         .with_context(|| format!("materialize frontend beside {}", rlxp_path.display()))?;
 
-    let idx = pack
-        .weights_index()
-        .context("rlxp missing weights index")?;
+    let idx = pack.weights_index().context("rlxp missing weights index")?;
     let mut encoder = HashMap::new();
     let mut decoder = HashMap::new();
     let mut wavernn = HashMap::new();
@@ -170,7 +166,9 @@ pub fn open_rlxp(rlxp_path: &Path) -> Result<RlxTts> {
             continue;
         };
         let entry = pack.weight_entry(name)?;
-        let data = pack.tensor_f32(name).with_context(|| format!("tensor {name}"))?;
+        let data = pack
+            .tensor_f32(name)
+            .with_context(|| format!("tensor {name}"))?;
         bucket.insert(stripped.to_string(), (data, entry.shape.clone()));
     }
     ensure!(!encoder.is_empty(), "RLXP missing encoder.* tensors");
@@ -301,8 +299,7 @@ fn materialize_sidecar(file: &GgufFile, extract_dir: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, text)
-            .with_context(|| format!("write {}", path.display()))?;
+        std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
     }
 
     for name in file.keys() {
@@ -324,8 +321,7 @@ fn materialize_sidecar(file: &GgufFile, extract_dir: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, bytes)
-            .with_context(|| format!("write blob {}", path.display()))?;
+        std::fs::write(&path, bytes).with_context(|| format!("write blob {}", path.display()))?;
     }
 
     // Ensure a minimal manifest exists even if the KV was missing.
@@ -412,8 +408,7 @@ fn manifest_from_gguf(file: &GgufFile, extract_dir: &Path) -> Result<BundleManif
 
 /// Sanitize a loose-bundle `manifest.json` (strip Apple source fields, set voice ids).
 pub fn sanitize_manifest(path: &Path) -> Result<()> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let mut man: serde_json::Value =
         serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
     let obj = man
@@ -443,7 +438,11 @@ pub fn sanitize_manifest(path: &Path) -> Result<()> {
 
 /// Pack a loose directory bundle into one runnable `rlx-tts.gguf`.
 pub fn pack_directory(bundle: &Path, out: &Path) -> Result<PackReport> {
-    ensure!(bundle.is_dir(), "bundle dir not found: {}", bundle.display());
+    ensure!(
+        bundle.is_dir(),
+        "bundle dir not found: {}",
+        bundle.display()
+    );
 
     let man_path = bundle.join("manifest.json");
     let man: serde_json::Value = if man_path.is_file() {
@@ -460,10 +459,7 @@ pub fn pack_directory(bundle: &Path, out: &Path) -> Result<PackReport> {
         .get("sample_rate_hz")
         .and_then(|v| v.as_u64())
         .unwrap_or(24_000) as u32;
-    let mel_bins = man
-        .get("mel_bins")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(80) as u32;
+    let mel_bins = man.get("mel_bins").and_then(|v| v.as_u64()).unwrap_or(80) as u32;
     let hop_length = man
         .get("hop_length")
         .and_then(|v| v.as_u64())
@@ -518,9 +514,10 @@ pub fn pack_directory(bundle: &Path, out: &Path) -> Result<PackReport> {
             continue;
         }
         // Neural safetensors expanded above.
-        if NEURAL_STEMS.iter().any(|s| {
-            rel == Path::new(&format!("{s}.safetensors"))
-        }) {
+        if NEURAL_STEMS
+            .iter()
+            .any(|s| rel == Path::new(&format!("{s}.safetensors")))
+        {
             continue;
         }
         let data = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
@@ -574,10 +571,14 @@ pub fn pack_rlxp(source: &Path, out: &Path) -> Result<PackReport> {
     {
         return pack_rlxp_from_gguf(source, out);
     }
-    ensure!(source.is_dir(), "pack source not found: {}", source.display());
+    ensure!(
+        source.is_dir(),
+        "pack source not found: {}",
+        source.display()
+    );
     if let Some(gguf) = resolve_gguf_path(source) {
-        let loose = source.join("manifest.json").is_file()
-            && source.join("encoder.safetensors").is_file();
+        let loose =
+            source.join("manifest.json").is_file() && source.join("encoder.safetensors").is_file();
         if !loose {
             return pack_rlxp_from_gguf(&gguf, out);
         }
@@ -603,7 +604,9 @@ fn pack_rlxp_from_gguf(gguf_path: &Path, out: &Path) -> Result<PackReport> {
     for name in file.keys() {
         if NEURAL_PREFIXES.iter().any(|p| name.starts_with(p)) {
             let t = file.get(name).with_context(|| format!("tensor {name}"))?;
-            let (data, _) = file.dequant_f32(name).with_context(|| format!("dequant {name}"))?;
+            let (data, _) = file
+                .dequant_f32(name)
+                .with_context(|| format!("dequant {name}"))?;
             let bytes: Vec<u8> = data.iter().flat_map(|x| x.to_le_bytes()).collect();
             weights.push(PackedWeight::hot(
                 name,
@@ -658,7 +661,11 @@ fn pack_rlxp_from_gguf(gguf_path: &Path, out: &Path) -> Result<PackReport> {
 }
 
 fn pack_rlxp_from_directory(bundle: &Path, out: &Path) -> Result<PackReport> {
-    ensure!(bundle.is_dir(), "bundle dir not found: {}", bundle.display());
+    ensure!(
+        bundle.is_dir(),
+        "bundle dir not found: {}",
+        bundle.display()
+    );
 
     let man_path = bundle.join("manifest.json");
     let man: serde_json::Value = if man_path.is_file() {
@@ -706,7 +713,10 @@ fn pack_rlxp_from_directory(bundle: &Path, out: &Path) -> Result<PackReport> {
         if skip_rel(rel) {
             continue;
         }
-        if NEURAL_STEMS.iter().any(|s| rel == Path::new(&format!("{s}.safetensors"))) {
+        if NEURAL_STEMS
+            .iter()
+            .any(|s| rel == Path::new(&format!("{s}.safetensors")))
+        {
             continue;
         }
         let data = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
@@ -827,7 +837,7 @@ fn skip_rel(rel: &Path) -> bool {
         return true;
     }
     let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    SKIP_NAMES.iter().any(|s| *s == name)
+    SKIP_NAMES.contains(&name)
 }
 
 fn collect_files(_root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -914,13 +924,10 @@ pub fn default_extract_dir() -> Option<PathBuf> {
         }
     }
     // Loose frontend/ still on disk (dev layout before packing).
-    for root in [
+    [
         PathBuf::from(crate::native::DEFAULT_BUNDLE_DIR),
         manifest_dir.join("../../weights/tts/rlx-tts"),
-    ] {
-        if root.join("frontend").is_dir() {
-            return Some(root);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|root| root.join("frontend").is_dir())
 }

@@ -42,6 +42,6 @@ just zonos-demo                 # MLX by default
 just zonos-demo DEVICE=metal
 just zonos-backends             # CPU + Metal + MLX + Whisper
 # CUDA: host-pad KV by default (`RLX_ENABLE_GPU_KV=1` to try resident KV).
-# msi: ~20 s fox, Whisper ok-row; cov can lag CPU (sampling) — CPU ~56% on short budget.
+# NVIDIA: ~20 s fox, Whisper ok-row; cov can lag CPU (sampling) — CPU ~56% on short budget.
 RLX_DEVICES=cpu,cuda just zonos-backends
 ```

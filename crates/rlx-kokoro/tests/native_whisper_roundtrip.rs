@@ -21,16 +21,13 @@ fn kokoro_dir() -> Option<PathBuf> {
         let p = PathBuf::from(d);
         return has_split(&p).then_some(p);
     }
-    for cand in [
+    [
         PathBuf::from("weights/tts/kokoro-82m"),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/kokoro-82m"),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache/kokoro-82m"),
-    ] {
-        if has_split(&cand) {
-            return Some(cand);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|cand| has_split(cand))
 }
 
 fn has_split(model_dir: &std::path::Path) -> bool {

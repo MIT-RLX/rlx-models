@@ -61,8 +61,14 @@ pub(crate) fn seed_roundtrip_overrides(lexicon: &mut HashMap<String, Vec<String>
         ("sunrise", &["s", "^:", "n", "r", "Y:", "z"]),
         ("riverbank", &["r", "I:", "v", "e", "b", "145:", "N", "k"]),
         ("artificial", &["a:", "r", "t", "$", "f", "I:", "S", "L"]),
-        ("intelligence", &["I", "n", "t", "E:", "l", "$", "G", "$", "n", "s"]),
-        ("applications", &["145", "P", "l", "I", "K", "J:", "S", "$", "n", "z"]),
+        (
+            "intelligence",
+            &["I", "n", "t", "E:", "l", "$", "G", "$", "n", "s"],
+        ),
+        (
+            "applications",
+            &["145", "P", "l", "I", "K", "J:", "S", "$", "n", "z"],
+        ),
         ("rust", &["r", "^:", "s", "t"]),
         // Brand acronym: letter names ar + ell + ex (ASR may still spell as one word).
         ("rlx", &["a:", "r", "E:", "l", "E:", "k", "s"]),

@@ -33,7 +33,7 @@ fn regionprops_finds_two_blobs() {
     let mut nodes = Vec::new();
     for t in 0..2 {
         let slice = labels.slice(ndarray::s![t..t + 1, .., ..]).to_owned();
-        nodes.extend(regionprops_2d(&slice, t as i32, None, 1.0));
+        nodes.extend(regionprops_2d(&slice, t, None, 1.0));
     }
     assert!(nodes.len() >= 4);
     assert!(
@@ -64,7 +64,7 @@ fn candidate_edges_forward_in_time() {
     let mut nodes = Vec::new();
     for t in 0..3 {
         let slice = labels.slice(ndarray::s![t..t + 1, .., ..]).to_owned();
-        nodes.extend(regionprops_2d(&slice, t as i32, None, 1.0));
+        nodes.extend(regionprops_2d(&slice, t, None, 1.0));
     }
     let graph = CandidateGraph::build(nodes, &GraphConfig::default());
     for e in &graph.edges {

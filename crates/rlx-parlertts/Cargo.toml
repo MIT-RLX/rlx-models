@@ -27,6 +27,9 @@ rlx-onnx-import = { workspace = true }
 # Descript DAC 44.1kHz/9-codebook decoder (Parler's audio codec).
 rlx-dac = { workspace = true }
 
+[lints]
+workspace = true
+
 # ort is DEV-only (validation/parity), never a runtime dep — per project constraint.
 # Feature set mirrors rlx-chatterbox (the bare download-binaries path fails the
 # ort-sys TLS build script).

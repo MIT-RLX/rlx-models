@@ -33,13 +33,13 @@ use crate::vision::{
     load_vision_encoder,
 };
 use crate::weights::Qwen35Weights;
-use rlx_core::WeightLoader;
 use crate::{
     PackedParams, build_qwen35_decode_hir_dynamic_ext, build_qwen35_decode_hir_ext,
     build_qwen35_hir_sized_ext, build_qwen35_prefill_cache_hir_dynamic_ext,
     build_qwen35_prefill_cache_hir_ext, build_qwen35_prefill_hidden_cache_hir_dynamic_ext,
     build_qwen35_prefill_hidden_cache_hir_ext,
 };
+use rlx_core::WeightLoader;
 use rlx_runtime::MoeExpertStore;
 
 fn push_moe_residency(compiled: &mut rlx_runtime::CompiledGraph, layers: &[Vec<bool>]) {
@@ -48,21 +48,14 @@ fn push_moe_residency(compiled: &mut rlx_runtime::CompiledGraph, layers: &[Vec<b
 }
 
 /// Minimal NumPy `.npy` writer for F32 row-major dumps (layer parity).
-fn write_npy_f32_row_major(
-    path: &Path,
-    rows: usize,
-    cols: usize,
-    data: &[f32],
-) -> Result<()> {
+fn write_npy_f32_row_major(path: &Path, rows: usize, cols: usize, data: &[f32]) -> Result<()> {
     use std::io::Write;
     anyhow::ensure!(
         data.len() == rows * cols,
         "npy len {} != {rows}*{cols}",
         data.len()
     );
-    let header = format!(
-        "{{'descr': '<f4', 'fortran_order': False, 'shape': ({rows}, {cols}), }}"
-    );
+    let header = format!("{{'descr': '<f4', 'fortran_order': False, 'shape': ({rows}, {cols}), }}");
     let mut header_bytes = header.into_bytes();
     while (10 + header_bytes.len() + 1) % 16 != 0 {
         header_bytes.push(b' ');
@@ -474,12 +467,11 @@ impl Qwen35RunnerBuilder {
                         .any(|k| k.starts_with("model.visual."));
                     if has_visual {
                         let t_vis = std::time::Instant::now();
-                        let vweights = crate::vision::MmProjWeights::from_hf_visual(
-                            &vcfg, &mut mmap_loader,
-                        )
-                        .with_context(|| {
-                            format!("qwen35: load HF vision from {}", model_dir.display())
-                        })?;
+                        let vweights =
+                            crate::vision::MmProjWeights::from_hf_visual(&vcfg, &mut *mmap_loader)
+                                .with_context(|| {
+                                    format!("qwen35: load HF vision from {}", model_dir.display())
+                                })?;
                         eprintln!(
                             "[qwen35] read HF vision weights in {:.2?} \
                              (layers={}, n_embd={}, llm_hidden={})",
@@ -709,11 +701,7 @@ impl Qwen35RunnerBuilder {
                 !(packed
                     && matches!(
                         device,
-                        Device::Cuda
-                            | Device::Rocm
-                            | Device::Gpu
-                            | Device::Vulkan
-                            | Device::Metal
+                        Device::Cuda | Device::Rocm | Device::Gpu | Device::Vulkan | Device::Metal
                     ))
             }),
             self.aot_cache_dir.clone(),
@@ -836,15 +824,36 @@ fn compile_static_prefill_cache(
     Ok((compiled, params, packed))
 }
 
+/// Open a checkpoint directory as either an mlx-community affine-quantized
+/// loader (`config.json` `quantization` block → [`rlx_core::weight_loader::MlxLoader`],
+/// which dequantizes packed 4/8-bit affine weights → F32 on take) or a plain
+/// HF safetensors mmap loader. Both satisfy [`WeightLoader`], so downstream
+/// `HfTranslatingLoader` + `Qwen35Weights::from_loader` are unchanged.
+fn open_dir_loader(dir: &Path) -> Result<Box<dyn WeightLoader>> {
+    if rlx_core::weight_registry::dir_is_mlx_quant(dir) {
+        let path = dir
+            .to_str()
+            .ok_or_else(|| anyhow!("qwen35: non-UTF8 mlx weights dir {dir:?}"))?;
+        let loader = rlx_core::weight_loader::MlxLoader::open(path)
+            .with_context(|| format!("qwen35: open mlx-affine dir {dir:?}"))?;
+        return Ok(Box::new(loader));
+    }
+    let loader = rlx_core::SafetensorsMmapLoader::open(dir)
+        .with_context(|| format!("qwen35: open safetensors dir {dir:?}"))?;
+    Ok(Box::new(loader))
+}
+
 #[allow(clippy::too_many_arguments)]
-/// Open a HuggingFace safetensors checkpoint via mmap (F32 on take only).
-fn load_hf_mmap_loader(
-    weights_path: &Path,
-) -> Result<(PathBuf, PathBuf, rlx_core::SafetensorsMmapLoader)> {
+/// Open a HuggingFace safetensors or mlx-community checkpoint via mmap
+/// (F32 on take only; mlx-affine weights are dequantized on take).
+fn load_hf_mmap_loader(weights_path: &Path) -> Result<(PathBuf, PathBuf, Box<dyn WeightLoader>)> {
     if weights_path.is_dir() {
-        let loader = rlx_core::SafetensorsMmapLoader::open(weights_path)
-            .with_context(|| format!("qwen35: open safetensors dir {weights_path:?}"))?;
-        return Ok((weights_path.to_path_buf(), weights_path.to_path_buf(), loader));
+        let loader = open_dir_loader(weights_path)?;
+        return Ok((
+            weights_path.to_path_buf(),
+            weights_path.to_path_buf(),
+            loader,
+        ));
     }
     let resolved = resolve_weights_file(weights_path)?;
     let ext = resolved
@@ -874,12 +883,10 @@ fn load_hf_mmap_loader(
             // fall back to a temp dir view via index_from_dir on parent.
             parent.clone()
         };
-        let loader = rlx_core::SafetensorsMmapLoader::open(&dir)
-            .with_context(|| format!("qwen35: open safetensors dir {dir:?}"))?;
+        let loader = open_dir_loader(&dir)?;
         return Ok((dir, resolved, loader));
     }
-    let loader = rlx_core::SafetensorsMmapLoader::open(&parent)
-        .with_context(|| format!("qwen35: open safetensors {resolved:?}"))?;
+    let loader = open_dir_loader(&parent)?;
     Ok((parent, resolved, loader))
 }
 
@@ -1098,6 +1105,8 @@ fn finish_build(
         // (avoids mid-stream recompiles under low-mem); a power-of-two ladder
         // would only pad further (e.g. 39→64) with no benefit under pinning.
         let max = max_seq.max(1) as u64;
+        // One exact-`max_seq` bucket (not a collected integer range).
+        #[allow(clippy::single_range_in_vec_init)]
         Some(BucketedCompileCache::new(device, vec![1..(max + 1)]))
     } else {
         None
@@ -2393,8 +2402,7 @@ impl Qwen35Runner {
             for (pos, &id_f) in padded.iter().enumerate() {
                 let src = (id_f as usize) * n_embd;
                 if src + n_embd <= tbl.len() {
-                    v[pos * n_embd..pos * n_embd + n_embd]
-                        .copy_from_slice(&tbl[src..src + n_embd]);
+                    v[pos * n_embd..pos * n_embd + n_embd].copy_from_slice(&tbl[src..src + n_embd]);
                 }
             }
             v
@@ -2436,7 +2444,9 @@ impl Qwen35Runner {
             // (layer hiddens are pushed *before* the LM head — see builder).
             let n_layers = self.cfg.num_hidden_layers - self.cfg.nextn_predict_layers;
             let n_embd = self.cfg.hidden_size;
-            let dump_dir = std::env::var("RLX_QWEN35_DUMP_LAYERS").ok().map(PathBuf::from);
+            let dump_dir = std::env::var("RLX_QWEN35_DUMP_LAYERS")
+                .ok()
+                .map(PathBuf::from);
             if let Some(ref dir) = dump_dir {
                 std::fs::create_dir_all(dir).with_context(|| {
                     format!("create RLX_QWEN35_DUMP_LAYERS dir {}", dir.display())
@@ -2495,9 +2505,8 @@ impl Qwen35Runner {
                     } else {
                         (self.batch, n_embd)
                     };
-                    write_npy_f32_row_major(&path, rows, cols, v).with_context(|| {
-                        format!("write layer dump {}", path.display())
-                    })?;
+                    write_npy_f32_row_major(&path, rows, cols, v)
+                        .with_context(|| format!("write layer dump {}", path.display()))?;
                 }
             }
             if let Some(ref dir) = dump_dir {
@@ -2967,9 +2976,9 @@ impl Qwen35Runner {
         if rlx_ir::env::flag("RLX_QWEN35_DEBUG_LOGITS") {
             let n_embd = self.cfg.hidden_size;
             let h = &trunk[..n_embd.min(trunk.len())];
-            let (norm_sq, abs_max) = h.iter().fold((0f32, 0f32), |(s, m), &x| {
-                (s + x * x, m.max(x.abs()))
-            });
+            let (norm_sq, abs_max) = h
+                .iter()
+                .fold((0f32, 0f32), |(s, m), &x| (s + x * x, m.max(x.abs())));
             eprintln!(
                 "[qwen35][debug] trunk_l2={:.4} absmax={:.4} n_embd={} mrope_interleaved={}",
                 norm_sq.sqrt(),
@@ -3150,8 +3159,8 @@ impl Qwen35Runner {
                 let mtp_logits_path = self.mtp_logits_path;
                 let fast_mtp = self.fast_mtp;
                 let fast_greedy = self.fast_greedy_lm_head;
-                let need_extract = self.prefill_cache_params.is_empty()
-                    && self.prefill_cache_packed.is_empty();
+                let need_extract =
+                    self.prefill_cache_params.is_empty() && self.prefill_cache_packed.is_empty();
                 let captured =
                     std::cell::RefCell::new(None::<(HashMap<String, Vec<f32>>, PackedParams)>);
                 let cache_params = &self.prefill_cache_params;
@@ -3392,9 +3401,10 @@ impl Qwen35Runner {
                 },
             )?;
         }
-        let cache = self.prefill_hidden_dynamic_cache.as_mut().ok_or_else(|| {
-            anyhow!("qwen35: hidden prefill cache missing (mmproj not loaded?)")
-        })?;
+        let cache = self
+            .prefill_hidden_dynamic_cache
+            .as_mut()
+            .ok_or_else(|| anyhow!("qwen35: hidden prefill cache missing (mmproj not loaded?)"))?;
         let compiled = get_or_specialize_hir_with_options(
             cache,
             &config,

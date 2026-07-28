@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Conformer-CTC CUDA validation on NVIDIA host (e.g. ssh msi).
+# Conformer-CTC CUDA validation on NVIDIA host (set RLX_CUDA_HOST; e.g. ssh your-cuda-host).
 # From Mac: scripts/conformer_ctc_cuda_validate.sh --remote
-# On msi:   scripts/conformer_ctc_cuda_validate.sh
+# On the CUDA host:   scripts/conformer_ctc_cuda_validate.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOST="${MSI_HOST:-msi}"
+HOST="${RLX_CUDA_HOST:?set RLX_CUDA_HOST to your CUDA host, e.g. user@host}"
 REMOTE_MODELS="${REMOTE_MODELS:-rlx-models}"
 
 remote_run() {
   echo ">> sync trees to $HOST"
-  bash "$ROOT/scripts/matrix/sync_to_msi.sh"
+  bash "$ROOT/scripts/matrix/sync_to_remote.sh"
   echo ">> sync conformer-ctc assets (nemo + sample wav)"
   ssh "$HOST" "mkdir -p ~/$REMOTE_MODELS/.cache/conformer-ctc"
   rsync -az \

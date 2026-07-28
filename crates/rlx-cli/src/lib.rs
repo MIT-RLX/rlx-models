@@ -62,5 +62,10 @@ pub use registry::{
     ModelRunner, dispatch, dispatch_help, register_cli, register_runner, registered_runners,
     run_registered,
 };
+pub use rlx_core::weights_discover::{
+    DiscoverOpts, DiscoveredFormat, DiscoveredWeight, WeightSourceKind, default_source_roots,
+    looks_like_filesystem_path, resolve_weight_query, resolve_weight_query_in_roots,
+    resolve_weights_path_or_query, scan_weights, scan_weights_in_roots,
+};
 pub use rlx_core::{STANDARD_DEVICE_NAMES, validate_sam_device, validate_standard_device};
 pub use weights_resolve::{WeightsResolveCli, resolve_weights_cli};

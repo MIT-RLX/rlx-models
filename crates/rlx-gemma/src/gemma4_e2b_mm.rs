@@ -41,7 +41,8 @@ use crate::multimodal::{GemmaMultimodalConfig, fuse_multimodal_embeddings};
 use crate::multimodal_mask::{build_vision_bidirectional_mask_2d, expand_attn_bias};
 use crate::qat_loader::GemmaQatLoader;
 
-type PackedWeightMap = HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>;
+use crate::builder::PackedSrc;
+type PackedWeightMap = HashMap<String, (PackedSrc, QuantScheme, Vec<usize>)>;
 
 /// Build the **pre-scale** fused `inputs_embeds` `[seq·hidden]` for the
 /// embed-lazy LM path: raw `embed_tokens` rows for text positions, and
@@ -106,7 +107,7 @@ pub fn embed_lazy_marker_with(cfg: &GemmaConfig, media_bias: bool) -> PackedWeig
     m.insert(
         "model.embed_tokens.weight".to_string(),
         (
-            Vec::new(),
+            PackedSrc::F32,
             QuantScheme::Int8Block { block_size: 32 },
             vec![cfg.vocab_size, cfg.hidden_size],
         ),
@@ -115,7 +116,7 @@ pub fn embed_lazy_marker_with(cfg: &GemmaConfig, media_bias: bool) -> PackedWeig
         m.insert(
             "__media_bias__".to_string(),
             (
-                Vec::new(),
+                PackedSrc::F32,
                 QuantScheme::Int8Block { block_size: 32 },
                 vec![],
             ),

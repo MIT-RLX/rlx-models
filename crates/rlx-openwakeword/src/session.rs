@@ -2,9 +2,7 @@
 // Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna.
 
 use anyhow::Result;
-use rlx_wake::{
-    MelConfig, MelFrontend, OWW_CHUNK_SAMPLES, WakeConfig, WakeEngine, WakeStep,
-};
+use rlx_wake::{MelConfig, MelFrontend, OWW_CHUNK_SAMPLES, WakeConfig, WakeEngine, WakeStep};
 use std::collections::VecDeque;
 use std::path::Path;
 

@@ -9,7 +9,7 @@
 //! a silence-fbank calibration affine before e5 distill.
 
 use crate::spec::MEL_BINS;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// Frame shift / length at 16 kHz (10 ms / 25 ms) — Kaldi-style fbank defaults from mini.json.
 pub const FRAME_SHIFT: usize = 160;
@@ -38,7 +38,8 @@ pub fn log_mel_fbank(pcm: &[f32], sample_rate: u32) -> Result<Vec<Vec<f32>>> {
     }
     // deterministic light dither; production can inject RNG
     for (i, x) in pcm.iter_mut().enumerate() {
-        let u = ((i as u32).wrapping_mul(1664525).wrapping_add(1013904223) >> 8) as f32 / 16777216.0;
+        let u =
+            ((i as u32).wrapping_mul(1664525).wrapping_add(1013904223) >> 8) as f32 / 16777216.0;
         *x += DITHER * (u - 0.5) * 2.0;
     }
     let mean = pcm.iter().sum::<f32>() / pcm.len() as f32;
@@ -83,7 +84,11 @@ fn upsample_2x(pcm: &[f32]) -> Vec<f32> {
     let mut o = Vec::with_capacity(pcm.len() * 2);
     for i in 0..pcm.len() {
         o.push(pcm[i]);
-        let n = if i + 1 < pcm.len() { pcm[i + 1] } else { pcm[i] };
+        let n = if i + 1 < pcm.len() {
+            pcm[i + 1]
+        } else {
+            pcm[i]
+        };
         o.push(0.5 * (pcm[i] + n));
     }
     o

@@ -27,13 +27,7 @@
 //! `GemmaRunner` per family.
 
 use anyhow::{Context, Result, anyhow, bail};
-use rlx_core::gguf_config::{
-    DINOV2_GGUF_ARCHES, FLUX_GGUF_ARCHES, SAM_GGUF_ARCHES, SAM2_GGUF_ARCHES, SAM3_GGUF_ARCHES,
-    VJEPA2_GGUF_ARCHES, W2V_BERT_GGUF_ARCHES,
-};
-use rlx_core::gguf_support::{
-    gguf_architecture_from_path, gguf_family_for_arch, resolve_weights_file,
-};
+use rlx_core::gguf_support::{gguf_architecture_from_path, resolve_weights_file};
 use std::path::{Path, PathBuf};
 
 use crate::registry::run_registered;
@@ -72,6 +66,25 @@ pub fn run_auto(args: &[String]) -> Result<()> {
     );
     // Re-build argv: most per-family runners take `--weights PATH`. If the
     // caller already passed --weights, don't double it; otherwise inject.
+    //
+    // A GGUF model is a single self-contained file → forward the file. A
+    // safetensors model is a multi-file directory (config.json + tokenizer +
+    // shards); dedicated runners load the whole dir (mlx-community affine
+    // dirs, sharded checkpoints), so forward the DIRECTORY, not one shard.
+    let forward_path: PathBuf = match &sniff.from {
+        SniffedFrom::SafetensorsConfig(_) => {
+            if path.is_dir() {
+                path.to_path_buf()
+            } else {
+                sniff
+                    .path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| sniff.path.clone())
+            }
+        }
+        SniffedFrom::GgufArch(_) => sniff.path.clone(),
+    };
     let rest: Vec<String> = args[1..].to_vec();
     let has_weights_flag = rest
         .iter()
@@ -79,7 +92,7 @@ pub fn run_auto(args: &[String]) -> Result<()> {
     let mut forwarded: Vec<String> = Vec::with_capacity(rest.len() + 2);
     if !has_weights_flag {
         forwarded.push("--weights".into());
-        forwarded.push(sniff.path.display().to_string());
+        forwarded.push(forward_path.display().to_string());
     }
     forwarded.extend(rest);
     match run_registered(sniff.runner_name, &forwarded)? {
@@ -130,6 +143,7 @@ pub struct UnimplementedArch {
 /// the phf map can hold `&'static UnimplementedArch`.
 mod families {
     use super::UnimplementedArch;
+    #[allow(dead_code)] // was KNOWN_UNIMPLEMENTED; mistral3/4 now route via rlx-mistral
     pub static MISTRAL: UnimplementedArch = UnimplementedArch {
         family: "Mistral 3+ / Ministral",
         milestone: "M4",
@@ -170,6 +184,7 @@ mod families {
         milestone: "M5",
         note: "OpenAI gpt-oss — confirm arch shape — PLAN.md M5",
     };
+    #[allow(dead_code)] // dense nemotron now routes to the llama32 runner
     pub static NEMOTRON: UnimplementedArch = UnimplementedArch {
         family: "Nemotron",
         milestone: "M5",
@@ -196,6 +211,7 @@ mod families {
         milestone: "M5",
         note: "Qwen3 + MoE routing block — PLAN.md M5 (often loadable via qwen3 runner once MoE lands)",
     };
+    #[allow(dead_code)] // qwen3_next now routes to the qwen35 runner
     pub static QWEN3_NEXT: UnimplementedArch = UnimplementedArch {
         family: "Qwen3-Next",
         milestone: "M5",
@@ -205,11 +221,6 @@ mod families {
         family: "Gemma 4 MoE (A4B)",
         milestone: "M2",
         note: "Gemma 4 MoE A4B routing block — dense + E2B/E4B run via the `gemma` runner — PLAN.md M2",
-    };
-    pub static QWEN3_VL: UnimplementedArch = UnimplementedArch {
-        family: "Qwen3-VL",
-        milestone: "M7",
-        note: "vision tower + projector + LM (dense or MoE) — PLAN.md M7",
     };
     pub static QWEN3_MTP: UnimplementedArch = UnimplementedArch {
         family: "Qwen3 / Qwen3.6 + MTP",
@@ -227,14 +238,16 @@ mod families {
         note: "Llama-shaped — PLAN.md M4",
     };
     pub static DEEPSEEK: UnimplementedArch = UnimplementedArch {
-        family: "DeepSeek 2",
+        family: "DeepSeek-V3 / Kimi-K2",
         milestone: "M5",
-        note: "MoE + MLA attention — needs MoE block + MLA primitive — PLAN.md M5",
+        note: "MLA + fine-grained MoE graph IS built in rlx-deepseek (finite on synthetic F32); \
+               remaining = a runner + packed DequantMatMul re-plumb (rlx-flow path is F32-only) — \
+               real 671B–1T checkpoint not runnable on this box yet",
     };
     pub static COHERE: UnimplementedArch = UnimplementedArch {
         family: "Command-R / Cohere",
         milestone: "M4",
-        note: "Llama-shaped — PLAN.md M4",
+        note: "parallel-residual coded; cohere2 (command-r7b) needs per-layer sliding/full-attn + NoPE-on-global — still garbage",
     };
 }
 
@@ -254,9 +267,8 @@ mod families {
 /// Both GGUF arch tags and HF `model_type` values are accepted so
 /// downstream callers don't keep two parallel lists.
 static KNOWN_UNIMPLEMENTED: phf::Map<&'static str, &'static UnimplementedArch> = phf::phf_map! {
-    // Mistral / Ministral (real llama.cpp tags)
-    "mistral3" => &families::MISTRAL,
-    "mistral4" => &families::MISTRAL,
+    // mistral3 / mistral4 route via `GgufModelFamily::Mistral` → `rlx-mistral`
+    // (and `rlx-mistral-vl` when mmproj is attached).
     // Phi MoE — still pending.
     "phimoe" => &families::PHIMOE,
     // Catalog HF model_type aliases — same remap gap as phi3.
@@ -266,13 +278,15 @@ static KNOWN_UNIMPLEMENTED: phf::Map<&'static str, &'static UnimplementedArch> =
     "minimax-m2" => &families::MINIMAX,
     "minimax_m2" => &families::MINIMAX,
     "minimax" => &families::MINIMAX,
-    "glm4" => &families::GLM,
+    // dense glm4 / chatglm now route to the llama32 runner (per-arch packed
+    // builder delta: GLM norm placement + partial RoPE + fused gate∥up).
+    // glm5 / glm4moe remain unimplemented.
     "glm5" => &families::GLM,
-    "chatglm" => &families::GLM,
     "glm4moe" => &families::GLM_MOE,
     "gpt-oss" => &families::GPT_OSS,
     "gpt_oss" => &families::GPT_OSS,
-    "nemotron" => &families::NEMOTRON,
+    // dense `nemotron` now routes to the llama32 runner (LayerNorm + squared-ReLU
+    // gate-less FFN). The Mamba/attention hybrid `nemotron_h` still needs rlx-ssm.
     "nemotron_h" => &families::NEMOTRON_H,
     "nemotron_h_moe" => &families::NEMOTRON_H,
     // lfm2 / lfm / lfm25 / lfm2_5 are now routed through `rlx-lfm`'s
@@ -281,25 +295,33 @@ static KNOWN_UNIMPLEMENTED: phf::Map<&'static str, &'static UnimplementedArch> =
     "lfm2moe" => &families::LFM_MOE,
     // Qwen variants we don't run yet
     "qwen3moe" => &families::QWEN3_MOE,
-    "qwen3next" => &families::QWEN3_NEXT,
+    // qwen3next / qwen3_5 / qwen3_5_moe / qwen3_5_mtp now route to the qwen35
+    // runner (gated-DeltaNet graph is implemented; mlx-community affine dirs
+    // load via MlxLoader) — see model_registry `id:"qwen35"`.
     // Gemma 3 / 3n route through `gemma` (see `model_type_runner_name`).
     // Only the MoE A4B variant remains unimplemented.
     "gemma4moe" => &families::GEMMA4,
-    "qwen3vl" => &families::QWEN3_VL,
-    "qwen3vlmoe" => &families::QWEN3_VL,
-    "qwen3_vl" => &families::QWEN3_VL,
-    "qwen3-vl" => &families::QWEN3_VL,
+    // qwen3vl* route through `gguf_family_for_arch` → `GgufModelFamily::Qwen3Vl`.
     "qwen3_mtp" => &families::QWEN3_MTP,
     "qwen3-mtp" => &families::QWEN3_MTP,
     "qwen36_mtp" => &families::QWEN3_MTP,
     // Other catalog-adjacent families
     "llada" => &families::LLADA,
     "llada-moe" => &families::LLADA,
-    "granite" => &families::GRANITE,
+    // dense `granite` now routes to the llama32 runner (embed/residual/attn/
+    // logit multipliers wired in the packed builder). MoE / hybrid remain.
     "granitemoe" => &families::GRANITE,
     "granitehybrid" => &families::GRANITE,
     "deepseek2" => &families::DEEPSEEK,
     "deepseek2-ocr" => &families::DEEPSEEK,
+    // HF model_type keys (mlx-community): builder exists in rlx-deepseek, runner pending.
+    "deepseek_v3" => &families::DEEPSEEK,
+    "deepseek_v4" => &families::DEEPSEEK,
+    "kimi_k2" => &families::DEEPSEEK,
+    "kimi_k25" => &families::DEEPSEEK,
+    // cohere/command-r/cohere2 stay unimplemented: parallel-residual coded but
+    // cohere2 still garbage (per-layer sliding/full-attn + NoPE-on-global unwired).
+    "cohere" => &families::COHERE,
     "command-r" => &families::COHERE,
     "cohere2" => &families::COHERE,
 };
@@ -318,79 +340,21 @@ pub fn known_unimplemented_keys() -> impl Iterator<Item = (&'static str, &'stati
 
 /// Map a GGUF `general.architecture` tag to the short runner name.
 ///
-/// Returns `None` for embed-only families (`bert`, `nomic-bert`, …) which
-/// aren't currently exposed through the `rlx-run` dispatch table, and for
+/// Returns `None` for hint-only families (e.g. embedding GGUFs) and for
 /// catalog families that aren't implemented yet — those get a richer error
 /// via [`known_unimplemented_arch`] when sniffed.
 pub fn arch_runner_name(arch: &str) -> Option<&'static str> {
-    match arch {
-        "phi3" | "phi4" => return Some("phi"),
-        _ => {}
-    }
-    if let Some(fam) = gguf_family_for_arch(arch) {
-        return Some(fam.runner_name());
-    }
-    if FLUX_GGUF_ARCHES.contains(&arch) {
-        return Some("flux2");
-    }
-    if DINOV2_GGUF_ARCHES.contains(&arch) {
-        return Some("dinov2");
-    }
-    if VJEPA2_GGUF_ARCHES.contains(&arch) {
-        return Some("vjepa2");
-    }
-    if SAM3_GGUF_ARCHES.contains(&arch) {
-        return Some("sam3");
-    }
-    if SAM2_GGUF_ARCHES.contains(&arch) {
-        return Some("sam2");
-    }
-    if SAM_GGUF_ARCHES.contains(&arch) {
-        return Some("sam1");
-    }
-    if W2V_BERT_GGUF_ARCHES.contains(&arch) {
-        return Some("wav2vec2-bert");
-    }
-    None
+    rlx_core::model_registry::runner_for_gguf_arch(arch)
 }
 
 /// Map an HF `config.json` `model_type` value to a short runner name.
 ///
 /// HF naming differs from GGUF tags — `model_type: "llama"` covers Llama
 /// 2 / 3 / 3.x, `qwen3` covers Qwen3 and Qwen3 MoE, etc.
+///
+/// Source of truth: [`rlx_core::model_registry`].
 pub fn model_type_runner_name(model_type: &str) -> Option<&'static str> {
-    match model_type {
-        // qwen2 deliberately omitted — rlx-qwen3 doesn't support
-        // Qwen 2 tensor layout (needs q/k/v bias + no QK-norm).
-        // qwen2 GGUFs fall through to known_unimplemented_arch.
-        "qwen3" | "qwen3_moe" | "qwen3moe" | "qwen25" | "qwen2_5" | "qwen2.5" | "qwen251"
-        | "qwen2_5_1" => Some("qwen3"),
-        "qwen35" | "qwen3_5" | "qwen35_moe" | "qwen35moe" => Some("qwen35"),
-        // Qwen3.6 runs through the qwen35 trunk (PLAN.md M1).
-        "qwen36" | "qwen3_6" | "qwen36_moe" | "qwen36moe" => Some("qwen35"),
-        "llama" | "llama2" | "llama3" => Some("llama32"),
-        // Gemma 4 dense + E2B/E4B mobile (PLE + KV-shared). The unified
-        // top-level model_type is `gemma4`; the text sub-config is
-        // `gemma4_text`. The MoE A4B variant (`gemma4moe`) stays in the
-        // unimplemented table until its routing block is validated.
-        "gemma"
-        | "gemma2"
-        | "gemma3"
-        | "gemma3n"
-        | "gemma4"
-        | "gemma4_text"
-        | "gemma4_unified"
-        | "gemma4_unified_text" => Some("gemma"),
-        "dinov2" | "dinov2_with_registers" => Some("dinov2"),
-        "vjepa2" | "vjepa" => Some("vjepa2"),
-        "sam" | "sam_vit" | "mobile-sam" | "mobile_sam" => Some("sam1"),
-        "sam2" => Some("sam2"),
-        "sam3" => Some("sam3"),
-        "whisper" => Some("whisper"),
-        "wav2vec2-bert" | "wav2vec2_bert" | "w2v-bert" | "w2v_bert" => Some("wav2vec2-bert"),
-        "flux" | "flux2" => Some("flux2"),
-        _ => None,
-    }
+    rlx_core::model_registry::runner_for_hf_model_type(model_type)
 }
 
 /// Sniff `model_type` from the `config.json` next to a safetensors file.
@@ -537,11 +501,10 @@ mod tests {
 
     #[test]
     fn known_unimplemented_covers_plan_families() {
-        // M4 — Llama-shaped (real llama.cpp tags)
-        assert_eq!(
-            known_unimplemented_arch("mistral3").map(|u| u.milestone),
-            Some("M4")
-        );
+        // M4 — mistral3/4 now route via GgufModelFamily::Mistral
+        assert_eq!(known_unimplemented_arch("mistral3"), None);
+        assert_eq!(arch_runner_name("mistral3"), Some("mistral"));
+        assert_eq!(arch_runner_name("mistral4"), Some("mistral"));
         assert_eq!(known_unimplemented_arch("phi3"), None);
         assert_eq!(known_unimplemented_arch("phi4"), None);
         assert_eq!(known_unimplemented_arch("gemma3"), None);
@@ -550,13 +513,34 @@ mod tests {
             known_unimplemented_arch("bonsai").map(|u| u.milestone),
             Some("M4")
         );
+        // dense granite is now wired (routes to llama32); MoE / hybrid remain.
+        assert_eq!(known_unimplemented_arch("granite"), None);
+        assert_eq!(arch_runner_name("granite"), Some("llama32"));
+        assert_eq!(arch_runner_name("exaone"), Some("llama32"));
+        assert_eq!(
+            known_unimplemented_arch("granitemoe").map(|u| u.milestone),
+            Some("M4")
+        );
         // M5 — MoE / SSM
         assert_eq!(
             known_unimplemented_arch("minimax-m2").map(|u| u.milestone),
             Some("M5")
         );
+        // dense glm4 / chatglm / nemotron / olmo2 now route to llama32 (validated
+        // coherent on real GGUFs); cohere2 stays unimplemented (still garbage);
+        // MoE / SSM-hybrid variants remain unimplemented.
+        assert_eq!(known_unimplemented_arch("glm4"), None);
+        assert_eq!(arch_runner_name("glm4"), Some("llama32"));
+        assert_eq!(arch_runner_name("chatglm"), Some("llama32"));
+        assert_eq!(known_unimplemented_arch("nemotron"), None);
+        assert_eq!(arch_runner_name("nemotron"), Some("llama32"));
         assert_eq!(
-            known_unimplemented_arch("glm4").map(|u| u.milestone),
+            known_unimplemented_arch("cohere2").map(|u| u.milestone),
+            Some("M4")
+        );
+        assert_eq!(arch_runner_name("olmo2"), Some("llama32"));
+        assert_eq!(
+            known_unimplemented_arch("glm4moe").map(|u| u.milestone),
             Some("M5")
         );
         assert_eq!(
@@ -568,11 +552,9 @@ mod tests {
             known_unimplemented_arch("qwen3_mtp").map(|u| u.milestone),
             Some("M6")
         );
-        // M7 — VL
-        assert_eq!(
-            known_unimplemented_arch("qwen3vl").map(|u| u.milestone),
-            Some("M7")
-        );
+        // M7 — VL (qwen3vl now routes via GgufModelFamily::Qwen3Vl)
+        assert_eq!(known_unimplemented_arch("qwen3vl"), None);
+        assert_eq!(crate::arch_runner_name("qwen3vl"), Some("qwen3-vl"));
         // Implemented or unknown — plain `mistral` is NOT a llama.cpp arch
         // tag (Mistral 1/2 use `llama`), so it should not be flagged.
         assert_eq!(known_unimplemented_arch("qwen3"), None);
@@ -582,7 +564,7 @@ mod tests {
 
     #[test]
     fn auto_sniff_error_points_at_milestone_for_known_unimplemented() {
-        // Build a tiny mistral.gguf and check the error message.
+        // Build a tiny bonsai.gguf and check the error message.
         let mut buf: Vec<u8> = Vec::new();
         buf.extend_from_slice(&rlx_gguf::GGUF_MAGIC.to_le_bytes());
         buf.extend_from_slice(&3u32.to_le_bytes());
@@ -592,7 +574,7 @@ mod tests {
         buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
         buf.extend_from_slice(k.as_bytes());
         buf.extend_from_slice(&8u32.to_le_bytes());
-        let v = "mistral3";
+        let v = "bonsai";
         buf.extend_from_slice(&(v.len() as u64).to_le_bytes());
         buf.extend_from_slice(v.as_bytes());
         let name = "w";
@@ -611,11 +593,11 @@ mod tests {
         for _ in 0..4 {
             buf.extend_from_slice(&1.0f32.to_le_bytes());
         }
-        let path = std::env::temp_dir().join("rlx_auto_dispatch_mistral3_hint.gguf");
+        let path = std::env::temp_dir().join("rlx_auto_dispatch_bonsai_hint.gguf");
         std::fs::write(&path, &buf).unwrap();
         let err = auto_sniff(&path).expect_err("should error");
         let s = format!("{err:#}");
-        assert!(s.contains("Mistral"), "expected family name in error: {s}");
+        assert!(s.contains("Bonsai"), "expected family name in error: {s}");
         assert!(s.contains("M4"), "expected milestone tag in error: {s}");
         std::fs::remove_file(&path).ok();
     }
@@ -794,6 +776,53 @@ mod tests {
         std::fs::write(&st, b"").unwrap();
         let sniff = auto_sniff(&st).expect("sniff");
         assert_eq!(sniff.runner_name, "llama32");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A safetensors / mlx-community model is a multi-file directory; `run_auto`
+    /// must forward the DIRECTORY (so the runner can load config + tokenizer +
+    /// all shards), not the single resolved shard file. Contrast with the GGUF
+    /// case (single self-contained file) exercised by `run_auto_*` above.
+    #[test]
+    fn run_auto_forwards_dir_for_safetensors() {
+        use crate::registry::{ModelRunner, register_runner};
+        use std::sync::{Mutex, OnceLock};
+        static CAP: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+        fn cap() -> &'static Mutex<Vec<String>> {
+            CAP.get_or_init(|| Mutex::new(Vec::new()))
+        }
+        struct C;
+        impl ModelRunner for C {
+            fn name(&self) -> &'static str {
+                "llama32"
+            }
+            fn description(&self) -> &'static str {
+                "test capture safetensors dir"
+            }
+            fn run(&self, args: &[String]) -> Result<()> {
+                *cap().lock().unwrap() = args.to_vec();
+                Ok(())
+            }
+        }
+        register_runner(Box::new(C));
+
+        let dir = std::env::temp_dir().join("rlx_auto_dispatch_st_dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), br#"{"model_type":"llama"}"#).unwrap();
+        // Resolver picks this shard; run_auto must still forward its parent dir.
+        std::fs::write(dir.join("model.safetensors"), b"").unwrap();
+
+        run_auto(&[dir.display().to_string(), "--max-tokens".into(), "4".into()]).unwrap();
+        let got = cap().lock().unwrap().clone();
+        assert_eq!(
+            got,
+            vec![
+                "--weights".to_string(),
+                dir.display().to_string(), // the DIR, not dir/model.safetensors
+                "--max-tokens".into(),
+                "4".into(),
+            ]
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

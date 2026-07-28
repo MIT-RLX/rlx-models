@@ -206,9 +206,7 @@ impl HydraLite {
             if !cfg_p.is_file() {
                 continue;
             }
-            if let Ok(gc) =
-                serde_json::from_str::<PipelineCfg>(&std::fs::read_to_string(&cfg_p)?)
-            {
+            if let Ok(gc) = serde_json::from_str::<PipelineCfg>(&std::fs::read_to_string(&cfg_p)?) {
                 for stage in gc.pipeline {
                     if stage.id == "neural_adapter" {
                         apply_neural_adapter_params(&mut fe_opts, &stage.params);
@@ -242,7 +240,10 @@ impl HydraLite {
             }
         }
         // Later seeds win: Nashville JSON → adapter hardcodes → round-trip OOVs.
-        load_nashville_isym_phones(&frontend_dir.join("nashville_isym_phones.json"), &mut lexicon);
+        load_nashville_isym_phones(
+            &frontend_dir.join("nashville_isym_phones.json"),
+            &mut lexicon,
+        );
         seed_nashville_lexicon(&mut lexicon);
         seed_roundtrip_overrides(&mut lexicon);
 
@@ -318,10 +319,13 @@ impl HydraLite {
         };
 
         let mut pause_min_duration_ms = 70.0f32;
-        let post_path = ["post.cfg", "pipeline.cfg"].iter().map(|n| bundle_dir.join(n)).find(|p| p.is_file());
+        let post_path = ["post.cfg", "pipeline.cfg"]
+            .iter()
+            .map(|n| bundle_dir.join(n))
+            .find(|p| p.is_file());
         if let Some(post_path) = post_path.as_ref().filter(|p| p.is_file()) {
             if let Ok(gc) =
-                serde_json::from_str::<PipelineCfg>(&std::fs::read_to_string(&post_path)?)
+                serde_json::from_str::<PipelineCfg>(&std::fs::read_to_string(post_path)?)
             {
                 for stage in gc.pipeline {
                     if stage.id == "neural_adapter" {
@@ -478,10 +482,8 @@ impl TextFrontend for HydraLite {
         let text = self.normalize(text);
         let neural = self.neural_adapter_packing();
         let mut phones = Vec::new();
-        if !neural {
-            if self.map.id("_").is_some() {
-                phones.push("_".to_string());
-            }
+        if !neural && self.map.id("_").is_some() {
+            phones.push("_".to_string());
         }
 
         let tokens: Vec<_> = self.word_re.find_iter(&text).map(|m| m.as_str()).collect();
@@ -549,10 +551,8 @@ impl TextFrontend for HydraLite {
             if phones.last().map(|s| s.as_str()) != Some(self.opts.eos.as_str()) {
                 phones.push(self.opts.eos.clone());
             }
-        } else if !neural {
-            if self.map.id("_").is_some() {
-                phones.push("_".to_string());
-            }
+        } else if !neural && self.map.id("_").is_some() {
+            phones.push("_".to_string());
         }
         if phones.first().map(|s| s.as_str()) == Some("_") && self.map.id("_").is_none() {
             phones.remove(0);
@@ -670,7 +670,10 @@ fn seed_nashville_lexicon(lexicon: &mut HashMap<String, Vec<String>>) {
         ("give", &["g", "I:", "v"]),
         ("go", &["g", "O:"]),
         ("good", &["g", "U:", "d"]),
-        ("government", &["g", "^:", "v", "e", "n", "m", "$", "n", "t"]),
+        (
+            "government",
+            &["g", "^:", "v", "e", "n", "m", "$", "n", "t"],
+        ),
         ("grow", &["g", "r", "O:"]),
         ("guy", &["g", "Y:"]),
         ("hand", &["h", "145:", "n", "d"]),
@@ -687,7 +690,10 @@ fn seed_nashville_lexicon(lexicon: &mut HashMap<String, Vec<String>>) {
         ("hour", &["@:", "e"]),
         ("house", &["h", "@:", "s"]),
         ("idea", &["Y", "d", "i:", "$"]),
-        ("information", &["I", "n", "f", "e", "m", "J:", "S", "$", "n"]),
+        (
+            "information",
+            &["I", "n", "f", "e", "m", "J:", "S", "$", "n"],
+        ),
         ("is", &["I", "z"]),
         ("issue", &["I:", "S", "u"]),
         ("job", &["G", "a:", "b"]),
@@ -799,7 +805,10 @@ fn seed_nashville_lexicon(lexicon: &mut HashMap<String, Vec<String>>) {
         ("teacher", &["146", "i:", "C", "e"]),
         ("team", &["146", "i:", "m"]),
         ("tell", &["146", "E:", "l"]),
-        ("temperatures", &["146", "E:", "m", "P", "r", "$", "C", "e", "z"]),
+        (
+            "temperatures",
+            &["146", "E:", "m", "P", "r", "$", "C", "e", "z"],
+        ),
         ("ten", &["146", "E:", "n"]),
         ("thank", &["T", "145:", "N", "k"]),
         ("the", &["D", "$"]),
@@ -810,7 +819,10 @@ fn seed_nashville_lexicon(lexicon: &mut HashMap<String, Vec<String>>) {
         ("today", &["146", "$", "d", "J:"]),
         ("try", &["146", "r", "Y:"]),
         ("two", &["146", "u:"]),
-        ("understand", &["^", "n", "d", "e", "s", "t", "145:", "n", "d"]),
+        (
+            "understand",
+            &["^", "n", "d", "e", "s", "t", "145:", "n", "d"],
+        ),
         ("use", &["j", "u:", "z"]),
         ("wait", &["w", "J:", "t"]),
         ("walk", &["w", "A:", "k"]),

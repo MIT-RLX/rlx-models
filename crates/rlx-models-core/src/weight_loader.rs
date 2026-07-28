@@ -444,6 +444,10 @@ pub fn ggml_type_to_quant_scheme(dtype: rlx_gguf::GgmlType) -> Option<QuantSchem
         // 27B never expands to ~108 GB of F32 weights.
         GgmlType::Q1_0 => Some(QuantScheme::GgufQ1_0),
         GgmlType::Q2_0 => Some(QuantScheme::GgufQ2_0),
+        // Fermion five-value ternary (Neutrino-8B) — keep packed so the 8B
+        // stays ~4 GB instead of expanding to ~32 GB of F32 weights.
+        GgmlType::FV5 => Some(QuantScheme::GgufFV5),
+        GgmlType::FV5B => Some(QuantScheme::GgufFV5B),
         _ => None,
     }
 }
@@ -487,6 +491,23 @@ fn probe_q6k_block_dequant() -> bool {
     (out_block[0] - full[0]).abs() < 1e-4
 }
 
+/// Structure-only metadata for an MLX packed Linear (see
+/// [`WeightLoader::packed_mlx_meta`]): everything needed to size the graph's
+/// params EXCEPT the large `w_q` codes, which are deferred to per-shard load.
+#[derive(Clone, Debug)]
+pub struct PackedMlxMeta {
+    /// Byte length of the deferred `w_q` codes (sizes the U8 param).
+    pub w_q_len: usize,
+    /// Small per-group scales (affine: f32 LE; mxfp: u8) — kept, not deferred.
+    pub scales: Vec<u8>,
+    /// Small per-group biases (affine: f32 LE; mxfp: dummy) — kept.
+    pub biases: Vec<u8>,
+    pub scheme: rlx_ir::quant::QuantScheme,
+    /// Logical dense output shape `[out_features, in_features]`.
+    pub out_shape: Vec<usize>,
+    pub n_groups: usize,
+}
+
 /// Common interface every weight format must satisfy. Mirrors the
 /// existing `WeightMap` API so the safetensors impl is a one-line
 /// adapter.
@@ -515,10 +536,41 @@ pub trait WeightLoader: Send {
         let _ = key;
         Ok(None)
     }
+    /// Take a quantized Linear as separate packed MLX arrays (weight codes +
+    /// f32 scales + f32 biases) for a 4-input `Op::DequantMatMul`. Default
+    /// `None` — only MLX-native loaders implement it. Callers try this
+    /// *before* [`take_packed`](Self::take_packed) (single-blob GGUF).
+    fn take_packed_mlx(&mut self, key: &str) -> Result<Option<MlxPackedLinear>> {
+        let _ = key;
+        Ok(None)
+    }
     /// Borrow packed bytes without marking taken (GGUF mmap path).
     fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
         let _ = key;
         None
+    }
+    /// Non-destructive K-quant metadata: `(scheme, shape)` for a packed tensor,
+    /// or `None` for non-K-quant / absent tensors. Unlike [`take_packed`](Self::take_packed)
+    /// this copies **no bytes** and does **not** mark the tensor taken, so a
+    /// bucketed builder can re-read it on every graph rebuild. Bytes are
+    /// uploaded separately, zero-copy, via
+    /// [`tensor_bytes_borrowed`](Self::tensor_bytes_borrowed) after compile —
+    /// which keeps the quantized model from being duplicated in RSS. Default
+    /// `None` (loaders without a zero-copy packed path fall back to `take_packed`).
+    fn packed_meta(&self, key: &str) -> Option<(rlx_ir::quant::QuantScheme, Vec<usize>)> {
+        let _ = key;
+        None
+    }
+    /// **Structure-only** metadata for an MLX packed Linear: the byte length of
+    /// the (large) `w_q` codes plus the small scales/biases + scheme/shape, so a
+    /// builder can size the U8 codes param WITHOUT retaining the codes
+    /// themselves. Default `None` — normal loaders load packed weights whole via
+    /// [`take_packed_mlx`](Self::take_packed_mlx); a structure-only wrapper
+    /// returns `Some` (dropping the codes) so a coordinator can build a graph
+    /// larger than its RAM. The worker later re-fetches its shard's codes.
+    fn packed_mlx_meta(&mut self, key: &str) -> Result<Option<PackedMlxMeta>> {
+        let _ = key;
+        Ok(None)
     }
     /// Names that haven't been taken yet — useful for "did the
     /// model use every weight?" hygiene checks.
@@ -551,9 +603,86 @@ impl WeightLoader for WeightMap {
     }
 }
 
+/// Forward every method to the boxed inner so a `Box<dyn WeightLoader>` is
+/// itself a [`WeightLoader`]. Lets a callsite pick a loader at runtime (e.g.
+/// mlx-affine vs plain safetensors) and still feed it to generic-over-`L`
+/// consumers like [`HfTranslatingLoader`]. All defaulted methods are forwarded
+/// too — otherwise the box would hide the inner's `take_packed`/`take_packed_mlx`.
+impl WeightLoader for Box<dyn WeightLoader> {
+    fn format_id(&self) -> &'static str {
+        (**self).format_id()
+    }
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+    fn is_empty(&self) -> bool {
+        (**self).is_empty()
+    }
+    fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        (**self).take(key)
+    }
+    fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        (**self).take_transposed(key)
+    }
+    fn take_packed(&mut self, key: &str) -> Result<Option<crate::weight_map::PackedWeightTensor>> {
+        (**self).take_packed(key)
+    }
+    fn take_packed_mlx(&mut self, key: &str) -> Result<Option<MlxPackedLinear>> {
+        (**self).take_packed_mlx(key)
+    }
+    fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
+        (**self).tensor_bytes_borrowed(key)
+    }
+    fn packed_meta(&self, key: &str) -> Option<(rlx_ir::quant::QuantScheme, Vec<usize>)> {
+        (**self).packed_meta(key)
+    }
+    fn remaining_keys(&self) -> Vec<String> {
+        (**self).remaining_keys()
+    }
+    fn arch_hint(&self) -> Option<&str> {
+        (**self).arch_hint()
+    }
+}
+
 /// F32 tensor stored in a shared host cache (`Arc` avoids cloning multi-GB
 /// weights on every graph build).
 pub type ArcF32Tensor = (Arc<Vec<f32>>, Vec<usize>);
+
+/// Cache-blocked row-major 2-D transpose. `src` is `[rows, cols]` row-major
+/// (element `(i, j)` at `i*cols + j`); returns `[cols, rows]` row-major
+/// (`(i, j)` moves to `(j, i)`).
+///
+/// Loaders bridge PyTorch's row-major linear weights to RLX's column-major IR,
+/// so *every* 2-D weight is transposed on *every* graph build. The naive
+/// `dst[j*rows + i] = src[i*cols + j]` loop writes down a fresh column each
+/// step, evicting a cache line per element — pathological for multi-GB
+/// matrices. Iterating in tiles keeps a small block of the strided destination
+/// axis resident, cutting cache/TLB misses by roughly the tile size. Output is
+/// byte-identical to the naive loop (see `transpose_matches_naive`).
+pub(crate) fn transpose_2d_rowmajor(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    debug_assert_eq!(src.len(), rows * cols, "transpose shape mismatch");
+    let mut dst = vec![0f32; src.len()];
+    // ~64 f32 ≈ one cache line per axis; a 64×64 tile is 16 KiB, comfortably
+    // inside L1/L2 while amortizing the strided write stride over the block.
+    const BLK: usize = 64;
+    let mut i0 = 0;
+    while i0 < rows {
+        let i1 = (i0 + BLK).min(rows);
+        let mut j0 = 0;
+        while j0 < cols {
+            let j1 = (j0 + BLK).min(cols);
+            for i in i0..i1 {
+                let row = &src[i * cols..i * cols + cols];
+                for j in j0..j1 {
+                    dst[j * rows + i] = row[j];
+                }
+            }
+            j0 = j1;
+        }
+        i0 = i1;
+    }
+    dst
+}
 
 /// [`WeightLoader`] view over a frozen `HashMap` of [`ArcF32Tensor`].
 /// Graph builders [`take`](WeightLoader::take) tensors out of this view
@@ -584,21 +713,126 @@ impl WeightLoader for ArcCacheLoader<'_> {
         Ok((data.as_ref().clone(), shape.clone()))
     }
     fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
-        let (data, shape) = self.take(key)?;
+        // Borrow the cached `Arc` and transpose straight out of it — the old
+        // path went through `take`, materializing a full throwaway clone of the
+        // (multi-GB) weight just to feed the transpose. Here the only
+        // allocation is the transposed result itself.
+        let (data, shape) = self
+            .cache
+            .get(key)
+            .ok_or_else(|| anyhow!("weight not found in arc cache: {key}"))?;
         if shape.len() != 2 {
             anyhow::bail!("transpose requires 2D, got {shape:?}");
         }
         let (rows, cols) = (shape[0], shape[1]);
-        let mut transposed = vec![0f32; data.len()];
-        for i in 0..rows {
-            for j in 0..cols {
-                transposed[j * rows + i] = data[i * cols + j];
-            }
-        }
-        Ok((transposed, vec![cols, rows]))
+        Ok((
+            transpose_2d_rowmajor(data.as_ref(), rows, cols),
+            vec![cols, rows],
+        ))
     }
     fn remaining_keys(&self) -> Vec<String> {
         self.cache.keys().cloned().collect()
+    }
+}
+
+// ─── MLX (mlx-community) loader ───────────────────────────────────
+//
+// mlx-lm checkpoints keep HF-standard tensor names (`model.layers.N.
+// self_attn.q_proj.weight`, …) but quantized packs store the Linear as
+// three tensors: `*.weight` (packed uint32 codes), `*.scales`, `*.biases`.
+// A `config.json` `quantization` block selects affine / mxfp. This loader
+// dequantizes to dense f32 for gather tables + norms, and hands the packed
+// affine triples straight to a 4-input `Op::DequantMatMul` on backends that
+// support `QuantScheme::MlxAffine`.
+
+/// A quantized Linear as separate packed MLX arrays for a 4-input
+/// `Op::DequantMatMul` (`x`, `w_q`, `scales`, `biases`).
+/// A quantized Linear as separate packed MLX arrays (weight codes + scales +
+/// biases as raw bytes, with `scale_dtype()`/`bias_dtype()` helpers). Re-exports
+/// the rlx-mlx-io carrier so downstream crates need no direct rlx-mlx-io dep.
+pub use rlx_mlx_io::MlxPackedLinear;
+/// Host dequantizer for one MLX-affine packed matrix (`codes`,`scales`,`biases`
+/// → row-major `[rows, n_groups*group_size]` F32). Re-exported so dedicated
+/// crates (e.g. rlx-laguna) can add an affine matmul path without a direct
+/// rlx-mlx-io dependency.
+pub use rlx_mlx_io::dequant_affine_f32;
+
+/// [`WeightLoader`] over an mlx-community weight directory / safetensors. The
+/// backing is either eager (whole checkpoint in RAM) or lazy (mmap, tensors
+/// materialized on demand) — see [`MlxLoader::open`] vs [`MlxLoader::open_lazy`].
+pub struct MlxLoader {
+    w: Box<dyn rlx_mlx_io::MlxRead>,
+    taken: HashSet<String>,
+}
+
+impl MlxLoader {
+    /// Open an mlx-community model directory, `.safetensors`, `.npz`, or `.npy`
+    /// **eagerly** (whole checkpoint loaded into RAM).
+    pub fn open(path: &str) -> Result<Self> {
+        let w =
+            rlx_mlx_io::load_path(path).with_context(|| format!("load mlx weights from {path}"))?;
+        Ok(Self {
+            w: Box::new(w),
+            taken: HashSet::new(),
+        })
+    }
+
+    /// Open an mlx-community directory / `.safetensors` **lazily** (mmap; each
+    /// tensor materialized only when taken). Peak RAM is one tensor + dequant
+    /// scratch, so a pipeline worker can load its shard of a model far larger
+    /// than its own RAM. `.npz`/`.npy` aren't supported — use [`Self::open`].
+    pub fn open_lazy(path: &str) -> Result<Self> {
+        let w = rlx_mlx_io::load_path_lazy(path)
+            .with_context(|| format!("lazily load mlx weights from {path}"))?;
+        Ok(Self {
+            w: Box::new(w),
+            taken: HashSet::new(),
+        })
+    }
+
+    /// True when the mlx checkpoint declares a `quantization` block.
+    pub fn is_quantized(&self) -> bool {
+        self.w.mlx_config().quantization.is_some()
+    }
+}
+
+impl WeightLoader for MlxLoader {
+    fn format_id(&self) -> &'static str {
+        "mlx"
+    }
+    fn len(&self) -> usize {
+        self.w
+            .logical_keys()
+            .iter()
+            .filter(|k| !self.taken.contains(*k))
+            .count()
+    }
+    fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let out = self.w.take_dense_f32(key)?;
+        self.taken.insert(key.to_string());
+        Ok(out)
+    }
+    fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let (data, shape) = self.take(key)?;
+        if shape.len() != 2 {
+            anyhow::bail!("mlx transpose requires 2D, got {shape:?} for {key}");
+        }
+        let (rows, cols) = (shape[0], shape[1]);
+        Ok((transpose_2d_rowmajor(&data, rows, cols), vec![cols, rows]))
+    }
+    fn take_packed_mlx(&mut self, key: &str) -> Result<Option<MlxPackedLinear>> {
+        let Some(p) = self.w.take_packed_linear(key)? else {
+            return Ok(None);
+        };
+        self.taken.insert(key.to_string());
+        Ok(Some(p))
+    }
+    fn remaining_keys(&self) -> Vec<String> {
+        self.w
+            .logical_keys()
+            .into_iter()
+            .filter(|k| !self.taken.contains(k))
+            .collect()
     }
 }
 
@@ -721,6 +955,19 @@ impl GgufLoader {
             include_mtp: false,
             mtp_layer_threshold,
         })
+    }
+
+    /// An empty loader (no tensors) tagged with `arch`. Placeholder for runtimes
+    /// that hold their weights out-of-band (e.g. the laguna mlx-affine host path,
+    /// whose `PackedMlx` weights carry bytes inline and never touch a GGUF mmap).
+    pub fn empty(arch: &str) -> Self {
+        Self {
+            file: rlx_gguf::GgufFile::empty(),
+            arch: arch.to_string(),
+            taken: HashSet::new(),
+            include_mtp: false,
+            mtp_layer_threshold: None,
+        }
     }
 
     pub fn architecture(&self) -> &str {
@@ -934,8 +1181,7 @@ impl GgufLoader {
                 .file
                 .get(key)
                 .ok_or_else(|| anyhow!("MTP weight not found in GGUF: {key}"))?;
-            if !is_native_float_ggml(t.dtype) && !crate::gguf_support::laguna_allow_f32_expand()
-            {
+            if !is_native_float_ggml(t.dtype) && !crate::gguf_support::laguna_allow_f32_expand() {
                 return Err(anyhow!(
                     "F32 expand disabled for Laguna GGUF (`{key}` / take_mtp); \
                      set RLX_LAGUNA_ALLOW_F32_EXPAND=1 to opt in"
@@ -972,6 +1218,24 @@ impl WeightLoader for GgufLoader {
     fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
         GgufLoader::tensor_bytes_borrowed(self, key)
     }
+    fn packed_meta(&self, key: &str) -> Option<(rlx_ir::quant::QuantScheme, Vec<usize>)> {
+        // Non-destructive twin of `take_packed_metadata`: resolves the tensor
+        // and reports (scheme, shape) without touching `self.taken`, so the
+        // bucketed decode/prefill builders can re-read it on every rebuild while
+        // the bytes are served zero-copy by `tensor_bytes_borrowed`.
+        let real = self.resolve(key).ok()?;
+        if !self.include_mtp && self.is_mtp_tensor(&real) {
+            return None;
+        }
+        let t = self.file.get(&real)?;
+        let scheme = ggml_type_to_quant_scheme(t.dtype)?;
+        if !dequant_matmul_supported(scheme) {
+            return None;
+        }
+        let mut shape = t.shape.clone();
+        shape.reverse();
+        Some((scheme, shape))
+    }
     fn len(&self) -> usize {
         self.file
             .tensors
@@ -996,8 +1260,7 @@ impl WeightLoader for GgufLoader {
                 .file
                 .get(&real)
                 .ok_or_else(|| anyhow!("tensor missing: {real}"))?;
-            if !is_native_float_ggml(t.dtype) && !crate::gguf_support::laguna_allow_f32_expand()
-            {
+            if !is_native_float_ggml(t.dtype) && !crate::gguf_support::laguna_allow_f32_expand() {
                 return Err(anyhow!(
                     "F32 expand disabled for Laguna GGUF (`{key}` → {real}, {:?}): \
                      use packed/mmap (`take_packed` / `take_packed_metadata` / \
@@ -1060,13 +1323,7 @@ impl WeightLoader for GgufLoader {
             return Err(anyhow!("transpose requires 2D, got {shape:?}"));
         }
         let (rows, cols) = (shape[0], shape[1]);
-        let mut t = vec![0f32; data.len()];
-        for i in 0..rows {
-            for j in 0..cols {
-                t[j * rows + i] = data[i * cols + j];
-            }
-        }
-        Ok((t, vec![cols, rows]))
+        Ok((transpose_2d_rowmajor(&data, rows, cols), vec![cols, rows]))
     }
     fn remaining_keys(&self) -> Vec<String> {
         // MTP weights default to invisible — they belong to optional
@@ -1104,6 +1361,47 @@ impl GgufLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Naive reference transpose the blocked helper must match byte-for-byte.
+    fn transpose_naive(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+        let mut dst = vec![0f32; src.len()];
+        for i in 0..rows {
+            for j in 0..cols {
+                dst[j * rows + i] = src[i * cols + j];
+            }
+        }
+        dst
+    }
+
+    #[test]
+    fn transpose_matches_naive() {
+        // Cover shapes that straddle the 64-wide tile: exact tile, sub-tile,
+        // and non-square with both dims crossing a block boundary.
+        for &(rows, cols) in &[(3usize, 5usize), (64, 64), (65, 1), (1, 65), (100, 70)] {
+            let src: Vec<f32> = (0..rows * cols).map(|n| n as f32).collect();
+            assert_eq!(
+                transpose_2d_rowmajor(&src, rows, cols),
+                transpose_naive(&src, rows, cols),
+                "blocked != naive at {rows}x{cols}"
+            );
+        }
+    }
+
+    #[test]
+    fn arc_cache_take_transposed_is_correct_and_nondestructive() {
+        // [2, 3] row-major → [3, 2].
+        let mut cache: HashMap<String, ArcF32Tensor> = HashMap::new();
+        cache.insert(
+            "w".into(),
+            (Arc::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), vec![2, 3]),
+        );
+        let mut ldr = ArcCacheLoader::new(&cache);
+        let (t, shape) = ldr.take_transposed("w").unwrap();
+        assert_eq!(shape, vec![3, 2]);
+        assert_eq!(t, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+        // View loader: the backing cache is untouched, so a second take works.
+        assert!(ldr.take_transposed("w").is_ok());
+    }
 
     #[test]
     fn unknown_extension_errors() {
@@ -1557,13 +1855,8 @@ mod tests {
         .unwrap();
         let bias = vec![1.0f32, 2.0, 3.0, 4.0];
         let bias_bytes: Vec<u8> = bytemuck::cast_slice(&bias).to_vec();
-        w.add_tensor_bytes(
-            "blk.0.exp_probs_b.bias",
-            vec![4],
-            GgmlType::F32,
-            bias_bytes,
-        )
-        .unwrap();
+        w.add_tensor_bytes("blk.0.exp_probs_b.bias", vec![4], GgmlType::F32, bias_bytes)
+            .unwrap();
         w.write_to_path(&path).unwrap();
 
         let mut loader = GgufLoader::from_file(path.to_str().unwrap()).unwrap();
@@ -1574,9 +1867,7 @@ mod tests {
             msg.contains("disabled") || msg.contains("FORBIDDEN"),
             "expected Laguna F32 forbid, got: {msg}"
         );
-        let err2 = loader
-            .take_native_f32("blk.0.ffn_down.weight")
-            .unwrap_err();
+        let err2 = loader.take_native_f32("blk.0.ffn_down.weight").unwrap_err();
         assert!(
             format!("{err2:#}").contains("FORBIDDEN"),
             "take_native_f32 must refuse Q4K"

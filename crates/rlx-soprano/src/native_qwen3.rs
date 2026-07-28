@@ -97,7 +97,8 @@ impl SopranoQwen3 {
         let mut out = vec![0f32; ids.len() * HIDDEN];
         for (t, &id) in ids.iter().enumerate() {
             let src = (id as usize) * HIDDEN;
-            out[t * HIDDEN..(t + 1) * HIDDEN].copy_from_slice(&self.embed_tokens[src..src + HIDDEN]);
+            out[t * HIDDEN..(t + 1) * HIDDEN]
+                .copy_from_slice(&self.embed_tokens[src..src + HIDDEN]);
         }
         out
     }
@@ -159,7 +160,11 @@ impl SopranoQwen3 {
         let eb: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&embeds).to_vec();
         let outs = g.run_typed(&[("inputs_embeds", &eb, DType::F32)]);
         let hidden = as_f32(&outs[0].0);
-        anyhow::ensure!(hidden.len() >= seq * HIDDEN, "hidden {} short", hidden.len());
+        anyhow::ensure!(
+            hidden.len() >= seq * HIDDEN,
+            "hidden {} short",
+            hidden.len()
+        );
         Ok((real, hidden))
     }
 

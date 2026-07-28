@@ -550,10 +550,7 @@ mod tests {
         let out = extract_rel_pos(&raw, dh, size);
         assert_eq!(out.len(), size * size * dh);
         let mid = (size - 1) as f32;
-        assert_eq!(
-            &out[(1 * size + 1) * dh..(1 * size + 1) * dh + dh],
-            &[mid, mid]
-        );
+        assert_eq!(&out[(size + 1) * dh..(size + 1) * dh + dh], &[mid, mid]);
     }
 
     #[test]

@@ -54,8 +54,10 @@ impl TtsAdapter for ChatterboxAdapter {
 
     fn synthesize(&mut self, req: SynthRequest<'_>) -> Result<SynthResult> {
         let (ref_pcm, ref_sr) = resolve_ref(req.clone.as_ref(), &self.dir)?;
-        let mut opts = SynthOpts::default();
-        opts.seed = req.seed;
+        let opts = SynthOpts {
+            seed: req.seed,
+            ..Default::default()
+        };
         let t0 = Instant::now();
         let pcm = self.inner.synthesize(req.text, &ref_pcm, ref_sr, &opts)?;
         Ok(SynthResult {

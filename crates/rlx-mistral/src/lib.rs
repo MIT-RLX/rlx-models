@@ -24,9 +24,13 @@
 //! Mistral 3's per-layer sliding-window mask or Mistral-specific RoPE
 //! base — runs will produce *some* tokens but won't match the upstream
 //! reference until those land in `rlx-llama32`. PLAN.md M4 follow-up.
+//!
+//! Multimodal (Pixtral mmproj) lives in `rlx-mistral-vl`.
 
 use anyhow::{Context, Result, bail};
+use rlx_cli::LmRunner;
 use rlx_llama_base::LlamaBaseConfig;
+use rlx_runtime::Device;
 use std::path::{Path, PathBuf};
 
 pub use rlx_llama32::{Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder};
@@ -62,12 +66,60 @@ impl MistralRunner {
     ) -> Result<Vec<u32>> {
         self.inner.generate_packed(prompt_ids, n_new, on_token)
     }
+    pub fn predict_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        self.inner.predict_logits(prompt_ids)
+    }
+    /// Register a one-shot multimodal embed splice for the next `generate`
+    /// (packed `input_embeddings` path). See
+    /// [`rlx_llama32::Llama32Runner::set_multimodal_embed_override`].
+    pub fn set_multimodal_embed_override(&mut self, start: usize, embeds: Vec<f32>) {
+        self.inner.set_multimodal_embed_override(start, embeds);
+    }
+    /// Whether a registered multimodal splice is still unconsumed.
+    pub fn multimodal_override_pending(&self) -> bool {
+        self.inner.multimodal_override_pending()
+    }
+    /// Drop any unconsumed multimodal splice.
+    pub fn clear_multimodal_embed_override(&mut self) {
+        self.inner.clear_multimodal_embed_override();
+    }
+    pub fn generate(
+        &mut self,
+        prompt_ids: &[u32],
+        n_new: usize,
+        on_token: impl FnMut(u32),
+    ) -> Result<Vec<u32>> {
+        self.inner.generate(prompt_ids, n_new, on_token)
+    }
+}
+
+impl LmRunner for MistralRunner {
+    fn family(&self) -> &'static str {
+        "mistral"
+    }
+    fn vocab_size(&self) -> usize {
+        self.inner.config().vocab_size
+    }
+    fn predict_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        MistralRunner::predict_logits(self, prompt_ids)
+    }
+    fn generate(
+        &mut self,
+        prompt_ids: &[u32],
+        n_new: usize,
+        on_token: &mut dyn FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        MistralRunner::generate(self, prompt_ids, n_new, |tok| {
+            let _ = on_token(tok);
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct MistralRunnerBuilder {
     weights: Option<PathBuf>,
     inner: Llama32RunnerBuilder,
+    accept_llama_arch: bool,
 }
 
 impl MistralRunnerBuilder {
@@ -75,6 +127,17 @@ impl MistralRunnerBuilder {
         let p: PathBuf = path.into();
         self.weights = Some(p.clone());
         self.inner = self.inner.weights(p);
+        self
+    }
+    /// Also accept `general.architecture = llama`. Mistral-Small-3.x / Ministral
+    /// checkpoints are frequently converted with the legacy `llama` tag (they
+    /// are Llama-shaped), so an arch check alone can't tell them from genuine
+    /// Mistral-1/2. Opt in only when the Mistral-3 identity is already confirmed
+    /// out-of-band — e.g. a paired Pixtral mmproj, which never accompanies a
+    /// plain Mistral-1/2 text model. See [`crate::MistralRunner`] and
+    /// `rlx-mistral-vl`.
+    pub fn accept_llama_arch(mut self, on: bool) -> Self {
+        self.accept_llama_arch = on;
         self
     }
     pub fn max_seq(mut self, n: usize) -> Self {
@@ -85,6 +148,10 @@ impl MistralRunnerBuilder {
         self.inner = self.inner.packed_weights(on);
         self
     }
+    pub fn device(mut self, d: Device) -> Self {
+        self.inner = self.inner.device(d);
+        self
+    }
     pub fn build(self) -> Result<MistralRunner> {
         let weights = self
             .weights
@@ -93,10 +160,13 @@ impl MistralRunnerBuilder {
             .clone();
         let config = LlamaBaseConfig::from_gguf_path(&weights)
             .with_context(|| format!("rlx-mistral: parse {weights:?}"))?;
-        if !ACCEPTED_ARCHES.contains(&config.arch.as_str()) {
+        let arch_ok = ACCEPTED_ARCHES.contains(&config.arch.as_str())
+            || (self.accept_llama_arch && config.arch == "llama");
+        if !arch_ok {
             bail!(
                 "rlx-mistral: expected `general.architecture` ∈ {ACCEPTED_ARCHES:?}; \
-                 got `{}` at {weights:?} (Mistral 1/2 ship as `llama` — use rlx-llama32 directly)",
+                 got `{}` at {weights:?} (Mistral 1/2 ship as `llama` — use rlx-llama32 directly; \
+                 for a Mistral-3 VL checkpoint tagged `llama`, build with `.accept_llama_arch(true)`)",
                 config.arch
             );
         }

@@ -47,11 +47,7 @@ fn sigmoid(x: f32) -> f32 {
 }
 
 fn softplus(x: f32) -> f32 {
-    if x > 20.0 {
-        x
-    } else {
-        (1.0 + x.exp()).ln()
-    }
+    if x > 20.0 { x } else { (1.0 + x.exp()).ln() }
 }
 
 fn rms_norm(x: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
@@ -102,7 +98,15 @@ fn softmax_row(logits: &mut [f32]) {
     }
 }
 
-fn apply_rope_inplace(x: &mut [f32], cos: &[f32], sin: &[f32], seq: usize, n_heads: usize, hd: usize, rot_dim: usize) {
+fn apply_rope_inplace(
+    x: &mut [f32],
+    cos: &[f32],
+    sin: &[f32],
+    seq: usize,
+    n_heads: usize,
+    hd: usize,
+    rot_dim: usize,
+) {
     let half = rot_dim / 2;
     for t in 0..seq {
         for h in 0..n_heads {
@@ -120,17 +124,36 @@ fn apply_rope_inplace(x: &mut [f32], cos: &[f32], sin: &[f32], seq: usize, n_hea
     }
 }
 
-fn dense_mlp(x: &[f32], w: &TextWeights, layer: usize, seq: usize, h: usize, inter: usize) -> Result<Vec<f32>> {
+fn dense_mlp(
+    x: &[f32],
+    w: &TextWeights,
+    layer: usize,
+    seq: usize,
+    h: usize,
+    inter: usize,
+) -> Result<Vec<f32>> {
     let gate = linear(x, w.get(&format!("layers.{layer}.gate"))?, seq, inter, h);
     let up = linear(x, w.get(&format!("layers.{layer}.up"))?, seq, inter, h);
     let mut mid = vec![0.0; seq * inter];
     for i in 0..mid.len() {
         mid[i] = silu(gate[i]) * up[i];
     }
-    Ok(linear(&mid, w.get(&format!("layers.{layer}.down"))?, seq, h, inter))
+    Ok(linear(
+        &mid,
+        w.get(&format!("layers.{layer}.down"))?,
+        seq,
+        h,
+        inter,
+    ))
 }
 
-fn moe_mlp(cfg: &LagunaConfig, x: &[f32], w: &TextWeights, layer: usize, seq: usize) -> Result<Vec<f32>> {
+fn moe_mlp(
+    cfg: &LagunaConfig,
+    x: &[f32],
+    w: &TextWeights,
+    layer: usize,
+    seq: usize,
+) -> Result<Vec<f32>> {
     let h = cfg.hidden_size;
     let ne = cfg.num_experts;
     let top_k = cfg.num_experts_per_tok.min(ne).max(1);
@@ -235,7 +258,13 @@ fn dense_mlp_named(
     Ok(linear(&mid, w.get(down_k)?, seq, h, inter))
 }
 
-fn attention(cfg: &LagunaConfig, layer: usize, x: &[f32], w: &TextWeights, seq: usize) -> Result<Vec<f32>> {
+fn attention(
+    cfg: &LagunaConfig,
+    layer: usize,
+    x: &[f32],
+    w: &TextWeights,
+    seq: usize,
+) -> Result<Vec<f32>> {
     let h = cfg.hidden_size;
     let n_heads = cfg.n_heads(layer);
     let n_kv = cfg.num_key_value_heads;
@@ -393,13 +422,21 @@ pub fn forward_logits(cfg: &LagunaConfig, w: &TextWeights, prompt_ids: &[u32]) -
 
     for layer in 0..cfg.num_hidden_layers {
         let residual = x.clone();
-        let normed = rms_norm(&x, w.get(&format!("layers.{layer}.attn_norm"))?, cfg.rms_norm_eps);
+        let normed = rms_norm(
+            &x,
+            w.get(&format!("layers.{layer}.attn_norm"))?,
+            cfg.rms_norm_eps,
+        );
         let attn = attention(cfg, layer, &normed, w, seq)?;
         for i in 0..x.len() {
             x[i] = residual[i] + attn[i];
         }
         let residual = x.clone();
-        let normed = rms_norm(&x, w.get(&format!("layers.{layer}.ffn_norm"))?, cfg.rms_norm_eps);
+        let normed = rms_norm(
+            &x,
+            w.get(&format!("layers.{layer}.ffn_norm"))?,
+            cfg.rms_norm_eps,
+        );
         let ffn = if cfg.is_dense_mlp(layer) {
             dense_mlp(&normed, w, layer, seq, h, cfg.intermediate_size)?
         } else {

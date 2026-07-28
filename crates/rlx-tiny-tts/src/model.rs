@@ -620,7 +620,7 @@ impl TinyModel {
                 dbg_dump(&format!("dec_out_{i}"), &v);
             }
         }
-        // Catch the MSI wgpu/vulkan failure mode: duration collapse → y_len=1 →
+        // Catch the NVIDIA wgpu/vulkan failure mode: duration collapse → y_len=1 →
         // exactly 512 samples of near-silence after the 512× HiFi-GAN upsample.
         crate::audio::ensure_audible(&wav).with_context(|| {
             format!("device={device:?} y_len={y_len} (decoder upsample is 512× per frame)")
@@ -723,7 +723,13 @@ pub fn import_graph_named(
     // Keep If/scalar TLS payloads so we can reinstall after shape propagation
     // without reopening the nested pack (`build_hir_from_parts` drains TLS).
     let mut native_tls: Option<(
-        std::collections::HashMap<String, (Vec<rlx_onnx_import::BundleNode>, Vec<rlx_onnx_import::BundleNode>)>,
+        std::collections::HashMap<
+            String,
+            (
+                Vec<rlx_onnx_import::BundleNode>,
+                Vec<rlx_onnx_import::BundleNode>,
+            ),
+        >,
         std::collections::HashSet<String>,
     )> = None;
     let (manifest, mut nodes, params, mut i64_params, init_shapes) = if is_native_rlxp {
@@ -731,13 +737,7 @@ pub fn import_graph_named(
             .with_context(|| format!("load native subgraph {}", path.display()))?;
         rlx_assets::native_pack::install_native_subgraph_tls(&g);
         native_tls = Some((g.if_branches.clone(), g.scalar_consts.clone()));
-        (
-            g.manifest,
-            g.nodes,
-            g.params,
-            g.i64_params,
-            g.init_shapes,
-        )
+        (g.manifest, g.nodes, g.params, g.i64_params, g.init_shapes)
     } else if is_native_dir {
         anyhow::bail!(
             "loose graph dir {} is unsupported — use graphs/<name>.rlxp",

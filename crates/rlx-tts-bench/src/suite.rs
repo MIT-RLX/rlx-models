@@ -94,13 +94,7 @@ pub fn run_suite(cfg: &RunConfig) -> Result<Vec<BenchRow>> {
                                 msg.clone(),
                             )
                         } else {
-                            failed_row(
-                                model,
-                                device_label(device),
-                                phrase_id,
-                                "plain",
-                                msg.clone(),
-                            )
+                            failed_row(model, device_label(device), phrase_id, "plain", msg.clone())
                         };
                         push_row(cfg, &mut rows, row);
                     }
@@ -531,10 +525,7 @@ fn ok_row(
 }
 
 pub fn list_adapters() {
-    println!(
-        "{:<14} {:<8} {:<12} {}",
-        "model", "clone", "feature", "weights"
-    );
+    println!("{:<14} {:<8} {:<12} weights", "model", "clone", "feature");
     for m in catalog() {
         let status = if m.id == "fake" || m.hints.available() {
             format!("OK {}", m.hints.resolve_dir().unwrap_or_default().display())

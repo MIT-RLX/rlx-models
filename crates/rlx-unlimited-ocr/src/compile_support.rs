@@ -73,7 +73,7 @@ where
 /// Pack-aware compile/run guard.
 ///
 /// On Metal + Q4_0 soft-pack, disables fused grouped GEMV unless the user
-/// already set `RLX_METAL_GROUPED_GEMV_DISABLE`. crates.io `rlx` 0.2.13 still
+/// already set `RLX_METAL_GROUPED_GEMV_DISABLE`. crates.io `rlx` 0.2.14 still
 /// ships an interleaved-nibble `q4_0_mv_f32`; the non-fused path stays correct.
 /// Local RLX with the split-nibble GEMV fix can set
 /// `RLX_METAL_GROUPED_GEMV_DISABLE=0` to keep the fast path.

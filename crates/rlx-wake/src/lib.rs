@@ -17,12 +17,12 @@
 
 pub mod audio;
 pub mod bench;
+pub mod cnn;
 pub mod device;
 pub mod mel;
 pub mod metrics;
 pub mod ops;
 pub mod parity;
-pub mod cnn;
 pub mod ternary;
 pub mod train;
 pub mod weights_io;
@@ -31,6 +31,7 @@ use anyhow::Result;
 
 pub use audio::{SAMPLE_RATE_16K, load_wav_mono_f32, parse_wav_mono_f32, resample_linear};
 pub use bench::{BenchStats, bench_engine, print_bench_table};
+pub use cnn::{WakeCnn, WakeCnnConfig, WakeCnnWeights};
 pub use device::{
     available_device_labels, available_devices, bench_device_label, bind_streaming_device,
     ensure_backend_ready, parse_device_list, resolve_device, streaming_execution_device,
@@ -44,11 +45,10 @@ pub use parity::{
     BackendParityRow, assert_100_percent_parity, max_abs_score_delta, run_backend_parity,
     score_parity_fraction, scores_exact_match,
 };
-pub use cnn::{WakeCnn, WakeCnnConfig, WakeCnnWeights};
 pub use ternary::{TernaryOpts, TernaryStats, is_ternary_f32, ternarize, ternarize_inplace};
 pub use train::{
-    LabeledClip, MlpConfig, MlpWeights, SgdConfig, CnnTrainConfig, TrainReport,
-    load_pos_neg_dirs, synth_pos_neg_dataset, train_mlp, train_wake_cnn, write_synth_corpus,
+    CnnTrainConfig, LabeledClip, MlpConfig, MlpWeights, SgdConfig, TrainReport, load_pos_neg_dirs,
+    synth_pos_neg_dataset, train_mlp, train_wake_cnn, write_synth_corpus,
 };
 
 /// Default openWakeWord-style hop (80 ms @ 16 kHz).

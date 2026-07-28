@@ -4,7 +4,7 @@
 # Local (Apple Silicon):
 #   scripts/matrix/bonsai27b_bench.sh
 #
-# MSI CUDA (after sync):
+# On the CUDA host (after sync):
 #   scripts/matrix/bonsai27b_bench.sh --cuda-only
 #   # or from Mac: scripts/matrix/bonsai27b_bench.sh --remote-cuda
 #
@@ -48,17 +48,18 @@ mkdir -p "$OUT_DIR"
 cd "$REPO"
 
 if [ "$MODE" = "remote-cuda" ]; then
-  echo ">> sync trees to msi"
-  bash "$HERE/sync_to_msi.sh"
+  HOST="${RLX_CUDA_HOST:?set RLX_CUDA_HOST to your CUDA host, e.g. user@host}"
+  echo ">> sync trees to $HOST"
+  bash "$HERE/sync_to_remote.sh"
   echo ">> remote CUDA bench"
-  ssh msi "export PATH=\$HOME/.cargo/bin:/usr/local/cuda/bin:\$PATH; \
+  ssh "$HOST" "export PATH=\$HOME/.cargo/bin:/usr/local/cuda/bin:\$PATH; \
     export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\$LD_LIBRARY_PATH; \
     BONSAI_GGUF=\$HOME/rlx-models/weights/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf \
     BONSAI_MAX_TOKENS=$MAX_TOKENS BONSAI_OUT=\$HOME/rlx-models/scripts/matrix/out/bonsai27b_bench \
     bash \$HOME/rlx-models/scripts/matrix/bonsai27b_bench.sh --cuda-only"
   mkdir -p "$OUT_DIR"
-  scp msi:rlx-models/scripts/matrix/out/bonsai27b_bench/cuda.log "$OUT_DIR/cuda.log" || true
-  scp msi:rlx-models/scripts/matrix/out/bonsai27b_bench/summary.md "$OUT_DIR/summary_cuda.md" || true
+  scp "$HOST":rlx-models/scripts/matrix/out/bonsai27b_bench/cuda.log "$OUT_DIR/cuda.log" || true
+  scp "$HOST":rlx-models/scripts/matrix/out/bonsai27b_bench/summary.md "$OUT_DIR/summary_cuda.md" || true
   echo ">> pulled CUDA logs to $OUT_DIR"
   exit 0
 fi

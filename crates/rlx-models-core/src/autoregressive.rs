@@ -27,9 +27,6 @@ use std::collections::HashMap;
 /// Decode step outputs: logits plus per-layer K/V (row-major `[seq * kv_dim]`).
 pub type DecodeLogitsKv = (Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>);
 
-type PackedUploadMap<'a> =
-    Option<&'a HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>>;
-
 pub use rlx_runtime::kv_cache::LayerKvCache as KvCacheState;
 
 /// LRU prefill cache key: `(batch << 32) | seq`.
@@ -52,8 +49,13 @@ pub fn prefill_cache_key(batch: usize, seq: usize) -> u64 {
 /// **CUDA is excluded for Qwen3.5/Bonsai** — enabling it scaled elementwise /
 /// GDN correctly but Q1 packed prefill still diverged (zero tokens). Prefer a
 /// tight `prefill_seq` compile for short CUDA prompts instead.
-/// Set `RLX_DISABLE_ACTIVE_EXTENT=1` to force full-bucket compute on the other
-/// backends too.
+///
+/// wgpu (Gpu) / Vulkan are back on: the active-extent divergence on MLX-packed
+/// Qwen3 prefill was a `Step::GatherAxis` bug (it scaled `total` by
+/// `actual/upper`, dropping trailing lanes for the seq-collapsing last-token
+/// gather where `outer=1`). Fixed in rlx-wgpu to scale only the leading `outer`
+/// dim; wgpu now matches CPU with active-extent on.
+/// Set `RLX_DISABLE_ACTIVE_EXTENT=1` to force full-bucket compute everywhere.
 pub fn packed_prefill_active_extent_enabled(device: Device) -> bool {
     if rlx_ir::env::var("RLX_DISABLE_ACTIVE_EXTENT").as_deref() == Some("1") {
         return false;
@@ -714,7 +716,7 @@ where
 }
 
 /// Graph variant of [`run_bucketed_kv_decode_hir_scratch`] for packed tier-0 builders.
-pub fn run_bucketed_kv_decode_graph_layers_scratch<F>(
+pub fn run_bucketed_kv_decode_graph_layers_scratch<F, U>(
     cache: &mut BucketedCompileCache,
     past_seq: usize,
     kv: &LayerKvCache,
@@ -724,13 +726,16 @@ pub fn run_bucketed_kv_decode_graph_layers_scratch<F>(
     padded_v: &mut [Vec<f32>],
     fixed_inputs: &[CacheRunInput<'_>],
     build: F,
-    packed_upload: PackedUploadMap<'_>,
-    f32_param_keys: &std::collections::HashSet<String>,
+    // Uploads this bucket's packed weights into the freshly-built graph — called
+    // once per bucket on first build. Decouples the helper from how weights are
+    // stored (owned bytes vs. borrowed-from-mmap recipes).
+    upload_packed: Option<U>,
     packed_loaded: &mut std::collections::HashSet<u64>,
     options: &CompileOptions,
 ) -> Result<DecodeLogitsKv>
 where
     F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>),
+    U: FnOnce(&mut CompiledGraph),
 {
     let key = past_seq as u64;
     let needs_build = cache.compiled_for_key_mut(key).is_none();
@@ -738,14 +743,9 @@ where
         .ensure_graph_with_params(key, build, options)
         .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?;
     if needs_build {
-        if let Some(packed) = packed_upload {
+        if let Some(upload) = upload_packed {
             if packed_loaded.insert(upper_u64) {
-                for (name, (bytes, _scheme, _shape)) in packed {
-                    if bytes.is_empty() || f32_param_keys.contains(name.as_str()) {
-                        continue;
-                    }
-                    compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-                }
+                upload(compiled);
             }
         }
     }

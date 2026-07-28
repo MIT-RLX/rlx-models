@@ -26,7 +26,7 @@ code stream (hence the waveform) stays bit-identical across backends.
 | **Metal** | ✅ | prefill + sampler on CPU; codec on Metal |
 | **MLX** | ✅ | sampler on CPU; cos 1.0 vs CPU |
 | **wgpu** | ✅ | prefill + sampler on CPU; codec on wgpu |
-| **CUDA** | ✅ | msi: prefill on CUDA by default; codec on CPU (`RLX_MOSS_CODEC_DEVICE=gpu` to force) |
+| **CUDA** | ✅ | NVIDIA: prefill on CUDA by default; codec on CPU (`RLX_MOSS_CODEC_DEVICE=gpu` to force) |
 
 ## Setup
 

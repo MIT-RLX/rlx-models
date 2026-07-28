@@ -132,7 +132,10 @@ fn transcribe(args: &[String]) -> Result<()> {
             bail!("warm transcript diverged from cold:\n  cold={text}\n  warm={text2}");
         }
     } else {
-        eprintln!("[rlx-conformer-ctc] {cold_ms:.1} ms (cached={})", asr.cached_encoder_count());
+        eprintln!(
+            "[rlx-conformer-ctc] {cold_ms:.1} ms (cached={})",
+            asr.cached_encoder_count()
+        );
     }
 
     println!("{text}");

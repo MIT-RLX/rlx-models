@@ -37,7 +37,7 @@ pub fn load_weights(dir: &Path) -> anyhow::Result<LoadedWeights> {
         Vec::new();
     for name in st.names() {
         let view = st.tensor(name)?;
-        let shape: Vec<usize> = view.shape().iter().copied().collect();
+        let shape: Vec<usize> = view.shape().to_vec();
         match view.dtype() {
             safetensors::tensor::Dtype::F32 => {
                 let mut data = Vec::with_capacity(view.data().len() / 4);
@@ -82,20 +82,20 @@ pub fn load_weights(dir: &Path) -> anyhow::Result<LoadedWeights> {
         let scale = scale_for(&f32, &name).copied().unwrap_or(1.0);
         let zp = zp_for(&f32, &name);
         let data: Vec<f32> = match dt {
-            safetensors::tensor::Dtype::U8 => raw.iter().map(|&b| (b as f32 - zp) * scale).collect(),
+            safetensors::tensor::Dtype::U8 => {
+                raw.iter().map(|&b| (b as f32 - zp) * scale).collect()
+            }
             _ => raw.iter().map(|&b| (b as i8 as f32 - zp) * scale).collect(),
         };
         let out_name = name.strip_suffix("_quantized").unwrap_or(&name).to_string();
-        if !f32.contains_key(&out_name) {
-            f32.insert(out_name.clone(), (data.clone(), shape.clone()));
-        }
-        if name.ends_with("_quantized") && !f32.contains_key(name.as_str()) {
-            f32.insert(name.clone(), (data.clone(), shape.clone()));
+        f32.entry(out_name)
+            .or_insert_with(|| (data.clone(), shape.clone()));
+        if name.ends_with("_quantized") {
+            f32.entry(name.clone())
+                .or_insert_with(|| (data.clone(), shape.clone()));
         }
         let import_name = format!("{name}_f32_import");
-        if !f32.contains_key(&import_name) {
-            f32.insert(import_name, (data, shape));
-        }
+        f32.entry(import_name).or_insert((data, shape));
     }
     Ok(LoadedWeights { f32, i64 })
 }

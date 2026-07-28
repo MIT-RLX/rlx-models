@@ -226,8 +226,8 @@ impl<'a> WaveRnn<'a> {
                 .collect();
             NativeBnnsFullyConnected::new(&weights, input, output, bias, relu)
         };
-        let use_native_fc = opts.rng == WaveRnnRng::NativeBnns
-            && std::env::var_os("RLX_WR_PORTABLE_FC").is_none();
+        let use_native_fc =
+            opts.rng == WaveRnnRng::NativeBnns && std::env::var_os("RLX_WR_PORTABLE_FC").is_none();
         let mut native_mel_fc = use_native_fc
             .then(|| make_fc(mel_w, N_MELS, GATES, Some(mel_b), false))
             .flatten();
@@ -310,11 +310,7 @@ impl<'a> WaveRnn<'a> {
                 mel_fc_portable(&mel_buf, mel_b, &mel_view, &mut scratch.i_mel);
             }
 
-            let frame_in_coarse = if zero_coarse_bit {
-                0.0
-            } else {
-                prev_coarse
-            };
+            let frame_in_coarse = if zero_coarse_bit { 0.0 } else { prev_coarse };
 
             for _ in 0..STEPS_PER_FRAME {
                 let coarse_bit = if zero_coarse_bit {
@@ -457,12 +453,11 @@ impl<'a> WaveRnn<'a> {
                     opts.gru_n_pre_fine,
                 );
                 if !native_head_into(
-                        &mut native_fine_head,
-                        &scratch.h_fine,
-                        &mut scratch.head_hid,
-                        &mut scratch.logits,
-                    )
-                {
+                    &mut native_fine_head,
+                    &scratch.h_fine,
+                    &mut scratch.head_hid,
+                    &mut scratch.logits,
+                ) {
                     portable_head_into(
                         &scratch.h_fine,
                         f_fc0_w,

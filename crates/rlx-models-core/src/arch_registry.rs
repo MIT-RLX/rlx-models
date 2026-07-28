@@ -115,6 +115,7 @@ pub fn registered() -> Vec<ArchSpec> {
 /// startup path (or rely on a consumer to call it; safe to invoke
 /// multiple times).
 pub fn register_all() {
+    crate::model_registry::ensure_builtin_gguf_models();
     register(ArchSpec {
         name: "bert",
         family: ArchFamily::BertEncoder,

@@ -56,7 +56,7 @@ local_clip() { # id src reftext ss t
     echo "skip $id (set ${id^^}_SRC to a local audio file)"
   fi
 }
-local_clip mlk "${MLK_SRC:-/Users/macmini/Downloads/archive/esp32qt-idf copy/data/I Have a Dream, Martin Luther King Jr. [MLKDream].wav}" \
+local_clip mlk "${MLK_SRC:-$HOME/Downloads/MLKDream.wav}" \
   'One hundred years later the Negro still languishes in the corners of American society' 120 12
 # Common Voice (accents), FLEURS (multilingual), LibriVox (long-form public domain):
 # gated or transcript-less, so wire via env, e.g.:

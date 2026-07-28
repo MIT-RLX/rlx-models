@@ -255,7 +255,7 @@ fn run_tiny_moe_quant_packed_ir(device: Device, prec: ResolvedLmPrecision) {
     if prec == ResolvedLmPrecision::Q4_0 {
         let head = UnlimitedOcrWeightPrefix::lm_head();
         assert!(
-            pack.ir_mat_blob(&head, false)
+            pack.ir_mat_blob(head, false)
                 .expect("lm_head blob")
                 .is_none(),
             "Q4 soft-pack should keep lm_head as F16 IR (not U8)"

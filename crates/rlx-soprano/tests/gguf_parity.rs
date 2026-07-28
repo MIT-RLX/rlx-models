@@ -6,11 +6,9 @@
 
 use std::path::PathBuf;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use rlx_runtime::Device;
-use rlx_soprano::{
-    gguf_bundle, InferOpts, NativeSoprano, DEFAULT_GGUF_NAME, DEFAULT_LOCAL_DIR,
-};
+use rlx_soprano::{DEFAULT_GGUF_NAME, DEFAULT_LOCAL_DIR, InferOpts, NativeSoprano, gguf_bundle};
 
 fn peak_norm_cosine(a: &[f32], b: &[f32]) -> f64 {
     let pa = a.iter().fold(0.0f32, |m, &x| m.max(x.abs())).max(1e-12);
@@ -52,16 +50,16 @@ fn resolve_loose_dir() -> PathBuf {
 fn loose_vs_gguf_pcm_parity_short() -> Result<()> {
     let dir = resolve_loose_dir();
     if !dir.join("onnx/soprano_backbone_kv_fp32.onnx").is_file() {
-        eprintln!("skip: loose soprano weights missing under {}", dir.display());
+        eprintln!(
+            "skip: loose soprano weights missing under {}",
+            dir.display()
+        );
         return Ok(());
     }
     let gguf_out = std::env::var("RLX_SOPRANO_GGUF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            std::env::temp_dir().join(format!(
-                "rlx-soprano-parity-{}.gguf",
-                std::process::id()
-            ))
+            std::env::temp_dir().join(format!("rlx-soprano-parity-{}.gguf", std::process::id()))
         });
     let text = std::env::var("RLX_TEXT")
         .unwrap_or_else(|_| "The quick brown fox jumps over the lazy dog.".into());
@@ -107,10 +105,7 @@ fn loose_vs_gguf_pcm_parity_short() -> Result<()> {
         bail!("PCM cosine {cos:.6} < 0.999");
     }
     // Keep default pack under weights/ when writing to DEFAULT_GGUF_NAME path.
-    if gguf_out
-        .file_name()
-        .is_some_and(|n| n == DEFAULT_GGUF_NAME)
-    {
+    if gguf_out.file_name().is_some_and(|n| n == DEFAULT_GGUF_NAME) {
         eprintln!("kept {}", gguf_out.display());
     } else {
         let _ = std::fs::remove_file(&gguf_out);

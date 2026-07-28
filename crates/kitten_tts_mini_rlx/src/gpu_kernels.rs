@@ -38,9 +38,9 @@ use crate::alignment::concat_alignment_durations;
 ))]
 use crate::kernels::{
     ACT_COPY, ALIGNMENT_SCATTER_INDICES, CONCAT_FROM_SEQUENCE, CONCAT_FROM_SEQUENCE_ONNX,
-    DYNAMIC_QUANTIZE_LINEAR, DYNAMIC_QUANTIZE_LSTM, F0_IF_BYPASS, F0_IF_SELECT,
-    F0_NCHW_UNSQUEEZE, F0_NEAREST_UPSAMPLE, Q_MATMUL, Q_MATMUL_BAKED, RANDOM_NORMAL_LIKE,
-    RANDOM_UNIFORM_LIKE, SCATTER_ELEMENTS, SCATTER_ND,
+    DYNAMIC_QUANTIZE_LINEAR, DYNAMIC_QUANTIZE_LSTM, F0_IF_BYPASS, F0_IF_SELECT, F0_NCHW_UNSQUEEZE,
+    F0_NEAREST_UPSAMPLE, Q_MATMUL, Q_MATMUL_BAKED, RANDOM_NORMAL_LIKE, RANDOM_UNIFORM_LIKE,
+    SCATTER_ELEMENTS, SCATTER_ND,
 };
 use crate::lstm::{LstmAttrs, dynamic_lstm_f32, dynamic_quantize_lstm};
 #[cfg(any(
@@ -1130,11 +1130,7 @@ mod mlx {
         F0_NEAREST_UPSAMPLE,
         run_f0_nearest_upsample
     );
-    mlx_kernel!(
-        F0NchwUnsqueezeMlx,
-        F0_NCHW_UNSQUEEZE,
-        run_f0_nchw_unsqueeze
-    );
+    mlx_kernel!(F0NchwUnsqueezeMlx, F0_NCHW_UNSQUEEZE, run_f0_nchw_unsqueeze);
     mlx_kernel!(QMatMulMlx, Q_MATMUL, run_qmatmul);
     mlx_kernel!(QMatMulBakedMlx, Q_MATMUL_BAKED, run_qmatmul_baked);
     mlx_kernel!(

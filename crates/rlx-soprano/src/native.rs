@@ -156,14 +156,9 @@ impl NativeSoprano {
             ("past_sequence_length", past),
             ("past_sequence_length + sequence_length", past + seq),
         ];
-        let (hir, mut params, _r) = rlx_tiny_tts::model::import_graph_named(
-            &path,
-            BACKBONE,
-            seq.max(1),
-            false,
-            &named,
-        )
-        .with_context(|| format!("import {BACKBONE} past={past} seq={seq}"))?;
+        let (hir, mut params, _r) =
+            rlx_tiny_tts::model::import_graph_named(&path, BACKBONE, seq.max(1), false, &named)
+                .with_context(|| format!("import {BACKBONE} past={past} seq={seq}"))?;
         let key = format!("sop_{BACKBONE}_{:?}_p{past}_s{seq}", self.device);
         let mut g = self
             .cache
@@ -272,7 +267,7 @@ impl NativeSoprano {
             .collect();
         let outs = g.run_typed(&refs);
         anyhow::ensure!(
-            outs.len() >= 1 + 2 * N_LAYERS + 1,
+            outs.len() > 1 + 2 * N_LAYERS,
             "backbone outs {} < expected",
             outs.len()
         );
@@ -487,7 +482,9 @@ impl NativeSoprano {
         max_prompt_tokens: usize,
     ) -> Result<Vec<f32>> {
         let chunks = split_utterances(text, max_prompt_tokens, |chunk| {
-            self.encode_prompt(chunk).map(|ids| ids.len()).unwrap_or(usize::MAX)
+            self.encode_prompt(chunk)
+                .map(|ids| ids.len())
+                .unwrap_or(usize::MAX)
         });
         anyhow::ensure!(!chunks.is_empty(), "soprano: no text chunks after split");
         let mut pcm = Vec::new();
@@ -581,8 +578,7 @@ fn split_utterances(
                 cur = trial;
             }
             if prompt_tokens(&cur) > max_prompt_tokens {
-                let words: Vec<String> =
-                    cur.split_whitespace().map(str::to_string).collect();
+                let words: Vec<String> = cur.split_whitespace().map(str::to_string).collect();
                 cur.clear();
                 let mut pack = String::new();
                 for w in words {

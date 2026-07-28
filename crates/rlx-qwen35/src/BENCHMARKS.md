@@ -1,7 +1,6 @@
 # Qwen3.5 performance notes
 
-Hardware notes below are from development machines (Apple Silicon and MSI RTX
-3080 Ti). Re-measure locally with `RLX_QWEN35_BENCH=1`.
+Hardware notes below are from development machines (Apple Silicon and NVIDIA RTX). Re-measure locally with `RLX_QWEN35_BENCH=1`.
 
 ## Quick CLI bench
 

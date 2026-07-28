@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# One command from the Mac: sync -> run the harness on msi -> pull the report back.
-#   scripts/matrix/msi_run.sh [TIER] [ONLY] [BACKENDS] [ALL]
-# e.g. scripts/matrix/msi_run.sh 1 qwen3-0.6b "" 0
+# One command from the Mac: sync -> run the harness on the CUDA host -> pull the report back.
+#   scripts/matrix/remote_run.sh [TIER] [ONLY] [BACKENDS] [ALL]
+# e.g. scripts/matrix/remote_run.sh 1 qwen3-0.6b "" 0
 set -euo pipefail
 
 TIER="${1:-1}"; ONLY="${2:-}"; BACKENDS="${3:-}"; ALL="${4:-0}"
-HOST="${MSI_HOST:-msi}"
+HOST="${RLX_CUDA_HOST:?set RLX_CUDA_HOST to your CUDA host, e.g. user@host}"
 REMOTE_MODELS="${REMOTE_MODELS:-rlx-models}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-bash "$HERE/sync_to_msi.sh"
+bash "$HERE/sync_to_remote.sh"
 
 # Non-interactive ssh has no cargo/cuda on PATH — export them inline.
 REMOTE_ENV="PATH=\$HOME/.cargo/bin:/usr/local/cuda/bin:\$PATH \

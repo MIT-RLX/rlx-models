@@ -96,7 +96,9 @@ fn parse_args() -> Result<Opts> {
         match arg.as_str() {
             "--device" => {
                 device = Some(parse_device(
-                    &args.next().ok_or_else(|| anyhow::anyhow!("--device needs value"))?,
+                    &args
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--device needs value"))?,
                 )?);
                 all = false;
             }
@@ -189,7 +191,10 @@ fn synth_weights(cfg: &Llama32Config) -> WeightMap {
     );
     for i in 0..cfg.physical_layers() {
         let lp = format!("model.layers.{i}");
-        t.insert(format!("{lp}.input_layernorm.weight"), (vec![1.0; h], vec![h]));
+        t.insert(
+            format!("{lp}.input_layernorm.weight"),
+            (vec![1.0; h], vec![h]),
+        );
         t.insert(
             format!("{lp}.post_attention_layernorm.weight"),
             (vec![1.0; h], vec![h]),
@@ -457,7 +462,9 @@ fn main() -> Result<()> {
     let mut best_portable: Option<(String, f64)> = None;
     for &device in &opts.devices {
         let label = device_label(device);
-        let outcome = catch_unwind(AssertUnwindSafe(|| run_synth(device, opts.warm, opts.iters)));
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            run_synth(device, opts.warm, opts.iters)
+        }));
         match outcome {
             Ok(Ok(row)) => {
                 println!(
@@ -497,7 +504,9 @@ fn main() -> Result<()> {
                 }
             }
             Ok(Err(e)) => {
-                println!("| {label:<8} | skip     |         |        |            |            |            |         | {e:#} |");
+                println!(
+                    "| {label:<8} | skip     |         |        |            |            |            |         | {e:#} |"
+                );
             }
             Err(_) => {
                 eprintln!("| {label:<8} | PANIC/OOM | — |");
@@ -527,8 +536,9 @@ fn main() -> Result<()> {
         );
         for &device in &opts.devices {
             let label = device_label(device);
-            let outcome =
-                catch_unwind(AssertUnwindSafe(|| run_real(weights, device, opts.warm.min(1))));
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                run_real(weights, device, opts.warm.min(1))
+            }));
             match outcome {
                 Ok(Ok(row)) => {
                     println!(

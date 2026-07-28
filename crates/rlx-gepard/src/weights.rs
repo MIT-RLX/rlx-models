@@ -121,7 +121,7 @@ pub fn read_shape(st: &SafeTensors<'_>, name: &str) -> Result<Vec<usize>> {
     let view = st
         .tensor(name)
         .with_context(|| format!("tensor '{name}' not found in safetensors"))?;
-    Ok(view.shape().iter().map(|&d| d as usize).collect())
+    Ok(view.shape().to_vec())
 }
 
 /// Check whether a tensor is present (used for optional modules).

@@ -8,13 +8,15 @@
 use anyhow::{Result, bail};
 use rlx_wakeword_core::{MelConfig, MelFrontend, SAMPLE_RATE_16K, WakeCnn, WakeCnnWeights};
 
-use crate::config::WakewordConfig;
 #[cfg(feature = "speaker-id")]
 use crate::cascade::SpeakerGate;
+use crate::config::WakewordConfig;
 
 #[derive(Debug, Clone)]
 pub enum WakeEvent {
-    Idle { t_ms: f32 },
+    Idle {
+        t_ms: f32,
+    },
     Candidate {
         phrase_id: String,
         score: f32,
@@ -136,7 +138,12 @@ impl WakewordSession {
         }
     }
 
-    pub fn upsert_phrase(&mut self, id: impl Into<String>, weights: WakeCnnWeights, threshold: f32) {
+    pub fn upsert_phrase(
+        &mut self,
+        id: impl Into<String>,
+        weights: WakeCnnWeights,
+        threshold: f32,
+    ) {
         let id = id.into();
         let hop_len = MelConfig::default().hop_length;
         let window_frames = self.cfg.context_frames(hop_len);
@@ -155,7 +162,9 @@ impl WakewordSession {
         if let Some(p) = self.cfg.phrases.iter_mut().find(|p| p.id == id) {
             p.threshold = threshold;
         } else {
-            self.cfg.phrases.push(crate::config::PhraseConfig::new(id, threshold));
+            self.cfg
+                .phrases
+                .push(crate::config::PhraseConfig::new(id, threshold));
         }
     }
 

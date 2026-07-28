@@ -191,7 +191,11 @@ fn materialize_gguf(file: &GgufFile, extract_dir: &Path) -> Result<()> {
 
 /// Pack required loose-dir files into one `soprano.rlxp` (native nested graphs).
 pub fn pack_rlxp(bundle: &Path, out: &Path) -> Result<PackReport> {
-    ensure!(bundle.is_dir(), "bundle dir not found: {}", bundle.display());
+    ensure!(
+        bundle.is_dir(),
+        "bundle dir not found: {}",
+        bundle.display()
+    );
     ensure!(
         bundle.join("tokenizer.json").is_file(),
         "missing tokenizer.json under {}",
@@ -224,7 +228,11 @@ pub fn pack_rlxp(bundle: &Path, out: &Path) -> Result<PackReport> {
 }
 
 pub fn pack_directory(bundle: &Path, out: &Path) -> Result<PackReport> {
-    ensure!(bundle.is_dir(), "bundle dir not found: {}", bundle.display());
+    ensure!(
+        bundle.is_dir(),
+        "bundle dir not found: {}",
+        bundle.display()
+    );
     for rel in LEGACY_GGUF_RELPATHS {
         ensure!(
             bundle.join(rel).is_file(),
@@ -239,10 +247,7 @@ pub fn pack_directory(bundle: &Path, out: &Path) -> Result<PackReport> {
     w.set_meta("general.name", MetaValue::String("soprano".into()));
     w.set_meta("rlx_soprano.format", MetaValue::String(FORMAT.into()));
     w.set_meta("rlx_soprano.sample_rate_hz", MetaValue::U32(32_000));
-    w.set_meta(
-        "rlx_soprano.hf_repo",
-        MetaValue::String(HF_REPO.into()),
-    );
+    w.set_meta("rlx_soprano.hf_repo", MetaValue::String(HF_REPO.into()));
 
     let mut names = BTreeSet::new();
     let mut file_kv = 0u32;

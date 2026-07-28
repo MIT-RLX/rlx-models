@@ -1,20 +1,26 @@
 //! Force ORT duration via production compile_slot_length + run_kitten_inference.
-use std::process::Command;
 use kitten_tts_mini_rlx::bundle_compile::SeqCompileCache;
 use rlx_ir::DType;
 use rlx_runtime::Device;
+use std::process::Command;
 
 fn style_row() -> Vec<f32> {
     let out = Command::new("python3")
-        .args(["-c", r#"
+        .args([
+            "-c",
+            r#"
 import numpy as np,sys
 z=np.load('.cache/kittentts-mini-0.8/voices.npz')
 sys.stdout.buffer.write(z['expr-voice-2-m'][6].astype(np.float32).tobytes())
-"#])
+"#,
+        ])
         .current_dir("/Users/Shared/rlx-models")
         .output()
         .unwrap();
-    out.stdout.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
+    out.stdout
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect()
 }
 
 fn stats(wave: &[f32], trim: usize) {
@@ -45,7 +51,9 @@ fn main() -> anyhow::Result<()> {
     let cache = SeqCompileCache::new(Device::Cpu, bundle, compile_seq.max(token_len), max_wave, 2);
     let graphs = cache.cached_graphs_for_seq(token_len)?;
     kitten_tts_mini_rlx::bundle_compile::shape_all_graphs_for_infer(
-        &graphs, token_len, compile_seq,
+        &graphs,
+        token_len,
+        compile_seq,
     )?;
     let mut ids_padded = ids.clone();
     ids_padded.resize(compile_seq, 0);
@@ -62,17 +70,27 @@ fn main() -> anyhow::Result<()> {
     let align_bytes: Vec<u8> = align.iter().flat_map(|d| d.to_le_bytes()).collect();
 
     eprintln!("A) free-run (no carry seed):");
-    let outs = kitten_tts_mini_rlx::bundle_compile::run_kitten_inference(
-        &graphs, &inputs, None, None,
-    );
-    let wave: Vec<f32> = outs[0].0.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+    let outs =
+        kitten_tts_mini_rlx::bundle_compile::run_kitten_inference(&graphs, &inputs, None, None);
+    let wave: Vec<f32> = outs[0]
+        .0
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
     stats(&wave, wave.len());
 
     eprintln!("B) ORT duration carry+align:");
     let outs = kitten_tts_mini_rlx::bundle_compile::run_kitten_inference(
-        &graphs, &inputs, Some(&align_bytes), Some(&align_bytes),
+        &graphs,
+        &inputs,
+        Some(&align_bytes),
+        Some(&align_bytes),
     );
-    let wave: Vec<f32> = outs[0].0.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+    let wave: Vec<f32> = outs[0]
+        .0
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
     stats(&wave, 34 * 600);
     Ok(())
 }

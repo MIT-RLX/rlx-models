@@ -58,13 +58,25 @@ pub fn detector_input(path: &Path) -> Result<(Vec<f32>, Letterbox, GrayImage)> {
             }
         }
     }
-    let lb = Letterbox { scale: s, ox: ox as f32, oy: oy as f32, orig_w: iw, orig_h: ih };
+    let lb = Letterbox {
+        scale: s,
+        ox: ox as f32,
+        oy: oy as f32,
+        orig_w: iw,
+        orig_h: ih,
+    };
     Ok((out, lb, image::open(path)?.to_luma8()))
 }
 
 /// Crop a line box (original-image pixel coords) from `gray`, resize to height 32,
 /// pad width to a multiple of 4, normalize to `[0,1]` (background high). `(luma, width)`.
-pub fn crop_line_luma(gray: &GrayImage, x0: u32, y0: u32, x1: u32, y1: u32) -> Option<(Vec<f32>, usize)> {
+pub fn crop_line_luma(
+    gray: &GrayImage,
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+) -> Option<(Vec<f32>, usize)> {
     let (cw, ch) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
     if cw < 4 || ch < 4 {
         return None;

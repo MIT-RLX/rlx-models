@@ -7,9 +7,7 @@ use serde::Deserialize;
 
 use crate::fastspeech2::{FastSpeech2, VarianceControls};
 use crate::frontend::{HydraLite, TextFrontend, parse_phone_string};
-use crate::metrics::{
-    apply_leading_silence_ms, apply_output_volume, apply_wavernn_mulaw_iir,
-};
+use crate::metrics::{apply_leading_silence_ms, apply_output_volume, apply_wavernn_mulaw_iir};
 use crate::wavernn::{WaveRnn, WaveRnnOpts};
 use crate::weights::Weights;
 use crate::{AudioOutput, DEFAULT_VOICE_ID};
@@ -268,9 +266,9 @@ impl RlxTts {
                 self.post.volume_smoothing,
             );
         }
-        let pad_ms = if std::env::var_os("RLX_TTS_NO_LEADING_SILENCE").is_some() {
-            0
-        } else if skip > 0 && std::env::var_os("RLX_TTS_FORCE_LEADING_SILENCE").is_none() {
+        let pad_ms = if std::env::var_os("RLX_TTS_NO_LEADING_SILENCE").is_some()
+            || (skip > 0 && std::env::var_os("RLX_TTS_FORCE_LEADING_SILENCE").is_none())
+        {
             0
         } else {
             self.post.leading_silence_ms

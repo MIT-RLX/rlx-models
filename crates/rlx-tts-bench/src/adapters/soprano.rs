@@ -84,8 +84,10 @@ impl TtsAdapter for SopranoAdapter {
             anyhow::ensure!(!latents.is_empty(), "soprano: no latents produced");
             self.inner.decode_latents(&latents, true)?
         } else {
-            let mut opts = InferOpts::default();
-            opts.seed = req.seed;
+            let opts = InferOpts {
+                seed: req.seed,
+                ..Default::default()
+            };
             self.inner.synthesize(req.text, &opts)?
         };
         Ok(SynthResult {

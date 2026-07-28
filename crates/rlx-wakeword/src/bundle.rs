@@ -154,7 +154,11 @@ pub fn stub_bundle(phrase_id: &str, hop_ms: u32) -> WakewordBundle {
 }
 
 /// Stub bundle with `n` lite CNN phrase heads (`word0`… or custom ids via `id_fn`).
-pub fn stub_bundle_n(n: usize, hop_ms: u32, mut id_fn: impl FnMut(usize) -> String) -> WakewordBundle {
+pub fn stub_bundle_n(
+    n: usize,
+    hop_ms: u32,
+    mut id_fn: impl FnMut(usize) -> String,
+) -> WakewordBundle {
     let n = n.max(1);
     let mut phrases = Vec::with_capacity(n);
     let mut weights = Vec::with_capacity(n);

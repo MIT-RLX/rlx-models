@@ -1,8 +1,6 @@
 //! RLX-only wake training must reduce loss on a synthetic pos/neg set.
 
-use rlx_wake::train::{
-    CnnTrainConfig, synth_pos_neg_dataset, train_new_lite_cnn, train_wake_cnn,
-};
+use rlx_wake::train::{CnnTrainConfig, synth_pos_neg_dataset, train_new_lite_cnn, train_wake_cnn};
 use rlx_wake::{WakeCnnConfig, WakeCnnWeights};
 
 #[test]

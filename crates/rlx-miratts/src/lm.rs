@@ -93,7 +93,10 @@ impl MiraLm {
                 "[miratts] LM on {lm_device:?} (codec/speaker default CPU; set RLX_MIRATTS_LM_DEVICE to override)"
             );
         }
-        eprintln!("[miratts] loading Qwen2 LM from {} on {lm_device:?}…", dir.display());
+        eprintln!(
+            "[miratts] loading Qwen2 LM from {} on {lm_device:?}…",
+            dir.display()
+        );
         let runner = Qwen3RunnerBuilder::default()
             .weights(dir)
             .config_value(qwen2_config(cfg))
@@ -153,7 +156,11 @@ impl MiraLm {
             }
             *counts.entry(next).or_insert(0) += 1;
             if step == 0 || (step + 1) % 16 == 0 || step + 1 == max_new {
-                eprintln!("[miratts] AR {}/{max_new} (codes={})", step + 1, codes.len());
+                eprintln!(
+                    "[miratts] AR {}/{max_new} (codes={})",
+                    step + 1,
+                    codes.len()
+                );
             }
             logits = self.generator.decode_get_logits(next)?;
         }

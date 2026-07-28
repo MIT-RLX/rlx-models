@@ -31,8 +31,8 @@ pub fn make(device: Device) -> Result<Box<dyn TtsAdapter>> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_DAC_DIR));
     let inner = NativeParler::open(&dir, &dac, device).context("load parlertts")?;
-    let description = std::env::var("RLX_PARLER_DESCRIPTION")
-        .unwrap_or_else(|_| DEFAULT_DESCRIPTION.to_string());
+    let description =
+        std::env::var("RLX_PARLER_DESCRIPTION").unwrap_or_else(|_| DEFAULT_DESCRIPTION.to_string());
     Ok(Box::new(ParlerAdapter { inner, description }))
 }
 
@@ -53,12 +53,12 @@ impl TtsAdapter for ParlerAdapter {
     }
 
     fn synthesize(&mut self, req: SynthRequest<'_>) -> Result<SynthResult> {
-        let mut opts = InferOpts::default();
-        opts.seed = req.seed;
+        let opts = InferOpts {
+            seed: req.seed,
+            ..Default::default()
+        };
         let t0 = Instant::now();
-        let pcm = self
-            .inner
-            .synthesize(req.text, &self.description, &opts)?;
+        let pcm = self.inner.synthesize(req.text, &self.description, &opts)?;
         Ok(SynthResult {
             pcm,
             sample_rate: SAMPLE_RATE,

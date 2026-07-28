@@ -49,8 +49,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use rlx_flow::blocks::{
-    DecodeRopeParamsStage, LlamaDecodeLayerSpec, LlamaDecoderSpec, LlamaDecoderStage,
-    RmsNormStage, RopeTablesStage, llama_prefill_layer_composed, llama_prefill_layer_fused,
+    DecodeRopeParamsStage, LlamaDecodeLayerSpec, LlamaDecoderSpec, LlamaDecoderStage, RmsNormStage,
+    RopeTablesStage, llama_prefill_layer_composed, llama_prefill_layer_fused,
 };
 use rlx_flow::{BuiltModel, CompileProfile, FlowStage, ModelFlow, SideOutputs};
 use rlx_ir::dynamic::sym;
@@ -170,7 +170,7 @@ impl LlamaLayerCtx<'_> {
                     name: format!("layer{index}"),
                     inner: Arc::new(FlowStage::LlamaDecodeLayer(decode)),
                 }
-            },
+            }
         }
     }
 }
@@ -754,6 +754,9 @@ impl<'a> Llama32Flow<'a> {
         if o.dynamic_seq {
             f = f.dynamic_seq();
         }
+        if o.inputs_embeds {
+            f = f.inputs_embeds();
+        }
         if o.with_lm_head {
             f = f.lm_head();
         }
@@ -797,6 +800,8 @@ pub struct Llama32PrefillOpts {
     pub with_lm_head: bool,
     pub with_kv_outputs: bool,
     pub last_logits_only: bool,
+    /// Feed `inputs_embeds [batch, seq, hidden]` instead of token ids.
+    pub inputs_embeds: bool,
     pub profile: Option<CompileProfile>,
 }
 
@@ -809,6 +814,7 @@ impl Llama32PrefillOpts {
             with_lm_head: false,
             with_kv_outputs: false,
             last_logits_only: false,
+            inputs_embeds: false,
             profile: None,
         }
     }

@@ -20,19 +20,23 @@
 //! one family.
 
 pub use rlx_core::{
-    BertConfig, EmbedGgufKind, FlowBuildExt, GgufDirGuide, GgufModelFamily, GgufTensorNameResolver,
+    BertConfig, DiscoverOpts, DiscoveredFormat, DiscoveredWeight, EmbedGgufKind, FlowBuildExt,
+    GgufDirGuide, GgufModelFamily, GgufModelRegistration, GgufTensorNameResolver,
     LlamaFamilyGgufResolver, LoadOpts, LoadWeightsOptions, LoadedWeights, NomicBertConfig,
     NomicVisionConfig, PassThroughGgufResolver, Qwen35NativeGgufResolver, RegisteredFormat,
     ResolveOpts, ResolveWeightsOptions, STANDARD_DEVICE_NAMES, WeightDrainPolicy,
-    WeightFormatRegistration, WeightLoader, WeightMap, WeightMapSource, arch_registry,
-    assert_gguf_family, config, dataprocessing, flow_bridge, flow_util, format_for_extension,
+    WeightFormatRegistration, WeightLoader, WeightMap, WeightMapSource, WeightSourceKind,
+    arch_registry, assert_gguf_family, config, dataprocessing, default_source_roots,
+    ensure_builtin_gguf_models, flow_bridge, flow_util, format_for_extension,
     gguf_architecture_str, gguf_dir_guide, gguf_f32_bytes_estimate, gguf_family_for_arch,
     gguf_resolve, gguf_runner_hint, gguf_support, into_compile_parts, is_standard_device,
     list_registered_formats, lm, load_from_path, load_weight_map_resolved, load_weights_resolved,
-    open as open_weights, open_map, open_map_with, open_with, register_gguf_tensor_resolver,
-    register_weight_format, resolve_weights_file, resolve_weights_file_with_options,
-    validate_sam_device, validate_standard_device, vision_ops_ir, weight_loader, weight_map,
-    weight_registry, weights,
+    looks_like_filesystem_path, model_registry, open as open_weights, open_map, open_map_with,
+    open_with, register_gguf_model, register_gguf_tensor_resolver, register_weight_format,
+    resolve_weight_query, resolve_weight_query_in_roots, resolve_weights_file,
+    resolve_weights_file_with_options, resolve_weights_path_or_query, scan_weights,
+    scan_weights_in_roots, validate_sam_device, validate_standard_device, vision_ops_ir,
+    weight_loader, weight_map, weight_registry, weights, weights_discover,
 };
 pub use rlx_flow::{BuiltModel, CompileProfile};
 
@@ -115,6 +119,26 @@ pub mod fara {
 #[cfg(feature = "qwen25-vl")]
 pub mod qwen25_vl {
     pub use rlx_qwen25_vl::*;
+}
+#[cfg(feature = "qwen3-vl")]
+pub mod qwen3_vl {
+    pub use rlx_qwen3_vl::*;
+}
+#[cfg(feature = "lfm-vl")]
+pub mod lfm_vl {
+    pub use rlx_lfm_vl::*;
+}
+#[cfg(feature = "mistral-vl")]
+pub mod mistral_vl {
+    pub use rlx_mistral_vl::*;
+}
+#[cfg(feature = "llama4")]
+pub mod llama4 {
+    pub use rlx_llama4::*;
+}
+#[cfg(feature = "mllama")]
+pub mod mllama {
+    pub use rlx_mllama::*;
 }
 #[cfg(feature = "llama32")]
 pub mod llama32 {
@@ -207,6 +231,14 @@ pub mod qwen3_asr {
 #[cfg(feature = "conformer-ctc")]
 pub mod conformer_ctc {
     pub use rlx_conformer_ctc::*;
+}
+#[cfg(feature = "funasr")]
+pub mod funasr {
+    pub use rlx_funasr::*;
+}
+#[cfg(feature = "nemotron-asr")]
+pub mod nemotron_asr {
+    pub use rlx_nemotron_asr::*;
 }
 #[cfg(feature = "voxtral-tts")]
 pub mod voxtral_tts {
@@ -331,6 +363,10 @@ pub mod mistral {
 #[cfg(feature = "bonsai")]
 pub mod bonsai {
     pub use rlx_bonsai::*;
+}
+#[cfg(feature = "neutrino")]
+pub mod neutrino {
+    pub use rlx_neutrino::*;
 }
 #[cfg(feature = "minicpm5")]
 pub mod minicpm5 {

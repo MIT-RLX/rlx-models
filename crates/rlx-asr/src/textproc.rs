@@ -3,7 +3,7 @@
 
 //! Hammer OpenFST spelling chains + etiquette profanity map.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -33,7 +33,11 @@ impl Fst {
         let labels: Vec<u32> = input.bytes().map(|b| b as u32).collect();
         match self.best_path(&labels) {
             Some(out) => {
-                let bytes: Vec<u8> = out.into_iter().filter(|&c| c > 0 && c < 256).map(|c| c as u8).collect();
+                let bytes: Vec<u8> = out
+                    .into_iter()
+                    .filter(|&c| c > 0 && c < 256)
+                    .map(|c| c as u8)
+                    .collect();
                 String::from_utf8_lossy(&bytes).into_owned()
             }
             None => input.to_string(),
@@ -71,7 +75,9 @@ impl Fst {
                                 no.push(ol);
                             }
                             let nc = cost + w;
-                            let e = beam.entry((pos + 1, nxt)).or_insert((f32::INFINITY, Vec::new()));
+                            let e = beam
+                                .entry((pos + 1, nxt))
+                                .or_insert((f32::INFINITY, Vec::new()));
                             if nc < e.0 {
                                 *e = (nc, no);
                             }
@@ -104,7 +110,8 @@ fn parse_openfst_binary(data: &[u8]) -> Result<Fst> {
         bail!("fst too small");
     }
     // AT&T text format
-    if data.starts_with(b"0\t") || data.starts_with(b"#") || data.iter().take(64).all(|&b| b < 128) {
+    if data.starts_with(b"0\t") || data.starts_with(b"#") || data.iter().take(64).all(|&b| b < 128)
+    {
         return parse_att_text(std::str::from_utf8(data)?);
     }
     parse_const_fst(data)
@@ -189,7 +196,10 @@ fn parse_const_fst(data: &[u8]) -> Result<Fst> {
         off = align16(off);
     }
     if off + nstates * 20 + narcs * 16 > data.len() + 32 {
-        bail!("const fst truncated: states={nstates} arcs={narcs} off={off} len={}", data.len());
+        bail!(
+            "const fst truncated: states={nstates} arcs={narcs} off={off} len={}",
+            data.len()
+        );
     }
     let mut finals = HashMap::new();
     let mut state_meta = Vec::with_capacity(nstates);
@@ -221,7 +231,9 @@ fn parse_const_fst(data: &[u8]) -> Result<Fst> {
     let mut arcs: HashMap<(u32, u32), Vec<(u32, u32, f32)>> = HashMap::new();
     for (s, &(pos, na)) in state_meta.iter().enumerate() {
         for a in &raw_arcs[pos..pos + na] {
-            arcs.entry((s as u32, a.0)).or_default().push((a.3, a.1, a.2));
+            arcs.entry((s as u32, a.0))
+                .or_default()
+                .push((a.3, a.1, a.2));
         }
     }
     Ok(Fst {
@@ -253,8 +265,12 @@ fn parse_att_text(text: &str) -> Result<Fst> {
             4 | 5 => {
                 let s: u32 = parts[0].parse()?;
                 let n: u32 = parts[1].parse()?;
-                let il: u32 = parts[2].parse().unwrap_or_else(|_| parts[2].bytes().next().unwrap_or(0) as u32);
-                let ol: u32 = parts[3].parse().unwrap_or_else(|_| parts[3].bytes().next().unwrap_or(0) as u32);
+                let il: u32 = parts[2]
+                    .parse()
+                    .unwrap_or_else(|_| parts[2].bytes().next().unwrap_or(0) as u32);
+                let ol: u32 = parts[3]
+                    .parse()
+                    .unwrap_or_else(|_| parts[3].bytes().next().unwrap_or(0) as u32);
                 let w = parts.get(4).and_then(|x| x.parse().ok()).unwrap_or(0.0);
                 arcs.entry((s, il)).or_default().push((n, ol, w));
                 if start.is_none() {

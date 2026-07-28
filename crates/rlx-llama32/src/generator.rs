@@ -124,10 +124,21 @@ fn uses_packed_gguf_gpu_prefill(device: Device, mode: MetalGgufPrefillMode) -> b
     ) && mode.use_packed_gguf()
 }
 
-/// Phi 3/4 GGUF uses fused `attn_qkv` / `gate_up` tensors — the F32 flow path
-/// expects split Q/K/V and fails at load time.
+/// Whether a GGUF checkpoint must use the packed (`builder.rs`) graph path
+/// instead of the F32 `rlx-flow` path.
+///
+/// Two cases:
+/// * **Phi 3/4** — fused `attn_qkv` / `gate_up` tensors that the split-Q/K/V
+///   F32 flow can't load.
+/// * **Granite** — the `embedding` / `residual` / `attention` / `logit` scalar
+///   multipliers are only applied by the packed builder
+///   ([`build_llama32_graph_sized_packed`] / the packed decode builder); the
+///   F32 `rlx-flow` Llama blocks don't carry them, so a Granite checkpoint on
+///   the F32 path would silently drop the multipliers and emit garbage. Forcing
+///   the packed path (works on CPU too via `Op::DequantMatMul`) keeps Granite
+///   correct on every device.
 fn fused_phi_gguf_needs_packed_paths(cfg: &Llama32Config, is_gguf: bool) -> bool {
-    is_gguf && cfg.is_phi_arch()
+    is_gguf && (cfg.is_phi_arch() || cfg.has_granite_scalars() || cfg.needs_arch_packed_builder())
 }
 
 /// Packed GGUF decode: skip in-graph vocab matmul; host argmax on tied Q4 embed.
@@ -287,6 +298,12 @@ struct PackedGgufPrefillFeed {
     last_idx: [f32; 1],
     embed_lazy: Option<(Vec<u8>, rlx_ir::quant::QuantScheme)>,
     embed_scratch: Vec<f32>,
+    /// One-shot multimodal splice: `(start_row, [rows * hidden] f32)`. Applied
+    /// over the host-gathered text embeds in `fill_embed_inputs`, so vision soft
+    /// tokens replace their placeholder rows in `input_embeddings` — the packed
+    /// (K-quant) prefill analog of the F32 `inputs_embeds` path. Consumed by the
+    /// generator each prefill (set from `pending_embed_override`).
+    embed_override: Option<(usize, Vec<f32>)>,
 }
 
 impl PackedGgufPrefillFeed {
@@ -302,6 +319,7 @@ impl PackedGgufPrefillFeed {
             last_idx: [0f32; 1],
             embed_lazy,
             embed_scratch: vec![0f32; upper_seq * hidden],
+            embed_override: None,
         }
     }
 
@@ -326,6 +344,27 @@ impl PackedGgufPrefillFeed {
                 &self.ids_f32[..n],
                 &mut self.embed_scratch[..n * self.hidden],
             )?;
+        }
+        // Multimodal splice: overwrite the placeholder rows with vision soft
+        // tokens. Requires embed mode (`input_embeddings`); a GGUF whose embed
+        // table is stored uncompressed (F16/F32) takes the `input_ids` graph
+        // where `embed_scratch` is unused, so a splice would be silently lost —
+        // hence the explicit guard.
+        if let Some((start, data)) = &self.embed_override {
+            anyhow::ensure!(
+                self.embed_lazy.is_some(),
+                "multimodal embed splice needs a block-quantized embed table \
+                 (input_embeddings mode); this GGUF's `token_embd` is not packed"
+            );
+            let rows = data.len() / self.hidden;
+            anyhow::ensure!(
+                data.len() % self.hidden == 0 && start + rows <= n,
+                "embed splice [{start}..{}] (hidden {}) exceeds prefill len {n}",
+                start + rows,
+                self.hidden
+            );
+            let off = start * self.hidden;
+            self.embed_scratch[off..off + data.len()].copy_from_slice(data);
         }
         Ok(())
     }
@@ -397,9 +436,7 @@ impl PackedGgufPrefill {
             Session::new(self.exec_device).compile_with(logits_graph, &opts)
         });
         attach_f32_params(&mut logits, params);
-        for (name, (bytes, _scheme, _shape)) in &packed {
-            logits.set_param_typed(name, bytes, rlx_ir::DType::U8);
-        }
+        upload_packed_borrowed(&mut logits, &packed, &loader)?;
         if self.feed.embed_lazy.is_none() {
             if let Some(host) = embed_host {
                 self.feed.embed_lazy = Some(host);
@@ -440,9 +477,7 @@ impl PackedGgufPrefill {
             Session::new(exec_device).compile_with(graph, &opts)
         });
         attach_f32_params(&mut kv, params);
-        for (name, (bytes, _scheme, _shape)) in &packed {
-            kv.set_param_typed(name, bytes, rlx_ir::DType::U8);
-        }
+        upload_packed_borrowed(&mut kv, &packed, &loader)?;
         Ok(Self {
             feed: PackedGgufPrefillFeed::new(upper_seq, cfg.hidden_size, embed_host),
             logits: None,
@@ -498,9 +533,7 @@ impl PackedGgufPrefill {
             Session::new(exec_device).compile_with(kv_graph, &opts)
         });
         attach_f32_params(&mut kv, params_kv);
-        for (name, (bytes, _scheme, _shape)) in &packed_kv {
-            kv.set_param_typed(name, bytes, rlx_ir::DType::U8);
-        }
+        upload_packed_borrowed(&mut kv, &packed_kv, &loader)?;
         Ok(Self {
             feed: PackedGgufPrefillFeed::new(upper_seq, cfg.hidden_size, embed_host),
             logits: None,
@@ -721,7 +754,7 @@ fn push_packed_decode_token_input<'a>(
 }
 
 fn packed_graph_uses_lazy_embed(
-    packed: &HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    packed: &HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
     params: &HashMap<String, Vec<f32>>,
 ) -> bool {
     packed.contains_key("model.embed_tokens.weight")
@@ -899,6 +932,27 @@ fn attach_f32_params(compiled: &mut CompiledGraph, mut params: HashMap<String, V
     }
 }
 
+/// Upload packed K-quant weights **zero-copy**: borrow each tensor's bytes
+/// straight from the (mmap'd) loader and hand them to the arena via
+/// `set_param_typed`. The `packed` map now carries only `(scheme, shape)`
+/// metadata, so the quantized bytes are never materialized into an owned
+/// buffer nor cached a second time — the model isn't duplicated in RSS. The
+/// loader must outlive this call (it does at every call site: a local
+/// `GgufLoader` for prefill, `self.decode_weights_cache` for decode).
+fn upload_packed_borrowed(
+    compiled: &mut CompiledGraph,
+    packed: &HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    loader: &dyn WeightLoader,
+) -> Result<()> {
+    for name in packed.keys() {
+        let bytes = loader
+            .tensor_bytes_borrowed(name)
+            .with_context(|| format!("packed upload: bytes unavailable for {name}"))?;
+        compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+    }
+    Ok(())
+}
+
 /// Per-layer KV cache state for incremental decoding. Each `Vec<f32>`
 /// is a flat `[batch, past_seq, kv_proj_dim]` tensor.
 #[derive(Clone)]
@@ -937,7 +991,10 @@ impl DecodeKvScratch {
 enum BuildWeightLoader<'a> {
     Cached(ArcCacheLoader<'a>),
     Gguf(GgufLoader),
-    Live(Box<dyn WeightLoader + 'a>),
+    // Owned, file-backed loader from `load_from_path` — always `'static`, so it
+    // must NOT borrow the enum's `'a` (that would force `'a: 'static` at every
+    // trait-method dispatch below → E0521).
+    Live(Box<dyn WeightLoader>),
 }
 
 impl WeightLoader for BuildWeightLoader<'_> {
@@ -974,6 +1031,20 @@ impl WeightLoader for BuildWeightLoader<'_> {
             Self::Cached(l) => l.remaining_keys(),
             Self::Gguf(l) => l.remaining_keys(),
             Self::Live(l) => l.remaining_keys(),
+        }
+    }
+    fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
+        match self {
+            Self::Cached(l) => l.tensor_bytes_borrowed(key),
+            Self::Gguf(l) => l.tensor_bytes_borrowed(key),
+            Self::Live(l) => l.tensor_bytes_borrowed(key),
+        }
+    }
+    fn packed_meta(&self, key: &str) -> Option<(rlx_ir::quant::QuantScheme, Vec<usize>)> {
+        match self {
+            Self::Cached(l) => l.packed_meta(key),
+            Self::Gguf(l) => l.packed_meta(key),
+            Self::Live(l) => l.packed_meta(key),
         }
     }
 }
@@ -1084,6 +1155,12 @@ impl WeightLoader for CachedGgufWeights {
     fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
         self.inner.tensor_bytes_borrowed(key)
     }
+    fn packed_meta(&self, key: &str) -> Option<(rlx_ir::quant::QuantScheme, Vec<usize>)> {
+        // Non-destructive: read straight from the inner GGUF header on every
+        // (bucketed) rebuild. Bytes are served zero-copy via
+        // `tensor_bytes_borrowed`, so we no longer cache packed bytes here.
+        self.inner.packed_meta(key)
+    }
 }
 
 /// Stateful LLaMA-3.2 generation handle.
@@ -1169,6 +1246,10 @@ pub struct Llama32Generator {
     decode_resident_hidden_bound: HashSet<usize>,
     decode_kv_scratch: DecodeKvScratch,
     decode_embed_scratch: Vec<f32>,
+    /// Pending one-shot multimodal embed splice for the next packed prefill.
+    /// Set via [`Self::set_multimodal_embed_override`]; moved into the packed
+    /// prefill feed (and thereby consumed) at each prefill run site.
+    pending_embed_override: Option<(usize, Vec<f32>)>,
 }
 
 impl Llama32Generator {
@@ -1227,6 +1308,7 @@ impl Llama32Generator {
             decode_resident_hidden_bound: HashSet::new(),
             decode_kv_scratch: DecodeKvScratch::default(),
             decode_embed_scratch: Vec::new(),
+            pending_embed_override: None,
         })
     }
 
@@ -1267,6 +1349,7 @@ impl Llama32Generator {
             decode_resident_hidden_bound: HashSet::new(),
             decode_kv_scratch: DecodeKvScratch::default(),
             decode_embed_scratch: Vec::new(),
+            pending_embed_override: None,
         })
     }
 
@@ -1276,7 +1359,9 @@ impl Llama32Generator {
         cache: &'a HashMap<String, ArcF32Tensor>,
     ) -> Result<BuildWeightLoader<'a>> {
         if deferred {
-            let path = path.as_ref().context("deferred weights need weights path")?;
+            let path = path
+                .as_ref()
+                .context("deferred weights need weights path")?;
             let path_str = path.to_str().context("non-utf8 weights path")?;
             let is_gguf = path
                 .extension()
@@ -1569,7 +1654,9 @@ impl Llama32Generator {
         ids_f32: &[f32],
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
         self.ensure_packed_prefill(seq)?;
+        let ov = self.pending_embed_override.take();
         let p = self.packed_gguf_prefill.as_mut().unwrap();
+        p.feed.embed_override = ov;
         let (logits, layers_k, layers_v) = p.run(seq, ids_f32)?;
         if logits.iter().all(|x| x.is_finite()) {
             eprintln!(
@@ -1709,7 +1796,9 @@ impl Llama32Generator {
             return Ok(None);
         }
         self.ensure_packed_prefill(prompt_len)?;
+        let ov = self.pending_embed_override.take();
         let p = self.packed_gguf_prefill.as_mut().unwrap();
+        p.feed.embed_override = ov;
         Ok(Some(p.run(prompt_len, ids_f32)?))
     }
 
@@ -1724,6 +1813,36 @@ impl Llama32Generator {
     pub fn with_compile_seq_cap(mut self, cap: usize) -> Self {
         self.compile_seq_cap = Some(cap.max(1));
         self
+    }
+
+    /// Register a one-shot multimodal embed splice for the **next** prefill:
+    /// `embeds` is `[rows * hidden]` f32 that overwrites sequence positions
+    /// `start .. start + rows` of `input_embeddings` (the vision soft tokens),
+    /// leaving the surrounding text tokens gathered from the packed embed table.
+    ///
+    /// This is the packed (K-quant, on-device) analog of the F32 `inputs_embeds`
+    /// prefill: it keeps the LM weights packed (no ~4× F32 dequant) so a 24B VL
+    /// model fits in unified memory. Only effective on the packed GGUF prefill
+    /// path (Metal / MLX / CUDA / ROCm with a block-quantized `token_embd`);
+    /// `fill_embed_inputs` errors if the embed table is not packed.
+    pub fn set_multimodal_embed_override(&mut self, start: usize, embeds: Vec<f32>) {
+        self.pending_embed_override = Some((start, embeds));
+    }
+
+    /// Drop any pending multimodal splice that a prefill has not consumed.
+    /// Callers should invoke this after a `generate` that may have failed before
+    /// the packed prefill ran, so a stale splice can never leak into a later
+    /// (possibly text-only) generation on the same runner.
+    pub fn clear_multimodal_embed_override(&mut self) {
+        self.pending_embed_override = None;
+    }
+
+    /// True while a multimodal splice is still pending — i.e. no packed prefill
+    /// has consumed it. After a `generate`/`prefill`, a lingering `true` means
+    /// the packed GGUF path was **not** taken (e.g. CPU F32 fallback), so the
+    /// vision tokens were dropped; callers should treat that as an error.
+    pub fn multimodal_override_pending(&self) -> bool {
+        self.pending_embed_override.is_some()
     }
 
     /// Like [`Self::from_loader`] but loads tier-1 profiles from
@@ -2506,8 +2625,7 @@ impl Llama32Generator {
             self.decode_weights_cache = Some(CachedGgufWeights::from_file(&path_str)?);
         }
         let cfg = self.cfg.clone();
-        let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
-            HashMap::new();
+        let mut packed: HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)> = HashMap::new();
         let (graph, params) = build_llama32_decode_graph_sized_packed(
             &cfg,
             self.decode_weights_cache.as_mut().unwrap(),
@@ -2526,9 +2644,11 @@ impl Llama32Generator {
         });
         let lazy_embed = packed_graph_uses_lazy_embed(&packed, &params);
         attach_f32_params(&mut compiled, params);
-        for (name, (bytes, _scheme, _shape)) in &packed {
-            compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-        }
+        upload_packed_borrowed(
+            &mut compiled,
+            &packed,
+            self.decode_weights_cache.as_ref().unwrap(),
+        )?;
 
         let cache = self.cache.as_ref().context("packed decode without cache")?;
         let input_ids_f32 = [input_tok as f32];
@@ -2542,10 +2662,19 @@ impl Llama32Generator {
             &self.cfg,
             input_tok,
             if lazy_embed {
-                let (bytes, scheme, _) = packed
+                // Metadata from the map; embed bytes borrowed zero-copy from the
+                // live decode loader (mmap) for this token's host-side gather.
+                let scheme = packed
                     .get("model.embed_tokens.weight")
-                    .expect("lazy decode embed");
-                Some((bytes.as_slice(), *scheme))
+                    .map(|(s, _)| *s)
+                    .expect("lazy decode embed meta");
+                let bytes = self
+                    .decode_weights_cache
+                    .as_ref()
+                    .unwrap()
+                    .tensor_bytes_borrowed("model.embed_tokens.weight")
+                    .expect("lazy decode embed bytes");
+                Some((bytes, scheme))
             } else {
                 None
             },
@@ -2620,7 +2749,7 @@ impl Llama32Generator {
                 self.decode_weights_cache = Some(CachedGgufWeights::from_file(&path_str)?);
             }
             let cfg = self.cfg.clone();
-            let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
+            let mut packed: HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)> =
                 HashMap::new();
             let (graph, params) = build_llama32_decode_graph_sized_packed(
                 &cfg,
@@ -2636,14 +2765,14 @@ impl Llama32Generator {
                 exec_device,
             );
             let cache_mut = self.decode_compile_cache.as_mut().unwrap();
+            let loader_ref: &dyn WeightLoader = self.decode_weights_cache.as_ref().unwrap();
             packed_gguf_compile_guard(exec_device, || {
                 let (_u, compiled) = cache_mut
                     .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
                     .expect("bucket must exist; we just looked it up");
                 attach_f32_params(compiled, params);
-                for (name, (bytes, _scheme, _shape)) in &packed {
-                    compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-                }
+                upload_packed_borrowed(compiled, &packed, loader_ref)
+                    .expect("packed decode: zero-copy weight upload");
             });
             self.decode_loaded_buckets.insert(bucket_idx);
         }
@@ -2677,20 +2806,18 @@ impl Llama32Generator {
             .collect();
         let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4 + 2 * n_layers);
         let mut embed_scratch = Vec::new();
-        let lazy_embed = self
-            .decode_weights_cache
-            .as_ref()
-            .and_then(|cache| {
-                cache
-                    .packed
-                    .get("model.embed_tokens.weight")
-                    .map(|(b, s, _)| (b.as_slice(), *s))
-            })
-            .filter(|_| {
-                self.decode_weights_cache
-                    .as_ref()
-                    .is_some_and(|cache| !cache.f32_take.contains_key("model.embed_tokens.weight"))
-            });
+        let lazy_embed = self.decode_weights_cache.as_ref().and_then(|cache| {
+            // Host-side lazy gather iff the embed is stored K-quant (packed)
+            // and was NOT dequantized to F32. Bytes are borrowed zero-copy from
+            // the loader's mmap — no longer sourced from a resident byte cache.
+            let key = "model.embed_tokens.weight";
+            if cache.f32_take.contains_key(key) {
+                return None;
+            }
+            let (scheme, _) = cache.packed_meta(key)?;
+            let bytes = cache.tensor_bytes_borrowed(key)?;
+            Some((bytes, scheme))
+        });
         push_packed_decode_token_input(
             &self.cfg,
             input_tok,
@@ -2868,7 +2995,7 @@ impl Llama32Generator {
 
             self.ensure_decode_weights_cache()?;
             let cfg = self.cfg.clone();
-            let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
+            let mut packed: HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)> =
                 HashMap::new();
             let (graph, params) = build_llama32_decode_graph_sized_packed_ext(
                 &cfg,
@@ -2885,16 +3012,14 @@ impl Llama32Generator {
                 exec_device,
             );
             let cache_mut = self.decode_compile_cache_hidden.as_mut().unwrap();
+            let loader_ref: &dyn WeightLoader = self.decode_weights_cache.as_ref().unwrap();
             packed_gguf_compile_guard(exec_device, || {
                 let (_u, compiled) = cache_mut
                     .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
                     .expect("bucket must exist; we just looked it up");
                 attach_f32_params(compiled, params);
-                for (name, (bytes, _scheme, _shape)) in &packed {
-                    if !bytes.is_empty() {
-                        compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-                    }
-                }
+                upload_packed_borrowed(compiled, &packed, loader_ref)
+                    .expect("packed decode: zero-copy weight upload");
             });
             self.decode_loaded_buckets_hidden.insert(bucket_idx);
         }
@@ -2930,19 +3055,18 @@ impl Llama32Generator {
             .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
             .collect();
         let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4 + 2 * n_layers);
-        let lazy_embed = self
-            .decode_weights_cache
-            .as_ref()
-            .and_then(|c| {
-                c.packed
-                    .get("model.embed_tokens.weight")
-                    .map(|(b, s, _)| (b.as_slice(), *s))
-            })
-            .filter(|_| {
-                self.decode_weights_cache
-                    .as_ref()
-                    .is_some_and(|c| !c.f32_take.contains_key("model.embed_tokens.weight"))
-            });
+        let lazy_embed = self.decode_weights_cache.as_ref().and_then(|c| {
+            // Host-side lazy gather iff the embed is K-quant and not F32; bytes
+            // borrowed zero-copy from the loader mmap (see the mirror in
+            // `decode_step_packed_bucketed`).
+            let key = "model.embed_tokens.weight";
+            if c.f32_take.contains_key(key) {
+                return None;
+            }
+            let (scheme, _) = c.packed_meta(key)?;
+            let bytes = c.tensor_bytes_borrowed(key)?;
+            Some((bytes, scheme))
+        });
         push_packed_decode_token_input(
             &self.cfg,
             input_tok,
@@ -3080,7 +3204,7 @@ impl Llama32Generator {
             if needs_compile {
                 self.ensure_decode_weights_cache()?;
                 let cfg = self.cfg.clone();
-                let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
+                let mut packed: HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)> =
                     HashMap::new();
                 let (graph, params) = build_llama32_decode_graph_sized_packed_ext(
                     &cfg,
@@ -3097,16 +3221,24 @@ impl Llama32Generator {
                     exec_device,
                 );
                 let cache_mut = self.decode_compile_cache_hidden.as_mut().unwrap();
+                let loader_ref: &dyn WeightLoader = self.decode_weights_cache.as_ref().unwrap();
                 packed_gguf_compile_guard(exec_device, || {
                     let (_u, compiled) = cache_mut
                         .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
                         .expect("bucket must exist; we just looked it up");
                     let f32_keys: HashSet<String> = params.keys().cloned().collect();
                     attach_f32_params(compiled, params);
-                    for (name, (bytes, _scheme, _shape)) in &packed {
-                        if !bytes.is_empty() && !f32_keys.contains(name.as_str()) {
-                            compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+                    // Zero-copy upload, but skip any key already attached as an
+                    // F32 param (packed/F32 keys are disjoint by construction;
+                    // the guard is kept defensively).
+                    for name in packed.keys() {
+                        if f32_keys.contains(name.as_str()) {
+                            continue;
                         }
+                        let bytes = loader_ref
+                            .tensor_bytes_borrowed(name)
+                            .expect("packed decode: zero-copy weight bytes");
+                        compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
                     }
                 });
                 self.decode_loaded_buckets_hidden.insert(bucket_idx);
@@ -3138,20 +3270,17 @@ impl Llama32Generator {
         let input_ids_f32 = [input_tok as f32];
         let mask = bucket_decode_mask(past_seq, upper);
 
-        let lazy_embed = self
-            .decode_weights_cache
-            .as_ref()
-            .and_then(|cache| {
-                cache
-                    .packed
-                    .get("model.embed_tokens.weight")
-                    .map(|(b, s, _)| (b.as_slice(), *s))
-            })
-            .filter(|_| {
-                self.decode_weights_cache
-                    .as_ref()
-                    .is_some_and(|cache| !cache.f32_take.contains_key("model.embed_tokens.weight"))
-            });
+        let lazy_embed = self.decode_weights_cache.as_ref().and_then(|cache| {
+            // Host-side lazy gather iff the embed is K-quant and not F32; bytes
+            // borrowed zero-copy from the loader mmap.
+            let key = "model.embed_tokens.weight";
+            if cache.f32_take.contains_key(key) {
+                return None;
+            }
+            let (scheme, _) = cache.packed_meta(key)?;
+            let bytes = cache.tensor_bytes_borrowed(key)?;
+            Some((bytes, scheme))
+        });
         let mut embed_scratch = Vec::new();
         let mut run_inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4);
         push_packed_decode_token_input(
@@ -3316,7 +3445,7 @@ impl Llama32Generator {
                     self.decode_weights_cache = Some(CachedGgufWeights::from_file(&path_str)?);
                 }
                 let cfg = self.cfg.clone();
-                let mut packed: HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
+                let mut packed: HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)> =
                     HashMap::new();
                 let (graph, params) = build_llama32_decode_graph_sized_packed(
                     &cfg,
@@ -3332,14 +3461,14 @@ impl Llama32Generator {
                     exec_device,
                 );
                 let cache_mut = self.decode_compile_cache.as_mut().unwrap();
+                let loader_ref: &dyn WeightLoader = self.decode_weights_cache.as_ref().unwrap();
                 packed_gguf_compile_guard(exec_device, || {
                     let (_u, compiled) = cache_mut
                         .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
                         .expect("bucket must exist; we just looked it up");
                     attach_f32_params(compiled, params);
-                    for (name, (bytes, _scheme, _shape)) in &packed {
-                        compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-                    }
+                    upload_packed_borrowed(compiled, &packed, loader_ref)
+                        .expect("packed decode: zero-copy weight upload");
                 });
                 self.decode_loaded_buckets.insert(bucket_idx);
             } else if self.decode_weights_cache.is_none() {
@@ -3377,20 +3506,17 @@ impl Llama32Generator {
         let input_ids_f32 = [input_tok as f32];
         let mask = bucket_decode_mask(past_seq, upper);
 
-        let lazy_embed = self
-            .decode_weights_cache
-            .as_ref()
-            .and_then(|cache| {
-                cache
-                    .packed
-                    .get("model.embed_tokens.weight")
-                    .map(|(b, s, _)| (b.as_slice(), *s))
-            })
-            .filter(|_| {
-                self.decode_weights_cache
-                    .as_ref()
-                    .is_some_and(|cache| !cache.f32_take.contains_key("model.embed_tokens.weight"))
-            });
+        let lazy_embed = self.decode_weights_cache.as_ref().and_then(|cache| {
+            // Host-side lazy gather iff the embed is K-quant and not F32; bytes
+            // borrowed zero-copy from the loader mmap.
+            let key = "model.embed_tokens.weight";
+            if cache.f32_take.contains_key(key) {
+                return None;
+            }
+            let (scheme, _) = cache.packed_meta(key)?;
+            let bytes = cache.tensor_bytes_borrowed(key)?;
+            Some((bytes, scheme))
+        });
         let mut embed_scratch = Vec::new();
         let mut run_inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4);
         push_packed_decode_token_input(
@@ -3526,8 +3652,7 @@ impl Llama32Generator {
         let key_strs: Vec<String> = (0..self.cfg.kv_layers())
             .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
             .collect();
-        let mut inputs: Vec<(&str, &[f32])> =
-            Vec::with_capacity(4 + 2 * self.cfg.kv_layers());
+        let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(4 + 2 * self.cfg.kv_layers());
         inputs.push(("input_ids", input_ids_f32.as_slice()));
         inputs.push(("position", position.as_slice()));
         for i in 0..self.cfg.kv_layers() {
@@ -4319,6 +4444,10 @@ mod tests {
             attention_bias: false,
             head_dim: Some(8),
             rope_scaling: None,
+            embedding_scale: None,
+            residual_scale: None,
+            attention_scale: None,
+            logit_scale: None,
             num_loops: 1,
             skip_loop_final_norm: false,
             rope_style: rlx_ir::RopeStyle::NeoX,
@@ -4672,6 +4801,10 @@ mod tests {
             attention_bias: false,
             head_dim: Some(128),
             rope_scaling: None,
+            embedding_scale: None,
+            residual_scale: None,
+            attention_scale: None,
+            logit_scale: None,
             num_loops: 1,
             skip_loop_final_norm: false,
             rope_style: rlx_ir::RopeStyle::NeoX,
@@ -4911,6 +5044,10 @@ mod tests {
                 attention_bias: false,
                 head_dim: Some(hd),
                 rope_scaling: None,
+                embedding_scale: None,
+                residual_scale: None,
+                attention_scale: None,
+                logit_scale: None,
                 num_loops: 1,
                 skip_loop_final_norm: false,
                 rope_style: rlx_ir::RopeStyle::NeoX,
@@ -4964,6 +5101,10 @@ mod tests {
                 attention_bias: false,
                 head_dim: Some(hd),
                 rope_scaling: None,
+                embedding_scale: None,
+                residual_scale: None,
+                attention_scale: None,
+                logit_scale: None,
                 num_loops: 1,
                 skip_loop_final_norm: false,
                 rope_style: rlx_ir::RopeStyle::NeoX,
@@ -5088,6 +5229,10 @@ mod tests {
                 attention_bias: false,
                 head_dim: Some(hd),
                 rope_scaling: None,
+                embedding_scale: None,
+                residual_scale: None,
+                attention_scale: None,
+                logit_scale: None,
                 num_loops: 1,
                 skip_loop_final_norm: false,
                 rope_style: rlx_ir::RopeStyle::NeoX,

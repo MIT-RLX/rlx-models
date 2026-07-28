@@ -33,7 +33,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 pub use rlx_runtime::{Device, parse_device};
 pub use rlx_tiny_tts::{

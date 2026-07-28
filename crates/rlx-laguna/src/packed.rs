@@ -37,26 +37,33 @@ pub enum MatWeight {
         scheme: QuantScheme,
         shape: Vec<usize>,
     },
+    /// mlx-community affine (4/8-bit) packed linear: resident codes + f32
+    /// scales/biases. Dequantized on the fly by [`crate::mlx_affine`] (the GGUF
+    /// block kernels can't read this layout). Held owned (not mmap-borrowed)
+    /// since mlx checkpoints are safetensors, not a single GGUF blob.
+    PackedMlx(Box<rlx_core::weight_loader::MlxPackedLinear>),
     /// Native F32/F16/BF16 host copy (norms, biases, small gates).
     F32(Vec<f32>),
 }
 
 impl MatWeight {
     pub fn is_packed(&self) -> bool {
-        matches!(self, Self::Packed { .. })
+        matches!(self, Self::Packed { .. } | Self::PackedMlx(_))
     }
 
     pub fn packed_meta(&self) -> Option<(&str, QuantScheme, &[usize])> {
         match self {
             Self::Packed { key, scheme, shape } => Some((key.as_str(), *scheme, shape.as_slice())),
-            Self::F32(_) => None,
+            // MLX-affine has no GGUF key/mmap blob; the affine host path in
+            // `mlx_affine` consumes it directly, not via this GGUF metadata.
+            Self::PackedMlx(_) | Self::F32(_) => None,
         }
     }
 
     pub fn f32_bytes(&self) -> usize {
         match self {
             Self::F32(v) => v.len() * 4,
-            Self::Packed { .. } => 0,
+            Self::Packed { .. } | Self::PackedMlx(_) => 0,
         }
     }
 }
@@ -182,7 +189,11 @@ impl LagunaPackedWeights {
     }
 }
 
-fn take_native(loader: &mut GgufLoader, key: &str, native_f32_bytes: &mut usize) -> Result<Vec<f32>> {
+fn take_native(
+    loader: &mut GgufLoader,
+    key: &str,
+    native_f32_bytes: &mut usize,
+) -> Result<Vec<f32>> {
     let (data, _shape) = loader
         .take_native_f32(key)
         .with_context(|| format!("native F32 side tensor `{key}`"))?;
@@ -217,7 +228,10 @@ fn take_mat_required(
             } else {
                 shape
             };
-            packed_params.insert(logical.to_string(), (key.to_string(), scheme, shape.clone()));
+            packed_params.insert(
+                logical.to_string(),
+                (key.to_string(), scheme, shape.clone()),
+            );
             *packed_tensor_count += 1;
             Ok(MatWeight::Packed {
                 key: key.to_string(),
@@ -531,7 +545,7 @@ mod tests {
             "attn_k_norm.weight",
         ] {
             w.add_tensor_bytes(
-                &format!("blk.0.{name}"),
+                format!("blk.0.{name}"),
                 vec![h],
                 GgmlType::F32,
                 f32_bytes(h),
@@ -548,7 +562,7 @@ mod tests {
             ("ffn_up.weight", vec![h, inter], h * inter),
             ("ffn_down.weight", vec![inter, h], inter * h),
         ] {
-            w.add_tensor_bytes(&format!("blk.0.{name}"), shape, GgmlType::Q4K, q4(n))
+            w.add_tensor_bytes(format!("blk.0.{name}"), shape, GgmlType::Q4K, q4(n))
                 .unwrap();
         }
         w.write_to_path(path).unwrap();
@@ -588,8 +602,7 @@ mod tests {
             "expected F32 expand blocked, got: {err:#}"
         );
 
-        let next =
-            crate::packed_forward::greedy_next(&cfg, &w, &loader, &[1, 2, 3], None).unwrap();
+        let next = crate::packed_forward::greedy_next(&cfg, &w, &loader, &[1, 2, 3], None).unwrap();
         assert!((next as usize) < cfg.vocab_size);
         let out =
             crate::packed_forward::generate(&cfg, &w, &loader, &[1, 2], 2, |_| {}, None).unwrap();
@@ -597,14 +610,8 @@ mod tests {
         // Cached generate must match full-recompute greedy_next loop.
         let mut recomputed = vec![1u32, 2];
         for _ in 0..2 {
-            let next = crate::packed_forward::greedy_next(
-                &cfg,
-                &w,
-                &loader,
-                &recomputed,
-                None,
-            )
-            .unwrap();
+            let next =
+                crate::packed_forward::greedy_next(&cfg, &w, &loader, &recomputed, None).unwrap();
             recomputed.push(next);
         }
         assert_eq!(out, recomputed);

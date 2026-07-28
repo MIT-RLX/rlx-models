@@ -30,7 +30,13 @@ pub struct Box2 {
 }
 
 /// Group heatmaps into line boxes. `region`/`link_h` are `hw*hw` row-major.
-pub fn group_lines(region: &[f32], link_h: &[f32], hw: usize, thresh: f32, min_pixels: usize) -> Vec<Box2> {
+pub fn group_lines(
+    region: &[f32],
+    link_h: &[f32],
+    hw: usize,
+    thresh: f32,
+    min_pixels: usize,
+) -> Vec<Box2> {
     let mask: Vec<bool> = region
         .iter()
         .zip(link_h)

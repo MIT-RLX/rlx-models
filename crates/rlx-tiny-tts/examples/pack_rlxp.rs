@@ -10,15 +10,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rlx_assets::native_pack::{pack_native_from_onnx_dir, specs_from_root};
 
-const COMPONENTS: &[&str] = &[
-    "text_encoder",
-    "duration_predictor",
-    "flow",
-    "decoder",
-];
+const COMPONENTS: &[&str] = &["text_encoder", "duration_predictor", "flow", "decoder"];
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -26,9 +21,10 @@ fn main() -> Result<()> {
         args.next()
             .unwrap_or_else(|| "weights/tts/tiny-tts-rlx".into()),
     );
-    let out = PathBuf::from(args.next().unwrap_or_else(|| {
-        dir.join("tiny-tts.rlxp").display().to_string()
-    }));
+    let out = PathBuf::from(
+        args.next()
+            .unwrap_or_else(|| dir.join("tiny-tts.rlxp").display().to_string()),
+    );
     if !dir.join("config.json").is_file() {
         bail!("missing {}/config.json", dir.display());
     }

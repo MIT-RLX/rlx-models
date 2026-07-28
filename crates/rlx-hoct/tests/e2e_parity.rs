@@ -95,9 +95,7 @@ fn ctc_and_geff_roundtrip_dirs() {
     let mut all = Vec::new();
     for t in 0..3 {
         let lab = labels.slice(ndarray::s![t..t + 1, .., ..]).to_owned();
-        all.extend(rlx_hoct::features::regionprops_2d(
-            &lab, t as i32, None, 1.0,
-        ));
+        all.extend(rlx_hoct::features::regionprops_2d(&lab, t, None, 1.0));
     }
     let sol = rlx_hoct::ilp::IlpSolution {
         active_nodes: (0..all.len()).collect(),

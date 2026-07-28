@@ -42,8 +42,8 @@ fn main() -> anyhow::Result<()> {
     println!("text: {text:?}  nfe={nfe}");
     println!("model={}  ref={}", model.display(), ref_path.display());
     println!(
-        "{:<8} {:>8} {:>7} {:>8} {:>8}  {}",
-        "backend", "ms", "peak", "fox", "cos", "exec"
+        "{:<8} {:>8} {:>7} {:>8} {:>8}  exec",
+        "backend", "ms", "peak", "fox", "cos"
     );
 
     let mut cpu_wav: Option<Vec<f32>> = None;

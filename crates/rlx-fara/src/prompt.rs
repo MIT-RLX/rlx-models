@@ -49,10 +49,7 @@ Only stop at a critical point if (1) required information is missing, (2) the ta
 pub fn format_fara_multimodal_prompt(size: FaraSize, goal: &str) -> String {
     let system = fara_system_prompt(size);
     let user = format!("{MEDIA_MARKER}{goal}");
-    let msgs = [
-        ChatMessage::system(system),
-        ChatMessage::user(user),
-    ];
+    let msgs = [ChatMessage::system(system), ChatMessage::user(user)];
     // Fara trajectories use open thinking; leave thinking enabled.
     // Image precedes the goal text (HF chat template with image-then-text).
     format_chatml_with(&msgs, ChatFormatOpts::default())

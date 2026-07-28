@@ -1,6 +1,5 @@
 use rlx_porcupine::{
-    PorcupineEngine, PorcupineWeights, WakeConfig, assert_100_percent_parity,
-    run_backend_parity,
+    PorcupineEngine, PorcupineWeights, WakeConfig, assert_100_percent_parity, run_backend_parity,
 };
 use rlx_wake::{bench_device_label, streaming_execution_device};
 
@@ -13,11 +12,8 @@ fn porcupine_100_percent_backend_parity() {
     let rows = run_backend_parity(&pcm, |dev| {
         let _ = streaming_execution_device(dev);
         Ok(
-            PorcupineEngine::new(
-                PorcupineWeights::stub("porcupine"),
-                WakeConfig::default(),
-            )
-            .with_device_label(bench_device_label(dev)),
+            PorcupineEngine::new(PorcupineWeights::stub("porcupine"), WakeConfig::default())
+                .with_device_label(bench_device_label(dev)),
         )
     })
     .unwrap();

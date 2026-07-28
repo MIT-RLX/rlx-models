@@ -38,7 +38,10 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 
 /// Max absolute elementwise difference.
 pub fn max_abs(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0., f32::max)
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0., f32::max)
 }
 
 /// Devices to sweep, from `OCR2_DEVICES` (comma-separated; default `cpu`).

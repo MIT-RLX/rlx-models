@@ -18,7 +18,7 @@ rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true }
 rlx-autodiff = { workspace = true }
 rlx-uni2 = { workspace = true }
-rlx-tune = { path = "../rlx-tune", version = "0.2.13" }
+rlx-tune = { path = "../rlx-tune", version = "0.2.14" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

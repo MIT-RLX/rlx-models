@@ -67,12 +67,18 @@ pub fn auto_runner(path: &Path) -> Result<Box<dyn LmRunner>> {
 }
 
 /// Same as [`auto_runner`] but also attaches an mmproj vision encoder
-/// when the model family supports multimodal prefill (today: `qwen35`
-/// non-MTP path). For other families `mmproj` is silently ignored —
-/// matches llama-cpp's behaviour where mmproj on a text-only model is
-/// a no-op. The returned runner's [`LmRunner::supports_multimodal`]
-/// will report `true` only when both the family is multimodal-capable
-/// and `mmproj` was attached.
+/// when the model family supports multimodal prefill.
+///
+/// Supported with mmproj today:
+/// - `qwen35` / `qwen36` (plain `Qwen35Runner`; MTP SpecRunner is skipped when
+///   mmproj is set so vision wins over speculative decode)
+/// - `gemma` (Gemma 4 multimodal projector)
+/// - `qwen3-vl` (feature `qwen3-vl`)
+/// - `lfm` with mmproj (feature `lfm-vl`)
+/// - `mistral` / Ministral with mmproj (feature `mistral-vl`, Pixtral projector)
+///
+/// For other families, a non-`None` `mmproj` **errors** instead of being
+/// silently ignored — callers that want text-only should pass `None`.
 pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box<dyn LmRunner>> {
     let sniff = auto_sniff(path)?;
     let weights = sniff.path.as_path();
@@ -80,15 +86,20 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
     // `.build()` (matches llama.cpp's behaviour — K-quant tensors stay
     // packed in memory, never materialise to a dense F32 matrix).
     let runner: Box<dyn LmRunner> = match sniff.runner_name {
-        "qwen3" => Box::new(Qwen3Runner::builder().weights(weights).build()?),
+        "qwen3" => {
+            if mmproj.is_some() {
+                bail!(
+                    "auto_runner_with_mmproj: runner `qwen3` does not attach mmproj — \
+                     use a `qwen3vl*` GGUF with the qwen3-vl runner, or omit mmproj for text-only"
+                );
+            }
+            Box::new(Qwen3Runner::builder().weights(weights).build()?)
+        }
         "qwen35" => {
-            // PLAN.md M6 — auto-route MTP-equipped GGUFs through
-            // `Qwen35SpecRunner` for speculative decode. The
-            // `Qwen35MtpHead` HIR op now dispatches `DequantMatMul`
-            // per-weight (via `weight_schemes` plumbed through
-            // `lower_qwen35_mtp_head`), so packed K-quant GGUFs can
-            // run MTP without falling back to F32-only.
-            if gguf_has_mtp_heads(weights).unwrap_or(false) {
+            // When mmproj is requested, prefer plain Qwen35Runner (vision) over
+            // MTP SpecRunner — speculative decode + mmproj is not wired together.
+            let want_mtp = mmproj.is_none() && gguf_has_mtp_heads(weights).unwrap_or(false);
+            if want_mtp {
                 Box::new(
                     rlx_qwen35::Qwen35SpecRunner::builder()
                         .weights(weights)
@@ -102,14 +113,133 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
                 Box::new(b.build()?)
             }
         }
-        "gemma" => Box::new(GemmaRunner::builder().weights(weights).build()?),
-        "llama32" => Box::new(Llama32Runner::builder().weights(weights).build()?),
-        "lfm" => Box::new(rlx_lfm::LfmRunner::builder().weights(weights).build()?),
-        other => bail!(
-            "auto_runner: runner `{other}` (sniffed from {:?}) has no `LmRunner` impl yet — \
-             use its per-family builder directly",
-            sniff.from
-        ),
+        "gemma" => {
+            let mut b = GemmaRunner::builder().weights(weights);
+            if let Some(mp) = mmproj {
+                b = b.mmproj(mp);
+            }
+            Box::new(b.build()?)
+        }
+        "llama32" => {
+            if mmproj.is_some() {
+                bail!(
+                    "auto_runner_with_mmproj: runner `llama32` has no multimodal path — omit mmproj"
+                );
+            }
+            Box::new(Llama32Runner::builder().weights(weights).build()?)
+        }
+        "mistral" => {
+            if let Some(mp) = mmproj {
+                #[cfg(feature = "mistral-vl")]
+                {
+                    Box::new(
+                        rlx_mistral_vl::MistralVlRunner::builder()
+                            .weights(weights)
+                            .mmproj(mp)
+                            .build()?,
+                    ) as Box<dyn LmRunner>
+                }
+                #[cfg(not(feature = "mistral-vl"))]
+                {
+                    let _ = mp;
+                    bail!(
+                        "auto_runner_with_mmproj: mistral + mmproj requires feature `mistral-vl` \
+                         (enable rlx-models/mistral-vl)"
+                    );
+                }
+            } else {
+                #[cfg(feature = "mistral")]
+                {
+                    Box::new(
+                        rlx_mistral::MistralRunner::builder()
+                            .weights(weights)
+                            .build()?,
+                    ) as Box<dyn LmRunner>
+                }
+                #[cfg(not(feature = "mistral"))]
+                {
+                    bail!(
+                        "auto_runner: runner `mistral` requires feature `mistral` \
+                         (enable rlx-models/mistral)"
+                    );
+                }
+            }
+        }
+        "lfm" => {
+            if let Some(mp) = mmproj {
+                #[cfg(feature = "lfm-vl")]
+                {
+                    Box::new(
+                        rlx_lfm_vl::LfmVlRunner::builder()
+                            .weights(weights)
+                            .mmproj(mp)
+                            .build()?,
+                    ) as Box<dyn LmRunner>
+                }
+                #[cfg(not(feature = "lfm-vl"))]
+                {
+                    let _ = mp;
+                    bail!(
+                        "auto_runner_with_mmproj: LFM + mmproj requires feature `lfm-vl` \
+                         (enable rlx-models/lfm-vl)"
+                    );
+                }
+            } else {
+                Box::new(rlx_lfm::LfmRunner::builder().weights(weights).build()?)
+            }
+        }
+        "qwen3-vl" => {
+            #[cfg(feature = "qwen3-vl")]
+            {
+                let mut b = rlx_qwen3_vl::Qwen3VlRunner::builder().weights(weights);
+                if let Some(mp) = mmproj {
+                    b = b.mmproj(mp);
+                }
+                Box::new(b.build()?) as Box<dyn LmRunner>
+            }
+            #[cfg(not(feature = "qwen3-vl"))]
+            {
+                let _ = mmproj;
+                bail!(
+                    "auto_runner_with_mmproj: runner `qwen3-vl` requires feature `qwen3-vl` \
+                     (enable rlx-models/qwen3-vl)"
+                );
+            }
+        }
+        // Llama-4 / Llama-3.2-Vision are safetensors-checkpoint, native-multimodal
+        // runners without an `LmRunner` impl — `auto_runner` can't box them. Point
+        // the caller at the right builder instead of the generic "no LmRunner".
+        "llama4" => {
+            let _ = mmproj;
+            bail!(
+                "auto_runner: `llama4` is a safetensors-checkpoint runner (MoE + native \
+                 vision), not an LmRunner/GGUF path — build it directly with \
+                 `rlx_llama4::Llama4Runner::from_checkpoint(dir, device)` (or `Llama4VlRunner` \
+                 for image input)"
+            );
+        }
+        "mllama" => {
+            let _ = mmproj;
+            bail!(
+                "auto_runner: `mllama` (Llama-3.2-Vision, cross-attention) is a \
+                 safetensors-checkpoint runner, not an LmRunner/GGUF path — build it directly \
+                 with `rlx_mllama::MllamaRunner::from_checkpoint(dir, device)`"
+            );
+        }
+        other => {
+            if mmproj.is_some() {
+                bail!(
+                    "auto_runner_with_mmproj: runner `{other}` (sniffed from {:?}) does not \
+                     support mmproj — omit mmproj for text-only, or use a supported VL family",
+                    sniff.from
+                );
+            }
+            bail!(
+                "auto_runner: runner `{other}` (sniffed from {:?}) has no `LmRunner` impl yet — \
+                 use its per-family builder directly",
+                sniff.from
+            )
+        }
     };
     Ok(runner)
 }

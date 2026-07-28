@@ -4,7 +4,7 @@
 
 [package]
 name = "rlx-tiny-tts"
-version = "0.2.13"
+version = "0.2.14"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

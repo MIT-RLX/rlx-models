@@ -126,8 +126,6 @@ impl WeightSource for SynthWeights {
             vec![0.0; n]
         } else if key.contains("norm") && key.ends_with("weight") {
             vec![1.0; n]
-        } else if key.contains("batch_norm") && key.ends_with("weight") {
-            vec![1.0; n]
         } else {
             (0..n).map(|i| 0.01 * ((i % 7) as f32 - 3.0)).collect()
         };

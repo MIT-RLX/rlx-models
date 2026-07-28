@@ -51,14 +51,7 @@ impl MlpWeights {
         );
         let h: Vec<f32> = h_pre.iter().copied().map(relu).collect();
         let mut logit = [0.0f32];
-        gemv_bias(
-            1,
-            self.cfg.hidden,
-            &self.fc2_w,
-            &h,
-            &self.fc2_b,
-            &mut logit,
-        );
+        gemv_bias(1, self.cfg.hidden, &self.fc2_w, &h, &self.fc2_b, &mut logit);
         (sigmoid(logit[0]), h_pre, h)
     }
 

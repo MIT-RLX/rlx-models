@@ -48,10 +48,22 @@ fn register_builtins() {
         "Run Bonsai — llama-arch 1.7B–8B or prism-ml Bonsai/Ternary-Bonsai-27B (qwen35 Q1_0/Q2_0); auto-dispatches by arch",
         rlx_bonsai::cli_run,
     );
+    #[cfg(feature = "neutrino")]
+    register_cli(
+        "neutrino",
+        "Run Neutrino-8B (FermionResearch; Qwen3 topology + FV5 five-value ternary weights)",
+        rlx_neutrino::cli_run,
+    );
     register_cli(
         "qwen35",
         "Run a Qwen3.5 / Qwen3.6 GGUF (hybrid gated-DeltaNet + attention)",
         rlx_qwen35::cli::run,
+    );
+    #[cfg(feature = "minimax")]
+    register_cli(
+        "minimax-m3",
+        "Run MiniMax-M3 (MSA block-sparse MoE; text prefill runner + vision tower)",
+        rlx_minimax::m3::cli_run,
     );
     #[cfg(feature = "fara")]
     register_cli(

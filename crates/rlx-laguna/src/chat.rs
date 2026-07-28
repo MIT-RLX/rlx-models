@@ -95,18 +95,32 @@ impl LagunaChat {
     }
 
     /// Render chat turns and encode to token ids (no extra BOS from tokenizer).
-    pub fn encode_chat(
-        &self,
-        messages: &[ChatMessage],
-        enable_thinking: bool,
-    ) -> Result<Vec<u32>> {
-        let text = self.template.render_with_options(
-            messages,
-            ChatRenderOptions {
-                add_generation_prompt: true,
-                enable_thinking,
-            },
-        )?;
+    pub fn encode_chat(&self, messages: &[ChatMessage], enable_thinking: bool) -> Result<Vec<u32>> {
+        let text = self
+            .template
+            .render_with_options(
+                messages,
+                ChatRenderOptions {
+                    add_generation_prompt: true,
+                    enable_thinking,
+                },
+            )
+            .or_else(|e| {
+                if self.used_fallback_template {
+                    return Err(e);
+                }
+                // HF templates can still fail at render (exotic filters); fall back once.
+                eprintln!(
+                    "rlx-laguna: chat template render failed ({e:#}); using simplified in-crate template"
+                );
+                compile_fallback()?.render_with_options(
+                    messages,
+                    ChatRenderOptions {
+                        add_generation_prompt: true,
+                        enable_thinking,
+                    },
+                )
+            })?;
         self.encode_text(&text)
     }
 
@@ -119,9 +133,7 @@ impl LagunaChat {
     }
 
     pub fn decode_token(&self, id: u32) -> String {
-        self.tokenizer
-            .decode(&[id], false)
-            .unwrap_or_default()
+        self.tokenizer.decode(&[id], false).unwrap_or_default()
     }
 }
 

@@ -57,7 +57,7 @@ BNNS AOT SIGSEGVs on these CFM graphs). TinyModel also pins
 `RLX_COREML_UNITS=all|cpu|ane` if needed. Metal / MLX / wgpu / CUDA remain
 available for non-CoreML GPU.
 
-**CUDA (msi):** RTF ≈1.4×, cos **0.99979** vs CPU, whisper **0.85** (same known
+**CUDA (NVIDIA):** RTF ≈1.4×, cos **0.99979** vs CPU, whisper **0.85** (same known
 espeak coverage as Apple backends).
 
 ## Known limitation

@@ -143,7 +143,7 @@ fn tokenizer_prompt_assembly_prepends_bos() -> Result<()> {
     ensure!(!ids.is_empty(), "empty prompt");
     ensure!(ids[0] == 0, "BOS must be 0, got {}", ids[0]);
     ensure!(
-        ids.iter().any(|&t| t == IMAGE_TOKEN_ID),
+        ids.contains(&IMAGE_TOKEN_ID),
         "missing image token {IMAGE_TOKEN_ID}"
     );
     let n_img = ids.iter().filter(|&&t| t == IMAGE_TOKEN_ID).count();
@@ -166,9 +166,11 @@ fn load_weights_and_emit_first_logits() -> Result<()> {
     let mut runner = UnlimitedOcrRunner::open(&dir, Device::Cpu)?;
     runner.load_weights()?;
     let pre = preprocess_path(&img, ImageMode::Base { size: 1024 })?;
-    let mut opts = SampleOpts::default();
-    opts.max_new_tokens = 1;
-    opts.no_repeat_ngram_size = 0;
+    let opts = SampleOpts {
+        max_new_tokens: 1,
+        no_repeat_ngram_size: 0,
+        ..Default::default()
+    };
     let (text, ids, prompt_len) = runner.generate("<image>document parsing.", &[pre], &opts)?;
     ensure!(ids.len() == prompt_len + 1, "expected one new token");
     ensure!(!text.is_empty() || ids[prompt_len] == 1, "empty decode");

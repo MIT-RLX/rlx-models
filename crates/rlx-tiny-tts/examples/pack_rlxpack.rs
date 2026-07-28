@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rlx_tiny_tts::asset_source::pack;
 
 fn main() -> Result<()> {
@@ -16,9 +16,10 @@ fn main() -> Result<()> {
         args.next()
             .unwrap_or_else(|| "weights/tts/tiny-tts-rlx".into()),
     );
-    let out = PathBuf::from(args.next().unwrap_or_else(|| {
-        dir.join("tiny-tts.rlxpack").display().to_string()
-    }));
+    let out = PathBuf::from(
+        args.next()
+            .unwrap_or_else(|| dir.join("tiny-tts.rlxpack").display().to_string()),
+    );
     if !dir.join("config.json").is_file() {
         bail!("missing {}/config.json", dir.display());
     }

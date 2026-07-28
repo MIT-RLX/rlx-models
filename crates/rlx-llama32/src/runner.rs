@@ -279,6 +279,26 @@ impl Llama32Runner {
         self.generator.prefill_get_last_logits(prompt_ids)
     }
 
+    /// Register a one-shot multimodal embed splice for the next `generate`
+    /// prefill — the vision soft tokens overwrite positions `start..start+rows`
+    /// of the packed `input_embeddings`. See
+    /// [`Llama32Generator::set_multimodal_embed_override`].
+    pub fn set_multimodal_embed_override(&mut self, start: usize, embeds: Vec<f32>) {
+        self.generator.set_multimodal_embed_override(start, embeds);
+    }
+
+    /// Whether a registered multimodal splice is still unconsumed (packed path
+    /// not taken). See [`Llama32Generator::multimodal_override_pending`].
+    pub fn multimodal_override_pending(&self) -> bool {
+        self.generator.multimodal_override_pending()
+    }
+
+    /// Drop any unconsumed multimodal splice. See
+    /// [`Llama32Generator::clear_multimodal_embed_override`].
+    pub fn clear_multimodal_embed_override(&mut self) {
+        self.generator.clear_multimodal_embed_override();
+    }
+
     pub fn generate_packed(
         &mut self,
         prompt_ids: &[u32],
@@ -360,7 +380,22 @@ fn load_llama32_gguf_config(
         .get("general.architecture")
         .and_then(MetaValue::as_str)
         .unwrap_or("llama");
-    const LLAMA_SHAPED_GGUF_ARCHES: &[&str] = &["llama", "phi3", "phi4"];
+    // mistral3/4: Ministral / Mistral Medium — Llama-shaped GGUFs with
+    // arch-prefixed metadata keys (parsed via llama32_cfg_from_gguf).
+    // granite: IBM Granite dense — Llama-shaped + scalar multipliers
+    // (embedding/residual/attention/logit), applied in the packed builder.
+    // exaone: LG ExaOne 3.x — Llama-shaped, NeoX RoPE.
+    // olmo2/olmo, nemotron, glm4/chatglm all reuse the Llama qkv+rope+attention
+    // core with a small per-arch structural delta applied in the packed builder
+    // (see `builder.rs` `emit_*` helpers). Each is validated coherent on a real
+    // Q4_K_M GGUF. cohere/command-r/cohere2 are NOT routed: the parallel-residual
+    // path is coded but cohere2 (command-r7b) still outputs garbage — it needs
+    // its per-layer sliding/full-attention + NoPE-on-global-layers logic, which
+    // is unverified; kept in `known_unimplemented_arch` until it's correct.
+    const LLAMA_SHAPED_GGUF_ARCHES: &[&str] = &[
+        "llama", "phi3", "phi4", "mistral3", "mistral4", "granite", "exaone", "olmo2", "olmo",
+        "nemotron", "glm4", "chatglm",
+    ];
     if !LLAMA_SHAPED_GGUF_ARCHES.contains(&arch) {
         bail!(
             "{path:?} has architecture {arch:?}; Llama32Runner expects general.architecture ∈ {LLAMA_SHAPED_GGUF_ARCHES:?}"

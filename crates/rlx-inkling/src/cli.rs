@@ -130,7 +130,7 @@ fn run_eager(runner: &InklingRunner, ids: &[u32], max_tokens: Option<usize>) -> 
     if let Some(n) = max_tokens {
         let mut printed = Vec::new();
         let out = runner.generate(ids, n, |tok| printed.push(tok))?;
-        println!("  generate(+{n}): {:?}", &printed);
+        println!("  generate(+{n}): {:?}", printed);
         println!("  full_ids: {out:?}");
     }
     Ok(())

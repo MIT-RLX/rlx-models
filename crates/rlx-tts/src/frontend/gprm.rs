@@ -14,8 +14,8 @@ pub struct GprmIndex {
 impl GprmIndex {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let v: serde_json::Value =
             serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
         let mut by_text = HashMap::new();
@@ -38,6 +38,10 @@ impl GprmIndex {
     pub fn len(&self) -> usize {
         self.by_text.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_text.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -54,7 +58,7 @@ mod tests {
             return;
         }
         let idx = GprmIndex::load(path).unwrap();
-        assert!(idx.len() > 0);
+        assert!(!idx.is_empty());
         assert_eq!(idx.lookup_stem("Hi."), Some("hi"));
     }
 }

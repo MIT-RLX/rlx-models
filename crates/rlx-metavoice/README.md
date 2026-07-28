@@ -39,7 +39,7 @@ Defaults: **greedy** argmax, `--max-tokens 864`, `--seed 1337`, speaker from
 cargo run -p rlx-metavoice --release --example backend_matrix \
   --features "metal,mlx,gpu,coreml"
 
-# CUDA host (e.g. msi)
+# CUDA host (set RLX_CUDA_HOST)
 cargo run -p rlx-metavoice --release --example backend_matrix --features cuda,gpu
 ```
 
@@ -54,7 +54,7 @@ cos=1.0 vs CPU EnCodec):
 | host | backends |
 |------|----------|
 | Mac | CPU, Metal, MLX, wgpu, CoreML |
-| msi (RTX 3080 Ti) | CPU, CUDA, wgpu |
+| NVIDIA (RTX 3080 Ti) | CPU, CUDA, wgpu |
 
 **Requires** speaker conditioning (`bria_16k.wav` or `--reference`). Zero emb or a
 short max-token budget without a speaker is what produced the old 67% transcript

@@ -41,8 +41,8 @@ pub fn generate_corpus(n: usize, seed: u64) -> Vec<CorpusItem> {
 /// Load extra lines from a file (`#` comments / blank lines skipped).
 /// Each non-empty line becomes `file_NNNN`.
 pub fn load_corpus_file(path: &Path) -> Result<Vec<CorpusItem>> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("read corpus {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("read corpus {}", path.display()))?;
     let mut out = Vec::new();
     for line in raw.lines() {
         let t = line.trim();
@@ -96,7 +96,9 @@ fn phrase_at(seed: u64) -> Draft {
 }
 
 fn pick<'a>(seed: u64, lane: u64, xs: &[&'a str]) -> &'a str {
-    xs[((seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(lane * 0x85EB_CA6B))
+    xs[((seed
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(lane * 0x85EB_CA6B))
         % xs.len() as u64) as usize]
 }
 
@@ -321,21 +323,8 @@ fn name_intro(seed: u64) -> Draft {
         seed,
         1,
         &[
-            "Alex",
-            "Jordan",
-            "Sam",
-            "Taylor",
-            "Morgan",
-            "Casey",
-            "Riley",
-            "Avery",
-            "Quinn",
-            "Cameron",
-            "Harper",
-            "Drew",
-            "Nora",
-            "Elena",
-            "Marcus",
+            "Alex", "Jordan", "Sam", "Taylor", "Morgan", "Casey", "Riley", "Avery", "Quinn",
+            "Cameron", "Harper", "Drew", "Nora", "Elena", "Marcus",
         ],
     );
     let role = pick(
@@ -429,7 +418,10 @@ fn shopping(seed: u64) -> Draft {
 }
 
 fn longish(seed: u64) -> Draft {
-    let a = stmt(seed, "everyday").text.trim_end_matches('.').to_string();
+    let a = stmt(seed, "everyday")
+        .text
+        .trim_end_matches('.')
+        .to_string();
     let b = pick(
         seed,
         9,
@@ -453,14 +445,7 @@ fn mixed(seed: u64) -> Draft {
         seed,
         1,
         &[
-            "careful",
-            "rapid",
-            "gentle",
-            "precise",
-            "cheerful",
-            "steady",
-            "curious",
-            "patient",
+            "careful", "rapid", "gentle", "precise", "cheerful", "steady", "curious", "patient",
         ],
     );
     let noun = pick(

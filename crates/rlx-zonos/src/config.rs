@@ -69,7 +69,7 @@ impl ZonosFileConfig {
     pub fn validate(&self) -> Result<()> {
         let h = self.backbone.attn_cfg.num_heads;
         let d = self.backbone.d_model;
-        if d % h != 0 {
+        if !d.is_multiple_of(h) {
             bail!("d_model {d} not divisible by num_heads {h}");
         }
         Ok(())

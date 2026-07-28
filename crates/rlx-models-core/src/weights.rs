@@ -80,9 +80,11 @@ pub fn load_weight_map(path: impl AsRef<Path>, gguf_arches: &[&str]) -> Result<W
     WeightMap::from_resolved_path(path)
 }
 
-/// Idempotent: ensure built-in GGUF tensor resolvers are registered (safe to call from `main`).
+/// Idempotent: ensure built-in GGUF tensor resolvers and model-family
+/// registry entries are registered (safe to call from `main`).
 pub fn init() {
     crate::gguf_resolve::ensure_builtin_resolvers();
+    crate::model_registry::ensure_builtin_gguf_models();
 }
 
 impl WeightFormatRegistration {

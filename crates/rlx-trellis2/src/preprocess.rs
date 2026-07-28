@@ -20,6 +20,7 @@
 //!   * uses an existing non-opaque alpha channel when present;
 //!   * otherwise accepts RGB and treats the whole frame as opaque foreground
 //!     (`--no-rembg` / `PreprocessOptions::allow_rgb_fallback`).
+//!
 //! BiRefNet itself is **not** ported here.
 
 use anyhow::{Result, bail};

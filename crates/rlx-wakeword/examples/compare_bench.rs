@@ -10,7 +10,8 @@ use rlx_porcupine::{PorcupineEngine, PorcupineWeights};
 use rlx_voxrt::{VoxrtEngine, VoxrtWeights};
 use rlx_wake::{
     SAMPLE_RATE_16K, WakeConfig, WakeEngine, available_devices, bench_device_label, bench_engine,
-    best_f1_threshold, peak_of, print_bench_table, print_detection_stats, streaming_execution_device,
+    best_f1_threshold, peak_of, print_bench_table, print_detection_stats,
+    streaming_execution_device,
 };
 use rlx_wakeword::bundle::stub_bundle;
 use rlx_wakeword::session::{WakeEvent, WakewordSession};
@@ -206,10 +207,7 @@ fn main() -> anyhow::Result<()> {
     let oww_b = oww_weight_bytes();
 
     println!("=== weight size (stub f32 tensors) ===");
-    println!(
-        "{:<22} {:>10} {:>10}  notes",
-        "engine", "params", "bytes"
-    );
+    println!("{:<22} {:>10} {:>10}  notes", "engine", "params", "bytes");
     println!(
         "{:<22} {:>10} {:>10}  product default (1 phrase)",
         "wakeword-lite",
@@ -248,10 +246,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     println!("\n=== estimated live RAM (weights + mel ring + scratch) ===");
-    println!(
-        "{:<22} {:>10}  hop",
-        "engine", "RAM_KiB"
-    );
+    println!("{:<22} {:>10}  hop", "engine", "RAM_KiB");
     println!(
         "{:<22} {:>10.1}  40 ms",
         "wakeword-lite",
@@ -290,13 +285,13 @@ fn main() -> anyhow::Result<()> {
         measure_detection_engine("nanowakeword", label, &mut e, &positives, &negatives)?;
     }
     {
-        let mut e =
-            PorcupineEngine::new(PorcupineWeights::stub("porcupine"), cfg.clone()).with_device_label(label);
+        let mut e = PorcupineEngine::new(PorcupineWeights::stub("porcupine"), cfg.clone())
+            .with_device_label(label);
         measure_detection_engine("porcupine", label, &mut e, &positives, &negatives)?;
     }
     {
-        let mut e =
-            VoxrtEngine::new(VoxrtWeights::stub("hey assistant"), cfg.clone()).with_device_label(label);
+        let mut e = VoxrtEngine::new(VoxrtWeights::stub("hey assistant"), cfg.clone())
+            .with_device_label(label);
         measure_detection_engine("voxrt", label, &mut e, &positives, &negatives)?;
     }
     {
@@ -335,13 +330,13 @@ fn main() -> anyhow::Result<()> {
         stats.push(bench_engine("nanowakeword", label, &mut e, &pcm, 2, 6)?);
     }
     {
-        let mut e =
-            PorcupineEngine::new(PorcupineWeights::stub("porcupine"), cfg.clone()).with_device_label(label);
+        let mut e = PorcupineEngine::new(PorcupineWeights::stub("porcupine"), cfg.clone())
+            .with_device_label(label);
         stats.push(bench_engine("porcupine", label, &mut e, &pcm, 2, 6)?);
     }
     {
-        let mut e =
-            VoxrtEngine::new(VoxrtWeights::stub("hey assistant"), cfg.clone()).with_device_label(label);
+        let mut e = VoxrtEngine::new(VoxrtWeights::stub("hey assistant"), cfg.clone())
+            .with_device_label(label);
         stats.push(bench_engine("voxrt", label, &mut e, &pcm, 2, 6)?);
     }
     print_bench_table(&stats);

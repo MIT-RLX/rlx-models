@@ -32,6 +32,7 @@ pub mod codec_bench;
 pub mod config;
 pub mod dataprocessing;
 pub mod device_capabilities;
+pub mod distributed_bridge;
 pub mod embedded_safetensors;
 pub mod flow_bridge;
 pub mod flow_util;
@@ -42,14 +43,19 @@ pub mod gpu_kv;
 pub mod host_kernels;
 pub mod image_preprocess;
 pub mod lm;
+pub mod mlx_coverage;
+pub mod mlx_npz_convert;
+pub mod model_registry;
 pub mod moe_weights;
 pub mod prompt_cache;
 pub mod safetensors_checkpoint;
+pub mod standard_decoder;
 pub mod vision_ops_ir;
 pub mod weight_loader;
 pub mod weight_map;
 pub mod weight_registry;
 pub mod weights;
+pub mod weights_discover;
 
 pub use asr_metrics::{
     EditCounts, WerAccumulator, batch_to_stream_factor, character_error_rate, edit_distance,
@@ -97,6 +103,10 @@ pub use autoregressive::{
     split_bucketed_decode_kv_per_layer, split_decode_logits_kv, split_decode_logits_kv_aux,
 };
 pub use config::{BertConfig, NomicBertConfig, NomicVisionConfig};
+pub use distributed_bridge::{
+    LoadKind, LoaderParamSource, ManifestParamSource, MapParamSource, StructureLoader,
+    run_decoder_pipeline_local,
+};
 pub use embedded_safetensors::EmbeddedSafetensors;
 pub use flow_bridge::{
     apply_compile_profile, compile_graph_encoder, compile_graph_gemma_decode,
@@ -127,12 +137,29 @@ pub use gpu_kv::{
     sync_gpu_kv_to_host,
 };
 pub use lm::{FlowBuildExt, into_compile_parts};
+pub use mlx_coverage::{CoverageStatus, CoverageVia, ModelCoverage, classify_coverage};
+pub use mlx_npz_convert::{MlxNpzConvertReport, convert_mlx_npz_to_hf, meta_name_to_hf};
+pub use model_registry::{
+    GgufModelRegistration, ensure_builtin_gguf_models, family_for_gguf_arch, hint_for_gguf_arch,
+    lookup_gguf_arch, lookup_gguf_model_id, lookup_hf_model_type, register_gguf_model,
+    registered_gguf_models, runner_for_gguf_arch, runner_for_hf_model_type,
+};
 pub use safetensors_checkpoint::{SafetensorsCheckpoint, SafetensorsMmapLoader};
+pub use standard_decoder::{
+    DecoderSpec, DeepseekSpec, DeepseekV4Spec, Glm4MoeSpec, GptOssSpec, HyV3Spec, KimiLinearSpec,
+    Lfm2Spec, MinimaxSpec, ModelSupport, NemotronHSpec, RopeScaling, build_deepseek_mla,
+    build_deepseek_prefill, build_deepseek_v4_prefill, build_deepseek_v4_stage,
+    build_glm4moe_prefill, build_gpt_oss_prefill, build_hc_post, build_hc_pre, build_hc_sinkhorn,
+    build_hy_v3_prefill, build_kimi_kda, build_kimi_linear_prefill, build_kv_compressor_overlap,
+    build_kv_compressor_pool, build_lfm2_prefill, build_minimax_prefill, build_nemotron_h_prefill,
+    build_standard_decoder_packed, build_v4_indexer_score, build_v4_o_lora,
+    build_v4_sink_attention, build_v4_topk_gate, classify_config,
+};
 pub use weight_loader::{
     ArcCacheLoader, ArcF32Tensor, GgufLoader, HfTranslatingLoader, WeightLoader,
-    dequant_matmul_supported, ggml_type_to_quant_scheme, gguf_to_hf_name, gguf_to_hf_name_candidates,
-    gguf_to_hf_name_for_arch, gguf_to_hf_qwen35_name, hf_to_gguf_name, hf_to_gguf_name_for_arch,
-    is_mtp_weight, is_native_float_ggml, load_from_path,
+    dequant_matmul_supported, ggml_type_to_quant_scheme, gguf_to_hf_name,
+    gguf_to_hf_name_candidates, gguf_to_hf_name_for_arch, gguf_to_hf_qwen35_name, hf_to_gguf_name,
+    hf_to_gguf_name_for_arch, is_mtp_weight, is_native_float_ggml, load_from_path,
 };
 pub use weight_map::{WeightDrainPolicy, WeightMap};
 pub use weight_registry::{
@@ -143,4 +170,9 @@ pub use weight_registry::{
 pub use weights::{
     GgufDirGuide, LoadOpts, ResolveOpts, default_resolve_opts, gguf_dir_guide, init,
     load_weight_map, open, open_map, open_map_with, open_with, pick, pick_default,
+};
+pub use weights_discover::{
+    DiscoverOpts, DiscoveredFormat, DiscoveredWeight, WeightSourceKind, default_source_roots,
+    looks_like_filesystem_path, resolve_weight_query, resolve_weight_query_in_roots,
+    resolve_weights_path_or_query, scan_weights, scan_weights_in_roots,
 };

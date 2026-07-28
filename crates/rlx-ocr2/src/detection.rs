@@ -114,7 +114,9 @@ pub fn build_detector_graph_heads(
     let mut node: HashMap<String, HirNodeId> = HashMap::new();
     let mut shp: HashMap<String, Vec<usize>> = HashMap::new();
 
-    let x = b.m().input("x", Shape::new(&recipe.input_shape, DType::F32));
+    let x = b
+        .m()
+        .input("x", Shape::new(&recipe.input_shape, DType::F32));
     node.insert("x".into(), x);
     shp.insert("x".into(), recipe.input_shape.clone());
 
@@ -125,7 +127,9 @@ pub fn build_detector_graph_heads(
         let s = &o.shape;
         let (oc, oh, ow) = (s[1], s[2], s[3]);
         let get = |m: &HashMap<String, HirNodeId>, k: &str| -> Result<HirNodeId> {
-            m.get(k).copied().ok_or_else(|| anyhow!("missing node {k} for op {}", o.name))
+            m.get(k)
+                .copied()
+                .ok_or_else(|| anyhow!("missing node {k} for op {}", o.name))
         };
         let id = match o.op.as_str() {
             "conv" => {
@@ -141,22 +145,59 @@ pub fn build_detector_graph_heads(
                 let (ph, pw) = (pad[0], pad[2]);
                 let groups = o.groups.unwrap_or(1);
                 let y = if groups == 1 {
-                    conv2d_bias(&mut b.m(), xin, weight, bias, batch, oc, k[0], k[1],
-                                [st[0], st[1]], [ph, pw], oh, ow)
+                    conv2d_bias(
+                        &mut b.m(),
+                        xin,
+                        weight,
+                        bias,
+                        batch,
+                        oc,
+                        k[0],
+                        k[1],
+                        [st[0], st[1]],
+                        [ph, pw],
+                        oh,
+                        ow,
+                    )
                 } else {
-                    conv2d_bias_groups(&mut b.m(), xin, weight, bias, batch, oc, k[0], k[1],
-                                       [st[0], st[1]], [ph, pw], groups, oh, ow)
+                    conv2d_bias_groups(
+                        &mut b.m(),
+                        xin,
+                        weight,
+                        bias,
+                        batch,
+                        oc,
+                        k[0],
+                        k[1],
+                        [st[0], st[1]],
+                        [ph, pw],
+                        groups,
+                        oh,
+                        ow,
+                    )
                 };
-                if o.relu.unwrap_or(false) { b.m().relu(y) } else { y }
+                if o.relu.unwrap_or(false) {
+                    b.m().relu(y)
+                } else {
+                    y
+                }
             }
-            "relu" => { let x = get(&node, &o.ins[0])?; b.m().relu(x) }
+            "relu" => {
+                let x = get(&node, &o.ins[0])?;
+                b.m().relu(x)
+            }
             "sigmoid" => {
                 let x = get(&node, &o.ins[0])?;
-                b.m().activation(Activation::Sigmoid, x, Shape::new(s, DType::F32))
+                b.m()
+                    .activation(Activation::Sigmoid, x, Shape::new(s, DType::F32))
             }
             "add" => {
                 let y = b.m().add(get(&node, &o.ins[0])?, get(&node, &o.ins[1])?);
-                if o.relu.unwrap_or(false) { b.m().relu(y) } else { y }
+                if o.relu.unwrap_or(false) {
+                    b.m().relu(y)
+                } else {
+                    y
+                }
             }
             "mul" => b.m().mul(get(&node, &o.ins[0])?, get(&node, &o.ins[1])?),
             "clamp" => {
@@ -180,7 +221,10 @@ pub fn build_detector_graph_heads(
                     avg_pool2d(&mut b.m(), x, [2, 2], [2, 2], batch, oc, ih, iw)
                 }
             }
-            "upsample" => { let x = get(&node, &o.ins[0])?; b.m().resize_bilinear2d(x, oh, ow, false) }
+            "upsample" => {
+                let x = get(&node, &o.ins[0])?;
+                b.m().resize_bilinear2d(x, oh, ow, false)
+            }
             "concat" => {
                 let ids: Result<Vec<_>> = o.ins.iter().map(|n| get(&node, n)).collect();
                 b.m().concat_(ids?, 1)
@@ -196,7 +240,9 @@ pub fn build_detector_graph_heads(
                 let x = get(&node, &o.ins[0])?;
                 let mu = b.m().mean(x, vec![1], true); // [1,1,H,W]
                 let xc = b.m().sub(x, mu);
-                let e = b.m().activation(Activation::Exp, xc, Shape::new(s, DType::F32));
+                let e = b
+                    .m()
+                    .activation(Activation::Exp, xc, Shape::new(s, DType::F32));
                 let denom = b.m().sum(e, vec![1], true);
                 b.m().div(e, denom)
             }
@@ -213,7 +259,9 @@ pub fn build_detector_graph_heads(
 }
 
 fn get_out(m: &HashMap<String, HirNodeId>, k: &str) -> Result<HirNodeId> {
-    m.get(k).copied().ok_or_else(|| anyhow!("missing output head {k}"))
+    m.get(k)
+        .copied()
+        .ok_or_else(|| anyhow!("missing output head {k}"))
 }
 
 /// Detector runner: loads recipe + weights, compiles, runs a normalized image.
@@ -270,7 +318,10 @@ impl Detector {
     pub fn forward(&self, input: &[f32]) -> Result<Vec<(String, Vec<f32>)>> {
         let mut guard = self.compiled.lock().map_err(|_| anyhow!("lock poisoned"))?;
         if guard.is_none() {
-            let path = self.weights_path.to_str().ok_or_else(|| anyhow!("weights path not UTF-8"))?;
+            let path = self
+                .weights_path
+                .to_str()
+                .ok_or_else(|| anyhow!("weights path not UTF-8"))?;
             let mut wm = WeightMap::from_file(path)?;
             let (graph, params) =
                 build_detector_graph_heads(&self.recipe_json, &mut wm, Some(&self.heads))?;
@@ -283,7 +334,11 @@ impl Detector {
         }
         let outs = guard.as_mut().unwrap().run(&[("x", input)]);
         if outs.len() != self.heads.len() {
-            bail!("detector produced {} outputs, expected {}", outs.len(), self.heads.len());
+            bail!(
+                "detector produced {} outputs, expected {}",
+                outs.len(),
+                self.heads.len()
+            );
         }
         Ok(self.heads.iter().cloned().zip(outs).collect())
     }

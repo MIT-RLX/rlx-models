@@ -45,7 +45,13 @@ fn recognizer_cpu_parity_vs_numpy() {
         assert_eq!(logits.len(), expected.len(), "logit count mismatch");
         let cos = cosine(&logits, &expected);
         let mad = max_abs(&logits, &expected);
-        println!("recognizer [{name:5}] cos={cos:.6} max_abs={mad:.4e} (n={})", logits.len());
-        assert!(cos > 0.999, "recognizer[{name}] cos {cos} below 0.999 (max_abs {mad})");
+        println!(
+            "recognizer [{name:5}] cos={cos:.6} max_abs={mad:.4e} (n={})",
+            logits.len()
+        );
+        assert!(
+            cos > 0.999,
+            "recognizer[{name}] cos {cos} below 0.999 (max_abs {mad})"
+        );
     }
 }

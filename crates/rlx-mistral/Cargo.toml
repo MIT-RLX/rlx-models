@@ -15,6 +15,7 @@ anyhow = { workspace = true }
 rlx-llama-base = { workspace = true }
 rlx-llama32 = { workspace = true }
 rlx-cli = { workspace = true }
+rlx-runtime = { workspace = true }
 
 [features]
 default = []

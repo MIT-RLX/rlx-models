@@ -941,6 +941,23 @@ impl Qwen3Generator {
         let last_row = &logits[..vocab];
         let tok = sample_token(last_row, opts) as u32;
         self.tokens.push(tok);
+        // Prefill compiles a multi-GiB arena. Decode needs another; on discrete
+        // / VirtIO wgpu keeping both OOMs (~2× act + weights). KV is already
+        // on the host — drop the prefill executable so peak is one graph.
+        // Weight buffers are process-shared in rlx-wgpu when layouts match.
+        if matches!(
+            self.device,
+            Device::Gpu
+                | Device::Vulkan
+                | Device::WebGpu
+                | Device::Cuda
+                | Device::Rocm
+                | Device::DirectX
+        ) {
+            if let Some(cache) = &mut self.prefill_compile_cache {
+                cache.clear();
+            }
+        }
         Ok(tok)
     }
 

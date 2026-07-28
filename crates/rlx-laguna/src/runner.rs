@@ -45,9 +45,10 @@ impl LagunaRunner {
     pub fn try_from_gguf_f32(path: impl AsRef<Path>) -> Result<Self> {
         crate::memory::refuse_f32_expand("LagunaRunner::try_from_gguf_f32")?;
         let path = path.as_ref();
-        let mut loader = GgufLoader::from_file(path.to_str().ok_or_else(|| {
-            anyhow::anyhow!("non-UTF8 GGUF path: {}", path.display())
-        })?)?;
+        let mut loader = GgufLoader::from_file(
+            path.to_str()
+                .ok_or_else(|| anyhow::anyhow!("non-UTF8 GGUF path: {}", path.display()))?,
+        )?;
         let cfg = LagunaConfig::from_gguf(loader.file())?;
         let weights = crate::weights::load_text_weights_from_gguf_f32(&mut loader)?;
         Ok(Self { cfg, weights })
@@ -126,12 +127,11 @@ pub struct LagunaPackedRunner {
 impl LagunaPackedRunner {
     pub fn from_gguf_packed(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let mut loader = GgufLoader::from_file(path.to_str().ok_or_else(|| {
-            anyhow::anyhow!("rlx-laguna: non-UTF8 path {}", path.display())
-        })?)
-        .map_err(|e| {
-            anyhow::anyhow!("rlx-laguna: packed mmap open {}: {e:#}", path.display())
-        })?;
+        let mut loader = GgufLoader::from_file(
+            path.to_str()
+                .ok_or_else(|| anyhow::anyhow!("rlx-laguna: non-UTF8 path {}", path.display()))?,
+        )
+        .map_err(|e| anyhow::anyhow!("rlx-laguna: packed mmap open {}: {e:#}", path.display()))?;
         if loader.architecture() != "laguna" {
             bail!(
                 "rlx-laguna: expected general.architecture=laguna, got {}",
@@ -144,6 +144,31 @@ impl LagunaPackedRunner {
             cfg,
             weights,
             loader,
+        })
+    }
+
+    /// Load an **mlx-community Laguna directory** (HF `config.json` + affine
+    /// safetensors) — the packed weights carry their bytes inline
+    /// ([`MatWeight::PackedMlx`]), so the retained `loader` is an empty GGUF
+    /// placeholder (the host forward only reads it for the GGUF-`Packed` branch,
+    /// which never fires on an all-affine model).
+    pub fn from_mlx_dir(dir: impl AsRef<Path>) -> Result<Self> {
+        let dir = dir.as_ref();
+        let dir_s = dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("rlx-laguna: non-UTF8 mlx dir {}", dir.display()))?;
+        let cfg = LagunaConfig::from_json_path(dir.join("config.json"))?;
+        if cfg.model_type != "laguna" {
+            bail!(
+                "rlx-laguna: expected model_type=laguna, got {}",
+                cfg.model_type
+            );
+        }
+        let weights = crate::mlx_load::load_mlx_weights(dir_s, &cfg)?;
+        Ok(Self {
+            cfg,
+            weights,
+            loader: GgufLoader::empty("laguna"),
         })
     }
 
@@ -179,7 +204,7 @@ impl LagunaPackedRunner {
         &self,
         prompt_ids: &[u32],
         n_new: usize,
-        mut accel: Option<&mut crate::device_matmul::DeviceMatmul>,
+        accel: Option<&mut crate::device_matmul::DeviceMatmul>,
         mut on_token: impl FnMut(u32),
     ) -> Result<Vec<u32>> {
         crate::packed_forward::generate(
@@ -189,7 +214,7 @@ impl LagunaPackedRunner {
             prompt_ids,
             n_new,
             &mut on_token,
-            accel.as_deref_mut(),
+            accel,
         )
     }
 }
@@ -206,9 +231,7 @@ mod tests {
         let runner = LagunaRunner::new(cfg.clone(), w);
         let prompt = vec![1u32, 2, 3];
         let mut new_toks = Vec::new();
-        let out = runner
-            .generate(&prompt, 3, |t| new_toks.push(t))
-            .unwrap();
+        let out = runner.generate(&prompt, 3, |t| new_toks.push(t)).unwrap();
         assert_eq!(out.len(), prompt.len() + new_toks.len());
         assert_eq!(new_toks.len(), 3);
     }

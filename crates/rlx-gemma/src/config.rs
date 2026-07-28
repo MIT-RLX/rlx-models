@@ -184,6 +184,40 @@ pub struct GemmaConfig {
     /// non-empty, [`Self::is_eog_token`] matches greedy stop semantics.
     #[serde(default)]
     pub eog_token_ids: Vec<u32>,
+    /// Per-layer MLP activation-sparsity fraction (gemma-3n `_gaussian_topk`).
+    /// Layers with `sparsity > 0` apply a top-k gate cutoff at
+    /// `mean + std·√2·erfinv(2·sparsity−1)` before the GELU. Empty / all-zero
+    /// ⇒ plain GELU everywhere (gemma-4 QAT, gemma-2/3). gemma-3n E2B: layers
+    /// 0..=9 = 0.95, rest 0.0.
+    #[serde(default)]
+    pub activation_sparsity_pattern: Vec<f32>,
+
+    // ── gemma-3n AltUp + Laurel + dual-θ RoPE ──────────────────────
+    /// AltUp: number of parallel hidden streams (gemma-3n: 4). `<= 1` ⇒ no
+    /// AltUp (gemma-4 E2B / flagship / legacy). Drives the 4-stream
+    /// predict/correct wrapper + entry/exit stream projections.
+    #[serde(default)]
+    pub altup_num_inputs: usize,
+    /// Index of the "real" (active) stream that carries the embedding and runs
+    /// the per-layer body. gemma-3n: 0.
+    #[serde(default)]
+    pub altup_active_idx: usize,
+    /// Clip bound for the AltUp prediction/correction coefficient weights
+    /// (`mx.clip(w, -c, c)`). gemma-3n: 120.0. `None` ⇒ no clip.
+    #[serde(default)]
+    pub altup_coef_clip: Option<f32>,
+    /// Whether the corrected active stream is scaled by `correct_output_scale`
+    /// before the per-layer projection. gemma-3n: true.
+    #[serde(default)]
+    pub altup_correct_scale: bool,
+    /// Low-rank width of the Laurel augmented-residual block. `0` ⇒ no Laurel.
+    /// gemma-3n: 64.
+    #[serde(default)]
+    pub laurel_rank: usize,
+    /// gemma-3n RoPE base frequency for sliding-window (local) layers.
+    /// Full-attention layers use `rope_theta` (1e6). Defaults to 10000.
+    #[serde(default = "default_rope_local_base_freq")]
+    pub rope_local_base_freq: f64,
 }
 
 impl GemmaConfig {
@@ -201,6 +235,9 @@ fn default_rope_theta() -> f64 {
 }
 fn default_expert_weights_scale() -> f32 {
     1.0
+}
+fn default_rope_local_base_freq() -> f64 {
+    10_000.0
 }
 
 impl GemmaConfig {
@@ -275,6 +312,12 @@ impl GemmaConfig {
         self.hidden_size_per_layer_input
     }
 
+    /// Whether this checkpoint uses gemma-3n AltUp (4 parallel hidden streams).
+    /// Distinguishes gemma-3n (AltUp + PLE) from gemma-4 E2B (PLE only).
+    pub fn has_altup(&self) -> bool {
+        self.altup_num_inputs > 1
+    }
+
     /// Vocab of the per-layer embedding table (defaults to `vocab_size`).
     pub fn ple_vocab_size(&self) -> usize {
         if self.vocab_size_per_layer_input > 0 {
@@ -322,6 +365,26 @@ impl GemmaConfig {
             self.intermediate_size * 2
         } else {
             self.intermediate_size
+        }
+    }
+
+    /// MLP activation-sparsity fraction for layer `i` (gemma-3n). `0.0` ⇒
+    /// plain GELU. `> 0.0` ⇒ `gelu_topk` gate cutoff at that sparsity.
+    pub fn layer_activation_sparsity(&self, layer: usize) -> f32 {
+        self.activation_sparsity_pattern
+            .get(layer)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    /// Gaussian-topk cutoff multiplier `√2·erfinv(2·sparsity−1)` for layer `i`
+    /// (`None` when the layer is dense). Matches gemma-3n `MLP._std_multiplier`.
+    pub fn layer_gaussian_std_multiplier(&self, layer: usize) -> Option<f32> {
+        let s = self.layer_activation_sparsity(layer);
+        if s > 0.0 {
+            Some((std::f64::consts::SQRT_2 * erfinv(2.0 * s as f64 - 1.0)) as f32)
+        } else {
+            None
         }
     }
 
@@ -446,6 +509,13 @@ impl GemmaConfig {
             use_double_wide_mlp: false,
             enable_moe_block: false,
             eog_token_ids: Vec::new(),
+            activation_sparsity_pattern: Vec::new(),
+            altup_num_inputs: 0,
+            altup_active_idx: 0,
+            altup_coef_clip: None,
+            altup_correct_scale: false,
+            laurel_rank: 0,
+            rope_local_base_freq: 10_000.0,
         }
     }
 
@@ -546,10 +616,49 @@ impl GemmaConfig {
 }
 
 /// HF dense Gemma 4 checkpoints use JSON `null` for unused MoE keys.
+/// Inverse error function (Giles 2010 single-precision rational approx,
+/// ~1e-6 accurate over the useful range) — used for the gemma-3n activation
+/// sparsity cutoff `√2·erfinv(2·sparsity−1)`.
+fn erfinv(x: f64) -> f64 {
+    let w = -((1.0 - x) * (1.0 + x)).ln();
+    let p = if w < 5.0 {
+        let w = w - 2.5;
+        let mut p = 2.810_226_36e-08;
+        p = 3.432_739_39e-07 + p * w;
+        p = -3.523_387_7e-06 + p * w;
+        p = -4.391_506_54e-06 + p * w;
+        p = 0.000_218_580_87 + p * w;
+        p = -0.001_253_725_03 + p * w;
+        p = -0.004_177_681_64 + p * w;
+        p = 0.246_640_727 + p * w;
+        1.501_409_41 + p * w
+    } else {
+        let w = w.sqrt() - 3.0;
+        let mut p = -0.000_200_214_257;
+        p = 0.000_100_950_558 + p * w;
+        p = 0.001_349_343_22 + p * w;
+        p = -0.003_673_428_44 + p * w;
+        p = 0.005_739_507_73 + p * w;
+        p = -0.007_622_461_3 + p * w;
+        p = 0.009_438_870_47 + p * w;
+        p = 1.001_674_06 + p * w;
+        2.832_976_82 + p * w
+    };
+    p * x
+}
+
 fn normalize_hf_null_usize_fields(mut value: serde_json::Value) -> serde_json::Value {
     let Some(obj) = value.as_object_mut() else {
         return value;
     };
+    // gemma-3n ships a *per-layer* `intermediate_size` array (uniform for E2B).
+    // The builder models a single scalar via `layer_intermediate_size`, so
+    // collapse the array to its first element.
+    if let Some(arr) = obj.get("intermediate_size").and_then(|v| v.as_array()) {
+        if let Some(first) = arr.first().cloned() {
+            obj.insert("intermediate_size".to_string(), first);
+        }
+    }
     for key in [
         "num_experts",
         "num_experts_used",
@@ -583,7 +692,12 @@ fn infer_arch_from_json(raw: &str) -> GemmaArch {
         if raw.contains("\"gemma2\"") {
             return GemmaArch::Gemma2;
         }
-        if raw.contains("\"gemma3\"") {
+        // gemma-3n (`gemma3n` / `gemma3n_text`) shares the Gemma-3 layer style
+        // (per-head q/k norm, no v-norm, dual local/global RoPE, sandwich norms).
+        if raw.contains("\"gemma3\"")
+            || raw.contains("\"gemma3n\"")
+            || raw.contains("\"gemma3n_text\"")
+        {
             return GemmaArch::Gemma3;
         }
     }
@@ -868,6 +982,15 @@ pub fn gemma_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<GemmaConfig> {
         use_double_wide_mlp: get_bool("gemma.use_double_wide_mlp").unwrap_or(false),
         enable_moe_block: get_u32("gemma.expert_count").unwrap_or(0) > 0,
         eog_token_ids: gemma_eog_tokens_from_gguf(raw, arch),
+        activation_sparsity_pattern: Vec::new(),
+        // AltUp / Laurel are gemma-3n HF-safetensors features not carried in
+        // any GGUF today; default them off so the GGUF path is unchanged.
+        altup_num_inputs: 0,
+        altup_active_idx: 0,
+        altup_coef_clip: None,
+        altup_correct_scale: false,
+        laurel_rank: 0,
+        rope_local_base_freq: get_f32("gemma.rope.freq_base_swa").unwrap_or(10_000.0) as f64,
     })
 }
 

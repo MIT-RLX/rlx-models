@@ -1,6 +1,5 @@
 use rlx_voxrt::{
-    VoxrtEngine, VoxrtWeights, WakeConfig, assert_100_percent_parity,
-    run_backend_parity,
+    VoxrtEngine, VoxrtWeights, WakeConfig, assert_100_percent_parity, run_backend_parity,
 };
 use rlx_wake::{bench_device_label, streaming_execution_device};
 
@@ -13,11 +12,8 @@ fn voxrt_100_percent_backend_parity() {
     let rows = run_backend_parity(&pcm, |dev| {
         let _ = streaming_execution_device(dev);
         Ok(
-            VoxrtEngine::new(
-                VoxrtWeights::stub("hey assistant"),
-                WakeConfig::default(),
-            )
-            .with_device_label(bench_device_label(dev)),
+            VoxrtEngine::new(VoxrtWeights::stub("hey assistant"), WakeConfig::default())
+                .with_device_label(bench_device_label(dev)),
         )
     })
     .unwrap();

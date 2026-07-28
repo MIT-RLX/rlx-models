@@ -7,7 +7,7 @@
 //! Needs `weights/tts/gepard`, `nano_dec_1.89kbps.safetensors`, and Whisper Tiny
 //! (`.cache/whisper-tiny`). Run via `just gepard-whisper`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn gepard_bundle() -> Option<PathBuf> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/gepard");
@@ -37,8 +37,8 @@ fn whisper_coverage(hyp: &str, want: &[&str]) -> usize {
 }
 
 fn synthesize_and_whisper(
-    bundle: &PathBuf,
-    wd: &PathBuf,
+    bundle: &Path,
+    wd: &Path,
     text: &str,
     device: &str,
 ) -> (String, usize, usize) {

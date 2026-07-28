@@ -55,7 +55,8 @@ impl NativeEngine {
         let weights_dir = weights_dir
             .canonicalize()
             .with_context(|| format!("resolve native weights dir {weights_dir:?}"))?;
-        let device = kitten_tts_mini_rlx::device_policy::resolve_device(prefer_metal_device(device));
+        let device =
+            kitten_tts_mini_rlx::device_policy::resolve_device(prefer_metal_device(device));
         if !rlx_runtime::is_available(device) {
             anyhow::bail!(
                 "native device {device:?} is not available in this build — rebuild with \
@@ -279,13 +280,8 @@ impl NativeEngine {
             for (chunk, start) in &chunks {
                 let chunk_dur = ort_duration
                     .map(|d| crate::infer_opts::ort_duration_slice(d, *start, chunk.len()));
-                let part = self.infer_chunk(
-                    chunk,
-                    style,
-                    speed,
-                    chunk_dur.as_deref(),
-                    compile_width,
-                )?;
+                let part =
+                    self.infer_chunk(chunk, style, speed, chunk_dur.as_deref(), compile_width)?;
                 if ort_duration.is_some() {
                     audio.extend_from_slice(&part);
                 } else {
@@ -372,8 +368,8 @@ impl NativeEngine {
 
         // When an external duration oracle is provided, seed the duration carry so the
         // vocoder alignment matches (native fixed-point alone still diverges on token-0).
-        let carry_seed: Option<Vec<u8>> = ort_duration
-            .map(|d| crate::infer_opts::duration_carry_bytes(d, compile_seq));
+        let carry_seed: Option<Vec<u8>> =
+            ort_duration.map(|d| crate::infer_opts::duration_carry_bytes(d, compile_seq));
         let align_bytes = carry_seed.clone();
 
         let outputs = kitten_tts_mini_rlx::bundle_compile::run_kitten_inference(
@@ -495,11 +491,19 @@ fn trim_waveform_from_duration(audio: &mut Vec<f32>, dur_bytes: &[u8], token_len
     trim_waveform_with_decoded(audio, &decode_i64_tensor(dur_bytes), token_len)
 }
 
-fn trim_waveform_from_duration_f32(audio: &mut Vec<f32>, dur_bytes: &[u8], token_len: usize) -> bool {
+fn trim_waveform_from_duration_f32(
+    audio: &mut Vec<f32>,
+    dur_bytes: &[u8],
+    token_len: usize,
+) -> bool {
     trim_waveform_with_decoded(audio, &decode_duration_f32(dur_bytes), token_len)
 }
 
-fn trim_waveform_from_duration_i32(audio: &mut Vec<f32>, dur_bytes: &[u8], token_len: usize) -> bool {
+fn trim_waveform_from_duration_i32(
+    audio: &mut Vec<f32>,
+    dur_bytes: &[u8],
+    token_len: usize,
+) -> bool {
     trim_waveform_with_decoded(audio, &decode_duration_i32(dur_bytes), token_len)
 }
 

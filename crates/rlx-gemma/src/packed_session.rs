@@ -44,7 +44,53 @@ use rlx_runtime::{CompileOptions, Device};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-type PackedWeightMap = HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>;
+use crate::builder::PackedSrc;
+type PackedWeightMap = HashMap<String, (PackedSrc, QuantScheme, Vec<usize>)>;
+
+/// Upload packed weights **zero-copy** into a compiled graph's arena. Each
+/// weight's bytes are borrowed straight from the loader mmap; a fused proj
+/// (multi-key recipe) is re-concatenated into a reused scratch buffer, so
+/// nothing packed stays resident. `skip(name)` filters keys already attached
+/// as F32 params (they'd otherwise double-write); F32 sentinels are always
+/// skipped. Called on every (re)build of a decode/prefill bucket graph.
+fn upload_packed_borrowed(
+    compiled: &mut rlx_runtime::CompiledGraph,
+    packed: &PackedWeightMap,
+    loader: &GgufLoader,
+    skip: impl Fn(&str) -> bool,
+) {
+    let mut scratch: Vec<u8> = Vec::new();
+    for (name, (src, _scheme, _shape)) in packed.iter() {
+        if src.is_f32() || skip(name) {
+            continue;
+        }
+        match src {
+            PackedSrc::Owned(bytes) => {
+                compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+            }
+            PackedSrc::Borrow { keys, nbytes } => {
+                if keys.len() == 1 {
+                    let b = loader
+                        .tensor_bytes_borrowed(&keys[0])
+                        .expect("packed borrow: missing tensor");
+                    compiled.set_param_typed(name, b, rlx_ir::DType::U8);
+                } else {
+                    scratch.clear();
+                    scratch.reserve(*nbytes);
+                    for k in keys {
+                        scratch.extend_from_slice(
+                            loader
+                                .tensor_bytes_borrowed(k)
+                                .expect("packed borrow: missing fused component"),
+                        );
+                    }
+                    compiled.set_param_typed(name, &scratch, rlx_ir::DType::U8);
+                }
+            }
+            PackedSrc::F32 => {}
+        }
+    }
+}
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -485,6 +531,10 @@ pub(crate) struct GemmaPackedSession {
     decode_f32_overlay: Option<Arc<HashMap<String, Vec<f32>>>>,
     f32_params: Arc<HashMap<String, Vec<f32>>>,
     packed_tensors: Arc<PackedWeightMap>,
+    /// Mmap'd GGUF kept resident so packed weights can be borrowed straight into
+    /// the arena at every (re)attach — the quantized model is never held as
+    /// owned bytes. Shared (`&self` reads only: `tensor_bytes_borrowed`).
+    loader: Arc<GgufLoader>,
     packed_buckets_loaded: HashSet<u64>,
     packed_buckets_loaded_hidden: HashSet<u64>,
     inv_freq: Vec<f64>,
@@ -573,6 +623,17 @@ fn gather_embed_row(
     Ok(())
 }
 
+/// The resident packed embed table `(bytes, scheme, shape)`. The embed stays
+/// `PackedSrc::Owned` (one bounded tensor) so the host-side lazy gather and tied
+/// LM-head keep reading owned bytes; every per-layer weight is borrowed from the
+/// mmap instead. Returns `None` if the embed isn't packed (F32-gather models) or
+/// isn't resident. A free function (not a `&self` method) so its borrow stays
+/// scoped to `packed_tensors` — leaving `embed_scratch` free to write into.
+fn embed_owned(packed: &PackedWeightMap) -> Option<(&[u8], &QuantScheme, &Vec<usize>)> {
+    let (src, scheme, shape) = packed.get("model.embed_tokens.weight")?;
+    Some((src.owned_bytes()?, scheme, shape))
+}
+
 impl GemmaPackedSession {
     pub fn build(
         cfg: GemmaConfig,
@@ -617,10 +678,13 @@ impl GemmaPackedSession {
         let rope_cap = max_seq.saturating_add(16);
         let (mut f32_params, packed) =
             crate::builder::drain_gemma_packed_weights_ext(&cfg, &mut loader, Some(rope_cap))?;
+        // The drain recorded borrow recipes, not bytes — keep the mmap'd loader
+        // alive so those recipes can be resolved to arena uploads on demand.
+        let loader = Arc::new(loader);
         step!(t_drain, "drain_gemma_packed_weights done at");
         if trace_init {
             let f32_bytes: usize = f32_params.values().map(|v| v.len() * 4).sum();
-            let packed_bytes: usize = packed.values().map(|(b, _, _)| b.len()).sum();
+            let packed_bytes: usize = packed.values().map(|(b, _, _)| b.nbytes()).sum();
             eprintln!(
                 "[gemma-runner trace]   f32 params: {} entries, {:.2} GB; packed: {} entries, {:.2} GB",
                 f32_params.len(),
@@ -723,6 +787,7 @@ impl GemmaPackedSession {
             decode_f32_overlay: None,
             f32_params: f32_arc,
             packed_tensors: packed_arc,
+            loader,
             packed_buckets_loaded: HashSet::new(),
             packed_buckets_loaded_hidden: HashSet::new(),
             inv_freq,
@@ -831,9 +896,7 @@ impl GemmaPackedSession {
         if !self.decode_input_ids_embed {
             return Ok(Arc::clone(&self.f32_params));
         }
-        let (bytes, scheme, _) = self
-            .packed_tensors
-            .get("model.embed_tokens.weight")
+        let (bytes, scheme, _) = embed_owned(&self.packed_tensors)
             .context("GPU decode embed gather: missing packed embed")?;
         let table = materialize_packed_embed_table(bytes, *scheme, &self.cfg)?;
         let mib = (table.len() * 4) as f64 / (1024.0 * 1024.0);
@@ -883,14 +946,9 @@ impl GemmaPackedSession {
         for (name, data) in params {
             compiled.set_param(name, data);
         }
-        for (name, (bytes, _scheme, _shape)) in self.packed_tensors.iter() {
-            if !bytes.is_empty()
-                && !params.contains_key(name.as_str())
-                && !f32_param_keys.contains(name.as_str())
-            {
-                compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-            }
-        }
+        upload_packed_borrowed(compiled, &self.packed_tensors, &self.loader, |name| {
+            params.contains_key(name) || f32_param_keys.contains(name)
+        });
         self.packed_param_template_upper.get_or_insert(upper);
         self.packed_buckets_loaded.insert(upper);
     }
@@ -938,6 +996,7 @@ impl GemmaPackedSession {
         let opts = self.prefill_opts.clone();
         let packed_loaded = &mut self.prefill_packed_loaded;
         let packed_for_upload = Arc::clone(&self.packed_tensors);
+        let loader_for_upload = Arc::clone(&self.loader);
         packed_gguf_compile_guard(self.exec_device, || {
             metal_prefill_compile_guard(self.exec_device, || {
                 let t_graph = Instant::now();
@@ -974,16 +1033,14 @@ impl GemmaPackedSession {
                 if packed_loaded.insert(key) {
                     let t_packed = Instant::now();
                     let n_packed = packed_for_upload.len();
-                    for (name, (bytes, _scheme, _shape)) in packed_for_upload.iter() {
-                        // Graph F32 params (norms, rope) must not be overwritten by
-                        // stale packed-map entries for the same key.
-                        if !bytes.is_empty()
-                            && !params.contains_key(name.as_str())
-                            && !f32_params.contains_key(name.as_str())
-                        {
-                            compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-                        }
-                    }
+                    // Graph F32 params (norms, rope) must not be overwritten by
+                    // stale packed-map entries for the same key.
+                    upload_packed_borrowed(
+                        compiled,
+                        &packed_for_upload,
+                        &loader_for_upload,
+                        |name| params.contains_key(name) || f32_params.contains_key(name),
+                    );
                     if trace {
                         eprintln!(
                             "[gemma-runner trace]   set_param_typed packed ({n_packed} entries) done at {:.1}s",
@@ -1012,6 +1069,7 @@ impl GemmaPackedSession {
         let opts = self.prefill_opts.clone();
         let packed_loaded = &mut self.prefill_cpu_packed_loaded;
         let packed_for_upload = Arc::clone(&self.packed_tensors);
+        let loader_for_upload = Arc::clone(&self.loader);
         packed_gguf_compile_guard(Device::Cpu, || {
             let (graph, params) =
                 Self::build_prefill_graph(&cfg, &f32_params, &packed_tensors, seq, hidden_only);
@@ -1025,14 +1083,9 @@ impl GemmaPackedSession {
                 compiled.set_param(name, data);
             }
             if packed_loaded.insert(key) {
-                for (name, (bytes, _scheme, _shape)) in packed_for_upload.iter() {
-                    if !bytes.is_empty()
-                        && !params.contains_key(name.as_str())
-                        && !f32_params.contains_key(name.as_str())
-                    {
-                        compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-                    }
-                }
+                upload_packed_borrowed(compiled, &packed_for_upload, &loader_for_upload, |name| {
+                    params.contains_key(name) || f32_params.contains_key(name)
+                });
             }
         });
         Ok(())
@@ -1149,6 +1202,7 @@ impl GemmaPackedSession {
             f32_params.keys().cloned().collect();
         let packed_tensors = Arc::clone(&self.packed_tensors);
         let packed_for_upload = Arc::clone(&self.packed_tensors);
+        let loader_for_upload = Arc::clone(&self.loader);
         let decode_opts = self.decode_opts.clone();
         let packed_buckets = &mut self.packed_buckets_loaded_hidden;
         packed_decode_compile_guard(self.device, self.exec_device, || {
@@ -1169,11 +1223,9 @@ impl GemmaPackedSession {
                 )
                 .expect("hidden decode bucket prewarm");
             if packed_buckets.insert(upper_u64) {
-                for (name, (bytes, _scheme, _shape)) in packed_for_upload.iter() {
-                    if !bytes.is_empty() && !f32_param_keys.contains(name) {
-                        compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-                    }
-                }
+                upload_packed_borrowed(compiled, &packed_for_upload, &loader_for_upload, |name| {
+                    f32_param_keys.contains(name)
+                });
             }
         });
         Ok(())
@@ -1248,9 +1300,7 @@ impl GemmaPackedSession {
             for v in self.embed_scratch.iter_mut() {
                 *v = 0.0;
             }
-            let (bytes, scheme, _shape) = self
-                .packed_tensors
-                .get("model.embed_tokens.weight")
+            let (bytes, scheme, _shape) = embed_owned(&self.packed_tensors)
                 .expect("lazy embed: packed entry must be present");
             for (i, &tok) in prompt_ids.iter().take(n).enumerate() {
                 let row_off = i * h;
@@ -1447,9 +1497,7 @@ impl GemmaPackedSession {
             bail!("prefill hidden short: {} < {end} (n={n})", hidden.len());
         }
         let vocab = self.cfg.vocab_size;
-        let (bytes, scheme, _) = self
-            .packed_tensors
-            .get("model.embed_tokens.weight")
+        let (bytes, scheme, _) = embed_owned(&self.packed_tensors)
             .context("host greedy lm_head: missing packed embed")?;
         let (tok, _) = rlx_cpu::lm_head::gguf_tied_lm_argmax_parallel(
             &hidden[start..end],
@@ -1562,9 +1610,7 @@ impl GemmaPackedSession {
         let lazy = self.decode_lazy_embed();
         if lazy {
             self.embed_scratch.resize(h, 0.0);
-            let (bytes, scheme, _shape) = self
-                .packed_tensors
-                .get("model.embed_tokens.weight")
+            let (bytes, scheme, _shape) = embed_owned(&self.packed_tensors)
                 .expect("lazy embed: packed entry must be present");
             gather_embed_row(
                 bytes,
@@ -1722,9 +1768,7 @@ impl GemmaPackedSession {
         let lazy = self.decode_lazy_embed();
         if lazy {
             self.embed_scratch.resize(h, 0.0);
-            let (bytes, scheme, _shape) = self
-                .packed_tensors
-                .get("model.embed_tokens.weight")
+            let (bytes, scheme, _shape) = embed_owned(&self.packed_tensors)
                 .expect("lazy embed: packed entry must be present");
             gather_embed_row(
                 bytes,
@@ -1860,14 +1904,9 @@ impl GemmaPackedSession {
                     compiled.set_param(name, data);
                 }
                 if self.packed_buckets_loaded_hidden.insert(upper_u64) {
-                    for (name, (bytes, _scheme, _shape)) in packed_tensors.iter() {
-                        if !bytes.is_empty()
-                            && !params.contains_key(name.as_str())
-                            && !f32_param_keys.contains(name.as_str())
-                        {
-                            compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
-                        }
-                    }
+                    upload_packed_borrowed(compiled, &packed_tensors, &self.loader, |name| {
+                        params.contains_key(name) || f32_param_keys.contains(name)
+                    });
                 }
                 for (name, buf, out_idx) in &bound {
                     compiled.bind_gpu_handle(name, buf);
@@ -1882,9 +1921,7 @@ impl GemmaPackedSession {
         let lazy = self.decode_lazy_embed();
         if lazy {
             self.embed_scratch.resize(h, 0.0);
-            let (bytes, scheme, _shape) = self
-                .packed_tensors
-                .get("model.embed_tokens.weight")
+            let (bytes, scheme, _shape) = embed_owned(&self.packed_tensors)
                 .expect("lazy embed: packed entry must be present");
             gather_embed_row(
                 bytes,
@@ -1949,9 +1986,7 @@ impl GemmaPackedSession {
             bail!("decode hidden short: {} < {h}", hidden.len());
         }
         let vocab = self.cfg.vocab_size;
-        let (bytes, scheme, _) = self
-            .packed_tensors
-            .get("model.embed_tokens.weight")
+        let (bytes, scheme, _) = embed_owned(&self.packed_tensors)
             .context("host greedy lm_head: missing packed embed")?;
         let (tok, _) =
             rlx_cpu::lm_head::gguf_tied_lm_argmax_parallel(&hidden[..h], bytes, h, vocab, *scheme);
@@ -1998,9 +2033,7 @@ impl GemmaPackedSession {
         let lazy = self.decode_lazy_embed();
         if lazy {
             self.embed_scratch.resize(h, 0.0);
-            let (bytes, scheme, _shape) = self
-                .packed_tensors
-                .get("model.embed_tokens.weight")
+            let (bytes, scheme, _shape) = embed_owned(&self.packed_tensors)
                 .expect("lazy embed: packed entry must be present");
             gather_embed_row(
                 bytes,
@@ -2067,6 +2100,7 @@ impl GemmaPackedSession {
         let packed_tensors = Arc::clone(&self.packed_tensors);
         let decode_opts = self.decode_opts.clone();
         let packed_upload = Arc::clone(&self.packed_tensors);
+        let loader_for_upload = Arc::clone(&self.loader);
         let kv_cache = self.cache.as_ref().context("decode without cache")?;
         let t0 = Instant::now();
         let decode_exec = if self.metal_decode_via_cpu {
@@ -2103,8 +2137,11 @@ impl GemmaPackedSession {
                         PackedDecodeLmOutput::FullLogits,
                     )
                 },
-                Some(packed_upload.as_ref()),
-                &f32_param_keys,
+                Some(|compiled: &mut rlx_runtime::CompiledGraph| {
+                    upload_packed_borrowed(compiled, &packed_upload, &loader_for_upload, |n| {
+                        f32_param_keys.contains(n)
+                    });
+                }),
                 packed_loaded,
                 &decode_opts,
             )
@@ -2182,9 +2219,7 @@ impl GemmaPackedSession {
         let lazy = self.decode_lazy_embed();
         if lazy {
             self.embed_scratch.resize(h, 0.0);
-            let (bytes, scheme, _shape) = self
-                .packed_tensors
-                .get("model.embed_tokens.weight")
+            let (bytes, scheme, _shape) = embed_owned(&self.packed_tensors)
                 .expect("lazy embed: packed entry must be present");
             gather_embed_row(
                 bytes,
@@ -2248,6 +2283,7 @@ impl GemmaPackedSession {
         let packed_tensors = Arc::clone(&self.packed_tensors);
         let decode_opts = self.decode_opts.clone();
         let packed_upload = Arc::clone(&self.packed_tensors);
+        let loader_for_upload = Arc::clone(&self.loader);
         let kv_cache = self.cache.as_ref().context("decode without cache")?;
 
         let (hidden, new_k, new_v) =
@@ -2271,8 +2307,11 @@ impl GemmaPackedSession {
                             PackedDecodeLmOutput::HiddenOnly,
                         )
                     },
-                    Some(packed_upload.as_ref()),
-                    &f32_param_keys,
+                    Some(|compiled: &mut rlx_runtime::CompiledGraph| {
+                        upload_packed_borrowed(compiled, &packed_upload, &loader_for_upload, |n| {
+                            f32_param_keys.contains(n)
+                        });
+                    }),
                     &mut self.packed_buckets_loaded_hidden,
                     &decode_opts,
                 )
@@ -2289,9 +2328,7 @@ impl GemmaPackedSession {
             bail!("decode hidden short: {} < {h}", hidden.len());
         }
         let vocab = self.cfg.vocab_size;
-        let (bytes, scheme, _) = self
-            .packed_tensors
-            .get("model.embed_tokens.weight")
+        let (bytes, scheme, _) = embed_owned(&self.packed_tensors)
             .context("host greedy lm_head: missing packed embed")?;
         let (tok, _) =
             rlx_cpu::lm_head::gguf_tied_lm_argmax_parallel(&hidden[..h], bytes, h, vocab, *scheme);
@@ -2335,9 +2372,7 @@ impl GemmaPackedSession {
             for v in self.embed_scratch.iter_mut() {
                 *v = 0.0;
             }
-            let (bytes, scheme, _shape) = self
-                .packed_tensors
-                .get("model.embed_tokens.weight")
+            let (bytes, scheme, _shape) = embed_owned(&self.packed_tensors)
                 .expect("lazy embed: packed entry must be present");
             for (i, &tok) in prompt_ids.iter().take(n).enumerate() {
                 let row_off = i * h;

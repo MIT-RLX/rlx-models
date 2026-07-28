@@ -49,6 +49,10 @@ pub struct TextConfig {
 impl TextConfig {
     pub fn llama_config(&self) -> rlx_llama32::Llama32Config {
         rlx_llama32::Llama32Config {
+            embedding_scale: None,
+            residual_scale: None,
+            attention_scale: None,
+            logit_scale: None,
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size.unwrap_or(self.hidden_size * 3),

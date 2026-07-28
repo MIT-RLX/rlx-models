@@ -27,7 +27,7 @@ just kittentts -- --ipa "həˈloʊ" --device metal
 # Native RLX graph (default) — see NATIVE.md
 just kittentts -- --ipa "həˈloʊ" --out-wav out.wav
 
-# NVIDIA (MSI): cuda / vulkan / gpu (wgpu)
+# NVIDIA: cuda / vulkan / gpu (wgpu)
 cargo run -p rlx-kittentts --release --features native,cuda,gpu,vulkan -- \
   --ipa "həˈloʊ" --device vulkan --out-wav out.wav
 ```

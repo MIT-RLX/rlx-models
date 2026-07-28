@@ -37,6 +37,8 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut bucketed_decode = true;
     let mut temperature = 0f32;
     let mut top_p = 1f32;
+    let mut convert_mlx: Option<PathBuf> = None;
+    let mut out_dir: Option<PathBuf> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -83,12 +85,44 @@ pub fn run(args: &[String]) -> Result<()> {
                 temperature = req(args, &mut i)?.parse().context("--temperature: f32")?;
             }
             "--top-p" => top_p = req(args, &mut i)?.parse().context("--top-p: f32")?,
+            // One-shot: rewrite a legacy mlx-examples Llama dir (flat config +
+            // weights.npz, Meta-original names) into an HF safetensors dir the
+            // standard path loads. `--out DST` (default `<src>-hf`).
+            "--convert-mlx-npz" => convert_mlx = Some(req(args, &mut i)?.into()),
+            "--out" => out_dir = Some(req(args, &mut i)?.into()),
             "--help" | "-h" => {
                 eprintln!("rlx-llama32 — see README for flags");
                 return Ok(());
             }
             other => bail!("unknown flag: {other}"),
         }
+    }
+
+    // Legacy mlx-examples → HF conversion (isolated one-shot; reuses the
+    // fully-supported HF safetensors path afterward). Runs and exits.
+    if let Some(src) = convert_mlx {
+        let dst = out_dir.unwrap_or_else(|| {
+            let mut p = src.clone().into_os_string();
+            p.push("-hf");
+            PathBuf::from(p)
+        });
+        let rep = rlx_core::convert_mlx_npz_to_hf(&src, &dst)?;
+        println!(
+            "rlx-llama32: converted legacy mlx {src:?} → HF {}\n  \
+             {} tensors · {} layers · hidden {} · heads {}/{} kv · vocab {} · inter {} · tied={}\n  \
+             run:  rlx-llama32 --weights {}/model.safetensors --prompt \"…\"",
+            rep.out_dir,
+            rep.n_tensors,
+            rep.n_layers,
+            rep.hidden_size,
+            rep.n_heads,
+            rep.n_kv_heads,
+            rep.vocab_size,
+            rep.intermediate_size,
+            rep.tied_embeddings,
+            rep.out_dir,
+        );
+        return Ok(());
     }
 
     let weights = weights.ok_or_else(|| anyhow!("--weights is required"))?;

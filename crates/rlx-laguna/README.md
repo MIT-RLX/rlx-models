@@ -69,31 +69,45 @@ process-wide F32 dequant cache unless opted in.
 ```bash
 just test-laguna
 
+# Fetch Unsloth Laguna-S GGUF (UD-Q4_K_M shards) + Poolside tokenizer → .cache/laguna-s
+# S UD-Q4_K_M ≈73 GB packed — needs a high-RAM host. On ≤64 GB use XS instead:
+just fetch-laguna-xs   # ~20 GB Q4_K_M → .cache/laguna-xs
+just fetch-laguna      # only if you have headroom for ~73 GB + KV/OS
+
 # Synth (no weights)
 just laguna -- --synth --prompt-ids 1,2,3 --max-tokens 4
 
-# Header sniff
-just laguna -- --weights /path/to/Laguna-….gguf
+# Header sniff (dir + nested prefer → first split shard)
+just laguna -- --weights .cache/laguna-s --prefer Q4_K_M
 
 # Packed generate (host kernels, raw ids)
-just laguna -- --weights /path/to/Laguna-XS-….gguf --packed-load \
+just laguna -- --weights .cache/laguna-s --prefer Q4_K_M --packed-load \
   --max-tokens 32 --prompt-ids 1,2,3
 
 # Packed generate with in-crate tokenizer + chat template
-just features=apple-silicon laguna -- --weights /path/to/Laguna-XS-….gguf \
-  --packed-load --device metal --tokenizer-dir /path/to/laguna-xs \
+# (host fused kernels are fastest for MoE chat/decode on Apple Silicon;
+#  `--device metal` is skipped when prompt_len < 128)
+just features=apple-silicon laguna -- \
+  --weights .cache/laguna-s --prefer Q4_K_M --packed-load \
+  --device metal --tokenizer-dir .cache/laguna-s \
   --prompt "Say hello" --max-tokens 8
 
 # Packed generate on Metal (needs apple-silicon / metal feature)
-just features=apple-silicon laguna -- --weights /path/to/Laguna-XS-….gguf \
+just features=apple-silicon laguna -- --weights .cache/laguna-s --prefer Q4_K_M \
   --packed-load --device metal --max-tokens 32 --prompt-ids …
 
 # DequantMatMul backend speed + parity
-just laguna-backend-bench -- --weights /path/to/Laguna-XS-….gguf
+just laguna-backend-bench -- --weights .cache/laguna-xs/Laguna-XS-2.1-Q4_K_M.gguf
+# (XS is smaller for bench; or pass the Laguna-S first-shard path after fetch-laguna)
 
 # Optional Hub GGUF layout probe (Range GETs only):
 just laguna-probe-gguf
 ```
+
+`--weights` may be a Hub checkout root: Unsloth nests quants under
+`UD-Q4_K_M/` (3-way splits). `--prefer Q4_K_M` (default when unresolved)
+scans one child-dir level and picks `*-00001-of-*.gguf`. Override the fetch
+folder with `just fetch-laguna QUANT=UD-Q4_K_XL`.
 
 Inference stays on **RLX**. The Unsloth / Poolside GGUF is the weight format — not a llama.cpp runtime dependency (llama.cpp [#25165](https://github.com/ggml-org/llama.cpp/pull/25165) is the reference converter).
 
@@ -103,8 +117,8 @@ Use the central host ([`rlx-openai`](../rlx-openai/README.md)):
 
 ```bash
 just features=apple-silicon,laguna openai-serve -- \
-  --engine laguna --weights /path/to/Laguna-XS-….gguf \
-  --tokenizer-dir /path/to/laguna-xs --device metal \
+  --engine laguna --weights .cache/laguna-s --prefer Q4_K_M \
+  --tokenizer-dir .cache/laguna-s --device metal \
   --host 127.0.0.1 --port 8080 --model-id laguna
 ```
 

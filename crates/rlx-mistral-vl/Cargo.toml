@@ -1,0 +1,34 @@
+[package]
+name = "rlx-mistral-vl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Ministral / Mistral Medium VL runner (Pixtral mmproj + mistral3/4 LM)"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-core = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-mistral = { workspace = true }
+rlx-llama32 = { workspace = true }
+rlx-qwen35 = { workspace = true, features = ["tokenizer"] }
+image = { workspace = true }
+
+[features]
+default = []
+# Accelerator backends — forward to the LM + runtime crates so real-weights
+# tests (`tests/real_*`) can run the packed LM on-device.
+metal = ["rlx-mistral/metal", "rlx-llama32/metal", "rlx-runtime/metal"]
+mlx = ["rlx-mistral/mlx", "rlx-llama32/mlx", "rlx-runtime/mlx"]
+
+[lints]
+workspace = true

@@ -7,10 +7,10 @@
 //! [`Encoder::forward_stub`] supplies shaped outputs for the pipeline.
 
 use crate::spec::{
-    AED_WINDOW_FRAMES, CHUNK_FRAMES, DECODER_DIM, DECODER_HEADS, DECODER_HEAD_DIM, LOOKAHEAD_FRAMES,
-    MEL_BINS, SUBSAMPLE, VOCAB,
+    AED_WINDOW_FRAMES, CHUNK_FRAMES, DECODER_DIM, DECODER_HEAD_DIM, DECODER_HEADS,
+    LOOKAHEAD_FRAMES, MEL_BINS, SUBSAMPLE, VOCAB,
 };
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 
 pub const ENCODER_LAYERS: usize = 28;

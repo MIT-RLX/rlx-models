@@ -97,8 +97,6 @@ fn resolve_ref_pcm(clone: Option<&CloneRequest<'_>>, dir: &Path) -> Result<Vec<f
     }
     // Fallback: short tone so plain bench runs still exercise the clone path.
     Ok((0..sr as usize)
-        .map(|i| {
-            (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sr as f32).sin() * 0.1
-        })
+        .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sr as f32).sin() * 0.1)
         .collect())
 }

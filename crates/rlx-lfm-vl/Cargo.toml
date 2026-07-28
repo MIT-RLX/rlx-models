@@ -20,6 +20,8 @@ rlx-flow = { workspace = true }
 rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true }
 rlx-gguf = { workspace = true }
+rlx-lfm = { workspace = true }
+rlx-qwen35 = { workspace = true, features = ["tokenizer"] }
 image = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

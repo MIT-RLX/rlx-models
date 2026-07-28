@@ -253,8 +253,10 @@ impl NativeKokoro {
         // ── 3. Decoder graph → raw (pre-ISTFT-normalization) waveform ───────
         // MPSGraph produces a corrupt result for this decoder's repeated
         // channel-normalization sequence. The Metal thunk schedule is correct.
-        let mut dec_opts = CompileOptions::default();
-        dec_opts.disable_mpsgraph = matches!(self.device, Device::Metal);
+        let dec_opts = CompileOptions {
+            disable_mpsgraph: matches!(self.device, Device::Metal),
+            ..Default::default()
+        };
         let mut dec = self
             .model
             .compile_named_with_options(

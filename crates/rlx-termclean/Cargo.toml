@@ -19,7 +19,7 @@ publish = false
 # Base features are inference-only (`eval-metal` → CPU+Metal forward). The
 # `train` feature unifies `optim` on top for the autodiff/optimizer stack; the
 # DEFAULT build pulls neither (pure-std, zero-dep).
-rlx-tensor = { path = "../../../rlx/crates/core/rlx-tensor", version = "0.2.13", optional = true, default-features = false, features = ["eval-metal"] }
+rlx-tensor = { path = "../../../rlx/crates/core/rlx-tensor", version = "0.2.14", optional = true, default-features = false, features = ["eval-metal"] }
 # Optional: rayon work-stealing pool as an alternative to the pure-std thread fan-out.
 rayon = { version = "1", optional = true }
 # Inference/serving deps (only compiled with the `infer` feature).

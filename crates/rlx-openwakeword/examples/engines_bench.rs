@@ -137,25 +137,19 @@ fn main() -> anyhow::Result<()> {
             measure_detection("openwakeword", label, &mut e, &positives, &negatives)?;
         }
         {
-            let mut e = NanoWakeWordEngine::new(
-                NanoWakeWordWeights::stub(true, "hey nano"),
-                cfg.clone(),
-            )
-            .with_device_label(label);
+            let mut e =
+                NanoWakeWordEngine::new(NanoWakeWordWeights::stub(true, "hey nano"), cfg.clone())
+                    .with_device_label(label);
             measure_detection("nanowakeword", label, &mut e, &positives, &negatives)?;
         }
         {
-            let mut e = PorcupineEngine::new(
-                PorcupineWeights::stub("porcupine"),
-                cfg.clone(),
-            )
-            .with_device_label(label);
+            let mut e = PorcupineEngine::new(PorcupineWeights::stub("porcupine"), cfg.clone())
+                .with_device_label(label);
             measure_detection("porcupine", label, &mut e, &positives, &negatives)?;
         }
         {
-            let mut e =
-                VoxrtEngine::new(VoxrtWeights::stub("hey assistant"), cfg.clone())
-                    .with_device_label(label);
+            let mut e = VoxrtEngine::new(VoxrtWeights::stub("hey assistant"), cfg.clone())
+                .with_device_label(label);
             measure_detection("voxrt", label, &mut e, &positives, &negatives)?;
         }
     }
@@ -171,25 +165,19 @@ fn main() -> anyhow::Result<()> {
             stats.push(bench_engine("openwakeword", label, &mut e, &pcm, 2, 6)?);
         }
         {
-            let mut e = NanoWakeWordEngine::new(
-                NanoWakeWordWeights::stub(true, "hey nano"),
-                cfg.clone(),
-            )
-            .with_device_label(label);
+            let mut e =
+                NanoWakeWordEngine::new(NanoWakeWordWeights::stub(true, "hey nano"), cfg.clone())
+                    .with_device_label(label);
             stats.push(bench_engine("nanowakeword", label, &mut e, &pcm, 2, 6)?);
         }
         {
-            let mut e = PorcupineEngine::new(
-                PorcupineWeights::stub("porcupine"),
-                cfg.clone(),
-            )
-            .with_device_label(label);
+            let mut e = PorcupineEngine::new(PorcupineWeights::stub("porcupine"), cfg.clone())
+                .with_device_label(label);
             stats.push(bench_engine("porcupine", label, &mut e, &pcm, 2, 6)?);
         }
         {
-            let mut e =
-                VoxrtEngine::new(VoxrtWeights::stub("hey assistant"), cfg.clone())
-                    .with_device_label(label);
+            let mut e = VoxrtEngine::new(VoxrtWeights::stub("hey assistant"), cfg.clone())
+                .with_device_label(label);
             stats.push(bench_engine("voxrt", label, &mut e, &pcm, 2, 6)?);
         }
     }

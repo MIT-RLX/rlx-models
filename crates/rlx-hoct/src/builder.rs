@@ -23,5 +23,5 @@ use std::path::Path;
 
 /// Load safetensors and return an eager [`HoctModel`] with the given config.
 pub fn build_hoct_eager(cfg: &HoctConfig, weights_path: impl AsRef<Path>) -> Result<HoctModel> {
-    HoctFlow::new(cfg.clone()).build_from_path(weights_path)
+    HoctFlow::new(*cfg).build_from_path(weights_path)
 }

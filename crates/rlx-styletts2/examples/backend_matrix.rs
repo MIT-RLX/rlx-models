@@ -22,14 +22,12 @@ fn main() -> anyhow::Result<()> {
     let voice = std::env::var("RLX_VOICE").unwrap_or_else(|_| "af_heart".into());
     let devices = parse_devices();
 
-    println!(
-        "== StyleTTS2 Kokoro cross-backend (native graph-split RLX path) =="
-    );
+    println!("== StyleTTS2 Kokoro cross-backend (native graph-split RLX path) ==");
     println!("text: {text:?}  voice={voice}");
     println!("model={}", model.display());
     println!(
-        "{:<8} {:>8} {:>7} {:>8} {:>8}  {}",
-        "backend", "ms", "peak", "fox", "cos", "exec"
+        "{:<8} {:>8} {:>7} {:>8} {:>8}  exec",
+        "backend", "ms", "peak", "fox", "cos"
     );
 
     let mut cpu_wav: Option<Vec<f32>> = None;

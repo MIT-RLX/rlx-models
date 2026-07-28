@@ -20,8 +20,7 @@ use anyhow::{Result, bail};
 use rlx_conformer_ctc::{ConformerCtc, wav};
 use rlx_runtime::{Device, is_available};
 
-const REF: &str =
-    "well i don't wish to see it any more observed phoebe turning away her eyes it is certainly very like the old portrait";
+const REF: &str = "well i don't wish to see it any more observed phoebe turning away her eyes it is certainly very like the old portrait";
 
 fn main() -> Result<()> {
     let nemo = env_path("RLX_CONFORMER_CTC_NEMO")
@@ -48,8 +47,8 @@ fn main() -> Result<()> {
         w.samples.len()
     );
     println!(
-        "{:<8} {:>8} {:>8} {:>5}  {}",
-        "backend", "cold_ms", "warm_ms", "ok", "transcript"
+        "{:<8} {:>8} {:>8} {:>5}  transcript",
+        "backend", "cold_ms", "warm_ms", "ok"
     );
 
     let mut failed = false;
@@ -96,11 +95,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn transcribe_cold_warm(
-    nemo: &Path,
-    device: Device,
-    w: &wav::Wav,
-) -> Result<(String, f64, f64)> {
+fn transcribe_cold_warm(nemo: &Path, device: Device, w: &wav::Wav) -> Result<(String, f64, f64)> {
     let mut asr = ConformerCtc::open(nemo, device)?;
     let pcm = wav::resample(&w.samples, w.sample_rate, asr.config().sample_rate as u32);
     let t0 = Instant::now();
@@ -121,10 +116,10 @@ fn norm(s: &str) -> String {
         let c = ch.to_ascii_lowercase();
         if c.is_ascii_alphanumeric() || c == '\'' {
             out.push(c);
-        } else if c.is_whitespace() || c == ',' || c == '.' || c == ';' || c == ':' {
-            if !out.ends_with(' ') {
-                out.push(' ');
-            }
+        } else if (c.is_whitespace() || c == ',' || c == '.' || c == ';' || c == ':')
+            && !out.ends_with(' ')
+        {
+            out.push(' ');
         }
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")

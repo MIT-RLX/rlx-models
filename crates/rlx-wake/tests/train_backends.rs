@@ -1,9 +1,7 @@
 //! Train path must bind every available RLX backend (same slotting as infer).
 
 use rlx_wake::train::{CnnTrainConfig, synth_pos_neg_dataset, train_wake_cnn};
-use rlx_wake::{
-    WakeCnnConfig, WakeCnnWeights, available_devices, bind_streaming_device,
-};
+use rlx_wake::{WakeCnnConfig, WakeCnnWeights, available_devices, bind_streaming_device};
 
 #[test]
 fn cnn_train_binds_all_available_backends() {

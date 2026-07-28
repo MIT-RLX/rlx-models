@@ -42,12 +42,19 @@ fn detector_cpu_parity_vs_expected() {
             let expected = read_f32(fix.join(format!("{head}.bin")));
             assert_eq!(data.len(), expected.len(), "{head} size mismatch");
             let cos = cosine(data, &expected);
-            let mad = data.iter().zip(&expected).map(|(x, y)| (x - y).abs()).fold(0., f32::max);
+            let mad = data
+                .iter()
+                .zip(&expected)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0., f32::max);
             println!("  {head:24} cos={cos:.5} maxabs={mad:.4e}");
             if cos.is_finite() {
                 worst = worst.min(cos);
             }
         }
-        assert!(worst > 0.999, "[{name}] worst detector head cos {worst} below 0.999");
+        assert!(
+            worst > 0.999,
+            "[{name}] worst detector head cos {worst} below 0.999"
+        );
     }
 }

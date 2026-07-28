@@ -40,9 +40,7 @@ pub struct MelSpectrogram {
 ///
 /// Ladder covers ~2.5–80 s at 10 ms hop; beyond that, round up to 1024.
 pub fn bucket_mel_frames(n_frames: usize) -> usize {
-    const LADDER: &[usize] = &[
-        256, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192,
-    ];
+    const LADDER: &[usize] = &[256, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192];
     let n = n_frames.max(1);
     for &b in LADDER {
         if n <= b {

@@ -230,7 +230,7 @@ impl Sdp {
     /// absent → identity scale).
     fn ea0_reverse(&self, z: &mut [f32], t: usize) {
         let m = self.t("dp.flows.0.m"); // [2,1]
-        let logs = self.w.get("dp.flows.0.logs").map(|x| x.clone());
+        let logs = self.w.get("dp.flows.0.logs").cloned();
         for c in 0..2 {
             let mc = m[c];
             let sc = logs.as_ref().map(|l| (-l[c]).exp()).unwrap_or(1.0);
@@ -323,17 +323,16 @@ fn layer_norm_ch(x: &mut [f32], c: usize, t: usize, gamma: &[f32], beta: &[f32])
 fn erf(x: f32) -> f32 {
     let t = 1.0 / (1.0 + 0.3275911 * x.abs());
     let y = 1.0
-        - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t
-            + 0.254829592)
+        - (((((1.061_405_4 * t - 1.453_152_1) * t) + 1.421_413_8) * t - 0.284_496_72) * t
+            + 0.254_829_6)
             * t
             * (-x * x).exp();
     y.copysign(x)
 }
 
 fn gelu_(x: &mut [f32]) {
-    const INV_SQRT2: f32 = 0.707_106_78;
     for v in x.iter_mut() {
-        *v = 0.5 * *v * (1.0 + erf(*v * INV_SQRT2));
+        *v = 0.5 * *v * (1.0 + erf(*v * std::f32::consts::FRAC_1_SQRT_2));
     }
 }
 

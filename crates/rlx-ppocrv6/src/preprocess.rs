@@ -44,11 +44,7 @@ pub fn load_rgb(path: &Path) -> Result<RgbPage> {
 pub fn from_dynamic(img: DynamicImage) -> RgbPage {
     let rgb = img.to_rgb8();
     let (width, height) = rgb.dimensions();
-    RgbPage {
-        width,
-        height,
-        rgb,
-    }
+    RgbPage { width, height, rgb }
 }
 
 /// Aspect-preserving resize so max(H,W) == `limit_side_len`, then pad to multiple of 32.
@@ -63,8 +59,8 @@ pub fn det_resize(page: &RgbPage, limit_side_len: usize) -> (RgbImage, f32, f32,
     let mut rw = (ow * ratio).round().max(1.0) as u32;
     let mut rh = (oh * ratio).round().max(1.0) as u32;
     // round up to multiple of 32
-    rw = ((rw + 31) / 32) * 32;
-    rh = ((rh + 31) / 32) * 32;
+    rw = rw.div_ceil(32) * 32;
+    rh = rh.div_ceil(32) * 32;
     let resized = image::imageops::resize(&page.rgb, rw, rh, FilterType::Triangle);
     let sx = rw as f32 / page.width as f32;
     let sy = rh as f32 / page.height as f32;
@@ -101,14 +97,9 @@ pub fn rec_resize_pad(
     let mut tw = (target_h as f32 * ratio).round().max(1.0) as usize;
     tw = tw.min(max_w);
     // keep width multiple of 8 for stride stack
-    tw = ((tw + 7) / 8) * 8;
+    tw = tw.div_ceil(8) * 8;
     tw = tw.max(8);
-    let resized = image::imageops::resize(
-        crop,
-        tw as u32,
-        target_h as u32,
-        FilterType::Triangle,
-    );
+    let resized = image::imageops::resize(crop, tw as u32, target_h as u32, FilterType::Triangle);
     let n = tw * target_h;
     let mut out = vec![0f32; 3 * n];
     for (i, p) in resized.pixels().enumerate() {

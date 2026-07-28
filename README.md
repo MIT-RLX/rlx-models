@@ -90,7 +90,7 @@ rlx-models/
 | [`rlx-nanbeige`](crates/rlx-nanbeige/README.md) | Nanbeige4.2 Looped Transformer ([Nanbeige/Nanbeige4.2-3B](https://huggingface.co/Nanbeige/Nanbeige4.2-3B)) |
 | `rlx-tinyllama` | TinyLlama-1.1B (Llama-shaped; [TinyLlama/TinyLlama-1.1B-Chat-v1.0](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)) |
 | [`rlx-inkling`](crates/rlx-inkling/README.md) | Inkling multimodal MoE ([thinkingmachines/Inkling](https://huggingface.co/thinkingmachines/Inkling)); config + weight map + synth text forward |
-| [`rlx-laguna`](crates/rlx-laguna/README.md) | Laguna MoE ([poolside/Laguna-S-2.1](https://huggingface.co/poolside/Laguna-S-2.1) / XS / [GGUF](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF)); packed mmap generate (KV cache, optional Metal/MLX); `--tokenizer-dir` / OpenAI via [`rlx-openai`](crates/rlx-openai/README.md) |
+| [`rlx-laguna`](crates/rlx-laguna/README.md) | Laguna MoE ([poolside/Laguna-S-2.1](https://huggingface.co/poolside/Laguna-S-2.1) / XS / [GGUF](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF)); `just fetch-laguna` → `.cache/laguna-s` (nested Unsloth quants; `--prefer Q4_K_M`); packed mmap generate (KV cache, optional Metal/MLX); `--tokenizer-dir` / OpenAI via [`rlx-openai`](crates/rlx-openai/README.md) |
 | [`rlx-openai`](crates/rlx-openai/README.md) | Central OpenAI HTTP server (`RegistryBackend`); `--engine qwen3\|laguna\|qwen35\|…` |
 | `rlx-gemma` | Gemma / Gemma 2 |
 | `rlx-llada2` | LLaDA2 + TIDE offload |
@@ -153,6 +153,7 @@ Install [just](https://github.com/casey/just) (`brew install just`). From the re
 just                          # list recipes
 just qwen3 -- --weights model.gguf --prompt-ids 1,2,3
 just inspect weights/model.gguf
+just weights-scan -- --query qwen --json
 just qwen3-metal -- --weights model.gguf --device metal --prompt-ids 1,2,3
 just fetch-minicpm5
 just minicpm5 -- --weights /tmp/rlx-weights/MiniCPM5-1B/model-00000-of-00001.safetensors --device cpu --prompt-ids 1,42 --max-tokens 16
@@ -216,6 +217,8 @@ cargo run -p rlx-models --bin rlx-run -- inspect Qwen3-0.6B-Q4_K_M.gguf
 ```
 
 `rlx-inspect` dumps format, tensor count, dtype histogram, GGUF metadata, MTP heads, and multi-`.gguf` dir hints (`--prefer Q4_K_M`).
+
+**Local discovery:** `rlx-inspect scan` walks LM Studio, Ollama, Hugging Face hub (MLX/vLLM), Lemonade, and RLX local dirs on macOS/Linux/Windows (`weights/`, `.cache/`, `%TEMP%/rlx-weights` or `/tmp/rlx-weights`, `$RLX_WEIGHTS_DIR`, `$RLX_WEIGHTS_PATHS`). `rlx-inspect resolve <query>` picks one path (prefers `Q4_K_M`). Library: `rlx_core::weights_discover` / `rlx_models::{scan_weights, resolve_weight_query, …}` (see [crates/rlx-models-core/README.md](crates/rlx-models-core/README.md)). Short `--weights` names that are not existing paths also resolve via the same scanner when CLIs use `resolve_weights_cli`.
 
 ### Custom CLI
 
@@ -585,7 +588,7 @@ let (_path, map) = weights::open_map(path)?;
 | `register_gguf_tensor_resolver` | HF ↔ `blk.*` / prefix strip per checkpoint layout |
 | `BertConfig::from_gguf`, `Flux2Config::from_gguf` | Hyperparameters from metadata |
 
-**Inspect:** `rlx-inspect path [--prefer Q4_K_M] [--json]` — directory listing, split-part hints, runner suggestions.
+**Inspect:** `rlx-inspect path [--prefer Q4_K_M] [--json]` — directory listing, split-part hints, runner suggestions. `rlx-inspect scan [--query …]` / `rlx-inspect resolve <query>` / `just weights-scan` — discover weights in local LLM app caches.
 
 **CLI:** LM / FLUX binaries accept `--prefer-quant` and `--gguf-index` (via `rlx_cli::resolve_weights_cli`); default quant preference is `Q4_K_M` in multi-file dirs.
 
@@ -986,20 +989,22 @@ burnembed (`/Users/Shared/burnembed`) re-exports `rlx_models::embed` with `--fea
 
 ### Publishing (crates.io)
 
-Prerequisite: upstream **`rlx*`** **0.2.13** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
+Prerequisite: upstream **`rlx*`** **0.2.14** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
 
 ```sh
 rm -f .cargo/config.toml
-cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.13, no path source
+cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.14, no path source
 ```
 
-Pre-flight (same gates as `scripts/publish.sh`):
+Pre-flight (same gates as `scripts/publish.sh` / `just lint` / CI):
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
+just fmt-check
+just lint
 cargo test --workspace --release --exclude kitten_tts_mini_rlx
 ```
+
+Local auto-gate on commit: `just install-hooks` (sets `core.hooksPath=.githooks`). Cursor agents also rustfmt on edit and re-run the scoped gate on turn end.
 
 Dry-run packaging (no upload):
 

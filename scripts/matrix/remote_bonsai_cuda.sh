@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Run Bonsai-27B Q1_0 on MSI CUDA (16GB). Sync trees first, then build+run.
-#   scripts/matrix/msi_bonsai_cuda.sh
+# Run Bonsai-27B Q1_0 on the CUDA host (RTX 3080 Ti, 16GB). Sync trees first, then build+run.
+#   scripts/matrix/remote_bonsai_cuda.sh
 #
 # Uses rlx-qwen35 --fast (ChatML + no-think + tight prefill_seq).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOST="${MSI_HOST:-msi}"
+HOST="${RLX_CUDA_HOST:?set RLX_CUDA_HOST to your CUDA host, e.g. user@host}"
 REMOTE_MODELS="${REMOTE_MODELS:-rlx-models}"
 GGUF="${BONSAI_GGUF:-weights/Bonsai-27B-gguf/Bonsai-27B-Q1_0.gguf}"
 PROMPT="${BONSAI_PROMPT:-What is the capital of France?}"
 MAX_TOKENS="${BONSAI_MAX_TOKENS:-16}"
 
-bash "$HERE/sync_to_msi.sh"
+bash "$HERE/sync_to_remote.sh"
 
 echo ">> building rlx-qwen35 (cuda) on $HOST"
 ssh "$HOST" bash -s <<EOF
@@ -42,4 +42,4 @@ export RLX_CUDA_MATMUL_PRECISE=\${RLX_CUDA_MATMUL_PRECISE:-1}
   --prompt '$PROMPT' 2>&1 | tee /tmp/bonsai_cuda_run.log
 EOF
 
-echo ">> logs on msi: /tmp/bonsai_cuda_build.log /tmp/bonsai_cuda_run.log"
+echo ">> logs on the CUDA host: /tmp/bonsai_cuda_build.log /tmp/bonsai_cuda_run.log"

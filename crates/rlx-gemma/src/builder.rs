@@ -25,7 +25,48 @@ use rlx_ir::quant::QuantScheme;
 use std::collections::HashMap;
 
 type F32WeightMap = HashMap<String, Vec<f32>>;
-type PackedWeightMap = HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>;
+
+/// Where a packed weight's bytes come from at attach time. Storing the *source*
+/// instead of the bytes keeps the quantized model out of resident RSS: 1:1
+/// weights and fused projections are re-materialized transiently by borrowing
+/// straight from the GGUF mmap at each attach (see `upload_packed_borrowed`).
+#[derive(Clone, Debug)]
+pub enum PackedSrc {
+    /// Kept resident — used only when a weight genuinely can't be borrowed.
+    Owned(Vec<u8>),
+    /// Borrow these GGUF tensors from the loader mmap and concat in order at
+    /// attach. One key = a 1:1 weight; many keys = a fused proj (gate‖up,
+    /// q‖k‖v). `nbytes` is the total U8 length (sum of the parts).
+    Borrow { keys: Vec<String>, nbytes: usize },
+    /// Materialized to F32 at drain (norms / unsupported quant); the graph param
+    /// is F32 and rebuilt from the f32 cache, never uploaded as packed bytes.
+    F32,
+}
+
+impl PackedSrc {
+    /// Byte length of the packed U8 param node (0 for the F32 sentinel).
+    pub fn nbytes(&self) -> usize {
+        match self {
+            PackedSrc::Owned(b) => b.len(),
+            PackedSrc::Borrow { nbytes, .. } => *nbytes,
+            PackedSrc::F32 => 0,
+        }
+    }
+    /// True for the F32-materialized sentinel.
+    pub fn is_f32(&self) -> bool {
+        matches!(self, PackedSrc::F32)
+    }
+    /// Resident bytes for an [`PackedSrc::Owned`] entry (the embed table);
+    /// `None` for borrow recipes / F32 sentinels.
+    pub fn owned_bytes(&self) -> Option<&[u8]> {
+        match self {
+            PackedSrc::Owned(b) => Some(b),
+            _ => None,
+        }
+    }
+}
+
+type PackedWeightMap = HashMap<String, (PackedSrc, QuantScheme, Vec<usize>)>;
 type PackedDrainResult = (F32WeightMap, PackedWeightMap);
 
 /// Decode-graph lm_head output mode for packed GGUF graphs.
@@ -350,8 +391,16 @@ pub fn drain_gemma_packed_weights_ext(
 
     let keys = loader.remaining_keys();
     let mut f32_shapes: HashMap<String, Vec<usize>> = HashMap::new();
-    let mut packed_list: Vec<(String, Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> =
-        Vec::new();
+    // (canonical name, gguf borrow key, scheme, shape, packed byte length).
+    // Zero-copy: record only metadata + the key to borrow at attach — the
+    // multi-GB packed bytes are never materialized into the resident map.
+    let mut packed_list: Vec<(
+        String,
+        String,
+        rlx_ir::quant::QuantScheme,
+        Vec<usize>,
+        usize,
+    )> = Vec::new();
     for key in keys {
         let canonical = rlx_core::weight_loader::gguf_to_hf_name_for_arch(&key, &arch)
             .unwrap_or_else(|| key.clone());
@@ -359,8 +408,12 @@ pub fn drain_gemma_packed_weights_ext(
         // mixed-quant GGUF may still expose them as Q5_0 etc.
         let force_f32 = canonical.contains("layernorm") || canonical.contains("_norm.weight");
         if !force_f32 {
-            if let Some((bytes, scheme, shape)) = loader.take_packed(&key)? {
-                packed_list.push((key, bytes, scheme, shape));
+            if let Some((scheme, shape)) = loader.packed_meta(&key) {
+                let nbytes = loader
+                    .tensor_bytes_borrowed(&key)
+                    .ok_or_else(|| anyhow::anyhow!("packed {key}: bytes unavailable"))?
+                    .len();
+                packed_list.push((canonical, key, scheme, shape, nbytes));
                 continue;
             }
         }
@@ -381,23 +434,34 @@ pub fn drain_gemma_packed_weights_ext(
     }
 
     let mut packed = HashMap::new();
-    for (key, bytes, scheme, shape) in packed_list {
-        let canonical = rlx_core::weight_loader::gguf_to_hf_name_for_arch(&key, &arch)
-            .unwrap_or_else(|| key.clone());
-        packed.insert(canonical, (bytes, scheme, shape));
+    for (canonical, gguf_key, scheme, shape, nbytes) in packed_list {
+        packed.insert(
+            canonical,
+            (
+                PackedSrc::Borrow {
+                    keys: vec![gguf_key],
+                    nbytes,
+                },
+                scheme,
+                shape,
+            ),
+        );
     }
-    // Task #36: keep the original Q4K bytes of `embed_tokens` so the LM-head
-    // builder can issue a DequantMatMul on them instead of materialising a
-    // ~4 GB transposed f32 constant per session.
+    // Task #36: the embed table stays materialized (one bounded tensor) so the
+    // host-side lazy gather + tied LM-head DequantMatMul keep reading owned
+    // bytes; every per-layer weight below is borrowed from the mmap instead.
     if let Some((bytes, scheme, shape)) = embed_packed {
-        packed.insert("model.embed_tokens.weight".into(), (bytes, scheme, shape));
+        packed.insert(
+            "model.embed_tokens.weight".into(),
+            (PackedSrc::Owned(bytes), scheme, shape),
+        );
     }
-    // Weights materialized to F32 at drain (norms, unsupported quants) get empty
-    // packed sentinels so cached graph rebuilds can resolve shape + f32 bytes.
+    // Weights materialized to F32 at drain (norms, unsupported quants) get F32
+    // sentinels so cached graph rebuilds resolve shape + f32 bytes.
     for (canonical, shape) in f32_shapes {
         packed
             .entry(canonical)
-            .or_insert_with(|| (Vec::new(), QuantScheme::GgufQ4_0, shape));
+            .or_insert_with(|| (PackedSrc::F32, QuantScheme::GgufQ4_0, shape));
     }
 
     // Per-layer projection fusion. Each row of a Q4K weight is an
@@ -410,84 +474,119 @@ pub fn drain_gemma_packed_weights_ext(
     let fuse_gate_up = std::env::var("RLX_GEMMA_NO_FUSE_GATE_UP").as_deref() != Ok("1");
     let fuse_qkv = std::env::var("RLX_GEMMA_NO_FUSE_QKV").as_deref() != Ok("1");
     let num_layers = cfg.num_hidden_layers;
+    // Fusion now concatenates the borrow *recipes* (ordered GGUF keys), not the
+    // bytes: at attach the components are borrowed from the mmap and copied into
+    // one scratch buffer in sequence — same fused layout, nothing resident.
     for layer in 0..num_layers {
-        // FFN: gate_proj || up_proj.
+        // FFN: gate_proj ‖ up_proj.
         if fuse_gate_up {
             let gk = format!("model.layers.{layer}.mlp.gate_proj.weight");
             let uk = format!("model.layers.{layer}.mlp.up_proj.weight");
-            if let (Some(gate_entry), Some(up_entry)) =
-                (packed.get(&gk).cloned(), packed.get(&uk).cloned())
+            if let (
+                Some((
+                    PackedSrc::Borrow {
+                        keys: gate_keys,
+                        nbytes: gate_nb,
+                    },
+                    gate_scheme,
+                    gate_shape,
+                )),
+                Some((
+                    PackedSrc::Borrow {
+                        keys: up_keys,
+                        nbytes: up_nb,
+                    },
+                    up_scheme,
+                    up_shape,
+                )),
+            ) = (packed.get(&gk).cloned(), packed.get(&uk).cloned())
             {
-                let (gate_bytes, gate_scheme, gate_shape) = gate_entry;
-                let (up_bytes, up_scheme, up_shape) = up_entry;
                 let gate_n = gate_shape.first().copied().unwrap_or(0);
                 let gate_k = gate_shape.get(1).copied().unwrap_or(0);
                 let up_n = up_shape.first().copied().unwrap_or(0);
                 let up_k = up_shape.get(1).copied().unwrap_or(0);
-                if gate_scheme == up_scheme
-                    && gate_k > 0
-                    && gate_k == up_k
-                    && !gate_bytes.is_empty()
-                    && !up_bytes.is_empty()
-                {
-                    let mut fused = Vec::with_capacity(gate_bytes.len() + up_bytes.len());
-                    fused.extend_from_slice(&gate_bytes);
-                    fused.extend_from_slice(&up_bytes);
+                if gate_scheme == up_scheme && gate_k > 0 && gate_k == up_k {
+                    let mut fused_keys = gate_keys;
+                    fused_keys.extend(up_keys);
                     packed.insert(
                         format!("model.layers.{layer}.mlp.gate_up.weight"),
-                        (fused, gate_scheme, vec![gate_n + up_n, gate_k]),
+                        (
+                            PackedSrc::Borrow {
+                                keys: fused_keys,
+                                nbytes: gate_nb + up_nb,
+                            },
+                            gate_scheme,
+                            vec![gate_n + up_n, gate_k],
+                        ),
                     );
                     packed.remove(&gk);
                     packed.remove(&uk);
                 }
             }
         }
-        // Attention: q_proj || k_proj [|| v_proj]. With attention_k_eq_v
-        // the v stream aliases k so the GGUF has no v_proj.weight; the
-        // fused key is q||k only and the graph builder uses k as v.
+        // Attention: q_proj ‖ k_proj [‖ v_proj]. With attention_k_eq_v the v
+        // stream aliases k so the GGUF has no v_proj.weight; the fused key is
+        // q‖k only and the graph builder uses k as v.
         if fuse_qkv {
             let qk_key = format!("model.layers.{layer}.self_attn.q_proj.weight");
             let kk_key = format!("model.layers.{layer}.self_attn.k_proj.weight");
             let vk_key = format!("model.layers.{layer}.self_attn.v_proj.weight");
-            let q_entry = packed.get(&qk_key).cloned();
-            let k_entry = packed.get(&kk_key).cloned();
-            let v_entry = packed.get(&vk_key).cloned();
-            if let (Some(q_e), Some(k_e)) = (q_entry, k_entry) {
-                let (q_bytes, q_scheme, q_shape) = q_e;
-                let (k_bytes, k_scheme, k_shape) = k_e;
+            if let (
+                Some((
+                    PackedSrc::Borrow {
+                        keys: q_keys,
+                        nbytes: q_nb,
+                    },
+                    q_scheme,
+                    q_shape,
+                )),
+                Some((
+                    PackedSrc::Borrow {
+                        keys: k_keys,
+                        nbytes: k_nb,
+                    },
+                    k_scheme,
+                    k_shape,
+                )),
+            ) = (packed.get(&qk_key).cloned(), packed.get(&kk_key).cloned())
+            {
+                let v_entry = packed.get(&vk_key).cloned();
                 let q_n = q_shape.first().copied().unwrap_or(0);
                 let q_k_dim = q_shape.get(1).copied().unwrap_or(0);
                 let k_n = k_shape.first().copied().unwrap_or(0);
                 let k_k_dim = k_shape.get(1).copied().unwrap_or(0);
-                if q_scheme == k_scheme
-                    && q_k_dim > 0
-                    && q_k_dim == k_k_dim
-                    && !q_bytes.is_empty()
-                    && !k_bytes.is_empty()
-                {
-                    let mut fused = Vec::with_capacity(
-                        q_bytes.len()
-                            + k_bytes.len()
-                            + v_entry.as_ref().map_or(0, |(b, _, _)| b.len()),
-                    );
-                    fused.extend_from_slice(&q_bytes);
-                    fused.extend_from_slice(&k_bytes);
+                if q_scheme == k_scheme && q_k_dim > 0 && q_k_dim == k_k_dim {
+                    let mut fused_keys = q_keys;
+                    fused_keys.extend(k_keys);
+                    let mut total_nb = q_nb + k_nb;
                     let (mut total_n, has_v) = (q_n + k_n, v_entry.is_some());
-                    if let Some((v_bytes, v_scheme, v_shape)) = v_entry.as_ref() {
+                    if let Some((v_src, v_scheme, v_shape)) = v_entry.as_ref() {
                         let v_n = v_shape.first().copied().unwrap_or(0);
                         let v_k_dim = v_shape.get(1).copied().unwrap_or(0);
-                        if *v_scheme == q_scheme && v_k_dim == q_k_dim && !v_bytes.is_empty() {
-                            fused.extend_from_slice(v_bytes);
-                            total_n += v_n;
-                        } else {
-                            // Mixed quant — skip the fusion for this
-                            // layer rather than emit a broken tensor.
-                            continue;
+                        match v_src {
+                            PackedSrc::Borrow {
+                                keys: v_keys,
+                                nbytes: v_nb,
+                            } if *v_scheme == q_scheme && v_k_dim == q_k_dim => {
+                                fused_keys.extend(v_keys.clone());
+                                total_nb += *v_nb;
+                                total_n += v_n;
+                            }
+                            // Mixed quant / non-borrowable — skip fusion for
+                            // this layer rather than emit a broken tensor.
+                            _ => continue,
                         }
                     }
                     packed.insert(
                         format!("model.layers.{layer}.self_attn.qkv.weight"),
-                        (fused, q_scheme, vec![total_n, q_k_dim]),
+                        (
+                            PackedSrc::Borrow {
+                                keys: fused_keys,
+                                nbytes: total_nb,
+                            },
+                            q_scheme,
+                            vec![total_n, q_k_dim],
+                        ),
                     );
                     packed.remove(&qk_key);
                     packed.remove(&kk_key);
@@ -503,6 +602,34 @@ pub fn drain_gemma_packed_weights_ext(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// gemma-3n `gelu_topk` gate activation:
+/// `gelu_approx(max(0, gate − (mean + std·std_mul)))`, with `mean`/`std`
+/// (population, ddof=0) reduced over the last (intermediate) axis per token.
+/// Matches HF `Gemma3nTextMLP._gaussian_topk` + `nn.gelu_approx`.
+fn gelu_topk_gate(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    gate: rlx_ir::NodeId,
+    std_mul: f32,
+    name: &str,
+) -> rlx_ir::NodeId {
+    use rlx_ir::{DType, Shape};
+    let mean = g.mean(gate, vec![2], true); // [b, s, 1]
+    let sq = g.mul(gate, gate);
+    let msq = g.mean(sq, vec![2], true); // E[x²]
+    let mean2 = g.mul(mean, mean); // E[x]²
+    let var = g.sub(msq, mean2); // population variance
+    let var = g.relu(var); // clamp float-noise negatives before sqrt
+    let std = g.sqrt(var);
+    let sm = g.param(&format!("{name}.stdmul"), Shape::new(&[1], DType::F32));
+    params.insert(format!("{name}.stdmul"), vec![std_mul]);
+    let std_scaled = g.mul(std, sm); // std·std_mul (scalar broadcast)
+    let cutoff = g.add(mean, std_scaled); // mean + std·std_mul
+    let shifted = g.sub(gate, cutoff); // gate − cutoff, [b,s,int]
+    let relud = g.relu(shifted); // max(0, ·)
+    g.gelu_approx(relud)
+}
+
 pub fn build_gemma_graph_sized_packed(
     cfg: &GemmaConfig,
     weights: &mut rlx_core::weight_loader::GgufLoader,
@@ -549,6 +676,19 @@ pub fn build_gemma_graph_sized_packed_ext(
     use rlx_ir::{DType, NodeId, Shape};
 
     validate_cfg(cfg)?;
+
+    // gemma-3n: 4-stream AltUp + Laurel wrapper needs a dedicated graph shape.
+    // Prefill-only; ignores the packed/kv/last-token knobs (mlx-affine is F32).
+    if cfg.has_altup() {
+        let _ = (
+            with_lm_head,
+            last_token_from_input,
+            with_kv_outputs,
+            &known_packed,
+            &known_f32,
+        );
+        return build_gemma3n_prefill_graph(cfg, weights, batch, seq);
+    }
 
     let mut g = Graph::new("gemma_packed");
     let mut params: HashMap<String, Vec<f32>> = HashMap::new();
@@ -629,8 +769,8 @@ pub fn build_gemma_graph_sized_packed_ext(
         known_f32: Option<&F32WeightMap>,
         key: &str,
     ) -> Result<(NodeId, Option<QuantScheme>)> {
-        if let Some((bytes, scheme, shape)) = known_packed.and_then(|m| m.get(key)) {
-            if bytes.is_empty() {
+        if let Some((src, scheme, shape)) = known_packed.and_then(|m| m.get(key)) {
+            if src.is_f32() {
                 let cached = known_f32
                     .and_then(|m| m.get(key))
                     .ok_or_else(|| anyhow::anyhow!("f32 cache miss for drained proj {key}"))?;
@@ -638,19 +778,22 @@ pub fn build_gemma_graph_sized_packed_ext(
                 params.insert(key.to_string(), cached.clone());
                 return Ok((id, None));
             }
-            let id = g.param(key, Shape::new(&[bytes.len()], DType::U8));
+            let id = g.param(key, Shape::new(&[src.nbytes()], DType::U8));
             return Ok((id, Some(*scheme)));
         }
         if let Some((bytes, scheme, shape)) = weights.take_packed(key)? {
             let id = g.param(key, Shape::new(&[bytes.len()], DType::U8));
-            packed.insert(key.to_string(), (bytes, scheme, shape));
+            packed.insert(key.to_string(), (PackedSrc::Owned(bytes), scheme, shape));
             Ok((id, Some(scheme)))
         } else {
             let (data, shape) = weights.take_transposed(key)?;
             let id = g.param(key, Shape::new(&shape, DType::F32));
             params.insert(key.to_string(), data);
             // Sentinel: proj was materialized to F32 on drain (e.g. Q4_0); rebuild from cache.
-            packed.insert(key.to_string(), (Vec::new(), QuantScheme::GgufQ4_0, shape));
+            packed.insert(
+                key.to_string(),
+                (PackedSrc::F32, QuantScheme::GgufQ4_0, shape),
+            );
             Ok((id, None))
         }
     }
@@ -1371,7 +1514,21 @@ pub fn build_gemma_graph_sized_packed_ext(
             known_f32,
             &format!("{lp}.mlp.down_proj.weight"),
         )?;
-        let gate_act = g.gelu_approx(gate);
+        // gemma-3n activation sparsity: sparse layers apply `gelu_topk` — a
+        // per-token gate cutoff at `mean + std·√2·erfinv(2·sparsity−1)` before
+        // the GELU (HF `Gemma3nTextMLP._gaussian_topk`). Dense layers (and every
+        // gemma-2/3/4 layer) keep the plain approx-GELU.
+        let gate_act = if let Some(std_mul) = cfg.layer_gaussian_std_multiplier(layer) {
+            gelu_topk_gate(
+                &mut g,
+                &mut params,
+                gate,
+                std_mul,
+                &format!("{lp}.mlp.act_sparsity"),
+            )
+        } else {
+            g.gelu_approx(gate)
+        };
         if tap_l0 && layer == tap_layer {
             l0_taps.push(gate_act); // tap 10e: gelu(gate)
         }
@@ -1474,15 +1631,17 @@ pub fn build_gemma_graph_sized_packed_ext(
         // every layer output by this before the next residual; skipping it lets
         // the hidden stream grow ~20–50× per layer → softcap-saturated garbage
         // logits on prefill (decode already applied this in the builder below).
+        // gemma-4 mobile-QAT ships a per-layer `layer_scalar`; gemma-3n does not
+        // (its per-layer output magnitude is governed by AltUp instead). Apply it
+        // only when present so both checkpoints build.
         if cfg.has_ple() {
-            let ls = load_p(
-                &mut g,
-                &mut params,
-                weights,
-                &format!("{lp}.layer_scalar"),
-                false,
-            )?;
-            h_id = g.mul(h_id, ls);
+            let lsk = format!("{lp}.layer_scalar");
+            if let Ok((data, shape)) = weights.take(&lsk) {
+                let id = g.param(&lsk, Shape::new(&shape, DType::F32));
+                params.insert(lsk, data);
+                h_id = g.mul(h_id, id);
+            }
+            // else: gemma-3n has no per-layer output scalar (AltUp governs it).
         } else if matches!(cfg.arch, GemmaArch::Gemma4) {
             // [1] output_scale scalar → full [hidden] vector. A [1]-param
             // broadcast multiply mis-reads on the CUDA backend (garbage slot →
@@ -1770,8 +1929,8 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
         known_f32: Option<&F32WeightMap>,
         key: &str,
     ) -> Result<(NodeId, Option<QuantScheme>)> {
-        if let Some((bytes, scheme, shape)) = known_packed.and_then(|m| m.get(key)) {
-            if bytes.is_empty() {
+        if let Some((src, scheme, shape)) = known_packed.and_then(|m| m.get(key)) {
+            if src.is_f32() {
                 let cached = known_f32
                     .and_then(|m| m.get(key))
                     .ok_or_else(|| anyhow::anyhow!("f32 cache miss for drained proj {key}"))?;
@@ -1779,19 +1938,22 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
                 params.insert(key.to_string(), cached.clone());
                 return Ok((id, None));
             }
-            let id = g.param(key, Shape::new(&[bytes.len()], DType::U8));
+            let id = g.param(key, Shape::new(&[src.nbytes()], DType::U8));
             return Ok((id, Some(*scheme)));
         }
         if let Some((bytes, scheme, shape)) = weights.take_packed(key)? {
             let id = g.param(key, Shape::new(&[bytes.len()], DType::U8));
-            packed.insert(key.to_string(), (bytes, scheme, shape));
+            packed.insert(key.to_string(), (PackedSrc::Owned(bytes), scheme, shape));
             Ok((id, Some(scheme)))
         } else {
             let (data, shape) = weights.take_transposed(key)?;
             let id = g.param(key, Shape::new(&shape, DType::F32));
             params.insert(key.to_string(), data);
             // Sentinel: proj was materialized to F32 on drain (e.g. Q4_0); rebuild from cache.
-            packed.insert(key.to_string(), (Vec::new(), QuantScheme::GgufQ4_0, shape));
+            packed.insert(
+                key.to_string(),
+                (PackedSrc::F32, QuantScheme::GgufQ4_0, shape),
+            );
             Ok((id, None))
         }
     }
@@ -2346,7 +2508,18 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
             known_f32,
             &format!("{lp}.mlp.down_proj.weight"),
         )?;
-        let gate_act = g.gelu_approx(gate);
+        // gemma-3n activation sparsity (decode path — same as prefill).
+        let gate_act = if let Some(std_mul) = cfg.layer_gaussian_std_multiplier(layer) {
+            gelu_topk_gate(
+                &mut g,
+                &mut params,
+                gate,
+                std_mul,
+                &format!("{lp}.mlp.act_sparsity"),
+            )
+        } else {
+            g.gelu_approx(gate)
+        };
         let mlp_inner = g.mul(gate_act, up);
         let mut ffn_out = emit_proj(
             &mut g,
@@ -2575,6 +2748,622 @@ pub fn build_gemma_decode_graph_sized_packed_ext(
         outputs.push(v);
     }
     g.set_outputs(outputs);
+    Ok((g, params))
+}
+
+/// gemma-3n text-decoder prefill graph — the 4-stream **AltUp** + **Laurel**
+/// wrapper around the Gemma-3 layer body.
+///
+/// Reproduces `mlx_lm/models/gemma3n.py` (`LanguageModel.__call__` +
+/// `Gemma3nDecoderLayer.__call__` + `Gemma3nAltUp` + `Gemma3nLaurelBlock`)
+/// operation-for-operation for **prefill** (batch=1, cache=None → every layer
+/// computes its own K/V; the `num_kv_shared_layers` reuse is a decode-time
+/// optimization and is a no-op for a fresh prefill). Loads F32 (via the
+/// mlx-affine dequant loader). Inputs: `input_ids` `[b,s]` (f32 ids) and
+/// `per_layer_inputs` `[b,s,num_layers*ple_w]` (host-precomputed PLE). Output:
+/// last-axis-softcapped logits `[b,s,vocab]` (tied lm_head).
+fn build_gemma3n_prefill_graph(
+    cfg: &GemmaConfig,
+    weights: &mut dyn rlx_core::weight_loader::WeightLoader,
+    batch: usize,
+    seq: usize,
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    use crate::rope::{build_rope_tables, default_inv_freq};
+    use rlx_core::weight_loader::WeightLoader;
+    use rlx_ir::op::{Activation, MaskKind, Op};
+    use rlx_ir::{DType, NodeId, Shape};
+
+    if batch != 1 {
+        return Err(anyhow!("gemma-3n AltUp prefill requires batch=1"));
+    }
+
+    let mut g = Graph::new("gemma3n_altup");
+    let mut params: HashMap<String, Vec<f32>> = HashMap::new();
+    let f = DType::F32;
+
+    let h = cfg.hidden_size;
+    let nh = cfg.num_attention_heads;
+    let n_kv = cfg.num_key_value_heads;
+    let dh = cfg.head_dim();
+    let q_dim = nh * dh;
+    let kv_dim = n_kv * dh;
+    let group = nh / n_kv;
+    let eps = cfg.rms_norm_eps as f32;
+    let num_layers = cfg.active_num_layers();
+    let n_alt = cfg.altup_num_inputs;
+    let active = cfg.altup_active_idx;
+    let ple_w = cfg.ple_width();
+    let clip = cfg.altup_coef_clip;
+    let vocab = cfg.vocab_size;
+    let window = cfg.sliding_window.unwrap_or(512);
+
+    // ── Helpers ────────────────────────────────────────────────────
+    fn synth(
+        g: &mut Graph,
+        params: &mut HashMap<String, Vec<f32>>,
+        name: &str,
+        data: Vec<f32>,
+        shape: &[usize],
+    ) -> NodeId {
+        let id = g.param(name, Shape::new(shape, DType::F32));
+        params.insert(name.to_string(), data);
+        id
+    }
+    /// `gamma = 1 + loaded_weight` (loader returns `weight-1` for norm keys, so
+    /// `1 + (w-1) = w` = the stored mlx `nn.RMSNorm` gain).
+    fn norm_gamma(
+        g: &mut Graph,
+        params: &mut HashMap<String, Vec<f32>>,
+        weights: &mut dyn WeightLoader,
+        key: &str,
+        dim: usize,
+    ) -> Result<NodeId> {
+        let (w, _shape) = weights.take(key)?;
+        let wnode = g.param(key, Shape::new(&[dim], DType::F32));
+        params.insert(key.to_string(), w);
+        let ones = synth(g, params, &format!("{key}.ones"), vec![1.0f32; dim], &[dim]);
+        Ok(g.add(ones, wnode))
+    }
+    fn gemma_rms(
+        g: &mut Graph,
+        params: &mut HashMap<String, Vec<f32>>,
+        weights: &mut dyn WeightLoader,
+        x: NodeId,
+        key: &str,
+        dim: usize,
+        eps: f32,
+    ) -> Result<NodeId> {
+        let gamma = norm_gamma(g, params, weights, key, dim)?;
+        let beta = synth(g, params, &format!("{key}.beta"), vec![0.0f32; dim], &[dim]);
+        Ok(g.rms_norm(x, gamma, beta, eps))
+    }
+    /// Standard `x @ W.T` linear from a `[out,in]` (possibly quantized) weight.
+    /// mlx-affine weights come back dequantized to F32 via `take_transposed`
+    /// (→ `[in,out]`), so the projection is a plain `mm`.
+    fn linear(
+        g: &mut Graph,
+        params: &mut HashMap<String, Vec<f32>>,
+        weights: &mut dyn WeightLoader,
+        x: NodeId,
+        key: &str,
+    ) -> Result<NodeId> {
+        let (data, shape) = weights.take_transposed(key)?; // [in, out]
+        let w = g.param(key, Shape::new(&shape, DType::F32));
+        params.insert(key.to_string(), data);
+        Ok(g.mm(x, w))
+    }
+    /// AltUp coefficient linear: the tiny `prediction_coefs`/`correction_coefs`
+    /// weights are stored UNquantized as `[out,in]` f32. mlx clips them to
+    /// `±coef_clip` then applies `m @ W.T`. We clip + transpose host-side.
+    #[allow(clippy::too_many_arguments)]
+    fn coef_lin(
+        g: &mut Graph,
+        params: &mut HashMap<String, Vec<f32>>,
+        weights: &mut dyn WeightLoader,
+        m: NodeId,
+        key: &str,
+        out: usize,
+        inn: usize,
+        clip: Option<f32>,
+    ) -> Result<NodeId> {
+        let (mut data, shape) = weights.take(key)?; // [out, inn]
+        anyhow::ensure!(
+            shape == [out, inn],
+            "{key}: coef weight shape {shape:?} != [{out},{inn}]"
+        );
+        if let Some(c) = clip {
+            for v in &mut data {
+                *v = v.clamp(-c, c);
+            }
+        }
+        let mut t = vec![0f32; data.len()];
+        for r in 0..out {
+            for cc in 0..inn {
+                t[cc * out + r] = data[r * inn + cc];
+            }
+        }
+        let w = g.param(key, Shape::new(&[inn, out], DType::F32));
+        params.insert(key.to_string(), t);
+        Ok(g.mm(m, w)) // [b,s,inn] @ [inn,out] → [b,s,out]
+    }
+
+    // ── Graph inputs ───────────────────────────────────────────────
+    let input_ids = g.input("input_ids", Shape::new(&[batch, seq], f));
+    let per_layer_inputs = g.input(
+        "per_layer_inputs",
+        Shape::new(&[batch, seq, num_layers * ple_w], f),
+    );
+
+    // ── Shared small constants ─────────────────────────────────────
+    let inv_h = synth(&mut g, &mut params, "g3n.inv_h", vec![1.0 / h as f32], &[1]);
+    let inv_sqrt2 = synth(
+        &mut g,
+        &mut params,
+        "g3n.inv_sqrt2",
+        vec![0.5f32.sqrt()],
+        &[1],
+    );
+    let one_scalar = synth(&mut g, &mut params, "g3n.one", vec![1.0f32], &[1]);
+    let inv_n = synth(
+        &mut g,
+        &mut params,
+        "g3n.inv_n",
+        vec![1.0 / n_alt as f32],
+        &[1],
+    );
+
+    // ── Embedding + AltUp entry ────────────────────────────────────
+    // embed_tokens (quantized → dequant [vocab,h]); reused for tied lm_head.
+    let (embed_data, embed_shape) = weights.take("model.embed_tokens.weight")?;
+    let embed_w = g.param("model.embed_tokens.weight", Shape::new(&embed_shape, f));
+    params.insert("model.embed_tokens.weight".into(), embed_data);
+    let embed_scale = synth(
+        &mut g,
+        &mut params,
+        "g3n.embed_scale",
+        vec![(h as f32).sqrt()],
+        &[1],
+    );
+    let gathered = g.gather_(embed_w, input_ids, 0); // [b,s,h]
+    let h0 = g.mul(gathered, embed_scale); // active stream (idx 0)
+
+    // target_magnitude = sqrt(mean(h0^2)) over hidden.
+    let target_mag = {
+        let sq = g.mul(h0, h0);
+        let m = g.mean(sq, vec![2], true);
+        g.sqrt(m)
+    };
+    let mut streams: Vec<NodeId> = Vec::with_capacity(n_alt);
+    streams.push(h0);
+    for j in 0..(n_alt - 1) {
+        let proj = linear(
+            &mut g,
+            &mut params,
+            weights,
+            h0,
+            &format!("model.altup_projections.{j}.weight"),
+        )?;
+        // magnitude-normalize: proj * (target_mag / mag)  (mlx maximum floor is
+        // finfo.min ≈ -3.4e38 → a no-op; divide by mag directly).
+        let sq = g.mul(proj, proj);
+        let m = g.mean(sq, vec![2], true);
+        let mag = g.sqrt(m);
+        let ratio = g.div(target_mag, mag);
+        let normed = g.mul(proj, ratio);
+        streams.push(normed);
+    }
+
+    // ── RoPE tables (dual-θ: local 1e4 for sliding, global 1e6 for full) ──
+    let local_inv = default_inv_freq(cfg.rope_local_base_freq, dh);
+    let global_inv = default_inv_freq(cfg.rope_theta, dh);
+    let half = local_inv.len();
+    let (lc, ls) = build_rope_tables(&local_inv, seq);
+    let (gc, gs) = build_rope_tables(&global_inv, seq);
+    let local_cos = synth(&mut g, &mut params, "g3n.rope.local.cos", lc, &[seq, half]);
+    let local_sin = synth(&mut g, &mut params, "g3n.rope.local.sin", ls, &[seq, half]);
+    let global_cos = synth(&mut g, &mut params, "g3n.rope.global.cos", gc, &[seq, half]);
+    let global_sin = synth(&mut g, &mut params, "g3n.rope.global.sin", gs, &[seq, half]);
+
+    // ── Decoder layers ─────────────────────────────────────────────
+    for layer in 0..num_layers {
+        let lp = format!("model.layers.{layer}");
+        let is_full = cfg.is_full_attention_layer(layer);
+        let (cos, sin) = if is_full {
+            (global_cos, global_sin)
+        } else {
+            (local_cos, local_sin)
+        };
+        let int_dim = cfg.layer_intermediate_size(layer);
+
+        // Shared router (norm + modality_router) used by predict AND correct.
+        let router_gamma = norm_gamma(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.altup.router_norm.weight"),
+            h,
+        )?;
+        let router_beta = synth(
+            &mut g,
+            &mut params,
+            &format!("{lp}.altup.router_norm.beta"),
+            vec![0.0f32; h],
+            &[h],
+        );
+        let (rw_data, rw_shape) =
+            weights.take_transposed(&format!("{lp}.altup.modality_router.weight"))?;
+        let router_w = g.param(
+            format!("{lp}.altup.modality_router.weight"),
+            Shape::new(&rw_shape, f),
+        );
+        params.insert(format!("{lp}.altup.modality_router.weight"), rw_data);
+        // modalities(x) = tanh( modality_router( router_norm(x) * (1/h) ) )
+        macro_rules! modalities {
+            ($x:expr) => {{
+                let normed = g.rms_norm($x, router_gamma, router_beta, eps);
+                let scaled = g.mul(normed, inv_h);
+                let routed = g.mm(scaled, router_w);
+                g.tanh(routed)
+            }};
+        }
+
+        // ── AltUp predict ──────────────────────────────────────────
+        let m_pred = modalities!(streams[active]);
+        let pred_lin = coef_lin(
+            &mut g,
+            &mut params,
+            weights,
+            m_pred,
+            &format!("{lp}.altup.prediction_coefs.weight"),
+            n_alt * n_alt,
+            n_alt,
+            clip,
+        )?; // [b,s,n_alt^2]
+        // predicted[c] = stream[c] + Σ_k stream[k] * pred_lin[..., c*n + k]
+        let mut predictions: Vec<NodeId> = Vec::with_capacity(n_alt);
+        for c in 0..n_alt {
+            let mut acc = streams[c];
+            for k in 0..n_alt {
+                let coef = g.narrow_(pred_lin, 2, c * n_alt + k, 1); // [b,s,1]
+                let term = g.mul(streams[k], coef);
+                acc = g.add(acc, term);
+            }
+            predictions.push(acc);
+        }
+        let active_prediction = predictions[active];
+
+        // ── Layer body on the active predicted stream ──────────────
+        let ap_normed = gemma_rms(
+            &mut g,
+            &mut params,
+            weights,
+            active_prediction,
+            &format!("{lp}.input_layernorm.weight"),
+            h,
+            eps,
+        )?;
+
+        // Laurel: x + post_laurel_norm(linear_right(linear_left(x))).
+        let laurel_out = {
+            let ll = linear(
+                &mut g,
+                &mut params,
+                weights,
+                ap_normed,
+                &format!("{lp}.laurel.linear_left.weight"),
+            )?;
+            let lr = linear(
+                &mut g,
+                &mut params,
+                weights,
+                ll,
+                &format!("{lp}.laurel.linear_right.weight"),
+            )?;
+            let ln = gemma_rms(
+                &mut g,
+                &mut params,
+                weights,
+                lr,
+                &format!("{lp}.laurel.post_laurel_norm.weight"),
+                h,
+                eps,
+            )?;
+            g.add(ap_normed, ln)
+        };
+
+        // Attention (scale = 1.0, per-head q/k norm, no-scale v norm).
+        let q = linear(
+            &mut g,
+            &mut params,
+            weights,
+            ap_normed,
+            &format!("{lp}.self_attn.q_proj.weight"),
+        )?;
+        let k = linear(
+            &mut g,
+            &mut params,
+            weights,
+            ap_normed,
+            &format!("{lp}.self_attn.k_proj.weight"),
+        )?;
+        let v = linear(
+            &mut g,
+            &mut params,
+            weights,
+            ap_normed,
+            &format!("{lp}.self_attn.v_proj.weight"),
+        )?;
+        let q4 = g.reshape_(q, vec![batch as i64, seq as i64, nh as i64, dh as i64]);
+        let qn = gemma_rms(
+            &mut g,
+            &mut params,
+            weights,
+            q4,
+            &format!("{lp}.self_attn.q_norm.weight"),
+            dh,
+            eps,
+        )?;
+        let q = g.reshape_(qn, vec![batch as i64, seq as i64, q_dim as i64]);
+        let k4 = g.reshape_(k, vec![batch as i64, seq as i64, n_kv as i64, dh as i64]);
+        let kn = gemma_rms(
+            &mut g,
+            &mut params,
+            weights,
+            k4,
+            &format!("{lp}.self_attn.k_norm.weight"),
+            dh,
+            eps,
+        )?;
+        let k = g.reshape_(kn, vec![batch as i64, seq as i64, kv_dim as i64]);
+        // v_norm = RMSNoScale (gamma=1, beta=0).
+        let v4 = g.reshape_(v, vec![batch as i64, seq as i64, n_kv as i64, dh as i64]);
+        let v_ones = synth(
+            &mut g,
+            &mut params,
+            &format!("{lp}.self_attn.v_norm.ones"),
+            vec![1.0f32; dh],
+            &[dh],
+        );
+        let v_zeros = synth(
+            &mut g,
+            &mut params,
+            &format!("{lp}.self_attn.v_norm.zeros"),
+            vec![0.0f32; dh],
+            &[dh],
+        );
+        let vn = g.rms_norm(v4, v_ones, v_zeros, eps);
+        let v = g.reshape_(vn, vec![batch as i64, seq as i64, kv_dim as i64]);
+
+        let q = g.rope_n(q, cos, sin, dh, dh);
+        let k = g.rope_n(k, cos, sin, dh, dh);
+        let k_rep = repeat_kv_packed(&mut g, k, n_kv, dh, group);
+        let v_rep = repeat_kv_packed(&mut g, v, n_kv, dh, group);
+        let mask_kind = if is_full {
+            MaskKind::Causal
+        } else {
+            MaskKind::SlidingWindow(window)
+        };
+        let attn_shape = rlx_ir::shape::attention_shape(g.shape(q));
+        let attn = g.attention_kind_opts(
+            q,
+            k_rep,
+            v_rep,
+            nh,
+            dh,
+            mask_kind,
+            attn_shape,
+            Some(1.0f32),
+            None,
+        );
+        let attn_out = linear(
+            &mut g,
+            &mut params,
+            weights,
+            attn,
+            &format!("{lp}.self_attn.o_proj.weight"),
+        )?;
+        let attn_out = gemma_rms(
+            &mut g,
+            &mut params,
+            weights,
+            attn_out,
+            &format!("{lp}.post_attention_layernorm.weight"),
+            h,
+            eps,
+        )?;
+
+        // attn_gated = active_prediction + attn;  attn_laurel = (gated+laurel)*2^-½
+        let attn_gated = g.add(active_prediction, attn_out);
+        let sum = g.add(attn_gated, laurel_out);
+        let attn_laurel = g.mul(sum, inv_sqrt2);
+
+        // FFN (GeGLU, gemma-3n gelu_topk gate on sparse layers).
+        let attn_norm = gemma_rms(
+            &mut g,
+            &mut params,
+            weights,
+            attn_laurel,
+            &format!("{lp}.pre_feedforward_layernorm.weight"),
+            h,
+            eps,
+        )?;
+        let gate = linear(
+            &mut g,
+            &mut params,
+            weights,
+            attn_norm,
+            &format!("{lp}.mlp.gate_proj.weight"),
+        )?;
+        let up = linear(
+            &mut g,
+            &mut params,
+            weights,
+            attn_norm,
+            &format!("{lp}.mlp.up_proj.weight"),
+        )?;
+        let gate_act = if let Some(std_mul) = cfg.layer_gaussian_std_multiplier(layer) {
+            gelu_topk_gate(
+                &mut g,
+                &mut params,
+                gate,
+                std_mul,
+                &format!("{lp}.mlp.act_sparsity"),
+            )
+        } else {
+            g.gelu_approx(gate)
+        };
+        let _ = int_dim; // int_dim documented; shapes are inferred by mm.
+        let inner = g.mul(gate_act, up);
+        let down = linear(
+            &mut g,
+            &mut params,
+            weights,
+            inner,
+            &format!("{lp}.mlp.down_proj.weight"),
+        )?;
+        let ffn = gemma_rms(
+            &mut g,
+            &mut params,
+            weights,
+            down,
+            &format!("{lp}.post_feedforward_layernorm.weight"),
+            h,
+            eps,
+        )?;
+        let activated = g.add(attn_laurel, ffn);
+
+        // ── AltUp correct ──────────────────────────────────────────
+        let m_corr = modalities!(activated);
+        let corr_lin = coef_lin(
+            &mut g,
+            &mut params,
+            weights,
+            m_corr,
+            &format!("{lp}.altup.correction_coefs.weight"),
+            n_alt,
+            n_alt,
+            clip,
+        )?; // [b,s,n_alt]
+        let innovation = g.sub(activated, predictions[active]);
+        let mut corrected: Vec<NodeId> = Vec::with_capacity(n_alt);
+        for c in 0..n_alt {
+            let coef = g.narrow_(corr_lin, 2, c, 1); // [b,s,1]
+            let coef1 = g.add(coef, one_scalar); // correction_coefs + 1
+            let term = g.mul(innovation, coef1);
+            corrected.push(g.add(predictions[c], term));
+        }
+
+        // ── Per-layer input injection (added to streams 1..n) ──────
+        let first_prediction = corrected[active];
+        let fp = if cfg.altup_correct_scale {
+            let (cs_data, cs_shape) = weights.take(&format!("{lp}.altup.correct_output_scale"))?;
+            let cs = g.param(
+                format!("{lp}.altup.correct_output_scale"),
+                Shape::new(&cs_shape, f),
+            );
+            params.insert(format!("{lp}.altup.correct_output_scale"), cs_data);
+            g.mul(first_prediction, cs)
+        } else {
+            first_prediction
+        };
+        let gated = linear(
+            &mut g,
+            &mut params,
+            weights,
+            fp,
+            &format!("{lp}.per_layer_input_gate.weight"),
+        )?;
+        let gated = g.gelu_approx(gated);
+        let ple_slice = g.narrow_(per_layer_inputs, 2, layer * ple_w, ple_w);
+        let gated = g.mul(gated, ple_slice);
+        let projected = linear(
+            &mut g,
+            &mut params,
+            weights,
+            gated,
+            &format!("{lp}.per_layer_projection.weight"),
+        )?;
+        let projected = gemma_rms(
+            &mut g,
+            &mut params,
+            weights,
+            projected,
+            &format!("{lp}.post_per_layer_input_norm.weight"),
+            h,
+            eps,
+        )?;
+        // corrected[1:] += first_prediction; corrected[0] unchanged.
+        let mut next = Vec::with_capacity(n_alt);
+        for (c, cur) in corrected.iter().copied().enumerate() {
+            if c == 0 {
+                next.push(cur);
+            } else {
+                next.push(g.add(cur, projected));
+            }
+        }
+        streams = next;
+    }
+
+    // ── AltUp exit: unembed streams 1.., magnitude-match, mean ─────
+    let s0 = streams[active];
+    let exit_target = {
+        let sq = g.mul(s0, s0);
+        let m = g.mean(sq, vec![2], true);
+        g.sqrt(m)
+    };
+    let mut exit_streams: Vec<NodeId> = Vec::with_capacity(n_alt);
+    exit_streams.push(s0);
+    for j in 0..(n_alt - 1) {
+        let proj = linear(
+            &mut g,
+            &mut params,
+            weights,
+            streams[j + 1],
+            &format!("model.altup_unembed_projections.{j}.weight"),
+        )?;
+        let sq = g.mul(proj, proj);
+        let m = g.mean(sq, vec![2], true);
+        let mag = g.sqrt(m);
+        let ratio = g.div(exit_target, mag);
+        let normed = g.mul(proj, ratio);
+        exit_streams.push(normed);
+    }
+    let mut acc = exit_streams[0];
+    for s in exit_streams.iter().skip(1).copied() {
+        acc = g.add(acc, s);
+    }
+    let h_final = g.mul(acc, inv_n); // mean over streams
+
+    let hidden = gemma_rms(
+        &mut g,
+        &mut params,
+        weights,
+        h_final,
+        "model.norm.weight",
+        h,
+        eps,
+    )?;
+
+    // Tied lm_head: logits = hidden @ embed_tokensᵀ (reuse embed param, in-graph
+    // transpose — avoids a second ~2 GB f32 copy).
+    let embed_t = g.transpose_(embed_w, vec![1, 0]); // [h, vocab]
+    let mut logits = g.mm(hidden, embed_t); // [b,s,vocab]
+    let _ = vocab;
+    if let Some(cap) = cfg.final_logit_softcapping {
+        let inv = synth(
+            &mut g,
+            &mut params,
+            "g3n.softcap.inv",
+            vec![1.0 / cap],
+            &[1],
+        );
+        let cap_id = synth(&mut g, &mut params, "g3n.softcap.cap", vec![cap], &[1]);
+        let scaled = g.mul(logits, inv);
+        let scaled_shape = g.shape(scaled).clone();
+        let t = g.add_node(Op::Activation(Activation::Tanh), vec![scaled], scaled_shape);
+        logits = g.mul(t, cap_id);
+    }
+    g.set_outputs(vec![logits]);
     Ok((g, params))
 }
 

@@ -17,18 +17,28 @@ fn main() -> Result<()> {
         .get(2)
         .cloned()
         .unwrap_or_else(|| "The quick brown fox jumps over the lazy dog.".into());
-    let out = args.get(3).cloned().unwrap_or_else(|| "/tmp/soprano_native.wav".into());
-    let max_new: usize = std::env::var("SOPRANO_MAX_NEW").ok().and_then(|s| s.parse().ok()).unwrap_or(256);
+    let out = args
+        .get(3)
+        .cloned()
+        .unwrap_or_else(|| "/tmp/soprano_native.wav".into());
+    let max_new: usize = std::env::var("SOPRANO_MAX_NEW")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(256);
 
     let dir = std::env::var("RLX_SOPRANO_DIR").unwrap_or_else(|_| "weights/tts/soprano".into());
     let st = std::env::var("SOPRANO_BACKBONE_ST").context("set SOPRANO_BACKBONE_ST")?;
     let device = parse_device(&dev).context("device")?;
 
     let onnx = NativeSoprano::open(&dir, device).context("open onnx (tokenizer + decoder)")?;
-    let native = SopranoQwen3::open(std::path::Path::new(&st), device).context("open native backbone")?;
+    let native =
+        SopranoQwen3::open(std::path::Path::new(&st), device).context("open native backbone")?;
 
     let ids = onnx.encode_prompt(&text)?;
-    eprintln!("[native_synth] device={dev} prompt='{text}' ({} tok) max_new={max_new}", ids.len());
+    eprintln!(
+        "[native_synth] device={dev} prompt='{text}' ({} tok) max_new={max_new}",
+        ids.len()
+    );
     let t0 = std::time::Instant::now();
     let (latents, toks) = native.generate_latents_greedy(&ids, max_new)?;
     eprintln!(
@@ -40,9 +50,15 @@ fn main() -> Result<()> {
     anyhow::ensure!(!latents.is_empty(), "no latents produced");
 
     // ONNX Vocos decoder (clean-named weights) — swapped for a native one in M3b.
-    let pcm = onnx.decode_latents(&latents, true).context("decode latents")?;
+    let pcm = onnx
+        .decode_latents(&latents, true)
+        .context("decode latents")?;
     let peak = pcm.iter().fold(0f32, |m, &x| m.max(x.abs()));
-    eprintln!("[native_synth] pcm {} samples ({:.2}s) peak={peak:.3}", pcm.len(), pcm.len() as f32 / 32000.0);
+    eprintln!(
+        "[native_synth] pcm {} samples ({:.2}s) peak={peak:.3}",
+        pcm.len(),
+        pcm.len() as f32 / 32000.0
+    );
 
     let spec = hound::WavSpec {
         channels: 1,

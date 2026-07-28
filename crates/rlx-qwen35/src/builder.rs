@@ -2896,10 +2896,7 @@ fn depthwise_conv1d_op(
     debug_assert_eq!(width, out_seq + k - 1);
     // Layout: BSC → BCW → NCHW `[N,C,L,1]` with kernel `[k,1]` (length on H).
     let bcw = g.transpose_(padded_bsc, vec![0, 2, 1]);
-    let nchw = g.reshape_(
-        bcw,
-        vec![batch as i64, channels as i64, width as i64, 1],
-    );
+    let nchw = g.reshape_(bcw, vec![batch as i64, channels as i64, width as i64, 1]);
     let w_data = pack_depthwise_conv_weight(weight, k, channels);
     let w = register_param(
         g,

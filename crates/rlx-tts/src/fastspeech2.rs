@@ -1,4 +1,3 @@
-
 use anyhow::{Context, Result};
 use ndarray::Array2;
 
@@ -157,13 +156,19 @@ impl<'a> FastSpeech2<'a> {
             }
         }
         if let Some(ref pw) = ctrl.phonewise_pitch {
-            anyhow::ensure!(pw.len() == phone_ids.len(), "phonewise_pitch length mismatch");
+            anyhow::ensure!(
+                pw.len() == phone_ids.len(),
+                "phonewise_pitch length mismatch"
+            );
             for (d, &v) in pitch.iter_mut().zip(pw.iter()) {
                 *d = v;
             }
         }
         if let Some(ref pw) = ctrl.phonewise_energy {
-            anyhow::ensure!(pw.len() == phone_ids.len(), "phonewise_energy length mismatch");
+            anyhow::ensure!(
+                pw.len() == phone_ids.len(),
+                "phonewise_energy length mismatch"
+            );
             for (d, &v) in energy.iter_mut().zip(pw.iter()) {
                 *d = v;
             }
@@ -194,7 +199,7 @@ impl<'a> FastSpeech2<'a> {
             eprintln!(
                 "fs2 dur_raw[:20]={:?} durs={:?} sum={}",
                 &dur[..dur.len().min(20)],
-                &durs,
+                durs,
                 durs.iter().sum::<usize>()
             );
         }

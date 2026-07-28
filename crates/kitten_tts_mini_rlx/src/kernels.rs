@@ -701,7 +701,9 @@ impl CpuKernel for F0IfSelectKernel {
                 "[f0if] mel={mel} mel_cap={:?} wave_cap={:?} valid={valid} f0.len={} out.len={} samples: {}",
                 crate::opts::runtime_mel_cap(),
                 crate::opts::runtime_wave_cap(),
-                f0.len(), out.len(), s.join(" ")
+                f0.len(),
+                out.len(),
+                s.join(" ")
             );
         }
         if f0.len() == out.len() {

@@ -17,7 +17,7 @@
 //! `tools/mtmd/clip.cpp` / `clip-impl.h`.
 
 use super::config::MmProjConfig;
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use rlx_core::weight_loader::{GgufLoader, WeightLoader};
 use rlx_gguf::GgufFile;
 

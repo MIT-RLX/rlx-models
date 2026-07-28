@@ -38,7 +38,9 @@
 //! ```
 
 use anyhow::{Context, Result, bail};
-use rlx_models::run::{ChatMessage, auto_chat_template, auto_runner, auto_tokenize};
+use rlx_models::run::{
+    ChatMessage, auto_chat_template, auto_detokenize, auto_runner, auto_tokenize,
+};
 use std::path::PathBuf;
 
 #[derive(Debug, Default)]
@@ -127,6 +129,11 @@ fn main() -> Result<()> {
     })?;
     println!();
     eprintln!("# generated {} ids: {:?}", generated.len(), generated);
+
+    eprintln!("# 6) detokenize → text");
+    let text = auto_detokenize(weights, &generated, None, true)
+        .with_context(|| format!("auto_detokenize({weights:?})"))?;
+    println!("\n=== decoded output ===\n{text}\n======================");
 
     Ok(())
 }

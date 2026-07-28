@@ -86,7 +86,9 @@ impl TtsAdapter for LuxAdapter {
             if pcm.is_empty() {
                 pcm = seg;
             } else {
-                let xf = (self.inner.sample_rate() as usize / 50).min(pcm.len()).min(seg.len());
+                let xf = (self.inner.sample_rate() as usize / 50)
+                    .min(pcm.len())
+                    .min(seg.len());
                 let base = pcm.len() - xf;
                 for i in 0..xf {
                     let a = 1.0 - (i as f32 / xf as f32);
@@ -133,9 +135,7 @@ fn sentence_chunks(text: &str, whole_max: usize, max_chars: usize) -> Vec<String
         }
         // Prefer a clean break after sentence-ending punctuation once the chunk
         // is reasonably full.
-        if cur.chars().count() >= max_chars * 3 / 4
-            && cur.trim_end().ends_with(['.', '!', '?'])
-        {
+        if cur.chars().count() >= max_chars * 3 / 4 && cur.trim_end().ends_with(['.', '!', '?']) {
             out.push(std::mem::take(&mut cur));
         }
     }

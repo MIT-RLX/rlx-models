@@ -188,11 +188,11 @@ fn main() -> Result<()> {
                 let show = |v: &[f32]| {
                     format!(
                         "{:?} … {:?}",
-                        &v[..6.min(k)]
+                        v[..6.min(k)]
                             .iter()
                             .map(|x| format!("{x:.3e}"))
                             .collect::<Vec<_>>(),
-                        &v[k.saturating_sub(6)..k]
+                        v[k.saturating_sub(6)..k]
                             .iter()
                             .map(|x| format!("{x:.3e}"))
                             .collect::<Vec<_>>()

@@ -65,7 +65,7 @@ fn load_fixture() -> Option<SharedFixture> {
     let prompt_ids = rlx_unlimited_ocr::build_prompt_ids(
         &model_dir,
         "<image>document parsing.",
-        &[prep.clone()],
+        std::slice::from_ref(&prep),
         cfg.bos_token_id,
         IMAGE_TOKEN_ID,
     )
@@ -111,6 +111,7 @@ fn generate_on_device(fx: &SharedFixture, device: Device) -> Vec<u32> {
     token_ids[prompt_len..].to_vec()
 }
 
+#[allow(dead_code)] // called from feature-gated metal/wgpu/cuda tests
 fn parity_vs_cpu(device: Device) {
     if !parity_enabled() {
         eprintln!("skip token parity {device:?}: set RLX_UNLIMITED_OCR_TOKEN_PARITY=1");

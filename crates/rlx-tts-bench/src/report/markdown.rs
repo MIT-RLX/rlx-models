@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use super::json::BenchRow;
 
 /// Prefer `short`/`plain` rows; fall back to any ok row for the cell.
-fn cell_rows<'a>(rows: &'a [BenchRow]) -> BTreeMap<(String, String), &'a BenchRow> {
+fn cell_rows(rows: &[BenchRow]) -> BTreeMap<(String, String), &BenchRow> {
     let mut best: BTreeMap<(String, String), &BenchRow> = BTreeMap::new();
     for r in rows {
         if r.status != "ok" {
@@ -99,7 +99,7 @@ pub fn write_markdown(path: &Path, rows: &[BenchRow], host_note: &str) -> Result
     let cells = cell_rows(rows);
     let mut models = BTreeSet::new();
     let mut devices = BTreeSet::new();
-    for ((m, d), _) in &cells {
+    for (m, d) in cells.keys() {
         models.insert(m.clone());
         devices.insert(d.clone());
     }

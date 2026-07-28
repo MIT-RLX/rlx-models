@@ -177,7 +177,8 @@ fn build_native_cached_graphs(
                             &carry_w,
                         )
                     });
-                    let dur = crate::bundle_compile::join_compile("duration compile thread", dur_h)?;
+                    let dur =
+                        crate::bundle_compile::join_compile("duration compile thread", dur_h)?;
                     let wave =
                         crate::bundle_compile::join_compile("waveform compile thread", wave_h)?;
                     Ok((Some(dur), wave))

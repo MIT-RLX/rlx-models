@@ -50,7 +50,7 @@ Default path is **native RLX** (import each ONNX subgraph via `rlx-onnx-import`)
 Optional `--features onnx` keeps the ORT reference.
 
 Cross-backend matrix (`examples/backend_matrix.rs`): Apple backends bit-identical
-vs CPU (whisper 1.00). **CUDA** (msi): RTF ≈2.4×, cos ≈0.965 vs CPU, whisper 1.00.
+vs CPU (whisper 1.00). **CUDA** (NVIDIA): RTF ≈2.4×, cos ≈0.965 vs CPU, whisper 1.00.
 
 ## Notes
 

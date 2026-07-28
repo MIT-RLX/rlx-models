@@ -466,8 +466,8 @@ fn ensure_punctuation(text: &str) -> String {
 
 #[cfg(feature = "espeak")]
 const NON_BOUNDARY_ABBREVIATIONS: &[&str] = &[
-    "dr", "prof", "mr", "mrs", "ms", "fig", "figs", "pp", "p", "ch", "sec", "jan", "feb",
-    "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "al",
+    "dr", "prof", "mr", "mrs", "ms", "fig", "figs", "pp", "p", "ch", "sec", "jan", "feb", "mar",
+    "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "al",
 ];
 
 /// True when `text[index]` is a sentence boundary (KittenTTS `chunk_text` rules).
@@ -512,11 +512,7 @@ fn is_sentence_boundary(text: &str, index: usize) -> bool {
             let lower = before.to_ascii_lowercase();
             if lower.ends_with("a.m") || lower.ends_with("p.m") {
                 let next = text[index + 1..].trim_start();
-                return next.is_empty()
-                    || next
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_uppercase());
+                return next.is_empty() || next.chars().next().is_some_and(|c| c.is_uppercase());
             }
         }
     }

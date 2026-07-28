@@ -16,7 +16,7 @@
 //! Tiny synthetic Laguna configs + deterministic weight tensors.
 
 use crate::config::{
-    AttnGating, AttnLayerType, LagunaConfig, MlpLayerType, MODEL_TYPE, RopeLayerParams,
+    AttnGating, AttnLayerType, LagunaConfig, MODEL_TYPE, MlpLayerType, RopeLayerParams,
 };
 use crate::eager::TextWeights;
 use std::collections::HashMap;
@@ -136,7 +136,10 @@ pub fn synthetic_text_weights(cfg: &LagunaConfig) -> TextWeights {
             let inter = cfg.moe_intermediate_size;
             let ne = cfg.num_experts;
             let ns = cfg.shared_expert_intermediate_size;
-            tensors.insert(format!("layers.{layer}.gate_weight"), ramp(ne * h, seed + 20));
+            tensors.insert(
+                format!("layers.{layer}.gate_weight"),
+                ramp(ne * h, seed + 20),
+            );
             tensors.insert(format!("layers.{layer}.gate_bias"), ramp(ne, seed + 21));
             tensors.insert(
                 format!("layers.{layer}.expert_gate"),
@@ -150,7 +153,10 @@ pub fn synthetic_text_weights(cfg: &LagunaConfig) -> TextWeights {
                 format!("layers.{layer}.expert_down"),
                 ramp(ne * h * inter, seed + 24),
             );
-            tensors.insert(format!("layers.{layer}.shared_gate"), ramp(ns * h, seed + 25));
+            tensors.insert(
+                format!("layers.{layer}.shared_gate"),
+                ramp(ns * h, seed + 25),
+            );
             tensors.insert(format!("layers.{layer}.shared_up"), ramp(ns * h, seed + 26));
             tensors.insert(
                 format!("layers.{layer}.shared_down"),

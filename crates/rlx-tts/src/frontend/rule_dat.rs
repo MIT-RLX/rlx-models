@@ -156,11 +156,7 @@ impl Rule {
         if rhs.is_empty() {
             rhs = trailer_ascii_rhs(&self.trailer_payload).unwrap_or_default();
         }
-        if saw_op {
-            Some((lhs, rhs))
-        } else {
-            None
-        }
+        if saw_op { Some((lhs, rhs)) } else { None }
     }
 }
 
@@ -203,7 +199,11 @@ impl RuleDat {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         ensure!(bytes.len() >= 8, "rule.dat too short");
         let n_tables = bytes[0] as usize;
-        ensure!(bytes[1..4] == MAGIC, "bad rule.dat magic {:02x?}", &bytes[1..4]);
+        ensure!(
+            bytes[1..4] == MAGIC,
+            "bad rule.dat magic {:02x?}",
+            &bytes[1..4]
+        );
         let mut off = 4;
         let mut tables = Vec::with_capacity(n_tables);
         for ti in 0..n_tables {
@@ -219,10 +219,12 @@ impl RuleDat {
             };
             off = next;
             // Optional padding / reserved u32 observed as zeros before first rule.
-            if off + 4 <= bytes.len() && bytes[off..off + 4] == [0, 0, 0, 0] {
-                if off + 5 < bytes.len() && bytes[off + 4].is_ascii_alphanumeric() {
-                    off += 4;
-                }
+            if off + 4 <= bytes.len()
+                && bytes[off..off + 4] == [0, 0, 0, 0]
+                && off + 5 < bytes.len()
+                && bytes[off + 4].is_ascii_alphanumeric()
+            {
+                off += 4;
             }
 
             // BinaryGraph body (rewrite / TN ordinal/sms/…): does not start with R.
@@ -291,7 +293,7 @@ impl RuleDat {
             }
         }
         // Longer LHS first to prefer specific matches.
-        pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        pairs.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
         let mut out = input.to_string();
         for (lhs, rhs) in pairs {
             if lhs.is_empty() {
@@ -312,9 +314,9 @@ fn find_next_table_start(bytes: &[u8], mut off: usize, _remaining: usize) -> Res
                 let looks_name = !name.is_empty()
                     && name.len() < 64
                     && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-                    && name
-                        .chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'));
+                    && name.chars().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_')
+                    });
                 if looks_name {
                     let mut body = name_end;
                     if body + 4 <= bytes.len() && bytes[body..body + 4] == [0, 0, 0, 0] {
@@ -345,10 +347,17 @@ fn parse_rule(bytes: &[u8], off: &mut usize, last_in_table: bool) -> Result<Rule
     let (label, next) = read_cstring(bytes, *off)?;
     *off = next;
     ensure!(
-        label.starts_with('R') || label.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()),
+        label.starts_with('R')
+            || label
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric()),
         "expected rule label, got {label:?}"
     );
-    ensure!(*off + 36 <= bytes.len(), "truncated rule header for {label}");
+    ensure!(
+        *off + 36 <= bytes.len(),
+        "truncated rule header for {label}"
+    );
     let mut header = [0u32; 9];
     for h in &mut header {
         *h = u32::from_le_bytes(bytes[*off..*off + 4].try_into().unwrap());

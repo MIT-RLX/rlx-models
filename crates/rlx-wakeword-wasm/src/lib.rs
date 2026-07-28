@@ -89,12 +89,7 @@ fn tone(seconds: f32, freq_hz: f32, amp: f32) -> Vec<f32> {
 }
 
 fn bias_bytes(w: &WakeCnnWeights) -> usize {
-    (w.conv1_b.len()
-        + w.conv2_b.len()
-        + w.conv3_b.len()
-        + w.fc1_b.len()
-        + w.fc2_b.len())
-        * 4
+    (w.conv1_b.len() + w.conv2_b.len() + w.conv3_b.len() + w.fc1_b.len() + w.fc2_b.len()) * 4
 }
 
 fn weight_storage_bytes(mode: WeightMode) -> usize {

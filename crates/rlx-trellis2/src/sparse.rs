@@ -142,7 +142,7 @@ pub fn silu(x: &mut [f32]) {
 /// GELU (tanh approximation), in place.
 #[allow(dead_code)]
 pub fn gelu_tanh_inplace(x: &mut [f32]) {
-    const K: f32 = 0.797_884_56; // sqrt(2/pi)
+    const K: f32 = 0.797_884_6; // sqrt(2/pi)
     for v in x.iter_mut() {
         let t = *v;
         *v = 0.5 * t * (1.0 + (K * (t + 0.044715 * t * t * t)).tanh());
@@ -300,7 +300,7 @@ mod tests {
         let x = SparseTensor::new(vec![1.0, 2.0], vec![[5, 5, 5]], in_c);
         let mut w = vec![0.0f32; out_c * 27 * in_c];
         // center slot kd=kh=kw=1 -> index 13; weights [3.0, 4.0]
-        let center = ((1 * 3 + 1) * 3 + 1) * in_c;
+        let center = ((3 + 1) * 3 + 1) * in_c;
         w[center] = 3.0;
         w[center + 1] = 4.0;
         let out = submanifold_conv3d(&x, &w, &[0.5], out_c);

@@ -28,8 +28,7 @@ pub const LOOKAHEAD_FRAMES: usize = 16;
 
 /// Encoder AED window flattened: `[AED_WINDOW_FRAMES, DECODER_DIM]`.
 pub const ENC_ELEMS: usize = AED_WINDOW_FRAMES * DECODER_DIM;
-pub const AED_CACHE_IN_ELEMS: usize =
-    BEAM * AED_MAX_HISTORY * 2 * DECODER_LAYERS * DECODER_DIM;
+pub const AED_CACHE_IN_ELEMS: usize = BEAM * AED_MAX_HISTORY * 2 * DECODER_LAYERS * DECODER_DIM;
 
 pub const CTC_SCALE: f32 = 0.3;
 pub const AED_SCALE: f32 = 0.7;

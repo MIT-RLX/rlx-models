@@ -21,8 +21,8 @@
 
 use anyhow::Result;
 use rlx_core::vision_ops_ir::{conv2d_bias, conv2d_bias_groups};
-use rlx_ir::hir::{HirMut, HirNodeId};
 use rlx_ir::HirGraphExt;
+use rlx_ir::hir::{HirMut, HirNodeId};
 
 /// Fused GELU activation.
 pub fn gelu(g: &mut HirMut<'_>, x: HirNodeId) -> HirNodeId {
@@ -71,6 +71,17 @@ pub fn pw_conv(
 ) -> Result<HirNodeId> {
     let _ = in_c;
     Ok(conv2d_bias(
-        g, x, weight, bias, batch, out_c, 1, 1, [1, 1], [0, 0], h, w,
+        g,
+        x,
+        weight,
+        bias,
+        batch,
+        out_c,
+        1,
+        1,
+        [1, 1],
+        [0, 0],
+        h,
+        w,
     ))
 }

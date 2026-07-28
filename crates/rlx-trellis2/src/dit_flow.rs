@@ -75,7 +75,7 @@ impl CompiledDit {
         );
         ensure!(t_mod.len() == c6, "t_mod len {} != 6×C {}", t_mod.len(), c6);
         ensure!(
-            cond.len() % self.n_cond == 0 && !cond.is_empty(),
+            cond.len().is_multiple_of(self.n_cond) && !cond.is_empty(),
             "cond length {} not divisible by n_cond {}",
             cond.len(),
             self.n_cond
@@ -539,6 +539,8 @@ fn trellis_block(
         );
 
         let qkv_w = {
+            // End `HirMut` borrow of `emit.hir()` before `load_param`.
+            #[allow(clippy::drop_non_drop)]
             drop(gb);
             emit.load_param(&format!("{p}.self_attn.to_qkv.weight"), true)?
         };
@@ -569,6 +571,7 @@ fn trellis_block(
 
         // ── cross-attn ──
         let n2_w = {
+            #[allow(clippy::drop_non_drop)]
             drop(gb);
             emit.load_param(&format!("{p}.norm2.weight"), false)?
         };
@@ -605,6 +608,7 @@ fn trellis_block(
 
         // ── MLP ──
         let mlp0_w = {
+            #[allow(clippy::drop_non_drop)]
             drop(gb);
             emit.load_param(&format!("{p}.mlp.mlp.0.weight"), true)?
         };

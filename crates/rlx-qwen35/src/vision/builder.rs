@@ -18,7 +18,7 @@
 use super::config::MmProjConfig;
 use super::preprocess::build_spatial_merge_gather_idx;
 use super::weights::{DeepstackWeights, MmProjWeights, VisionBlockWeights};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use rlx_ir::hir::{FusionPolicy, HirGraphExt, HirModule, HirMut, HirNodeId};
 use rlx_ir::op::MaskKind;
 use rlx_ir::{DType, Graph, Op, Shape};
@@ -508,8 +508,7 @@ fn resize_position_embd(
         let mut out = vec![0f32; n_pos * n];
         let copy = (weights.position_embd.len() / n).min(n_pos);
         for i in 0..copy {
-            out[i * n..(i + 1) * n]
-                .copy_from_slice(&weights.position_embd[i * n..(i + 1) * n]);
+            out[i * n..(i + 1) * n].copy_from_slice(&weights.position_embd[i * n..(i + 1) * n]);
         }
         return out;
     }

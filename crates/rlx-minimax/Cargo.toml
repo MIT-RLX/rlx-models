@@ -1,12 +1,12 @@
 [package]
 name = "rlx-minimax"
-version = "0.2.13"
+version = "0.2.14"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "MiniMax M2.5 / M2.7 runner — Lightning Attention LM (decode-step + state buffer wiring)"
+description = "MiniMax runners for RLX — M2.5/M2.7 Lightning Attention LM, and M3 (MSA block-sparse MoE + vision tower)"
 keywords.workspace = true
 categories.workspace = true
 

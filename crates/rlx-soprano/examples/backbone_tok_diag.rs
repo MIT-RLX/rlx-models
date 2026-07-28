@@ -4,7 +4,7 @@
 //! cargo run -p rlx-soprano --release --example backbone_tok_diag --features apple-silicon
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use rlx_runtime::{Device, is_available};
@@ -78,7 +78,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn ort_tokens(dir: &PathBuf, text: &str, n: usize) -> anyhow::Result<Vec<i64>> {
+fn ort_tokens(dir: &Path, text: &str, n: usize) -> anyhow::Result<Vec<i64>> {
     let dir_s = dir.display().to_string();
     let text_s = text.replace('\\', "\\\\").replace('\'', "\\'");
     let py = format!(

@@ -12,7 +12,7 @@
 //!   --features native,apple-silicon \
 //!   --test native_backend_bench -- --nocapture --test-threads=1
 //!
-//! # NVIDIA (MSI): --features native,gpu,cuda,vulkan
+//! # NVIDIA: --features native,gpu,cuda,vulkan
 //! ```
 //!
 //! Env: `KITTEN_TTS_BENCH_WARM` (default 3), `KITTEN_TTS_BENCH_SKIP_WHISPER=1`.
@@ -42,9 +42,8 @@ fn warm_runs() -> usize {
 }
 
 fn skip_whisper() -> bool {
-    std::env::var("KITTEN_TTS_BENCH_SKIP_WHISPER").is_ok_and(|v| {
-        v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
-    })
+    std::env::var("KITTEN_TTS_BENCH_SKIP_WHISPER")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
 }
 
 /// Optional filter: `KITTEN_TTS_BENCH_DEVICES=cpu,cuda,gpu` (comma-separated).
@@ -55,11 +54,7 @@ fn device_allowlist() -> Option<Vec<String>> {
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
-    if list.is_empty() {
-        None
-    } else {
-        Some(list)
-    }
+    if list.is_empty() { None } else { Some(list) }
 }
 
 fn device_allowed(dev: Device, allow: &Option<Vec<String>>) -> bool {
@@ -248,8 +243,8 @@ fn run_backend(
 
 fn print_table(rows: &[Row]) {
     eprintln!(
-        "{:<6} {:<8} {:>10} {:>9} {:>8} {:>7} {:>7}  {}",
-        "phrase", "backend", "compile(s)", "warm(ms)", "audio(s)", "RTF", "peak", "whisper/status"
+        "{:<6} {:<8} {:>10} {:>9} {:>8} {:>7} {:>7}  whisper/status",
+        "phrase", "backend", "compile(s)", "warm(ms)", "audio(s)", "RTF", "peak"
     );
     for r in rows {
         if r.status == "ok" {
@@ -269,7 +264,9 @@ fn print_table(rows: &[Row]) {
 #[test]
 fn native_backend_bench() {
     let Some(weights) = assets::default_native_weights_dir() else {
-        eprintln!("skip: no native weights (run `just fetch-kittentts` / `just fetch-kitten-rlx-bundle`)");
+        eprintln!(
+            "skip: no native weights (run `just fetch-kittentts` / `just fetch-kitten-rlx-bundle`)"
+        );
         return;
     };
     let Some(voices) = voices_npz() else {
@@ -291,10 +288,7 @@ fn native_backend_bench() {
         eprintln!("note: no whisper weights — RTF only (`just fetch-whisper-base` / tiny)");
     }
 
-    let phrases: &[(&str, &str)] = &[
-        (SHORT_LABEL, SHORT_IPA),
-        (LONG_LABEL, LONG_IPA),
-    ];
+    let phrases: &[(&str, &str)] = &[(SHORT_LABEL, SHORT_IPA), (LONG_LABEL, LONG_IPA)];
 
     let candidates = [
         Device::Cpu,

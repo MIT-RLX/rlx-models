@@ -24,12 +24,12 @@ pub mod train;
 #[cfg(feature = "onnx")]
 pub mod onnx;
 
-pub use session::{OpenWakeWordEngine, OpenWakeWordWeights};
-pub use train::train_phrase_head;
 pub use rlx_wake::{
     SAMPLE_RATE_16K, WakeConfig, WakeEngine, WakeStep, assert_100_percent_parity,
     available_devices, bench_device_label, bench_engine, best_f1_threshold, bind_streaming_device,
     detection_stats, float_precision, load_wav_mono_f32, parse_device_list, peak_of, peak_score,
-    print_bench_table, print_detection_stats, resolve_device, resample_linear, run_backend_parity,
+    print_bench_table, print_detection_stats, resample_linear, resolve_device, run_backend_parity,
     score_wav, streaming_execution_device,
 };
+pub use session::{OpenWakeWordEngine, OpenWakeWordWeights};
+pub use train::train_phrase_head;

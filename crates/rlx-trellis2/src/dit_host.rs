@@ -17,7 +17,7 @@
 //!
 //! A faithful, batch-1 fp32 port of `SparseStructureFlowModel` /
 //! `SLatFlowModel` (`trellis2/models/{sparse_structure_flow,structured_latent_flow}.py`)
-//! + `ModulatedTransformerCrossBlock`. It is the parity oracle for the graph
+//! and `ModulatedTransformerCrossBlock`. It is the parity reference for the graph
 //! lowering and a CPU fallback. The two DiTs differ only in tokenization:
 //!   * dense structure DiT — tokens are a fixed `res³` grid (RoPE from grid);
 //!   * sparse SLat DiT — tokens are active voxels (RoPE from their coords),

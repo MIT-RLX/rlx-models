@@ -67,5 +67,5 @@ just features=all-backends wake-all-backends -- --wav clip.wav
 just features=all-backends wake-train-cnn -- --synth --keyword "hey rlx" \
   --out /tmp/wake_model.safetensors --device all --epochs 20
 just bench-wake
-just wake-cuda-msi   # CUDA on ssh msi
+just wake-cuda-remote   # CUDA on the remote host (set RLX_CUDA_HOST)
 ```

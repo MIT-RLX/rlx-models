@@ -4,7 +4,7 @@
 //!
 //! Run:
 //!   REF_NPY=/Users/Shared/skill/src-tauri/resources/neutts-samples/jo.npy \
-//!   NEUTTS_DECODER_PATH=/Users/macmini/.skill/models/neutts/neucodec_decoder.safetensors \
+//!   NEUTTS_DECODER_PATH=$HOME/.skill/models/neutts/neucodec_decoder.safetensors \
 //!   cargo run -p rlx-neutts --example synth_metal --features llama,codec,rlx,metal
 //!
 //! Add `--release` for representative timing.
@@ -52,14 +52,16 @@ fn write_wav(path: &PathBuf, audio: &[f32], rate: u32) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let backbone = std::env::var("BACKBONE_GGUF")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(
-                "/Users/macmini/.cache/huggingface/hub/models--neuphonic--neutts-nano-q4-gguf/\
-             snapshots/8ae1694877fdf9d7c4a7bee2cc9775ba7eab3923/neutts-nano-Q4_0.gguf",
-            )
-        });
+    // Backbone GGUF: honor BACKBONE_GGUF, else discover via the HF hub API
+    // (downloads to / reuses the local cache) — no hard-coded snapshot path.
+    let backbone = match std::env::var("BACKBONE_GGUF") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => hf_hub::api::sync::Api::new()
+            .context("hf_hub Api")?
+            .model("neuphonic/neutts-nano-q4-gguf".to_string())
+            .get("neutts-nano-Q4_0.gguf")
+            .context("resolve neutts-nano-Q4_0.gguf via HF hub")?,
+    };
     let ref_npy = std::env::var("REF_NPY").context("set REF_NPY to a preset .npy (e.g. jo.npy)")?;
     let ref_codes = read_npy_i32(&ref_npy)?;
     eprintln!("[synth] ref-codes: {} tokens", ref_codes.len());

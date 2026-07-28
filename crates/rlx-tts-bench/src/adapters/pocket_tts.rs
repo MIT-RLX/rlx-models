@@ -33,8 +33,8 @@ pub fn make(_device: Device) -> Result<Box<dyn TtsAdapter>> {
     let tokenizer = dir.join(TOKENIZER_FILE);
     let model = TtsModel::open(&weights, &tokenizer).context("load pocket-tts")?;
     let voice_path = resolve_voice_path(&dir)?;
-    let voice = Voice::open(&voice_path)
-        .with_context(|| format!("load voice {}", voice_path.display()))?;
+    let voice =
+        Voice::open(&voice_path).with_context(|| format!("load voice {}", voice_path.display()))?;
     Ok(Box::new(PocketAdapter { model, voice }))
 }
 
@@ -55,8 +55,10 @@ impl TtsAdapter for PocketAdapter {
     }
 
     fn synthesize(&mut self, req: SynthRequest<'_>) -> Result<SynthResult> {
-        let mut opts = GenerationOptions::default();
-        opts.seed = req.seed;
+        let opts = GenerationOptions {
+            seed: req.seed,
+            ..Default::default()
+        };
         let t0 = Instant::now();
         let audio = self.model.generate(req.text, &self.voice, opts)?;
         Ok(SynthResult {

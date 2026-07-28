@@ -65,6 +65,6 @@
     "Where": 22
   },
   "skipped": 0,
-  "source_onnx": "/Users/macmini/.cache/huggingface/hub/models--KittenML--kitten-tts-mini-0.8/snapshots/c02725660cea441db4c383af69f1f26f5cd00947/kitten_tts_mini_v0_8.onnx",
+  "source_onnx": "~/.cache/huggingface/hub/models--KittenML--kitten-tts-mini-0.8/snapshots/c02725660cea441db4c383af69f1f26f5cd00947/kitten_tts_mini_v0_8.onnx",
   "unsupported": {}
 }

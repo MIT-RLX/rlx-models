@@ -109,8 +109,7 @@ fn apply_rewrite_map(text: &str, map: &[(String, String)]) -> String {
         for (lhs, rhs) in map {
             if rest.starts_with(lhs.as_str()) {
                 // Prefer token boundary: start of string or non-letter before.
-                let ok_start = i == 0
-                    || !chars[i - 1].is_ascii_alphanumeric();
+                let ok_start = i == 0 || !chars[i - 1].is_ascii_alphanumeric();
                 if ok_start {
                     hit = Some((lhs.chars().count(), rhs.as_str()));
                     break;

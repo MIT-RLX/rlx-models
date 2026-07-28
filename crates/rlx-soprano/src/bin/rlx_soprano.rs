@@ -36,11 +36,14 @@ fn main() -> Result<()> {
                 model_dir = PathBuf::from(args.next().context("missing --model-dir")?)
             }
             "--pack-rlxp" => {
-                pack_rlxp_out =
-                    Some(PathBuf::from(args.next().context("missing --pack-rlxp PATH")?))
+                pack_rlxp_out = Some(PathBuf::from(
+                    args.next().context("missing --pack-rlxp PATH")?,
+                ))
             }
             "--pack-gguf" => {
-                pack_gguf = Some(PathBuf::from(args.next().context("missing --pack-gguf PATH")?))
+                pack_gguf = Some(PathBuf::from(
+                    args.next().context("missing --pack-gguf PATH")?,
+                ))
             }
             "--max-tokens" => {
                 opts.max_new_tokens = args

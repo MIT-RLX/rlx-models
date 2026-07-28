@@ -385,7 +385,7 @@ fn attr_rgb(attrs: &[f32], i: usize) -> [u8; 3] {
 }
 
 fn align4(buf: &mut Vec<u8>) {
-    while buf.len() % 4 != 0 {
+    while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
 }
@@ -399,7 +399,7 @@ fn encode_png_rgba(img: &image::RgbaImage) -> Vec<u8> {
 
 fn pack_glb(json: serde_json::Value, bin: &[u8]) -> Vec<u8> {
     let mut json_bytes = serde_json::to_vec(&json).expect("glb json");
-    while json_bytes.len() % 4 != 0 {
+    while !json_bytes.len().is_multiple_of(4) {
         json_bytes.push(b' ');
     }
     let bin_len = bin.len();
@@ -540,7 +540,7 @@ mod tests {
             // vertex offset logits 0 -> sigmoid .5 -> offset 0.5 (voxel center)
             feats[i * 7 + 6] = 1.0; // split weight positive
         }
-        feats[0 * 7 + 3] = 1.0; // voxel 0 intersected on x-axis
+        feats[3] = 1.0; // voxel 0 intersected on x-axis
         let st = SparseTensor::new(feats, coords, 7);
         let m = dual_grid_to_mesh(&st, 2, [-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]);
         assert_eq!(m.vertices.len(), 4);

@@ -30,7 +30,7 @@ pub use rlx_wake::{TernaryOpts, TernaryStats, is_ternary_f32};
 pub use cascade::speaker::{EnrolledSpeaker, SpeakerIdConfig, SpeakerIdGate};
 
 pub use rlx_wake::{
-    SAMPLE_RATE_16K, bind_streaming_device, load_wav_mono_f32, parse_device_list, resolve_device,
-    resample_linear,
+    SAMPLE_RATE_16K, bind_streaming_device, load_wav_mono_f32, parse_device_list, resample_linear,
+    resolve_device,
 };
 pub use rlx_wakeword_core::{PACK_MAGIC, PackHeader};

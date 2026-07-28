@@ -3,8 +3,8 @@
 
 use anyhow::{Result, bail};
 use rlx_wake::{
-    SAMPLE_RATE_16K, WakeConfig, WakeEngine, bind_streaming_device, load_wav_mono_f32, parse_device_list,
-    peak_score, resample_linear, score_wav,
+    SAMPLE_RATE_16K, WakeConfig, WakeEngine, bind_streaming_device, load_wav_mono_f32,
+    parse_device_list, peak_score, resample_linear, score_wav,
 };
 use std::path::PathBuf;
 

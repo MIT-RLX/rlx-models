@@ -93,7 +93,9 @@ fn load_tts(seq: usize, max_wave: usize) -> Option<KittenTTS> {
 
 #[test]
 fn native_hello_via_whisper() {
-    let _guard = NATIVE_WHISPER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = NATIVE_WHISPER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let Some(whisper_dir) = whisper_asr_dir() else {
         eprintln!("skip: run `just fetch-whisper-base`");
         return;
@@ -133,7 +135,9 @@ fn native_hello_via_whisper() {
 
 #[test]
 fn native_long_ipa_via_whisper() {
-    let _guard = NATIVE_WHISPER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = NATIVE_WHISPER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let Some(whisper_dir) = whisper_asr_dir() else {
         eprintln!("skip: run `just fetch-whisper-base`");
         return;

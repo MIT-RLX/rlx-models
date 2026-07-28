@@ -47,7 +47,7 @@ impl TnPrefix {
                 }
             }
         }
-        pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        pairs.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
         pairs.dedup();
         Ok(Self { pairs })
     }

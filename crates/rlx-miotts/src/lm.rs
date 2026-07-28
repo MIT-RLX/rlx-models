@@ -101,7 +101,7 @@ impl MioLmConfig {
     pub fn load(dir: &Path) -> Result<Self> {
         let p = dir.join("config.json");
         let s = std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
-        Ok(serde_json::from_str(&s).context("parse MioTTS config.json")?)
+        serde_json::from_str(&s).context("parse MioTTS config.json")
     }
 
     pub fn to_qwen3(&self) -> Qwen3Config {

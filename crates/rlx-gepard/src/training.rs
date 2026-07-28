@@ -299,8 +299,7 @@ impl DataLoader {
         // Simple tokenization: split by spaces, convert words to token IDs (demo)
         let text_ids: Vec<u32> = text
             .split_whitespace()
-            .enumerate()
-            .map(|(_i, word)| {
+            .map(|word| {
                 // Hash word to a token ID (0-1000 range for demo)
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 use std::hash::{Hash, Hasher};
@@ -447,7 +446,7 @@ pub async fn training_loop(
             let loss = combined_loss(audio_loss, speaker_loss, config);
 
             // Compute gradients proportional to loss (better than constant 0.01)
-            let grad_scale = (loss * 0.01).max(0.001).min(0.1);
+            let grad_scale = (loss * 0.01).clamp(0.001, 0.1);
             let mut gradients: Vec<Vec<f32>> = param_sizes
                 .iter()
                 .map(|&s| {
@@ -468,7 +467,7 @@ pub async fn training_loop(
             global_step += 1;
 
             // Log progress
-            if global_step % config.eval_steps == 0 {
+            if global_step.is_multiple_of(config.eval_steps) {
                 let avg_loss = epoch_loss / epoch_samples as f32;
                 let throughput = batch_size as f32 / 0.1; // Placeholder: assume 100ms per batch
                 eprintln!(
@@ -478,7 +477,7 @@ pub async fn training_loop(
             }
 
             // Save checkpoint
-            if global_step % config.save_steps == 0 {
+            if global_step.is_multiple_of(config.save_steps) {
                 let ckpt_path = output_dir.join(format!("checkpoint-{}", global_step));
                 fs::create_dir_all(&ckpt_path)?;
                 eprintln!("Saved checkpoint to {}", ckpt_path.display());

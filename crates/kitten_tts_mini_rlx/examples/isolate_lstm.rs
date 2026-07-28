@@ -3,7 +3,7 @@
 
 use std::process::Command;
 
-use kitten_tts_mini_rlx::lstm::{dynamic_quantize_lstm, LstmAttrs};
+use kitten_tts_mini_rlx::lstm::{LstmAttrs, dynamic_quantize_lstm};
 use safetensors::SafeTensors;
 
 fn f32_vec(bytes: &[u8]) -> Vec<f32> {
@@ -60,9 +60,23 @@ fn main() {
         .join("weights/rlx_bundle/weights.safetensors");
     let bytes = std::fs::read(&bundle).expect("bundle");
     let st = SafeTensors::deserialize(&bytes).expect("st");
-    let i8v = |n: &str| -> Vec<i8> { st.tensor(n).unwrap().data().iter().map(|&b| b as i8).collect() };
+    let i8v = |n: &str| -> Vec<i8> {
+        st.tensor(n)
+            .unwrap()
+            .data()
+            .iter()
+            .map(|&b| b as i8)
+            .collect()
+    };
     let f32t = |n: &str| -> Vec<f32> { f32_vec(st.tensor(n).unwrap().data()) };
-    let i8_to_i32 = |n: &str| -> Vec<i32> { st.tensor(n).unwrap().data().iter().map(|&b| b as i8 as i32).collect() };
+    let i8_to_i32 = |n: &str| -> Vec<i32> {
+        st.tensor(n)
+            .unwrap()
+            .data()
+            .iter()
+            .map(|&b| b as i8 as i32)
+            .collect()
+    };
 
     let w = i8v("onnx::LSTM_6094_quantized"); // [2,640,1024]
     let r = i8v("onnx::LSTM_6095_quantized"); // [2,256,1024]
@@ -78,7 +92,13 @@ fn main() {
     ]);
     let x = &got[0]; // [8,1,640]
     let y_ort = &got[1]; // [8,2,1,256]
-    println!("x len={} (expect {}), y_ort len={} (expect {})", x.len(), 8 * 640, y_ort.len(), 8 * 2 * 256);
+    println!(
+        "x len={} (expect {}), y_ort len={} (expect {})",
+        x.len(),
+        8 * 640,
+        y_ort.len(),
+        8 * 2 * 256
+    );
 
     let seq = 8usize;
     let batch = 1usize;
@@ -112,12 +132,18 @@ fn main() {
         &w_zp,
         &r_scale,
         &r_zp,
-        LstmAttrs { hidden_size: hidden, bidirectional: true },
+        LstmAttrs {
+            hidden_size: hidden,
+            bidirectional: true,
+        },
         &mut y,
     )
     .expect("lstm");
     let (m, i) = cmp(&y);
-    println!("A (as-is)           max_abs={m:.5} @idx={i}  y0={:?}", &y[..4]);
+    println!(
+        "A (as-is)           max_abs={m:.5} @idx={i}  y0={:?}",
+        &y[..4]
+    );
 
     // Variant B: transpose W [dir,input,h4]->[dir,h4,input], R [dir,hidden,h4]->[dir,h4,hidden].
     let transpose_dir = |src: &[i8], rows: usize, cols: usize| -> Vec<i8> {
@@ -148,11 +174,17 @@ fn main() {
         &w_zp,
         &r_scale,
         &r_zp,
-        LstmAttrs { hidden_size: hidden, bidirectional: true },
+        LstmAttrs {
+            hidden_size: hidden,
+            bidirectional: true,
+        },
         &mut y2,
     )
     .expect("lstm2");
     let (m2, i2) = cmp(&y2);
-    println!("B (W,R transposed)  max_abs={m2:.5} @idx={i2}  y0={:?}", &y2[..4]);
+    println!(
+        "B (W,R transposed)  max_abs={m2:.5} @idx={i2}  y0={:?}",
+        &y2[..4]
+    );
     println!("ort                 y0={:?}", &y_ort[..4]);
 }

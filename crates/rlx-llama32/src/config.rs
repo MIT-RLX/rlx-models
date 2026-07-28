@@ -16,6 +16,44 @@ pub enum Llama32RopeType {
     Llama3,
 }
 
+/// Dense-arch structural family for the packed (`builder.rs`) block deltas.
+///
+/// Every variant except [`DenseArch::Llama`] carries a small per-arch topology
+/// difference (norm placement / kind, FFN shape, residual wiring) that the
+/// packed builder applies. `Llama` reproduces the stock Llama/Granite/Phi block
+/// unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DenseArch {
+    /// Stock Llama block (also granite / exaone / mistral / phi paths).
+    Llama,
+    /// OLMo-2: no pre-attn/pre-ffn norm; full-projection Q/K RMSNorm; a
+    /// post-attention and post-feedforward RMSNorm applied to each sub-layer
+    /// output *before* the residual add.
+    Olmo2,
+    /// Nemotron (dense): LayerNorm (+bias) for input/pre-ffn/final norms; a
+    /// gate-less squared-ReLU FFN (`down(relu(up(x))²)`); partial RoPE.
+    Nemotron,
+    /// Cohere / Command-R / Cohere2: a single LayerNorm (no bias) feeds BOTH
+    /// attention and MLP whose outputs are summed into one residual
+    /// (`h = x + attn(ln(x)) + mlp(ln(x))`); `logit_scale` MULTIPLIES logits.
+    Cohere,
+    /// GLM-4 (0414): four RMSNorms per layer — pre-attn, post-attn (pre
+    /// residual), pre-ffn, post-ffn (pre residual); fused gate∥up MLP.
+    Glm4,
+    /// ChatGLM / GLM-Edge: standard pre-norm (input + pre-ffn RMSNorm); fused
+    /// gate∥up MLP; partial-or-full RoPE per `rope.dimension_count`.
+    ChatGlm,
+}
+
+/// Which normalization the arch uses for its per-layer norms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormKind {
+    /// RMSNorm (Llama / OLMo-2 / GLM).
+    Rms,
+    /// Mean-subtracting LayerNorm (Nemotron with bias, Cohere without).
+    LayerNorm,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Llama32RopeScaling {
     pub factor: f32,
@@ -60,6 +98,24 @@ pub struct Llama32Config {
     pub head_dim: Option<usize>,
     #[serde(default)]
     pub rope_scaling: Option<Llama32RopeScaling>,
+    /// Granite embedding multiplier — input token embeddings are multiplied by
+    /// this scalar (`GraniteForCausalLM.embedding_multiplier`, GGUF
+    /// `granite.embedding_scale`). `None` = no scaling (plain Llama).
+    #[serde(default, alias = "embedding_multiplier")]
+    pub embedding_scale: Option<f32>,
+    /// Granite residual multiplier — every attention / MLP sub-layer output is
+    /// multiplied by this before the residual add (`residual_multiplier`, GGUF
+    /// `granite.residual_scale`).
+    #[serde(default, alias = "residual_multiplier")]
+    pub residual_scale: Option<f32>,
+    /// Granite attention score scale — replaces the default `1/sqrt(head_dim)`
+    /// softmax scale (`attention_multiplier`, GGUF `granite.attention.scale`).
+    #[serde(default, alias = "attention_multiplier")]
+    pub attention_scale: Option<f32>,
+    /// Granite logit divisor — final logits are divided by this scalar
+    /// (`logits_scaling`, GGUF `granite.logit_scale`).
+    #[serde(default, alias = "logits_scaling")]
+    pub logit_scale: Option<f32>,
     /// Looped Transformer depth multiplier (Nanbeige). Layers are applied
     /// [`num_loops`] times with **shared** weights and **separate** KV slots
     /// per loop iteration. Default `1` = standard single pass.
@@ -142,6 +198,76 @@ impl Llama32Config {
         matches!(self.gguf_arch.as_deref(), Some("phi3") | Some("phi4"))
     }
 
+    /// Attention softmax scale: Granite's `attention_multiplier` when present,
+    /// else the default `1/sqrt(head_dim)` (returned as `None` so the op picks
+    /// its own default). Granite-2b uses `0.015625` (= 1/head_dim, not
+    /// 1/sqrt(head_dim)), so this must override the op default.
+    pub fn attn_score_scale(&self) -> Option<f32> {
+        self.attention_scale
+    }
+
+    /// Whether any Granite-style scalar multiplier is active. When false the
+    /// builder emits the stock Llama residual/embed/logit math unchanged.
+    pub fn has_granite_scalars(&self) -> bool {
+        self.embedding_scale.is_some()
+            || self.residual_scale.is_some()
+            || self.attention_scale.is_some()
+            || self.logit_scale.is_some()
+    }
+
+    /// Structural arch family for the packed builder's per-arch block deltas.
+    pub fn dense_arch(&self) -> DenseArch {
+        match self.gguf_arch.as_deref() {
+            Some("olmo2") | Some("olmo") => DenseArch::Olmo2,
+            Some("nemotron") => DenseArch::Nemotron,
+            Some("cohere") | Some("command-r") | Some("cohere2") => DenseArch::Cohere,
+            Some("glm4") => DenseArch::Glm4,
+            Some("chatglm") => DenseArch::ChatGlm,
+            _ => DenseArch::Llama,
+        }
+    }
+
+    /// Cohere2 (Command-R7B) interleaves sliding-window and full-attention
+    /// layers and applies **NoPE (no RoPE) on the global/full-attention
+    /// layers** (mlx-lm `cohere2.py`: RoPE only when `use_sliding_window`;
+    /// `use_sliding_window = (i+1) % pattern != 0`). Returns the pattern (so a
+    /// layer is global-NoPE when `(layer_idx+1) % pattern == 0`), or `None` for
+    /// plain Cohere / Command-R (all layers use RoPE). llama.cpp hardcodes the
+    /// cohere2 pattern to 4.
+    pub fn cohere2_nope_pattern(&self) -> Option<usize> {
+        matches!(self.gguf_arch.as_deref(), Some("cohere2")).then_some(4)
+    }
+
+    /// Normalization flavor for this arch's per-layer norms.
+    pub fn norm_kind(&self) -> NormKind {
+        match self.dense_arch() {
+            DenseArch::Nemotron | DenseArch::Cohere => NormKind::LayerNorm,
+            _ => NormKind::Rms,
+        }
+    }
+
+    /// Whether the arch needs the packed (`builder.rs`) block deltas, so the
+    /// CPU / MLX F32-`rlx-flow` path must be bypassed (as for Phi / Granite).
+    /// A stock-Llama block still runs on the F32 flow.
+    pub fn needs_arch_packed_builder(&self) -> bool {
+        self.dense_arch() != DenseArch::Llama
+    }
+
+    /// Cohere applies `logit_scale` as a MULTIPLIER on the final logits
+    /// (`logits *= logit_scale`), unlike Granite which DIVIDES by it
+    /// (`logits /= logits_scaling`). Returns the effective multiplier for the
+    /// active arch, or `None` when no logit scaling applies.
+    pub fn final_logit_multiplier(&self) -> Option<f32> {
+        match self.logit_scale {
+            Some(ls) if ls != 0.0 => Some(if self.dense_arch() == DenseArch::Cohere {
+                ls
+            } else {
+                1.0 / ls
+            }),
+            _ => None,
+        }
+    }
+
     /// Physical decoder blocks stored in the checkpoint.
     pub fn physical_layers(&self) -> usize {
         self.num_hidden_layers
@@ -175,6 +301,10 @@ impl Llama32Config {
             attention_bias: false,
             head_dim: None,
             rope_scaling: None,
+            embedding_scale: None,
+            residual_scale: None,
+            attention_scale: None,
+            logit_scale: None,
             num_loops: 1,
             skip_loop_final_norm: false,
             rope_style: rlx_ir::RopeStyle::NeoX,
@@ -227,7 +357,17 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
     let rope_dim = get_u32("llama.rope.dimension_count")
         .ok()
         .map(|v| v as usize);
-    let head_dim = head_dim_key.or(rope_dim);
+    // Nemotron (and GLM-4) store `rope.dimension_count` as the PARTIAL rotary
+    // width (e.g. 64) while the true head_dim is `hidden/heads` (e.g. 128) and
+    // no `key_length` is present. The generic `key_length.or(rope_dim)` heuristic
+    // would mistake that partial width for the head dim — so when the arch has
+    // no explicit key_length, pin head_dim from `hidden/heads`.
+    let derived_head_dim = if head_dim_key.is_none() && num_attention_heads > 0 {
+        Some(hidden_size / num_attention_heads)
+    } else {
+        None
+    };
+    let head_dim = head_dim_key.or(derived_head_dim).or(rope_dim);
 
     let rope_scaling = match get_meta("llama.rope.scaling.type").and_then(MetaValue::as_str) {
         Some("none") | None => {
@@ -256,6 +396,27 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
         }
     };
 
+    // Granite (IBM) scalar multipliers — read from `granite.*` metadata. These
+    // are `None` for every other Llama-shaped arch, leaving the stock math
+    // intact. Keys mirror llama.cpp `LLM_KV_{EMBEDDING,RESIDUAL,LOGIT}_SCALE`
+    // and `LLM_KV_ATTENTION_SCALE`.
+    let embedding_scale = get_f32("llama.embedding_scale");
+    let residual_scale = get_f32("llama.residual_scale");
+    let attention_scale = get_f32("llama.attention.scale");
+    let logit_scale = get_f32("llama.logit_scale");
+
+    // RoPE flavor: the HF→GGUF converter permutes Q/K for llama.cpp's
+    // interleaved (NORM / GPT-J) rope only for NORM-type arches (llama,
+    // granite). NEOX-type arches (exaone, olmo2, cohere/command-r) are stored
+    // un-permuted and must rotate with NeoX rotate-half.
+    let rope_style = match arch_prefix {
+        // NeoX rotate-half (no converter permutation)
+        "phi3" | "phi4" | "exaone" | "olmo" | "olmo2" | "cohere" | "command-r" | "cohere2"
+        | "glm4" | "chatglm" | "nemotron" => rlx_ir::RopeStyle::NeoX,
+        // GPT-J interleaved (converter-permuted): llama, granite, everything else
+        _ => rlx_ir::RopeStyle::GptJ,
+    };
+
     Ok(Llama32Config {
         vocab_size: infer_vocab_size_from_gguf(raw),
         hidden_size,
@@ -275,16 +436,25 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
         attention_bias: false,
         head_dim,
         rope_scaling,
+        embedding_scale,
+        residual_scale,
+        attention_scale,
+        logit_scale,
         num_loops: get_u32("llama.num_loops").map(|v| v as usize).unwrap_or(1),
         skip_loop_final_norm: get_bool("llama.skip_loop_final_norm").unwrap_or(false),
-        // Phi-3/4 GGUF uses HF NeoX rotate-half; plain Llama GGUF is GPT-J.
-        rope_style: if matches!(arch_prefix, "phi3" | "phi4") {
-            rlx_ir::RopeStyle::NeoX
-        } else {
-            rlx_ir::RopeStyle::GptJ
-        },
+        rope_style,
         gguf_arch: Some(arch_prefix.to_string()),
-        rope_dim: rope_dim.filter(|r| head_dim_key.is_some() && *r <= head_dim_key.unwrap()),
+        // Partial-RoPE marker. Phi gates on `key_length` (unchanged). Nemotron /
+        // GLM-4 carry a partial `rope.dimension_count` without `key_length`, so
+        // also treat any rope_dim strictly smaller than the resolved head_dim as
+        // the partial rotary width. Full-rope models (rope_dim == head_dim) keep
+        // `None` → `n_rot()` falls back to the full head_dim.
+        rope_dim: {
+            let hd = head_dim.unwrap_or_else(|| hidden_size / num_attention_heads.max(1));
+            rope_dim.filter(|r| {
+                (head_dim_key.is_some() && *r <= head_dim_key.unwrap()) || (*r > 0 && *r < hd)
+            })
+        },
     })
 }
 
@@ -433,6 +603,92 @@ mod tests {
         let cfg = llama32_cfg_from_gguf(&raw).expect("llama32 config");
         assert_eq!(cfg.vocab_size, vocab as usize);
         assert!(!cfg.tie_word_embeddings);
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Granite `granite.*` scalar multipliers + NORM/GPT-J rope parse from GGUF.
+    #[test]
+    fn gguf_granite_scalars_parse() {
+        use rlx_gguf::GgmlType;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "rlx_llama32_granite_{}_{}.gguf",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+        ));
+
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&rlx_gguf::GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&1u64.to_le_bytes()); // 1 tensor
+        buf.extend_from_slice(&12u64.to_le_bytes()); // metadata keys
+
+        let write_str = |buf: &mut Vec<u8>, k: &str, v: &str| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&8u32.to_le_bytes());
+            buf.extend_from_slice(&(v.len() as u64).to_le_bytes());
+            buf.extend_from_slice(v.as_bytes());
+        };
+        let write_u32 = |buf: &mut Vec<u8>, k: &str, v: u32| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&4u32.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        };
+        let write_f32 = |buf: &mut Vec<u8>, k: &str, v: f32| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&6u32.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        };
+
+        write_str(&mut buf, "general.architecture", "granite");
+        write_u32(&mut buf, "granite.embedding_length", 2048);
+        write_u32(&mut buf, "granite.feed_forward_length", 8192);
+        write_u32(&mut buf, "granite.block_count", 40);
+        write_u32(&mut buf, "granite.attention.head_count", 32);
+        write_u32(&mut buf, "granite.attention.head_count_kv", 8);
+        write_u32(&mut buf, "granite.vocab_size", 49159);
+        write_f32(&mut buf, "granite.embedding_scale", 12.0);
+        write_f32(&mut buf, "granite.residual_scale", 0.22);
+        write_f32(&mut buf, "granite.attention.scale", 0.015625);
+        write_f32(&mut buf, "granite.logit_scale", 8.0);
+        write_f32(&mut buf, "granite.rope.freq_base", 10_000_000.0);
+
+        // one dummy f32 tensor
+        let name = "token_embd.weight";
+        buf.extend_from_slice(&(name.len() as u64).to_le_bytes());
+        buf.extend_from_slice(name.as_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&4u64.to_le_bytes());
+        buf.extend_from_slice(&(GgmlType::F32 as u32).to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        while !buf
+            .len()
+            .is_multiple_of(rlx_gguf::DEFAULT_ALIGNMENT as usize)
+        {
+            buf.push(0);
+        }
+        for _ in 0..4 {
+            buf.extend_from_slice(&0f32.to_le_bytes());
+        }
+        std::fs::write(&path, &buf).unwrap();
+
+        let raw = rlx_gguf::GgufFile::from_path(&path).expect("parse granite gguf");
+        let cfg = llama32_cfg_from_gguf(&raw).expect("granite config");
+        assert_eq!(cfg.gguf_arch.as_deref(), Some("granite"));
+        assert_eq!(cfg.embedding_scale, Some(12.0));
+        assert_eq!(cfg.residual_scale, Some(0.22));
+        assert_eq!(cfg.attention_scale, Some(0.015625));
+        assert_eq!(cfg.logit_scale, Some(8.0));
+        assert!(cfg.has_granite_scalars());
+        assert_eq!(cfg.attn_score_scale(), Some(0.015625));
+        // Granite is NORM/permuted → GPT-J rotate flavor (same as llama).
+        assert_eq!(cfg.rope_style, rlx_ir::RopeStyle::GptJ);
+        assert!((cfg.rope_theta - 10_000_000.0).abs() < 1.0);
         std::fs::remove_file(path).ok();
     }
 }

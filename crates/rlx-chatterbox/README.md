@@ -15,7 +15,7 @@ Runtime at inference). Optional `--features onnx` keeps the ORT reference.
 | **MLX** | ✅ 6/6 | cos 1.0 vs CPU; speech_encoder on CPU |
 | **wgpu** | ✅ 6/6 | cos 1.0 vs CPU; speech_encoder on CPU |
 | **Metal** | ✅ | hand-authored T3 LM (ONNX LM zeros on Metal); S3Gen on CPU |
-| **CUDA** | ✅ 6/6 | msi: cos 1.000 vs self; ~8.8 s fox; `dit`/`exec` Cuda |
+| **CUDA** | ✅ 6/6 | NVIDIA: cos 1.000 vs self; ~8.8 s fox; `dit`/`exec` Cuda |
 
 ## Setup
 

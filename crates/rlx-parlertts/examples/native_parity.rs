@@ -332,7 +332,11 @@ fn main() -> Result<()> {
         "prompt_input_ids" => Tensor::<i64>::from_array(([1usize, pt], prompt_ids))?
     ])?;
     let ort_lg = od[0].try_extract_tensor::<f32>()?.1.to_vec();
-    println!("[decoder] pt={pt} DEC_T={DEC_T} → expect logits len 9*{}*1088={}", pt + DEC_T, 9 * (pt + DEC_T) * 1088);
+    println!(
+        "[decoder] pt={pt} DEC_T={DEC_T} → expect logits len 9*{}*1088={}",
+        pt + DEC_T,
+        9 * (pt + DEC_T) * 1088
+    );
     let c = cosine(&nat_lg, &ort_lg);
     println!(
         "[decoder] native {} vs ort {} → cosine={:.6}",

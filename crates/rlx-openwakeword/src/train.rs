@@ -10,9 +10,7 @@ use rlx_wake::train::report::TrainReport;
 use rlx_wake::train::sgd::{SgdConfig, bce_dlogit, bce_loss, sgd_step};
 use rlx_wake::{MelConfig, MelFrontend, OWW_CHUNK_SAMPLES};
 
-use crate::embedding::{
-    EMBED_DIM, EmbeddingNet, EmbeddingWeights, MEL_STEP, MEL_WINDOW,
-};
+use crate::embedding::{EMBED_DIM, EmbeddingNet, EmbeddingWeights, MEL_STEP, MEL_WINDOW};
 use crate::phrase::{EMBED_HISTORY, PhraseWeights};
 
 fn collect_embed_window(

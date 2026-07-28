@@ -11,7 +11,7 @@
 //! AED / units / Hammer load from the GGUF. For folded CTC, use
 //! `just asr-e2e-native`.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rlx_asr::pipeline::AsrSession;
 use std::path::{Path, PathBuf};
 
@@ -20,7 +20,10 @@ fn usage() -> ! {
     eprintln!("  rlx-asr transcribe [--dir DIR] --wav audio.wav");
     eprintln!();
     eprintln!("env: RLX_ASR_DIR  RLX_ASR_TIMING=1  RLX_ASR_GGUF=path");
-    eprintln!("weights: just fetch-rlx-asr  →  weights/asr/model.gguf ({})", rlx_asr::HF_REPO);
+    eprintln!(
+        "weights: just fetch-rlx-asr  →  weights/asr/model.gguf ({})",
+        rlx_asr::HF_REPO
+    );
     std::process::exit(2);
 }
 

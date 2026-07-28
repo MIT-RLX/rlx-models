@@ -52,7 +52,7 @@ Set `KITTEN_RLX_FORCE_BUNDLE=1` to keep using `rlx_bundle/graph.json` instead.
 | Native QMatMul | `native_qmatmul` | On for Cpu/Cuda/Rocm/Vulkan/discrete Gpu |
 
 `rlx-kittentts` calls `prepare(device, max_waveform_samples)` at `NativeEngine::load`.
-Full tables, env overrides, and MSI numbers: [rlx-kittentts/NATIVE.md](../rlx-kittentts/NATIVE.md).
+Full tables, env overrides, and NVIDIA numbers: [rlx-kittentts/NATIVE.md](../rlx-kittentts/NATIVE.md).
 
 Constants: `WGPU_WAVEFORM_CAP` (32 000), `VULKAN_WAVEFORM_CAP` (80 000),
 `DISCRETE_MAX_FRAMES_PER_TOKEN` (8). Legacy `DISCRETE_WGPU_*` aliases remain.

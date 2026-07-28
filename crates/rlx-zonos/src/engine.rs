@@ -167,7 +167,7 @@ fn prefill_bucket(seq: usize) -> usize {
         .iter()
         .copied()
         .find(|&b| b >= seq)
-        .unwrap_or_else(|| ((seq + 31) / 32) * 32)
+        .unwrap_or_else(|| seq.div_ceil(32) * 32)
 }
 
 pub struct BackboneEngine {
@@ -479,7 +479,7 @@ pub fn prefer_eager() -> bool {
 
 pub fn default_max_seq(max_new_tokens: usize, prefix_len: usize) -> usize {
     let need = prefix_len + max_new_tokens + 16;
-    let rounded = ((need + 31) / 32) * 32;
+    let rounded = need.div_ceil(32) * 32;
     rounded.max(64)
 }
 

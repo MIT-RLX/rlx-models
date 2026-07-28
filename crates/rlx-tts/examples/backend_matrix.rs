@@ -84,10 +84,7 @@ fn main() -> anyhow::Result<()> {
         iters()
     );
     println!();
-    println!(
-        "{:<8} {:<8} {:<6} notes",
-        "device", "avail", "run",
-    );
+    println!("{:<8} {:<8} {:<6} notes", "device", "avail", "run",);
 
     let mut any_gpu = false;
     for (dev, name) in backends() {

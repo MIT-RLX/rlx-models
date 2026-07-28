@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
                 (n, node.name.clone().unwrap_or_default(), dims)
             })
             .collect();
-        sizes.sort_by(|a, b| b.0.cmp(&a.0));
+        sizes.sort_by_key(|b| std::cmp::Reverse(b.0));
         let total: usize = sizes.iter().map(|s| s.0).sum();
         println!(
             "---- top-20 largest nodes (total elems={total}, ~{:.1} GB f32) ----",

@@ -29,8 +29,8 @@ pub struct CharDict {
 
 impl CharDict {
     pub fn load(path: &Path) -> Result<Self> {
-        let text = fs::read_to_string(path)
-            .with_context(|| format!("read dict {}", path.display()))?;
+        let text =
+            fs::read_to_string(path).with_context(|| format!("read dict {}", path.display()))?;
         Ok(Self::from_lines(text.lines()))
     }
 

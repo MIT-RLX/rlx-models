@@ -91,10 +91,7 @@ pub fn is_forbidden_onnx_asset(name: &str) -> bool {
 }
 
 fn resolve_shape(name: &str, nel: usize, init_shapes: &HashMap<String, Vec<usize>>) -> Vec<usize> {
-    let shape = init_shapes
-        .get(name)
-        .cloned()
-        .unwrap_or_else(|| vec![nel]);
+    let shape = init_shapes.get(name).cloned().unwrap_or_else(|| vec![nel]);
     if shape.iter().product::<usize>() == nel {
         shape
     } else {
@@ -116,8 +113,8 @@ pub fn export_onnx_to_subgraph_rlxp(
         std::fs::create_dir_all(parent)?;
     }
 
-    let (mut manifest, nodes, params, i64_params, init_shapes) = prepare_onnx_file(onnx_path)
-        .with_context(|| format!("prepare {}", onnx_path.display()))?;
+    let (mut manifest, nodes, params, i64_params, init_shapes) =
+        prepare_onnx_file(onnx_path).with_context(|| format!("prepare {}", onnx_path.display()))?;
     let if_branches = take_if_branches();
     let scalar_consts = take_scalar_consts();
 
@@ -326,8 +323,7 @@ fn parse_if_branches(bytes: &[u8]) -> Result<HashMap<String, (Vec<BundleNode>, V
 /// Does **not** touch thread-locals — call [`install_native_subgraph_tls`]
 /// immediately before `build_hir_from_parts` on the same thread.
 pub fn load_native_subgraph_rlxp(path: &Path) -> Result<NativeSubgraph> {
-    let pack =
-        Package::open(path).with_context(|| format!("open subgraph {}", path.display()))?;
+    let pack = Package::open(path).with_context(|| format!("open subgraph {}", path.display()))?;
     let man = pack.manifest();
     ensure!(
         man.sidecars.iter().any(|s| s.id == "graph.json"),

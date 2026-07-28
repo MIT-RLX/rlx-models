@@ -133,6 +133,10 @@ impl VoxtralConfig {
         Self {
             audio_config: VoxtralAudioConfig::tiny_synthetic(),
             text_config: Llama32Config {
+                embedding_scale: None,
+                residual_scale: None,
+                attention_scale: None,
+                logit_scale: None,
                 vocab_size: 32,
                 hidden_size: 16,
                 intermediate_size: 32,
@@ -164,6 +168,10 @@ impl VoxtralConfig {
         Self {
             audio_config: VoxtralAudioConfig::mini_3b(),
             text_config: Llama32Config {
+                embedding_scale: None,
+                residual_scale: None,
+                attention_scale: None,
+                logit_scale: None,
                 vocab_size: 131_072,
                 hidden_size: 3072,
                 intermediate_size: 8192,

@@ -172,9 +172,7 @@ impl NgramModel {
                 q[i] = t as u16;
             }
             let target = key(l as u8, q, tok16);
-            if let Ok(idx) =
-                recs.binary_search_by(|r| key(r.ctx_len, r.ctx, r.tok).cmp(&target))
-            {
+            if let Ok(idx) = recs.binary_search_by(|r| key(r.ctx_len, r.ctx, r.tok).cmp(&target)) {
                 return recs[idx].logprob;
             }
         }

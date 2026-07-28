@@ -281,7 +281,7 @@ pub fn welch_peaks_fusion_target(device: Device) -> rlx_compile::FusionTarget {
         }
         Device::OneApi => FusionTarget::Wgpu,
         Device::Tpu => FusionTarget::Tpu,
-        Device::Cpu | Device::Hexagon => FusionTarget::Cpu,
+        Device::Cpu | Device::Hexagon | Device::Xdna => FusionTarget::Cpu,
     }
 }
 

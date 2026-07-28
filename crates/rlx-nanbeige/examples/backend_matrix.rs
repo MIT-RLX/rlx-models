@@ -48,7 +48,10 @@ fn synth(cfg: &Llama32Config) -> WeightMap {
     );
     for i in 0..cfg.physical_layers() {
         let lp = format!("model.layers.{i}");
-        t.insert(format!("{lp}.input_layernorm.weight"), (vec![1.0; h], vec![h]));
+        t.insert(
+            format!("{lp}.input_layernorm.weight"),
+            (vec![1.0; h], vec![h]),
+        );
         t.insert(
             format!("{lp}.post_attention_layernorm.weight"),
             (vec![1.0; h], vec![h]),
@@ -134,16 +137,8 @@ fn main() -> Result<()> {
         cfg.kv_layers()
     );
     let cpu = run(Device::Cpu)?;
-    println!(
-        "{:<10} {:>6}  cosine_vs_cpu",
-        "device", "avail"
-    );
-    println!(
-        "{:<10} {:>6}  {:.8}  (reference)",
-        "cpu",
-        "yes",
-        1.0
-    );
+    println!("{:<10} {:>6}  cosine_vs_cpu", "device", "avail");
+    println!("{:<10} {:>6}  {:.8}  (reference)", "cpu", "yes", 1.0);
     for &dev in STANDARD_DEVICES {
         if matches!(dev, Device::Cpu) {
             continue;

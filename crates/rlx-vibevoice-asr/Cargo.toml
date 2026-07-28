@@ -1,0 +1,44 @@
+[package]
+name = "rlx-vibevoice-asr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "VibeVoice-ASR-BitNet speech recognition for RLX (I8_S ConvNeXt VAE encoders + BitNet I2_S Qwen2 LM decoder), loading Microsoft's shipped GGUFs natively"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+rlx-core = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-qwen3 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokenizers = { workspace = true, optional = true }
+
+[[bin]]
+name = "rlx-vibevoice-asr"
+path = "src/bin/rlx_vibevoice_asr.rs"
+
+[features]
+default = ["tokenizer"]
+tokenizer = ["dep:tokenizers"]
+cpu = ["rlx-runtime/cpu"]
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+coreml = ["rlx-runtime/coreml"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+
+[lints]
+workspace = true

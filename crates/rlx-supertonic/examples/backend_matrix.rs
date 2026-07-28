@@ -125,8 +125,8 @@ fn main() -> anyhow::Result<()> {
 
     println!("== (b) rlx native cross-backend parity + RTF ==");
     println!(
-        "{:<8} {:>8} {:>7} {:>10} {:>9}  {}",
-        "backend", "rtf", "ms", "cos_vs_cpu", "whisper", "note"
+        "{:<8} {:>8} {:>7} {:>10} {:>9}  note",
+        "backend", "rtf", "ms", "cos_vs_cpu", "whisper"
     );
     #[cfg(feature = "onnx")]
     let mut native_cpu_ms = f64::NAN;

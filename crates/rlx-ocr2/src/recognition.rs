@@ -91,7 +91,9 @@ pub fn build_recognition_graph(
     let seq = w;
 
     // [batch, 192, 1, seq] → [batch, seq, 192]
-    let x = b.m().reshape_(x, vec![batch as i64, FEAT as i64, seq as i64]);
+    let x = b
+        .m()
+        .reshape_(x, vec![batch as i64, FEAT as i64, seq as i64]);
     let x = b.m().transpose_(x, vec![0, 2, 1]);
 
     // 2× bidirectional LSTM, directions summed.
@@ -210,7 +212,10 @@ fn lstm_sum(
     let w_hh = b.load_param(wm, &format!("lstm.{idx}.w_hh"))?; // [2*4H, H]
     let bias = b.load_param(wm, &format!("lstm.{idx}.bias"))?; // [2*4H]
     let out_shape = Shape::new(&[batch, seq, 2 * hidden], DType::F32);
-    let y = b.m().0.lstm(x, w_ih, w_hh, bias, hidden, 1, true, out_shape); // [b,seq,2H]
+    let y = b
+        .m()
+        .0
+        .lstm(x, w_ih, w_hh, bias, hidden, 1, true, out_shape); // [b,seq,2H]
     let fwd = b.m().narrow_(y, 2, 0, hidden);
     let rev = b.m().narrow_(y, 2, hidden, hidden);
     Ok(b.m().add(fwd, rev))

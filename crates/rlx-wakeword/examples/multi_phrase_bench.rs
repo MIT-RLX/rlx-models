@@ -38,12 +38,7 @@ fn tone(seconds: f32, freq_hz: f32, amp: f32) -> Vec<f32> {
 }
 
 fn bias_bytes(w: &WakeCnnWeights) -> usize {
-    (w.conv1_b.len()
-        + w.conv2_b.len()
-        + w.conv3_b.len()
-        + w.fc1_b.len()
-        + w.fc2_b.len())
-        * 4
+    (w.conv1_b.len() + w.conv2_b.len() + w.conv3_b.len() + w.fc1_b.len() + w.fc2_b.len()) * 4
 }
 
 fn weight_storage_bytes(mode: WeightMode) -> usize {
@@ -250,12 +245,15 @@ fn main() {
     for &n in &[2usize, 10] {
         print!("N={n}:");
         for mode in modes {
-            if let Some(r) = all.iter().find(|r| r.n == n && matches!(
-                (r.mode, mode),
-                (WeightMode::F32, WeightMode::F32)
-                    | (WeightMode::TernaryFc, WeightMode::TernaryFc)
-                    | (WeightMode::TernaryAll, WeightMode::TernaryAll)
-            )) {
+            if let Some(r) = all.iter().find(|r| {
+                r.n == n
+                    && matches!(
+                        (r.mode, mode),
+                        (WeightMode::F32, WeightMode::F32)
+                            | (WeightMode::TernaryFc, WeightMode::TernaryFc)
+                            | (WeightMode::TernaryAll, WeightMode::TernaryAll)
+                    )
+            }) {
                 print!(
                     "  {}={:.0}µs/hop RTF={:.4}",
                     mode.label(),

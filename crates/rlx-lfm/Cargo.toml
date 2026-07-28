@@ -24,6 +24,9 @@ rlx-gguf = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+tokenizers = { workspace = true }
+
 [features]
 default = []
 metal = ["rlx-runtime/metal"]

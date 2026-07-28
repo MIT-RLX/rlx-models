@@ -83,7 +83,7 @@ pub fn clamp_max_seq(cfg: &Llama32Config, device: Device, want: usize) -> usize 
     let mut lo = 16usize;
     let mut hi = want;
     while lo < hi {
-        let mid = (lo + hi + 1) / 2;
+        let mid = (lo + hi).div_ceil(2);
         if working_set_bytes(cfg, mid) <= budget {
             lo = mid;
         } else {
@@ -265,13 +265,13 @@ pub fn prepare(device: Device) {
             if std::env::var_os("RLX_DECODE_BUCKET_PEAK_BYTES").is_none() {
                 std::env::set_var(
                     "RLX_DECODE_BUCKET_PEAK_BYTES",
-                    &(2usize * 1024 * 1024 * 1024).to_string(),
+                    (2usize * 1024 * 1024 * 1024).to_string(),
                 );
             }
             if std::env::var_os("RLX_DECODE_ONESHOT_PEAK_BYTES").is_none() {
                 std::env::set_var(
                     "RLX_DECODE_ONESHOT_PEAK_BYTES",
-                    &(1024usize * 1024 * 1024).to_string(),
+                    (1024usize * 1024 * 1024).to_string(),
                 );
             }
         }

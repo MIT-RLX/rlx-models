@@ -24,7 +24,11 @@ use std::path::{Path, PathBuf};
 pub enum GgufModelFamily {
     Qwen3,
     Qwen35,
+    /// Qwen3-VL / Qwen3-VL-MoE (`qwen3vl` / `qwen3vlmoe`) — LM + mmproj.
+    Qwen3Vl,
     Llama32,
+    /// Mistral 3+ / Ministral (`mistral3` / `mistral4`) — Llama-shaped via `rlx-mistral`.
+    Mistral,
     Gemma,
     /// LiquidAI LFM2.5 text variants (`lfm2` / `lfm` / `lfm25` / `lfm2_5`).
     Lfm,
@@ -39,7 +43,9 @@ impl GgufModelFamily {
         match self {
             Self::Qwen3 => "rlx-qwen3",
             Self::Qwen35 => "rlx-qwen35",
+            Self::Qwen3Vl => "rlx-qwen3-vl",
             Self::Llama32 => "rlx-llama32",
+            Self::Mistral => "rlx-mistral",
             Self::Gemma => "rlx-gemma",
             Self::Lfm => "rlx-lfm",
             Self::Inkling => "rlx-inkling",
@@ -54,7 +60,9 @@ impl GgufModelFamily {
         match self {
             Self::Qwen3 => "qwen3",
             Self::Qwen35 => "qwen35",
+            Self::Qwen3Vl => "qwen3-vl",
             Self::Llama32 => "llama32",
+            Self::Mistral => "mistral",
             Self::Gemma => "gemma",
             Self::Lfm => "lfm",
             Self::Inkling => "inkling",
@@ -66,7 +74,9 @@ impl GgufModelFamily {
         match self {
             Self::Qwen3 => "`rlx_models::Qwen3Runner::builder()...build()`",
             Self::Qwen35 => "`rlx_models::Qwen35Runner::builder()...build()`",
+            Self::Qwen3Vl => "`rlx_qwen3_vl::Qwen3VlRunner::builder()...build()`",
             Self::Llama32 => "`rlx_models::Llama32Runner::builder()...build()`",
+            Self::Mistral => "`rlx_mistral::MistralRunner::builder()...build()`",
             Self::Gemma => "`rlx_models::GemmaRunner::builder()...build()`",
             Self::Lfm => "`rlx_lfm::LfmRunner::builder()...build()`",
             Self::Inkling => "`rlx_inkling::InklingRunner::builder()...build()`",
@@ -83,11 +93,26 @@ impl GgufModelFamily {
             // explicit short tags for safetensors sidecars that name
             // them differently. Used by rlx-omnicoder which delegates
             // here. PLAN.md M4.
-            Self::Qwen3 => matches!(arch, "qwen3" | "qwen2" | "qwen25" | "qwen2_5" | "qwen2vl"),
+            // Also accept qwen3vl* so `Qwen3Runner` can load the LM half of a
+            // Qwen3-VL GGUF when composed by `Qwen3VlRunner` (auto_sniff still
+            // routes those arches to `Qwen3Vl` via `gguf_family_for_arch`).
+            Self::Qwen3 => matches!(
+                arch,
+                "qwen3"
+                    | "qwen2"
+                    | "qwen25"
+                    | "qwen2_5"
+                    | "qwen2vl"
+                    | "qwen3vl"
+                    | "qwen3vlmoe"
+                    | "qwen3_vl"
+                    | "qwen3-vl"
+            ),
             // Qwen3.6 reuses the Qwen3.5 trunk; `Qwen35Config::from_gguf`
             // reads its metadata keys under the `qwen36.*` prefix. Routes
             // through the same runner. PLAN.md M1.
             Self::Qwen35 => matches!(arch, "qwen35" | "qwen35moe" | "qwen36" | "qwen36moe"),
+            Self::Qwen3Vl => matches!(arch, "qwen3vl" | "qwen3vlmoe" | "qwen3_vl" | "qwen3-vl"),
             // Llama32 family accepts the Llama-shaped M4 stub archs
             // (`mistral3`/`mistral4`, `phi3`, `granite`, `command-r`/`cohere2`)
             // so the per-family stub wrappers in
@@ -105,15 +130,15 @@ impl GgufModelFamily {
             Self::Llama32 => matches!(
                 arch,
                 "llama"
-                    | "mistral3"
-                    | "mistral4"
                     | "phi3"
+                    | "phi4"
                     | "granite"
                     | "granitemoe"
                     | "granitehybrid"
                     | "command-r"
                     | "cohere2"
             ),
+            Self::Mistral => matches!(arch, "mistral3" | "mistral4"),
             // Gemma 3 / 3n / 4 route through the same family — share
             // the V3+ layer style, RoPE base, and 4-norm sandwich
             // wired in `rlx-gemma`. Gemma 4 unified additionally
@@ -215,24 +240,11 @@ pub fn gguf_safetensors_only_hint(runner: &str, path: &Path, arch: &str) -> Stri
 }
 
 /// Map a GGUF architecture tag to the runner family that should load it.
+///
+/// Delegates to [`crate::model_registry`] (built-ins + any third-party
+/// [`crate::model_registry::register_gguf_model`] calls).
 pub fn gguf_family_for_arch(arch: &str) -> Option<GgufModelFamily> {
-    match arch {
-        "qwen3" | "qwen2" | "qwen25" | "qwen2_5" | "qwen2vl" => Some(GgufModelFamily::Qwen3),
-        "qwen35" | "qwen35moe" | "qwen36" | "qwen36moe" => Some(GgufModelFamily::Qwen35),
-        // Only the plain `llama` arch tag is fully wired today. The
-        // other Llama-shaped arches (mistral3/4, phi3/4, granite*,
-        // command-r/cohere2, bonsai, omnicoder) need per-arch tensor-
-        // name remap in `Llama32Weights::from_loader` before they can
-        // flow through `auto_runner`. Tracked in M4.
-        "llama" | "phi3" | "phi4" => Some(GgufModelFamily::Llama32),
-        "gemma" | "gemma2" | "gemma3" | "gemma3n" | "gemma4" | "gemma4moe" | "gemma4_unified" => {
-            Some(GgufModelFamily::Gemma)
-        }
-        "lfm2" | "lfm" | "lfm25" | "lfm2_5" => Some(GgufModelFamily::Lfm),
-        "inkling" | "inkling_mm_model" => Some(GgufModelFamily::Inkling),
-        "laguna" => Some(GgufModelFamily::Laguna),
-        _ => None,
-    }
+    crate::model_registry::family_for_gguf_arch(arch)
 }
 
 /// Open the file and ensure `general.architecture` matches `expected`.
@@ -295,6 +307,11 @@ pub fn resolve_weights_file(path: &Path) -> Result<PathBuf> {
 }
 
 /// Resolve with optional GGUF file selection inside a directory.
+///
+/// When `prefer_gguf_substring` is set and no shallow `.gguf` matches (Unsloth /
+/// Laguna-style layouts with `UD-Q4_K_M/*.gguf` under the repo root), scans
+/// **one level** of child directories. Among matches, prefers `*-00001-of-*.gguf`
+/// (first multi-part shard).
 pub fn resolve_weights_file_with_options(
     path: &Path,
     opts: &ResolveWeightsOptions<'_>,
@@ -307,17 +324,14 @@ pub fn resolve_weights_file_with_options(
     }
     let mut ggufs = list_gguf_files_in_dir(path)?;
     if let Some(sub) = opts.prefer_gguf_substring {
-        let preferred: Vec<_> = ggufs
-            .iter()
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|n| n.contains(sub))
-            })
-            .cloned()
-            .collect();
+        let preferred = filter_gguf_by_substring(&ggufs, sub);
         if !preferred.is_empty() {
-            ggufs = preferred;
+            ggufs = prefer_first_split_shard(preferred);
+        } else {
+            let nested = list_gguf_files_in_child_dirs(path, Some(sub))?;
+            if !nested.is_empty() {
+                ggufs = prefer_first_split_shard(nested);
+            }
         }
     }
     match ggufs.len() {
@@ -369,6 +383,66 @@ pub fn list_gguf_files_in_dir(dir: &Path) -> Result<Vec<PathBuf>> {
     }
     ggufs.sort();
     Ok(ggufs)
+}
+
+fn filter_gguf_by_substring(ggufs: &[PathBuf], sub: &str) -> Vec<PathBuf> {
+    ggufs
+        .iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|n| n.contains(sub))
+                || p.to_string_lossy().contains(sub)
+        })
+        .cloned()
+        .collect()
+}
+
+/// `.gguf` files in immediate child directories of `dir`, optionally filtered by
+/// substring in the file name or relative path (Unsloth quant folders).
+fn list_gguf_files_in_child_dirs(dir: &Path, prefer: Option<&str>) -> Result<Vec<PathBuf>> {
+    let mut ggufs = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading dir {dir:?}"))? {
+        let entry = entry?;
+        let child = entry.path();
+        if !child.is_dir() {
+            continue;
+        }
+        for p in list_gguf_files_in_dir(&child)? {
+            if let Some(sub) = prefer {
+                let name_ok = p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|n| n.contains(sub));
+                let path_ok = p.to_string_lossy().contains(sub);
+                if !(name_ok || path_ok) {
+                    continue;
+                }
+            }
+            ggufs.push(p);
+        }
+    }
+    ggufs.sort();
+    Ok(ggufs)
+}
+
+fn is_first_split_shard_name(name: &str) -> bool {
+    name.contains("-00001-of-") || name.contains("-0001-of-")
+}
+
+/// If any path looks like a multi-part first shard, keep only those; a single
+/// `00001` wins immediately (typical Unsloth 3-way split under one quant dir).
+fn prefer_first_split_shard(ggufs: Vec<PathBuf>) -> Vec<PathBuf> {
+    let firsts: Vec<PathBuf> = ggufs
+        .iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(is_first_split_shard_name)
+        })
+        .cloned()
+        .collect();
+    if firsts.is_empty() { ggufs } else { firsts }
 }
 
 /// Other parts of the same multi-file GGUF split in `path`'s directory (sorted by `split.no`).
@@ -439,25 +513,24 @@ pub fn load_gguf_file(path: &Path) -> Result<GgufFile> {
     let header = GgufFile::header_from_path(path)
         .with_context(|| format!("opening GGUF header {path:?}"))?;
     let arch = gguf_architecture_str(&header).unwrap_or("unknown");
-    let force_mmap = arch == "laguna" || low_mem_compile();
 
-    // Low-mem / Laguna: mmap the file (data segment paged on demand, reclaimable)
-    // rather than reading the whole thing into RSS. Splits fall through to
-    // the owned merge path below (mmap is single-file) — Laguna splits still
-    // refuse F32 expand at `take` time.
-    let raw = if force_mmap {
-        match GgufFile::from_path_mmap(path) {
-            Ok(f) => f,
-            Err(e) if arch == "laguna" => {
-                bail!(
-                    "Laguna GGUF must be mmap'd (F32 expand / full RSS slurp forbidden): \
-                     {path:?}: {e:#}"
-                );
-            }
-            Err(e) => return Err(e).with_context(|| format!("mmap GGUF {path:?}")),
+    // Always mmap the data segment (paged on demand, reclaimable) instead of
+    // slurping the whole multi-GB payload into RSS — the file bytes then back
+    // `tensor_bytes_borrowed` zero-copy and never count as resident anon memory.
+    // Laguna *requires* mmap (F32 expand / full slurp forbidden); every other
+    // arch prefers it and falls back to an owned read only when the platform
+    // can't mmap. Multi-part splits fall through to the owned merge path below
+    // (mmap is single-file); `low_mem_compile()` no longer gates this — mmap is
+    // now the default everywhere.
+    let raw = match GgufFile::from_path_mmap(path) {
+        Ok(f) => f,
+        Err(e) if arch == "laguna" => {
+            bail!(
+                "Laguna GGUF must be mmap'd (F32 expand / full RSS slurp forbidden): \
+                 {path:?}: {e:#}"
+            );
         }
-    } else {
-        GgufFile::from_path(path).with_context(|| format!("opening GGUF {path:?}"))?
+        Err(_e) => GgufFile::from_path(path).with_context(|| format!("opening GGUF {path:?}"))?,
     };
     let count = raw
         .metadata
@@ -646,5 +719,34 @@ mod tests {
         assert!(fam.accepts_arch("gemma4_unified"));
         assert!(!fam.accepts_arch("llama"));
         assert!(!fam.accepts_arch("qwen3"));
+    }
+
+    #[test]
+    fn resolve_nested_unsloth_prefer_first_shard() {
+        let root = std::env::temp_dir().join(format!(
+            "rlx-gguf-nested-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let quant = root.join("UD-Q4_K_M");
+        std::fs::create_dir_all(&quant).unwrap();
+        // Top-level IQ (should be ignored when preferring Q4_K_M).
+        std::fs::write(root.join("Laguna-S-2.1-UD-IQ1_M.gguf"), b"GGUF").unwrap();
+        let shard1 = quant.join("Laguna-S-2.1-UD-Q4_K_M-00001-of-00003.gguf");
+        let shard2 = quant.join("Laguna-S-2.1-UD-Q4_K_M-00002-of-00003.gguf");
+        let shard3 = quant.join("Laguna-S-2.1-UD-Q4_K_M-00003-of-00003.gguf");
+        for p in [&shard1, &shard2, &shard3] {
+            std::fs::write(p, b"GGUF").unwrap();
+        }
+        let got = resolve_weights_file_with_options(
+            &root,
+            &ResolveWeightsOptions::default().prefer_substring("Q4_K_M"),
+        )
+        .expect("resolve nested");
+        assert_eq!(got, shard1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

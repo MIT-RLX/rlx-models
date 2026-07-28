@@ -14,19 +14,46 @@ use rlx_runtime::Device;
 
 const VOC: &[(&str, &str)] = &[
     ("/decoder/Unsqueeze", "/decoder/Unsqueeze_output_0"),
-    ("/decoder/generator/f0_upsamp/Resize", "/decoder/generator/f0_upsamp/Resize_output_0"),
+    (
+        "/decoder/generator/f0_upsamp/Resize",
+        "/decoder/generator/f0_upsamp/Resize_output_0",
+    ),
 ];
 
 const EXTRA: &[(&str, &str)] = &[
     ("/bert_encoder/Add", "/bert_encoder/Add_output_0"),
-    ("/text_encoder_1/Concat_1", "/text_encoder_1/Concat_1_output_0"),
-    ("/text_encoder_1/Transpose_3", "/text_encoder_1/Transpose_3_output_0"),
-    ("/text_encoder/lstms.0/Reshape", "/text_encoder/lstms.0/Reshape_output_0"),
-    ("/text_encoder/lstms.2/Transpose", "/text_encoder/lstms.2/Transpose_output_0"),
-    ("/text_encoder/lstms.4/Transpose", "/text_encoder/lstms.4/Transpose_output_0"),
-    ("/text_encoder_1/Transpose_14", "/text_encoder_1/Transpose_14_output_0"),
-    ("/text_encoder_1/Gather_10", "/text_encoder_1/Gather_10_output_0"),
-    ("/text_encoder/lstms.5/LayerNormalization", "/text_encoder/lstms.5/LayerNormalization_output_0"),
+    (
+        "/text_encoder_1/Concat_1",
+        "/text_encoder_1/Concat_1_output_0",
+    ),
+    (
+        "/text_encoder_1/Transpose_3",
+        "/text_encoder_1/Transpose_3_output_0",
+    ),
+    (
+        "/text_encoder/lstms.0/Reshape",
+        "/text_encoder/lstms.0/Reshape_output_0",
+    ),
+    (
+        "/text_encoder/lstms.2/Transpose",
+        "/text_encoder/lstms.2/Transpose_output_0",
+    ),
+    (
+        "/text_encoder/lstms.4/Transpose",
+        "/text_encoder/lstms.4/Transpose_output_0",
+    ),
+    (
+        "/text_encoder_1/Transpose_14",
+        "/text_encoder_1/Transpose_14_output_0",
+    ),
+    (
+        "/text_encoder_1/Gather_10",
+        "/text_encoder_1/Gather_10_output_0",
+    ),
+    (
+        "/text_encoder/lstms.5/LayerNormalization",
+        "/text_encoder/lstms.5/LayerNormalization_output_0",
+    ),
 ];
 
 fn dur_watch() -> Vec<(&'static str, &'static str)> {
@@ -73,7 +100,10 @@ sys.stdout.buffer.write(v.astype(np.float32).tobytes())
         .collect()
 }
 
-fn ort_tensors(ort_names: &[&str], ids: &[i64]) -> anyhow::Result<std::collections::HashMap<String, Vec<f32>>> {
+fn ort_tensors(
+    ort_names: &[&str],
+    ids: &[i64],
+) -> anyhow::Result<std::collections::HashMap<String, Vec<f32>>> {
     let root = repo_root();
     let model = root.join(".cache/kittentts-mini-0.8/kitten_tts_mini_v0_8.onnx");
     let voices = root.join(".cache/kittentts-mini-0.8/voices.npz");
@@ -105,7 +135,10 @@ print(json.dumps(out))
     );
     let out = Command::new("python3").arg("-c").arg(&script).output()?;
     if !out.status.success() {
-        anyhow::bail!("ort script failed: {}", String::from_utf8_lossy(&out.stderr));
+        anyhow::bail!(
+            "ort script failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     let map: std::collections::HashMap<String, Vec<f64>> = serde_json::from_slice(&out.stdout)?;
     Ok(map
@@ -134,14 +167,14 @@ fn main() -> anyhow::Result<()> {
     let huge = std::env::args().any(|a| a == "--huge");
     let ids: Vec<i64> = if huge {
         // 40 tokens → compile_seq >= 32 → the FULL vocoder-shape override path.
-        let mut v = vec![0i64];
-        for _ in 0..38 {
-            v.push(83);
-        }
-        v.push(0);
+        let mut v = vec![83i64; 40];
+        v[0] = 0;
+        v[39] = 0;
         v
     } else if big {
-        vec![0, 81, 83, 16, 53, 65, 156, 102, 53, 16, 44, 123, 156, 43, 135, 56, 0]
+        vec![
+            0, 81, 83, 16, 53, 65, 156, 102, 53, 16, 44, 123, 156, 43, 135, 56, 0,
+        ]
     } else {
         vec![0, 50, 83, 156, 54, 57, 135, 10, 0]
     };
@@ -186,9 +219,8 @@ fn main() -> anyhow::Result<()> {
             ("style", &style_bytes, DType::F32),
             ("speed", &speed, DType::F32),
         ];
-        let outs = kitten_tts_mini_rlx::bundle_compile::run_with_duration_fixed_point(
-            &mut graph, &inputs,
-        );
+        let outs =
+            kitten_tts_mini_rlx::bundle_compile::run_with_duration_fixed_point(&mut graph, &inputs);
         if let Some((wave, _)) = outs.first() {
             let s: Vec<f32> = wave
                 .chunks_exact(4)
@@ -200,7 +232,10 @@ fn main() -> anyhow::Result<()> {
             let act = active.min(s.len());
             let ap = s[..act].iter().fold(0.0f32, |a, &x| a.max(x.abs()));
             let pp = s[act..].iter().fold(0.0f32, |a, &x| a.max(x.abs()));
-            eprintln!("fullwave peak={peak:.4e} samples={} | ACTIVE({act}) peak={ap:.4e} PAD peak={pp:.4e}", s.len());
+            eprintln!(
+                "fullwave peak={peak:.4e} samples={} | ACTIVE({act}) peak={ap:.4e} PAD peak={pp:.4e}",
+                s.len()
+            );
         }
         return Ok(());
     }
@@ -209,11 +244,19 @@ fn main() -> anyhow::Result<()> {
         let nodes = import.hir.nodes();
         for n in nodes.iter() {
             if let Some(nm) = n.name.as_deref() {
-                if nm.contains("F0_proj") || nm == "/decoder/Unsqueeze" || nm.contains("f0_upsamp")
-                    || nm.contains("/If") || nm.contains("F0IfSelect")
+                if nm.contains("F0_proj")
+                    || nm == "/decoder/Unsqueeze"
+                    || nm.contains("f0_upsamp")
+                    || nm.contains("/If")
+                    || nm.contains("F0IfSelect")
                 {
-                    let dims: Vec<usize> = n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
-                    eprintln!("{:>62} {:>16} {dims:?}", nm, format!("{:?}", n.op).chars().take(16).collect::<String>());
+                    let dims: Vec<usize> =
+                        n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
+                    eprintln!(
+                        "{:>62} {:>16} {dims:?}",
+                        nm,
+                        format!("{:?}", n.op).chars().take(16).collect::<String>()
+                    );
                 }
             }
         }
@@ -225,8 +268,13 @@ fn main() -> anyhow::Result<()> {
         for n in nodes.iter() {
             if let Some(nm) = n.name.as_deref() {
                 if nm.contains("l_sin_gen/") {
-                    let dims: Vec<usize> = n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
-                    eprintln!("{:>60} {:>18} {dims:?}", nm, format!("{:?}", n.op).chars().take(18).collect::<String>());
+                    let dims: Vec<usize> =
+                        n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
+                    eprintln!(
+                        "{:>60} {:>18} {dims:?}",
+                        nm,
+                        format!("{:?}", n.op).chars().take(18).collect::<String>()
+                    );
                 }
             }
         }
@@ -241,7 +289,8 @@ fn main() -> anyhow::Result<()> {
         let nodes = import.hir.nodes();
         for n in nodes.iter() {
             if let Some(nm) = n.name.as_deref() {
-                let is_gen = nm.starts_with("/decoder/generator/") || nm.starts_with("/decoder/decode.");
+                let is_gen =
+                    nm.starts_with("/decoder/generator/") || nm.starts_with("/decoder/decode.");
                 if !is_gen || nm.contains("l_sin_gen/") {
                     continue;
                 }
@@ -251,8 +300,16 @@ fn main() -> anyhow::Result<()> {
                 let dims: Vec<usize> = n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
                 // only convs/transposes/leakyrelu/adain norms (structural)
                 let opn = format!("{:?}", n.op);
-                if opn.contains("Conv") || opn.contains("Custom") || nm.contains("LeakyRelu") || nm.contains("ConvTranspose") {
-                    eprintln!("{:>62} {:>16} {dims:?}", nm, opn.chars().take(16).collect::<String>());
+                if opn.contains("Conv")
+                    || opn.contains("Custom")
+                    || nm.contains("LeakyRelu")
+                    || nm.contains("ConvTranspose")
+                {
+                    eprintln!(
+                        "{:>62} {:>16} {dims:?}",
+                        nm,
+                        opn.chars().take(16).collect::<String>()
+                    );
                 }
             }
         }
@@ -266,17 +323,32 @@ fn main() -> anyhow::Result<()> {
             if n.name.as_deref() == Some("/decoder/generator/m_source/l_sin_gen/Mul")
                 && matches!(n.op, rlx_ir::hir::HirOp::Mir(rlx_ir::Op::Binary(_)))
             {
-                eprintln!("RAD Binary(Mul) shape={:?}", n.shape.dims().iter().map(|d| d.unwrap_static()).collect::<Vec<_>>());
+                eprintln!(
+                    "RAD Binary(Mul) shape={:?}",
+                    n.shape
+                        .dims()
+                        .iter()
+                        .map(|d| d.unwrap_static())
+                        .collect::<Vec<_>>()
+                );
                 for (k, inp) in n.inputs.iter().enumerate() {
                     if let Some(pn) = by_id(*inp) {
-                        let dims: Vec<usize> = pn.shape.dims().iter().map(|d| d.unwrap_static()).collect();
+                        let dims: Vec<usize> =
+                            pn.shape.dims().iter().map(|d| d.unwrap_static()).collect();
                         let nel: usize = dims.iter().product();
-                        eprintln!("   in[{k}] op={:?} name={:?} shape={dims:?} nelem={nel}", pn.op, pn.name);
+                        eprintln!(
+                            "   in[{k}] op={:?} name={:?} shape={dims:?} nelem={nel}",
+                            pn.op, pn.name
+                        );
                         for (kk, i2) in pn.inputs.iter().enumerate() {
                             if let Some(p2) = by_id(*i2) {
-                                let d2: Vec<usize> = p2.shape.dims().iter().map(|d| d.unwrap_static()).collect();
+                                let d2: Vec<usize> =
+                                    p2.shape.dims().iter().map(|d| d.unwrap_static()).collect();
                                 let n2: usize = d2.iter().product();
-                                eprintln!("      in[{k}].in[{kk}] op={:?} name={:?} shape={d2:?} nelem={n2}", p2.op, p2.name);
+                                eprintln!(
+                                    "      in[{k}].in[{kk}] op={:?} name={:?} shape={d2:?} nelem={n2}",
+                                    p2.op, p2.name
+                                );
                             }
                         }
                     }
@@ -301,7 +373,10 @@ fn main() -> anyhow::Result<()> {
                 eprintln!("NODE {target}: op={:?} shape={:?}", n.op, n.shape);
                 for (k, inp) in n.inputs.iter().enumerate() {
                     if let Some(pn) = by_id(*inp) {
-                        eprintln!("   in[{k}] id={:?} op={:?} name={:?} shape={:?}", inp, pn.op, pn.name, pn.shape);
+                        eprintln!(
+                            "   in[{k}] id={:?} op={:?} name={:?} shape={:?}",
+                            inp, pn.op, pn.name, pn.shape
+                        );
                     } else {
                         eprintln!("   in[{k}] id={:?} <missing>", inp);
                     }
@@ -362,7 +437,8 @@ fn main() -> anyhow::Result<()> {
         ("style", &style_bytes, DType::F32),
         ("speed", &speed, DType::F32),
     ];
-    if let Some(m) = std::env::args().find_map(|a| a.strip_prefix("--mel=").map(|s| s.to_string())) {
+    if let Some(m) = std::env::args().find_map(|a| a.strip_prefix("--mel=").map(|s| s.to_string()))
+    {
         let mel: usize = m.parse().unwrap();
         kitten_tts_mini_rlx::opts::set_runtime_mel_frames(mel);
         eprintln!("set runtime_mel_frames={mel}");
@@ -376,7 +452,12 @@ fn main() -> anyhow::Result<()> {
             vec![19, 2, 1, 2, 3, 2, 3, 2]
         };
         kitten_tts_mini_rlx::bundle_compile::run_parity_inputs_with_duration(
-            &mut graph, seq, token_len, &ids, &style, Some(&ort_dur),
+            &mut graph,
+            seq,
+            token_len,
+            &ids,
+            &style,
+            Some(&ort_dur),
         )
     } else {
         graph.run_typed(&inputs)
@@ -391,13 +472,20 @@ fn main() -> anyhow::Result<()> {
     eprintln!("=== duration path: native vs ORT ===");
     for (i, (_, hir)) in probes.iter().enumerate() {
         let Some(nat) = probe_output_f32_at(&outs, i) else {
-            eprintln!("{hir}: missing native probe (dt={:?})", outs.get(i).map(|(_, d)| d));
+            eprintln!(
+                "{hir}: missing native probe (dt={:?})",
+                outs.get(i).map(|(_, d)| d)
+            );
             continue;
         };
         let ort_name = watch.iter().find(|(h, _)| h == hir).unwrap().1;
         let Some(ort_v) = ort.get(ort_name) else {
             let m = nat.iter().copied().map(f32::abs).fold(0.0, f32::max);
-            eprintln!("{hir}: ORT missing; native len={} max={m:.4} n0={:?}", nat.len(), &nat[..nat.len().min(6)]);
+            eprintln!(
+                "{hir}: ORT missing; native len={} max={m:.4} n0={:?}",
+                nat.len(),
+                &nat[..nat.len().min(6)]
+            );
             continue;
         };
         let (max_abs, idx) = max_abs_diff(&nat, ort_v);

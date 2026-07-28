@@ -33,12 +33,21 @@ fn ngram_reproduces_expected() {
     let mut n = 0;
     for line in refs.lines() {
         let (seq_s, exp_s) = line.split_once('\t').unwrap();
-        let seq: Vec<u32> = seq_s.split_whitespace().map(|x| x.parse().unwrap()).collect();
+        let seq: Vec<u32> = seq_s
+            .split_whitespace()
+            .map(|x| x.parse().unwrap())
+            .collect();
         let exp: f32 = exp_s.parse().unwrap();
         let got = model.joint(&seq);
         max_err = max_err.max((got - exp).abs());
         n += 1;
     }
-    println!("n-gram parity: order={} {} seqs, max_abs_err={:.6}", model.order, n, max_err);
-    assert!(max_err < 1e-3, "n-gram native vs expected max err {max_err}");
+    println!(
+        "n-gram parity: order={} {} seqs, max_abs_err={:.6}",
+        model.order, n, max_err
+    );
+    assert!(
+        max_err < 1e-3,
+        "n-gram native vs expected max err {max_err}"
+    );
 }

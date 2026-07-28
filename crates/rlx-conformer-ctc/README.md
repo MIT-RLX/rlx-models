@@ -98,7 +98,7 @@ Cross-backend matrix (cold_ms / warm_ms + transcript check):
 
 ```bash
 just test-conformer-ctc-backends
-just conformer-ctc-cuda-msi          # sync + CUDA on ssh msi
+just conformer-ctc-cuda-remote          # sync + CUDA on the remote host (set RLX_CUDA_HOST)
 ```
 
 On the Librispeech sample (`stt_en_conformer_ctc_small`), warm Metal is

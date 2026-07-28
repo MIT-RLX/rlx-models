@@ -69,7 +69,7 @@ impl HoctFlow {
     }
 
     pub fn build_eager(&self, weights: HoctWeights) -> HoctModel {
-        HoctModel::new(self.cfg.clone(), weights)
+        HoctModel::new(self.cfg, weights)
     }
 
     pub fn build_from_path(&self, path: impl AsRef<Path>) -> Result<HoctModel> {
@@ -78,7 +78,7 @@ impl HoctFlow {
 
     pub fn build_compiled(&self, weights: HoctWeights) -> HoctCompiled {
         HoctCompiled {
-            model: HoctModel::new(self.cfg.clone(), weights),
+            model: HoctModel::new(self.cfg, weights),
             max_nodes: self.max_nodes,
             max_edges: self.max_edges,
             device: Device::Cpu,

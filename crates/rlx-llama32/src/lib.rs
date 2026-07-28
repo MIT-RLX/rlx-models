@@ -26,9 +26,7 @@ pub use builder::{
     build_llama32_graph_sized_last_logits, build_llama32_graph_sized_packed,
     build_llama32_prefill_hir_dynamic_ext, build_llama32_prefill_hir_sized_ext,
 };
-pub use capabilities::{
-    LM_DEVICE_NAMES, STANDARD_DEVICE_NAMES, STANDARD_DEVICES, validate_device,
-};
+pub use capabilities::{LM_DEVICE_NAMES, STANDARD_DEVICE_NAMES, STANDARD_DEVICES, validate_device};
 pub use config::{Llama32Config, Llama32RopeScaling, Llama32RopeType, llama32_cfg_from_gguf};
 pub use flow::{
     LLAMA32_PROFILE_FILE, Llama32DecodeOpts, Llama32Flow, Llama32Mode, Llama32PrefillOpts,
@@ -69,6 +67,10 @@ mod tests {
             max_position_embeddings: 16,
             rms_norm_eps: 1e-5,
             rope_theta: 500_000.0,
+            embedding_scale: None,
+            residual_scale: None,
+            attention_scale: None,
+            logit_scale: None,
             hidden_act: "silu".into(),
             tie_word_embeddings: false,
             attention_bias: false,

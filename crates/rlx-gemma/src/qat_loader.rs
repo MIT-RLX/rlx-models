@@ -41,44 +41,95 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow, bail};
 use rlx_core::safetensors_checkpoint::SafetensorsCheckpoint;
 use rlx_core::weight_loader::WeightLoader;
+use rlx_mlx_io::dequant_affine_f32;
 use safetensors::Dtype;
 
 use crate::qat::{GemmaQuantBits, GemmaQuantPlan, dequantize_matrix, unpack_row};
 
-/// Loader over a single-file (or sharded) Gemma 4 E2B mobile checkpoint.
+/// Which quantized checkpoint dialect the loader is reading.
+///
+/// Both the Google *mobile QAT* export and the community **mlx-community**
+/// affine 4-bit export ship the Gemma 3n / 4 E2B text LM, but with different
+/// tensor naming, quant codecs, and RMSNorm gain conventions:
+///
+/// | | prefix | codec | norm gain |
+/// |-|--------|-------|-----------|
+/// | `GoogleQat` | `model.language_model.…` | per-row int2/4/8 · `weight_scale` | plain `w` (loader returns `w-1`) |
+/// | `MlxAffine` | `language_model.model.…` | packed uint32 affine · `.scales`+`.biases` (group_size) | `1+w` (loader returns raw `w`) |
+enum QuantFmt {
+    /// Google mobile QAT (`quantization_config.module_quant_configs`).
+    GoogleQat(GemmaQuantPlan),
+    /// mlx-community affine (`quantization.{group_size,bits}` + per-module flags).
+    MlxAffine { bits: u32, group_size: u32 },
+}
+
+/// Loader over a single-file (or sharded) Gemma 3n / 4 E2B checkpoint —
+/// either Google mobile QAT or mlx-community affine 4-bit (auto-detected in
+/// [`GemmaQatLoader::open`]).
 pub struct GemmaQatLoader {
     ckpt: SafetensorsCheckpoint,
-    plan: GemmaQuantPlan,
+    fmt: QuantFmt,
     taken: HashSet<String>,
 }
 
 impl GemmaQatLoader {
-    /// Open the checkpoint directory (expects `model.safetensors` +
-    /// `config.json` with a `quantization_config` block).
+    /// Open the checkpoint directory. Auto-detects the quant dialect from
+    /// `config.json`:
+    /// - an mlx-community affine block (`quantization` / `quantization_config`
+    ///   carrying integer `group_size` **and** `bits`) → [`QuantFmt::MlxAffine`];
+    /// - otherwise a Google mobile-QAT `quantization_config`
+    ///   (`module_quant_configs` regex table) → [`QuantFmt::GoogleQat`].
     pub fn open(dir: &Path) -> Result<Self> {
         let ckpt = SafetensorsCheckpoint::open(dir)?;
         let cfg_path = dir.join("config.json");
         let raw = std::fs::read(&cfg_path)
-            .with_context(|| format!("reading {cfg_path:?} for quantization_config"))?;
+            .with_context(|| format!("reading {cfg_path:?} for quantization config"))?;
         let json: serde_json::Value =
             serde_json::from_slice(&raw).with_context(|| format!("parsing {cfg_path:?}"))?;
-        let quant = json.get("quantization_config").ok_or_else(|| {
-            anyhow!("{cfg_path:?}: no quantization_config (not a QAT checkpoint?)")
-        })?;
-        let plan = GemmaQuantPlan::from_json(quant);
+        let fmt = if let Some((bits, group_size)) = detect_mlx_affine(&json) {
+            QuantFmt::MlxAffine { bits, group_size }
+        } else {
+            let quant = json.get("quantization_config").ok_or_else(|| {
+                anyhow!("{cfg_path:?}: no quantization_config / mlx quantization block")
+            })?;
+            QuantFmt::GoogleQat(GemmaQuantPlan::from_json(quant))
+        };
         Ok(Self {
             ckpt,
-            plan,
+            fmt,
             taken: HashSet::new(),
         })
     }
 
+    fn is_mlx(&self) -> bool {
+        matches!(self.fmt, QuantFmt::MlxAffine { .. })
+    }
+
+    /// Borrow the Google-QAT quant plan (only valid on a QAT checkpoint).
+    fn qat_plan(&self) -> Result<&GemmaQuantPlan> {
+        match &self.fmt {
+            QuantFmt::GoogleQat(p) => Ok(p),
+            QuantFmt::MlxAffine { .. } => {
+                bail!("QAT-only accessor called on an mlx-affine checkpoint")
+            }
+        }
+    }
+
     /// Translate a builder-side HF name to the checkpoint's storage name.
-    /// Text LM weights live under `model.language_model.`; the multimodal
-    /// towers/projectors (`vision_tower`, `audio_tower`, `embed_vision`,
-    /// `embed_audio`) and `lm_head` are stored verbatim under `model.` and
-    /// must NOT get the `language_model` infix.
-    fn remap(key: &str) -> String {
+    ///
+    /// - **Google-QAT** stores the text LM under `model.language_model.`; the
+    ///   multimodal towers/projectors and `lm_head` are verbatim under `model.`.
+    /// - **mlx-community** stores the text LM under `language_model.model.`
+    ///   (the mirror ordering); `lm_head` is tied (no tensor).
+    fn remap(&self, key: &str) -> String {
+        if self.is_mlx() {
+            return match key.strip_prefix("model.") {
+                Some(rest) => format!("language_model.model.{rest}"),
+                // `lm_head.…` is tied to embed_tokens in gemma-3n (no tensor);
+                // anything else passes through verbatim.
+                None => key.to_string(),
+            };
+        }
         if key.starts_with("lm_head") {
             return key.to_string();
         }
@@ -95,6 +146,44 @@ impl GemmaQatLoader {
             Some(rest) => format!("model.language_model.{rest}"),
             None => key.to_string(),
         }
+    }
+
+    /// Dequantize one mlx-affine linear `{base}.weight` (packed uint32 codes)
+    /// + `{base}.scales` + `{base}.biases` (bf16/f16/f32, `[out, n_groups]`) to a
+    /// row-major `[out, in]` F32 matrix. `in = n_groups * group_size`.
+    fn mlx_dequant_linear(&self, base: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let QuantFmt::MlxAffine { bits, group_size } = self.fmt else {
+            bail!("mlx_dequant_linear on non-mlx loader");
+        };
+        let (wbytes, _wdt, wshape) = self.ckpt.tensor_raw(&format!("{base}.weight"))?;
+        anyhow::ensure!(
+            wshape.len() == 2,
+            "{base}.weight: expected rank-2 packed codes, got {wshape:?}"
+        );
+        let out = wshape[0];
+        let (scales, sshape) = self.read_float_named(&format!("{base}.scales"))?;
+        anyhow::ensure!(
+            sshape.len() == 2 && sshape[0] == out,
+            "{base}.scales: shape {sshape:?} incompatible with out {out}"
+        );
+        let n_groups = sshape[1];
+        let (biases, _) = self.read_float_named(&format!("{base}.biases"))?;
+        let inn = n_groups * group_size as usize;
+        let w = dequant_affine_f32(&wbytes, &scales, &biases, bits, group_size, out, n_groups)?;
+        Ok((w, vec![out, inn]))
+    }
+
+    /// Read a plain float tensor (`F32`/`F16`/`BF16`) by storage name as F32
+    /// **without** the QAT norm-delta convention (mlx keeps the raw `(1+w)` gain).
+    fn read_float_named(&self, st: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let (bytes, dt, shape) = self.ckpt.tensor_raw(st)?;
+        Ok((bytes_view_to_f32(&bytes, dt)?, shape))
+    }
+
+    /// True when the (already-remapped) storage base names an mlx quantized
+    /// layer — a `{base}.weight` with a `{base}.scales` sibling.
+    fn mlx_is_quantized(&self, base: &str) -> bool {
+        self.ckpt.contains(&format!("{base}.scales"))
     }
 
     /// Unpacked input width for a packed weight `[out, packed_cols]`.
@@ -116,7 +205,7 @@ impl GemmaQatLoader {
     fn dequant_linear(&self, st_weight: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         let module = st_weight.strip_suffix(".weight").unwrap_or(st_weight);
         let bits = self
-            .plan
+            .qat_plan()?
             .resolve_bits(module)
             .ok_or_else(|| anyhow!("{module}: no quant bits (in modules_to_not_convert?)"))?;
         let (qbytes, qdt, qshape) = self.ckpt.tensor_raw(st_weight)?;
@@ -141,7 +230,7 @@ impl GemmaQatLoader {
     /// apply the `sqrt(dim)` embed-scale — the builder applies that separately.
     fn dequant_embedding_full(&self, base: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         let bits = self
-            .plan
+            .qat_plan()?
             .resolve_bits(base)
             .ok_or_else(|| anyhow!("{base}: no quant bits for embedding"))?;
         let (qbytes, qdt, qshape) = self
@@ -178,10 +267,13 @@ impl GemmaQatLoader {
         builder_key: &str,
         rows: &[u32],
     ) -> Result<(Vec<f32>, usize)> {
-        let base = Self::remap(builder_key);
+        let base = self.remap(builder_key);
         let base = base.strip_suffix(".weight").unwrap_or(&base);
+        if let QuantFmt::MlxAffine { bits, group_size } = self.fmt {
+            return self.mlx_dequant_embedding_rows(base, bits, group_size, rows);
+        }
         let bits = self
-            .plan
+            .qat_plan()?
             .resolve_bits(base)
             .ok_or_else(|| anyhow!("{base}: no quant bits for embedding"))?;
         let (qbytes, qdt, qshape) = self
@@ -227,9 +319,66 @@ impl GemmaQatLoader {
         Ok((out, dim))
     }
 
-    /// Read a plain float tensor by builder-side key (remapped) as F32.
+    /// mlx affine variant of [`Self::dequant_embedding_rows`]: gather + dequant
+    /// only `rows` of a packed uint32 embedding with grouped `.scales`/`.biases`
+    /// (`[vocab, n_groups]`, group_size along the embed dim). Never materializes
+    /// the full `[vocab, dim]` table.
+    fn mlx_dequant_embedding_rows(
+        &self,
+        base: &str,
+        bits: u32,
+        group_size: u32,
+        rows: &[u32],
+    ) -> Result<(Vec<f32>, usize)> {
+        let (wbytes, _wdt, wshape) = self.ckpt.tensor_raw(&format!("{base}.weight"))?;
+        anyhow::ensure!(
+            wshape.len() == 2,
+            "{base}.weight: expected rank-2, got {wshape:?}"
+        );
+        let vocab = wshape[0];
+        // uint32 codes → 4 bytes/word; row byte-stride = packed_words * 4.
+        let row_bytes = wbytes.len() / vocab;
+        anyhow::ensure!(
+            row_bytes * vocab == wbytes.len(),
+            "{base}.weight: {} bytes not divisible by vocab {vocab}",
+            wbytes.len()
+        );
+        let (scales, sshape) = self.read_float_named(&format!("{base}.scales"))?;
+        anyhow::ensure!(
+            sshape.len() == 2 && sshape[0] == vocab,
+            "{base}.scales: shape {sshape:?} incompatible with vocab {vocab}"
+        );
+        let n_groups = sshape[1];
+        let (biases, _) = self.read_float_named(&format!("{base}.biases"))?;
+        let dim = n_groups * group_size as usize;
+        let mut out = Vec::with_capacity(rows.len() * dim);
+        for &r in rows {
+            let r = r as usize;
+            anyhow::ensure!(r < vocab, "{base}: row {r} >= vocab {vocab}");
+            let wr = &wbytes[r * row_bytes..(r + 1) * row_bytes];
+            let sr = &scales[r * n_groups..(r + 1) * n_groups];
+            let br = &biases[r * n_groups..(r + 1) * n_groups];
+            let row = dequant_affine_f32(wr, sr, br, bits, group_size, 1, n_groups)?;
+            out.extend_from_slice(&row);
+        }
+        Ok((out, dim))
+    }
+
+    /// Read a tensor by builder-side key (remapped) as F32. For mlx, a
+    /// quantized module (e.g. `per_layer_model_projection`, an mlx Linear) is
+    /// dequantized; a plain float tensor (norms) is read directly.
     pub fn float_tensor(&self, builder_key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
-        self.take_float(&Self::remap(builder_key))
+        let st = self.remap(builder_key);
+        if self.is_mlx() {
+            let base = st.strip_suffix(".weight").unwrap_or(&st);
+            if self.mlx_is_quantized(base) {
+                return self.mlx_dequant_linear(base);
+            }
+            // Non-quantized float (e.g. `per_layer_projection_norm.weight`).
+            // Route through `take_float` so the norm `−1` convention applies.
+            return self.take_float(&st);
+        }
+        self.take_float(&st)
     }
 
     /// Main token embedding rows for `ids`, scaled by the Gemma embed-scale
@@ -320,6 +469,12 @@ impl GemmaQatLoader {
             Dtype::F32 | Dtype::F16 | Dtype::BF16 => bytes_view_to_f32(&bytes, dt)?,
             other => bail!("{st}: take_float on non-float dtype {other:?}"),
         };
+        // The builder's `gemma_rms` always applies `1 + loaded_weight`, but BOTH
+        // dialects store the *full* RMSNorm gain and apply it directly:
+        //   - Google-QAT `Gemma4RMSNorm` = `x_normed * weight`;
+        //   - mlx-community gemma-3n uses stock `nn.RMSNorm` (mx.fast.rms_norm,
+        //     `x_normed * weight`, no `+1`) on already-baked gains.
+        // So we return `weight - 1` and let `1 + (w-1) = w` reproduce it.
         if st.ends_with("norm.weight") {
             for v in &mut data {
                 *v -= 1.0;
@@ -330,7 +485,19 @@ impl GemmaQatLoader {
 
     fn take_impl(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         self.taken.insert(key.to_string());
-        let st = Self::remap(key);
+        let st = self.remap(key);
+        // ── mlx-community affine ────────────────────────────────────────
+        if self.is_mlx() {
+            let base = st.strip_suffix(".weight").unwrap_or(&st);
+            if self.mlx_is_quantized(base) {
+                return self.mlx_dequant_linear(base);
+            }
+            if self.ckpt.contains(&st) {
+                return self.take_float(&st);
+            }
+            bail!("GemmaQatLoader(mlx): tensor {key} (→ {st}) not found in checkpoint");
+        }
+        // ── Google mobile QAT ───────────────────────────────────────────
         // Case 1: tensor stored directly (float norms, packed-int linears).
         if self.ckpt.contains(&st) {
             let (_b, dt, _s) = self.ckpt.tensor_raw(&st)?;
@@ -365,6 +532,24 @@ fn bytes_view_to_f32(bytes: &[u8], dt: Dtype) -> Result<Vec<f32>> {
             .collect(),
         other => bail!("unsupported float dtype {other:?}"),
     })
+}
+
+/// Detect an mlx-community affine quant block: a `quantization` (or
+/// `quantization_config`) object carrying integer `group_size` **and** `bits`.
+/// Returns `(bits, group_size)`. Google mobile-QAT uses a `module_quant_configs`
+/// table with neither key at top level, so it falls through to `None`.
+fn detect_mlx_affine(json: &serde_json::Value) -> Option<(u32, u32)> {
+    for key in ["quantization", "quantization_config"] {
+        if let Some(q) = json.get(key) {
+            if let (Some(bits), Some(gs)) = (
+                q.get("bits").and_then(|v| v.as_u64()),
+                q.get("group_size").and_then(|v| v.as_u64()),
+            ) {
+                return Some((bits as u32, gs as u32));
+            }
+        }
+    }
+    None
 }
 
 fn transpose_2d(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {
@@ -415,10 +600,11 @@ impl WeightLoader for GemmaQatLoader {
         &mut self,
         key: &str,
     ) -> Result<Option<rlx_core::weight_map::PackedWeightTensor>> {
-        if !rlx_ir::env::flag("RLX_GEMMA_QAT_PACK") {
+        // mlx-affine stays on the exact F32 `take` path (no Q4_K repack).
+        if self.is_mlx() || !rlx_ir::env::flag("RLX_GEMMA_QAT_PACK") {
             return Ok(None);
         }
-        let st = Self::remap(key);
+        let st = self.remap(key);
         // Peek the logical [out, in] WITHOUT consuming (`tensor_raw` doesn't mark
         // `taken`, so the f32 fallback can still take it).
         let Ok((_b, qdt, qshape)) = self.ckpt.tensor_raw(&st) else {
@@ -428,7 +614,7 @@ impl WeightLoader for GemmaQatLoader {
             return Ok(None);
         }
         let module = st.strip_suffix(".weight").unwrap_or(&st);
-        let Some(bits) = self.plan.resolve_bits(module) else {
+        let Some(bits) = self.qat_plan()?.resolve_bits(module) else {
             return Ok(None);
         };
         let out = qshape[0];

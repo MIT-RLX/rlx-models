@@ -29,15 +29,12 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 fn melo_dir() -> Option<PathBuf> {
-    for p in [
+    [
         root().join("weights/tts/melotts"),
         root().join("weights/tiny-tts-rlx"),
-    ] {
-        if p.join("config.json").is_file() {
-            return Some(p);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|p| p.join("config.json").is_file())
 }
 fn ov_dir() -> Option<PathBuf> {
     let p = std::env::var("RLX_OPENVOICE_DIR")

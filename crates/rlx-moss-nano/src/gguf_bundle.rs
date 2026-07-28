@@ -12,11 +12,11 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
+use rlx_assets::native_pack::{OnnxGraphSpec, pack_native_from_onnx_dir};
 use rlx_assets::pack::{
     BundleLoadPath, ResolveBundleOpts, ResolvedBundlePath, extract_dir_for, is_rlxp_file,
     materialize_rlxp, resolve_bundle_load_path, resolve_bundle_path,
 };
-use rlx_assets::native_pack::{OnnxGraphSpec, pack_native_from_onnx_dir};
 use rlx_gguf::{GgmlType, GgufFile, GgufWriter, MetaValue};
 
 use rlx_runtime::Device;
@@ -198,9 +198,14 @@ fn materialize_gguf(file: &GgufFile, extract_dir: &Path) -> Result<()> {
 
 /// Pack required loose-dir files into one `moss-nano.rlxp` (native nested graphs).
 pub fn pack_rlxp(bundle: &Path, out: &Path) -> Result<PackReport> {
-    ensure!(bundle.is_dir(), "bundle dir not found: {}", bundle.display());
     ensure!(
-        bundle.join("browser_poc_manifest.json").is_file() && bundle.join("tokenizer.json").is_file(),
+        bundle.is_dir(),
+        "bundle dir not found: {}",
+        bundle.display()
+    );
+    ensure!(
+        bundle.join("browser_poc_manifest.json").is_file()
+            && bundle.join("tokenizer.json").is_file(),
         "missing manifest/tokenizer under {}",
         bundle.display()
     );
@@ -219,7 +224,11 @@ pub fn pack_rlxp(bundle: &Path, out: &Path) -> Result<PackReport> {
         },
     ];
     for s in &specs {
-        ensure!(s.onnx_path.is_file(), "missing pack source {}", s.onnx_path.display());
+        ensure!(
+            s.onnx_path.is_file(),
+            "missing pack source {}",
+            s.onnx_path.display()
+        );
     }
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent)?;
@@ -237,7 +246,11 @@ pub fn pack_rlxp(bundle: &Path, out: &Path) -> Result<PackReport> {
 
 /// Pack the required loose-dir files into one legacy `moss-nano.gguf`.
 pub fn pack_directory(bundle: &Path, out: &Path) -> Result<PackReport> {
-    ensure!(bundle.is_dir(), "bundle dir not found: {}", bundle.display());
+    ensure!(
+        bundle.is_dir(),
+        "bundle dir not found: {}",
+        bundle.display()
+    );
     for rel in LEGACY_ONNX_RELPATHS {
         ensure!(
             bundle.join(rel).is_file(),
@@ -253,10 +266,7 @@ pub fn pack_directory(bundle: &Path, out: &Path) -> Result<PackReport> {
     w.set_meta("rlx_moss.format", MetaValue::String(FORMAT.into()));
     w.set_meta("rlx_moss.sample_rate_hz", MetaValue::U32(48_000));
     w.set_meta("rlx_moss.channels", MetaValue::U32(2));
-    w.set_meta(
-        "rlx_moss.hf_repo",
-        MetaValue::String(HF_REPO.into()),
-    );
+    w.set_meta("rlx_moss.hf_repo", MetaValue::String(HF_REPO.into()));
 
     let mut names = BTreeSet::new();
     let mut file_kv = 0u32;

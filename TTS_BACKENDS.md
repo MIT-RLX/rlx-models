@@ -16,14 +16,14 @@ in-process on the same input — ONNX Runtime is what these models shipped as.
 | ChatterBox | Fox 0/6 false negative | `rlx-whisper` skips lang/task tokens on `.en` checkpoints | Apple Whisper 6/6 |
 | StyleTTS2 / Kokoro native | Decoder garbage (historical) | Remove Cin↔Cout transpose on ONNX `ConvTranspose` (`rlx-onnx-import`). Native is default: ORT CPU encoder + RLX decoder (or `RLX_KOKORO_NATIVE_ENC=1`); fox **6/6** on CPU/Metal/MLX/wgpu | fox 6/6 Apple |
 | Soprano | Harness + MLX peak | Default greedy; coverage `len≥2`; Vocos on CPU when backbone is MLX | CPU/Metal/MLX Whisper 1.00 |
-| Piper | Stochastic ORT / GPU enc | Native path; CPU-pinned `enc_p`; `RLX_PIPER_DETERMINISTIC=1` | Apple cos 1.0; MSI CUDA cos≈1.0 |
+| Piper | Stochastic ORT / GPU enc | Native path; CPU-pinned `enc_p`; `RLX_PIPER_DETERMINISTIC=1` | Apple cos 1.0; NVIDIA CUDA cos≈1.0 |
 | Gepard | Bucketed decode mask/KV slice drift | Fix `slice_kv_from_bucket` + dense `generated` for custom-mask AR; bucketed default | Apple fox 6/6 + long 15/15 |
 | MeloTTS / tiny-tts | 512-sample silence | Same CT fix + `ensure_audible` | Local CPU/wgpu/Metal cos 1.0 |
 | MetaVoice | Whisper ~67% | Greedy defaults, speaker required, PCM postprocess | Fox 6/6 Apple |
 | F5-TTS | DiT GPU mismatch | Metal/MLX on-device OK (fox 6/6); keep ScatterNd pin over MPS cliff; Apple `--device gpu` DiT→Metal by default. True wgpu (`RLX_F5_WGPU_DIT=1`): teacher traj mad≈1e-8 vs CPU, NFE=32 fox **6/6**. Fixes in wgpu: (1) unsharded `>bind` arenas — dedicated scratch / virtual bind-sized stripes under `RLX_WGPU_LARGE_BUFFERS=1`; (2) `Transpose(Param)` must bind the **act output** stripe and stage the weight in — param-anchored windows wrote the transpose into scratch with no writeback, so AdaLN Gemm collapsed to bias | fox 6/6 Metal + true wgpu |
-| Supertonic | Vulkan cos≈0.03 | Host non-last Reduce; true Vulkan cos 1.0 (no remap) | MSI cos 1.0 |
+| Supertonic | Vulkan cos≈0.03 | Host non-last Reduce; true Vulkan cos 1.0 (no remap) | NVIDIA cos 1.0 |
 
-Remaining: MSI CUDA/Vulkan Gepard matrix when the rig is reachable.
+Remaining: NVIDIA CUDA/Vulkan Gepard matrix when the rig is reachable.
 
 ## Supertonic-3 (CFM, 4 subgraphs) — text = "The quick brown fox …", 4.30 s audio @ 44.1 kHz
 
@@ -35,7 +35,7 @@ Remaining: MSI CUDA/Vulkan Gepard matrix when the rig is reachable.
 | MLX    | 13.5× |  318 | 1.00000 | 1.00 |
 | wgpu   | 1.5×  | 2856 | 1.00000 | 1.00 |
 | CoreML | 1.3×  | 3399 | 1.00000 | 1.00 |
-| **CUDA** (msi) | **2.4×** | **1782** | 0.96463 | 1.00 |
+| **CUDA** (NVIDIA) | **2.4×** | **1782** | 0.96463 | 1.00 |
 
 **Correctness: perfect on Apple backends.** All five native Apple backends produce bit-identical audio
 (cosine 1.00000) and transcribe with 1.00 coverage. CUDA (Linux) matches Whisper coverage with
@@ -68,7 +68,7 @@ here is CPU EP).
 | MLX    | 1.7× | 1383 | 1.00000 | 0.85 |
 | wgpu   | 0.3× | 7423 | 1.00000 | 0.85 |
 | CoreML | (see note) | end-to-end with `RLX_COREML_UNITS=gpu` (auto) | — |
-| **CUDA** (msi) | 1.4× | 1664 | 0.99979 | 0.85 |
+| **CUDA** (NVIDIA) | 1.4× | 1664 | 0.99979 | 0.85 |
 
 Parity holds (cosine 1.0 / 0.99992-Metal; whisper 0.85 — luxtts's known espeak-vowel
 coverage). **CoreML** runs all three subgraphs on `Device::Ane` when compute units
@@ -120,12 +120,12 @@ Next CPU targets from the post-fix profile: `Transpose` (39 ms/430 calls), `Conv
   Compile OK for OpenVoice tones, MeloTTS encoder, MioTTS codec, MiraTTS
   detokenizer.
 
-## 2026-07-18 MSI CUDA + Vulkan + Mac CoreML (matrix harness)
+## 2026-07-18 NVIDIA CUDA + Vulkan + Mac CoreML (matrix harness)
 
-Host: `ssh msi` (RTX 3080 Ti Laptop) via `just matrix-remote`; Mac CoreML via
+Host: the remote CUDA host `RLX_CUDA_HOST` (RTX 3080 Ti Laptop) via `just matrix-remote`; Mac CoreML via
 `just matrix BACKENDS=cpu,coreml`. Cosine = wav vs CPU baseline.
 
-### CUDA (msi) — green
+### CUDA (NVIDIA) — green
 | model | cos vs CPU | notes |
 |---|---|---|
 | melotts / tiny-tts | ≈1.000 | full native |
@@ -144,7 +144,7 @@ Host: `ssh msi` (RTX 3080 Ti Laptop) via `just matrix-remote`; Mac CoreML via
 | moss-nano | **fixed 2026-07-18** — bucketed prefill + CUDA prefill on by default (~39s fox); codec still CPU |
 | gepard AR | still CPU unless `RLX_GEPARD_CUDA_AR=1` |
 
-### Vulkan (msi) — 2026-07-19 true-Vulkan pass
+### Vulkan (NVIDIA) — 2026-07-19 true-Vulkan pass
 
 **Root causes fixed in `rlx-vulkan` (local `../rlx`):**
 1. **Arena > `maxStorageBufferRange` (~4 GiB)** — bump allocator → all-zero bindings (silent fox). Switched to `plan_memory_f32_uniform` liveness reuse; **param/act split** + **activation striping** (wgpu-style snap into ≤4 GiB shards with stage reserve) when acts alone exceed the limit (F5 DiT).
@@ -169,7 +169,7 @@ Silent `RLX_*_VULKAN` remaps removed for kokoro / styletts2 / supertonic / moss-
 
 | luxtts | ✅ loads on Vulkan | `num_frames` floored to `tp+1` (no prompt-length CLI trip) |
 
-### MSI matrix (2026-07-19)
+### NVIDIA matrix (2026-07-19)
 
 `BACKENDS=cuda,vulkan` (cpu omitted by harness arg quirk): melotts / tiny-tts /
 kokoro / styletts2 / supertonic / moss-nano / sesame **PASS** on both. LuxTTS
@@ -179,7 +179,7 @@ need re-gate after striping + Vulkan-AR→CPU.
 
 **2026-07-19 follow-up (Mac + rlx local):** ChatterBox cpu/metal/mlx fox 6/6
 cos 1.0 after clearing stale AOT. Vulkan striping + F5 true-DiT + Gepard
-Vulkan-AR→CPU land pending MSI re-run (host unreachable this session).
+Vulkan-AR→CPU land pending NVIDIA re-run (host unreachable this session).
 
 ### CoreML (Mac)
 

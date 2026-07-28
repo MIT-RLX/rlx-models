@@ -49,13 +49,13 @@ pub const HF_REPO: &str = "eugenehp/rlx-asr";
 
 pub use beam::StreamingCtcBeam;
 pub use effective_decoder::EffectiveStep1;
-pub use env::{asr_dir, asr_dir_env, timing, AsrPaths};
+pub use env::{AsrPaths, asr_dir, asr_dir_env, timing};
 pub use gguf_io::{
-    pack_asr_gguf, pack_asr_rlxp, resolve_gguf_path, resolve_pack_path, resolve_rlxp_path,
-    AsrGguf, AsrPack, AsrRlxp, DEFAULT_GGUF_NAME, DEFAULT_RLXP_NAME,
+    AsrGguf, AsrPack, AsrRlxp, DEFAULT_GGUF_NAME, DEFAULT_RLXP_NAME, pack_asr_gguf, pack_asr_rlxp,
+    resolve_gguf_path, resolve_pack_path, resolve_rlxp_path,
 };
-pub use k_codebook::{affine_group, KCodebook, TextKLayer, TEXT_K_LAYERS};
-pub use ls_projections::{LsProjections, LsVLayer, ATT_V_HEAD_DIM, ATT_V_OUT};
+pub use k_codebook::{KCodebook, TEXT_K_LAYERS, TextKLayer, affine_group};
+pub use ls_projections::{ATT_V_HEAD_DIM, ATT_V_OUT, LsProjections, LsVLayer};
 pub use pipeline::{AsrSession, StreamingAsr, Transcript};
-pub use units::Units;
 pub use spec::{BEAM, BLANK, EOS, MEL_BINS, SOS, VOCAB};
+pub use units::Units;

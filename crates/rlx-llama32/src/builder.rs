@@ -3,7 +3,7 @@
 //
 // LLaMA-3.2 graph builder — GQA + RoPE + SwiGLU, no QK-norm.
 
-use crate::config::Llama32Config;
+use crate::config::{DenseArch, Llama32Config, NormKind};
 use crate::rope::{build_rope_tables, resolve_inv_freq, rope_slice};
 use anyhow::{Result, anyhow, bail};
 use rlx_core::weight_loader::WeightLoader;
@@ -144,6 +144,7 @@ fn build_llama32_graph_sized_impl(
         with_lm_head,
         with_kv_outputs,
         last_logits_only,
+        inputs_embeds: false,
         profile: None,
     };
     rlx_core::flow_util::graph_from_built(crate::flow::build_llama32_prefill_built(
@@ -175,6 +176,7 @@ fn build_llama32_hir_sized_impl(
         with_lm_head,
         with_kv_outputs,
         last_logits_only,
+        inputs_embeds: false,
         profile: None,
     };
     build_llama32_prefill_flow(cfg, weights, &opts)
@@ -399,6 +401,42 @@ fn synth_zero(
     id
 }
 
+/// Multiply a graph node by a constant scalar via a broadcast `[1]` param
+/// (mirrors rlx-flow `EmbedScaleStage`). Used for the Granite embedding /
+/// residual / logit multipliers. `name` must be unique per scale site.
+fn scale_by(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    x: NodeId,
+    name: &str,
+    scale: f32,
+) -> NodeId {
+    let sid = if let Some(id) = g.param_id(name) {
+        id
+    } else {
+        let id = g.param(name, Shape::new(&[1], DType::F32));
+        params.insert(name.to_string(), vec![scale]);
+        id
+    };
+    g.mul(x, sid)
+}
+
+/// Granite attention score scale (`attention_multiplier`) → the `score_scale`
+/// argument of `Op::Attention`. `None` for non-Granite (op uses its default
+/// `1/sqrt(head_dim)`).
+fn attn_causal(
+    g: &mut Graph,
+    q: NodeId,
+    k: NodeId,
+    v: NodeId,
+    nh: usize,
+    dh: usize,
+    score_scale: Option<f32>,
+    shape: Shape,
+) -> NodeId {
+    g.attention_kind_opts(q, k, v, nh, dh, MaskKind::Causal, shape, score_scale, None)
+}
+
 /// Dequant a single embed row from packed GGUF bytes (Q4K / Q6K).
 pub(crate) fn gather_embed_row(
     packed_bytes: &[u8],
@@ -466,7 +504,7 @@ pub(crate) fn gather_embed_rows(
 /// loader exposes K-quant bytes for `key`, else as a transposed F32 param
 /// (plain `g.mm`). Shared by the packed prefill and decode builders.
 fn proj_available(
-    packed: &HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    packed: &HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
     weights: &dyn WeightLoader,
     key: &str,
 ) -> bool {
@@ -476,7 +514,7 @@ fn proj_available(
 fn load_self_attn_qkv(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
-    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    packed: &mut HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
     weights: &mut dyn WeightLoader,
     cfg: &Llama32Config,
     lp: &str,
@@ -528,7 +566,7 @@ fn load_self_attn_qkv(
 fn load_swiglu_ffn(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
-    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    packed: &mut HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
     weights: &mut dyn WeightLoader,
     cfg: &Llama32Config,
     lp: &str,
@@ -587,19 +625,29 @@ fn load_swiglu_ffn(
 fn load_proj(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
-    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    packed: &mut HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
     weights: &mut dyn WeightLoader,
     key: &str,
 ) -> Result<(NodeId, Option<rlx_ir::quant::QuantScheme>, Vec<usize>)> {
     if let Some(id) = g.param_id(key) {
-        if let Some((_bytes, scheme, shape)) = packed.get(key) {
+        if let Some((scheme, shape)) = packed.get(key) {
             return Ok((id, Some(*scheme), shape.clone()));
         }
         return Ok((id, None, Vec::new()));
     }
-    if let Some((bytes, scheme, shape)) = weights.take_packed(key)? {
-        let id = g.param(key, Shape::new(&[bytes.len()], DType::U8));
-        packed.insert(key.to_string(), (bytes, scheme, shape.clone()));
+    // Zero-copy packed path: read (scheme, shape) non-destructively and reserve
+    // the U8 param slot by byte length, WITHOUT materializing the quantized
+    // bytes. The bytes are uploaded straight from the loader's mmap after
+    // compile (see `upload_packed_borrowed`), so the model isn't duplicated in
+    // RSS. Loaders without a zero-copy path (`packed_meta` → None) fall through
+    // to the F32 dequant branch.
+    if let Some((scheme, shape)) = weights.packed_meta(key) {
+        let nbytes = weights
+            .tensor_bytes_borrowed(key)
+            .ok_or_else(|| anyhow!("packed weight {key}: metadata present but bytes unavailable"))?
+            .len();
+        let id = g.param(key, Shape::new(&[nbytes], DType::U8));
+        packed.insert(key.to_string(), (scheme, shape.clone()));
         Ok((id, Some(scheme), shape))
     } else {
         let nid = load_p(g, params, weights, key, true)?;
@@ -619,6 +667,430 @@ fn emit_proj(
     match scheme {
         Some(s) => g.add_node(Op::DequantMatMul { scheme: s }, vec![input, w], out_shape),
         None => g.mm(input, w),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Per-arch block deltas (OLMo-2 / Nemotron / Cohere / GLM-4 / ChatGLM).
+//
+// Each dense arch reuses the Llama qkv-proj + RoPE + attention + o_proj core;
+// only the *normalization placement/kind*, *FFN shape*, and *residual wiring*
+// differ. The packed prefill and decode builders share these helpers so the
+// arch topology is defined once. `DenseArch::Llama` reproduces the stock
+// Llama/Granite/Phi block byte-for-byte.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Fetch (or create once) a zero bias node of length `len` under `name`.
+fn zero_beta_named(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    name: &str,
+    len: usize,
+) -> NodeId {
+    if let Some(id) = g.param_id(name) {
+        return id;
+    }
+    synth_zero(g, params, name, len)
+}
+
+/// Arch-aware per-layer normalization over the last (hidden) axis: RMSNorm for
+/// Llama / OLMo-2 / GLM, mean-subtracting LayerNorm for Nemotron (`bias_key`)
+/// and Cohere (no bias → zero beta).
+#[allow(clippy::too_many_arguments)]
+fn emit_norm(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    weights: &mut dyn WeightLoader,
+    cfg: &Llama32Config,
+    weight_key: &str,
+    bias_key: Option<&str>,
+    x: NodeId,
+    eps: f32,
+    zero_beta: NodeId,
+) -> Result<NodeId> {
+    let w = load_p(g, params, weights, weight_key, false)?;
+    match cfg.norm_kind() {
+        NormKind::Rms => Ok(g.rms_norm(x, w, zero_beta, eps)),
+        NormKind::LayerNorm => {
+            let beta = match bias_key {
+                Some(bk) => load_p(g, params, weights, bk, false)?,
+                None => zero_beta,
+            };
+            Ok(g.ln(x, w, beta, eps))
+        }
+    }
+}
+
+/// OLMo-2 applies an RMSNorm over the FULL Q/K projection (`[n_heads·head_dim]`)
+/// between the q/k projections and RoPE. No-op for every other arch.
+fn emit_qk_norm(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    weights: &mut dyn WeightLoader,
+    cfg: &Llama32Config,
+    weight_idx: usize,
+    q: NodeId,
+    k: NodeId,
+    eps: f32,
+) -> Result<(NodeId, NodeId)> {
+    if cfg.dense_arch() != DenseArch::Olmo2 {
+        return Ok((q, k));
+    }
+    let zb_q = zero_beta_named(g, params, "olmo2.zero_beta.q", cfg.q_proj_dim());
+    let zb_kv = zero_beta_named(g, params, "olmo2.zero_beta.kv", cfg.kv_proj_dim());
+    let qn = load_p(
+        g,
+        params,
+        weights,
+        &format!("blk.{weight_idx}.attn_q_norm.weight"),
+        false,
+    )?;
+    let kn = load_p(
+        g,
+        params,
+        weights,
+        &format!("blk.{weight_idx}.attn_k_norm.weight"),
+        false,
+    )?;
+    Ok((g.rms_norm(q, qn, zb_q, eps), g.rms_norm(k, kn, zb_kv, eps)))
+}
+
+/// Arch-aware FFN (through `down_proj`): SwiGLU for Llama/OLMo-2/Cohere (split
+/// gate/up), fused gate∥up SwiGLU for GLM, gate-less squared-ReLU for Nemotron.
+#[allow(clippy::too_many_arguments)]
+fn emit_arch_ffn(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    packed: &mut HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    weights: &mut dyn WeightLoader,
+    cfg: &Llama32Config,
+    lp: &str,
+    batch: usize,
+    seq: usize,
+    ffn_in: NodeId,
+    f: DType,
+) -> Result<NodeId> {
+    let inter = cfg.intermediate_size;
+    let hh = cfg.hidden_size;
+    let act = match cfg.dense_arch() {
+        DenseArch::Nemotron => {
+            // Gate-less squared-ReLU: down(relu(up(x))²).
+            let (up_w, up_s, _) = load_proj(
+                g,
+                params,
+                packed,
+                weights,
+                &format!("{lp}.mlp.up_proj.weight"),
+            )?;
+            let up = emit_proj(g, ffn_in, up_w, up_s, Shape::new(&[batch, seq, inter], f));
+            let r = g.relu(up);
+            g.mul(r, r)
+        }
+        DenseArch::Glm4 | DenseArch::ChatGlm => {
+            // GLM fuses gate∥up into a single `ffn_up` of width 2·inter; the
+            // first half is the gate (SiLU), the second is the up projection
+            // (matches llama.cpp `LLM_FFN_SWIGLU`'s split order).
+            let (gu_w, gu_s, _) = load_proj(
+                g,
+                params,
+                packed,
+                weights,
+                &format!("{lp}.mlp.up_proj.weight"),
+            )?;
+            let combined = emit_proj(
+                g,
+                ffn_in,
+                gu_w,
+                gu_s,
+                Shape::new(&[batch, seq, inter * 2], f),
+            );
+            let gate = g.narrow_(combined, 2, 0, inter);
+            let up = g.narrow_(combined, 2, inter, inter);
+            let ga = g.silu(gate);
+            g.mul(ga, up)
+        }
+        _ => {
+            let (gate, up) =
+                load_swiglu_ffn(g, params, packed, weights, cfg, lp, batch, seq, ffn_in, f)?;
+            let ga = g.silu(gate);
+            g.mul(ga, up)
+        }
+    };
+    let (down_w, down_s, _) = load_proj(
+        g,
+        params,
+        packed,
+        weights,
+        &format!("{lp}.mlp.down_proj.weight"),
+    )?;
+    Ok(emit_proj(
+        g,
+        act,
+        down_w,
+        down_s,
+        Shape::new(&[batch, seq, hh], f),
+    ))
+}
+
+/// Emit the pre-attention normalization. Returns `(attn_in, ffn_parallel)`:
+/// `attn_in` feeds the q/k/v projections; `ffn_parallel` is `Some` only for
+/// Cohere's parallel residual (the same normed input also feeds the MLP).
+#[allow(clippy::too_many_arguments)]
+fn emit_input_stage(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    weights: &mut dyn WeightLoader,
+    cfg: &Llama32Config,
+    lp: &str,
+    weight_idx: usize,
+    h_id: NodeId,
+    eps: f32,
+    zero_beta_hidden: NodeId,
+) -> Result<(NodeId, Option<NodeId>)> {
+    match cfg.dense_arch() {
+        // OLMo-2 has no pre-attention norm — attention reads the residual stream.
+        DenseArch::Olmo2 => Ok((h_id, None)),
+        DenseArch::Cohere => {
+            let n = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("{lp}.input_layernorm.weight"),
+                None,
+                h_id,
+                eps,
+                zero_beta_hidden,
+            )?;
+            Ok((n, Some(n)))
+        }
+        _ => {
+            let bias = (cfg.dense_arch() == DenseArch::Nemotron)
+                .then(|| format!("blk.{weight_idx}.attn_norm.bias"));
+            let n = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("{lp}.input_layernorm.weight"),
+                bias.as_deref(),
+                h_id,
+                eps,
+                zero_beta_hidden,
+            )?;
+            Ok((n, None))
+        }
+    }
+}
+
+/// Emit the post-attention norm + FFN + residual wiring for one block, returning
+/// the new residual-stream value. `attn_out` is the raw `o_proj` output (before
+/// any residual scaling); `ffn_parallel` carries Cohere's shared normed input.
+#[allow(clippy::too_many_arguments)]
+fn emit_output_stage(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    packed: &mut HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    weights: &mut dyn WeightLoader,
+    cfg: &Llama32Config,
+    lp: &str,
+    weight_idx: usize,
+    batch: usize,
+    seq: usize,
+    h_id: NodeId,
+    attn_out: NodeId,
+    ffn_parallel: Option<NodeId>,
+    eps: f32,
+    zero_beta_hidden: NodeId,
+    f: DType,
+) -> Result<NodeId> {
+    match cfg.dense_arch() {
+        DenseArch::Cohere => {
+            // Parallel residual: h = x + attn(ln(x)) + mlp(ln(x)).
+            let ffn_in = ffn_parallel
+                .ok_or_else(|| anyhow!("cohere parallel residual missing shared norm"))?;
+            let ffn_out =
+                emit_arch_ffn(g, params, packed, weights, cfg, lp, batch, seq, ffn_in, f)?;
+            let s1 = g.add(h_id, attn_out);
+            Ok(g.add(s1, ffn_out))
+        }
+        DenseArch::Olmo2 => {
+            // post-attn RMSNorm on the attention output, then residual; NO
+            // pre-FFN norm; post-FFN RMSNorm before the FFN residual add.
+            let post_attn_n = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("blk.{weight_idx}.post_attention_norm.weight"),
+                None,
+                attn_out,
+                eps,
+                zero_beta_hidden,
+            )?;
+            let post_attn = g.add(h_id, post_attn_n);
+            let ffn_raw = emit_arch_ffn(
+                g, params, packed, weights, cfg, lp, batch, seq, post_attn, f,
+            )?;
+            let ffn_n = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("blk.{weight_idx}.post_ffw_norm.weight"),
+                None,
+                ffn_raw,
+                eps,
+                zero_beta_hidden,
+            )?;
+            Ok(g.add(post_attn, ffn_n))
+        }
+        DenseArch::Glm4 => {
+            // 4 RMSNorms: (pre-attn already applied) → post-attn → pre-ffn → post-ffn.
+            let post_attn_n = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("blk.{weight_idx}.attn_post_norm.weight"),
+                None,
+                attn_out,
+                eps,
+                zero_beta_hidden,
+            )?;
+            let ffn_inp = g.add(h_id, post_attn_n);
+            let normed = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("{lp}.post_attention_layernorm.weight"),
+                None,
+                ffn_inp,
+                eps,
+                zero_beta_hidden,
+            )?;
+            let ffn_raw =
+                emit_arch_ffn(g, params, packed, weights, cfg, lp, batch, seq, normed, f)?;
+            let ffn_n = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("blk.{weight_idx}.ffn_post_norm.weight"),
+                None,
+                ffn_raw,
+                eps,
+                zero_beta_hidden,
+            )?;
+            Ok(g.add(ffn_inp, ffn_n))
+        }
+        DenseArch::Nemotron => {
+            let post_attn = g.add(h_id, attn_out);
+            let bias = format!("blk.{weight_idx}.ffn_norm.bias");
+            let normed = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("{lp}.post_attention_layernorm.weight"),
+                Some(&bias),
+                post_attn,
+                eps,
+                zero_beta_hidden,
+            )?;
+            let ffn_out =
+                emit_arch_ffn(g, params, packed, weights, cfg, lp, batch, seq, normed, f)?;
+            Ok(g.add(post_attn, ffn_out))
+        }
+        DenseArch::Llama | DenseArch::ChatGlm => {
+            // Stock Llama block (+ Granite residual multipliers). ChatGLM reuses
+            // it (pre-norm + pre-ffn norm); its fused gate∥up MLP is handled in
+            // `emit_arch_ffn`.
+            let attn_out = match cfg.residual_scale {
+                Some(rs) => scale_by(
+                    g,
+                    params,
+                    attn_out,
+                    &format!("granite.res_scale.attn.{weight_idx}"),
+                    rs,
+                ),
+                None => attn_out,
+            };
+            let post_attn = g.add(h_id, attn_out);
+            let normed_post = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("{lp}.post_attention_layernorm.weight"),
+                None,
+                post_attn,
+                eps,
+                zero_beta_hidden,
+            )?;
+            let ffn_out = emit_arch_ffn(
+                g,
+                params,
+                packed,
+                weights,
+                cfg,
+                lp,
+                batch,
+                seq,
+                normed_post,
+                f,
+            )?;
+            let ffn_out = match cfg.residual_scale {
+                Some(rs) => scale_by(
+                    g,
+                    params,
+                    ffn_out,
+                    &format!("granite.res_scale.ffn.{weight_idx}"),
+                    rs,
+                ),
+                None => ffn_out,
+            };
+            Ok(g.add(post_attn, ffn_out))
+        }
+    }
+}
+
+/// Arch-aware final norm (before the LM head) — same kinds as [`emit_norm`],
+/// with Nemotron's `output_norm.bias`.
+fn emit_final_norm(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    weights: &mut dyn WeightLoader,
+    cfg: &Llama32Config,
+    h_id: NodeId,
+    eps: f32,
+    zero_beta_hidden: NodeId,
+) -> Result<NodeId> {
+    let bias = (cfg.dense_arch() == DenseArch::Nemotron).then_some("output_norm.bias");
+    emit_norm(
+        g,
+        params,
+        weights,
+        cfg,
+        "model.norm.weight",
+        bias,
+        h_id,
+        eps,
+        zero_beta_hidden,
+    )
+}
+
+/// Apply the arch's final logit scaling (Cohere multiplies, Granite divides).
+fn apply_logit_scale(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    cfg: &Llama32Config,
+    logits: NodeId,
+) -> NodeId {
+    match cfg.final_logit_multiplier() {
+        Some(m) => scale_by(g, params, logits, "arch.logit_scale", m),
+        None => logits,
     }
 }
 
@@ -646,7 +1118,7 @@ fn emit_proj(
 fn load_packed_embed(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
-    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    packed: &mut HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
     weights: &mut dyn WeightLoader,
     cfg: &Llama32Config,
     batch: usize,
@@ -655,15 +1127,25 @@ fn load_packed_embed(
     embed_host: &mut Option<(Vec<u8>, rlx_ir::quant::QuantScheme)>,
 ) -> Result<(NodeId, Option<(NodeId, rlx_ir::quant::QuantScheme)>)> {
     let key = "model.embed_tokens.weight";
-    if let Some((bytes, scheme, shape)) = weights.take_packed(key)? {
-        *embed_host = Some((bytes.clone(), scheme));
+    if let Some((scheme, shape)) = weights.packed_meta(key) {
+        // The embed stays packed. Keep ONE owned copy of its bytes for the
+        // host-side lazy gather (`embed_host`): the prefill loader is dropped
+        // after build, so this single tensor can't be borrowed at runtime. The
+        // tied LM-head param (if any) carries metadata only and is uploaded
+        // zero-copy from the loader at attach time, like every other matmul.
+        let bytes = weights
+            .tensor_bytes_borrowed(key)
+            .ok_or_else(|| anyhow!("packed embed {key}: bytes unavailable"))?
+            .to_vec();
+        let nbytes = bytes.len();
+        *embed_host = Some((bytes, scheme));
         let h_in = g.input(
             "input_embeddings",
             Shape::new(&[batch, seq, cfg.hidden_size], DType::F32),
         );
         let tied = if want_head && cfg.tie_word_embeddings {
-            let id = g.param(key, Shape::new(&[bytes.len()], DType::U8));
-            packed.insert(key.to_string(), (bytes, scheme, shape));
+            let id = g.param(key, Shape::new(&[nbytes], DType::U8));
+            packed.insert(key.to_string(), (scheme, shape));
             Some((id, scheme))
         } else {
             None
@@ -687,7 +1169,7 @@ pub fn build_llama32_graph_sized_packed(
     with_lm_head: bool,
     last_logits_only: bool,
     with_kv_outputs: bool,
-    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    packed: &mut HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
     embed_host: &mut Option<(Vec<u8>, rlx_ir::quant::QuantScheme)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
     validate_cfg(cfg)?;
@@ -730,6 +1212,11 @@ pub fn build_llama32_graph_sized_packed(
         with_lm_head,
         embed_host,
     )?;
+    // Granite: multiply input embeddings by `embedding_multiplier`.
+    if let Some(es) = cfg.embedding_scale {
+        h_id = scale_by(&mut g, &mut params, h_id, "granite.embed_scale", es);
+    }
+    let score_scale = cfg.attn_score_scale();
     let last_token_idx = if last_logits_only {
         Some(g.input("last_token_idx", Shape::new(&[batch], DType::F32)))
     } else {
@@ -743,14 +1230,19 @@ pub fn build_llama32_graph_sized_packed(
         let weight_idx = cfg.weight_layer_index(exec_idx);
         let lp = format!("model.layers.{weight_idx}");
 
-        let in_ln_g = load_p(
+        // Arch-aware pre-attention norm (OLMo-2 has none; Cohere shares it with
+        // the MLP for the parallel residual).
+        let (attn_in, ffn_parallel) = emit_input_stage(
             &mut g,
             &mut params,
             weights,
-            &format!("{lp}.input_layernorm.weight"),
-            false,
+            cfg,
+            &lp,
+            weight_idx,
+            h_id,
+            eps,
+            zero_beta_hidden,
         )?;
-        let normed_in = g.rms_norm(h_id, in_ln_g, zero_beta_hidden, eps);
 
         let (q, k, v) = load_self_attn_qkv(
             &mut g,
@@ -761,15 +1253,25 @@ pub fn build_llama32_graph_sized_packed(
             &lp,
             batch,
             seq,
-            normed_in,
+            attn_in,
             f,
         )?;
+        // OLMo-2: RMSNorm the full Q/K projection before RoPE (no-op otherwise).
+        let (q, k) = emit_qk_norm(&mut g, &mut params, weights, cfg, weight_idx, q, k, eps)?;
 
         // GGUF Llama → interleaved/GPT-J RoPE flavor (mirror the decode-packed
         // builder `build_llama32_decode_graph_sized_packed`). Plain `g.rope`
         // applies NeoX rotation, which corrupts packed-prefill KV for GGUF
         // checkpoints and makes Metal-decode diverge from the CPU F32 reference.
-        let (q_rope, k_rope) = apply_qk_rope(&mut g, q, k, cos_id, sin_id, cfg);
+        // Cohere2 skips RoPE on its global (full-attention) layers (NoPE).
+        let cohere2_nope = cfg
+            .cohere2_nope_pattern()
+            .is_some_and(|p| (weight_idx + 1) % p == 0);
+        let (q_rope, k_rope) = if cohere2_nope {
+            (q, k)
+        } else {
+            apply_qk_rope(&mut g, q, k, cos_id, sin_id, cfg)
+        };
         if with_kv_outputs {
             kv_outputs.push((k_rope, v));
         }
@@ -778,7 +1280,16 @@ pub fn build_llama32_graph_sized_packed(
         let v_rep = repeat_kv(&mut g, v, nkv, dh, group);
 
         let attn_shape = shape::attention_shape(g.shape(q_rope));
-        let attn = g.attention_kind(q_rope, k_rep, v_rep, nh, dh, MaskKind::Causal, attn_shape);
+        let attn = attn_causal(
+            &mut g,
+            q_rope,
+            k_rep,
+            v_rep,
+            nh,
+            dh,
+            score_scale,
+            attn_shape,
+        );
 
         let (o_w, o_s, _) = load_proj(
             &mut g,
@@ -788,46 +1299,25 @@ pub fn build_llama32_graph_sized_packed(
             &format!("{lp}.self_attn.o_proj.weight"),
         )?;
         let attn_out = emit_proj(&mut g, attn, o_w, o_s, Shape::new(&[batch, seq, h], f));
-        let post_attn = g.add(h_id, attn_out);
 
-        let post_ln_g = load_p(
-            &mut g,
-            &mut params,
-            weights,
-            &format!("{lp}.post_attention_layernorm.weight"),
-            false,
-        )?;
-        let normed_post = g.rms_norm(post_attn, post_ln_g, zero_beta_hidden, eps);
-
-        let (gate, up) = load_swiglu_ffn(
+        // Arch-aware post-attention norm + FFN + residual wiring.
+        h_id = emit_output_stage(
             &mut g,
             &mut params,
             packed,
             weights,
             cfg,
             &lp,
+            weight_idx,
             batch,
             seq,
-            normed_post,
+            h_id,
+            attn_out,
+            ffn_parallel,
+            eps,
+            zero_beta_hidden,
             f,
         )?;
-        let (down_w, down_s, _) = load_proj(
-            &mut g,
-            &mut params,
-            packed,
-            weights,
-            &format!("{lp}.mlp.down_proj.weight"),
-        )?;
-        let gate_act = g.silu(gate);
-        let swiglu = g.mul(gate_act, up);
-        let ffn_out = emit_proj(
-            &mut g,
-            swiglu,
-            down_w,
-            down_s,
-            Shape::new(&[batch, seq, h], f),
-        );
-        h_id = g.add(post_attn, ffn_out);
 
         let loop_end = physical > 0 && (exec_idx + 1) % physical == 0;
         let last_exec = exec_idx + 1 == kv_layers;
@@ -837,8 +1327,15 @@ pub fn build_llama32_graph_sized_packed(
         }
     }
 
-    let final_ln_g = load_p(&mut g, &mut params, weights, "model.norm.weight", false)?;
-    let hidden = g.rms_norm(h_id, final_ln_g, zero_beta_hidden, eps);
+    let hidden = emit_final_norm(
+        &mut g,
+        &mut params,
+        weights,
+        cfg,
+        h_id,
+        eps,
+        zero_beta_hidden,
+    )?;
 
     let out = if with_lm_head {
         let head_input = if last_logits_only {
@@ -876,7 +1373,7 @@ pub fn build_llama32_graph_sized_packed(
                 load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
             (id, scheme)
         };
-        emit_proj(
+        let logits = emit_proj(
             &mut g,
             head_input,
             lm_head_w,
@@ -889,7 +1386,9 @@ pub fn build_llama32_graph_sized_packed(
                 ],
                 f,
             ),
-        )
+        );
+        // Granite divides by `logits_scaling`; Cohere multiplies by `logit_scale`.
+        apply_logit_scale(&mut g, &mut params, cfg, logits)
     } else {
         hidden
     };
@@ -950,7 +1449,7 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
     past_seq: usize,
     use_custom_mask: bool,
     with_lm_head: bool,
-    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    packed: &mut HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
     validate_cfg(cfg)?;
 
@@ -1002,6 +1501,11 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
         with_lm_head,
         &mut embed_host,
     )?;
+    // Granite: multiply input embeddings by `embedding_multiplier`.
+    if let Some(es) = cfg.embedding_scale {
+        h_id = scale_by(&mut g, &mut params, h_id, "granite.embed_scale", es);
+    }
+    let score_scale = cfg.attn_score_scale();
 
     // Per-layer past K/V cache inputs (unrolled across loops).
     let kv_layers = cfg.kv_layers();
@@ -1032,14 +1536,18 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
         let weight_idx = cfg.weight_layer_index(exec_idx);
         let lp = format!("model.layers.{weight_idx}");
 
-        let in_ln_g = load_p(
+        // Arch-aware pre-attention norm (OLMo-2 has none; Cohere shares it).
+        let (attn_in, ffn_parallel) = emit_input_stage(
             &mut g,
             &mut params,
             weights,
-            &format!("{lp}.input_layernorm.weight"),
-            false,
+            cfg,
+            &lp,
+            weight_idx,
+            h_id,
+            eps,
+            zero_beta_hidden,
         )?;
-        let normed_in = g.rms_norm(h_id, in_ln_g, zero_beta_hidden, eps);
 
         let (q, k, v) = load_self_attn_qkv(
             &mut g,
@@ -1050,12 +1558,21 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
             &lp,
             batch,
             1,
-            normed_in,
+            attn_in,
             f,
         )?;
+        // OLMo-2: RMSNorm the full Q/K projection before RoPE (no-op otherwise).
+        let (q, k) = emit_qk_norm(&mut g, &mut params, weights, cfg, weight_idx, q, k, eps)?;
 
-        // GGUF Llama → interleaved/GPT-J RoPE flavor.
-        let (q_rope, k_rope) = apply_qk_rope(&mut g, q, k, cos_id, sin_id, cfg);
+        // GGUF Llama → interleaved/GPT-J RoPE flavor. Cohere2 global layers = NoPE.
+        let cohere2_nope = cfg
+            .cohere2_nope_pattern()
+            .is_some_and(|p| (weight_idx + 1) % p == 0);
+        let (q_rope, k_rope) = if cohere2_nope {
+            (q, k)
+        } else {
+            apply_qk_rope(&mut g, q, k, cos_id, sin_id, cfg)
+        };
 
         // Append the new token to the cached KV, export the full buffers.
         let new_k = g.concat_(vec![past_k_ids[exec_idx], k_rope], 1);
@@ -1067,8 +1584,27 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
 
         let attn_shape = shape::attention_shape(g.shape(q_rope));
         let attn = match mask_id {
-            Some(m) => g.attention(q_rope, k_rep, v_rep, m, nh, dh, attn_shape),
-            None => g.attention_kind(q_rope, k_rep, v_rep, nh, dh, MaskKind::Causal, attn_shape),
+            Some(m) => g.attention_opts(
+                q_rope,
+                k_rep,
+                v_rep,
+                m,
+                nh,
+                dh,
+                attn_shape,
+                score_scale,
+                None,
+            ),
+            None => attn_causal(
+                &mut g,
+                q_rope,
+                k_rep,
+                v_rep,
+                nh,
+                dh,
+                score_scale,
+                attn_shape,
+            ),
         };
 
         let (o_w, o_s, _) = load_proj(
@@ -1079,46 +1615,25 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
             &format!("{lp}.self_attn.o_proj.weight"),
         )?;
         let attn_out = emit_proj(&mut g, attn, o_w, o_s, Shape::new(&[batch, 1, h], f));
-        let post_attn = g.add(h_id, attn_out);
 
-        let post_ln_g = load_p(
-            &mut g,
-            &mut params,
-            weights,
-            &format!("{lp}.post_attention_layernorm.weight"),
-            false,
-        )?;
-        let normed_post = g.rms_norm(post_attn, post_ln_g, zero_beta_hidden, eps);
-
-        let (gate, up) = load_swiglu_ffn(
+        // Arch-aware post-attention norm + FFN + residual wiring.
+        h_id = emit_output_stage(
             &mut g,
             &mut params,
             packed,
             weights,
             cfg,
             &lp,
+            weight_idx,
             batch,
             1,
-            normed_post,
+            h_id,
+            attn_out,
+            ffn_parallel,
+            eps,
+            zero_beta_hidden,
             f,
         )?;
-        let (down_w, down_s, _) = load_proj(
-            &mut g,
-            &mut params,
-            packed,
-            weights,
-            &format!("{lp}.mlp.down_proj.weight"),
-        )?;
-        let gate_act = g.silu(gate);
-        let swiglu = g.mul(gate_act, up);
-        let ffn_out = emit_proj(
-            &mut g,
-            swiglu,
-            down_w,
-            down_s,
-            Shape::new(&[batch, 1, h], f),
-        );
-        h_id = g.add(post_attn, ffn_out);
 
         let loop_end = physical > 0 && (exec_idx + 1) % physical == 0;
         let last_exec = exec_idx + 1 == kv_layers;
@@ -1128,8 +1643,15 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
         }
     }
 
-    let final_ln_g = load_p(&mut g, &mut params, weights, "model.norm.weight", false)?;
-    let hidden = g.rms_norm(h_id, final_ln_g, zero_beta_hidden, eps);
+    let hidden = emit_final_norm(
+        &mut g,
+        &mut params,
+        weights,
+        cfg,
+        h_id,
+        eps,
+        zero_beta_hidden,
+    )?;
 
     let out = if with_lm_head {
         // Decode is always last-position (seq == 1), so no gather is needed.
@@ -1160,13 +1682,15 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
                 load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
             (id, scheme)
         };
-        emit_proj(
+        let logits = emit_proj(
             &mut g,
             hidden,
             lm_head_w,
             lm_head_scheme,
             Shape::new(&[batch, 1, cfg.vocab_size], f),
-        )
+        );
+        // Granite divides by `logits_scaling`; Cohere multiplies by `logit_scale`.
+        apply_logit_scale(&mut g, &mut params, cfg, logits)
     } else {
         hidden
     };
@@ -1187,7 +1711,7 @@ pub fn build_llama32_decode_graph_sized_packed(
     batch: usize,
     past_seq: usize,
     use_custom_mask: bool,
-    packed: &mut HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    packed: &mut HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
     build_llama32_decode_graph_sized_packed_ext(
         cfg,

@@ -25,12 +25,8 @@ const BRAND_TEXT: &str = "Hello from the Soprano model.";
 fn soprano_bundle_present(dir: &std::path::Path) -> bool {
     dir.join("soprano.rlxp").is_file()
         || dir.join("soprano.gguf").is_file()
-        || dir
-            .join("graphs/soprano_backbone_kv_fp32.rlxp")
-            .is_file()
-        || dir
-            .join("onnx/soprano_backbone_kv_fp32.onnx")
-            .is_file()
+        || dir.join("graphs/soprano_backbone_kv_fp32.rlxp").is_file()
+        || dir.join("onnx/soprano_backbone_kv_fp32.onnx").is_file()
 }
 
 fn main() -> anyhow::Result<()> {

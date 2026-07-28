@@ -185,7 +185,9 @@ fn run() -> Result<()> {
         (Some(t), None) => model.synthesize_text(&t, &ctrl, &vocoder)?,
         (None, Some(p)) => model.synthesize_phone_string(&p, &ctrl, &vocoder)?,
         (Some(_), Some(_)) => bail!("pass only one of --text or --phones"),
-        (None, None) => bail!("pass --text, --phones, --probe-bundle, --pack-rlxp, or --pack-gguf\n\n{HELP}"),
+        (None, None) => {
+            bail!("pass --text, --phones, --probe-bundle, --pack-rlxp, or --pack-gguf\n\n{HELP}")
+        }
     };
 
     write_wav(&audio, &out)?;

@@ -1,0 +1,43 @@
+# Example: DeepSeek-V4-Flash across a heterogeneous cluster.
+#
+# Three nodes of different hardware share one model. The coordinator (the node
+# you launch on) probes each node, plans a RAM-balanced layer split, launches
+# the remote workers over SSH, and drives a forward pass. Every node keeps its
+# own device / precision / KV placement.
+#
+# Replace the addresses, `ssh` aliases, and `ckpt_dir` paths with your own.
+# `addr` is the host:port the worker binds/serves on; `ssh` is an alias from
+# your `~/.ssh/config` (so key-based, non-interactive login already works).
+model = "mlx-community/DeepSeek-V4-Flash-2bit-DQ"
+seq = 6
+rng_seed = 42
+reserve_ram_gb = 1.0
+
+[placement]
+policy = "ram_balanced"
+
+[[node]]                              # coordinator + stage 0 — runs locally and holds the full checkpoint
+addr = "127.0.0.1:9100"
+ckpt_dir = "/path/to/DeepSeek-V4-Flash-2bit-DQ"
+device = "metal"                      # e.g. an Apple-silicon box (unified-memory GPU)
+precision = "bf16"
+kv_cache = "host"
+max_ram_gb = 16                       # cap the layers this node takes to fit its free RAM
+
+[[node]]
+addr = "10.0.0.11:9101"
+ssh = "gpu-node"                      # ~/.ssh/config Host alias for the second box
+ckpt_dir = "/home/user/DeepSeek-V4-Flash-2bit-DQ"
+device = "cpu"                        # a small-VRAM GPU can OOM/destabilize on a big managed stage; CPU is stable
+precision = "bf16"
+kv_cache = "host"
+max_ram_gb = 58
+
+[[node]]
+addr = "10.0.0.12:9102"
+ssh = "amd-node"                      # ~/.ssh/config Host alias for the third box
+ckpt_dir = "/home/user/DeepSeek-V4-Flash-2bit-DQ"
+device = "cpu"                        # backends that host-fall-back unsupported ops run far slower than the native CPU path
+precision = "bf16"
+kv_cache = "host"
+max_ram_gb = 44

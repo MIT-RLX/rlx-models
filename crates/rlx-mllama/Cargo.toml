@@ -1,0 +1,48 @@
+[package]
+name = "rlx-mllama"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Llama-3.2-Vision (mllama) cross-attention vision-language model for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-llama32 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+safetensors = { workspace = true }
+image = { workspace = true }
+half = { workspace = true }
+tokenizers = { workspace = true }
+
+[[bin]]
+name = "rlx-mllama"
+path = "src/bin/rlx_mllama.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-llama32/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-llama32/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-llama32/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-llama32/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-llama32/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-llama32/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

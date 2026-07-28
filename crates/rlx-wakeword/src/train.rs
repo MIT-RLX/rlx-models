@@ -9,7 +9,8 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use rlx_wake::train::{
-    CnnTrainConfig, LabeledClip, SgdConfig, load_pos_neg_dirs, synth_pos_neg_dataset, train_wake_cnn,
+    CnnTrainConfig, LabeledClip, SgdConfig, load_pos_neg_dirs, synth_pos_neg_dataset,
+    train_wake_cnn,
 };
 use rlx_wake::{TernaryOpts, TrainReport, WakeCnnConfig, WakeCnnWeights};
 use std::path::{Path, PathBuf};
@@ -86,7 +87,11 @@ pub struct PhraseTrainSpec {
 }
 
 impl PhraseTrainSpec {
-    pub fn from_dirs(id: impl Into<String>, pos: impl Into<PathBuf>, neg: impl Into<PathBuf>) -> Self {
+    pub fn from_dirs(
+        id: impl Into<String>,
+        pos: impl Into<PathBuf>,
+        neg: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             id: id.into(),
             pos_dir: Some(pos.into()),
@@ -110,12 +115,7 @@ impl PhraseTrainSpec {
         Self::synth_sized(id, 8, 8, 1.2)
     }
 
-    pub fn synth_sized(
-        id: impl Into<String>,
-        n_pos: usize,
-        n_neg: usize,
-        seconds: f32,
-    ) -> Self {
+    pub fn synth_sized(id: impl Into<String>, n_pos: usize, n_neg: usize, seconds: f32) -> Self {
         Self {
             id: id.into(),
             pos_dir: None,
@@ -221,7 +221,10 @@ impl TrainBuilder {
     }
 
     pub fn run(self) -> Result<WakewordBundle> {
-        ensure!(!self.specs.is_empty(), "add at least one phrase / synth_n / phrases_dir");
+        ensure!(
+            !self.specs.is_empty(),
+            "add at least one phrase / synth_n / phrases_dir"
+        );
         train_phrases(&self.specs, &self.opts, self.out_dir.as_deref())
     }
 }
@@ -234,7 +237,11 @@ pub fn parse_phrase_arg(s: &str) -> Result<(String, Option<PathBuf>, Option<Path
         let (pos, neg) = rest
             .split_once(':')
             .ok_or_else(|| anyhow::anyhow!("--phrase ID=POS:NEG (got {s})"))?;
-        Ok((id.to_string(), Some(PathBuf::from(pos)), Some(PathBuf::from(neg))))
+        Ok((
+            id.to_string(),
+            Some(PathBuf::from(pos)),
+            Some(PathBuf::from(neg)),
+        ))
     } else {
         Ok((s.to_string(), None, None))
     }
@@ -268,7 +275,10 @@ pub fn specs_from_phrases_dir(dir: &Path) -> Result<Vec<PhraseTrainSpec>> {
     Ok(out)
 }
 
-pub fn train_one_phrase(spec: &PhraseTrainSpec, opts: &TrainOpts) -> Result<(WakeCnnWeights, TrainReport)> {
+pub fn train_one_phrase(
+    spec: &PhraseTrainSpec,
+    opts: &TrainOpts,
+) -> Result<(WakeCnnWeights, TrainReport)> {
     let clips = if let Some(c) = &spec.clips {
         c.clone()
     } else {

@@ -77,9 +77,7 @@ pub fn run(args: &[String]) -> Result<()> {
 
     for device in devices {
         let (_, label) = bind_streaming_device(device)?;
-        let mut sess = loaded
-            .open_session()?
-            .with_device_label(label);
+        let mut sess = loaded.open_session()?.with_device_label(label);
         let events = sess.push(&pcm);
         let cands: Vec<_> = events
             .iter()

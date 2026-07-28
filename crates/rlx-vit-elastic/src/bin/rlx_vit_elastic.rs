@@ -176,7 +176,7 @@ fn run_glare(opts: &HashMap<String, String>) -> Result<()> {
     let mut trainer = GlareTrainer::new(&cfg, &loaded, &gc, steps, device)?;
     let losses = trainer.train(&images, steps)?;
 
-    let win = losses.len().min(5).max(1);
+    let win = losses.len().clamp(1, 5);
     let first: f32 = losses.iter().take(win).sum::<f32>() / win as f32;
     let last: f32 = losses.iter().rev().take(win).sum::<f32>() / win as f32;
     println!("[glare] loss: first≈{first:.4} → last≈{last:.4} over {steps} steps");

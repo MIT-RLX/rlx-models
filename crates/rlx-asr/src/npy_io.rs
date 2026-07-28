@@ -3,7 +3,7 @@
 
 //! Minimal `.npy` / `.npz` readers for ASR weight packing.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -75,11 +75,7 @@ pub fn parse_npy(bytes: &[u8]) -> Result<NpyArray> {
     if fortran {
         data = transpose_fortran_to_c(&data, &shape, elem)?;
     }
-    Ok(NpyArray {
-        shape,
-        dtype,
-        data,
-    })
+    Ok(NpyArray { shape, dtype, data })
 }
 
 fn dtype_bytes(d: NpyDType) -> usize {
@@ -150,7 +146,10 @@ fn parse_shape(header: &str) -> Result<Vec<usize>> {
         if p.is_empty() {
             continue;
         }
-        shape.push(p.parse::<usize>().with_context(|| format!("shape dim {p}"))?);
+        shape.push(
+            p.parse::<usize>()
+                .with_context(|| format!("shape dim {p}"))?,
+        );
     }
     Ok(shape)
 }
@@ -231,8 +230,7 @@ pub fn load_npy(path: &Path) -> Result<NpyArray> {
 /// Read silence-fbank / similar whitespace-separated float text.
 pub fn read_f32_txt(path: &Path) -> Result<Vec<f32>> {
     let s = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    Ok(s
-        .split_whitespace()
+    Ok(s.split_whitespace()
         .filter_map(|t| t.parse::<f32>().ok())
         .collect())
 }

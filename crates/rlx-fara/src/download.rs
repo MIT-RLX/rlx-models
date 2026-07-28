@@ -16,9 +16,9 @@
 //! HuggingFace download helpers for Fara1.5.
 
 use crate::config::{FaraSize, default_cache_root, default_model_dir, is_model_dir};
-use anyhow::Result;
 #[cfg(feature = "hf-download")]
 use anyhow::Context;
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 fn snapshot_pointer_path(cache_root: &Path, size: FaraSize) -> PathBuf {

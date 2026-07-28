@@ -98,11 +98,80 @@ fn build_decode_flow(cfg: &LfmConfig, sink: SideOutputs) -> ModelFlow {
     flow.output("logits")
 }
 
+/// Same as [`build_decode_flow`] but takes `inputs_embeds` `[1,1,hidden]`
+/// instead of gathering from `token_id` — multimodal / VL prefill.
+fn build_decode_from_hidden_flow(cfg: &LfmConfig, sink: SideOutputs) -> ModelFlow {
+    let cfg_for_layers = cfg.clone();
+    let cfg_for_lmhead = cfg.clone();
+    let hidden = cfg.hidden_size;
+    let vocab = cfg.vocab_size;
+    let c = cfg.ssm_channels;
+    let n = cfg.ssm_state_size;
+    let layers = cfg.num_hidden_layers;
+
+    let mut flow = ModelFlow::new("lfm_decode_hidden")
+        .with_profile(CompileProfile::encoder())
+        .input("inputs_embeds", Shape::new(&[1, 1, hidden], DType::F32));
+    for l in 0..layers {
+        flow = flow.input(format!("state_in_{l}"), Shape::new(&[1, c, n], DType::F32));
+    }
+    flow = flow.plugin_named("embed", move |emit, _input| {
+        let h = emit.flow_input("inputs_embeds")?;
+        Ok(Some(h))
+    });
+
+    let sink_inner = sink.inner();
+    for l in 0..layers {
+        let cfg_l = cfg_for_layers.clone();
+        let sink_l = sink_inner.clone();
+        flow = flow.plugin_named(format!("layer_{l}_bind"), move |emit, input| {
+            let state_val = emit.flow_input(&format!("state_in_{l}"))?;
+            emit.state
+                .named
+                .insert(format!("lfm.state_in_{l}"), state_val.hir_id());
+            Ok(input)
+        });
+        flow = flow.plugin_named(
+            format!("layer_{l}"),
+            lfm_decode_layer_plugin_with_sink(cfg_l, l, Some(sink_l)),
+        );
+    }
+
+    flow = flow.plugin_named("lm_head", move |emit, input| {
+        let h_in = input.ok_or_else(|| anyhow!("lm_head requires input"))?;
+        let norm_w = emit.load_param("output_norm.weight", false)?;
+        let eps = cfg_for_lmhead.rms_norm_eps as f32;
+        let beta = emit.synth_zeros("output_norm.zero_beta", cfg_for_lmhead.hidden_size);
+        let normed = {
+            let mut gb = HirMut::new(emit.hir());
+            gb.rms_norm(h_in.hir_id(), norm_w, beta, eps)
+        };
+        let lm_w_key = if cfg_for_lmhead.tie_word_embeddings {
+            "token_embd.weight"
+        } else {
+            "output.weight"
+        };
+        let lm_w = emit.load_param(lm_w_key, true)?;
+        let mut gb = HirMut::new(emit.hir());
+        let logits = gb.mm(normed, lm_w);
+        Ok(Some(FlowValue::new(
+            logits,
+            Shape::new(&[1, 1, vocab], DType::F32),
+        )))
+    });
+
+    flow.output("logits")
+}
+
 pub struct LfmRunner {
     compiled: rlx_runtime::CompiledGraph,
+    /// Optional second graph for hidden-row steps (VL prefill).
+    compiled_hidden: Option<rlx_runtime::CompiledGraph>,
     cfg: LfmConfig,
     state_buffers: Vec<Vec<f32>>,
+    token_embd: Option<Vec<f32>>,
     _device: Device,
+    weights_path: PathBuf,
 }
 
 impl LfmRunner {
@@ -135,6 +204,93 @@ impl LfmRunner {
             buf.copy_from_slice(state_out);
         }
         outs.swap_remove(0)
+    }
+
+    /// Single decode step from a precomputed hidden row `[hidden_size]`.
+    /// Builds the hidden graph lazily on first use.
+    pub fn step_hidden(&mut self, hidden: &[f32]) -> Result<Vec<f32>> {
+        if hidden.len() != self.cfg.hidden_size {
+            return Err(anyhow!(
+                "step_hidden: expected {} floats, got {}",
+                self.cfg.hidden_size,
+                hidden.len()
+            ));
+        }
+        self.ensure_hidden_graph()?;
+        let compiled = self.compiled_hidden.as_mut().unwrap();
+        let mut named: Vec<(String, &[f32])> = Vec::with_capacity(self.state_buffers.len() + 1);
+        named.push(("inputs_embeds".to_string(), hidden));
+        for (i, buf) in self.state_buffers.iter().enumerate() {
+            named.push((format!("state_in_{i}"), buf.as_slice()));
+        }
+        let inputs: Vec<(&str, &[f32])> = named.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        let mut outs = compiled.run(&inputs);
+        for (i, buf) in self.state_buffers.iter_mut().enumerate() {
+            let state_out = outs.get(i + 1).expect("missing state_out side output");
+            buf.copy_from_slice(state_out);
+        }
+        Ok(outs.swap_remove(0))
+    }
+
+    /// Prefill from a full sequence of hidden rows `[seq * hidden]` (row-major).
+    /// Returns last-position logits.
+    pub fn prefill_from_embeds(&mut self, hidden: &[f32], seq: usize) -> Result<Vec<f32>> {
+        let h = self.cfg.hidden_size;
+        if hidden.len() != seq * h {
+            return Err(anyhow!(
+                "prefill_from_embeds: expected {} floats, got {}",
+                seq * h,
+                hidden.len()
+            ));
+        }
+        self.reset_state();
+        let mut last = Vec::new();
+        for t in 0..seq {
+            let row = &hidden[t * h..(t + 1) * h];
+            last = self.step_hidden(row)?;
+        }
+        Ok(last)
+    }
+
+    pub fn token_embd_table(&mut self) -> Result<&[f32]> {
+        if self.token_embd.is_none() {
+            let mut loader = rlx_core::weight_registry::open_weight_loader(&self.weights_path)
+                .with_context(|| format!("rlx-lfm: open {}", self.weights_path.display()))?;
+            let mut wm = WeightMap::from_weight_loader_dequant_all(loader.as_mut())?;
+            let (data, _shape) = wm
+                .take("token_embd.weight")
+                .or_else(|_| wm.take("model.embed_tokens.weight"))
+                .with_context(|| "rlx-lfm: token_embd.weight missing")?;
+            self.token_embd = Some(data);
+        }
+        Ok(self.token_embd.as_ref().unwrap().as_slice())
+    }
+
+    pub fn weights_path(&self) -> &PathBuf {
+        &self.weights_path
+    }
+
+    fn ensure_hidden_graph(&mut self) -> Result<()> {
+        if self.compiled_hidden.is_some() {
+            return Ok(());
+        }
+        let mut loader = rlx_core::weight_registry::open_weight_loader(&self.weights_path)
+            .with_context(|| format!("rlx-lfm: open {}", self.weights_path.display()))?;
+        let mut wm = WeightMap::from_weight_loader_dequant_all(loader.as_mut())?;
+        let sink = SideOutputs::new();
+        let flow = build_decode_from_hidden_flow(&self.cfg, sink.clone());
+        let built = flow.build(&mut WeightMapSource(&mut wm))?;
+        let typed = built.typed_params.clone();
+        let built = built.with_extra_hir_outputs(sink.drain());
+        let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
+        let opts = rlx_core::flow_bridge::compile_options_for_profile(
+            &CompileProfile::encoder(),
+            self._device,
+        );
+        let mut compiled = Session::new(self._device).compile_with(graph, &opts);
+        rlx_core::flow_util::attach_built_params(&mut compiled, params, &typed);
+        self.compiled_hidden = Some(compiled);
+        Ok(())
     }
 
     pub fn generate(
@@ -257,9 +413,24 @@ impl LfmRunnerBuilder {
             (None, Some(p)) => LfmConfig::from_hf_config_json(&p)
                 .with_context(|| format!("rlx-lfm: parse HF config {p:?}"))?,
             (None, None) => {
-                let raw_gguf = rlx_gguf::GgufFile::from_path(&weights_path)
-                    .with_context(|| format!("rlx-lfm: parse GGUF {weights_path:?}"))?;
-                LfmConfig::from_gguf(&raw_gguf)?
+                // Auto-detect an HF / mlx-community `config.json` beside the
+                // weights (the dir itself, or a file's parent) before falling
+                // back to GGUF metadata. Lets `--weights <mlx-dir>` work with no
+                // separate --hf-config flag (mlx-community dirs ship config.json).
+                let cfg_json = if weights_path.is_dir() {
+                    Some(weights_path.join("config.json"))
+                } else {
+                    weights_path.parent().map(|d| d.join("config.json"))
+                }
+                .filter(|p| p.is_file());
+                if let Some(cj) = cfg_json {
+                    LfmConfig::from_hf_config_json(&cj)
+                        .with_context(|| format!("rlx-lfm: parse HF/mlx config {cj:?}"))?
+                } else {
+                    let raw_gguf = rlx_gguf::GgufFile::from_path(&weights_path)
+                        .with_context(|| format!("rlx-lfm: parse GGUF {weights_path:?}"))?;
+                    LfmConfig::from_gguf(&raw_gguf)?
+                }
             }
         };
 
@@ -295,9 +466,12 @@ impl LfmRunnerBuilder {
 
         Ok(LfmRunner {
             compiled,
+            compiled_hidden: None,
             cfg,
             state_buffers,
+            token_embd: None,
             _device: device,
+            weights_path,
         })
     }
 }

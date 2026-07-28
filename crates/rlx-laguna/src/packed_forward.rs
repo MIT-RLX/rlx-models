@@ -24,8 +24,9 @@ use crate::config::{AttnGating, LagunaConfig, RopeLayerParams};
 use crate::device_matmul::DeviceMatmul;
 use crate::packed::{LagunaPackedFfn, LagunaPackedWeights, MatWeight};
 use anyhow::{Result, anyhow, bail};
+use rayon::prelude::*;
 use rlx_core::GgufLoader;
-use rlx_cpu::gguf_matmul::{gguf_matmul_bt, gguf_matmul_bt_dispatch};
+use rlx_cpu::gguf_matmul::{gguf_matmul_bt, gguf_matmul_bt_dispatch, gguf_matmul_bt_serial};
 use rlx_cpu::lm_head::gguf_tied_lm_argmax;
 use rlx_flow::rope::{YarnScaling, default_inv_freq, yarn_scaled_inv_freq};
 use rlx_gguf::QK_K;
@@ -40,11 +41,7 @@ fn sigmoid(x: f32) -> f32 {
 }
 
 fn softplus(x: f32) -> f32 {
-    if x > 20.0 {
-        x
-    } else {
-        (1.0 + x.exp()).ln()
-    }
+    if x > 20.0 { x } else { (1.0 + x.exp()).ln() }
 }
 
 fn rms_norm(x: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
@@ -77,8 +74,7 @@ fn softmax_row(logits: &mut [f32]) {
 }
 
 pub(crate) fn rope_inv_freq(rope: &RopeLayerParams, rot_dim: usize) -> Vec<f64> {
-    let use_yarn = rope.yarn_factor > 1.0
-        || rope.rope_type.eq_ignore_ascii_case("yarn");
+    let use_yarn = rope.yarn_factor > 1.0 || rope.rope_type.eq_ignore_ascii_case("yarn");
     if use_yarn {
         yarn_scaled_inv_freq(
             rope.rope_theta as f64,
@@ -87,8 +83,8 @@ pub(crate) fn rope_inv_freq(rope: &RopeLayerParams, rot_dim: usize) -> Vec<f64> 
                 factor: rope.yarn_factor,
                 beta_fast: rope.beta_fast,
                 beta_slow: rope.beta_slow,
-                original_max_position_embeddings: rope.original_max_position_embeddings
-                    .max(1) as u32,
+                original_max_position_embeddings: rope.original_max_position_embeddings.max(1)
+                    as u32,
             },
         )
     } else {
@@ -119,38 +115,6 @@ pub(crate) fn rotary_freqs(
         }
     }
     (cos, sin)
-}
-
-#[cfg(test)]
-mod yarn_tests {
-    use super::*;
-    use crate::config::RopeLayerParams;
-
-    #[test]
-    fn yarn_inv_freq_differs_from_default() {
-        let plain = RopeLayerParams {
-            rope_type: "default".into(),
-            yarn_factor: 1.0,
-            ..RopeLayerParams::default()
-        };
-        let yarn = RopeLayerParams {
-            rope_type: "yarn".into(),
-            yarn_factor: 128.0,
-            original_max_position_embeddings: 8192,
-            beta_fast: 32.0,
-            beta_slow: 1.0,
-            ..RopeLayerParams::default()
-        };
-        let a = rope_inv_freq(&plain, 64);
-        let b = rope_inv_freq(&yarn, 64);
-        assert_eq!(a.len(), b.len());
-        let diff = a
-            .iter()
-            .zip(b.iter())
-            .map(|(x, y)| (x - y).abs())
-            .fold(0.0f64, f64::max);
-        assert!(diff > 1e-6, "expected YaRN to change inv_freq, max_diff={diff}");
-    }
 }
 
 fn apply_rope_inplace(
@@ -197,7 +161,10 @@ fn linear_f32(x: &[f32], w: &[f32], seq: usize, out_dim: usize, in_dim: usize) -
     y
 }
 
-fn mat_bytes<'a>(loader: &'a GgufLoader, m: &MatWeight) -> Result<(&'a [u8], QuantScheme, usize, usize)> {
+fn mat_bytes<'a>(
+    loader: &'a GgufLoader,
+    m: &MatWeight,
+) -> Result<(&'a [u8], QuantScheme, usize, usize)> {
     match m {
         MatWeight::Packed { key, scheme, shape } => {
             if shape.len() != 2 {
@@ -210,8 +177,20 @@ fn mat_bytes<'a>(loader: &'a GgufLoader, m: &MatWeight) -> Result<(&'a [u8], Qua
                 .ok_or_else(|| anyhow!("mmap bytes missing for {key}"))?;
             Ok((bytes, *scheme, n, k))
         }
+        MatWeight::PackedMlx(_) => {
+            bail!("mat_bytes: mlx-affine weight has no GGUF mmap bytes (uses the affine host path)")
+        }
         MatWeight::F32(_) => bail!("mat_bytes: F32 weight has no packed bytes"),
     }
+}
+
+/// Metal/MLX DequantMatMul launch+upload overhead dominates MoE decode (`m=1`)
+/// and typical chat prefills on Apple Silicon; host fused `gguf_matmul` wins in
+/// `backend_bench` even at seq=8. Keep the device path for large batch/`m`.
+pub const DEVICE_MATMUL_MIN_M: usize = 128;
+
+fn maybe_accel(accel: Option<&mut DeviceMatmul>, m: usize) -> Option<&mut DeviceMatmul> {
+    accel.filter(|_| m >= DEVICE_MATMUL_MIN_M)
 }
 
 fn linear_mat(
@@ -225,14 +204,15 @@ fn linear_mat(
 ) -> Result<Vec<f32>> {
     match m {
         MatWeight::F32(w) => Ok(linear_f32(x, w, seq, out_dim, in_dim)),
+        // mlx-affine: dequant one matrix transiently → F32 GEMM (host only;
+        // device path stays GGUF). No accel — bounded per-weight memory.
+        MatWeight::PackedMlx(p) => crate::mlx_affine::affine_matmul_bt(x, p, seq, out_dim, in_dim),
         MatWeight::Packed { .. } => {
             let (bytes, scheme, n, k) = mat_bytes(loader, m)?;
             if n != out_dim || k != in_dim {
-                bail!(
-                    "packed mat shape [{n},{k}] != expected out={out_dim} in={in_dim}"
-                );
+                bail!("packed mat shape [{n},{k}] != expected out={out_dim} in={in_dim}");
             }
-            if let Some(dev) = accel {
+            if let Some(dev) = maybe_accel(accel, seq) {
                 return dev.matmul(x, bytes, seq, in_dim, out_dim, scheme);
             }
             let mut y = vec![0.0; seq * out_dim];
@@ -243,7 +223,7 @@ fn linear_mat(
     }
 }
 
-fn packed_gemm(
+fn packed_gemm_ex(
     x: &[f32],
     bytes: &[u8],
     m: usize,
@@ -251,15 +231,24 @@ fn packed_gemm(
     n: usize,
     scheme: QuantScheme,
     accel: Option<&mut DeviceMatmul>,
-    // When true, never use the CPU F32 dequant cache (MoE experts).
     expert: bool,
+    force_serial: bool,
 ) -> Result<Vec<f32>> {
-    if let Some(dev) = accel {
-        return dev.matmul(x, bytes, m, k, n, scheme);
+    // Experts: fused host — each slab pointer would force a Metal re-upload.
+    if !expert {
+        if let Some(dev) = maybe_accel(accel, m) {
+            return dev.matmul(x, bytes, m, k, n, scheme);
+        }
     }
     let mut y = vec![0.0; m * n];
     if expert {
-        gguf_matmul_bt(x, bytes, &mut y, m, k, n, scheme);
+        if force_serial {
+            // Outer Rayon already parallel (tokens/experts) — avoid nested pool.
+            gguf_matmul_bt_serial(x, bytes, &mut y, m, k, n, scheme);
+        } else {
+            // Decode: one expert at a time; let m1_parallel use the full pool.
+            gguf_matmul_bt(x, bytes, &mut y, m, k, n, scheme);
+        }
     } else {
         gguf_matmul_bt_dispatch(x, bytes, &mut y, m, k, n, scheme);
     }
@@ -302,8 +291,24 @@ fn gather_embed(
                 if id >= vocab {
                     bail!("token id {id} >= vocab {vocab}");
                 }
-                x[t * hidden..(t + 1) * hidden]
-                    .copy_from_slice(&w[id * hidden..(id + 1) * hidden]);
+                x[t * hidden..(t + 1) * hidden].copy_from_slice(&w[id * hidden..(id + 1) * hidden]);
+            }
+            Ok(x)
+        }
+        MatWeight::PackedMlx(p) => {
+            // Affine token_embd `[vocab, hidden]`: dequant the table transiently,
+            // then gather the prompt rows (correctness-first).
+            let (w, n_vocab, n_embd) = crate::mlx_affine::dequant_linear(p)?;
+            if n_embd != hidden {
+                bail!("embed hidden {n_embd} != cfg {hidden}");
+            }
+            let mut x = vec![0.0; ids.len() * n_embd];
+            for (t, &id) in ids.iter().enumerate() {
+                let id = id as usize;
+                if id >= n_vocab {
+                    bail!("token id {id} >= vocab {n_vocab}");
+                }
+                x[t * n_embd..(t + 1) * n_embd].copy_from_slice(&w[id * n_embd..(id + 1) * n_embd]);
             }
             Ok(x)
         }
@@ -384,17 +389,17 @@ fn dense_mlp_mat(
     for i in 0..mid.len() {
         mid[i] = silu(g[i]) * u[i];
     }
-    linear_mat(loader, down, &mid, seq, h, inter, accel.as_deref_mut())
+    linear_mat(loader, down, &mid, seq, h, inter, accel)
 }
 
-fn expert_slab<'a>(
-    bytes: &'a [u8],
+fn expert_slab(
+    bytes: &[u8],
     scheme: QuantScheme,
     n_expert: usize,
     n: usize,
     k: usize,
     e: usize,
-) -> Result<&'a [u8]> {
+) -> Result<&[u8]> {
     let be = block_elems(scheme);
     let bb = block_bytes(scheme);
     let slab_bytes = (k * n) / be * bb;
@@ -408,6 +413,306 @@ fn expert_slab<'a>(
         bail!("expert {e} >= {n_expert}");
     }
     Ok(&bytes[e * slab_bytes..(e + 1) * slab_bytes])
+}
+
+fn moe_one_token(
+    t: usize,
+    scores: &[f32],
+    shared: &[f32],
+    x: &[f32],
+    ne: usize,
+    h: usize,
+    inter: usize,
+    top_k: usize,
+    scale: f32,
+    norm_topk: bool,
+    gate_bias: Option<&[f32]>,
+    g_bytes: &[u8],
+    g_scheme: QuantScheme,
+    u_bytes: &[u8],
+    u_scheme: QuantScheme,
+    d_bytes: &[u8],
+    d_scheme: QuantScheme,
+    gn: usize,
+    gk: usize,
+    un: usize,
+    uk: usize,
+    dn: usize,
+    dk: usize,
+    par_experts: bool,
+    serial_gemm: bool,
+) -> Result<Vec<f32>> {
+    let row = &scores[t * ne..(t + 1) * ne];
+    let mut order: Vec<(usize, f32)> = (0..ne)
+        .map(|e| {
+            let b = gate_bias.and_then(|b| b.get(e).copied()).unwrap_or(0.0);
+            (e, row[e] + b)
+        })
+        .collect();
+    let kth = top_k.min(order.len());
+    if kth > 0 && kth < order.len() {
+        order.select_nth_unstable_by(kth - 1, |a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        order[..kth]
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    } else {
+        order.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let mut picks: Vec<(usize, f32)> = order
+        .into_iter()
+        .take(top_k)
+        .map(|(e, _)| (e, row[e]))
+        .collect();
+    if norm_topk {
+        let sum: f32 = picks.iter().map(|(_, w)| *w).sum::<f32>().max(1e-12);
+        for p in &mut picks {
+            p.1 /= sum;
+        }
+    }
+    let xt = &x[t * h..(t + 1) * h];
+    let mut acc = shared[t * h..(t + 1) * h].to_vec();
+
+    let apply_expert = |e: usize, rw: f32| -> Result<Vec<f32>> {
+        let g_slab = expert_slab(g_bytes, g_scheme, ne, gn, gk, e)?;
+        let u_slab = expert_slab(u_bytes, u_scheme, ne, un, uk, e)?;
+        let d_slab = expert_slab(d_bytes, d_scheme, ne, dn, dk, e)?;
+        let gate = packed_gemm_ex(xt, g_slab, 1, h, inter, g_scheme, None, true, serial_gemm)?;
+        let up = packed_gemm_ex(xt, u_slab, 1, h, inter, u_scheme, None, true, serial_gemm)?;
+        let mut mid = vec![0.0; inter];
+        for i in 0..inter {
+            mid[i] = silu(gate[i]) * up[i];
+        }
+        let mut down =
+            packed_gemm_ex(&mid, d_slab, 1, inter, h, d_scheme, None, true, serial_gemm)?;
+        let w = rw * scale;
+        for o in &mut down {
+            *o *= w;
+        }
+        Ok(down)
+    };
+
+    if par_experts {
+        let contribs: Result<Vec<Vec<f32>>> = picks
+            .par_iter()
+            .map(|&(e, rw)| apply_expert(e, rw))
+            .collect();
+        for down in contribs? {
+            for o in 0..h {
+                acc[o] += down[o];
+            }
+        }
+    } else {
+        for &(e, rw) in &picks {
+            let down = apply_expert(e, rw)?;
+            for o in 0..h {
+                acc[o] += down[o];
+            }
+        }
+    }
+    Ok(acc)
+}
+
+fn pick_topk_experts(
+    row: &[f32],
+    gate_bias: Option<&[f32]>,
+    top_k: usize,
+    norm_topk: bool,
+) -> Vec<(usize, f32)> {
+    let ne = row.len();
+    let mut order: Vec<(usize, f32)> = (0..ne)
+        .map(|e| {
+            let b = gate_bias.and_then(|b| b.get(e).copied()).unwrap_or(0.0);
+            (e, row[e] + b)
+        })
+        .collect();
+    let kth = top_k.min(order.len());
+    if kth > 0 && kth < order.len() {
+        order.select_nth_unstable_by(kth - 1, |a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        order[..kth]
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    } else {
+        order.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let mut picks: Vec<(usize, f32)> = order
+        .into_iter()
+        .take(top_k)
+        .map(|(e, _)| (e, row[e]))
+        .collect();
+    if norm_topk {
+        let sum: f32 = picks.iter().map(|(_, w)| *w).sum::<f32>().max(1e-12);
+        for p in &mut picks {
+            p.1 /= sum;
+        }
+    }
+    picks
+}
+
+fn env_flag(name: &str) -> bool {
+    matches!(
+        std::env::var(name).as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
+
+/// Host batched MoE (`gguf_grouped_matmul_bt_fused`) — sort tokens by expert.
+fn moe_mlp_batched_host(
+    x: &[f32],
+    scores: &[f32],
+    shared: Vec<f32>,
+    seq: usize,
+    h: usize,
+    ne: usize,
+    top_k: usize,
+    inter: usize,
+    scale: f32,
+    norm_topk: bool,
+    bias: Option<&[f32]>,
+    g_bytes: &[u8],
+    g_scheme: QuantScheme,
+    u_bytes: &[u8],
+    u_scheme: QuantScheme,
+    d_bytes: &[u8],
+    d_scheme: QuantScheme,
+) -> Result<Vec<f32>> {
+    let m = seq * top_k;
+    let mut x_exp = vec![0.0f32; m * h];
+    let mut expert_idx = vec![0.0f32; m];
+    let mut router_w = vec![0.0f32; m];
+    for t in 0..seq {
+        let picks = pick_topk_experts(&scores[t * ne..(t + 1) * ne], bias, top_k, norm_topk);
+        for (j, &(e, w)) in picks.iter().enumerate() {
+            let row = t * top_k + j;
+            expert_idx[row] = e as f32;
+            router_w[row] = w * scale;
+            x_exp[row * h..(row + 1) * h].copy_from_slice(&x[t * h..(t + 1) * h]);
+        }
+    }
+
+    let mut gate = vec![0.0f32; m * inter];
+    let mut up = vec![0.0f32; m * inter];
+    rlx_cpu::gguf_matmul::gguf_grouped_matmul_bt_fused(
+        &x_exp,
+        g_bytes,
+        &expert_idx,
+        &mut gate,
+        m,
+        h,
+        inter,
+        ne,
+        g_scheme,
+    );
+    rlx_cpu::gguf_matmul::gguf_grouped_matmul_bt_fused(
+        &x_exp,
+        u_bytes,
+        &expert_idx,
+        &mut up,
+        m,
+        h,
+        inter,
+        ne,
+        u_scheme,
+    );
+
+    let mut mid = vec![0.0f32; m * inter];
+    for i in 0..mid.len() {
+        mid[i] = silu(gate[i]) * up[i];
+    }
+
+    let mut down = vec![0.0f32; m * h];
+    rlx_cpu::gguf_matmul::gguf_grouped_matmul_bt_fused(
+        &mid,
+        d_bytes,
+        &expert_idx,
+        &mut down,
+        m,
+        inter,
+        h,
+        ne,
+        d_scheme,
+    );
+
+    let mut out = shared;
+    for t in 0..seq {
+        for j in 0..top_k {
+            let row = t * top_k + j;
+            let w = router_w[row];
+            let src = &down[row * h..(row + 1) * h];
+            let dst = &mut out[t * h..(t + 1) * h];
+            for o in 0..h {
+                dst[o] += src[o] * w;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Device batched MoE — full expert stacks stay resident via DequantGroupedMatMul.
+/// Gate/up/silu/down run as one compiled graph (single GPU sync per MoE layer).
+fn moe_mlp_batched_device(
+    accel: &mut DeviceMatmul,
+    x: &[f32],
+    scores: &[f32],
+    shared: Vec<f32>,
+    seq: usize,
+    h: usize,
+    ne: usize,
+    top_k: usize,
+    inter: usize,
+    scale: f32,
+    norm_topk: bool,
+    bias: Option<&[f32]>,
+    g_bytes: &[u8],
+    g_scheme: QuantScheme,
+    u_bytes: &[u8],
+    u_scheme: QuantScheme,
+    d_bytes: &[u8],
+    d_scheme: QuantScheme,
+) -> Result<Vec<f32>> {
+    let m = seq * top_k;
+    let mut x_exp = vec![0.0f32; m * h];
+    let mut expert_idx = vec![0.0f32; m];
+    let mut router_w = vec![0.0f32; m];
+    for t in 0..seq {
+        let picks = pick_topk_experts(&scores[t * ne..(t + 1) * ne], bias, top_k, norm_topk);
+        for (j, &(e, w)) in picks.iter().enumerate() {
+            let row = t * top_k + j;
+            expert_idx[row] = e as f32;
+            router_w[row] = w * scale;
+            x_exp[row * h..(row + 1) * h].copy_from_slice(&x[t * h..(t + 1) * h]);
+        }
+    }
+
+    let down = accel.grouped_swiglu(
+        &x_exp,
+        &expert_idx,
+        g_bytes,
+        g_scheme,
+        u_bytes,
+        u_scheme,
+        d_bytes,
+        d_scheme,
+        m,
+        h,
+        inter,
+        ne,
+    )?;
+
+    let mut out = shared;
+    for t in 0..seq {
+        for j in 0..top_k {
+            let row = t * top_k + j;
+            let w = router_w[row];
+            let src = &down[row * h..(row + 1) * h];
+            let dst = &mut out[t * h..(t + 1) * h];
+            for o in 0..h {
+                dst[o] += src[o] * w;
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn moe_mlp(
@@ -450,13 +755,9 @@ fn moe_mlp(
         accel.as_deref_mut(),
     )?;
 
-    // Router is often native F32 [n_expert, hidden] after reverse of [hidden, n_expert].
     let logits = match router {
-        MatWeight::F32(w) => {
-            // shape may be [ne, h] or we stored as F32 from [2048,256] → reverse [256,2048]
-            linear_f32(x, w, seq, ne, h)
-        }
-        MatWeight::Packed { .. } => {
+        MatWeight::F32(w) => linear_f32(x, w, seq, ne, h),
+        MatWeight::Packed { .. } | MatWeight::PackedMlx(_) => {
             linear_mat(loader, router, x, seq, ne, h, accel.as_deref_mut())?
         }
     };
@@ -470,6 +771,36 @@ fn moe_mlp(
         scores[i] = sigmoid(z);
     }
 
+    // mlx-affine routed experts (stacked `switch_mlp.*` packs): host affine
+    // SwiGLU path — dequant one expert matrix at a time, no full F32 expand.
+    if let MatWeight::PackedMlx(gp) = gate_exps {
+        let (up_p, down_p) = match (up_exps, down_exps) {
+            (MatWeight::PackedMlx(u), MatWeight::PackedMlx(d)) => (u, d),
+            _ => bail!("laguna mlx MoE: gate/up/down experts must all be mlx-affine"),
+        };
+        let bias = gate_bias.as_ref().map(|v| v.as_slice());
+        let mut out = vec![0.0f32; seq * h];
+        for t in 0..seq {
+            let acc = crate::mlx_affine::affine_moe_token(
+                &scores[t * ne..(t + 1) * ne],
+                &x[t * h..(t + 1) * h],
+                &shared[t * h..(t + 1) * h],
+                gp,
+                up_p,
+                down_p,
+                ne,
+                top_k,
+                h,
+                inter,
+                cfg.moe_routed_scaling_factor,
+                cfg.norm_topk_prob,
+                bias,
+            )?;
+            out[t * h..(t + 1) * h].copy_from_slice(&acc);
+        }
+        return Ok(out);
+    }
+
     let (g_bytes, g_scheme, g_shape) = match gate_exps {
         MatWeight::Packed { key, scheme, shape } => {
             let b = loader
@@ -477,6 +808,7 @@ fn moe_mlp(
                 .ok_or_else(|| anyhow!("missing {key}"))?;
             (b, *scheme, shape.as_slice())
         }
+        MatWeight::PackedMlx(_) => unreachable!("mlx-affine experts handled above"),
         MatWeight::F32(_) => bail!("gate_exps must stay packed"),
     };
     let (u_bytes, u_scheme, u_shape) = match up_exps {
@@ -486,6 +818,9 @@ fn moe_mlp(
                 .ok_or_else(|| anyhow!("missing {key}"))?;
             (b, *scheme, shape.as_slice())
         }
+        MatWeight::PackedMlx(_) => bail!(
+            "laguna: mlx-affine routed-MoE expert stacks not yet wired (see crate::mlx_affine)"
+        ),
         MatWeight::F32(_) => bail!("up_exps must stay packed"),
     };
     let (d_bytes, d_scheme, d_shape) = match down_exps {
@@ -495,97 +830,132 @@ fn moe_mlp(
                 .ok_or_else(|| anyhow!("missing {key}"))?;
             (b, *scheme, shape.as_slice())
         }
+        MatWeight::PackedMlx(_) => bail!(
+            "laguna: mlx-affine routed-MoE expert stacks not yet wired (see crate::mlx_affine)"
+        ),
         MatWeight::F32(_) => bail!("down_exps must stay packed"),
     };
-    // [E, n, k] with n=inter, k=hidden for gate/up; down is [E, hidden, inter]
     if g_shape.len() != 3 || g_shape[0] != ne {
         bail!("gate_exps shape {g_shape:?} expected E={ne}");
     }
+    let gn = g_shape[1];
+    let gk = g_shape[2];
+    let un = u_shape[1];
+    let uk = u_shape[2];
+    let dn = d_shape[1];
+    let dk = d_shape[2];
+    if gn != inter || gk != h || un != inter || uk != h || dn != h || dk != inter {
+        bail!(
+            "expert dims gate[{gn},{gk}] up[{un},{uk}] down[{dn},{dk}] \
+             vs inter={inter} h={h}"
+        );
+    }
+    let _ = expert_slab(g_bytes, g_scheme, ne, gn, gk, 0)?;
+
+    let scale = cfg.moe_routed_scaling_factor;
+    let norm_topk = cfg.norm_topk_prob;
+    let bias = gate_bias.as_ref().map(|v| v.as_slice());
+
+    // Device grouped MoE: upload each expert stack once, keep resident.
+    // Device grouped MoE: opt-in (`--device-moe` / RLX_LAGUNA_DEVICE_MOE=1).
+    // Host int8 MoE is faster for decode unless expert stacks are already
+    // resident from a prior step (pointer-keyed DeviceMatmul cache).
+    // Host batched: sort-by-expert fused GEMMs.
+    // Default: per-token / per-expert int8 Q4_K GEMVs.
+    let want_device_moe = accel.is_some()
+        && env_flag("RLX_LAGUNA_DEVICE_MOE")
+        && !env_flag("RLX_LAGUNA_DEVICE_MOE_DISABLE");
+    let want_batched_host = env_flag("RLX_LAGUNA_BATCHED_MOE");
+
+    if want_device_moe {
+        if let Some(dev) = accel {
+            return moe_mlp_batched_device(
+                dev, x, &scores, shared, seq, h, ne, top_k, inter, scale, norm_topk, bias, g_bytes,
+                g_scheme, u_bytes, u_scheme, d_bytes, d_scheme,
+            );
+        }
+    }
+    if want_batched_host {
+        return moe_mlp_batched_host(
+            x, &scores, shared, seq, h, ne, top_k, inter, scale, norm_topk, bias, g_bytes,
+            g_scheme, u_bytes, u_scheme, d_bytes, d_scheme,
+        );
+    }
+
+    let par_tokens = seq > 1;
+    let par_experts = seq <= 1;
+    let serial_gemm = true;
+
+    let rows: Result<Vec<Vec<f32>>> = if par_tokens {
+        (0..seq)
+            .into_par_iter()
+            .map(|t| {
+                moe_one_token(
+                    t,
+                    &scores,
+                    &shared,
+                    x,
+                    ne,
+                    h,
+                    inter,
+                    top_k,
+                    scale,
+                    norm_topk,
+                    bias,
+                    g_bytes,
+                    g_scheme,
+                    u_bytes,
+                    u_scheme,
+                    d_bytes,
+                    d_scheme,
+                    gn,
+                    gk,
+                    un,
+                    uk,
+                    dn,
+                    dk,
+                    false,
+                    serial_gemm,
+                )
+            })
+            .collect()
+    } else {
+        (0..seq)
+            .map(|t| {
+                moe_one_token(
+                    t,
+                    &scores,
+                    &shared,
+                    x,
+                    ne,
+                    h,
+                    inter,
+                    top_k,
+                    scale,
+                    norm_topk,
+                    bias,
+                    g_bytes,
+                    g_scheme,
+                    u_bytes,
+                    u_scheme,
+                    d_bytes,
+                    d_scheme,
+                    gn,
+                    gk,
+                    un,
+                    uk,
+                    dn,
+                    dk,
+                    par_experts,
+                    serial_gemm,
+                )
+            })
+            .collect()
+    };
 
     let mut out = vec![0.0; seq * h];
-    for t in 0..seq {
-        let row = &scores[t * ne..(t + 1) * ne];
-        let mut order: Vec<(usize, f32)> = (0..ne)
-            .map(|e| {
-                let b = gate_bias
-                    .as_ref()
-                    .and_then(|b| b.get(e).copied())
-                    .unwrap_or(0.0);
-                (e, row[e] + b)
-            })
-            .collect();
-        order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let mut picks: Vec<(usize, f32)> = order
-            .into_iter()
-            .take(top_k)
-            .map(|(e, _)| (e, row[e]))
-            .collect();
-        if cfg.norm_topk_prob {
-            let sum: f32 = picks.iter().map(|(_, w)| *w).sum::<f32>().max(1e-12);
-            for p in &mut picks {
-                p.1 /= sum;
-            }
-        }
-        let xt = &x[t * h..(t + 1) * h];
-        for &(e, rw) in &picks {
-            // gate/up: [E, inter, hidden] → n=inter, k=hidden
-            let gn = g_shape[1];
-            let gk = g_shape[2];
-            let un = u_shape[1];
-            let uk = u_shape[2];
-            let dn = d_shape[1];
-            let dk = d_shape[2];
-            if gn != inter || gk != h || un != inter || uk != h || dn != h || dk != inter {
-                bail!(
-                    "expert dims gate[{gn},{gk}] up[{un},{uk}] down[{dn},{dk}] \
-                     vs inter={inter} h={h}"
-                );
-            }
-            let g_slab = expert_slab(g_bytes, g_scheme, ne, gn, gk, e)?;
-            let u_slab = expert_slab(u_bytes, u_scheme, ne, un, uk, e)?;
-            let d_slab = expert_slab(d_bytes, d_scheme, ne, dn, dk, e)?;
-            // Expert mats: Metal/MLX via accel, else fused host (never CPU F32 cache).
-            let gate = packed_gemm(
-                xt,
-                g_slab,
-                1,
-                h,
-                inter,
-                g_scheme,
-                accel.as_deref_mut(),
-                true,
-            )?;
-            let up = packed_gemm(
-                xt,
-                u_slab,
-                1,
-                h,
-                inter,
-                u_scheme,
-                accel.as_deref_mut(),
-                true,
-            )?;
-            let mut mid = vec![0.0; inter];
-            for i in 0..inter {
-                mid[i] = silu(gate[i]) * up[i];
-            }
-            let down = packed_gemm(
-                &mid,
-                d_slab,
-                1,
-                inter,
-                h,
-                d_scheme,
-                accel.as_deref_mut(),
-                true,
-            )?;
-            for o in 0..h {
-                out[t * h + o] += down[o] * rw * cfg.moe_routed_scaling_factor;
-            }
-        }
-        for o in 0..h {
-            out[t * h + o] += shared[t * h + o];
-        }
+    for (t, row) in rows?.into_iter().enumerate() {
+        out[t * h..(t + 1) * h].copy_from_slice(&row);
     }
     Ok(out)
 }
@@ -611,11 +981,7 @@ impl LayerKvCache {
 
     fn len(&self) -> usize {
         let row = self.n_heads * self.head_dim;
-        if row == 0 {
-            0
-        } else {
-            self.k.len() / row
-        }
+        self.k.len().checked_div(row).unwrap_or(0)
     }
 }
 
@@ -630,10 +996,7 @@ impl PackedKvCache {
         let layers = (0..cfg.num_hidden_layers)
             .map(|i| LayerKvCache::empty(cfg.n_heads(i), cfg.head_dim))
             .collect();
-        Self {
-            layers,
-            seq_len: 0,
-        }
+        Self { layers, seq_len: 0 }
     }
 }
 
@@ -708,7 +1071,7 @@ fn attention(
         }
     }
 
-    let (cos, sin) = rotary_freqs(pos_start, seq, rot_dim, &rope_inv_freq(&rope, rot_dim));
+    let (cos, sin) = rotary_freqs(pos_start, seq, rot_dim, &rope_inv_freq(rope, rot_dim));
     apply_rope_inplace(&mut qn, &cos, &sin, seq, n_heads, hd, rot_dim);
     apply_rope_inplace(&mut kn, &cos, &sin, seq, n_kv, hd, rot_dim);
 
@@ -736,37 +1099,44 @@ fn attention(
         cache_len
     };
 
+    // Parallelize over heads. Layout gather keeps each head's work private.
+    let head_outs: Vec<Vec<f32>> = (0..n_heads)
+        .into_par_iter()
+        .map(|hq| {
+            let mut local = vec![0.0; seq * hd];
+            let mut scores = Vec::new();
+            for ti in 0..seq {
+                let tq = pos_start + ti;
+                let t_min = tq.saturating_sub(window - 1);
+                let win = tq - t_min + 1;
+                scores.resize(win, 0.0);
+                let qrow = &qn[(ti * n_heads + hq) * hd..(ti * n_heads + hq + 1) * hd];
+                for (i, tk) in (t_min..=tq).enumerate() {
+                    let krow = &kv.k[(tk * n_heads + hq) * hd..(tk * n_heads + hq + 1) * hd];
+                    let mut dot = 0.0;
+                    for j in 0..hd {
+                        dot += qrow[j] * krow[j];
+                    }
+                    scores[i] = dot * scale;
+                }
+                softmax_row(&mut scores);
+                let out_row = &mut local[ti * hd..(ti + 1) * hd];
+                for (i, tk) in (t_min..=tq).enumerate() {
+                    let vrow = &kv.v[(tk * n_heads + hq) * hd..(tk * n_heads + hq + 1) * hd];
+                    let a = scores[i];
+                    for j in 0..hd {
+                        out_row[j] += a * vrow[j];
+                    }
+                }
+            }
+            local
+        })
+        .collect();
     let mut attn_out = vec![0.0; seq * q_dim];
-    for hq in 0..n_heads {
+    for (hq, local) in head_outs.into_iter().enumerate() {
         for ti in 0..seq {
-            let tq = pos_start + ti;
-            let mut scores = vec![0.0f32; cache_len];
-            let qrow = &qn[(ti * n_heads + hq) * hd..(ti * n_heads + hq + 1) * hd];
-            let t_min = tq.saturating_sub(window - 1);
-            for tk in 0..=tq {
-                if tk < t_min {
-                    scores[tk] = f32::NEG_INFINITY;
-                    continue;
-                }
-                let krow = &kv.k[(tk * n_heads + hq) * hd..(tk * n_heads + hq + 1) * hd];
-                let mut dot = 0.0;
-                for j in 0..hd {
-                    dot += qrow[j] * krow[j];
-                }
-                scores[tk] = dot * scale;
-            }
-            for tk in (tq + 1)..cache_len {
-                scores[tk] = f32::NEG_INFINITY;
-            }
-            softmax_row(&mut scores);
-            let out_base = (ti * n_heads + hq) * hd;
-            for tk in t_min..=tq {
-                let vrow = &kv.v[(tk * n_heads + hq) * hd..(tk * n_heads + hq + 1) * hd];
-                let a = scores[tk];
-                for j in 0..hd {
-                    attn_out[out_base + j] += a * vrow[j];
-                }
-            }
+            let dst = (ti * n_heads + hq) * hd;
+            attn_out[dst..dst + hd].copy_from_slice(&local[ti * hd..(ti + 1) * hd]);
         }
     }
 
@@ -802,15 +1172,7 @@ fn attention(
         }
     }
 
-    linear_mat(
-        loader,
-        &layer.wo,
-        &attn_out,
-        seq,
-        h,
-        q_dim,
-        accel.as_deref_mut(),
-    )
+    linear_mat(loader, &layer.wo, &attn_out, seq, h, q_dim, accel)
 }
 
 fn forward_hidden_with_cache(
@@ -830,7 +1192,6 @@ fn forward_hidden_with_cache(
     let mut x = gather_embed(loader, &weights.token_embd, prompt_ids, h, cfg.vocab_size)?;
 
     for (layer_idx, layer) in weights.layers.iter().enumerate() {
-        let residual = x.clone();
         let normed = rms_norm(&x, &layer.attn_norm, cfg.rms_norm_eps);
         let attn = attention(
             cfg,
@@ -844,9 +1205,8 @@ fn forward_hidden_with_cache(
             accel.as_deref_mut(),
         )?;
         for i in 0..x.len() {
-            x[i] = residual[i] + attn[i];
+            x[i] += attn[i];
         }
-        let residual = x.clone();
         let normed = rms_norm(&x, &layer.ffn_norm, cfg.rms_norm_eps);
         let ffn = match &layer.ffn {
             LagunaPackedFfn::Dense { gate, up, down } => dense_mlp_mat(
@@ -865,7 +1225,7 @@ fn forward_hidden_with_cache(
             }
         };
         for i in 0..x.len() {
-            x[i] = residual[i] + ffn[i];
+            x[i] += ffn[i];
         }
     }
 
@@ -895,8 +1255,11 @@ fn lm_argmax_hidden(
     let h = cfg.hidden_size;
     let (key, scheme, n_vocab, n_embd) = if let Some(out) = weights.output.as_ref() {
         match out {
-            MatWeight::Packed { key, scheme, shape } => {
-                (key.as_str(), *scheme, shape[0], shape[1])
+            MatWeight::Packed { key, scheme, shape } => (key.as_str(), *scheme, shape[0], shape[1]),
+            MatWeight::PackedMlx(p) => {
+                let (w, n_vocab, n_embd) = crate::mlx_affine::dequant_linear(p)?;
+                let (idx, _) = rlx_cpu::lm_head::f32_tied_lm_argmax(hidden, &w, n_embd, n_vocab);
+                return Ok(idx);
             }
             MatWeight::F32(w) => {
                 let n_vocab = w.len() / h;
@@ -906,8 +1269,11 @@ fn lm_argmax_hidden(
         }
     } else {
         match &weights.token_embd {
-            MatWeight::Packed { key, scheme, shape } => {
-                (key.as_str(), *scheme, shape[0], shape[1])
+            MatWeight::Packed { key, scheme, shape } => (key.as_str(), *scheme, shape[0], shape[1]),
+            MatWeight::PackedMlx(p) => {
+                let (w, n_vocab, n_embd) = crate::mlx_affine::dequant_linear(p)?;
+                let (idx, _) = rlx_cpu::lm_head::f32_tied_lm_argmax(hidden, &w, n_embd, n_vocab);
+                return Ok(idx);
             }
             MatWeight::F32(w) => {
                 let n_vocab = w.len() / h;
@@ -991,4 +1357,39 @@ pub fn generate(
         }
     }
     Ok(ids)
+}
+
+#[cfg(test)]
+mod yarn_tests {
+    use super::*;
+    use crate::config::RopeLayerParams;
+
+    #[test]
+    fn yarn_inv_freq_differs_from_default() {
+        let plain = RopeLayerParams {
+            rope_type: "default".into(),
+            yarn_factor: 1.0,
+            ..RopeLayerParams::default()
+        };
+        let yarn = RopeLayerParams {
+            rope_type: "yarn".into(),
+            yarn_factor: 128.0,
+            original_max_position_embeddings: 8192,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            ..RopeLayerParams::default()
+        };
+        let a = rope_inv_freq(&plain, 64);
+        let b = rope_inv_freq(&yarn, 64);
+        assert_eq!(a.len(), b.len());
+        let diff = a
+            .iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f64, f64::max);
+        assert!(
+            diff > 1e-6,
+            "expected YaRN to change inv_freq, max_diff={diff}"
+        );
+    }
 }

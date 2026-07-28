@@ -1,6 +1,6 @@
 [package]
 name = "rlx-gemma"
-version = "0.2.13"
+version = "0.2.14"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,6 +21,7 @@ rlx-runtime = { workspace = true }
 rlx-cpu = { workspace = true }
 rlx-opt = { workspace = true }
 rlx-gguf = { workspace = true }
+rlx-mlx-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 safetensors = { workspace = true }

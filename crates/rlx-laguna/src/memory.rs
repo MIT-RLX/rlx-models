@@ -142,19 +142,14 @@ mod tests {
         let n = 256usize;
         let nbytes = bytes_for_public(GgmlType::Q4K, n).expect("q4k size");
         let bytes = vec![0u8; nbytes];
-        w.add_tensor_bytes(
-            "blk.0.ffn_down.weight",
-            vec![16, 16],
-            GgmlType::Q4K,
-            bytes,
-        )
-        .unwrap();
+        w.add_tensor_bytes("blk.0.ffn_down.weight", vec![16, 16], GgmlType::Q4K, bytes)
+            .unwrap();
         w.write_to_path(path).unwrap();
     }
 
     #[test]
     fn f32_expand_default_is_off() {
-        assert!(!ALLOW_F32_EXPAND);
+        const { assert!(!ALLOW_F32_EXPAND) };
         // Do not assert `!allow_f32_expand()` — parallel tests may set the env.
     }
 

@@ -6,10 +6,8 @@
 
 use std::path::PathBuf;
 
-use anyhow::{bail, ensure, Context, Result};
-use rlx_moss_nano::{
-    gguf_bundle, MossNative, NativeOpts, DEFAULT_GGUF_NAME, DEFAULT_LOCAL_DIR,
-};
+use anyhow::{Context, Result, bail, ensure};
+use rlx_moss_nano::{DEFAULT_GGUF_NAME, DEFAULT_LOCAL_DIR, MossNative, NativeOpts, gguf_bundle};
 use rlx_runtime::Device;
 
 fn peak_norm_cosine(a: &[f32], b: &[f32]) -> f64 {

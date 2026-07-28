@@ -17,16 +17,13 @@ fn workspace_root() -> PathBuf {
 fn model_dir(tier: &str) -> Option<PathBuf> {
     let p = workspace_root().join(format!(".cache/ppocrv6/{tier}"));
     let det = p.join("det/model.safetensors").is_file()
-        || p.join(format!("det/ppocrv6_{tier}_det.safetensors")).is_file();
+        || p.join(format!("det/ppocrv6_{tier}_det.safetensors"))
+            .is_file();
     let rec = p.join("rec/model.safetensors").is_file()
-        || p.join(format!("rec/ppocrv6_{tier}_rec.safetensors")).is_file();
-    if det && rec {
-        Some(p)
-    } else {
-        None
-    }
+        || p.join(format!("rec/ppocrv6_{tier}_rec.safetensors"))
+            .is_file();
+    if det && rec { Some(p) } else { None }
 }
-
 
 #[test]
 fn tiny_cpu_dry_build() {

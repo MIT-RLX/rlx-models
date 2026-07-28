@@ -71,7 +71,7 @@ pub fn layer_norm(x: &ArrayView3<f32>, weight: &[f32], bias: &[f32], eps: f32) -
 }
 
 pub fn gelu_tanh(x: f32) -> f32 {
-    0.5 * x * (1.0 + (0.797_884_56 * (x + 0.044_715 * x * x * x)).tanh())
+    0.5 * x * (1.0 + (0.797_884_6 * (x + 0.044_715 * x * x * x)).tanh())
 }
 
 pub fn linear2d(

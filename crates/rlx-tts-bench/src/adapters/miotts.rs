@@ -53,9 +53,11 @@ impl TtsAdapter for MioAdapter {
     }
 
     fn synthesize(&mut self, req: SynthRequest<'_>) -> Result<SynthResult> {
-        let mut opts = GenerateOpts::default();
-        opts.seed = req.seed;
-        opts.preset = self.preset.clone();
+        let opts = GenerateOpts {
+            seed: req.seed,
+            preset: self.preset.clone(),
+            ..Default::default()
+        };
         let t0 = Instant::now();
         let result = self.inner.synthesize(req.text, &opts)?;
         Ok(SynthResult {

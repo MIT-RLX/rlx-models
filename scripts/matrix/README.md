@@ -5,7 +5,7 @@ actually correct — semantic check (whisper coverage / WER / token sanity) **an
 cross-backend parity (cosine vs the CPU baseline). One command, same on any host.
 
 - On the Mac it exercises `cpu, metal, mlx, wgpu, coreml`.
-- On `msi` (Linux + RTX 3080 Ti) it exercises `cpu, wgpu, cuda, vulkan`.
+- On the CUDA host (Linux + RTX 3080 Ti) it exercises `cpu, wgpu, cuda, vulkan`.
 
 The host decides — nothing platform-specific lives in the registry. A model stanza
 only describes what's intrinsic to the model; the driver intersects the host's
@@ -17,7 +17,7 @@ backends with the crate's declared cargo features to pick what to build and run.
 # Mac Metal taps:
 scripts/matrix/bonsai_trace_compare.sh metal
 
-# MSI CUDA taps (sync + build + scp):
+# Remote CUDA taps (sync + build + scp):
 scripts/matrix/bonsai_trace_compare.sh cuda
 
 # First mismatched fingerprint:
@@ -30,7 +30,7 @@ Env: `RLX_QWEN35_DECODE_TRACE`, `RLX_QWEN35_TAP`, `RLX_CUDA_PATH_TRACE`, `RLX_CU
 ## Run it
 
 ```bash
-# Full curated Tier-1 matrix on msi (sync -> build -> run -> pull report back):
+# Full curated Tier-1 matrix on the CUDA host (sync -> build -> run -> pull report back):
 just matrix-remote
 
 # One model (fast iteration):
@@ -42,7 +42,7 @@ just matrix-remote TIER=all ALL=1
 # A subset of backends:
 just matrix-remote BACKENDS=cpu,cuda
 
-# Run on THIS machine instead of msi (auto-detects local backends):
+# Run on THIS machine instead of the CUDA host (auto-detects local backends):
 just matrix            # or: python3 scripts/matrix/run_matrix.py
 ```
 
@@ -86,5 +86,5 @@ detected automatically from the crate's `[features]`.
 
 - `registry.toml` — the model catalogue (source of truth).
 - `run_matrix.py` — driver: host detect → build once → weights → run per backend → validate → report. Stdlib only.
-- `sync_to_msi.sh` — rsync both working trees (`rlx-models` + sibling `../rlx`) to msi; excludes `weights/`, `target/`, `.cache/`.
-- `msi_run.sh` — from-Mac wrapper: sync → ssh run → pull report.
+- `sync_to_remote.sh` — rsync both working trees (`rlx-models` + sibling `../rlx`) to the CUDA host; excludes `weights/`, `target/`, `.cache/`.
+- `remote_run.sh` — from-Mac wrapper: sync → ssh run → pull report.

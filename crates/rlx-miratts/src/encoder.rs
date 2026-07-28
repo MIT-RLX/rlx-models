@@ -79,7 +79,7 @@ impl MiraSpeakerEncoder {
     /// Run `s_encoder` on a precomputed mel `[T, 128]` (row-major).
     pub fn encode_mel(&self, mel_tx128: &[f32]) -> Result<Vec<u32>> {
         anyhow::ensure!(
-            mel_tx128.len() % N_MELS == 0,
+            mel_tx128.len().is_multiple_of(N_MELS),
             "mel length {} not divisible by {N_MELS}",
             mel_tx128.len()
         );
@@ -137,7 +137,8 @@ pub fn pcm_to_mel(pcm: &[f32]) -> Vec<f32> {
         let n = x.len();
         while x.len() < REF_SAMPLES {
             let take = (REF_SAMPLES - x.len()).min(n);
-            x.extend_from_slice(&x[..take].to_vec());
+            let chunk = x[..take].to_vec();
+            x.extend_from_slice(&chunk);
         }
     }
     x.truncate(REF_SAMPLES);

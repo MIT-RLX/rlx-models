@@ -1,8 +1,8 @@
-# Local RLX development — patch crates.io 0.2.13 with a sibling checkout.
+# Local RLX development — patch crates.io 0.2.14 with a sibling checkout.
 #
 # Layout (recommended):
 #   rlx-workspace/
-#     rlx/           ← upstream RLX repo (v0.2.13+)
+#     rlx/           ← upstream RLX repo (v0.2.14+)
 #     rlx-models/    ← this repo
 #
 # Enable local RLX:
@@ -12,8 +12,8 @@
 #   rm .cargo/config.toml
 #
 # Rules:
-# - Root Cargo.toml `[workspace.dependencies]` pins `rlx*` at ^0.2.13.
-# - `rlx-distributed` requires rlx-driver 0.2.13+ (`ProcessGroup`, `TcpTransport`, …).
+# - Root Cargo.toml `[workspace.dependencies]` pins `rlx*` at ^0.2.14.
+# - `rlx-distributed` requires rlx-driver 0.2.14+ (`ProcessGroup`, `TcpTransport`, …).
 # - Every crate uses `{ workspace = true }` — no path deps to ../rlx in committed files.
 # - Patches apply only when `.cargo/config.toml` exists (gitignored).
 # - Patch ALL entries below together; a partial patch can mix path/registry builds and break native `links` (e.g. mlx-sys).
@@ -38,6 +38,7 @@ rlx-onnx-import = { path = "../rlx/crates/io/rlx-onnx-import" }
 rlx-metal = { path = "../rlx/crates/backends/rlx-metal" }
 rlx-mlx = { path = "../rlx/crates/backends/rlx-mlx" }
 rlx-mlx-sys = { path = "../rlx/crates/backends/rlx-mlx-sys" }
+rlx-mlx-io = { path = "../rlx/crates/io/rlx-mlx-io" }
 rlx-cuda = { path = "../rlx/crates/backends/rlx-cuda" }
 rlx-wgpu = { path = "../rlx/crates/backends/rlx-wgpu" }
 rlx-vulkan = { path = "../rlx/crates/backends/rlx-vulkan" }

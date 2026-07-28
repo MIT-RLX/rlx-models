@@ -39,6 +39,9 @@ path = "src/bin/rlx_gepard.rs"
 name = "rlx-gepard-train"
 path = "src/bin/rlx_gepard_train.rs"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 metal      = ["rlx-runtime/metal", "rlx-qwen35/metal"]

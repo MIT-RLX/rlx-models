@@ -13,9 +13,7 @@ use crate::adapter::SynthRequest;
 use crate::adapters::make_adapter;
 use crate::corpus::{CorpusItem, generate_corpus, load_corpus_file};
 use crate::devices::device_label;
-use crate::metrics::{
-    WhisperState, spectral_vs_ref, try_load_whisper, whisper_coverage,
-};
+use crate::metrics::{WhisperState, spectral_vs_ref, try_load_whisper, whisper_coverage};
 use crate::phrases::content_words;
 use crate::wav::{peak_normalize, write_wav_mono};
 
@@ -122,7 +120,11 @@ pub fn run_stress(cfg: &StressConfig) -> Result<Vec<StressRow>> {
                 done.insert(v.id);
             }
         }
-        eprintln!("resume: {} completed id(s) in {}", done.len(), json_path.display());
+        eprintln!(
+            "resume: {} completed id(s) in {}",
+            done.len(),
+            json_path.display()
+        );
     } else if !cfg.resume {
         let _ = std::fs::remove_file(&json_path);
     }
@@ -151,8 +153,7 @@ pub fn run_stress(cfg: &StressConfig) -> Result<Vec<StressRow>> {
         .with_context(|| format!("load target model {}", cfg.target_model))?;
     let mut reference = match &cfg.ref_model {
         Some(ref_id) => Some(
-            make_adapter(ref_id, cfg.device)
-                .with_context(|| format!("load ref model {ref_id}"))?,
+            make_adapter(ref_id, cfg.device).with_context(|| format!("load ref model {ref_id}"))?,
         ),
         None => None,
     };
@@ -166,7 +167,9 @@ pub fn run_stress(cfg: &StressConfig) -> Result<Vec<StressRow>> {
             continue;
         }
         let row = {
-            let ref_slot = reference.as_mut().map(|b| b.as_mut() as &mut dyn crate::adapter::TtsAdapter);
+            let ref_slot = reference
+                .as_mut()
+                .map(|b| b.as_mut() as &mut dyn crate::adapter::TtsAdapter);
             run_one(
                 cfg,
                 item,
@@ -215,9 +218,7 @@ pub fn run_stress(cfg: &StressConfig) -> Result<Vec<StressRow>> {
     if let Some(min_cov) = cfg.fail_under_coverage {
         if let Some(med) = summary.median_coverage {
             if med < min_cov {
-                anyhow::bail!(
-                    "median Whisper coverage {med:.3} < fail-under-coverage {min_cov}"
-                );
+                anyhow::bail!("median Whisper coverage {med:.3} < fail-under-coverage {min_cov}");
             }
         }
     }
@@ -316,15 +317,11 @@ fn run_one(
 
     if peak < 1e-4 || dur < 0.05 {
         row.status = "error".into();
-        row.error = Some(format!(
-            "silent_or_tiny peak={peak:.3e} dur={dur:.3}"
-        ));
+        row.error = Some(format!("silent_or_tiny peak={peak:.3e} dur={dur:.3}"));
         return Ok(row);
     }
 
-    if cfg.save_wav
-        || (cfg.save_wav_every > 0 && (idx % cfg.save_wav_every == 0))
-    {
+    if cfg.save_wav || (cfg.save_wav_every > 0 && idx.is_multiple_of(cfg.save_wav_every)) {
         let path = cfg.out_dir.join("wav").join(format!("{}.wav", item.id));
         let _ = write_wav_mono(&path, &synth.pcm, synth.sample_rate);
     }
@@ -359,10 +356,7 @@ fn run_one(
 }
 
 fn append_row(path: &Path, row: &StressRow) -> Result<()> {
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut f = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(f, "{}", serde_json::to_string(row)?)?;
     Ok(())
 }
@@ -462,9 +456,7 @@ fn levenshtein(a: &[char], b: &[char]) -> usize {
         cur[0] = i;
         for j in 1..=m {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            cur[j] = (prev[j] + 1)
-                .min(cur[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut cur);
     }

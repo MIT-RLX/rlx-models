@@ -29,6 +29,9 @@ rustfft = "6"
 name = "rlx-metavoice"
 path = "src/bin/rlx_metavoice.rs"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 metal = ["rlx-runtime/metal", "rlx-encodec/metal"]

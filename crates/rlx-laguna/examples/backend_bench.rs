@@ -114,9 +114,8 @@ fn run_device(
     g.set_outputs(vec![y_id]);
 
     let opts = compile_options_for_packed_gguf_prefill(exec);
-    let mut compiled = packed_gguf_compile_guard(exec, || {
-        Session::new(exec).compile_with(g.clone(), &opts)
-    });
+    let mut compiled =
+        packed_gguf_compile_guard(exec, || Session::new(exec).compile_with(g.clone(), &opts));
     compiled.set_param_typed(key, bytes, DType::U8);
 
     for _ in 0..WARM {
@@ -154,9 +153,8 @@ fn run_device(
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let weights = flag_value(&args, "--weights").unwrap_or_else(|| {
-        ".cache/laguna-xs/Laguna-XS-2.1-Q4_K_M.gguf".into()
-    });
+    let weights = flag_value(&args, "--weights")
+        .unwrap_or_else(|| ".cache/laguna-xs/Laguna-XS-2.1-Q4_K_M.gguf".into());
     let path = PathBuf::from(&weights);
     if !path.is_file() {
         bail!("weights not found: {}", path.display());
@@ -236,10 +234,7 @@ fn main() -> Result<()> {
     }
 
     // Rank by speed (finite ms) and by precision (highest cosine, then lowest max_abs).
-    let mut by_speed: Vec<_> = rows
-        .iter()
-        .filter(|r| r.ms.is_finite())
-        .collect();
+    let mut by_speed: Vec<_> = rows.iter().filter(|r| r.ms.is_finite()).collect();
     by_speed.sort_by(|a, b| a.ms.partial_cmp(&b.ms).unwrap());
     let fastest = by_speed.first().map(|r| r.device.as_str()).unwrap_or("-");
 
@@ -294,7 +289,9 @@ fn main() -> Result<()> {
     }
     println!();
     println!("Fastest:      **{fastest}**");
-    println!("Most precise: **{most_precise}** (vs host `gguf_matmul` reference; HostKernel is exact by definition)");
+    println!(
+        "Most precise: **{most_precise}** (vs host `gguf_matmul` reference; HostKernel is exact by definition)"
+    );
     println!();
     println!(
         "Note: e2e generate uses packed KV-cached decode (`--device metal|mlx` optional); \

@@ -164,7 +164,13 @@ fn main() -> anyhow::Result<()> {
         .nodes()
         .iter()
         .filter(|n| n.name.as_deref() == Some(hir_name))
-        .max_by_key(|n| n.shape.dims().iter().map(|d| d.unwrap_static()).product::<usize>())
+        .max_by_key(|n| {
+            n.shape
+                .dims()
+                .iter()
+                .map(|d| d.unwrap_static())
+                .product::<usize>()
+        })
         .ok_or_else(|| anyhow::anyhow!("HIR node missing: {hir_name}"))?;
 
     let probes: Vec<_> = WATCH
@@ -175,7 +181,13 @@ fn main() -> anyhow::Result<()> {
                 .nodes()
                 .iter()
                 .filter(|n| n.name.as_deref() == Some(*hir))
-                .max_by_key(|n| n.shape.dims().iter().map(|d| d.unwrap_static()).product::<usize>())
+                .max_by_key(|n| {
+                    n.shape
+                        .dims()
+                        .iter()
+                        .map(|d| d.unwrap_static())
+                        .product::<usize>()
+                })
                 .map(|n| (n.id, *hir))
         })
         .collect();

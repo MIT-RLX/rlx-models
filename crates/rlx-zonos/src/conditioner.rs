@@ -201,8 +201,7 @@ impl PrefixConditioner {
                 w.get("prefix_conditioner.conditioners.1.uncond_vector")?
                     .to_vec(),
             );
-        } else {
-            let spk = opts.speaker.as_ref().unwrap();
+        } else if let Some(spk) = opts.speaker.as_ref() {
             anyhow::ensure!(spk.len() == 128, "speaker emb must be 128-d");
             let yw = w.get("prefix_conditioner.conditioners.1.project.weight")?;
             let yb = w.get("prefix_conditioner.conditioners.1.project.bias")?;

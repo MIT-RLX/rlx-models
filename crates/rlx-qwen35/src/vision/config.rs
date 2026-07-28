@@ -16,7 +16,7 @@
 //! Qwen3.5 VLM mmproj config — parsed from GGUF `clip.*` metadata keys
 //! (llama.cpp `tools/mtmd/clip-impl.h`) or HF `vision_config`.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use rlx_gguf::{GgufFile, MetaValue};
 use std::path::Path;
 

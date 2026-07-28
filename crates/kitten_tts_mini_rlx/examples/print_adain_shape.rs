@@ -11,8 +11,11 @@ fn main() {
     let import = import_from_bundle_cached(&bundle, &opts).expect("import");
     let mut by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for n in import.hir.nodes() {
-        let Some(name) = n.name.as_deref() else { continue };
-        if !(name.contains("/generator/") && (name.contains("InstanceNormalization") || name.contains("noise_convs")))
+        let Some(name) = n.name.as_deref() else {
+            continue;
+        };
+        if !(name.contains("/generator/")
+            && (name.contains("InstanceNormalization") || name.contains("noise_convs")))
         {
             continue;
         }

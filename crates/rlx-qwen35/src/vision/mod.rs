@@ -25,12 +25,12 @@ mod weights;
 
 pub use builder::{build_qwen35_vision_graph, build_qwen35_vision_hir};
 pub use config::MmProjConfig;
-pub use encoder::{load_vision_encoder, Qwen35VisionEncoder, VisionEncodeOutput};
-pub use flow::{build_qwen35_vision_built, Qwen35VisionFlow};
+pub use encoder::{Qwen35VisionEncoder, VisionEncodeOutput, load_vision_encoder};
+pub use flow::{Qwen35VisionFlow, build_qwen35_vision_built};
 pub use multimodal::{
+    MEDIA_MARKER, MultimodalPrefill, MultimodalPrompt, VISION_END, VISION_START,
     build_multimodal_mrope_sections, image_chunk_n_pos, image_decoder_pos,
-    merge_text_and_vision_embd, MultimodalPrefill, MultimodalPrompt, MEDIA_MARKER, VISION_END,
-    VISION_START,
+    merge_text_and_vision_embd,
 };
 pub use preprocess::{build_vision_positions, preprocess_rgb};
 pub use weights::MmProjWeights;

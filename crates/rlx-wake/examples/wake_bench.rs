@@ -88,14 +88,7 @@ fn main() -> anyhow::Result<()> {
         let _ = streaming_execution_device(device);
         let label = bench_device_label(device);
         let mut eng = ProbeEngine::new();
-        stats.push(bench_engine(
-            "wake-cnn-lite",
-            label,
-            &mut eng,
-            &pcm,
-            2,
-            8,
-        )?);
+        stats.push(bench_engine("wake-cnn-lite", label, &mut eng, &pcm, 2, 8)?);
     }
     print_bench_table(&stats);
     Ok(())

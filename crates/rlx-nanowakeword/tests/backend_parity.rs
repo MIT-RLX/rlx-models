@@ -14,10 +14,11 @@ fn nanowakeword_100_percent_backend_parity() {
     }
     let rows = run_backend_parity(&pcm, |dev| {
         let _ = streaming_execution_device(dev);
-        Ok(
-            NanoWakeWordEngine::new(NanoWakeWordWeights::stub(true, "hey nano"), WakeConfig::default())
-                .with_device_label(bench_device_label(dev)),
+        Ok(NanoWakeWordEngine::new(
+            NanoWakeWordWeights::stub(true, "hey nano"),
+            WakeConfig::default(),
         )
+        .with_device_label(bench_device_label(dev)))
     })
     .unwrap();
     assert_100_percent_parity(&rows).unwrap();

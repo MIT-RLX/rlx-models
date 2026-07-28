@@ -53,7 +53,7 @@ The harness forces Whisper `language=en` (Tiny otherwise mis-detects language on
 
 Validated: fox seed 42 → Whisper **6/6**; long paragraph seed 42 → **15/15**.
 Cross-backend Mimi: `just sesame-backends` / `just sesame-backends-long`.
-CUDA on msi (`just sesame-validate-cuda`): fox cpu+cuda both **6/6**, cos **1.000**,
+CUDA on the NVIDIA box (`just sesame-validate-cuda`): fox cpu+cuda both **6/6**, cos **1.000**,
 Mimi decode ~596 ms CUDA vs ~3103 ms CPU (LM frames cached on CPU); long **15/15**.
 
 ## Architecture

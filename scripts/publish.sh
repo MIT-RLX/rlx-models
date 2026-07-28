@@ -49,7 +49,7 @@
 #
 # Default flow:
 #
-#   1. Pre-flight: cargo fmt --check, cargo clippy -- -D warnings,
+#   1. Pre-flight: scripts/rust-lint-gate.sh --workspace (fmt + clippy -D warnings),
 #      cargo test --workspace --release. Aborts if any fails.
 #   2. Confirm prompt (skip with --yes).
 #   3. Per tier, publish each crate sequentially. After each crate:
@@ -62,7 +62,7 @@
 #   4. Crates marked `publish = false` or in workspace.exclude (see SKIPPED)
 #      are not published — cargo skips them; this script lists the rest.
 #
-# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.13) from the RLX repo
+# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.14) from the RLX repo
 # before `rlx-models` path deps resolve on the registry.
 #
 # Publishable workspace crates in 7 tiers (tier 6 = facade `rlx-models` last).
@@ -73,7 +73,7 @@
 # (`rlx-qwen3`, `rlx-laguna`, …); `rlx-kokoro` before `rlx-styletts2`;
 # `rlx-luxtts` before `rlx-zipvoice`; `rlx-quant-calib` before `rlx-tune`;
 # `rlx-distributed` before `rlx-qwen3`.
-# Workspace / upstream pin: 0.2.13 — bump `[workspace.package].version` and
+# Workspace / upstream pin: 0.2.14 — bump `[workspace.package].version` and
 # `[workspace.dependencies]` path `version =` fields before publishing.
 # Bump `[workspace.package].version`, per-crate `[package].version` when needed
 # (e.g. `rlx-models-core`), and `[workspace.dependencies]` pins before publishing.
@@ -496,13 +496,10 @@ fi
 
 # ── Pre-flight gates ────────────────────────────────────────────
 if (( ! NO_GATE )); then
-    bold "[1/3] cargo fmt --check"
-    cargo fmt --all -- --check
+    bold "[1/2] cargo fmt --check + clippy (-D warnings)"
+    ./scripts/rust-lint-gate.sh --workspace
 
-    bold "[2/3] cargo clippy --workspace --all-targets -- -D warnings"
-    cargo clippy --workspace --all-targets -- -D warnings
-
-    bold "[3/3] cargo test --workspace --release --lib"
+    bold "[2/2] cargo test --workspace --release --lib"
     # Publish gate runs LIB UNIT TESTS ONLY — the fast, deterministic checks of
     # core library logic. Integration tests (`tests/`) are intentionally NOT run
     # here: the bulk are real-weight / cross-backend / GPU / e2e parity suites that

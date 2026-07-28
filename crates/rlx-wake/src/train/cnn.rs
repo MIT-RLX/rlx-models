@@ -3,8 +3,8 @@
 
 //! Train [`WakeCnn`] end-to-end in RLX (conv + FC, SGD on `rlx-cpu` path).
 
-use crate::ops::{conv1d_nchw, gemv_bias, global_mean_pool_chw, relu, sigmoid};
 use crate::cnn::{WakeCnnConfig, WakeCnnWeights};
+use crate::ops::{conv1d_nchw, gemv_bias, global_mean_pool_chw, relu, sigmoid};
 use crate::train::dataset::{LabeledClip, clip_mel_frames};
 use crate::train::report::TrainReport;
 use crate::train::sgd::{SgdConfig, bce_dlogit, bce_loss, sgd_step};
@@ -112,14 +112,7 @@ fn forward(w: &WakeCnnWeights, mel_flat: &[f32]) -> FwdCache {
     let mut pooled = vec![0.0f32; cfg.c3];
     global_mean_pool_chw(&y3[..cfg.c3 * t3], cfg.c3, t3, &mut pooled);
     let mut h_pre = vec![0.0f32; cfg.hidden];
-    gemv_bias(
-        cfg.hidden,
-        cfg.c3,
-        &w.fc1_w,
-        &pooled,
-        &w.fc1_b,
-        &mut h_pre,
-    );
+    gemv_bias(cfg.hidden, cfg.c3, &w.fc1_w, &pooled, &w.fc1_b, &mut h_pre);
     let h: Vec<f32> = h_pre.iter().copied().map(relu).collect();
     let mut logit = [0.0f32];
     gemv_bias(1, cfg.hidden, &w.fc2_w, &h, &w.fc2_b, &mut logit);
@@ -361,7 +354,11 @@ pub fn train_wake_cnn(
 }
 
 /// Convenience: fresh lite CNN + train.
-pub fn train_new_lite_cnn(clips: &[LabeledClip], keyword: &str, epochs: usize) -> (WakeCnnWeights, TrainReport) {
+pub fn train_new_lite_cnn(
+    clips: &[LabeledClip],
+    keyword: &str,
+    epochs: usize,
+) -> (WakeCnnWeights, TrainReport) {
     let mut w = WakeCnnWeights::stub(WakeCnnConfig::lite());
     let cfg = CnnTrainConfig {
         keyword: keyword.into(),

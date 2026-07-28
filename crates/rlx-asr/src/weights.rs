@@ -3,7 +3,7 @@
 
 //! Weight I/O helpers (little-endian f32 blobs).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::Path;
 

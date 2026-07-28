@@ -67,7 +67,7 @@ impl HoctDeviceRunner {
         batch: usize,
     ) -> Result<Self> {
         validate_standard_device("hoct", device)?;
-        let flow = HoctFlow::new(cfg.clone())
+        let flow = HoctFlow::new(cfg)
             .with_pad(256, max_edges)
             .with_batch(batch);
         let mut wm = HoctFlow::head_weight_map(&weights);
@@ -147,7 +147,7 @@ impl HoctDeviceRunner {
         let mut logits = Array3::<f32>::zeros((b, e, 1));
         for bi in 0..b {
             for ei in 0..e {
-                logits[[bi, ei, 0]] = flat[(bi * self.max_edges + ei) * 1];
+                logits[[bi, ei, 0]] = flat[bi * self.max_edges + ei];
             }
         }
         Ok(logits)

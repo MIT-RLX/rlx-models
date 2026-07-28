@@ -26,6 +26,10 @@ mod rocm_tests {
 
     fn tiny_cfg() -> Llama32Config {
         Llama32Config {
+            embedding_scale: None,
+            residual_scale: None,
+            attention_scale: None,
+            logit_scale: None,
             vocab_size: 32,
             hidden_size: 16,
             intermediate_size: 32,

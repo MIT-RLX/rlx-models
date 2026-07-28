@@ -120,6 +120,12 @@ pub fn minicpm5_1b_preset() -> Llama32Config {
         rope_style: rlx_llama32::RopeStyle::NeoX,
         gguf_arch: None,
         rope_dim: None,
+        // Arch-quirk scales (Cohere/Granite/GLM/…) — off for MiniCPM (matches the
+        // pre-existing behavior before these fields existed).
+        embedding_scale: None,
+        residual_scale: None,
+        attention_scale: None,
+        logit_scale: None,
     }
 }
 

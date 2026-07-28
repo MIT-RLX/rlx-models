@@ -64,7 +64,7 @@ fn main() -> Result<()> {
     // Verify with sox
     println!("\nAudio properties:");
     let output = std::process::Command::new("sox")
-        .args(&[reference_audio_path, "-n", "stat"])
+        .args([reference_audio_path, "-n", "stat"])
         .output()?;
     let stats = String::from_utf8_lossy(&output.stderr);
     for line in stats.lines().take(3) {

@@ -151,7 +151,13 @@ impl AssetSource {
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| matches!(e, "rlxp" | "rlxpack" | "pack"));
-        if looks_packed || (path.is_file() && !path.is_dir() && !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("rlx"))) {
+        if looks_packed
+            || (path.is_file()
+                && !path.is_dir()
+                && !path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("rlx")))
+        {
             Self::new(pack::LazyPackProvider::new(path))
         } else {
             Self::dir(path)
@@ -493,8 +499,8 @@ pub mod pack {
 
     fn peek_magic(path: &Path) -> Result<Option<[u8; 8]>> {
         use std::io::Read;
-        let mut f = std::fs::File::open(path)
-            .with_context(|| format!("open {}", path.display()))?;
+        let mut f =
+            std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
         let mut buf = [0u8; 8];
         match f.read(&mut buf) {
             Ok(8) => Ok(Some(buf)),
@@ -509,6 +515,7 @@ pub mod pack {
             .is_some_and(|e| e.eq_ignore_ascii_case("rlxp"))
     }
 
+    #[cfg(feature = "rlxp")]
     fn media_type_for(name: &str) -> String {
         match Path::new(name)
             .extension()
@@ -533,7 +540,7 @@ pub mod pack {
     pub fn write_dir(dir: impl AsRef<Path>, out: impl AsRef<Path>) -> Result<()> {
         #[cfg(feature = "rlxp")]
         {
-            return write_dir_rlxp(dir, out);
+            write_dir_rlxp(dir, out)
         }
         #[cfg(not(feature = "rlxp"))]
         {
@@ -577,14 +584,12 @@ pub mod pack {
         for (name, bytes) in files {
             sidecars.push((name.clone(), media_type_for(&name), bytes));
         }
-        let name = package_name
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                out.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("assets")
-                    .to_string()
-            });
+        let name = package_name.map(str::to_string).unwrap_or_else(|| {
+            out.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("assets")
+                .to_string()
+        });
         let opts = WriteOptions {
             name,
             producer: Some("rlx-assets".into()),
@@ -636,8 +641,7 @@ pub mod pack {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, bytes)
-                .with_context(|| format!("write {}", path.display()))?;
+            std::fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
         }
         std::fs::write(&marker, b"ok")?;
         Ok(())
@@ -700,12 +704,7 @@ pub mod pack {
     pub fn is_pack_extension(path: &Path) -> bool {
         path.extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| {
-                matches!(
-                    e.to_ascii_lowercase().as_str(),
-                    "rlxp" | "rlxpack" | "pack"
-                )
-            })
+            .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "rlxp" | "rlxpack" | "pack"))
     }
 
     fn is_gguf_extension(path: &Path) -> bool {
@@ -731,10 +730,10 @@ pub mod pack {
         }
         #[cfg(feature = "rlxp")]
         {
-            return peek_magic(path)
+            peek_magic(path)
                 .ok()
                 .flatten()
-                .is_some_and(|m| m == *MAGIC_RLXPFLAT);
+                .is_some_and(|m| m == *MAGIC_RLXPFLAT)
         }
         #[cfg(not(feature = "rlxp"))]
         {
@@ -765,9 +764,7 @@ pub mod pack {
         let magic = peek_magic(path)?;
         #[cfg(feature = "rlxp")]
         {
-            if looks_rlxp_path(path)
-                || magic == Some(*MAGIC_RLXPFLAT)
-            {
+            if looks_rlxp_path(path) || magic == Some(*MAGIC_RLXPFLAT) {
                 return Ok(ResolvedBundlePath::Pack(path.to_path_buf()));
             }
         }
@@ -784,9 +781,7 @@ pub mod pack {
             || path
                 .extension()
                 .and_then(|e| e.to_str())
-                .is_some_and(|e| {
-                    matches!(e.to_ascii_lowercase().as_str(), "rlxpack" | "pack")
-                })
+                .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "rlxpack" | "pack"))
         {
             return Ok(ResolvedBundlePath::Pack(path.to_path_buf()));
         }
@@ -842,7 +837,10 @@ pub mod pack {
     /// 4. Loose directory (unchanged)
     ///
     /// When `path` is a **file**: magic/extension → [`ResolvedBundlePath`].
-    pub fn resolve_bundle_path(path: &Path, opts: &ResolveBundleOpts<'_>) -> Result<ResolvedBundlePath> {
+    pub fn resolve_bundle_path(
+        path: &Path,
+        opts: &ResolveBundleOpts<'_>,
+    ) -> Result<ResolvedBundlePath> {
         if path.is_file() {
             return classify_bundle_file(path);
         }
@@ -922,8 +920,7 @@ pub mod pack {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, &bytes)
-                .with_context(|| format!("write {}", path.display()))?;
+            std::fs::write(&path, &bytes).with_context(|| format!("write {}", path.display()))?;
         }
         std::fs::write(&marker, b"ok")?;
         Ok(())
@@ -1098,11 +1095,7 @@ pub mod pack {
             Ok(Cow::Owned(bytes))
         }
         fn exists(&self, name: &str) -> bool {
-            self.pack
-                .manifest()
-                .sidecars
-                .iter()
-                .any(|s| s.id == name)
+            self.pack.manifest().sidecars.iter().any(|s| s.id == name)
         }
         fn names(&self) -> Result<Vec<String>> {
             Ok(self

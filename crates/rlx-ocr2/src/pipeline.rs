@@ -50,7 +50,10 @@ impl Ocr2 {
         // Grouping only reads region_score + link_score_horizontal; build a detector that
         // outputs just those two heads (prunes ~28% of ops — the other 5 heads' conv/upsample/
         // softmax tails — with no effect on the retained heatmaps).
-        let heads = vec!["region_score".to_string(), "link_score_horizontal".to_string()];
+        let heads = vec![
+            "region_score".to_string(),
+            "link_score_horizontal".to_string(),
+        ];
         Ok(Self {
             detector: Detector::load_heads(recipe, det_weights, device, heads)?,
             recognizer: Recognizer::load(rec_weights, codemap, device)?,
@@ -103,11 +106,16 @@ impl Ocr2 {
             let y1 = (y1 + pady).min(lb.orig_h as f32) as u32;
             if let Some((luma, w)) = crop_line_luma(&gray, x0, y0, x1, y1) {
                 let text = match &self.rescorer {
-                    Some(r) => self.recognizer.recognize_with_rescorer(&luma, w, r, self.beam)?,
+                    Some(r) => self
+                        .recognizer
+                        .recognize_with_rescorer(&luma, w, r, self.beam)?,
                     None => self.recognizer.recognize(&luma, w)?,
                 };
                 if !text.trim().is_empty() {
-                    out.push(OcrLine { text, bbox: (x0, y0, x1, y1) });
+                    out.push(OcrLine {
+                        text,
+                        bbox: (x0, y0, x1, y1),
+                    });
                 }
             }
         }

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Sesame CSM CUDA validation on NVIDIA host (e.g. ssh msi).
+# Sesame CSM CUDA validation on NVIDIA host (set RLX_CUDA_HOST; e.g. ssh your-cuda-host).
 # From Mac: scripts/sesame_cuda_validate.sh --remote
-# On msi:   scripts/sesame_cuda_validate.sh
+# On the CUDA host:   scripts/sesame_cuda_validate.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOST="${MSI_HOST:-msi}"
+HOST="${RLX_CUDA_HOST:?set RLX_CUDA_HOST to your CUDA host, e.g. user@host}"
 REMOTE_MODELS="${REMOTE_MODELS:-rlx-models}"
 FOX='The quick brown fox jumps over the lazy dog.'
 LONG='The quick brown fox jumps over the lazy dog. Courage and kindness matter more than cleverness alone when people face hard times together and choose to help each other without waiting for perfect conditions.'
 
 remote_run() {
   echo ">> sync trees to $HOST"
-  bash "$ROOT/scripts/matrix/sync_to_msi.sh"
+  bash "$ROOT/scripts/matrix/sync_to_remote.sh"
   echo ">> running Sesame CUDA validate on $HOST"
   ssh "$HOST" "cd $REMOTE_MODELS && bash scripts/sesame_cuda_validate.sh --local"
 }

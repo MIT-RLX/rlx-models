@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": ".cursor/hooks/rustfmt-after-edit.sh"
+      }
+    ],
+    "afterTabFileEdit": [
+      {
+        "command": ".cursor/hooks/rustfmt-after-edit.sh"
+      }
+    ],
+    "stop": [
+      {
+        "command": ".cursor/hooks/fmt-clippy-stop.sh",
+        "timeout": 600,
+        "loop_limit": 3
+      }
+    ]
+  }
+}

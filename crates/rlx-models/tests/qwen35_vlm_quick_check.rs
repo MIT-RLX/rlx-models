@@ -73,6 +73,7 @@ fn tiny_lm_cfg() -> Qwen35Config {
         rope_dim_count: 4,
         rope_dim_sections: vec![],
         mrope_interleaved: false,
+        rms_norm_offset: false,
         full_attention_interval: 3,
         ssm_conv_kernel: 4,
         ssm_group_count: 2,

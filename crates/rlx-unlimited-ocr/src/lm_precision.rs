@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn f16_roundtrip() {
-        let v = vec![0.0f32, 1.0, -0.5, 3.14159];
+        let v = vec![0.0f32, 1.0, -0.5, std::f32::consts::PI];
         let b = f32_to_f16_bytes(&v);
         let back = f16_bytes_to_f32(&b).unwrap();
         for (a, b) in v.iter().zip(back.iter()) {

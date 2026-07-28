@@ -81,7 +81,12 @@ impl Recognizer {
                 .ok_or_else(|| anyhow!("weights path is not valid UTF-8"))?;
             let mut wm = WeightMap::from_file(path_str)?;
             let (graph, params) = build_recognition_graph(&mut wm, 1, width)?;
-            slot.insert(crate::compile::compile_encoder(graph, params, self.device, false));
+            slot.insert(crate::compile::compile_encoder(
+                graph,
+                params,
+                self.device,
+                false,
+            ));
         }
         cache
             .get_mut(&width)
@@ -117,7 +122,9 @@ impl Recognizer {
             let rescore_s = rescorer.score(&s);
             let total = rec_score + rescore_s;
             if dbg {
-                eprintln!("  cand {s:?}  rec={rec_score:.3} rescore={rescore_s:.3} total={total:.3}");
+                eprintln!(
+                    "  cand {s:?}  rec={rec_score:.3} rescore={rescore_s:.3} total={total:.3}"
+                );
             }
             if best.as_ref().is_none_or(|(b, _)| total > *b) {
                 best = Some((total, s));

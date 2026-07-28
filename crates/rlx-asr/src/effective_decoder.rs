@@ -12,7 +12,7 @@
 
 use crate::spec::{DECODER_DIM, VOCAB};
 use crate::weights::read_f32_bin;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 fn matvec_rowmajor(rows: usize, cols: usize, w: &[f32], x: &[f32], out: &mut [f32]) {

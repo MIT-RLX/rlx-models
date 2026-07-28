@@ -61,9 +61,8 @@ mod inner {
             std::fs::create_dir_all(&cache_dir)
                 .map_err(|e| anyhow!("failed to create espeak-ng data dir: {e}"))?;
             // Bundled pack is tagged `en`; `en-us` / `en-gb` voices share that dict data.
-            espeak_ng::install_bundled_language(&cache_dir, "en").map_err(|e| {
-                anyhow!("failed to install bundled espeak-ng data for en: {e}")
-            })?;
+            espeak_ng::install_bundled_language(&cache_dir, "en")
+                .map_err(|e| anyhow!("failed to install bundled espeak-ng data for en: {e}"))?;
             Ok(cache_dir)
         })
     }

@@ -4,7 +4,7 @@
 #
 # Usage:
 #   scripts/matrix/bonsai27b_coherent.sh              # local backends
-#   HOST=msi scripts/matrix/bonsai27b_coherent.sh     # remote (expects synced trees)
+#   RLX_CUDA_HOST=user@host scripts/matrix/bonsai27b_coherent.sh     # remote (expects synced trees)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

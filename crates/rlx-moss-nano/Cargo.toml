@@ -1,6 +1,6 @@
 [package]
 name = "rlx-moss-nano"
-version = "0.2.13"
+version = "0.2.14"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -53,7 +53,7 @@ path = "src/bin/rlx_moss_nano.rs"
 [[example]]
 name = "backend_matrix"
 # Device-agnostic at runtime (guards on `is_available`); build with whatever
-# backend features are enabled (`apple-silicon` on Mac, `cuda` on msi).
+# backend features are enabled (`apple-silicon` on Mac, `cuda` on NVIDIA).
 
 [lints]
 workspace = true

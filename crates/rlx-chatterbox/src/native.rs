@@ -256,7 +256,7 @@ impl NativeChatterBox {
     /// Drop every cached graph whose key starts with `prefix`, freeing its
     /// compiled arena (weights + intermediates). Opt-in via `RLX_CB_LOW_MEM`:
     /// the default KEEPS graphs so repeated `synthesize` calls skip `compile_lir`
-    /// + `set_param` (fast steady state); low-mem trades that for a much lower
+    /// and `set_param` (fast steady state); low-mem trades that for a much lower
     /// PEAK RSS (the LM, estimator and vocoder never coexist).
     fn release(&self, prefix: &str) {
         if std::env::var_os("RLX_CB_LOW_MEM").is_some() {
@@ -556,7 +556,7 @@ impl NativeChatterBox {
                     .lm_head()
                     .export_kv()
                     .build(&mut wm)?;
-                Ok(built.into_parts()?)
+                built.into_parts()
             })?;
             self.graphs.lock().unwrap().insert(pf_key.clone(), g);
         }
@@ -607,7 +607,7 @@ impl NativeChatterBox {
                     .export_kv()
                     .lm_head()
                     .build(&mut wm)?;
-                Ok(built.into_parts()?)
+                built.into_parts()
             })?;
             self.graphs.lock().unwrap().insert(dec_key.clone(), g);
         }
@@ -777,8 +777,7 @@ impl NativeChatterBox {
         };
 
         let (mut agree, mut total, mut first_div, mut cos_sum) = (0usize, 0usize, None, 0f64);
-        let mut seq = prompt_seq;
-        for step in 0..opts.max_frames {
+        for (step, seq) in (prompt_seq..).enumerate().take(opts.max_frames) {
             let onnx = self.onnx_lm_logits_last(&embeds, seq, compile_len)?;
             let nat = self.native_lm_logits_last(&embeds, seq, compile_len)?;
             total += 1;
@@ -794,7 +793,6 @@ impl NativeChatterBox {
             }
             let emb = self.embed(&[to], seq, opts.exaggeration)?;
             embeds.extend_from_slice(&emb);
-            seq += 1;
         }
         Ok((agree, total, first_div, cos_sum / total.max(1) as f64))
     }
@@ -862,9 +860,8 @@ impl NativeChatterBox {
         } else {
             let mut generated: Vec<i64> = Vec::new();
             let mut seen: HashSet<i64> = HashSet::new();
-            let mut seq = prompt_seq;
             let mut embeds = embeds;
-            for _ in 0..opts.max_frames {
+            for seq in (prompt_seq..).take(opts.max_frames) {
                 let logits = self.lm_logits_last(&embeds, seq, compile_len)?;
                 let next = sample(&logits, &seen, opts, &mut rng);
                 if is_eos(next) {
@@ -874,7 +871,6 @@ impl NativeChatterBox {
                 seen.insert(next);
                 let emb = self.embed(&[next], seq, opts.exaggeration)?;
                 embeds.extend_from_slice(&emb);
-                seq += 1;
             }
             generated
         };

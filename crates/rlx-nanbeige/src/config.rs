@@ -60,9 +60,9 @@ pub fn validate_hf_config(weights_or_dir: &Path) -> Result<()> {
 
     match probe.model_type.as_deref() {
         Some("nanbeige") => {}
-        Some(other) => bail!(
-            "rlx-nanbeige: {cfg_path:?} has model_type={other:?}; expected `nanbeige`"
-        ),
+        Some(other) => {
+            bail!("rlx-nanbeige: {cfg_path:?} has model_type={other:?}; expected `nanbeige`")
+        }
         None => bail!("rlx-nanbeige: {cfg_path:?} missing model_type"),
     }
 
@@ -109,6 +109,10 @@ pub fn validate_weights_kind(weights: &Path) -> Result<()> {
 /// Reference dims for [Nanbeige/Nanbeige4.2-3B](https://huggingface.co/Nanbeige/Nanbeige4.2-3B).
 pub fn nanbeige42_3b_preset() -> Llama32Config {
     Llama32Config {
+        embedding_scale: None,
+        residual_scale: None,
+        attention_scale: None,
+        logit_scale: None,
         vocab_size: 166_144,
         hidden_size: 3072,
         intermediate_size: 10_752,

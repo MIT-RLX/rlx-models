@@ -72,8 +72,7 @@ pub fn ternarize(w: &[f32], keep_frac: f32) -> Vec<f32> {
     let keep = keep_frac.clamp(0.01, 1.0);
     let mut abs: Vec<f32> = w.iter().map(|v| v.abs()).collect();
     abs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-    let n_keep = (((abs.len() as f32) * keep).round() as usize)
-        .clamp(1, abs.len());
+    let n_keep = (((abs.len() as f32) * keep).round() as usize).clamp(1, abs.len());
     let thr = if n_keep >= abs.len() {
         0.0
     } else {

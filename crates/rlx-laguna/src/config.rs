@@ -280,7 +280,8 @@ impl LagunaConfig {
     }
 
     pub fn from_json_str(text: &str) -> Result<Self> {
-        let v: serde_json::Value = serde_json::from_str(text).context("parse Laguna config.json")?;
+        let v: serde_json::Value =
+            serde_json::from_str(text).context("parse Laguna config.json")?;
         Self::from_value(&v)
     }
 
@@ -291,9 +292,8 @@ impl LagunaConfig {
                 .map(|x| x as usize)
                 .ok_or_else(|| anyhow!("missing config.{k}"))
         };
-        let u_opt = |k: &str| -> Option<usize> {
-            v.get(k).and_then(|x| x.as_u64()).map(|x| x as usize)
-        };
+        let u_opt =
+            |k: &str| -> Option<usize> { v.get(k).and_then(|x| x.as_u64()).map(|x| x as usize) };
         let f = |k: &str, default: f32| -> f32 {
             v.get(k)
                 .and_then(|x| x.as_f64())

@@ -47,16 +47,14 @@ fn main() -> anyhow::Result<()> {
                 scalar_input_mask,
                 input_modulus,
                 ..
-            } => {
-                if chain
-                    .iter()
-                    .any(|s| matches!(s, rlx_runtime::op::ChainStep::Compare(..)))
-                {
-                    eprintln!(
-                        "Region with Compare: nin={num_inputs} mask={scalar_input_mask:#x} modulus={:?}",
-                        &input_modulus[..*num_inputs as usize]
-                    );
-                }
+            } if chain
+                .iter()
+                .any(|s| matches!(s, rlx_runtime::op::ChainStep::Compare(..))) =>
+            {
+                eprintln!(
+                    "Region with Compare: nin={num_inputs} mask={scalar_input_mask:#x} modulus={:?}",
+                    &input_modulus[..*num_inputs as usize]
+                );
             }
             _ => {}
         }

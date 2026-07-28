@@ -15,7 +15,8 @@ fn setup() -> Option<(NativeSoprano, SopranoQwen3)> {
     let st = std::env::var("SOPRANO_BACKBONE_ST").ok()?;
     let dir = std::env::var("RLX_SOPRANO_DIR").unwrap_or_else(|_| "weights/tts/soprano".into());
     let device =
-        parse_device(&std::env::var("RLX_SOPRANO_DEVICE").unwrap_or_else(|_| "cpu".into())).unwrap();
+        parse_device(&std::env::var("RLX_SOPRANO_DEVICE").unwrap_or_else(|_| "cpu".into()))
+            .unwrap();
     let onnx = NativeSoprano::open(&dir, device).expect("open onnx backbone");
     let native = SopranoQwen3::open(Path::new(&st), device).expect("open native backbone");
     Some((onnx, native))
@@ -50,7 +51,10 @@ fn prefill_logit_parity() {
         assert_eq!(lo.len(), ln.len(), "vocab mismatch");
         let (ao, an) = (argmax(&lo), argmax(&ln));
         let cos = cosine(&lo, &ln);
-        println!("[{text}] onnx_argmax={ao} native_argmax={an} cos={cos:.5} n_tok={}", ids.len());
+        println!(
+            "[{text}] onnx_argmax={ao} native_argmax={an} cos={cos:.5} n_tok={}",
+            ids.len()
+        );
         assert!(cos > 0.99, "logit cosine {cos} too low for '{text}'");
         assert_eq!(ao, an, "argmax mismatch for '{text}'");
     }
@@ -66,9 +70,15 @@ fn greedy_token_parity() {
     };
     let text = "Hello from Soprano.";
     let ids = onnx.encode_prompt(text).expect("encode");
-    let opts = InferOpts { greedy: true, max_new_tokens: 40, ..Default::default() };
+    let opts = InferOpts {
+        greedy: true,
+        max_new_tokens: 40,
+        ..Default::default()
+    };
     let (ol, otoks) = onnx.generate_latents(text, &opts).expect("onnx generate");
-    let (nl, ntoks) = native.generate_latents_greedy(&ids, 40).expect("native generate");
+    let (nl, ntoks) = native
+        .generate_latents_greedy(&ids, 40)
+        .expect("native generate");
     let n = otoks.len().min(ntoks.len()).min(24);
     println!("onnx   toks[..{n}] = {:?}", &otoks[..n]);
     println!("native toks[..{n}] = {:?}", &ntoks[..n]);

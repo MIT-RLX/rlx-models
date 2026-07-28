@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Mirror the two working trees (rlx-models + its sibling ../rlx) to msi.
+# Mirror the two working trees (rlx-models + its sibling ../rlx) to the remote CUDA host.
 # We rsync working trees (not git) because both have uncommitted changes newer
-# than msi and we must not commit. weights/, target/, .cache/ are EXCLUDED so
-# --delete can never touch msi's 12G of downloaded weights or its build cache.
+# than the remote and we must not commit. weights/, target/, .cache/ are EXCLUDED so
+# --delete can never touch the remote'''s 12G of downloaded weights or its build cache.
 set -euo pipefail
 
-HOST="${MSI_HOST:-msi}"
+HOST="${RLX_CUDA_HOST:?set RLX_CUDA_HOST to your CUDA host, e.g. user@host}"
 LOCAL_MODELS="${LOCAL_MODELS:-/Users/Shared/rlx-models}"
 LOCAL_RLX="${LOCAL_RLX:-/Users/Shared/rlx}"
 REMOTE_MODELS="${REMOTE_MODELS:-rlx-models}"     # relative to remote $HOME

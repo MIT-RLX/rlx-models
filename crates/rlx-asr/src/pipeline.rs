@@ -12,7 +12,7 @@ use crate::spec::{AED_CACHE_IN_ELEMS, BEAM, BLANK, ENC_ELEMS, EOS, SOS, VOCAB};
 use crate::textproc::{Etiquette, Hammer};
 use crate::units::Units;
 use crate::vad::Vad;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -118,7 +118,10 @@ impl AsrSession {
             } else if paths.units_txt().is_file() {
                 Units::load(&paths.units_txt())?
             } else {
-                bail!("units missing in pack and no units.txt under {}", dir.display());
+                bail!(
+                    "units missing in pack and no units.txt under {}",
+                    dir.display()
+                );
             }
         } else {
             Units::load(&paths.units_txt())
@@ -126,7 +129,8 @@ impl AsrSession {
         };
 
         let hammer = if let Some(ref g) = pack {
-            g.load_hammer("en_US").unwrap_or(Hammer { fsts: Vec::new() })
+            g.load_hammer("en_US")
+                .unwrap_or(Hammer { fsts: Vec::new() })
         } else if let Some(tp) = paths.tp_dir() {
             Hammer::load_dir(&tp, "en_US")?
         } else {
@@ -159,7 +163,10 @@ impl AsrSession {
 
     /// Transcribe mono PCM with energy VAD + stub/native encoder + native AED (or CTC).
     pub fn transcribe(&mut self, pcm: &[f32], sample_rate: u32) -> Result<Transcript> {
-        let trimmed = self.vad.trim(pcm, sample_rate).unwrap_or_else(|_| pcm.to_vec());
+        let trimmed = self
+            .vad
+            .trim(pcm, sample_rate)
+            .unwrap_or_else(|_| pcm.to_vec());
         let pcm_use = if trimmed.is_empty() {
             pcm
         } else {
@@ -210,11 +217,7 @@ impl AsrSession {
     }
 
     /// AED step against a provided encoder_cache (debug / joint decode).
-    pub fn aed_step(
-        &mut self,
-        tokens: &[u32; BEAM],
-        encoder_cache: &[f32],
-    ) -> Result<Vec<f32>> {
+    pub fn aed_step(&mut self, tokens: &[u32; BEAM], encoder_cache: &[f32]) -> Result<Vec<f32>> {
         let (lp, _) = self.aed_step_full(tokens, encoder_cache, None)?;
         Ok(lp)
     }

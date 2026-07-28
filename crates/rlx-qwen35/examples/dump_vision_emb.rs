@@ -74,7 +74,11 @@ fn main() -> Result<()> {
         }
     };
     let resized = if (src_w, src_h) != (tw, th) {
-        img.resize_exact(tw as u32, th as u32, image::imageops::FilterType::CatmullRom)
+        img.resize_exact(
+            tw as u32,
+            th as u32,
+            image::imageops::FilterType::CatmullRom,
+        )
     } else {
         img
     };
@@ -105,9 +109,7 @@ fn main() -> Result<()> {
 
     let rows = out_emb.n_tokens as u32;
     let cols = dim as u32;
-    let header = format!(
-        "{{'descr': '<f4', 'fortran_order': False, 'shape': ({rows}, {cols}), }}"
-    );
+    let header = format!("{{'descr': '<f4', 'fortran_order': False, 'shape': ({rows}, {cols}), }}");
     let mut header_bytes = header.into_bytes();
     while (10 + header_bytes.len() + 1) % 16 != 0 {
         header_bytes.push(b' ');
