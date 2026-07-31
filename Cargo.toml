@@ -47,6 +47,7 @@ members = [
     "crates/rlx-llama4",
     "crates/rlx-deepseek",
     "crates/rlx-glm4moe",
+    "crates/rlx-kimi-k3",
     "crates/rlx-jamba",
     "crates/rlx-gemma",
     "crates/rlx-gemma-inflect-nano",
@@ -151,6 +152,7 @@ members = [
     "crates/rlx-termclean",
     "crates/rlx-trellis2",
     "crates/rlx-unlimited-ocr",
+    "crates/rlx-vlash",
 ]
 
 # rlx-mamba-bench is an opt-in head-to-head bench against burn-mamba.
@@ -253,6 +255,8 @@ rlx-qwen3 = { path = "crates/rlx-qwen3", version = "0.2.14" }
 rlx-qwen3-tts = { path = "crates/rlx-qwen3-tts", version = "0.2.14" }
 rlx-llama32 = { path = "crates/rlx-llama32", version = "0.2.14" }
 rlx-gemma = { path = "crates/rlx-gemma", version = "0.2.14" }
+rlx-siglip2 = { path = "crates/rlx-siglip2", version = "0.2.14" }
+rlx-vlash = { path = "crates/rlx-vlash", version = "0.2.14" }
 rlx-eagle3 = { path = "crates/rlx-eagle3", version = "0.2.14" }
 rlx-llada2 = { path = "crates/rlx-llada2", version = "0.2.14" }
 rlx-qwen35 = { path = "crates/rlx-qwen35", version = "0.2.14" }
@@ -295,6 +299,7 @@ rlx-mllama = { path = "crates/rlx-mllama", version = "0.2.14" }
 rlx-llama4 = { path = "crates/rlx-llama4", version = "0.2.14" }
 rlx-deepseek = { path = "crates/rlx-deepseek", version = "0.2.14" }
 rlx-glm4moe = { path = "crates/rlx-glm4moe", version = "0.2.14" }
+rlx-kimi-k3 = { path = "crates/rlx-kimi-k3", version = "0.2.14" }
 rlx-nemotron-omni = { path = "crates/rlx-nemotron-omni", version = "0.2.14" }
 rlx-ocr = { path = "crates/rlx-ocr", version = "0.2.14" }
 rlx-ocr2 = { path = "crates/rlx-ocr2", version = "0.2.14" }

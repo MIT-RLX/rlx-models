@@ -8090,6 +8090,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-kimi-k3"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "half",
+ "rlx-cli",
+ "rlx-deepseek",
+ "rlx-distributed",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-llada2",
+ "rlx-models-core",
+ "rlx-runtime",
+ "safetensors 0.7.0",
+ "serde",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
 name = "rlx-kittentts"
 version = "0.2.14"
 dependencies = [
@@ -8921,8 +8941,10 @@ version = "0.2.14"
 dependencies = [
  "anyhow",
  "rlx-gguf",
+ "rlx-ir",
  "rlx-qwen3",
  "rlx-qwen35",
+ "rlx-runtime",
 ]
 
 [[package]]
@@ -10073,6 +10095,27 @@ dependencies = [
  "safetensors 0.7.0",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rlx-vlash"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "half",
+ "hf-hub",
+ "image",
+ "rlx-cli",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-models-core",
+ "rlx-opt",
+ "rlx-runtime",
+ "rlx-siglip2",
+ "safetensors 0.7.0",
+ "serde",
+ "serde_json",
+ "tokenizers",
 ]
 
 [[package]]

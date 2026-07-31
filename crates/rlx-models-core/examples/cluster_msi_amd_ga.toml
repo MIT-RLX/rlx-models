@@ -1,0 +1,52 @@
+# DeepSeek-V4-Flash **GA 0731** (MXFP4-MLX) across macmini + msi + amd, over the
+# `ssh msi` / `ssh amd` aliases. Coordinator = macmini.
+#
+#   cargo run --release -p rlx-models-core --example dsv4_cluster --features metal -- \
+#     --config crates/rlx-models-core/examples/cluster_msi_amd_ga.toml \
+#     --model-dir /Volumes/FOUR/DeepSeek/DeepSeek-V4-Flash-0731-MXFP4-MLX \
+#     --remote-bin /home/user/rlx-models/target/release/examples/dsv4_cluster \
+#     --ids 0,671,6102,294,8760,344
+#
+# ⚠️  RAM FIT: this checkpoint is ~167 GB on disk (MXFP4, 4-bit). The three nodes
+# total 64+61+43 = 168 GB RAM (macmini swap-bound under EDA tools), so ~145 GB is
+# realistically usable — the full model likely will NOT fit resident across these
+# three nodes (the 96.5 GB 2-bit PREVIEW already swap-thrashed macmini). To run GA
+# here you'd want a 4th node, or a 2-/3-bit GA MLX repack (none published yet).
+# The `max_ram_gb` caps below are pushed as far as the boxes allow; if the planner
+# rejects ("model does not fit"), that's the capacity ceiling, not a bug.
+model = "Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX"
+seq = 6
+rng_seed = 42
+reserve_ram_gb = 1.0
+
+[placement]
+policy = "ram_balanced"
+
+# macmini — coordinator + stage 0, M4 Pro / Metal. Kept small (swap-bound).
+[[node]]
+addr = "192.168.99.148:9100"
+ckpt_dir = "/Volumes/FOUR/DeepSeek/DeepSeek-V4-Flash-0731-MXFP4-MLX"
+device = "metal"
+precision = "mxfp4"
+kv_cache = "host"
+max_ram_gb = 44
+
+# msi — 61 GB, CPU (stable; host-delegates the MoE).
+[[node]]
+addr = "192.168.99.76:9101"
+ssh = "msi"
+ckpt_dir = "/home/user/DeepSeek-V4-Flash-0731-MXFP4-MLX"
+device = "cpu"
+precision = "mxfp4"
+kv_cache = "host"
+max_ram_gb = 58
+
+# amd — 43 GB, CPU.
+[[node]]
+addr = "192.168.99.161:9102"
+ssh = "amd"
+ckpt_dir = "/home/user/DeepSeek-V4-Flash-0731-MXFP4-MLX"
+device = "cpu"
+precision = "mxfp4"
+kv_cache = "host"
+max_ram_gb = 40

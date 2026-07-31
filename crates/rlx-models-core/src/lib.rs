@@ -33,6 +33,7 @@ pub mod config;
 pub mod dataprocessing;
 pub mod device_capabilities;
 pub mod distributed_bridge;
+pub mod dsv4_quant;
 pub mod embedded_safetensors;
 pub mod flow_bridge;
 pub mod flow_util;

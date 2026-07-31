@@ -17,6 +17,10 @@ rlx-gguf = { workspace = true }
 # Tokenizer + ChatML helpers (Qwen3 byte-level BPE, GGUF-embedded vocab).
 rlx-qwen35 = { workspace = true, optional = true }
 
+[dev-dependencies]
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+
 [[bin]]
 name = "rlx-neutrino"
 path = "src/bin/rlx_neutrino.rs"
@@ -29,9 +33,10 @@ default = ["tokenizer"]
 # Text prompts + chat template + detokenize. Without it the CLI is ids-only
 # (which is exactly the reference `fermion-greedy` parity harness).
 tokenizer = ["dep:rlx-qwen35", "rlx-qwen35/tokenizer"]
-# FV5 is a CPU-only ggml type (the fermion-fv5 fork ships no GPU kernel), so
-# these backend passthroughs exist for API symmetry with the other LM crates;
-# the FV5 DequantMatMul still executes on CPU regardless of device.
+# Backend passthroughs to rlx-qwen3 / rlx-runtime. FV5 (ggml 43) and FV5B (44)
+# now have on-device dequant kernels (Metal / MLX / wgpu / CUDA), so the ternary
+# DequantMatMul runs on the selected GPU backend instead of always on CPU; CPU
+# remains the bit-exact reference (see the FV5 dequant parity tests).
 metal = ["rlx-qwen3/metal"]
 mlx = ["rlx-qwen3/mlx"]
 cuda = ["rlx-qwen3/cuda"]

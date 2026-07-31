@@ -790,6 +790,23 @@ impl MlxLoader {
         })
     }
 
+    /// `MADV_WILLNEED`-prefetch the given tensors (best effort) so their shard
+    /// pages read ahead while the caller builds+compiles its stage — overlapping
+    /// disk IO with compile instead of paying it as page-faults during the first
+    /// forward. No-op for the eager loader (already resident). Pass the stage's
+    /// expected weight keys, or [`Self::prewarm_all`] for the whole shard.
+    pub fn prewarm(&self, keys: &[&str]) {
+        self.w.prewarm(keys);
+    }
+
+    /// Prefetch every tensor this (lazy) loader indexes — call right after
+    /// `open_lazy`, before building the stage graph, to warm the page cache.
+    pub fn prewarm_all(&self) {
+        let keys = self.w.logical_keys();
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        self.w.prewarm(&refs);
+    }
+
     /// True when the mlx checkpoint declares a `quantization` block.
     pub fn is_quantized(&self) -> bool {
         self.w.mlx_config().quantization.is_some()

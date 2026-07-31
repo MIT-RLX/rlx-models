@@ -26,7 +26,8 @@ cuda = ["rlx-llama32/cuda"]
 rocm = ["rlx-llama32/rocm"]
 gpu = ["rlx-llama32/gpu"]
 vulkan = ["rlx-llama32/vulkan"]
-all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+coreml = ["rlx-llama32/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
 
 [lints]
 workspace = true

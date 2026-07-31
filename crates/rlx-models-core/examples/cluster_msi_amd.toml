@@ -1,0 +1,61 @@
+# DeepSeek-V4-Flash across THIS cluster — macmini (coordinator) + msi + amd,
+# launched over the `ssh msi` / `ssh amd` aliases from ~/.ssh/config.
+#
+# Drive it from macmini:
+#   cargo run --release -p rlx-models-core --example dsv4_cluster --features metal -- \
+#     --config crates/rlx-models-core/examples/cluster_msi_amd.toml \
+#     --model-dir /Users/Shared/DeepSeek-V4-Flash-2bit-DQ \
+#     --remote-bin /home/user/rlx-models/target/release/examples/dsv4_cluster \
+#     --ids 0,671,6102,294,8760,344
+#
+# `addr` = the LAN host:port each worker binds/serves on (must be reachable from
+# the coordinator). `ssh` = the ~/.ssh/config alias used only to launch + probe.
+#
+# ── Checkpoint ────────────────────────────────────────────────────────────────
+# Currently DOWNLOADED on the nodes: the April PREVIEW `DeepSeek-V4-Flash-2bit-DQ`
+# (msi ~/DeepSeek-V4-Flash-2bit-DQ, amd ~/DeepSeek-V4-Flash-2bit-DQ). This config
+# runs against it as-is (it exercises the exact GA `build_deepseek_v4_stage` path,
+# now with YaRN wired). To run the GA `0731` weights, download an MLX-loadable GA
+# repack to every node — `Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX` (~156GB, MXFP4;
+# loads via MlxLoader) — set `model` + each `ckpt_dir` to it, and re-check the
+# `max_ram_gb` split (156GB is tighter than the 96.5GB preview: 64+61+43=168GB
+# total RAM, macmini swap-bound, so amd/msi must carry the bulk).
+model = "mlx-community/DeepSeek-V4-Flash-2bit-DQ"   # ← swap to the Vontra 0731 MXFP4-MLX repo for GA
+seq = 6
+rng_seed = 42
+reserve_ram_gb = 1.0
+
+[placement]
+policy = "ram_balanced"
+
+# ── macmini — coordinator + stage 0 (runs locally, M4 Pro / Metal) ──
+# Swap-bound (user EDA tools) → small layer cap so it isn't the pipeline stall.
+[[node]]
+addr = "192.168.99.148:9100"
+ckpt_dir = "/Users/Shared/DeepSeek-V4-Flash-2bit-DQ"
+device = "metal"
+precision = "bf16"
+kv_cache = "host"
+max_ram_gb = 16
+
+# ── msi — RTX 3080 Ti box, 61 GB RAM. CPU (a 16 GB-VRAM GPU OOMs on a big
+#    managed stage; CPU is stable and host-delegates the MoE anyway). ──
+[[node]]
+addr = "192.168.99.76:9101"
+ssh = "msi"
+ckpt_dir = "/home/user/DeepSeek-V4-Flash-2bit-DQ"
+device = "cpu"
+precision = "bf16"
+kv_cache = "host"
+max_ram_gb = 55
+
+# ── amd — Radeon box, 43 GB RAM. CPU (Vulkan works but host-falls-back the MoE
+#    → far slower; raise GTT + set device="vulkan" only if you want the GPU). ──
+[[node]]
+addr = "192.168.99.161:9102"
+ssh = "amd"
+ckpt_dir = "/home/user/DeepSeek-V4-Flash-2bit-DQ"
+device = "cpu"
+precision = "bf16"
+kv_cache = "host"
+max_ram_gb = 38

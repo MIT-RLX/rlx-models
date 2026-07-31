@@ -29,6 +29,16 @@ default = []
 # tests (`tests/real_*`) can run the packed LM on-device.
 metal = ["rlx-mistral/metal", "rlx-llama32/metal", "rlx-runtime/metal"]
 mlx = ["rlx-mistral/mlx", "rlx-llama32/mlx", "rlx-runtime/mlx"]
+cuda = ["rlx-mistral/cuda", "rlx-llama32/cuda", "rlx-runtime/cuda"]
+rocm = ["rlx-mistral/rocm", "rlx-llama32/rocm", "rlx-runtime/rocm"]
+gpu = ["rlx-mistral/gpu", "rlx-llama32/gpu", "rlx-runtime/gpu"]
+vulkan = ["rlx-mistral/vulkan", "rlx-llama32/vulkan", "rlx-runtime/vulkan"]
+coreml = ["rlx-mistral/coreml", "rlx-llama32/coreml", "rlx-runtime/coreml", "rlx-core/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
 
 [lints]
 workspace = true

@@ -5,7 +5,8 @@
 # --delete can never touch the remote'''s 12G of downloaded weights or its build cache.
 set -euo pipefail
 
-HOST="${RLX_CUDA_HOST:?set RLX_CUDA_HOST to your CUDA host, e.g. user@host}"
+# Accept any remote (msi / amd / …) via RLX_REMOTE_HOST; RLX_CUDA_HOST kept for compat.
+HOST="${RLX_REMOTE_HOST:-${RLX_CUDA_HOST:?set RLX_REMOTE_HOST (or RLX_CUDA_HOST) to your remote, e.g. msi}}"
 LOCAL_MODELS="${LOCAL_MODELS:-/Users/Shared/rlx-models}"
 LOCAL_RLX="${LOCAL_RLX:-/Users/Shared/rlx}"
 REMOTE_MODELS="${REMOTE_MODELS:-rlx-models}"     # relative to remote $HOME

@@ -139,6 +139,15 @@ fn spec() -> DeepseekV4Spec {
         rms_norm_eps: 1e-5,
         hc_sinkhorn_iters: 5,
         hc_eps: 1e-6,
+        original_seq_len: 0,
+        rope_factor: 1.0,
+        beta_fast: 32.0,
+        beta_slow: 1.0,
+        n_mtp_layers: 0,
+        dspark_block_size: 0,
+        dspark_noise_token_id: 0,
+        dspark_target_layer_ids: vec![],
+        dspark_markov_rank: 256,
     }
 }
 

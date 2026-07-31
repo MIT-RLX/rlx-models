@@ -1,0 +1,55 @@
+[package]
+name = "rlx-vlash"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "VLASH π₀ / π₀.₅ Vision-Language-Action policies (PaliGemma + Gemma-300M flow matching) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-opt = { workspace = true }
+rlx-siglip2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+safetensors = { workspace = true }
+image = { workspace = true }
+half = { workspace = true }
+tokenizers = { workspace = true }
+hf-hub = { workspace = true, optional = true }
+
+[[bin]]
+name = "rlx-vlash"
+path = "src/bin/rlx_vlash.rs"
+
+[[example]]
+name = "predict_action"
+path = "examples/predict_action.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+pipeline = ["dep:hf-hub"]
+metal = ["rlx-runtime/metal", "rlx-siglip2/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-siglip2/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-siglip2/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-siglip2/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-siglip2/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-siglip2/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

@@ -294,7 +294,7 @@ OPTIONS:
     -h, --help             Show this help
 
 Greedy (argmax) decoding only — the deterministic mode the FV5 correctness gate certifies.
-FV5 is a CPU-only ggml type; this runs on CPU regardless of build features.
+FV5/FV5B now have on-device dequant kernels (Metal/MLX/wgpu/CUDA); CPU stays the bit-exact reference.
 ";
 
 /// CLI entry point (`rlx-run neutrino …` / `rlx-neutrino …`).

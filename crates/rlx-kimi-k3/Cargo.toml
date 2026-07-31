@@ -1,0 +1,58 @@
+[package]
+name = "rlx-kimi-k3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Kimi-K3 (Moonshot AI) — hybrid KDA + MLA linear attention, LatentMoE, multimodal — for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-deepseek = { workspace = true }
+rlx-llada2 = { workspace = true }
+rlx-distributed = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+safetensors = { workspace = true }
+half = { workspace = true }
+tokenizers = { workspace = true }
+
+[[bin]]
+name = "rlx-kimi-k3"
+path = "src/bin/rlx_kimi_k3.rs"
+
+# Feature-flagged multi-node cluster runner example (mac + ssh msi + ssh amd).
+[[example]]
+name = "kimi_k3_cluster"
+required-features = ["cluster"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Multi-node pipeline: placement planning against the real checkpoint + a
+# reduced local forward. Pulls in the model-agnostic distributed runtime.
+cluster = ["dep:rlx-distributed"]
+metal = ["rlx-runtime/metal", "rlx-deepseek/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-deepseek/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-deepseek/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-deepseek/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-deepseek/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-deepseek/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-core/coreml", "rlx-deepseek/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

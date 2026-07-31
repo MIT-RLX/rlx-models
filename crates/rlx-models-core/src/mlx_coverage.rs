@@ -259,16 +259,29 @@ fn dedicated_coverage(arch: &str) -> Option<Dedicated> {
     // Uses only 2D affine/MXFP4 dequant (already works; no 3D quant). MTP head
     // unconsumed (qwen3.5_mtp precedent). Giant + FP4 → e2e-on-real-checkpoint
     // deferred (correct-by-construction, unrunnable locally).
-    if a == "deepseek_v4" || a == "deepseek_v4_mtp" {
+    // GA `DeepSeek-V4-Flash-0731` adds, over the April preview: YaRN on the
+    // compressed-layer RoPE (build_deepseek_v4_stage rope_tables, cos-exact vs
+    // precompute_freqs_cis); DSpark speculative decoding (build_dspark_stage +
+    // build_dspark_markov_head/confidence_head + dspark_forward_head/greedy_accept —
+    // heads cos-exact, stage builds+compiles, driver validated); fp8-block + fp4
+    // (MXFP4) HOST dequant for the deepseek-ai fp8/fp4 original (dsv4_quant,
+    // cos-exact) alongside the mlx-community affine repacks; and `deepseek4` GGUF
+    // recognition (DeepseekV4Spec::from_gguf_metadata + hf_key_to_deepseek4_gguf,
+    // validated vs the real bartowski MXFP4 header — GGUF is base-only, no DSpark).
+    // Still WiredDeferred: every real GA checkpoint is a 96–167GB giant (>64GB RAM)
+    // with no local oracle, so e2e→Validated remains a hardware ceiling.
+    if a == "deepseek_v4" || a == "deepseek_v4_mtp" || a == "deepseek4" {
         return hit(
             "rlx-models-core",
             CoverageStatus::WiredDeferred,
-            "DeepSeek-V4-Flash — build_deepseek_v4_prefill (Hyper-Connections + o-LoRA MLA + \
-             overlapping KV-Compressor + learned Indexer top-k + sqrtsoftplus/hash MoE); all cores \
-             cos-exact vs inference/model.py, full forward builds+finite; 2D-quant-only load path; \
-             DeepseekV4Spec::from_config + dsv4_validate harness READY (loads real mlx dir → prefill \
-             → argmax/oracle-check). e2e→Validated blocked ONLY by hardware: smallest checkpoint is \
-             ~96GB (>64GB RAM), no smaller variant, no local oracle. MTP head unconsumed",
+            "DeepSeek-V4-Flash (GA 0731) — build_deepseek_v4_prefill (Hyper-Connections + o-LoRA MLA \
+             + overlapping KV-Compressor + learned Indexer top-k + sqrtsoftplus/hash MoE + YaRN) plus \
+             full DSpark speculative decoding (build_dspark_stage/heads/driver) and 3 quant load paths \
+             (mlx-community affine, deepseek-ai fp8+fp4 via dsv4_quant, `deepseek4` GGUF MXFP4 via \
+             from_gguf_metadata+name-map). All cores cos-exact vs inference/model.py; forward + DSpark \
+             stage build+compile finite; config/metadata verified vs real 0731 config.json + GGUF \
+             header. e2e→Validated blocked ONLY by hardware: 96–167GB checkpoints (>64GB RAM), no \
+             smaller variant, no local oracle",
         );
     }
 
@@ -498,9 +511,10 @@ mod tests {
 
     #[test]
     fn deepseek_v4_wired() {
-        // DeepSeek-V4-Flash (+MTP): 5-subsystem research arch assembled by
-        // build_deepseek_v4_prefill; all cores cos-exact + full forward finite.
-        for mt in ["deepseek_v4", "deepseek_v4_mtp"] {
+        // DeepSeek-V4-Flash GA (+MTP, + `deepseek4` GGUF arch): 5-subsystem research
+        // arch + DSpark, assembled by build_deepseek_v4_prefill/build_dspark_stage;
+        // all cores cos-exact + full forward finite; 3 quant load paths.
+        for mt in ["deepseek_v4", "deepseek_v4_mtp", "deepseek4"] {
             let c = classify_coverage(&cfg(mt));
             assert!(c.supported, "{mt}");
             assert_eq!(c.via, CoverageVia::Dedicated("rlx-models-core"), "{mt}");

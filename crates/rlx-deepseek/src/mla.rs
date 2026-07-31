@@ -154,10 +154,14 @@ pub fn emit_mla_attention(
         let k_nope = gb.narrow_(kv4, 3, 0, nope);
         let value = gb.narrow_(kv4, 3, nope, vd);
 
-        // RoPE (interleaved) on q_rot [1,s*h,rope] and the single k_rot head [1,s,rope].
-        let q_rot_2d = gb.reshape_(q_rot, vec![1, si * hi, ri]);
-        let q_rot_2d = gb.rope_styled(q_rot_2d, cos, sin, rope, RopeStyle::GptJ);
-        q_rot = gb.reshape_(q_rot_2d, vec![1, si, hi, ri]);
+        // RoPE (interleaved). Pack heads in the LAST dim ([1,s,h*rope]) so it uses
+        // the portable multi-head RoPE path (every backend, incl. MLX); flattening
+        // seq*heads onto the seq axis ([1,s*h,rope]) is not lowerable on MLX
+        // (cos[seq] can't broadcast over the packed heads). Mathematically
+        // identical — each head's `rope`-wide slice is rotated by cos[seq].
+        let q_rot_3d = gb.reshape_(q_rot, vec![1, si, hi * ri]);
+        let q_rot_3d = gb.rope_styled(q_rot_3d, cos, sin, rope, RopeStyle::GptJ);
+        q_rot = gb.reshape_(q_rot_3d, vec![1, si, hi, ri]);
         let k_rot_r = gb.rope_styled(k_rot, cos, sin, rope, RopeStyle::GptJ); // [1,s,rope]
         let k_rot_4 = gb.reshape_(k_rot_r, vec![1, si, 1, ri]);
         let k_rot_h = gb.mul(k_rot_4, ones); // broadcast → [1,s,h,rope]

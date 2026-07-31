@@ -1,0 +1,50 @@
+# Kimi-K3 across THIS cluster — macmini (coordinator) + msi + amd, over the
+# `ssh msi` / `ssh amd` aliases. Used by the `kimi_k3_cluster` example:
+#
+#   cargo run --release -p rlx-kimi-k3 --features cluster,metal --example kimi_k3_cluster -- \
+#     plan --config crates/rlx-kimi-k3/examples/cluster_kimi_k3.toml \
+#          --model-dir /Volumes/FOUR/kimi
+#
+# Kimi-K3 is 1.56 TB on disk but only the 114 GB BF16 backbone is RESIDENT; the
+# 1.45 TB of MXFP4 routed experts is DISK-PAGED (16/896 active per token). So the
+# per-node `max_ram_gb` only has to cover this node's backbone layers (~1.18 GB
+# each) + a little arena/paging slack — NOT the experts. Budgets below are raised
+# from the DSV4 config so the 114 GB backbone clears the planner's fit check
+# (64+61+43 = 168 GB physical; leave headroom for the coordinator/OS + paged
+# experts in flight).
+model = "/Volumes/FOUR/kimi"
+seq = 8
+rng_seed = 42
+reserve_ram_gb = 2.0
+
+[placement]
+policy = "ram_balanced"
+
+# ── macmini — coordinator + stage 0 (embed), Metal, weights local ──
+[[node]]
+addr = "192.168.99.148:9100"
+ckpt_dir = "/Volumes/FOUR/kimi"
+device = "metal"
+precision = "bf16"
+kv_cache = "host"
+max_ram_gb = 40
+
+# ── msi — RTX 3080 Ti box, 61 GB RAM (CPU stage; experts host-page from NVMe) ──
+[[node]]
+addr = "192.168.99.76:9101"
+ssh = "msi"
+ckpt_dir = "/home/user/kimi"
+device = "cpu"
+precision = "bf16"
+kv_cache = "host"
+max_ram_gb = 56
+
+# ── amd — Radeon box, 43 GB RAM (CPU stage + head) ──
+[[node]]
+addr = "192.168.99.161:9102"
+ssh = "amd"
+ckpt_dir = "/home/user/kimi"
+device = "cpu"
+precision = "bf16"
+kv_cache = "host"
+max_ram_gb = 40

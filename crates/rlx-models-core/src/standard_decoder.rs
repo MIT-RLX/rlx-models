@@ -492,7 +492,9 @@ fn load_proj(
         let n_groups = meta.n_groups.max(1);
         let w = g.param(key, Shape::new(&[meta.w_q_len], DType::U8));
         packed.insert(key.to_string(), (Vec::new(), scheme, meta.out_shape));
-        if let QuantScheme::MlxMxfp4 { .. } = scheme {
+        // MXFP4 (2 codes/byte) and MXFP8 (1 code/byte) share the packed path:
+        // raw codes + per-group E8M0 u8 scales, no zero-point; the op dequants.
+        if matches!(scheme, QuantScheme::MlxMxfp4 { .. } | QuantScheme::MlxMxfp8 { .. }) {
             let s_name = format!("{key}.scales");
             let scale = g.param(&s_name, Shape::new(&[n, n_groups], DType::U8));
             packed.insert(s_name, (meta.scales, scheme, vec![n, n_groups]));
@@ -542,7 +544,7 @@ fn load_proj(
         // mxfp4 path reads the E8M0 group scales as RAW u8 (no zero-point), so
         // bind codes + u8 scales as packed params + a dummy u8 zp to keep the
         // 4-input op shape. (Affine falls through below with f32 scales/biases.)
-        if let QuantScheme::MlxMxfp4 { .. } = scheme {
+        if matches!(scheme, QuantScheme::MlxMxfp4 { .. } | QuantScheme::MlxMxfp8 { .. }) {
             let n = p.out_shape.first().copied().unwrap_or(0);
             let n_groups = p.n_groups().max(1);
             let w = g.param(key, Shape::new(&[p.w_q.len()], DType::U8));
@@ -2508,6 +2510,323 @@ pub fn build_v4_o_lora(
     g.reshape_(out, vec![r, dim as i64])
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DSpark — the GA (`DeepSeek-V4-Flash-0731`) integrated speculative-decoding
+// module (stored under the checkpoint `mtp.*` namespace). The main forward is
+// correct without it (spec decoding only accelerates the autoregressive loop by
+// drafting `dspark_block_size` tokens per step and verifying them against the
+// main model). These builders assemble the DSpark stages; each is validated
+// cos-exact against the reference `model.py` (`DSparkAttention`/`DSparkMarkovHead`/
+// `DSparkConfidenceHead`/`DSparkBlock`). Reused pieces: `build_hc_pre`/`_post`/
+// `_head`, `build_v4_sink_attention`, `build_v4_o_lora`, `build_deepseek_moe_ffn`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// DSpark **Markov head** (`DSparkMarkovHead`) — a bigram-style per-token logit
+/// bias. `markov_w1` is a `[vocab, markov_rank]` embedding; `markov_w2` a
+/// `[vocab, markov_rank]` head. For token ids `[rows]` it returns
+/// `(logits[rows, vocab] = embed @ markov_w2ᵀ, embed[rows, markov_rank])`. The
+/// caller adds `logits` into the draft logits and feeds `embed` to the confidence
+/// head. `markov_w2_t` is the transposed `[markov_rank, vocab]` weight (for
+/// `g.mm`). Mirrors `DSparkMarkovHead.forward`. `pub` for the probe.
+pub fn build_dspark_markov_head(
+    g: &mut Graph,
+    markov_w1: NodeId,
+    markov_w2_t: NodeId,
+    token_ids: NodeId,
+    rows: usize,
+    markov_rank: usize,
+    vocab: usize,
+) -> (NodeId, NodeId) {
+    let ids2 = g.reshape_(token_ids, vec![1, rows as i64]);
+    let embed = g.gather_(markov_w1, ids2, 0); // [1, rows, markov_rank]
+    let embed = g.reshape_(embed, vec![rows as i64, markov_rank as i64]);
+    let logits = g.mm(embed, markov_w2_t); // [rows, vocab]
+    let logits = g.reshape_(logits, vec![rows as i64, vocab as i64]);
+    (logits, embed)
+}
+
+/// DSpark **confidence head** (`DSparkConfidenceHead`) — a scalar acceptance score
+/// per draft position: `proj(concat(hidden, markov_embed))`. `hidden` is
+/// `[rows, dim]`, `markov_embed` `[rows, markov_rank]`, `proj_t` the transposed
+/// `[dim+markov_rank, 1]` weight. Returns `[rows]`. Mirrors
+/// `DSparkConfidenceHead.forward`. `pub` for the probe.
+pub fn build_dspark_confidence_head(
+    g: &mut Graph,
+    hidden: NodeId,
+    markov_embed: NodeId,
+    proj_t: NodeId,
+    rows: usize,
+) -> NodeId {
+    let cat = g.concat_(vec![hidden, markov_embed], 1); // [rows, dim+markov_rank]
+    let conf = g.mm(cat, proj_t); // [rows, 1]
+    g.reshape_(conf, vec![rows as i64])
+}
+
+/// Build a **DSpark speculative-decode stage** graph (`Transformer.forward_spec`
+/// decode path) for one draft step. Given the main model's target-layer hiddens
+/// (`main_hidden [cache_len, dim*n_targets]`) and the `block_size` draft token ids,
+/// it: projects `main_x = main_norm(main_proj(main_hidden))` (stage-0), builds the
+/// per-stage `DSparkBlock` (HC-wrapped sliding-window `DSparkAttention` where the
+/// `block_size` draft queries attend to `[main_kv window ++ block_kv]` with a
+/// per-head sink, then HC-wrapped sqrtsoftplus MoE), reduces with `hc_head`,
+/// normalizes, and applies the (shared) `lm_head`. Returns a graph with outputs
+/// `[block_logits [block, vocab], head_hidden [block, dim]]`. The per-draft Markov
+/// logit bias + confidence are applied host-side ([`build_dspark_markov_head`] /
+/// [`build_dspark_confidence_head`]) because they are autoregressive over samples.
+/// DSpark layers are pure sliding-window (`compress_ratio == 0`), so RoPE uses the
+/// raw `rope_theta` base (no YaRN). Weights live under `model.mtp.{stage}.*`
+/// (checkpoint `mtp.*` namespace); `lm_head`/`embed_tokens` are shared with the
+/// main model. Mirrors `DSparkBlock`/`DSparkAttention` (deepseek-ai GA `model.py`).
+pub fn build_dspark_stage(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    block_size: usize,
+    cache_len: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    let mut g = Graph::new("dspark_stage");
+    let mut params: HashMap<String, Vec<f32>> = HashMap::new();
+    let f = DType::F32;
+    let d = spec.dim;
+    let hc = spec.hc_mult;
+    let nh = spec.n_heads;
+    let hd = spec.head_dim;
+    let rd = spec.rope_head_dim & !1;
+    let ql = spec.q_lora_rank;
+    let eps = spec.rms_norm_eps;
+    let block = block_size;
+    let n_targets = spec.dspark_target_layer_ids.len().max(1);
+    let n_stages = spec.n_mtp_layers.max(1);
+    let scale = (hd as f32).powf(-0.5);
+    let half = (rd / 2).max(1);
+    let zb_d = synth_zero(&mut g, &mut params, "ds.zb.d", d);
+    let zb_ql = synth_zero(&mut g, &mut params, "ds.zb.ql", ql);
+    let zb_hd = synth_zero(&mut g, &mut params, "ds.zb.hd", hd);
+    let q_ones = synth_const(&mut g, &mut params, "ds.qones", vec![1f32; hd], &[hd]);
+
+    // Sliding RoPE tables (base `rope_theta`, no YaRN — DSpark layers have ratio 0).
+    // `cache` positions 0..cache_len; `block` positions cache_len..cache_len+block.
+    let rope = |g: &mut Graph,
+                params: &mut HashMap<String, Vec<f32>>,
+                start: usize,
+                n: usize,
+                tag: &str| {
+        let (mut cosd, mut sind) = (vec![0f32; n * half], vec![0f32; n * half]);
+        for p in 0..n {
+            for i in 0..half {
+                let fr = (spec.rope_theta).powf(-(2.0 * i as f64) / rd as f64);
+                let (s, c) = ((start + p) as f64 * fr).sin_cos();
+                cosd[p * half + i] = c as f32;
+                sind[p * half + i] = s as f32;
+            }
+        }
+        let sinneg: Vec<f32> = sind.iter().map(|v| -v).collect();
+        let cos = synth_const(g, params, &format!("ds.cos.{tag}"), cosd, &[n, half]);
+        let sin = synth_const(g, params, &format!("ds.sin.{tag}"), sind, &[n, half]);
+        let sinv = synth_const(g, params, &format!("ds.sinv.{tag}"), sinneg, &[n, half]);
+        (cos, sin, sinv)
+    };
+    let (cos_c, sin_c, _) = rope(&mut g, &mut params, 0, cache_len, "cache");
+    let (cos_b, sin_b, sinv_b) = rope(&mut g, &mut params, cache_len, block, "block");
+
+    // Draft embeds → HC-expand to `hc` streams. `draft_ids` = [input_id, noise…].
+    let draft_ids = g.input("draft_ids", Shape::new(&[block], DType::I32));
+    let draft_ids2 = g.reshape_(draft_ids, vec![1, block as i64]);
+    let (embed_w, _, _) =
+        load_dense_dequant(&mut g, &mut params, weights, "model.embed_tokens.weight")?;
+    let xe = g.gather_(embed_w, draft_ids2, 0); // [1, block, d]
+    let xe = g.reshape_(xe, vec![block as i64, 1, d as i64]);
+    let ones_hc = synth_const(&mut g, &mut params, "ds.hc.ones", vec![1f32; hc], &[1, hc, 1]);
+    let mut h = g.mul(xe, ones_hc); // [block, hc, d]
+
+    // main_x = main_norm(main_proj(main_hidden)); main_hidden [cache_len, dim*n_targets].
+    let main_hidden = g.input(
+        "main_hidden",
+        Shape::new(&[cache_len, d * n_targets], DType::F32),
+    );
+    let mp = load_transposed_param(&mut g, &mut params, weights, "model.mtp.0.main_proj.weight")?;
+    let main_x = g.mm(main_hidden, mp); // [cache_len, d]
+    let mn = load_norm(&mut g, &mut params, weights, "model.mtp.0.main_norm.weight", 0.0)?;
+    let main_x = g.rms_norm(main_x, mn, zb_d, eps);
+
+    for stage in 0..n_stages {
+        let lp = format!("model.mtp.{stage}");
+        // Window KV cache = rope(kv_norm(wkv(main_x))) at cache positions.
+        let wkv = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wkv.weight"))?;
+        let ckv = emit_proj(&mut g, main_x, &wkv, Shape::new(&[cache_len, hd], f));
+        let kvn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.kv_norm.weight"), 0.0)?;
+        let ckv = g.rms_norm(ckv, kvn, zb_hd, eps);
+        let cache_kv = rope_tail(&mut g, ckv, cos_c, sin_c, cache_len, 1, hd, rd);
+
+        // ── HC-wrapped DSpark attention ──
+        let residual = h;
+        let fn_a = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
+        let sc_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.scale"), false)?;
+        let bs_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.base"), false)?;
+        let (xa, post_a, comb_a) = build_hc_pre(
+            &mut g, &mut params, h, fn_a, sc_a, bs_a, block, hc, d, spec.hc_eps,
+            spec.hc_sinkhorn_iters, &format!("{lp}.a"),
+        );
+        let an = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn_norm.weight"), 0.0)?;
+        let xa = g.rms_norm(xa, an, zb_d, eps);
+        // q-LoRA + per-head norm + block RoPE
+        let wqa = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_a.weight"))?;
+        let qr = emit_proj(&mut g, xa, &wqa, Shape::new(&[block, ql], f));
+        let qn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.q_norm.weight"), 0.0)?;
+        let qr = g.rms_norm(qr, qn, zb_ql, eps);
+        let wqb = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_b.weight"))?;
+        let q = emit_proj(&mut g, qr, &wqb, Shape::new(&[block, nh * hd], f));
+        let q = per_head_rms(&mut g, q, q_ones, zb_hd, 1, block, nh, hd, eps);
+        let q = rope_tail(&mut g, q, cos_b, sin_b, block, nh, hd, rd);
+        // block KV from the draft tokens
+        let bkv = emit_proj(&mut g, xa, &wkv, Shape::new(&[block, hd], f));
+        let bkv = g.rms_norm(bkv, kvn, zb_hd, eps);
+        let bkv = rope_tail(&mut g, bkv, cos_b, sin_b, block, 1, hd, rd);
+        // kv_all = [window cache ++ block]; sliding mask (all cache + all block valid)
+        let kv_all = g.concat_(vec![cache_kv, bkv], 0); // [cache_len+block, hd]
+        let n_keys = cache_len + block;
+        let win = spec.window_size.max(1);
+        let neg = -1e30f32;
+        let mut md = vec![0f32; block * n_keys];
+        for qi in 0..block {
+            for ki in 0..n_keys {
+                // window cache positions within `win` of the query are visible; all
+                // block positions are visible (DSpark parallel-draft block attention).
+                let vis = if ki < cache_len {
+                    cache_len + qi < ki + win // qi absolute = cache_len+qi ; key = ki
+                } else {
+                    true
+                };
+                md[qi * n_keys + ki] = if vis { 0.0 } else { neg };
+            }
+        }
+        let mask = synth_const(&mut g, &mut params, &format!("{lp}.ds.mask"), md, &[block, n_keys]);
+        let sink = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.attn_sink"), false)?;
+        let q3 = g.reshape_(q, vec![block as i64, nh as i64, hd as i64]);
+        let o = build_v4_sink_attention(
+            &mut g, &mut params, q3, kv_all, mask, sink, scale, block, nh, hd, n_keys,
+            &format!("{lp}.sa"),
+        );
+        let o_flat = g.reshape_(o, vec![block as i64, (nh * hd) as i64]);
+        let o_inv = rope_tail(&mut g, o_flat, cos_b, sinv_b, block, nh, hd, rd);
+        let dpg = nh * hd / spec.n_groups;
+        let woa = load_v4_wo_a(
+            &mut g, &mut params, weights, &format!("{lp}.attn.wo_a.weight"),
+            spec.n_groups, spec.o_lora_rank, dpg,
+        )?;
+        let wob = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn.wo_b.weight"))?;
+        let attn_out = build_v4_o_lora(
+            &mut g, o_inv, woa, wob, block, spec.n_groups, spec.o_lora_rank, dpg, d,
+        );
+        h = build_hc_post(&mut g, attn_out, residual, post_a, comb_a, block, hc, d);
+
+        // ── HC-wrapped sqrtsoftplus MoE FFN ──
+        let residual = h;
+        let fn_f = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.fn"))?;
+        let sc_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.scale"), false)?;
+        let bs_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.base"), false)?;
+        let (xf, post_f, comb_f) = build_hc_pre(
+            &mut g, &mut params, h, fn_f, sc_f, bs_f, block, hc, d, spec.hc_eps,
+            spec.hc_sinkhorn_iters, &format!("{lp}.f"),
+        );
+        let fnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.ffn_norm.weight"), 0.0)?;
+        let xf = g.rms_norm(xf, fnorm, zb_d, eps);
+        let ds = v4_moe_spec(spec);
+        let x3 = g.reshape_(xf, vec![1, block as i64, d as i64]);
+        let moe = build_deepseek_moe_ffn(&mut g, &mut params, packed, weights, &lp, x3, 1, block, &ds, None)?;
+        let moe = g.reshape_(moe, vec![block as i64, d as i64]);
+        h = build_hc_post(&mut g, moe, residual, post_f, comb_f, block, hc, d);
+    }
+
+    // Final stage: hc_head reduce → norm → shared lm_head → block logits.
+    let last = n_stages - 1;
+    let lp = format!("model.mtp.{last}");
+    let hfn = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.hc_head.fn"))?;
+    let hsc = load_p(&mut g, &mut params, weights, &format!("{lp}.hc_head.scale"), false)?;
+    let hbs = load_p(&mut g, &mut params, weights, &format!("{lp}.hc_head.base"), false)?;
+    let x = build_hc_head(&mut g, &mut params, h, hfn, hsc, hbs, block, hc, d, spec.hc_eps, "ds.head");
+    let nrm = load_norm(&mut g, &mut params, weights, &format!("{lp}.norm.weight"), 0.0)?;
+    let x = g.rms_norm(x, nrm, zb_d, eps);
+    let head_p = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
+    let logits = emit_proj(&mut g, x, &head_p, Shape::new(&[block, spec.vocab_size], f));
+    let logits = g.reshape_(logits, vec![block as i64, spec.vocab_size as i64]);
+    g.set_outputs(vec![logits, x]);
+    Ok((g, params))
+}
+
+/// DSpark **draft head loop** (`DSparkBlock.forward_head`) — the host-side
+/// autoregressive step that turns the DSpark stage's block logits + hidden into
+/// `block_size` draft tokens plus a per-position confidence. Starting from the
+/// verified `input_id`, each position `i` adds the Markov bigram bias
+/// ([`build_dspark_markov_head`]) for the current token to `block_logits[i]`,
+/// greedily picks the next draft token (`temperature == 0`), and records the
+/// Markov embedding; the confidence head ([`build_dspark_confidence_head`]) then
+/// scores each `(head_hidden[i], markov_embed[i])`. Returns
+/// `(output_ids[block+1], confidence[block])`. Greedy only (the reference's
+/// Gumbel `sample` for `temperature > 0` needs an RNG; greedy == argmax matches
+/// the verifier's greedy accept below). Pure f32, mirrors `model.py`.
+#[allow(clippy::too_many_arguments)]
+pub fn dspark_forward_head(
+    block_logits: &[f32], // [block, vocab]
+    markov_w1: &[f32],    // [vocab, markov_rank]
+    markov_w2: &[f32],    // [vocab, markov_rank]
+    head_hidden: &[f32],  // [block, dim]
+    confidence_proj: &[f32], // [dim + markov_rank]
+    input_id: usize,
+    block: usize,
+    vocab: usize,
+    markov_rank: usize,
+    dim: usize,
+) -> (Vec<usize>, Vec<f32>) {
+    let mut output_ids = vec![0usize; block + 1];
+    output_ids[0] = input_id;
+    let mut confidence = vec![0f32; block];
+    for i in 0..block {
+        let tok = output_ids[i];
+        // Markov bias: logits_bias[v] = Σ_k w1[tok,k]·w2[v,k].
+        let embed = &markov_w1[tok * markov_rank..(tok + 1) * markov_rank];
+        let mut best = (0usize, f32::MIN);
+        for v in 0..vocab {
+            let mut bias = 0f32;
+            for k in 0..markov_rank {
+                bias += embed[k] * markov_w2[v * markov_rank + k];
+            }
+            let l = block_logits[i * vocab + v] + bias;
+            if l > best.1 {
+                best = (v, l);
+            }
+        }
+        output_ids[i + 1] = best.0;
+        // confidence = proj · concat(head_hidden[i], markov_embed[i]).
+        let mut c = 0f32;
+        for j in 0..dim {
+            c += head_hidden[i * dim + j] * confidence_proj[j];
+        }
+        for k in 0..markov_rank {
+            c += embed[k] * confidence_proj[dim + k];
+        }
+        confidence[i] = c;
+    }
+    (output_ids, confidence)
+}
+
+/// Greedy speculative **accept length** (`generate` verify step): given the draft
+/// tokens proposed for positions `1..=block` and the main model's argmax at each
+/// of those positions (`verify_argmax[i]` = argmax of the main-model logits that
+/// would produce `draft_ids[i+1]`), return the number of leading draft tokens the
+/// main model agrees with — the standard lossless greedy acceptance. `draft_ids`
+/// is the `[block+1]` output of [`dspark_forward_head`]; `verify_argmax` is
+/// `[block]`. The `block+1`-th token (the first rejected / bonus token) is taken
+/// from the main model and is the caller's responsibility.
+pub fn dspark_greedy_accept(draft_ids: &[usize], verify_argmax: &[usize]) -> usize {
+    let mut n = 0;
+    while n < verify_argmax.len() && n + 1 < draft_ids.len() && draft_ids[n + 1] == verify_argmax[n]
+    {
+        n += 1;
+    }
+    n
+}
+
 /// DeepSeek-V4 (`deepseek_v4`) spec — Hyper-Connections + o-LoRA MLA (+ KV
 /// compression) + sqrtsoftplus MoE. Assembles the validated cores
 /// ([`build_hc_pre`]/[`build_hc_post`]/[`build_hc_head`],
@@ -2556,6 +2875,32 @@ pub struct DeepseekV4Spec {
     pub rms_norm_eps: f32,
     pub hc_sinkhorn_iters: usize,
     pub hc_eps: f32,
+    // ── YaRN (GA `DeepSeek-V4-Flash-0731`; the April preview shipped these too but
+    // the builder left them off). YaRN scales the KV-compressed-layer RoPE only:
+    // `original_seq_len > 0` enables the NTK-by-parts blend (base `compress_rope_theta`,
+    // `rope_factor` interpolation, `beta_fast`/`beta_slow` correction range). Pure
+    // sliding-window layers use raw `rope_theta` (YaRN off). No `mscale` (reference
+    // `precompute_freqs_cis` applies none; `softmax_scale == head_dim^-0.5`). ──
+    /// `original_max_position_embeddings` (65536). 0 disables YaRN entirely.
+    pub original_seq_len: usize,
+    /// YaRN interpolation `factor` (16 = 65536→1M context).
+    pub rope_factor: f64,
+    pub beta_fast: f64,
+    pub beta_slow: f64,
+    // ── DSpark (GA speculative-decoding module, stored under `mtp.*`). `n_mtp_layers`
+    // `DSparkBlock`s reuse the MTP checkpoint slot; the main forward is correct with
+    // them loaded-unused. 0 (`dspark_block_size == 0`) disables DSpark. ──
+    /// Number of `DSparkBlock` stages (GA = 3). Derived from `compress_ratios`
+    /// length beyond `n_layers` when `n_mtp_layers`/`num_nextn_predict_layers` absent.
+    pub n_mtp_layers: usize,
+    /// Draft tokens generated per DSpark step (GA = 5). 0 disables DSpark.
+    pub dspark_block_size: usize,
+    /// Padding token id for unfilled draft positions (GA = 128799).
+    pub dspark_noise_token_id: usize,
+    /// Main-model layer ids whose hidden states feed `main_proj` (GA = [40,41,42]).
+    pub dspark_target_layer_ids: Vec<usize>,
+    /// Markov-head embedding rank (GA = 256).
+    pub dspark_markov_rank: usize,
 }
 
 impl DeepseekV4Spec {
@@ -2575,7 +2920,7 @@ impl DeepseekV4Spec {
         let fl = |k: &str| v.get(k).and_then(serde_json::Value::as_f64);
         let req = |k: &str| u(k).ok_or_else(|| anyhow!("deepseek_v4 config missing `{k}`"));
         let n_layers = req("num_hidden_layers")?;
-        let compress_ratios: Vec<usize> = v
+        let ratios_full: Vec<usize> = v
             .get("compress_ratios")
             .and_then(serde_json::Value::as_array)
             .map(|a| {
@@ -2583,11 +2928,38 @@ impl DeepseekV4Spec {
                     .filter_map(|e| e.as_u64().map(|n| n as usize))
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_default()
-            .into_iter()
-            .take(n_layers)
-            .collect();
+            .unwrap_or_default();
+        // The config carries `n_mtp_layers` extra `compress_ratios` entries (GA: 46 =
+        // 43 main + 3 DSpark). Truncate to the main layers; derive DSpark stage count
+        // from the surplus when the field is absent.
+        let compress_ratios: Vec<usize> = ratios_full.iter().copied().take(n_layers).collect();
+        let derived_mtp = ratios_full.len().saturating_sub(n_layers);
         let moe_inter = req("moe_intermediate_size")?;
+        // YaRN params live under `rope_scaling` (HF top config) or as flat
+        // ModelArgs-style keys (the reference `inference/config.json`).
+        let rs = v.get("rope_scaling");
+        let rs_u = |k: &str| rs.and_then(|r| r.get(k)).and_then(serde_json::Value::as_u64);
+        let rs_f = |k: &str| rs.and_then(|r| r.get(k)).and_then(serde_json::Value::as_f64);
+        let original_seq_len = rs_u("original_max_position_embeddings")
+            .map(|x| x as usize)
+            .or_else(|| u("original_seq_len"))
+            .unwrap_or(0);
+        let rope_factor = rs_f("factor").or_else(|| fl("rope_factor")).unwrap_or(1.0);
+        let beta_fast = rs_f("beta_fast").or_else(|| fl("beta_fast")).unwrap_or(32.0);
+        let beta_slow = rs_f("beta_slow").or_else(|| fl("beta_slow")).unwrap_or(1.0);
+        let dspark_target_layer_ids: Vec<usize> = v
+            .get("dspark_target_layer_ids")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_u64().map(|n| n as usize))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let n_mtp_layers = u("n_mtp_layers")
+            .or(if derived_mtp > 0 { Some(derived_mtp) } else { None })
+            .or_else(|| u("num_nextn_predict_layers"))
+            .unwrap_or(0);
         Ok(DeepseekV4Spec {
             vocab_size: req("vocab_size")?,
             dim: req("hidden_size")?,
@@ -2621,7 +2993,298 @@ impl DeepseekV4Spec {
             hc_sinkhorn_iters: u("hc_sinkhorn_iters").unwrap_or(20),
             hc_eps: fl("hc_eps").unwrap_or(1e-6) as f32,
             n_hash_layers: u("num_hash_layers").unwrap_or(0),
+            original_seq_len,
+            rope_factor,
+            beta_fast,
+            beta_slow,
+            n_mtp_layers,
+            dspark_block_size: u("dspark_block_size").unwrap_or(0),
+            dspark_noise_token_id: u("dspark_noise_token_id").unwrap_or(0),
+            dspark_target_layer_ids,
+            dspark_markov_rank: u("dspark_markov_rank").unwrap_or(256),
         })
+    }
+
+    /// Parse a **`deepseek4` GGUF** metadata map into a spec — for the
+    /// `bartowski/DeepSeek-V4-Flash-0731-GGUF` (llama.cpp `general.architecture ==
+    /// deepseek4`, MXFP4). `meta` is the GGUF key/value store as a JSON object
+    /// (`deepseek4.*` + `general.*`); `vocab_size` comes from the `token_embd`
+    /// shape / tokenizer (GGUF has no explicit vocab KV). Verified against the real
+    /// shard-1 header: block_count 43, embedding_length 4096, head_count 64/kv 1,
+    /// key/value_length 512, rope.dimension_count 64, q_lora_rank 1024,
+    /// output_lora_rank 1024, output_group_count 8, indexer 64×128 top-512,
+    /// compress_ratios[46], compress_rope_freq_base 160000, expert 256×6+1,
+    /// expert_weights_scale 1.5, hyper_connection.count 4 / sinkhorn 20,
+    /// hash_layer_count 3, swiglu_clamp 10. The GGUF is **base-only** (no MTP/DSpark
+    /// tensors), so all `dspark_*`/`n_mtp_layers` are 0. YaRN is read from
+    /// `deepseek4.rope.scaling.*` when present (else off).
+    pub fn from_gguf_metadata(meta: &serde_json::Value, vocab_size: usize) -> Result<Self> {
+        // GGUF metadata keys are `deepseek4.<suffix>`; `general.<suffix>` for the rest.
+        let g = |k: &str| meta.get(format!("deepseek4.{k}"));
+        let u = |k: &str| g(k).and_then(serde_json::Value::as_u64).map(|x| x as usize);
+        let fl = |k: &str| g(k).and_then(serde_json::Value::as_f64);
+        let req = |k: &str| u(k).ok_or_else(|| anyhow!("deepseek4 GGUF missing `deepseek4.{k}`"));
+        let n_layers = req("block_count")?;
+        let ratios_full: Vec<usize> = g("attention.compress_ratios")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().filter_map(|e| e.as_u64().map(|n| n as usize)).collect())
+            .unwrap_or_default();
+        let compress_ratios: Vec<usize> = ratios_full.into_iter().take(n_layers).collect();
+        let moe_inter = req("expert_feed_forward_length")?;
+        // Per-layer swiglu clamp array (all 10.0) — take the first as the scalar bound.
+        let swiglu_limit = g("swiglu_clamp_exp")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(serde_json::Value::as_f64)
+            .or_else(|| fl("swiglu_clamp_exp"))
+            .unwrap_or(0.0) as f32;
+        Ok(DeepseekV4Spec {
+            vocab_size,
+            dim: req("embedding_length")?,
+            n_layers,
+            hc_mult: u("hyper_connection.count").unwrap_or(4),
+            n_heads: req("attention.head_count")?,
+            head_dim: u("attention.key_length").unwrap_or(512),
+            rope_head_dim: u("rope.dimension_count").unwrap_or(64),
+            q_lora_rank: u("attention.q_lora_rank").unwrap_or(0),
+            n_groups: u("attention.output_group_count").unwrap_or(1),
+            o_lora_rank: u("attention.output_lora_rank").unwrap_or(moe_inter),
+            compress_ratios,
+            index_head_dim: u("attention.indexer.key_length").unwrap_or(0),
+            index_n_heads: u("attention.indexer.head_count").unwrap_or(0),
+            index_topk: u("attention.indexer.top_k").unwrap_or(0),
+            window_size: u("attention.sliding_window").unwrap_or(usize::MAX / 4),
+            first_k_dense_replace: 0,
+            n_hash_layers: u("hash_layer_count").unwrap_or(0),
+            moe_intermediate_size: moe_inter,
+            n_routed_experts: req("expert_count")?,
+            n_activated_experts: u("expert_used_count").unwrap_or(6),
+            n_shared_experts: u("expert_shared_count").unwrap_or(0),
+            intermediate_size: moe_inter,
+            route_scale: fl("expert_weights_scale").unwrap_or(1.0) as f32,
+            rope_theta: fl("rope.freq_base").unwrap_or(10000.0),
+            compress_rope_theta: fl("attention.compress_rope_freq_base").unwrap_or(10000.0),
+            swiglu_limit,
+            rms_norm_eps: fl("attention.layer_norm_rms_epsilon").unwrap_or(1e-6) as f32,
+            hc_sinkhorn_iters: u("hyper_connection.sinkhorn_iterations").unwrap_or(20),
+            hc_eps: fl("hyper_connection.epsilon").unwrap_or(1e-6) as f32,
+            // YaRN: llama.cpp stores it under `rope.scaling.*` when applied (else off).
+            original_seq_len: u("rope.scaling.original_context_length").unwrap_or(0),
+            rope_factor: fl("rope.scaling.factor").unwrap_or(1.0),
+            beta_fast: fl("rope.scaling.beta_fast").unwrap_or(32.0),
+            beta_slow: fl("rope.scaling.beta_slow").unwrap_or(1.0),
+            // GGUF is base-only — no MTP/DSpark tensors ("MTP: no").
+            n_mtp_layers: 0,
+            dspark_block_size: 0,
+            dspark_noise_token_id: 0,
+            dspark_target_layer_ids: Vec::new(),
+            dspark_markov_rank: 0,
+        })
+    }
+}
+
+/// Map a **`deepseek4` GGUF** (llama.cpp `blk.N.*`) tensor name to the HF-style key
+/// the V4 builders ([`build_deepseek_v4_stage`]) request, or vice versa — the
+/// translation a `WeightLoader` adapter wraps around a `GgufLoader` so the MXFP4
+/// K-quant experts flow through the existing GGUF packed path. Covers the names
+/// **confirmed** against the real `bartowski/DeepSeek-V4-Flash-0731-GGUF` header
+/// (stacked experts `blk.N.ffn_{gate,up,down}_exps.weight`, hash routing
+/// `blk.N.ffn_gate_tid2eid.weight`) plus the standard llama.cpp DeepSeek /
+/// deepseek4-specific names (`attn_q_a`/`attn_q_b`/`attn_kv_a_mqa`/`attn_o_a`/
+/// `attn_o_b`/`attn_compressor_*`/`attn_indexer_*`/`hc_attn_*`/`hc_ffn_*`).
+/// Returns the GGUF name for an HF builder key, or `None` if unmapped.
+pub fn hf_key_to_deepseek4_gguf(key: &str) -> Option<String> {
+    // Top-level (non-layer) tensors.
+    match key {
+        "model.embed_tokens.weight" => return Some("token_embd.weight".into()),
+        "model.norm.weight" => return Some("output_norm.weight".into()),
+        "lm_head.weight" => return Some("output.weight".into()),
+        "model.hc_head.fn" => return Some("output_hc.weight".into()),
+        "model.hc_head.scale" => return Some("output_hc_scale.weight".into()),
+        "model.hc_head.base" => return Some("output_hc_base.weight".into()),
+        _ => {}
+    }
+    // Per-layer: `model.layers.N.<rest>` → `blk.N.<mapped>`.
+    let rest = key.strip_prefix("model.layers.")?;
+    let (n, tail) = rest.split_once('.')?;
+    let mapped = match tail {
+        "attn_norm.weight" => "attn_norm.weight",
+        "ffn_norm.weight" => "ffn_norm.weight",
+        "attn.wq_a.weight" => "attn_q_a.weight",
+        "attn.q_norm.weight" => "attn_q_a_norm.weight",
+        "attn.wq_b.weight" => "attn_q_b.weight",
+        "attn.wkv.weight" => "attn_kv_a_mqa.weight",
+        "attn.kv_norm.weight" => "attn_kv_a_norm.weight",
+        "attn.wo_a.weight" => "attn_o_a.weight",
+        "attn.wo_b.weight" => "attn_o_b.weight",
+        "attn.attn_sink" => "attn_sink.weight",
+        "attn_hc.fn" => "hc_attn.weight",
+        "attn_hc.scale" => "hc_attn_scale.weight",
+        "attn_hc.base" => "hc_attn_base.weight",
+        "ffn_hc.fn" => "hc_ffn.weight",
+        "ffn_hc.scale" => "hc_ffn_scale.weight",
+        "ffn_hc.base" => "hc_ffn_base.weight",
+        "attn.compressor.wkv.weight" => "attn_compressor_kv.weight",
+        "attn.compressor.wgate.weight" => "attn_compressor_gate.weight",
+        "attn.compressor.ape" => "attn_compressor_ape.weight",
+        "attn.compressor.norm.weight" => "attn_compressor_norm.weight",
+        "attn.indexer.wq_b.weight" => "attn_indexer_q_b.weight",
+        "attn.indexer.weights_proj.weight" => "attn_indexer_weights.weight",
+        "attn.indexer.compressor.wkv.weight" => "attn_indexer_compressor_kv.weight",
+        "attn.indexer.compressor.wgate.weight" => "attn_indexer_compressor_gate.weight",
+        "attn.indexer.compressor.ape" => "attn_indexer_compressor_ape.weight",
+        "attn.indexer.compressor.norm.weight" => "attn_indexer_compressor_norm.weight",
+        "ffn.gate.weight" => "ffn_gate_inp.weight",
+        "ffn.gate.e_score_correction_bias" => "exp_probs_b.bias",
+        "ffn.gate.tid2eid" => "ffn_gate_tid2eid.weight",
+        "ffn.switch_mlp.gate_proj.weight" => "ffn_gate_exps.weight",
+        "ffn.switch_mlp.up_proj.weight" => "ffn_up_exps.weight",
+        "ffn.switch_mlp.down_proj.weight" => "ffn_down_exps.weight",
+        "ffn.shared_experts.gate_proj.weight" => "ffn_gate_shexp.weight",
+        "ffn.shared_experts.up_proj.weight" => "ffn_up_shexp.weight",
+        "ffn.shared_experts.down_proj.weight" => "ffn_down_shexp.weight",
+        _ => return None,
+    };
+    Some(format!("blk.{n}.{mapped}"))
+}
+
+/// Map a V4 builder key (`model.*` HF-style, as the `build_deepseek_v4_*` graphs
+/// emit) to the tensor name in a **reference-format** checkpoint — one exported
+/// via deepseek-ai `inference/convert.py`, as `Vontra/DeepSeek-V4-Flash-0731-
+/// MXFP4-MLX` ships. **Verified against that checkpoint's real 72k-tensor index.**
+/// The `attn.*` / `attn.compressor.*` / `attn.indexer.*` / `ffn.gate.{weight,
+/// tid2eid}` subnames already match; the deltas: no `model.` prefix; `embed` /
+/// `head` / `norm` for embed / lm_head / final norm; `hc_head_*` and per-layer
+/// `hc_attn_*` / `hc_ffn_*` for the Hyper-Connection tensors; `shared_experts.
+/// w{1,3,2}` for shared gate/up/down. Returns the checkpoint name, or `None`.
+/// The **routed** experts are stored PER-EXPERT (`layers.N.ffn.experts.{i}.
+/// w{1,3,2}`, not stacked), so a `switch_mlp.*` request has no single name — a
+/// loader must gather them via [`dsv4_ref_expert_key`] into the `[n_expert, out,
+/// in]` tensor the grouped matmul wants (the remaining structural adapter).
+pub fn hf_key_to_dsv4_ref(key: &str) -> Option<String> {
+    match key {
+        "model.embed_tokens.weight" => return Some("embed.weight".into()),
+        "model.norm.weight" => return Some("norm.weight".into()),
+        "lm_head.weight" => return Some("head.weight".into()),
+        "model.hc_head.fn" => return Some("hc_head_fn".into()),
+        "model.hc_head.scale" => return Some("hc_head_scale".into()),
+        "model.hc_head.base" => return Some("hc_head_base".into()),
+        _ => {}
+    }
+    let rest = key.strip_prefix("model.layers.")?;
+    let (n, tail) = rest.split_once('.')?;
+    let mapped = match tail {
+        "attn_hc.fn" => "hc_attn_fn".to_string(),
+        "attn_hc.scale" => "hc_attn_scale".to_string(),
+        "attn_hc.base" => "hc_attn_base".to_string(),
+        "ffn_hc.fn" => "hc_ffn_fn".to_string(),
+        "ffn_hc.scale" => "hc_ffn_scale".to_string(),
+        "ffn_hc.base" => "hc_ffn_base".to_string(),
+        "ffn.shared_experts.gate_proj.weight" => "ffn.shared_experts.w1.weight".to_string(),
+        "ffn.shared_experts.up_proj.weight" => "ffn.shared_experts.w3.weight".to_string(),
+        "ffn.shared_experts.down_proj.weight" => "ffn.shared_experts.w2.weight".to_string(),
+        // aux-loss-free routing bias — convert.py renames e_score_correction_bias → bias.
+        "ffn.gate.e_score_correction_bias" => "ffn.gate.bias".to_string(),
+        // attn.* / attn_norm / ffn_norm / ffn.gate.* / compressor.* / indexer.* keep
+        // their subname — only the `model.` prefix is dropped.
+        other => other.to_string(),
+    };
+    Some(format!("layers.{n}.{mapped}"))
+}
+
+/// Per-expert routed-MoE tensor name in a reference-format V4 checkpoint
+/// (`ffn.experts.{i}.w{1,3,2}`, where w1=gate, w3=up, w2=down). A stacking loader
+/// gathers experts `0..n_routed` into the `[n_expert, out, in]` tensor the
+/// `DequantGroupedMatMulMlx` op consumes.
+pub fn dsv4_ref_expert_key(layer: usize, expert: usize, proj: &str) -> String {
+    let w = match proj {
+        "gate_proj" => "w1",
+        "up_proj" => "w3",
+        "down_proj" => "w2",
+        _ => "w1",
+    };
+    format!("layers.{layer}.ffn.experts.{expert}.{w}.weight")
+}
+
+/// A [`WeightLoader`] adapter that loads a **reference-format** DeepSeek-V4
+/// checkpoint (post `inference/convert.py`, e.g.
+/// `Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX`) through the builder's HF-style keys.
+/// It (1) name-maps every request via [`hf_key_to_dsv4_ref`], and (2) for a
+/// stacked `switch_mlp.{gate,up,down}_proj` request, GATHERS the per-expert
+/// `ffn.experts.{i}.w{1,3,2}` MXFP4 tensors and concatenates their packed codes +
+/// scales into the single `[n_expert, out, in]` tensor the `DequantGroupedMatMulMlx`
+/// op consumes. Wrap `MlxLoader::open_lazy(dir)` with this to load the real GA
+/// checkpoint on a node (each pipeline stage's layer range fits the node's RAM).
+pub struct DsV4RefLoader {
+    inner: Box<dyn WeightLoader>,
+    n_experts: usize,
+}
+
+impl DsV4RefLoader {
+    pub fn new(inner: Box<dyn WeightLoader>, n_experts: usize) -> Self {
+        Self { inner, n_experts }
+    }
+    fn map(key: &str) -> String {
+        hf_key_to_dsv4_ref(key).unwrap_or_else(|| key.to_string())
+    }
+    /// `(layer, proj)` if `key` is a stacked routed-expert request, else `None`.
+    fn switch_mlp_parts(key: &str) -> Option<(usize, &'static str)> {
+        let rest = key.strip_prefix("model.layers.")?;
+        let (n, tail) = rest.split_once('.')?;
+        let proj = match tail {
+            "ffn.switch_mlp.gate_proj.weight" => "gate_proj",
+            "ffn.switch_mlp.up_proj.weight" => "up_proj",
+            "ffn.switch_mlp.down_proj.weight" => "down_proj",
+            _ => return None,
+        };
+        Some((n.parse().ok()?, proj))
+    }
+}
+
+impl WeightLoader for DsV4RefLoader {
+    fn format_id(&self) -> &'static str {
+        "dsv4-ref"
+    }
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+    fn remaining_keys(&self) -> Vec<String> {
+        self.inner.remaining_keys()
+    }
+    fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        self.inner.take(&Self::map(key))
+    }
+    fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        self.inner.take_transposed(&Self::map(key))
+    }
+    fn take_packed_mlx(
+        &mut self,
+        key: &str,
+    ) -> Result<Option<crate::weight_loader::MlxPackedLinear>> {
+        if let Some((layer, proj)) = Self::switch_mlp_parts(key) {
+            let (mut w_q, mut scales, mut biases) = (Vec::new(), Vec::new(), Vec::new());
+            let mut out_shape: Vec<usize> = Vec::new();
+            let mut scheme = None;
+            for e in 0..self.n_experts {
+                let p = self
+                    .inner
+                    .take_packed_mlx(&dsv4_ref_expert_key(layer, e, proj))?
+                    .ok_or_else(|| anyhow!("routed expert {e} of {key} is not MLX-packed"))?;
+                w_q.extend_from_slice(&p.w_q);
+                scales.extend_from_slice(&p.scales);
+                biases.extend_from_slice(&p.biases);
+                out_shape = p.out_shape;
+                scheme = Some(p.scheme);
+            }
+            return Ok(Some(crate::weight_loader::MlxPackedLinear {
+                w_q,
+                scales,
+                biases,
+                scheme: scheme.ok_or_else(|| anyhow!("no experts for {key}"))?,
+                out_shape,
+            }));
+        }
+        self.inner.take_packed_mlx(&Self::map(key))
     }
 }
 
@@ -2687,35 +3350,56 @@ pub fn build_deepseek_v4_stage(
     let zb_hd = synth_zero(&mut g, &mut params, "v4.zb.hd", hd);
 
     // RoPE (GPT-J **interleaved**, applied to the LAST `rope_head_dim` dims of each
-    // head — see `apply_rotary_emb(q[..., -rd:])` in the reference). YaRN is off
-    // (original_seq_len==0). Two bases: `rope_theta` for pure-sliding layers,
-    // `compress_rope_theta` for KV-compressed layers (ratio>0). `half` = rd/2 angles.
+    // head — see `apply_rotary_emb(q[..., -rd:])` in the reference). Two bases:
+    // `rope_theta` for pure-sliding layers (YaRN off), `compress_rope_theta` for
+    // KV-compressed layers (ratio>0). GA `DeepSeek-V4-Flash-0731` applies **YaRN**
+    // on the compressed-layer table (`precompute_freqs_cis(original_seq_len>0)`):
+    // NTK-by-parts blend of interpolated (÷factor) ↔ extrapolated freqs over the
+    // `[low,high]` correction range. `RopeScaling::None::inv_freq == θ^(-2i/rd)`,
+    // so the sliding table is byte-identical to the pre-YaRN builder; only the
+    // compressed table changes. No `mscale` (reference applies none). `half`=rd/2.
     let half = (rd / 2).max(1);
-    let rope_tables =
-        |g: &mut Graph, params: &mut HashMap<String, Vec<f32>>, theta: f64, tag: &str| {
-            let (mut cosd, mut sind) = (vec![0f32; seq * half], vec![0f32; seq * half]);
-            for p in 0..seq {
-                for i in 0..half {
-                    let fr = theta.powf(-(2.0 * i as f64) / rd as f64);
-                    let (s, c) = (p as f64 * fr).sin_cos();
-                    cosd[p * half + i] = c as f32;
-                    sind[p * half + i] = s as f32;
-                }
+    let sliding_rs = RopeScaling::None;
+    let compress_rs = if spec.original_seq_len > 0 && spec.rope_factor > 1.0 {
+        RopeScaling::Yarn {
+            factor: spec.rope_factor,
+            original_max_position_embeddings: spec.original_seq_len as f64,
+            beta_fast: spec.beta_fast,
+            beta_slow: spec.beta_slow,
+            attention_factor: Some(1.0), // no mscale for V4 (unused here regardless)
+        }
+    } else {
+        RopeScaling::None
+    };
+    let rope_tables = |g: &mut Graph,
+                       params: &mut HashMap<String, Vec<f32>>,
+                       theta: f64,
+                       rs: &RopeScaling,
+                       tag: &str| {
+        let (mut cosd, mut sind) = (vec![0f32; seq * half], vec![0f32; seq * half]);
+        for p in 0..seq {
+            for i in 0..half {
+                let fr = rs.inv_freq(i, rd, theta);
+                let (s, c) = (p as f64 * fr).sin_cos();
+                cosd[p * half + i] = c as f32;
+                sind[p * half + i] = s as f32;
             }
-            let sinneg: Vec<f32> = sind.iter().map(|v| -v).collect();
-            let cos = synth_const(g, params, &format!("v4.rope.cos.{tag}"), cosd, &[seq, half]);
-            let sin = synth_const(g, params, &format!("v4.rope.sin.{tag}"), sind, &[seq, half]);
-            let sin_inv = synth_const(
-                g,
-                params,
-                &format!("v4.rope.sininv.{tag}"),
-                sinneg,
-                &[seq, half],
-            );
-            (cos, sin, sin_inv)
-        };
-    let (cos_m, sin_m, sininv_m) = rope_tables(&mut g, &mut params, spec.rope_theta, "m");
-    let (cos_c, sin_c, sininv_c) = rope_tables(&mut g, &mut params, spec.compress_rope_theta, "c");
+        }
+        let sinneg: Vec<f32> = sind.iter().map(|v| -v).collect();
+        let cos = synth_const(g, params, &format!("v4.rope.cos.{tag}"), cosd, &[seq, half]);
+        let sin = synth_const(g, params, &format!("v4.rope.sin.{tag}"), sind, &[seq, half]);
+        let sin_inv = synth_const(
+            g,
+            params,
+            &format!("v4.rope.sininv.{tag}"),
+            sinneg,
+            &[seq, half],
+        );
+        (cos, sin, sin_inv)
+    };
+    let (cos_m, sin_m, sininv_m) = rope_tables(&mut g, &mut params, spec.rope_theta, &sliding_rs, "m");
+    let (cos_c, sin_c, sininv_c) =
+        rope_tables(&mut g, &mut params, spec.compress_rope_theta, &compress_rs, "c");
 
     // Causal window mask [rows, seq] (window ≥ seq at prefill ⇒ full causal).
     let neg = -1e30f32;
@@ -3298,6 +3982,1455 @@ pub fn build_deepseek_v4_stage(
         g.set_outputs(vec![h]);
     }
     Ok((g, params))
+}
+
+/// Single-window **overlapping** compressor pool for the decode path (`ratio == 4`).
+/// Given the previous window's `[ratio, 2·hd]` kv/score (with APE, or `-1e30`
+/// score for the not-yet-seen window 0) and the current window's `[ratio, 2·hd]`
+/// kv/score (with APE), it forms the `2·ratio` overlap candidate set — the
+/// previous tokens' **first** `hd` dims ++ the current tokens' **second** `hd`
+/// dims — softmaxes over the `2·ratio` candidates per feature, weighted-sums to
+/// `[hd]`, and RMSNorms. Matches [`build_kv_compressor_overlap`] for one window
+/// (which the prefill uses). No RoPE (the prefill stage doesn't rope `comp`).
+#[allow(clippy::too_many_arguments)]
+fn build_overlap_pool_single(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    prev_kv: NodeId,
+    prev_score: NodeId,
+    curr_kv: NodeId,
+    curr_score: NodeId,
+    norm_w: NodeId,
+    hd: usize,
+    eps: f32,
+    tag: &str,
+) -> NodeId {
+    let d = hd as i64;
+    // candidate kv/score [2*ratio, hd]: prev first-half ++ current second-half.
+    let pk = g.narrow_(prev_kv, 1, 0, hd);
+    let ck = g.narrow_(curr_kv, 1, hd, hd);
+    let cand_kv = g.concat_(vec![pk, ck], 0);
+    let ps = g.narrow_(prev_score, 1, 0, hd);
+    let cs = g.narrow_(curr_score, 1, hd, hd);
+    let cand_sc = g.concat_(vec![ps, cs], 0);
+    // softmax over the 2*ratio token axis (per hd feature): move it last, sm, back.
+    let sct = g.transpose_(cand_sc, vec![1, 0]);
+    let w = g.sm(sct, -1);
+    let w = g.transpose_(w, vec![1, 0]);
+    let pooled = g.mul(cand_kv, w);
+    let pooled = g.sum(pooled, vec![0], false); // [hd]
+    let pooled2 = g.reshape_(pooled, vec![1, d]);
+    let zb = synth_zero(g, params, &format!("{tag}.ovzb"), hd);
+    g.rms_norm(pooled2, norm_w, zb, eps)
+}
+
+/// Build a **single-token DECODE step** for DeepSeek-V4 with a KV cache — the
+/// O(1)-per-token path that replaces re-running the whole prefill each step
+/// (which is O(n²): 289 s for a *6-token* prompt). The graph takes the new token
+/// id + each layer's cached window KV (`kvcache.{il}` `[cache_len, head_dim]`,
+/// the roped MLA latents of the prior tokens) and returns `logits [1, vocab]`
+/// plus per-layer state the host threads into the next step. RoPE is applied at
+/// absolute position `pos`; the query attends to `[window-cache ++ new (++
+/// compressed-cache)]` with the per-head attention sink (all provided positions
+/// are valid by construction, so no mask). Correctness is by the standard KV-cache
+/// induction: fed the same tokens, the accumulated cache equals what prefill
+/// computes internally, so decode logits == prefill logits (validated).
+///
+/// Returns the output-name list (in graph-output order) so the host can map
+/// results and thread the right buffers. Per layer:
+/// * `kvnew.{il}` `[1, head_dim]` — the new roped MLA latent → append to the
+///   layer's window ring.
+/// * **compressed (non-overlap `ratio ∉ {0,4}`) layers** additionally emit either
+///   `ck.{il}`/`cg.{il}` `[1, coff·head_dim]` (the raw compressor projections, on a
+///   non-firing step → accumulate into the running window buffer) OR `comp.{il}`
+///   `[1, head_dim]` (on a firing step, `(pos+1) % ratio == 0` → the pooled
+///   RMSNorm'd compressed KV, append to the compressed cache + reset the buffer).
+///   The pooled window reuses [`build_kv_compressor_pool`] (no RoPE — the prefill
+///   stage doesn't RoPE `comp`, so decode matches). Inputs the host supplies:
+///   `kvcache.{il}` `[cache_len, hd]`, `compcache.{il}` `[pos/ratio, hd]`, and on a
+///   firing step `partial_ck.{il}`/`partial_cg.{il}` `[ratio-1, coff·hd]`.
+///
+/// **Overlapping (`ratio == 4`)** layers use [`build_overlap_pool_single`] with a
+/// host-shifted previous-window state (`prev_kv`/`prev_score.{il}`); the learned
+/// **Indexer** is skipped (a no-op while `ncomp ≤ index_topk`, i.e. context ≤
+/// `index_topk·ratio` = 2048 — exactly what the prefill does), and the builder
+/// **errors** if that budget is exceeded so it can't silently mis-run long context.
+pub fn build_deepseek_v4_decode(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    pos: usize,
+    cache_len: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    let mut g = Graph::new("deepseek_v4_decode");
+    let mut params: HashMap<String, Vec<f32>> = HashMap::new();
+    let f = DType::F32;
+    let d = spec.dim;
+    let hc = spec.hc_mult;
+    let nh = spec.n_heads;
+    let hd = spec.head_dim;
+    let rd = spec.rope_head_dim & !1;
+    let ql = spec.q_lora_rank;
+    let eps = spec.rms_norm_eps;
+    let scale = (hd as f32).powf(-0.5);
+    let half = (rd / 2).max(1);
+    let zb_d = synth_zero(&mut g, &mut params, "v4d.zb.d", d);
+    let zb_ql = synth_zero(&mut g, &mut params, "v4d.zb.ql", ql);
+    let zb_hd = synth_zero(&mut g, &mut params, "v4d.zb.hd", hd);
+    let q_ones = synth_const(&mut g, &mut params, "v4d.qones", vec![1f32; hd], &[hd]);
+
+    // RoPE at the single absolute position `pos` (sliding base, no YaRN — decode is
+    // only wired for ratio==0 layers). cos/sin/sininv are `[1, half]`.
+    let (mut cosd, mut sind) = (vec![0f32; half], vec![0f32; half]);
+    for i in 0..half {
+        let fr = spec.rope_theta.powf(-(2.0 * i as f64) / rd as f64);
+        let (s, c) = (pos as f64 * fr).sin_cos();
+        cosd[i] = c as f32;
+        sind[i] = s as f32;
+    }
+    let sinneg: Vec<f32> = sind.iter().map(|v| -v).collect();
+    let cos_p = synth_const(&mut g, &mut params, "v4d.cos", cosd, &[1, half]);
+    let sin_p = synth_const(&mut g, &mut params, "v4d.sin", sind, &[1, half]);
+    let sininv_p = synth_const(&mut g, &mut params, "v4d.sininv", sinneg, &[1, half]);
+
+    // Embed the single new token → HC-expand to `hc` streams.
+    let token = g.input("token_id", Shape::new(&[1], DType::I32));
+    let token2 = g.reshape_(token, vec![1, 1]);
+    let input_ids_flat = g.reshape_(token, vec![1]);
+    let (embed_w, _, _) =
+        load_dense_dequant(&mut g, &mut params, weights, "model.embed_tokens.weight")?;
+    let h0 = g.gather_(embed_w, token2, 0); // [1,1,d]
+    let h0 = g.reshape_(h0, vec![1, 1, d as i64]);
+    let ones_hc = synth_const(&mut g, &mut params, "v4d.hc.ones", vec![1f32; hc], &[1, hc, 1]);
+    let mut h = g.mul(h0, ones_hc); // [1, hc, d]
+    // Extra per-layer outputs (name, node), emitted after `logits`.
+    let mut extra_outs: Vec<(String, NodeId)> = Vec::new();
+
+    for il in 0..spec.n_layers {
+        let ratio = spec.compress_ratios.get(il).copied().unwrap_or(0);
+        let lp = format!("model.layers.{il}");
+        // ── HC-wrapped MLA attention (single query, cached KV) ──
+        let residual = h;
+        let fn_a = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
+        let sc_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.scale"), false)?;
+        let bs_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.base"), false)?;
+        let (xa, post_a, comb_a) = build_hc_pre(
+            &mut g, &mut params, h, fn_a, sc_a, bs_a, 1, hc, d, spec.hc_eps,
+            spec.hc_sinkhorn_iters, &format!("{lp}.da"),
+        );
+        let an = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn_norm.weight"), 0.0)?;
+        let xa = g.rms_norm(xa, an, zb_d, eps);
+        let wqa = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_a.weight"))?;
+        let qr = emit_proj(&mut g, xa, &wqa, Shape::new(&[1, ql], f));
+        let qn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.q_norm.weight"), 0.0)?;
+        let qr = g.rms_norm(qr, qn, zb_ql, eps);
+        let wqb = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_b.weight"))?;
+        let q = emit_proj(&mut g, qr, &wqb, Shape::new(&[1, nh * hd], f));
+        let q = per_head_rms(&mut g, q, q_ones, zb_hd, 1, 1, nh, hd, eps);
+        let q = rope_tail(&mut g, q, cos_p, sin_p, 1, nh, hd, rd);
+        // New token's KV latent (roped) — this is what the host caches.
+        let wkv = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wkv.weight"))?;
+        let kv = emit_proj(&mut g, xa, &wkv, Shape::new(&[1, hd], f));
+        let kvn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.kv_norm.weight"), 0.0)?;
+        let kv = g.rms_norm(kv, kvn, zb_hd, eps);
+        let kv_new = rope_tail(&mut g, kv, cos_p, sin_p, 1, 1, hd, rd); // [1, hd]
+        extra_outs.push((format!("kvnew.{il}"), g.reshape_(kv_new, vec![1, hd as i64])));
+        // Window key set = cached window ++ new (all valid — host holds only valid slots).
+        let win_kv = if cache_len > 0 {
+            let kvc = g.input(&format!("kvcache.{il}"), Shape::new(&[cache_len, hd], f));
+            g.concat_(vec![kvc, kv_new], 0)
+        } else {
+            kv_new
+        };
+        let win_keys = cache_len + 1;
+        // Append the compressed KV cache for compress layers (non-overlap).
+        let (kv_all, n_keys) = if ratio == 0 {
+            (win_kv, win_keys)
+        } else {
+            let overlap = ratio == 4;
+            let coff = if overlap { 2 } else { 1 };
+            let firing = (pos + 1) % ratio == 0;
+            let ncomp_before = pos / ratio;
+            let ncomp_vis = if firing { ncomp_before + 1 } else { ncomp_before };
+            // The Indexer only prunes when ncomp > index_topk; below that it keeps
+            // every causally-valid compressed position (exact, = the deterministic
+            // mask, matching prefill's `indexer_on` gate). Refuse the pruning regime.
+            if overlap && spec.index_head_dim > 0 && ncomp_vis > spec.index_topk {
+                return Err(anyhow!(
+                    "build_deepseek_v4_decode: Indexer top-k pruning (ncomp {ncomp_vis} > \
+                     index_topk {}) not yet implemented (layer {il}); exact only for context \
+                     <= index_topk*ratio",
+                    spec.index_topk
+                ));
+            }
+            // Compressor projections for the new token: ck/cg = wkv/wgate(xa).
+            let cw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wkv.weight"), true)?;
+            let ck_t = g.mm(xa, cw); // [1, coff*hd]
+            let cgw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wgate.weight"), true)?;
+            let cg_raw = g.mm(xa, cgw);
+            // Overlap adds APE per-token here; non-overlap lets build_kv_compressor_pool
+            // add the whole-window APE.
+            let cg_t = if overlap {
+                let ape = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.ape"), false)?;
+                let ape_row = g.narrow_(ape, 0, pos % ratio, 1); // [1, coff*hd]
+                g.add(cg_raw, ape_row)
+            } else {
+                cg_raw
+            };
+            let compcache = if ncomp_before > 0 {
+                Some(g.input(&format!("compcache.{il}"), Shape::new(&[ncomp_before, hd], f)))
+            } else {
+                None
+            };
+            let comp_all = if firing {
+                let cnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.norm.weight"), 0.0)?;
+                let (win_ck, win_cg) = if ratio > 1 {
+                    let pck = g.input(&format!("partial_ck.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
+                    let pcg = g.input(&format!("partial_cg.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
+                    (g.concat_(vec![pck, ck_t], 0), g.concat_(vec![pcg, cg_t], 0))
+                } else {
+                    (ck_t, cg_t)
+                };
+                let compressed_t = if overlap {
+                    // Overlap pool needs the previous window (host-shifted; window 0 =
+                    // 0 kv / -1e30 score → masked).
+                    let prev_kv = g.input(&format!("prev_kv.{il}"), Shape::new(&[ratio, coff * hd], f));
+                    let prev_score = g.input(&format!("prev_score.{il}"), Shape::new(&[ratio, coff * hd], f));
+                    build_overlap_pool_single(
+                        &mut g, &mut params, prev_kv, prev_score, win_ck, win_cg, cnorm, hd, eps,
+                        &format!("{lp}.dov"),
+                    )
+                } else {
+                    let ape = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.ape"), false)?;
+                    build_kv_compressor_pool(
+                        &mut g, &mut params, win_ck, win_cg, ape, cnorm, 1, ratio, ratio, hd, eps,
+                        &format!("{lp}.dcomp"),
+                    )
+                };
+                extra_outs.push((format!("comp.{il}"), g.reshape_(compressed_t, vec![1, hd as i64])));
+                // Emit the current token's ck/cg too so the host reconstructs the
+                // current window (the next `prev` for overlap; ignored non-overlap).
+                extra_outs.push((format!("ck.{il}"), g.reshape_(ck_t, vec![1, (coff * hd) as i64])));
+                extra_outs.push((format!("cg.{il}"), g.reshape_(cg_t, vec![1, (coff * hd) as i64])));
+                let all = match compcache {
+                    Some(c) => g.concat_(vec![c, compressed_t], 0),
+                    None => compressed_t,
+                };
+                Some(all)
+            } else {
+                extra_outs.push((format!("ck.{il}"), g.reshape_(ck_t, vec![1, (coff * hd) as i64])));
+                extra_outs.push((format!("cg.{il}"), g.reshape_(cg_t, vec![1, (coff * hd) as i64])));
+                compcache
+            };
+            match comp_all {
+                Some(c) if ncomp_vis > 0 => (g.concat_(vec![win_kv, c], 0), win_keys + ncomp_vis),
+                _ => (win_kv, win_keys),
+            }
+        };
+        let mask = synth_const(
+            &mut g, &mut params, &format!("{lp}.v4d.mask"), vec![0f32; n_keys], &[1, n_keys],
+        );
+        let sink = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.attn_sink"), false)?;
+        let q3 = g.reshape_(q, vec![1, nh as i64, hd as i64]);
+        let o = build_v4_sink_attention(
+            &mut g, &mut params, q3, kv_all, mask, sink, scale, 1, nh, hd, n_keys, &format!("{lp}.dsa"),
+        );
+        let o_flat = g.reshape_(o, vec![1, (nh * hd) as i64]);
+        let o_inv = rope_tail(&mut g, o_flat, cos_p, sininv_p, 1, nh, hd, rd);
+        let dpg = nh * hd / spec.n_groups;
+        let woa = load_v4_wo_a(
+            &mut g, &mut params, weights, &format!("{lp}.attn.wo_a.weight"),
+            spec.n_groups, spec.o_lora_rank, dpg,
+        )?;
+        let wob = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn.wo_b.weight"))?;
+        let attn_out = build_v4_o_lora(&mut g, o_inv, woa, wob, 1, spec.n_groups, spec.o_lora_rank, dpg, d);
+        h = build_hc_post(&mut g, attn_out, residual, post_a, comb_a, 1, hc, d);
+
+        // ── HC-wrapped FFN (dense SwiGLU or sqrtsoftplus MoE) ──
+        let residual = h;
+        let fn_f = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.fn"))?;
+        let sc_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.scale"), false)?;
+        let bs_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.base"), false)?;
+        let (xf, post_f, comb_f) = build_hc_pre(
+            &mut g, &mut params, h, fn_f, sc_f, bs_f, 1, hc, d, spec.hc_eps,
+            spec.hc_sinkhorn_iters, &format!("{lp}.df"),
+        );
+        let fnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.ffn_norm.weight"), 0.0)?;
+        let xf = g.rms_norm(xf, fnorm, zb_d, eps);
+        let ffn_out = if il < spec.first_k_dense_replace {
+            let gp = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.gate_proj.weight"))?;
+            let up = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.up_proj.weight"))?;
+            let dn = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.down_proj.weight"))?;
+            let gate = emit_proj(&mut g, xf, &gp, Shape::new(&[1, spec.intermediate_size], f));
+            let upv = emit_proj(&mut g, xf, &up, Shape::new(&[1, spec.intermediate_size], f));
+            let sg = g.silu(gate);
+            let glu = g.mul(sg, upv);
+            emit_proj(&mut g, glu, &dn, Shape::new(&[1, d], f))
+        } else {
+            let ds = v4_moe_spec(spec);
+            let x3 = g.reshape_(xf, vec![1, 1, d as i64]);
+            let hash_ids = if il < spec.n_hash_layers { Some(input_ids_flat) } else { None };
+            let moe = build_deepseek_moe_ffn(&mut g, &mut params, packed, weights, &lp, x3, 1, 1, &ds, hash_ids)?;
+            g.reshape_(moe, vec![1, d as i64])
+        };
+        h = build_hc_post(&mut g, ffn_out, residual, post_f, comb_f, 1, hc, d);
+    }
+
+    // Head: hc_head reduce → norm → lm_head.
+    let hfn = load_transposed_param(&mut g, &mut params, weights, "model.hc_head.fn")?;
+    let hsc = load_p(&mut g, &mut params, weights, "model.hc_head.scale", false)?;
+    let hbs = load_p(&mut g, &mut params, weights, "model.hc_head.base", false)?;
+    let x = build_hc_head(&mut g, &mut params, h, hfn, hsc, hbs, 1, hc, d, spec.hc_eps, "v4d.head");
+    let fnorm = load_norm(&mut g, &mut params, weights, "model.norm.weight", 0.0)?;
+    let x = g.rms_norm(x, fnorm, zb_d, eps);
+    let head_p = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
+    let logits = emit_proj(&mut g, x, &head_p, Shape::new(&[1, spec.vocab_size], f));
+    let logits = g.reshape_(logits, vec![1, spec.vocab_size as i64]);
+    // Outputs: `logits` first, then the per-layer state nodes in emission order.
+    let mut outs = vec![logits];
+    let mut names = vec!["logits".to_string()];
+    for (name, node) in extra_outs {
+        names.push(name);
+        outs.push(node);
+    }
+    g.set_outputs(outs);
+    Ok((g, params, names))
+}
+
+/// **Greedy generation** for DeepSeek-V4 via the KV-cache decode path — the usable
+/// end-to-end loop: it decodes the prompt token-by-token (building each layer's
+/// window ring + compressor state, so this doubles as the prefill), then emits
+/// `n_new` tokens one at a time by feeding back the argmax. This is the O(n)-per-
+/// token path (vs re-running the whole forward each step). `make_loader` returns a
+/// fresh [`WeightLoader`] per step (the current builder consumes weights via
+/// `take`; a lazy loader re-opens cheaply — a fixed-max-cache compile-once runner
+/// is the perf follow-up). Correct for context ≤ `index_topk·ratio` (the Indexer
+/// is a no-op there; the decode builder errors past it). Returns the `n_new`
+/// generated token ids. The sliding-window ring keeps the last `window_size - 1`
+/// KV latents so the query sees exactly `window_size` positions (matching prefill's
+/// `qi - ki < window` mask).
+pub fn deepseek_v4_generate(
+    spec: &DeepseekV4Spec,
+    mut make_loader: impl FnMut() -> Box<dyn WeightLoader>,
+    device: rlx_runtime::Device,
+    prompt_ids: &[u32],
+    n_new: usize,
+) -> Result<Vec<u32>> {
+    use rlx_runtime::Session;
+    let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+        &rlx_flow::CompileProfile::qwen3_prefill(),
+        device,
+    );
+    let nl = spec.n_layers;
+    let hd = spec.head_dim;
+    let window = spec.window_size.max(1);
+    let ratios: Vec<usize> = (0..nl)
+        .map(|il| spec.compress_ratios.get(il).copied().unwrap_or(0))
+        .collect();
+    let coffs: Vec<usize> = ratios.iter().map(|&r| if r == 4 { 2 } else { 1 }).collect();
+    let mut win_ring = vec![Vec::<f32>::new(); nl];
+    let mut compcache = vec![Vec::<f32>::new(); nl];
+    let mut partial_ck = vec![Vec::<f32>::new(); nl];
+    let mut partial_cg = vec![Vec::<f32>::new(); nl];
+    let mut prev_kv = vec![Vec::<f32>::new(); nl];
+    let mut prev_score = vec![Vec::<f32>::new(); nl];
+    for il in 0..nl {
+        if ratios[il] == 4 {
+            prev_kv[il] = vec![0f32; ratios[il] * coffs[il] * hd];
+            prev_score[il] = vec![-1e30f32; ratios[il] * coffs[il] * hd];
+        }
+    }
+    // One decode step at absolute position `pos` for `token`; returns its logits and
+    // threads the per-layer window ring + compressor state forward.
+    let mut step = |pos: usize, token: u32| -> Result<Vec<f32>> {
+        let cache_len = if nl > 0 { win_ring[0].len() / hd } else { 0 }; // = min(pos, window-1)
+        let mut loader = make_loader();
+        let mut packed: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+        let (g, params, onames) =
+            build_deepseek_v4_decode(spec, &mut *loader, pos, cache_len, &mut packed)?;
+        let mut compiled = Session::new(device).compile_with(g, &opts);
+        for (n, dd) in &params {
+            compiled.set_param(n, dd);
+        }
+        let mut owned: Vec<(String, Vec<f32>)> = vec![("token_id".into(), vec![token as f32])];
+        for il in 0..nl {
+            if cache_len > 0 {
+                owned.push((format!("kvcache.{il}"), win_ring[il].clone()));
+            }
+            let ratio = ratios[il];
+            if ratio > 0 {
+                let firing = (pos + 1) % ratio == 0;
+                if pos / ratio > 0 {
+                    owned.push((format!("compcache.{il}"), compcache[il].clone()));
+                }
+                if firing && ratio > 1 {
+                    owned.push((format!("partial_ck.{il}"), partial_ck[il].clone()));
+                    owned.push((format!("partial_cg.{il}"), partial_cg[il].clone()));
+                }
+                if firing && ratio == 4 {
+                    owned.push((format!("prev_kv.{il}"), prev_kv[il].clone()));
+                    owned.push((format!("prev_score.{il}"), prev_score[il].clone()));
+                }
+            }
+        }
+        let inputs: Vec<(&str, &[f32])> =
+            owned.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+        let out = compiled.run(&inputs);
+        let get = |name: &str| -> Vec<f32> {
+            let i = onames.iter().position(|x| x == name).expect("decode output");
+            out[i].clone()
+        };
+        let logits = get("logits");
+        let maxlen = (window - 1) * hd;
+        for il in 0..nl {
+            win_ring[il].extend_from_slice(&get(&format!("kvnew.{il}")));
+            if win_ring[il].len() > maxlen {
+                let drop = win_ring[il].len() - maxlen;
+                win_ring[il].drain(0..drop);
+            }
+            let ratio = ratios[il];
+            if ratio > 0 {
+                if (pos + 1) % ratio == 0 {
+                    compcache[il].extend_from_slice(&get(&format!("comp.{il}")));
+                    if ratio == 4 {
+                        let mut ckw = partial_ck[il].clone();
+                        ckw.extend_from_slice(&get(&format!("ck.{il}")));
+                        let mut cgw = partial_cg[il].clone();
+                        cgw.extend_from_slice(&get(&format!("cg.{il}")));
+                        prev_kv[il] = ckw;
+                        prev_score[il] = cgw;
+                    }
+                    partial_ck[il].clear();
+                    partial_cg[il].clear();
+                } else {
+                    partial_ck[il].extend_from_slice(&get(&format!("ck.{il}")));
+                    partial_cg[il].extend_from_slice(&get(&format!("cg.{il}")));
+                }
+            }
+        }
+        Ok(logits)
+    };
+    let argmax = |l: &[f32]| -> u32 {
+        l.iter()
+            .enumerate()
+            .fold((0usize, f32::MIN), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) })
+            .0 as u32
+    };
+    // Prefill the prompt through the decode path (builds the cache); the last
+    // token's logits seed the first generated token.
+    let mut logits = vec![0f32; spec.vocab_size];
+    for (pos, &tok) in prompt_ids.iter().enumerate() {
+        logits = step(pos, tok)?;
+    }
+    let mut out_ids = Vec::with_capacity(n_new);
+    for i in 0..n_new {
+        let next = argmax(&logits);
+        out_ids.push(next);
+        logits = step(prompt_ids.len() + i, next)?;
+    }
+    Ok(out_ids)
+}
+
+/// **Fixed-shape** single-token decode graph for a **compile-once** runner
+/// ([`V4Decoder`]). Unlike [`build_deepseek_v4_decode`] — which bakes `pos` into
+/// the RoPE table and branches on firing, so it recompiles every token — this has
+/// a stable shape: `cos`/`sin`/`sininv` and the per-compress-layer APE row are
+/// **inputs**; every layer's window cache is a fixed `[max_win, hd]` and its
+/// compressed cache `[max_comp, hd]`, both padded and gated by a per-layer
+/// validity `mask.{il}` input; and the compressor **always pools** into one fixed
+/// extra key slot that the mask marks valid only on a firing step. So it compiles
+/// ONCE and runs per token. Weights load once (into the returned params). Outputs:
+/// `logits` + per-layer `kvnew.{il}`, and per-compress-layer `comp.{il}` (the
+/// pooled KV — the host appends it on a firing step) + `ck.{il}`/`cg.{il}` (raw
+/// projections the host accumulates). Key order per compress layer:
+/// `[window(max_win) ++ new(1) ++ compcache(max_comp) ++ compressed(1)]`.
+pub fn build_deepseek_v4_decode_fixed(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    max_win: usize,
+    max_comp: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    build_deepseek_v4_decode_fixed_stage(spec, weights, 0..spec.n_layers, true, true, max_win, max_comp, packed)
+}
+
+/// One **layer-range STAGE** of the fixed-shape decode graph — the distributed
+/// decode building block (each cluster node builds only its `layers` and relays
+/// the single-token hidden boundary `[1, hc_mult, dim]`, mirroring
+/// [`build_deepseek_v4_stage`] for prefill). `first` embeds the token; `last`
+/// applies the head → `logits`; otherwise the stage takes a `hidden_in` input and
+/// emits a `hidden_out` output. Hash-routing layers must live on the `first`
+/// stage (only it has the token id). Each node holds the KV cache for its own
+/// `layers`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_deepseek_v4_decode_fixed_stage(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    layers: std::ops::Range<usize>,
+    first: bool,
+    last: bool,
+    max_win: usize,
+    max_comp: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    let mut g = Graph::new("deepseek_v4_decode_fixed");
+    let mut params: HashMap<String, Vec<f32>> = HashMap::new();
+    let f = DType::F32;
+    let d = spec.dim;
+    let hc = spec.hc_mult;
+    let nh = spec.n_heads;
+    let hd = spec.head_dim;
+    let rd = spec.rope_head_dim & !1;
+    let ql = spec.q_lora_rank;
+    let eps = spec.rms_norm_eps;
+    let scale = (hd as f32).powf(-0.5);
+    let half = (rd / 2).max(1);
+    let zb_d = synth_zero(&mut g, &mut params, "v4f.zb.d", d);
+    let zb_ql = synth_zero(&mut g, &mut params, "v4f.zb.ql", ql);
+    let zb_hd = synth_zero(&mut g, &mut params, "v4f.zb.hd", hd);
+    let q_ones = synth_const(&mut g, &mut params, "v4f.qones", vec![1f32; hd], &[hd]);
+    // RoPE tables for the current position are INPUTS (host recomputes per step).
+    let cos_p = g.input("cos", Shape::new(&[1, half], f));
+    let sin_p = g.input("sin", Shape::new(&[1, half], f));
+    let sininv_p = g.input("sininv", Shape::new(&[1, half], f));
+
+    // First stage embeds the token + HC-expands; later stages take the relayed
+    // hidden boundary. `input_ids_flat` (hash routing) exists only on the first
+    // stage — hash layers must live there.
+    let (mut h, input_ids_flat): (NodeId, Option<NodeId>) = if first {
+        let token = g.input("token_id", Shape::new(&[1], DType::I32));
+        let token2 = g.reshape_(token, vec![1, 1]);
+        let ids_flat = g.reshape_(token, vec![1]);
+        let (embed_w, _, _) =
+            load_dense_dequant(&mut g, &mut params, weights, "model.embed_tokens.weight")?;
+        let h0 = g.gather_(embed_w, token2, 0);
+        let h0 = g.reshape_(h0, vec![1, 1, d as i64]);
+        let ones_hc = synth_const(&mut g, &mut params, "v4f.hc.ones", vec![1f32; hc], &[1, hc, 1]);
+        (g.mul(h0, ones_hc), Some(ids_flat))
+    } else {
+        (g.input("hidden_in", Shape::new(&[1, hc, d], f)), None)
+    };
+    let mut extra_outs: Vec<(String, NodeId)> = Vec::new();
+
+    for il in layers.clone() {
+        let ratio = spec.compress_ratios.get(il).copied().unwrap_or(0);
+        let overlap = ratio == 4;
+        let coff = if overlap { 2 } else { 1 };
+        let lp = format!("model.layers.{il}");
+        // HC-wrapped MLA attention.
+        let residual = h;
+        let fn_a = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
+        let sc_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.scale"), false)?;
+        let bs_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.base"), false)?;
+        let (xa, post_a, comb_a) = build_hc_pre(
+            &mut g, &mut params, h, fn_a, sc_a, bs_a, 1, hc, d, spec.hc_eps,
+            spec.hc_sinkhorn_iters, &format!("{lp}.fa"),
+        );
+        let an = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn_norm.weight"), 0.0)?;
+        let xa = g.rms_norm(xa, an, zb_d, eps);
+        let wqa = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_a.weight"))?;
+        let qr = emit_proj(&mut g, xa, &wqa, Shape::new(&[1, ql], f));
+        let qn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.q_norm.weight"), 0.0)?;
+        let qr = g.rms_norm(qr, qn, zb_ql, eps);
+        let wqb = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_b.weight"))?;
+        let q = emit_proj(&mut g, qr, &wqb, Shape::new(&[1, nh * hd], f));
+        let q = per_head_rms(&mut g, q, q_ones, zb_hd, 1, 1, nh, hd, eps);
+        let q = rope_tail(&mut g, q, cos_p, sin_p, 1, nh, hd, rd);
+        let wkv = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wkv.weight"))?;
+        let kv = emit_proj(&mut g, xa, &wkv, Shape::new(&[1, hd], f));
+        let kvn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.kv_norm.weight"), 0.0)?;
+        let kv = g.rms_norm(kv, kvn, zb_hd, eps);
+        let kv_new = rope_tail(&mut g, kv, cos_p, sin_p, 1, 1, hd, rd);
+        extra_outs.push((format!("kvnew.{il}"), g.reshape_(kv_new, vec![1, hd as i64])));
+
+        let wcache = g.input(&format!("wcache.{il}"), Shape::new(&[max_win, hd], f));
+        let (kv_all, n_keys) = if ratio == 0 {
+            (g.concat_(vec![wcache, kv_new], 0), max_win + 1)
+        } else {
+            // Compressor projections + always-pool (result masked unless firing).
+            let cw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wkv.weight"), true)?;
+            let ck_t = g.mm(xa, cw);
+            let cgw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wgate.weight"), true)?;
+            let cg_raw = g.mm(xa, cgw);
+            let cnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.norm.weight"), 0.0)?;
+            // Overlap adds the (host-provided) APE row per token; non-overlap lets
+            // build_kv_compressor_pool add the whole-window APE.
+            let cg_emit = if overlap {
+                let ape_row = g.input(&format!("ape_row.{il}"), Shape::new(&[1, coff * hd], f));
+                g.add(cg_raw, ape_row)
+            } else {
+                cg_raw
+            };
+            let pck = g.input(&format!("partial_ck.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
+            let pcg = g.input(&format!("partial_cg.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
+            let win_ck = g.concat_(vec![pck, ck_t], 0);
+            let win_cg = g.concat_(vec![pcg, cg_emit], 0);
+            let compressed_t = if overlap {
+                let prev_kv = g.input(&format!("prev_kv.{il}"), Shape::new(&[ratio, coff * hd], f));
+                let prev_score = g.input(&format!("prev_score.{il}"), Shape::new(&[ratio, coff * hd], f));
+                build_overlap_pool_single(
+                    &mut g, &mut params, prev_kv, prev_score, win_ck, win_cg, cnorm, hd, eps,
+                    &format!("{lp}.fov"),
+                )
+            } else {
+                let ape = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.ape"), false)?;
+                build_kv_compressor_pool(
+                    &mut g, &mut params, win_ck, win_cg, ape, cnorm, 1, ratio, ratio, hd, eps,
+                    &format!("{lp}.fcomp"),
+                )
+            };
+            extra_outs.push((format!("comp.{il}"), g.reshape_(compressed_t, vec![1, hd as i64])));
+            extra_outs.push((format!("ck.{il}"), g.reshape_(ck_t, vec![1, (coff * hd) as i64])));
+            extra_outs.push((format!("cg.{il}"), g.reshape_(cg_emit, vec![1, (coff * hd) as i64])));
+            let compcache = g.input(&format!("compcache.{il}"), Shape::new(&[max_comp, hd], f));
+            (
+                g.concat_(vec![wcache, kv_new, compcache, compressed_t], 0),
+                max_win + 1 + max_comp + 1,
+            )
+        };
+        let mask = g.input(&format!("mask.{il}"), Shape::new(&[1, n_keys], f));
+        let sink = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.attn_sink"), false)?;
+        let q3 = g.reshape_(q, vec![1, nh as i64, hd as i64]);
+        let o = build_v4_sink_attention(
+            &mut g, &mut params, q3, kv_all, mask, sink, scale, 1, nh, hd, n_keys, &format!("{lp}.fsa"),
+        );
+        let o_flat = g.reshape_(o, vec![1, (nh * hd) as i64]);
+        let o_inv = rope_tail(&mut g, o_flat, cos_p, sininv_p, 1, nh, hd, rd);
+        let dpg = nh * hd / spec.n_groups;
+        let woa = load_v4_wo_a(
+            &mut g, &mut params, weights, &format!("{lp}.attn.wo_a.weight"),
+            spec.n_groups, spec.o_lora_rank, dpg,
+        )?;
+        let wob = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn.wo_b.weight"))?;
+        let attn_out = build_v4_o_lora(&mut g, o_inv, woa, wob, 1, spec.n_groups, spec.o_lora_rank, dpg, d);
+        h = build_hc_post(&mut g, attn_out, residual, post_a, comb_a, 1, hc, d);
+
+        // HC-wrapped FFN.
+        let residual = h;
+        let fn_f = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.fn"))?;
+        let sc_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.scale"), false)?;
+        let bs_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.base"), false)?;
+        let (xf, post_f, comb_f) = build_hc_pre(
+            &mut g, &mut params, h, fn_f, sc_f, bs_f, 1, hc, d, spec.hc_eps,
+            spec.hc_sinkhorn_iters, &format!("{lp}.ff"),
+        );
+        let fnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.ffn_norm.weight"), 0.0)?;
+        let xf = g.rms_norm(xf, fnorm, zb_d, eps);
+        let ffn_out = if il < spec.first_k_dense_replace {
+            let gp = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.gate_proj.weight"))?;
+            let up = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.up_proj.weight"))?;
+            let dn = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.down_proj.weight"))?;
+            let gate = emit_proj(&mut g, xf, &gp, Shape::new(&[1, spec.intermediate_size], f));
+            let upv = emit_proj(&mut g, xf, &up, Shape::new(&[1, spec.intermediate_size], f));
+            let sg = g.silu(gate);
+            let glu = g.mul(sg, upv);
+            emit_proj(&mut g, glu, &dn, Shape::new(&[1, d], f))
+        } else {
+            let ds = v4_moe_spec(spec);
+            let x3 = g.reshape_(xf, vec![1, 1, d as i64]);
+            let hash_ids = if il < spec.n_hash_layers { input_ids_flat } else { None };
+            let moe = build_deepseek_moe_ffn(&mut g, &mut params, packed, weights, &lp, x3, 1, 1, &ds, hash_ids)?;
+            g.reshape_(moe, vec![1, d as i64])
+        };
+        h = build_hc_post(&mut g, ffn_out, residual, post_f, comb_f, 1, hc, d);
+        // DSpark: at each target layer, emit the mean-over-HC-streams hidden. The
+        // host concatenates these (in target order) into `main_hidden`, which the
+        // DSpark drafter's `main_proj` consumes (Transformer.forward collects
+        // `h.mean(dim=2)` at `dspark_target_layer_ids`).
+        if spec.dspark_target_layer_ids.contains(&il) {
+            let mh = g.mean(h, vec![1], false); // [1, d] over the hc streams
+            extra_outs.push((format!("main_hidden.{il}"), g.reshape_(mh, vec![1, d as i64])));
+        }
+    }
+
+    // Last stage: hc_head → norm → lm_head → logits. Others relay the hidden.
+    let mut outs;
+    let mut names;
+    if last {
+        let hfn = load_transposed_param(&mut g, &mut params, weights, "model.hc_head.fn")?;
+        let hsc = load_p(&mut g, &mut params, weights, "model.hc_head.scale", false)?;
+        let hbs = load_p(&mut g, &mut params, weights, "model.hc_head.base", false)?;
+        let x = build_hc_head(&mut g, &mut params, h, hfn, hsc, hbs, 1, hc, d, spec.hc_eps, "v4f.head");
+        let fnorm = load_norm(&mut g, &mut params, weights, "model.norm.weight", 0.0)?;
+        let x = g.rms_norm(x, fnorm, zb_d, eps);
+        let head_p = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
+        let logits = emit_proj(&mut g, x, &head_p, Shape::new(&[1, spec.vocab_size], f));
+        let logits = g.reshape_(logits, vec![1, spec.vocab_size as i64]);
+        outs = vec![logits];
+        names = vec!["logits".to_string()];
+    } else {
+        outs = vec![g.reshape_(h, vec![1, hc as i64, d as i64])];
+        names = vec!["hidden_out".to_string()];
+    }
+    for (name, node) in extra_outs {
+        names.push(name);
+        outs.push(node);
+    }
+    g.set_outputs(outs);
+    Ok((g, params, names))
+}
+
+/// **Compile-once** DeepSeek-V4 greedy decoder. Builds the fixed-shape decode
+/// graph ([`build_deepseek_v4_decode_fixed`]) and loads weights **once**, then
+/// [`Self::step`]s per token feeding padded caches + validity masks — so the graph
+/// compiles a single time (vs [`deepseek_v4_generate`], which recompiles every
+/// token). `max_win` should be `window_size - 1` (the sliding-window ring depth);
+/// `max_comp` bounds the compressed-KV cache (`max_len / smallest_ratio`).
+/// Correct while `ncomp ≤ index_topk` (context ≤ `index_topk·ratio`).
+pub struct V4Decoder {
+    compiled: rlx_runtime::CompiledGraph,
+    out_names: Vec<String>,
+    vocab: usize,
+    hd: usize,
+    half: usize,
+    rd: usize,
+    rope_theta: f64,
+    max_win: usize,
+    max_comp: usize,
+    ratios: Vec<usize>,
+    coffs: Vec<usize>,
+    ape: Vec<Vec<f32>>, // per overlap layer: [ratio, coff*hd]
+    win_ring: Vec<Vec<f32>>,
+    compcache: Vec<Vec<f32>>,
+    partial_ck: Vec<Vec<f32>>,
+    partial_cg: Vec<Vec<f32>>,
+    prev_kv: Vec<Vec<f32>>,
+    prev_score: Vec<Vec<f32>>,
+    layers: std::ops::Range<usize>,
+    first: bool,
+    last: bool,
+    target_layers: Vec<usize>,
+    main_hidden: Option<Vec<f32>>,
+    pos: usize,
+}
+
+/// A checkpoint of a [`V4Decoder`]'s KV cache + position. Take one before
+/// speculatively decoding a draft block, then [`V4Decoder::restore`] to roll back
+/// the rejected drafts (the KV-rollback primitive for speculative / beam decoding).
+#[derive(Clone)]
+pub struct V4DecodeSnapshot {
+    win_ring: Vec<Vec<f32>>,
+    compcache: Vec<Vec<f32>>,
+    partial_ck: Vec<Vec<f32>>,
+    partial_cg: Vec<Vec<f32>>,
+    prev_kv: Vec<Vec<f32>>,
+    prev_score: Vec<Vec<f32>>,
+    main_hidden: Option<Vec<f32>>,
+    pos: usize,
+}
+
+impl V4Decoder {
+    /// Snapshot the full KV-cache + compressor state + position.
+    pub fn snapshot(&self) -> V4DecodeSnapshot {
+        V4DecodeSnapshot {
+            win_ring: self.win_ring.clone(),
+            compcache: self.compcache.clone(),
+            partial_ck: self.partial_ck.clone(),
+            partial_cg: self.partial_cg.clone(),
+            prev_kv: self.prev_kv.clone(),
+            prev_score: self.prev_score.clone(),
+            main_hidden: self.main_hidden.clone(),
+            pos: self.pos,
+        }
+    }
+
+    /// Roll the decoder back to a [`Self::snapshot`] — discards every token decoded
+    /// since (their window/compressed/partial/prev KV state), so a rejected draft
+    /// block leaves no trace.
+    pub fn restore(&mut self, s: V4DecodeSnapshot) {
+        self.win_ring = s.win_ring;
+        self.compcache = s.compcache;
+        self.partial_ck = s.partial_ck;
+        self.partial_cg = s.partial_cg;
+        self.prev_kv = s.prev_kv;
+        self.prev_score = s.prev_score;
+        self.main_hidden = s.main_hidden;
+        self.pos = s.pos;
+    }
+
+    /// Full-model decoder (all layers, first+last). See [`Self::new_stage`] for a
+    /// single pipeline stage.
+    pub fn new(
+        spec: &DeepseekV4Spec,
+        weights: &mut dyn WeightLoader,
+        max_win: usize,
+        max_comp: usize,
+        device: rlx_runtime::Device,
+    ) -> Result<Self> {
+        Self::new_stage(spec, weights, 0..spec.n_layers, true, true, max_win, max_comp, device)
+    }
+
+    /// One pipeline **stage** decoder over `layers` (holds only its layers' KV
+    /// cache). `first` consumes the token id; `last` produces logits; otherwise it
+    /// consumes/produces the hidden boundary. Drive N of these with
+    /// [`deepseek_v4_generate_pipelined`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_stage(
+        spec: &DeepseekV4Spec,
+        weights: &mut dyn WeightLoader,
+        layers: std::ops::Range<usize>,
+        first: bool,
+        last: bool,
+        max_win: usize,
+        max_comp: usize,
+        device: rlx_runtime::Device,
+    ) -> Result<Self> {
+        let nl = spec.n_layers;
+        let hd = spec.head_dim;
+        let ratios: Vec<usize> = (0..nl)
+            .map(|il| spec.compress_ratios.get(il).copied().unwrap_or(0))
+            .collect();
+        let coffs: Vec<usize> = ratios.iter().map(|&r| if r == 4 { 2 } else { 1 }).collect();
+        // Read APE for overlap layers up front — the fixed graph feeds them the
+        // `ape_row` input rather than loading APE (so this take() doesn't collide).
+        let mut ape = vec![Vec::new(); nl];
+        for il in layers.clone() {
+            if ratios[il] == 4 {
+                let (a, _) = weights.take(&format!("model.layers.{il}.attn.compressor.ape"))?;
+                ape[il] = a;
+            }
+        }
+        let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+            &rlx_flow::CompileProfile::qwen3_prefill(),
+            device,
+        );
+        let mut packed: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+        let (g, params, out_names) = build_deepseek_v4_decode_fixed_stage(
+            spec, weights, layers.clone(), first, last, max_win, max_comp, &mut packed,
+        )?;
+        let mut compiled = rlx_runtime::Session::new(device).compile_with(g, &opts);
+        // Bind params, **consuming** each map so every source buffer is dropped the
+        // moment it's copied into the arena — peak resident ≈ arena + one param
+        // (not maps + arena = 2×). Weights stay PACKED (MXFP4/MXFP8, ~4× smaller
+        // than F32), so a ~1/3-of-model stage is ~50GB and fits a 64GB node with
+        // only modest swap. Binding the packed U8 codes (previously missing — the
+        // stage only ever `--build-only`'d) is also what makes a real forward work.
+        for (n, dd) in params {
+            compiled.set_param(&n, &dd);
+        }
+        for (n, (bytes, _scheme, _shape)) in packed {
+            compiled.set_param_typed(&n, &bytes, DType::U8);
+        }
+        compiled.finalize_params();
+        let mut prev_kv = vec![Vec::new(); nl];
+        let mut prev_score = vec![Vec::new(); nl];
+        for il in layers.clone() {
+            if ratios[il] == 4 {
+                prev_kv[il] = vec![0f32; ratios[il] * coffs[il] * hd];
+                prev_score[il] = vec![-1e30f32; ratios[il] * coffs[il] * hd];
+            }
+        }
+        Ok(Self {
+            compiled,
+            out_names,
+            vocab: spec.vocab_size,
+            hd,
+            half: (spec.rope_head_dim & !1) / 2,
+            rd: spec.rope_head_dim & !1,
+            rope_theta: spec.rope_theta,
+            max_win,
+            max_comp,
+            ratios,
+            coffs,
+            ape,
+            win_ring: vec![Vec::new(); nl],
+            compcache: vec![Vec::new(); nl],
+            partial_ck: vec![Vec::new(); nl],
+            partial_cg: vec![Vec::new(); nl],
+            prev_kv,
+            prev_score,
+            layers,
+            first,
+            last,
+            target_layers: spec.dspark_target_layer_ids.clone(),
+            main_hidden: None,
+            pos: 0,
+        })
+    }
+
+    /// The concatenated mean-over-streams hidden at the DSpark target layers from
+    /// the last [`Self::step`] — the `main_hidden` the DSpark drafter consumes.
+    /// `Some` only when this stage owns those layers and emitted them.
+    pub fn main_hidden(&self) -> Option<&[f32]> {
+        self.main_hidden.as_deref()
+    }
+
+    /// Full-model convenience: decode one token → `[vocab]` logits (panics if this
+    /// isn't a first+last decoder).
+    pub fn step(&mut self, token: u32) -> Vec<f32> {
+        self.step_io(Some(token), None).0.expect("first+last decoder yields logits")
+    }
+
+    /// One pipeline-stage step. `first` stages take `token`; others take
+    /// `hidden_in` `[1*hc*d]`. Returns `(logits?, hidden_out?)` — `logits` on the
+    /// `last` stage, else `hidden_out` to relay to the next stage.
+    pub fn step_io(
+        &mut self,
+        token: Option<u32>,
+        hidden_in: Option<&[f32]>,
+    ) -> (Option<Vec<f32>>, Option<Vec<f32>>) {
+        let pos = self.pos;
+        let nl = self.ratios.len();
+        let (hd, half, rd) = (self.hd, self.half.max(1), self.rd);
+        let (mut cosd, mut sind) = (vec![0f32; half], vec![0f32; half]);
+        for i in 0..half {
+            let fr = self.rope_theta.powf(-(2.0 * i as f64) / rd as f64);
+            let (s, c) = (pos as f64 * fr).sin_cos();
+            cosd[i] = c as f32;
+            sind[i] = s as f32;
+        }
+        let sininv: Vec<f32> = sind.iter().map(|v| -v).collect();
+        let pad = |v: &[f32], rows: usize, cols: usize| -> Vec<f32> {
+            let mut out = vec![0f32; rows * cols];
+            let n = v.len().min(rows * cols);
+            out[..n].copy_from_slice(&v[..n]);
+            out
+        };
+        let mut owned: Vec<(String, Vec<f32>)> = Vec::new();
+        if self.first {
+            owned.push(("token_id".into(), vec![token.expect("first stage needs a token") as f32]));
+        } else {
+            owned.push(("hidden_in".into(), hidden_in.expect("stage needs hidden_in").to_vec()));
+        }
+        owned.push(("cos".into(), cosd));
+        owned.push(("sin".into(), sind));
+        owned.push(("sininv".into(), sininv));
+        let _ = nl;
+        for il in self.layers.clone() {
+            let win_len = self.win_ring[il].len() / hd;
+            owned.push((format!("wcache.{il}"), pad(&self.win_ring[il], self.max_win, hd)));
+            let ratio = self.ratios[il];
+            let coff = self.coffs[il];
+            if ratio == 0 {
+                let mut m = vec![-1e30f32; self.max_win + 1];
+                for e in m.iter_mut().take(win_len) {
+                    *e = 0.0;
+                }
+                m[self.max_win] = 0.0;
+                owned.push((format!("mask.{il}"), m));
+            } else {
+                let ncomp = self.compcache[il].len() / hd;
+                let firing = (pos + 1) % ratio == 0;
+                owned.push((format!("compcache.{il}"), pad(&self.compcache[il], self.max_comp, hd)));
+                owned.push((format!("partial_ck.{il}"), pad(&self.partial_ck[il], ratio - 1, coff * hd)));
+                owned.push((format!("partial_cg.{il}"), pad(&self.partial_cg[il], ratio - 1, coff * hd)));
+                if ratio == 4 {
+                    let row = pos % ratio;
+                    owned.push((format!("ape_row.{il}"), self.ape[il][row * coff * hd..(row + 1) * coff * hd].to_vec()));
+                    owned.push((format!("prev_kv.{il}"), self.prev_kv[il].clone()));
+                    owned.push((format!("prev_score.{il}"), self.prev_score[il].clone()));
+                }
+                let n_keys = self.max_win + 1 + self.max_comp + 1;
+                let mut m = vec![-1e30f32; n_keys];
+                for e in m.iter_mut().take(win_len) {
+                    *e = 0.0;
+                }
+                m[self.max_win] = 0.0;
+                for c in 0..ncomp {
+                    m[self.max_win + 1 + c] = 0.0;
+                }
+                if firing {
+                    m[self.max_win + 1 + self.max_comp] = 0.0;
+                }
+                owned.push((format!("mask.{il}"), m));
+            }
+        }
+        let inputs: Vec<(&str, &[f32])> = owned.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+        let out = self.compiled.run(&inputs);
+        let out_names = &self.out_names;
+        let get = |name: &str| -> Vec<f32> {
+            let i = out_names.iter().position(|x| x == name).expect("decode output");
+            out[i].clone()
+        };
+        let result = if self.last {
+            (Some(get("logits")), None)
+        } else {
+            (None, Some(get("hidden_out")))
+        };
+        let maxwin_floats = self.max_win * hd;
+        for il in self.layers.clone() {
+            self.win_ring[il].extend_from_slice(&get(&format!("kvnew.{il}")));
+            if self.win_ring[il].len() > maxwin_floats {
+                let drop = self.win_ring[il].len() - maxwin_floats;
+                self.win_ring[il].drain(0..drop);
+            }
+            let ratio = self.ratios[il];
+            if ratio > 0 {
+                if (pos + 1) % ratio == 0 {
+                    self.compcache[il].extend_from_slice(&get(&format!("comp.{il}")));
+                    if ratio == 4 {
+                        let mut ckw = self.partial_ck[il].clone();
+                        ckw.extend_from_slice(&get(&format!("ck.{il}")));
+                        let mut cgw = self.partial_cg[il].clone();
+                        cgw.extend_from_slice(&get(&format!("cg.{il}")));
+                        self.prev_kv[il] = ckw;
+                        self.prev_score[il] = cgw;
+                    }
+                    self.partial_ck[il].clear();
+                    self.partial_cg[il].clear();
+                } else {
+                    self.partial_ck[il].extend_from_slice(&get(&format!("ck.{il}")));
+                    self.partial_cg[il].extend_from_slice(&get(&format!("cg.{il}")));
+                }
+            }
+        }
+        // Collect the DSpark main_hidden (target layers, in order) if this stage
+        // emitted them.
+        if !self.target_layers.is_empty() {
+            let mut mh = Vec::new();
+            let mut have = false;
+            for &tl in &self.target_layers {
+                let nm = format!("main_hidden.{tl}");
+                if let Some(i) = self.out_names.iter().position(|x| *x == nm) {
+                    mh.extend_from_slice(&out[i]);
+                    have = true;
+                }
+            }
+            self.main_hidden = if have { Some(mh) } else { None };
+        }
+        self.pos += 1;
+        result
+    }
+
+    /// Greedy generate `n_new` tokens after decoding `prompt_ids` (prompt included
+    /// in the cache). Compile-once: one graph, one weight load, N runs.
+    pub fn generate(&mut self, prompt_ids: &[u32], n_new: usize) -> Vec<u32> {
+        let mut logits = vec![0f32; self.vocab];
+        for &tok in prompt_ids {
+            logits = self.step(tok);
+        }
+        let argmax = |l: &[f32]| -> u32 {
+            l.iter()
+                .enumerate()
+                .fold((0usize, f32::MIN), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) })
+                .0 as u32
+        };
+        let mut out = Vec::with_capacity(n_new);
+        for _ in 0..n_new {
+            let next = argmax(&logits);
+            out.push(next);
+            logits = self.step(next);
+        }
+        out
+    }
+}
+
+/// **Pipelined (distributed) greedy generation**: drive an ordered set of stage
+/// decoders ([`V4Decoder::new_stage`], contiguous layer ranges, `first` first and
+/// `last` last) through the token loop, relaying each stage's hidden boundary to
+/// the next. Each stage holds only its layers' KV cache — the in-process reference
+/// for a cross-node decode (each `V4Decoder` would live on its own node, the
+/// relay over TCP). Returns the `n_new` greedy tokens.
+pub fn deepseek_v4_generate_pipelined(
+    stages: &mut [V4Decoder],
+    prompt_ids: &[u32],
+    n_new: usize,
+) -> Vec<u32> {
+    fn drive(stages: &mut [V4Decoder], token: u32) -> Vec<f32> {
+        let mut hidden: Option<Vec<f32>> = None;
+        let mut logits: Option<Vec<f32>> = None;
+        for (i, stage) in stages.iter_mut().enumerate() {
+            let (lo, ho) = if i == 0 {
+                stage.step_io(Some(token), None)
+            } else {
+                stage.step_io(None, hidden.as_deref())
+            };
+            logits = lo;
+            hidden = ho;
+        }
+        logits.expect("last stage must produce logits")
+    }
+    let vocab = stages.last().map(|s| s.vocab).unwrap_or(0);
+    let argmax = |l: &[f32]| -> u32 {
+        l.iter()
+            .enumerate()
+            .fold((0usize, f32::MIN), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) })
+            .0 as u32
+    };
+    let mut logits = vec![0f32; vocab];
+    for &tok in prompt_ids {
+        logits = drive(stages, tok);
+    }
+    let mut out = Vec::with_capacity(n_new);
+    for _ in 0..n_new {
+        let next = argmax(&logits);
+        out.push(next);
+        logits = drive(stages, next);
+    }
+    out
+}
+
+/// Length-prefixed f32 tensor over TCP: `u64` LE count + `count` LE f32s. A
+/// zero-length message is the stop sentinel.
+fn v4_send_tensor(s: &mut std::net::TcpStream, data: &[f32]) -> std::io::Result<()> {
+    use std::io::Write;
+    s.write_all(&(data.len() as u64).to_le_bytes())?;
+    let bytes: Vec<u8> = data.iter().flat_map(|x| x.to_le_bytes()).collect();
+    s.write_all(&bytes)?;
+    s.flush()
+}
+fn v4_recv_tensor(s: &mut std::net::TcpStream) -> std::io::Result<Vec<f32>> {
+    use std::io::Read;
+    let mut lb = [0u8; 8];
+    s.read_exact(&mut lb)?;
+    let n = u64::from_le_bytes(lb) as usize;
+    let mut buf = vec![0u8; n * 4];
+    s.read_exact(&mut buf)?;
+    Ok(buf.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+}
+
+/// **Serve one pipeline-stage decoder over TCP** (the cross-node worker). Accepts
+/// a connection, then loops `{ recv input → step_io → send output }` until a
+/// zero-length stop message, holding this stage's KV cache across the loop. A
+/// `first` stage receives the token id as a `[1]` tensor; others receive the
+/// hidden boundary. The `last` stage sends logits; others send the next hidden.
+pub fn serve_v4_decode_stage(
+    dec: &mut V4Decoder,
+    listener: std::net::TcpListener,
+) -> std::io::Result<()> {
+    let (mut stream, _) = listener.accept()?;
+    stream.set_nodelay(true).ok();
+    loop {
+        let input = v4_recv_tensor(&mut stream)?;
+        if input.is_empty() {
+            break; // stop
+        }
+        let (logits, hidden) = if dec.first {
+            dec.step_io(Some(input[0] as u32), None)
+        } else {
+            dec.step_io(None, Some(&input))
+        };
+        let out = if dec.last {
+            logits.expect("last stage logits")
+        } else {
+            hidden.expect("stage hidden")
+        };
+        v4_send_tensor(&mut stream, &out)?;
+    }
+    Ok(())
+}
+
+/// **Coordinator**: drive a pipelined greedy decode over TCP across the stage
+/// workers at `worker_addrs` (stage order — `[0]` is `first`, the last emits
+/// logits). Per token it sends the token to stage 0 and relays each stage's
+/// boundary to the next, argmaxing the final logits; sends a stop to every worker
+/// at the end. Returns the `n_new` greedy token ids. The distributed counterpart
+/// of [`deepseek_v4_generate_pipelined`].
+pub fn run_v4_decode_pipelined_tcp(
+    worker_addrs: &[String],
+    vocab: usize,
+    prompt_ids: &[u32],
+    n_new: usize,
+) -> std::io::Result<Vec<u32>> {
+    let mut streams: Vec<std::net::TcpStream> = Vec::new();
+    for a in worker_addrs {
+        let s = std::net::TcpStream::connect(a)?;
+        s.set_nodelay(true).ok();
+        streams.push(s);
+    }
+    fn drive(streams: &mut [std::net::TcpStream], token: u32) -> std::io::Result<Vec<f32>> {
+        v4_send_tensor(&mut streams[0], &[token as f32])?;
+        let mut b = v4_recv_tensor(&mut streams[0])?;
+        for i in 1..streams.len() {
+            v4_send_tensor(&mut streams[i], &b)?;
+            b = v4_recv_tensor(&mut streams[i])?;
+        }
+        Ok(b)
+    }
+    let argmax = |l: &[f32]| -> u32 {
+        l.iter()
+            .enumerate()
+            .fold((0usize, f32::MIN), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) })
+            .0 as u32
+    };
+    let mut logits = vec![0f32; vocab];
+    for &tok in prompt_ids {
+        logits = drive(&mut streams, tok)?;
+    }
+    let mut out = Vec::with_capacity(n_new);
+    for _ in 0..n_new {
+        let next = argmax(&logits);
+        out.push(next);
+        logits = drive(&mut streams, next)?;
+    }
+    for s in &mut streams {
+        v4_send_tensor(s, &[])?; // stop
+    }
+    Ok(out)
+}
+
+/// **Batch (seq=block) VERIFY graph** — the DSpark speculative-decode accelerator.
+/// Processes all `block` draft tokens in ONE main-model pass on top of the KV
+/// cache (one ~5.4 GB weight-read instead of `block` sequential ones — the whole
+/// point), returning `logits [block, vocab]` and each layer's `kvnew.{il}
+/// [block, hd]` so the host can commit the accepted prefix. Fixed-shape (compile
+/// once): `cos`/`sin`/`sininv` are `[block, half]` inputs; each layer takes a
+/// padded window cache `[max_win, hd]` + compressed cache `[max_comp, hd]` and a
+/// validity mask `[block, n_keys]` (window valid slots, **causal within the block**,
+/// visible compressed positions). It attends to the **existing** compressed cache
+/// but does NOT form new compressed KV inside the block — so it is EXACT whenever
+/// no compressor fires within the block (`block < ratio`; on GA the ratio-128
+/// layers never fire for `block ≤ 5`). Ratio-4 in-block compression is the
+/// remaining exactness refinement (the host can re-check accepted tokens with the
+/// exact seq=1 decode). Mirrors [`build_deepseek_v4_decode_fixed_stage`] at
+/// `rows = block`, minus the compressor pooling.
+pub fn build_deepseek_v4_verify_block(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    block: usize,
+    max_win: usize,
+    max_comp: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    let mut g = Graph::new("deepseek_v4_verify_block");
+    let mut params: HashMap<String, Vec<f32>> = HashMap::new();
+    let f = DType::F32;
+    let (d, hc, nh, hd) = (spec.dim, spec.hc_mult, spec.n_heads, spec.head_dim);
+    let rd = spec.rope_head_dim & !1;
+    let ql = spec.q_lora_rank;
+    let eps = spec.rms_norm_eps;
+    let scale = (hd as f32).powf(-0.5);
+    let half = (rd / 2).max(1);
+    let b = block;
+    let zb_d = synth_zero(&mut g, &mut params, "v4v.zb.d", d);
+    let zb_ql = synth_zero(&mut g, &mut params, "v4v.zb.ql", ql);
+    let zb_hd = synth_zero(&mut g, &mut params, "v4v.zb.hd", hd);
+    let q_ones = synth_const(&mut g, &mut params, "v4v.qones", vec![1f32; hd], &[hd]);
+    let cos_p = g.input("cos", Shape::new(&[b, half], f));
+    let sin_p = g.input("sin", Shape::new(&[b, half], f));
+    let sininv_p = g.input("sininv", Shape::new(&[b, half], f));
+
+    let token = g.input("token_id", Shape::new(&[b], DType::I32));
+    let token2 = g.reshape_(token, vec![1, b as i64]);
+    let input_ids_flat = g.reshape_(token, vec![b as i64]);
+    let (embed_w, _, _) =
+        load_dense_dequant(&mut g, &mut params, weights, "model.embed_tokens.weight")?;
+    let h0 = g.gather_(embed_w, token2, 0); // [1, b, d]
+    let h0 = g.reshape_(h0, vec![b as i64, 1, d as i64]);
+    let ones_hc = synth_const(&mut g, &mut params, "v4v.hc.ones", vec![1f32; hc], &[1, hc, 1]);
+    let mut h = g.mul(h0, ones_hc); // [b, hc, d]
+    let mut extra_outs: Vec<(String, NodeId)> = Vec::new();
+
+    for il in 0..spec.n_layers {
+        let ratio = spec.compress_ratios.get(il).copied().unwrap_or(0);
+        let lp = format!("model.layers.{il}");
+        let residual = h;
+        let fn_a = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
+        let sc_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.scale"), false)?;
+        let bs_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.base"), false)?;
+        let (xa, post_a, comb_a) = build_hc_pre(
+            &mut g, &mut params, h, fn_a, sc_a, bs_a, b, hc, d, spec.hc_eps,
+            spec.hc_sinkhorn_iters, &format!("{lp}.va"),
+        );
+        let an = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn_norm.weight"), 0.0)?;
+        let xa = g.rms_norm(xa, an, zb_d, eps);
+        let wqa = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_a.weight"))?;
+        let qr = emit_proj(&mut g, xa, &wqa, Shape::new(&[b, ql], f));
+        let qn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.q_norm.weight"), 0.0)?;
+        let qr = g.rms_norm(qr, qn, zb_ql, eps);
+        let wqb = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_b.weight"))?;
+        let q = emit_proj(&mut g, qr, &wqb, Shape::new(&[b, nh * hd], f));
+        let q = per_head_rms(&mut g, q, q_ones, zb_hd, 1, b, nh, hd, eps);
+        let q = rope_tail(&mut g, q, cos_p, sin_p, b, nh, hd, rd);
+        let wkv = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wkv.weight"))?;
+        let kv = emit_proj(&mut g, xa, &wkv, Shape::new(&[b, hd], f));
+        let kvn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.kv_norm.weight"), 0.0)?;
+        let kv = g.rms_norm(kv, kvn, zb_hd, eps);
+        let kv_new = rope_tail(&mut g, kv, cos_p, sin_p, b, 1, hd, rd); // [b, hd]
+        extra_outs.push((format!("kvnew.{il}"), g.reshape_(kv_new, vec![b as i64, hd as i64])));
+
+        let wcache = g.input(&format!("wcache.{il}"), Shape::new(&[max_win, hd], f));
+        let (kv_all, n_keys) = if ratio == 0 {
+            (g.concat_(vec![wcache, kv_new], 0), max_win + b)
+        } else {
+            let compcache = g.input(&format!("compcache.{il}"), Shape::new(&[max_comp, hd], f));
+            (g.concat_(vec![wcache, kv_new, compcache], 0), max_win + b + max_comp)
+        };
+        let mask = g.input(&format!("mask.{il}"), Shape::new(&[b, n_keys], f));
+        let sink = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.attn_sink"), false)?;
+        let q3 = g.reshape_(q, vec![b as i64, nh as i64, hd as i64]);
+        let o = build_v4_sink_attention(
+            &mut g, &mut params, q3, kv_all, mask, sink, scale, b, nh, hd, n_keys, &format!("{lp}.vsa"),
+        );
+        let o_flat = g.reshape_(o, vec![b as i64, (nh * hd) as i64]);
+        let o_inv = rope_tail(&mut g, o_flat, cos_p, sininv_p, b, nh, hd, rd);
+        let dpg = nh * hd / spec.n_groups;
+        let woa = load_v4_wo_a(
+            &mut g, &mut params, weights, &format!("{lp}.attn.wo_a.weight"),
+            spec.n_groups, spec.o_lora_rank, dpg,
+        )?;
+        let wob = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn.wo_b.weight"))?;
+        let attn_out = build_v4_o_lora(&mut g, o_inv, woa, wob, b, spec.n_groups, spec.o_lora_rank, dpg, d);
+        h = build_hc_post(&mut g, attn_out, residual, post_a, comb_a, b, hc, d);
+
+        let residual = h;
+        let fn_f = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.fn"))?;
+        let sc_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.scale"), false)?;
+        let bs_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.base"), false)?;
+        let (xf, post_f, comb_f) = build_hc_pre(
+            &mut g, &mut params, h, fn_f, sc_f, bs_f, b, hc, d, spec.hc_eps,
+            spec.hc_sinkhorn_iters, &format!("{lp}.vf"),
+        );
+        let fnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.ffn_norm.weight"), 0.0)?;
+        let xf = g.rms_norm(xf, fnorm, zb_d, eps);
+        let ffn_out = if il < spec.first_k_dense_replace {
+            let gp = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.gate_proj.weight"))?;
+            let up = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.up_proj.weight"))?;
+            let dn = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.down_proj.weight"))?;
+            let gate = emit_proj(&mut g, xf, &gp, Shape::new(&[b, spec.intermediate_size], f));
+            let upv = emit_proj(&mut g, xf, &up, Shape::new(&[b, spec.intermediate_size], f));
+            let sg = g.silu(gate);
+            let glu = g.mul(sg, upv);
+            emit_proj(&mut g, glu, &dn, Shape::new(&[b, d], f))
+        } else {
+            let ds = v4_moe_spec(spec);
+            let x3 = g.reshape_(xf, vec![1, b as i64, d as i64]);
+            let hash_ids = if il < spec.n_hash_layers { Some(input_ids_flat) } else { None };
+            let moe = build_deepseek_moe_ffn(&mut g, &mut params, packed, weights, &lp, x3, 1, b, &ds, hash_ids)?;
+            g.reshape_(moe, vec![b as i64, d as i64])
+        };
+        h = build_hc_post(&mut g, ffn_out, residual, post_f, comb_f, b, hc, d);
+    }
+
+    let hfn = load_transposed_param(&mut g, &mut params, weights, "model.hc_head.fn")?;
+    let hsc = load_p(&mut g, &mut params, weights, "model.hc_head.scale", false)?;
+    let hbs = load_p(&mut g, &mut params, weights, "model.hc_head.base", false)?;
+    let x = build_hc_head(&mut g, &mut params, h, hfn, hsc, hbs, b, hc, d, spec.hc_eps, "v4v.head");
+    let fnorm = load_norm(&mut g, &mut params, weights, "model.norm.weight", 0.0)?;
+    let x = g.rms_norm(x, fnorm, zb_d, eps);
+    let head_p = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
+    let logits = emit_proj(&mut g, x, &head_p, Shape::new(&[b, spec.vocab_size], f));
+    let logits = g.reshape_(logits, vec![b as i64, spec.vocab_size as i64]);
+    let mut outs = vec![logits];
+    let mut names = vec!["logits".to_string()];
+    for (name, node) in extra_outs {
+        names.push(name);
+        outs.push(node);
+    }
+    g.set_outputs(outs);
+    Ok((g, params, names))
+}
+
+/// **End-to-end DSpark speculative decode** (greedy, LOSSLESS ⇒ byte-identical
+/// output to [`V4Decoder::generate`], but fewer full-model passes). Each round:
+/// take the definite next token `t = argmax(L)`, ask `draft_fn(t)` for up to
+/// `block-1` guesses, verify the whole `[t, d₁..dₖ]` block in ONE main pass via
+/// `verify` ([`build_deepseek_v4_verify_block`]), accept the longest greedy-matching
+/// prefix, and commit the accepted tokens' KV **straight from the verify pass** — so
+/// `a+1` tokens cost one draft + one verify weight-read instead of `a+1` of them.
+///
+/// A bad draft just falls back to one token/round (never wrong — that's the
+/// losslessness). SLIDING layers only (ratio 0); the compressor-layer commit
+/// (feeding the block KV through the compressor state machine) is the remaining
+/// extension for the full GA topology.
+#[allow(clippy::too_many_arguments)]
+pub fn deepseek_v4_generate_speculative(
+    dec: &mut V4Decoder,
+    verify: &mut rlx_runtime::Compiled,
+    vnames: &[String],
+    spec: &DeepseekV4Spec,
+    max_win: usize,
+    block: usize,
+    mut draft_fn: impl FnMut(u32) -> Vec<u32>,
+    prompt: &[u32],
+    n_new: usize,
+) -> Vec<u32> {
+    let (hd, rd) = (spec.head_dim, spec.rope_head_dim & !1);
+    let half = (rd / 2).max(1);
+    let (vocab, nl, theta) = (spec.vocab_size, spec.n_layers, spec.rope_theta);
+    let argmax = |l: &[f32]| -> u32 {
+        let (mut bi, mut bv) = (0usize, f32::NEG_INFINITY);
+        for (i, &v) in l.iter().enumerate() {
+            if v > bv {
+                bv = v;
+                bi = i;
+            }
+        }
+        bi as u32
+    };
+    let mut last = vec![0f32; vocab];
+    for &tk in prompt {
+        last = dec.step(tk);
+    }
+    let mut out: Vec<u32> = Vec::new();
+    while out.len() < n_new {
+        let t = argmax(&last);
+        let drafts = draft_fn(t);
+        let k = drafts.len().min(block - 1);
+        // Fixed-size block [t, d₁..dₖ, pad…]; causal ⇒ the padded tail can't affect
+        // the first k+1 rows.
+        let mut blk = vec![t];
+        blk.extend_from_slice(&drafts[..k]);
+        let bl = blk.len(); // k+1
+        blk.resize(block, 0);
+        let pos = dec.pos;
+        let (mut cosb, mut sinb, mut sininvb) =
+            (vec![0f32; block * half], vec![0f32; block * half], vec![0f32; block * half]);
+        for p in 0..block {
+            for i in 0..half {
+                let fr = (theta as f64).powf(-(2.0 * i as f64) / rd as f64);
+                let (s, c) = ((pos + p) as f64 * fr).sin_cos();
+                cosb[p * half + i] = c as f32;
+                sinb[p * half + i] = s as f32;
+                sininvb[p * half + i] = -s as f32;
+            }
+        }
+        let toks_f: Vec<f32> = blk.iter().map(|&x| x as f32).collect();
+        let mut owned: Vec<(String, Vec<f32>)> = vec![
+            ("token_id".into(), toks_f),
+            ("cos".into(), cosb),
+            ("sin".into(), sinb),
+            ("sininv".into(), sininvb),
+        ];
+        for il in 0..nl {
+            let win_len = (dec.win_ring[il].len() / hd).min(max_win);
+            let mut wc = vec![0f32; max_win * hd];
+            let n = dec.win_ring[il].len().min(max_win * hd);
+            wc[..n].copy_from_slice(&dec.win_ring[il][..n]);
+            owned.push((format!("wcache.{il}"), wc));
+            let nkeys = max_win + block;
+            let mut m = vec![-1e30f32; block * nkeys];
+            for r in 0..block {
+                for s in 0..win_len {
+                    m[r * nkeys + s] = 0.0; // window valid (no eviction within a block)
+                }
+                for j in 0..=r {
+                    m[r * nkeys + max_win + j] = 0.0; // causal within the block
+                }
+            }
+            owned.push((format!("mask.{il}"), m));
+        }
+        let inputs: Vec<(&str, &[f32])> = owned.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+        let vout = verify.run(&inputs);
+        let vget = |name: &str| -> &Vec<f32> {
+            let i = vnames.iter().position(|x| x == name).expect("verify output");
+            &vout[i]
+        };
+        let logits = vget("logits"); // [block, vocab]
+        let row_argmax = |r: usize| argmax(&logits[r * vocab..(r + 1) * vocab]);
+        // Accept the longest run where draft[a+1] == argmax(previous row).
+        let mut a = 0usize;
+        while a < bl - 1 && blk[a + 1] == row_argmax(a) {
+            a += 1;
+        }
+        for j in 0..=a {
+            out.push(blk[j]);
+        }
+        // Commit the accepted KV straight from the verify pass (sliding append+evict).
+        let maxwin_floats = max_win * hd;
+        for il in 0..nl {
+            let kvn = vget(&format!("kvnew.{il}")); // [block, hd]
+            dec.win_ring[il].extend_from_slice(&kvn[..(a + 1) * hd]);
+            if dec.win_ring[il].len() > maxwin_floats {
+                let drop = dec.win_ring[il].len() - maxwin_floats;
+                dec.win_ring[il].drain(0..drop);
+            }
+        }
+        dec.pos = pos + a + 1;
+        last = logits[a * vocab..(a + 1) * vocab].to_vec();
+    }
+    out.truncate(n_new);
+    out
 }
 
 /// Load a 2D weight as a `[in, out]` param (transposed from the stored `[out,
@@ -6950,9 +9083,10 @@ mod tests {
 
     #[test]
     fn deepseek_v4_from_config_matches_real_checkpoint() {
-        // Key fields from the real mlx-community/DeepSeek-V4-Flash-4bit config.json
-        // (verified via HF index/config read). Asserts from_config maps them to the
-        // layout confirmed against the checkpoint's tensor index.
+        // Exact fields from the GA `deepseek-ai/DeepSeek-V4-Flash-0731/config.json`
+        // (verified against the HF config + reference inference/config.json). Asserts
+        // from_config maps them — including YaRN (rope_scaling) and DSpark — to the
+        // layout confirmed against the checkpoint tensor index.
         let mut cfg = serde_json::json!({
             "model_type": "deepseek_v4",
             "vocab_size": 129280, "hidden_size": 4096, "num_hidden_layers": 43,
@@ -6962,13 +9096,22 @@ mod tests {
             "sliding_window": 128, "num_hash_layers": 3,
             "n_routed_experts": 256, "num_experts_per_tok": 6, "n_shared_experts": 1,
             "moe_intermediate_size": 2048, "routed_scaling_factor": 1.5,
-            "rope_theta": 10000.0, "rms_norm_eps": 1e-6, "hc_mult": 4,
+            "rope_theta": 10000.0, "compress_rope_theta": 160000.0,
+            "rms_norm_eps": 1e-6, "hc_mult": 4,
             "hc_sinkhorn_iters": 20, "hc_eps": 1e-6, "swiglu_limit": 10.0,
+            "num_nextn_predict_layers": 1, "expert_dtype": "fp4",
+            "rope_scaling": {
+                "type": "yarn", "factor": 16,
+                "original_max_position_embeddings": 65536,
+                "beta_fast": 32, "beta_slow": 1
+            },
+            "dspark_block_size": 5, "dspark_noise_token_id": 128799,
+            "dspark_target_layer_ids": [40, 41, 42], "dspark_markov_rank": 256,
         });
-        // Real pattern: [0,0,4,128,4,128,…,4,0] — 44 entries (43 layers + 1 MTP).
-        let ratios: Vec<usize> = (0..44)
+        // Real GA pattern: [0,0,4,128,…,4,0,0,0] — 46 entries (43 layers + 3 DSpark).
+        let ratios: Vec<usize> = (0..46)
             .map(|i| {
-                if i < 2 || i == 43 {
+                if i < 2 || i >= 43 {
                     0
                 } else if i % 2 == 0 {
                     4
@@ -6999,14 +9142,1060 @@ mod tests {
         assert_eq!(s.hc_mult, 4);
         assert_eq!(s.hc_sinkhorn_iters, 20);
         assert_eq!(s.first_k_dense_replace, 0); // V4 has no dense FFN layers
-        // compress_ratios truncated to n_layers (config carries an extra MTP entry).
+        assert_eq!(s.compress_rope_theta, 160000.0);
+        // YaRN (compressed-layer RoPE): rope_scaling → spec fields.
+        assert_eq!(s.original_seq_len, 65536);
+        assert_eq!(s.rope_factor, 16.0);
+        assert_eq!(s.beta_fast, 32.0);
+        assert_eq!(s.beta_slow, 1.0);
+        // DSpark (GA speculative decoding): 3 stages (derived from the 46−43 surplus
+        // compress_ratios entries, since the HF config only exposes 1 nextn layer).
+        assert_eq!(s.n_mtp_layers, 3);
+        assert_eq!(s.dspark_block_size, 5);
+        assert_eq!(s.dspark_noise_token_id, 128799);
+        assert_eq!(s.dspark_target_layer_ids, vec![40, 41, 42]);
+        assert_eq!(s.dspark_markov_rank, 256);
+        // compress_ratios truncated to n_layers (config carries 3 DSpark entries).
         assert_eq!(s.compress_ratios.len(), 43);
         assert_eq!(s.compress_ratios[0], 0);
         assert_eq!(s.compress_ratios[1], 0);
         assert_eq!(s.compress_ratios[2], 4); // ratio-4 → overlap + Indexer
         assert_eq!(s.compress_ratios[3], 128); // ratio-128 → non-overlap, no Indexer
         assert_eq!(s.compress_ratios[41], 128);
-        assert_eq!(s.compress_ratios[42], 4); // last real layer; index-43 (0) is the truncated MTP entry
+        assert_eq!(s.compress_ratios[42], 4); // last real layer; 43..45 (0) are DSpark
+    }
+
+    #[test]
+    fn deepseek_v4_yarn_freqs_match_reference() {
+        // Validate the YaRN compressed-layer RoPE freqs (`RopeScaling::Yarn::inv_freq`,
+        // which the V4 builder feeds into the compress table) against an INDEPENDENT
+        // reimplementation of the GA reference `precompute_freqs_cis` (model.py), with
+        // the exact GA params: dim=rope_head_dim=64, base=compress_rope_theta=160000,
+        // factor=16, original_seq_len=65536, beta_fast=32, beta_slow=1.
+        let dim = 64usize;
+        let base = 160000.0f64;
+        let factor = 16.0f64;
+        let max_seq = 65536.0f64;
+        let (beta_fast, beta_slow) = (32.0f64, 1.0f64);
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let find_corr = |rot: f64| dim as f64 * (max_seq / (rot * two_pi)).ln() / (2.0 * base.ln());
+        let low = find_corr(beta_fast).floor().max(0.0);
+        let high = find_corr(beta_slow).ceil().min(dim as f64 - 1.0);
+        let denom = if (high - low).abs() < f64::EPSILON {
+            0.001
+        } else {
+            high - low
+        };
+        let rs = RopeScaling::Yarn {
+            factor,
+            original_max_position_embeddings: max_seq,
+            beta_fast,
+            beta_slow,
+            attention_factor: Some(1.0),
+        };
+        let mut max_err = 0.0f64;
+        for i in 0..dim / 2 {
+            let raw = 1.0 / base.powf(2.0 * i as f64 / dim as f64);
+            let ramp = ((i as f64 - low) / denom).clamp(0.0, 1.0);
+            let smooth = 1.0 - ramp;
+            let reference = raw / factor * (1.0 - smooth) + raw * smooth;
+            let got = rs.inv_freq(i, dim, base);
+            max_err = max_err.max((reference - got).abs());
+        }
+        assert!(max_err < 1e-12, "YaRN inv_freq vs reference max_err={max_err:e}");
+        // Sliding-window layers (RopeScaling::None) must reproduce raw θ^(-2i/rd)
+        // exactly (byte-identical to the pre-YaRN builder).
+        let none = RopeScaling::None;
+        for i in 0..dim / 2 {
+            let raw = 10000.0f64.powf(-(2.0 * i as f64) / dim as f64);
+            assert!((none.inv_freq(i, dim, 10000.0) - raw).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn deepseek_v4_dspark_heads_match_reference() {
+        use rlx_runtime::{Device, Session};
+        let rnd = |seed: f64, i: usize| -> f32 {
+            let x = ((i as f64 + 1.0) * (seed + 1.3) * 12.9898).sin() * 43758.5453;
+            (x - x.floor()) as f32 - 0.5
+        };
+        let (rows, vocab, mr, dim) = (3usize, 7usize, 4usize, 5usize);
+        let ids = [2usize, 5, 0];
+        let w1: Vec<f32> = (0..vocab * mr).map(|i| rnd(1.0, i)).collect(); // [vocab, mr]
+        let w2: Vec<f32> = (0..vocab * mr).map(|i| rnd(2.0, i)).collect(); // [vocab, mr]
+        let hidden: Vec<f32> = (0..rows * dim).map(|i| rnd(3.0, i)).collect();
+        let proj: Vec<f32> = (0..(dim + mr)).map(|i| rnd(4.0, i)).collect(); // [1, dim+mr]
+        // transposed weights for g.mm
+        let mut w2_t = vec![0f32; mr * vocab]; // [mr, vocab]
+        for v in 0..vocab {
+            for k in 0..mr {
+                w2_t[k * vocab + v] = w2[v * mr + k];
+            }
+        }
+        let proj_t = proj.clone(); // [dim+mr, 1]
+
+        let mut g = Graph::new("dspark_heads");
+        let mut params: HashMap<String, Vec<f32>> = HashMap::new();
+        let tok = g.input("tok", Shape::new(&[rows], DType::I32));
+        let hin = g.input("hidden", Shape::new(&[rows, dim], DType::F32));
+        let pw1 = g.param("w1", Shape::new(&[vocab, mr], DType::F32));
+        params.insert("w1".into(), w1.clone());
+        let pw2t = g.param("w2t", Shape::new(&[mr, vocab], DType::F32));
+        params.insert("w2t".into(), w2_t);
+        let ppt = g.param("pt", Shape::new(&[dim + mr, 1], DType::F32));
+        params.insert("pt".into(), proj_t);
+        let (logits, embed) =
+            build_dspark_markov_head(&mut g, pw1, pw2t, tok, rows, mr, vocab);
+        let conf = build_dspark_confidence_head(&mut g, hin, embed, ppt, rows);
+        g.set_outputs(vec![logits, conf]);
+        let opts =
+            crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+                &rlx_flow::CompileProfile::qwen3_prefill(),
+                Device::Cpu,
+            );
+        let mut compiled = Session::new(Device::Cpu).compile_with(g, &opts);
+        for (n, dd) in &params {
+            compiled.set_param(n, dd);
+        }
+        let ids_f32: Vec<f32> = ids.iter().map(|&i| i as f32).collect();
+        let out = compiled.run(&[
+            ("tok", ids_f32.as_slice()),
+            ("hidden", hidden.as_slice()),
+        ]);
+        let got_logits = &out[0];
+        let got_conf = &out[1];
+
+        // reference
+        let mut max_le = 0f32;
+        let mut max_ce = 0f32;
+        for t in 0..rows {
+            let tok = ids[t];
+            // embed = w1[tok]; logit[v] = Σ_k embed[k]·w2[v,k]
+            for v in 0..vocab {
+                let mut s = 0f32;
+                for k in 0..mr {
+                    s += w1[tok * mr + k] * w2[v * mr + k];
+                }
+                max_le = max_le.max((s - got_logits[t * vocab + v]).abs());
+            }
+            // conf = Σ_j cat[j]·proj[j], cat = [hidden(dim), embed(mr)]
+            let mut c = 0f32;
+            for j in 0..dim {
+                c += hidden[t * dim + j] * proj[j];
+            }
+            for k in 0..mr {
+                c += w1[tok * mr + k] * proj[dim + k];
+            }
+            max_ce = max_ce.max((c - got_conf[t]).abs());
+        }
+        assert!(max_le < 1e-4, "markov logits err {max_le:e}");
+        assert!(max_ce < 1e-4, "confidence err {max_ce:e}");
+    }
+
+    #[test]
+    fn deepseek_v4_dspark_stage_builds_and_compiles() {
+        use crate::weight_loader::{MlxPackedLinear, WeightLoader};
+        use rlx_ir::quant::QuantScheme;
+        use rlx_runtime::{Device, Session};
+        // A synthetic in-memory loader: dense F32 for everything except the MoE
+        // `switch_mlp` experts, which are served as minimal MLX-affine packed blobs
+        // (8-bit, 1 group). Validates the full DSpark forward_spec wiring/shapes.
+        struct DsMemLoader {
+            t: HashMap<String, (Vec<f32>, Vec<usize>)>,
+        }
+        impl WeightLoader for DsMemLoader {
+            fn take(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                self.t.get(k).cloned().ok_or_else(|| anyhow!("missing {k}"))
+            }
+            fn take_transposed(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                let (d, s) = self.take(k)?;
+                let (r, c) = (s[0], s[1]);
+                let mut o = vec![0f32; d.len()];
+                for i in 0..r {
+                    for j in 0..c {
+                        o[j * r + i] = d[i * c + j];
+                    }
+                }
+                Ok((o, vec![c, r]))
+            }
+            fn len(&self) -> usize {
+                self.t.len()
+            }
+            fn remaining_keys(&self) -> Vec<String> {
+                self.t.keys().cloned().collect()
+            }
+            fn take_packed_mlx(&mut self, key: &str) -> Result<Option<MlxPackedLinear>> {
+                // (n_expert, out, in) for the three switch_mlp projections.
+                let dims = if key.ends_with("switch_mlp.gate_proj.weight")
+                    || key.ends_with("switch_mlp.up_proj.weight")
+                {
+                    Some((4usize, 8usize, 8usize)) // n_expert, inter, dim
+                } else if key.ends_with("switch_mlp.down_proj.weight") {
+                    Some((4usize, 8usize, 8usize)) // n_expert, dim, inter
+                } else {
+                    None
+                };
+                let Some((ne, out, inn)) = dims else {
+                    return Ok(None);
+                };
+                let f32_le = |v: &[f32]| -> Vec<u8> {
+                    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+                };
+                Ok(Some(MlxPackedLinear {
+                    w_q: vec![0u8; ne * out * inn], // 8-bit codes (1 byte/elem)
+                    scales: f32_le(&vec![0.01f32; ne * out]), // 1 group
+                    biases: f32_le(&vec![0.0f32; ne * out]),
+                    scheme: QuantScheme::MlxAffine {
+                        bits: 8,
+                        group_size: inn as u32,
+                    },
+                    out_shape: vec![out, inn],
+                }))
+            }
+        }
+
+        let (vocab, dim, hc, nh, hd, rd, ql) = (16, 8, 2, 2, 4, 2, 6);
+        let (ngrp, olora, inter, ne, top) = (2usize, 3usize, 8usize, 4usize, 2usize);
+        let (n_mtp, block, cache_len, n_targets) = (2usize, 3usize, 4usize, 2usize);
+        let mix_hc = (2 + hc) * hc;
+        let hcd = hc * dim;
+        let dpg = nh * hd / ngrp;
+        let spec = DeepseekV4Spec {
+            vocab_size: vocab,
+            dim,
+            n_layers: 43,
+            hc_mult: hc,
+            n_heads: nh,
+            head_dim: hd,
+            rope_head_dim: rd,
+            q_lora_rank: ql,
+            n_groups: ngrp,
+            o_lora_rank: olora,
+            compress_ratios: vec![0; 43],
+            index_head_dim: 0,
+            index_n_heads: 0,
+            index_topk: 0,
+            window_size: 64,
+            first_k_dense_replace: 0,
+            n_hash_layers: 0,
+            moe_intermediate_size: inter,
+            n_routed_experts: ne,
+            n_activated_experts: top,
+            n_shared_experts: 1,
+            intermediate_size: inter,
+            route_scale: 1.5,
+            rope_theta: 10000.0,
+            compress_rope_theta: 160000.0,
+            swiglu_limit: 10.0,
+            rms_norm_eps: 1e-6,
+            hc_sinkhorn_iters: 3,
+            hc_eps: 1e-6,
+            original_seq_len: 0,
+            rope_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            n_mtp_layers: n_mtp,
+            dspark_block_size: block,
+            dspark_noise_token_id: 5,
+            dspark_target_layer_ids: vec![40, 41],
+            dspark_markov_rank: 4,
+        };
+
+        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
+        let mut sd = 0.0f64;
+        let mut put = |t: &mut HashMap<String, (Vec<f32>, Vec<usize>)>, k: String, shape: Vec<usize>| {
+            sd += 1.0;
+            let n: usize = shape.iter().product();
+            let data: Vec<f32> = (0..n)
+                .map(|i| {
+                    let x = ((i as f64 + 1.0) * (sd + 1.3) * 12.9898).sin() * 43758.5453;
+                    (x - x.floor()) as f32 - 0.5
+                })
+                .collect();
+            t.insert(k, (data, shape));
+        };
+        put(&mut t, "model.embed_tokens.weight".into(), vec![vocab, dim]);
+        put(&mut t, "lm_head.weight".into(), vec![vocab, dim]);
+        put(&mut t, "model.mtp.0.main_proj.weight".into(), vec![dim, dim * n_targets]);
+        put(&mut t, "model.mtp.0.main_norm.weight".into(), vec![dim]);
+        for s in 0..n_mtp {
+            let p = format!("model.mtp.{s}");
+            put(&mut t, format!("{p}.attn.wkv.weight"), vec![hd, dim]);
+            put(&mut t, format!("{p}.attn.kv_norm.weight"), vec![hd]);
+            put(&mut t, format!("{p}.attn_hc.fn"), vec![mix_hc, hcd]);
+            put(&mut t, format!("{p}.attn_hc.scale"), vec![3]);
+            put(&mut t, format!("{p}.attn_hc.base"), vec![mix_hc]);
+            put(&mut t, format!("{p}.attn_norm.weight"), vec![dim]);
+            put(&mut t, format!("{p}.attn.wq_a.weight"), vec![ql, dim]);
+            put(&mut t, format!("{p}.attn.q_norm.weight"), vec![ql]);
+            put(&mut t, format!("{p}.attn.wq_b.weight"), vec![nh * hd, ql]);
+            put(&mut t, format!("{p}.attn.attn_sink"), vec![nh]);
+            put(&mut t, format!("{p}.attn.wo_a.weight"), vec![ngrp * olora, dpg]);
+            put(&mut t, format!("{p}.attn.wo_b.weight"), vec![dim, ngrp * olora]);
+            put(&mut t, format!("{p}.ffn_hc.fn"), vec![mix_hc, hcd]);
+            put(&mut t, format!("{p}.ffn_hc.scale"), vec![3]);
+            put(&mut t, format!("{p}.ffn_hc.base"), vec![mix_hc]);
+            put(&mut t, format!("{p}.ffn_norm.weight"), vec![dim]);
+            put(&mut t, format!("{p}.ffn.gate.weight"), vec![ne, dim]);
+            put(&mut t, format!("{p}.ffn.gate.e_score_correction_bias"), vec![ne]);
+            put(&mut t, format!("{p}.ffn.shared_experts.gate_proj.weight"), vec![inter, dim]);
+            put(&mut t, format!("{p}.ffn.shared_experts.up_proj.weight"), vec![inter, dim]);
+            put(&mut t, format!("{p}.ffn.shared_experts.down_proj.weight"), vec![dim, inter]);
+        }
+        let last = n_mtp - 1;
+        put(&mut t, format!("model.mtp.{last}.hc_head.fn"), vec![hc, hcd]);
+        put(&mut t, format!("model.mtp.{last}.hc_head.scale"), vec![1]);
+        put(&mut t, format!("model.mtp.{last}.hc_head.base"), vec![hc]);
+        put(&mut t, format!("model.mtp.{last}.norm.weight"), vec![dim]);
+
+        let mut loader = DsMemLoader { t };
+        let mut packed: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+        let (graph, _params) =
+            build_dspark_stage(&spec, &mut loader, block, cache_len, &mut packed)
+                .expect("build_dspark_stage");
+        assert_eq!(graph.outputs.len(), 2, "logits + head hidden");
+        // Compile on CPU: validates every DSpark-specific op composes (main_proj mm,
+        // window-cache RoPE, cat(cache,block), sliding sink-attention, o-LoRA, HC,
+        // hc_head, lm_head) plus the reused sqrtsoftplus MoE grouped path.
+        let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+            &rlx_flow::CompileProfile::qwen3_prefill(),
+            Device::Cpu,
+        );
+        let _compiled = Session::new(Device::Cpu).compile_with(graph, &opts);
+    }
+
+    #[test]
+    fn deepseek_v4_dspark_forward_head_and_accept() {
+        let rnd = |seed: f64, i: usize| -> f32 {
+            let x = ((i as f64 + 1.0) * (seed + 1.3) * 12.9898).sin() * 43758.5453;
+            (x - x.floor()) as f32 - 0.5
+        };
+        let (block, vocab, mr, dim) = (3usize, 5usize, 2usize, 4usize);
+        let bl: Vec<f32> = (0..block * vocab).map(|i| rnd(1.0, i)).collect();
+        let w1: Vec<f32> = (0..vocab * mr).map(|i| rnd(2.0, i)).collect();
+        let w2: Vec<f32> = (0..vocab * mr).map(|i| rnd(3.0, i)).collect();
+        let hh: Vec<f32> = (0..block * dim).map(|i| rnd(4.0, i)).collect();
+        let proj: Vec<f32> = (0..(dim + mr)).map(|i| rnd(5.0, i)).collect();
+        let input_id = 1usize;
+        let (ids, conf) =
+            dspark_forward_head(&bl, &w1, &w2, &hh, &proj, input_id, block, vocab, mr, dim);
+
+        // Independent reference of the autoregressive Markov loop.
+        let mut ref_ids = vec![0usize; block + 1];
+        ref_ids[0] = input_id;
+        let mut ref_conf = vec![0f32; block];
+        for i in 0..block {
+            let tok = ref_ids[i];
+            let mut best = (0usize, f32::MIN);
+            for v in 0..vocab {
+                let mut bias = 0f32;
+                for k in 0..mr {
+                    bias += w1[tok * mr + k] * w2[v * mr + k];
+                }
+                let l = bl[i * vocab + v] + bias;
+                if l > best.1 {
+                    best = (v, l);
+                }
+            }
+            ref_ids[i + 1] = best.0;
+            let mut c = 0f32;
+            for j in 0..dim {
+                c += hh[i * dim + j] * proj[j];
+            }
+            for k in 0..mr {
+                c += w1[tok * mr + k] * proj[dim + k];
+            }
+            ref_conf[i] = c;
+        }
+        assert_eq!(ids, ref_ids);
+        for i in 0..block {
+            assert!((conf[i] - ref_conf[i]).abs() < 1e-5);
+        }
+
+        // Greedy accept: draft [1,7,4,9]; main argmax agrees on 7,4 then diverges.
+        assert_eq!(dspark_greedy_accept(&[1, 7, 4, 9], &[7, 4, 2]), 2);
+        assert_eq!(dspark_greedy_accept(&[1, 7, 4, 9], &[3, 4, 2]), 0); // first rejected
+        assert_eq!(dspark_greedy_accept(&[1, 7, 4, 9], &[7, 4, 9]), 3); // all accepted
+    }
+
+    #[test]
+    fn deepseek_v4_from_gguf_metadata_matches_real_header() {
+        // Exact deepseek4.* metadata read from the real
+        // bartowski/DeepSeek-V4-Flash-0731-GGUF shard-1 header.
+        let ratios: Vec<usize> = (0..46)
+            .map(|i| if i < 2 || i >= 43 { 0 } else if i % 2 == 0 { 4 } else { 128 })
+            .collect();
+        let clamp: Vec<f64> = vec![10.0; 43];
+        let meta = serde_json::json!({
+            "general.architecture": "deepseek4",
+            "deepseek4.block_count": 43,
+            "deepseek4.context_length": 1048576u64,
+            "deepseek4.embedding_length": 4096,
+            "deepseek4.attention.head_count": 64,
+            "deepseek4.attention.head_count_kv": 1,
+            "deepseek4.rope.freq_base": 10000.0,
+            "deepseek4.rope.dimension_count": 64,
+            "deepseek4.attention.layer_norm_rms_epsilon": 1e-6,
+            "deepseek4.expert_count": 256,
+            "deepseek4.expert_used_count": 6,
+            "deepseek4.expert_shared_count": 1,
+            "deepseek4.attention.key_length": 512,
+            "deepseek4.attention.value_length": 512,
+            "deepseek4.attention.q_lora_rank": 1024,
+            "deepseek4.attention.output_lora_rank": 1024,
+            "deepseek4.attention.output_group_count": 8,
+            "deepseek4.attention.sliding_window": 128,
+            "deepseek4.expert_feed_forward_length": 2048,
+            "deepseek4.expert_weights_scale": 1.5,
+            "deepseek4.attention.indexer.head_count": 64,
+            "deepseek4.attention.indexer.key_length": 128,
+            "deepseek4.attention.indexer.top_k": 512,
+            "deepseek4.attention.compress_ratios": ratios,
+            "deepseek4.attention.compress_rope_freq_base": 160000.0,
+            "deepseek4.hyper_connection.count": 4,
+            "deepseek4.hyper_connection.sinkhorn_iterations": 20,
+            "deepseek4.hyper_connection.epsilon": 1e-6,
+            "deepseek4.hash_layer_count": 3,
+            "deepseek4.swiglu_clamp_exp": clamp,
+        });
+        let s = DeepseekV4Spec::from_gguf_metadata(&meta, 129280).unwrap();
+        assert_eq!(s.vocab_size, 129280);
+        assert_eq!(s.dim, 4096);
+        assert_eq!(s.n_layers, 43);
+        assert_eq!(s.n_heads, 64);
+        assert_eq!(s.head_dim, 512);
+        assert_eq!(s.rope_head_dim, 64);
+        assert_eq!(s.q_lora_rank, 1024);
+        assert_eq!(s.o_lora_rank, 1024);
+        assert_eq!(s.n_groups, 8);
+        assert_eq!(s.index_head_dim, 128);
+        assert_eq!(s.index_n_heads, 64);
+        assert_eq!(s.index_topk, 512);
+        assert_eq!(s.window_size, 128);
+        assert_eq!(s.n_hash_layers, 3);
+        assert_eq!(s.n_routed_experts, 256);
+        assert_eq!(s.n_activated_experts, 6);
+        assert_eq!(s.n_shared_experts, 1);
+        assert_eq!(s.moe_intermediate_size, 2048);
+        assert_eq!(s.hc_mult, 4);
+        assert_eq!(s.hc_sinkhorn_iters, 20);
+        assert_eq!(s.route_scale, 1.5);
+        assert_eq!(s.rope_theta, 10000.0);
+        assert_eq!(s.compress_rope_theta, 160000.0);
+        assert_eq!(s.swiglu_limit, 10.0);
+        assert_eq!(s.compress_ratios.len(), 43);
+        assert_eq!(s.compress_ratios[42], 4);
+        // GGUF is base-only: no DSpark/MTP.
+        assert_eq!(s.n_mtp_layers, 0);
+        assert_eq!(s.dspark_block_size, 0);
+
+        // Name mapping (confirmed against the real GGUF header).
+        assert_eq!(
+            hf_key_to_deepseek4_gguf("model.layers.5.attn.wq_a.weight").as_deref(),
+            Some("blk.5.attn_q_a.weight")
+        );
+        assert_eq!(
+            hf_key_to_deepseek4_gguf("model.layers.7.ffn.switch_mlp.gate_proj.weight").as_deref(),
+            Some("blk.7.ffn_gate_exps.weight")
+        );
+        assert_eq!(
+            hf_key_to_deepseek4_gguf("model.layers.0.ffn.gate.tid2eid").as_deref(),
+            Some("blk.0.ffn_gate_tid2eid.weight")
+        );
+        assert_eq!(
+            hf_key_to_deepseek4_gguf("model.embed_tokens.weight").as_deref(),
+            Some("token_embd.weight")
+        );
+        assert_eq!(hf_key_to_deepseek4_gguf("nonexistent.key"), None);
+    }
+
+    #[test]
+    fn deepseek_v4_ref_name_map() {
+        // Verified against the real Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX index
+        // (1328 builder keys → all resolve to real tensors).
+        assert_eq!(hf_key_to_dsv4_ref("model.embed_tokens.weight").as_deref(), Some("embed.weight"));
+        assert_eq!(hf_key_to_dsv4_ref("lm_head.weight").as_deref(), Some("head.weight"));
+        assert_eq!(hf_key_to_dsv4_ref("model.norm.weight").as_deref(), Some("norm.weight"));
+        assert_eq!(hf_key_to_dsv4_ref("model.hc_head.fn").as_deref(), Some("hc_head_fn"));
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.layers.0.attn.wq_a.weight").as_deref(),
+            Some("layers.0.attn.wq_a.weight")
+        );
+        assert_eq!(hf_key_to_dsv4_ref("model.layers.5.attn_hc.fn").as_deref(), Some("layers.5.hc_attn_fn"));
+        assert_eq!(hf_key_to_dsv4_ref("model.layers.5.ffn_hc.scale").as_deref(), Some("layers.5.hc_ffn_scale"));
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.layers.2.attn.compressor.ape").as_deref(),
+            Some("layers.2.attn.compressor.ape")
+        );
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.layers.2.attn.indexer.wq_b.weight").as_deref(),
+            Some("layers.2.attn.indexer.wq_b.weight")
+        );
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.layers.3.ffn.gate.e_score_correction_bias").as_deref(),
+            Some("layers.3.ffn.gate.bias")
+        );
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.layers.0.ffn.gate.tid2eid").as_deref(),
+            Some("layers.0.ffn.gate.tid2eid")
+        );
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.layers.7.ffn.shared_experts.down_proj.weight").as_deref(),
+            Some("layers.7.ffn.shared_experts.w2.weight")
+        );
+        assert_eq!(dsv4_ref_expert_key(7, 42, "gate_proj"), "layers.7.ffn.experts.42.w1.weight");
+        assert_eq!(dsv4_ref_expert_key(7, 42, "down_proj"), "layers.7.ffn.experts.42.w2.weight");
+        assert_eq!(dsv4_ref_expert_key(7, 42, "up_proj"), "layers.7.ffn.experts.42.w3.weight");
+        assert_eq!(hf_key_to_dsv4_ref("nonexistent"), None);
+    }
+
+    #[test]
+    fn deepseek_v4_ref_loader_maps_and_stacks() {
+        use crate::weight_loader::{MlxPackedLinear, WeightLoader};
+        use rlx_ir::quant::QuantScheme;
+        use std::sync::{Arc, Mutex};
+        // Recording mock: logs each key the adapter requests of the inner loader,
+        // and returns a fixed-size packed tensor so we can check the stacking.
+        struct Mock {
+            reqs: Arc<Mutex<Vec<String>>>,
+            per_wq: usize,
+            per_sc: usize,
+        }
+        impl WeightLoader for Mock {
+            fn take(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                self.reqs.lock().unwrap().push(k.into());
+                Ok((vec![0.0], vec![1]))
+            }
+            fn take_transposed(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                self.reqs.lock().unwrap().push(k.into());
+                Ok((vec![0.0], vec![1, 1]))
+            }
+            fn len(&self) -> usize {
+                0
+            }
+            fn remaining_keys(&self) -> Vec<String> {
+                vec![]
+            }
+            fn take_packed_mlx(&mut self, k: &str) -> Result<Option<MlxPackedLinear>> {
+                self.reqs.lock().unwrap().push(k.into());
+                Ok(Some(MlxPackedLinear {
+                    w_q: vec![7u8; self.per_wq],
+                    scales: vec![3u8; self.per_sc],
+                    biases: vec![],
+                    scheme: QuantScheme::MlxMxfp4 { group_size: 32 },
+                    out_shape: vec![2048, 4096],
+                }))
+            }
+        }
+        let reqs = Arc::new(Mutex::new(Vec::new()));
+        let mock = Mock { reqs: reqs.clone(), per_wq: 10, per_sc: 4 };
+        let n_experts = 3;
+        let mut ad = DsV4RefLoader::new(Box::new(mock), n_experts);
+
+        // Name mapping on take.
+        ad.take("model.layers.5.attn.q_norm.weight").unwrap();
+        ad.take("model.embed_tokens.weight").unwrap();
+        // Stacked routed experts: gathers per-expert w1 and concatenates.
+        let p = ad
+            .take_packed_mlx("model.layers.5.ffn.switch_mlp.gate_proj.weight")
+            .unwrap()
+            .unwrap();
+        // A non-expert packed request name-maps straight through.
+        ad.take_packed_mlx("model.layers.5.attn.wq_a.weight").unwrap();
+
+        let r = reqs.lock().unwrap();
+        assert!(r.contains(&"layers.5.attn.q_norm.weight".to_string()));
+        assert!(r.contains(&"embed.weight".to_string()));
+        assert!(r.contains(&"layers.5.attn.wq_a.weight".to_string()));
+        for e in 0..n_experts {
+            assert!(
+                r.contains(&format!("layers.5.ffn.experts.{e}.w1.weight")),
+                "missing gathered expert {e}"
+            );
+        }
+        // Stacked codes/scales = n_experts × per-expert.
+        assert_eq!(p.w_q.len(), n_experts * 10);
+        assert_eq!(p.scales.len(), n_experts * 4);
+        assert!(matches!(p.scheme, QuantScheme::MlxMxfp4 { .. }));
+    }
+
+    #[test]
+    fn deepseek_v4_decode_matches_prefill() {
+        use crate::weight_loader::WeightLoader;
+        use rlx_ir::quant::QuantScheme;
+        use rlx_runtime::{Device, Session};
+        // Simple dense-F32 in-memory loader (re-created per build since `take`
+        // consumes). All-sliding (ratio 0) + all-dense FFN so no MoE packing.
+        #[derive(Clone)]
+        struct Mem {
+            t: HashMap<String, (Vec<f32>, Vec<usize>)>,
+        }
+        impl WeightLoader for Mem {
+            fn take(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                self.t.get(k).cloned().ok_or_else(|| anyhow!("missing {k}"))
+            }
+            fn take_transposed(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                let (d, s) = self.take(k)?;
+                let (r, c) = (s[0], s[1]);
+                let mut o = vec![0f32; d.len()];
+                for i in 0..r {
+                    for j in 0..c {
+                        o[j * r + i] = d[i * c + j];
+                    }
+                }
+                Ok((o, vec![c, r]))
+            }
+            fn len(&self) -> usize {
+                self.t.len()
+            }
+            fn remaining_keys(&self) -> Vec<String> {
+                self.t.keys().cloned().collect()
+            }
+        }
+
+        let (vocab, dim, hc, nh, hd, rd, ql) = (16, 8, 2, 2, 4, 2, 6);
+        let (ngrp, olora, inter, nl) = (2usize, 3usize, 10usize, 3usize);
+        let mix_hc = (2 + hc) * hc;
+        let hcd = hc * dim;
+        let dpg = nh * hd / ngrp;
+        let mk_spec = |win: usize| DeepseekV4Spec {
+            vocab_size: vocab,
+            dim,
+            n_layers: nl,
+            hc_mult: hc,
+            n_heads: nh,
+            head_dim: hd,
+            rope_head_dim: rd,
+            q_lora_rank: ql,
+            n_groups: ngrp,
+            o_lora_rank: olora,
+            // layer0 sliding, layer1 non-overlap compress (ratio 2), layer2 overlap (ratio 4)
+            compress_ratios: vec![0, 2, 4],
+            index_head_dim: 0,
+            index_n_heads: 0,
+            index_topk: 0,
+            window_size: win,
+            first_k_dense_replace: nl, // all dense FFN
+            n_hash_layers: 0,
+            moe_intermediate_size: inter,
+            n_routed_experts: 4,
+            n_activated_experts: 2,
+            n_shared_experts: 1,
+            intermediate_size: inter,
+            route_scale: 1.5,
+            rope_theta: 10000.0,
+            compress_rope_theta: 160000.0,
+            swiglu_limit: 0.0,
+            rms_norm_eps: 1e-6,
+            hc_sinkhorn_iters: 3,
+            hc_eps: 1e-6,
+            original_seq_len: 0,
+            rope_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            n_mtp_layers: 0,
+            dspark_block_size: 0,
+            dspark_noise_token_id: 0,
+            dspark_target_layer_ids: vec![nl - 1], // last layer → DSpark main_hidden
+            dspark_markov_rank: 0,
+        };
+
+        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
+        let mut sd = 0.0f64;
+        let mut put = |t: &mut HashMap<String, (Vec<f32>, Vec<usize>)>, k: String, shape: Vec<usize>| {
+            sd += 1.0;
+            let n: usize = shape.iter().product();
+            let data: Vec<f32> = (0..n)
+                .map(|i| {
+                    let x = ((i as f64 + 1.0) * (sd + 1.3) * 12.9898).sin() * 43758.5453;
+                    ((x - x.floor()) as f32 - 0.5) * 0.4
+                })
+                .collect();
+            t.insert(k, (data, shape));
+        };
+        let spec_ratios = [0usize, 2, 4]; // must match compress_ratios in mk_spec
+        put(&mut t, "model.embed_tokens.weight".into(), vec![vocab, dim]);
+        for il in 0..nl {
+            let p = format!("model.layers.{il}");
+            put(&mut t, format!("{p}.attn_hc.fn"), vec![mix_hc, hcd]);
+            put(&mut t, format!("{p}.attn_hc.scale"), vec![3]);
+            put(&mut t, format!("{p}.attn_hc.base"), vec![mix_hc]);
+            put(&mut t, format!("{p}.attn_norm.weight"), vec![dim]);
+            put(&mut t, format!("{p}.attn.wq_a.weight"), vec![ql, dim]);
+            put(&mut t, format!("{p}.attn.q_norm.weight"), vec![ql]);
+            put(&mut t, format!("{p}.attn.wq_b.weight"), vec![nh * hd, ql]);
+            put(&mut t, format!("{p}.attn.wkv.weight"), vec![hd, dim]);
+            put(&mut t, format!("{p}.attn.kv_norm.weight"), vec![hd]);
+            put(&mut t, format!("{p}.attn.attn_sink"), vec![nh]);
+            put(&mut t, format!("{p}.attn.wo_a.weight"), vec![ngrp * olora, dpg]);
+            put(&mut t, format!("{p}.attn.wo_b.weight"), vec![dim, ngrp * olora]);
+            // Compressor weights (coff=2 for overlap ratio-4, else 1).
+            let lratio = spec_ratios[il];
+            if lratio > 0 {
+                let coff = if lratio == 4 { 2 } else { 1 };
+                put(&mut t, format!("{p}.attn.compressor.wkv.weight"), vec![coff * hd, dim]);
+                put(&mut t, format!("{p}.attn.compressor.wgate.weight"), vec![coff * hd, dim]);
+                put(&mut t, format!("{p}.attn.compressor.ape"), vec![lratio, coff * hd]);
+                put(&mut t, format!("{p}.attn.compressor.norm.weight"), vec![hd]);
+            }
+            put(&mut t, format!("{p}.ffn_hc.fn"), vec![mix_hc, hcd]);
+            put(&mut t, format!("{p}.ffn_hc.scale"), vec![3]);
+            put(&mut t, format!("{p}.ffn_hc.base"), vec![mix_hc]);
+            put(&mut t, format!("{p}.ffn_norm.weight"), vec![dim]);
+            put(&mut t, format!("{p}.ffn.gate_proj.weight"), vec![inter, dim]);
+            put(&mut t, format!("{p}.ffn.up_proj.weight"), vec![inter, dim]);
+            put(&mut t, format!("{p}.ffn.down_proj.weight"), vec![dim, inter]);
+        }
+        put(&mut t, "model.hc_head.fn".into(), vec![hc, hcd]);
+        put(&mut t, "model.hc_head.scale".into(), vec![1]);
+        put(&mut t, "model.hc_head.base".into(), vec![hc]);
+        put(&mut t, "model.norm.weight".into(), vec![dim]);
+        put(&mut t, "lm_head.weight".into(), vec![vocab, dim]);
+
+        let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+            &rlx_flow::CompileProfile::qwen3_prefill(),
+            Device::Cpu,
+        );
+        let seq = 8usize; // ≥ 8 so the ratio-4 overlap layer fires twice (windows 0 & 1)
+        let ids: Vec<u32> = (0..seq).map(|i| ((i * 5 + 3) % vocab) as u32).collect();
+
+        // ── Prefill: full sequence in one pass ──
+        let mut pk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+        let (pg, pp) =
+            build_deepseek_v4_prefill(&mk_spec(64), &mut Mem { t: t.clone() }, seq, &mut pk).unwrap();
+        let mut pc = Session::new(Device::Cpu).compile_with(pg, &opts);
+        for (n, dd) in &pp {
+            pc.set_param(n, dd);
+        }
+        let ids_f32: Vec<f32> = ids.iter().map(|&x| x as f32).collect();
+        let prefill = pc.run(&[("input_ids", ids_f32.as_slice())]).into_iter().next().unwrap();
+
+        // ── Decode: one token at a time, threading per-layer KV + compressor state ──
+        let ratios = [0usize, 2, 4];
+        let coffs: Vec<usize> = ratios.iter().map(|&r| if r == 4 { 2 } else { 1 }).collect();
+        let mut win_ring: Vec<Vec<f32>> = vec![Vec::new(); nl]; // window KV (kvnew history)
+        let mut compcache: Vec<Vec<f32>> = vec![Vec::new(); nl]; // compressed KV (compress layers)
+        let mut partial_ck: Vec<Vec<f32>> = vec![Vec::new(); nl];
+        let mut partial_cg: Vec<Vec<f32>> = vec![Vec::new(); nl];
+        // Overlap (ratio-4) previous-window state: window 0 = 0 kv / -1e30 score.
+        let mut prev_kv: Vec<Vec<f32>> = vec![Vec::new(); nl];
+        let mut prev_score: Vec<Vec<f32>> = vec![Vec::new(); nl];
+        for il in 0..nl {
+            if ratios[il] == 4 {
+                prev_kv[il] = vec![0f32; ratios[il] * coffs[il] * hd];
+                prev_score[il] = vec![-1e30f32; ratios[il] * coffs[il] * hd];
+            }
+        }
+        for tpos in 0..seq {
+            let mut dk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (dg, dp, onames) =
+                build_deepseek_v4_decode(&mk_spec(64), &mut Mem { t: t.clone() }, tpos, tpos, &mut dk)
+                    .unwrap();
+            let mut dc = Session::new(Device::Cpu).compile_with(dg, &opts);
+            for (n, dd) in &dp {
+                dc.set_param(n, dd);
+            }
+            // Assemble the inputs the host must supply this step (owned so the
+            // &[f32] refs outlive `run`).
+            let mut owned: Vec<(String, Vec<f32>)> = vec![("token_id".into(), vec![ids[tpos] as f32])];
+            for il in 0..nl {
+                if tpos > 0 {
+                    owned.push((format!("kvcache.{il}"), win_ring[il].clone()));
+                }
+                let ratio = ratios[il];
+                if ratio > 0 {
+                    let firing = (tpos + 1) % ratio == 0;
+                    if tpos / ratio > 0 {
+                        owned.push((format!("compcache.{il}"), compcache[il].clone()));
+                    }
+                    if firing && ratio > 1 {
+                        owned.push((format!("partial_ck.{il}"), partial_ck[il].clone()));
+                        owned.push((format!("partial_cg.{il}"), partial_cg[il].clone()));
+                    }
+                    if firing && ratio == 4 {
+                        owned.push((format!("prev_kv.{il}"), prev_kv[il].clone()));
+                        owned.push((format!("prev_score.{il}"), prev_score[il].clone()));
+                    }
+                }
+            }
+            let inputs: Vec<(&str, &[f32])> =
+                owned.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+            let out = dc.run(&inputs);
+            let get = |name: &str| -> Vec<f32> {
+                let i = onames.iter().position(|x| x == name).unwrap_or_else(|| panic!("no output {name}"));
+                out[i].clone()
+            };
+            let dlog = get("logits");
+            let pslice = &prefill[tpos * vocab..(tpos + 1) * vocab];
+            let max_err = dlog.iter().zip(pslice).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+            assert!(
+                max_err < 2e-3,
+                "decode vs prefill logits mismatch at pos {tpos}: max_err {max_err:e}"
+            );
+            // Thread the state forward.
+            for il in 0..nl {
+                win_ring[il].extend_from_slice(&get(&format!("kvnew.{il}")));
+                let ratio = ratios[il];
+                if ratio > 0 {
+                    if (tpos + 1) % ratio == 0 {
+                        compcache[il].extend_from_slice(&get(&format!("comp.{il}")));
+                        // Overlap: the just-completed window becomes the next `prev`.
+                        if ratio == 4 {
+                            let mut ckw = partial_ck[il].clone();
+                            ckw.extend_from_slice(&get(&format!("ck.{il}")));
+                            let mut cgw = partial_cg[il].clone();
+                            cgw.extend_from_slice(&get(&format!("cg.{il}")));
+                            prev_kv[il] = ckw;
+                            prev_score[il] = cgw;
+                        }
+                        partial_ck[il].clear();
+                        partial_cg[il].clear();
+                    } else {
+                        partial_ck[il].extend_from_slice(&get(&format!("ck.{il}")));
+                        partial_cg[il].extend_from_slice(&get(&format!("cg.{il}")));
+                    }
+                }
+            }
+        }
+
+        // ── Generate loop: KV-cache greedy == naive full-prefill greedy ──
+        // window=3 (< sequence) exercises the sliding-window RING; ratios [0,2,4]
+        // cover all layer types incl the overlap compressor's prev-window shift.
+        let gspec = mk_spec(3);
+        let prompt = [ids[0], ids[1]];
+        let n_new = 3usize;
+        let argmax = |l: &[f32]| -> u32 {
+            l.iter()
+                .enumerate()
+                .fold((0usize, f32::MIN), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) })
+                .0 as u32
+        };
+        // Naive greedy: re-prefill the full growing sequence each step.
+        let mut nids = prompt.to_vec();
+        for _ in 0..n_new {
+            let mut nk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (ng, np) =
+                build_deepseek_v4_prefill(&gspec, &mut Mem { t: t.clone() }, nids.len(), &mut nk).unwrap();
+            let mut nc = Session::new(Device::Cpu).compile_with(ng, &opts);
+            for (n, dd) in &np {
+                nc.set_param(n, dd);
+            }
+            let nf: Vec<f32> = nids.iter().map(|&x| x as f32).collect();
+            let nl_out = nc.run(&[("input_ids", nf.as_slice())]).into_iter().next().unwrap();
+            let next = argmax(&nl_out[(nids.len() - 1) * vocab..nids.len() * vocab]);
+            nids.push(next);
+        }
+        let naive_gen = nids[prompt.len()..].to_vec();
+        // KV-cache generate (fresh loader per step).
+        let tmap = t.clone();
+        let kv_gen = deepseek_v4_generate(
+            &gspec,
+            || Box::new(Mem { t: tmap.clone() }) as Box<dyn WeightLoader>,
+            Device::Cpu,
+            &prompt,
+            n_new,
+        )
+        .unwrap();
+        assert_eq!(kv_gen, naive_gen, "KV-cache generate must match naive full-prefill greedy");
+
+        // ── Compile-once V4Decoder == per-step generate (one graph, one load) ──
+        // max_win = window-1 = 2; max_comp bounds the compressed cache.
+        let mut dec = V4Decoder::new(&mk_spec(3), &mut Mem { t: t.clone() }, 2, 4, Device::Cpu).unwrap();
+        let once_gen = dec.generate(&prompt, n_new);
+        assert_eq!(once_gen, kv_gen, "compile-once V4Decoder must match per-step generate");
+
+        // ── DSpark interface: the main model emits `main_hidden` (mean-over-streams
+        // hidden at the target layer) — what the speculative drafter consumes. ──
+        let mut mhdec = V4Decoder::new(&mk_spec(3), &mut Mem { t: t.clone() }, 2, 4, Device::Cpu).unwrap();
+        mhdec.step(prompt[0]);
+        let mh = mhdec.main_hidden().expect("main_hidden emitted at the target layer");
+        assert_eq!(mh.len(), dim, "main_hidden is [dim] per target layer");
+        assert!(mh.iter().all(|v| v.is_finite()), "main_hidden finite");
+
+        // ── KV rollback: snapshot → decode → restore → re-decode is identical (the
+        // speculative-decode reject primitive). ──
+        let mut rdec = V4Decoder::new(&mk_spec(3), &mut Mem { t: t.clone() }, 2, 4, Device::Cpu).unwrap();
+        rdec.step(ids[0]);
+        rdec.step(ids[1]);
+        let snap = rdec.snapshot();
+        let l1 = rdec.step(ids[2]);
+        let l1b = rdec.step(ids[3]);
+        rdec.restore(snap);
+        let l2 = rdec.step(ids[2]);
+        let l2b = rdec.step(ids[3]);
+        let e1 = l1.iter().zip(&l2).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        let e2 = l1b.iter().zip(&l2b).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(e1 < 1e-4 && e2 < 1e-4, "restore must reproduce state: {e1:e} {e2:e}");
+
+        // ── seq=block BATCH VERIFY graph == `block` sequential seq=1 decodes (the
+        // DSpark accelerator; spec-decode is lossless ⇒ identical logits). Sliding
+        // config at pos 0 so no compressor fires inside the block ⇒ EXACT. ──
+        {
+            let mut ss = mk_spec(3);
+            ss.compress_ratios = vec![0, 0, 0]; // all sliding
+            let block = 3usize;
+            let (mw, mc) = (2usize, 4usize);
+            let vtok: Vec<u32> = (0..block).map(|i| ((i * 3 + 1) % vocab) as u32).collect();
+            // Reference: the exact seq=1 decoder, one token at a time.
+            let mut rdec = V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let reflog: Vec<Vec<f32>> = vtok.iter().map(|&tk| rdec.step(tk)).collect();
+            // Batch verify graph (whole block in one pass).
+            let mut vk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (vg, vp, vnames) =
+                build_deepseek_v4_verify_block(&ss, &mut Mem { t: t.clone() }, block, mw, mc, &mut vk).unwrap();
+            let mut vc = Session::new(Device::Cpu).compile_with(vg, &opts);
+            for (n, dd) in &vp {
+                vc.set_param(n, dd);
+            }
+            let half = (rd / 2).max(1);
+            let (mut cosb, mut sinb, mut sininvb) =
+                (vec![0f32; block * half], vec![0f32; block * half], vec![0f32; block * half]);
+            for p in 0..block {
+                for i in 0..half {
+                    let fr = (ss.rope_theta as f64).powf(-(2.0 * i as f64) / rd as f64);
+                    let (s, c) = (p as f64 * fr).sin_cos();
+                    cosb[p * half + i] = c as f32;
+                    sinb[p * half + i] = s as f32;
+                    sininvb[p * half + i] = -s as f32;
+                }
+            }
+            let nkeys = mw + block;
+            let mut mask = vec![-1e30f32; block * nkeys];
+            for r in 0..block {
+                for j in 0..=r {
+                    mask[r * nkeys + mw + j] = 0.0; // block-causal; window empty at pos 0
+                }
+            }
+            let toks_f: Vec<f32> = vtok.iter().map(|&x| x as f32).collect();
+            let mut owned: Vec<(String, Vec<f32>)> = vec![
+                ("token_id".into(), toks_f),
+                ("cos".into(), cosb),
+                ("sin".into(), sinb),
+                ("sininv".into(), sininvb),
+            ];
+            for il in 0..ss.n_layers {
+                owned.push((format!("wcache.{il}"), vec![0f32; mw * hd]));
+                owned.push((format!("mask.{il}"), mask.clone()));
+            }
+            let inputs: Vec<(&str, &[f32])> = owned.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+            let vout = vc.run(&inputs);
+            let vi = vnames.iter().position(|x| x == "logits").unwrap();
+            let vlog = &vout[vi];
+            for p in 0..block {
+                let slice = &vlog[p * vocab..(p + 1) * vocab];
+                let err = reflog[p].iter().zip(slice).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+                assert!(err < 1e-4, "batch verify row {p} must match seq=1 decode: err {err:e}");
+            }
+        }
+
+        // ── Distributed decode: a 2-stage layer split (relaying the hidden
+        // boundary) == the single-stage decode. Validates the cross-node seam for
+        // decode (the analogue of the prefill stage-split). Single step, pos 0,
+        // empty caches — proves the hidden `[1,hc,d]` boundary; per-stage cache
+        // threading is the already-validated single-node logic. ──
+        let (mw, mc) = (2usize, 4usize);
+        let gspec2 = mk_spec(3);
+        let mk_inputs = |lrange: std::ops::Range<usize>, is_first: bool, hin: Option<Vec<f32>>| {
+            let half = (rd / 2).max(1);
+            let mut o: Vec<(String, Vec<f32>)> = Vec::new();
+            if is_first {
+                o.push(("token_id".into(), vec![ids[0] as f32]));
+            } else {
+                o.push(("hidden_in".into(), hin.unwrap()));
+            }
+            o.push(("cos".into(), vec![1f32; half])); // pos 0 → cos 0 =1, sin 0 =0
+            o.push(("sin".into(), vec![0f32; half]));
+            o.push(("sininv".into(), vec![0f32; half]));
+            for il in lrange {
+                let ratio = [0usize, 2, 4][il];
+                let coff = if ratio == 4 { 2 } else { 1 };
+                o.push((format!("wcache.{il}"), vec![0f32; mw * hd]));
+                if ratio == 0 {
+                    let mut m = vec![-1e30f32; mw + 1];
+                    m[mw] = 0.0; // only the new token is valid
+                    o.push((format!("mask.{il}"), m));
+                } else {
+                    o.push((format!("compcache.{il}"), vec![0f32; mc * hd]));
+                    o.push((format!("partial_ck.{il}"), vec![0f32; (ratio - 1) * coff * hd]));
+                    o.push((format!("partial_cg.{il}"), vec![0f32; (ratio - 1) * coff * hd]));
+                    if ratio == 4 {
+                        let ape = &t[&format!("model.layers.{il}.attn.compressor.ape")].0;
+                        o.push((format!("ape_row.{il}"), ape[0..coff * hd].to_vec()));
+                        o.push((format!("prev_kv.{il}"), vec![0f32; ratio * coff * hd]));
+                        o.push((format!("prev_score.{il}"), vec![-1e30f32; ratio * coff * hd]));
+                    }
+                    let mut m = vec![-1e30f32; mw + 1 + mc + 1];
+                    m[mw] = 0.0; // new valid; window/comp empty; not firing at pos 0
+                    o.push((format!("mask.{il}"), m));
+                }
+            }
+            o
+        };
+        let run = |g: Graph, p: &HashMap<String, Vec<f32>>, names: &[String], inp: &[(String, Vec<f32>)], want: &str| {
+            let mut c = Session::new(Device::Cpu).compile_with(g, &opts);
+            for (n, dd) in p {
+                c.set_param(n, dd);
+            }
+            let r: Vec<(&str, &[f32])> = inp.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+            let out = c.run(&r);
+            out[names.iter().position(|x| x == want).unwrap()].clone()
+        };
+        // 1-stage (all layers).
+        let mut fk = HashMap::new();
+        let (fg, fp, fnm) =
+            build_deepseek_v4_decode_fixed(&gspec2, &mut Mem { t: t.clone() }, mw, mc, &mut fk).unwrap();
+        let full_logits = run(fg, &fp, &fnm, &mk_inputs(0..nl, true, None), "logits");
+        // 2-stage: layers [0,1] then [2], relaying `hidden`.
+        let mut s0k = HashMap::new();
+        let (s0g, s0p, s0nm) = build_deepseek_v4_decode_fixed_stage(
+            &gspec2, &mut Mem { t: t.clone() }, 0..2, true, false, mw, mc, &mut s0k,
+        )
+        .unwrap();
+        let hidden = run(s0g, &s0p, &s0nm, &mk_inputs(0..2, true, None), "hidden_out");
+        let mut s1k = HashMap::new();
+        let (s1g, s1p, s1nm) = build_deepseek_v4_decode_fixed_stage(
+            &gspec2, &mut Mem { t: t.clone() }, 2..3, false, true, mw, mc, &mut s1k,
+        )
+        .unwrap();
+        let split_logits = run(s1g, &s1p, &s1nm, &mk_inputs(2..3, false, Some(hidden)), "logits");
+        let split_err = full_logits
+            .iter()
+            .zip(&split_logits)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(split_err < 1e-4, "2-stage decode split must match 1-stage: {split_err:e}");
+
+        // ── Pipelined (distributed) generate: 2 stage decoders relaying the hidden
+        // per token == the single-node V4Decoder. The in-process reference for a
+        // cross-node decode run. ──
+        let st0 = V4Decoder::new_stage(&mk_spec(3), &mut Mem { t: t.clone() }, 0..2, true, false, 2, 4, Device::Cpu).unwrap();
+        let st1 = V4Decoder::new_stage(&mk_spec(3), &mut Mem { t: t.clone() }, 2..3, false, true, 2, 4, Device::Cpu).unwrap();
+        let mut stages = vec![st0, st1];
+        let pipe_gen = deepseek_v4_generate_pipelined(&mut stages, &prompt, n_new);
+        assert_eq!(pipe_gen, once_gen, "pipelined 2-stage decode must match single-node V4Decoder");
+
+        // ── Distributed decode over REAL TCP (worker threads on localhost) ==
+        // single-node. Each stage builds inside its thread (nothing non-Send
+        // crosses) and serves; the coordinator drives + stops them. ──
+        let stage_cfg = [(0..2usize, true, false), (2..3usize, false, true)];
+        let mut addrs: Vec<String> = Vec::new();
+        let mut handles = Vec::new();
+        for (lr, fst, lst) in stage_cfg {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            addrs.push(listener.local_addr().unwrap().to_string());
+            let tt = t.clone();
+            let sp = mk_spec(3);
+            handles.push(std::thread::spawn(move || {
+                let mut dec =
+                    V4Decoder::new_stage(&sp, &mut Mem { t: tt }, lr, fst, lst, 2, 4, Device::Cpu).unwrap();
+                serve_v4_decode_stage(&mut dec, listener).unwrap();
+            }));
+        }
+        let tcp_gen = run_v4_decode_pipelined_tcp(&addrs, vocab, &prompt, n_new).unwrap();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(tcp_gen, once_gen, "TCP distributed decode must match single-node V4Decoder");
     }
 
     #[test]
