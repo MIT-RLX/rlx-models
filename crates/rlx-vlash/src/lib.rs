@@ -37,13 +37,26 @@
 //!   - [`canonical_key`] — OpenPI→RLX checkpoint key remapping.
 
 pub mod config;
+pub mod flow;
+pub mod joint_layer;
 pub mod normalize;
+pub mod prefix;
 pub mod preprocess;
+pub mod runner;
+pub mod sample;
+pub mod suffix;
+pub mod testkit;
 pub mod tokenizer;
+pub mod util;
+pub mod vision;
 pub mod weights;
 
 pub use config::{GemmaConfig, VisionConfig, VlashConfig, VlashVariant};
+pub use flow::build_denoise_flow;
 pub use normalize::{MeanStd, Normalization};
 pub use preprocess::{resize_with_pad_normalize, rgb8_to_nchw_normalized};
+pub use runner::{VlashRunner, VlashRunnerBuilder};
+pub use sample::sample_actions;
 pub use tokenizer::{PaligemmaTokenizer, TokenizedPrompt};
+pub use vision::build_vision_flow;
 pub use weights::{canonical_key, load_remapped, remap};

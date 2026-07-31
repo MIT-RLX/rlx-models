@@ -22,9 +22,9 @@
 //!
 //! The Conv2d patch stem + position embeddings run on host (reusing
 //! [`rlx_siglip2::assemble_vision_hidden`]); the graph is 27 bidirectional
-//! pre-LN encoder layers → `post_layernorm` → the projector linear. The HF
-//! `image_features` scaling (`/ √hidden`) is applied later, in `prefix.rs`, so
-//! this graph's output equals the raw projector output.
+//! pre-LN encoder layers → `post_layernorm` → the projector linear. At the
+//! pinned `transformers` commit `get_image_features` applies no scaling, so
+//! this graph's output is used as the image tokens directly (see `prefix.rs`).
 
 use anyhow::{Result, ensure};
 use rlx_flow::{BuiltModel, CompileProfile, Emit, FlowValue, ModelFlow};

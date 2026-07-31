@@ -36,6 +36,10 @@ path = "src/bin/rlx_vlash.rs"
 name = "predict_action"
 path = "examples/predict_action.rs"
 
+[[example]]
+name = "dump_intermediates"
+path = "examples/dump_intermediates.rs"
+
 [lints]
 workspace = true
 

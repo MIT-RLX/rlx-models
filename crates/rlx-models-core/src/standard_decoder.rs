@@ -5239,6 +5239,30 @@ pub fn build_deepseek_v4_verify_block(
         let kv_new = rope_tail(&mut g, kv, cos_p, sin_p, b, 1, hd, rd); // [b, hd]
         extra_outs.push((format!("kvnew.{il}"), g.reshape_(kv_new, vec![b as i64, hd as i64])));
 
+        // Compressor projections for each block token (ck = wkv(xa), cg = wgate(xa)
+        // [+ per-token APE for the overlapping ratio-4 compressor]) — the raw state
+        // the host commits into partial_ck/cg, and what the in-block pool consumes.
+        // Matches the seq=1 decode exactly; the APE row (pos+i)%ratio is selected by
+        // a host-provided `ape_idx.{il}` gather so the graph stays compile-once.
+        if ratio > 0 {
+            let overlap = ratio == 4;
+            let coff = if overlap { 2 } else { 1 };
+            let cw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wkv.weight"), true)?;
+            let ck_t = g.mm(xa, cw); // [b, coff*hd]
+            let cgw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wgate.weight"), true)?;
+            let cg_raw = g.mm(xa, cgw);
+            let cg_t = if overlap {
+                let ape = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.ape"), false)?;
+                let ape_idx = g.input(&format!("ape_idx.{il}"), Shape::new(&[b], DType::I32));
+                let sel = g.gather_(ape, g.reshape_(ape_idx, vec![1, b as i64]), 0); // [1, b, coff*hd]
+                g.add(cg_raw, g.reshape_(sel, vec![b as i64, (coff * hd) as i64]))
+            } else {
+                cg_raw
+            };
+            extra_outs.push((format!("ck.{il}"), g.reshape_(ck_t, vec![b as i64, (coff * hd) as i64])));
+            extra_outs.push((format!("cg.{il}"), g.reshape_(cg_t, vec![b as i64, (coff * hd) as i64])));
+        }
+
         let wcache = g.input(&format!("wcache.{il}"), Shape::new(&[max_win, hd], f));
         let (kv_all, n_keys) = if ratio == 0 {
             (g.concat_(vec![wcache, kv_new], 0), max_win + b)
@@ -5320,13 +5344,15 @@ pub fn build_deepseek_v4_verify_block(
 /// `a+1` tokens cost one draft + one verify weight-read instead of `a+1` of them.
 ///
 /// A bad draft just falls back to one token/round (never wrong — that's the
-/// losslessness). SLIDING layers only (ratio 0); the compressor-layer commit
-/// (feeding the block KV through the compressor state machine) is the remaining
-/// extension for the full GA topology.
+/// losslessness). Correct for ANY topology: on a config with compress layers it
+/// decodes exactly (seq=1) since their per-token compressor state can't be
+/// reproduced from the sliding commit — the batch acceleration applies to sliding
+/// topologies, and unlocking it for GA needs in-block compressor pooling in the
+/// verify graph (a distinct piece). See the `has_compress` guard.
 #[allow(clippy::too_many_arguments)]
 pub fn deepseek_v4_generate_speculative(
     dec: &mut V4Decoder,
-    verify: &mut rlx_runtime::Compiled,
+    verify: &mut rlx_runtime::CompiledGraph,
     vnames: &[String],
     spec: &DeepseekV4Spec,
     max_win: usize,
@@ -5352,9 +5378,21 @@ pub fn deepseek_v4_generate_speculative(
     for &tk in prompt {
         last = dec.step(tk);
     }
+    // Compress layers accumulate compressor state (partial_ck/cg, compcache) on
+    // EVERY token; the straight-from-verify sliding commit below can't reproduce
+    // that, so on a compress topology we decode exactly (seq=1) and skip the batch
+    // path. The batch speedup currently applies to sliding topologies; unlocking it
+    // for GA needs in-block compressor pooling in the verify graph (a distinct
+    // piece). Correctness holds either way — this only gates the acceleration.
+    let has_compress = spec.compress_ratios.iter().any(|&r| r > 0);
     let mut out: Vec<u32> = Vec::new();
     while out.len() < n_new {
         let t = argmax(&last);
+        if has_compress {
+            out.push(t);
+            last = dec.step(t);
+            continue;
+        }
         let drafts = draft_fn(t);
         let k = drafts.len().min(block - 1);
         // Fixed-size block [t, d₁..dₖ, pad…]; causal ⇒ the padded tail can't affect
@@ -10086,6 +10124,61 @@ mod tests {
                 let err = reflog[p].iter().zip(slice).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
                 assert!(err < 1e-4, "batch verify row {p} must match seq=1 decode: err {err:e}");
             }
+        }
+
+        // ── END-TO-END speculative decode == greedy (LOSSLESS), with a perfect
+        // drafter (full block acceptance) AND a trivial one (fallback to 1/round). ──
+        {
+            let mut ss = mk_spec(8); // window 8 ≥ prompt(2)+gen(6) ⇒ no in-block eviction
+            ss.compress_ratios = vec![0, 0, 0];
+            let (mw, mc, block) = (7usize, 4usize, 3usize);
+            let prompt = [1u32, 4];
+            let n_new = 6usize;
+            let mut gdec = V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let gref = gdec.generate(&prompt, n_new); // greedy reference
+            let mut vk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (vg, vp, vnames) =
+                build_deepseek_v4_verify_block(&ss, &mut Mem { t: t.clone() }, block, mw, mc, &mut vk).unwrap();
+            let mut vc = Session::new(Device::Cpu).compile_with(vg, &opts);
+            for (n, dd) in &vp {
+                vc.set_param(n, dd);
+            }
+            // Perfect drafter → full acceptance (exercises multi-token commit).
+            let gref2 = gref.clone();
+            let mut cur = 0usize;
+            let perfect = move |_t: u32| -> Vec<u32> {
+                let (s, e) = ((cur + 1).min(gref2.len()), (cur + block).min(gref2.len()));
+                cur += block;
+                gref2[s..e].to_vec()
+            };
+            let mut sdec = V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let spec_out =
+                deepseek_v4_generate_speculative(&mut sdec, &mut vc, &vnames, &ss, mw, block, perfect, &prompt, n_new);
+            assert_eq!(spec_out, gref, "speculative (perfect drafter) must equal greedy");
+            // Trivial drafter (draft 0s) → mostly rejected ⇒ greedy fallback.
+            let mut tdec = V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let triv = |_t: u32| -> Vec<u32> { vec![0u32; block - 1] };
+            let triv_out =
+                deepseek_v4_generate_speculative(&mut tdec, &mut vc, &vnames, &ss, mw, block, triv, &prompt, n_new);
+            assert_eq!(triv_out, gref, "speculative (trivial drafter) must equal greedy");
+
+            // COMPRESS topology ([0,2,4]) → the guard decodes exactly (seq=1) and
+            // still equals greedy (correctness holds; acceleration is gated off).
+            let cs = mk_spec(8); // real compress_ratios [0,2,4]
+            let mut cgdec = V4Decoder::new(&cs, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let cgref = cgdec.generate(&prompt, n_new);
+            let mut ck: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (cvg, cvp, cvn) =
+                build_deepseek_v4_verify_block(&cs, &mut Mem { t: t.clone() }, block, mw, mc, &mut ck).unwrap();
+            let mut cvc = Session::new(Device::Cpu).compile_with(cvg, &opts);
+            for (n, dd) in &cvp {
+                cvc.set_param(n, dd);
+            }
+            let mut csdec = V4Decoder::new(&cs, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let triv2 = |_t: u32| -> Vec<u32> { vec![0u32; block - 1] };
+            let c_out =
+                deepseek_v4_generate_speculative(&mut csdec, &mut cvc, &cvn, &cs, mw, block, triv2, &prompt, n_new);
+            assert_eq!(c_out, cgref, "speculative on compress topology must equal greedy (guard path)");
         }
 
         // ── Distributed decode: a 2-stage layer split (relaying the hidden
