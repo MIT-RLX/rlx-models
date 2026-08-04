@@ -369,6 +369,12 @@ pub fn build_qwen3_decode_built(
     let kv_dim = cfg.kv_proj_dim();
 
     let hidden_shape = Shape::new(&[batch, 1, h], f);
+    // F16-resident KV cache matches the F16 K/V the decode layer stores.
+    let kv_dt = if rlx_ir::env::flag("RLX_QWEN3_F16_KV") {
+        DType::F16
+    } else {
+        f
+    };
     let past_kv_shape = if opts.dynamic_past {
         Shape::from_dims(
             &[
@@ -376,10 +382,10 @@ pub fn build_qwen3_decode_built(
                 Dim::Dynamic(sym::PAST_SEQ),
                 Dim::Static(kv_dim),
             ],
-            f,
+            kv_dt,
         )
     } else {
-        Shape::new(&[batch, opts.past_seq, kv_dim], f)
+        Shape::new(&[batch, opts.past_seq, kv_dim], kv_dt)
     };
 
     let decode_spec = Qwen3DecodeLayerSpec {
@@ -464,6 +470,12 @@ pub fn build_qwen3_decode_embeds_built(
     let kv_dim = cfg.kv_proj_dim();
 
     let hidden_shape = Shape::new(&[batch, 1, h], f);
+    // F16-resident KV cache matches the F16 K/V the decode layer stores.
+    let kv_dt = if rlx_ir::env::flag("RLX_QWEN3_F16_KV") {
+        DType::F16
+    } else {
+        f
+    };
     let past_kv_shape = if opts.dynamic_past {
         Shape::from_dims(
             &[
@@ -471,10 +483,10 @@ pub fn build_qwen3_decode_embeds_built(
                 Dim::Dynamic(sym::PAST_SEQ),
                 Dim::Static(kv_dim),
             ],
-            f,
+            kv_dt,
         )
     } else {
-        Shape::new(&[batch, opts.past_seq, kv_dim], f)
+        Shape::new(&[batch, opts.past_seq, kv_dim], kv_dt)
     };
 
     let decode_spec = Qwen3DecodeLayerSpec {

@@ -369,7 +369,10 @@ pub fn cli_run(args: &[String]) -> Result<()> {
     // Resolve the prompt into token ids.
     let (input_ids, ids_mode) = match (prompt_ids, prompt) {
         (Some(ids), _) => (parse_ids(&ids)?, true),
-        (None, Some(text)) => (encode_text(&weights, tokenizer.as_deref(), &system, &text, no_chat)?, false),
+        (None, Some(text)) => (
+            encode_text(&weights, tokenizer.as_deref(), &system, &text, no_chat)?,
+            false,
+        ),
         (None, None) => bail!("provide --prompt \"text\" or --prompt-ids 1,2,3"),
     };
     if input_ids.is_empty() {
@@ -437,7 +440,9 @@ fn encode_text(
     _text: &str,
     _no_chat: bool,
 ) -> Result<Vec<u32>> {
-    bail!("text prompts need the `tokenizer` feature; use --prompt-ids, or rebuild with --features tokenizer")
+    bail!(
+        "text prompts need the `tokenizer` feature; use --prompt-ids, or rebuild with --features tokenizer"
+    )
 }
 
 #[cfg(feature = "tokenizer")]

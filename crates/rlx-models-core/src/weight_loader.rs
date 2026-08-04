@@ -544,6 +544,27 @@ pub trait WeightLoader: Send {
         let _ = key;
         Ok(None)
     }
+    /// **Zero-copy** borrow of a packed mxfp expert's mmap bytes (codes + e8m0
+    /// scales), no owned `MlxPackedLinear` copy. Default: unsupported (`None`) → the
+    /// caller falls back to [`Self::take_packed_mlx`]. Only mmap loaders that back
+    /// experts by direct shard slices override this. Used by the paged-MoE hot loop
+    /// to write codes straight from mmap → device.
+    fn borrow_packed_mlx(&self, key: &str) -> Option<rlx_mlx_io::PackedMlxBorrow<'_>> {
+        let _ = key;
+        None
+    }
+    /// Drop a [`Self::borrow_packed_mlx`] tensor's mmap pages once copied elsewhere
+    /// (bounds the page cache; pairs with the zero-copy borrow). Default no-op.
+    fn dontneed_packed_mlx(&self, key: &str) {
+        let _ = key;
+    }
+    /// `MADV_WILLNEED`-prefetch a batch of tensors so a subsequent serial gather
+    /// hits warm page cache instead of latency-bound per-tensor mmap faults — the
+    /// key to saturating a fast (Thunderbolt/NVMe) link on the scattered per-expert
+    /// MoE reads. Default no-op; mmap loaders override it.
+    fn prewarm(&self, keys: &[&str]) {
+        let _ = keys;
+    }
     /// Borrow packed bytes without marking taken (GGUF mmap path).
     fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
         let _ = key;
@@ -843,6 +864,15 @@ impl WeightLoader for MlxLoader {
         };
         self.taken.insert(key.to_string());
         Ok(Some(p))
+    }
+    fn prewarm(&self, keys: &[&str]) {
+        MlxLoader::prewarm(self, keys);
+    }
+    fn borrow_packed_mlx(&self, key: &str) -> Option<rlx_mlx_io::PackedMlxBorrow<'_>> {
+        self.w.borrow_packed(key)
+    }
+    fn dontneed_packed_mlx(&self, key: &str) {
+        self.w.dontneed_packed(key);
     }
     fn remaining_keys(&self) -> Vec<String> {
         self.w

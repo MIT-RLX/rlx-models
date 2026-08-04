@@ -46,12 +46,6 @@ pub struct DeepseekMoeDims {
     pub seq: usize,
 }
 
-fn linear(emit: &mut Emit<'_>, prefix: &str, x: HirNodeId) -> Result<HirNodeId> {
-    let w = emit.load_param(&format!("{prefix}.weight"), true)?;
-    let mut gb = HirMut::new(emit.hir());
-    Ok(gb.mm(x, w))
-}
-
 /// Emit the MoE FFN for `model.layers.{i}.mlp` (`prefix`) on `[1,seq,hidden]`.
 pub fn emit_deepseek_moe(
     emit: &mut Emit<'_>,

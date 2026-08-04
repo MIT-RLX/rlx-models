@@ -1496,7 +1496,11 @@ pub fn build_qwen35_trunk_export_model_flow(
 
     let flow_base = ModelFlow::new("qwen35_trunk_export")
         .input("input_ids", Shape::new(&[batch, seq], f))
-        .input("last_token_idx", Shape::new(&[batch], f));
+        // last_token_idx must be I32: the gather kernel reinterprets the index
+        // tensor's raw bytes as integers, so an F32 4.0 (0x40800000) becomes a
+        // huge OOB index that clamps to position 0 — the tap then dumps token 0
+        // instead of the true last token. (Real path: gather_last_token.rs.)
+        .input("last_token_idx", Shape::new(&[batch], DType::I32));
     // Large-vocab models (Bonsai-27B: token_embd [248320,5120] F32 = 4.7 GiB)
     // otherwise keep the whole embedding table resident on the device just to
     // gather the prompt's rows. Host-embed (auto ≥1 GiB / env override) gathers

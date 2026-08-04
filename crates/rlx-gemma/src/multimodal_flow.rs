@@ -97,6 +97,7 @@ fn biased_self_attn_stage(spec: SelfAttnPrefillSpec) -> FlowStage {
                 rlx_ir::ops::attention::attention_kind_op(
                     spec.num_heads,
                     spec.head_dim,
+                    None, // v_head_dim = same as head_dim
                     MaskKind::Bias,
                     spec.score_scale,
                     spec.attn_logit_softcap,

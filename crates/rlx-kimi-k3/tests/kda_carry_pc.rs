@@ -182,3 +182,65 @@ fn carry_pc_resumes_scan_from_state() {
         "carry_pc resumed scan worst diff {worst} > 1e-5 (state not consumed correctly?)"
     );
 }
+
+/// The recurrent state must be READABLE after a run so a decode loop can thread
+/// it: output the state node and check it equals the reference's final state.
+#[test]
+fn carry_pc_state_is_read_back() {
+    let (h, n) = (2usize, 4usize);
+    let s = 3usize;
+    let hn = h * n;
+
+    let q = fill(s * hn, 11);
+    let k = fill(s * hn, 12);
+    let v = fill(s * hn, 13);
+    let g = fill(s * hn, 14);
+    let beta = fill(s * h, 15);
+
+    let zero = vec![0f32; h * n * n];
+    let (_, want_state) = reference(&q, &k, &v, &g, &beta, &zero, s, h, n);
+
+    let mut hir = HirModule::new("kda_carry_readback");
+    let mut gb = HirMut::new(&mut hir);
+    let f = DType::F32;
+    let q_in = gb.input("q", Shape::new(&[1, s, h, n], f));
+    let k_in = gb.input("k", Shape::new(&[1, s, h, n], f));
+    let v_in = gb.input("v", Shape::new(&[1, s, h, n], f));
+    let g_in = gb.input("g", Shape::new(&[1, s, h, n], f));
+    let beta_in = gb.input("beta", Shape::new(&[1, s, h], f));
+    let state_in = gb.input("state", Shape::new(&[1, h, n, n], f));
+    let out = gb.gated_delta_net_carry_pc(
+        q_in,
+        k_in,
+        v_in,
+        g_in,
+        beta_in,
+        state_in,
+        n,
+        Shape::new(&[1, s, h, n], f),
+    );
+    // Output BOTH the scan result and the (written-back) state.
+    gb.set_outputs(vec![out, state_in]);
+
+    let built = built_from_hir(hir, HashMap::new()).expect("build readback graph");
+    let mut compiled = compile_built(built, dev()).expect("compile readback");
+    let outs = compiled.run(&[
+        ("q", q.as_slice()),
+        ("k", k.as_slice()),
+        ("v", v.as_slice()),
+        ("g", g.as_slice()),
+        ("beta", beta.as_slice()),
+        ("state", zero.as_slice()),
+    ]);
+    let state_out = &outs[1];
+
+    assert_eq!(state_out.len(), want_state.len());
+    let mut worst = 0f32;
+    for i in 0..state_out.len() {
+        worst = worst.max((state_out[i] - want_state[i]).abs());
+    }
+    assert!(
+        worst < 1e-5,
+        "carry_pc state read-back worst diff {worst} > 1e-5 (writeback not visible?)"
+    );
+}

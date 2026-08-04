@@ -125,7 +125,7 @@ impl MmProjConfig {
             .map(|v| v as usize)
             .unwrap_or(4096 * n_merge * n_merge * patch_size * patch_size);
 
-        Ok(Self {
+        let mut cfg = Self {
             patch_size,
             n_embd,
             n_head,
@@ -144,7 +144,28 @@ impl MmProjConfig {
             llm_hidden_size: u32k("clip.vision.projection_dim")? as usize,
             n_ff: u32k("clip.vision.feed_forward_length")? as usize,
             deepstack_layers: arr_bool_layers("clip.vision.is_deepstack_layers"),
-        })
+        };
+        // Honor the same low-mem pixel caps as the HF path. A large image
+        // (e.g. Qwen3.6's ~1M-pixel default) yields ~1k vision tokens, which
+        // blows past the compiled `max_seq` / Metal buffer limit on a 27B; a
+        // lower cap keeps the multimodal prefill in memory.
+        cfg.apply_pixel_env_overrides();
+        Ok(cfg)
+    }
+
+    /// Apply `RLX_QWEN35_IMAGE_MIN_PIXELS` / `RLX_QWEN35_IMAGE_MAX_PIXELS`
+    /// overrides (used by both the GGUF and HF config paths).
+    fn apply_pixel_env_overrides(&mut self) {
+        if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MIN_PIXELS") {
+            if let Ok(n) = v.parse::<usize>() {
+                self.image_min_pixels = n.max(1);
+            }
+        }
+        if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MAX_PIXELS") {
+            if let Ok(n) = v.parse::<usize>() {
+                self.image_max_pixels = n.max(self.image_min_pixels);
+            }
+        }
     }
 
     /// Read `vision_config` from a HuggingFace Qwen3.5 / Fara multimodal
@@ -219,16 +240,7 @@ impl MmProjConfig {
             deepstack_layers,
         };
         // Low-mem / short-ctx overrides (Fara BF16 otherwise upscales to ≥1M pixels).
-        if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MIN_PIXELS") {
-            if let Ok(n) = v.parse::<usize>() {
-                cfg.image_min_pixels = n.max(1);
-            }
-        }
-        if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MAX_PIXELS") {
-            if let Ok(n) = v.parse::<usize>() {
-                cfg.image_max_pixels = n.max(cfg.image_min_pixels);
-            }
-        }
+        cfg.apply_pixel_env_overrides();
         Ok(cfg)
     }
 

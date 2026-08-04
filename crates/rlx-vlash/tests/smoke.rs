@@ -41,10 +41,15 @@ fn run_variant_on(variant: VlashVariant, device: Device, label: &str) {
     let mut vision = compile_built(vision_built, device).expect("compile vision");
 
     let hidden_len = batch_img * patches * cfg.vision.width;
-    let hidden: Vec<f32> = (0..hidden_len).map(|i| ((i % 17) as f32) * 0.01 - 0.08).collect();
+    let hidden: Vec<f32> = (0..hidden_len)
+        .map(|i| ((i % 17) as f32) * 0.01 - 0.08)
+        .collect();
     let vout = vision.run(&[("hidden", hidden.as_slice())]);
     let image_features = &vout[0];
-    assert_eq!(image_features.len(), batch_img * patches * cfg.vision.projection_dim);
+    assert_eq!(
+        image_features.len(),
+        batch_img * patches * cfg.vision.projection_dim
+    );
     assert!(
         image_features.iter().all(|v| v.is_finite()),
         "[{label}/{variant:?}] vision output finite"
@@ -71,7 +76,9 @@ fn run_variant_on(variant: VlashVariant, device: Device, label: &str) {
         VlashVariant::Pi0 => (0..cfg.chunk_size * cfg.expert.hidden)
             .map(|i| (i as f32 * 0.01).cos())
             .collect(),
-        VlashVariant::Pi05 => (0..cfg.expert.hidden).map(|i| (i as f32 * 0.01).cos()).collect(),
+        VlashVariant::Pi05 => (0..cfg.expert.hidden)
+            .map(|i| (i as f32 * 0.01).cos())
+            .collect(),
     };
 
     let out = denoise.run(&[
@@ -97,6 +104,17 @@ fn run_variant_on(variant: VlashVariant, device: Device, label: &str) {
 }
 
 /// Run both variants on `device` when the backend is present at runtime.
+/// Only invoked by the GPU-feature-gated tests below.
+#[cfg_attr(
+    not(any(
+        feature = "metal",
+        feature = "mlx",
+        feature = "gpu",
+        feature = "vulkan",
+        feature = "cuda"
+    )),
+    allow(dead_code)
+)]
 fn run_backend(device: Device, label: &str) {
     if !rlx_runtime::device_ext::is_available(device) {
         println!("{label} backend unavailable — skipping");
@@ -146,6 +164,42 @@ fn graphs_run_cuda() {
     run_backend(Device::Cuda, "cuda");
 }
 
+/// Prep → load → run: write a GGUF bundle, load it back with `load_prepped`,
+/// and confirm the graphs build + run finite from the prepared weights.
+#[test]
+fn prepped_gguf_bundle_runs_cpu() {
+    use rlx_vlash::prep::{QuantScheme, load_prepped, write_gguf};
+    let cfg = tiny_config(VlashVariant::Pi05);
+    let wm = synth_weights(&cfg);
+    let mut path = std::env::temp_dir();
+    path.push(format!("rlx_vlash_bundle_{}.gguf", std::process::id()));
+    write_gguf(&wm, &path, QuantScheme::F16, VlashVariant::Pi05).expect("write gguf");
+
+    // Load the prepared bundle (canonical keys, dequantized to f32).
+    let mut wm2 = load_prepped(path.to_str().unwrap()).expect("load_prepped");
+
+    let patches = cfg.vision.num_patches();
+    let prefix_len = patches + 4;
+    let denoise_built = build_denoise_flow(&cfg, &mut wm2, prefix_len).expect("build denoise");
+    let mut denoise = compile_built(denoise_built, Device::Cpu).expect("compile denoise");
+
+    let prefix_pad = vec![true; prefix_len];
+    let attn = build_attn_inputs(&cfg, &prefix_pad);
+    let prefix_emb: Vec<f32> = (0..prefix_len * cfg.vlm.hidden)
+        .map(|i| ((i % 23) as f32) * 0.01 - 0.11)
+        .collect();
+    let state: Vec<f32> = (0..cfg.max_state_dim).map(|i| i as f32 * 0.05).collect();
+    let noise: Vec<f32> = (0..cfg.chunk_size * cfg.max_action_dim)
+        .map(|i| (i as f32 * 0.3).sin())
+        .collect();
+    let actions = sample_actions(&mut denoise, &cfg, &prefix_emb, &state, &attn, &noise);
+    assert!(
+        actions.iter().all(|v| v.is_finite()),
+        "prepped-bundle actions finite"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Exercise the full host denoise loop (`sample_actions`) end-to-end.
 #[test]
 fn sample_loop_runs_cpu() {
@@ -169,8 +223,14 @@ fn sample_loop_runs_cpu() {
 
     let actions = sample_actions(&mut denoise, &cfg, &prefix_emb, &state, &attn, &noise);
     assert_eq!(actions.len(), cfg.chunk_size * cfg.max_action_dim);
-    assert!(actions.iter().all(|v| v.is_finite()), "sampled actions finite");
+    assert!(
+        actions.iter().all(|v| v.is_finite()),
+        "sampled actions finite"
+    );
     // Euler integration should move x_t away from the pure noise input.
-    let moved = actions.iter().zip(noise.iter()).any(|(a, n)| (a - n).abs() > 1e-6);
+    let moved = actions
+        .iter()
+        .zip(noise.iter())
+        .any(|(a, n)| (a - n).abs() > 1e-6);
     assert!(moved, "denoise loop should update x_t");
 }

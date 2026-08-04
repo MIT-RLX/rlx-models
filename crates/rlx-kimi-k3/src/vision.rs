@@ -93,6 +93,98 @@ fn lin(
     g.mm(x, wid)
 }
 
+/// Host-side **patch embedding**: patchify `image` `[3, H, W]` with the conv
+/// `[hidden, 3·p·p]` (stride = patch, no bias) into per-patch hidden states, then
+/// add the bilinear-interpolated learnable position embedding. Returns
+/// `(patch_hidden [L, hidden], grid_h, grid_w)` with `L = (H/p)·(W/p)`. This is the
+/// upstream of [`build_vision`] (which takes patch hidden + 2D-RoPE cos/sin).
+#[allow(clippy::too_many_arguments)]
+pub fn patch_embed(
+    image: &[f32],
+    h_img: usize,
+    w_img: usize,
+    conv: &[f32],
+    pos_emb: &[f32],
+    pos_h: usize,
+    pos_w: usize,
+    patch: usize,
+    hidden: usize,
+) -> (Vec<f32>, usize, usize) {
+    let (gh, gw) = (h_img / patch, w_img / patch);
+    let flat = 3 * patch * patch;
+    let mut out = vec![0f32; gh * gw * hidden];
+    for pr in 0..gh {
+        for pc in 0..gw {
+            let pidx = pr * gw + pc;
+            // patchify conv: out[o] = Σ image_patch[c,kh,kw] · conv[o, (c·p+kh)·p+kw]
+            for o in 0..hidden {
+                let wbase = o * flat;
+                let mut s = 0f32;
+                let mut idx = 0;
+                for ch in 0..3 {
+                    for kh in 0..patch {
+                        let irow = pr * patch + kh;
+                        for kw in 0..patch {
+                            let icol = pc * patch + kw;
+                            s += image[(ch * h_img + irow) * w_img + icol] * conv[wbase + idx];
+                            idx += 1;
+                        }
+                    }
+                }
+                out[pidx * hidden + o] = s;
+            }
+            // + bilinear pos_emb, mapping this patch into the [pos_h, pos_w] grid.
+            let fy = if gh > 1 {
+                pr as f32 * (pos_h - 1) as f32 / (gh - 1) as f32
+            } else {
+                0.0
+            };
+            let fx = if gw > 1 {
+                pc as f32 * (pos_w - 1) as f32 / (gw - 1) as f32
+            } else {
+                0.0
+            };
+            let (y0, x0) = (fy.floor() as usize, fx.floor() as usize);
+            let (y1, x1) = ((y0 + 1).min(pos_h - 1), (x0 + 1).min(pos_w - 1));
+            let (dy, dx) = (fy - y0 as f32, fx - x0 as f32);
+            for o in 0..hidden {
+                let p00 = pos_emb[(y0 * pos_w + x0) * hidden + o];
+                let p01 = pos_emb[(y0 * pos_w + x1) * hidden + o];
+                let p10 = pos_emb[(y1 * pos_w + x0) * hidden + o];
+                let p11 = pos_emb[(y1 * pos_w + x1) * hidden + o];
+                let top = p00 * (1.0 - dx) + p01 * dx;
+                let bot = p10 * (1.0 - dx) + p11 * dx;
+                out[pidx * hidden + o] += top * (1.0 - dy) + bot * dy;
+            }
+        }
+    }
+    (out, gh, gw)
+}
+
+/// **2D RoPE** cos/sin tables for the vision tower — `[L, head_dim/2]` each, in the
+/// `GptJ` pairing [`build_vision`] uses. `divided`: the first `head_dim/4` pair
+/// angles rotate by the patch ROW, the next `head_dim/4` by the COL. (Frequency
+/// base 10000; exact HF-parity of the frequency schedule is unverified.)
+pub fn vision_rope_2d(gh: usize, gw: usize, head_dim: usize) -> (Vec<f32>, Vec<f32>) {
+    let (l, half, quarter) = (gh * gw, head_dim / 2, head_dim / 4);
+    let mut cos = vec![0f32; l * half];
+    let mut sin = vec![0f32; l * half];
+    for pr in 0..gh {
+        for pc in 0..gw {
+            let p = pr * gw + pc;
+            for i in 0..quarter.max(1) {
+                let freq = 10000f32.powf(-(i as f32) / quarter.max(1) as f32);
+                let (ar, ac) = (pr as f32 * freq, pc as f32 * freq);
+                cos[p * half + i] = ar.cos();
+                sin[p * half + i] = ar.sin();
+                cos[p * half + quarter + i] = ac.cos();
+                sin[p * half + quarter + i] = ac.sin();
+            }
+        }
+    }
+    (cos, sin)
+}
+
 /// One ViT encoder block on `x` `[1, L, hidden]`; returns `[1, L, hidden]`.
 #[allow(clippy::too_many_arguments)]
 fn block(

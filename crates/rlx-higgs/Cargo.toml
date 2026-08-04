@@ -1,0 +1,18 @@
+[package]
+name = "rlx-higgs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Higgs-Audio v2 (Llama-3.2 backbone + RVQ audio tokenizer) on RLX — TTS + STT config and codebook delay"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow           = { workspace = true }
+rlx-audio-blocks = { workspace = true }
+
+[lints]
+workspace = true

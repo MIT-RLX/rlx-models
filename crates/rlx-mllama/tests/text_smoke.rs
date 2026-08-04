@@ -14,7 +14,6 @@ use rlx_core::weight_map::WeightMap;
 use rlx_ir::{DType, Shape};
 use rlx_llama32::{Llama32Config, Llama32Flow};
 use rlx_mllama::cross_attn::{CROSS_STATES_INPUT, CrossAttnDims, cross_attn_stage};
-use rlx_runtime::Device;
 use std::collections::HashMap;
 
 fn dev() -> rlx_runtime::Device {

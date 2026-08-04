@@ -1,0 +1,18 @@
+[package]
+name = "rlx-ace-step"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "ACE-Step music generation (flow-matching DiT) on RLX — config + SD3-shift flow scheduler"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow           = { workspace = true }
+rlx-audio-blocks = { workspace = true }
+
+[lints]
+workspace = true

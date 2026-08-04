@@ -1,0 +1,17 @@
+[package]
+name = "rlx-omnivoice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "OmniVoice massively-multilingual voice-design TTS on RLX — config + ISO-639-3 language handling"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

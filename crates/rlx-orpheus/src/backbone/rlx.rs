@@ -549,11 +549,16 @@ impl BackboneModel {
             LmEngine::Packed(runner) => {
                 let sample = sample_opts(cfg);
                 let apply_penalty = cfg.repetition_penalty > 1.0;
-                let mut history = prompt_ids.to_vec();
                 let mut token_counts = std::collections::HashMap::<u32, u32>::new();
+                let mut generated: Vec<u32> = Vec::new();
+                // Prefill the prompt ONCE to populate the KV cache, then decode one
+                // token at a time (O(n)). The previous version re-prefilled the whole
+                // growing history every step (`predict_logits(&history)`) — O(n²),
+                // ~1.8 s/token on a 3B Q4 CPU. We keep raw logits so the per-slot SNAC
+                // masking (`adjust_orpheus_logits`) still runs before sampling.
+                let mut logits = runner.predict_logits(prompt_ids)?;
                 for step in 0..cfg.max_new_tokens {
                     let slot_ix = stream_index;
-                    let mut logits = runner.predict_logits(&history)?;
                     adjust_orpheus_logits(
                         &mut logits,
                         slot_ix,
@@ -568,10 +573,13 @@ impl BackboneModel {
                         break;
                     }
                     *token_counts.entry(next).or_insert(0) += 1;
-                    history.push(next);
+                    generated.push(next);
+                    if step + 1 < cfg.max_new_tokens {
+                        logits = runner.decode_get_logits(next)?;
+                    }
                 }
                 if std::env::var("ORPHEUS_DEBUG_TOKENS").ok().as_deref() == Some("1") {
-                    let generated = history[prompt_ids.len()..].to_vec();
+                    let generated = generated.clone();
                     eprintln!(
                         "[orpheus/backbone] raw tokens ({}): {:?}",
                         generated.len(),

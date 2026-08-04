@@ -377,6 +377,7 @@ fn attention_bias(
         Op::Attention {
             num_heads,
             head_dim,
+            v_head_dim: None,
             mask_kind: MaskKind::Bias,
             score_scale: None,
             attn_logit_softcap: None,

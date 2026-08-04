@@ -29,6 +29,9 @@ image = { workspace = true }
 name = "rlx-llama4"
 path = "src/bin/rlx_llama4.rs"
 
+[dev-dependencies]
+rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope" }
+
 [lints]
 workspace = true
 

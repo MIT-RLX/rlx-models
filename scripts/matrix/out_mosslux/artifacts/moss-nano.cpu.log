@@ -1,0 +1,6 @@
+$ /Users/Shared/rlx-models/target/release/rlx-moss-nano --data weights/tts/moss-nano --voice Saki --max-frames 32 --text Hi there friends. --device cpu --out scripts/matrix/out_mosslux/artifacts/moss-nano.cpu.wav
+
+--- stdout ---
+Wrote 104640 samples (1.09s @ 48000 Hz, 2ch) to scripts/matrix/out_mosslux/artifacts/moss-nano.cpu.wav [native/Cpu, voice=Saki] synth=4494ms (4.12× RT)
+
+--- stderr ---

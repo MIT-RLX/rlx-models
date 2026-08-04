@@ -1,0 +1,135 @@
+{
+  "host": "Darwin",
+  "backends": [
+    "cpu",
+    "metal",
+    "mlx",
+    "wgpu",
+    "coreml"
+  ],
+  "adapters": {},
+  "rows": [
+    {
+      "model": "kokoro",
+      "kind": "tts",
+      "package": "rlx-kokoro",
+      "backend": "cpu",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 115200
+      },
+      "ms": 4191
+    },
+    {
+      "model": "kokoro",
+      "kind": "tts",
+      "package": "rlx-kokoro",
+      "backend": "metal",
+      "status": "fail",
+      "detail": "cosine -0.051 vs cpu",
+      "metrics": {
+        "samples": 115200,
+        "cosine": -0.05094
+      },
+      "ms": 6317
+    },
+    {
+      "model": "kokoro",
+      "kind": "tts",
+      "package": "rlx-kokoro",
+      "backend": "mlx",
+      "status": "fail",
+      "detail": "panic: MLX run_typed failed: mlx error: lower <unnamed> (NodeId(823), Reshape, op=Reshape { new_shape: [1, 512, 384] }; inputs=[NodeId(822):<unnamed>:Gather:Shape { dims: [Static(192), Static(384)], d",
+      "metrics": {},
+      "ms": 1205
+    },
+    {
+      "model": "kokoro",
+      "kind": "tts",
+      "package": "rlx-kokoro",
+      "backend": "wgpu",
+      "status": "pass",
+      "detail": "cosine 0.984",
+      "metrics": {
+        "samples": 115200,
+        "cosine": 0.98381
+      },
+      "ms": 17331
+    },
+    {
+      "model": "kokoro",
+      "kind": "tts",
+      "package": "rlx-kokoro",
+      "backend": "coreml",
+      "status": "fail",
+      "detail": "/private/var/folders/9_/pjm86g5j44l4cdv5mld3wd9c0000gn/T/rlx-coreml-cache/fe959d3c775dfa94.mlmodelc/model.mil:7768:12: error: 'mps.reshape' op the result shape is not compatible with the input shape",
+      "metrics": {},
+      "ms": 5750
+    },
+    {
+      "model": "supertonic",
+      "kind": "tts",
+      "package": "rlx-supertonic",
+      "backend": "cpu",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 189847
+      },
+      "ms": 2376
+    },
+    {
+      "model": "supertonic",
+      "kind": "tts",
+      "package": "rlx-supertonic",
+      "backend": "metal",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 189847,
+        "cosine": 1.0
+      },
+      "ms": 5006
+    },
+    {
+      "model": "supertonic",
+      "kind": "tts",
+      "package": "rlx-supertonic",
+      "backend": "mlx",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 189847,
+        "cosine": 1.0
+      },
+      "ms": 3079
+    },
+    {
+      "model": "supertonic",
+      "kind": "tts",
+      "package": "rlx-supertonic",
+      "backend": "wgpu",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 189847,
+        "cosine": 1.0
+      },
+      "ms": 4902
+    },
+    {
+      "model": "supertonic",
+      "kind": "tts",
+      "package": "rlx-supertonic",
+      "backend": "coreml",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 189847,
+        "cosine": 1.0
+      },
+      "ms": 5975
+    }
+  ]
+}

@@ -196,9 +196,9 @@ impl Llama4VlRunner {
         let (cos, sin) = self.rope_text.get(&max_len).unwrap();
         let compiled = &mut self.text_compiled.as_mut().unwrap().1;
 
-        let mut real = prompt_len;
         let mut generated = Vec::new();
-        for _ in 0..max_new {
+        for i in 0..max_new {
+            let real = prompt_len + i;
             let out = compiled
                 .run(&[
                     ("inputs_embeds", embeds.as_slice()),
@@ -226,7 +226,6 @@ impl Llama4VlRunner {
             let dst = real * hidden;
             let base = next as usize * hidden;
             embeds[dst..dst + hidden].copy_from_slice(&self.embed_tokens[base..base + hidden]);
-            real += 1;
         }
         Ok(generated)
     }

@@ -119,10 +119,17 @@ fn main() -> Result<()> {
     let actions = runner.predict_action_chunk(&[nchw.as_slice()], &state, &args.prompt, None)?;
     let cfg = runner.config();
     let dim = actions.len() / cfg.chunk_size;
-    println!("Predicted action chunk: {} steps × {} dims", cfg.chunk_size, dim);
+    println!(
+        "Predicted action chunk: {} steps × {} dims",
+        cfg.chunk_size, dim
+    );
     for (i, step) in actions.chunks(dim).take(5).enumerate() {
         let preview: Vec<String> = step.iter().take(8).map(|v| format!("{v:+.3}")).collect();
-        println!("  step {i:2}: [{}{}]", preview.join(", "), if dim > 8 { ", …" } else { "" });
+        println!(
+            "  step {i:2}: [{}{}]",
+            preview.join(", "),
+            if dim > 8 { ", …" } else { "" }
+        );
     }
     Ok(())
 }

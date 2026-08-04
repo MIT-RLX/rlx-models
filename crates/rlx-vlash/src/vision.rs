@@ -144,7 +144,11 @@ fn emit_encoder_layer(
 /// (patch projections + position embeddings, assembled on host). Output
 /// `"image_features"` is `[batch, 256, projection_dim]` (raw projector output;
 /// the `/√hidden` scaling is applied in `prefix.rs`).
-pub fn build_vision_flow(cfg: &VisionConfig, wm: &mut WeightMap, batch: usize) -> Result<BuiltModel> {
+pub fn build_vision_flow(
+    cfg: &VisionConfig,
+    wm: &mut WeightMap,
+    batch: usize,
+) -> Result<BuiltModel> {
     let width = cfg.width;
     let heads = cfg.heads;
     let seq = cfg.num_patches();

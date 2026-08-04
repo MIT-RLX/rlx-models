@@ -159,7 +159,7 @@ kind = "tts"
 tier = 1
 bin = "rlx-moss-nano"
 template = "tts_text"
-features_base = ["onnx"]
+features_base = []  # native-only (rlx-onnx-import → rlx runtime); the crate removed its ort `onnx` feature
 weights = { path = "weights/tts/moss-nano" }
 download = { mode = "none" }
 # CPU prefill is multi-minute on fox; short text + compact voice keeps the
@@ -178,7 +178,7 @@ kind = "tts"
 tier = 1
 bin = "rlx-luxtts"
 template = "tts_clone"
-features_base = ["onnx"]
+features_base = []  # native-only (rlx-onnx-import → rlx runtime); the crate removed its ort `onnx` feature
 weights = { path = "weights/tts/luxtts" }
 download = { mode = "none" }
 extra = "--data weights/tts/luxtts"

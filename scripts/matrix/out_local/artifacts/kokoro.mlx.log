@@ -1,0 +1,10 @@
+$ /Users/Shared/rlx-models/target/release/rlx-kokoro --data weights/tts/kokoro-82m --voice af_heart --text The quick brown fox jumps over the lazy dog near the river bank. --device mlx --out scripts/matrix/out_local/artifacts/kokoro.mlx.wav
+
+--- stdout ---
+
+--- stderr ---
+rlx-mlx: falling back to MlxMode::Lazy — compile mode unsupported for this graph: graph has 2719 nodes (limit 1536); mlx::compile_simplify is unbounded on large TTS/vocoder graphs — set RLX_MLX_COMPILE_MAX_NODES=0 to force Compiled
+
+thread 'main' (89477968) panicked at /Users/Shared/rlx/crates/backends/rlx-mlx/src/backend.rs:559:27:
+MLX run_typed failed: mlx error: lower <unnamed> (NodeId(823), Reshape, op=Reshape { new_shape: [1, 512, 384] }; inputs=[NodeId(822):<unnamed>:Gather:Shape { dims: [Static(192), Static(384)], dtype: F32 } (runtime=[192, 384])]): mlx error: [reshape] Cannot reshape array of size 73728 into shape (1,512,384).
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

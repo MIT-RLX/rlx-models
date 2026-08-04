@@ -1,0 +1,23 @@
+[package]
+name = "rlx-parakeet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "NVIDIA Parakeet-TDT FastConformer transducer on RLX (Token-and-Duration Transducer)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow           = { workspace = true }
+rlx-flow         = { workspace = true }
+rlx-nemotron-asr = { workspace = true }
+rlx-audio-blocks = { workspace = true }
+rlx-nemo         = { workspace = true }
+rlx-core         = { workspace = true }
+rlx-runtime      = { workspace = true }
+
+[lints]
+workspace = true

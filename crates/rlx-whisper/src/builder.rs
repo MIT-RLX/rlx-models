@@ -553,6 +553,7 @@ impl<'a> WhisperBuilder<'a> {
             rlx_ir::ops::attention::attention_kind_op(
                 n_head,
                 head_dim,
+                None, // v_head_dim = same as head_dim
                 MaskKind::Custom,
                 Some(scale),
                 None,

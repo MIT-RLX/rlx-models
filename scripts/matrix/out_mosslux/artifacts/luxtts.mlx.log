@@ -1,0 +1,9 @@
+$ /Users/Shared/rlx-models/target/release/rlx-luxtts --data weights/tts/luxtts --prompt-wav assets/jfk/jfk_voice_clone.wav --prompt-text And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. --text The quick brown fox jumps over the lazy dog near the river bank. --device mlx --out scripts/matrix/out_mosslux/artifacts/luxtts.mlx.wav
+
+--- stdout ---
+Wrote 30464 samples (1.27s @ 24000 Hz) to scripts/matrix/out_mosslux/artifacts/luxtts.mlx.wav [steps=4, ep=rlx-native/Mlx]
+
+--- stderr ---
+[luxtts] loaded 3 subgraphs on rlx-native/Mlx
+rlx-mlx: falling back to MlxMode::Lazy — compile mode unsupported for this graph: mlx error: rlx-mlx: graph contains `GatherElements (host reference)` whose lowering evaluates a tensor on the host; mlx::compile forbids eval inside its trace. Use MlxMode::Lazy for this graph, or pre-dequantize the affected weights at load time.
+rlx-mlx: falling back to MlxMode::Lazy — compile mode unsupported for this graph: graph has 4636 nodes (limit 1536); mlx::compile_simplify is unbounded on large TTS/vocoder graphs — set RLX_MLX_COMPILE_MAX_NODES=0 to force Compiled

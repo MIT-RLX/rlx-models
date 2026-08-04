@@ -271,7 +271,7 @@ impl Florence2Builder<'_> {
         let head_dim = c / num_heads;
         let out_shape = Shape::new(&[bw as usize, (ws * ws), c], self.f);
         let attn = self.g().add_node(
-            attention_kind_op(num_heads, head_dim, MaskKind::None, None, None),
+            attention_kind_op(num_heads, head_dim, None, MaskKind::None, None, None),
             vec![q, k, vv],
             out_shape,
         );

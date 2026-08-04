@@ -25,6 +25,7 @@ hound = "3"
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
+rlx-ir = { workspace = true }
 
 [features]
 default = []

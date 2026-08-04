@@ -35,9 +35,13 @@ impl MioCodec {
             "missing {} — run crates/rlx-miotts/scripts/export_miocodec_decode.py",
             onnx.display()
         );
+        // The ISTFT analysis window. Prefer a shipped fixture if present, but fall
+        // back to computing it: MioCodec's `istft_head.ISTFT` uses the standard
+        // periodic Hann window (`torch.hann_window(win_length)`), so it is fully
+        // determined by `N_FFT` and does not need to be a downloaded artifact.
         let window = load_f32_bin(&codec_dir.join("fixtures/hann_window.f32"))
             .or_else(|_| load_f32_bin(&codec_dir.join("hann_window.f32")))
-            .context("hann_window.f32")?;
+            .unwrap_or_else(|_| hann_window_periodic(N_FFT));
         anyhow::ensure!(
             window.len() == N_FFT,
             "window len {} != {N_FFT}",
@@ -118,6 +122,44 @@ impl MioCodec {
         );
         let mag = as_f32(&outs[0]).context("mag")?;
         let phase = as_f32(&outs[1]).context("phase")?;
+        // Parity bisection (dev): dump the exact decoder_body I/O so a Python
+        // onnxruntime run can diff native mag/phase (isolates decoder_body vs ISTFT).
+        if let Some(dir) = std::env::var_os("RLX_MIO_DUMP") {
+            let dir = std::path::PathBuf::from(dir);
+            let _ = std::fs::create_dir_all(&dir);
+            let dump = |name: &str, b: &[u8]| {
+                let _ = std::fs::write(dir.join(name), b);
+            };
+            dump("in_tokens.i64", &tok_b);
+            dump("in_emb.f32", &emb_b);
+            dump(
+                "mag_native.f32",
+                &mag.iter()
+                    .flat_map(|x| x.to_le_bytes())
+                    .collect::<Vec<u8>>(),
+            );
+            dump(
+                "phase_native.f32",
+                &phase
+                    .iter()
+                    .flat_map(|x| x.to_le_bytes())
+                    .collect::<Vec<u8>>(),
+            );
+            // Extra outputs (from RLX_ONNX_TAP) land at outs[2..] — dump each for a
+            // native-vs-ort numerical bisect of intermediate tensors.
+            for (i, o) in outs.iter().enumerate().skip(2) {
+                dump(&format!("tap_{i}.f32"), &o.0);
+                eprintln!("[mio-dump] tap_{i} len={}", o.0.len() / 4);
+            }
+            eprintln!(
+                "[mio-dump] tokens={} emb={} mag={} phase={} t={}",
+                codes.len(),
+                global_emb.len(),
+                mag.len(),
+                phase.len(),
+                mag.len() / N_FREQ
+            );
+        }
         anyhow::ensure!(mag.len() == phase.len() && mag.len() % N_FREQ == 0);
         let t = mag.len() / N_FREQ;
         Ok(istft_same(
@@ -160,4 +202,13 @@ fn load_f32_bin(path: &Path) -> Result<Vec<f32>> {
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
+}
+
+/// Periodic Hann window of length `n` — matches PyTorch `torch.hann_window(n)`
+/// (`periodic=True`), which MioCodec's ISTFT head uses: `0.5·(1 − cos(2πk/n))`.
+fn hann_window_periodic(n: usize) -> Vec<f32> {
+    use std::f32::consts::PI;
+    (0..n)
+        .map(|k| 0.5 * (1.0 - (2.0 * PI * k as f32 / n as f32).cos()))
+        .collect()
 }

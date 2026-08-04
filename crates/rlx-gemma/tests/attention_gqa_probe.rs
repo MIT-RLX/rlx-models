@@ -52,6 +52,7 @@ fn run_case(nh: usize, nkv: usize, hd: usize, seq: usize, mode: u32) -> Option<f
         Op::Attention {
             num_heads: nh,
             head_dim: hd,
+            v_head_dim: None,
             mask_kind: MaskKind::Causal,
             score_scale: Some(1.0),
             attn_logit_softcap: None,

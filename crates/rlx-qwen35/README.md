@@ -2,7 +2,7 @@
 
 Alibaba **Qwen3.5 / Qwen3.6** for RLX — hybrid **Gated DeltaNet** ("linear attention") + full attention every `full_attention_interval` layers, optional **MTP** head for speculative decode. Dense (`qwen35` / `qwen36`) and MoE (`qwen35moe`) GGUFs load through the shared GGUF metadata reader.
 
-**Status:** dense and MoE GGUF prefill + bucketed decode run on CPU and on GPU backends (`metal`, `mlx`, `cuda`, …) with `--packed` for K-quants / Q1_0. Some ops may still fall back to host on a given device; see root [README.md](../../README.md) backend matrix. Remaining gaps (MoE offload polish, VLM parity): `PLAN.md` § Qwen3.5.
+**Status:** dense and MoE GGUF prefill + bucketed decode run on CPU and on GPU backends (`metal`, `mlx`, `cuda`, …) with `--packed` for K-quants / Q1_0. **Qwen3.6-27B-MTP (Q3_K_S) text generation is coherent and matches llama.cpp** on CPU and Metal (e.g. "The capital of France is" → "Paris."). Some ops may still fall back to host on a given device; see root [README.md](../../README.md) backend matrix. Remaining gaps (MoE offload polish, VLM parity): `PLAN.md` § Qwen3.5.
 
 ## Quick start
 

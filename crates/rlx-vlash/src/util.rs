@@ -111,8 +111,13 @@ pub fn block_causal_bias(pad: &[bool], att: &[i32], heads: usize) -> Vec<f32> {
 ///   scale    = 1/period * 2π
 ///   emb      = concat(sin(scale·time), cos(scale·time))
 /// ```
-pub fn sinusoidal_time_embedding(time: f32, dim: usize, min_period: f32, max_period: f32) -> Vec<f32> {
-    assert!(dim % 2 == 0, "time embedding dim must be even");
+pub fn sinusoidal_time_embedding(
+    time: f32,
+    dim: usize,
+    min_period: f32,
+    max_period: f32,
+) -> Vec<f32> {
+    assert!(dim.is_multiple_of(2), "time embedding dim must be even");
     let half = dim / 2;
     let mut emb = vec![0f32; dim];
     let t = time as f64;

@@ -69,6 +69,12 @@ pub struct SynthRequest<'a> {
     pub device: Device,
     pub clone: Option<CloneRequest<'a>>,
     pub seed: u64,
+    /// Decode deterministically (greedy/argmax, no temperature sampling).
+    /// The bench is a cross-backend *parity* harness: `cosine_vs_cpu` is only
+    /// meaningful when every backend runs the same deterministic token path.
+    /// Stochastic AR models (chatterbox, …) otherwise diverge into different —
+    /// but equally valid — samples, which reads as a false Metal/MLX failure.
+    pub deterministic: bool,
 }
 
 #[derive(Debug, Clone)]

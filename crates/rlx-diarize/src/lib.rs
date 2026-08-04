@@ -18,5 +18,7 @@
 pub mod cluster;
 pub mod embed;
 pub mod session;
+pub mod sortformer;
 
 pub use session::{DiarizeConfig, DiarizeSession, SpeakerTurn};
+pub use sortformer::{SortformerConfig, activity_to_turns, sort_speakers_by_arrival};

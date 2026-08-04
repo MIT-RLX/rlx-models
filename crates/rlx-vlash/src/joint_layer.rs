@@ -194,7 +194,15 @@ pub fn emit_joint_layer(
     let ek = format!("expert.layers.{idx}");
 
     // --- pre-attention norm (VLM standard, expert std/adaRMS) ---
-    let n_p = emit_norm(emit, &format!("{vk}.input_layernorm"), prefix, vlm.hidden, eps, batch, None)?;
+    let n_p = emit_norm(
+        emit,
+        &format!("{vk}.input_layernorm"),
+        prefix,
+        vlm.hidden,
+        eps,
+        batch,
+        None,
+    )?;
     let n_s = emit_norm(
         emit,
         &format!("{ek}.input_layernorm"),
@@ -229,6 +237,7 @@ pub fn emit_joint_layer(
             rlx_ir::ops::attention::attention_kind_op(
                 heads,
                 head_dim,
+                None, // v_head_dim = same as head_dim
                 rlx_ir::op::MaskKind::Bias,
                 Some(cfg.vlm.score_scale()),
                 None,

@@ -151,6 +151,28 @@ impl BertTokenizer {
         Ok(Self { inner: tokenizer })
     }
 
+    /// Tokenize a **(query, passage) pair** for a cross-encoder: the underlying
+    /// tokenizer's post-processor emits `[CLS] query [SEP] passage [SEP]` and sets
+    /// token_type_ids to 0 over the query segment and 1 over the passage — exactly
+    /// what a `BertForSequenceClassification` reranker was trained on. Returns the
+    /// single sequence's `(input_ids, attention_mask, token_type_ids)`, truncated
+    /// to the configured max length. No batch padding is applied (single input).
+    pub fn encode_pair(
+        &self,
+        query: &str,
+        passage: &str,
+    ) -> anyhow::Result<(Vec<u32>, Vec<u32>, Vec<u32>)> {
+        let enc = self
+            .inner
+            .encode((query, passage), true)
+            .map_err(|e| anyhow::anyhow!("pair tokenization failed: {e}"))?;
+        Ok((
+            enc.get_ids().to_vec(),
+            enc.get_attention_mask().to_vec(),
+            enc.get_type_ids().to_vec(),
+        ))
+    }
+
     /// Tokenize a batch of texts.
     ///
     /// Returns input_ids, attention_mask, and token_type_ids for each text,

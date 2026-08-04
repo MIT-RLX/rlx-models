@@ -96,7 +96,8 @@ fn vae_encoder_compiles_and_runs() {
 
     // padded_len must be divisible by the stride product (2 here).
     let padded_len = 16usize;
-    let mut graph = VaeEncoderGraph::compile_for(dev(), &w, padded_len).expect("compile VAE encoder");
+    let mut graph =
+        VaeEncoderGraph::compile_for(dev(), &w, padded_len).expect("compile VAE encoder");
     let audio = fill(padded_len, 7);
     let feats = graph.run(&audio).expect("run VAE encoder");
 

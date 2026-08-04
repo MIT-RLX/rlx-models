@@ -1,0 +1,18 @@
+[package]
+name = "rlx-inflect-v2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Inflect v2 (VITS-style end-to-end flow TTS) on RLX — config, generation options, and flow prior"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow           = { workspace = true }
+rlx-audio-blocks = { workspace = true }
+
+[lints]
+workspace = true

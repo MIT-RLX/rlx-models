@@ -11,8 +11,8 @@ fn main() -> anyhow::Result<()> {
         .collect();
     paths.sort();
     println!(
-        "{:<18} {:<12} {:<14} {}",
-        "arch/file", "runner", "class", "detail"
+        "{:<18} {:<12} {:<14} detail",
+        "arch/file", "runner", "class"
     );
     println!("{}", "-".repeat(90));
     for p in paths {

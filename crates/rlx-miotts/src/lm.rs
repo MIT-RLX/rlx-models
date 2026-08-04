@@ -138,8 +138,20 @@ pub struct MioLm {
 
 impl MioLm {
     pub fn load(dir: &Path, cfg: &MioLmConfig, device: Device) -> Result<Self> {
-        let runner = Qwen3RunnerBuilder::default()
-            .weights(dir)
+        // MioTTS generates speech codes with the streaming decode loop
+        // (`prefill_get_last_logits` + `decode_get_logits`), which only exists on
+        // the **F32** generator — the packed-weights path builds no generator. The
+        // model dir may ship both a packed `*.gguf` (which the builder would
+        // auto-select once it is ≥256 MB) and an f32 `model.safetensors`, so prefer
+        // the safetensors; otherwise force the F32 path off the GGUF.
+        let mut builder = Qwen3RunnerBuilder::default();
+        let safetensors = dir.join("model.safetensors");
+        builder = if safetensors.is_file() {
+            builder.weights(safetensors)
+        } else {
+            builder.weights(dir).packed_weights(false)
+        };
+        let runner = builder
             .config_value(cfg.to_qwen3())
             .device(device)
             .build()

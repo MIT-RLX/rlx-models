@@ -27,6 +27,7 @@
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+#[cfg(target_arch = "aarch64")]
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -161,6 +162,7 @@ fn bench_one(seed: u64, shape: Shape, iters: usize) {
     let mut out_ref = vec![0f32; out_dim];
     let mut out_sgemm = vec![0f32; out_dim];
     let mut out_bf16 = vec![0f32; out_dim];
+    #[cfg(target_arch = "aarch64")]
     let mut out_bf16_par = vec![0f32; out_dim];
 
     matvec_f32_scalar(&w_f32_as_bf16, &x_f32, &mut out_ref, out_dim, in_dim);

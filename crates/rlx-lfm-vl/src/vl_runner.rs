@@ -178,7 +178,7 @@ impl LfmVlRunner {
         seq.extend_from_slice(&before);
         seq.extend_from_slice(&start);
         let vision_start = seq.len();
-        seq.extend(std::iter::repeat(0u32).take(n_vision));
+        seq.extend(std::iter::repeat_n(0u32, n_vision));
         seq.extend_from_slice(&after);
 
         let mut hidden = Vec::with_capacity(seq.len() * n_embd);

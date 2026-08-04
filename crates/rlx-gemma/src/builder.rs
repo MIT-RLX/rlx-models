@@ -621,7 +621,7 @@ fn gelu_topk_gate(
     let var = g.sub(msq, mean2); // population variance
     let var = g.relu(var); // clamp float-noise negatives before sqrt
     let std = g.sqrt(var);
-    let sm = g.param(&format!("{name}.stdmul"), Shape::new(&[1], DType::F32));
+    let sm = g.param(format!("{name}.stdmul"), Shape::new(&[1], DType::F32));
     params.insert(format!("{name}.stdmul"), vec![std_mul]);
     let std_scaled = g.mul(std, sm); // std·std_mul (scalar broadcast)
     let cutoff = g.add(mean, std_scaled); // mean + std·std_mul

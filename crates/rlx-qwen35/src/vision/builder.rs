@@ -164,17 +164,20 @@ pub fn build_qwen35_vision_hir(
     let mm_norm_b = param_vec(&mut g, &mut params, "mm_norm.bias", &weights.mm_norm_b, n);
     h_id = g.ln(h_id, mm_norm_w, mm_norm_b, eps);
 
-    // MM projector: spatial merge along features, then GELU FFN.
+    // MM projector: spatial merge along features, then GELU FFN. The merger
+    // hidden width is derived from the fc1 bias — for the Qwen3-VL GGUF it is
+    // `n·merge²`, which differs from the block FFN width `n_ff`.
+    let mm_hidden = weights.mm_0_b.len().max(1);
     let merged = merge_spatial_tokens(&mut g, h_id, batch, n_pos, n, merge_sq);
     let mm0_w = param_mat(
         &mut g,
         &mut params,
         "mm.0.weight",
-        &transpose_2d(&weights.mm_0_w, n_ff, n * merge_sq),
+        &transpose_2d(&weights.mm_0_w, mm_hidden, n * merge_sq),
         n * merge_sq,
-        n_ff,
+        mm_hidden,
     )?;
-    let mm0_b = param_vec(&mut g, &mut params, "mm.0.bias", &weights.mm_0_b, n_ff);
+    let mm0_b = param_vec(&mut g, &mut params, "mm.0.bias", &weights.mm_0_b, mm_hidden);
     let mm0_mm = g.mm(merged, mm0_w);
     let mm0 = g.add(mm0_mm, mm0_b);
     let mm0_act = g.gelu(mm0);
@@ -183,8 +186,8 @@ pub fn build_qwen35_vision_hir(
         &mut g,
         &mut params,
         "mm.1.weight",
-        &transpose_2d(&weights.mm_1_w, proj, n_ff),
-        n_ff,
+        &transpose_2d(&weights.mm_1_w, proj, mm_hidden),
+        mm_hidden,
         proj,
     )?;
     let mm1_b = param_vec(&mut g, &mut params, "mm.1.bias", &weights.mm_1_b, proj);

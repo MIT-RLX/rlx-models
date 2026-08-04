@@ -1500,15 +1500,20 @@ pub(crate) fn build_linear_layer(
     );
     let beta = activation(g, Activation::Sigmoid, beta_pre);
 
-    // gate_g = -exp(A_log) * softplus(alpha + dt_bias)
-    // Kernel applies state *= exp(gate_g), so gate_g must be ≤ 0 (Qwen3-Next /
-    // Qwen3.5 GatedDeltaNet). Raw `A_log * softplus` is wrong: A_log can be
-    // positive, which makes exp(gate)>1 and explodes the recurrent state.
+    // gate_g = ssm_a * softplus(alpha + dt_bias); kernel applies state *= exp(gate_g).
+    //
+    // `blk.*.ssm_a` in the GGUF is ALREADY the (negative) decay coefficient that
+    // llama.cpp's converter precomputes as `-exp(A_log)` — verified against a
+    // llama.cpp eval-callback dump on Qwen3.6-27B: gate == softplus(dt) * ssm_a
+    // with ssm_a ≈ -0.04 per head. Applying another `-exp()` here treated ssm_a as
+    // a raw `A_log` and produced a ~24× too-aggressive decay (-exp(-0.04) ≈ -0.96
+    // vs -0.04), collapsing the recurrent state to near-zero within one step —
+    // i.e. a memoryless GatedDeltaNet, which yielded grammatical-but-degenerate
+    // (prompt-echoing) generations. Use ssm_a directly, matching llama.cpp / HF
+    // (`A = -exp(A_log)`, decay = exp(A * softplus(dt))).
     let alpha_biased = g.add(alpha, dt_bias);
     let alpha_softplus = softplus(g, alpha_biased);
-    let a_exp = activation(g, Activation::Exp, ssm_a_p);
-    let neg_a = activation(g, Activation::Neg, a_exp);
-    let gate_g = g.mul(neg_a, alpha_softplus);
+    let gate_g = g.mul(ssm_a_p, alpha_softplus);
 
     // Reshape gate/beta to [batch, seq, n_v_heads] for the
     // GatedDeltaNet kernel signature.
@@ -1896,6 +1901,7 @@ pub(crate) fn build_full_attn_layer(
             Op::Attention {
                 num_heads: n_head,
                 head_dim,
+                v_head_dim: None,
                 mask_kind: MaskKind::Causal,
                 score_scale: None,
                 attn_logit_softcap: None,
@@ -3115,11 +3121,15 @@ fn repeat_heads(
     factor: usize,
 ) -> NodeId {
     let _ = (bs, head_dim);
+    // Qwen3.6 GatedDeltaNet GQA expands q/k from n_k_heads (16) to n_v_heads (48)
+    // by TILING: [h0,h1,…,h15, h0,h1,…, h0,h1,…] so v-head `h` pairs with
+    // kv-head `h % n_k_heads` — matching ggml/llama.cpp. (Interleave
+    // `[h0,h0,h0,h1,…]` = `h / factor` is WRONG: it agrees only for v-heads 0 and
+    // 47 by coincidence and flips the sign of every middle head's GDN output.)
     let mut pieces = Vec::with_capacity(in_heads * factor);
-    for h in 0..in_heads {
-        let slice = g.narrow_(x, 2, h, 1);
-        for _ in 0..factor {
-            pieces.push(slice);
+    for _ in 0..factor {
+        for h in 0..in_heads {
+            pieces.push(g.narrow_(x, 2, h, 1));
         }
     }
     g.concat_(pieces, 2)

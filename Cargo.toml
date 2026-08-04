@@ -7,6 +7,7 @@ members = [
     "crates/rlx-assets",
     "crates/rlx-vision-bench",
     "crates/rlx-tts-bench",
+    "crates/rlx-llm-bench",
     "crates/rlx-serve",
     "crates/rlx-openai",
     "crates/rlx-model-hub",
@@ -87,6 +88,31 @@ members = [
     "crates/rlx-nemotron",
     "crates/rlx-nemotron-asr",
     "crates/rlx-conformer-ctc",
+    "crates/rlx-audio-blocks",
+    "crates/rlx-parakeet",
+    "crates/rlx-hviske",
+    "crates/rlx-inflect-v2",
+    "crates/rlx-outetts",
+    "crates/rlx-kroko",
+    "crates/rlx-stable-audio",
+    "crates/rlx-seed-vc",
+    "crates/rlx-ace-step",
+    "crates/rlx-fish",
+    "crates/rlx-higgs",
+    "crates/rlx-voxcpm",
+    "crates/rlx-index-tts",
+    "crates/rlx-glm-tts",
+    "crates/rlx-irodori",
+    "crates/rlx-omnivoice",
+    "crates/rlx-confucius",
+    "crates/rlx-dramabox",
+    "crates/rlx-roformer-sep",
+    "crates/rlx-demucs",
+    "crates/rlx-qwen3-aligner",
+    "crates/rlx-rvc",
+    "crates/rlx-vevo",
+    "crates/rlx-heartmula",
+    "crates/rlx-citrinet",
     "crates/rlx-lfm",
     "crates/rlx-glm",
     "crates/rlx-ssm",
@@ -150,6 +176,7 @@ members = [
     "crates/rlx-sesame",
     "crates/rlx-zonos",
     "crates/rlx-termclean",
+    "crates/rlx-tinystories",    "crates/rlx-tiny",
     "crates/rlx-trellis2",
     "crates/rlx-unlimited-ocr",
     "crates/rlx-vlash",
@@ -226,6 +253,7 @@ flate2 = "1"
 
 rlx-cli = { path = "crates/rlx-cli", version = "0.2.14" }
 rlx-core = { path = "crates/rlx-models-core", package = "rlx-models-core", version = "0.2.14" }
+rlx-eval = { path = "crates/rlx-eval", version = "0.2.14" }
 rlx-assets = { path = "crates/rlx-assets", version = "0.2.14" }
 # Consolidated into ../rlx (crates/core/rlx-distributed); redirected to the local
 # checkout by the `[patch]` in .cargo/config.toml, like the other rlx-* crates.
@@ -343,6 +371,31 @@ rlx-minimax = { path = "crates/rlx-minimax", version = "0.2.14" }
 rlx-nemotron = { path = "crates/rlx-nemotron", version = "0.2.14" }
 rlx-nemotron-asr = { path = "crates/rlx-nemotron-asr", version = "0.2.14" }
 rlx-conformer-ctc = { path = "crates/rlx-conformer-ctc", version = "0.2.14" }
+rlx-audio-blocks = { path = "crates/rlx-audio-blocks", version = "0.2.14" }
+rlx-parakeet = { path = "crates/rlx-parakeet", version = "0.2.14" }
+rlx-hviske = { path = "crates/rlx-hviske", version = "0.2.14" }
+rlx-inflect-v2 = { path = "crates/rlx-inflect-v2", version = "0.2.14" }
+rlx-outetts = { path = "crates/rlx-outetts", version = "0.2.14" }
+rlx-kroko = { path = "crates/rlx-kroko", version = "0.2.14" }
+rlx-stable-audio = { path = "crates/rlx-stable-audio", version = "0.2.14" }
+rlx-seed-vc = { path = "crates/rlx-seed-vc", version = "0.2.14" }
+rlx-ace-step = { path = "crates/rlx-ace-step", version = "0.2.14" }
+rlx-fish = { path = "crates/rlx-fish", version = "0.2.14" }
+rlx-higgs = { path = "crates/rlx-higgs", version = "0.2.14" }
+rlx-voxcpm = { path = "crates/rlx-voxcpm", version = "0.2.14" }
+rlx-index-tts = { path = "crates/rlx-index-tts", version = "0.2.14" }
+rlx-glm-tts = { path = "crates/rlx-glm-tts", version = "0.2.14" }
+rlx-irodori = { path = "crates/rlx-irodori", version = "0.2.14" }
+rlx-omnivoice = { path = "crates/rlx-omnivoice", version = "0.2.14" }
+rlx-confucius = { path = "crates/rlx-confucius", version = "0.2.14" }
+rlx-dramabox = { path = "crates/rlx-dramabox", version = "0.2.14" }
+rlx-roformer-sep = { path = "crates/rlx-roformer-sep", version = "0.2.14" }
+rlx-demucs = { path = "crates/rlx-demucs", version = "0.2.14" }
+rlx-qwen3-aligner = { path = "crates/rlx-qwen3-aligner", version = "0.2.14" }
+rlx-rvc = { path = "crates/rlx-rvc", version = "0.2.14" }
+rlx-vevo = { path = "crates/rlx-vevo", version = "0.2.14" }
+rlx-heartmula = { path = "crates/rlx-heartmula", version = "0.2.14" }
+rlx-citrinet = { path = "crates/rlx-citrinet", version = "0.2.14" }
 rlx-funasr = { path = "crates/rlx-funasr", version = "0.2.14" }
 rlx-nemo = { version = "^0.2.14" }
 rlx-inflect-nano = { path = "crates/rlx-inflect-nano", version = "0.2.14", default-features = false }

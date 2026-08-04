@@ -1,0 +1,17 @@
+[package]
+name = "rlx-fish"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Fish-Speech (dual-AR Llama backbone + Firefly-GAN codec) on RLX — config + codebook packing"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

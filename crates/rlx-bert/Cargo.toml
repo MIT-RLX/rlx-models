@@ -21,6 +21,15 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
 
+[dev-dependencies]
+rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope" }
+# The `rlx!` DSL examples need the umbrella `tensor` (DSL) feature on top of the
+# workspace's `cpu` backend. Dev-only, so the published `rlx-bert` lib is
+# unaffected.
+rlx = { workspace = true, features = ["tensor"] }
+# The full-BERT example fetches a real checkpoint from the HF hub at runtime.
+hf-hub = { workspace = true }
+
 [lints]
 workspace = true
 

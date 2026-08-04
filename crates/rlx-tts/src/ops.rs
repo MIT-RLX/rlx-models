@@ -19,13 +19,13 @@ pub fn linear_in_out(
     out: usize,
     b: Option<&[f32]>,
 ) -> Array2<f32> {
-    let (t, xin) = x.dim();
-    debug_assert_eq!(xin, inp);
-    let mut y = Array2::<f32>::zeros((t, out));
-    let x_slice = x.as_slice().expect("linear x contiguous");
-    let y_slice = y.as_slice_mut().expect("linear y contiguous");
+    debug_assert_eq!(x.dim().1, inp);
     #[cfg(target_os = "macos")]
-    {
+    let mut y = {
+        let (t, _) = x.dim();
+        let mut y = Array2::<f32>::zeros((t, out));
+        let x_slice = x.as_slice().expect("linear x contiguous");
+        let y_slice = y.as_slice_mut().expect("linear y contiguous");
         // C = α A B + β C  with A[T,in], B[in,out], C[T,out], row-major.
         unsafe {
             cblas_sgemm(
@@ -45,12 +45,10 @@ pub fn linear_in_out(
                 out as i32,
             );
         }
-    }
+        y
+    };
     #[cfg(not(target_os = "macos"))]
-    {
-        let wv = view2(w, inp, out);
-        y = x.dot(&wv);
-    }
+    let mut y = x.dot(&view2(w, inp, out));
     if let Some(b) = b {
         for mut row in y.rows_mut() {
             for (v, bi) in row.iter_mut().zip(b.iter()) {

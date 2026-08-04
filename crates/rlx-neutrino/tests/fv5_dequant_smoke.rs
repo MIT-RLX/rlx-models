@@ -65,7 +65,13 @@ fn pack_fv5b_block(qs: &[i8], s: f32) -> Vec<u8> {
 
 /// Run `x[m,k] @ dequant(w)[n,k]^T` on `device` and on CPU; return
 /// (device_output, cpu_output). `None` if the device isn't available.
-fn run(scheme: QuantScheme, packed: &[u8], m: usize, k: usize, n: usize) -> Option<(Vec<f32>, Vec<f32>)> {
+fn run(
+    scheme: QuantScheme,
+    packed: &[u8],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Option<(Vec<f32>, Vec<f32>)> {
     let device = dev();
     if device != Device::Cpu && !rlx_runtime::is_available(device) {
         eprintln!("skip: {device:?} unavailable");
@@ -90,7 +96,9 @@ fn run(scheme: QuantScheme, packed: &[u8], m: usize, k: usize, n: usize) -> Opti
 }
 
 fn check(name: &str, out: Option<(Vec<f32>, Vec<f32>)>, elems: usize) {
-    let Some((dev_out, cpu_out)) = out else { return };
+    let Some((dev_out, cpu_out)) = out else {
+        return;
+    };
     assert_eq!(dev_out.len(), elems, "{name}: output length");
     assert!(
         dev_out.iter().all(|v| v.is_finite()),
@@ -103,7 +111,11 @@ fn check(name: &str, out: Option<(Vec<f32>, Vec<f32>)>, elems: usize) {
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     eprintln!("neutrino {name} on {:?}: max_abs={max_abs:.6e}", dev());
-    assert!(max_abs <= 1e-3, "{name}: {:?} diverges from CPU: {max_abs}", dev());
+    assert!(
+        max_abs <= 1e-3,
+        "{name}: {:?} diverges from CPU: {max_abs}",
+        dev()
+    );
 }
 
 #[test]
@@ -127,7 +139,8 @@ fn fv5_and_fv5b_dequant_matmul_smoke() {
     // FV5B (ggml 44) — the int8 embed / lm_head rows.
     let mut fv5b = Vec::new();
     for row in 0..n {
-        let qs: [i8; 256] = std::array::from_fn(|i| ((i as i32 * 7 + row as i32) % 251 - 125) as i8);
+        let qs: [i8; 256] =
+            std::array::from_fn(|i| ((i as i32 * 7 + row as i32) % 251 - 125) as i8);
         fv5b.extend_from_slice(&pack_fv5b_block(&qs, 0.03));
     }
     check("FV5B", run(QuantScheme::GgufFV5B, &fv5b, m, k, n), m * n);

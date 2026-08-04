@@ -422,6 +422,11 @@ fn rope_tail(
     if rd >= hd {
         return g.rope_n_styled(x, cos, sin, hd, hd, RopeStyle::GptJ);
     }
+    // #4: fused partial GptJ tail-rope (one Op::Custom instead of narrow×2 + reshape×3
+    // + concat around the rope op).
+    if crate::dsv4_opt::opt_rope() {
+        return crate::dsv4_opt::emit_rope_tail(g, x, cos, sin, rows, nh, hd, rd);
+    }
     let x3 = g.reshape_(x, vec![rows as i64, nh as i64, hd as i64]);
     let nope = g.narrow_(x3, 2, 0, hd - rd); // [rows, nh, hd-rd]
     let tail = g.narrow_(x3, 2, hd - rd, rd); // [rows, nh, rd]
@@ -494,7 +499,10 @@ fn load_proj(
         packed.insert(key.to_string(), (Vec::new(), scheme, meta.out_shape));
         // MXFP4 (2 codes/byte) and MXFP8 (1 code/byte) share the packed path:
         // raw codes + per-group E8M0 u8 scales, no zero-point; the op dequants.
-        if matches!(scheme, QuantScheme::MlxMxfp4 { .. } | QuantScheme::MlxMxfp8 { .. }) {
+        if matches!(
+            scheme,
+            QuantScheme::MlxMxfp4 { .. } | QuantScheme::MlxMxfp8 { .. }
+        ) {
             let s_name = format!("{key}.scales");
             let scale = g.param(&s_name, Shape::new(&[n, n_groups], DType::U8));
             packed.insert(s_name, (meta.scales, scheme, vec![n, n_groups]));
@@ -544,7 +552,10 @@ fn load_proj(
         // mxfp4 path reads the E8M0 group scales as RAW u8 (no zero-point), so
         // bind codes + u8 scales as packed params + a dummy u8 zp to keep the
         // 4-input op shape. (Affine falls through below with f32 scales/biases.)
-        if matches!(scheme, QuantScheme::MlxMxfp4 { .. } | QuantScheme::MlxMxfp8 { .. }) {
+        if matches!(
+            scheme,
+            QuantScheme::MlxMxfp4 { .. } | QuantScheme::MlxMxfp8 { .. }
+        ) {
             let n = p.out_shape.first().copied().unwrap_or(0);
             let n_groups = p.n_groups().max(1);
             let w = g.param(key, Shape::new(&[p.w_q.len()], DType::U8));
@@ -1388,6 +1399,7 @@ pub fn build_lfm2_prefill(
                 Op::Attention {
                     num_heads: nh,
                     head_dim: dh,
+                    v_head_dim: None,
                     mask_kind: MaskKind::Causal,
                     score_scale: None,
                     attn_logit_softcap: None,
@@ -1752,6 +1764,7 @@ pub fn build_deepseek_mla(
         Op::Attention {
             num_heads: h,
             head_dim: qk,
+            v_head_dim: None,
             mask_kind: MaskKind::Causal,
             score_scale: spec.attn_score_scale, // deepseek YaRN folds mscale² here
             attn_logit_softcap: None,
@@ -2051,6 +2064,10 @@ pub fn build_hc_sinkhorn(
     iters: usize,
     tag: &str,
 ) -> (NodeId, NodeId, NodeId) {
+    // #1: fused Sinkhorn HC gate (one Op::Custom instead of ~36 tiny Div/Reduce ops).
+    if crate::dsv4_opt::opt_hcgate() {
+        return crate::dsv4_opt::emit_hc_gate(g, mixes, scale, base, rows, hc, eps, iters);
+    }
     let (r, h) = (rows as i64, hc as i64);
     let eps_c = const1(g, params, &format!("{tag}.hc.eps"), eps);
     let two = const1(g, params, &format!("{tag}.hc.two"), 2.0);
@@ -2450,6 +2467,12 @@ pub fn build_v4_sink_attention(
     n_keys: usize,
     tag: &str,
 ) -> NodeId {
+    // #2: fused sink-attention (one Op::Custom instead of Softmax + 2 MatMul + views).
+    if crate::dsv4_opt::opt_sinkattn() {
+        return crate::dsv4_opt::emit_sink_attention(
+            g, q, kv, mask, sink, scale, rows, n_heads, head_dim, n_keys,
+        );
+    }
     let (r, nh, hd, nk) = (rows as i64, n_heads as i64, head_dim as i64, n_keys as i64);
     // scores = (q @ kvᵀ) * scale  → [rows, nh, nk]
     let q2 = g.reshape_(q, vec![(rows * n_heads) as i64, hd]);
@@ -2636,7 +2659,13 @@ pub fn build_dspark_stage(
         load_dense_dequant(&mut g, &mut params, weights, "model.embed_tokens.weight")?;
     let xe = g.gather_(embed_w, draft_ids2, 0); // [1, block, d]
     let xe = g.reshape_(xe, vec![block as i64, 1, d as i64]);
-    let ones_hc = synth_const(&mut g, &mut params, "ds.hc.ones", vec![1f32; hc], &[1, hc, 1]);
+    let ones_hc = synth_const(
+        &mut g,
+        &mut params,
+        "ds.hc.ones",
+        vec![1f32; hc],
+        &[1, hc, 1],
+    );
     let mut h = g.mul(xe, ones_hc); // [block, hc, d]
 
     // main_x = main_norm(main_proj(main_hidden)); main_hidden [cache_len, dim*n_targets].
@@ -2646,35 +2675,100 @@ pub fn build_dspark_stage(
     );
     let mp = load_transposed_param(&mut g, &mut params, weights, "model.mtp.0.main_proj.weight")?;
     let main_x = g.mm(main_hidden, mp); // [cache_len, d]
-    let mn = load_norm(&mut g, &mut params, weights, "model.mtp.0.main_norm.weight", 0.0)?;
+    let mn = load_norm(
+        &mut g,
+        &mut params,
+        weights,
+        "model.mtp.0.main_norm.weight",
+        0.0,
+    )?;
     let main_x = g.rms_norm(main_x, mn, zb_d, eps);
 
     for stage in 0..n_stages {
         let lp = format!("model.mtp.{stage}");
         // Window KV cache = rope(kv_norm(wkv(main_x))) at cache positions.
-        let wkv = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wkv.weight"))?;
+        let wkv = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wkv.weight"),
+        )?;
         let ckv = emit_proj(&mut g, main_x, &wkv, Shape::new(&[cache_len, hd], f));
-        let kvn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.kv_norm.weight"), 0.0)?;
+        let kvn = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.kv_norm.weight"),
+            0.0,
+        )?;
         let ckv = g.rms_norm(ckv, kvn, zb_hd, eps);
         let cache_kv = rope_tail(&mut g, ckv, cos_c, sin_c, cache_len, 1, hd, rd);
 
         // ── HC-wrapped DSpark attention ──
         let residual = h;
-        let fn_a = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
-        let sc_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.scale"), false)?;
-        let bs_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.base"), false)?;
+        let fn_a =
+            load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
+        let sc_a = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_hc.scale"),
+            false,
+        )?;
+        let bs_a = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_hc.base"),
+            false,
+        )?;
         let (xa, post_a, comb_a) = build_hc_pre(
-            &mut g, &mut params, h, fn_a, sc_a, bs_a, block, hc, d, spec.hc_eps,
-            spec.hc_sinkhorn_iters, &format!("{lp}.a"),
+            &mut g,
+            &mut params,
+            h,
+            fn_a,
+            sc_a,
+            bs_a,
+            block,
+            hc,
+            d,
+            spec.hc_eps,
+            spec.hc_sinkhorn_iters,
+            &format!("{lp}.a"),
         );
-        let an = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn_norm.weight"), 0.0)?;
+        let an = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_norm.weight"),
+            0.0,
+        )?;
         let xa = g.rms_norm(xa, an, zb_d, eps);
         // q-LoRA + per-head norm + block RoPE
-        let wqa = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_a.weight"))?;
+        let wqa = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wq_a.weight"),
+        )?;
         let qr = emit_proj(&mut g, xa, &wqa, Shape::new(&[block, ql], f));
-        let qn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.q_norm.weight"), 0.0)?;
+        let qn = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.q_norm.weight"),
+            0.0,
+        )?;
         let qr = g.rms_norm(qr, qn, zb_ql, eps);
-        let wqb = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_b.weight"))?;
+        let wqb = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wq_b.weight"),
+        )?;
         let q = emit_proj(&mut g, qr, &wqb, Shape::new(&[block, nh * hd], f));
         let q = per_head_rms(&mut g, q, q_ones, zb_hd, 1, block, nh, hd, eps);
         let q = rope_tail(&mut g, q, cos_b, sin_b, block, nh, hd, rd);
@@ -2700,40 +2794,119 @@ pub fn build_dspark_stage(
                 md[qi * n_keys + ki] = if vis { 0.0 } else { neg };
             }
         }
-        let mask = synth_const(&mut g, &mut params, &format!("{lp}.ds.mask"), md, &[block, n_keys]);
-        let sink = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.attn_sink"), false)?;
+        let mask = synth_const(
+            &mut g,
+            &mut params,
+            &format!("{lp}.ds.mask"),
+            md,
+            &[block, n_keys],
+        );
+        let sink = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.attn_sink"),
+            false,
+        )?;
         let q3 = g.reshape_(q, vec![block as i64, nh as i64, hd as i64]);
         let o = build_v4_sink_attention(
-            &mut g, &mut params, q3, kv_all, mask, sink, scale, block, nh, hd, n_keys,
+            &mut g,
+            &mut params,
+            q3,
+            kv_all,
+            mask,
+            sink,
+            scale,
+            block,
+            nh,
+            hd,
+            n_keys,
             &format!("{lp}.sa"),
         );
         let o_flat = g.reshape_(o, vec![block as i64, (nh * hd) as i64]);
         let o_inv = rope_tail(&mut g, o_flat, cos_b, sinv_b, block, nh, hd, rd);
         let dpg = nh * hd / spec.n_groups;
         let woa = load_v4_wo_a(
-            &mut g, &mut params, weights, &format!("{lp}.attn.wo_a.weight"),
-            spec.n_groups, spec.o_lora_rank, dpg,
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.wo_a.weight"),
+            spec.n_groups,
+            spec.o_lora_rank,
+            dpg,
         )?;
-        let wob = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn.wo_b.weight"))?;
+        let wob = load_transposed_param(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.wo_b.weight"),
+        )?;
         let attn_out = build_v4_o_lora(
-            &mut g, o_inv, woa, wob, block, spec.n_groups, spec.o_lora_rank, dpg, d,
+            &mut g,
+            o_inv,
+            woa,
+            wob,
+            block,
+            spec.n_groups,
+            spec.o_lora_rank,
+            dpg,
+            d,
         );
         h = build_hc_post(&mut g, attn_out, residual, post_a, comb_a, block, hc, d);
 
         // ── HC-wrapped sqrtsoftplus MoE FFN ──
         let residual = h;
         let fn_f = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.fn"))?;
-        let sc_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.scale"), false)?;
-        let bs_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.base"), false)?;
+        let sc_f = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_hc.scale"),
+            false,
+        )?;
+        let bs_f = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_hc.base"),
+            false,
+        )?;
         let (xf, post_f, comb_f) = build_hc_pre(
-            &mut g, &mut params, h, fn_f, sc_f, bs_f, block, hc, d, spec.hc_eps,
-            spec.hc_sinkhorn_iters, &format!("{lp}.f"),
+            &mut g,
+            &mut params,
+            h,
+            fn_f,
+            sc_f,
+            bs_f,
+            block,
+            hc,
+            d,
+            spec.hc_eps,
+            spec.hc_sinkhorn_iters,
+            &format!("{lp}.f"),
         );
-        let fnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.ffn_norm.weight"), 0.0)?;
+        let fnorm = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_norm.weight"),
+            0.0,
+        )?;
         let xf = g.rms_norm(xf, fnorm, zb_d, eps);
         let ds = v4_moe_spec(spec);
         let x3 = g.reshape_(xf, vec![1, block as i64, d as i64]);
-        let moe = build_deepseek_moe_ffn(&mut g, &mut params, packed, weights, &lp, x3, 1, block, &ds, None)?;
+        let moe = build_deepseek_moe_ffn(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &lp,
+            x3,
+            1,
+            block,
+            &ds,
+            None,
+        )?;
         let moe = g.reshape_(moe, vec![block as i64, d as i64]);
         h = build_hc_post(&mut g, moe, residual, post_f, comb_f, block, hc, d);
     }
@@ -2742,10 +2915,40 @@ pub fn build_dspark_stage(
     let last = n_stages - 1;
     let lp = format!("model.mtp.{last}");
     let hfn = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.hc_head.fn"))?;
-    let hsc = load_p(&mut g, &mut params, weights, &format!("{lp}.hc_head.scale"), false)?;
-    let hbs = load_p(&mut g, &mut params, weights, &format!("{lp}.hc_head.base"), false)?;
-    let x = build_hc_head(&mut g, &mut params, h, hfn, hsc, hbs, block, hc, d, spec.hc_eps, "ds.head");
-    let nrm = load_norm(&mut g, &mut params, weights, &format!("{lp}.norm.weight"), 0.0)?;
+    let hsc = load_p(
+        &mut g,
+        &mut params,
+        weights,
+        &format!("{lp}.hc_head.scale"),
+        false,
+    )?;
+    let hbs = load_p(
+        &mut g,
+        &mut params,
+        weights,
+        &format!("{lp}.hc_head.base"),
+        false,
+    )?;
+    let x = build_hc_head(
+        &mut g,
+        &mut params,
+        h,
+        hfn,
+        hsc,
+        hbs,
+        block,
+        hc,
+        d,
+        spec.hc_eps,
+        "ds.head",
+    );
+    let nrm = load_norm(
+        &mut g,
+        &mut params,
+        weights,
+        &format!("{lp}.norm.weight"),
+        0.0,
+    )?;
     let x = g.rms_norm(x, nrm, zb_d, eps);
     let head_p = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
     let logits = emit_proj(&mut g, x, &head_p, Shape::new(&[block, spec.vocab_size], f));
@@ -2767,10 +2970,10 @@ pub fn build_dspark_stage(
 /// the verifier's greedy accept below). Pure f32, mirrors `model.py`.
 #[allow(clippy::too_many_arguments)]
 pub fn dspark_forward_head(
-    block_logits: &[f32], // [block, vocab]
-    markov_w1: &[f32],    // [vocab, markov_rank]
-    markov_w2: &[f32],    // [vocab, markov_rank]
-    head_hidden: &[f32],  // [block, dim]
+    block_logits: &[f32],    // [block, vocab]
+    markov_w1: &[f32],       // [vocab, markov_rank]
+    markov_w2: &[f32],       // [vocab, markov_rank]
+    head_hidden: &[f32],     // [block, dim]
     confidence_proj: &[f32], // [dim + markov_rank]
     input_id: usize,
     block: usize,
@@ -2808,6 +3011,87 @@ pub fn dspark_forward_head(
         confidence[i] = c;
     }
     (output_ids, confidence)
+}
+
+/// **DSpark drafter wiring** — turns the main model's accumulated target-layer
+/// hiddens into `n_draft` speculative tokens for the verify/accept loop. It builds +
+/// runs the DSpark stage ([`build_dspark_stage`] — the `mtp.*` sub-model over
+/// `main_hidden [cache_len, dim*n_targets]` and the block draft ids), then applies
+/// the host-side autoregressive Markov-bigram + confidence head
+/// ([`dspark_forward_head`]) to produce `[input_id, d₁, …]`; the drafted tail
+/// (`d₁..`, up to `n_draft`) is returned. This is the `draft_fn` for
+/// [`deepseek_v4_generate_speculative`] /
+/// [`deepseek_v4_generate_speculative_paged_layerwise`] — and losslessness does NOT
+/// depend on draft quality (a wrong guess is rejected by the verifier), so a weak or
+/// mis-trained drafter is still correct, just slower. The main model exposes
+/// `main_hidden` via [`V4Decoder::main_hidden`] at each accepted position (the driver
+/// accumulates the `[cache_len, dim*n_targets]` history). The stage is (re)built per
+/// call since `cache_len` grows; amortizing that (fixed max-cache stage + mask, or a
+/// per-`cache_len` compile cache) is a perf follow-up, not a correctness one.
+#[allow(clippy::too_many_arguments)]
+pub fn deepseek_v4_dspark_draft(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    device: rlx_runtime::Device,
+    main_hidden: &[f32], // [cache_len, dim*n_targets]
+    input_id: u32,
+    n_draft: usize,
+) -> Result<Vec<u32>> {
+    let d = spec.dim;
+    let vocab = spec.vocab_size;
+    let block = spec.dspark_block_size.max(1);
+    let n_targets = spec.dspark_target_layer_ids.len().max(1);
+    let markov_rank = spec.dspark_markov_rank.max(1);
+    let last = spec.n_mtp_layers.max(1) - 1;
+    let cache_len = main_hidden.len() / (d * n_targets);
+    // Build + compile the DSpark stage for this cache length.
+    let (g, params) = build_dspark_stage(spec, weights, block, cache_len, packed)?;
+    let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+        &rlx_flow::CompileProfile::qwen3_prefill(),
+        device,
+    );
+    let mut sess = rlx_runtime::Session::new(device).compile_with(g, &opts);
+    for (n, dd) in &params {
+        sess.set_param(n, dd);
+    }
+    // Bind the packed (MXFP4) expert codes emitted into `packed` during the build.
+    for (n, (bytes, _scheme, _shape)) in packed.iter() {
+        sess.set_param_typed(n, bytes, DType::U8);
+    }
+    // draft_ids = [input_id, noise…]; the head fills the tail autoregressively.
+    let mut draft_ids = vec![input_id as f32];
+    draft_ids.resize(block, spec.dspark_noise_token_id as f32);
+    let out = sess.run(&[
+        ("draft_ids", draft_ids.as_slice()),
+        ("main_hidden", main_hidden),
+    ]);
+    // set_outputs order in build_dspark_stage: [logits [block,vocab], head_hidden [block,dim]].
+    let block_logits = &out[0];
+    let head_hidden = &out[1];
+    // Markov + confidence weights live at the FINAL MTP stage.
+    let lp = format!("model.mtp.{last}");
+    let (mw1, _) = weights.take(&format!("{lp}.markov_head.markov_w1.weight"))?;
+    let (mw2, _) = weights.take(&format!("{lp}.markov_head.markov_w2.weight"))?;
+    let (cproj, _) = weights.take(&format!("{lp}.confidence_head.proj.weight"))?;
+    let (output_ids, _confidence) = dspark_forward_head(
+        block_logits,
+        &mw1,
+        &mw2,
+        head_hidden,
+        &cproj,
+        input_id as usize,
+        block,
+        vocab,
+        markov_rank,
+        d,
+    );
+    // output_ids[0] == input_id; the drafted tail follows.
+    Ok(output_ids[1..]
+        .iter()
+        .take(n_draft)
+        .map(|&x| x as u32)
+        .collect())
 }
 
 /// Greedy speculative **accept length** (`generate` verify step): given the draft
@@ -2938,14 +3222,22 @@ impl DeepseekV4Spec {
         // YaRN params live under `rope_scaling` (HF top config) or as flat
         // ModelArgs-style keys (the reference `inference/config.json`).
         let rs = v.get("rope_scaling");
-        let rs_u = |k: &str| rs.and_then(|r| r.get(k)).and_then(serde_json::Value::as_u64);
-        let rs_f = |k: &str| rs.and_then(|r| r.get(k)).and_then(serde_json::Value::as_f64);
+        let rs_u = |k: &str| {
+            rs.and_then(|r| r.get(k))
+                .and_then(serde_json::Value::as_u64)
+        };
+        let rs_f = |k: &str| {
+            rs.and_then(|r| r.get(k))
+                .and_then(serde_json::Value::as_f64)
+        };
         let original_seq_len = rs_u("original_max_position_embeddings")
             .map(|x| x as usize)
             .or_else(|| u("original_seq_len"))
             .unwrap_or(0);
         let rope_factor = rs_f("factor").or_else(|| fl("rope_factor")).unwrap_or(1.0);
-        let beta_fast = rs_f("beta_fast").or_else(|| fl("beta_fast")).unwrap_or(32.0);
+        let beta_fast = rs_f("beta_fast")
+            .or_else(|| fl("beta_fast"))
+            .unwrap_or(32.0);
         let beta_slow = rs_f("beta_slow").or_else(|| fl("beta_slow")).unwrap_or(1.0);
         let dspark_target_layer_ids: Vec<usize> = v
             .get("dspark_target_layer_ids")
@@ -2957,7 +3249,11 @@ impl DeepseekV4Spec {
             })
             .unwrap_or_default();
         let n_mtp_layers = u("n_mtp_layers")
-            .or(if derived_mtp > 0 { Some(derived_mtp) } else { None })
+            .or(if derived_mtp > 0 {
+                Some(derived_mtp)
+            } else {
+                None
+            })
             .or_else(|| u("num_nextn_predict_layers"))
             .unwrap_or(0);
         Ok(DeepseekV4Spec {
@@ -3027,7 +3323,11 @@ impl DeepseekV4Spec {
         let n_layers = req("block_count")?;
         let ratios_full: Vec<usize> = g("attention.compress_ratios")
             .and_then(serde_json::Value::as_array)
-            .map(|a| a.iter().filter_map(|e| e.as_u64().map(|n| n as usize)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_u64().map(|n| n as usize))
+                    .collect()
+            })
             .unwrap_or_default();
         let compress_ratios: Vec<usize> = ratios_full.into_iter().take(n_layers).collect();
         let moe_inter = req("expert_feed_forward_length")?;
@@ -3262,13 +3562,22 @@ impl WeightLoader for DsV4RefLoader {
         key: &str,
     ) -> Result<Option<crate::weight_loader::MlxPackedLinear>> {
         if let Some((layer, proj)) = Self::switch_mlp_parts(key) {
+            // Prefetch ALL experts' packed tensors in one MADV_WILLNEED batch before
+            // the serial gather: the OS issues the reads concurrently (saturating the
+            // Thunderbolt/NVMe link) instead of the loop stalling on one latency-bound
+            // per-expert mmap fault at a time.
+            let ekeys: Vec<String> = (0..self.n_experts)
+                .map(|e| dsv4_ref_expert_key(layer, e, proj))
+                .collect();
+            let erefs: Vec<&str> = ekeys.iter().map(|s| s.as_str()).collect();
+            self.inner.prewarm(&erefs);
             let (mut w_q, mut scales, mut biases) = (Vec::new(), Vec::new(), Vec::new());
             let mut out_shape: Vec<usize> = Vec::new();
             let mut scheme = None;
             for e in 0..self.n_experts {
                 let p = self
                     .inner
-                    .take_packed_mlx(&dsv4_ref_expert_key(layer, e, proj))?
+                    .take_packed_mlx(&ekeys[e])?
                     .ok_or_else(|| anyhow!("routed expert {e} of {key} is not MLX-packed"))?;
                 w_q.extend_from_slice(&p.w_q);
                 scales.extend_from_slice(&p.scales);
@@ -3285,6 +3594,27 @@ impl WeightLoader for DsV4RefLoader {
             }));
         }
         self.inner.take_packed_mlx(&Self::map(key))
+    }
+    fn prewarm(&self, keys: &[&str]) {
+        // Name-map each key (model.layers.N.* → the ref key) before forwarding, so the
+        // inner mmap loader warms the right tensors.
+        let mapped: Vec<String> = keys.iter().map(|k| Self::map(k)).collect();
+        let refs: Vec<&str> = mapped.iter().map(String::as_str).collect();
+        self.inner.prewarm(&refs);
+    }
+    fn borrow_packed_mlx(&self, key: &str) -> Option<rlx_mlx_io::PackedMlxBorrow<'_>> {
+        // Only the per-expert layout can zero-copy borrow; the stacked switch_mlp path
+        // must concatenate experts (owned copy).
+        if Self::switch_mlp_parts(key).is_some() {
+            return None;
+        }
+        self.inner.borrow_packed_mlx(&Self::map(key))
+    }
+    fn dontneed_packed_mlx(&self, key: &str) {
+        if Self::switch_mlp_parts(key).is_some() {
+            return;
+        }
+        self.inner.dontneed_packed_mlx(&Self::map(key));
     }
 }
 
@@ -3397,9 +3727,15 @@ pub fn build_deepseek_v4_stage(
         );
         (cos, sin, sin_inv)
     };
-    let (cos_m, sin_m, sininv_m) = rope_tables(&mut g, &mut params, spec.rope_theta, &sliding_rs, "m");
-    let (cos_c, sin_c, sininv_c) =
-        rope_tables(&mut g, &mut params, spec.compress_rope_theta, &compress_rs, "c");
+    let (cos_m, sin_m, sininv_m) =
+        rope_tables(&mut g, &mut params, spec.rope_theta, &sliding_rs, "m");
+    let (cos_c, sin_c, sininv_c) = rope_tables(
+        &mut g,
+        &mut params,
+        spec.compress_rope_theta,
+        &compress_rs,
+        "c",
+    );
 
     // Causal window mask [rows, seq] (window ≥ seq at prefill ⇒ full causal).
     let neg = -1e30f32;
@@ -4062,6 +4398,24 @@ pub fn build_deepseek_v4_decode(
     cache_len: usize,
     packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    build_deepseek_v4_decode_moe(spec, weights, pos, cache_len, packed, false)
+}
+
+/// [`build_deepseek_v4_decode`] with an optional **paged MoE split**: when
+/// `paged_moe` is set, each routed-MoE layer does NOT emit the in-graph grouped MoE
+/// (all experts resident); instead it outputs `moe_in.{il}` (the post-`ffn_norm`
+/// hidden) and takes a `moe_out.{il}` input that the host fills with
+/// [`PagedGroupedMoe`] (+ shared expert). The driver runs the graph once per MoE
+/// layer, feeding back each layer's MoE result — so only the active experts ever
+/// touch memory. Dense layers are unaffected.
+pub fn build_deepseek_v4_decode_moe(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    pos: usize,
+    cache_len: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    paged_moe: bool,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
     let mut g = Graph::new("deepseek_v4_decode");
     let mut params: HashMap<String, Vec<f32>> = HashMap::new();
     let f = DType::F32;
@@ -4101,7 +4455,13 @@ pub fn build_deepseek_v4_decode(
         load_dense_dequant(&mut g, &mut params, weights, "model.embed_tokens.weight")?;
     let h0 = g.gather_(embed_w, token2, 0); // [1,1,d]
     let h0 = g.reshape_(h0, vec![1, 1, d as i64]);
-    let ones_hc = synth_const(&mut g, &mut params, "v4d.hc.ones", vec![1f32; hc], &[1, hc, 1]);
+    let ones_hc = synth_const(
+        &mut g,
+        &mut params,
+        "v4d.hc.ones",
+        vec![1f32; hc],
+        &[1, hc, 1],
+    );
     let mut h = g.mul(h0, ones_hc); // [1, hc, d]
     // Extra per-layer outputs (name, node), emitted after `logits`.
     let mut extra_outs: Vec<(String, NodeId)> = Vec::new();
@@ -4111,33 +4471,95 @@ pub fn build_deepseek_v4_decode(
         let lp = format!("model.layers.{il}");
         // ── HC-wrapped MLA attention (single query, cached KV) ──
         let residual = h;
-        let fn_a = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
-        let sc_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.scale"), false)?;
-        let bs_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.base"), false)?;
+        let fn_a =
+            load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
+        let sc_a = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_hc.scale"),
+            false,
+        )?;
+        let bs_a = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_hc.base"),
+            false,
+        )?;
         let (xa, post_a, comb_a) = build_hc_pre(
-            &mut g, &mut params, h, fn_a, sc_a, bs_a, 1, hc, d, spec.hc_eps,
-            spec.hc_sinkhorn_iters, &format!("{lp}.da"),
+            &mut g,
+            &mut params,
+            h,
+            fn_a,
+            sc_a,
+            bs_a,
+            1,
+            hc,
+            d,
+            spec.hc_eps,
+            spec.hc_sinkhorn_iters,
+            &format!("{lp}.da"),
         );
-        let an = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn_norm.weight"), 0.0)?;
+        let an = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_norm.weight"),
+            0.0,
+        )?;
         let xa = g.rms_norm(xa, an, zb_d, eps);
-        let wqa = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_a.weight"))?;
+        let wqa = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wq_a.weight"),
+        )?;
         let qr = emit_proj(&mut g, xa, &wqa, Shape::new(&[1, ql], f));
-        let qn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.q_norm.weight"), 0.0)?;
+        let qn = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.q_norm.weight"),
+            0.0,
+        )?;
         let qr = g.rms_norm(qr, qn, zb_ql, eps);
-        let wqb = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_b.weight"))?;
+        let wqb = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wq_b.weight"),
+        )?;
         let q = emit_proj(&mut g, qr, &wqb, Shape::new(&[1, nh * hd], f));
         let q = per_head_rms(&mut g, q, q_ones, zb_hd, 1, 1, nh, hd, eps);
         let q = rope_tail(&mut g, q, cos_p, sin_p, 1, nh, hd, rd);
         // New token's KV latent (roped) — this is what the host caches.
-        let wkv = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wkv.weight"))?;
+        let wkv = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wkv.weight"),
+        )?;
         let kv = emit_proj(&mut g, xa, &wkv, Shape::new(&[1, hd], f));
-        let kvn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.kv_norm.weight"), 0.0)?;
+        let kvn = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.kv_norm.weight"),
+            0.0,
+        )?;
         let kv = g.rms_norm(kv, kvn, zb_hd, eps);
         let kv_new = rope_tail(&mut g, kv, cos_p, sin_p, 1, 1, hd, rd); // [1, hd]
-        extra_outs.push((format!("kvnew.{il}"), g.reshape_(kv_new, vec![1, hd as i64])));
+        extra_outs.push((
+            format!("kvnew.{il}"),
+            g.reshape_(kv_new, vec![1, hd as i64]),
+        ));
         // Window key set = cached window ++ new (all valid — host holds only valid slots).
         let win_kv = if cache_len > 0 {
-            let kvc = g.input(&format!("kvcache.{il}"), Shape::new(&[cache_len, hd], f));
+            let kvc = g.input(format!("kvcache.{il}"), Shape::new(&[cache_len, hd], f));
             g.concat_(vec![kvc, kv_new], 0)
         } else {
             kv_new
@@ -4149,9 +4571,13 @@ pub fn build_deepseek_v4_decode(
         } else {
             let overlap = ratio == 4;
             let coff = if overlap { 2 } else { 1 };
-            let firing = (pos + 1) % ratio == 0;
+            let firing = (pos + 1).is_multiple_of(ratio);
             let ncomp_before = pos / ratio;
-            let ncomp_vis = if firing { ncomp_before + 1 } else { ncomp_before };
+            let ncomp_vis = if firing {
+                ncomp_before + 1
+            } else {
+                ncomp_before
+            };
             // The Indexer only prunes when ncomp > index_topk; below that it keeps
             // every causally-valid compressed position (exact, = the deterministic
             // mask, matching prefill's `indexer_on` gate). Refuse the pruning regime.
@@ -4164,29 +4590,62 @@ pub fn build_deepseek_v4_decode(
                 ));
             }
             // Compressor projections for the new token: ck/cg = wkv/wgate(xa).
-            let cw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wkv.weight"), true)?;
+            let cw = load_p(
+                &mut g,
+                &mut params,
+                weights,
+                &format!("{lp}.attn.compressor.wkv.weight"),
+                true,
+            )?;
             let ck_t = g.mm(xa, cw); // [1, coff*hd]
-            let cgw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wgate.weight"), true)?;
+            let cgw = load_p(
+                &mut g,
+                &mut params,
+                weights,
+                &format!("{lp}.attn.compressor.wgate.weight"),
+                true,
+            )?;
             let cg_raw = g.mm(xa, cgw);
             // Overlap adds APE per-token here; non-overlap lets build_kv_compressor_pool
             // add the whole-window APE.
             let cg_t = if overlap {
-                let ape = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.ape"), false)?;
+                let ape = load_p(
+                    &mut g,
+                    &mut params,
+                    weights,
+                    &format!("{lp}.attn.compressor.ape"),
+                    false,
+                )?;
                 let ape_row = g.narrow_(ape, 0, pos % ratio, 1); // [1, coff*hd]
                 g.add(cg_raw, ape_row)
             } else {
                 cg_raw
             };
             let compcache = if ncomp_before > 0 {
-                Some(g.input(&format!("compcache.{il}"), Shape::new(&[ncomp_before, hd], f)))
+                Some(g.input(
+                    format!("compcache.{il}"),
+                    Shape::new(&[ncomp_before, hd], f),
+                ))
             } else {
                 None
             };
             let comp_all = if firing {
-                let cnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.norm.weight"), 0.0)?;
+                let cnorm = load_norm(
+                    &mut g,
+                    &mut params,
+                    weights,
+                    &format!("{lp}.attn.compressor.norm.weight"),
+                    0.0,
+                )?;
                 let (win_ck, win_cg) = if ratio > 1 {
-                    let pck = g.input(&format!("partial_ck.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
-                    let pcg = g.input(&format!("partial_cg.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
+                    let pck = g.input(
+                        format!("partial_ck.{il}"),
+                        Shape::new(&[ratio - 1, coff * hd], f),
+                    );
+                    let pcg = g.input(
+                        format!("partial_cg.{il}"),
+                        Shape::new(&[ratio - 1, coff * hd], f),
+                    );
                     (g.concat_(vec![pck, ck_t], 0), g.concat_(vec![pcg, cg_t], 0))
                 } else {
                     (ck_t, cg_t)
@@ -4194,32 +4653,75 @@ pub fn build_deepseek_v4_decode(
                 let compressed_t = if overlap {
                     // Overlap pool needs the previous window (host-shifted; window 0 =
                     // 0 kv / -1e30 score → masked).
-                    let prev_kv = g.input(&format!("prev_kv.{il}"), Shape::new(&[ratio, coff * hd], f));
-                    let prev_score = g.input(&format!("prev_score.{il}"), Shape::new(&[ratio, coff * hd], f));
+                    let prev_kv =
+                        g.input(format!("prev_kv.{il}"), Shape::new(&[ratio, coff * hd], f));
+                    let prev_score = g.input(
+                        format!("prev_score.{il}"),
+                        Shape::new(&[ratio, coff * hd], f),
+                    );
                     build_overlap_pool_single(
-                        &mut g, &mut params, prev_kv, prev_score, win_ck, win_cg, cnorm, hd, eps,
+                        &mut g,
+                        &mut params,
+                        prev_kv,
+                        prev_score,
+                        win_ck,
+                        win_cg,
+                        cnorm,
+                        hd,
+                        eps,
                         &format!("{lp}.dov"),
                     )
                 } else {
-                    let ape = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.ape"), false)?;
+                    let ape = load_p(
+                        &mut g,
+                        &mut params,
+                        weights,
+                        &format!("{lp}.attn.compressor.ape"),
+                        false,
+                    )?;
                     build_kv_compressor_pool(
-                        &mut g, &mut params, win_ck, win_cg, ape, cnorm, 1, ratio, ratio, hd, eps,
+                        &mut g,
+                        &mut params,
+                        win_ck,
+                        win_cg,
+                        ape,
+                        cnorm,
+                        1,
+                        ratio,
+                        ratio,
+                        hd,
+                        eps,
                         &format!("{lp}.dcomp"),
                     )
                 };
-                extra_outs.push((format!("comp.{il}"), g.reshape_(compressed_t, vec![1, hd as i64])));
+                extra_outs.push((
+                    format!("comp.{il}"),
+                    g.reshape_(compressed_t, vec![1, hd as i64]),
+                ));
                 // Emit the current token's ck/cg too so the host reconstructs the
                 // current window (the next `prev` for overlap; ignored non-overlap).
-                extra_outs.push((format!("ck.{il}"), g.reshape_(ck_t, vec![1, (coff * hd) as i64])));
-                extra_outs.push((format!("cg.{il}"), g.reshape_(cg_t, vec![1, (coff * hd) as i64])));
+                extra_outs.push((
+                    format!("ck.{il}"),
+                    g.reshape_(ck_t, vec![1, (coff * hd) as i64]),
+                ));
+                extra_outs.push((
+                    format!("cg.{il}"),
+                    g.reshape_(cg_t, vec![1, (coff * hd) as i64]),
+                ));
                 let all = match compcache {
                     Some(c) => g.concat_(vec![c, compressed_t], 0),
                     None => compressed_t,
                 };
                 Some(all)
             } else {
-                extra_outs.push((format!("ck.{il}"), g.reshape_(ck_t, vec![1, (coff * hd) as i64])));
-                extra_outs.push((format!("cg.{il}"), g.reshape_(cg_t, vec![1, (coff * hd) as i64])));
+                extra_outs.push((
+                    format!("ck.{il}"),
+                    g.reshape_(ck_t, vec![1, (coff * hd) as i64]),
+                ));
+                extra_outs.push((
+                    format!("cg.{il}"),
+                    g.reshape_(cg_t, vec![1, (coff * hd) as i64]),
+                ));
                 compcache
             };
             match comp_all {
@@ -4228,49 +4730,156 @@ pub fn build_deepseek_v4_decode(
             }
         };
         let mask = synth_const(
-            &mut g, &mut params, &format!("{lp}.v4d.mask"), vec![0f32; n_keys], &[1, n_keys],
+            &mut g,
+            &mut params,
+            &format!("{lp}.v4d.mask"),
+            vec![0f32; n_keys],
+            &[1, n_keys],
         );
-        let sink = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.attn_sink"), false)?;
+        let sink = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.attn_sink"),
+            false,
+        )?;
         let q3 = g.reshape_(q, vec![1, nh as i64, hd as i64]);
         let o = build_v4_sink_attention(
-            &mut g, &mut params, q3, kv_all, mask, sink, scale, 1, nh, hd, n_keys, &format!("{lp}.dsa"),
+            &mut g,
+            &mut params,
+            q3,
+            kv_all,
+            mask,
+            sink,
+            scale,
+            1,
+            nh,
+            hd,
+            n_keys,
+            &format!("{lp}.dsa"),
         );
         let o_flat = g.reshape_(o, vec![1, (nh * hd) as i64]);
         let o_inv = rope_tail(&mut g, o_flat, cos_p, sininv_p, 1, nh, hd, rd);
         let dpg = nh * hd / spec.n_groups;
         let woa = load_v4_wo_a(
-            &mut g, &mut params, weights, &format!("{lp}.attn.wo_a.weight"),
-            spec.n_groups, spec.o_lora_rank, dpg,
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.wo_a.weight"),
+            spec.n_groups,
+            spec.o_lora_rank,
+            dpg,
         )?;
-        let wob = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn.wo_b.weight"))?;
-        let attn_out = build_v4_o_lora(&mut g, o_inv, woa, wob, 1, spec.n_groups, spec.o_lora_rank, dpg, d);
+        let wob = load_transposed_param(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.wo_b.weight"),
+        )?;
+        let attn_out = build_v4_o_lora(
+            &mut g,
+            o_inv,
+            woa,
+            wob,
+            1,
+            spec.n_groups,
+            spec.o_lora_rank,
+            dpg,
+            d,
+        );
         h = build_hc_post(&mut g, attn_out, residual, post_a, comb_a, 1, hc, d);
 
         // ── HC-wrapped FFN (dense SwiGLU or sqrtsoftplus MoE) ──
         let residual = h;
         let fn_f = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.fn"))?;
-        let sc_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.scale"), false)?;
-        let bs_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.base"), false)?;
+        let sc_f = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_hc.scale"),
+            false,
+        )?;
+        let bs_f = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_hc.base"),
+            false,
+        )?;
         let (xf, post_f, comb_f) = build_hc_pre(
-            &mut g, &mut params, h, fn_f, sc_f, bs_f, 1, hc, d, spec.hc_eps,
-            spec.hc_sinkhorn_iters, &format!("{lp}.df"),
+            &mut g,
+            &mut params,
+            h,
+            fn_f,
+            sc_f,
+            bs_f,
+            1,
+            hc,
+            d,
+            spec.hc_eps,
+            spec.hc_sinkhorn_iters,
+            &format!("{lp}.df"),
         );
-        let fnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.ffn_norm.weight"), 0.0)?;
+        let fnorm = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_norm.weight"),
+            0.0,
+        )?;
         let xf = g.rms_norm(xf, fnorm, zb_d, eps);
         let ffn_out = if il < spec.first_k_dense_replace {
-            let gp = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.gate_proj.weight"))?;
-            let up = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.up_proj.weight"))?;
-            let dn = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.down_proj.weight"))?;
+            let gp = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.ffn.gate_proj.weight"),
+            )?;
+            let up = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.ffn.up_proj.weight"),
+            )?;
+            let dn = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.ffn.down_proj.weight"),
+            )?;
             let gate = emit_proj(&mut g, xf, &gp, Shape::new(&[1, spec.intermediate_size], f));
             let upv = emit_proj(&mut g, xf, &up, Shape::new(&[1, spec.intermediate_size], f));
             let sg = g.silu(gate);
             let glu = g.mul(sg, upv);
             emit_proj(&mut g, glu, &dn, Shape::new(&[1, d], f))
+        } else if paged_moe {
+            // Split at the MoE boundary: emit the post-`ffn_norm` hidden and receive
+            // the host-computed (paged) MoE result. `xf` is `[1, d]`.
+            extra_outs.push((format!("moe_in.{il}"), xf));
+            g.input(format!("moe_out.{il}"), Shape::new(&[1, d], f))
         } else {
             let ds = v4_moe_spec(spec);
             let x3 = g.reshape_(xf, vec![1, 1, d as i64]);
-            let hash_ids = if il < spec.n_hash_layers { Some(input_ids_flat) } else { None };
-            let moe = build_deepseek_moe_ffn(&mut g, &mut params, packed, weights, &lp, x3, 1, 1, &ds, hash_ids)?;
+            let hash_ids = if il < spec.n_hash_layers {
+                Some(input_ids_flat)
+            } else {
+                None
+            };
+            let moe = build_deepseek_moe_ffn(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &lp,
+                x3,
+                1,
+                1,
+                &ds,
+                hash_ids,
+            )?;
             g.reshape_(moe, vec![1, d as i64])
         };
         h = build_hc_post(&mut g, ffn_out, residual, post_f, comb_f, 1, hc, d);
@@ -4280,7 +4889,19 @@ pub fn build_deepseek_v4_decode(
     let hfn = load_transposed_param(&mut g, &mut params, weights, "model.hc_head.fn")?;
     let hsc = load_p(&mut g, &mut params, weights, "model.hc_head.scale", false)?;
     let hbs = load_p(&mut g, &mut params, weights, "model.hc_head.base", false)?;
-    let x = build_hc_head(&mut g, &mut params, h, hfn, hsc, hbs, 1, hc, d, spec.hc_eps, "v4d.head");
+    let x = build_hc_head(
+        &mut g,
+        &mut params,
+        h,
+        hfn,
+        hsc,
+        hbs,
+        1,
+        hc,
+        d,
+        spec.hc_eps,
+        "v4d.head",
+    );
     let fnorm = load_norm(&mut g, &mut params, weights, "model.norm.weight", 0.0)?;
     let x = g.rms_norm(x, fnorm, zb_d, eps);
     let head_p = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
@@ -4352,6 +4973,11 @@ pub fn deepseek_v4_generate(
         for (n, dd) in &params {
             compiled.set_param(n, dd);
         }
+        // Bind packed MoE/quant codes (+ bf16 scale/bias slabs) as raw bytes — a
+        // MoE checkpoint's `switch_mlp` experts live here, not in `params`.
+        for (n, (b, _s, _)) in &packed {
+            compiled.set_param_typed(n, b, DType::U8);
+        }
         let mut owned: Vec<(String, Vec<f32>)> = vec![("token_id".into(), vec![token as f32])];
         for il in 0..nl {
             if cache_len > 0 {
@@ -4359,7 +4985,7 @@ pub fn deepseek_v4_generate(
             }
             let ratio = ratios[il];
             if ratio > 0 {
-                let firing = (pos + 1) % ratio == 0;
+                let firing = (pos + 1).is_multiple_of(ratio);
                 if pos / ratio > 0 {
                     owned.push((format!("compcache.{il}"), compcache[il].clone()));
                 }
@@ -4373,11 +4999,16 @@ pub fn deepseek_v4_generate(
                 }
             }
         }
-        let inputs: Vec<(&str, &[f32])> =
-            owned.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+        let inputs: Vec<(&str, &[f32])> = owned
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_slice()))
+            .collect();
         let out = compiled.run(&inputs);
         let get = |name: &str| -> Vec<f32> {
-            let i = onames.iter().position(|x| x == name).expect("decode output");
+            let i = onames
+                .iter()
+                .position(|x| x == name)
+                .expect("decode output");
             out[i].clone()
         };
         let logits = get("logits");
@@ -4390,7 +5021,7 @@ pub fn deepseek_v4_generate(
             }
             let ratio = ratios[il];
             if ratio > 0 {
-                if (pos + 1) % ratio == 0 {
+                if (pos + 1).is_multiple_of(ratio) {
                     compcache[il].extend_from_slice(&get(&format!("comp.{il}")));
                     if ratio == 4 {
                         let mut ckw = partial_ck[il].clone();
@@ -4413,11 +5044,182 @@ pub fn deepseek_v4_generate(
     let argmax = |l: &[f32]| -> u32 {
         l.iter()
             .enumerate()
-            .fold((0usize, f32::MIN), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) })
+            .fold(
+                (0usize, f32::MIN),
+                |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
+            )
             .0 as u32
     };
     // Prefill the prompt through the decode path (builds the cache); the last
     // token's logits seed the first generated token.
+    let mut logits = vec![0f32; spec.vocab_size];
+    for (pos, &tok) in prompt_ids.iter().enumerate() {
+        logits = step(pos, tok)?;
+    }
+    let mut out_ids = Vec::with_capacity(n_new);
+    for i in 0..n_new {
+        let next = argmax(&logits);
+        out_ids.push(next);
+        logits = step(prompt_ids.len() + i, next)?;
+    }
+    Ok(out_ids)
+}
+
+/// **Paged-MoE** greedy generation — the end-to-end decode with the MoE **split out
+/// of the graph** and run host-side (attention stays in-graph). Mirrors
+/// [`deepseek_v4_generate`] but builds the graph in paged mode
+/// ([`build_deepseek_v4_decode_moe`] with `paged_moe = true`): each routed-MoE layer
+/// emits `moe_in.{il}` (its post-`ffn_norm` hidden) and consumes `moe_out.{il}`.
+/// Each decode step runs the graph once per MoE layer, in layer order, filling
+/// `moe_out.{il}` from `moe_fn(il, token, xf)` — wire that to [`PagedGroupedMoe`] (+
+/// shared expert) so only the active experts ever touch memory. `moe_fn` receives the
+/// layer index, the **current decode token id** (for the first `n_hash_layers`, whose
+/// experts come from `gate.tid2eid[token]` rather than score top-k — use
+/// [`hash_route_experts`]), and the `[dim]` hidden; it returns the `[dim]` MoE result.
+/// Dense layers add no passes. Numerically identical to [`deepseek_v4_generate`] when
+/// `moe_fn` reproduces the in-graph MoE.
+pub fn deepseek_v4_generate_paged(
+    spec: &DeepseekV4Spec,
+    mut make_loader: impl FnMut() -> Box<dyn WeightLoader>,
+    device: rlx_runtime::Device,
+    prompt_ids: &[u32],
+    n_new: usize,
+    mut moe_fn: impl FnMut(usize, u32, &[f32]) -> Result<Vec<f32>>,
+) -> Result<Vec<u32>> {
+    use rlx_runtime::Session;
+    let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+        &rlx_flow::CompileProfile::qwen3_prefill(),
+        device,
+    );
+    let (nl, hd, d) = (spec.n_layers, spec.head_dim, spec.dim);
+    let window = spec.window_size.max(1);
+    let ratios: Vec<usize> = (0..nl)
+        .map(|il| spec.compress_ratios.get(il).copied().unwrap_or(0))
+        .collect();
+    let coffs: Vec<usize> = ratios.iter().map(|&r| if r == 4 { 2 } else { 1 }).collect();
+    let moe_layers: Vec<usize> = (0..nl)
+        .filter(|&il| il >= spec.first_k_dense_replace)
+        .collect();
+    let (mut win_ring, mut compcache) = (vec![Vec::<f32>::new(); nl], vec![Vec::<f32>::new(); nl]);
+    let (mut partial_ck, mut partial_cg) =
+        (vec![Vec::<f32>::new(); nl], vec![Vec::<f32>::new(); nl]);
+    let (mut prev_kv, mut prev_score) = (vec![Vec::<f32>::new(); nl], vec![Vec::<f32>::new(); nl]);
+    for il in 0..nl {
+        if ratios[il] == 4 {
+            prev_kv[il] = vec![0f32; ratios[il] * coffs[il] * hd];
+            prev_score[il] = vec![-1e30f32; ratios[il] * coffs[il] * hd];
+        }
+    }
+    let mut step = |pos: usize, token: u32| -> Result<Vec<f32>> {
+        let cache_len = if nl > 0 { win_ring[0].len() / hd } else { 0 };
+        let mut loader = make_loader();
+        let mut packed: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+        let (g, params, onames) =
+            build_deepseek_v4_decode_moe(spec, &mut *loader, pos, cache_len, &mut packed, true)?;
+        let mut compiled = Session::new(device).compile_with(g, &opts);
+        for (n, dd) in &params {
+            compiled.set_param(n, dd);
+        }
+        // Bind packed codes for any in-graph quant (attention/dense); routed-MoE
+        // experts are paged out of the graph so none appear here.
+        for (n, (b, _s, _)) in &packed {
+            compiled.set_param_typed(n, b, DType::U8);
+        }
+        // Base (non-MoE) inputs — identical across every pass this step.
+        let mut base: Vec<(String, Vec<f32>)> = vec![("token_id".into(), vec![token as f32])];
+        for il in 0..nl {
+            if cache_len > 0 {
+                base.push((format!("kvcache.{il}"), win_ring[il].clone()));
+            }
+            let ratio = ratios[il];
+            if ratio > 0 {
+                let firing = (pos + 1).is_multiple_of(ratio);
+                if pos / ratio > 0 {
+                    base.push((format!("compcache.{il}"), compcache[il].clone()));
+                }
+                if firing && ratio > 1 {
+                    base.push((format!("partial_ck.{il}"), partial_ck[il].clone()));
+                    base.push((format!("partial_cg.{il}"), partial_cg[il].clone()));
+                }
+                if firing && ratio == 4 {
+                    base.push((format!("prev_kv.{il}"), prev_kv[il].clone()));
+                    base.push((format!("prev_score.{il}"), prev_score[il].clone()));
+                }
+            }
+        }
+        // Assemble inputs = base ++ current moe_out.{il}; run one full pass.
+        let mut moe_out: HashMap<usize, Vec<f32>> =
+            moe_layers.iter().map(|&il| (il, vec![0f32; d])).collect();
+        let run = |compiled: &mut rlx_runtime::CompiledGraph,
+                   moe_out: &HashMap<usize, Vec<f32>>| {
+            let mut owned = base.clone();
+            for &il in &moe_layers {
+                owned.push((format!("moe_out.{il}"), moe_out[&il].clone()));
+            }
+            let inputs: Vec<(&str, &[f32])> = owned
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_slice()))
+                .collect();
+            compiled.run(&inputs)
+        };
+        // One pass per MoE layer (causal: `moe_in.{il}` is valid once layers < il are
+        // filled), then a final pass for logits + committed KV.
+        for &il in &moe_layers {
+            let out = run(&mut compiled, &moe_out);
+            let xf_i = onames
+                .iter()
+                .position(|x| *x == format!("moe_in.{il}"))
+                .expect("moe_in");
+            let xf = out[xf_i].clone();
+            moe_out.insert(il, moe_fn(il, token, &xf)?);
+        }
+        let out = run(&mut compiled, &moe_out);
+        let get = |name: &str| -> Vec<f32> {
+            out[onames
+                .iter()
+                .position(|x| x == name)
+                .expect("decode output")]
+            .clone()
+        };
+        let logits = get("logits");
+        let maxlen = (window - 1) * hd;
+        for il in 0..nl {
+            win_ring[il].extend_from_slice(&get(&format!("kvnew.{il}")));
+            if win_ring[il].len() > maxlen {
+                let drop = win_ring[il].len() - maxlen;
+                win_ring[il].drain(0..drop);
+            }
+            let ratio = ratios[il];
+            if ratio > 0 {
+                if (pos + 1).is_multiple_of(ratio) {
+                    compcache[il].extend_from_slice(&get(&format!("comp.{il}")));
+                    if ratio == 4 {
+                        let mut ckw = partial_ck[il].clone();
+                        ckw.extend_from_slice(&get(&format!("ck.{il}")));
+                        let mut cgw = partial_cg[il].clone();
+                        cgw.extend_from_slice(&get(&format!("cg.{il}")));
+                        prev_kv[il] = ckw;
+                        prev_score[il] = cgw;
+                    }
+                    partial_ck[il].clear();
+                    partial_cg[il].clear();
+                } else {
+                    partial_ck[il].extend_from_slice(&get(&format!("ck.{il}")));
+                    partial_cg[il].extend_from_slice(&get(&format!("cg.{il}")));
+                }
+            }
+        }
+        Ok(logits)
+    };
+    let argmax = |l: &[f32]| -> u32 {
+        l.iter()
+            .enumerate()
+            .fold(
+                (0usize, f32::MIN),
+                |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
+            )
+            .0 as u32
+    };
     let mut logits = vec![0f32; spec.vocab_size];
     for (pos, &tok) in prompt_ids.iter().enumerate() {
         logits = step(pos, tok)?;
@@ -4451,7 +5253,16 @@ pub fn build_deepseek_v4_decode_fixed(
     max_comp: usize,
     packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
-    build_deepseek_v4_decode_fixed_stage(spec, weights, 0..spec.n_layers, true, true, max_win, max_comp, packed)
+    build_deepseek_v4_decode_fixed_stage(
+        spec,
+        weights,
+        0..spec.n_layers,
+        true,
+        true,
+        max_win,
+        max_comp,
+        packed,
+    )
 }
 
 /// One **layer-range STAGE** of the fixed-shape decode graph — the distributed
@@ -4472,6 +5283,34 @@ pub fn build_deepseek_v4_decode_fixed_stage(
     max_win: usize,
     max_comp: usize,
     packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    build_deepseek_v4_decode_fixed_stage_moe(
+        spec, weights, layers, first, last, max_win, max_comp, packed, false, false,
+    )
+}
+
+/// [`build_deepseek_v4_decode_fixed_stage`] with the **compile-once PAGED MoE split**:
+/// `paged_moe` makes each routed-MoE layer emit `moe_in.{il}` + take `moe_out.{il}`
+/// (as in [`build_deepseek_v4_decode_moe`]) but on the FIXED-shape graph — so the
+/// backbone compiles ONCE (pos/mask/APE are inputs) and the host fills the MoE per
+/// token, avoiding the O(L²) per-token recompile of `deepseek_v4_generate_paged`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_deepseek_v4_decode_fixed_stage_moe(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    layers: std::ops::Range<usize>,
+    first: bool,
+    last: bool,
+    max_win: usize,
+    max_comp: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    paged_moe: bool,
+    // Attn/post split: build ONLY the attention side of a single MoE layer — emit
+    // `moe_in` + the `build_hc_post` inputs (`hcp_residual`/`hcp_postf`/`hcp_combf`)
+    // and STOP before the final `hc_post`/head, which move to [`build_v4_post_stage`].
+    // Removes the O(2L) two-pass attention recompute. Only for single-layer paged
+    // MoE stages (the layerwise driver); a no-op otherwise.
+    split_attn: bool,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
     let mut g = Graph::new("deepseek_v4_decode_fixed");
     let mut params: HashMap<String, Vec<f32>> = HashMap::new();
@@ -4505,12 +5344,21 @@ pub fn build_deepseek_v4_decode_fixed_stage(
             load_dense_dequant(&mut g, &mut params, weights, "model.embed_tokens.weight")?;
         let h0 = g.gather_(embed_w, token2, 0);
         let h0 = g.reshape_(h0, vec![1, 1, d as i64]);
-        let ones_hc = synth_const(&mut g, &mut params, "v4f.hc.ones", vec![1f32; hc], &[1, hc, 1]);
+        let ones_hc = synth_const(
+            &mut g,
+            &mut params,
+            "v4f.hc.ones",
+            vec![1f32; hc],
+            &[1, hc, 1],
+        );
         (g.mul(h0, ones_hc), Some(ids_flat))
     } else {
         (g.input("hidden_in", Shape::new(&[1, hc, d], f)), None)
     };
     let mut extra_outs: Vec<(String, NodeId)> = Vec::new();
+    // Set true once a split-attn MoE layer emits its `hcp_*` boundary — then the
+    // final `hc_post`/head/`main_hidden` are skipped (they live in the post graph).
+    let mut attn_only = false;
 
     for il in layers.clone() {
         let ratio = spec.compress_ratios.get(il).copied().unwrap_or(0);
@@ -4519,117 +5367,359 @@ pub fn build_deepseek_v4_decode_fixed_stage(
         let lp = format!("model.layers.{il}");
         // HC-wrapped MLA attention.
         let residual = h;
-        let fn_a = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
-        let sc_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.scale"), false)?;
-        let bs_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.base"), false)?;
+        let fn_a =
+            load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
+        let sc_a = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_hc.scale"),
+            false,
+        )?;
+        let bs_a = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_hc.base"),
+            false,
+        )?;
         let (xa, post_a, comb_a) = build_hc_pre(
-            &mut g, &mut params, h, fn_a, sc_a, bs_a, 1, hc, d, spec.hc_eps,
-            spec.hc_sinkhorn_iters, &format!("{lp}.fa"),
+            &mut g,
+            &mut params,
+            h,
+            fn_a,
+            sc_a,
+            bs_a,
+            1,
+            hc,
+            d,
+            spec.hc_eps,
+            spec.hc_sinkhorn_iters,
+            &format!("{lp}.fa"),
         );
-        let an = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn_norm.weight"), 0.0)?;
+        let an = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_norm.weight"),
+            0.0,
+        )?;
         let xa = g.rms_norm(xa, an, zb_d, eps);
-        let wqa = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_a.weight"))?;
+        let wqa = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wq_a.weight"),
+        )?;
         let qr = emit_proj(&mut g, xa, &wqa, Shape::new(&[1, ql], f));
-        let qn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.q_norm.weight"), 0.0)?;
+        let qn = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.q_norm.weight"),
+            0.0,
+        )?;
         let qr = g.rms_norm(qr, qn, zb_ql, eps);
-        let wqb = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_b.weight"))?;
+        let wqb = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wq_b.weight"),
+        )?;
         let q = emit_proj(&mut g, qr, &wqb, Shape::new(&[1, nh * hd], f));
         let q = per_head_rms(&mut g, q, q_ones, zb_hd, 1, 1, nh, hd, eps);
         let q = rope_tail(&mut g, q, cos_p, sin_p, 1, nh, hd, rd);
-        let wkv = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wkv.weight"))?;
+        let wkv = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wkv.weight"),
+        )?;
         let kv = emit_proj(&mut g, xa, &wkv, Shape::new(&[1, hd], f));
-        let kvn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.kv_norm.weight"), 0.0)?;
+        let kvn = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.kv_norm.weight"),
+            0.0,
+        )?;
         let kv = g.rms_norm(kv, kvn, zb_hd, eps);
         let kv_new = rope_tail(&mut g, kv, cos_p, sin_p, 1, 1, hd, rd);
-        extra_outs.push((format!("kvnew.{il}"), g.reshape_(kv_new, vec![1, hd as i64])));
+        extra_outs.push((
+            format!("kvnew.{il}"),
+            g.reshape_(kv_new, vec![1, hd as i64]),
+        ));
 
-        let wcache = g.input(&format!("wcache.{il}"), Shape::new(&[max_win, hd], f));
+        let wcache = g.input(format!("wcache.{il}"), Shape::new(&[max_win, hd], f));
         let (kv_all, n_keys) = if ratio == 0 {
             (g.concat_(vec![wcache, kv_new], 0), max_win + 1)
         } else {
             // Compressor projections + always-pool (result masked unless firing).
-            let cw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wkv.weight"), true)?;
+            let cw = load_p(
+                &mut g,
+                &mut params,
+                weights,
+                &format!("{lp}.attn.compressor.wkv.weight"),
+                true,
+            )?;
             let ck_t = g.mm(xa, cw);
-            let cgw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wgate.weight"), true)?;
+            let cgw = load_p(
+                &mut g,
+                &mut params,
+                weights,
+                &format!("{lp}.attn.compressor.wgate.weight"),
+                true,
+            )?;
             let cg_raw = g.mm(xa, cgw);
-            let cnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.norm.weight"), 0.0)?;
+            let cnorm = load_norm(
+                &mut g,
+                &mut params,
+                weights,
+                &format!("{lp}.attn.compressor.norm.weight"),
+                0.0,
+            )?;
             // Overlap adds the (host-provided) APE row per token; non-overlap lets
             // build_kv_compressor_pool add the whole-window APE.
             let cg_emit = if overlap {
-                let ape_row = g.input(&format!("ape_row.{il}"), Shape::new(&[1, coff * hd], f));
+                let ape_row = g.input(format!("ape_row.{il}"), Shape::new(&[1, coff * hd], f));
                 g.add(cg_raw, ape_row)
             } else {
                 cg_raw
             };
-            let pck = g.input(&format!("partial_ck.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
-            let pcg = g.input(&format!("partial_cg.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
+            let pck = g.input(
+                format!("partial_ck.{il}"),
+                Shape::new(&[ratio - 1, coff * hd], f),
+            );
+            let pcg = g.input(
+                format!("partial_cg.{il}"),
+                Shape::new(&[ratio - 1, coff * hd], f),
+            );
             let win_ck = g.concat_(vec![pck, ck_t], 0);
             let win_cg = g.concat_(vec![pcg, cg_emit], 0);
             let compressed_t = if overlap {
-                let prev_kv = g.input(&format!("prev_kv.{il}"), Shape::new(&[ratio, coff * hd], f));
-                let prev_score = g.input(&format!("prev_score.{il}"), Shape::new(&[ratio, coff * hd], f));
+                let prev_kv = g.input(format!("prev_kv.{il}"), Shape::new(&[ratio, coff * hd], f));
+                let prev_score = g.input(
+                    format!("prev_score.{il}"),
+                    Shape::new(&[ratio, coff * hd], f),
+                );
                 build_overlap_pool_single(
-                    &mut g, &mut params, prev_kv, prev_score, win_ck, win_cg, cnorm, hd, eps,
+                    &mut g,
+                    &mut params,
+                    prev_kv,
+                    prev_score,
+                    win_ck,
+                    win_cg,
+                    cnorm,
+                    hd,
+                    eps,
                     &format!("{lp}.fov"),
                 )
             } else {
-                let ape = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.ape"), false)?;
+                let ape = load_p(
+                    &mut g,
+                    &mut params,
+                    weights,
+                    &format!("{lp}.attn.compressor.ape"),
+                    false,
+                )?;
                 build_kv_compressor_pool(
-                    &mut g, &mut params, win_ck, win_cg, ape, cnorm, 1, ratio, ratio, hd, eps,
+                    &mut g,
+                    &mut params,
+                    win_ck,
+                    win_cg,
+                    ape,
+                    cnorm,
+                    1,
+                    ratio,
+                    ratio,
+                    hd,
+                    eps,
                     &format!("{lp}.fcomp"),
                 )
             };
-            extra_outs.push((format!("comp.{il}"), g.reshape_(compressed_t, vec![1, hd as i64])));
-            extra_outs.push((format!("ck.{il}"), g.reshape_(ck_t, vec![1, (coff * hd) as i64])));
-            extra_outs.push((format!("cg.{il}"), g.reshape_(cg_emit, vec![1, (coff * hd) as i64])));
-            let compcache = g.input(&format!("compcache.{il}"), Shape::new(&[max_comp, hd], f));
+            extra_outs.push((
+                format!("comp.{il}"),
+                g.reshape_(compressed_t, vec![1, hd as i64]),
+            ));
+            extra_outs.push((
+                format!("ck.{il}"),
+                g.reshape_(ck_t, vec![1, (coff * hd) as i64]),
+            ));
+            extra_outs.push((
+                format!("cg.{il}"),
+                g.reshape_(cg_emit, vec![1, (coff * hd) as i64]),
+            ));
+            let compcache = g.input(format!("compcache.{il}"), Shape::new(&[max_comp, hd], f));
             (
                 g.concat_(vec![wcache, kv_new, compcache, compressed_t], 0),
                 max_win + 1 + max_comp + 1,
             )
         };
-        let mask = g.input(&format!("mask.{il}"), Shape::new(&[1, n_keys], f));
-        let sink = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.attn_sink"), false)?;
+        let mask = g.input(format!("mask.{il}"), Shape::new(&[1, n_keys], f));
+        let sink = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.attn_sink"),
+            false,
+        )?;
         let q3 = g.reshape_(q, vec![1, nh as i64, hd as i64]);
         let o = build_v4_sink_attention(
-            &mut g, &mut params, q3, kv_all, mask, sink, scale, 1, nh, hd, n_keys, &format!("{lp}.fsa"),
+            &mut g,
+            &mut params,
+            q3,
+            kv_all,
+            mask,
+            sink,
+            scale,
+            1,
+            nh,
+            hd,
+            n_keys,
+            &format!("{lp}.fsa"),
         );
         let o_flat = g.reshape_(o, vec![1, (nh * hd) as i64]);
         let o_inv = rope_tail(&mut g, o_flat, cos_p, sininv_p, 1, nh, hd, rd);
         let dpg = nh * hd / spec.n_groups;
         let woa = load_v4_wo_a(
-            &mut g, &mut params, weights, &format!("{lp}.attn.wo_a.weight"),
-            spec.n_groups, spec.o_lora_rank, dpg,
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.wo_a.weight"),
+            spec.n_groups,
+            spec.o_lora_rank,
+            dpg,
         )?;
-        let wob = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn.wo_b.weight"))?;
-        let attn_out = build_v4_o_lora(&mut g, o_inv, woa, wob, 1, spec.n_groups, spec.o_lora_rank, dpg, d);
+        let wob = load_transposed_param(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.wo_b.weight"),
+        )?;
+        let attn_out = build_v4_o_lora(
+            &mut g,
+            o_inv,
+            woa,
+            wob,
+            1,
+            spec.n_groups,
+            spec.o_lora_rank,
+            dpg,
+            d,
+        );
         h = build_hc_post(&mut g, attn_out, residual, post_a, comb_a, 1, hc, d);
 
         // HC-wrapped FFN.
         let residual = h;
         let fn_f = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.fn"))?;
-        let sc_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.scale"), false)?;
-        let bs_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.base"), false)?;
+        let sc_f = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_hc.scale"),
+            false,
+        )?;
+        let bs_f = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_hc.base"),
+            false,
+        )?;
         let (xf, post_f, comb_f) = build_hc_pre(
-            &mut g, &mut params, h, fn_f, sc_f, bs_f, 1, hc, d, spec.hc_eps,
-            spec.hc_sinkhorn_iters, &format!("{lp}.ff"),
+            &mut g,
+            &mut params,
+            h,
+            fn_f,
+            sc_f,
+            bs_f,
+            1,
+            hc,
+            d,
+            spec.hc_eps,
+            spec.hc_sinkhorn_iters,
+            &format!("{lp}.ff"),
         );
-        let fnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.ffn_norm.weight"), 0.0)?;
+        let fnorm = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_norm.weight"),
+            0.0,
+        )?;
         let xf = g.rms_norm(xf, fnorm, zb_d, eps);
         let ffn_out = if il < spec.first_k_dense_replace {
-            let gp = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.gate_proj.weight"))?;
-            let up = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.up_proj.weight"))?;
-            let dn = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.down_proj.weight"))?;
+            let gp = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.ffn.gate_proj.weight"),
+            )?;
+            let up = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.ffn.up_proj.weight"),
+            )?;
+            let dn = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.ffn.down_proj.weight"),
+            )?;
             let gate = emit_proj(&mut g, xf, &gp, Shape::new(&[1, spec.intermediate_size], f));
             let upv = emit_proj(&mut g, xf, &up, Shape::new(&[1, spec.intermediate_size], f));
             let sg = g.silu(gate);
             let glu = g.mul(sg, upv);
             emit_proj(&mut g, glu, &dn, Shape::new(&[1, d], f))
+        } else if paged_moe && split_attn {
+            // Attn/post split: emit `moe_in` + the `hc_post` inputs and STOP here —
+            // `build_v4_post_stage` finishes the layer once the host MoE fills moe_out.
+            extra_outs.push((format!("moe_in.{il}"), xf));
+            extra_outs.push((
+                format!("hcp_residual.{il}"),
+                g.reshape_(residual, vec![1, (hc * d) as i64]),
+            ));
+            extra_outs.push((
+                format!("hcp_postf.{il}"),
+                g.reshape_(post_f, vec![1, hc as i64]),
+            ));
+            extra_outs.push((
+                format!("hcp_combf.{il}"),
+                g.reshape_(comb_f, vec![1, (hc * hc) as i64]),
+            ));
+            attn_only = true;
+            break;
+        } else if paged_moe {
+            // Compile-once split: emit the post-ffn_norm hidden, take the host MoE.
+            extra_outs.push((format!("moe_in.{il}"), xf));
+            g.input(format!("moe_out.{il}"), Shape::new(&[1, d], f))
         } else {
             let ds = v4_moe_spec(spec);
             let x3 = g.reshape_(xf, vec![1, 1, d as i64]);
-            let hash_ids = if il < spec.n_hash_layers { input_ids_flat } else { None };
-            let moe = build_deepseek_moe_ffn(&mut g, &mut params, packed, weights, &lp, x3, 1, 1, &ds, hash_ids)?;
+            let hash_ids = if il < spec.n_hash_layers {
+                input_ids_flat
+            } else {
+                None
+            };
+            let moe = build_deepseek_moe_ffn(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &lp,
+                x3,
+                1,
+                1,
+                &ds,
+                hash_ids,
+            )?;
             g.reshape_(moe, vec![1, d as i64])
         };
         h = build_hc_post(&mut g, ffn_out, residual, post_f, comb_f, 1, hc, d);
@@ -4639,18 +5729,38 @@ pub fn build_deepseek_v4_decode_fixed_stage(
         // `h.mean(dim=2)` at `dspark_target_layer_ids`).
         if spec.dspark_target_layer_ids.contains(&il) {
             let mh = g.mean(h, vec![1], false); // [1, d] over the hc streams
-            extra_outs.push((format!("main_hidden.{il}"), g.reshape_(mh, vec![1, d as i64])));
+            extra_outs.push((
+                format!("main_hidden.{il}"),
+                g.reshape_(mh, vec![1, d as i64]),
+            ));
         }
     }
 
     // Last stage: hc_head → norm → lm_head → logits. Others relay the hidden.
     let mut outs;
     let mut names;
-    if last {
+    if attn_only {
+        // Attn/post split: the graph ends at the `hcp_*`/`moe_in` boundary; the post
+        // graph produces `hidden_out`/`logits`. Outputs are the extra_outs only.
+        outs = Vec::new();
+        names = Vec::new();
+    } else if last {
         let hfn = load_transposed_param(&mut g, &mut params, weights, "model.hc_head.fn")?;
         let hsc = load_p(&mut g, &mut params, weights, "model.hc_head.scale", false)?;
         let hbs = load_p(&mut g, &mut params, weights, "model.hc_head.base", false)?;
-        let x = build_hc_head(&mut g, &mut params, h, hfn, hsc, hbs, 1, hc, d, spec.hc_eps, "v4f.head");
+        let x = build_hc_head(
+            &mut g,
+            &mut params,
+            h,
+            hfn,
+            hsc,
+            hbs,
+            1,
+            hc,
+            d,
+            spec.hc_eps,
+            "v4f.head",
+        );
         let fnorm = load_norm(&mut g, &mut params, weights, "model.norm.weight", 0.0)?;
         let x = g.rms_norm(x, fnorm, zb_d, eps);
         let head_p = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
@@ -4659,12 +5769,83 @@ pub fn build_deepseek_v4_decode_fixed_stage(
         outs = vec![logits];
         names = vec!["logits".to_string()];
     } else {
+        // NB the per-stage hidden boundary (`hidden_out`) is CORRECT on CPU; on the
+        // Metal backbone (`--attn-gpu`) a non-`logits` graph output of this op sequence
+        // reads back as ZEROS — a Metal backend flush/materialization bug (the routed
+        // MoE grouped kernel on Metal is unaffected; CPU backbone + GPU MoE is the
+        // validated fast path). Keep CPU-correct.
         outs = vec![g.reshape_(h, vec![1, hc as i64, d as i64])];
         names = vec!["hidden_out".to_string()];
     }
     for (name, node) in extra_outs {
         names.push(name);
         outs.push(node);
+    }
+    g.set_outputs(outs);
+    Ok((g, params, names))
+}
+
+/// **Attn/post split — the POST graph.** The weight-free `build_hc_post` (+ the
+/// `hc_head → norm → lm_head` on the `last` stage) as its own tiny graph, so the
+/// expensive attention + `build_hc_pre` runs ONCE per token (in the attn graph,
+/// built with `split_attn=true`) instead of TWICE (the old O(2L) two-pass, which
+/// recomputed all of attention just to apply `moe_out`). Inputs (the attn graph's
+/// `hcp_*` outputs + the host MoE result): `hcp_residual` `[1,hc*d]`, `hcp_postf`
+/// `[1,hc]`, `hcp_combf` `[1,hc*hc]`, `moe_out` `[1,d]`. Output: `hidden_out`
+/// `[1,hc,d]` (else `logits` on `last`); `main_hidden` `[1,d]` when `target`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_v4_post_stage(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    last: bool,
+    target: bool,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    let mut g = Graph::new("deepseek_v4_post");
+    let mut params: HashMap<String, Vec<f32>> = HashMap::new();
+    let f = DType::F32;
+    let (d, hc) = (spec.dim, spec.hc_mult);
+    let eps = spec.rms_norm_eps;
+    let zb_d = synth_zero(&mut g, &mut params, "v4post.zb.d", d);
+    let residual_in = g.input("hcp_residual", Shape::new(&[1, hc * d], f));
+    let residual = g.reshape_(residual_in, vec![1, hc as i64, d as i64]);
+    let post_f = g.input("hcp_postf", Shape::new(&[1, hc], f));
+    let comb_f = g.input("hcp_combf", Shape::new(&[1, hc * hc], f));
+    let moe_out = g.input("moe_out", Shape::new(&[1, d], f));
+    let h = build_hc_post(&mut g, moe_out, residual, post_f, comb_f, 1, hc, d);
+    let mut outs: Vec<NodeId> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    if last {
+        let hfn = load_transposed_param(&mut g, &mut params, weights, "model.hc_head.fn")?;
+        let hsc = load_p(&mut g, &mut params, weights, "model.hc_head.scale", false)?;
+        let hbs = load_p(&mut g, &mut params, weights, "model.hc_head.base", false)?;
+        let x = build_hc_head(
+            &mut g,
+            &mut params,
+            h,
+            hfn,
+            hsc,
+            hbs,
+            1,
+            hc,
+            d,
+            spec.hc_eps,
+            "v4post.head",
+        );
+        let fnorm = load_norm(&mut g, &mut params, weights, "model.norm.weight", 0.0)?;
+        let x = g.rms_norm(x, fnorm, zb_d, eps);
+        let head_p = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
+        let logits = emit_proj(&mut g, x, &head_p, Shape::new(&[1, spec.vocab_size], f));
+        outs.push(g.reshape_(logits, vec![1, spec.vocab_size as i64]));
+        names.push("logits".to_string());
+    } else {
+        outs.push(g.reshape_(h, vec![1, hc as i64, d as i64]));
+        names.push("hidden_out".to_string());
+    }
+    if target {
+        let mh = g.mean(h, vec![1], false);
+        outs.push(g.reshape_(mh, vec![1, d as i64]));
+        names.push("main_hidden".to_string());
     }
     g.set_outputs(outs);
     Ok((g, params, names))
@@ -4681,6 +5862,7 @@ pub struct V4Decoder {
     compiled: rlx_runtime::CompiledGraph,
     out_names: Vec<String>,
     vocab: usize,
+    dim: usize,
     hd: usize,
     half: usize,
     rd: usize,
@@ -4702,6 +5884,16 @@ pub struct V4Decoder {
     target_layers: Vec<usize>,
     main_hidden: Option<Vec<f32>>,
     pos: usize,
+    /// Non-empty when built in **paged-MoE** mode ([`Self::new_stage_paged`]): the
+    /// MoE layer indices in this stage whose `moe_out.{il}` the host fills each step
+    /// (see [`Self::step_paged`]). Empty ⇒ resident MoE in-graph.
+    moe_layers: Vec<usize>,
+    /// **Attn/post split** ([`Self::new_stage_paged_split`]): when `Some`, the main
+    /// `compiled` graph is attention-only (emits `moe_in` + `hcp_*` and stops), and
+    /// this weight-free graph ([`build_v4_post_stage`]) applies `moe_out` to produce
+    /// `hidden_out`/`logits` — so attention runs ONCE per token, not twice.
+    post: Option<rlx_runtime::CompiledGraph>,
+    post_names: Vec<String>,
 }
 
 /// A checkpoint of a [`V4Decoder`]'s KV cache + position. Take one before
@@ -4748,6 +5940,158 @@ impl V4Decoder {
         self.pos = s.pos;
     }
 
+    /// Assemble the batch-verify graph inputs for `block` tokens at the current pos
+    /// from this decoder's cache (window/compressed/partial/prev) — the block
+    /// analogue of [`Self::step_io`]'s per-token assembly. `max_comp` = the verify
+    /// graph's compressed-cache dim. Handles all layer types incl. the in-block
+    /// compressor candidate visibility (fire ⇒ visible to that block query onward).
+    fn verify_block_inputs(
+        &self,
+        block: usize,
+        btok: &[u32],
+        max_comp: usize,
+    ) -> Vec<(String, Vec<f32>)> {
+        let (hd, half, rd, mw, pos) = (self.hd, self.half.max(1), self.rd, self.max_win, self.pos);
+        let (mut cosb, mut sinb, mut sininvb) = (
+            vec![0f32; block * half],
+            vec![0f32; block * half],
+            vec![0f32; block * half],
+        );
+        for p in 0..block {
+            for i in 0..half {
+                let fr = self.rope_theta.powf(-(2.0 * i as f64) / rd as f64);
+                let (s, c) = ((pos + p) as f64 * fr).sin_cos();
+                cosb[p * half + i] = c as f32;
+                sinb[p * half + i] = s as f32;
+                sininvb[p * half + i] = -(s as f32);
+            }
+        }
+        let mut owned: Vec<(String, Vec<f32>)> = vec![
+            ("token_id".into(), btok.iter().map(|&x| x as f32).collect()),
+            ("cos".into(), cosb),
+            ("sin".into(), sinb),
+            ("sininv".into(), sininvb),
+        ];
+        let padr = |v: &[f32], rows: usize| -> Vec<f32> {
+            let mut o = vec![0f32; rows * hd];
+            let n = v.len().min(rows * hd);
+            o[..n].copy_from_slice(&v[..n]);
+            o
+        };
+        for il in self.layers.clone() {
+            let r = self.ratios[il];
+            let coff = self.coffs[il];
+            let wlen = self.win_ring[il].len() / hd;
+            let ncomp = self.compcache[il].len() / hd;
+            owned.push((format!("wcache.{il}"), padr(&self.win_ring[il], mw)));
+            let nk = if r == 0 {
+                mw + block
+            } else {
+                mw + block + max_comp + block
+            };
+            let mut m = vec![-1e30f32; block * nk];
+            for row in 0..block {
+                for s in 0..wlen.min(mw) {
+                    m[row * nk + s] = 0.0; // window valid
+                }
+                for j in 0..=row {
+                    m[row * nk + mw + j] = 0.0; // block-causal
+                }
+                if r > 0 {
+                    for c in 0..ncomp.min(max_comp) {
+                        m[row * nk + mw + block + c] = 0.0; // existing compressed (all pre-block)
+                    }
+                    let cand0 = mw + block + max_comp;
+                    for j in 0..block {
+                        if (pos + j + 1) % r == 0 && j <= row {
+                            m[row * nk + cand0 + j] = 0.0; // in-block compressed, visible
+                        }
+                    }
+                }
+            }
+            owned.push((format!("mask.{il}"), m));
+            if r > 0 {
+                owned.push((
+                    format!("compcache.{il}"),
+                    padr(&self.compcache[il], max_comp),
+                ));
+                let slots = r - 1;
+                let np = self.partial_ck[il].len() / (coff * hd);
+                let mut fpk = vec![0f32; (slots - np) * coff * hd];
+                fpk.extend_from_slice(&self.partial_ck[il]);
+                let mut fpg = vec![0f32; (slots - np) * coff * hd];
+                fpg.extend_from_slice(&self.partial_cg[il]);
+                owned.push((format!("pck.{il}"), fpk));
+                owned.push((format!("pcg.{il}"), fpg));
+                if r == 4 {
+                    owned.push((
+                        format!("ape_idx.{il}"),
+                        (0..block).map(|i| ((pos + i) % r) as f32).collect(),
+                    ));
+                    let pk = if self.prev_kv[il].is_empty() {
+                        vec![0f32; r * coff * hd]
+                    } else {
+                        self.prev_kv[il].clone()
+                    };
+                    let ps = if self.prev_score[il].is_empty() {
+                        vec![-1e30f32; r * coff * hd]
+                    } else {
+                        self.prev_score[il].clone()
+                    };
+                    owned.push((format!("prev_kv.{il}"), pk));
+                    owned.push((format!("prev_score.{il}"), ps));
+                }
+            }
+        }
+        owned
+    }
+
+    /// Commit the accepted block prefix (`accept_len+1` tokens) into the cache from
+    /// the verify outputs — the block analogue of [`Self::step_io`]'s cache update
+    /// (window append + compressor partial/compcache/prev state machine). `get`
+    /// fetches a verify output by name. Exact for ≤1 overlap fire per block (block≤5).
+    fn commit_block(&mut self, accept_len: usize, get: impl Fn(&str) -> Vec<f32>) {
+        let hd = self.hd;
+        let maxwin = self.max_win * hd;
+        let pos = self.pos;
+        let n = accept_len + 1;
+        for il in self.layers.clone() {
+            let kvn = get(&format!("kvnew.{il}"));
+            self.win_ring[il].extend_from_slice(&kvn[..n * hd]);
+            if self.win_ring[il].len() > maxwin {
+                let d = self.win_ring[il].len() - maxwin;
+                self.win_ring[il].drain(0..d);
+            }
+            let r = self.ratios[il];
+            if r > 0 {
+                let coff = self.coffs[il];
+                let ck = get(&format!("ck.{il}"));
+                let cg = get(&format!("cg.{il}"));
+                let comp = get(&format!("comp.{il}"));
+                let cw = coff * hd;
+                for i in 0..n {
+                    if (pos + i + 1).is_multiple_of(r) {
+                        self.compcache[il].extend_from_slice(&comp[i * hd..(i + 1) * hd]);
+                        if r == 4 {
+                            let mut ckw = self.partial_ck[il].clone();
+                            ckw.extend_from_slice(&ck[i * cw..(i + 1) * cw]);
+                            let mut cgw = self.partial_cg[il].clone();
+                            cgw.extend_from_slice(&cg[i * cw..(i + 1) * cw]);
+                            self.prev_kv[il] = ckw;
+                            self.prev_score[il] = cgw;
+                        }
+                        self.partial_ck[il].clear();
+                        self.partial_cg[il].clear();
+                    } else {
+                        self.partial_ck[il].extend_from_slice(&ck[i * cw..(i + 1) * cw]);
+                        self.partial_cg[il].extend_from_slice(&cg[i * cw..(i + 1) * cw]);
+                    }
+                }
+            }
+        }
+        self.pos = pos + n;
+    }
+
     /// Full-model decoder (all layers, first+last). See [`Self::new_stage`] for a
     /// single pipeline stage.
     pub fn new(
@@ -4757,7 +6101,16 @@ impl V4Decoder {
         max_comp: usize,
         device: rlx_runtime::Device,
     ) -> Result<Self> {
-        Self::new_stage(spec, weights, 0..spec.n_layers, true, true, max_win, max_comp, device)
+        Self::new_stage(
+            spec,
+            weights,
+            0..spec.n_layers,
+            true,
+            true,
+            max_win,
+            max_comp,
+            device,
+        )
     }
 
     /// One pipeline **stage** decoder over `layers` (holds only its layers' KV
@@ -4774,6 +6127,67 @@ impl V4Decoder {
         max_win: usize,
         max_comp: usize,
         device: rlx_runtime::Device,
+    ) -> Result<Self> {
+        Self::new_stage_impl(
+            spec, weights, layers, first, last, max_win, max_comp, device, false, false,
+        )
+    }
+
+    /// [`Self::new_stage`] in **compile-once PAGED MoE** mode: the routed-MoE layers
+    /// are split out of the graph (`moe_in`/`moe_out`), so the backbone compiles ONCE
+    /// and [`Self::step_paged`] fills the MoE host-side per token. This is the fix for
+    /// the O(L²) per-token recompile of [`deepseek_v4_generate_paged`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_stage_paged(
+        spec: &DeepseekV4Spec,
+        weights: &mut dyn WeightLoader,
+        layers: std::ops::Range<usize>,
+        first: bool,
+        last: bool,
+        max_win: usize,
+        max_comp: usize,
+        device: rlx_runtime::Device,
+    ) -> Result<Self> {
+        Self::new_stage_impl(
+            spec, weights, layers, first, last, max_win, max_comp, device, true, false,
+        )
+    }
+
+    /// [`Self::new_stage_paged`] with the **attn/post split** for a single MoE layer:
+    /// the main graph is attention-only and a tiny weight-free post graph applies
+    /// `moe_out` — halving the per-token attention (no O(2L) two-pass recompute).
+    /// Falls back to the plain paged stage for dense / non-single-layer stages.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_stage_paged_split(
+        spec: &DeepseekV4Spec,
+        weights: &mut dyn WeightLoader,
+        layers: std::ops::Range<usize>,
+        first: bool,
+        last: bool,
+        max_win: usize,
+        max_comp: usize,
+        device: rlx_runtime::Device,
+    ) -> Result<Self> {
+        // Only single-layer MoE stages benefit; dense layers have no host-MoE boundary.
+        let il = layers.start;
+        let is_moe = layers.len() == 1 && il >= spec.first_k_dense_replace;
+        Self::new_stage_impl(
+            spec, weights, layers, first, last, max_win, max_comp, device, true, is_moe,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_stage_impl(
+        spec: &DeepseekV4Spec,
+        weights: &mut dyn WeightLoader,
+        layers: std::ops::Range<usize>,
+        first: bool,
+        last: bool,
+        max_win: usize,
+        max_comp: usize,
+        device: rlx_runtime::Device,
+        paged_moe: bool,
+        split_attn: bool,
     ) -> Result<Self> {
         let nl = spec.n_layers;
         let hd = spec.head_dim;
@@ -4795,23 +6209,87 @@ impl V4Decoder {
             device,
         );
         let mut packed: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
-        let (g, params, out_names) = build_deepseek_v4_decode_fixed_stage(
-            spec, weights, layers.clone(), first, last, max_win, max_comp, &mut packed,
-        )?;
-        let mut compiled = rlx_runtime::Session::new(device).compile_with(g, &opts);
-        // Bind params, **consuming** each map so every source buffer is dropped the
-        // moment it's copied into the arena — peak resident ≈ arena + one param
-        // (not maps + arena = 2×). Weights stay PACKED (MXFP4/MXFP8, ~4× smaller
-        // than F32), so a ~1/3-of-model stage is ~50GB and fits a 64GB node with
-        // only modest swap. Binding the packed U8 codes (previously missing — the
-        // stage only ever `--build-only`'d) is also what makes a real forward work.
-        for (n, dd) in params {
-            compiled.set_param(&n, &dd);
-        }
-        for (n, (bytes, _scheme, _shape)) in packed {
-            compiled.set_param_typed(&n, &bytes, DType::U8);
-        }
-        compiled.finalize_params();
+        // `RLX_DSV4_STREAM_COMPILE=1`: STREAM-COMPILE — structure-build the graph
+        // (defer the big packed codes: only shapes + small BF16 scales held), compile
+        // to allocate the arena, then stream each param into it on demand. The source
+        // weights and the compiled arena never coexist at 2×, so a FULL single-node
+        // model fits ~1× (its resident size, e.g. ~90 GB for 2-bit) instead of ~2×
+        // (~180 GB → OOM on a 64 GB box). Costs a 2nd read of the codes (fast on NVMe);
+        // default OFF (eager) since a stage that fits doesn't need it.
+        let stream = std::env::var("RLX_DSV4_STREAM_COMPILE").ok().as_deref() == Some("1");
+        let (compiled, out_names) = if stream {
+            use rlx_distributed::{Param, ParamSource};
+            let (g, params, out_names, manifest) = {
+                let mut sloader = crate::distributed_bridge::StructureLoader::new(weights);
+                let (g, p, o) = build_deepseek_v4_decode_fixed_stage_moe(
+                    spec,
+                    &mut sloader,
+                    layers.clone(),
+                    first,
+                    last,
+                    max_win,
+                    max_comp,
+                    &mut packed,
+                    paged_moe,
+                    split_attn,
+                )?;
+                (g, p, o, sloader.manifest)
+            };
+            let names: Vec<String> = g
+                .nodes()
+                .iter()
+                .filter_map(|n| match &n.op {
+                    Op::Param { name } => Some(name.clone()),
+                    _ => None,
+                })
+                .collect();
+            let mut compiled = rlx_runtime::Session::new(device).compile_with(g, &opts);
+            let synth: HashMap<String, Vec<f32>> =
+                params.into_iter().filter(|(_, v)| !v.is_empty()).collect();
+            let synth_packed: HashMap<String, Vec<u8>> = packed
+                .into_iter()
+                .filter_map(|(k, (b, _, _))| (!b.is_empty()).then_some((k, b)))
+                .collect();
+            let mut source = crate::distributed_bridge::ManifestParamSource {
+                loader: weights,
+                manifest,
+                synth,
+                synth_packed,
+            };
+            for name in &names {
+                match source.get(name) {
+                    Some(Param::F32(v)) => compiled.set_param(name, &v),
+                    Some(Param::Typed(b, dt)) => compiled.set_param_typed(name, &b, dt),
+                    None => {}
+                }
+            }
+            compiled.finalize_params();
+            (compiled, out_names)
+        } else {
+            let (g, params, out_names) = build_deepseek_v4_decode_fixed_stage_moe(
+                spec,
+                weights,
+                layers.clone(),
+                first,
+                last,
+                max_win,
+                max_comp,
+                &mut packed,
+                paged_moe,
+                split_attn,
+            )?;
+            let mut compiled = rlx_runtime::Session::new(device).compile_with(g, &opts);
+            // Eager: bind while CONSUMING each map so every source buffer drops the
+            // moment it's copied into the arena — peak ≈ arena + one param.
+            for (n, dd) in params {
+                compiled.set_param(&n, &dd);
+            }
+            for (n, (bytes, _scheme, _shape)) in packed {
+                compiled.set_param_typed(&n, &bytes, DType::U8);
+            }
+            compiled.finalize_params();
+            (compiled, out_names)
+        };
         let mut prev_kv = vec![Vec::new(); nl];
         let mut prev_score = vec![Vec::new(); nl];
         for il in layers.clone() {
@@ -4820,10 +6298,41 @@ impl V4Decoder {
                 prev_score[il] = vec![-1e30f32; ratios[il] * coffs[il] * hd];
             }
         }
+        let moe_layers: Vec<usize> = if paged_moe {
+            layers
+                .clone()
+                .filter(|&il| il >= spec.first_k_dense_replace)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Attn/post split: build + compile the tiny weight-free post graph (applies
+        // `moe_out` → `hidden_out`/`logits`). Its head/`main_hidden` weights were NOT
+        // taken by the attn-only main graph, so they're still available here.
+        let (post, post_names) = if split_attn {
+            let target = spec.dspark_target_layer_ids.contains(&layers.start);
+            let mut ppacked: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (pg, pparams, pnames) =
+                build_v4_post_stage(spec, weights, last, target, &mut ppacked)?;
+            let mut pc = rlx_runtime::Session::new(device).compile_with(pg, &opts);
+            for (n, dd) in pparams {
+                pc.set_param(&n, &dd);
+            }
+            for (n, (bytes, _s, _sh)) in ppacked {
+                pc.set_param_typed(&n, &bytes, DType::U8);
+            }
+            pc.finalize_params();
+            (Some(pc), pnames)
+        } else {
+            (None, Vec::new())
+        };
         Ok(Self {
             compiled,
             out_names,
+            post,
+            post_names,
             vocab: spec.vocab_size,
+            dim: spec.dim,
             hd,
             half: (spec.rope_head_dim & !1) / 2,
             rd: spec.rope_head_dim & !1,
@@ -4845,6 +6354,7 @@ impl V4Decoder {
             target_layers: spec.dspark_target_layer_ids.clone(),
             main_hidden: None,
             pos: 0,
+            moe_layers,
         })
     }
 
@@ -4858,7 +6368,9 @@ impl V4Decoder {
     /// Full-model convenience: decode one token → `[vocab]` logits (panics if this
     /// isn't a first+last decoder).
     pub fn step(&mut self, token: u32) -> Vec<f32> {
-        self.step_io(Some(token), None).0.expect("first+last decoder yields logits")
+        self.step_io(Some(token), None)
+            .0
+            .expect("first+last decoder yields logits")
     }
 
     /// One pipeline-stage step. `first` stages take `token`; others take
@@ -4888,9 +6400,15 @@ impl V4Decoder {
         };
         let mut owned: Vec<(String, Vec<f32>)> = Vec::new();
         if self.first {
-            owned.push(("token_id".into(), vec![token.expect("first stage needs a token") as f32]));
+            owned.push((
+                "token_id".into(),
+                vec![token.expect("first stage needs a token") as f32],
+            ));
         } else {
-            owned.push(("hidden_in".into(), hidden_in.expect("stage needs hidden_in").to_vec()));
+            owned.push((
+                "hidden_in".into(),
+                hidden_in.expect("stage needs hidden_in").to_vec(),
+            ));
         }
         owned.push(("cos".into(), cosd));
         owned.push(("sin".into(), sind));
@@ -4898,7 +6416,10 @@ impl V4Decoder {
         let _ = nl;
         for il in self.layers.clone() {
             let win_len = self.win_ring[il].len() / hd;
-            owned.push((format!("wcache.{il}"), pad(&self.win_ring[il], self.max_win, hd)));
+            owned.push((
+                format!("wcache.{il}"),
+                pad(&self.win_ring[il], self.max_win, hd),
+            ));
             let ratio = self.ratios[il];
             let coff = self.coffs[il];
             if ratio == 0 {
@@ -4910,13 +6431,25 @@ impl V4Decoder {
                 owned.push((format!("mask.{il}"), m));
             } else {
                 let ncomp = self.compcache[il].len() / hd;
-                let firing = (pos + 1) % ratio == 0;
-                owned.push((format!("compcache.{il}"), pad(&self.compcache[il], self.max_comp, hd)));
-                owned.push((format!("partial_ck.{il}"), pad(&self.partial_ck[il], ratio - 1, coff * hd)));
-                owned.push((format!("partial_cg.{il}"), pad(&self.partial_cg[il], ratio - 1, coff * hd)));
+                let firing = (pos + 1).is_multiple_of(ratio);
+                owned.push((
+                    format!("compcache.{il}"),
+                    pad(&self.compcache[il], self.max_comp, hd),
+                ));
+                owned.push((
+                    format!("partial_ck.{il}"),
+                    pad(&self.partial_ck[il], ratio - 1, coff * hd),
+                ));
+                owned.push((
+                    format!("partial_cg.{il}"),
+                    pad(&self.partial_cg[il], ratio - 1, coff * hd),
+                ));
                 if ratio == 4 {
                     let row = pos % ratio;
-                    owned.push((format!("ape_row.{il}"), self.ape[il][row * coff * hd..(row + 1) * coff * hd].to_vec()));
+                    owned.push((
+                        format!("ape_row.{il}"),
+                        self.ape[il][row * coff * hd..(row + 1) * coff * hd].to_vec(),
+                    ));
                     owned.push((format!("prev_kv.{il}"), self.prev_kv[il].clone()));
                     owned.push((format!("prev_score.{il}"), self.prev_score[il].clone()));
                 }
@@ -4935,11 +6468,17 @@ impl V4Decoder {
                 owned.push((format!("mask.{il}"), m));
             }
         }
-        let inputs: Vec<(&str, &[f32])> = owned.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+        let inputs: Vec<(&str, &[f32])> = owned
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_slice()))
+            .collect();
         let out = self.compiled.run(&inputs);
         let out_names = &self.out_names;
         let get = |name: &str| -> Vec<f32> {
-            let i = out_names.iter().position(|x| x == name).expect("decode output");
+            let i = out_names
+                .iter()
+                .position(|x| x == name)
+                .expect("decode output");
             out[i].clone()
         };
         let result = if self.last {
@@ -4956,7 +6495,7 @@ impl V4Decoder {
             }
             let ratio = self.ratios[il];
             if ratio > 0 {
-                if (pos + 1) % ratio == 0 {
+                if (pos + 1).is_multiple_of(ratio) {
                     self.compcache[il].extend_from_slice(&get(&format!("comp.{il}")));
                     if ratio == 4 {
                         let mut ckw = self.partial_ck[il].clone();
@@ -4992,6 +6531,278 @@ impl V4Decoder {
         result
     }
 
+    /// Assemble the fixed-shape per-token inputs (token/hidden, RoPE, per-layer
+    /// window/compressor cache + mask + APE) for the current position — the input
+    /// half of [`Self::step_io`], reused by [`Self::step_paged`].
+    fn decode_inputs(
+        &self,
+        token: Option<u32>,
+        hidden_in: Option<&[f32]>,
+    ) -> Vec<(String, Vec<f32>)> {
+        let pos = self.pos;
+        let (hd, half, rd) = (self.hd, self.half.max(1), self.rd);
+        let (mut cosd, mut sind) = (vec![0f32; half], vec![0f32; half]);
+        for i in 0..half {
+            let fr = self.rope_theta.powf(-(2.0 * i as f64) / rd as f64);
+            let (s, c) = (pos as f64 * fr).sin_cos();
+            cosd[i] = c as f32;
+            sind[i] = s as f32;
+        }
+        let sininv: Vec<f32> = sind.iter().map(|v| -v).collect();
+        let pad = |v: &[f32], rows: usize, cols: usize| -> Vec<f32> {
+            let mut out = vec![0f32; rows * cols];
+            let n = v.len().min(rows * cols);
+            out[..n].copy_from_slice(&v[..n]);
+            out
+        };
+        let mut owned: Vec<(String, Vec<f32>)> = Vec::new();
+        if self.first {
+            owned.push((
+                "token_id".into(),
+                vec![token.expect("first stage needs a token") as f32],
+            ));
+        } else {
+            owned.push((
+                "hidden_in".into(),
+                hidden_in.expect("stage needs hidden_in").to_vec(),
+            ));
+        }
+        owned.push(("cos".into(), cosd));
+        owned.push(("sin".into(), sind));
+        owned.push(("sininv".into(), sininv));
+        for il in self.layers.clone() {
+            let win_len = self.win_ring[il].len() / hd;
+            owned.push((
+                format!("wcache.{il}"),
+                pad(&self.win_ring[il], self.max_win, hd),
+            ));
+            let ratio = self.ratios[il];
+            let coff = self.coffs[il];
+            if ratio == 0 {
+                let mut m = vec![-1e30f32; self.max_win + 1];
+                for e in m.iter_mut().take(win_len) {
+                    *e = 0.0;
+                }
+                m[self.max_win] = 0.0;
+                owned.push((format!("mask.{il}"), m));
+            } else {
+                let ncomp = self.compcache[il].len() / hd;
+                let firing = (pos + 1).is_multiple_of(ratio);
+                owned.push((
+                    format!("compcache.{il}"),
+                    pad(&self.compcache[il], self.max_comp, hd),
+                ));
+                owned.push((
+                    format!("partial_ck.{il}"),
+                    pad(&self.partial_ck[il], ratio - 1, coff * hd),
+                ));
+                owned.push((
+                    format!("partial_cg.{il}"),
+                    pad(&self.partial_cg[il], ratio - 1, coff * hd),
+                ));
+                if ratio == 4 {
+                    let row = pos % ratio;
+                    owned.push((
+                        format!("ape_row.{il}"),
+                        self.ape[il][row * coff * hd..(row + 1) * coff * hd].to_vec(),
+                    ));
+                    owned.push((format!("prev_kv.{il}"), self.prev_kv[il].clone()));
+                    owned.push((format!("prev_score.{il}"), self.prev_score[il].clone()));
+                }
+                let n_keys = self.max_win + 1 + self.max_comp + 1;
+                let mut m = vec![-1e30f32; n_keys];
+                for e in m.iter_mut().take(win_len) {
+                    *e = 0.0;
+                }
+                m[self.max_win] = 0.0;
+                for c in 0..ncomp {
+                    m[self.max_win + 1 + c] = 0.0;
+                }
+                if firing {
+                    m[self.max_win + 1 + self.max_comp] = 0.0;
+                }
+                owned.push((format!("mask.{il}"), m));
+            }
+        }
+        owned
+    }
+
+    fn out_named(&self, out: &[Vec<f32>], name: &str) -> Vec<f32> {
+        out[self
+            .out_names
+            .iter()
+            .position(|x| x == name)
+            .expect("decode output")]
+        .clone()
+    }
+
+    /// Commit KV/compressor state + DSpark `main_hidden` from a run's outputs and
+    /// advance the position — the commit half of [`Self::step_io`].
+    fn commit_from_outputs(&mut self, out: &[Vec<f32>]) {
+        let (hd, pos) = (self.hd, self.pos);
+        let out_names = &self.out_names;
+        let get = |name: &str| -> Vec<f32> {
+            out[out_names
+                .iter()
+                .position(|x| x == name)
+                .expect("decode output")]
+            .clone()
+        };
+        let maxwin_floats = self.max_win * hd;
+        for il in self.layers.clone() {
+            self.win_ring[il].extend_from_slice(&get(&format!("kvnew.{il}")));
+            if self.win_ring[il].len() > maxwin_floats {
+                let drop = self.win_ring[il].len() - maxwin_floats;
+                self.win_ring[il].drain(0..drop);
+            }
+            let ratio = self.ratios[il];
+            if ratio > 0 {
+                if (pos + 1) % ratio == 0 {
+                    self.compcache[il].extend_from_slice(&get(&format!("comp.{il}")));
+                    if ratio == 4 {
+                        let mut ckw = self.partial_ck[il].clone();
+                        ckw.extend_from_slice(&get(&format!("ck.{il}")));
+                        let mut cgw = self.partial_cg[il].clone();
+                        cgw.extend_from_slice(&get(&format!("cg.{il}")));
+                        self.prev_kv[il] = ckw;
+                        self.prev_score[il] = cgw;
+                    }
+                    self.partial_ck[il].clear();
+                    self.partial_cg[il].clear();
+                } else {
+                    self.partial_ck[il].extend_from_slice(&get(&format!("ck.{il}")));
+                    self.partial_cg[il].extend_from_slice(&get(&format!("cg.{il}")));
+                }
+            }
+        }
+        if !self.target_layers.is_empty() {
+            let mut mh = Vec::new();
+            let mut have = false;
+            for &tl in &self.target_layers {
+                let nm = format!("main_hidden.{tl}");
+                if let Some(i) = self.out_names.iter().position(|x| *x == nm) {
+                    mh.extend_from_slice(&out[i]);
+                    have = true;
+                }
+            }
+            self.main_hidden = if have { Some(mh) } else { None };
+        }
+        self.pos += 1;
+    }
+
+    /// **Stage-protocol PAGED step** (built via [`Self::new_stage_paged`]). `first`
+    /// stages consume `token`, others `hidden_in`; `last` produces `[vocab]` logits,
+    /// others the `[1·hc·d]` hidden boundary. `token` is ALWAYS passed to `moe_fn`
+    /// (for hash layers). Runs the fixed graph once per MoE layer IN THIS STAGE
+    /// (filling `moe_out.{il}` from `moe_fn(il, token, xf)`), then a final pass. Driving
+    /// PER-LAYER stages (via [`deepseek_v4_generate_paged_layerwise`]) cuts the
+    /// monolithic O(L²) attention recompute + O(L²) compile to O(L).
+    pub fn step_io_paged(
+        &mut self,
+        token: u32,
+        hidden_in: Option<&[f32]>,
+        mut moe_fn: impl FnMut(usize, u32, &[f32]) -> Result<Vec<f32>>,
+    ) -> Result<(Option<Vec<f32>>, Option<Vec<f32>>)> {
+        let base = self.decode_inputs(if self.first { Some(token) } else { None }, hidden_in);
+        // Attn/post split: run attention ONCE → moe_in + hc_post inputs; host MoE;
+        // then the tiny post graph applies moe_out → hidden_out/logits. Halves the
+        // per-token attention vs the two-pass below.
+        if self.post.is_some() {
+            let il = self.layers.start;
+            let attn_owned: Vec<(&str, &[f32])> = base
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_slice()))
+                .collect();
+            let attn_out = self.compiled.run(&attn_owned);
+            let xf = self.out_named(&attn_out, &format!("moe_in.{il}"));
+            let moe = moe_fn(il, token, &xf)?;
+            let residual = self.out_named(&attn_out, &format!("hcp_residual.{il}"));
+            let postf = self.out_named(&attn_out, &format!("hcp_postf.{il}"));
+            let combf = self.out_named(&attn_out, &format!("hcp_combf.{il}"));
+            let post_out = {
+                let post = self.post.as_mut().expect("post graph");
+                post.run(&[
+                    ("hcp_residual", residual.as_slice()),
+                    ("hcp_postf", postf.as_slice()),
+                    ("hcp_combf", combf.as_slice()),
+                    ("moe_out", moe.as_slice()),
+                ])
+            };
+            let pget = |name: &str| -> Vec<f32> {
+                self.post_names
+                    .iter()
+                    .position(|x| x == name)
+                    .map(|i| post_out[i].clone())
+                    .unwrap_or_default()
+            };
+            let result = if self.last {
+                (Some(pget("logits")), None)
+            } else {
+                (None, Some(pget("hidden_out")))
+            };
+            // KV cache / compressor commit from the ATTN graph outputs (also bumps
+            // `pos`; it sets main_hidden=None since the attn graph has none) — THEN
+            // set `main_hidden` from the post graph so it isn't clobbered.
+            self.commit_from_outputs(&attn_out);
+            if let Some(i) = self.post_names.iter().position(|x| x == "main_hidden") {
+                self.main_hidden = Some(post_out[i].clone());
+            }
+            return Ok(result);
+        }
+        let d = self.dim;
+        let ml = self.moe_layers.clone();
+        let mut moe_out: HashMap<usize, Vec<f32>> =
+            ml.iter().map(|&il| (il, vec![0f32; d])).collect();
+        let run = |compiled: &mut rlx_runtime::CompiledGraph,
+                   base: &[(String, Vec<f32>)],
+                   mo: &HashMap<usize, Vec<f32>>| {
+            let mut owned: Vec<(&str, &[f32])> = base
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_slice()))
+                .collect();
+            let extra: Vec<(String, Vec<f32>)> = ml
+                .iter()
+                .map(|&j| (format!("moe_out.{j}"), mo[&j].clone()))
+                .collect();
+            for (n, v) in &extra {
+                owned.push((n.as_str(), v.as_slice()));
+            }
+            compiled.run(&owned)
+        };
+        // One pass per MoE layer (causal: moe_in.{il} is valid once layers < il filled).
+        for &il in &ml {
+            let out = run(&mut self.compiled, &base, &moe_out);
+            let xf = self.out_named(&out, &format!("moe_in.{il}"));
+            moe_out.insert(il, moe_fn(il, token, &xf)?);
+        }
+        let out = run(&mut self.compiled, &base, &moe_out);
+        let result = if self.last {
+            (Some(self.out_named(&out, "logits")), None)
+        } else {
+            (None, Some(self.out_named(&out, "hidden_out")))
+        };
+        self.commit_from_outputs(&out);
+        Ok(result)
+    }
+
+    /// [`Self::step_io_paged`] for a whole-model `first && last` decoder → `[vocab]`
+    /// logits (compile-once, monolithic — O(L²) attention recompute; prefer the
+    /// per-layer [`deepseek_v4_generate_paged_layerwise`] for large models).
+    pub fn step_paged(
+        &mut self,
+        token: u32,
+        moe_fn: impl FnMut(usize, u32, &[f32]) -> Result<Vec<f32>>,
+    ) -> Result<Vec<f32>> {
+        assert!(
+            self.last,
+            "step_paged needs a `last` stage (produces logits)"
+        );
+        Ok(self
+            .step_io_paged(token, None, moe_fn)?
+            .0
+            .expect("last stage yields logits"))
+    }
+
     /// Greedy generate `n_new` tokens after decoding `prompt_ids` (prompt included
     /// in the cache). Compile-once: one graph, one weight load, N runs.
     pub fn generate(&mut self, prompt_ids: &[u32], n_new: usize) -> Vec<u32> {
@@ -5002,7 +6813,10 @@ impl V4Decoder {
         let argmax = |l: &[f32]| -> u32 {
             l.iter()
                 .enumerate()
-                .fold((0usize, f32::MIN), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) })
+                .fold(
+                    (0usize, f32::MIN),
+                    |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
+                )
                 .0 as u32
         };
         let mut out = Vec::with_capacity(n_new);
@@ -5044,7 +6858,10 @@ pub fn deepseek_v4_generate_pipelined(
     let argmax = |l: &[f32]| -> u32 {
         l.iter()
             .enumerate()
-            .fold((0usize, f32::MIN), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) })
+            .fold(
+                (0usize, f32::MIN),
+                |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
+            )
             .0 as u32
     };
     let mut logits = vec![0f32; vocab];
@@ -5060,13 +6877,120 @@ pub fn deepseek_v4_generate_pipelined(
     out
 }
 
+/// **Per-layer PAGED decode** — the O(L)-time compile-once paged decoder. Builds ONE
+/// paged stage PER LAYER ([`V4Decoder::new_stage_paged`], `il..il+1`), so the backbone
+/// compiles in `nl` small LINEAR steps (not one O(L²) monolith) and each token threads
+/// the hidden through the stages, running **each layer's attention exactly once** per
+/// pass (the monolithic [`deepseek_v4_generate_paged`] re-ran all layers' attention
+/// every MoE pass → O(L²)). The MoE stays paged host-side via `moe_fn(il, token, xf)`
+/// (wire to [`PagedGroupedMoe`]/[`paged_moe_forward`] + [`dense_swiglu_ffn`], hash via
+/// [`hash_route_experts`]). `make_loader` yields a fresh loader per stage build.
+#[allow(clippy::too_many_arguments)]
+pub fn deepseek_v4_generate_paged_layerwise(
+    spec: &DeepseekV4Spec,
+    mut make_loader: impl FnMut() -> Box<dyn WeightLoader>,
+    device: rlx_runtime::Device,
+    max_win: usize,
+    max_comp: usize,
+    prompt_ids: &[u32],
+    n_new: usize,
+    mut moe_fn: impl FnMut(usize, u32, &[f32]) -> Result<Vec<f32>>,
+) -> Result<Vec<u32>> {
+    let nl = spec.n_layers;
+    let mut stages: Vec<V4Decoder> = Vec::with_capacity(nl);
+    for il in 0..nl {
+        stages.push(V4Decoder::new_stage_paged(
+            spec,
+            &mut *make_loader(),
+            il..il + 1,
+            il == 0,
+            il == nl - 1,
+            max_win,
+            max_comp,
+            device,
+        )?);
+    }
+    // One token: thread the hidden boundary through the per-layer stages; each stage
+    // fills its own MoE via `moe_fn` inside `step_io_paged`.
+    fn run_token(
+        stages: &mut [V4Decoder],
+        token: u32,
+        moe_fn: &mut dyn FnMut(usize, u32, &[f32]) -> Result<Vec<f32>>,
+    ) -> Result<Vec<f32>> {
+        let mut hidden: Option<Vec<f32>> = None;
+        let mut logits: Option<Vec<f32>> = None;
+        for st in stages.iter_mut() {
+            let (lg, hd) = st.step_io_paged(token, hidden.as_deref(), &mut *moe_fn)?;
+            logits = lg;
+            hidden = hd;
+        }
+        Ok(logits.expect("last stage yields logits"))
+    }
+    let argmax = |l: &[f32]| -> u32 {
+        l.iter()
+            .enumerate()
+            .fold(
+                (0usize, f32::MIN),
+                |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
+            )
+            .0 as u32
+    };
+    let mut logits = vec![0f32; spec.vocab_size];
+    for &tok in prompt_ids {
+        logits = run_token(&mut stages, tok, &mut moe_fn)?;
+    }
+    let mut out = Vec::with_capacity(n_new);
+    for _ in 0..n_new {
+        let next = argmax(&logits);
+        out.push(next);
+        logits = run_token(&mut stages, next, &mut moe_fn)?;
+    }
+    Ok(out)
+}
+
+/// Tune a stage stream for a **high-bandwidth link (Thunderbolt bridge, ~10-40
+/// Gbps)**: `TCP_NODELAY` (no Nagle — the per-token boundary is tiny and
+/// latency-critical) + large `SO_SNDBUF`/`SO_RCVBUF` to fill the bandwidth-delay
+/// product (default 4 MiB, override `RLX_V4_SOCKBUF`). The transport itself is
+/// interface-agnostic — route over Thunderbolt by passing the TB-bridge IPs
+/// (macOS `bridge0`, Linux `thunderbolt-net`) as the worker/peer addresses.
+fn v4_configure_stream(s: &std::net::TcpStream) {
+    s.set_nodelay(true).ok();
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let buf: libc::c_int = std::env::var("RLX_V4_SOCKBUF")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4 * 1024 * 1024);
+        let fd = s.as_raw_fd();
+        for opt in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+            unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    opt,
+                    &buf as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                );
+            }
+        }
+    }
+}
+
 /// Length-prefixed f32 tensor over TCP: `u64` LE count + `count` LE f32s. A
 /// zero-length message is the stop sentinel.
 fn v4_send_tensor(s: &mut std::net::TcpStream, data: &[f32]) -> std::io::Result<()> {
     use std::io::Write;
-    s.write_all(&(data.len() as u64).to_le_bytes())?;
-    let bytes: Vec<u8> = data.iter().flat_map(|x| x.to_le_bytes()).collect();
-    s.write_all(&bytes)?;
+    // Coalesce the length prefix + payload into ONE buffer → one write_all → one
+    // TCP segment: fewer syscalls and no split-packet on a NODELAY fast link, so
+    // the per-hop relay latency is a single round-trip, not two.
+    let mut frame = Vec::with_capacity(8 + data.len() * 4);
+    frame.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    for x in data {
+        frame.extend_from_slice(&x.to_le_bytes());
+    }
+    s.write_all(&frame)?;
     s.flush()
 }
 fn v4_recv_tensor(s: &mut std::net::TcpStream) -> std::io::Result<Vec<f32>> {
@@ -5076,7 +7000,10 @@ fn v4_recv_tensor(s: &mut std::net::TcpStream) -> std::io::Result<Vec<f32>> {
     let n = u64::from_le_bytes(lb) as usize;
     let mut buf = vec![0u8; n * 4];
     s.read_exact(&mut buf)?;
-    Ok(buf.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Ok(buf
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
 }
 
 /// **Serve one pipeline-stage decoder over TCP** (the cross-node worker). Accepts
@@ -5089,7 +7016,7 @@ pub fn serve_v4_decode_stage(
     listener: std::net::TcpListener,
 ) -> std::io::Result<()> {
     let (mut stream, _) = listener.accept()?;
-    stream.set_nodelay(true).ok();
+    v4_configure_stream(&stream);
     loop {
         let input = v4_recv_tensor(&mut stream)?;
         if input.is_empty() {
@@ -5125,7 +7052,7 @@ pub fn run_v4_decode_pipelined_tcp(
     let mut streams: Vec<std::net::TcpStream> = Vec::new();
     for a in worker_addrs {
         let s = std::net::TcpStream::connect(a)?;
-        s.set_nodelay(true).ok();
+        v4_configure_stream(&s);
         streams.push(s);
     }
     fn drive(streams: &mut [std::net::TcpStream], token: u32) -> std::io::Result<Vec<f32>> {
@@ -5140,7 +7067,10 @@ pub fn run_v4_decode_pipelined_tcp(
     let argmax = |l: &[f32]| -> u32 {
         l.iter()
             .enumerate()
-            .fold((0usize, f32::MIN), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) })
+            .fold(
+                (0usize, f32::MIN),
+                |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
+            )
             .0 as u32
     };
     let mut logits = vec![0f32; vocab];
@@ -5182,6 +7112,58 @@ pub fn build_deepseek_v4_verify_block(
     max_comp: usize,
     packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    build_deepseek_v4_verify_block_moe(spec, weights, block, max_win, max_comp, packed, false)
+}
+
+/// [`build_deepseek_v4_verify_block`] with the **paged-MoE split** — the routed
+/// experts leave the graph as a `moe_in.{il} [block,d]` output + `moe_out.{il}
+/// [block,d]` input, so the 156 GB experts are host-paged (like the decode stage)
+/// and the verify block runs on a resident backbone. This is the enabling piece
+/// for speculative decode on the FULL paged model (`deepseek_v4_generate_speculative_paged`).
+#[allow(clippy::too_many_arguments)]
+pub fn build_deepseek_v4_verify_block_moe(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    block: usize,
+    max_win: usize,
+    max_comp: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    paged_moe: bool,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    build_deepseek_v4_verify_block_stage(
+        spec,
+        weights,
+        block,
+        max_win,
+        max_comp,
+        packed,
+        0..spec.n_layers,
+        paged_moe,
+    )
+}
+
+/// [`build_deepseek_v4_verify_block_moe`] restricted to a **layer range** — the
+/// O(L) layerwise verify that replaces the monolithic O(L²) causal fill. When
+/// `layers.start == 0` the block tokens are embedded; otherwise `h` comes from a
+/// `hidden_in [block,hc,d]` input. When `layers.end == n_layers` the graph applies
+/// `hc_head`/`norm`/`lm_head` (output `logits [block,vocab]`); otherwise it emits
+/// `hidden_out [block,hc,d]`. A layerwise driver runs one single-layer stage per
+/// layer, threading `hidden_out → hidden_in` and reading each layer's expert ONCE
+/// for all `block` rows, so a K-token block verify costs O(L) backbone passes
+/// (2 per paged MoE layer to fill `moe_out`) instead of the monolithic O(L²).
+/// Composing all single-layer stages is bit-identical to the whole-model build
+/// (`deepseek_v4_layerwise_verify_matches_monolithic` regression test).
+#[allow(clippy::too_many_arguments)]
+pub fn build_deepseek_v4_verify_block_stage(
+    spec: &DeepseekV4Spec,
+    weights: &mut dyn WeightLoader,
+    block: usize,
+    max_win: usize,
+    max_comp: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    layers: std::ops::Range<usize>,
+    paged_moe: bool,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
     let mut g = Graph::new("deepseek_v4_verify_block");
     let mut params: HashMap<String, Vec<f32>> = HashMap::new();
     let f = DType::F32;
@@ -5200,133 +7182,474 @@ pub fn build_deepseek_v4_verify_block(
     let sin_p = g.input("sin", Shape::new(&[b, half], f));
     let sininv_p = g.input("sininv", Shape::new(&[b, half], f));
 
-    let token = g.input("token_id", Shape::new(&[b], DType::I32));
-    let token2 = g.reshape_(token, vec![1, b as i64]);
-    let input_ids_flat = g.reshape_(token, vec![b as i64]);
-    let (embed_w, _, _) =
-        load_dense_dequant(&mut g, &mut params, weights, "model.embed_tokens.weight")?;
-    let h0 = g.gather_(embed_w, token2, 0); // [1, b, d]
-    let h0 = g.reshape_(h0, vec![b as i64, 1, d as i64]);
-    let ones_hc = synth_const(&mut g, &mut params, "v4v.hc.ones", vec![1f32; hc], &[1, hc, 1]);
-    let mut h = g.mul(h0, ones_hc); // [b, hc, d]
+    // Token ids embed the block (first stage only) and drive hash-MoE layers.
+    let need_token = layers.start == 0 || layers.clone().any(|il| il < spec.n_hash_layers);
+    let token_opt = if need_token {
+        Some(g.input("token_id", Shape::new(&[b], DType::I32)))
+    } else {
+        None
+    };
+    let input_ids_flat = token_opt.map(|t| g.reshape_(t, vec![b as i64]));
+    let mut h = if layers.start == 0 {
+        let token = token_opt.expect("token_id for embed");
+        let token2 = g.reshape_(token, vec![1, b as i64]);
+        let (embed_w, _, _) =
+            load_dense_dequant(&mut g, &mut params, weights, "model.embed_tokens.weight")?;
+        let h0 = g.gather_(embed_w, token2, 0); // [1, b, d]
+        let h0 = g.reshape_(h0, vec![b as i64, 1, d as i64]);
+        let ones_hc = synth_const(
+            &mut g,
+            &mut params,
+            "v4v.hc.ones",
+            vec![1f32; hc],
+            &[1, hc, 1],
+        );
+        g.mul(h0, ones_hc) // [b, hc, d]
+    } else {
+        g.input("hidden_in", Shape::new(&[b, hc, d], f))
+    };
     let mut extra_outs: Vec<(String, NodeId)> = Vec::new();
 
-    for il in 0..spec.n_layers {
+    for il in layers.clone() {
         let ratio = spec.compress_ratios.get(il).copied().unwrap_or(0);
         let lp = format!("model.layers.{il}");
         let residual = h;
-        let fn_a = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
-        let sc_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.scale"), false)?;
-        let bs_a = load_p(&mut g, &mut params, weights, &format!("{lp}.attn_hc.base"), false)?;
+        let fn_a =
+            load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn_hc.fn"))?;
+        let sc_a = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_hc.scale"),
+            false,
+        )?;
+        let bs_a = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_hc.base"),
+            false,
+        )?;
         let (xa, post_a, comb_a) = build_hc_pre(
-            &mut g, &mut params, h, fn_a, sc_a, bs_a, b, hc, d, spec.hc_eps,
-            spec.hc_sinkhorn_iters, &format!("{lp}.va"),
+            &mut g,
+            &mut params,
+            h,
+            fn_a,
+            sc_a,
+            bs_a,
+            b,
+            hc,
+            d,
+            spec.hc_eps,
+            spec.hc_sinkhorn_iters,
+            &format!("{lp}.va"),
         );
-        let an = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn_norm.weight"), 0.0)?;
+        let an = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn_norm.weight"),
+            0.0,
+        )?;
         let xa = g.rms_norm(xa, an, zb_d, eps);
-        let wqa = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_a.weight"))?;
+        let wqa = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wq_a.weight"),
+        )?;
         let qr = emit_proj(&mut g, xa, &wqa, Shape::new(&[b, ql], f));
-        let qn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.q_norm.weight"), 0.0)?;
+        let qn = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.q_norm.weight"),
+            0.0,
+        )?;
         let qr = g.rms_norm(qr, qn, zb_ql, eps);
-        let wqb = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wq_b.weight"))?;
+        let wqb = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wq_b.weight"),
+        )?;
         let q = emit_proj(&mut g, qr, &wqb, Shape::new(&[b, nh * hd], f));
         let q = per_head_rms(&mut g, q, q_ones, zb_hd, 1, b, nh, hd, eps);
         let q = rope_tail(&mut g, q, cos_p, sin_p, b, nh, hd, rd);
-        let wkv = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.attn.wkv.weight"))?;
+        let wkv = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.attn.wkv.weight"),
+        )?;
         let kv = emit_proj(&mut g, xa, &wkv, Shape::new(&[b, hd], f));
-        let kvn = load_norm(&mut g, &mut params, weights, &format!("{lp}.attn.kv_norm.weight"), 0.0)?;
+        let kvn = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.kv_norm.weight"),
+            0.0,
+        )?;
         let kv = g.rms_norm(kv, kvn, zb_hd, eps);
         let kv_new = rope_tail(&mut g, kv, cos_p, sin_p, b, 1, hd, rd); // [b, hd]
-        extra_outs.push((format!("kvnew.{il}"), g.reshape_(kv_new, vec![b as i64, hd as i64])));
+        extra_outs.push((
+            format!("kvnew.{il}"),
+            g.reshape_(kv_new, vec![b as i64, hd as i64]),
+        ));
 
         // Compressor projections for each block token (ck = wkv(xa), cg = wgate(xa)
         // [+ per-token APE for the overlapping ratio-4 compressor]) — the raw state
         // the host commits into partial_ck/cg, and what the in-block pool consumes.
         // Matches the seq=1 decode exactly; the APE row (pos+i)%ratio is selected by
         // a host-provided `ape_idx.{il}` gather so the graph stays compile-once.
-        if ratio > 0 {
+        let comp_proj: Option<(NodeId, NodeId, usize, bool)> = if ratio > 0 {
             let overlap = ratio == 4;
             let coff = if overlap { 2 } else { 1 };
-            let cw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wkv.weight"), true)?;
+            let cw = load_p(
+                &mut g,
+                &mut params,
+                weights,
+                &format!("{lp}.attn.compressor.wkv.weight"),
+                true,
+            )?;
             let ck_t = g.mm(xa, cw); // [b, coff*hd]
-            let cgw = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.wgate.weight"), true)?;
+            let cgw = load_p(
+                &mut g,
+                &mut params,
+                weights,
+                &format!("{lp}.attn.compressor.wgate.weight"),
+                true,
+            )?;
             let cg_raw = g.mm(xa, cgw);
             let cg_t = if overlap {
-                let ape = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.compressor.ape"), false)?;
-                let ape_idx = g.input(&format!("ape_idx.{il}"), Shape::new(&[b], DType::I32));
-                let sel = g.gather_(ape, g.reshape_(ape_idx, vec![1, b as i64]), 0); // [1, b, coff*hd]
-                g.add(cg_raw, g.reshape_(sel, vec![b as i64, (coff * hd) as i64]))
+                let ape = load_p(
+                    &mut g,
+                    &mut params,
+                    weights,
+                    &format!("{lp}.attn.compressor.ape"),
+                    false,
+                )?;
+                let ape_idx = g.input(format!("ape_idx.{il}"), Shape::new(&[b], DType::I32));
+                let idx2 = g.reshape_(ape_idx, vec![1, b as i64]);
+                let sel = g.gather_(ape, idx2, 0); // [1, b, coff*hd]
+                let sel = g.reshape_(sel, vec![b as i64, (coff * hd) as i64]);
+                g.add(cg_raw, sel)
             } else {
                 cg_raw
             };
-            extra_outs.push((format!("ck.{il}"), g.reshape_(ck_t, vec![b as i64, (coff * hd) as i64])));
-            extra_outs.push((format!("cg.{il}"), g.reshape_(cg_t, vec![b as i64, (coff * hd) as i64])));
-        }
-
-        let wcache = g.input(&format!("wcache.{il}"), Shape::new(&[max_win, hd], f));
-        let (kv_all, n_keys) = if ratio == 0 {
-            (g.concat_(vec![wcache, kv_new], 0), max_win + b)
+            extra_outs.push((
+                format!("ck.{il}"),
+                g.reshape_(ck_t, vec![b as i64, (coff * hd) as i64]),
+            ));
+            extra_outs.push((
+                format!("cg.{il}"),
+                g.reshape_(cg_t, vec![b as i64, (coff * hd) as i64]),
+            ));
+            Some((ck_t, cg_t, coff, overlap))
         } else {
-            let compcache = g.input(&format!("compcache.{il}"), Shape::new(&[max_comp, hd], f));
-            (g.concat_(vec![wcache, kv_new, compcache], 0), max_win + b + max_comp)
+            None
         };
-        let mask = g.input(&format!("mask.{il}"), Shape::new(&[b, n_keys], f));
-        let sink = load_p(&mut g, &mut params, weights, &format!("{lp}.attn.attn_sink"), false)?;
+
+        let wcache = g.input(format!("wcache.{il}"), Shape::new(&[max_win, hd], f));
+        let (kv_all, n_keys) = match comp_proj {
+            None => (g.concat_(vec![wcache, kv_new], 0), max_win + b),
+            // NON-OVERLAP compress: existing compcache + IN-BLOCK candidate pool. For
+            // each block position j, pool the ratio-token window ending at j from
+            // `[partial_pad(ratio-1) ++ block_ck]` (host front-pads the partial so
+            // window[j] = full[j..j+ratio] is exactly the ratio tokens ending at
+            // pos+j). The visibility mask exposes cand_comp[j] only when j is a real
+            // fire and j ≤ query. `comp.{il}` is emitted for the host commit.
+            Some((ck_t, cg_t, coff, false)) => {
+                let compcache = g.input(format!("compcache.{il}"), Shape::new(&[max_comp, hd], f));
+                let pck = g.input(format!("pck.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
+                let pcg = g.input(format!("pcg.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
+                let full_ck = g.concat_(vec![pck, ck_t], 0); // [ratio-1+b, coff*hd]
+                let full_cg = g.concat_(vec![pcg, cg_t], 0);
+                let ape = load_p(
+                    &mut g,
+                    &mut params,
+                    weights,
+                    &format!("{lp}.attn.compressor.ape"),
+                    false,
+                )?;
+                let cnorm = load_norm(
+                    &mut g,
+                    &mut params,
+                    weights,
+                    &format!("{lp}.attn.compressor.norm.weight"),
+                    0.0,
+                )?;
+                let mut cands: Vec<NodeId> = Vec::with_capacity(b);
+                for j in 0..b {
+                    let wck = g.narrow_(full_ck, 0, j, ratio);
+                    let wcg = g.narrow_(full_cg, 0, j, ratio);
+                    let c = build_kv_compressor_pool(
+                        &mut g,
+                        &mut params,
+                        wck,
+                        wcg,
+                        ape,
+                        cnorm,
+                        1,
+                        ratio,
+                        ratio,
+                        hd,
+                        eps,
+                        &format!("{lp}.vp{j}"),
+                    );
+                    cands.push(g.reshape_(c, vec![1, hd as i64]));
+                }
+                let cand_comp = g.concat_(cands, 0); // [b, hd]
+                extra_outs.push((format!("comp.{il}"), cand_comp));
+                (
+                    g.concat_(vec![wcache, kv_new, compcache, cand_comp], 0),
+                    max_win + b + max_comp + b,
+                )
+            }
+            // OVERLAP (ratio-4): same in-block candidate pool + visibility mask as
+            // non-overlap, but each window pools with the PREVIOUS window via
+            // build_overlap_pool_single (host prev_kv/prev_score — the ≤1 in-block
+            // fire for block≤5 reuses the block-start prev).
+            Some((ck_t, cg_t, coff, true)) => {
+                let compcache = g.input(format!("compcache.{il}"), Shape::new(&[max_comp, hd], f));
+                let pck = g.input(format!("pck.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
+                let pcg = g.input(format!("pcg.{il}"), Shape::new(&[ratio - 1, coff * hd], f));
+                let prev_kv = g.input(format!("prev_kv.{il}"), Shape::new(&[ratio, coff * hd], f));
+                let prev_score = g.input(
+                    format!("prev_score.{il}"),
+                    Shape::new(&[ratio, coff * hd], f),
+                );
+                let full_ck = g.concat_(vec![pck, ck_t], 0);
+                let full_cg = g.concat_(vec![pcg, cg_t], 0);
+                let cnorm = load_norm(
+                    &mut g,
+                    &mut params,
+                    weights,
+                    &format!("{lp}.attn.compressor.norm.weight"),
+                    0.0,
+                )?;
+                let mut cands: Vec<NodeId> = Vec::with_capacity(b);
+                for j in 0..b {
+                    let wck = g.narrow_(full_ck, 0, j, ratio);
+                    let wcg = g.narrow_(full_cg, 0, j, ratio);
+                    let c = build_overlap_pool_single(
+                        &mut g,
+                        &mut params,
+                        prev_kv,
+                        prev_score,
+                        wck,
+                        wcg,
+                        cnorm,
+                        hd,
+                        eps,
+                        &format!("{lp}.vov{j}"),
+                    );
+                    cands.push(c); // [1, hd]
+                }
+                let cand_comp = g.concat_(cands, 0); // [b, hd]
+                extra_outs.push((format!("comp.{il}"), cand_comp));
+                (
+                    g.concat_(vec![wcache, kv_new, compcache, cand_comp], 0),
+                    max_win + b + max_comp + b,
+                )
+            }
+        };
+        let mask = g.input(format!("mask.{il}"), Shape::new(&[b, n_keys], f));
+        let sink = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.attn_sink"),
+            false,
+        )?;
         let q3 = g.reshape_(q, vec![b as i64, nh as i64, hd as i64]);
         let o = build_v4_sink_attention(
-            &mut g, &mut params, q3, kv_all, mask, sink, scale, b, nh, hd, n_keys, &format!("{lp}.vsa"),
+            &mut g,
+            &mut params,
+            q3,
+            kv_all,
+            mask,
+            sink,
+            scale,
+            b,
+            nh,
+            hd,
+            n_keys,
+            &format!("{lp}.vsa"),
         );
         let o_flat = g.reshape_(o, vec![b as i64, (nh * hd) as i64]);
         let o_inv = rope_tail(&mut g, o_flat, cos_p, sininv_p, b, nh, hd, rd);
         let dpg = nh * hd / spec.n_groups;
         let woa = load_v4_wo_a(
-            &mut g, &mut params, weights, &format!("{lp}.attn.wo_a.weight"),
-            spec.n_groups, spec.o_lora_rank, dpg,
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.wo_a.weight"),
+            spec.n_groups,
+            spec.o_lora_rank,
+            dpg,
         )?;
-        let wob = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.attn.wo_b.weight"))?;
-        let attn_out = build_v4_o_lora(&mut g, o_inv, woa, wob, b, spec.n_groups, spec.o_lora_rank, dpg, d);
+        let wob = load_transposed_param(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.attn.wo_b.weight"),
+        )?;
+        let attn_out = build_v4_o_lora(
+            &mut g,
+            o_inv,
+            woa,
+            wob,
+            b,
+            spec.n_groups,
+            spec.o_lora_rank,
+            dpg,
+            d,
+        );
         h = build_hc_post(&mut g, attn_out, residual, post_a, comb_a, b, hc, d);
 
         let residual = h;
         let fn_f = load_transposed_param(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.fn"))?;
-        let sc_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.scale"), false)?;
-        let bs_f = load_p(&mut g, &mut params, weights, &format!("{lp}.ffn_hc.base"), false)?;
+        let sc_f = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_hc.scale"),
+            false,
+        )?;
+        let bs_f = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_hc.base"),
+            false,
+        )?;
         let (xf, post_f, comb_f) = build_hc_pre(
-            &mut g, &mut params, h, fn_f, sc_f, bs_f, b, hc, d, spec.hc_eps,
-            spec.hc_sinkhorn_iters, &format!("{lp}.vf"),
+            &mut g,
+            &mut params,
+            h,
+            fn_f,
+            sc_f,
+            bs_f,
+            b,
+            hc,
+            d,
+            spec.hc_eps,
+            spec.hc_sinkhorn_iters,
+            &format!("{lp}.vf"),
         );
-        let fnorm = load_norm(&mut g, &mut params, weights, &format!("{lp}.ffn_norm.weight"), 0.0)?;
+        let fnorm = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_norm.weight"),
+            0.0,
+        )?;
         let xf = g.rms_norm(xf, fnorm, zb_d, eps);
         let ffn_out = if il < spec.first_k_dense_replace {
-            let gp = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.gate_proj.weight"))?;
-            let up = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.up_proj.weight"))?;
-            let dn = load_proj(&mut g, &mut params, packed, weights, &format!("{lp}.ffn.down_proj.weight"))?;
+            let gp = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.ffn.gate_proj.weight"),
+            )?;
+            let up = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.ffn.up_proj.weight"),
+            )?;
+            let dn = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.ffn.down_proj.weight"),
+            )?;
             let gate = emit_proj(&mut g, xf, &gp, Shape::new(&[b, spec.intermediate_size], f));
             let upv = emit_proj(&mut g, xf, &up, Shape::new(&[b, spec.intermediate_size], f));
             let sg = g.silu(gate);
             let glu = g.mul(sg, upv);
             emit_proj(&mut g, glu, &dn, Shape::new(&[b, d], f))
+        } else if paged_moe {
+            // Paged: emit the block's post-ffn_norm hiddens; host fills the MoE for
+            // all `block` tokens (one expert read amortized across the block).
+            extra_outs.push((format!("moe_in.{il}"), xf));
+            g.input(format!("moe_out.{il}"), Shape::new(&[b, d], f))
         } else {
             let ds = v4_moe_spec(spec);
             let x3 = g.reshape_(xf, vec![1, b as i64, d as i64]);
-            let hash_ids = if il < spec.n_hash_layers { Some(input_ids_flat) } else { None };
-            let moe = build_deepseek_moe_ffn(&mut g, &mut params, packed, weights, &lp, x3, 1, b, &ds, hash_ids)?;
+            let hash_ids = if il < spec.n_hash_layers {
+                input_ids_flat
+            } else {
+                None
+            };
+            let moe = build_deepseek_moe_ffn(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &lp,
+                x3,
+                1,
+                b,
+                &ds,
+                hash_ids,
+            )?;
             g.reshape_(moe, vec![b as i64, d as i64])
         };
         h = build_hc_post(&mut g, ffn_out, residual, post_f, comb_f, b, hc, d);
+        // DSpark: emit the mean-over-HC hidden at each target layer (per block row) so
+        // the driver can accumulate `main_hidden` history for the drafter — mirrors the
+        // decode stage's `main_hidden.{il}` emission.
+        if spec.dspark_target_layer_ids.contains(&il) {
+            let mh = g.mean(h, vec![1], false); // [b, d] over the hc streams
+            extra_outs.push((
+                format!("main_hidden.{il}"),
+                g.reshape_(mh, vec![b as i64, d as i64]),
+            ));
+        }
     }
 
-    let hfn = load_transposed_param(&mut g, &mut params, weights, "model.hc_head.fn")?;
-    let hsc = load_p(&mut g, &mut params, weights, "model.hc_head.scale", false)?;
-    let hbs = load_p(&mut g, &mut params, weights, "model.hc_head.base", false)?;
-    let x = build_hc_head(&mut g, &mut params, h, hfn, hsc, hbs, b, hc, d, spec.hc_eps, "v4v.head");
-    let fnorm = load_norm(&mut g, &mut params, weights, "model.norm.weight", 0.0)?;
-    let x = g.rms_norm(x, fnorm, zb_d, eps);
-    let head_p = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
-    let logits = emit_proj(&mut g, x, &head_p, Shape::new(&[b, spec.vocab_size], f));
-    let logits = g.reshape_(logits, vec![b as i64, spec.vocab_size as i64]);
-    let mut outs = vec![logits];
-    let mut names = vec!["logits".to_string()];
+    // Last stage applies the head (→ `logits`); interior stages thread `hidden_out`.
+    let (primary, primary_name) = if layers.end == spec.n_layers {
+        let hfn = load_transposed_param(&mut g, &mut params, weights, "model.hc_head.fn")?;
+        let hsc = load_p(&mut g, &mut params, weights, "model.hc_head.scale", false)?;
+        let hbs = load_p(&mut g, &mut params, weights, "model.hc_head.base", false)?;
+        let x = build_hc_head(
+            &mut g,
+            &mut params,
+            h,
+            hfn,
+            hsc,
+            hbs,
+            b,
+            hc,
+            d,
+            spec.hc_eps,
+            "v4v.head",
+        );
+        let fnorm = load_norm(&mut g, &mut params, weights, "model.norm.weight", 0.0)?;
+        let x = g.rms_norm(x, fnorm, zb_d, eps);
+        let head_p = load_proj(&mut g, &mut params, packed, weights, "lm_head.weight")?;
+        let logits = emit_proj(&mut g, x, &head_p, Shape::new(&[b, spec.vocab_size], f));
+        (
+            g.reshape_(logits, vec![b as i64, spec.vocab_size as i64]),
+            "logits".to_string(),
+        )
+    } else {
+        (
+            g.reshape_(h, vec![b as i64, hc as i64, d as i64]),
+            "hidden_out".to_string(),
+        )
+    };
+    let mut outs = vec![primary];
+    let mut names = vec![primary_name];
     for (name, node) in extra_outs {
         names.push(name);
         outs.push(node);
@@ -5355,15 +7678,13 @@ pub fn deepseek_v4_generate_speculative(
     verify: &mut rlx_runtime::CompiledGraph,
     vnames: &[String],
     spec: &DeepseekV4Spec,
-    max_win: usize,
     block: usize,
+    max_comp: usize,
     mut draft_fn: impl FnMut(u32) -> Vec<u32>,
     prompt: &[u32],
     n_new: usize,
 ) -> Vec<u32> {
-    let (hd, rd) = (spec.head_dim, spec.rope_head_dim & !1);
-    let half = (rd / 2).max(1);
-    let (vocab, nl, theta) = (spec.vocab_size, spec.n_layers, spec.rope_theta);
+    let vocab = spec.vocab_size;
     let argmax = |l: &[f32]| -> u32 {
         let (mut bi, mut bv) = (0usize, f32::NEG_INFINITY);
         for (i, &v) in l.iter().enumerate() {
@@ -5378,21 +7699,9 @@ pub fn deepseek_v4_generate_speculative(
     for &tk in prompt {
         last = dec.step(tk);
     }
-    // Compress layers accumulate compressor state (partial_ck/cg, compcache) on
-    // EVERY token; the straight-from-verify sliding commit below can't reproduce
-    // that, so on a compress topology we decode exactly (seq=1) and skip the batch
-    // path. The batch speedup currently applies to sliding topologies; unlocking it
-    // for GA needs in-block compressor pooling in the verify graph (a distinct
-    // piece). Correctness holds either way — this only gates the acceleration.
-    let has_compress = spec.compress_ratios.iter().any(|&r| r > 0);
     let mut out: Vec<u32> = Vec::new();
     while out.len() < n_new {
         let t = argmax(&last);
-        if has_compress {
-            out.push(t);
-            last = dec.step(t);
-            continue;
-        }
         let drafts = draft_fn(t);
         let k = drafts.len().min(block - 1);
         // Fixed-size block [t, d₁..dₖ, pad…]; causal ⇒ the padded tail can't affect
@@ -5401,50 +7710,21 @@ pub fn deepseek_v4_generate_speculative(
         blk.extend_from_slice(&drafts[..k]);
         let bl = blk.len(); // k+1
         blk.resize(block, 0);
-        let pos = dec.pos;
-        let (mut cosb, mut sinb, mut sininvb) =
-            (vec![0f32; block * half], vec![0f32; block * half], vec![0f32; block * half]);
-        for p in 0..block {
-            for i in 0..half {
-                let fr = (theta as f64).powf(-(2.0 * i as f64) / rd as f64);
-                let (s, c) = ((pos + p) as f64 * fr).sin_cos();
-                cosb[p * half + i] = c as f32;
-                sinb[p * half + i] = s as f32;
-                sininvb[p * half + i] = -s as f32;
-            }
-        }
-        let toks_f: Vec<f32> = blk.iter().map(|&x| x as f32).collect();
-        let mut owned: Vec<(String, Vec<f32>)> = vec![
-            ("token_id".into(), toks_f),
-            ("cos".into(), cosb),
-            ("sin".into(), sinb),
-            ("sininv".into(), sininvb),
-        ];
-        for il in 0..nl {
-            let win_len = (dec.win_ring[il].len() / hd).min(max_win);
-            let mut wc = vec![0f32; max_win * hd];
-            let n = dec.win_ring[il].len().min(max_win * hd);
-            wc[..n].copy_from_slice(&dec.win_ring[il][..n]);
-            owned.push((format!("wcache.{il}"), wc));
-            let nkeys = max_win + block;
-            let mut m = vec![-1e30f32; block * nkeys];
-            for r in 0..block {
-                for s in 0..win_len {
-                    m[r * nkeys + s] = 0.0; // window valid (no eviction within a block)
-                }
-                for j in 0..=r {
-                    m[r * nkeys + max_win + j] = 0.0; // causal within the block
-                }
-            }
-            owned.push((format!("mask.{il}"), m));
-        }
-        let inputs: Vec<(&str, &[f32])> = owned.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+        // Assemble ALL verify inputs from the cache (window + compressor state) and
+        // run the whole block in one pass.
+        let owned = dec.verify_block_inputs(block, &blk, max_comp);
+        let inputs: Vec<(&str, &[f32])> = owned
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_slice()))
+            .collect();
         let vout = verify.run(&inputs);
-        let vget = |name: &str| -> &Vec<f32> {
-            let i = vnames.iter().position(|x| x == name).expect("verify output");
-            &vout[i]
+        let vpos = |name: &str| {
+            vnames
+                .iter()
+                .position(|x| x == name)
+                .expect("verify output")
         };
-        let logits = vget("logits"); // [block, vocab]
+        let logits = &vout[vpos("logits")]; // [block, vocab]
         let row_argmax = |r: usize| argmax(&logits[r * vocab..(r + 1) * vocab]);
         // Accept the longest run where draft[a+1] == argmax(previous row).
         let mut a = 0usize;
@@ -5454,21 +7734,1593 @@ pub fn deepseek_v4_generate_speculative(
         for j in 0..=a {
             out.push(blk[j]);
         }
-        // Commit the accepted KV straight from the verify pass (sliding append+evict).
-        let maxwin_floats = max_win * hd;
-        for il in 0..nl {
-            let kvn = vget(&format!("kvnew.{il}")); // [block, hd]
-            dec.win_ring[il].extend_from_slice(&kvn[..(a + 1) * hd]);
-            if dec.win_ring[il].len() > maxwin_floats {
-                let drop = dec.win_ring[il].len() - maxwin_floats;
-                dec.win_ring[il].drain(0..drop);
-            }
-        }
-        dec.pos = pos + a + 1;
-        last = logits[a * vocab..(a + 1) * vocab].to_vec();
+        let last_next = logits[a * vocab..(a + 1) * vocab].to_vec();
+        // Commit the accepted prefix's KV + compressor state straight from the pass.
+        let get = |nm: &str| vout[vpos(nm)].clone();
+        dec.commit_block(a, get);
+        last = last_next;
     }
     out.truncate(n_new);
     out
+}
+
+/// **Paged** DSpark speculative decode — [`deepseek_v4_generate_speculative`] for the
+/// FULL 156 GB model: both the prompt decoder (`dec`, a first+last paged
+/// [`V4Decoder`]) and the block verifier (`verify`, built by
+/// [`build_deepseek_v4_verify_block_moe`] with `paged_moe=true`) leave the routed
+/// experts as a host `moe_in`/`moe_out` boundary. `moe_fn(il, tokens, moe_in[n,d]) →
+/// moe_out[n,d]` fills them (one expert read amortized across the block's `n` rows —
+/// the whole point on the I/O-bound paged model). Verify fills `moe_out.{il}`
+/// causally (a pass per MoE layer, reading `moe_in.{il}` then the host MoE), then
+/// reads block logits. **Lossless** (greedy accept). NB the monolithic verify's
+/// per-layer fill is O(L²) backbone — fine for the expert-I/O-bound regime (experts
+/// read once/block); a layerwise verify would make it O(L) (follow-up).
+#[allow(clippy::too_many_arguments)]
+pub fn deepseek_v4_generate_speculative_paged(
+    dec: &mut V4Decoder,
+    verify: &mut rlx_runtime::CompiledGraph,
+    vnames: &[String],
+    spec: &DeepseekV4Spec,
+    block: usize,
+    max_comp: usize,
+    mut moe_fn: impl FnMut(usize, &[u32], &[f32]) -> Result<Vec<f32>>,
+    mut draft_fn: impl FnMut(u32) -> Vec<u32>,
+    prompt: &[u32],
+    n_new: usize,
+) -> Result<Vec<u32>> {
+    let vocab = spec.vocab_size;
+    let d = spec.dim;
+    let argmax = |l: &[f32]| -> u32 {
+        let (mut bi, mut bv) = (0usize, f32::NEG_INFINITY);
+        for (i, &v) in l.iter().enumerate() {
+            if v > bv {
+                bv = v;
+                bi = i;
+            }
+        }
+        bi as u32
+    };
+    let ml: Vec<usize> = (spec.first_k_dense_replace..spec.n_layers).collect();
+    // Prompt prefill via the paged decoder (wrap the batch moe_fn for its 1-token step).
+    let mut last = vec![0f32; vocab];
+    for &tk in prompt {
+        let (l, _) = dec.step_io_paged(tk, None, |il, t, xf| moe_fn(il, &[t], xf))?;
+        last = l.expect("first+last paged decoder yields logits");
+    }
+    let mut out: Vec<u32> = Vec::new();
+    while out.len() < n_new {
+        let t = argmax(&last);
+        let drafts = draft_fn(t);
+        let k = drafts.len().min(block - 1);
+        let mut blk = vec![t];
+        blk.extend_from_slice(&drafts[..k]);
+        let bl = blk.len(); // k+1 real rows
+        blk.resize(block, 0);
+        let base = dec.verify_block_inputs(block, &blk, max_comp);
+        // Fill moe_out.{il} causally (one verify pass per MoE layer).
+        let mut moe_out: HashMap<usize, Vec<f32>> =
+            ml.iter().map(|&il| (il, vec![0f32; block * d])).collect();
+        let run = |v: &mut rlx_runtime::CompiledGraph,
+                   base: &[(String, Vec<f32>)],
+                   mo: &HashMap<usize, Vec<f32>>|
+         -> Vec<Vec<f32>> {
+            let extra: Vec<(String, Vec<f32>)> = ml
+                .iter()
+                .map(|&j| (format!("moe_out.{j}"), mo[&j].clone()))
+                .collect();
+            let mut owned: Vec<(&str, &[f32])> = base
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_slice()))
+                .collect();
+            for (n, v) in &extra {
+                owned.push((n.as_str(), v.as_slice()));
+            }
+            v.run(&owned)
+        };
+        let vpos = |name: &str| {
+            vnames
+                .iter()
+                .position(|x| x == name)
+                .expect("verify output")
+        };
+        for &il in &ml {
+            let vout = run(verify, &base, &moe_out);
+            let xf = vout[vpos(&format!("moe_in.{il}"))].clone(); // [block, d]
+            moe_out.insert(il, moe_fn(il, &blk, &xf)?);
+        }
+        let vout = run(verify, &base, &moe_out);
+        let logits = &vout[vpos("logits")]; // [block, vocab]
+        let row_argmax = |r: usize| argmax(&logits[r * vocab..(r + 1) * vocab]);
+        let mut a = 0usize;
+        while a < bl - 1 && blk[a + 1] == row_argmax(a) {
+            a += 1;
+        }
+        for j in 0..=a {
+            out.push(blk[j]);
+        }
+        last = logits[a * vocab..(a + 1) * vocab].to_vec();
+        let get = |nm: &str| vout[vpos(nm)].clone();
+        dec.commit_block(a, get);
+    }
+    out.truncate(n_new);
+    Ok(out)
+}
+
+/// **Layerwise** paged DSpark speculative decode — the O(L) replacement for
+/// [`deepseek_v4_generate_speculative_paged`]'s monolithic O(L²) verify. The
+/// monolithic verify runs the whole-model graph `L+1` times (each pass recomputing
+/// EVERY layer's attention just to advance the causal `moe_out` fill by one layer) ⇒
+/// O(L²) backbone. This runs ONE single-layer verify stage per layer
+/// ([`build_deepseek_v4_verify_block_stage`], `layers = il..il+1`), threading
+/// `hidden_out → hidden_in`: a paged MoE layer costs 2 stage runs (fill `moe_out.{il}`
+/// then finish `hidden_out`), a dense layer costs 1 ⇒ O(L) backbone per block, while
+/// STILL reading each layer's expert exactly once for all `block` rows. `stages[il]`/
+/// `stage_names[il]` are the compiled single-layer verify graphs (built with the SAME
+/// `paged_moe` as deployment). Lossless (byte-identical to greedy) — validated against
+/// the monolithic verify by `deepseek_v4_layerwise_verify_matches_monolithic` and
+/// end-to-end against greedy by `deepseek_v4_speculative_*`.
+#[allow(clippy::too_many_arguments)]
+pub fn deepseek_v4_generate_speculative_paged_layerwise(
+    dec: &mut V4Decoder,
+    stages: &mut [rlx_runtime::CompiledGraph],
+    stage_names: &[Vec<String>],
+    spec: &DeepseekV4Spec,
+    block: usize,
+    max_comp: usize,
+    mut moe_fn: impl FnMut(usize, &[u32], &[f32]) -> Result<Vec<f32>>,
+    mut draft_fn: impl FnMut(u32, &[f32]) -> Vec<u32>,
+    prompt: &[u32],
+    n_new: usize,
+) -> Result<Vec<u32>> {
+    assert_eq!(stages.len(), spec.n_layers, "one verify stage per layer");
+    assert_eq!(stage_names.len(), spec.n_layers, "one name set per stage");
+    let vocab = spec.vocab_size;
+    let d = spec.dim;
+    let argmax = |l: &[f32]| -> u32 {
+        let (mut bi, mut bv) = (0usize, f32::NEG_INFINITY);
+        for (i, &v) in l.iter().enumerate() {
+            if v > bv {
+                bv = v;
+                bi = i;
+            }
+        }
+        bi as u32
+    };
+    // Prompt prefill via the paged decoder (its own 1-token MoE fill). We accumulate
+    // `main_hist` — the per-token target-layer hiddens (`[cache_len, dim*n_targets]`)
+    // the DSpark drafter consumes via `draft_fn(input_id, &main_hist)`.
+    let mut last = vec![0f32; vocab];
+    let mut main_hist: Vec<f32> = Vec::new();
+    for &tk in prompt {
+        let (l, _) = dec.step_io_paged(tk, None, |il, t, xf| moe_fn(il, &[t], xf))?;
+        last = l.expect("first+last paged decoder yields logits");
+        if let Some(mh) = dec.main_hidden() {
+            main_hist.extend_from_slice(mh);
+        }
+    }
+    let mut out: Vec<u32> = Vec::new();
+    while out.len() < n_new {
+        let t = argmax(&last);
+        let drafts = draft_fn(t, &main_hist);
+        let k = drafts.len().min(block - 1);
+        let mut blk = vec![t];
+        blk.extend_from_slice(&drafts[..k]);
+        let bl = blk.len(); // k+1 real rows
+        blk.resize(block, 0);
+        let base = dec.verify_block_inputs(block, &blk, max_comp);
+        // Thread the block hidden through one single-layer stage per layer (O(L)).
+        let mut collected: HashMap<String, Vec<f32>> = HashMap::new();
+        let mut hidden: Vec<f32> = Vec::new();
+        let mut logits: Vec<f32> = Vec::new();
+        for il in 0..spec.n_layers {
+            // Feed this stage exactly its declared inputs: shared rope + token (embed on
+            // stage 0 / hash layers) + layer-`il` cache state + hidden_in (interior).
+            let suffix = format!(".{il}");
+            let mut ins: Vec<(String, Vec<f32>)> = Vec::new();
+            for (n, v) in &base {
+                if n == "cos" || n == "sin" || n == "sininv" {
+                    ins.push((n.clone(), v.clone()));
+                } else if n == "token_id" {
+                    if il == 0 || il < spec.n_hash_layers {
+                        ins.push((n.clone(), v.clone()));
+                    }
+                } else if n.ends_with(&suffix) {
+                    ins.push((n.clone(), v.clone()));
+                }
+            }
+            if il > 0 {
+                ins.push(("hidden_in".into(), hidden.clone()));
+            }
+            let names = &stage_names[il];
+            let pos = |nm: &str| names.iter().position(|x| x == nm);
+            let is_moe = il >= spec.first_k_dense_replace;
+            let vout = if is_moe {
+                // Pass 1 (moe_out=0) → moe_in.{il}; host MoE; Pass 2 → hidden/logits.
+                let mut i1 = ins.clone();
+                i1.push((format!("moe_out.{il}"), vec![0f32; block * d]));
+                let r1: Vec<(&str, &[f32])> =
+                    i1.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+                let o1 = stages[il].run(&r1);
+                let xf = o1[pos(&format!("moe_in.{il}")).expect("moe_in output")].clone();
+                let mo = moe_fn(il, &blk, &xf)?;
+                let mut i2 = ins;
+                i2.push((format!("moe_out.{il}"), mo));
+                let r2: Vec<(&str, &[f32])> =
+                    i2.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+                stages[il].run(&r2)
+            } else {
+                let r: Vec<(&str, &[f32])> = ins
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_slice()))
+                    .collect();
+                stages[il].run(&r)
+            };
+            for nm in [
+                format!("kvnew.{il}"),
+                format!("ck.{il}"),
+                format!("cg.{il}"),
+                format!("comp.{il}"),
+                format!("main_hidden.{il}"),
+            ] {
+                if let Some(p) = pos(&nm) {
+                    collected.insert(nm.clone(), vout[p].clone());
+                }
+            }
+            if il + 1 == spec.n_layers {
+                logits = vout[pos("logits").expect("logits output")].clone();
+            } else {
+                hidden = vout[pos("hidden_out").expect("hidden_out output")].clone();
+            }
+        }
+        let row_argmax = |r: usize| argmax(&logits[r * vocab..(r + 1) * vocab]);
+        let mut a = 0usize;
+        while a < bl - 1 && blk[a + 1] == row_argmax(a) {
+            a += 1;
+        }
+        for j in 0..=a {
+            out.push(blk[j]);
+        }
+        last = logits[a * vocab..(a + 1) * vocab].to_vec();
+        dec.commit_block(a, |nm| collected.get(nm).cloned().unwrap_or_default());
+        // Extend the drafter's main_hidden history with the accepted positions'
+        // target-layer hiddens (in `dspark_target_layer_ids` order → [n, dim*n_targets]).
+        for j in 0..=a {
+            for &tl in &spec.dspark_target_layer_ids {
+                if let Some(mh) = collected.get(&format!("main_hidden.{tl}")) {
+                    main_hist.extend_from_slice(&mh[j * d..(j + 1) * d]);
+                }
+            }
+        }
+    }
+    out.truncate(n_new);
+    Ok(out)
+}
+
+/// Source of individual MoE experts, read ON DEMAND — the core of **Expert Paging**:
+/// only the `top_k` active experts per token ever touch memory, so the ~140 GB of GA
+/// experts stay on disk (mmap). `fetch` returns expert `e`'s `proj`
+/// (`"gate_proj"`/`"up_proj"`/`"down_proj"`) for layer `il` as row-major `[out, in]`
+/// F32 (dequantized). A real impl reads a SINGLE per-expert tensor from the mmap
+/// loader (only its pages fault in); cold experts are never materialized — turning a
+/// resident 156 GB into ~backbone + 6/256·experts ≈ 20 GB.
+pub trait ExpertSource {
+    fn fetch(&mut self, il: usize, e: usize, proj: &str) -> Result<Vec<f32>>;
+
+    /// **Parallel prefetch** the given `(layer, expert)` set before the serial
+    /// `fetch` calls — issues all disk page-faults at once (uses the SSD's queue
+    /// depth) instead of stalling one round-trip per tensor. Default no-op (in-memory
+    /// / already-warm sources). Called by [`paged_moe_forward`] for a token's active
+    /// experts. Overlaps the expert-paging I/O, which is otherwise latency-bound.
+    fn prewarm(&mut self, _experts: &[(usize, usize)]) {}
+}
+
+fn softplus_host(x: f32) -> f32 {
+    // ln(1+e^x) in the stable max(x,0)+ln(1+e^-|x|) form (matches softplus_stable).
+    x.max(0.0) + (1.0 + (-x.abs()).exp()).ln()
+}
+
+/// Dense (shared-expert / dense-FFN) SwiGLU for one token: `down · (silu(clamp(gate·x))
+/// · clamp(up·x))`. `gate`/`up` are `[inter, h]` row-major, `down` is `[h, inter]`;
+/// `swiglu_limit > 0` applies V4's clamp (gate ≤ L, up ∈ [-L, L]). Matches the
+/// in-graph shared expert — add its output to [`PagedGroupedMoe`]'s routed result to
+/// form the complete MoE layer host-side.
+pub fn dense_swiglu_ffn(
+    x: &[f32],
+    gate: &[f32],
+    up: &[f32],
+    down: &[f32],
+    swiglu_limit: f32,
+) -> Vec<f32> {
+    let h = x.len();
+    let inter = gate.len() / h.max(1);
+    let silu = |z: f32| z / (1.0 + (-z).exp());
+    let mut glu = vec![0f32; inter];
+    for (r, gr) in glu.iter_mut().enumerate() {
+        let (mut a, mut b) = (0f32, 0f32);
+        for i in 0..h {
+            a += gate[r * h + i] * x[i];
+            b += up[r * h + i] * x[i];
+        }
+        if swiglu_limit > 0.0 {
+            a = a.min(swiglu_limit);
+            b = b.clamp(-swiglu_limit, swiglu_limit);
+        }
+        *gr = silu(a) * b;
+    }
+    let mut out = vec![0f32; h];
+    for (r, o) in out.iter_mut().enumerate() {
+        let mut s = 0f32;
+        for i in 0..inter {
+            s += down[r * inter + i] * glu[i];
+        }
+        *o = s;
+    }
+    out
+}
+
+/// **Hash routing** (DeepSeek-V4's first `n_hash_layers`): the `top_k` experts for a
+/// token come from a fixed `gate.tid2eid` table `[vocab, top_k]` (expert ids stored as
+/// f32), NOT from score top-k. Returns `tid2eid[token]` as expert indices — feed as
+/// `hash_eids` to [`paged_moe_route`] on those layers. Mirrors the in-graph
+/// `Gather(tid2eid, token)` in `build_deepseek_moe_c`.
+pub fn hash_route_experts(tid2eid: &[f32], top_k: usize, token: u32) -> Vec<usize> {
+    let base = token as usize * top_k;
+    (0..top_k)
+        .map(|j| {
+            tid2eid
+                .get(base + j)
+                .map(|&v| v.max(0.0) as usize)
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+/// Route one token: V4 `sqrtsoftplus` scores → select `top_k` experts (hash `tid2eid`
+/// row when given, else score top-k on `scores + ebias`) → per-expert weights (the
+/// ORIGINAL scores, optionally `norm_topk_prob`-normalized and `routed_scaling`d).
+/// Returns `(expert_ids, weights)`. Matches `build_deepseek_moe_c` exactly; split out
+/// so the paging selection is independently checkable against the graph's TopK.
+pub fn paged_moe_route(
+    spec: &DeepseekSpec,
+    h2d: &[f32],
+    router_w: &[f32],
+    ebias: Option<&[f32]>,
+    hash_eids: Option<&[usize]>,
+) -> (Vec<usize>, Vec<f32>) {
+    let (h, n, top_k) = (
+        spec.hidden_size,
+        spec.n_routed_experts,
+        spec.num_experts_per_tok,
+    );
+    let mut scores = vec![0f32; n];
+    for (e, se) in scores.iter_mut().enumerate() {
+        let mut s = 0f32;
+        for i in 0..h {
+            s += router_w[e * h + i] * h2d[i];
+        }
+        *se = softplus_host(s).sqrt();
+    }
+    let top: Vec<usize> = if let Some(eids) = hash_eids {
+        eids.to_vec()
+    } else {
+        let mut route: Vec<(usize, f32)> = (0..n)
+            .map(|e| (e, scores[e] + ebias.map_or(0.0, |b| b[e])))
+            .collect();
+        // Descending by selection score; index tie-break (stable) — order among the
+        // chosen set doesn't affect the summed output.
+        route.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
+        route[..top_k].iter().map(|&(e, _)| e).collect()
+    };
+    let mut w: Vec<f32> = top.iter().map(|&e| scores[e]).collect();
+    if spec.norm_topk_prob {
+        let s: f32 = w.iter().sum();
+        if s != 0.0 {
+            w.iter_mut().for_each(|x| *x /= s);
+        }
+    }
+    if (spec.routed_scaling_factor - 1.0).abs() > f32::EPSILON {
+        w.iter_mut().for_each(|x| *x *= spec.routed_scaling_factor);
+    }
+    (top, w)
+}
+
+/// **Fused** dequant-matvec of one packed expert projection: `out[out_dim] =
+/// x[in_dim] @ dequant(W)ᵀ`, reading the packed codes directly (no `[out,in]` f32
+/// materialization). MXFP4/affine use the fused kernels; other schemes fall back to
+/// materialize-then-matvec.
+fn fused_matvec(
+    p: &crate::weight_loader::MlxPackedLinear,
+    x: &[f32],
+    out_dim: usize,
+    in_dim: usize,
+) -> Result<Vec<f32>> {
+    match p.scheme {
+        QuantScheme::MlxMxfp4 { group_size } => {
+            let sc = expert_scales_f32(p); // e8m0 → f32
+            Ok(rlx_mlx_io::dequant_matvec_mxfp4(
+                x, &p.w_q, &sc, group_size, in_dim, out_dim,
+            )?)
+        }
+        QuantScheme::MlxAffine { bits, group_size } => {
+            let sc = f32_from_le_bytes(&p.scales);
+            let ng = in_dim / (group_size as usize).max(1);
+            let bi = if p.biases.is_empty() {
+                vec![0f32; out_dim * ng]
+            } else {
+                f32_from_le_bytes(&p.biases)
+            };
+            Ok(rlx_mlx_io::dequant_matvec_affine(
+                x,
+                &p.w_q,
+                &sc,
+                &bi,
+                bits as u32,
+                group_size,
+                in_dim,
+                out_dim,
+            )?)
+        }
+        _ => {
+            let w = dequant_packed_linear(p)?; // [out, in] f32 (mxfp8 etc.)
+            Ok((0..out_dim)
+                .map(|j| (0..in_dim).map(|i| x[i] * w[j * in_dim + i]).sum::<f32>())
+                .collect())
+        }
+    }
+}
+
+/// **FUSED host paged MoE** — like [`paged_moe_forward`] but takes packed experts
+/// ([`PackedExpertSource`]) and runs FUSED dequant-matvec directly on the codes, so
+/// no expert weight is ever materialized to `[out,in]` f32 (the MXFP4 routed experts
+/// read `n·k/2` bytes, not `n·k·4`). Bit-exact with `paged_moe_forward`.
+#[allow(clippy::too_many_arguments)]
+pub fn paged_moe_forward_fused(
+    spec: &DeepseekSpec,
+    il: usize,
+    h2d: &[f32],
+    router_w: &[f32],
+    ebias: Option<&[f32]>,
+    hash_eids: Option<&[usize]>,
+    src: &mut dyn PackedExpertSource,
+    shared: Option<(&[f32], &[f32], &[f32])>,
+) -> Result<Vec<f32>> {
+    let (h, inter) = (spec.hidden_size, spec.moe_intermediate_size);
+    let (top, w) = paged_moe_route(spec, h2d, router_w, ebias, hash_eids);
+    let active: Vec<(usize, usize)> = top.iter().map(|&e| (il, e)).collect();
+    src.prewarm(&active);
+    let silu = |z: f32| z / (1.0 + (-z).exp());
+    let lim = spec.swiglu_limit;
+    let mut out = vec![0f32; h];
+    for (ki, &e) in top.iter().enumerate() {
+        let pg = src.fetch_packed(il, e, "gate_proj")?; // [inter, h]
+        let pu = src.fetch_packed(il, e, "up_proj")?;
+        let pd = src.fetch_packed(il, e, "down_proj")?; // [h, inter]
+        let gate = fused_matvec(&pg, h2d, inter, h)?;
+        let up = fused_matvec(&pu, h2d, inter, h)?;
+        let mut glu = vec![0f32; inter];
+        for (r, gr) in glu.iter_mut().enumerate() {
+            let (mut sg, mut su) = (gate[r], up[r]);
+            if lim > 0.0 {
+                sg = sg.min(lim);
+                su = su.clamp(-lim, lim);
+            }
+            *gr = silu(sg) * su;
+        }
+        let down = fused_matvec(&pd, &glu, h, inter)?;
+        for (r, o) in out.iter_mut().enumerate() {
+            *o += w[ki] * down[r];
+        }
+    }
+    if let Some((sg_w, su_w, sd_w)) = shared {
+        let sh = dense_swiglu_ffn(h2d, sg_w, su_w, sd_w, lim);
+        for (o, s) in out.iter_mut().zip(&sh) {
+            *o += s;
+        }
+    }
+    Ok(out)
+}
+
+/// Host-side MoE for one token with **expert paging**: [`paged_moe_route`] → load
+/// ONLY the selected experts via `src` → clamped-SwiGLU → weighted sum (+ dense
+/// shared expert). Numerically matches the in-graph `build_deepseek_moe_ffn` but
+/// never materializes the full expert set. `shared` = `(gate[se·h], up[se·h],
+/// down[h·se])` row-major, or `None`.
+#[allow(clippy::too_many_arguments)]
+pub fn paged_moe_forward(
+    spec: &DeepseekSpec,
+    il: usize,
+    h2d: &[f32],
+    router_w: &[f32],
+    ebias: Option<&[f32]>,
+    hash_eids: Option<&[usize]>,
+    src: &mut dyn ExpertSource,
+    shared: Option<(&[f32], &[f32], &[f32])>,
+) -> Result<Vec<f32>> {
+    let (h, inter) = (spec.hidden_size, spec.moe_intermediate_size);
+    let (top, w) = paged_moe_route(spec, h2d, router_w, ebias, hash_eids);
+    // Parallel-prefetch this token's active experts before the serial fetch loop —
+    // overlaps the disk page-faults instead of one round-trip per tensor.
+    let active: Vec<(usize, usize)> = top.iter().map(|&e| (il, e)).collect();
+    src.prewarm(&active);
+    use rayon::prelude::*;
+    let silu = |z: f32| z / (1.0 + (-z).exp());
+    let lim = spec.swiglu_limit;
+    let mut out = vec![0f32; h];
+    for (ki, &e) in top.iter().enumerate() {
+        let w1 = src.fetch(il, e, "gate_proj")?; // [inter, h]
+        let w3 = src.fetch(il, e, "up_proj")?; // [inter, h]
+        let w2 = src.fetch(il, e, "down_proj")?; // [h, inter]
+        // clamped-SwiGLU over the inter rows, parallel.
+        let mut glu = vec![0f32; inter];
+        glu.par_iter_mut().enumerate().for_each(|(r, gr)| {
+            let (mut sg, mut su) = (0f32, 0f32);
+            for i in 0..h {
+                let x = h2d[i];
+                sg += w1[r * h + i] * x;
+                su += w3[r * h + i] * x;
+            }
+            if lim > 0.0 {
+                sg = sg.min(lim);
+                su = su.clamp(-lim, lim);
+            }
+            *gr = silu(sg) * su;
+        });
+        // down-proj over the h rows, parallel; accumulate the weighted contribution.
+        let contrib: Vec<f32> = (0..h)
+            .into_par_iter()
+            .map(|r| {
+                let mut s = 0f32;
+                for i in 0..inter {
+                    s += w2[r * inter + i] * glu[i];
+                }
+                w[ki] * s
+            })
+            .collect();
+        for (o, c) in out.iter_mut().zip(&contrib) {
+            *o += c;
+        }
+    }
+    if let Some((sg_w, su_w, sd_w)) = shared {
+        let se = sg_w.len() / h;
+        let mut glu = vec![0f32; se];
+        for (r, gr) in glu.iter_mut().enumerate() {
+            let (mut a, mut b) = (0f32, 0f32);
+            for i in 0..h {
+                let x = h2d[i];
+                a += sg_w[r * h + i] * x;
+                b += su_w[r * h + i] * x;
+            }
+            *gr = silu(a) * b;
+        }
+        for (r, o) in out.iter_mut().enumerate() {
+            let mut s = 0f32;
+            for i in 0..se {
+                s += sd_w[r * se + i] * glu[i];
+            }
+            *o += s;
+        }
+    }
+    Ok(out)
+}
+
+/// **Batched host-side MoE with expert paging — the WINNING reduce strategy (S3
+/// grouped scatter-reduce)** wired into the paging path. Given `batch` tokens
+/// `x = [batch, h]` (row-major), route each, **group the tokens by expert**, fetch
+/// each active expert's weights **exactly once per batch** (the paging + memory-band
+/// win), compute its whole token-group in parallel, and **scatter-add** the weighted
+/// SwiGLU output back per token.
+///
+/// vs the per-token [`paged_moe_forward`] (S1 token-major, which re-fetches +
+/// re-reads an expert's weights for every token that picks it) this reads each
+/// active expert's weights ONCE for its `m` tokens and parallelizes the group's
+/// GEMV rows across cores — the microbench (`moe_reduce_bench`) measured this at
+/// 1.6–11× faster (widening with batch and on slower CPUs) with byte-identical
+/// output. `hash_eids[b]` = optional per-token hash route; `shared` = dense shared
+/// expert applied to every token.
+#[allow(clippy::too_many_arguments)]
+pub fn paged_moe_forward_batched(
+    spec: &DeepseekSpec,
+    il: usize,
+    x: &[f32],
+    batch: usize,
+    router_w: &[f32],
+    ebias: Option<&[f32]>,
+    hash_eids: Option<&[Vec<usize>]>,
+    src: &mut dyn ExpertSource,
+    shared: Option<(&[f32], &[f32], &[f32])>,
+) -> Result<Vec<f32>> {
+    use rayon::prelude::*;
+    let (h, inter, n) = (
+        spec.hidden_size,
+        spec.moe_intermediate_size,
+        spec.n_routed_experts,
+    );
+    let silu = |z: f32| z / (1.0 + (-z).exp());
+    let lim = spec.swiglu_limit;
+    // Route every token, then invert into per-expert token groups: expert →
+    // [(token, gate_weight)]. This is the "group tokens by expert" of S3.
+    let mut groups: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n];
+    for b in 0..batch {
+        let he = hash_eids.map(|hs| hs[b].as_slice());
+        let (top, w) = paged_moe_route(spec, &x[b * h..b * h + h], router_w, ebias, he);
+        for (e, gw) in top.into_iter().zip(w) {
+            groups[e].push((b, gw));
+        }
+    }
+    let mut out = vec![0f32; batch * h];
+    for (e, toks) in groups.iter().enumerate() {
+        if toks.is_empty() {
+            continue;
+        }
+        // Fetch this expert ONCE for its whole token group (the paging win).
+        let w1 = src.fetch(il, e, "gate_proj")?; // [inter, h]
+        let w3 = src.fetch(il, e, "up_proj")?; // [inter, h]
+        let w2 = src.fetch(il, e, "down_proj")?; // [h, inter]
+        // Compute each token in the group in parallel (rows across cores), producing
+        // its weighted [h] contribution; reduce serially into `out` (each token is
+        // distinct within one expert's group, so there is no write conflict).
+        let contrib: Vec<(usize, Vec<f32>)> = toks
+            .par_iter()
+            .map(|&(b, gw)| {
+                let xb = &x[b * h..b * h + h];
+                let mut glu = vec![0f32; inter];
+                for (r, gr) in glu.iter_mut().enumerate() {
+                    let (mut sg, mut su) = (0f32, 0f32);
+                    for i in 0..h {
+                        let xi = xb[i];
+                        sg += w1[r * h + i] * xi;
+                        su += w3[r * h + i] * xi;
+                    }
+                    if lim > 0.0 {
+                        sg = sg.min(lim);
+                        su = su.clamp(-lim, lim);
+                    }
+                    *gr = silu(sg) * su;
+                }
+                let mut d = vec![0f32; h];
+                for (r, dr) in d.iter_mut().enumerate() {
+                    let mut s = 0f32;
+                    for i in 0..inter {
+                        s += w2[r * inter + i] * glu[i];
+                    }
+                    *dr = gw * s;
+                }
+                (b, d)
+            })
+            .collect();
+        for (b, d) in contrib {
+            let o = &mut out[b * h..b * h + h];
+            for (oi, di) in o.iter_mut().zip(&d) {
+                *oi += di;
+            }
+        }
+    }
+    // Dense shared expert: same weights for every token → one grouped GEMM over all
+    // `batch` tokens (parallel rows), scatter-add.
+    if let Some((sg_w, su_w, sd_w)) = shared {
+        let se = sg_w.len() / h;
+        let shared_out: Vec<Vec<f32>> = (0..batch)
+            .into_par_iter()
+            .map(|b| {
+                let xb = &x[b * h..b * h + h];
+                let mut glu = vec![0f32; se];
+                for (r, gr) in glu.iter_mut().enumerate() {
+                    let (mut a, mut bb) = (0f32, 0f32);
+                    for i in 0..h {
+                        let xi = xb[i];
+                        a += sg_w[r * h + i] * xi;
+                        bb += su_w[r * h + i] * xi;
+                    }
+                    *gr = silu(a) * bb;
+                }
+                let mut d = vec![0f32; h];
+                for (r, dr) in d.iter_mut().enumerate() {
+                    let mut s = 0f32;
+                    for i in 0..se {
+                        s += sd_w[r * se + i] * glu[i];
+                    }
+                    *dr = s;
+                }
+                d
+            })
+            .collect();
+        for (b, d) in shared_out.into_iter().enumerate() {
+            let o = &mut out[b * h..b * h + h];
+            for (oi, di) in o.iter_mut().zip(&d) {
+                *oi += di;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Dequantize a packed MLX Linear to row-major `[out, in]` F32.
+pub fn dequant_packed_linear(p: &crate::weight_loader::MlxPackedLinear) -> Result<Vec<f32>> {
+    let out = p.out_shape.first().copied().unwrap_or(0);
+    let n_groups = p.n_groups().max(1);
+    Ok(match p.scheme {
+        QuantScheme::MlxAffine { bits, group_size } => {
+            let scales = f32_from_le_bytes(&p.scales);
+            let biases = if p.biases.is_empty() {
+                vec![0f32; out * n_groups]
+            } else {
+                f32_from_le_bytes(&p.biases)
+            };
+            rlx_mlx_io::dequant_affine_f32(
+                &p.w_q,
+                &scales,
+                &biases,
+                bits as u32,
+                group_size,
+                out,
+                n_groups,
+            )?
+        }
+        QuantScheme::MlxMxfp4 { group_size } => {
+            rlx_mlx_io::dequant_mxfp4_f32(&p.w_q, &p.scales, group_size, out, n_groups)?
+        }
+        QuantScheme::MlxMxfp8 { group_size } => {
+            // DeepSeek-V4 shared experts + some attention projs are 8-bit MXFP8.
+            rlx_mlx_io::dequant_mxfp8_f32(&p.w_q, &p.scales, group_size, out, n_groups)?
+        }
+        other => return Err(anyhow!("paged expert: unsupported scheme {other}")),
+    })
+}
+
+/// [`ExpertSource`] over an MLX checkpoint's **per-expert** reference tensors
+/// (`layers.{il}.ffn.experts.{e}.w{1,3,2}.weight`) — the REAL Expert Paging: each
+/// `fetch` reads + dequantizes a SINGLE expert straight from the mmap loader, so
+/// only the ~6/256 active experts per token ever leave disk (backing the 156 GB GA
+/// with ≈ backbone + a handful of experts resident). Wrap the RAW mmap loader
+/// (e.g. `MlxLoader::open_lazy`), not the stacking [`DsV4RefLoader`].
+pub struct PagedMlxExperts<'a> {
+    pub loader: &'a mut dyn WeightLoader,
+}
+impl ExpertSource for PagedMlxExperts<'_> {
+    fn fetch(&mut self, il: usize, e: usize, proj: &str) -> Result<Vec<f32>> {
+        let key = dsv4_ref_expert_key(il, e, proj);
+        let p = self
+            .loader
+            .take_packed_mlx(&key)?
+            .ok_or_else(|| anyhow!("paged expert {key}: not MLX-packed"))?;
+        dequant_packed_linear(&p)
+    }
+}
+
+/// PACKED (still-quantized) access to one MoE expert — the paging primitive for the
+/// **GPU** grouped path ([`PagedGroupedMoe`]): returns the per-expert MLX-packed
+/// Linear (codes + scales, undequantized) so the native `DequantGroupedMatMulMlx`
+/// kernel dequants + matmuls it **on-device**, instead of the host dequant that
+/// [`ExpertSource`] does. Only the batch's active experts are ever fetched.
+pub trait PackedExpertSource {
+    fn fetch_packed(
+        &mut self,
+        il: usize,
+        e: usize,
+        proj: &str,
+    ) -> Result<crate::weight_loader::MlxPackedLinear>;
+
+    /// **Parallel prefetch** the given `(layer, expert)` set before they are fetched
+    /// serially — overlaps the disk reads (the expert-paging bottleneck) by issuing
+    /// all page-faults at once instead of one round-trip per tensor. Default no-op
+    /// (in-memory sources). Called by [`PagedGroupedMoe`] for a batch's NEW experts.
+    fn prewarm(&mut self, _experts: &[(usize, usize)]) {}
+
+    /// **Zero-copy borrow-only** hot path: if this source can borrow the projection's
+    /// packed bytes straight from its mmap, call `sink(codes, scales)` (which writes
+    /// them into the device slot) and return `Some(sink_result)`; otherwise return
+    /// `None` and the caller falls back to [`Self::fetch_packed`]. Returning `None`
+    /// (rather than doing an owned fetch here) keeps this a pure `&self` borrow, so
+    /// the caller can decide between zero-copy and owned without a borrow conflict.
+    /// Halves the per-expert copy (codes go mmap→device with no owned `Vec`).
+    fn with_packed_borrowed(
+        &mut self,
+        _il: usize,
+        _e: usize,
+        _proj: &str,
+        _sink: &mut dyn FnMut(&[u8], &[u8]) -> bool,
+    ) -> Option<bool> {
+        None
+    }
+}
+
+impl PackedExpertSource for PagedMlxExperts<'_> {
+    fn fetch_packed(
+        &mut self,
+        il: usize,
+        e: usize,
+        proj: &str,
+    ) -> Result<crate::weight_loader::MlxPackedLinear> {
+        let key = dsv4_ref_expert_key(il, e, proj);
+        self.loader
+            .take_packed_mlx(&key)?
+            .ok_or_else(|| anyhow!("paged expert {key}: not MLX-packed"))
+    }
+
+    fn prewarm(&mut self, experts: &[(usize, usize)]) {
+        // Warm every active expert's 3 projections in one parallel page-fault pass.
+        let keys: Vec<String> = experts
+            .iter()
+            .flat_map(|&(il, e)| {
+                ["gate_proj", "up_proj", "down_proj"]
+                    .into_iter()
+                    .map(move |p| dsv4_ref_expert_key(il, e, p))
+            })
+            .collect();
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        self.loader.prewarm(&refs);
+    }
+}
+
+/// Fused, parallel raw-scale-bytes → BF16 little-endian bytes (the device
+/// grouped-dequant's scale format). Decodes MXFP4 `e8m0` (or reads f32) and
+/// narrows to bf16 in ONE rayon pass — no intermediate f32 `Vec` and no
+/// `flat_map` — since this is the paging hot loop's dominant CPU cost. Element
+/// order matches [`expert_scales_f32`] output bit-for-bit.
+/// Takes raw `&[u8]` so it works on both owned and zero-copy-borrowed mmap scales.
+fn scales_bf16_le(scales: &[u8], scheme: QuantScheme) -> Vec<u8> {
+    use rayon::prelude::*;
+    match scheme {
+        QuantScheme::MlxMxfp4 { .. } => {
+            let mut out = vec![0u8; scales.len() * 2];
+            out.par_chunks_mut(2)
+                .zip(scales.par_iter())
+                .for_each(|(o, &b)| {
+                    let bf = (rlx_mlx_io::mxfp4_scale_e8m0_to_f32(b).to_bits() >> 16) as u16;
+                    o.copy_from_slice(&bf.to_le_bytes());
+                });
+            out
+        }
+        _ => {
+            let n = scales.len() / 4;
+            let mut out = vec![0u8; n * 2];
+            out.par_chunks_mut(2).enumerate().for_each(|(i, o)| {
+                let f = f32::from_le_bytes([
+                    scales[i * 4],
+                    scales[i * 4 + 1],
+                    scales[i * 4 + 2],
+                    scales[i * 4 + 3],
+                ]);
+                let bf = (f.to_bits() >> 16) as u16;
+                o.copy_from_slice(&bf.to_le_bytes());
+            });
+            out
+        }
+    }
+}
+
+/// Owned-`MlxPackedLinear` convenience over [`scales_bf16_le`].
+fn expert_scales_bf16_le(p: &crate::weight_loader::MlxPackedLinear) -> Vec<u8> {
+    scales_bf16_le(&p.scales, p.scheme)
+}
+
+/// Per-expert scales (as stored in [`MlxPackedLinear`]) → f32 `[out * n_groups]`,
+/// matching exactly what [`dequant_packed_linear`] decodes (so the on-device grouped
+/// dequant and the host reference agree bit-for-bit).
+fn expert_scales_f32(p: &crate::weight_loader::MlxPackedLinear) -> Vec<f32> {
+    match p.scheme {
+        QuantScheme::MlxMxfp4 { .. } => p
+            .scales
+            .iter()
+            .map(|&b| rlx_mlx_io::mxfp4_scale_e8m0_to_f32(b))
+            .collect(),
+        _ => f32_from_le_bytes(&p.scales),
+    }
+}
+
+/// **GPU-accelerated paged batched MoE** — the winning S3 grouped scatter-reduce
+/// ([`paged_moe_forward_batched`]) wired onto the native `DequantGroupedMatMulMlx`
+/// kernel end-to-end. The compiled graph runs gate/up/down as three grouped
+/// dequant-matmuls with a clamped-SwiGLU between them, all **on-device** (Metal/MLX
+/// GPU, or CPU) — replacing the host dequant-to-f32 + CPU GEMM of the pure-host
+/// path. Only the batch's DISTINCT active experts are uploaded into a compact
+/// `a_cap`-slot param buffer (**paging preserved**: ≤ a_cap of the model's experts
+/// ever resident), and the graph compiles ONCE and is reused across batches — so the
+/// per-batch cost is just the active-expert upload + one run.
+///
+/// Build with [`PagedGroupedMoe::new`], then call [`forward`](Self::forward) per
+/// batch. Rows are the flattened `(token, chosen-expert)` pairs (`≤ batch·top_k`),
+/// padded to `m_cap`; the output is scatter-reduced back to `[batch, hidden]`.
+/// Cumulative µs / counts for [`PagedGroupedMoe::forward`] IO-vs-compute split
+/// (`RLX_IO_PROFILE`): `(prewarm, fetch+prep, upload, gpu-run, new-experts, calls)`.
+/// Read + reset via [`paged_moe_io_profile_take`].
+pub static PGM_PREWARM_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PGM_FETCH_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PGM_UPLOAD_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PGM_COMPUTE_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PGM_NEW_EXPERTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PGM_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Read and reset the [`PagedGroupedMoe`] IO profile counters:
+/// `(prewarm_ms, fetch_ms, upload_ms, compute_ms, new_experts, calls)`.
+pub fn paged_moe_io_profile_take() -> (f64, f64, f64, f64, u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let ms = |a: &std::sync::atomic::AtomicU64| a.swap(0, Relaxed) as f64 / 1000.0;
+    (
+        ms(&PGM_PREWARM_US),
+        ms(&PGM_FETCH_US),
+        ms(&PGM_UPLOAD_US),
+        ms(&PGM_COMPUTE_US),
+        PGM_NEW_EXPERTS.swap(0, Relaxed),
+        PGM_CALLS.swap(0, Relaxed),
+    )
+}
+
+pub struct PagedGroupedMoe {
+    compiled: rlx_runtime::CompiledGraph,
+    a_cap: usize,
+    m_cap: usize,
+    hidden: usize,
+    inter: usize,
+    ng_h: usize,
+    ng_i: usize,
+    scheme: QuantScheme,
+    bpr_h: usize, // packed bytes per gate/up row (K = hidden)
+    bpr_i: usize, // packed bytes per down row  (K = inter)
+    // Persistent compact host buffers for the 3 projs (codes / bf16 scales / bf16
+    // biases), uploaded to the device only when an expert slot changes.
+    gate_c: Vec<u8>,
+    gate_s: Vec<u8>,
+    gate_b: Vec<u8>,
+    up_c: Vec<u8>,
+    up_s: Vec<u8>,
+    up_b: Vec<u8>,
+    down_c: Vec<u8>,
+    down_s: Vec<u8>,
+    down_b: Vec<u8>,
+    // Expert residency (LRU): which (layer, expert) occupies each compact slot.
+    // Keying by (layer, expert) — not expert alone — keeps it correct across layers
+    // in a real decode, where the same expert id in two layers is a different tensor.
+    slot_of: HashMap<(usize, usize), usize>,
+    slot_expert: Vec<Option<(usize, usize)>>,
+    slot_tick: Vec<u64>,
+    tick: u64,
+    dirty: bool,
+    /// Incremental per-slot upload: write only a changed expert's slot bytes into
+    /// the device buffers (via `CompiledGraph::set_param_range`) instead of
+    /// re-uploading the whole `a_cap`-slot buffer each step. Set false the first
+    /// time the backend reports the partial write unsupported → whole-buffer
+    /// fallback. Makes a large `a_cap` (cross-token residency) cheap to maintain.
+    incremental: bool,
+    /// Zero-copy fetch: borrow packed codes/scales straight from the loader's mmap
+    /// into the device slot (no owned `MlxPackedLinear` copy). **Opt-in** via
+    /// `RLX_PGM_ZEROCOPY=1`. Default OFF because a controlled A/B showed it is ~neutral
+    /// to slightly slower in RELEASE: the copy it removes is cheap once optimized
+    /// (~10 GB/s memcpy), while the per-expert `MADV_DONTNEED` it must add (to bound
+    /// the page cache) roughly offsets that. (It WAS faster in debug, but that only
+    /// reflects debug's slow memcpy.) Kept available for the cold-drive case where the
+    /// saved copy may matter, and as the wiring for a future stream-to-device path.
+    zerocopy: bool,
+    /// Count of expert-projection uploads performed (telemetry: how much the
+    /// residency cache saved — steady-state hot sets drive this toward zero).
+    pub uploads: usize,
+}
+
+impl PagedGroupedMoe {
+    /// Compile the grouped-MoE graph for a fixed capacity: up to `m_cap` rows
+    /// (`≥ batch·top_k`) routed across up to `a_cap` distinct experts, hidden/inter
+    /// dims, `group_size` (K-groups), and `swiglu_limit` (`0.0` = plain SwiGLU).
+    /// `scheme` is the expert quant (`MlxMxfp4`/`MlxAffine`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        device: rlx_runtime::Device,
+        a_cap: usize,
+        m_cap: usize,
+        hidden: usize,
+        inter: usize,
+        group_size: usize,
+        swiglu_limit: f32,
+        scheme: QuantScheme,
+    ) -> Self {
+        use rlx_ir::infer::GraphExt;
+        let f = DType::F32;
+        let (ng_h, ng_i) = (hidden / group_size, inter / group_size);
+        // Bytes/row of packed codes: MXFP4 packs 2 codes/byte, affine 1 byte/code.
+        let bpr = |in_dim: usize| -> usize {
+            match scheme {
+                QuantScheme::MlxMxfp4 { .. } => in_dim / 2,
+                _ => in_dim,
+            }
+        };
+        let mut g = Graph::new("paged_grouped_moe");
+        let x = g.input("x", Shape::new(&[m_cap, hidden], f));
+        let eidx = g.input("eidx", Shape::new(&[m_cap], f));
+        // gate/up: [inter, hidden] per expert; down: [hidden, inter] per expert.
+        let gate_c = g.param(
+            "gate_c",
+            Shape::new(&[a_cap * inter * bpr(hidden)], DType::U8),
+        );
+        let gate_s = g.param("gate_s", Shape::new(&[a_cap, inter, ng_h], DType::BF16));
+        let gate_b = g.param("gate_b", Shape::new(&[a_cap, inter, ng_h], DType::BF16));
+        let up_c = g.param(
+            "up_c",
+            Shape::new(&[a_cap * inter * bpr(hidden)], DType::U8),
+        );
+        let up_s = g.param("up_s", Shape::new(&[a_cap, inter, ng_h], DType::BF16));
+        let up_b = g.param("up_b", Shape::new(&[a_cap, inter, ng_h], DType::BF16));
+        let down_c = g.param(
+            "down_c",
+            Shape::new(&[a_cap * hidden * bpr(inter)], DType::U8),
+        );
+        let down_s = g.param("down_s", Shape::new(&[a_cap, hidden, ng_i], DType::BF16));
+        let down_b = g.param("down_b", Shape::new(&[a_cap, hidden, ng_i], DType::BF16));
+
+        let gate = g.add_node(
+            Op::DequantGroupedMatMulMlx { scheme },
+            vec![x, gate_c, gate_s, gate_b, eidx],
+            Shape::new(&[m_cap, inter], f),
+        );
+        let up = g.add_node(
+            Op::DequantGroupedMatMulMlx { scheme },
+            vec![x, up_c, up_s, up_b, eidx],
+            Shape::new(&[m_cap, inter], f),
+        );
+        // Clamped SwiGLU: glu = silu(min(gate, L)) * clamp(up, ±L)  (matches the
+        // host `paged_moe_forward_batched`; L≤0 ⇒ plain SwiGLU).
+        let (gate_a, up_a) = if swiglu_limit > 0.0 {
+            let gc = g.add_node(
+                Op::Clamp {
+                    min: f32::NEG_INFINITY,
+                    max: swiglu_limit,
+                },
+                vec![gate],
+                Shape::new(&[m_cap, inter], f),
+            );
+            let uc = g.add_node(
+                Op::Clamp {
+                    min: -swiglu_limit,
+                    max: swiglu_limit,
+                },
+                vec![up],
+                Shape::new(&[m_cap, inter], f),
+            );
+            (gc, uc)
+        } else {
+            (gate, up)
+        };
+        let act = g.silu(gate_a);
+        let glu = g.mul(act, up_a);
+        let down = g.add_node(
+            Op::DequantGroupedMatMulMlx { scheme },
+            vec![glu, down_c, down_s, down_b, eidx],
+            Shape::new(&[m_cap, hidden], f),
+        );
+        g.set_outputs(vec![down]);
+        let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill(device);
+        let compiled = rlx_runtime::Session::new(device).compile_with(g, &opts);
+        let (bpr_h, bpr_i) = match scheme {
+            QuantScheme::MlxMxfp4 { .. } => (hidden / 2, inter / 2),
+            _ => (hidden, inter),
+        };
+        // Host buffers stay EMPTY on the incremental fast path (direct per-slot
+        // device writes) — sized lazily only if the backend forces the whole-buffer
+        // fallback, so a large `a_cap` residency costs no idle host RAM (paging's
+        // whole point). See [`Self::write_slot`].
+        Self {
+            compiled,
+            a_cap,
+            m_cap,
+            hidden,
+            inter,
+            ng_h,
+            ng_i,
+            scheme,
+            bpr_h,
+            bpr_i,
+            gate_c: Vec::new(),
+            gate_s: Vec::new(),
+            gate_b: Vec::new(),
+            up_c: Vec::new(),
+            up_s: Vec::new(),
+            up_b: Vec::new(),
+            down_c: Vec::new(),
+            down_s: Vec::new(),
+            down_b: Vec::new(),
+            incremental: true,
+            zerocopy: rlx_ir::env::flag("RLX_PGM_ZEROCOPY"),
+            slot_of: HashMap::new(),
+            slot_expert: vec![None; a_cap],
+            slot_tick: vec![0; a_cap],
+            tick: 0,
+            dirty: false,
+            uploads: 0,
+        }
+    }
+
+    /// Write one expert's packed gate/up/down into compact `slot`. Fast path
+    /// (`incremental`): decode scales to bf16 once and partial-write codes (straight
+    /// from the packed source, zero-copy) + scales + zero-bias DIRECTLY into the
+    /// device slot — no big host-buffer round-trip, no re-copy. Fallback path
+    /// (backend without partial writes): populate the persistent host buffers and
+    /// mark them dirty for a whole-buffer upload in [`forward`](Self::forward).
+    fn write_slot(
+        &mut self,
+        slot: usize,
+        gate: &crate::weight_loader::MlxPackedLinear,
+        up: &crate::weight_loader::MlxPackedLinear,
+        down: &crate::weight_loader::MlxPackedLinear,
+    ) {
+        self.uploads += 1;
+        let (cs_g, se_g) = (self.inter * self.bpr_h, self.inter * self.ng_h);
+        let (cs_d, se_d) = (self.hidden * self.bpr_i, self.hidden * self.ng_i);
+        if self.incremental {
+            let zero = vec![0u8; se_g.max(se_d) * 2];
+            let c = &mut self.compiled;
+            let mut proj = |cn: &str,
+                            sn: &str,
+                            bn: &str,
+                            cslab: usize,
+                            se: usize,
+                            p: &crate::weight_loader::MlxPackedLinear| {
+                debug_assert_eq!(p.w_q.len(), cslab, "packed code slab size mismatch");
+                let sb = expert_scales_bf16_le(p);
+                let mut o = c.set_param_range(cn, slot * cslab, &p.w_q); // codes: zero-copy
+                o &= c.set_param_range(sn, slot * se * 2, &sb);
+                o &= c.set_param_range(bn, slot * se * 2, &zero[..se * 2]);
+                o
+            };
+            let ok = proj("gate_c", "gate_s", "gate_b", cs_g, se_g, gate)
+                & proj("up_c", "up_s", "up_b", cs_g, se_g, up)
+                & proj("down_c", "down_s", "down_b", cs_d, se_d, down);
+            if ok {
+                return;
+            }
+            // Partial write unsupported on this backend → fall back for the run.
+            self.incremental = false;
+        }
+        // Whole-buffer host path: size the persistent buffers on first use, then
+        // populate + upload when dirty.
+        if self.gate_c.is_empty() {
+            let (code_g, scale_g) = (self.a_cap * cs_g, self.a_cap * se_g * 2);
+            let (code_d, scale_d) = (self.a_cap * cs_d, self.a_cap * se_d * 2);
+            self.gate_c = vec![0u8; code_g];
+            self.gate_s = vec![0u8; scale_g];
+            self.gate_b = vec![0u8; scale_g];
+            self.up_c = vec![0u8; code_g];
+            self.up_s = vec![0u8; scale_g];
+            self.up_b = vec![0u8; scale_g];
+            self.down_c = vec![0u8; code_d];
+            self.down_s = vec![0u8; scale_d];
+            self.down_b = vec![0u8; scale_d];
+        }
+        // Whole-buffer host path: populate host buffers, uploaded when dirty.
+        let put = |codes: &mut [u8],
+                   scales: &mut [u8],
+                   biases: &mut [u8],
+                   code_slab: usize,
+                   scale_elems: usize,
+                   p: &crate::weight_loader::MlxPackedLinear| {
+            let co = slot * code_slab;
+            codes[co..co + code_slab].fill(0);
+            codes[co..co + p.w_q.len()].copy_from_slice(&p.w_q);
+            let sb = expert_scales_bf16_le(p);
+            let so = slot * scale_elems * 2;
+            scales[so..so + scale_elems * 2].fill(0);
+            scales[so..so + sb.len()].copy_from_slice(&sb);
+            biases[so..so + scale_elems * 2].fill(0); // zero bias
+        };
+        let (mut gc, mut gs, mut gb) = (
+            std::mem::take(&mut self.gate_c),
+            std::mem::take(&mut self.gate_s),
+            std::mem::take(&mut self.gate_b),
+        );
+        let (mut uc, mut us, mut ub) = (
+            std::mem::take(&mut self.up_c),
+            std::mem::take(&mut self.up_s),
+            std::mem::take(&mut self.up_b),
+        );
+        let (mut dc, mut ds, mut db) = (
+            std::mem::take(&mut self.down_c),
+            std::mem::take(&mut self.down_s),
+            std::mem::take(&mut self.down_b),
+        );
+        put(&mut gc, &mut gs, &mut gb, cs_g, se_g, gate);
+        put(&mut uc, &mut us, &mut ub, cs_g, se_g, up);
+        put(&mut dc, &mut ds, &mut db, cs_d, se_d, down);
+        (self.gate_c, self.gate_s, self.gate_b) = (gc, gs, gb);
+        (self.up_c, self.up_s, self.up_b) = (uc, us, ub);
+        (self.down_c, self.down_s, self.down_b) = (dc, ds, db);
+        self.dirty = true;
+    }
+
+    /// **Zero-copy** slot write: for each proj, ask the source to borrow the packed
+    /// codes+scales straight from its mmap ([`PackedExpertSource::with_packed_borrowed`])
+    /// and write them into the device slot with NO owned `MlxPackedLinear` copy (codes
+    /// go mmap→device directly; scales decode mmap→bf16→device). Returns `Ok(true)`
+    /// when all 3 projs were written this way; `Ok(false)` when the source can't borrow
+    /// (caller uses the owned [`Self::write_slot`]) or the backend lacks partial writes
+    /// (sets `incremental=false`, caller falls back). No owned fetch happens here.
+    fn write_expert_zerocopy(
+        &mut self,
+        slot: usize,
+        il: usize,
+        e: usize,
+        src: &mut dyn PackedExpertSource,
+    ) -> Result<bool> {
+        let (cs_g, se_g) = (self.inter * self.bpr_h, self.inter * self.ng_h);
+        let (cs_d, se_d) = (self.hidden * self.bpr_i, self.hidden * self.ng_i);
+        let zero = vec![0u8; se_g.max(se_d) * 2];
+        let scheme = self.scheme;
+        let projs = [
+            ("gate_proj", "gate_c", "gate_s", "gate_b", cs_g, se_g),
+            ("up_proj", "up_c", "up_s", "up_b", cs_g, se_g),
+            ("down_proj", "down_c", "down_s", "down_b", cs_d, se_d),
+        ];
+        for (proj, cn, sn, bn, cslab, se) in projs {
+            // Scope the `self.compiled` borrow so we can mutate `self.incremental` after.
+            let (res, fail) = {
+                let compiled = &mut self.compiled;
+                let z = &zero;
+                let mut fail = false;
+                let mut sink = |codes: &[u8], scales: &[u8]| -> bool {
+                    debug_assert_eq!(codes.len(), cslab, "borrowed code slab size mismatch");
+                    let sb = scales_bf16_le(scales, scheme);
+                    let mut o = compiled.set_param_range(cn, slot * cslab, codes);
+                    o &= compiled.set_param_range(sn, slot * se * 2, &sb);
+                    o &= compiled.set_param_range(bn, slot * se * 2, &z[..se * 2]);
+                    if !o {
+                        fail = true;
+                    }
+                    o
+                };
+                let res = src.with_packed_borrowed(il, e, proj, &mut sink);
+                (res, fail)
+            };
+            if res.is_none() {
+                // Source can't borrow this proj → caller uses the owned path.
+                return Ok(false);
+            }
+            if fail {
+                // Backend has no partial-write path → fall back to whole-buffer upload.
+                self.incremental = false;
+                return Ok(false);
+            }
+        }
+        self.uploads += 1;
+        Ok(true)
+    }
+
+    /// Run one batch. `x` = `[batch, hidden]` token activations; `routes[b]` =
+    /// `(expert_id, gate_weight)` pairs for token `b` (from [`paged_moe_route`]).
+    ///
+    /// Experts already resident from a previous call are **reused in place** — only
+    /// experts new to this batch are fetched (paging) + written into a free/LRU slot,
+    /// and the device buffers are re-uploaded ONLY if something changed. So a stable
+    /// hot set makes steady-state cost ≈ the on-device grouped GEMM + the per-token
+    /// `x`/`eidx` upload (see [`uploads`](Self::uploads)).
+    pub fn forward(
+        &mut self,
+        il: usize,
+        x: &[f32],
+        batch: usize,
+        routes: &[Vec<(usize, f32)>],
+        src: &mut dyn PackedExpertSource,
+    ) -> Result<Vec<f32>> {
+        let h = self.hidden;
+        self.tick += 1;
+        let now = self.tick;
+        // Rows = flattened (token, expert, weight); distinct active experts.
+        let mut rows: Vec<(usize, usize, f32)> = Vec::new(); // (token, global_e, weight)
+        let mut active: Vec<usize> = Vec::new();
+        let mut seen: HashMap<usize, ()> = HashMap::new();
+        for (b, r) in routes.iter().enumerate().take(batch) {
+            for &(e, w) in r {
+                if seen.insert(e, ()).is_none() {
+                    active.push(e);
+                }
+                rows.push((b, e, w));
+            }
+        }
+        if active.len() > self.a_cap {
+            return Err(anyhow!(
+                "PagedGroupedMoe: {} distinct active experts exceeds a_cap={}",
+                active.len(),
+                self.a_cap
+            ));
+        }
+        if rows.len() > self.m_cap {
+            return Err(anyhow!(
+                "PagedGroupedMoe: {} rows exceeds m_cap={}",
+                rows.len(),
+                self.m_cap
+            ));
+        }
+        // Parallel-prefetch the NEW (non-resident) experts before the serial fetch —
+        // overlaps the disk page-faults (the paging bottleneck) instead of stalling
+        // one round-trip per tensor. No-op for in-memory sources.
+        let new_experts: Vec<(usize, usize)> = active
+            .iter()
+            .filter(|&&e| !self.slot_of.contains_key(&(il, e)))
+            .map(|&e| (il, e))
+            .collect();
+        use std::sync::atomic::Ordering::Relaxed;
+        let prof = rlx_ir::env::flag("RLX_IO_PROFILE");
+        PGM_CALLS.fetch_add(1, Relaxed);
+        PGM_NEW_EXPERTS.fetch_add(new_experts.len() as u64, Relaxed);
+        if !new_experts.is_empty() {
+            let t = std::time::Instant::now();
+            src.prewarm(&new_experts);
+            if prof {
+                PGM_PREWARM_US.fetch_add(t.elapsed().as_micros() as u64, Relaxed);
+            }
+        }
+        // Assign each active expert a slot: reuse if resident, else a free/LRU slot.
+        // Residency is keyed by (layer, expert) so it stays correct across layers.
+        for &e in &active {
+            let ekey = (il, e);
+            if !self.slot_of.contains_key(&ekey) {
+                // Pick a free slot, else evict the LRU slot NOT in the active set.
+                let slot = if let Some(s) = self.slot_expert.iter().position(|x| x.is_none()) {
+                    s
+                } else {
+                    let active_set: std::collections::HashSet<(usize, usize)> =
+                        active.iter().map(|&a| (il, a)).collect();
+                    let mut best = None;
+                    for s in 0..self.a_cap {
+                        let occ = self.slot_expert[s].unwrap();
+                        if !active_set.contains(&occ)
+                            && best.is_none_or(|(_, t)| self.slot_tick[s] < t)
+                        {
+                            best = Some((s, self.slot_tick[s]));
+                        }
+                    }
+                    best.map(|(s, _)| s)
+                        .ok_or_else(|| anyhow!("PagedGroupedMoe: no evictable slot"))?
+                };
+                if let Some(old) = self.slot_expert[slot] {
+                    self.slot_of.remove(&old);
+                }
+                let tr = std::time::Instant::now();
+                // Zero-copy fast path: borrow codes+scales from the loader's mmap and
+                // write straight to the device slot (no owned MlxPackedLinear copy).
+                let zc = if self.incremental && self.zerocopy {
+                    self.write_expert_zerocopy(slot, il, e, src)?
+                } else {
+                    false
+                };
+                if !zc {
+                    // Owned path: fetch the 3 projs, then write_slot (owned incremental
+                    // or whole-buffer host fallback).
+                    let gate = src.fetch_packed(il, e, "gate_proj")?;
+                    let up = src.fetch_packed(il, e, "up_proj")?;
+                    let down = src.fetch_packed(il, e, "down_proj")?;
+                    self.write_slot(slot, &gate, &up, &down);
+                }
+                if prof {
+                    PGM_FETCH_US.fetch_add(tr.elapsed().as_micros() as u64, Relaxed);
+                }
+                self.slot_expert[slot] = Some(ekey);
+                self.slot_of.insert(ekey, slot);
+            }
+            let s = self.slot_of[&ekey];
+            self.slot_tick[s] = now;
+        }
+        // Upload buffers only if a slot changed since the last run.
+        let tu = std::time::Instant::now();
+        if self.dirty {
+            self.compiled
+                .set_param_typed("gate_c", &self.gate_c, DType::U8);
+            self.compiled
+                .set_param_typed("gate_s", &self.gate_s, DType::BF16);
+            self.compiled
+                .set_param_typed("gate_b", &self.gate_b, DType::BF16);
+            self.compiled.set_param_typed("up_c", &self.up_c, DType::U8);
+            self.compiled
+                .set_param_typed("up_s", &self.up_s, DType::BF16);
+            self.compiled
+                .set_param_typed("up_b", &self.up_b, DType::BF16);
+            self.compiled
+                .set_param_typed("down_c", &self.down_c, DType::U8);
+            self.compiled
+                .set_param_typed("down_s", &self.down_s, DType::BF16);
+            self.compiled
+                .set_param_typed("down_b", &self.down_b, DType::BF16);
+            self.dirty = false;
+        }
+        if prof {
+            PGM_UPLOAD_US.fetch_add(tu.elapsed().as_micros() as u64, Relaxed);
+        }
+        // Padded row inputs: x_exp[m_cap, h], eidx[m_cap] (slot index per row).
+        let mut x_exp = vec![0f32; self.m_cap * h];
+        let mut eidx = vec![0f32; self.m_cap];
+        for (r, &(b, e, _)) in rows.iter().enumerate() {
+            x_exp[r * h..r * h + h].copy_from_slice(&x[b * h..b * h + h]);
+            eidx[r] = self.slot_of[&(il, e)] as f32;
+        }
+        let tc = std::time::Instant::now();
+        let out_rows = self
+            .compiled
+            .run(&[("x", x_exp.as_slice()), ("eidx", eidx.as_slice())])[0]
+            .clone();
+        if prof {
+            PGM_COMPUTE_US.fetch_add(tc.elapsed().as_micros() as u64, Relaxed);
+        }
+        // Scatter-reduce: out[token] += weight * down_row.
+        let mut out = vec![0f32; batch * h];
+        for (r, &(b, _, w)) in rows.iter().enumerate() {
+            let dr = &out_rows[r * h..r * h + h];
+            let ob = &mut out[b * h..b * h + h];
+            for (oi, di) in ob.iter_mut().zip(dr) {
+                *oi += w * di;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// **GPU dense shared expert** — the always-on shared FFN (`silu(clamp(x·Wg))·clamp(x·Wu)`
+/// then `·Wd`) run ON-DEVICE, so the paged decode's LAST host-side MoE piece moves to
+/// the GPU alongside [`PagedGroupedMoe`]'s routed experts. Compiles ONE dense-SwiGLU
+/// graph (f32 weights) and reuses it across layers; [`forward`](Self::forward) uploads
+/// the layer's shared weights (already dequantized to f32) + runs. Bit-exact with the
+/// host [`dense_swiglu_ffn`].
+pub struct SharedExpertGpu {
+    compiled: rlx_runtime::CompiledGraph,
+    dim: usize,
+    se: usize,
+}
+
+impl SharedExpertGpu {
+    /// Compile the dense-SwiGLU graph for `dim`-wide tokens and `se_inter` hidden.
+    pub fn new(
+        device: rlx_runtime::Device,
+        dim: usize,
+        se_inter: usize,
+        swiglu_limit: f32,
+    ) -> Self {
+        use rlx_ir::infer::GraphExt;
+        let f = DType::F32;
+        let mut g = Graph::new("shared_expert_gpu");
+        let x = g.input("x", Shape::new(&[1, dim], f));
+        // Params stored TRANSPOSED for `x[1,dim] @ W` matmuls: gate/up = [dim, se],
+        // down = [se, dim] (host transposes on upload).
+        let sg = g.param("sg", Shape::new(&[dim, se_inter], f));
+        let su = g.param("su", Shape::new(&[dim, se_inter], f));
+        let sd = g.param("sd", Shape::new(&[se_inter, dim], f));
+        let gate = g.mm(x, sg); // [1, se]
+        let up = g.mm(x, su);
+        let (gate, up) = if swiglu_limit > 0.0 {
+            let l = swiglu_limit;
+            (
+                g.add_node(
+                    Op::Clamp {
+                        min: f32::NEG_INFINITY,
+                        max: l,
+                    },
+                    vec![gate],
+                    Shape::new(&[1, se_inter], f),
+                ),
+                g.add_node(
+                    Op::Clamp { min: -l, max: l },
+                    vec![up],
+                    Shape::new(&[1, se_inter], f),
+                ),
+            )
+        } else {
+            (gate, up)
+        };
+        let act = g.silu(gate);
+        let glu = g.mul(act, up);
+        let down = g.mm(glu, sd); // [1, dim]
+        g.set_outputs(vec![down]);
+        let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill(device);
+        let compiled = rlx_runtime::Session::new(device).compile_with(g, &opts);
+        Self {
+            compiled,
+            dim,
+            se: se_inter,
+        }
+    }
+
+    /// Run the shared expert on-device. `sg`/`su` are `[se, dim]` row-major (gate/up),
+    /// `sd` is `[dim, se]` (down) — the same layout as [`dense_swiglu_ffn`]. Returns
+    /// `[dim]`.
+    pub fn forward(&mut self, x: &[f32], sg: &[f32], su: &[f32], sd: &[f32]) -> Result<Vec<f32>> {
+        let (dim, se) = (self.dim, self.se);
+        let tr = |v: &[f32], rows: usize, cols: usize| -> Vec<f32> {
+            let mut o = vec![0f32; rows * cols];
+            for r in 0..rows {
+                for c in 0..cols {
+                    o[c * rows + r] = v[r * cols + c];
+                }
+            }
+            o
+        };
+        self.compiled.set_param("sg", &tr(sg, se, dim)); // [se,dim]→[dim,se]
+        self.compiled.set_param("su", &tr(su, se, dim));
+        self.compiled.set_param("sd", &tr(sd, dim, se)); // [dim,se]→[se,dim]
+        Ok(self.compiled.run(&[("x", x)])[0].clone())
+    }
+}
+
+/// LRU expert cache sized by a [`ResourceBudget`](crate::resource::ResourceBudget) —
+/// wraps any [`ExpertSource`] so the hottest `cap` `(layer, expert, proj)` weight
+/// tensors stay RESIDENT and are reused across tokens, while the rest stream on
+/// demand from the inner source. This is what makes `budget.resident_experts(...)`
+/// do real work: it bounds the expert-paging working set to the configured
+/// RAM/expert budget (LRU-evicting the coldest when full). `hits`/`misses` expose
+/// the reuse rate. `cap == 0` disables caching (always stream).
+pub struct CachedExpertSource<S: ExpertSource> {
+    inner: S,
+    cache: HashMap<(usize, usize, u8), (Vec<f32>, u64)>,
+    cap: usize,
+    tick: u64,
+    pub hits: usize,
+    pub misses: usize,
+}
+
+impl<S: ExpertSource> CachedExpertSource<S> {
+    /// Cache up to `cap` `(layer, expert, proj)` tensors (≈ `cap/3` experts).
+    pub fn new(inner: S, cap: usize) -> Self {
+        Self {
+            inner,
+            cache: HashMap::new(),
+            cap,
+            tick: 0,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Size the cache from a resource budget: `resident_experts × 3` projs.
+    pub fn from_budget(
+        inner: S,
+        budget: &crate::resource::ResourceBudget,
+        n_experts: usize,
+        bytes_per_expert: usize,
+        backbone_bytes: usize,
+    ) -> Self {
+        let k = budget.resident_experts(n_experts, bytes_per_expert, backbone_bytes);
+        Self::new(inner, k.saturating_mul(3))
+    }
+
+    /// Resident `(layer,expert,proj)` tensor count.
+    pub fn resident(&self) -> usize {
+        self.cache.len()
+    }
+}
+
+impl<S: ExpertSource> ExpertSource for CachedExpertSource<S> {
+    fn fetch(&mut self, il: usize, e: usize, proj: &str) -> Result<Vec<f32>> {
+        if self.cap == 0 {
+            return self.inner.fetch(il, e, proj);
+        }
+        let pj = match proj {
+            "gate_proj" => 0u8,
+            "up_proj" => 1,
+            _ => 2,
+        };
+        let key = (il, e, pj);
+        self.tick += 1;
+        if let Some((v, t)) = self.cache.get_mut(&key) {
+            *t = self.tick;
+            self.hits += 1;
+            return Ok(v.clone());
+        }
+        self.misses += 1;
+        let v = self.inner.fetch(il, e, proj)?;
+        if self.cache.len() >= self.cap {
+            // Evict the least-recently-used entry (min tick).
+            if let Some((&ek, _)) = self.cache.iter().min_by_key(|(_, (_, t))| *t) {
+                self.cache.remove(&ek);
+            }
+        }
+        self.cache.insert(key, (v.clone(), self.tick));
+        Ok(v)
+    }
+
+    fn prewarm(&mut self, experts: &[(usize, usize)]) {
+        // Only prefetch experts NOT already fully cached (all 3 projs resident) —
+        // cache hits skip disk entirely, so warming them wastes I/O.
+        let need: Vec<(usize, usize)> = experts
+            .iter()
+            .copied()
+            .filter(|&(il, e)| !(0..3).all(|pj| self.cache.contains_key(&(il, e, pj))))
+            .collect();
+        if !need.is_empty() {
+            self.inner.prewarm(&need);
+        }
+    }
 }
 
 /// Load a 2D weight as a `[in, out]` param (transposed from the stored `[out,
@@ -5504,7 +9356,7 @@ fn load_v4_wo_a(
 
 /// [`DeepseekV4Spec`] → the [`DeepseekSpec`] view used by [`build_deepseek_moe_ffn`]
 /// (sqrtsoftplus + always-normalized + shared expert).
-fn v4_moe_spec(spec: &DeepseekV4Spec) -> DeepseekSpec {
+pub fn v4_moe_spec(spec: &DeepseekV4Spec) -> DeepseekSpec {
     DeepseekSpec {
         vocab_size: spec.vocab_size,
         hidden_size: spec.dim,
@@ -5861,6 +9713,7 @@ pub fn build_glm4moe_prefill(
             Op::Attention {
                 num_heads: nh,
                 head_dim: dh,
+                v_head_dim: None,
                 mask_kind: MaskKind::Causal,
                 score_scale: None,
                 attn_logit_softcap: None,
@@ -6086,6 +9939,7 @@ pub fn build_minimax_prefill(
             Op::Attention {
                 num_heads: nh,
                 head_dim: dh,
+                v_head_dim: None,
                 mask_kind: MaskKind::Causal,
                 score_scale: None,
                 attn_logit_softcap: None,
@@ -6461,6 +10315,7 @@ fn build_nemotron_h_attention(
         Op::Attention {
             num_heads: nh,
             head_dim: dh,
+            v_head_dim: None,
             mask_kind: MaskKind::Causal,
             score_scale: None,
             attn_logit_softcap: None,
@@ -6903,6 +10758,7 @@ pub fn build_hy_v3_prefill(
             Op::Attention {
                 num_heads: nh,
                 head_dim: dh,
+                v_head_dim: None,
                 mask_kind: MaskKind::Causal,
                 score_scale: None,
                 attn_logit_softcap: None,
@@ -8190,6 +12046,7 @@ pub fn build_standard_decoder_packed(
             Op::Attention {
                 num_heads: nh,
                 head_dim: dh,
+                v_head_dim: None,
                 mask_kind: spec.attn_mask_kind(),
                 score_scale: spec.attn_score_scale,
                 attn_logit_softcap: spec.attn_logit_softcap,
@@ -9240,7 +13097,10 @@ mod tests {
             let got = rs.inv_freq(i, dim, base);
             max_err = max_err.max((reference - got).abs());
         }
-        assert!(max_err < 1e-12, "YaRN inv_freq vs reference max_err={max_err:e}");
+        assert!(
+            max_err < 1e-12,
+            "YaRN inv_freq vs reference max_err={max_err:e}"
+        );
         // Sliding-window layers (RopeScaling::None) must reproduce raw θ^(-2i/rd)
         // exactly (byte-identical to the pre-YaRN builder).
         let none = RopeScaling::None;
@@ -9282,24 +13142,19 @@ mod tests {
         params.insert("w2t".into(), w2_t);
         let ppt = g.param("pt", Shape::new(&[dim + mr, 1], DType::F32));
         params.insert("pt".into(), proj_t);
-        let (logits, embed) =
-            build_dspark_markov_head(&mut g, pw1, pw2t, tok, rows, mr, vocab);
+        let (logits, embed) = build_dspark_markov_head(&mut g, pw1, pw2t, tok, rows, mr, vocab);
         let conf = build_dspark_confidence_head(&mut g, hin, embed, ppt, rows);
         g.set_outputs(vec![logits, conf]);
-        let opts =
-            crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
-                &rlx_flow::CompileProfile::qwen3_prefill(),
-                Device::Cpu,
-            );
+        let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+            &rlx_flow::CompileProfile::qwen3_prefill(),
+            Device::Cpu,
+        );
         let mut compiled = Session::new(Device::Cpu).compile_with(g, &opts);
         for (n, dd) in &params {
             compiled.set_param(n, dd);
         }
         let ids_f32: Vec<f32> = ids.iter().map(|&i| i as f32).collect();
-        let out = compiled.run(&[
-            ("tok", ids_f32.as_slice()),
-            ("hidden", hidden.as_slice()),
-        ]);
+        let out = compiled.run(&[("tok", ids_f32.as_slice()), ("hidden", hidden.as_slice())]);
         let got_logits = &out[0];
         let got_conf = &out[1];
 
@@ -9366,21 +13221,19 @@ mod tests {
                 // (n_expert, out, in) for the three switch_mlp projections.
                 let dims = if key.ends_with("switch_mlp.gate_proj.weight")
                     || key.ends_with("switch_mlp.up_proj.weight")
+                    || key.ends_with("switch_mlp.down_proj.weight")
                 {
-                    Some((4usize, 8usize, 8usize)) // n_expert, inter, dim
-                } else if key.ends_with("switch_mlp.down_proj.weight") {
-                    Some((4usize, 8usize, 8usize)) // n_expert, dim, inter
+                    Some((4usize, 8usize, 8usize)) // n_expert, out, in
                 } else {
                     None
                 };
                 let Some((ne, out, inn)) = dims else {
                     return Ok(None);
                 };
-                let f32_le = |v: &[f32]| -> Vec<u8> {
-                    v.iter().flat_map(|x| x.to_le_bytes()).collect()
-                };
+                let f32_le =
+                    |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
                 Ok(Some(MlxPackedLinear {
-                    w_q: vec![0u8; ne * out * inn], // 8-bit codes (1 byte/elem)
+                    w_q: vec![0u8; ne * out * inn],           // 8-bit codes (1 byte/elem)
                     scales: f32_le(&vec![0.01f32; ne * out]), // 1 group
                     biases: f32_le(&vec![0.0f32; ne * out]),
                     scheme: QuantScheme::MlxAffine {
@@ -9441,20 +13294,25 @@ mod tests {
 
         let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
         let mut sd = 0.0f64;
-        let mut put = |t: &mut HashMap<String, (Vec<f32>, Vec<usize>)>, k: String, shape: Vec<usize>| {
-            sd += 1.0;
-            let n: usize = shape.iter().product();
-            let data: Vec<f32> = (0..n)
-                .map(|i| {
-                    let x = ((i as f64 + 1.0) * (sd + 1.3) * 12.9898).sin() * 43758.5453;
-                    (x - x.floor()) as f32 - 0.5
-                })
-                .collect();
-            t.insert(k, (data, shape));
-        };
+        let mut put =
+            |t: &mut HashMap<String, (Vec<f32>, Vec<usize>)>, k: String, shape: Vec<usize>| {
+                sd += 1.0;
+                let n: usize = shape.iter().product();
+                let data: Vec<f32> = (0..n)
+                    .map(|i| {
+                        let x = ((i as f64 + 1.0) * (sd + 1.3) * 12.9898).sin() * 43758.5453;
+                        (x - x.floor()) as f32 - 0.5
+                    })
+                    .collect();
+                t.insert(k, (data, shape));
+            };
         put(&mut t, "model.embed_tokens.weight".into(), vec![vocab, dim]);
         put(&mut t, "lm_head.weight".into(), vec![vocab, dim]);
-        put(&mut t, "model.mtp.0.main_proj.weight".into(), vec![dim, dim * n_targets]);
+        put(
+            &mut t,
+            "model.mtp.0.main_proj.weight".into(),
+            vec![dim, dim * n_targets],
+        );
         put(&mut t, "model.mtp.0.main_norm.weight".into(), vec![dim]);
         for s in 0..n_mtp {
             let p = format!("model.mtp.{s}");
@@ -9468,20 +13326,48 @@ mod tests {
             put(&mut t, format!("{p}.attn.q_norm.weight"), vec![ql]);
             put(&mut t, format!("{p}.attn.wq_b.weight"), vec![nh * hd, ql]);
             put(&mut t, format!("{p}.attn.attn_sink"), vec![nh]);
-            put(&mut t, format!("{p}.attn.wo_a.weight"), vec![ngrp * olora, dpg]);
-            put(&mut t, format!("{p}.attn.wo_b.weight"), vec![dim, ngrp * olora]);
+            put(
+                &mut t,
+                format!("{p}.attn.wo_a.weight"),
+                vec![ngrp * olora, dpg],
+            );
+            put(
+                &mut t,
+                format!("{p}.attn.wo_b.weight"),
+                vec![dim, ngrp * olora],
+            );
             put(&mut t, format!("{p}.ffn_hc.fn"), vec![mix_hc, hcd]);
             put(&mut t, format!("{p}.ffn_hc.scale"), vec![3]);
             put(&mut t, format!("{p}.ffn_hc.base"), vec![mix_hc]);
             put(&mut t, format!("{p}.ffn_norm.weight"), vec![dim]);
             put(&mut t, format!("{p}.ffn.gate.weight"), vec![ne, dim]);
-            put(&mut t, format!("{p}.ffn.gate.e_score_correction_bias"), vec![ne]);
-            put(&mut t, format!("{p}.ffn.shared_experts.gate_proj.weight"), vec![inter, dim]);
-            put(&mut t, format!("{p}.ffn.shared_experts.up_proj.weight"), vec![inter, dim]);
-            put(&mut t, format!("{p}.ffn.shared_experts.down_proj.weight"), vec![dim, inter]);
+            put(
+                &mut t,
+                format!("{p}.ffn.gate.e_score_correction_bias"),
+                vec![ne],
+            );
+            put(
+                &mut t,
+                format!("{p}.ffn.shared_experts.gate_proj.weight"),
+                vec![inter, dim],
+            );
+            put(
+                &mut t,
+                format!("{p}.ffn.shared_experts.up_proj.weight"),
+                vec![inter, dim],
+            );
+            put(
+                &mut t,
+                format!("{p}.ffn.shared_experts.down_proj.weight"),
+                vec![dim, inter],
+            );
         }
         let last = n_mtp - 1;
-        put(&mut t, format!("model.mtp.{last}.hc_head.fn"), vec![hc, hcd]);
+        put(
+            &mut t,
+            format!("model.mtp.{last}.hc_head.fn"),
+            vec![hc, hcd],
+        );
         put(&mut t, format!("model.mtp.{last}.hc_head.scale"), vec![1]);
         put(&mut t, format!("model.mtp.{last}.hc_head.base"), vec![hc]);
         put(&mut t, format!("model.mtp.{last}.norm.weight"), vec![dim]);
@@ -9561,7 +13447,15 @@ mod tests {
         // Exact deepseek4.* metadata read from the real
         // bartowski/DeepSeek-V4-Flash-0731-GGUF shard-1 header.
         let ratios: Vec<usize> = (0..46)
-            .map(|i| if i < 2 || i >= 43 { 0 } else if i % 2 == 0 { 4 } else { 128 })
+            .map(|i| {
+                if i < 2 || i >= 43 {
+                    0
+                } else if i % 2 == 0 {
+                    4
+                } else {
+                    128
+                }
+            })
             .collect();
         let clamp: Vec<f64> = vec![10.0; 43];
         let meta = serde_json::json!({
@@ -9651,16 +13545,34 @@ mod tests {
     fn deepseek_v4_ref_name_map() {
         // Verified against the real Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX index
         // (1328 builder keys → all resolve to real tensors).
-        assert_eq!(hf_key_to_dsv4_ref("model.embed_tokens.weight").as_deref(), Some("embed.weight"));
-        assert_eq!(hf_key_to_dsv4_ref("lm_head.weight").as_deref(), Some("head.weight"));
-        assert_eq!(hf_key_to_dsv4_ref("model.norm.weight").as_deref(), Some("norm.weight"));
-        assert_eq!(hf_key_to_dsv4_ref("model.hc_head.fn").as_deref(), Some("hc_head_fn"));
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.embed_tokens.weight").as_deref(),
+            Some("embed.weight")
+        );
+        assert_eq!(
+            hf_key_to_dsv4_ref("lm_head.weight").as_deref(),
+            Some("head.weight")
+        );
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.norm.weight").as_deref(),
+            Some("norm.weight")
+        );
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.hc_head.fn").as_deref(),
+            Some("hc_head_fn")
+        );
         assert_eq!(
             hf_key_to_dsv4_ref("model.layers.0.attn.wq_a.weight").as_deref(),
             Some("layers.0.attn.wq_a.weight")
         );
-        assert_eq!(hf_key_to_dsv4_ref("model.layers.5.attn_hc.fn").as_deref(), Some("layers.5.hc_attn_fn"));
-        assert_eq!(hf_key_to_dsv4_ref("model.layers.5.ffn_hc.scale").as_deref(), Some("layers.5.hc_ffn_scale"));
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.layers.5.attn_hc.fn").as_deref(),
+            Some("layers.5.hc_attn_fn")
+        );
+        assert_eq!(
+            hf_key_to_dsv4_ref("model.layers.5.ffn_hc.scale").as_deref(),
+            Some("layers.5.hc_ffn_scale")
+        );
         assert_eq!(
             hf_key_to_dsv4_ref("model.layers.2.attn.compressor.ape").as_deref(),
             Some("layers.2.attn.compressor.ape")
@@ -9681,9 +13593,18 @@ mod tests {
             hf_key_to_dsv4_ref("model.layers.7.ffn.shared_experts.down_proj.weight").as_deref(),
             Some("layers.7.ffn.shared_experts.w2.weight")
         );
-        assert_eq!(dsv4_ref_expert_key(7, 42, "gate_proj"), "layers.7.ffn.experts.42.w1.weight");
-        assert_eq!(dsv4_ref_expert_key(7, 42, "down_proj"), "layers.7.ffn.experts.42.w2.weight");
-        assert_eq!(dsv4_ref_expert_key(7, 42, "up_proj"), "layers.7.ffn.experts.42.w3.weight");
+        assert_eq!(
+            dsv4_ref_expert_key(7, 42, "gate_proj"),
+            "layers.7.ffn.experts.42.w1.weight"
+        );
+        assert_eq!(
+            dsv4_ref_expert_key(7, 42, "down_proj"),
+            "layers.7.ffn.experts.42.w2.weight"
+        );
+        assert_eq!(
+            dsv4_ref_expert_key(7, 42, "up_proj"),
+            "layers.7.ffn.experts.42.w3.weight"
+        );
         assert_eq!(hf_key_to_dsv4_ref("nonexistent"), None);
     }
 
@@ -9726,7 +13647,11 @@ mod tests {
             }
         }
         let reqs = Arc::new(Mutex::new(Vec::new()));
-        let mock = Mock { reqs: reqs.clone(), per_wq: 10, per_sc: 4 };
+        let mock = Mock {
+            reqs: reqs.clone(),
+            per_wq: 10,
+            per_sc: 4,
+        };
         let n_experts = 3;
         let mut ad = DsV4RefLoader::new(Box::new(mock), n_experts);
 
@@ -9739,7 +13664,8 @@ mod tests {
             .unwrap()
             .unwrap();
         // A non-expert packed request name-maps straight through.
-        ad.take_packed_mlx("model.layers.5.attn.wq_a.weight").unwrap();
+        ad.take_packed_mlx("model.layers.5.attn.wq_a.weight")
+            .unwrap();
 
         let r = reqs.lock().unwrap();
         assert!(r.contains(&"layers.5.attn.q_norm.weight".to_string()));
@@ -9755,6 +13681,2292 @@ mod tests {
         assert_eq!(p.w_q.len(), n_experts * 10);
         assert_eq!(p.scales.len(), n_experts * 4);
         assert!(matches!(p.scheme, QuantScheme::MlxMxfp4 { .. }));
+    }
+
+    #[test]
+    fn cached_expert_source_budget() {
+        use crate::resource::ResourceBudget;
+        struct Counting;
+        impl ExpertSource for Counting {
+            fn fetch(&mut self, _il: usize, e: usize, _proj: &str) -> Result<Vec<f32>> {
+                Ok(vec![e as f32; 4])
+            }
+        }
+        // Budget caps 2 experts resident → cache holds 2×3 = 6 (layer,expert,proj) tensors.
+        let budget = ResourceBudget {
+            max_ram_bytes: None,
+            max_resident_experts: Some(2),
+        };
+        let mut src = CachedExpertSource::from_budget(Counting, &budget, 256, 1 << 20, 0);
+        // Cold-fetch experts 0,1,2 × 3 projs = 9 streams; cache bounds to 6, evicting e0.
+        for e in 0..3 {
+            for p in ["gate_proj", "up_proj", "down_proj"] {
+                src.fetch(0, e, p).unwrap();
+            }
+        }
+        assert!(
+            src.resident() <= 6,
+            "cache bounded by budget, got {}",
+            src.resident()
+        );
+        assert_eq!(src.misses, 9);
+        assert_eq!(src.hits, 0);
+        // Expert 2 is the most recent → all cached → hits (reuse across tokens).
+        for p in ["gate_proj", "up_proj", "down_proj"] {
+            src.fetch(0, 2, p).unwrap();
+        }
+        assert_eq!(src.hits, 3, "recent experts reused from RAM");
+        // Expert 0 was LRU-evicted → re-streams.
+        let before = src.misses;
+        src.fetch(0, 0, "gate_proj").unwrap();
+        assert_eq!(
+            src.misses,
+            before + 1,
+            "evicted expert re-streams on demand"
+        );
+    }
+
+    #[test]
+    fn paged_expert_moe_matches() {
+        use rlx_ir::op::Op;
+        use rlx_runtime::{Device, Session};
+        let f = DType::F32;
+        let (h, n, top_k, inter, se_n) = (4usize, 8usize, 3usize, 6usize, 1usize);
+        let spec = DeepseekSpec {
+            vocab_size: 16,
+            hidden_size: h,
+            num_hidden_layers: 1,
+            num_attention_heads: 1,
+            q_lora_rank: 0,
+            absorbed_mla: false,
+            kv_lora_rank: 0,
+            qk_nope_head_dim: 0,
+            qk_rope_head_dim: 0,
+            v_head_dim: 0,
+            intermediate_size: inter,
+            moe_intermediate_size: inter,
+            n_routed_experts: n,
+            num_experts_per_tok: top_k,
+            n_shared_experts: se_n,
+            first_k_dense_replace: 0,
+            routed_scaling_factor: 1.5,
+            norm_topk_prob: true,
+            sigmoid_gate: false,
+            sqrtsoftplus_gate: true,
+            swiglu_limit: 7.0,
+            rope_theta: 10000.0,
+            rope_scaling: RopeScaling::None,
+            attn_score_scale: None,
+            rope_neox: true,
+            rms_norm_eps: 1e-6,
+        };
+        let rnd = |seed: usize| -> f32 {
+            (((seed.wrapping_mul(2654435761)) % 1000) as f32) / 500.0 - 1.0
+        };
+        let h2d: Vec<f32> = (0..h).map(|i| rnd(i + 1)).collect();
+        let router_w: Vec<f32> = (0..n * h).map(|i| rnd(i + 100)).collect(); // [n, h]
+        let ebias: Vec<f32> = (0..n).map(|e| rnd(e + 50) * 0.1).collect();
+        let mut gate: Vec<Vec<f32>> = Vec::new();
+        let mut up: Vec<Vec<f32>> = Vec::new();
+        let mut down: Vec<Vec<f32>> = Vec::new();
+        for e in 0..n {
+            gate.push((0..inter * h).map(|i| rnd(e * 1000 + i + 7)).collect());
+            up.push((0..inter * h).map(|i| rnd(e * 1000 + i + 5000)).collect());
+            down.push((0..h * inter).map(|i| rnd(e * 1000 + i + 9000)).collect());
+        }
+        let se = inter * se_n;
+        let sg: Vec<f32> = (0..se * h).map(|i| rnd(i + 20000)).collect(); // [se, h]
+        let su: Vec<f32> = (0..se * h).map(|i| rnd(i + 30000)).collect();
+        let sd: Vec<f32> = (0..h * se).map(|i| rnd(i + 40000)).collect(); // [h, se]
+
+        // (1) Selection == graph TopK (same ops as build_deepseek_moe_c → independent).
+        let mut g = Graph::new("route_chk");
+        let mut params: HashMap<String, Vec<f32>> = HashMap::new();
+        let h2d_in = g.input("h2d", Shape::new(&[1, h], f));
+        let rw = g.param("rw", Shape::new(&[h, n], f)); // [h, n] = router_w transposed
+        let mut rwt = vec![0f32; h * n];
+        for i in 0..h {
+            for e in 0..n {
+                rwt[i * n + e] = router_w[e * h + i];
+            }
+        }
+        params.insert("rw".into(), rwt);
+        let logits = g.mm(h2d_in, rw);
+        let sp = softplus_stable(&mut g, &mut params, logits, "chk");
+        let scores_n = g.sqrt(sp);
+        let eb = g.param("eb", Shape::new(&[n], f));
+        params.insert("eb".into(), ebias.clone());
+        let route = g.add(scores_n, eb);
+        let top_idx = g.add_node(
+            Op::TopK { k: top_k },
+            vec![route],
+            Shape::new(&[1, top_k], f),
+        );
+        g.set_outputs(vec![top_idx]);
+        let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+            &rlx_flow::CompileProfile::qwen3_prefill(),
+            Device::Cpu,
+        );
+        let mut c = Session::new(Device::Cpu).compile_with(g, &opts);
+        for (nm, dd) in &params {
+            c.set_param(nm, dd);
+        }
+        let gout = c.run(&[("h2d", h2d.as_slice())]);
+        let mut graph_top: Vec<usize> = gout[0].iter().map(|&x| x as usize).collect();
+        graph_top.sort_unstable();
+        let (ptop0, _) = paged_moe_route(&spec, &h2d, &router_w, Some(&ebias), None);
+        let mut ptop = ptop0.clone();
+        ptop.sort_unstable();
+        assert_eq!(
+            ptop, graph_top,
+            "paged routing must select the same experts as the graph TopK"
+        );
+
+        // (2) paged_moe_forward == full reference, loading ONLY the active experts.
+        struct HE {
+            gate: Vec<Vec<f32>>,
+            up: Vec<Vec<f32>>,
+            down: Vec<Vec<f32>>,
+            loads: usize,
+        }
+        impl ExpertSource for HE {
+            fn fetch(&mut self, _il: usize, e: usize, proj: &str) -> Result<Vec<f32>> {
+                self.loads += 1;
+                Ok(match proj {
+                    "gate_proj" => self.gate[e].clone(),
+                    "up_proj" => self.up[e].clone(),
+                    _ => self.down[e].clone(),
+                })
+            }
+        }
+        let mut src = HE {
+            gate: gate.clone(),
+            up: up.clone(),
+            down: down.clone(),
+            loads: 0,
+        };
+        let paged = paged_moe_forward(
+            &spec,
+            0,
+            &h2d,
+            &router_w,
+            Some(&ebias),
+            None,
+            &mut src,
+            Some((&sg, &su, &sd)),
+        )
+        .unwrap();
+        assert_eq!(
+            src.loads,
+            top_k * 3,
+            "expert paging must touch ONLY the {top_k} active experts (×3 projs)"
+        );
+        let silu = |z: f32| z / (1.0 + (-z).exp());
+        let (top, w) = paged_moe_route(&spec, &h2d, &router_w, Some(&ebias), None);
+        let mut refo = vec![0f32; h];
+        for (ki, &e) in top.iter().enumerate() {
+            let mut glu = vec![0f32; inter];
+            for (r, gr) in glu.iter_mut().enumerate() {
+                let (mut a, mut b) = (0f32, 0f32);
+                for i in 0..h {
+                    a += gate[e][r * h + i] * h2d[i];
+                    b += up[e][r * h + i] * h2d[i];
+                }
+                *gr = silu(a.min(7.0)) * b.clamp(-7.0, 7.0);
+            }
+            for (r, o) in refo.iter_mut().enumerate() {
+                let mut s = 0f32;
+                for i in 0..inter {
+                    s += down[e][r * inter + i] * glu[i];
+                }
+                *o += w[ki] * s;
+            }
+        }
+        let mut sglu = vec![0f32; se];
+        for (r, gr) in sglu.iter_mut().enumerate() {
+            let (mut a, mut b) = (0f32, 0f32);
+            for i in 0..h {
+                a += sg[r * h + i] * h2d[i];
+                b += su[r * h + i] * h2d[i];
+            }
+            *gr = silu(a) * b;
+        }
+        for (r, o) in refo.iter_mut().enumerate() {
+            let mut s = 0f32;
+            for i in 0..se {
+                s += sd[r * se + i] * sglu[i];
+            }
+            *o += s;
+        }
+        let err = paged
+            .iter()
+            .zip(&refo)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(err < 1e-4, "paged MoE output must match reference: {err:e}");
+
+        // (3) HASH ROUTING (GA's first `n_hash_layers`): experts come from a `tid2eid`
+        // row, not score top-k. Paging must select exactly those experts, weight them
+        // by their ORIGINAL scores, and still touch only `top_k` of them.
+        let hash_eids = vec![6usize, 1, 4];
+        let (htop, hw) = paged_moe_route(&spec, &h2d, &router_w, Some(&ebias), Some(&hash_eids));
+        assert_eq!(
+            htop, hash_eids,
+            "hash routing must select the tid2eid experts"
+        );
+        let mut src2 = HE {
+            gate: gate.clone(),
+            up: up.clone(),
+            down: down.clone(),
+            loads: 0,
+        };
+        let hpaged = paged_moe_forward(
+            &spec,
+            0,
+            &h2d,
+            &router_w,
+            Some(&ebias),
+            Some(&hash_eids),
+            &mut src2,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            src2.loads,
+            top_k * 3,
+            "hash routing must also touch ONLY the {top_k} selected experts"
+        );
+        let mut href = vec![0f32; h];
+        for (ki, &e) in hash_eids.iter().enumerate() {
+            let mut glu = vec![0f32; inter];
+            for (r, gr) in glu.iter_mut().enumerate() {
+                let (mut a, mut b) = (0f32, 0f32);
+                for i in 0..h {
+                    a += gate[e][r * h + i] * h2d[i];
+                    b += up[e][r * h + i] * h2d[i];
+                }
+                *gr = silu(a.min(7.0)) * b.clamp(-7.0, 7.0);
+            }
+            for (r, o) in href.iter_mut().enumerate() {
+                let mut s = 0f32;
+                for i in 0..inter {
+                    s += down[e][r * inter + i] * glu[i];
+                }
+                *o += hw[ki] * s;
+            }
+        }
+        let herr = hpaged
+            .iter()
+            .zip(&href)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            herr < 1e-4,
+            "paged hash-routed MoE must match reference: {herr:e}"
+        );
+
+        // (4) BATCHED S3 (grouped scatter-reduce) == per-token S1 loop, and fetches
+        // each active expert ONCE per batch (not once per token that picks it).
+        let bsz = 5usize;
+        let mut xb = vec![0f32; bsz * h];
+        for b in 0..bsz {
+            for i in 0..h {
+                // Distinct token vectors so the routing differs across the batch.
+                xb[b * h + i] =
+                    h2d[i] * (0.7 + 0.1 * b as f32) + 0.01 * (b as f32 - i as f32).sin();
+            }
+        }
+        // S1 reference: run the per-token paging path for each token, concatenate.
+        let mut s1 = vec![0f32; bsz * h];
+        let mut distinct: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for b in 0..bsz {
+            let tok = &xb[b * h..b * h + h];
+            let (tt, _) = paged_moe_route(&spec, tok, &router_w, Some(&ebias), None);
+            distinct.extend(tt);
+            let mut s = HE {
+                gate: gate.clone(),
+                up: up.clone(),
+                down: down.clone(),
+                loads: 0,
+            };
+            let o = paged_moe_forward(
+                &spec,
+                0,
+                tok,
+                &router_w,
+                Some(&ebias),
+                None,
+                &mut s,
+                Some((&sg, &su, &sd)),
+            )
+            .unwrap();
+            s1[b * h..b * h + h].copy_from_slice(&o);
+        }
+        // S3 batched.
+        let mut sb = HE {
+            gate: gate.clone(),
+            up: up.clone(),
+            down: down.clone(),
+            loads: 0,
+        };
+        let s3 = paged_moe_forward_batched(
+            &spec,
+            0,
+            &xb,
+            bsz,
+            &router_w,
+            Some(&ebias),
+            None,
+            &mut sb,
+            Some((&sg, &su, &sd)),
+        )
+        .unwrap();
+        let berr = s1
+            .iter()
+            .zip(&s3)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            berr < 1e-4,
+            "batched S3 MoE must match per-token S1: {berr:e}"
+        );
+        // Each DISTINCT active expert fetched exactly once (×3 projs) — the paging win.
+        assert_eq!(
+            sb.loads,
+            distinct.len() * 3,
+            "batched paging must fetch each distinct active expert ONCE per batch, not per token"
+        );
+    }
+
+    #[test]
+    fn paged_grouped_moe_gpu_matches_host() {
+        // The GPU grouped-MoE path (PagedGroupedMoe, on-device DequantGroupedMatMulMlx)
+        // must equal the host S3 path (paged_moe_forward_batched) that dequants + GEMMs
+        // on CPU — same synthetic MXFP4 per-expert weights, same routing. Runs on
+        // Device::Cpu (the grouped op has a CPU impl); Metal/MLX is a drop-in device swap.
+        use crate::weight_loader::MlxPackedLinear;
+        use rlx_ir::quant::QuantScheme;
+        let (h, inter, gs) = (64usize, 32usize, 32usize);
+        let (n, top_k, batch) = (6usize, 2usize, 4usize);
+        let scheme = QuantScheme::MlxMxfp4 {
+            group_size: gs as u32,
+        };
+        let spec = DeepseekSpec {
+            vocab_size: 16,
+            hidden_size: h,
+            num_hidden_layers: 1,
+            num_attention_heads: 1,
+            q_lora_rank: 0,
+            absorbed_mla: false,
+            kv_lora_rank: 0,
+            qk_nope_head_dim: 0,
+            qk_rope_head_dim: 0,
+            v_head_dim: 0,
+            intermediate_size: inter,
+            moe_intermediate_size: inter,
+            n_routed_experts: n,
+            num_experts_per_tok: top_k,
+            n_shared_experts: 0,
+            first_k_dense_replace: 0,
+            routed_scaling_factor: 1.5,
+            norm_topk_prob: true,
+            sigmoid_gate: false,
+            sqrtsoftplus_gate: true,
+            swiglu_limit: 7.0,
+            rope_theta: 10000.0,
+            rope_scaling: RopeScaling::None,
+            attn_score_scale: None,
+            rope_neox: true,
+            rms_norm_eps: 1e-6,
+        };
+        let rnd =
+            |seed: usize| -> f32 { ((seed.wrapping_mul(2654435761) % 1000) as f32) / 500.0 - 1.0 };
+
+        // Synthetic per-expert MXFP4 packed weights. gate/up: out=inter,in=h; down: out=h,in=inter.
+        let mk = |e: usize, proj: u8, out: usize, inn: usize| -> MlxPackedLinear {
+            let ng = inn / gs;
+            let w_q: Vec<u8> = (0..out * (inn / 2))
+                .map(|i| ((i * 31 + e * 17 + proj as usize * 7 + 3) % 256) as u8)
+                .collect();
+            // e8m0 scale bytes near 1.0 (0x7f == 2^0) so dequant magnitudes are sane.
+            let scales: Vec<u8> = (0..out * ng)
+                .map(|i| (0x7c + ((i + e) % 6)) as u8)
+                .collect();
+            MlxPackedLinear {
+                w_q,
+                scales,
+                biases: Vec::new(),
+                scheme,
+                out_shape: vec![out, inn],
+            }
+        };
+        // Build the full expert bank (used by both paths).
+        let bank: Vec<[MlxPackedLinear; 3]> = (0..n)
+            .map(|e| [mk(e, 0, inter, h), mk(e, 1, inter, h), mk(e, 2, h, inter)])
+            .collect();
+
+        // Packed source (GPU path) + dequantizing source (host reference) over the bank.
+        struct PackedBank<'a>(&'a [[MlxPackedLinear; 3]]);
+        impl PackedExpertSource for PackedBank<'_> {
+            fn fetch_packed(
+                &mut self,
+                _il: usize,
+                e: usize,
+                proj: &str,
+            ) -> Result<MlxPackedLinear> {
+                let j = match proj {
+                    "gate_proj" => 0,
+                    "up_proj" => 1,
+                    _ => 2,
+                };
+                Ok(self.0[e][j].clone())
+            }
+        }
+        struct DequantBank<'a>(&'a [[MlxPackedLinear; 3]]);
+        impl ExpertSource for DequantBank<'_> {
+            fn fetch(&mut self, _il: usize, e: usize, proj: &str) -> Result<Vec<f32>> {
+                let j = match proj {
+                    "gate_proj" => 0,
+                    "up_proj" => 1,
+                    _ => 2,
+                };
+                dequant_packed_linear(&self.0[e][j])
+            }
+        }
+
+        let x: Vec<f32> = (0..batch * h).map(|i| rnd(i + 1) * 0.5).collect();
+        let router_w: Vec<f32> = (0..n * h).map(|i| rnd(i + 100)).collect();
+        // Route each token identically for both paths (no shared expert here).
+        let routes: Vec<Vec<(usize, f32)>> = (0..batch)
+            .map(|b| {
+                let (top, w) = paged_moe_route(&spec, &x[b * h..b * h + h], &router_w, None, None);
+                top.into_iter().zip(w).collect()
+            })
+            .collect();
+
+        // Host S3 reference.
+        let mut href = DequantBank(&bank);
+        let host =
+            paged_moe_forward_batched(&spec, 0, &x, batch, &router_w, None, None, &mut href, None)
+                .unwrap();
+
+        // GPU grouped path (Device::Cpu here).
+        let mut moe = PagedGroupedMoe::new(
+            rlx_runtime::Device::Cpu,
+            n,
+            batch * top_k,
+            h,
+            inter,
+            gs,
+            spec.swiglu_limit,
+            scheme,
+        );
+        let mut psrc = PackedBank(&bank);
+        let gpu = moe.forward(0, &x, batch, &routes, &mut psrc).unwrap();
+
+        let err = host
+            .iter()
+            .zip(&gpu)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        let mag = host.iter().map(|v| v.abs()).fold(0f32, f32::max).max(1e-6);
+        assert!(
+            err / mag < 1e-3,
+            "GPU grouped MoE must match host S3: rel_err {:e} (abs {err:e}, mag {mag:e})",
+            err / mag
+        );
+    }
+
+    #[test]
+    fn shared_expert_gpu_matches_host() {
+        // The on-device dense shared expert must equal the host dense_swiglu_ffn.
+        use rlx_runtime::Device;
+        let (dim, se) = (16usize, 8usize);
+        let lim = 7.0f32;
+        let rnd = |s: usize| ((s.wrapping_mul(2654435761) % 1000) as f32) / 500.0 - 1.0;
+        let x: Vec<f32> = (0..dim).map(|i| rnd(i + 1) * 0.5).collect();
+        let sg: Vec<f32> = (0..se * dim).map(|i| rnd(i + 5) * 0.2).collect(); // [se, dim]
+        let su: Vec<f32> = (0..se * dim).map(|i| rnd(i + 9) * 0.2).collect();
+        let sd: Vec<f32> = (0..dim * se).map(|i| rnd(i + 13) * 0.2).collect(); // [dim, se]
+        let host = dense_swiglu_ffn(&x, &sg, &su, &sd, lim);
+        let mut g = SharedExpertGpu::new(Device::Cpu, dim, se, lim);
+        let gpu = g.forward(&x, &sg, &su, &sd).unwrap();
+        let err = host
+            .iter()
+            .zip(&gpu)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            err < 1e-4,
+            "GPU shared expert must match host dense_swiglu_ffn: err {err:e}"
+        );
+        assert_eq!(gpu.len(), dim);
+    }
+
+    #[test]
+    fn paged_moe_fused_matches_dequant() {
+        // FUSED dequant-matvec (reads packed codes) must equal the dequant-then-matmul
+        // path bit-for-bit, on synthetic MXFP4 experts + shared.
+        use crate::weight_loader::MlxPackedLinear;
+        use rlx_ir::quant::QuantScheme;
+        let (h, inter, gs, ne, topk) = (64usize, 32usize, 32usize, 6usize, 3usize);
+        let scheme = QuantScheme::MlxMxfp4 {
+            group_size: gs as u32,
+        };
+        let rnd = |s: usize| ((s.wrapping_mul(2654435761) % 1000) as f32) / 500.0 - 1.0;
+        let mk = |e: usize, pj: u8, out: usize, inn: usize| -> MlxPackedLinear {
+            let ng = inn / gs;
+            MlxPackedLinear {
+                w_q: (0..out * (inn / 2))
+                    .map(|i| ((i * 31 + e * 17 + pj as usize * 7 + 3) % 256) as u8)
+                    .collect(),
+                scales: (0..out * ng)
+                    .map(|i| (0x7c + ((i + e) % 6)) as u8)
+                    .collect(),
+                biases: Vec::new(),
+                scheme,
+                out_shape: vec![out, inn],
+            }
+        };
+        let bank: Vec<[MlxPackedLinear; 3]> = (0..ne)
+            .map(|e| [mk(e, 0, inter, h), mk(e, 1, inter, h), mk(e, 2, h, inter)])
+            .collect();
+        struct Bank<'a>(&'a [[MlxPackedLinear; 3]]);
+        impl ExpertSource for Bank<'_> {
+            fn fetch(&mut self, _il: usize, e: usize, proj: &str) -> Result<Vec<f32>> {
+                let j = match proj {
+                    "gate_proj" => 0,
+                    "up_proj" => 1,
+                    _ => 2,
+                };
+                dequant_packed_linear(&self.0[e][j])
+            }
+        }
+        impl PackedExpertSource for Bank<'_> {
+            fn fetch_packed(
+                &mut self,
+                _il: usize,
+                e: usize,
+                proj: &str,
+            ) -> Result<MlxPackedLinear> {
+                let j = match proj {
+                    "gate_proj" => 0,
+                    "up_proj" => 1,
+                    _ => 2,
+                };
+                Ok(self.0[e][j].clone())
+            }
+        }
+        let spec = DeepseekSpec {
+            vocab_size: 0,
+            hidden_size: h,
+            num_hidden_layers: 1,
+            num_attention_heads: 1,
+            q_lora_rank: 0,
+            absorbed_mla: false,
+            kv_lora_rank: 0,
+            qk_nope_head_dim: 0,
+            qk_rope_head_dim: 0,
+            v_head_dim: 0,
+            intermediate_size: inter,
+            moe_intermediate_size: inter,
+            n_routed_experts: ne,
+            num_experts_per_tok: topk,
+            n_shared_experts: 1,
+            first_k_dense_replace: 0,
+            routed_scaling_factor: 1.5,
+            norm_topk_prob: true,
+            sigmoid_gate: false,
+            sqrtsoftplus_gate: true,
+            swiglu_limit: 7.0,
+            rope_theta: 10000.0,
+            rope_scaling: RopeScaling::None,
+            attn_score_scale: None,
+            rope_neox: true,
+            rms_norm_eps: 1e-6,
+        };
+        let x: Vec<f32> = (0..h).map(|i| rnd(i + 1) * 0.5).collect();
+        let router: Vec<f32> = (0..ne * h).map(|i| rnd(i + 100)).collect();
+        let (sg, su, sd): (Vec<f32>, Vec<f32>, Vec<f32>) = (
+            (0..inter * h).map(|i| rnd(i + 5) * 0.1).collect(),
+            (0..inter * h).map(|i| rnd(i + 9) * 0.1).collect(),
+            (0..h * inter).map(|i| rnd(i + 13) * 0.1).collect(),
+        );
+        let a = paged_moe_forward(
+            &spec,
+            0,
+            &x,
+            &router,
+            None,
+            None,
+            &mut Bank(&bank),
+            Some((&sg, &su, &sd)),
+        )
+        .unwrap();
+        let b = paged_moe_forward_fused(
+            &spec,
+            0,
+            &x,
+            &router,
+            None,
+            None,
+            &mut Bank(&bank),
+            Some((&sg, &su, &sd)),
+        )
+        .unwrap();
+        let err = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            err < 1e-4,
+            "fused matvec MoE must match dequant path: err {err:e}"
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_paged_decode_matches_resident() {
+        // END-TO-END paged decode: a tiny 1-layer MoE V4 model decoded with the MoE
+        // SPLIT OUT of the graph (attention in-graph, MoE host-side via
+        // `paged_moe_forward`) must produce the SAME tokens as the fully-resident
+        // `deepseek_v4_generate`. MXFP4 experts (bf16-exact scales) ⇒ the in-graph
+        // grouped op and the host dequant agree bit-for-bit.
+        use crate::weight_loader::{MlxPackedLinear, WeightLoader};
+        use rlx_ir::quant::QuantScheme;
+        use rlx_runtime::{Device, Session};
+        let (vocab, dim, hc, nh, hd, rd, ql) = (16usize, 8, 2, 2, 4, 2, 6);
+        let (ngrp, olora, inter, ne, nact, gs) = (2usize, 3, 8, 4, 2, 8);
+        let (mix_hc, hcd, dpg) = ((2 + hc) * hc, hc * dim, nh * hd / ngrp);
+        let scheme = QuantScheme::MlxMxfp4 {
+            group_size: gs as u32,
+        };
+        let spec = DeepseekV4Spec {
+            vocab_size: vocab,
+            dim,
+            n_layers: 1,
+            hc_mult: hc,
+            n_heads: nh,
+            head_dim: hd,
+            rope_head_dim: rd,
+            q_lora_rank: ql,
+            n_groups: ngrp,
+            o_lora_rank: olora,
+            compress_ratios: vec![0],
+            index_head_dim: 0,
+            index_n_heads: 0,
+            index_topk: 0,
+            window_size: 64,
+            first_k_dense_replace: 0,
+            n_hash_layers: 0,
+            moe_intermediate_size: inter,
+            n_routed_experts: ne,
+            n_activated_experts: nact,
+            n_shared_experts: 1,
+            intermediate_size: inter,
+            route_scale: 1.5,
+            rope_theta: 10000.0,
+            compress_rope_theta: 160000.0,
+            swiglu_limit: 0.0,
+            rms_norm_eps: 1e-6,
+            hc_sinkhorn_iters: 3,
+            hc_eps: 1e-6,
+            original_seq_len: 0,
+            rope_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            n_mtp_layers: 0,
+            dspark_block_size: 0,
+            dspark_noise_token_id: 0,
+            dspark_target_layer_ids: vec![0],
+            dspark_markov_rank: 0,
+        };
+
+        // Dense f32 weights + stacked MXFP4 switch_mlp experts.
+        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
+        let mut sd = 0.0f64;
+        let mut put = |t: &mut HashMap<String, (Vec<f32>, Vec<usize>)>,
+                       k: String,
+                       shape: Vec<usize>| {
+            sd += 1.0;
+            let n: usize = shape.iter().product();
+            let data: Vec<f32> = (0..n)
+                .map(|i| {
+                    (((i as f64 + 1.0) * (sd + 1.3) * 12.9898).sin() * 43758.5453).fract() as f32
+                        * 0.4
+                        - 0.2
+                })
+                .collect();
+            t.insert(k, (data, shape));
+        };
+        put(&mut t, "model.embed_tokens.weight".into(), vec![vocab, dim]);
+        let p = "model.layers.0";
+        put(&mut t, format!("{p}.attn_hc.fn"), vec![mix_hc, hcd]);
+        put(&mut t, format!("{p}.attn_hc.scale"), vec![3]);
+        put(&mut t, format!("{p}.attn_hc.base"), vec![mix_hc]);
+        put(&mut t, format!("{p}.attn_norm.weight"), vec![dim]);
+        put(&mut t, format!("{p}.attn.wq_a.weight"), vec![ql, dim]);
+        put(&mut t, format!("{p}.attn.q_norm.weight"), vec![ql]);
+        put(&mut t, format!("{p}.attn.wq_b.weight"), vec![nh * hd, ql]);
+        put(&mut t, format!("{p}.attn.wkv.weight"), vec![hd, dim]);
+        put(&mut t, format!("{p}.attn.kv_norm.weight"), vec![hd]);
+        put(&mut t, format!("{p}.attn.attn_sink"), vec![nh]);
+        put(
+            &mut t,
+            format!("{p}.attn.wo_a.weight"),
+            vec![ngrp * olora, dpg],
+        );
+        put(
+            &mut t,
+            format!("{p}.attn.wo_b.weight"),
+            vec![dim, ngrp * olora],
+        );
+        put(&mut t, format!("{p}.ffn_hc.fn"), vec![mix_hc, hcd]);
+        put(&mut t, format!("{p}.ffn_hc.scale"), vec![3]);
+        put(&mut t, format!("{p}.ffn_hc.base"), vec![mix_hc]);
+        put(&mut t, format!("{p}.ffn_norm.weight"), vec![dim]);
+        put(&mut t, format!("{p}.ffn.gate.weight"), vec![ne, dim]); // router [n_expert, dim]
+        // Shared expert (n_shared=1, se_inter=inter): dense f32 SwiGLU.
+        put(
+            &mut t,
+            format!("{p}.ffn.shared_experts.gate_proj.weight"),
+            vec![inter, dim],
+        );
+        put(
+            &mut t,
+            format!("{p}.ffn.shared_experts.up_proj.weight"),
+            vec![inter, dim],
+        );
+        put(
+            &mut t,
+            format!("{p}.ffn.shared_experts.down_proj.weight"),
+            vec![dim, inter],
+        );
+        put(&mut t, "model.hc_head.fn".into(), vec![hc, hcd]);
+        put(&mut t, "model.hc_head.scale".into(), vec![1]);
+        put(&mut t, "model.hc_head.base".into(), vec![hc]);
+        put(&mut t, "model.norm.weight".into(), vec![dim]);
+        put(&mut t, "lm_head.weight".into(), vec![vocab, dim]);
+
+        // Stacked MXFP4 switch_mlp: gate/up [ne,inter,dim], down [ne,dim,inter].
+        let mk_stack = |out: usize, inn: usize, salt: usize| -> (Vec<u8>, Vec<u8>) {
+            let ng = inn / gs;
+            let w_q: Vec<u8> = (0..ne * out * (inn / 2))
+                .map(|i| ((i * 37 + salt * 11 + 5) % 256) as u8)
+                .collect();
+            let scales: Vec<u8> = (0..ne * out * ng)
+                .map(|i| (0x7b + ((i + salt) % 4)) as u8)
+                .collect(); // ~2^-4..2^-1
+            (w_q, scales)
+        };
+        let mut packed: HashMap<String, (Vec<u8>, Vec<u8>, usize, usize)> = HashMap::new();
+        packed.insert(format!("{p}.ffn.switch_mlp.gate_proj.weight"), {
+            let (w, s) = mk_stack(inter, dim, 1);
+            (w, s, inter, dim)
+        });
+        packed.insert(format!("{p}.ffn.switch_mlp.up_proj.weight"), {
+            let (w, s) = mk_stack(inter, dim, 2);
+            (w, s, inter, dim)
+        });
+        packed.insert(format!("{p}.ffn.switch_mlp.down_proj.weight"), {
+            let (w, s) = mk_stack(dim, inter, 3);
+            (w, s, dim, inter)
+        });
+
+        #[derive(Clone)]
+        struct Mem {
+            t: HashMap<String, (Vec<f32>, Vec<usize>)>,
+            packed: HashMap<String, (Vec<u8>, Vec<u8>, usize, usize)>,
+            ne: usize,
+            scheme: QuantScheme,
+        }
+        impl WeightLoader for Mem {
+            fn take(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                self.t.get(k).cloned().ok_or_else(|| anyhow!("missing {k}"))
+            }
+            fn take_transposed(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                let (d, s) = self.take(k)?;
+                let (r, c) = (s[0], s[1]);
+                let mut o = vec![0f32; d.len()];
+                for i in 0..r {
+                    for j in 0..c {
+                        o[j * r + i] = d[i * c + j];
+                    }
+                }
+                Ok((o, vec![c, r]))
+            }
+            fn len(&self) -> usize {
+                self.t.len()
+            }
+            fn remaining_keys(&self) -> Vec<String> {
+                self.t.keys().cloned().collect()
+            }
+            fn take_packed_mlx(&mut self, key: &str) -> Result<Option<MlxPackedLinear>> {
+                let Some((w_q, scales, out, inn)) = self.packed.get(key) else {
+                    return Ok(None);
+                };
+                Ok(Some(MlxPackedLinear {
+                    w_q: w_q.clone(),
+                    scales: scales.clone(),
+                    biases: Vec::new(),
+                    scheme: self.scheme,
+                    out_shape: vec![self.ne * out, *inn],
+                }))
+            }
+        }
+        let mem = Mem {
+            t,
+            packed: packed.clone(),
+            ne,
+            scheme,
+        };
+        let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+            &rlx_flow::CompileProfile::qwen3_prefill(),
+            Device::Cpu,
+        );
+        let ds = v4_moe_spec(&spec);
+        let router: Vec<f32> = mem.t[&format!("{p}.ffn.gate.weight")].0.clone(); // [ne, dim]
+        let sg = mem.t[&format!("{p}.ffn.shared_experts.gate_proj.weight")]
+            .0
+            .clone();
+        let su = mem.t[&format!("{p}.ffn.shared_experts.up_proj.weight")]
+            .0
+            .clone();
+        let sd = mem.t[&format!("{p}.ffn.shared_experts.down_proj.weight")]
+            .0
+            .clone();
+        struct Sliced<'a> {
+            packed: &'a HashMap<String, (Vec<u8>, Vec<u8>, usize, usize)>,
+            gs: usize,
+            scheme: QuantScheme,
+        }
+        impl Sliced<'_> {
+            fn slice(&self, il: usize, e: usize, proj: &str) -> MlxPackedLinear {
+                let key = format!("model.layers.{il}.ffn.switch_mlp.{proj}.weight");
+                let (w_q, scales, out, inn) = &self.packed[&key];
+                let (slab, sb) = (out * inn / 2, out * (inn / self.gs));
+                MlxPackedLinear {
+                    w_q: w_q[e * slab..(e + 1) * slab].to_vec(),
+                    scales: scales[e * sb..(e + 1) * sb].to_vec(),
+                    biases: Vec::new(),
+                    scheme: self.scheme,
+                    out_shape: vec![*out, *inn],
+                }
+            }
+        }
+        impl ExpertSource for Sliced<'_> {
+            fn fetch(&mut self, il: usize, e: usize, proj: &str) -> Result<Vec<f32>> {
+                dequant_packed_linear(&self.slice(il, e, proj))
+            }
+        }
+        impl PackedExpertSource for Sliced<'_> {
+            fn fetch_packed(&mut self, il: usize, e: usize, proj: &str) -> Result<MlxPackedLinear> {
+                Ok(self.slice(il, e, proj))
+            }
+        }
+        let token = 5u32;
+
+        // ── Resident single decode step (MoE in-graph) → logits_res ──
+        let mut pk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+        let (rg, rp, rn) =
+            build_deepseek_v4_decode(&spec, &mut mem.clone(), 0, 0, &mut pk).unwrap();
+        let mut rc = Session::new(Device::Cpu).compile_with(rg, &opts);
+        for (n, dd) in &rp {
+            rc.set_param(n, dd);
+        }
+        for (n, (b, _s, _)) in &pk {
+            rc.set_param_typed(n, b, DType::U8);
+        }
+        let rout = rc.run(&[("token_id", &[token as f32])]);
+        let logits_res = rout[rn.iter().position(|x| x == "logits").unwrap()].clone();
+
+        // ── Paged single decode step: attention in-graph, MoE host-side ──
+        let mut pk2: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+        let (pg, pp, pn) =
+            build_deepseek_v4_decode_moe(&spec, &mut mem.clone(), 0, 0, &mut pk2, true).unwrap();
+        let mut pc = Session::new(Device::Cpu).compile_with(pg, &opts);
+        for (n, dd) in &pp {
+            pc.set_param(n, dd);
+        }
+        // Pass 1: extract moe_in.0 (= xf) with moe_out.0 = zeros.
+        let zeros = vec![0f32; dim];
+        let tok = [token as f32];
+        let p1 = pc.run(&[("token_id", &tok), ("moe_out.0", zeros.as_slice())]);
+        let xf = p1[pn.iter().position(|x| *x == "moe_in.0").unwrap()].clone();
+
+        // Compute the MoE with the graph's OWN kernel: a standalone
+        // `build_deepseek_moe_ffn(xf)` graph — bit-exact to the resident inline MoE.
+        // (This validates the SPLIT PLUMBING; using PagedGroupedMoe / a host MoE for
+        // `moe_out` instead is the deployment path — its numerics are validated
+        // separately in `paged_grouped_moe_gpu_matches_host` / `paged_expert_moe_matches`.)
+        let mut gm = Graph::new("moe_only");
+        let mut mp: HashMap<String, Vec<f32>> = HashMap::new();
+        let mut mpk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+        let xf_in = gm.input("xf", Shape::new(&[1, 1, dim], DType::F32));
+        let moe_node = build_deepseek_moe_ffn(
+            &mut gm,
+            &mut mp,
+            &mut mpk,
+            &mut mem.clone(),
+            p,
+            xf_in,
+            1,
+            1,
+            &ds,
+            None,
+        )
+        .unwrap();
+        let moe_flat = gm.reshape_(moe_node, vec![1, dim as i64]);
+        gm.set_outputs(vec![moe_flat]);
+        let mut mc = Session::new(Device::Cpu).compile_with(gm, &opts);
+        for (n, dd) in &mp {
+            mc.set_param(n, dd);
+        }
+        for (n, (b, _s, _)) in &mpk {
+            mc.set_param_typed(n, b, DType::U8);
+        }
+        let moe_out = mc.run(&[("xf", xf.as_slice())])[0].clone();
+
+        // The HOST MoE (paged_moe_forward on sliced experts + shared) must reproduce
+        // the in-graph MoE now that the expert codes are bound — this is the
+        // deployment path (moe_fn = host/PagedGroupedMoe MoE).
+        let mut src = Sliced {
+            packed: &packed,
+            gs,
+            scheme,
+        };
+        let moe_host = paged_moe_forward(
+            &ds,
+            0,
+            &xf,
+            &router,
+            None,
+            None,
+            &mut src,
+            Some((&sg, &su, &sd)),
+        )
+        .unwrap();
+        let merr = moe_out
+            .iter()
+            .zip(&moe_host)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        let mmag = moe_out
+            .iter()
+            .map(|v| v.abs())
+            .fold(0f32, f32::max)
+            .max(1e-6);
+        assert!(
+            merr / mmag < 1e-3,
+            "host paged_moe_forward must match in-graph MoE: rel_err {:e} (abs {merr:e})",
+            merr / mmag
+        );
+
+        // Pass 2: feed the MoE result back → logits. Must EXACTLY equal resident.
+        let p2 = pc.run(&[("token_id", &tok), ("moe_out.0", moe_out.as_slice())]);
+        let logits_paged = p2[pn.iter().position(|x| x == "logits").unwrap()].clone();
+
+        let err = logits_res
+            .iter()
+            .zip(&logits_paged)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        let mag = logits_res
+            .iter()
+            .map(|v| v.abs())
+            .fold(0f32, f32::max)
+            .max(1e-6);
+        assert!(
+            logits_paged.iter().all(|x| x.is_finite()) && err / mag < 1e-4,
+            "paged-split logits must match resident: rel_err {:e} (abs {err:e}, mag {mag:e})",
+            err / mag
+        );
+        assert_eq!(logits_res.len(), vocab);
+
+        // ── FULL end-to-end: paged generate driver == resident generate ──
+        // Resident `deepseek_v4_generate` now binds the packed MoE codes (the fix);
+        // the paged driver runs L+1 passes/token with the MoE filled by the graph's
+        // own kernel ⇒ BYTE-IDENTICAL generated tokens (prompt prefill + greedy).
+        let prompt: Vec<u32> = vec![2, 7, 1, 4];
+        let resident_tok =
+            deepseek_v4_generate(&spec, || Box::new(mem.clone()), Device::Cpu, &prompt, 4).unwrap();
+        let paged_tok = deepseek_v4_generate_paged(
+            &spec,
+            || Box::new(mem.clone()),
+            Device::Cpu,
+            &prompt,
+            4,
+            |il, _tok, xfin| {
+                // In-graph MoE for layer `il` (paged out of the decode graph, run here).
+                let mut gm = Graph::new("moe_step");
+                let mut mp: HashMap<String, Vec<f32>> = HashMap::new();
+                let mut mpk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+                let xi = gm.input("xf", Shape::new(&[1, 1, dim], DType::F32));
+                let lp = format!("model.layers.{il}");
+                let mo = build_deepseek_moe_ffn(
+                    &mut gm,
+                    &mut mp,
+                    &mut mpk,
+                    &mut mem.clone(),
+                    &lp,
+                    xi,
+                    1,
+                    1,
+                    &ds,
+                    None,
+                )?;
+                let mof = gm.reshape_(mo, vec![1, dim as i64]);
+                gm.set_outputs(vec![mof]);
+                let mut c = Session::new(Device::Cpu).compile_with(gm, &opts);
+                for (n, dd) in &mp {
+                    c.set_param(n, dd);
+                }
+                for (n, (b, _s, _)) in &mpk {
+                    c.set_param_typed(n, b, DType::U8);
+                }
+                Ok(c.run(&[("xf", xfin)])[0].clone())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resident_tok, paged_tok,
+            "paged generate must match resident token-for-token"
+        );
+        assert_eq!(resident_tok.len(), 4);
+
+        // ── Deployment path: paged generate with the HOST paged MoE (sliced experts
+        // + shared) as moe_fn — the real expert-paging decode. Host MoE matches the
+        // graph to ~1e-3, so greedy tokens track resident here too.
+        let deploy_tok = deepseek_v4_generate_paged(
+            &spec,
+            || Box::new(mem.clone()),
+            Device::Cpu,
+            &prompt,
+            4,
+            |il, _tok, xfin| {
+                let mut s = Sliced {
+                    packed: &packed,
+                    gs,
+                    scheme,
+                };
+                paged_moe_forward(
+                    &ds,
+                    il,
+                    xfin,
+                    &router,
+                    None,
+                    None,
+                    &mut s,
+                    Some((&sg, &su, &sd)),
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            deploy_tok, resident_tok,
+            "host-paged-MoE decode must match resident tokens"
+        );
+
+        // ── The clean deployment API: PagedGroupedMoe (GPU grouped kernel, routed)
+        // + dense_swiglu_ffn (shared) as moe_fn. Routed part uses the SAME grouped op
+        // as the graph ⇒ token-exact vs resident. ──
+        let mut gmoe = PagedGroupedMoe::new(
+            Device::Cpu,
+            ne,
+            nact,
+            dim,
+            inter,
+            gs,
+            spec.swiglu_limit,
+            scheme,
+        );
+        let grouped_tok = deepseek_v4_generate_paged(
+            &spec,
+            || Box::new(mem.clone()),
+            Device::Cpu,
+            &prompt,
+            4,
+            |il, _tok, xfin| {
+                let (top, w) = paged_moe_route(&ds, xfin, &router, None, None);
+                let routes = vec![top.into_iter().zip(w).collect::<Vec<_>>()];
+                let mut s = Sliced {
+                    packed: &packed,
+                    gs,
+                    scheme,
+                };
+                let routed = gmoe.forward(il, xfin, 1, &routes, &mut s)?;
+                let shared = dense_swiglu_ffn(xfin, &sg, &su, &sd, spec.swiglu_limit);
+                Ok(routed.iter().zip(&shared).map(|(a, b)| a + b).collect())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            grouped_tok, resident_tok,
+            "GPU-grouped-kernel paged decode must match resident tokens"
+        );
+
+        // ── COMPILE-ONCE paged decode: V4Decoder::new_stage_paged compiles the fixed
+        // backbone ONCE, step_paged fills the MoE host-side per token (no per-token
+        // recompile) ⇒ same tokens as the recompile-per-token generate (and resident). ──
+        let (mw, mc) = (spec.window_size, 1usize);
+        let mut pdec = V4Decoder::new_stage_paged(
+            &spec,
+            &mut mem.clone(),
+            0..spec.n_layers,
+            true,
+            true,
+            mw,
+            mc,
+            Device::Cpu,
+        )
+        .unwrap();
+        let mut moe_graph = |il: usize, _t: u32, xf: &[f32]| -> Result<Vec<f32>> {
+            let mut gm = Graph::new("moe_co");
+            let mut mp: HashMap<String, Vec<f32>> = HashMap::new();
+            let mut mpk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let xi = gm.input("xf", Shape::new(&[1, 1, dim], DType::F32));
+            let lp = format!("model.layers.{il}");
+            let mo = build_deepseek_moe_ffn(
+                &mut gm,
+                &mut mp,
+                &mut mpk,
+                &mut mem.clone(),
+                &lp,
+                xi,
+                1,
+                1,
+                &ds,
+                None,
+            )?;
+            let mf = gm.reshape_(mo, vec![1, dim as i64]);
+            gm.set_outputs(vec![mf]);
+            let mut c = Session::new(Device::Cpu).compile_with(gm, &opts);
+            for (n, dd) in &mp {
+                c.set_param(n, dd);
+            }
+            for (n, (b, _s, _)) in &mpk {
+                c.set_param_typed(n, b, DType::U8);
+            }
+            Ok(c.run(&[("xf", xf)])[0].clone())
+        };
+        let argmax = |l: &[f32]| {
+            l.iter()
+                .enumerate()
+                .fold(
+                    (0usize, f32::MIN),
+                    |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
+                )
+                .0 as u32
+        };
+        let mut logits = vec![0f32; vocab];
+        for &tk in &prompt {
+            logits = pdec.step_paged(tk, &mut moe_graph).unwrap();
+        }
+        let mut co_tok = Vec::new();
+        for _ in 0..4 {
+            let nx = argmax(&logits);
+            co_tok.push(nx);
+            logits = pdec.step_paged(nx, &mut moe_graph).unwrap();
+        }
+        assert_eq!(
+            co_tok, resident_tok,
+            "compile-once paged decode (V4Decoder::step_paged) must match resident tokens"
+        );
+
+        // ── PER-LAYER paged decode (O(L) compile + O(2L) attention, one stage/layer)
+        // must also match resident token-for-token. ──
+        let lw_tok = deepseek_v4_generate_paged_layerwise(
+            &spec,
+            || Box::new(mem.clone()),
+            Device::Cpu,
+            mw,
+            mc,
+            &prompt,
+            4,
+            &mut moe_graph,
+        )
+        .unwrap();
+        assert_eq!(
+            lw_tok, resident_tok,
+            "per-layer paged decode must match resident tokens"
+        );
+
+        // ── PAGED VERIFY BLOCK (Gap 1): build_deepseek_v4_verify_block_moe(paged) with
+        // moe_out filled host-side must MATCH the resident verify block bit-for-bit —
+        // enabling speculative decode on the paged model. ──
+        {
+            let block = 3usize;
+            let half = (rd / 2).max(1);
+            let (mut cosb, mut sinb, mut sininvb) = (
+                vec![0f32; block * half],
+                vec![0f32; block * half],
+                vec![0f32; block * half],
+            );
+            for pp in 0..block {
+                for i in 0..half {
+                    let fr = (spec.rope_theta as f64).powf(-(2.0 * i as f64) / rd as f64);
+                    let (s, c) = (pp as f64 * fr).sin_cos();
+                    cosb[pp * half + i] = c as f32;
+                    sinb[pp * half + i] = s as f32;
+                    sininvb[pp * half + i] = -s as f32;
+                }
+            }
+            let nkeys = mw + block;
+            let mut mask = vec![-1e30f32; block * nkeys];
+            for r in 0..block {
+                for j in 0..=r {
+                    mask[r * nkeys + mw + j] = 0.0;
+                }
+            }
+            let vtok: Vec<u32> = (0..block).map(|i| ((i * 3 + 1) % vocab) as u32).collect();
+            let toks_f: Vec<f32> = vtok.iter().map(|&x| x as f32).collect();
+            let base_inputs = || -> Vec<(String, Vec<f32>)> {
+                let mut o = vec![
+                    ("token_id".to_string(), toks_f.clone()),
+                    ("cos".into(), cosb.clone()),
+                    ("sin".into(), sinb.clone()),
+                    ("sininv".into(), sininvb.clone()),
+                ];
+                for il in 0..spec.n_layers {
+                    o.push((format!("wcache.{il}"), vec![0f32; mw * hd]));
+                    o.push((format!("mask.{il}"), mask.clone()));
+                }
+                o
+            };
+            // Resident verify block.
+            let mut rvk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (rvg, rvp, rvn) =
+                build_deepseek_v4_verify_block(&spec, &mut mem.clone(), block, mw, mc, &mut rvk)
+                    .unwrap();
+            let mut rvc = Session::new(Device::Cpu).compile_with(rvg, &opts);
+            for (n, dd) in &rvp {
+                rvc.set_param(n, dd);
+            }
+            for (n, (b, _, _)) in &rvk {
+                rvc.set_param_typed(n, b, DType::U8);
+            }
+            let ri = base_inputs();
+            let rin: Vec<(&str, &[f32])> =
+                ri.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+            let rvout = rvc.run(&rin);
+            let rlog = rvout[rvn.iter().position(|x| x == "logits").unwrap()].clone();
+            // Paged verify block: moe_in/moe_out split, host fills the block MoE
+            // (build_deepseek_moe_ffn seq=block — the same op the resident graph runs).
+            let mut pvk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (pvg, pvp, pvn) = build_deepseek_v4_verify_block_moe(
+                &spec,
+                &mut mem.clone(),
+                block,
+                mw,
+                mc,
+                &mut pvk,
+                true,
+            )
+            .unwrap();
+            let mut pvc = Session::new(Device::Cpu).compile_with(pvg, &opts);
+            for (n, dd) in &pvp {
+                pvc.set_param(n, dd);
+            }
+            for (n, (b, _, _)) in &pvk {
+                pvc.set_param_typed(n, b, DType::U8);
+            }
+            let ml: Vec<usize> = (spec.first_k_dense_replace..spec.n_layers).collect();
+            let mut moe_out: HashMap<usize, Vec<f32>> =
+                ml.iter().map(|&il| (il, vec![0f32; block * dim])).collect();
+            let block_moe = |il: usize, xf: &[f32]| -> Vec<f32> {
+                let mut gm = Graph::new("moe_blk");
+                let mut mp: HashMap<String, Vec<f32>> = HashMap::new();
+                let mut mpk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+                let xi = gm.input("xf", Shape::new(&[1, block, dim], DType::F32));
+                let lp = format!("model.layers.{il}");
+                let mo = build_deepseek_moe_ffn(
+                    &mut gm,
+                    &mut mp,
+                    &mut mpk,
+                    &mut mem.clone(),
+                    &lp,
+                    xi,
+                    1,
+                    block,
+                    &ds,
+                    None,
+                )
+                .unwrap();
+                let mf = gm.reshape_(mo, vec![block as i64, dim as i64]);
+                gm.set_outputs(vec![mf]);
+                let mut c = Session::new(Device::Cpu).compile_with(gm, &opts);
+                for (n, dd) in &mp {
+                    c.set_param(n, dd);
+                }
+                for (n, (b, _s, _)) in &mpk {
+                    c.set_param_typed(n, b, DType::U8);
+                }
+                c.run(&[("xf", xf)])[0].clone()
+            };
+            let run_pv = |pvc: &mut rlx_runtime::CompiledGraph,
+                          mo: &HashMap<usize, Vec<f32>>|
+             -> Vec<Vec<f32>> {
+                let mut o = base_inputs();
+                for &il in &ml {
+                    o.push((format!("moe_out.{il}"), mo[&il].clone()));
+                }
+                let inp: Vec<(&str, &[f32])> =
+                    o.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+                pvc.run(&inp)
+            };
+            for &il in &ml {
+                let pv = run_pv(&mut pvc, &moe_out);
+                let xf = pv[pvn
+                    .iter()
+                    .position(|x| x == &format!("moe_in.{il}"))
+                    .unwrap()]
+                .clone();
+                moe_out.insert(il, block_moe(il, &xf));
+            }
+            let pv = run_pv(&mut pvc, &moe_out);
+            let plog = &pv[pvn.iter().position(|x| x == "logits").unwrap()];
+            let err = rlog
+                .iter()
+                .zip(plog)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max);
+            assert!(
+                err < 1e-3,
+                "paged verify block must match resident verify block: {err:e}"
+            );
+        }
+
+        // ── HASH ROUTING: first n_hash_layers pick experts from gate.tid2eid[token],
+        // not score top-k. Resident graph does Gather(tid2eid, token); the paged
+        // moe_fn does hash_route_experts(tid2eid, token) → paged_moe_forward. ──
+        let mut spec_h = spec.clone();
+        spec_h.n_hash_layers = 1; // layer 0 becomes hash-routed
+        let mut tid2eid = vec![0f32; vocab * nact];
+        for tk in 0..vocab {
+            for j in 0..nact {
+                tid2eid[tk * nact + j] = ((tk + j * 2 + 1) % ne) as f32;
+            }
+        }
+        let mut mem_h = mem.clone();
+        mem_h.t.insert(
+            format!("{p}.ffn.gate.tid2eid"),
+            (tid2eid.clone(), vec![vocab, nact]),
+        );
+        let res_h =
+            deepseek_v4_generate(&spec_h, || Box::new(mem_h.clone()), Device::Cpu, &prompt, 4)
+                .unwrap();
+        let paged_h = deepseek_v4_generate_paged(
+            &spec_h,
+            || Box::new(mem_h.clone()),
+            Device::Cpu,
+            &prompt,
+            4,
+            |il, tok, xfin| {
+                let hash =
+                    (il < spec_h.n_hash_layers).then(|| hash_route_experts(&tid2eid, nact, tok));
+                let mut s = Sliced {
+                    packed: &packed,
+                    gs,
+                    scheme,
+                };
+                paged_moe_forward(
+                    &ds,
+                    il,
+                    xfin,
+                    &router,
+                    None,
+                    hash.as_deref(),
+                    &mut s,
+                    Some((&sg, &su, &sd)),
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            res_h, paged_h,
+            "hash-routed paged decode must match resident tokens"
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_layerwise_verify_matches_monolithic() {
+        // O(L) LAYERWISE verify: composing single-layer `build_deepseek_v4_verify_block_stage`
+        // graphs (threading `hidden_out → hidden_in`) must be BIT-IDENTICAL to the
+        // monolithic whole-model verify — proving the O(L²)→O(L) transform is lossless.
+        // 2 layers, sliding-only (the paged moe_in/moe_out split is validated separately
+        // by the Gap-1 block in `deepseek_v4_paged_decode_matches_resident`).
+        use crate::weight_loader::{MlxPackedLinear, WeightLoader};
+        use rlx_ir::quant::QuantScheme;
+        use rlx_runtime::{Device, Session};
+        let (vocab, dim, hc, nh, hd, rd, ql) = (16usize, 8, 2, 2, 4, 2, 6);
+        let (ngrp, olora, inter, ne, nact, gs) = (2usize, 3, 8, 4, 2, 8);
+        let nl = 2usize;
+        let (mix_hc, hcd, dpg) = ((2 + hc) * hc, hc * dim, nh * hd / ngrp);
+        let scheme = QuantScheme::MlxMxfp4 {
+            group_size: gs as u32,
+        };
+        let spec = DeepseekV4Spec {
+            vocab_size: vocab,
+            dim,
+            n_layers: nl,
+            hc_mult: hc,
+            n_heads: nh,
+            head_dim: hd,
+            rope_head_dim: rd,
+            q_lora_rank: ql,
+            n_groups: ngrp,
+            o_lora_rank: olora,
+            compress_ratios: vec![0; nl],
+            index_head_dim: 0,
+            index_n_heads: 0,
+            index_topk: 0,
+            window_size: 64,
+            first_k_dense_replace: 0,
+            n_hash_layers: 0,
+            moe_intermediate_size: inter,
+            n_routed_experts: ne,
+            n_activated_experts: nact,
+            n_shared_experts: 1,
+            intermediate_size: inter,
+            route_scale: 1.5,
+            rope_theta: 10000.0,
+            compress_rope_theta: 160000.0,
+            swiglu_limit: 0.0,
+            rms_norm_eps: 1e-6,
+            hc_sinkhorn_iters: 3,
+            hc_eps: 1e-6,
+            original_seq_len: 0,
+            rope_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            n_mtp_layers: 0,
+            dspark_block_size: 0,
+            dspark_noise_token_id: 0,
+            dspark_target_layer_ids: vec![0],
+            dspark_markov_rank: 0,
+        };
+        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
+        let mut sd = 0.0f64;
+        let mut put = |t: &mut HashMap<String, (Vec<f32>, Vec<usize>)>,
+                       k: String,
+                       shape: Vec<usize>| {
+            sd += 1.0;
+            let n: usize = shape.iter().product();
+            let data: Vec<f32> = (0..n)
+                .map(|i| {
+                    (((i as f64 + 1.0) * (sd + 1.3) * 12.9898).sin() * 43758.5453).fract() as f32
+                        * 0.4
+                        - 0.2
+                })
+                .collect();
+            t.insert(k, (data, shape));
+        };
+        put(&mut t, "model.embed_tokens.weight".into(), vec![vocab, dim]);
+        let mk_stack = |out: usize, inn: usize, salt: usize| -> (Vec<u8>, Vec<u8>) {
+            let ng = inn / gs;
+            let w_q: Vec<u8> = (0..ne * out * (inn / 2))
+                .map(|i| ((i * 37 + salt * 11 + 5) % 256) as u8)
+                .collect();
+            let scales: Vec<u8> = (0..ne * out * ng)
+                .map(|i| (0x7b + ((i + salt) % 4)) as u8)
+                .collect();
+            (w_q, scales)
+        };
+        let mut packed: HashMap<String, (Vec<u8>, Vec<u8>, usize, usize)> = HashMap::new();
+        for li in 0..nl {
+            let p = format!("model.layers.{li}");
+            put(&mut t, format!("{p}.attn_hc.fn"), vec![mix_hc, hcd]);
+            put(&mut t, format!("{p}.attn_hc.scale"), vec![3]);
+            put(&mut t, format!("{p}.attn_hc.base"), vec![mix_hc]);
+            put(&mut t, format!("{p}.attn_norm.weight"), vec![dim]);
+            put(&mut t, format!("{p}.attn.wq_a.weight"), vec![ql, dim]);
+            put(&mut t, format!("{p}.attn.q_norm.weight"), vec![ql]);
+            put(&mut t, format!("{p}.attn.wq_b.weight"), vec![nh * hd, ql]);
+            put(&mut t, format!("{p}.attn.wkv.weight"), vec![hd, dim]);
+            put(&mut t, format!("{p}.attn.kv_norm.weight"), vec![hd]);
+            put(&mut t, format!("{p}.attn.attn_sink"), vec![nh]);
+            put(
+                &mut t,
+                format!("{p}.attn.wo_a.weight"),
+                vec![ngrp * olora, dpg],
+            );
+            put(
+                &mut t,
+                format!("{p}.attn.wo_b.weight"),
+                vec![dim, ngrp * olora],
+            );
+            put(&mut t, format!("{p}.ffn_hc.fn"), vec![mix_hc, hcd]);
+            put(&mut t, format!("{p}.ffn_hc.scale"), vec![3]);
+            put(&mut t, format!("{p}.ffn_hc.base"), vec![mix_hc]);
+            put(&mut t, format!("{p}.ffn_norm.weight"), vec![dim]);
+            put(&mut t, format!("{p}.ffn.gate.weight"), vec![ne, dim]);
+            put(
+                &mut t,
+                format!("{p}.ffn.shared_experts.gate_proj.weight"),
+                vec![inter, dim],
+            );
+            put(
+                &mut t,
+                format!("{p}.ffn.shared_experts.up_proj.weight"),
+                vec![inter, dim],
+            );
+            put(
+                &mut t,
+                format!("{p}.ffn.shared_experts.down_proj.weight"),
+                vec![dim, inter],
+            );
+            packed.insert(format!("{p}.ffn.switch_mlp.gate_proj.weight"), {
+                let (w, s) = mk_stack(inter, dim, 1);
+                (w, s, inter, dim)
+            });
+            packed.insert(format!("{p}.ffn.switch_mlp.up_proj.weight"), {
+                let (w, s) = mk_stack(inter, dim, 2);
+                (w, s, inter, dim)
+            });
+            packed.insert(format!("{p}.ffn.switch_mlp.down_proj.weight"), {
+                let (w, s) = mk_stack(dim, inter, 3);
+                (w, s, dim, inter)
+            });
+        }
+        put(&mut t, "model.hc_head.fn".into(), vec![hc, hcd]);
+        put(&mut t, "model.hc_head.scale".into(), vec![1]);
+        put(&mut t, "model.hc_head.base".into(), vec![hc]);
+        put(&mut t, "model.norm.weight".into(), vec![dim]);
+        put(&mut t, "lm_head.weight".into(), vec![vocab, dim]);
+
+        #[derive(Clone)]
+        struct Mem {
+            t: HashMap<String, (Vec<f32>, Vec<usize>)>,
+            packed: HashMap<String, (Vec<u8>, Vec<u8>, usize, usize)>,
+            ne: usize,
+            scheme: QuantScheme,
+        }
+        impl WeightLoader for Mem {
+            fn take(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                self.t.get(k).cloned().ok_or_else(|| anyhow!("missing {k}"))
+            }
+            fn take_transposed(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                let (d, s) = self.take(k)?;
+                let (r, c) = (s[0], s[1]);
+                let mut o = vec![0f32; d.len()];
+                for i in 0..r {
+                    for j in 0..c {
+                        o[j * r + i] = d[i * c + j];
+                    }
+                }
+                Ok((o, vec![c, r]))
+            }
+            fn len(&self) -> usize {
+                self.t.len()
+            }
+            fn remaining_keys(&self) -> Vec<String> {
+                self.t.keys().cloned().collect()
+            }
+            fn take_packed_mlx(&mut self, key: &str) -> Result<Option<MlxPackedLinear>> {
+                let Some((w_q, scales, out, inn)) = self.packed.get(key) else {
+                    return Ok(None);
+                };
+                Ok(Some(MlxPackedLinear {
+                    w_q: w_q.clone(),
+                    scales: scales.clone(),
+                    biases: Vec::new(),
+                    scheme: self.scheme,
+                    out_shape: vec![self.ne * out, *inn],
+                }))
+            }
+        }
+        let mem = Mem {
+            t,
+            packed,
+            ne,
+            scheme,
+        };
+        let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+            &rlx_flow::CompileProfile::qwen3_prefill(),
+            Device::Cpu,
+        );
+        let (block, mw, mc_win) = (3usize, 8usize, 0usize);
+        let half = (rd / 2).max(1);
+        let (mut cosb, mut sinb, mut sininvb) = (
+            vec![0f32; block * half],
+            vec![0f32; block * half],
+            vec![0f32; block * half],
+        );
+        for pp in 0..block {
+            for i in 0..half {
+                let fr = (spec.rope_theta as f64).powf(-(2.0 * i as f64) / rd as f64);
+                let (s, c) = (pp as f64 * fr).sin_cos();
+                cosb[pp * half + i] = c as f32;
+                sinb[pp * half + i] = s as f32;
+                sininvb[pp * half + i] = -s as f32;
+            }
+        }
+        let nkeys = mw + block;
+        let mut mask = vec![-1e30f32; block * nkeys];
+        for r in 0..block {
+            for j in 0..=r {
+                mask[r * nkeys + mw + j] = 0.0;
+            }
+        }
+        let vtok: Vec<u32> = (0..block).map(|i| ((i * 3 + 1) % vocab) as u32).collect();
+        let toks_f: Vec<f32> = vtok.iter().map(|&x| x as f32).collect();
+
+        // ── MONOLITHIC verify (all layers, MoE in-graph) ──
+        let mut mk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+        let (mg, mpm, mn) =
+            build_deepseek_v4_verify_block(&spec, &mut mem.clone(), block, mw, mc_win, &mut mk)
+                .unwrap();
+        let mut mcs = Session::new(Device::Cpu).compile_with(mg, &opts);
+        for (n, dd) in &mpm {
+            mcs.set_param(n, dd);
+        }
+        for (n, (b, _, _)) in &mk {
+            mcs.set_param_typed(n, b, DType::U8);
+        }
+        let mono_inputs = {
+            let mut o = vec![
+                ("token_id".to_string(), toks_f.clone()),
+                ("cos".into(), cosb.clone()),
+                ("sin".into(), sinb.clone()),
+                ("sininv".into(), sininvb.clone()),
+            ];
+            for il in 0..nl {
+                o.push((format!("wcache.{il}"), vec![0f32; mw * hd]));
+                o.push((format!("mask.{il}"), mask.clone()));
+            }
+            o
+        };
+        let mi: Vec<(&str, &[f32])> = mono_inputs
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_slice()))
+            .collect();
+        let mono_out = mcs.run(&mi);
+        let mono_log = mono_out[mn.iter().position(|x| x == "logits").unwrap()].clone();
+
+        // ── LAYERWISE: one single-layer stage per layer, thread hidden_out → hidden_in ──
+        let mut hidden: Option<Vec<f32>> = None;
+        let mut layer_log: Vec<f32> = Vec::new();
+        for il in 0..nl {
+            let mut sk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (sg2, sp2, sn2) = build_deepseek_v4_verify_block_stage(
+                &spec,
+                &mut mem.clone(),
+                block,
+                mw,
+                mc_win,
+                &mut sk,
+                il..il + 1,
+                false,
+            )
+            .unwrap();
+            let mut sc = Session::new(Device::Cpu).compile_with(sg2, &opts);
+            for (n, dd) in &sp2 {
+                sc.set_param(n, dd);
+            }
+            for (n, (b, _, _)) in &sk {
+                sc.set_param_typed(n, b, DType::U8);
+            }
+            let mut o: Vec<(String, Vec<f32>)> = vec![
+                ("cos".into(), cosb.clone()),
+                ("sin".into(), sinb.clone()),
+                ("sininv".into(), sininvb.clone()),
+                (format!("wcache.{il}"), vec![0f32; mw * hd]),
+                (format!("mask.{il}"), mask.clone()),
+            ];
+            if il == 0 {
+                o.push(("token_id".into(), toks_f.clone()));
+            } else {
+                o.push(("hidden_in".into(), hidden.clone().unwrap()));
+            }
+            let inp: Vec<(&str, &[f32])> =
+                o.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+            let out = sc.run(&inp);
+            if il + 1 == nl {
+                layer_log = out[sn2.iter().position(|x| x == "logits").unwrap()].clone();
+            } else {
+                hidden = Some(out[sn2.iter().position(|x| x == "hidden_out").unwrap()].clone());
+            }
+        }
+        let err = mono_log
+            .iter()
+            .zip(&layer_log)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            layer_log.iter().all(|x| x.is_finite()) && err < 1e-4,
+            "layerwise verify must match monolithic verify: max_abs_err {err:e}"
+        );
+        assert_eq!(layer_log.len(), block * vocab);
+    }
+
+    #[test]
+    fn deepseek_v4_fusion_ablation() {
+        // ABLATION STUDY: toggle each graph-fusion flag (#1 hc-gate, #2 sink-attn,
+        // #4 rope), build the DSV4 decode graph, count RUNTIME ops (the identified
+        // bottleneck = kernel launches), run on CPU (must stay bit-exact vs baseline),
+        // and time it. Prints a ranked table. 2-layer synthetic model, rd<hd so the
+        // partial-rope path (#4) is exercised.
+        use crate::weight_loader::{MlxPackedLinear, WeightLoader};
+        use rlx_ir::quant::QuantScheme;
+        use rlx_runtime::{Device, Session};
+        use std::time::Instant;
+        // Representative dims: hc=4 (real HC width), hd=64/nh=8 so attention matmuls
+        // are non-trivial (exposes whether a fused kernel actually beats BLAS), rd<hd.
+        let (vocab, dim, hc, nh, hd, rd, ql) = (32usize, 128, 4, 8, 64, 32, 64);
+        let (ngrp, olora, inter, ne, nact, gs) = (2usize, 16, 64, 4, 2, 8);
+        let nl = 4usize;
+        let (mix_hc, hcd, dpg) = ((2 + hc) * hc, hc * dim, nh * hd / ngrp);
+        let scheme = QuantScheme::MlxMxfp4 {
+            group_size: gs as u32,
+        };
+        let spec = DeepseekV4Spec {
+            vocab_size: vocab,
+            dim,
+            n_layers: nl,
+            hc_mult: hc,
+            n_heads: nh,
+            head_dim: hd,
+            rope_head_dim: rd,
+            q_lora_rank: ql,
+            n_groups: ngrp,
+            o_lora_rank: olora,
+            compress_ratios: vec![0; nl],
+            index_head_dim: 0,
+            index_n_heads: 0,
+            index_topk: 0,
+            window_size: 64,
+            first_k_dense_replace: 0,
+            n_hash_layers: 0,
+            moe_intermediate_size: inter,
+            n_routed_experts: ne,
+            n_activated_experts: nact,
+            n_shared_experts: 1,
+            intermediate_size: inter,
+            route_scale: 1.5,
+            rope_theta: 10000.0,
+            compress_rope_theta: 160000.0,
+            swiglu_limit: 0.0,
+            rms_norm_eps: 1e-6,
+            hc_sinkhorn_iters: 3,
+            hc_eps: 1e-6,
+            original_seq_len: 0,
+            rope_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            n_mtp_layers: 0,
+            dspark_block_size: 0,
+            dspark_noise_token_id: 0,
+            dspark_target_layer_ids: vec![0],
+            dspark_markov_rank: 0,
+        };
+        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
+        let mut sd = 0.0f64;
+        let mut put = |t: &mut HashMap<String, (Vec<f32>, Vec<usize>)>,
+                       k: String,
+                       shape: Vec<usize>| {
+            sd += 1.0;
+            let n: usize = shape.iter().product();
+            let data: Vec<f32> = (0..n)
+                .map(|i| {
+                    (((i as f64 + 1.0) * (sd + 1.3) * 12.9898).sin() * 43758.5453).fract() as f32
+                        * 0.4
+                        - 0.2
+                })
+                .collect();
+            t.insert(k, (data, shape));
+        };
+        put(&mut t, "model.embed_tokens.weight".into(), vec![vocab, dim]);
+        let mk_stack = |out: usize, inn: usize, salt: usize| -> (Vec<u8>, Vec<u8>) {
+            let ng = inn / gs;
+            let w_q: Vec<u8> = (0..ne * out * (inn / 2))
+                .map(|i| ((i * 37 + salt * 11 + 5) % 256) as u8)
+                .collect();
+            let scales: Vec<u8> = (0..ne * out * ng)
+                .map(|i| (0x7b + ((i + salt) % 4)) as u8)
+                .collect();
+            (w_q, scales)
+        };
+        let mut packed: HashMap<String, (Vec<u8>, Vec<u8>, usize, usize)> = HashMap::new();
+        for li in 0..nl {
+            let p = format!("model.layers.{li}");
+            put(&mut t, format!("{p}.attn_hc.fn"), vec![mix_hc, hcd]);
+            put(&mut t, format!("{p}.attn_hc.scale"), vec![3]);
+            put(&mut t, format!("{p}.attn_hc.base"), vec![mix_hc]);
+            put(&mut t, format!("{p}.attn_norm.weight"), vec![dim]);
+            put(&mut t, format!("{p}.attn.wq_a.weight"), vec![ql, dim]);
+            put(&mut t, format!("{p}.attn.q_norm.weight"), vec![ql]);
+            put(&mut t, format!("{p}.attn.wq_b.weight"), vec![nh * hd, ql]);
+            put(&mut t, format!("{p}.attn.wkv.weight"), vec![hd, dim]);
+            put(&mut t, format!("{p}.attn.kv_norm.weight"), vec![hd]);
+            put(&mut t, format!("{p}.attn.attn_sink"), vec![nh]);
+            put(
+                &mut t,
+                format!("{p}.attn.wo_a.weight"),
+                vec![ngrp * olora, dpg],
+            );
+            put(
+                &mut t,
+                format!("{p}.attn.wo_b.weight"),
+                vec![dim, ngrp * olora],
+            );
+            put(&mut t, format!("{p}.ffn_hc.fn"), vec![mix_hc, hcd]);
+            put(&mut t, format!("{p}.ffn_hc.scale"), vec![3]);
+            put(&mut t, format!("{p}.ffn_hc.base"), vec![mix_hc]);
+            put(&mut t, format!("{p}.ffn_norm.weight"), vec![dim]);
+            put(&mut t, format!("{p}.ffn.gate.weight"), vec![ne, dim]);
+            put(
+                &mut t,
+                format!("{p}.ffn.shared_experts.gate_proj.weight"),
+                vec![inter, dim],
+            );
+            put(
+                &mut t,
+                format!("{p}.ffn.shared_experts.up_proj.weight"),
+                vec![inter, dim],
+            );
+            put(
+                &mut t,
+                format!("{p}.ffn.shared_experts.down_proj.weight"),
+                vec![dim, inter],
+            );
+            packed.insert(format!("{p}.ffn.switch_mlp.gate_proj.weight"), {
+                let (w, s) = mk_stack(inter, dim, 1);
+                (w, s, inter, dim)
+            });
+            packed.insert(format!("{p}.ffn.switch_mlp.up_proj.weight"), {
+                let (w, s) = mk_stack(inter, dim, 2);
+                (w, s, inter, dim)
+            });
+            packed.insert(format!("{p}.ffn.switch_mlp.down_proj.weight"), {
+                let (w, s) = mk_stack(dim, inter, 3);
+                (w, s, dim, inter)
+            });
+        }
+        put(&mut t, "model.hc_head.fn".into(), vec![hc, hcd]);
+        put(&mut t, "model.hc_head.scale".into(), vec![1]);
+        put(&mut t, "model.hc_head.base".into(), vec![hc]);
+        put(&mut t, "model.norm.weight".into(), vec![dim]);
+        put(&mut t, "lm_head.weight".into(), vec![vocab, dim]);
+
+        #[derive(Clone)]
+        struct Mem {
+            t: HashMap<String, (Vec<f32>, Vec<usize>)>,
+            packed: HashMap<String, (Vec<u8>, Vec<u8>, usize, usize)>,
+            ne: usize,
+            scheme: QuantScheme,
+        }
+        impl WeightLoader for Mem {
+            fn take(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                self.t.get(k).cloned().ok_or_else(|| anyhow!("missing {k}"))
+            }
+            fn take_transposed(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                let (d, s) = self.take(k)?;
+                let (r, c) = (s[0], s[1]);
+                let mut o = vec![0f32; d.len()];
+                for i in 0..r {
+                    for j in 0..c {
+                        o[j * r + i] = d[i * c + j];
+                    }
+                }
+                Ok((o, vec![c, r]))
+            }
+            fn len(&self) -> usize {
+                self.t.len()
+            }
+            fn remaining_keys(&self) -> Vec<String> {
+                self.t.keys().cloned().collect()
+            }
+            fn take_packed_mlx(&mut self, key: &str) -> Result<Option<MlxPackedLinear>> {
+                let Some((w_q, scales, out, inn)) = self.packed.get(key) else {
+                    return Ok(None);
+                };
+                Ok(Some(MlxPackedLinear {
+                    w_q: w_q.clone(),
+                    scales: scales.clone(),
+                    biases: Vec::new(),
+                    scheme: self.scheme,
+                    out_shape: vec![self.ne * out, *inn],
+                }))
+            }
+        }
+        let mem = Mem {
+            t,
+            packed,
+            ne,
+            scheme,
+        };
+        let opts = crate::flow_bridge::compile_options_for_packed_gguf_prefill_with_profile(
+            &rlx_flow::CompileProfile::qwen3_prefill(),
+            Device::Cpu,
+        );
+
+        // Op classifier: total nodes, runtime ops (exclude Param/Input/Constant),
+        // Reduce+Div (the Sinkhorn signature), and fused Custom ops.
+        fn classify(g: &Graph) -> (usize, usize, usize, usize) {
+            use rlx_ir::Op;
+            let (mut total, mut runtime, mut reducediv, mut custom) = (0, 0, 0, 0);
+            for n in g.nodes() {
+                total += 1;
+                match &n.op {
+                    Op::Param { .. } | Op::Input { .. } | Op::Constant { .. } => {}
+                    Op::Custom { .. } => {
+                        runtime += 1;
+                        custom += 1;
+                    }
+                    Op::Reduce { .. } => {
+                        runtime += 1;
+                        reducediv += 1;
+                    }
+                    Op::Binary(rlx_ir::op::BinaryOp::Div) => {
+                        runtime += 1;
+                        reducediv += 1;
+                    }
+                    _ => runtime += 1,
+                }
+            }
+            (total, runtime, reducediv, custom)
+        }
+
+        let configs: &[(&str, &[&str])] = &[
+            ("baseline", &[]),
+            ("#1 hcgate", &["RLX_OPT_HCGATE"]),
+            ("#2 sinkattn", &["RLX_OPT_SINKATTN"]),
+            ("#4 rope", &["RLX_OPT_ROPE"]),
+            (
+                "all(1+2+4)",
+                &["RLX_OPT_HCGATE", "RLX_OPT_SINKATTN", "RLX_OPT_ROPE"],
+            ),
+        ];
+        const REPS: usize = 30;
+        let token = 5u32;
+        let mut base_logits: Option<Vec<f32>> = None;
+        let mut rows: Vec<(String, usize, usize, usize, usize, f64, f32)> = Vec::new();
+        for (name, flags) in configs {
+            rlx_ir::env::clear_overrides();
+            for f in *flags {
+                rlx_ir::env::set(*f, "1");
+            }
+            let mut pk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (g, params, names) =
+                build_deepseek_v4_decode(&spec, &mut mem.clone(), 0, 0, &mut pk).unwrap();
+            let (total, runtime, reducediv, custom) = classify(&g);
+            let mut c = Session::new(Device::Cpu).compile_with(g, &opts);
+            for (n, dd) in &params {
+                c.set_param(n, dd);
+            }
+            for (n, (b, _, _)) in &pk {
+                c.set_param_typed(n, b, DType::U8);
+            }
+            let li = names.iter().position(|x| x == "logits").unwrap();
+            let mut logits = c.run(&[("token_id", &[token as f32])])[li].clone(); // warm
+            let t0 = Instant::now();
+            for _ in 0..REPS {
+                logits = c.run(&[("token_id", &[token as f32])])[li].clone();
+            }
+            let ms = t0.elapsed().as_secs_f64() * 1e3 / REPS as f64;
+            let err = match &base_logits {
+                Some(b) => logits
+                    .iter()
+                    .zip(b)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0f32, f32::max),
+                None => 0.0,
+            };
+            if base_logits.is_none() {
+                base_logits = Some(logits.clone());
+            }
+            rows.push((name.to_string(), total, runtime, reducediv, custom, ms, err));
+        }
+        rlx_ir::env::clear_overrides();
+
+        let base_rt = rows[0].2 as f64;
+        println!(
+            "\n══ DSV4 fusion ablation ({nl}-layer synthetic decode, hc={hc} hd={hd}, per token) ══"
+        );
+        println!(
+            "{:<14} {:>6} {:>8} {:>8} {:>7} {:>9} {:>10} {:>10}",
+            "config", "nodes", "runtime", "R+Div", "custom", "time/tok", "vs base", "max|Δlogit|"
+        );
+        for (name, total, runtime, reducediv, custom, ms, err) in &rows {
+            let redux = 100.0 * (1.0 - *runtime as f64 / base_rt);
+            println!(
+                "{:<14} {:>6} {:>8} {:>8} {:>7} {:>7.3}ms {:>9.1}% {:>10.2e}",
+                name, total, runtime, reducediv, custom, ms, redux, err
+            );
+        }
+        println!("(runtime = ops excluding Param/Input/Constant; R+Div = Sinkhorn signature)\n");
+
+        for (name, _, _, _, _, _, err) in &rows {
+            assert!(
+                *err < 2e-3,
+                "config '{name}' must match baseline: max|Δ| {err:e}"
+            );
+        }
+        // The #1 hc-gate fusion must remove the most runtime ops of the single-flag runs.
+        let rt = |n: &str| rows.iter().find(|r| r.0 == n).unwrap().2;
+        assert!(
+            rt("#1 hcgate") < rt("baseline"),
+            "hc-gate must cut runtime ops"
+        );
+        assert!(rt("all(1+2+4)") <= rt("#1 hcgate"), "all-on cuts the most");
+    }
+
+    #[test]
+    fn deepseek_v4_dspark_draft_produces_valid_block() {
+        // DRAFTER WIRING: `deepseek_v4_dspark_draft` builds+runs the DSpark stage
+        // (`mtp.0.*` sub-model over main_hidden) and applies the Markov+confidence head
+        // to emit a block of drafts. It must produce exactly `n_draft` in-vocab token
+        // ids from a synthetic 1-stage drafter — validating the full stage→head wiring
+        // (input/output plumbing, packed-code binding, output slicing). Draft *quality*
+        // is irrelevant to correctness (the verifier rejects wrong guesses); the
+        // lossless verify/accept loop is validated by `deepseek_v4_decode_matches_prefill`.
+        use crate::weight_loader::{MlxPackedLinear, WeightLoader};
+        use rlx_ir::quant::QuantScheme;
+        use rlx_runtime::Device;
+        let (vocab, dim, hc, nh, hd, rd, ql) = (16usize, 8, 2, 2, 4, 2, 6);
+        let (ngrp, olora, inter, ne, nact, gs) = (2usize, 3, 8, 4, 2, 8);
+        let (block, mrank) = (4usize, 3usize);
+        let (mix_hc, hcd, dpg) = ((2 + hc) * hc, hc * dim, nh * hd / ngrp);
+        let scheme = QuantScheme::MlxMxfp4 {
+            group_size: gs as u32,
+        };
+        let spec = DeepseekV4Spec {
+            vocab_size: vocab,
+            dim,
+            n_layers: 1,
+            hc_mult: hc,
+            n_heads: nh,
+            head_dim: hd,
+            rope_head_dim: rd,
+            q_lora_rank: ql,
+            n_groups: ngrp,
+            o_lora_rank: olora,
+            compress_ratios: vec![0],
+            index_head_dim: 0,
+            index_n_heads: 0,
+            index_topk: 0,
+            window_size: 64,
+            first_k_dense_replace: 0,
+            n_hash_layers: 0,
+            moe_intermediate_size: inter,
+            n_routed_experts: ne,
+            n_activated_experts: nact,
+            n_shared_experts: 1,
+            intermediate_size: inter,
+            route_scale: 1.5,
+            rope_theta: 10000.0,
+            compress_rope_theta: 160000.0,
+            swiglu_limit: 0.0,
+            rms_norm_eps: 1e-6,
+            hc_sinkhorn_iters: 3,
+            hc_eps: 1e-6,
+            original_seq_len: 0,
+            rope_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            n_mtp_layers: 1,
+            dspark_block_size: block,
+            dspark_noise_token_id: 0,
+            dspark_target_layer_ids: vec![0],
+            dspark_markov_rank: mrank,
+        };
+        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
+        let mut sd = 0.0f64;
+        let mut put = |t: &mut HashMap<String, (Vec<f32>, Vec<usize>)>,
+                       k: String,
+                       shape: Vec<usize>| {
+            sd += 1.0;
+            let n: usize = shape.iter().product();
+            let data: Vec<f32> = (0..n)
+                .map(|i| {
+                    (((i as f64 + 1.0) * (sd + 1.3) * 12.9898).sin() * 43758.5453).fract() as f32
+                        * 0.4
+                        - 0.2
+                })
+                .collect();
+            t.insert(k, (data, shape));
+        };
+        // Shared embed + lm_head.
+        put(&mut t, "model.embed_tokens.weight".into(), vec![vocab, dim]);
+        put(&mut t, "lm_head.weight".into(), vec![vocab, dim]);
+        let mp = "model.mtp.0";
+        // main projection (n_targets=1 ⇒ [dim,dim]) + norm.
+        put(&mut t, format!("{mp}.main_proj.weight"), vec![dim, dim]);
+        put(&mut t, format!("{mp}.main_norm.weight"), vec![dim]);
+        // HC-wrapped attention.
+        put(&mut t, format!("{mp}.attn_hc.fn"), vec![mix_hc, hcd]);
+        put(&mut t, format!("{mp}.attn_hc.scale"), vec![3]);
+        put(&mut t, format!("{mp}.attn_hc.base"), vec![mix_hc]);
+        put(&mut t, format!("{mp}.attn_norm.weight"), vec![dim]);
+        put(&mut t, format!("{mp}.attn.wq_a.weight"), vec![ql, dim]);
+        put(&mut t, format!("{mp}.attn.q_norm.weight"), vec![ql]);
+        put(&mut t, format!("{mp}.attn.wq_b.weight"), vec![nh * hd, ql]);
+        put(&mut t, format!("{mp}.attn.wkv.weight"), vec![hd, dim]);
+        put(&mut t, format!("{mp}.attn.kv_norm.weight"), vec![hd]);
+        put(&mut t, format!("{mp}.attn.attn_sink"), vec![nh]);
+        put(
+            &mut t,
+            format!("{mp}.attn.wo_a.weight"),
+            vec![ngrp * olora, dpg],
+        );
+        put(
+            &mut t,
+            format!("{mp}.attn.wo_b.weight"),
+            vec![dim, ngrp * olora],
+        );
+        // HC-wrapped MoE FFN.
+        put(&mut t, format!("{mp}.ffn_hc.fn"), vec![mix_hc, hcd]);
+        put(&mut t, format!("{mp}.ffn_hc.scale"), vec![3]);
+        put(&mut t, format!("{mp}.ffn_hc.base"), vec![mix_hc]);
+        put(&mut t, format!("{mp}.ffn_norm.weight"), vec![dim]);
+        put(&mut t, format!("{mp}.ffn.gate.weight"), vec![ne, dim]);
+        put(
+            &mut t,
+            format!("{mp}.ffn.shared_experts.gate_proj.weight"),
+            vec![inter, dim],
+        );
+        put(
+            &mut t,
+            format!("{mp}.ffn.shared_experts.up_proj.weight"),
+            vec![inter, dim],
+        );
+        put(
+            &mut t,
+            format!("{mp}.ffn.shared_experts.down_proj.weight"),
+            vec![dim, inter],
+        );
+        // Final reduce + heads.
+        put(&mut t, format!("{mp}.hc_head.fn"), vec![hc, hcd]);
+        put(&mut t, format!("{mp}.hc_head.scale"), vec![1]);
+        put(&mut t, format!("{mp}.hc_head.base"), vec![hc]);
+        put(&mut t, format!("{mp}.norm.weight"), vec![dim]);
+        put(
+            &mut t,
+            format!("{mp}.markov_head.markov_w1.weight"),
+            vec![vocab, mrank],
+        );
+        put(
+            &mut t,
+            format!("{mp}.markov_head.markov_w2.weight"),
+            vec![vocab, mrank],
+        );
+        put(
+            &mut t,
+            format!("{mp}.confidence_head.proj.weight"),
+            vec![dim + mrank],
+        );
+
+        let mk_stack = |out: usize, inn: usize, salt: usize| -> (Vec<u8>, Vec<u8>) {
+            let ng = inn / gs;
+            let w_q: Vec<u8> = (0..ne * out * (inn / 2))
+                .map(|i| ((i * 37 + salt * 11 + 5) % 256) as u8)
+                .collect();
+            let scales: Vec<u8> = (0..ne * out * ng)
+                .map(|i| (0x7b + ((i + salt) % 4)) as u8)
+                .collect();
+            (w_q, scales)
+        };
+        let mut packed_w: HashMap<String, (Vec<u8>, Vec<u8>, usize, usize)> = HashMap::new();
+        packed_w.insert(format!("{mp}.ffn.switch_mlp.gate_proj.weight"), {
+            let (w, s) = mk_stack(inter, dim, 1);
+            (w, s, inter, dim)
+        });
+        packed_w.insert(format!("{mp}.ffn.switch_mlp.up_proj.weight"), {
+            let (w, s) = mk_stack(inter, dim, 2);
+            (w, s, inter, dim)
+        });
+        packed_w.insert(format!("{mp}.ffn.switch_mlp.down_proj.weight"), {
+            let (w, s) = mk_stack(dim, inter, 3);
+            (w, s, dim, inter)
+        });
+
+        #[derive(Clone)]
+        struct Mem {
+            t: HashMap<String, (Vec<f32>, Vec<usize>)>,
+            packed: HashMap<String, (Vec<u8>, Vec<u8>, usize, usize)>,
+            ne: usize,
+            scheme: QuantScheme,
+        }
+        impl WeightLoader for Mem {
+            fn take(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                self.t.get(k).cloned().ok_or_else(|| anyhow!("missing {k}"))
+            }
+            fn take_transposed(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+                let (d, s) = self.take(k)?;
+                let (r, c) = (s[0], s[1]);
+                let mut o = vec![0f32; d.len()];
+                for i in 0..r {
+                    for j in 0..c {
+                        o[j * r + i] = d[i * c + j];
+                    }
+                }
+                Ok((o, vec![c, r]))
+            }
+            fn len(&self) -> usize {
+                self.t.len()
+            }
+            fn remaining_keys(&self) -> Vec<String> {
+                self.t.keys().cloned().collect()
+            }
+            fn take_packed_mlx(&mut self, key: &str) -> Result<Option<MlxPackedLinear>> {
+                let Some((w_q, scales, out, inn)) = self.packed.get(key) else {
+                    return Ok(None);
+                };
+                Ok(Some(MlxPackedLinear {
+                    w_q: w_q.clone(),
+                    scales: scales.clone(),
+                    biases: Vec::new(),
+                    scheme: self.scheme,
+                    out_shape: vec![self.ne * out, *inn],
+                }))
+            }
+        }
+        let mut mem = Mem {
+            t,
+            packed: packed_w,
+            ne,
+            scheme,
+        };
+        // main_hidden [cache_len, dim*n_targets=dim] — some prior context.
+        let cache_len = 5usize;
+        let main_hidden: Vec<f32> = (0..cache_len * dim)
+            .map(|i| ((i as f64 * 0.37).sin() * 0.2) as f32)
+            .collect();
+        let n_draft = block - 1;
+        let drafts = deepseek_v4_dspark_draft(
+            &spec,
+            &mut mem,
+            &mut HashMap::new(),
+            Device::Cpu,
+            &main_hidden,
+            3u32,
+            n_draft,
+        )
+        .unwrap();
+        assert_eq!(drafts.len(), n_draft, "drafter must return n_draft tokens");
+        assert!(
+            drafts.iter().all(|&x| (x as usize) < vocab),
+            "all drafted ids must be in-vocab: {drafts:?}"
+        );
+    }
+
+    #[test]
+    fn hash_route_experts_selects_tid2eid_row() {
+        // tid2eid[token] row = the token's expert ids (f32-encoded).
+        let (vocab, top_k) = (5usize, 3usize);
+        let mut t2e = vec![0f32; vocab * top_k];
+        for tk in 0..vocab {
+            for j in 0..top_k {
+                t2e[tk * top_k + j] = ((tk * 7 + j) % 11) as f32;
+            }
+        }
+        for tk in 0..vocab {
+            let got = hash_route_experts(&t2e, top_k, tk as u32);
+            let want: Vec<usize> = (0..top_k).map(|j| (tk * 7 + j) % 11).collect();
+            assert_eq!(got, want, "token {tk}");
+        }
+        // Out-of-range token → zeros (graceful).
+        assert_eq!(hash_route_experts(&t2e, top_k, 99), vec![0, 0, 0]);
     }
 
     #[test]
@@ -9840,17 +16052,18 @@ mod tests {
 
         let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
         let mut sd = 0.0f64;
-        let mut put = |t: &mut HashMap<String, (Vec<f32>, Vec<usize>)>, k: String, shape: Vec<usize>| {
-            sd += 1.0;
-            let n: usize = shape.iter().product();
-            let data: Vec<f32> = (0..n)
-                .map(|i| {
-                    let x = ((i as f64 + 1.0) * (sd + 1.3) * 12.9898).sin() * 43758.5453;
-                    ((x - x.floor()) as f32 - 0.5) * 0.4
-                })
-                .collect();
-            t.insert(k, (data, shape));
-        };
+        let mut put =
+            |t: &mut HashMap<String, (Vec<f32>, Vec<usize>)>, k: String, shape: Vec<usize>| {
+                sd += 1.0;
+                let n: usize = shape.iter().product();
+                let data: Vec<f32> = (0..n)
+                    .map(|i| {
+                        let x = ((i as f64 + 1.0) * (sd + 1.3) * 12.9898).sin() * 43758.5453;
+                        ((x - x.floor()) as f32 - 0.5) * 0.4
+                    })
+                    .collect();
+                t.insert(k, (data, shape));
+            };
         let spec_ratios = [0usize, 2, 4]; // must match compress_ratios in mk_spec
         put(&mut t, "model.embed_tokens.weight".into(), vec![vocab, dim]);
         for il in 0..nl {
@@ -9865,24 +16078,52 @@ mod tests {
             put(&mut t, format!("{p}.attn.wkv.weight"), vec![hd, dim]);
             put(&mut t, format!("{p}.attn.kv_norm.weight"), vec![hd]);
             put(&mut t, format!("{p}.attn.attn_sink"), vec![nh]);
-            put(&mut t, format!("{p}.attn.wo_a.weight"), vec![ngrp * olora, dpg]);
-            put(&mut t, format!("{p}.attn.wo_b.weight"), vec![dim, ngrp * olora]);
+            put(
+                &mut t,
+                format!("{p}.attn.wo_a.weight"),
+                vec![ngrp * olora, dpg],
+            );
+            put(
+                &mut t,
+                format!("{p}.attn.wo_b.weight"),
+                vec![dim, ngrp * olora],
+            );
             // Compressor weights (coff=2 for overlap ratio-4, else 1).
             let lratio = spec_ratios[il];
             if lratio > 0 {
                 let coff = if lratio == 4 { 2 } else { 1 };
-                put(&mut t, format!("{p}.attn.compressor.wkv.weight"), vec![coff * hd, dim]);
-                put(&mut t, format!("{p}.attn.compressor.wgate.weight"), vec![coff * hd, dim]);
-                put(&mut t, format!("{p}.attn.compressor.ape"), vec![lratio, coff * hd]);
+                put(
+                    &mut t,
+                    format!("{p}.attn.compressor.wkv.weight"),
+                    vec![coff * hd, dim],
+                );
+                put(
+                    &mut t,
+                    format!("{p}.attn.compressor.wgate.weight"),
+                    vec![coff * hd, dim],
+                );
+                put(
+                    &mut t,
+                    format!("{p}.attn.compressor.ape"),
+                    vec![lratio, coff * hd],
+                );
                 put(&mut t, format!("{p}.attn.compressor.norm.weight"), vec![hd]);
             }
             put(&mut t, format!("{p}.ffn_hc.fn"), vec![mix_hc, hcd]);
             put(&mut t, format!("{p}.ffn_hc.scale"), vec![3]);
             put(&mut t, format!("{p}.ffn_hc.base"), vec![mix_hc]);
             put(&mut t, format!("{p}.ffn_norm.weight"), vec![dim]);
-            put(&mut t, format!("{p}.ffn.gate_proj.weight"), vec![inter, dim]);
+            put(
+                &mut t,
+                format!("{p}.ffn.gate_proj.weight"),
+                vec![inter, dim],
+            );
             put(&mut t, format!("{p}.ffn.up_proj.weight"), vec![inter, dim]);
-            put(&mut t, format!("{p}.ffn.down_proj.weight"), vec![dim, inter]);
+            put(
+                &mut t,
+                format!("{p}.ffn.down_proj.weight"),
+                vec![dim, inter],
+            );
         }
         put(&mut t, "model.hc_head.fn".into(), vec![hc, hcd]);
         put(&mut t, "model.hc_head.scale".into(), vec![1]);
@@ -9900,13 +16141,18 @@ mod tests {
         // ── Prefill: full sequence in one pass ──
         let mut pk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
         let (pg, pp) =
-            build_deepseek_v4_prefill(&mk_spec(64), &mut Mem { t: t.clone() }, seq, &mut pk).unwrap();
+            build_deepseek_v4_prefill(&mk_spec(64), &mut Mem { t: t.clone() }, seq, &mut pk)
+                .unwrap();
         let mut pc = Session::new(Device::Cpu).compile_with(pg, &opts);
         for (n, dd) in &pp {
             pc.set_param(n, dd);
         }
         let ids_f32: Vec<f32> = ids.iter().map(|&x| x as f32).collect();
-        let prefill = pc.run(&[("input_ids", ids_f32.as_slice())]).into_iter().next().unwrap();
+        let prefill = pc
+            .run(&[("input_ids", ids_f32.as_slice())])
+            .into_iter()
+            .next()
+            .unwrap();
 
         // ── Decode: one token at a time, threading per-layer KV + compressor state ──
         let ratios = [0usize, 2, 4];
@@ -9926,16 +16172,22 @@ mod tests {
         }
         for tpos in 0..seq {
             let mut dk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
-            let (dg, dp, onames) =
-                build_deepseek_v4_decode(&mk_spec(64), &mut Mem { t: t.clone() }, tpos, tpos, &mut dk)
-                    .unwrap();
+            let (dg, dp, onames) = build_deepseek_v4_decode(
+                &mk_spec(64),
+                &mut Mem { t: t.clone() },
+                tpos,
+                tpos,
+                &mut dk,
+            )
+            .unwrap();
             let mut dc = Session::new(Device::Cpu).compile_with(dg, &opts);
             for (n, dd) in &dp {
                 dc.set_param(n, dd);
             }
             // Assemble the inputs the host must supply this step (owned so the
             // &[f32] refs outlive `run`).
-            let mut owned: Vec<(String, Vec<f32>)> = vec![("token_id".into(), vec![ids[tpos] as f32])];
+            let mut owned: Vec<(String, Vec<f32>)> =
+                vec![("token_id".into(), vec![ids[tpos] as f32])];
             for il in 0..nl {
                 if tpos > 0 {
                     owned.push((format!("kvcache.{il}"), win_ring[il].clone()));
@@ -9956,16 +16208,25 @@ mod tests {
                     }
                 }
             }
-            let inputs: Vec<(&str, &[f32])> =
-                owned.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+            let inputs: Vec<(&str, &[f32])> = owned
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_slice()))
+                .collect();
             let out = dc.run(&inputs);
             let get = |name: &str| -> Vec<f32> {
-                let i = onames.iter().position(|x| x == name).unwrap_or_else(|| panic!("no output {name}"));
+                let i = onames
+                    .iter()
+                    .position(|x| x == name)
+                    .unwrap_or_else(|| panic!("no output {name}"));
                 out[i].clone()
             };
             let dlog = get("logits");
             let pslice = &prefill[tpos * vocab..(tpos + 1) * vocab];
-            let max_err = dlog.iter().zip(pslice).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+            let max_err = dlog
+                .iter()
+                .zip(pslice)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max);
             assert!(
                 max_err < 2e-3,
                 "decode vs prefill logits mismatch at pos {tpos}: max_err {max_err:e}"
@@ -10005,7 +16266,10 @@ mod tests {
         let argmax = |l: &[f32]| -> u32 {
             l.iter()
                 .enumerate()
-                .fold((0usize, f32::MIN), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) })
+                .fold(
+                    (0usize, f32::MIN),
+                    |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) },
+                )
                 .0 as u32
         };
         // Naive greedy: re-prefill the full growing sequence each step.
@@ -10013,13 +16277,18 @@ mod tests {
         for _ in 0..n_new {
             let mut nk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
             let (ng, np) =
-                build_deepseek_v4_prefill(&gspec, &mut Mem { t: t.clone() }, nids.len(), &mut nk).unwrap();
+                build_deepseek_v4_prefill(&gspec, &mut Mem { t: t.clone() }, nids.len(), &mut nk)
+                    .unwrap();
             let mut nc = Session::new(Device::Cpu).compile_with(ng, &opts);
             for (n, dd) in &np {
                 nc.set_param(n, dd);
             }
             let nf: Vec<f32> = nids.iter().map(|&x| x as f32).collect();
-            let nl_out = nc.run(&[("input_ids", nf.as_slice())]).into_iter().next().unwrap();
+            let nl_out = nc
+                .run(&[("input_ids", nf.as_slice())])
+                .into_iter()
+                .next()
+                .unwrap();
             let next = argmax(&nl_out[(nids.len() - 1) * vocab..nids.len() * vocab]);
             nids.push(next);
         }
@@ -10034,25 +16303,36 @@ mod tests {
             n_new,
         )
         .unwrap();
-        assert_eq!(kv_gen, naive_gen, "KV-cache generate must match naive full-prefill greedy");
+        assert_eq!(
+            kv_gen, naive_gen,
+            "KV-cache generate must match naive full-prefill greedy"
+        );
 
         // ── Compile-once V4Decoder == per-step generate (one graph, one load) ──
         // max_win = window-1 = 2; max_comp bounds the compressed cache.
-        let mut dec = V4Decoder::new(&mk_spec(3), &mut Mem { t: t.clone() }, 2, 4, Device::Cpu).unwrap();
+        let mut dec =
+            V4Decoder::new(&mk_spec(3), &mut Mem { t: t.clone() }, 2, 4, Device::Cpu).unwrap();
         let once_gen = dec.generate(&prompt, n_new);
-        assert_eq!(once_gen, kv_gen, "compile-once V4Decoder must match per-step generate");
+        assert_eq!(
+            once_gen, kv_gen,
+            "compile-once V4Decoder must match per-step generate"
+        );
 
         // ── DSpark interface: the main model emits `main_hidden` (mean-over-streams
         // hidden at the target layer) — what the speculative drafter consumes. ──
-        let mut mhdec = V4Decoder::new(&mk_spec(3), &mut Mem { t: t.clone() }, 2, 4, Device::Cpu).unwrap();
+        let mut mhdec =
+            V4Decoder::new(&mk_spec(3), &mut Mem { t: t.clone() }, 2, 4, Device::Cpu).unwrap();
         mhdec.step(prompt[0]);
-        let mh = mhdec.main_hidden().expect("main_hidden emitted at the target layer");
+        let mh = mhdec
+            .main_hidden()
+            .expect("main_hidden emitted at the target layer");
         assert_eq!(mh.len(), dim, "main_hidden is [dim] per target layer");
         assert!(mh.iter().all(|v| v.is_finite()), "main_hidden finite");
 
         // ── KV rollback: snapshot → decode → restore → re-decode is identical (the
         // speculative-decode reject primitive). ──
-        let mut rdec = V4Decoder::new(&mk_spec(3), &mut Mem { t: t.clone() }, 2, 4, Device::Cpu).unwrap();
+        let mut rdec =
+            V4Decoder::new(&mk_spec(3), &mut Mem { t: t.clone() }, 2, 4, Device::Cpu).unwrap();
         rdec.step(ids[0]);
         rdec.step(ids[1]);
         let snap = rdec.snapshot();
@@ -10061,9 +16341,20 @@ mod tests {
         rdec.restore(snap);
         let l2 = rdec.step(ids[2]);
         let l2b = rdec.step(ids[3]);
-        let e1 = l1.iter().zip(&l2).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
-        let e2 = l1b.iter().zip(&l2b).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
-        assert!(e1 < 1e-4 && e2 < 1e-4, "restore must reproduce state: {e1:e} {e2:e}");
+        let e1 = l1
+            .iter()
+            .zip(&l2)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        let e2 = l1b
+            .iter()
+            .zip(&l2b)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            e1 < 1e-4 && e2 < 1e-4,
+            "restore must reproduce state: {e1:e} {e2:e}"
+        );
 
         // ── seq=block BATCH VERIFY graph == `block` sequential seq=1 decodes (the
         // DSpark accelerator; spec-decode is lossless ⇒ identical logits). Sliding
@@ -10075,22 +16366,33 @@ mod tests {
             let (mw, mc) = (2usize, 4usize);
             let vtok: Vec<u32> = (0..block).map(|i| ((i * 3 + 1) % vocab) as u32).collect();
             // Reference: the exact seq=1 decoder, one token at a time.
-            let mut rdec = V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let mut rdec =
+                V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
             let reflog: Vec<Vec<f32>> = vtok.iter().map(|&tk| rdec.step(tk)).collect();
             // Batch verify graph (whole block in one pass).
             let mut vk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
-            let (vg, vp, vnames) =
-                build_deepseek_v4_verify_block(&ss, &mut Mem { t: t.clone() }, block, mw, mc, &mut vk).unwrap();
+            let (vg, vp, vnames) = build_deepseek_v4_verify_block(
+                &ss,
+                &mut Mem { t: t.clone() },
+                block,
+                mw,
+                mc,
+                &mut vk,
+            )
+            .unwrap();
             let mut vc = Session::new(Device::Cpu).compile_with(vg, &opts);
             for (n, dd) in &vp {
                 vc.set_param(n, dd);
             }
             let half = (rd / 2).max(1);
-            let (mut cosb, mut sinb, mut sininvb) =
-                (vec![0f32; block * half], vec![0f32; block * half], vec![0f32; block * half]);
+            let (mut cosb, mut sinb, mut sininvb) = (
+                vec![0f32; block * half],
+                vec![0f32; block * half],
+                vec![0f32; block * half],
+            );
             for p in 0..block {
                 for i in 0..half {
-                    let fr = (ss.rope_theta as f64).powf(-(2.0 * i as f64) / rd as f64);
+                    let fr = ss.rope_theta.powf(-(2.0 * i as f64) / rd as f64);
                     let (s, c) = (p as f64 * fr).sin_cos();
                     cosb[p * half + i] = c as f32;
                     sinb[p * half + i] = s as f32;
@@ -10115,14 +16417,24 @@ mod tests {
                 owned.push((format!("wcache.{il}"), vec![0f32; mw * hd]));
                 owned.push((format!("mask.{il}"), mask.clone()));
             }
-            let inputs: Vec<(&str, &[f32])> = owned.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+            let inputs: Vec<(&str, &[f32])> = owned
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_slice()))
+                .collect();
             let vout = vc.run(&inputs);
             let vi = vnames.iter().position(|x| x == "logits").unwrap();
             let vlog = &vout[vi];
             for p in 0..block {
                 let slice = &vlog[p * vocab..(p + 1) * vocab];
-                let err = reflog[p].iter().zip(slice).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
-                assert!(err < 1e-4, "batch verify row {p} must match seq=1 decode: err {err:e}");
+                let err = reflog[p]
+                    .iter()
+                    .zip(slice)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0f32, f32::max);
+                assert!(
+                    err < 1e-4,
+                    "batch verify row {p} must match seq=1 decode: err {err:e}"
+                );
             }
         }
 
@@ -10134,11 +16446,19 @@ mod tests {
             let (mw, mc, block) = (7usize, 4usize, 3usize);
             let prompt = [1u32, 4];
             let n_new = 6usize;
-            let mut gdec = V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let mut gdec =
+                V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
             let gref = gdec.generate(&prompt, n_new); // greedy reference
             let mut vk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
-            let (vg, vp, vnames) =
-                build_deepseek_v4_verify_block(&ss, &mut Mem { t: t.clone() }, block, mw, mc, &mut vk).unwrap();
+            let (vg, vp, vnames) = build_deepseek_v4_verify_block(
+                &ss,
+                &mut Mem { t: t.clone() },
+                block,
+                mw,
+                mc,
+                &mut vk,
+            )
+            .unwrap();
             let mut vc = Session::new(Device::Cpu).compile_with(vg, &opts);
             for (n, dd) in &vp {
                 vc.set_param(n, dd);
@@ -10151,34 +16471,684 @@ mod tests {
                 cur += block;
                 gref2[s..e].to_vec()
             };
-            let mut sdec = V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
-            let spec_out =
-                deepseek_v4_generate_speculative(&mut sdec, &mut vc, &vnames, &ss, mw, block, perfect, &prompt, n_new);
-            assert_eq!(spec_out, gref, "speculative (perfect drafter) must equal greedy");
+            let mut sdec =
+                V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let spec_out = deepseek_v4_generate_speculative(
+                &mut sdec, &mut vc, &vnames, &ss, block, mc, perfect, &prompt, n_new,
+            );
+            assert_eq!(
+                spec_out, gref,
+                "speculative (perfect drafter) must equal greedy"
+            );
             // Trivial drafter (draft 0s) → mostly rejected ⇒ greedy fallback.
-            let mut tdec = V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let mut tdec =
+                V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
             let triv = |_t: u32| -> Vec<u32> { vec![0u32; block - 1] };
-            let triv_out =
-                deepseek_v4_generate_speculative(&mut tdec, &mut vc, &vnames, &ss, mw, block, triv, &prompt, n_new);
-            assert_eq!(triv_out, gref, "speculative (trivial drafter) must equal greedy");
+            let triv_out = deepseek_v4_generate_speculative(
+                &mut tdec, &mut vc, &vnames, &ss, block, mc, triv, &prompt, n_new,
+            );
+            assert_eq!(
+                triv_out, gref,
+                "speculative (trivial drafter) must equal greedy"
+            );
+
+            // ── LAYERWISE paged driver (O(L)): one single-layer verify stage per layer,
+            // hidden threaded across them, must ALSO equal greedy — proving the O(L²)→O(L)
+            // driver is lossless end-to-end (not just the graph, per
+            // `deepseek_v4_layerwise_verify_matches_monolithic`). ──
+            let build_stages =
+                |sp: &DeepseekV4Spec| -> (Vec<rlx_runtime::CompiledGraph>, Vec<Vec<String>>) {
+                    let mut st = Vec::new();
+                    let mut nm = Vec::new();
+                    for il in 0..sp.n_layers {
+                        let mut sk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> =
+                            HashMap::new();
+                        let (sg, sp2, sn) = build_deepseek_v4_verify_block_stage(
+                            sp,
+                            &mut Mem { t: t.clone() },
+                            block,
+                            mw,
+                            mc,
+                            &mut sk,
+                            il..il + 1,
+                            false,
+                        )
+                        .unwrap();
+                        let mut sc = Session::new(Device::Cpu).compile_with(sg, &opts);
+                        for (n, dd) in &sp2 {
+                            sc.set_param(n, dd);
+                        }
+                        for (n, (b, _, _)) in &sk {
+                            sc.set_param_typed(n, b, DType::U8);
+                        }
+                        st.push(sc);
+                        nm.push(sn);
+                    }
+                    (st, nm)
+                };
+            // All-dense model ⇒ no paged MoE layer fires; the moe_fn must never be called.
+            let no_moe = || {
+                move |_il: usize, _tok: &[u32], _xf: &[f32]| -> Result<Vec<f32>> {
+                    Err(anyhow!("all-dense model: no paged MoE layers"))
+                }
+            };
+            let (mut lst, lnm) = build_stages(&ss);
+            let mut ldec =
+                V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let gref4 = gref.clone();
+            let mut cur2 = 0usize;
+            let perfect2 = move |_t: u32, _mh: &[f32]| -> Vec<u32> {
+                let (s, e) = ((cur2 + 1).min(gref4.len()), (cur2 + block).min(gref4.len()));
+                cur2 += block;
+                gref4[s..e].to_vec()
+            };
+            let lw_out = deepseek_v4_generate_speculative_paged_layerwise(
+                &mut ldec,
+                &mut lst,
+                &lnm,
+                &ss,
+                block,
+                mc,
+                no_moe(),
+                perfect2,
+                &prompt,
+                n_new,
+            )
+            .unwrap();
+            assert_eq!(
+                lw_out, gref,
+                "layerwise paged speculative (perfect drafter) must equal greedy"
+            );
+            let mut ldec2 =
+                V4Decoder::new(&ss, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let triv3 = |_t: u32, _mh: &[f32]| -> Vec<u32> { vec![0u32; block - 1] };
+            let lw_triv = deepseek_v4_generate_speculative_paged_layerwise(
+                &mut ldec2,
+                &mut lst,
+                &lnm,
+                &ss,
+                block,
+                mc,
+                no_moe(),
+                triv3,
+                &prompt,
+                n_new,
+            )
+            .unwrap();
+            assert_eq!(
+                lw_triv, gref,
+                "layerwise paged speculative (trivial drafter) must equal greedy"
+            );
 
             // COMPRESS topology ([0,2,4]) → the guard decodes exactly (seq=1) and
             // still equals greedy (correctness holds; acceleration is gated off).
             let cs = mk_spec(8); // real compress_ratios [0,2,4]
-            let mut cgdec = V4Decoder::new(&cs, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let mut cgdec =
+                V4Decoder::new(&cs, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
             let cgref = cgdec.generate(&prompt, n_new);
             let mut ck: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
-            let (cvg, cvp, cvn) =
-                build_deepseek_v4_verify_block(&cs, &mut Mem { t: t.clone() }, block, mw, mc, &mut ck).unwrap();
+            let (cvg, cvp, cvn) = build_deepseek_v4_verify_block(
+                &cs,
+                &mut Mem { t: t.clone() },
+                block,
+                mw,
+                mc,
+                &mut ck,
+            )
+            .unwrap();
             let mut cvc = Session::new(Device::Cpu).compile_with(cvg, &opts);
             for (n, dd) in &cvp {
                 cvc.set_param(n, dd);
             }
-            let mut csdec = V4Decoder::new(&cs, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let mut csdec =
+                V4Decoder::new(&cs, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
             let triv2 = |_t: u32| -> Vec<u32> { vec![0u32; block - 1] };
-            let c_out =
-                deepseek_v4_generate_speculative(&mut csdec, &mut cvc, &cvn, &cs, mw, block, triv2, &prompt, n_new);
-            assert_eq!(c_out, cgref, "speculative on compress topology must equal greedy (guard path)");
+            let c_out = deepseek_v4_generate_speculative(
+                &mut csdec, &mut cvc, &cvn, &cs, block, mc, triv2, &prompt, n_new,
+            );
+            assert_eq!(
+                c_out, cgref,
+                "speculative on compress topology must equal greedy (guard path)"
+            );
+
+            // Layerwise driver on the COMPRESS topology: the per-layer compressor state
+            // (compcache/pck/pcg/prev_kv/prev_score/ape_idx.{il}) must thread through the
+            // single-layer stages exactly as the monolithic verify does.
+            let (mut clst, clnm) = build_stages(&cs);
+            let mut cldec =
+                V4Decoder::new(&cs, &mut Mem { t: t.clone() }, mw, mc, Device::Cpu).unwrap();
+            let triv4 = |_t: u32, _mh: &[f32]| -> Vec<u32> { vec![0u32; block - 1] };
+            let clw = deepseek_v4_generate_speculative_paged_layerwise(
+                &mut cldec,
+                &mut clst,
+                &clnm,
+                &cs,
+                block,
+                mc,
+                no_moe(),
+                triv4,
+                &prompt,
+                n_new,
+            )
+            .unwrap();
+            assert_eq!(
+                clw, cgref,
+                "layerwise paged speculative on compress must equal greedy"
+            );
+        }
+
+        // ── Verify graph emits compressor projections (ck/cg) matching seq=1 EXACTLY
+        // — the foundation for in-block pooling + the partial-state commit. Overlap
+        // (ratio-4) config at pos 0, block 3: the compressor fires at pos 3 (outside
+        // the block) ⇒ no in-block compression ⇒ h (hence ck/cg) is exact, incl. the
+        // per-token APE gather. ──
+        {
+            let mut ss = mk_spec(8);
+            ss.compress_ratios = vec![0, 0, 4]; // only layer 2 compresses (overlap)
+            let ratios = [0usize, 0, 4];
+            let (mw, mc, block) = (7usize, 4usize, 3usize);
+            let vtok: Vec<u32> = vec![1, 4, 0];
+            // seq=1 reference: capture ck.2/cg.2 at pos 0,1,2 (no fire ⇒ no compcache/partial).
+            let mut wr: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            let (mut s_ck, mut s_cg): (Vec<Vec<f32>>, Vec<Vec<f32>>) = (Vec::new(), Vec::new());
+            for tpos in 0..block {
+                let mut dk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+                let (dg, dp, onames) =
+                    build_deepseek_v4_decode(&ss, &mut Mem { t: t.clone() }, tpos, tpos, &mut dk)
+                        .unwrap();
+                let mut dc = Session::new(Device::Cpu).compile_with(dg, &opts);
+                for (n, dd) in &dp {
+                    dc.set_param(n, dd);
+                }
+                let mut owned: Vec<(String, Vec<f32>)> =
+                    vec![("token_id".into(), vec![vtok[tpos] as f32])];
+                if tpos > 0 {
+                    for il in 0..nl {
+                        owned.push((format!("kvcache.{il}"), wr[il].clone()));
+                    }
+                }
+                let inputs: Vec<(&str, &[f32])> = owned
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_slice()))
+                    .collect();
+                let out = dc.run(&inputs);
+                let get = |nm: &str| -> Vec<f32> {
+                    out[onames.iter().position(|x| x == nm).unwrap()].clone()
+                };
+                s_ck.push(get("ck.2"));
+                s_cg.push(get("cg.2"));
+                for il in 0..nl {
+                    wr[il].extend_from_slice(&get(&format!("kvnew.{il}")));
+                }
+            }
+            // Verify graph ck.2/cg.2 for the same block at pos 0.
+            let mut vk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (vg, vp, vnames) = build_deepseek_v4_verify_block(
+                &ss,
+                &mut Mem { t: t.clone() },
+                block,
+                mw,
+                mc,
+                &mut vk,
+            )
+            .unwrap();
+            let mut vc = Session::new(Device::Cpu).compile_with(vg, &opts);
+            for (n, dd) in &vp {
+                vc.set_param(n, dd);
+            }
+            let half = (rd / 2).max(1);
+            let (mut cosb, mut sinb, mut sininvb) = (
+                vec![0f32; block * half],
+                vec![0f32; block * half],
+                vec![0f32; block * half],
+            );
+            for p in 0..block {
+                for i in 0..half {
+                    let fr = ss.rope_theta.powf(-(2.0 * i as f64) / rd as f64);
+                    let (s, c) = (p as f64 * fr).sin_cos();
+                    cosb[p * half + i] = c as f32;
+                    sinb[p * half + i] = s as f32;
+                    sininvb[p * half + i] = -s as f32;
+                }
+            }
+            let mut owned: Vec<(String, Vec<f32>)> = vec![
+                ("token_id".into(), vtok.iter().map(|&x| x as f32).collect()),
+                ("cos".into(), cosb),
+                ("sin".into(), sinb),
+                ("sininv".into(), sininvb),
+            ];
+            for il in 0..nl {
+                owned.push((format!("wcache.{il}"), vec![0f32; mw * hd]));
+                let r = ratios[il];
+                let coff = if r == 4 { 2 } else { 1 };
+                let nk = if r == 0 {
+                    mw + block
+                } else {
+                    mw + block + mc + block
+                };
+                let mut m = vec![-1e30f32; block * nk];
+                for row in 0..block {
+                    for j in 0..=row {
+                        m[row * nk + mw + j] = 0.0; // block-causal; window/compcache/cand empty at pos 0
+                    }
+                }
+                owned.push((format!("mask.{il}"), m));
+                if r > 0 {
+                    owned.push((format!("compcache.{il}"), vec![0f32; mc * hd]));
+                    owned.push((format!("pck.{il}"), vec![0f32; (r - 1) * coff * hd]));
+                    owned.push((format!("pcg.{il}"), vec![0f32; (r - 1) * coff * hd]));
+                    if r == 4 {
+                        owned.push((
+                            format!("ape_idx.{il}"),
+                            (0..block).map(|i| (i % r) as f32).collect(),
+                        ));
+                        owned.push((format!("prev_kv.{il}"), vec![0f32; r * coff * hd]));
+                        owned.push((format!("prev_score.{il}"), vec![-1e30f32; r * coff * hd]));
+                    }
+                }
+            }
+            let inputs: Vec<(&str, &[f32])> = owned
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_slice()))
+                .collect();
+            let vout = vc.run(&inputs);
+            let vget =
+                |nm: &str| -> &Vec<f32> { &vout[vnames.iter().position(|x| x == nm).unwrap()] };
+            let (vck, vcg) = (vget("ck.2"), vget("cg.2")); // [block, 2·hd]
+            let w = 2 * hd; // coff=2 for overlap
+            for p in 0..block {
+                let eck = s_ck[p]
+                    .iter()
+                    .zip(&vck[p * w..(p + 1) * w])
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0f32, f32::max);
+                let ecg = s_cg[p]
+                    .iter()
+                    .zip(&vcg[p * w..(p + 1) * w])
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0f32, f32::max);
+                assert!(
+                    eck < 1e-4 && ecg < 1e-4,
+                    "verify ck/cg row {p} must match seq=1: {eck:e} {ecg:e}"
+                );
+            }
+        }
+
+        // ── IN-BLOCK NON-OVERLAP POOL: verify == seq=1 with an in-block fire. [0,2,4]
+        // at pos 0, block 3: layer 1 (ratio-2, non-overlap) fires at pos 1 INSIDE the
+        // block ⇒ the verify forms cand_comp[1] and masks it visible to queries 1,2;
+        // layer 2 (ratio-4) fires at pos 3 (outside). Exact-match logits validate the
+        // candidate pool AND the visibility mask. ──
+        {
+            let ss = mk_spec(8); // [0,2,4]
+            let ratios = [0usize, 2, 4];
+            let coffs = [1usize, 1, 2];
+            let (mw, mc, block) = (7usize, 4usize, 3usize);
+            let vtok: Vec<u32> = vec![1, 4, 0];
+            // seq=1 reference logits at pos 0,1,2, threading layer-1 compressor state.
+            let mut wr: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            let mut cc: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            let mut pck: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            let mut pcg: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            let mut s_log: Vec<Vec<f32>> = Vec::new();
+            for tpos in 0..block {
+                let mut dk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+                let (dg, dp, on) =
+                    build_deepseek_v4_decode(&ss, &mut Mem { t: t.clone() }, tpos, tpos, &mut dk)
+                        .unwrap();
+                let mut dc = Session::new(Device::Cpu).compile_with(dg, &opts);
+                for (n, dd) in &dp {
+                    dc.set_param(n, dd);
+                }
+                let mut owned: Vec<(String, Vec<f32>)> =
+                    vec![("token_id".into(), vec![vtok[tpos] as f32])];
+                for il in 0..nl {
+                    if tpos > 0 {
+                        owned.push((format!("kvcache.{il}"), wr[il].clone()));
+                    }
+                    let r = ratios[il];
+                    if r > 0 {
+                        if tpos >= r {
+                            owned.push((format!("compcache.{il}"), cc[il].clone()));
+                        }
+                        if (tpos + 1) % r == 0 && r > 1 {
+                            owned.push((format!("partial_ck.{il}"), pck[il].clone()));
+                            owned.push((format!("partial_cg.{il}"), pcg[il].clone()));
+                        }
+                    }
+                }
+                let inputs: Vec<(&str, &[f32])> = owned
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_slice()))
+                    .collect();
+                let out = dc.run(&inputs);
+                let get = |nm: &str| -> Vec<f32> {
+                    out[on.iter().position(|x| x == nm).unwrap()].clone()
+                };
+                s_log.push(get("logits"));
+                for il in 0..nl {
+                    wr[il].extend_from_slice(&get(&format!("kvnew.{il}")));
+                    let r = ratios[il];
+                    if r > 0 {
+                        if (tpos + 1) % r == 0 {
+                            cc[il].extend_from_slice(&get(&format!("comp.{il}")));
+                            pck[il].clear();
+                            pcg[il].clear();
+                        } else {
+                            pck[il].extend_from_slice(&get(&format!("ck.{il}")));
+                            pcg[il].extend_from_slice(&get(&format!("cg.{il}")));
+                        }
+                    }
+                }
+            }
+            // Verify the whole block at pos 0.
+            let mut vk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (vg, vp, vn) = build_deepseek_v4_verify_block(
+                &ss,
+                &mut Mem { t: t.clone() },
+                block,
+                mw,
+                mc,
+                &mut vk,
+            )
+            .unwrap();
+            let mut vc = Session::new(Device::Cpu).compile_with(vg, &opts);
+            for (n, dd) in &vp {
+                vc.set_param(n, dd);
+            }
+            let half = (rd / 2).max(1);
+            let (mut cosb, mut sinb, mut sininvb) = (
+                vec![0f32; block * half],
+                vec![0f32; block * half],
+                vec![0f32; block * half],
+            );
+            for p in 0..block {
+                for i in 0..half {
+                    let fr = ss.rope_theta.powf(-(2.0 * i as f64) / rd as f64);
+                    let (s, c) = (p as f64 * fr).sin_cos();
+                    cosb[p * half + i] = c as f32;
+                    sinb[p * half + i] = s as f32;
+                    sininvb[p * half + i] = -s as f32;
+                }
+            }
+            let mut owned: Vec<(String, Vec<f32>)> = vec![
+                ("token_id".into(), vtok.iter().map(|&x| x as f32).collect()),
+                ("cos".into(), cosb),
+                ("sin".into(), sinb),
+                ("sininv".into(), sininvb),
+            ];
+            for il in 0..nl {
+                owned.push((format!("wcache.{il}"), vec![0f32; mw * hd]));
+                let r = ratios[il];
+                let coff = coffs[il];
+                let nk = if r == 0 {
+                    mw + block
+                } else {
+                    mw + block + mc + block
+                };
+                let mut m = vec![-1e30f32; block * nk];
+                for row in 0..block {
+                    for j in 0..=row {
+                        m[row * nk + mw + j] = 0.0; // block-causal (window empty)
+                    }
+                    if r > 0 {
+                        let cand0 = mw + block + mc;
+                        for j in 0..block {
+                            if (j + 1) % r == 0 && j <= row {
+                                m[row * nk + cand0 + j] = 0.0; // in-block compressed, visible
+                            }
+                        }
+                    }
+                }
+                owned.push((format!("mask.{il}"), m));
+                if r > 0 {
+                    owned.push((format!("compcache.{il}"), vec![0f32; mc * hd]));
+                    owned.push((format!("pck.{il}"), vec![0f32; (r - 1) * coff * hd]));
+                    owned.push((format!("pcg.{il}"), vec![0f32; (r - 1) * coff * hd]));
+                    if r == 4 {
+                        owned.push((
+                            format!("ape_idx.{il}"),
+                            (0..block).map(|i| (i % r) as f32).collect(),
+                        ));
+                        owned.push((format!("prev_kv.{il}"), vec![0f32; r * coff * hd]));
+                        owned.push((format!("prev_score.{il}"), vec![-1e30f32; r * coff * hd]));
+                    }
+                }
+            }
+            let inputs: Vec<(&str, &[f32])> = owned
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_slice()))
+                .collect();
+            let vout = vc.run(&inputs);
+            let vlog = &vout[vn.iter().position(|x| x == "logits").unwrap()];
+            for p in 0..block {
+                let err = s_log[p]
+                    .iter()
+                    .zip(&vlog[p * vocab..(p + 1) * vocab])
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0f32, f32::max);
+                assert!(
+                    err < 1e-3,
+                    "in-block non-overlap pool: verify row {p} must match seq=1: {err:e}"
+                );
+            }
+        }
+
+        // ── IN-BLOCK OVERLAP POOL (ratio-4): verify == seq=1 with an in-block ratio-4
+        // fire. [0,0,4], 2 primed tokens (dec at pos 2), block [2,3,4]: the overlap
+        // compressor fires at pos 3 (block j=1), pooling with the window-0 prev. ──
+        {
+            let mut ss = mk_spec(8);
+            ss.compress_ratios = vec![0, 0, 4];
+            let ratios = [0usize, 0, 4];
+            let coffs = [1usize, 1, 2];
+            let (mw, mc, block) = (7usize, 4usize, 3usize);
+            let start = 2usize; // prime pos 0,1 → block starts at pos 2
+            let all: Vec<u32> = vec![1, 4, 0, 2, 5]; // pos 0..5
+            // seq=1 reference, snapshotting the compressor state at pos `start`.
+            let mut wr: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            let mut cc: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            let mut pck: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            let mut pcg: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            let mut pkv: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            let mut psc: Vec<Vec<f32>> = vec![Vec::new(); nl];
+            for il in 0..nl {
+                if ratios[il] == 4 {
+                    pkv[il] = vec![0f32; ratios[il] * coffs[il] * hd];
+                    psc[il] = vec![-1e30f32; ratios[il] * coffs[il] * hd];
+                }
+            }
+            let (mut snap_wr, mut snap_pck, mut snap_pcg, mut snap_pkv, mut snap_psc) = (
+                wr.clone(),
+                pck.clone(),
+                pcg.clone(),
+                pkv.clone(),
+                psc.clone(),
+            );
+            let mut s_log: Vec<Vec<f32>> = Vec::new();
+            for (tpos, &tok) in all.iter().enumerate() {
+                if tpos == start {
+                    snap_wr = wr.clone();
+                    snap_pck = pck.clone();
+                    snap_pcg = pcg.clone();
+                    snap_pkv = pkv.clone();
+                    snap_psc = psc.clone();
+                }
+                let mut dk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+                let (dg, dp, on) =
+                    build_deepseek_v4_decode(&ss, &mut Mem { t: t.clone() }, tpos, tpos, &mut dk)
+                        .unwrap();
+                let mut dc = Session::new(Device::Cpu).compile_with(dg, &opts);
+                for (n, dd) in &dp {
+                    dc.set_param(n, dd);
+                }
+                let mut owned: Vec<(String, Vec<f32>)> =
+                    vec![("token_id".into(), vec![tok as f32])];
+                for il in 0..nl {
+                    if tpos > 0 {
+                        owned.push((format!("kvcache.{il}"), wr[il].clone()));
+                    }
+                    let r = ratios[il];
+                    if r > 0 {
+                        if tpos >= r {
+                            owned.push((format!("compcache.{il}"), cc[il].clone()));
+                        }
+                        if (tpos + 1) % r == 0 && r > 1 {
+                            owned.push((format!("partial_ck.{il}"), pck[il].clone()));
+                            owned.push((format!("partial_cg.{il}"), pcg[il].clone()));
+                        }
+                        if (tpos + 1) % r == 0 && r == 4 {
+                            owned.push((format!("prev_kv.{il}"), pkv[il].clone()));
+                            owned.push((format!("prev_score.{il}"), psc[il].clone()));
+                        }
+                    }
+                }
+                let inputs: Vec<(&str, &[f32])> = owned
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_slice()))
+                    .collect();
+                let out = dc.run(&inputs);
+                let get = |nm: &str| -> Vec<f32> {
+                    out[on.iter().position(|x| x == nm).unwrap()].clone()
+                };
+                if tpos >= start {
+                    s_log.push(get("logits"));
+                }
+                for il in 0..nl {
+                    wr[il].extend_from_slice(&get(&format!("kvnew.{il}")));
+                    let r = ratios[il];
+                    if r > 0 {
+                        if (tpos + 1) % r == 0 {
+                            cc[il].extend_from_slice(&get(&format!("comp.{il}")));
+                            if r == 4 {
+                                let mut ckw = pck[il].clone();
+                                ckw.extend_from_slice(&get(&format!("ck.{il}")));
+                                let mut cgw = pcg[il].clone();
+                                cgw.extend_from_slice(&get(&format!("cg.{il}")));
+                                pkv[il] = ckw;
+                                psc[il] = cgw;
+                            }
+                            pck[il].clear();
+                            pcg[il].clear();
+                        } else {
+                            pck[il].extend_from_slice(&get(&format!("ck.{il}")));
+                            pcg[il].extend_from_slice(&get(&format!("cg.{il}")));
+                        }
+                    }
+                }
+            }
+            // Verify the block [pos start..start+3] on the snapshot state.
+            let mut vk: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+            let (vg, vp, vn) = build_deepseek_v4_verify_block(
+                &ss,
+                &mut Mem { t: t.clone() },
+                block,
+                mw,
+                mc,
+                &mut vk,
+            )
+            .unwrap();
+            let mut vc = Session::new(Device::Cpu).compile_with(vg, &opts);
+            for (n, dd) in &vp {
+                vc.set_param(n, dd);
+            }
+            let half = (rd / 2).max(1);
+            let (mut cosb, mut sinb, mut sininvb) = (
+                vec![0f32; block * half],
+                vec![0f32; block * half],
+                vec![0f32; block * half],
+            );
+            for p in 0..block {
+                for i in 0..half {
+                    let fr = ss.rope_theta.powf(-(2.0 * i as f64) / rd as f64);
+                    let (s, c) = ((start + p) as f64 * fr).sin_cos();
+                    cosb[p * half + i] = c as f32;
+                    sinb[p * half + i] = s as f32;
+                    sininvb[p * half + i] = -s as f32;
+                }
+            }
+            let btok: Vec<f32> = all[start..start + block]
+                .iter()
+                .map(|&x| x as f32)
+                .collect();
+            let mut owned: Vec<(String, Vec<f32>)> = vec![
+                ("token_id".into(), btok),
+                ("cos".into(), cosb),
+                ("sin".into(), sinb),
+                ("sininv".into(), sininvb),
+            ];
+            for il in 0..nl {
+                let r = ratios[il];
+                let coff = coffs[il];
+                let wlen = snap_wr[il].len() / hd;
+                let padw = {
+                    let mut o = vec![0f32; mw * hd];
+                    let nn = snap_wr[il].len().min(mw * hd);
+                    o[..nn].copy_from_slice(&snap_wr[il][..nn]);
+                    o
+                };
+                owned.push((format!("wcache.{il}"), padw));
+                let nk = if r == 0 {
+                    mw + block
+                } else {
+                    mw + block + mc + block
+                };
+                let mut m = vec![-1e30f32; block * nk];
+                for row in 0..block {
+                    for s in 0..wlen.min(mw) {
+                        m[row * nk + s] = 0.0; // window valid
+                    }
+                    for j in 0..=row {
+                        m[row * nk + mw + j] = 0.0; // block-causal
+                    }
+                    if r > 0 {
+                        let cand0 = mw + block + mc;
+                        for j in 0..block {
+                            if (start + j + 1).is_multiple_of(r) && j <= row {
+                                m[row * nk + cand0 + j] = 0.0; // in-block compressed, visible
+                            }
+                        }
+                    }
+                }
+                owned.push((format!("mask.{il}"), m));
+                if r > 0 {
+                    owned.push((format!("compcache.{il}"), vec![0f32; mc * hd])); // ncomp=0 at pos 2
+                    // front-pad the partial to ratio-1 slots
+                    let slots = r - 1;
+                    let np = snap_pck[il].len() / (coff * hd);
+                    let mut fpk = vec![0f32; (slots - np) * coff * hd];
+                    fpk.extend_from_slice(&snap_pck[il]);
+                    let mut fpg = vec![0f32; (slots - np) * coff * hd];
+                    fpg.extend_from_slice(&snap_pcg[il]);
+                    owned.push((format!("pck.{il}"), fpk));
+                    owned.push((format!("pcg.{il}"), fpg));
+                    if r == 4 {
+                        owned.push((
+                            format!("ape_idx.{il}"),
+                            (0..block).map(|i| ((start + i) % r) as f32).collect(),
+                        ));
+                        owned.push((format!("prev_kv.{il}"), snap_pkv[il].clone()));
+                        owned.push((format!("prev_score.{il}"), snap_psc[il].clone()));
+                    }
+                }
+            }
+            let inputs: Vec<(&str, &[f32])> = owned
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_slice()))
+                .collect();
+            let vout = vc.run(&inputs);
+            let vlog = &vout[vn.iter().position(|x| x == "logits").unwrap()];
+            for p in 0..block {
+                let err = s_log[p]
+                    .iter()
+                    .zip(&vlog[p * vocab..(p + 1) * vocab])
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0f32, f32::max);
+                assert!(
+                    err < 1e-3,
+                    "in-block OVERLAP pool: verify row {p} must match seq=1: {err:e}"
+                );
+            }
         }
 
         // ── Distributed decode: a 2-stage layer split (relaying the hidden
@@ -10209,13 +17179,22 @@ mod tests {
                     o.push((format!("mask.{il}"), m));
                 } else {
                     o.push((format!("compcache.{il}"), vec![0f32; mc * hd]));
-                    o.push((format!("partial_ck.{il}"), vec![0f32; (ratio - 1) * coff * hd]));
-                    o.push((format!("partial_cg.{il}"), vec![0f32; (ratio - 1) * coff * hd]));
+                    o.push((
+                        format!("partial_ck.{il}"),
+                        vec![0f32; (ratio - 1) * coff * hd],
+                    ));
+                    o.push((
+                        format!("partial_cg.{il}"),
+                        vec![0f32; (ratio - 1) * coff * hd],
+                    ));
                     if ratio == 4 {
                         let ape = &t[&format!("model.layers.{il}.attn.compressor.ape")].0;
                         o.push((format!("ape_row.{il}"), ape[0..coff * hd].to_vec()));
                         o.push((format!("prev_kv.{il}"), vec![0f32; ratio * coff * hd]));
-                        o.push((format!("prev_score.{il}"), vec![-1e30f32; ratio * coff * hd]));
+                        o.push((
+                            format!("prev_score.{il}"),
+                            vec![-1e30f32; ratio * coff * hd],
+                        ));
                     }
                     let mut m = vec![-1e30f32; mw + 1 + mc + 1];
                     m[mw] = 0.0; // new valid; window/comp empty; not firing at pos 0
@@ -10224,48 +17203,102 @@ mod tests {
             }
             o
         };
-        let run = |g: Graph, p: &HashMap<String, Vec<f32>>, names: &[String], inp: &[(String, Vec<f32>)], want: &str| {
+        let run = |g: Graph,
+                   p: &HashMap<String, Vec<f32>>,
+                   names: &[String],
+                   inp: &[(String, Vec<f32>)],
+                   want: &str| {
             let mut c = Session::new(Device::Cpu).compile_with(g, &opts);
             for (n, dd) in p {
                 c.set_param(n, dd);
             }
-            let r: Vec<(&str, &[f32])> = inp.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+            let r: Vec<(&str, &[f32])> = inp
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_slice()))
+                .collect();
             let out = c.run(&r);
             out[names.iter().position(|x| x == want).unwrap()].clone()
         };
         // 1-stage (all layers).
         let mut fk = HashMap::new();
         let (fg, fp, fnm) =
-            build_deepseek_v4_decode_fixed(&gspec2, &mut Mem { t: t.clone() }, mw, mc, &mut fk).unwrap();
+            build_deepseek_v4_decode_fixed(&gspec2, &mut Mem { t: t.clone() }, mw, mc, &mut fk)
+                .unwrap();
         let full_logits = run(fg, &fp, &fnm, &mk_inputs(0..nl, true, None), "logits");
         // 2-stage: layers [0,1] then [2], relaying `hidden`.
         let mut s0k = HashMap::new();
         let (s0g, s0p, s0nm) = build_deepseek_v4_decode_fixed_stage(
-            &gspec2, &mut Mem { t: t.clone() }, 0..2, true, false, mw, mc, &mut s0k,
+            &gspec2,
+            &mut Mem { t: t.clone() },
+            0..2,
+            true,
+            false,
+            mw,
+            mc,
+            &mut s0k,
         )
         .unwrap();
         let hidden = run(s0g, &s0p, &s0nm, &mk_inputs(0..2, true, None), "hidden_out");
         let mut s1k = HashMap::new();
         let (s1g, s1p, s1nm) = build_deepseek_v4_decode_fixed_stage(
-            &gspec2, &mut Mem { t: t.clone() }, 2..3, false, true, mw, mc, &mut s1k,
+            &gspec2,
+            &mut Mem { t: t.clone() },
+            2..3,
+            false,
+            true,
+            mw,
+            mc,
+            &mut s1k,
         )
         .unwrap();
-        let split_logits = run(s1g, &s1p, &s1nm, &mk_inputs(2..3, false, Some(hidden)), "logits");
+        let split_logits = run(
+            s1g,
+            &s1p,
+            &s1nm,
+            &mk_inputs(2..3, false, Some(hidden)),
+            "logits",
+        );
         let split_err = full_logits
             .iter()
             .zip(&split_logits)
             .map(|(a, b)| (a - b).abs())
             .fold(0f32, f32::max);
-        assert!(split_err < 1e-4, "2-stage decode split must match 1-stage: {split_err:e}");
+        assert!(
+            split_err < 1e-4,
+            "2-stage decode split must match 1-stage: {split_err:e}"
+        );
 
         // ── Pipelined (distributed) generate: 2 stage decoders relaying the hidden
         // per token == the single-node V4Decoder. The in-process reference for a
         // cross-node decode run. ──
-        let st0 = V4Decoder::new_stage(&mk_spec(3), &mut Mem { t: t.clone() }, 0..2, true, false, 2, 4, Device::Cpu).unwrap();
-        let st1 = V4Decoder::new_stage(&mk_spec(3), &mut Mem { t: t.clone() }, 2..3, false, true, 2, 4, Device::Cpu).unwrap();
+        let st0 = V4Decoder::new_stage(
+            &mk_spec(3),
+            &mut Mem { t: t.clone() },
+            0..2,
+            true,
+            false,
+            2,
+            4,
+            Device::Cpu,
+        )
+        .unwrap();
+        let st1 = V4Decoder::new_stage(
+            &mk_spec(3),
+            &mut Mem { t: t.clone() },
+            2..3,
+            false,
+            true,
+            2,
+            4,
+            Device::Cpu,
+        )
+        .unwrap();
         let mut stages = vec![st0, st1];
         let pipe_gen = deepseek_v4_generate_pipelined(&mut stages, &prompt, n_new);
-        assert_eq!(pipe_gen, once_gen, "pipelined 2-stage decode must match single-node V4Decoder");
+        assert_eq!(
+            pipe_gen, once_gen,
+            "pipelined 2-stage decode must match single-node V4Decoder"
+        );
 
         // ── Distributed decode over REAL TCP (worker threads on localhost) ==
         // single-node. Each stage builds inside its thread (nothing non-Send
@@ -10280,7 +17313,8 @@ mod tests {
             let sp = mk_spec(3);
             handles.push(std::thread::spawn(move || {
                 let mut dec =
-                    V4Decoder::new_stage(&sp, &mut Mem { t: tt }, lr, fst, lst, 2, 4, Device::Cpu).unwrap();
+                    V4Decoder::new_stage(&sp, &mut Mem { t: tt }, lr, fst, lst, 2, 4, Device::Cpu)
+                        .unwrap();
                 serve_v4_decode_stage(&mut dec, listener).unwrap();
             }));
         }
@@ -10288,7 +17322,10 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        assert_eq!(tcp_gen, once_gen, "TCP distributed decode must match single-node V4Decoder");
+        assert_eq!(
+            tcp_gen, once_gen,
+            "TCP distributed decode must match single-node V4Decoder"
+        );
     }
 
     #[test]

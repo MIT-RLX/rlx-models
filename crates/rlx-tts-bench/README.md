@@ -120,7 +120,7 @@ Whisper: `RLX_WHISPER_DIR` or `.cache/whisper-tiny` / `whisper-base.en` (`just f
 
 Scenarios: `plain`, `clone`, `clone_noisy_ref`.
 
-After a run, copy `BACKENDS.md` into the repo root [`TTS_BACKENDS.md`](../../TTS_BACKENDS.md) (or merge the matrices section) for release notes.
+After a run, fold `BACKENDS.md` into the Cross-backend parity & benchmarks section of the repo-root [`TTS.md`](../../TTS.md) for release notes.
 
 ## Publish
 

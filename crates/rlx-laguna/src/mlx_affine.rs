@@ -64,7 +64,7 @@ pub fn dequant_linear(p: &MlxPackedLinear) -> Result<(Vec<f32>, usize, usize)> {
     let out = p.out_shape[0];
     let inn = p.out_shape[1];
     let gs = group_size as usize;
-    if gs == 0 || inn % gs != 0 {
+    if gs == 0 || !inn.is_multiple_of(gs) {
         bail!("laguna mlx-affine: in_features {inn} not divisible by group_size {gs}");
     }
     let n_groups = inn / gs;
@@ -147,7 +147,7 @@ pub fn expert_slice(
         bail!("laguna mlx-affine expert {e} >= {n_expert}");
     }
     let need = |len: usize, name: &str| -> Result<usize> {
-        if len % n_expert != 0 {
+        if !len.is_multiple_of(n_expert) {
             bail!(
                 "laguna mlx-affine expert: {name} len {len} not divisible by n_expert {n_expert}"
             );

@@ -317,4 +317,142 @@ mod tests {
         assert!(p.passes.dce);
         assert!(!p.fusion.skip);
     }
+
+    /// Regression guard for `unsloth/Qwen3.6-27B-MTP-GGUF`. Writes a GGUF
+    /// header carrying the *exact* metadata that ships in the real 27B file
+    /// (`general.architecture = "qwen35"`, `qwen35.*` keys) and asserts the
+    /// derived [`Qwen35Config`] — including the hybrid trunk layout
+    /// `16 × (3 × GDN + 1 × full-attention)`, partial RoPE, GQA and the MTP
+    /// head split. Metadata values captured from the shipped GGUF header.
+    #[test]
+    fn parses_qwen36_27b_mtp_gguf_config() {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&rlx_gguf::GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        let kv_count_off = buf.len();
+        buf.extend_from_slice(&0u64.to_le_bytes());
+
+        let write_string = |buf: &mut Vec<u8>, k: &str, v: &str| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&8u32.to_le_bytes());
+            buf.extend_from_slice(&(v.len() as u64).to_le_bytes());
+            buf.extend_from_slice(v.as_bytes());
+        };
+        let write_u32 = |buf: &mut Vec<u8>, k: &str, v: u32| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&4u32.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        };
+        let write_f32 = |buf: &mut Vec<u8>, k: &str, v: f32| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&6u32.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        };
+        let write_arr_u32 = |buf: &mut Vec<u8>, k: &str, vals: &[u32]| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&9u32.to_le_bytes()); // array
+            buf.extend_from_slice(&4u32.to_le_bytes()); // element type = u32
+            buf.extend_from_slice(&(vals.len() as u64).to_le_bytes());
+            for v in vals {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+        };
+
+        let mut n_kv: u64 = 0;
+        macro_rules! kv {
+            (s $k:expr, $v:expr) => {{
+                write_string(&mut buf, $k, $v);
+                n_kv += 1;
+            }};
+            (u $k:expr, $v:expr) => {{
+                write_u32(&mut buf, $k, $v);
+                n_kv += 1;
+            }};
+            (f $k:expr, $v:expr) => {{
+                write_f32(&mut buf, $k, $v);
+                n_kv += 1;
+            }};
+            (a $k:expr, $v:expr) => {{
+                write_arr_u32(&mut buf, $k, $v);
+                n_kv += 1;
+            }};
+        }
+        kv!(s "general.architecture", "qwen35");
+        kv!(u "qwen35.block_count", 65);
+        kv!(u "qwen35.nextn_predict_layers", 1);
+        kv!(u "qwen35.embedding_length", 5120);
+        kv!(u "qwen35.feed_forward_length", 17408);
+        kv!(u "qwen35.attention.head_count", 24);
+        kv!(u "qwen35.attention.head_count_kv", 4);
+        kv!(u "qwen35.attention.key_length", 256);
+        kv!(u "qwen35.attention.value_length", 256);
+        kv!(f "qwen35.attention.layer_norm_rms_epsilon", 1e-6);
+        kv!(u "qwen35.context_length", 262_144);
+        kv!(u "qwen35.full_attention_interval", 4);
+        kv!(u "qwen35.rope.dimension_count", 64);
+        kv!(f "qwen35.rope.freq_base", 10_000_000.0);
+        kv!(a "qwen35.rope.dimension_sections", &[11, 11, 10, 0]);
+        kv!(u "qwen35.ssm.conv_kernel", 4);
+        kv!(u "qwen35.ssm.state_size", 128);
+        kv!(u "qwen35.ssm.group_count", 16);
+        kv!(u "qwen35.ssm.time_step_rank", 48);
+        kv!(u "qwen35.ssm.inner_size", 6144);
+
+        buf[kv_count_off..kv_count_off + 8].copy_from_slice(&n_kv.to_le_bytes());
+        while !buf
+            .len()
+            .is_multiple_of(rlx_gguf::DEFAULT_ALIGNMENT as usize)
+        {
+            buf.push(0);
+        }
+        let path = std::env::temp_dir().join("rlx_qwen36_27b_config_test.gguf");
+        std::fs::write(&path, &buf).unwrap();
+        let raw = rlx_gguf::GgufFile::from_path(&path).unwrap();
+        let cfg = Qwen35Config::from_gguf(&raw).unwrap();
+
+        // Core dims.
+        assert_eq!(cfg.num_hidden_layers, 65, "block_count incl. MTP head");
+        assert_eq!(cfg.nextn_predict_layers, 1);
+        assert_eq!(cfg.mtp_layer_start(), Some(64), "64 trunk + 1 MTP");
+        assert_eq!(cfg.hidden_size, 5120);
+        assert_eq!(cfg.intermediate_size, 17408);
+        assert_eq!(cfg.max_position_embeddings, 262_144);
+        assert!(!cfg.is_moe(), "27B dense, not MoE");
+
+        // Gated full-attention: GQA 24:4 with 256-dim heads (6144 != hidden).
+        assert_eq!(cfg.num_attention_heads, 24);
+        assert_eq!(cfg.num_key_value_heads, 4);
+        assert_eq!(cfg.key_length, 256);
+        assert_eq!(cfg.value_length, 256);
+        assert_ne!(cfg.num_attention_heads * cfg.key_length, cfg.hidden_size);
+
+        // Partial RoPE: rotate 64 of the 256 head dims; MRoPE THW sections.
+        assert_eq!(cfg.rope_dim_count, 64);
+        assert!((cfg.rope_theta - 10_000_000.0).abs() < 1.0);
+        assert_eq!(cfg.rope_dim_sections, vec![11, 11, 10, 0]);
+        assert!((cfg.rms_norm_eps - 1e-6).abs() < 1e-9);
+
+        // Gated DeltaNet: 48 value-heads × 128 (inner 6144), 16 QK-heads.
+        assert_eq!(cfg.ssm_conv_kernel, 4);
+        assert_eq!(cfg.ssm_state_size, 128);
+        assert_eq!(cfg.ssm_group_count, 16, "linear QK heads");
+        assert_eq!(cfg.ssm_time_step_rank, 48, "linear value heads");
+        assert_eq!(cfg.ssm_inner_size, 6144, "48 × 128");
+
+        // Hybrid trunk layout: full attention every 4th layer over the 64
+        // trunk layers ⇒ 16 full-attention + 48 Gated-DeltaNet.
+        assert_eq!(cfg.full_attention_interval, 4);
+        let n_main = cfg.num_hidden_layers - cfg.nextn_predict_layers;
+        let interval = cfg.full_attention_interval.max(1);
+        let full = (0..n_main).filter(|il| (il + 1) % interval == 0).count();
+        assert_eq!(full, 16, "16 × (3 × GDN + 1 × full-attn)");
+        assert_eq!(n_main - full, 48, "48 Gated-DeltaNet layers");
+
+        std::fs::remove_file(&path).ok();
+    }
 }

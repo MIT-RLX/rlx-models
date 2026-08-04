@@ -269,11 +269,10 @@ impl Supertonic {
         named: &[(&str, usize)],
         inputs: &[(&str, &[u8], DType)],
     ) -> Result<Vec<f32>> {
-        let mut g = self
+        let out = self
             .model
-            .compile_named(comp, self.device, length, named)
-            .map_err(|e| anyhow::anyhow!("compile {comp}: {e:#}"))?;
-        let out = g.run_typed(inputs);
+            .run_named(comp, self.device, length, named, inputs)
+            .map_err(|e| anyhow::anyhow!("run {comp}: {e:#}"))?;
         let (bytes, _dt) = out
             .into_iter()
             .next()
@@ -348,38 +347,60 @@ impl Supertonic {
             let _ = std::fs::write(dir.join("meta.json"), meta);
         }
 
+        // The duration predictor and text encoder are done — hand their idle
+        // activation arenas back to the OS so they don't sit resident (alongside
+        // the flow decoder's + vocoder's) for the rest of the utterance. Their
+        // outputs were already copied out by `run1`.
+        self.model.release_named_scratch(
+            "duration_predictor",
+            self.device,
+            t,
+            &[("text_length", t)],
+        );
+        self.model
+            .release_named_scratch("text_encoder", self.device, t, &[("text_length", t)]);
+
         // 4. flow-matching ODE loop. The estimator integrates internally (it maps
-        //    xt→x_{t+1}); the caller just feeds xt back. Compile once, run total×.
-        let mut ve = self
-            .model
-            .compile_named(
-                "vector_estimator",
-                self.device,
-                l,
-                &[("text_length", t), ("latent_length", l)],
-            )
-            .map_err(|e| anyhow::anyhow!("compile vector_estimator: {e:#}"))?;
+        //    xt→x_{t+1}); the caller just feeds xt back. `run_named` builds the
+        //    graph once (first step / first utterance) and reuses it in place for
+        //    every subsequent step and utterance — no per-step compile or clone.
+        let ve_named = [("text_length", t), ("latent_length", l)];
         let text_emb_b = f32_bytes(&text_emb);
         let lm_b = f32_bytes(&latent_mask);
         let ts_b = f32_bytes(&[total as f32]);
         for step in 0..total {
             let nl_b = f32_bytes(&xt);
             let cs_b = f32_bytes(&[step as f32]);
-            let out = ve.run_typed(&[
-                ("noisy_latent", &nl_b, DType::F32),
-                ("text_emb", &text_emb_b, DType::F32),
-                ("style_ttl", &style_ttl_b, DType::F32),
-                ("latent_mask", &lm_b, DType::F32),
-                ("text_mask", &tm_b, DType::F32),
-                ("current_step", &cs_b, DType::F32),
-                ("total_step", &ts_b, DType::F32),
-            ]);
+            let out = self
+                .model
+                .run_named(
+                    "vector_estimator",
+                    self.device,
+                    l,
+                    &ve_named,
+                    &[
+                        ("noisy_latent", &nl_b, DType::F32),
+                        ("text_emb", &text_emb_b, DType::F32),
+                        ("style_ttl", &style_ttl_b, DType::F32),
+                        ("latent_mask", &lm_b, DType::F32),
+                        ("text_mask", &tm_b, DType::F32),
+                        ("current_step", &cs_b, DType::F32),
+                        ("total_step", &ts_b, DType::F32),
+                    ],
+                )
+                .map_err(|e| anyhow::anyhow!("run vector_estimator: {e:#}"))?;
             let (bytes, _dt) = out
                 .into_iter()
                 .next()
                 .context("vector_estimator: no output")?;
             xt = as_f32(&bytes);
         }
+
+        // The flow decoder is the single largest activation arena and is now done
+        // (its result is in `xt`) — release it before the vocoder runs so the two
+        // ~GB working sets never sit resident together.
+        self.model
+            .release_named_scratch("vector_estimator", self.device, l, &ve_named);
 
         // 5. vocoder → waveform, trim to dur·sr.
         let wav = self.run1(
@@ -388,6 +409,10 @@ impl Supertonic {
             &[("latent_length", l)],
             &[("latent", &f32_bytes(&xt), DType::F32)],
         )?;
+        // Vocoder done too — free its scratch so idle RSS between utterances stays
+        // near the weight footprint, not the peak activation footprint.
+        self.model
+            .release_named_scratch("vocoder", self.device, l, &[("latent_length", l)]);
         let n = ((duration * self.cfg.sample_rate as f32) as usize).min(wav.len());
         let audio = wav[..n.max(1)].to_vec();
 
@@ -464,6 +489,170 @@ impl Supertonic {
         };
         let n = ((duration * self.cfg.sample_rate as f32) as usize).min(wav.len());
         Ok(wav[..n.max(1)].to_vec())
+    }
+
+    /// Validation-only: run each subgraph via BOTH native RLX and ONNX Runtime with
+    /// identical (ort-reference) inputs, and print the per-subgraph cosine. Isolates
+    /// which subgraph's native execution diverges from ort.
+    #[cfg(feature = "onnx")]
+    pub fn debug_subgraph_parity(
+        &self,
+        text: &str,
+        lang: &str,
+        voice: &Voice,
+        opts: &InferOpts,
+    ) -> Result<()> {
+        fn cos(a: &[f32], b: &[f32]) -> f32 {
+            let n = a.len().min(b.len());
+            let dot: f32 = a[..n].iter().zip(&b[..n]).map(|(x, y)| x * y).sum();
+            let na: f32 = a[..n].iter().map(|v| v * v).sum::<f32>().sqrt();
+            let nb: f32 = b[..n].iter().map(|v| v * v).sum::<f32>().sqrt();
+            dot / (na * nb + 1e-12)
+        }
+        let ids = self.indexer.encode(text, lang)?;
+        let t = ids.len();
+        let text_mask = vec![1.0f32; t];
+        let ids_b = i64_bytes(&ids);
+        let tm_b = f32_bytes(&text_mask);
+        let style_ttl_b = f32_bytes(&voice.ttl.data);
+
+        // duration_predictor
+        let dp_n = self.run1(
+            "duration_predictor",
+            t,
+            &[("text_length", t)],
+            &[
+                ("text_ids", &ids_b, DType::I64),
+                ("style_dp", &f32_bytes(&voice.dp.data), DType::F32),
+                ("text_mask", &tm_b, DType::F32),
+            ],
+        )?;
+        let dp_o = {
+            let a = i64_t(&[1, t], ids.clone())?;
+            let b = f32_t(&[1, voice.dp.rows, voice.dp.cols], voice.dp.data.clone())?;
+            let c = f32_t(&[1, 1, t], text_mask.clone())?;
+            let mut s = self.dp.lock().expect("ort");
+            extract0(&s.run(ort::inputs![a, b, c])?)?.1
+        };
+        eprintln!(
+            "[parity] duration_predictor cos={:.6} native={:?} ort={:?}",
+            cos(&dp_n, &dp_o),
+            dp_n.first(),
+            dp_o.first()
+        );
+
+        // text_encoder
+        let te_n = self.run1(
+            "text_encoder",
+            t,
+            &[("text_length", t)],
+            &[
+                ("text_ids", &ids_b, DType::I64),
+                ("style_ttl", &style_ttl_b, DType::F32),
+                ("text_mask", &tm_b, DType::F32),
+            ],
+        )?;
+        let (emb_shape_o, te_o) = {
+            let a = i64_t(&[1, t], ids.clone())?;
+            let b = f32_t(&[1, voice.ttl.rows, voice.ttl.cols], voice.ttl.data.clone())?;
+            let c = f32_t(&[1, 1, t], text_mask.clone())?;
+            let mut s = self.text_enc.lock().expect("ort");
+            extract0(&s.run(ort::inputs![a, b, c])?)?
+        };
+        let emb_shape_o = shape_usize(&emb_shape_o);
+        eprintln!(
+            "[parity] text_encoder   cos={:.6} (len {} vs {}) shape={:?}",
+            cos(&te_n, &te_o),
+            te_n.len(),
+            te_o.len(),
+            emb_shape_o
+        );
+        if let Some(d) = std::env::var_os("RLX_ST_TE_DUMP") {
+            let d = std::path::PathBuf::from(d);
+            let _ = std::fs::create_dir_all(&d);
+            dump_f32(&d.join("te_native.f32"), &te_n);
+            dump_f32(&d.join("te_ort.f32"), &te_o);
+            let _ = std::fs::write(d.join("te_shape.json"), format!("{:?}", emb_shape_o));
+            // Dump the exact text_encoder inputs so an external ORT run can
+            // reproduce the per-node reference on identical data.
+            dump_i64(&d.join("in_ids.i64"), &ids);
+            dump_f32(&d.join("in_style_ttl.f32"), &voice.ttl.data);
+            dump_f32(&d.join("in_text_mask.f32"), &text_mask);
+            let _ = std::fs::write(
+                d.join("in_meta.json"),
+                format!(
+                    "{{\"t\":{t},\"ttl_rows\":{},\"ttl_cols\":{}}}",
+                    voice.ttl.rows, voice.ttl.cols
+                ),
+            );
+        }
+
+        // vector_estimator (1 step, fed the SAME noise + ort text_emb to isolate)
+        let duration = (dp_o[0] / opts.speed).max(0.05);
+        let l = self.cfg.latent_len(duration);
+        let ch = self.cfg.latent_channels();
+        let mut rng = Rng::new(opts.seed);
+        let xt: Vec<f32> = (0..ch * l).map(|_| rng.randn()).collect();
+        let latent_mask = vec![1.0f32; l];
+        let total = opts.total_step.max(1);
+        let mut ve = self
+            .model
+            .compile_named(
+                "vector_estimator",
+                self.device,
+                l,
+                &[("text_length", t), ("latent_length", l)],
+            )
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        let ve_n = {
+            let out = ve.run_typed(&[
+                ("noisy_latent", &f32_bytes(&xt), DType::F32),
+                ("text_emb", &f32_bytes(&te_o), DType::F32),
+                ("style_ttl", &style_ttl_b, DType::F32),
+                ("latent_mask", &f32_bytes(&latent_mask), DType::F32),
+                ("text_mask", &tm_b, DType::F32),
+                ("current_step", &f32_bytes(&[0.0]), DType::F32),
+                ("total_step", &f32_bytes(&[total as f32]), DType::F32),
+            ]);
+            as_f32(&out.into_iter().next().context("ve no output")?.0)
+        };
+        let ve_o = {
+            let nl = f32_t(&[1, ch, l], xt.clone())?;
+            let te = f32_t(&emb_shape_o, te_o.clone())?;
+            let st = f32_t(&[1, voice.ttl.rows, voice.ttl.cols], voice.ttl.data.clone())?;
+            let lm = f32_t(&[1, 1, l], latent_mask.clone())?;
+            let tm = f32_t(&[1, 1, t], text_mask.clone())?;
+            let cs = f32_t(&[1], vec![0.0f32])?;
+            let ts = f32_t(&[1], vec![total as f32])?;
+            let mut s = self.vector_est.lock().expect("ort");
+            extract0(&s.run(ort::inputs![nl, te, st, lm, tm, cs, ts])?)?.1
+        };
+        eprintln!(
+            "[parity] vector_estimator cos={:.6} (len {} vs {})",
+            cos(&ve_n, &ve_o),
+            ve_n.len(),
+            ve_o.len()
+        );
+
+        // vocoder (fed the SAME ort ve output to isolate)
+        let voc_n = self.run1(
+            "vocoder",
+            l,
+            &[("latent_length", l)],
+            &[("latent", &f32_bytes(&ve_o), DType::F32)],
+        )?;
+        let voc_o = {
+            let a = f32_t(&[1, ch, l], ve_o.clone())?;
+            let mut s = self.vocoder.lock().expect("ort");
+            extract0(&s.run(ort::inputs![a])?)?.1
+        };
+        eprintln!(
+            "[parity] vocoder        cos={:.6} (len {} vs {})",
+            cos(&voc_n, &voc_o),
+            voc_n.len(),
+            voc_o.len()
+        );
+        Ok(())
     }
 
     /// Write mono 16-bit PCM WAV at the model sample rate.

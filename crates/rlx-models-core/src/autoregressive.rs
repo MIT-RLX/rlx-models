@@ -524,6 +524,78 @@ where
     )
 }
 
+/// Packed-weights variant of [`run_bucketed_kv_decode`]: `build` returns
+/// `(graph, f32_params, packed_params)` and the U8 packed params are bound via
+/// `set_param_typed` on first compile — K-quant linears stay packed in the arena
+/// (`Op::DequantMatMul`) instead of dequant-to-f32. Batch = 1. Everything after
+/// the compile+bind (K/V padding, run) is identical to the f32 path.
+pub fn run_bucketed_kv_decode_packed<F>(
+    cache: &mut BucketedCompileCache,
+    past_seq: usize,
+    kv: &LayerKvCache,
+    kv_dim: usize,
+    num_layers: usize,
+    fixed_inputs: &[CacheRunInput<'_>],
+    build: F,
+    options: &CompileOptions,
+) -> Result<DecodeLogitsKv>
+where
+    F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>),
+{
+    let batch = 1usize;
+    let (upper_u64, compiled) = cache
+        .ensure_graph_with_packed(past_seq as u64, build, options)
+        .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?;
+    let upper = upper_u64 as usize;
+
+    let row_upper = upper_u64.saturating_mul(batch as u64);
+    let padded_k: Vec<Vec<f32>> = kv
+        .layers_k
+        .iter()
+        .map(|k| pad_rows(k, kv_dim, row_upper))
+        .collect();
+    let padded_v: Vec<Vec<f32>> = kv
+        .layers_v
+        .iter()
+        .map(|v| pad_rows(v, kv_dim, row_upper))
+        .collect();
+    let key_names = past_kv_input_names(num_layers);
+
+    let mut specs: Vec<CacheRunInput<'_>> = Vec::with_capacity(fixed_inputs.len() + 2 * num_layers);
+    for inp in fixed_inputs {
+        specs.push(CacheRunInput {
+            name: inp.name,
+            data: inp.data,
+            row_inner: inp.row_inner,
+        });
+    }
+    for i in 0..num_layers {
+        specs.push(CacheRunInput {
+            name: key_names[2 * i].as_str(),
+            data: padded_k[i].as_slice(),
+            row_inner: Some(kv_dim),
+        });
+        specs.push(CacheRunInput {
+            name: key_names[2 * i + 1].as_str(),
+            data: padded_v[i].as_slice(),
+            row_inner: Some(kv_dim),
+        });
+    }
+
+    let kv_dims = vec![kv_dim; num_layers];
+    let output_inners = output_inners_for_kv(&kv_dims);
+    finish_bucketed_decode(
+        compiled,
+        upper,
+        past_seq,
+        &specs,
+        &output_inners,
+        kv,
+        &kv_dims,
+        batch,
+    )
+}
+
 /// Like [`run_bucketed_kv_decode`] but compiles decode graphs from HIR (Gemma / Llama / Qwen3.5).
 pub fn run_bucketed_kv_decode_hir<F>(
     cache: &mut BucketedCompileCache,

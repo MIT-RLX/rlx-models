@@ -504,6 +504,7 @@ fn debug_parity_g2_attention_ops() -> Result<()> {
     for n in graph.nodes() {
         if let Op::Attention {
             head_dim,
+            v_head_dim: None,
             score_scale,
             attn_logit_softcap,
             mask_kind,

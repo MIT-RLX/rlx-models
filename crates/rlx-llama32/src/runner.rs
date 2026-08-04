@@ -279,6 +279,16 @@ impl Llama32Runner {
         self.generator.prefill_get_last_logits(prompt_ids)
     }
 
+    /// Incremental single-token decode: feed the previously-sampled token and get
+    /// the next-position logits from the KV cache (O(1) per step). Requires a
+    /// prior [`Self::predict_logits`] prefill to populate the cache. Pairs with it
+    /// for O(n) autoregressive loops that need raw logits (e.g. the Orpheus SNAC
+    /// decode that applies per-slot logit masking before sampling) — instead of
+    /// re-prefilling the whole growing history each step (O(n²)).
+    pub fn decode_get_logits(&mut self, token: u32) -> Result<Vec<f32>> {
+        self.generator.decode_get_logits(token)
+    }
+
     /// Register a one-shot multimodal embed splice for the next `generate`
     /// prefill — the vision soft tokens overwrite positions `start..start+rows`
     /// of the packed `input_embeddings`. See

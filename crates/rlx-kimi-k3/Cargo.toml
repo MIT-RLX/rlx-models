@@ -22,6 +22,8 @@ rlx-llada2 = { workspace = true }
 rlx-distributed = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+memmap2 = "0.9"
+rayon = "1.10"
 anyhow = { workspace = true }
 safetensors = { workspace = true }
 half = { workspace = true }
@@ -30,6 +32,12 @@ tokenizers = { workspace = true }
 [[bin]]
 name = "rlx-kimi-k3"
 path = "src/bin/rlx_kimi_k3.rs"
+
+# opscope dataflow RECORDING harness (link-local to ../rlx), for the
+# `record_dataflow` example only.
+[dev-dependencies]
+rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope" }
+libc = "0.2"
 
 # Feature-flagged multi-node cluster runner example (mac + ssh msi + ssh amd).
 [[example]]
@@ -51,6 +59,8 @@ rocm = ["rlx-runtime/rocm", "rlx-deepseek/rocm"]
 gpu = ["rlx-runtime/gpu", "rlx-deepseek/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-deepseek/vulkan"]
 coreml = ["rlx-runtime/coreml", "rlx-core/coreml", "rlx-deepseek/coreml"]
+amx-sme = ["rlx-runtime/amx-sme"]
+amx-bnns = ["rlx-runtime/amx-bnns"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
 apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]

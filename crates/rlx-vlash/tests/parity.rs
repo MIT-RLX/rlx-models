@@ -64,7 +64,11 @@ impl Fixture {
                 let shape: Vec<usize> = meta
                     .get("shape")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|x| x.as_u64().map(|u| u as usize)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_u64().map(|u| u as usize))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let bytes = std::fs::read(dir.join(file)).ok()?;
                 let data: Vec<f32> = bytes
@@ -108,15 +112,27 @@ fn max_abs(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn assert_parity(label: &str, got: &[f32], want: &[f32]) {
-    assert_eq!(got.len(), want.len(), "{label}: length {} != {}", got.len(), want.len());
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "{label}: length {} != {}",
+        got.len(),
+        want.len()
+    );
     let cos = cosine(got, want);
     let mx = max_abs(got, want);
     println!("  [{label}] cos={cos:.6} max|Δ|={mx:.3e} n={}", got.len());
-    assert!(cos > 0.999, "{label}: cosine {cos:.6} <= 0.999 (max|Δ|={mx:.3e})");
+    assert!(
+        cos > 0.999,
+        "{label}: cosine {cos:.6} <= 0.999 (max|Δ|={mx:.3e})"
+    );
 }
 
 fn fixture_dir(var: &str) -> Option<PathBuf> {
-    std::env::var(var).ok().map(PathBuf::from).filter(|p| p.is_dir())
+    std::env::var(var)
+        .ok()
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
 }
 
 fn model_safetensors(var: &str) -> Option<String> {
@@ -256,10 +272,18 @@ fn run_all(variant: VlashVariant, fix_var: &str, model_var: &str) {
 
 #[test]
 fn pi0_parity_cpu() {
-    run_all(VlashVariant::Pi0, "RLX_VLASH_PI0_FIXTURE", "RLX_VLASH_PI0_MODEL");
+    run_all(
+        VlashVariant::Pi0,
+        "RLX_VLASH_PI0_FIXTURE",
+        "RLX_VLASH_PI0_MODEL",
+    );
 }
 
 #[test]
 fn pi05_parity_cpu() {
-    run_all(VlashVariant::Pi05, "RLX_VLASH_PI05_FIXTURE", "RLX_VLASH_PI05_MODEL");
+    run_all(
+        VlashVariant::Pi05,
+        "RLX_VLASH_PI05_FIXTURE",
+        "RLX_VLASH_PI05_MODEL",
+    );
 }

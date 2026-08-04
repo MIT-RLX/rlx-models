@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(optimal_canvas(448, 448, 4, 448), (1, 1));
         // very wide image → prefers more width tiles.
         let (a, b) = optimal_canvas(200, 1600, 4, 448);
-        assert_eq!(a * b <= 4, true);
+        assert!(a * b <= 4);
         assert!(
             b >= a,
             "wide image should use >= width tiles, got ({a},{b})"

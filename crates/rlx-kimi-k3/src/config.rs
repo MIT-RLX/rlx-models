@@ -220,13 +220,16 @@ impl KimiLinearConfig {
 /// The vision ViT tower config (`config.json["vision_config"]`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct KimiVisionConfig {
-    #[serde(default = "d_vis_hidden")]
+    // Kimi-K3's `config.json` names these `vt_*` / `qkv_hidden_size` / etc.; the
+    // `alias`es accept the real HF keys (without them serde silently used the
+    // defaults — loading 24 not 27 blocks and the wrong head count).
+    #[serde(default = "d_vis_hidden", alias = "vt_hidden_size")]
     pub hidden_size: usize,
-    #[serde(default = "d_vis_layers")]
+    #[serde(default = "d_vis_layers", alias = "vt_num_hidden_layers")]
     pub num_hidden_layers: usize,
-    #[serde(default = "d_vis_heads")]
+    #[serde(default = "d_vis_heads", alias = "vt_num_attention_heads")]
     pub num_attention_heads: usize,
-    #[serde(default = "d_vis_inter")]
+    #[serde(default = "d_vis_inter", alias = "vt_intermediate_size")]
     pub intermediate_size: usize,
     #[serde(default = "d_patch")]
     pub patch_size: usize,
@@ -234,7 +237,7 @@ pub struct KimiVisionConfig {
     pub mm_hidden_size: usize,
     #[serde(default = "d_merge")]
     pub merge_kernel_size: Vec<usize>,
-    #[serde(default = "d_eps")]
+    #[serde(default = "d_eps", alias = "projector_ln_eps")]
     pub rms_norm_eps: f32,
     #[serde(default = "d_pos")]
     pub init_pos_emb_height: usize,

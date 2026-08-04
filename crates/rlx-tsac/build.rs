@@ -14,8 +14,11 @@ fn main() {
 
     let src = vendor.join("src");
     let mut build = cc::Build::new();
+    // gnu11 (not strict c11): Linux glibc hides POSIX `strdup`/`alloca` under
+    // `-std=c11`, which modern gcc then errors on (implicit-declaration). macOS
+    // clang is unaffected either way. gnu11 keeps both toolchains building.
     build
-        .std("c11")
+        .std("gnu11")
         .include(vendor.join("include"))
         .include(&src)
         .include(src.join("vulkan"))

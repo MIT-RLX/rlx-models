@@ -137,6 +137,15 @@ pub struct TinyModel {
     cfg: BundleConfig,
     /// Compiled graphs keyed by `(component, device, length)`.
     cache: Mutex<HashMap<(&'static str, Device, usize), CompiledGraph>>,
+    /// Compiled graphs from `compile_named` keyed by the full named-length + opts
+    /// string. The tuple `cache` above can't express a graph with two distinct
+    /// symbolic lengths (`text_length` + `latent_length`), so `compile_named`
+    /// used to re-import + re-compile + re-`set_param` on EVERY call — the flow
+    /// ODE decoder (supertonic/luxtts/F5) then paid ~seconds of graph build per
+    /// utterance even though the real per-step compute is milliseconds. This
+    /// caches the fully param-loaded graph so repeat calls at the same lengths
+    /// hand back a cheap clone instead.
+    named_cache: Mutex<HashMap<String, CompiledGraph>>,
 }
 
 /// Tiny FNV-1a hash for cache-key disambiguation (tap set → stable short tag).
@@ -214,6 +223,7 @@ impl TinyModel {
             root,
             cfg,
             cache: Mutex::new(HashMap::new()),
+            named_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -286,17 +296,126 @@ impl TinyModel {
         self.compile_named_with_options(component, device, length, named, CompileOptions::default())
     }
 
-    /// Compile one graph with caller-selected runtime compile options.
+    /// Compile one graph with caller-selected runtime compile options. Hands back
+    /// an owned clone of the cached graph (for callers that need to keep it, e.g.
+    /// an ODE loop that reuses one instance across steps). Prefer [`Self::run_named`]
+    /// for one-shot runs — it reuses the cached instance IN PLACE (no arena clone).
     pub fn compile_named_with_options(
         &self,
         component: &str,
         device: Device,
         length: usize,
         named: &[(&str, usize)],
-        mut copts: CompileOptions,
+        copts: CompileOptions,
     ) -> Result<CompiledGraph> {
+        let key = self.ensure_named_cached(component, device, length, named, copts)?;
+        Ok(self
+            .named_cache
+            .lock()
+            .expect("named cache")
+            .get(&key)
+            .expect("graph just cached")
+            .clone())
+    }
+
+    /// Run one named-length graph and return its outputs, reusing the cached
+    /// compiled instance **in place** across calls — no per-call import, compile,
+    /// `set_param`, or arena clone. This is the hot path for flow-ODE decoders
+    /// (supertonic/luxtts/F5): the first call builds the graph, every subsequent
+    /// call (next ODE step, next utterance at the same lengths) just binds inputs
+    /// and runs. Holds the cache lock during the run, so concurrent `synthesize`
+    /// calls on one model serialize (each returns owned output bytes).
+    pub fn run_named(
+        &self,
+        component: &str,
+        device: Device,
+        length: usize,
+        named: &[(&str, usize)],
+        inputs: &[(&str, &[u8], DType)],
+    ) -> Result<Vec<(Vec<u8>, DType)>> {
+        let key =
+            self.ensure_named_cached(component, device, length, named, CompileOptions::default())?;
+        let mut cache = self.named_cache.lock().expect("named cache");
+        let g = cache.get_mut(&key).expect("graph just cached");
+        Ok(g.run_typed(inputs))
+    }
+
+    /// Return a cached named graph's idle scratch (activation) memory to the OS
+    /// while it stays compiled + param-loaded. Call after a pipeline stage is done
+    /// with a subgraph (e.g. after the flow ODE loop, before the vocoder) so the
+    /// sequentially-run stages don't each pin a multi-hundred-MB activation arena
+    /// resident at once. No-op if the graph isn't cached yet, or off CPU.
+    pub fn release_named_scratch(
+        &self,
+        component: &str,
+        device: Device,
+        length: usize,
+        named: &[(&str, usize)],
+    ) {
+        let Ok(key) =
+            self.ensure_named_cached(component, device, length, named, CompileOptions::default())
+        else {
+            return;
+        };
+        if let Some(g) = self.named_cache.lock().expect("named cache").get_mut(&key) {
+            g.release_scratch();
+        }
+    }
+
+    /// Ensure the named graph is built + param-loaded in the in-memory cache and
+    /// return its key. Skips re-import + re-compile + re-`set_param` when this exact
+    /// (component, device, length, named-lengths, opts) graph was already built in
+    /// this process. The key captures every discriminator the disk AOT key does
+    /// EXCEPT the uniform-fill count (constant per component, and only known
+    /// post-import) — dropping it can't alias two different graphs because
+    /// `component` already disambiguates.
+    fn ensure_named_cached(
+        &self,
+        component: &str,
+        device: Device,
+        length: usize,
+        named: &[(&str, usize)],
+        mut copts: CompileOptions,
+    ) -> Result<String> {
         if matches!(device, Device::Ane) {
             crate::coreml::ensure_coreml_units_for_tts();
+        }
+        let no_opt = std::env::var("RLX_NO_OPT").is_ok();
+        let (k_dce, k_fold, k_fuse) = if no_opt {
+            (false, false, false)
+        } else {
+            (
+                copts.dce,
+                copts.constant_folding,
+                !copts.fusion_opts.skip_fusion,
+            )
+        };
+        let named_tag = named
+            .iter()
+            .map(|(k, v)| format!("{k}{v}"))
+            .collect::<Vec<_>>()
+            .join("_");
+        let tap_tag = std::env::var("RLX_ONNX_TAP")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("_tap{:016x}", fnv1a(&s)))
+            .unwrap_or_default();
+        let cml_tag = if matches!(device, Device::Ane) {
+            crate::coreml::coreml_units_cache_tag()
+        } else {
+            String::new()
+        };
+        let mem_key = format!(
+            "{component}_{device:?}_s{length}_{named_tag}{tap_tag}_dce{}_fold{}_fuse{}_mps{}_noopt{}{cml_tag}",
+            k_dce as u8, k_fold as u8, k_fuse as u8, copts.disable_mpsgraph as u8, no_opt as u8,
+        );
+        if self
+            .named_cache
+            .lock()
+            .expect("named cache")
+            .contains_key(&mem_key)
+        {
+            return Ok(mem_key);
         }
         let path = self.component_path(component)?;
         anyhow::ensure!(
@@ -324,23 +443,10 @@ impl TinyModel {
                 report.stubbed, report.unsupported
             );
         }
-        let named_tag = named
-            .iter()
-            .map(|(k, v)| format!("{k}{v}"))
-            .collect::<Vec<_>>()
-            .join("_");
-        // Fold RLX_ONNX_TAP into the key: taps append extra graph outputs, so a
-        // cached graph with a different (or empty) tap set must not be reused.
-        let tap_tag = std::env::var("RLX_ONNX_TAP")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("_tap{:016x}", fnv1a(&s)))
-            .unwrap_or_default();
-        // RLX_NO_OPT disables DCE/constant-folding/fusion so a tapped graph
-        // (extra outputs) compiles the SAME node set as the untapped graph —
-        // makes RLX_ONNX_TAP intermediates a faithful mirror of the real run for
-        // debugging (otherwise DCE/fusion differ per output set).
-        let no_opt = std::env::var("RLX_NO_OPT").is_ok();
+        // named_tag / tap_tag / no_opt / cml_tag were computed above for the
+        // in-memory key. RLX_NO_OPT disables DCE/constant-folding/fusion so a
+        // tapped graph (extra outputs) compiles the SAME node set as the untapped
+        // graph — a faithful mirror of the real run for RLX_ONNX_TAP debugging.
         if no_opt {
             copts.dce = false;
             copts.constant_folding = false;
@@ -364,11 +470,6 @@ impl TinyModel {
             (!copts.fusion_opts.skip_fusion) as u8
         );
         let mps_tag = if copts.disable_mpsgraph { "_nomps" } else { "" };
-        let cml_tag = if matches!(device, Device::Ane) {
-            crate::coreml::coreml_units_cache_tag()
-        } else {
-            String::new()
-        };
         let cache_key = format!(
             "{CACHE_TAG}_b{}_{component}_{device:?}_s{length}_{named_tag}{tap_tag}{opt_tag}{mps_tag}{cml_tag}{}",
             build_tag(),
@@ -394,7 +495,11 @@ impl TinyModel {
             compiled.set_param(&name, &data);
         }
         compiled.finalize_params();
-        Ok(compiled)
+        self.named_cache
+            .lock()
+            .expect("named cache")
+            .insert(mem_key.clone(), compiled);
+        Ok(mem_key)
     }
 
     fn compile(&self, component: &str, device: Device, length: usize) -> Result<CompiledGraph> {

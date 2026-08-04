@@ -56,6 +56,12 @@ impl TtsAdapter for ChatterboxAdapter {
         let (ref_pcm, ref_sr) = resolve_ref(req.clone.as_ref(), &self.dir)?;
         let opts = SynthOpts {
             seed: req.seed,
+            // Cross-backend parity requires a deterministic token path: greedy
+            // (repetition-penalized argmax) is byte-identical CPU/Metal/MLX, so
+            // `cosine_vs_cpu` measures the compute path, not RNG sensitivity.
+            // Under default temperature sampling a single-ULP logit difference
+            // flips a sampled token and cascades into a different (valid) sample.
+            greedy: req.deterministic,
             ..Default::default()
         };
         let t0 = Instant::now();

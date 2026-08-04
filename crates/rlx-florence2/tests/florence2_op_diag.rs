@@ -278,7 +278,7 @@ fn run(device: Device, build: &str) -> Vec<f32> {
             "winattn" => {
                 let q = g.reshape_(x, vec![4, 4, 6]);
                 let attn = g.add_node(
-                    attention_kind_op(2, 3, MaskKind::None, None, None),
+                    attention_kind_op(2, 3, None, MaskKind::None, None, None),
                     vec![q, q, q],
                     Shape::new(&[4, 4, 6], f),
                 );

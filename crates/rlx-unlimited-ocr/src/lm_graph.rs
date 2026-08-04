@@ -749,6 +749,7 @@ fn run_layer(
         Op::Attention {
             num_heads: spec.num_heads,
             head_dim: spec.head_dim,
+            v_head_dim: None,
             mask_kind: MaskKind::Causal,
             score_scale: None,
             attn_logit_softcap: None,

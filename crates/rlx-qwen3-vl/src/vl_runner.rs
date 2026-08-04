@@ -203,10 +203,9 @@ impl Qwen3VlRunner {
         &mut self,
         prompt_ids: &[u32],
         n_new: usize,
-        mut on_token: impl FnMut(u32) -> bool,
+        on_token: impl FnMut(u32) -> bool,
     ) -> Result<Vec<u32>> {
-        self.lm
-            .generate_stoppable(prompt_ids, n_new, |t| on_token(t))
+        self.lm.generate_stoppable(prompt_ids, n_new, on_token)
     }
 
     fn encode_rgb(&mut self, rgb: &[u8], w: usize, h: usize) -> Result<VisionEncodeOutput> {
@@ -331,7 +330,7 @@ impl Qwen3VlRunner {
         // Expect: logits (+ optional hidden) + per-layer K/V.
         // Prefer split_decode style: last outputs are K/V pairs.
         ensure!(
-            outputs.len() >= 1 + 2 * n_layers,
+            outputs.len() > 2 * n_layers,
             "prefill produced {} outputs, need >= {}",
             outputs.len(),
             1 + 2 * n_layers

@@ -96,3 +96,20 @@ fn native_matches_onnxruntime_end_to_end() {
         "native/ort waveform cosine {cos} below parity threshold"
     );
 }
+
+#[test]
+fn which_subgraph_diverges() {
+    let Some(dir) = supertonic_dir() else {
+        eprintln!("skip: no supertonic weights");
+        return;
+    };
+    let tts = Supertonic::load_on(&dir, Device::Cpu).expect("load supertonic");
+    let voice = Voice::load(&dir.join("voice_styles/F1.json")).expect("voice F1");
+    let opts = InferOpts {
+        total_step: 4,
+        speed: 1.05,
+        seed: 42,
+    };
+    tts.debug_subgraph_parity(TEXT, "en", &voice, &opts)
+        .expect("parity probe");
+}

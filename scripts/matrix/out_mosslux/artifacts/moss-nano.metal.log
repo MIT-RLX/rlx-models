@@ -1,0 +1,21 @@
+$ /Users/Shared/rlx-models/target/release/rlx-moss-nano --data weights/tts/moss-nano --voice Saki --max-frames 32 --text Hi there friends. --device metal --out scripts/matrix/out_mosslux/artifacts/moss-nano.metal.wav
+
+--- stdout ---
+Wrote 104640 samples (1.09s @ 48000 Hz, 2ch) to scripts/matrix/out_mosslux/artifacts/moss-nano.metal.wav [native/Metal, voice=Saki] synth=3978ms (3.65× RT)
+
+--- stderr ---
+rlx-cpu: CpuKernel 'onnx.Mod' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.IsNaN' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.ConcatFromSequence' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.KittenConcatFromSequence' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.ExpandI64Align' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.AlignmentRange' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.VocoderWaveformSlice' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.GatherND' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.ScatterND' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.ScatterElements' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.GatherElements' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.OneHot' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.NonZero' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.CumProd' was already registered — replacing the previous entry
+rlx-cpu: CpuKernel 'onnx.Einsum' was already registered — replacing the previous entry

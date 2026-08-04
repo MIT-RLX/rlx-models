@@ -23,17 +23,63 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
+# Dual-encoder retrieval (feature `dual-encoder`): a dedicated sentence encoder
+# for the KV-store's semantic index (downloads MiniLM/BGE weights via hf-hub).
+rlx-embed = { workspace = true, optional = true }
+hf-hub = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
 
 [[bin]]
 name = "rlx-qwen3"
 path = "src/bin/rlx_qwen3.rs"
+
+# The quant optimize+bench example is opt-in behind `quant-opt` — its recipes are
+# experimental optimization actuation, not part of the default build.
+[[example]]
+name = "qwen_quant_bench"
+required-features = ["quant-opt"]
+
+# Interactive terminal chat REPL (streams tokens, multi-turn history).
+[[example]]
+name = "qwen_chat"
+
+# Multi-shot memory/context-retrieval test + unified cache/selection/op analysis.
+[[example]]
+name = "memory_probe"
+
+# 100k-context multi-shot bench of the disk-tiered HNSW KV context store + GPU decode.
+[[example]]
+name = "context_scale_bench"
+required-features = ["mmap-kv"]
+
+# 1M-context multi-shot full-system telemetry (ops/timing/precision/error/recall).
+[[example]]
+name = "context_1m_telemetry"
+required-features = ["dual-encoder"]
+
+[dev-dependencies]
+# `dotprod` pulls opscope's neon/decompose GEMV kernels incl. the W8A8 SDOT path
+# (int8×int8→int32, no f32 widen) used by the `ablate` mode's lever-1 measurement.
+rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope", features = ["dotprod"] }
+tokenizers = { workspace = true }
+# memory_probe --op-inspect builds the retrieval encoder + cross-encoder BERT
+# graphs for static op-cost/dataflow analysis (whole-pipeline ops inspection).
+rlx-bert = { workspace = true }
 
 [lints]
 workspace = true
 
 [features]
 default = []
+# Opt-in quant optimize+bench example (per-channel int8 / plain & grouped int4 +
+# embedding-dedup, benched end-to-end for quality). Off by default.
+quant-opt = []
 metal = ["rlx-runtime/metal"]
+# Disk-tiered million-token KV context store (HNSW + mmap).
+mmap-kv = ["rlx-runtime/mmap-kv"]
+# Dedicated sentence-encoder for the KV-store semantic retrieval index. Downloads
+# a small retrieval model (MiniLM/BGE) via hf-hub — the selective, 1M-scale signal.
+dual-encoder = ["mmap-kv", "dep:rlx-embed", "rlx-embed/hf-download", "dep:hf-hub", "dep:tokenizers"]
 mlx = ["rlx-runtime/mlx"]
 cuda = ["rlx-runtime/cuda"]
 rocm = ["rlx-runtime/rocm"]

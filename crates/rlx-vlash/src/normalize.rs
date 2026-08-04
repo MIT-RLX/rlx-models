@@ -121,8 +121,11 @@ pub fn pad_to(x: &[f32], cur: usize, new: usize) -> Result<Vec<f32>> {
     if cur > new {
         return Err(anyhow!("cannot pad {cur} → {new} (shrink)"));
     }
-    if x.len() % cur != 0 {
-        return Err(anyhow!("pad_to: len {} not divisible by cur {cur}", x.len()));
+    if !x.len().is_multiple_of(cur) {
+        return Err(anyhow!(
+            "pad_to: len {} not divisible by cur {cur}",
+            x.len()
+        ));
     }
     let rows = x.len() / cur;
     let mut out = vec![0f32; rows * new];

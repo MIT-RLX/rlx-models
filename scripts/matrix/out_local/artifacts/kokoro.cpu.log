@@ -1,0 +1,6 @@
+$ /Users/Shared/rlx-models/target/release/rlx-kokoro --data weights/tts/kokoro-82m --voice af_heart --text The quick brown fox jumps over the lazy dog near the river bank. --device cpu --out scripts/matrix/out_local/artifacts/kokoro.cpu.wav
+
+--- stdout ---
+Wrote 115200 samples (4.80s @ 24000 Hz) to scripts/matrix/out_local/artifacts/kokoro.cpu.wav [voice=af_heart, backend=native, device=Cpu]
+
+--- stderr ---

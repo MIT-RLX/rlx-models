@@ -370,7 +370,34 @@ impl LuxTts {
                     DType::F32,
                 ),
             ]);
-            let v = as_f32(&out.into_iter().next().context("fm_decoder: no output")?.0);
+            // Dump the fm_decoder step-0 I/O so a Python onnxruntime run on the
+            // SAME inputs can diff `v` (no seeded-noise mismatch) — decides whether
+            // luxtts's mel divergence is the CFM flow or upstream/quality. Any
+            // RLX_ONNX_TAP tensor lands at outs[1..] → dumped for op-level bisect.
+            if step == 0
+                && let Some(dir) = std::env::var_os("RLX_LUX_DUMP")
+            {
+                let dir = std::path::PathBuf::from(dir);
+                let _ = std::fs::create_dir_all(&dir);
+                let d = |name: &str, v: &[f32]| {
+                    let _ = std::fs::write(
+                        dir.join(name),
+                        v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>(),
+                    );
+                };
+                for (i, o) in out.iter().enumerate().skip(1) {
+                    d(&format!("fm_tap_{i}.f32"), &as_f32(&o.0));
+                    eprintln!("[lux-fm] tap_{i} len={}", o.0.len() / 4);
+                }
+                d("fm_v_native.f32", &as_f32(&out[0].0));
+                d("fm_t.f32", &[t_cur]);
+                d("fm_x.f32", &x);
+                d("fm_textcond.f32", &text_condition);
+                d("fm_speechcond.f32", &speech_cond);
+                d("fm_guidance.f32", &[opts.guidance_scale]);
+                eprintln!("[lux-fm] t={t_cur} x={} v={}", x.len(), out[0].0.len() / 4);
+            }
+            let v = as_f32(&out[0].0);
             for i in 0..x.len() {
                 let x1 = x[i] + (1.0 - t_cur) * v[i];
                 let x0 = x[i] - t_cur * v[i];
@@ -404,6 +431,33 @@ impl LuxTts {
         let real = as_f32(&vout[0].0);
         let imag = as_f32(&vout[1].0);
         let mut wav = dsp::istft(&real, &imag, l);
+
+        // Parity bisection (dev): dump each subgraph boundary so a Python
+        // onnxruntime run can diff native vs ort per stage + do spectral/temporal
+        // analysis on the final waveform.
+        if let Some(dir) = std::env::var_os("RLX_LUX_DUMP") {
+            let dir = std::path::PathBuf::from(dir);
+            let _ = std::fs::create_dir_all(&dir);
+            let d32 = |name: &str, v: &[f32]| {
+                let _ = std::fs::write(
+                    dir.join(name),
+                    v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>(),
+                );
+            };
+            let _ = std::fs::write(dir.join("in_ids.i64"), i64_bytes(&input_ids));
+            d32("enc.f32", &enc);
+            d32("mel_lm.f32", &mel_lm);
+            d32("real_native.f32", &real);
+            d32("imag_native.f32", &imag);
+            d32("wav_native.f32", &wav);
+            eprintln!(
+                "[lux-dump] S={s} l={l} num_frames={num_frames} tp={tp} enc={} mel_lm={} real={} wav={}",
+                enc.len(),
+                mel_lm.len(),
+                real.len(),
+                wav.len()
+            );
+        }
 
         // 9. volume match.
         if prompt_rms < TARGET_RMS {

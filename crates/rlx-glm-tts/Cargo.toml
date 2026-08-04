@@ -1,0 +1,18 @@
+[package]
+name = "rlx-glm-tts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "GLM-TTS / GLM-4-Voice (GLM backbone + streaming speech tokens + flow token2mel) on RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow           = { workspace = true }
+rlx-audio-blocks = { workspace = true }
+
+[lints]
+workspace = true

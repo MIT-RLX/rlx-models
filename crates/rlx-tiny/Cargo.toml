@@ -1,0 +1,47 @@
+[package]
+name = "rlx-tiny"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Train a small nanoGPT-style LLM from scratch on TinyStories — a showcase of the RLX rlx! DSL + autodiff training flow (unpublished)"
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+# The training stack: `dsl` = the `rlx! { … }` graph DSL, `optim` = autodiff +
+# CPU eval + the rlx_optim optimizers (AdamW, LR schedules, Func::train_step*).
+# Path dep on the sibling rlx checkout, mirroring rlx-termclean.
+rlx-tensor = { path = "../../../rlx/crates/core/rlx-tensor", version = "0.2.14", default-features = false, features = ["dsl", "optim"] }
+# The dense sibling: its trained checkpoint is the source of the PQ codebook /
+# index init (`--init-from`) and the distillation teacher (`--distill`). No new
+# runtime IO/params — only the init/distill procedure. Default-features off so a
+# `--no-default-features` CPU build never pulls Metal/download.
+rlx-tinystories = { path = "../rlx-tinystories", version = "0.2.14", default-features = false }
+# TinyStories fetch (synchronous ureq client) — pulled by the `download` feature.
+hf-hub = { workspace = true, optional = true }
+# mmap the byte-level corpus so a multi-GB train split never lives in RAM.
+memmap2 = "0.9"
+
+[features]
+# Metal on by default (Apple GPU training); drop with --no-default-features for
+# a pure-CPU build, and add `download` to auto-fetch TinyStories from the Hub.
+default = ["metal", "download"]
+metal = ["rlx-tensor/eval-metal", "rlx-tinystories/metal"]
+download = ["dep:hf-hub"]
+
+[[bin]]
+name = "rlx-tiny-train"
+path = "src/bin/train.rs"
+
+[[bin]]
+name = "rlx-tiny-generate"
+path = "src/bin/generate.rs"
+
+[lints]
+workspace = true

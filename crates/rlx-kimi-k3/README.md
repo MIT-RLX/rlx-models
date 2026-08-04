@@ -18,3 +18,11 @@ patch-merger projector, spliced into the text stream at the media placeholder to
 Port in progress. Verified via device-parametrized finite-logits smoke tests on
 synthetic configs across all RLX backends, plus a single-block real-weight check.
 Real full-model validation is deferred (the checkpoint is ~1.6 TB bf16).
+
+## Cluster inference & expert-compute performance
+The disaggregated expert-parallel path (recurrent backbone on one node; stateless MoE
+experts fanned out to workers over TCP, one rank per compute engine) and its optimized
+MXFP4 expert kernels — parallel paging, fused CPU decode-matmul, and **native CUDA/HIP
+register-decode GEMM** — are documented in
+[`docs/MOE_EXPERT_OPTIMIZATION.md`](docs/MOE_EXPERT_OPTIMIZATION.md). Fleet launch/measure
+tooling is in [`scripts/`](scripts/README.md).

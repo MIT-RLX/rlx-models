@@ -2,6 +2,8 @@
 
 Concrete model graph builders + weight loaders for RLX — the "what actually runs" layer.
 
+**[152 model families](MODELS.md)** across 15 categories — language & multimodal LLMs, vision, speech (ASR/TTS), audio codecs, and more — each a standalone crate under `crates/`. See **[MODELS.md](MODELS.md)** for the complete catalog with per-model backend support.
+
 Standalone repo: [github.com/MIT-RLX/rlx-models](https://github.com/MIT-RLX/rlx-models). Clone next to [`rlx`](https://github.com/MIT-RLX/rlx):
 
 ```text
@@ -23,6 +25,7 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 
 ## Contents
 
+- [Model catalog](#model-catalog)
 - [Architecture](#architecture)
 - [Running models](#running-models)
 - [What's here](#whats-here)
@@ -45,6 +48,17 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 - [Per-crate READMEs](#per-crate-readmes)
 - [License](#license)
 
+## Model catalog
+
+This workspace ships **152 model families** (one crate per architecture), plus 4 training crates and shared infrastructure. Highlights:
+
+- **26 language models** — Qwen3 / 3.5 / 3.6, Llama 3.2 / 4, Gemma, DeepSeek-V3, GLM-4.x, MiniMax, Jamba, Mamba, Phi, gpt-oss, LLaDA2, MiniCPM5, TinyLlama, …
+- **12 vision-language / omni** — Fara1.5, Qwen2.5-VL, Llama-3.2-Vision, Florence-2, LocateAnything, Kimi-K3, Inkling, …
+- **9 vision** encoders / detection / segmentation — DINOv2 / v3, SigLIP 2, V-JEPA 2, SAM 1 / 2 / 3, Grounding DINO — plus **4 biomedical** and **3 embedding** models.
+- **14 ASR** and **43 TTS / speech-LM** models, **11 neural audio codecs**, plus voice conversion, music generation, source separation, wake-word, VAD, OCR, and robotics (VLA).
+
+See **[MODELS.md](MODELS.md)** for the complete list — every model, its crate, a one-line description, and the backends it supports (CPU · Metal · MLX · CUDA · ROCm · wgpu · Vulkan).
+
 ## Architecture
 
 This repo is a **Cargo workspace**: one library crate per model family under `crates/`, plus shared infrastructure. The `rlx-models` package is a thin **facade** that re-exports historical paths (`rlx_models::qwen3`, `rlx_models::sam`, …).
@@ -63,6 +77,8 @@ rlx-models/
 ```
 
 ### Crates
+
+The table below highlights shared infrastructure and a selection of model crates; for the **complete** model list (all 152 families, with backends) see **[MODELS.md](MODELS.md)**.
 
 | Crate | Model / role |
 |---|---|
@@ -318,7 +334,7 @@ just fetch-minicpm5-gguf Q4_K_M
 
 ## Text-to-speech (TTS)
 
-Nine inference crates cover lightweight edge models through multi‑billion‑parameter voice clones. Build GPU binaries with the same feature names as LMs (`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, `all-backends`, `apple-silicon`). Training crates are listed separately below. Cross-backend Whisper/RTF notes: [TTS_BACKENDS.md](TTS_BACKENDS.md).
+Nine inference crates cover lightweight edge models through multi‑billion‑parameter voice clones. Build GPU binaries with the same feature names as LMs (`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, `all-backends`, `apple-silicon`). Training crates are listed separately below. Cross-backend Whisper/RTF notes: [TTS.md](TTS.md) (see the Cross-backend parity & benchmarks section).
 
 ### Models
 
@@ -1073,7 +1089,7 @@ Asset helpers: [`rlx-assets`](crates/rlx-assets/README.md) (`native-pack` featur
 | `dinov2` | yes | yes (`dinov2`; F32 drain or K-quant/Q4_0/Q8_0 packed `DequantMatMul` when quant tensors present) | **no** for `facebook/dinov2-*` — [dinov2](https://huggingface.co/models?library=gguf&search=dinov2) (0). Community converters (dinov2.cpp) use `dinov2` arch; tensor names must match HF/candle keys. | production |
 | `sam`, `sam2`, `sam3` | yes | yes (`sam` / `mobile-sam` / `sam2` F32 drain). **SAM3**: F32 drain or K-quant via fused CPU `gguf_matmul` (ViT, text, detector host+IR, seg cross-attn/mask/scoring, 1×1 inst/sem `DequantMatMul` IR); 3×3 pixel conv stays packed at load (one-time dequant cache on host, materialize for tier-1 IR compile) | **SAM1 ViT-H / SAM2**: no official Hub GGUF — [segment+anything](https://huggingface.co/models?library=gguf&search=segment+anything) (0), [sam2.1](https://huggingface.co/models?library=gguf&search=sam2.1) (0). **MobileSAM**: [mobilesam](https://huggingface.co/models?library=gguf&search=mobilesam) (2), e.g. [Acly/MobileSAM-GGUF](https://huggingface.co/Acly/MobileSAM-GGUF) (`mobile-sam`). **SAM3**: [sam3](https://huggingface.co/models?library=gguf&search=sam3) (1) — [rob-laz/sam3-gguf](https://huggingface.co/rob-laz/sam3-gguf) (`sam3`). Beware [TheBloke/SAM-GGUF](https://huggingface.co/TheBloke/SAM-GGUF) — 7B **chat LM** (`llama`), not Segment Anything. | production (encoder + mask path) |
 | `qwen3` | yes | yes (Q4_K_M / Q5_K_M / Q6_K) | **yes** — [qwen3](https://huggingface.co/models?library=gguf&search=qwen3) (many); e.g. `unsloth/Qwen3-*-GGUF` | top-1 vs HF (`parity-candle` + weights) |
-| `qwen35` | — | yes | **yes** — same hub space; e.g. `unsloth/Qwen3.5-*-GGUF` | vs llama.cpp when `QWEN35_GGUF_PATH` / `parity-llama` |
+| `qwen35` | — | yes | **yes** — same hub space; e.g. `unsloth/Qwen3.5-*-GGUF`, `unsloth/Qwen3.6-27B-MTP-GGUF` (VLM: text GGUF + CLIP `mmproj-*.gguf`; hybrid gated-DeltaNet + periodic attention, MTP head; Q3_K_S text generation coherent on CPU/Metal, verified vs llama.cpp; `just fetch-qwen36-27b`) | coherent vs llama.cpp (`QWEN35_GGUF_PATH` / `parity-llama`) |
 | `llama32` | yes | yes | **yes** — [llama-3.2](https://huggingface.co/models?library=gguf&search=llama-3.2) (~5k) | vs llama.cpp when `LLAMA32_GGUF_PATH` |
 | `minicpm5` | yes | yes (`llama`) | **yes** — [MiniCPM5-1B-GGUF](https://huggingface.co/openbmb/MiniCPM5-1B-GGUF) (Q4_K_M / Q8_0 / F16) | vs PyTorch (`minicpm5_parity`); `rlx-minicpm5` 0.2.6 on `rlx-llama32` 0.2.6; GGUF packed CPU/Metal |
 | `tinyllama` | yes | yes (`llama`) | **yes** — [TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF](https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF) (Q4_K_M / Q8_0 / Q6_K) | real-weight GGUF packed prefill vs CPU (`tinyllama_backend_gguf_check`); wraps `rlx-llama32` |

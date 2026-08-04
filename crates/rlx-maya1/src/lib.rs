@@ -38,7 +38,11 @@ pub use rlx_runtime::{Device, parse_device};
 pub const DEFAULT_HF_REPO: &str = "mradermacher/maya1-GGUF";
 pub const DEFAULT_LOCAL_DIR: &str = "weights/tts/maya1";
 pub const SAMPLE_RATE: u32 = 24000;
-pub const DEFAULT_MAX_NEW_TOKENS: u32 = 16;
+// Full-utterance generation cap (SNAC is 7 tokens/frame ≈ 12.9 frames/s at 24 kHz,
+// so ~1200 tokens ≈ 13 s of audio). The model normally emits CODE_END well before
+// this for a single sentence. Was 16 during the arch-smoke bring-up, which capped
+// every synthesis at ~2 SNAC frames (~0.17 s) → truncated babble ("you").
+pub const DEFAULT_MAX_NEW_TOKENS: u32 = 1200;
 
 /// Maya1's generation defaults (README: temperature 0.4, top_p 0.9).
 pub fn maya1_config() -> GenerationConfig {
@@ -122,9 +126,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quick_check_default_uses_short_generation() {
+    fn default_config_allows_full_utterance() {
         let cfg = maya1_config();
-        assert!(cfg.max_new_tokens <= 16);
+        // Must be large enough for a full sentence (>1 s of SNAC frames), not the
+        // old 16-token smoke cap that truncated synthesis to ~0.17 s of babble.
+        assert!(cfg.max_new_tokens >= 512);
         assert!(cfg.greedy);
     }
 }

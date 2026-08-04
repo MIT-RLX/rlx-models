@@ -1,0 +1,8 @@
+$ /Users/Shared/rlx-models/target/release/rlx-moss-nano --data weights/tts/moss-nano --voice Saki --max-frames 32 --text Hi there friends. --device mlx --out scripts/matrix/out_mosslux/artifacts/moss-nano.mlx.wav
+
+--- stdout ---
+Wrote 104640 samples (1.09s @ 48000 Hz, 2ch) to scripts/matrix/out_mosslux/artifacts/moss-nano.mlx.wav [native/Mlx, voice=Saki] synth=2517ms (2.31× RT)
+
+--- stderr ---
+rlx-mlx: falling back to MlxMode::Lazy — compile mode unsupported for this graph: graph has 1861 nodes (limit 1536); mlx::compile_simplify is unbounded on large TTS/vocoder graphs — set RLX_MLX_COMPILE_MAX_NODES=0 to force Compiled
+rlx-mlx: falling back to MlxMode::Lazy — compile mode unsupported for this graph: graph has 2572 nodes (limit 1536); mlx::compile_simplify is unbounded on large TTS/vocoder graphs — set RLX_MLX_COMPILE_MAX_NODES=0 to force Compiled

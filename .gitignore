@@ -11,6 +11,14 @@
 # Local weight caches (GGUF / safetensors trees used by env-gated tests)
 /weights
 ./weights
+# NVMe-staged model blobs (pre-quantized expert/attn shards, multi-GB each —
+# e.g. kimi-k3 .q8/.bin stages). Regenerated locally; never source.
+/.nvme/
+**/.nvme/
+# GGUF model blobs are never source — fetched to /tmp/rlx-weights or an external
+# disk (see `just fetch-*`). Belt-and-suspenders so a stray local copy in-tree
+# is never committed. (No .gguf fixtures are tracked.)
+*.gguf
 # Centralized TTS weights (downloaded + generated) — staged for a standalone
 # Hugging Face weights repo; never committed to the main repo.
 /weights/tts/
@@ -20,6 +28,12 @@ weights/tts/
 crates/*/weights/
 crates/rlx-neutts/models/
 **/neucodec_decoder.safetensors
+
+# Generated memory_probe / retention benchmark outputs (dataflow `.dot` + inspect
+# `.csv`). Consolidated under `bench_out/`; regenerable, never committed.
+/bench_out/
+/bench_*/
+/memory_probe_out/
 
 # Qwen3-TTS parity fixtures (bake locally; see tests/qwen3_tts_*_parity)
 crates/rlx-qwen3-tts/tests/fixtures/st_encoder_parity.safetensors

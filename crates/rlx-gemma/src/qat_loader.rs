@@ -149,7 +149,7 @@ impl GemmaQatLoader {
     }
 
     /// Dequantize one mlx-affine linear `{base}.weight` (packed uint32 codes)
-    /// + `{base}.scales` + `{base}.biases` (bf16/f16/f32, `[out, n_groups]`) to a
+    /// plus `{base}.scales` + `{base}.biases` (bf16/f16/f32, `[out, n_groups]`) to a
     /// row-major `[out, in]` F32 matrix. `in = n_groups * group_size`.
     fn mlx_dequant_linear(&self, base: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         let QuantFmt::MlxAffine { bits, group_size } = self.fmt else {

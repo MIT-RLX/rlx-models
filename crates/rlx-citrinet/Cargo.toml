@@ -1,0 +1,17 @@
+[package]
+name = "rlx-citrinet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "NeMo Citrinet 1D-conv CTC ASR on RLX — config + CTC greedy decode"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

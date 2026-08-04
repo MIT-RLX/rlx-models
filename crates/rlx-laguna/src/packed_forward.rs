@@ -85,6 +85,7 @@ pub(crate) fn rope_inv_freq(rope: &RopeLayerParams, rot_dim: usize) -> Vec<f64> 
                 beta_slow: rope.beta_slow,
                 original_max_position_embeddings: rope.original_max_position_embeddings.max(1)
                     as u32,
+                attention_factor: None,
             },
         )
     } else {

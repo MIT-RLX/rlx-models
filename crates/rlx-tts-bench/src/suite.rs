@@ -232,6 +232,7 @@ fn run_one(
             device,
             clone: mk_clone(),
             seed: cfg.seed,
+            deterministic: true,
         };
         let _ = adapter.synthesize(req);
     }
@@ -245,6 +246,7 @@ fn run_one(
             device,
             clone: mk_clone(),
             seed: cfg.seed,
+            deterministic: true,
         };
         match adapter.synthesize(req) {
             Ok(r) => {

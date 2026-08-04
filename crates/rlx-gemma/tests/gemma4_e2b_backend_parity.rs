@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use rlx_core::weight_loader::WeightLoader; // tensor_bytes_borrowed for packed-Borrow upload
+use rlx_gemma::builder::PackedSrc;
 use rlx_gemma::config::GemmaConfig;
 use rlx_gemma::gemma_e2b::{compile_e2b_prefill, resolve_e2b_device};
 use rlx_gemma::qat_loader::GemmaQatLoader;
@@ -63,12 +65,26 @@ fn hidden_last_token(device: Device, dir: &std::path::Path, cfg: &GemmaConfig) -
         compile_e2b_prefill(device, g, p).ok()?
     };
     // Provide the packed (Q4_K-repacked QAT) projection weights — the builder
-    // collects them in `packed` but the f32 param path doesn't upload U8. Skip
-    // empty-bytes SENTINELS (load_proj inserts them for f32-fallback weights);
-    // uploading an empty U8 param would clobber the correct f32 weight.
-    for (k, (bytes, _scheme, _shape)) in &packed {
-        if !bytes.is_empty() {
-            c.set_param_typed(k, bytes, rlx_ir::DType::U8);
+    // records each as a `PackedSrc`: `Owned` (embed table) uploads its resident
+    // bytes; `Borrow` recipes concat one or more loader tensors from the mmap
+    // (mirrors production `upload_packed_borrowed`); the `F32` sentinel is a
+    // f32-fallback weight — skip it, uploading empty U8 would clobber the param.
+    let mut scratch: Vec<u8> = Vec::new();
+    for (k, (src, _scheme, _shape)) in &packed {
+        match src {
+            PackedSrc::Owned(b) => c.set_param_typed(k, b, rlx_ir::DType::U8),
+            PackedSrc::Borrow { keys, nbytes } => {
+                scratch.clear();
+                scratch.reserve(*nbytes);
+                for key in keys {
+                    scratch.extend_from_slice(
+                        bld.tensor_bytes_borrowed(key)
+                            .expect("packed borrow: missing loader tensor"),
+                    );
+                }
+                c.set_param_typed(k, &scratch, rlx_ir::DType::U8);
+            }
+            PackedSrc::F32 => {}
         }
     }
     let outs = c.run(&[

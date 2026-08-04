@@ -36,7 +36,6 @@ use crate::backend::{MambaBackend, MambaTensor};
 use crate::backends::ssm_dispatch;
 use anyhow::{Result, anyhow, bail};
 use metal::{Buffer, CommandBufferRef, CommandQueue};
-use rlx_ir::MatmulEpilogue;
 use rlx_metal::blas as mblas;
 use rlx_metal::device::metal_device;
 use rlx_runtime::Device;
@@ -170,7 +169,7 @@ impl MambaBackend for MetalBackend {
 
     fn upload(&mut self, data: &[f32]) -> Result<Self::Tensor> {
         let t = self.bump_alloc(data.len());
-        let bytes = data.len() * std::mem::size_of::<f32>();
+        let bytes = std::mem::size_of_val(data);
         unsafe {
             let dst = (self.arena.contents() as *mut u8).add(t.offset);
             std::ptr::copy_nonoverlapping(data.as_ptr() as *const c_void as *const u8, dst, bytes);
@@ -230,7 +229,7 @@ impl MambaBackend for MetalBackend {
                 m,
                 k,
                 n,
-                MatmulEpilogue::None,
+                mblas::FusedAct::None,
             );
         });
         Ok(())

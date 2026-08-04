@@ -47,6 +47,12 @@ impl TtsAdapter for GepardAdapter {
     }
 
     fn synthesize(&mut self, req: SynthRequest<'_>) -> Result<SynthResult> {
+        // gepard's default temperature sampling (0.4) free-runs into coherent
+        // but WRONG words (fox 0/6 — "The love is a cure…"); greedy is faithful
+        // (verified fox 6/6 "The quick brown fox jumps over the lazy dog.").
+        // Honor the bench's deterministic request → greedy.
+        self.inner.opts.greedy = req.deterministic;
+        self.inner.opts.seed = req.seed;
         let t0 = Instant::now();
         let pcm = self.inner.synthesize(req.text, "")?;
         Ok(SynthResult {

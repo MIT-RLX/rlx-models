@@ -22,15 +22,17 @@
 //!
 //! Tensor names follow the mlx-community Laguna layout, under the
 //! `language_model.` prefix (Laguna is a VLM; this is its text tower):
-//!   - `language_model.model.embed_tokens.weight`, `…model.norm.weight`,
-//!     `language_model.lm_head.weight`
-//!   - per layer `…model.layers.{i}.`:
-//!       `input_layernorm` / `post_attention_layernorm`
-//!       `self_attn.{q,k,v,o}_proj` + `q_norm` / `k_norm` + `g_proj` (attn gate)
-//!       dense: `mlp.{gate,up,down}_proj`
-//!       moe:   `mlp.gate.proj` (router) + `mlp.gate.e_score_correction_bias`
-//!              + `mlp.shared_expert.{gate,up,down}_proj`
-//!              + `mlp.switch_mlp.{gate,up,down}_proj` (stacked `[E,out,in]`)
+//!
+//! ```text
+//! language_model.model.embed_tokens.weight, …model.norm.weight, language_model.lm_head.weight
+//! per layer …model.layers.{i}.:
+//!   input_layernorm / post_attention_layernorm
+//!   self_attn.{q,k,v,o}_proj + q_norm / k_norm + g_proj (attn gate)
+//!   dense: mlp.{gate,up,down}_proj
+//!   moe:   mlp.gate.proj (router) + mlp.gate.e_score_correction_bias
+//!          + mlp.shared_expert.{gate,up,down}_proj
+//!          + mlp.switch_mlp.{gate,up,down}_proj (stacked [E,out,in])
+//! ```
 
 use crate::config::LagunaConfig;
 use crate::packed::{

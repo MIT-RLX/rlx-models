@@ -192,6 +192,7 @@ pub fn build_lora_train_graph(
             Op::Attention {
                 num_heads: text.num_attention_heads,
                 head_dim: dh,
+                v_head_dim: None,
                 mask_kind: MaskKind::Causal,
                 score_scale: None,
                 attn_logit_softcap: None,

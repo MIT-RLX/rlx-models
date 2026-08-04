@@ -60,11 +60,25 @@ impl SegmentParams {
         }
     }
 
+    /// Tuned for NeMo MarbleNet frame scores (10 ms hop @ 16 kHz).
+    pub fn marblenet() -> Self {
+        let sr = 16_000;
+        Self {
+            threshold: 0.5,
+            neg_threshold: Some(0.35),
+            min_speech_samples: sr * 200 / 1000,
+            min_silence_samples: sr * 100 / 1000,
+            speech_pad_samples: sr * 30 / 1000,
+            max_speech_samples: usize::MAX / 2,
+        }
+    }
+
     /// Segment params for a compiled-in VAD algorithm name.
     pub fn for_algorithm(algo: &str) -> Self {
         match algo {
             "earshot" => Self::earshot(),
             "silero" => Self::silero(),
+            "marblenet" => Self::marblenet(),
             other => {
                 let _ = other;
                 Self::default()
@@ -110,6 +124,19 @@ pub fn speech_segments_silero(
         probs.push(session.predict_frame_padded(chunk)?);
     }
     Ok(segments_from_probs(pcm.len(), frame, params, &probs))
+}
+
+/// Convert a sequence of per-frame speech probabilities into speech segments,
+/// using the shared hysteresis logic (threshold / neg-threshold / min-speech /
+/// min-silence / padding). Model-agnostic: any frame-level VAD (MarbleNet, Silero,
+/// …) that produces per-frame probs at a fixed `hop` can reuse it.
+pub fn speech_segments_from_probs(
+    n_samples: usize,
+    hop: usize,
+    params: &SegmentParams,
+    probs: &[f32],
+) -> Vec<SpeechSegment> {
+    segments_from_probs(n_samples, hop, params, probs)
 }
 
 fn segments_from_probs(

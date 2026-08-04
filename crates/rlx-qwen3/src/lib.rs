@@ -33,14 +33,18 @@ pub mod builder;
 pub mod capabilities;
 pub mod cli;
 pub mod config;
+pub mod embedder;
 pub mod flow;
 pub mod generator;
 pub mod high_level_runner;
+pub mod packed_decode;
 pub mod pipeline;
 pub mod pipeline_decode;
+pub mod precision;
 mod profile;
 pub mod sampling;
 pub mod spec;
+pub mod tool_call;
 
 pub use builder::{
     build_qwen3_decode_graph_sized, build_qwen3_graph_sized, build_qwen3_graph_sized_last_logits,
@@ -54,6 +58,8 @@ pub use flow::{
     build_qwen3_decode_hir, build_qwen3_prefill_built, build_qwen3_prefill_embeds_built,
     build_qwen3_prefill_flow, build_qwen3_prefill_graph,
 };
+#[cfg(feature = "mmap-kv")]
+pub use generator::KvStoreConfig;
 pub use generator::Qwen3Generator;
 pub use high_level_runner::{Precision, Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder};
 pub use pipeline::{
@@ -66,6 +72,30 @@ pub use sampling::{
     SampleOpts, apply_repetition_penalty, sample_token, sample_token_at, softmax_logits,
 };
 pub use spec::Qwen3Speculator;
+pub use tool_call::{
+    ToolCall, ToolSpec, has_tool_call, parse_tool_calls, render_tool_response, render_tools_system,
+};
+
+/// One-import DX surface for downstream users — the runner + generation config,
+/// sampling, tool-calling glue, and (under `mmap-kv`) the KV context store:
+/// `use rlx_qwen3::prelude::*;`. A convenience grouping of already-public items;
+/// it flips no defaults and gates the same features the crate does.
+pub mod prelude {
+    pub use crate::config::Qwen3Config;
+    pub use crate::generator::Qwen3Generator;
+    pub use crate::high_level_runner::{
+        Precision, Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder,
+    };
+    pub use crate::sampling::{SampleOpts, sample_token};
+    pub use crate::tool_call::{
+        ToolCall, ToolSpec, has_tool_call, parse_tool_calls, render_tool_response,
+        render_tools_system,
+    };
+    // Needed by every runner call site.
+    #[cfg(feature = "mmap-kv")]
+    pub use crate::generator::KvStoreConfig;
+    pub use rlx_runtime::Device;
+}
 
 #[cfg(test)]
 mod tests {

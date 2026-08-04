@@ -1,0 +1,8 @@
+$ /Users/Shared/rlx-models/target/release/rlx-supertonic --data weights/tts/supertonic-3 --text The quick brown fox jumps over the lazy dog near the river bank. --device mlx --out scripts/matrix/out_local/artifacts/supertonic.mlx.wav
+
+--- stdout ---
+Wrote 189847 samples (4.30s @ 44100 Hz) to scripts/matrix/out_local/artifacts/supertonic.mlx.wav [voice=F1, lang=en, steps=8, ep=rlx-native/Mlx]
+
+--- stderr ---
+[supertonic] loaded 4 subgraphs on rlx-native/Mlx
+rlx-mlx: falling back to MlxMode::Lazy — compile mode unsupported for this graph: graph has 2829 nodes (limit 1536); mlx::compile_simplify is unbounded on large TTS/vocoder graphs — set RLX_MLX_COMPILE_MAX_NODES=0 to force Compiled

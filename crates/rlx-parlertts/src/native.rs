@@ -123,7 +123,26 @@ impl NativeParler {
         };
         let (hir, mut params, _r, _m) =
             build_hir_from_onnx_file(&path, opts).with_context(|| format!("import {component}"))?;
-        let key = format!("parler_{component}_s{seq}_{:?}", self.device);
+        if std::env::var_os("RLX_DIM_DBG").is_some() {
+            for n in hir.nodes() {
+                if let rlx_ir::hir::HirOp::Input { name } = &n.op {
+                    eprintln!("[hir-input] {component}::{name} {:?}", n.shape.dims());
+                }
+            }
+        }
+        // The compiled graph's static shapes depend on EVERY named length
+        // (pt=prompt len, et=encoder len, t, …), not just `seq`. Keying only on
+        // `seq` collides across transcripts of different token counts and reloads
+        // a stale graph from the persistent disk cache — e.g. a pt=19 decoder
+        // reused for a pt=13 transcript → prompt_input_ids baked [1,19] → MLX
+        // `from_bytes` panic (CPU silently tolerated the mismatch). Fold all
+        // named dims into the key so each shape-distinct graph caches separately.
+        let named_key: String = {
+            let mut kv: Vec<String> = named.iter().map(|(k, v)| format!("{k}{v}")).collect();
+            kv.sort();
+            kv.join("_")
+        };
+        let key = format!("parler_{component}_s{seq}_{named_key}_{:?}", self.device);
         let mut g = self
             .cache
             .compile_hir_cached(&key, self.device, hir, &CompileOptions::default())
@@ -227,18 +246,30 @@ impl NativeParler {
             // returns only the codebook stream (`seq == t`, sample at `step`).
             let logits = as_f32(&out[0].0);
             let seq = logits.len() / (K * VOCAB);
+            if step == 0 && std::env::var_os("RLX_PARLER_DBG").is_some() {
+                eprintln!(
+                    "[parler-dbg] pt={pt} enc_len={enc_len} t={t} full={full} → decoder seq={seq} (prefix={})",
+                    seq.saturating_sub(t)
+                );
+            }
             anyhow::ensure!(
                 seq > 0 && logits.len() == seq * K * VOCAB,
                 "decoder logits len {} not divisible by {K}×{VOCAB}",
                 logits.len()
             );
-            let seq_idx = if seq == full {
-                pt + step
-            } else if seq == t {
+            // The decoder prepends a prompt/description prefix, then the codebook
+            // stream of length `t`. The prefix length is BAKED into the exported
+            // graph (empirically a fixed 19, independent of `pt` = prompt_ids.len()
+            // — the `pt` compile dim does not resize it), so derive it from the
+            // actual returned sequence rather than assuming `pt`. `seq == t` means
+            // the export returns only the codebook stream (no prefix).
+            let seq_idx = if seq == t {
                 step
+            } else if seq > t {
+                (seq - t) + step
             } else {
                 return Err(anyhow!(
-                    "unexpected decoder seq length {seq} (expected {t} or {full})"
+                    "decoder seq length {seq} < codebook steps {t} (expected >= {t})"
                 ));
             };
             anyhow::ensure!(

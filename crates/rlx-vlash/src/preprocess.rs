@@ -73,12 +73,7 @@ fn resize_plane_bilinear(
 ///
 /// `chw` is a `3 × h_in × w_in` row-major image in `[0, 1]`. Returns a
 /// SigLIP-normalized NCHW tensor `[3 · target · target]` in `[-1, 1]`.
-pub fn resize_with_pad_normalize(
-    chw: &[f32],
-    h_in: usize,
-    w_in: usize,
-    target: usize,
-) -> Vec<f32> {
+pub fn resize_with_pad_normalize(chw: &[f32], h_in: usize, w_in: usize, target: usize) -> Vec<f32> {
     assert_eq!(chw.len(), 3 * h_in * w_in, "chw length mismatch");
     // ratio = max(W/target, H/target); resized dims truncate toward zero (Python int()).
     let ratio = (w_in as f64 / target as f64).max(h_in as f64 / target as f64);
@@ -109,14 +104,17 @@ pub fn resize_with_pad_normalize(
 
 /// Convenience: RGB8 (HWC, `[0,255]`) → normalized NCHW `[-1,1]` at `target×target`.
 pub fn rgb8_to_nchw_normalized(rgb: &[u8], h_in: usize, w_in: usize, target: usize) -> Vec<f32> {
-    assert_eq!(rgb.len(), 3 * h_in * w_in, "rgb length mismatch (expect HWC)");
+    assert_eq!(
+        rgb.len(),
+        3 * h_in * w_in,
+        "rgb length mismatch (expect HWC)"
+    );
     // HWC u8 → CHW f32 in [0,1].
     let mut chw = vec![0f32; 3 * h_in * w_in];
     for y in 0..h_in {
         for x in 0..w_in {
             for c in 0..3 {
-                chw[c * h_in * w_in + y * w_in + x] =
-                    rgb[(y * w_in + x) * 3 + c] as f32 / 255.0;
+                chw[c * h_in * w_in + y * w_in + x] = rgb[(y * w_in + x) * 3 + c] as f32 / 255.0;
             }
         }
     }
@@ -145,7 +143,10 @@ mod tests {
         let out = resize_with_pad_normalize(&chw, h, w, t);
         // Top rows are padded (value 0 → −1 after ×2−1).
         let c0 = &out[0..t * t];
-        assert!((c0[0] - (-1.0)).abs() < 1e-6, "top-left should be padded to -1");
+        assert!(
+            (c0[0] - (-1.0)).abs() < 1e-6,
+            "top-left should be padded to -1"
+        );
         // Bottom-right region holds resized content (0.5 → 0.0 after ×2−1).
         let br = c0[(t - 1) * t + (t - 1)];
         assert!(br.abs() < 1e-4, "content region should be ~0 (0.5*2-1)");

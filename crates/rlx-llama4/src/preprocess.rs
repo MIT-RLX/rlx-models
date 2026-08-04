@@ -22,7 +22,6 @@
 
 use anyhow::{Result, ensure};
 use image::{RgbImage, imageops::FilterType};
-use rlx_core::weight_loader::WeightLoader;
 use rlx_core::weight_map::WeightMap;
 
 use crate::config::Llama4VisionConfig;

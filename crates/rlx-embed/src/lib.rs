@@ -31,6 +31,7 @@ mod bert;
 mod nomic;
 mod pooling;
 mod registry;
+mod reranker;
 mod runtime;
 mod text;
 mod tokenizer;
@@ -43,6 +44,7 @@ pub use pooling::{Pooling, l2_normalize_in_place, pool_embeddings};
 pub use registry::{
     EmbeddingModel, ImageEmbeddingModel, ImageModelInfo, ModelArch, ModelInfo, models_map,
 };
+pub use reranker::RlxReranker;
 pub use runtime::{RlxEmbed, compile_model, compile_model_cpu};
 pub use text::embed_with_rlx;
 pub use tokenizer::{BertTokenizer, TokenizedBatch};

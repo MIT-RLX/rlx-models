@@ -53,6 +53,11 @@ impl TtsAdapter for ParlerAdapter {
     }
 
     fn synthesize(&mut self, req: SynthRequest<'_>) -> Result<SynthResult> {
+        // Keep SAMPLING (not `req.deterministic`): parlertts greedy is degenerate
+        // (repetitive — collapses to "the", fox 0/6), so sampling gives the real
+        // fox 6/6 output. The MLX crash for pt≠19 transcripts is separately fixed
+        // (AOT cache-key now folds pt/et), so sampling is robust on MLX too. The
+        // remaining GPU waveform-cosine gap is benign AR-sample divergence.
         let opts = InferOpts {
             seed: req.seed,
             ..Default::default()

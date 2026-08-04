@@ -46,5 +46,8 @@ iroh = ["rlx-driver/iroh"]
 name = "rlx-vision-bench"
 path = "src/main.rs"
 
+[dev-dependencies]
+rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope" }
+
 [lints]
 workspace = true

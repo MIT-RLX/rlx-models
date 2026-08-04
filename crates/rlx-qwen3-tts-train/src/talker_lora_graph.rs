@@ -208,6 +208,7 @@ pub fn build_talker_lora_graph(
             Op::Attention {
                 num_heads: cfg.num_attention_heads,
                 head_dim: dh,
+                v_head_dim: None,
                 mask_kind: MaskKind::Causal,
                 score_scale: None,
                 attn_logit_softcap: None,

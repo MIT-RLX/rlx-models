@@ -97,8 +97,13 @@ impl MiraLm {
             "[miratts] loading Qwen2 LM from {} on {lm_device:?}…",
             dir.display()
         );
+        // Point at the f32 safetensors explicitly: the builder otherwise
+        // auto-picks a `Q4_K_M` gguf in the dir (prefer_gguf default) and builds
+        // PACKED, which has no streaming f32 generator → `into_generator()` = None.
+        let st = dir.join("model.safetensors");
+        let weights = if st.exists() { st } else { dir.to_path_buf() };
         let runner = Qwen3RunnerBuilder::default()
-            .weights(dir)
+            .weights(weights)
             .config_value(qwen2_config(cfg))
             .device(lm_device)
             .build()

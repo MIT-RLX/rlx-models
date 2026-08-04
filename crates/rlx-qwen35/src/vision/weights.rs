@@ -104,45 +104,54 @@ impl MmProjWeights {
         let patch_out = n;
         let patch_in = 3;
         let patch_elems = patch_out * patch_in * ps * ps;
+        let merge_sq = cfg.n_merge * cfg.n_merge;
+        let mm_in = n * merge_sq;
+        let proj = cfg.llm_hidden_size;
 
+        // Dual temporal patch conv (Qwen3-VL replicates a still frame across
+        // the 2-frame temporal window → `v.patch_embd.weight` + `.weight.1`).
         let patch_embd_0 = take_tensor(loader, "v.patch_embd.weight")?;
         let patch_embd_1 = take_tensor(loader, "v.patch_embd.weight.1")?;
         let patch_bias = take_tensor(loader, "v.patch_embd.bias")?;
-        let position_embd = take_tensor(loader, "vision.position_embd.weight")?;
-
         check_len("v.patch_embd.weight", &patch_embd_0, patch_elems)?;
         check_len("v.patch_embd.weight.1", &patch_embd_1, patch_elems)?;
         check_len("v.patch_embd.bias", &patch_bias, n)?;
-        check_len("vision.position_embd.weight", &position_embd, n * n)?;
 
-        let pre_ln_w = take_tensor(loader, "vision.pre_ln.weight")?;
-        let pre_ln_b = take_tensor(loader, "vision.pre_ln.bias")?;
-        let post_ln_w = take_tensor(loader, "vision.post_ln.weight")?;
-        let post_ln_b = take_tensor(loader, "vision.post_ln.bias")?;
-        check_len("vision.pre_ln.weight", &pre_ln_w, n)?;
-        check_len("vision.pre_ln.bias", &pre_ln_b, n)?;
-        check_len("vision.post_ln.weight", &post_ln_w, n)?;
-        check_len("vision.post_ln.bias", &post_ln_b, n)?;
-        // Older mmproj exports omit the merger norm. It is identity in that
-        // layout, while HF Fara checkpoints provide it explicitly.
-        let mm_norm_w = vec![1.0; n];
-        let mm_norm_b = vec![0.0; n];
+        // Absolute position table `[num_pos, n]` (token-major). `num_pos` is
+        // a square grid that need not equal `n²`; the builder bilinearly
+        // resizes it to the actual patch grid.
+        let position_embd = take_tensor(loader, "v.position_embd.weight")?;
+        ensure!(
+            !position_embd.is_empty() && position_embd.len().is_multiple_of(n),
+            "v.position_embd.weight: len {} is not a multiple of n_embd {n}",
+            position_embd.len()
+        );
 
-        let merge = cfg.n_merge;
-        let merge_sq = merge * merge;
-        let mm_in = n * merge_sq;
+        // llama.cpp qwen3vl mmproj has no pre-LN. The single post-block
+        // LayerNorm (`v.post_ln`) is the merger norm applied over `n` right
+        // before the spatial merge, so route it into the always-on `mm_norm`
+        // slot and disable `has_post_ln` (applying both would re-normalize
+        // and strip the learned affine).
+        let post_ln_w = take_tensor(loader, "v.post_ln.weight")?;
+        let post_ln_b = take_tensor(loader, "v.post_ln.bias")?;
+        check_len("v.post_ln.weight", &post_ln_w, n)?;
+        check_len("v.post_ln.bias", &post_ln_b, n)?;
+
+        // Merger MLP: `mm.0` (fc1) → GELU → `mm.2` (fc2). The merger hidden
+        // width is `n·merge²` (derived from the fc1 bias), NOT the block FFN
+        // width `n_ff`.
         let mm_0_w = take_tensor(loader, "mm.0.weight")?;
         let mm_0_b = take_tensor(loader, "mm.0.bias")?;
-        let mm_1_w = take_tensor(loader, "mm.1.weight")?;
-        let mm_1_b = take_tensor(loader, "mm.1.bias")?;
-        check_len("mm.0.weight", &mm_0_w, n_ff * mm_in)?;
-        check_len("mm.0.bias", &mm_0_b, n_ff)?;
-        check_len("mm.1.weight", &mm_1_w, cfg.llm_hidden_size * n_ff)?;
-        check_len("mm.1.bias", &mm_1_b, cfg.llm_hidden_size)?;
+        let mm_1_w = take_tensor(loader, "mm.2.weight")?;
+        let mm_1_b = take_tensor(loader, "mm.2.bias")?;
+        let mm_hidden = mm_0_b.len();
+        check_len("mm.0.weight", &mm_0_w, mm_in * mm_hidden)?;
+        check_len("mm.2.weight", &mm_1_w, mm_hidden * proj)?;
+        check_len("mm.2.bias", &mm_1_b, proj)?;
 
         let mut blocks = Vec::with_capacity(cfg.n_layer);
         for il in 0..cfg.n_layer {
-            let p = format!("vision.blk.{il}");
+            let p = format!("v.blk.{il}");
             let qkv_w = take_tensor(loader, &format!("{p}.attn_qkv.weight"))?;
             let qkv_b = take_tensor(loader, &format!("{p}.attn_qkv.bias"))?;
             let attn_out_w = take_tensor(loader, &format!("{p}.attn_out.weight"))?;
@@ -152,18 +161,24 @@ impl MmProjWeights {
             check_len(&format!("{p}.attn_out.weight"), &attn_out_w, n * n)?;
             check_len(&format!("{p}.attn_out.bias"), &attn_out_b, n)?;
 
-            let ffn_gate_w = take_tensor(loader, &format!("{p}.ffn_gate.weight"))?;
-            let ffn_gate_b = take_tensor(loader, &format!("{p}.ffn_gate.bias"))?;
-            let ffn_up_w = take_tensor(loader, &format!("{p}.ffn_up.weight"))?;
-            let ffn_up_b = take_tensor(loader, &format!("{p}.ffn_up.bias"))?;
+            // Non-gated MLP: `ffn_up` is fc1 (n→n_ff), `ffn_down` is fc2
+            // (n_ff→n). The builder's non-gated path reads fc1 from
+            // `ffn_gate_w`, so map ffn_up→gate and leave `ffn_up_w` empty.
+            let ffn_gate_w = take_tensor(loader, &format!("{p}.ffn_up.weight"))?;
+            let ffn_gate_b = take_tensor(loader, &format!("{p}.ffn_up.bias"))?;
             let ffn_down_w = take_tensor(loader, &format!("{p}.ffn_down.weight"))?;
             let ffn_down_b = take_tensor(loader, &format!("{p}.ffn_down.bias"))?;
-            check_len(&format!("{p}.ffn_gate.weight"), &ffn_gate_w, n_ff * n)?;
-            check_len(&format!("{p}.ffn_gate.bias"), &ffn_gate_b, n_ff)?;
-            check_len(&format!("{p}.ffn_up.weight"), &ffn_up_w, n_ff * n)?;
-            check_len(&format!("{p}.ffn_up.bias"), &ffn_up_b, n_ff)?;
+            check_len(&format!("{p}.ffn_up.weight"), &ffn_gate_w, n_ff * n)?;
+            check_len(&format!("{p}.ffn_up.bias"), &ffn_gate_b, n_ff)?;
             check_len(&format!("{p}.ffn_down.weight"), &ffn_down_w, n * n_ff)?;
             check_len(&format!("{p}.ffn_down.bias"), &ffn_down_b, n)?;
+
+            let ln1_w = take_tensor(loader, &format!("{p}.ln1.weight"))?;
+            let ln1_b = take_tensor(loader, &format!("{p}.ln1.bias"))?;
+            let ln2_w = take_tensor(loader, &format!("{p}.ln2.weight"))?;
+            let ln2_b = take_tensor(loader, &format!("{p}.ln2.bias"))?;
+            check_len(&format!("{p}.ln1.weight"), &ln1_w, n)?;
+            check_len(&format!("{p}.ln2.weight"), &ln2_w, n)?;
 
             let deepstack = if cfg.deepstack_layers.contains(&il) {
                 let ds = format!("v.deepstack.{il}");
@@ -180,21 +195,21 @@ impl MmProjWeights {
             };
 
             blocks.push(VisionBlockWeights {
-                ln1_w: take_tensor(loader, &format!("{p}.ln1.weight"))?,
-                ln1_b: take_tensor(loader, &format!("{p}.ln1.bias"))?,
-                ln2_w: take_tensor(loader, &format!("{p}.ln2.weight"))?,
-                ln2_b: take_tensor(loader, &format!("{p}.ln2.bias"))?,
+                ln1_w,
+                ln1_b,
+                ln2_w,
+                ln2_b,
                 qkv_w,
                 qkv_b,
                 attn_out_w,
                 attn_out_b,
                 ffn_gate_w,
                 ffn_gate_b,
-                ffn_up_w,
-                ffn_up_b,
+                ffn_up_w: Vec::new(),
+                ffn_up_b: Vec::new(),
                 ffn_down_w,
                 ffn_down_b,
-                ffn_gated: true,
+                ffn_gated: false,
                 deepstack,
             });
         }
@@ -204,15 +219,15 @@ impl MmProjWeights {
             patch_embd_1,
             patch_bias,
             position_embd,
-            pre_ln_w,
-            pre_ln_b,
-            post_ln_w,
-            post_ln_b,
-            has_pre_ln: true,
-            has_post_ln: true,
+            pre_ln_w: vec![1.0; n],
+            pre_ln_b: vec![0.0; n],
+            post_ln_w: vec![1.0; n],
+            post_ln_b: vec![0.0; n],
+            has_pre_ln: false,
+            has_post_ln: false,
 
-            mm_norm_w,
-            mm_norm_b,
+            mm_norm_w: post_ln_w,
+            mm_norm_b: post_ln_b,
             mm_0_w,
             mm_0_b,
             mm_1_w,
@@ -712,14 +727,12 @@ mod tests {
         assert_eq!(w.patch_embd_1.len(), w.patch_embd_0.len());
         assert_eq!(w.mm_norm_w.len(), n);
         assert_eq!(w.mm_norm_b.len(), n);
-        assert_eq!(w.ffn_up_identity_len_via_block(), n_ff * n);
+        // Non-gated HF vision MLP: fc1 lives in `ffn_gate_w`, `ffn_up_w` is
+        // left empty and the builder skips the gate multiply.
+        assert!(!w.blocks[0].ffn_gated);
+        assert_eq!(w.blocks[0].ffn_gate_w.len(), n_ff * n);
+        assert_eq!(w.blocks[0].ffn_up_w.len(), 0);
         // Visual keys should be drained.
         assert!(!map.keys().any(|k| k.starts_with("model.visual.")));
-    }
-
-    impl MmProjWeights {
-        fn ffn_up_identity_len_via_block(&self) -> usize {
-            self.blocks[0].ffn_up_w.len()
-        }
     }
 }

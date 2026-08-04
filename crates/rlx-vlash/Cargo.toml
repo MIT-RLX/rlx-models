@@ -19,6 +19,8 @@ rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true }
 rlx-opt = { workspace = true }
 rlx-siglip2 = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-pkg = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -39,6 +41,10 @@ path = "examples/predict_action.rs"
 [[example]]
 name = "dump_intermediates"
 path = "examples/dump_intermediates.rs"
+
+[[example]]
+name = "prep_weights"
+path = "examples/prep_weights.rs"
 
 [lints]
 workspace = true

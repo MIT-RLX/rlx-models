@@ -95,14 +95,7 @@ pub fn emit_mla_attention(
     let rope = d.qk_rope_head_dim;
     let qk = d.qk_head_dim();
     let vd = d.v_head_dim;
-    let (si, hi, ni, ri, qki, vi) = (
-        s as i64,
-        h as i64,
-        nope as i64,
-        rope as i64,
-        qk as i64,
-        vd as i64,
-    );
+    let (si, hi, ri, qki, vi) = (s as i64, h as i64, rope as i64, qk as i64, vd as i64);
 
     // --- Q low-rank path ---
     let q_a = linear(emit, &format!("{prefix}.q_a_proj"), hidden)?;

@@ -1,0 +1,60 @@
+[package]
+name = "rlx-llm-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+description = "Unified LLM benchmark harness for RLX: speed (tok/s) + quality (MMLU/GSM8K) + parity, model-agnostic over rlx_runtime::lm::LmRunner"
+# Harness only — a driver over the model crates, not a published library.
+publish = false
+
+[dependencies]
+# Model-agnostic seam: every rlx LM crate implements `LmRunner`.
+rlx-runtime = { workspace = true }
+# Reused quality primitives: teacher-forced MC + perplexity scoring.
+rlx-eval = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokenizers = { workspace = true }
+libc = "0.2"
+# Dataset fetch (HF datasets-server JSON rows API). Already in the graph via
+# `hf-hub`'s `ureq` feature, so this adds no meaningful compile cost.
+ureq = "2"
+
+# Per-model adapters live behind their own feature. `qwen3` is on by default
+# so the binary is runnable out of the box; add more (`llama32`, `gemma`, …)
+# as their adapters land.
+rlx-qwen3 = { workspace = true, optional = true }
+
+[[bin]]
+name = "rlx-llm-bench"
+path = "src/bin/rlx-llm-bench.rs"
+
+[features]
+default = ["qwen3"]
+qwen3 = ["dep:rlx-qwen3"]
+
+# Backend fan-out: forward to rlx-runtime and to whichever model adapters are
+# enabled. The `rlx-qwen3?/…` form only activates when the `qwen3` feature (and
+# thus the optional dep) is on, so `--no-default-features --features cuda` still
+# builds the model-agnostic core.
+metal = ["rlx-runtime/metal", "rlx-qwen3?/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-qwen3?/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-qwen3?/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-qwen3?/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-qwen3?/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-qwen3?/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-qwen3?/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[lints]
+workspace = true

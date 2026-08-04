@@ -1,0 +1,138 @@
+{
+  "host": "Darwin",
+  "backends": [
+    "cpu",
+    "metal",
+    "mlx",
+    "wgpu",
+    "coreml"
+  ],
+  "adapters": {},
+  "rows": [
+    {
+      "model": "moss-nano",
+      "kind": "tts",
+      "package": "rlx-moss-nano",
+      "backend": "cpu",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 52320
+      },
+      "ms": 4520
+    },
+    {
+      "model": "moss-nano",
+      "kind": "tts",
+      "package": "rlx-moss-nano",
+      "backend": "metal",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 52320,
+        "cosine": 1.0
+      },
+      "ms": 4006
+    },
+    {
+      "model": "moss-nano",
+      "kind": "tts",
+      "package": "rlx-moss-nano",
+      "backend": "mlx",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 52320,
+        "cosine": 1.0
+      },
+      "ms": 2541
+    },
+    {
+      "model": "moss-nano",
+      "kind": "tts",
+      "package": "rlx-moss-nano",
+      "backend": "wgpu",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 52320,
+        "cosine": 1.0
+      },
+      "ms": 3768
+    },
+    {
+      "model": "moss-nano",
+      "kind": "tts",
+      "package": "rlx-moss-nano",
+      "backend": "coreml",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 52320,
+        "cosine": 1.0
+      },
+      "ms": 11200
+    },
+    {
+      "model": "luxtts",
+      "kind": "tts",
+      "package": "rlx-luxtts",
+      "backend": "cpu",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 30464
+      },
+      "ms": 8391
+    },
+    {
+      "model": "luxtts",
+      "kind": "tts",
+      "package": "rlx-luxtts",
+      "backend": "metal",
+      "status": "pass",
+      "detail": "cosine 0.973",
+      "metrics": {
+        "samples": 30464,
+        "cosine": 0.97268
+      },
+      "ms": 9133
+    },
+    {
+      "model": "luxtts",
+      "kind": "tts",
+      "package": "rlx-luxtts",
+      "backend": "mlx",
+      "status": "pass",
+      "detail": "cosine 0.973",
+      "metrics": {
+        "samples": 30464,
+        "cosine": 0.97268
+      },
+      "ms": 4744
+    },
+    {
+      "model": "luxtts",
+      "kind": "tts",
+      "package": "rlx-luxtts",
+      "backend": "wgpu",
+      "status": "fail",
+      "detail": "panic: attempt to calculate the remainder with a divisor of zero",
+      "metrics": {},
+      "ms": 22238
+    },
+    {
+      "model": "luxtts",
+      "kind": "tts",
+      "package": "rlx-luxtts",
+      "backend": "coreml",
+      "status": "pass",
+      "detail": "cosine 0.973",
+      "metrics": {
+        "samples": 30464,
+        "cosine": 0.97268
+      },
+      "ms": 34393
+    }
+  ]
+}

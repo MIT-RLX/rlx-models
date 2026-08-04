@@ -72,5 +72,11 @@ rlx-whisper = { workspace = true }
 name = "rlx-supertonic"
 path = "src/bin/rlx_supertonic.rs"
 
+# Compares the native path against the ONNX-Runtime reference, so it needs the
+# `onnx` feature (which gates `Supertonic::synthesize_ort`).
+[[example]]
+name = "cmp_ort"
+required-features = ["onnx"]
+
 [lints]
 workspace = true

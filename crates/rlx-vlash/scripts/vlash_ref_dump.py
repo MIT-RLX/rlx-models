@@ -61,6 +61,11 @@ def main():
     ap.add_argument("--img-w", type=int, default=224)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--num-steps", type=int, default=10)
+    ap.add_argument(
+        "--tokens",
+        default="",
+        help="comma-separated fixed token ids; skips the (gated) PaliGemma tokenizer",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -68,19 +73,54 @@ def main():
     np.random.seed(args.seed)
     torch.set_grad_enabled(False)
 
+    fixed_tokens = [int(x) for x in args.tokens.split(",") if x.strip() != ""]
+    if fixed_tokens:
+        # Bypass the gated `google/paligemma-3b-pt-224` tokenizer: the policy
+        # constructor calls AutoTokenizer.from_pretrained unconditionally, but
+        # for numeric parity we only need identical token ids on both sides.
+        import transformers
+
+        class _DummyTok:
+            def __call__(self, *a, **k):
+                raise RuntimeError("tokenizer bypassed (--tokens given)")
+
+        transformers.AutoTokenizer.from_pretrained = staticmethod(lambda *a, **k: _DummyTok())
+
     # --- load policy on CPU, float32, unfused (matches the crate) ---
     if args.variant == "pi0":
-        from vlash.policies.pi0.configuration_pi0 import PI0Config as Cfg
+        from vlash.policies.pi0.configuration_pi0 import (
+            PI0ActionExpertConfig as ExpCfg,
+            PI0Config as Cfg,
+            PI0VLMConfig as VlmCfg,
+        )
         from vlash.policies.pi0.modeling_pi0 import PI0Policy as Policy
     else:
-        from vlash.policies.pi05.configuration_pi05 import PI05Config as Cfg
+        from vlash.policies.pi05.configuration_pi05 import (
+            PI05ActionExpertConfig as ExpCfg,
+            PI05Config as Cfg,
+            PI05VLMConfig as VlmCfg,
+        )
         from vlash.policies.pi05.modeling_pi05 import PI05Policy as Policy
 
-    cfg = Cfg.from_pretrained(args.checkpoint)
+    # lerobot's `from_pretrained` decode does not run the dataclass __init__, so
+    # it drops fields absent from config.json (state_cond, vlm_config, …). The
+    # `lerobot/pi05_base` config.json matches the dataclass defaults (verified:
+    # chunk 50, dims 32, 10 steps, gemma_2b/gemma_300m, state_cond absent→False),
+    # so a fresh `Cfg()` reproduces it exactly. (Repair nested cfgs defensively.)
+    cfg = Cfg()
+    if getattr(cfg, "vlm_config", None) is None:
+        cfg.vlm_config = VlmCfg()
+    if getattr(cfg, "action_expert_config", None) is None:
+        cfg.action_expert_config = ExpCfg()
     cfg.dtype = "float32"
     cfg.device = "cpu"
-    cfg.fuse_qkv = False
-    cfg.fuse_gate_up = False
+    # Enable Q/K/V + gate/up fusion (VLASH's default). It is numerically
+    # identical to the unfused path — a fused projection is just the stacked
+    # per-head matmul — and pi0's `denoise_step` reads `self_attn.qkv_proj`, so
+    # it *requires* fusion to run. The rlx crate loads the unfused checkpoint
+    # weights and matches either way.
+    cfg.fuse_qkv = True
+    cfg.fuse_gate_up = True
     policy = Policy.from_pretrained(args.checkpoint, config=cfg)
     policy.eval()
     policy.model.float()
@@ -111,15 +151,19 @@ def main():
         img_masks.append(torch.ones(1, dtype=torch.bool))
     w(args.out, manifest, "pixel_values", images[0][0])  # [C,224,224] in [-1,1]
 
-    # Tokenize prompt (+ trailing newline handled by prepare_language).
-    tok = policy.language_tokenizer(
-        [args.prompt if args.prompt.endswith("\n") else args.prompt + "\n"],
-        padding="max_length" if args.prompt_len > 0 else "longest",
-        max_length=args.prompt_len if args.prompt_len > 0 else policy.config.tokenizer_max_length,
-        return_tensors="pt",
-    )
-    tokens = tok["input_ids"]
-    masks = tok["attention_mask"].bool()
+    # Tokenize prompt, or use the fixed ids (when the tokenizer is bypassed).
+    if fixed_tokens:
+        tokens = torch.tensor([fixed_tokens], dtype=torch.long)
+        masks = torch.ones_like(tokens, dtype=torch.bool)
+    else:
+        tok = policy.language_tokenizer(
+            [args.prompt if args.prompt.endswith("\n") else args.prompt + "\n"],
+            padding="max_length" if args.prompt_len > 0 else "longest",
+            max_length=args.prompt_len if args.prompt_len > 0 else policy.config.tokenizer_max_length,
+            return_tensors="pt",
+        )
+        tokens = tok["input_ids"]
+        masks = tok["attention_mask"].bool()
     w(args.out, manifest, "token_ids", tokens.float())
     w(args.out, manifest, "token_mask", masks.float())
 

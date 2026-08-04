@@ -97,19 +97,29 @@ impl VlashRunnerBuilder {
     }
 }
 
-fn find_safetensors(dir: &Path) -> Result<PathBuf> {
-    let single = dir.join("model.safetensors");
-    if single.is_file() {
-        return Ok(single);
+/// Resolve the weights source in `dir`, preferring a prepared bundle
+/// (`model.gguf` → `model.rlxp` → `model.safetensors`) then any `.safetensors`.
+fn find_weights(dir: &Path) -> Result<PathBuf> {
+    if dir.is_file() {
+        return Ok(dir.to_path_buf());
     }
-    // Fall back to the first *.safetensors in the directory.
-    for entry in std::fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
-        let p = entry?.path();
-        if p.extension().and_then(|e| e.to_str()) == Some("safetensors") {
+    for name in ["model.gguf", "model.rlxp", "model.safetensors"] {
+        let p = dir.join(name);
+        if p.is_file() {
             return Ok(p);
         }
     }
-    Err(anyhow!("no .safetensors found in {}", dir.display()))
+    for entry in std::fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
+        let p = entry?.path();
+        match p.extension().and_then(|e| e.to_str()) {
+            Some("safetensors") | Some("gguf") | Some("rlxp") => return Ok(p),
+            _ => {}
+        }
+    }
+    Err(anyhow!(
+        "no weights (.gguf/.rlxp/.safetensors) found in {}",
+        dir.display()
+    ))
 }
 
 impl VlashRunner {
@@ -130,8 +140,12 @@ impl VlashRunner {
         use hf_hub::api::sync::Api;
         let api = Api::new()?.model(repo.to_string());
         // Resolve into the shared HF cache; both files land in the same dir.
-        let st = api.get("model.safetensors").context("download model.safetensors")?;
-        let _ = api.get("tokenizer.json").context("download tokenizer.json")?;
+        let st = api
+            .get("model.safetensors")
+            .context("download model.safetensors")?;
+        let _ = api
+            .get("tokenizer.json")
+            .context("download tokenizer.json")?;
         let dir = st
             .parent()
             .ok_or_else(|| anyhow!("no parent dir for {}", st.display()))?;
@@ -148,8 +162,10 @@ impl VlashRunner {
         prompt_tokens: usize,
     ) -> Result<Self> {
         let cfg = VlashConfig::for_variant(variant);
-        let st = find_safetensors(model_dir)?;
-        let mut wm = crate::weights::load_remapped(st.to_str().unwrap())?;
+        // Accept a prepared `.gguf`/`.rlxp` bundle (canonical keys baked in) or
+        // a raw safetensors checkpoint (remapped on load) — transparently.
+        let src = find_weights(model_dir)?;
+        let mut wm = crate::prep::load_prepped(src.to_str().unwrap())?;
 
         // Host-consumed pieces (before the graph builders drain their keys).
         let vision_embed = extract_vision_embed(&mut wm, &cfg.vision)?;
@@ -167,7 +183,12 @@ impl VlashRunner {
         let denoise_built = crate::flow::build_denoise_flow(&cfg, &mut wm, prefix_len)?;
         let denoise = rlx_core::flow_util::compile_built(denoise_built, device)?;
 
-        let tokenizer = PaligemmaTokenizer::from_dir(model_dir)?;
+        let tok_dir = if model_dir.is_file() {
+            model_dir.parent().unwrap_or(model_dir)
+        } else {
+            model_dir
+        };
+        let tokenizer = PaligemmaTokenizer::from_dir(tok_dir)?;
 
         Ok(Self {
             cfg,

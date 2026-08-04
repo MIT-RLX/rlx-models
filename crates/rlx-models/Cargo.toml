@@ -1356,6 +1356,10 @@ required-features = ["sam3"]
 name = "sam3_encoder_bench"
 required-features = ["sam3"]
 
+[[example]]
+name = "backend_sweep"
+required-features = ["runner"]
+
 [[test]]
 name = "tide_parity"
 required-features = ["llada2", "qwen35"]

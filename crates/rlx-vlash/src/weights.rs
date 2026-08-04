@@ -83,7 +83,9 @@ pub fn canonical_key(raw: &str) -> Option<String> {
             return Some("norm.state.std".to_string());
         }
     }
-    if (low.contains("buffer_action") || low.ends_with("action.mean") || low.ends_with("action.std"))
+    if (low.contains("buffer_action")
+        || low.ends_with("action.mean")
+        || low.ends_with("action.std"))
         && low.contains("action")
     {
         // Distinguish state vs action already handled above; here handle action.
@@ -108,8 +110,8 @@ pub fn canonical_key(raw: &str) -> Option<String> {
         ("time_mlp_out.", "suffix.time_mlp_out."),
     ] {
         // Only fire on top-level occurrences (avoid matching inside longer paths).
-        if raw.starts_with(src) {
-            return Some(format!("{dst}{}", &raw[src.len()..]));
+        if let Some(rest) = raw.strip_prefix(src) {
+            return Some(format!("{dst}{rest}"));
         }
     }
 
@@ -158,6 +160,11 @@ pub fn canonical_key(raw: &str) -> Option<String> {
         }
         if raw.contains("multi_modal_projector.linear.bias") {
             return Some("vision.projector.bias".to_string());
+        }
+        // Text embeddings are tied to the LM head — the checkpoint ships only
+        // `paligemma.lm_head.weight` [vocab, hidden]; use it as embed_tokens.
+        if raw.contains("lm_head") {
+            return Some("vlm.embed_tokens.weight".to_string());
         }
         // Gemma-2B text backbone.
         if raw.contains("language_model") {
@@ -259,7 +266,10 @@ mod tests {
                 "paligemma_with_expert.gemma_expert.model.norm.weight",
                 Some("expert.norm.weight"),
             ),
-            ("action_in_proj.weight", Some("suffix.action_in_proj.weight")),
+            (
+                "action_in_proj.weight",
+                Some("suffix.action_in_proj.weight"),
+            ),
             ("action_in_proj.bias", Some("suffix.action_in_proj.bias")),
             ("action_out_proj.weight", Some("action_out_proj.weight")),
             (

@@ -20,7 +20,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
-struct RopeParams {
+pub struct RopeParams {
     #[serde(default)]
     rope_theta: Option<f32>,
     #[serde(default)]

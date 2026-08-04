@@ -19,6 +19,7 @@
 
 pub mod audio;
 pub mod device;
+pub mod marblenet;
 pub mod ops;
 pub mod segments;
 
@@ -37,9 +38,11 @@ pub use device::{
     available_device_labels, available_devices, bench_device_label, ensure_backend_ready,
     parse_device_list, resolve_device, streaming_execution_device,
 };
+pub use marblenet::MarbleNetConfig;
 pub use segments::SegmentParams;
 #[cfg(feature = "earshot")]
 pub use segments::speech_segments_earshot;
+pub use segments::speech_segments_from_probs;
 #[cfg(feature = "silero")]
 pub use segments::speech_segments_silero;
 

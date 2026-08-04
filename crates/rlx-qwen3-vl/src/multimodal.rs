@@ -35,7 +35,7 @@ impl VisionEncodeOutput {
     pub fn from_flat(embeddings: Vec<f32>, n_embd: usize) -> Result<Self> {
         ensure!(n_embd > 0, "n_embd must be > 0");
         ensure!(
-            embeddings.len() % n_embd == 0,
+            embeddings.len().is_multiple_of(n_embd),
             "vision embeds len {} not divisible by n_embd {n_embd}",
             embeddings.len()
         );

@@ -1266,7 +1266,7 @@ pub fn build_llama32_graph_sized_packed(
         // Cohere2 skips RoPE on its global (full-attention) layers (NoPE).
         let cohere2_nope = cfg
             .cohere2_nope_pattern()
-            .is_some_and(|p| (weight_idx + 1) % p == 0);
+            .is_some_and(|p| (weight_idx + 1).is_multiple_of(p));
         let (q_rope, k_rope) = if cohere2_nope {
             (q, k)
         } else {
@@ -1567,7 +1567,7 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
         // GGUF Llama → interleaved/GPT-J RoPE flavor. Cohere2 global layers = NoPE.
         let cohere2_nope = cfg
             .cohere2_nope_pattern()
-            .is_some_and(|p| (weight_idx + 1) % p == 0);
+            .is_some_and(|p| (weight_idx + 1).is_multiple_of(p));
         let (q_rope, k_rope) = if cohere2_nope {
             (q, k)
         } else {

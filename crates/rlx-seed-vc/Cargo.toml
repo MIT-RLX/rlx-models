@@ -1,0 +1,18 @@
+[package]
+name = "rlx-seed-vc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Seed-VC zero-shot voice conversion on RLX — config + conditional-flow-matching sampler with CFG"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow           = { workspace = true }
+rlx-audio-blocks = { workspace = true }
+
+[lints]
+workspace = true

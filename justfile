@@ -332,6 +332,24 @@ fetch-bonsai27b:
     fi
     ls -lh "$gguf"
 
+# unsloth/Qwen3.6-27B-MTP-GGUF (qwen35 arch VLM: hybrid gated-DeltaNet +
+# periodic attention + MTP head). Text GGUF (Q3_K_S ~11.7 GB) + CLIP mmproj
+# (F16 ~0.9 GB). Then: just qwen35 -- --weights DEST/Qwen3.6-27B-Q3_K_S.gguf
+# --device metal --packed --chat --prompt "..." [--mmproj DEST/mmproj-F16.gguf --image img.png]
+fetch-qwen36-27b:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="{{real_weights_dir}}/qwen3.6-27b-gguf"
+    mkdir -p "$dest"
+    base="https://huggingface.co/unsloth/Qwen3.6-27B-MTP-GGUF/resolve/main"
+    for f in Qwen3.6-27B-Q3_K_S.gguf mmproj-F16.gguf; do
+      if [ ! -s "$dest/$f" ]; then
+        echo ">> downloading $f → $dest/$f"
+        curl -L -C - --retry 5 -o "$dest/$f" "$base/$f"
+      fi
+    done
+    ls -lh "$dest"
+
 # prism-ml/Ternary-Bonsai-27B (qwen35 arch, Q2_0_g128 packed). ~7.2 GB.
 fetch-ternary-bonsai27b:
     #!/usr/bin/env bash

@@ -145,6 +145,7 @@ impl EncoderBuilder<'_> {
                 Op::Attention {
                     num_heads: nh,
                     head_dim: hd,
+                    v_head_dim: None,
                     mask_kind: MaskKind::Bias,
                     score_scale: None,
                     attn_logit_softcap: None,

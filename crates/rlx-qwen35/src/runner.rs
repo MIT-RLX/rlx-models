@@ -928,6 +928,20 @@ fn finish_build(
         // SAFETY: single-threaded runner build; env read at decode HIR compile time.
         unsafe { std::env::set_var("RLX_QWEN35_HOST_EMBED", "1") };
     }
+    // Auto-enable the low-mem compile/upload path for large models: it skips the
+    // redundant F32 param clone, streams packed weights straight from the mmap
+    // instead of a multi-GB owned cache copy, and drops the decode-bucket warm —
+    // roughly halving peak RSS (Qwen3.6-27B: ~33 GB → ~18–24 GB) so the model
+    // survives concurrent memory pressure. Explicit `RLX_LOW_MEM_COMPILE` wins.
+    if cfg.hidden_size >= 4096 && std::env::var("RLX_LOW_MEM_COMPILE").is_err() {
+        // SAFETY: single-threaded runner build; env read at compile time below.
+        unsafe { std::env::set_var("RLX_LOW_MEM_COMPILE", "1") };
+        eprintln!(
+            "[qwen35] large model (hidden={}): auto-enabling low-mem compile \
+             (lower peak RSS; set RLX_LOW_MEM_COMPILE=0 to disable)",
+            cfg.hidden_size
+        );
+    }
     let host_embed =
         force_host_embed || crate::flow::host_embed_enabled_for_bytes(weights.token_embd.len() * 4);
     let prefill_profile = prefill_profile_override.unwrap_or_else(|| {
@@ -1504,6 +1518,14 @@ impl Qwen35Runner {
 
     fn clear_host_dense_projections(&mut self) {
         if !self.weights.has_dense_f32_projections() {
+            return;
+        }
+        // Inline weights (`.inline_weights(...)`, e.g. Gepard) have no on-disk
+        // source, so once released `ensure_dense_projections_resident` bails
+        // ("host F32 projections were released and cannot be reloaded — no
+        // weights path") and Metal/MLX decode crashes. Only release when there
+        // IS a weights_path to remap from; otherwise keep them resident.
+        if self.weights_path.as_os_str().is_empty() {
             return;
         }
         let Some(w) = std::sync::Arc::get_mut(&mut self.weights) else {

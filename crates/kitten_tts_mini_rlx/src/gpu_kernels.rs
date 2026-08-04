@@ -687,13 +687,13 @@ fn run_f0_if_bypass(
             }
             return Ok(());
         }
-        return Err(format!(
+        Err(format!(
             "F0IfBypass size {} != {} (squeeze {} -> {})",
             x.len(),
             out.len(),
             x.len(),
             out.len()
-        ));
+        ))
     }
 }
 
@@ -1032,7 +1032,7 @@ mod mlx {
     }
 
     fn dtype_from_bytes(len: usize, nelems: usize) -> DType {
-        let es = if nelems > 0 { len / nelems } else { 4 };
+        let es = len.checked_div(nelems).unwrap_or(4);
         match es {
             1 => DType::I8,
             4 => DType::F32,

@@ -69,7 +69,10 @@ pub fn build_denoise_flow(
 
     let mut flow = ModelFlow::new("vlash_denoise")
         .with_profile(CompileProfile::encoder())
-        .input("prefix_emb", Shape::new(&[batch, prefix_len, vlm_hidden], f))
+        .input(
+            "prefix_emb",
+            Shape::new(&[batch, prefix_len, vlm_hidden], f),
+        )
         .input("state", Shape::new(&[batch, state_dim], f))
         .input("actions", Shape::new(&[batch, chunk, act_dim], f));
     // time_emb shape differs by variant.

@@ -32,8 +32,19 @@
 //!    (state / noisy actions / time), run the 18 joint layers, and read the
 //!    velocity `v_t` from `action_out_proj`; integrate `x_t += dt · v_t`.
 //!
+//! Both variants reproduce the original VLASH implementation on the published
+//! `lerobot/pi0_base` / `lerobot/pi05_base` checkpoints at **cosine 1.0** across
+//! every stage (vision features → prefix → denoise step → full action chunk);
+//! see `scripts/run_parity.py` and `tests/parity.rs`. Runs on CPU, Metal, MLX,
+//! wgpu, and Vulkan.
+//!
 //! Entry points:
+//!   - [`VlashRunner`] — load a checkpoint / prepped bundle and
+//!     `predict_action_chunk`.
 //!   - [`VlashConfig`] / [`VlashVariant`] — model dimensions + policy family.
+//!   - [`load_prepped`] — load safetensors / GGUF / rlxp into a `WeightMap`;
+//!     [`write_gguf`] / [`write_rlxp`] + [`QuantScheme`] prepare RLX-native
+//!     bundles (see the `prep_weights` example).
 //!   - [`canonical_key`] — OpenPI→RLX checkpoint key remapping.
 
 pub mod config;
@@ -41,6 +52,7 @@ pub mod flow;
 pub mod joint_layer;
 pub mod normalize;
 pub mod prefix;
+pub mod prep;
 pub mod preprocess;
 pub mod runner;
 pub mod sample;
@@ -54,6 +66,7 @@ pub mod weights;
 pub use config::{GemmaConfig, VisionConfig, VlashConfig, VlashVariant};
 pub use flow::build_denoise_flow;
 pub use normalize::{MeanStd, Normalization};
+pub use prep::{QuantScheme, load_prepped, read_gguf, read_rlxp, write_gguf, write_rlxp};
 pub use preprocess::{resize_with_pad_normalize, rgb8_to_nchw_normalized};
 pub use runner::{VlashRunner, VlashRunnerBuilder};
 pub use sample::sample_actions;

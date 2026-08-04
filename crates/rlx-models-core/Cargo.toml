@@ -40,6 +40,8 @@ libc = "0.2"
 rlx-metal = { workspace = true, optional = true }
 rlx-mlx = { workspace = true, optional = true }
 rlx-wgpu = { workspace = true, optional = true }
+rlx-cuda = { workspace = true, optional = true }
+rlx-rocm = { workspace = true, optional = true }
 
 [features]
 # Opt-in execution backends, used by the audio_ops_ir cross-backend tests and
@@ -48,10 +50,14 @@ rlx-wgpu = { workspace = true, optional = true }
 metal = ["rlx-runtime/metal", "dep:rlx-metal"]
 mlx = ["rlx-runtime/mlx", "dep:rlx-mlx"]
 gpu = ["rlx-runtime/gpu", "dep:rlx-wgpu"]
-cuda = ["rlx-runtime/cuda"]
-rocm = ["rlx-runtime/rocm"]
+cuda = ["rlx-runtime/cuda", "dep:rlx-cuda"]
+rocm = ["rlx-runtime/rocm", "dep:rlx-rocm"]
 vulkan = ["rlx-runtime/vulkan", "dep:rlx-wgpu"]
 coreml = ["rlx-runtime/coreml"]
+
+[dev-dependencies]
+tokenizers = { workspace = true }
+rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope" }
 
 [lints]
 workspace = true

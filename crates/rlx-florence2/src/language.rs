@@ -223,7 +223,7 @@ impl Florence2Builder<'_> {
         let out_shape = Shape::new(&[self.batch, q_seq, d], self.f);
         let _ = kv_seq;
         let attn = self.g().add_node(
-            attention_kind_op(n_head, head_dim, mask, None, None),
+            attention_kind_op(n_head, head_dim, None, mask, None, None),
             vec![q, k, v],
             out_shape,
         );

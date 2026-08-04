@@ -198,6 +198,35 @@ pub fn build_qwen3_decode_graph_sized_ext(
     build_qwen3_decode_graph(cfg, weights, &opts)
 }
 
+/// Oneshot decode builder that ALSO exports the per-layer post-RoPE query
+/// (`q_rope`) after logits + K + V. Output order is:
+/// `logits, K_0, V_0, …, K_{L-1}, V_{L-1}, q_0, q_1, …, q_{L-1}` — read the
+/// trailing `L` q tensors with [`split_decode_logits_kv_aux`] (`num_aux = L`).
+///
+/// Used by the retrieval KV-store path to score cached blocks by the model's
+/// actual attention query (Q·K) instead of a key-self-similarity proxy (K·K).
+/// Specialized to the exact `past_seq` (causal mask, no mask input), matching
+/// [`build_qwen3_decode_graph_sized`].
+pub fn build_qwen3_decode_graph_sized_qk(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    past_seq: usize,
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    use crate::flow::{Qwen3DecodeOpts, build_qwen3_decode_graph};
+
+    let opts = Qwen3DecodeOpts {
+        batch,
+        past_seq,
+        dynamic_past: false,
+        use_custom_mask: false,
+        ragged_rope: false,
+        export_qk: true,
+        profile: None,
+    };
+    build_qwen3_decode_graph(cfg, weights, &opts)
+}
+
 /// Decode builder for **ragged** batched decode: a per-sequence RoPE table
 /// (`rope_cos`/`rope_sin` shaped `[batch, head_dim/2]`) plus the custom mask, so
 /// each sequence in the batch may sit at a different absolute position / cache

@@ -45,7 +45,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rlx_runtime::{CompileOptions, DType, Device};
+use rlx_runtime::{CompileOptions, DType, Device, parse_device};
 use rlx_tiny_tts::BundleConfig;
 use rlx_tiny_tts::model::TinyModel;
 
@@ -252,16 +252,28 @@ impl NativeKokoro {
 
         // ── 3. Decoder graph → raw (pre-ISTFT-normalization) waveform ───────
         // MPSGraph produces a corrupt result for this decoder's repeated
-        // channel-normalization sequence. The Metal thunk schedule is correct.
+        // channel-normalization sequence, so Metal disables MPSGraph. MLX ran
+        // this decoder correctly once the underlying rlx-mlx grouped/depthwise
+        // ConvTranspose2d bug was fixed (it mixed channels across groups → the
+        // ISTFTNet upsampler output ~25× too large → garbage; now host-evaled
+        // for groups>1). Decoder runs on the requested device again; override
+        // with RLX_KOKORO_DEC_DEVICE=cpu if a future backend regresses.
+        let dec_device = match std::env::var("RLX_KOKORO_DEC_DEVICE").as_deref() {
+            Ok(v) => parse_device(v.trim()).unwrap_or(self.device),
+            Err(_) => self.device,
+        };
+        if dec_device != self.device {
+            eprintln!("[kokoro] decoder on {dec_device:?} (RLX_KOKORO_DEC_DEVICE override)");
+        }
         let dec_opts = CompileOptions {
-            disable_mpsgraph: matches!(self.device, Device::Metal),
+            disable_mpsgraph: matches!(dec_device, Device::Metal),
             ..Default::default()
         };
         let mut dec = self
             .model
             .compile_named_with_options(
                 DECODER_RAW,
-                self.device,
+                dec_device,
                 frames,
                 &[("unk__357", 1), ("unk__368", frames)],
                 dec_opts,

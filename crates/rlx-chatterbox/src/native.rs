@@ -863,6 +863,29 @@ impl NativeChatterBox {
             let mut embeds = embeds;
             for seq in (prompt_seq..).take(opts.max_frames) {
                 let logits = self.lm_logits_last(&embeds, seq, compile_len)?;
+                if std::env::var_os("RLX_CB_LOGIT_DIAG").is_some() {
+                    let mut i0 = 0usize;
+                    for i in 1..logits.len() {
+                        if logits[i] > logits[i0] {
+                            i0 = i;
+                        }
+                    }
+                    let (mut i1, mut v1) = (usize::MAX, f32::NEG_INFINITY);
+                    for (i, &x) in logits.iter().enumerate() {
+                        if i != i0 && x > v1 {
+                            v1 = x;
+                            i1 = i;
+                        }
+                    }
+                    eprintln!(
+                        "[cb-diag {:?}] step={} top1={i0}({:.6}) top2={i1}({:.6}) gap={:.6}",
+                        self.device,
+                        seq - prompt_seq,
+                        logits[i0],
+                        v1,
+                        logits[i0] - v1
+                    );
+                }
                 let next = sample(&logits, &seen, opts, &mut rng);
                 if is_eos(next) {
                     break;
@@ -875,6 +898,23 @@ impl NativeChatterBox {
             generated
         };
         anyhow::ensure!(!generated.is_empty(), "no speech tokens generated");
+        // Debug: dump the generated speech-token IDs per device so CPU vs Metal
+        // AR divergence can be localized (RLX_CB_DUMP_TOKENS=1 → /tmp/cb_tokens_<dev>.txt).
+        if std::env::var_os("RLX_CB_DUMP_TOKENS").is_some() {
+            let dev = format!("{:?}", self.device).to_lowercase();
+            let path = format!("/tmp/cb_tokens_{dev}.txt");
+            let s = generated
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let _ = std::fs::write(&path, &s);
+            eprintln!(
+                "[chatterbox] dumped {} tokens → {path} (sum={})",
+                generated.len(),
+                generated.iter().sum::<i64>()
+            );
+        }
         lap(&format!("LM AR loop ({} tokens)", generated.len()));
         // The LM / embed / speech-encoder graphs are done — free them (their
         // outputs are already owned Vecs) so they don't coexist with the decoder.

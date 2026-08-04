@@ -69,6 +69,11 @@ def main():
     ap.add_argument("--num-images", type=int, default=1)
     ap.add_argument("--threshold", type=float, default=0.999)
     ap.add_argument("--num-steps", type=int, default=10)
+    ap.add_argument(
+        "--tokens",
+        default="",
+        help="comma-separated fixed token ids (bypasses the gated PaliGemma tokenizer)",
+    )
     ap.add_argument("--skip-ref", action="store_true", help="reuse an existing reference dump")
     args = ap.parse_args()
 
@@ -87,6 +92,7 @@ def main():
                 "--prompt-len", str(args.prompt_len),
                 "--num-images", str(args.num_images),
                 "--num-steps", str(args.num_steps),
+                "--tokens", args.tokens,
             ],
             check=True,
         )

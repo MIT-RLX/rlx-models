@@ -640,6 +640,172 @@ impl Qwen3Runner {
         // tokens every turn).
         generator.generate_cached_until(n_new, self.sample, on_token, |_| {})
     }
+
+    /// Multi-turn continuation. Feeds only the **new** prompt tokens (the delta
+    /// since the last turn) into the resident KV cache instead of re-prefilling
+    /// the whole history, then generates. The first turn (no cache yet) falls
+    /// back to a normal prefill; every later turn skips the O(seq) prefill-graph
+    /// recompile and only pays for its new tokens through the already-compiled
+    /// decode buckets. `on_token` returns false to stop early (e.g. on EOS).
+    /// F32 path only — packed_weights re-prefills every step by design.
+    pub fn generate_continuation_stoppable(
+        &mut self,
+        new_prompt_ids: &[u32],
+        n_new: usize,
+        on_token: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        if self.packed.is_some() {
+            bail!(
+                "generate_continuation_stoppable is F32-only; packed_weights has no persistent \
+                 KV cache. Use generate_stoppable (re-prefills each turn)."
+            );
+        }
+        let generator = self
+            .generator
+            .as_mut()
+            .ok_or_else(|| anyhow!("F32 generator is not available in packed_weights mode"))?;
+        if generator.has_cache() {
+            generator.feed_continuation(new_prompt_ids)?;
+        } else {
+            // First turn: a fresh batched prefill (fast, one forward over the
+            // whole prompt); the cache seeds on the first decode step below.
+            generator.prefill(new_prompt_ids);
+        }
+        generator.generate_cached_until(n_new, self.sample, on_token, |_| {})
+    }
+
+    /// Drop the multi-turn KV cache so the next `generate_continuation_stoppable`
+    /// starts a fresh conversation (a clean prefill). No-op in packed mode.
+    pub fn reset_cache(&mut self) {
+        if let Some(g) = self.generator.as_mut() {
+            g.prefill(&[]);
+        }
+    }
+
+    /// Live context length (tokens in the KV cache + pending), or 0 in packed
+    /// mode. Used by callers to decide when to evict old turns before the
+    /// window fills.
+    pub fn context_len(&self) -> usize {
+        self.generator
+            .as_ref()
+            .map(|g| g.context_len())
+            .unwrap_or(0)
+    }
+
+    /// Pre-compile the decode-bucket graphs up to context length `up_to` so long
+    /// conversations don't stall on a first-use bucket compile mid-reply.
+    /// Returns the number of buckets newly compiled (0 in packed mode).
+    pub fn warm_buckets(&mut self, up_to: usize) -> usize {
+        self.generator
+            .as_mut()
+            .map(|g| g.warm_decode_buckets(up_to))
+            .unwrap_or(0)
+    }
+
+    /// Start recording per-step KV cache/context telemetry on the retention
+    /// manager (no-op unless a retention policy is active). Read back with
+    /// [`take_retention_recorder`](Self::take_retention_recorder).
+    pub fn enable_retention_recording(&mut self) {
+        if let Some(g) = self.generator.as_mut() {
+            g.enable_retention_recording();
+        }
+    }
+    /// Take the recorded cache/context telemetry.
+    pub fn take_retention_recorder(
+        &mut self,
+    ) -> Option<rlx_runtime::kv_metrics::RetentionRecorder> {
+        self.generator
+            .as_mut()
+            .and_then(|g| g.take_retention_recorder())
+    }
+    /// Start recording per-step KV/selection **data** inspection (shape / stats /
+    /// histograms / dataflow). Read back with [`take_inspect_log`](Self::take_inspect_log).
+    pub fn enable_inspect(&mut self) {
+        if let Some(g) = self.generator.as_mut() {
+            g.enable_inspect();
+        }
+    }
+    /// Take the recorded KV/selection inspection log.
+    pub fn take_inspect_log(&mut self) -> Option<rlx_ir::tensor_inspect::InspectLog> {
+        self.generator.as_mut().and_then(|g| g.take_inspect_log())
+    }
+
+    /// Enable the disk-tiered million-token context store as the retention
+    /// backend (see [`Qwen3Generator::enable_kv_store`]).
+    #[cfg(feature = "mmap-kv")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn enable_kv_store(&mut self, cfg: crate::KvStoreConfig) -> anyhow::Result<()> {
+        if let Some(g) = self.generator.as_mut() {
+            g.enable_kv_store(cfg)?;
+        }
+        Ok(())
+    }
+    /// Context-store stats `(blocks, tokens, disk_bytes)`, or `None` if disabled.
+    #[cfg(feature = "mmap-kv")]
+    pub fn kv_store_stats(&self) -> Option<(usize, usize, usize)> {
+        self.generator.as_ref().and_then(|g| g.kv_store_stats())
+    }
+    /// Inject a prebuilt block embedder into the active KV store (dual-encoder).
+    #[cfg(feature = "mmap-kv")]
+    pub fn set_kv_store_embedder(&mut self, embedder: Box<dyn crate::embedder::BlockEmbedder>) {
+        if let Some(g) = self.generator.as_mut() {
+            g.set_kv_store_embedder(embedder);
+        }
+    }
+    /// Set/clear the clean retrieval-query text (the actual question) for the
+    /// KV-store's semantic retrieval — set it right before generating the answer.
+    pub fn set_retrieval_query(&mut self, text: Option<String>) {
+        if let Some(g) = self.generator.as_mut() {
+            g.set_retrieval_query(text);
+        }
+    }
+    /// Token ids retrieved in the last decode step (retrieval-vs-generation split).
+    pub fn last_retrieved_tokens(&self) -> Vec<u32> {
+        self.generator
+            .as_ref()
+            .map(|g| g.last_retrieved_tokens().to_vec())
+            .unwrap_or_default()
+    }
+    /// Suspend/resume the store's decode-time offload+splice while keeping it
+    /// queryable (see [`Qwen3Generator::set_kv_store_suspended`]). For the
+    /// text-reinjection path (D).
+    #[cfg(feature = "mmap-kv")]
+    pub fn set_kv_store_suspended(&mut self, on: bool) {
+        if let Some(g) = self.generator.as_mut() {
+            g.set_kv_store_suspended(on);
+        }
+    }
+    /// Freeze the current token history as the retrieval-span source (for the
+    /// interleave loop's per-hop re-prefills). See
+    /// [`Qwen3Generator::snapshot_retrieval_stream`].
+    #[cfg(feature = "mmap-kv")]
+    pub fn snapshot_retrieval_stream(&mut self) {
+        if let Some(g) = self.generator.as_mut() {
+            g.snapshot_retrieval_stream();
+        }
+    }
+    /// Revert to the live token history for retrieval-span recovery.
+    #[cfg(feature = "mmap-kv")]
+    pub fn clear_retrieval_stream(&mut self) {
+        if let Some(g) = self.generator.as_mut() {
+            g.clear_retrieval_stream();
+        }
+    }
+    /// Read-only top-k retrieval that returns each block's ordered token-id span +
+    /// score (most-relevant first) for re-injection as labeled TEXT
+    /// (see [`Qwen3Generator::retrieve_context_spans`]). Call before any fresh
+    /// prefill/generate.
+    #[cfg(feature = "mmap-kv")]
+    pub fn retrieve_context_spans(
+        &self,
+        topk_override: Option<usize>,
+        context_margin: usize,
+    ) -> Vec<(Vec<u32>, f32)> {
+        self.generator
+            .as_ref()
+            .map(|g| g.retrieve_context_spans(topk_override, context_margin))
+            .unwrap_or_default()
+    }
 }
 
 impl LmRunner for Qwen3Runner {

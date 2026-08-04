@@ -272,6 +272,7 @@ fn run_one(
             device: cfg.device,
             clone: None,
             seed: cfg.seed,
+            deterministic: true,
         }) {
             Ok(s) => {
                 row.ref_ms = Some(s.wall_ms);
@@ -290,6 +291,7 @@ fn run_one(
         device: cfg.device,
         clone: None,
         seed: cfg.seed,
+        deterministic: true,
     }) {
         Ok(s) => s,
         Err(e) => {

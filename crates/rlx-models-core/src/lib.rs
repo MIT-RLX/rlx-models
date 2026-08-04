@@ -33,6 +33,7 @@ pub mod config;
 pub mod dataprocessing;
 pub mod device_capabilities;
 pub mod distributed_bridge;
+pub mod dsv4_opt;
 pub mod dsv4_quant;
 pub mod embedded_safetensors;
 pub mod flow_bridge;
@@ -49,6 +50,7 @@ pub mod mlx_npz_convert;
 pub mod model_registry;
 pub mod moe_weights;
 pub mod prompt_cache;
+pub mod resource;
 pub mod safetensors_checkpoint;
 pub mod standard_decoder;
 pub mod vision_ops_ir;
@@ -147,14 +149,17 @@ pub use model_registry::{
 };
 pub use safetensors_checkpoint::{SafetensorsCheckpoint, SafetensorsMmapLoader};
 pub use standard_decoder::{
-    DecoderSpec, DeepseekSpec, DeepseekV4Spec, Glm4MoeSpec, GptOssSpec, HyV3Spec, KimiLinearSpec,
-    Lfm2Spec, MinimaxSpec, ModelSupport, NemotronHSpec, RopeScaling, build_deepseek_mla,
-    build_deepseek_prefill, build_deepseek_v4_prefill, build_deepseek_v4_stage,
+    CachedExpertSource, DecoderSpec, DeepseekSpec, DeepseekV4Spec, ExpertSource, Glm4MoeSpec,
+    GptOssSpec, HyV3Spec, KimiLinearSpec, Lfm2Spec, MinimaxSpec, ModelSupport, NemotronHSpec,
+    PackedExpertSource, PagedGroupedMoe, PagedMlxExperts, RopeScaling, SharedExpertGpu,
+    build_deepseek_mla, build_deepseek_prefill, build_deepseek_v4_prefill, build_deepseek_v4_stage,
     build_glm4moe_prefill, build_gpt_oss_prefill, build_hc_post, build_hc_pre, build_hc_sinkhorn,
     build_hy_v3_prefill, build_kimi_kda, build_kimi_linear_prefill, build_kv_compressor_overlap,
     build_kv_compressor_pool, build_lfm2_prefill, build_minimax_prefill, build_nemotron_h_prefill,
     build_standard_decoder_packed, build_v4_indexer_score, build_v4_o_lora,
-    build_v4_sink_attention, build_v4_topk_gate, classify_config,
+    build_v4_sink_attention, build_v4_topk_gate, classify_config, deepseek_v4_generate_paged,
+    deepseek_v4_generate_paged_layerwise, dense_swiglu_ffn, hash_route_experts, paged_moe_forward,
+    paged_moe_forward_batched, paged_moe_io_profile_take, paged_moe_route,
 };
 pub use weight_loader::{
     ArcCacheLoader, ArcF32Tensor, GgufLoader, HfTranslatingLoader, WeightLoader,

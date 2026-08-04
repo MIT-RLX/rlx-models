@@ -22,10 +22,17 @@
 
 pub mod common;
 pub mod config;
+pub mod dist;
+#[cfg(feature = "cluster")]
+pub mod dist_experts;
 pub mod flow;
+pub mod io_opt;
 pub mod kda;
+pub mod loader;
 pub mod mla;
 pub mod moe;
+pub mod prelude;
+pub mod runner;
 pub mod vision;
 pub mod wrapper;
 

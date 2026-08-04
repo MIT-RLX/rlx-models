@@ -28,6 +28,7 @@
 pub mod decoder;
 pub mod features;
 pub mod tokens;
+pub mod variant;
 
 #[cfg(feature = "llama")]
 pub mod backbone;
@@ -46,6 +47,7 @@ pub use features::{
 };
 pub use runner::{GenerationConfig, NeuTTS};
 pub use tokens::{NUM_SPEECH_TOKENS, STOP_TOKEN, build_prompt, extract_ids, ids_to_token_str};
+pub use variant::NeuTtsVariant;
 
 #[cfg(feature = "llama")]
 pub use backbone::{BackboneModel, DEFAULT_N_CTX};

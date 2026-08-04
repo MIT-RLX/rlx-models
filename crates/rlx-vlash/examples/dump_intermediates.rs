@@ -36,7 +36,7 @@ use rlx_vlash::config::VlashVariant;
 use rlx_vlash::prefix::{assemble_prefix, build_attn_inputs};
 use rlx_vlash::sample::{sample_actions, time_input};
 use rlx_vlash::vision::{build_vision_flow, extract_vision_embed};
-use rlx_vlash::{VlashConfig, build_denoise_flow, weights};
+use rlx_vlash::{VlashConfig, build_denoise_flow};
 
 fn read_bin(dir: &Path, name: &str) -> Result<Vec<f32>> {
     let p = dir.join(format!("{name}.bin"));
@@ -80,24 +80,36 @@ fn main() -> Result<()> {
     let fixture = fixture.ok_or_else(|| anyhow!("--fixture required"))?;
 
     let cfg = VlashConfig::for_variant(variant);
+    // Accept a checkpoint dir/file or a prepped bundle (model.gguf/model.rlxp).
     let st = {
-        let single = model.join("model.safetensors");
-        if single.is_file() {
-            single.to_string_lossy().into_owned()
-        } else {
+        if model.is_file() {
             model.to_string_lossy().into_owned()
+        } else {
+            let mut chosen = model.join("model.safetensors");
+            for name in ["model.gguf", "model.rlxp"] {
+                let p = model.join(name);
+                if p.is_file() {
+                    chosen = p;
+                    break;
+                }
+            }
+            chosen.to_string_lossy().into_owned()
         }
     };
 
     // Shared inputs from the Python dump.
     let pixel_values = read_bin(&fixture, "pixel_values")?;
-    let token_ids: Vec<i64> = read_bin(&fixture, "token_ids")?.iter().map(|&x| x as i64).collect();
-    let token_mask = read_bin(&fixture, "token_mask").unwrap_or_else(|_| vec![1.0; token_ids.len()]);
+    let token_ids: Vec<i64> = read_bin(&fixture, "token_ids")?
+        .iter()
+        .map(|&x| x as i64)
+        .collect();
+    let token_mask =
+        read_bin(&fixture, "token_mask").unwrap_or_else(|_| vec![1.0; token_ids.len()]);
     let state = read_bin(&fixture, "state_padded")?;
     let noise = read_bin(&fixture, "noise")?;
 
     println!("Loading rlx-vlash {} from {st}…", variant.as_str());
-    let mut wm = weights::load_remapped(&st)?;
+    let mut wm = rlx_vlash::prep::load_prepped(&st)?;
     let vision_embed = extract_vision_embed(&mut wm, &cfg.vision)?;
     let (embed_tokens, embed_shape) = wm.take("vlm.embed_tokens.weight").context("embed_tokens")?;
     let vocab = embed_shape[0];

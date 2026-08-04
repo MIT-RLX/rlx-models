@@ -1,0 +1,33 @@
+[package]
+name = "rlx-hviske"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Hviske Danish ASR on RLX — a Whisper-large-v3 finetune preset over rlx-whisper"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow      = { workspace = true }
+rlx-whisper = { workspace = true }
+
+[features]
+default = []
+# Backend support is inherited from rlx-whisper — forward the feature flags so
+# `--features all-backends` (or a specific backend) lights up the whole stack.
+metal        = ["rlx-whisper/metal"]
+mlx          = ["rlx-whisper/mlx"]
+cuda         = ["rlx-whisper/cuda"]
+rocm         = ["rlx-whisper/rocm"]
+gpu          = ["rlx-whisper/gpu"]
+vulkan       = ["rlx-whisper/vulkan"]
+coreml       = ["rlx-whisper/coreml"]
+all-backends = ["rlx-whisper/all-backends"]
+silero-vad   = ["rlx-whisper/silero-vad"]
+diarize      = ["rlx-whisper/diarize"]
+
+[lints]
+workspace = true

@@ -26,6 +26,7 @@ pub mod config;
 pub mod dsp;
 pub mod gguf_bundle;
 pub mod native;
+pub mod variant;
 
 pub use config::{BuiltinVoice, CodecInfo, Manifest, TtsConfig};
 pub use dsp::{TightenOpts, tighten_pauses};
@@ -35,6 +36,7 @@ pub use gguf_bundle::{
 };
 pub use native::{MossNative, NativeOpts};
 pub use rlx_runtime::{Device, parse_device};
+pub use variant::MossVariant;
 
 /// Weights repo (Apache-2.0). Prefer packed `moss-nano.rlxp` from [`HF_REPO`].
 /// Legacy `moss-nano.gguf` and local loose ONNX still load for rebuilds.

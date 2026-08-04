@@ -1,0 +1,17 @@
+[package]
+name = "rlx-rvc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "RVC retrieval-based voice conversion on RLX — config + retrieval feature blend + F0 pitch-shift"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

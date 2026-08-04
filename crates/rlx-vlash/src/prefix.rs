@@ -104,14 +104,14 @@ pub fn suffix_att_pad(cfg: &VlashConfig) -> (Vec<i32>, Vec<bool>) {
             let mut att = Vec::with_capacity(1 + chunk);
             att.push(1); // state token opens a block
             att.push(1); // first action token opens a block
-            att.extend(std::iter::repeat(0).take(chunk - 1));
+            att.extend(std::iter::repeat_n(0, chunk - 1));
             let pad = vec![true; 1 + chunk];
             (att, pad)
         }
         VlashVariant::Pi05 => {
             let mut att = Vec::with_capacity(chunk);
             att.push(1);
-            att.extend(std::iter::repeat(0).take(chunk - 1));
+            att.extend(std::iter::repeat_n(0, chunk - 1));
             let pad = vec![true; chunk];
             (att, pad)
         }

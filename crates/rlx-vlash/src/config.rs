@@ -227,7 +227,9 @@ impl VlashConfig {
             max_period: 4.0,
             tokenizer_max_length: 200,
             image_size: 224,
-            state_cond: true,
+            // `lerobot/pi05_base` ships no state-conditioning weights
+            // (`state_cond=false`); fine-tuned π₀.₅ variants may enable it.
+            state_cond: false,
         }
     }
 

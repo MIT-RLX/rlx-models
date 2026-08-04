@@ -95,7 +95,11 @@ pub fn dequant_fp4_block(
     for r in 0..rows {
         for c in 0..cols {
             let byte = packed[r * bytes_per_row + c / 2];
-            let nib = if c % 2 == 0 { byte & 0x0F } else { (byte >> 4) & 0x0F };
+            let nib = if c % 2 == 0 {
+                byte & 0x0F
+            } else {
+                (byte >> 4) & 0x0F
+            };
             let s = block_scales[r * sc_cols + c / block];
             out[r * cols + c] = E2M1_TABLE[nib as usize] * s;
         }
@@ -112,17 +116,20 @@ mod tests {
         // (byte, expected) — hand-derived from the e4m3fn spec.
         let cases = [
             (0x00u8, 0.0f32),
-            (0x38, 1.0),   // exp 7, mant 0
-            (0x3F, 1.875), // exp 7, mant 7 → 1+7/8
-            (0x40, 2.0),   // exp 8
-            (0x78, 256.0), // exp 15, mant 0 → 2^8
-            (0x7E, 448.0), // exp 15, mant 6 → 2^8·1.75 (max finite)
-            (0xB8, -1.0),  // sign, exp 7
+            (0x38, 1.0),         // exp 7, mant 0
+            (0x3F, 1.875),       // exp 7, mant 7 → 1+7/8
+            (0x40, 2.0),         // exp 8
+            (0x78, 256.0),       // exp 15, mant 0 → 2^8
+            (0x7E, 448.0),       // exp 15, mant 6 → 2^8·1.75 (max finite)
+            (0xB8, -1.0),        // sign, exp 7
             (0x01, 0.001953125), // subnormal 2^-9
         ];
         for (b, want) in cases {
             let got = e4m3fn_to_f32(b);
-            assert!((got - want).abs() < 1e-6, "e4m3 {b:#04x} = {got} want {want}");
+            assert!(
+                (got - want).abs() < 1e-6,
+                "e4m3 {b:#04x} = {got} want {want}"
+            );
         }
         assert!(e4m3fn_to_f32(0x7F).is_nan());
         assert!(e4m3fn_to_f32(0xFF).is_nan());
@@ -164,7 +171,12 @@ mod tests {
         let out = dequant_fp4_block(&packed, &scales, rows, cols, block);
         let want = [0.5 * 2.0, 1.0 * 2.0, 1.5 * 4.0, 2.0 * 4.0];
         for i in 0..cols {
-            assert!((out[i] - want[i]).abs() < 1e-6, "fp4 col {i} = {} want {}", out[i], want[i]);
+            assert!(
+                (out[i] - want[i]).abs() < 1e-6,
+                "fp4 col {i} = {} want {}",
+                out[i],
+                want[i]
+            );
         }
     }
 

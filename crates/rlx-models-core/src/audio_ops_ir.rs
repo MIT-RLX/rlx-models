@@ -827,7 +827,8 @@ mod tests {
     }
 
     fn gpu_devices() -> Vec<Device> {
-        let v = vec![Device::Cpu];
+        #[allow(unused_mut)]
+        let mut v = vec![Device::Cpu];
         #[cfg(feature = "metal")]
         if rlx_runtime::is_available(Device::Metal) {
             v.push(Device::Metal);
