@@ -60,6 +60,7 @@ pub fn build_qwen3_graph_sized(
         with_kv_outputs,
         with_qk_outputs: false,
         last_logits_only: false,
+        packed: false,
         profile: None,
         rope_cos: None,
         rope_sin: None,
@@ -83,6 +84,7 @@ pub fn build_qwen3_graph_sized_last_logits(
         with_kv_outputs,
         with_qk_outputs: false,
         last_logits_only: true,
+        packed: false,
         profile: None,
         rope_cos: None,
         rope_sin: None,
@@ -90,6 +92,40 @@ pub fn build_qwen3_graph_sized_last_logits(
     rlx_core::flow_util::graph_from_built(crate::flow::build_qwen3_prefill_built(
         cfg, weights, &opts,
     )?)
+}
+
+/// **Native packed** prefill-seed graph **with its packed parts**: last-position
+/// logits + per-layer K/V side outputs, with the linear projections lowered to
+/// `Op::DequantMatMul` straight from the GGUF (weights stay packed). Returns the
+/// triple `(graph, f32_params, packed_params)` — the U8 K-quant blobs bind via
+/// `set_param_typed`. Seeds a native-packed decode with no F32 weight residency.
+#[allow(clippy::type_complexity)]
+pub fn build_qwen3_graph_sized_last_logits_packed(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    seq: usize,
+    with_kv_outputs: bool,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>)> {
+    let opts = crate::flow::Qwen3PrefillOpts {
+        batch,
+        seq,
+        with_lm_head: true,
+        with_kv_outputs,
+        with_qk_outputs: false,
+        last_logits_only: true,
+        packed: true,
+        profile: None,
+        rope_cos: None,
+        rope_sin: None,
+    };
+    let mut built = crate::flow::build_qwen3_prefill_built(cfg, weights, &opts)?;
+    let packed_params: Vec<(String, Vec<u8>)> = std::mem::take(&mut built.typed_params)
+        .into_iter()
+        .map(|(name, bytes, _dtype)| (name, bytes))
+        .collect();
+    let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
+    Ok((graph, params, packed_params))
 }
 
 /// Attention mask from config: a sliding window when the model enables one
@@ -161,6 +197,7 @@ pub fn build_qwen3_decode_hir_sized_ext(
         use_custom_mask,
         ragged_rope: false,
         export_qk: false,
+        packed: false,
         profile: None,
     };
     build_qwen3_decode_flow(cfg, weights, &opts)
@@ -193,63 +230,130 @@ pub fn build_qwen3_decode_graph_sized_ext(
         use_custom_mask,
         ragged_rope: false,
         export_qk: false,
+        packed: false,
         profile: None,
     };
     build_qwen3_decode_graph(cfg, weights, &opts)
 }
 
-/// Oneshot decode builder that ALSO exports the per-layer post-RoPE query
-/// (`q_rope`) after logits + K + V. Output order is:
-/// `logits, K_0, V_0, …, K_{L-1}, V_{L-1}, q_0, q_1, …, q_{L-1}` — read the
-/// trailing `L` q tensors with [`split_decode_logits_kv_aux`] (`num_aux = L`).
+/// Emit a sized `(batch, past_seq)` decode-graph builder: fill a
+/// [`Qwen3DecodeOpts`](crate::flow::Qwen3DecodeOpts) with the listed field
+/// overrides (everything else defaulted) and delegate to
+/// [`build_qwen3_decode_graph`](crate::flow::build_qwen3_decode_graph). One
+/// line per variant keeps the near-identical wrappers in sync — adding a new
+/// axis (e.g. `packed`) is a `Default` field plus one override here.
+macro_rules! sized_decode_graph {
+    (
+        $(#[$meta:meta])*
+        $name:ident $(, $field:ident : $val:expr)* $(,)?
+    ) => {
+        $(#[$meta])*
+        pub fn $name(
+            cfg: &Qwen3Config,
+            weights: &mut dyn WeightLoader,
+            batch: usize,
+            past_seq: usize,
+        ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+            let opts = crate::flow::Qwen3DecodeOpts {
+                batch,
+                past_seq,
+                $($field: $val,)*
+                ..Default::default()
+            };
+            crate::flow::build_qwen3_decode_graph(cfg, weights, &opts)
+        }
+    };
+}
+
+sized_decode_graph!(
+    /// Oneshot decode builder that ALSO exports the per-layer post-RoPE query
+    /// (`q_rope`) after logits + K + V. Output order is:
+    /// `logits, K_0, V_0, …, K_{L-1}, V_{L-1}, q_0, q_1, …, q_{L-1}` — read the
+    /// trailing `L` q tensors with [`split_decode_logits_kv_aux`] (`num_aux = L`).
+    ///
+    /// Used by the retrieval KV-store path to score cached blocks by the model's
+    /// actual attention query (Q·K) instead of a key-self-similarity proxy (K·K).
+    /// Specialized to the exact `past_seq` (causal mask, no mask input).
+    build_qwen3_decode_graph_sized_qk,
+    export_qk: true,
+);
+
+sized_decode_graph!(
+    /// Decode builder for **ragged** batched decode: a per-sequence RoPE table
+    /// (`rope_cos`/`rope_sin` shaped `[batch, head_dim/2]`) plus the custom mask,
+    /// so each sequence in the batch may sit at a different absolute position /
+    /// cache length. Otherwise identical to `_ext` with `use_custom_mask = true`.
+    build_qwen3_decode_graph_sized_ragged,
+    use_custom_mask: true,
+    ragged_rope: true,
+);
+
+/// **Native packed** m=1 decode graph **with its packed parts**. The linear
+/// projections lower to fused `Op::DequantMatMul` over the GGUF/MLX quant blobs
+/// (weights stay packed) instead of dequantizing to F32 — the low-memory,
+/// no-rewrite decode graph that replaces re-running the prefill graph each token
+/// in packed mode.
 ///
-/// Used by the retrieval KV-store path to score cached blocks by the model's
-/// actual attention query (Q·K) instead of a key-self-similarity proxy (K·K).
-/// Specialized to the exact `past_seq` (causal mask, no mask input), matching
-/// [`build_qwen3_decode_graph_sized`].
-pub fn build_qwen3_decode_graph_sized_qk(
+/// Unlike the F32 sized builders this returns a **triple**: the MIR graph, the
+/// F32 params (embeddings / norms / RoPE), and the U8 K-quant blobs
+/// (`name → bytes`) for the DequantMatMul weights. Feed it straight into
+/// [`rlx_core::run_bucketed_kv_decode_packed`]. Requires a packed-capable
+/// `WeightLoader` (K-quant tensors); non-quant keys fall back to F32.
+#[allow(clippy::type_complexity)]
+pub fn build_qwen3_decode_graph_sized_packed(
     cfg: &Qwen3Config,
     weights: &mut dyn WeightLoader,
     batch: usize,
     past_seq: usize,
-) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
-    use crate::flow::{Qwen3DecodeOpts, build_qwen3_decode_graph};
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>)> {
+    use crate::flow::{Qwen3DecodeOpts, build_qwen3_decode_built};
 
     let opts = Qwen3DecodeOpts {
         batch,
         past_seq,
-        dynamic_past: false,
-        use_custom_mask: false,
-        ragged_rope: false,
-        export_qk: true,
-        profile: None,
+        packed: true,
+        ..Default::default()
     };
-    build_qwen3_decode_graph(cfg, weights, &opts)
+    let mut built = build_qwen3_decode_built(cfg, weights, &opts)?;
+    // Move the U8 blobs out before lowering (the graph keeps only the U8 param
+    // *placeholders*; the bytes ride alongside for the runner to bind).
+    let packed_params: Vec<(String, Vec<u8>)> = std::mem::take(&mut built.typed_params)
+        .into_iter()
+        .map(|(name, bytes, _dtype)| (name, bytes))
+        .collect();
+    let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
+    Ok((graph, params, packed_params))
 }
 
-/// Decode builder for **ragged** batched decode: a per-sequence RoPE table
-/// (`rope_cos`/`rope_sin` shaped `[batch, head_dim/2]`) plus the custom mask, so
-/// each sequence in the batch may sit at a different absolute position / cache
-/// length. The graph is otherwise identical to
-/// [`build_qwen3_decode_graph_sized_ext`] with `use_custom_mask = true`.
-pub fn build_qwen3_decode_graph_sized_ragged(
+/// **Native packed** ragged decode graph: per-sequence RoPE (`[batch, half]`) +
+/// custom mask (like [`build_qwen3_decode_graph_sized_ragged`]) with
+/// `Op::DequantMatMul` projections over the packed GGUF blobs. The ragged
+/// analogue of [`build_qwen3_decode_graph_sized_packed`] — fuses concurrent
+/// requests at MIXED cache lengths without F32 weight residency.
+#[allow(clippy::type_complexity)]
+pub fn build_qwen3_decode_graph_sized_ragged_packed(
     cfg: &Qwen3Config,
     weights: &mut dyn WeightLoader,
     batch: usize,
     past_seq: usize,
-) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
-    use crate::flow::{Qwen3DecodeOpts, build_qwen3_decode_graph};
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>)> {
+    use crate::flow::{Qwen3DecodeOpts, build_qwen3_decode_built};
 
     let opts = Qwen3DecodeOpts {
         batch,
         past_seq,
-        dynamic_past: false,
+        packed: true,
         use_custom_mask: true,
         ragged_rope: true,
-        export_qk: false,
-        profile: None,
+        ..Default::default()
     };
-    build_qwen3_decode_graph(cfg, weights, &opts)
+    let mut built = build_qwen3_decode_built(cfg, weights, &opts)?;
+    let packed_params: Vec<(String, Vec<u8>)> = std::mem::take(&mut built.typed_params)
+        .into_iter()
+        .map(|(name, bytes, _dtype)| (name, bytes))
+        .collect();
+    let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
+    Ok((graph, params, packed_params))
 }
 
 // ────────────────────────────────────────────────────────────────

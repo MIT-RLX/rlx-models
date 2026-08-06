@@ -38,7 +38,7 @@ use rlx_ir::shape::Dim;
 use rlx_ir::{DType, Shape};
 
 use super::config::Qwen3Config;
-use rlx_core::flow_bridge::WeightLoaderSource;
+use rlx_core::flow_bridge::{PackedWeightLoaderSource, WeightLoaderSource};
 use rlx_core::weight_loader::WeightLoader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +56,10 @@ pub struct Qwen3PrefillOpts {
     /// Export post-RoPE Q and GQA-expanded K per layer (AIF / attention probe).
     pub with_qk_outputs: bool,
     pub last_logits_only: bool,
+    /// Lower the linear projections to fused `Op::DequantMatMul` over packed
+    /// GGUF/MLX blobs instead of dequantizing to F32 (see the same flag on
+    /// [`Qwen3DecodeOpts`]). Requires a packed-capable `WeightLoader`.
+    pub packed: bool,
     pub profile: Option<CompileProfile>,
     /// When set, use these tables (`[seq, head_dim/2]`) instead of config-derived RoPE.
     pub rope_cos: Option<Vec<f32>>,
@@ -71,6 +75,7 @@ impl Qwen3PrefillOpts {
             with_kv_outputs: false,
             with_qk_outputs: false,
             last_logits_only: false,
+            packed: false,
             profile: None,
             rope_cos: None,
             rope_sin: None,
@@ -92,6 +97,12 @@ pub struct Qwen3DecodeOpts {
     pub ragged_rope: bool,
     /// Export post-RoPE Q and GQA-expanded K side outputs per layer (AIF decode probe).
     pub export_qk: bool,
+    /// Lower the linear projections to fused `Op::DequantMatMul` over packed
+    /// GGUF/MLX quant blobs instead of dequantizing to F32. Requires a
+    /// packed-capable `WeightLoader` (K-quant tensors). Gives an m=1 decode
+    /// graph that keeps the big projection weights packed — the low-memory,
+    /// no-rewrite alternative to re-running the prefill graph each token.
+    pub packed: bool,
     pub profile: Option<CompileProfile>,
 }
 
@@ -104,6 +115,7 @@ impl Default for Qwen3DecodeOpts {
             use_custom_mask: false,
             ragged_rope: false,
             export_qk: false,
+            packed: false,
             profile: None,
         }
     }
@@ -239,6 +251,7 @@ impl Qwen3Flow<'_> {
             with_kv_outputs: self.with_kv_outputs,
             with_qk_outputs: self.with_qk_outputs,
             last_logits_only: self.last_logits_only,
+            packed: false,
             profile: self.profile,
             rope_cos: None,
             rope_sin: None,
@@ -253,6 +266,7 @@ impl Qwen3Flow<'_> {
             use_custom_mask: self.use_custom_mask,
             ragged_rope: false,
             export_qk: false,
+            packed: false,
             profile: self.profile,
         }
     }
@@ -331,10 +345,10 @@ pub fn build_qwen3_prefill_built(
     let mut built = if opts.with_lm_head {
         flow.raw_stage(qwen3_lm_head_stage(cfg))
             .output("logits")
-            .build(&mut WeightLoaderSource(weights))?
+            .build(decode_weight_source(weights, opts.packed).as_mut())?
     } else {
         flow.output("hidden_states")
-            .build(&mut WeightLoaderSource(weights))?
+            .build(decode_weight_source(weights, opts.packed).as_mut())?
     };
 
     if opts.with_kv_outputs {
@@ -345,6 +359,20 @@ pub fn build_qwen3_prefill_built(
         built = built.with_extra_hir_outputs(extra);
     }
     Ok(built)
+}
+
+/// Pick the flow weight source for a decode build: packed lowers the linear
+/// projections to `Op::DequantMatMul` (K-quant blobs stay packed), F32
+/// dequantizes as before. Boxed so both arms share one call site.
+fn decode_weight_source<'a>(
+    weights: &'a mut dyn WeightLoader,
+    packed: bool,
+) -> Box<dyn rlx_flow::WeightSource + 'a> {
+    if packed {
+        Box::new(PackedWeightLoaderSource(weights))
+    } else {
+        Box::new(WeightLoaderSource(weights))
+    }
 }
 
 pub fn build_qwen3_decode_built(
@@ -385,7 +413,16 @@ pub fn build_qwen3_decode_built(
             kv_dt,
         )
     } else {
-        Shape::new(&[batch, opts.past_seq, kv_dim], kv_dt)
+        // In-place KV (`RLX_QWEN3_INPLACE_KV`) needs one extra row so the
+        // KvAppend output (`[batch, past_seq+1, kv_dim]`) can alias this buffer.
+        Shape::new(
+            &[
+                batch,
+                opts.past_seq + rlx_ir::env::flag("RLX_QWEN3_INPLACE_KV") as usize,
+                kv_dim,
+            ],
+            kv_dt,
+        )
     };
 
     let decode_spec = Qwen3DecodeLayerSpec {
@@ -438,7 +475,7 @@ pub fn build_qwen3_decode_built(
         .final_norm(eps)
         .raw_stage(qwen3_lm_head_stage(cfg))
         .output("logits")
-        .build(&mut WeightLoaderSource(weights))?;
+        .build(decode_weight_source(weights, opts.packed).as_mut())?;
     let mut extra = kv_out.drain();
     if opts.export_qk {
         extra.extend(qk_out.drain());
@@ -486,7 +523,16 @@ pub fn build_qwen3_decode_embeds_built(
             kv_dt,
         )
     } else {
-        Shape::new(&[batch, opts.past_seq, kv_dim], kv_dt)
+        // In-place KV (`RLX_QWEN3_INPLACE_KV`) needs one extra row so the
+        // KvAppend output (`[batch, past_seq+1, kv_dim]`) can alias this buffer.
+        Shape::new(
+            &[
+                batch,
+                opts.past_seq + rlx_ir::env::flag("RLX_QWEN3_INPLACE_KV") as usize,
+                kv_dim,
+            ],
+            kv_dt,
+        )
     };
 
     let decode_spec = Qwen3DecodeLayerSpec {

@@ -234,7 +234,18 @@ fn main() {
     let real = std::env::args().nth(2).as_deref() == Some("real");
     let mut rng = Philox4x32::new(0x9E37);
 
-    let (cfg, graph, params, seq) = if real {
+    // `... <csv> decode` → inspect the m=1 KV-cache DECODE graph (the one skill
+    // actually optimizes) instead of prefill. Structural dataflow / op-cost /
+    // roofline / fusion-pattern analysis is what matters; the graph isn't run.
+    let want_decode = std::env::args().any(|a| a == "decode");
+    let (cfg, graph, params, seq) = if want_decode {
+        let cfg = qwen3_config();
+        let past = 32usize;
+        let mut wm = random_weights(&cfg, &mut rng);
+        let (g, p) = rlx_qwen3::build_qwen3_decode_graph_sized(&cfg, &mut wm, 1, past)
+            .expect("build qwen3 decode graph");
+        (cfg, g, p, 1usize)
+    } else if real {
         let dir = Path::new("/Users/Shared/rlx-models/weights/lm/qwen3-0.6b");
         let cfg = Qwen3Config::from_file(&dir.join("config.json")).expect("qwen3 config.json");
         // WeightMap::from_file auto-converts BF16 → f32; pass the FILE not the dir.
@@ -291,10 +302,17 @@ fn main() {
 
     // ── Structural ──
     println!("[struct] top repeated dataflow blocks (fusion candidates):");
-    for p in repeated_flow_patterns(&graph, 3, 5, 2).iter().take(3) {
+    for p in repeated_flow_patterns(&graph, 3, 5, 2).iter().take(12) {
         println!("   ×{} d{}  {}", p.count, p.depth, p.tree);
     }
     println!();
+
+    // Decode graph inputs (input_ids[1,1] + rope + past_k/v) differ from the
+    // prefill-shaped stat-injection run below, so stop after the static dataflow
+    // inspect (op-costs / roofline / GEMM shapes / fusion patterns) for decode.
+    if want_decode {
+        return;
+    }
 
     // ── Inject value + attention sketches, then run ──
     let scfg = StatConfig::default();

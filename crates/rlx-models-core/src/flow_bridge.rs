@@ -39,6 +39,47 @@ impl rlx_flow::WeightSource for WeightLoaderSource<'_> {
             self.0.take(key)
         }
     }
+    // `take_packed` intentionally left at the trait default (`None`): the plain
+    // adapter always dequantizes to F32, so existing flows are unchanged.
+}
+
+/// Packed-aware [`WeightLoader`] → [`rlx_flow::WeightSource`] adapter.
+///
+/// Identical to [`WeightLoaderSource`] for F32 weights, but also serves GGUF/MLX
+/// quant blobs via [`rlx_flow::WeightSource::take_packed`], so the flow builder
+/// emits fused `DequantMatMul` projections instead of dequantizing to F32 — one
+/// packed graph that runs at any `m` (m=1 decode, m=N prefill). Opt-in: only
+/// flows explicitly built with this adapter go packed, so no existing path
+/// changes behavior. Any model can adopt packed matmuls just by building its
+/// flow through this wrapper.
+pub struct PackedWeightLoaderSource<'a>(pub &'a mut dyn WeightLoader);
+
+impl rlx_flow::WeightSource for PackedWeightLoaderSource<'_> {
+    fn take(&mut self, key: &str, transpose: bool) -> anyhow::Result<(Vec<f32>, Vec<usize>)> {
+        if transpose {
+            self.0.take_transposed(key)
+        } else {
+            self.0.take(key)
+        }
+    }
+
+    /// Hand the flow builder the GGUF/MLX quant blob so `linear` emits a fused
+    /// `DequantMatMul` instead of dequantizing to F32. `PackedWeightTensor` is
+    /// `(w_q, scheme, [out_dim, in_dim])`; bias (when any) is applied by the
+    /// caller as a separate add, matching the F32 matmul path.
+    fn take_packed(&mut self, key: &str) -> anyhow::Result<Option<rlx_flow::GgufPackedLinear>> {
+        Ok(self.0.take_packed(key)?.map(|(w_q, scheme, shape)| {
+            let out_dim = shape.first().copied().unwrap_or(0);
+            let in_dim = shape.get(1).copied().unwrap_or(0);
+            rlx_flow::GgufPackedLinear {
+                w_q,
+                scheme,
+                in_dim,
+                out_dim,
+                bias: Vec::new(),
+            }
+        }))
+    }
 }
 
 /// Load a tier-1 profile from disk; fall back to `default` when missing or invalid.

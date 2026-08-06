@@ -52,12 +52,23 @@ Prefill and KV-cache decode run on every standard RLX backend when the matching 
 ## Examples
 
 ```bash
-cargo run -p rlx-qwen3 --release --example decode_bench      -- --weights model.gguf
-cargo run -p rlx-qwen3 --release --example roundtrip_bench   -- --weights model.gguf
-cargo run -p rlx-qwen3 --release --example qwen3_pipeline    -- --weights model.gguf
+cargo run -p rlx-qwen3 --release --example decode_bench         -- --weights model.gguf
+cargo run -p rlx-qwen3 --release --example roundtrip_bench      -- --weights model.gguf
+cargo run -p rlx-qwen3 --release --example qwen3_pipeline       -- --weights model.gguf
+# batched / serving throughput curve (PACKED=1, RESIDENT=1, RAGGED=1 env toggles):
+cargo run -p rlx-qwen3 --release --features metal --example batched_decode_bench -- <weights-dir>
 ```
 
 `pipeline_bench` / `pipeline_multiproc` exercise the block-pipelined ([`BlockSpec`](src/pipeline.rs)) prefill/decode stages.
+
+## Performance & throughput
+
+Packed (Q4) decode, the SIMD quant-GEMV kernels, resident KV, flash-decode, and
+the **batched / serving throughput** stack (uniform + ragged, packed +
+resident-KV — fuse concurrent requests at mixed lengths) are documented in
+[`docs/qwen3-packed-decode-throughput.md`](../../docs/qwen3-packed-decode-throughput.md).
+The earlier F16-weight single-stream path is in
+[`rlx/docs/metal-qwen3-decode-perf.md`](../../../rlx/docs/metal-qwen3-decode-perf.md).
 
 ## How it fits
 

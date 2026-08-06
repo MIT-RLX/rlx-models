@@ -40,13 +40,37 @@ pub fn resolve_tokenizer_path(weights: &Path, explicit: Option<&Path>) -> Option
         .filter(|p| p.is_file())
 }
 
+/// Path-keyed cache of parsed tokenizers. Building a `tokenizers::Tokenizer`
+/// means reading + parsing a multi-MB `tokenizer.json` (or rebuilding a BPE from
+/// GGUF metadata). Streaming decode calls the detokenizer **once per generated
+/// token**, so doing that per call dominated decode latency (device-independent,
+/// ~10-50×). Cache it so the parse happens once per file.
+#[cfg(feature = "qwen35-tokenizer")]
+pub(crate) fn cached_tokenizer(
+    key: &Path,
+    build: impl FnOnce() -> Result<tokenizers::Tokenizer>,
+) -> Result<std::sync::Arc<tokenizers::Tokenizer>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<tokenizers::Tokenizer>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(tok) = cache.lock().unwrap().get(key) {
+        return Ok(tok.clone());
+    }
+    let tok = Arc::new(build()?);
+    cache.lock().unwrap().insert(key.to_path_buf(), tok.clone());
+    Ok(tok)
+}
+
 /// Encode `text` to token ids using a HuggingFace tokenizer file.
 #[cfg(feature = "qwen35-tokenizer")]
 pub fn encode_prompt(tokenizer_path: &Path, text: &str) -> Result<Vec<u32>> {
-    let data = std::fs::read_to_string(tokenizer_path)
-        .with_context(|| format!("read tokenizer {}", tokenizer_path.display()))?;
-    let tok: tokenizers::Tokenizer = tokenizers::Tokenizer::from_bytes(data.as_bytes())
-        .map_err(|e| anyhow::anyhow!("parse tokenizer.json: {e}"))?;
+    let tok = cached_tokenizer(tokenizer_path, || {
+        let data = std::fs::read_to_string(tokenizer_path)
+            .with_context(|| format!("read tokenizer {}", tokenizer_path.display()))?;
+        tokenizers::Tokenizer::from_bytes(data.as_bytes())
+            .map_err(|e| anyhow::anyhow!("parse tokenizer.json: {e}"))
+    })?;
     let enc = tok
         .encode(text, false)
         .map_err(|e| anyhow::anyhow!("tokenize: {e}"))?;
@@ -199,10 +223,12 @@ pub fn encode_prompt_from_gguf(_weights: &Path, _text: &str) -> Result<Vec<u32>>
 /// `skip_special_tokens=true` drops `<|im_end|>` / `<|endoftext|>` etc.
 #[cfg(feature = "qwen35-tokenizer")]
 pub fn decode_ids(tokenizer_path: &Path, ids: &[u32], skip_special_tokens: bool) -> Result<String> {
-    let data = std::fs::read_to_string(tokenizer_path)
-        .with_context(|| format!("read tokenizer {}", tokenizer_path.display()))?;
-    let tok: tokenizers::Tokenizer = tokenizers::Tokenizer::from_bytes(data.as_bytes())
-        .map_err(|e| anyhow::anyhow!("parse tokenizer.json: {e}"))?;
+    let tok = cached_tokenizer(tokenizer_path, || {
+        let data = std::fs::read_to_string(tokenizer_path)
+            .with_context(|| format!("read tokenizer {}", tokenizer_path.display()))?;
+        tokenizers::Tokenizer::from_bytes(data.as_bytes())
+            .map_err(|e| anyhow::anyhow!("parse tokenizer.json: {e}"))
+    })?;
     tok.decode(ids, skip_special_tokens)
         .map_err(|e| anyhow::anyhow!("detokenize: {e}"))
 }
@@ -224,6 +250,7 @@ pub fn decode_ids_from_gguf(
     ids: &[u32],
     skip_special_tokens: bool,
 ) -> Result<String> {
+    let tok = cached_tokenizer(weights, || {
     use rlx_gguf::{GgufFile, MetaValue};
     use tokenizers::Tokenizer;
     use tokenizers::models::bpe::BPE;
@@ -312,6 +339,8 @@ pub fn decode_ids_from_gguf(
         }
     }
 
+    Ok(tok)
+    })?;
     tok.decode(ids, skip_special_tokens)
         .map_err(|e| anyhow::anyhow!("detokenize: {e}"))
 }

@@ -28,6 +28,7 @@ pub mod dist_experts;
 pub mod flow;
 pub mod io_opt;
 pub mod kda;
+pub mod kda_chunk;
 pub mod loader;
 pub mod mla;
 pub mod moe;

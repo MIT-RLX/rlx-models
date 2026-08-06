@@ -73,7 +73,8 @@ pub use sampling::{
 };
 pub use spec::Qwen3Speculator;
 pub use tool_call::{
-    ToolCall, ToolSpec, has_tool_call, parse_tool_calls, render_tool_response, render_tools_system,
+    ToolCall, ToolResultCache, ToolSpec, ToolsSystemPromptCache, has_tool_call, parse_tool_calls,
+    render_tool_response, render_tools_system,
 };
 
 /// One-import DX surface for downstream users — the runner + generation config,
@@ -88,8 +89,8 @@ pub mod prelude {
     };
     pub use crate::sampling::{SampleOpts, sample_token};
     pub use crate::tool_call::{
-        ToolCall, ToolSpec, has_tool_call, parse_tool_calls, render_tool_response,
-        render_tools_system,
+        ToolCall, ToolResultCache, ToolSpec, ToolsSystemPromptCache, has_tool_call,
+        parse_tool_calls, render_tool_response, render_tools_system,
     };
     // Needed by every runner call site.
     #[cfg(feature = "mmap-kv")]

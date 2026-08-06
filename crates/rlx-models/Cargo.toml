@@ -177,6 +177,10 @@ embed = ["dep:rlx-embed", "rlx-embed/embed"]
 flux2 = ["dep:rlx-flux2"]
 diamond = ["dep:rlx-diamond"]
 qwen3 = ["dep:rlx-qwen3"]
+# Long-context KV: disk-tiered HNSW context store (`mmap-kv`) and the optional
+# dual-encoder for semantic block retrieval (`dual-encoder`, pulls rlx-embed).
+mmap-kv = ["qwen3", "rlx-qwen3?/mmap-kv"]
+dual-encoder = ["mmap-kv", "rlx-qwen3?/dual-encoder"]
 qwen35 = ["dep:rlx-qwen35"]
 minimax = ["dep:rlx-minimax"]
 fara = ["dep:rlx-fara", "qwen35"]

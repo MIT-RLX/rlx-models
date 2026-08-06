@@ -50,25 +50,29 @@ fn main() -> anyhow::Result<()> {
     let _ = generator.prefill_get_last_logits(&prompt)?;
     let l_f32 = generator.decode_get_logits(next)?;
 
-    // --- packed decode (same prefill state) ---
+    // --- NATIVE packed path: prefill-seed AND decode ---
+    // Enable native packed BEFORE the prefill, so both the prefill-seed and the
+    // decode step build their graphs with `Op::DequantMatMul` projections
+    // straight from the GGUF (weights stay packed — no F32 residency). Both
+    // `run_prefill_with_cache` and `decode_get_logits` honor `native_packed_gguf`,
+    // so this exercises the exact production graphs on both sides.
+    generator.enable_native_packed_decode_from_gguf(&gguf)?;
+    assert!(
+        generator.has_native_packed_decode(),
+        "native packed decode not enabled"
+    );
     let _ = generator.prefill_get_last_logits(&prompt)?;
-    let n = generator.enable_packed_decode_from_gguf(&gguf)?;
-    eprintln!("[parity] packed linears: {n}");
-    if n == 0 {
-        anyhow::bail!("no linears packed — is this a K-quant GGUF?");
-    }
-    assert!(generator.has_packed_decode(), "packed decode not enabled");
-    let l_packed = generator.decode_get_logits(next)?;
+    let l_native = generator.decode_get_logits(next)?;
 
     // --- compare ---
-    let cos = cosine(&l_f32, &l_packed);
+    let cos = cosine(&l_f32, &l_native);
     let maxabs = l_f32
         .iter()
-        .zip(&l_packed)
+        .zip(&l_native)
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     let am_f32 = l_f32.iter().cloned().fold(f32::MIN, f32::max);
-    let am_pk = l_packed.iter().cloned().fold(f32::MIN, f32::max);
+    let am_nat = l_native.iter().cloned().fold(f32::MIN, f32::max);
     let argmax = |v: &[f32]| {
         v.iter()
             .enumerate()
@@ -77,19 +81,19 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or(0)
     };
     eprintln!(
-        "[parity] logits: {} dims | cosine={cos:.6} | max|Δ|={maxabs:.4} | argmax f32={} packed={} (max {am_f32:.3}/{am_pk:.3})",
+        "[parity] logits: {} dims | cosine={cos:.6} | max|Δ|={maxabs:.4} | argmax f32={} native={} (max {am_f32:.3}/{am_nat:.3})",
         l_f32.len(),
         argmax(&l_f32),
-        argmax(&l_packed),
+        argmax(&l_native),
     );
-    if cos > 0.999 && argmax(&l_f32) == argmax(&l_packed) {
-        eprintln!("[parity] PASS ✓ (packed decode matches F32; same next-token)");
+    if cos > 0.999 && argmax(&l_f32) == argmax(&l_native) {
+        eprintln!("[parity] PASS ✓ (native packed decode matches F32; same next-token)");
         Ok(())
     } else {
         anyhow::bail!(
-            "PARITY FAIL: cosine {cos:.6}, argmax f32={} packed={}",
+            "PARITY FAIL: cosine {cos:.6}, argmax f32={} native={}",
             argmax(&l_f32),
-            argmax(&l_packed)
+            argmax(&l_native)
         );
     }
 }

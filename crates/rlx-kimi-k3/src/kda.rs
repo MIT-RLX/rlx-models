@@ -22,6 +22,27 @@ use std::collections::HashMap;
 
 type Params = HashMap<String, Vec<f32>>;
 
+/// Chunk size for the opt-in FlashKDA chunked-parallel prefill path (see
+/// [`crate::kda_chunk`]), or `None` to keep the native sequential recurrence.
+/// `RLX_KDA_CHUNK` enables it; a value in `2..=16` sets the chunk size, anything
+/// else (e.g. `1`, `on`) uses FlashKDA's default of 16.
+fn kda_chunk_size() -> Option<usize> {
+    let v = std::env::var("RLX_KDA_CHUNK").ok()?;
+    match v.trim().parse::<usize>() {
+        Ok(n) if (2..=16).contains(&n) => Some(n),
+        _ => Some(16),
+    }
+}
+
+/// Whether the chunked KDA prefill uses the `Op::Scan`-based K2 (O(1) graph size)
+/// instead of the unrolled chunk loop. `RLX_KDA_CHUNK_SCAN=1`. Bit-identical.
+fn kda_chunk_use_scan() -> bool {
+    std::env::var("RLX_KDA_CHUNK_SCAN")
+        .ok()
+        .map(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 /// KDA shape parameters.
 #[derive(Debug, Clone, Copy)]
 pub struct KdaDims {
@@ -434,16 +455,30 @@ pub fn build_kda_layer(
     let beta = sigmoid(g, beta, Shape::new(&[rows, h], DType::F32));
     let beta = g.reshape_(beta, vec![b as i64, s as i64, h as i64]);
 
-    // (6) per-channel gated delta-net recurrence
-    let scan = g.gated_delta_net_pc(
-        q_l2,
-        k_l2,
-        vh,
-        g_log,
-        beta,
-        hd,
-        Shape::new(&bshd, DType::F32),
-    );
+    // (6) per-channel gated delta-net recurrence. Opt-in FlashKDA chunked-parallel
+    // form (`RLX_KDA_CHUNK`), else the native sequential `Op::GatedDeltaNet`.
+    let scan = if let Some(chunk) = kda_chunk_size() {
+        let (out, _final_state) = crate::kda_chunk::build_kda_chunked_scan(
+            g,
+            q_l2,
+            k_l2,
+            vh,
+            g_log,
+            beta,
+            crate::kda_chunk::ChunkDims {
+                batch: b,
+                seq: s,
+                heads: h,
+                head_dim: hd,
+                chunk,
+                use_scan: kda_chunk_use_scan(),
+            },
+            None,
+        );
+        out
+    } else {
+        g.gated_delta_net_pc(q_l2, k_l2, vh, g_log, beta, hd, Shape::new(&bshd, DType::F32))
+    };
 
     // (7) FusedRMSNormGated(sigmoid): rms_norm(scan * sigmoid(g_proj(x)))  (g from fused)
     let g2 = g.reshape_(g2, vec![b as i64, s as i64, h as i64, hd as i64]);

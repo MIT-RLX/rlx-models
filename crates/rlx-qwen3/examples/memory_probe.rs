@@ -29,6 +29,7 @@
 //!        --out <dir> --op-inspect / --no-op-inspect
 
 use std::fs;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Instant;
@@ -72,6 +73,10 @@ struct TurnPerf {
     ctx_before: usize,
     gen_toks: usize,
     ttft_ms: f64,
+    prep_ms: f64,
+    retrieval_ms: f64,
+    decode_ms: f64,
+    total_ms: f64,
     decode_tps: f64,
 }
 
@@ -90,7 +95,61 @@ struct PolicyResult {
     inspect_hist_csv: String,
     dataflow_dot: String,
     perf: Vec<TurnPerf>,
+    turn_replies: Vec<(usize, String, String)>,
 }
+
+fn cosine_distance(a: &str, b: &str) -> f64 {
+    fn featurize(s: &str) -> BTreeMap<String, f64> {
+        let mut m = BTreeMap::<String, f64>::new();
+        for raw in s.split(|c: char| !c.is_ascii_alphanumeric()) {
+            let t = raw.trim().to_ascii_lowercase();
+            if t.is_empty() {
+                continue;
+            }
+            *m.entry(t).or_insert(0.0) += 1.0;
+        }
+        m
+    }
+    let va = featurize(a);
+    let vb = featurize(b);
+    if va.is_empty() && vb.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0;
+    let mut na = 0.0;
+    let mut nb = 0.0;
+    for v in va.values() {
+        na += v * v;
+    }
+    for v in vb.values() {
+        nb += v * v;
+    }
+    for (k, av) in &va {
+        if let Some(bv) = vb.get(k) {
+            dot += av * bv;
+        }
+    }
+    if na == 0.0 || nb == 0.0 {
+        return 1.0;
+    }
+    let sim = (dot / (na.sqrt() * nb.sqrt())).clamp(-1.0, 1.0);
+    1.0 - sim
+}
+
+fn summarize_distances(mut vals: Vec<f64>) -> Option<(f64, f64, f64, usize)> {
+    vals.retain(|v| v.is_finite());
+    if vals.is_empty() {
+        return None;
+    }
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = vals.len();
+    let mean = vals.iter().sum::<f64>() / n as f64;
+    let median = vals[n / 2];
+    let p95 = vals[((n - 1) * 95) / 100];
+    Some((mean, median, p95, n))
+}
+
+const STRONG_POLICY: &str = "kvstore:16:4:32:12:2:l2:4:1.0:0.15:1:q8:1:1:0:4:0:enc:1.0:0.15:0.15:1:48";
 
 /// Build a **greedy top-k** sampler. `temp <= 0` ⇒ deterministic argmax over the
 /// (top-k restricted) distribution — the right default for a reproducible
@@ -109,11 +168,175 @@ fn make_sampler(temp: f32, top_k: usize, top_p: f32, seed: u64) -> SampleOpts {
     s
 }
 
+fn retrieval_keywords(text: &str) -> String {
+    const STOPWORDS: &[&str] = &[
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
+        "have", "how", "i", "in", "is", "it", "my", "of", "on", "or", "the",
+        "to", "was", "what", "when", "where", "which", "who", "why", "with", "you",
+    ];
+    let mut out = Vec::new();
+    for raw in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let lower = token.to_ascii_lowercase();
+        let keep = token.chars().any(|c| c.is_ascii_digit())
+            || token.len() > 2
+            && !STOPWORDS.contains(&lower.as_str());
+        if keep && !out.iter().any(|t: &String| t.eq_ignore_ascii_case(token)) {
+            out.push(token.to_string());
+        }
+    }
+    out.join(" ")
+}
+
+fn structured_retrieval_query(question: &str, reasoning: Option<&str>) -> String {
+    let mut parts = Vec::new();
+    let q = question.trim();
+    if !q.is_empty() {
+        parts.push(q.to_string());
+        let kw = retrieval_keywords(q);
+        if !kw.is_empty() && kw != q {
+            parts.push(format!("keywords: {kw}"));
+        }
+    }
+    if let Some(reasoning) = reasoning {
+        let kw = retrieval_keywords(reasoning);
+        if !kw.is_empty() {
+            parts.push(format!("reasoning: {kw}"));
+        }
+    }
+    parts.join(" | ")
+}
+
+fn strip_think_markup(text: &str) -> String {
+    let mut s = text.replace("<think>", "").replace("</think>", "");
+    s = s.replace("<|im_start|>", "").replace("<|im_end|>", "");
+    s = s
+        .replace("<short answer>", "")
+        .replace("</short answer>", "")
+        .replace("<tool_call>", "")
+        .replace("</tool_call>", "")
+        .replace("RESULT:", "")
+        .replace("CITES:", "");
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn parse_answer_and_cites(reply: &str) -> (String, Vec<usize>) {
+    let answer = reply
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("ANSWER:"))
+        .map(strip_think_markup)
+        .unwrap_or_else(|| strip_think_markup(reply.trim()));
+
+    let cites_line = reply
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("CITES:"))
+        .unwrap_or("");
+    let cites = cites_line
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|t| t.parse::<usize>().ok())
+        .collect::<Vec<_>>();
+    (answer, cites)
+}
+
+fn contains_token_casefold(hay: &str, needle: &str) -> bool {
+    let h = hay.to_ascii_lowercase();
+    let n = needle.to_ascii_lowercase();
+    if n.chars().all(|c| c.is_ascii_digit()) {
+        let hb = h.as_bytes();
+        let nb = n.as_bytes();
+        if nb.is_empty() || nb.len() > hb.len() {
+            return false;
+        }
+        for i in 0..=hb.len() - nb.len() {
+            if &hb[i..i + nb.len()] != nb {
+                continue;
+            }
+            let left_ok = i == 0 || !hb[i - 1].is_ascii_digit();
+            let right_ok = i + nb.len() == hb.len() || !hb[i + nb.len()].is_ascii_digit();
+            if left_ok && right_ok {
+                return true;
+            }
+        }
+        false
+    } else {
+        h.contains(&n)
+    }
+}
+
+fn is_uncertain_answer(answer: &str) -> bool {
+    let a = answer.to_ascii_lowercase();
+    [
+        "i don't know",
+        "cannot",
+        "no information",
+        "not sure",
+        "<answer>",
+        "<nothing>",
+        "<no data>",
+    ]
+    .iter()
+    .any(|p| a.contains(p))
+}
+
+#[cfg(feature = "mmap-kv")]
+fn summarize_retrieval_hits(tok: &Tokenizer, hits: &[(Vec<u32>, f32)], topn: usize) -> String {
+    hits
+        .iter()
+        .take(topn)
+        .enumerate()
+        .map(|(i, (ids, score))| {
+            let t = tok.decode(ids, true).unwrap_or_default().replace('\n', " ");
+            let snippet: String = t.trim().chars().take(48).collect();
+            format!("#{} s={:.3} \"{}\"", i + 1, score, snippet)
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+#[cfg(feature = "mmap-kv")]
+fn should_rerank_spans(hits: &[(Vec<u32>, f32)], tm_topk: usize) -> bool {
+    if hits.len() <= tm_topk || hits.len() < 2 {
+        return false;
+    }
+    let top = hits[0].1;
+    let next = hits[1].1;
+    (top - next).abs() < 0.01
+}
+
+#[cfg(feature = "mmap-kv")]
+fn cached_retrieve_context_spans(
+    runner: &mut Qwen3Runner,
+    cache: &mut std::collections::HashMap<String, Vec<(Vec<u32>, f32)>>,
+    query: &str,
+    tm_topk: usize,
+    tm_margin: usize,
+) -> Vec<(Vec<u32>, f32)> {
+    if let Some(hits) = cache.get(query) {
+        return hits.clone();
+    }
+    runner.set_retrieval_query(Some(query.to_string()));
+    let hits = runner.retrieve_context_spans(Some(tm_topk), tm_margin);
+    cache.insert(query.to_string(), hits.clone());
+    hits
+}
+
 fn render_prompt(system: &str, pending_user: &str) -> String {
     format!(
         "<|im_start|>system\n{system}<|im_end|>\n\
          <|im_start|>user\n{pending_user}<|im_end|>\n<|im_start|>assistant\n"
     )
+}
+
+fn log_stage_routing(dev: Device, enc_dev: Device, rr_dev: Device) {
+    eprintln!(
+        "[memory_probe] stage routing: LM={dev:?} | retrieval-encoder={enc_dev:?} | reranker={rr_dev:?}"
+    );
+    eprintln!(
+        "[memory_probe] stage routing: warmup=LM, plants/fillers=LM, recall-decode=LM, retrieval=encoder, rerank=reranker"
+    );
 }
 
 /// Format retrieved spans as labeled notes (`[1] …\n[2] …`), one per line.
@@ -138,7 +361,7 @@ fn notes_from_spans(tok: &Tokenizer, spans: &[(Vec<u32>, f32)]) -> String {
 /// result back; if it emits `ANSWER: <a>` stop; otherwise (no marker) fall back
 /// to IRCoT — re-query the store with `question + reasoning-so-far` and feed the
 /// result — so a fact the first pass missed can still be pulled in. Bounded by
-/// `max_hops`. Returns `(answer, full_transcript, notes_seen_lower, hops)`.
+/// `max_hops`. Returns `(answer, full_transcript, notes_seen_lower, hops, retrieval_ms)`.
 ///
 /// The store stays SUSPENDED throughout (no auto-splice); retrieval is driven
 /// here via `retrieve_context_spans`, which reads the frozen retrieval stream so
@@ -155,8 +378,10 @@ fn interleave_recall(
     tm_margin: usize,
     max_hops: usize,
     hop_tokens: usize,
-) -> anyhow::Result<(String, String, String, usize)> {
+) -> anyhow::Result<(String, String, String, usize, f64)> {
     runner.set_kv_store_suspended(true);
+    let mut retrieval_cache: std::collections::HashMap<String, Vec<(Vec<u32>, f32)>> =
+        std::collections::HashMap::new();
     let enc = |s: &str| -> anyhow::Result<Vec<u32>> {
         Ok(tok
             .encode(s, false)
@@ -165,14 +390,23 @@ fn interleave_recall(
             .to_vec())
     };
     // Hop 0 seed: retrieve on the question itself.
-    runner.set_retrieval_query(Some(question.to_string()));
-    let seed = runner.retrieve_context_spans(Some(tm_topk), tm_margin);
+    let seed_query = structured_retrieval_query(question, None);
+    let mut retrieval_ms = 0.0f64;
+    let rt0 = Instant::now();
+    let seed = cached_retrieve_context_spans(
+        runner,
+        &mut retrieval_cache,
+        &seed_query,
+        tm_topk,
+        tm_margin,
+    );
+    retrieval_ms += rt0.elapsed().as_secs_f64() * 1e3;
     let mut notes_seen = notes_from_spans(tok, &seed).to_lowercase();
     let instr = format!(
-        "Answer the question using the memory notes. If the notes do NOT contain the fact, \
-         write on a new line exactly `SEARCH: <keywords>` and I will look it up and add the \
-         result; then continue. When you know the answer, write `ANSWER: <answer>`.\n\n\
-         NOTES:\n{}\nQUESTION: {question}\n",
+        "Answer the question using the memory notes. Return exactly two lines:\n\
+         ANSWER: <short answer>\nCITES: [note_numbers]\n\
+         If the notes do NOT contain the fact, write on a new line exactly `SEARCH: <keywords>` \
+         and I will add more notes.\n\nNOTES:\n{}\nQUESTION: {question}\n",
         notes_from_spans(tok, &seed)
     );
     let mut transcript = render_prompt(system, &instr);
@@ -205,15 +439,19 @@ fn interleave_recall(
         transcript.push_str(&chunk);
         // ANSWER wins.
         if let Some(p) = chunk.find("ANSWER:") {
-            answer = chunk[p + 7..]
+            let cand = chunk[p + 7..]
                 .lines()
                 .next()
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            if !answer.is_empty() {
+            let (_, cites) = parse_answer_and_cites(&chunk);
+            let confident = !cand.is_empty() && !is_uncertain_answer(&cand) && !cites.is_empty();
+            if confident {
+                answer = cand;
                 break;
             }
+            eprintln!("      [hop {hops}] low-confidence ANSWER, continuing retrieval");
         }
         // Explicit SEARCH → fetch and feed the result.
         let (query, tag) = if let Some(p) = chunk.rfind("SEARCH:") {
@@ -235,14 +473,23 @@ fn interleave_recall(
         if query.is_empty() {
             break;
         }
-        runner.set_retrieval_query(Some(query.clone()));
-        let hits = runner.retrieve_context_spans(Some(tm_topk), tm_margin);
+        let q_struct = structured_retrieval_query(&query, Some(&chunk));
+        let rt0 = Instant::now();
+        let hits = cached_retrieve_context_spans(
+            runner,
+            &mut retrieval_cache,
+            &q_struct,
+            tm_topk,
+            tm_margin,
+        );
+        retrieval_ms += rt0.elapsed().as_secs_f64() * 1e3;
+        eprintln!(
+            "      [hop {hops} {tag}] q={:?} | {}",
+            q_struct.chars().take(72).collect::<String>(),
+            summarize_retrieval_hits(tok, &hits, 3)
+        );
         let notes = notes_from_spans(tok, &hits);
         notes_seen.push_str(&notes.to_lowercase());
-        eprintln!(
-            "      [hop {hops} {tag}] q={:?}",
-            query.chars().take(60).collect::<String>()
-        );
         transcript.push_str(&format!("\nRESULT:\n{notes}\n"));
     }
     // Force a final answer if none was emitted.
@@ -257,10 +504,10 @@ fn interleave_recall(
             a.push(t);
             true
         })?;
-        answer = tok.decode(&a, true).unwrap_or_default().trim().to_string();
+        answer = strip_think_markup(tok.decode(&a, true).unwrap_or_default().trim());
     }
     runner.set_kv_store_suspended(false);
-    Ok((answer, transcript, notes_seen, hops))
+    Ok((answer, transcript, notes_seen, hops, retrieval_ms))
 }
 
 /// Log-scaled unicode sparkline of a `usize` series.
@@ -300,6 +547,8 @@ fn run_policy(
     eos: &[u32],
     max_seq: usize,
     max_tokens: usize,
+    max_ttft_ms: f64,
+    ttft_recall_only: bool,
     sample: SampleOpts,
     text_memory: bool,
     tm_topk: usize,
@@ -333,6 +582,16 @@ fn run_policy(
         .sample(sample)
         .build()?;
 
+    // Pre-build buckets once so growing-context turns avoid repeated compile work.
+    let warm_target = max_seq.min(2048);
+    let warm_t0 = Instant::now();
+    runner.warm_buckets(warm_target);
+    eprintln!(
+        "[memory_probe] warmup: buckets up to {} in {:.0}ms",
+        warm_target,
+        warm_t0.elapsed().as_secs_f64() * 1e3
+    );
+
     if is_kvstore {
         #[cfg(feature = "mmap-kv")]
         {
@@ -354,11 +613,10 @@ fn run_policy(
             let decay: f32 = fields.get(7).and_then(|x| x.parse().ok()).unwrap_or(1.0);
             let lexical: f32 = fields.get(8).and_then(|x| x.parse().ok()).unwrap_or(0.0);
             let qscore = matches!(fields.get(9).copied().unwrap_or("0"), "1" | "q" | "Q");
-            let scheme = match fields.get(10).copied().unwrap_or("q8") {
-                "f16" | "F16" => rlx_runtime::quantized_kv::KvQuant::F16,
-                "q4" | "Q4" | "q4_0" => rlx_runtime::quantized_kv::KvQuant::Q4_0,
-                _ => rlx_runtime::quantized_kv::KvQuant::Q8_0,
-            };
+            let scheme = rlx_runtime::quantized_kv::KvQuant::from_name(
+                fields.get(10).copied().unwrap_or("q8"),
+            )
+            .unwrap_or(rlx_runtime::quantized_kv::KvQuant::Q8_0);
             // Field 11 = MAXSIM (1/m = late-interaction re-rank), 12 = ROWKEYS
             // (1/r = salient-row HNSW index). Both attack mean-pool dilution.
             let maxsim = matches!(fields.get(11).copied().unwrap_or("0"), "1" | "m" | "M");
@@ -487,10 +745,11 @@ fn run_policy(
     let mut last_eos = false;
     let mut recall = Vec::new();
     let mut perf = Vec::new();
+    let mut turn_replies = Vec::new();
     // Text-reinjection (D): retrieved TEXT spans per needle, captured ONCE at the
     // first recall (while the token history the spans are recovered from is still
     // intact — a fresh D generation clears it). Keyed by needle index.
-    let d_spans: std::collections::HashMap<usize, Vec<(Vec<u32>, f32)>> =
+    let mut d_spans: std::collections::HashMap<usize, Vec<(Vec<u32>, f32)>> =
         std::collections::HashMap::new();
     #[allow(unused_mut)] // mutated only under the mmap-kv / dual-encoder feature
     let mut d_captured = false;
@@ -509,6 +768,7 @@ fn run_policy(
     let _ = (il_snap, interleave, max_hops, hop_tokens, enc_dev, rr_dev);
 
     for (ti, turn) in script.iter().enumerate() {
+        let turn_t0 = Instant::now();
         let user_raw = match turn {
             Turn::Plant(i) => needles[*i].plant,
             Turn::Filler(f) => f,
@@ -530,12 +790,16 @@ fn run_policy(
             .to_vec();
 
         let ctx_before = runner.context_len();
-        runner.warm_buckets((ctx_before + delta_ids.len() + max_tokens).min(max_seq));
+        // Avoid per-turn bucket warmup: repeated compile/probe work here can dwarf
+        // decode and inflate TTFT on short-turn harnesses.
+        let _ = (ctx_before, delta_ids.len(), max_tokens, max_seq);
 
         // Clean retrieval query: on recall turns, target the ACTUAL question text
         // (not the noisy decode-position token window). Cleared otherwise.
         match turn {
-            Turn::Recall(i) => runner.set_retrieval_query(Some(needles[*i].ask.to_string())),
+            Turn::Recall(i) => {
+                runner.set_retrieval_query(Some(structured_retrieval_query(needles[*i].ask, None)))
+            }
             _ => runner.set_retrieval_query(None),
         }
 
@@ -546,6 +810,7 @@ fn run_policy(
         // For D recalls: the retrieved notes' text (for retrieval-vs-gen attribution).
         #[allow(unused_mut)] // assigned only under the interleave / dual-encoder feature
         let mut d_ret_text: Option<String> = None;
+        let mut retrieval_ms = 0.0f64;
         let t0 = Instant::now();
         let mut ttft: Option<std::time::Duration> = None;
         if is_interleave_recall {
@@ -556,13 +821,16 @@ fn run_policy(
                     Turn::Recall(i) => *i,
                     _ => unreachable!(),
                 };
+                eprintln!(
+                    "      [stage routing] interleave recall[{i}]: seed/retrieve=encoder ({enc_dev:?}) | hop-generation=LM ({dev:?}) | answer-finalize=LM ({dev:?})"
+                );
                 // Freeze the original stream ONCE (retrieval recovers span text from
                 // it; the loop's per-hop re-prefills clobber the live tokens).
                 if !il_snap {
                     il_snap = true;
                     runner.snapshot_retrieval_stream();
                 }
-                let (answer, transcript, notes_seen, hops) = interleave_recall(
+                let (answer, transcript, notes_seen, hops, ret_ms) = interleave_recall(
                     &mut runner,
                     &tok,
                     system,
@@ -573,6 +841,7 @@ fn run_policy(
                     max_hops,
                     hop_tokens,
                 )?;
+                retrieval_ms += ret_ms;
                 ttft = Some(t0.elapsed());
                 d_ret_text = Some(notes_seen);
                 eprintln!("      [INTERLEAVE needle[{i}] hops={hops}] answer={answer:?}");
@@ -593,6 +862,9 @@ fn run_policy(
                     Turn::Recall(i) => *i,
                     _ => unreachable!(),
                 };
+                eprintln!(
+                    "      [stage routing] text-memory recall[{i}]: retrieval=encoder ({enc_dev:?}) | rerank={rr_dev:?} | answer-gen=LM ({dev:?})"
+                );
                 // Capture every recall needle's top-k spans ONCE, while the full
                 // token history is still resident (read-only; the first D generation
                 // below clears it).
@@ -600,7 +872,10 @@ fn run_policy(
                     d_captured = true;
                     for t in script {
                         if let Turn::Recall(k) = t {
-                            runner.set_retrieval_query(Some(needles[*k].ask.to_string()));
+                            runner.set_retrieval_query(Some(structured_retrieval_query(
+                                needles[*k].ask,
+                                None,
+                            )));
                             // With a reranker: over-fetch by bi-encoder, jointly
                             // score (question, note), keep the top tm_topk. Without:
                             // straight bi-encoder top-k.
@@ -608,23 +883,43 @@ fn run_policy(
                             let picked = if let Some(rr) = reranker.as_mut() {
                                 let cands = runner
                                     .retrieve_context_spans(Some(rerank_overfetch), tm_margin);
-                                let texts: Vec<String> = cands
-                                    .iter()
-                                    .map(|(ids, _)| tok.decode(ids, true).unwrap_or_default())
-                                    .collect();
-                                let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-                                match rr.rerank(needles[*k].ask, &refs) {
-                                    Ok(order) => order
-                                        .into_iter()
-                                        .take(tm_topk)
-                                        .filter_map(|(idx, sc)| {
-                                            cands.get(idx).map(|(ids, _)| (ids.clone(), sc))
-                                        })
-                                        .collect::<Vec<_>>(),
-                                    Err(e) => {
-                                        eprintln!("[rerank] failed: {e}; bi-encoder top-k");
-                                        runner.retrieve_context_spans(Some(tm_topk), tm_margin)
+                                if should_rerank_spans(&cands, tm_topk) {
+                                    let texts: Vec<String> = cands
+                                        .iter()
+                                        .map(|(ids, _)| tok.decode(ids, true).unwrap_or_default())
+                                        .collect();
+                                    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                                    match rr.rerank(needles[*k].ask, &refs) {
+                                        Ok(order) => {
+                                            let rank_moves = order
+                                                .iter()
+                                                .take(tm_topk)
+                                                .enumerate()
+                                                .map(|(new_rank, (idx, sc))| {
+                                                    format!("{}:{}->{},s={:.3}", idx + 1, idx + 1, new_rank + 1, sc)
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .join(" | ");
+                                            eprintln!(
+                                                "      [rerank needle[{k}]] {}",
+                                                rank_moves
+                                            );
+                                            order
+                                                .into_iter()
+                                                .take(tm_topk)
+                                                .filter_map(|(idx, sc)| {
+                                                    cands.get(idx).map(|(ids, _)| (ids.clone(), sc))
+                                                })
+                                                .collect::<Vec<_>>()
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[rerank] failed: {e}; bi-encoder top-k");
+                                            runner.retrieve_context_spans(Some(tm_topk), tm_margin)
+                                        }
                                     }
+                                } else {
+                                    eprintln!("      [rerank needle[{k}]] skipped: clear top-score margin");
+                                    cands.into_iter().take(tm_topk).collect::<Vec<_>>()
                                 }
                             } else {
                                 runner.retrieve_context_spans(Some(tm_topk), tm_margin)
@@ -659,7 +954,7 @@ fn run_policy(
                 let think_suffix = if tm_think { "" } else { " /no_think" };
                 let user = format!(
                     "Notes you saved earlier:\n{notes}\nUsing only the notes above, answer this: \
-                     {}{think_suffix}",
+                     {}{think_suffix}\nReturn exactly:\nANSWER: <short answer>\nCITES: [note_numbers]",
                     needles[i].ask
                 );
                 let prompt = render_prompt(system, &user);
@@ -705,6 +1000,7 @@ fn run_policy(
                 }
             }
         } else {
+            eprintln!("      [stage routing] plain recall turn: decode=LM ({dev:?})");
             runner.generate_continuation_stoppable(&delta_ids, max_tokens, |t| {
                 if ttft.is_none() {
                     ttft = Some(t0.elapsed());
@@ -721,9 +1017,23 @@ fn run_policy(
         last_eos = hit_eos;
 
         let reply = tok.decode(&out, true).unwrap_or_default();
+        let cleaned_reply = strip_think_markup(&reply);
         let ttft_d = ttft.unwrap_or(dt);
+        let ttft_ms_now = ttft_d.as_secs_f64() * 1e3;
+        let sla_applies = !ttft_recall_only || matches!(turn, Turn::Recall(_));
+        if sla_applies && max_ttft_ms > 0.0 && ttft_ms_now > max_ttft_ms {
+            anyhow::bail!(
+                "TTFT SLA exceeded on turn {ti} ({}): {:.1}ms > {:.1}ms",
+                turn.label(),
+                ttft_ms_now,
+                max_ttft_ms
+            );
+        }
         let decode_toks = out.len().saturating_sub(1);
         let decode_dt = dt.saturating_sub(ttft_d);
+        let total_ms = turn_t0.elapsed().as_secs_f64() * 1e3;
+        let decode_ms = decode_dt.as_secs_f64() * 1e3;
+        let prep_ms = (total_ms - decode_ms).max(0.0);
         let decode_tps = if decode_toks > 0 && decode_dt.as_secs_f64() > 0.0 {
             decode_toks as f64 / decode_dt.as_secs_f64()
         } else {
@@ -734,7 +1044,11 @@ fn run_policy(
             kind: turn.label(),
             ctx_before,
             gen_toks: out.len(),
-            ttft_ms: ttft_d.as_secs_f64() * 1e3,
+            ttft_ms: ttft_ms_now,
+            prep_ms,
+            retrieval_ms,
+            decode_ms,
+            total_ms,
             decode_tps,
         });
 
@@ -750,11 +1064,12 @@ fn run_policy(
             } else {
                 reply.as_str()
             };
-            let lower = answer_text.to_lowercase();
-            let hit = needles[*i]
+            let (parsed_answer, cites) = parse_answer_and_cites(answer_text);
+            let lower = parsed_answer.to_lowercase();
+            let answered = needles[*i]
                 .expect
                 .iter()
-                .any(|e| lower.contains(&e.to_lowercase()));
+                .any(|e| contains_token_casefold(&lower, &e.to_lowercase()));
             // Retrieval-vs-generation attribution: did the RETRIEVED blocks contain
             // the needle's answer text? (retrieved & !answered = GENERATION miss;
             // !retrieved = RETRIEVAL miss.) For D, use the labeled notes' text; for
@@ -771,22 +1086,46 @@ fn run_policy(
             let retrieved_fact = needles[*i]
                 .expect
                 .iter()
-                .any(|e| ret_text.contains(&e.to_lowercase()));
+                .any(|e| contains_token_casefold(&ret_text, &e.to_lowercase()));
+            let cited_fact = match &d_ret_text {
+                Some(t) if !cites.is_empty() => cites
+                    .iter()
+                    .filter_map(|c| {
+                        t.lines()
+                            .find(|ln| ln.trim_start().starts_with(&format!("[{c}]")))
+                    })
+                    .any(|ln| {
+                        needles[*i]
+                            .expect
+                            .iter()
+                            .any(|e| contains_token_casefold(&ln.to_lowercase(), &e.to_lowercase()))
+                    }),
+                _ => retrieved_fact,
+            };
+            let hit = answered && cited_fact;
             let attrib = match (retrieved_fact, hit) {
                 (true, true) => "OK",
                 (true, false) => "GEN-miss (fact retrieved, model failed)",
                 (false, _) => "RETRIEVAL-miss (fact not in retrieved blocks)",
             };
             eprintln!(
-                "      needle[{i}] expect={:?} retrieved_fact={retrieved_fact} answered={hit} → {attrib}",
-                needles[*i].expect
+                "      needle[{i}] expect={:?} retrieved_fact={retrieved_fact} cited_fact={cited_fact} answered={hit} cites={:?} uncertain={} → {attrib}",
+                needles[*i].expect,
+                cites,
+                is_uncertain_answer(&parsed_answer)
             );
             recall.push((needles[*i].ask.to_string(), hit, reply.clone()));
         }
 
-        let snippet: String = reply.replace('\n', " ").chars().take(48).collect();
+        turn_replies.push((ti, turn.label().to_string(), cleaned_reply.clone()));
+
+        let snippet: String = cleaned_reply
+            .replace('\n', " ")
+            .chars()
+            .take(48)
+            .collect();
         eprintln!(
-            "  [{ti:2}] {:7} ctx {ctx_before:5} -> gen {:3} tok @ {decode_tps:5.0} tps  {snippet}",
+            "  [{ti:2}] {:7} ctx {ctx_before:5} -> gen {:3} tok @ {decode_tps:7.2} tps  prep {prep_ms:7.1}ms ret {retrieval_ms:7.1}ms dec {decode_ms:7.1}ms  {snippet}",
             turn.label(),
             out.len(),
         );
@@ -840,6 +1179,7 @@ fn run_policy(
         inspect_hist_csv,
         dataflow_dot,
         perf,
+        turn_replies,
     })
 }
 
@@ -1143,7 +1483,10 @@ fn main() -> anyhow::Result<()> {
     let mut device = "metal".to_string();
     let mut weights = PathBuf::from(DEFAULT_WEIGHTS);
     let mut policies = "sinks:4:24,retrieval:8:6:4:24,auto:64".to_string();
+    let mut policies_set = false;
     let mut max_tokens = 24usize;
+    let mut max_ttft_ms = 5000.0f64;
+    let mut ttft_recall_only = true;
     let mut max_seq = 8192usize;
     let mut out_dir = PathBuf::from("memory_probe_out");
     let mut op_inspect = true;
@@ -1177,12 +1520,14 @@ fn main() -> anyhow::Result<()> {
     let mut interleave = false;
     let mut max_hops = 3usize;
     let mut hop_tokens = 64usize;
+    let mut latency_preset_strict = false;
     // Per-aux-model device placement (default = the LM's --device). Lets the
     // retrieval encoder and cross-encoder reranker run on a DIFFERENT accelerator
     // than the LM — e.g. LM on Metal + reranker on ANE (CoreML), or encoder on
     // CPU where f32 GEMM already dispatches to Accelerate/AMX. Empty = follow --device.
     let mut encoder_device = String::new();
     let mut reranker_device = String::new();
+    let mut cosine_baseline = String::from("0");
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -1197,10 +1542,25 @@ fn main() -> anyhow::Result<()> {
             "--policies" => {
                 i += 1;
                 policies = args[i].clone();
+                policies_set = true;
             }
             "--max-tokens" => {
                 i += 1;
                 max_tokens = args[i].parse()?;
+            }
+            "--max-ttft-ms" => {
+                i += 1;
+                max_ttft_ms = args[i].parse()?;
+            }
+            "--ttft-sla-scope" => {
+                i += 1;
+                ttft_recall_only = match args[i].as_str() {
+                    "all" => false,
+                    "recall" => true,
+                    other => anyhow::bail!(
+                        "invalid --ttft-sla-scope {other}; expected recall|all"
+                    ),
+                };
             }
             "--max-seq" => {
                 i += 1;
@@ -1253,6 +1613,15 @@ fn main() -> anyhow::Result<()> {
                 tm_think_tokens = args[i].parse()?;
             }
             "--interleave" => interleave = true,
+            "--latency-preset" => {
+                i += 1;
+                match args[i].as_str() {
+                    "strict" => latency_preset_strict = true,
+                    other => anyhow::bail!(
+                        "invalid --latency-preset {other}; expected strict"
+                    ),
+                }
+            }
             "--max-hops" => {
                 i += 1;
                 max_hops = args[i].parse()?;
@@ -1269,23 +1638,50 @@ fn main() -> anyhow::Result<()> {
                 i += 1;
                 reranker_device = args[i].clone();
             }
+            "--cosine-baseline" => {
+                i += 1;
+                cosine_baseline = args[i].clone();
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "memory_probe [--device metal] [--weights DIR] \
                      [--policies sinks:4:24,retrieval:8:6:4:24,auto:64] \
                      [--max-tokens 24] [--max-seq 8192] [--out DIR] [--no-op-inspect] \
+                     [--max-ttft-ms 5000] [--ttft-sla-scope recall|all] \
+                     [--latency-preset strict] \
                      [--temp 0.0] [--top-k 40] [--top-p 1.0] [--seed 0] \
                      [--text-memory] [--tm-topk 3] [--tm-margin 16] \
                      [--rerank REPO] [--rerank-overfetch 16] \
                      [--tm-think] [--tm-think-tokens 200] \
                      [--interleave] [--max-hops 3] [--hop-tokens 64] \
-                     [--encoder-device D] [--reranker-device D]"
+                     [--encoder-device D] [--reranker-device D] \
+                     [--cosine-baseline <policy-or-index>]"
                 );
                 return Ok(());
             }
             other => eprintln!("[memory_probe] ignoring unknown arg: {other}"),
         }
         i += 1;
+    }
+
+    if (text_memory || interleave) && !policies_set {
+        policies = STRONG_POLICY.to_string();
+        eprintln!("[memory_probe] strong retrieval policy defaulted: {policies}");
+    }
+    if latency_preset_strict {
+        max_seq = max_seq.min(768);
+        max_tokens = max_tokens.min(8);
+        max_hops = max_hops.min(1);
+        hop_tokens = hop_tokens.min(24);
+        tm_topk = tm_topk.min(2);
+        rerank_overfetch = rerank_overfetch.min(6);
+        op_inspect = false;
+        if max_ttft_ms <= 0.0 {
+            max_ttft_ms = 5000.0;
+        }
+        eprintln!(
+            "[memory_probe] latency preset=strict: max_seq={max_seq} max_tokens={max_tokens} max_hops={max_hops} hop_tokens={hop_tokens} tm_topk={tm_topk} rerank_overfetch={rerank_overfetch}"
+        );
     }
     fs::create_dir_all(&out_dir)?;
 
@@ -1346,6 +1742,7 @@ fn main() -> anyhow::Result<()> {
     if enc_dev != dev || rr_dev != dev {
         eprintln!("[memory_probe] aux devices: LM={dev:?} encoder={enc_dev:?} reranker={rr_dev:?}");
     }
+    log_stage_routing(dev, enc_dev, rr_dev);
     let tok = Tokenizer::from_file(weights.join("tokenizer.json"))
         .map_err(|e| anyhow::anyhow!("tokenizer.json: {e}"))?;
     let eos: Vec<u32> = ["<|im_end|>", "<|endoftext|>"]
@@ -1482,6 +1879,8 @@ fn main() -> anyhow::Result<()> {
             &eos,
             max_seq,
             max_tokens,
+            max_ttft_ms,
+            ttft_recall_only,
             sampler,
             text_memory,
             tm_topk,
@@ -1567,11 +1966,37 @@ fn main() -> anyhow::Result<()> {
             println!("  {line}");
         }
         println!("\nthroughput (per turn):");
-        println!("  turn kind     ctx_before  gen  ttft_ms   tps");
+        println!("  turn kind     ctx_before  gen  ttft_ms   prep_ms    ret_ms   dec_ms total_ms    tps");
         for p in &r.perf {
             println!(
-                "  {:>4} {:7} {:>10} {:>4} {:>8.0} {:>5.0}",
-                p.turn, p.kind, p.ctx_before, p.gen_toks, p.ttft_ms, p.decode_tps
+                "  {:>4} {:7} {:>10} {:>4} {:>8.1} {:>9.1} {:>9.1} {:>8.1} {:>8.1} {:>7.2}",
+                p.turn,
+                p.kind,
+                p.ctx_before,
+                p.gen_toks,
+                p.ttft_ms,
+                p.prep_ms,
+                p.retrieval_ms,
+                p.decode_ms,
+                p.total_ms,
+                p.decode_tps
+            );
+        }
+        let mut tps_vals: Vec<f64> = r
+            .perf
+            .iter()
+            .map(|p| p.decode_tps)
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .collect();
+        if !tps_vals.is_empty() {
+            tps_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let mean_tps = tps_vals.iter().sum::<f64>() / tps_vals.len() as f64;
+            let med_tps = tps_vals[tps_vals.len() / 2];
+            println!(
+                "  tps summary: mean={:.2} median={:.2} samples={}",
+                mean_tps,
+                med_tps,
+                tps_vals.len()
             );
         }
     }
@@ -1589,6 +2014,53 @@ fn main() -> anyhow::Result<()> {
             r.recall.len(),
             r.extension
         );
+    }
+
+    // Cross-policy output drift vs a baseline policy over the same prompt series.
+    let baseline_idx = cosine_baseline
+        .parse::<usize>()
+        .ok()
+        .filter(|i| *i < results.len())
+        .or_else(|| results.iter().position(|r| r.policy == cosine_baseline))
+        .unwrap_or(0);
+    if !results.is_empty() {
+        let baseline = &results[baseline_idx];
+        println!(
+            "\n── output cosine distance vs baseline '{}' ──",
+            baseline.policy
+        );
+        println!(
+            "  {:<28} {:>9} {:>9} {:>9} {:>8}   {:>9} {:>9} {:>9} {:>8}",
+            "policy",
+            "all_mean",
+            "all_med",
+            "all_p95",
+            "n_all",
+            "rec_mean",
+            "rec_med",
+            "rec_p95",
+            "n_rec"
+        );
+        for r in &results {
+            let mut all = Vec::new();
+            for ((ti_a, _ka, ra), (ti_b, _kb, rb)) in
+                r.turn_replies.iter().zip(baseline.turn_replies.iter())
+            {
+                if ti_a == ti_b {
+                    all.push(cosine_distance(ra, rb));
+                }
+            }
+            let mut rec = Vec::new();
+            for ((_, _, ra), (_, _, rb)) in r.recall.iter().zip(baseline.recall.iter()) {
+                rec.push(cosine_distance(ra, rb));
+            }
+            let (am, ad, ap, an) = summarize_distances(all).unwrap_or((0.0, 0.0, 0.0, 0));
+            let (rm, rd, rp, rn) = summarize_distances(rec).unwrap_or((0.0, 0.0, 0.0, 0));
+            println!(
+                "  {:<28} {:>9.4} {:>9.4} {:>9.4} {:>8}   {:>9.4} {:>9.4} {:>9.4} {:>8}",
+                r.policy, am, ad, ap, an, rm, rd, rp, rn
+            );
+        }
     }
     println!(
         "\nCSV/DOT written under {out_dir:?} (retention_*, inspect_stats_*, inspect_hist_*, dataflow_*, ops_*)."

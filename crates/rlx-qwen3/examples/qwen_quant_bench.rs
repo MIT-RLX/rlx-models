@@ -31,6 +31,7 @@ use rlx_runtime::{Device, Session};
 const BASE: &str = "/Users/Shared/rlx-models/weights/lm/qwen3-0.6b";
 
 #[derive(Clone, Copy, PartialEq)]
+#[allow(dead_code)]
 enum Prec {
     F32,
     /// int8, one scale per output channel (row).
@@ -879,6 +880,16 @@ fn rank_sublayers(cfg: &Qwen3Config, seq: usize, ids: &[f32]) -> Vec<(usize, Str
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let pbench_mode = args.iter().any(|a| a == "pbench");
+    let mut pbench_force_f32 = false;
+    if pbench_mode && std::env::var_os("RLX_QWEN3_F16_WEIGHTS").is_some() {
+        // `RLX_QWEN3_F16_WEIGHTS` is decode-generator only. `pbench` runs a
+        // full-window forward and CPU reference pass, which cannot consume F16
+        // weight params. Clear the process env before any model/runtime setup so
+        // every downstream std::env reader sees the safe F32 path.
+        pbench_force_f32 = true;
+        unsafe { std::env::remove_var("RLX_QWEN3_F16_WEIGHTS") };
+    }
     // Weights dir: $RLX_QWEN_DIR (remote Linux rigs) else the mac default.
     let base_dir = std::env::var("RLX_QWEN_DIR").unwrap_or_else(|_| BASE.to_string());
     let cfg =
@@ -964,7 +975,7 @@ fn main() {
         let ids: Vec<f32> = (0..seq)
             .map(|i| ((i.wrapping_mul(2_654_435_761)) % vocab) as f32)
             .collect();
-        let mut time_run = |mut c: rlx_runtime::CompiledGraph| -> f64 {
+        let time_run = |mut c: rlx_runtime::CompiledGraph| -> f64 {
             c.run(&[("input_ids", &ids)]); // warm
             let t = Instant::now();
             for _ in 0..3 {
@@ -1953,24 +1964,24 @@ fn main() {
         let per_step_bytes = (seq * 4 + vocab * 4) as u64; // ids up + vocab logits back
         // Device compute: modeled from a VRAM-bandwidth assumption (or measured under
         // `--features metal`, below). A GPU streams the weights ~Nx faster than CPU DRAM.
-        let vram_gbps = 400.0_f64; // modeled mid-range discrete VRAM
-        #[allow(unused_mut)]
-        let mut dev_ms = weight_bytes as f64 / (vram_gbps * 1e9) * 1e3;
-        #[allow(unused_mut)]
-        let mut dev_src = "modeled @400GB/s VRAM";
         #[cfg(feature = "metal")]
-        {
+        let (dev_ms, dev_src): (f64, &str) = {
             // Real device compute (incl. its own on-device streaming) on Metal.
             let mut cm = Session::new(Device::Metal).compile(base_g.clone());
             for (n, d) in &params {
                 cm.set_param(n, d);
             }
             cm.run(&[("input_ids", ids.as_slice())]); // warm: upload + compile MPSGraph
-            dev_ms = median_ms(1, 5, || {
+            let measured_ms = median_ms(1, 5, || {
                 cm.run(&[("input_ids", ids.as_slice())]);
             });
-            dev_src = "MEASURED on Metal";
-        }
+            (measured_ms, "MEASURED on Metal")
+        };
+        #[cfg(not(feature = "metal"))]
+        let (dev_ms, dev_src): (f64, &str) = {
+            let vram_gbps = 400.0_f64; // modeled mid-range discrete VRAM
+            (weight_bytes as f64 / (vram_gbps * 1e9) * 1e3, "modeled @400GB/s VRAM")
+        };
 
         println!("\n  ── CPU↔GPU offload roofline (measured host, {dev_src} device) ──");
         println!("    host CPU forward:      {host_ms:>7.1} ms/step");
@@ -2537,11 +2548,12 @@ fn main() {
             "qwen3-0.6B KV-CACHE DECODE tps — device={dev_str}, {} prompts, weights={dir}\n",
             prompts.len()
         );
-        // Build the generator ONCE; the bucketed decode cache is reused across prompts.
+        // Build the generator ONCE; decode buckets and prefill graphs are reused across prompts.
         let mut gn = Qwen3Generator::from_path(cfg2.clone(), st.to_str().unwrap(), dev)
             .expect("generator")
-            .with_decode_cache(128);
-        let (mut s_dtps, mut s_ptps) = (0f64, 0f64);
+            .with_decode_cache(128)
+            .with_prefill_cache(16);
+        let (mut s_dtps, mut s_ptps_cold, mut s_ptps_warm) = (0f64, 0f64, 0f64);
         for (idx, user) in prompts.iter().enumerate() {
             let chat = format!(
                 "<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
@@ -2551,11 +2563,17 @@ fn main() {
                 .expect("encode")
                 .get_ids()
                 .to_vec();
+            // Cold prefill-seed (may include first-compile cost for this prompt shape).
             gn.prefill(&prompt_ids);
-            // First cached step = prefill-with-cache (seeds per-layer K/V + samples t0).
-            let t_seed = Instant::now();
-            let first = gn.step_cached(SampleOpts::greedy()).expect("seed");
-            let prefill_s = t_seed.elapsed().as_secs_f64();
+            let t_seed_cold = Instant::now();
+            let _ = gn.step_cached(SampleOpts::greedy()).expect("seed-cold");
+            let prefill_s_cold = t_seed_cold.elapsed().as_secs_f64();
+
+            // Warm prefill-seed: same prompt shape immediately repeated.
+            gn.prefill(&prompt_ids);
+            let t_seed_warm = Instant::now();
+            let first = gn.step_cached(SampleOpts::greedy()).expect("seed-warm");
+            let prefill_s_warm = t_seed_warm.elapsed().as_secs_f64();
             // Time EACH decode step. The power-of-two bucket ladder compiles O(log N)
             // graphs, so a few steps spike on compilation; the MEDIAN step is the true
             // warm steady-state decode cost (compile spikes are outliers).
@@ -2574,30 +2592,38 @@ fn main() {
             let median_ms = step_ms.get(step_ms.len() / 2).copied().unwrap_or(0.0);
             let min_ms = step_ms.first().copied().unwrap_or(0.0);
             let decode_tps = 1000.0 / median_ms.max(1e-9);
-            let prefill_tps = prompt_ids.len() as f64 / prefill_s.max(1e-9);
+            let prefill_tps_cold = prompt_ids.len() as f64 / prefill_s_cold.max(1e-9);
+            let prefill_tps_warm = prompt_ids.len() as f64 / prefill_s_warm.max(1e-9);
             let text = tok.decode(&ids, true).unwrap_or_default();
             println!("  [{}] {user:?}", idx + 1);
             println!(
-                "      prompt={:<3} decode={decode_tps:>6.1} tok/s (median {median_ms:.1}ms, min {min_ms:.1}ms/tok)  prefill={prefill_s:.2}s  [{} steps]",
+                "      prompt={:<3} decode={decode_tps:>6.1} tok/s (median {median_ms:.1}ms, min {min_ms:.1}ms/tok)  prefill(cold)={prefill_s_cold:.2}s  prefill(warm)={prefill_s_warm:.2}s  [{} steps]",
                 prompt_ids.len(),
                 step_ms.len()
             );
             println!("      gen: {}", text.trim().replace('\n', " "));
             println!(
-                "      CSV,{dev_str},{},{},{decode_tps:.1},{prefill_tps:.0}",
+                "      CSV,{dev_str},{},{},{decode_tps:.1},{prefill_tps_cold:.0},{prefill_tps_warm:.0}",
                 idx + 1,
                 prompt_ids.len()
             );
             s_dtps += decode_tps;
-            s_ptps += prefill_tps;
+            s_ptps_cold += prefill_tps_cold;
+            s_ptps_warm += prefill_tps_warm;
         }
         let n = prompts.len() as f64;
         println!(
-            "\n  MEAN device={dev_str:<7} decode={:>6.1} tok/s  prefill={:>7.0} tok/s",
+            "\n  MEAN device={dev_str:<7} decode={:>6.1} tok/s  prefill(cold)={:>7.0} tok/s  prefill(warm)={:>7.0} tok/s",
             s_dtps / n,
-            s_ptps / n
+            s_ptps_cold / n,
+            s_ptps_warm / n
         );
-        println!("  CSVMEAN,{dev_str},{:.1},{:.0}", s_dtps / n, s_ptps / n);
+        println!(
+            "  CSVMEAN,{dev_str},{:.1},{:.0},{:.0}",
+            s_dtps / n,
+            s_ptps_cold / n,
+            s_ptps_warm / n
+        );
         return;
     }
 
@@ -2609,6 +2635,11 @@ fn main() {
     if let Some(pi) = args.iter().position(|a| a == "pbench") {
         use rlx_opscope::timing::median_ms;
         use tokenizers::Tokenizer;
+        if pbench_force_f32 {
+            eprintln!(
+                "[qwen_quant_bench] RLX_QWEN3_F16_WEIGHTS is unsupported for pbench/full-forward; forcing F32 weights for this run"
+            );
+        }
         let dev_str = args
             .get(pi + 1)
             .map(|s| s.as_str())

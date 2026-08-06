@@ -83,6 +83,13 @@ pub struct Qwen3Generator {
     /// dequanted f32 — ~4× fewer weight bytes moved per decode step (the
     /// weight-bytes-bound bottleneck). `None` = the default F32 decode path.
     packed_weights: Option<Arc<HashMap<String, (Vec<u8>, rlx_ir::quant::QuantScheme)>>>,
+    /// When set, the bucketed decode graph is built **natively packed**: the
+    /// flow lowers each linear projection to `Op::DequantMatMul` straight from
+    /// this GGUF (no F32 weight-MatMul, no post-hoc rewrite, big projection
+    /// weights never dequantized). Takes precedence over `packed_weights`. Holds
+    /// the GGUF path, re-`mmap`ed on each decode-bucket compile miss;
+    /// steady-state decode reuses the cached compiled graph.
+    native_packed_gguf: Option<String>,
     tokens: Vec<u32>,
     device: Device,
     /// Populated lazily on the first `step_cached` call (seeded from
@@ -113,6 +120,23 @@ pub struct Qwen3Generator {
     /// growth). Fixes the async-MLX per-step-sync regression. Auto-on for GPU.
     use_gpu_kv: bool,
     gpu_kv_binding: GpuKvBinding,
+    /// Decode-step counter for the retrieval throttle (`RLX_RETRIEVE_INTERVAL`):
+    /// the expensive retrieve+splice+rebind runs every N steps; between, the
+    /// resident cache grows via the normal decode append (incremental fold, no
+    /// rebind), amortizing the O(resident) per-step splice cost.
+    retention_step: usize,
+    /// Resident batched decode ([`Self::decode_batched_resident_step`]): the
+    /// GPU-handle binding bucket per batch size `B`, and the host K/V mirror per
+    /// `B` (kept accurate via cheap per-step new-row readback so a bucket rebind
+    /// can re-pad without a full device→host copy). Eliminates the O(B·ctx) KV
+    /// re-upload the stateless `decode_batched_uniform` pays every step.
+    batched_gpu_kv_binding: HashMap<usize, GpuKvBinding>,
+    batched_resident_kv: HashMap<usize, Vec<KvCacheState>>,
+    /// Same as the two above but for **ragged** resident decode (sequences at
+    /// mixed cache lengths; bucket = the batch max). Separate maps so a uniform
+    /// and a ragged session at the same `B` don't collide.
+    batched_ragged_gpu_kv_binding: HashMap<usize, GpuKvBinding>,
+    batched_ragged_resident_kv: HashMap<usize, Vec<KvCacheState>>,
     /// Optional selective KV retention (Stage 2). When set, after each decode
     /// step the resident K/V is reshaped per the policy's [`RetentionPlan`]
     /// (keep sinks + recent + heavy-hitters, evict/offload the rest) so effective
@@ -685,12 +709,50 @@ impl Qwen3Generator {
                 rlx_core::weight_loader::gguf_to_hf_name(&k).unwrap_or_else(|| k.clone());
             weights_cache.insert(canonical, v);
         }
+        Ok(Self::assemble(cfg, weights_cache, None, device))
+    }
+
+    /// Construct a **native packed decode-only** generator: no F32 weights are
+    /// loaded (empty `weights_cache`); both the prefill-seed and the decode step
+    /// build their graphs with `Op::DequantMatMul` projections straight from
+    /// `gguf_path` (weights stay packed). This is the low-memory generate path —
+    /// the packed alternative to re-running the prefill graph every token — and
+    /// only decode/prefill-seed methods are valid on it (methods that read
+    /// `weights_cache` directly, e.g. `sequence_logits`, are not).
+    pub fn new_native_packed_decode(
+        cfg: Qwen3Config,
+        gguf_path: &str,
+        device: Device,
+    ) -> Result<Self> {
+        use rlx_core::weight_loader::GgufLoader;
+        validate_device(&cfg, device, /*packed*/ true)?;
+        GgufLoader::from_file(gguf_path)
+            .with_context(|| format!("open GGUF for native packed generator: {gguf_path}"))?;
+        Ok(Self::assemble(
+            cfg,
+            HashMap::new(),
+            Some(gguf_path.to_string()),
+            device,
+        ))
+    }
+
+    /// Shared field initializer for the generator constructors. `weights_cache`
+    /// is the F32 weight map (empty for the native-packed path); when
+    /// `native_packed_gguf` is set, prefill-seed + decode lower projections to
+    /// `Op::DequantMatMul` from that GGUF instead of reading `weights_cache`.
+    fn assemble(
+        cfg: Qwen3Config,
+        weights_cache: HashMap<String, (Vec<f32>, Vec<usize>)>,
+        native_packed_gguf: Option<String>,
+        device: Device,
+    ) -> Self {
         let max_past = cfg.max_position_embeddings.clamp(1, 4096);
         let retention = retention_from_env(cfg.kv_proj_dim());
-        Ok(Self {
+        Self {
             cfg,
             weights_cache: Arc::new(weights_cache),
             packed_weights: None,
+            native_packed_gguf,
             tokens: Vec::new(),
             device,
             cache: None,
@@ -702,6 +764,10 @@ impl Qwen3Generator {
             )),
             batched_decode_caches: HashMap::new(),
             batched_ragged_caches: HashMap::new(),
+            batched_gpu_kv_binding: HashMap::new(),
+            batched_resident_kv: HashMap::new(),
+            batched_ragged_gpu_kv_binding: HashMap::new(),
+            batched_ragged_resident_kv: HashMap::new(),
             prefill_profile: CompileProfile::qwen3_prefill(),
             decode_profile: CompileProfile::qwen3_decode(),
             // GPU-resident row-feed decode only where the backend implements
@@ -709,12 +775,20 @@ impl Qwen3Generator {
             // win — no per-step PCIe K/V re-upload), MLX + Metal (correct; neutral on
             // unified memory, where the host path's upload is already cheap). ROCm /
             // Vulkan / wgpu lack the row-feed hooks → they use the host path.
+            // Native packed decode now takes the resident path too:
+            // `decode_step_gpu_resident` builds the PACKED bucket graph via
+            // `ensure_graph_with_packed` (DequantMatMul projections + bound U8
+            // blobs), so the O(context) host KV re-upload is gone at long context
+            // — the KV feed is graph-agnostic (input/output names are unchanged
+            // by packing). The non-native rewrite path (`packed_weights`, set
+            // post-construction) is excluded at the resident dispatch below.
             use_gpu_kv: device_supports_gpu_kv(device)
                 && matches!(
                     device,
                     Device::Cuda | Device::Mlx | Device::Metal | Device::Rocm | Device::Vulkan
                 ),
             gpu_kv_binding: GpuKvBinding::default(),
+            retention_step: 0,
             retention,
             #[cfg(feature = "mmap-kv")]
             kv_store: None,
@@ -728,7 +802,7 @@ impl Qwen3Generator {
             last_q_pooled: None,
             inspect: None,
             inspect_step: 0,
-        })
+        }
     }
 
     /// Enable selective KV retention with `policy` (Stage 2). The manager scores
@@ -1378,6 +1452,30 @@ impl Qwen3Generator {
         self.packed_weights.is_some()
     }
 
+    /// Enable **native** packed K-quant decode: the bucketed decode graph is
+    /// built with `Op::DequantMatMul` projections straight from `gguf_path` (the
+    /// flow keeps the big projection weights packed), instead of building the
+    /// F32 decode graph and rewriting its MatMuls. Supersedes
+    /// [`enable_packed_decode_from_gguf`](Self::enable_packed_decode_from_gguf)
+    /// when both are set. The GGUF is re-opened (mmap) on each decode-bucket
+    /// compile miss; steady-state decode reuses the cached compiled graph, so
+    /// the re-open cost is amortized.
+    pub fn enable_native_packed_decode_from_gguf(&mut self, gguf_path: &str) -> Result<()> {
+        use rlx_core::weight_loader::GgufLoader;
+        // Validate the path opens now, so a bad path fails here rather than
+        // inside a decode-step compile closure (which `expect`s).
+        GgufLoader::from_file(gguf_path)
+            .with_context(|| format!("open GGUF for native packed decode: {gguf_path}"))?;
+        self.native_packed_gguf = Some(gguf_path.to_string());
+        Ok(())
+    }
+
+    /// Whether the native packed decode path (flow `DequantMatMul` from GGUF)
+    /// is active.
+    pub fn has_native_packed_decode(&self) -> bool {
+        self.native_packed_gguf.is_some()
+    }
+
     /// Inject a `name → (packed_bytes, scheme)` map (HF weight keys) to enable
     /// the packed decode path directly (bypasses the GGUF re-load).
     pub fn set_packed_weights(
@@ -1571,6 +1669,26 @@ impl Qwen3Generator {
         if self.kv_store_suspended {
             return;
         }
+        // Retrieval throttle: with a store enabled, the expensive per-step
+        // retrieve + splice + GPU rebind scales with the resident set. Since the
+        // relevant retrieved context barely changes token-to-token, run it only
+        // every `RLX_RETRIEVE_INTERVAL` steps. Between, register the newest
+        // position and let the resident cache grow by one via the normal decode
+        // append (incremental fold — no rebind, no store query, no re-splice).
+        #[cfg(feature = "mmap-kv")]
+        if self.kv_store.is_some() {
+            let interval: usize = std::env::var("RLX_RETRIEVE_INTERVAL")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1);
+            self.retention_step = self.retention_step.wrapping_add(1);
+            // Retrieve on steps 1, 1+N, 1+2N … so the first decode after prefill
+            // evicts the (large) prefill KV immediately; skip the N-1 in between.
+            if interval > 1 && self.retention_step % interval != 1 {
+                self.retention.as_mut().unwrap().append(); // track position only
+                return;
+            }
+        }
         // #4: apply mixed-precision KV to the resident mirror every step (before
         // the plan's early-out) so the new row is included.
         if std::env::var_os("RLX_QWEN3_KV_QUANT").is_some() {
@@ -1588,7 +1706,9 @@ impl Qwen3Generator {
         // over the *current* resident (before `append` adds the new token).
         // Kept for inspection recording after commit.
         let mut importance_snapshot: Option<Vec<f32>> = None;
-        if self.retention.as_ref().unwrap().needs_attention() || self.inspect.is_some() {
+        let skip_imp = std::env::var_os("RLX_SKIP_IMP").is_some();
+        if !skip_imp && (self.retention.as_ref().unwrap().needs_attention() || self.inspect.is_some())
+        {
             let resident_len = self.retention.as_ref().unwrap().resident_len();
             if resident_len > 0 {
                 let cache = self.cache.as_ref().unwrap();
@@ -1673,7 +1793,7 @@ impl Qwen3Generator {
             .unwrap_or(false);
         #[cfg(not(feature = "mmap-kv"))]
         let multilayer = false;
-        let _query_layers: Vec<Vec<f32>> = if multilayer {
+        let query_layers: Vec<Vec<f32>> = if multilayer {
             self.cache
                 .as_ref()
                 .map(|c| {
@@ -2219,7 +2339,12 @@ impl Qwen3Generator {
         // GPU-resident row-feed path (async-MLX decode fix): keep K/V on device,
         // fold only the new row in place each step — no host round-trip, no handle
         // growth. The host path below re-uploads the whole padded cache each token.
-        if self.use_gpu_kv && !rlx_ir::env::flag("RLX_QWEN3_NO_GPU_KV") {
+        // The resident path handles F32 and NATIVE packed (`native_packed_gguf`);
+        // the non-native rewrite path (`packed_weights` set, no native GGUF) still
+        // uses the host bucketed path below — it applies its rewrite per compile.
+        let non_native_packed =
+            self.packed_weights.is_some() && self.native_packed_gguf.is_none();
+        if self.use_gpu_kv && !non_native_packed && !rlx_ir::env::flag("RLX_QWEN3_NO_GPU_KV") {
             return self.decode_step_gpu_resident(
                 past_seq,
                 upper,
@@ -2262,7 +2387,36 @@ impl Qwen3Generator {
         let cfg = self.cfg.clone();
         let weights = self.weights_cache.clone();
         let packed = self.packed_weights.clone();
+        let native_gguf = self.native_packed_gguf.clone();
         let cache_dec = self.decode_compile_cache.as_mut().unwrap();
+        // Native packed decode: build the m=1 decode graph straight from the
+        // GGUF with `Op::DequantMatMul` projections (the flow emits packed
+        // matmuls; no F32 weights, no rewrite). Same graph topology as F32/
+        // rewrite, so logits match (DequantMatMul ≡ dequant+matmul). Preferred
+        // when set.
+        if let Some(gguf) = native_gguf {
+            let cfg = cfg.clone();
+            return run_bucketed_kv_decode_packed(
+                cache_dec,
+                past_seq,
+                &kv,
+                kv_dim,
+                n_layers,
+                &fixed,
+                move |upper| {
+                    let mut loader = rlx_core::weight_loader::GgufLoader::from_file(&gguf)
+                        .expect("open GGUF for native packed decode");
+                    crate::builder::build_qwen3_decode_graph_sized_packed(
+                        &cfg,
+                        &mut loader,
+                        1,
+                        upper as usize,
+                    )
+                    .expect("native packed decode graph")
+                },
+                &decode_opts,
+            );
+        }
         // Packed decode: build the F32 decode graph, then rewrite its weight
         // MatMuls → packed DequantMatMul and bind the U8 K-quant bytes (only the
         // compile miss pays the rewrite; steady-state captures the `Arc`s). The
@@ -2347,22 +2501,55 @@ impl Qwen3Generator {
         let decode_opts = self.profile_compile_options(true);
         let cfg = self.cfg.clone();
         let weights = self.weights_cache.clone();
+        let native_gguf = self.native_packed_gguf.clone();
 
         // Compile + set params for this bucket (only on a cache miss; hits keep the
-        // weights resident on device).
+        // weights resident on device). Native packed builds the m=1 decode graph
+        // straight from the GGUF (`Op::DequantMatMul` projections + bound U8 blobs
+        // via `ensure_graph_with_packed`) — no F32 residency; the resident K/V feed
+        // below is identical (KV input/output names are unchanged by packing).
         {
             let cache_dec = self.decode_compile_cache.as_mut().unwrap();
-            cache_dec
-                .ensure_graph_with_params(
-                    key,
-                    |upper| {
-                        let mut wm = WeightMap::from_tensors((*weights).clone());
-                        build_qwen3_decode_graph_sized_ext(&cfg, &mut wm, 1, upper as usize, true)
+            if let Some(gguf) = &native_gguf {
+                let gguf = gguf.clone();
+                let cfg = cfg.clone();
+                cache_dec
+                    .ensure_graph_with_packed(
+                        key,
+                        move |upper| {
+                            let mut loader =
+                                rlx_core::weight_loader::GgufLoader::from_file(&gguf)
+                                    .expect("open GGUF for native packed resident decode");
+                            crate::builder::build_qwen3_decode_graph_sized_packed(
+                                &cfg,
+                                &mut loader,
+                                1,
+                                upper as usize,
+                            )
+                            .expect("native packed resident decode graph")
+                        },
+                        &decode_opts,
+                    )
+                    .context("decode bucket outside compile-cache range")?;
+            } else {
+                cache_dec
+                    .ensure_graph_with_params(
+                        key,
+                        |upper| {
+                            let mut wm = WeightMap::from_tensors((*weights).clone());
+                            build_qwen3_decode_graph_sized_ext(
+                                &cfg,
+                                &mut wm,
+                                1,
+                                upper as usize,
+                                true,
+                            )
                             .expect("qwen3 decode graph")
-                    },
-                    &decode_opts,
-                )
-                .context("decode bucket outside compile-cache range")?;
+                        },
+                        &decode_opts,
+                    )
+                    .context("decode bucket outside compile-cache range")?;
+            }
         }
 
         // (Re)bind resident K/V handles on first use of this bucket or after a
@@ -2533,6 +2720,7 @@ impl Qwen3Generator {
         let decode_opts = self.profile_compile_options(true);
         let cfg = self.cfg.clone();
         let weights = self.weights_cache.clone();
+        let native_gguf = self.native_packed_gguf.clone();
 
         let input_ids_f32: Vec<f32> = entries.iter().map(|(t, _)| *t as f32).collect();
         let (cos, sin) = compute_rope_slice(&cfg, abs_pos);
@@ -2543,17 +2731,43 @@ impl Qwen3Generator {
             .batched_decode_caches
             .entry(b)
             .or_insert_with(|| BucketedCompileCache::power_of_two_ladder(device, 1, max_past));
-        let (upper_u64, compiled) = cache_b
-            .ensure_graph_with_params(
-                past_seq as u64,
-                |upper| {
-                    let mut wm = WeightMap::from_tensors((*weights).clone());
-                    build_qwen3_decode_graph_sized_ext(&cfg, &mut wm, b, upper as usize, true)
-                        .expect("qwen3 batched decode graph")
-                },
-                &decode_opts,
-            )
-            .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?;
+        // Native packed: build the batched decode graph with `Op::DequantMatMul`
+        // projections straight from the GGUF (weights stay Q4 — half the per-step
+        // weight-read bandwidth vs the F32 dequant-at-load path) and bind the U8
+        // blobs on compile-miss. Same fix as the single-stream resident path;
+        // KV is still host-uploaded (batched resident feed is a separate step).
+        let (upper_u64, compiled) = if let Some(gguf) = native_gguf {
+            let cfg = cfg.clone();
+            cache_b
+                .ensure_graph_with_packed(
+                    past_seq as u64,
+                    move |upper| {
+                        let mut loader = rlx_core::weight_loader::GgufLoader::from_file(&gguf)
+                            .expect("open GGUF for native packed batched decode");
+                        crate::builder::build_qwen3_decode_graph_sized_packed(
+                            &cfg,
+                            &mut loader,
+                            b,
+                            upper as usize,
+                        )
+                        .expect("native packed batched decode graph")
+                    },
+                    &decode_opts,
+                )
+                .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?
+        } else {
+            cache_b
+                .ensure_graph_with_params(
+                    past_seq as u64,
+                    |upper| {
+                        let mut wm = WeightMap::from_tensors((*weights).clone());
+                        build_qwen3_decode_graph_sized_ext(&cfg, &mut wm, b, upper as usize, true)
+                            .expect("qwen3 batched decode graph")
+                    },
+                    &decode_opts,
+                )
+                .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?
+        };
         let upper = upper_u64 as usize;
 
         // Batch-major padded KV `[batch, upper, kv_dim]`: each sequence's
@@ -2631,6 +2845,209 @@ impl Qwen3Generator {
         Ok(out)
     }
 
+    /// Seed the **resident** batched-decode host mirror for `B = caches.len()`
+    /// sequences (call once after prefill, or to reset). Subsequent
+    /// [`Self::decode_batched_resident_step`] calls keep the K/V GPU-resident.
+    pub fn decode_batched_resident_init(&mut self, caches: &[&KvCacheState]) {
+        let b = caches.len();
+        self.batched_resident_kv
+            .insert(b, caches.iter().map(|c| (*c).clone()).collect());
+        self.batched_gpu_kv_binding.insert(b, GpuKvBinding::default());
+    }
+
+    /// One **resident** batched decode step (all `B` sequences at the same
+    /// `past_seq`). K/V stays GPU-resident: the `[B, upper, kv_dim]` handles are
+    /// bound once per bucket (from the host mirror) and each step folds only the
+    /// new token's row in place on device (`feed_kv_batch_major_src`) — no
+    /// O(B·ctx) KV re-upload like the stateless [`Self::decode_batched_uniform`].
+    /// Returns per-sequence next-token logits. Seed with
+    /// [`Self::decode_batched_resident_init`] first. Token-identical to the
+    /// stateless path. Honors `native_packed_gguf` (packed DequantMatMul).
+    pub fn decode_batched_resident_step(
+        &mut self,
+        toks: &[u32],
+        abs_pos: usize,
+        past_seq: usize,
+    ) -> Result<Vec<Vec<f32>>> {
+        let b = toks.len();
+        if b == 0 {
+            return Ok(Vec::new());
+        }
+        anyhow::ensure!(
+            self.batched_resident_kv.contains_key(&b),
+            "decode_batched_resident_step: call decode_batched_resident_init first"
+        );
+        let kv_dim = self.cfg.kv_proj_dim();
+        let n_layers = self.cfg.num_hidden_layers;
+        let vocab = self.cfg.vocab_size;
+        let max_past = self.cfg.max_position_embeddings.clamp(1, 4096) as u64;
+        let device = self.device;
+        let decode_opts = self.profile_compile_options(true);
+        let cfg = self.cfg.clone();
+        let weights = self.weights_cache.clone();
+        let native_gguf = self.native_packed_gguf.clone();
+
+        let input_ids_f32: Vec<f32> = toks.iter().map(|t| *t as f32).collect();
+        let (cos, sin) = compute_rope_slice(&cfg, abs_pos);
+        let key = past_seq as u64;
+
+        // Compile (or fetch) the B-shaped decode graph — packed or F32.
+        let cache_b = self
+            .batched_decode_caches
+            .entry(b)
+            .or_insert_with(|| BucketedCompileCache::power_of_two_ladder(device, 1, max_past));
+        let upper = {
+            let (upper_u64, _c) = if let Some(gguf) = native_gguf {
+                let cfg = cfg.clone();
+                cache_b
+                    .ensure_graph_with_packed(
+                        key,
+                        move |upper| {
+                            let mut loader = rlx_core::weight_loader::GgufLoader::from_file(&gguf)
+                                .expect("open GGUF for resident batched decode");
+                            crate::builder::build_qwen3_decode_graph_sized_packed(
+                                &cfg,
+                                &mut loader,
+                                b,
+                                upper as usize,
+                            )
+                            .expect("resident batched packed decode graph")
+                        },
+                        &decode_opts,
+                    )
+                    .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?
+            } else {
+                cache_b
+                    .ensure_graph_with_params(
+                        key,
+                        |upper| {
+                            let mut wm = WeightMap::from_tensors((*weights).clone());
+                            build_qwen3_decode_graph_sized_ext(&cfg, &mut wm, b, upper as usize, true)
+                                .expect("resident batched decode graph")
+                        },
+                        &decode_opts,
+                    )
+                    .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?
+            };
+            upper_u64 as usize
+        };
+
+        // (Re)bind resident K/V handles `[B, upper, kv_dim]` from the host mirror
+        // on first use of this bucket (or after a bucket change).
+        let handles_live = self
+            .batched_decode_caches
+            .get_mut(&b)
+            .and_then(|c| c.compiled_for_key_mut(key))
+            .map(|cg| cg.has_gpu_handle("past_k_0"))
+            .unwrap_or(false);
+        let bound_upper = self
+            .batched_gpu_kv_binding
+            .get(&b)
+            .map(|g| g.upper)
+            .unwrap_or(u64::MAX);
+        if bound_upper != upper as u64 || !handles_live {
+            let real = past_seq * kv_dim;
+            let bufs: Vec<(String, Vec<f32>)> = {
+                let mirror = self.batched_resident_kv.get(&b).unwrap();
+                (0..n_layers)
+                    .flat_map(|l| {
+                        let mut pk = vec![0.0f32; b * upper * kv_dim];
+                        let mut pv = vec![0.0f32; b * upper * kv_dim];
+                        for (i, m) in mirror.iter().enumerate() {
+                            let base = i * upper * kv_dim;
+                            pk[base..base + real].copy_from_slice(&m.layers_k[l][..real]);
+                            pv[base..base + real].copy_from_slice(&m.layers_v[l][..real]);
+                        }
+                        [(format!("past_k_{l}"), pk), (format!("past_v_{l}"), pv)]
+                    })
+                    .collect()
+            };
+            let compiled = self
+                .batched_decode_caches
+                .get_mut(&b)
+                .unwrap()
+                .compiled_for_key_mut(key)
+                .context("resident batched bucket missing after compile")?;
+            for (li, (name, buf)) in bufs.iter().enumerate() {
+                compiled.bind_gpu_handle(name, buf);
+                // Output order is logits, K_0, V_0, K_1, V_1, … → out index li+1.
+                compiled.register_kv_row_feed(name, 1 + li);
+            }
+            self.batched_gpu_kv_binding
+                .insert(b, GpuKvBinding { upper: upper as u64 });
+        }
+
+        // Per-row mask `[B, upper+1]` (rows identical at uniform past_seq).
+        let row_mask = bucket_decode_mask(past_seq, upper);
+        let mut mask = Vec::with_capacity(b * row_mask.len());
+        for _ in 0..b {
+            mask.extend_from_slice(&row_mask);
+        }
+
+        let compiled = self
+            .batched_decode_caches
+            .get_mut(&b)
+            .unwrap()
+            .compiled_for_key_mut(key)
+            .context("resident batched bucket missing")?;
+        let run_inputs: Vec<(&str, &[f32])> = vec![
+            ("input_ids", &input_ids_f32),
+            ("rope_cos", &cos),
+            ("rope_sin", &sin),
+            ("mask", &mask),
+        ];
+        // Read back ONLY logits; K/V outputs stay on device for the fold below.
+        let mut outs = compiled.run_read_outputs(&run_inputs, Some(&[0]));
+        // Fold each sequence's new token (output row `upper` of the `[B, upper+1]`
+        // cache output) into the resident `[B, upper]` handle at `past_seq`.
+        compiled.feed_kv_batch_major_src(upper, upper + 1, past_seq, b, upper, kv_dim);
+        // Cheap per-step readback of ONLY the new rows keeps the host mirror
+        // accurate for the next bucket rebind (O(B) rows, not O(B·ctx)).
+        let mut new_rows: Vec<Vec<(Vec<f32>, Vec<f32>)>> = (0..b).map(|_| Vec::with_capacity(n_layers)).collect();
+        for l in 0..n_layers {
+            for (i, nr) in new_rows.iter_mut().enumerate() {
+                let row = i * (upper + 1) + upper;
+                let nk = compiled
+                    .read_output_row(1 + 2 * l, row, kv_dim)
+                    .context("resident batched K row")?;
+                let nv = compiled
+                    .read_output_row(2 + 2 * l, row, kv_dim)
+                    .context("resident batched V row")?;
+                nr.push((nk, nv));
+            }
+        }
+        let logits_raw = outs
+            .drain(..)
+            .next()
+            .context("resident batched logits missing")?;
+
+        // Advance the host mirror (append the new rows, bump past_len).
+        {
+            let mirror = self.batched_resident_kv.get_mut(&b).unwrap();
+            for (i, m) in mirror.iter_mut().enumerate() {
+                for (l, (nk, nv)) in new_rows[i].drain(..).enumerate() {
+                    m.layers_k[l].extend_from_slice(&nk);
+                    m.layers_v[l].extend_from_slice(&nv);
+                }
+                m.past_len = past_seq + 1;
+            }
+        }
+        // Bucket change next step → drop the binding so the larger handle rebinds.
+        let next_upper = self.batched_decode_caches.get(&b).and_then(|c| {
+            c.bucket_for((past_seq + 1) as u64)
+                .and_then(|idx| c.buckets().nth(idx).map(|r| r.end - 1))
+        });
+        if next_upper != Some(upper as u64) {
+            self.batched_gpu_kv_binding.insert(b, GpuKvBinding::default());
+        }
+
+        let mut out = Vec::with_capacity(b);
+        for i in 0..b {
+            out.push(logits_raw[i * vocab..(i + 1) * vocab].to_vec());
+        }
+        Ok(out)
+    }
+
     /// **Ragged fused batched decode** — decodes `B = entries.len()` sequences
     /// in ONE forward even when they sit at **different** cache lengths.
     ///
@@ -2669,28 +3086,51 @@ impl Qwen3Generator {
         let decode_opts = self.profile_compile_options(true);
         let cfg = self.cfg.clone();
         let weights = self.weights_cache.clone();
+        let native_gguf = self.native_packed_gguf.clone();
 
         // Per-sequence input token, RoPE row (at the sequence's own position),
         // and mask row (each sequence's own real past length).
         let input_ids_f32: Vec<f32> = entries.iter().map(|(t, _)| *t as f32).collect();
         let max_past_seq = entries.iter().map(|(_, kv)| kv.past_len).max().unwrap_or(0);
 
-        // Graph + bucket `upper` for the longest sequence in the batch.
+        // Graph + bucket `upper` for the longest sequence in the batch. Native
+        // packed → ragged DequantMatMul graph (half the weight read); else F32.
         let cache_b = self
             .batched_ragged_caches
             .entry(b)
             .or_insert_with(|| BucketedCompileCache::power_of_two_ladder(device, 1, max_past));
-        let (upper_u64, compiled) = cache_b
-            .ensure_graph_with_params(
-                max_past_seq as u64,
-                |upper| {
-                    let mut wm = WeightMap::from_tensors((*weights).clone());
-                    build_qwen3_decode_graph_sized_ragged(&cfg, &mut wm, b, upper as usize)
-                        .expect("qwen3 ragged decode graph")
-                },
-                &decode_opts,
-            )
-            .ok_or_else(|| anyhow::anyhow!("past_seq {max_past_seq} outside decode buckets"))?;
+        let (upper_u64, compiled) = if let Some(gguf) = native_gguf {
+            let cfg = cfg.clone();
+            cache_b
+                .ensure_graph_with_packed(
+                    max_past_seq as u64,
+                    move |upper| {
+                        let mut loader = rlx_core::weight_loader::GgufLoader::from_file(&gguf)
+                            .expect("open GGUF for native packed ragged decode");
+                        crate::builder::build_qwen3_decode_graph_sized_ragged_packed(
+                            &cfg,
+                            &mut loader,
+                            b,
+                            upper as usize,
+                        )
+                        .expect("native packed ragged decode graph")
+                    },
+                    &decode_opts,
+                )
+                .ok_or_else(|| anyhow::anyhow!("past_seq {max_past_seq} outside decode buckets"))?
+        } else {
+            cache_b
+                .ensure_graph_with_params(
+                    max_past_seq as u64,
+                    |upper| {
+                        let mut wm = WeightMap::from_tensors((*weights).clone());
+                        build_qwen3_decode_graph_sized_ragged(&cfg, &mut wm, b, upper as usize)
+                            .expect("qwen3 ragged decode graph")
+                    },
+                    &decode_opts,
+                )
+                .ok_or_else(|| anyhow::anyhow!("past_seq {max_past_seq} outside decode buckets"))?
+        };
         let upper = upper_u64 as usize;
 
         // Per-row RoPE `[batch, half]` and mask `[batch, upper+1]`.
@@ -2769,6 +3209,209 @@ impl Qwen3Generator {
         Ok(out)
     }
 
+    /// Seed the **ragged resident** decode host mirror for `B = caches.len()`
+    /// sequences at possibly DIFFERENT cache lengths (call once / on reset).
+    pub fn decode_batched_ragged_resident_init(&mut self, caches: &[&KvCacheState]) {
+        let b = caches.len();
+        self.batched_ragged_resident_kv
+            .insert(b, caches.iter().map(|c| (*c).clone()).collect());
+        self.batched_ragged_gpu_kv_binding
+            .insert(b, GpuKvBinding::default());
+    }
+
+    /// One **ragged resident** batched decode step: `B` sequences at MIXED cache
+    /// lengths, K/V GPU-resident. Each sequence's RoPE/mask uses its own
+    /// `past_len` (from the mirror; bucket = the batch max), and its new token
+    /// folds into its OWN resident row via `feed_kv_batch_major_ragged` — no
+    /// O(B·ctx) re-upload. Returns per-sequence logits; the mirror advances each
+    /// sequence by one. Seed with [`Self::decode_batched_ragged_resident_init`].
+    /// Honors `native_packed_gguf` (ragged DequantMatMul). Token-identical to
+    /// [`Self::decode_batched_ragged`].
+    pub fn decode_batched_ragged_resident_step(&mut self, toks: &[u32]) -> Result<Vec<Vec<f32>>> {
+        let b = toks.len();
+        if b == 0 {
+            return Ok(Vec::new());
+        }
+        anyhow::ensure!(
+            self.batched_ragged_resident_kv.contains_key(&b),
+            "decode_batched_ragged_resident_step: call decode_batched_ragged_resident_init first"
+        );
+        let kv_dim = self.cfg.kv_proj_dim();
+        let n_layers = self.cfg.num_hidden_layers;
+        let vocab = self.cfg.vocab_size;
+        let half = self.cfg.head_dim / 2;
+        let max_past = self.cfg.max_position_embeddings.clamp(1, 4096) as u64;
+        let device = self.device;
+        let decode_opts = self.profile_compile_options(true);
+        let cfg = self.cfg.clone();
+        let weights = self.weights_cache.clone();
+        let native_gguf = self.native_packed_gguf.clone();
+
+        let past_lens: Vec<usize> = self.batched_ragged_resident_kv[&b]
+            .iter()
+            .map(|m| m.past_len)
+            .collect();
+        let max_past_seq = past_lens.iter().copied().max().unwrap_or(0);
+        let key = max_past_seq as u64;
+        let input_ids_f32: Vec<f32> = toks.iter().map(|t| *t as f32).collect();
+
+        let cache_b = self
+            .batched_ragged_caches
+            .entry(b)
+            .or_insert_with(|| BucketedCompileCache::power_of_two_ladder(device, 1, max_past));
+        let upper = {
+            let (upper_u64, _c) = if let Some(gguf) = native_gguf {
+                let cfg = cfg.clone();
+                cache_b
+                    .ensure_graph_with_packed(
+                        key,
+                        move |upper| {
+                            let mut loader = rlx_core::weight_loader::GgufLoader::from_file(&gguf)
+                                .expect("open GGUF for resident ragged decode");
+                            crate::builder::build_qwen3_decode_graph_sized_ragged_packed(
+                                &cfg,
+                                &mut loader,
+                                b,
+                                upper as usize,
+                            )
+                            .expect("resident ragged packed decode graph")
+                        },
+                        &decode_opts,
+                    )
+                    .ok_or_else(|| anyhow::anyhow!("past_seq {max_past_seq} outside decode buckets"))?
+            } else {
+                cache_b
+                    .ensure_graph_with_params(
+                        key,
+                        |upper| {
+                            let mut wm = WeightMap::from_tensors((*weights).clone());
+                            build_qwen3_decode_graph_sized_ragged(&cfg, &mut wm, b, upper as usize)
+                                .expect("resident ragged decode graph")
+                        },
+                        &decode_opts,
+                    )
+                    .ok_or_else(|| anyhow::anyhow!("past_seq {max_past_seq} outside decode buckets"))?
+            };
+            upper_u64 as usize
+        };
+
+        // (Re)bind `[B, upper, kv_dim]` from the mirror — each sequence's own
+        // `past_len` real rows, zero-padded to the shared bucket `upper`.
+        let handles_live = self
+            .batched_ragged_caches
+            .get_mut(&b)
+            .and_then(|c| c.compiled_for_key_mut(key))
+            .map(|cg| cg.has_gpu_handle("past_k_0"))
+            .unwrap_or(false);
+        let bound_upper = self
+            .batched_ragged_gpu_kv_binding
+            .get(&b)
+            .map(|g| g.upper)
+            .unwrap_or(u64::MAX);
+        if bound_upper != upper as u64 || !handles_live {
+            let bufs: Vec<(String, Vec<f32>)> = {
+                let mirror = self.batched_ragged_resident_kv.get(&b).unwrap();
+                (0..n_layers)
+                    .flat_map(|l| {
+                        let mut pk = vec![0.0f32; b * upper * kv_dim];
+                        let mut pv = vec![0.0f32; b * upper * kv_dim];
+                        for (i, m) in mirror.iter().enumerate() {
+                            let real = m.past_len * kv_dim;
+                            let base = i * upper * kv_dim;
+                            pk[base..base + real].copy_from_slice(&m.layers_k[l][..real]);
+                            pv[base..base + real].copy_from_slice(&m.layers_v[l][..real]);
+                        }
+                        [(format!("past_k_{l}"), pk), (format!("past_v_{l}"), pv)]
+                    })
+                    .collect()
+            };
+            let compiled = self
+                .batched_ragged_caches
+                .get_mut(&b)
+                .unwrap()
+                .compiled_for_key_mut(key)
+                .context("resident ragged bucket missing after compile")?;
+            for (li, (name, buf)) in bufs.iter().enumerate() {
+                compiled.bind_gpu_handle(name, buf);
+                compiled.register_kv_row_feed(name, 1 + li);
+            }
+            self.batched_ragged_gpu_kv_binding
+                .insert(b, GpuKvBinding { upper: upper as u64 });
+        }
+
+        // Per-sequence RoPE `[B, half]` + mask `[B, upper+1]` (each at its own pos).
+        let mut cos = Vec::with_capacity(b * half);
+        let mut sin = Vec::with_capacity(b * half);
+        let mut mask = Vec::with_capacity(b * (upper + 1));
+        for &pl in &past_lens {
+            let (c, s) = compute_rope_slice(&cfg, pl);
+            cos.extend_from_slice(&c);
+            sin.extend_from_slice(&s);
+            mask.extend_from_slice(&bucket_decode_mask(pl, upper));
+        }
+
+        let compiled = self
+            .batched_ragged_caches
+            .get_mut(&b)
+            .unwrap()
+            .compiled_for_key_mut(key)
+            .context("resident ragged bucket missing")?;
+        let run_inputs: Vec<(&str, &[f32])> = vec![
+            ("input_ids", &input_ids_f32),
+            ("rope_cos", &cos),
+            ("rope_sin", &sin),
+            ("mask", &mask),
+        ];
+        let mut outs = compiled.run_read_outputs(&run_inputs, Some(&[0]));
+        // Each sequence's new token (output row `upper`) → its OWN resident row
+        // (`past_lens[i]`), on device.
+        compiled.feed_kv_batch_major_ragged(upper, upper + 1, &past_lens, upper, kv_dim);
+        let mut new_rows: Vec<Vec<(Vec<f32>, Vec<f32>)>> =
+            (0..b).map(|_| Vec::with_capacity(n_layers)).collect();
+        for l in 0..n_layers {
+            for (i, nr) in new_rows.iter_mut().enumerate() {
+                let row = i * (upper + 1) + upper;
+                let nk = compiled
+                    .read_output_row(1 + 2 * l, row, kv_dim)
+                    .context("resident ragged K row")?;
+                let nv = compiled
+                    .read_output_row(2 + 2 * l, row, kv_dim)
+                    .context("resident ragged V row")?;
+                nr.push((nk, nv));
+            }
+        }
+        let logits_raw = outs
+            .drain(..)
+            .next()
+            .context("resident ragged logits missing")?;
+
+        {
+            let mirror = self.batched_ragged_resident_kv.get_mut(&b).unwrap();
+            for (i, m) in mirror.iter_mut().enumerate() {
+                for (l, (nk, nv)) in new_rows[i].drain(..).enumerate() {
+                    m.layers_k[l].extend_from_slice(&nk);
+                    m.layers_v[l].extend_from_slice(&nv);
+                }
+                m.past_len += 1;
+            }
+        }
+        // Bucket change next step (max advances by 1) → drop binding to rebind.
+        let next_upper = self.batched_ragged_caches.get(&b).and_then(|c| {
+            c.bucket_for((max_past_seq + 1) as u64)
+                .and_then(|idx| c.buckets().nth(idx).map(|r| r.end - 1))
+        });
+        if next_upper != Some(upper as u64) {
+            self.batched_ragged_gpu_kv_binding
+                .insert(b, GpuKvBinding::default());
+        }
+
+        let mut out = Vec::with_capacity(b);
+        for i in 0..b {
+            out.push(logits_raw[i * vocab..(i + 1) * vocab].to_vec());
+        }
+        Ok(out)
+    }
+
     /// Run prefill-with-cache and return the raw outputs. Uses the
     /// LRU `CompileCache` when enabled; otherwise compiles fresh each
     /// call. Keyed by `seq` because graph shape is seq-specialized.
@@ -2779,8 +3422,36 @@ impl Qwen3Generator {
         ids_f32: &[f32],
     ) -> Result<Vec<Vec<f32>>> {
         let prefill_opts = self.profile_compile_options(false);
+        // Native packed prefill-seed: build the last-logits + KV-export graph
+        // with `Op::DequantMatMul` projections straight from the GGUF (weights
+        // stay packed) and bind the U8 blobs. Compiles fresh each seed (prefill
+        // runs once per generation), so no F32 weight residency — this is the
+        // seed for a fully packed, low-memory generate loop.
+        if let Some(gguf) = self.native_packed_gguf.clone() {
+            let mut loader = rlx_core::weight_loader::GgufLoader::from_file(&gguf)?;
+            let (graph, params, packed_params) =
+                crate::builder::build_qwen3_graph_sized_last_logits_packed(
+                    &self.cfg, &mut loader, batch, seq, /*with_kv_outputs*/ true,
+                )?;
+            let mut compiled = Session::new(self.device).compile_with(graph, &prefill_opts);
+            for (name, data) in &params {
+                compiled.set_param(name, data);
+            }
+            for (name, bytes) in &packed_params {
+                compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+            }
+            return Ok(compiled.run(&[("input_ids", ids_f32)]));
+        }
         if let Some(cache) = &mut self.prefill_compile_cache {
             let key = prefill_cache_key(batch, seq);
+            if cache.contains(key) {
+                let compiled = cache.get_or_compile_with_options(
+                    key,
+                    || panic!("run_prefill_with_cache: missing prefill cache key {key}"),
+                    &prefill_opts,
+                );
+                return Ok(compiled.run(&[("input_ids", ids_f32)]));
+            }
             let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
             let (graph, params) = build_qwen3_graph_sized_last_logits(
                 &self.cfg, &mut wm, batch, seq, /*with_kv_outputs*/ true,
@@ -2957,6 +3628,10 @@ impl Qwen3Generator {
     pub fn restore_cache(&mut self, cache: KvCacheState, tokens: Vec<u32>) {
         self.cache = Some(cache);
         self.tokens = tokens;
+        // The restored host KV mirror is now authoritative; drop any stale
+        // GPU-resident handles so the resident decode path re-seeds from it
+        // (else feed_continuation / decode read a dead binding). Mirrors prefill().
+        self.gpu_kv_binding = GpuKvBinding::default();
     }
 
     /// Prefill `prompt`, **reusing** a `restored` KV cache that already covers
@@ -2991,6 +3666,38 @@ impl Qwen3Generator {
             logits = self.decode_get_logits(t)?;
         }
         Ok(logits)
+    }
+
+    /// Fast prefix reuse for the GPU decode path. Like [`Self::prefill_with_reuse`]
+    /// but replays the suffix through the resident `feed_continuation` (GPU) path
+    /// instead of the host `decode_get_logits` loop — so warm TTFT pays only the
+    /// (short) suffix at decode speed, not a host round-trip per token. Leaves the
+    /// state on the `step_cached` invariant (`past_len == tokens.len() - 1`, last
+    /// prompt token pending) ready for `generate_cached_until`. Token-identical to
+    /// a cold full prefill of `prompt` (the reused rows are byte-identical).
+    pub fn prefill_with_reuse_fast(
+        &mut self,
+        prompt: &[u32],
+        restored: KvCacheState,
+        reuse_len: usize,
+    ) -> Result<()> {
+        if prompt.len() < 2 {
+            anyhow::bail!("prefill_with_reuse_fast: prompt must have ≥2 tokens");
+        }
+        let kv_dim = self.cfg.kv_proj_dim();
+        let reuse = reuse_len.min(prompt.len() - 1).min(restored.past_len);
+        let kv = if reuse == restored.past_len {
+            restored
+        } else {
+            trim_kv(&restored, reuse, kv_dim)
+        };
+        self.cache = Some(kv);
+        self.gpu_kv_binding = GpuKvBinding::default();
+        // `prompt[reuse]` becomes the pending token (step_cached invariant), then
+        // feed_continuation folds it + the rest of the suffix on the GPU path.
+        self.tokens = prompt[..reuse + 1].to_vec();
+        self.feed_continuation(&prompt[reuse + 1..])?;
+        Ok(())
     }
 
     pub fn config(&self) -> &Qwen3Config {
@@ -3052,13 +3759,27 @@ impl Qwen3Generator {
         })?;
         let past_seq = cache.past_len;
 
-        let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
-        let (graph, params) =
-            build_qwen3_decode_graph_sized(&self.cfg, &mut wm, /*batch*/ 1, past_seq)?;
+        // Native packed: build the decode graph with `Op::DequantMatMul`
+        // projections straight from the GGUF and bind the U8 blobs. Otherwise
+        // the F32 graph from the dequant-at-load weight cache.
+        let (graph, params, packed_params) = if let Some(gguf) = self.native_packed_gguf.clone() {
+            let mut loader = rlx_core::weight_loader::GgufLoader::from_file(&gguf)?;
+            crate::builder::build_qwen3_decode_graph_sized_packed(
+                &self.cfg, &mut loader, /*batch*/ 1, past_seq,
+            )?
+        } else {
+            let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
+            let (graph, params) =
+                build_qwen3_decode_graph_sized(&self.cfg, &mut wm, /*batch*/ 1, past_seq)?;
+            (graph, params, Vec::new())
+        };
         let opts = self.profile_compile_options(true);
         let mut compiled = Session::new(self.device).compile_with(graph, &opts);
         for (name, data) in &params {
             compiled.set_param(name, data);
+        }
+        for (name, bytes) in &packed_params {
+            compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
         }
 
         let (cos, sin) = compute_rope_slice(&self.cfg, past_seq);

@@ -211,13 +211,85 @@ impl Qwen3RunnerBuilder {
         // Auto-default packed when no explicit choice was made AND the
         // GGUF on disk is ≥ 256 MB (avoids the F32-dequant OOM on
         // multi-GB fixtures). Explicit `.packed_weights(_)` overrides.
+        //
+        // Exception (Metal, small models < 700 MB GGUF ≈ ≤1B params): the
+        // packed Q4 decode is dequant-bound (~13 tok/s), while the F32
+        // generator with F16-resident weights (enabled just below) hits
+        // ~22 tok/s — measured ~1.6× on qwen3-0.6B. Their F32 footprint
+        // (< ~3 GB) fits comfortably, so trade the memory for the decode
+        // speed. Larger models stay packed (memory); non-Metal is unchanged.
         let packed = self.packed_weights.unwrap_or_else(|| {
-            matches!(format, WeightFormat::Gguf)
-                && std::fs::metadata(&weights_path)
-                    .ok()
-                    .map(|m| m.len() >= 256 * 1024 * 1024)
-                    .unwrap_or(false)
+            if !matches!(format, WeightFormat::Gguf) {
+                return false;
+            }
+            let sz = std::fs::metadata(&weights_path)
+                .ok()
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let small_metal =
+                matches!(device, Device::Metal) && sz < 700 * 1024 * 1024;
+            sz >= 256 * 1024 * 1024 && !small_metal
         });
+        // F16-resident weights on Metal: half the projection/LM-head weight bytes
+        // → ~1.55× decode. Lossless-ish for a Q4-native GGUF (F16's 10-bit
+        // mantissa easily holds dequantized 4-bit values). Metal-only (other
+        // backends misread F16 params). Applies to the PACKED path too: there the
+        // Q4 projections ignore this (they lower to DequantMatMul over the U8 blob
+        // via `take_packed`), so the only weight it converts is the big tied
+        // LM-head — moving it off the dense F32 sgemm onto the fast F16
+        // `gemv_f16w_splitk` (the lm_head is ~16% of packed decode). Respects an
+        // explicit override.
+        if matches!(device, Device::Metal)
+            && rlx_ir::env::var("RLX_QWEN3_F16_WEIGHTS").is_none()
+        {
+            rlx_ir::env::set("RLX_QWEN3_F16_WEIGHTS", "1");
+        }
+        // Flash-decoding (split-KV) attention on Metal: the base m=1 SDPA kernel
+        // launches only batch*heads (~16) threadgroups → occupancy-starved
+        // (attention is ~46% of packed decode). Split KV into ~64-key partitions
+        // (P≈4 at ~256 ctx via the tuned heuristic) so `heads*P` threadgroups fill
+        // the GPU; a tiny combine merges the online-softmax partials. Numerically
+        // equal (token-identical). Measured attention 6.4→3.75ms (−41%) at ~256
+        // ctx; long ctx unaffected (bandwidth-bound). Metal, respects an override.
+        if matches!(device, Device::Metal)
+            && rlx_ir::env::var("RLX_METAL_SDPA_FLASH_DECODE").is_none()
+        {
+            rlx_ir::env::set("RLX_METAL_SDPA_FLASH_DECODE", "1");
+        }
+        // GQA-native attention on Metal: pass the un-expanded (num_kv_heads) K/V
+        // to `Op::Attention` and skip the `repeat_kv` Expand — the Metal SDPA
+        // maps query→shared-kv head internally, so the Expand only wrote 2× the
+        // KV that attention re-reads. Measured +~10% F16 / +9% Q4 decode,
+        // token-identical (M4 Pro). Metal-only: the SDPA kernels do the GQA
+        // indexing; other backends still need the materialized KV, so gate it.
+        if matches!(device, Device::Metal)
+            && rlx_ir::env::var("RLX_QWEN3_GQA_NATIVE").is_none()
+        {
+            rlx_ir::env::set("RLX_QWEN3_GQA_NATIVE", "1");
+        }
+        // Bake weight-only concats on Metal: the QKV / gate-up projections lower
+        // to a fused matmul fed by a Concat of their (static) weight matrices.
+        // Without baking, that weight Concat re-copies every decode step (~56
+        // dispatches/token here); Option A computes it once and skips it
+        // thereafter. Measured +16% decode (24.5→28.5 tok/s), token-identical
+        // (M4 Pro, 0.6B). Metal + unpacked, respects an explicit override.
+        if matches!(device, Device::Metal)
+            && !packed
+            && rlx_ir::env::var("RLX_QWEN3_BAKE_WEIGHTS").is_none()
+        {
+            rlx_ir::env::set("RLX_QWEN3_BAKE_WEIGHTS", "1");
+        }
+        // In-place KV append on Metal: the decode KV-cache update lowers to a
+        // first-class `Op::KvAppend` that writes the single new row into the
+        // (aliased) cache buffer instead of `concat`-copying the whole O(context)
+        // cache each token. Measured +27% @2k ctx, +42% @4k (grows with context),
+        // token-identical (M4 Pro, 0.6B). Metal, incl. the packed decode graph
+        // (KvAppend is backend-generic + token-identical); respects an override.
+        if matches!(device, Device::Metal)
+            && rlx_ir::env::var("RLX_QWEN3_INPLACE_KV").is_none()
+        {
+            rlx_ir::env::set("RLX_QWEN3_INPLACE_KV", "1");
+        }
         validate_device(&cfg, device, packed)?;
 
         if let Some(cap_gb) = self.max_memory_gb {
@@ -236,11 +308,35 @@ impl Qwen3RunnerBuilder {
             rlx_ir::env::set("RLX_QWEN3_F16_LM_HEAD", "1");
         }
 
-        // In packed mode, do not construct the F32 generator: that
-        // path dequants the full model and defeats the low-memory
-        // GGUF loader.
+        // In packed mode, do not construct the F32 generator (it dequants the
+        // full model and defeats the low-memory GGUF loader). For GGUF weights,
+        // build a **native packed** generator instead: no F32 weights, and the
+        // prefill-seed + decode graphs lower projections to `Op::DequantMatMul`
+        // straight from the GGUF — so the low-memory path gets a real m=1 decode
+        // loop rather than re-running the prefill graph every token.
         let mut generator = if packed {
-            None
+            if matches!(format, WeightFormat::Gguf) {
+                // Packed K-quant executes on the packed execution device (CPU
+                // where GPU packed is not yet verified).
+                let exec = rlx_core::flow_bridge::packed_gguf_execution_device(device);
+                let path_str = weights_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("non-utf8 weights path"))?;
+                eprintln!(
+                    "[qwen3-runner] packed_weights=true — native packed generate \
+                     (Op::DequantMatMul prefill+decode) on {exec:?}"
+                );
+                Some(Qwen3Generator::new_native_packed_decode(
+                    cfg.clone(),
+                    path_str,
+                    exec,
+                )?)
+            } else {
+                // Non-GGUF packed (e.g. MLX): no native generator yet — the
+                // PackedForward prefill path below handles it (and bails if the
+                // format is unsupported).
+                None
+            }
         } else {
             // `from_path_with_mtp` auto-detects safetensors vs GGUF and
             // — for GGUF only — flips MTP-head visibility based on the
@@ -283,12 +379,13 @@ impl Qwen3RunnerBuilder {
             generator = Some(inner.with_prefill_cache(8).with_decode_cache(max_seq + 64));
         }
 
-        // Packed-weights opt-in (GGUF only): compile a one-shape
-        // prefill graph with `Op::DequantMatMul` so K-quant weights
-        // stay packed in the arena. The compiled module is kept
-        // alongside the F32 generator; `predict_logits` routes to
-        // whichever is present.
-        let packed = if packed {
+        // Packed-weights opt-in fallback for formats WITHOUT a native packed
+        // generator (i.e. not GGUF — `generator` is still `None` here): compile a
+        // one-shape prefill graph with `Op::DequantMatMul` and generate via
+        // repeated prefill. GGUF packed built a native generator above, so it
+        // skips this (and `self.packed` stays `None` → `generate`/`predict_logits`
+        // route through the generator).
+        let packed = if packed && generator.is_none() {
             if !matches!(format, WeightFormat::Gguf) {
                 bail!(
                     "packed_weights(true) requires a .gguf file; got {:?} for {:?}",
@@ -682,6 +779,48 @@ impl Qwen3Runner {
         }
     }
 
+    /// PREFIX CACHING (exact). Prefill a shared prompt prefix once and export a
+    /// reusable snapshot (KV cache + tokens). Cheap host clone; safe to keep and
+    /// reuse across many later generations that share this prefix. `None` if the
+    /// generator is unavailable (packed non-GGUF). F32 / GGUF-native-packed only.
+    pub fn cache_prefix(
+        &mut self,
+        prefix_ids: &[u32],
+    ) -> Result<rlx_runtime::lm::SessionSnapshot> {
+        let g = self
+            .generator
+            .as_mut()
+            .ok_or_else(|| anyhow!("cache_prefix requires the generator (not available here)"))?;
+        g.prefill_get_last_logits(prefix_ids)?; // seed cache to exactly the prefix
+        let (kv, tokens) = g
+            .export_cache()
+            .ok_or_else(|| anyhow!("cache_prefix: no exportable cache after prefill"))?;
+        Ok(rlx_runtime::lm::SessionSnapshot { kv, tokens })
+    }
+
+    /// Generate reusing a cached prefix: restore `snap`, replay only the suffix
+    /// of `full_prompt` (`full_prompt[snap.len()..]`) through the fast GPU path,
+    /// then decode. `full_prompt` must start with the cached prefix. Token-
+    /// identical to `generate(full_prompt, …)` but skips re-prefilling the prefix.
+    pub fn generate_with_prefix_stoppable(
+        &mut self,
+        snap: &rlx_runtime::lm::SessionSnapshot,
+        full_prompt: &[u32],
+        n_new: usize,
+        on_token: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        let sample = self.sample;
+        let g = self.generator.as_mut().ok_or_else(|| {
+            anyhow!("generate_with_prefix requires the generator (F32/GGUF-native-packed only)")
+        })?;
+        let reuse = snap.tokens.len().min(full_prompt.len().saturating_sub(1));
+        if full_prompt.len() < snap.tokens.len() || full_prompt[..reuse] != snap.tokens[..reuse] {
+            bail!("generate_with_prefix: full_prompt does not start with the cached prefix");
+        }
+        g.prefill_with_reuse_fast(full_prompt, snap.kv.clone(), reuse)?;
+        g.generate_cached_until(n_new, sample, on_token, |_| {})
+    }
+
     /// Live context length (tokens in the KV cache + pending), or 0 in packed
     /// mode. Used by callers to decide when to evict old turns before the
     /// window fills.
@@ -806,6 +945,32 @@ impl Qwen3Runner {
             .map(|g| g.retrieve_context_spans(topk_override, context_margin))
             .unwrap_or_default()
     }
+
+    /// Turn this Qwen3 runner into a **long-context** runner in one call:
+    /// enable the disk-tiered HNSW KV context store *and* attach a dual-encoder
+    /// (e.g. `BAAI/bge-small-en-v1.5`) for semantic block retrieval. The encoder
+    /// is built from this model's own tokenizer (`qwen_tokenizer_json`, needed to
+    /// detokenize KV block spans back to text). Backend-agnostic — works the same
+    /// on CPU / Metal / CUDA / wgpu because it operates on the arena KV, not the
+    /// device. `encoder_repo` is fetched + cached via hf-hub on first use.
+    #[cfg(feature = "dual-encoder")]
+    pub fn enable_kv_store_with_encoder(
+        &mut self,
+        cfg: crate::KvStoreConfig,
+        qwen_tokenizer_json: &std::path::Path,
+        encoder_repo: &str,
+        device: Device,
+    ) -> anyhow::Result<()> {
+        use anyhow::Context;
+        let qwen_tok = tokenizers::Tokenizer::from_file(qwen_tokenizer_json).map_err(|e| {
+            anyhow::anyhow!("load qwen tokenizer {}: {e}", qwen_tokenizer_json.display())
+        })?;
+        self.enable_kv_store(cfg.embedder(crate::embedder::EmbedderKind::Encoder))?;
+        let enc = crate::embedder::RlxEmbedEmbedder::from_pretrained(qwen_tok, encoder_repo, device)
+            .context("build dual-encoder for KV context store")?;
+        self.set_kv_store_embedder(Box::new(enc));
+        Ok(())
+    }
 }
 
 impl LmRunner for Qwen3Runner {
@@ -870,6 +1035,17 @@ impl LmRunner for Qwen3Runner {
                 true
             }
             None => false,
+        }
+    }
+
+    fn kv_store_stats(&self) -> Option<(usize, usize, usize)> {
+        #[cfg(feature = "mmap-kv")]
+        {
+            return Qwen3Runner::kv_store_stats(self);
+        }
+        #[cfg(not(feature = "mmap-kv"))]
+        {
+            None
         }
     }
 }

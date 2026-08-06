@@ -35,6 +35,10 @@ pub use rlx_flux2::{Flux2Output, Flux2Runner, Flux2RunnerBuilder};
 pub use rlx_gemma::{GemmaConfigSource, GemmaRunner, GemmaRunnerBuilder};
 pub use rlx_llama32::{Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder};
 pub use rlx_qwen3::{Precision, Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder};
+/// Long-context KV context-store config (HNSW retrieval memory). Re-exported so
+/// consumers can enable it via `Qwen3Runner::enable_kv_store[_with_encoder]`.
+#[cfg(feature = "mmap-kv")]
+pub use rlx_qwen3::KvStoreConfig;
 pub use rlx_qwen35::{Qwen35ConfigSource, Qwen35Runner, Qwen35RunnerBuilder};
 #[cfg(feature = "uni2")]
 pub use rlx_uni2::{Uni2Output, Uni2Runner, Uni2RunnerBuilder};

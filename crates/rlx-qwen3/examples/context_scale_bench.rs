@@ -90,12 +90,7 @@ fn main() -> anyhow::Result<()> {
         i += 1;
     }
     std::fs::create_dir_all(&out_dir)?;
-    let scheme = match quant.as_str() {
-        "f16" => KvQuant::F16,
-        "q8_0" => KvQuant::Q8_0,
-        "q5_0" => KvQuant::Q5_0,
-        _ => KvQuant::Q4_0,
-    };
+    let scheme = KvQuant::from_name(&quant).unwrap_or(KvQuant::Q4_0);
 
     // ── GPU: load qwen3 on Metal (real decode latency over a bounded resident) ──
     // f16-resident weights (the shipped decode default) for peak Metal tps.

@@ -8,6 +8,8 @@
 .env
 .env.local
 
+context_bench_out/
+
 # Local weight caches (GGUF / safetensors trees used by env-gated tests)
 /weights
 ./weights
