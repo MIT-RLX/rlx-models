@@ -36,10 +36,10 @@ use candle_transformers::models::segment_anything::image_encoder::ImageEncoderVi
 use rlx_models::WeightMap;
 use rlx_models::dinov2::{DinoV2Config, assemble_hidden, build_dinov2_graph_sized};
 use rlx_models::sam::{
-    SAM_EMBED_HW, SAM_IMG_SIZE, SAM_PROMPT_EMBED_DIM, Sam, SamConfig, SamEncoderConfig,
-    apply_neck_host, assemble_patch_tokens, build_sam_encoder_graph,
+    SAM_IMG_SIZE, SAM_PROMPT_EMBED_DIM, Sam, SamConfig, SamEncoderConfig, assemble_patch_tokens,
+    build_sam_encoder_graph,
 };
-use rlx_runtime::{Device, Session};
+use rlx_runtime::Device;
 use std::time::Instant;
 
 const ITERS: usize = 3;
@@ -64,6 +64,10 @@ fn time_it<F: FnMut()>(mut f: F) -> f64 {
 }
 
 #[test]
+// 6.28 / 3.14 are deliberate 2-dp values, not TAU/PI: they define the
+// synthetic parity input, and changing them would change every dumped
+// reference blob compared against here.
+#[allow(clippy::approx_constant)]
 fn timing_sam_vit_b() -> Result<()> {
     let Some(weights) = rlx_ir::env::var("RLX_SAM_WEIGHTS") else {
         eprintln!("skipping (set RLX_SAM_WEIGHTS)");
@@ -109,16 +113,16 @@ fn timing_sam_vit_b() -> Result<()> {
     // ── rlx CPU encoder (graph + neck) ──
     let cfg = SamEncoderConfig::vit_b();
     let mut wm_cpu = WeightMap::from_file(&weights)?;
-    let (graph, params, pre, neck) = build_sam_encoder_graph(&cfg, &mut wm_cpu)?;
+    let (graph, params, pre) = build_sam_encoder_graph(&cfg, &mut wm_cpu)?;
     let mut compiled_cpu = compile_support::compile_sam(Device::Cpu, graph, params);
     let rlx_cpu_ms = time_it(|| {
         let hidden = assemble_patch_tokens(&pre, &image).unwrap();
-        let body = compiled_cpu
+        // Neck is inside the compiled graph — the run IS the full encoder.
+        let _body = compiled_cpu
             .run(&[("hidden", hidden.as_slice())])
             .into_iter()
             .next()
             .unwrap();
-        let _ = apply_neck_host(&neck, &body, SAM_EMBED_HW);
     });
 
     // ── rlx Metal encoder (gated) ──
@@ -126,16 +130,16 @@ fn timing_sam_vit_b() -> Result<()> {
     let rlx_metal_ms = {
         let cfg2 = SamEncoderConfig::vit_b();
         let mut wm_m = WeightMap::from_file(&weights)?;
-        let (graph2, params2, pre2, neck2) = build_sam_encoder_graph(&cfg2, &mut wm_m)?;
+        let (graph2, params2, pre2) = build_sam_encoder_graph(&cfg2, &mut wm_m)?;
         let mut compiled_m = compile_support::compile_sam(Device::Metal, graph2, params2);
         Some(time_it(|| {
             let hidden = assemble_patch_tokens(&pre2, &image).unwrap();
-            let body = compiled_m
+            // Neck is inside the compiled graph — the run IS the full encoder.
+            let _body = compiled_m
                 .run(&[("hidden", hidden.as_slice())])
                 .into_iter()
                 .next()
                 .unwrap();
-            let _ = apply_neck_host(&neck2, &body, SAM_EMBED_HW);
         }))
     };
     #[cfg(not(feature = "metal"))]
@@ -179,6 +183,10 @@ fn timing_sam_vit_b() -> Result<()> {
 }
 
 #[test]
+// 6.28 / 3.14 are deliberate 2-dp values, not TAU/PI: they define the
+// synthetic parity input, and changing them would change every dumped
+// reference blob compared against here.
+#[allow(clippy::approx_constant)]
 fn timing_dinov2_vit_small() -> Result<()> {
     let Some(weights) = rlx_ir::env::var("RLX_DINOV2_WEIGHTS") else {
         eprintln!("skipping (set RLX_DINOV2_WEIGHTS)");

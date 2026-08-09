@@ -387,7 +387,7 @@ impl MossNative {
     }
 
     /// Generate `[n_frames][n_vq]` audio codes. Prefill is recompiled on 32-token
-    /// buckets as the sequence grows (see [`Self::prefill_bucket`]) and re-run each
+    /// buckets as the sequence grows (see `Self::prefill_bucket`) and re-run each
     /// frame — the `decode_step` KV cache can't substitute: it does NOT mask past
     /// keys (past_valid_lengths only sets the new token's RoPE index; verified in
     /// ORT too), so a fixed-shape padded KV would attend to the zero-pad and diverge.

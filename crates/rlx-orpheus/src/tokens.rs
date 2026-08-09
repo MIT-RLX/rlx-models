@@ -276,7 +276,7 @@ pub fn build_voice_clone_prompt_ids(
     Ok(out)
 }
 
-/// JSON bundle written by [`scripts/orpheus_encode_reference.py`].
+/// JSON bundle written by `scripts/orpheus_encode_reference.py`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct VoiceCloneReference {
     pub transcript: String,

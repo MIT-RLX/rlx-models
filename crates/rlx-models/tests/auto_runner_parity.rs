@@ -35,7 +35,6 @@
 
 use std::path::PathBuf;
 
-use rlx_models::LmRunner;
 use rlx_models::run::auto_runner;
 
 fn fixture() -> Option<PathBuf> {

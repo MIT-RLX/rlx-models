@@ -17,7 +17,7 @@
 //!
 //! - [`LLaDA2MoeConfig`] — HF / TIDE `config.json`
 //! - [`build_llada2_forward_graph`] — bidirectional attention + MoE FFN
-//! - [`LLaDA2Runner`] — multi-backend forward + [`generate`] + TIDE offload
+//! - [`LLaDA2Runner`] — multi-backend forward + [`mod@generate`] + TIDE offload
 //!   (standard backends: CPU, Metal, MLX, CUDA, ROCm, WGPU, Vulkan)
 //!
 //! ## PyTorch parity checklist
@@ -25,10 +25,10 @@
 //! | Component | Status |
 //! |-----------|--------|
 //! | RMSNorm, fused QKV, QK-norm, partial RoPE | Graph |
-//! | Bidirectional attention + `head_dim^-0.5` scale | [`Op::Attention`] B,H,S,D |
+//! | Bidirectional attention + `head_dim^-0.5` scale | `Op::Attention` B,H,S,D |
 //! | Group-limited sigmoid gate + expert bias routing | [`gate_op`] |
 //! | SwiGLU dense + MoE + shared expert | Graph |
-//! | Block-diffusion mask + `generate` loop | [`generate`] |
+//! | Block-diffusion mask + `generate` loop | [`mod@generate`] |
 //! | Temperature / top-k / top-p sampling | [`sampling`] |
 //! | TIDE expert offload | [`moe_store`] + runtime pools |
 //!

@@ -161,7 +161,7 @@ fn main() -> anyhow::Result<()> {
     // reuses that exact direction. (Degenerate all-positive-clustered keys break
     // HNSW navigation — a bench-data artifact, not a store limitation.)
     let needle_key = |ni: usize| -> Vec<f32> {
-        let seed = 0xEED1E_5EED_0000u64.wrapping_add(ni as u64 * 0x100);
+        let seed = 0x000E_ED1E_5EED_0000_u64.wrapping_add(ni as u64 * 0x100);
         (0..kv_dim)
             .map(|j| (h(seed ^ (j as u64 + 1)) * 2.0 - 1.0) * 3.0)
             .collect()

@@ -329,7 +329,7 @@ pub fn build_latent_moe(
 ///
 /// Runs on the ORCHESTRATOR (not the workers): the RMSNorm is nonlinear so it must
 /// apply AFTER the cross-worker sum. Replicates the tail of [`build_latent_moe`]; the
-/// worker head is [`crate::dist_experts::KimiExpertProvider`].
+/// worker head is `crate::dist_experts::KimiExpertProvider`.
 pub fn build_moe_tail(
     g: &mut HirMut,
     params: &mut Params,
@@ -492,7 +492,7 @@ pub fn build_moe_route(
 /// as params here (names `moe.{gate,up,down}_{codes,scales,biases}`, data fed post-compile
 /// via `set_param_typed`). This is the shared pre-norm core:
 /// [`build_moe_experts_paged_packed`] appends the tail (routed_norm + up_proj + shared);
-/// the distributed worker provider ([`crate::dist_experts`]) calls it DIRECTLY on its
+/// the distributed worker provider (`crate::dist_experts`) calls it DIRECTLY on its
 /// OWNED shard (idx/prob zeroed for non-owned slots) to emit its latent partial.
 pub fn build_packed_routed_latent(
     g: &mut HirMut,

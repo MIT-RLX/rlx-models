@@ -49,7 +49,7 @@ pub struct LossPoint {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LossLandscape3D {
-    /// Grid over twiddle[0] (real) vs twiddle[1] (imag) with other weights fixed.
+    /// Grid over `twiddle[0]` (real) vs `twiddle[1]` (imag) with other weights fixed.
     pub x_label: String,
     pub y_label: String,
     pub x: Vec<f32>,
@@ -59,7 +59,7 @@ pub struct LossLandscape3D {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivationHeatmap {
-    /// Row = FFT stage, col = butterfly index; values in [0,1] (gate activation).
+    /// Row = FFT stage, col = butterfly index; values in `[0,1]` (gate activation).
     pub stages: usize,
     pub butterflies: usize,
     pub gates: Vec<f32>,

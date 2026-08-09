@@ -12,8 +12,8 @@
 //!   cargo run --release -p rlx-qwen3 --example spec_decode_bench --features metal
 
 use rlx_qwen3::{Qwen3Config, Qwen3Generator, Qwen3Speculator};
-use rlx_runtime::spec_decode::SpecDecoder;
 use rlx_runtime::Device;
+use rlx_runtime::spec_decode::SpecDecoder;
 use std::path::Path;
 use std::time::Instant;
 use tokenizers::Tokenizer;
@@ -22,10 +22,12 @@ fn main() -> anyhow::Result<()> {
     let dir = "/Users/Shared/weights/qwen3-0.6b";
     // Both draft and target run NATIVE-PACKED (Op::DequantMatMul from GGUF, ~4×
     // fewer weight bytes/token than F32) — so the draft is genuinely cheaper.
-    let target_gguf = std::env::var("SPEC_TARGET")
-        .unwrap_or_else(|_| "/Users/Shared/weights/qwen3-0.6b-gguf/Qwen3-0.6B-Q4_K_M.gguf".to_string());
-    let gguf = std::env::var("SPEC_DRAFT")
-        .unwrap_or_else(|_| "/Users/Shared/weights/qwen3-0.6b-gguf/Qwen3-0.6B-Q2_K.gguf".to_string());
+    let target_gguf = std::env::var("SPEC_TARGET").unwrap_or_else(|_| {
+        "/Users/Shared/weights/qwen3-0.6b-gguf/Qwen3-0.6B-Q4_K_M.gguf".to_string()
+    });
+    let gguf = std::env::var("SPEC_DRAFT").unwrap_or_else(|_| {
+        "/Users/Shared/weights/qwen3-0.6b-gguf/Qwen3-0.6B-Q2_K.gguf".to_string()
+    });
     for k in [
         "RLX_QWEN3_F16_WEIGHTS",
         "RLX_QWEN3_BAKE_WEIGHTS",
@@ -71,14 +73,13 @@ fn main() -> anyhow::Result<()> {
 
     eprintln!("[spec] running {want}-token speculative decode, n_draft={n_draft} …");
     let mut ctx = prompt.clone();
-    let (mut rounds, mut accepted) = (0usize, 0usize);
+    let mut rounds = 0usize;
     let t = Instant::now();
     while ctx.len() < prompt.len() + want {
         let new = dec.step(&ctx);
         if new.is_empty() {
             break;
         }
-        accepted += new.len();
         ctx.extend(new);
         rounds += 1;
     }

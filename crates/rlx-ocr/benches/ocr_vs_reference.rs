@@ -21,7 +21,7 @@
 
 #![cfg(feature = "parity-ocrs")]
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use criterion::{Criterion, criterion_group, criterion_main};
 use ocrs::{ImageSource as RefImageSource, OcrEngine as RefEngine, OcrEngineParams as RefParams};
 use rlx_ocr::{ImageSource, OcrEngine, resolve_model_dir};

@@ -395,7 +395,7 @@ pub fn kv_from_prefill_outputs_per_layer(
 
 /// One bucketed decode step: compile bucket if needed, pad K/V, run, slice updated K/V.
 ///
-/// `fixed_inputs` must include `mask` (use [`bucket_decode_mask`]) when the graph uses
+/// `fixed_inputs` must include `mask` (use `bucket_decode_mask`) when the graph uses
 /// `MaskKind::Custom`. Rope / token inputs should use `row_inner: None`.
 pub fn run_bucketed_kv_decode<F>(
     cache: &mut BucketedCompileCache,

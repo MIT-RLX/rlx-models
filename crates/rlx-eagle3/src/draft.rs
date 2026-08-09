@@ -293,7 +293,7 @@ impl<'a> Eagle3DraftReference<'a> {
     /// Run one speculation step. Updates the internal KV cache.
     ///
     /// - `prev_hidden`: hidden state from the previous step (or
-    ///   [`init_hidden`] on step 0).
+    ///   `init_hidden` on step 0).
     /// - `prev_target_token`: target-vocab token id used to look up
     ///   the embedding (on step 0, this is the last token of the
     ///   verifier's context).

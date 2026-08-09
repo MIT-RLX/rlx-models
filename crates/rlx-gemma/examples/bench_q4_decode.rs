@@ -70,10 +70,13 @@ fn prompt_ids() -> Vec<u32> {
     }
     let n_words = PROMPT.split_whitespace().count();
     let mut ids = vec![2u32];
-    ids.extend((100..(100 + n_words as u32)).map(|t| t));
+    ids.extend(100..(100 + n_words as u32));
     ids
 }
 
+/// `bench_one` prints each phase inline; the struct is returned so a caller
+/// could aggregate, which this example does not do.
+#[allow(dead_code)]
 struct Phases {
     load_s: f32,
     prefill_s: f32,

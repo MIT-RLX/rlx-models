@@ -149,7 +149,7 @@ impl LagunaPackedRunner {
 
     /// Load an **mlx-community Laguna directory** (HF `config.json` + affine
     /// safetensors) — the packed weights carry their bytes inline
-    /// ([`MatWeight::PackedMlx`]), so the retained `loader` is an empty GGUF
+    /// (`MatWeight::PackedMlx`), so the retained `loader` is an empty GGUF
     /// placeholder (the host forward only reads it for the GGUF-`Packed` branch,
     /// which never fires on an all-affine model).
     pub fn from_mlx_dir(dir: impl AsRef<Path>) -> Result<Self> {

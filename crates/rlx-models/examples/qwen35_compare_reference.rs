@@ -28,7 +28,7 @@ fn main() {
 
 #[cfg(feature = "parity-llama")]
 fn main() -> anyhow::Result<()> {
-    use anyhow::{Context, Result, bail};
+    use anyhow::{Context, bail};
     use rlx_models::qwen35::llama_reference;
     let mut args = std::env::args().skip(1);
     let weights = args.next().context(

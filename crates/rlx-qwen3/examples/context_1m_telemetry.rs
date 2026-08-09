@@ -26,7 +26,10 @@
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Instant;
-use std::{collections::HashMap, io::{BufReader, BufWriter, Read, Write}};
+use std::{
+    collections::HashMap,
+    io::{BufReader, BufWriter, Read, Write},
+};
 
 use rlx_ir::tensor_inspect::InspectLog;
 use rlx_qwen3::{Qwen3Runner, SampleOpts};
@@ -141,7 +144,11 @@ fn write_embed_cache(
     write_u64(&mut w, needle_doc.len() as u64)?;
     write_u64(&mut w, needle_qry.len() as u64)?;
     write_u64(&mut w, pool.len() as u64)?;
-    for v in needle_doc.iter().chain(needle_qry.iter()).chain(pool.iter()) {
+    for v in needle_doc
+        .iter()
+        .chain(needle_qry.iter())
+        .chain(pool.iter())
+    {
         write_f32_slice(&mut w, v)?;
     }
     w.flush()?;
@@ -157,13 +164,19 @@ fn read_embed_cache(
     let mut r = BufReader::new(std::fs::File::open(path)?);
     let magic = read_u32(&mut r)?;
     let ver = read_u32(&mut r)?;
-    anyhow::ensure!(magic == EMBED_CACHE_MAGIC && ver == 1, "invalid embed cache header");
+    anyhow::ensure!(
+        magic == EMBED_CACHE_MAGIC && ver == 1,
+        "invalid embed cache header"
+    );
     let dim = read_u64(&mut r)? as usize;
     let nd = read_u64(&mut r)? as usize;
     let nq = read_u64(&mut r)? as usize;
     let np = read_u64(&mut r)? as usize;
     anyhow::ensure!(dim == edim, "embed cache dim mismatch: {dim} != {edim}");
-    anyhow::ensure!(nd == n_needle && nq == n_needle, "embed cache needle count mismatch");
+    anyhow::ensure!(
+        nd == n_needle && nq == n_needle,
+        "embed cache needle count mismatch"
+    );
     anyhow::ensure!(np == n_pool, "embed cache pool count mismatch");
 
     let mut needle_doc = Vec::with_capacity(nd);
@@ -310,9 +323,7 @@ fn main() -> anyhow::Result<()> {
         .build()?;
     if warm_buckets > 0 {
         let warmed = runner.warm_buckets(warm_buckets);
-        eprintln!(
-            "[1m] decode bucket warmup requested={warm_buckets}, compiled={warmed}"
-        );
+        eprintln!("[1m] decode bucket warmup requested={warm_buckets}, compiled={warmed}");
     }
     let kv_dim = runner.config().kv_proj_dim();
     let n_layers = runner.config().num_hidden_layers;
@@ -413,7 +424,6 @@ fn main() -> anyhow::Result<()> {
             ef_construction,
             m: hm,
             m0: hm * 2,
-            ..Default::default()
         },
     );
 
@@ -562,10 +572,14 @@ fn main() -> anyhow::Result<()> {
         .enumerate()
         .map(|(i, v)| (i, v.clone()))
         .collect();
-    let mut hnsw_cache: HashMap<(usize, usize, usize), Vec<rlx_runtime::kv_context_store::RetrievedBlock>> =
-        HashMap::new();
-    let mut exact_cache: HashMap<(usize, usize, usize), Vec<rlx_runtime::kv_context_store::RetrievedBlock>> =
-        HashMap::new();
+    let mut hnsw_cache: HashMap<
+        (usize, usize, usize),
+        Vec<rlx_runtime::kv_context_store::RetrievedBlock>,
+    > = HashMap::new();
+    let mut exact_cache: HashMap<
+        (usize, usize, usize),
+        Vec<rlx_runtime::kv_context_store::RetrievedBlock>,
+    > = HashMap::new();
     let mut csv = String::from(
         "shot,ctx_tokens,store_blocks,disk_gb,ram_idx_mb,ingest_tok_per_s,\
          embed_query_ms,hnsw_retrieve_ms,exact_retrieve_ms,recall_hnsw,recall_exact,\
@@ -574,9 +588,7 @@ fn main() -> anyhow::Result<()> {
     let t_all = Instant::now();
     let mut t_ing = Instant::now();
 
-    eprintln!(
-        "[1m] populating {tokens} tokens into the store (multi-shot at {shots:?}) …"
-    );
+    eprintln!("[1m] populating {tokens} tokens into the store (multi-shot at {shots:?}) …");
     for b in 0..nblocks {
         let id = if can_reuse_store {
             let m = &manifest_blocks[b];
@@ -597,7 +609,8 @@ fn main() -> anyhow::Result<()> {
                 });
                 id
             } else {
-                let id = store.append_block(b * block, Origin::Generated, b as u32, &k, &v, &key)?;
+                let id =
+                    store.append_block(b * block, Origin::Generated, b as u32, &k, &v, &key)?;
                 // Filler embedding: a random convex mix of TWO pool sentences + jitter,
                 // so distractors spread diversely across the real-text manifold instead
                 // of collapsing into a few mega-clusters (which would bury the needles —

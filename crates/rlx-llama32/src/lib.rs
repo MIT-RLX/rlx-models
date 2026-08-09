@@ -48,7 +48,7 @@ pub use rlx_qwen35::{encode_prompt, encode_prompt_auto, resolve_tokenizer_path};
 pub use runner::{Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder};
 
 #[cfg(feature = "parity-llama")]
-pub use rlx_qwen35::llama_oracle;
+pub use rlx_qwen35::llama_reference;
 
 #[cfg(test)]
 mod tests {

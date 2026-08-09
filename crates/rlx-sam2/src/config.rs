@@ -412,7 +412,7 @@ pub struct Sam2MemoryConfig {
     pub pos_enc_at_cross_attn_queries: bool,
     /// Maximum number of object pointers preserved across frames.
     pub max_obj_ptrs_in_encoder: usize,
-    /// Fuse each memory-attention layer into one graph with [`Op::AxialRope2d`]
+    /// Fuse each memory-attention layer into one graph with `Op::AxialRope2d`
     /// (faster than the default five-graph + host-RoPE path). Requires axial RoPE
     /// on the compile device (CPU today; Metal uses host fallback when enabled).
     pub mem_attn_in_graph_rope: bool,

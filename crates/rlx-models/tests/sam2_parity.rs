@@ -110,8 +110,6 @@ const TOL_COS: f64 = 1e-7;
 /// Loose cap on max-abs-diff for warnings only. Doesn't fail the
 /// test — cos_dist is the gate.
 const WARN_MAX_DIFF: f32 = 5e-2;
-const TOL_MASK: f32 = 1e-2;
-const TOL_IOU: f32 = 1e-3;
 
 fn weights_path() -> Option<String> {
     rlx_ir::env::var("RLX_SAM2_WEIGHTS")
@@ -133,6 +131,10 @@ fn cfg_for_ref_name(name: &str) -> Sam2HieraConfig {
 
 /// Deterministic 1024×1024 RGB-u8 image — same sine recipe as the
 /// DINOv2 / SAM v1 parity tests.
+// 6.28 / 3.14 are deliberate 2-dp values, not TAU/PI: they define the
+// synthetic parity input, and changing them would change every dumped
+// reference blob compared against here.
+#[allow(clippy::approx_constant)]
 fn synthesize_image_u8() -> Vec<u8> {
     let n = SAM2_IMG_SIZE * SAM2_IMG_SIZE * 3;
     let mut v = vec![0u8; n];
@@ -1496,8 +1498,11 @@ fn sam2_decoder_parity_vs_pytorch() -> Result<()> {
     let _ = extract_memory_encoder_weights(&mut wm, &full_cfg.memory_encoder)?;
     let _ = extract_memory_attention_weights(&mut wm, &full_cfg.memory)?;
 
+    let mut prompt_mask_stack =
+        rlx_models::sam2::prompt_mask_ir::Sam2PromptMaskCompiled::compile(&prompt_w, Device::Cpu)?;
     let prompt = prompt_encoder_forward(
         &prompt_w,
+        &mut prompt_mask_stack,
         Some((&points, &labels)),
         /*boxes=*/ None,
         /*masks=*/ None,

@@ -146,7 +146,7 @@ pub fn apply_compile_profile(profile: &CompileProfile, opts: &mut CompileOptions
     }
 }
 
-/// Dynamic HIR template/specialize — default passes only (matches legacy [`DynamicDimCompileCache`]).
+/// Dynamic HIR template/specialize — default passes only (matches legacy `DynamicDimCompileCache`).
 pub fn compile_options_dynamic(binding: rlx_ir::DimBinding) -> CompileOptions {
     CompileOptions::new().dim_binding(binding)
 }

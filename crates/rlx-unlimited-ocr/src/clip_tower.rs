@@ -23,7 +23,7 @@
 //!
 //! DeepSeek-OCR / Unlimited-OCR feeds this tower [`crate::sam_tower::SamTower`]'s
 //! `[1024, q, q]` neck output as the patch-embedding tokens instead of running
-//! CLIP's own `Conv2d` patch embed (see [`Self::encode`] / [`Self::encode_batch`]);
+//! CLIP's own `Conv2d` patch embed (see `Self::encode` / `Self::encode_batch`);
 //! the raw-pixel `Conv2d` path is kept as a fallback for standalone use / testing.
 
 use crate::config::ClipTowerConfig;

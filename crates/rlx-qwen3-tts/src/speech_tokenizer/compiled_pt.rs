@@ -215,6 +215,7 @@ impl PreTransformerGpu {
                     with_qk_outputs: false,
                     with_lm_head: false,
                     last_logits_only: false,
+                    packed: false,
                     profile: Some(profile),
                     rope_cos: Some(rope_cos),
                     rope_sin: Some(rope_sin),

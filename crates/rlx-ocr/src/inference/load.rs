@@ -28,8 +28,7 @@ pub fn load_rten_model(path: impl AsRef<Path>) -> Result<Model> {
     #[cfg(feature = "rten-mmap")]
     {
         // SAFETY: file is read-only; RTen maps weight blobs without mutating the file.
-        return unsafe { opts.load_mmap(path) }
-            .with_context(|| format!("mmap-load model {:?}", path));
+        unsafe { opts.load_mmap(path) }.with_context(|| format!("mmap-load model {:?}", path))
     }
 
     #[cfg(not(feature = "rten-mmap"))]

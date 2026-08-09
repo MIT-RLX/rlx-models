@@ -1,7 +1,7 @@
 //! Synthetic TUI renderers.
 //!
 //! Each renderer takes clean content, lays it out as a realistic terminal
-//! screen, and records provenance as it goes (via [`Screen`]) so it can emit
+//! screen, and records provenance as it goes (via `Screen`) so it can emit
 //! the rendered `input`, a per-char `tags` string, and the clean `target`
 //! together. The corruption function is known, so labels are exact — no human
 //! annotation.

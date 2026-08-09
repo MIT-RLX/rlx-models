@@ -32,12 +32,16 @@ use candle_transformers::models::dinov2 as candle_dinov2;
 use criterion::{Criterion, criterion_group, criterion_main};
 use rlx_models::WeightMap;
 use rlx_models::dinov2::{DinoV2Config, assemble_hidden, build_dinov2_graph_sized};
-use rlx_runtime::{Device, Session};
+use rlx_runtime::Device;
 use std::hint::black_box;
 
 const IMG_SIZE: usize = 518;
 const PATCH_SIZE: usize = 14;
 
+// 6.28 / 3.14 are deliberate 2-dp values, not TAU/PI: they define the
+// synthetic parity input, and changing them would change every dumped
+// reference blob compared against here.
+#[allow(clippy::approx_constant)]
 fn synthesize_image() -> Vec<f32> {
     let n = 3 * IMG_SIZE * IMG_SIZE;
     let mut v = vec![0f32; n];

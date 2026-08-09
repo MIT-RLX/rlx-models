@@ -23,6 +23,9 @@
 mod common;
 
 use common::{PREFILL_SEQ, compiled_trace, eager_trace, l2, load_backbone, model_dir};
+// Only the metal / gpu comparison tests below use these.
+#[cfg(any(all(target_os = "macos", feature = "metal"), feature = "gpu"))]
+use common::{cosine, max_abs_diff};
 use rlx_runtime::Device;
 use rlx_voxtral_tts::lm_flow::{build_tts_backbone_decode_built, build_tts_backbone_prefill_built};
 use std::time::Instant;

@@ -15,7 +15,7 @@
 
 //! Classic Wav2Vec2 + CTC forced alignment (WhisperX-style).
 //!
-//! Separate from [`rlx-wav2vec2-bert`] (Conformer W2V-BERT). This crate provides
+//! Separate from `rlx-wav2vec2-bert` (Conformer W2V-BERT). This crate provides
 //! phoneme/frame alignment for transcript text against 16 kHz PCM.
 
 pub mod align;

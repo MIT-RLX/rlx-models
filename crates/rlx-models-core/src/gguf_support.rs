@@ -53,7 +53,7 @@ impl GgufModelFamily {
         }
     }
 
-    /// Short name this family registers as with [`register_cli`] in
+    /// Short name this family registers as with `register_cli` in
     /// `rlx_run` (e.g. `"qwen3"`, `"qwen35"`). Used by `auto_runner` to
     /// look up a `ModelRunner` in the registry.
     pub fn runner_name(self) -> &'static str {

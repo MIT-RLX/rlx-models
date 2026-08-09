@@ -18,7 +18,7 @@
 //! Slow (no SIMD, no BLAS, no autotuned blocking) but correct: enough
 //! to drive `Eagle3Speculator::propose` end-to-end without standing
 //! up the full HIR compile pipeline. Real inference will eventually
-//! route through [`crate::draft::Eagle3DraftBuilder`] (HIR graph) —
+//! route through `crate::draft::Eagle3DraftBuilder` (HIR graph) —
 //! this module's purpose is to be a numerical oracle while that
 //! lands, and to make integration tests possible without weights.
 //!

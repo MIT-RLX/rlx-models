@@ -44,7 +44,7 @@ impl<R: LatentReward + ?Sized> LatentReward for HybridLatentDecodeReward<'_, R> 
     }
 }
 
-/// Mean blue channel in [0,1] on decoded RGB (planar u8 HWC interleaved in decode output).
+/// Mean blue channel in `[0,1]` on decoded RGB (planar u8 HWC interleaved in decode output).
 pub fn decoded_blueness_reward(
     runner: &Flux2Runner,
     packed_latents: &[f32],

@@ -67,7 +67,7 @@ pub enum RopeScaling {
     },
     /// YaRN (`rope_type == "yarn"`): NTK-by-parts blend of extrapolated and
     /// `/factor`-interpolated frequencies over `[low, high]` dims, plus a scalar
-    /// attention factor applied to cos/sin ([`Self::mscale`]).
+    /// attention factor applied to cos/sin (`Self::mscale`).
     Yarn {
         factor: f64,
         original_max_position_embeddings: f64,
@@ -1484,6 +1484,282 @@ pub fn build_lfm2_prefill(
     let logits = g.mm(hidden_2d, embed_t); // [seq, vocab]
     g.set_outputs(vec![logits]);
     Ok((g, params))
+}
+
+/// Build an **LFM2 / LFM2.5** single-token **decode** graph (O(1) per step) with
+/// caches, for O(n) autoregressive generation instead of re-prefilling.
+///
+/// Fixed shapes (one compile): the KV cache is a `[1, max_kv, kv_dim]` buffer per
+/// attention layer, written in-graph at the current position `pos` via a one-hot
+/// select (`kv_write_oh`) and read back with a `[1, max_kv]` `MaskKind::Custom`
+/// key-padding mask (`key_mask`, 1.0 for positions `0..=pos`). Each ShortConv
+/// layer keeps a `[1, k-1, conv_dim]` conv-state (the last `k-1` `B·x` columns),
+/// concatenated with the new column before the (valid) depthwise conv. RoPE for
+/// the single query position is fed as `rope_cos`/`rope_sin` `[1, half]`.
+///
+/// Inputs: `token_id[1]`, `rope_cos[1,half]`, `rope_sin[1,half]`,
+/// `key_mask[1,max_kv]`, `kv_write_oh[1,max_kv,1]`, `kv_write_inv[1,max_kv,1]`,
+/// `conv_state_in_{l}[1,k-1,conv_dim]` (ShortConv layers),
+/// `k_in_{l}`/`v_in_{l}[1,max_kv,kv_dim]` (attention layers).
+/// Outputs: `logits[1,vocab]` then, in layer order, the updated caches. The
+/// returned `Vec<String>` names those extra outputs so the caller can thread
+/// them back as inputs next step.
+#[allow(clippy::type_complexity)]
+pub fn build_lfm2_decode(
+    spec: &Lfm2Spec,
+    weights: &mut dyn WeightLoader,
+    max_kv: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    let mut g = Graph::new("lfm2_decode");
+    let mut params: HashMap<String, Vec<f32>> = HashMap::new();
+    let f = DType::F32;
+    let h = spec.hidden_size;
+    let nh = spec.num_attention_heads;
+    let nkv = spec.num_key_value_heads;
+    let dh = spec.head_dim;
+    let group = nh / nkv.max(1);
+    let kv_dim = nkv * dh;
+    let eps = spec.rms_norm_eps;
+    let inter = spec.intermediate_size;
+    let cdim = spec.conv_dim;
+    let kc = spec.conv_kernel;
+    let half = dh / 2;
+
+    let zero_beta_hidden = synth_zero(&mut g, &mut params, "lfmd.zero_beta.hidden", h);
+    let zero_beta_headdim = synth_zero(&mut g, &mut params, "lfmd.zero_beta.head_dim", dh);
+
+    let cos_id = g.input("rope_cos", Shape::new(&[1, half], f));
+    let sin_id = g.input("rope_sin", Shape::new(&[1, half], f));
+    let key_mask = g.input("key_mask", Shape::new(&[1, max_kv], f));
+    let write_oh = g.input("kv_write_oh", Shape::new(&[1, max_kv, 1], f));
+    let write_inv = g.input("kv_write_inv", Shape::new(&[1, max_kv, 1], f));
+
+    let token = g.input("token_id", Shape::new(&[1, 1], DType::I32));
+    let embed_w = load_p(
+        &mut g,
+        &mut params,
+        weights,
+        "model.embed_tokens.weight",
+        false,
+    )?;
+    let mut h_id = g.gather_(embed_w, token, 0); // [1,1,hidden]
+
+    let mut extra_outs: Vec<(String, NodeId)> = Vec::new();
+
+    for il in 0..spec.num_hidden_layers {
+        let lp = format!("model.layers.{il}");
+        let op_norm = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.operator_norm.weight"),
+            0.0,
+        )?;
+        let normed = g.rms_norm(h_id, op_norm, zero_beta_hidden, eps);
+
+        let mixed = if spec.full_attn_layers.contains(&il) {
+            // ── GQA attention over the cached KV (single query at `pos`) ──
+            let q_p = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.self_attn.q_proj.weight"),
+            )?;
+            let k_p = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.self_attn.k_proj.weight"),
+            )?;
+            let v_p = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.self_attn.v_proj.weight"),
+            )?;
+            let q = emit_proj(&mut g, normed, &q_p, Shape::new(&[1, 1, nh * dh], f));
+            let k = emit_proj(&mut g, normed, &k_p, Shape::new(&[1, 1, kv_dim], f));
+            let v = emit_proj(&mut g, normed, &v_p, Shape::new(&[1, 1, kv_dim], f));
+            let qn_g = load_norm(
+                &mut g,
+                &mut params,
+                weights,
+                &format!("{lp}.self_attn.q_layernorm.weight"),
+                0.0,
+            )?;
+            let kn_g = load_norm(
+                &mut g,
+                &mut params,
+                weights,
+                &format!("{lp}.self_attn.k_layernorm.weight"),
+                0.0,
+            )?;
+            let qn = per_head_rms(&mut g, q, qn_g, zero_beta_headdim, 1, 1, nh, dh, eps);
+            let kn = per_head_rms(&mut g, k, kn_g, zero_beta_headdim, 1, 1, nkv, dh, eps);
+            let q_rope = rope_heads(&mut g, qn, cos_id, sin_id, 1, 1, nh, dh, true); // [1,1,nh*dh]
+            let k_rope = rope_heads(&mut g, kn, cos_id, sin_id, 1, 1, nkv, dh, true); // [1,1,kv_dim]
+
+            // Write k_rope / v at position `pos` into the [1,max_kv,kv_dim] cache
+            // buffers via one-hot select, then read the full (masked) cache.
+            let k_in = g.input(format!("k_in_{il}"), Shape::new(&[1, max_kv, kv_dim], f));
+            let v_in = g.input(format!("v_in_{il}"), Shape::new(&[1, max_kv, kv_dim], f));
+            let k_keep = g.mul(k_in, write_inv); // [1,max_kv,kv_dim]
+            let v_keep = g.mul(v_in, write_inv);
+            let k_new = g.mul(k_rope, write_oh); // broadcast [1,1,kv]*[1,max_kv,1]
+            let v_new = g.mul(v, write_oh);
+            let k_full = g.add(k_keep, k_new); // [1,max_kv,kv_dim]
+            let v_full = g.add(v_keep, v_new);
+            extra_outs.push((format!("k_out_{il}"), k_full));
+            extra_outs.push((format!("v_out_{il}"), v_full));
+
+            let k_rep = repeat_kv(&mut g, k_full, nkv, dh, group); // [1,max_kv,nh*dh]
+            let v_rep = repeat_kv(&mut g, v_full, nkv, dh, group);
+            let attn_shape = shape::attention_shape(g.shape(q_rope));
+            let attn = g.add_node(
+                Op::Attention {
+                    num_heads: nh,
+                    head_dim: dh,
+                    v_head_dim: None,
+                    mask_kind: MaskKind::Custom,
+                    score_scale: None,
+                    attn_logit_softcap: None,
+                },
+                vec![q_rope, k_rep, v_rep, key_mask],
+                attn_shape,
+            );
+            let o_p = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.self_attn.out_proj.weight"),
+            )?;
+            emit_proj(&mut g, attn, &o_p, Shape::new(&[1, 1, h], f))
+        } else {
+            // ── ShortConv with conv-state cache ──
+            let in_p = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.conv.in_proj.weight"),
+            )?;
+            let bcx = emit_proj(&mut g, normed, &in_p, Shape::new(&[1, 1, 3 * cdim], f));
+            let b_part = g.narrow_(bcx, 2, 0, cdim);
+            let c_part = g.narrow_(bcx, 2, cdim, cdim);
+            let x_part = g.narrow_(bcx, 2, 2 * cdim, cdim);
+            let bx = g.mul(b_part, x_part); // [1,1,cdim]
+            let state_in = g.input(
+                format!("conv_state_in_{il}"),
+                Shape::new(&[1, kc - 1, cdim], f),
+            );
+            let win = g.concat_(vec![state_in, bx], 1); // [1,kc,cdim]
+            // conv-state out = last kc-1 columns of the window.
+            let state_out = g.narrow_(win, 1, 1, kc - 1); // [1,kc-1,cdim]
+            extra_outs.push((format!("conv_state_out_{il}"), state_out));
+            // Depthwise (valid) conv over the [1,kc,cdim] window → [1,1,cdim].
+            // A single-output depthwise conv is a per-channel weighted sum over
+            // the kc window: conv_out[c] = Σ_j win[j,c]·w[c,j]. Express it as an
+            // elementwise multiply + reduce over the kc axis instead of
+            // transpose→reshape→Conv2d. Bit-identical, but avoids a per-step
+            // Transpose (pathologically slow per call on the CUDA backend for
+            // these tiny decode tensors — ~0.8 ms each) and the Conv2d op.
+            let conv_key = format!("{lp}.conv.conv.weight");
+            let (wdata, _s) = weights.take(&conv_key)?; // [cdim,kc,1] row-major = w[c,j]
+            // Re-lay to [1,kc,cdim] (w_t[j,c] = w[c,j]) so it lines up with `win`.
+            let mut w_t = vec![0f32; kc * cdim];
+            for c in 0..cdim {
+                for j in 0..kc {
+                    w_t[j * cdim + c] = wdata[c * kc + j];
+                }
+            }
+            let w = g.param(&conv_key, Shape::new(&[1, kc, cdim], f));
+            params.insert(conv_key, w_t);
+            let prod = g.mul(win, w); // [1,kc,cdim]
+            let conv_sum = g.sum(prod, vec![1], false); // Σ over kc → [1,cdim]
+            let conv_out = g.reshape_(conv_sum, vec![1, 1, cdim as i64]); // [1,1,cdim]
+            let y = g.mul(c_part, conv_out);
+            let out_p = load_proj(
+                &mut g,
+                &mut params,
+                packed,
+                weights,
+                &format!("{lp}.conv.out_proj.weight"),
+            )?;
+            emit_proj(&mut g, y, &out_p, Shape::new(&[1, 1, h], f))
+        };
+        let h_after = g.add(h_id, mixed);
+
+        // SwiGLU FFN.
+        let ffn_norm = load_norm(
+            &mut g,
+            &mut params,
+            weights,
+            &format!("{lp}.ffn_norm.weight"),
+            0.0,
+        )?;
+        let ffn_normed = g.rms_norm(h_after, ffn_norm, zero_beta_hidden, eps);
+        let w1 = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.feed_forward.w1.weight"),
+        )?;
+        let w3 = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.feed_forward.w3.weight"),
+        )?;
+        let w2 = load_proj(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            &format!("{lp}.feed_forward.w2.weight"),
+        )?;
+        let gate = emit_proj(&mut g, ffn_normed, &w1, Shape::new(&[1, 1, inter], f));
+        let up = emit_proj(&mut g, ffn_normed, &w3, Shape::new(&[1, 1, inter], f));
+        let gate_act = g.silu(gate);
+        let glu = g.mul(gate_act, up);
+        let down = emit_proj(&mut g, glu, &w2, Shape::new(&[1, 1, h], f));
+        h_id = g.add(h_after, down);
+    }
+
+    let final_norm = load_norm(
+        &mut g,
+        &mut params,
+        weights,
+        "model.embedding_norm.weight",
+        0.0,
+    )?;
+    let hidden = g.rms_norm(h_id, final_norm, zero_beta_hidden, eps);
+    let hidden_2d = g.reshape_(hidden, vec![1, h as i64]);
+    // Tied lm_head as `embed_w @ hiddenᵀ` (→ [vocab,1] → [1,vocab]) instead of
+    // `hidden @ embed_wᵀ`. This transposes the tiny [1,hidden] activation rather
+    // than the huge [vocab,hidden] embedding EVERY decode step — the latter was
+    // the single largest CUDA decode cost (~26ms/step re-transposing ~512MB).
+    // Bit-identical (same Σ over hidden). At seq==1 both the [1,hidden]→[hidden,1]
+    // transpose and the [vocab,1]→[1,vocab] reshape are layout-preserving, so the
+    // transpose-elision pass drops them entirely (zero copies).
+    let hidden_t = g.transpose_(hidden_2d, vec![1, 0]); // [hidden, 1]
+    let logits_col = g.mm(embed_w, hidden_t); // [vocab, 1]
+    let logits = g.reshape_(logits_col, vec![1, spec.vocab_size as i64]); // [1, vocab]
+
+    let mut outputs = vec![logits];
+    let mut names = Vec::with_capacity(extra_outs.len());
+    for (name, node) in extra_outs {
+        names.push(name);
+        outputs.push(node);
+    }
+    g.set_outputs(outputs);
+    Ok((g, params, names))
 }
 
 /// DeepSeek-V2/V3 (+ Moonlight/Kimi) spec: MLA attention + fine-grained MoE.
@@ -3115,7 +3391,7 @@ pub fn dspark_greedy_accept(draft_ids: &[usize], verify_argmax: &[usize]) -> usi
 /// compression) + sqrtsoftplus MoE. Assembles the validated cores
 /// ([`build_hc_pre`]/[`build_hc_post`]/[`build_hc_head`],
 /// [`build_kv_compressor_pool`], [`build_v4_sink_attention`],
-/// [`build_v4_o_lora`], `sqrtsoftplus` [`build_deepseek_moe`]). Ref:
+/// [`build_v4_o_lora`], `sqrtsoftplus` `build_deepseek_moe`). Ref:
 /// deepseek-ai/DeepSeek-V4-Flash `inference/model.py`.
 #[derive(Debug, Clone)]
 pub struct DeepseekV4Spec {
@@ -3181,7 +3457,7 @@ pub struct DeepseekV4Spec {
     pub dspark_block_size: usize,
     /// Padding token id for unfilled draft positions (GA = 128799).
     pub dspark_noise_token_id: usize,
-    /// Main-model layer ids whose hidden states feed `main_proj` (GA = [40,41,42]).
+    /// Main-model layer ids whose hidden states feed `main_proj` (GA = `[40,41,42]`).
     pub dspark_target_layer_ids: Vec<usize>,
     /// Markov-head embedding rank (GA = 256).
     pub dspark_markov_rank: usize,
@@ -3309,7 +3585,7 @@ impl DeepseekV4Spec {
     /// shard-1 header: block_count 43, embedding_length 4096, head_count 64/kv 1,
     /// key/value_length 512, rope.dimension_count 64, q_lora_rank 1024,
     /// output_lora_rank 1024, output_group_count 8, indexer 64×128 top-512,
-    /// compress_ratios[46], compress_rope_freq_base 160000, expert 256×6+1,
+    /// `compress_ratios[46]`, compress_rope_freq_base 160000, expert 256×6+1,
     /// expert_weights_scale 1.5, hyper_connection.count 4 / sinkhorn 20,
     /// hash_layer_count 3, swiglu_clamp 10. The GGUF is **base-only** (no MTP/DSpark
     /// tensors), so all `dspark_*`/`n_mtp_layers` are 0. YaRN is read from
@@ -4386,7 +4662,7 @@ fn build_overlap_pool_single(
 ///   `kvcache.{il}` `[cache_len, hd]`, `compcache.{il}` `[pos/ratio, hd]`, and on a
 ///   firing step `partial_ck.{il}`/`partial_cg.{il}` `[ratio-1, coff·hd]`.
 ///
-/// **Overlapping (`ratio == 4`)** layers use [`build_overlap_pool_single`] with a
+/// **Overlapping (`ratio == 4`)** layers use `build_overlap_pool_single` with a
 /// host-shifted previous-window state (`prev_kv`/`prev_score.{il}`); the learned
 /// **Indexer** is skipped (a no-op while `ncomp ≤ index_topk`, i.e. context ≤
 /// `index_topk·ratio` = 2048 — exactly what the prefill does), and the builder
@@ -8618,7 +8894,7 @@ fn expert_scales_f32(p: &crate::weight_loader::MlxPackedLinear) -> Vec<f32> {
 /// ever resident), and the graph compiles ONCE and is reused across batches — so the
 /// per-batch cost is just the active-expert upload + one run.
 ///
-/// Build with [`PagedGroupedMoe::new`], then call [`forward`](Self::forward) per
+/// Build with [`PagedGroupedMoe::new`], then call [`PagedGroupedMoe::forward`] per
 /// batch. Rows are the flattened `(token, chosen-expert)` pairs (`≤ batch·top_k`),
 /// padded to `m_cap`; the output is scatter-reduced back to `[batch, hidden]`.
 /// Cumulative µs / counts for [`PagedGroupedMoe::forward`] IO-vs-compute split
@@ -9354,7 +9630,7 @@ fn load_v4_wo_a(
     Ok(node)
 }
 
-/// [`DeepseekV4Spec`] → the [`DeepseekSpec`] view used by [`build_deepseek_moe_ffn`]
+/// [`DeepseekV4Spec`] → the [`DeepseekSpec`] view used by `build_deepseek_moe_ffn`
 /// (sqrtsoftplus + always-normalized + shared expert).
 pub fn v4_moe_spec(spec: &DeepseekV4Spec) -> DeepseekSpec {
     DeepseekSpec {

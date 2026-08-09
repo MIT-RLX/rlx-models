@@ -71,10 +71,17 @@ fn main() -> anyhow::Result<()> {
         let dir = std::env::temp_dir().join("rlx_splice_store");
         let _ = std::fs::remove_dir_all(&dir);
         let envn = |k: &str, d: usize| {
-            std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
+            std::env::var(k)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(d)
         };
-        let (block, sinks, recent, topk) =
-            (envn("BLOCK", 16), envn("SINKS", 4), envn("RECENT", 64), envn("TOPK", 8));
+        let (block, sinks, recent, topk) = (
+            envn("BLOCK", 16),
+            envn("SINKS", 4),
+            envn("RECENT", 64),
+            envn("TOPK", 8),
+        );
         eprintln!("[splice] resident≈sinks{sinks}+recent{recent}+topk{topk}×block{block}");
         runner.enable_kv_store(
             KvStoreConfig::new()

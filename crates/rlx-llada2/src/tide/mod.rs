@@ -13,7 +13,7 @@
 //! - [`TideOffloadStats`] / [`aggregate_offload_stats`]
 //! - [`BlockDenoiseConfig`] + [`num_transfer_tokens_schedule`] (LLaDA2 `generate`)
 //!
-//! RLX wires this to [`crate::qwen35::Qwen35Runner`] (MoE AR) and [`TideRunner`] /
+//! RLX wires this to `crate::qwen35::Qwen35Runner` (MoE AR) and [`TideRunner`] /
 //! [`crate::LLaDA2Runner`] (LLaDA2 block diffusion).
 
 mod diffusion;

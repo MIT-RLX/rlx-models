@@ -53,6 +53,15 @@ use rlx_gemma::config::{
 };
 use rlx_gemma::generator::GemmaGenerator;
 use rlx_runtime::Device;
+#[cfg(any(
+    feature = "metal",
+    feature = "mlx",
+    feature = "gpu",
+    feature = "cuda",
+    feature = "rocm",
+    feature = "vulkan"
+))]
+use rlx_runtime::is_available;
 use std::collections::HashMap;
 
 const PREFILL: &[u32] = &[1, 2, 3, 4];

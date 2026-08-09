@@ -6,7 +6,7 @@
 //! The model-selection seam: how a request's `model` field maps to the
 //! [`Engine`] that serves it.
 //!
-//! [`Engine`](crate::engine::Engine) is a *single* model's decode loop. A
+//! [`Engine`] is a *single* model's decode loop. A
 //! server often wants to expose several models behind one OpenAI-compatible
 //! endpoint and route each request by its `model` field — the same shape as
 //! mesh-llm's `OpenAiBackend`. [`ModelBackend`] is that higher seam: it turns

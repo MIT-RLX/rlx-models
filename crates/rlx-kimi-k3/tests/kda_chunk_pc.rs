@@ -12,8 +12,8 @@
 use rlx_core::flow_util::{built_from_hir, compile_built};
 use rlx_ir::hir::{HirModule, HirMut};
 use rlx_ir::{DType, HirGraphExt, Shape};
-use rlx_kimi_k3::kda::{build_kda_layer, KdaDims, KdaWeights};
-use rlx_kimi_k3::kda_chunk::{build_kda_chunked_scan, ChunkDims};
+use rlx_kimi_k3::kda::{KdaDims, KdaWeights, build_kda_layer};
+use rlx_kimi_k3::kda_chunk::{ChunkDims, build_kda_chunked_scan};
 use rlx_runtime::{CompiledGraph, Device};
 use std::collections::HashMap;
 
@@ -146,13 +146,7 @@ fn run_chunked(
     let built = built_from_hir(hir, HashMap::new()).expect("build chunked graph");
     let mut compiled = compile_built(built, dev()).expect("compile chunked graph");
     compiled
-        .run(&[
-            ("q", q),
-            ("k", k),
-            ("v", v),
-            ("g", g),
-            ("beta", beta),
-        ])
+        .run(&[("q", q), ("k", k), ("v", v), ("g", g), ("beta", beta)])
         .into_iter()
         .next()
         .expect("chunked output")
@@ -180,7 +174,15 @@ fn run_native_pc(
     let v_in = gb.input("v", Shape::new(&[b, s, h, n], f));
     let g_in = gb.input("g", Shape::new(&[b, s, h, n], f));
     let beta_in = gb.input("beta", Shape::new(&[b, s, h], f));
-    let out = gb.gated_delta_net_pc(q_in, k_in, v_in, g_in, beta_in, n, Shape::new(&[b, s, h, n], f));
+    let out = gb.gated_delta_net_pc(
+        q_in,
+        k_in,
+        v_in,
+        g_in,
+        beta_in,
+        n,
+        Shape::new(&[b, s, h, n], f),
+    );
     gb.set_outputs(vec![out]);
     let built = built_from_hir(hir, HashMap::new()).expect("build native pc graph");
     let mut compiled = compile_built(built, dev()).expect("compile native pc graph");
@@ -235,7 +237,10 @@ fn chunked_matches_sequential_reference() {
         let v = fill(bshn, 30 + ci as u64, 1.0);
         // g_log ≤ 0 (the real KDA gate is negative); keep it modest so exp(±cumsum)
         // stays well within f32 range for this chunk size.
-        let g: Vec<f32> = fill(bshn, 40 + ci as u64, 0.25).iter().map(|x| -(x.abs())).collect();
+        let g: Vec<f32> = fill(bshn, 40 + ci as u64, 0.25)
+            .iter()
+            .map(|x| -(x.abs()))
+            .collect();
         let beta: Vec<f32> = fill(b * s * h, 50 + ci as u64, 4.0)
             .iter()
             .map(|x| 1.0 / (1.0 + (-x).exp())) // sigmoid, as the layer applies
@@ -345,7 +350,10 @@ fn full_kda_layer_chunked_matches_native() {
     unsafe { std::env::remove_var("RLX_KDA_CHUNK") };
 
     assert_eq!(y_native.len(), y_chunk.len());
-    assert!(y_chunk.iter().all(|v| v.is_finite()), "chunked KDA output must be finite");
+    assert!(
+        y_chunk.iter().all(|v| v.is_finite()),
+        "chunked KDA output must be finite"
+    );
     let amp = y_native.iter().fold(0f32, |m, x| m.max(x.abs())).max(1e-3);
     let worst = max_abs_diff(&y_native, &y_chunk);
     assert!(
@@ -366,8 +374,17 @@ use std::time::Instant;
 /// Returns (output, hir_node_count, build+compile ms, single-run ms).
 #[allow(clippy::too_many_arguments)]
 fn build_compile_run(
-    q: &[f32], k: &[f32], v: &[f32], g: &[f32], beta: &[f32],
-    b: usize, s: usize, h: usize, n: usize, chunk: usize, use_scan: bool,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    g: &[f32],
+    beta: &[f32],
+    b: usize,
+    s: usize,
+    h: usize,
+    n: usize,
+    chunk: usize,
+    use_scan: bool,
 ) -> (Vec<f32>, usize, f64, f64) {
     // Graph build + compile (this is where unroll's O(T) node count bites).
     let t0 = Instant::now();
@@ -380,8 +397,20 @@ fn build_compile_run(
     let g_in = gb.input("g", Shape::new(&[b, s, h, n], f));
     let beta_in = gb.input("beta", Shape::new(&[b, s, h], f));
     let (out, _final) = build_kda_chunked_scan(
-        &mut gb, q_in, k_in, v_in, g_in, beta_in,
-        ChunkDims { batch: b, seq: s, heads: h, head_dim: n, chunk, use_scan },
+        &mut gb,
+        q_in,
+        k_in,
+        v_in,
+        g_in,
+        beta_in,
+        ChunkDims {
+            batch: b,
+            seq: s,
+            heads: h,
+            head_dim: n,
+            chunk,
+            use_scan,
+        },
         None,
     );
     gb.set_outputs(vec![out]);
@@ -401,7 +430,10 @@ fn build_compile_run(
 #[ignore = "benchmark; run explicitly with --ignored --nocapture"]
 fn bench_scan_vs_unroll() {
     let (b, h, n, chunk) = (1usize, 2usize, 128usize, 16usize);
-    println!("\nFlashKDA K2: unrolled loop vs Op::Scan   (b={b} h={h} n={n} C={chunk}, device={:?})", dev());
+    println!(
+        "\nFlashKDA K2: unrolled loop vs Op::Scan   (b={b} h={h} n={n} C={chunk}, device={:?})",
+        dev()
+    );
     println!(
         "{:>6} | {:>6} | {:>12} {:>10} | {:>12} {:>10} | {:>9}",
         "T", "chunks", "nodes(unrl)", "nodes(scn)", "b+cmp unrl", "b+cmp scn", "max|Δ|"
@@ -412,14 +444,25 @@ fn bench_scan_vs_unroll() {
         let k = fill(bshn, 2, 1.0);
         let v = fill(bshn, 3, 1.0);
         let g: Vec<f32> = fill(bshn, 4, 0.25).iter().map(|x| -(x.abs())).collect();
-        let beta: Vec<f32> = fill(b * s * h, 5, 4.0).iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect();
+        let beta: Vec<f32> = fill(b * s * h, 5, 4.0)
+            .iter()
+            .map(|x| 1.0 / (1.0 + (-x).exp()))
+            .collect();
 
-        let (o_u, nn_u, c_u, _r_u) = build_compile_run(&q, &k, &v, &g, &beta, b, s, h, n, chunk, false);
-        let (o_s, nn_s, c_s, _r_s) = build_compile_run(&q, &k, &v, &g, &beta, b, s, h, n, chunk, true);
+        let (o_u, nn_u, c_u, _r_u) =
+            build_compile_run(&q, &k, &v, &g, &beta, b, s, h, n, chunk, false);
+        let (o_s, nn_s, c_s, _r_s) =
+            build_compile_run(&q, &k, &v, &g, &beta, b, s, h, n, chunk, true);
         let d = max_abs_diff(&o_u, &o_s);
         println!(
             "{:>6} | {:>6} | {:>12} {:>10} | {:>10.1}ms {:>8.1}ms | {:>9.2e}",
-            s, s / chunk, nn_u, nn_s, c_u, c_s, d
+            s,
+            s / chunk,
+            nn_u,
+            nn_s,
+            c_u,
+            c_s,
+            d
         );
         assert!(d < 1e-3, "scan/unroll diverge at T={s}: {d}");
     }
@@ -434,7 +477,14 @@ fn bench_scan_vs_unroll() {
 // (RLX_TEST_DEVICE=metal|mlx|cuda to pick a backend.)
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn compile_chunked_graph(b: usize, s: usize, h: usize, n: usize, chunk: usize, use_scan: bool) -> CompiledGraph {
+fn compile_chunked_graph(
+    b: usize,
+    s: usize,
+    h: usize,
+    n: usize,
+    chunk: usize,
+    use_scan: bool,
+) -> CompiledGraph {
     let mut hir = HirModule::new("kda_bench_rt");
     let mut gb = HirMut::new(&mut hir);
     let f = DType::F32;
@@ -444,8 +494,20 @@ fn compile_chunked_graph(b: usize, s: usize, h: usize, n: usize, chunk: usize, u
     let g = gb.input("g", Shape::new(&[b, s, h, n], f));
     let beta = gb.input("beta", Shape::new(&[b, s, h], f));
     let (out, _f) = build_kda_chunked_scan(
-        &mut gb, q, k, v, g, beta,
-        ChunkDims { batch: b, seq: s, heads: h, head_dim: n, chunk, use_scan },
+        &mut gb,
+        q,
+        k,
+        v,
+        g,
+        beta,
+        ChunkDims {
+            batch: b,
+            seq: s,
+            heads: h,
+            head_dim: n,
+            chunk,
+            use_scan,
+        },
         None,
     );
     gb.set_outputs(vec![out]);
@@ -468,7 +530,11 @@ fn compile_native_graph(b: usize, s: usize, h: usize, n: usize) -> CompiledGraph
     compile_built(built, dev()).expect("compile")
 }
 
-fn time_min(compiled: &mut CompiledGraph, inputs: &[(&str, &[f32])], reps: usize) -> (f64, Vec<f32>) {
+fn time_min(
+    compiled: &mut CompiledGraph,
+    inputs: &[(&str, &[f32])],
+    reps: usize,
+) -> (f64, Vec<f32>) {
     let mut out = compiled.run(inputs).into_iter().next().unwrap(); // warm
     let _ = compiled.run(inputs);
     let mut best = f64::INFINITY;
@@ -484,8 +550,14 @@ fn time_min(compiled: &mut CompiledGraph, inputs: &[(&str, &[f32])], reps: usize
 #[ignore = "runtime benchmark; run with --release --ignored --nocapture"]
 fn bench_runtime() {
     let (b, h, n, chunk) = (1usize, 16usize, 128usize, 16usize);
-    println!("\nKDA forward runtime   (b={b} h={h} n={n} C={chunk}, device={:?})", dev());
-    println!("{:>6} | {:>12} {:>12} {:>12} | {:>10} {:>10}", "T", "native(ms)", "unroll(ms)", "scan(ms)", "spd(u/n)", "spd(s/n)");
+    println!(
+        "\nKDA forward runtime   (b={b} h={h} n={n} C={chunk}, device={:?})",
+        dev()
+    );
+    println!(
+        "{:>6} | {:>12} {:>12} {:>12} | {:>10} {:>10}",
+        "T", "native(ms)", "unroll(ms)", "scan(ms)", "spd(u/n)", "spd(s/n)"
+    );
     for &s in &[512usize, 2048] {
         let bshn = b * s * h * n;
         let mut q = fill(bshn, 1, 1.0);
@@ -494,21 +566,41 @@ fn bench_runtime() {
         l2norm_rows(&mut k, b * s * h, n);
         let v = fill(bshn, 3, 1.0);
         let g: Vec<f32> = fill(bshn, 4, 0.25).iter().map(|x| -(x.abs())).collect();
-        let beta: Vec<f32> = fill(b * s * h, 5, 4.0).iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect();
-        let inputs: [(&str, &[f32]); 5] = [("q", &q), ("k", &k), ("v", &v), ("g", &g), ("beta", &beta)];
+        let beta: Vec<f32> = fill(b * s * h, 5, 4.0)
+            .iter()
+            .map(|x| 1.0 / (1.0 + (-x).exp()))
+            .collect();
+        let inputs: [(&str, &[f32]); 5] =
+            [("q", &q), ("k", &k), ("v", &v), ("g", &g), ("beta", &beta)];
 
         let (t_nat, o_nat) = time_min(&mut compile_native_graph(b, s, h, n), &inputs, 8);
-        let (t_unr, o_unr) = time_min(&mut compile_chunked_graph(b, s, h, n, chunk, false), &inputs, 8);
-        let (t_scn, o_scn) = time_min(&mut compile_chunked_graph(b, s, h, n, chunk, true), &inputs, 8);
+        let (t_unr, o_unr) = time_min(
+            &mut compile_chunked_graph(b, s, h, n, chunk, false),
+            &inputs,
+            8,
+        );
+        let (t_scn, o_scn) = time_min(
+            &mut compile_chunked_graph(b, s, h, n, chunk, true),
+            &inputs,
+            8,
+        );
 
         // sanity: all three agree
         let d1 = max_abs_diff(&o_nat, &o_unr);
         let d2 = max_abs_diff(&o_unr, &o_scn);
-        assert!(d1 < 2e-3 && d2 < 1e-3, "T={s} divergence native/unroll {d1}, unroll/scan {d2}");
+        assert!(
+            d1 < 2e-3 && d2 < 1e-3,
+            "T={s} divergence native/unroll {d1}, unroll/scan {d2}"
+        );
 
         println!(
             "{:>6} | {:>12.3} {:>12.3} {:>12.3} | {:>9.2}x {:>9.2}x",
-            s, t_nat, t_unr, t_scn, t_nat / t_unr, t_nat / t_scn
+            s,
+            t_nat,
+            t_unr,
+            t_scn,
+            t_nat / t_unr,
+            t_nat / t_scn
         );
     }
     println!();
@@ -525,7 +617,10 @@ fn bench_runtime() {
 #[ignore = "profiling; run with --release --ignored --nocapture"]
 fn bench_native_scaling() {
     let n = 128usize;
-    println!("\nNative Op::GatedDeltaNet scaling  (n={n}, device={:?})", dev());
+    println!(
+        "\nNative Op::GatedDeltaNet scaling  (n={n}, device={:?})",
+        dev()
+    );
 
     println!("-- vs sequence length T  (b=1, h=16) --");
     println!("{:>6} | {:>10} | {:>12}", "T", "time(ms)", "us/token");
@@ -538,8 +633,12 @@ fn bench_native_scaling() {
         l2norm_rows(&mut k, b * s * h, n);
         let v = fill(bshn, 3, 1.0);
         let g: Vec<f32> = fill(bshn, 4, 0.25).iter().map(|x| -(x.abs())).collect();
-        let beta: Vec<f32> = fill(b * s * h, 5, 4.0).iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect();
-        let inputs: [(&str, &[f32]); 5] = [("q", &q), ("k", &k), ("v", &v), ("g", &g), ("beta", &beta)];
+        let beta: Vec<f32> = fill(b * s * h, 5, 4.0)
+            .iter()
+            .map(|x| 1.0 / (1.0 + (-x).exp()))
+            .collect();
+        let inputs: [(&str, &[f32]); 5] =
+            [("q", &q), ("k", &k), ("v", &v), ("g", &g), ("beta", &beta)];
         let (t, _o) = time_min(&mut compile_native_graph(b, s, h, n), &inputs, 8);
         println!("{:>6} | {:>10.3} | {:>12.4}", s, t, t * 1e3 / s as f64);
     }
@@ -555,8 +654,12 @@ fn bench_native_scaling() {
         l2norm_rows(&mut k, b * s * h, n);
         let v = fill(bshn, 3, 1.0);
         let g: Vec<f32> = fill(bshn, 4, 0.25).iter().map(|x| -(x.abs())).collect();
-        let beta: Vec<f32> = fill(b * s * h, 5, 4.0).iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect();
-        let inputs: [(&str, &[f32]); 5] = [("q", &q), ("k", &k), ("v", &v), ("g", &g), ("beta", &beta)];
+        let beta: Vec<f32> = fill(b * s * h, 5, 4.0)
+            .iter()
+            .map(|x| 1.0 / (1.0 + (-x).exp()))
+            .collect();
+        let inputs: [(&str, &[f32]); 5] =
+            [("q", &q), ("k", &k), ("v", &v), ("g", &g), ("beta", &beta)];
         let (t, _o) = time_min(&mut compile_native_graph(b, s, h, n), &inputs, 8);
         println!("{:>6} | {:>10.3} | {:>12.4}", h, t, t / h as f64);
     }

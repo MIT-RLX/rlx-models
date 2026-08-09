@@ -34,10 +34,8 @@ fn best_speaker(turns: &[rlx_diarize::SpeakerTurn], start: f32, end: f32) -> Opt
     let mut best: Option<(usize, f32)> = None;
     for t in turns {
         let overlap = (end.min(t.end) - start.max(t.start)).max(0.0);
-        if overlap > 0.0 {
-            if best.map(|(_, o)| overlap > o).unwrap_or(true) {
-                best = Some((t.speaker_id, overlap));
-            }
+        if overlap > 0.0 && best.map(|(_, o)| overlap > o).unwrap_or(true) {
+            best = Some((t.speaker_id, overlap));
         }
     }
     best.map(|(id, _)| id)

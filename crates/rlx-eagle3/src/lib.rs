@@ -22,7 +22,7 @@
 //! | [`config`] | ✅ tested | Parses RedHatAI / vLLM-speculators `Eagle3SpeculatorConfig`. |
 //! | [`d2t`] | ✅ tested | Draft-vocab → target-vocab scatter (LUT-based). |
 //! | [`weights`] | ✅ tested on synthetic | Reads draft `model.safetensors` and surfaces named tensors. |
-//! | [`speculator`] | ⚠️ scaffold | `Eagle3Speculator<H>` implements [`Speculator`], but its `propose()` requires the draft graph from [`draft`] to be wired. |
+//! | [`speculator`] | ⚠️ scaffold | `Eagle3Speculator<H>` implements `Speculator`, but its `propose()` requires the draft graph from [`draft`] to be wired. |
 //! | [`draft`] | ⚠️ not yet built | The HIR graph builder for the 1-layer Llama draft + fc fusion + lm_head over draft vocab. See module docs for the spec we need to match against `speculators/core.py`. |
 //!
 //! # The architecture (per RedHatAI/gemma-4-31B-it-speculator.eagle3 + vLLM docs)

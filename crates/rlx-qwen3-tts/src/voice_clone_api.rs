@@ -761,6 +761,8 @@ impl VoiceClone {
         let talker_cfg = self.cfg.talker().clone();
 
         let mut emitter = ChunkEmitter::new(chunk_samples, start);
+        // Assigned only on the `incremental-decode` drain paths below.
+        #[allow(unused_mut)]
         let mut consumed_samples = 0usize;
         let mut stop_early = false;
         let mut streamed_pcm = Vec::new();

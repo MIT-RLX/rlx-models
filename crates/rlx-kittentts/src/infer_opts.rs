@@ -214,7 +214,7 @@ pub fn max_waveform_samples_for_tokens(token_len: usize) -> usize {
 ///
 /// Sized for **one infer chunk** (≤ [`narrow_chunk_slots`] when vocoder chunking applies),
 /// not the full padded IPA length — keeps compile arenas in the low hundreds of MB, not tens of GB.
-/// Graphs still compile with `token_cap + DURATION_COMPILE_HEADROOM` via [`SeqCompileCache`].
+/// Graphs still compile with `token_cap + DURATION_COMPILE_HEADROOM` via `SeqCompileCache`.
 pub fn recommended_native_compile_opts(token_len: usize) -> (usize, usize) {
     let compile_tokens = native_compile_token_cap(token_len);
     (compile_tokens, max_waveform_samples_for_tokens(token_len))

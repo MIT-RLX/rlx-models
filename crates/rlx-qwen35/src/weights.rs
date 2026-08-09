@@ -219,7 +219,7 @@ pub struct Qwen35MtpLayer {
 /// Top-level Qwen3.5 / Qwen3.6 weight bundle.
 #[derive(Debug, Clone)]
 pub struct Qwen35Weights {
-    /// `[n_vocab, n_embd]`. Shared via [`Arc`] so graph-build clones are
+    /// `[n_vocab, n_embd]`. Shared via `Arc` so graph-build clones are
     /// cheap — Bonsai-27B's table is ~4.7 GiB; deep-copying it on every
     /// `weights.clone()` dominated packed CUDA compile wall time.
     pub token_embd: std::sync::Arc<[f32]>,
@@ -773,6 +773,14 @@ fn load_mtp_layer(
     cfg: &Qwen35Config,
     pack_via: Option<*mut GgufLoader>,
 ) -> Result<Qwen35MtpLayer> {
+    // Keep the MTP layer PACKED like every other layer (dequant-at-load to F32
+    // here loads ~1.2 GB of vocab-sized embed/head tensors on EVERY run even when
+    // MTP is unused — a big memory regression). The MTP head's custom-op lowering
+    // can't consume packed weights (`g.mm` on rank-1), so `--mtp --spec-decode
+    // --packed` will bail with "matmul requires rank >= 2" — but that path isn't
+    // wired for real use, and the normal / verify / prefix-cache paths never build
+    // the MTP head, so packed is the right default. (To use MTP, dequant just its
+    // matmul weights on demand rather than at load.)
     let base = load_full_attn_layer(loader, il, cfg, pack_via)?;
     let p = |suffix: &str| format!("blk.{il}.nextn.{suffix}");
     let eh_proj = take_mat(loader, &p("eh_proj.weight"), pack_via)?;

@@ -10,7 +10,7 @@
 //!
 //! Entry points: [`MoshiSession`], CLI (`feature = "cli"`), streaming ([`spawn_duplex_stream`]).
 //!
-//! https://github.com/kyutai-labs/moshi
+//! <https://github.com/kyutai-labs/moshi>
 
 pub mod backend;
 pub mod checkpoint;

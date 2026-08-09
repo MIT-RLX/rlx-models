@@ -91,10 +91,11 @@ fn bench_report() {
 /// Run one MoE layer, dispatching to the expert-parallel cluster workers when a
 /// [`crate::dist_experts::ClusterMoe`] is installed (config-driven), else locally
 /// via [`run_moe_paged`]. `layer` is the global layer index.
+#[cfg_attr(not(feature = "cluster"), allow(unused_variables))]
 fn run_moe_layer(
     ck: &mut CheckpointLoader,
     layer_prefix: &str,
-    _layer: usize,
+    layer: usize,
     mn: &[f32],
     d: MoeDims,
     device: Device,

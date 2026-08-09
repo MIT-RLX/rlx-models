@@ -87,7 +87,7 @@ fn graph_vocoder_on_metal() {
     let mut g = model
         .compile_vocoder_graph(mel.dim().1, rlx_runtime::Device::Metal)
         .expect("compile metal vocoder");
-    let gw = g.forward(&mel).expect("metal forward"); // warm
+    let _gw = g.forward(&mel).expect("metal forward"); // warm
     let t0 = std::time::Instant::now();
     let gw = g.forward(&mel).unwrap();
     let dt = t0.elapsed().as_secs_f32();

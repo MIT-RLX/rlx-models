@@ -85,7 +85,7 @@ pub fn suggest_max_frames(text: &str, opts_cap: usize) -> usize {
 // ── audio-frame embedding ─────────────────────────────────────────────────────
 
 /// Embed one audio frame through the audio-embed stack:
-/// 32 × lookup → concat [hidden] → Linear+GELU+Linear → affine-free LN → × scale.
+/// 32 × lookup → concat `[hidden]` → Linear+GELU+Linear → affine-free LN → × scale.
 pub fn embed_audio_frame(
     channels: &[u32],
     overlay: &GepardOverlay,

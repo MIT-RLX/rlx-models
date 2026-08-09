@@ -18,7 +18,7 @@
 //! **Inflect v2** is a VITS-style end-to-end flow TTS (espeak phonemes → text
 //! encoder + stochastic duration predictor + normalizing flow → HiFiGAN-style
 //! decoder, 24 kHz). Note this is a *different architecture* from Inflect-Nano v1
-//! ([`rlx_inflect_nano`], a mel-acoustic model + separate vocoder) — v2 is a VITS2
+//! (`rlx_inflect_nano`, a mel-acoustic model + separate vocoder) — v2 is a VITS2
 //! family model, so the synthesis graph is shared with
 //! [`rlx-tiny-tts`](https://docs.rs/rlx-tiny-tts) (MeloTTS / VITS2), which already
 //! runs on all RLX backends.

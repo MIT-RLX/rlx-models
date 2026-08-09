@@ -116,7 +116,7 @@ impl Flux2Config {
         self.patch_size * self.patch_size * self.out_ch()
     }
 
-    /// FLUX.2 [dev] defaults (32B-class; not runnable on commodity RAM at F32).
+    /// FLUX.2 `[dev]` defaults (32B-class; not runnable on commodity RAM at F32).
     pub fn flux2_dev() -> Self {
         Self {
             patch_size: 1,
@@ -136,7 +136,7 @@ impl Flux2Config {
         }
     }
 
-    /// FLUX.2 [klein] 4B-style defaults (guidance embedder optional).
+    /// FLUX.2 `[klein]` 4B-style defaults (guidance embedder optional).
     pub fn flux2_klein_4b() -> Self {
         Self {
             num_layers: 4,
@@ -149,7 +149,7 @@ impl Flux2Config {
         }
     }
 
-    /// FLUX.2 [klein] 9B defaults (BFL `Klein9BParams`: 8 double + 24 single, 32 heads).
+    /// FLUX.2 `[klein]` 9B defaults (BFL `Klein9BParams`: 8 double + 24 single, 32 heads).
     pub fn flux2_klein_9b() -> Self {
         Self {
             num_layers: 8,

@@ -197,7 +197,7 @@ pub use crate::device_policy::{
     WGPU_WAVEFORM_CAP as WGPU_ACT_SAFE_WAVEFORM_CAP, clamp_waveform_for_device,
 };
 
-/// Per-bucket waveform compile cap from runtime token width, bounded by [`engine_cap`].
+/// Per-bucket waveform compile cap from runtime token width, bounded by `engine_cap`.
 pub fn compile_waveform_cap(runtime_tokens: usize, engine_cap: usize) -> usize {
     let est = runtime_tokens
         .saturating_mul(COMPILE_SAMPLES_PER_DURATION_UNIT)

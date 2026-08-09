@@ -5,7 +5,7 @@
 
 //! NARMA-10 predictors: dense ESN, locally connected ESN (LCESN), and polynomial readout.
 //!
-//! Training protocol and benchmarks live in [`train`]; see the [crate README](../README.md).
+//! Training protocol and benchmarks live in `train`; see the [crate README](../README.md).
 
 mod esn_ridge;
 mod local_esn;

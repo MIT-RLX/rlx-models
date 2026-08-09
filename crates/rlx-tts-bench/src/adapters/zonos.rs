@@ -48,8 +48,10 @@ impl TtsAdapter for ZonosAdapter {
     }
 
     fn synthesize(&mut self, req: SynthRequest<'_>) -> Result<SynthResult> {
-        let mut opts = InferOpts::default();
-        opts.seed = req.seed;
+        let opts = InferOpts {
+            seed: req.seed,
+            ..InferOpts::default()
+        };
         let t0 = Instant::now();
         let pcm = self.inner.synthesize(req.text, &opts)?;
         Ok(SynthResult {

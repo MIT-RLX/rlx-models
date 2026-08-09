@@ -112,7 +112,8 @@ mod tests {
         assert!(emb.iter().all(|v| v.is_finite()), "non-finite embedding");
 
         let mut enc =
-            Qwen35VisionEncoder::from_parts(cfg.clone(), weights, img_w, img_h).expect("encoder");
+            Qwen35VisionEncoder::from_parts(cfg.clone(), weights, img_w, img_h, Device::Cpu)
+                .expect("encoder");
         let out = enc.encode_rgb(&rgb, img_w, img_h).expect("encode");
         assert_eq!(out.n_tokens, 1);
         assert_eq!(out.grid_x, 1);

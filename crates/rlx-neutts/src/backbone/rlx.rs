@@ -214,8 +214,8 @@ impl BackboneModel {
 
     /// Greedy continuation for parity tests.
     ///
-    /// [`load_greedy_parity`] uses KV-cached [`Llama32Runner::generate`] (F32 weights,
-    /// MSVC uses oneshot decode in `step_cached`). Production [`load`] uses packed Q4.
+    /// `load_greedy_parity` uses KV-cached [`Llama32Runner::generate`] (F32 weights,
+    /// MSVC uses oneshot decode in `step_cached`). Production `load` uses packed Q4.
     /// Debug: `NEUTTS_GREEDY_INCREMENTAL=1` or `NEUTTS_GREEDY_PREDICT_LOGITS=1`.
     pub fn generate_greedy_ids_from_prompt(
         &self,

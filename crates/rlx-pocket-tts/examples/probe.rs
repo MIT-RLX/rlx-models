@@ -94,7 +94,7 @@ fn main() -> Result<()> {
         let slot = voice_t + i;
         println!(
             "  K[{slot}, head=0, dim=0..4] = {:?}",
-            &l0.k.slice(ndarray::s![slot, 0, 0..4]).to_vec()
+            l0.k.slice(ndarray::s![slot, 0, 0..4]).to_vec()
         );
     }
     Ok(())

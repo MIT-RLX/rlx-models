@@ -19,11 +19,11 @@
 //!
 //! Backends do not see the block's algorithm. They just expose enough
 //! tensor-level primitives that the algorithm — written once in
-//! [`crate::block::forward_with`] — can run on top.
+//! `crate::block::forward_with` — can run on top.
 //!
 //! Linears and conv use per-backend matmul primitives; the **selective scan**
 //! is a single compiled `rlx_ssm::MambaScanStage` graph per backend (see
-//! [`crate::scan`] and [`Self::selective_scan`]). CUDA/wgpu run
+//! [`crate::scan`] and `Self::selective_scan`). CUDA/wgpu run
 //! `Op::SelectiveScan` on device; Metal/MLX fall back to the CPU reference
 //! path for the scan while keeping device matmuls.
 

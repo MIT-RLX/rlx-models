@@ -200,11 +200,28 @@ impl Qwen35TrunkTarget {
         let checkpoint = self.inner.decode_cache_checkpoint();
         let mut probs = Vec::with_capacity(n);
         let start_for_restore = start_logits.clone();
-        let mut logits = start_logits;
-        for i in 0..n {
-            probs.push(softmax_logits(&logits));
-            if i + 1 < n {
-                logits = self.inner.decode_get_logits(proposed[i])?;
+        // probs[0] predicts proposed[0] (from `start_logits`); probs[i] predicts
+        // proposed[i] from the logits AFTER proposed[i-1]. Instead of n sequential
+        // decode steps, run ONE batched m=n verify forward (weights read once —
+        // the speculative amortization). Requires the host KV mirror (non-resident).
+        probs.push(softmax_logits(&start_logits));
+        if n > 1 {
+            if let Some(cache) = checkpoint.clone() {
+                let vlog = self.inner.verify_forward(&cache, &proposed[..n - 1])?;
+                for row in &vlog {
+                    probs.push(softmax_logits(row));
+                }
+            } else {
+                // No cache to continue from — fall back to sequential.
+                let mut logits = start_logits;
+                for i in 0..n {
+                    if i > 0 {
+                        probs.push(softmax_logits(&logits));
+                    }
+                    if i + 1 < n {
+                        logits = self.inner.decode_get_logits(proposed[i])?;
+                    }
+                }
             }
         }
         self.inner.restore_decode_cache(checkpoint);

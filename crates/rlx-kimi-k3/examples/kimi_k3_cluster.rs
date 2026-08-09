@@ -846,7 +846,7 @@ fn cmd_pipeline(args: &[String]) -> Result<()> {
         let snaps_in: Vec<_> = (0..carry_snaps.len())
             .map(|j| {
                 g.input(
-                    &format!("snap_{j}"),
+                    format!("snap_{j}"),
                     Shape::new(&[batch, seq, hidden], DType::F32),
                 )
             })
@@ -1331,7 +1331,7 @@ fn cmd_load_cmp(args: &[String]) -> Result<()> {
     let q8 = format!("{nvme}/kimi-q8");
     let mut ck = CheckpointLoader::open(model_dir)?;
     let kc = KimiK3Config::load(Path::new(model_dir).join("config.json"))?;
-    let tc = kc.text_config.clone();
+    let _tc = kc.text_config.clone();
     let n_layers: usize = opt(args, "--layers")
         .and_then(|s| s.parse().ok())
         .unwrap_or(8);

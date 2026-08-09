@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Native Wav2Vec2-BERT flow — Conformer encoder via [`ModelFlow`] + shared [`super::builder::W2vBuilder`].
+//! Native Wav2Vec2-BERT flow — Conformer encoder via [`ModelFlow`] + shared `super::builder::W2vBuilder`.
 
 use anyhow::Result;
 use rlx_flow::{BuiltModel, CompileProfile, ModelFlow};

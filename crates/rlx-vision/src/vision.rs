@@ -21,7 +21,7 @@ use rlx_core::weight_map::WeightMap;
 use rlx_ir::Graph;
 use std::collections::HashMap;
 
-/// Build a NomicVision encoder IR graph via native [`ModelFlow`].
+/// Build a NomicVision encoder IR graph via native `ModelFlow`.
 pub fn build_vision_graph_sized(
     cfg: &NomicVisionConfig,
     weights: &mut WeightMap,

@@ -36,7 +36,7 @@ pub struct Flux2SampleParams<'a> {
     pub latent_h: usize,
     pub latent_w: usize,
     pub seed: u64,
-    /// img2img: starting step index (from [`flow_match_init_timestep`]).
+    /// img2img: starting step index (from `flow_match_init_timestep`).
     pub init_timestep: usize,
     /// img2img: pre-blended latents (skips fresh noise init when set).
     pub initial_latents: Option<&'a [f32]>,

@@ -18,7 +18,7 @@
 //! Replaces `llama-cpp-4`'s `MtmdContext` end-to-end. The runner
 //! receives a list of [`MtmdTurn`]s — text + images + audio — and
 //! produces an [`AssembledTurn`] the per-family VL/Omni runner
-//! consumes via the [`rlx_vlm_base`] traits.
+//! consumes via the `rlx_vlm_base` traits.
 //!
 //! **Status:** TYPE SKELETON. The shape is in place so `skill` can
 //! write code against `MtmdContext::build_turn(..)` today; the

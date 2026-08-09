@@ -59,7 +59,7 @@ pub fn freqs_cis_for_grid(
     out
 }
 
-/// Cos/sin tables for [`HirGraphExt::rope`] on the X and Y halves of head_dim (2D RoPE).
+/// Cos/sin tables for `HirGraphExt::rope` on the X and Y halves of head_dim (2D RoPE).
 pub fn rope_cos_sin_halves_for_grid(
     cfg: &MoonVitConfig,
     grid_h: usize,

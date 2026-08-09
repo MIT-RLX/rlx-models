@@ -226,6 +226,7 @@ impl Qwen3TtsMegakernel {
     ///   implemented; this errors clearly if called on a non-eager backend).
     /// - The non-fused CP path (`fused = None`, `cp = Some(_)`); the fused
     ///   path bypasses talker.codec_head_flat and would need its own loop.
+    ///
     /// Begin a stepwise speculative codec-AR session. Drive it with
     /// [`Self::codec_ar_speculative_step`] to interleave AR with downstream
     /// work (partial decode, network send).

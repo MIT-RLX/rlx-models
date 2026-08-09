@@ -598,8 +598,12 @@ mod tests {
     }
 
     /// GPU backends compiled into this build (CPU is covered separately).
+    // Elements are cfg-gated per backend, so `vec![..]` is not an option.
+    #[allow(clippy::vec_init_then_push)]
     fn gpu_devices() -> Vec<Device> {
-        let v = Vec::new();
+        // `mut` is only exercised by the backend-feature pushes below.
+        #[allow(unused_mut)]
+        let mut v = Vec::new();
         #[cfg(feature = "metal")]
         v.push(Device::Metal);
         #[cfg(feature = "mlx")]

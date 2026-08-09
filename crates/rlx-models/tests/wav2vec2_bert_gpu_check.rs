@@ -23,8 +23,6 @@ mod support;
 #[cfg(feature = "gpu")]
 #[test]
 fn wav2vec2_bert_tiny_graph_runs_on_gpu() {
-    mod compile_support;
-
     use rlx_runtime::Device;
 
     if !rlx_wgpu::is_available() {

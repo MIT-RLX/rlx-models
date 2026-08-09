@@ -160,7 +160,7 @@ fn apply_vision_rope_2d(
 
 /// Build the vision encoder graph: patch-embed → 16 encoder layers, returning
 /// the encoder `last_hidden_state` `[B, P, 768]` (pre-pooling). Inputs:
-/// `vision_pixels` `[B,P,3*patch^2=768]` (raw [0,1] patch pixels),
+/// `vision_pixels` `[B,P,3*patch^2=768]` (raw `[0,1]` patch pixels),
 /// `vision_pos_embed` `[B,P,768]` (host-precomputed x+y position-embedding sum),
 /// `vision_rope_cos`/`vision_rope_sin` `[1,P,64]`. Bidirectional attention
 /// (no causal mask) over all patches.

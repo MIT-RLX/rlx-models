@@ -16,8 +16,11 @@
 //! High-level runner for Qwen3.5 / Qwen3.6 (qwen35 architecture).
 
 use crate::cache::{
-    Qwen35DecodeCache, advance_cache_from_decode_outputs, decode_step_feeds, last_token_indices,
-    pack_input_ids, seed_cache_from_outputs, zero_prompt_padding_kv, zero_recurrent_inputs,
+    Qwen35DecodeCache, Qwen35LayerState, advance_cache_from_decode_outputs,
+    advance_cache_from_decode_outputs_n, advance_cache_resident_inplace, build_verify_bias_mask,
+    decode_step_feeds, full_attn_kv_f32, last_token_indices, maybe_pack_full_attn_kv,
+    pack_input_ids, pad_kv_to_bucket, seed_cache_from_outputs, trunk_layer_kinds,
+    zero_prompt_padding_kv, zero_recurrent_inputs,
 };
 use crate::capabilities::validate_device;
 use crate::config::Qwen35Config;
@@ -37,7 +40,7 @@ use crate::{
     PackedParams, build_qwen35_decode_hir_dynamic_ext, build_qwen35_decode_hir_ext,
     build_qwen35_hir_sized_ext, build_qwen35_prefill_cache_hir_dynamic_ext,
     build_qwen35_prefill_cache_hir_ext, build_qwen35_prefill_hidden_cache_hir_dynamic_ext,
-    build_qwen35_prefill_hidden_cache_hir_ext,
+    build_qwen35_prefill_hidden_cache_hir_ext, build_qwen35_verify_hir,
 };
 use rlx_core::WeightLoader;
 use rlx_runtime::MoeExpertStore;
@@ -890,6 +893,28 @@ fn load_hf_mmap_loader(weights_path: &Path) -> Result<(PathBuf, PathBuf, Box<dyn
     Ok((parent, resolved, loader))
 }
 
+/// Backend for the vision tower.
+///
+/// Default = the **LM device** (e.g. Metal): with the decomposed SDPA path
+/// (`RLX_QWEN35_VISION_SDPA_DECOMP`, auto-on for GPU backends) the ViT rides the
+/// fast batched-GEMM route, so Metal now beats CPU (~5.0s vs ~5.5s for Fara-4B, and
+/// ~3× faster than the old fused-attention Metal path at ~15.5s) while avoiding a
+/// CPU→GPU embedding copy. `RLX_QWEN35_VISION_DEVICE=cpu|metal|mlx|coreml|ane|cuda`
+/// forces a backend; `auto` also follows the LM device. Unparseable values fall
+/// back to the LM device. The encoder additionally falls back to CPU per-backend
+/// if the chosen one can't compile the tower.
+fn resolve_vision_device(lm_device: Device) -> Device {
+    match std::env::var("RLX_QWEN35_VISION_DEVICE")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("auto") | Some("lm") => lm_device,
+        Some(s) if !s.is_empty() => rlx_runtime::parse_device(s).unwrap_or(lm_device),
+        _ => lm_device,
+    }
+}
+
 fn finish_build(
     cfg: Qwen35Config,
     weights: Qwen35Weights,
@@ -927,6 +952,51 @@ fn finish_build(
     if force_host_embed {
         // SAFETY: single-threaded runner build; env read at decode HIR compile time.
         unsafe { std::env::set_var("RLX_QWEN35_HOST_EMBED", "1") };
+    }
+    // wgpu/WebGPU can't bind the F32 `token_embd` table as one storage buffer once
+    // it exceeds `max_storage_buffer_binding_size` (128 MiB): the on-GPU gather
+    // panics (amd/llvmpipe) or returns garbage (NVIDIA/Vulkan) — coherent only
+    // with host-gathered embeddings. Force host-embed on these backends unless the
+    // caller explicitly set the env override.
+    if matches!(device, Device::Gpu | Device::WebGpu)
+        && std::env::var("RLX_QWEN35_HOST_EMBED").is_err()
+    {
+        // SAFETY: single-threaded runner build; env read at decode HIR compile time.
+        unsafe { std::env::set_var("RLX_QWEN35_HOST_EMBED", "1") };
+    }
+    // Metal decode optimizations, both token-identical (measured on qwen3.5-0.8B
+    // packed @2K): in-place KV append (`Op::KvAppend` instead of concat-copying
+    // the O(ctx) padded cache each token, +~5%) and fused GDN ssm_alpha/ssm_beta
+    // projections (one `[n_embd, 2*n_v]` matmul vs two tiny GEMVs, +~18%).
+    // Default-on; set the vars to `0` to disable.
+    if matches!(device, Device::Metal) {
+        // SAFETY: single-threaded runner build; env read at decode HIR compile time.
+        unsafe {
+            // Resident KV (RLX_QWEN35_GPU_KV) RELIES on in-place KV: the past_k/v
+            // handles are bound resident once per bucket (arena = source of truth),
+            // and `Op::KvAppend` accumulates new rows in-place in the arena — no
+            // per-token host feed, no `feed_kv_row`. So keep inplace ON.
+            if std::env::var("RLX_QWEN35_INPLACE_KV").is_err() {
+                std::env::set_var("RLX_QWEN35_INPLACE_KV", "1");
+            }
+            if std::env::var("RLX_QWEN35_FUSE_SSM").is_err() {
+                std::env::set_var("RLX_QWEN35_FUSE_SSM", "1");
+            }
+            // GQA-native: skip the K/V head-widening narrow+concat (the SDPA
+            // kernels index shared kv heads internally). Token-identical; removes
+            // an O(ctx) concat that was ~18% of decode GPU-time @8K (+17% @8K).
+            if std::env::var("RLX_QWEN35_GQA_NATIVE").is_err() {
+                std::env::set_var("RLX_QWEN35_GQA_NATIVE", "1");
+            }
+            // Resident KV: bind past_k/v as resident arena handles once, grow them
+            // in-place with Op::KvAppend + an O(1) intra-buffer row relocate — no
+            // per-token host KV re-upload (`pad_kv_to_bucket`, the O(ctx) IO cost).
+            // batch==1 only (batch>1 falls back to the host feed path). Token-
+            // identical; +42% @4K, +68% @8K (grows with ctx).
+            if std::env::var("RLX_QWEN35_GPU_KV").is_err() {
+                std::env::set_var("RLX_QWEN35_GPU_KV", "1");
+            }
+        }
     }
     // Auto-enable the low-mem compile/upload path for large models: it skips the
     // redundant F32 param clone, streams packed weights straight from the mmap
@@ -985,19 +1055,29 @@ fn finish_build(
         }
     };
 
+    // Vision tower backend (CPU by default — see `resolve_vision_device`;
+    // `RLX_QWEN35_VISION_DEVICE=metal|mlx|coreml|auto` to override).
+    let vision_device = resolve_vision_device(device);
     let vision_encoder = if let Some(ref path) = mmproj_path {
         Some(load_vision_encoder(
             path.to_str()
                 .ok_or_else(|| anyhow!("non-utf8 mmproj path"))?,
             224,
             224,
+            vision_device,
         )?)
     } else if let Some((vcfg, vweights)) = inline_mmproj {
         // Placeholder compile size — `encode_rgb` recompiles for the real
         // smart-resized dims. Must satisfy `patch_size * 2` (HF Fara uses 16→32).
         let step = vcfg.patch_size.saturating_mul(2).max(2);
         let side = 224usize.next_multiple_of(step).max(step);
-        Some(Qwen35VisionEncoder::from_parts(vcfg, vweights, side, side)?)
+        Some(Qwen35VisionEncoder::from_parts(
+            vcfg,
+            vweights,
+            side,
+            side,
+            vision_device,
+        )?)
     } else {
         None
     };
@@ -1184,11 +1264,15 @@ fn finish_build(
         _prefill_hidden_cache_params: prefill_hidden_cache_params,
         _prefill_hidden_cache_packed: prefill_hidden_cache_packed,
         decode_graphs: HashMap::new(),
+        verify_graphs: HashMap::new(),
         decode_compile_cache,
         decode_dynamic_cache,
         predict_hir_cache: None,
         decode_dynamic_params,
         decode_dynamic_packed,
+        verify_shared_params: HashMap::new(),
+        verify_shared_packed: PackedParams::new(),
+        verify_bucket_graphs: HashMap::new(),
         packed_bytes_cache: HashMap::new(),
         cfg,
         device,
@@ -1210,6 +1294,7 @@ fn finish_build(
         aot_cache: aot,
         dynamic_prefill,
         dynamic_decode,
+        exact_prefill: rlx_ir::env::flag("RLX_QWEN35_EXACT_PREFILL"),
         vision_encoder,
         mmproj_path,
         prefill_profile,
@@ -1217,6 +1302,11 @@ fn finish_build(
         moe_offload,
         moe_store,
         moe_refresh_step: 0,
+        use_gpu_kv: matches!(device, Device::Metal) && rlx_ir::env::flag("RLX_QWEN35_GPU_KV"),
+        gpu_kv_upper: 0,
+        kv_sink: 0,
+        kv_window: 0,
+        kv_slack: 0,
     };
 
     if let Some(ref mut compiled) = runner.prefill_cache {
@@ -1366,12 +1456,23 @@ pub struct Qwen35Runner {
     _prefill_hidden_cache_params: HashMap<String, Vec<f32>>,
     _prefill_hidden_cache_packed: PackedParams,
     decode_graphs: HashMap<usize, rlx_runtime::CompiledGraph>,
+    /// Continued multi-token verify graphs, keyed by `(past_seq, n_new, mtp)`.
+    verify_graphs: HashMap<(usize, usize, bool), rlx_runtime::CompiledGraph>,
     decode_compile_cache: Option<BucketedCompileCache>,
     decode_dynamic_cache: Option<Qwen35CompileCache>,
     /// Predict / reprefill HIR (must not share a template with decode graphs).
     predict_hir_cache: Option<Qwen35CompileCache>,
     decode_dynamic_params: HashMap<String, Vec<f32>>,
     decode_dynamic_packed: PackedParams,
+    /// BUCKETED verify/chunk (the speculative-decode memory fix). Shared weights
+    /// (F32 params + packed) built ONCE and uploaded into each bucket graph —
+    /// packed upload is zero-copy from the mmap'd GGUF, so no per-past_seq weight
+    /// copy. Graphs are keyed by `(bucket_upper, n_new)`: past_seq is padded up to
+    /// a coarse bucket + an additive per-query bias mask blocks the pad slots, so
+    /// the graph count is bounded by (#buckets × #draft-lengths), not #past_seq.
+    verify_shared_params: HashMap<String, Vec<f32>>,
+    verify_shared_packed: PackedParams,
+    verify_bucket_graphs: HashMap<(usize, usize), rlx_runtime::CompiledGraph>,
     packed_bytes_cache: HashMap<String, Arc<[u8]>>,
     cfg: Qwen35Config,
     device: Device,
@@ -1394,6 +1495,9 @@ pub struct Qwen35Runner {
     aot_cache: Option<AotCache>,
     dynamic_prefill: bool,
     dynamic_decode: bool,
+    /// Process the prompt through the DECODE path (bit-identical to sequential
+    /// decode) instead of the parallel prefill flow. Env `RLX_QWEN35_EXACT_PREFILL`.
+    exact_prefill: bool,
     vision_encoder: Option<Qwen35VisionEncoder>,
     mmproj_path: Option<PathBuf>,
     prefill_profile: CompileProfile,
@@ -1404,6 +1508,20 @@ pub struct Qwen35Runner {
     moe_store: Option<MoeExpertStore>,
     /// Decode-step counter for MoE refresh scheduling (TIDE τ).
     moe_refresh_step: usize,
+    /// GPU-resident KV decode (`RLX_QWEN35_GPU_KV`, Metal): full-attn K/V stays
+    /// on-device via bound handles + `feed_kv_row`; only logits + O(1) GDN state
+    /// leave the device. `gpu_kv_upper` tracks the bucket the handles are bound
+    /// for (0 = unbound; rebind on bucket change).
+    use_gpu_kv: bool,
+    gpu_kv_upper: u64,
+    /// StreamingLLM sink+window KV bound. `kv_window == 0` disables it (default).
+    /// When set, decode evicts the middle of the full-attn KV, keeping `kv_sink`
+    /// sinks + the most recent `kv_window` rows, so long-context decode attention
+    /// stays bounded instead of O(context). Forces the non-resident decode path
+    /// (host K/V mirror is the source of truth for eviction).
+    kv_sink: usize,
+    kv_window: usize,
+    kv_slack: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1430,7 +1548,7 @@ impl Qwen35Runner {
     /// Packed Bonsai-27B prefill is ~4 GiB; keeping it while compiling a
     /// decode bucket OOMs 16 GB CUDA cards. Dense HF F32 (Fara-4B ~17 GiB)
     /// has the same problem on unified memory. Prefill is rebuilt lazily on
-    /// the next [`Self::prefill_seed_decode_cache`] call.
+    /// the next `Self::prefill_seed_decode_cache` call.
     pub fn drop_prefill_cache(&mut self) {
         let mut dropped = false;
         if self.prefill_cache.take().is_some() {
@@ -1892,7 +2010,7 @@ impl Qwen35Runner {
             return self.decode_step_dynamic_raw(cache, tokens, generated_per_row, custom_embed);
         }
         let past_seq = cache.past_seq;
-        let (cos, sin) = self.mrope_decode_rope_at_past(past_seq);
+        let (cos, sin) = self.mrope_decode_rope_at_past(cache.abs_pos);
         let use_bucket = self
             .decode_compile_cache
             .as_ref()
@@ -2004,7 +2122,7 @@ impl Qwen35Runner {
         custom_embed: Option<&[f32]>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>)> {
         let past_seq = cache.past_seq;
-        let (cos, sin) = self.mrope_decode_rope_at_past(past_seq);
+        let (cos, sin) = self.mrope_decode_rope_at_past(cache.abs_pos);
         let feeds_owned = decode_step_feeds(
             &self.cfg,
             cache,
@@ -2260,9 +2378,71 @@ impl Qwen35Runner {
         self.decode_cache = None;
     }
 
+    /// Enable StreamingLLM sink+window KV eviction for long-context decode: keep
+    /// `sinks` attention-sink rows + the most recent `window` rows of the
+    /// full-attn KV, bounding decode attention at ~`sinks+window` rows instead
+    /// of O(context). `slack` (0 → `max(window/8, 32)`) is how far `past_seq`
+    /// may grow past the bound before compaction, amortizing the memcpy. Forces
+    /// the non-resident decode path (the host mirror drives eviction). batch==1.
+    /// `window == 0` disables (the default). Set before generating.
+    pub fn set_kv_sink_window(&mut self, sinks: usize, window: usize, slack: usize) {
+        self.kv_sink = sinks;
+        self.kv_window = window;
+        self.kv_slack = if slack > 0 {
+            slack
+        } else {
+            (window / 8).max(32)
+        };
+        if window > 0 {
+            self.use_gpu_kv = false;
+            // Bounded `past_seq` → shrink the decode bucket from `max_seq` to
+            // ~`sinks+window+slack` so decode attention runs over the bound
+            // instead of the whole (prompt-sized) bucket. THIS is what turns the
+            // eviction into a speed win. Safe to rebuild: the decode graph
+            // compiles lazily on first decode (after this call).
+            if self.decode_compile_cache.is_some() {
+                let bound = (sinks + window + self.kv_slack + 16) as u64;
+                // One exact bucket at the eviction bound (not a collected integer range).
+                #[allow(clippy::single_range_in_vec_init)]
+                let buckets = vec![1..(bound + 1)];
+                self.decode_compile_cache = Some(BucketedCompileCache::new(self.device, buckets));
+            }
+            // The decode graph reads RLX_QWEN35_GPU_KV at (lazy) compile time and
+            // the resident graph shape is incompatible with host-fed eviction;
+            // force non-resident at the env level too. Best-effort — for a
+            // guaranteed effect, set it before the runner is built.
+            // SAFETY: single-threaded runner config, before first decode.
+            unsafe { std::env::set_var("RLX_QWEN35_GPU_KV", "0") };
+        }
+    }
+
+    /// Apply sink+window KV eviction to `cache` if enabled (no-op otherwise).
+    fn maybe_evict_kv(&self, cache: &mut Qwen35DecodeCache) {
+        if self.kv_window > 0 {
+            crate::cache::evict_kv_sink_window(
+                &self.cfg,
+                cache,
+                self.kv_sink,
+                self.kv_window,
+                self.kv_slack,
+            );
+        }
+    }
+
     /// Snapshot the current decode cache (for two-phase MTP draft propose).
     pub fn decode_cache_checkpoint(&self) -> Option<Qwen35DecodeCache> {
         self.decode_cache.clone()
+    }
+
+    /// Rope/mrope config accessors (diagnostics).
+    pub fn cfg_key_length(&self) -> usize {
+        self.cfg.key_length
+    }
+    pub fn cfg_rope_dim_count(&self) -> usize {
+        self.cfg.rope_dim_count
+    }
+    pub fn is_runtime_mrope(&self) -> bool {
+        self.runtime_mrope
     }
 
     /// Restore a decode cache snapshot (discards uncommitted draft steps).
@@ -2721,6 +2901,9 @@ impl Qwen35Runner {
         let t_all = std::time::Instant::now();
         let t_prefill = std::time::Instant::now();
         let (trunk, mut cache, _) = self.prefill_seed_decode_cache(prompts)?;
+        // Bound a long prompt's KV immediately so the first decode steps read a
+        // capped cache (sink+window). No-op unless enabled.
+        self.maybe_evict_kv(&mut cache);
         let prefill_ms = t_prefill.elapsed().as_secs_f64() * 1e3;
 
         if crate::trace::tap_enabled() {
@@ -2800,6 +2983,7 @@ impl Qwen35Runner {
             let mut step_timer = crate::trace::StepTimer::start();
             next_tokens = step_timer
                 .time_run(|| self.decode_step(&mut cache, &next_tokens, &row_gen_count, opts))?;
+            self.maybe_evict_kv(&mut cache);
             step_timer.time_cache(|| {
                 self.decode_cache = Some(cache.clone());
             });
@@ -2851,6 +3035,86 @@ impl Qwen35Runner {
         Ok(generated)
     }
 
+    /// Continue generation from the LIVE decode cache seeded by a prior
+    /// [`Self::generate_with_opts`]/[`Self::generate_batch_with_opts`] call
+    /// (batch==1), **without re-prefilling the history**. This is the
+    /// incremental / streaming-continuation path: instead of paying an
+    /// `O(prompt + generated + close)` prefill to append a few tokens, each
+    /// `feed` token is folded into the KV + GDN state with one decode step
+    /// (`O(feed)`), then up to `n_new` tokens are generated and streamed via
+    /// `on_token` (return `false` to stop early).
+    ///
+    /// `feed` must lead with the **pending** token — the last token returned by
+    /// the previous generation, which was sampled but not yet folded into the
+    /// cache (the generation loop always leaves its final token pending). For a
+    /// thinking-budget close that is `[last_generated, <close tokens>…]`.
+    ///
+    /// The returned tokens are the newly generated ones (not `feed`). On return
+    /// the cache again has its final token pending, so `generate_continue` can be
+    /// chained (lead the next `feed` with the last returned token).
+    pub fn generate_continue<F>(
+        &mut self,
+        feed: &[u32],
+        n_new: usize,
+        opts: SampleOpts,
+        mut on_token: F,
+    ) -> Result<Vec<u32>>
+    where
+        F: FnMut(u32) -> bool,
+    {
+        if self.batch != 1 {
+            bail!(
+                "qwen35::generate_continue: requires batch=1 (runner batch={})",
+                self.batch
+            );
+        }
+        if feed.is_empty() {
+            bail!(
+                "qwen35::generate_continue: `feed` must be non-empty \
+                 (lead it with the pending last-generated token)"
+            );
+        }
+        let mut cache = self.decode_cache.take().ok_or_else(|| {
+            anyhow!("qwen35::generate_continue: no live decode cache; run generate first")
+        })?;
+
+        // Fold all-but-last feed tokens into the cache: advance KV + GDN state
+        // one decode step each, discarding the sampled prediction (the true next
+        // token is known — it's the following `feed` entry). This is the O(feed)
+        // incremental prefill that replaces re-running the full prompt.
+        for &tok in &feed[..feed.len() - 1] {
+            if cache.past_seq >= self.max_seq - 1 {
+                self.decode_cache = Some(cache);
+                bail!(
+                    "qwen35::generate_continue: cache reached max_seq={} while feeding",
+                    self.max_seq
+                );
+            }
+            let row_gen = dense_generated_per_row(&cache);
+            self.decode_step(&mut cache, &[tok], &row_gen, opts)?;
+        }
+
+        // The last feed token is the current input; its decode step yields the
+        // first generated token. From there the loop mirrors the main decode
+        // loop, leaving the final token pending for chained continuation.
+        let mut next = *feed.last().unwrap();
+        let mut generated = Vec::with_capacity(n_new);
+        for _ in 0..n_new {
+            if cache.past_seq >= self.max_seq - 1 {
+                break;
+            }
+            let row_gen = dense_generated_per_row(&cache);
+            let preds = self.decode_step(&mut cache, &[next], &row_gen, opts)?;
+            next = preds[0];
+            generated.push(next);
+            if !on_token(next) {
+                break;
+            }
+        }
+        self.decode_cache = Some(cache);
+        Ok(generated)
+    }
+
     /// Prefill and return trunk logits for the last prompt position.
     /// Seeds the decode cache so subsequent [`Self::decode_get_logits`] calls work.
     pub fn prefill_get_last_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
@@ -2865,10 +3129,39 @@ impl Qwen35Runner {
                 self.batch
             );
         }
+        // Opt-in: process the prompt through the DECODE path so the prompt KV/GDN
+        // state is bit-identical to sequential decode (prefill↔decode consistency,
+        // at higher TTFT). The default parallel prefill flow computes the prompt
+        // with a different (faster) attention/GDN accumulation.
+        if self.exact_prefill {
+            return self.exact_prefill_seed(prompt_ids);
+        }
         let (trunk, _, mtp_logits) = self.prefill_seed_decode_cache(&[prompt_ids.to_vec()])?;
         Ok(Qwen35PrefillSeed {
             trunk_logits: self.trunk_to_logits(trunk, self.fast_greedy_lm_head)?,
             mtp_logits,
+        })
+    }
+
+    /// Bit-exact-to-decode prompt prefill: seed an EMPTY decode cache and run the
+    /// whole prompt through `prefill_chunk` (the decode trunk-layer graph verify
+    /// validated as bit-identical to sequential decode). The resulting cache +
+    /// seed logits match what token-by-token decoding of the prompt would produce.
+    /// Slower TTFT than the parallel prefill flow; use when prefill↔decode must be
+    /// bit-consistent (e.g. exact prefix caching / spec-decode from a fresh prompt).
+    pub fn exact_prefill_seed(&mut self, prompt_ids: &[u32]) -> Result<Qwen35PrefillSeed> {
+        if self.batch != 1 {
+            bail!("qwen35: exact_prefill_seed requires batch=1");
+        }
+        if prompt_ids.is_empty() {
+            bail!("qwen35: exact_prefill_seed empty prompt");
+        }
+        let mut cache = Qwen35DecodeCache::empty(&self.cfg, 1);
+        let trunk = self.prefill_chunk(&mut cache, prompt_ids)?;
+        self.decode_cache = Some(cache);
+        Ok(Qwen35PrefillSeed {
+            trunk_logits: trunk,
+            mtp_logits: None,
         })
     }
 
@@ -2923,6 +3216,7 @@ impl Qwen35Runner {
                 self.batch
             );
         }
+        let t_vis = std::time::Instant::now();
         let vision = {
             let enc = self
                 .vision_encoder
@@ -2931,8 +3225,13 @@ impl Qwen35Runner {
             enc.encode_rgb(rgb, img_w, img_h)?
         };
         eprintln!(
-            "[qwen35] vision encode: grid={}x{} tokens={} (src={}x{})",
-            vision.grid_x, vision.grid_y, vision.n_tokens, img_w, img_h
+            "[qwen35] vision encode: grid={}x{} tokens={} (src={}x{}) in {:.1}ms",
+            vision.grid_x,
+            vision.grid_y,
+            vision.n_tokens,
+            img_w,
+            img_h,
+            t_vis.elapsed().as_secs_f64() * 1e3
         );
         // Vision tower is only needed for encode; drop it before the dense
         // LLM graphs so its F32 param clone is not resident with prefill.
@@ -2990,6 +3289,12 @@ impl Qwen35Runner {
             );
         }
         self.decode_cache = None;
+        // Fresh sequence — invalidate any GPU-resident K/V binding so the first
+        // decode step re-seeds from this prompt's cache (see the same reset in
+        // `prefill_seed_decode_cache`). `prefill_multimodal_trunk` does not route
+        // through that function, so without this a second multimodal turn would
+        // decode against the previous turn's resident K/V.
+        self.gpu_kv_upper = 0;
         let (trunk, _) = self.prefill_multimodal_trunk(prompt, rgb, img_w, img_h, tokenizer)?;
         let mut cache = self
             .decode_cache
@@ -3094,6 +3399,17 @@ impl Qwen35Runner {
                 bail!("qwen35: prompt row {i} is empty");
             }
         }
+
+        // A fresh prefill starts a NEW sequence whose KV must be pushed into the
+        // GPU-resident handles. Those handles are re-seeded by
+        // `decode_step_bucketed_resident` only when `gpu_kv_upper != upper`
+        // (a bucket change). Without this reset a second `generate()` that lands
+        // in the SAME decode bucket keeps `need_rebind=false`, so the resident K/V
+        // still holds the PREVIOUS prompt — the new prompt decodes against stale
+        // attention (its answer follows the earlier turn's topic). Invalidate the
+        // binding so the first decode step of this sequence re-seeds from the fresh
+        // host cache below.
+        self.gpu_kv_upper = 0;
 
         self.ensure_static_prefill_cache()?;
 
@@ -3595,7 +3911,7 @@ impl Qwen35Runner {
         want_mtp: bool,
     ) -> Result<Vec<f32>> {
         let past_seq = cache.past_seq;
-        let (cos, sin) = self.mrope_decode_rope_at_past(past_seq);
+        let (cos, sin) = self.mrope_decode_rope_at_past(cache.abs_pos);
 
         let use_bucket = self
             .decode_compile_cache
@@ -3706,6 +4022,458 @@ impl Qwen35Runner {
         }
     }
 
+    /// Continued multi-token **verify** forward: run all `tokens` (N of them)
+    /// through ONE forward continuing from `cache` — the `m=N` projections read
+    /// each weight once (the speculative-decode amortization), the GDN state
+    /// scans the N tokens, and full-attn attends N causal queries against the
+    /// past KV. Returns per-position trunk logits `[N][vocab]`. Does NOT mutate
+    /// `cache` (the caller decides how many to accept). batch==1.
+    /// Sink+window evict a caller-owned cache (bounds `past_seq` so the
+    /// continued-forward graph keys stabilize → compiled once, no per-step
+    /// recompile). Lossy on middle context.
+    pub fn evict_kv_window(&self, cache: &mut Qwen35DecodeCache, sinks: usize, window: usize) {
+        crate::cache::evict_kv_sink_window(&self.cfg, cache, sinks, window, 0);
+    }
+
+    /// Bucket upper for a multi-token verify prefix: a SINGLE bucket at `max_seq`.
+    /// Pow-2 sub-buckets multiplied the graph count (bucket × n_new) and each graph
+    /// holds its own resident packed weights; one `max_seq` bucket compiles at most
+    /// one graph per draft length `n_new` instead — bounded by #draft-lengths, not
+    /// context. KV is padded up to `max_seq` and the bias mask blocks the pad slots.
+    fn verify_bucket_upper(&self, past_seq: usize) -> usize {
+        self.max_seq.max(past_seq)
+    }
+
+    /// Assemble the input feed for a continued m=N forward (input_ids, N rope rows,
+    /// host embeds, GDN state + full-attn KV) for a BUCKETED verify graph compiled
+    /// at `bucket_upper`: full-attn K/V is zero-padded from `past_seq` up to
+    /// `bucket_upper` rows and an additive per-query bias `mask`
+    /// `[1, n_head, n, upper+n]` blocks the pad slots + enforces causality among
+    /// the `n` new tokens (`MaskKind::Bias`). batch==1 only.
+    fn build_continued_feed_bucketed(
+        &self,
+        cache: &Qwen35DecodeCache,
+        tokens: &[u32],
+        bucket_upper: usize,
+    ) -> Result<Vec<(String, Vec<f32>)>> {
+        let n = tokens.len();
+        let abs0 = cache.abs_pos;
+        let head_dim = self.cfg.key_length;
+        let kv_cols = self.cfg.num_key_value_heads * head_dim;
+        let n_head = self.cfg.num_attention_heads;
+        let past_seq = cache.past_seq;
+        let mut cos = Vec::new();
+        let mut sin = Vec::new();
+        for i in 0..n {
+            let (c, s) = self.mrope_decode_rope_at_past(abs0 + i);
+            cos.extend_from_slice(&c);
+            sin.extend_from_slice(&s);
+        }
+        let ids: Vec<f32> = tokens.iter().map(|&t| t as f32).collect();
+        let mut owned: Vec<(String, Vec<f32>)> = vec![
+            ("input_ids".into(), ids),
+            ("rope_cos".into(), cos),
+            ("rope_sin".into(), sin),
+            (
+                "mask".into(),
+                build_verify_bias_mask(1, n_head, past_seq, n, bucket_upper),
+            ),
+        ];
+        // Verify graphs are built with `force_host_embed` → always feed embeddings.
+        {
+            let tbl = self.weights.token_embd.as_ref();
+            let n_embd = self.cfg.hidden_size;
+            let mut e = vec![0f32; n * n_embd];
+            for (i, &t) in tokens.iter().enumerate() {
+                let src = (t as usize) * n_embd;
+                if src + n_embd <= tbl.len() {
+                    e[i * n_embd..(i + 1) * n_embd].copy_from_slice(&tbl[src..src + n_embd]);
+                }
+            }
+            owned.push(("inputs_embeds".into(), e));
+        }
+        // Pad K/V to exactly `bucket_upper` rows (concat layout — in-place KV is
+        // forced off under the bias mask, so no +1 row).
+        let pad_to_upper = |src: &[f32]| -> Vec<f32> {
+            let mut out = vec![0f32; bucket_upper * kv_cols];
+            let copy = past_seq * kv_cols;
+            out[..copy].copy_from_slice(&src[..copy]);
+            out
+        };
+        let kinds = trunk_layer_kinds(&self.cfg);
+        for (il, layer) in cache.layers.iter().enumerate() {
+            if kinds[il] {
+                let (k, v) = full_attn_kv_f32(layer)?;
+                owned.push((format!("past_k_l{il}"), pad_to_upper(&k)));
+                owned.push((format!("past_v_l{il}"), pad_to_upper(&v)));
+            } else if let Qwen35LayerState::Linear {
+                conv_state,
+                ssm_state,
+            } = layer
+            {
+                owned.push((format!("conv_state_l{il}"), conv_state.clone()));
+                owned.push((format!("ssm_state_l{il}"), ssm_state.clone()));
+            }
+        }
+        Ok(owned)
+    }
+
+    /// Build/cache the BUCKETED verify graph at `(bucket_upper, n_new)`
+    /// (verify_all + additive bias mask, in-place KV off). The weight layout is
+    /// shape-independent, so every bucket after the first RETAINS the first
+    /// bucket's GPU weight buffer via [`CompiledGraph::share_params_from`] instead
+    /// of uploading its own ~GBs of packed weights — ONE weight copy backs all
+    /// verify buckets (bounds RSS to O(1) in context length, not O(#buckets)).
+    fn ensure_verify_bucket(&mut self, bucket_upper: usize, n_new: usize) -> Result<()> {
+        let key = (bucket_upper, n_new);
+        if self.verify_bucket_graphs.contains_key(&key) {
+            return Ok(());
+        }
+        if self.verify_shared_params.is_empty() {
+            let (_, params, packed) = build_qwen35_verify_hir(
+                &self.cfg,
+                self.weights.clone(),
+                1,
+                bucket_upper,
+                n_new,
+                true,
+                false,
+                false,
+                true,
+            )?;
+            self.verify_shared_params = params;
+            self.verify_shared_packed = packed;
+        }
+        let (hir, _p, _pk) = build_qwen35_verify_hir(
+            &self.cfg,
+            self.weights.clone(),
+            1,
+            bucket_upper,
+            n_new,
+            true,
+            false,
+            false,
+            true,
+        )?;
+        let mut compiled = self.compile_hir_for_config(
+            decode_config(1, bucket_upper),
+            &format!("verify_bkt_{bucket_upper}_{n_new}"),
+            hir,
+        )?;
+        // Retain an existing bucket's weight buffer (same weights, different shape)
+        // → no second packed-weight copy. Falls back to a full upload on any layout
+        // mismatch (still correct).
+        let shared = self
+            .verify_bucket_graphs
+            .values()
+            .next()
+            .map(|donor| compiled.share_params_from(donor))
+            .unwrap_or(false);
+        if !shared {
+            for (name, data) in &self.verify_shared_params {
+                compiled.set_param(name, data);
+            }
+            upload_packed_opt(
+                &mut compiled,
+                self.gguf_loader.as_mut(),
+                &self.verify_shared_packed,
+                &mut self.packed_bytes_cache,
+            )?;
+        }
+        self.verify_bucket_graphs.insert(key, compiled);
+        Ok(())
+    }
+
+    /// Build/cache the verify graph for `(past_seq, n, mtp)` (verify_all=true).
+    fn ensure_verify_graph(&mut self, past_seq: usize, n: usize, mtp: bool) -> Result<()> {
+        let key = (past_seq, n, mtp);
+        if self.verify_graphs.contains_key(&key) {
+            return Ok(());
+        }
+        let (hir, params, packed) = build_qwen35_verify_hir(
+            &self.cfg,
+            self.weights.clone(),
+            1,
+            past_seq,
+            n,
+            true,
+            mtp,
+            false,
+            false,
+        )?;
+        let mut compiled = self.compile_hir_for_config(
+            decode_config(1, past_seq),
+            &format!("verify_{past_seq}_{n}_{mtp}"),
+            hir,
+        )?;
+        for (name, data) in &params {
+            compiled.set_param(name, data);
+        }
+        upload_packed_opt(
+            &mut compiled,
+            self.gguf_loader.as_mut(),
+            &packed,
+            &mut self.packed_bytes_cache,
+        )?;
+        self.verify_graphs.insert(key, compiled);
+        Ok(())
+    }
+
+    /// Like [`Self::verify_forward`] but COMMITS the `n` tokens into `cache` in
+    /// the SAME forward (verify + commit merged — accept-N then costs one forward
+    /// instead of two). Returns per-position logits `[n][vocab]`. On accept < n
+    /// the caller must roll back (restore a pre-call checkpoint), since the GDN
+    /// state + KV advanced by the full `n`.
+    pub fn verify_and_commit(
+        &mut self,
+        cache: &mut Qwen35DecodeCache,
+        tokens: &[u32],
+    ) -> Result<(Vec<Vec<f32>>, Option<u32>)> {
+        if self.batch != 1 {
+            bail!("qwen35::verify_and_commit: batch==1 only");
+        }
+        let n = tokens.len();
+        if n == 0 {
+            return Ok((vec![], None));
+        }
+        // BUCKETED verify graph: pad the prefix up to `upper` (a coarse pow-2
+        // bucket), block the pad slots with an additive per-query bias mask, and
+        // slice the KV output back to `past_seq + n`. ONE graph per (bucket, n) with
+        // weights shared (packed zero-copy) — no per-past_seq weight copy.
+        let upper = self.verify_bucket_upper(cache.past_seq);
+        self.ensure_verify_bucket(upper, n)?;
+        let owned = self.build_continued_feed_bucketed(cache, tokens, upper)?;
+        let feeds: Vec<(&str, &[f32])> = owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect();
+        let outs = {
+            let compiled = self.verify_bucket_graphs.get_mut(&(upper, n)).unwrap();
+            compiled.run(&feeds)
+        };
+        // Commit the n tokens (KV + GDN state); recover per-position trunk logits.
+        // `Some(upper)` slices the bucketed KV output back to the dense prefix.
+        let (trunk, _mtp) = advance_cache_from_decode_outputs_n(
+            &self.cfg,
+            cache,
+            n,
+            outs,
+            Some(upper),
+            false,
+            false,
+            false,
+        )?;
+        let vocab = self.lm_vocab_size();
+        if trunk.len() < n * vocab {
+            bail!(
+                "verify_and_commit: trunk len {} < n*vocab {}*{}",
+                trunk.len(),
+                n,
+                vocab
+            );
+        }
+        let logits: Vec<Vec<f32>> = (0..n)
+            .map(|i| trunk[i * vocab..(i + 1) * vocab].to_vec())
+            .collect();
+        Ok((logits, None))
+    }
+
+    pub fn verify_forward(
+        &mut self,
+        cache: &Qwen35DecodeCache,
+        tokens: &[u32],
+    ) -> Result<Vec<Vec<f32>>> {
+        if self.batch != 1 {
+            bail!("qwen35::verify_forward: batch==1 only");
+        }
+        let n = tokens.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        let past_seq = cache.past_seq;
+        let abs0 = cache.abs_pos;
+        let head_dim = self.cfg.key_length;
+        let kv_cols = self.cfg.num_key_value_heads * head_dim;
+
+        // RoPE: one row per new absolute position abs0..abs0+n-1.
+        let mut cos = Vec::new();
+        let mut sin = Vec::new();
+        for i in 0..n {
+            let (c, s) = self.mrope_decode_rope_at_past(abs0 + i);
+            cos.extend_from_slice(&c);
+            sin.extend_from_slice(&s);
+        }
+
+        let ids: Vec<f32> = tokens.iter().map(|&t| t as f32).collect();
+        let mut owned: Vec<(String, Vec<f32>)> = vec![
+            ("input_ids".into(), ids),
+            ("rope_cos".into(), cos),
+            ("rope_sin".into(), sin),
+        ];
+        if self.host_embed {
+            let tbl = self.weights.token_embd.as_ref();
+            let n_embd = self.cfg.hidden_size;
+            let mut e = vec![0f32; n * n_embd];
+            for (i, &t) in tokens.iter().enumerate() {
+                let src = (t as usize) * n_embd;
+                if src + n_embd <= tbl.len() {
+                    e[i * n_embd..(i + 1) * n_embd].copy_from_slice(&tbl[src..src + n_embd]);
+                }
+            }
+            owned.push(("inputs_embeds".into(), e));
+        }
+
+        // Feed the recurrent state + full-attn KV (padded to past_seq+n rows so
+        // the in-place KvAppend of the n new rows fits).
+        let _ = kv_cols;
+        let kinds = trunk_layer_kinds(&self.cfg);
+        for (il, layer) in cache.layers.iter().enumerate() {
+            if kinds[il] {
+                // seq>1 uses the concat KV path: feed exactly `past_seq` rows.
+                let (k, v) = full_attn_kv_f32(layer)?;
+                owned.push((format!("past_k_l{il}"), k));
+                owned.push((format!("past_v_l{il}"), v));
+            } else if let Qwen35LayerState::Linear {
+                conv_state,
+                ssm_state,
+            } = layer
+            {
+                owned.push((format!("conv_state_l{il}"), conv_state.clone()));
+                owned.push((format!("ssm_state_l{il}"), ssm_state.clone()));
+            }
+        }
+
+        self.ensure_verify_graph(past_seq, n, false)?;
+        let feeds: Vec<(&str, &[f32])> = owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect();
+        let outs = {
+            let compiled = self.verify_graphs.get_mut(&(past_seq, n, false)).unwrap();
+            compiled.run(&feeds)
+        };
+        let vocab = self.lm_vocab_size();
+        let logits_flat = outs
+            .first()
+            .ok_or_else(|| anyhow!("verify_forward: no logits output"))?;
+        if logits_flat.len() < n * vocab {
+            bail!(
+                "verify_forward: logits len {} < n*vocab {}*{}",
+                logits_flat.len(),
+                n,
+                vocab
+            );
+        }
+        Ok((0..n)
+            .map(|i| logits_flat[i * vocab..(i + 1) * vocab].to_vec())
+            .collect())
+    }
+
+    /// Commit a chunk of `tokens` (C of them) into `cache` via ONE continued m=C
+    /// forward (all C projections read each weight once). Advances the cache by C
+    /// (KV + GDN state) and returns the last position's logits. batch==1;
+    /// requires the host KV mirror (non-resident) + in-place KV (Metal default).
+    /// Feed a prompt SUFFIX (`tokens`) into an existing prefix `cache` via one
+    /// continued m=N forward — the prefix's KV is reused (not re-prefilled), so
+    /// this is the prefix-caching primitive: TTFT for a shared-prefix prompt
+    /// becomes O(suffix) matmul instead of O(prefix+suffix). Returns the
+    /// next-token logits. batch==1; non-resident host KV mirror.
+    pub fn prefill_chunk(
+        &mut self,
+        cache: &mut Qwen35DecodeCache,
+        tokens: &[u32],
+    ) -> Result<Vec<f32>> {
+        let n = tokens.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        // n==1 (the common speculative-reject rollback): route through the EXACT
+        // decode kernel greedy uses (custom-mask bucketed decode), so the committed
+        // token is bit-identical to sequential decode — preserves spec-decode
+        // exactness. The bias-mask verify graph is a different kernel and can flip
+        // near-tie argmaxes, so only use it for the genuine multi-token (n>1) case.
+        if n == 1 {
+            let generated = dense_generated_per_row(cache);
+            return self.decode_forward_logits_batch(cache, tokens, &generated, false);
+        }
+        // Same BUCKETED graph as `verify_and_commit` (verify_all=true, bias mask):
+        // pad KV up to a coarse bucket, block pad slots, commit the C tokens, and
+        // return the LAST position's next-token logits.
+        let upper = self.verify_bucket_upper(cache.past_seq);
+        self.ensure_verify_bucket(upper, n)?;
+        let owned = self.build_continued_feed_bucketed(cache, tokens, upper)?;
+        let feeds: Vec<(&str, &[f32])> = owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect();
+        let outs = {
+            let compiled = self.verify_bucket_graphs.get_mut(&(upper, n)).unwrap();
+            compiled.run(&feeds)
+        };
+        let (trunk, _mtp) = advance_cache_from_decode_outputs_n(
+            &self.cfg,
+            cache,
+            n,
+            outs,
+            Some(upper),
+            false,
+            false,
+            false,
+        )?;
+        // verify_all=true → trunk is `[n*vocab]`; the chunk's next-token prediction
+        // is the LAST position's logits.
+        let vocab = self.lm_vocab_size();
+        if trunk.len() < n * vocab {
+            bail!(
+                "prefill_chunk: trunk len {} < n*vocab {}",
+                trunk.len(),
+                n * vocab
+            );
+        }
+        Ok(trunk[(n - 1) * vocab..n * vocab].to_vec())
+    }
+
+    /// Chunked prefill: process `prompt` in chunks of `chunk_size`, evicting the
+    /// KV to `sinks`+`window` between chunks so each chunk's attention stays
+    /// bounded → TTFT ~LINEAR in prompt length instead of O(seq²). Returns
+    /// `(last_logits, cache)`. Lossy on middle context (GDN state is exact; only
+    /// the full-attn KV is windowed). batch==1; forces non-resident.
+    pub fn prefill_chunked(
+        &mut self,
+        prompt: &[u32],
+        chunk_size: usize,
+        sinks: usize,
+        window: usize,
+    ) -> Result<(Vec<f32>, Qwen35DecodeCache)> {
+        if self.batch != 1 {
+            bail!("qwen35::prefill_chunked: batch==1 only");
+        }
+        if prompt.is_empty() {
+            bail!("qwen35::prefill_chunked: empty prompt");
+        }
+        let c = chunk_size.max(1);
+        let first = c.min(prompt.len());
+        // Chunk 0 through the normal prefill (from zero state).
+        let (trunk0, mut cache, _) = self.prefill_seed_decode_cache(&[prompt[..first].to_vec()])?;
+        let mut last = self.trunk_to_logits(trunk0, self.fast_greedy_lm_head)?;
+        let mut pos = first;
+        while pos < prompt.len() {
+            // Bound the KV before the next chunk (attention stays ~window-sized).
+            crate::cache::evict_kv_sink_window(&self.cfg, &mut cache, sinks, window, 0);
+            if std::env::var_os("RLX_QWEN35_CHUNK_DBG").is_some() {
+                eprintln!(
+                    "[chunk-dbg] past_seq={} (bounded?) pos={pos}",
+                    cache.past_seq
+                );
+            }
+            let end = (pos + c).min(prompt.len());
+            last = self.prefill_chunk(&mut cache, &prompt[pos..end])?;
+            pos = end;
+        }
+        crate::cache::evict_kv_sink_window(&self.cfg, &mut cache, sinks, window, 0);
+        Ok((last, cache))
+    }
+
     fn decode_step_bucketed(
         &mut self,
         cache: &mut Qwen35DecodeCache,
@@ -3729,6 +4497,18 @@ impl Qwen35Runner {
         sin: &[f32],
         custom_embed: Option<&[f32]>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>)> {
+        // GPU-resident KV: full-attn K/V stays on-device (bound handles +
+        // feed_kv_row); only logits + O(1) GDN state leave the device. batch==1.
+        if self.use_gpu_kv && cache.batch == 1 {
+            return self.decode_step_bucketed_resident(
+                cache,
+                tokens,
+                generated_per_row,
+                cos,
+                sin,
+                custom_embed,
+            );
+        }
         let past_seq = cache.past_seq;
         let bucket_key = self.decode_bucket_key(past_seq as u64);
         let upper = self.ensure_decode_bucket_compiled(past_seq as u64)?;
@@ -3774,11 +4554,171 @@ impl Qwen35Runner {
         )
     }
 
+    /// GPU-resident KV bucketed decode step (Metal, batch==1). Full-attn K/V
+    /// never leaves the device: the padded cache is bound once per bucket as
+    /// GPU handles, `feed_kv_row` folds the new token's row (graph output row
+    /// `upper`) into each handle at row `past_seq` on-device, and only logits +
+    /// O(1) GDN state are read back. Eliminates the per-token host re-upload
+    /// (`pad_kv_to_bucket`) and O(ctx) readback (`slice_kv_from_bucket`).
+    /// Requires the concat KV form (in-place KV is forced off — see finish_build).
+    fn decode_step_bucketed_resident(
+        &mut self,
+        cache: &mut Qwen35DecodeCache,
+        tokens: &[u32],
+        generated_per_row: &[usize],
+        cos: &[f32],
+        sin: &[f32],
+        custom_embed: Option<&[f32]>,
+    ) -> Result<(Vec<f32>, Option<Vec<f32>>)> {
+        let past_seq = cache.past_seq;
+        let bucket_key = self.decode_bucket_key(past_seq as u64);
+        let upper = self.ensure_decode_bucket_compiled(past_seq as u64)?;
+        let head_dim = self.cfg.key_length;
+        let kv_cols = self.cfg.num_key_value_heads * head_dim;
+        let kinds = trunk_layer_kinds(&self.cfg);
+        // Output layout: [0]=logits, [1]=mtp (iff mtp_logits_path), then
+        // layer_side (2 slots/layer, layer order). base = first side-output index.
+        let base = 1 + self.mtp_logits_path as usize;
+        let mtp_path = self.mtp_logits_path;
+        let need_rebind = self.gpu_kv_upper != upper as u64;
+
+        // On a bucket change with a prior binding, pull the accumulated K/V out of
+        // the OLD resident handles (rows [0..past_seq)) into the host mirror so we
+        // can re-seed the new bucket's [upper+1] buffer.
+        if need_rebind && self.gpu_kv_upper != 0 {
+            let old_upper = self.gpu_kv_upper;
+            let n = past_seq * kv_cols;
+            let mut synced: Vec<(usize, Vec<f32>, Vec<f32>)> = Vec::new();
+            {
+                let cache_mut = self.decode_compile_cache.as_mut().unwrap();
+                if let Some(old) = cache_mut.compiled_for_upper(old_upper) {
+                    for (il, &is_full) in kinds.iter().enumerate() {
+                        if !is_full {
+                            continue;
+                        }
+                        let k = old
+                            .read_gpu_handle(&format!("past_k_l{il}"))
+                            .unwrap_or_default();
+                        let v = old
+                            .read_gpu_handle(&format!("past_v_l{il}"))
+                            .unwrap_or_default();
+                        synced.push((
+                            il,
+                            k[..n.min(k.len())].to_vec(),
+                            v[..n.min(v.len())].to_vec(),
+                        ));
+                    }
+                }
+            }
+            for (il, k, v) in synced {
+                cache.layers[il] = maybe_pack_full_attn_kv(k, v, kv_cols)?;
+            }
+        }
+
+        // Feeds minus the resident handles (past_k_l*/past_v_l* live on-device).
+        let feeds_owned = decode_step_feeds(
+            &self.cfg,
+            cache,
+            tokens,
+            cos,
+            sin,
+            Some(upper),
+            generated_per_row,
+            self.host_embed.then(|| self.weights.token_embd.as_ref()),
+            custom_embed,
+        )?;
+        let feeds_owned: Vec<(String, Vec<f32>)> = feeds_owned
+            .into_iter()
+            .filter(|(k, _)| !(k.starts_with("past_k_l") || k.starts_with("past_v_l")))
+            .collect();
+
+        // Seed buffers padded to [upper+1] (pad_kv_to_bucket adds the inplace +1
+        // row). Computed up front so the cache borrow ends before `compiled`.
+        let handle_bufs: Vec<(usize, Vec<f32>, Vec<f32>)> = if need_rebind {
+            let mut v = Vec::new();
+            for (il, &is_full) in kinds.iter().enumerate() {
+                if !is_full {
+                    continue;
+                }
+                let (pk, pv) = full_attn_kv_f32(&cache.layers[il])?;
+                v.push((
+                    il,
+                    pad_kv_to_bucket(&pk, cache.batch, past_seq, upper, kv_cols),
+                    pad_kv_to_bucket(&pv, cache.batch, past_seq, upper, kv_cols),
+                ));
+            }
+            v
+        } else {
+            Vec::new()
+        };
+
+        // logits(0) + mtp(1?) + GDN conv/ssm outputs. Full-attn K/V are resident
+        // (NOT read back — only their new row via read_output_row below).
+        let mut read_indices: Vec<usize> = vec![0];
+        if mtp_path {
+            read_indices.push(1);
+        }
+        for (il, &is_full) in kinds.iter().enumerate() {
+            if !is_full {
+                read_indices.push(base + 2 * il);
+                read_indices.push(base + 2 * il + 1);
+            }
+        }
+
+        let feeds: Vec<(&str, &[f32])> = feeds_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect();
+        let decode_opts = self.bucketed_decode_compile_options();
+
+        let outputs = {
+            let cache_mut = self.decode_compile_cache.as_mut().unwrap();
+            let (_u, compiled) = cache_mut
+                .ensure_hir_with_params(
+                    bucket_key,
+                    |_| panic!("decode bucket must be compiled"),
+                    &decode_opts,
+                )
+                .expect("decode bucket missing after ensure");
+
+            let first_full = kinds.iter().position(|&f| f);
+            let handles_live = first_full
+                .map(|il| compiled.has_gpu_handle(&format!("past_k_l{il}")))
+                .unwrap_or(false);
+            if need_rebind || !handles_live {
+                // bind_gpu_handle writes the seed once + marks the handle resident
+                // (later runs skip the host→arena copy). register_kv_row_feed maps
+                // each handle to its k_out/v_out output; with in-place KvAppend that
+                // output ALIASES the handle, so the post-run `feed_kv_row` does an
+                // intra-buffer relocate of the new token (written at the fixed
+                // `upper` row) → the growing `past_seq` row, accumulating in-place.
+                for (il, kp, vp) in &handle_bufs {
+                    compiled.bind_gpu_handle(&format!("past_k_l{il}"), kp);
+                    compiled.register_kv_row_feed(&format!("past_k_l{il}"), base + 2 * il);
+                    compiled.bind_gpu_handle(&format!("past_v_l{il}"), vp);
+                    compiled.register_kv_row_feed(&format!("past_v_l{il}"), base + 2 * il + 1);
+                }
+            }
+            // Resident handles skipped on upload; only logits + GDN state D2H'd.
+            let outs = compiled.run_read_outputs(&feeds, Some(&read_indices));
+            // Relocate the new token row `upper` → `past_seq` in each resident
+            // handle (host memcpy on unified memory, O(1)) so it accumulates.
+            compiled.feed_kv_row(upper, past_seq, kv_cols);
+            outs
+        };
+        if need_rebind {
+            self.gpu_kv_upper = upper as u64;
+        }
+
+        advance_cache_resident_inplace(&self.cfg, cache, outputs, mtp_path, mtp_path)
+    }
+
     fn mrope_prefill_rope_feeds(&self, seq: usize) -> Vec<(String, Vec<f32>)> {
         if !self.runtime_mrope {
             return Vec::new();
         }
-        let head_half = self.cfg.key_length / 2;
+        // rot_half (= n_rot/2) row stride to match the RoPE kernel (partial rope).
+        let head_half = self.cfg.rope_dim_count / 2;
         let sections = self.mrope_section_positions.as_deref();
         let (cos, sin) = mrope_prefill_feeds(&self.cfg, seq, sections, head_half);
         vec![("rope_cos".into(), cos), ("rope_sin".into(), sin)]
@@ -3788,7 +4728,10 @@ impl Qwen35Runner {
     /// (or text) prefix. Vision tokens compress positions (`max(nx,ny)` for
     /// `nx*ny` tokens); using raw `past_seq` desyncs queries from cached K.
     fn mrope_decode_rope_at_past(&self, past_seq: usize) -> (Vec<f32>, Vec<f32>) {
-        let head_half = self.cfg.key_length / 2;
+        // rot_half (= n_rot/2) per token, matching the RoPE kernel's row stride —
+        // NOT key_length/2. A head_half feed rotates only seq position 0 correctly
+        // (partial rope); position ≥ 1 reads identity padding (breaks m>1 verify).
+        let head_half = self.cfg.rope_dim_count / 2;
         let next_sec = if let Some(sections) = self.mrope_section_positions.as_deref() {
             if past_seq == 0 {
                 text_section_pos(0)

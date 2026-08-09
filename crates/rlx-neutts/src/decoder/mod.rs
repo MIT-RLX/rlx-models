@@ -17,7 +17,7 @@
 //!
 //! | Feature     | Path                                      |
 //! |-------------|-------------------------------------------|
-//! | `codec`     | Eager ndarray CPU ([`eager`]) — default   |
+//! | `codec`     | Eager ndarray CPU (`eager`) — default   |
 //! | `burn`      | Burn wgpu → NdArray → eager fallback      |
 //! | `rlx`       | RLX runtime (eager parity until graph)    |
 //!

@@ -78,7 +78,7 @@ pub fn ensure_weights(model_dir: &Path) -> Result<()> {
             .and_then(|s| s.to_str())
             .unwrap_or("24khz");
         fetch_dac(model_dir, model_type)?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(feature = "hf-download"))]
     {

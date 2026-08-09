@@ -40,7 +40,7 @@
 mod compile_support;
 
 use anyhow::Result;
-use candle_core::{DType as CDType, Device as CDevice, IndexOp, Module, Tensor};
+use candle_core::{DType as CDType, Device as CDevice, Module, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::segment_anything::image_encoder::ImageEncoderViT;
 use candle_transformers::models::segment_anything::mask_decoder::MaskDecoder;
@@ -48,9 +48,8 @@ use candle_transformers::models::segment_anything::prompt_encoder::PromptEncoder
 use rlx_models::WeightMap;
 use rlx_models::sam::{
     Device, SAM_EMBED_HW, SAM_IMG_SIZE, SAM_MASK_IN_CHANS, SAM_PROMPT_EMBED_DIM, Sam, SamConfig,
-    SamEncoderConfig, apply_neck_host, assemble_patch_tokens, build_sam_encoder_graph,
+    SamEncoderConfig, assemble_patch_tokens, build_sam_encoder_graph,
 };
-use rlx_runtime::Session;
 
 const PARITY_TOL: f32 = 5e-3;
 
@@ -61,6 +60,10 @@ fn weights_path() -> Option<String> {
 /// Deterministic 1024×1024 NCHW image — same sine pattern recipe as
 /// the DINOv2 parity test, scaled to SAM's pixel-space input range
 /// (post-normalisation it's roughly [-2, 2]).
+// 6.28 / 3.14 are deliberate 2-dp values, not TAU/PI: they define the
+// synthetic parity input, and changing them would change every dumped
+// reference blob compared against here.
+#[allow(clippy::approx_constant)]
 fn synthesize_image() -> Vec<f32> {
     let n = 3 * SAM_IMG_SIZE * SAM_IMG_SIZE;
     let mut v = vec![0f32; n];
@@ -132,7 +135,7 @@ fn run_rlx(weights: &str, image_nchw: &[f32]) -> Result<Vec<f32>> {
         cfg.global_attn_indexes.retain(|&i| i < cfg.depth);
     }
     let mut wm = WeightMap::from_file(weights)?;
-    let (graph, params, pre, neck) = build_sam_encoder_graph(&cfg, &mut wm)?;
+    let (graph, params, pre) = build_sam_encoder_graph(&cfg, &mut wm)?;
 
     let mut compiled =
         rlx_models::flow_util::compile_graph_sam_with_params(pick_device(), graph, params)?;
@@ -145,9 +148,9 @@ fn run_rlx(weights: &str, image_nchw: &[f32]) -> Result<Vec<f32>> {
         .next()
         .ok_or_else(|| anyhow::anyhow!("rlx encoder produced no output"))?;
 
-    // Host-side neck (conv1x1 → LN2d → conv3x3 → LN2d → [256, 64, 64]).
-    let nchw = apply_neck_host(&neck, &body_out, SAM_EMBED_HW);
-    Ok(nchw)
+    // The neck (conv1x1 → LN2d → conv3x3 → LN2d) is part of the compiled
+    // graph now, so the single output already is `[256, 64, 64]` NCHW.
+    Ok(body_out)
 }
 
 fn max_abs_diff(a: &[f32], b: &[f32]) -> (f32, usize) {
@@ -350,7 +353,7 @@ fn sam_end_to_end_parity_vs_candle() -> Result<()> {
     //     binary mask) still matches > 99.9% of pixels.
     let cpu = matches!(device, Device::Cpu);
     let mask_tol = if cpu { 1e-2 } else { 5e-1 };
-    let iou_tol = if cpu { 1e-3 } else { 1e-3 };
+    let iou_tol = 1e-3;
     let agree_min = 0.999;
     assert!(
         mask_diff <= mask_tol,

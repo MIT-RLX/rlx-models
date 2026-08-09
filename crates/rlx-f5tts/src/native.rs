@@ -82,7 +82,7 @@ impl F5Native {
     }
 
     /// Device used for the NFE DiT loop (may fall back to CPU — see
-    /// [`dit_exec_device`]).
+    /// `dit_exec_device`).
     pub fn dit_device(&self) -> Device {
         dit_exec_device(self.device)
     }

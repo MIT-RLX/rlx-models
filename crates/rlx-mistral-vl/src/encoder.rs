@@ -104,7 +104,7 @@ impl PixtralWeights {
     }
 }
 
-/// Compiled Pixtral vision tower (Metal / CUDA / CPU via [`Session`]).
+/// Compiled Pixtral vision tower (Metal / CUDA / CPU via `Session`).
 pub struct PixtralVisionEncoder {
     cfg: PixtralVisionConfig,
     weights: PixtralWeights,

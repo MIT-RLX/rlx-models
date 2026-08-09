@@ -42,7 +42,7 @@ fn round_up(n: usize, mult: usize) -> usize {
     n.div_ceil(mult) * mult
 }
 
-/// Allocate Vec<f32> with at least 64-byte alignment via a sentinel pad.
+/// Allocate `Vec<f32>` with at least 64-byte alignment via a sentinel pad.
 /// Returns the aligned slice plus the owning Vec.
 fn aligned_vec(n: usize) -> (Vec<f32>, usize) {
     // Over-allocate so that the data ptr+offset is 64-byte aligned.

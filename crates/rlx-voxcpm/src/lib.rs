@@ -24,7 +24,7 @@
 //!
 //! - **Backbone** → MiniCPM (Llama-shaped → `rlx-minicpm5` / `rlx-llama32`).
 //! - **Local flow head** → [`rlx_audio_blocks::sampling::FlowMatchEuler::ascending`]
-//!   (noise → data) + [`classifier_free_guidance`](rlx_audio_blocks::sampling::classifier_free_guidance).
+//!   (noise → data) + [`classifier_free_guidance`].
 //! - **Vocoder** → a mel/latent vocoder (`rlx-neutts` BigVGAN / `rlx-tsac` HiFT).
 //!
 //! Checkpoint-free, unit-tested core here: the config, the local-flow scheduler,

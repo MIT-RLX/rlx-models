@@ -25,6 +25,8 @@ use rlx_tsac::{TsacBackendKind, TsacCodec, TsacOptions};
 
 const CRATE: &str = "rlx-tsac";
 
+// Elements are cfg-gated per backend, so `vec![..]` is not an option.
+#[allow(clippy::vec_init_then_push)]
 fn main() -> Result<()> {
     let (_dur, iters) = cb::parse_dur_iters();
     let dir = correct::default_dir();
@@ -44,7 +46,9 @@ fn main() -> Result<()> {
     }
     let audio_s = wav_seconds(&in_wav).unwrap_or(0.0);
 
-    let candidates = vec![];
+    // `mut` is only exercised by the backend-feature pushes below.
+    #[allow(unused_mut)]
+    let mut candidates = vec![];
     #[cfg(feature = "metal")]
     candidates.push(Device::Metal);
     #[cfg(feature = "mlx")]

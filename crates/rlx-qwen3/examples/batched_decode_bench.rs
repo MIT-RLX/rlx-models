@@ -38,7 +38,9 @@ fn main() -> anyhow::Result<()> {
     // F32 generator (dequant-at-load) from the GGUF; on Metal with
     // RLX_QWEN3_F16_WEIGHTS=1 the projections/LM-head are F16-resident.
     let gguf = dir.join("Qwen3-0.6B-Q4_K_M.gguf");
-    let gguf_s = gguf.to_str().ok_or_else(|| anyhow::anyhow!("bad gguf path"))?;
+    let gguf_s = gguf
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("bad gguf path"))?;
     // PACKED=1 → native packed decode (Q4 DequantMatMul, ~half the weight read);
     // else F32 dequant-at-load (F16-resident on Metal).
     let packed = std::env::var("PACKED").is_ok();
@@ -49,8 +51,14 @@ fn main() -> anyhow::Result<()> {
         Qwen3Generator::from_loader(cfg.clone(), &mut loader, device)?
     };
 
-    let prompt_len: usize = std::env::var("PROMPT").ok().and_then(|s| s.parse().ok()).unwrap_or(128);
-    let steps: usize = std::env::var("STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(48);
+    let prompt_len: usize = std::env::var("PROMPT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(128);
+    let steps: usize = std::env::var("STEPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(48);
     let prompt: Vec<u32> = (1..=prompt_len as u32).collect();
     g.prefill_get_last_logits(&prompt)?;
     let (base_kv, _) = g
@@ -64,7 +72,11 @@ fn main() -> anyhow::Result<()> {
     eprintln!(
         "[batched-bench] {}{} decode, Metal, prompt={prompt_len}, {steps} timed steps/batch",
         if packed { "PACKED" } else { "F32(F16)" },
-        if resident { " +RESIDENT-KV" } else { " host-KV" }
+        if resident {
+            " +RESIDENT-KV"
+        } else {
+            " host-KV"
+        }
     );
     eprintln!(
         "{:>6} {:>10} {:>9} {:>13} {:>9}",
@@ -82,43 +94,71 @@ fn main() -> anyhow::Result<()> {
             let plen = prompt_len.saturating_sub(i * step).max(8);
             let p: Vec<u32> = (1..=plen as u32).collect();
             g.prefill_get_last_logits(&p)?;
-            pool.push(g.export_cache().ok_or_else(|| anyhow::anyhow!("no cache"))?.0);
+            pool.push(
+                g.export_cache()
+                    .ok_or_else(|| anyhow::anyhow!("no cache"))?
+                    .0,
+            );
         }
         for &b in &[4usize, 8, 16] {
             // Two independent runs (host, resident) from the SAME staggered caches.
-            let run = |g: &mut Qwen3Generator, resident: bool| -> anyhow::Result<(Vec<Vec<u32>>, f64)> {
-                let caches: Vec<_> = pool[..b].to_vec();
-                let mut toks: Vec<u32> = (0..b as u32).map(|i| 1 + (i % 100)).collect();
-                let mut fps: Vec<Vec<u32>> = vec![Vec::new(); b];
-                let t0;
-                if resident {
-                    let refs: Vec<&_> = caches.iter().collect();
-                    g.decode_batched_ragged_resident_init(&refs);
-                    let lg = g.decode_batched_ragged_resident_step(&toks)?; // warm
-                    for (i, l) in lg.iter().enumerate() { toks[i] = argmax(l); }
-                    t0 = Instant::now();
-                    for _ in 0..steps {
-                        let lg = g.decode_batched_ragged_resident_step(&toks)?;
-                        for (i, l) in lg.iter().enumerate() { toks[i] = argmax(l); fps[i].push(toks[i]); }
-                    }
-                } else {
-                    let mut caches = caches;
-                    let out = {
-                        let e: Vec<_> = toks.iter().zip(caches.iter()).map(|(t, k)| (*t, k)).collect();
-                        g.decode_batched_ragged(&e)?
-                    };
-                    for (i, (l, kv)) in out.into_iter().enumerate() { toks[i] = argmax(&l); caches[i] = kv; }
-                    t0 = Instant::now();
-                    for _ in 0..steps {
+            let run =
+                |g: &mut Qwen3Generator, resident: bool| -> anyhow::Result<(Vec<Vec<u32>>, f64)> {
+                    let caches: Vec<_> = pool[..b].to_vec();
+                    let mut toks: Vec<u32> = (0..b as u32).map(|i| 1 + (i % 100)).collect();
+                    let mut fps: Vec<Vec<u32>> = vec![Vec::new(); b];
+                    let t0;
+                    if resident {
+                        let refs: Vec<&_> = caches.iter().collect();
+                        g.decode_batched_ragged_resident_init(&refs);
+                        let lg = g.decode_batched_ragged_resident_step(&toks)?; // warm
+                        for (i, l) in lg.iter().enumerate() {
+                            toks[i] = argmax(l);
+                        }
+                        t0 = Instant::now();
+                        for _ in 0..steps {
+                            let lg = g.decode_batched_ragged_resident_step(&toks)?;
+                            for (i, l) in lg.iter().enumerate() {
+                                toks[i] = argmax(l);
+                                fps[i].push(toks[i]);
+                            }
+                        }
+                    } else {
+                        let mut caches = caches;
                         let out = {
-                            let e: Vec<_> = toks.iter().zip(caches.iter()).map(|(t, k)| (*t, k)).collect();
+                            let e: Vec<_> = toks
+                                .iter()
+                                .zip(caches.iter())
+                                .map(|(t, k)| (*t, k))
+                                .collect();
                             g.decode_batched_ragged(&e)?
                         };
-                        for (i, (l, kv)) in out.into_iter().enumerate() { toks[i] = argmax(&l); caches[i] = kv; fps[i].push(toks[i]); }
+                        for (i, (l, kv)) in out.into_iter().enumerate() {
+                            toks[i] = argmax(&l);
+                            caches[i] = kv;
+                        }
+                        t0 = Instant::now();
+                        for _ in 0..steps {
+                            let out = {
+                                let e: Vec<_> = toks
+                                    .iter()
+                                    .zip(caches.iter())
+                                    .map(|(t, k)| (*t, k))
+                                    .collect();
+                                g.decode_batched_ragged(&e)?
+                            };
+                            for (i, (l, kv)) in out.into_iter().enumerate() {
+                                toks[i] = argmax(&l);
+                                caches[i] = kv;
+                                fps[i].push(toks[i]);
+                            }
+                        }
                     }
-                }
-                Ok((fps, (b * steps) as f64 / t0.elapsed().as_secs_f64().max(1e-9)))
-            };
+                    Ok((
+                        fps,
+                        (b * steps) as f64 / t0.elapsed().as_secs_f64().max(1e-9),
+                    ))
+                };
             let (fp_host, tps_host) = run(&mut g, false)?;
             let (fp_res, tps_res) = run(&mut g, true)?;
             let ok = fp_host == fp_res;
@@ -162,8 +202,11 @@ fn main() -> anyhow::Result<()> {
         } else {
             // Warm: compile the B-shaped decode bucket (not timed).
             let out = {
-                let entries: Vec<_> =
-                    toks.iter().zip(kvs.iter()).map(|(t, kv)| (*t, kv)).collect();
+                let entries: Vec<_> = toks
+                    .iter()
+                    .zip(kvs.iter())
+                    .map(|(t, kv)| (*t, kv))
+                    .collect();
                 g.decode_batched_uniform(&entries, past, past)?
             };
             past += 1;
@@ -174,8 +217,11 @@ fn main() -> anyhow::Result<()> {
             t0 = Instant::now();
             for _ in 0..steps {
                 let out = {
-                    let entries: Vec<_> =
-                        toks.iter().zip(kvs.iter()).map(|(t, kv)| (*t, kv)).collect();
+                    let entries: Vec<_> = toks
+                        .iter()
+                        .zip(kvs.iter())
+                        .map(|(t, kv)| (*t, kv))
+                        .collect();
                     g.decode_batched_uniform(&entries, past, past)?
                 };
                 past += 1;
@@ -189,7 +235,10 @@ fn main() -> anyhow::Result<()> {
             }
         }
         if b == 1 {
-            eprintln!("  [B=1 token fingerprint] {:?}", &seq0[..seq0.len().min(16)]);
+            eprintln!(
+                "  [B=1 token fingerprint] {:?}",
+                &seq0[..seq0.len().min(16)]
+            );
         }
         let secs = t0.elapsed().as_secs_f64();
         let agg = (b * steps) as f64 / secs.max(1e-9);

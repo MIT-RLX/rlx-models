@@ -141,7 +141,7 @@ struct HfConfigProbe {
     vocab_size: Option<usize>,
 }
 
-/// Public wrapper around [`probe_variant`] for callers outside this module
+/// Public wrapper around `probe_variant` for callers outside this module
 /// (e.g. `crate::prepare::try_download_safetensors_pr` needs to decide which
 /// HF PR branch to mirror from).
 pub fn probe_variant_public(path: &Path) -> Result<Option<ClinicalBertVariant>> {

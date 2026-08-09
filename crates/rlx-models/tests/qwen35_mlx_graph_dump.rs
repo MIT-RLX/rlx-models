@@ -15,11 +15,11 @@
 
 //! Dump post-fusion MLX graph for qwen35 tiny config.
 
+mod compile_support;
+
 #[cfg(all(target_os = "macos", feature = "mlx"))]
 #[test]
 fn dump_mlx_fused_graph() {
-    mod compile_support;
-
     use rlx_ir::Op;
     use rlx_models::build_qwen35_graph_sized;
     use rlx_models::qwen35::synth;
@@ -121,7 +121,7 @@ fn dump_mlx_fused_graph() {
             .iter()
             .map(|d| d.unwrap_static())
             .collect();
-        if dims.iter().any(|&d| d == 34)
+        if dims.contains(&34)
             || matches!(
                 node.op,
                 Op::Rope { .. }

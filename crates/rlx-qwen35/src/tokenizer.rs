@@ -251,95 +251,95 @@ pub fn decode_ids_from_gguf(
     skip_special_tokens: bool,
 ) -> Result<String> {
     let tok = cached_tokenizer(weights, || {
-    use rlx_gguf::{GgufFile, MetaValue};
-    use tokenizers::Tokenizer;
-    use tokenizers::models::bpe::BPE;
-    use tokenizers::pre_tokenizers::byte_level::ByteLevel;
+        use rlx_gguf::{GgufFile, MetaValue};
+        use tokenizers::Tokenizer;
+        use tokenizers::models::bpe::BPE;
+        use tokenizers::pre_tokenizers::byte_level::ByteLevel;
 
-    let raw = GgufFile::from_path(weights).with_context(|| format!("open GGUF {weights:?}"))?;
-    let model_kind = raw
-        .metadata
-        .get("tokenizer.ggml.model")
-        .and_then(MetaValue::as_str)
-        .unwrap_or("gpt2");
-    if model_kind == "llama" || model_kind == "no_vocab" {
-        anyhow::bail!(
-            "GGUF tokenizer.ggml.model = `{model_kind}` (SentencePiece family) — \
+        let raw = GgufFile::from_path(weights).with_context(|| format!("open GGUF {weights:?}"))?;
+        let model_kind = raw
+            .metadata
+            .get("tokenizer.ggml.model")
+            .and_then(MetaValue::as_str)
+            .unwrap_or("gpt2");
+        if model_kind == "llama" || model_kind == "no_vocab" {
+            anyhow::bail!(
+                "GGUF tokenizer.ggml.model = `{model_kind}` (SentencePiece family) — \
              not supported in the vocab-only decode fallback; provide a tokenizer.json"
-        );
-    }
-
-    let tokens_meta = raw
-        .metadata
-        .get("tokenizer.ggml.tokens")
-        .ok_or_else(|| anyhow::anyhow!("GGUF missing tokenizer.ggml.tokens"))?;
-    let tokens: Vec<String> = match tokens_meta {
-        MetaValue::Array(a) => a
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect(),
-        _ => anyhow::bail!("tokenizer.ggml.tokens not an array"),
-    };
-    let merges_meta = raw
-        .metadata
-        .get("tokenizer.ggml.merges")
-        .ok_or_else(|| anyhow::anyhow!("GGUF missing tokenizer.ggml.merges"))?;
-    let merges_raw: Vec<String> = match merges_meta {
-        MetaValue::Array(a) => a
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect(),
-        _ => anyhow::bail!("tokenizer.ggml.merges not an array"),
-    };
-
-    let vocab: tokenizers::models::bpe::Vocab = tokens
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (t.clone(), i as u32))
-        .collect();
-    let merges: Vec<(String, String)> = merges_raw
-        .iter()
-        .filter_map(|line| {
-            let mut it = line.splitn(2, ' ');
-            Some((it.next()?.to_string(), it.next()?.to_string()))
-        })
-        .collect();
-
-    let bpe = BPE::builder()
-        .vocab_and_merges(vocab, merges)
-        .build()
-        .map_err(|e| anyhow::anyhow!("build BPE from GGUF vocab: {e}"))?;
-    let mut tok = Tokenizer::new(bpe);
-    tok.with_pre_tokenizer(Some(ByteLevel::new(false, true, true)));
-    tok.with_decoder(Some(tokenizers::decoders::byte_level::ByteLevel::new(
-        false, true, true,
-    )));
-
-    // Register control / user-defined tokens so `skip_special_tokens` actually
-    // strips them and the decoder doesn't byte-level-reverse `<|im_end|>` etc.
-    // Mirror of the encoder change above.
-    if let Some(MetaValue::Array(arr)) = raw.metadata.get("tokenizer.ggml.token_type") {
-        use tokenizers::AddedToken;
-        let mut added: Vec<AddedToken> = Vec::new();
-        for (idx, meta) in arr.iter().enumerate() {
-            let Some(kind) = meta.as_u32() else { continue };
-            if kind != 3 && kind != 4 {
-                continue;
-            }
-            let Some(text) = tokens.get(idx) else {
-                continue;
-            };
-            if text.is_empty() {
-                continue;
-            }
-            added.push(AddedToken::from(text.clone(), kind == 3).normalized(false));
+            );
         }
-        if !added.is_empty() {
-            tok.add_special_tokens(&added);
-        }
-    }
 
-    Ok(tok)
+        let tokens_meta = raw
+            .metadata
+            .get("tokenizer.ggml.tokens")
+            .ok_or_else(|| anyhow::anyhow!("GGUF missing tokenizer.ggml.tokens"))?;
+        let tokens: Vec<String> = match tokens_meta {
+            MetaValue::Array(a) => a
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect(),
+            _ => anyhow::bail!("tokenizer.ggml.tokens not an array"),
+        };
+        let merges_meta = raw
+            .metadata
+            .get("tokenizer.ggml.merges")
+            .ok_or_else(|| anyhow::anyhow!("GGUF missing tokenizer.ggml.merges"))?;
+        let merges_raw: Vec<String> = match merges_meta {
+            MetaValue::Array(a) => a
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect(),
+            _ => anyhow::bail!("tokenizer.ggml.merges not an array"),
+        };
+
+        let vocab: tokenizers::models::bpe::Vocab = tokens
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.clone(), i as u32))
+            .collect();
+        let merges: Vec<(String, String)> = merges_raw
+            .iter()
+            .filter_map(|line| {
+                let mut it = line.splitn(2, ' ');
+                Some((it.next()?.to_string(), it.next()?.to_string()))
+            })
+            .collect();
+
+        let bpe = BPE::builder()
+            .vocab_and_merges(vocab, merges)
+            .build()
+            .map_err(|e| anyhow::anyhow!("build BPE from GGUF vocab: {e}"))?;
+        let mut tok = Tokenizer::new(bpe);
+        tok.with_pre_tokenizer(Some(ByteLevel::new(false, true, true)));
+        tok.with_decoder(Some(tokenizers::decoders::byte_level::ByteLevel::new(
+            false, true, true,
+        )));
+
+        // Register control / user-defined tokens so `skip_special_tokens` actually
+        // strips them and the decoder doesn't byte-level-reverse `<|im_end|>` etc.
+        // Mirror of the encoder change above.
+        if let Some(MetaValue::Array(arr)) = raw.metadata.get("tokenizer.ggml.token_type") {
+            use tokenizers::AddedToken;
+            let mut added: Vec<AddedToken> = Vec::new();
+            for (idx, meta) in arr.iter().enumerate() {
+                let Some(kind) = meta.as_u32() else { continue };
+                if kind != 3 && kind != 4 {
+                    continue;
+                }
+                let Some(text) = tokens.get(idx) else {
+                    continue;
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                added.push(AddedToken::from(text.clone(), kind == 3).normalized(false));
+            }
+            if !added.is_empty() {
+                tok.add_special_tokens(&added);
+            }
+        }
+
+        Ok(tok)
     })?;
     tok.decode(ids, skip_special_tokens)
         .map_err(|e| anyhow::anyhow!("detokenize: {e}"))

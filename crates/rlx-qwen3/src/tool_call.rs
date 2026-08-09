@@ -95,19 +95,10 @@ fn tools_signature(tools: &[ToolSpec]) -> u64 {
 }
 
 /// Small cache for the expensive tools-system prompt rendering step.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ToolsSystemPromptCache {
     sig: u64,
     rendered: String,
-}
-
-impl Default for ToolsSystemPromptCache {
-    fn default() -> Self {
-        Self {
-            sig: 0,
-            rendered: String::new(),
-        }
-    }
 }
 
 impl ToolsSystemPromptCache {
@@ -155,12 +146,11 @@ impl ToolResultCache {
 
     pub fn insert(&mut self, name: &str, arguments: &Value, value: Value) {
         let k = tool_result_key(name, arguments);
-        if self.map.contains_key(&k) {
-            self.map.insert(k, value);
+        // Overwriting an existing entry keeps its original FIFO position.
+        if self.map.insert(k, value).is_some() {
             return;
         }
         self.order.push_back(k);
-        self.map.insert(k, value);
         while self.order.len() > self.cap {
             if let Some(old) = self.order.pop_front() {
                 self.map.remove(&old);

@@ -84,7 +84,7 @@ impl FusionIr {
     /// `vision` is `[lv, d]`, `text` is `[lt, d]`. Returns updated
     /// `(vision, text)` (layerscale + residual applied), matching the native
     /// `Encoder::fusion` + residual. Standalone runner (one graph); the fused
-    /// enhancer uses [`build_fusion`] to compose into a shared graph instead.
+    /// enhancer uses `build_fusion` to compose into a shared graph instead.
     pub fn forward(&self, vision: &[f32], text: &[f32]) -> Result<(Vec<f32>, Vec<f32>)> {
         let d = self.d;
         let lv = vision.len() / d;

@@ -153,10 +153,9 @@ pub fn greedy_generation_ids(
     ctx.decode(&mut batch).context("llama decode prompt")?;
 
     let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
-    let mut n_cur = prompt_ids.len() as i32;
     let mut out: Vec<u32> = Vec::with_capacity(max_new_tokens as usize);
 
-    for _ in 0..max_new_tokens {
+    for n_cur in (prompt_ids.len() as i32..).take(max_new_tokens as usize) {
         let token = sampler.sample(&ctx, batch.n_tokens() - 1);
         sampler.accept(token);
         if model.is_eog_token(token) {
@@ -166,7 +165,6 @@ pub fn greedy_generation_ids(
         batch.clear();
         batch.add(token, n_cur, &[0], true)?;
         ctx.decode(&mut batch).context("llama decode step")?;
-        n_cur += 1;
     }
     Ok(out)
 }

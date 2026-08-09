@@ -28,8 +28,8 @@
 //! Flags: --device <d> --weights <dir> --policies <a,b,c> --max-tokens <n>
 //!        --out <dir> --op-inspect / --no-op-inspect
 
-use std::fs;
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Instant;
@@ -149,7 +149,8 @@ fn summarize_distances(mut vals: Vec<f64>) -> Option<(f64, f64, f64, usize)> {
     Some((mean, median, p95, n))
 }
 
-const STRONG_POLICY: &str = "kvstore:16:4:32:12:2:l2:4:1.0:0.15:1:q8:1:1:0:4:0:enc:1.0:0.15:0.15:1:48";
+const STRONG_POLICY: &str =
+    "kvstore:16:4:32:12:2:l2:4:1.0:0.15:1:q8:1:1:0:4:0:enc:1.0:0.15:0.15:1:48";
 
 /// Build a **greedy top-k** sampler. `temp <= 0` ⇒ deterministic argmax over the
 /// (top-k restricted) distribution — the right default for a reproducible
@@ -170,9 +171,9 @@ fn make_sampler(temp: f32, top_k: usize, top_p: f32, seed: u64) -> SampleOpts {
 
 fn retrieval_keywords(text: &str) -> String {
     const STOPWORDS: &[&str] = &[
-        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
-        "have", "how", "i", "in", "is", "it", "my", "of", "on", "or", "the",
-        "to", "was", "what", "when", "where", "which", "who", "why", "with", "you",
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have", "how", "i",
+        "in", "is", "it", "my", "of", "on", "or", "the", "to", "was", "what", "when", "where",
+        "which", "who", "why", "with", "you",
     ];
     let mut out = Vec::new();
     for raw in text.split(|c: char| !c.is_ascii_alphanumeric()) {
@@ -182,8 +183,7 @@ fn retrieval_keywords(text: &str) -> String {
         }
         let lower = token.to_ascii_lowercase();
         let keep = token.chars().any(|c| c.is_ascii_digit())
-            || token.len() > 2
-            && !STOPWORDS.contains(&lower.as_str());
+            || token.len() > 2 && !STOPWORDS.contains(&lower.as_str());
         if keep && !out.iter().any(|t: &String| t.eq_ignore_ascii_case(token)) {
             out.push(token.to_string());
         }
@@ -283,8 +283,7 @@ fn is_uncertain_answer(answer: &str) -> bool {
 
 #[cfg(feature = "mmap-kv")]
 fn summarize_retrieval_hits(tok: &Tokenizer, hits: &[(Vec<u32>, f32)], topn: usize) -> String {
-    hits
-        .iter()
+    hits.iter()
         .take(topn)
         .enumerate()
         .map(|(i, (ids, score))| {
@@ -296,7 +295,8 @@ fn summarize_retrieval_hits(tok: &Tokenizer, hits: &[(Vec<u32>, f32)], topn: usi
         .join(" | ")
 }
 
-#[cfg(feature = "mmap-kv")]
+// Only the dual-encoder rerank path calls this.
+#[cfg(feature = "dual-encoder")]
 fn should_rerank_spans(hits: &[(Vec<u32>, f32)], tm_topk: usize) -> bool {
     if hits.len() <= tm_topk || hits.len() < 2 {
         return false;
@@ -749,6 +749,7 @@ fn run_policy(
     // Text-reinjection (D): retrieved TEXT spans per needle, captured ONCE at the
     // first recall (while the token history the spans are recovered from is still
     // intact — a fresh D generation clears it). Keyed by needle index.
+    #[allow(unused_mut)] // populated only under the mmap-kv / dual-encoder feature
     let mut d_spans: std::collections::HashMap<usize, Vec<(Vec<u32>, f32)>> =
         std::collections::HashMap::new();
     #[allow(unused_mut)] // mutated only under the mmap-kv / dual-encoder feature
@@ -810,6 +811,7 @@ fn run_policy(
         // For D recalls: the retrieved notes' text (for retrieval-vs-gen attribution).
         #[allow(unused_mut)] // assigned only under the interleave / dual-encoder feature
         let mut d_ret_text: Option<String> = None;
+        #[allow(unused_mut)] // accumulated only under the interleave / dual-encoder feature
         let mut retrieval_ms = 0.0f64;
         let t0 = Instant::now();
         let mut ttft: Option<std::time::Duration> = None;
@@ -832,10 +834,10 @@ fn run_policy(
                 }
                 let (answer, transcript, notes_seen, hops, ret_ms) = interleave_recall(
                     &mut runner,
-                    &tok,
+                    tok,
                     system,
                     needles[i].ask,
-                    &eos,
+                    eos,
                     tm_topk,
                     tm_margin,
                     max_hops,
@@ -888,7 +890,8 @@ fn run_policy(
                                         .iter()
                                         .map(|(ids, _)| tok.decode(ids, true).unwrap_or_default())
                                         .collect();
-                                    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                                    let refs: Vec<&str> =
+                                        texts.iter().map(|s| s.as_str()).collect();
                                     match rr.rerank(needles[*k].ask, &refs) {
                                         Ok(order) => {
                                             let rank_moves = order
@@ -896,14 +899,17 @@ fn run_policy(
                                                 .take(tm_topk)
                                                 .enumerate()
                                                 .map(|(new_rank, (idx, sc))| {
-                                                    format!("{}:{}->{},s={:.3}", idx + 1, idx + 1, new_rank + 1, sc)
+                                                    format!(
+                                                        "{}:{}->{},s={:.3}",
+                                                        idx + 1,
+                                                        idx + 1,
+                                                        new_rank + 1,
+                                                        sc
+                                                    )
                                                 })
                                                 .collect::<Vec<_>>()
                                                 .join(" | ");
-                                            eprintln!(
-                                                "      [rerank needle[{k}]] {}",
-                                                rank_moves
-                                            );
+                                            eprintln!("      [rerank needle[{k}]] {}", rank_moves);
                                             order
                                                 .into_iter()
                                                 .take(tm_topk)
@@ -918,7 +924,9 @@ fn run_policy(
                                         }
                                     }
                                 } else {
-                                    eprintln!("      [rerank needle[{k}]] skipped: clear top-score margin");
+                                    eprintln!(
+                                        "      [rerank needle[{k}]] skipped: clear top-score margin"
+                                    );
                                     cands.into_iter().take(tm_topk).collect::<Vec<_>>()
                                 }
                             } else {
@@ -1119,11 +1127,7 @@ fn run_policy(
 
         turn_replies.push((ti, turn.label().to_string(), cleaned_reply.clone()));
 
-        let snippet: String = cleaned_reply
-            .replace('\n', " ")
-            .chars()
-            .take(48)
-            .collect();
+        let snippet: String = cleaned_reply.replace('\n', " ").chars().take(48).collect();
         eprintln!(
             "  [{ti:2}] {:7} ctx {ctx_before:5} -> gen {:3} tok @ {decode_tps:7.2} tps  prep {prep_ms:7.1}ms ret {retrieval_ms:7.1}ms dec {decode_ms:7.1}ms  {snippet}",
             turn.label(),
@@ -1557,9 +1561,7 @@ fn main() -> anyhow::Result<()> {
                 ttft_recall_only = match args[i].as_str() {
                     "all" => false,
                     "recall" => true,
-                    other => anyhow::bail!(
-                        "invalid --ttft-sla-scope {other}; expected recall|all"
-                    ),
+                    other => anyhow::bail!("invalid --ttft-sla-scope {other}; expected recall|all"),
                 };
             }
             "--max-seq" => {
@@ -1617,9 +1619,7 @@ fn main() -> anyhow::Result<()> {
                 i += 1;
                 match args[i].as_str() {
                     "strict" => latency_preset_strict = true,
-                    other => anyhow::bail!(
-                        "invalid --latency-preset {other}; expected strict"
-                    ),
+                    other => anyhow::bail!("invalid --latency-preset {other}; expected strict"),
                 }
             }
             "--max-hops" => {
@@ -1966,7 +1966,9 @@ fn main() -> anyhow::Result<()> {
             println!("  {line}");
         }
         println!("\nthroughput (per turn):");
-        println!("  turn kind     ctx_before  gen  ttft_ms   prep_ms    ret_ms   dec_ms total_ms    tps");
+        println!(
+            "  turn kind     ctx_before  gen  ttft_ms   prep_ms    ret_ms   dec_ms total_ms    tps"
+        );
         for p in &r.perf {
             println!(
                 "  {:>4} {:7} {:>10} {:>4} {:>8.1} {:>9.1} {:>9.1} {:>8.1} {:>8.1} {:>7.2}",

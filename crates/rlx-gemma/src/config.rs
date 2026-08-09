@@ -445,7 +445,7 @@ impl GemmaConfig {
         }
     }
 
-    /// Per-layer `(kv_dim, window)` trim spec for [`LayerKvCache::trim_sliding_window_per_layer`].
+    /// Per-layer `(kv_dim, window)` trim spec for `LayerKvCache::trim_sliding_window_per_layer`.
     pub fn sliding_kv_trim_spec(&self, kv_dims: &[usize]) -> Vec<Option<(usize, usize)>> {
         (0..self.num_hidden_layers)
             .map(|layer| {

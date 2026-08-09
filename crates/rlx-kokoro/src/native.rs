@@ -179,7 +179,7 @@ impl NativeKokoro {
     }
 
     /// Synthesize from a phoneme (IPA) string using a named voice — the native
-    /// analogue of [`crate::Kokoro::infer_phonemes`].
+    /// analogue of `crate::Kokoro::infer_phonemes`.
     pub fn infer_phonemes(&self, phonemes: &str, voice: &str, speed: f32) -> Result<Vec<f32>> {
         let voice_data = self.voices.get(voice).with_context(|| {
             format!(
@@ -205,7 +205,7 @@ impl NativeKokoro {
 
     /// Synthesize from plain text (espeak-ng G2P). The espeak language is derived
     /// from the voice prefix. Native analogue of
-    /// [`crate::Kokoro::generate_from_text`].
+    /// `crate::Kokoro::generate_from_text`.
     #[cfg(feature = "espeak")]
     pub fn generate_from_text(&self, text: &str, voice: &str, speed: f32) -> Result<Vec<f32>> {
         let lang = crate::config::voice_lang(voice);

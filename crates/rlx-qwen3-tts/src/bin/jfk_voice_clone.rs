@@ -21,12 +21,18 @@
 //! Two modes:
 //!
 //! Single-target:
-//!   jfk_voice_clone --model-dir <Base> --ref-wav <wav>
-//!                   --target-text <str> --out-wav <wav>
+//!
+//! ```text
+//! jfk_voice_clone --model-dir <Base> --ref-wav <wav>
+//!                 --target-text <str> --out-wav <wav>
+//! ```
 //!
 //! Batch (amortize the ~1 s of model open across many clones):
-//!   jfk_voice_clone --model-dir <Base> --ref-wav <wav>
-//!                   --targets-file <file> --out-dir <dir>
+//!
+//! ```text
+//! jfk_voice_clone --model-dir <Base> --ref-wav <wav>
+//!                 --targets-file <file> --out-dir <dir>
+//! ```
 //!
 //! Targets file format (one per line, optional `name|` prefix):
 //!   # comments allowed

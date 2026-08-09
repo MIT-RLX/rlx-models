@@ -29,7 +29,7 @@
 //! | Command-R    | `command-r` / `cohere2` | Default          | Cohere Llama-shaped                    |
 //!
 //! [`LlamaBaseConfig`] captures the union of fields the rlx-models M4
-//! stub crates need; [`from_gguf_path`] reads them straight from a GGUF
+//! stub crates need; `from_gguf_path` reads them straight from a GGUF
 //! header (no full weight load).
 //!
 //! Existing `rlx-llama32` / `rlx-qwen3` / `rlx-gemma` keep their own

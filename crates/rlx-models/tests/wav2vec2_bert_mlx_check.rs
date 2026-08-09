@@ -21,8 +21,6 @@ mod support;
 #[cfg(all(target_os = "macos", feature = "mlx"))]
 #[test]
 fn wav2vec2_bert_tiny_graph_runs_on_mlx() {
-    mod compile_support;
-
     use rlx_runtime::Device;
     support::run_tiny_graph(Device::Mlx);
 }

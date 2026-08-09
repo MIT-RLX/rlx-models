@@ -683,7 +683,7 @@ impl St12HzDecoder {
     pub fn decode_with_pt_cache(
         &mut self,
         frames: &[Vec<u32>],
-        device: rlx_runtime::Device,
+        _device: rlx_runtime::Device,
         kv_state: &mut PreTransformerKvState,
         pt_cache: &mut Array2<f32>,
     ) -> Result<Vec<f32>> {

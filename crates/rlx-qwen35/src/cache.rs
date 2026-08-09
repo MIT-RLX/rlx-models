@@ -59,7 +59,7 @@ fn kv_quant_from_env() -> Option<rlx_runtime::quantized_kv::KvQuant> {
     }
 }
 
-fn maybe_pack_full_attn_kv(
+pub(crate) fn maybe_pack_full_attn_kv(
     past_k: Vec<f32>,
     past_v: Vec<f32>,
     kv_cols: usize,
@@ -92,7 +92,7 @@ fn maybe_pack_full_attn_kv(
     })
 }
 
-fn full_attn_kv_f32(layer: &Qwen35LayerState) -> anyhow::Result<(Vec<f32>, Vec<f32>)> {
+pub(crate) fn full_attn_kv_f32(layer: &Qwen35LayerState) -> anyhow::Result<(Vec<f32>, Vec<f32>)> {
     use anyhow::{Context, bail};
     match layer {
         Qwen35LayerState::FullAttn {
@@ -111,7 +111,14 @@ fn full_attn_kv_f32(layer: &Qwen35LayerState) -> anyhow::Result<(Vec<f32>, Vec<f
 #[derive(Debug, Clone)]
 pub struct Qwen35DecodeCache {
     pub batch: usize,
+    /// Physical resident length of the full-attn KV (rows actually stored). With
+    /// sink+window eviction this can be < `abs_pos`.
     pub past_seq: usize,
+    /// True absolute position of the next token (total tokens seen, never
+    /// shrunk). Equals `past_seq` unless KV rows have been evicted. Decode RoPE
+    /// uses THIS so a retained key's original-position RoPE still aligns with the
+    /// query after the middle of the cache is dropped.
+    pub abs_pos: usize,
     /// Actual prompt length per batch row (before generation).
     pub prompt_lens: Vec<usize>,
     pub layers: Vec<Qwen35LayerState>,
@@ -120,6 +127,40 @@ pub struct Qwen35DecodeCache {
 impl Qwen35DecodeCache {
     pub fn n_trunk(&self) -> usize {
         self.layers.len()
+    }
+
+    /// An empty cache (`past_seq=0`, zero recurrent state, no KV) — the seed for
+    /// processing a prompt through the DECODE path (`prefill_chunk`) so the prompt
+    /// representation is bit-identical to sequential decode.
+    pub fn empty(cfg: &Qwen35Config, batch: usize) -> Self {
+        let n_state = cfg.ssm_state_size;
+        let n_v_heads = cfg.ssm_time_step_rank;
+        let conv_channels = linear_conv_channels(cfg);
+        let k_conv = cfg.ssm_conv_kernel;
+        let layers = trunk_layer_kinds(cfg)
+            .into_iter()
+            .map(|is_full| {
+                if is_full {
+                    Qwen35LayerState::FullAttn {
+                        past_k: Vec::new(),
+                        past_v: Vec::new(),
+                        packed: None,
+                    }
+                } else {
+                    Qwen35LayerState::Linear {
+                        conv_state: vec![0f32; batch * (k_conv - 1) * conv_channels],
+                        ssm_state: vec![0f32; batch * n_v_heads * n_state * n_state],
+                    }
+                }
+            })
+            .collect();
+        Qwen35DecodeCache {
+            batch,
+            past_seq: 0,
+            abs_pos: 0,
+            prompt_lens: vec![0; batch],
+            layers,
+        }
     }
 }
 
@@ -227,6 +268,11 @@ pub fn build_decode_attention_mask(
 }
 
 /// Pad `[batch, actual, kv_cols]` K/V to `[batch, bucket_upper, kv_cols]`.
+///
+/// Under in-place KV (`RLX_QWEN35_INPLACE_KV`) the graph declares `past_k/v` one
+/// row larger so `Op::KvAppend` can write the new token at index `bucket_upper`;
+/// pad to `bucket_upper + 1` rows (the trailing row starts zero, gets overwritten
+/// on-GPU by KvAppend). The padded stride must match the graph's declared shape.
 pub fn pad_kv_to_bucket(
     src: &[f32],
     batch: usize,
@@ -234,10 +280,11 @@ pub fn pad_kv_to_bucket(
     bucket_upper: usize,
     kv_cols: usize,
 ) -> Vec<f32> {
-    let mut out = vec![0f32; batch * bucket_upper * kv_cols];
+    let rows = bucket_upper + rlx_ir::env::flag("RLX_QWEN35_INPLACE_KV") as usize;
+    let mut out = vec![0f32; batch * rows * kv_cols];
     for b in 0..batch {
         let src_base = b * actual_past * kv_cols;
-        let dst_base = b * bucket_upper * kv_cols;
+        let dst_base = b * rows * kv_cols;
         let copy_len = actual_past * kv_cols;
         out[dst_base..dst_base + copy_len].copy_from_slice(&src[src_base..src_base + copy_len]);
     }
@@ -304,6 +351,86 @@ pub fn slice_kv_from_bucket(
         out[dst_base..dst_base + copy_len].copy_from_slice(&src[src_base..src_base + copy_len]);
     }
     Ok(out)
+}
+
+/// Multi-token bucketed slice: KV buffer is `concat(past_padded[upper], new[n_new])`
+/// → `[batch, upper + n_new, kv]` with the `n_new` new tokens at rows
+/// `[upper, upper+n_new)` (the `[past_seq, upper)` slots are zero pad). Reassemble
+/// dense `[batch, new_past, kv]` = real prefix `[0, past_seq)` ++ new `[upper, ...)`.
+/// `new_past = past_seq + n_new`. For `n_new == 1` this matches
+/// [`slice_kv_from_bucket`]'s decode branch.
+pub fn slice_kv_from_bucket_n(
+    src: &[f32],
+    batch: usize,
+    new_past: usize,
+    n_new: usize,
+    bucket_upper: usize,
+    kv_cols: usize,
+) -> anyhow::Result<Vec<f32>> {
+    use anyhow::bail;
+    if new_past == 0 {
+        return Ok(Vec::new());
+    }
+    let old_past = new_past.saturating_sub(n_new);
+    let buf_seq = bucket_upper + n_new;
+    let buf_len = batch * buf_seq * kv_cols;
+    if src.len() < buf_len {
+        bail!(
+            "slice_kv_from_bucket_n: need {buf_len} elems ({buf_seq} rows), got {} \
+             (batch={batch}, upper={bucket_upper}, n_new={n_new})",
+            src.len()
+        );
+    }
+    let mut out = vec![0f32; batch * new_past * kv_cols];
+    for b in 0..batch {
+        let src_base = b * buf_seq * kv_cols;
+        let dst_base = b * new_past * kv_cols;
+        let prefix = old_past * kv_cols;
+        if prefix > 0 {
+            out[dst_base..dst_base + prefix].copy_from_slice(&src[src_base..src_base + prefix]);
+        }
+        // The n_new new rows live contiguously at bucket_upper.
+        let src_new = src_base + bucket_upper * kv_cols;
+        let dst_new = dst_base + prefix;
+        let new_len = n_new * kv_cols;
+        out[dst_new..dst_new + new_len].copy_from_slice(&src[src_new..src_new + new_len]);
+    }
+    Ok(out)
+}
+
+/// Additive per-query attention bias `[batch, n_head, n_new, upper + n_new]` for
+/// bucketed multi-token verify (`MaskKind::Bias`: `s += M`).
+///
+/// KV layout is `concat(past_padded[upper], new[n_new])`: real past keys occupy
+/// `[0, past_seq)`, pad slots `[past_seq, upper)`, and the `n_new` new tokens
+/// `[upper, upper+n_new)`. Query `qi` (absolute position `past_seq + qi`) attends
+/// the real past plus new keys `[upper, upper+qi]` (causal among the new tokens);
+/// every other slot (padding + future new) gets `-1e9`. batch==1 → `valid` is the
+/// full `past_seq` (no intra-cache padding on a single stream).
+pub fn build_verify_bias_mask(
+    batch: usize,
+    n_head: usize,
+    past_seq: usize,
+    n_new: usize,
+    bucket_upper: usize,
+) -> Vec<f32> {
+    let seq_k = bucket_upper + n_new;
+    let mut mask = vec![-1e9f32; batch * n_head * n_new * seq_k];
+    let valid = past_seq.min(bucket_upper);
+    for b in 0..batch {
+        for h in 0..n_head {
+            for qi in 0..n_new {
+                let row = (((b * n_head + h) * n_new) + qi) * seq_k;
+                for ki in 0..valid {
+                    mask[row + ki] = 0.0;
+                }
+                for ki in bucket_upper..=(bucket_upper + qi) {
+                    mask[row + ki] = 0.0;
+                }
+            }
+        }
+    }
+    mask
 }
 
 /// Zero padded prompt positions in full-attention KV (variable-length batch).
@@ -423,6 +550,13 @@ pub fn decode_step_feeds(
                 feeds.push((format!("ssm_state_l{il}"), ssm_state.clone()));
             }
             (Qwen35LayerState::FullAttn { .. }, true) => {
+                // Resident-KV (`RLX_QWEN35_GPU_KV`): past_k/v are bound as resident
+                // arena handles and grown in-place by Op::KvAppend — never fed from
+                // host. Skip building the O(ctx) feed (the host mirror is also stale
+                // here since the resident path doesn't append per-token).
+                if rlx_ir::env::flag("RLX_QWEN35_GPU_KV") {
+                    continue;
+                }
                 let (past_k, past_v) = full_attn_kv_f32(layer)?;
                 if let Some(upper) = bucket_upper {
                     feeds.push((
@@ -584,6 +718,7 @@ pub fn seed_cache_from_outputs(
         Qwen35DecodeCache {
             batch,
             past_seq: seq,
+            abs_pos: seq,
             prompt_lens: prompt_lens.to_vec(),
             layers,
         },
@@ -591,11 +726,102 @@ pub fn seed_cache_from_outputs(
     ))
 }
 
+/// StreamingLLM-style sink+window KV eviction (single-stream). Keeps the first
+/// `sinks` rows (attention sinks) and the most recent `window` rows of every
+/// full-attn layer's host K/V mirror, dropping the middle. Retained keys keep
+/// their ORIGINAL-position RoPE, and decode RoPE uses `cache.abs_pos` (the true
+/// position), so the query still aligns with the retained keys after the cut —
+/// this is why RoPE had to be decoupled from `past_seq`.
+///
+/// `past_seq` (physical resident rows) drops to `sinks + window`; `abs_pos` is
+/// untouched. Triggered lazily: only compacts once `past_seq` exceeds
+/// `sinks + window + slack`, then trims back to `sinks + window`, so the O(rows)
+/// memcpy is amortized over ~`slack` steps. No-op when the cache still fits, on
+/// batch > 1, or when packed KV is in use (would need dequant/repack first).
+pub fn evict_kv_sink_window(
+    cfg: &Qwen35Config,
+    cache: &mut Qwen35DecodeCache,
+    sinks: usize,
+    window: usize,
+    slack: usize,
+) -> bool {
+    if cache.batch != 1 || window == 0 || kv_quant_from_env().is_some() {
+        return false;
+    }
+    let keep = sinks + window;
+    if cache.past_seq <= keep + slack {
+        return false;
+    }
+    let kv_cols = cfg.num_key_value_heads * cfg.key_length;
+    let old = cache.past_seq;
+    // Keep rows [0, sinks) ++ [old-window, old); drop the middle.
+    let win_start = old - window;
+    for layer in cache.layers.iter_mut() {
+        if let Qwen35LayerState::FullAttn { past_k, past_v, .. } = layer {
+            compact_sink_window(past_k, kv_cols, sinks, win_start, old);
+            compact_sink_window(past_v, kv_cols, sinks, win_start, old);
+        }
+    }
+    cache.past_seq = keep;
+    // Keep prompt_lens ≤ past_seq so `dense_generated_per_row` (past_seq −
+    // prompt_len) stays non-negative; the sinks are (part of) the prompt.
+    for pl in cache.prompt_lens.iter_mut() {
+        *pl = (*pl).min(keep);
+    }
+    true
+}
+
+/// In-place retain rows `[0, sinks) ++ [win_start, old)` of a row-major
+/// `[old, kv_cols]` f32 buffer, shifting the window block up to abut the sinks.
+fn compact_sink_window(
+    buf: &mut Vec<f32>,
+    kv_cols: usize,
+    sinks: usize,
+    win_start: usize,
+    old: usize,
+) {
+    if buf.len() != old * kv_cols {
+        return; // unexpected shape (e.g. empty packed mirror); leave untouched
+    }
+    let src = win_start * kv_cols;
+    let dst = sinks * kv_cols;
+    let len = (old - win_start) * kv_cols;
+    buf.copy_within(src..src + len, dst);
+    buf.truncate(dst + len);
+}
+
 /// Advance `cache` from decode-graph outputs (logits or normed hidden + states).
 /// When `trunk_is_hidden`, the first output is `[batch × hidden_size]` not logits.
 pub fn advance_cache_from_decode_outputs(
     cfg: &Qwen35Config,
     cache: &mut Qwen35DecodeCache,
+    outputs: Vec<Vec<f32>>,
+    bucket_upper: Option<usize>,
+    mtp_logits_path: bool,
+    want_mtp: bool,
+    trunk_is_hidden: bool,
+) -> anyhow::Result<(Vec<f32>, Option<Vec<f32>>)> {
+    advance_cache_from_decode_outputs_n(
+        cfg,
+        cache,
+        1,
+        outputs,
+        bucket_upper,
+        mtp_logits_path,
+        want_mtp,
+        trunk_is_hidden,
+    )
+}
+
+/// Like [`advance_cache_from_decode_outputs`] but for a continued `n_new`-token
+/// forward (chunked prefill): the full-attn KV grew by `n_new` rows and
+/// `past_seq`/`abs_pos` advance by `n_new`. The graph's state outputs are the
+/// FINAL state after all `n_new` tokens (GDN carry scanned them).
+#[allow(clippy::too_many_arguments)]
+pub fn advance_cache_from_decode_outputs_n(
+    cfg: &Qwen35Config,
+    cache: &mut Qwen35DecodeCache,
+    n_new: usize,
     outputs: Vec<Vec<f32>>,
     bucket_upper: Option<usize>,
     mtp_logits_path: bool,
@@ -614,7 +840,7 @@ pub fn advance_cache_from_decode_outputs(
     }
     let mut iter = outputs.into_iter();
     let trunk = iter.next().context("trunk head output missing")?;
-    let new_past = cache.past_seq + 1;
+    let new_past = cache.past_seq + n_new;
     let head_dim = cfg.key_length;
     let kv_cols = cfg.num_key_value_heads * head_dim;
     let batch = cache.batch;
@@ -658,9 +884,11 @@ pub fn advance_cache_from_decode_outputs(
             let k = iter.next().context("new_k missing")?;
             let v = iter.next().context("new_v missing")?;
             let (k, v) = if let Some(upper) = bucket_upper {
+                // Bucketed verify: KV is `concat(past_padded[upper], new[n_new])`;
+                // slice back to the dense `new_past` rows (n_new-aware).
                 (
-                    slice_kv_from_bucket(&k, batch, new_past, upper, kv_cols)?,
-                    slice_kv_from_bucket(&v, batch, new_past, upper, kv_cols)?,
+                    slice_kv_from_bucket_n(&k, batch, new_past, n_new, upper, kv_cols)?,
+                    slice_kv_from_bucket_n(&v, batch, new_past, n_new, upper, kv_cols)?,
                 )
             } else {
                 (k, v)
@@ -685,8 +913,72 @@ pub fn advance_cache_from_decode_outputs(
         }
     }
     cache.past_seq = new_past;
+    cache.abs_pos += n_new;
     cache.layers = new_layers;
     Ok((trunk_out, mtp_logits))
+}
+
+/// Advance the decode cache for the **GPU-resident KV** path (batch==1).
+///
+/// Unlike [`advance_cache_from_decode_outputs`], the full-attention K/V never
+/// leave the device: `outputs` contains ONLY `[logits, mtp?, then GDN
+/// conv/ssm in layer order]` (full-attn K/V outputs stayed in the arena and were
+/// folded into the resident handles by `feed_kv_row`). The new K/V rows arrive
+/// via `new_kv_rows[il] = Some((k_row, v_row))` (one `[kv_cols]` row each, read
+/// O(1) from the resident output) and are APPENDED to the host mirror — no
+/// `slice_kv_from_bucket` O(ctx) copy. The mirror is kept only so a bucket
+/// change can rebind the handles.
+/// Advance the decode cache for the **GPU-resident inplace-KV** path (batch==1).
+///
+/// The full-attention K/V live entirely in the resident arena handles and are
+/// grown in-place by `Op::KvAppend` — they never touch the host, so this only
+/// advances `past_seq` and refreshes the O(1) GDN conv/ssm state (host-fed).
+/// `outputs` = `[logits, mtp?, then GDN conv/ssm in layer order]` (no K/V).
+/// The full-attn host mirror is left stale (the arena is the source of truth);
+/// it is re-synced only on a bucket change (read_gpu_handle → mirror → rebind).
+pub fn advance_cache_resident_inplace(
+    cfg: &Qwen35Config,
+    cache: &mut Qwen35DecodeCache,
+    outputs: Vec<Vec<f32>>,
+    mtp_logits_path: bool,
+    want_mtp: bool,
+) -> anyhow::Result<(Vec<f32>, Option<Vec<f32>>)> {
+    use anyhow::{Context, bail};
+    let batch = cache.batch;
+    if batch != 1 {
+        bail!("advance_cache_resident_inplace: resident KV path is batch==1 only");
+    }
+    let mut iter = outputs.into_iter();
+    let trunk = iter
+        .next()
+        .context("resident decode: logits output missing")?;
+    let logits = truncate_logits_row(cfg, trunk, batch);
+    let mtp = if mtp_logits_path {
+        let raw = iter.next().context("resident decode: mtp logits missing")?;
+        if want_mtp {
+            Some(parse_mtp_logits(cfg, batch, raw)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let kinds = trunk_layer_kinds(cfg);
+    for (il, layer) in cache.layers.iter_mut().enumerate() {
+        if kinds[il] {
+            continue; // full-attn K/V resident in arena; mirror untouched
+        }
+        let conv = iter.next().context("resident decode: conv_state missing")?;
+        let ssm = iter.next().context("resident decode: ssm_state missing")?;
+        *layer = Qwen35LayerState::Linear {
+            conv_state: conv,
+            ssm_state: ssm,
+        };
+    }
+    cache.past_seq += 1;
+    cache.abs_pos += 1;
+    Ok((logits, mtp))
 }
 
 /// Describe per-layer buffer sizes for a config (trunk only).
@@ -795,6 +1087,7 @@ mod tests {
         let mut cache = Qwen35DecodeCache {
             batch,
             past_seq,
+            abs_pos: past_seq,
             prompt_lens: vec![past_seq],
             layers: vec![Qwen35LayerState::FullAttn {
                 past_k: vec![0.0; batch * past_seq * kv_cols],
@@ -856,6 +1149,7 @@ mod tests {
         let mut cache = Qwen35DecodeCache {
             batch,
             past_seq: 1,
+            abs_pos: 1,
             prompt_lens: vec![1],
             layers: vec![Qwen35LayerState::FullAttn {
                 past_k: vec![0.0; batch * kv_cols],

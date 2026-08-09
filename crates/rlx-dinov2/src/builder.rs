@@ -17,7 +17,7 @@
 //!
 //! Input: `"hidden"` `[batch, seq, hidden_size]` — caller assembles
 //!   `[CLS, register_tokens…, projected_patches] + pos_embed`.
-//!   (See [`crate::dinov2::preprocess::assemble_hidden`].)
+//!   (See `crate::dinov2::preprocess::assemble_hidden`.)
 
 use super::config::DinoV2Config;
 use super::preprocess::DinoV2PreprocessWeights;
@@ -25,7 +25,7 @@ use anyhow::Result;
 use rlx_core::weight_map::WeightMap;
 use rlx_ir::Graph;
 
-/// Build the DINOv2 IR graph via native [`ModelFlow`].
+/// Build the DINOv2 IR graph via native `ModelFlow`.
 pub fn build_dinov2_graph_sized(
     cfg: &DinoV2Config,
     weights: &mut WeightMap,

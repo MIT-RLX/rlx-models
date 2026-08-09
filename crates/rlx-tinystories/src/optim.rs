@@ -1,5 +1,5 @@
 //! The canonical **Muon** training recipe: Newton–Schulz-orthogonalized
-//! momentum ([`rlx_optim::Muon`]) on the 2-D hidden weight matrices, with
+//! momentum (`rlx_optim::Muon`) on the 2-D hidden weight matrices, with
 //! **AdamW** on everything Muon isn't meant for — the token/positional
 //! embeddings and the 1-D biases / LayerNorm gains. (Muon's own non-2-D
 //! fallback is plain SGD-momentum, so routing those to AdamW matches the

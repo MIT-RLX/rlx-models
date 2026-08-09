@@ -23,7 +23,7 @@
 //!
 //! GGUF stores tensor shapes in **`ne` order** — the fastest-varying
 //! (contiguous) dimension first. For a row-major `[out, inn]` linear weight,
-//! pass shape `[inn, out]`; the [`linear`] helper does this for you.
+//! pass shape `[inn, out]`; the `linear` helper does this for you.
 
 use crate::quant::{GroupQuant, dequantize};
 use anyhow::{Result, bail};
@@ -68,7 +68,7 @@ pub fn encode_bytes(data: &[f32], encoding: Encoding) -> Result<(GgmlType, Vec<u
 pub struct SinkTensor<'a> {
     pub name: String,
     /// Shape in GGUF `ne` order (contiguous dim first). For a row-major
-    /// `[out, inn]` weight this is `[inn, out]`; see [`linear`].
+    /// `[out, inn]` weight this is `[inn, out]`; see `linear`.
     pub shape: Vec<usize>,
     pub data: &'a [f32],
     pub encoding: Encoding,

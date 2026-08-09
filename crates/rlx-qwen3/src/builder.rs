@@ -16,7 +16,7 @@
 //! Qwen3 graph builder — packed weights and legacy probes.
 //!
 //! Prefill and decode graphs are assembled via [`crate::flow::Qwen3Flow`]
-//! (native [`ModelFlow`]). This module retains the packed-weight prefill
+//! (native `ModelFlow`). This module retains the packed-weight prefill
 //! entry point, which now delegates to the family-generic
 //! [`rlx_core::build_standard_decoder_packed`] (Qwen3 is one member of the
 //! standard causal-decoder family it covers).
@@ -269,7 +269,7 @@ sized_decode_graph!(
     /// Oneshot decode builder that ALSO exports the per-layer post-RoPE query
     /// (`q_rope`) after logits + K + V. Output order is:
     /// `logits, K_0, V_0, …, K_{L-1}, V_{L-1}, q_0, q_1, …, q_{L-1}` — read the
-    /// trailing `L` q tensors with [`split_decode_logits_kv_aux`] (`num_aux = L`).
+    /// trailing `L` q tensors with `split_decode_logits_kv_aux` (`num_aux = L`).
     ///
     /// Used by the retrieval KV-store path to score cached blocks by the model's
     /// actual attention query (Q·K) instead of a key-self-similarity proxy (K·K).
@@ -297,7 +297,7 @@ sized_decode_graph!(
 /// Unlike the F32 sized builders this returns a **triple**: the MIR graph, the
 /// F32 params (embeddings / norms / RoPE), and the U8 K-quant blobs
 /// (`name → bytes`) for the DequantMatMul weights. Feed it straight into
-/// [`rlx_core::run_bucketed_kv_decode_packed`]. Requires a packed-capable
+/// `rlx_core::run_bucketed_kv_decode_packed`. Requires a packed-capable
 /// `WeightLoader` (K-quant tensors); non-quant keys fall back to F32.
 #[allow(clippy::type_complexity)]
 pub fn build_qwen3_decode_graph_sized_packed(

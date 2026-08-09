@@ -6,7 +6,7 @@
 //! Speed dimension: prefill throughput, decode throughput, time-to-first-token
 //! and peak RSS — the four numbers you compare across models and backends.
 //!
-//! All measured through the model-agnostic [`LmRunner`] surface:
+//! All measured through the model-agnostic `LmRunner` surface:
 //! - **prefill** is timed via a dedicated `prefill_logits` call when the runner
 //!   supports it (F32 path); packed/quantized runners that don't are reported
 //!   with `prefill_toks_s = 0` and folded into TTFT instead.

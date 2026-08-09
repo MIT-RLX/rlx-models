@@ -125,7 +125,7 @@ fn preprocess_matches_reference_cases() {
 
 #[test]
 fn ctc_greedy_matches_reference_logic() {
-    let rows = vec![
+    let rows = [
         vec![0.0, 0.9, 0.1, 0.0],
         vec![0.0, 0.9, 0.1, 0.0],
         vec![0.0, 0.1, 0.8, 0.0],

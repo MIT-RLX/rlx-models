@@ -31,7 +31,9 @@ mod tests {
     use rlx_runtime::Device;
 
     fn devices() -> Vec<Device> {
-        let v = vec![Device::Cpu];
+        // `mut` is only exercised by the backend-feature pushes below.
+        #[allow(unused_mut)]
+        let mut v = vec![Device::Cpu];
         #[cfg(feature = "metal")]
         if rlx_runtime::is_available(Device::Metal) {
             v.push(Device::Metal);

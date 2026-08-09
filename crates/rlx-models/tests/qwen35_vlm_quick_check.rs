@@ -194,8 +194,8 @@ fn qwen35_vlm_hidden_prefill_and_decode_quick_check() {
     let img_w = 4;
     let img_h = 4;
     let rgb: Vec<u8> = (0..(img_w * img_h * 3)).map(|i| (i % 251) as u8).collect();
-    let mut enc =
-        Qwen35VisionEncoder::from_parts(mmcfg, mmweights, img_w, img_h).expect("vision encoder");
+    let mut enc = Qwen35VisionEncoder::from_parts(mmcfg, mmweights, img_w, img_h, Device::Cpu)
+        .expect("vision encoder");
     let vision = enc.encode_rgb(&rgb, img_w, img_h).expect("encode");
 
     let prompt = format!("before{MEDIA_MARKER}after");

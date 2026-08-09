@@ -27,12 +27,15 @@ use anyhow::{Context, Result, bail};
 use rlx_llama_base::LlamaBaseConfig;
 use std::path::Path;
 
+pub mod cli;
 pub mod config;
 pub mod flow;
+pub mod lfm2_gguf;
 pub mod runner;
 
 pub use config::LfmConfig;
 pub use flow::{lfm_decode_layer_plugin, lfm_decode_layer_plugin_with_sink};
+pub use lfm2_gguf::{GgufNameShim, Lfm2GgufRunner, lfm2_spec_from_gguf, resolve_gguf};
 pub use runner::{LfmRunner, LfmRunnerBuilder};
 
 pub const PLAN_MILESTONE: &str = "M5";

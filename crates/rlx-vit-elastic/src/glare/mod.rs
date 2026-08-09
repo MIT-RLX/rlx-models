@@ -8,7 +8,7 @@
 //! GLARE: continual self-supervised pre-training that adapts a frozen SSL ViT
 //! to a new domain by training only a UniAdapter (+ cross-attention + head)
 //! with a student–teacher (EMA) DINO objective at three levels — global
-//! ([CLS]), regional (cross-attention), and local (patch strong-blur).
+//! (`[CLS]`), regional (cross-attention), and local (patch strong-blur).
 
 pub mod adapter;
 pub mod cross_attn;

@@ -59,6 +59,7 @@ Decoder LMs, MoE, hybrid SSM/attention, ternary, diffusion LMs, and speculative 
 | `rlx-mamba` | Mamba1 selective-SSM block and multi-backend driver; SSM core via rlx-ssm flow (SelectiveScan / mamba1_step) | CPU, Metal, MLX, CUDA, ROCm, wgpu |
 | `rlx-minicpm5` | MiniCPM5 causal LM runner (Llama-shaped; openbmb/MiniCPM5-1B) | **All 7** (+CoreML) |
 | `rlx-minimax` | MiniMax runners for RLX — M2.5/M2.7 Lightning Attention LM, and M3 (MSA block-sparse MoE + vision tower) | **All 7** |
+| `rlx-minimax-h3` | MiniMax-H3 (Hailuo 3.0) omni-modal video+audio generation — joint 33B flow-matching DiT, 3D video VAE, BigVGAN audio VAE | CPU, Metal, MLX, wgpu |
 | `rlx-mistral` | Mistral 3+ / Ministral runner — STUB (PLAN.md M4) | **All 7** (+CoreML) |
 | `rlx-nanbeige` | Nanbeige4.2 Looped Transformer LM (Nanbeige/Nanbeige4.2-3B) | **All 7** (+CoreML) |
 | `rlx-nemotron` | NVIDIA Nemotron 3 Nano runner — text + hybrid Mamba2/attention LM | **All 7** |

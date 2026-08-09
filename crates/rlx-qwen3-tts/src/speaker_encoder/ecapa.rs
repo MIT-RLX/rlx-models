@@ -41,7 +41,7 @@ impl Conv1d {
     /// Forward with reflect-pad to keep `T` constant ("same" padding).
     ///
     /// Implemented as `k` sub-GEMMs:
-    ///   out[c_out, t]  =  bias[c_out]  +  Σ_kk  W[:, :, kk] · pad[:, kk*d : kk*d + t]
+    ///   `out[c_out, t]  =  bias[c_out]  +  Σ_kk  W[:, :, kk] · pad[:, kk*d : kk*d + t]`
     /// where each kk step is a single `[c_out × c_in] @ [c_in × t]` matmul.
     /// Beats the triple-loop reference on long sequences (≈10-50×).
     pub fn forward(&self, x: ArrayView2<f32>) -> Array2<f32> {

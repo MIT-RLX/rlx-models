@@ -23,11 +23,9 @@ mod support;
 #[cfg(feature = "gpu")]
 #[test]
 fn vjepa2_tiny_pipeline_matches_cpu_on_gpu() {
-    mod compile_support;
-
     use rlx_runtime::Device;
 
-    if !rlx_wgpu::is_available() {
+    if !rlx_runtime::is_available(Device::Gpu) {
         eprintln!("skip: no wgpu adapter");
         return;
     }

@@ -802,7 +802,7 @@ pub(crate) fn attach_alignment_frame_param(compiled: &mut CompiledGraph) {
 
 /// Optimized infer: waveform-only in production, or duration refine + waveform pass.
 ///
-/// When `carry_seed` is set, it is written to [`DURATION_CARRY`] on the waveform graph
+/// When `carry_seed` is set, it is written to `DURATION_CARRY` on the waveform graph
 /// (and skips duration refinement) so native vocoder length matches ORT exactly.
 pub fn run_kitten_inference(
     graphs: &CachedSeqGraphs,
@@ -1419,7 +1419,7 @@ fn load_bundle_f32_param(
 }
 
 /// Break the duration feedback cycle: `/Expand_1` always reads stale carry; `/Where_1`
-/// keeps live `duration` in ORT single-pass mode (see [`patch_duration_where_input`]).
+/// keeps live `duration` in ORT single-pass mode (see `patch_duration_where_input`).
 pub fn rewrite_duration_carry(nodes: &mut [BundleNode]) {
     for node in nodes.iter_mut() {
         if node.name != "/Expand_1" {

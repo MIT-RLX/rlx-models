@@ -152,7 +152,7 @@ pub fn missing_keys(weights: &WeightMap, expected: &[String]) -> Vec<String> {
 ///
 /// Matches `kyutai/tts-1.6b-en_fr/dsm_tts_1e68beda@240.safetensors` as loaded by
 /// [`crate::model::KyutaiTtsModel`], [`crate::depformer_stream::DepformerStream`],
-/// and [`crate::model::ConditionerBundle`].
+/// and `crate::model::ConditionerBundle`.
 pub fn expected_kyutai_tts_keys(cfg: &crate::config::KyutaiTtsConfig) -> Vec<String> {
     // Text embedding (demuxed second stream).
     let mut keys = vec![

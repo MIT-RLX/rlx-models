@@ -111,7 +111,7 @@ fn max_reduce(
 /// Build the SAM 2 Hiera image-encoder graph.
 ///
 /// Input: `"hidden"` shape `[1, grid, grid, E0]` BHWC — produced by the
-/// host-side [`crate::sam2::preprocess::assemble_patch_tokens`] which
+/// host-side `crate::sam2::preprocess::assemble_patch_tokens` which
 /// runs the overlapping Conv2d patch embed + adds the interpolated
 /// position embedding.
 ///

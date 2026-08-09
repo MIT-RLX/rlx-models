@@ -124,7 +124,7 @@ impl CompatibilityStatus {
     }
 }
 
-/// Structured report from [`check_path`]. Print directly via [`Display`]
+/// Structured report from [`check_path`]. Print directly via `Display`
 /// or serialize as JSON via [`CompatibilityReport::to_json`].
 #[derive(Debug, Clone)]
 pub struct CompatibilityReport {

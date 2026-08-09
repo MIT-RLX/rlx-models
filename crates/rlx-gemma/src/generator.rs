@@ -137,7 +137,7 @@ fn metal_decode_profile(device: Device, mut profile: CompileProfile) -> CompileP
 /// Stateful Gemma generation handle.
 ///
 /// Holds the (config, weight bytes, token history) and rebuilds a
-/// prefill graph on each [`step`] call. Cheap to construct after
+/// prefill graph on each `step` call. Cheap to construct after
 /// initial weight load; tokens stay in-memory between calls.
 pub struct GemmaGenerator {
     cfg: GemmaConfig,
@@ -323,7 +323,7 @@ impl GemmaGenerator {
     /// EAGLE3-style aux hidden state tap. When `ids` is non-empty,
     /// every subsequent decode step builds the graph with
     /// `with_aux_hidden_layer_ids(ids)` and extracts the per-layer
-    /// hidden states. Call [`take_last_aux`] after each
+    /// hidden states. Call `take_last_aux` after each
     /// `step_cached` / `generate_cached_with` token to retrieve
     /// them. Setting this disables the bucketed-decode fast path —
     /// each step compiles via `decode_step_oneshot`.
@@ -519,7 +519,7 @@ impl GemmaGenerator {
         Self::from_loader(cfg, loader.as_mut(), device)
     }
 
-    /// Same as [`from_path`] but with MTP-head visibility control.
+    /// Same as `from_path` but with MTP-head visibility control.
     /// When `include_mtp=true` and the file is GGUF, MTP weights are
     /// drained into the generator's cache alongside the base
     /// weights. The base inference path still ignores them — they
@@ -545,7 +545,7 @@ impl GemmaGenerator {
     }
 
     /// Replace the token history with `prompt_ids`. Does not run the
-    /// model — the next [`step`] call processes the full sequence.
+    /// model — the next `step` call processes the full sequence.
     /// Clears any KV cache from a prior generation.
     pub fn prefill(&mut self, prompt_ids: &[u32]) {
         self.tokens.clear();
@@ -554,7 +554,7 @@ impl GemmaGenerator {
         self.reset_gpu_kv_binding();
     }
 
-    /// Like [`prefill`], but the next cached prefill uses fused
+    /// Like `prefill`, but the next cached prefill uses fused
     /// `inputs_embeds` (`prefill_hidden`) instead of token lookup.
     pub fn prefill_from_embeds(
         &mut self,
@@ -646,7 +646,7 @@ impl GemmaGenerator {
     /// Cached step: O(L) per token instead of O(L²). First call seeds
     /// the KV cache from the prompt via prefill-with-cache; subsequent
     /// calls run the decode-mode graph on just the last token + cached
-    /// past. Output is bit-identical to [`step`] modulo reduction
+    /// past. Output is bit-identical to `step` modulo reduction
     /// order in the SDPA kernel.
     ///
     /// Invariant after each call: `cache.past_seq == tokens.len() - 1`
@@ -1167,7 +1167,7 @@ impl GemmaGenerator {
         }
     }
 
-    /// Run `n` cached steps after [`prefill_from_embeds`].
+    /// Run `n` cached steps after `prefill_from_embeds`.
     pub fn generate_from_embeds(
         &mut self,
         prompt_ids: &[u32],
@@ -1190,7 +1190,7 @@ impl GemmaGenerator {
         self.generate_cached(n, opts)
     }
 
-    /// Streaming variant of [`generate_from_embeds`].
+    /// Streaming variant of `generate_from_embeds`.
     pub fn generate_from_embeds_with(
         &mut self,
         prompt_ids: &[u32],
@@ -1222,7 +1222,7 @@ impl GemmaGenerator {
         self.generate_cached_with(n, opts, |_| {})
     }
 
-    /// Same as [`generate_cached`] but invokes `on_token` once per
+    /// Same as `generate_cached` but invokes `on_token` once per
     /// freshly sampled id, inside the decode loop. The whole `n` step
     /// loop shares the bucketed compile cache — callers wanting a
     /// streaming UI should prefer this to calling

@@ -88,7 +88,7 @@ fn main() -> Result<()> {
         cfg.n_embd, cfg.n_layer
     );
 
-    let mut enc = Qwen35VisionEncoder::from_parts(cfg, weights, tw, th)?;
+    let mut enc = Qwen35VisionEncoder::from_parts(cfg, weights, tw, th, rlx_runtime::Device::Cpu)?;
     let out_emb = enc.encode_rgb(&rgb, tw, th)?;
     let dim = out_emb.embeddings.len() / out_emb.n_tokens.max(1);
     let mean = out_emb.embeddings.iter().sum::<f32>() / out_emb.embeddings.len().max(1) as f32;

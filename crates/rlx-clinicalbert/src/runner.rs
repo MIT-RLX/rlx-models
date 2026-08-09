@@ -299,7 +299,7 @@ impl ClinicalBertRunner {
     /// All four inputs are flattened `[batch, seq]` F32 buffers.
     ///
     /// In [`MlmExecMode::InGraph`] mode `mlm_logits` is also computed and
-    /// cached for [`Self::mlm_logits`] / [`Self::mlm_logits_into`].
+    /// cached for `Self::mlm_logits` / `Self::mlm_logits_into`.
     pub fn forward(
         &mut self,
         input_ids: &[f32],

@@ -117,7 +117,7 @@ pub struct Llama32Config {
     #[serde(default, alias = "logits_scaling")]
     pub logit_scale: Option<f32>,
     /// Looped Transformer depth multiplier (Nanbeige). Layers are applied
-    /// [`num_loops`] times with **shared** weights and **separate** KV slots
+    /// `num_loops` times with **shared** weights and **separate** KV slots
     /// per loop iteration. Default `1` = standard single pass.
     #[serde(default = "default_num_loops")]
     pub num_loops: usize,
@@ -136,7 +136,7 @@ pub struct Llama32Config {
     /// GGUF `general.architecture` tag when loaded from GGUF (`llama`, `phi3`, …).
     #[serde(skip)]
     pub gguf_arch: Option<String>,
-    /// Rotary dimension when it differs from [`head_dim`] (Phi-3 partial RoPE).
+    /// Rotary dimension when it differs from `head_dim` (Phi-3 partial RoPE).
     #[serde(skip)]
     pub rope_dim: Option<usize>,
 }
@@ -182,7 +182,7 @@ impl Llama32Config {
         self.num_key_value_heads * self.head_dim()
     }
 
-    /// Leading per-head dims that receive RoPE (equals [`head_dim`] for Llama;
+    /// Leading per-head dims that receive RoPE (equals `head_dim` for Llama;
     /// may be smaller for Phi-3 partial RoPE).
     pub fn n_rot(&self) -> usize {
         self.rope_dim
@@ -273,7 +273,7 @@ impl Llama32Config {
         self.num_hidden_layers
     }
 
-    /// KV-cache / execution depth after unrolling [`num_loops`].
+    /// KV-cache / execution depth after unrolling `num_loops`.
     pub fn kv_layers(&self) -> usize {
         self.num_hidden_layers.saturating_mul(self.num_loops.max(1))
     }

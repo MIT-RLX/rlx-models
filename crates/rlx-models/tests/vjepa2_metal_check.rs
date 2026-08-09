@@ -21,8 +21,6 @@ mod support;
 #[cfg(all(target_os = "macos", feature = "metal"))]
 #[test]
 fn vjepa2_tiny_pipeline_matches_cpu_on_metal() {
-    mod compile_support;
-
     use rlx_runtime::Device;
     let cpu = support::run_compiled_pipeline(Device::Cpu);
     let metal = support::run_compiled_pipeline(Device::Metal);

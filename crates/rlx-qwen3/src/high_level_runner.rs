@@ -226,8 +226,7 @@ impl Qwen3RunnerBuilder {
                 .ok()
                 .map(|m| m.len())
                 .unwrap_or(0);
-            let small_metal =
-                matches!(device, Device::Metal) && sz < 700 * 1024 * 1024;
+            let small_metal = matches!(device, Device::Metal) && sz < 700 * 1024 * 1024;
             sz >= 256 * 1024 * 1024 && !small_metal
         });
         // F16-resident weights on Metal: half the projection/LM-head weight bytes
@@ -239,9 +238,7 @@ impl Qwen3RunnerBuilder {
         // LM-head — moving it off the dense F32 sgemm onto the fast F16
         // `gemv_f16w_splitk` (the lm_head is ~16% of packed decode). Respects an
         // explicit override.
-        if matches!(device, Device::Metal)
-            && rlx_ir::env::var("RLX_QWEN3_F16_WEIGHTS").is_none()
-        {
+        if matches!(device, Device::Metal) && rlx_ir::env::var("RLX_QWEN3_F16_WEIGHTS").is_none() {
             rlx_ir::env::set("RLX_QWEN3_F16_WEIGHTS", "1");
         }
         // Flash-decoding (split-KV) attention on Metal: the base m=1 SDPA kernel
@@ -262,9 +259,7 @@ impl Qwen3RunnerBuilder {
         // KV that attention re-reads. Measured +~10% F16 / +9% Q4 decode,
         // token-identical (M4 Pro). Metal-only: the SDPA kernels do the GQA
         // indexing; other backends still need the materialized KV, so gate it.
-        if matches!(device, Device::Metal)
-            && rlx_ir::env::var("RLX_QWEN3_GQA_NATIVE").is_none()
-        {
+        if matches!(device, Device::Metal) && rlx_ir::env::var("RLX_QWEN3_GQA_NATIVE").is_none() {
             rlx_ir::env::set("RLX_QWEN3_GQA_NATIVE", "1");
         }
         // Bake weight-only concats on Metal: the QKV / gate-up projections lower
@@ -285,9 +280,7 @@ impl Qwen3RunnerBuilder {
         // cache each token. Measured +27% @2k ctx, +42% @4k (grows with context),
         // token-identical (M4 Pro, 0.6B). Metal, incl. the packed decode graph
         // (KvAppend is backend-generic + token-identical); respects an override.
-        if matches!(device, Device::Metal)
-            && rlx_ir::env::var("RLX_QWEN3_INPLACE_KV").is_none()
-        {
+        if matches!(device, Device::Metal) && rlx_ir::env::var("RLX_QWEN3_INPLACE_KV").is_none() {
             rlx_ir::env::set("RLX_QWEN3_INPLACE_KV", "1");
         }
         validate_device(&cfg, device, packed)?;
@@ -702,7 +695,7 @@ impl Qwen3Runner {
         })
     }
 
-    /// Like [`generate`] but the callback can return `false` to stop
+    /// Like `generate` but the callback can return `false` to stop
     /// sampling early (e.g. on EOS).
     pub fn generate_stoppable(
         &mut self,
@@ -783,10 +776,7 @@ impl Qwen3Runner {
     /// reusable snapshot (KV cache + tokens). Cheap host clone; safe to keep and
     /// reuse across many later generations that share this prefix. `None` if the
     /// generator is unavailable (packed non-GGUF). F32 / GGUF-native-packed only.
-    pub fn cache_prefix(
-        &mut self,
-        prefix_ids: &[u32],
-    ) -> Result<rlx_runtime::lm::SessionSnapshot> {
+    pub fn cache_prefix(&mut self, prefix_ids: &[u32]) -> Result<rlx_runtime::lm::SessionSnapshot> {
         let g = self
             .generator
             .as_mut()
@@ -966,8 +956,9 @@ impl Qwen3Runner {
             anyhow::anyhow!("load qwen tokenizer {}: {e}", qwen_tokenizer_json.display())
         })?;
         self.enable_kv_store(cfg.embedder(crate::embedder::EmbedderKind::Encoder))?;
-        let enc = crate::embedder::RlxEmbedEmbedder::from_pretrained(qwen_tok, encoder_repo, device)
-            .context("build dual-encoder for KV context store")?;
+        let enc =
+            crate::embedder::RlxEmbedEmbedder::from_pretrained(qwen_tok, encoder_repo, device)
+                .context("build dual-encoder for KV context store")?;
         self.set_kv_store_embedder(Box::new(enc));
         Ok(())
     }
@@ -1041,7 +1032,7 @@ impl LmRunner for Qwen3Runner {
     fn kv_store_stats(&self) -> Option<(usize, usize, usize)> {
         #[cfg(feature = "mmap-kv")]
         {
-            return Qwen3Runner::kv_store_stats(self);
+            Qwen3Runner::kv_store_stats(self)
         }
         #[cfg(not(feature = "mmap-kv"))]
         {

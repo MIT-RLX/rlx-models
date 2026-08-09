@@ -25,6 +25,9 @@ mod compile_support;
 use rlx_cpu::blas::sgemm_bt;
 use rlx_models::weight_loader::GgufLoader;
 use rlx_models::{Qwen35Config, Qwen35Weights};
+// Used only by the `parity-llama` test below.
+#[cfg(feature = "parity-llama")]
+use rlx_models::Qwen35RunnerBuilder;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_NON_MTP_Q4: &str = "/tmp/rlx-models/Qwen3.5-0.8B-Q4_K_M.gguf";
@@ -108,7 +111,7 @@ fn load_token_embd(path: &Path) -> (Qwen35Config, Vec<f32>, bool) {
 fn rlx_hidden(path: &Path, prompt_ids: &[u32]) -> Vec<f32> {
     use rlx_ir::DType;
     use rlx_models::qwen35::{build_qwen35_graph_sized_ext, last_token_indices, pack_input_ids};
-    use rlx_runtime::{Device, Session};
+    use rlx_runtime::Device;
 
     let max_seq = prompt_ids.len();
     let mut loader = GgufLoader::from_file(path.to_str().unwrap()).expect("gguf");

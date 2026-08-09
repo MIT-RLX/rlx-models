@@ -174,7 +174,7 @@ impl<H: VerifierHiddenSource> Eagle3Speculator<H> {
     /// [`Speculator::propose`] just unwraps this.
     ///
     /// Routes through the compiled HIR runner if one was attached
-    /// via [`with_hir_runner`]; otherwise falls back to the scalar
+    /// via `with_hir_runner`; otherwise falls back to the scalar
     /// reference. Both produce numerically identical greedy
     /// proposals (parity pinned in `tests/hir_parity.rs`).
     pub fn propose_inner(&mut self, context: &[u32], n: usize) -> Result<DraftProposal> {

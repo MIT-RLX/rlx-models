@@ -29,6 +29,13 @@ tokenizers = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 llama-cpp-2 = { workspace = true, optional = true }
 
+# Decodes an image with the `image` crate, so it needs the VLM feature that
+# pulls that optional dep in (workspace builds unify it in; a standalone
+# `-p rlx-qwen35` / `cargo publish` build does not).
+[[example]]
+name = "dump_vision_emb"
+required-features = ["qwen35-vlm"]
+
 [features]
 default = ["tokenizer"]
 tokenizer = ["dep:tokenizers", "qwen35-tokenizer"]

@@ -46,6 +46,10 @@ fn weights_path() -> Option<String> {
     rlx_ir::env::var("RLX_SAM3_WEIGHTS")
 }
 
+// 6.28 / 3.14 are deliberate 2-dp values, not TAU/PI: they define the
+// synthetic parity input, and changing them would change every dumped
+// reference blob compared against here.
+#[allow(clippy::approx_constant)]
 fn synthesize_image_u8() -> Vec<u8> {
     let n = SAM3_IMG_SIZE * SAM3_IMG_SIZE * 3;
     let mut v = vec![0u8; n];
@@ -525,7 +529,7 @@ fn sam3_end_to_end_image_parity_vs_pytorch() -> Result<()> {
     let image = synthesize_image_u8();
     let (image_nchw, _) = rlx_models::sam3_preprocess_image(&image, SAM3_IMG_SIZE, SAM3_IMG_SIZE);
     let cfg = Sam3Config::base();
-    let model = Sam3::from_safetensors(&weights, cfg)?;
+    let mut model = Sam3::from_safetensors(&weights, cfg)?;
     let ref_dir = dump_reference(&weights, &image_nchw, "person")?;
 
     let tokens_blob = ref_dir.join("text_tokens.i32");
@@ -829,7 +833,7 @@ fn sam3_segmentation_parity_vs_pytorch() -> Result<()> {
     let image = synthesize_image_u8();
     let (image_nchw, _) = rlx_models::sam3_preprocess_image(&image, SAM3_IMG_SIZE, SAM3_IMG_SIZE);
     let cfg = Sam3Config::base();
-    let model = Sam3::from_safetensors(&weights, cfg)?;
+    let mut model = Sam3::from_safetensors(&weights, cfg)?;
     let ref_dir = dump_reference(&weights, &image_nchw, "person")?;
 
     let int_blob = ref_dir.join("decoder_intermediate.f32");
@@ -944,7 +948,7 @@ fn sam3_neck_parity_vs_pytorch() -> Result<()> {
     let (image_nchw, _) = rlx_models::sam3_preprocess_image(&image, SAM3_IMG_SIZE, SAM3_IMG_SIZE);
 
     let cfg = Sam3Config::base();
-    let model = Sam3::from_safetensors(&weights, cfg)?;
+    let mut model = Sam3::from_safetensors(&weights, cfg)?;
     let levels = model.predict_neck(&image, SAM3_IMG_SIZE, SAM3_IMG_SIZE)?;
     ensure!(levels.len() == 4, "SAM3 neck must produce 4 levels");
 

@@ -26,10 +26,10 @@ use crate::recognition::line_batch::{
 use crate::text::TextLine;
 use anyhow::{Context, Result, anyhow};
 use rayon::prelude::*;
-use rten::{Dimension, FloatOperators, RunOptions, thread_pool};
-use rten_imageproc::{BoundingRect, Polygon, Rect, RotatedRect};
+use rten::{Dimension, RunOptions, thread_pool};
+use rten_imageproc::{Polygon, Rect, RotatedRect};
 use rten_tensor::prelude::*;
-use rten_tensor::{NdTensor, NdTensorView, NdTensorViewMut};
+use rten_tensor::{NdTensor, NdTensorView};
 use std::collections::HashMap;
 use std::path::Path;
 

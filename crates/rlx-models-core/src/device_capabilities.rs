@@ -143,7 +143,7 @@ pub fn device_memory_for_moe_offload(device: Device) -> Option<(usize, usize)> {
     }
 }
 
-/// SAM v1 also documents `tpu` on [`rlx_sam::Sam::from_safetensors_on`].
+/// SAM v1 also documents `tpu` on `rlx_sam::Sam::from_safetensors_on`.
 pub fn validate_sam_device(family: &str, device: Device) -> Result<()> {
     if device == Device::Tpu || is_standard_device(device) {
         Ok(())

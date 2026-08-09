@@ -35,6 +35,10 @@ use rlx_models::sam::{Device, SAM_IMG_SIZE, Sam, SamConfig};
 const POINTS: &[f32] = &[512.0, 512.0];
 const LABELS: &[f32] = &[1.0];
 
+// 6.28 / 3.14 are deliberate 2-dp values, not TAU/PI: they define the
+// synthetic parity input, and changing them would change every dumped
+// reference blob compared against here.
+#[allow(clippy::approx_constant)]
 fn synth_image() -> Vec<f32> {
     let n = 3 * SAM_IMG_SIZE * SAM_IMG_SIZE;
     let mut v = vec![0f32; n];
@@ -117,7 +121,7 @@ fn report_pair(name: &str, a: (&[f32], &[f32]), b: (&[f32], &[f32])) {
     let mask_mean = mean_abs(a_msk, b_msk);
     let mask_l2 = rel_l2(a_msk, b_msk);
     let mask_agree = binary_agreement(a_msk, b_msk);
-    eprintln!("");
+    eprintln!();
     eprintln!("=== {name} ===");
     eprintln!(
         "  image_emb  cos={:.9}  max={:.4e}  mean={:.4e}  rel_l2={:.4e}",
@@ -141,24 +145,15 @@ fn sam_cross_backend_distance() -> Result<()> {
     // Run each backend then drop the Sam *before* creating the next.
     // Some backends share global state (Metal kernels cache, MLX device
     // singleton) that can leak across instances if they coexist.
-    let (cpu_emb, cpu_msk) = {
-        let r = run_backend("cpu", Device::Cpu, &weights, &image)?;
-        r
-    };
+    let (cpu_emb, cpu_msk) = { run_backend("cpu", Device::Cpu, &weights, &image)? };
 
     #[cfg(feature = "metal")]
-    let (metal_emb, metal_msk) = {
-        let r = run_backend("metal", Device::Metal, &weights, &image)?;
-        r
-    };
+    let (metal_emb, metal_msk) = { run_backend("metal", Device::Metal, &weights, &image)? };
     #[cfg(not(feature = "metal"))]
     let (metal_emb, metal_msk): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
 
     #[cfg(feature = "mlx")]
-    let (mlx_emb, mlx_msk) = {
-        let r = run_backend("mlx", Device::Mlx, &weights, &image)?;
-        r
-    };
+    let (mlx_emb, mlx_msk) = { run_backend("mlx", Device::Mlx, &weights, &image)? };
     #[cfg(not(feature = "mlx"))]
     let (mlx_emb, mlx_msk): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
 

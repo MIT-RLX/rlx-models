@@ -19,12 +19,15 @@
 //!   semantic_rvq.encode(emb) ‖ acoustic_rvq.encode(emb, num_q - 1)  →  codes [K, T]
 //!
 //! Each RVQ branch:
-//!   x = input_proj(emb)                  ([hidden] → [codebook_dim])
-//!   residual = x
-//!   for layer in layers[:K]:
-//!     indices = nearest_codebook_entry(residual)
-//!     residual = residual − codebook[indices]
-//!     append(indices)
+//!
+//! ```text
+//! x = input_proj(emb)                  ([hidden] → [codebook_dim])
+//! residual = x
+//! for layer in layers[:K]:
+//!   indices = nearest_codebook_entry(residual)
+//!   residual = residual − codebook[indices]
+//!   append(indices)
+//! ```
 //!
 //! Codebook entries: `embed = embed_sum / max(cluster_usage, eps)`.
 
@@ -181,7 +184,7 @@ pub struct SplitRvq {
 
 impl SplitRvq {
     /// Encode `embeddings` `[hidden, T]`. Returns codes as `[T][num_q]` —
-    /// one Vec<u32> per frame, length `num_q`.
+    /// one `Vec<u32>` per frame, length `num_q`.
     ///
     /// `num_q` defaults to `cfg.num_total_quantizers`; pass `Some(n)` to truncate.
     pub fn encode_frames(&self, embeddings: &Array2<f32>, num_q: Option<usize>) -> Vec<Vec<u32>> {

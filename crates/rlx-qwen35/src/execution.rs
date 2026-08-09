@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Qwen3.5 execution variants — [`ModelExecutionConfig`] drives cache keys and [`DimBinding`].
+//! Qwen3.5 execution variants — [`ModelExecutionConfig`] drives cache keys and `DimBinding`.
 
 use std::path::PathBuf;
 
@@ -132,6 +132,14 @@ pub fn hidden_prefill_config(batch: usize, seq: usize) -> ModelExecutionConfig {
 /// Decode step (symbolic `sym::PAST_SEQ`, new tokens = 1).
 pub fn decode_config(batch: usize, past_seq: usize) -> ModelExecutionConfig {
     ModelExecutionConfig::qwen35_decode(batch, past_seq)
+}
+
+/// Continued multi-token verify (symbolic `sym::PAST_SEQ`, `n_new` new tokens).
+/// `past_seq` is dynamic; `n_new` distinguishes the graph — so ONE dynamic
+/// verify graph is compiled + weight-shared across all prefix lengths (the
+/// memory fix for speculative decode).
+pub fn verify_config(batch: usize, past_seq: usize, n_new: usize) -> ModelExecutionConfig {
+    ModelExecutionConfig::qwen35_decode_n(batch, past_seq, n_new)
 }
 
 /// Cache bucket key — use [`ModelExecutionConfig::cache_key`] (full component fingerprint).

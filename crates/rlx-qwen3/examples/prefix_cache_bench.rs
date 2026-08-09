@@ -55,7 +55,10 @@ fn main() -> anyhow::Result<()> {
         .get_ids()
         .to_vec();
     let suffix_ids = tok
-        .encode("\n\nUser: What is the capital of France?\nAssistant:", false)
+        .encode(
+            "\n\nUser: What is the capital of France?\nAssistant:",
+            false,
+        )
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .get_ids()
         .to_vec();
@@ -104,7 +107,11 @@ fn main() -> anyhow::Result<()> {
         })?;
         let warm = t.elapsed().as_secs_f64() * 1e3;
 
-        let parity = if cold_toks == warm_toks { "PASS" } else { "FAIL" };
+        let parity = if cold_toks == warm_toks {
+            "PASS"
+        } else {
+            "FAIL"
+        };
         println!(
             "{:>8} {:>7} {:>11.1} {:>11.1} {:>8.1}x  {:>6}",
             plen,

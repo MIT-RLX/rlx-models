@@ -21,7 +21,7 @@ mod compile_support;
 mod metal_tests {
     use rlx_models::weight_map::WeightMap;
     use rlx_models::{Llama32Config, build_llama32_graph_sized};
-    use rlx_runtime::{Device, Session};
+    use rlx_runtime::Device;
     use std::collections::HashMap;
 
     fn tiny_cfg() -> Llama32Config {
@@ -121,10 +121,11 @@ mod metal_tests {
         let (graph, params) =
             build_llama32_graph_sized(&cfg, &mut wm, 1, 4, true, false).expect("build");
         let mut compiled =
-            compile_support::compile_llama32_prefill(Device::Metal, graph, params.clone());
+            super::compile_support::compile_llama32_prefill(Device::Metal, graph, params.clone());
 
         let ids = vec![1.0f32, 2.0, 3.0, 4.0];
-        let outs = compiled.run(&[("input_ids", &ids), ("last_token_idx", &[3.0f32])]);
+        let last_token_idx = vec![3.0f32];
+        let outs = compiled.run(&[("input_ids", &ids), ("last_token_idx", &last_token_idx)]);
         assert!(!outs.is_empty());
         assert!(outs[0].iter().all(|v| v.is_finite()));
     }

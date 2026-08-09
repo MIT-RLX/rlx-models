@@ -367,7 +367,11 @@ impl<'a> Qwen35Flow<'a> {
             .num_hidden_layers
             .saturating_sub(cfg.nextn_predict_layers);
 
-        let head_half = cfg.key_length / 2;
+        // RoPE cos/sin row stride = n_rot/2, matching the RoPE kernel's per-row index
+        // stride — NOT key_length/2. For partial rope (rope_dim_count < key_length) a
+        // key_length/2 feed leaves seq position ≥ 1 reading the previous token's
+        // identity-padded tail (only position 0 rotates correctly).
+        let head_half = cfg.rope_dim_count / 2;
         let max_pos = cfg.max_position_embeddings;
 
         let flow_name = if runtime_mrope {
@@ -691,8 +695,25 @@ pub fn build_qwen35_prefill_flow(
 pub struct Qwen35DecodeOpts {
     pub batch: usize,
     pub past_seq: usize,
+    /// Number of NEW tokens processed this forward. `1` = normal decode. `>1` is
+    /// the continued multi-token forward used by speculative verify: project all
+    /// `seq` tokens as one `m=seq` matmul (weights read once — the amortization),
+    /// scan the GDN state across them, and attend `seq` causal queries against
+    /// the past KV. The GDN carry op already handles `s>1` from a seed state.
+    pub seq: usize,
+    /// Emit logits for ALL `seq` positions (skip the gather-last narrow) —
+    /// speculative verify needs every draft position's logits, not just the last.
+    pub verify_all: bool,
     pub dynamic_past: bool,
     pub use_custom_mask: bool,
+    /// `use_custom_mask` mask is an ADDITIVE per-query bias `[b, n_head, seq, past+seq]`
+    /// (`MaskKind::Bias`) rather than the multiplicative per-key `[b, past+seq]`
+    /// (`MaskKind::Custom`). Required for multi-token (`seq>1`) bucketed verify.
+    pub bias_mask: bool,
+    /// Force host-gathered embeddings (feed `inputs_embeds`, don't register the
+    /// F32 `token_embd` table into the graph). Bucketed verify sets this so its N
+    /// bucket graphs don't each copy the ~0.6 GB table (the self-spec memory sink).
+    pub force_host_embed: bool,
     pub enable_mtp_head: bool,
     pub fast_mtp: bool,
     pub fast_greedy_lm_head: bool,
@@ -704,8 +725,12 @@ impl Qwen35DecodeOpts {
         Self {
             batch,
             past_seq,
+            seq: 1,
+            verify_all: false,
             dynamic_past: false,
             use_custom_mask: false,
+            bias_mask: false,
+            force_host_embed: false,
             enable_mtp_head: false,
             fast_mtp: false,
             fast_greedy_lm_head: false,
@@ -765,7 +790,7 @@ impl<'a> Qwen35DecodeFlow<'a> {
     }
 }
 
-/// Native decode assembly via [`ModelFlow`] plugins + shared [`super::builder`] emit helpers.
+/// Native decode assembly via [`ModelFlow`] plugins + shared `super::builder` emit helpers.
 pub fn build_qwen35_decode_model_flow(
     cfg: &Qwen35Config,
     weights: std::sync::Arc<Qwen35Weights>,
@@ -776,14 +801,21 @@ pub fn build_qwen35_decode_model_flow(
     PackedParams,
 )> {
     let batch = opts.batch;
-    let seq = 1usize;
+    let seq = opts.seq.max(1);
     let past_len = opts.past_seq;
     let with_lm_head = !opts.fast_greedy_lm_head;
-    let head_half = cfg.key_length / 2;
+    // The RoPE kernel indexes the cos/sin table with a `n_rot/2` (rot_half) per-row
+    // stride — NOT head_dim/2. For PARTIAL rope (rope_dim_count < key_length) a
+    // head_half-strided feed makes every seq position ≥ 1 read into the previous
+    // token's identity-padded tail (invisible at seq=1 decode, wrong for the m>1
+    // verify forward). Feed exactly rot_half angles/token so the stride matches.
+    let rot_half = cfg.rope_dim_count / 2;
     let f = DType::F32;
     let hidden = hidden_shape(batch, seq, cfg.hidden_size);
     let ids_shape = Shape::new(&[batch, seq], f);
-    let rope_shape = Shape::new(&[1, head_half], f);
+    // One RoPE row per NEW query position (seq rows for a continued m>1 forward,
+    // so each verified token is roped at its own absolute position).
+    let rope_shape = Shape::new(&[seq, rot_half], f);
 
     let cfg_c = cfg.clone();
     let weights_c = weights.clone();
@@ -791,9 +823,12 @@ pub fn build_qwen35_decode_model_flow(
     let mtp_sink: Arc<Mutex<Option<HirNodeId>>> = Arc::new(Mutex::new(None));
     let packed_sink: Arc<Mutex<PackedParams>> = Arc::new(Mutex::new(PackedParams::new()));
     let use_mask = opts.use_custom_mask;
+    let bias_mask = opts.bias_mask;
+    let n_head = cfg.num_attention_heads;
     let dynamic_past = opts.dynamic_past;
     let enable_mtp = opts.enable_mtp_head;
     let fast_mtp = opts.fast_mtp;
+    let verify_all = opts.verify_all;
 
     let mut flow = ModelFlow::new("qwen35_decode")
         .input("rope_cos", rope_shape.clone())
@@ -801,14 +836,21 @@ pub fn build_qwen35_decode_model_flow(
         .input("input_ids", ids_shape);
 
     if use_mask {
-        flow = flow.input("mask", Shape::new(&[batch, past_len + seq], f));
+        // Bias: additive per-query `[b, n_head, seq, past+seq]`; Custom: `[b, past+seq]`.
+        let mask_shape = if bias_mask {
+            Shape::new(&[batch, n_head, seq, past_len + seq], f)
+        } else {
+            Shape::new(&[batch, past_len + seq], f)
+        };
+        flow = flow.input("mask", mask_shape);
     }
 
     // Host-gathered embeddings: decode's new-token embedding is fed as
     // `inputs_embeds` instead of registering the full F32 token_embd table
     // (Bonsai-27B 4.7 GiB) into the decode arena — which, being >4 GiB,
     // otherwise mis-addresses the u32 gather offset.
-    let host_embed = host_embed_enabled_for_bytes(weights_c.token_embd.len() * 4);
+    let host_embed =
+        opts.force_host_embed || host_embed_enabled_for_bytes(weights_c.token_embd.len() * 4);
     if host_embed {
         flow = flow.input("inputs_embeds", hidden.clone());
     }
@@ -884,6 +926,7 @@ pub fn build_qwen35_decode_model_flow(
                 past_len,
                 dynamic_past,
                 mask,
+                bias_mask,
                 &mut layer_recur,
             )?;
             recur.lock().expect("recur sink").extend(layer_recur);
@@ -907,9 +950,11 @@ pub fn build_qwen35_decode_model_flow(
         let mut gb = HirMut::new(hir);
         let mut packed = packed_tail.lock().expect("packed sink");
         let h_pre = hidden.hir_id();
-        let h_lm = if with_lm_head {
+        let h_lm = if with_lm_head && !verify_all {
             gb.narrow_(h_pre, 1, seq - 1, 1)
         } else {
+            // verify_all: lm_head over ALL seq positions (spec verify needs each
+            // draft position's logits, not just the last).
             h_pre
         };
         let (logits, mtp, _) = emit_qwen35_prefill_tail(
@@ -935,8 +980,9 @@ pub fn build_qwen35_decode_model_flow(
             *mtp_out.lock().expect("mtp sink") = Some(mtp_id);
         }
         let primary = logits.unwrap_or(h_lm);
+        let out_rows = if verify_all { seq } else { 1 };
         let out_shape = if with_lm_head {
-            Shape::new(&[batch, 1, weights_tail.lm_vocab_size(&cfg_tail)], f)
+            Shape::new(&[batch, out_rows, weights_tail.lm_vocab_size(&cfg_tail)], f)
         } else {
             hidden.shape.clone()
         };
@@ -1085,7 +1131,11 @@ pub fn build_qwen35_prefill_cache_model_flow(
     let fast_mtp = opts.fast_mtp;
     let need_last_idx = with_lm_head || export_normed_hidden;
 
-    let head_half = cfg.key_length / 2;
+    // RoPE cos/sin row stride = n_rot/2, matching the RoPE kernel's per-row index
+    // stride — NOT key_length/2. For partial rope (rope_dim_count < key_length) a
+    // key_length/2 feed leaves seq position ≥ 1 reading the previous token's
+    // identity-padded tail (only position 0 rotates correctly).
+    let head_half = cfg.rope_dim_count / 2;
     let max_pos = cfg.max_position_embeddings;
     let f = DType::F32;
     let n_embd = cfg.hidden_size;
@@ -1490,7 +1540,11 @@ pub fn build_qwen35_trunk_export_model_flow(
     let tail_sink: Arc<Mutex<Vec<HirNodeId>>> = Arc::new(Mutex::new(Vec::new()));
     let packed_sink: Arc<Mutex<PackedParams>> = Arc::new(Mutex::new(PackedParams::new()));
 
-    let head_half = cfg.key_length / 2;
+    // RoPE cos/sin row stride = n_rot/2, matching the RoPE kernel's per-row index
+    // stride — NOT key_length/2. For partial rope (rope_dim_count < key_length) a
+    // key_length/2 feed leaves seq position ≥ 1 reading the previous token's
+    // identity-padded tail (only position 0 rotates correctly).
+    let head_half = cfg.rope_dim_count / 2;
     let max_pos = cfg.max_position_embeddings;
     let trunk_count = weights_c.trunk_layers.len();
 
@@ -1736,7 +1790,11 @@ pub fn build_qwen35_layer_probe_model_flow(
     );
 
     let n_embd = cfg.hidden_size;
-    let head_half = cfg.key_length / 2;
+    // RoPE cos/sin row stride = n_rot/2, matching the RoPE kernel's per-row index
+    // stride — NOT key_length/2. For partial rope (rope_dim_count < key_length) a
+    // key_length/2 feed leaves seq position ≥ 1 reading the previous token's
+    // identity-padded tail (only position 0 rotates correctly).
+    let head_half = cfg.rope_dim_count / 2;
     let max_pos = cfg.max_position_embeddings;
     let f = DType::F32;
     let hidden = hidden_shape(batch, seq, n_embd);

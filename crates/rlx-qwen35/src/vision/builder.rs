@@ -114,6 +114,13 @@ pub fn build_qwen35_vision_hir(
     // Full-attention mask (bidirectional).
     let mask = param_mask(&mut g, &mut params, "attn_mask", batch, n_pos);
 
+    // The fused `Op::Attention` kernel is pathologically slow on Metal for the ViT
+    // shape (1024 tokens, bidirectional, F32 — ~404ms/layer, 94.7% of the encode),
+    // while plain batched matmul (`sgemm`) is fast. Decompose SDPA into
+    // matmul→softmax→matmul so the tower rides the fast GEMM path on every backend.
+    // `RLX_QWEN35_VISION_SDPA_DECOMP=0` restores the fused op.
+    let decompose_attn = std::env::var("RLX_QWEN35_VISION_SDPA_DECOMP").as_deref() != Ok("0");
+
     let mut deepstack_outs: Vec<NodeId> = Vec::new();
 
     for (il, blk) in weights.blocks.iter().enumerate() {
@@ -134,6 +141,7 @@ pub fn build_qwen35_vision_hir(
             merge_sq,
             rope_cos,
             rope_sin,
+            decompose_attn,
         )?;
         if let Some(ds) = &blk.deepstack {
             let feat = build_deepstack_branch(
@@ -252,6 +260,7 @@ fn build_encoder_block(
     _merge_sq: usize,
     rope_cos: NodeId,
     rope_sin: NodeId,
+    decompose_attn: bool,
 ) -> Result<NodeId> {
     let p = format!("blk.{il}");
     let ln1_w = param_vec(g, params, &format!("{p}.ln1.weight"), &blk.ln1_w, n);
@@ -277,15 +286,19 @@ fn build_encoder_block(
     let q = apply_vision_rope(g, q, rope_cos, rope_sin, batch, seq, nh, dh);
     let k = apply_vision_rope(g, k, rope_cos, rope_sin, batch, seq, nh, dh);
 
-    let attn = g.attention_kind(
-        q,
-        k,
-        v,
-        nh,
-        dh,
-        MaskKind::None,
-        Shape::new(&[batch, seq, n], DType::F32),
-    );
+    let attn = if decompose_attn {
+        sdpa_decomposed(g, params, &p, q, k, v, batch, seq, nh, dh)
+    } else {
+        g.attention_kind(
+            q,
+            k,
+            v,
+            nh,
+            dh,
+            MaskKind::None,
+            Shape::new(&[batch, seq, n], DType::F32),
+        )
+    };
     let attn2d = g.reshape_(attn, vec![(batch * seq) as i64, n as i64]);
     let out_w = param_mat(
         g,
@@ -355,6 +368,57 @@ fn build_encoder_block(
     let down = g.add(down_mm, down_b);
     let down_bsn = g.reshape_(down, vec![batch as i64, seq as i64, n as i64]);
     Ok(g.add(h, down_bsn))
+}
+
+/// Scaled dot-product attention as explicit `matmul → softmax → matmul`
+/// (bidirectional, no mask), an alternative to the fused `Op::Attention`.
+///
+/// `q`/`k`/`v` are `[batch, seq, n]` (`n = nh·dh`, RoPE already applied to q/k).
+/// Splitting per head and riding the fast batched-GEMM path avoids the slow fused
+/// ViT-attention Metal kernel. Numerically matches `attention_kind` with the
+/// default `1/√dh` score scale. Returns `[batch, seq, n]`.
+#[allow(clippy::too_many_arguments)]
+fn sdpa_decomposed(
+    g: &mut HirMut,
+    params: &mut HashMap<String, Vec<f32>>,
+    p: &str,
+    q: NodeId,
+    k: NodeId,
+    v: NodeId,
+    batch: usize,
+    seq: usize,
+    nh: usize,
+    dh: usize,
+) -> NodeId {
+    let n = nh * dh;
+    let (b, s, h, d) = (batch as i64, seq as i64, nh as i64, dh as i64);
+    // [b, s, n] → [b, s, nh, dh] → [b, nh, s, dh].
+    let qh = g.reshape_(q, vec![b, s, h, d]);
+    let qh = g.transpose_(qh, vec![0, 2, 1, 3]);
+    let kh = g.reshape_(k, vec![b, s, h, d]);
+    let kh = g.transpose_(kh, vec![0, 2, 1, 3]);
+    let vh = g.reshape_(v, vec![b, s, h, d]);
+    let vh = g.transpose_(vh, vec![0, 2, 1, 3]);
+
+    // Fold the 1/√dh score scale into q (matches Op::Attention's default scale).
+    let scale = param_vec(
+        g,
+        params,
+        &format!("{p}.sdpa_scale"),
+        &[1.0 / (dh as f32).sqrt()],
+        1,
+    );
+    let qh = g.mul(qh, scale);
+
+    // scores = q·kᵀ  →  [b, nh, s, s]; softmax over keys; ctx = scores·v.
+    let kh_t = g.transpose_(kh, vec![0, 1, 3, 2]); // [b, nh, dh, s]
+    let scores = g.mm(qh, kh_t);
+    let probs = g.sm(scores, 3);
+    let ctx = g.mm(probs, vh); // [b, nh, s, dh]
+
+    // [b, nh, s, dh] → [b, s, nh, dh] → [b, s, n].
+    let ctx = g.transpose_(ctx, vec![0, 2, 1, 3]);
+    g.reshape_(ctx, vec![b, s, n as i64])
 }
 
 fn build_deepstack_branch(

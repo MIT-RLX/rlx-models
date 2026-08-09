@@ -16,8 +16,8 @@
 //! LM weight storage precision / quant for Unlimited-OCR MoE.
 //!
 //! - [`LmWeightPrecision::F32`] — parity path (exact host F32 pack).
-//! - [`LmWeightPrecision::F16`] / [`Bf16`] — half-size host cache.
-//! - [`LmWeightPrecision::Q8_0`] / [`Q4_0`] — GGUF block quants on host
+//! - [`LmWeightPrecision::F16`] / `Bf16` — half-size host cache.
+//! - [`LmWeightPrecision::Q8_0`] / `Q4_0` — GGUF block quants on host
 //!   (~⅛–¼ of F32); kept packed in IR via Dequant*MatMul.
 //! - [`LmWeightPrecision::Auto`] — cascade F32 → F16 → Q8_0 → Q4_0 by RAM.
 

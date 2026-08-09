@@ -5,7 +5,7 @@
 // Requires `--features parity-candle` plus any backend passthroughs you
 // want to exercise.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use candle_core::{DType as CDType, Device as CDevice, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::qwen3 as candle_qwen3;
@@ -14,7 +14,7 @@ use rlx_models::qwen3::{
     build_qwen3_graph_sized_last_logits,
 };
 use rlx_models::weight_map::WeightMap;
-use rlx_runtime::{Device, Session};
+use rlx_runtime::Device;
 use std::env;
 use std::time::Instant;
 
@@ -120,9 +120,8 @@ fn main() -> Result<()> {
                 if rlx_ir::env::flag("RLX_QWEN3_FUSION_REPORT") {
                     let report = fusion_report(&weights, &cfg, batch, seq)?;
                     println!(
-                        "fusion,rlx,{},{},{batch},{seq},true,,,,,,,,,ok,{}",
+                        "fusion,rlx,{},graph,{batch},{seq},true,,,,,,,,,ok,{}",
                         device.name(),
-                        "graph",
                         report
                     );
                 }

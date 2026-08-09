@@ -76,6 +76,48 @@ fn check_safetensors_only_repo_uses_config_json() {
 }
 
 #[test]
+fn check_qwen35_base_and_gguf_repos_are_supported() {
+    if !net_enabled() {
+        eprintln!("skip: set RLX_NET_TESTS=1");
+        return;
+    }
+
+    for repo in ["Qwen/Qwen3.5-0.8B-Base", "unsloth/Qwen3.5-0.8B-GGUF"] {
+        let report =
+            check_hf_repo(repo).unwrap_or_else(|e| panic!("check_hf_repo({repo}) failed: {e:#}"));
+        match &report.status {
+            CompatibilityStatus::Supported { runner } => {
+                assert_eq!(*runner, "qwen35", "{repo} should route to qwen35");
+            }
+            other => panic!("expected Supported for {repo}, got {other:?}\nreport:\n{report}"),
+        }
+        eprintln!("HF live qwen35 check {repo}: {report}");
+    }
+}
+
+#[test]
+fn check_carbon_500m_dna_llama_is_supported() {
+    if !net_enabled() {
+        eprintln!("skip: set RLX_NET_TESTS=1");
+        return;
+    }
+    // Carbon-500M is a DNA LM with a stock `LlamaForCausalLM` / `model_type =
+    // llama` config (the DNA modality lives entirely in its tokenizer), so it
+    // routes to the shared llama32 backbone. rlx-carbon layers the hybrid
+    // Qwen3-BPE + DNA-6mer tokenizer on top.
+    let repo = "HuggingFaceBio/Carbon-500M";
+    let report =
+        check_hf_repo(repo).unwrap_or_else(|e| panic!("check_hf_repo({repo}) failed: {e:#}"));
+    match &report.status {
+        CompatibilityStatus::Supported { runner } => {
+            assert_eq!(*runner, "llama32", "{repo} should route to llama32");
+        }
+        other => panic!("expected Supported for {repo}, got {other:?}\nreport:\n{report}"),
+    }
+    eprintln!("HF live carbon check {repo}: {report}");
+}
+
+#[test]
 fn check_known_unimplemented_arch_reports_milestone() {
     if !net_enabled() {
         eprintln!("skip: set RLX_NET_TESTS=1");

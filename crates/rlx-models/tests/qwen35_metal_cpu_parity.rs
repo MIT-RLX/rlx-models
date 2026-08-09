@@ -70,7 +70,12 @@ fn qwen35_host_embed_matches_gather_cpu() {
     );
 }
 
-#[cfg(all(target_os = "macos", feature = "metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "macos", feature = "mlx"),
+    feature = "gpu",
+    feature = "cuda"
+))]
 fn cos(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
     let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -78,7 +83,12 @@ fn cos(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb + 1e-9)
 }
 
-#[cfg(all(target_os = "macos", feature = "metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "macos", feature = "mlx"),
+    feature = "gpu",
+    feature = "cuda"
+))]
 fn check(device: Device, name: &str) {
     if !rlx_runtime::is_available(device) {
         eprintln!("skip qwen35 {name}: backend unavailable");
@@ -143,7 +153,11 @@ fn generated_tokens(device: Device) -> Vec<u32> {
         .expect("generate")
 }
 
-#[cfg(all(target_os = "macos", feature = "metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "metal"),
+    feature = "gpu",
+    feature = "cuda"
+))]
 fn check_gen(device: Device, name: &str) {
     if !rlx_runtime::is_available(device) {
         eprintln!("skip qwen35 gen {name}: unavailable");

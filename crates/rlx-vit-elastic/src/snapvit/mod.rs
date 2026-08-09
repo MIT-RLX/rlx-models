@@ -12,7 +12,7 @@
 //! - [`fitness`] — label-free PCA-cosine fitness (Eq. 6), forward-only.
 //! - [`xnes`] — the global block-scaling search (§3.3).
 //! - [`prune`] — prunability score + elastic structured pruning (Eq. 8/9).
-//! - [`run`] — end-to-end: local → xNES → elastic sub-networks.
+//! - [`mod@run`] — end-to-end: local → xNES → elastic sub-networks.
 
 pub mod fitness;
 pub mod local;

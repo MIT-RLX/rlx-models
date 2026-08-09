@@ -76,9 +76,9 @@ impl GemmaQatLoader {
     /// Open the checkpoint directory. Auto-detects the quant dialect from
     /// `config.json`:
     /// - an mlx-community affine block (`quantization` / `quantization_config`
-    ///   carrying integer `group_size` **and** `bits`) → [`QuantFmt::MlxAffine`];
+    ///   carrying integer `group_size` **and** `bits`) → `QuantFmt::MlxAffine`;
     /// - otherwise a Google mobile-QAT `quantization_config`
-    ///   (`module_quant_configs` regex table) → [`QuantFmt::GoogleQat`].
+    ///   (`module_quant_configs` regex table) → `QuantFmt::GoogleQat`.
     pub fn open(dir: &Path) -> Result<Self> {
         let ckpt = SafetensorsCheckpoint::open(dir)?;
         let cfg_path = dir.join("config.json");

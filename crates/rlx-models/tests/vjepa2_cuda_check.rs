@@ -21,8 +21,6 @@ mod support;
 #[cfg(feature = "cuda")]
 #[test]
 fn vjepa2_tiny_pipeline_matches_cpu_on_cuda() {
-    mod compile_support;
-
     use rlx_runtime::Device;
 
     if !rlx_cuda::is_available() {

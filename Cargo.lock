@@ -7378,6 +7378,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-carbon"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "rlx-cli",
+ "rlx-llama32",
+ "rlx-runtime",
+ "serde",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
 name = "rlx-chatterbox"
 version = "0.2.14"
 dependencies = [
@@ -8332,6 +8345,7 @@ dependencies = [
  "rlx-ir",
  "rlx-llama-base",
  "rlx-models-core",
+ "rlx-qwen35",
  "rlx-runtime",
  "rlx-ssm",
  "serde",
@@ -8625,6 +8639,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-minimax-h3"
+version = "0.2.14"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "half",
+ "hf-hub",
+ "image",
+ "rlx-cli",
+ "rlx-cpu",
+ "rlx-fft",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-models-core",
+ "rlx-opt",
+ "rlx-runtime",
+ "safetensors 0.7.0",
+ "serde",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
 name = "rlx-miotts"
 version = "0.2.14"
 dependencies = [
@@ -8877,6 +8914,7 @@ dependencies = [
  "rlx-wakeword-core",
  "rlx-wav2vec2-asr",
  "rlx-wav2vec2-bert",
+ "rlx-wgpu",
  "rlx-whisper",
  "rlx-zipvoice",
  "safetensors 0.7.0",

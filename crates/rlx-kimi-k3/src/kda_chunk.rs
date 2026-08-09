@@ -63,20 +63,38 @@ use rlx_ir::{DType, Graph, HirGraphExt, Shape};
 /// Inclusive `cumsum` along `axis` (same shape in/out).
 fn cumsum(g: &mut HirMut, x: HirNodeId, axis: i32) -> HirNodeId {
     let sh = g.shape(x).clone();
-    g.add_node(Op::Cumsum { axis, exclusive: false }, vec![x], sh)
+    g.add_node(
+        Op::Cumsum {
+            axis,
+            exclusive: false,
+        },
+        vec![x],
+        sh,
+    )
 }
 
 /// Lower-triangular mask keeping entries on/below diagonal `diag`.
 fn tril(g: &mut HirMut, x: HirNodeId, diag: i64) -> HirNodeId {
     let sh = g.shape(x).clone();
-    g.add_node(Op::Trilu { upper: false, diagonal: diag }, vec![x], sh)
+    g.add_node(
+        Op::Trilu {
+            upper: false,
+            diagonal: diag,
+        },
+        vec![x],
+        sh,
+    )
 }
 
 /// Embed an f32 constant tensor directly in the graph.
 fn f32_const(g: &mut HirMut, dims: &[usize], data: Vec<f32>) -> HirNodeId {
     debug_assert_eq!(data.len(), dims.iter().product::<usize>());
     let bytes: Vec<u8> = data.iter().flat_map(|x| x.to_le_bytes()).collect();
-    g.add_node(Op::Constant { data: bytes }, vec![], Shape::new(dims, DType::F32))
+    g.add_node(
+        Op::Constant { data: bytes },
+        vec![],
+        Shape::new(dims, DType::F32),
+    )
 }
 
 /// Swap the last two axes of a rank-`r` tensor.
@@ -95,13 +113,29 @@ fn swap01(g: &mut HirMut, x: HirNodeId, r: usize) -> HirNodeId {
 
 /// Split `[b, sp, h, n]` into per-chunk batches `[b, nc, h, c, n]` so `(b, nc, h)`
 /// are matmul batch dims and `(c, n)` are the chunk's `(time, channel)` matrix.
-fn to_chunks(g: &mut HirMut, x: HirNodeId, b: usize, nc: usize, c: usize, h: usize, n: usize) -> HirNodeId {
+fn to_chunks(
+    g: &mut HirMut,
+    x: HirNodeId,
+    b: usize,
+    nc: usize,
+    c: usize,
+    h: usize,
+    n: usize,
+) -> HirNodeId {
     let r = g.reshape_(x, vec![b as i64, nc as i64, c as i64, h as i64, n as i64]);
     g.transpose_(r, vec![0, 1, 3, 2, 4])
 }
 
 /// Slice chunk `ci` out of a `[b, nc, h, m, p]` K1 tensor → `[b, h, m, p]`.
-fn chunk_of(g: &mut HirMut, x: HirNodeId, ci: usize, b: usize, h: usize, m: usize, p: usize) -> HirNodeId {
+fn chunk_of(
+    g: &mut HirMut,
+    x: HirNodeId,
+    ci: usize,
+    b: usize,
+    h: usize,
+    m: usize,
+    p: usize,
+) -> HirNodeId {
     let s = g.narrow_(x, 1, ci, 1);
     g.reshape_(s, vec![b as i64, h as i64, m as i64, p as i64])
 }
@@ -122,14 +156,14 @@ pub struct ChunkDims {
 
 /// Intra-chunk (K1) tensors, all `[b, nc, h, c, *]` batched over `(b, nc, h)`.
 struct K1 {
-    k_dec: HirNodeId,  // [b, nc, h, c, n]
-    q_dec: HirNodeId,  // [b, nc, h, c, n]
-    inv: HirNodeId,    // [b, nc, h, c, c]
-    mqk: HirNodeId,    // [b, nc, h, c, c]
-    k_res: HirNodeId,  // [b, nc, h, c, n]
-    v5: HirNodeId,     // [b, nc, h, c, n]
-    beta5: HirNodeId,  // [b, nc, h, c, 1]
-    egtot: HirNodeId,  // [b, nc, h, 1, n]
+    k_dec: HirNodeId, // [b, nc, h, c, n]
+    q_dec: HirNodeId, // [b, nc, h, c, n]
+    inv: HirNodeId,   // [b, nc, h, c, c]
+    mqk: HirNodeId,   // [b, nc, h, c, c]
+    k_res: HirNodeId, // [b, nc, h, c, n]
+    v5: HirNodeId,    // [b, nc, h, c, n]
+    beta5: HirNodeId, // [b, nc, h, c, 1]
+    egtot: HirNodeId, // [b, nc, h, 1, n]
 }
 
 /// FlashKDA K1: all intra-chunk math, fully parallel over `(b, nc, h)`.
@@ -209,13 +243,31 @@ fn kda_k1(
         g.add(inv, step)
     };
 
-    K1 { k_dec, q_dec, inv, mqk, k_res, v5, beta5, egtot }
+    K1 {
+        k_dec,
+        q_dec,
+        inv,
+        mqk,
+        k_res,
+        v5,
+        beta5,
+        egtot,
+    }
 }
 
 /// Reassemble a per-chunk output `[b, nc, c, h, n]` → `[b, s, h, n]` (padding
 /// rows sliced off).
 #[allow(clippy::too_many_arguments)]
-fn reassemble(g: &mut HirMut, out_bncchn: HirNodeId, b: usize, sp: usize, h: usize, n: usize, s: usize, pad: usize) -> HirNodeId {
+fn reassemble(
+    g: &mut HirMut,
+    out_bncchn: HirNodeId,
+    b: usize,
+    sp: usize,
+    h: usize,
+    n: usize,
+    s: usize,
+    pad: usize,
+) -> HirNodeId {
     let outr = g.reshape_(out_bncchn, vec![b as i64, sp as i64, h as i64, n as i64]);
     if pad > 0 {
         g.narrow_(outr, 1, 0, s)
@@ -300,7 +352,13 @@ fn scan_state_body(b: usize, c: usize, h: usize, n: usize) -> Graph {
     let vcorr = body.binary(BinaryOp::Sub, vc, sk, bhcn.clone());
     let vcorr = body.binary(BinaryOp::Mul, vcorr, bc, bhcn.clone());
     let u = body.add_node(Op::MatMul, vec![inv, vcorr], bhcn); // INV·(β·(v−kd·H))
-    let kr_t = body.add_node(Op::Transpose { perm: vec![0, 1, 3, 2] }, vec![kr], bhnc);
+    let kr_t = body.add_node(
+        Op::Transpose {
+            perm: vec![0, 1, 3, 2],
+        },
+        vec![kr],
+        bhnc,
+    );
     let delta = body.add_node(Op::MatMul, vec![kr_t, u], bhnn.clone()); // k_resᵀ·U
     let hdec = body.binary(BinaryOp::Mul, carry, egt, bhnn.clone()); // exp(Gtot)·H
     let h_new = body.binary(BinaryOp::Add, hdec, delta, bhnn);
@@ -406,7 +464,10 @@ pub fn build_kda_chunked_scan(
     initial_state: Option<HirNodeId>,
 ) -> (HirNodeId, HirNodeId) {
     let (b, s, h, n, c) = (d.batch, d.seq, d.heads, d.head_dim, d.chunk);
-    assert!((1..=16).contains(&c), "chunk size must be in 1..=16 (got {c})");
+    assert!(
+        (1..=16).contains(&c),
+        "chunk size must be in 1..=16 (got {c})"
+    );
     let nc = s.div_ceil(c);
     let sp = nc * c;
     let pad = sp - s;
@@ -433,7 +494,8 @@ pub fn build_kda_chunked_scan(
 
     let k1 = kda_k1(g, q, k, v, g_log, beta, b, nc, c, h, n);
 
-    let init = initial_state.unwrap_or_else(|| f32_const(g, &[b, h, n, n], vec![0.0; b * h * n * n]));
+    let init =
+        initial_state.unwrap_or_else(|| f32_const(g, &[b, h, n, n], vec![0.0; b * h * n * n]));
 
     if d.use_scan {
         k2_scan(g, &k1, init, b, nc, c, h, n, sp, s, pad)

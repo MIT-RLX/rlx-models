@@ -25,7 +25,7 @@
 //!   - The cross-attention `downsample_rate` is configurable in the
 //!     reference (defaults to 2 for the decoder transformer, matching
 //!     v1). We keep the rate as a parameter on
-//!     [`extract_two_way_transformer_weights`].
+//!     `extract_two_way_transformer_weights`.
 //!
 //! Decoder transformer compute is small (q_n ≤ ~10 tokens, k_n = 64²),
 //! so staying on the CPU is the right tradeoff vs. growing the IR
@@ -335,7 +335,7 @@ pub fn layer_norm_last(x: &mut [f32], rows: usize, n: usize, g: &[f32], b: &[f32
     }
 }
 
-/// Stack / IR final norm — matches compiled [`Op::LayerNorm`] on CPU.
+/// Stack / IR final norm — matches compiled `Op::LayerNorm` on CPU.
 pub fn layer_norm_last_cpu(x: &mut [f32], rows: usize, n: usize, g: &[f32], b: &[f32], eps: f32) {
     let mut tmp = vec![0f32; n];
     for r in 0..rows {

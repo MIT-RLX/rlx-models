@@ -60,6 +60,15 @@ use rlx_gemma::config::{
 };
 use rlx_gemma::flow::{GemmaPrefillOpts, build_gemma_prefill_flow};
 use rlx_runtime::Device;
+#[cfg(any(
+    feature = "metal",
+    feature = "mlx",
+    feature = "gpu",
+    feature = "cuda",
+    feature = "rocm",
+    feature = "vulkan"
+))]
+use rlx_runtime::is_available;
 use std::collections::HashMap;
 
 const SEQ: usize = 4;

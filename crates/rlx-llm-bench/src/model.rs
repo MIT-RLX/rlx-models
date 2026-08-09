@@ -14,7 +14,7 @@
 //!   `k-1` decodes per choice. Same output as [`rlx_eval::score_mc`] but on the
 //!   KV-cached path instead of a full teacher-forced forward.
 //! - [`LmLogprobs`] impl — teacher-forced next-token log-probs for the whole
-//!   sequence, so [`rlx_eval::perplexity`] runs unchanged on any runner.
+//!   sequence, so [`fn@rlx_eval::perplexity`] runs unchanged on any runner.
 
 use anyhow::{Result, anyhow, bail};
 use rlx_eval::{LmLogprobs, McItem, McResult};
@@ -199,7 +199,7 @@ impl BenchModel {
 }
 
 /// Teacher-forced next-token log-probs for **any** runner, computed on the
-/// host-driven KV path so [`rlx_eval::perplexity`] (and any other
+/// host-driven KV path so [`fn@rlx_eval::perplexity`] (and any other
 /// [`LmLogprobs`] consumer) works uniformly. `sequence_logprobs(tokens)`
 /// returns `tokens.len() - 1` values where index `i` is
 /// `log P(tokens[i+1] | tokens[..=i])`.

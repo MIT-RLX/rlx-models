@@ -886,7 +886,7 @@ impl WeightLoader for MlxLoader {
 /// Adapter that lets a HF-safetensors-backed [`WeightLoader`] satisfy
 /// requests phrased in GGUF-style names (`blk.N.attn_q.weight` etc.).
 ///
-/// Builders like [`Qwen35Weights::from_loader`] address tensors using
+/// Builders like `Qwen35Weights::from_loader` address tensors using
 /// the GGUF / llama.cpp convention; the underlying safetensors file
 /// stores them under HF / PyTorch names (`model.layers.N.self_attn.q_proj.weight`).
 /// This wrapper:
@@ -1172,7 +1172,7 @@ impl GgufLoader {
 
     /// Copy an already-uncompressed float tensor to host `Vec<f32>`.
     ///
-    /// Accepts only [`GgmlType`] F32 / F16 / BF16. Quantized tensors error
+    /// Accepts only `GgmlType` F32 / F16 / BF16. Quantized tensors error
     /// (Laguna: "F32 expand FORBIDDEN") — use [`Self::take_packed`] /
     /// [`Self::take_packed_metadata`] instead.
     pub fn take_native_f32(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
@@ -1212,7 +1212,7 @@ impl GgufLoader {
     /// Take a single MTP weight by name. Bypasses the `include_mtp`
     /// filter so callers can grab specific heads without flipping
     /// the global visibility. Returns an error if the name isn't a
-    /// recognized MTP weight (use [`take`] for non-MTP keys).
+    /// recognized MTP weight (use `take` for non-MTP keys).
     pub fn take_mtp(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         if !self.is_mtp_tensor(key) {
             return Err(anyhow!("not an MTP weight under this file's scheme: {key}"));

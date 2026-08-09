@@ -33,6 +33,9 @@ pub fn candle_codec_available(device: Device) -> bool {
         | Device::Tpu
         | Device::OpenGl
         | Device::DirectX
+        | Device::Xdna
+        | Device::OneApi
+        | Device::Hexagon
         | Device::WebGpu => false,
     }
 }

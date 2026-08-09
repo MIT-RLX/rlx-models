@@ -33,7 +33,7 @@
 //!
 //! ## Parity status
 //!
-//! Synthetic-weights build tests in [`tests`] exercise every component
+//! Synthetic-weights build tests in `tests` exercise every component
 //! (encoder, prompt enc, decoder, memory enc/attn, end-to-end Sam2
 //! object) for every Hiera variant. Numerical parity against the
 //! pytorch reference is wired up in `tests/sam2_parity.rs` behind the

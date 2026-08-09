@@ -477,7 +477,15 @@ pub fn build_kda_layer(
         );
         out
     } else {
-        g.gated_delta_net_pc(q_l2, k_l2, vh, g_log, beta, hd, Shape::new(&bshd, DType::F32))
+        g.gated_delta_net_pc(
+            q_l2,
+            k_l2,
+            vh,
+            g_log,
+            beta,
+            hd,
+            Shape::new(&bshd, DType::F32),
+        )
     };
 
     // (7) FusedRMSNormGated(sigmoid): rms_norm(scan * sigmoid(g_proj(x)))  (g from fused)

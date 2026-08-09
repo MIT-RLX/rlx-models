@@ -401,6 +401,21 @@ tinyllama-pipeline *ARGS:
 phi *ARGS:
     just run-bin rlx-phi rlx-phi {{ARGS}}
 
+# Carbon DNA language model (Llama backbone + hybrid Qwen3-BPE/DNA-6mer tokenizer).
+# The `tokenizer` feature is always enabled so text/DNA prompts work.
+#   just fetch-carbon
+#   just carbon --model /tmp/rlx-weights/Carbon-500M --prompt ATGGCGACCTTTAGCGATCTG --max-tokens 64
+#   just features=metal carbon --model DIR --device metal --prompt "<dna>ATCGATCG"
+carbon *ARGS:
+    cargo run -p rlx-carbon --bin rlx-carbon {{profile}} {{ if features != "" { "--features " + features + ",tokenizer" } else { "--features tokenizer" } }} -- {{ARGS}}
+
+# LiquidAI LFM2 / LFM2.5 GGUF (hybrid ShortConv + attention). `tokenizer` always on.
+#   just fetch-lfm25
+#   just lfm --weights /tmp/rlx-weights/LFM2.5-2.6B-Q4_K_M.gguf --prompt "The capital of France is" --max-tokens 24
+#   just features=metal lfm --weights FILE.gguf --device metal --prompt "Q: 2+2? A:"
+lfm *ARGS:
+    cargo run -p rlx-lfm --bin rlx-lfm {{profile}} {{ if features != "" { "--features " + features + ",tokenizer" } else { "--features tokenizer" } }} -- {{ARGS}}
+
 # thinkingmachines/Inkling — multimodal MoE scaffold (config / weight map / synth text forward).
 inkling *ARGS:
     just run-bin rlx-inkling rlx-inkling {{ARGS}}
@@ -2723,6 +2738,30 @@ flux2 *ARGS:
 trellis2 *ARGS:
     just run-bin rlx-trellis2 rlx-trellis2 {{ARGS}}
 
+# MiniMax-H3 (Hailuo 3.0) omni-modal video+audio generation.
+minimax-h3 *ARGS:
+    just run-bin rlx-minimax-h3 rlx-minimax-h3 {{ARGS}}
+
+# Report the architecture of a MiniMax-H3 checkpoint.
+minimax-h3-inspect WEIGHTS:
+    just minimax-h3 -- inspect --weights {{WEIGHTS}}
+
+# Resolve a request and print the packed layout it implies.
+minimax-h3-plan WEIGHTS TASK="t2va" STEPS="32":
+    just minimax-h3 -- plan --weights {{WEIGHTS}} --task {{TASK}} --steps {{STEPS}}
+
+# CPU tests (no weights needed).
+test-minimax-h3:
+    cargo test -p rlx-minimax-h3
+
+# Cross-backend agreement (Metal / MLX / wgpu against CPU).
+test-minimax-h3-backends:
+    cargo test -p rlx-minimax-h3 --release --features apple-silicon --test backends -- --nocapture
+
+# Checks against a real checkpoint (only the VAEs and configs are required).
+test-minimax-h3-weights WEIGHTS:
+    RLX_MINIMAX_H3={{WEIGHTS}} cargo test -p rlx-minimax-h3 --release --test real_weights -- --nocapture
+
 flux2-serve *ARGS:
     just run-bin rlx-flux2 rlx-flux2-serve {{ARGS}}
 
@@ -2739,6 +2778,103 @@ qwen3-all-backends *ARGS:
 
 qwen35-metal *ARGS:
     just features=metal run-bin rlx-qwen35 rlx-qwen35 {{ARGS}}
+
+# Optimized long-context Metal profile (OOM-safe defaults).
+# Usage:
+#   just qwen35-metal-long-opt
+#   just qwen35-metal-long-opt Q3_K_S
+#   QWEN35_IDS="$(jot -s, 512 1000)" just qwen35-metal-long-opt
+qwen35-metal-long-opt QUANT="Q4_K_M":
+        #!/usr/bin/env bash
+        set -euo pipefail
+        model="weights/Qwen3.5-0.8B-gguf/Qwen3.5-0.8B-${QUANT}.gguf"
+        if [ ! -s "$model" ]; then
+            echo "missing $model" >&2
+            echo "hint: just fetch-qwen35-gguf ${QUANT}" >&2
+            exit 1
+        fi
+        ids="${QWEN35_IDS:-$(jot -s, 512 1000)}"
+        RLX_LOW_MEM_COMPILE=1 \
+        RLX_QWEN35_KEEP_PREFILL=0 \
+        RLX_QWEN35_BENCH=1 \
+        target/release/rlx-qwen35 \
+            --weights "$model" \
+            --device metal \
+            --packed \
+            --prompt-ids "$ids" \
+            --max-seq 640 \
+            --max-tokens 32 \
+            --temperature 0 \
+            --top-p 1 \
+            --seed 42 \
+            --fast
+
+# Speed-first preset (bench winner on this host): Q3_K_S @ max_seq=640.
+qwen35-metal-long-speed:
+        QWEN35_IDS="${QWEN35_IDS:-$(jot -s, 512 1000)}" \
+            just qwen35-metal-long-opt Q3_K_S
+
+# Quality-leaning preset (still OOM-safe): Q4_K_M @ max_seq=640.
+qwen35-metal-long-quality:
+        QWEN35_IDS="${QWEN35_IDS:-$(jot -s, 512 1000)}" \
+            just qwen35-metal-long-opt Q4_K_M
+
+# Reasoning-focused Q4 profile (more reliable than Q3, tuned think budget).
+# Usage:
+#   just qwen35-metal-reason "Who wrote Hamlet? Answer with last name only."
+qwen35-metal-reason PROMPT="Who wrote Hamlet? Answer with last name only.":
+        RLX_LOW_MEM_COMPILE=1 \
+        RLX_QWEN35_KEEP_PREFILL=0 \
+        RLX_QWEN35_BENCH=1 \
+        target/release/rlx-qwen35 \
+            --weights weights/Qwen3.5-0.8B-gguf/Qwen3.5-0.8B-Q4_K_M.gguf \
+            --device metal \
+            --packed \
+            --prompt "{{PROMPT}}" \
+            --max-seq 512 \
+            --max-tokens 96 \
+            --temperature 0 \
+            --top-p 1 \
+            --seed 42 \
+            --think \
+            --thinking-budget 32
+
+# Speed-biased reasoning preset: same Q4 + think budget, lower token cap.
+qwen35-metal-reason-fast PROMPT="What is the capital of France? Answer with one word.":
+        RLX_LOW_MEM_COMPILE=1 \
+        RLX_QWEN35_KEEP_PREFILL=0 \
+        RLX_QWEN35_BENCH=1 \
+        target/release/rlx-qwen35 \
+            --weights weights/Qwen3.5-0.8B-gguf/Qwen3.5-0.8B-Q4_K_M.gguf \
+            --device metal \
+            --packed \
+            --prompt "{{PROMPT}}" \
+            --max-seq 512 \
+            --max-tokens 64 \
+            --temperature 0 \
+            --top-p 1 \
+            --seed 42 \
+            --think \
+            --thinking-budget 32
+
+# Max-speed decode preset (Q6_K, deterministic, tighter decode shape).
+# Bench-tuned on this host: max_seq=320 was faster than 384/512 at prompt=256.
+qwen35-metal-speed-max:
+        QWEN35_IDS="${QWEN35_IDS:-$(jot -s, 256 1000)}" \
+        RLX_LOW_MEM_COMPILE=1 \
+        RLX_QWEN35_KEEP_PREFILL=0 \
+        RLX_QWEN35_BENCH=1 \
+        target/release/rlx-qwen35 \
+            --weights weights/Qwen3.5-0.8B-gguf/Qwen3.5-0.8B-Q6_K.gguf \
+            --device metal \
+            --packed \
+            --prompt-ids "$QWEN35_IDS" \
+            --max-seq 320 \
+            --max-tokens 64 \
+            --temperature 0 \
+            --top-p 1 \
+            --seed 42 \
+            --fast
 
 qwen35-all-backends *ARGS:
     just features=all-backends run-bin rlx-qwen35 rlx-qwen35 {{ARGS}}
@@ -2797,6 +2933,12 @@ fetch-qwen3 REPO="Qwen/Qwen3-0.6B":
     docker build -t rlx-qwen3-fetch docker/qwen3-fetch
     docker run --rm -v "$PWD/weights:/weights" rlx-qwen3-fetch {{REPO}}
 
+# Qwen3.5-0.8B Base safetensors + tokenizer/config (downloads to weights/Qwen3.5-0.8B-Base/).
+fetch-qwen35-base:
+    mkdir -p weights
+    docker build -t rlx-qwen3-fetch docker/qwen3-fetch
+    docker run --rm -v "$PWD/weights:/weights" rlx-qwen3-fetch Qwen/Qwen3.5-0.8B-Base
+
 # Qwen3-ASR-0.6B safetensors + tokenizer for the all-Qwen voice chat example.
 fetch-qwen3-asr REPO="Qwen/Qwen3-ASR-0.6B":
     huggingface-cli download {{REPO}} --local-dir .cache/qwen3-asr/Qwen3-ASR-0.6B
@@ -2807,6 +2949,21 @@ fetch-qwen3-gguf:
     test -s weights/Qwen3-0.6B-gguf/Qwen3-0.6B-Q4_K_M.gguf || \
         curl -L --create-dirs -C - -o weights/Qwen3-0.6B-gguf/Qwen3-0.6B-Q4_K_M.gguf \
             'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf'
+
+# Qwen3.5-0.8B GGUF from unsloth (default quant = Q4_K_M).
+# Example quants: Q3_K_S, Q3_K_M, Q4_0, Q4_1, Q4_K_M, Q5_K_M, Q6_K, Q8_0, BF16.
+fetch-qwen35-gguf QUANT="Q4_K_M":
+    mkdir -p weights/Qwen3.5-0.8B-gguf
+    test -s weights/Qwen3.5-0.8B-gguf/Qwen3.5-0.8B-{{QUANT}}.gguf || \
+        curl -L --create-dirs -C - -o weights/Qwen3.5-0.8B-gguf/Qwen3.5-0.8B-{{QUANT}}.gguf \
+            'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-{{QUANT}}.gguf'
+
+# Pull both canonical checkpoints requested in the runbook:
+# - Qwen/Qwen3.5-0.8B-Base (safetensors)
+# - unsloth/Qwen3.5-0.8B-GGUF (Q4_K_M by default)
+fetch-qwen35-0.8b:
+    just fetch-qwen35-base
+    just fetch-qwen35-gguf
 
 # --- real-weight integration tests (PLAN.md M0–M3 verification) ---
 #
@@ -2918,6 +3075,15 @@ fetch-tinyllama-gguf QUANT="Q4_K_M":
 
 fetch-tinyllama-gguf-all:
     just fetch-tinyllama-gguf all
+
+# Carbon-500M DNA model (~1 GB bf16 safetensors) into {{real_weights_dir}}/Carbon-500M.
+# Needs the HuggingFace CLI (`pip install huggingface_hub`); the repo is public.
+fetch-carbon:
+    huggingface-cli download HuggingFaceBio/Carbon-500M --local-dir {{real_weights_dir}}/Carbon-500M
+
+# LFM2.5-2.6B GGUF (Q4_K_M ~1.6 GB) into {{real_weights_dir}}/LFM2.5-2.6B-GGUF.
+fetch-lfm25 QUANT="Q4_K_M":
+    huggingface-cli download LiquidAI/LFM2.5-2.6B-GGUF LFM2.5-2.6B-{{QUANT}}.gguf --local-dir {{real_weights_dir}}/LFM2.5-2.6B-GGUF
 
 test-tinyllama-real: fetch-tinyllama
     RLX_TINYLLAMA_WEIGHTS={{real_weights_dir}}/TinyLlama-1.1B-Chat-v1.0/model-00001-of-00003.safetensors \

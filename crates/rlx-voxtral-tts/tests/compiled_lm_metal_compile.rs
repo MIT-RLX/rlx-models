@@ -17,6 +17,15 @@
 
 use std::path::PathBuf;
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+use rlx_core::flow_util::compile_built;
+#[cfg(all(target_os = "macos", feature = "metal"))]
+use rlx_runtime::Device;
+#[cfg(all(target_os = "macos", feature = "metal"))]
+use rlx_voxtral_tts::lm_flow::build_tts_backbone_decode_built;
+#[cfg(all(target_os = "macos", feature = "metal"))]
+use rlx_voxtral_tts::{VoxtralTtsConfig, VoxtralTtsWeightStore};
+
 #[allow(dead_code)]
 fn model_dir() -> Option<PathBuf> {
     std::env::var("RLX_VOXTRAL_TTS_DIR")

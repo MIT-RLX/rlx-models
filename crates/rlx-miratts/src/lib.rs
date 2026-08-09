@@ -49,7 +49,7 @@
 //! - ✅ **Step 4** — speaker encoder (`s_encoder.onnx`): mel → 32 global tokens,
 //!   native via rlx-tiny-tts. MiraTTS `encode_audio` uses this path only (no
 //!   WavLM / `q_encoder`). [`MiraTts::synthesize_with_ref`] encodes a raw
-//!   reference clip; [`synthesize`] still accepts precomputed codes.
+//!   reference clip; `synthesize` still accepts precomputed codes.
 //!
 //! See the `miratts_port_scope` memory note.
 
@@ -173,9 +173,9 @@ pub const MAX_SPEECH_FRAMES: usize = codec::SPEECH_LEN;
 /// A loaded MiraTTS model directory: Qwen2-0.5B LM + native FastBiCodec
 /// decoder + speaker encoder.
 ///
-/// Voice cloning from a raw reference clip goes through [`synthesize_with_ref`]
+/// Voice cloning from a raw reference clip goes through `synthesize_with_ref`
 /// (`s_encoder` mel → 32 global tokens). Precomputed codes still work via
-/// [`synthesize`].
+/// `synthesize`.
 pub struct MiraTts {
     dir: PathBuf,
     config: MiraConfig,
@@ -275,7 +275,7 @@ impl MiraTts {
     /// Synthesize `text` conditioned on precomputed reference context codes.
     ///
     /// `semantic_context` / `global_tokens` are normally the same 32 globals from
-    /// [`encode_ref`] / `s_encoder` (MiraTTS `encode_audio`). Returns 16 kHz mono.
+    /// `encode_ref` / `s_encoder` (MiraTTS `encode_audio`). Returns 16 kHz mono.
     pub fn synthesize(
         &mut self,
         text: &str,

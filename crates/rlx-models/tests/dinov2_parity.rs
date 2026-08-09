@@ -53,7 +53,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::dinov2 as candle_dinov2;
 use rlx_models::WeightMap;
 use rlx_models::dinov2::{DinoV2Config, assemble_hidden, build_dinov2_graph_sized};
-use rlx_runtime::{Device, Session};
+use rlx_runtime::Device;
 
 const IMG_SIZE: usize = 518;
 const PATCH_SIZE: usize = 14;
@@ -67,6 +67,10 @@ fn weights_path() -> Option<String> {
 /// range. We synthesize a smooth sine pattern instead of loading a real
 /// image — this keeps the test self-contained but still exercises every
 /// channel across the full spatial domain.
+// 6.28 / 3.14 are deliberate 2-dp values, not TAU/PI: they define the
+// synthetic parity input, and changing them would change every dumped
+// reference blob compared against here.
+#[allow(clippy::approx_constant)]
 fn synthesize_image() -> Vec<f32> {
     let n = 3 * IMG_SIZE * IMG_SIZE;
     let mut v = vec![0f32; n];
@@ -131,8 +135,8 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> (f32, usize) {
 
 /// Load an image from disk and convert to a `[3, 518, 518]` NCHW f32
 /// tensor using the *exact* same pipeline as candle's
-/// `imagenet::load_image518` (`resize_to_fill` with `FilterType::Triangle`
-/// + ImageNet mean/std). This guarantees both implementations receive
+/// `imagenet::load_image518` (`resize_to_fill` with `FilterType::Triangle` +
+/// ImageNet mean/std). This guarantees both implementations receive
 /// bit-identical input tensors, so any parity gap is downstream of I/O.
 fn load_image_518(path: &str) -> Result<Vec<f32>> {
     use image::imageops::FilterType;

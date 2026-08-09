@@ -66,7 +66,7 @@ fn lower_hir(hir: HirModule) -> Result<Graph> {
 /// Build the SAM ViT image-encoder HIR (body + neck).
 ///
 /// Input: `"hidden"` shape `[1, hw·hw, embed_dim]` — patch tokens from
-/// [`crate::sam::preprocess::assemble_patch_tokens`].
+/// `crate::sam::preprocess::assemble_patch_tokens`.
 ///
 /// Output: `[1, out_chans, hw, hw]` NCHW image embeddings.
 pub fn build_sam_encoder_hir(

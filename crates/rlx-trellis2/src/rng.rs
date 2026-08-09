@@ -19,7 +19,7 @@
 //! `torch.randn` (Philox); it is a deterministic host substitute for the
 //! pipeline API and small regression tests.
 
-/// SplitMix64 PRNG (https://prng.di.unimi.it/splitmix64.c).
+/// SplitMix64 PRNG (<https://prng.di.unimi.it/splitmix64.c>).
 #[derive(Clone, Debug)]
 pub struct SplitMix64 {
     state: u64,

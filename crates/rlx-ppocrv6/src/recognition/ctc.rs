@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-/// Character dictionary: index 0 is CTC blank; chars[i] is class i+1 in logits
+/// Character dictionary: index 0 is CTC blank; `chars[i]` is class i+1 in logits
 /// when dict was loaded without an explicit blank (Paddle `CTCLabelDecode`).
 #[derive(Debug, Clone)]
 pub struct CharDict {

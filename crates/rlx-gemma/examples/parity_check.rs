@@ -132,7 +132,7 @@ fn run_llama(gguf: &Path, prompt_ids: &[u32]) -> Result<Option<(usize, f32)>> {
         println!("\n— llama.cpp reference —");
         let llama_logits = llama_reference::last_token_logits(gguf, prompt_ids)
             .context("llama_reference::last_token_logits")?;
-        return Ok(logit_stats("llama.cpp", &llama_logits));
+        Ok(logit_stats("llama.cpp", &llama_logits))
     }
     #[cfg(not(feature = "parity-llama"))]
     {
@@ -181,8 +181,8 @@ fn run_llama_hidden(gguf: &Path, prompt_ids: &[u32]) -> Result<Vec<f32>> {
     #[cfg(feature = "parity-llama")]
     {
         println!("\n— llama.cpp last-token hidden —");
-        return llama_reference::last_token_hidden(gguf, prompt_ids)
-            .context("llama_reference::last_token_hidden");
+        llama_reference::last_token_hidden(gguf, prompt_ids)
+            .context("llama_reference::last_token_hidden")
     }
     #[cfg(not(feature = "parity-llama"))]
     {
@@ -243,7 +243,7 @@ fn run_llama_greedy(gguf: &Path, prompt_ids: &[u32]) -> Result<Vec<u32>> {
         let toks = llama_reference::greedy_generation_ids(gguf, prompt_ids, GREEDY_STEPS, 512)
             .context("llama_reference::greedy_generation_ids")?;
         println!("llama.cpp greedy ids ({}) = {toks:?}", toks.len());
-        return Ok(toks);
+        Ok(toks)
     }
     #[cfg(not(feature = "parity-llama"))]
     {

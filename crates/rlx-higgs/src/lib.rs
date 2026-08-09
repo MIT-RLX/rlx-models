@@ -28,8 +28,8 @@
 //!   shared **delay pattern** ([`rlx_audio_blocks::codec`]).
 //!
 //! Checkpoint-free, unit-tested core here: the config ([`HiggsConfig`]), the task
-//! [`HiggsMode`], and the RVQ codebook delay helpers ([`delay_encode`] /
-//! [`delay_decode`]). Wiring the backbone + DualFFN + tokenizer decode end-to-end
+//! [`HiggsMode`], and the RVQ codebook delay helpers (`delay_encode` /
+//! `delay_decode`). Wiring the backbone + DualFFN + tokenizer decode end-to-end
 //! is the next step.
 
 use anyhow::Result;

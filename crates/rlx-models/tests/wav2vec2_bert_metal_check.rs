@@ -21,8 +21,6 @@ mod support;
 #[cfg(all(target_os = "macos", feature = "metal"))]
 #[test]
 fn wav2vec2_bert_tiny_graph_runs_on_metal() {
-    mod compile_support;
-
     use rlx_runtime::Device;
     support::run_tiny_graph(Device::Metal);
 }

@@ -16,7 +16,7 @@
 //! Wires deep encoder + projector + compiled MoE LM for generation.
 //!
 //! Vision (SAM/CLIP/projector pack) stays host-f32; the MoE LM runs as a
-//! compiled RLX graph on [`Self::device`] (including CPU).
+//! compiled RLX graph on `Self::device` (including CPU).
 
 use crate::config::{EOS_TOKEN_ID, IMAGE_TOKEN_ID, UnlimitedOcrConfig};
 use crate::deep_encoder::DeepEncoder;

@@ -675,7 +675,7 @@ impl DistilledTernaryFftModel {
         Ok(())
     }
 
-    /// Like [`prune_gates_to_target`] but also guards mel-vs-reference when `ref_mel` is set.
+    /// Like `prune_gates_to_target` but also guards mel-vs-reference when `ref_mel` is set.
     pub fn prune_gates_to_target_with_ref(
         &mut self,
         signal: &[f32],

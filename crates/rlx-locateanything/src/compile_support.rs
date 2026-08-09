@@ -20,7 +20,7 @@ use rlx_flow::CompileProfile;
 use rlx_ir::logical_kernel::KernelDispatchConfig;
 use rlx_runtime::{CompileOptions, Device};
 
-/// MoonViT: MLX / wgpu / Vulkan lack in-graph [`Op::AxialRope2d`]; Metal `AxialRope2d` diverges from
+/// MoonViT: MLX / wgpu / Vulkan lack in-graph `Op::AxialRope2d`; Metal `AxialRope2d` diverges from
 /// the CPU reference on large grids — use the same decomposed 1D RoPE path.
 pub fn moonvit_use_decomposed_rope(device: Device) -> bool {
     matches!(

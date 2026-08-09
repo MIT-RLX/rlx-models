@@ -944,7 +944,7 @@ fn main() {
         );
         println!(
             "  • W8A8 adds {extra} nodes (~{} per matmul: Abs→Reduce(max)→Recip→Mul→Round→Clamp→Mul).",
-            if mm > 0 { extra / mm } else { 0 }
+            extra.checked_div(mm).unwrap_or(0)
         );
         println!(
             "    The Reduce (per-token amax) is a SERIAL reduction gating each of the {mm} matmuls, and the"
@@ -1046,8 +1046,10 @@ fn main() {
         let mut wm = WeightMap::from_file(st.to_str().unwrap()).expect("safetensors");
         let (g, params) =
             build_qwen3_graph_sized(&cfg, &mut wm, 1, seq, true, false).expect("build qwen3");
-        let mut scfg = rlx_opscope::StatConfig::default();
-        scfg.per_channel = true;
+        let scfg = rlx_opscope::StatConfig {
+            per_channel: true,
+            ..rlx_opscope::StatConfig::default()
+        };
         let (g1, specs) = rlx_opscope::inject_matmul_stats(&g, &scfg);
         let mut o = rlx_runtime::CompileOptions::default();
         o.fusion_opts.skip_fusion = true; // taps break SwiGLU fusion
@@ -1118,7 +1120,7 @@ fn main() {
             }
             let sl = &rows[lo..hi];
             let mean = |f: &dyn Fn(&(f32, f32, f32, f32)) -> f32| {
-                sl.iter().map(|r| f(r)).sum::<f32>() / sl.len() as f32
+                sl.iter().map(f).sum::<f32>() / sl.len() as f32
             };
             println!(
                 "    {:<8} {:>9.1} {:>7.0}% {:>12.0}× {:>10.0}",
@@ -1219,7 +1221,13 @@ fn main() {
         );
         let attn_p = 2 * qd * h + 2 * kvd * h; // q+o + k+v
         let mlp_p = 3 * inter * h;
-        let sub_bytes = |order: usize| if order % 2 == 0 { attn_p } else { mlp_p };
+        let sub_bytes = |order: usize| {
+            if order.is_multiple_of(2) {
+                attn_p
+            } else {
+                mlp_p
+            }
+        };
 
         // Rank sublayers by influence (ascending gap = skip-first) and validate
         // an INCREMENTAL sweep — small per-layer deltas COMPOUND, so the naive
@@ -1980,7 +1988,10 @@ fn main() {
         #[cfg(not(feature = "metal"))]
         let (dev_ms, dev_src): (f64, &str) = {
             let vram_gbps = 400.0_f64; // modeled mid-range discrete VRAM
-            (weight_bytes as f64 / (vram_gbps * 1e9) * 1e3, "modeled @400GB/s VRAM")
+            (
+                weight_bytes as f64 / (vram_gbps * 1e9) * 1e3,
+                "modeled @400GB/s VRAM",
+            )
         };
 
         println!("\n  ── CPU↔GPU offload roofline (measured host, {dev_src} device) ──");
@@ -2919,7 +2930,11 @@ fn main() {
             cfg.num_hidden_layers,
         );
         let (attn_p, mlp_p) = (2 * qd * h + 2 * kvd * h, 3 * inter * h);
-        let sub_share = (if skip_order % 2 == 0 { attn_p } else { mlp_p }) as f64
+        let sub_share = (if skip_order.is_multiple_of(2) {
+            attn_p
+        } else {
+            mlp_p
+        }) as f64
             / (nl * (attn_p + mlp_p)) as f64;
 
         // (name, prec, skip, activations-int8-so-SDOT-applies)

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "LiquidAI LFM2.5 runner (text) — LFM SSM LM (decode-step + state wiring)"
+description = "LiquidAI LFM2 / LFM2.5 runner (text) — hybrid ShortConv + GQA-attention GGUF LM (+ legacy SSM decode)"
 keywords.workspace = true
 categories.workspace = true
 
@@ -23,12 +23,30 @@ rlx-cpu = { workspace = true }
 rlx-gguf = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Text prompts + detokenize via the GGUF-embedded gpt2 BPE (LFM2 uses it).
+rlx-qwen35 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokenizers = { workspace = true }
 
+[[bin]]
+name = "rlx-lfm"
+path = "src/bin/rlx_lfm.rs"
+
+# LFM2/LFM2.5 GGUF text generation on any backend (pass `--device`).
+[[example]]
+name = "lfm2_generate"
+required-features = ["tokenizer"]
+
+# TTFT / steady-state decode bench — prompts go through the GGUF gpt2 BPE.
+[[example]]
+name = "lfm2_bench"
+required-features = ["tokenizer"]
+
 [features]
 default = []
+# Text in / text out for the GGUF runner (reuses the GGUF gpt2 BPE reader).
+tokenizer = ["dep:rlx-qwen35", "rlx-qwen35/tokenizer"]
 metal = ["rlx-runtime/metal"]
 mlx = ["rlx-runtime/mlx"]
 cuda = ["rlx-runtime/cuda"]

@@ -22,7 +22,7 @@
 //!   - `ckpts/*.json` — per-model architecture configs. The generative DiTs
 //!     (`SparseStructureFlowModel`, `SLatFlowModel`) share [`DitConfig`]; the
 //!     sparse VAEs use [`SparseVaeConfig`]; the (reused) dense sparse-structure
-//!     decoder uses [`SparseStructureVaeConfig`].
+//!     decoder uses `SparseStructureVaeConfig`.
 //!
 //! All fields keep the upstream names so a checkpoint's JSON deserializes
 //! verbatim.

@@ -21,8 +21,6 @@ mod support;
 #[cfg(feature = "rocm")]
 #[test]
 fn vjepa2_tiny_pipeline_matches_cpu_on_rocm() {
-    mod compile_support;
-
     use rlx_runtime::Device;
 
     if !rlx_rocm::is_available() {

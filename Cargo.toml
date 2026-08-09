@@ -77,6 +77,7 @@ members = [
     "crates/rlx-nanbeige",
     "crates/rlx-tinyllama",
     "crates/rlx-phi",
+    "crates/rlx-carbon",
     "crates/rlx-omnicoder",
     "crates/rlx-granite",
     "crates/rlx-inkling",
@@ -84,6 +85,7 @@ members = [
     "crates/rlx-cohere",
     "crates/rlx-llama-base",
     "crates/rlx-minimax",
+    "crates/rlx-minimax-h3",
     "crates/rlx-gpt-oss",
     "crates/rlx-nemotron",
     "crates/rlx-nemotron-asr",
@@ -309,6 +311,7 @@ rlx-minicpm5 = { path = "crates/rlx-minicpm5", version = "0.2.14" }
 rlx-nanbeige = { path = "crates/rlx-nanbeige", version = "0.2.14" }
 rlx-tinyllama = { path = "crates/rlx-tinyllama", version = "0.2.14" }
 rlx-phi = { path = "crates/rlx-phi", version = "0.2.14" }
+rlx-carbon = { path = "crates/rlx-carbon", version = "0.2.14" }
 rlx-omnicoder = { path = "crates/rlx-omnicoder", version = "0.2.14" }
 rlx-granite = { path = "crates/rlx-granite", version = "0.2.14" }
 rlx-inkling = { path = "crates/rlx-inkling", version = "0.2.14" }
@@ -368,6 +371,7 @@ rlx-kyutai-tts = { path = "crates/rlx-kyutai-tts", version = "0.2.14" }
 rlx-ssm = { path = "crates/rlx-ssm", version = "0.2.14" }
 rlx-lfm = { path = "crates/rlx-lfm", version = "0.2.14" }
 rlx-minimax = { path = "crates/rlx-minimax", version = "0.2.14" }
+rlx-minimax-h3 = { path = "crates/rlx-minimax-h3", version = "0.2.14" }
 rlx-nemotron = { path = "crates/rlx-nemotron", version = "0.2.14" }
 rlx-nemotron-asr = { path = "crates/rlx-nemotron-asr", version = "0.2.14" }
 rlx-conformer-ctc = { path = "crates/rlx-conformer-ctc", version = "0.2.14" }

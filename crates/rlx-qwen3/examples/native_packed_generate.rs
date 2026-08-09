@@ -67,7 +67,10 @@ fn main() -> anyhow::Result<()> {
     let gguf = std::env::args().nth(1).unwrap_or_else(|| {
         "/Users/Shared/rlx-models/weights/lm/qwen3-0.6b-gguf/Qwen3-0.6B-Q4_K_M.gguf".to_string()
     });
-    let device = std::env::args().nth(2).map(|s| parse_device(&s)).unwrap_or(Device::Metal);
+    let device = std::env::args()
+        .nth(2)
+        .map(|s| parse_device(&s))
+        .unwrap_or(Device::Metal);
     // Long prompt so decode starts in the TOP compile bucket → no mid-stream
     // bucket-boundary recompiles → the timed window is pure steady-state decode.
     // E2E_PROMPT_LEN overrides the prompt length to probe long-context decode.
@@ -95,7 +98,10 @@ fn main() -> anyhow::Result<()> {
         (1u32..=prompt_len).collect()
     };
     let n = 96;
-    eprintln!("[e2e] GGUF: {gguf} | device={device:?} | prompt={} tokens", prompt.len());
+    eprintln!(
+        "[e2e] GGUF: {gguf} | device={device:?} | prompt={} tokens",
+        prompt.len()
+    );
 
     // E2E_PACKED_ONLY: profile/measure the packed runner alone (skip the F32
     // reference + comparison).
@@ -123,10 +129,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("[e2e] PASS ✓ (native packed generate == F32 greedy stream, {n} tokens)");
         Ok(())
     } else {
-        let diverge = f32_toks
-            .iter()
-            .zip(&packed_toks)
-            .position(|(a, b)| a != b);
+        let diverge = f32_toks.iter().zip(&packed_toks).position(|(a, b)| a != b);
         anyhow::bail!("E2E FAIL: streams diverge at index {diverge:?}");
     }
 }

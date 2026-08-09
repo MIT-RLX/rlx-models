@@ -34,11 +34,11 @@ pub use rlx_dinov2::{DinoV2Output, DinoV2Runner, DinoV2RunnerBuilder, DinoV2Vari
 pub use rlx_flux2::{Flux2Output, Flux2Runner, Flux2RunnerBuilder};
 pub use rlx_gemma::{GemmaConfigSource, GemmaRunner, GemmaRunnerBuilder};
 pub use rlx_llama32::{Llama32ConfigSource, Llama32Runner, Llama32RunnerBuilder};
-pub use rlx_qwen3::{Precision, Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder};
 /// Long-context KV context-store config (HNSW retrieval memory). Re-exported so
 /// consumers can enable it via `Qwen3Runner::enable_kv_store[_with_encoder]`.
 #[cfg(feature = "mmap-kv")]
 pub use rlx_qwen3::KvStoreConfig;
+pub use rlx_qwen3::{Precision, Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder};
 pub use rlx_qwen35::{Qwen35ConfigSource, Qwen35Runner, Qwen35RunnerBuilder};
 #[cfg(feature = "uni2")]
 pub use rlx_uni2::{Uni2Output, Uni2Runner, Uni2RunnerBuilder};
@@ -189,7 +189,22 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
                     );
                 }
             } else {
-                Box::new(rlx_lfm::LfmRunner::builder().weights(weights).build()?)
+                // LFM2 / LFM2.5 GGUFs use the hybrid ShortConv+attention arch
+                // (`Lfm2GgufRunner`); the legacy `LfmRunner` only handles the
+                // older SSM variant and bails on ShortConv tensors.
+                let is_gguf = weights
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("gguf"))
+                    .unwrap_or(false);
+                if is_gguf {
+                    Box::new(rlx_lfm::Lfm2GgufRunner::open(
+                        weights,
+                        rlx_runtime::Device::Cpu,
+                    )?) as Box<dyn LmRunner>
+                } else {
+                    Box::new(rlx_lfm::LfmRunner::builder().weights(weights).build()?)
+                }
             }
         }
         "qwen3-vl" => {

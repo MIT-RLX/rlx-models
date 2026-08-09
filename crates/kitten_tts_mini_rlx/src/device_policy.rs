@@ -458,7 +458,8 @@ mod tests {
                 assert_eq!(wave_device(Device::Gpu), Device::Vulkan);
                 assert_eq!(clamp_waveform(Device::Gpu, 160_000), VULKAN_WAVEFORM_CAP);
                 assert_eq!(clamp_waveform(Device::Gpu, 16_000), 16_000);
-                std::env::remove_var("KITTEN_RLX_GPU_WAVE");
+                // SAFETY: single-threaded test; mirrors `crate::set_env_var`.
+                unsafe { std::env::remove_var("KITTEN_RLX_GPU_WAVE") };
             }
             // Explicit wgpu Gpu wave keeps the 32 k wgpu cap.
             if !env_disabled("KITTEN_RLX_WGPU_WAVEFORM_CAP")
@@ -467,7 +468,8 @@ mod tests {
                 crate::set_env_var("KITTEN_RLX_GPU_WAVE", "wgpu");
                 assert_eq!(wave_device(Device::Gpu), Device::Gpu);
                 assert_eq!(clamp_waveform(Device::Gpu, 48_000), WGPU_WAVEFORM_CAP);
-                std::env::remove_var("KITTEN_RLX_GPU_WAVE");
+                // SAFETY: single-threaded test; mirrors `crate::set_env_var`.
+                unsafe { std::env::remove_var("KITTEN_RLX_GPU_WAVE") };
             }
             if !env_disabled("KITTEN_RLX_VULKAN_WAVEFORM_CAP")
                 && env_usize("KITTEN_RLX_VULKAN_WAVEFORM_CAP").is_none()
@@ -502,7 +504,8 @@ mod tests {
                 assert_eq!(duration_device(Device::Gpu), Device::Cpu);
                 crate::set_env_var("KITTEN_RLX_GPU_WAVE", "1");
                 assert_eq!(duration_device(Device::Gpu), Device::Vulkan);
-                std::env::remove_var("KITTEN_RLX_GPU_WAVE");
+                // SAFETY: single-threaded test; mirrors `crate::set_env_var`.
+                unsafe { std::env::remove_var("KITTEN_RLX_GPU_WAVE") };
             }
             if std::env::var("KITTEN_RLX_CPU_WAVE").is_err()
                 && std::env::var("KITTEN_RLX_GPU_WAVE").is_err()

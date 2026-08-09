@@ -114,3 +114,19 @@ crates/rlx-whisper/fixtures/
 # Required build asset (baked via include_str!), not a regenerable fixture:
 !crates/rlx-orpheus/tests/fixtures/orpheus_hi_codes.txt
 weights/asr/
+
+# Stray HuggingFace checkpoint files dropped in the repo ROOT by download /
+# export scripts (a bare `from_pretrained(..., save_pretrained("."))` writes the
+# whole set here). Same policy as the *.gguf rule above: model blobs are never
+# source — they belong under /weights, /tmp/rlx-weights, or an external disk.
+# Root-anchored (`/`) so per-crate config.json / tokenizer.json stay tracked.
+/*.safetensors
+/added_tokens.json
+/config.json
+/dna_config.json
+/generation_config.json
+/merges.txt
+/special_tokens_map.json
+/tokenizer.json
+/tokenizer_config.json
+/vocab.json

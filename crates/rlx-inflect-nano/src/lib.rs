@@ -106,7 +106,7 @@ impl InflectNano {
     }
 
     /// Load an Inflect-Nano bundle from anywhere: a directory, a packed
-    /// `.rlxpack` file, in-memory bytes, or any custom [`AssetSource`]
+    /// `.rlxpack` file, in-memory bytes, or any custom `AssetSource`
     /// (`rlx_core::AssetSource`). Additive alongside [`InflectNano::load_from_dir`];
     /// requires the `rlx-graph` feature (which pulls the shared loader). Directory
     /// sources load in place; other sources materialize to a self-cleaning temp

@@ -352,6 +352,7 @@ mod async_impl {
     use super::*;
     use crate::VoiceClone;
     use crate::voice_clone_api::SpeakerReference;
+    use anyhow::Result;
     use futures_channel::mpsc;
     use futures_core::Stream;
     use std::pin::Pin;
@@ -409,7 +410,7 @@ mod async_impl {
     {
         let (tx, rx) = mpsc::unbounded::<Result<PcmChunk>>();
         let handle = std::thread::spawn(move || -> Result<StreamStats> {
-            let mut tx = tx;
+            let tx = tx;
             let stats = tts.generate_stream(&reference, &target_text, config, |evt| {
                 match evt {
                     StreamEvent::Pcm(chunk) => {
@@ -440,6 +441,7 @@ mod tokio_impl {
     use super::*;
     use crate::VoiceClone;
     use crate::voice_clone_api::SpeakerReference;
+    use anyhow::Result;
 
     /// `tokio::sync::mpsc::Receiver<Result<PcmChunk>>`. Use `recv().await`.
     pub type PcmChunkReceiver = tokio::sync::mpsc::Receiver<Result<PcmChunk>>;

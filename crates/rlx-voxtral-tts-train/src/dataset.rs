@@ -152,7 +152,7 @@ impl WavDataset {
         out
     }
 
-    /// Inverse of [`patches_to_ncl`] — recovers time-domain PCM from NCL layout.
+    /// Inverse of `patches_to_ncl` — recovers time-domain PCM from NCL layout.
     pub fn ncl_to_pcm(ncl: &[f32], patch_size: usize) -> Vec<f32> {
         if patch_size == 0 {
             return Vec::new();

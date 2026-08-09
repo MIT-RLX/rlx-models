@@ -11,7 +11,7 @@
 //!   enumerates `A./B./…` and scores the single answer letter.
 //! - [`run_gsm8k`] — generative exact-match: prompt (optionally few-shot),
 //!   greedy-decode, take the last number, compare to the gold `#### N`.
-//! - [`run_perplexity`] — reuses [`rlx_eval::perplexity`] via the [`BenchModel`]
+//! - [`run_perplexity`] — reuses [`fn@rlx_eval::perplexity`] via the [`BenchModel`]
 //!   `LmLogprobs` impl.
 
 pub mod datasets;

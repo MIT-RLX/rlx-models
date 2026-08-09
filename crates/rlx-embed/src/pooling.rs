@@ -18,7 +18,7 @@
 /// Pooling strategy for reducing token hidden states to one vector per sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pooling {
-    /// First token ([CLS]).
+    /// First token (`[CLS]`).
     Cls,
     /// Attention-mask-weighted mean over tokens.
     Mean,

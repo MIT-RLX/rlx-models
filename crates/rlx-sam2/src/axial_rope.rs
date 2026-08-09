@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! SAM2 axial 2-D RoPE (host + cos/sin tables for [`Op::Rope`] IR).
+//! SAM2 axial 2-D RoPE (host + cos/sin tables for `Op::Rope` IR).
 
 /// Per-token cos/sin for x-axis and y-axis halves (`[seq, head_dim/4]` each).
 pub fn axial_rope_cos_sin_for_seq(

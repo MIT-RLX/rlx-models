@@ -57,6 +57,11 @@ required-features = ["mmap-kv"]
 name = "context_1m_telemetry"
 required-features = ["dual-encoder"]
 
+# Retrieve + splice the disk-tiered KV store into a live decode cache.
+[[example]]
+name = "retrieval_decode_splice"
+required-features = ["mmap-kv"]
+
 [dev-dependencies]
 # `dotprod` pulls opscope's neon/decompose GEMV kernels incl. the W8A8 SDOT path
 # (int8×int8→int32, no f32 widen) used by the `ablate` mode's lever-1 measurement.

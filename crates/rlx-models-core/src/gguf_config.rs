@@ -55,7 +55,7 @@ pub const EMBED_GGUF_ARCHES: &[&str] = &["bert", "modern-bert", "nomic-bert", "n
 /// GGUF architectures for FLUX denoiser checkpoints (validate in `rlx-flux2`, not the loader).
 pub const FLUX_GGUF_ARCHES: &[&str] = &["flux"];
 
-/// DINOv2 ViT (e.g. dinov2.cpp / community converters); F32 drain via [`PrefixStripGgufResolver`].
+/// DINOv2 ViT (e.g. dinov2.cpp / community converters); F32 drain via `PrefixStripGgufResolver`.
 pub const DINOV2_GGUF_ARCHES: &[&str] = &["dinov2"];
 
 /// SAM v1 ViT-H and MobileSAM GGUF (`sam`, `mobile-sam`).

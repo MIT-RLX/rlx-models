@@ -23,7 +23,7 @@ use crate::train::random_batch;
 use anyhow::{Result, ensure};
 use rand::prelude::*;
 
-/// Per butterfly: 2×2 complex matrix as 8 floats [m00r,m00i,m01r,m01i,m10r,m10i,m11r,m11i].
+/// Per butterfly: 2×2 complex matrix as 8 floats `[m00r,m00i,m01r,m01i,m10r,m10i,m11r,m11i]`.
 #[derive(Debug, Clone)]
 pub struct UnitaryWeights {
     pub matrices: Vec<f32>,

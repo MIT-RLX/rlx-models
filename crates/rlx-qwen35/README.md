@@ -7,6 +7,16 @@ Alibaba **Qwen3.5 / Qwen3.6** for RLX — hybrid **Gated DeltaNet** ("linear att
 ## Quick start
 
 ```bash
+just fetch-qwen35-0.8b
+
+# GGUF path (default fetched quant: Q4_K_M)
+just qwen35 -- --weights weights/Qwen3.5-0.8B-gguf/Qwen3.5-0.8B-Q4_K_M.gguf \
+  --packed --chat --prompt "Hello" --max-tokens 32
+
+# Or safetensors directory from Qwen/Qwen3.5-0.8B-Base
+just qwen35 -- --weights weights/Qwen3.5-0.8B-Base --chat --prompt "Hello" --max-tokens 32
+
+# Generic local GGUF path
 just qwen35 -- --weights model.gguf --prompt "Hello" --max-tokens 32
 # or:
 cargo run -p rlx-qwen35 --release --features apple-silicon -- \

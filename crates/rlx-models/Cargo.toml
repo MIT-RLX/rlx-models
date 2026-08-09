@@ -134,6 +134,8 @@ hf-hub = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
 rlx-metal = { workspace = true, optional = true }
 rlx-mlx = { workspace = true, optional = true }
+# Adapter introspection for the wgpu/vulkan backend checks in tests/.
+rlx-wgpu = { workspace = true, optional = true }
 candle-core = { workspace = true, optional = true }
 candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
@@ -568,6 +570,7 @@ coreml = [
 gpu = [
     "embed",
     "ocr",
+    "dep:rlx-wgpu",
     "rlx-runtime/gpu",
     "rlx-bert?/gpu",
     "rlx-clinicalbert?/gpu",
@@ -645,6 +648,7 @@ portable-gpu = ["gpu"]
 vulkan = [
     "embed",
     "ocr",
+    "dep:rlx-wgpu",
     "rlx-runtime/vulkan",
     "rlx-bert?/vulkan",
     "rlx-clinicalbert?/vulkan",
@@ -1447,6 +1451,46 @@ required-features = ["wav2vec2-bert"]
 [[test]]
 name = "wav2vec2_bert_vulkan_check"
 required-features = ["wav2vec2-bert"]
+
+[[test]]
+name = "llama32_cuda_check"
+required-features = ["llama32"]
+
+[[test]]
+name = "llama32_rocm_check"
+required-features = ["llama32"]
+
+[[test]]
+name = "llama32_metal_check"
+required-features = ["llama32"]
+
+[[test]]
+name = "llama32_mlx_check"
+required-features = ["llama32"]
+
+[[test]]
+name = "llama32_wgpu_check"
+required-features = ["llama32"]
+
+[[test]]
+name = "whisper_all_backends_e2e"
+required-features = ["whisper"]
+
+[[test]]
+name = "whisper_backend_parity"
+required-features = ["whisper"]
+
+[[test]]
+name = "whisper_parity"
+required-features = ["whisper"]
+
+[[test]]
+name = "whisper_real_encoder_parity"
+required-features = ["whisper"]
+
+[[test]]
+name = "whisper_wgpu_gpu_kv"
+required-features = ["whisper"]
 
 [[test]]
 name = "whisper_decode_path_parity"

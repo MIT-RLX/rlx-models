@@ -46,9 +46,9 @@ impl Default for TrainingConfig {
 
 /// Training batch: text + audio + optional speaker embedding.
 pub struct TrainingBatch {
-    /// Text token IDs: Vec<Vec<u32>> shape [batch_size, seq_len]
+    /// Text token IDs: `Vec<Vec<u32>>` shape `[batch_size, seq_len]`
     pub text_ids: Vec<Vec<u32>>,
-    /// Audio codec frames: Vec<Vec<Vec<u32>>> shape [batch_size, num_frames, 32]
+    /// Audio codec frames: `Vec<Vec<Vec<u32>>>` shape `[batch_size, num_frames, 32]`
     pub audio_frames: Vec<Vec<Vec<u32>>>,
     /// Optional reference audio for speaker embedding (batch_size wavs)
     pub ref_audio: Option<Vec<Vec<f32>>>,

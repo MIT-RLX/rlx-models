@@ -170,7 +170,7 @@ fn is_zip_pytorch(path: &Path) -> Result<bool> {
     let mut magic = [0u8; 2];
     f.read_exact(&mut magic)
         .with_context(|| format!("read magic from {path:?}"))?;
-    Ok(magic == [b'P', b'K'])
+    Ok(magic == *b"PK")
 }
 
 /// HF PR branches that host `model.safetensors` when `main` only has legacy pytorch.

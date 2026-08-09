@@ -41,6 +41,15 @@ use rlx_gemma::multimodal::{
     build_vision_projection_graph,
 };
 use rlx_gemma::unified_projector::{build_unified_audio_graph, build_unified_vision_graph};
+#[cfg(any(
+    feature = "metal",
+    feature = "mlx",
+    feature = "gpu",
+    feature = "cuda",
+    feature = "rocm",
+    feature = "vulkan"
+))]
+use rlx_runtime::is_available;
 use rlx_runtime::{Device, Session};
 
 // ── Tiny projector configs ───────────────────────────────────────

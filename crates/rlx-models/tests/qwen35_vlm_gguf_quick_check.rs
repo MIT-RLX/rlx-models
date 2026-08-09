@@ -135,7 +135,8 @@ fn qwen35_real_gguf_mmproj_assembled_prefill() {
     };
 
     let (rgb, img_w, img_h) = load_rgb(None);
-    let mut enc = Qwen35VisionEncoder::from_mmproj(&mmproj, img_w, img_h).expect("vision encoder");
+    let mut enc = Qwen35VisionEncoder::from_mmproj(&mmproj, img_w, img_h, Device::Cpu)
+        .expect("vision encoder");
     let vision = enc.encode_rgb(&rgb, img_w, img_h).expect("encode");
 
     let mut loader =

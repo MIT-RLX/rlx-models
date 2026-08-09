@@ -37,7 +37,8 @@ mod cuda_tests {
         let mut compiled =
             super::compile_support::compile_qwen35_prefill(Device::Cuda, graph, params);
         let ids = vec![1.0f32, 2.0, 3.0, 4.0];
-        let outs = compiled.run(&[("input_ids", &ids), ("last_token_idx", &[3.0f32])]);
+        let last_token_idx = vec![3.0f32];
+        let outs = compiled.run(&[("input_ids", &ids), ("last_token_idx", &last_token_idx)]);
         assert!(!outs.is_empty());
         assert!(outs[0].iter().all(|v| v.is_finite()));
     }

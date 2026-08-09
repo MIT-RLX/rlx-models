@@ -37,6 +37,8 @@ use rlx_gemma::config::{
 };
 use rlx_gemma::generator::GemmaGenerator;
 use rlx_runtime::Device;
+#[cfg(any(feature = "metal", feature = "mlx", feature = "gpu"))]
+use rlx_runtime::is_available;
 use std::collections::HashMap;
 use std::time::Instant;
 

@@ -25,14 +25,14 @@
 //! Many mlx-community architectures the generic builder rejects (Gemma AltUp,
 //! Qwen3.5 gated-DeltaNet, DeepSeek/Kimi MLA, GLM-MoE, gpt-oss sinks, …) DO
 //! have a dedicated rlx crate that runs them. This module layers that
-//! knowledge on top: [`classify_coverage`] consults the [`dedicated_coverage`]
+//! knowledge on top: [`classify_coverage`] consults the `dedicated_coverage`
 //! table FIRST, and only falls back to the generic classifier when no crate
 //! claims the arch. The result is the "does rlx run it (via any path)" verdict
 //! the mlx-community catalog reports.
 //!
 //! Adding a family: wire its dispatch (a `model_registry` `model_type` → runner
 //! mapping) and its crate's MLX-affine loader, then add ONE arm to
-//! [`dedicated_coverage`]. `supported` flips in one place and the catalog stays
+//! `dedicated_coverage`. `supported` flips in one place and the catalog stays
 //! consistent with what actually runs.
 
 use serde_json::Value;

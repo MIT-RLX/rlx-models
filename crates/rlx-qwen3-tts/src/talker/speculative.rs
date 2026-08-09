@@ -78,17 +78,12 @@ pub const DEFAULT_DRAFT_LEN: usize = 4;
 ///
 /// `GreedyArgmax` is what v1 ships; richer policies arrive when we have
 /// the sampling RNG plumbed through the verify call.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum AcceptancePolicy {
     /// Accept iff `draft_token == argmax(verifier_logits[i])`. Deterministic;
     /// safe baseline; under-accepts vs. sampling.
+    #[default]
     GreedyArgmax,
-}
-
-impl Default for AcceptancePolicy {
-    fn default() -> Self {
-        Self::GreedyArgmax
-    }
 }
 
 /// Source of draft tokens. Implementations propose `k` future g0 codec

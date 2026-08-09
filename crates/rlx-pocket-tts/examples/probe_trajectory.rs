@@ -90,7 +90,7 @@ fn main() -> Result<()> {
                 l2(backbones.last().unwrap()),
                 l2(latents.last().unwrap()),
                 eos,
-                &latents
+                latents
                     .last()
                     .unwrap()
                     .row(0)

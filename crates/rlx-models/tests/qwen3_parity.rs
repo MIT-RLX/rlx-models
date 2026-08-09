@@ -57,7 +57,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::qwen3 as candle_qwen3;
 use rlx_models::qwen3::{Qwen3Config, build_qwen3_graph_sized};
 use rlx_models::weight_map::WeightMap;
-use rlx_runtime::{Device, Session};
+use rlx_runtime::Device;
 use std::time::Instant;
 
 const HIDDEN_TOL: f32 = 5e-3;

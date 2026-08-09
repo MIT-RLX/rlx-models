@@ -19,7 +19,7 @@
 //! projection and attention (best parity today).
 //!
 //! [`MemoryAttentionCompiled::compile_in_graph_rope`] fuses each layer into one
-//! graph using [`Op::AxialRope2d`] (faster compile/run). Both paths share a
+//! graph using `Op::AxialRope2d` (faster compile/run). Both paths share a
 //! compiled stack final-norm subgraph (`skip_fusion` to avoid bad LN fusion).
 
 use super::axial_rope::apply_axial_rope_2d;

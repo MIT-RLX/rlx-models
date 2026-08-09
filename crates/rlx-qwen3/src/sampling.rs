@@ -92,8 +92,8 @@ pub struct SampleOpts {
     pub dry_allowed_length: usize,
     pub dry_max_ngram: usize,
     /// DRY sequence-break tokens packed into a fixed-size array.
-    /// Use [`SampleOpts::dry_breakers`] to read the slice or
-    /// [`SampleOpts::with_dry_breakers`] to set it.
+    /// Use `SampleOpts::dry_breakers` to read the slice or
+    /// `SampleOpts::with_dry_breakers` to set it.
     pub dry_sequence_breakers: [u32; DRY_BREAKERS_MAX],
     pub dry_sequence_breakers_len: u8,
     pub mirostat: MirostatMode,

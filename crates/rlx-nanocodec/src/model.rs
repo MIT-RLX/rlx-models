@@ -48,7 +48,7 @@ pub struct StageW {
     pub c_out: usize,
     pub k: usize,
     pub stride: usize,
-    /// res_layer[ks][dil] residual blocks (3 kernels × 3 dilations).
+    /// `res_layer[ks][dil]` residual blocks (3 kernels × 3 dilations).
     pub res: Vec<Vec<ResidualBlockW>>,
 }
 

@@ -41,6 +41,10 @@ use rlx_models::sam::{
 };
 use std::hint::black_box;
 
+// 6.28 / 3.14 are deliberate 2-dp values, not TAU/PI: they define the
+// synthetic parity input, and changing them would change every dumped
+// reference blob compared against here.
+#[allow(clippy::approx_constant)]
 fn synthesize_image() -> Vec<f32> {
     let n = 3 * SAM_IMG_SIZE * SAM_IMG_SIZE;
     let mut v = vec![0f32; n];

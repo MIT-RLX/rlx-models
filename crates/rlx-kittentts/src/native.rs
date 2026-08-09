@@ -188,7 +188,7 @@ impl NativeEngine {
     }
 
     /// Like [`infer`](Self::infer), but supplies per-chunk ORT duration tensors aligned with
-    /// [`infer_opts::chunk_padded_ids_with_offsets`] (isolated ORT runs per chunk).
+    /// `infer_opts::chunk_padded_ids_with_offsets` (isolated ORT runs per chunk).
     pub fn infer_with_chunk_ort_durations(
         &self,
         ids: &[i64],

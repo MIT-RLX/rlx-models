@@ -13,7 +13,7 @@
 //! `params` map and a `packed` (quantized-bytes) map. Feed those to
 //! [`MapParamSource`] and hand the graph to
 //! [`run_decoder_pipeline_local`] (single machine) or, on a cluster, partition
-//! with [`rlx_distributed::graph::partition`] and serve each stage with
+//! with [`fn@rlx_distributed::graph::partition`] and serve each stage with
 //! [`rlx_distributed::graph::serve_stage`] using a per-node source.
 
 use crate::weight_loader::WeightLoader;

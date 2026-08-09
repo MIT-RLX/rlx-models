@@ -15,7 +15,7 @@
 
 //! Precision-parametric packed linear emission for the packed decode path.
 //!
-//! A K-quant / low-precision weight linear lowers to [`Op::DequantMatMul`], but
+//! A K-quant / low-precision weight linear lowers to `Op::DequantMatMul`, but
 //! the operand layout differs by precision family:
 //!   - **GGUF** (`Q4_K`, `Q6_K`, `Q8_0`, MXFP4, IQ*, …): one self-describing
 //!     packed blob → 2-input `(x, packed_w)`.
@@ -24,7 +24,7 @@
 //!   - **NVFP4**: 4-input with FP8 block scales + optional f32 global scale.
 //!
 //! Rather than hand-write that dispatch per projection × per layer, the
-//! [`dequant_forms!`] macro generates one **exhaustive** `QuantScheme →
+//! `dequant_forms!` macro generates one **exhaustive** `QuantScheme →
 //! DequantForm` classifier: adding a new [`QuantScheme`] variant without
 //! assigning it a form is a COMPILE error, so no precision is silently left
 //! un-lowered on the packed decode path. [`emit_packed_linear`] then emits the
@@ -33,7 +33,7 @@
 use rlx_ir::quant::QuantScheme;
 use rlx_ir::{Graph, NodeId, Shape};
 
-/// How a [`QuantScheme`] maps to a [`Op::DequantMatMul`] operand layout.
+/// How a [`QuantScheme`] maps to a `Op::DequantMatMul` operand layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DequantForm {
     /// GGUF self-describing blob: `(x, packed_w)`.
@@ -91,7 +91,7 @@ dequant_forms! {
 }
 
 /// Emit a single packed linear `y = x · dequant(w)ᵀ` as the precision-correct
-/// [`Op::DequantMatMul`]. `w_q` is the U8 packed-code param; `scale`/`zp` are
+/// `Op::DequantMatMul`. `w_q` is the U8 packed-code param; `scale`/`zp` are
 /// the auxiliary params (ignored for [`DequantForm::Packed2`], where the GGUF
 /// blob is self-describing). `out_shape` is the result shape `[.., n]`.
 pub fn emit_packed_linear(

@@ -40,7 +40,7 @@ pub struct PackReport {
 /// Pack ASR tensors into one GGUF.
 ///
 /// `root` is the published tree (sidecars + output). Tensor pack sources may
-/// live under `root` or a cache via [`pack_source_roots`].
+/// live under `root` or a cache via `pack_source_roots`.
 pub fn pack_asr_gguf(root: &Path, out: &Path) -> Result<PackReport> {
     let sources = pack_source_roots(root);
     let mut w = GgufWriter::new();

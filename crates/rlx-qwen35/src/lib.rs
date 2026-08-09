@@ -103,7 +103,7 @@ pub use builder::{
     build_qwen35_prefill_cache_graph, build_qwen35_prefill_cache_graph_ext,
     build_qwen35_prefill_cache_hir_dynamic_ext, build_qwen35_prefill_cache_hir_ext,
     build_qwen35_prefill_hidden_cache_hir_dynamic_ext, build_qwen35_prefill_hidden_cache_hir_ext,
-    build_qwen35_prefix_graph, build_qwen35_trunk_export_graph,
+    build_qwen35_prefix_graph, build_qwen35_trunk_export_graph, build_qwen35_verify_hir,
     emit_qwen35_full_attn_prefill_layer, emit_qwen35_gdn_prefill_layer, emit_qwen35_prefill_tail,
 };
 pub use cache::{

@@ -23,7 +23,7 @@
 //! [`rlx_audio_blocks::decoders::transducer`] (the stateless-predictor greedy
 //! search) and contributes the Kroko-specific config + the glue that turns a
 //! Zipformer2 encoder + stateless decoder/joint into a
-//! [`StatelessTransducerCore`](rlx_audio_blocks::decoders::StatelessTransducerCore).
+//! [`StatelessTransducerCore`].
 //!
 //! Status: config + decode wiring, CPU smoke. The Zipformer2 encoder graph
 //! (Conv2dSubsampling + streaming Zipformer2 stacks) and the stateless

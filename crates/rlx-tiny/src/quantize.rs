@@ -1,6 +1,6 @@
 //! Product quantization (k-means) for **data-optimal** codebook-synthesis init.
 //!
-//! The runtime model ([`crate::model::synth_linear`]) replaces each weight
+//! The runtime model (`crate::model::synth_linear`) replaces each weight
 //! `W [k,n]` (consumed `x·W`) with a fixed u8 index table `[n, k/ED]` + a trained
 //! codebook `[NE, ED]`; `Op::SynthMatMul` reconstructs `Wᵀ[n,k]` inside the
 //! matmul (`out[i,j] = Σ_p x[i,p]·Wᵀ[j,p]`, so `Wᵀ[j,p] = W[p,j]`). By default
@@ -76,7 +76,7 @@ fn dist2(a: &[f32], b: &[f32]) -> f32 {
 /// exactly the two tensors `synth_linear` bakes/trains. Reconstruction is
 /// `Ŵᵀ[j, kb·ED+t] = codebook[indices[j·nb+kb]]·[t]` (i.e. `Ŵ[kb·ED+t, j]`).
 ///
-/// Runs k-means (k-means++ init, [`KMEANS_ITERS`] Lloyd steps) over the
+/// Runs k-means (k-means++ init, `KMEANS_ITERS` Lloyd steps) over the
 /// `n·(k/entry_dim)` length-`entry_dim` blocks of `Wᵀ`. `num_entries ≤ 256`.
 pub fn pq_quantize(
     w: &[f32],

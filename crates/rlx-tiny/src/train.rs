@@ -1,8 +1,8 @@
 //! The training loop, lifted out of `bin/train.rs` so `main` reads as *parse →
 //! resolve config/corpus → build+init → [`Trainer::run`]*. A [`Trainer`] owns
 //! the model, optimizer, schedule, and loop policy; each iteration is a short,
-//! named sequence — [`Trainer::train_step`] → [`Trainer::maybe_eval`]
-//! (keep-best checkpoint) → [`Trainer::maybe_sample`] — instead of one long
+//! named sequence — `Trainer::train_step` → `Trainer::maybe_eval`
+//! (keep-best checkpoint) → `Trainer::maybe_sample` — instead of one long
 //! block. Behavior is identical to the hand-inlined loop: same distill / QAT /
 //! plain step selection, same eval-every / sample-every cadence, same keep-best
 //! checkpointing and bits/byte report.

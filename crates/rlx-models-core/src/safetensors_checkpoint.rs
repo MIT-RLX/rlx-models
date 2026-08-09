@@ -334,8 +334,8 @@ pub fn tensor_view_to_f32(
     })
 }
 
-/// [`WeightLoader`] that keeps shards mmap'd and only materializes F32 on
-/// [`WeightLoader::take`]. Avoids the ~2× RAM spike of
+/// `WeightLoader` that keeps shards mmap'd and only materializes F32 on
+/// `WeightLoader::take`. Avoids the ~2× RAM spike of
 /// [`WeightMap::from_safetensors_dir`] (full BF16→F32 HashMap before drain).
 pub struct SafetensorsMmapLoader {
     ckpt: SafetensorsCheckpoint,

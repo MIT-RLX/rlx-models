@@ -13,7 +13,6 @@ use axum::{
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt};
-use rlx_mimi;
 use rlx_moshi::{
     GenerationConfig, MoshiSession, MoshiVariant, StreamCommand, StreamEvent, WsMsgType,
     decode_ws_message, encode_ws_audio, encode_ws_handshake, encode_ws_text, parse_moshi_device,
@@ -127,7 +126,7 @@ async fn handle_socket(socket: WebSocket, st: Arc<AppState>, prompt: String) {
         max_steps: st.max_steps,
         ..GenerationConfig::default()
     };
-    let handle = match spawn_duplex_tokio(session, &prompt, run_cfg, 64) {
+    let mut handle = match spawn_duplex_tokio(session, &prompt, run_cfg, 64) {
         Ok(h) => h,
         Err(e) => {
             let _ = sender
@@ -138,7 +137,6 @@ async fn handle_socket(socket: WebSocket, st: Arc<AppState>, prompt: String) {
     };
 
     let cmd_tx = handle.cmd_tx.clone();
-    let mut event_rx = handle.event_rx;
 
     let pump = tokio::spawn(async move {
         while let Some(msg) = receiver.next().await {
@@ -171,7 +169,7 @@ async fn handle_socket(socket: WebSocket, st: Arc<AppState>, prompt: String) {
         let _ = cmd_tx.send(StreamCommand::Finish).await;
     });
 
-    while let Some(ev) = event_rx.recv().await {
+    while let Some(ev) = handle.event_rx.recv().await {
         match ev {
             StreamEvent::Ready => {
                 let _ = sender

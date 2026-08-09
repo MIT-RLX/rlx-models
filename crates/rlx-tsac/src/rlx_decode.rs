@@ -283,7 +283,7 @@ impl RlxDecoder {
 
 /// DAC encoder on RLX backends: PCM → continuous latent `[1024, nf]`. The conv
 /// stack runs as rlx-dac's encoder graph (all backends); RVQ quantization (codes)
-/// is layered on top via [`RlxCodec`]. Standard DAC conventions (the Bellard q8
+/// is layered on top via `RlxCodec`. Standard DAC conventions (the Bellard q8
 /// weights are a standard DAC, not tsac-ng's quirky decode).
 pub struct RlxEncoder {
     device: Device,

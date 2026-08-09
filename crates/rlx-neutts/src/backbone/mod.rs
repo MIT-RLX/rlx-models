@@ -18,7 +18,7 @@
 //! | Feature              | Implementation                          |
 //! |----------------------|-----------------------------------------|
 //! | `llama` (default)    | [`rlx::BackboneModel`] — `rlx-llama32`   |
-//! | `parity-llama-cpp`   | [`llama_cpp::LlamaCppBackbone`] — ref   |
+//! | `parity-llama-cpp`   | `llama_cpp::LlamaCppBackbone` — ref   |
 
 #[cfg(feature = "llama")]
 mod rlx;

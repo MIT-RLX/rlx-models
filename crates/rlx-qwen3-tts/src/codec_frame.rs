@@ -83,6 +83,7 @@ pub fn build_qwen3_tts_decode_built(
             use_custom_mask: true,
             ragged_rope: false,
             export_qk: false,
+            packed: false,
             profile: Some(profile.clone()),
         },
     )
@@ -107,6 +108,7 @@ pub fn build_qwen3_tts_prefill_built(
             with_qk_outputs: false,
             with_lm_head: false,
             last_logits_only: false,
+            packed: false,
             profile: Some(profile.clone()),
             rope_cos,
             rope_sin,

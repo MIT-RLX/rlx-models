@@ -25,7 +25,7 @@
 //!
 //! - **Vision tower** ([`Qwen3VlVisionRunner`]) — implemented.
 //!   SigLIP-variant ViT (pre-LN, separate Q/K/V, GELU FFN, no
-//!   LayerScale, no CLS) via [`rlx_flow::blocks::siglip_layer_fused`]
+//!   LayerScale, no CLS) via `rlx_flow::blocks::siglip_layer_fused`
 //!   + multimodal projector (LayerNorm → 2× linear with GELU). Reads
 //!     the mmproj GGUF + an HF `config.json` for hyperparameters.
 //! - **Image preprocessing** ([`Qwen3VlImagePreprocessor`]) — bicubic

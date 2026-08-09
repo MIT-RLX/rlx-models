@@ -8,7 +8,7 @@ use crate::multimodal::{IMAGE_PAD, MEDIA_MARKER, VISION_END, VISION_START};
 /// Default system preamble for Qwen2.5-VL instruct checkpoints.
 pub const DEFAULT_SYSTEM: &str = "You are a helpful assistant.";
 
-/// Build the user turn text with a single image placeholder marker for [`MultimodalPrompt`].
+/// Build the user turn text with a single image placeholder marker for `MultimodalPrompt`.
 pub fn user_turn_with_media(question: &str) -> String {
     format!("{MEDIA_MARKER}{question}")
 }

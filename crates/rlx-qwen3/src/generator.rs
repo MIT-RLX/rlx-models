@@ -66,7 +66,7 @@ use std::sync::Arc;
 /// Stateful Qwen3 generation handle.
 ///
 /// Holds the (config, weight bytes, token history) and rebuilds a
-/// prefill graph on each [`step`] call. Cheap to construct after
+/// prefill graph on each `step` call. Cheap to construct after
 /// initial weight load; tokens stay in-memory between calls.
 pub struct Qwen3Generator {
     cfg: Qwen3Config,
@@ -124,6 +124,7 @@ pub struct Qwen3Generator {
     /// the expensive retrieve+splice+rebind runs every N steps; between, the
     /// resident cache grows via the normal decode append (incremental fold, no
     /// rebind), amortizing the O(resident) per-step splice cost.
+    #[cfg(feature = "mmap-kv")]
     retention_step: usize,
     /// Resident batched decode ([`Self::decode_batched_resident_step`]): the
     /// GPU-handle binding bucket per batch size `B`, and the host K/V mirror per
@@ -788,6 +789,7 @@ impl Qwen3Generator {
                     Device::Cuda | Device::Mlx | Device::Metal | Device::Rocm | Device::Vulkan
                 ),
             gpu_kv_binding: GpuKvBinding::default(),
+            #[cfg(feature = "mmap-kv")]
             retention_step: 0,
             retention,
             #[cfg(feature = "mmap-kv")]
@@ -1211,7 +1213,7 @@ impl Qwen3Generator {
         Self::from_loader_at(cfg, loader.as_mut(), device, weights_path)
     }
 
-    /// Same as [`from_path`] but with MTP-head visibility control.
+    /// Same as `from_path` but with MTP-head visibility control.
     /// When `include_mtp=true` and the file is GGUF, MTP weights are
     /// drained into the generator's cache alongside the base
     /// weights. The base inference path still ignores them — they
@@ -1237,7 +1239,7 @@ impl Qwen3Generator {
     }
 
     /// Replace the token history with `prompt_ids`. Does not run the
-    /// model — the next [`step`] call processes the full sequence.
+    /// model — the next `step` call processes the full sequence.
     /// Clears any KV cache from a prior generation.
     pub fn prefill(&mut self, prompt_ids: &[u32]) {
         self.tokens.clear();
@@ -1302,7 +1304,7 @@ impl Qwen3Generator {
     /// Cached step: O(L) per token instead of O(L²). First call seeds
     /// the KV cache from the prompt via prefill-with-cache; subsequent
     /// calls run the decode-mode graph on just the last token + cached
-    /// past. Output is bit-identical to [`step`] modulo reduction
+    /// past. Output is bit-identical to `step` modulo reduction
     /// order in the SDPA kernel.
     ///
     /// Invariant after each call: `cache.past_seq == tokens.len() - 1`
@@ -1707,7 +1709,8 @@ impl Qwen3Generator {
         // Kept for inspection recording after commit.
         let mut importance_snapshot: Option<Vec<f32>> = None;
         let skip_imp = std::env::var_os("RLX_SKIP_IMP").is_some();
-        if !skip_imp && (self.retention.as_ref().unwrap().needs_attention() || self.inspect.is_some())
+        if !skip_imp
+            && (self.retention.as_ref().unwrap().needs_attention() || self.inspect.is_some())
         {
             let resident_len = self.retention.as_ref().unwrap().resident_len();
             if resident_len > 0 {
@@ -1791,8 +1794,7 @@ impl Qwen3Generator {
             .as_ref()
             .map(|s| s.multilayer)
             .unwrap_or(false);
-        #[cfg(not(feature = "mmap-kv"))]
-        let multilayer = false;
+        #[cfg(feature = "mmap-kv")]
         let query_layers: Vec<Vec<f32>> = if multilayer {
             self.cache
                 .as_ref()
@@ -1952,13 +1954,12 @@ impl Qwen3Generator {
                         st.store.len_blocks(),
                     );
                 }
-                if st.embedder.is_some() {
+                if let Some(embd) = st.embedder.as_ref() {
                     // Semantic dual-encoder path (the selective, 1M-scalable signal):
                     // embed the question tokens → hybrid3 blend of embedding +
                     // lexical (+ optional K·K). This is what makes small-topk recall
                     // land the right block where K·K cannot.
                     // Prefer the clean question text over the noisy token window.
-                    let embd = st.embedder.as_ref().unwrap();
                     let eq = query_text
                         .as_deref()
                         .and_then(|t| embd.embed_query_str(t))
@@ -2342,8 +2343,7 @@ impl Qwen3Generator {
         // The resident path handles F32 and NATIVE packed (`native_packed_gguf`);
         // the non-native rewrite path (`packed_weights` set, no native GGUF) still
         // uses the host bucketed path below — it applies its rewrite per compile.
-        let non_native_packed =
-            self.packed_weights.is_some() && self.native_packed_gguf.is_none();
+        let non_native_packed = self.packed_weights.is_some() && self.native_packed_gguf.is_none();
         if self.use_gpu_kv && !non_native_packed && !rlx_ir::env::flag("RLX_QWEN3_NO_GPU_KV") {
             return self.decode_step_gpu_resident(
                 past_seq,
@@ -2517,9 +2517,8 @@ impl Qwen3Generator {
                     .ensure_graph_with_packed(
                         key,
                         move |upper| {
-                            let mut loader =
-                                rlx_core::weight_loader::GgufLoader::from_file(&gguf)
-                                    .expect("open GGUF for native packed resident decode");
+                            let mut loader = rlx_core::weight_loader::GgufLoader::from_file(&gguf)
+                                .expect("open GGUF for native packed resident decode");
                             crate::builder::build_qwen3_decode_graph_sized_packed(
                                 &cfg,
                                 &mut loader,
@@ -2852,7 +2851,8 @@ impl Qwen3Generator {
         let b = caches.len();
         self.batched_resident_kv
             .insert(b, caches.iter().map(|c| (*c).clone()).collect());
-        self.batched_gpu_kv_binding.insert(b, GpuKvBinding::default());
+        self.batched_gpu_kv_binding
+            .insert(b, GpuKvBinding::default());
     }
 
     /// One **resident** batched decode step (all `B` sequences at the same
@@ -2922,8 +2922,14 @@ impl Qwen3Generator {
                         key,
                         |upper| {
                             let mut wm = WeightMap::from_tensors((*weights).clone());
-                            build_qwen3_decode_graph_sized_ext(&cfg, &mut wm, b, upper as usize, true)
-                                .expect("resident batched decode graph")
+                            build_qwen3_decode_graph_sized_ext(
+                                &cfg,
+                                &mut wm,
+                                b,
+                                upper as usize,
+                                true,
+                            )
+                            .expect("resident batched decode graph")
                         },
                         &decode_opts,
                     )
@@ -2973,8 +2979,12 @@ impl Qwen3Generator {
                 // Output order is logits, K_0, V_0, K_1, V_1, … → out index li+1.
                 compiled.register_kv_row_feed(name, 1 + li);
             }
-            self.batched_gpu_kv_binding
-                .insert(b, GpuKvBinding { upper: upper as u64 });
+            self.batched_gpu_kv_binding.insert(
+                b,
+                GpuKvBinding {
+                    upper: upper as u64,
+                },
+            );
         }
 
         // Per-row mask `[B, upper+1]` (rows identical at uniform past_seq).
@@ -3003,7 +3013,8 @@ impl Qwen3Generator {
         compiled.feed_kv_batch_major_src(upper, upper + 1, past_seq, b, upper, kv_dim);
         // Cheap per-step readback of ONLY the new rows keeps the host mirror
         // accurate for the next bucket rebind (O(B) rows, not O(B·ctx)).
-        let mut new_rows: Vec<Vec<(Vec<f32>, Vec<f32>)>> = (0..b).map(|_| Vec::with_capacity(n_layers)).collect();
+        let mut new_rows: Vec<Vec<(Vec<f32>, Vec<f32>)>> =
+            (0..b).map(|_| Vec::with_capacity(n_layers)).collect();
         for l in 0..n_layers {
             for (i, nr) in new_rows.iter_mut().enumerate() {
                 let row = i * (upper + 1) + upper;
@@ -3038,7 +3049,8 @@ impl Qwen3Generator {
                 .and_then(|idx| c.buckets().nth(idx).map(|r| r.end - 1))
         });
         if next_upper != Some(upper as u64) {
-            self.batched_gpu_kv_binding.insert(b, GpuKvBinding::default());
+            self.batched_gpu_kv_binding
+                .insert(b, GpuKvBinding::default());
         }
 
         let mut out = Vec::with_capacity(b);
@@ -3278,7 +3290,9 @@ impl Qwen3Generator {
                         },
                         &decode_opts,
                     )
-                    .ok_or_else(|| anyhow::anyhow!("past_seq {max_past_seq} outside decode buckets"))?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("past_seq {max_past_seq} outside decode buckets")
+                    })?
             } else {
                 cache_b
                     .ensure_graph_with_params(
@@ -3290,7 +3304,9 @@ impl Qwen3Generator {
                         },
                         &decode_opts,
                     )
-                    .ok_or_else(|| anyhow::anyhow!("past_seq {max_past_seq} outside decode buckets"))?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("past_seq {max_past_seq} outside decode buckets")
+                    })?
             };
             upper_u64 as usize
         };
@@ -3335,8 +3351,12 @@ impl Qwen3Generator {
                 compiled.bind_gpu_handle(name, buf);
                 compiled.register_kv_row_feed(name, 1 + li);
             }
-            self.batched_ragged_gpu_kv_binding
-                .insert(b, GpuKvBinding { upper: upper as u64 });
+            self.batched_ragged_gpu_kv_binding.insert(
+                b,
+                GpuKvBinding {
+                    upper: upper as u64,
+                },
+            );
         }
 
         // Per-sequence RoPE `[B, half]` + mask `[B, upper+1]` (each at its own pos).
@@ -3431,7 +3451,11 @@ impl Qwen3Generator {
             let mut loader = rlx_core::weight_loader::GgufLoader::from_file(&gguf)?;
             let (graph, params, packed_params) =
                 crate::builder::build_qwen3_graph_sized_last_logits_packed(
-                    &self.cfg, &mut loader, batch, seq, /*with_kv_outputs*/ true,
+                    &self.cfg,
+                    &mut loader,
+                    batch,
+                    seq,
+                    /*with_kv_outputs*/ true,
                 )?;
             let mut compiled = Session::new(self.device).compile_with(graph, &prefill_opts);
             for (name, data) in &params {
@@ -3477,7 +3501,7 @@ impl Qwen3Generator {
         self.generate_cached_with(n, opts, |_| {})
     }
 
-    /// Same as [`generate_cached`] but invokes `on_token` once per
+    /// Same as `generate_cached` but invokes `on_token` once per
     /// freshly sampled id, inside the decode loop. The whole `n` step
     /// loop shares the bucketed compile cache — callers wanting a
     /// streaming UI should prefer this to calling
@@ -3492,7 +3516,7 @@ impl Qwen3Generator {
         self.generate_cached_until(n, opts, |_| true, on_token)
     }
 
-    /// Like [`generate_cached_with`] but stops early when `should_continue`
+    /// Like `generate_cached_with` but stops early when `should_continue`
     /// returns `false` after sampling a token.
     pub fn generate_cached_until(
         &mut self,
@@ -3765,7 +3789,10 @@ impl Qwen3Generator {
         let (graph, params, packed_params) = if let Some(gguf) = self.native_packed_gguf.clone() {
             let mut loader = rlx_core::weight_loader::GgufLoader::from_file(&gguf)?;
             crate::builder::build_qwen3_decode_graph_sized_packed(
-                &self.cfg, &mut loader, /*batch*/ 1, past_seq,
+                &self.cfg,
+                &mut loader,
+                /*batch*/ 1,
+                past_seq,
             )?
         } else {
             let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());

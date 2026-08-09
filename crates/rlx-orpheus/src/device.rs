@@ -93,7 +93,7 @@ pub fn preferred_synth_device() -> Device {
 
 /// Like [`preferred_synth_device`] but returns the first available device in the
 /// preference order, even when KV decode is not advertised (caller may still use
-/// incremental decode via [`BackboneLoadOptions::use_fast_kv`]).
+/// incremental decode via `BackboneLoadOptions::use_fast_kv`).
 pub fn preferred_synth_device_lenient() -> Device {
     for device in [
         Device::Metal,

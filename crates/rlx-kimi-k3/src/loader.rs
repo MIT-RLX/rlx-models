@@ -9,7 +9,7 @@
 //! `DenseMlpWeights`, `MoeWeights`).
 //!
 //! The 114 GB backbone (attention/dense/embed/norm/head) loads densely and fits;
-//! the 1.45 TB of routed experts cannot be materialized in full — [`load_expert`]
+//! the 1.45 TB of routed experts cannot be materialized in full — `load_expert`
 //! dequantizes ONE expert at a time (for paging / spot checks), never a whole
 //! 896-expert layer.
 
@@ -251,7 +251,7 @@ impl CheckpointLoader {
     /// `[vocab, hidden]`) TRANSPOSED to a genuine `[K, N]` = `[in, out]` BF16 tensor
     /// — the standard `g.mm(x[M,K], w[K,N])` weight layout, so EVERY backend's native
     /// BF16 matmul consumes it correctly (not a CPU-only B-transposed reinterpret).
-    /// Half the bytes of the f32 [`linear_t`]. One pass, parallel over the `K` output
+    /// Half the bytes of the f32 `linear_t`. One pass, parallel over the `K` output
     /// rows (each gathers its strided source column), directly into the byte buffer.
     pub fn lm_head_bf16_kn(
         &mut self,
@@ -284,7 +284,7 @@ impl CheckpointLoader {
     }
 
     /// Load the **MoonViT vision tower + patchmergerv2 projector** real weights and
-    /// derive its [`VisionDims`] from the config + weight shapes. `grid_h`/`grid_w`
+    /// derive its `VisionDims` from the config + weight shapes. `grid_h`/`grid_w`
     /// (the image's patch grid) default to `init_pos_emb_{height,width}`; the caller
     /// overrides them per image. All matmul weights are `linear_t`-transposed to the
     /// `[in, out]` layout [`crate::vision::build_vision`] expects.
@@ -480,7 +480,7 @@ impl CheckpointLoader {
 
     /// Load the LatentMoE **non-expert** weights (router, latent down/up, norm,
     /// 2 shared experts) — small & dense. The 896 routed experts are NOT loaded
-    /// here (MXFP4, 16 GB/layer); use [`load_expert`] to page them.
+    /// here (MXFP4, 16 GB/layer); use `load_expert` to page them.
     pub fn load_moe_dense(&mut self, layer_prefix: &str, d: MoeDims) -> Result<MoeWeights> {
         let (hidden, l, e, si) = (
             d.hidden,

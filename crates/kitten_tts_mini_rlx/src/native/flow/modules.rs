@@ -15,7 +15,7 @@
 
 //! Semantic module map for the native Kitten mini graph.
 //!
-//! The full HIR is built by [`super::build_native_hir`] via [`crate::graph`]
+//! The full HIR is built by [`super::build_native_hir`] via `crate::graph`
 //! (decomposed from ONNX). Submodule files document boundaries for incremental
 //! hand-porting (OCR-style) — see [`crate::native::config::ModuleKind`].
 

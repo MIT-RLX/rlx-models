@@ -44,6 +44,7 @@ fn text_encoder_tiny_runs_on_vulkan() {
         seq,
         TINY_TEXT_ENCODER_LAYERS,
         Device::Vulkan,
+        None,
     )
     .unwrap();
     let out = compiled.run(&[("input_ids", ids_f32.as_slice())]).remove(0);

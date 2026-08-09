@@ -16,7 +16,7 @@
 //! NomicBERT graph builder — RoPE + SwiGLU + no bias.
 //!
 //! Production builds go through [`crate::flow::NomicFlow`] (native
-//! [`ModelFlow`]). The functions below remain for diagnostics only.
+//! `ModelFlow`). The functions below remain for diagnostics only.
 
 use anyhow::Result;
 use rlx_core::config::NomicBertConfig;

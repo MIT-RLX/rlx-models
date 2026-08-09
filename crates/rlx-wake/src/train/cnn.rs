@@ -1,7 +1,7 @@
 // RLX — versatile ML compiler + runtime.
 // Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna.
 
-//! Train [`WakeCnn`] end-to-end in RLX (conv + FC, SGD on `rlx-cpu` path).
+//! Train `WakeCnn` end-to-end in RLX (conv + FC, SGD on `rlx-cpu` path).
 
 use crate::cnn::{WakeCnnConfig, WakeCnnWeights};
 use crate::ops::{conv1d_nchw, gemv_bias, global_mean_pool_chw, relu, sigmoid};

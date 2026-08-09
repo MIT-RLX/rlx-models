@@ -25,7 +25,7 @@ use super::prompt_mask_ir::SamPromptMaskCompiled;
 use anyhow::{Result, ensure};
 use rlx_core::weight_map::WeightMap;
 
-/// All weights consumed by [`PromptEncoder::forward`]. Loaded once
+/// All weights consumed by `PromptEncoder::forward`. Loaded once
 /// from the safetensors file and then reused per prompt.
 pub struct PromptEncoderWeights {
     /// `[2, embed_dim/2]` Gaussian random projection used by the
@@ -127,7 +127,7 @@ pub(super) fn extract_prompt_encoder_weights(
     })
 }
 
-/// Output of [`PromptEncoder::forward`] — fed straight into the mask
+/// Output of `PromptEncoder::forward` — fed straight into the mask
 /// decoder. All host-side `Vec<f32>`.
 pub struct PromptEncoderOutput {
     /// `[num_tokens, embed_dim]` — concatenation of point and box

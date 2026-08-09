@@ -48,6 +48,8 @@ use candle_transformers::models::gemma2 as candle_gemma2;
 #[cfg(feature = "parity-candle")]
 use rlx_models::flow_util::compile_built;
 #[cfg(feature = "parity-candle")]
+use rlx_models::gemma::config::GemmaRopeMap;
+#[cfg(feature = "parity-candle")]
 use rlx_models::gemma::{
     GemmaArch, GemmaConfig, GemmaPrefillOpts, build_gemma_graph_sized_last_logits,
     build_gemma_prefill_built,
@@ -139,6 +141,27 @@ fn tiny_cfg() -> (GemmaConfig, candle_gemma::Config) {
         num_experts_used: 0,
         expert_ffn_size: 0,
         expert_weights_scale: 1.0,
+        // Gemma-3n / MoE / AltUp additions — inert for this plain-Gemma tiny
+        // config (values mirror `GemmaConfig::tiny_test`).
+        layer_types: Vec::new(),
+        rope_parameters: GemmaRopeMap::default(),
+        global_head_dim: None,
+        num_global_key_value_heads: None,
+        attention_k_eq_v: false,
+        use_bidirectional_attention: None,
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: 0,
+        num_kv_shared_layers: 0,
+        use_double_wide_mlp: false,
+        enable_moe_block: false,
+        eog_token_ids: Vec::new(),
+        activation_sparsity_pattern: Vec::new(),
+        altup_num_inputs: 0,
+        altup_active_idx: 0,
+        altup_coef_clip: None,
+        altup_correct_scale: false,
+        laurel_rank: 0,
+        rope_local_base_freq: 10_000.0,
     };
     let candle = candle_gemma::Config {
         attention_bias: false,
@@ -185,11 +208,6 @@ fn tiny_gemma2_cfg() -> (GemmaConfig, candle_gemma2::Config) {
         attn_logit_softcapping: Some(50.0),
         final_logit_softcapping: Some(30.0),
         query_pre_attn_scalar: 256,
-        effective_num_layers: None,
-        num_experts: 0,
-        num_experts_used: 0,
-        expert_ffn_size: 0,
-        expert_weights_scale: 1.0,
         sliding_window: None,
     };
     (rlx, candle)
@@ -315,11 +333,11 @@ fn run_candle_last_logits(
     let input =
         Tensor::from_vec(ids.to_vec(), (batch, seq), &device).map_err(anyhow::Error::from)?;
     let logits = model.forward(&input, 0).map_err(anyhow::Error::from)?;
-    Ok(logits
+    logits
         .flatten_all()
         .map_err(anyhow::Error::from)?
         .to_vec1()
-        .map_err(anyhow::Error::from)?)
+        .map_err(anyhow::Error::from)
 }
 
 #[cfg(feature = "parity-candle")]
@@ -337,14 +355,15 @@ fn run_candle_gemma2_last_logits(
     let input =
         Tensor::from_vec(ids.to_vec(), (batch, seq), &device).map_err(anyhow::Error::from)?;
     let logits = model.forward(&input, 0).map_err(anyhow::Error::from)?;
-    Ok(logits
+    logits
         .flatten_all()
         .map_err(anyhow::Error::from)?
         .to_vec1()
-        .map_err(anyhow::Error::from)?)
+        .map_err(anyhow::Error::from)
 }
 
 #[cfg(feature = "parity-candle")]
+#[allow(dead_code)] // kept as the compile_built reference path
 fn run_rlx_gemma2_last_logits_compile_built(
     cfg: &GemmaConfig,
     wm: &mut WeightMap,
@@ -356,6 +375,8 @@ fn run_rlx_gemma2_last_logits_compile_built(
         batch,
         seq,
         dynamic_seq: false,
+        prefill_hidden: false,
+        media_attn_bias: false,
         with_lm_head: true,
         with_kv_outputs: false,
         last_logits_only: true,
@@ -456,7 +477,7 @@ fn gemma_synthetic_last_logits_match_candle() -> Result<()> {
         }
         (data, shapes)
     };
-    let mut wm = WeightMap::from_tensors(wm_tensors);
+    let wm = WeightMap::from_tensors(wm_tensors);
 
     let candle_logits = run_candle_last_logits(&candle_cfg, &flat, &shape_map, batch, seq, &ids)?;
     let mut wm = wm;
@@ -640,6 +661,27 @@ fn gemma_cfg_from_json(path: &str) -> Result<(GemmaConfig, candle_gemma::Config)
         num_experts_used: 0,
         expert_ffn_size: 0,
         expert_weights_scale: 1.0,
+        // Gemma-3n / MoE / AltUp additions — inert for this plain-Gemma tiny
+        // config (values mirror `GemmaConfig::tiny_test`).
+        layer_types: Vec::new(),
+        rope_parameters: GemmaRopeMap::default(),
+        global_head_dim: None,
+        num_global_key_value_heads: None,
+        attention_k_eq_v: false,
+        use_bidirectional_attention: None,
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: 0,
+        num_kv_shared_layers: 0,
+        use_double_wide_mlp: false,
+        enable_moe_block: false,
+        eog_token_ids: Vec::new(),
+        activation_sparsity_pattern: Vec::new(),
+        altup_num_inputs: 0,
+        altup_active_idx: 0,
+        altup_coef_clip: None,
+        altup_correct_scale: false,
+        laurel_rank: 0,
+        rope_local_base_freq: 10_000.0,
     };
     let candle = candle_gemma::Config {
         attention_bias: rlx.attention_bias,
@@ -688,11 +730,6 @@ fn gemma_real_weights_last_logits_match_candle() -> Result<()> {
     assert_logits_parity(&rlx_logits, &candle_logits, "real weights B=1 L=8");
     Ok(())
 }
-
-#[cfg(all(feature = "parity-pytorch", feature = "parity-candle"))]
-use rlx_models::gemma::GemmaConfig;
-#[cfg(all(feature = "parity-pytorch", feature = "parity-candle"))]
-use rlx_models::weight_map::WeightMap;
 
 #[cfg(feature = "parity-pytorch")]
 fn reference_script() -> std::path::PathBuf {

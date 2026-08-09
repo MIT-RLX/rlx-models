@@ -61,7 +61,7 @@ fn permute_qk(w: &[f32], dim1: usize, dim2: usize, n_heads: usize) -> Vec<f32> {
 
 /// Map a Meta-original tensor name to its HF equivalent. Returns `None` for
 /// tensors HF drops (e.g. cached `rope.freqs`). The second field is `true` when
-/// the tensor is a q/k projection that must be [`permute_qk`]-ed.
+/// the tensor is a q/k projection that must be `permute_qk`-ed.
 pub fn meta_name_to_hf(name: &str) -> Option<(String, bool)> {
     if name == "tok_embeddings.weight" {
         return Some(("model.embed_tokens.weight".into(), false));

@@ -20,6 +20,19 @@
 
 use std::path::PathBuf;
 
+#[cfg(feature = "gpu")]
+use rlx_core::flow_util::compile_built;
+#[cfg(feature = "gpu")]
+use rlx_llama32::Llama32DecodeOpts;
+#[cfg(feature = "gpu")]
+use rlx_runtime::Device;
+#[cfg(feature = "gpu")]
+use rlx_voxtral_tts::lm_flow::{
+    build_tts_backbone_decode_shard_built_opts, build_tts_backbone_prefill_shard_hir_dynamic_ext,
+};
+#[cfg(feature = "gpu")]
+use rlx_voxtral_tts::{VoxtralTtsConfig, VoxtralTtsWeightStore};
+
 #[allow(dead_code)]
 fn model_dir() -> Option<PathBuf> {
     std::env::var("RLX_VOXTRAL_TTS_DIR")

@@ -16,7 +16,7 @@
 //! Legacy custom-kernel RNG fills — delegates to upstream [`rlx_ir`] helpers.
 //!
 //! Prefer [`CompileOptions::rng`](rlx_runtime::CompileOptions::rng) with native
-//! [`Op::RngNormal`] / [`Op::RngUniform`] when compiling; these remain for
+//! `Op::RngNormal` / `Op::RngUniform` when compiling; these remain for
 //! `Op::Custom` GPU/CPU kernel registration fallback.
 
 use rlx_ir::{RngOptions, fill_normal_like, fill_uniform_like};

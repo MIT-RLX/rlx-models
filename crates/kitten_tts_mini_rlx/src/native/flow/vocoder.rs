@@ -15,7 +15,7 @@
 
 //! Vocoder submodule metadata (`/decoder/generator/*`).
 //!
-//! The full vocoder HIR lives in [`crate::graph`] today (quant AdaIN resblocks,
+//! The full vocoder HIR lives in `crate::graph` today (quant AdaIN resblocks,
 //! source-filter sine gen, noise branches). Shape overrides for long waveforms
 //! mirror [`crate::bundle_patches`].
 

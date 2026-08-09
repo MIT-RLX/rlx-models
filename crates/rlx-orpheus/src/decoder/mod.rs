@@ -4,8 +4,8 @@
 //! SNAC 24 kHz RVQ decoder for Orpheus speech tokens.
 //!
 //! - **Eager** ([`SnacDecoder`]): host safetensors + ndarray (default).
-//! - **CoreML** ([`SnacBackend`] with [`SnacLoadOptions::coreml`]): quantizer on CPU,
-//!   conv decoder compiled to [`Device::Ane`] via `rlx-ir` (feature `coreml`).
+//! - **CoreML** ([`SnacBackend`] with `SnacLoadOptions::coreml`): quantizer on CPU,
+//!   conv decoder compiled to `Device::Ane` via `rlx-ir` (feature `coreml`).
 //!
 //! Weights: [`decoder_weights_path`] (`ORPHEUS_SNAC_PATH`).
 

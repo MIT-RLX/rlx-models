@@ -999,7 +999,7 @@ pub(crate) fn decode_forward(codes: &[i32], w: &DecoderWeights) -> Vec<f32> {
 /// ## Backend selection
 ///
 /// When built with `--features wgpu`, the decoder automatically selects the
-/// best available backend on the **first call to [`decode`]** (lazy init):
+/// best available backend on the **first call to `decode`** (lazy init):
 ///
 /// | Priority | Backend                   | When used                          |
 /// |----------|---------------------------|------------------------------------|
@@ -1283,13 +1283,13 @@ fn decode_wav_mono(data: &[u8]) -> Result<(Vec<f32>, u32)> {
 ///              └──► CodecEnc (BigCodec, strides [2,2,4,4,5]) ─────────────┘
 /// ```
 ///
-/// Weights: `neucodec_encoder.safetensors` from [`scripts/export_neucodec_encoder.py`].
+/// Weights: `neucodec_encoder.safetensors` from `scripts/export_neucodec_encoder.py`.
 /// Set `NEUTTS_ENCODER_PATH` before [`NeuCodecEncoder::new`].
 ///
 /// ## Status
 ///
 /// * **Done**: weight load, CodecEnc + SemanticEncoder eager forward, fc_prior fusion,
-///   FSQ quantize ([`fsq_encode`]), WAV ingest, optional W2V-BERT tap (`w2v-bert` feature).
+///   FSQ quantize (`fsq_encode`), WAV ingest, optional W2V-BERT tap (`w2v-bert` feature).
 pub struct NeuCodecEncoder {
     path: PathBuf,
     weights: EncoderWeights,

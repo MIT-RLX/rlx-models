@@ -939,7 +939,7 @@ impl TalkerEngine {
         self.last_hidden.copy_from_slice(&flat[off..off + h]);
     }
 
-    /// KV decode step; updates [`Self::last_hidden`] without sampling.
+    /// KV decode step; updates `Self::last_hidden` without sampling.
     pub fn decode_hidden_step(&mut self, embed: ArrayView1<f32>) -> Result<()> {
         ensure!(embed.len() == self.hidden, "decode embed len");
         if self.uses_eager_decode() {

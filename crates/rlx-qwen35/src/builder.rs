@@ -201,6 +201,10 @@ pub(crate) enum AttnCacheMode<'a> {
         v_out: &'a mut NodeId,
         /// Optional per-row mask for bucketed / variable-length decode.
         mask: Option<NodeId>,
+        /// `true` → `mask` is an ADDITIVE per-query bias `[b, n_head, seq, past+seq]`
+        /// (`MaskKind::Bias`, for multi-token bucketed verify); `false` → a
+        /// multiplicative per-key mask `[b, past+seq]` (`MaskKind::Custom`, decode).
+        mask_bias: bool,
     },
 }
 
@@ -317,8 +321,12 @@ pub fn build_qwen35_graph_sized_ext(
             let opts = crate::flow::Qwen35DecodeOpts {
                 batch,
                 past_seq,
+                seq: 1,
+                verify_all: false,
                 dynamic_past: false,
                 use_custom_mask: false,
+                bias_mask: false,
+                force_host_embed: false,
                 enable_mtp_head,
                 fast_mtp,
                 fast_greedy_lm_head: !with_lm_head,
@@ -624,6 +632,46 @@ pub fn build_qwen35_decode_hir_ext(
     )
 }
 
+/// HIR for a continued multi-token **verify** forward: process `n_new` new
+/// tokens at once (seq=`n_new`) continuing from a `past_seq`-length cache, and
+/// emit logits for ALL `n_new` positions (`verify_all`). The `m=n_new`
+/// projections read each weight once (the speculative-decode amortization); the
+/// GDN carry scans the `n_new` tokens from the seed state.
+pub fn build_qwen35_verify_hir(
+    cfg: &Qwen35Config,
+    weights: impl Into<std::sync::Arc<Qwen35Weights>>,
+    batch: usize,
+    past_seq: usize,
+    n_new: usize,
+    verify_all: bool,
+    enable_mtp: bool,
+    dynamic_past: bool,
+    use_bias_mask: bool,
+) -> Result<(HirModule, HashMap<String, Vec<f32>>, PackedParams)> {
+    let opts = crate::flow::Qwen35DecodeOpts {
+        batch,
+        // Bucketed verify: `past_seq` is the bucket UPPER; KV is padded to it and
+        // an additive per-query bias mask (`use_bias_mask`) blocks the pad slots +
+        // enforces causality among the `n_new` new tokens → ONE graph per bucket,
+        // weights shared (the memory fix). `dynamic_past` is the (broken) symbolic
+        // alternative — leave it off for the bucketed path.
+        past_seq,
+        seq: n_new,
+        verify_all,
+        dynamic_past,
+        use_custom_mask: use_bias_mask,
+        bias_mask: use_bias_mask,
+        // Bucketed verify graphs host-gather embeddings so its N bucket graphs
+        // don't each register the ~0.6 GB F32 token_embd (the memory sink).
+        force_host_embed: use_bias_mask,
+        enable_mtp_head: enable_mtp,
+        fast_mtp: false,
+        fast_greedy_lm_head: false,
+        profile: None,
+    };
+    crate::flow::build_qwen35_decode_model_flow(cfg, weights.into(), &opts)
+}
+
 /// Decode graph with optional custom attention mask (bucketed cache).
 pub fn build_qwen35_decode_graph_ext(
     cfg: &Qwen35Config,
@@ -638,8 +686,12 @@ pub fn build_qwen35_decode_graph_ext(
     let opts = crate::flow::Qwen35DecodeOpts {
         batch,
         past_seq,
+        seq: 1,
+        verify_all: false,
         dynamic_past: false,
         use_custom_mask,
+        bias_mask: false,
+        force_host_embed: false,
         enable_mtp_head,
         fast_mtp,
         fast_greedy_lm_head,
@@ -669,8 +721,12 @@ pub(crate) fn build_qwen35_decode_hir_assembled(
     let opts = crate::flow::Qwen35DecodeOpts {
         batch,
         past_seq,
+        seq: 1,
+        verify_all: false,
         dynamic_past: dynamic_past_seq,
         use_custom_mask,
+        bias_mask: false,
+        force_host_embed: false,
         enable_mtp_head,
         fast_mtp,
         fast_greedy_lm_head: !with_lm_head,
@@ -1118,6 +1174,7 @@ fn build_qwen35_hir_fallback_assembled(
                         k_out: &mut k_export,
                         v_out: &mut v_export,
                         mask: decode_mask_id,
+                        mask_bias: false,
                     })
                 } else {
                     None
@@ -1463,41 +1520,71 @@ pub(crate) fn build_linear_layer(
     );
     // → [batch*seq, value_dim]
 
-    // alpha = ssm_alpha @ x ; shape [batch*seq, n_v_heads]
-    let alpha_w = proj_mat(
-        g,
-        params,
-        packed,
-        &name(il, "ssm_alpha.weight"),
-        &lin.ssm_alpha,
-        n_embd,
-        n_v_heads,
-    );
-    let alpha = emit_proj(
-        g,
-        x_2d,
-        alpha_w,
-        &lin.ssm_alpha,
-        bs.flat2_shape(n_v_heads, DType::F32),
-    );
-
-    // beta = sigmoid(ssm_beta @ x)
-    let beta_w = proj_mat(
-        g,
-        params,
-        packed,
-        &name(il, "ssm_beta.weight"),
-        &lin.ssm_beta,
-        n_embd,
-        n_v_heads,
-    );
-    let beta_pre = emit_proj(
-        g,
-        x_2d,
-        beta_w,
-        &lin.ssm_beta,
-        bs.flat2_shape(n_v_heads, DType::F32),
-    );
+    // alpha (raw) and beta_pre are both tiny `[n_embd → n_v_heads]` F32 GEMVs
+    // sharing the input x_2d (the GGUF keeps ssm_alpha/ssm_beta unquantized).
+    // Fusing the two weights into one `[n_embd, 2*n_v_heads]` matmul halves this
+    // per-GDN-layer dispatch (36→18 tiny GEMVs/token, the decode dispatch tail)
+    // and is token-identical. Opt-in `RLX_QWEN35_FUSE_SSM`; falls back to two
+    // separate projections if either weight is packed.
+    let fuse_ssm = rlx_ir::env::flag("RLX_QWEN35_FUSE_SSM");
+    let (alpha, beta_pre) = match (&lin.ssm_alpha, &lin.ssm_beta) {
+        (MatWeight::F32(a), MatWeight::F32(b)) if fuse_ssm => {
+            // Weights are stored `[out, in]`; concat along `out` → `[2*n_v, in]`,
+            // then proj_mat's transpose convention gives a `[in, 2*n_v]` param.
+            let mut fused = Vec::with_capacity(a.len() + b.len());
+            fused.extend_from_slice(a);
+            fused.extend_from_slice(b);
+            let fused_w = param(
+                g,
+                params,
+                &name(il, "ssm_alpha_beta.weight"),
+                &transpose_2d(&fused, 2 * n_v_heads, n_embd),
+                &[n_embd, 2 * n_v_heads],
+            );
+            let fused_out = g.mm(x_2d, fused_w); // [batch*seq, 2*n_v_heads]
+            (
+                g.narrow_(fused_out, 1, 0, n_v_heads),
+                g.narrow_(fused_out, 1, n_v_heads, n_v_heads),
+            )
+        }
+        _ => {
+            // alpha = ssm_alpha @ x ; shape [batch*seq, n_v_heads]
+            let alpha_w = proj_mat(
+                g,
+                params,
+                packed,
+                &name(il, "ssm_alpha.weight"),
+                &lin.ssm_alpha,
+                n_embd,
+                n_v_heads,
+            );
+            let alpha = emit_proj(
+                g,
+                x_2d,
+                alpha_w,
+                &lin.ssm_alpha,
+                bs.flat2_shape(n_v_heads, DType::F32),
+            );
+            // beta_pre = ssm_beta @ x
+            let beta_w = proj_mat(
+                g,
+                params,
+                packed,
+                &name(il, "ssm_beta.weight"),
+                &lin.ssm_beta,
+                n_embd,
+                n_v_heads,
+            );
+            let beta_pre = emit_proj(
+                g,
+                x_2d,
+                beta_w,
+                &lin.ssm_beta,
+                bs.flat2_shape(n_v_heads, DType::F32),
+            );
+            (alpha, beta_pre)
+        }
+    };
     let beta = activation(g, Activation::Sigmoid, beta_pre);
 
     // gate_g = ssm_a * softplus(alpha + dt_bias); kernel applies state *= exp(gate_g).
@@ -1639,6 +1726,8 @@ pub(crate) fn build_linear_layer(
         // D2H of an Input-as-output can observe the pre-upload zeros even when
         // GDN mutated the arena in place (CPU/Metal unified memory hides this).
         // `ssm * (1 + 0*sum(y))` is a broadcast mul that depends on `y`.
+        // (The compiler constant-folds this to just `ssm` — 0 extra decode
+        // thunks — so it stays as the portable, discrete-GPU-safe form.)
         let scan_sum = g.sum(y, vec![0, 1, 2, 3], false);
         let one = scalar_const(g, 1.0);
         let zero = scalar_const(g, 0.0);
@@ -1854,11 +1943,11 @@ pub(crate) fn build_full_attn_layer(
     let q_rot = g.rope_n(q_normed, cos_id, sin_id, head_dim, n_rot);
     let k_rot = g.rope_n(k_normed, cos_id, sin_id, head_dim, n_rot);
 
-    let (k_cat, v_cat, attn_seq, attn_mask) = match attn_cache {
+    let (k_cat, v_cat, attn_seq, attn_mask, attn_mask_bias) = match attn_cache {
         Some(AttnCacheMode::Export { k_out, v_out }) => {
             *k_out = k_rot;
             *v_out = v_packed;
-            (k_rot, v_packed, seq, None)
+            (k_rot, v_packed, seq, None, false)
         }
         Some(AttnCacheMode::Decode {
             past_k,
@@ -1867,42 +1956,87 @@ pub(crate) fn build_full_attn_layer(
             k_out,
             v_out,
             mask,
+            mask_bias,
         }) => {
-            let new_k = g.concat_(vec![past_k, k_rot], 1);
-            let new_v = g.concat_(vec![past_v, v_packed], 1);
+            // In-place KV append (opt-in `RLX_QWEN35_INPLACE_KV`): write the new
+            // row into `past_k/v` at index `past_seq` instead of concat-copying
+            // the whole O(ctx) padded cache each token (61.9% of decode DRAM
+            // traffic — 544 MB/token @2K). Requires the caller to declare
+            // `past_k/v` one row larger (`[batch, past_seq+1, kv]`) so the
+            // aliased KvAppend output fits. Token-identical to the concat.
+            // Op::KvAppend writes exactly ONE new row (decode). For a continued
+            // multi-token forward (seq>1: chunked prefill / spec verify) the N new
+            // rows must go through `concat` instead. So in-place KV is seq==1 only.
+            // Bias-masked bucketed verify needs the concat layout (new tokens at
+            // rows `[upper, upper+n)`), so force in-place KvAppend off there.
+            let (new_k, new_v) =
+                if seq == 1 && !mask_bias && rlx_ir::env::flag("RLX_QWEN35_INPLACE_KV") {
+                    (
+                        g.kv_append(past_k, k_rot, 1, past_seq),
+                        g.kv_append(past_v, v_packed, 1, past_seq),
+                    )
+                } else {
+                    (
+                        g.concat_(vec![past_k, k_rot], 1),
+                        g.concat_(vec![past_v, v_packed], 1),
+                    )
+                };
             *k_out = new_k;
             *v_out = new_v;
-            (new_k, new_v, past_seq + seq, mask)
+            (new_k, new_v, past_seq + seq, mask, mask_bias)
         }
-        None => (k_rot, v_packed, seq, None),
+        None => (k_rot, v_packed, seq, None, false),
     };
 
     // sigmoid gate → [B, S, n_head * head_dim]
     let gate_sig = activation(g, Activation::Sigmoid, gate_packed);
 
     // GQA repeat: widen K/V from n_kv_head to n_head along head dim.
+    // GQA-native (opt-in `RLX_QWEN35_GQA_NATIVE`): the SDPA kernels index K/V by
+    // shared kv head internally (`qkv_kv_offset(..., byte_offs.kv_heads, ...)`,
+    // kv_heads inferred from the K shape), so skip the widening `narrow+concat`
+    // — which at decode materializes the FULL [ctx, kv_dim] cache every token
+    // (~18% of decode GPU-time @8K, O(ctx)). Token-identical.
     let group = n_head / n_kv_head;
-    let k_full = if group == 1 {
+    let expand = group > 1 && !rlx_ir::env::flag("RLX_QWEN35_GQA_NATIVE");
+    let k_full = if !expand {
         k_cat
     } else {
         repeat_heads_packed(g, k_cat, batch, attn_seq, n_kv_head, head_dim, group)
     };
-    let v_full = if group == 1 {
+    let v_full = if !expand {
         v_cat
     } else {
         repeat_heads_packed(g, v_cat, batch, attn_seq, n_kv_head, head_dim, group)
     };
 
     let attn_shape = bs.bs3(kv_dim, DType::F32);
+    // Sliding-window PREFILL attention (RLX_QWEN35_SWA_WINDOW>0, seq>1): each
+    // query attends only the last `window` keys, so the prefill-attention kernel
+    // iterates ~window keys/query → TTFT O(seq·window) LINEAR instead of O(seq²).
+    // Lossy on middle context (pair with sink+window decode). Decode (seq==1)
+    // stays causal over its (already bounded) KV.
+    let swa_window = rlx_ir::env::parse_or::<usize>("RLX_QWEN35_SWA_WINDOW", 0);
     let attn_out = if let Some(mask) = attn_mask {
-        g.attention(q_rot, k_full, v_full, mask, n_head, head_dim, attn_shape)
+        if attn_mask_bias {
+            // Additive per-query bias `[b, n_head, seq, past+seq]` (MaskKind::Bias):
+            // multi-token bucketed verify — expresses causal-among-new + padding.
+            g.attention_bias(q_rot, k_full, v_full, mask, n_head, head_dim, attn_shape)
+        } else {
+            g.attention(q_rot, k_full, v_full, mask, n_head, head_dim, attn_shape)
+        }
     } else {
+        let mask_kind = if seq > 1 && swa_window > 0 {
+            MaskKind::SlidingWindow(swa_window)
+        } else {
+            MaskKind::Causal
+        };
         g.add_node(
             Op::Attention {
                 num_heads: n_head,
                 head_dim,
                 v_head_dim: None,
-                mask_kind: MaskKind::Causal,
+                mask_kind,
                 score_scale: None,
                 attn_logit_softcap: None,
             },
@@ -3044,19 +3178,31 @@ fn l2_norm(g: &mut HirMut, x: NodeId, eps: f32) -> NodeId {
     let sumsq = g.sum(sq, vec![last], true);
     let rms = g.sqrt(sumsq);
     let eps_p = scalar_const(g, eps);
-    // max(rms, eps) = eps + relu(rms - eps) — fewer ops than the abs form.
-    let diff = g.sub(rms, eps_p);
-    let relu = activation(g, Activation::Relu, diff);
-    let denom = g.add(eps_p, relu);
+    // Clamp `max(rms, eps)` in ONE native binary (Metal `elem_max`, commutative
+    // broadcast path) instead of `eps + relu(rms - eps)` — 3 dispatches → 1.
+    // This L2-norm runs 2×/GDN-layer ×18 = 36×/token, so −2 thunks each ≈ −72
+    // off the decode dispatch floor (1836). Bit-identical to the clamp.
+    let denom = maximum(g, rms, eps_p);
     g.div(x, denom)
+}
+
+/// `max(lhs, rhs)` as a single `Op::Binary(Max)` node (Metal-native, commutative
+/// broadcast). Not exposed by `HirGraphExt` (which only wires add/sub/mul/div),
+/// so built directly on the module.
+fn maximum(g: &mut HirMut, lhs: NodeId, rhs: NodeId) -> NodeId {
+    let s = {
+        let ls = g.shape(lhs).clone();
+        let rs = g.shape(rhs).clone();
+        rlx_ir::shape::binary_shape(&ls, &rs).expect("maximum shape inference")
+    };
+    g.0.mir(Op::Binary(rlx_ir::op::BinaryOp::Max), vec![lhs, rhs], s)
 }
 
 /// `softplus(x) = log(1 + exp(x))`.
 fn softplus(g: &mut HirMut, x: NodeId) -> NodeId {
-    let ex = activation(g, Activation::Exp, x);
-    let one = scalar_const(g, 1.0);
-    let sum = g.add(ex, one);
-    activation(g, Activation::Log, sum)
+    // Single fused Softplus kernel (log(1+exp(x))) instead of exp→add→log —
+    // 1 dispatch vs 3 (×18 GDN layers on the decode dispatch floor).
+    activation(g, Activation::Softplus, x)
 }
 
 /// Repeat each KV head `factor` times on the packed last axis of a
@@ -3336,6 +3482,7 @@ pub fn emit_qwen35_decode_trunk_layer(
     past_len: usize,
     dynamic_past_seq: bool,
     decode_mask: Option<HirNodeId>,
+    mask_bias: bool,
     recur_out: &mut Vec<NodeId>,
 ) -> Result<HirNodeId> {
     let batch = bs.batch;
@@ -3377,6 +3524,17 @@ pub fn emit_qwen35_decode_trunk_layer(
             let mut k_export = HirNodeId(0);
             let mut v_export = HirNodeId(0);
             let kv_cols = cfg.num_key_value_heads * head_dim;
+            // In-place KV append needs `past_k/v` declared `seq` rows larger so
+            // the aliased KvAppend output `[batch, past_len+seq, kv]` fits (seq=1
+            // for normal decode; seq=N for a continued multi-token verify). Only
+            // the static (bucketed) path — the dynamic PAST_SEQ path keeps concat.
+            // In-place KvAppend is seq==1 only (see build_full_attn_layer); seq>1
+            // uses concat, which declares `past_k/v` at exactly `past_len` rows.
+            let inplace_kv = bs.seq == 1
+                && !dynamic_past_seq
+                && !mask_bias
+                && rlx_ir::env::flag("RLX_QWEN35_INPLACE_KV");
+            let kv_rows = past_len + inplace_kv as usize;
             let past_kv_shape = if dynamic_past_seq {
                 Shape::from_dims(
                     &[
@@ -3387,7 +3545,7 @@ pub fn emit_qwen35_decode_trunk_layer(
                     DType::F32,
                 )
             } else {
-                Shape::new(&[batch, past_len, kv_cols], DType::F32)
+                Shape::new(&[batch, kv_rows, kv_cols], DType::F32)
             };
             let past_k = g.input(format!("past_k_l{il}"), past_kv_shape.clone());
             let past_v = g.input(format!("past_v_l{il}"), past_kv_shape);
@@ -3398,6 +3556,7 @@ pub fn emit_qwen35_decode_trunk_layer(
                 k_out: &mut k_export,
                 v_out: &mut v_export,
                 mask: decode_mask,
+                mask_bias,
             };
             let h = build_full_attn_layer(
                 g,

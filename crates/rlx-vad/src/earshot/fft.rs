@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! From https://gitlab.com/teskje/microfft-rs
+//! From <https://gitlab.com/teskje/microfft-rs>
 //! Copyright (c) 2020-2024 Jan Teske, MIT license
 //!
 //! This is actually 2.5x slower than realfft/rustfft, but it's much simpler and doesn't require `std`.

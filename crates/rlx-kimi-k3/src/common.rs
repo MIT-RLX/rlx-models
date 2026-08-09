@@ -371,7 +371,7 @@ pub enum WeightQuant {
 }
 
 /// The requested top-level policy — a fixed scheme, or `Adaptive` (resolved
-/// per-layer via [`QUANT_LAYER`]).
+/// per-layer via `QUANT_LAYER`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum QuantPolicy {
     Fixed(WeightQuant),
@@ -381,12 +381,12 @@ pub enum QuantPolicy {
     /// on the rest. The measured 4-bit fix — ~4.8 effective bits, 2.7× lower error
     /// than uniform int4 (the amplification is concentrated in `o_proj`).
     Mixed,
-    /// Like [`Mixed`] but int6-g64 (not int4) on the robust projections: int8 on the
+    /// Like `Mixed` but int6-g64 (not int4) on the robust projections: int8 on the
     /// sensitive ones (`RLX_KIMI_MIXED_HI`, default `o_proj`), int6-g64 elsewhere.
     /// ~6.1 effective bits — pushes uniform-int6 accuracy toward int8 by protecting
     /// only the recurrence-amplified projection, for ~⅜ the bf16 bytes.
     Mixed6,
-    /// Like [`Mixed6`] but int7-g64 on the robust projections: int8 on the sensitive
+    /// Like `Mixed6` but int7-g64 on the robust projections: int8 on the sensitive
     /// ones, int7-g64 elsewhere. ~7.1 effective bits — closes nearly all of the
     /// remaining int6→int8 gap for ~7/16 the bf16 bytes.
     Mixed7,
@@ -431,8 +431,8 @@ pub fn is_quant_hotspot(idx: usize, n_layers: usize) -> bool {
 }
 
 /// Resolve the concrete scheme for a [`linear`] projection named `name` under the
-/// requested policy: `adaptive` consults [`QUANT_LAYER`] (int8 on depth hotspots),
-/// `mixed` consults [`mixed_hi`] (int8 on the sensitive projections, e.g. `o_proj`,
+/// requested policy: `adaptive` consults `QUANT_LAYER` (int8 on depth hotspots),
+/// `mixed` consults `mixed_hi` (int8 on the sensitive projections, e.g. `o_proj`,
 /// int4 elsewhere). `Fixed` ignores `name`.
 pub fn resolve_quant(name: &str) -> WeightQuant {
     match quant_policy() {

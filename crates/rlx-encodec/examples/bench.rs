@@ -18,6 +18,8 @@ use rlx_runtime::Device;
 
 const CRATE: &str = "rlx-encodec";
 
+// Elements are cfg-gated per backend, so `vec![..]` is not an option.
+#[allow(clippy::vec_init_then_push)]
 fn main() -> Result<()> {
     let (dur, iters) = cb::parse_dur_iters();
 
@@ -31,7 +33,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let candidates = vec![];
+    #[allow(unused_mut)]
+    let mut candidates = vec![];
     #[cfg(feature = "metal")]
     candidates.push(Device::Metal);
     #[cfg(feature = "mlx")]

@@ -29,7 +29,7 @@
 //! - [`distill`] — float / ternary distilled students and compiled deploys
 //! - [`exec`] — backend compilation, device selection, inference runner
 //! - [`spectral`] — mel frontend, Welch PSD, top-K peak extraction
-//! - [`bench`], [`ablation`], [`study`] — benchmarks, ablations, HTML reports
+//! - [`mod@bench`], [`ablation`], [`study`] — benchmarks, ablations, HTML reports
 //! - [`cli`] — the `rlx-fft` command-line interface
 //!
 //! # Quick start

@@ -115,7 +115,7 @@ fn run(device: Device, build: &str) -> Vec<f32> {
         "convdw" => {
             params.insert(
                 "w".to_string(),
-                (0..6 * 1 * 3 * 3).map(|i| (i as f32) * 0.01).collect(),
+                (0..6 * 3 * 3).map(|i| (i as f32) * 0.01).collect(),
             );
         }
         _ => {}

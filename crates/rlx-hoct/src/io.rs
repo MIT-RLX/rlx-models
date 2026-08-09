@@ -102,7 +102,7 @@ pub fn load_tiff_stack(dir: impl AsRef<Path>) -> Result<Array3<u32>> {
         let file = File::open(p)?;
         let mut dec = Decoder::new(BufReader::new(file))?;
         let img = dec.read_image()?;
-        let (y, x) = dec.dimensions();
+        let (y, x) = dec.dimensions()?;
         h = y as usize;
         w = x as usize;
         let slice = match img {

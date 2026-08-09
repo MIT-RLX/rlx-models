@@ -663,6 +663,7 @@ mod tests {
 
     #[test]
     fn product_default_native_path() {
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
         let o = WaveRnnOpts::product_default();
         #[cfg(target_os = "macos")]
         {

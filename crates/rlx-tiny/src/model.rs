@@ -18,7 +18,7 @@
 //!
 //! **Graph shape.** The **per-layer weight tensors** — codebook params, their
 //! fixed u8 index constants, and the LoRA factors — are built in plain Rust
-//! *before* the block, grouped one [`LayerParams`] per layer into a single
+//! *before* the block, grouped one `LayerParams` per layer into a single
 //! `Vec<LayerParams>`, and adopted by one **`bind layers[];`**, so
 //! `layers[i].cb_wq[s]` reads layer `i`, stage `s`'s codebook inside the runtime
 //! `repeat i` (layers) × `repeat s` (residual-VQ stages).
@@ -78,7 +78,7 @@ const Z_LOSS_BETA: f32 = 1e-4;
 /// Data-optimal initialization derived from a **trained dense** checkpoint by
 /// product quantization (see [`crate::quantize`]). Carries, per synth layer, the
 /// baked u8 index tables (one per residual-VQ stage — consumed at graph-build
-/// time by [`synth_linear`]) and, per parameter name, the initial value the
+/// time by `synth_linear`) and, per parameter name, the initial value the
 /// codebooks / LoRA factors / copied embeddings-norms-biases should take
 /// (consumed at [`init_dense`] time). The runtime model is byte-for-byte the same
 /// shape as a random-init one — only the *values and index assignment* change.

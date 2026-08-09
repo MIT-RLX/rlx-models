@@ -32,7 +32,7 @@ pub struct TextKLayer {
     pub int8: Vec<i8>,
     pub scale: Vec<f32>,
     pub ones: Vec<f32>,
-    /// Row-major f32 `[out,in]` = int8 * scale[row].
+    /// Row-major f32 `[out,in]` = int8 * `scale[row]`.
     pub weight: Vec<f32>,
 }
 

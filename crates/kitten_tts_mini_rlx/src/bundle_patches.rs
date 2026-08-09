@@ -387,7 +387,7 @@ pub(crate) fn inject_if_n_bypass(hir: &mut HirModule) -> bool {
 
 /// Replace F0/N projection compute with named Params (ORT-prosody → native-vocoder partition).
 ///
-/// Call **after** [`inject_if_f0_bypass`] / [`inject_if_n_bypass`] so `F0IfSelect` already
+/// Call **after** `inject_if_f0_bypass` / `inject_if_n_bypass` so `F0IfSelect` already
 /// points at these nodes. Pads `f0`/`n` (ORT live length) into the compiled proj axis with
 /// trailing zeros. Returns the Param names + element counts written into `params`.
 pub fn replace_f0n_proj_with_params(

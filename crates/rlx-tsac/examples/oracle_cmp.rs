@@ -72,7 +72,7 @@ fn main() -> Result<()> {
             [2, 0, 1],
             [2, 1, 0],
         ];
-        let (d0, d1, d2) = (md[0], md[1], md[2]);
+        let (_d0, d1, d2) = (md[0], md[1], md[2]);
         for p in perms {
             // permuted dims
             let pd = [md[p[0]], md[p[1]], md[p[2]]];

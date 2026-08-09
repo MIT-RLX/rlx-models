@@ -233,7 +233,7 @@ fn run_probe_remote() -> Result<()> {
         let report = probe::probe_remote(None)?;
         report.print();
         report.assert_ok()?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(feature = "hf-probe"))]
     {
@@ -259,7 +259,7 @@ fn run_probe_gguf_remote(args: &[String]) -> Result<()> {
             report.write_json(&full)?;
             println!("  wrote full tensor sniff {full}");
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(feature = "hf-probe"))]
     {

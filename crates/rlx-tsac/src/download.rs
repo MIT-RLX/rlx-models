@@ -77,7 +77,7 @@ pub fn ensure_tsac(install_dir: &Path) -> Result<()> {
     #[cfg(feature = "fetch")]
     {
         fetch_tsac(install_dir)?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(feature = "fetch"))]
     {

@@ -28,6 +28,11 @@ safetensors = { workspace = true }
 anyhow = { workspace = true }
 tokenizers = { workspace = true, optional = true }
 
+# Detokenizes output, so it needs the `tokenizer` re-exports.
+[[example]]
+name = "dense_gguf_run"
+required-features = ["tokenizer"]
+
 [features]
 default = []
 tokenizer = ["dep:tokenizers", "rlx-qwen35/tokenizer"]
