@@ -1660,9 +1660,13 @@ mod f0_bypass_tests {
                     assert_eq!(dims, vec![1, 512, mel], "{name}");
                 }
                 "/shared/Reshape" => assert_eq!(dims, vec![mel, 1, 512], "{name}"),
-                "/F0.2/Div" => assert_eq!(dims, vec![1, 256, mel], "{name}"),
+                // F0.1 is the upsampling AdaIN res-block: channels 512 -> 256 and
+                // length x2, so everything after it runs at 2*mel (element count is
+                // unchanged: 512*mel == 256*2*mel).
+                "/F0.2/Div" => assert_eq!(dims, vec![1, 256, mel * 2], "{name}"),
                 "/F0_proj/Conv_output_0_Cast_to_float32_0" => {
-                    assert_eq!(dims, vec![1, 1, mel], "{name}");
+                    // Downstream of the F0.1 upsample, so also 2*mel.
+                    assert_eq!(dims, vec![1, 1, mel * 2], "{name}");
                 }
                 _ => {}
             }
@@ -1983,20 +1987,35 @@ mod f0_bypass_tests {
             ),
             "mel alignment inject failed on bundle HIR"
         );
-        let expand = (0..hir.len()).find_map(|idx| {
-            let id = rlx_ir::hir::HirNodeId(idx as u32);
-            if hir.node(id).name.as_deref() == Some("/Expand_3") {
-                return Some(id);
-            }
-            None
+        // The alignment invariant, independent of ONNX export naming: mel length
+        // must come from the runtime `ALIGNMENT_FRAME_COUNT` param plus the
+        // scatter-indices op, rather than a constant-folded Shape chain.
+        let has_frame_param = (0..hir.len()).any(|idx| {
+            let n = hir.node(rlx_ir::hir::HirNodeId(idx as u32));
+            matches!(&n.op, HirOp::Mir(Op::Param { name }) if name == ALIGNMENT_FRAME_COUNT)
         });
-        let expand = expand.expect("/Expand_3 node");
-        assert!(
-            matches!(
-                &hir.node(expand).op,
-                HirOp::Mir(Op::Custom { name, .. }) if name == EXPAND_I64_ALIGN
-            ),
-            "Expand_3 should lower to ExpandI64Align after inject"
-        );
+        assert!(has_frame_param, "ALIGNMENT_FRAME_COUNT param not installed");
+
+        let has_scatter = (0..hir.len()).any(|idx| {
+            let n = hir.node(rlx_ir::hir::HirNodeId(idx as u32));
+            matches!(&n.op, HirOp::Mir(Op::Custom { name, .. }) if name == ALIGNMENT_SCATTER_INDICES)
+        });
+        assert!(has_scatter, "alignment scatter-indices not installed");
+
+        // `/Expand_3` is only present in some bundle exports (node numbering is not
+        // stable across re-exports, and `weights/` is a local, regenerable artifact).
+        // When it IS present, `inject_expand3_alignment_shape` must have lowered it.
+        if let Some(expand) = (0..hir.len()).find_map(|idx| {
+            let id = rlx_ir::hir::HirNodeId(idx as u32);
+            (hir.node(id).name.as_deref() == Some("/Expand_3")).then_some(id)
+        }) {
+            assert!(
+                matches!(
+                    &hir.node(expand).op,
+                    HirOp::Mir(Op::Custom { name, .. }) if name == EXPAND_I64_ALIGN
+                ),
+                "Expand_3 present but not lowered to ExpandI64Align"
+            );
+        }
     }
 }

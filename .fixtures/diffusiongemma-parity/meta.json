@@ -1,0 +1,117 @@
+{
+  "chat_cases": [
+    {
+      "name": "plain",
+      "soft_tokens": [],
+      "expected": "<bos><|turn>user\nWhy is the sky blue?<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "system",
+      "soft_tokens": [],
+      "expected": "<bos><|turn>system\nYou are terse.<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "thinking",
+      "soft_tokens": [],
+      "expected": "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "multi",
+      "soft_tokens": [],
+      "expected": "<bos><|turn>user\n2+2?<turn|>\n<|turn>model\n4<turn|>\n<|turn>user\nand 3+3?<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "image",
+      "soft_tokens": [
+        3
+      ],
+      "expected": "<bos><|turn>user\n<|image><|image|><|image|><|image|><image|>What is this?<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "two_images",
+      "soft_tokens": [
+        2,
+        4
+      ],
+      "expected": "<bos><|turn>user\n<|image><|image|><|image|><image|><|image><|image|><|image|><|image|><|image|><image|>Compare these.<turn|>\n<|turn>model\n"
+    }
+  ],
+  "resize_cases": [
+    {
+      "src_h": 137,
+      "src_w": 91,
+      "dst_h": 96,
+      "dst_w": 48
+    },
+    {
+      "src_h": 40,
+      "src_w": 30,
+      "dst_h": 96,
+      "dst_w": 144
+    },
+    {
+      "src_h": 64,
+      "src_w": 64,
+      "dst_h": 48,
+      "dst_w": 96
+    }
+  ],
+  "vision": {
+    "patches": 16,
+    "soft_tokens": 4,
+    "grid": 4,
+    "positions_x": [
+      0,
+      1,
+      2,
+      3,
+      0,
+      1,
+      2,
+      3,
+      0,
+      1,
+      2,
+      3,
+      0,
+      1,
+      2,
+      3
+    ],
+    "positions_y": [
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      1,
+      1,
+      2,
+      2,
+      2,
+      2,
+      3,
+      3,
+      3,
+      3
+    ]
+  },
+  "prompt_len": 6,
+  "canvas": 4,
+  "temperature": 0.8,
+  "prompt_ids": [
+    3,
+    10,
+    17,
+    24,
+    31,
+    6
+  ],
+  "canvas_ids": [
+    3,
+    10,
+    17,
+    24
+  ]
+}

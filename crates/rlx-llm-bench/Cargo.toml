@@ -30,26 +30,30 @@ ureq = "2"
 # so the binary is runnable out of the box; add more (`llama32`, `gemma`, …)
 # as their adapters land.
 rlx-qwen3 = { workspace = true, optional = true }
+rlx-llama32 = { workspace = true, optional = true }
+# Read stop-token ids straight from a GGUF header (llama32 adapter).
+rlx-gguf = { workspace = true, optional = true }
 
 [[bin]]
 name = "rlx-llm-bench"
 path = "src/bin/rlx-llm-bench.rs"
 
 [features]
-default = ["qwen3"]
+default = ["qwen3", "llama32"]
 qwen3 = ["dep:rlx-qwen3"]
+llama32 = ["dep:rlx-llama32", "dep:rlx-gguf"]
 
 # Backend fan-out: forward to rlx-runtime and to whichever model adapters are
 # enabled. The `rlx-qwen3?/…` form only activates when the `qwen3` feature (and
 # thus the optional dep) is on, so `--no-default-features --features cuda` still
 # builds the model-agnostic core.
-metal = ["rlx-runtime/metal", "rlx-qwen3?/metal"]
-mlx = ["rlx-runtime/mlx", "rlx-qwen3?/mlx"]
-cuda = ["rlx-runtime/cuda", "rlx-qwen3?/cuda"]
-rocm = ["rlx-runtime/rocm", "rlx-qwen3?/rocm"]
-gpu = ["rlx-runtime/gpu", "rlx-qwen3?/gpu"]
-vulkan = ["rlx-runtime/vulkan", "rlx-qwen3?/vulkan"]
-coreml = ["rlx-runtime/coreml", "rlx-qwen3?/coreml"]
+metal = ["rlx-runtime/metal", "rlx-qwen3?/metal", "rlx-llama32?/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-qwen3?/mlx", "rlx-llama32?/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-qwen3?/cuda", "rlx-llama32?/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-qwen3?/rocm", "rlx-llama32?/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-qwen3?/gpu", "rlx-llama32?/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-qwen3?/vulkan", "rlx-llama32?/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-qwen3?/coreml", "rlx-llama32?/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
 apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]

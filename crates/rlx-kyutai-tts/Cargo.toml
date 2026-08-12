@@ -25,7 +25,7 @@ rlx-core = { workspace = true }
 rlx-ir = { workspace = true }
 rlx-mimi = { workspace = true }
 rlx-runtime = { workspace = true }
-sentencepiece = "0.11"
+sentencepiece = "0.14"
 rayon = "1.10"
 # NOTE: rlx-kyutai-tts implements all required architecture primitives natively
 # (see src/nn.rs, src/cross_attention.rs, src/conditioner.rs, etc.). We avoid

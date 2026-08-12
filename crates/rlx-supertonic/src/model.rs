@@ -177,8 +177,6 @@ pub struct Supertonic {
     vector_est: Mutex<Session>,
     #[cfg(feature = "onnx")]
     vocoder: Mutex<Session>,
-    #[cfg(feature = "onnx")]
-    ort_ep: String,
 }
 
 impl Supertonic {
@@ -243,7 +241,6 @@ impl Supertonic {
                 text_enc: Mutex::new(text_enc),
                 vector_est: Mutex::new(vector_est),
                 vocoder: Mutex::new(vocoder),
-                ort_ep: ep,
             })
         }
     }

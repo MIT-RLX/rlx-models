@@ -205,6 +205,19 @@ fn register_builtin_gguf_models() {
         family: Some(GgufModelFamily::Llama32),
         hint: "rlx-llama32 (`--packed` for large K-quant GGUF)",
     });
+    // Muse Glimmer (Meta) — Llama-shaped dense trunk with four per-layer
+    // RMSNorms, per-head QK-norm, a sigmoid attention output gate, and
+    // interleaved sliding-window (RoPE) / global (NoPE) layers. Runs on the
+    // rlx-llama32 packed GGUF path via `DenseArch::MuseGlimmer`.
+    register_gguf_model(GgufModelRegistration {
+        id: "muse-glimmer",
+        arches: &["muse-glimmer"],
+        hf_model_types: &["muse_glimmer", "muse-glimmer"],
+        runner: Some("llama32"),
+        family: Some(GgufModelFamily::Llama32),
+        hint: "rlx-llama32 (`--packed`; text LM only — the repo's `mmproj-*.gguf` \
+               vision tower and `dflash-*.gguf` drafter are not wired yet)",
+    });
     // Phi shares Llama32 weights/assert path but has its own CLI runner.
     register_gguf_model(GgufModelRegistration {
         id: "phi",

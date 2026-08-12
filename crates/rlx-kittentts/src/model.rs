@@ -609,8 +609,12 @@ mod chunk_tests {
 
     #[test]
     fn chunk_short_sentence() {
+        // `ensure_punctuation` keeps an existing terminal `.!?,;:` and only appends
+        // a comma when the chunk has none — so the period survives here.
         let c = chunk_text("Hello world.", 400);
-        assert_eq!(c, vec!["Hello world,"]);
+        assert_eq!(c, vec!["Hello world."]);
+        // The append-a-comma path, for a chunk with no terminal punctuation.
+        assert_eq!(chunk_text("Hello world", 400), vec!["Hello world,"]);
     }
 
     #[test]

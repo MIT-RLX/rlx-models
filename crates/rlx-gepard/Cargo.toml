@@ -18,7 +18,7 @@ rlx-ir   = { workspace = true }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx-qwen35 = { workspace = true }
 rlx-whisper = { workspace = true }
-rlx-nanocodec = { path = "../rlx-nanocodec" }
+rlx-nanocodec = { path = "../rlx-nanocodec", version = "0.2.14" }
 anyhow      = { workspace = true }
 serde       = { workspace = true, features = ["derive"] }
 serde_json  = { workspace = true }

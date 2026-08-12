@@ -112,17 +112,26 @@ mod tests {
         two_way_transformer_forward,
     };
 
+    /// Non-degenerate synthetic weights. Uniform fills make every channel
+    /// identical, so the final LayerNorm normalizes a zero-variance vector and
+    /// amplifies pure f32 reduction-order noise without bound.
+    fn varied(n: usize, base: f32, stride: usize) -> Vec<f32> {
+        (0..n)
+            .map(|i| base * (1.0 + 0.35 * (((i * stride) % 23) as f32 / 23.0 - 0.5)))
+            .collect()
+    }
+
     fn synth_attn(e: usize, down: usize) -> Sam2AttentionWeights {
         let id = e / down;
         let nh = 8;
         Sam2AttentionWeights {
-            q_w: vec![0.01; id * e],
+            q_w: varied(id * e, 0.01, 7),
             q_b: vec![0.0; id],
-            k_w: vec![0.02; id * e],
+            k_w: varied(id * e, 0.02, 11),
             k_b: vec![0.0; id],
-            v_w: vec![0.03; id * e],
+            v_w: varied(id * e, 0.03, 13),
             v_b: vec![0.0; id],
-            out_w: vec![0.04; e * id],
+            out_w: varied(e * id, 0.04, 17),
             out_b: vec![0.0; e],
             num_heads: nh,
             embed_dim: e,
@@ -138,9 +147,9 @@ mod tests {
             cross_token_to_image: synth_attn(e, 2),
             norm2_g: vec![1.0; e],
             norm2_b: vec![0.0; e],
-            mlp_lin1_w: vec![0.01; 2048 * e],
+            mlp_lin1_w: varied(2048 * e, 0.01, 19),
             mlp_lin1_b: vec![0.0; 2048],
-            mlp_lin2_w: vec![0.02; e * 2048],
+            mlp_lin2_w: varied(e * 2048, 0.02, 23),
             mlp_lin2_b: vec![0.0; e],
             norm3_g: vec![1.0; e],
             norm3_b: vec![0.0; e],

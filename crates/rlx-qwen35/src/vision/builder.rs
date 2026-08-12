@@ -177,26 +177,28 @@ pub fn build_qwen35_vision_hir(
     // `n·merge²`, which differs from the block FFN width `n_ff`.
     let mm_hidden = weights.mm_0_b.len().max(1);
     let merged = merge_spatial_tokens(&mut g, h_id, batch, n_pos, n, merge_sq);
-    let mm0_w = param_mat(
+    let mm0_w = param_mat_dt(
         &mut g,
         &mut params,
         "mm.0.weight",
         &transpose_2d(&weights.mm_0_w, mm_hidden, n * merge_sq),
         n * merge_sq,
         mm_hidden,
+        vision_weight_dtype("mm"),
     )?;
     let mm0_b = param_vec(&mut g, &mut params, "mm.0.bias", &weights.mm_0_b, mm_hidden);
     let mm0_mm = g.mm(merged, mm0_w);
     let mm0 = g.add(mm0_mm, mm0_b);
     let mm0_act = g.gelu(mm0);
 
-    let mm1_w = param_mat(
+    let mm1_w = param_mat_dt(
         &mut g,
         &mut params,
         "mm.1.weight",
         &transpose_2d(&weights.mm_1_w, proj, mm_hidden),
         mm_hidden,
         proj,
+        vision_weight_dtype("mm"),
     )?;
     let mm1_b = param_vec(&mut g, &mut params, "mm.1.bias", &weights.mm_1_b, proj);
     let mm1_mm = g.mm(mm0_act, mm1_w);
@@ -268,13 +270,14 @@ fn build_encoder_block(
     let x = g.ln(h_in, ln1_w, ln1_b, eps);
 
     let x2d = g.reshape_(x, vec![(batch * seq) as i64, n as i64]);
-    let qkv_w = param_mat(
+    let qkv_w = param_mat_dt(
         g,
         params,
         &format!("{p}.attn_qkv.weight"),
         &transpose_2d(&blk.qkv_w, 3 * n, n),
         n,
         3 * n,
+        vision_weight_dtype("qkv"),
     )?;
     let qkv_b = param_vec(g, params, &format!("{p}.attn_qkv.bias"), &blk.qkv_b, 3 * n);
     let qkv_mm = g.mm(x2d, qkv_w);
@@ -300,13 +303,14 @@ fn build_encoder_block(
         )
     };
     let attn2d = g.reshape_(attn, vec![(batch * seq) as i64, n as i64]);
-    let out_w = param_mat(
+    let out_w = param_mat_dt(
         g,
         params,
         &format!("{p}.attn_out.weight"),
         &transpose_2d(&blk.attn_out_w, n, n),
         n,
         n,
+        vision_weight_dtype("out"),
     )?;
     let out_b = param_vec(g, params, &format!("{p}.attn_out.bias"), &blk.attn_out_b, n);
     let attn_mm = g.mm(attn2d, out_w);
@@ -319,13 +323,14 @@ fn build_encoder_block(
     let y = g.ln(h, ln2_w, ln2_b, eps);
     let y2d = g.reshape_(y, vec![(batch * seq) as i64, n as i64]);
 
-    let gate_w = param_mat(
+    let gate_w = param_mat_dt(
         g,
         params,
         &format!("{p}.ffn_gate.weight"),
         &transpose_2d(&blk.ffn_gate_w, n_ff, n),
         n,
         n_ff,
+        vision_weight_dtype("ffn"),
     )?;
     let gate_b = param_vec(
         g,
@@ -334,13 +339,14 @@ fn build_encoder_block(
         &blk.ffn_gate_b,
         n_ff,
     );
-    let down_w = param_mat(
+    let down_w = param_mat_dt(
         g,
         params,
         &format!("{p}.ffn_down.weight"),
         &transpose_2d(&blk.ffn_down_w, n, n_ff),
         n_ff,
         n,
+        vision_weight_dtype("ffn"),
     )?;
     let down_b = param_vec(g, params, &format!("{p}.ffn_down.bias"), &blk.ffn_down_b, n);
 
@@ -349,13 +355,14 @@ fn build_encoder_block(
     // HF `hidden_act: gelu_pytorch_tanh` → approximate GELU (tanh).
     let gate_act = g.gelu_approx(gate);
     let ff = if blk.ffn_gated {
-        let up_w = param_mat(
+        let up_w = param_mat_dt(
             g,
             params,
             &format!("{p}.ffn_up.weight"),
             &transpose_2d(&blk.ffn_up_w, n_ff, n),
             n,
             n_ff,
+            vision_weight_dtype("ffn"),
         )?;
         let up_b = param_vec(g, params, &format!("{p}.ffn_up.bias"), &blk.ffn_up_b, n_ff);
         let up_mm = g.mm(y2d, up_w);
@@ -670,6 +677,23 @@ fn param_mat(
     in_dim: usize,
     out_dim: usize,
 ) -> Result<NodeId> {
+    param_mat_dt(g, params, name, data, in_dim, out_dim, DType::F32)
+}
+
+/// Like [`param_mat`] but with an explicit weight dtype. Matmul weights can be
+/// stored F16 (the backend promotes F16→F32 before sgemm, or runs hgemm): the
+/// `Vec<f32>` data is converted to F16 on upload, halving resident weight bytes.
+/// Only valid for weights consumed by `mm` — NOT for weights added elementwise
+/// (e.g. the position embedding), which must match the F32 activation.
+fn param_mat_dt(
+    g: &mut HirMut,
+    params: &mut HashMap<String, Vec<f32>>,
+    name: &str,
+    data: &[f32],
+    in_dim: usize,
+    out_dim: usize,
+    dt: DType,
+) -> Result<NodeId> {
     if data.len() != in_dim * out_dim {
         return Err(anyhow::anyhow!(
             "{name}: len {} != in {in_dim} * out {out_dim}",
@@ -681,8 +705,33 @@ fn param_mat(
         params,
         name,
         data.to_vec(),
-        Shape::new(&[in_dim, out_dim], DType::F32),
+        Shape::new(&[in_dim, out_dim], dt),
     ))
+}
+
+/// Weight dtype for one ViT matmul `role` (`qkv` | `out` | `ffn` | `mm`).
+///
+/// **Default F16.** The mmproj weights are F16 on disk, so storing them F16 is
+/// lossless and the backend promotes F16→F32 with F32 accumulate — **byte-identical
+/// to F32** across every deterministic test (matmul parity rel ≤ 5e-6; synthetic
+/// shapes; 4 real photos same-build A/B; CLI `default==off==all`) — while halving
+/// resident vision weights 1.33→0.67 GB. Correct only after two backend fixes: a
+/// CPU `Op::MatMul` F16-rhs path (`SgemmF16`) and gating the mm+bias fusion off
+/// non-F32 weights (the fused epilogue read the half weight as f32 garbage; was
+/// blue→"green" before).
+///
+/// `RLX_QWEN35_VISION_F16` overrides: `0`/`off`/`f32` → all F32; `1`/`all` → all
+/// F16; a comma list of roles (e.g. `ffn,out`) → only those F16, the rest F32.
+fn vision_weight_dtype(role: &str) -> DType {
+    match std::env::var("RLX_QWEN35_VISION_F16").ok().as_deref() {
+        Some("0") | Some("off") | Some("f32") | Some("none") => DType::F32,
+        Some(list)
+            if !matches!(list, "1" | "all") && !list.split(',').any(|r| r.trim() == role) =>
+        {
+            DType::F32
+        }
+        _ => DType::F16,
+    }
 }
 
 fn param_mask(

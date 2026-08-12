@@ -1598,7 +1598,6 @@ mod tests {
     #[cfg(feature = "coreml")]
     #[test]
     fn fma_decomposes_and_runs_on_ane() {
-        use rlx_ir::infer::GraphExt;
         use rlx_ir::{DType, Graph, Op, Shape};
         use rlx_runtime::{CompileOptions, Device, Precision, Session};
         let mut g = Graph::new("fma_ane");

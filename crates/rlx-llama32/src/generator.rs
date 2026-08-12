@@ -52,7 +52,7 @@ use rlx_flow::CompileProfile;
 use rlx_ir::DimBinding;
 use rlx_ir::logical_kernel::KernelDispatchConfig;
 use rlx_qwen3::sampling::{SampleOpts, sample_token, sample_token_at};
-use rlx_runtime::attn_mask::bucket_decode_mask;
+use rlx_runtime::attn_mask::{bucket_decode_mask, bucket_decode_mask_windowed};
 use rlx_runtime::compile_cache::{BucketedCompileCache, CompileCache, DynamicDimCompileCache};
 use rlx_runtime::{
     CompileOptions, CompiledGraph, Device, Session, llama_decode_bucket_compile_peak_bytes,
@@ -400,6 +400,9 @@ struct PackedGgufPrefill {
     kv_dim: usize,
     n_layers: usize,
     host_greedy_prefill: bool,
+    /// One graph emits BOTH last-token logits and per-layer KV (Metal). Halves
+    /// prefill memory and compute vs compiling a separate logits graph.
+    fused_logits_kv: bool,
     /// Deferred logits compile (CUDA / ROCm — one graph at a time in VRAM).
     logits_plan: Option<(Llama32Config, PathBuf, CompileProfile)>,
 }
@@ -486,6 +489,58 @@ impl PackedGgufPrefill {
             kv_dim: cfg.kv_proj_dim(),
             n_layers: cfg.kv_layers(),
             host_greedy_prefill: true,
+            fused_logits_kv: false,
+            logits_plan: None,
+        })
+    }
+
+    /// ONE packed graph emitting last-token logits AND per-layer KV.
+    ///
+    /// The alternative (`build_kv_only` + `compile_logits`) keeps two full-weight
+    /// graphs resident and runs the model TWICE per prefill. Each packed arena is
+    /// a full copy of the checkpoint — 14.27 GB on Muse-Glimmer-30B UD-Q4_K_XL —
+    /// so the split form costs 28.5 GB and two forwards where this costs 14.27 GB
+    /// and one. The builder already supports both outputs at once; `outputs[0]`
+    /// is the `[1,1,vocab]` last-token logits (`last_logits_only`), then
+    /// `k0,v0,k1,v1,…`.
+    fn build_logits_with_kv(
+        cfg: &Llama32Config,
+        path: &Path,
+        upper_seq: usize,
+        device: Device,
+        profile: &CompileProfile,
+    ) -> Result<Self> {
+        let exec_device = packed_gguf_execution_device(device);
+        let path_str = path.to_str().context("non-utf8 weights path")?;
+        let mut loader = GgufLoader::from_file(path_str)?;
+        let mut packed = HashMap::new();
+        let mut embed_host = None;
+        let (graph, params) = build_llama32_graph_sized_packed(
+            cfg,
+            &mut loader,
+            1,
+            upper_seq,
+            /*with_lm_head*/ true,
+            /*last_logits_only*/ true,
+            /*with_kv_outputs*/ true,
+            &mut packed,
+            &mut embed_host,
+        )?;
+        let opts = compile_options_for_packed_gguf_prefill_with_profile(profile, exec_device);
+        let mut kv = packed_gguf_compile_guard(exec_device, || {
+            Session::new(exec_device).compile_with(graph, &opts)
+        });
+        attach_f32_params(&mut kv, params);
+        upload_packed_borrowed(&mut kv, &packed, &loader)?;
+        Ok(Self {
+            feed: PackedGgufPrefillFeed::new(upper_seq, cfg.hidden_size, embed_host),
+            logits: None,
+            kv,
+            exec_device,
+            kv_dim: cfg.kv_proj_dim(),
+            n_layers: cfg.kv_layers(),
+            host_greedy_prefill: false,
+            fused_logits_kv: true,
             logits_plan: None,
         })
     }
@@ -497,11 +552,11 @@ impl PackedGgufPrefill {
         device: Device,
         profile: &CompileProfile,
     ) -> Result<Self> {
-        let mut out = Self::build_kv_only(cfg, path, upper_seq, device, profile)?;
         if matches!(device, Device::Metal) {
-            out.compile_logits()?;
+            // One fused graph instead of kv_only + a second logits graph.
+            return Self::build_logits_with_kv(cfg, path, upper_seq, device, profile);
         }
-        Ok(out)
+        Self::build_kv_only(cfg, path, upper_seq, device, profile)
     }
 
     /// KV graph only — half the compile RAM of [`Self::build`] (16 GiB CUDA).
@@ -542,6 +597,7 @@ impl PackedGgufPrefill {
             kv_dim: cfg.kv_proj_dim(),
             n_layers: cfg.kv_layers(),
             host_greedy_prefill: false,
+            fused_logits_kv: false,
             logits_plan: Some((cfg.clone(), path.to_path_buf(), profile.clone())),
         })
     }
@@ -626,7 +682,14 @@ impl PackedGgufPrefill {
                 1 + 2 * self.n_layers
             );
         }
-        let hidden = packed_prefill_last_hidden(&outputs[0], n, self.feed.hidden)?;
+        // `outputs[0]` is the last-token slice. In the fused logits+KV mode it is
+        // already `[1,1,vocab]` (the builder applied `last_logits_only`), so it
+        // needs no slicing; in host-greedy mode it is the hidden state and does.
+        let hidden = if self.fused_logits_kv {
+            outputs[0].clone()
+        } else {
+            packed_prefill_last_hidden(&outputs[0], n, self.feed.hidden)?
+        };
         let kv_seq = infer_prefill_kv_seq(&outputs[1..], 1, &[self.kv_dim], n, self.feed.upper_seq);
         let (mut layers_k, mut layers_v) =
             split_packed_kv_outputs(outputs[1..].to_vec(), 1, kv_seq, self.kv_dim, self.n_layers)?;
@@ -645,7 +708,9 @@ impl PackedGgufPrefill {
         prompt_len: usize,
         ids_f32: &[f32],
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
-        if self.host_greedy_prefill {
+        if self.host_greedy_prefill || self.fused_logits_kv {
+            // Same output layout either way: [0] = last-token slice, then KV.
+            // `with_lm_head` decides whether [0] is logits or hidden.
             return self.run_hidden_with_kv(prompt_len, ids_f32);
         }
         let n = self.fill_inputs(prompt_len, ids_f32);
@@ -944,11 +1009,40 @@ fn upload_packed_borrowed(
     packed: &HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
     loader: &dyn WeightLoader,
 ) -> Result<()> {
+    // Stream weights in with `pread` rather than borrowing them out of the GGUF
+    // mmap, reusing one buffer.
+    //
+    // Borrowing makes every page of the checkpoint resident, so the process
+    // holds a full second copy behind the backend arena — 14.4 GB behind a
+    // 14.1 GB arena on Muse-Glimmer-30B UD-Q4_K_XL, and the prefill + decode
+    // pair then pushed a 64 GB machine into swap (decode steps with an 88 ms
+    // median stalling up to 15 s). It cannot be given back on macOS: measured
+    // on a 6 GB mapping, MADV_DONTNEED / MADV_FREE / msync(MS_INVALIDATE) all
+    // left RSS at 5.86 GB and only munmap dropped it.
+    //
+    // Reading sidesteps it — the kernel buffer cache is not charged to the
+    // process. Same 6 GB, mmap+touch = 5.93 GB RSS vs pread = 0.07 GB. Resident
+    // cost becomes the largest single tensor instead of the whole file.
+    //
+    // Set RLX_LLAMA32_MMAP_UPLOAD=1 to go back to borrowing.
+    let stream = !rlx_ir::env::flag("RLX_LLAMA32_MMAP_UPLOAD");
+    let mut scratch: Vec<u8> = Vec::new();
     for name in packed.keys() {
+        if stream && loader.read_tensor_bytes_into(name, &mut scratch)? {
+            compiled.set_param_typed(name, &scratch, rlx_ir::DType::U8);
+            continue;
+        }
         let bytes = loader
             .tensor_bytes_borrowed(name)
             .with_context(|| format!("packed upload: bytes unavailable for {name}"))?;
         compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
+    }
+    // Linux honours this for file-backed pages and it is a real win on the
+    // Linux hosts; macOS ignores it (see above). With streaming on there is
+    // little left to release, but a caller that opted back into mmap upload
+    // still benefits.
+    if !rlx_ir::env::flag("RLX_LLAMA32_KEEP_MMAP") {
+        loader.release_mapped_pages();
     }
     Ok(())
 }
@@ -1621,6 +1715,24 @@ impl Llama32Generator {
         }
     }
 
+    /// Release the packed prefill graph as soon as it has produced logits + KV,
+    /// instead of caching it for the next prompt.
+    ///
+    /// Every compiled graph owns a CONTIGUOUS arena holding a full copy of the
+    /// packed weights (`set_param_typed` writes into the arena; it cannot alias
+    /// the loader's scattered mmap pages). So keeping the prefill graph alive
+    /// while the decode graph compiles costs ~2× the checkpoint. Measured on
+    /// Muse-Glimmer-30B UD-Q4_K_XL (14.07 GB of packed params): one graph
+    /// resident is ~29.7 GB, two is ~56-60 GB — which OOMs a 64 GB box.
+    ///
+    /// Trade-off: the next prefill has to rebuild + recompile the graph, so this
+    /// is off by default (multi-turn chat would pay it every turn) and opt-in via
+    /// `RLX_LLAMA32_FREE_PREFILL=1` or the existing `ORPHEUS_LOW_MEM=1`, which
+    /// the soft-budget errors already point users at.
+    fn free_prefill_after_seed(&self) -> bool {
+        rlx_ir::env::flag("RLX_LLAMA32_FREE_PREFILL") || rlx_ir::env::flag("ORPHEUS_LOW_MEM")
+    }
+
     /// Packed GPU KV + CPU F32 logits — seeds device KV for native CUDA/ROCm
     /// decode without compiling the packed logits graph (16 GiB-safe).
     fn seed_prefill_packed_kv_cpu_logits(
@@ -1663,6 +1775,9 @@ impl Llama32Generator {
                 "[llama32] packed GGUF prefill on {:?} (logits+KV on device, no host F32 dequant)",
                 self.device
             );
+            // NOTE: no drop here — every caller of this fn in `prefill_seed_triple`
+            // already releases the graph right after it returns (gated on
+            // `ORPHEUS_PREFILL_PERSIST`). Dropping again here would be redundant.
             return Ok((logits, layers_k, layers_v));
         }
         eprintln!(
@@ -1799,7 +1914,20 @@ impl Llama32Generator {
         let ov = self.pending_embed_override.take();
         let p = self.packed_gguf_prefill.as_mut().unwrap();
         p.feed.embed_override = ov;
-        Ok(Some(p.run(prompt_len, ids_f32)?))
+        let triple = p.run(prompt_len, ids_f32)?;
+        // Unlike the Metal / CUDA seams in `prefill_seed_triple`, this path never
+        // released the prefill graph — so its full-weight arena stayed resident
+        // while the decode graph compiled its own. Same accounting as
+        // [`Self::free_prefill_after_seed`]: ~2× the checkpoint instead of 1×.
+        // The returned triple is host-owned, so dropping here is safe.
+        if self.free_prefill_after_seed() {
+            self.drop_packed_gguf_prefill();
+            eprintln!(
+                "[llama32] freed packed prefill graph after seeding (low-mem mode); \
+                 the next prefill will rebuild it"
+            );
+        }
+        Ok(Some(triple))
     }
 
     fn compile_seq_cap(&self) -> usize {
@@ -2219,6 +2347,49 @@ impl Llama32Generator {
         self
     }
 
+    /// Bucket ladder for decode, or a SINGLE bucket for big packed models.
+    ///
+    /// The power-of-two ladder bounds padding waste at 2x, but the thing being
+    /// padded is attention over `past_seq` — and decode on a multi-GB packed
+    /// model is bandwidth-bound on the WEIGHTS, not on attention. Streaming
+    /// 14 GB dominates a token (77 ms measured on Muse-Glimmer-30B); the extra
+    /// attention positions are noise beside it.
+    ///
+    /// Meanwhile every bucket costs a compile plus a full re-upload of the
+    /// weights into a fresh arena. `max_past = 256` produces 9 buckets, and on
+    /// Muse-Glimmer-30B each rollover stalled a single token for 5-24 s against
+    /// an 85 ms median. So above `SINGLE_BUCKET_MIN_BYTES` the ladder is a net
+    /// loss and we compile ONE graph at `max_past` instead: one compile, one
+    /// upload, no rollovers ever.
+    ///
+    /// Small models keep the ladder — their re-upload is cheap and the padded
+    /// attention is a real fraction of the step. Override the cutoff with
+    /// `RLX_LLAMA32_SINGLE_BUCKET_BYTES` (0 forces the ladder everywhere).
+    fn weights_bytes(&self) -> Option<u64> {
+        let p = self.weights_path.as_ref()?;
+        std::fs::metadata(p).ok().map(|m| m.len())
+    }
+
+    fn decode_bucket_cache(
+        device: Device,
+        max_past: usize,
+        packed_bytes: Option<u64>,
+    ) -> BucketedCompileCache {
+        const SINGLE_BUCKET_MIN_BYTES: u64 = 2 << 30; // 2 GiB
+        let cutoff = rlx_ir::env::var("RLX_LLAMA32_SINGLE_BUCKET_BYTES")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(SINGLE_BUCKET_MIN_BYTES);
+        let max = max_past.max(1) as u64;
+        if cutoff > 0 && packed_bytes.is_some_and(|b| b >= cutoff) {
+            // One bucket spanning the whole range — `new` takes `Vec<Range<u64>>`,
+            // so the `single_range_in_vec_init` "collect the range" fix is a type
+            // error here, not a simplification.
+            #[allow(clippy::single_range_in_vec_init)]
+            return BucketedCompileCache::new(device, vec![1..max + 1]);
+        }
+        BucketedCompileCache::power_of_two_ladder(device, /*min*/ 1, max)
+    }
+
     /// Enable the bucketed decode compile cache spanning past-seq
     /// values in `[1, max_past]`. Buckets are power-of-two
     /// `[1..2, 2..3, 3..5, 5..9, 9..17, …]`. Each bucket compiles
@@ -2229,19 +2400,15 @@ impl Llama32Generator {
     /// at least half the bucket's upper bound (except possibly the
     /// smallest bucket).
     pub fn with_decode_cache(mut self, max_past: usize) -> Self {
-        let cache = BucketedCompileCache::power_of_two_ladder(
-            self.decode_device(),
-            /*min*/ 1,
-            max_past.max(1) as u64,
-        );
+        let cache = Self::decode_bucket_cache(self.decode_device(), max_past, self.weights_bytes());
         self.decode_compile_cache = Some(cache);
         self.decode_dynamic_cache = None;
         self.decode_loaded_buckets.clear();
         if self.host_greedy_lm {
-            self.decode_compile_cache_hidden = Some(BucketedCompileCache::power_of_two_ladder(
+            self.decode_compile_cache_hidden = Some(Self::decode_bucket_cache(
                 packed_gguf_execution_device(self.decode_device()),
-                /*min*/ 1,
-                max_past.max(1) as u64,
+                max_past,
+                self.weights_bytes(),
             ));
             self.decode_loaded_buckets_hidden.clear();
             self.decode_resident_hidden_bound.clear();
@@ -2700,6 +2867,18 @@ impl Llama32Generator {
     /// [`decode_step_packed`] takes). Numerically identical to
     /// `decode_step_packed`: same inv_freq-derived RoPE row, same mask
     /// semantics, same packed weights.
+    /// Windowed keep mask for the `mask_swa` input the packed decode graph adds
+    /// on interleaved local/global arches (Muse Glimmer). `None` — and no such
+    /// graph input — for every arch whose layers are all full-attention.
+    ///
+    /// The plain `mask` only zeroes a bucket's padding rows; a sliding-window
+    /// layer must additionally drop real past keys older than `past_seq - w`.
+    fn swa_decode_mask(&self, past_seq: usize, upper: usize) -> Option<Vec<f32>> {
+        self.cfg.swa_pattern()?;
+        let w = self.cfg.sliding_window?;
+        Some(bucket_decode_mask_windowed(past_seq, upper, w))
+    }
+
     #[allow(clippy::type_complexity)]
     fn decode_step_bucketed_packed(
         &mut self,
@@ -2771,8 +2950,22 @@ impl Llama32Generator {
                     .get_or_compile_with_options(past_seq as u64, |_upper| graph, &opts)
                     .expect("bucket must exist; we just looked it up");
                 attach_f32_params(compiled, params);
-                upload_packed_borrowed(compiled, &packed, loader_ref)
-                    .expect("packed decode: zero-copy weight upload");
+                // Retain an already-populated bucket's weight buffer rather
+                // than uploading our own. Packed decode weights are large and
+                // read-only, and every bucket compiles from the same param set,
+                // so one GPU copy backs them all (`share_params_from` bumps the
+                // MTLBuffer refcount and copies only the small arena-resident
+                // norms). Without this each rollover re-uploaded the whole
+                // checkpoint — on Muse-Glimmer-30B that stalled one token for
+                // 5-30 s against an 85 ms median, and held a second 14 GB copy.
+                if !cache_mut.try_share_params_from_donor(upper as u64) {
+                    let compiled = cache_mut
+                        .compiled_for_key_mut(past_seq as u64)
+                        .expect("bucket compiled above");
+                    upload_packed_borrowed(compiled, &packed, loader_ref)
+                        .expect("packed decode: zero-copy weight upload");
+                }
+                cache_mut.set_weight_donor(upper as u64);
             });
             self.decode_loaded_buckets.insert(bucket_idx);
         }
@@ -2782,6 +2975,7 @@ impl Llama32Generator {
         let (cos_row, sin_row) = rope_slice(&self.inv_freq, past_seq);
         let input_ids_f32 = [input_tok as f32];
         let mask = bucket_decode_mask(past_seq, upper);
+        let swa_mask = self.swa_decode_mask(past_seq, upper);
 
         // Pad past_k / past_v to length `upper`.
         let padded_k: Vec<Vec<f32>> = (0..n_layers)
@@ -2829,6 +3023,9 @@ impl Llama32Generator {
         inputs.push(("cos", cos_row.as_slice()));
         inputs.push(("sin", sin_row.as_slice()));
         inputs.push(("mask", mask.as_slice()));
+        if let Some(m) = swa_mask.as_ref() {
+            inputs.push(("mask_swa", m.as_slice()));
+        }
         for i in 0..n_layers {
             inputs.push((&key_strs[2 * i], padded_k[i].as_slice()));
             inputs.push((&key_strs[2 * i + 1], padded_v[i].as_slice()));
@@ -3033,6 +3230,7 @@ impl Llama32Generator {
         // instead kept `past_seq` (zero padding) and masked `upper` (the token's
         // own key) — inverted, which collapsed host-greedy decode to garbage.
         let mask = bucket_decode_mask(past_seq, upper);
+        let swa_mask = self.swa_decode_mask(past_seq, upper);
         let input_ids_f32 = [input_tok as f32];
         let cache = self.cache.as_ref().context("packed decode without cache")?;
         let past_bytes = past_seq.saturating_mul(kv_dim);
@@ -3078,6 +3276,9 @@ impl Llama32Generator {
         inputs.push(("cos", cos_row.as_slice()));
         inputs.push(("sin", sin_row.as_slice()));
         inputs.push(("mask", mask.as_slice()));
+        if let Some(m) = swa_mask.as_ref() {
+            inputs.push(("mask_swa", m.as_slice()));
+        }
         for i in 0..n_layers {
             inputs.push((
                 &key_strs[2 * i],
@@ -3269,6 +3470,7 @@ impl Llama32Generator {
         let (cos_row, sin_row) = rope_slice(&self.inv_freq, past_seq);
         let input_ids_f32 = [input_tok as f32];
         let mask = bucket_decode_mask(past_seq, upper);
+        let swa_mask = self.swa_decode_mask(past_seq, upper);
 
         let lazy_embed = self.decode_weights_cache.as_ref().and_then(|cache| {
             // Host-side lazy gather iff the embed is K-quant and not F32; bytes
@@ -3294,6 +3496,9 @@ impl Llama32Generator {
         run_inputs.push(("cos", cos_row.as_slice()));
         run_inputs.push(("sin", sin_row.as_slice()));
         run_inputs.push(("mask", mask.as_slice()));
+        if let Some(m) = swa_mask.as_ref() {
+            run_inputs.push(("mask_swa", m.as_slice()));
+        }
 
         let cache_mut = self.decode_compile_cache_hidden.as_mut().unwrap();
         let compiled = cache_mut
@@ -3505,6 +3710,7 @@ impl Llama32Generator {
         let (cos_row, sin_row) = rope_slice(&self.inv_freq, past_seq);
         let input_ids_f32 = [input_tok as f32];
         let mask = bucket_decode_mask(past_seq, upper);
+        let swa_mask = self.swa_decode_mask(past_seq, upper);
 
         let lazy_embed = self.decode_weights_cache.as_ref().and_then(|cache| {
             // Host-side lazy gather iff the embed is K-quant and not F32; bytes
@@ -3530,6 +3736,9 @@ impl Llama32Generator {
         run_inputs.push(("cos", cos_row.as_slice()));
         run_inputs.push(("sin", sin_row.as_slice()));
         run_inputs.push(("mask", mask.as_slice()));
+        if let Some(m) = swa_mask.as_ref() {
+            run_inputs.push(("mask_swa", m.as_slice()));
+        }
 
         let cache_mut = self.decode_compile_cache.as_mut().unwrap();
         let compiled = cache_mut
@@ -4453,6 +4662,9 @@ mod tests {
             rope_style: rlx_ir::RopeStyle::NeoX,
             gguf_arch: None,
             rope_dim: None,
+            sliding_window: None,
+            sliding_window_pattern: None,
+            final_logit_softcap: None,
         }
     }
 
@@ -4810,6 +5022,9 @@ mod tests {
             rope_style: rlx_ir::RopeStyle::NeoX,
             gguf_arch: None,
             rope_dim: None,
+            sliding_window: None,
+            sliding_window_pattern: None,
+            final_logit_softcap: None,
         }
     }
 
@@ -5053,6 +5268,9 @@ mod tests {
                 rope_style: rlx_ir::RopeStyle::NeoX,
                 gguf_arch: None,
                 rope_dim: None,
+                sliding_window: None,
+                sliding_window_pattern: None,
+                final_logit_softcap: None,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
 
@@ -5110,6 +5328,9 @@ mod tests {
                 rope_style: rlx_ir::RopeStyle::NeoX,
                 gguf_arch: None,
                 rope_dim: None,
+                sliding_window: None,
+                sliding_window_pattern: None,
+                final_logit_softcap: None,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
 
@@ -5238,6 +5459,9 @@ mod tests {
                 rope_style: rlx_ir::RopeStyle::NeoX,
                 gguf_arch: None,
                 rope_dim: None,
+                sliding_window: None,
+                sliding_window_pattern: None,
+                final_logit_softcap: None,
             };
             let prompt: Vec<u32> = vec![1, 2, 3, 5];
             let steps = 3;

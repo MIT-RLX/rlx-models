@@ -2,7 +2,7 @@
 
 Every model family in this workspace, one crate per architecture. This catalog is generated from each crate's `Cargo.toml` (`description` + backend feature set).
 
-**152 model families** across 15 categories, plus 4 training crates. Shared infrastructure, servers, and benchmark crates are not listed here.
+**156 model families** across 15 categories, plus 4 training crates. Shared infrastructure, servers, and benchmark crates are not listed here.
 
 ## Backends
 
@@ -19,7 +19,7 @@ Enable GPU backends at build time with matching features, e.g. `cargo build -p r
 
 | Category | Count |
 |---|--:|
-| [Language models (text LLMs & reasoning)](#language-models-text-llms--reasoning) | 26 |
+| [Language models (text LLMs & reasoning)](#language-models-text-llms--reasoning) | 30 |
 | [Vision-language & multimodal (VLM / omni)](#vision-language--multimodal-vlm--omni) | 12 |
 | [Vision encoders, detection & segmentation](#vision-encoders-detection--segmentation) | 9 |
 | [Biomedical & scientific](#biomedical--scientific) | 4 |
@@ -34,7 +34,7 @@ Enable GPU backends at build time with matching features, e.g. `cargo build -p r
 | [Neural audio codecs](#neural-audio-codecs) | 11 |
 | [Speech front-end, wake-word & DSP](#speech-front-end-wake-word--dsp) | 13 |
 | [Robotics (vision-language-action)](#robotics-vision-language-action) | 1 |
-| **Total** | **152** |
+| **Total** | **156** |
 
 ## Language models (text LLMs & reasoning)
 
@@ -45,6 +45,7 @@ Decoder LMs, MoE, hybrid SSM/attention, ternary, diffusion LMs, and speculative 
 | `rlx-bonsai` | Bonsai small-reasoning runner — STUB (PLAN.md M4) | **All 7** |
 | `rlx-cohere` | Cohere Command-R runner — STUB (PLAN.md M4) | **All 7** |
 | `rlx-deepseek` | DeepSeek-V3 / V3.1 (MLA + fine-grained MoE), incl. Kimi-K2, for RLX | **All 7** (+CoreML) |
+| `rlx-diffusiongemma` | DiffusionGemma 26B-A4B (Google) — block-diffusion Gemma 4 MoE encoder/decoder, vision tower, image processor, chat template, entropy-bounded sampler | CPU (torch parity, text + vision) |
 | `rlx-eagle3` | EAGLE3 speculative-decoding draft + scheduler primitives for RLX | CPU, Metal, MLX, CUDA |
 | `rlx-gemma` | Gemma / Gemma 2 causal LMs for RLX | **All 7** (+CoreML) |
 | `rlx-glm` | GLM 5.1 runner (delegates to rlx-llama32; GLM-specific RoPE/RMSNorm pending) | CPU |
@@ -54,6 +55,7 @@ Decoder LMs, MoE, hybrid SSM/attention, ternary, diffusion LMs, and speculative 
 | `rlx-jamba` | Jamba (Mamba-1 + attention + MoE hybrid) for RLX | **All 7** (+CoreML) |
 | `rlx-laguna` | Laguna MoE (poolside Laguna S/XS) for RLX — packed GGUF generate + synth reference | CPU, Metal, MLX, CUDA, wgpu, Vulkan (+CoreML) |
 | `rlx-lfm` | LiquidAI LFM2.5 runner (text) — LFM SSM LM (decode-step + state wiring) | **All 7** |
+| `rlx-ling` | Ling 3.0 / BailingMoeV3 (inclusionAI) — hybrid KDA + MLA attention, fine-grained MoE, MXFP4 — for RLX | **All 7** (CPU/Metal/MLX/CoreML/wgpu/CUDA/ROCm parity-checked); real weights on CPU/Metal/MLX/CUDA. `--mxfp4` on all but CoreML |
 | `rlx-llada2` | LLaDA2 MoE diffusion LM + TIDE offload for RLX | **All 7** |
 | `rlx-llama32` | LLaMA 3.2 for RLX | **All 7** (+CoreML) |
 | `rlx-mamba` | Mamba1 selective-SSM block and multi-backend driver; SSM core via rlx-ssm flow (SelectiveScan / mamba1_step) | CPU, Metal, MLX, CUDA, ROCm, wgpu |
@@ -61,6 +63,7 @@ Decoder LMs, MoE, hybrid SSM/attention, ternary, diffusion LMs, and speculative 
 | `rlx-minimax` | MiniMax runners for RLX — M2.5/M2.7 Lightning Attention LM, and M3 (MSA block-sparse MoE + vision tower) | **All 7** |
 | `rlx-minimax-h3` | MiniMax-H3 (Hailuo 3.0) omni-modal video+audio generation — joint 33B flow-matching DiT, 3D video VAE, BigVGAN audio VAE | CPU, Metal, MLX, wgpu |
 | `rlx-mistral` | Mistral 3+ / Ministral runner — STUB (PLAN.md M4) | **All 7** (+CoreML) |
+| `rlx-motif` | Motif-3 (Motif Technologies) — GDLA differential latent attention, MHC hyper-connections, PolyNorm MoE — for RLX | **All 7** (+CoreML) — parity-checked on every one; Linux wgpu needs `RLX_ARENA_NO_REUSE=1` (rlx-wgpu slot-reuse bug) |
 | `rlx-nanbeige` | Nanbeige4.2 Looped Transformer LM (Nanbeige/Nanbeige4.2-3B) | **All 7** (+CoreML) |
 | `rlx-nemotron` | NVIDIA Nemotron 3 Nano runner — text + hybrid Mamba2/attention LM | **All 7** |
 | `rlx-neutrino` | Neutrino-8B (Fermion Research) — Qwen3 topology with FV5 ternary weights for RLX | **All 7** (+CoreML) |

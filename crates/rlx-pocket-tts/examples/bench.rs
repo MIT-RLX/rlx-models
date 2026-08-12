@@ -82,8 +82,10 @@ fn main() -> Result<()> {
 
         // Warmup runs (results discarded).
         for w in 0..warmup {
-            let mut opts = GenerationOptions::default();
-            opts.seed = seed.wrapping_add((w as u64).wrapping_mul(0x9E37_79B9));
+            let opts = GenerationOptions {
+                seed: seed.wrapping_add((w as u64).wrapping_mul(0x9E37_79B9)),
+                ..GenerationOptions::default()
+            };
             let _ = model.generate(text, &voice, opts)?;
         }
 
@@ -92,8 +94,10 @@ fn main() -> Result<()> {
         let mut samples_total: usize = 0;
 
         for it in 0..iters {
-            let mut opts = GenerationOptions::default();
-            opts.seed = seed.wrapping_add(((it + 100) as u64).wrapping_mul(0x9E37_79B9));
+            let opts = GenerationOptions {
+                seed: seed.wrapping_add(((it + 100) as u64).wrapping_mul(0x9E37_79B9)),
+                ..GenerationOptions::default()
+            };
             let t = Instant::now();
             let audio = model.generate(text, &voice, opts)?;
             let wall = t.elapsed().as_secs_f64();

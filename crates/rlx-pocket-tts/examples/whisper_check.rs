@@ -54,8 +54,10 @@ fn main() -> Result<()> {
     eprintln!("temp={} steps={}", cfg.temperature, cfg.lsd_decode_steps);
     let model = TtsModel::open_with_config(&assets.weights, &assets.tokenizer, cfg)?;
     let voice = model.load_voice(&voice_path)?;
-    let mut opts = GenerationOptions::default();
-    opts.seed = seed;
+    let opts = GenerationOptions {
+        seed,
+        ..GenerationOptions::default()
+    };
 
     eprintln!("prompt:   {text:?}");
     eprintln!("voice:    {voice_name}  seed={seed}");

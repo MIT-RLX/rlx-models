@@ -11,11 +11,24 @@ description = "RLX native model decomposed from ONNX (auto-generated)"
 
 [dependencies]
 anyhow = "1"
-rlx-ir = { version = "=0.2.10" }
-rlx-runtime = { version = "=0.2.10", default-features = false, features = ["cpu"] }
+rlx-ir = { version = "0.2.14" }
+rlx-runtime = { version = "0.2.14", default-features = false, features = ["cpu"] }
 safetensors = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# `src/` is emitted by the ONNX-decompose tool, so its identifiers come from
+# ONNX node names and hand-edits would be overwritten on regeneration.
+# Allowed here (Cargo.toml survives a re-emit) rather than in the sources.
+[lints.rust]
+non_snake_case = "allow"
+dead_code = "allow"
+
+[lints.clippy]
+type_complexity = "allow"
+vec_init_then_push = "allow"
+iter_on_single_items = "allow"
+iter_cloned_collect = "allow"
 
 [features]
 default = ["cpu"]

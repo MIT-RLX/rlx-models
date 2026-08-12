@@ -21,11 +21,11 @@ rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # rlx-kittentts — both are StyleTTS2-family models with the same espeak→IPA
 # frontend. Referenced by path (not workspace inheritance) so its default
 # features can be disabled.
-rlx-kittentts = { path = "../rlx-kittentts", default-features = false }
+rlx-kittentts = { path = "../rlx-kittentts", version = "0.2.14", default-features = false }
 # Native RLX inference path (ort-free): reuse the generic ONNX→rlx-ir→run harness
 # (`compile_named`/`run_typed`) from rlx-tiny-tts to run the graph-split
 # encoder + decoder_raw subgraphs on any RLX backend. Optional (feature `native`).
-rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false, features = ["cpu"], optional = true }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.14", default-features = false, features = ["cpu"], optional = true }
 
 [dependencies.hf-hub]
 workspace = true

@@ -1,0 +1,41 @@
+[package]
+name = "rlx-motif"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Motif-3 (Motif Technologies) — GDLA differential latent attention, MHC hyper-connections, PolyNorm MoE — for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-llada2 = { workspace = true }
+rlx-runtime = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-llada2/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-llada2/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-llada2/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-llada2/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-llada2/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-llada2/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-core/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

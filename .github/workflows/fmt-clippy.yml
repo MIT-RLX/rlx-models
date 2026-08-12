@@ -12,6 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `--all-targets` builds rlx-gemma-inflect-nano's cpal dev-dependency,
+      # which needs ALSA headers; without this the gate fails in alsa-sys's
+      # build script before it lints a single crate.
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

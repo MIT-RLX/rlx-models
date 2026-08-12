@@ -20,6 +20,14 @@ use anyhow::{Result, anyhow};
 use rlx_gguf::{GgufFile, MetaValue};
 use std::path::Path;
 
+/// Default minimum vision-token floor (post spatial-merge) used when the GGUF /
+/// HF config does not pin `image_min_pixels`. Fewer tokens = faster ViT encode
+/// AND a shorter multimodal LM prefill, at some loss of fine detail. Lowered from
+/// the Qwen3-VL upstream 1024 to 576 as a latency/quality balance; override in
+/// TOKENS via `RLX_QWEN35_VISION_MIN_TOKENS` (or in raw pixels via
+/// `RLX_QWEN35_IMAGE_MIN_PIXELS`, which still wins).
+const DEFAULT_MIN_VISION_TOKENS: usize = 576;
+
 /// Vision / mmproj hyperparameters from a Qwen3-VL `mmproj` GGUF.
 #[derive(Debug, Clone)]
 pub struct MmProjConfig {
@@ -120,7 +128,7 @@ impl MmProjConfig {
 
         let image_min_pixels = u32k_opt("clip.vision.image_min_pixels")
             .map(|v| v as usize)
-            .unwrap_or(1024 * n_merge * n_merge * patch_size * patch_size);
+            .unwrap_or(DEFAULT_MIN_VISION_TOKENS * n_merge * n_merge * patch_size * patch_size);
         let image_max_pixels = u32k_opt("clip.vision.image_max_pixels")
             .map(|v| v as usize)
             .unwrap_or(4096 * n_merge * n_merge * patch_size * patch_size);
@@ -156,6 +164,15 @@ impl MmProjConfig {
     /// Apply `RLX_QWEN35_IMAGE_MIN_PIXELS` / `RLX_QWEN35_IMAGE_MAX_PIXELS`
     /// overrides (used by both the GGUF and HF config paths).
     fn apply_pixel_env_overrides(&mut self) {
+        // Token-unit floor override (more intuitive than raw pixels): the LM sees
+        // `image_min_pixels / (n_merge^2 * patch^2)` tokens minimum. Applied before
+        // the raw-pixel override below so the latter can still take final precedence.
+        if let Ok(v) = std::env::var("RLX_QWEN35_VISION_MIN_TOKENS") {
+            if let Ok(toks) = v.parse::<usize>() {
+                self.image_min_pixels =
+                    toks.max(1) * self.n_merge * self.n_merge * self.patch_size * self.patch_size;
+            }
+        }
         if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MIN_PIXELS") {
             if let Ok(n) = v.parse::<usize>() {
                 self.image_min_pixels = n.max(1);
@@ -225,7 +242,11 @@ impl MmProjConfig {
             n_head,
             n_layer,
             image_size,
-            image_min_pixels: 1024 * n_merge * n_merge * patch_size * patch_size,
+            image_min_pixels: DEFAULT_MIN_VISION_TOKENS
+                * n_merge
+                * n_merge
+                * patch_size
+                * patch_size,
             image_max_pixels: 4096 * n_merge * n_merge * patch_size * patch_size,
             n_merge,
             eps: f("rms_norm_eps")

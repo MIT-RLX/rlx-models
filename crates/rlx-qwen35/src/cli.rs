@@ -29,7 +29,8 @@ Usage: rlx-qwen35 --weights PATH [options]
 
   --weights PATH           GGUF (or directory) path
   --device NAME            cpu|metal|mlx|cuda|rocm|gpu|vulkan|auto (default cpu)
-  --packed                 Keep GGUF quants packed in the arena
+  --packed                 Keep GGUF quants packed (DEFAULT; F16-resident decode on Metal)
+  --dense / --no-packed    Dequantize weights to full F32 (slower, most accurate)
   --prompt TEXT            ChatML user turn (needs tokenizer feature)
   --prompt-ids 1,2;3,4     Raw token ids (; = batch rows)
   --system TEXT            System message (with --prompt / --chat)
@@ -85,7 +86,10 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut enable_mtp = false;
     let mut spec_decode = false;
     let mut spec_n = 4usize;
-    let mut packed_weights = false;
+    // Default ON: keep GGUF K-quants packed and dequant-on-the-fly, which on
+    // Metal runs the fast F16-resident decode path (~6× the F32 dequant path,
+    // token-identical). `--dense`/`--no-packed` opts back into full F32 weights.
+    let mut packed_weights = true;
     let mut batch = 1usize;
     let mut temperature = 0f32;
     let mut top_p = 1f32;
@@ -138,6 +142,7 @@ pub fn run(args: &[String]) -> Result<()> {
             "--spec-decode" => spec_decode = true,
             "--spec-n" => spec_n = it.next().context("--spec-n")?.parse()?,
             "--packed" => packed_weights = true,
+            "--dense" | "--no-packed" => packed_weights = false,
             "--dynamic-prefill" => dynamic_prefill = true,
             "--dynamic-decode" => dynamic_decode = true,
             "--temperature" => {

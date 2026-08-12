@@ -36,6 +36,10 @@ llama-cpp-2 = { workspace = true, optional = true }
 name = "dump_vision_emb"
 required-features = ["qwen35-vlm"]
 
+[[example]]
+name = "fara_image_reuse"
+required-features = ["qwen35-vlm", "qwen35-tokenizer"]
+
 [features]
 default = ["tokenizer"]
 tokenizer = ["dep:tokenizers", "qwen35-tokenizer"]

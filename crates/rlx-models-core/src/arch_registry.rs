@@ -162,9 +162,24 @@ pub fn register_all() {
         description: "Qwen3 (Alibaba) — GQA + QK-norm + SwiGLU dense causal LM. Phase 1 ships prefill graph; KV cache / lm_head / sampling / MTP follow.",
     });
     register(ArchSpec {
+        name: "bailing_hybrid",
+        family: ArchFamily::CausalLLM,
+        description: "Ling 3.0 / BailingMoeV3 (inclusionAI) — KDA linear attention interleaved with MLA on a layer_group_size cycle, fine-grained noaux_tc MoE. Prefill graph via rlx-ling.",
+    });
+    register(ArchSpec {
+        name: "Motif",
+        family: ArchFamily::CausalLLM,
+        description: "Motif-3 (Motif Technologies) — GDLA grouped differential latent attention (MLA low-rank + noise-head subtraction + element-wise output gate, global/sliding-window interleave), MHC manifold-constrained hyper-connections (4 residual streams mixed by a Sinkhorn doubly stochastic matrix), and a 384-expert MoE with per-expert PolyNorm. Prefill graph via rlx-motif.",
+    });
+    register(ArchSpec {
         name: "llada2",
         family: ArchFamily::Diffusion,
         description: "LLaDA2 MoE (inclusionAI) — block diffusion LLM with sigmoid group-limited TopK router and TIDE predictive expert offload.",
+    });
+    register(ArchSpec {
+        name: "diffusion_gemma",
+        family: ArchFamily::Diffusion,
+        description: "DiffusionGemma (Google) — block-diffusion text LM: a weight-tied Gemma 4 MoE encoder/decoder pair where the decoder denoises a fixed canvas bidirectionally over the encoder's read-only KV cache. Entropy-bounded sampler via rlx-diffusiongemma.",
     });
     register(ArchSpec {
         name: "llama32",
@@ -180,6 +195,11 @@ pub fn register_all() {
         name: "gemma",
         family: ArchFamily::CausalLLM,
         description: "Gemma / Gemma 2 (Google) — GQA + RoPE + GeGLU + embed scaling + tied weights. Safetensors + GGUF via rlx-run gemma.",
+    });
+    register(ArchSpec {
+        name: "muse-glimmer",
+        family: ArchFamily::CausalLLM,
+        description: "Muse Glimmer 30B (Meta) — dense GQA trunk with per-head QK-norm, a sigmoid attention output gate, 4 RMSNorms/layer, and interleaved sliding-window (RoPE) / global (NoPE) attention. GGUF via rlx-run llama32.",
     });
     register(ArchSpec {
         name: "laguna",

@@ -234,6 +234,19 @@ impl WeightMap {
         Self { tensors }
     }
 
+    /// Add (or replace) a tensor. For checkpoint preprocessors that synthesize
+    /// tensors a builder expects — e.g. stacking per-expert MoE weights that the
+    /// upstream checkpoint stores one tensor per expert. Returns the previous
+    /// entry, if any.
+    pub fn insert(
+        &mut self,
+        key: impl Into<String>,
+        data: Vec<f32>,
+        shape: Vec<usize>,
+    ) -> Option<(Vec<f32>, Vec<usize>)> {
+        self.tensors.insert(key.into(), (data, shape))
+    }
+
     /// Drain all tensors into a snapshot map (for runners that rebuild graphs per shape).
     pub fn snapshot_from_path(path: &str) -> Result<F32WeightSnapshot> {
         let mut wm = Self::from_file(path)?;

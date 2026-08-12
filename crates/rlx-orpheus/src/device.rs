@@ -179,7 +179,11 @@ mod tests {
         assert!(lm_kv_decode_supported(Device::Vulkan));
     }
 
+    // `resolve_orpheus_device("coreml")` bails unless the LM lands on an Apple
+    // backend (Metal/MLX/CPU); on a CUDA host it resolves to Cuda and errors by
+    // design. The ANE SNAC path only exists on Apple.
     #[test]
+    #[cfg(target_os = "macos")]
     fn resolve_coreml_sets_snac_flag() {
         let rt = resolve_orpheus_device("coreml").unwrap();
         assert_eq!(rt.snac, crate::decoder::SnacExec::Ane);

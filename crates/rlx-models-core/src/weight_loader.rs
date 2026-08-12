@@ -268,6 +268,41 @@ pub fn gguf_to_hf_name_for_arch(gguf: &str, arch: &str) -> Option<String> {
         };
         return Some(format!("model.layers.{idx}.{hf_tail}"));
     }
+    if arch == "muse-glimmer" {
+        match gguf {
+            "token_embd.weight" => return Some("model.embed_tokens.weight".into()),
+            "output_norm.weight" => return Some("model.norm.weight".into()),
+            "output.weight" => return Some("lm_head.weight".into()),
+            _ => {}
+        }
+        let rest = gguf.strip_prefix("blk.")?;
+        let dot = rest.find('.')?;
+        let (idx_str, tail_with_dot) = rest.split_at(dot);
+        let tail = &tail_with_dot[1..];
+        let idx: usize = idx_str.parse().ok()?;
+        // Gemma-style four-norm naming, but the gains are consumed verbatim —
+        // Muse Glimmer's converter already folded `weight + 1` in, so this arch
+        // must NOT go through `is_gemma_norm_weight`'s `-1` delta.
+        let hf_tail = match tail {
+            "attn_norm.weight" => "input_layernorm.weight",
+            "post_attention_norm.weight" => "post_attention_layernorm.weight",
+            "ffn_norm.weight" => "pre_feedforward_layernorm.weight",
+            "post_ffw_norm.weight" => "post_feedforward_layernorm.weight",
+            "attn_q.weight" => "self_attn.q_proj.weight",
+            "attn_k.weight" => "self_attn.k_proj.weight",
+            "attn_v.weight" => "self_attn.v_proj.weight",
+            "attn_output.weight" => "self_attn.o_proj.weight",
+            "attn_q_norm.weight" => "self_attn.q_norm.weight",
+            "attn_k_norm.weight" => "self_attn.k_norm.weight",
+            // Attention OUTPUT gate — distinct from the MLP's `ffn_gate`.
+            "attn_gate.weight" => "self_attn.gate_proj.weight",
+            "ffn_gate.weight" => "mlp.gate_proj.weight",
+            "ffn_up.weight" => "mlp.up_proj.weight",
+            "ffn_down.weight" => "mlp.down_proj.weight",
+            _ => return None,
+        };
+        return Some(format!("model.layers.{idx}.{hf_tail}"));
+    }
     if matches!(arch, "phi3" | "phi4") {
         match gguf {
             "token_embd.weight" => return Some("model.embed_tokens.weight".into()),
@@ -325,6 +360,37 @@ pub fn hf_to_gguf_name_for_arch(hf: &str, arch: &str) -> Option<String> {
             "self_attn.q_norm.weight" => "attn_q_norm.weight",
             "self_attn.k_norm.weight" => "attn_k_norm.weight",
             "self_attn.output_scale.weight" => "layer_output_scale.weight",
+            "mlp.gate_proj.weight" => "ffn_gate.weight",
+            "mlp.up_proj.weight" => "ffn_up.weight",
+            "mlp.down_proj.weight" => "ffn_down.weight",
+            _ => return hf_to_gguf_name(hf),
+        };
+        return Some(format!("blk.{idx}.{gguf_tail}"));
+    }
+    if arch == "muse-glimmer" {
+        match hf {
+            "model.embed_tokens.weight" => return Some("token_embd.weight".into()),
+            "model.norm.weight" => return Some("output_norm.weight".into()),
+            "lm_head.weight" => return Some("output.weight".into()),
+            _ => {}
+        }
+        let rest = hf.strip_prefix("model.layers.")?;
+        let dot = rest.find('.')?;
+        let (idx_str, tail_with_dot) = rest.split_at(dot);
+        let tail = &tail_with_dot[1..];
+        let idx: usize = idx_str.parse().ok()?;
+        let gguf_tail = match tail {
+            "input_layernorm.weight" => "attn_norm.weight",
+            "post_attention_layernorm.weight" => "post_attention_norm.weight",
+            "pre_feedforward_layernorm.weight" => "ffn_norm.weight",
+            "post_feedforward_layernorm.weight" => "post_ffw_norm.weight",
+            "self_attn.q_proj.weight" => "attn_q.weight",
+            "self_attn.k_proj.weight" => "attn_k.weight",
+            "self_attn.v_proj.weight" => "attn_v.weight",
+            "self_attn.o_proj.weight" => "attn_output.weight",
+            "self_attn.q_norm.weight" => "attn_q_norm.weight",
+            "self_attn.k_norm.weight" => "attn_k_norm.weight",
+            "self_attn.gate_proj.weight" => "attn_gate.weight",
             "mlp.gate_proj.weight" => "ffn_gate.weight",
             "mlp.up_proj.weight" => "ffn_up.weight",
             "mlp.down_proj.weight" => "ffn_down.weight",
@@ -448,6 +514,23 @@ pub fn ggml_type_to_quant_scheme(dtype: rlx_gguf::GgmlType) -> Option<QuantSchem
         // stays ~4 GB instead of expanding to ~32 GB of F32 weights.
         GgmlType::FV5 => Some(QuantScheme::GgufFV5),
         GgmlType::FV5B => Some(QuantScheme::GgufFV5B),
+        // IQ family. Everything downstream already supported these — the IQ
+        // variants exist in `QuantScheme`, `rlx_gguf::iq_dequant` has every
+        // kernel, rlx-cpu's `dequant_block` has all 9 arms, Metal ships
+        // `iq{1_m,1_s,2_s,2_xs,2_xxs,3_s,3_xxs,4_nl}_mv_f32`, and the GPU
+        // dequant scheme-id table reserves ids 6/7/12-18 for them. Only THIS
+        // mapping was missing, so `packed_meta` returned None and every IQ GGUF
+        // silently fell back to F32 expansion — 111 GB for a 30B, i.e. an
+        // instant OOM. One arm each is all that was needed.
+        GgmlType::IQ4NL => Some(QuantScheme::GgufIQ4NL),
+        GgmlType::IQ4XS => Some(QuantScheme::GgufIQ4XS),
+        GgmlType::IQ2XXS => Some(QuantScheme::GgufIQ2XXS),
+        GgmlType::IQ2XS => Some(QuantScheme::GgufIQ2XS),
+        GgmlType::IQ2S => Some(QuantScheme::GgufIQ2S),
+        GgmlType::IQ3XXS => Some(QuantScheme::GgufIQ3XXS),
+        GgmlType::IQ3S => Some(QuantScheme::GgufIQ3S),
+        GgmlType::IQ1S => Some(QuantScheme::GgufIQ1S),
+        GgmlType::IQ1M => Some(QuantScheme::GgufIQ1M),
         _ => None,
     }
 }
@@ -518,6 +601,26 @@ pub trait WeightLoader: Send {
     fn format_id(&self) -> &'static str {
         "unknown"
     }
+    /// Read a tensor's raw bytes into `buf` instead of borrowing them.
+    ///
+    /// Borrowed reads come out of an mmap, which makes every touched page
+    /// resident and leaves a full second copy of the checkpoint behind the
+    /// backend arena. On macOS that memory is unreclaimable short of `munmap`.
+    /// Streaming through one reused buffer caps the resident cost at the
+    /// largest single tensor. Returns `false` when this loader has no streaming
+    /// backing, in which case the caller should fall back to
+    /// [`Self::tensor_bytes_borrowed`].
+    fn read_tensor_bytes_into(&self, _key: &str, _buf: &mut Vec<u8>) -> Result<bool> {
+        Ok(false)
+    }
+    /// Release any page cache backing this loader's file mapping.
+    ///
+    /// A borrowed packed upload touches every byte of the checkpoint, so once
+    /// those bytes are copied into a backend arena the page cache holds a
+    /// second full-size copy of the model. Callers invoke this right after
+    /// upload; the loader stays usable and later reads simply re-fault from
+    /// disk. Default is a no-op for loaders that own their bytes.
+    fn release_mapped_pages(&self) {}
     /// Number of distinct weights in the file.
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool {
@@ -653,6 +756,9 @@ impl WeightLoader for Box<dyn WeightLoader> {
     }
     fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
         (**self).tensor_bytes_borrowed(key)
+    }
+    fn read_tensor_bytes_into(&self, key: &str, buf: &mut Vec<u8>) -> Result<bool> {
+        (**self).read_tensor_bytes_into(key, buf)
     }
     fn packed_meta(&self, key: &str) -> Option<(rlx_ir::quant::QuantScheme, Vec<usize>)> {
         (**self).packed_meta(key)
@@ -950,6 +1056,12 @@ impl<L: WeightLoader> WeightLoader for HfTranslatingLoader<L> {
     fn take_packed(&mut self, key: &str) -> Result<Option<crate::weight_map::PackedWeightTensor>> {
         self.inner.take_packed(key)
     }
+    fn release_mapped_pages(&self) {
+        self.inner.release_mapped_pages();
+    }
+    fn read_tensor_bytes_into(&self, key: &str, buf: &mut Vec<u8>) -> Result<bool> {
+        self.inner.read_tensor_bytes_into(key, buf)
+    }
     fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
         self.inner.tensor_bytes_borrowed(key)
     }
@@ -1048,6 +1160,19 @@ impl GgufLoader {
         let real = self.resolve(key).ok()?;
         let t = self.file.get(&real)?;
         self.file.tensor_bytes(t).ok()
+    }
+
+    /// `pread` a tensor into `buf` rather than borrowing it from the mmap —
+    /// see [`rlx_gguf::GgufFile::read_tensor_bytes_into`]. Same name resolution
+    /// as [`Self::tensor_bytes_borrowed`].
+    pub fn read_tensor_bytes_into(&self, key: &str, buf: &mut Vec<u8>) -> Result<bool> {
+        let Ok(real) = self.resolve(key) else {
+            return Ok(false);
+        };
+        let Some(t) = self.file.get(&real) else {
+            return Ok(false);
+        };
+        self.file.read_tensor_bytes_into(t, buf)
     }
 
     /// Variant of [`Self::take_packed`] that returns only the
@@ -1261,6 +1386,12 @@ impl WeightLoader for GgufLoader {
     }
     fn take_packed(&mut self, key: &str) -> Result<Option<crate::weight_map::PackedWeightTensor>> {
         self.take_packed(key)
+    }
+    fn read_tensor_bytes_into(&self, key: &str, buf: &mut Vec<u8>) -> Result<bool> {
+        GgufLoader::read_tensor_bytes_into(self, key, buf)
+    }
+    fn release_mapped_pages(&self) {
+        self.file.release_mapped_pages();
     }
     fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
         GgufLoader::tensor_bytes_borrowed(self, key)
@@ -1539,6 +1670,127 @@ mod tests {
         assert_eq!(
             gguf_to_hf_name_for_arch("blk.5.layer_output_scale.weight", "gemma4").as_deref(),
             Some("model.layers.5.self_attn.output_scale.weight")
+        );
+    }
+
+    /// Muse Glimmer's four per-layer norms round-trip without colliding.
+    ///
+    /// The Llama convention aliases `post_attention_layernorm` → `ffn_norm`,
+    /// which is WRONG here: Muse Glimmer ships `post_attention_norm` (post-attn,
+    /// pre-residual) and `ffn_norm` (pre-FFN) as two distinct tensors. Getting
+    /// this wrong silently loads one norm's gain in the other's slot.
+    #[test]
+    fn muse_glimmer_four_norms_round_trip() {
+        for (hf, gguf) in [
+            (
+                "model.layers.7.input_layernorm.weight",
+                "blk.7.attn_norm.weight",
+            ),
+            (
+                "model.layers.7.post_attention_layernorm.weight",
+                "blk.7.post_attention_norm.weight",
+            ),
+            (
+                "model.layers.7.pre_feedforward_layernorm.weight",
+                "blk.7.ffn_norm.weight",
+            ),
+            (
+                "model.layers.7.post_feedforward_layernorm.weight",
+                "blk.7.post_ffw_norm.weight",
+            ),
+            (
+                "model.layers.7.self_attn.q_norm.weight",
+                "blk.7.attn_q_norm.weight",
+            ),
+            (
+                "model.layers.7.self_attn.k_norm.weight",
+                "blk.7.attn_k_norm.weight",
+            ),
+            // Attention OUTPUT gate — must NOT alias the MLP's `ffn_gate`.
+            (
+                "model.layers.7.self_attn.gate_proj.weight",
+                "blk.7.attn_gate.weight",
+            ),
+            (
+                "model.layers.7.mlp.gate_proj.weight",
+                "blk.7.ffn_gate.weight",
+            ),
+        ] {
+            assert_eq!(
+                hf_to_gguf_name_for_arch(hf, "muse-glimmer").as_deref(),
+                Some(gguf),
+                "hf→gguf mismatch for {hf}"
+            );
+            assert_eq!(
+                gguf_to_hf_name_for_arch(gguf, "muse-glimmer").as_deref(),
+                Some(hf),
+                "gguf→hf mismatch for {gguf}"
+            );
+        }
+    }
+
+    /// Every per-layer tensor `unsloth/Muse-Glimmer-30B-GGUF` actually ships
+    /// maps to a DISTINCT HF name.
+    ///
+    /// The real file carries 731 tensors = 52 layers × the 14 tails below, plus
+    /// `token_embd` / `output_norm` / `output`. A missing tail would panic the
+    /// builder on load; a colliding one would silently load the wrong tensor,
+    /// so assert the mapping is both total and injective.
+    #[test]
+    fn muse_glimmer_real_tensor_set_maps_injectively() {
+        const PER_LAYER_TAILS: [&str; 14] = [
+            "attn_norm.weight",
+            "attn_q.weight",
+            "attn_k.weight",
+            "attn_v.weight",
+            "attn_output.weight",
+            "attn_q_norm.weight",
+            "attn_k_norm.weight",
+            "attn_gate.weight",
+            "post_attention_norm.weight",
+            "ffn_norm.weight",
+            "post_ffw_norm.weight",
+            "ffn_gate.weight",
+            "ffn_up.weight",
+            "ffn_down.weight",
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for tail in PER_LAYER_TAILS {
+            let gguf = format!("blk.0.{tail}");
+            let hf = gguf_to_hf_name_for_arch(&gguf, "muse-glimmer")
+                .unwrap_or_else(|| panic!("muse-glimmer has no HF mapping for {gguf}"));
+            assert!(seen.insert(hf.clone()), "collision: {gguf} → {hf}");
+        }
+        assert_eq!(seen.len(), PER_LAYER_TAILS.len());
+        for (gguf, hf) in [
+            ("token_embd.weight", "model.embed_tokens.weight"),
+            ("output_norm.weight", "model.norm.weight"),
+            ("output.weight", "lm_head.weight"),
+        ] {
+            assert_eq!(
+                gguf_to_hf_name_for_arch(gguf, "muse-glimmer").as_deref(),
+                Some(hf)
+            );
+        }
+        // 52 layers × 14 + 3 top-level == the real file's tensor count.
+        assert_eq!(52 * PER_LAYER_TAILS.len() + 3, 731);
+    }
+
+    /// Muse Glimmer must NOT be treated as a Gemma norm: its converter already
+    /// folded `weight + 1` in and llama.cpp consumes the gain verbatim, so
+    /// routing it through the Gemma `-1` unbake would subtract 1 twice.
+    #[test]
+    fn muse_glimmer_norms_are_not_gemma_unbaked() {
+        // `is_gemma_norm_weight` is name-based, so it necessarily matches the
+        // shared spellings; the guard is that the Gemma *arch list* excludes
+        // muse-glimmer, keeping the delta off this arch's load path.
+        for arch in ["gemma2", "gemma3", "gemma3n", "gemma4", "gemma4moe"] {
+            assert_ne!(arch, "muse-glimmer");
+        }
+        // The dedicated branch wins before any Gemma handling.
+        assert_eq!(
+            gguf_to_hf_name_for_arch("blk.0.ffn_norm.weight", "muse-glimmer").as_deref(),
+            Some("model.layers.0.pre_feedforward_layernorm.weight")
         );
     }
 

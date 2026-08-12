@@ -16,7 +16,7 @@ hound = "3"
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # ZipVoice and LuxTTS share the exact ZipVoice runtime (LuxTTS is ZipVoice-distill
 # fine-tuned); reuse the rlx-luxtts runner + DSP wholesale.
-rlx-luxtts = { path = "../rlx-luxtts" }
+rlx-luxtts = { path = "../rlx-luxtts", version = "0.2.14" }
 
 [features]
 default = []

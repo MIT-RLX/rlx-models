@@ -43,6 +43,20 @@ pub enum DenseArch {
     /// ChatGLM / GLM-Edge: standard pre-norm (input + pre-ffn RMSNorm); fused
     /// gate∥up MLP; partial-or-full RoPE per `rope.dimension_count`.
     ChatGlm,
+    /// Muse Glimmer (Meta) — four RMSNorms per layer like [`DenseArch::Glm4`]
+    /// (pre-attn, post-attn, pre-ffn, post-ffn), but with four extra deltas:
+    ///   - per-head-dim Q/K RMSNorm (Qwen3-style, `[head_dim]` gains),
+    ///   - a sigmoid **attention output gate** applied between SDPA and
+    ///     `o_proj` (`attn_out * sigmoid(W_gate @ pre_attn_normed)`),
+    ///   - interleaved local/global attention: 3 sliding-window layers (RoPE)
+    ///     then 1 full-attention layer (**NoPE**), repeating,
+    ///   - an unweighted RMSNorm on the token embeddings, `logit_scale` as a
+    ///     logit MULTIPLIER, and a final `tanh` logit softcap.
+    ///
+    /// The two post-norms use a distinct, much smaller epsilon (1e-8) than the
+    /// pre-norms (`attention.layer_norm_rms_epsilon`, 1e-5). Matches llama.cpp
+    /// `src/models/muse-glimmer.cpp`.
+    MuseGlimmer,
 }
 
 /// Which normalization the arch uses for its per-layer norms.
@@ -139,6 +153,25 @@ pub struct Llama32Config {
     /// Rotary dimension when it differs from `head_dim` (Phi-3 partial RoPE).
     #[serde(skip)]
     pub rope_dim: Option<usize>,
+    /// Sliding-window width for local attention layers
+    /// (`{arch}.attention.sliding_window`, llama.cpp `n_swa`). A local layer
+    /// attends to keys within `w` positions **inclusive** of the query
+    /// (`q_pos - k_pos <= w`), matching llama.cpp `LLAMA_SWA_TYPE_STANDARD`
+    /// and [`rlx_ir::op::MaskKind::SlidingWindow`]. `None` = all layers full.
+    #[serde(default)]
+    pub sliding_window: Option<usize>,
+    /// Local/global interleave period
+    /// (`{arch}.attention.sliding_window_pattern`). Mirrors llama.cpp
+    /// `llama_hparams::set_swa_pattern(p)` with `dense_first = false`: layer
+    /// `i` is sliding-window when `i % p < p - 1`, so `p = 4` yields three
+    /// local layers followed by one global (full-attention) layer.
+    #[serde(default)]
+    pub sliding_window_pattern: Option<usize>,
+    /// Final logit `tanh` softcap (`{arch}.final_logit_softcapping`, Gemma-2
+    /// style): `logits = cap * tanh(logits / cap)`. Applied AFTER
+    /// [`Self::final_logit_multiplier`], matching llama.cpp's ordering.
+    #[serde(default, alias = "final_logit_softcapping")]
+    pub final_logit_softcap: Option<f32>,
 }
 
 fn default_num_loops() -> usize {
@@ -223,8 +256,71 @@ impl Llama32Config {
             Some("cohere") | Some("command-r") | Some("cohere2") => DenseArch::Cohere,
             Some("glm4") => DenseArch::Glm4,
             Some("chatglm") => DenseArch::ChatGlm,
+            Some("muse-glimmer") => DenseArch::MuseGlimmer,
             _ => DenseArch::Llama,
         }
+    }
+
+    /// Local/global interleave period, or `None` when every layer is
+    /// full-attention. Only Muse Glimmer drives this from GGUF metadata today;
+    /// Cohere2 keeps its hardcoded pattern in [`Self::cohere2_nope_pattern`].
+    pub fn swa_pattern(&self) -> Option<usize> {
+        match self.dense_arch() {
+            DenseArch::MuseGlimmer => self.sliding_window_pattern.filter(|&p| p > 1),
+            _ => None,
+        }
+    }
+
+    /// Whether layer `idx` is a **sliding-window (local)** layer. llama.cpp
+    /// `set_swa_pattern(p)`: `is_swa(i) = i % p < p - 1`. With no pattern every
+    /// layer is global.
+    pub fn is_swa_layer(&self, idx: usize) -> bool {
+        self.swa_pattern().is_some_and(|p| idx % p < p - 1)
+    }
+
+    /// Sliding-window width to use for layer `idx`, or `None` for a full
+    /// (global) attention layer.
+    pub fn attn_window_for_layer(&self, idx: usize) -> Option<usize> {
+        self.sliding_window
+            .filter(|&w| w > 0 && self.is_swa_layer(idx))
+    }
+
+    /// Whether layer `idx` skips RoPE entirely (NoPE).
+    ///
+    /// Two arches land here with the *same* predicate but different framings:
+    /// Cohere2 states it as "global layers are NoPE" (`(i+1) % p == 0`), and
+    /// Muse Glimmer as "RoPE runs on the SWA layers" (`!is_swa(i)`, i.e.
+    /// `i % p == p - 1`). Those are the same set of layers.
+    pub fn is_nope_layer(&self, idx: usize) -> bool {
+        if let Some(p) = self.cohere2_nope_pattern() {
+            return (idx + 1).is_multiple_of(p);
+        }
+        self.swa_pattern().is_some() && !self.is_swa_layer(idx)
+    }
+
+    /// Epsilon for the two **post**-norms (post-attention / post-FFN). Muse
+    /// Glimmer hardcodes 1e-8 here — deliberately different from the pre-norms'
+    /// `attention.layer_norm_rms_epsilon` (1e-5); see llama.cpp
+    /// `muse-glimmer.cpp` (`post_norm_eps`). Every other arch reuses
+    /// `rms_norm_eps`.
+    pub fn post_norm_eps(&self) -> f32 {
+        match self.dense_arch() {
+            DenseArch::MuseGlimmer => 1e-8,
+            _ => self.rms_norm_eps as f32,
+        }
+    }
+
+    /// Whether the arch gates the attention output with
+    /// `sigmoid(W_gate @ pre_attn_normed)` before `o_proj`.
+    pub fn uses_attn_out_gate(&self) -> bool {
+        self.dense_arch() == DenseArch::MuseGlimmer
+    }
+
+    /// Whether an **unweighted** RMSNorm is applied to the token embeddings
+    /// before the first block (Muse Glimmer's `build_norm(inpL, nullptr, …)`).
+    /// This is not the same as Gemma's `sqrt(d_model)` embedding multiplier.
+    pub fn normalizes_input_embeddings(&self) -> bool {
+        self.dense_arch() == DenseArch::MuseGlimmer
     }
 
     /// Cohere2 (Command-R7B) interleaves sliding-window and full-attention
@@ -259,11 +355,16 @@ impl Llama32Config {
     /// active arch, or `None` when no logit scaling applies.
     pub fn final_logit_multiplier(&self) -> Option<f32> {
         match self.logit_scale {
-            Some(ls) if ls != 0.0 => Some(if self.dense_arch() == DenseArch::Cohere {
-                ls
-            } else {
-                1.0 / ls
-            }),
+            Some(ls) if ls != 0.0 => Some(
+                if matches!(
+                    self.dense_arch(),
+                    DenseArch::Cohere | DenseArch::MuseGlimmer
+                ) {
+                    ls
+                } else {
+                    1.0 / ls
+                },
+            ),
             _ => None,
         }
     }
@@ -310,6 +411,9 @@ impl Llama32Config {
             rope_style: rlx_ir::RopeStyle::NeoX,
             gguf_arch: None,
             rope_dim: None,
+            sliding_window: None,
+            sliding_window_pattern: None,
+            final_logit_softcap: None,
         }
     }
 }
@@ -405,6 +509,17 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
     let attention_scale = get_f32("llama.attention.scale");
     let logit_scale = get_f32("llama.logit_scale");
 
+    // Interleaved local/global attention (Muse Glimmer). `sliding_window` is
+    // llama.cpp's `n_swa`; `sliding_window_pattern` its `set_swa_pattern`
+    // period. Absent for every plain-Llama GGUF, leaving all layers global.
+    let sliding_window = get_u32("llama.attention.sliding_window")
+        .ok()
+        .map(|v| v as usize);
+    let sliding_window_pattern = get_u32("llama.attention.sliding_window_pattern")
+        .ok()
+        .map(|v| v as usize);
+    let final_logit_softcap = get_f32("llama.final_logit_softcapping");
+
     // RoPE flavor: the HF→GGUF converter permutes Q/K for llama.cpp's
     // interleaved (NORM / GPT-J) rope only for NORM-type arches (llama,
     // granite). NEOX-type arches (exaone, olmo2, cohere/command-r) are stored
@@ -413,7 +528,8 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
         // NeoX rotate-half (no converter permutation)
         "phi3" | "phi4" | "exaone" | "olmo" | "olmo2" | "cohere" | "command-r" | "cohere2"
         | "glm4" | "chatglm" | "nemotron" => rlx_ir::RopeStyle::NeoX,
-        // GPT-J interleaved (converter-permuted): llama, granite, everything else
+        // GPT-J interleaved (converter-permuted): llama, granite, muse-glimmer
+        // (llama.cpp lists it under `LLAMA_ROPE_TYPE_NORM`), everything else.
         _ => rlx_ir::RopeStyle::GptJ,
     };
 
@@ -455,6 +571,9 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
                 (head_dim_key.is_some() && *r <= head_dim_key.unwrap()) || (*r > 0 && *r < hd)
             })
         },
+        sliding_window,
+        sliding_window_pattern,
+        final_logit_softcap,
     })
 }
 
@@ -690,5 +809,176 @@ mod tests {
         assert_eq!(cfg.rope_style, rlx_ir::RopeStyle::GptJ);
         assert!((cfg.rope_theta - 10_000_000.0).abs() < 1.0);
         std::fs::remove_file(path).ok();
+    }
+
+    /// Muse Glimmer 30B hparams parse from a `muse-glimmer.*` GGUF header, with
+    /// the exact key/value set `unsloth/Muse-Glimmer-30B-GGUF` ships.
+    #[test]
+    fn gguf_muse_glimmer_hparams_parse() {
+        use rlx_gguf::GgmlType;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "rlx_llama32_muse_{}_{}.gguf",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+        ));
+
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&rlx_gguf::GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&2u64.to_le_bytes()); // 2 tensors
+        buf.extend_from_slice(&14u64.to_le_bytes()); // metadata keys
+
+        let write_str = |buf: &mut Vec<u8>, k: &str, v: &str| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&8u32.to_le_bytes());
+            buf.extend_from_slice(&(v.len() as u64).to_le_bytes());
+            buf.extend_from_slice(v.as_bytes());
+        };
+        let write_u32 = |buf: &mut Vec<u8>, k: &str, v: u32| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&4u32.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        };
+        let write_f32 = |buf: &mut Vec<u8>, k: &str, v: f32| {
+            buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            buf.extend_from_slice(k.as_bytes());
+            buf.extend_from_slice(&6u32.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        };
+
+        write_str(&mut buf, "general.architecture", "muse-glimmer");
+        write_u32(&mut buf, "muse-glimmer.block_count", 52);
+        write_u32(&mut buf, "muse-glimmer.context_length", 131_072);
+        write_u32(&mut buf, "muse-glimmer.embedding_length", 6656);
+        write_u32(&mut buf, "muse-glimmer.feed_forward_length", 19_968);
+        write_u32(&mut buf, "muse-glimmer.attention.head_count", 32);
+        write_u32(&mut buf, "muse-glimmer.attention.head_count_kv", 2);
+        write_u32(&mut buf, "muse-glimmer.attention.key_length", 128);
+        write_u32(&mut buf, "muse-glimmer.attention.value_length", 128);
+        write_u32(&mut buf, "muse-glimmer.attention.sliding_window", 2048);
+        write_u32(&mut buf, "muse-glimmer.attention.sliding_window_pattern", 4);
+        write_f32(&mut buf, "muse-glimmer.rope.freq_base", 500_000.0);
+        write_f32(&mut buf, "muse-glimmer.final_logit_softcapping", 20.0);
+        write_f32(&mut buf, "muse-glimmer.logit_scale", 0.196_116_13);
+
+        // token_embd + a separate output.weight → untied LM head.
+        for (name, offset) in [("token_embd.weight", 0u64), ("output.weight", 16u64)] {
+            buf.extend_from_slice(&(name.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name.as_bytes());
+            buf.extend_from_slice(&1u32.to_le_bytes());
+            buf.extend_from_slice(&4u64.to_le_bytes());
+            buf.extend_from_slice(&(GgmlType::F32 as u32).to_le_bytes());
+            buf.extend_from_slice(&offset.to_le_bytes());
+        }
+        while !buf
+            .len()
+            .is_multiple_of(rlx_gguf::DEFAULT_ALIGNMENT as usize)
+        {
+            buf.push(0);
+        }
+        for _ in 0..8 {
+            buf.extend_from_slice(&0f32.to_le_bytes());
+        }
+        std::fs::write(&path, &buf).unwrap();
+
+        let raw = rlx_gguf::GgufFile::from_path(&path).expect("parse muse-glimmer gguf");
+        let cfg = llama32_cfg_from_gguf(&raw).expect("muse-glimmer config");
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(cfg.gguf_arch.as_deref(), Some("muse-glimmer"));
+        assert_eq!(cfg.dense_arch(), DenseArch::MuseGlimmer);
+        assert_eq!(cfg.hidden_size, 6656);
+        assert_eq!(cfg.num_hidden_layers, 52);
+        assert_eq!(cfg.intermediate_size, 19_968);
+        // head_dim comes from key_length (128), NOT hidden/heads (208).
+        assert_eq!(cfg.head_dim(), 128);
+        assert_eq!(cfg.q_proj_dim(), 4096);
+        assert_eq!(cfg.kv_proj_dim(), 256);
+        assert_eq!(cfg.kv_group_size(), 16);
+        assert_eq!(cfg.sliding_window, Some(2048));
+        assert_eq!(cfg.sliding_window_pattern, Some(4));
+        assert_eq!(cfg.final_logit_softcap, Some(20.0));
+        assert!(!cfg.tie_word_embeddings);
+        // llama.cpp lists MUSE_GLIMMER under LLAMA_ROPE_TYPE_NORM → the
+        // converter permutes Q/K, so rotate with the interleaved GPT-J flavor.
+        assert_eq!(cfg.rope_style, rlx_ir::RopeStyle::GptJ);
+        assert!((cfg.rope_theta - 500_000.0).abs() < 1.0);
+        // `logit_scale` MULTIPLIES here (Cohere semantics), it does not divide.
+        let m = cfg.final_logit_multiplier().expect("logit multiplier");
+        assert!((m - 0.196_116_13).abs() < 1e-6, "got {m}");
+        // Post-norms use 1e-8, pre-norms the GGUF rms eps.
+        assert_eq!(cfg.post_norm_eps(), 1e-8);
+        assert!(cfg.uses_attn_out_gate());
+        assert!(cfg.normalizes_input_embeddings());
+        assert!(cfg.needs_arch_packed_builder());
+    }
+
+    /// llama.cpp `set_swa_pattern(4)` ⇒ layers 0,1,2 sliding-window (with RoPE)
+    /// and layer 3 full-attention (NoPE), repeating. Layer 51 (the last of 52)
+    /// lands on a global layer.
+    #[test]
+    fn muse_glimmer_local_global_layer_pattern() {
+        let mut cfg = Llama32Config::tiny_test();
+        cfg.gguf_arch = Some("muse-glimmer".into());
+        cfg.sliding_window = Some(2048);
+        cfg.sliding_window_pattern = Some(4);
+        cfg.num_hidden_layers = 52;
+
+        for (idx, want_local) in [
+            (0, true),
+            (1, true),
+            (2, true),
+            (3, false),
+            (4, true),
+            (7, false),
+            (50, true),
+            (51, false),
+        ] {
+            assert_eq!(cfg.is_swa_layer(idx), want_local, "layer {idx} locality");
+            // RoPE runs on the local layers; the global ones are NoPE.
+            assert_eq!(cfg.is_nope_layer(idx), !want_local, "layer {idx} nope");
+            assert_eq!(
+                cfg.attn_window_for_layer(idx),
+                want_local.then_some(2048),
+                "layer {idx} window"
+            );
+        }
+    }
+
+    /// A plain Llama GGUF must keep every layer global/RoPE'd — the new
+    /// interleave helpers are inert without the `muse-glimmer` arch tag.
+    #[test]
+    fn llama_arch_has_no_sliding_window_layers() {
+        let cfg = Llama32Config::tiny_test();
+        assert_eq!(cfg.dense_arch(), DenseArch::Llama);
+        assert!(cfg.swa_pattern().is_none());
+        for idx in 0..8 {
+            assert!(!cfg.is_swa_layer(idx));
+            assert!(!cfg.is_nope_layer(idx));
+            assert_eq!(cfg.attn_window_for_layer(idx), None);
+        }
+        assert_eq!(cfg.post_norm_eps(), cfg.rms_norm_eps as f32);
+        assert!(!cfg.uses_attn_out_gate());
+        assert!(!cfg.normalizes_input_embeddings());
+    }
+
+    /// Cohere2's NoPE predicate is unchanged by the shared `is_nope_layer`
+    /// helper: global layers are `(i+1) % 4 == 0`, and it has no SWA window.
+    #[test]
+    fn cohere2_nope_pattern_preserved() {
+        let mut cfg = Llama32Config::tiny_test();
+        cfg.gguf_arch = Some("cohere2".into());
+        assert_eq!(cfg.cohere2_nope_pattern(), Some(4));
+        for (idx, want_nope) in [(0, false), (1, false), (2, false), (3, true), (7, true)] {
+            assert_eq!(cfg.is_nope_layer(idx), want_nope, "layer {idx}");
+        }
+        // Cohere2 doesn't drive the windowed-mask path.
+        assert!(cfg.swa_pattern().is_none());
+        assert_eq!(cfg.attn_window_for_layer(3), None);
     }
 }

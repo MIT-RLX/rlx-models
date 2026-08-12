@@ -2,7 +2,7 @@
 
 Concrete model graph builders + weight loaders for RLX — the "what actually runs" layer.
 
-**[152 model families](MODELS.md)** across 15 categories — language & multimodal LLMs, vision, speech (ASR/TTS), audio codecs, and more — each a standalone crate under `crates/`. See **[MODELS.md](MODELS.md)** for the complete catalog with per-model backend support.
+**[156 model families](MODELS.md)** across 15 categories — language & multimodal LLMs, vision, speech (ASR/TTS), audio codecs, and more — each a standalone crate under `crates/`. See **[MODELS.md](MODELS.md)** for the complete catalog with per-model backend support.
 
 Standalone repo: [github.com/MIT-RLX/rlx-models](https://github.com/MIT-RLX/rlx-models). Clone next to [`rlx`](https://github.com/MIT-RLX/rlx):
 
@@ -50,9 +50,9 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 
 ## Model catalog
 
-This workspace ships **152 model families** (one crate per architecture), plus 4 training crates and shared infrastructure. Highlights:
+This workspace ships **156 model families** (one crate per architecture), plus 4 training crates and shared infrastructure. Highlights:
 
-- **26 language models** — Qwen3 / 3.5 / 3.6, Llama 3.2 / 4, Gemma, DeepSeek-V3, GLM-4.x, MiniMax, Jamba, Mamba, Phi, gpt-oss, LLaDA2, MiniCPM5, TinyLlama, …
+- **30 language models** — Qwen3 / 3.5 / 3.6, Llama 3.2 / 4, Gemma, DeepSeek-V3, GLM-4.x, MiniMax, Jamba, Mamba, Phi, gpt-oss, Ling 3.0, Motif-3, MiniCPM5, TinyLlama, … plus two **diffusion LMs** (DiffusionGemma, LLaDA2).
 - **12 vision-language / omni** — Fara1.5, Qwen2.5-VL, Llama-3.2-Vision, Florence-2, LocateAnything, Kimi-K3, Inkling, …
 - **9 vision** encoders / detection / segmentation — DINOv2 / v3, SigLIP 2, V-JEPA 2, SAM 1 / 2 / 3, Grounding DINO — plus **4 biomedical** and **3 embedding** models.
 - **14 ASR** and **43 TTS / speech-LM** models, **11 neural audio codecs**, plus voice conversion, music generation, source separation, wake-word, VAD, OCR, and robotics (VLA).
@@ -78,7 +78,7 @@ rlx-models/
 
 ### Crates
 
-The table below highlights shared infrastructure and a selection of model crates; for the **complete** model list (all 152 families, with backends) see **[MODELS.md](MODELS.md)**.
+The table below highlights shared infrastructure and a selection of model crates; for the **complete** model list (all 156 families, with backends) see **[MODELS.md](MODELS.md)**.
 
 | Crate | Model / role |
 |---|---|
@@ -110,6 +110,9 @@ The table below highlights shared infrastructure and a selection of model crates
 | [`rlx-laguna`](crates/rlx-laguna/README.md) | Laguna MoE ([poolside/Laguna-S-2.1](https://huggingface.co/poolside/Laguna-S-2.1) / XS / [GGUF](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF)); `just fetch-laguna` → `.cache/laguna-s` (nested Unsloth quants; `--prefer Q4_K_M`); packed mmap generate (KV cache, optional Metal/MLX); `--tokenizer-dir` / OpenAI via [`rlx-openai`](crates/rlx-openai/README.md) |
 | [`rlx-openai`](crates/rlx-openai/README.md) | Central OpenAI HTTP server (`RegistryBackend`); `--engine qwen3\|laguna\|qwen35\|…` |
 | `rlx-gemma` | Gemma / Gemma 2 |
+| [`rlx-ling`](crates/rlx-ling/README.md) | Ling 3.0 / BailingMoeV3 ([inclusionAI/Ling-3.0-tiny](https://huggingface.co/inclusionAI/Ling-3.0-tiny)); hybrid KDA + MLA, 128-expert MoE; prefill + decode, parity-checked vs PyTorch reference; `--mxfp4` quantizes the whole model at load time (29.5 → 4.0 GiB, fits a 16 GB CUDA card) |
+| [`rlx-motif`](crates/rlx-motif/README.md) | Motif-3 ([Motif-Technologies/Motif-3](https://huggingface.co/Motif-Technologies/Motif-3)); GDLA differential latent attention + MHC hyper-connections (Sinkhorn) + 384-expert PolyNorm MoE; prefill graph, block-level parity vs host references |
+| [`rlx-diffusiongemma`](crates/rlx-diffusiongemma/README.md) | DiffusionGemma 26B-A4B ([google/diffusiongemma-26B-A4B-it](https://huggingface.co/google/diffusiongemma-26B-A4B-it)); block-diffusion Gemma 4 MoE encoder/decoder + vision tower, image processor, chat template, entropy-bounded sampler; torch parity on synthetic *and* real weights |
 | `rlx-llada2` | LLaDA2 + TIDE offload |
 | `rlx-flux2` | FLUX.2 |
 | `rlx-vjepa2` | V-JEPA 2 |

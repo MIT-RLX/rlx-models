@@ -49,6 +49,7 @@ pub mod mlx_coverage;
 pub mod mlx_npz_convert;
 pub mod model_registry;
 pub mod moe_weights;
+pub mod mxfp4_pack;
 pub mod prompt_cache;
 pub mod resource;
 pub mod safetensors_checkpoint;

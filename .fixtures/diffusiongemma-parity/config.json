@@ -1,0 +1,55 @@
+{
+  "model_type": "diffusion_gemma",
+  "canvas_length": 4,
+  "vision_config": {
+    "hidden_size": 24,
+    "num_hidden_layers": 2,
+    "num_attention_heads": 2,
+    "head_dim": 12,
+    "intermediate_size": 20,
+    "patch_size": 2,
+    "pooling_kernel_size": 2,
+    "position_embedding_size": 32,
+    "rms_norm_eps": 1e-06,
+    "standardize": true,
+    "use_clipped_linears": false,
+    "rope_parameters": {
+      "rope_theta": 100.0,
+      "rope_type": "default"
+    }
+  },
+  "text_config": {
+    "vocab_size": 32,
+    "hidden_size": 16,
+    "intermediate_size": 12,
+    "num_hidden_layers": 4,
+    "num_attention_heads": 4,
+    "num_key_value_heads": 2,
+    "num_global_key_value_heads": 1,
+    "head_dim": 8,
+    "global_head_dim": 16,
+    "layer_types": [
+      "sliding_attention",
+      "sliding_attention",
+      "sliding_attention",
+      "full_attention"
+    ],
+    "sliding_window": 4,
+    "rms_norm_eps": 1e-06,
+    "final_logit_softcapping": 30.0,
+    "num_experts": 4,
+    "top_k_experts": 2,
+    "moe_intermediate_size": 6,
+    "rope_parameters": {
+      "full_attention": {
+        "partial_rotary_factor": 0.25,
+        "rope_theta": 1000000.0,
+        "rope_type": "proportional"
+      },
+      "sliding_attention": {
+        "rope_theta": 10000.0,
+        "rope_type": "default"
+      }
+    }
+  }
+}

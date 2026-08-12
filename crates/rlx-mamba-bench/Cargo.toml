@@ -2,7 +2,7 @@
 name = "rlx-mamba-bench"
 version = "0.2.14"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.89"
 license = "GPL-3.0-only"
 description = "Head-to-head benchmark of rlx-mamba against burn-mamba. Excluded from the default workspace because of the burn dependency footprint."
 publish = false

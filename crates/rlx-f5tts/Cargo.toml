@@ -16,7 +16,7 @@ hound = "3"
 half = "2"
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # Native RLX path: import + compile + run the 3 F5 graphs (no ort at runtime).
-rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.14", default-features = false }
 
 [dependencies.hf-hub]
 workspace = true

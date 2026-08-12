@@ -17,9 +17,9 @@ serde_json = { workspace = true }
 hound = "3"
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # Bundled espeak-ng phonemizer (reused for the espeak G2P frontend).
-rlx-kittentts = { path = "../rlx-kittentts", default-features = false }
+rlx-kittentts = { path = "../rlx-kittentts", version = "0.2.14", default-features = false }
 # Native (ort-free) rlx-ir path: import + compile + run the split subgraphs.
-rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false, optional = true }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.14", default-features = false, optional = true }
 
 [dependencies.hf-hub]
 workspace = true

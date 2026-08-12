@@ -47,6 +47,7 @@ members = [
     "crates/rlx-mllama",
     "crates/rlx-llama4",
     "crates/rlx-deepseek",
+    "crates/rlx-dflash",
     "crates/rlx-glm4moe",
     "crates/rlx-kimi-k3",
     "crates/rlx-jamba",
@@ -54,6 +55,9 @@ members = [
     "crates/rlx-gemma-inflect-nano",
     "crates/rlx-eagle3",
     "crates/rlx-llada2",
+    "crates/rlx-ling",
+    "crates/rlx-motif",
+    "crates/rlx-diffusiongemma",
     "crates/rlx-qwen35",
     "crates/rlx-fara",
     "crates/rlx-qwen25-vl",
@@ -198,7 +202,7 @@ exclude = [
 [workspace.package]
 version       = "0.2.14"
 edition       = "2024"
-rust-version  = "1.87"
+rust-version  = "1.89"  # matches upstream rlx* 0.2.14 (edition=2024 ≥1.85; AVX-VNNI)
 license       = "GPL-3.0-only"
 authors       = ["Eugene Hauptmann", "Nataliya Kosmyna"]
 repository    = "https://github.com/MIT-RLX/rlx-models"
@@ -289,6 +293,9 @@ rlx-siglip2 = { path = "crates/rlx-siglip2", version = "0.2.14" }
 rlx-vlash = { path = "crates/rlx-vlash", version = "0.2.14" }
 rlx-eagle3 = { path = "crates/rlx-eagle3", version = "0.2.14" }
 rlx-llada2 = { path = "crates/rlx-llada2", version = "0.2.14" }
+rlx-ling = { path = "crates/rlx-ling", version = "0.2.14" }
+rlx-motif = { path = "crates/rlx-motif", version = "0.2.14" }
+rlx-diffusiongemma = { path = "crates/rlx-diffusiongemma", version = "0.2.14" }
 rlx-qwen35 = { path = "crates/rlx-qwen35", version = "0.2.14" }
 rlx-fara = { path = "crates/rlx-fara", version = "0.2.14" }
 rlx-qwen25-vl = { path = "crates/rlx-qwen25-vl", version = "0.2.14" }
@@ -329,6 +336,7 @@ rlx-mistral-vl = { path = "crates/rlx-mistral-vl", version = "0.2.14" }
 rlx-mllama = { path = "crates/rlx-mllama", version = "0.2.14" }
 rlx-llama4 = { path = "crates/rlx-llama4", version = "0.2.14" }
 rlx-deepseek = { path = "crates/rlx-deepseek", version = "0.2.14" }
+rlx-dflash = { path = "crates/rlx-dflash", version = "0.2.14" }
 rlx-glm4moe = { path = "crates/rlx-glm4moe", version = "0.2.14" }
 rlx-kimi-k3 = { path = "crates/rlx-kimi-k3", version = "0.2.14" }
 rlx-nemotron-omni = { path = "crates/rlx-nemotron-omni", version = "0.2.14" }

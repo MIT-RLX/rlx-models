@@ -308,5 +308,10 @@ fn to_llama32_config(cfg: &MllamaConfig) -> Llama32Config {
         rope_style: rlx_ir::RopeStyle::NeoX,
         gguf_arch: None,
         rope_dim: None,
+        // Sliding-window / final-logit-softcap knobs added to Llama32Config
+        // upstream — off for MLlama (matches behavior before these fields existed).
+        sliding_window: None,
+        sliding_window_pattern: None,
+        final_logit_softcap: None,
     }
 }

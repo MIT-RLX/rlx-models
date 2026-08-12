@@ -158,6 +158,57 @@ impl GgufTensorNameResolver for Gemma2GgufResolver {
     }
 }
 
+/// Muse Glimmer: Gemma-style four norms per layer **plus** an attention output
+/// gate.
+///
+/// Shares the Gemma norm naming (`attn_norm` / `post_attention_norm` /
+/// `ffn_norm` / `post_ffw_norm`), so it needs the same override of the Llama
+/// `post_attention_layernorm → ffn_norm` alias. It is deliberately NOT folded
+/// into [`Gemma2GgufResolver`]: Gemma's converter bakes `(1 + gamma)` into every
+/// norm gain and the loader subtracts 1 on take, whereas Muse Glimmer's
+/// converter folds `weight + 1` in already and llama.cpp consumes the gain
+/// verbatim. Routing it through the Gemma path would subtract 1 twice.
+///
+/// The extra tensor is `attn_gate` (`[n_embd, n_head * head_dim]`), exposed to
+/// builders as `self_attn.gate_proj` so it can't collide with the MLP's
+/// `mlp.gate_proj` (GGUF `ffn_gate`).
+pub struct MuseGlimmerGgufResolver;
+
+impl GgufTensorNameResolver for MuseGlimmerGgufResolver {
+    fn matches_arch(&self, arch: &str) -> bool {
+        arch == "muse-glimmer"
+    }
+
+    fn resolve(&self, file: &GgufFile, key: &str) -> Option<String> {
+        // Identity hit first — accept native GGUF names verbatim.
+        if file.tensors.contains_key(key) {
+            return Some(key.to_string());
+        }
+        if let Some(rest) = key.strip_prefix("model.layers.") {
+            if let Some((idx, tail)) = rest.split_once('.') {
+                let gguf_tail = match tail {
+                    "post_attention_layernorm.weight" => Some("post_attention_norm.weight"),
+                    "pre_feedforward_layernorm.weight" => Some("ffn_norm.weight"),
+                    "post_feedforward_layernorm.weight" => Some("post_ffw_norm.weight"),
+                    "self_attn.q_norm.weight" => Some("attn_q_norm.weight"),
+                    "self_attn.k_norm.weight" => Some("attn_k_norm.weight"),
+                    "self_attn.gate_proj.weight" => Some("attn_gate.weight"),
+                    _ => None,
+                };
+                if let Some(t) = gguf_tail {
+                    let g = format!("blk.{idx}.{t}");
+                    if file.tensors.contains_key(&g) {
+                        return Some(g);
+                    }
+                }
+            }
+        }
+        // Everything else (input_layernorm, q/k/v/o, MLP, embeddings, lm_head)
+        // follows the Llama convention unchanged.
+        LlamaFamilyGgufResolver.resolve(file, key)
+    }
+}
+
 /// Phi 3 / 4: fused `attn_qkv` and `ffn_up` (gate∥up) tensors.
 pub struct Phi3GgufResolver;
 
@@ -209,6 +260,7 @@ fn builtin_resolvers() -> &'static Vec<Box<dyn GgufTensorNameResolver>> {
     BUILTIN_RESOLVERS.get_or_init(|| {
         vec![
             Box::new(Qwen35NativeGgufResolver),
+            Box::new(MuseGlimmerGgufResolver),
             Box::new(Gemma2GgufResolver),
             Box::new(Phi3GgufResolver),
             Box::new(LlamaFamilyGgufResolver),

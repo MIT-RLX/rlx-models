@@ -14,8 +14,8 @@ readme = "README.md"
 [dependencies]
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx-qwen3 = { workspace = true }
-rlx-xcodec = { path = "../rlx-xcodec", default-features = false, features = ["cpu"] }
-rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false }
+rlx-xcodec = { path = "../rlx-xcodec", version = "0.2.14", default-features = false, features = ["cpu"] }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.14", default-features = false }
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
 tokenizers = { workspace = true }
 anyhow = { workspace = true }

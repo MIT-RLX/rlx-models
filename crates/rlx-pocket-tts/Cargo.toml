@@ -23,7 +23,7 @@ ndarray = "0.16"
 hound = "3"
 rand = "0.8"
 rand_distr = "0.4"
-sentencepiece = "0.11"
+sentencepiece = "0.14"
 
 rlx-runtime = { workspace = true, optional = true, default-features = false }
 rlx = { workspace = true, optional = true, default-features = false }

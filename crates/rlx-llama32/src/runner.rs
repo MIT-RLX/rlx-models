@@ -214,16 +214,16 @@ impl Llama32RunnerBuilder {
         )?
         .with_compile_seq_cap(max_seq);
         // Large dense safetensors: keep at most one compiled graph's worth of
-        // device weights (prefill+decode would ~2× Nanbeige 3B ≈ 31 GiB).
-        let large_dense_st = matches!(format, WeightFormat::Safetensors)
+        // device weights (prefill+decode would ~2x Nanbeige 3B ~= 31 GiB).
+        let large_dense = matches!(format, WeightFormat::Safetensors)
             && total_bytes_estimate >= 2 * 1024 * 1024 * 1024;
-        if !large_dense_st {
+        if !large_dense {
             generator = generator.with_prefill_cache(8);
         }
         // Prefer a decode cache for large dense ST even if the caller left
         // bucketed_decode off — oneshot re-attaches the full F32 model each
         // token and usually trips the soft RAM gate after Compiled prefill.
-        if self.bucketed_decode_cache || large_dense_st {
+        if self.bucketed_decode_cache || large_dense {
             generator = generator.with_decode_cache(max_seq.saturating_add(16).max(64));
         }
 
@@ -402,9 +402,24 @@ fn load_llama32_gguf_config(
     // path is coded but cohere2 (command-r7b) still outputs garbage — it needs
     // its per-layer sliding/full-attention + NoPE-on-global-layers logic, which
     // is unverified; kept in `known_unimplemented_arch` until it's correct.
+    // muse-glimmer IS routed: unlike cohere2 above, its per-layer
+    // sliding-window/full-attention split and NoPE-on-global-layers logic is
+    // implemented and parity-tested against a reference decoder on CPU, Metal,
+    // MLX, CoreML, wgpu, CUDA and Vulkan (`tests/muse_glimmer_arch.rs`).
     const LLAMA_SHAPED_GGUF_ARCHES: &[&str] = &[
-        "llama", "phi3", "phi4", "mistral3", "mistral4", "granite", "exaone", "olmo2", "olmo",
-        "nemotron", "glm4", "chatglm",
+        "llama",
+        "phi3",
+        "phi4",
+        "mistral3",
+        "mistral4",
+        "granite",
+        "exaone",
+        "olmo2",
+        "olmo",
+        "nemotron",
+        "glm4",
+        "chatglm",
+        "muse-glimmer",
     ];
     if !LLAMA_SHAPED_GGUF_ARCHES.contains(&arch) {
         bail!(

@@ -84,10 +84,40 @@ mod inner {
         let engine = create_engine(lang)?;
         // KittenTTS uses phonemizer with preserve_punctuation + strip; match that
         // (not raw espeak-ng --ipa, which drops punctuation and emits clause newlines).
-        let ipa = engine
-            .text_to_phonemes(text)
-            .map_err(|e| anyhow!("espeak-ng phonemize ({lang}) failed: {e}"))?;
-        Ok(ipa.trim().to_owned())
+        //
+        // espeak-ng has no preserve_punctuation option, so phonemize the spans
+        // *between* punctuation marks and splice the original marks back in at the
+        // same positions — which is what phonemizer(preserve_punctuation=True) does.
+        const PUNCT: &[char] = &['.', ',', '!', '?', ';', ':'];
+        let mut out = String::new();
+        let mut span = String::new();
+        let flush = |span: &mut String, out: &mut String| -> Result<()> {
+            if span.trim().is_empty() {
+                span.clear();
+                return Ok(());
+            }
+            let ipa = engine
+                .text_to_phonemes(span.trim())
+                .map_err(|e| anyhow!("espeak-ng phonemize ({lang}) failed: {e}"))?;
+            // espeak emits a newline per clause; flatten to spaces.
+            let ipa = ipa.replace('\n', " ");
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            out.push_str(ipa.trim());
+            span.clear();
+            Ok(())
+        };
+        for ch in text.chars() {
+            if PUNCT.contains(&ch) {
+                flush(&mut span, &mut out)?;
+                out.push(ch);
+            } else {
+                span.push(ch);
+            }
+        }
+        flush(&mut span, &mut out)?;
+        Ok(out.trim().to_owned())
     }
 }
 

@@ -45,6 +45,8 @@ fn moe_compiles_and_runs() {
         routed_scaling: 1.0,
         shared_inter: 16,
         seq: 3,
+        experts_pretransposed: false,
+        mxfp4_group: None,
     };
     let (h, inter, e) = (d.hidden, d.moe_inter, d.n_routed);
     let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();

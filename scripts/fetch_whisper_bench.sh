@@ -53,7 +53,9 @@ local_clip() { # id src reftext ss t
     ffmpeg -y -loglevel error -ss "$ss" -t "$t" -i "$src" -ar 16000 -ac 1 "$OUT/${id}_16k.wav"
     printf '%s' "$ref" > "$OUT/$id.reference.txt"; echo "$id ready"
   else
-    echo "skip $id (set ${id^^}_SRC to a local audio file)"
+    # `${id^^}` is bash 4+; macOS ships bash 3.2, where it is a fatal
+    # "bad substitution" under `set -e` and kills the manifest step below.
+    echo "skip $id (set $(printf '%s' "$id" | tr 'a-z' 'A-Z')_SRC to a local audio file)"
   fi
 }
 local_clip mlk "${MLK_SRC:-$HOME/Downloads/MLKDream.wav}" \

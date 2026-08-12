@@ -17,6 +17,8 @@ use rlx_runtime::Device;
 
 use crate::model::BenchModel;
 
+#[cfg(feature = "llama32")]
+pub mod llama32;
 #[cfg(feature = "qwen3")]
 pub mod qwen3;
 
@@ -90,6 +92,19 @@ pub fn build_model(spec: &BuildSpec) -> Result<BenchModel> {
                 bail!("qwen3 adapter not compiled in; rebuild with `--features qwen3`")
             }
         }
+        // Every arch on the llama32 packed GGUF path: llama, granite, phi,
+        // cohere/command-r, olmo2, glm4, muse-glimmer. The runner picks its own
+        // per-arch deltas off `general.architecture`.
+        "llama32" | "llama" | "muse-glimmer" => {
+            #[cfg(feature = "llama32")]
+            {
+                llama32::build(spec)
+            }
+            #[cfg(not(feature = "llama32"))]
+            {
+                bail!("llama32 adapter not compiled in; rebuild with `--features llama32`")
+            }
+        }
         other => bail!(
             "unknown model kind {other:?}; compiled adapters: {}",
             compiled_adapters()
@@ -102,6 +117,8 @@ pub fn build_model(spec: &BuildSpec) -> Result<BenchModel> {
 /// added without a mutable accumulator.
 pub fn compiled_adapters() -> String {
     let v: &[&str] = &[
+        #[cfg(feature = "llama32")]
+        "llama32",
         #[cfg(feature = "qwen3")]
         "qwen3",
     ];

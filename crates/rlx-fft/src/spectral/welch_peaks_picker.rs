@@ -483,6 +483,11 @@ mod tests {
         );
     }
 
+    // Without the `metal` feature `Device::Metal` has no calibrated cost model
+    // (estimate_with_device falls through to generic discrete-GPU defaults) while
+    // the CPU side stays host-calibrated, so the Metal/CPU crossover lands
+    // differently per machine. Only assert these where the real model exists.
+    #[cfg(feature = "metal")]
     #[test]
     fn large_batch_picks_rlx_on_metal() {
         assert_eq!(
@@ -491,6 +496,11 @@ mod tests {
         );
     }
 
+    // Without the `metal` feature `Device::Metal` has no calibrated cost model
+    // (estimate_with_device falls through to generic discrete-GPU defaults) while
+    // the CPU side stays host-calibrated, so the Metal/CPU crossover lands
+    // differently per machine. Only assert these where the real model exists.
+    #[cfg(feature = "metal")]
     #[test]
     fn metal_mid_batch_picks_rlx() {
         assert_eq!(
@@ -499,6 +509,11 @@ mod tests {
         );
     }
 
+    // Without the `metal` feature `Device::Metal` has no calibrated cost model
+    // (estimate_with_device falls through to generic discrete-GPU defaults) while
+    // the CPU side stays host-calibrated, so the Metal/CPU crossover lands
+    // differently per machine. Only assert these where the real model exists.
+    #[cfg(feature = "metal")]
     #[test]
     fn metal_small_batch_stays_rustfft() {
         assert_eq!(
@@ -507,6 +522,11 @@ mod tests {
         );
     }
 
+    // Without the `metal` feature `Device::Metal` has no calibrated cost model
+    // (estimate_with_device falls through to generic discrete-GPU defaults) while
+    // the CPU side stays host-calibrated, so the Metal/CPU crossover lands
+    // differently per machine. Only assert these where the real model exists.
+    #[cfg(feature = "metal")]
     #[test]
     fn metal_upper_mid_batch_picks_rlx() {
         assert_eq!(

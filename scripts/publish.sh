@@ -65,14 +65,15 @@
 # Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.14) from the RLX repo
 # before `rlx-models` path deps resolve on the registry.
 #
-# Publishable workspace crates in 7 tiers (tier 6 = facade `rlx-models` last).
-# Notable ordering: `kitten_tts_mini_rlx` before `rlx-kittentts`; `rlx-whisper`
-# before `rlx-kittentts` (dev-dep for roundtrip tests); `rlx-llama32` / `rlx-gemma`
-# (tier 4) before `rlx-minicpm5` / `rlx-voxtral-tts-train` (tier 5–6);
-# `rlx-guardrails` before `rlx-serve`; `rlx-openai` after `rlx-serve` + LM crates
-# (`rlx-qwen3`, `rlx-laguna`, …); `rlx-kokoro` before `rlx-styletts2`;
-# `rlx-luxtts` before `rlx-zipvoice`; `rlx-quant-calib` before `rlx-tune`;
-# `rlx-distributed` before `rlx-qwen3`.
+# 177 publishable workspace crates in 10 tiers (tier 9 = facade `rlx-models`,
+# alone and last). Tiers are dependency *levels*: a crate sits at
+# `1 + max(tier of its in-workspace path deps)`, so every dep of a crate is
+# strictly earlier and `validate_publish_order` below holds by construction.
+# Regenerate rather than hand-edit when adding a crate — hand-maintained order
+# is what let `rlx-lfm`/`rlx-qwen3-vl` drift ahead of `rlx-qwen35` and
+# `rlx-wakeword` ahead of `rlx-nanowakeword`/`rlx-porcupine`/`rlx-voxrt`.
+# Only in-workspace paths count: dev-only deps on a sibling checkout (e.g.
+# `rlx-opscope` at ../../../rlx) are stripped by `cargo publish` and get no tier.
 # Workspace / upstream pin: 0.2.14 — bump `[workspace.package].version` and
 # `[workspace.dependencies]` path `version =` fields before publishing.
 # Bump `[workspace.package].version`, per-crate `[package].version` when needed
@@ -157,13 +158,16 @@ SKIPPED=(
 # and `[dev-dependencies]` (including optional) against crates.io. Within
 # a tier, list deps before dependents (e.g. rlx-cpu before rlx-splat).
 TIERS=(
-    "kitten_tts_mini_rlx rlx-assets rlx-diamond rlx-diarize rlx-distributed rlx-guardrails rlx-llama-base rlx-model-hub rlx-models-core rlx-inflect-nano rlx-onnx-decompose rlx-protocol rlx-quant-calib rlx-ssm rlx-vlm-base rlx-wav2vec2-asr"
-    "rlx-bert rlx-cli rlx-encodec rlx-facodec rlx-llada2 rlx-mamba rlx-nanocodec rlx-nomic rlx-sam-ir rlx-snac rlx-speechtokenizer rlx-tiny-tts rlx-tune rlx-vibevoice rlx-vision rlx-wavtokenizer rlx-xcodec"
-    "rlx-bioclip2 rlx-clinicalbert rlx-conformer-ctc rlx-dac rlx-dinov2 rlx-dinov3 rlx-hoct rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-grounding-dino rlx-lfm rlx-lfm-vl rlx-minimax rlx-nemotron-asr rlx-ocr rlx-ocr2 rlx-asr rlx-ppocrv6 rlx-qwen3 rlx-qwen3-vl rlx-sam rlx-siglip2 rlx-uni2 rlx-vad rlx-wake rlx-wakeword-core rlx-wakeword rlx-openwakeword rlx-nanowakeword rlx-porcupine rlx-voxrt rlx-vjepa2 rlx-wav2vec2-bert"
-    "rlx-eval rlx-flux2 rlx-locateanything rlx-unlimited-ocr rlx-omnicoder rlx-qwen25-vl rlx-qwen35 rlx-fara rlx-sam2 rlx-sam3 rlx-serve rlx-trellis2 rlx-tsac rlx-vit-elastic rlx-whisper"
-    "rlx-aec rlx-gemma rlx-kittentts rlx-tts rlx-llama32 rlx-mimi rlx-nemotron-omni rlx-pocket-tts rlx-qwen3-asr rlx-chatterbox rlx-f5tts rlx-gepard rlx-kokoro rlx-luxtts rlx-melotts rlx-metavoice rlx-miotts rlx-miratts rlx-moss-nano rlx-openvoice rlx-parlertts rlx-piper rlx-sesame rlx-soprano rlx-supertonic rlx-zonos"
-    "rlx-bonsai rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-inkling rlx-laguna rlx-kyutai-tts rlx-minicpm5 rlx-nanbeige rlx-mistral rlx-moshi rlx-nemotron rlx-neutts rlx-orpheus rlx-maya1 rlx-phi rlx-qwen3-tts rlx-styletts2 rlx-tinyllama rlx-voxtral rlx-voxtral-tts rlx-zipvoice"
-    "rlx-openai rlx-models rlx-qwen3-tts-train rlx-voxtral-tts-train"
+    "kitten_tts_mini_rlx rlx-asr rlx-assets rlx-audio-blocks rlx-citrinet rlx-confucius rlx-demucs rlx-diamond rlx-diarize rlx-dramabox rlx-fish rlx-guardrails rlx-irodori rlx-llama-base rlx-model-hub rlx-omnivoice rlx-onnx-decompose rlx-outetts rlx-protocol rlx-quant-calib rlx-qwen3-aligner rlx-roformer-sep rlx-rvc rlx-ssm rlx-vlm-base rlx-wav2vec2-asr"
+    "rlx-ace-step rlx-glm-tts rlx-heartmula rlx-higgs rlx-index-tts rlx-inflect-v2 rlx-kroko rlx-mamba rlx-models-core rlx-seed-vc rlx-stable-audio rlx-tune rlx-vevo rlx-voxcpm"
+    "rlx-bert rlx-cli rlx-dflash rlx-encodec rlx-facodec rlx-inflect-nano rlx-llada2 rlx-nanocodec rlx-nomic rlx-sam-ir rlx-snac rlx-speechtokenizer rlx-vibevoice rlx-vision rlx-wavtokenizer rlx-xcodec"
+    "rlx-bioclip2 rlx-clinicalbert rlx-conformer-ctc rlx-dac rlx-deepseek rlx-diffusiongemma rlx-dinov2 rlx-dinov3 rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-grounding-dino rlx-hoct rlx-inkling rlx-llama4 rlx-minimax rlx-motif rlx-nemotron-asr rlx-ocr rlx-ocr2 rlx-ppocrv6 rlx-sam rlx-siglip2 rlx-tiny-tts rlx-uni2 rlx-unlimited-ocr rlx-vad rlx-vjepa2 rlx-wake rlx-wav2vec2-bert"
+    "rlx-glm4moe rlx-jamba rlx-kimi-k3 rlx-ling rlx-minimax-h3 rlx-nanowakeword rlx-parakeet rlx-porcupine rlx-qwen3 rlx-sam2 rlx-sam3 rlx-trellis2 rlx-tsac rlx-tts rlx-vit-elastic rlx-vlash rlx-voxrt rlx-wakeword-core rlx-whisper"
+    "rlx-aec rlx-eval rlx-f5tts rlx-flux2 rlx-hviske rlx-kittentts rlx-locateanything rlx-melotts rlx-metavoice rlx-mimi rlx-miotts rlx-miratts rlx-moss-nano rlx-nemotron-omni rlx-omnicoder rlx-openvoice rlx-openwakeword rlx-parlertts rlx-pocket-tts rlx-qwen25-vl rlx-qwen3-asr rlx-qwen35 rlx-serve rlx-soprano rlx-supertonic rlx-vibevoice-asr"
+    "rlx-fara rlx-gemma rlx-gepard rlx-kokoro rlx-kyutai-tts rlx-laguna rlx-lfm rlx-llama32 rlx-luxtts rlx-moshi rlx-neutrino rlx-piper rlx-qwen3-tts rlx-qwen3-vl rlx-sesame rlx-wakeword rlx-zonos"
+    "rlx-bonsai rlx-carbon rlx-chatterbox rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-lfm-vl rlx-minicpm5 rlx-mistral rlx-mllama rlx-nanbeige rlx-nemotron rlx-neutts rlx-openai rlx-orpheus rlx-phi rlx-qwen3-tts-train rlx-styletts2 rlx-tinyllama rlx-voxtral rlx-voxtral-tts rlx-zipvoice"
+    "rlx-maya1 rlx-mistral-vl rlx-voxtral-tts-train"
+    "rlx-models"
 )
 
 usage() {
@@ -318,16 +322,25 @@ def workspace_internal_keys(root: Path) -> set[str]:
     return keys
 
 INTERNAL_KEYS = workspace_internal_keys(root)
+CRATES_DIR = (root / "crates").resolve()
 
-def is_internal_path_dep(line: str, key: str) -> bool:
+def is_internal_path_dep(line: str, key: str, crate_dir: Path) -> bool:
     if key in INTERNAL_KEYS:
         return True
-    return bool(
-        re.search(
-            rf"^{re.escape(key)}\s*=\s*\{{[^}}]*path\s*=\s*(\"\.\.?/|\"crates/)",
-            line.strip(),
-        )
+    m3 = re.search(
+        rf"^{re.escape(key)}\s*=\s*\{{[^}}]*path\s*=\s*\"([^\"]+)\"",
+        line.strip(),
     )
+    if not m3:
+        return False
+    # Only deps resolving INSIDE this workspace get a publish tier. A path into
+    # a sibling checkout — e.g. the dev-only `rlx-opscope` at ../../../rlx — is
+    # stripped by `cargo publish` (path-only dev-dependency), so demanding a
+    # tier for it would block every release on a crate we do not publish.
+    try:
+        return (crate_dir / m3.group(1)).resolve().is_relative_to(CRATES_DIR)
+    except (OSError, ValueError):
+        return False
 
 def parse_rlx_deps(toml_path: Path, crate_name: str) -> set[str]:
     text = toml_path.read_text()
@@ -343,7 +356,7 @@ def parse_rlx_deps(toml_path: Path, crate_name: str) -> set[str]:
             key = m2.group(1)
             if key == crate_name:
                 continue
-            if is_internal_path_dep(line, key):
+            if is_internal_path_dep(line, key, toml_path.parent):
                 deps.add(key)
     return deps
 

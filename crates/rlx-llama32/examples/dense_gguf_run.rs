@@ -44,7 +44,7 @@ fn main() -> Result<()> {
         .weights(wp)
         .device(device)
         .packed_weights(true)
-        .stream(false)
+        .stream(true)
         .max_seq(256)
         .build()?;
 
@@ -67,7 +67,62 @@ fn main() -> Result<()> {
     );
 
     // Greedy continuation (host tied-lm_head argmax on the GGUF packed path).
-    let out_ids = runner.generate(&ids, n_new, |_t| {})?;
+    //
+    // TTFT is the first callback: on the packed path prefill emits the last
+    // position's logits directly, so token 1 lands as soon as prefill is done.
+    // Decode throughput therefore excludes prefill — measure it over tokens
+    // 2..n, not 1..n, or prefill smears into the per-token figure.
+    // Two passes. The FIRST includes lazily compiling and uploading the prefill
+    // graph, which is a one-time cost of seconds — reporting it as TTFT would
+    // overstate steady-state latency by ~10x. The SECOND is what a warm server
+    // actually sees. Both are printed; neither alone is the honest number.
+    let mut out_ids = Vec::new();
+    for pass in 0..2 {
+        let t0 = std::time::Instant::now();
+        let mut ttft: Option<std::time::Duration> = None;
+        let mut per_tok: Vec<std::time::Duration> = Vec::with_capacity(n_new);
+        let mut last = t0;
+        out_ids = runner.generate(&ids, n_new, |_t| {
+            let now = std::time::Instant::now();
+            if ttft.is_none() {
+                ttft = Some(now - t0);
+            } else {
+                per_tok.push(now - last);
+            }
+            last = now;
+        })?;
+        let total = t0.elapsed();
+        let ttft = ttft.unwrap_or(total);
+        let label = if pass == 0 { "COLD" } else { "WARM" };
+        println!(
+            "\n[{label}] TTFT {:.1} ms  ({} prompt tokens => {:.1} tok/s prefill)",
+            ttft.as_secs_f64() * 1e3,
+            ids.len(),
+            ids.len() as f64 / ttft.as_secs_f64()
+        );
+        if !per_tok.is_empty() {
+            let mut sorted = per_tok.clone();
+            sorted.sort();
+            let decode: std::time::Duration = per_tok.iter().sum();
+            // Median as well as mean: under memory pressure a handful of tokens
+            // stall on page faults for seconds, which drags the mean far off the
+            // rate the model actually sustains.
+            println!(
+                "[{label}] DECODE {:.2} tok/s mean | {:.2} tok/s median  ({} tokens, mean {:.1} ms, median {:.1} ms, max {:.1} ms)",
+                per_tok.len() as f64 / decode.as_secs_f64(),
+                1.0 / sorted[sorted.len() / 2].as_secs_f64(),
+                per_tok.len(),
+                decode.as_secs_f64() * 1e3 / per_tok.len() as f64,
+                sorted[sorted.len() / 2].as_secs_f64() * 1e3,
+                sorted[sorted.len() - 1].as_secs_f64() * 1e3,
+            );
+        }
+        println!(
+            "[{label}] TOTAL  {:.2} s for {} new tokens",
+            total.as_secs_f64(),
+            out_ids.len()
+        );
+    }
     eprintln!("greedy_gen_ids = {out_ids:?}");
     let text = rlx_llama32::decode_ids_auto(wp, None, &out_ids, true)
         .unwrap_or_else(|e| format!("<decode failed: {e}>"));

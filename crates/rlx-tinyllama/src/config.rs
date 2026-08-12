@@ -151,6 +151,9 @@ pub fn tinyllama_1_1b_preset() -> Llama32Config {
         rope_style: rlx_llama32::RopeStyle::NeoX,
         gguf_arch: None,
         rope_dim: None,
+        sliding_window: None,
+        sliding_window_pattern: None,
+        final_logit_softcap: None,
     }
 }
 

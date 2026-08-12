@@ -61,6 +61,9 @@ fn tiny_cfg(layers: usize) -> Llama32Config {
         rope_style: rlx_ir::RopeStyle::NeoX,
         gguf_arch: None,
         rope_dim: None,
+        sliding_window: None,
+        sliding_window_pattern: None,
+        final_logit_softcap: None,
     }
 }
 

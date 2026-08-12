@@ -16,7 +16,7 @@ repository.workspace = true
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx-qwen3 = { workspace = true }
 # Native codec decode: import + compile + run detokenizer.onnx (codes → waveform).
-rlx-tiny-tts = { path = "../rlx-tiny-tts", default-features = false }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.14", default-features = false }
 tokenizers = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

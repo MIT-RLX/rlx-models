@@ -305,13 +305,21 @@ mod tests {
             10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
         ];
         let w: [i8; 32] = std::array::from_fn(|i| (i as i8).wrapping_mul(3));
-        let mut serial = vec![0.0f32; 16];
+        // act [8,2] x w [2,8] => out is m*n = 8*8 = 64, not 16. At 16 the serial
+        // path bailed on its `out.len() < m * n` guard (leaving zeros) while
+        // `qmatmul_row_range` wrote 64 floats through a raw pointer into a
+        // 16-element allocation.
+        let mut serial = vec![0.0f32; 64];
         qmatmul_uint8_act_i8_weight_into(&act_q, &[8, 2], 0.1, 0, &w, &[2, 8], 0.2, 0, &mut serial);
-        let mut par = vec![0.0f32; 16];
+        let mut par = vec![0.0f32; 64];
         qmatmul_row_range(&act_q, 0, &w, 0, 2, 8, 0.02, par.as_mut_ptr(), 0, 4);
         qmatmul_row_range(&act_q, 0, &w, 0, 2, 8, 0.02, par.as_mut_ptr(), 4, 8);
+        // Relative tolerance: the two paths accumulate in a different order, so
+        // results differ by an ULP or two. At |x| ~ 116 one f32 ULP is ~7.6e-6,
+        // which a fixed 1e-5 absolute bound cannot represent.
         for (a, b) in serial.iter().zip(par.iter()) {
-            assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+            let tol = 1e-5 * a.abs().max(1.0);
+            assert!((a - b).abs() <= tol, "{a} vs {b} (tol {tol})");
         }
     }
 

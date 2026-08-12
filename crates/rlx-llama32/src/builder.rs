@@ -401,6 +401,44 @@ fn synth_zero(
     id
 }
 
+/// Unit gain vector — the identity `gamma` for an *unweighted* RMSNorm
+/// (Muse Glimmer's embedding norm, which llama.cpp expresses as
+/// `build_norm(inpL, nullptr, …)`). Cached by name like [`zero_beta_named`].
+fn synth_ones(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    name: &str,
+    len: usize,
+) -> NodeId {
+    if let Some(id) = g.param_id(name) {
+        return id;
+    }
+    let id = g.param(name, Shape::new(&[len], DType::F32));
+    params.insert(name.to_string(), vec![1f32; len]);
+    id
+}
+
+/// RMSNorm each attention head independently over its `head_dim` slice, with a
+/// shared `[head_dim]` gain (Qwen3 / Muse Glimmer QK-norm). `x` is
+/// `[batch, seq, heads * head_dim]`; the result keeps that shape.
+#[allow(clippy::too_many_arguments)]
+fn per_head_rms(
+    g: &mut Graph,
+    x: NodeId,
+    gamma: NodeId,
+    beta: NodeId,
+    batch: usize,
+    seq: usize,
+    heads: usize,
+    head_dim: usize,
+    eps: f32,
+) -> NodeId {
+    let flat = (batch * seq * heads) as i64;
+    let r = g.reshape_(x, vec![flat, head_dim as i64]);
+    let n = g.rms_norm(r, gamma, beta, eps);
+    g.reshape_(n, vec![batch as i64, seq as i64, (heads * head_dim) as i64])
+}
+
 /// Multiply a graph node by a constant scalar via a broadcast `[1]` param
 /// (mirrors rlx-flow `EmbedScaleStage`). Used for the Granite embedding /
 /// residual / logit multipliers. `name` must be unique per scale site.
@@ -437,6 +475,45 @@ fn attn_causal(
     g.attention_kind_opts(q, k, v, nh, dh, MaskKind::Causal, shape, score_scale, None)
 }
 
+/// Causal attention with the per-layer mask this arch wants: a sliding window
+/// on local layers of an interleaved local/global arch (Muse Glimmer), plain
+/// causal everywhere else.
+///
+/// [`MaskKind::SlidingWindow(w)`] keeps keys with `q_pos - k_pos <= w` — the
+/// same inclusive convention as llama.cpp's `LLAMA_SWA_TYPE_STANDARD`
+/// (`masked = p0 < p1 - n_swa`), so `w` is `n_swa` verbatim. The CPU executor
+/// derives the query's absolute position as `q_offset = s_k - s_q`, which makes
+/// this correct for prefill (`q_offset = 0`) and for a KV-cache decode step
+/// (`s_q = 1`, `q_offset = past_seq`) alike.
+#[allow(clippy::too_many_arguments)]
+fn attn_for_layer(
+    g: &mut Graph,
+    cfg: &Llama32Config,
+    layer_idx: usize,
+    q: NodeId,
+    k: NodeId,
+    v: NodeId,
+    nh: usize,
+    dh: usize,
+    score_scale: Option<f32>,
+    shape: Shape,
+) -> NodeId {
+    match cfg.attn_window_for_layer(layer_idx) {
+        Some(w) => g.attention_kind_opts(
+            q,
+            k,
+            v,
+            nh,
+            dh,
+            MaskKind::SlidingWindow(w),
+            shape,
+            score_scale,
+            None,
+        ),
+        None => attn_causal(g, q, k, v, nh, dh, score_scale, shape),
+    }
+}
+
 /// Dequant a single embed row from packed GGUF bytes (Q4K / Q6K).
 pub(crate) fn gather_embed_row(
     packed_bytes: &[u8],
@@ -464,9 +541,22 @@ pub(crate) fn gather_embed_row(
         );
     }
     let row = &packed_bytes[off..off + row_bytes];
+    // Every GGUF weight dtype rlx can dequant, not just the two the first
+    // Q4_K_M model happened to use: `token_embd` is quantized independently of
+    // the rest of the model, so e.g. Muse-Glimmer's Q6_K_XL and Q8_K_XL builds
+    // both ship a Q8_0 embedding table and used to fail to load outright.
     let dequant = match scheme {
+        QuantScheme::GgufQ2K => rlx_gguf::dequant_q2_k(row, hidden)?,
+        QuantScheme::GgufQ3K => rlx_gguf::dequant_q3_k(row, hidden)?,
         QuantScheme::GgufQ4K => rlx_gguf::dequant_q4_k(row, hidden)?,
+        QuantScheme::GgufQ5K => rlx_gguf::dequant_q5_k(row, hidden)?,
         QuantScheme::GgufQ6K => rlx_gguf::dequant_q6_k(row, hidden)?,
+        QuantScheme::GgufQ8K => rlx_gguf::dequant_q8_k(row, hidden)?,
+        QuantScheme::GgufQ4_0 => rlx_gguf::dequant_q4_0(row, hidden)?,
+        QuantScheme::GgufQ4_1 => rlx_gguf::dequant_q4_1(row, hidden)?,
+        QuantScheme::GgufQ5_0 => rlx_gguf::dequant_q5_0(row, hidden)?,
+        QuantScheme::GgufQ5_1 => rlx_gguf::dequant_q5_1(row, hidden)?,
+        QuantScheme::GgufQ8_0 => rlx_gguf::dequant_q8_0(row, hidden)?,
         _ => bail!("gather_embed_row: unsupported scheme {scheme:?}"),
     };
     out.copy_from_slice(&dequant);
@@ -474,7 +564,7 @@ pub(crate) fn gather_embed_row(
 }
 
 /// Host-gather prompt-token embedding rows for lazy packed prefill/decode.
-pub(crate) fn gather_embed_rows(
+pub fn gather_embed_rows(
     packed_bytes: &[u8],
     scheme: rlx_ir::quant::QuantScheme,
     hidden: usize,
@@ -721,18 +811,70 @@ fn emit_norm(
     }
 }
 
-/// OLMo-2 applies an RMSNorm over the FULL Q/K projection (`[n_heads·head_dim]`)
-/// between the q/k projections and RoPE. No-op for every other arch.
+/// Q/K normalization between the q/k projections and RoPE:
+///
+/// - OLMo-2 normalizes the **FULL** Q/K projection (`[n_heads·head_dim]`) with
+///   a gain of that same width.
+/// - Muse Glimmer normalizes **per head** with a shared `[head_dim]` gain
+///   (Qwen3-style). Its `attn_q_norm` additionally absorbs the reference
+///   implementation's `qk_scale_factor` at conversion time, so the softmax
+///   scale stays the plain `1/sqrt(head_dim)`.
+///
+/// No-op for every other arch.
+#[allow(clippy::too_many_arguments)]
 fn emit_qk_norm(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     weights: &mut dyn WeightLoader,
     cfg: &Llama32Config,
     weight_idx: usize,
+    batch: usize,
+    seq: usize,
     q: NodeId,
     k: NodeId,
     eps: f32,
 ) -> Result<(NodeId, NodeId)> {
+    if cfg.dense_arch() == DenseArch::MuseGlimmer {
+        let dh = cfg.head_dim();
+        let zb_hd = zero_beta_named(g, params, "muse_glimmer.zero_beta.head_dim", dh);
+        let qn = load_p(
+            g,
+            params,
+            weights,
+            &format!("blk.{weight_idx}.attn_q_norm.weight"),
+            false,
+        )?;
+        let kn = load_p(
+            g,
+            params,
+            weights,
+            &format!("blk.{weight_idx}.attn_k_norm.weight"),
+            false,
+        )?;
+        let qo = per_head_rms(
+            g,
+            q,
+            qn,
+            zb_hd,
+            batch,
+            seq,
+            cfg.num_attention_heads,
+            dh,
+            eps,
+        );
+        let ko = per_head_rms(
+            g,
+            k,
+            kn,
+            zb_hd,
+            batch,
+            seq,
+            cfg.num_key_value_heads,
+            dh,
+            eps,
+        );
+        return Ok((qo, ko));
+    }
     if cfg.dense_arch() != DenseArch::Olmo2 {
         return Ok((q, k));
     }
@@ -985,6 +1127,51 @@ fn emit_output_stage(
             )?;
             Ok(g.add(ffn_inp, ffn_n))
         }
+        DenseArch::MuseGlimmer => {
+            // Same four-norm sandwich as GLM-4, but the two POST norms use
+            // `post_norm_eps` (1e-8) rather than the pre-norms' 1e-5, and the
+            // GGUF spells them `post_attention_norm` / `ffn_norm` /
+            // `post_ffw_norm` (Gemma-style, NOT the Llama alias where
+            // `post_attention_layernorm` means the pre-FFN norm).
+            let pn_eps = cfg.post_norm_eps();
+            let post_attn_n = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("blk.{weight_idx}.post_attention_norm.weight"),
+                None,
+                attn_out,
+                pn_eps,
+                zero_beta_hidden,
+            )?;
+            let ffn_inp = g.add(h_id, post_attn_n);
+            let normed = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("blk.{weight_idx}.ffn_norm.weight"),
+                None,
+                ffn_inp,
+                eps,
+                zero_beta_hidden,
+            )?;
+            let ffn_raw =
+                emit_arch_ffn(g, params, packed, weights, cfg, lp, batch, seq, normed, f)?;
+            let ffn_n = emit_norm(
+                g,
+                params,
+                weights,
+                cfg,
+                &format!("blk.{weight_idx}.post_ffw_norm.weight"),
+                None,
+                ffn_raw,
+                pn_eps,
+                zero_beta_hidden,
+            )?;
+            Ok(g.add(ffn_inp, ffn_n))
+        }
         DenseArch::Nemotron => {
             let post_attn = g.add(h_id, attn_out);
             let bias = format!("blk.{weight_idx}.ffn_norm.bias");
@@ -1092,6 +1279,65 @@ fn apply_logit_scale(
         Some(m) => scale_by(g, params, logits, "arch.logit_scale", m),
         None => logits,
     }
+}
+
+/// Gemma-2 style final logit softcap: `cap * tanh(logits / cap)`. Runs AFTER
+/// [`apply_logit_scale`], matching llama.cpp `muse-glimmer.cpp` (scale by
+/// `f_logit_scale`, then softcap). No-op when the arch has no softcap.
+fn apply_logit_softcap(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    cfg: &Llama32Config,
+    logits: NodeId,
+) -> NodeId {
+    match cfg.final_logit_softcap {
+        Some(cap) if cap > 0.0 => {
+            let inv = scale_by(g, params, logits, "arch.logit_softcap.inv", 1.0 / cap);
+            let t = g.tanh(inv);
+            scale_by(g, params, t, "arch.logit_softcap.cap", cap)
+        }
+        _ => logits,
+    }
+}
+
+/// Muse Glimmer's attention output gate: `attn_out * sigmoid(W_gate @ attn_in)`,
+/// applied between SDPA and `o_proj`. `attn_in` is the **pre-attention normed**
+/// hidden state (llama.cpp's `attn_inp`), not the residual stream. The gate
+/// projection is `[hidden, n_heads * head_dim]`, i.e. the same width as `q_proj`.
+/// No-op for every other arch.
+#[allow(clippy::too_many_arguments)]
+fn emit_attn_out_gate(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    packed: &mut HashMap<String, (rlx_ir::quant::QuantScheme, Vec<usize>)>,
+    weights: &mut dyn WeightLoader,
+    cfg: &Llama32Config,
+    lp: &str,
+    batch: usize,
+    seq: usize,
+    attn_in: NodeId,
+    attn_out: NodeId,
+    f: DType,
+) -> Result<NodeId> {
+    if !cfg.uses_attn_out_gate() {
+        return Ok(attn_out);
+    }
+    let (gw, gs, _) = load_proj(
+        g,
+        params,
+        packed,
+        weights,
+        &format!("{lp}.self_attn.gate_proj.weight"),
+    )?;
+    let gate = emit_proj(
+        g,
+        attn_in,
+        gw,
+        gs,
+        Shape::new(&[batch, seq, cfg.q_proj_dim()], f),
+    );
+    let gate = g.sigmoid(gate);
+    Ok(g.mul(attn_out, gate))
 }
 
 /// Load the input-embedding table for a packed builder.
@@ -1216,6 +1462,13 @@ pub fn build_llama32_graph_sized_packed(
     if let Some(es) = cfg.embedding_scale {
         h_id = scale_by(&mut g, &mut params, h_id, "granite.embed_scale", es);
     }
+    // Muse Glimmer: unweighted RMSNorm on the token embeddings before block 0
+    // (llama.cpp `build_norm(inpL, nullptr, nullptr, LLM_NORM_RMS, -1)`), which
+    // uses the standard `f_norm_rms_eps`, not the 1e-8 post-norm epsilon.
+    if cfg.normalizes_input_embeddings() {
+        let ones = synth_ones(&mut g, &mut params, "muse_glimmer.embed_norm.ones", h);
+        h_id = g.rms_norm(h_id, ones, zero_beta_hidden, eps);
+    }
     let score_scale = cfg.attn_score_scale();
     let last_token_idx = if last_logits_only {
         Some(g.input("last_token_idx", Shape::new(&[batch], DType::F32)))
@@ -1256,18 +1509,28 @@ pub fn build_llama32_graph_sized_packed(
             attn_in,
             f,
         )?;
-        // OLMo-2: RMSNorm the full Q/K projection before RoPE (no-op otherwise).
-        let (q, k) = emit_qk_norm(&mut g, &mut params, weights, cfg, weight_idx, q, k, eps)?;
+        // OLMo-2: full-projection Q/K RMSNorm; Muse Glimmer: per-head. No-op
+        // for every other arch.
+        let (q, k) = emit_qk_norm(
+            &mut g,
+            &mut params,
+            weights,
+            cfg,
+            weight_idx,
+            batch,
+            seq,
+            q,
+            k,
+            eps,
+        )?;
 
         // GGUF Llama → interleaved/GPT-J RoPE flavor (mirror the decode-packed
         // builder `build_llama32_decode_graph_sized_packed`). Plain `g.rope`
         // applies NeoX rotation, which corrupts packed-prefill KV for GGUF
         // checkpoints and makes Metal-decode diverge from the CPU F32 reference.
-        // Cohere2 skips RoPE on its global (full-attention) layers (NoPE).
-        let cohere2_nope = cfg
-            .cohere2_nope_pattern()
-            .is_some_and(|p| (weight_idx + 1).is_multiple_of(p));
-        let (q_rope, k_rope) = if cohere2_nope {
+        // Cohere2 and Muse Glimmer skip RoPE on their global (full-attention)
+        // layers (NoPE).
+        let (q_rope, k_rope) = if cfg.is_nope_layer(weight_idx) {
             (q, k)
         } else {
             apply_qk_rope(&mut g, q, k, cos_id, sin_id, cfg)
@@ -1280,8 +1543,10 @@ pub fn build_llama32_graph_sized_packed(
         let v_rep = repeat_kv(&mut g, v, nkv, dh, group);
 
         let attn_shape = shape::attention_shape(g.shape(q_rope));
-        let attn = attn_causal(
+        let attn = attn_for_layer(
             &mut g,
+            cfg,
+            weight_idx,
             q_rope,
             k_rep,
             v_rep,
@@ -1290,6 +1555,21 @@ pub fn build_llama32_graph_sized_packed(
             score_scale,
             attn_shape,
         );
+
+        // Muse Glimmer gates the SDPA output before `o_proj` (no-op elsewhere).
+        let attn = emit_attn_out_gate(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            cfg,
+            &lp,
+            batch,
+            seq,
+            attn_in,
+            attn,
+            f,
+        )?;
 
         let (o_w, o_s, _) = load_proj(
             &mut g,
@@ -1388,7 +1668,8 @@ pub fn build_llama32_graph_sized_packed(
             ),
         );
         // Granite divides by `logits_scaling`; Cohere multiplies by `logit_scale`.
-        apply_logit_scale(&mut g, &mut params, cfg, logits)
+        let logits = apply_logit_scale(&mut g, &mut params, cfg, logits);
+        apply_logit_softcap(&mut g, &mut params, cfg, logits)
     } else {
         hidden
     };
@@ -1505,6 +1786,13 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
     if let Some(es) = cfg.embedding_scale {
         h_id = scale_by(&mut g, &mut params, h_id, "granite.embed_scale", es);
     }
+    // Muse Glimmer: unweighted RMSNorm on the token embeddings before block 0
+    // (llama.cpp `build_norm(inpL, nullptr, nullptr, LLM_NORM_RMS, -1)`), which
+    // uses the standard `f_norm_rms_eps`, not the 1e-8 post-norm epsilon.
+    if cfg.normalizes_input_embeddings() {
+        let ones = synth_ones(&mut g, &mut params, "muse_glimmer.embed_norm.ones", h);
+        h_id = g.rms_norm(h_id, ones, zero_beta_hidden, eps);
+    }
     let score_scale = cfg.attn_score_scale();
 
     // Per-layer past K/V cache inputs (unrolled across loops).
@@ -1526,6 +1814,17 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
     // Bucketed decode: binary keep mask over `concat(past_k, new_k)` positions.
     let mask_id = if use_custom_mask {
         Some(g.input("mask", Shape::new(&[batch, past_seq + 1], f)))
+    } else {
+        None
+    };
+    // Interleaved local/global arches (Muse Glimmer) need a SECOND keep mask for
+    // their sliding-window layers: `mask` only zeroes the bucket's padding rows,
+    // whereas a local layer must additionally drop real past keys older than
+    // `pos - window`. Fed from `rlx_runtime::attn_mask::bucket_decode_mask_windowed`.
+    // Without the custom-mask path, `MaskKind::SlidingWindow` handles this
+    // in-graph and no extra input is needed.
+    let swa_mask_id = if use_custom_mask && cfg.swa_pattern().is_some() {
+        Some(g.input("mask_swa", Shape::new(&[batch, past_seq + 1], f)))
     } else {
         None
     };
@@ -1561,14 +1860,23 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
             attn_in,
             f,
         )?;
-        // OLMo-2: RMSNorm the full Q/K projection before RoPE (no-op otherwise).
-        let (q, k) = emit_qk_norm(&mut g, &mut params, weights, cfg, weight_idx, q, k, eps)?;
+        // OLMo-2: full-projection Q/K RMSNorm; Muse Glimmer: per-head.
+        let (q, k) = emit_qk_norm(
+            &mut g,
+            &mut params,
+            weights,
+            cfg,
+            weight_idx,
+            batch,
+            1,
+            q,
+            k,
+            eps,
+        )?;
 
-        // GGUF Llama → interleaved/GPT-J RoPE flavor. Cohere2 global layers = NoPE.
-        let cohere2_nope = cfg
-            .cohere2_nope_pattern()
-            .is_some_and(|p| (weight_idx + 1).is_multiple_of(p));
-        let (q_rope, k_rope) = if cohere2_nope {
+        // GGUF Llama → interleaved/GPT-J RoPE flavor. Cohere2 / Muse Glimmer
+        // global layers = NoPE.
+        let (q_rope, k_rope) = if cfg.is_nope_layer(weight_idx) {
             (q, k)
         } else {
             apply_qk_rope(&mut g, q, k, cos_id, sin_id, cfg)
@@ -1583,7 +1891,14 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
         let v_rep = repeat_kv(&mut g, new_v, nkv, dh, group);
 
         let attn_shape = shape::attention_shape(g.shape(q_rope));
-        let attn = match mask_id {
+        // Local layers of an interleaved arch take the windowed keep mask when
+        // one exists; everything else takes the plain bucket mask.
+        let layer_mask = if cfg.attn_window_for_layer(weight_idx).is_some() {
+            swa_mask_id.or(mask_id)
+        } else {
+            mask_id
+        };
+        let attn = match layer_mask {
             Some(m) => g.attention_opts(
                 q_rope,
                 k_rep,
@@ -1595,8 +1910,10 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
                 score_scale,
                 None,
             ),
-            None => attn_causal(
+            None => attn_for_layer(
                 &mut g,
+                cfg,
+                weight_idx,
                 q_rope,
                 k_rep,
                 v_rep,
@@ -1606,6 +1923,21 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
                 attn_shape,
             ),
         };
+
+        // Muse Glimmer gates the SDPA output before `o_proj` (no-op elsewhere).
+        let attn = emit_attn_out_gate(
+            &mut g,
+            &mut params,
+            packed,
+            weights,
+            cfg,
+            &lp,
+            batch,
+            1,
+            attn_in,
+            attn,
+            f,
+        )?;
 
         let (o_w, o_s, _) = load_proj(
             &mut g,
@@ -1690,7 +2022,8 @@ pub fn build_llama32_decode_graph_sized_packed_ext(
             Shape::new(&[batch, 1, cfg.vocab_size], f),
         );
         // Granite divides by `logits_scaling`; Cohere multiplies by `logit_scale`.
-        apply_logit_scale(&mut g, &mut params, cfg, logits)
+        let logits = apply_logit_scale(&mut g, &mut params, cfg, logits);
+        apply_logit_softcap(&mut g, &mut params, cfg, logits)
     } else {
         hidden
     };

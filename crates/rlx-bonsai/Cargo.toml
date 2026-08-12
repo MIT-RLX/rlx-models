@@ -15,7 +15,7 @@ anyhow = { workspace = true }
 rlx-gguf = { workspace = true }
 rlx-llama-base = { workspace = true }
 rlx-llama32 = { workspace = true }
-rlx-qwen35 = { path = "../rlx-qwen35", default-features = false }
+rlx-qwen35 = { path = "../rlx-qwen35", version = "0.2.14", default-features = false }
 rlx-cli = { workspace = true }
 rlx-runtime = { workspace = true }
 

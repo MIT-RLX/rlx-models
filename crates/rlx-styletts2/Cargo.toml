@@ -13,7 +13,7 @@ readme = "README.md"
 
 [dependencies]
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
-rlx-kokoro = { path = "../rlx-kokoro", default-features = false, features = ["native", "espeak"] }
+rlx-kokoro = { path = "../rlx-kokoro", version = "0.2.14", default-features = false, features = ["native", "espeak"] }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 clap = { version = "4", features = ["derive"] }

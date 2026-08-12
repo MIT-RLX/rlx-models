@@ -78,6 +78,50 @@ let path = resolve_weight_query(
 
 Also re-exported from `rlx_models::` and `rlx_cli::`.
 
+## MXFP4 encoder
+
+[`mxfp4_pack`](src/mxfp4_pack.rs) is rlx's f32 → MXFP4 **encoder** — E2M1 nibbles
+plus a per-group E8M0 scale. Every other MXFP4 path in the tree is consume-side,
+written for checkpoints that ship already quantized (mlx-community, Kimi); this
+is what lets an ordinary bf16/f32 HF checkpoint drive the same packed kernels,
+for ~8x less arena.
+
+```rust
+use rlx_models_core::mxfp4_pack::{GROUP_SIZE, quantize_rows};
+
+// A `[out, in]` HF weight — the contraction runs along the last dim.
+let q = quantize_rows(&weight, out_features, in_features, GROUP_SIZE);
+compiled.set_param_typed("w.codes", &q.codes, DType::U8);
+compiled.set_param_typed("w.scales", q.scales_e8m0(), DType::U8);   // dense op
+// ...or `q.scales_bf16()` for the grouped MoE op — see below.
+```
+
+**The two consuming ops disagree on how the scale operand is typed, and the
+mismatch is silent** (both are the right byte count):
+
+| op | scale param | contents |
+|---|---|---|
+| `Op::DequantMatMul` (dense) | `U8 [n, groups]` | raw E8M0 bytes |
+| `Op::DequantGroupedMatMulMlx` (MoE) | `BF16 [E, n, groups]` | the *decoded* float `2^(b-127)` |
+
+Layout for both is `[E,] N, K` row-major with the contraction along the last
+dim, so a stacked expert bank needs **no transpose** — the opposite of the f32
+`Op::GroupedMatMul` path.
+
+Group exponents use the smallest `e` with `6·2^e >= amax`, which makes
+saturation impossible. (OCP's `floor(log2(amax)) - 2` leaves the group max in
+`[4, 8)` and clamps the top quarter of that range, costing up to 25% on the
+largest weight in each group.)
+
+`tests/mxfp4_pack_ops.rs` is the gate: it feeds packed bytes to the real ops and
+compares against an f32 matmul of the dequantized weight, so a layout
+misreading shared between the encoder and its own `dequantize` cannot pass.
+[`examples/mxfp4_grouped_bench`](examples/mxfp4_grouped_bench.rs) times the
+grouped/dense ops standalone at real MoE shapes — use it before touching any
+MXFP4 kernel.
+
+See [`rlx-ling`](../rlx-ling/README.md) for a whole model on this path.
+
 ## Distributed inference (multi-node)
 
 Run one model split across several machines when no single host has the RAM for

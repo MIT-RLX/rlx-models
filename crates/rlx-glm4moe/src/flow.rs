@@ -96,6 +96,8 @@ pub fn build_glm_text_flow(
         routed_scaling: cfg.routed_scaling_factor,
         shared_inter: cfg.moe_intermediate_size * cfg.n_shared_experts,
         seq,
+        experts_pretransposed: false,
+        mxfp4_group: None,
     };
 
     let mut flow = ModelFlow::new("glm4_moe")

@@ -38,9 +38,9 @@ pub struct HybridDnaTokenizer {
 }
 
 impl HybridDnaTokenizer {
-    /// Load from a Carbon model directory (`tokenizer.json` + `dna_config.json`
-    /// + optional `generation_config.json`). Missing `dna_config.json` falls
-    /// back to the Carbon defaults ([`DnaConfig::default`]).
+    /// Load from a Carbon model directory (`tokenizer.json` + `dna_config.json` +
+    /// optional `generation_config.json`). Missing `dna_config.json` falls back
+    /// to the Carbon defaults ([`DnaConfig::default`]).
     pub fn from_dir(dir: &Path) -> Result<Self> {
         let tok_path = dir.join("tokenizer.json");
         let base = Tokenizer::from_file(&tok_path)

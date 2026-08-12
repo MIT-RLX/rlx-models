@@ -137,6 +137,9 @@ impl GgufModelFamily {
                     | "granitehybrid"
                     | "command-r"
                     | "cohere2"
+                    // Muse Glimmer runs the full arch deltas on the packed
+                    // path (`DenseArch::MuseGlimmer`), not a lenient stub.
+                    | "muse-glimmer"
             ),
             Self::Mistral => matches!(arch, "mistral3" | "mistral4"),
             // Gemma 3 / 3n / 4 route through the same family — share

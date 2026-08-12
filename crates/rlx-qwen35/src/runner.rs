@@ -997,6 +997,44 @@ fn finish_build(
                 std::env::set_var("RLX_QWEN35_GPU_KV", "1");
             }
         }
+    } else if matches!(device, Device::Cuda) {
+        // Declare the parameter-sharing scope: this runner compiles a prefill
+        // graph plus one decode bucket per context length, all from the same
+        // weights, so they may share device-resident params instead of each
+        // re-uploading ~3 GB. Keyed on the weights path so a second model loaded
+        // in the same process gets its own region. No-op unless
+        // `RLX_CUDA_SHARED_PARAMS=1`.
+        rlx_runtime::set_param_sharing_scope(&weights_path.to_string_lossy());
+        // SAFETY: single-threaded runner build; env read at decode HIR compile time.
+        unsafe {
+            // Resident KV on CUDA (rlx-cuda gained `Op::KvAppend`). Same rationale
+            // as the Metal block: bind past_k/v as resident arena handles and grow
+            // them in place rather than re-uploading the padded cache every token
+            // — measured at ~91 MB/token of HtoD on qwen3.5-0.8B @ctx 320.
+            // Resident KV REQUIRES in-place KV append, so both go together.
+            // `FUSE_SSM` / `GQA_NATIVE` are measured on Metal only and stay off
+            // here until they are validated on CUDA.
+            if std::env::var("RLX_QWEN35_INPLACE_KV").is_err() {
+                std::env::set_var("RLX_QWEN35_INPLACE_KV", "1");
+            }
+            if std::env::var("RLX_QWEN35_GPU_KV").is_err() {
+                std::env::set_var("RLX_QWEN35_GPU_KV", "1");
+            }
+        }
+    } else {
+        // rlx-rocm / rlx-wgpu / rlx-cpu still lack `Op::KvAppend` and reject it at
+        // legalization, so they must not COMPILE a resident-shaped graph either.
+        //
+        // Devices without a resident-KV decode driver must also not COMPILE a
+        // resident-shaped graph: `cache.rs` decides whether to emit the O(ctx)
+        // host KV feed purely from `RLX_QWEN35_GPU_KV`, while the runner used to
+        // re-check the device separately. Forcing the var on such a device gave a
+        // resident graph driven by the host-feed path — no `feed_kv_row`, stale
+        // past_k/v, silently wrong tokens. Pin the var off so the graph and the
+        // runner can never disagree. (Same pattern cli.rs uses to disable it.)
+        unsafe {
+            std::env::set_var("RLX_QWEN35_GPU_KV", "0");
+        }
     }
     // Auto-enable the low-mem compile/upload path for large models: it skips the
     // redundant F32 param clone, streams packed weights straight from the mmap
@@ -1085,10 +1123,16 @@ fn finish_build(
     if vision_encoder.is_some() && batch != 1 {
         bail!("qwen35: VLM (mmproj) requires batch=1");
     }
-    if vision_encoder.is_some() && !dynamic_prefill {
-        eprintln!("[qwen35] mmproj loaded — enabling dynamic prefill for variable multimodal seq");
-    }
-    let dynamic_prefill = dynamic_prefill || vision_encoder.is_some();
+    // NOTE: mmproj does NOT force `dynamic_prefill`. Image turns run through the
+    // hidden-embed prefill (`prefill_seed_from_hidden`, built below for any mmproj
+    // runner), which is independent of this flag. TEXT turns on a VLM runner then
+    // use the *static* prefill cache — one fixed-size graph compiled once at
+    // `prefill_seq` and reused for any prompt length (Metal computes the full
+    // bucket on the validated MPSGraph path; MLX/CPU trim to the active extent) —
+    // so they don't recompile per prompt length (the ~6s dynamic-prefill TTFT).
+    // The static cache is also safe to keep resident across turns (see
+    // `keep_prefill` in `prefill_seed_decode_cache`), unlike the seq-symbolic
+    // dynamic cache. Net: VLM text TTFT ~6.3s → ~3.2s (flat across lengths).
 
     let t = Instant::now();
     let aot = aot_cache_dir.as_ref().map(AotCache::new);
@@ -1302,11 +1346,15 @@ fn finish_build(
         moe_offload,
         moe_store,
         moe_refresh_step: 0,
-        use_gpu_kv: matches!(device, Device::Metal) && rlx_ir::env::flag("RLX_QWEN35_GPU_KV"),
+        // Single source of truth with `cache.rs`, which gates the O(ctx) host KV
+        // feed on this env var alone. The device allowlist is applied once, above,
+        // by pinning the var off for unsupported devices.
+        use_gpu_kv: rlx_ir::env::flag("RLX_QWEN35_GPU_KV"),
         gpu_kv_upper: 0,
         kv_sink: 0,
         kv_window: 0,
         kv_slack: 0,
+        multimodal_phase_cb: None,
     };
 
     if let Some(ref mut compiled) = runner.prefill_cache {
@@ -1357,6 +1405,28 @@ fn finish_build(
         // is wasted work unless explicitly requested.
         if runner.prefill_cache.is_none() || rlx_ir::env::flag("RLX_QWEN35_WARM_PREDICT") {
             runner.warm_predict_graph()?;
+        }
+    }
+    // Warm the STATIC hidden-prefill graph at load so the FIRST image doesn't pay
+    // the ~5.6s MPSGraph compile inline (mirrors the eager text static-prefill
+    // compile). Only for packed VLM runners on unified memory, where the graph is
+    // kept resident + reused across images. Non-fatal + opt-out via
+    // RLX_QWEN35_WARM_HIDDEN_PREFILL=0.
+    let warm_hidden = runner.prefill_hidden_dynamic_cache.is_some()
+        && runner.weights.has_packed_projections()
+        && matches!(runner.device, Device::Metal | Device::Mlx)
+        && rlx_ir::env::var("RLX_QWEN35_WARM_HIDDEN_PREFILL").as_deref() != Some("0");
+    if warm_hidden {
+        let bucket = runner.prefill_seq;
+        let t = Instant::now();
+        match runner.specialize_hidden_prefill(bucket) {
+            Ok(()) => eprintln!(
+                "[qwen35] warmed static hidden-prefill graph at load (seq={bucket}) in {:.2?}",
+                t.elapsed()
+            ),
+            Err(e) => eprintln!(
+                "[qwen35] hidden-prefill warm at load failed ({e}); will compile on first image"
+            ),
         }
     }
     Ok(runner)
@@ -1522,6 +1592,10 @@ pub struct Qwen35Runner {
     kv_sink: usize,
     kv_window: usize,
     kv_slack: usize,
+    /// Progress callback fired at multimodal phase boundaries ("vision" before
+    /// the image is encoded, "prefill" before the LM prefill). See
+    /// [`rlx_cli::LmRunner::set_multimodal_phase_callback`].
+    multimodal_phase_cb: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1569,6 +1643,20 @@ impl Qwen35Runner {
         if dropped {
             trim_accelerator_arena_pool(self.device);
             eprintln!("[qwen35] dropped prefill cache (free VRAM for decode)");
+        }
+    }
+
+    /// Free ONLY the hidden (VLM) prefill arena, preserving the static *text*
+    /// `prefill_cache`. The hidden cache is seq-symbolic (its lookup key does not
+    /// encode the concrete seq), so it is rebuilt per image turn regardless — but
+    /// the static text prefill is a fixed-size graph worth keeping resident so
+    /// interleaved text turns don't pay a ~6s rebuild after every image turn.
+    pub fn drop_hidden_prefill_cache(&mut self) {
+        if let Some(cache) = self.prefill_hidden_dynamic_cache.as_mut() {
+            let device = cache.device();
+            *cache = Qwen35CompileCache::new(device, 32);
+            trim_accelerator_arena_pool(self.device);
+            eprintln!("[qwen35] dropped hidden prefill cache (free VRAM for decode)");
         }
     }
 
@@ -3216,6 +3304,12 @@ impl Qwen35Runner {
                 self.batch
             );
         }
+        // Clone the phase callback up front so we can report progress without
+        // holding a borrow of `self` across the vision-encode / prefill calls.
+        let phase = self.multimodal_phase_cb.clone();
+        if let Some(p) = &phase {
+            p("vision");
+        }
         let t_vis = std::time::Instant::now();
         let vision = {
             let enc = self
@@ -3263,6 +3357,9 @@ impl Qwen35Runner {
             vision.n_tokens
         );
         self.mrope_section_positions = Some(prefill.mrope_sections.clone());
+        if let Some(p) = &phase {
+            p("prefill");
+        }
         let (trunk, _, mtp_logits) = self.prefill_seed_from_hidden(prefill)?;
         Ok((trunk, mtp_logits))
     }
@@ -3615,12 +3712,31 @@ impl Qwen35Runner {
         // arenas may not fit. Short Metal/MLX/CUDA contexts keep prefill —
         // avoids a multi-second rebuild on the next turn / after warm.
         // Override: RLX_QWEN35_KEEP_PREFILL=1|0.
+        //
+        // The STATIC prefill path (`!dynamic_prefill`, `prefill_cache` present) is
+        // a single fixed-size graph compiled once at `prefill_seq` and reused for
+        // any prompt length (padded up to the bucket; MLX trims to the active
+        // extent, Metal computes the full bucket on the validated MPSGraph path).
+        // Keeping it resident across turns is both correct (no stale seq-symbolic
+        // graph) and the whole TTFT win — without it, every turn drops and rebuilds
+        // (~6s). Keep by default on unified-memory Metal/MLX regardless of
+        // `max_seq`. Gate on PACKED weights: a dense-F32 static prefill graph pins
+        // the F32 projections on device (Fara-4B ≈ +17 GiB), which is exactly what
+        // the drop exists to avoid — only packed graphs (borrowed mmap bytes) are
+        // cheap to keep. Use `has_packed_projections()` (a packed GGUF still keeps a
+        // few host-F32 *side* projections, so `has_dense_f32_projections()` is a
+        // false-positive here). The seq-symbolic *dynamic* cache is never kept by
+        // default (stale-graph hazard); only the explicit env override forces it.
+        let static_prefill_kept = !self.dynamic_prefill
+            && matches!(self.device, Device::Metal | Device::Mlx)
+            && self.weights.has_packed_projections();
         let keep_prefill = match rlx_ir::env::var("RLX_QWEN35_KEEP_PREFILL").as_deref() {
             Some("1") | Some("true") | Some("on") => true,
             Some("0") | Some("false") | Some("off") => false,
             _ => {
-                self.max_seq <= 128
-                    && matches!(self.device, Device::Metal | Device::Mlx | Device::Cuda)
+                static_prefill_kept
+                    || (self.max_seq <= 128
+                        && matches!(self.device, Device::Metal | Device::Mlx | Device::Cuda))
             }
         };
         if !keep_prefill
@@ -3637,6 +3753,70 @@ impl Qwen35Runner {
             self.drop_prefill_cache();
         }
         Ok((trunk, cache, mtp_logits))
+    }
+
+    /// Build + compile (NO run) the static hidden-prefill graph at `bucket` and
+    /// cache it. Idempotent: a no-op once the bucket graph is resident. Called
+    /// eagerly at model load (`finish_build`) so the first image skips the ~5.6s
+    /// MPSGraph compile, and lazily on the first image otherwise.
+    pub fn specialize_hidden_prefill(&mut self, bucket: usize) -> Result<()> {
+        let config = self.execution_config(hidden_prefill_config(self.batch, bucket));
+        let compile_opts = self.dyn_compile_options(&config);
+        let already = self
+            .prefill_hidden_dynamic_cache
+            .as_ref()
+            .is_some_and(|c| c.contains(&config));
+        if already {
+            return Ok(());
+        }
+        self.ensure_dense_projections_resident()?;
+        let release = release_host_dense_enabled(self.device, &self.weights);
+        let (hir, params, packed) = build_qwen35_prefill_hidden_cache_hir_ext(
+            &self.cfg,
+            std::sync::Arc::clone(&self.weights),
+            1,
+            bucket,
+            self.runtime_mrope,
+            self.mtp_logits_path,
+            self.fast_mtp,
+            self.fast_greedy_lm_head,
+        )
+        .context("hidden prefill HIR at bucket seq")?;
+        // Free host before Metal compile; decode reloads from mmap after the
+        // prefill arena is dropped.
+        if release {
+            self.clear_host_dense_projections();
+        }
+        let hir_cell = std::cell::RefCell::new(Some(hir));
+        let capt = std::cell::RefCell::new(Some((params, packed)));
+        let gguf_loader = &mut self.gguf_loader;
+        let packed_bytes_cache = &mut self.packed_bytes_cache;
+        let cache = self
+            .prefill_hidden_dynamic_cache
+            .as_mut()
+            .ok_or_else(|| anyhow!("qwen35: hidden prefill cache missing (mmproj not loaded?)"))?;
+        get_or_specialize_hir_with_options(
+            cache,
+            &config,
+            || {
+                hir_cell
+                    .borrow_mut()
+                    .take()
+                    .expect("hidden prefill HIR already taken")
+            },
+            &compile_opts,
+            |c| {
+                let (params, packed) = capt
+                    .borrow_mut()
+                    .take()
+                    .expect("hidden prefill params already taken");
+                for (name, data) in params {
+                    c.set_param(&name, &data);
+                }
+                upload_packed_opt(c, gguf_loader.as_mut(), &packed, packed_bytes_cache).map(|_| ())
+            },
+        )?;
+        Ok(())
     }
 
     /// VLM prefill-cache path: host-spliced hidden states + runtime MRoPE sections.
@@ -3664,14 +3844,45 @@ impl Qwen35Runner {
             );
         }
 
+        // Static hidden-prefill bucket: compile ONE hidden-prefill graph at
+        // `prefill_seq` and pad every image's feeds up to it, so the expensive
+        // (~5.6s) MPSGraph compile happens once and is reused across images —
+        // mirrors the static TEXT prefill. Correctness matches the text path:
+        // attention is causal and the recurrent (GDN) state is gathered at
+        // `last_token_idx`, so the zero-padded tail (positions `seq..bucket`) can't
+        // contaminate the real prompt, and its KV is sliced off at `seq` by
+        // `seed_cache_from_outputs`. Gate on packed weights + unified memory (a
+        // dense-F32 kept graph would pin the F32 projections — the very thing the
+        // per-turn drop exists to avoid); fall back to a concrete-seq graph when the
+        // prompt exceeds the bucket.
+        let use_static_hidden = self.weights.has_packed_projections()
+            && matches!(self.device, Device::Metal | Device::Mlx)
+            && seq <= self.prefill_seq;
+        let bucket = if use_static_hidden {
+            self.prefill_seq
+        } else {
+            seq
+        };
+        // The hidden cache key is seq-symbolic (one slot), so a kept static graph
+        // would be wrongly returned for an oversized concrete-seq turn. Drop it
+        // first in that (rare) case so this turn rebuilds at its own size.
+        if !use_static_hidden {
+            self.drop_hidden_prefill_cache();
+        }
+
         let last_idx = vec![prefill.last_token_idx as f32];
         let zero_in = zero_recurrent_inputs(&self.cfg, self.batch);
         let input_ids = if self.mtp_logits_path || self.enable_mtp {
-            Some(pack_input_ids(std::slice::from_ref(&prefill.seq), seq)?)
+            Some(pack_input_ids(std::slice::from_ref(&prefill.seq), bucket)?)
         } else {
             None
         };
-        let mut feeds: Vec<(&str, &[f32])> = vec![("prefill_hidden", prefill.hidden.as_slice())];
+        // Own the hidden buffer so it can be zero-padded up to the bucket extent.
+        let mut hidden = prefill.hidden;
+        if bucket != seq {
+            hidden.resize(bucket * n_embd, 0.0);
+        }
+        let mut feeds: Vec<(&str, &[f32])> = vec![("prefill_hidden", hidden.as_slice())];
         feeds.push(("last_token_idx", last_idx.as_slice()));
         for (name, data) in &zero_in {
             feeds.push((name, data.as_slice()));
@@ -3679,66 +3890,17 @@ impl Qwen35Runner {
         if let Some(ref ids) = input_ids {
             feeds.push(("input_ids", ids.as_slice()));
         }
-        let rope_owned = self.mrope_prefill_rope_feeds(seq);
+        let rope_owned = self.mrope_prefill_rope_feeds(bucket);
         for (name, data) in &rope_owned {
             feeds.push((name.as_str(), data.as_slice()));
         }
 
-        let config = self.execution_config(hidden_prefill_config(self.batch, seq));
+        // Ensure the hidden-prefill graph for this bucket is compiled + resident.
+        // For static VLM runners this was warmed at model load (see `finish_build`),
+        // so on the hot path it's a no-op; otherwise it compiles here on first use.
+        self.specialize_hidden_prefill(bucket)?;
+        let config = self.execution_config(hidden_prefill_config(self.batch, bucket));
         let compile_opts = self.dyn_compile_options(&config);
-        let already = self
-            .prefill_hidden_dynamic_cache
-            .as_ref()
-            .is_some_and(|c| c.contains(&config));
-        if !already {
-            self.ensure_dense_projections_resident()?;
-            let release = release_host_dense_enabled(self.device, &self.weights);
-            let (hir, params, packed) = build_qwen35_prefill_hidden_cache_hir_ext(
-                &self.cfg,
-                std::sync::Arc::clone(&self.weights),
-                1,
-                seq,
-                self.runtime_mrope,
-                self.mtp_logits_path,
-                self.fast_mtp,
-                self.fast_greedy_lm_head,
-            )
-            .context("static hidden prefill HIR at concrete seq")?;
-            // Free host before Metal compile; decode reloads from mmap after
-            // prefill arena is dropped.
-            if release {
-                self.clear_host_dense_projections();
-            }
-            let hir_cell = std::cell::RefCell::new(Some(hir));
-            let capt = std::cell::RefCell::new(Some((params, packed)));
-            let gguf_loader = &mut self.gguf_loader;
-            let packed_bytes_cache = &mut self.packed_bytes_cache;
-            let cache = self.prefill_hidden_dynamic_cache.as_mut().ok_or_else(|| {
-                anyhow!("qwen35: hidden prefill cache missing (mmproj not loaded?)")
-            })?;
-            get_or_specialize_hir_with_options(
-                cache,
-                &config,
-                || {
-                    hir_cell
-                        .borrow_mut()
-                        .take()
-                        .expect("hidden prefill HIR already taken")
-                },
-                &compile_opts,
-                |c| {
-                    let (params, packed) = capt
-                        .borrow_mut()
-                        .take()
-                        .expect("hidden prefill params already taken");
-                    for (name, data) in params {
-                        c.set_param(&name, &data);
-                    }
-                    upload_packed_opt(c, gguf_loader.as_mut(), &packed, packed_bytes_cache)
-                        .map(|_| ())
-                },
-            )?;
-        }
         let cache = self
             .prefill_hidden_dynamic_cache
             .as_mut()
@@ -3746,11 +3908,17 @@ impl Qwen35Runner {
         let compiled = get_or_specialize_hir_with_options(
             cache,
             &config,
-            || panic!("qwen35: hidden prefill cache miss after low-mem specialize"),
+            || panic!("qwen35: hidden prefill cache miss after specialize"),
             &compile_opts,
             |_| Ok(()),
         )?;
-        let outs = compiled.run(&feeds);
+        // Compute only the real `seq` rows out of the `bucket` compile extent where
+        // the backend supports it (MLX active-extent); Metal stays on the full
+        // bucket. Measured: forcing active-extent on Metal is CORRECT for qwen3.5
+        // (no Gemma-Q4 arena NaN) but ~10% SLOWER — it flips off the MPSGraph-hybrid
+        // path onto the per-op MSL path, so the full-bucket MPSGraph run wins even
+        // though it computes more rows. See `packed_prefill_active_extent_enabled`.
+        let outs = run_packed_prefill(compiled, self.device, seq, bucket, &feeds);
         let prompt_lens = vec![seq];
         let (trunk, mut cache, mtp_logits) = seed_cache_from_outputs(
             &self.cfg,
@@ -3767,12 +3935,20 @@ impl Qwen35Runner {
         // arena before decode so dense F32 Metal/MLX builds fit in RAM.
         // Note: host projections may already be cleared — do not gate on
         // `has_dense_f32_projections()` here.
+        //
+        // Use the HIDDEN-ONLY drop (never touches the static text prefill_cache).
+        // When the hidden prefill is STATIC+bucketed (`use_static_hidden`), keep it
+        // resident across turns exactly like the static text cache — that reuse is
+        // the whole point (skips the ~5.6s MPSGraph recompile per image). Otherwise
+        // (concrete-seq fallback, or non-packed / discrete GPU) fall back to the
+        // per-turn drop so a stale wrong-seq graph can't be reused.
         let keep_prefill = match rlx_ir::env::var("RLX_QWEN35_KEEP_PREFILL").as_deref() {
             Some("1") | Some("true") | Some("on") => true,
             Some("0") | Some("false") | Some("off") => false,
             _ => {
-                self.max_seq <= 128
-                    && matches!(self.device, Device::Metal | Device::Mlx | Device::Cuda)
+                use_static_hidden
+                    || (self.max_seq <= 128
+                        && matches!(self.device, Device::Metal | Device::Mlx | Device::Cuda))
             }
         };
         if !keep_prefill
@@ -3786,7 +3962,7 @@ impl Qwen35Runner {
                     | Device::Mlx
             )
         {
-            self.drop_prefill_cache();
+            self.drop_hidden_prefill_cache();
         }
         Ok((trunk, cache, mtp_logits))
     }
@@ -4796,6 +4972,13 @@ impl rlx_cli::LmRunner for Qwen35Runner {
         Qwen35Runner::generate_multimodal(
             self, prompt, rgb, img_w, img_h, tokenizer, n_new, on_token,
         )
+    }
+
+    fn set_multimodal_phase_callback(
+        &mut self,
+        cb: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
+    ) {
+        self.multimodal_phase_cb = cb;
     }
 }
 

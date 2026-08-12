@@ -113,6 +113,24 @@ pub fn encode_prompt_auto(weights: &Path, explicit: Option<&Path>, text: &str) -
 /// the `tokenizers` crate doesn't support from raw vocab arrays.
 #[cfg(feature = "qwen35-tokenizer")]
 pub fn encode_prompt_from_gguf(weights: &Path, text: &str) -> Result<Vec<u32>> {
+    // Build the BPE tokenizer from GGUF metadata ONCE per weights path and cache
+    // it. Re-opening the (multi-GB) GGUF and rebuilding a ~150K-entry BPE + merges
+    // on every call cost ~3s — paid per prompt, which dominated multimodal TTFT
+    // (the VLM `assemble` re-tokenizes inside the runner on every image). The
+    // `cached_tokenizer` map keys on the path, so repeated turns reuse the parse.
+    let tok = cached_tokenizer(weights, || build_gguf_tokenizer(weights))?;
+    let enc = tok
+        .encode(text, false)
+        .map_err(|e| anyhow::anyhow!("tokenize: {e}"))?;
+    Ok(enc.get_ids().to_vec())
+}
+
+/// Reconstruct a byte-level-BPE `Tokenizer` from the vocab + merges embedded in
+/// GGUF metadata (`tokenizer.ggml.{tokens, merges, token_type}`). Expensive
+/// (opens the GGUF, parses a large vocab) — callers should go through
+/// [`cached_tokenizer`] so this runs once per file.
+#[cfg(feature = "qwen35-tokenizer")]
+fn build_gguf_tokenizer(weights: &Path) -> Result<tokenizers::Tokenizer> {
     use rlx_gguf::{GgufFile, MetaValue};
     use tokenizers::AddedToken;
     use tokenizers::Tokenizer;
@@ -177,6 +195,15 @@ pub fn encode_prompt_from_gguf(weights: &Path, text: &str) -> Result<Vec<u32>> {
         .map_err(|e| anyhow::anyhow!("build BPE from GGUF vocab: {e}"))?;
     let mut tok = Tokenizer::new(bpe);
     tok.with_pre_tokenizer(Some(ByteLevel::new(false, true, true)));
+    // Also set the byte-level DECODER. The pre-tokenizer alone is enough to
+    // ENCODE, but this same tokenizer is cached by path and reused by
+    // `decode_ids_from_gguf` (same `cached_tokenizer` key = the weights path).
+    // Without a decoder, `.decode()` leaves raw byte-level markers (`Ġ`/`Ċ`) in
+    // the output. Adding it is a no-op for encoding, so one cached instance
+    // serves both directions regardless of which path populates the cache first.
+    tok.with_decoder(Some(tokenizers::decoders::byte_level::ByteLevel::new(
+        false, true, true,
+    )));
 
     // Register CONTROL tokens (chat-template markers like <|im_start|>, <|im_end|>,
     // <|endoftext|>) as added/special tokens so the pre-tokenizer doesn't byte-level
@@ -208,10 +235,7 @@ pub fn encode_prompt_from_gguf(weights: &Path, text: &str) -> Result<Vec<u32>> {
         }
     }
 
-    let enc = tok
-        .encode(text, false)
-        .map_err(|e| anyhow::anyhow!("tokenize: {e}"))?;
-    Ok(enc.get_ids().to_vec())
+    Ok(tok)
 }
 
 #[cfg(not(feature = "qwen35-tokenizer"))]
@@ -250,97 +274,12 @@ pub fn decode_ids_from_gguf(
     ids: &[u32],
     skip_special_tokens: bool,
 ) -> Result<String> {
-    let tok = cached_tokenizer(weights, || {
-        use rlx_gguf::{GgufFile, MetaValue};
-        use tokenizers::Tokenizer;
-        use tokenizers::models::bpe::BPE;
-        use tokenizers::pre_tokenizers::byte_level::ByteLevel;
-
-        let raw = GgufFile::from_path(weights).with_context(|| format!("open GGUF {weights:?}"))?;
-        let model_kind = raw
-            .metadata
-            .get("tokenizer.ggml.model")
-            .and_then(MetaValue::as_str)
-            .unwrap_or("gpt2");
-        if model_kind == "llama" || model_kind == "no_vocab" {
-            anyhow::bail!(
-                "GGUF tokenizer.ggml.model = `{model_kind}` (SentencePiece family) — \
-             not supported in the vocab-only decode fallback; provide a tokenizer.json"
-            );
-        }
-
-        let tokens_meta = raw
-            .metadata
-            .get("tokenizer.ggml.tokens")
-            .ok_or_else(|| anyhow::anyhow!("GGUF missing tokenizer.ggml.tokens"))?;
-        let tokens: Vec<String> = match tokens_meta {
-            MetaValue::Array(a) => a
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect(),
-            _ => anyhow::bail!("tokenizer.ggml.tokens not an array"),
-        };
-        let merges_meta = raw
-            .metadata
-            .get("tokenizer.ggml.merges")
-            .ok_or_else(|| anyhow::anyhow!("GGUF missing tokenizer.ggml.merges"))?;
-        let merges_raw: Vec<String> = match merges_meta {
-            MetaValue::Array(a) => a
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect(),
-            _ => anyhow::bail!("tokenizer.ggml.merges not an array"),
-        };
-
-        let vocab: tokenizers::models::bpe::Vocab = tokens
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (t.clone(), i as u32))
-            .collect();
-        let merges: Vec<(String, String)> = merges_raw
-            .iter()
-            .filter_map(|line| {
-                let mut it = line.splitn(2, ' ');
-                Some((it.next()?.to_string(), it.next()?.to_string()))
-            })
-            .collect();
-
-        let bpe = BPE::builder()
-            .vocab_and_merges(vocab, merges)
-            .build()
-            .map_err(|e| anyhow::anyhow!("build BPE from GGUF vocab: {e}"))?;
-        let mut tok = Tokenizer::new(bpe);
-        tok.with_pre_tokenizer(Some(ByteLevel::new(false, true, true)));
-        tok.with_decoder(Some(tokenizers::decoders::byte_level::ByteLevel::new(
-            false, true, true,
-        )));
-
-        // Register control / user-defined tokens so `skip_special_tokens` actually
-        // strips them and the decoder doesn't byte-level-reverse `<|im_end|>` etc.
-        // Mirror of the encoder change above.
-        if let Some(MetaValue::Array(arr)) = raw.metadata.get("tokenizer.ggml.token_type") {
-            use tokenizers::AddedToken;
-            let mut added: Vec<AddedToken> = Vec::new();
-            for (idx, meta) in arr.iter().enumerate() {
-                let Some(kind) = meta.as_u32() else { continue };
-                if kind != 3 && kind != 4 {
-                    continue;
-                }
-                let Some(text) = tokens.get(idx) else {
-                    continue;
-                };
-                if text.is_empty() {
-                    continue;
-                }
-                added.push(AddedToken::from(text.clone(), kind == 3).normalized(false));
-            }
-            if !added.is_empty() {
-                tok.add_special_tokens(&added);
-            }
-        }
-
-        Ok(tok)
-    })?;
+    // Same cached, byte-level-BPE tokenizer as the encode path — `build_gguf_tokenizer`
+    // now sets both the pre-tokenizer and the byte-level decoder, so a single cached
+    // instance (keyed by the weights path) serves encode AND decode. Keeping this in
+    // one builder prevents the two directions from drifting (an earlier split let the
+    // encode-built, decoder-less tokenizer win the cache and leak `Ġ`/`Ċ` markers).
+    let tok = cached_tokenizer(weights, || build_gguf_tokenizer(weights))?;
     tok.decode(ids, skip_special_tokens)
         .map_err(|e| anyhow::anyhow!("detokenize: {e}"))
 }
@@ -377,4 +316,41 @@ pub fn decode_ids_auto(
          tokenizer.json next to the file",
         weights
     )
+}
+
+#[cfg(all(test, feature = "qwen35-tokenizer"))]
+mod tests {
+    use super::*;
+
+    /// Regression: `encode_prompt_from_gguf` and `decode_ids_from_gguf` share one
+    /// path-keyed cached tokenizer. Encode runs first (during prefill) and used to
+    /// populate the cache with a *decoder-less* tokenizer, so decode leaked raw
+    /// byte-level markers (`Ġ`/`Ċ`). `build_gguf_tokenizer` now sets the byte-level
+    /// decoder too, so a single cached instance round-trips cleanly regardless of
+    /// which direction touches the cache first. Encode-then-decode here mirrors the
+    /// real order and asserts no markers survive.
+    #[test]
+    fn gguf_tokenizer_roundtrips_without_bytelevel_markers() {
+        let gguf = std::env::var("FARA_GGUF").unwrap_or_else(|_| {
+            "/Users/Shared/weights/fara1.5-4b-gguf/Fara1.5-4B-Q4_K_M.gguf".to_string()
+        });
+        let path = std::path::Path::new(&gguf);
+        if !path.is_file() {
+            eprintln!("skip: FARA_GGUF not present at {gguf}");
+            return;
+        }
+        let text = "The animal in the photo is a black puppy.";
+        // Encode FIRST — this is what populates the shared cache in the real path.
+        let ids = encode_prompt_from_gguf(path, text).expect("encode via GGUF vocab");
+        assert!(!ids.is_empty(), "encode produced no ids");
+        let decoded = decode_ids_from_gguf(path, &ids, true).expect("decode via GGUF vocab");
+        assert!(
+            !decoded.contains('Ġ') && !decoded.contains('Ċ'),
+            "byte-level markers leaked into decode: {decoded:?}"
+        );
+        assert!(
+            decoded.contains("puppy"),
+            "round-trip lost content: {decoded:?}"
+        );
+    }
 }

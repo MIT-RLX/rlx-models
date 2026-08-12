@@ -473,6 +473,9 @@ mod tests {
         assert_eq!(arch_runner_name("qwen25"), Some("qwen3"));
         assert_eq!(arch_runner_name("qwen2_5"), Some("qwen3"));
         assert_eq!(arch_runner_name("llama"), Some("llama32"));
+        // Muse Glimmer runs its arch deltas on the llama32 packed GGUF path
+        // (`DenseArch::MuseGlimmer`), so `rlx-run auto` routes it there.
+        assert_eq!(arch_runner_name("muse-glimmer"), Some("llama32"));
         assert_eq!(arch_runner_name("phi3"), Some("phi"));
         assert_eq!(arch_runner_name("gemma"), Some("gemma"));
         assert_eq!(arch_runner_name("gemma2"), Some("gemma"));

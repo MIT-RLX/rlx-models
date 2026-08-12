@@ -126,6 +126,11 @@ pub fn minicpm5_1b_preset() -> Llama32Config {
         residual_scale: None,
         attention_scale: None,
         logit_scale: None,
+        // Sliding-window / final-logit-softcap knobs added to Llama32Config
+        // upstream — off for MiniCPM (matches behavior before these fields existed).
+        sliding_window: None,
+        sliding_window_pattern: None,
+        final_logit_softcap: None,
     }
 }
 
