@@ -4617,7 +4617,6 @@ dependencies = [
  "anyhow",
  "dirs 6.0.0",
  "half",
- "metal 0.30.0",
  "rlx-compile",
  "rlx-cpu",
  "rlx-cuda",
@@ -4958,21 +4957,6 @@ name = "metal"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ecfd3296f8c56b7c1f6fbac3c71cefa9d78ce009850c45000015f206dc7fa21"
-dependencies = [
- "bitflags 2.13.1",
- "block",
- "core-graphics-types 0.1.3",
- "foreign-types",
- "log",
- "objc",
- "paste",
-]
-
-[[package]]
-name = "metal"
-version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c3572083504c43e14aec05447f8a3d57cce0f66d7a3c1b9058572eca4d70ab9"
 dependencies = [
  "bitflags 2.13.1",
  "block",
@@ -8556,7 +8540,6 @@ version = "0.2.14"
 dependencies = [
  "anyhow",
  "criterion",
- "metal 0.30.0",
  "rlx-cpu",
  "rlx-cuda",
  "rlx-flow",

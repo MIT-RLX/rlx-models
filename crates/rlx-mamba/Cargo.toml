@@ -28,16 +28,12 @@ rlx-mlx = { workspace = true, optional = true }
 rlx-cuda = { workspace = true, optional = true }
 rlx-wgpu = { workspace = true, optional = true }
 rlx-rocm = { workspace = true, optional = true }
-# The `metal` crate is only needed on Apple platforms; rlx-metal
-# re-exports its core types but we still need direct access for buffer
-# allocation + encoders inside our backend.
-metal = { version = "0.30", optional = true }
 
 [features]
 default = []
 # Apple-only. Real Metal backend (uses rlx-metal's MSL sgemm for the
 # linears; element-wise + scan + conv on CPU via unified-memory access).
-metal = ["dep:rlx-metal", "dep:metal", "rlx-runtime/metal"]
+metal = ["dep:rlx-metal", "rlx-runtime/metal"]
 # Apple-only. Real MLX backend (matmul + element-wise on MLX; scan + conv1d on CPU).
 mlx = ["dep:rlx-mlx", "rlx-runtime/mlx"]
 # NVIDIA. The crate builds on Mac because `rlx-cuda` uses

@@ -15,7 +15,7 @@
 
 //! Apple Metal backend.
 //!
-//! Architecture: one growable `metal::Buffer` in shared-storage mode,
+//! Architecture: one growable `rlx_metal::mtl::Buffer` in shared-storage mode,
 //! bump-allocated per `upload`/`alloc`. The matmuls go through
 //! `rlx_metal::blas::metal_sgemm` / `metal_sgemm_bias` (custom MSL
 //! kernels, picked per-shape via `hw_model().pick_sgemm`). Element-wise
@@ -35,9 +35,9 @@
 use crate::backend::{MambaBackend, MambaTensor};
 use crate::backends::ssm_dispatch;
 use anyhow::{Result, anyhow, bail};
-use metal::{Buffer, CommandBufferRef, CommandQueue};
 use rlx_metal::blas as mblas;
 use rlx_metal::device::metal_device;
+use rlx_metal::mtl::{Buffer, CommandBufferRef, CommandQueue, ComputeCommandEncoderRef};
 use rlx_runtime::Device;
 use std::ffi::c_void;
 
@@ -140,7 +140,7 @@ impl MetalBackend {
     /// algorithm is sequential at the host level, so flushing per-call
     /// keeps the semantics simple; batching multiple sgemms into one
     /// command buffer is an obvious follow-up optimization.
-    fn run_gpu<F: FnOnce(&CommandBufferRef, &metal::ComputeCommandEncoderRef)>(
+    fn run_gpu<F: FnOnce(&CommandBufferRef, &ComputeCommandEncoderRef)>(
         queue: &CommandQueue,
         f: F,
     ) {

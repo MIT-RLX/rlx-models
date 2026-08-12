@@ -22,9 +22,9 @@ mod metal {
     use std::hash::{Hash, Hasher};
     use std::sync::{Mutex, OnceLock};
 
-    use metal::Buffer;
     use rlx_metal::blas::buffers_sgemm_sync;
     use rlx_metal::device::metal_device;
+    use rlx_metal::mtl::Buffer;
 
     fn env_flag(name: &str) -> bool {
         std::env::var(name).is_ok_and(|v| {

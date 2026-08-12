@@ -33,7 +33,6 @@ rlx-metal = { workspace = true, optional = true }
 rlx-mlx = { workspace = true, optional = true }
 rlx-cuda = { workspace = true, optional = true }
 rlx-gguf = { workspace = true, optional = true }
-metal = { version = "0.30", optional = true }
 
 [[example]]
 name = "native_quick"
@@ -79,7 +78,7 @@ required-features = ["native"]
 default = ["cpu"]
 cpu = ["rlx-runtime/cpu"]
 cuda = ["rlx-runtime/cuda", "dep:rlx-cuda"]
-metal = ["rlx-runtime/metal", "dep:rlx-metal", "dep:metal"]
+metal = ["rlx-runtime/metal", "dep:rlx-metal"]
 mlx = ["rlx-runtime/mlx", "dep:rlx-mlx"]
 gpu = ["rlx-runtime/gpu"]
 rocm = ["rlx-runtime/rocm"]
