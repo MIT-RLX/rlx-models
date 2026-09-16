@@ -320,7 +320,7 @@ fn f32_from_le_bytes(b: &[u8]) -> Vec<f32> {
 /// Load a weight by key and register it as an F32 `Param` node. When
 /// `transpose` is set, the safetensors `[out, in]` layout is swapped to
 /// rlx's `[in, out]` matmul convention.
-fn load_p(
+pub(crate) fn load_p(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     weights: &mut dyn WeightLoader,
@@ -340,7 +340,7 @@ fn load_p(
 
 /// Register a zero-valued param (RMSNorm `beta`, which these models lack
 /// but the IR op signature requires).
-fn synth_zero(
+pub(crate) fn synth_zero(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     name: &str,
@@ -352,7 +352,7 @@ fn synth_zero(
 }
 
 /// Register a constant param of the given shape/data.
-fn synth_const(
+pub(crate) fn synth_const(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     name: &str,
@@ -365,7 +365,7 @@ fn synth_const(
 }
 
 /// Load an RMSNorm gain, adding `offset` (Gemma bakes `(1+γ)`; `offset=1.0`).
-fn load_norm(
+pub(crate) fn load_norm(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     weights: &mut dyn WeightLoader,
@@ -385,7 +385,7 @@ fn load_norm(
 
 /// Per-head RMSNorm via reshape to `[B*S*heads, head_dim]`.
 #[allow(clippy::too_many_arguments)]
-fn per_head_rms(
+pub(crate) fn per_head_rms(
     g: &mut Graph,
     x: NodeId,
     gamma: NodeId,
@@ -406,7 +406,7 @@ fn per_head_rms(
 /// Apply RoPE to the **last `rd` dims** of each head (GPT-J interleaved), leaving
 /// the leading `hd-rd` "nope" dims untouched. `x` is `[rows, n_heads*hd]`. Mirrors
 /// the reference `apply_rotary_emb(x[..., -rd:])`; `sin` chooses forward/inverse.
-fn rope_tail(
+pub(crate) fn rope_tail(
     g: &mut Graph,
     x: NodeId,
     cos: NodeId,
@@ -473,14 +473,14 @@ fn gather_last_token(
 /// Result of loading a projection weight. `scale`/`bias` are `Some` only
 /// for MLX affine packs (separate per-group tensors); GGUF K-quant
 /// carries its scales inside the single packed blob.
-struct Proj {
-    w: NodeId,
-    scheme: Option<QuantScheme>,
-    scale: Option<NodeId>,
-    bias: Option<NodeId>,
+pub(crate) struct Proj {
+    pub(crate) w: NodeId,
+    pub(crate) scheme: Option<QuantScheme>,
+    pub(crate) scale: Option<NodeId>,
+    pub(crate) bias: Option<NodeId>,
 }
 
-fn load_proj(
+pub(crate) fn load_proj(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
@@ -667,7 +667,7 @@ fn rope_heads(
 }
 
 /// Emit DequantMatMul (2-input GGUF / 4-input MLX affine) or plain MatMul.
-fn emit_proj(g: &mut Graph, input: NodeId, p: &Proj, out_shape: Shape) -> NodeId {
+pub(crate) fn emit_proj(g: &mut Graph, input: NodeId, p: &Proj, out_shape: Shape) -> NodeId {
     match p.scheme {
         Some(s) => {
             let mut inputs = vec![input, p.w];
@@ -943,7 +943,7 @@ fn load_stacked_group_experts_mlx(
 }
 
 /// Create a `[1]` f32 constant param (for broadcast scalar mul/add).
-fn const1(g: &mut Graph, params: &mut HashMap<String, Vec<f32>>, name: &str, v: f32) -> NodeId {
+pub(crate) fn const1(g: &mut Graph, params: &mut HashMap<String, Vec<f32>>, name: &str, v: f32) -> NodeId {
     let node = g.param(name, Shape::new(&[1], DType::F32));
     params.insert(name.to_string(), vec![v]);
     node
@@ -1164,7 +1164,7 @@ pub struct Lfm2Spec {
 }
 
 /// Register a fixed-shape zero param (causal-conv left padding).
-fn register_zeros(
+pub(crate) fn register_zeros(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     name: &str,
@@ -2406,7 +2406,8 @@ pub fn build_hc_pre(
     rows: usize,
     hc: usize,
     d: usize,
-    eps: f32,
+    norm_eps: f32,
+    hc_eps: f32,
     iters: usize,
     tag: &str,
 ) -> (NodeId, NodeId, NodeId) {
@@ -2414,13 +2415,15 @@ pub fn build_hc_pre(
     let x_flat = g.reshape_(x, vec![rows as i64, hcd as i64]);
     let sq = g.mul(x_flat, x_flat);
     let ms = g.mean(sq, vec![1], true);
-    let eps_c = const1(g, params, &format!("{tag}.hcp.eps"), eps);
+    // `norm_eps` here, `hc_eps` in the Sinkhorn: the reference keeps them
+    // separate, and V4.1 sets them 14 orders of magnitude apart (1e-20 vs 1e-6).
+    let eps_c = const1(g, params, &format!("{tag}.hcp.eps"), norm_eps);
     let ms = g.add(ms, eps_c);
     let rsq = g.rsqrt(ms); // [rows,1]
     let mixes = g.mm(x_flat, hc_fn_t); // [rows, mix_hc]
     let mixes = g.mul(mixes, rsq);
     let (pre, post, comb) =
-        build_hc_sinkhorn(g, params, mixes, scale, base, rows, hc, eps, iters, tag);
+        build_hc_sinkhorn(g, params, mixes, scale, base, rows, hc, hc_eps, iters, tag);
     // y = Σ_hc pre·x
     let pre3 = g.reshape_(pre, vec![rows as i64, hc as i64, 1]);
     let yh = g.mul(pre3, x); // [rows,hc,d]
@@ -2443,15 +2446,18 @@ pub fn build_hc_head(
     rows: usize,
     hc: usize,
     d: usize,
-    eps: f32,
+    norm_eps: f32,
+    hc_eps: f32,
     tag: &str,
 ) -> NodeId {
     let hcd = hc * d;
     let x_flat = g.reshape_(x, vec![rows as i64, hcd as i64]);
     let sq = g.mul(x_flat, x_flat);
     let ms = g.mean(sq, vec![1], true);
-    let eps_c = const1(g, params, &format!("{tag}.hch.eps"), eps);
-    let ms = g.add(ms, eps_c);
+    // as in `build_hc_pre`: the RMS uses `norm_eps`, the gate `hc_eps`
+    let norm_eps_c = const1(g, params, &format!("{tag}.hch.neps"), norm_eps);
+    let eps_c = const1(g, params, &format!("{tag}.hch.eps"), hc_eps);
+    let ms = g.add(ms, norm_eps_c);
     let rsq = g.rsqrt(ms);
     let mixes = g.mm(x_flat, hc_fn_t); // [rows, hc]
     let mixes = g.mul(mixes, rsq);
@@ -2464,8 +2470,14 @@ pub fn build_hc_head(
     g.sum(yh, vec![1], false) // [rows,d]
 }
 
-/// HC post-expand: `1→hc` streams. `y[j] = post[j]·x_out + Σ_k comb[j,k]·residual[k]`.
+/// HC post-expand: `1→hc` streams. `y[j] = post[j]·x_out + Σ_i comb[i,j]·residual[i]`.
 /// `x_out [rows,d]` is the sublayer output; `residual [rows,hc,d]` the block input.
+///
+/// The contraction is over `comb`'s **first** axis. The reference writes it as
+/// `(comb.unsqueeze(-1) * residual.unsqueeze(-2)).sum(dim=2)`, which aligns
+/// `comb`'s leading `hc` with `residual`'s and then reduces it — i.e.
+/// `combᵀ·residual`. Contracting the other way passes every shape check and
+/// quietly permutes the stream mixing.
 pub fn build_hc_post(
     g: &mut Graph,
     x_out: NodeId,
@@ -2480,10 +2492,10 @@ pub fn build_hc_post(
     let post3 = g.reshape_(post, vec![r, h, 1]);
     let xo3 = g.reshape_(x_out, vec![r, 1, dd]);
     let term1 = g.mul(post3, xo3); // [rows,hc,d]
-    let comb4 = g.reshape_(comb, vec![r, h, h, 1]);
-    let res4 = g.reshape_(residual, vec![r, 1, h, dd]);
-    let prod = g.mul(comb4, res4); // [rows,hc,k,d]
-    let term2 = g.sum(prod, vec![2], false); // Σ_k → [rows,hc,d]
+    let comb4 = g.reshape_(comb, vec![r, h, h, 1]); // [rows, i, j, 1]
+    let res4 = g.reshape_(residual, vec![r, h, 1, dd]); // [rows, i, 1, d]
+    let prod = g.mul(comb4, res4); // [rows, i, j, d]
+    let term2 = g.sum(prod, vec![1], false); // Σ_i → [rows, j, d]
     g.add(term1, term2)
 }
 
@@ -3009,6 +3021,7 @@ pub fn build_dspark_stage(
             block,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             spec.hc_sinkhorn_iters,
             &format!("{lp}.a"),
@@ -3157,6 +3170,7 @@ pub fn build_dspark_stage(
             block,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             spec.hc_sinkhorn_iters,
             &format!("{lp}.f"),
@@ -3215,6 +3229,7 @@ pub fn build_dspark_stage(
         block,
         hc,
         d,
+        spec.rms_norm_eps,
         spec.hc_eps,
         "ds.head",
     );
@@ -4089,6 +4104,7 @@ pub fn build_deepseek_v4_stage(
             rows,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             spec.hc_sinkhorn_iters,
             &format!("{lp}.a"),
@@ -4478,6 +4494,7 @@ pub fn build_deepseek_v4_stage(
             rows,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             spec.hc_sinkhorn_iters,
             &format!("{lp}.f"),
@@ -4580,6 +4597,7 @@ pub fn build_deepseek_v4_stage(
             rows,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             "head",
         );
@@ -4773,6 +4791,7 @@ pub fn build_deepseek_v4_decode_moe(
             1,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             spec.hc_sinkhorn_iters,
             &format!("{lp}.da"),
@@ -5092,6 +5111,7 @@ pub fn build_deepseek_v4_decode_moe(
             1,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             spec.hc_sinkhorn_iters,
             &format!("{lp}.df"),
@@ -5175,6 +5195,7 @@ pub fn build_deepseek_v4_decode_moe(
         1,
         hc,
         d,
+        spec.rms_norm_eps,
         spec.hc_eps,
         "v4d.head",
     );
@@ -5669,6 +5690,7 @@ pub fn build_deepseek_v4_decode_fixed_stage_moe(
             1,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             spec.hc_sinkhorn_iters,
             &format!("{lp}.fa"),
@@ -5915,6 +5937,7 @@ pub fn build_deepseek_v4_decode_fixed_stage_moe(
             1,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             spec.hc_sinkhorn_iters,
             &format!("{lp}.ff"),
@@ -6034,6 +6057,7 @@ pub fn build_deepseek_v4_decode_fixed_stage_moe(
             1,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             "v4f.head",
         );
@@ -6105,6 +6129,7 @@ pub fn build_v4_post_stage(
             1,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             "v4post.head",
         );
@@ -7516,6 +7541,7 @@ pub fn build_deepseek_v4_verify_block_stage(
             b,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             spec.hc_sinkhorn_iters,
             &format!("{lp}.va"),
@@ -7813,6 +7839,7 @@ pub fn build_deepseek_v4_verify_block_stage(
             b,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             spec.hc_sinkhorn_iters,
             &format!("{lp}.vf"),
@@ -7907,6 +7934,7 @@ pub fn build_deepseek_v4_verify_block_stage(
             b,
             hc,
             d,
+            spec.rms_norm_eps,
             spec.hc_eps,
             "v4v.head",
         );
@@ -9601,7 +9629,7 @@ impl<S: ExpertSource> ExpertSource for CachedExpertSource<S> {
 
 /// Load a 2D weight as a `[in, out]` param (transposed from the stored `[out,
 /// in]`) for direct `g.mm(x, w)`. Dequantizes if packed.
-fn load_transposed_param(
+pub(crate) fn load_transposed_param(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     weights: &mut dyn WeightLoader,
@@ -9615,7 +9643,7 @@ fn load_transposed_param(
 
 /// Load V4 `wo_a` (`[n_groups*o_lora_rank, dpg]`) dense-F32, reshaped to the 3D
 /// `[n_groups, o_lora_rank, dpg]` param [`build_v4_o_lora`] slices.
-fn load_v4_wo_a(
+pub(crate) fn load_v4_wo_a(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     weights: &mut dyn WeightLoader,
@@ -10410,7 +10438,7 @@ fn load_neg_exp(
 
 /// Numerically-stable `softplus(x) = relu(x) + log(1 + exp(-|x|))` composed from
 /// primitive ops (no dedicated builder method). `name` seeds the `[1]` constant.
-fn softplus_stable(
+pub(crate) fn softplus_stable(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     x: NodeId,
@@ -11663,7 +11691,7 @@ pub struct GptOssSpec {
 /// the dense `take` path uses only the GLOBAL group_size, so it mis-widens a
 /// per-module-affine embed in a mixed-quant checkpoint (gpt-oss: global mxfp4
 /// gs=32 but embed affine gs=64). Registers the F32 table and returns its node.
-fn load_dense_dequant(
+pub(crate) fn load_dense_dequant(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     weights: &mut dyn WeightLoader,

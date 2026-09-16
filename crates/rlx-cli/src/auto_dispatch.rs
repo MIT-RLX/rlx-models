@@ -317,6 +317,7 @@ static KNOWN_UNIMPLEMENTED: phf::Map<&'static str, &'static UnimplementedArch> =
     // HF model_type keys (mlx-community): builder exists in rlx-deepseek, runner pending.
     "deepseek_v3" => &families::DEEPSEEK,
     "deepseek_v4" => &families::DEEPSEEK,
+    "deepseek_v41" => &families::DEEPSEEK,
     "kimi_k2" => &families::DEEPSEEK,
     "kimi_k25" => &families::DEEPSEEK,
     // cohere/command-r/cohere2 stay unimplemented: parallel-residual coded but

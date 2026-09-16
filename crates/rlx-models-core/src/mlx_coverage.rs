@@ -297,6 +297,31 @@ fn dedicated_coverage(arch: &str) -> Option<Dedicated> {
         );
     }
 
+    // ── DeepSeek-V4.1-Flash (`deepseek_v41`, DeepseekV41ForCausalLM). A different
+    // architecture from V4, not a revision: CSA2 shares one compressed KV cache and
+    // one Indexer across a run of layers (`kv_source_layer_ids` /
+    // `index_source_layer_ids`) instead of every compressed layer owning its own, a
+    // hierarchical Indexer pre-filters candidate blocks, Engram mixes n-gram hash
+    // lookups into the residual stream at two layers, a DeepSeek-ViT tower feeds an
+    // aligner, the DSpark stages route over their own 128-expert bank, and the
+    // Hyper-Connection pre-mix is threaded forward (no `hc_head`). Prefill +
+    // pipeline stages + vision are parity-exact (2e-7) against the released
+    // `inference/model.py` run on CPU; WiredDeferred because the only checkpoint is
+    // 510GB of fp8/fp4 and there is no smaller variant to run end to end.
+    if a == "deepseek_v41" || a == "deepseek_v41_text" {
+        return hit(
+            "rlx-models-core",
+            CoverageStatus::WiredDeferred,
+            "DeepSeek-V4.1-Flash — build_deepseek_v41_prefill/_stage (CSA2 shared KV + hierarchical \
+             Indexer + Engram n-gram memory + Hyper-Connections with threaded pre-mix + o-LoRA MLA \
+             + sqrtsoftplus MoE with a per-stage expert bank + YaRN) plus the DeepSeek-ViT tower and \
+             aligner (dsv41_vision) and the fp8/fp4 checkpoint reader (dsv41_quant, three scale \
+             layouts). Every stage parity-exact vs `inference/model.py` on CPU (max rel 2e-7 through \
+             the logits); Engram hashing bit-exact including the numpy PCG64 multipliers. \
+             e2e→Validated blocked by hardware: a 510GB fp8/fp4 checkpoint, no smaller variant",
+        );
+    }
+
     // ── GLM-5 (`glm_moe_dsa`, GlmMoeDsaForCausalLM = DeepSeek-V3.2): absorbed-MLA
     //    (q-LoRA + per-head embed_q/unembed_out) + sparse Indexer + deepseek MoE ──
     // Routes through build_deepseek_prefill with q_lora_rank>0 + absorbed_mla=true.
@@ -531,6 +556,19 @@ mod tests {
             assert!(c.supported, "{mt}");
             assert_eq!(c.via, CoverageVia::Dedicated("rlx-models-core"), "{mt}");
             assert_eq!(c.status, CoverageStatus::WiredDeferred, "{mt}");
+        }
+    }
+
+    #[test]
+    fn deepseek_v41_wired() {
+        // V4.1 is its own arch, and must NOT fall through to the V4 entry: the two
+        // disagree on KV sharing, the Indexer, Engram, vision and the head.
+        for mt in ["deepseek_v41", "deepseek_v41_text"] {
+            let c = classify_coverage(&cfg(mt));
+            assert!(c.supported, "{mt}");
+            assert_eq!(c.via, CoverageVia::Dedicated("rlx-models-core"), "{mt}");
+            assert_eq!(c.status, CoverageStatus::WiredDeferred, "{mt}");
+            assert!(c.reason.contains("V4.1"), "{mt}: {}", c.reason);
         }
     }
 

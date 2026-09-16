@@ -295,8 +295,13 @@ impl TwoWayTransformerCompiled {
         let nh = self.num_heads;
         let max_q = self.max_q_n;
         let max_k = self.k_n;
-        let plane = max_q * max_k;
-        let mut mask_buf = vec![0f32; nh * plane];
+        // Each mask gets a buffer sized to ITS OWN declared input, not to the
+        // largest of the three. The self-attention mask is `[1, H, max_q,
+        // max_q]` while the cross masks are `[1, H, max_q, max_k]`; with one
+        // shared `max_q * max_k` buffer the self mask was handed to a smaller
+        // slot with `H * max_q * (max_k - max_q)` floats too many.
+        let mut self_buf = vec![0f32; nh * max_q * max_q];
+        let mut cross_buf = vec![0f32; nh * max_q * max_k];
 
         let mut owned: Vec<(String, Vec<f32>)> = vec![
             ("tokens".into(), tokens_padded.to_vec()),
@@ -304,15 +309,15 @@ impl TwoWayTransformerCompiled {
             ("image_pe".into(), image_pe_seq.to_vec()),
         ];
         for i in 0..self.num_layers {
-            Self::fill_attn_mask(&mut mask_buf, nh, max_q, max_q, active_q_n, active_q_n);
-            owned.push((format!("mask_L{i}_self"), mask_buf.clone()));
-            Self::fill_attn_mask(&mut mask_buf, nh, max_q, max_k, active_q_n, max_k);
-            owned.push((format!("mask_L{i}_t2i"), mask_buf.clone()));
-            Self::fill_attn_mask(&mut mask_buf, nh, max_k, max_q, max_k, active_q_n);
-            owned.push((format!("mask_L{i}_i2t"), mask_buf.clone()));
+            Self::fill_attn_mask(&mut self_buf, nh, max_q, max_q, active_q_n, active_q_n);
+            owned.push((format!("mask_L{i}_self"), self_buf.clone()));
+            Self::fill_attn_mask(&mut cross_buf, nh, max_q, max_k, active_q_n, max_k);
+            owned.push((format!("mask_L{i}_t2i"), cross_buf.clone()));
+            Self::fill_attn_mask(&mut cross_buf, nh, max_k, max_q, max_k, active_q_n);
+            owned.push((format!("mask_L{i}_i2t"), cross_buf.clone()));
         }
-        Self::fill_attn_mask(&mut mask_buf, nh, max_q, max_k, active_q_n, max_k);
-        owned.push(("mask_final_t2i".into(), mask_buf.clone()));
+        Self::fill_attn_mask(&mut cross_buf, nh, max_q, max_k, active_q_n, max_k);
+        owned.push(("mask_final_t2i".into(), cross_buf.clone()));
 
         let feeds: Vec<(&str, &[f32])> = owned
             .iter()

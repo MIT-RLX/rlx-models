@@ -118,6 +118,10 @@ crates/rlx-whisper/fixtures/
 !crates/rlx-tada/tests/fixtures/*.json
 !crates/rlx-glm5next/tests/fixtures/*.json
 !crates/rlx-chatterbox/tests/fixtures/*.json
+# DeepSeek-V4.1 parity fixtures: the reference is a 510GB checkpoint and the
+# harness that produced these needs torch, so they are not regenerable from the
+# repo — `tests/dsv41_reference_parity.rs` does not run without them.
+!crates/rlx-models-core/tests/fixtures/dsv41_*.json
 
 # 8 MB TADA end-to-end reference; regenerate locally rather than shipping it in
 # the published crate (the small per-stage fixtures next to it are tracked).

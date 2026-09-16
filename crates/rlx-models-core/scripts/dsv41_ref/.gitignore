@@ -1,0 +1,11 @@
+# Fetched from the upstream model repo by ./fetch.sh — not vendored, so the
+# harness always compares against what upstream currently says.
+model.py
+engram.py
+vision.py
+image_processor.py
+__pycache__/
+# Regenerated dumps; the trimmed copies under ../../tests/fixtures are tracked.
+dsv41_ref.json
+dsv41_vision_ref.json
+dsv41_dspark_ref.json

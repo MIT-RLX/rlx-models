@@ -122,6 +122,46 @@ MXFP4 kernel.
 
 See [`rlx-ling`](../rlx-ling/README.md) for a whole model on this path.
 
+## DeepSeek-V4.1-Flash
+
+`model_type: deepseek_v41`. A different architecture from V4 rather than a
+revision, so it has its own modules:
+
+| module | what it holds |
+|---|---|
+| [`dsv41`] | config + shapes, and the CSA2 sourcing rules (`kv_source_for`, `index_source_for`, `uses_candidates`) |
+| [`dsv41_graph`] | prefill and pipeline stages (`build_deepseek_v41_prefill` / `_stage`) |
+| [`dsv41_decode`] | single-token decode with a KV cache, plus the host-side `V41DecodeCache` |
+| [`dsv41_engram`] | the n-gram hash tables: token map, prime bucket layout, numpy-exact multipliers |
+| [`dsv41_vision`] | DeepSeek-ViT (2-D RoPE) + the aligner |
+| [`dsv41_dspark`] | the speculative draft head — seed, step, Markov bias, confidence |
+| [`dsv41_quant`] | the fp8/fp4 checkpoint reader (three scale layouts) and `DsV41Loader` |
+
+A pipeline stage boundary carries **both** the hidden state and the
+Hyper-Connection pre-mix, because V4.1 threads the mix forward across blocks; a
+boundary that dropped it would silently restart from the one-hot mix. Stage
+splits also have to keep each `kv_source_layer` in the same stage as the layers
+that read it — `DeepseekV41Spec::kv_source_for` tells you where those runs
+start.
+
+### Parity
+
+`tests/dsv41_reference_parity.rs` checks the port against the released
+`inference/model.py`, run on CPU with its tilelang kernels transliterated to
+torch. Parameters are drawn from a name-keyed PRNG both sides reproduce, so the
+fixtures carry only shapes and outputs. Every stage matches to 2e-7 relative;
+decode reproduces prefill token for token and a split stage reproduces the
+single-shot run.
+
+`cargo run -p rlx-models-core --example dsv41_bisect` walks the taps stage by
+stage against a dump, which is how the port was brought up — point
+`RLX_DSV41_REF` at a fuller dump to compare more intermediates, and
+`RLX_DSV41_DBG=<stage> RLX_DSV41_DBGLAYER=<n>` cuts the graph short at one of
+them (`engram`, `comp`, `compkv`, `topk`, `attn`, `ffn`, `block`).
+
+Real weights are out of reach here — the only checkpoint is 510 GB of fp8/fp4 —
+so coverage is `WiredDeferred`.
+
 ## Distributed inference (multi-node)
 
 Run one model split across several machines when no single host has the RAM for

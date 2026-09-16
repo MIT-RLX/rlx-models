@@ -59,6 +59,7 @@ fn main() -> Result<()> {
         hc,
         d,
         eps,
+        eps,
         iters,
         "p",
     );
@@ -151,12 +152,16 @@ fn main() -> Result<()> {
                 hmix[dd] += pre[hh] * xr(hh, dd);
             }
         }
-        // hc_post (identity sublayer x_out=hmix): y[j,dd] = post[j]*hmix[dd] + Σ_k comb[j][k]*x[k,dd]
+        // hc_post (identity sublayer x_out=hmix): y[j,dd] = post[j]*hmix[dd] + Σ_i comb[i][j]*x[i,dd]
+        //
+        // The sum is over comb's FIRST index — `(comb.unsqueeze(-1) *
+        // residual.unsqueeze(-2)).sum(dim=2)` in the reference aligns comb's
+        // leading hc with the residual's and reduces that one.
         for j in 0..hc {
             for dd in 0..d {
                 let mut v = post[j] * hmix[dd];
-                for k in 0..hc {
-                    v += comb[j][k] * xr(k, dd);
+                for i in 0..hc {
+                    v += comb[i][j] * xr(i, dd);
                 }
                 refout[(r * hc + j) * d + dd] = v;
             }

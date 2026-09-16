@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+### DeepSeek-V4.1-Flash
+
+`deepseek-ai/DeepSeek-V4.1-Flash` (`model_type: deepseek_v41`, released
+2026-09-10) is a different architecture from V4, not a revision of it, and the
+V4 path would have loaded it into a silently wrong model. It is now its own
+port in `rlx-models-core`: `dsv41` (config/shapes), `dsv41_graph` (prefill +
+pipeline stages), `dsv41_decode` (KV-cache decode), `dsv41_engram`,
+`dsv41_vision`, `dsv41_dspark`, `dsv41_quant`.
+
+What V4.1 changes:
+
+- **CSA2 KV sharing.** `compress_ratio > 0` no longer means a layer compresses
+  its own KV. Only `kv_source_layer_ids` (`[2, 8, 14, 20]`) run a compressor and
+  only those own index keys; every layer up to the next source reads that cache.
+  `index_source_layer_ids` splits the same way for the Indexer. Feeding V4.1 to
+  the V4 builder would have built 38 compressors where the checkpoint has 4.
+- **A hierarchical Indexer.** Layer 20 picks `candidate_topk_blocks` blocks of
+  `candidate_block_size` compressed positions; layers 24/28/32/36 score only
+  inside them.
+- **Engram** — n-gram hash lookups mixed into the residual stream at layers 1
+  and 14, over two 384-million-row tables. Every part of the hash has to match
+  training exactly: the normalized token map, the prime-sized bucket ranges, and
+  the multipliers, which come from `np.random.default_rng(10007 · layer_id)` and
+  therefore need numpy's `SeedSequence` → PCG64 → Lemire chain reproduced bit for
+  bit (`dsv41_engram::np_rng`). The primes summing to the checkpoint's own
+  `engram_num_embeddings` is what confirms the layout.
+- **Vision** — a DeepSeek-ViT with 2-D RoPE plus an unfold/MLP aligner.
+- **Per-stage expert banks** — the three DSpark stages route over 128 experts
+  top-3, the backbone over 384 top-6.
+- **A threaded Hyper-Connection pre-mix** — each sublayer computes the mix the
+  *next* one consumes, and there is no `hc_head`: the final collapse reuses the
+  last block's FFN mix.
+- **Three quant scale layouts** behind one `weight_block_size: [32, 32]`:
+  32×32 tiles for the FP8 Linears, row-wise groups for the FP4 experts, and —
+  the trap — row-wise groups for the FP8 Engram table, which a tiled reading
+  would smear across 32 rows of the table at a time.
+
+Parity: the released `inference/model.py` was run on CPU with its tilelang
+kernels transliterated to torch, and every stage of the port matches it to
+**2e-7** relative through the logits — engram, compressor, compressed RoPE,
+candidate blocks, Indexer top-k, sink attention, o-LoRA, MoE. Decode reproduces
+prefill token for token; a split pipeline stage reproduces the single-shot run;
+the vision tower and the DSpark draft head (rings, logits, Markov bias,
+confidence, and the greedy draft tokens) match their own fixtures. End-to-end on
+real weights stays out of reach: the only checkpoint is 510 GB of fp8/fp4.
+
+Two details worth knowing when reading the code. The reference round-trips
+activations through FP8/FP4 in place (`act_quant(..., inplace=True)`); those
+calls are precision simulation, not semantics, and the port computes the
+F32-exact value. And `torch.topk`'s order among **equal** scores is unspecified
+while the Indexer produces exact ties constantly (it rectifies its head scores,
+so any position every head dislikes scores exactly zero) — the port keeps the
+lowest index, matching `Op::TopK`, and the parity harness pins torch to the same
+rule. A thresholding gate instead keeps *every* tied entry and quietly overruns
+the `index_topk` budget.
+
+### Fixed: DeepSeek-V4 Hyper-Connections mixed the streams transposed
+
+`build_hc_post` contracted the Sinkhorn combination matrix on the wrong axis.
+The reference writes the residual term as
+`(comb.unsqueeze(-1) * residual.unsqueeze(-2)).sum(dim=2)`, which aligns `comb`'s
+leading `hc` with the residual's and reduces *that* one — `combᵀ·residual`. The
+port summed the other index, which passes every shape check (`comb` is square)
+and silently permutes how the parallel residual streams mix, in every V4 prefill,
+decode, pipeline and DSpark graph. `examples/hc_probe.rs` did not catch it
+because its inline reference encoded the same transpose; both are fixed, and the
+probe now matches at cosine 1.0.
+
+Alongside it, `build_hc_pre` / `build_hc_head` used `hc_eps` for the RMS
+pre-norm where the reference uses `norm_eps`. For V4 those are both 1e-6 so
+nothing moved, but V4.1 sets them 14 orders of magnitude apart (1e-20 vs 1e-6)
+and every mixing coefficient would have been perturbed. Both now take the two
+epsilons separately.
+
 ### Warnings cleared, including three classes the lint gate never saw
 
 `scripts/rust-lint-gate.sh` runs `cargo clippy --workspace --all-targets -D
