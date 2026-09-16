@@ -220,10 +220,10 @@ impl UnlimitedOcrWeightStore {
         let prefix = format!("{PREFIX_LM_LAYERS}{layer_idx}.mlp.experts.");
         let mut ids = HashSet::new();
         for key in self.all_keys.iter() {
-            if let Some(rest) = key.strip_prefix(&prefix) {
-                if let Some(e) = rest.split('.').next() {
-                    ids.insert(e.to_string());
-                }
+            if let Some(rest) = key.strip_prefix(&prefix)
+                && let Some(e) = rest.split('.').next()
+            {
+                ids.insert(e.to_string());
             }
         }
         ids.len()

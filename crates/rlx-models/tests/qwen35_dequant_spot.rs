@@ -26,12 +26,12 @@ use std::path::PathBuf;
 const DEFAULT_NON_MTP_Q4: &str = "/tmp/rlx-models/Qwen3.5-0.8B-Q4_K_M.gguf";
 
 fn gguf_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("QWEN35_GGUF_PATH") {
-        if !p.is_empty() {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                return Some(path);
-            }
+    if let Ok(p) = std::env::var("QWEN35_GGUF_PATH")
+        && !p.is_empty()
+    {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            return Some(path);
         }
     }
     let path = PathBuf::from(DEFAULT_NON_MTP_Q4);

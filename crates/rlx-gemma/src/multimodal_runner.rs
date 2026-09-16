@@ -650,10 +650,10 @@ fn find_next_marker(prompt: &str) -> Option<(usize, MarkerKind, usize)> {
     ];
     let mut best: Option<(usize, MarkerKind, usize)> = None;
     for &(m, kind) in candidates {
-        if let Some(i) = prompt.find(m) {
-            if best.map(|(bi, _, _)| i < bi).unwrap_or(true) {
-                best = Some((i, kind, m.len()));
-            }
+        if let Some(i) = prompt.find(m)
+            && best.map(|(bi, _, _)| i < bi).unwrap_or(true)
+        {
+            best = Some((i, kind, m.len()));
         }
     }
     best

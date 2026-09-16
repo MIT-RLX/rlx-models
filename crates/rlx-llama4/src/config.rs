@@ -95,10 +95,10 @@ impl Llama4TextConfig {
         struct Wrap {
             text_config: Option<Llama4TextConfig>,
         }
-        if let Ok(w) = serde_json::from_str::<Wrap>(text) {
-            if let Some(t) = w.text_config {
-                return Ok(t);
-            }
+        if let Ok(w) = serde_json::from_str::<Wrap>(text)
+            && let Some(t) = w.text_config
+        {
+            return Ok(t);
         }
         serde_json::from_str(text).context("parsing llama4 text config")
     }

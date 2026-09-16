@@ -172,21 +172,21 @@ pub fn sample_all_heads_temp(
                 h.len(),
                 v,
             );
-            if repetition_penalty != 1.0 {
-                if let Some(frames) = recent_frames {
-                    let start = if repetition_window == 0 {
-                        0
-                    } else {
-                        frames.len().saturating_sub(repetition_window)
-                    };
-                    for frame in &frames[start..] {
-                        let tok = frame[ch] as usize;
-                        if tok < logits.len() {
-                            if logits[tok] > 0.0 {
-                                logits[tok] /= repetition_penalty;
-                            } else {
-                                logits[tok] *= repetition_penalty;
-                            }
+            if repetition_penalty != 1.0
+                && let Some(frames) = recent_frames
+            {
+                let start = if repetition_window == 0 {
+                    0
+                } else {
+                    frames.len().saturating_sub(repetition_window)
+                };
+                for frame in &frames[start..] {
+                    let tok = frame[ch] as usize;
+                    if tok < logits.len() {
+                        if logits[tok] > 0.0 {
+                            logits[tok] /= repetition_penalty;
+                        } else {
+                            logits[tok] *= repetition_penalty;
                         }
                     }
                 }

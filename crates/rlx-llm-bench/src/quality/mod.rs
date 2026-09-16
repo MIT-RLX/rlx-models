@@ -124,12 +124,12 @@ const LETTERS: &[&str] = &[
 fn render_context(doc: &McDoc, mode: MmluMode) -> String {
     let mut ctx = String::new();
     // `Raw` is a bare sentence stem — no subject preamble, no `Answer:` scaffold.
-    if mode != MmluMode::Raw {
-        if let Some(subj) = &doc.subject {
-            ctx.push_str(&format!(
-                "The following is a multiple choice question about {subj}.\n\n"
-            ));
-        }
+    if mode != MmluMode::Raw
+        && let Some(subj) = &doc.subject
+    {
+        ctx.push_str(&format!(
+            "The following is a multiple choice question about {subj}.\n\n"
+        ));
     }
     ctx.push_str(&doc.question);
     match mode {

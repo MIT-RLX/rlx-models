@@ -30,7 +30,7 @@
 use anyhow::{Result, anyhow};
 use rlx_flow::blocks::{
     LmHeadStage, Qwen3DecodeLayerSpec, Qwen3DecoderSpec, RopeTablesStage, qwen3_decode_layer_fused,
-    qwen3_decode_layer_side, qwen3_prefill_layer_side,
+    qwen3_decode_layer_side_tap, qwen3_prefill_layer_side,
 };
 use rlx_flow::{BuiltModel, CompileProfile, FlowStage, ModelFlow, SideOutputs};
 use rlx_ir::dynamic::sym;
@@ -56,6 +56,12 @@ pub struct Qwen3PrefillOpts {
     /// Export post-RoPE Q and GQA-expanded K per layer (AIF / attention probe).
     pub with_qk_outputs: bool,
     pub last_logits_only: bool,
+    /// Take the gathered row index from a `last_token_idx` input instead of
+    /// hard-coding `seq - 1`. Lets one compiled graph serve every prompt whose
+    /// length rounds up to the same `seq` (right-pad the ids, point
+    /// `last_token_idx` at the real final position) — see the generator's
+    /// prefill bucketing. Only meaningful with `last_logits_only`.
+    pub last_token_from_input: bool,
     /// Lower the linear projections to fused `Op::DequantMatMul` over packed
     /// GGUF/MLX blobs instead of dequantizing to F32 (see the same flag on
     /// [`Qwen3DecodeOpts`]). Requires a packed-capable `WeightLoader`.
@@ -75,6 +81,7 @@ impl Qwen3PrefillOpts {
             with_kv_outputs: false,
             with_qk_outputs: false,
             last_logits_only: false,
+            last_token_from_input: false,
             packed: false,
             profile: None,
             rope_cos: None,
@@ -97,6 +104,15 @@ pub struct Qwen3DecodeOpts {
     pub ragged_rope: bool,
     /// Export post-RoPE Q and GQA-expanded K side outputs per layer (AIF decode probe).
     pub export_qk: bool,
+    /// Layers whose **residual-stream input** to export, after the KV (and Q/K)
+    /// outputs and in ascending layer order.
+    ///
+    /// This is the target-side hook Eagle-style drafters need: EAGLE3, DFlash
+    /// and DSpark read the target's residual stream at a few depths
+    /// (`dflash.target_layers`) and fuse them instead of embedding tokens
+    /// themselves. Indices at or past `num_hidden_layers` are dropped at build
+    /// time, and an empty list costs nothing.
+    pub tap_layers: Vec<usize>,
     /// Lower the linear projections to fused `Op::DequantMatMul` over packed
     /// GGUF/MLX quant blobs instead of dequantizing to F32. Requires a
     /// packed-capable `WeightLoader` (K-quant tensors). Gives an m=1 decode
@@ -115,6 +131,7 @@ impl Default for Qwen3DecodeOpts {
             use_custom_mask: false,
             ragged_rope: false,
             export_qk: false,
+            tap_layers: Vec::new(),
             packed: false,
             profile: None,
         }
@@ -131,6 +148,7 @@ pub struct Qwen3Flow<'a> {
     dynamic_past: bool,
     with_lm_head: bool,
     with_kv_outputs: bool,
+    tap_layers: Vec<usize>,
     with_qk_outputs: bool,
     last_logits_only: bool,
     use_custom_mask: bool,
@@ -148,6 +166,7 @@ impl<'a> Qwen3Flow<'a> {
             dynamic_past: false,
             with_lm_head: false,
             with_kv_outputs: false,
+            tap_layers: Vec::new(),
             with_qk_outputs: false,
             last_logits_only: false,
             use_custom_mask: false,
@@ -214,6 +233,20 @@ impl<'a> Qwen3Flow<'a> {
     }
 
     /// Export per-layer Q/K side outputs (requires [`Self::export_kv`]).
+    /// Export the residual-stream input of each listed layer, after the KV
+    /// outputs and in ascending layer order.
+    ///
+    /// The target-side half of Eagle-style speculative decoding: a DFlash or
+    /// EAGLE3 drafter reads these instead of embedding tokens itself. Pass the
+    /// drafter's `target_layers` verbatim.
+    pub fn with_tap_layers(mut self, ids: impl IntoIterator<Item = usize>) -> Self {
+        let mut v: Vec<usize> = ids.into_iter().collect();
+        v.sort_unstable();
+        v.dedup();
+        self.tap_layers = v;
+        self
+    }
+
     pub fn export_qk(mut self) -> Self {
         self.with_kv_outputs = true;
         self.with_qk_outputs = true;
@@ -251,6 +284,7 @@ impl Qwen3Flow<'_> {
             with_kv_outputs: self.with_kv_outputs,
             with_qk_outputs: self.with_qk_outputs,
             last_logits_only: self.last_logits_only,
+            last_token_from_input: false,
             packed: false,
             profile: self.profile,
             rope_cos: None,
@@ -266,6 +300,7 @@ impl Qwen3Flow<'_> {
             use_custom_mask: self.use_custom_mask,
             ragged_rope: false,
             export_qk: false,
+            tap_layers: self.tap_layers.clone(),
             packed: false,
             profile: self.profile,
         }
@@ -337,7 +372,11 @@ pub fn build_qwen3_prefill_built(
     });
 
     if opts.with_lm_head && opts.last_logits_only {
-        flow = flow.gather_last_token_at(batch, seq);
+        flow = if opts.last_token_from_input {
+            flow.gather_last_token_dynamic(batch)
+        } else {
+            flow.gather_last_token_at(batch, seq)
+        };
     }
 
     flow = flow.final_norm(eps);
@@ -440,6 +479,20 @@ pub fn build_qwen3_decode_built(
 
     let kv_out = SideOutputs::new();
     let qk_out = SideOutputs::new();
+    let tap_out = SideOutputs::new();
+    // Layers are built in ascending order, so a sorted, deduped tap list makes
+    // the drained sink line up with the drafter's expected concat order.
+    let tap_layers: Vec<usize> = {
+        let mut v: Vec<usize> = opts
+            .tap_layers
+            .iter()
+            .copied()
+            .filter(|i| *i < cfg.num_hidden_layers)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
 
     // Ragged decode supplies one RoPE row per sequence (`[batch, half]`); the
     // default shares a single row across the batch (`[1, half]`).
@@ -470,7 +523,9 @@ pub fn build_qwen3_decode_built(
             let spec = decode_spec.clone();
             let kv = kv_out.clone();
             let qk = qk_out.clone();
-            move |i| qwen3_decode_layer_side(i, spec.clone(), &kv, &qk, export_qk)
+            let tap = tap_out.clone();
+            let taps = tap_layers.clone();
+            move |i| qwen3_decode_layer_side_tap(i, spec.clone(), &kv, &qk, &tap, export_qk, &taps)
         })
         .final_norm(eps)
         .raw_stage(qwen3_lm_head_stage(cfg))
@@ -480,6 +535,7 @@ pub fn build_qwen3_decode_built(
     if opts.export_qk {
         extra.extend(qk_out.drain());
     }
+    extra.extend(tap_out.drain());
     Ok(built.with_extra_hir_outputs(extra))
 }
 
@@ -868,6 +924,190 @@ mod tests {
         WeightMap::from_tensors(t)
     }
 
+    /// Two layers with distinguishable weights, so a tap can be checked by
+    /// value rather than by shape.
+    fn tiny_cfg_2l() -> Qwen3Config {
+        Qwen3Config {
+            num_hidden_layers: 2,
+            ..tiny_cfg()
+        }
+    }
+
+    fn synthetic_weights_2l(cfg: &Qwen3Config) -> WeightMap {
+        let h = cfg.hidden_size;
+        let q_dim = cfg.q_proj_dim();
+        let kv_dim = cfg.kv_proj_dim();
+        let int_dim = cfg.intermediate_size;
+        let dh = cfg.head_dim;
+        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
+        // Deterministic, non-zero: all-zero weights would make every layer's
+        // residual identical and a tap test vacuous.
+        let r = |n: usize, salt: u64| -> Vec<f32> {
+            let mut st = salt.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+            (0..n)
+                .map(|_| {
+                    st = st.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                    (((st >> 40) as f32 / (1u32 << 23) as f32) - 1.0) * 0.1
+                })
+                .collect()
+        };
+        t.insert(
+            "model.embed_tokens.weight".into(),
+            (r(cfg.vocab_size * h, 1), vec![cfg.vocab_size, h]),
+        );
+        for i in 0..cfg.num_hidden_layers {
+            let lp = format!("model.layers.{i}");
+            let s = i as u64 + 2;
+            t.insert(
+                format!("{lp}.input_layernorm.weight"),
+                (vec![1.0; h], vec![h]),
+            );
+            t.insert(
+                format!("{lp}.post_attention_layernorm.weight"),
+                (vec![1.0; h], vec![h]),
+            );
+            t.insert(
+                format!("{lp}.self_attn.q_proj.weight"),
+                (r(q_dim * h, s * 10), vec![q_dim, h]),
+            );
+            t.insert(
+                format!("{lp}.self_attn.k_proj.weight"),
+                (r(kv_dim * h, s * 11), vec![kv_dim, h]),
+            );
+            t.insert(
+                format!("{lp}.self_attn.v_proj.weight"),
+                (r(kv_dim * h, s * 12), vec![kv_dim, h]),
+            );
+            t.insert(
+                format!("{lp}.self_attn.o_proj.weight"),
+                (r(h * q_dim, s * 13), vec![h, q_dim]),
+            );
+            t.insert(
+                format!("{lp}.self_attn.q_norm.weight"),
+                (vec![1.0; dh], vec![dh]),
+            );
+            t.insert(
+                format!("{lp}.self_attn.k_norm.weight"),
+                (vec![1.0; dh], vec![dh]),
+            );
+            t.insert(
+                format!("{lp}.mlp.gate_proj.weight"),
+                (r(int_dim * h, s * 14), vec![int_dim, h]),
+            );
+            t.insert(
+                format!("{lp}.mlp.up_proj.weight"),
+                (r(int_dim * h, s * 15), vec![int_dim, h]),
+            );
+            t.insert(
+                format!("{lp}.mlp.down_proj.weight"),
+                (r(h * int_dim, s * 16), vec![h, int_dim]),
+            );
+        }
+        t.insert("model.norm.weight".into(), (vec![1.0; h], vec![h]));
+        t.insert(
+            "lm_head.weight".into(),
+            (r(cfg.vocab_size * h, 99), vec![cfg.vocab_size, h]),
+        );
+        WeightMap::from_tensors(t)
+    }
+
+    /// Taps come after logits + K/V, one per requested layer, ascending.
+    #[test]
+    fn decode_tap_layers_append_one_output_each() {
+        let cfg = tiny_cfg_2l();
+        let mut wm = synthetic_weights_2l(&cfg);
+        let opts = Qwen3DecodeOpts {
+            batch: 1,
+            past_seq: 2,
+            tap_layers: vec![1, 0, 1], // unsorted + duplicate on purpose
+            ..Default::default()
+        };
+        let built = build_qwen3_decode_built(&cfg, &mut wm, &opts).unwrap();
+        let hir = built.into_hir().unwrap();
+        // logits + K/V per layer + one tap per DISTINCT in-range layer.
+        assert_eq!(hir.outputs.len(), 1 + 2 * cfg.num_hidden_layers + 2);
+    }
+
+    /// Out-of-range tap ids are dropped, not fatal — a drafter's
+    /// `target_layers` may name a depth this config does not have.
+    #[test]
+    fn decode_tap_layers_out_of_range_are_dropped() {
+        let cfg = tiny_cfg_2l();
+        let mut wm = synthetic_weights_2l(&cfg);
+        let opts = Qwen3DecodeOpts {
+            batch: 1,
+            past_seq: 2,
+            tap_layers: vec![0, 99],
+            ..Default::default()
+        };
+        let built = build_qwen3_decode_built(&cfg, &mut wm, &opts).unwrap();
+        let hir = built.into_hir().unwrap();
+        assert_eq!(hir.outputs.len(), 1 + 2 * cfg.num_hidden_layers + 1);
+    }
+
+    /// **The tap must be the residual stream, not just a tensor of the right
+    /// shape.** Layer 0's input is the token embedding by definition, so that
+    /// row is checkable against the weight table; layer 1's must differ, or the
+    /// tap is the same node repeated.
+    #[test]
+    fn decode_tap_is_the_layer_input_residual() {
+        use rlx_runtime::{Device, Session};
+
+        let cfg = tiny_cfg_2l();
+        let h = cfg.hidden_size;
+        let mut wm = synthetic_weights_2l(&cfg);
+        let embed = wm.take("model.embed_tokens.weight").unwrap().0;
+        let mut wm = synthetic_weights_2l(&cfg);
+
+        let opts = Qwen3DecodeOpts {
+            batch: 1,
+            past_seq: 2,
+            tap_layers: vec![0, 1],
+            ..Default::default()
+        };
+        let built = build_qwen3_decode_built(&cfg, &mut wm, &opts).unwrap();
+        let (graph, params) = built.into_graph_parts().unwrap();
+        let n_out = graph.outputs.len();
+        let mut c = Session::new(Device::Cpu).compile(graph);
+        for (k, v) in &params {
+            c.set_param(k, v);
+        }
+
+        let token = 7usize;
+        let half = cfg.head_dim / 2;
+        let past = vec![0.0f32; 2 * cfg.kv_proj_dim()];
+        let mut inputs: Vec<(String, Vec<f32>)> = vec![
+            ("input_ids".into(), vec![token as f32]),
+            ("rope_cos".into(), vec![1.0; half]),
+            ("rope_sin".into(), vec![0.0; half]),
+        ];
+        for i in 0..cfg.num_hidden_layers {
+            inputs.push((format!("past_k_{i}"), past.clone()));
+            inputs.push((format!("past_v_{i}"), past.clone()));
+        }
+        let refs: Vec<(&str, &[f32])> = inputs
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_slice()))
+            .collect();
+        let out = c.run(&refs);
+
+        let tap0 = &out[n_out - 2];
+        let tap1 = &out[n_out - 1];
+        assert_eq!(tap0.len(), h, "tap is one hidden row per decoded token");
+
+        // Layer 0's residual input IS the embedding row for this token.
+        let want = &embed[token * h..(token + 1) * h];
+        for (i, (g, w)) in tap0.iter().zip(want).enumerate() {
+            assert!(
+                (g - w).abs() < 1e-5,
+                "tap[layer 0][{i}] = {g}, embedding row = {w}"
+            );
+        }
+        // Layer 1 saw a whole transformer block; it cannot match layer 0.
+        let delta: f32 = tap0.iter().zip(tap1).map(|(a, b)| (a - b).abs()).sum();
+        assert!(delta > 1e-4, "layer 1 tap equals layer 0 (delta {delta})");
+    }
+
     #[test]
     fn prefill_flow_builds() {
         let cfg = tiny_cfg();
@@ -918,6 +1158,7 @@ mod tests {
             batch: 1,
             past_seq: 4,
             export_qk: true,
+            tap_layers: Vec::new(),
             ..Default::default()
         };
         let built = build_qwen3_decode_built(&cfg, &mut wm, &opts).unwrap();

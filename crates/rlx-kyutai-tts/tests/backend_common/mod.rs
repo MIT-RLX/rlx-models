@@ -45,16 +45,27 @@ pub fn tiny_cfg() -> KyutaiTtsConfig {
     cfg.dim = 64;
     cfg.num_heads = 4;
     cfg.num_layers = 2;
-    cfg.hidden_scale = 4.0;
+    cfg.hidden_scale = 4.125;
     cfg.text_card = 10;
     cfg.context = 8;
     cfg.positional_embedding = PositionalEmbedding::Rope;
     cfg
 }
 
+/// Packed SwiGLU half-width, the way a real checkpoint stores it.
+///
+/// `hidden_scale` is not the hidden width: Kyutai applies the usual SwiGLU ⅔ adjustment, so the
+/// 1.6B checkpoint's `gating.linear_in.weight` is `[11264, 2048]` (hidden 5632) for
+/// `dim_feedforward = 2048 · 4.125 = 8448`. The fixture used `dim_feedforward / 2`, which is a
+/// *different* number — so it agreed with the buggy `TtsDims::from_cfg` and no test could see
+/// that the RLX graph was slicing gate/up at the wrong offset.
+pub fn swiglu_hidden(cfg: &KyutaiTtsConfig) -> usize {
+    (cfg.dim as f32 * cfg.hidden_scale).round() as usize * 2 / 3
+}
+
 pub fn synthetic_weights(cfg: &KyutaiTtsConfig) -> HashMap<String, (Vec<f32>, Vec<usize>)> {
     let d = cfg.dim;
-    let h = (cfg.dim as f32 * cfg.hidden_scale / 2.0).round() as usize;
+    let h = swiglu_hidden(cfg);
     let vocab = cfg.text_card;
     let mut w = HashMap::new();
     fill(&mut w, "text_linear.weight", &[vocab, d]);
@@ -123,9 +134,10 @@ fn fixture() -> Fixture {
     for (i, v) in emb.iter_mut().enumerate() {
         *v = 0.01 * (i as f32 + 1.0);
     }
+    let weights = synthetic_weights(&cfg);
     Fixture {
-        dims: TtsDims::from_cfg(&cfg, 1),
-        weights: synthetic_weights(&cfg),
+        dims: TtsDims::from_cfg_and_weights(&cfg, 1, &weights).expect("dims from weights"),
+        weights,
         cross_ctx: vec![0.02f32; d],
         emb,
         upper: cfg.context,
@@ -162,6 +174,7 @@ pub fn temporal_decode_step0_on_device(device: Device, label: &str) {
         &f.weights,
         &f.emb,
         &f.cross_ctx,
+        f.dims.t_cross,
         &[],
         0,
         f.upper,
@@ -180,6 +193,7 @@ pub fn temporal_decode_step0_on_device(device: Device, label: &str) {
         &f.weights,
         &f.emb,
         &f.cross_ctx,
+        f.dims.t_cross,
         &[],
         0,
         f.upper,
@@ -202,6 +216,7 @@ pub fn temporal_decode_step1_on_device(device: Device, label: &str) {
         &f.weights,
         &f.emb,
         &f.cross_ctx,
+        f.dims.t_cross,
         &[],
         0,
         f.upper,
@@ -215,6 +230,7 @@ pub fn temporal_decode_step1_on_device(device: Device, label: &str) {
         &f.weights,
         &emb2,
         &f.cross_ctx,
+        f.dims.t_cross,
         &kv0,
         1,
         f.upper,
@@ -233,6 +249,7 @@ pub fn temporal_decode_step1_on_device(device: Device, label: &str) {
         &f.weights,
         &emb2,
         &f.cross_ctx,
+        f.dims.t_cross,
         &kv0,
         1,
         f.upper,

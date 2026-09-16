@@ -183,10 +183,10 @@ fn dump_tensors(dir: &str, real: bool, cap: Option<usize>) {
     let (mut n, mut bytes) = (0usize, 0usize);
     for key in keys {
         // `None` (all) keeps every weight; `Some(n)` keeps only blocks < n.
-        if let Some(nl) = cap {
-            if !within_layer_cap(&key, nl) {
-                continue;
-            }
+        if let Some(nl) = cap
+            && !within_layer_cap(&key, nl)
+        {
+            continue;
         }
         if let Some((data, shape)) = wm.get(&key) {
             if shape.len() != 2 || shape[0] < 2 || shape[1] < 2 {

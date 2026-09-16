@@ -49,12 +49,12 @@ impl CtTransformer {
     pub fn open(dir: &Path, device: Device) -> Result<Self> {
         let mut cfg = CtTransformerConfig::from_dir(dir)?;
         let weights = crate::weights::load_dir(dir)?;
-        if let Some((_, s)) = weights.get("embed.weight") {
-            if s.len() == 2 {
-                cfg.vocab_size = s[0];
-                cfg.embed_unit = s[1];
-                cfg.encoder.input_size = s[1];
-            }
+        if let Some((_, s)) = weights.get("embed.weight")
+            && s.len() == 2
+        {
+            cfg.vocab_size = s[0];
+            cfg.embed_unit = s[1];
+            cfg.encoder.input_size = s[1];
         }
         let tokenizer = Tokenizer::from_dir(dir).ok();
         Ok(Self {
@@ -153,10 +153,11 @@ impl CtTransformer {
         let mut out = String::new();
         for (u, &pid) in units.iter().zip(&punc) {
             out.push_str(u);
-            if let Some(sym) = self.cfg.punc_list.get(pid as usize) {
-                if sym != "_" && sym != "<unk>" {
-                    out.push_str(sym);
-                }
+            if let Some(sym) = self.cfg.punc_list.get(pid as usize)
+                && sym != "_"
+                && sym != "<unk>"
+            {
+                out.push_str(sym);
             }
         }
         Ok(out)

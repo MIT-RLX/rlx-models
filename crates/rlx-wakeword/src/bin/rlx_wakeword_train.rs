@@ -134,12 +134,12 @@ fn collect_specs(args: &[String]) -> Result<Vec<PhraseTrainSpec>> {
         i += 1;
     }
     // legacy: --pos/--neg without --phrase=
-    if specs.is_empty() {
-        if let (Some(pos), Some(neg)) = (flag(args, "--pos"), flag(args, "--neg")) {
-            let id = flag(args, "--phrase").unwrap_or_else(|| "wake".into());
-            let id = parse_phrase_arg(&id).map(|(i, _, _)| i).unwrap_or(id);
-            specs.push(PhraseTrainSpec::from_dirs(id, pos, neg));
-        }
+    if specs.is_empty()
+        && let (Some(pos), Some(neg)) = (flag(args, "--pos"), flag(args, "--neg"))
+    {
+        let id = flag(args, "--phrase").unwrap_or_else(|| "wake".into());
+        let id = parse_phrase_arg(&id).map(|(i, _, _)| i).unwrap_or(id);
+        specs.push(PhraseTrainSpec::from_dirs(id, pos, neg));
     }
     Ok(specs)
 }

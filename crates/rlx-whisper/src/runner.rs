@@ -888,8 +888,8 @@ impl WhisperRunner {
         let use_gpu = self.use_gpu_kv;
         let enc_seq = self.active_enc_seq;
         let mut cross_on_gpu = use_gpu && bound_epoch == epoch;
-        if let Some(compiled) = self.decode_compile_cache.compiled_for_key_mut(key) {
-            if Self::bind_cross_gpu_if_needed(
+        if let Some(compiled) = self.decode_compile_cache.compiled_for_key_mut(key)
+            && Self::bind_cross_gpu_if_needed(
                 compiled,
                 cross,
                 enc_seq,
@@ -898,10 +898,10 @@ impl WhisperRunner {
                 epoch,
                 bound_epoch,
                 use_gpu,
-            )? {
-                self.cross_gpu_bound_epoch = epoch;
-                cross_on_gpu = true;
-            }
+            )?
+        {
+            self.cross_gpu_bound_epoch = epoch;
+            cross_on_gpu = true;
         }
         if !cross_on_gpu {
             for i in 0..n_layers {
@@ -960,10 +960,10 @@ impl WhisperRunner {
             .unwrap_or(upper);
         let leaves_bucket = next_upper != upper;
 
-        if sync_kv_to_host || leaves_bucket || force_host_kv {
-            if let Some(compiled) = self.decode_compile_cache.compiled_for_key_mut(key) {
-                sync_gpu_kv_to_host(compiled, cache, d_model, n_layers)?;
-            }
+        if (sync_kv_to_host || leaves_bucket || force_host_kv)
+            && let Some(compiled) = self.decode_compile_cache.compiled_for_key_mut(key)
+        {
+            sync_gpu_kv_to_host(compiled, cache, d_model, n_layers)?;
         }
         Ok(logits)
     }
@@ -1031,8 +1031,8 @@ impl WhisperRunner {
         let use_gpu = self.use_gpu_kv;
         let enc_seq = self.active_enc_seq;
         let mut cross_on_gpu = use_gpu && bound_epoch == epoch;
-        if let Some(compiled) = self.decode_compile_cache.compiled_for_key_mut(key) {
-            if Self::bind_cross_gpu_if_needed(
+        if let Some(compiled) = self.decode_compile_cache.compiled_for_key_mut(key)
+            && Self::bind_cross_gpu_if_needed(
                 compiled,
                 cross,
                 enc_seq,
@@ -1041,10 +1041,10 @@ impl WhisperRunner {
                 epoch,
                 bound_epoch,
                 use_gpu,
-            )? {
-                self.cross_gpu_bound_epoch = epoch;
-                cross_on_gpu = true;
-            }
+            )?
+        {
+            self.cross_gpu_bound_epoch = epoch;
+            cross_on_gpu = true;
         }
         if !cross_on_gpu {
             for i in 0..n_layers {

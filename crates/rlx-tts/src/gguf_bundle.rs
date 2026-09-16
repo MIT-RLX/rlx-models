@@ -527,15 +527,13 @@ pub fn pack_directory(bundle: &Path, out: &Path) -> Result<PackReport> {
             .and_then(|e| e.to_str())
             .is_some_and(|e| TEXT_SUFFIXES.iter().any(|s| s.eq_ignore_ascii_case(e)))
             && data.len() < 8 * 1024 * 1024;
-        if is_text {
-            if let Ok(text) = std::str::from_utf8(&data) {
-                w.set_meta(
-                    format!("rlx_tts.file.{key}"),
-                    MetaValue::String(text.to_string()),
-                );
-                file_kv += 1;
-                continue;
-            }
+        if is_text && let Ok(text) = std::str::from_utf8(&data) {
+            w.set_meta(
+                format!("rlx_tts.file.{key}"),
+                MetaValue::String(text.to_string()),
+            );
+            file_kv += 1;
+            continue;
         }
         let name = format!("blob.{key}");
         add_i8(&mut w, &mut names, &name, vec![data.len()], &data)?;

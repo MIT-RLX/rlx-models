@@ -1,0 +1,77 @@
+{
+  "host": "Darwin",
+  "backends": [
+    "cpu",
+    "metal",
+    "mlx",
+    "wgpu",
+    "coreml"
+  ],
+  "adapters": {},
+  "rows": [
+    {
+      "model": "tada",
+      "kind": "tts",
+      "package": "rlx-tada",
+      "backend": "cpu",
+      "status": "pass",
+      "detail": "ok",
+      "metrics": {
+        "samples": 93114
+      },
+      "ms": 9753
+    },
+    {
+      "model": "tada",
+      "kind": "tts",
+      "package": "rlx-tada",
+      "backend": "metal",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 93114,
+        "cosine": 1.0
+      },
+      "ms": 7276
+    },
+    {
+      "model": "tada",
+      "kind": "tts",
+      "package": "rlx-tada",
+      "backend": "mlx",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 93114,
+        "cosine": 1.0
+      },
+      "ms": 6232
+    },
+    {
+      "model": "tada",
+      "kind": "tts",
+      "package": "rlx-tada",
+      "backend": "wgpu",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 93114,
+        "cosine": 1.0
+      },
+      "ms": 91943
+    },
+    {
+      "model": "tada",
+      "kind": "tts",
+      "package": "rlx-tada",
+      "backend": "coreml",
+      "status": "pass",
+      "detail": "cosine 1.000",
+      "metrics": {
+        "samples": 93114,
+        "cosine": 1.0
+      },
+      "ms": 34906
+    }
+  ]
+}

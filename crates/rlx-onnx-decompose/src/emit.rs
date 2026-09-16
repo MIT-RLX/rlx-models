@@ -683,22 +683,24 @@ fn emit_node(
     e.line(&comment);
 
     for name in &node.inputs {
-        if inits.contains(name.as_str()) && !node.outputs.is_empty() {
-            if let Some(shape) = plan.init_shapes.get(name) {
-                // RLX has no rank-0; promote ONNX scalar `dims=[]` to `[1]`
-                // (same as rlx-onnx-import lowerer) so Binary broadcast works.
-                let shape: &[usize] = if shape.is_empty() { &[1] } else { shape };
-                let shape_lit = format!(
-                    "&[{}]",
-                    shape
-                        .iter()
-                        .map(|d| d.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                let is_i64 = plan.i64_params.contains_key(name.as_str());
-                e.line(format!("if !b.env.contains_key({}) {{", rust_str_lit(name)));
-                e.block(|e| {
+        if inits.contains(name.as_str())
+            && !node.outputs.is_empty()
+            && let Some(shape) = plan.init_shapes.get(name)
+        {
+            // RLX has no rank-0; promote ONNX scalar `dims=[]` to `[1]`
+            // (same as rlx-onnx-import lowerer) so Binary broadcast works.
+            let shape: &[usize] = if shape.is_empty() { &[1] } else { shape };
+            let shape_lit = format!(
+                "&[{}]",
+                shape
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            let is_i64 = plan.i64_params.contains_key(name.as_str());
+            e.line(format!("if !b.env.contains_key({}) {{", rust_str_lit(name)));
+            e.block(|e| {
                     if is_i64 {
                         e.line(format!(
                             "let (data, _) = weights.i64.get({}).with_context(|| format!(\"i64 weight {{}}\", {}))?;",
@@ -724,8 +726,7 @@ fn emit_node(
                     }
                     e.line(format!("b.bind({}, id);", rust_str_lit(name)));
                 });
-                e.line("}");
-            }
+            e.line("}");
         }
     }
 

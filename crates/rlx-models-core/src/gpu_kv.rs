@@ -148,10 +148,10 @@ fn layer_host_rows(
     past_len: usize,
     kv_dim: usize,
 ) -> Vec<f32> {
-    if compiled.has_gpu_handle(name) {
-        if let Some(buf) = compiled.read_gpu_handle(name) {
-            return compact_bucketed_kv_buffer(&buf, past_len, kv_dim, 1);
-        }
+    if compiled.has_gpu_handle(name)
+        && let Some(buf) = compiled.read_gpu_handle(name)
+    {
+        return compact_bucketed_kv_buffer(&buf, past_len, kv_dim, 1);
     }
     let take = (past_len * kv_dim).min(host.len());
     host[..take].to_vec()

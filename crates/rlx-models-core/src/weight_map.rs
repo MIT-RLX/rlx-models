@@ -16,6 +16,7 @@
 //! Safetensors weight loading — standalone, no framework dependency.
 
 use anyhow::{Context, Result, bail, ensure};
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -44,9 +45,66 @@ pub enum WeightDrainPolicy {
     AllF32StrictUnused,
 }
 
+/// Cache-blocked, parallel `[rows, cols]` → `[cols, rows]` transpose.
+///
+/// The obvious nested loop writes down a column of the destination while
+/// reading along a row of the source, so every store lands in a different cache
+/// line. On a 2048×8192 Llama MLP weight that measured ~1 GB/s, and a 1 B-param
+/// checkpoint spends about four seconds there — more than compiling and running
+/// the graph combined. Tiling makes both sides cache-resident and rayon spreads
+/// the tiles; the output is identical.
+pub fn transpose_2d(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    /// One tile is 64×64 f32 = 16 KB per side, comfortably inside L1/L2.
+    const TILE: usize = 64;
+    let mut out = vec![0f32; rows * cols];
+    if rows == 0 || cols == 0 {
+        return out;
+    }
+    // Destination is `[cols, rows]`; hand each thread a band of its rows so the
+    // writes never overlap.
+    let band = TILE.max(cols.div_ceil(rayon::current_num_threads().max(1)));
+    out.par_chunks_mut(band * rows)
+        .enumerate()
+        .for_each(|(chunk, dst)| {
+            let j0 = chunk * band;
+            let j1 = (j0 + band).min(cols);
+            for jt in (j0..j1).step_by(TILE) {
+                let jmax = (jt + TILE).min(j1);
+                for it in (0..rows).step_by(TILE) {
+                    let imax = (it + TILE).min(rows);
+                    for i in it..imax {
+                        let src = &data[i * cols + jt..i * cols + jmax];
+                        for (o, v) in src.iter().enumerate() {
+                            dst[(jt + o - j0) * rows + i] = *v;
+                        }
+                    }
+                }
+            }
+        });
+    out
+}
+
 /// Map of tensor name → (f32 data, shape).
 pub struct WeightMap {
     tensors: HashMap<String, (Vec<f32>, Vec<usize>)>,
+}
+
+/// HF ↔ Hunyuan Q/K-norm name aliases (HY-MT `query_layernorm` / `key_layernorm`).
+fn hunyuan_norm_aliases(key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(prefix) = key.strip_suffix("self_attn.q_norm.weight") {
+        out.push(format!("{prefix}self_attn.query_layernorm.weight"));
+    }
+    if let Some(prefix) = key.strip_suffix("self_attn.k_norm.weight") {
+        out.push(format!("{prefix}self_attn.key_layernorm.weight"));
+    }
+    if let Some(prefix) = key.strip_suffix("self_attn.query_layernorm.weight") {
+        out.push(format!("{prefix}self_attn.q_norm.weight"));
+    }
+    if let Some(prefix) = key.strip_suffix("self_attn.key_layernorm.weight") {
+        out.push(format!("{prefix}self_attn.k_norm.weight"));
+    }
+    out
 }
 
 impl WeightMap {
@@ -189,10 +247,20 @@ impl WeightMap {
     }
 
     /// Take a tensor by name (removes from map). Returns (data, shape).
+    ///
+    /// Also accepts Hunyuan dense / HY-MT aliases:
+    /// `self_attn.query_layernorm` ↔ `self_attn.q_norm`,
+    /// `self_attn.key_layernorm` ↔ `self_attn.k_norm`.
     pub fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
-        self.tensors
-            .remove(key)
-            .ok_or_else(|| anyhow::anyhow!("weight not found: {key}"))
+        if let Some(v) = self.tensors.remove(key) {
+            return Ok(v);
+        }
+        for alt in hunyuan_norm_aliases(key) {
+            if let Some(v) = self.tensors.remove(&alt) {
+                return Ok(v);
+            }
+        }
+        anyhow::bail!("weight not found: {key}")
     }
 
     /// Take and transpose a 2D weight: [out, in] → [in, out] for row-major matmul.
@@ -202,18 +270,17 @@ impl WeightMap {
             anyhow::bail!("transpose requires 2D, got {shape:?}");
         }
         let (rows, cols) = (shape[0], shape[1]);
-        let mut transposed = vec![0f32; data.len()];
-        for i in 0..rows {
-            for j in 0..cols {
-                transposed[j * rows + i] = data[i * cols + j];
-            }
-        }
-        Ok((transposed, vec![cols, rows]))
+        Ok((transpose_2d(&data, rows, cols), vec![cols, rows]))
     }
 
     /// Check if a key exists.
     pub fn has(&self, key: &str) -> bool {
-        self.tensors.contains_key(key)
+        if self.tensors.contains_key(key) {
+            return true;
+        }
+        hunyuan_norm_aliases(key)
+            .into_iter()
+            .any(|alt| self.tensors.contains_key(&alt))
     }
 
     /// List all keys.
@@ -352,6 +419,55 @@ pub(crate) fn bytes_to_f32_vec(bytes: &[u8]) -> Vec<f32> {
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod transpose_tests {
+    use super::transpose_2d;
+
+    fn naive(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+        let mut out = vec![0f32; data.len()];
+        for i in 0..rows {
+            for j in 0..cols {
+                out[j * rows + i] = data[i * cols + j];
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn tiled_transpose_matches_the_naive_one() {
+        // Sizes that straddle the 64-wide tile and the rayon band split, plus
+        // the degenerate single-row / single-column shapes.
+        for &(r, c) in &[
+            (1usize, 1usize),
+            (1, 257),
+            (257, 1),
+            (64, 64),
+            (65, 63),
+            (127, 129),
+            (256, 1024),
+            (1024, 256),
+            (300, 7),
+        ] {
+            let data: Vec<f32> = (0..r * c).map(|i| i as f32 * 0.5 - 3.0).collect();
+            assert_eq!(transpose_2d(&data, r, c), naive(&data, r, c), "{r}x{c}");
+        }
+    }
+
+    #[test]
+    fn transposing_twice_is_the_identity() {
+        let (r, c) = (193usize, 97usize);
+        let data: Vec<f32> = (0..r * c).map(|i| (i % 251) as f32).collect();
+        let once = transpose_2d(&data, r, c);
+        assert_eq!(transpose_2d(&once, c, r), data);
+    }
+
+    #[test]
+    fn empty_dimensions_do_not_panic() {
+        assert!(transpose_2d(&[], 0, 8).is_empty());
+        assert!(transpose_2d(&[], 8, 0).is_empty());
     }
 }
 

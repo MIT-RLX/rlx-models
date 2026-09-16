@@ -33,6 +33,8 @@ pub struct RlxKyutaiTtsModel {
     temporal_pruned: bool,
     sum_offset: Option<Array1<f32>>,
     cross_ctx: Vec<f32>,
+    /// Real conditioner frames in `cross_ctx`; the rest is zero padding (0 = none).
+    cross_len: usize,
     kv: Vec<(Vec<f32>, Vec<f32>)>,
     seq_len: usize,
     temporal_compiled: Option<CompiledGraph>,
@@ -58,7 +60,7 @@ impl RlxKyutaiTtsModel {
         max_upper: usize,
     ) -> Result<Self> {
         let t_cross = MAX_SPEAKER_CROSS_FRAMES;
-        let dims = TtsDims::from_cfg(&cfg, t_cross);
+        let dims = TtsDims::from_cfg_and_weights(&cfg, t_cross, &weights)?;
         let text_emb = TextEmbedding::load(&weights, cfg.text_card)?;
         let mut audio_embs = Vec::with_capacity(cfg.n_q);
         for q in 0..cfg.n_q {
@@ -84,6 +86,7 @@ impl RlxKyutaiTtsModel {
             temporal_pruned: false,
             sum_offset: None,
             cross_ctx,
+            cross_len: 0,
             kv: Vec::new(),
             seq_len: 0,
             temporal_compiled: None,
@@ -145,8 +148,10 @@ impl RlxKyutaiTtsModel {
                 self.cfg.fuser.cross_attention_pos_emb_scale,
                 self.cfg.max_period as f32,
             );
+            self.cross_len = t;
         } else {
             self.cross_ctx.fill(0.0);
+            self.cross_len = 0;
         }
         Ok(())
     }
@@ -194,6 +199,7 @@ impl RlxKyutaiTtsModel {
             &self.dims,
             emb.as_slice().unwrap(),
             &self.cross_ctx,
+            self.cross_len,
             &self.kv,
             self.seq_len,
             self.max_upper,
@@ -211,6 +217,20 @@ impl RlxKyutaiTtsModel {
         }
         self.seq_len += 1;
 
+        // Same shape of trace as the eager reference in `model.rs`, so the two text heads can be
+        // diffed step-for-step. The correct distribution is dominated by `pad` (3) and
+        // `new_word` (0) with every real word token masked to ~-17.
+        if std::env::var_os("RLX_KYUTAI_TTS_TRACE").is_some() {
+            let mut top: Vec<(usize, f32)> = text_logits.iter().copied().enumerate().collect();
+            top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            eprintln!(
+                "rlx logits len={} top5 {:?} pad={:.3} new_word={:.3}",
+                text_logits.len(),
+                &top[..5.min(top.len())],
+                text_logits.get(3).copied().unwrap_or(f32::NAN),
+                text_logits.first().copied().unwrap_or(f32::NAN),
+            );
+        }
         let sampled_text = sampler.sample_text(&Array1::from_vec(text_logits));
         Ok((sampled_text, Array1::from_vec(hidden)))
     }

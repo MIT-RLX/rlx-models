@@ -55,10 +55,10 @@ impl Paraformer {
         let mut cfg = ParaformerConfig::from_dir(dir)?;
         let weights = crate::weights::load_dir(dir)?;
         // Trust the checkpoint for the vocabulary size.
-        if let Some((_, s)) = weights.get("decoder.output_layer.weight") {
-            if !s.is_empty() {
-                cfg.vocab_size = s[0];
-            }
+        if let Some((_, s)) = weights.get("decoder.output_layer.weight")
+            && !s.is_empty()
+        {
+            cfg.vocab_size = s[0];
         }
         let cmvn = crate::frontend::load_configured_cmvn(dir);
         let frontend = WavFrontend::new(cfg.frontend.clone(), cmvn);

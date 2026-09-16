@@ -122,16 +122,16 @@ impl PhiRunnerBuilder {
 }
 
 pub fn cli_run(args: &[String]) -> Result<()> {
-    if let Some(first) = args.iter().position(|a| a == "--weights") {
-        if let Some(path) = args.get(first + 1) {
-            let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
-                .with_context(|| format!("rlx-phi: parse {path}"))?;
-            if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
-                bail!(
-                    "rlx-phi: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
-                    cfg.arch
-                );
-            }
+    if let Some(first) = args.iter().position(|a| a == "--weights")
+        && let Some(path) = args.get(first + 1)
+    {
+        let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
+            .with_context(|| format!("rlx-phi: parse {path}"))?;
+        if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
+            bail!(
+                "rlx-phi: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
+                cfg.arch
+            );
         }
     }
     rlx_llama32::cli::run(args)

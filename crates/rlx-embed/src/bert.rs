@@ -36,6 +36,9 @@ pub struct RlxBertModel {
     device: Device,
     precision: Precision,
     policy: Option<PrecisionPolicy>,
+    /// First position id. Zero for BERT; `pad_token_id + 1` for the
+    /// RoBERTa family. See [`RlxBertModel::position_offset`].
+    position_offset: usize,
 }
 
 impl RlxBertModel {
@@ -76,6 +79,7 @@ impl RlxBertModel {
         policy: Option<PrecisionPolicy>,
     ) -> Result<Self> {
         let config = BertConfig::from_file(config_path)?;
+        let position_offset = roberta_position_offset(config_path);
         let compiled = Self::compile_flow(
             &config,
             weights_path,
@@ -93,7 +97,22 @@ impl RlxBertModel {
             device,
             precision,
             policy,
+            position_offset,
         })
+    }
+
+    /// First position id to feed the model.
+    ///
+    /// BERT numbers positions from 0, but the RoBERTa family — which includes
+    /// every multilingual checkpoint in the registry, since `multilingual-e5`
+    /// and `paraphrase-multilingual` are XLM-RoBERTa — reserves ids up to
+    /// `pad_token_id` and starts real tokens at `pad_token_id + 1`. That is why
+    /// their `max_position_embeddings` is 514 rather than 512. Feeding 0-based
+    /// positions reads the wrong row of the position table for every token: the
+    /// output is still plausible, just quietly worse, which is the kind of bug
+    /// that survives a long time.
+    pub fn position_offset(&self) -> usize {
+        self.position_offset
     }
 
     pub fn load(config_path: &Path, weights_path: &str) -> Result<Self> {
@@ -165,5 +184,73 @@ impl RlxBertModel {
 
     pub fn hidden_size(&self) -> usize {
         self.config.hidden_size
+    }
+}
+
+/// Reads the position-id offset out of a raw `config.json`.
+///
+/// [`BertConfig`] carries neither `model_type` nor `pad_token_id`, and widening
+/// a shared core type for one architecture's quirk is worse than reading the
+/// two fields here. Unknown or absent fields give 0, i.e. BERT behaviour.
+fn roberta_position_offset(config_path: &Path) -> usize {
+    let Ok(raw) = std::fs::read(config_path) else {
+        return 0;
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) else {
+        return 0;
+    };
+    let model_type = v
+        .get("model_type")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
+    if !model_type.contains("roberta") {
+        return 0;
+    }
+    v.get("pad_token_id")
+        .and_then(|p| p.as_u64())
+        .map_or(0, |p| p as usize + 1)
+}
+
+#[cfg(test)]
+mod position_offset_tests {
+    use super::roberta_position_offset;
+
+    fn write(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).expect("mkdir");
+        let p = dir.join("config.json");
+        std::fs::write(&p, body).expect("write");
+        p
+    }
+
+    #[test]
+    fn bert_numbers_positions_from_zero() {
+        let d = std::env::temp_dir().join(format!("rlx-embed-pos-b{}", std::process::id()));
+        let p = write(&d, r#"{"model_type":"bert","pad_token_id":0}"#);
+        assert_eq!(roberta_position_offset(&p), 0);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// The multilingual checkpoints — `multilingual-e5-*`,
+    /// `paraphrase-multilingual-*` — are all XLM-RoBERTa with `pad_token_id: 1`,
+    /// so their first real position is 2. Measured on `multilingual-e5-base`,
+    /// getting this wrong shrinks the margin between paraphrase and unrelated
+    /// text from 0.61 to 0.20.
+    #[test]
+    fn xlm_roberta_starts_after_the_pad_token() {
+        let d = std::env::temp_dir().join(format!("rlx-embed-pos-x{}", std::process::id()));
+        let p = write(&d, r#"{"model_type":"xlm-roberta","pad_token_id":1}"#);
+        assert_eq!(roberta_position_offset(&p), 2);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn an_unreadable_or_partial_config_falls_back_to_bert() {
+        let d = std::env::temp_dir().join(format!("rlx-embed-pos-u{}", std::process::id()));
+        assert_eq!(roberta_position_offset(&d.join("missing.json")), 0);
+        let p = write(&d, r#"{"model_type":"roberta"}"#);
+        assert_eq!(roberta_position_offset(&p), 0, "no pad_token_id");
+        let p = write(&d, "not json");
+        assert_eq!(roberta_position_offset(&p), 0);
+        std::fs::remove_dir_all(&d).ok();
     }
 }

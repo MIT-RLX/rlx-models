@@ -16,13 +16,12 @@ publish = false
 anyhow = { workspace = true }
 # The training stack: `dsl` = the `rlx! { … }` graph DSL, `optim` = autodiff +
 # CPU eval + the rlx_optim optimizers (AdamW, LR schedules, Func::train_step*).
-# Path dep on the sibling rlx checkout, mirroring rlx-termclean.
-rlx-tensor = { path = "../../../rlx/crates/core/rlx-tensor", version = "0.2.14", default-features = false, features = ["dsl", "optim"] }
+rlx-tensor = { workspace = true, features = ["dsl", "optim"] }
 # The dense sibling: its trained checkpoint is the source of the PQ codebook /
 # index init (`--init-from`) and the distillation teacher (`--distill`). No new
 # runtime IO/params — only the init/distill procedure. Default-features off so a
 # `--no-default-features` CPU build never pulls Metal/download.
-rlx-tinystories = { path = "../rlx-tinystories", version = "0.2.14", default-features = false }
+rlx-tinystories = { path = "../rlx-tinystories", version = "0.2.16", default-features = false }
 # TinyStories fetch (synchronous ureq client) — pulled by the `download` feature.
 hf-hub = { workspace = true, optional = true }
 # mmap the byte-level corpus so a multi-GB train split never lives in RAM.

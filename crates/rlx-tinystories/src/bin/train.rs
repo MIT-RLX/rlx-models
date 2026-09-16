@@ -199,10 +199,10 @@ fn ram_budget_bytes(a: &Args) -> Option<usize> {
     if let Some(g) = a.max_ram_gb {
         return Some((g * 1e9) as usize);
     }
-    if let Ok(v) = std::env::var("RLX_MAX_RAM_BYTES") {
-        if let Ok(b) = v.parse::<usize>() {
-            return Some(b);
-        }
+    if let Ok(v) = std::env::var("RLX_MAX_RAM_BYTES")
+        && let Ok(b) = v.parse::<usize>()
+    {
+        return Some(b);
     }
     physical_ram_bytes().map(|r| r * 7 / 10)
 }

@@ -57,10 +57,10 @@ pub fn parse_bench_device_list(csv: &str) -> Result<Vec<String>> {
     if csv.eq_ignore_ascii_case("apple-silicon") {
         let mut out = vec!["cpu".to_string()];
         for name in ["metal", "mlx", "wgpu", "ane"] {
-            if let Ok(dev) = parse_device(name) {
-                if is_available(dev) {
-                    out.push(bench_device_label(dev));
-                }
+            if let Ok(dev) = parse_device(name)
+                && is_available(dev)
+            {
+                out.push(bench_device_label(dev));
             }
         }
         out.sort();

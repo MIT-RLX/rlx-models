@@ -183,10 +183,10 @@ pub fn parse_tool_calls(text: &str) -> Vec<ToolCall> {
         let after = &rest[o + OPEN.len()..];
         let Some(c) = after.find(CLOSE) else { break };
         let body = after[..c].trim();
-        if let Ok(call) = serde_json::from_str::<ToolCall>(body) {
-            if !call.name.is_empty() {
-                out.push(call);
-            }
+        if let Ok(call) = serde_json::from_str::<ToolCall>(body)
+            && !call.name.is_empty()
+        {
+            out.push(call);
         }
         rest = &after[c + CLOSE.len()..];
     }

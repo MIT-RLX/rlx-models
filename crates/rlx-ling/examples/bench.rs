@@ -615,10 +615,9 @@ fn run_decode_bench(args: &Args, cfg: &LingConfig, ids: &[u32]) -> Result<()> {
     if let Some(tk) = std::fs::metadata(args.weights.join("tokenizer.json"))
         .ok()
         .and_then(|_| tokenizers::Tokenizer::from_file(args.weights.join("tokenizer.json")).ok())
+        && let Ok(text) = tk.decode(&generated, false)
     {
-        if let Ok(text) = tk.decode(&generated, false) {
-            println!("generated: {text:?}");
-        }
+        println!("generated: {text:?}");
     }
     Ok(())
 }

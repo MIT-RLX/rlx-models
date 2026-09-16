@@ -261,10 +261,9 @@ fn open_engine(install_dir: &Path, options: &TsacOptions, device: Device) -> Res
     // the faithful native codec otherwise (which can still decode tsac-ng files).
     if crate::correct::weights_available(&crate::correct::default_dir())
         && std::env::var("RLX_TSAC_ENGINE").ok().as_deref() != Some("native")
+        && let Ok(correct) = crate::correct::CorrectCodec::open(options.device, options.quality)
     {
-        if let Ok(correct) = crate::correct::CorrectCodec::open(options.device, options.quality) {
-            return Ok(CodecEngine::Correct(correct));
-        }
+        return Ok(CodecEngine::Correct(correct));
     }
 
     if prefer_external(install_dir) {
@@ -368,11 +367,11 @@ fn ld_library_path(install_dir: &Path) -> String {
 }
 
 fn ensure_parent(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create dir {}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create dir {}", parent.display()))?;
     }
     Ok(())
 }

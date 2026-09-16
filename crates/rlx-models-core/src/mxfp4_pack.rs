@@ -43,8 +43,8 @@
 //! | [`rlx_ir::op::Op::DequantMatMul`] (dense) | `U8 [n, groups]` | raw E8M0 bytes |
 //! | `Op::DequantGroupedMatMulMlx` (MoE) | `BF16 [E, n, groups]` | the decoded float `2^(b-127)` |
 //!
-//! Use [`quantize_rows`] then feed [`scales_e8m0`] to the dense op and
-//! [`scales_bf16`] to the grouped one.
+//! Use [`quantize_rows`] then feed [`Mxfp4::scales_e8m0`] to the dense op and
+//! [`Mxfp4::scales_bf16`] to the grouped one.
 //!
 //! ## Exponent choice
 //!

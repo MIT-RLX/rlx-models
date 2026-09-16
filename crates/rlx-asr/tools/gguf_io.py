@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 # RLX — GPLv3.
-# Minimal GGUF v3 reader for rlx-asr (F32 / I8 tensors + string metadata).
+# Minimal GGUF v3 + flat `.rlxp` reader for rlx-asr (F32 tensors + metadata).
 from __future__ import annotations
 
+import json
 import struct
+import zstandard as zstd
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 GGUF_MAGIC = 0x46554747  # GGUF little-endian
+RLXP_MAGIC = b"RLXPFLAT"
 GGML_F32 = 0
 GGML_I8 = 24
+DATA_ALIGN = 64
 
 _VALUE_READERS = {
     0: ("B", 1),  # u8
@@ -26,6 +30,68 @@ _VALUE_READERS = {
     11: ("q", 8),  # i64
     12: ("d", 8),  # f64
 }
+
+
+class RlxpFile:
+    """Flat `.rlxp` (RLXPFLAT v2) — hot f32 tensors + zstd sidecars."""
+
+    def __init__(self, path: Path | str):
+        self.path = Path(path)
+        self._data = self.path.read_bytes()
+        if self._data[:8] != RLXP_MAGIC:
+            raise ValueError(f"not RLXPFLAT: {self.path}")
+        _ver, _flags, toc_len = struct.unpack_from("<IIQ", self._data, 8)
+        self._toc: dict[str, Any] = json.loads(self._data[24 : 24 + toc_len])
+        hdr = 24 + toc_len
+        pad = (DATA_ALIGN - (hdr % DATA_ALIGN)) % DATA_ALIGN
+        self._data_base = hdr + pad
+        self._strings: list[str] = self._toc.get("strings") or []
+        self._tensors: dict[str, dict[str, Any]] = {}
+        for t in self._toc.get("tensors") or []:
+            name = t.get("name") or ""
+            if not name and "name_i" in t:
+                name = self._strings[int(t["name_i"])]
+            self._tensors[name] = t
+        self._sidecars: dict[str, dict[str, Any]] = {
+            s["id"]: s for s in self._toc.get("sidecars") or []
+        }
+
+    def has(self, name: str) -> bool:
+        return name in self._tensors
+
+    def tensor_f32(self, name: str) -> np.ndarray:
+        t = self._tensors.get(name)
+        if t is None:
+            raise KeyError(name)
+        if t.get("scheme", "f32") != "f32":
+            raise ValueError(f"tensor {name}: scheme {t.get('scheme')}")
+        off = int(t["offset"])
+        ln = int(t["length"])
+        raw = self._data[self._data_base + off : self._data_base + off + ln]
+        shape = [int(x) for x in t.get("shape") or []]
+        n = int(np.prod(shape)) if shape else ln // 4
+        arr = np.frombuffer(raw, dtype="<f4", count=n)
+        return np.array(arr, dtype=np.float32).reshape(shape) if shape else arr.copy()
+
+    def sidecar_bytes(self, stem: str) -> bytes:
+        key = stem if stem in self._sidecars else f"{stem}.json"
+        sc = self._sidecars.get(stem) or self._sidecars.get(key)
+        if sc is None:
+            raise KeyError(stem)
+        off = int(sc["offset"])
+        ln = int(sc["length"])
+        raw = bytes(self._data[self._data_base + off : self._data_base + off + ln])
+        if raw[:4] == b"(\xb5/\xfd":
+            return zstd.ZstdDecompressor().decompress(raw, max_output_size=10_000_000)
+        return raw
+
+    def units(self) -> list[str]:
+        raw = self.sidecar_bytes("units.txt")
+        return [
+            ln.split()[0]
+            for ln in raw.decode("utf-8", errors="replace").splitlines()
+            if ln.strip()
+        ]
 
 
 class GgufFile:
@@ -138,7 +204,8 @@ class GgufFile:
         return name in self.tensors
 
 
-def resolve_gguf(root: Path | None = None) -> Path | None:
+def resolve_pack(root: Path | None = None) -> Path | None:
+    """Prefer `model.rlxp`, then legacy GGUF under an ASR root."""
     from audio_io import asr_dir
 
     root = root or asr_dir()
@@ -147,26 +214,65 @@ def resolve_gguf(root: Path | None = None) -> Path | None:
         p = Path(env)
         if p.is_file():
             return p
-    for name in ("model.gguf", "asr.gguf", "rlx-asr.gguf"):
+    for name in ("model.rlxp", "model.gguf", "asr.rlxp", "asr.gguf", "rlx-asr.gguf"):
         p = root / name
         if p.is_file():
             return p
     return None
 
 
-def load_encoder_pack(gguf_path: Path | None = None) -> dict[str, np.ndarray]:
-    """Load folded encoder tensors from GGUF (`encoder.*` keys → unprefixed)."""
-    path = gguf_path or resolve_gguf()
+def resolve_gguf(root: Path | None = None) -> Path | None:
+    from audio_io import asr_dir
+
+    root = root or asr_dir()
+    env = __import__("os").environ.get("RLX_ASR_GGUF")
+    if env:
+        p = Path(env)
+        if p.is_file() and p.suffix.lower() != ".rlxp":
+            return p
+    for name in ("model.gguf", "asr.gguf", "rlx-asr.gguf"):
+        p = root / name
+        if p.is_file():
+            return p
+    pack = resolve_pack(root)
+    if pack is not None and pack.suffix.lower() == ".gguf":
+        return pack
+    return None
+
+
+def open_pack(path: Path | None = None) -> GgufFile | RlxpFile:
+    from audio_io import asr_dir
+
+    path = path or resolve_pack(asr_dir())
     if path is None:
-        raise FileNotFoundError("model.gguf not found (run: just asr-pack-gguf)")
-    g = GgufFile(path)
+        raise FileNotFoundError("model.rlxp / model.gguf not found under ASR dir")
+    if path.suffix.lower() == ".rlxp" or path.read_bytes()[:8] == RLXP_MAGIC:
+        return RlxpFile(path)
+    return GgufFile(path)
+
+
+def load_encoder_pack(pack_path: Path | None = None) -> dict[str, np.ndarray]:
+    """Load folded encoder tensors (`encoder.*` → unprefixed keys)."""
+    path = pack_path or resolve_pack()
+    if path is None:
+        raise FileNotFoundError("model.rlxp / model.gguf not found (run: just fetch-rlx-asr)")
+    pack = open_pack(path)
     out: dict[str, np.ndarray] = {}
     prefix = "encoder."
-    for name in g.tensors:
+    if isinstance(pack, RlxpFile):
+        for name in pack._tensors:
+            if not name.startswith(prefix):
+                continue
+            try:
+                out[name[len(prefix) :]] = pack.tensor_f32(name)
+            except (ValueError, KeyError):
+                continue
+        return out
+    for name in pack.tensors:
         if not name.startswith(prefix):
             continue
         try:
-            out[name[len(prefix) :]] = g.tensor_f32(name)
+            out[name[len(prefix) :]] = pack.tensor_f32(name)
         except ValueError:
             continue
     return out

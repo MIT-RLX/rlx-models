@@ -540,13 +540,13 @@ fn bytes_view_to_f32(bytes: &[u8], dt: Dtype) -> Result<Vec<f32>> {
 /// table with neither key at top level, so it falls through to `None`.
 fn detect_mlx_affine(json: &serde_json::Value) -> Option<(u32, u32)> {
     for key in ["quantization", "quantization_config"] {
-        if let Some(q) = json.get(key) {
-            if let (Some(bits), Some(gs)) = (
+        if let Some(q) = json.get(key)
+            && let (Some(bits), Some(gs)) = (
                 q.get("bits").and_then(|v| v.as_u64()),
                 q.get("group_size").and_then(|v| v.as_u64()),
-            ) {
-                return Some((bits as u32, gs as u32));
-            }
+            )
+        {
+            return Some((bits as u32, gs as u32));
         }
     }
     None

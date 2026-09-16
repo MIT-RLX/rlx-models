@@ -53,6 +53,37 @@ pub enum Precision {
 /// override.
 pub type Qwen3ConfigSource = rlx_runtime::ConfigSource<Qwen3Config>;
 
+/// Keys the builder auto-enabled for a Metal runner, so a later build in the
+/// same process can drop **exactly those** overrides again.
+fn auto_metal_keys() -> &'static std::sync::Mutex<std::collections::HashSet<&'static str>> {
+    static KEYS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<&'static str>>> =
+        std::sync::OnceLock::new();
+    KEYS.get_or_init(Default::default)
+}
+
+/// Turn a Metal-only tuning knob on for Metal and back off everywhere else.
+///
+/// `rlx_ir::env` overrides are **process-global**, so an unconditional
+/// `set(..)` on the Metal path leaks into every runner built afterwards. That
+/// is not merely a lost optimization: `RLX_QWEN3_INPLACE_KV` emits
+/// `Op::KvAppend`, which MLX has no kernel for, so building a Metal runner and
+/// then an MLX one in the same process failed to compile with "Backend
+/// ::supported_ops() must include each kind". Undoing only the keys we set
+/// leaves an override the caller installed itself — or a real `RLX_*` process
+/// env var — untouched, since `unset` just drops our map entry.
+fn auto_metal_env(device: Device, key: &'static str, applies: bool) {
+    let want = matches!(device, Device::Metal) && applies;
+    let mut ours = auto_metal_keys().lock().unwrap_or_else(|e| e.into_inner());
+    if want {
+        if rlx_ir::env::var(key).is_none() {
+            rlx_ir::env::set(key, "1");
+            ours.insert(key);
+        }
+    } else if ours.remove(key) {
+        rlx_ir::env::unset(key);
+    }
+}
+
 /// Builder for [`Qwen3Runner`]. See the module docs for usage.
 #[derive(Debug, Clone, Default)]
 pub struct Qwen3RunnerBuilder {
@@ -78,6 +109,9 @@ pub struct Qwen3RunnerBuilder {
     packed_weights: Option<bool>,
     /// Substring for picking one `.gguf` in a directory (default `Q4_K_M`).
     prefer_gguf: Option<String>,
+    /// Round prompt lengths up to this multiple before compiling the prefill
+    /// graph (see [`Qwen3RunnerBuilder::prefill_bucket`]). `None` = exact.
+    prefill_bucket: Option<usize>,
 }
 
 impl Qwen3RunnerBuilder {
@@ -178,6 +212,22 @@ impl Qwen3RunnerBuilder {
         self
     }
 
+    /// Round prompt lengths up to a multiple of `step` before compiling the
+    /// prefill graph, so one compiled shape serves `step` consecutive lengths.
+    /// Default off (exact lengths).
+    ///
+    /// Worth turning on whenever prompt length varies call to call and the
+    /// runner is long-lived: the prefill compile cache keys on the exact
+    /// `(batch, seq)`, so such a workload otherwise recompiles the prefill graph
+    /// nearly every call — seconds on Metal, which dwarfs the forward pass for
+    /// short prompts. Token-identical either way; the cost is up to `step - 1`
+    /// padded positions of prefill compute. See
+    /// [`Qwen3Generator::with_prefill_bucket`] for the mechanism.
+    pub fn prefill_bucket(mut self, step: usize) -> Self {
+        self.prefill_bucket = (step > 1).then_some(step);
+        self
+    }
+
     /// Resolve all defaults, load weights + config, compile the
     /// graph. Expensive — call once and reuse the resulting
     /// [`Qwen3Runner`] across many `generate` calls.
@@ -238,9 +288,7 @@ impl Qwen3RunnerBuilder {
         // LM-head — moving it off the dense F32 sgemm onto the fast F16
         // `gemv_f16w_splitk` (the lm_head is ~16% of packed decode). Respects an
         // explicit override.
-        if matches!(device, Device::Metal) && rlx_ir::env::var("RLX_QWEN3_F16_WEIGHTS").is_none() {
-            rlx_ir::env::set("RLX_QWEN3_F16_WEIGHTS", "1");
-        }
+        auto_metal_env(device, "RLX_QWEN3_F16_WEIGHTS", true);
         // Flash-decoding (split-KV) attention on Metal: the base m=1 SDPA kernel
         // launches only batch*heads (~16) threadgroups → occupancy-starved
         // (attention is ~46% of packed decode). Split KV into ~64-key partitions
@@ -248,41 +296,28 @@ impl Qwen3RunnerBuilder {
         // the GPU; a tiny combine merges the online-softmax partials. Numerically
         // equal (token-identical). Measured attention 6.4→3.75ms (−41%) at ~256
         // ctx; long ctx unaffected (bandwidth-bound). Metal, respects an override.
-        if matches!(device, Device::Metal)
-            && rlx_ir::env::var("RLX_METAL_SDPA_FLASH_DECODE").is_none()
-        {
-            rlx_ir::env::set("RLX_METAL_SDPA_FLASH_DECODE", "1");
-        }
+        auto_metal_env(device, "RLX_METAL_SDPA_FLASH_DECODE", true);
         // GQA-native attention on Metal: pass the un-expanded (num_kv_heads) K/V
         // to `Op::Attention` and skip the `repeat_kv` Expand — the Metal SDPA
         // maps query→shared-kv head internally, so the Expand only wrote 2× the
         // KV that attention re-reads. Measured +~10% F16 / +9% Q4 decode,
         // token-identical (M4 Pro). Metal-only: the SDPA kernels do the GQA
         // indexing; other backends still need the materialized KV, so gate it.
-        if matches!(device, Device::Metal) && rlx_ir::env::var("RLX_QWEN3_GQA_NATIVE").is_none() {
-            rlx_ir::env::set("RLX_QWEN3_GQA_NATIVE", "1");
-        }
+        auto_metal_env(device, "RLX_QWEN3_GQA_NATIVE", true);
         // Bake weight-only concats on Metal: the QKV / gate-up projections lower
         // to a fused matmul fed by a Concat of their (static) weight matrices.
         // Without baking, that weight Concat re-copies every decode step (~56
         // dispatches/token here); Option A computes it once and skips it
         // thereafter. Measured +16% decode (24.5→28.5 tok/s), token-identical
         // (M4 Pro, 0.6B). Metal + unpacked, respects an explicit override.
-        if matches!(device, Device::Metal)
-            && !packed
-            && rlx_ir::env::var("RLX_QWEN3_BAKE_WEIGHTS").is_none()
-        {
-            rlx_ir::env::set("RLX_QWEN3_BAKE_WEIGHTS", "1");
-        }
+        auto_metal_env(device, "RLX_QWEN3_BAKE_WEIGHTS", !packed);
         // In-place KV append on Metal: the decode KV-cache update lowers to a
         // first-class `Op::KvAppend` that writes the single new row into the
         // (aliased) cache buffer instead of `concat`-copying the whole O(context)
         // cache each token. Measured +27% @2k ctx, +42% @4k (grows with context),
         // token-identical (M4 Pro, 0.6B). Metal, incl. the packed decode graph
         // (KvAppend is backend-generic + token-identical); respects an override.
-        if matches!(device, Device::Metal) && rlx_ir::env::var("RLX_QWEN3_INPLACE_KV").is_none() {
-            rlx_ir::env::set("RLX_QWEN3_INPLACE_KV", "1");
-        }
+        auto_metal_env(device, "RLX_QWEN3_INPLACE_KV", true);
         validate_device(&cfg, device, packed)?;
 
         if let Some(cap_gb) = self.max_memory_gb {
@@ -369,7 +404,11 @@ impl Qwen3RunnerBuilder {
             }
         }
         if let Some(inner) = generator.take() {
-            generator = Some(inner.with_prefill_cache(8).with_decode_cache(max_seq + 64));
+            let mut inner = inner.with_prefill_cache(8).with_decode_cache(max_seq + 64);
+            if let Some(step) = self.prefill_bucket {
+                inner = inner.with_prefill_bucket(step);
+            }
+            generator = Some(inner);
         }
 
         // Packed-weights opt-in fallback for formats WITHOUT a native packed
@@ -1140,8 +1179,47 @@ fn qwen3_cfg_from_gguf(raw: &GgufFile) -> Result<Qwen3Config> {
         128
     };
 
+    // HY-MT / some converters omit `<arch>.vocab_size` — infer from
+    // `token_embd.weight` (GGML dims: innermost-first; vocab is the non-hidden
+    // axis). Default 151_936 only when neither metadata nor the tensor exists.
+    let vocab_size = get_u32("qwen3.vocab_size")
+        .ok()
+        .map(|v| v as usize)
+        .or_else(|| {
+            let t = raw.tensors.get("token_embd.weight")?;
+            if t.shape.len() != 2 {
+                return None;
+            }
+            let (a, b) = (t.shape[0], t.shape[1]);
+            Some(if a == hidden_size {
+                b
+            } else if b == hidden_size {
+                a
+            } else {
+                a.max(b)
+            })
+        })
+        .unwrap_or(151_936);
+
+    // Dense Hunyuan (HY-MT) matches Qwen3 QK-norm / no attn bias even though
+    // the arch tag is not `qwen3`.
+    let is_hunyuan_dense = matches!(
+        arch_prefix,
+        "hunyuan-dense" | "hunyuan_dense" | "hunyuan-v1-dense"
+    );
+    let qk_norm_default = if is_hunyuan_dense {
+        true
+    } else {
+        qk_norm_default
+    };
+    let attention_bias_default = if is_hunyuan_dense {
+        false
+    } else {
+        attention_bias_default
+    };
+
     Ok(Qwen3Config {
-        vocab_size: get_u32("qwen3.vocab_size").unwrap_or(151_936) as usize,
+        vocab_size,
         hidden_size,
         intermediate_size: get_u32("qwen3.feed_forward_length")? as usize,
         num_hidden_layers: get_u32("qwen3.block_count")? as usize,
@@ -1187,4 +1265,62 @@ fn qwen3_cfg_from_gguf(raw: &GgufFile) -> Result<Qwen3Config> {
             .unwrap_or(0),
         expert_weights_scale: get_f32("qwen3.expert_weights_scale").unwrap_or(1.0),
     })
+}
+
+#[cfg(test)]
+mod auto_metal_env_tests {
+    use super::*;
+
+    /// The Metal tuning knobs are process-global `rlx_ir::env` overrides.
+    /// Building a Metal runner and then a non-Metal one in the same process used
+    /// to leave them on — and `RLX_QWEN3_INPLACE_KV` emits `Op::KvAppend`, which
+    /// MLX has no kernel for, so the second runner failed to compile. Scoping
+    /// them to Metal is what makes a mixed-device process work.
+    #[test]
+    fn metal_knobs_do_not_leak_into_other_devices() {
+        const KEY: &str = "RLX_QWEN3_TEST_ONLY_KNOB";
+        rlx_ir::env::unset(KEY);
+        assert!(rlx_ir::env::var(KEY).is_none());
+
+        auto_metal_env(Device::Metal, KEY, true);
+        assert_eq!(rlx_ir::env::var(KEY).as_deref(), Some("1"));
+
+        // A CPU/MLX/CUDA runner built afterwards clears it again.
+        auto_metal_env(Device::Cpu, KEY, true);
+        assert!(rlx_ir::env::var(KEY).is_none(), "knob leaked off Metal");
+    }
+
+    /// `applies=false` (e.g. `BAKE_WEIGHTS` under packed weights) is treated the
+    /// same as a non-Metal device: turn it back off rather than leaving a stale
+    /// override from an earlier unpacked Metal build.
+    #[test]
+    fn not_applicable_clears_like_another_device() {
+        const KEY: &str = "RLX_QWEN3_TEST_ONLY_KNOB2";
+        rlx_ir::env::unset(KEY);
+        auto_metal_env(Device::Metal, KEY, true);
+        assert_eq!(rlx_ir::env::var(KEY).as_deref(), Some("1"));
+        auto_metal_env(Device::Metal, KEY, false);
+        assert!(rlx_ir::env::var(KEY).is_none());
+    }
+
+    /// An override the caller installed is theirs — we never set it, so we never
+    /// unset it either.
+    #[test]
+    fn caller_installed_override_survives() {
+        const KEY: &str = "RLX_QWEN3_TEST_ONLY_KNOB3";
+        rlx_ir::env::set(KEY, "0");
+        auto_metal_env(Device::Metal, KEY, true);
+        assert_eq!(
+            rlx_ir::env::var(KEY).as_deref(),
+            Some("0"),
+            "we overwrote it"
+        );
+        auto_metal_env(Device::Cpu, KEY, true);
+        assert_eq!(
+            rlx_ir::env::var(KEY).as_deref(),
+            Some("0"),
+            "we cleared a knob we didn't set"
+        );
+        rlx_ir::env::unset(KEY);
+    }
 }

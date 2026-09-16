@@ -1,0 +1,36 @@
+[package]
+name = "rlx-voice-gender"
+version = "0.2.16"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "On-device speech gender: ACF F0 bands + optional ECAPA ONNX via TinyModel"
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-f0 = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-tiny-tts = { workspace = true, optional = true }
+
+[features]
+default = ["f0"]
+f0 = []
+# Optional neural path: JaesungHuh / ECAPA gender ONNX imported via TinyModel.
+onnx = ["dep:rlx-tiny-tts"]
+metal = ["rlx-tiny-tts?/metal", "rlx-runtime/metal"]
+mlx = ["rlx-tiny-tts?/mlx", "rlx-runtime/mlx"]
+cuda = ["rlx-tiny-tts?/cuda", "rlx-runtime/cuda"]
+rocm = ["rlx-tiny-tts?/rocm", "rlx-runtime/rocm"]
+coreml = ["rlx-tiny-tts?/coreml", "rlx-runtime/coreml"]
+gpu = ["rlx-tiny-tts?/gpu", "rlx-runtime/gpu"]
+vulkan = ["rlx-tiny-tts?/vulkan", "rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+
+[lints]
+workspace = true

@@ -53,15 +53,15 @@ pub fn rename_hf_key(name: &str) -> Option<String> {
     out = out.replacen("model.visual", "model.vision_tower", 1);
 
     // Vision / audio internals (after tower rename)
-    if let Some(rest) = out.strip_prefix("model.vision_tower.layers.linear_") {
-        if let Some((idx, _)) = rest.split_once('.') {
-            out = format!("model.vision_tower.encoder_layers.{idx}.projection.weight");
-        }
+    if let Some(rest) = out.strip_prefix("model.vision_tower.layers.linear_")
+        && let Some((idx, _)) = rest.split_once('.')
+    {
+        out = format!("model.vision_tower.encoder_layers.{idx}.projection.weight");
     }
-    if let Some(rest) = out.strip_prefix("model.vision_tower.layers.norm_") {
-        if let Some((idx, _)) = rest.split_once('.') {
-            out = format!("model.vision_tower.encoder_layers.{idx}.layer_norm.weight");
-        }
+    if let Some(rest) = out.strip_prefix("model.vision_tower.layers.norm_")
+        && let Some((idx, _)) = rest.split_once('.')
+    {
+        out = format!("model.vision_tower.encoder_layers.{idx}.layer_norm.weight");
     }
     out = out.replacen(
         "model.audio_tower.encoder.weight",

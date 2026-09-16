@@ -185,6 +185,18 @@ fn dedicated_coverage(arch: &str) -> Option<Dedicated> {
             "Hunyuan-V3 GQA+qk-norm+full-RoPE+deepseek-MoE — build_hy_v3_prefill (reuses validated MoE/RoPE/qk-norm); 80L/192-expert giant needs RAM",
         );
     }
+    // Dense Hunyuan / HY-MT1.5 (`hunyuan_v1_dense`) — Qwen3-shaped MT model.
+    if a == "hunyuan_v1_dense"
+        || a == "hunyuan-dense"
+        || a == "hunyuan_dense"
+        || a == "hunyuan-v1-dense"
+    {
+        return hit(
+            "rlx-hy-mt",
+            CoverageStatus::WiredDeferred,
+            "HY-MT1.5 dense Hunyuan MT — Qwen3-shaped GQA+QK-norm via rlx-hy-mt / Qwen3Runner",
+        );
+    }
 
     // ── gpt-oss: attention-with-sinks + MXFP4 packed MoE ──
     // Full `build_gpt_oss_prefill` (attention with per-head sinks + YaRN + mixed
@@ -567,8 +579,13 @@ mod tests {
             assert_eq!(c.via, CoverageVia::Dedicated("rlx-hunyuan"), "{mt}");
             assert_eq!(c.status, CoverageStatus::WiredDeferred, "{mt}");
         }
-        // Old dense hunyuan (`hunyuan_v1_dense`) is generic-shaped — not claimed here.
-        assert!(dedicated_coverage("hunyuan_v1_dense").is_none());
+        // Dense HY-MT1.5 (`hunyuan_v1_dense`) — dedicated rlx-hy-mt (Qwen3 path).
+        for mt in ["hunyuan_v1_dense", "hunyuan-dense", "hunyuan_dense"] {
+            let c = classify_coverage(&cfg(mt));
+            assert!(c.supported, "{mt}");
+            assert_eq!(c.via, CoverageVia::Dedicated("rlx-hy-mt"), "{mt}");
+            assert_eq!(c.status, CoverageStatus::WiredDeferred, "{mt}");
+        }
     }
 
     #[test]

@@ -167,21 +167,21 @@ impl MmProjConfig {
         // Token-unit floor override (more intuitive than raw pixels): the LM sees
         // `image_min_pixels / (n_merge^2 * patch^2)` tokens minimum. Applied before
         // the raw-pixel override below so the latter can still take final precedence.
-        if let Ok(v) = std::env::var("RLX_QWEN35_VISION_MIN_TOKENS") {
-            if let Ok(toks) = v.parse::<usize>() {
-                self.image_min_pixels =
-                    toks.max(1) * self.n_merge * self.n_merge * self.patch_size * self.patch_size;
-            }
+        if let Ok(v) = std::env::var("RLX_QWEN35_VISION_MIN_TOKENS")
+            && let Ok(toks) = v.parse::<usize>()
+        {
+            self.image_min_pixels =
+                toks.max(1) * self.n_merge * self.n_merge * self.patch_size * self.patch_size;
         }
-        if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MIN_PIXELS") {
-            if let Ok(n) = v.parse::<usize>() {
-                self.image_min_pixels = n.max(1);
-            }
+        if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MIN_PIXELS")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            self.image_min_pixels = n.max(1);
         }
-        if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MAX_PIXELS") {
-            if let Ok(n) = v.parse::<usize>() {
-                self.image_max_pixels = n.max(self.image_min_pixels);
-            }
+        if let Ok(v) = std::env::var("RLX_QWEN35_IMAGE_MAX_PIXELS")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            self.image_max_pixels = n.max(self.image_min_pixels);
         }
     }
 

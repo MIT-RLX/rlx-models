@@ -187,10 +187,10 @@ fn write_codes(path: &PathBuf, codes: &MimiCodes) -> Result<()> {
         }
         text.push('\n');
     }
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
     }
     fs::write(path, text).with_context(|| format!("write {}", path.display()))
 }

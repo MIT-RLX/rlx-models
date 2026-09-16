@@ -1052,10 +1052,10 @@ struct GlobalRopeParams {
 fn find_hir_input(hir: &HirModule, name: &str) -> anyhow::Result<rlx_ir::HirNodeId> {
     use rlx_ir::hir::HirOp;
     for node in hir.nodes() {
-        if let HirOp::Input { name: n } = &node.op {
-            if n == name {
-                return Ok(node.id);
-            }
+        if let HirOp::Input { name: n } = &node.op
+            && n == name
+        {
+            return Ok(node.id);
         }
     }
     Err(anyhow::anyhow!("gemma decode flow missing input: {name}"))

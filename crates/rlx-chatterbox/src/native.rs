@@ -374,7 +374,17 @@ impl NativeChatterBox {
         } else {
             &self.cpu_cache
         };
-        let key = format!("cb_{component}_{device:?}_s{seq}");
+        // The on-disk key must name everything that shapes the HIR. `seq` alone
+        // does not: `speech_encoder` is always compiled at seq=100 and takes its
+        // real extent from `max_wav` (the reference clip's sample count), so two
+        // clips of different durations produced different graphs and then shared
+        // one cache entry — the first voice cloned in a session silently served
+        // its compiled graph to every later one. Measured against onnxruntime,
+        // the first clip came out at cosine 1.00000000 and the next two at 0.992
+        // and 0.569. `named` carries per-component dynamic lengths for the same
+        // reason.
+        let named_tag: String = named.iter().map(|(k, v)| format!("_{k}{v}")).collect();
+        let key = format!("cb_{component}_{device:?}_s{seq}_w{max_wav}{named_tag}");
         let t1 = std::time::Instant::now();
         let mut g = cache
             .compile_hir_cached(&key, device, hir, &CompileOptions::default())
@@ -721,6 +731,27 @@ impl NativeChatterBox {
     /// token so both see the identical growing prefix. Returns
     /// `(agree, total, first_divergence, mean_cosine)`. Fast dev gate (both paths
     /// are ort-free; the ONNX path is the whisper-validated oracle).
+    /// Speaker embedding for a reference clip — the conditioning half of voice
+    /// cloning, without the autoregressive loop.
+    ///
+    /// Exposed so clone fidelity can be checked directly: embed the reference
+    /// and the synthesis and compare. Running the whole AR stack just to learn
+    /// whether the encoder responds to its input is minutes of work for a
+    /// question the encoder alone answers.
+    pub fn speaker_embedding(&self, reference: &[f32], ref_sr: u32) -> Result<Vec<f32>> {
+        let ref24 = pad_ref_wav(resample(reference, ref_sr, SAMPLE_RATE));
+        let n_samp = ref24.len();
+        let se_out = self.run_cached(
+            &format!("enc_s{n_samp}"),
+            "speech_encoder",
+            100,
+            &[],
+            n_samp,
+            &[("audio_values", &f32_le(&ref24), DType::F32)],
+        )?;
+        hm_f32(&se_out, "speaker_embeddings")
+    }
+
     pub fn token_parity(
         &self,
         text: &str,

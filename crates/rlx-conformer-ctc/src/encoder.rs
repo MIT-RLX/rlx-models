@@ -92,11 +92,11 @@ impl<'a> EncoderBuilder<'a> {
     fn linear(&mut self, x: HirNodeId, w: &str, b: Option<&str>, out: usize) -> Result<HirNodeId> {
         let wt = self.load(w, true)?;
         let mut y = self.g().mm(x, wt);
-        if let Some(bk) = b {
-            if let Some(bias) = self.load_opt(bk, false)? {
-                let b3 = self.g().reshape_(bias, vec![1, 1, out as i64]);
-                y = self.g().add(y, b3);
-            }
+        if let Some(bk) = b
+            && let Some(bias) = self.load_opt(bk, false)?
+        {
+            let b3 = self.g().reshape_(bias, vec![1, 1, out as i64]);
+            y = self.g().add(y, b3);
         }
         Ok(y)
     }
@@ -282,11 +282,11 @@ impl<'a> EncoderBuilder<'a> {
         let wkey = self.fresh("pw_w");
         let wnode = self.synth(&wkey, wt, &[in_c, out_c]);
         let mut y = self.g().mm(x, wnode);
-        if let Some(bk) = b {
-            if let Some(bias) = self.load_opt(bk, false)? {
-                let b3 = self.g().reshape_(bias, vec![1, 1, out_c as i64]);
-                y = self.g().add(y, b3);
-            }
+        if let Some(bk) = b
+            && let Some(bias) = self.load_opt(bk, false)?
+        {
+            let b3 = self.g().reshape_(bias, vec![1, 1, out_c as i64]);
+            y = self.g().add(y, b3);
         }
         Ok(y)
     }
@@ -470,11 +470,11 @@ impl<'a> EncoderBuilder<'a> {
             vec![node, wnode],
             Shape::new(&[1, out_c, h_out, w_out], f),
         );
-        if let Some(bk) = b {
-            if let Some(bias) = self.load_opt(bk, false)? {
-                let b4 = self.g().reshape_(bias, vec![1, out_c as i64, 1, 1]);
-                return Ok(self.g().add(conv, b4));
-            }
+        if let Some(bk) = b
+            && let Some(bias) = self.load_opt(bk, false)?
+        {
+            let b4 = self.g().reshape_(bias, vec![1, out_c as i64, 1, 1]);
+            return Ok(self.g().add(conv, b4));
         }
         Ok(conv)
     }

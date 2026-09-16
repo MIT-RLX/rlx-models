@@ -490,18 +490,18 @@ impl TalkerEngine {
             self.kv = padded_kv_for_warmup(&saved_kv, sim_past, self.kv_dim, self.n_layers);
             self.past_len = sim_past;
             self.gpu_kv_binding = GpuKvBinding::default();
-            if self.use_gpu_kv {
-                if let Some(compiled) = self.decode_cache.compiled_for_key_mut(sim_past as u64) {
-                    install_gpu_kv_handles(
-                        compiled,
-                        &self.kv,
-                        sim_past,
-                        upper_u,
-                        self.kv_dim,
-                        self.n_layers,
-                    )?;
-                    self.gpu_kv_binding.upper = upper_u;
-                }
+            if self.use_gpu_kv
+                && let Some(compiled) = self.decode_cache.compiled_for_key_mut(sim_past as u64)
+            {
+                install_gpu_kv_handles(
+                    compiled,
+                    &self.kv,
+                    sim_past,
+                    upper_u,
+                    self.kv_dim,
+                    self.n_layers,
+                )?;
+                self.gpu_kv_binding.upper = upper_u;
             }
             self.decode_hidden_into(ArrayView1::from(&emb), &mut hidden_out)?;
         }
@@ -512,18 +512,18 @@ impl TalkerEngine {
         self.gpu_kv_binding = GpuKvBinding::default();
         if self.use_gpu_kv {
             let key = self.past_len as u64;
-            if let Some(upper) = self.decode_upper_for_key(key) {
-                if let Some(compiled) = self.decode_cache.compiled_for_key_mut(key) {
-                    install_gpu_kv_handles(
-                        compiled,
-                        &self.kv,
-                        self.past_len,
-                        upper as u64,
-                        self.kv_dim,
-                        self.n_layers,
-                    )?;
-                    self.gpu_kv_binding.upper = upper as u64;
-                }
+            if let Some(upper) = self.decode_upper_for_key(key)
+                && let Some(compiled) = self.decode_cache.compiled_for_key_mut(key)
+            {
+                install_gpu_kv_handles(
+                    compiled,
+                    &self.kv,
+                    self.past_len,
+                    upper as u64,
+                    self.kv_dim,
+                    self.n_layers,
+                )?;
+                self.gpu_kv_binding.upper = upper as u64;
             }
         }
         Ok(())
@@ -578,18 +578,18 @@ impl TalkerEngine {
             self.kv = padded_kv_for_warmup(&saved_kv, sim_past, self.kv_dim, self.n_layers);
             self.past_len = sim_past;
             self.gpu_kv_binding = GpuKvBinding::default();
-            if self.use_gpu_kv {
-                if let Some(compiled) = self.decode_cache.compiled_for_key_mut(sim_past as u64) {
-                    install_gpu_kv_handles(
-                        compiled,
-                        &self.kv,
-                        sim_past,
-                        upper_u,
-                        self.kv_dim,
-                        self.n_layers,
-                    )?;
-                    self.gpu_kv_binding.upper = upper_u;
-                }
+            if self.use_gpu_kv
+                && let Some(compiled) = self.decode_cache.compiled_for_key_mut(sim_past as u64)
+            {
+                install_gpu_kv_handles(
+                    compiled,
+                    &self.kv,
+                    sim_past,
+                    upper_u,
+                    self.kv_dim,
+                    self.n_layers,
+                )?;
+                self.gpu_kv_binding.upper = upper_u;
             }
             self.decode_hidden_into(ArrayView1::from(&emb), &mut hidden_out)?;
         }
@@ -600,18 +600,18 @@ impl TalkerEngine {
         self.gpu_kv_binding = GpuKvBinding::default();
         if self.use_gpu_kv {
             let key = self.past_len as u64;
-            if let Some(upper) = self.decode_upper_for_key(key) {
-                if let Some(compiled) = self.decode_cache.compiled_for_key_mut(key) {
-                    install_gpu_kv_handles(
-                        compiled,
-                        &self.kv,
-                        self.past_len,
-                        upper as u64,
-                        self.kv_dim,
-                        self.n_layers,
-                    )?;
-                    self.gpu_kv_binding.upper = upper as u64;
-                }
+            if let Some(upper) = self.decode_upper_for_key(key)
+                && let Some(compiled) = self.decode_cache.compiled_for_key_mut(key)
+            {
+                install_gpu_kv_handles(
+                    compiled,
+                    &self.kv,
+                    self.past_len,
+                    upper as u64,
+                    self.kv_dim,
+                    self.n_layers,
+                )?;
+                self.gpu_kv_binding.upper = upper as u64;
             }
         }
         Ok(())
@@ -1066,10 +1066,10 @@ impl TalkerEngine {
             let next_key = (past_seq + 1) as u64;
             let next_upper = self.decode_upper_for_key(next_key).unwrap_or(upper);
             let leaves_bucket = next_upper != upper;
-            if leaves_bucket || matches!(self.device, Device::Gpu | Device::Metal) {
-                if let Some(compiled) = self.decode_cache.compiled_for_key_mut(key) {
-                    sync_gpu_kv_to_host(compiled, &mut self.kv, self.kv_dim, self.n_layers)?;
-                }
+            if (leaves_bucket || matches!(self.device, Device::Gpu | Device::Metal))
+                && let Some(compiled) = self.decode_cache.compiled_for_key_mut(key)
+            {
+                sync_gpu_kv_to_host(compiled, &mut self.kv, self.kv_dim, self.n_layers)?;
             }
             if leaves_bucket {
                 self.gpu_kv_binding = GpuKvBinding::default();

@@ -290,10 +290,10 @@ fn main() -> Result<()> {
             if let Err(e) = p.finish() {
                 eprintln!("[chat] drain failed: {e}");
             }
-        } else if let Some(buf) = &fallback {
-            if !buf.is_empty() {
-                rlx_gemma_inflect_nano::play_samples(buf, 24_000).ok();
-            }
+        } else if let Some(buf) = &fallback
+            && !buf.is_empty()
+        {
+            rlx_gemma_inflect_nano::play_samples(buf, 24_000).ok();
         }
         println!();
     }

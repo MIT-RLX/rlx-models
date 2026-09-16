@@ -238,10 +238,10 @@ fn load_vision_config(config_json: &Path) -> Result<Llama4VisionConfig> {
     }
     let text = std::fs::read_to_string(config_json)
         .with_context(|| format!("reading {}", config_json.display()))?;
-    if let Ok(w) = serde_json::from_str::<Wrap>(&text) {
-        if let Some(v) = w.vision_config {
-            return Ok(v);
-        }
+    if let Ok(w) = serde_json::from_str::<Wrap>(&text)
+        && let Some(v) = w.vision_config
+    {
+        return Ok(v);
     }
     serde_json::from_str(&text).context("parsing llama4 vision config")
 }

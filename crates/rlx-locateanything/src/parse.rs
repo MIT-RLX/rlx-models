@@ -117,10 +117,10 @@ fn bracket_coord_nums(s: &str) -> Vec<u32> {
         let Some(end) = after.find('>') else {
             break;
         };
-        if let Ok(n) = after[..end].trim().parse::<u32>() {
-            if n <= 1000 {
-                nums.push(n);
-            }
+        if let Ok(n) = after[..end].trim().parse::<u32>()
+            && n <= 1000
+        {
+            nums.push(n);
         }
         rest = &after[end + 1..];
     }

@@ -58,10 +58,10 @@ impl CachedSeqGraphs {
 
     /// Lock the primary infer graph (waveform-only slice in production split mode).
     pub fn lock_infer_graph(&self) -> std::sync::MutexGuard<'_, CompiledGraph> {
-        if crate::compile_profile::production_waveform_only_infer() {
-            if let Some(w) = &self.waveform_only {
-                return w.lock().expect("waveform graph");
-            }
+        if crate::compile_profile::production_waveform_only_infer()
+            && let Some(w) = &self.waveform_only
+        {
+            return w.lock().expect("waveform graph");
         }
         self.full.lock().expect("full graph")
     }
@@ -90,11 +90,12 @@ impl SeqGraphCache {
     pub fn insert(&self, seq: usize, graphs: CachedSeqGraphs) {
         let mut entries = self.entries.lock().expect("seq graph cache");
         let mut order = self.order.lock().expect("seq graph cache order");
-        if entries.len() >= self.capacity && !entries.contains_key(&seq) {
-            if let Some(evict) = order.first().copied() {
-                entries.remove(&evict);
-                order.retain(|&k| k != evict);
-            }
+        if entries.len() >= self.capacity
+            && !entries.contains_key(&seq)
+            && let Some(evict) = order.first().copied()
+        {
+            entries.remove(&evict);
+            order.retain(|&k| k != evict);
         }
         entries.insert(seq, graphs);
         order.retain(|&k| k != seq);

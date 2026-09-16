@@ -253,10 +253,10 @@ pub fn validate_dit_weights(cfg: &H3TransformerConfig, weights: &WeightMap) -> R
         match weights.get(&key) {
             None => missing.push(key),
             Some((_, shape)) => {
-                if let Some(want) = dit_parameter_shape(cfg, &key) {
-                    if shape != want.as_slice() {
-                        wrong.push(format!("{key}: got {shape:?}, expected {want:?}"));
-                    }
+                if let Some(want) = dit_parameter_shape(cfg, &key)
+                    && shape != want.as_slice()
+                {
+                    wrong.push(format!("{key}: got {shape:?}, expected {want:?}"));
                 }
             }
         }

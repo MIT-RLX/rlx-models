@@ -105,6 +105,25 @@ extra = "--data weights/tiny-tts-rlx"
 validate = { rule = "tts", coverage_pass = 0.6, coverage_warn = 0.4, cosine_pass = 0.95, cosine_warn = 0.70 }
 license = { nc = false, gated = false }
 
+[[models]]
+name = "tada"
+package = "rlx-tada"
+kind = "tts"
+# tier 2: the checkpoint set is 5.4 GB (backbone + codec + aligner + tokenizer)
+# and is not part of any default fetch.
+tier = 2
+bin = "rlx-tada"
+template = "tts_text"
+features_base = []
+weights = { path = "weights/tts/tada" }
+download = { mode = "none" }
+# `speak` takes a pre-built voice prompt rather than a reference wav — building
+# one runs the aligner and the codec encoder, which is the expensive half and
+# does not depend on the text. `just fetch-tada` writes harness.tadaprompt.
+extra = "speak --weights weights/tts/tada --prompt weights/tts/tada/harness.tadaprompt"
+validate = { rule = "tts", coverage_pass = 0.6, coverage_warn = 0.4, cosine_pass = 0.95, cosine_warn = 0.70 }
+license = { nc = false, gated = false }
+
 # =========================================================================== TTS (ORT-backed)
 [[models]]
 name = "kokoro"

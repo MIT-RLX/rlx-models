@@ -21,7 +21,16 @@ mod support;
 
 use support::{LONG_IPA, assert_audible, style_for};
 
+use std::sync::Mutex;
+
 use rlx_kittentts::{Device, KittenTTS, assets};
+
+/// The native engine's mel/wave compile caps are **process**-global (`bundle_patches`'
+/// `IMPORT_MAX_WAVEFORM` / `IMPORT_SEQUENCE_LENGTH`), so two native compiles running on
+/// different `max_waveform_samples` in parallel stomp on each other: the long-sentence engine
+/// asks for 200 k, picks up the short test's 48 k, and returns 2 s of audio. Serialize them,
+/// exactly as `native_whisper_roundtrip.rs` already does.
+static NATIVE_COMPILE_LOCK: Mutex<()> = Mutex::new(());
 
 fn voices_npz() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("KITTEN_VOICES_NPZ") {
@@ -48,6 +57,9 @@ fn native_infer_smoke() {
         return;
     };
     support::setup_native_smoke_env();
+    let _guard = NATIVE_COMPILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let tts = KittenTTS::load_native(
         &weights,
@@ -79,6 +91,9 @@ fn native_long_sentence_smoke() {
         return;
     };
     support::setup_native_smoke_env();
+    let _guard = NATIVE_COMPILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let tts = KittenTTS::load_native(
         &weights,

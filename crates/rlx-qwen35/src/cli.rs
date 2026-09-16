@@ -46,6 +46,8 @@ Usage: rlx-qwen35 --weights PATH [options]
   --mmproj PATH / --image PATH
   --temperature F / --top-p F / --seed N / --batch N
   --aot-cache DIR
+  --jsonl-stdio            Load once; read {{\"prompt\":…}} lines on stdin, write
+                           {{\"ok\":true,\"text\":…}} on stdout (logs on stderr)
   --help                   This message
 
 Env: RLX_QWEN35_BENCH, RLX_QWEN35_DECODE_TRACE, RLX_QWEN35_WARM_DECODE,
@@ -114,11 +116,13 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut self_spec = false;
     let mut fast = false;
     let mut max_seq_set = false;
+    let mut jsonl_stdio = false;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--weights" => weights = Some(PathBuf::from(it.next().context("--weights")?)),
+            "--jsonl-stdio" => jsonl_stdio = true,
             "--prefer-quant" | "--prefer" | "-p" => {
                 resolve_cli.prefer_gguf = Some(it.next().context("--prefer-quant")?.clone());
             }
@@ -208,6 +212,37 @@ pub fn run(args: &[String]) -> Result<()> {
             .ok_or_else(|| anyhow!("rlx-qwen35: --weights <path or dir with .gguf> required"))?,
         &resolve_cli,
     )?;
+
+    if jsonl_stdio {
+        if max_tokens == 0 {
+            max_tokens = 64;
+        }
+        if max_seq == 0 {
+            // Room for ChatML + typical catalog prompts + generation.
+            max_seq = (256 + max_tokens).max(384);
+        }
+        if fast {
+            enable_thinking = false;
+            use_chat = true;
+        }
+        return run_jsonl_stdio(JsonlStdioOpts {
+            weights,
+            device,
+            tokenizer,
+            max_seq,
+            max_tokens,
+            packed_weights,
+            use_chat,
+            enable_thinking,
+            system_text,
+            temperature,
+            top_p,
+            seed,
+            aot_cache,
+            dynamic_prefill,
+            dynamic_decode,
+        });
+    }
 
     let chat_opts = crate::ChatFormatOpts { enable_thinking };
     if let Some(raw) = messages_json {
@@ -1081,12 +1116,11 @@ pub fn run(args: &[String]) -> Result<()> {
                 Ok(text) => {
                     let cleaned = text.trim();
                     let (think, answer) = crate::split_thinking(cleaned);
-                    if show_thinking {
-                        if let Some(t) = think.as_ref() {
-                            if !t.is_empty() {
-                                println!("[rlx-qwen35] qwen35: thinking>\n{t}");
-                            }
-                        }
+                    if show_thinking
+                        && let Some(t) = think.as_ref()
+                        && !t.is_empty()
+                    {
+                        println!("[rlx-qwen35] qwen35: thinking>\n{t}");
                     }
                     let display = if answer.is_empty() {
                         cleaned.to_string()
@@ -1100,5 +1134,218 @@ pub fn run(args: &[String]) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+struct JsonlStdioOpts {
+    weights: PathBuf,
+    device: String,
+    tokenizer: Option<PathBuf>,
+    max_seq: usize,
+    max_tokens: usize,
+    packed_weights: bool,
+    use_chat: bool,
+    enable_thinking: bool,
+    system_text: Option<String>,
+    temperature: f32,
+    top_p: f32,
+    seed: u64,
+    aot_cache: Option<PathBuf>,
+    dynamic_prefill: bool,
+    dynamic_decode: bool,
+}
+
+/// Persistent generate loop: one model load, many prompts over stdin/stdout JSONL.
+fn run_jsonl_stdio(opts: JsonlStdioOpts) -> Result<()> {
+    use std::io::{BufRead, Write};
+
+    let dev = parse_qwen35_device(&opts.device)?;
+    eprintln!(
+        "[rlx-qwen35] jsonl-stdio: weights={:?} device={} max_seq={} max_tokens={} packed={}",
+        opts.weights, opts.device, opts.max_seq, opts.max_tokens, opts.packed_weights
+    );
+
+    let mut builder = crate::Qwen35RunnerBuilder::default()
+        .weights(&opts.weights)
+        .device(dev)
+        .batch(1)
+        .max_seq(opts.max_seq)
+        .enable_mtp(false)
+        .mtp_logits_path(false)
+        .packed_weights(opts.packed_weights)
+        .last_logits_only(true);
+    if let Some(ref dir) = opts.aot_cache {
+        builder = builder.aot_cache_dir(dir);
+    }
+    if opts.dynamic_prefill {
+        builder = builder.dynamic_prefill(true);
+    }
+    if opts.dynamic_decode {
+        builder = builder.dynamic_decode(true);
+    }
+    let mut runner = builder.build()?;
+    let specials = crate::SpecialTokenIds::resolve(&opts.weights, opts.tokenizer.as_deref());
+    let chat_opts = crate::ChatFormatOpts {
+        enable_thinking: opts.enable_thinking,
+    };
+    let sample_opts = if opts.temperature <= 0.0 {
+        SampleOpts::greedy()
+    } else {
+        SampleOpts::temperature(opts.temperature, opts.seed).with_top_p(opts.top_p)
+    };
+
+    // Amortize first-prefill / Metal pipeline warm into startup, not the first job.
+    {
+        let warm = if opts.use_chat {
+            let msgs = crate::messages_from_prompt(None, "ping");
+            crate::encode_chat_auto_with(
+                &opts.weights,
+                opts.tokenizer.as_deref(),
+                &msgs,
+                chat_opts,
+            )?
+        } else {
+            crate::encode_prompt_auto(&opts.weights, opts.tokenizer.as_deref(), "ping")?
+        };
+        if warm.len() < opts.max_seq {
+            let _ = runner.generate_with_opts(&warm, 1, SampleOpts::greedy(), |_| false);
+            runner.reset_decode_cache();
+        }
+    }
+
+    {
+        let mut out = std::io::stdout().lock();
+        writeln!(out, r#"{{"event":"ready"}}"#)?;
+        out.flush()?;
+    }
+
+    let stdin = std::io::stdin();
+    let lines = stdin.lock().lines();
+    for line in lines {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let (id, prompt, max_tokens, quit) = parse_jsonl_request(trimmed)?;
+        if quit {
+            break;
+        }
+        let Some(prompt) = prompt else {
+            write_jsonl_error(id, "missing prompt")?;
+            continue;
+        };
+        let max_tokens = max_tokens.unwrap_or(opts.max_tokens).max(1);
+
+        let encode_t0 = std::time::Instant::now();
+        let prompt_ids = if opts.use_chat || opts.system_text.is_some() {
+            let msgs = crate::messages_from_prompt(opts.system_text.as_deref(), &prompt);
+            crate::encode_chat_auto_with(
+                &opts.weights,
+                opts.tokenizer.as_deref(),
+                &msgs,
+                chat_opts,
+            )?
+        } else {
+            crate::encode_prompt_auto(&opts.weights, opts.tokenizer.as_deref(), &prompt)?
+        };
+        if prompt_ids.len() + max_tokens > opts.max_seq {
+            write_jsonl_error(
+                id,
+                &format!(
+                    "prompt+max_tokens ({}+{}) exceeds --max-seq {}",
+                    prompt_ids.len(),
+                    max_tokens,
+                    opts.max_seq
+                ),
+            )?;
+            continue;
+        }
+
+        runner.reset_decode_cache();
+        let gen_t0 = std::time::Instant::now();
+        let new_ids = match runner.generate_with_opts(&prompt_ids, max_tokens, sample_opts, |t| {
+            !specials.is_stop(t)
+        }) {
+            Ok(ids) => ids,
+            Err(e) => {
+                write_jsonl_error(id, &format!("{e:#}"))?;
+                continue;
+            }
+        };
+        let text = crate::decode_ids_auto(&opts.weights, opts.tokenizer.as_deref(), &new_ids, true)
+            .map(|t| {
+                let cleaned = t.trim();
+                let (_think, answer) = crate::split_thinking(cleaned);
+                if answer.is_empty() {
+                    cleaned.to_string()
+                } else {
+                    answer
+                }
+            })
+            .unwrap_or_default();
+
+        let gen_ms = gen_t0.elapsed().as_millis();
+        let enc_ms = encode_t0.elapsed().as_millis();
+        eprintln!(
+            "[rlx-qwen35] jsonl: id={id:?} prompt_tok={} out_tok={} encode_ms={enc_ms} gen_ms={gen_ms}",
+            prompt_ids.len(),
+            new_ids.len()
+        );
+
+        let mut out = std::io::stdout().lock();
+        let mut obj = serde_json::json!({
+            "ok": true,
+            "text": text,
+            "prompt_tokens": prompt_ids.len(),
+            "completion_tokens": new_ids.len(),
+            "gen_ms": gen_ms,
+        });
+        if let Some(id) = id {
+            obj["id"] = id;
+        }
+        writeln!(out, "{}", obj)?;
+        out.flush()?;
+    }
+    Ok(())
+}
+
+fn parse_jsonl_request(
+    line: &str,
+) -> Result<(
+    Option<serde_json::Value>,
+    Option<String>,
+    Option<usize>,
+    bool,
+)> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+        if v.get("cmd").and_then(|c| c.as_str()) == Some("quit") {
+            return Ok((None, None, None, true));
+        }
+        let id = v.get("id").cloned();
+        let prompt = v
+            .get("prompt")
+            .and_then(|p| p.as_str())
+            .map(|s| s.to_string());
+        let max_tokens = v
+            .get("max_tokens")
+            .and_then(|m| m.as_u64())
+            .map(|n| n as usize);
+        return Ok((id, prompt, max_tokens, false));
+    }
+    // Plain text line = prompt.
+    Ok((None, Some(line.to_string()), None, false))
+}
+
+fn write_jsonl_error(id: Option<serde_json::Value>, err: &str) -> Result<()> {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let mut obj = serde_json::json!({ "ok": false, "error": err });
+    if let Some(id) = id {
+        obj["id"] = id;
+    }
+    writeln!(out, "{}", obj)?;
+    out.flush()?;
     Ok(())
 }

@@ -98,10 +98,10 @@ fn download_rows(
         for r in rows {
             on_row(&r["row"])?;
             delivered += 1;
-            if let Some(l) = limit {
-                if delivered >= l {
-                    return Ok(delivered);
-                }
+            if let Some(l) = limit
+                && delivered >= l
+            {
+                return Ok(delivered);
             }
         }
         offset += rows.len();

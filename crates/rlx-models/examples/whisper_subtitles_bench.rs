@@ -191,7 +191,7 @@ fn run_mode(runner: &mut WhisperRunner, pcm: &[f32], mode: BenchMode) -> anyhow:
             runner.apply_word_alignment(pcm, &mut transcript, WordAlignMode::Dtw)?;
             stages.align = t.elapsed().as_secs_f64() * 1000.0;
             let t = Instant::now();
-            let mut diar = DiarizeSession::new(DiarizeConfig::default());
+            let mut diar = DiarizeSession::mel_stat(DiarizeConfig::default());
             assign_speakers(&mut diar, pcm, &mut transcript)?;
             stages.diarize = t.elapsed().as_secs_f64() * 1000.0;
             (segments, words, text_len) = transcript_stats(&transcript);

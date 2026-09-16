@@ -86,8 +86,8 @@ pub use mrope::{
     text_section_pos,
 };
 pub use multimodal::{
-    IMAGE_PAD, MEDIA_MARKER, MultimodalPrefill, MultimodalPrompt, VISION_END, VISION_START,
-    assemble_from_token_ids, merge_text_and_vision_embd,
+    IM_END_TOKEN, IMAGE_PAD, MEDIA_MARKER, MultimodalPrefill, MultimodalPrompt, VISION_END,
+    VISION_START, assemble_from_token_ids, merge_text_and_vision_embd,
 };
 pub use probe::{
     load_probe_reference_dump, load_probe_sample, run_hf_python_probe, sanitize_sample_id,

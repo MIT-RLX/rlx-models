@@ -249,10 +249,10 @@ impl RlxTts {
             wr.infer(&mel, vocoder)?
         };
         drop(mel);
-        if let Some(alpha) = self.post.wr_mulaw_iir_alpha {
-            if std::env::var_os("RLX_TTS_NO_MULAW_IIR").is_none() {
-                apply_wavernn_mulaw_iir(&mut pcm, alpha);
-            }
+        if let Some(alpha) = self.post.wr_mulaw_iir_alpha
+            && std::env::var_os("RLX_TTS_NO_MULAW_IIR").is_none()
+        {
+            apply_wavernn_mulaw_iir(&mut pcm, alpha);
         }
         let trim = self.post.wr_trailing_trim_samples;
         if trim > 0 && pcm.len() > trim {

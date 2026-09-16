@@ -225,10 +225,10 @@ fn main() -> Result<()> {
                 )?,
             ),
         );
-        if il < spec.n_hash_layers {
-            if let Ok((t2e, _)) = ld.take(&format!("model.layers.{il}.ffn.gate.tid2eid")) {
-                tid2eid.insert(il, t2e);
-            }
+        if il < spec.n_hash_layers
+            && let Ok((t2e, _)) = ld.take(&format!("model.layers.{il}.ffn.gate.tid2eid"))
+        {
+            tid2eid.insert(il, t2e);
         }
     }
     eprintln!(

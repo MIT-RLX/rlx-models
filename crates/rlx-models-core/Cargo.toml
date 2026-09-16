@@ -57,7 +57,7 @@ coreml = ["rlx-runtime/coreml"]
 
 [dev-dependencies]
 tokenizers = { workspace = true }
-rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope" }
+rlx-opscope = { workspace = true }
 
 [lints]
 workspace = true

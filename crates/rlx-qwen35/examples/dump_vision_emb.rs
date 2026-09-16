@@ -38,15 +38,15 @@ fn main() -> Result<()> {
     let mut cfg = MmProjConfig::from_hf_config_json(&cfg_path)?;
     // Match the tiny Fara smoke path unless the caller forces a size.
     if force_w.is_none() {
-        if let Ok(v) = env::var("RLX_QWEN35_IMAGE_MIN_PIXELS") {
-            if let Ok(n) = v.parse() {
-                cfg.image_min_pixels = n;
-            }
+        if let Ok(v) = env::var("RLX_QWEN35_IMAGE_MIN_PIXELS")
+            && let Ok(n) = v.parse()
+        {
+            cfg.image_min_pixels = n;
         }
-        if let Ok(v) = env::var("RLX_QWEN35_IMAGE_MAX_PIXELS") {
-            if let Ok(n) = v.parse() {
-                cfg.image_max_pixels = n;
-            }
+        if let Ok(v) = env::var("RLX_QWEN35_IMAGE_MAX_PIXELS")
+            && let Ok(n) = v.parse()
+        {
+            cfg.image_max_pixels = n;
         }
     }
     let mut loader = SafetensorsMmapLoader::open(&model_dir)?;

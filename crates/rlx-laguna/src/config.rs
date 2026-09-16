@@ -641,16 +641,16 @@ fn parse_mlp_types(
     layers: usize,
     root: &serde_json::Value,
 ) -> Vec<MlpLayerType> {
-    if let Some(serde_json::Value::Array(a)) = v {
-        if !a.is_empty() {
-            return a
-                .iter()
-                .map(|x| match x.as_str().unwrap_or("") {
-                    "dense" => MlpLayerType::Dense,
-                    _ => MlpLayerType::Sparse,
-                })
-                .collect();
-        }
+    if let Some(serde_json::Value::Array(a)) = v
+        && !a.is_empty()
+    {
+        return a
+            .iter()
+            .map(|x| match x.as_str().unwrap_or("") {
+                "dense" => MlpLayerType::Dense,
+                _ => MlpLayerType::Sparse,
+            })
+            .collect();
     }
     let lead = root
         .get("mlp_only_layers")

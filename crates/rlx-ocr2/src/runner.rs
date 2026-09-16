@@ -16,18 +16,18 @@
 //! Load weights, compile the recognizer graph, run a forward pass, CTC-decode.
 
 use crate::recognition::{NUM_CLASSES, build_recognition_graph};
+use crate::weights::{WeightSource, parse_codemap};
 use anyhow::{Result, anyhow};
-use rlx_core::weight_map::WeightMap;
 use rlx_runtime::{CompiledGraph, Device};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 /// Codemap entries `>= SENTINEL` are the CTC blank / non-printing markers.
 const SENTINEL: u32 = 0xFFFE;
 
 pub struct Recognizer {
-    weights_path: PathBuf,
+    weights: WeightSource,
     codemap: Vec<u32>, // class index -> Unicode codepoint (blank/sentinel >= 0xFFFE)
     blank: usize,
     device: Device,
@@ -36,10 +36,12 @@ pub struct Recognizer {
 
 impl Recognizer {
     pub fn load(weights: &Path, codemap: &Path, device: Device) -> Result<Self> {
-        let codemap: Vec<u32> = std::fs::read_to_string(codemap)?
-            .split_whitespace()
-            .map(|s| s.parse::<u32>())
-            .collect::<std::result::Result<_, _>>()?;
+        let codemap = parse_codemap(&std::fs::read_to_string(codemap)?)?;
+        Self::from_parts(weights.into(), codemap, device)
+    }
+
+    /// Build from an already-loaded weight source + codemap (the `.rlxp` path).
+    pub fn from_parts(weights: WeightSource, codemap: Vec<u32>, device: Device) -> Result<Self> {
         if codemap.len() != NUM_CLASSES {
             return Err(anyhow!(
                 "codemap has {} entries, expected {NUM_CLASSES}",
@@ -51,7 +53,7 @@ impl Recognizer {
             .position(|&v| v >= SENTINEL)
             .unwrap_or(codemap.len() - 1);
         Ok(Self {
-            weights_path: weights.to_path_buf(),
+            weights,
             codemap,
             blank,
             device,
@@ -75,17 +77,13 @@ impl Recognizer {
         }
         let mut cache = self.cache.lock().map_err(|_| anyhow!("lock poisoned"))?;
         if let std::collections::hash_map::Entry::Vacant(slot) = cache.entry(width) {
-            let path_str = self
-                .weights_path
-                .to_str()
-                .ok_or_else(|| anyhow!("weights path is not valid UTF-8"))?;
-            let mut wm = WeightMap::from_file(path_str)?;
+            let mut wm = self.weights.weight_map()?;
             let (graph, params) = build_recognition_graph(&mut wm, 1, width)?;
             slot.insert(crate::compile::compile_encoder(
                 graph,
                 params,
                 self.device,
-                false,
+                crate::env::no_fusion(),
             ));
         }
         cache
@@ -139,10 +137,10 @@ impl Recognizer {
             return;
         }
         let cp = self.codemap[idx];
-        if cp < SENTINEL {
-            if let Some(ch) = char::from_u32(cp) {
-                out.push(ch);
-            }
+        if cp < SENTINEL
+            && let Some(ch) = char::from_u32(cp)
+        {
+            out.push(ch);
         }
     }
 

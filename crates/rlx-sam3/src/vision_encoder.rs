@@ -641,12 +641,11 @@ fn take_linear_w_or_gguf(
             let w = take_linear_w(weights, bases, in_dim, out_dim)?;
             return Ok((w, None));
         }
-        if let Some(packed) = gguf_packed {
-            if let Some(prefix) = key.strip_suffix(".weight") {
-                if packed.get_linear(key).is_some() {
-                    return Ok((Vec::new(), Some(prefix.to_string())));
-                }
-            }
+        if let Some(packed) = gguf_packed
+            && let Some(prefix) = key.strip_suffix(".weight")
+            && packed.get_linear(key).is_some()
+        {
+            return Ok((Vec::new(), Some(prefix.to_string())));
         }
     }
     anyhow::bail!("none of the SAM3 linear weight keys were found: {keys:?}")

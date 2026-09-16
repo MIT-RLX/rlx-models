@@ -151,10 +151,10 @@ impl PredictionNet {
     /// Returns the top layer's hidden state and the new stacked state.
     pub fn step(&self, label: Option<usize>, state: &PredState) -> (Vec<f32>, PredState) {
         let mut x = vec![0.0f32; self.embed_dim];
-        if let Some(l) = label {
-            if l < self.vocab {
-                x.copy_from_slice(&self.embed[l * self.embed_dim..(l + 1) * self.embed_dim]);
-            }
+        if let Some(l) = label
+            && l < self.vocab
+        {
+            x.copy_from_slice(&self.embed[l * self.embed_dim..(l + 1) * self.embed_dim]);
         }
         let mut new_layers = Vec::with_capacity(self.lstms.len());
         let mut cur = x;

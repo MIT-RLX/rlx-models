@@ -162,10 +162,10 @@ pub fn run(args: &[String]) -> Result<()> {
     );
 
     #[cfg(feature = "tokenizer")]
-    if let Some(tp) = &tokenizer_path {
-        if tp.exists() {
-            let _ = crate::postprocess::label_detections(&mut dets, &tokens.input_ids, tp);
-        }
+    if let Some(tp) = &tokenizer_path
+        && tp.exists()
+    {
+        let _ = crate::postprocess::label_detections(&mut dets, &tokens.input_ids, tp);
     }
 
     println!("detections: {}", dets.len());

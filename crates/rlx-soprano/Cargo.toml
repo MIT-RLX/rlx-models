@@ -1,6 +1,6 @@
 [package]
 name = "rlx-soprano"
-version = "0.2.14"
+version = "0.2.16"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,7 +15,7 @@ rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
 rlx-assets = { workspace = true, features = ["rlxp", "native-pack"] }
-rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.14", default-features = false }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.16", default-features = false }
 rlx-ir = { workspace = true }
 rlx-onnx-import = { workspace = true, features = ["runtime"] }
 rlx-gguf = { workspace = true }

@@ -204,15 +204,17 @@ pub fn compile_waveform_cap(runtime_tokens: usize, engine_cap: usize) -> usize {
         .saturating_mul(TYPICAL_MAX_DURATION_UNITS_PER_TOKEN)
         .saturating_add(COMPILE_WAVEFORM_HEADROOM)
         .max(COMPILE_WAVEFORM_FLOOR);
-    est.min(engine_cap.max(COMPILE_WAVEFORM_FLOOR))
+    // `est` is already frame-aligned by construction, but `engine_cap` is caller-supplied and
+    // often is not (the TTS bench passes a round 200_000). Align the result, not just `est`.
+    crate::bundle_patches::align_waveform_cap(est.min(engine_cap.max(COMPILE_WAVEFORM_FLOOR)))
 }
 
 /// Max compiled seq graphs kept resident (LRU); production keeps one bucket.
 pub fn seq_compile_cache_capacity() -> usize {
-    if let Ok(raw) = std::env::var("KITTEN_RLX_SEQ_CACHE_CAPACITY") {
-        if let Ok(n) = raw.parse::<usize>() {
-            return n.max(1);
-        }
+    if let Ok(raw) = std::env::var("KITTEN_RLX_SEQ_CACHE_CAPACITY")
+        && let Ok(n) = raw.parse::<usize>()
+    {
+        return n.max(1);
     }
     match infer_mode() {
         InferMode::Production => 1,

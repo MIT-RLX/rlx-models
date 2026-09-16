@@ -15,9 +15,15 @@ pub fn user_turn_with_media(question: &str) -> String {
 
 /// Full ChatML prompt string before tokenization (image pads expanded at assemble time).
 pub fn qwen25_vl_chatml(user_text: &str, system: &str) -> String {
+    // Every turn but the last has to be closed with `<|im_end|>`. Closing them
+    // with a bare newline instead leaves the model reading one unterminated
+    // turn, and the likeliest continuation of an unterminated turn is to
+    // terminate it — the trunk emits `<|im_end|>` as its first token no matter
+    // what the image contains. Matches `apply_chat_template(...,
+    // add_generation_prompt=True)` byte for byte.
     format!(
-        "<|im_start|>system\n{system}\n\
-         <|im_start|>user\n{user_text}\n\
+        "<|im_start|>system\n{system}<|im_end|>\n\
+         <|im_start|>user\n{user_text}<|im_end|>\n\
          <|im_start|>assistant\n"
     )
 }
@@ -51,6 +57,22 @@ mod tests {
         let p = qwen25_vl_chatml("hello", DEFAULT_SYSTEM);
         assert!(p.contains("<|im_start|>assistant"));
         assert!(p.contains("hello"));
+    }
+
+    /// Byte-for-byte against `apply_chat_template(..., add_generation_prompt=True)`
+    /// for a single-image user turn. Pinned as a literal because the failure it
+    /// guards against is silent: a template that merely *looks* like ChatML
+    /// still runs, and the model answers `<|im_end|>` to every image.
+    #[test]
+    fn chatml_matches_the_hf_template() {
+        let user = user_turn_with_media("Describe the image.");
+        let p = expand_media_marker(&qwen25_vl_chatml(&user, DEFAULT_SYSTEM));
+        assert_eq!(
+            p,
+            "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n\
+             <|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>\
+             Describe the image.<|im_end|>\n<|im_start|>assistant\n"
+        );
     }
 
     #[test]

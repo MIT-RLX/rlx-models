@@ -57,18 +57,18 @@ impl DistillCache {
         verbose: bool,
     ) -> Result<Self> {
         let hidden = talker.hidden_size;
-        if let Some(path) = cache_path {
-            if path.is_file() {
-                match Self::load(path, max_seq, hidden) {
-                    Ok(c) => {
-                        if verbose {
-                            eprintln!("[jfk-lora] loaded distill cache {}", path.display());
-                        }
-                        return Ok(c);
+        if let Some(path) = cache_path
+            && path.is_file()
+        {
+            match Self::load(path, max_seq, hidden) {
+                Ok(c) => {
+                    if verbose {
+                        eprintln!("[jfk-lora] loaded distill cache {}", path.display());
                     }
-                    Err(e) => {
-                        eprintln!("[jfk-lora] cache read failed ({e}), rebuilding");
-                    }
+                    return Ok(c);
+                }
+                Err(e) => {
+                    eprintln!("[jfk-lora] cache read failed ({e}), rebuilding");
                 }
             }
         }

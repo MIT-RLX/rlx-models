@@ -44,8 +44,13 @@ pub struct Lexicon {
 
 impl Lexicon {
     pub fn load(path: &Path) -> Result<Self> {
+        Ok(Self::from_text(&std::fs::read_to_string(path)?))
+    }
+
+    /// Build the trie from `word \t log-prob` lines (only the word column is used).
+    pub fn from_text(text: &str) -> Self {
         let mut nodes: Vec<TrieNode> = vec![TrieNode::default()]; // 0 = root
-        for line in std::fs::read_to_string(path)?.lines() {
+        for line in text.lines() {
             let w = line.split_once('\t').map(|(w, _)| w).unwrap_or(line);
             if w.is_empty() {
                 continue;
@@ -64,11 +69,11 @@ impl Lexicon {
             }
             nodes[cur as usize].is_word = true;
         }
-        Ok(Self {
+        Self {
             nodes,
             oov_penalty: -1.0,
             prefix_penalty: -0.35,
-        })
+        }
     }
 
     /// Classify one lowercased word against the trie: 0 (word) / prefix / off-trie.
@@ -189,10 +194,10 @@ impl Rescorer {
         if let Some(c) = &self.ngram {
             s += self.w_ngram * c.joint(&self.ngram_tokens(text, c));
         }
-        if self.w_word != 0.0 {
-            if let Some(w) = &self.word_ngram {
-                s += self.w_word * w.joint(&Self::word_tokens(text, w));
-            }
+        if self.w_word != 0.0
+            && let Some(w) = &self.word_ngram
+        {
+            s += self.w_word * w.joint(&Self::word_tokens(text, w));
         }
         if let Some(l) = &self.lexicon {
             s += self.w_lex * l.score(text);

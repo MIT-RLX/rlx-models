@@ -132,10 +132,10 @@ fn main() -> Result<()> {
     println!("rlx argmax    = {argmax}");
     println!("oracle argmax = {oracle_argmax}   (\" Paris\")");
     println!("finite        = {}", last.iter().all(|v| v.is_finite()));
-    if let Ok(ol) = read_npy_f32(&dir.join("oracle_prefill_last_logits.npy")) {
-        if ol.len() == last.len() {
-            println!("cosine        = {:.6}", cosine(last, &ol));
-        }
+    if let Ok(ol) = read_npy_f32(&dir.join("oracle_prefill_last_logits.npy"))
+        && ol.len() == last.len()
+    {
+        println!("cosine        = {:.6}", cosine(last, &ol));
     }
     if argmax == oracle_argmax {
         println!("✅ gpt-oss prefill MATCHES the mlx-lm oracle");

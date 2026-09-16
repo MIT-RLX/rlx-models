@@ -45,6 +45,7 @@ pub fn bench_device_label(device: Device) -> &'static str {
         Device::WebGpu => "webgpu",
         Device::OneApi => "oneapi",
         Device::Hexagon => "hexagon",
+        Device::Egpu => "egpu",
     }
 }
 

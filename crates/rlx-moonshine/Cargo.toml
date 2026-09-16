@@ -1,0 +1,49 @@
+[package]
+name = "rlx-moonshine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Moonshine English ASR (Useful Sensors) for RLX — encoder–decoder, raw 16 kHz PCM"
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-opt = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+safetensors = { workspace = true }
+rayon = "1.10"
+tokenizers = { workspace = true, optional = true }
+
+[[bin]]
+name = "rlx-moonshine"
+path = "src/bin/rlx_moonshine.rs"
+
+[features]
+default = ["tokenizer"]
+tokenizer = ["dep:tokenizers"]
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+coreml = ["rlx-runtime/coreml"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[lints]
+workspace = true

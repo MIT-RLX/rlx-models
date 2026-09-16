@@ -949,19 +949,14 @@ fn finish_build(
     skip_warm: bool,
 ) -> Result<Qwen35Runner> {
     let weights = Arc::new(weights);
-    if force_host_embed {
-        // SAFETY: single-threaded runner build; env read at decode HIR compile time.
-        unsafe { std::env::set_var("RLX_QWEN35_HOST_EMBED", "1") };
-    }
-    // wgpu/WebGPU can't bind the F32 `token_embd` table as one storage buffer once
-    // it exceeds `max_storage_buffer_binding_size` (128 MiB): the on-GPU gather
-    // panics (amd/llvmpipe) or returns garbage (NVIDIA/Vulkan) — coherent only
-    // with host-gathered embeddings. Force host-embed on these backends unless the
-    // caller explicitly set the env override.
-    if matches!(device, Device::Gpu | Device::WebGpu)
-        && std::env::var("RLX_QWEN35_HOST_EMBED").is_err()
-    {
-        // SAFETY: single-threaded runner build; env read at decode HIR compile time.
+    // wgpu/WebGPU can't bind a large F32 `token_embd` as one storage buffer —
+    // force host-gathered embeds via the runner flag (not a process-wide env)
+    // so parallel backend tests don't poison each other.
+    let caller_force_host_embed = force_host_embed;
+    let force_host_embed = force_host_embed || matches!(device, Device::Gpu | Device::WebGpu);
+    if caller_force_host_embed {
+        // SAFETY: single-threaded runner build; env read at HIR compile time for
+        // legacy prefill paths that still consult RLX_QWEN35_HOST_EMBED.
         unsafe { std::env::set_var("RLX_QWEN35_HOST_EMBED", "1") };
     }
     // Metal decode optimizations, both token-identical (measured on qwen3.5-0.8B
@@ -1022,8 +1017,9 @@ fn finish_build(
             }
         }
     } else {
-        // rlx-rocm / rlx-wgpu / rlx-cpu still lack `Op::KvAppend` and reject it at
-        // legalization, so they must not COMPILE a resident-shaped graph either.
+        // rlx-rocm / rlx-wgpu / rlx-cpu / rlx-mlx still lack `Op::KvAppend` and
+        // reject it at legalization, so they must not COMPILE a resident-shaped
+        // graph either.
         //
         // Devices without a resident-KV decode driver must also not COMPILE a
         // resident-shaped graph: `cache.rs` decides whether to emit the O(ctx)
@@ -1032,8 +1028,15 @@ fn finish_build(
         // resident graph driven by the host-feed path — no `feed_kv_row`, stale
         // past_k/v, silently wrong tokens. Pin the var off so the graph and the
         // runner can never disagree. (Same pattern cli.rs uses to disable it.)
+        //
+        // Also clear Metal-only opts that poison later runners in the same
+        // process (backend matrix / parallel tests): GQA-native Attention is
+        // Metal SDPA-only — MLX cannot reshape shared-KV heads that way.
         unsafe {
             std::env::set_var("RLX_QWEN35_GPU_KV", "0");
+            std::env::set_var("RLX_QWEN35_GQA_NATIVE", "0");
+            std::env::set_var("RLX_QWEN35_INPLACE_KV", "0");
+            std::env::set_var("RLX_QWEN35_FUSE_SSM", "0");
         }
     }
     // Auto-enable the low-mem compile/upload path for large models: it skips the
@@ -1263,6 +1266,7 @@ fn finish_build(
             mtp_logits_path,
             fast_mtp,
             fast_greedy_lm_head,
+            host_embed,
         )?;
         (p, packed)
     } else {
@@ -2139,6 +2143,7 @@ impl Qwen35Runner {
                     self.mtp_logits_path,
                     self.fast_mtp,
                     self.fast_greedy_lm_head,
+                    self.host_embed,
                 )?;
                 let mut compiled = self.compile_hir_for_config(
                     decode_config(self.batch, past_seq),
@@ -2182,10 +2187,10 @@ impl Qwen35Runner {
                 if let (Some(mo), Some(layers)) = (self.moe_offload.as_mut(), layers) {
                     let store = self.moe_store.as_ref();
                     let compiled = self.decode_graphs.get_mut(&past_seq).unwrap();
-                    if refresh_moe_from_capture(mo, store, compiled, &layers, step, false) {
-                        if let Some(store) = self.moe_store.as_ref() {
-                            store.apply_to_compiled(compiled);
-                        }
+                    if refresh_moe_from_capture(mo, store, compiled, &layers, step, false)
+                        && let Some(store) = self.moe_store.as_ref()
+                    {
+                        store.apply_to_compiled(compiled);
                     }
                 }
             }
@@ -2240,6 +2245,7 @@ impl Qwen35Runner {
         let fast_mtp = self.fast_mtp;
         let fast_greedy = self.fast_greedy_lm_head;
         let batch = self.batch;
+        let host_embed = self.host_embed;
         let decode_params = &self.decode_dynamic_params;
         let decode_packed = &self.decode_dynamic_packed;
         let gguf_loader = &mut self.gguf_loader;
@@ -2256,6 +2262,7 @@ impl Qwen35Runner {
                     mtp_logits_path,
                     fast_mtp,
                     fast_greedy,
+                    host_embed,
                 )
                 .expect("dynamic decode HIR")
                 .0
@@ -2352,6 +2359,7 @@ impl Qwen35Runner {
         let mtp_logits_path = self.mtp_logits_path;
         let fast_mtp = self.fast_mtp;
         let fast_greedy = self.fast_greedy_lm_head;
+        let host_embed = self.host_embed;
         let (hir, params, packed) = build_qwen35_decode_hir_ext(
             &cfg,
             std::sync::Arc::clone(&self.weights),
@@ -2361,6 +2369,7 @@ impl Qwen35Runner {
             mtp_logits_path,
             fast_mtp,
             fast_greedy,
+            host_embed,
         )
         .context("qwen35 decode HIR")?;
         if release {
@@ -2393,32 +2402,32 @@ impl Qwen35Runner {
                     &decode_opts,
                 )
                 .ok_or_else(|| anyhow!("past_seq {key} outside decode buckets"))?;
-            if let Some(packed) = packed_slot.take() {
-                if !packed.is_empty() {
-                    if cache_mut.try_share_params_from_donor(upper) {
-                        packed_nbytes = packed_param_bytes(self.gguf_loader.as_ref(), &packed);
-                    } else {
-                        let compiled = cache_mut
-                            .compiled_for_key_mut(key)
-                            .ok_or_else(|| anyhow!("decode bucket missing after ensure"))?;
-                        packed_nbytes = upload_packed_opt(
-                            compiled,
-                            self.gguf_loader.as_mut(),
-                            &packed,
-                            &mut self.packed_bytes_cache,
-                        )?;
-                        if packed_nbytes > 0 {
-                            cache_mut.set_weight_donor(upper);
-                        }
+            if let Some(packed) = packed_slot.take()
+                && !packed.is_empty()
+            {
+                if cache_mut.try_share_params_from_donor(upper) {
+                    packed_nbytes = packed_param_bytes(self.gguf_loader.as_ref(), &packed);
+                } else {
+                    let compiled = cache_mut
+                        .compiled_for_key_mut(key)
+                        .ok_or_else(|| anyhow!("decode bucket missing after ensure"))?;
+                    packed_nbytes = upload_packed_opt(
+                        compiled,
+                        self.gguf_loader.as_mut(),
+                        &packed,
+                        &mut self.packed_bytes_cache,
+                    )?;
+                    if packed_nbytes > 0 {
+                        cache_mut.set_weight_donor(upper);
                     }
                 }
             }
             upper
         };
-        if packed_nbytes > 0 {
-            if let Some(cache) = self.decode_compile_cache.as_mut() {
-                cache.note_resident_bytes(key, packed_nbytes);
-            }
+        if packed_nbytes > 0
+            && let Some(cache) = self.decode_compile_cache.as_mut()
+        {
+            cache.note_resident_bytes(key, packed_nbytes);
         }
         Ok(upper as usize)
     }
@@ -2950,14 +2959,14 @@ impl Qwen35Runner {
                 prompts.len()
             );
         }
-        if let Some(limits) = n_new_per_row {
-            if limits.len() != self.batch {
-                bail!(
-                    "qwen35::generate_batch: n_new_per_row len {} != batch {}",
-                    limits.len(),
-                    self.batch
-                );
-            }
+        if let Some(limits) = n_new_per_row
+            && limits.len() != self.batch
+        {
+            bail!(
+                "qwen35::generate_batch: n_new_per_row len {} != batch {}",
+                limits.len(),
+                self.batch
+            );
         }
         for (i, p) in prompts.iter().enumerate() {
             if p.is_empty() {
@@ -3654,14 +3663,14 @@ impl Qwen35Runner {
                 }
             }
             let outs = compiled.run(&feeds);
-            if let Some(layers) = compiled.take_moe_topk_capture() {
-                if let Some(mo) = self.moe_offload.as_mut() {
-                    let store = self.moe_store.as_ref();
-                    if refresh_moe_from_capture(mo, store, compiled, &layers, 0, true) {
-                        if let Some(store) = self.moe_store.as_ref() {
-                            store.apply_to_compiled(compiled);
-                        }
-                    }
+            if let Some(layers) = compiled.take_moe_topk_capture()
+                && let Some(mo) = self.moe_offload.as_mut()
+            {
+                let store = self.moe_store.as_ref();
+                if refresh_moe_from_capture(mo, store, compiled, &layers, 0, true)
+                    && let Some(store) = self.moe_store.as_ref()
+                {
+                    store.apply_to_compiled(compiled);
                 }
             }
             outs
@@ -3688,10 +3697,10 @@ impl Qwen35Runner {
             };
             if let (Some(mo), Some(layers)) = (self.moe_offload.as_mut(), layers) {
                 let store = self.moe_store.as_ref();
-                if refresh_moe_from_capture(mo, store, compiled, &layers, 0, true) {
-                    if let Some(store) = self.moe_store.as_ref() {
-                        store.apply_to_compiled(compiled);
-                    }
+                if refresh_moe_from_capture(mo, store, compiled, &layers, 0, true)
+                    && let Some(store) = self.moe_store.as_ref()
+                {
+                    store.apply_to_compiled(compiled);
                 }
             }
             outs
@@ -4129,6 +4138,7 @@ impl Qwen35Runner {
                     self.mtp_logits_path,
                     self.fast_mtp,
                     self.fast_greedy_lm_head,
+                    self.host_embed,
                 )?;
                 let mut compiled = self.compile_hir_for_config(
                     decode_config(self.batch, past_seq),
@@ -4172,10 +4182,10 @@ impl Qwen35Runner {
                 if let (Some(mo), Some(layers)) = (self.moe_offload.as_mut(), layers) {
                     let store = self.moe_store.as_ref();
                     let compiled = self.decode_graphs.get_mut(&past_seq).unwrap();
-                    if refresh_moe_from_capture(mo, store, compiled, &layers, step, false) {
-                        if let Some(store) = self.moe_store.as_ref() {
-                            store.apply_to_compiled(compiled);
-                        }
+                    if refresh_moe_from_capture(mo, store, compiled, &layers, step, false)
+                        && let Some(store) = self.moe_store.as_ref()
+                    {
+                        store.apply_to_compiled(compiled);
                     }
                 }
             }

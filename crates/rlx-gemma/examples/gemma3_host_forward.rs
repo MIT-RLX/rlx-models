@@ -125,11 +125,11 @@ fn attention(
                     scores[tk] = f32::NEG_INFINITY;
                     continue;
                 }
-                if let Some(w) = sliding {
-                    if tq.saturating_sub(tk) >= w {
-                        scores[tk] = f32::NEG_INFINITY;
-                        continue;
-                    }
+                if let Some(w) = sliding
+                    && tq.saturating_sub(tk) >= w
+                {
+                    scores[tk] = f32::NEG_INFINITY;
+                    continue;
                 }
                 let k_off = (tk * n_kv + kv_h) * dh;
                 let mut dot = 0f32;

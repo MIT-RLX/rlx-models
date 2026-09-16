@@ -63,10 +63,10 @@ impl SenseVoice {
     pub fn open(dir: &Path, device: Device) -> Result<Self> {
         let mut cfg = SenseVoiceConfig::from_dir(dir)?;
         let weights = crate::weights::load_dir(dir)?;
-        if let Some((_, s)) = weights.get("ctc.ctc_lo.weight") {
-            if !s.is_empty() {
-                cfg.vocab_size = s[0];
-            }
+        if let Some((_, s)) = weights.get("ctc.ctc_lo.weight")
+            && !s.is_empty()
+        {
+            cfg.vocab_size = s[0];
         }
         let cmvn = crate::frontend::load_configured_cmvn(dir);
         let frontend = WavFrontend::new(cfg.frontend.clone(), cmvn);

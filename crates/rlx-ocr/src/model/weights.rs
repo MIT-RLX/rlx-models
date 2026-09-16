@@ -135,10 +135,10 @@ pub const DET_DW_KEYS: [&str; 26] = [
 ];
 
 pub fn detection_input_hw() -> (usize, usize) {
-    if let Ok(s) = std::env::var("OCR_DETECTION_HW") {
-        if let Some(hw) = parse_hw(&s) {
-            return hw;
-        }
+    if let Ok(s) = std::env::var("OCR_DETECTION_HW")
+        && let Some(hw) = parse_hw(&s)
+    {
+        return hw;
     }
     (800, 600)
 }

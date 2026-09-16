@@ -55,6 +55,7 @@ pub mod resource;
 pub mod safetensors_checkpoint;
 pub mod standard_decoder;
 pub mod vision_ops_ir;
+pub mod voice_clone;
 pub mod weight_loader;
 pub mod weight_map;
 pub mod weight_registry;

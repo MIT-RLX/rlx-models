@@ -45,10 +45,10 @@ fn print_generation_trace() {
     let mut state =
         rlx_kyutai_tts::generate::GenerateState::new(&cfg, &tok, prompt, gen_cfg).expect("st");
     while state.step_idx() < 200 {
-        if let Some(e) = state.end_step() {
-            if state.step_idx() >= e + cfg.audio_delay_frames() + 4 {
-                break;
-            }
+        if let Some(e) = state.end_step()
+            && state.step_idx() >= e + cfg.audio_delay_frames() + 4
+        {
+            break;
         }
         state.step(&mut m).expect("step");
     }

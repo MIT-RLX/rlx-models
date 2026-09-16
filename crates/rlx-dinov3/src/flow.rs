@@ -30,7 +30,8 @@
 //!      fit.
 //!
 //! RoPE cos/sin are host-precomputed (see [`crate::rope`]) and published
-//! as a named flow slot (`dv3_cos`/`dv3_sin`) via [`RopeTablesStage`]; the
+//! as a named flow slot (`dv3_cos`/`dv3_sin`) via
+//! [`rlx_flow::blocks::RopeTablesStage`]; the
 //! attention plugin reads them by name and applies the stock NeoX `rope`
 //! op to the whole sequence (prefix rows are identity — no in-graph slice).
 

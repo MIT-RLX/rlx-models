@@ -185,10 +185,10 @@ impl CorrectCodec {
             }
         }
         buf.extend_from_slice(&bw.finish());
-        if let Some(parent) = out_tsac.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).ok();
-            }
+        if let Some(parent) = out_tsac.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).ok();
         }
         std::fs::write(out_tsac, buf).with_context(|| format!("write {}", out_tsac.display()))?;
         Ok(())

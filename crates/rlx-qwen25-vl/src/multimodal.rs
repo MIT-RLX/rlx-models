@@ -24,6 +24,10 @@ pub const VISION_END: &str = "<|vision_end|>";
 pub const IMAGE_PAD: &str = "<|image_pad|>";
 /// Single-image placeholder in user prompts (replaced by vision token span).
 pub const MEDIA_MARKER: &str = "<__media__>";
+/// `<|im_end|>` as an id — the ChatML turn terminator, and `eos_token_id` in
+/// every Qwen2.5-VL `config.json`. Held as an id rather than a string because a
+/// decode loop has to compare against it without a tokenizer in hand.
+pub const IM_END_TOKEN: u32 = 151645;
 
 pub fn merge_text_and_vision_embd(
     token_embd: &[f32],

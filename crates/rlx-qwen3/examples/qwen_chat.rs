@@ -468,23 +468,24 @@ fn main() -> anyhow::Result<()> {
             // GPU between steps. A byte-level BPE char that spans tokens leaves a
             // trailing U+FFFD (�); hold the window (don't flush / advance) until it
             // completes, so the window stays tiny and boundaries stay clean.
-            if let Ok(s) = tok.decode(&out_ids[decode_start..], true) {
-                if !s.is_empty() && !s.ends_with('\u{FFFD}') {
-                    print!("{s}");
-                    std::io::stdout().flush().ok();
-                    decode_start = out_ids.len();
-                }
+            if let Ok(s) = tok.decode(&out_ids[decode_start..], true)
+                && !s.is_empty()
+                && !s.ends_with('\u{FFFD}')
+            {
+                print!("{s}");
+                std::io::stdout().flush().ok();
+                decode_start = out_ids.len();
             }
             true
         })?;
         let dt = t0.elapsed();
         // Flush any remaining tail (reply ended mid-grapheme, or --nostream held
         // everything back — decode_start is still 0 there, so this prints it all).
-        if decode_start < out_ids.len() {
-            if let Ok(s) = tok.decode(&out_ids[decode_start..], true) {
-                print!("{s}");
-                std::io::stdout().flush().ok();
-            }
+        if decode_start < out_ids.len()
+            && let Ok(s) = tok.decode(&out_ids[decode_start..], true)
+        {
+            print!("{s}");
+            std::io::stdout().flush().ok();
         }
         let reply = tok.decode(&out_ids, true).unwrap_or_default();
         // Split the report: time-to-first-token (prefill + any graph compile) vs

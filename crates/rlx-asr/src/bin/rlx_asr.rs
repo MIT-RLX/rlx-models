@@ -7,8 +7,8 @@
 //! rlx-asr transcribe [--dir DIR] --wav audio.wav
 //! ```
 //!
-//! Encoder is a shaped stub until the folded Conformer path is wired in Rust;
-//! AED / units / Hammer load from the GGUF. For folded CTC, use
+//! Encoder is the folded Conformer path when weights are present; otherwise a shaped stub.
+//! AED / units / Hammer load from the pack. For folded CTC parity checks, use
 //! `just asr-e2e-native`.
 
 use anyhow::{Context, Result, bail};
@@ -19,7 +19,10 @@ fn usage() -> ! {
     eprintln!("usage:");
     eprintln!("  rlx-asr transcribe [--dir DIR] --wav audio.wav");
     eprintln!();
-    eprintln!("env: RLX_ASR_DIR  RLX_ASR_TIMING=1  RLX_ASR_GGUF=path");
+    eprintln!("env: RLX_ASR_DIR  RLX_ASR_ENCODER=folded|native  RLX_ASR_FRONTEND=auto|raw|ls");
+    eprintln!("     RLX_ASR_BODY_MLP=auto|0|1  RLX_ASR_H_MAP=auto|0|1  RLX_ASR_VAD=1|0");
+    eprintln!("     RLX_ASR_FALLBACK=conformer,whisper|whisper|none  RLX_ASR_EARLY_ABORT=1");
+    eprintln!("     RLX_ASR_FRONTEND_LS_DIR=path/to/bin  RLX_ASR_TIMING=1  RLX_ASR_GGUF=path");
     eprintln!(
         "weights: just fetch-rlx-asr  →  weights/asr/model.gguf ({})",
         rlx_asr::HF_REPO

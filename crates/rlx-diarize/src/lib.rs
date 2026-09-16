@@ -1,24 +1,17 @@
 // RLX — versatile ML compiler + runtime.
-// Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, version 3.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna. GPLv3.
 
-//! Speaker diarization: sliding-window embeddings + agglomerative clustering.
+//! Speaker diarization: sliding-window embeddings + centroid clustering.
+//!
+//! - Default backend: mel-stat embeddings (no neural weights).
+//! - Feature `wespeaker`: WeSpeaker ResNet34-LM on **native RLX** (256-d) when
+//!   [`DiarizeConfig::wespeaker_dir`] / `RLX_WESPEAKER_DIR` resolves (ONNX under
+//!   `onnx/` is import/reference only).
 
 pub mod cluster;
 pub mod embed;
 pub mod session;
 pub mod sortformer;
 
-pub use session::{DiarizeConfig, DiarizeSession, SpeakerTurn};
+pub use session::{DiarizeConfig, DiarizeSession, SpeakerTurn, best_speaker};
 pub use sortformer::{SortformerConfig, activity_to_turns, sort_speakers_by_arrival};

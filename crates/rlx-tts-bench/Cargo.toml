@@ -17,6 +17,7 @@ name = "rlx-tts-bench"
 path = "src/main.rs"
 
 [dependencies]
+libc = "0.2"
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 hound = "3"

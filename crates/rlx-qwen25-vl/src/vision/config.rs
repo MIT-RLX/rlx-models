@@ -109,12 +109,26 @@ impl MmProjConfig {
             .or_else(|| u32k_opt("clip.vision.projector.scale_factor"))
             .unwrap_or(2) as usize;
 
+        // A merged token covers `(patch_size · n_merge)²` pixels, so these
+        // bounds are really "fewest / most tokens an image may become". HF's
+        // `Qwen2VLImageProcessor` defaults are 4 and 1280 tokens (min_pixels
+        // 56·56, max_pixels 28·28·1280); the mmproj GGUFs on the Hub carry
+        // neither `clip.vision.image_*_pixels` key, so whatever stands here is
+        // what every image actually gets.
+        //
+        // A 1024-token *floor* is not a floor in practice, it is a target:
+        // `smart_resize` upscales anything below it, so a 640x360 photo that HF
+        // turns into 299 tokens became 1032, and every vision position landed
+        // at the wrong scale.
+        const TOKENS_MIN: usize = 4;
+        const TOKENS_MAX: usize = 1280;
+        let token_pixels = n_merge * n_merge * patch_size * patch_size;
         let image_min_pixels = u32k_opt("clip.vision.image_min_pixels")
             .map(|v| v as usize)
-            .unwrap_or(1024 * n_merge * n_merge * patch_size * patch_size);
+            .unwrap_or(TOKENS_MIN * token_pixels);
         let image_max_pixels = u32k_opt("clip.vision.image_max_pixels")
             .map(|v| v as usize)
-            .unwrap_or(4096 * n_merge * n_merge * patch_size * patch_size);
+            .unwrap_or(TOKENS_MAX * token_pixels);
 
         let projector_type = strk("clip.projector_type")
             .or_else(|_| strk("clip.vision.projector_type"))

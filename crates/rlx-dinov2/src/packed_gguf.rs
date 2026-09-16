@@ -54,31 +54,31 @@ pub fn load_dinov2_from_gguf(path: &Path) -> Result<(WeightMap, GgufPackedParams
     let mut f32_tensors: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
 
     for key in &keys {
-        if let Some(prefix) = key.strip_suffix(".weight") {
-            if let Some((bytes, scheme, shape)) = loader.take_packed(key)? {
-                ensure!(shape.len() == 2, "{key}: expected 2D weight, got {shape:?}");
-                let in_dim = shape[0];
-                let out_dim = shape[1];
-                let bias_key = format!("{prefix}.bias");
-                let bias = if keys.iter().any(|k| k == &bias_key) {
-                    let (b, bshape) = loader.take(&bias_key)?;
-                    ensure!(bshape == vec![out_dim], "{bias_key}: shape mismatch");
-                    b
-                } else {
-                    vec![0.0f32; out_dim]
-                };
-                linears.insert(
-                    prefix.to_string(),
-                    GgufPackedLinear {
-                        w_q: bytes,
-                        scheme,
-                        in_dim,
-                        out_dim,
-                        bias,
-                    },
-                );
-                continue;
-            }
+        if let Some(prefix) = key.strip_suffix(".weight")
+            && let Some((bytes, scheme, shape)) = loader.take_packed(key)?
+        {
+            ensure!(shape.len() == 2, "{key}: expected 2D weight, got {shape:?}");
+            let in_dim = shape[0];
+            let out_dim = shape[1];
+            let bias_key = format!("{prefix}.bias");
+            let bias = if keys.iter().any(|k| k == &bias_key) {
+                let (b, bshape) = loader.take(&bias_key)?;
+                ensure!(bshape == vec![out_dim], "{bias_key}: shape mismatch");
+                b
+            } else {
+                vec![0.0f32; out_dim]
+            };
+            linears.insert(
+                prefix.to_string(),
+                GgufPackedLinear {
+                    w_q: bytes,
+                    scheme,
+                    in_dim,
+                    out_dim,
+                    bias,
+                },
+            );
+            continue;
         }
         let (data, shape) = loader.take(key)?;
         f32_tensors.insert(key.clone(), (data, shape));

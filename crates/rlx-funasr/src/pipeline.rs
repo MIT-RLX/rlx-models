@@ -139,10 +139,10 @@ impl FunPipeline {
                 Some(asr) => asr.transcribe(slice)?,
                 None => String::new(),
             };
-            if let Some(punc) = &self.punc {
-                if !text.is_empty() {
-                    text = punc.restore(&text)?;
-                }
+            if let Some(punc) = &self.punc
+                && !text.is_empty()
+            {
+                text = punc.restore(&text)?;
             }
             let speaker = match &self.speaker {
                 Some(spk) => spk.embedding(slice).ok(),

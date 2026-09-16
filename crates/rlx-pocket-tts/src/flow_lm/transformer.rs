@@ -209,10 +209,10 @@ impl StreamingTransformer {
                         if delta < 0 {
                             continue;
                         }
-                        if let Some(ctx) = self.context {
-                            if (delta as usize) >= ctx {
-                                continue;
-                            }
+                        if let Some(ctx) = self.context
+                            && (delta as usize) >= ctx
+                        {
+                            continue;
                         }
                         let mut s = 0.0;
                         for di in 0..self.head_dim {

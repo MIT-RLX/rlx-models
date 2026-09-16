@@ -293,7 +293,16 @@ fn default_wave_cap(device: Device) -> usize {
 ///
 /// When wave is pinned to CPU ([`wave_device`]), skip the bind-window cap so
 /// long IPA can single-pass on the host vocoder.
+///
+/// The alignment applies on **every** path, device cap or not: the wgpu 32 k / Vulkan 80 k
+/// ceilings and the env overrides are all round numbers rather than frame multiples, and a cap
+/// that is not a whole number of vocoder frames desynchronizes the NSF sine source from the
+/// wave axis (see [`crate::bundle_patches::align_waveform_cap`]).
 pub fn clamp_waveform(device: Device, max_wave: usize) -> usize {
+    crate::bundle_patches::align_waveform_cap(device_clamp_waveform(device, max_wave))
+}
+
+fn device_clamp_waveform(device: Device, max_wave: usize) -> usize {
     if !is_discrete_nvidia(device) {
         return max_wave;
     }
@@ -388,7 +397,9 @@ pub fn prepare(device: Device, max_waveform_samples: usize) -> (Device, usize) {
     let device = resolve_device(device);
     crate::compile_profile::apply_device_runtime_defaults(device);
     let capped = clamp_waveform(device, max_waveform_samples);
-    if capped < max_waveform_samples {
+    // Compare against the frame-aligned request: losing <1 vocoder frame to alignment is not a
+    // storage-bind clamp and should not be reported as one.
+    if capped < crate::bundle_patches::align_waveform_cap(max_waveform_samples) {
         let key = wave_cap_env_key(wave_device(device));
         eprintln!(
             "[kittentts] {}: max_waveform_samples {max_waveform_samples} → {capped} \

@@ -1,0 +1,40 @@
+[package]
+name = "rlx-translategemma"
+version = "0.2.16"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Google TranslateGemma open MT models (Gemma 3-shaped) for RLX"
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-gemma = { workspace = true }
+rlx-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+metal = ["rlx-gemma/metal"]
+mlx = ["rlx-gemma/mlx"]
+cuda = ["rlx-gemma/cuda"]
+rocm = ["rlx-gemma/rocm"]
+gpu = ["rlx-gemma/gpu"]
+vulkan = ["rlx-gemma/vulkan"]
+coreml = ["rlx-gemma/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+
+[[bin]]
+name = "rlx-translategemma"
+path = "src/bin/rlx_translategemma.rs"
+
+[lints]
+workspace = true

@@ -125,10 +125,10 @@ impl BenchModel {
     /// that makes many-length workloads (MMLU) crawl on those backends.
     pub fn context_last_logits(&mut self, context: &[u32]) -> Result<Vec<f32>> {
         let vocab = self.runner.vocab_size();
-        if let Ok(l) = self.runner.prefill_logits(context) {
-            if l.len() >= vocab {
-                return Ok(l);
-            }
+        if let Ok(l) = self.runner.prefill_logits(context)
+            && l.len() >= vocab
+        {
+            return Ok(l);
         }
         let l = self.runner.predict_logits(context)?;
         if l.len() < vocab {

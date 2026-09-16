@@ -113,10 +113,10 @@ pub fn preferred_synth_device_lenient() -> Device {
 /// Device for integration tests; honors `ORPHEUS_SYNTH_DEVICE` then [`preferred_synth_device`].
 #[cfg(feature = "llama")]
 pub fn synth_device_for_tests() -> Device {
-    if let Ok(s) = std::env::var("ORPHEUS_SYNTH_DEVICE") {
-        if let Ok(d) = rlx_cli::parse_device(s.trim()) {
-            return d;
-        }
+    if let Ok(s) = std::env::var("ORPHEUS_SYNTH_DEVICE")
+        && let Ok(d) = rlx_cli::parse_device(s.trim())
+    {
+        return d;
     }
     preferred_synth_device()
 }

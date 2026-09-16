@@ -1,0 +1,81 @@
+[package]
+name = "rlx-wespeaker"
+version = "0.2.16"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "WeSpeaker ResNet34-LM speaker embeddings on RLX (fbank + native graph)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-tiny-tts = { workspace = true }
+rlx-assets = { workspace = true, features = ["rlxp", "native-pack"], optional = true }
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "pkg-config",
+    "download-binaries",
+    "tls-rustls",
+    "ndarray",
+] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-rustls",
+    "ndarray",
+] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-rustls",
+    "copy-dylibs",
+    "ndarray",
+] }
+
+[features]
+default = ["native"]
+# Native RLX path (TinyModel / rlx-onnx-import → Metal/CoreML/CPU/…).
+native = []
+# Optional ONNX Runtime parity path (reference only).
+onnx = ["dep:ort"]
+# Helpers to bake ONNX → graphs/wespeaker.rlxp.
+pack = ["dep:rlx-assets"]
+metal = ["rlx-runtime/metal", "rlx-tiny-tts/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-tiny-tts/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-tiny-tts/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-tiny-tts/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-tiny-tts/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+
+[[example]]
+name = "pack_rlxp"
+required-features = ["pack"]
+
+[[example]]
+name = "clone_fidelity"
+required-features = ["native"]
+
+[[example]]
+name = "embed_wav"
+required-features = ["native"]
+
+[dev-dependencies]
+hound = "3.5"
+rlx-core = { workspace = true }
+
+[lints]
+workspace = true

@@ -62,20 +62,9 @@ pub fn device_label(d: Device) -> &'static str {
 
 /// Parse a `--device` string into a [`Device`].
 pub fn parse_device(s: &str) -> Result<Device> {
-    let d = match s.trim().to_ascii_lowercase().as_str() {
-        "cpu" => Device::Cpu,
-        "metal" => Device::Metal,
-        "mlx" => Device::Mlx,
-        "coreml" | "ane" => Device::Ane,
-        "cuda" | "nvidia" => Device::Cuda,
-        "rocm" | "amd" => Device::Rocm,
-        "gpu" | "wgpu" => Device::Gpu,
-        "vulkan" => Device::Vulkan,
-        other => bail!(
-            "unknown device {other:?}; expected one of: cpu, metal, mlx, coreml, cuda, rocm, wgpu, vulkan"
-        ),
-    };
-    Ok(d)
+    use std::str::FromStr;
+    // Accept every rlx-driver alias (incl. egpu/tbgpu, hip, mps, …).
+    Device::from_str(s.trim()).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Build a [`BenchModel`] for `spec.model_kind`, dispatching to the adapter

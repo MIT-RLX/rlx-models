@@ -32,15 +32,21 @@ pub mod detection;
 pub mod graph;
 pub mod grouping;
 pub mod ngram;
+#[cfg(feature = "rlxp")]
+pub mod pack;
 pub mod pipeline;
 pub mod preprocess;
 pub mod recognition;
 pub mod rescore;
 pub mod runner;
+pub mod weights;
 
 pub use detection::{Detector, build_detector_graph};
 pub use ngram::NgramModel;
+#[cfg(feature = "rlxp")]
+pub use pack::{ContainerKind, Ocr2Pack, write_pack};
 pub use pipeline::{Ocr2, OcrLine};
 pub use recognition::{HIDDEN, NUM_CLASSES, REC_HEIGHT, build_recognition_graph};
 pub use rescore::{Lexicon, Rescorer};
 pub use runner::Recognizer;
+pub use weights::WeightSource;

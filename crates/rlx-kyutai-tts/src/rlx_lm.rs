@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use ndarray::Array2;
 use rayon::prelude::*;
 use rlx_ir::infer::GraphExt;
-use rlx_ir::op::MaskKind;
 use rlx_ir::{DType, Graph, Op, Shape};
 use rlx_runtime::{CompiledGraph, Device, Session};
 use std::collections::HashMap;
@@ -41,6 +40,41 @@ impl TtsDims {
             t_cross,
         }
     }
+
+    /// Same as [`Self::from_cfg`], but takes the SwiGLU width from the checkpoint.
+    ///
+    /// `hidden_scale` does **not** give the packed `gating.linear_in` width directly. Kyutai
+    /// applies the usual SwiGLU ⅔ adjustment, so the 1.6B checkpoint stores
+    /// `[11264, 2048]` — hidden 5632 — while `dim_feedforward / 2` computes
+    /// `(2048 · 4.125) / 2 = 4224`. Slicing gate/up at 4224 and transposing `linear_out`
+    /// against the wrong stride made every backbone layer garbage, which is what the RLX
+    /// path shipped: fluent speech that ignores the script. The weight knows its own shape,
+    /// so ask it.
+    pub fn from_cfg_and_weights(
+        cfg: &KyutaiTtsConfig,
+        t_cross: usize,
+        weights: &HashMap<String, (Vec<f32>, Vec<usize>)>,
+    ) -> Result<Self> {
+        let mut dims = Self::from_cfg(cfg, t_cross);
+        dims.ffn = swiglu_hidden_from_weights(weights, dims.d_model)?;
+        Ok(dims)
+    }
+}
+
+/// Packed `gating.linear_in.weight` is `[2 · hidden, d]`; return `hidden`.
+fn swiglu_hidden_from_weights(
+    weights: &HashMap<String, (Vec<f32>, Vec<usize>)>,
+    d: usize,
+) -> Result<usize> {
+    let key = "transformer.layers.0.gating.linear_in.weight";
+    let (_, shape) = weights
+        .get(key)
+        .with_context(|| format!("missing weight {key}"))?;
+    anyhow::ensure!(
+        shape.len() == 2 && shape[1] == d && shape[0] % 2 == 0,
+        "{key}: expected [2*hidden, {d}], got {shape:?}"
+    );
+    Ok(shape[0] / 2)
 }
 
 fn p(li: usize, name: &str) -> String {
@@ -136,6 +170,7 @@ fn cross_attn_block(
     g: &mut Graph,
     x: rlx_ir::NodeId,
     cross_ctx: rlx_ir::NodeId,
+    cross_mask: rlx_ir::NodeId,
     li: usize,
     dims: &TtsDims,
     _p1d: &Shape,
@@ -167,15 +202,12 @@ fn cross_attn_block(
     let k = g.reshape_(k2d, cx_heads.to_vec());
     let v = g.reshape_(v2d, cx_heads.to_vec());
 
-    let attn = g.attention_kind(
-        q,
-        k,
-        v,
-        nh,
-        hd,
-        MaskKind::None,
-        Shape::new(&[1, 1, nh, hd], DType::F32),
-    );
+    // Masked, not `MaskKind::None`: `cross_ctx` is a fixed `MAX_SPEAKER_CROSS_FRAMES` buffer
+    // that `set_generation_conditions` zero-pads. A zero *key* scores 0 against any query, so
+    // without a mask every padding slot takes weight `exp(0)` in the softmax and dilutes the
+    // real conditioning frames rather than dropping out. The eager path never had this problem
+    // — it attends over exactly the frames the conditioner produced.
+    let attn = g.attention_(q, k, v, cross_mask, nh, hd);
     let attn = g.reshape_(attn, vec![1i64, 1, d as i64]);
     let cx_ow = g.param(p(li, "cx_o"), Shape::new(&[d, d], DType::F32));
     let cx_out = g.mm(attn, cx_ow);
@@ -249,15 +281,28 @@ fn for_each_transformer_param(
             ),
         );
         let gate_up = get(&format!("{pre}.gating.linear_in.weight"))?;
+        // The gate/up split below indexes by `ffn`, so a stale `ffn` silently reads the wrong
+        // half of the packed projection instead of failing. Check it against the tensor.
+        anyhow::ensure!(
+            gate_up.len() == 2 * ffn * d,
+            "{pre}.gating.linear_in.weight has {} elements, expected 2*ffn*d = 2*{ffn}*{d} = {}; \
+             `ffn` was derived from the config rather than the checkpoint",
+            gate_up.len(),
+            2 * ffn * d,
+        );
         emit(p(li, "gate"), transpose(&gate_up[0..ffn * d], ffn, d));
         emit(
             p(li, "up"),
             transpose(&gate_up[ffn * d..2 * ffn * d], ffn, d),
         );
-        emit(
-            p(li, "down"),
-            transpose(get(&format!("{pre}.gating.linear_out.weight"))?, d, ffn),
+        let down = get(&format!("{pre}.gating.linear_out.weight"))?;
+        anyhow::ensure!(
+            down.len() == d * ffn,
+            "{pre}.gating.linear_out.weight has {} elements, expected d*ffn = {d}*{ffn} = {}",
+            down.len(),
+            d * ffn,
         );
+        emit(p(li, "down"), transpose(down, d, ffn));
 
         let cx_in = get(&format!("{pre}.cross_attention.in_proj_weight"))?;
         emit(p(li, "cx_q"), transpose(&cx_in[0..d * d], d, d));
@@ -306,6 +351,7 @@ pub fn build_temporal_decode_graph_bucketed(dims: &TtsDims, upper: usize) -> Gra
     let roti = g.reshape_(sin, vec![1, 1, 1, half as i64]);
     let mask = g.input("attn_mask", Shape::new(&[1, upper + 1], DType::F32));
     let cross_ctx = g.input("cross_ctx", Shape::new(&[1, t_cross, d], DType::F32));
+    let cross_mask = g.input("cross_mask", Shape::new(&[1, t_cross], DType::F32));
     let zero_beta = g.param("zero_beta", Shape::new(&[d], DType::F32));
     let one = g.param("kv_one", Shape::new(&[1], DType::F32));
     let kv_shape = Shape::new(&[1, upper, nh, hd], DType::F32);
@@ -333,7 +379,7 @@ pub fn build_temporal_decode_graph_bucketed(dims: &TtsDims, upper: usize) -> Gra
         let attn = g.mm(attn, ow);
         x = g.add(x, attn);
 
-        x = cross_attn_block(&mut g, x, cross_ctx, li, dims, &p1d, &heads1);
+        x = cross_attn_block(&mut g, x, cross_ctx, cross_mask, li, dims, &p1d, &heads1);
         x = swiglu_block(&mut g, x, li, d, ffn, p1d.clone(), zero_beta);
     }
 
@@ -421,6 +467,7 @@ pub fn decode_bucketed_run(
     dims: &TtsDims,
     inputs_embeds: &[f32],
     cross_ctx: &[f32],
+    cross_len: usize,
     real_past_kv: &[(Vec<f32>, Vec<f32>)],
     past_seq: usize,
     upper: usize,
@@ -435,6 +482,17 @@ pub fn decode_bucketed_run(
         sin[i] = f.sin();
     }
     let mask = bucket_decode_mask(past_seq, upper);
+    // Keep only the conditioner's real frames; the rest of `cross_ctx` is zero padding.
+    // `cross_len == 0` (or ≥ t_cross) means "nothing to mask" — an all-zero context attends to
+    // nothing either way, and masking every slot would make the softmax NaN.
+    let keep = if cross_len == 0 {
+        dims.t_cross
+    } else {
+        cross_len.min(dims.t_cross)
+    };
+    let cross_mask: Vec<f32> = (0..dims.t_cross)
+        .map(|i| if i < keep { 1.0 } else { 0.0 })
+        .collect();
     let kvw = dims.n_heads * dims.head_dim;
     let pad_len = upper * kvw;
     let padded: Vec<(Vec<f32>, Vec<f32>)> = (0..dims.n_layers)
@@ -457,6 +515,7 @@ pub fn decode_bucketed_run(
         ("rope_sin".to_string(), sin.as_slice()),
         ("attn_mask".to_string(), mask.as_slice()),
         ("cross_ctx".to_string(), cross_ctx),
+        ("cross_mask".to_string(), cross_mask.as_slice()),
     ];
     for (li, (k, v)) in padded.iter().enumerate() {
         inputs.push((format!("past_k_{li}"), k.as_slice()));
@@ -480,6 +539,7 @@ pub fn temporal_decode_bucketed_rlx(
     weights: &HashMap<String, (Vec<f32>, Vec<usize>)>,
     inputs_embeds: &[f32],
     cross_ctx: &[f32],
+    cross_len: usize,
     real_past_kv: &[(Vec<f32>, Vec<f32>)],
     past_seq: usize,
     upper: usize,
@@ -493,6 +553,7 @@ pub fn temporal_decode_bucketed_rlx(
         dims,
         inputs_embeds,
         cross_ctx,
+        cross_len,
         real_past_kv,
         past_seq,
         upper,

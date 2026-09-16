@@ -68,16 +68,41 @@ impl rlx_flow::WeightSource for PackedWeightLoaderSource<'_> {
     /// `(w_q, scheme, [out_dim, in_dim])`; bias (when any) is applied by the
     /// caller as a separate add, matching the F32 matmul path.
     fn take_packed(&mut self, key: &str) -> anyhow::Result<Option<rlx_flow::GgufPackedLinear>> {
-        Ok(self.0.take_packed(key)?.map(|(w_q, scheme, shape)| {
-            let out_dim = shape.first().copied().unwrap_or(0);
-            let in_dim = shape.get(1).copied().unwrap_or(0);
-            rlx_flow::GgufPackedLinear {
+        Ok(self.0.take_packed(key)?.and_then(|(w_q, scheme, shape)| {
+            // A 3-D tensor is an expert bank, not a linear — `GgufPackedLinear`
+            // has nowhere to put the expert count, and reporting `out_dim = E`
+            // would be silently wrong. Those go through `take_packed_bank`.
+            if shape.len() != 2 {
+                return None;
+            }
+            let out_dim = shape[0];
+            let in_dim = shape[1];
+            Some(rlx_flow::GgufPackedLinear {
                 w_q,
                 scheme,
                 in_dim,
                 out_dim,
                 bias: Vec::new(),
+            })
+        }))
+    }
+
+    /// Hand over a packed MoE expert bank so the builder can emit
+    /// `Op::DequantGroupedMatMul`. GGUF stores `ffn_*_exps.weight` as
+    /// `[experts, out, in]` once the loader reverses GGML's dim order, which is
+    /// already the op's slab layout — the bytes pass through untouched.
+    fn take_packed_bank(&mut self, key: &str) -> anyhow::Result<Option<rlx_flow::GgufPackedBank>> {
+        Ok(self.0.take_packed(key)?.and_then(|(w_q, scheme, shape)| {
+            if shape.len() != 3 {
+                return None;
             }
+            Some(rlx_flow::GgufPackedBank {
+                w_q,
+                scheme,
+                num_experts: shape[0],
+                out_dim: shape[1],
+                in_dim: shape[2],
+            })
         }))
     }
 }

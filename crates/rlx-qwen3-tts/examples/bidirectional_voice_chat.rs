@@ -668,10 +668,10 @@ fn push_tts_reference(aec: &mut AecSession, pcm_24k: &[f32]) {
 }
 
 fn process_mic_aec(aec: Option<&mut AecSession>, mic: &[f32]) -> Vec<f32> {
-    if let Some(aec) = aec {
-        if let Ok(Some(out)) = aec.process_mic(mic) {
-            return out;
-        }
+    if let Some(aec) = aec
+        && let Ok(Some(out)) = aec.process_mic(mic)
+    {
+        return out;
     }
     mic.to_vec()
 }
@@ -726,19 +726,15 @@ fn resolve_qwen3_weights_path(weights_in: &Path, device: Device, gpu_perf: bool)
                 .map(|n| p.join(format!("{}-gguf", n.to_string_lossy())))
         })
         .filter(|d| d.is_dir());
-    if prefer_gguf {
-        if let Some(dir) = gguf_sibling {
-            return dir;
-        }
+    if prefer_gguf && let Some(dir) = gguf_sibling {
+        return dir;
     }
     // Default: MLX safetensors for 0.6B voice chat (fastest correct path today).
     if has_st && device == Device::Mlx {
         return weights_in.to_path_buf();
     }
-    if gpu_perf {
-        if let Some(dir) = gguf_sibling {
-            return dir;
-        }
+    if gpu_perf && let Some(dir) = gguf_sibling {
+        return dir;
     }
     weights_in.to_path_buf()
 }
@@ -1683,11 +1679,9 @@ impl Session {
             }
             let t_lm = Instant::now();
             let generated = lm.generate_stoppable(&prompt_ids, max_tokens, |tok| {
-                if show_tokens {
-                    if let Ok(piece) = tokenizer.decode(&[tok], false) {
-                        print!("{piece}");
-                        let _ = std::io::stdout().flush();
-                    }
+                if show_tokens && let Ok(piece) = tokenizer.decode(&[tok], false) {
+                    print!("{piece}");
+                    let _ = std::io::stdout().flush();
                 }
                 eos_id != Some(tok)
             })?;
@@ -1834,11 +1828,9 @@ impl Session {
                     return false;
                 }
                 answer_ids.push(tok);
-                if show_tokens {
-                    if let Ok(piece) = self.lm_tokenizer.decode(&[tok], false) {
-                        print!("{piece}");
-                        let _ = std::io::stdout().flush();
-                    }
+                if show_tokens && let Ok(piece) = self.lm_tokenizer.decode(&[tok], false) {
+                    print!("{piece}");
+                    let _ = std::io::stdout().flush();
                 }
                 if speakable_at.is_none()
                     && maybe_early_speakable(&self.lm_tokenizer, &answer_ids, eos_id, tok, 7)
@@ -2077,22 +2069,22 @@ fn run_streaming_mic_turns(
                 low_latency_tts,
                 prefetch,
             )?);
-        } else if session.streaming_asr {
-            if let Some(ws) = session.whisper_stream.as_mut() {
-                if gate.speech_active() {
-                    partial.maybe_update(ws, gate.active_buffer());
-                }
-                if gate.should_prefetch_asr() {
-                    let t0 = Instant::now();
-                    let buf = gate.active_buffer().to_vec();
-                    if let Ok(text) = transcribe_user_audio(ws, &buf) {
-                        println!(
-                            "  ASR prefetch ({:.2}s, {:.2}s audio): {text:?}",
-                            t0.elapsed().as_secs_f64(),
-                            buf.len() as f64 / WHISPER_RATE as f64
-                        );
-                        gate.set_prefetch(text);
-                    }
+        } else if session.streaming_asr
+            && let Some(ws) = session.whisper_stream.as_mut()
+        {
+            if gate.speech_active() {
+                partial.maybe_update(ws, gate.active_buffer());
+            }
+            if gate.should_prefetch_asr() {
+                let t0 = Instant::now();
+                let buf = gate.active_buffer().to_vec();
+                if let Ok(text) = transcribe_user_audio(ws, &buf) {
+                    println!(
+                        "  ASR prefetch ({:.2}s, {:.2}s audio): {text:?}",
+                        t0.elapsed().as_secs_f64(),
+                        buf.len() as f64 / WHISPER_RATE as f64
+                    );
+                    gate.set_prefetch(text);
                 }
             }
         }

@@ -38,19 +38,19 @@ pub fn prepare_text_prompt(text: &str, pad_with_spaces_for_short_inputs: bool) -
     let frames_after_eos_guess = if n_words <= 4 { 3 } else { 1 };
 
     // Capitalize first char if it's lowercase ASCII.
-    if let Some(first) = text.chars().next() {
-        if first.is_ascii_lowercase() {
-            let mut chars = text.chars();
-            let upper = chars.next().unwrap().to_ascii_uppercase();
-            text = format!("{upper}{}", chars.as_str());
-        }
+    if let Some(first) = text.chars().next()
+        && first.is_ascii_lowercase()
+    {
+        let mut chars = text.chars();
+        let upper = chars.next().unwrap().to_ascii_uppercase();
+        text = format!("{upper}{}", chars.as_str());
     }
 
     // Ensure trailing punctuation.
-    if let Some(last) = text.chars().last() {
-        if last.is_alphanumeric() {
-            text.push('.');
-        }
+    if let Some(last) = text.chars().last()
+        && last.is_alphanumeric()
+    {
+        text.push('.');
     }
 
     if pad_with_spaces_for_short_inputs && text.split_whitespace().count() < 5 {

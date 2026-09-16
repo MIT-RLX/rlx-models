@@ -65,24 +65,24 @@ const ACCEPTED_ARCHES: &[&str] = &[
 ];
 
 pub fn cli_run(args: &[String]) -> Result<()> {
-    if let Some(first) = args.iter().position(|a| a == "--weights") {
-        if let Some(path) = args.get(first + 1) {
-            let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
-                .with_context(|| format!("rlx-nemotron-omni: parse {path}"))?;
-            if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
-                bail!(
-                    "rlx-nemotron-omni: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
-                    cfg.arch
-                );
-            }
-            eprintln!(
-                "[rlx-nemotron-omni] {path}: arch `{}` accepted. Use the library API \
-                 (NemotronOmniVisionRunner::builder() / NemotronOmniAudioEncoder::new(...)) \
-                 for multimodal inference.",
+    if let Some(first) = args.iter().position(|a| a == "--weights")
+        && let Some(path) = args.get(first + 1)
+    {
+        let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
+            .with_context(|| format!("rlx-nemotron-omni: parse {path}"))?;
+        if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
+            bail!(
+                "rlx-nemotron-omni: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
                 cfg.arch
             );
-            return Ok(());
         }
+        eprintln!(
+            "[rlx-nemotron-omni] {path}: arch `{}` accepted. Use the library API \
+                 (NemotronOmniVisionRunner::builder() / NemotronOmniAudioEncoder::new(...)) \
+                 for multimodal inference.",
+            cfg.arch
+        );
+        return Ok(());
     }
     bail!(
         "rlx-nemotron-omni: usage: --weights <lm.gguf>; for inference use the \

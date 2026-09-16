@@ -37,7 +37,7 @@ use std::path::Path;
 
 /// Qwen3.5 model config — fields covering both the per-layer Mamba+
 /// Attention block and the MTP head.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Qwen35Config {
     pub vocab_size: usize,
     pub hidden_size: usize,

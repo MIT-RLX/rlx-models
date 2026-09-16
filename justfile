@@ -210,6 +210,74 @@ qwen3 *ARGS:
 qwen35 *ARGS:
     just run-bin rlx-qwen35 rlx-qwen35 {{ARGS}}
 
+# S1-mini by Superwhisper — ASR transcript text normalization (Qwen3-0.6B arch).
+# `just fetch-s1` first, then e.g.
+#   just s1 -- --weights .cache/s1-mini --transcript "so um send the report by uh friday"
+#   just features=metal s1 -- --weights .cache/s1-mini --device metal --stdin < notes.txt
+# FireRedAudio unified audio LM (ASR / understand E2E; TTS graphs next).
+# `just fetch-fireredaudio` then e.g.
+#   just fireredaudio -- --weights .cache/fireredaudio --task asr --audio clip16k.wav
+#   just fireredaudio -- --show-prompt --task understand --prompt "how many speakers?"
+fireredaudio *ARGS:
+    just features={{features}} run-bin rlx-fireredaudio rlx-fireredaudio {{ARGS}}
+
+# Synth FireRedAudio encoder on each available backend (no HF weights).
+#   just features=all-backends test-fireredaudio-backends
+test-fireredaudio-backends *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    feats="${features:-all-backends}"
+    echo "==> rlx-fireredaudio encoder backends (features=$feats)"
+    cargo test -p rlx-fireredaudio --release --features "$feats" encoder_ -- --nocapture {{ARGS}}
+
+# FireRedTeam/FireRedAudio (~30GB shards + RedAE decoder). Use ONLY_META=1 for
+# config/tokenizer/index only (dev without weights).
+fetch-fireredaudio:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest=.cache/fireredaudio
+    mkdir -p "$dest"
+    if [ "${ONLY_META:-0}" = "1" ]; then
+      hf download FireRedTeam/FireRedAudio \
+        FireRedAudio/config.json \
+        FireRedAudio/tokenizer.json \
+        FireRedAudio/tokenizer_config.json \
+        FireRedAudio/processor_config.json \
+        FireRedAudio/model.safetensors.index.json \
+        --local-dir "$dest"
+    else
+      hf download FireRedTeam/FireRedAudio --local-dir "$dest"
+    fi
+    ls -lh "$dest" "$dest/FireRedAudio" 2>/dev/null || ls -lh "$dest"
+
+s1 *ARGS:
+    just features={{features}} run-bin rlx-s1 rlx-s1 {{ARGS}}
+
+# superwhisper/s1-mini (BF16 safetensors + tokenizer) → .cache/s1-mini.
+# Add GGUF=1 to fetch superwhisper/s1-mini-GGUF into .cache/s1-mini-gguf instead.
+fetch-s1:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "${GGUF:-0}" = "1" ]; then
+      repo=superwhisper/s1-mini-GGUF; dest=.cache/s1-mini-gguf
+    else
+      repo=superwhisper/s1-mini; dest=.cache/s1-mini
+    fi
+    mkdir -p "$dest"
+    hf download "$repo" --local-dir "$dest" --exclude "banner.jpg"
+    ls -lh "$dest"
+
+# HF parity for S1-mini: dump the transformers reference (float32 — bf16 flips
+# near-tie argmaxes), then check prompt string / prompt ids / greedy tokens.
+test-s1-parity *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    weights="${S1_WEIGHTS:-.cache/s1-mini}"
+    ref="${S1_REFERENCE:-/tmp/s1_reference.json}"
+    [ -s "$ref" ] || python3 scripts/s1_hf_reference.py --weights "$weights" --dtype float32 --out "$ref"
+    S1_WEIGHTS="$weights" S1_REFERENCE="$ref" \
+      cargo test -p rlx-s1 --test hf_parity --release -- --nocapture {{ARGS}}
+
 # Microsoft Fara1.5 computer-use agent (Qwen3.5 multimodal safetensors).
 fara *ARGS:
     just features={{features}} run-bin rlx-fara rlx-fara {{ARGS}}
@@ -349,6 +417,75 @@ fetch-qwen36-27b:
       fi
     done
     ls -lh "$dest"
+
+# unsloth/Qwen3.8-27B-GGUF (same qwen35 arch/topology as Qwen3.6-27B —
+# identical 866-tensor layout, block_count 65 = 64 trunk + 1 MTP). Text GGUF
+# (Q3_K_S ~12.6 GB) + CLIP mmproj (F16 ~0.9 GB). Then:
+# just qwen35 -- --weights DEST/Qwen3.8-27B-Q3_K_S.gguf --device metal --packed
+# --chat --prompt "..." [--mmproj DEST/mmproj-F16.gguf --image img.png]
+fetch-qwen38-27b:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="{{real_weights_dir}}/qwen3.8-27b-gguf"
+    mkdir -p "$dest"
+    base="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main"
+    # Q4_K_M is the speed pick on Metal: 36% larger than Q3_K_S but ~1.5x
+    # faster to decode (Q3_K's GEMV is dequant-ALU bound at ~48 GB/s vs Q4_K
+    # ~185). See crates/rlx-qwen35/src/BENCHMARKS.md.
+    for f in Qwen3.8-27B-Q4_K_M.gguf Qwen3.8-27B-Q3_K_S.gguf mmproj-F16.gguf; do
+      if [ ! -s "$dest/$f" ]; then
+        echo ">> downloading $f → $dest/$f"
+        curl -L -C - --retry 5 -o "$dest/$f" "$base/$f"
+      fi
+    done
+    ls -lh "$dest"
+
+# Doses-AI/Pestle-27B-Ternary-GGUF (qwen35 arch — Qwen3.6-27B with Pestle
+# factorized ternary projections). One 7.9 GiB runnable text GGUF + an
+# optional 0.9 GiB CLIP mmproj. Blocks 0..=62 are Q2_0 factor pairs, block
+# 63 is dense BF16, embed/lm_head are G8_0. Then:
+# just qwen35 -- --weights DEST/pestle-27b-ternary.gguf --device metal
+# --packed --fast --prompt "..." [--mmproj DEST/mmproj-pestle-27b-ternary.gguf]
+fetch-pestle-27b:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="{{real_weights_dir}}/pestle-27b-ternary-gguf"
+    mkdir -p "$dest"
+    base="https://huggingface.co/Doses-AI/Pestle-27B-Ternary-GGUF/resolve/main"
+    for f in pestle-27b-ternary.gguf mmproj-pestle-27b-ternary.gguf chat_template.jinja CHECKSUMS.sha256; do
+      if [ ! -s "$dest/$f" ]; then
+        echo ">> downloading $f → $dest/$f"
+        curl -L -C - --retry 5 -o "$dest/$f" "$base/$f"
+      fi
+    done
+    # The repo ships checksums; a truncated ternary GGUF still parses and
+    # then decodes garbage, so verify rather than trust the byte count.
+    (cd "$dest" && shasum -a 256 -c CHECKSUMS.sha256)
+    ls -lh "$dest"
+
+# unsloth/GLM-5.3-Flash-GGUF, but only the parts worth testing. The full model
+# is 93 GB at its smallest quantization and its smallest text shard is 43.5 GB;
+# a GGUF header carries every tensor's byte offset, so `blk.0` (KDA + dense FFN
+# + mHC), `blk.3`'s attention/indexer/mHC, and 8 of its 288 routed experts come
+# out of one shard via HTTP range requests as a valid ~400 MB single-file GGUF.
+# (Each expert is a contiguous byte range, so 8 of 288 is ~60 MB, not 2.2 GB.)
+# Then: just glm5next-real
+fetch-glm5next-subset:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="{{real_weights_dir}}/glm5next"
+    mkdir -p "$dest"
+    out="$dest/GLM-5.3-Flash-blk0-blk3-e8.gguf"
+    if [ ! -s "$out" ]; then
+      python3 scripts/glm5next_subset.py --experts 8 "$out"
+    fi
+    ls -lh "$dest"
+
+# The rlx-glm5next real-weight tests against that subset: block numerics,
+# decode-vs-prefill, and packed (no-dequant) vs dequantized.
+glm5next-real: fetch-glm5next-subset
+    RLX_GLM5NEXT_GGUF="{{real_weights_dir}}/glm5next/GLM-5.3-Flash-blk0-blk3-e8.gguf" \
+      cargo test -p rlx-glm5next --test real_weights --test packed_weights -- --nocapture
 
 # prism-ml/Ternary-Bonsai-27B (qwen35 arch, Q2_0_g128 packed). ~7.2 GB.
 fetch-ternary-bonsai27b:
@@ -541,6 +678,24 @@ bench-nanbeige-backends-all *ARGS:
 
 test-tinyllama-backends *ARGS:
     cargo test -p rlx-models --test tinyllama_backend_parity --features tinyllama,llama32 {{profile}} {{feature_args}} {{ARGS}}
+
+test-hy-mt-backends *ARGS:
+    cargo test -p rlx-models --test hy_mt_backend_parity --features hy-mt,qwen3 {{profile}} {{feature_args}} {{ARGS}}
+
+test-hy-mt-backends-all *ARGS:
+    just features=all-backends test-hy-mt-backends {{ARGS}}
+
+test-moonshine-backends *ARGS:
+    cargo test -p rlx-models --test moonshine_backend_parity --features moonshine {{profile}} {{feature_args}} {{ARGS}}
+
+test-moonshine-backends-all *ARGS:
+    just features=all-backends test-moonshine-backends {{ARGS}}
+
+test-nllb-backends *ARGS:
+    cargo test -p rlx-models --test nllb_backend_parity --features nllb {{profile}} {{feature_args}} {{ARGS}}
+
+test-nllb-backends-all *ARGS:
+    just features=all-backends test-nllb-backends {{ARGS}}
 
 test-tinyllama-backends-all *ARGS:
     just features=all-backends test-tinyllama-backends {{ARGS}}
@@ -889,6 +1044,22 @@ bench-vad-jfk *ARGS:
 
 bench-vad-jfk-all-devices *ARGS:
     cargo run -p rlx-vad --example jfk_bench --release --features all-backends -- --devices all {{ARGS}}
+
+# TEN-VAD (TEN Framework port; embedded weights, parity vs the shipped library)
+test-ten-vad *ARGS:
+    cargo test -p rlx-ten-vad --release {{ARGS}}
+
+test-ten-vad-backends *ARGS:
+    cargo test -p rlx-ten-vad --test reference_parity --features all-backends --release {{ARGS}}
+
+ten-vad *ARGS:
+    just run-bin rlx-ten-vad rlx-ten-vad {{ARGS}}
+
+bench-ten-vad *ARGS:
+    cargo run -p rlx-ten-vad --example ten_vad_bench --release -- {{ARGS}}
+
+bench-ten-vad-all-devices *ARGS:
+    cargo run -p rlx-ten-vad --example ten_vad_bench --release --features all-backends -- --devices all {{ARGS}}
 
 # --- Wake-word (openWakeWord / nanowakeword / porcupine / voxrt) ---
 
@@ -1587,6 +1758,88 @@ soprano-whisper TEXT="The quick brown fox jumps over the lazy dog.":
 soprano-whisper-brand TEXT="Hello from the Soprano model.":
     RLX_TEXT="{{TEXT}}" RLX_GREEDY=1 cargo run -p rlx-soprano --release --example whisper_roundtrip --features apple-silicon
 
+# HumeAI TADA (Text-Acoustic Dual Alignment) — zero-shot voice cloning.
+# Weights land on the external volume: tada-1b alone is 3.9 GB.
+TADA_DIR := env_var_or_default("TADA_DIR", "/Volumes/FOUR/rlx-weights/tada")
+
+fetch-tada:
+    mkdir -p "{{TADA_DIR}}"
+    hf download HumeAI/tada-1b --local-dir "{{TADA_DIR}}/tada-1b"
+    # decoder/ is mandatory: the `_decoder.*` copy bundled in tada-1b is a
+    # different, unused set of weights that produces unintelligible audio.
+    hf download HumeAI/tada-codec --include "encoder/*" "decoder/*" "aligner/*" \
+        --local-dir "{{TADA_DIR}}/tada-codec"
+    # meta-llama/Llama-3.2-1B is gated; any mirror of the same vocabulary works.
+    hf download unsloth/Llama-3.2-1B --include "tokenizer*" "special_tokens_map.json" \
+        --local-dir "{{TADA_DIR}}/tokenizer"
+    # The cross-backend harness reads repo-relative paths; big checkpoints live
+    # off-repo, so link them in the way the other large models are linked.
+    mkdir -p weights/tts
+    ln -sfn "{{TADA_DIR}}" weights/tts/tada
+    just tada-harness-prompt
+    @echo "TADA in {{TADA_DIR}} (linked at weights/tts/tada)"
+
+# Voice prompt the matrix harness speaks with. Building one runs the aligner and
+# the codec encoder, so it is done once and cached rather than per backend.
+#
+# The transcript must be what the clip ACTUALLY says — `assets/jfk/jfk_voice_clone.wav`
+# is the 5.2 s excerpt without the "And so my fellow Americans," preamble, which
+# was in this recipe and is not in the audio. The aligner force-aligns whatever
+# it is given, so the only symptom was a poor alignment score (-4.66 vs -0.34).
+tada-harness-prompt:
+    cargo run -p rlx-tada --release -- prompt \
+        --weights weights/tts/tada --wav assets/jfk/jfk_voice_clone.wav \
+        --text "Ask not what your country can do for you. Ask what you can do for your country." \
+        --out weights/tts/tada/harness.tadaprompt --device cpu
+
+# Extra aligners for non-English references (de es fr it ja pl pt ar ch).
+fetch-tada-aligner LANG:
+    hf download HumeAI/tada-codec --include "aligner-{{LANG}}/*" \
+        --local-dir "{{TADA_DIR}}/tada-codec"
+
+# Encode a reference speaker into a reusable voice prompt.
+tada-prompt WAV TEXT OUT="/tmp/tada_voice.tadaprompt" DEVICE="cpu":
+    cargo run -p rlx-tada --release --features apple-silicon -- prompt \
+        --weights "{{TADA_DIR}}" --wav "{{WAV}}" --text "{{TEXT}}" \
+        --out "{{OUT}}" --device {{DEVICE}}
+
+tada-speak TEXT="Hello from TADA." PROMPT="/tmp/tada_voice.tadaprompt" OUT="/tmp/tada.wav" DEVICE="metal":
+    cargo run -p rlx-tada --release --features apple-silicon -- speak \
+        --weights "{{TADA_DIR}}" --prompt "{{PROMPT}}" --text "{{TEXT}}" \
+        --out "{{OUT}}" --device {{DEVICE}}
+
+tada-info PROMPT="/tmp/tada_voice.tadaprompt":
+    cargo run -p rlx-tada --release -- info --prompt "{{PROMPT}}"
+
+# Parity vs the upstream torch modules. The end-to-end case needs a Llama-3.2
+# tokenizer.json and the real-weight backbone check needs the checkpoint; both
+# skip without them. DEVICE runs the whole suite on another backend.
+test-tada DEVICE="cpu":
+    RLX_TADA_TOKENIZER="{{TADA_DIR}}/tokenizer" \
+    RLX_TADA_WEIGHTS="{{TADA_DIR}}" \
+    RLX_TADA_TEST_DEVICE={{DEVICE}} \
+        cargo test -p rlx-tada --release --features apple-silicon
+
+# Every backend this host can run, through the crate's own suite.
+test-tada-backends:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    fail=0
+    for d in cpu metal mlx gpu vulkan coreml; do
+      printf '%-8s ' "$d"
+      if just test-tada "$d" 2>&1 | grep -qE '^test result: FAILED'; then
+        echo FAILED; fail=1
+      else
+        echo ok
+      fi
+    done
+    exit $fail
+
+# Same thing through the shared cross-backend harness (adds a Whisper coverage
+# and cpu-vs-device cosine check, and is what a CUDA/ROCm rig runs).
+tada-matrix BACKENDS="cpu,metal,mlx,wgpu,coreml":
+    ONLY=tada ALL=1 BACKENDS={{BACKENDS}} python3 scripts/matrix/run_matrix.py
+
 # Zonos v0.1 transformer (espeak → AR → DAC 44.1 kHz)
 fetch-zonos:
     hf download Zyphra/Zonos-v0.1-transformer --local-dir weights/tts/zonos
@@ -1800,6 +2053,24 @@ maya1-demo TEXT DESC="Realistic female voice in her 20s with a British accent. W
     cargo run -p rlx-maya1 --release -- --description "{{DESC}}" --text "{{TEXT}}" --out /tmp/maya1_demo.wav
 
 # MeloTTS — VITS2 multilingual TTS (MIT). Real inference via rlx-tiny-tts engine.
+# ── sanoTTS (Root-A student stack, ~1.5M params) ────────────────────────────
+
+# Fetch one sanoTTS voice package (default: the 1.46M English "amy").
+fetch-sanotts PACK="amy-en-1p46m":
+    mkdir -p weights/tts/sanotts
+    .venv-hf/bin/hf download ampixa/sanoTTS --include '{{PACK}}/*' --local-dir weights/tts/sanotts
+    @echo "sanoTTS voice in weights/tts/sanotts/{{PACK}}"
+
+# Synthesize with sanoTTS. DEVICE: host|cpu|metal|mlx|cuda|rocm|gpu|vulkan|ane.
+sanotts TEXT="Hello from a two megabyte voice." PACK="amy-en-1p46m" DEVICE="mlx":
+    cargo run -p rlx-sanotts --release --features apple-silicon -- \
+        say "{{TEXT}}" --voice-dir weights/tts/sanotts/{{PACK}} --device {{DEVICE}} \
+        -o /tmp/sanotts_demo.wav
+
+# Gate the port against upstream's pure-numpy reference on every available device.
+test-sanotts-parity:
+    cargo test -p rlx-sanotts --features metal,mlx --test reference_parity -- --nocapture
+
 melotts-demo TEXT:
     cargo run -p rlx-melotts --release --features apple-silicon -- --text "{{TEXT}}" --out /tmp/melotts_demo.wav
 
@@ -2723,6 +2994,17 @@ asr-e2e-native *ARGS:
         ${FLAGS[@]+"${FLAGS[@]}"}
     fi
 
+# Experimental 28-layer native forward (Python probe; parity not yet validated)
+asr-e2e-native-layers *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY="${PWD}/.venv-asr312/bin/python"
+    [[ -x "$PY" ]] || PY="$(command -v python3)"
+    ARGS=({{ARGS}})
+    if [[ ${#ARGS[@]} -gt 0 && "${ARGS[0]}" == "--" ]]; then ARGS=("${ARGS[@]:1}"); fi
+    RLX_ASR_DIR="${RLX_ASR_DIR:-$PWD/weights/asr}" \
+      "$PY" crates/rlx-asr/tools/e2e_native_layers.py ${ARGS[@]+"${ARGS[@]}"}
+
 sam1 *ARGS:
     just run-bin rlx-sam rlx-sam1 {{ARGS}}
 
@@ -2943,6 +3225,20 @@ fetch-qwen35-base:
 fetch-qwen3-asr REPO="Qwen/Qwen3-ASR-0.6B":
     huggingface-cli download {{REPO}} --local-dir .cache/qwen3-asr/Qwen3-ASR-0.6B
 
+# VibeVoice-ASR-Streaming-7B (~17 GB BF16 safetensors).
+fetch-vibevoice-asr-streaming REPO="microsoft/VibeVoice-ASR-Streaming-7B":
+    huggingface-cli download {{REPO}} --local-dir .cache/vibevoice-asr-streaming-7b
+
+# Streaming transcription (needs fetch-vibevoice-asr-streaming).
+vibevoice-asr-streaming *ARGS:
+    cargo run -p rlx-vibevoice-asr --release --features tokenizer,all-backends -- \
+        --model-dir {{env_var_or_default("RLX_VIBEVOICE_ASR_STREAMING_DIR", ".cache/vibevoice-asr-streaming-7b")}} {{ARGS}}
+
+# Synthetic VAE (BitNet ReLU + Streaming GELU) on each available RLX backend.
+#   just features=all-backends test-vibevoice-asr-backends
+test-vibevoice-asr-backends *ARGS:
+    cargo test -p rlx-vibevoice-asr --test backend_quick_check --features all-backends --release -- --nocapture {{ARGS}}
+
 # Q4_K_M GGUF for low-memory / non-MLX LM paths (voice chat defaults to safetensors on MLX).
 fetch-qwen3-gguf:
     mkdir -p weights/Qwen3-0.6B-gguf
@@ -2961,9 +3257,13 @@ fetch-qwen35-gguf QUANT="Q4_K_M":
 # Pull both canonical checkpoints requested in the runbook:
 # - Qwen/Qwen3.5-0.8B-Base (safetensors)
 # - unsloth/Qwen3.5-0.8B-GGUF (Q4_K_M by default)
-fetch-qwen35-0.8b:
+# (just recipe names cannot contain `.`)
+fetch-qwen35-08b:
     just fetch-qwen35-base
     just fetch-qwen35-gguf
+
+# Back-compat alias (same as fetch-qwen35-08b).
+alias fetch-qwen35-0pt8b := fetch-qwen35-08b
 
 # --- real-weight integration tests (PLAN.md M0–M3 verification) ---
 #

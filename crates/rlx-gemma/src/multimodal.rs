@@ -977,10 +977,10 @@ fn next_media_marker(prompt: &str) -> Option<(usize, &'static str)> {
     ];
     let mut best: Option<(usize, &'static str)> = None;
     for &(m, _) in markers {
-        if let Some(i) = prompt.find(m) {
-            if best.map(|(bi, _)| i < bi).unwrap_or(true) {
-                best = Some((i, m));
-            }
+        if let Some(i) = prompt.find(m)
+            && best.map(|(bi, _)| i < bi).unwrap_or(true)
+        {
+            best = Some((i, m));
         }
     }
     best

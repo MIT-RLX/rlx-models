@@ -707,9 +707,18 @@ impl<'a> Llama32Flow<'a> {
             flow = patch(flow);
         }
 
+        // Honor `hidden_only()` here as prefill does. It used to be ignored,
+        // so a decode flow always built (and, when tied, always demanded)
+        // `model.embed_tokens.weight` even for callers that only wanted hidden
+        // states — which is a hard load failure for a checkpoint whose
+        // embedding table lives outside the decoder's weight map.
+        let flow = flow.final_norm(eps);
+        let flow = if self.with_lm_head {
+            flow.lm_head(cfg.vocab_size, h, cfg.tie_word_embeddings)
+        } else {
+            flow.output("hidden")
+        };
         let built = flow
-            .final_norm(eps)
-            .lm_head(cfg.vocab_size, h, cfg.tie_word_embeddings)
             .build(&mut WeightLoaderSource(weights))?
             .with_extra_hir_outputs(kv_out.drain());
 

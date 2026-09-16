@@ -108,10 +108,10 @@ impl StreamingRecognizer {
         } else {
             self.asr.transcribe(slice)?
         };
-        if let Some(p) = &self.punc {
-            if !text.is_empty() {
-                text = p.restore(&text)?;
-            }
+        if let Some(p) = &self.punc
+            && !text.is_empty()
+        {
+            text = p.restore(&text)?;
         }
         Ok(Segment {
             start_ms: self.buf_start_ms + s_ms,

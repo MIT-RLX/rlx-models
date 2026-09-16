@@ -121,10 +121,10 @@ print('ort duration', dur.reshape(-1).tolist(), 'sum', int(dur.sum()), 'wave', l
         .arg(ort_script)
         .current_dir("/Users/Shared/rlx-models")
         .output();
-    if let Ok(out) = ort {
-        if out.status.success() {
-            eprintln!("{}", String::from_utf8_lossy(&out.stdout).trim());
-        }
+    if let Ok(out) = ort
+        && out.status.success()
+    {
+        eprintln!("{}", String::from_utf8_lossy(&out.stdout).trim());
     }
     Ok(())
 }

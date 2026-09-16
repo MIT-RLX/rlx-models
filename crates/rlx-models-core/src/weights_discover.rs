@@ -721,10 +721,11 @@ impl DiscoveryAccum {
     fn finish(mut self) -> Result<Vec<DiscoveredWeight>> {
         if self.sniff_arch {
             for w in self.by_key.values_mut() {
-                if w.format == DiscoveredFormat::Gguf && w.arch_hint.is_none() {
-                    if let Ok(arch) = gguf_architecture_from_path(&w.path) {
-                        w.arch_hint = Some(arch);
-                    }
+                if w.format == DiscoveredFormat::Gguf
+                    && w.arch_hint.is_none()
+                    && let Ok(arch) = gguf_architecture_from_path(&w.path)
+                {
+                    w.arch_hint = Some(arch);
                 }
             }
         }
@@ -1085,20 +1086,20 @@ fn scan_lemonade(cache_dir: &Path, acc: &mut DiscoveryAccum) -> Result<()> {
     let config_path = cache_dir.join("config.json");
     let mut models_dirs: Vec<PathBuf> = Vec::new();
     let mut extra_dir: Option<PathBuf> = None;
-    if config_path.is_file() {
-        if let Ok(text) = fs::read_to_string(&config_path) {
-            if let Ok(cfg) = serde_json::from_str::<Value>(&text) {
-                if let Some(md) = cfg.get("models_dir").and_then(|v| v.as_str()) {
-                    if md != "auto" && !md.is_empty() {
-                        models_dirs.push(PathBuf::from(md));
-                    }
-                }
-                if let Some(ed) = cfg.get("extra_models_dir").and_then(|v| v.as_str()) {
-                    if !ed.is_empty() {
-                        extra_dir = Some(PathBuf::from(ed));
-                    }
-                }
-            }
+    if config_path.is_file()
+        && let Ok(text) = fs::read_to_string(&config_path)
+        && let Ok(cfg) = serde_json::from_str::<Value>(&text)
+    {
+        if let Some(md) = cfg.get("models_dir").and_then(|v| v.as_str())
+            && md != "auto"
+            && !md.is_empty()
+        {
+            models_dirs.push(PathBuf::from(md));
+        }
+        if let Some(ed) = cfg.get("extra_models_dir").and_then(|v| v.as_str())
+            && !ed.is_empty()
+        {
+            extra_dir = Some(PathBuf::from(ed));
         }
     }
     // Default: walk the lemonade cache for dropped GGUFs. HF hub is scanned
@@ -1125,10 +1126,10 @@ fn scan_lemonade(cache_dir: &Path, acc: &mut DiscoveryAccum) -> Result<()> {
             }
         }
     }
-    if let Some(ed) = extra_dir {
-        if ed.is_dir() {
-            walk_weight_files(&ed, WeightSourceKind::Lemonade, 0, 6, acc)?;
-        }
+    if let Some(ed) = extra_dir
+        && ed.is_dir()
+    {
+        walk_weight_files(&ed, WeightSourceKind::Lemonade, 0, 6, acc)?;
     }
 
     // user_models.json named checkpoints
@@ -1210,12 +1211,12 @@ fn resolve_lemonade_checkpoint(spec: &str) -> Option<PathBuf> {
             snap_dirs.push(p);
         }
     }
-    if snap_dirs.is_empty() {
-        if let Ok(rd) = fs::read_dir(&snapshots) {
-            for e in rd.flatten() {
-                if e.path().is_dir() {
-                    snap_dirs.push(e.path());
-                }
+    if snap_dirs.is_empty()
+        && let Ok(rd) = fs::read_dir(&snapshots)
+    {
+        for e in rd.flatten() {
+            if e.path().is_dir() {
+                snap_dirs.push(e.path());
             }
         }
     }

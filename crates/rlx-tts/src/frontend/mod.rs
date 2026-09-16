@@ -215,16 +215,15 @@ impl HydraLite {
             }
             break;
         }
-        if cfg_path.is_file() {
-            if let Ok(cfg) =
+        if cfg_path.is_file()
+            && let Ok(cfg) =
                 serde_json::from_str::<NeuralFeConfig>(&std::fs::read_to_string(&cfg_path)?)
-            {
-                if let Some(eos) = cfg.eos {
-                    fe_opts.eos = eos;
-                }
-                if let Some(wb) = cfg.word_boundary_marker {
-                    fe_opts.word_boundary = wb;
-                }
+        {
+            if let Some(eos) = cfg.eos {
+                fe_opts.eos = eos;
+            }
+            if let Some(wb) = cfg.word_boundary_marker {
+                fe_opts.word_boundary = wb;
             }
         }
 
@@ -323,20 +322,18 @@ impl HydraLite {
             .iter()
             .map(|n| bundle_dir.join(n))
             .find(|p| p.is_file());
-        if let Some(post_path) = post_path.as_ref().filter(|p| p.is_file()) {
-            if let Ok(gc) =
+        if let Some(post_path) = post_path.as_ref().filter(|p| p.is_file())
+            && let Ok(gc) =
                 serde_json::from_str::<PipelineCfg>(&std::fs::read_to_string(post_path)?)
-            {
-                for stage in gc.pipeline {
-                    if stage.id == "neural_adapter" {
-                        if let Some(v) = stage
-                            .params
-                            .get("pause_min_duration")
-                            .and_then(|x| x.as_f64())
-                        {
-                            pause_min_duration_ms = v as f32;
-                        }
-                    }
+        {
+            for stage in gc.pipeline {
+                if stage.id == "neural_adapter"
+                    && let Some(v) = stage
+                        .params
+                        .get("pause_min_duration")
+                        .and_then(|x| x.as_f64())
+                {
+                    pause_min_duration_ms = v as f32;
                 }
             }
         }
@@ -444,14 +441,14 @@ impl HydraLite {
             }
             return out;
         }
-        if let Some(g2p) = &self.torchn {
-            if let Ok(Some(compact)) = g2p.pronounce(&key) {
-                let cleaned = self.apply_g2p_rules(&compact);
-                if let Some(alpha) = &self.lhp_alpha {
-                    let phones = alpha.compact_to_phones(&cleaned);
-                    if !phones.is_empty() {
-                        return phones;
-                    }
+        if let Some(g2p) = &self.torchn
+            && let Ok(Some(compact)) = g2p.pronounce(&key)
+        {
+            let cleaned = self.apply_g2p_rules(&compact);
+            if let Some(alpha) = &self.lhp_alpha {
+                let phones = alpha.compact_to_phones(&cleaned);
+                if !phones.is_empty() {
+                    return phones;
                 }
             }
         }

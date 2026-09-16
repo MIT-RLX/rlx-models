@@ -1,0 +1,49 @@
+[package]
+name = "rlx-s1"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "S1-mini by Superwhisper — ASR transcript text normalization (Qwen3-0.6B topology) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-runtime = { workspace = true }
+# S1-mini's config.json is byte-identical to Qwen/Qwen3-0.6B's — the forward
+# pass is stock Qwen3, so this crate contributes the prompt protocol, not an
+# architecture.
+rlx-qwen3 = { workspace = true }
+# Qwen3 byte-level BPE (tokenizer.json or the GGUF-embedded vocab).
+rlx-qwen35 = { workspace = true, optional = true }
+
+[[bin]]
+name = "rlx-s1"
+path = "src/bin/rlx_s1.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = ["tokenizer"]
+# Text in / text out. Without it the crate still renders and validates the
+# prompt protocol, but can't tokenize or detokenize.
+tokenizer = ["dep:rlx-qwen35", "rlx-qwen35/tokenizer"]
+# Backend passthroughs to rlx-qwen3 / rlx-runtime.
+metal = ["rlx-qwen3/metal"]
+mlx = ["rlx-qwen3/mlx"]
+cuda = ["rlx-qwen3/cuda"]
+rocm = ["rlx-qwen3/rocm"]
+gpu = ["rlx-qwen3/gpu"]
+vulkan = ["rlx-qwen3/vulkan"]
+coreml = ["rlx-qwen3/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

@@ -175,15 +175,14 @@ fn find_state_dict(v: &Value) -> Option<Vec<(String, Value)>> {
         }
         // nested: look under common wrapper keys
         for (k, val) in items {
-            if let Value::Str(s) = k {
-                if matches!(
+            if let Value::Str(s) = k
+                && matches!(
                     s.as_str(),
                     "state_dict" | "model" | "model_state_dict" | "module"
-                ) {
-                    if let Some(d) = find_state_dict(val) {
-                        return Some(d);
-                    }
-                }
+                )
+                && let Some(d) = find_state_dict(val)
+            {
+                return Some(d);
             }
         }
         // fall back: any nested dict that resolves

@@ -10,7 +10,16 @@ use crate::spec::{
 
 /// First-pass CTC hypotheses.
 pub fn ctc_first_pass(wp_logprob: &[f32], n_frames: usize) -> Vec<(Vec<usize>, f32)> {
-    ctc_beam_nbest(wp_logprob, n_frames, VOCAB, BLANK as usize, BEAM)
+    ctc_first_pass_beam(wp_logprob, n_frames, BEAM)
+}
+
+/// First-pass CTC with explicit beam width (Python e2e uses 8).
+pub fn ctc_first_pass_beam(
+    wp_logprob: &[f32],
+    n_frames: usize,
+    beam: usize,
+) -> Vec<(Vec<usize>, f32)> {
+    ctc_beam_nbest(wp_logprob, n_frames, VOCAB, BLANK as usize, beam.max(1))
 }
 
 /// Combine CTC and AED sequence scores (first-pass joint weights).

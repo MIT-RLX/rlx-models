@@ -25,7 +25,7 @@ byte+count verified before the original is removed — see `scripts/relocate_wei
 | chatterbox | ✅ ort-free (5 backends); Metal=correct speech (whisper 6/6, logmel 0.97) | ⚠️ full synth slow (24k-node) | ? | FOUR | LM re-prefill; low waveform-cos = 1 near-tie argmax flip, not a bug (see note) |
 | orpheus | ✅ | ✅ RTF 22.3 Metal (O(n) decode) | ? | internal | decode was O(n²) |
 | openvoice | ✅ at-parity (0.89 = quality) | ? | ? | internal | subgraphs cos 1.0 |
-| luxtts | ✅ at-parity (0.77 = f32 floor) | ? | ? | internal | inherent, not a bug |
+| luxtts | ✅ cos 0.99848 (5 backends) | ? | ? | internal | wgpu unblocked: empty-tensor slot + run-loop hang |
 | metavoice | ✅ working | ? | ? | FOUR | EnCodec from safetensors |
 | parlertts | ✅ exact | ? | ? | FOUR | T5 + 9-codebook delay |
 | melotts | ✅ exact | ✅ (tiny-tts) | ? | internal | VITS2 |
@@ -46,11 +46,42 @@ byte+count verified before the original is removed — see `scripts/relocate_wei
    estimators). Remaining supertonic gap to ort (0.52 GB) is now ~1.9× (was
    5.7×) — closable with a shared arena across the sequential ve/voc graphs +
    optional f16 activations (would break byte-identical, so gated).
-2. **Speed/RAM benching.** Most rows have `?` for speed and RAM — need a
-   uniform harness that records native-rlx RTF **and** peak RSS per model on a
-   fixed clip, so the ledger reflects measured numbers not recollection.
+2. **Speed/RAM benching — harness landed (2026-09), sweep still to run.** The TTS
+   bench already recorded RTF; it had no memory column at all. Added
+   `rlx_tts_bench::metrics::{peak_rss_mb, RssTracker, RssMetrics}`, mirroring
+   `rlx_llm_bench::metrics::peak_rss_mb` / `rlx_core::asr_bench::peak_rss_mb` so all three
+   leaderboards compute the column the same way. Two details make it meaningful rather than
+   decorative: the suite already runs every `(model, device)` cell in its own **worker
+   subprocess**, so `getrusage(RUSAGE_SELF)` is scoped to one model; and `ru_maxrss` is a
+   monotonic high-water mark, so the tracker snapshots a **baseline before the adapter is
+   constructed** and reports `peak - baseline` — otherwise the Whisper scorer (loaded before
+   the model loop) is charged to every small TTS model. `results.jsonl` carries all three
+   numbers, `BACKENDS.md` gains a "Peak RAM (MB, model only)" table, and `summary.json` gains
+   `max_model_rss_mb` (max, not median — the criterion is "same-or-less RAM than the
+   reference"). First measured row: **luxtts cpu = 13 380 MB at RTF 0.55**. Populating the
+   rest of the ledger is now just a full sweep.
 3. **maya1 / chatterbox CPU speed.** 3B / 24k-node graphs are impractically
-   slow on CPU; Metal is the usable path. Not a regression, but flagged.
+   slow on CPU; Metal is the usable path. **chatterbox is not merely "big" — its T3 LM runs
+   an O(N²) re-prefill** (a full prompt+generated forward for *every* token). A true KV-cache
+   decode exists but is opt-in (`RLX_CB_NATIVE_LM_KV=1`) because it is **broken**: its own gate,
+   `examples/native_t3_kv_parity`, fails at cosine **−0.127** (`decode(1 tok | past)` vs
+   `prefill(T+1)[row T]`).
+   Narrowed (2026-09), not yet fixed — the gate now takes `RLX_T3_KV_T` / `RLX_T3_KV_UPPER` /
+   `RLX_T3_KV_POS` and prints a past-sensitivity and input-acceptance probe:
+   - not the bucket padding — identical cosine at `upper` = 6, 7, 12;
+   - the past *is* reaching attention — zeroing it moves the logits (cosine 0.51, not identical);
+   - it fails even at `t = 1`, where the only past position is 0 and RoPE is the identity, so a
+     pre/post-RoPE export mix-up is excluded;
+   - **the `position` input is accepted by the compiled graph but has zero effect on the output**
+     — cosine identical to 8 decimals for position 0, 6 and 12. So the new token's RoPE row is
+     not coming from `position`, and present/past keys sit in different position frames.
+   `GatherDecodeRopeStage` looks correct in isolation (gathers row `position` from the tables and
+   overwrites `state.rope_cos/sin`, which `self_attn` reads by default — no named slot is set),
+   so the next step is a dump of the lowered decode graph to see what actually feeds the RoPE.
+   Note while there: that gather indexes with the **F32** `position` input and `Op::Gather` wants
+   an integer — worth casting when this is wired up (casting alone changed nothing here, so it is
+   not the failing link).
+   Fixing this turns chatterbox CPU from O(N²) into O(N) and is the real answer to the timeout.
 4. **chatterbox Metal "low cosine" is NOT a bug — inherent AR near-tie flip.**
    The TTS-bench reported chatterbox `cosine_vs_cpu` ≈ 0.03–0.05 on Metal while
    MLX was 1.0. Root-caused (per-token dump + per-step logit diag on the exact
@@ -120,8 +151,47 @@ Findings surfaced:
   `vocab.json`+`merges.txt` via `AutoTokenizer.save_pretrained` (Base repo doesn't
   ship one) → cpu **fox 6/6** rtf 0.253 ✅. **kyutai** FAIL "missing voice
   embedding" → `hf download kyutai/tts-voices alba-mackenna/casual.wav…safetensors`
-  → backbone loads/runs (data-unblocked) but output **fox 0/6** (unintelligible —
-  model-quality bug remains, like gepard). **gepard metal/mlx crash FIXED** —
+  → backbone loads/runs (data-unblocked) but output **fox 0/6**.
+  **FIXED (2026-09) — fox 0/6 → 6/6 on CPU and Metal.** The output is not unintelligible at all — Whisper transcribes fluent English that
+  simply ignores the script ("I can't do this." on repeat). With `RLX_KYUTAI_TTS_EAGER=1` the
+  same prompt returns **"Hello World!"**. `KyutaiTtsBackend::open` defaults to the RLX path
+  (`use_rlx = !force_eager || force_native`), so the shipped path is the broken one.
+  Evidence: the eager text head is dominated by `pad`(3) and `new_word`(0) with every word
+  token masked to ≈ −17, exactly as a DSM text stream should be; the RLX head returns 8000
+  logits that are **all equal to ~1e-7** with pad/new_word at ~0. The divergence is upstream of
+  the head — a single decode step from a reset state gives backbone `hidden` **cosine −0.617**
+  (max|Δ| 3.55) between the two stacks.
+  **Why it shipped: the parity suite is vacuous.** `rlx_backend_parity.rs` calls
+  `assert_logits_match_cpu(label, &cpu, &cpu)` for CPU and otherwise compares the RLX graph on
+  one device against the *same graph* on another — cross-device self-consistency, which passes
+  just as happily when the graph is uniformly wrong. New test
+  `tests/rlx_vs_eager_backbone.rs` makes the real comparison (skips without the checkpoint,
+  fails loudly with it) and is the bisect harness for the fix.
+  Second, independent defect found in the same read: eager **skips** cross-attention when
+  there is no speaker and uses only the real context frames when there is one, while the RLX
+  graph always attends over a zero-padded `MAX_SPEAKER_CROSS_FRAMES` buffer with
+  `MaskKind::None`, so padding frames join the softmax. Needs a cross-attention mask input.
+  A `RLX_KYUTAI_TTS_TRACE` logits dump was added to the RLX path mirroring the eager one, so
+  the two heads can be diffed step-for-step.
+  **Root cause: the SwiGLU width was derived from the config instead of the checkpoint.**
+  `hidden_scale` is not the hidden width — Kyutai applies the usual SwiGLU ⅔ adjustment, so the
+  1.6B checkpoint stores `gating.linear_in.weight = [11264, 2048]` (hidden **5632**) while
+  `TtsDims::from_cfg` computed `dim_feedforward / 2 = (2048·4.125)/2 = **4224**`. Every
+  gate/up/down slice in the RLX graph was taken at the wrong offset and `linear_out` was
+  transposed against the wrong stride, so all 16 layers were garbage. The eager path was
+  unaffected because it reads the tensor's own shape. Fix: `TtsDims::from_cfg_and_weights`
+  takes `ffn` from `gating.linear_in.weight`, and `for_each_transformer_param` now *ensures*
+  the slice matches the stored element count instead of mis-slicing silently.
+  Cross-attention is masked too, so the zero padding no longer joins the softmax (synthetic
+  gate: max|Δ| 5.5e-3 → 1.2e-7).
+  **The fixture hid it**: `synthetic_weights` built `[2·(dim·hidden_scale/2), dim]` — the same
+  wrong convention as the buggy `from_cfg` — so the two agreed and no test could disagree. It
+  now emits checkpoint-shaped `[2·⅔·dim_feedforward, dim]`, and `tests/rlx_vs_eager_layer.rs`
+  compares the RLX graph against the eager `StreamingTransformer` on synthetic weights (no
+  checkpoint needed, so it runs in CI) at 1/2/3 layers, plus a case pinning the convention and
+  asserting the binder now fails loudly on a config-derived width.
+  Verified: whole kyutai suite green (incl. 8 cross-backend cells), real-weight backbone parity
+  passes, and e2e Whisper returns the prompt verbatim on **cpu and metal**. **gepard metal/mlx crash FIXED** —
   the qwen35 `clear_host_dense_projections` (runner.rs) now skips the release when
   `weights_path` is empty (inline_weights has no on-disk source to reload from),
   so Metal/MLX decode no longer panics with "F32 projections released, no weights
@@ -130,11 +200,41 @@ Findings surfaced:
   gepard's default temperature sampling (0.4) which **free-runs into coherent but
   WRONG words** ("The love is a cure…"); **greedy is faithful** (whisper "The quick
   brown fox jumps over the lazy dog."). Adapter now honors `deterministic`→greedy →
-  gepard cpu **6/6**, metal **6/6**. Same class as chatterbox. Still open (deep code): **kittentts/mlx** panic —
-  Reshape runtime `[1,200100,9]` vs static `[1,200000,9]` (a cap/NSF-source length
-  inconsistency in the code-gen `kitten_tts_mini_rlx` graph: F0/N-proj source vs
-  alignment-cap Expand) → `Mul` broadcast fails on MLX (CPU/Metal silently
-  tolerate; fox 4/6 everywhere ⇒ likely corrupts them too); **parlertts/GPU** cos 0.22 but fox 6/6 — NOT an rlx
+  gepard cpu **6/6**, metal **6/6**. Same class as chatterbox. **kittentts — FIXED (three
+  independent defects, 2026-09).** The reported symptom was an MLX Reshape panic, runtime
+  `[1,200100,9]` vs static `[1,200000,9]`; underneath it were three separate bugs.
+  (1) **Waveform caps were not frame-aligned.** The vocoder divides `max_wave` two ways —
+  the NSF sine chain at `MEL_DIV`=300 (the `f0_upsamp` nearest ×300) and the generator AdaIN
+  at `SAMPLES_PER_ALIGNMENT_FRAME`=600 — both with `div_ceil`. A cap that is not a whole
+  number of *both* makes the upsampled sine source longer than the axis it feeds:
+  `ceil(200_000/300)*300 = 200_100`. The bench adapter passes a round `200_000`; the wgpu
+  (32 k) and Vulkan (80 k) storage-bind ceilings are equally unaligned, all off by exactly
+  100 samples. Fix: `bundle_patches::align_waveform_cap` rounds **down** to a 600 boundary
+  (down, not up — those caps are memory ceilings), applied at `compile_waveform_cap`,
+  `device_policy::clamp_waveform`, and `set_import_max_waveform_samples`. Test
+  `kitten_tts_mini_rlx/tests/waveform_cap_alignment.rs`.
+  (2) **`f0_upsamp` was importing as ZEROS** — upstream `rlx-onnx-import` lowered nearest
+  `Resize` only for 2×2 and *width*-only shapes, so KittenTTS's `[1,1,1,F]→[1,1,300,F]`
+  **height** upsample fell through to the zero stub. The NSF f0 source was dead on every
+  backend. Fixed in `../rlx` with the rank-4 case of the NCDHW split-and-broadcast identity
+  (`[N,C,H,1,W,1]` expanded to `[N,C,H,kh,W,kw]`); test
+  `rlx-onnx-import/tests/resize_nearest_height.rs`.
+  (3) **The f0 repair patched the wrong node.** The importer lowers one ONNX op into a chain
+  and stamps the ONNX name on several links; `find_node_by_name` returns the *first*, but
+  consumers read the *last*. `inject_f0_nearest_upsample` rewrote the head, leaving the
+  voicing-mask `Greater` on a stale rank-4 `[1,1,300,seq]` alias while patching its output to
+  `[1,max_wave,1]` — a rank-reducing "broadcast" no backend can run. Now uses
+  `find_last_node_by_name`.
+  Result: `kitten_tts_mini_rlx` lib **19/19** (was 15/19 — the 4 failures were (2)),
+  `native_smoke` **2/2** (was 0/2, hard panic), `native_weights_parity` green, and the bench
+  configuration `(256, 200_000)` now synthesizes on **CPU and MLX** (`bench_cap_regression.rs`).
+  Whisper on the long fixture: *"This is a longer sentence for testing the K-10 text to speech
+  system in."* Remaining (pre-existing, minor): `native_hello_via_whisper` transcribes the
+  0.35 s `həˈloʊ` as "holo"; the native-vs-reference parity test passes, so this is the model's
+  own rendering, not a graph bug. Also fixed: `native_smoke.rs` lacked the process-global
+  compile-cap mutex `native_whisper_roundtrip.rs` has, so its two tests raced (the long one
+  picked up the short one's 48 k cap and returned 2 s of audio).
+  **parlertts/GPU** cos 0.22 but fox 6/6 — NOT an rlx
   bug: benign temperature-sampling divergence (adapter ran `greedy:false`). Its
   *greedy* path had a **model prompt-length bug (FIXED)**: `native.rs` assumed the
   decoder's prompt prefix == `pt` (prompt_ids.len()), but the exported decoder
@@ -156,9 +256,23 @@ Findings surfaced:
   their ort `onnx` feature (native-only now), so cargo errored "feature does not
   exist". Set `features_base = []` in `scripts/matrix/registry.toml`. **Validated
   on mac: moss-nano now PASSES all 5 backends** — cpu, metal 1.000, mlx 1.000,
-  wgpu 1.000, coreml 1.000 (was 100% build-blocked). **luxtts** now 4/5: cpu ✅,
-  metal 0.973, mlx 0.973, coreml 0.973, **wgpu ❌ panic** "remainder with divisor
-  of zero" (a wgpu integer zero-stride/modulo bug — separate small open item).
+  wgpu 1.000, coreml 1.000 (was 100% build-blocked). **luxtts — now 5/5 on mac
+  (FIXED 2026-09):** cpu, metal, mlx, wgpu, coreml all **cos 0.99848**. The wgpu
+  panic had moved on from "remainder with divisor of zero" to `rlx-wgpu arena: no
+  offset for node NodeId(731)`, and behind it were two upstream bugs, both about
+  **zero-element tensors** (LuxTTS's flow decoder builds an `Expand [0,1,512]`):
+  (a) `rlx_compile::memory` only records a buffer when its slot size is non-zero, so
+  a zero-element tensor gets no assignment and every `Arena::offset` lookup panicked.
+  `compile_static_inner` now gives each one an explicit empty slot, and
+  `arena_span_bytes` skips zero-length ids so they never anchor a bind window.
+  (b) With the node compiling, the run loop then **hung forever**: ~79 match arms in
+  `WgpuExecutable::run_inner` guard a degenerate dispatch with `if <extent> == 0 {
+  continue; }`, but the only `step_i += 1` for a dispatched step is at the bottom of
+  that loop — so every one of them re-entered on the same step indefinitely. (They
+  must also consume the step's bind group, or every later step binds the wrong one;
+  the `static_once` skip a few lines above already does exactly this.) Any model with
+  a zero-extent step was affected, not just luxtts. Tests:
+  `rlx-wgpu/tests/empty_tensor_arena_slot.rs`; full rlx-wgpu suite green.
   Remotes pick up the corrected registry on their next matrix run.
 - **build** moss-nano + luxtts `[gpu,onnx]` fail on Linux (ort feature) — expected;
   these still need the native path on non-mac.

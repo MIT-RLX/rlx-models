@@ -215,20 +215,19 @@ pub fn run_stress(cfg: &StressConfig) -> Result<Vec<StressRow>> {
         summary_path.display()
     );
 
-    if let Some(min_cov) = cfg.fail_under_coverage {
-        if let Some(med) = summary.median_coverage {
-            if med < min_cov {
-                anyhow::bail!("median Whisper coverage {med:.3} < fail-under-coverage {min_cov}");
-            }
-        }
+    if let Some(min_cov) = cfg.fail_under_coverage
+        && let Some(med) = summary.median_coverage
+        && med < min_cov
+    {
+        anyhow::bail!("median Whisper coverage {med:.3} < fail-under-coverage {min_cov}");
     }
-    if let Some(min_ok) = cfg.fail_under_ok_rate {
-        if summary.ok_rate < min_ok {
-            anyhow::bail!(
-                "ok_rate {:.3} < fail-under-ok-rate {min_ok}",
-                summary.ok_rate
-            );
-        }
+    if let Some(min_ok) = cfg.fail_under_ok_rate
+        && summary.ok_rate < min_ok
+    {
+        anyhow::bail!(
+            "ok_rate {:.3} < fail-under-ok-rate {min_ok}",
+            summary.ok_rate
+        );
     }
 
     Ok(all_rows)
@@ -328,12 +327,12 @@ fn run_one(
         let _ = write_wav_mono(&path, &synth.pcm, synth.sample_rate);
     }
 
-    if cfg.spectral {
-        if let Some((rpcm, rsr)) = ref_pcm.as_ref() {
-            let m = spectral_vs_ref(&synth.pcm, synth.sample_rate, rpcm, *rsr);
-            row.stft_cosine = Some(m.stft_cosine);
-            row.logmel_cosine = Some(m.logmel_cosine);
-        }
+    if cfg.spectral
+        && let Some((rpcm, rsr)) = ref_pcm.as_ref()
+    {
+        let m = spectral_vs_ref(&synth.pcm, synth.sample_rate, rpcm, *rsr);
+        row.stft_cosine = Some(m.stft_cosine);
+        row.logmel_cosine = Some(m.logmel_cosine);
     }
 
     if let Some(w) = whisper.as_mut() {

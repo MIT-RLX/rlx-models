@@ -489,11 +489,11 @@ impl Flux2Runner {
     }
 
     pub fn drop_text_encoder_weights(&self) -> Result<()> {
-        if let Ok(mut te) = self.text_encoder.lock() {
-            if te.is_some() {
-                eprintln!("[flux2] dropping text encoder weights (~8GB RAM)");
-                *te = None;
-            }
+        if let Ok(mut te) = self.text_encoder.lock()
+            && te.is_some()
+        {
+            eprintln!("[flux2] dropping text encoder weights (~8GB RAM)");
+            *te = None;
         }
         if let Ok(mut cfg) = self.text_encoder_cfg.lock() {
             *cfg = None;

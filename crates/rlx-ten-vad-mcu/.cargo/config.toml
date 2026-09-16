@@ -1,0 +1,16 @@
+[build]
+target = "riscv32imc-unknown-none-elf"
+
+# Applies to every rv32 variant, so the same firmware builds for an FPU-less
+# ESP32-C3/C6 (imc) and an FPU-equipped ESP32-P4 (imafc).
+[target.'cfg(target_arch = "riscv32")']
+rustflags = ["-C", "link-arg=-Tlink.x"]
+
+[target.riscv32imc-unknown-none-elf]
+# `virt` is QEMU's generic RISC-V board. ESP32-C3/C6 use the same rv32imc ISA,
+# so the compute path is identical; only the linker script and UART address
+# change for real silicon.
+runner = "qemu-system-riscv32 -machine virt -bios none -nographic -kernel"
+
+[target.riscv32imafc-unknown-none-elf]
+runner = "qemu-system-riscv32 -machine virt -bios none -nographic -kernel"

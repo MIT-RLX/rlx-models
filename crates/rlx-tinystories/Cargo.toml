@@ -16,8 +16,7 @@ publish = false
 anyhow = { workspace = true }
 # The training stack: `dsl` = the `rlx! { … }` graph DSL, `optim` = autodiff +
 # CPU eval + the rlx_optim optimizers (AdamW, LR schedules, Func::train_step*).
-# Path dep on the sibling rlx checkout, mirroring rlx-termclean.
-rlx-tensor = { path = "../../../rlx/crates/core/rlx-tensor", version = "0.2.14", default-features = false, features = ["dsl", "optim"] }
+rlx-tensor = { workspace = true, features = ["dsl", "optim"] }
 # TinyStories fetch (synchronous ureq client) — pulled by the `download` feature.
 hf-hub = { workspace = true, optional = true }
 # mmap the byte-level corpus so a multi-GB train split never lives in RAM.
@@ -25,7 +24,7 @@ memmap2 = "0.9"
 
 [dev-dependencies]
 # Op-scope: per-op FLOPs/bytes/roofline cost model for the `inspect_ops` example.
-rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope", version = "0.2.14" }
+rlx-opscope = { workspace = true }
 
 [features]
 # Metal on by default (Apple GPU training); drop with --no-default-features for

@@ -237,10 +237,10 @@ fn max_block_layers(keys: &[&str], prefixes: &[&str]) -> usize {
     let mut max_idx = 0usize;
     for key in keys {
         for pfx in prefixes {
-            if let Some(rest) = key.strip_prefix(pfx) {
-                if let Ok(i) = rest.split('.').next().unwrap_or("").parse::<usize>() {
-                    max_idx = max_idx.max(i + 1);
-                }
+            if let Some(rest) = key.strip_prefix(pfx)
+                && let Ok(i) = rest.split('.').next().unwrap_or("").parse::<usize>()
+            {
+                max_idx = max_idx.max(i + 1);
             }
         }
     }

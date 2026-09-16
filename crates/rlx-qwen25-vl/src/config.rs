@@ -92,7 +92,25 @@ pub struct Qwen25VlHfConfig {
 impl Qwen25VlHfConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path).with_context(|| format!("read {path:?}"))?;
-        serde_json::from_str(&data).with_context(|| format!("parse {path:?}"))
+        // Two layouts exist in the wild. Newer exports nest the language model
+        // under `text_config`; the original Qwen2.5-VL releases (3B included)
+        // put those fields at the top level alongside `vision_config`. Lift the
+        // flat form into the nested one rather than reject it — the alternative
+        // is `missing field text_config` on a perfectly good checkpoint.
+        let mut v: serde_json::Value =
+            serde_json::from_str(&data).with_context(|| format!("parse {path:?}"))?;
+        if v.get("text_config").is_none()
+            && let Some(obj) = v.as_object_mut()
+        {
+            let mut lm = serde_json::Map::new();
+            for (k, val) in obj.iter() {
+                if k != "vision_config" && k != "architectures" {
+                    lm.insert(k.clone(), val.clone());
+                }
+            }
+            obj.insert("text_config".into(), serde_json::Value::Object(lm));
+        }
+        serde_json::from_value(v).with_context(|| format!("parse {path:?}"))
     }
 
     pub fn into_runtime(self) -> Result<Qwen25VlConfig> {
@@ -103,10 +121,29 @@ impl Qwen25VlHfConfig {
             crate::ACCEPTED_HF_MODEL_TYPES
         );
         let mrope_sections = mrope_sections_from_hf(self.rope_scaling.as_ref());
-        let rope_dim_count = self.text_config.head_dim;
+        let mut lm = self.text_config;
+        // `from_value` bypasses `Qwen3Config::from_file`, so the derived
+        // defaults have to be applied here too.
+        lm.fill_derived_defaults()?;
+        let rope_dim_count = lm.head_dim;
+        // `Qwen3Config::qk_norm` defaults to Qwen3's behaviour, but neither
+        // Qwen2-VL nor Qwen2.5-VL has per-head Q/K norms — the HF config simply
+        // omits the field, so the default silently wins and the graph then asks
+        // for `self_attn.q_norm.weight`, which is not in the checkpoint. The
+        // accepted model types are exactly the ones without it.
+        lm.qk_norm = false;
+        // Same omission, opposite sign. `attention_bias` defaults to `false`,
+        // but a Qwen 2 attention block applies Q/K/V bias *unconditionally* —
+        // HF has no flag for it, so the checkpoint ships `self_attn.q_proj.bias`
+        // and friends with nothing in `config.json` to announce them. Left at
+        // the default the graph loads the weights and silently drops all three
+        // biases: layer 0 comes out the right magnitude but the wrong
+        // direction (cos 0.78 against the reference), and the error compounds
+        // until the trunk emits `<|im_end|>` on repeat.
+        lm.attention_bias = true;
         Ok(Qwen25VlConfig {
             lm: Qwen25VlLmConfig {
-                lm: self.text_config,
+                lm,
                 mrope_sections,
                 rope_dim_count,
             },

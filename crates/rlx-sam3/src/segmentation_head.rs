@@ -278,23 +278,23 @@ pub fn materialize_segmentation_gguf_weights(
         return Ok(());
     };
     for i in 0..weights.pixel_conv_gguf_keys.len() {
-        if weights.pixel_conv_w[i].is_empty() {
-            if let Some(key) = &weights.pixel_conv_gguf_keys[i] {
-                let p = packed_linear(gguf, key)
-                    .ok_or_else(|| anyhow::anyhow!("missing packed pixel conv: {key}"))?;
-                weights.pixel_conv_w[i] = gguf_packed_conv3_to_f32(p, D_MODEL, D_MODEL)?;
-            }
+        if weights.pixel_conv_w[i].is_empty()
+            && let Some(key) = &weights.pixel_conv_gguf_keys[i]
+        {
+            let p = packed_linear(gguf, key)
+                .ok_or_else(|| anyhow::anyhow!("missing packed pixel conv: {key}"))?;
+            weights.pixel_conv_w[i] = gguf_packed_conv3_to_f32(p, D_MODEL, D_MODEL)?;
         }
     }
-    if weights.inst_w.is_empty() {
-        if let Some(key) = &weights.inst_gguf_key {
-            weights.inst_w = gguf_packed_conv1_to_nchw(gguf, key, D_MODEL, D_MODEL)?;
-        }
+    if weights.inst_w.is_empty()
+        && let Some(key) = &weights.inst_gguf_key
+    {
+        weights.inst_w = gguf_packed_conv1_to_nchw(gguf, key, D_MODEL, D_MODEL)?;
     }
-    if weights.sem_w.is_empty() {
-        if let Some(key) = &weights.sem_gguf_key {
-            weights.sem_w = gguf_packed_conv1_to_nchw(gguf, key, 1, D_MODEL)?;
-        }
+    if weights.sem_w.is_empty()
+        && let Some(key) = &weights.sem_gguf_key
+    {
+        weights.sem_w = gguf_packed_conv1_to_nchw(gguf, key, 1, D_MODEL)?;
     }
     Ok(())
 }

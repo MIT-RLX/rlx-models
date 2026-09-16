@@ -588,16 +588,16 @@ fn infer_vocab_size_from_gguf(raw: &GgufFile) -> usize {
     {
         return v as usize;
     }
-    if let Some(MetaValue::Array(tokens)) = raw.metadata.get("tokenizer.ggml.tokens") {
-        if !tokens.is_empty() {
-            return tokens.len();
-        }
+    if let Some(MetaValue::Array(tokens)) = raw.metadata.get("tokenizer.ggml.tokens")
+        && !tokens.is_empty()
+    {
+        return tokens.len();
     }
     for name in ["token_embd.weight", "model.embed_tokens.weight"] {
-        if let Some(t) = raw.tensors.get(name) {
-            if !t.shape.is_empty() {
-                return t.shape[0];
-            }
+        if let Some(t) = raw.tensors.get(name)
+            && !t.shape.is_empty()
+        {
+            return t.shape[0];
         }
     }
     128_256

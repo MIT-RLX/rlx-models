@@ -20,15 +20,15 @@ mod compile_support;
 use rlx_models::{
     Qwen35LayerFfn,
     qwen35::{
-        MEDIA_MARKER, MatWeight, MmProjConfig, MmProjWeights, MultimodalPrompt, Qwen35Config,
+        MEDIA_MARKER, MatWeight, MmProjConfig, MmProjWeights, MultimodalPrompt, Proj, Qwen35Config,
         Qwen35FullAttnLayer, Qwen35LinearLayer, Qwen35RunnerBuilder, Qwen35TrunkLayer,
         Qwen35VisionEncoder, Qwen35Weights,
     },
 };
 use rlx_runtime::Device;
 
-fn mat(data: Vec<f32>) -> MatWeight {
-    MatWeight::F32(data)
+fn mat(data: Vec<f32>) -> Proj {
+    Proj::Dense(MatWeight::F32(data))
 }
 
 fn ramp(n: usize, scale: f32) -> Vec<f32> {

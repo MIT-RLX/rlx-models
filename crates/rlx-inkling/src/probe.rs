@@ -155,10 +155,10 @@ pub fn select_probe_shards(
 
     let mut shards = Vec::new();
     for k in keys {
-        if let Some(shard) = weight_map.get(&k) {
-            if !shards.iter().any(|s| s == shard) {
-                shards.push(shard.clone());
-            }
+        if let Some(shard) = weight_map.get(&k)
+            && !shards.iter().any(|s| s == shard)
+        {
+            shards.push(shard.clone());
         }
     }
     shards

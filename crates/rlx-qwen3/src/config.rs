@@ -36,6 +36,13 @@ pub struct Qwen3Config {
     pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
     pub num_key_value_heads: usize,
+    /// Explicit per-head width. Qwen3 states it (it is *not* always
+    /// `hidden_size / num_attention_heads`), but the Qwen2/2.5 family — and
+    /// every VL checkpoint built on it — omits the field entirely, where the
+    /// implied value is the quotient. Defaulted to 0 here and filled in by
+    /// [`Qwen3Config::from_file`] so those configs load instead of failing with
+    /// `missing field head_dim`.
+    #[serde(default)]
     pub head_dim: usize,
     pub max_position_embeddings: usize,
 
@@ -116,7 +123,34 @@ fn default_qk_norm() -> bool {
 impl Qwen3Config {
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let data = std::fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&data)?)
+        let mut cfg: Self = serde_json::from_str(&data)?;
+        cfg.fill_derived_defaults()?;
+        Ok(cfg)
+    }
+
+    /// Fill fields the Qwen2/2.5 family omits, which `#[serde(default)]` would
+    /// otherwise leave at zero.
+    ///
+    /// Must be called by *every* path that deserializes a config, not just
+    /// [`Self::from_file`] — a VL config arrives through
+    /// `Qwen25VlHfConfig::into_runtime` via `serde_json::from_value`, and a
+    /// `head_dim` of 0 there does not fail loudly: it reaches the Metal RoPE
+    /// lowering as `x_shape[2] / head_dim` and panics with `attempt to divide
+    /// by zero`, a long way from the cause.
+    pub fn fill_derived_defaults(&mut self) -> anyhow::Result<()> {
+        let cfg = self;
+        if cfg.head_dim == 0 {
+            anyhow::ensure!(
+                cfg.num_attention_heads > 0
+                    && cfg.hidden_size.is_multiple_of(cfg.num_attention_heads),
+                "config omits `head_dim` and hidden_size {} is not divisible by \
+                 num_attention_heads {}",
+                cfg.hidden_size,
+                cfg.num_attention_heads
+            );
+            cfg.head_dim = cfg.hidden_size / cfg.num_attention_heads;
+        }
+        Ok(())
     }
 
     /// Repetition factor for GQA: how many Q heads share each KV head.

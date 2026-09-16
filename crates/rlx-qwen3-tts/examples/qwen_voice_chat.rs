@@ -1210,11 +1210,11 @@ impl Session {
         // Play the pre-synthesized "thinking" filler right now (zero latency) so the
         // user hears an acknowledgment while the LM+TTS compose the real reply. Not
         // part of the saved reply WAV; only reaches the speaker (no-op in WAV mode).
-        if self.use_filler {
-            if let Some(f) = self.fillers.get(self.voice_idx) {
-                println!("  💭 (filler: {FILLER_TEXT:?})");
-                pcm_sink(f);
-            }
+        if self.use_filler
+            && let Some(f) = self.fillers.get(self.voice_idx)
+        {
+            println!("  💭 (filler: {FILLER_TEXT:?})");
+            pcm_sink(f);
         }
 
         let t_lm = Instant::now();
@@ -1262,11 +1262,9 @@ impl Session {
             let mut loop_err: Option<anyhow::Error> = None;
             for tok in rx.iter() {
                 answer_ids.push(tok);
-                if show_tokens {
-                    if let Ok(piece) = tokenizer.decode(&[tok], false) {
-                        print!("{piece}");
-                        let _ = std::io::stdout().flush();
-                    }
+                if show_tokens && let Ok(piece) = tokenizer.decode(&[tok], false) {
+                    print!("{piece}");
+                    let _ = std::io::stdout().flush();
                 }
                 if first_only {
                     continue; // first-sentence mode: synthesize once, after decode
@@ -1382,11 +1380,9 @@ impl Session {
                     if eos_id == Some(tok) {
                         return false;
                     }
-                    if show_tokens {
-                        if let Ok(piece) = tokenizer.decode(&[tok], false) {
-                            print!("{piece}");
-                            let _ = std::io::stdout().flush();
-                        }
+                    if show_tokens && let Ok(piece) = tokenizer.decode(&[tok], false) {
+                        print!("{piece}");
+                        let _ = std::io::stdout().flush();
                     }
                     true
                 })?;
@@ -1502,18 +1498,18 @@ impl Session {
         let stats =
             self.tts
                 .generate_stream(&self.voices[self.voice_idx].1, &text, stream_cfg, |evt| {
-                    if let StreamEvent::Pcm(chunk) = evt {
-                        if chunk_rms(&chunk.samples) >= thr {
-                            if ttfa.is_none() {
-                                *ttfa = Some(turn_anchor.elapsed().as_secs_f64());
-                                println!(
-                                    "  ▶ first speaker audio {:.2}s from turn start",
-                                    ttfa.unwrap()
-                                );
-                            }
-                            sink(&chunk.samples);
-                            pcm.extend_from_slice(&chunk.samples);
+                    if let StreamEvent::Pcm(chunk) = evt
+                        && chunk_rms(&chunk.samples) >= thr
+                    {
+                        if ttfa.is_none() {
+                            *ttfa = Some(turn_anchor.elapsed().as_secs_f64());
+                            println!(
+                                "  ▶ first speaker audio {:.2}s from turn start",
+                                ttfa.unwrap()
+                            );
                         }
+                        sink(&chunk.samples);
+                        pcm.extend_from_slice(&chunk.samples);
                     }
                     StreamControl::Continue
                 })?;

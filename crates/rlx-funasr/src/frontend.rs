@@ -166,10 +166,10 @@ fn parse_bracket_vectors(text: &str) -> Vec<Vec<f32>> {
                 }
             }
             _ => {
-                if let Some(v) = cur.as_mut() {
-                    if let Ok(x) = tok.parse::<f32>() {
-                        v.push(x);
-                    }
+                if let Some(v) = cur.as_mut()
+                    && let Ok(x) = tok.parse::<f32>()
+                {
+                    v.push(x);
                 }
             }
         }

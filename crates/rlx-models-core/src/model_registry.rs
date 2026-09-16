@@ -168,6 +168,24 @@ fn register_builtin_gguf_models() {
         family: Some(GgufModelFamily::Qwen3),
         hint: "rlx-qwen3 (use `--packed` for large K-quant GGUF)",
     });
+    // Tencent HY-MT1.5 — dense Hunyuan MT (`hunyuan-dense` GGUF / `hunyuan_v1_dense`
+    // HF). Qwen3-shaped (GQA + QK-norm); branded runner is `rlx-hy-mt`.
+    register_gguf_model(GgufModelRegistration {
+        id: "hy-mt",
+        arches: &["hunyuan-dense", "hunyuan_dense", "hunyuan-v1-dense"],
+        hf_model_types: &["hunyuan_v1_dense", "hunyuan-dense", "hunyuan_dense"],
+        runner: Some("hy-mt"),
+        family: Some(GgufModelFamily::Qwen3),
+        hint: "rlx-hy-mt (HY-MT1.5 translation; Qwen3-shaped, use `--packed` for K-quant GGUF)",
+    });
+    register_gguf_model(GgufModelRegistration {
+        id: "translategemma",
+        arches: &["gemma3", "gemma3_text"],
+        hf_model_types: &["gemma3", "gemma3_text"],
+        runner: Some("translategemma"),
+        family: Some(GgufModelFamily::Gemma),
+        hint: "rlx-translategemma / rlx-gemma (TranslateGemma = Gemma 3 MT)",
+    });
     register_gguf_model(GgufModelRegistration {
         id: "qwen35",
         arches: &["qwen35", "qwen35moe", "qwen36", "qwen36moe"],
@@ -431,6 +449,23 @@ fn register_builtin_gguf_models() {
         hint: "rlx-whisper",
     });
     register_gguf_model(GgufModelRegistration {
+        id: "moonshine",
+        arches: &[],
+        hf_model_types: &["moonshine"],
+        runner: Some("moonshine"),
+        family: None,
+        hint: "rlx-moonshine (`MoonshineRunner::builder().weights`)",
+    });
+    // Meta NLLB-200 / M2M100 encoder–decoder MT (safetensors).
+    register_gguf_model(GgufModelRegistration {
+        id: "nllb",
+        arches: &[],
+        hf_model_types: &["m2m_100", "m2m100", "nllb", "nllb_200"],
+        runner: Some("nllb"),
+        family: None,
+        hint: "rlx-nllb (`NllbRunner::builder().weights(...).build()`; FLORES-200 lang codes)",
+    });
+    register_gguf_model(GgufModelRegistration {
         id: "minimax-m3",
         arches: &["minimax-m3", "minimax_m3"],
         hf_model_types: &["minimax_m3_vl", "minimax_m3"],
@@ -440,6 +475,18 @@ fn register_builtin_gguf_models() {
     });
 
     // ── Hint-only (no rlx-run auto runner today) ─────────────────────────────
+    // GLM-5.3-Flash. A prefill flow builder, not an `LmRunner`: 320 B total /
+    // 18 B active, so it has no single-file GGUF and no in-process decode loop
+    // yet. Registered so sniffing names the arch and points at the crate
+    // instead of reporting an unknown architecture.
+    register_gguf_model(GgufModelRegistration {
+        id: "glm5next",
+        arches: &["glm5next"],
+        hf_model_types: &["glm5_next", "glm5_next_text"],
+        runner: None,
+        family: None,
+        hint: "rlx-glm5next (`build_glm5next_text_flow`; hybrid KDA + NoPE-MLA/DSA, mHC, 288-expert MoE)",
+    });
     register_gguf_model(GgufModelRegistration {
         id: "embed",
         arches: &["bert", "modern-bert", "nomic-bert", "nomic-bert-moe"],
@@ -453,6 +500,28 @@ fn register_builtin_gguf_models() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `glm5next` is sniffable but has no `LmRunner` — the hint has to name
+    /// the crate, otherwise a GLM-5.3-Flash GGUF reports an unknown
+    /// architecture.
+    #[test]
+    fn glm5next_is_sniffable_as_hint_only() {
+        ensure_builtin_gguf_models();
+        assert_eq!(runner_for_gguf_arch("glm5next"), None);
+        assert_eq!(family_for_gguf_arch("glm5next"), None);
+        let hint = hint_for_gguf_arch("glm5next").expect("glm5next must be registered");
+        assert!(hint.contains("rlx-glm5next"), "hint was {hint:?}");
+        assert_eq!(
+            lookup_hf_model_type("glm5_next").map(|r| r.id),
+            Some("glm5next"),
+            "the GGUF arch and the HF model_type must resolve to one entry"
+        );
+        // The older GLM MoE tag must not be captured by this registration.
+        assert_ne!(
+            hint_for_gguf_arch("glm4moe"),
+            hint_for_gguf_arch("glm5next")
+        );
+    }
 
     #[test]
     fn builtins_map_lm_arches() {
@@ -491,6 +560,8 @@ mod tests {
         assert_eq!(runner_for_gguf_arch("bert"), None);
         assert!(hint_for_gguf_arch("bert").unwrap().contains("rlx-embed"));
         assert_eq!(runner_for_hf_model_type("whisper"), Some("whisper"));
+        assert_eq!(runner_for_hf_model_type("m2m_100"), Some("nllb"));
+        assert_eq!(runner_for_hf_model_type("nllb"), Some("nllb"));
         assert_eq!(runner_for_hf_model_type("gemma4"), Some("gemma"));
         assert_eq!(runner_for_hf_model_type("gemma4moe"), None);
         // Qwen3.5 / Qwen3-Next mlx-community model_types route to the qwen35 runner.

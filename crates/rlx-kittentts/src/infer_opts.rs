@@ -26,10 +26,10 @@ pub const MAX_NATIVE_CHUNK_SLOTS: usize = 48;
 
 /// Max padded IPA ids per infer pass (runtime token cap from compile).
 pub fn infer_chunk_slots(sequence_length: usize) -> usize {
-    if let Ok(raw) = std::env::var("KITTEN_RLX_CHUNK_SLOTS") {
-        if let Ok(n) = raw.parse::<usize>() {
-            return n.max(1);
-        }
+    if let Ok(raw) = std::env::var("KITTEN_RLX_CHUNK_SLOTS")
+        && let Ok(n) = raw.parse::<usize>()
+    {
+        return n.max(1);
     }
     let budget = sequence_length
         .saturating_sub(DURATION_COMPILE_HEADROOM)

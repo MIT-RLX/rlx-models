@@ -34,6 +34,7 @@ use crate::builder::{
     build_qwen3_decode_graph_sized, build_qwen3_decode_graph_sized_ext,
     build_qwen3_decode_graph_sized_qk, build_qwen3_decode_graph_sized_ragged,
     build_qwen3_graph_sized, build_qwen3_graph_sized_last_logits,
+    build_qwen3_graph_sized_last_logits_with,
 };
 use crate::capabilities::validate_device;
 use crate::config::Qwen3Config;
@@ -100,6 +101,10 @@ pub struct Qwen3Generator {
     /// Set to `None` to disable (default for new instances; opt in via
     /// [`Qwen3Generator::with_prefill_cache`]).
     prefill_compile_cache: Option<CompileCache>,
+    /// Round prompt lengths up to this many tokens before compiling the prefill
+    /// graph, so one compiled shape serves a range of prompt lengths. `None`
+    /// (default) keeps the exact-length behavior.
+    prefill_bucket: Option<usize>,
     /// Bucketed compile cache for decode-mode graphs. Each bucket
     /// holds one compiled graph specialized at its upper-bound
     /// `past_seq`; the host pads `past_k`/`past_v` and supplies a
@@ -758,6 +763,7 @@ impl Qwen3Generator {
             device,
             cache: None,
             prefill_compile_cache: Some(CompileCache::new(device, 8)),
+            prefill_bucket: None,
             decode_compile_cache: Some(BucketedCompileCache::power_of_two_ladder(
                 device,
                 1,
@@ -1171,6 +1177,41 @@ impl Qwen3Generator {
         self
     }
 
+    /// Round prompt lengths up to a multiple of `step` before compiling the
+    /// prefill graph (`0`/`1` disables; `None` is the default and also
+    /// disables).
+    ///
+    /// The prefill compile cache is keyed on the exact `(batch, seq)`, so a
+    /// caller whose prompt length varies every call — a dictation or
+    /// normalization pipeline, say — recompiles the full prefill graph nearly
+    /// every time, which costs seconds on Metal and dwarfs the forward pass for
+    /// short prompts. Bucketing right-pads `input_ids` and gathers the LM-head
+    /// row through a `last_token_idx` input instead of a baked `seq - 1`, so one
+    /// compiled shape covers `step` consecutive lengths. Output is unchanged:
+    /// causal masking keeps the pad columns out of every real row, and the pad
+    /// KV rows are trimmed before they reach the cache.
+    ///
+    /// The cost is up to `step - 1` padded positions of prefill compute per
+    /// call, so pick `step` relative to your prompt lengths — 32 or 64 for
+    /// dictation-length prompts, larger for long documents. Applies to the F32
+    /// path at `batch == 1`; ignored for native-packed GGUF (which compiles
+    /// fresh per seed regardless).
+    pub fn with_prefill_bucket(mut self, step: usize) -> Self {
+        self.prefill_bucket = (step > 1).then_some(step);
+        self
+    }
+
+    /// Set or clear the prefill bucket after construction. See
+    /// [`Self::with_prefill_bucket`].
+    pub fn set_prefill_bucket(&mut self, step: Option<usize>) {
+        self.prefill_bucket = step.filter(|s| *s > 1);
+    }
+
+    /// The active prefill bucket step, if any.
+    pub fn prefill_bucket(&self) -> Option<usize> {
+        self.prefill_bucket
+    }
+
     /// Enable the bucketed decode compile cache spanning past-seq
     /// values in `[1, max_past]`. Buckets are power-of-two
     /// `[1..2, 2..3, 3..5, 5..9, 9..17, …]`. Each bucket compiles
@@ -1319,23 +1360,23 @@ impl Qwen3Generator {
             // the last position, and appends the token. Return that
             // token directly — no decode step on this call.
             let tok = self.seed_cache_from_prompt(opts)?;
-            if std::env::var("RLX_QWEN3_DUMP_DECODE").is_ok() {
-                if let Some(c) = self.cache.as_ref() {
-                    let mk = c
-                        .layers_k
-                        .iter()
-                        .flatten()
-                        .fold(0.0f32, |m, &v| m.max(v.abs()));
-                    let mv = c
-                        .layers_v
-                        .iter()
-                        .flatten()
-                        .fold(0.0f32, |m, &v| m.max(v.abs()));
-                    eprintln!(
-                        "[seed-kv-range] max|K|={mk:.1} max|V|={mv:.1} past_len={}",
-                        c.past_len
-                    );
-                }
+            if std::env::var("RLX_QWEN3_DUMP_DECODE").is_ok()
+                && let Some(c) = self.cache.as_ref()
+            {
+                let mk = c
+                    .layers_k
+                    .iter()
+                    .flatten()
+                    .fold(0.0f32, |m, &v| m.max(v.abs()));
+                let mv = c
+                    .layers_v
+                    .iter()
+                    .flatten()
+                    .fold(0.0f32, |m, &v| m.max(v.abs()));
+                eprintln!(
+                    "[seed-kv-range] max|K|={mk:.1} max|V|={mv:.1} past_len={}",
+                    c.past_len
+                );
             }
             // Bound the prompt's cache to the window before the first decode.
             self.rotate_cache_if_sliding();
@@ -1506,10 +1547,10 @@ impl Qwen3Generator {
                 continue;
             }
             // Only K-quant tensors have packed metadata; F16/F32 return None → skip.
-            if let Some((scheme, _shape)) = loader.packed_meta(&key) {
-                if let Some(bytes) = loader.tensor_bytes_borrowed(&key) {
-                    map.insert(key, (bytes.to_vec(), scheme));
-                }
+            if let Some((scheme, _shape)) = loader.packed_meta(&key)
+                && let Some(bytes) = loader.tensor_bytes_borrowed(&key)
+            {
+                map.insert(key, (bytes.to_vec(), scheme));
             }
         }
         let n = map.len();
@@ -1611,17 +1652,17 @@ impl Qwen3Generator {
             _ => return,
         };
         let kv_dim = self.cfg.kv_proj_dim();
-        if let Some(cache) = self.cache.as_mut() {
-            if cache.past_len > w {
-                let drop = (cache.past_len - w) * kv_dim;
-                for k in cache.layers_k.iter_mut() {
-                    k.drain(0..drop.min(k.len()));
-                }
-                for v in cache.layers_v.iter_mut() {
-                    v.drain(0..drop.min(v.len()));
-                }
-                cache.past_len = w;
+        if let Some(cache) = self.cache.as_mut()
+            && cache.past_len > w
+        {
+            let drop = (cache.past_len - w) * kv_dim;
+            for k in cache.layers_k.iter_mut() {
+                k.drain(0..drop.min(k.len()));
             }
+            for v in cache.layers_v.iter_mut() {
+                v.drain(0..drop.min(v.len()));
+            }
+            cache.past_len = w;
         }
     }
 
@@ -3432,15 +3473,72 @@ impl Qwen3Generator {
         Ok(out)
     }
 
-    /// Run prefill-with-cache and return the raw outputs. Uses the
-    /// LRU `CompileCache` when enabled; otherwise compiles fresh each
-    /// call. Keyed by `seq` because graph shape is seq-specialized.
+    /// Prefill `ids_f32` and return `(last-position logits, seeded KV cache)`.
+    ///
+    /// Wraps [`Self::run_prefill_with_cache`] with the bucketing bookkeeping:
+    /// the graph may have run at a padded length, in which case the exported KV
+    /// carries pad rows that must not enter the cache.
+    fn prefill_seed_kv(
+        &mut self,
+        batch: usize,
+        seq: usize,
+        ids_f32: &[f32],
+    ) -> Result<(Vec<f32>, KvCacheState)> {
+        let kv_dim = self.cfg.kv_proj_dim();
+        let (outputs, ran_seq) = self.run_prefill_with_cache(batch, seq, ids_f32)?;
+        let (logits, mut kv) =
+            kv_from_prefill_outputs(outputs, batch, ran_seq, kv_dim, self.cfg.num_hidden_layers)?;
+        if ran_seq != seq {
+            // Bucketed run: drop the pad rows. They sit *after* every real
+            // position, so causal masking (exp(-inf) = 0) means no real row ever
+            // attended to them — but leaving them in the cache would let the
+            // first decode step do exactly that. The retained prefix is
+            // numerically equivalent to an exactly-sized prefill, not
+            // bit-identical: the padded run is a wider GEMM and reduces in a
+            // different order (~1e-7 relative, same class as any matmul-shape
+            // change). Bucketing only engages at batch == 1, so a plain truncate
+            // is the right slice.
+            for k in kv.layers_k.iter_mut() {
+                k.truncate(seq * kv_dim);
+            }
+            for v in kv.layers_v.iter_mut() {
+                v.truncate(seq * kv_dim);
+            }
+            kv.past_len = seq;
+        }
+        Ok((logits, kv))
+    }
+
+    /// Round `seq` up to the configured prefill bucket, or return it unchanged
+    /// when bucketing is off / not applicable.
+    ///
+    /// The prefill compile cache is keyed on the exact `(batch, seq)`, so a
+    /// workload whose prompt length varies call to call recompiles the whole
+    /// prefill graph nearly every time (seconds on Metal). Rounding the length
+    /// up to a coarse grid collapses those into a handful of shapes at the cost
+    /// of at most `step - 1` padded positions of prefill compute.
+    fn prefill_bucket_seq(&self, batch: usize, seq: usize) -> usize {
+        let Some(step) = self.prefill_bucket else {
+            return seq;
+        };
+        // batch > 1 would need a strided KV trim rather than a truncate, and the
+        // native-packed path compiles fresh every seed anyway (nothing to reuse).
+        if step < 2 || batch != 1 || self.native_packed_gguf.is_some() {
+            return seq;
+        }
+        seq.div_ceil(step) * step
+    }
+
+    /// Run prefill-with-cache and return `(raw outputs, the seq it ran at)`.
+    /// Uses the LRU `CompileCache` when enabled; otherwise compiles fresh each
+    /// call. Keyed by `seq` because graph shape is seq-specialized — see
+    /// [`Self::prefill_bucket_seq`] for how that key is coarsened.
     fn run_prefill_with_cache(
         &mut self,
         batch: usize,
         seq: usize,
         ids_f32: &[f32],
-    ) -> Result<Vec<Vec<f32>>> {
+    ) -> Result<(Vec<Vec<f32>>, usize)> {
         let prefill_opts = self.profile_compile_options(false);
         // Native packed prefill-seed: build the last-logits + KV-export graph
         // with `Op::DequantMatMul` projections straight from the GGUF (weights
@@ -3464,35 +3562,67 @@ impl Qwen3Generator {
             for (name, bytes) in &packed_params {
                 compiled.set_param_typed(name, bytes, rlx_ir::DType::U8);
             }
-            return Ok(compiled.run(&[("input_ids", ids_f32)]));
+            return Ok((compiled.run(&[("input_ids", ids_f32)]), seq));
         }
+
+        // Bucketing: run at `ran_seq >= seq` with the tail of `input_ids`
+        // right-padded, and let `last_token_idx` point at the real final
+        // position so the LM head still reads row `seq - 1`. Pad id 0 is always
+        // in-vocab, so the embedding gather stays in bounds; what the pad rows
+        // compute is discarded (logits) or trimmed (KV) by `prefill_seed_kv`.
+        let ran_seq = self.prefill_bucket_seq(batch, seq);
+        let padded_ids: Vec<f32>;
+        let ids_f32 = if ran_seq == seq {
+            ids_f32
+        } else {
+            padded_ids = {
+                let mut v = ids_f32.to_vec();
+                v.resize(batch * ran_seq, 0.0);
+                v
+            };
+            &padded_ids
+        };
+        let last_idx = [(seq - 1) as f32];
+        let dyn_last = ran_seq != seq;
+        let inputs: Vec<(&str, &[f32])> = if dyn_last {
+            vec![
+                ("input_ids", ids_f32),
+                ("last_token_idx", last_idx.as_slice()),
+            ]
+        } else {
+            vec![("input_ids", ids_f32)]
+        };
+
         if let Some(cache) = &mut self.prefill_compile_cache {
-            let key = prefill_cache_key(batch, seq);
+            // Distinguish the bucketed graph from a same-length exact one: the
+            // former has an extra `last_token_idx` input, so they are not
+            // interchangeable behind one cache key.
+            let key = prefill_cache_key(batch, ran_seq) ^ if dyn_last { 1 << 62 } else { 0 };
             if cache.contains(key) {
                 let compiled = cache.get_or_compile_with_options(
                     key,
                     || panic!("run_prefill_with_cache: missing prefill cache key {key}"),
                     &prefill_opts,
                 );
-                return Ok(compiled.run(&[("input_ids", ids_f32)]));
+                return Ok((compiled.run(&inputs), ran_seq));
             }
             let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
-            let (graph, params) = build_qwen3_graph_sized_last_logits(
-                &self.cfg, &mut wm, batch, seq, /*with_kv_outputs*/ true,
+            let (graph, params) = build_qwen3_graph_sized_last_logits_with(
+                &self.cfg, &mut wm, batch, ran_seq, /*with_kv_outputs*/ true, dyn_last,
             )?;
             let compiled = compile_cache_ensure_graph(cache, key, graph, params, &prefill_opts);
-            Ok(compiled.run(&[("input_ids", ids_f32)]))
+            Ok((compiled.run(&inputs), ran_seq))
         } else {
             let mut wm = WeightMap::from_tensors((*self.weights_cache).clone());
-            let (graph, params) = build_qwen3_graph_sized_last_logits(
-                &self.cfg, &mut wm, batch, seq, /*with_kv_outputs*/ true,
+            let (graph, params) = build_qwen3_graph_sized_last_logits_with(
+                &self.cfg, &mut wm, batch, ran_seq, /*with_kv_outputs*/ true, dyn_last,
             )?;
             let opts = self.profile_compile_options(false);
             let mut compiled = Session::new(self.device).compile_with(graph, &opts);
             for (name, data) in &params {
                 compiled.set_param(name, data);
             }
-            Ok(compiled.run(&[("input_ids", ids_f32)]))
+            Ok((compiled.run(&inputs), ran_seq))
         }
     }
 
@@ -3543,12 +3673,9 @@ impl Qwen3Generator {
     fn seed_cache_from_prompt(&mut self, opts: SampleOpts) -> Result<u32> {
         let seq = self.tokens.len();
         let batch = 1usize;
-        let kv_dim = self.cfg.kv_proj_dim();
 
         let ids_f32: Vec<f32> = self.tokens.iter().map(|&i| i as f32).collect();
-        let outputs = self.run_prefill_with_cache(batch, seq, &ids_f32)?;
-        let (logits, kv) =
-            kv_from_prefill_outputs(outputs, batch, seq, kv_dim, self.cfg.num_hidden_layers)?;
+        let (logits, kv) = self.prefill_seed_kv(batch, seq, &ids_f32)?;
         self.cache = Some(kv);
         // Seed retention with the prompt's positions so the resident set tracks
         // the KV mirror row-for-row (Stage 2).
@@ -3576,10 +3703,9 @@ impl Qwen3Generator {
                 | Device::Cuda
                 | Device::Rocm
                 | Device::DirectX
-        ) {
-            if let Some(cache) = &mut self.prefill_compile_cache {
-                cache.clear();
-            }
+        ) && let Some(cache) = &mut self.prefill_compile_cache
+        {
+            cache.clear();
         }
         Ok(tok)
     }
@@ -3752,12 +3878,9 @@ impl Qwen3Generator {
 
         let seq = context.len();
         let batch = 1usize;
-        let kv_dim = self.cfg.kv_proj_dim();
 
         let ids_f32: Vec<f32> = context.iter().map(|&i| i as f32).collect();
-        let outputs = self.run_prefill_with_cache(batch, seq, &ids_f32)?;
-        let (logits, kv) =
-            kv_from_prefill_outputs(outputs, batch, seq, kv_dim, self.cfg.num_hidden_layers)?;
+        let (logits, kv) = self.prefill_seed_kv(batch, seq, &ids_f32)?;
         self.cache = Some(kv);
 
         let vocab = self.cfg.vocab_size;
@@ -4441,6 +4564,105 @@ mod tests {
             "bucketed-cache decode diverged from one-shot decode — \
              mask, padding, or output-slice bug"
         );
+    }
+
+    fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max)
+    }
+
+    /// Bucketed **prefill** must be indistinguishable from an exactly-sized
+    /// one — same next token, same KV cache, and the same continuation after
+    /// several decode steps. Three ways to get this wrong, each caught here:
+    /// gathering the padded last row instead of `last_token_idx`, leaving the
+    /// pad rows in the KV cache so the first decode step attends to them, and a
+    /// compile-cache key that lets a bucketed and an exact graph of the same
+    /// length alias each other.
+    #[test]
+    fn bucketed_prefill_matches_exact() {
+        let cfg = tiny_cfg();
+        let steps = 5;
+        // Lengths 3 and 5 both round up to the bucket 8 — so the second call
+        // also exercises reuse of the already-compiled bucketed graph.
+        for prompt in [vec![1u32, 2, 3], vec![1u32, 2, 3, 5, 7]] {
+            let mut wm_exact = synthetic_weights(&cfg);
+            let mut exact =
+                Qwen3Generator::from_loader(cfg.clone(), &mut wm_exact, Device::Cpu).unwrap();
+            exact.prefill(&prompt);
+            let exact_tokens = exact.generate_cached(steps, SampleOpts::greedy()).unwrap();
+            let exact_kv = exact.cache.clone().unwrap();
+
+            let mut wm_buc = synthetic_weights(&cfg);
+            let mut buc = Qwen3Generator::from_loader(cfg.clone(), &mut wm_buc, Device::Cpu)
+                .unwrap()
+                .with_prefill_bucket(8);
+            assert_eq!(buc.prefill_bucket(), Some(8));
+            buc.prefill(&prompt);
+            let buc_tokens = buc.generate_cached(steps, SampleOpts::greedy()).unwrap();
+            let buc_kv = buc.cache.clone().unwrap();
+
+            assert_eq!(
+                buc_tokens,
+                exact_tokens,
+                "bucketed prefill diverged at prompt len {}",
+                prompt.len()
+            );
+            assert_eq!(buc_kv.past_len, exact_kv.past_len, "KV length differs");
+            // Numerically equivalent, not bit-identical: the padded run is a
+            // wider GEMM, so the projections reduce in a different order. Pad
+            // *columns* contribute exactly zero (causal mask → exp(-inf)), so
+            // the gap is float summation order alone — ~1e-7 relative, the same
+            // class as changing any matmul's M. A masking or trimming bug would
+            // land orders of magnitude outside this, not inside it.
+            for (l, (bk, ek)) in buc_kv.layers_k.iter().zip(&exact_kv.layers_k).enumerate() {
+                assert_eq!(
+                    bk.len(),
+                    ek.len(),
+                    "layer {l} K length differs — pad rows left in the cache?"
+                );
+                let d = max_abs_diff(bk, ek);
+                assert!(d < 1e-5, "layer {l} K max|Δ|={d:e} — not a rounding gap");
+            }
+            for (l, (bv, ev)) in buc_kv.layers_v.iter().zip(&exact_kv.layers_v).enumerate() {
+                assert_eq!(bv.len(), ev.len(), "layer {l} V length differs");
+                let d = max_abs_diff(bv, ev);
+                assert!(d < 1e-5, "layer {l} V max|Δ|={d:e} — not a rounding gap");
+            }
+        }
+    }
+
+    /// An exact prompt length that is already a multiple of the bucket must not
+    /// take the padded path at all — no wasted compute, and no `last_token_idx`
+    /// graph where the plain one would do.
+    #[test]
+    fn bucket_is_a_no_op_on_aligned_lengths() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let gn = Qwen3Generator::from_loader(cfg, &mut wm, Device::Cpu)
+            .unwrap()
+            .with_prefill_bucket(8);
+        assert_eq!(gn.prefill_bucket_seq(1, 8), 8);
+        assert_eq!(gn.prefill_bucket_seq(1, 16), 16);
+        assert_eq!(gn.prefill_bucket_seq(1, 9), 16);
+        assert_eq!(gn.prefill_bucket_seq(1, 1), 8);
+        // batch > 1 would need a strided KV trim, so bucketing stands down.
+        assert_eq!(gn.prefill_bucket_seq(2, 9), 9);
+    }
+
+    /// `with_prefill_bucket(0|1)` is "off", not "round to 1".
+    #[test]
+    fn degenerate_bucket_steps_disable_bucketing() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        for step in [0usize, 1] {
+            let gn = Qwen3Generator::from_loader(cfg.clone(), &mut wm, Device::Cpu)
+                .unwrap()
+                .with_prefill_bucket(step);
+            assert_eq!(gn.prefill_bucket(), None, "step {step} should disable");
+            assert_eq!(gn.prefill_bucket_seq(1, 9), 9);
+        }
     }
 
     #[test]

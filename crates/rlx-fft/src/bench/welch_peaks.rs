@@ -459,37 +459,37 @@ pub fn run_welch_peaks_bench_opts(opts: &WelchPeaksBenchOpts) -> Result<WelchPea
             )),
         });
 
-        if opts.with_compiled {
-            if let Ok(mut compiled) = compile_learned_welch_peaks(
+        if opts.with_compiled
+            && let Ok(mut compiled) = compile_learned_welch_peaks(
                 &hard,
                 opts.batch,
                 fast,
                 device,
                 default_welch_peaks_hard_threshold(),
-            ) {
-                let pred_c = compiled.welch_peaks_batch(&fast_signal, &mut scratch)?;
-                let err_c = peak_max_err(&pred_c, &ref_peaks);
-                let ms = time_iters(opts.iters, || {
-                    let _ = compiled.welch_peaks_batch(&fast_signal, &mut scratch)?;
-                    Ok(())
-                })?;
-                rows.push(WelchPeaksBenchRow {
-                    path: format!("learned_fast_peaks_compiled_{:?}", compiled.run_device())
-                        .to_lowercase(),
-                    n_fft: opts.n_fft,
-                    batch: opts.batch,
-                    k: opts.k,
-                    device: opts.device_name.clone(),
-                    iters: opts.iters,
+            )
+        {
+            let pred_c = compiled.welch_peaks_batch(&fast_signal, &mut scratch)?;
+            let err_c = peak_max_err(&pred_c, &ref_peaks);
+            let ms = time_iters(opts.iters, || {
+                let _ = compiled.welch_peaks_batch(&fast_signal, &mut scratch)?;
+                Ok(())
+            })?;
+            rows.push(WelchPeaksBenchRow {
+                path: format!("learned_fast_peaks_compiled_{:?}", compiled.run_device())
+                    .to_lowercase(),
+                n_fft: opts.n_fft,
+                batch: opts.batch,
+                k: opts.k,
+                device: opts.device_name.clone(),
+                iters: opts.iters,
+                ms,
+                output_len: fast.output_len(opts.batch),
+                peak_err: Some(err_c),
+                algo_bw_gbps: Some(algorithm_bandwidth_gbps(
+                    useful_bytes_touched(opts.batch, fast),
                     ms,
-                    output_len: fast.output_len(opts.batch),
-                    peak_err: Some(err_c),
-                    algo_bw_gbps: Some(algorithm_bandwidth_gbps(
-                        useful_bytes_touched(opts.batch, fast),
-                        ms,
-                    )),
-                });
-            }
+                )),
+            });
         }
     }
 

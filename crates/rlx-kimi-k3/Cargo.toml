@@ -36,7 +36,7 @@ path = "src/bin/rlx_kimi_k3.rs"
 # opscope dataflow RECORDING harness (link-local to ../rlx), for the
 # `record_dataflow` example only.
 [dev-dependencies]
-rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope" }
+rlx-opscope = { workspace = true }
 libc = "0.2"
 
 # Feature-flagged multi-node cluster runner example (mac + ssh msi + ssh amd).

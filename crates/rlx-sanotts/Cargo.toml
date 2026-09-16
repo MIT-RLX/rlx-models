@@ -1,0 +1,73 @@
+[package]
+name = "rlx-sanotts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "sanoTTS (Root-A student stack) tiny neural text-to-speech for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+half = { workspace = true }
+sha2 = "0.10"
+hound = "3"
+clap = { version = "4", features = ["derive"] }
+unicode-normalization = "0.1"
+
+# rlx-ir graph path (multi-backend). Optional so the host-eager CPU reference
+# and its parity tests build without dragging in the compiler stack.
+rlx-ir = { workspace = true, optional = true }
+rlx-runtime = { workspace = true, optional = true, default-features = false, features = ["cpu"] }
+
+# Pure-Rust espeak-ng for the Piper-lineage G2P frontend. 0.1.3 reads a voice's
+# `dictrules` (0.1.2 silently gave every English voice en-GB), and 0.2.0 makes
+# the active voice's own phoneme table authoritative — 0.1.3 still rendered
+# en-US through the en-GB table, so `en-us` said `həlˈəʊ` rather than `həlˈoʊ`.
+# Both fixes are now released; the `[patch.crates-io]` this used to need is gone.
+espeak-ng = { version = "0.2.0", optional = true, default-features = false }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[features]
+default = ["rlx-graph", "espeak"]
+# Build the rlx-ir graph backend (compiled per device → runs on every rlx backend).
+rlx-graph = ["dep:rlx-ir", "dep:rlx-runtime", "rlx-runtime/cpu"]
+# espeak-ng text frontend (English data only). Without it the crate still
+# synthesizes from phoneme ids.
+espeak = ["dep:espeak-ng", "espeak-ng/bundled-data-en"]
+# All of espeak-ng's bundled languages, for the non-English sanoTTS voices
+# (Nepali, Hindi, Vietnamese, Indonesian, Chinese). Much larger binary.
+espeak-all-languages = ["espeak", "espeak-ng/bundled-data"]
+metal = ["rlx-graph", "rlx-runtime/metal"]
+mlx = ["rlx-graph", "rlx-runtime/mlx"]
+cuda = ["rlx-graph", "rlx-runtime/cuda"]
+rocm = ["rlx-graph", "rlx-runtime/rocm"]
+gpu = ["rlx-graph", "rlx-runtime/gpu"]
+vulkan = ["rlx-graph", "rlx-runtime/vulkan"]
+coreml = ["rlx-graph", "rlx-runtime/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+hf-download = ["dep:hf-hub"]
+
+[[bin]]
+name = "rlx-sanotts"
+path = "src/bin/rlx_sanotts.rs"
+
+[[test]]
+name = "reference_parity"
+path = "tests/reference_parity.rs"
+
+[lints]
+workspace = true

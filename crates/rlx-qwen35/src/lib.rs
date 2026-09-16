@@ -159,8 +159,8 @@ pub use vision::{
 #[cfg(feature = "qwen35-vlm")]
 pub use vision::{encode_image_file, load_rgb_image};
 pub use weights::{
-    MatWeight, Qwen35FullAttnLayer, Qwen35LayerFfn, Qwen35LinearLayer, Qwen35MoeFfn,
-    Qwen35MtpLayer, Qwen35TrunkLayer, Qwen35Weights,
+    MatWeight, PestleFactor, Proj, Qwen35FullAttnLayer, Qwen35LayerFfn, Qwen35LinearLayer,
+    Qwen35MoeFfn, Qwen35MtpLayer, Qwen35TrunkLayer, Qwen35Weights,
 };
 
 /// Legacy redirect — qwen35 forward is implemented via
@@ -318,14 +318,14 @@ mod tests {
         assert!(!p.fusion.skip);
     }
 
-    /// Regression guard for `unsloth/Qwen3.6-27B-MTP-GGUF`. Writes a GGUF
-    /// header carrying the *exact* metadata that ships in the real 27B file
-    /// (`general.architecture = "qwen35"`, `qwen35.*` keys) and asserts the
-    /// derived [`Qwen35Config`] — including the hybrid trunk layout
-    /// `16 × (3 × GDN + 1 × full-attention)`, partial RoPE, GQA and the MTP
-    /// head split. Metadata values captured from the shipped GGUF header.
-    #[test]
-    fn parses_qwen36_27b_mtp_gguf_config() {
+    /// Builds a GGUF header carrying the *exact* metadata that ships in the
+    /// real 27B `qwen35`-arch files and returns the derived [`Qwen35Config`].
+    ///
+    /// `unsloth/Qwen3.6-27B-MTP-GGUF` and `unsloth/Qwen3.8-27B-GGUF` publish
+    /// byte-identical `qwen35.*` KV sets (verified against both shipped
+    /// headers), so one builder covers both; only `general.name` and
+    /// tokenizer-side keys differ, and neither reaches this parser.
+    fn qwen35_27b_config_from_synth_header(general_name: &str, tmp_name: &str) -> Qwen35Config {
         let mut buf: Vec<u8> = Vec::new();
         buf.extend_from_slice(&rlx_gguf::GGUF_MAGIC.to_le_bytes());
         buf.extend_from_slice(&3u32.to_le_bytes());
@@ -383,6 +383,7 @@ mod tests {
             }};
         }
         kv!(s "general.architecture", "qwen35");
+        kv!(s "general.name", general_name);
         kv!(u "qwen35.block_count", 65);
         kv!(u "qwen35.nextn_predict_layers", 1);
         kv!(u "qwen35.embedding_length", 5120);
@@ -410,11 +411,18 @@ mod tests {
         {
             buf.push(0);
         }
-        let path = std::env::temp_dir().join("rlx_qwen36_27b_config_test.gguf");
+        let path = std::env::temp_dir().join(tmp_name);
         std::fs::write(&path, &buf).unwrap();
         let raw = rlx_gguf::GgufFile::from_path(&path).unwrap();
         let cfg = Qwen35Config::from_gguf(&raw).unwrap();
+        std::fs::remove_file(&path).ok();
+        cfg
+    }
 
+    /// Asserts the shared 27B `qwen35` topology: hybrid trunk layout
+    /// `16 × (3 × GDN + 1 × full-attention)`, partial RoPE, GQA and the MTP
+    /// head split.
+    fn assert_qwen35_27b_layout(cfg: &Qwen35Config) {
         // Core dims.
         assert_eq!(cfg.num_hidden_layers, 65, "block_count incl. MTP head");
         assert_eq!(cfg.nextn_predict_layers, 1);
@@ -452,7 +460,31 @@ mod tests {
         let full = (0..n_main).filter(|il| (il + 1) % interval == 0).count();
         assert_eq!(full, 16, "16 × (3 × GDN + 1 × full-attn)");
         assert_eq!(n_main - full, 48, "48 Gated-DeltaNet layers");
+    }
 
-        std::fs::remove_file(&path).ok();
+    /// Regression guard for `unsloth/Qwen3.6-27B-MTP-GGUF`.
+    #[test]
+    fn parses_qwen36_27b_mtp_gguf_config() {
+        let cfg =
+            qwen35_27b_config_from_synth_header("Qwen3.6-27B", "rlx_qwen36_27b_config_test.gguf");
+        assert_qwen35_27b_layout(&cfg);
+    }
+
+    /// Regression guard for `unsloth/Qwen3.8-27B-GGUF`. Qwen3.8 ships the
+    /// same `qwen35` architecture as Qwen3.6 — identical `qwen35.*` metadata
+    /// and an identical 866-tensor layout (same names *and* dtypes) — so it
+    /// must derive an identical [`Qwen35Config`]. Fires if a Qwen3.8-specific
+    /// branch ever diverges the two.
+    #[test]
+    fn parses_qwen38_27b_gguf_config() {
+        let cfg =
+            qwen35_27b_config_from_synth_header("Qwen3.8-27B", "rlx_qwen38_27b_config_test.gguf");
+        assert_qwen35_27b_layout(&cfg);
+        let qwen36 =
+            qwen35_27b_config_from_synth_header("Qwen3.6-27B", "rlx_qwen36_27b_xcheck.gguf");
+        assert_eq!(
+            cfg, qwen36,
+            "Qwen3.8-27B and Qwen3.6-27B must derive the same qwen35 config"
+        );
     }
 }

@@ -108,16 +108,16 @@ pub fn compile(
     weights_path: &std::path::Path,
     opts: &GraphOptions,
 ) -> anyhow::Result<rlx_runtime::CompiledGraph> {
-    if prefer_bundle_import(weights_path) {
-        if let Some(bundle) = bundle_compile::bundle_dir_near_weights(weights_path) {
-            return bundle_compile::compile_from_bundle(device, &bundle, opts);
-        }
+    if prefer_bundle_import(weights_path)
+        && let Some(bundle) = bundle_compile::bundle_dir_near_weights(weights_path)
+    {
+        return bundle_compile::compile_from_bundle(device, &bundle, opts);
     }
     #[cfg(feature = "native")]
-    if !force_bundle_from_env() {
-        if let Some(dir) = native::native_weights_dir_near(weights_path) {
-            return native::compile_native(device, &dir, opts);
-        }
+    if !force_bundle_from_env()
+        && let Some(dir) = native::native_weights_dir_near(weights_path)
+    {
+        return native::compile_native(device, &dir, opts);
     }
     if let Some(bundle) = bundle_compile::bundle_dir_near_weights(weights_path) {
         return bundle_compile::compile_from_bundle(device, &bundle, opts);

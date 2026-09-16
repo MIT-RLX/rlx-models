@@ -7,7 +7,8 @@
 
 use anyhow::{Context, Result};
 use rlx_qwen35::{
-    MatWeight, Qwen35Config, Qwen35FullAttnLayer, Qwen35LayerFfn, Qwen35TrunkLayer, Qwen35Weights,
+    MatWeight, Proj, Qwen35Config, Qwen35FullAttnLayer, Qwen35LayerFfn, Qwen35TrunkLayer,
+    Qwen35Weights,
 };
 use safetensors::SafeTensors;
 use std::sync::Arc;
@@ -67,16 +68,16 @@ fn load_full_attn_layer(st: &SafeTensors<'_>, layer: usize) -> Result<Qwen35Full
     Ok(Qwen35FullAttnLayer {
         attn_norm: qwen35_rms_weight(read_f32(st, &k("input_layernorm.weight"))?),
         attn_post_norm: qwen35_rms_weight(read_f32(st, &k("post_attention_layernorm.weight"))?),
-        attn_q_gate: mat_f32(read_f32(st, &k("self_attn.q_proj.weight"))?),
-        attn_k: mat_f32(read_f32(st, &k("self_attn.k_proj.weight"))?),
-        attn_v: mat_f32(read_f32(st, &k("self_attn.v_proj.weight"))?),
-        attn_output: mat_f32(read_f32(st, &k("self_attn.o_proj.weight"))?),
+        attn_q_gate: Proj::Dense(mat_f32(read_f32(st, &k("self_attn.q_proj.weight"))?)),
+        attn_k: Proj::Dense(mat_f32(read_f32(st, &k("self_attn.k_proj.weight"))?)),
+        attn_v: Proj::Dense(mat_f32(read_f32(st, &k("self_attn.v_proj.weight"))?)),
+        attn_output: Proj::Dense(mat_f32(read_f32(st, &k("self_attn.o_proj.weight"))?)),
         attn_q_norm: qwen35_rms_weight(read_f32(st, &k("self_attn.q_norm.weight"))?),
         attn_k_norm: qwen35_rms_weight(read_f32(st, &k("self_attn.k_norm.weight"))?),
         ffn: Qwen35LayerFfn::Dense {
-            gate: mat_f32(read_f32(st, &k("mlp.gate_proj.weight"))?),
-            up: mat_f32(read_f32(st, &k("mlp.up_proj.weight"))?),
-            down: mat_f32(read_f32(st, &k("mlp.down_proj.weight"))?),
+            gate: Proj::Dense(mat_f32(read_f32(st, &k("mlp.gate_proj.weight"))?)),
+            up: Proj::Dense(mat_f32(read_f32(st, &k("mlp.up_proj.weight"))?)),
+            down: Proj::Dense(mat_f32(read_f32(st, &k("mlp.down_proj.weight"))?)),
         },
     })
 }

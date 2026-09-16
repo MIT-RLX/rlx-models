@@ -36,12 +36,12 @@ fn gguf_path() -> Option<PathBuf> {
     if std::env::var("QWEN35_RUN_LLAMA_PARITY").ok().as_deref() != Some("1") {
         return None;
     }
-    if let Ok(p) = std::env::var("QWEN35_GGUF_PATH") {
-        if !p.is_empty() {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                return Some(path);
-            }
+    if let Ok(p) = std::env::var("QWEN35_GGUF_PATH")
+        && !p.is_empty()
+    {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            return Some(path);
         }
     }
     let path = PathBuf::from(DEFAULT_NON_MTP_Q4);

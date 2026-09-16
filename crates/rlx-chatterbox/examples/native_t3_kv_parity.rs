@@ -86,7 +86,13 @@ fn main() -> Result<()> {
     println!("[kv] device = {device:?}");
     let cache = AotCache::new(std::env::temp_dir().join(format!("rlx_t3_kv_parity_{device:?}")));
 
-    let t = 6usize; // prompt length; then one decode step to position T
+    // Prompt length; then one decode step to position T. `RLX_T3_KV_T=1` makes the only past
+    // position 0, where RoPE is the identity — so a pre- vs post-RoPE export mix-up is invisible
+    // there and visible for t > 1.
+    let t: usize = std::env::var("RLX_T3_KV_T")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(6);
     // deterministic embeds [T+1, H]
     let mk = |n: usize| -> Vec<f32> {
         (0..n * H)
@@ -129,7 +135,12 @@ fn main() -> Result<()> {
     //        real past length via a keep-mask. This is the shape the AR loop uses
     //        (one compile + one 2GB set_param, reused every step). past_k is the
     //        real KV padded to `upper` rows; mask keeps [0,past_seq)+new@upper. ---
-    let upper = 12usize; // bucket > t to exercise padding
+    // Bucket size. `RLX_T3_KV_UPPER=<n>` to vary it; `n == t` removes the zero padding, which
+    // separates "the KV handoff is wrong" from "the padded/masked bucket is wrong".
+    let upper: usize = std::env::var("RLX_T3_KV_UPPER")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
     let mut wm2 = load_wm(&nat)?;
     let decode = Llama32Flow::new(&cfg)
         .decode()
@@ -148,6 +159,9 @@ fn main() -> Result<()> {
         hir,
         params,
     )?;
+    // Which inputs does the compiled decode graph actually accept? `run_typed` matches by
+    // name, so a renamed/dropped input is silently ignored rather than reported.
+
     // pad real KV [1,t,H] → [1,upper,H]
     let pad = |real: &[u8]| -> Vec<u8> {
         let mut v = as_f32(real);
@@ -155,10 +169,26 @@ fn main() -> Result<()> {
         f32_le(&v)
     };
     let mask = rlx_runtime::attn_mask::bucket_decode_mask(t, upper); // [upper+1]
+    {
+        let pos_ok = gd.bind_handle("position", &[t as f32]);
+        let mask_ok = gd.bind_handle("mask", &mask);
+        let emb_ok = gd.bind_handle("inputs_embeds", &emb_new);
+        let pk_ok = gd.bind_handle("past_k_0", &vec![0.0f32; upper * H]);
+        println!(
+            "[kv] decode graph accepts: position={pos_ok} mask={mask_ok} inputs_embeds={emb_ok} past_k_0={pk_ok}"
+        );
+    }
+
     let mut din: Vec<(String, Vec<u8>, DType)> = Vec::new();
     din.push(("inputs_embeds".into(), f32_le(&emb_new), DType::F32));
     din.push(("mask".into(), f32_le(&mask), DType::F32));
-    din.push(("position".into(), f32_le(&[t as f32]), DType::F32));
+    // `RLX_T3_KV_POS` overrides the decode position, to pin down whether the flow wants the
+    // absolute position of the new token or its index in the bucket.
+    let pos_val: f32 = std::env::var("RLX_T3_KV_POS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(t as f32);
+    din.push(("position".into(), f32_le(&[pos_val]), DType::F32));
     for i in 0..NL {
         din.push((format!("past_k_{i}"), pad(&past_k[i]), DType::F32));
         din.push((format!("past_v_{i}"), pad(&past_v[i]), DType::F32));
@@ -169,6 +199,31 @@ fn main() -> Result<()> {
         .collect();
     let douts = gd.run_typed(&dref);
     let dlogits = as_f32(&douts[0].0); // [1,1,VOCAB]
+
+    // Diagnostic: does the past KV reach attention at all? Re-run with the past zeroed. If the
+    // logits are unchanged, the decode graph is attending only to the new token and the handoff
+    // is a no-op — a different bug from "the past is wrong".
+    {
+        let zeros = f32_le(&vec![0.0f32; upper * H]);
+        let mut z: Vec<(String, Vec<u8>, DType)> = Vec::new();
+        z.push(("inputs_embeds".into(), f32_le(&emb_new), DType::F32));
+        z.push(("mask".into(), f32_le(&mask), DType::F32));
+        z.push(("position".into(), f32_le(&[t as f32]), DType::F32));
+        for i in 0..NL {
+            z.push((format!("past_k_{i}"), zeros.clone(), DType::F32));
+            z.push((format!("past_v_{i}"), zeros.clone(), DType::F32));
+        }
+        let zref: Vec<(&str, &[u8], DType)> = z
+            .iter()
+            .map(|(n, b, d)| (n.as_str(), b.as_slice(), *d))
+            .collect();
+        let zl = as_f32(&gd.run_typed(&zref)[0].0);
+        let same = zl.iter().zip(&dlogits).all(|(a, b)| (a - b).abs() < 1e-6);
+        println!(
+            "[kv] past-sensitivity: zeroed-past cosine={:.6} identical={same}",
+            cosine(&zl, &dlogits)
+        );
+    }
     anyhow::ensure!(
         dlogits.len() == VOCAB,
         "decode logits {} != {VOCAB}",

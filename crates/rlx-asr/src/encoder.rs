@@ -3,8 +3,8 @@
 
 //! Streaming Conformer encoder — chunk 64 / lookahead 16, 28 layers.
 //!
-//! Until the folded encoder graph is wired from `model.gguf`,
-//! [`Encoder::forward_stub`] supplies shaped outputs for the pipeline.
+//! Production path uses [`crate::folded_encoder::FoldedEncoder`] when folded
+//! weights are present in the pack; [`Encoder::forward_stub`] remains for tests.
 
 use crate::spec::{
     AED_WINDOW_FRAMES, CHUNK_FRAMES, DECODER_DIM, DECODER_HEAD_DIM, DECODER_HEADS,

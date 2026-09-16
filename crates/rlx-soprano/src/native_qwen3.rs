@@ -114,6 +114,7 @@ impl SopranoQwen3 {
             with_kv_outputs: false,
             with_qk_outputs: false,
             last_logits_only: false,
+            last_token_from_input: false,
             packed: false,
             profile: None,
             rope_cos: None,

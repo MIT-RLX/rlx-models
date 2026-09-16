@@ -418,29 +418,28 @@ fn load_mat(
         return Ok(MatParam { id, scheme });
     }
 
-    if keep_packed {
-        if let Some(pack) = pack {
-            if let Some(blob) = pack.ir_mat_blob(key, transpose)? {
-                let id = emit
-                    .hir()
-                    .param(key, Shape::new(&[blob.bytes.len()], DType::U8));
-                typed
-                    .typed
-                    .lock()
-                    .expect("typed")
-                    .push((key.to_string(), blob.bytes, DType::U8));
-                typed
-                    .schemes
-                    .lock()
-                    .expect("schemes")
-                    .insert(cache_key.clone(), blob.scheme);
-                emit.state.loaded_params.insert(cache_key, id);
-                return Ok(MatParam {
-                    id,
-                    scheme: Some(blob.scheme),
-                });
-            }
-        }
+    if keep_packed
+        && let Some(pack) = pack
+        && let Some(blob) = pack.ir_mat_blob(key, transpose)?
+    {
+        let id = emit
+            .hir()
+            .param(key, Shape::new(&[blob.bytes.len()], DType::U8));
+        typed
+            .typed
+            .lock()
+            .expect("typed")
+            .push((key.to_string(), blob.bytes, DType::U8));
+        typed
+            .schemes
+            .lock()
+            .expect("schemes")
+            .insert(cache_key.clone(), blob.scheme);
+        emit.state.loaded_params.insert(cache_key, id);
+        return Ok(MatParam {
+            id,
+            scheme: Some(blob.scheme),
+        });
     }
 
     let id = emit.load_param(key, transpose)?;

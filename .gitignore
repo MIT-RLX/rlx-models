@@ -111,8 +111,17 @@ crates/*/tests/fixtures/*.bin
 crates/*/tests/fixtures/*.json
 crates/*/tests/fixtures/*.txt
 crates/rlx-whisper/fixtures/
-# Required build asset (baked via include_str!), not a regenerable fixture:
+# Required build assets (baked via include_str!), not regenerable fixtures. These
+# are compile-time inputs: without them the test targets do not build at all, so
+# `cargo clippy --workspace --all-targets` fails on a fresh clone.
 !crates/rlx-orpheus/tests/fixtures/orpheus_hi_codes.txt
+!crates/rlx-tada/tests/fixtures/*.json
+!crates/rlx-glm5next/tests/fixtures/*.json
+!crates/rlx-chatterbox/tests/fixtures/*.json
+
+# 8 MB TADA end-to-end reference; regenerate locally rather than shipping it in
+# the published crate (the small per-stage fixtures next to it are tracked).
+crates/rlx-tada/tests/fixtures/e2e_reference.safetensors
 weights/asr/
 
 # Stray HuggingFace checkpoint files dropped in the repo ROOT by download /

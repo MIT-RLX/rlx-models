@@ -331,10 +331,10 @@ fn resolve_ss_decoder(
     }
 
     // Local relative path (rare but valid).
-    if !spec.contains('/') || spec.starts_with("ckpts/") {
-        if let Ok(p) = resolve_local_stem(model_root, spec, false) {
-            return Ok(p);
-        }
+    if (!spec.contains('/') || spec.starts_with("ckpts/"))
+        && let Ok(p) = resolve_local_stem(model_root, spec, false)
+    {
+        return Ok(p);
     }
 
     // HuggingFace hub cache: models--microsoft--TRELLIS-image-large

@@ -53,13 +53,13 @@ def model_gguf(root: Path | None = None) -> Path | None:
 
 def load_silence_fbank(asr: Path) -> np.ndarray:
     try:
-        from gguf_io import GgufFile, resolve_gguf
+        from gguf_io import open_pack, resolve_pack
 
-        gguf = resolve_gguf(Path(asr))
-        if gguf is not None:
-            g = GgufFile(gguf)
-            if "silence_fbank" in g.tensors:
-                vals = g.tensor_f32("silence_fbank").astype(np.float32).reshape(-1)
+        path = resolve_pack(Path(asr))
+        if path is not None:
+            pack = open_pack(path)
+            if pack.has("silence_fbank"):
+                vals = pack.tensor_f32("silence_fbank").astype(np.float32).reshape(-1)
                 if vals.size >= N_MEL:
                     return vals[:N_MEL]
     except Exception:
@@ -142,6 +142,9 @@ def fit_silence_calibration(silence: np.ndarray, *, seed: int = 0) -> tuple[np.n
     m = raw.mean(axis=0)
     A = np.vstack([m, np.ones_like(m)]).T
     a_g, _b_g = np.linalg.lstsq(A, silence.astype(np.float64), rcond=None)[0]
+    # Uniform silence target (all 7.0) makes lstsq scale ~0 — skip (matches Rust).
+    if abs(float(a_g)) < 1e-4:
+        return np.ones(N_MEL, dtype=np.float32), np.zeros(N_MEL, dtype=np.float32)
     a = np.full(N_MEL, float(a_g), dtype=np.float32)
     b = (silence.astype(np.float32) - a * m).astype(np.float32)
     return a, b
@@ -152,6 +155,7 @@ class Fbank:
         self.asr_dir = Path(asr)
         self.silence = load_silence_fbank(self.asr_dir)
         self.a, self.b = fit_silence_calibration(self.silence)
+        self._calibrate = bool(np.any(np.abs(self.a) > 1e-4))
 
     def __call__(
         self, pcm: np.ndarray, sample_rate: int = SAMPLE_RATE, *, seed: int | None = 0
@@ -159,6 +163,8 @@ class Fbank:
         raw = log_mel_fbank(pcm, sample_rate=sample_rate, seed=seed)
         if raw.size == 0:
             return raw
+        if not self._calibrate:
+            return raw.astype(np.float32)
         return (raw * self.a[None, :] + self.b[None, :]).astype(np.float32)
 
 
@@ -185,10 +191,24 @@ def load_wav_pcm(path: Path) -> tuple[np.ndarray, int]:
 
 def mel_from_wav(path: Path, asr: Path | None = None) -> tuple[np.ndarray, np.ndarray]:
     asr = asr or asr_dir()
-    frontend = Fbank(asr)
+    mode = os.environ.get("RLX_ASR_FRONTEND", "raw").lower()
     pcm, sr = load_wav_pcm(path)
-    feat = frontend(pcm, sample_rate=sr, seed=0)
-    return feat, frontend.silence
+    raw = log_mel_fbank(pcm, sample_rate=sr, seed=0)
+    if mode in ("cal", "calibrated", "silence"):
+        frontend = Fbank(asr)
+        feat = frontend(pcm, sample_rate=sr, seed=0)
+    elif mode in ("ls", "ls_cross_wav", "cross_wav", "hybrid"):
+        feat = raw.astype(np.float32)
+        ls_dir = os.environ.get("RLX_ASR_FRONTEND_LS_DIR")
+        if ls_dir:
+            d = Path(ls_dir)
+            a = np.fromfile(d / "frontend_fbank_ls_cross_wav_a.bin", dtype=np.float32)
+            b = np.fromfile(d / "frontend_fbank_ls_cross_wav_b.bin", dtype=np.float32)
+            if a.size >= N_MEL and b.size >= N_MEL:
+                feat = feat * a[:N_MEL] + b[:N_MEL]
+    else:
+        feat = raw
+    return feat, silence_fbank(asr)
 
 
 def mel_windows(
@@ -222,16 +242,20 @@ def mel_chunks_from_wav(
 
 def resolve_units(asr: Path | None = None) -> list[str]:
     asr = asr or asr_dir()
-    from gguf_io import GgufFile, resolve_gguf
+    from gguf_io import RlxpFile, open_pack, resolve_pack
 
-    gguf = resolve_gguf(asr)
-    if gguf is None:
-        raise SystemExit(f"model.gguf not found under {asr} (run: just asr-pack-gguf)")
-    g = GgufFile(gguf)
-    units = g.metadata.get("rlx-asr.units")
+    path = resolve_pack(asr)
+    if path is None:
+        raise SystemExit(f"model.rlxp / model.gguf not found under {asr}")
+    pack = open_pack(path)
+    if isinstance(pack, RlxpFile):
+        units = pack.units()
+        if units:
+            return units
+    units = pack.metadata.get("rlx-asr.units")
     if isinstance(units, list) and units:
         return [str(u) for u in units]
-    raise SystemExit(f"rlx-asr.units missing in {gguf}")
+    raise SystemExit(f"rlx-asr.units missing in {path}")
 
 
 def decode_pieces(pieces: list[str], ids: list[int]) -> str:

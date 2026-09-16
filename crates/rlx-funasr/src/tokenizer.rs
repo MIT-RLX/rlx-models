@@ -84,11 +84,11 @@ impl Tokenizer {
             let mut sp: Option<std::path::PathBuf> = None;
             for e in rd.flatten() {
                 let p = e.path();
-                if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-                    if name.ends_with(".bpe.model") || name.ends_with(".model") {
-                        sp = Some(p);
-                        break;
-                    }
+                if let Some(name) = p.file_name().and_then(|s| s.to_str())
+                    && (name.ends_with(".bpe.model") || name.ends_with(".model"))
+                {
+                    sp = Some(p);
+                    break;
                 }
             }
             if let Some(p) = sp {
@@ -180,10 +180,10 @@ impl Tokenizer {
     pub fn rich(&self, ids: &[u32]) -> String {
         let mut emojis = String::new();
         for t in self.tags(ids) {
-            if let Some(e) = tag_emoji(&t) {
-                if !emojis.contains(e) {
-                    emojis.push_str(e);
-                }
+            if let Some(e) = tag_emoji(&t)
+                && !emojis.contains(e)
+            {
+                emojis.push_str(e);
             }
         }
         let text = self.decode(ids, true);

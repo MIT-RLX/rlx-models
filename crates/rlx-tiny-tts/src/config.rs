@@ -64,10 +64,10 @@ impl BundleConfig {
 
     /// Default speaker id (`default_speaker` name → id, else first, else 0).
     pub fn default_speaker(&self) -> i64 {
-        if let Some(name) = &self.default_speaker {
-            if let Some(id) = self.speakers.get(name) {
-                return *id;
-            }
+        if let Some(name) = &self.default_speaker
+            && let Some(id) = self.speakers.get(name)
+        {
+            return *id;
         }
         self.speakers.values().next().copied().unwrap_or(0)
     }

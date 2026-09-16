@@ -108,6 +108,40 @@ pub mod diamond {
 pub mod qwen3 {
     pub use rlx_qwen3::*;
 }
+#[cfg(feature = "hy-mt")]
+pub mod hy_mt {
+    pub use rlx_hy_mt::*;
+}
+#[cfg(feature = "translategemma")]
+pub mod translategemma {
+    pub use rlx_translategemma::*;
+}
+
+#[cfg(feature = "translate")]
+pub mod translate {
+    pub use rlx_translate::*;
+}
+#[cfg(feature = "nllb")]
+pub mod nllb {
+    pub use rlx_nllb::*;
+}
+#[cfg(feature = "moonshine")]
+pub mod moonshine {
+    pub use rlx_moonshine::*;
+}
+
+#[cfg(feature = "timesfm3")]
+pub mod timesfm3 {
+    pub use rlx_timesfm3::*;
+}
+#[cfg(feature = "f0")]
+pub mod f0 {
+    pub use rlx_f0::*;
+}
+#[cfg(feature = "voice-gender")]
+pub mod voice_gender {
+    pub use rlx_voice_gender::*;
+}
 #[cfg(feature = "qwen35")]
 pub mod qwen35 {
     pub use rlx_qwen35::*;
@@ -184,6 +218,10 @@ pub mod wav2vec2_asr {
 pub mod diarize {
     pub use rlx_diarize::*;
 }
+#[cfg(feature = "diarize")]
+pub mod wespeaker {
+    pub use rlx_wespeaker::*;
+}
 #[cfg(feature = "whisper")]
 pub mod whisper {
     pub use rlx_whisper::*;
@@ -191,6 +229,10 @@ pub mod whisper {
 #[cfg(feature = "vad")]
 pub mod vad {
     pub use rlx_vad::*;
+}
+#[cfg(feature = "ten-vad")]
+pub mod ten_vad {
+    pub use rlx_ten_vad::*;
 }
 #[cfg(feature = "wake")]
 pub mod wake {
@@ -227,6 +269,10 @@ pub mod voxtral {
 #[cfg(feature = "qwen3-asr")]
 pub mod qwen3_asr {
     pub use rlx_qwen3_asr::*;
+}
+#[cfg(feature = "vibevoice-asr")]
+pub mod vibevoice_asr {
+    pub use rlx_vibevoice_asr::*;
 }
 #[cfg(feature = "conformer-ctc")]
 pub mod conformer_ctc {
@@ -367,6 +413,14 @@ pub mod bonsai {
 #[cfg(feature = "neutrino")]
 pub mod neutrino {
     pub use rlx_neutrino::*;
+}
+#[cfg(feature = "s1")]
+pub mod s1 {
+    pub use rlx_s1::*;
+}
+#[cfg(feature = "fireredaudio")]
+pub mod fireredaudio {
+    pub use rlx_fireredaudio::*;
 }
 #[cfg(feature = "minicpm5")]
 pub mod minicpm5 {

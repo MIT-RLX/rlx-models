@@ -227,17 +227,17 @@ pub fn assert_full_model_fits(cfg: &Llama32Config, device: Device, max_seq: usiz
             ((params as f64) * 1.25) as usize + kv
         }
     };
-    if let Some(budget) = device_mem_budget_bytes(device) {
-        if need > budget {
-            bail!(
-                "nanbeige: estimated working set {:.2} GiB exceeds {:.2} GiB budget on {device:?} \
+    if let Some(budget) = device_mem_budget_bytes(device)
+        && need > budget
+    {
+        bail!(
+            "nanbeige: estimated working set {:.2} GiB exceeds {:.2} GiB budget on {device:?} \
                  (max_seq={max_seq}, kv_layers={}, loops={}) — use GGUF packed or more RAM",
-                need as f64 / (1024.0 * 1024.0 * 1024.0),
-                budget as f64 / (1024.0 * 1024.0 * 1024.0),
-                cfg.kv_layers(),
-                cfg.num_loops
-            );
-        }
+            need as f64 / (1024.0 * 1024.0 * 1024.0),
+            budget as f64 / (1024.0 * 1024.0 * 1024.0),
+            cfg.kv_layers(),
+            cfg.num_loops
+        );
     }
     Ok(())
 }

@@ -202,10 +202,11 @@ impl LocateAnythingRunner {
 
     /// MoonViT + projector on `device` (compiled graphs cached per grid / token count).
     pub fn encode_vision_cached(&mut self, img: &PreprocessedImage) -> Result<Vec<f32>> {
-        if let Some((gh, gw, ref out)) = self.cached_projected_vision {
-            if gh == img.grid_h && gw == img.grid_w {
-                return Ok(out.clone());
-            }
+        if let Some((gh, gw, ref out)) = self.cached_projected_vision
+            && gh == img.grid_h
+            && gw == img.grid_w
+        {
+            return Ok(out.clone());
         }
         let vit_cfg = self.cfg.vision_config.clone();
         let enc_device = vision_encode_device(self.device);

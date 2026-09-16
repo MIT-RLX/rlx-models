@@ -302,10 +302,10 @@ impl MiraTts {
 /// VRAM held and 0% util. Default codec+speaker to CPU; override with
 /// `RLX_MIRATTS_CODEC_DEVICE=cuda|gpu`.
 fn resolve_codec_device(requested: Device) -> Device {
-    if let Ok(v) = std::env::var("RLX_MIRATTS_CODEC_DEVICE") {
-        if let Ok(d) = parse_device(v.trim()) {
-            return d;
-        }
+    if let Ok(v) = std::env::var("RLX_MIRATTS_CODEC_DEVICE")
+        && let Ok(d) = parse_device(v.trim())
+    {
+        return d;
     }
     match requested {
         Device::Cuda | Device::Gpu | Device::Vulkan | Device::Metal | Device::Mlx => Device::Cpu,

@@ -60,6 +60,7 @@ pub fn build_qwen3_graph_sized(
         with_kv_outputs,
         with_qk_outputs: false,
         last_logits_only: false,
+        last_token_from_input: false,
         packed: false,
         profile: None,
         rope_cos: None,
@@ -77,6 +78,26 @@ pub fn build_qwen3_graph_sized_last_logits(
     seq: usize,
     with_kv_outputs: bool,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    build_qwen3_graph_sized_last_logits_with(cfg, weights, batch, seq, with_kv_outputs, false)
+}
+
+/// Like [`build_qwen3_graph_sized_last_logits`], but `last_token_from_input`
+/// declares a `last_token_idx` input and gathers *that* row instead of `seq - 1`.
+///
+/// This is what makes one compiled prefill graph reusable across prompt lengths:
+/// right-pad the ids up to `seq` and point `last_token_idx` at the real final
+/// position. Under causal masking the pad columns cannot influence any earlier
+/// row, so the gathered logits — and the KV rows below `last_token_idx` — are
+/// identical to an exactly-sized run. The caller is responsible for trimming the
+/// pad rows off the exported KV.
+pub fn build_qwen3_graph_sized_last_logits_with(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    seq: usize,
+    with_kv_outputs: bool,
+    last_token_from_input: bool,
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
     let opts = crate::flow::Qwen3PrefillOpts {
         batch,
         seq,
@@ -84,6 +105,7 @@ pub fn build_qwen3_graph_sized_last_logits(
         with_kv_outputs,
         with_qk_outputs: false,
         last_logits_only: true,
+        last_token_from_input,
         packed: false,
         profile: None,
         rope_cos: None,
@@ -114,6 +136,7 @@ pub fn build_qwen3_graph_sized_last_logits_packed(
         with_kv_outputs,
         with_qk_outputs: false,
         last_logits_only: true,
+        last_token_from_input: false,
         packed: true,
         profile: None,
         rope_cos: None,
@@ -197,6 +220,7 @@ pub fn build_qwen3_decode_hir_sized_ext(
         use_custom_mask,
         ragged_rope: false,
         export_qk: false,
+        tap_layers: Vec::new(),
         packed: false,
         profile: None,
     };
@@ -230,6 +254,7 @@ pub fn build_qwen3_decode_graph_sized_ext(
         use_custom_mask,
         ragged_rope: false,
         export_qk: false,
+        tap_layers: Vec::new(),
         packed: false,
         profile: None,
     };
@@ -259,7 +284,7 @@ macro_rules! sized_decode_graph {
                 past_seq,
                 $($field: $val,)*
                 ..Default::default()
-            };
+        };
             crate::flow::build_qwen3_decode_graph(cfg, weights, &opts)
         }
     };

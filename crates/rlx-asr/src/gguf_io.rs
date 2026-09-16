@@ -90,10 +90,9 @@ pub fn pack_asr_gguf(root: &Path, out: &Path) -> Result<PackReport> {
             .iter()
             .map(|s| s.join("etiquette.json"))
             .collect::<Vec<_>>(),
-    ) {
-        if let Ok(eti) = fs::read_to_string(eti_path) {
-            w.set_meta("rlx-asr.etiquette_json", MetaValue::String(eti));
-        }
+    ) && let Ok(eti) = fs::read_to_string(eti_path)
+    {
+        w.set_meta("rlx-asr.etiquette_json", MetaValue::String(eti));
     }
 
     if let Some(silence) = first_existing(

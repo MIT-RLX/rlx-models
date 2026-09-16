@@ -54,15 +54,15 @@ impl GgufTensorNameResolver for LlamaFamilyGgufResolver {
         if file.tensors.contains_key(key) {
             return Some(key.to_string());
         }
-        if let Some(g) = hf_to_gguf_name(key) {
-            if file.tensors.contains_key(&g) {
-                return Some(g);
-            }
+        if let Some(g) = hf_to_gguf_name(key)
+            && file.tensors.contains_key(&g)
+        {
+            return Some(g);
         }
-        if let Some(h) = gguf_to_hf_name(key) {
-            if file.tensors.contains_key(&h) {
-                return Some(h);
-            }
+        if let Some(h) = gguf_to_hf_name(key)
+            && file.tensors.contains_key(&h)
+        {
+            return Some(h);
         }
         None
     }
@@ -132,23 +132,23 @@ impl GgufTensorNameResolver for Gemma2GgufResolver {
         // which Gemma 2 reserves for the pre-FFN norm) and has no entry at
         // all for the `pre_feedforward_layernorm`/`post_feedforward_layernorm`
         // pair.
-        if let Some(rest) = key.strip_prefix("model.layers.") {
-            if let Some((idx, tail)) = rest.split_once('.') {
-                let gguf_tail = match tail {
-                    "post_attention_layernorm.weight" => Some("post_attention_norm.weight"),
-                    "pre_feedforward_layernorm.weight" => Some("ffn_norm.weight"),
-                    "post_feedforward_layernorm.weight" => Some("post_ffw_norm.weight"),
-                    // Inverse of `gguf_to_hf_name_for_arch` — Gemma 4 GGUF stores
-                    // per-layer output scalars as `layer_output_scale`, not HF
-                    // `self_attn.output_scale`.
-                    "self_attn.output_scale.weight" => Some("layer_output_scale.weight"),
-                    _ => None,
-                };
-                if let Some(t) = gguf_tail {
-                    let g = format!("blk.{idx}.{t}");
-                    if file.tensors.contains_key(&g) {
-                        return Some(g);
-                    }
+        if let Some(rest) = key.strip_prefix("model.layers.")
+            && let Some((idx, tail)) = rest.split_once('.')
+        {
+            let gguf_tail = match tail {
+                "post_attention_layernorm.weight" => Some("post_attention_norm.weight"),
+                "pre_feedforward_layernorm.weight" => Some("ffn_norm.weight"),
+                "post_feedforward_layernorm.weight" => Some("post_ffw_norm.weight"),
+                // Inverse of `gguf_to_hf_name_for_arch` — Gemma 4 GGUF stores
+                // per-layer output scalars as `layer_output_scale`, not HF
+                // `self_attn.output_scale`.
+                "self_attn.output_scale.weight" => Some("layer_output_scale.weight"),
+                _ => None,
+            };
+            if let Some(t) = gguf_tail {
+                let g = format!("blk.{idx}.{t}");
+                if file.tensors.contains_key(&g) {
+                    return Some(g);
                 }
             }
         }
@@ -184,22 +184,22 @@ impl GgufTensorNameResolver for MuseGlimmerGgufResolver {
         if file.tensors.contains_key(key) {
             return Some(key.to_string());
         }
-        if let Some(rest) = key.strip_prefix("model.layers.") {
-            if let Some((idx, tail)) = rest.split_once('.') {
-                let gguf_tail = match tail {
-                    "post_attention_layernorm.weight" => Some("post_attention_norm.weight"),
-                    "pre_feedforward_layernorm.weight" => Some("ffn_norm.weight"),
-                    "post_feedforward_layernorm.weight" => Some("post_ffw_norm.weight"),
-                    "self_attn.q_norm.weight" => Some("attn_q_norm.weight"),
-                    "self_attn.k_norm.weight" => Some("attn_k_norm.weight"),
-                    "self_attn.gate_proj.weight" => Some("attn_gate.weight"),
-                    _ => None,
-                };
-                if let Some(t) = gguf_tail {
-                    let g = format!("blk.{idx}.{t}");
-                    if file.tensors.contains_key(&g) {
-                        return Some(g);
-                    }
+        if let Some(rest) = key.strip_prefix("model.layers.")
+            && let Some((idx, tail)) = rest.split_once('.')
+        {
+            let gguf_tail = match tail {
+                "post_attention_layernorm.weight" => Some("post_attention_norm.weight"),
+                "pre_feedforward_layernorm.weight" => Some("ffn_norm.weight"),
+                "post_feedforward_layernorm.weight" => Some("post_ffw_norm.weight"),
+                "self_attn.q_norm.weight" => Some("attn_q_norm.weight"),
+                "self_attn.k_norm.weight" => Some("attn_k_norm.weight"),
+                "self_attn.gate_proj.weight" => Some("attn_gate.weight"),
+                _ => None,
+            };
+            if let Some(t) = gguf_tail {
+                let g = format!("blk.{idx}.{t}");
+                if file.tensors.contains_key(&g) {
+                    return Some(g);
                 }
             }
         }
@@ -222,15 +222,15 @@ impl GgufTensorNameResolver for Phi3GgufResolver {
             return Some(key.to_string());
         }
         for arch in ["phi3", "phi4"] {
-            if let Some(g) = hf_to_gguf_name_for_arch(key, arch) {
-                if file.tensors.contains_key(&g) {
-                    return Some(g);
-                }
+            if let Some(g) = hf_to_gguf_name_for_arch(key, arch)
+                && file.tensors.contains_key(&g)
+            {
+                return Some(g);
             }
-            if let Some(h) = gguf_to_hf_name_for_arch(key, arch) {
-                if file.tensors.contains_key(&h) {
-                    return Some(h);
-                }
+            if let Some(h) = gguf_to_hf_name_for_arch(key, arch)
+                && file.tensors.contains_key(&h)
+            {
+                return Some(h);
             }
         }
         None
@@ -291,34 +291,34 @@ pub fn resolve_gguf_tensor_name(
     requested_key: &str,
 ) -> Option<String> {
     for r in builtin_resolvers().iter() {
-        if r.matches_arch(arch) {
-            if let Some(name) = r.resolve(file, requested_key) {
-                return Some(name);
-            }
+        if r.matches_arch(arch)
+            && let Some(name) = r.resolve(file, requested_key)
+        {
+            return Some(name);
         }
     }
     let custom = CUSTOM_RESOLVERS
         .lock()
         .expect("gguf resolver registry lock");
     for r in custom.iter() {
-        if r.matches_arch(arch) {
-            if let Some(name) = r.resolve(file, requested_key) {
-                return Some(name);
-            }
+        if r.matches_arch(arch)
+            && let Some(name) = r.resolve(file, requested_key)
+        {
+            return Some(name);
         }
     }
     if file.tensors.contains_key(requested_key) {
         return Some(requested_key.to_string());
     }
-    if let Some(g) = hf_to_gguf_name(requested_key) {
-        if file.tensors.contains_key(&g) {
-            return Some(g);
-        }
+    if let Some(g) = hf_to_gguf_name(requested_key)
+        && file.tensors.contains_key(&g)
+    {
+        return Some(g);
     }
-    if let Some(h) = gguf_to_hf_name(requested_key) {
-        if file.tensors.contains_key(&h) {
-            return Some(h);
-        }
+    if let Some(h) = gguf_to_hf_name(requested_key)
+        && file.tensors.contains_key(&h)
+    {
+        return Some(h);
     }
     None
 }

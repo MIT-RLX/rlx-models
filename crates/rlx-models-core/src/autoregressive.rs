@@ -814,12 +814,11 @@ where
     let (upper_u64, compiled) = cache
         .ensure_graph_with_params(key, build, options)
         .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?;
-    if needs_build {
-        if let Some(upload) = upload_packed {
-            if packed_loaded.insert(upper_u64) {
-                upload(compiled);
-            }
-        }
+    if needs_build
+        && let Some(upload) = upload_packed
+        && packed_loaded.insert(upper_u64)
+    {
+        upload(compiled);
     }
     let upper = upper_u64 as usize;
 

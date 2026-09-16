@@ -26,6 +26,8 @@ rlx-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [[bin]]
 name = "rlx-chatterbox"

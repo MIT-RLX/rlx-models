@@ -4158,16 +4158,17 @@ dependencies = [
 
 [[package]]
 name = "rlx-autodiff"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "half",
  "rlx-fusion",
  "rlx-ir",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "rlx-compile"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "rlx-autodiff",
  "rlx-fusion",
@@ -4176,7 +4177,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-cpu"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "half",
  "rayon",
@@ -4189,7 +4190,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-dduf"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "half",
@@ -4200,7 +4201,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-driver"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "half",
  "rlx-ir",
@@ -4208,7 +4209,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-flow"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -4218,25 +4219,30 @@ dependencies = [
 
 [[package]]
 name = "rlx-fusion"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "rlx-ir",
 ]
 
 [[package]]
 name = "rlx-gguf"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "bytemuck",
  "half",
+ "libc",
  "memmap2",
  "rayon",
 ]
 
 [[package]]
+name = "rlx-gpu-dispatch"
+version = "0.2.16"
+
+[[package]]
 name = "rlx-ir"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "aes 0.9.2",
  "bincode 1.3.3",
@@ -4247,7 +4253,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-macros"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4256,7 +4262,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mamba"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "rlx-cpu",
@@ -4268,7 +4274,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mamba-bench"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "burn",
  "burn-mamba",
@@ -4278,7 +4284,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mlx-io"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "half",
@@ -4294,7 +4300,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nemo"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "flate2",
@@ -4305,7 +4311,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-opt"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "rlx-autodiff",
  "rlx-compile",
@@ -4315,7 +4321,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-pkg"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "bincode 1.3.3",
@@ -4336,7 +4342,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-runtime"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "half",
@@ -4347,6 +4353,7 @@ dependencies = [
  "rlx-dduf",
  "rlx-driver",
  "rlx-gguf",
+ "rlx-gpu-dispatch",
  "rlx-ir",
  "rlx-macros",
  "rlx-mlx-io",
@@ -4358,7 +4365,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-ssm"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "rlx-cpu",
@@ -6500,993 +6507,69 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "kitten_tts_mini_rlx"
-version = "0.2.14"
-
-[[patch.unused]]
 name = "rlx"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
-name = "rlx-asr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-assets"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-bert"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-bioclip2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-bonsai"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-chatterbox"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-cli"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-clinicalbert"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-cohere"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-conformer-ctc"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-coreml"
-version = "0.2.14"
+name = "rlx-collectives"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-cuda"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-dac"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-diamond"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-dinov2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-dinov3"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-distributed"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
-name = "rlx-embed"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-encodec"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-f5tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-fara"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-fft"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-florence2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-flux2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-funasr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-gemma"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-gepard"
-version = "0.2.14"
+name = "rlx-fpga"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-gpu-host"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-gpu-kernels"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-granite"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-hoct"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-inflect-nano"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-kittentts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-kokoro"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-kyutai-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-lfm"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-lfm-vl"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-llada2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-llama-base"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-llama32"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-llama4"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-locateanything"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-luxtts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-maya1"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-melotts"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-metal"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-metavoice"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-mimi"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-minicpm5"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-minimax"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-miotts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-miratts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-mistral"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-mistral-vl"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-mllama"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-mlx"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-mlx-sys"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-models"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-models-core"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-moshi"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-moss-nano"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nanbeige"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nanocodec"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nanowakeword"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nemotron"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nemotron-asr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-neutrino"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-neutts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nomic"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-ocr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-omnicoder"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-onnx-import"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
-name = "rlx-onnx-proto"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-openwakeword"
-version = "0.2.14"
+name = "rlx-opscope"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-optim"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-orpheus"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-parlertts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-phi"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-piper"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-pocket-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-porcupine"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-qwen3"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-qwen3-asr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-qwen3-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-qwen3-vl"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-qwen35"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-rocm"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-sam"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-sam-ir"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-sam2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-sam3"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-sesame"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-soprano"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-styletts2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-supertonic"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-tensor"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-text"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-tiny-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-tinyllama"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-trellis2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-tts-bench"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-unfuse"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-uni2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-unlimited-ocr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-vad"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-vision"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-vjepa2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-vlm-base"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-voxrt"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-voxtral"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-voxtral-tts"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-vulkan"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-wake"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-wakeword"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-wakeword-core"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-wav2vec2-bert"
-version = "0.2.14"
+version = "0.2.16"
 
 [[patch.unused]]
 name = "rlx-wgpu"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-whisper"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-xcodec"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-zipvoice"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-zonos"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlxsl"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-coreml"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-cuda"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-distributed"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-gpu-host"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-gpu-kernels"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-metal"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-mlx"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-mlx-sys"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-onnx-import"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-onnx-proto"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-rocm"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-tensor"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-text"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-unfuse"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-wgpu"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlxsl"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "kitten_tts_mini_rlx"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-asr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-assets"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-bert"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-bioclip2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-bonsai"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-chatterbox"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-cli"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-clinicalbert"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-cohere"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-conformer-ctc"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-dac"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-diamond"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-dinov2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-dinov3"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-embed"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-encodec"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-f5tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-fara"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-fft"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-florence2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-flux2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-funasr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-gemma"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-gepard"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-granite"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-hoct"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-inflect-nano"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-kittentts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-kokoro"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-kyutai-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-lfm"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-lfm-vl"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-llada2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-llama-base"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-llama32"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-llama4"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-locateanything"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-luxtts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-maya1"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-melotts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-metavoice"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-mimi"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-minicpm5"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-minimax"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-miotts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-miratts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-mistral"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-mistral-vl"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-mllama"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-models"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-models-core"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-moshi"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-moss-nano"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nanbeige"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nanocodec"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nanowakeword"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nemotron"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nemotron-asr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-neutrino"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-neutts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-nomic"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-ocr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-omnicoder"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-openwakeword"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-orpheus"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-parlertts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-phi"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-piper"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-pocket-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-porcupine"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-qwen3"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-qwen3-asr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-qwen3-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-qwen3-vl"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-qwen35"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-sam"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-sam-ir"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-sam2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-sam3"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-sesame"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-soprano"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-styletts2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-supertonic"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-tiny-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-tinyllama"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-trellis2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-tts-bench"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-uni2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-unlimited-ocr"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-vad"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-vision"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-vjepa2"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-vlm-base"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-voxrt"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-voxtral"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-voxtral-tts"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-wake"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-wakeword"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-wakeword-core"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-wav2vec2-bert"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-whisper"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-xcodec"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-zipvoice"
-version = "0.2.14"
-
-[[patch.unused]]
-name = "rlx-zonos"
-version = "0.2.14"
+version = "0.2.16"

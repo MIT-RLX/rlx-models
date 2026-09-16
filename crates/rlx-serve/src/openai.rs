@@ -139,10 +139,10 @@ impl ChatCompletionRequest {
     /// Reject tool definitions that collide with rlx's reserved (`_rlx_*`)
     /// tool names. Returns a client-facing message on violation.
     pub fn validate_tools(&self) -> Result<(), String> {
-        if let Some(tools) = &self.tools {
-            if rlx_guardrails::tools_collide_with_reserved(tools) {
-                return Err("tool definitions collide with reserved rlx_* tool names".to_string());
-            }
+        if let Some(tools) = &self.tools
+            && rlx_guardrails::tools_collide_with_reserved(tools)
+        {
+            return Err("tool definitions collide with reserved rlx_* tool names".to_string());
         }
         Ok(())
     }

@@ -1,0 +1,27 @@
+[package]
+name = "rlx-ten-vad-mcu"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+description = "Bare-metal RISC-V firmware running TEN-VAD on rlx-ten-vad-core"
+
+# Deliberately outside the workspace: this builds for a bare-metal target with
+# its own linker script and profile, and pulling it into the workspace would
+# force those settings on every host build.
+
+[dependencies]
+rlx-ten-vad-core = { path = "../rlx-ten-vad-core", default-features = false, features = ["bench-internals", "fast-pitch"] }
+
+[[bin]]
+name = "ten-vad-mcu"
+path = "src/main.rs"
+test = false
+bench = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false

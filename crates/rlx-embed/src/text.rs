@@ -50,7 +50,11 @@ pub fn embed_with_rlx(
         .iter()
         .flat_map(|r| r.iter().map(|&v| v as f32))
         .collect();
-    let pos: Vec<f32> = (0..b).flat_map(|_| (0..s).map(|i| i as f32)).collect();
+    // RoBERTa-family checkpoints start position ids at `pad_token_id + 1`.
+    let off = model.position_offset();
+    let pos: Vec<f32> = (0..b)
+        .flat_map(|_| (0..s).map(|i| (i + off) as f32))
+        .collect();
 
     let hidden = model.forward(&ids, &mask, &tt, &pos);
     let mask_refs: Vec<&[u32]> = batch.attention_mask.iter().map(|r| r.as_slice()).collect();

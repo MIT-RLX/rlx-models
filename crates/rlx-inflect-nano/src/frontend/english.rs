@@ -30,11 +30,11 @@ static ARPA: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 /// `parse_phoneme`: trailing digit → tone = digit+1, phoneme lowercased.
 fn parse_phoneme(phn: &str) -> (String, i64) {
     let bytes = phn.as_bytes();
-    if let Some(&last) = bytes.last() {
-        if last.is_ascii_digit() {
-            let tone = (last - b'0') as i64 + 1;
-            return (phn[..phn.len() - 1].to_lowercase(), tone);
-        }
+    if let Some(&last) = bytes.last()
+        && last.is_ascii_digit()
+    {
+        let tone = (last - b'0') as i64 + 1;
+        return (phn[..phn.len() - 1].to_lowercase(), tone);
     }
     (phn.to_lowercase(), 0)
 }

@@ -191,15 +191,15 @@ fn main() -> anyhow::Result<()> {
     }
 
     for node in exec.nodes() {
-        if let rlx_ir::Op::Input { name } = &node.op {
-            if name == "style" || name == "speed" || name == "input_ids" {
-                eprintln!(
-                    "input {name}: id={} slot={:?} shape={:?}",
-                    node.id,
-                    plan.assignments.get(&node.id),
-                    node.shape.dims()
-                );
-            }
+        if let rlx_ir::Op::Input { name } = &node.op
+            && (name == "style" || name == "speed" || name == "input_ids")
+        {
+            eprintln!(
+                "input {name}: id={} slot={:?} shape={:?}",
+                node.id,
+                plan.assignments.get(&node.id),
+                node.shape.dims()
+            );
         }
     }
 

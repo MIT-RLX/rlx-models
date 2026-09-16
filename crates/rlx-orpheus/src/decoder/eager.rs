@@ -619,10 +619,10 @@ impl SnacDecoder {
         if !self.inner.config.noise {
             return Ok(NoiseState::disabled());
         }
-        if let Some(dir) = &self.noise_ref_dir {
-            if let Some(state) = NoiseState::from_reference_dir(dir)? {
-                return Ok(state);
-            }
+        if let Some(dir) = &self.noise_ref_dir
+            && let Some(state) = NoiseState::from_reference_dir(dir)?
+        {
+            return Ok(state);
         }
         if let Some(seed) = self.noise_seed {
             return Ok(NoiseState::seeded(seed));

@@ -150,9 +150,15 @@ pub fn log_mel(cfg: &AsrConfig, pcm: &[f32], frontend: Option<&Frontend>) -> Mel
         None => mel_filterbank(cfg.sample_rate as f64, n_fft, cfg.n_mels),
     };
 
+    // A mel filter is a triangle, so most of the dense `[n_mels, n_freq]`
+    // matrix is zero — 80x201 carries about 1,200 useful weights of 16,080.
+    // The banded form drops the zeros without changing a bit of the result.
+    let bands = rlx_ir::audio::MelBands::from_dense(&filters, cfg.n_mels, n_freq);
+
     let mut data = vec![0.0f32; cfg.n_mels * n_frames];
     let mut buf: Vec<Complex<f32>> = vec![Complex { re: 0.0, im: 0.0 }; n_fft];
     let mut power = vec![0.0f32; n_freq];
+    let mut mel = vec![0.0f32; cfg.n_mels];
 
     for fi in 0..n_frames {
         let start = fi * hop;
@@ -168,9 +174,8 @@ pub fn log_mel(cfg: &AsrConfig, pcm: &[f32], frontend: Option<&Frontend>) -> Mel
             let c = buf[bin];
             *p = c.re * c.re + c.im * c.im; // power spectrum (mag_power = 2)
         }
-        for mi in 0..cfg.n_mels {
-            let row = &filters[mi * n_freq..(mi + 1) * n_freq];
-            let acc: f32 = row.iter().zip(&power).map(|(w, p)| w * p).sum();
+        bands.apply(&power, &mut mel);
+        for (mi, &acc) in mel.iter().enumerate() {
             data[mi * n_frames + fi] = (acc + LOG_GUARD).ln();
         }
     }

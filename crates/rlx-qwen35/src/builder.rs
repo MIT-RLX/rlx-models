@@ -48,7 +48,7 @@
 use crate::config::{Qwen35Config, mtp_draft_vocab_size};
 use crate::rope;
 use crate::weights::{
-    MatWeight, Qwen35FullAttnLayer, Qwen35LayerFfn, Qwen35LinearLayer, Qwen35MoeFfn,
+    MatWeight, Proj, Qwen35FullAttnLayer, Qwen35LayerFfn, Qwen35LinearLayer, Qwen35MoeFfn,
     Qwen35MtpLayer, Qwen35TrunkLayer, Qwen35Weights,
 };
 use anyhow::{Result, anyhow};
@@ -312,30 +312,29 @@ pub fn build_qwen35_graph_sized_ext(
         return Ok((graph, params, packed));
     }
 
-    if let Some(past_seq) = decode_past_seq {
-        if !export_recurrent_state
-            && !export_trunk_layer_hiddens
-            && !runtime_mrope
-            && !export_normed_hidden
-        {
-            let opts = crate::flow::Qwen35DecodeOpts {
-                batch,
-                past_seq,
-                seq: 1,
-                verify_all: false,
-                dynamic_past: false,
-                use_custom_mask: false,
-                bias_mask: false,
-                force_host_embed: false,
-                enable_mtp_head,
-                fast_mtp,
-                fast_greedy_lm_head: !with_lm_head,
-                profile: None,
-            };
-            let (built, packed) = crate::flow::build_qwen35_decode_built(cfg, weights, &opts)?;
-            let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
-            return Ok((graph, params, packed));
-        }
+    if let Some(past_seq) = decode_past_seq
+        && !export_recurrent_state
+        && !export_trunk_layer_hiddens
+        && !runtime_mrope
+        && !export_normed_hidden
+    {
+        let opts = crate::flow::Qwen35DecodeOpts {
+            batch,
+            past_seq,
+            seq: 1,
+            verify_all: false,
+            dynamic_past: false,
+            use_custom_mask: false,
+            bias_mask: false,
+            force_host_embed: false,
+            enable_mtp_head,
+            fast_mtp,
+            fast_greedy_lm_head: !with_lm_head,
+            profile: None,
+        };
+        let (built, packed) = crate::flow::build_qwen35_decode_built(cfg, weights, &opts)?;
+        let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
+        return Ok((graph, params, packed));
     }
 
     graph_from_qwen35_hir(build_qwen35_hir_sized_ext(
@@ -592,6 +591,7 @@ pub fn build_qwen35_decode_hir_dynamic_ext(
     enable_mtp_head: bool,
     fast_mtp: bool,
     fast_greedy_lm_head: bool,
+    force_host_embed: bool,
 ) -> Result<(HirModule, HashMap<String, Vec<f32>>, PackedParams)> {
     build_qwen35_decode_hir_assembled(
         cfg,
@@ -604,6 +604,7 @@ pub fn build_qwen35_decode_hir_dynamic_ext(
         true,
         false,
         fast_mtp,
+        force_host_embed,
     )
 }
 
@@ -617,6 +618,7 @@ pub fn build_qwen35_decode_hir_ext(
     enable_mtp_head: bool,
     fast_mtp: bool,
     fast_greedy_lm_head: bool,
+    force_host_embed: bool,
 ) -> Result<(HirModule, HashMap<String, Vec<f32>>, PackedParams)> {
     build_qwen35_decode_hir_assembled(
         cfg,
@@ -629,6 +631,7 @@ pub fn build_qwen35_decode_hir_ext(
         false,
         use_custom_mask,
         fast_mtp,
+        force_host_embed,
     )
 }
 
@@ -715,6 +718,7 @@ pub(crate) fn build_qwen35_decode_hir_assembled(
     dynamic_past_seq: bool,
     use_custom_mask: bool,
     fast_mtp: bool,
+    force_host_embed: bool,
 ) -> Result<(HirModule, HashMap<String, Vec<f32>>, PackedParams)> {
     let past_seq = decode_past_seq
         .ok_or_else(|| anyhow!("qwen35 decode assembly requires decode_past_seq"))?;
@@ -726,7 +730,7 @@ pub(crate) fn build_qwen35_decode_hir_assembled(
         dynamic_past: dynamic_past_seq,
         use_custom_mask,
         bias_mask: false,
-        force_host_embed: false,
+        force_host_embed,
         enable_mtp_head,
         fast_mtp,
         fast_greedy_lm_head: !with_lm_head,
@@ -882,6 +886,7 @@ fn build_qwen35_hir_sized_impl(
             dynamic_past_seq,
             use_custom_mask,
             fast_mtp,
+            false,
         );
     }
 
@@ -1483,40 +1488,30 @@ pub(crate) fn build_linear_layer(
 
     let _rows = bs.rows();
     // Fused qkv projection (key_dim*2 + value_dim channels).
-    let qkv_w = proj_mat(
+    let qkv = emit_linear(
         g,
         params,
         packed,
+        bs,
         &name(il, "attn_qkv.weight"),
         &lin.attn_qkv,
+        x_2d,
         n_embd,
         conv_channels,
-    );
-    let qkv = emit_proj(
-        g,
-        x_2d,
-        qkv_w,
-        &lin.attn_qkv,
-        bs.flat2_shape(conv_channels, DType::F32),
     );
     // → [batch*seq, conv_channels]
 
     // Gate projection z.
-    let gate_w = proj_mat(
+    let z = emit_linear(
         g,
         params,
         packed,
+        bs,
         &name(il, "attn_gate.weight"),
         &lin.attn_gate,
+        x_2d,
         n_embd,
         value_dim,
-    );
-    let z = emit_proj(
-        g,
-        x_2d,
-        gate_w,
-        &lin.attn_gate,
-        bs.flat2_shape(value_dim, DType::F32),
     );
     // → [batch*seq, value_dim]
 
@@ -1527,8 +1522,8 @@ pub(crate) fn build_linear_layer(
     // and is token-identical. Opt-in `RLX_QWEN35_FUSE_SSM`; falls back to two
     // separate projections if either weight is packed.
     let fuse_ssm = rlx_ir::env::flag("RLX_QWEN35_FUSE_SSM");
-    let (alpha, beta_pre) = match (&lin.ssm_alpha, &lin.ssm_beta) {
-        (MatWeight::F32(a), MatWeight::F32(b)) if fuse_ssm => {
+    let (alpha, beta_pre) = match (lin.ssm_alpha.dense(), lin.ssm_beta.dense()) {
+        (Some(MatWeight::F32(a)), Some(MatWeight::F32(b))) if fuse_ssm => {
             // Weights are stored `[out, in]`; concat along `out` → `[2*n_v, in]`,
             // then proj_mat's transpose convention gives a `[in, 2*n_v]` param.
             let mut fused = Vec::with_capacity(a.len() + b.len());
@@ -1549,38 +1544,28 @@ pub(crate) fn build_linear_layer(
         }
         _ => {
             // alpha = ssm_alpha @ x ; shape [batch*seq, n_v_heads]
-            let alpha_w = proj_mat(
+            let alpha = emit_linear(
                 g,
                 params,
                 packed,
+                bs,
                 &name(il, "ssm_alpha.weight"),
                 &lin.ssm_alpha,
+                x_2d,
                 n_embd,
                 n_v_heads,
             );
-            let alpha = emit_proj(
-                g,
-                x_2d,
-                alpha_w,
-                &lin.ssm_alpha,
-                bs.flat2_shape(n_v_heads, DType::F32),
-            );
             // beta_pre = ssm_beta @ x
-            let beta_w = proj_mat(
+            let beta_pre = emit_linear(
                 g,
                 params,
                 packed,
+                bs,
                 &name(il, "ssm_beta.weight"),
                 &lin.ssm_beta,
+                x_2d,
                 n_embd,
                 n_v_heads,
-            );
-            let beta_pre = emit_proj(
-                g,
-                x_2d,
-                beta_w,
-                &lin.ssm_beta,
-                bs.flat2_shape(n_v_heads, DType::F32),
             );
             (alpha, beta_pre)
         }
@@ -1770,21 +1755,16 @@ pub(crate) fn build_linear_layer(
     let scan_flat = bs.reshape_flat(g, scan_gated, value_dim);
 
     // ssm_out: [value_dim → n_embd]. Packed-aware.
-    let ssm_out_w = proj_mat(
+    let attn_out_2d = emit_linear(
         g,
         params,
         packed,
+        bs,
         &name(il, "ssm_out.weight"),
         &lin.ssm_out,
+        scan_flat,
         value_dim,
         n_embd,
-    );
-    let attn_out_2d = emit_proj(
-        g,
-        scan_flat,
-        ssm_out_w,
-        &lin.ssm_out,
-        bs.flat2_shape(n_embd, DType::F32),
     );
     let attn_out = bs.reshape_bsh(g, attn_out_2d, n_embd);
 
@@ -1850,21 +1830,16 @@ pub(crate) fn build_full_attn_layer(
 
     let _rows = bs.rows();
     // Joint Q + gate projection (Qwen3-Next).
-    let q_gate_w = proj_mat(
+    let q_gate = emit_linear(
         g,
         params,
         packed,
+        bs,
         &name(il, "attn_q.weight"),
         &fa.attn_q_gate,
+        x_2d,
         n_embd,
         q_gate_cols,
-    );
-    let q_gate = emit_proj(
-        g,
-        x_2d,
-        q_gate_w,
-        &fa.attn_q_gate,
-        bs.flat2_shape(q_gate_cols, DType::F32),
     );
     // Layout per qwen35.cpp ggml_view_3d: the n_head*2 axis is
     // (gate, q) interleaved per head, but ggml's strides imply
@@ -1878,37 +1853,27 @@ pub(crate) fn build_full_attn_layer(
     let gate_packed = bs.reshape_bsh(g, gate_heads, kv_dim);
 
     // K, V projections → [B, S, n_kv * head_dim].
-    let k_w = proj_mat(
+    let k_proj = emit_linear(
         g,
         params,
         packed,
+        bs,
         &name(il, "attn_k.weight"),
         &fa.attn_k,
+        x_2d,
         n_embd,
         kv_cols,
     );
-    let k_proj = emit_proj(
-        g,
-        x_2d,
-        k_w,
-        &fa.attn_k,
-        bs.flat2_shape(kv_cols, DType::F32),
-    );
-    let v_w = proj_mat(
+    let v_proj = emit_linear(
         g,
         params,
         packed,
+        bs,
         &name(il, "attn_v.weight"),
         &fa.attn_v,
+        x_2d,
         n_embd,
         kv_cols,
-    );
-    let v_proj = emit_proj(
-        g,
-        x_2d,
-        v_w,
-        &fa.attn_v,
-        bs.flat2_shape(kv_cols, DType::F32),
     );
     let k_packed = bs.reshape_bsh(g, k_proj, n_kv_head * head_dim);
     let v_packed = bs.reshape_bsh(g, v_proj, n_kv_head * head_dim);
@@ -2049,21 +2014,16 @@ pub(crate) fn build_full_attn_layer(
 
     // Output projection.
     let attn_gated_2d = bs.reshape_flat(g, attn_gated, kv_dim);
-    let out_w = proj_mat(
+    let attn_out_proj = emit_linear(
         g,
         params,
         packed,
+        bs,
         &name(il, "attn_output.weight"),
         &fa.attn_output,
+        attn_gated_2d,
         kv_dim,
         n_embd,
-    );
-    let attn_out_proj = emit_proj(
-        g,
-        attn_gated_2d,
-        out_w,
-        &fa.attn_output,
-        bs.flat2_shape(n_embd, DType::F32),
     );
     let attn_out_3d = bs.reshape_bsh(g, attn_out_proj, n_embd);
 
@@ -2189,7 +2149,7 @@ fn build_mtp_head(
         params,
         packed,
         &name(il, "attn_q.weight"),
-        &fa.attn_q_gate,
+        dense_only(&fa.attn_q_gate, "MTP attn_q"),
         n_embd,
         q_gate_cols,
     );
@@ -2198,7 +2158,7 @@ fn build_mtp_head(
         params,
         packed,
         &name(il, "attn_k.weight"),
-        &fa.attn_k,
+        dense_only(&fa.attn_k, "MTP attn_k"),
         n_embd,
         kv_cols,
     );
@@ -2207,7 +2167,7 @@ fn build_mtp_head(
         params,
         packed,
         &name(il, "attn_v.weight"),
-        &fa.attn_v,
+        dense_only(&fa.attn_v, "MTP attn_v"),
         n_embd,
         kv_cols,
     );
@@ -2235,7 +2195,7 @@ fn build_mtp_head(
         params,
         packed,
         &name(il, "attn_output.weight"),
-        &fa.attn_output,
+        dense_only(&fa.attn_output, "MTP attn_output"),
         kv_dim,
         n_embd,
     );
@@ -2281,7 +2241,7 @@ fn build_mtp_head(
         params,
         packed,
         &name(il, "ffn_gate.weight"),
-        fa_gate_src,
+        dense_only(fa_gate_src, "MTP ffn_gate"),
         n_embd,
         n_ff,
     );
@@ -2290,7 +2250,7 @@ fn build_mtp_head(
         params,
         packed,
         &name(il, "ffn_up.weight"),
-        fa_up_src,
+        dense_only(fa_up_src, "MTP ffn_up"),
         n_embd,
         n_ff,
     );
@@ -2299,7 +2259,7 @@ fn build_mtp_head(
         params,
         packed,
         &name(il, "ffn_down.weight"),
-        fa_down_src,
+        dense_only(fa_down_src, "MTP ffn_down"),
         n_ff,
         n_embd,
     );
@@ -2461,9 +2421,9 @@ fn build_ffn(
     h_in: NodeId,
     bs: BsLayout,
     attn_post_norm: &[f32],
-    ffn_gate: &MatWeight,
-    ffn_up: &MatWeight,
-    ffn_down: &MatWeight,
+    ffn_gate: &Proj,
+    ffn_up: &Proj,
+    ffn_down: &Proj,
     n_ff: usize,
     packed: &mut PackedParams,
 ) -> Result<NodeId> {
@@ -2480,45 +2440,41 @@ fn build_ffn(
     let h_normed = g.rms_norm(h_in, post_norm_w, post_norm_b, cfg.rms_norm_eps as f32);
     let h_2d = bs.reshape_flat(g, h_normed, n_embd);
 
-    let gate_w = proj_mat(
+    let _rows = bs.rows();
+    let gate = emit_linear(
         g,
         params,
         packed,
+        bs,
         &name(il, "ffn_gate.weight"),
         ffn_gate,
+        h_2d,
         n_embd,
         n_ff,
     );
-    let up_w = proj_mat(
+    let up = emit_linear(
         g,
         params,
         packed,
+        bs,
         &name(il, "ffn_up.weight"),
         ffn_up,
+        h_2d,
         n_embd,
         n_ff,
     );
-    let down_w = proj_mat(
+    let gate_silu = g.silu(gate);
+    let swiglu = g.mul(gate_silu, up);
+    let down = emit_linear(
         g,
         params,
         packed,
+        bs,
         &name(il, "ffn_down.weight"),
         ffn_down,
+        swiglu,
         n_ff,
         n_embd,
-    );
-
-    let _rows = bs.rows();
-    let gate = emit_proj(g, h_2d, gate_w, ffn_gate, bs.flat2_shape(n_ff, DType::F32));
-    let up = emit_proj(g, h_2d, up_w, ffn_up, bs.flat2_shape(n_ff, DType::F32));
-    let gate_silu = g.silu(gate);
-    let swiglu = g.mul(gate_silu, up);
-    let down = emit_proj(
-        g,
-        swiglu,
-        down_w,
-        ffn_down,
-        bs.flat2_shape(n_embd, DType::F32),
     );
     let ffn_out = bs.reshape_bsh(g, down, n_embd);
     Ok(g.add(h_in, ffn_out))
@@ -3291,10 +3247,7 @@ fn activation(g: &mut HirMut, kind: Activation, x: NodeId) -> NodeId {
 /// matches). Packed registers as a U8 byte tensor + records the
 /// scheme/shape in `packed`. Returns `(node, scheme_or_none, in, out)`.
 fn scheme_of(weight: &MatWeight) -> Option<QuantScheme> {
-    match weight {
-        MatWeight::F32(_) => None,
-        MatWeight::Packed { scheme, .. } => Some(*scheme),
-    }
+    weight.scheme()
 }
 
 fn proj_mat(
@@ -3365,6 +3318,101 @@ fn emit_proj(
             out_shape,
         ),
     }
+}
+
+/// Emit one linear projection, dense or Pestle-factorized, and return
+/// the `[rows, out_dim]` result.
+///
+/// Dense is the existing [`proj_mat`] + [`emit_proj`] pair. Pestle
+/// (`Doses-AI/Pestle-27B-Ternary-GGUF`) expands to five nodes:
+///
+/// ```text
+///   y = scale_post ⊙ ( U ( scale_mid ⊙ ( V ( scale_pre ⊙ x ) ) ) )
+/// ```
+///
+/// mirroring `build_pestle_mm` in the `mortar.cpp` fork. Both matmuls go
+/// through `emit_proj`, so a Q2_0-packed factor pair stays packed as two
+/// `DequantMatMul`s and never materializes F32 weights — the whole point
+/// of an 8.5 GB 27B.
+///
+/// The scales are per-channel `[in]` / `[rank]` / `[out]` params
+/// broadcast across token rows, and are named off `name` so a packed
+/// factor's graph param and its GGUF key stay distinct.
+#[allow(clippy::too_many_arguments)]
+fn emit_linear(
+    g: &mut HirMut,
+    params: &mut HashMap<String, Vec<f32>>,
+    packed: &mut PackedParams,
+    bs: BsLayout,
+    name: &str,
+    proj: &Proj,
+    input: NodeId,
+    in_dim: usize,
+    out_dim: usize,
+) -> NodeId {
+    match proj {
+        Proj::Dense(w) => {
+            let node = proj_mat(g, params, packed, name, w, in_dim, out_dim);
+            emit_proj(g, input, node, w, bs.flat2_shape(out_dim, DType::F32))
+        }
+        Proj::Pestle(f) => {
+            let pre = param(
+                g,
+                params,
+                &format!("{name}.pestle_scale_pre"),
+                &f.scale_pre,
+                &[in_dim],
+            );
+            let x = g.mul(pre, input);
+            let v_node = proj_mat(
+                g,
+                params,
+                packed,
+                &format!("{name}.pestle_v"),
+                &f.v,
+                in_dim,
+                f.rank,
+            );
+            let h = emit_proj(g, x, v_node, &f.v, bs.flat2_shape(f.rank, DType::F32));
+            let mid = param(
+                g,
+                params,
+                &format!("{name}.pestle_scale_mid"),
+                &f.scale_mid,
+                &[f.rank],
+            );
+            let h = g.mul(mid, h);
+            let u_node = proj_mat(
+                g,
+                params,
+                packed,
+                &format!("{name}.pestle_u"),
+                &f.u,
+                f.rank,
+                out_dim,
+            );
+            let y = emit_proj(g, h, u_node, &f.u, bs.flat2_shape(out_dim, DType::F32));
+            let post = param(
+                g,
+                params,
+                &format!("{name}.pestle_scale_post"),
+                &f.scale_post,
+                &[out_dim],
+            );
+            g.mul(post, y)
+        }
+    }
+}
+
+/// A [`Proj`] the caller can only handle as a plain matrix.
+///
+/// The MTP / NextN head builders predate Pestle and no Pestle checkpoint
+/// ships MTP layers, so they take this escape hatch rather than growing
+/// a second factorized path that nothing exercises.
+fn dense_only<'a>(proj: &'a Proj, what: &str) -> &'a MatWeight {
+    proj.dense().unwrap_or_else(|| {
+        panic!("{what}: Pestle-factorized projections are not supported on this path")
+    })
 }
 
 fn scalar_const(g: &mut HirMut, value: f32) -> NodeId {

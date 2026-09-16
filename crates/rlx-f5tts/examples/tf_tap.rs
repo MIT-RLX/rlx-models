@@ -80,11 +80,11 @@ fn main() -> anyhow::Result<()> {
             v.len(),
             &v[..5.min(v.len())]
         );
-        if i == 0 {
-            if let Ok(dir) = std::env::var("SC") {
-                let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
-                let _ = std::fs::write(format!("{dir}/tf_rlx_denoised_ts{ts}.f32"), bytes);
-            }
+        if i == 0
+            && let Ok(dir) = std::env::var("SC")
+        {
+            let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+            let _ = std::fs::write(format!("{dir}/tf_rlx_denoised_ts{ts}.f32"), bytes);
         }
     }
     Ok(())

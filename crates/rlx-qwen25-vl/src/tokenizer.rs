@@ -29,12 +29,12 @@ pub fn resolve_tokenizer_path(model_or_weights: &Path) -> Option<PathBuf> {
     if direct.is_file() {
         return Some(direct);
     }
-    if model_or_weights.extension().and_then(|s| s.to_str()) == Some("gguf") {
-        if let Some(parent) = model_or_weights.parent() {
-            let sibling = parent.join("tokenizer.json");
-            if sibling.is_file() {
-                return Some(sibling);
-            }
+    if model_or_weights.extension().and_then(|s| s.to_str()) == Some("gguf")
+        && let Some(parent) = model_or_weights.parent()
+    {
+        let sibling = parent.join("tokenizer.json");
+        if sibling.is_file() {
+            return Some(sibling);
         }
     }
     None

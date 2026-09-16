@@ -95,10 +95,10 @@ async fn main() -> Result<()> {
         anyhow::bail!("Training directory not found: {:?}", args.train_dir);
     }
 
-    if let Some(ref val_dir) = args.val_dir {
-        if !val_dir.exists() {
-            anyhow::bail!("Validation directory not found: {:?}", val_dir);
-        }
+    if let Some(ref val_dir) = args.val_dir
+        && !val_dir.exists()
+    {
+        anyhow::bail!("Validation directory not found: {:?}", val_dir);
     }
 
     // Create training config

@@ -64,7 +64,7 @@ pub struct PoolingWeights {
     pub probe: Vec<f32>,
 }
 
-pub(crate) fn extract_vision_embed_weights(
+pub fn extract_vision_embed_weights(
     weights: &mut WeightMap,
     cfg: &Siglip2Config,
 ) -> Result<VisionEmbedWeights> {
@@ -111,7 +111,7 @@ pub(crate) fn extract_vision_embed_weights(
 }
 
 /// Split the packed MAP-head `in_proj_weight`/`in_proj_bias` and tile the probe.
-pub(crate) fn extract_pooling_weights(
+pub fn extract_pooling_weights(
     weights: &mut WeightMap,
     cfg: &Siglip2Config,
     batch: usize,

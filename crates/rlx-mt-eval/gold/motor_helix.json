@@ -1,0 +1,27 @@
+{
+  "name": "motor_helix",
+  "source_lang": "en",
+  "cues": [
+    {
+      "id": 0,
+      "text_en": "A British company called Helix has quietly been building record-breaking electric motors for hypercars, and their new motor is the best one yet.",
+      "fr": "Une entreprise britannique appelée Helix construit discrètement des moteurs électriques qui battent des records pour les hypercars, et leur nouveau moteur est le meilleur à ce jour.",
+      "de": "Eine britische Firma namens Helix baut im Stillen rekordbrechende Elektromotoren für Hyperwagen, und ihr neuer Motor ist der beste bisher.",
+      "uk": "Британська компанія Helix непомітно створює рекордні електродвигуни для гіперкарів, і їхній новий мотор є найкращим на сьогодні."
+    },
+    {
+      "id": 1,
+      "text_en": "It delivers 950 horsepower and is about the size of this plant pot.",
+      "fr": "Il produit 950 chevaux et a la taille de ce pot de fleurs.",
+      "de": "Er liefert 950 PS und ist etwa so groß wie dieser Blumentopf.",
+      "uk": "Він виробляє 950 кінських сил і має приблизно розмір цього квіткового горщика."
+    },
+    {
+      "id": 2,
+      "text_en": "What makes this really interesting is that they use the most common and easiest-to-manufacture motor design, called a radial flux motor.",
+      "fr": "Ce qui rend cela vraiment intéressant, c'est qu'ils utilisent la conception de moteur la plus commune et la plus facile à fabriquer, appelée « moteur à flux radial ».",
+      "de": "Interessant daran ist, dass sie die gängigste und am einfachsten herzustellende Motorkonstruktion verwenden, den Radialflussmotor.",
+      "uk": "Найцікавіше те, що вони використовують найпоширенішу і найпростішу для виробництва конструкцію двигуна, яка називається двигуном радіального потоку."
+    }
+  ]
+}

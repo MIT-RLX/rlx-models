@@ -65,7 +65,7 @@ required-features = ["mmap-kv"]
 [dev-dependencies]
 # `dotprod` pulls opscope's neon/decompose GEMV kernels incl. the W8A8 SDOT path
 # (int8×int8→int32, no f32 widen) used by the `ablate` mode's lever-1 measurement.
-rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope", features = ["dotprod"] }
+rlx-opscope = { workspace = true, features = ["dotprod"] }
 tokenizers = { workspace = true }
 # memory_probe --op-inspect builds the retrieval encoder + cross-encoder BERT
 # graphs for static op-cost/dataflow analysis (whole-pipeline ops inspection).

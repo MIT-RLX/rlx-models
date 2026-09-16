@@ -83,8 +83,30 @@ fn key(ctx_len: u8, ctx: [u16; CTX_WIDTH], tok: u16) -> (u8, [u16; CTX_WIDTH], u
     (ctx_len, ctx, tok)
 }
 
+/// The model bytes: memory-mapped from a file, or owned (unpacked from an `.rlxp`).
+enum Store {
+    Mapped(Mmap),
+    /// Owned bytes held in a `u32` buffer. The record views below are `bytemuck`
+    /// casts, which require 4-byte alignment — an mmap base is page-aligned, but a
+    /// plain `Vec<u8>` is only byte-aligned and would panic.
+    Owned {
+        words: Vec<u32>,
+        len: usize,
+    },
+}
+
+impl Store {
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Mapped(m) => m,
+            Self::Owned { words, len } => &bytemuck::cast_slice(words)[..*len],
+        }
+    }
+}
+
 pub struct NgramModel {
-    mmap: Mmap,
+    store: Store,
     pub order: usize,
     max_ctx: usize,
     ngram_off: usize,
@@ -98,7 +120,21 @@ impl NgramModel {
         let file = std::fs::File::open(path)?;
         // Safety: the model file is read-only and not mutated for the map's lifetime.
         let mmap = unsafe { Mmap::map(&file)? };
+        Self::from_store(Store::Mapped(mmap))
+    }
 
+    /// Load from bytes already in memory (an `.rlxp` sidecar). Copies into an aligned
+    /// buffer; prefer [`Self::load`] when the model is a file, so it stays paged-in
+    /// on demand rather than on the heap.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let len = bytes.len();
+        let mut words = vec![0u32; len.div_ceil(4)];
+        bytemuck::cast_slice_mut(&mut words)[..len].copy_from_slice(bytes);
+        Self::from_store(Store::Owned { words, len })
+    }
+
+    fn from_store(store: Store) -> Result<Self> {
+        let mmap = store.bytes();
         let hdr_size = std::mem::size_of::<Header>();
         if mmap.len() < hdr_size || &mmap[0..8] != MAGIC {
             bail!("bad n-gram model magic");
@@ -136,9 +172,10 @@ impl NgramModel {
             tok2str.insert(e.tid, s);
         }
 
+        let order = header.order as usize;
         Ok(Self {
-            mmap,
-            order: header.order as usize,
+            store,
+            order,
             max_ctx: ctx_width,
             ngram_off,
             ngram_count,
@@ -147,11 +184,11 @@ impl NgramModel {
         })
     }
 
-    /// Zero-copy view of the sorted n-gram records straight from the mmap.
+    /// Zero-copy view of the sorted n-gram records straight from the backing store.
     #[inline]
     fn records(&self) -> &[NgramRecord] {
         let n = self.ngram_count * std::mem::size_of::<NgramRecord>();
-        bytemuck::cast_slice(&self.mmap[self.ngram_off..self.ngram_off + n])
+        bytemuck::cast_slice(&self.store.bytes()[self.ngram_off..self.ngram_off + n])
     }
 
     pub fn token_for(&self, s: &str) -> Option<u32> {

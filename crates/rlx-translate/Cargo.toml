@@ -1,0 +1,50 @@
+[package]
+name = "rlx-translate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "On-device system machine translation (Quasar pipeline: SentencePiece + Espresso NMT) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# the OS's normalizer files are sed scripts; their patterns use backreferences
+# and lazy quantifiers, which `regex` deliberately does not support.
+fancy-regex = "0.18"
+# Export target: WeightMap::from_file reads safetensors, so exported weights
+# drop straight into the rest of the workspace.
+safetensors = "0.4"
+# The other two export targets: GGUF for llama.cpp-family consumers, and the
+# official `.rlxp` pack for rlx asset bundles.
+rlx-gguf = { workspace = true }
+rlx-assets = { workspace = true, features = ["rlxp"] }
+# `inner_product` is 81% of executor time (see `crate::profile`), and it is a
+# plain int8 GEMM over disjoint output rows. Same version the rest of the
+# workspace already pins, so this adds nothing to the lock file.
+rayon = "1.10"
+
+[dev-dependencies]
+half = "2"
+# Independent semantic validation: judging our own translations with the
+# translation model's own encoder is circular, so the cosine metric is
+# cross-checked against a dedicated sentence embedder.
+rlx-embed = { workspace = true }
+
+[[bin]]
+name = "rlx-translate"
+path = "src/bin/rlx_translate.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []

@@ -140,10 +140,10 @@ fn main() -> Result<()> {
     println!("oracle argmax = {oracle_argmax}   (\" Paris\")");
     println!("finite        = {}", last.iter().all(|v| v.is_finite()));
     println!("rlx top5      = {:?}", &top[..5]);
-    if let Ok(oracle_logits) = read_npy_f32(&dir.join("oracle_prefill_last_logits.npy")) {
-        if oracle_logits.len() == last.len() {
-            println!("cosine        = {:.6}", cosine(last, &oracle_logits));
-        }
+    if let Ok(oracle_logits) = read_npy_f32(&dir.join("oracle_prefill_last_logits.npy"))
+        && oracle_logits.len() == last.len()
+    {
+        println!("cosine        = {:.6}", cosine(last, &oracle_logits));
     }
     if argmax == oracle_argmax {
         println!("✅ LFM2 ShortConv prefill MATCHES the mlx-lm oracle");

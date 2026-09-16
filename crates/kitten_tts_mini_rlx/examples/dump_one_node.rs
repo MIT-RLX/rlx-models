@@ -235,10 +235,9 @@ fn main() -> anyhow::Result<()> {
     if let Some(i) = std::env::var("IDX")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
+        && i < vals.len()
     {
-        if i < vals.len() {
-            println!("native idx={i} val={}", vals[i]);
-        }
+        println!("native idx={i} val={}", vals[i]);
     }
     Ok(())
 }

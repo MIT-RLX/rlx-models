@@ -39,10 +39,10 @@ fn first_full_layer(cfg: &GemmaConfig) -> Option<usize> {
 
 /// `(theta, n_rot)` for the default (sliding) RoPE table.
 pub fn sliding_rope_params(cfg: &GemmaConfig) -> (f64, usize) {
-    if matches!(cfg.arch, GemmaArch::Gemma3 | GemmaArch::Gemma4) {
-        if let Some(si) = first_sliding_layer(cfg) {
-            return (cfg.layer_rope_theta(si), cfg.layer_n_rot(si));
-        }
+    if matches!(cfg.arch, GemmaArch::Gemma3 | GemmaArch::Gemma4)
+        && let Some(si) = first_sliding_layer(cfg)
+    {
+        return (cfg.layer_rope_theta(si), cfg.layer_n_rot(si));
     }
     (cfg.rope_theta, cfg.head_dim())
 }
@@ -110,10 +110,10 @@ pub fn resolve_global_inv_freq(
     }
     // llama.cpp / GGUF: `rope_freqs.weight` covers the full global rotary dim
     // (length head_dim/2). Apply when sized to the table.
-    if let Some(f) = rope_freq_factors.filter(|f| !f.is_empty()) {
-        if f.len() == base.len() {
-            base = inv_freq_with_factors(&base, f);
-        }
+    if let Some(f) = rope_freq_factors.filter(|f| !f.is_empty())
+        && f.len() == base.len()
+    {
+        base = inv_freq_with_factors(&base, f);
     }
     Some(base)
 }

@@ -73,10 +73,10 @@ pub fn hf_snapshot_dir(_repo_id: &str) -> Result<PathBuf> {
 
 /// Best-effort checkpoint directory: `RLX_UNLIMITED_OCR_DIR` → HF cache → `just fetch` layout.
 pub fn default_model_dir() -> Result<PathBuf> {
-    if let Ok(raw) = std::env::var("RLX_UNLIMITED_OCR_DIR") {
-        if let Some(p) = crate::fixtures::resolve_model_dir_path(&raw) {
-            return Ok(p);
-        }
+    if let Ok(raw) = std::env::var("RLX_UNLIMITED_OCR_DIR")
+        && let Some(p) = crate::fixtures::resolve_model_dir_path(&raw)
+    {
+        return Ok(p);
     }
 
     #[cfg(feature = "hf-download")]

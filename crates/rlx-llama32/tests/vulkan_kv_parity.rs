@@ -24,10 +24,10 @@ use rlx_runtime::{Device, is_available};
 
 fn gguf_path() -> Option<String> {
     for k in ["LLAMA32_GGUF", "ORPHEUS_GGUF_PATH"] {
-        if let Ok(p) = std::env::var(k) {
-            if std::path::Path::new(&p).is_file() {
-                return Some(p);
-            }
+        if let Ok(p) = std::env::var(k)
+            && std::path::Path::new(&p).is_file()
+        {
+            return Some(p);
         }
     }
     let def = "/tmp/rlx-weights/orpheus/orpheus-3b-0.1-ft-Q4_K_M.gguf";

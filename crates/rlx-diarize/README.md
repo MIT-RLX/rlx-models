@@ -1,33 +1,40 @@
 # rlx-diarize
 
-Native RLX **speaker diarization**: slide a window over mono PCM, embed each window, then agglomeratively cluster the embeddings into speaker turns. Pure Rust (only `anyhow` + `serde`), no external model runtime — used by [`rlx-whisper`](../rlx-whisper)'s `diarize` feature to attach speaker labels to a transcript.
+Native RLX **speaker diarization**: slide a window over mono PCM, embed each
+window, then agglomeratively cluster into speaker turns.
+
+## Backends
+
+| Feature | Embeddings |
+|---------|------------|
+| *(default)* | Mel energy statistics (no neural weights) |
+| `wespeaker` | WeSpeaker ResNet34-LM **on RLX** (`rlx-wespeaker`) — Metal / CoreML / CPU / … |
+
+ONNX under `onnx/wespeaker.onnx` is only for RLX import / packing; runtime prefers
+`graphs/wespeaker.rlxp`.
 
 ## Public API
 
 ```rust
 use rlx_diarize::{DiarizeSession, DiarizeConfig, SpeakerTurn};
+use rlx_runtime::Device;
 
-let mut session = DiarizeSession::new(DiarizeConfig::default());
-let turns: Vec<SpeakerTurn> = session.diarize(&pcm_16k)?;   // 16 kHz mono
-for t in &turns {
-    // t.speaker_id, t.start (s), t.end (s)
-    println!("speaker {} : {:.2}–{:.2}", t.speaker_id, t.start, t.end);
-}
+let cfg = DiarizeConfig::default()
+    .with_auto_wespeaker(&[std::path::Path::new("weights")])
+    .with_device(Device::Metal);
+let mut session = DiarizeSession::new(cfg)?;
+let turns: Vec<SpeakerTurn> = session.diarize(&pcm_16k)?;
 # anyhow::Ok(())
 ```
 
-- `DiarizeConfig { window_sec, hop_sec, cluster_threshold }` — defaults `1.5 s` / `0.75 s` / `0.25`.
-- `DiarizeSession::new(cfg).diarize(pcm)` — sliding-window embeddings (`embed` module) → agglomerative clustering (`cluster` module) → merged contiguous `SpeakerTurn`s.
-- `SpeakerTurn { speaker_id, start, end }` — a contiguous span for one speaker (serde-serializable).
-
-Very short inputs (below half a window) collapse to a single turn covering the whole clip.
-
-## How it fits
-
-`rlx-whisper` calls `DiarizeSession::diarize` to label its segment/word timeline with speakers. See the `diarize` stage in [`rlx-whisper/src/diarize.rs`](../rlx-whisper/src/diarize.rs).
+- `DiarizeConfig { window_sec, hop_sec, cluster_threshold, wespeaker_dir, device }`
+  — defaults `1.5 s` / `0.75 s` / `0.35` / `None` / `Cpu`.
+- `DiarizeSession::mel_stat(cfg)` — force mel-stat (always succeeds).
 
 ## Tests
 
 ```bash
 cargo test -p rlx-diarize --release
+cargo run -p rlx-diarize --release --example diarize_wav --features "wespeaker,metal" -- \
+  clip.wav weights/wespeaker-voxceleb-resnet34-LM metal
 ```

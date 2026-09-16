@@ -219,22 +219,22 @@ pub struct ManifestParamSource<'a> {
 impl ParamSource for ManifestParamSource<'_> {
     fn get(&mut self, name: &str) -> Option<Param> {
         // MOVE out of the retained maps (frees as the runtime takes its copy).
-        if let Some(v) = self.synth.remove(name) {
-            if !v.is_empty() {
-                return Some(Param::f32(v));
-            }
+        if let Some(v) = self.synth.remove(name)
+            && !v.is_empty()
+        {
+            return Some(Param::f32(v));
         }
-        if let Some(b) = self.synth_packed.remove(name) {
-            if !b.is_empty() {
-                // MoE scale/bias slabs are retained BF16 to halve resident memory;
-                // any other retained packed bytes are U8. Dtype must match the node.
-                let dt = if name.ends_with(".scales") || name.ends_with(".biases") {
-                    DType::BF16
-                } else {
-                    DType::U8
-                };
-                return Some(Param::typed(b, dt));
-            }
+        if let Some(b) = self.synth_packed.remove(name)
+            && !b.is_empty()
+        {
+            // MoE scale/bias slabs are retained BF16 to halve resident memory;
+            // any other retained packed bytes are U8. Dtype must match the node.
+            let dt = if name.ends_with(".scales") || name.ends_with(".biases") {
+                DType::BF16
+            } else {
+                DType::U8
+            };
+            return Some(Param::typed(b, dt));
         }
         let served = match self.manifest.get(name) {
             Some(LoadKind::Transposed) => self

@@ -1,0 +1,9 @@
+$ /Users/Shared/rlx-models/target/release/rlx-tada speak --weights weights/tts/tada --prompt weights/tts/tada/harness.tadaprompt --text The quick brown fox jumps over the lazy dog near the river bank. --device mlx --out /Users/Shared/rlx-models/scripts/matrix/out/artifacts/tada.mlx.wav
+
+--- stdout ---
+
+--- stderr ---
+[prof] load 150.399917ms rss 246 MB
+[prof] peak rss 12318 MB
+[tada] 3.88s of audio in 6.05s (RTF 0.64×)
+[tada] wrote /Users/Shared/rlx-models/scripts/matrix/out/artifacts/tada.mlx.wav

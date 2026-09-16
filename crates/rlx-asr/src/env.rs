@@ -22,6 +22,125 @@ pub fn timing() -> bool {
     )
 }
 
+/// Encoder path: `folded` (default) or experimental `native` 28-layer stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EncoderMode {
+    #[default]
+    Folded,
+    Native,
+}
+
+pub fn encoder_mode() -> EncoderMode {
+    match std::env::var("RLX_ASR_ENCODER")
+        .unwrap_or_else(|_| "folded".into())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "native" | "layers" | "28" | "whole" => EncoderMode::Native,
+        _ => EncoderMode::Folded,
+    }
+}
+
+/// Mel frontend before the folded encoder.
+///
+/// Provenance (`frontend_fbank_verify.json`): raw decimated log-mel (~0.61–0.64 corr vs Apple
+/// speech features); silence affine helps zeros only (~0.37 on speech). Optional LS cross-wav
+/// affine (~0.90 holdout) when sidecar bins or pack tensors are present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FrontendMode {
+    Raw,
+    Calibrated,
+    #[default]
+    LsCrossWav,
+}
+
+pub fn frontend_mode() -> FrontendMode {
+    match std::env::var("RLX_ASR_FRONTEND")
+        .unwrap_or_else(|_| "auto".into())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "raw" => FrontendMode::Raw,
+        "cal" | "calibrated" | "silence" => FrontendMode::Calibrated,
+        "ls" | "ls_cross_wav" | "cross_wav" | "hybrid" | "auto" => FrontendMode::LsCrossWav,
+        _ => FrontendMode::Raw,
+    }
+}
+
+/// Optional directory with `frontend_fbank_ls_cross_wav_{a,b}.bin` (80 floats each).
+pub fn frontend_ls_dir() -> Option<PathBuf> {
+    std::env::var_os("RLX_ASR_FRONTEND_LS_DIR").map(PathBuf::from)
+}
+
+/// Stop after the first mel chunk when transcript looks like folded CTC junk.
+pub fn early_abort() -> bool {
+    !matches!(
+        std::env::var("RLX_ASR_EARLY_ABORT")
+            .unwrap_or_else(|_| "1".into())
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "off" | "none" | "no"
+    )
+}
+
+/// Apply optional `encoder.body_out_ls.A` (512×512) after `bodyR`.
+pub fn body_out_ls_enabled() -> bool {
+    match std::env::var("RLX_ASR_BODY_OUT")
+        .unwrap_or_else(|_| "auto".into())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "0" | "false" | "off" | "none" | "no" => false,
+        "1" | "true" | "on" | "yes" => true,
+        _ => true, // auto: use when tensor/sidecar present
+    }
+}
+
+pub fn body_out_ls_dir() -> Option<PathBuf> {
+    std::env::var_os("RLX_ASR_BODY_OUT_LS_DIR").map(PathBuf::from)
+}
+
+/// Optional CE residual MLP body: `enc = h@B + tanh(h@W1+b1)@W2 + b2`.
+///
+/// `auto` (default): use when `body_mlp_ce.*.bin` sidecars exist under `RLX_ASR_DIR`.
+pub fn body_mlp_ce_enabled() -> bool {
+    match std::env::var("RLX_ASR_BODY_MLP")
+        .unwrap_or_else(|_| "auto".into())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "0" | "false" | "off" | "none" | "no" => false,
+        "1" | "true" | "on" | "yes" => true,
+        _ => true,
+    }
+}
+
+/// Apply live h-space map `body_h_map_ls.M.bin` after input_proj.
+///
+/// `auto` (default): on when sidecar exists and frontend mode is LS (live path).
+pub fn h_map_enabled() -> bool {
+    match std::env::var("RLX_ASR_H_MAP")
+        .unwrap_or_else(|_| "auto".into())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "0" | "false" | "off" | "none" | "no" => false,
+        "1" | "true" | "on" | "yes" => true,
+        _ => matches!(frontend_mode(), FrontendMode::LsCrossWav),
+    }
+}
+
+/// Energy VAD trim before fbank. `0` skips trim (better for short paired eval clips).
+pub fn vad_enabled() -> bool {
+    !matches!(
+        std::env::var("RLX_ASR_VAD")
+            .unwrap_or_else(|_| "1".into())
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "off" | "none" | "no"
+    )
+}
+
 pub fn asr_dir_env() -> Option<PathBuf> {
     std::env::var_os("RLX_ASR_DIR").map(Into::into)
 }
@@ -46,10 +165,10 @@ pub fn default_asr_roots() -> Vec<PathBuf> {
 
 /// Resolve the ASR root: `RLX_ASR_DIR` (if set), else `weights/asr`.
 pub fn asr_dir() -> PathBuf {
-    if let Some(p) = asr_dir_env() {
-        if looks_like_asr_root(&p) || p.is_dir() {
-            return p;
-        }
+    if let Some(p) = asr_dir_env()
+        && (looks_like_asr_root(&p) || p.is_dir())
+    {
+        return p;
     }
     for c in default_asr_roots() {
         if looks_like_asr_root(&c) || c.is_dir() {

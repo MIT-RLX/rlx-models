@@ -61,23 +61,23 @@ pub const FAMILY: &str = "LFM2.5-VL";
 const ACCEPTED_ARCHES: &[&str] = &["lfm2-vl", "lfm25-vl", "lfm2_5_vl", "lfm-vl"];
 
 pub fn cli_run(args: &[String]) -> Result<()> {
-    if let Some(first) = args.iter().position(|a| a == "--weights") {
-        if let Some(path) = args.get(first + 1) {
-            let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
-                .with_context(|| format!("rlx-lfm-vl: parse {path}"))?;
-            if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
-                bail!(
-                    "rlx-lfm-vl: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
-                    cfg.arch
-                );
-            }
-            eprintln!(
-                "[rlx-lfm-vl] {path}: arch `{}` accepted. Use the library API \
-                 (LfmVlVisionRunner::builder()) for image inference.",
+    if let Some(first) = args.iter().position(|a| a == "--weights")
+        && let Some(path) = args.get(first + 1)
+    {
+        let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
+            .with_context(|| format!("rlx-lfm-vl: parse {path}"))?;
+        if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
+            bail!(
+                "rlx-lfm-vl: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
                 cfg.arch
             );
-            return Ok(());
         }
+        eprintln!(
+            "[rlx-lfm-vl] {path}: arch `{}` accepted. Use the library API \
+                 (LfmVlVisionRunner::builder()) for image inference.",
+            cfg.arch
+        );
+        return Ok(());
     }
     bail!(
         "rlx-lfm-vl: usage: --weights <lm.gguf>; for image inference use the \

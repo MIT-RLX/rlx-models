@@ -51,11 +51,11 @@ pub fn load_wav_mono_f32(path: &Path) -> Result<Vec<f32>> {
 }
 
 pub fn write_wav_f32(path: &Path, pcm: &[f32], sample_rate: u32, channels: u16) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create dir {}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create dir {}", parent.display()))?;
     }
     ensure!(channels >= 1, "channels must be >= 1");
     let frames = pcm.len() / channels as usize;
@@ -89,11 +89,11 @@ pub fn prepare_tsac_wav(in_wav: &Path, out_wav: &Path) -> Result<u16> {
 }
 
 fn write_wav_i16(path: &Path, pcm: &[f32], sample_rate: u32, channels: u16) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create dir {}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create dir {}", parent.display()))?;
     }
     ensure!(channels >= 1, "channels must be >= 1");
     let frames = pcm.len() / channels as usize;

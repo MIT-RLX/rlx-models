@@ -294,6 +294,9 @@ pub fn build_locateanything_mtp_kv_built(
             num_layers: qcfg.num_hidden_layers,
             use_custom_mask: false,
             need_past_kv: true,
+            // `past_k_*`/`past_v_*` are declared at exactly `past_seq` rows and
+            // concatenated whole, so there is no spare capacity to distinguish.
+            kv_past_len: None,
         }))
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh)

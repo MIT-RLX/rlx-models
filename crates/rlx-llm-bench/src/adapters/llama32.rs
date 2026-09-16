@@ -33,12 +33,11 @@ fn default_eos(weights: &std::path::Path, vocab: usize) -> Vec<u32> {
         .extension()
         .and_then(|s| s.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
+        && let Ok(f) = rlx_gguf::GgufFile::from_path(weights)
     {
-        if let Ok(f) = rlx_gguf::GgufFile::from_path(weights) {
-            for key in ["tokenizer.ggml.eos_token_id", "tokenizer.ggml.eot_token_id"] {
-                if let Some(v) = f.metadata.get(key).and_then(rlx_gguf::MetaValue::as_u32) {
-                    ids.push(v);
-                }
+        for key in ["tokenizer.ggml.eos_token_id", "tokenizer.ggml.eot_token_id"] {
+            if let Some(v) = f.metadata.get(key).and_then(rlx_gguf::MetaValue::as_u32) {
+                ids.push(v);
             }
         }
     }

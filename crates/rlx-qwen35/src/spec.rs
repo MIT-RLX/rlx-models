@@ -273,6 +273,10 @@ mod tests {
         MatWeight::F32(data)
     }
 
+    fn proj(data: Vec<f32>) -> crate::weights::Proj {
+        crate::weights::Proj::Dense(MatWeight::F32(data))
+    }
+
     fn ramp(n: usize, scale: f32) -> Vec<f32> {
         (0..n).map(|i| 0.001 + scale * (i as f32) * 0.01).collect()
     }
@@ -314,9 +318,9 @@ mod tests {
         let n_embd = cfg.hidden_size;
         let n_ff = cfg.intermediate_size;
         Qwen35LayerFfn::Dense {
-            gate: mat(ramp(n_embd * n_ff, 0.01)),
-            down: mat(ramp(n_ff * n_embd, 0.01)),
-            up: mat(ramp(n_embd * n_ff, 0.01)),
+            gate: proj(ramp(n_embd * n_ff, 0.01)),
+            down: proj(ramp(n_ff * n_embd, 0.01)),
+            up: proj(ramp(n_embd * n_ff, 0.01)),
         }
     }
 
@@ -332,15 +336,15 @@ mod tests {
         Qwen35LinearLayer {
             attn_norm: vec![1.0; n_embd],
             attn_post_norm: vec![1.0; n_embd],
-            attn_qkv: mat(ramp(n_embd * conv_channels, 0.01)),
-            attn_gate: mat(ramp(n_embd * value_dim, 0.01)),
+            attn_qkv: proj(ramp(n_embd * conv_channels, 0.01)),
+            attn_gate: proj(ramp(n_embd * value_dim, 0.01)),
             ssm_conv1d: ramp(cfg.ssm_conv_kernel * conv_channels, 0.02),
             ssm_dt_bias: ramp(n_v_heads, 0.05),
             ssm_a: vec![-1.0; n_v_heads],
-            ssm_beta: mat(ramp(n_embd * n_v_heads, 0.01)),
-            ssm_alpha: mat(ramp(n_embd * n_v_heads, 0.01)),
+            ssm_beta: proj(ramp(n_embd * n_v_heads, 0.01)),
+            ssm_alpha: proj(ramp(n_embd * n_v_heads, 0.01)),
             ssm_norm: vec![1.0; n_state],
-            ssm_out: mat(ramp(value_dim * n_embd, 0.01)),
+            ssm_out: proj(ramp(value_dim * n_embd, 0.01)),
             ffn: dense_ffn(cfg),
         }
     }
@@ -354,10 +358,10 @@ mod tests {
         Qwen35FullAttnLayer {
             attn_norm: vec![1.0; n_embd],
             attn_post_norm: vec![1.0; n_embd],
-            attn_q_gate: mat(ramp(n_embd * n_head * hd * 2, 0.01)),
-            attn_k: mat(ramp(n_embd * n_kv * hd, 0.01)),
-            attn_v: mat(ramp(n_embd * n_kv * hd, 0.01)),
-            attn_output: mat(ramp(n_head * hd * n_embd, 0.01)),
+            attn_q_gate: proj(ramp(n_embd * n_head * hd * 2, 0.01)),
+            attn_k: proj(ramp(n_embd * n_kv * hd, 0.01)),
+            attn_v: proj(ramp(n_embd * n_kv * hd, 0.01)),
+            attn_output: proj(ramp(n_head * hd * n_embd, 0.01)),
             attn_q_norm: vec![1.0; hd],
             attn_k_norm: vec![1.0; hd],
             ffn: dense_ffn(cfg),

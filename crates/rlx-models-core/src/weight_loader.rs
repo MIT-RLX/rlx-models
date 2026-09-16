@@ -200,10 +200,10 @@ pub fn gguf_to_hf_name_candidates(gguf: &str) -> Vec<String> {
     if let Some(h) = gguf_to_hf_name(gguf) {
         out.push(h);
     }
-    if let Some(h) = gguf_to_hf_qwen35_name(gguf) {
-        if !out.iter().any(|x| x == &h) {
-            out.push(h);
-        }
+    if let Some(h) = gguf_to_hf_qwen35_name(gguf)
+        && !out.iter().any(|x| x == &h)
+    {
+        out.push(h);
     }
     // Untied multimodal checkpoints sometimes nest lm_head under language_model.
     if gguf == "output.weight" {
@@ -514,6 +514,9 @@ pub fn ggml_type_to_quant_scheme(dtype: rlx_gguf::GgmlType) -> Option<QuantSchem
         // stays ~4 GB instead of expanding to ~32 GB of F32 weights.
         GgmlType::FV5 => Some(QuantScheme::GgufFV5),
         GgmlType::FV5B => Some(QuantScheme::GgufFV5B),
+        // Doses AI Pestle exact ternary — the 248320 × 5120 `token_embd`
+        // and `output` tables are 636 MB packed but 5.1 GB each as F32.
+        GgmlType::G8_0 => Some(QuantScheme::GgufG8_0),
         // IQ family. Everything downstream already supported these — the IQ
         // variants exist in `QuantScheme`, `rlx_gguf::iq_dequant` has every
         // kernel, rlx-cpu's `dequant_block` has all 9 arms, Metal ships
@@ -1218,16 +1221,13 @@ impl GgufLoader {
         if is_mtp_weight(name) {
             return true;
         }
-        if let Some(thresh) = self.mtp_layer_threshold {
-            if let Some(rest) = name.strip_prefix("blk.") {
-                if let Some(dot) = rest.find('.') {
-                    if let Ok(idx) = rest[..dot].parse::<u32>() {
-                        if idx >= thresh {
-                            return true;
-                        }
-                    }
-                }
-            }
+        if let Some(thresh) = self.mtp_layer_threshold
+            && let Some(rest) = name.strip_prefix("blk.")
+            && let Some(dot) = rest.find('.')
+            && let Ok(idx) = rest[..dot].parse::<u32>()
+            && idx >= thresh
+        {
+            return true;
         }
         false
     }

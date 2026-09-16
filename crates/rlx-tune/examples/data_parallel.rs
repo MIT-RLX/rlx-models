@@ -151,12 +151,12 @@ fn main() -> anyhow::Result<()> {
         .and_then(|i| args.get(i + 1))
         .cloned();
     let mut trainer = Trainer::new(g, &wrt, &params, 300, comm.as_deref(), &cfg)?;
-    if let Some(path) = &ckpt {
-        if std::path::Path::new(path).exists() {
-            trainer.restore(&Checkpoint::load(path)?);
-            if rank == 0 {
-                eprintln!("resumed from {path} at step {}", trainer.step_index());
-            }
+    if let Some(path) = &ckpt
+        && std::path::Path::new(path).exists()
+    {
+        trainer.restore(&Checkpoint::load(path)?);
+        if rank == 0 {
+            eprintln!("resumed from {path} at step {}", trainer.step_index());
         }
     }
 

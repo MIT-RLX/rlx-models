@@ -96,6 +96,9 @@ impl GgufModelFamily {
             // Also accept qwen3vl* so `Qwen3Runner` can load the LM half of a
             // Qwen3-VL GGUF when composed by `Qwen3VlRunner` (auto_sniff still
             // routes those arches to `Qwen3Vl` via `gguf_family_for_arch`).
+            // `hunyuan-dense` (HY-MT1.5) is Qwen3-shaped: GQA + QK-norm +
+            // SwiGLU, llama.cpp tensor names. Loaded via `rlx-hy-mt` /
+            // `Qwen3Runner` after config mapping.
             Self::Qwen3 => matches!(
                 arch,
                 "qwen3"
@@ -107,6 +110,9 @@ impl GgufModelFamily {
                     | "qwen3vlmoe"
                     | "qwen3_vl"
                     | "qwen3-vl"
+                    | "hunyuan-dense"
+                    | "hunyuan_dense"
+                    | "hunyuan-v1-dense"
             ),
             // Qwen3.6 reuses the Qwen3.5 trunk; `Qwen35Config::from_gguf`
             // reads its metadata keys under the `qwen36.*` prefix. Routes

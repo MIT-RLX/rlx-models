@@ -132,10 +132,10 @@ impl Bpe {
         loop {
             let mut best: Option<(usize, u32)> = None; // (position, new id)
             for i in 0..seq.len().saturating_sub(1) {
-                if let Some(&nid) = self.ranks.get(&(seq[i], seq[i + 1])) {
-                    if best.is_none_or(|(_, b)| nid < b) {
-                        best = Some((i, nid));
-                    }
+                if let Some(&nid) = self.ranks.get(&(seq[i], seq[i + 1]))
+                    && best.is_none_or(|(_, b)| nid < b)
+                {
+                    best = Some((i, nid));
                 }
             }
             let Some((i, nid)) = best else { break };

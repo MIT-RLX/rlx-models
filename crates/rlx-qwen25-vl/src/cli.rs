@@ -83,12 +83,21 @@ pub fn run(args: &[String]) -> Result<()> {
             let user_q = prompt_text.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("--image requires --prompt containing `{MEDIA_MARKER}` or plain question with --vlmevalkit-prompt")
             })?;
+            // Both non-VLMEvalKit branches produce the *inside* of a user turn,
+            // so they have to be framed. Feeding a bare turn to the trunk leaves
+            // it with no `<|im_start|>assistant`, and it answers by writing the
+            // frame itself: the first tokens out are `<|im_end|>\n<|im_end|>\n
+            // <|im_start|>\n` before the real reply begins.
+            // `vlmevalkit_chat_prompt` already frames its own.
             let prompt = if vlmevalkit_prompt {
                 crate::vlmevalkit_chat_prompt(user_q, None)
             } else if user_q.contains(MEDIA_MARKER) {
-                user_q.to_string()
+                crate::qwen25_vl_chatml(user_q, crate::chat_template::DEFAULT_SYSTEM)
             } else {
-                crate::user_turn_with_media(user_q)
+                crate::qwen25_vl_chatml(
+                    &crate::user_turn_with_media(user_q),
+                    crate::chat_template::DEFAULT_SYSTEM,
+                )
             };
             if !vlmevalkit_prompt && !prompt.contains(MEDIA_MARKER) {
                 bail!(

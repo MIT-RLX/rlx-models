@@ -40,6 +40,8 @@ just asr-check
 cargo run -p rlx-asr --release -- transcribe --wav clip.wav
 # Folded CTC e2e (Python, same pack):
 just asr-e2e-native -- --wav clip.wav
+# Experimental full 28-layer forward (needs parity tuning):
+python3 crates/rlx-asr/tools/e2e_native_layers.py --wav clip.wav
 ```
 
 Facade: `rlx-models` feature `streaming-asr` → `rlx_models::streaming_asr`.
@@ -49,8 +51,8 @@ Facade: `rlx-models` feature `streaming-asr` → `rlx_models::streaming_asr`.
 | Stage | Rust | Notes |
 |-------|------|--------|
 | Frontend / VAD / CTC beam / Hammer FSTs / AED | yes | Loads from `model.rlxp` (or legacy GGUF) |
-| Folded encoder → CTC | Python e2e | `tools/e2e_native_whole.py` |
-| Native Conformer graph | stub | Shaped outputs for pipeline wiring |
+| Folded encoder → CTC | yes (Rust + Python e2e) | `enc = (mel→proj) @ body_residual_ls.R` — fast; loops on real speech → use Whisper fallback |
+| Native Apple streaming encoder | experimental | `native_encoder.rs` — Espresso `streaming_encoder_64_16` caches; `RLX_ASR_ENCODER=native` |
 
 ## Features / backends
 

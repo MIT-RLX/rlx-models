@@ -236,10 +236,10 @@ impl NativeEngine {
             audio.extend_from_slice(&part);
         }
 
-        if let Some(target) = exact_target {
-            if audio.len() > target {
-                audio.truncate(target);
-            }
+        if let Some(target) = exact_target
+            && audio.len() > target
+        {
+            audio.truncate(target);
         }
         Ok(audio)
     }
@@ -291,10 +291,10 @@ impl NativeEngine {
             audio
         };
 
-        if let Some(target) = exact_target {
-            if audio.len() > target {
-                audio.truncate(target);
-            }
+        if let Some(target) = exact_target
+            && audio.len() > target
+        {
+            audio.truncate(target);
         }
         Ok(audio)
     }
@@ -380,19 +380,19 @@ impl NativeEngine {
         );
 
         if kitten_tts_mini_rlx::compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
-            if let Some((dur_bytes, dur_dt)) = outputs.get(1) {
-                if *dur_dt == DType::I64 {
-                    let dur = decode_i64_tensor(dur_bytes);
-                    let sum: i64 = dur[..ids.len().min(dur.len())]
-                        .iter()
-                        .copied()
-                        .filter(|&d| d > 0 && d < 10_000)
-                        .sum();
-                    eprintln!(
-                        "[kittentts] duration active={:?} sum={sum} compile_seq={compile_seq}",
-                        &dur[..ids.len().min(dur.len())]
-                    );
-                }
+            if let Some((dur_bytes, dur_dt)) = outputs.get(1)
+                && *dur_dt == DType::I64
+            {
+                let dur = decode_i64_tensor(dur_bytes);
+                let sum: i64 = dur[..ids.len().min(dur.len())]
+                    .iter()
+                    .copied()
+                    .filter(|&d| d > 0 && d < 10_000)
+                    .sum();
+                eprintln!(
+                    "[kittentts] duration active={:?} sum={sum} compile_seq={compile_seq}",
+                    &dur[..ids.len().min(dur.len())]
+                );
             }
             if let Some((wave_bytes, wave_dt)) = outputs.first() {
                 eprintln!(

@@ -362,6 +362,29 @@ impl TinyModel {
         }
     }
 
+    /// Cap or clear the named-length graph cache (param-loaded Metal graphs).
+    ///
+    /// Long dubs compile many `(text_len, latent_len)` keys; each keeps weights
+    /// resident. Call between utterances under low-memory / iOS profiles.
+    pub fn trim_named_cache(&self, max_entries: usize) {
+        let mut cache = self.named_cache.lock().expect("named cache");
+        if max_entries == 0 {
+            cache.clear();
+            return;
+        }
+        while cache.len() > max_entries {
+            let Some(key) = cache.keys().next().cloned() else {
+                break;
+            };
+            cache.remove(&key);
+        }
+    }
+
+    /// Drop every named compiled graph.
+    pub fn clear_named_cache(&self) {
+        self.trim_named_cache(0);
+    }
+
     /// Ensure the named graph is built + param-loaded in the in-memory cache and
     /// return its key. Skips re-import + re-compile + re-`set_param` when this exact
     /// (component, device, length, named-lengths, opts) graph was already built in

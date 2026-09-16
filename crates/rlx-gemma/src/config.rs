@@ -654,10 +654,10 @@ fn normalize_hf_null_usize_fields(mut value: serde_json::Value) -> serde_json::V
     // gemma-3n ships a *per-layer* `intermediate_size` array (uniform for E2B).
     // The builder models a single scalar via `layer_intermediate_size`, so
     // collapse the array to its first element.
-    if let Some(arr) = obj.get("intermediate_size").and_then(|v| v.as_array()) {
-        if let Some(first) = arr.first().cloned() {
-            obj.insert("intermediate_size".to_string(), first);
-        }
+    if let Some(arr) = obj.get("intermediate_size").and_then(|v| v.as_array())
+        && let Some(first) = arr.first().cloned()
+    {
+        obj.insert("intermediate_size".to_string(), first);
     }
     for key in [
         "num_experts",
@@ -1004,10 +1004,9 @@ fn gemma_eog_tokens_from_gguf(raw: &GgufFile, arch: GemmaArch) -> Vec<u32> {
         .metadata
         .get("tokenizer.ggml.eos_token_id")
         .and_then(MetaValue::as_u32)
+        && !ids.contains(&eos)
     {
-        if !ids.contains(&eos) {
-            ids.push(eos);
-        }
+        ids.push(eos);
     }
     ids.sort_unstable();
     ids.dedup();

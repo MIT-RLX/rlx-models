@@ -235,10 +235,10 @@ impl TorchnG2p {
             let mut best: Option<(usize, usize)> = None;
             for i in 0..chars.len() - 1 {
                 let key = (chars[i].clone(), chars[i + 1].clone());
-                if let Some(&rank) = merge_rank.get(&key) {
-                    if best.map(|(_, r)| rank < r).unwrap_or(true) {
-                        best = Some((i, rank));
-                    }
+                if let Some(&rank) = merge_rank.get(&key)
+                    && best.map(|(_, r)| rank < r).unwrap_or(true)
+                {
+                    best = Some((i, rank));
                 }
             }
             let Some((i, _)) = best else { break };
@@ -869,10 +869,10 @@ impl TorchnEncoder {
                 let s = target / n;
                 row.mapv_inplace(|v| v * s);
             }
-        } else if let Ok(s) = std::env::var("RLX_TTS_TORCHN_ENC_OUT_SCALE") {
-            if let Ok(scale) = s.parse::<f32>() {
-                x.mapv_inplace(|v| v * scale);
-            }
+        } else if let Ok(s) = std::env::var("RLX_TTS_TORCHN_ENC_OUT_SCALE")
+            && let Ok(scale) = s.parse::<f32>()
+        {
+            x.mapv_inplace(|v| v * scale);
         }
         Ok(x)
     }
@@ -1135,10 +1135,10 @@ pub fn probe_greedy_debug(
     let out_emb = TorchnEmbedding::load_output(path)?;
     let proj = TorchnSoftmaxProj::load(path)?;
     let mut x = in_emb.lookup(&ids)?;
-    if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none() {
-        if let Some(cb) = TorchnCodebook::load(path)? {
-            cb.add_positions(&mut x)?;
-        }
+    if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+        && let Some(cb) = TorchnCodebook::load(path)?
+    {
+        cb.add_positions(&mut x)?;
     }
     let bos = g2p.output_symbols.get("<s>").unwrap_or(2);
     let (h, tag) = if std::env::var_os("RLX_TTS_TORCHN_ENCODE_ONLY").is_some() {
@@ -1166,10 +1166,10 @@ pub fn probe_greedy_debug(
             dec_blocks.push(TorchnDecoderBlock::load(path, i)?);
         }
         let mut h = out_emb.lookup(&[bos])?;
-        if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none() {
-            if let Some(cb) = TorchnCodebook::load(path)? {
-                cb.add_positions(&mut h)?;
-            }
+        if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+            && let Some(cb) = TorchnCodebook::load(path)?
+        {
+            cb.add_positions(&mut h)?;
         }
         for b in &dec_blocks {
             h = b.forward(&h, &memory)?;
@@ -1291,10 +1291,10 @@ pub fn probe_greedy_phones(
     let proj = TorchnSoftmaxProj::load(path)?;
     let mut x = in_emb.lookup(&ids)?;
     // EncPos is always part of input Parallel in the bin; opt out with NO_ENCPOS.
-    if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none() {
-        if let Some(cb) = TorchnCodebook::load(path)? {
-            cb.add_positions(&mut x)?;
-        }
+    if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+        && let Some(cb) = TorchnCodebook::load(path)?
+    {
+        cb.add_positions(&mut x)?;
     }
 
     let bos = g2p.output_symbols.get("<s>").unwrap_or(2);
@@ -1351,10 +1351,10 @@ pub fn probe_greedy_phones(
         dec_blocks.push(TorchnDecoderBlock::load(path, i)?);
     }
     let mut h = out_emb.lookup(&[bos])?;
-    if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none() {
-        if let Some(cb) = TorchnCodebook::load(path)? {
-            cb.add_positions(&mut h)?;
-        }
+    if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+        && let Some(cb) = TorchnCodebook::load(path)?
+    {
+        cb.add_positions(&mut h)?;
     }
     let mut out_ids: Vec<u32> = Vec::new();
     for _ in 0..max_phones {
@@ -1384,10 +1384,10 @@ pub fn probe_greedy_phones(
         }
         out_ids.push(id);
         // Word→pronunciation often emits one multi-phone token then stops.
-        if let Some(sym) = g2p.output_symbols.symbol(id) {
-            if sym.contains('-') || (sym.len() > 1 && sym != "<unk>") {
-                break;
-            }
+        if let Some(sym) = g2p.output_symbols.symbol(id)
+            && (sym.contains('-') || (sym.len() > 1 && sym != "<unk>"))
+        {
+            break;
         }
         h = out_emb.lookup(&[id])?;
     }
@@ -1811,10 +1811,10 @@ mod tests {
         for (w, g) in words.iter().zip(golds) {
             let ids = g2p.encode_word(w);
             let mut x = in_emb.lookup(&ids).expect("lookup");
-            if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none() {
-                if let Some(cb) = TorchnCodebook::load(&st).expect("cb") {
-                    cb.add_positions(&mut x).expect("pos");
-                }
+            if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+                && let Some(cb) = TorchnCodebook::load(&st).expect("cb")
+            {
+                cb.add_positions(&mut x).expect("pos");
             }
             let y = enc.forward(x).expect("fwd");
             let peak = y.iter().cloned().fold(0.0f32, |a, v| a.max(v.abs()));
@@ -1894,10 +1894,10 @@ mod tests {
         for w in words {
             let ids = g2p.encode_word(w);
             let mut x = in_emb.lookup(&ids).expect("lu");
-            if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none() {
-                if let Some(cb) = TorchnCodebook::load(&st).expect("cb") {
-                    cb.add_positions(&mut x).expect("pos");
-                }
+            if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+                && let Some(cb) = TorchnCodebook::load(&st).expect("cb")
+            {
+                cb.add_positions(&mut x).expect("pos");
             }
             xs.push(x);
         }

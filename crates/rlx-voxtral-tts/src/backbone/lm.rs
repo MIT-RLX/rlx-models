@@ -51,10 +51,10 @@ impl MinistralLm {
         let mut layers = Vec::with_capacity(n_layers);
         for i in 0..n_layers {
             let mut layer = DecoderLayer::load(tensors, &format!("{PREFIX_BACKBONE}{i}"), cfg)?;
-            if let Some(bank) = lora {
-                if let Some(adapt) = bank.layers.get(i).and_then(|x| x.as_ref()) {
-                    layer.set_lora(adapt.clone(), bank.scale());
-                }
+            if let Some(bank) = lora
+                && let Some(adapt) = bank.layers.get(i).and_then(|x| x.as_ref())
+            {
+                layer.set_lora(adapt.clone(), bank.scale());
             }
             layers.push(layer);
         }

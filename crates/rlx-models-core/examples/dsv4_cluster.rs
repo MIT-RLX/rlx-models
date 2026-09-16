@@ -19,7 +19,9 @@
 //!   dsv4_cluster --probe --addr <addr> --ckpt <dir>
 
 use anyhow::{Context, Result};
-use rlx_distributed::cluster::{Cluster, ClusterConfig, ModelCost, NodeReport, probe_local};
+use rlx_distributed::cluster::{
+    Cluster, ClusterConfig, KvProfile, ModelCost, NodeReport, probe_local,
+};
 use rlx_distributed::graph::serve_stage;
 use rlx_distributed::{NamedTensor, Stage};
 use rlx_ir::op::Op;
@@ -582,11 +584,35 @@ fn model_cost(dir: &str) -> Result<ModelCost> {
     let head = if tied { 0 } else { embed };
     let body = resident.saturating_sub(embed + head);
     let per_layer = (body as f64 / n_layers as f64) as u64;
+    // MLA caches a compressed latent plus the RoPE'd key head, per layer per
+    // token, at bf16. Declaring it beats leaving it `unknown()`, which makes the
+    // planner refuse to plan rather than silently reserve nothing — but only
+    // when the config actually carries the MLA fields.
+    let kv = match (
+        cfg.get("kv_lora_rank").and_then(|v| v.as_u64()),
+        cfg.get("qk_rope_head_dim").and_then(|v| v.as_u64()),
+    ) {
+        (Some(lora), Some(rope)) => KvProfile::declared((lora + rope) * 2),
+        _ => KvProfile::unknown(),
+    };
+    // Params from the byte count at the checkpoint's own average width; this
+    // example reads shard sizes rather than tensor shapes, so bf16 is the right
+    // assumption for a DeepSeek release.
+    let params = disk / 2;
     Ok(ModelCost {
         n_layers,
         per_layer_bytes: per_layer,
+        // This estimate works from shard sizes, so routed-expert bytes are not
+        // separable from the rest and stay folded into `per_layer_bytes`.
+        // `ModelCost::from_tensor_index` splits them properly when a tensor
+        // index is available.
+        per_layer_expert_bytes: 0,
+        per_layer_expert_active_bytes: 0,
         embed_bytes: embed,
         head_bytes: head,
         per_layer_flops: 1.0,
+        kv,
+        params,
+        hidden_size: hidden as usize,
     })
 }

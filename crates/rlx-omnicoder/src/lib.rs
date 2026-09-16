@@ -103,16 +103,16 @@ impl OmniCoderRunnerBuilder {
 }
 
 pub fn cli_run(args: &[String]) -> Result<()> {
-    if let Some(first) = args.iter().position(|a| a == "--weights") {
-        if let Some(path) = args.get(first + 1) {
-            let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
-                .with_context(|| format!("rlx-omnicoder: parse {path}"))?;
-            if !matches!(cfg.arch.as_str(), "qwen3" | "qwen2") {
-                bail!(
-                    "rlx-omnicoder: {path}: GGUF arch = `{}`, expected `qwen3` (OmniCoder)",
-                    cfg.arch
-                );
-            }
+    if let Some(first) = args.iter().position(|a| a == "--weights")
+        && let Some(path) = args.get(first + 1)
+    {
+        let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
+            .with_context(|| format!("rlx-omnicoder: parse {path}"))?;
+        if !matches!(cfg.arch.as_str(), "qwen3" | "qwen2") {
+            bail!(
+                "rlx-omnicoder: {path}: GGUF arch = `{}`, expected `qwen3` (OmniCoder)",
+                cfg.arch
+            );
         }
     }
     rlx_qwen3::cli::run(args)

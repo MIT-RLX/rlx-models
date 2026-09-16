@@ -229,10 +229,10 @@ fn llama_base_from_hf(weights_or_dir: &Path) -> Result<LlamaBaseConfig> {
 
 /// CLI entry — delegates to [`rlx_llama32::cli::run`] after weight-kind checks.
 pub fn cli_run(args: &[String]) -> Result<()> {
-    if let Some(first) = args.iter().position(|a| a == "--weights") {
-        if let Some(path) = args.get(first + 1) {
-            validate_weights_kind(Path::new(path))?;
-        }
+    if let Some(first) = args.iter().position(|a| a == "--weights")
+        && let Some(path) = args.get(first + 1)
+    {
+        validate_weights_kind(Path::new(path))?;
     }
     rlx_llama32::cli::run(args)
 }

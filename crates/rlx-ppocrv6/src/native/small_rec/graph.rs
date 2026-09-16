@@ -90,10 +90,10 @@ fn reshape_dims_from_i64(numel: usize, raw: &[i64], input_dims: &[usize]) -> Vec
     let mut dims: Vec<i64> = raw.to_vec();
     // ONNX: 0 means copy from the corresponding input dimension.
     for (i, d) in dims.iter_mut().enumerate() {
-        if *d == 0 {
-            if let Some(&id) = input_dims.get(i) {
-                *d = id as i64;
-            }
+        if *d == 0
+            && let Some(&id) = input_dims.get(i)
+        {
+            *d = id as i64;
         }
     }
     if let Some(neg) = dims.iter().position(|&d| d < 0) {

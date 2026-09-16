@@ -86,10 +86,10 @@ fn main() -> anyhow::Result<()> {
     if !want.is_empty() {
         println!("---- mel-chain node shapes ----");
         for node in hir.nodes() {
-            if let Some(nm) = &node.name {
-                if want.split(',').any(|w| nm.contains(w)) {
-                    println!("{nm:40} {:?}", node.shape.dims());
-                }
+            if let Some(nm) = &node.name
+                && want.split(',').any(|w| nm.contains(w))
+            {
+                println!("{nm:40} {:?}", node.shape.dims());
             }
         }
     }

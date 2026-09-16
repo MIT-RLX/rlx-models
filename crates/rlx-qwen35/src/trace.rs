@@ -247,11 +247,11 @@ pub(crate) fn emit_tap(
         fp.mean,
         fp.checksum,
     );
-    if let Some(path) = rlx_ir::env::var("RLX_QWEN35_TAP_PATH") {
-        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
-            let _ = writeln!(f, "{line}");
-            return;
-        }
+    if let Some(path) = rlx_ir::env::var("RLX_QWEN35_TAP_PATH")
+        && let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path)
+    {
+        let _ = writeln!(f, "{line}");
+        return;
     }
     eprintln!("[qwen35][tap] {line}");
 }

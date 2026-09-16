@@ -126,10 +126,10 @@ fn first_with_ext(dir: &Path, exts: &[&str]) -> Result<Option<std::path::PathBuf
     }
     for entry in std::fs::read_dir(dir)? {
         let p = entry?.path();
-        if let Some(e) = p.extension().and_then(|s| s.to_str()) {
-            if exts.contains(&e) {
-                return Ok(Some(p));
-            }
+        if let Some(e) = p.extension().and_then(|s| s.to_str())
+            && exts.contains(&e)
+        {
+            return Ok(Some(p));
         }
     }
     Ok(None)

@@ -309,22 +309,22 @@ impl RuleDat {
 fn find_next_table_start(bytes: &[u8], mut off: usize, _remaining: usize) -> Result<usize> {
     while off + 8 < bytes.len() {
         let n_rules = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
-        if (1..10_000).contains(&n_rules) {
-            if let Ok((name, name_end)) = read_cstring(bytes, off + 4) {
-                let looks_name = !name.is_empty()
-                    && name.len() < 64
-                    && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-                    && name.chars().all(|c| {
-                        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_')
-                    });
-                if looks_name {
-                    let mut body = name_end;
-                    if body + 4 <= bytes.len() && bytes[body..body + 4] == [0, 0, 0, 0] {
-                        body += 4;
-                    }
-                    if body < bytes.len() && (bytes[body] == b'R' || bytes[body] == 1) {
-                        return Ok(off);
-                    }
+        if (1..10_000).contains(&n_rules)
+            && let Ok((name, name_end)) = read_cstring(bytes, off + 4)
+        {
+            let looks_name = !name.is_empty()
+                && name.len() < 64
+                && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                && name.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_')
+                });
+            if looks_name {
+                let mut body = name_end;
+                if body + 4 <= bytes.len() && bytes[body..body + 4] == [0, 0, 0, 0] {
+                    body += 4;
+                }
+                if body < bytes.len() && (bytes[body] == b'R' || bytes[body] == 1) {
+                    return Ok(off);
                 }
             }
         }
@@ -401,12 +401,12 @@ fn parse_rule(bytes: &[u8], off: &mut usize, last_in_table: bool) -> Result<Rule
 fn skip_to_next_rule_label(bytes: &[u8], off: &mut usize) -> Result<()> {
     let start = *off;
     while *off < bytes.len() {
-        if bytes[*off] == b'R' {
-            if let Ok((lab, _)) = read_cstring(bytes, *off) {
-                if lab.starts_with('R') && lab[1..].chars().all(|c| c.is_ascii_digit()) {
-                    return Ok(());
-                }
-            }
+        if bytes[*off] == b'R'
+            && let Ok((lab, _)) = read_cstring(bytes, *off)
+            && lab.starts_with('R')
+            && lab[1..].chars().all(|c| c.is_ascii_digit())
+        {
+            return Ok(());
         }
         *off += 1;
         // Guard runaway scans on corrupt blobs.

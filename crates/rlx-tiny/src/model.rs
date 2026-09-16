@@ -191,20 +191,20 @@ impl SynthInit {
                         *x += *y;
                     }
                 }
-                if cfg.lora_rank > 0 {
-                    if let (Some(a), Some(b)) = (
+                if cfg.lora_rank > 0
+                    && let (Some(a), Some(b)) = (
                         self.values.get(&format!("{cb_name}_lora_a")),
                         self.values.get(&format!("{cb_name}_lora_b")),
-                    ) {
-                        let r = cfg.lora_rank;
-                        for p in 0..k {
-                            for j in 0..n {
-                                let mut acc = 0f32;
-                                for c in 0..r {
-                                    acc += a[p * r + c] * b[j * r + c];
-                                }
-                                approx[p * n + j] += acc;
+                    )
+                {
+                    let r = cfg.lora_rank;
+                    for p in 0..k {
+                        for j in 0..n {
+                            let mut acc = 0f32;
+                            for c in 0..r {
+                                acc += a[p * r + c] * b[j * r + c];
                             }
+                            approx[p * n + j] += acc;
                         }
                     }
                 }
@@ -825,10 +825,10 @@ pub fn init_dense(model: Func, cfg: &GptConfig, init: &SynthInit, seed: u64) -> 
     model.init_params(move |name, dims| {
         let n: usize = dims.iter().product();
         // PQ-derived / copied value, when present and the right length.
-        if let Some(v) = init.values.get(name) {
-            if v.len() == n {
-                return v.clone();
-            }
+        if let Some(v) = init.values.get(name)
+            && v.len() == n
+        {
+            return v.clone();
         }
         // KAN spline coeffs are not PQ-derived — keep the ≈GELU init.
         if name.starts_with("coeff") {

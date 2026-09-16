@@ -1280,13 +1280,13 @@ fn cmd_study_report(args: &[String]) -> Result<()> {
         crate::ablation::write_ablation_json(path, report)?;
         eprintln!("wrote {}", path.display());
     }
-    if let Some(report) = &ablation {
-        if do_ablation || ablation_csv_out.is_some() {
-            let csv_dir = ablation_csv_out
-                .clone()
-                .unwrap_or_else(|| PathBuf::from("/tmp/rlx-fft-study-csv"));
-            crate::ablation::csv::write_ablation_csv_dir(&csv_dir, report)?;
-        }
+    if let Some(report) = &ablation
+        && (do_ablation || ablation_csv_out.is_some())
+    {
+        let csv_dir = ablation_csv_out
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/tmp/rlx-fft-study-csv"));
+        crate::ablation::csv::write_ablation_csv_dir(&csv_dir, report)?;
     }
 
     let inputs = crate::study::html::StudyInputs {

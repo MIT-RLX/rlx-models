@@ -47,20 +47,30 @@ impl Ocr2 {
         codemap: &Path,
         device: Device,
     ) -> Result<Self> {
-        // Grouping only reads region_score + link_score_horizontal; build a detector that
-        // outputs just those two heads (prunes ~28% of ops — the other 5 heads' conv/upsample/
-        // softmax tails — with no effect on the retained heatmaps).
-        let heads = vec![
+        Ok(Self::new(
+            Detector::load_heads(recipe, det_weights, device, Self::pipeline_heads())?,
+            Recognizer::load(rec_weights, codemap, device)?,
+        ))
+    }
+
+    /// The only heads grouping reads. Building just these prunes ~28% of the detector's
+    /// ops (the other five heads' conv/upsample/softmax tails) with no effect on the
+    /// heatmaps that are kept.
+    pub fn pipeline_heads() -> Vec<String> {
+        vec![
             "region_score".to_string(),
             "link_score_horizontal".to_string(),
-        ];
-        Ok(Self {
-            detector: Detector::load_heads(recipe, det_weights, device, heads)?,
-            recognizer: Recognizer::load(rec_weights, codemap, device)?,
+        ]
+    }
+
+    pub fn new(detector: Detector, recognizer: Recognizer) -> Self {
+        Self {
+            detector,
+            recognizer,
             thresh: 0.5,
             rescorer: None,
             beam: 12,
-        })
+        }
     }
 
     /// Attach the correction stack (n-gram + lexicon); recognition then uses beam+rescore.

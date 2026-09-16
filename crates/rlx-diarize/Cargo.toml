@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Native RLX speaker diarization (embedding + clustering)"
+description = "Native RLX speaker diarization (WeSpeaker embeddings + clustering)"
 keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
@@ -13,6 +13,27 @@ repository.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-wespeaker = { path = "../rlx-wespeaker", version = "0.2.16", default-features = false, features = ["native"], optional = true }
+
+[features]
+default = []
+# Neural speaker embeddings via WeSpeaker on RLX (Metal/CoreML/CPU/…).
+wespeaker = ["dep:rlx-wespeaker"]
+metal = ["rlx-runtime/metal", "rlx-wespeaker?/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-wespeaker?/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-wespeaker?/cuda"]
+coreml = ["rlx-runtime/coreml", "rlx-wespeaker?/coreml"]
+gpu = ["rlx-runtime/gpu", "rlx-wespeaker?/gpu"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+all-backends = ["apple-silicon", "cuda"]
+
+[dev-dependencies]
+hound = "3.5"
+
+[[example]]
+name = "diarize_wav"
+required-features = ["wespeaker"]
 
 [lints]
 workspace = true

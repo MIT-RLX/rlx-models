@@ -150,10 +150,10 @@ pub fn run(args: &[String]) -> Result<()> {
     let text = text.ok_or_else(|| anyhow!("--text is required"))?;
     let out_wav = out_wav.unwrap_or_else(|| PathBuf::from("orpheus-out.wav"));
 
-    if let Some(ref v) = voice {
-        if !VOICES.contains(&v.as_str()) {
-            eprintln!("warning: voice `{v}` is not in the built-in list {VOICES:?}");
-        }
+    if let Some(ref v) = voice
+        && !VOICES.contains(&v.as_str())
+    {
+        eprintln!("warning: voice `{v}` is not in the built-in list {VOICES:?}");
     }
 
     let runtime = resolve_orpheus_device(&device)?;

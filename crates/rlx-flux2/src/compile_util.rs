@@ -57,11 +57,11 @@ pub fn hash_f32_slice(v: &[f32]) -> u64 {
     for x in v.iter().take(64) {
         x.to_bits().hash(&mut h);
     }
-    if v.len() > 64 {
-        if let (Some(a), Some(b)) = (v.first(), v.last()) {
-            a.to_bits().hash(&mut h);
-            b.to_bits().hash(&mut h);
-        }
+    if v.len() > 64
+        && let (Some(a), Some(b)) = (v.first(), v.last())
+    {
+        a.to_bits().hash(&mut h);
+        b.to_bits().hash(&mut h);
     }
     h.finish()
 }

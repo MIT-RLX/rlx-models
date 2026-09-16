@@ -292,15 +292,12 @@ pub fn run_block_diffusion<S: BlockDenoiseSampler>(
                     .iter()
                     .zip(x0.iter())
                     .any(|(&s, &t)| s && t == gen_cfg.eos_id)
+                && let Some(eos_pos) = x.iter().position(|&t| t == gen_cfg.eos_id)
+                && x[prompt_length..eos_pos]
+                    .iter()
+                    .all(|&t| t != gen_cfg.mask_id)
             {
-                if let Some(eos_pos) = x.iter().position(|&t| t == gen_cfg.eos_id) {
-                    if x[prompt_length..eos_pos]
-                        .iter()
-                        .all(|&t| t != gen_cfg.mask_id)
-                    {
-                        return Ok((x[prompt_length..=eos_pos].to_vec(), stats));
-                    }
-                }
+                return Ok((x[prompt_length..=eos_pos].to_vec(), stats));
             }
         }
 

@@ -117,19 +117,17 @@ impl DeepseekV3Config {
     /// Attention score scale `qk_head_dim^-0.5` × YaRN mscale² (when scaled RoPE).
     pub fn attn_score_scale(&self) -> f32 {
         let base = (self.qk_head_dim() as f32).powf(-0.5);
-        if let Some(r) = self.rope_params() {
-            if r.rope_type
+        if let Some(r) = self.rope_params()
+            && r.rope_type
                 .as_deref()
                 .map(|t| t != "default")
                 .unwrap_or(false)
-            {
-                if let (Some(factor), Some(mscale_all)) = (r.factor, r.mscale_all_dim) {
-                    if mscale_all != 0.0 && factor > 1.0 {
-                        let mscale = 0.1 * mscale_all * factor.ln() + 1.0;
-                        return base * mscale * mscale;
-                    }
-                }
-            }
+            && let (Some(factor), Some(mscale_all)) = (r.factor, r.mscale_all_dim)
+            && mscale_all != 0.0
+            && factor > 1.0
+        {
+            let mscale = 0.1 * mscale_all * factor.ln() + 1.0;
+            return base * mscale * mscale;
         }
         base
     }

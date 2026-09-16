@@ -1,0 +1,54 @@
+[package]
+name = "rlx-ten-vad-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "no_std TEN-VAD: DSP frontend + scalar CRNN forward for MCU / FPGA / WASM targets"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[features]
+default = ["std"]
+# `std` routes the transcendentals to the platform libm through `f32` methods,
+# which is what keeps the frontend bit-identical to the upstream C reference on
+# the fixture's platform. Without it they go through the `libm` crate — portable
+# and bit-reproducible everywhere, but *different* in the last place.
+std = ["alloc"]
+# Test-signal generation returns owned buffers, so it needs an allocator. The
+# inference path does not: `Vad`, `Frontend`, `Net` and `FixedNet` are all
+# fixed-size, so a bare-metal build can drop the global allocator entirely.
+alloc = []
+# Per-stage entry points into the pitch estimator, for the MCU instruction-count
+# harness. A QEMU plugin reports one total per run, so isolating a stage means
+# running only that stage — which means reaching inside. Not part of the API.
+bench-internals = []
+# Replace the pitch estimator's 1024-point inverse FFT with the equivalent
+# 18x17 matrix (see `pitch::ac_matrix`). Mathematically the same linear map,
+# but it sums in a different order, so the frontend stops being *bit*-identical
+# to the upstream C DSP — hence a feature, off by default. For MCU targets,
+# where that FFT is 17% of the pitch estimator, turn it on.
+fast-pitch = []
+# Track the widest accumulator, pre-activation and cell value the integer net
+# actually reaches. Answers whether the `i64` accumulate the hot loop uses is
+# demanded by the trained weights or only by the worst case. Off by default —
+# it puts two `max` operations in the innermost loop.
+range-probe = []
+# Narrow the LSTM gate accumulator to i32 by pre-shifting its inputs 6 bits.
+# 30% off the integer net (926,146 -> 646,886 instructions/frame on rv32imc),
+# and it does cost accuracy: max|Δ| against the published model goes 3.7e-4 ->
+# 1.6e-3, which is worse than the vendor's own shipped binary at 9.6e-4.
+# Decisions are unaffected on the reference clip (0 flips) and move from 107 to
+# 122 in 497,775 frames elsewhere. Off by default: the accurate datapath is the
+# one this port is claimed on. Regenerate the MCU golden vectors after changing
+# it (`--example gen_mcu_vectors`).
+narrow-acc = []
+
+[dependencies]
+libm = { version = "0.2", default-features = false }
+
+[lints]
+workspace = true

@@ -38,16 +38,50 @@ for line in ocr.recognize_image(image_path)? {
 ### CLI
 
 ```sh
-# full page, with correction, on Metal
+# bundle every asset into one .rlxp, then run from it
+cargo run --release -p rlx-ocr2 -- pack assets/ rlx-ocr2.rlxp
+OCR2_DEVICE=metal cargo run --release -p rlx-ocr2 -- image rlx-ocr2.rlxp page.png
+
+# …or point at the loose files
 OCR2_DEVICE=metal cargo run --release -p rlx-ocr2 -- \
     image recipe.json det.safetensors rec.safetensors codemap.txt page.png ngram.bin lexicon.tsv
 
-# a single pre-cropped text line
+# a single pre-cropped text line (pack or loose)
+cargo run --release -p rlx-ocr2 -- line rlx-ocr2.rlxp line.png
 cargo run --release -p rlx-ocr2 -- line rec.safetensors codemap.txt line.png
 ```
 
 The optional `ngram.bin` / `lexicon.tsv` arguments enable beam-search correction;
-omit them for raw CTC output.
+omit them for raw CTC output. A `.rlxp` enables it automatically when it carries them.
+
+## Packaging (`.rlxp`)
+
+The `rlxp` feature (on by default) bundles the whole asset set into a single RLX
+package — both networks' tensors plus the recipe, codemap and correction assets:
+
+```rust
+use rlx_ocr2::{ContainerKind, Ocr2, write_pack};
+
+write_pack(Path::new("assets"), Path::new("rlx-ocr2.rlxp"), ContainerKind::Flat)?;
+let ocr = Ocr2::load_pack(Path::new("rlx-ocr2.rlxp"), Device::Metal)?; // correction included
+```
+
+There is no single executable graph to embed — the detector is interpreted from its
+recipe and the recognizer is rebuilt per line width — so the package is **weight-only**
+(`graph.encoding = "none"`) and looks like this:
+
+| member | contents |
+|--------|----------|
+| weights `detector/…` | 270 conv tensors |
+| weights `recognizer/…` | 30 CRNN tensors |
+| sidecar `detector_recipe.json` | the 265-op recipe |
+| sidecar `codemap.txt` | class index → codepoint |
+| sidecar `lexicon.tsv`, `ngram.bin` | correction stack (optional) |
+
+Tensors are stored hot (mmap-resident, uncompressed) so opening is a memory-map plus a
+per-tensor copy; sidecars are zstd'd since they are read once. `ContainerKind::{Flat,
+Zip, Dir}` all round-trip bit-identically to the loose-file path (`tests/pack_roundtrip.rs`).
+Inspect one with `rlx-pkg inspect rlx-ocr2.rlxp`.
 
 ## Backends
 
@@ -58,7 +92,8 @@ cargo build -p rlx-ocr2 --features metal      # or: mlx, cuda, gpu (wgpu), vulka
 ```
 
 Convenience groups: `all-backends`, `metal-mlx`, plus `blas-accelerate` for a faster
-CPU BLAS on Apple.
+CPU BLAS on Apple. `rlxp` (default on) adds `.rlxp` packaging; turn it off with
+`--no-default-features` to drop the `rlx-pkg` dependency.
 
 ## Environment knobs
 
@@ -80,6 +115,8 @@ CPU BLAS on Apple.
 | `codemap.txt` | recognizer class index → Unicode codepoint (blank ≥ `0xFFFE`) |
 | `ngram.bin` | packed, memory-mapped n-gram model (optional) |
 | `lexicon.tsv` | `word \t log-prob` lexicon (optional) |
+
+All of the above can be bundled into one `.rlxp` — see [Packaging](#packaging-rlxp).
 
 The n-gram model uses a compact, zero-copy **memory-mapped** layout (magic
 `RLXNGRM1`): a fixed header + a sorted, fixed-width record array read straight from

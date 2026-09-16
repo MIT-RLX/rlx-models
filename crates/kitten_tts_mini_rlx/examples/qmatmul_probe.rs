@@ -102,12 +102,12 @@ fn main() -> anyhow::Result<()> {
             eprintln!("    w  [3]: {w}");
             // If act producer is DQL, show its input producer (the real f32 activation).
             let act_id = inputs[0];
-            if let HirOp::Mir(Op::Custom { name: an, .. }) = &hir.node(act_id).op {
-                if an.contains("DynamicQuantize") {
-                    let src = hir.node(act_id).inputs.first().copied();
-                    if let Some(s) = src {
-                        eprintln!("    act src (DQL in): {}", producer_desc(&hir, s));
-                    }
+            if let HirOp::Mir(Op::Custom { name: an, .. }) = &hir.node(act_id).op
+                && an.contains("DynamicQuantize")
+            {
+                let src = hir.node(act_id).inputs.first().copied();
+                if let Some(s) = src {
+                    eprintln!("    act src (DQL in): {}", producer_desc(&hir, s));
                 }
             }
         }

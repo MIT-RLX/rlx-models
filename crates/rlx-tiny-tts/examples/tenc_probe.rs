@@ -53,10 +53,10 @@ fn main() -> anyhow::Result<()> {
         let mut reaches_convq = false;
         let mut reaches_phone = false;
         for id in &seen {
-            if let Some(nm) = hir.node(*id).name.as_deref() {
-                if nm.contains("attn_layers.0/conv_q") {
-                    reaches_convq = true;
-                }
+            if let Some(nm) = hir.node(*id).name.as_deref()
+                && nm.contains("attn_layers.0/conv_q")
+            {
+                reaches_convq = true;
             }
             if let rlx_ir::hir::HirOp::Input { name } = &hir.node(*id).op {
                 if name.contains("phone") {

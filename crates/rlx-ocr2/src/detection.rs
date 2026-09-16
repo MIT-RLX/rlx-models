@@ -21,6 +21,7 @@
 //! `[1,3,480,480]`; outputs are the 7 heatmap heads.
 
 use crate::graph::OcrGraphBuilder;
+use crate::weights::WeightSource;
 use anyhow::{Result, anyhow, bail};
 use rlx_core::vision_ops_ir::{avg_pool2d, conv2d_bias, conv2d_bias_groups, max_pool2d_2x2};
 use rlx_core::weight_map::WeightMap;
@@ -30,7 +31,7 @@ use rlx_ir::{DType, HirGraphExt, Shape};
 use rlx_runtime::{CompiledGraph, Device};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 #[derive(Deserialize)]
@@ -267,7 +268,7 @@ fn get_out(m: &HashMap<String, HirNodeId>, k: &str) -> Result<HirNodeId> {
 /// Detector runner: loads recipe + weights, compiles, runs a normalized image.
 pub struct Detector {
     recipe_json: String,
-    weights_path: PathBuf,
+    weights: WeightSource,
     heads: Vec<String>,
     device: Device,
     compiled: Mutex<Option<CompiledGraph>>, // compiled once, reused across calls
@@ -278,7 +279,7 @@ impl Detector {
     pub fn load(recipe: &Path, weights: &Path, device: Device) -> Result<Self> {
         let recipe_json = std::fs::read_to_string(recipe)?;
         let r: Recipe = serde_json::from_str(&recipe_json)?;
-        Self::from_json(recipe_json, weights, device, r.outputs)
+        Self::from_json(recipe_json, weights.into(), device, r.outputs)
     }
 
     /// Detector restricted to `heads` (a subset of the recipe's outputs). Ops feeding only the
@@ -291,18 +292,34 @@ impl Detector {
         heads: Vec<String>,
     ) -> Result<Self> {
         let recipe_json = std::fs::read_to_string(recipe)?;
+        Self::from_json(recipe_json, weights.into(), device, heads)
+    }
+
+    /// Build from an already-loaded recipe + weight source (the `.rlxp` path).
+    /// `heads` empty means "every head the recipe declares".
+    pub fn from_parts(
+        recipe_json: String,
+        weights: WeightSource,
+        device: Device,
+        heads: Vec<String>,
+    ) -> Result<Self> {
+        let heads = if heads.is_empty() {
+            serde_json::from_str::<Recipe>(&recipe_json)?.outputs
+        } else {
+            heads
+        };
         Self::from_json(recipe_json, weights, device, heads)
     }
 
     fn from_json(
         recipe_json: String,
-        weights: &Path,
+        weights: WeightSource,
         device: Device,
         heads: Vec<String>,
     ) -> Result<Self> {
         Ok(Self {
             recipe_json,
-            weights_path: weights.to_path_buf(),
+            weights,
             heads,
             device,
             compiled: Mutex::new(None),
@@ -318,11 +335,7 @@ impl Detector {
     pub fn forward(&self, input: &[f32]) -> Result<Vec<(String, Vec<f32>)>> {
         let mut guard = self.compiled.lock().map_err(|_| anyhow!("lock poisoned"))?;
         if guard.is_none() {
-            let path = self
-                .weights_path
-                .to_str()
-                .ok_or_else(|| anyhow!("weights path not UTF-8"))?;
-            let mut wm = WeightMap::from_file(path)?;
+            let mut wm = self.weights.weight_map()?;
             let (graph, params) =
                 build_detector_graph_heads(&self.recipe_json, &mut wm, Some(&self.heads))?;
             *guard = Some(crate::compile::compile_encoder(

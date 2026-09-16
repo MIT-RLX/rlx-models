@@ -14,7 +14,7 @@ use rlx_core::audio_ops_ir::{
 use rlx_ir::hir::{HirModule, HirMut, HirNodeId};
 use rlx_runtime::Device;
 
-use crate::config::{DOWNSAMPLE_STRIDES, VAE_EPS};
+use crate::config::{DOWNSAMPLE_STRIDES, VAE_EPS, VaeFfnAct};
 use crate::weights::{BlockW, ConvW, VaeEncoderWeights};
 
 /// Causal conv with a given stride: left-pad `k - stride` zeros, no right pad.
@@ -90,8 +90,8 @@ fn layer_scale(ag: &mut AudioGraph, x: HirNodeId, c: usize, t: usize, gamma: &[f
 }
 
 /// One ConvNeXt block: RMSNorm → depthwise causal conv → layer-scale → +res;
-/// RMSNorm → FFN(Linear→GELU→Linear) → layer-scale → +res.
-fn block(ag: &mut AudioGraph, x: HirNodeId, t: usize, b: &BlockW) -> HirNodeId {
+/// RMSNorm → FFN(Linear→act→Linear) → layer-scale → +res.
+fn block(ag: &mut AudioGraph, x: HirNodeId, t: usize, b: &BlockW, act: VaeFfnAct) -> HirNodeId {
     let c = b.dim;
     let inter = b.l1_w.len() / c; // 4·c (ffn_expansion)
 
@@ -102,12 +102,14 @@ fn block(ag: &mut AudioGraph, x: HirNodeId, t: usize, b: &BlockW) -> HirNodeId {
     let m = layer_scale(ag, m, c, t, &b.gamma);
     let x = ag.add(x, m);
 
-    // ffn: RMSNorm → 1×1 conv (C→4C) → ReLU → 1×1 conv (4C→C) → layer-scale → +res.
-    // The shipped VAE weights are I8_S, whose reference kernel (VibeASR.cpp
-    // `ggml_nn_linear_relu`) applies ReLU — not the F32 checkpoint's GELU.
+    // ffn: RMSNorm → 1×1 (C→4C) → act → 1×1 (4C→C) → layer-scale → +res.
+    // BitNet I8_S uses ReLU (VibeASR.cpp); BF16 Streaming safetensors use GELU.
     let n2 = ag.rms_norm_ch(x, c, t, &b.ffn_norm_w, VAE_EPS);
     let h = conv1x1(ag, n2, t, &b.l1_w, &b.l1_b, c, inter);
-    let h = ag.relu(h);
+    let h = match act {
+        VaeFfnAct::Relu => ag.relu(h),
+        VaeFfnAct::Gelu => ag.gelu(h),
+    };
     let h = conv1x1(ag, h, t, &b.l2_w, &b.l2_b, inter, c);
     let h = layer_scale(ag, h, c, t, &b.ffn_gamma);
     ag.add(x, h)
@@ -120,6 +122,15 @@ fn block(ag: &mut AudioGraph, x: HirNodeId, t: usize, b: &BlockW) -> HirNodeId {
 pub fn build_latent_graph(
     w: &VaeEncoderWeights,
     t: usize,
+) -> Result<(rlx_ir::Graph, Vec<(String, Vec<f32>)>, usize, usize)> {
+    build_latent_graph_with_act(w, t, VaeFfnAct::Relu)
+}
+
+/// Like [`build_latent_graph`] with an explicit FFN activation.
+pub fn build_latent_graph_with_act(
+    w: &VaeEncoderWeights,
+    t: usize,
+    act: VaeFfnAct,
 ) -> Result<(rlx_ir::Graph, Vec<(String, Vec<f32>)>, usize, usize)> {
     let mut hir = HirModule::new("vibevoice_encode_body");
     let mut g = HirMut::new(&mut hir);
@@ -135,7 +146,7 @@ pub fn build_latent_graph(
         x = y;
         cur_t = t_out;
         for b in &w.stages[i] {
-            x = block(&mut ag, x, cur_t, b);
+            x = block(&mut ag, x, cur_t, b, act);
         }
     }
     // head conv (stride 1, causal) → latent, in [T', vae_dim] row-major.
@@ -181,13 +192,44 @@ pub struct VaeEncoderGraph {
 
 impl VaeEncoderGraph {
     /// Compile for a specific padded input length (must be a multiple of 3200).
+    /// BitNet path: ReLU + whole-clip latent normalize (unless `VIBEASR_NO_NORM=1`).
     pub fn compile_for(device: Device, w: &VaeEncoderWeights, padded_len: usize) -> Result<Self> {
-        let (bg, bp, n_frames, vae_dim) = build_latent_graph(w, padded_len)?;
+        Self::compile_for_opts(
+            device,
+            w,
+            padded_len,
+            VaeFfnAct::Relu,
+            /*normalize*/ true,
+        )
+    }
+
+    /// Streaming BF16 path: GELU, no whole-clip latent normalize (matches HF encode).
+    pub fn compile_for_streaming(
+        device: Device,
+        w: &VaeEncoderWeights,
+        padded_len: usize,
+        act: VaeFfnAct,
+    ) -> Result<Self> {
+        Self::compile_for_opts(device, w, padded_len, act, /*normalize*/ false)
+    }
+
+    pub fn compile_for_opts(
+        device: Device,
+        w: &VaeEncoderWeights,
+        padded_len: usize,
+        act: VaeFfnAct,
+        normalize: bool,
+    ) -> Result<Self> {
+        let (bg, bp, n_frames, vae_dim) = build_latent_graph_with_act(w, padded_len, act)?;
         let body = compile(device, bg, bp, vae_dim, n_frames, "audio");
         let (cg, cp, connector_dim) = build_connector_graph(&w.connector, n_frames)?;
         let connector = compile(device, cg, cp, connector_dim, n_frames, "latent");
-        // HF normalizes the latent before the connector; disable with VIBEASR_NO_NORM=1.
-        let normalize = std::env::var("VIBEASR_NO_NORM").is_err();
+        let normalize = if normalize {
+            // BitNet: HF-style whole-clip normalize; disable with VIBEASR_NO_NORM=1.
+            std::env::var("VIBEASR_NO_NORM").is_err()
+        } else {
+            false
+        };
         Ok(Self {
             body,
             connector,

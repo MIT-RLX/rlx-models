@@ -2,7 +2,7 @@
 
 Concrete model graph builders + weight loaders for RLX — the "what actually runs" layer.
 
-**[156 model families](MODELS.md)** across 15 categories — language & multimodal LLMs, vision, speech (ASR/TTS), audio codecs, and more — each a standalone crate under `crates/`. See **[MODELS.md](MODELS.md)** for the complete catalog with per-model backend support.
+**[176 model families](MODELS.md)** across 16 categories — language & multimodal LLMs, vision, speech (ASR/TTS), audio codecs, and more — each a standalone crate under `crates/`. See **[MODELS.md](MODELS.md)** for the complete catalog with per-model backend support.
 
 Standalone repo: [github.com/MIT-RLX/rlx-models](https://github.com/MIT-RLX/rlx-models). Clone next to [`rlx`](https://github.com/MIT-RLX/rlx):
 
@@ -34,6 +34,7 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 - [Quickstart — embeddings](#quickstart--embeddings)
 - [High-level runner API](#high-level-runner-api)
 - [Adding a new model](#adding-a-new-model)
+- [Interpretability — the Jacobian lens](#interpretability--the-jacobian-lens)
 - [Compile profiles](#compile-profiles-tier-1)
 - [Qwen3](#qwen3)
 - [MiniCPM5](#minicpm5)
@@ -50,12 +51,13 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 
 ## Model catalog
 
-This workspace ships **156 model families** (one crate per architecture), plus 4 training crates and shared infrastructure. Highlights:
+This workspace ships **176 model families** (one crate per architecture), plus 4 training crates and shared infrastructure. Highlights:
 
-- **30 language models** — Qwen3 / 3.5 / 3.6, Llama 3.2 / 4, Gemma, DeepSeek-V3, GLM-4.x, MiniMax, Jamba, Mamba, Phi, gpt-oss, Ling 3.0, Motif-3, MiniCPM5, TinyLlama, … plus two **diffusion LMs** (DiffusionGemma, LLaDA2).
+- **36 language models** — Qwen3 / 3.5 / 3.6 / 3.8, Llama 3.2 / 4, Gemma, DeepSeek-V3 / V4, GLM-4.x / GLM-5.3, MiniMax, Jamba, Mamba, Phi, gpt-oss, Ling 3.0, Motif-3, MiniCPM5, TinyLlama, … plus two **diffusion LMs** (DiffusionGemma, LLaDA2) and speculative-decoding drafters (EAGLE3, DFlash).
 - **12 vision-language / omni** — Fara1.5, Qwen2.5-VL, Llama-3.2-Vision, Florence-2, LocateAnything, Kimi-K3, Inkling, …
-- **9 vision** encoders / detection / segmentation — DINOv2 / v3, SigLIP 2, V-JEPA 2, SAM 1 / 2 / 3, Grounding DINO — plus **4 biomedical** and **3 embedding** models.
-- **14 ASR** and **43 TTS / speech-LM** models, **11 neural audio codecs**, plus voice conversion, music generation, source separation, wake-word, VAD, OCR, and robotics (VLA).
+- **10 vision** encoders / detection / segmentation — DINOv2 / v3, SigLIP 2, V-JEPA 2, SAM 1 / 2 / 3, Grounding DINO, NeuralHash — plus **5 biomedical** (incl. Carbon DNA LMs), **3 embedding**, and **4 image / video / 3D generation** models (FLUX.2, TRELLIS.2, a Monte-Carlo render denoiser).
+- **2 time-series** forecasters — Google TimesFM-3, plus a NARMA-10 / echo-state-network parity baseline.
+- **15 ASR** and **45 TTS / speech-LM** models, **11 neural audio codecs**, and **19 speech front-end / wake-word / DSP** crates (TEN-VAD down to bare-metal RISC-V and FPGA), plus voice conversion, music generation, source separation, OCR, and robotics (VLA).
 
 See **[MODELS.md](MODELS.md)** for the complete list — every model, its crate, a one-line description, and the backends it supports (CPU · Metal · MLX · CUDA · ROCm · wgpu · Vulkan).
 
@@ -78,7 +80,7 @@ rlx-models/
 
 ### Crates
 
-The table below highlights shared infrastructure and a selection of model crates; for the **complete** model list (all 156 families, with backends) see **[MODELS.md](MODELS.md)**.
+The table below highlights shared infrastructure and a selection of model crates; for the **complete** model list (all 176 families, with backends) see **[MODELS.md](MODELS.md)**.
 
 | Crate | Model / role |
 |---|---|
@@ -96,11 +98,13 @@ The table below highlights shared infrastructure and a selection of model crates
 | [`rlx-hoct`](crates/rlx-hoct/README.md) | HOCT cell tracking (regionprops → edge transformer → ILP) |
 | `rlx-bioclip2` | BioCLIP-2 (OpenCLIP ViT-L-14) |
 | [`rlx-siglip2`](crates/rlx-siglip2/README.md) | SigLIP 2 (fixed-resolution + NaFlex) |
+| [`rlx-neuralhash`](crates/rlx-neuralhash/README.md) | Apple NeuralHash perceptual image hashing (native Espresso → rlx-ir) |
 | `rlx-embed` | embedding runtime |
 | `rlx-sam` / `sam2` / `sam3` | SAM family |
 | `rlx-sam-ir` | shared mask-decoder IR |
 | `rlx-qwen3` | Qwen3 LM |
 | `rlx-qwen35` | Qwen3.5 / 3.6 |
+| [`rlx-s1`](crates/rlx-s1/README.md) | S1-mini by Superwhisper ([superwhisper/s1-mini](https://huggingface.co/superwhisper/s1-mini)); ASR transcript text normalization on a Qwen3-0.6B fine-tune — fillers, self-corrections, punctuation, spoken numbers/dates/currency/emails; token-identical to `transformers` greedy |
 | [`rlx-fara`](crates/rlx-fara/README.md) | Microsoft Fara1.5 CUA ([Fara1.5-4B](https://huggingface.co/microsoft/Fara1.5-4B) / [9B](https://huggingface.co/microsoft/Fara1.5-9B); Qwen3.5 multimodal) |
 | `rlx-llama32` | LLaMA 3.2 |
 | `rlx-minicpm5` | MiniCPM5 (Llama-shaped; [openbmb/MiniCPM5-1B](https://huggingface.co/openbmb/MiniCPM5-1B)) |
@@ -119,10 +123,12 @@ The table below highlights shared infrastructure and a selection of model crates
 | `rlx-wav2vec2-bert` | Wav2Vec2-BERT |
 | `rlx-wav2vec2-asr` | Wav2Vec2 CTC forced alignment (WhisperX-style word timestamps) |
 | `rlx-whisper` | OpenAI Whisper ASR (segment + word timestamps, optional diarization) |
+| [`rlx-moonshine`](crates/rlx-moonshine/README.md) | Useful Sensors Moonshine English ASR (raw 16 kHz PCM enc–dec) |
 | [`rlx-conformer-ctc`](crates/rlx-conformer-ctc/README.md) | NVIDIA NeMo Conformer-CTC (`stt_en_conformer_ctc_small`, native `.nemo`) |
 | `rlx-diarize` | Speaker diarization (embedding + clustering) |
 | [`rlx-fft`](crates/rlx-fft/README.md) | Learned butterfly FFT, Welch PSD, fast top-K spectral peaks |
 | [`rlx-vad`](crates/rlx-vad/README.md) | Earshot + Silero VAD (embedded weights, 16 kHz) |
+| [`rlx-ten-vad`](crates/rlx-ten-vad/README.md) | TEN-VAD port (embedded weights, 16 kHz, pitch-aware) |
 | [`rlx-wake`](crates/rlx-wake/README.md) | Shared wake-word API / mel / WakeCnn / ternary |
 | [`rlx-wakeword-core`](crates/rlx-wakeword-core/README.md) | `no_std` mel + WakeCnn + ternary (embedded-ready) |
 | [`rlx-wakeword`](crates/rlx-wakeword/README.md) | First-party event-streaming wakeword product |
@@ -193,6 +199,7 @@ Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.m
 |--------|-------|---------|
 | `rlx-qwen3` | `rlx-qwen3` | `cargo run -p rlx-qwen3 --bin rlx-qwen3 --release -- --weights model.gguf --prompt-ids 1,2,3` |
 | `rlx-qwen35` | `rlx-qwen35` | `cargo run -p rlx-qwen35 --bin rlx-qwen35 --release -- …` |
+| `rlx-s1` | `rlx-s1` | `cargo run -p rlx-s1 --bin rlx-s1 --release -- --weights ./s1-mini --transcript "so um send the report by uh friday"` ([docs](crates/rlx-s1/README.md)) |
 | `rlx-fara` | `rlx-fara` | `just fetch-fara-4b && just fara --model-dir .cache/fara/4b --image shot.png --goal "…" --device cpu` |
 | `rlx-llama32` | `rlx-llama32` | `cargo run -p rlx-llama32 --bin rlx-llama32 --release -- …` |
 | `rlx-minicpm5` | `rlx-minicpm5` | `cargo run -p rlx-minicpm5 --features tokenizer --release -- --weights …/model.safetensors --prompt-ids 1,42` |
@@ -204,11 +211,15 @@ Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.m
 | `rlx-hoct` | `rlx-hoct` | `just fetch-hoct && just hoct -- track -m .cache/hoct/general_v0.safetensors --labels labels.raw -o /tmp/out` ([docs](crates/rlx-hoct/README.md)) |
 | `rlx-bioclip2` | `rlx-bioclip2` | `cargo run -p rlx-bioclip2 --bin rlx-bioclip2 --release -- --model-dir weights/bioclip-2 --image photo.jpg --labels "cat,dog"` |
 | `rlx-siglip2` | `rlx-siglip2` | `cargo run -p rlx-siglip2 --bin rlx-siglip2 --release -- --model-dir weights/siglip2-base-224 --image photo.jpg --labels "cat,dog"` |
+| `rlx-neuralhash` | `rlx-neuralhash` | `R=/System/Library/Frameworks/Vision.framework/Versions/A/Resources; cargo run -p rlx-neuralhash --bin rlx-neuralhash --release -- --net $R/NeuralHashv3b_fp16-current.espresso.net --seed $R/neuralhash_128x96_seed1.dat --image photo.jpg` ([docs](crates/rlx-neuralhash/README.md)) |
 | `rlx-vjepa2` | `rlx-vjepa2` | `cargo run -p rlx-vjepa2 --bin rlx-vjepa2 --release -- …` |
 | `rlx-wav2vec2-bert` | `rlx-wav2vec2-bert` | `cargo run -p rlx-wav2vec2-bert --bin rlx-wav2vec2-bert --release -- …` |
 | `rlx-whisper` | `rlx-whisper` | `cargo run -p rlx-whisper --bin rlx-whisper --release -- --weights model.safetensors --wav audio16k.wav` |
+| `rlx-moonshine` | `rlx-moonshine` | `cargo run -p rlx-moonshine --bin rlx-moonshine --release -- --weights moonshine-tiny/ --wav audio16k.wav` |
 | `rlx-fft` | `rlx-fft` | `cargo run -p rlx-fft --release -- bench-welch-peaks --n-fft 256 --batch 32 --strategy auto` ([docs](crates/rlx-fft/README.md)) |
 | `rlx-vad` | `rlx-vad` | `cargo run -p rlx-vad --release -- --backend silero --wav audio16k.wav` ([docs](crates/rlx-vad/README.md)) |
+| `rlx-ten-vad` | `rlx-ten-vad` | `cargo run -p rlx-ten-vad --release -- --wav audio16k.wav` ([docs](crates/rlx-ten-vad/README.md)) |
+| `rlx-translate` | `rlx-translate` | `cargo run -p rlx-translate --release -- translate en_US-fr_FR "the sea is warm"` ([docs](crates/rlx-translate/README.md)) |
 | `rlx-wakeword` | `rlx-wakeword` | `just wakeword-demo -- --wav clip.wav --hop-ms 40` |
 | `rlx-openwakeword` | `rlx-openwakeword` | `just openwakeword-demo -- --wav clip.wav` |
 | `rlx-nanowakeword` | `rlx-nanowakeword` | `just nanowakeword-demo -- --wav clip.wav` |
@@ -304,7 +315,7 @@ just example run_minicpm5 --release
 ```sh
 just fetch-qwen3
 # Qwen3.5-0.8B Base safetensors + unsloth GGUF (Q4_K_M default)
-just fetch-qwen35-0.8b
+just fetch-qwen35-08b
 # or pick a specific GGUF quant:
 just fetch-qwen35-gguf Q3_K_S
 # or: docker build -t rlx-qwen3-fetch docker/qwen3-fetch && …
@@ -328,6 +339,7 @@ just fetch-minicpm5-gguf Q4_K_M
 - **`hoct`** — Higher-Order Cell Tracking Transformer ([arXiv:2607.11754](https://arxiv.org/abs/2607.11754)): regionprops → kNN graph → edge transformer → HiGHS ILP → CTC/GEFF. CLI: `rlx-hoct`. See [crates/rlx-hoct/README.md](crates/rlx-hoct/README.md).
 - **`bioclip2`** — BioCLIP-2, an OpenCLIP ViT-L-14 (image + text towers → shared 768-d embeddings, zero-shot). Pure-Rust PIL preprocessing; 100% parity vs `open_clip` on CPU/Metal/MLX/wgpu. CLI: `rlx-bioclip2`. See [crates/rlx-bioclip2/README.md](crates/rlx-bioclip2/README.md).
 - **`siglip2`** — [SigLIP 2](https://huggingface.co/blog/siglip2) sigmoid-loss image + text encoder (attention-pooling MAP head, `gelu_pytorch_tanh`, multilingual Gemma tokenizer, sigmoid zero-shot). Both the **fixed-resolution** (`siglip2-base-patch16-224`, …) and **NaFlex** (variable resolution/aspect ratio) families. Pure-Rust preprocessing; HuggingFace parity (cos = 1.0) on CPU/Metal/MLX/wgpu/CUDA. CLI: `rlx-siglip2`. See [crates/rlx-siglip2/README.md](crates/rlx-siglip2/README.md).
+- **`neuralhash`** — Apple [NeuralHash](https://github.com/AsuharietYgvar/AppleNeuralHash2ONNX) perceptual image hashing: 225-layer MobileNetV3 (instance-norm + hard-swish + squeeze-excite) → 128 floats, then a `[96, 128]` seed projection → 96-bit hash. The architecture is read natively from the vendor's `NeuralHashv3b_fp16-current.espresso.{net,shape,weights}` container that macOS installs in `Vision.framework` (LZFSE `pbze` decoded inline) and built as an rlx-ir graph — ONNX is a validation-only path behind the `onnx-parity` feature. **Bit-identical hashes vs. an independent PyTorch reference on the shipping macOS model**, and across all 7 backends. Model files are never redistributed. PIL-exact bicubic preprocessing (99.98% bit-exact vs Pillow). CLI: `rlx-neuralhash`. See [crates/rlx-neuralhash/README.md](crates/rlx-neuralhash/README.md).
 - **`sam`**, **`sam2`**, **`sam3`** — Segment Anything encoders + mask decoders. Optional `sam.rlx.toml` next to weights (reference: `crates/rlx-sam/src/sam.rlx.toml`).
 - **`flux2`** — FLUX.2 rectified-flow denoiser. `rlx-flux2` CLI; presets `flux2_dev()`, `flux2_klein_4b()`, `flux2_klein_9b()`. VAE, CFG, img2img, LoRA, `hf-download`, `rlx-flux2-serve`. GPU backends via `rlx-models` features (`metal`, `cuda`, …).
 - **`embed`** — `RlxEmbed`, registry, tokenizers, pooling. `from_pretrained` with `hf-download`.
@@ -341,6 +353,7 @@ just fetch-minicpm5-gguf Q4_K_M
 - **`carbon`** — [Carbon](https://huggingface.co/HuggingFaceBio/Carbon-500M) decoder-only **DNA** LMs (500M / 3B / 8B; Llama-shaped, tied embeddings). Wraps `Llama32Runner` and adds a native `HybridDNATokenizer` (Qwen3 byte-level BPE for text + algorithmic 6-mer coding for `<dna>…</dna>` regions, ≈6 bp/token). CLI: `rlx-carbon`. See [crates/rlx-carbon/README.md](crates/rlx-carbon/README.md).
 - **`qwen3-tts`** — Qwen3-TTS Base (voice clone) + CustomVoice. ECAPA x-vector, 28-layer talker, 16-group code predictor, 12 Hz Mimi decode. [`VoiceClone`](crates/rlx-qwen3-tts/README.md#library-api) API, progressive streaming, and `bidirectional_voice_chat` (Whisper → Qwen3-0.6B → TTS). See [Qwen3-TTS](#qwen3-tts).
 - **`voxtral-tts`** — Voxtral-4B-TTS native inference (Tekken tokenizer, codec decode, compiled LM). **`voxtral-tts-train`** — RLX autodiff training for reference-audio cloning (codec encoder + full attention LoRA). See [Voxtral TTS](#voxtral-tts).
+- **`jlens`** — **Jacobian lens**: read out what an internal activation is disposed to make a model *say*, via `lens_l(h) = unembed(J_l · h)` with `J_l = E[∂h_final/∂h_l]`. A native port of the reference for *Verbalizable Representations Form a Global Workspace in Language Models*, **validated against it to 1.3–2.8e-6**. Model-agnostic behind one `LensModel` trait — four implementations (Qwen3.5 hybrid GGUF, Qwen3 dense safetensors, DINOv3, Qwen2.5-VL). Fits on CPU/Metal/MLX/CUDA/ROCm (agreeing to ~1e-7); *applying* a fitted lens is a forward pass, so any backend can do it. `examples/vl_report.rs` is one command for the whole vision-language picture — per-layer attention, per-word image masks, patch segmentation, transported word readout. See [Interpretability](#interpretability--the-jacobian-lens) and [crates/rlx-jlens/README.md](crates/rlx-jlens/README.md).
 - **`run`** — `Qwen3Runner`, `SamRunner`, … builders for one-call inference.
 
 ## Text-to-speech (TTS)
@@ -362,6 +375,8 @@ Nine inference crates cover lightweight edge models through multi‑billion‑pa
 | [TinyTTS](crates/rlx-tiny-tts/) / [MeloTTS](crates/rlx-melotts/) | `rlx-tiny-tts` | VITS2 | 44.1 kHz | [`eugenehp/tiny-tts-rlx`](https://huggingface.co/eugenehp/tiny-tts-rlx) `tiny-tts.rlxp` | MALE / FEMALE | — | `just fetch-tiny-tts` / `just melotts-demo` | production — nested graphs; MeloTTS is an alias |
 | [Soprano 1.1](crates/rlx-soprano/README.md) | `rlx-soprano` | ~80M | 32 kHz | [`eugenehp/soprano`](https://huggingface.co/eugenehp/soprano) `soprano.rlxp` | single voice | — | `just fetch-soprano` / `just soprano-demo` | production — nested backbone + Vocos; no Hub ONNX |
 | [MOSS-TTS-Nano](crates/rlx-moss-nano/README.md) | `rlx-moss-nano` | 0.1B | 48 kHz stereo | [`eugenehp/moss-nano`](https://huggingface.co/eugenehp/moss-nano) `moss-nano.rlxp` | 18 builtin voices | — | `just fetch-moss-nano` / `just moss-nano` | production — hierarchical AR + codec; no Hub ONNX |
+| [sanoTTS](crates/rlx-sanotts/README.md) | `rlx-sanotts` | ~1.5M | 22.05 kHz | [`ampixa/sanoTTS`](https://huggingface.co/ampixa/sanoTTS) fp16 voice packs | 7 packs, 3 languages | — | `rlx-sanotts say "…" --voice-dir …` | production — host reference gated against upstream numpy; frame stack + decoder on RLX graph |
+| [HumeAI TADA](crates/rlx-tada/README.md) | `rlx-tada` | 1B | 24 kHz | HF safetensors ([`HumeAI/tada-1b`](https://huggingface.co/HumeAI/tada-1b) + [`HumeAI/tada-codec`](https://huggingface.co/HumeAI/tada-codec)) | zero-shot clone from a reference clip (`.tadaprompt`) | — | `just tada-prompt` / `just tada-speak` | production — Llama-3.2 backbone + flow-matching acoustic/duration head; CPU/Metal/MLX/wgpu/Vulkan/CoreML |
 | [Inflect-Nano](crates/rlx-inflect-nano/README.md) | `rlx-inflect-nano` | ~4.6M | 24 kHz | exported safetensors bundle | single speaker | — | `rlx-inflect-nano --text "…"` | production — standalone Rust frontend; vocoder on RLX graph or CoreML (ORT) |
 
 **Training (inference + finetune):**
@@ -531,6 +546,69 @@ pub mod myarch {
 Put `MyArchRunner` in the model crate; re-export from `crates/rlx-models/src/run.rs`.
 
 Legacy flat modules (`rlx-bert`, `rlx-nomic`) stay as-is until they grow — use this layout for **new** architectures.
+
+## Interpretability — the Jacobian lens
+
+`rlx-jlens` reads out what an internal activation is *disposed to make the model
+say*:
+
+```text
+lens_l(h) = unembed( J_l · h ),   J_l = E[ ∂h_final / ∂h_l ]
+```
+
+Unlike a logit lens — which decodes a mid-layer residual as if the remaining
+layers were the identity — the transport accounts for what the rest of the stack
+would have done to it. `J_l` is one `[d_model, d_model]` matrix per layer,
+prompt-independent: **fit once, apply anywhere**. A native port of the reference
+implementation for *Verbalizable Representations Form a Global Workspace in
+Language Models*, checked against it entry-for-entry (relF 1.3–2.8e-6).
+
+On Qwen3.5-0.8B the lens has " Paris" as top-1 from **layer 16** while the plain
+logit lens is still saying " capital" at 22:
+
+```bash
+cargo run -p rlx-jlens --features qwen35,qwen35-tokenizer,metal --release \
+    --example lens_readout -- --device metal --every 2 \
+    --prompt "Fact: The capital of Japan is Tokyo. Fact: The capital city of France is"
+```
+
+### Vision-language, in one command
+
+Image patches are spliced into the LM's own residual stream, so the lens applies
+unchanged and the readout is the model's own vocabulary. `vl_report.rs` fits a
+Qwen2.5-VL and writes every figure from a single model load:
+
+```bash
+cargo run -p rlx-jlens --features qwen25-vl,metal --release --example vl_report -- \
+    --device metal --out ./report \
+    --mmproj .../mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf \
+    --image crates/rlx-locateanything/fixtures/sample.jpg
+```
+
+| output | what it shows |
+|---|---|
+| `1_attention_by_layer.png` | where the answer position looks, **every** layer |
+| `2_mask_<word>_by_layer.png` | where each probe word is supported, per fitted layer |
+| `report.txt` | attention table, transported top-1 per text position, patch segmentation |
+
+### Adding a model
+
+Implement `model::LensModel` — hand back a graph whose input is a residual
+stream and whose output is a residual stream — and the estimator, fitting loop
+and readout work unchanged. Four implementations ship, deliberately spanning both
+axes the interface abstracts (GGUF vs safetensors, hybrid vs dense vs ViT vs VLM):
+
+```bash
+cargo test -p rlx-jlens --features qwen35      # hybrid delta-net/attention, GGUF
+cargo test -p rlx-jlens --features qwen3       # dense attention-only, HF safetensors
+cargo test -p rlx-jlens --features qwen25-vl   # vision-language
+```
+
+Fitting runs on CPU, Metal, MLX, CUDA and ROCm (all agreeing with CPU to ~1e-7);
+*applying* a fitted lens is a forward pass and a `d × d` matvec, so any backend
+can read through one. Full write-up, including the backend bugs a Jacobian fit
+turned out to be unusually good at finding, in
+[crates/rlx-jlens/README.md](crates/rlx-jlens/README.md).
 
 ## Compile profiles (tier-1)
 
@@ -1018,11 +1096,11 @@ burnembed (`/Users/Shared/burnembed`) re-exports `rlx_models::embed` with `--fea
 
 ### Publishing (crates.io)
 
-Prerequisite: upstream **`rlx*`** **0.2.14** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
+Prerequisite: upstream **`rlx*`** **0.2.16** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
 
 ```sh
 rm -f .cargo/config.toml
-cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.14, no path source
+cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.16, no path source
 ```
 
 Pre-flight (same gates as `scripts/publish.sh` / `just lint` / CI):
@@ -1102,7 +1180,7 @@ Asset helpers: [`rlx-assets`](crates/rlx-assets/README.md) (`native-pack` featur
 | `dinov2` | yes | yes (`dinov2`; F32 drain or K-quant/Q4_0/Q8_0 packed `DequantMatMul` when quant tensors present) | **no** for `facebook/dinov2-*` — [dinov2](https://huggingface.co/models?library=gguf&search=dinov2) (0). Community converters (dinov2.cpp) use `dinov2` arch; tensor names must match HF/candle keys. | production |
 | `sam`, `sam2`, `sam3` | yes | yes (`sam` / `mobile-sam` / `sam2` F32 drain). **SAM3**: F32 drain or K-quant via fused CPU `gguf_matmul` (ViT, text, detector host+IR, seg cross-attn/mask/scoring, 1×1 inst/sem `DequantMatMul` IR); 3×3 pixel conv stays packed at load (one-time dequant cache on host, materialize for tier-1 IR compile) | **SAM1 ViT-H / SAM2**: no official Hub GGUF — [segment+anything](https://huggingface.co/models?library=gguf&search=segment+anything) (0), [sam2.1](https://huggingface.co/models?library=gguf&search=sam2.1) (0). **MobileSAM**: [mobilesam](https://huggingface.co/models?library=gguf&search=mobilesam) (2), e.g. [Acly/MobileSAM-GGUF](https://huggingface.co/Acly/MobileSAM-GGUF) (`mobile-sam`). **SAM3**: [sam3](https://huggingface.co/models?library=gguf&search=sam3) (1) — [rob-laz/sam3-gguf](https://huggingface.co/rob-laz/sam3-gguf) (`sam3`). Beware [TheBloke/SAM-GGUF](https://huggingface.co/TheBloke/SAM-GGUF) — 7B **chat LM** (`llama`), not Segment Anything. | production (encoder + mask path) |
 | `qwen3` | yes | yes (Q4_K_M / Q5_K_M / Q6_K) | **yes** — [qwen3](https://huggingface.co/models?library=gguf&search=qwen3) (many); e.g. `unsloth/Qwen3-*-GGUF` | top-1 vs HF (`parity-candle` + weights) |
-| `qwen35` | — | yes | **yes** — same hub space; e.g. `Qwen/Qwen3.5-0.8B-Base`, `unsloth/Qwen3.5-0.8B-GGUF`, `unsloth/Qwen3.6-27B-MTP-GGUF` (VLM: text GGUF + CLIP `mmproj-*.gguf`; hybrid gated-DeltaNet + periodic attention, MTP head; Q3_K_S text generation coherent on CPU/Metal, verified vs llama.cpp; `just fetch-qwen35-0.8b`, `just fetch-qwen36-27b`) | coherent vs llama.cpp (`QWEN35_GGUF_PATH` / `parity-llama`) |
+| `qwen35` | — | yes | **yes** — same hub space; e.g. `Qwen/Qwen3.5-0.8B-Base`, `unsloth/Qwen3.5-0.8B-GGUF`, `unsloth/Qwen3.6-27B-MTP-GGUF`, `unsloth/Qwen3.8-27B-GGUF` (VLM: text GGUF + CLIP `mmproj-*.gguf`; hybrid gated-DeltaNet + periodic attention, MTP head; Q3_K_S text generation coherent on CPU/Metal, verified vs llama.cpp; `just fetch-qwen35-08b`, `just fetch-qwen36-27b`, `just fetch-qwen38-27b`). Qwen3.8-27B is the same `qwen35` arch as Qwen3.6-27B — identical metadata, 866-tensor layout and tokenizer; see [crates/rlx-qwen35/README.md](crates/rlx-qwen35/README.md#qwen38-27b). `Doses-AI/Pestle-27B-Ternary-GGUF` also loads here (`just fetch-pestle-27b`): Qwen3.6-27B with Pestle factorized ternary projections (`Q2_0` factor pairs + `G8_0` embed/lm_head + one dense BF16 block) — greedy-identical to the `mortar.cpp` reference on Metal; both schemes + the factorized graph verified on **all 7** backends | coherent vs llama.cpp (`QWEN35_GGUF_PATH` / `parity-llama`) |
 | `llama32` | yes | yes | **yes** — [llama-3.2](https://huggingface.co/models?library=gguf&search=llama-3.2) (~5k) | vs llama.cpp when `LLAMA32_GGUF_PATH` |
 | `minicpm5` | yes | yes (`llama`) | **yes** — [MiniCPM5-1B-GGUF](https://huggingface.co/openbmb/MiniCPM5-1B-GGUF) (Q4_K_M / Q8_0 / F16) | vs PyTorch (`minicpm5_parity`); `rlx-minicpm5` 0.2.6 on `rlx-llama32` 0.2.6; GGUF packed CPU/Metal |
 | `tinyllama` | yes | yes (`llama`) | **yes** — [TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF](https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF) (Q4_K_M / Q8_0 / Q6_K) | real-weight GGUF packed prefill vs CPU (`tinyllama_backend_gguf_check`); wraps `rlx-llama32` |
@@ -1162,6 +1240,7 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 
 | Crate | README |
 |-------|--------|
+| `rlx-jlens` | [crates/rlx-jlens/README.md](crates/rlx-jlens/README.md) |
 | `rlx-fft` | [crates/rlx-fft/README.md](crates/rlx-fft/README.md) |
 | `rlx-qwen3-tts` | [crates/rlx-qwen3-tts/README.md](crates/rlx-qwen3-tts/README.md) |
 | `rlx-kittentts` | [crates/rlx-kittentts/README.md](crates/rlx-kittentts/README.md) |
@@ -1170,10 +1249,26 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `rlx-kyutai-tts` | [crates/rlx-kyutai-tts/README.md](crates/rlx-kyutai-tts/README.md) |
 | `rlx-pocket-tts` | [crates/rlx-pocket-tts/README.md](crates/rlx-pocket-tts/README.md) |
 | `rlx-inflect-nano` | [crates/rlx-inflect-nano/README.md](crates/rlx-inflect-nano/README.md) |
+| `rlx-sanotts` | [crates/rlx-sanotts/README.md](crates/rlx-sanotts/README.md) |
+| `rlx-tada` | [crates/rlx-tada/README.md](crates/rlx-tada/README.md) |
+| `rlx-glm5next` | [crates/rlx-glm5next/README.md](crates/rlx-glm5next/README.md) |
+| `rlx-timesfm3` | [crates/rlx-timesfm3/README.md](crates/rlx-timesfm3/README.md) |
+| `rlx-denoise` | [crates/rlx-denoise/README.md](crates/rlx-denoise/README.md) |
+| `rlx-nllb` | [crates/rlx-nllb/README.md](crates/rlx-nllb/README.md) |
+| `rlx-translate` | [crates/rlx-translate/README.md](crates/rlx-translate/README.md) |
+| `rlx-translategemma` | [crates/rlx-translategemma/README.md](crates/rlx-translategemma/README.md) |
+| `rlx-hy-mt` | [crates/rlx-hy-mt/README.md](crates/rlx-hy-mt/README.md) |
+| `rlx-fireredaudio` | [crates/rlx-fireredaudio/README.md](crates/rlx-fireredaudio/README.md) |
+| `rlx-f0` | [crates/rlx-f0/README.md](crates/rlx-f0/README.md) |
+| `rlx-voice-gender` | [crates/rlx-voice-gender/README.md](crates/rlx-voice-gender/README.md) |
+| `rlx-ten-vad-core` | [crates/rlx-ten-vad-core/README.md](crates/rlx-ten-vad-core/README.md) |
+| `rlx-ten-vad-fpga` | [crates/rlx-ten-vad-fpga/README.md](crates/rlx-ten-vad-fpga/README.md) |
+| `rlx-ten-vad-mcu` | [crates/rlx-ten-vad-mcu/README.md](crates/rlx-ten-vad-mcu/README.md) |
 | `kitten_tts_mini_rlx` | [crates/kitten_tts_mini_rlx/README.md](crates/kitten_tts_mini_rlx/README.md) |
 | `rlx-gemma` | [crates/rlx-gemma/README.md](crates/rlx-gemma/README.md) |
 | `rlx-minicpm5` | [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md) |
 | `rlx-tinyllama` | [crates/rlx-tinyllama/README.md](crates/rlx-tinyllama/README.md) |
+| `rlx-s1` | [crates/rlx-s1/README.md](crates/rlx-s1/README.md) |
 | `rlx-llama32` | [crates/rlx-llama32/README.md](crates/rlx-llama32/README.md) |
 | `rlx-locateanything` | [crates/rlx-locateanything/README.md](crates/rlx-locateanything/README.md) |
 | `rlx-fara` | [crates/rlx-fara/README.md](crates/rlx-fara/README.md) |
@@ -1181,6 +1276,7 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `rlx-trellis2` | [crates/rlx-trellis2/README.md](crates/rlx-trellis2/README.md) |
 | `rlx-minimax-h3` | [crates/rlx-minimax-h3/README.md](crates/rlx-minimax-h3/README.md) |
 | `rlx-vad` | [crates/rlx-vad/README.md](crates/rlx-vad/README.md) |
+| `rlx-ten-vad` | [crates/rlx-ten-vad/README.md](crates/rlx-ten-vad/README.md) |
 | `rlx-wake` | [crates/rlx-wake/README.md](crates/rlx-wake/README.md) |
 | `rlx-wakeword-core` | [crates/rlx-wakeword-core/README.md](crates/rlx-wakeword-core/README.md) |
 | `rlx-wakeword` | [crates/rlx-wakeword/README.md](crates/rlx-wakeword/README.md) |
@@ -1193,7 +1289,7 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `rlx-ssm` | [crates/rlx-ssm/README.md](crates/rlx-ssm/README.md) |
 | `rlx-models-core` (`rlx-core`) | [crates/rlx-models-core/README.md](crates/rlx-models-core/README.md) |
 | `rlx-clinicalbert` | [crates/rlx-clinicalbert/README.md](crates/rlx-clinicalbert/README.md) |
-| `rlx-onnx-import` | [crates/rlx-onnx-import/README.md](crates/rlx-onnx-import/README.md) |
+| `rlx-onnx-import` | [`rlx` repo: crates/io/rlx-onnx-import](https://github.com/MIT-RLX/rlx/tree/main/crates/io/rlx-onnx-import) |
 | `rlx-onnx-decompose` | [crates/rlx-onnx-decompose/README.md](crates/rlx-onnx-decompose/README.md) |
 | Voxtral TTS training | [docker/voxtral-tts/README.md](docker/voxtral-tts/README.md) |
 

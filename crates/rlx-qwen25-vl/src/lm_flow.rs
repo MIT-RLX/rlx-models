@@ -115,11 +115,19 @@ pub fn build_qwen25_vl_prefill_mrope_built(
             emit.state.rope_sin = Some(sin);
             Ok(None)
         })
-        .plugin_named("qwen25vl.adopt_hidden", move |emit, _| {
-            if emit.weights.has("model.embed_tokens.weight") {
-                let _ = emit.load_param("model.embed_tokens.weight", false)?;
+        .plugin_named("qwen25vl.adopt_hidden", {
+            // The embedding table is loaded here only so a tied LM head can
+            // reuse it. This flow takes `prefill_hidden` — an already-embedded
+            // sequence — so with no head to build it is a dead parameter, and
+            // for Qwen2.5-VL-3B that is 151936 x 2048 x 4 = 1.2 GB of arena
+            // holding a tensor nothing reads. Load it only when it is wanted.
+            let needs_embed = opts.with_lm_head;
+            move |emit, _| {
+                if needs_embed && emit.weights.has("model.embed_tokens.weight") {
+                    let _ = emit.load_param("model.embed_tokens.weight", false)?;
+                }
+                Ok(Some(emit.flow_input("prefill_hidden")?))
             }
-            Ok(Some(emit.flow_input("prefill_hidden")?))
         })
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh);

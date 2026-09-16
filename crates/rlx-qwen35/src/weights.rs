@@ -94,6 +94,13 @@ impl MatWeight {
     pub fn is_packed(&self) -> bool {
         matches!(self, MatWeight::Packed { .. })
     }
+    /// Quantization scheme for the packed variant. `None` for F32.
+    pub fn scheme(&self) -> Option<QuantScheme> {
+        match self {
+            MatWeight::F32(_) => None,
+            MatWeight::Packed { scheme, .. } => Some(*scheme),
+        }
+    }
     /// Loader-resolvable key for the packed variant. `None` for F32.
     pub fn packed_key(&self) -> Option<&str> {
         match self {
@@ -103,15 +110,95 @@ impl MatWeight {
     }
 }
 
+/// One Pestle-factorized projection (`Doses-AI/Pestle-27B-Ternary-GGUF`).
+///
+/// Pestle replaces a `[in, out]` linear with a *pair* of ternary
+/// matrices around a rank-`r` waist plus three per-channel f32 scales:
+///
+/// ```text
+///   y = scale_post ⊙ ( Uᵀ ( scale_mid ⊙ ( Vᵀ ( scale_pre ⊙ x ) ) ) )
+/// ```
+///
+/// Mirrors `build_pestle_mm` in the `mortar.cpp` fork's
+/// `src/models/qwen35.cpp`. Note the factorization does **not** reduce
+/// parameter count — `in·r + r·out ≈ in·out` at Pestle's ranks. It buys
+/// expressivity: a product of two ternary matrices spans far more of the
+/// original weight space than one ternary matrix at the same width, which
+/// is what lets the 27B hold up at 1.79 nominal bits/weight.
+///
+/// `u` / `v` are [`MatWeight`] (Q2_0-packed in the shipped file, so they
+/// stay packed through `Op::DequantMatMul`); the scales are tiny and
+/// stay host-side f32 like the norms.
+#[derive(Debug, Clone)]
+pub struct PestleFactor {
+    /// `[rank, in]` on-disk — the down-projection to the waist.
+    pub v: MatWeight,
+    /// `[out, rank]` on-disk — the up-projection out of the waist.
+    pub u: MatWeight,
+    /// `[in]` — applied to the projection input.
+    pub scale_pre: Vec<f32>,
+    /// `[rank]` — applied at the waist, between `v` and `u`.
+    pub scale_mid: Vec<f32>,
+    /// `[out]` — applied to the projection output.
+    pub scale_post: Vec<f32>,
+    /// Waist width. Varies per slot (128 … 3968 in the 27B).
+    pub rank: usize,
+}
+
+/// A linear projection: either one plain matrix or a Pestle factor pair.
+///
+/// Pestle checkpoints are *mixed* — the shipped 27B factorizes blocks
+/// 0..=62 and keeps block 63 dense BF16 ("matching-parent final decoder
+/// block"), so this is decided per layer, not per model.
+#[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
+pub enum Proj {
+    Dense(MatWeight),
+    Pestle(Box<PestleFactor>),
+}
+
+impl Proj {
+    /// The matmul weights this projection owns: one for dense, two
+    /// (`v`, `u`) for Pestle. Used by the pack/clear/upload predicates —
+    /// the per-channel scales are excluded on purpose, since like the
+    /// norms they stay resident for HIR rebuilds.
+    pub fn mats(&self) -> impl Iterator<Item = &MatWeight> {
+        let (a, b) = match self {
+            Proj::Dense(m) => (m, None),
+            Proj::Pestle(f) => (&f.v, Some(&f.u)),
+        };
+        std::iter::once(a).chain(b)
+    }
+
+    /// Mutable counterpart of [`Self::mats`].
+    pub fn mats_mut(&mut self) -> impl Iterator<Item = &mut MatWeight> {
+        let (a, b) = match self {
+            Proj::Dense(m) => (m, None),
+            Proj::Pestle(f) => (&mut f.v, Some(&mut f.u)),
+        };
+        std::iter::once(a).chain(b)
+    }
+
+    /// The dense matrix, or `None` when this is a Pestle pair. Lets the
+    /// fusion fast-paths (which need one contiguous `[out, in]` host
+    /// buffer) opt out cleanly.
+    pub fn dense(&self) -> Option<&MatWeight> {
+        match self {
+            Proj::Dense(m) => Some(m),
+            Proj::Pestle(_) => None,
+        }
+    }
+
+    pub fn is_pestle(&self) -> bool {
+        matches!(self, Proj::Pestle(_))
+    }
+}
+
 /// Per-layer feed-forward: dense SwiGLU or MoE (routed + gated shared expert).
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Qwen35LayerFfn {
-    Dense {
-        gate: MatWeight,
-        up: MatWeight,
-        down: MatWeight,
-    },
+    Dense { gate: Proj, up: Proj, down: Proj },
     Moe(Qwen35MoeFfn),
 }
 
@@ -151,9 +238,9 @@ pub struct Qwen35LinearLayer {
     /// Fused `[gate, x, k, B, C]`-style projection:
     /// `[n_embd, 2*key_dim + value_dim]` with `key_dim =
     /// ssm_state*group_count`, `value_dim = ssm_state*dt_rank`.
-    pub attn_qkv: MatWeight,
+    pub attn_qkv: Proj,
     /// `[n_embd, value_dim]` — z gating projection.
-    pub attn_gate: MatWeight,
+    pub attn_gate: Proj,
     /// Depthwise 1-D conv weights over the fused channels:
     /// `[ssm_conv_kernel, key_dim*2 + value_dim]`. Kept dense —
     /// `Op::Conv` has no packed variant and the conv kernel is
@@ -165,13 +252,13 @@ pub struct Qwen35LinearLayer {
     /// multiplier per head).
     pub ssm_a: Vec<f32>,
     /// `[n_embd, dt_rank]` — β projection.
-    pub ssm_beta: MatWeight,
+    pub ssm_beta: Proj,
     /// `[n_embd, dt_rank]` — α projection.
-    pub ssm_alpha: MatWeight,
+    pub ssm_alpha: Proj,
     /// `[ssm_state]` — per-state-row RMS norm gate.
     pub ssm_norm: Vec<f32>,
     /// `[value_dim, n_embd]` — output projection.
-    pub ssm_out: MatWeight,
+    pub ssm_out: Proj,
     pub ffn: Qwen35LayerFfn,
 }
 
@@ -184,10 +271,10 @@ pub struct Qwen35FullAttnLayer {
     pub attn_post_norm: Vec<f32>,
     /// `[n_embd, n_embd_head_k * n_head * 2]` — joint Q + gate
     /// projection (Qwen3-Next style).
-    pub attn_q_gate: MatWeight,
-    pub attn_k: MatWeight,
-    pub attn_v: MatWeight,
-    pub attn_output: MatWeight,
+    pub attn_q_gate: Proj,
+    pub attn_k: Proj,
+    pub attn_v: Proj,
+    pub attn_output: Proj,
     pub attn_q_norm: Vec<f32>,
     pub attn_k_norm: Vec<f32>,
     pub ffn: Qwen35LayerFfn,
@@ -251,10 +338,13 @@ impl Qwen35Weights {
         fn mat_dense(m: &MatWeight) -> bool {
             matches!(m, MatWeight::F32(v) if !v.is_empty())
         }
+        fn proj_dense(p: &Proj) -> bool {
+            p.mats().any(mat_dense)
+        }
         fn ffn_dense(ffn: &Qwen35LayerFfn) -> bool {
             match ffn {
                 Qwen35LayerFfn::Dense { gate, up, down } => {
-                    mat_dense(gate) || mat_dense(up) || mat_dense(down)
+                    proj_dense(gate) || proj_dense(up) || proj_dense(down)
                 }
                 Qwen35LayerFfn::Moe(m) => {
                     mat_dense(&m.router)
@@ -268,19 +358,19 @@ impl Qwen35Weights {
             }
         }
         fn full_dense(t: &Qwen35FullAttnLayer) -> bool {
-            mat_dense(&t.attn_q_gate)
-                || mat_dense(&t.attn_k)
-                || mat_dense(&t.attn_v)
-                || mat_dense(&t.attn_output)
+            proj_dense(&t.attn_q_gate)
+                || proj_dense(&t.attn_k)
+                || proj_dense(&t.attn_v)
+                || proj_dense(&t.attn_output)
                 || ffn_dense(&t.ffn)
         }
         self.trunk_layers.iter().any(|l| match l {
             Qwen35TrunkLayer::Linear(t) => {
-                mat_dense(&t.attn_qkv)
-                    || mat_dense(&t.attn_gate)
-                    || mat_dense(&t.ssm_beta)
-                    || mat_dense(&t.ssm_alpha)
-                    || mat_dense(&t.ssm_out)
+                proj_dense(&t.attn_qkv)
+                    || proj_dense(&t.attn_gate)
+                    || proj_dense(&t.ssm_beta)
+                    || proj_dense(&t.ssm_alpha)
+                    || proj_dense(&t.ssm_out)
                     || ffn_dense(&t.ffn)
             }
             Qwen35TrunkLayer::FullAttn(t) => full_dense(t),
@@ -301,10 +391,13 @@ impl Qwen35Weights {
         fn mat_packed(m: &MatWeight) -> bool {
             m.is_packed()
         }
+        fn proj_packed(p: &Proj) -> bool {
+            p.mats().any(mat_packed)
+        }
         fn ffn_packed(ffn: &Qwen35LayerFfn) -> bool {
             match ffn {
                 Qwen35LayerFfn::Dense { gate, up, down } => {
-                    mat_packed(gate) || mat_packed(up) || mat_packed(down)
+                    proj_packed(gate) || proj_packed(up) || proj_packed(down)
                 }
                 Qwen35LayerFfn::Moe(m) => {
                     mat_packed(&m.router)
@@ -318,19 +411,19 @@ impl Qwen35Weights {
             }
         }
         fn full_packed(t: &Qwen35FullAttnLayer) -> bool {
-            mat_packed(&t.attn_q_gate)
-                || mat_packed(&t.attn_k)
-                || mat_packed(&t.attn_v)
-                || mat_packed(&t.attn_output)
+            proj_packed(&t.attn_q_gate)
+                || proj_packed(&t.attn_k)
+                || proj_packed(&t.attn_v)
+                || proj_packed(&t.attn_output)
                 || ffn_packed(&t.ffn)
         }
         self.trunk_layers.iter().any(|l| match l {
             Qwen35TrunkLayer::Linear(t) => {
-                mat_packed(&t.attn_qkv)
-                    || mat_packed(&t.attn_gate)
-                    || mat_packed(&t.ssm_beta)
-                    || mat_packed(&t.ssm_alpha)
-                    || mat_packed(&t.ssm_out)
+                proj_packed(&t.attn_qkv)
+                    || proj_packed(&t.attn_gate)
+                    || proj_packed(&t.ssm_beta)
+                    || proj_packed(&t.ssm_alpha)
+                    || proj_packed(&t.ssm_out)
                     || ffn_packed(&t.ffn)
             }
             Qwen35TrunkLayer::FullAttn(t) => full_packed(t),
@@ -348,10 +441,13 @@ impl Qwen35Weights {
         fn empty_f32(m: &MatWeight) -> bool {
             matches!(m, MatWeight::F32(v) if v.is_empty())
         }
+        fn proj_empty(p: &Proj) -> bool {
+            p.mats().any(empty_f32)
+        }
         fn ffn_empty(ffn: &Qwen35LayerFfn) -> bool {
             match ffn {
                 Qwen35LayerFfn::Dense { gate, up, down } => {
-                    empty_f32(gate) || empty_f32(up) || empty_f32(down)
+                    proj_empty(gate) || proj_empty(up) || proj_empty(down)
                 }
                 Qwen35LayerFfn::Moe(m) => {
                     empty_f32(&m.router)
@@ -365,19 +461,19 @@ impl Qwen35Weights {
             }
         }
         fn full_empty(t: &Qwen35FullAttnLayer) -> bool {
-            empty_f32(&t.attn_q_gate)
-                || empty_f32(&t.attn_k)
-                || empty_f32(&t.attn_v)
-                || empty_f32(&t.attn_output)
+            proj_empty(&t.attn_q_gate)
+                || proj_empty(&t.attn_k)
+                || proj_empty(&t.attn_v)
+                || proj_empty(&t.attn_output)
                 || ffn_empty(&t.ffn)
         }
         self.trunk_layers.iter().any(|l| match l {
             Qwen35TrunkLayer::Linear(t) => {
-                empty_f32(&t.attn_qkv)
-                    || empty_f32(&t.attn_gate)
-                    || empty_f32(&t.ssm_beta)
-                    || empty_f32(&t.ssm_alpha)
-                    || empty_f32(&t.ssm_out)
+                proj_empty(&t.attn_qkv)
+                    || proj_empty(&t.attn_gate)
+                    || proj_empty(&t.ssm_beta)
+                    || proj_empty(&t.ssm_alpha)
+                    || proj_empty(&t.ssm_out)
                     || ffn_empty(&t.ffn)
             }
             Qwen35TrunkLayer::FullAttn(t) => full_empty(t),
@@ -397,12 +493,15 @@ impl Qwen35Weights {
                 v.shrink_to_fit();
             }
         }
+        fn clear_proj(p: &mut Proj) {
+            p.mats_mut().for_each(clear_mat);
+        }
         fn clear_ffn(ffn: &mut Qwen35LayerFfn) {
             match ffn {
                 Qwen35LayerFfn::Dense { gate, up, down } => {
-                    clear_mat(gate);
-                    clear_mat(up);
-                    clear_mat(down);
+                    clear_proj(gate);
+                    clear_proj(up);
+                    clear_proj(down);
                 }
                 Qwen35LayerFfn::Moe(m) => {
                     clear_mat(&mut m.router);
@@ -416,20 +515,20 @@ impl Qwen35Weights {
             }
         }
         fn clear_full(t: &mut Qwen35FullAttnLayer) {
-            clear_mat(&mut t.attn_q_gate);
-            clear_mat(&mut t.attn_k);
-            clear_mat(&mut t.attn_v);
-            clear_mat(&mut t.attn_output);
+            clear_proj(&mut t.attn_q_gate);
+            clear_proj(&mut t.attn_k);
+            clear_proj(&mut t.attn_v);
+            clear_proj(&mut t.attn_output);
             clear_ffn(&mut t.ffn);
         }
         for layer in &mut self.trunk_layers {
             match layer {
                 Qwen35TrunkLayer::Linear(t) => {
-                    clear_mat(&mut t.attn_qkv);
-                    clear_mat(&mut t.attn_gate);
-                    clear_mat(&mut t.ssm_beta);
-                    clear_mat(&mut t.ssm_alpha);
-                    clear_mat(&mut t.ssm_out);
+                    clear_proj(&mut t.attn_qkv);
+                    clear_proj(&mut t.attn_gate);
+                    clear_proj(&mut t.ssm_beta);
+                    clear_proj(&mut t.ssm_alpha);
+                    clear_proj(&mut t.ssm_out);
                     clear_ffn(&mut t.ffn);
                 }
                 Qwen35TrunkLayer::FullAttn(t) => clear_full(t),
@@ -603,15 +702,15 @@ fn take_expert_mat(
 ) -> Result<MatWeight> {
     if let Some(p) = pack_via {
         let g: &mut GgufLoader = unsafe { &mut *p };
-        if let Ok(Some((scheme, shape))) = g.take_packed_metadata(key) {
-            if shape.len() == 3 {
-                let n_expert = shape[2];
-                return Ok(MatWeight::Packed {
-                    key: key.to_string(),
-                    scheme,
-                    shape: vec![n_expert, shape[0], shape[1]],
-                });
-            }
+        if let Ok(Some((scheme, shape))) = g.take_packed_metadata(key)
+            && shape.len() == 3
+        {
+            let n_expert = shape[2];
+            return Ok(MatWeight::Packed {
+                key: key.to_string(),
+                scheme,
+                shape: vec![n_expert, shape[0], shape[1]],
+            });
         }
     }
     let (data, shape) = loader
@@ -625,6 +724,140 @@ fn take_expert_mat(
     let n_expert = shape[2];
     let permuted = permute_ggml_expert_to_grouped(&data, shape[0], shape[1], n_expert);
     Ok(MatWeight::F32(permuted))
+}
+
+// ── Pestle factorized projections ────────────────────────────────
+//
+// Slot numbering is fixed by the `mortar.cpp` fork's `load_block_trunk`
+// (`src/models/qwen35.cpp`) and is *not* derivable from the tensor
+// names, so it is spelled out here:
+//
+//   linear-attn (gated DeltaNet) blocks   full-attn blocks
+//   ───────────────────────────────────   ────────────────────────
+//   0  attn_qkv    n_embd → conv_ch       0  attn_q  (q + gate)
+//   1  attn_gate   n_embd → value_dim     1  attn_k
+//   2  ssm_beta    n_embd → n_v_heads     2  attn_v
+//   3  ssm_alpha   n_embd → n_v_heads     3  attn_output
+//   4  ssm_out     value_dim → n_embd     (slot 4 unused)
+//
+//   both: 5 ffn_gate, 6 ffn_up, 7 ffn_down
+//
+// Slots 2/3 are beta-then-alpha — the reverse of the order the two are
+// consumed in `build_layer_linear`. Swapping them silently trains the
+// gate on the decay term and yields fluent-but-wrong text, so keep the
+// mapping pinned to the fork.
+
+/// Tensor key for one part of a Pestle slot.
+fn pestle_key(il: usize, slot: usize, part: &str) -> String {
+    format!("blk.{il}.pestle.{slot}.{part}.weight")
+}
+
+/// True when layer `il` ships Pestle-factorized projections.
+///
+/// Probes the same tensor `mortar.cpp` does. Pestle checkpoints are
+/// *mixed* — `Pestle-27B-Ternary` factorizes blocks 0..=62 and leaves
+/// block 63 dense BF16 — so this is a per-layer question, and the probe
+/// is non-destructive (`tensor_bytes_borrowed` doesn't mark taken).
+fn layer_is_pestle(loader: &dyn WeightLoader, il: usize) -> bool {
+    loader
+        .tensor_bytes_borrowed(&pestle_key(il, 0, "v"))
+        .is_some()
+}
+
+/// Validate a Pestle factor's `[out, in]` dims. Packed mats carry their
+/// shape; F32 mats only carry a length, so check what each can offer.
+fn check_factor_shape(m: &MatWeight, out: usize, r#in: usize, what: &str) -> Result<()> {
+    match m {
+        MatWeight::Packed { shape, .. } => {
+            if shape.as_slice() != [out, r#in] {
+                return Err(anyhow!("{what}: shape {shape:?} != [{out}, {}]", r#in));
+            }
+        }
+        MatWeight::F32(v) => {
+            if v.len() != out * r#in {
+                return Err(anyhow!(
+                    "{what}: len {} != {out} * {} = {}",
+                    v.len(),
+                    r#in,
+                    out * r#in
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Load one Pestle slot for layer `il`.
+///
+/// `in_features` / `out_features` are the dims of the linear this slot
+/// replaces. The rank is read off `scale_mid`'s length rather than
+/// hardcoded from the fork's table: it varies per slot (128 for the
+/// tiny α/β heads up to 3968 for the FFN) and per model, and deriving
+/// it means a future Pestle checkpoint with different ranks loads
+/// without a code change.
+fn take_pestle(
+    loader: &mut dyn WeightLoader,
+    il: usize,
+    slot: usize,
+    in_features: usize,
+    out_features: usize,
+    pack_via: Option<*mut GgufLoader>,
+) -> Result<PestleFactor> {
+    let scale_pre = take_f32(loader, &pestle_key(il, slot, "scale_pre"))?;
+    let scale_mid = take_f32(loader, &pestle_key(il, slot, "scale_mid"))?;
+    let scale_post = take_f32(loader, &pestle_key(il, slot, "scale_post"))?;
+    let rank = scale_mid.len();
+    if scale_pre.len() != in_features || scale_post.len() != out_features {
+        return Err(anyhow!(
+            "blk.{il}.pestle.{slot}: scales are [pre {}, mid {rank}, post {}], \
+             expected [pre {in_features}, mid _, post {out_features}]",
+            scale_pre.len(),
+            scale_post.len(),
+        ));
+    }
+    let v = take_mat(loader, &pestle_key(il, slot, "v"), pack_via)?;
+    let u = take_mat(loader, &pestle_key(il, slot, "u"), pack_via)?;
+    check_factor_shape(&v, rank, in_features, &pestle_key(il, slot, "v"))?;
+    check_factor_shape(&u, out_features, rank, &pestle_key(il, slot, "u"))?;
+    Ok(PestleFactor {
+        v,
+        u,
+        scale_pre,
+        scale_mid,
+        scale_post,
+        rank,
+    })
+}
+
+/// Load a projection as either a Pestle factor pair (when `pestle`) or
+/// the plain `blk.{il}.{dense_suffix}` matrix.
+#[allow(clippy::too_many_arguments)]
+fn take_proj(
+    loader: &mut dyn WeightLoader,
+    il: usize,
+    pestle: bool,
+    slot: usize,
+    dense_suffix: &str,
+    in_features: usize,
+    out_features: usize,
+    pack_via: Option<*mut GgufLoader>,
+) -> Result<Proj> {
+    if pestle {
+        Ok(Proj::Pestle(Box::new(take_pestle(
+            loader,
+            il,
+            slot,
+            in_features,
+            out_features,
+            pack_via,
+        )?)))
+    } else {
+        Ok(Proj::Dense(take_mat(
+            loader,
+            &format!("blk.{il}.{dense_suffix}"),
+            pack_via,
+        )?))
+    }
 }
 
 fn permute_ggml_expert_to_grouped(data: &[f32], d0: usize, d1: usize, n_expert: usize) -> Vec<f32> {
@@ -645,20 +878,49 @@ fn load_layer_ffn(
     loader: &mut dyn WeightLoader,
     il: usize,
     cfg: &Qwen35Config,
+    pestle: bool,
     pack_via: Option<*mut GgufLoader>,
 ) -> Result<Qwen35LayerFfn> {
-    let p = |suffix: &str| format!("blk.{il}.{suffix}");
     if cfg.is_moe() {
-        Ok(Qwen35LayerFfn::Moe(load_moe_ffn(
+        // No Pestle MoE checkpoint exists yet; MoE files are dense-slot.
+        return Ok(Qwen35LayerFfn::Moe(load_moe_ffn(
             loader, il, cfg, pack_via,
-        )?))
-    } else {
-        Ok(Qwen35LayerFfn::Dense {
-            gate: take_mat(loader, &p("ffn_gate.weight"), pack_via)?,
-            up: take_mat(loader, &p("ffn_up.weight"), pack_via)?,
-            down: take_mat(loader, &p("ffn_down.weight"), pack_via)?,
-        })
+        )?));
     }
+    let n_embd = cfg.hidden_size;
+    let n_ff = cfg.intermediate_size;
+    Ok(Qwen35LayerFfn::Dense {
+        gate: take_proj(
+            loader,
+            il,
+            pestle,
+            5,
+            "ffn_gate.weight",
+            n_embd,
+            n_ff,
+            pack_via,
+        )?,
+        up: take_proj(
+            loader,
+            il,
+            pestle,
+            6,
+            "ffn_up.weight",
+            n_embd,
+            n_ff,
+            pack_via,
+        )?,
+        down: take_proj(
+            loader,
+            il,
+            pestle,
+            7,
+            "ffn_down.weight",
+            n_ff,
+            n_embd,
+            pack_via,
+        )?,
+    })
 }
 
 fn load_moe_ffn(
@@ -731,19 +993,70 @@ fn load_linear_layer(
     pack_via: Option<*mut GgufLoader>,
 ) -> Result<Qwen35LinearLayer> {
     let p = |suffix: &str| format!("blk.{il}.{suffix}");
+    let pestle = layer_is_pestle(loader, il);
+    let n_embd = cfg.hidden_size;
+    let n_v_heads = cfg.ssm_time_step_rank;
+    let key_dim = cfg.ssm_state_size * cfg.ssm_group_count;
+    let value_dim = cfg.ssm_state_size * n_v_heads;
+    let conv_channels = key_dim * 2 + value_dim;
     Ok(Qwen35LinearLayer {
         attn_norm: take_f32(loader, &p("attn_norm.weight"))?,
         attn_post_norm: take_f32(loader, &p("post_attention_norm.weight"))?,
-        attn_qkv: take_mat(loader, &p("attn_qkv.weight"), pack_via)?,
-        attn_gate: take_mat(loader, &p("attn_gate.weight"), pack_via)?,
+        attn_qkv: take_proj(
+            loader,
+            il,
+            pestle,
+            0,
+            "attn_qkv.weight",
+            n_embd,
+            conv_channels,
+            pack_via,
+        )?,
+        attn_gate: take_proj(
+            loader,
+            il,
+            pestle,
+            1,
+            "attn_gate.weight",
+            n_embd,
+            value_dim,
+            pack_via,
+        )?,
         ssm_conv1d: take_f32(loader, &p("ssm_conv1d.weight"))?,
         ssm_dt_bias: take_f32(loader, &p("ssm_dt.bias"))?,
         ssm_a: take_f32(loader, &p("ssm_a"))?,
-        ssm_beta: take_mat(loader, &p("ssm_beta.weight"), pack_via)?,
-        ssm_alpha: take_mat(loader, &p("ssm_alpha.weight"), pack_via)?,
+        ssm_beta: take_proj(
+            loader,
+            il,
+            pestle,
+            2,
+            "ssm_beta.weight",
+            n_embd,
+            n_v_heads,
+            pack_via,
+        )?,
+        ssm_alpha: take_proj(
+            loader,
+            il,
+            pestle,
+            3,
+            "ssm_alpha.weight",
+            n_embd,
+            n_v_heads,
+            pack_via,
+        )?,
         ssm_norm: take_f32(loader, &p("ssm_norm.weight"))?,
-        ssm_out: take_mat(loader, &p("ssm_out.weight"), pack_via)?,
-        ffn: load_layer_ffn(loader, il, cfg, pack_via)?,
+        ssm_out: take_proj(
+            loader,
+            il,
+            pestle,
+            4,
+            "ssm_out.weight",
+            value_dim,
+            n_embd,
+            pack_via,
+        )?,
+        ffn: load_layer_ffn(loader, il, cfg, pestle, pack_via)?,
     })
 }
 
@@ -754,16 +1067,58 @@ fn load_full_attn_layer(
     pack_via: Option<*mut GgufLoader>,
 ) -> Result<Qwen35FullAttnLayer> {
     let p = |suffix: &str| format!("blk.{il}.{suffix}");
+    let pestle = layer_is_pestle(loader, il);
+    let n_embd = cfg.hidden_size;
+    let head_k = cfg.key_length;
+    let q_dim = head_k * cfg.num_attention_heads;
+    let kv_dim = head_k * cfg.num_key_value_heads;
     Ok(Qwen35FullAttnLayer {
         attn_norm: take_f32(loader, &p("attn_norm.weight"))?,
         attn_post_norm: take_f32(loader, &p("post_attention_norm.weight"))?,
-        attn_q_gate: take_mat(loader, &p("attn_q.weight"), pack_via)?,
-        attn_k: take_mat(loader, &p("attn_k.weight"), pack_via)?,
-        attn_v: take_mat(loader, &p("attn_v.weight"), pack_via)?,
-        attn_output: take_mat(loader, &p("attn_output.weight"), pack_via)?,
+        // Joint Q + gate: 2× the query width (Qwen3-Next style).
+        attn_q_gate: take_proj(
+            loader,
+            il,
+            pestle,
+            0,
+            "attn_q.weight",
+            n_embd,
+            q_dim * 2,
+            pack_via,
+        )?,
+        attn_k: take_proj(
+            loader,
+            il,
+            pestle,
+            1,
+            "attn_k.weight",
+            n_embd,
+            kv_dim,
+            pack_via,
+        )?,
+        attn_v: take_proj(
+            loader,
+            il,
+            pestle,
+            2,
+            "attn_v.weight",
+            n_embd,
+            cfg.value_length * cfg.num_key_value_heads,
+            pack_via,
+        )?,
+        attn_output: take_proj(
+            loader,
+            il,
+            pestle,
+            3,
+            "attn_output.weight",
+            q_dim,
+            n_embd,
+            pack_via,
+        )?,
         attn_q_norm: take_f32(loader, &p("attn_q_norm.weight"))?,
         attn_k_norm: take_f32(loader, &p("attn_k_norm.weight"))?,
-        ffn: load_layer_ffn(loader, il, cfg, pack_via)?,
+        ffn: load_layer_ffn(loader, il, cfg, pestle, pack_via)?,
     })
 }
 

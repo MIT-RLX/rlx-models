@@ -447,11 +447,12 @@ fn main() -> anyhow::Result<()> {
             if rank == 0 && m.step.is_multiple_of(cfg.log_every) {
                 eprintln!("{m} | {:>7.0} samples/s", sps(&m));
             }
-            if rank == 0 && (m.step + 1).is_multiple_of(eval_every) {
-                if let Some(s) = eval_sess.as_mut() {
-                    let acc = evaluate(s, &trainer.params(), &test_x, &test_y, eb);
-                    eprintln!("  step {} test acc {:.2}%", m.step + 1, acc * 100.0);
-                }
+            if rank == 0
+                && (m.step + 1).is_multiple_of(eval_every)
+                && let Some(s) = eval_sess.as_mut()
+            {
+                let acc = evaluate(s, &trainer.params(), &test_x, &test_y, eb);
+                eprintln!("  step {} test acc {:.2}%", m.step + 1, acc * 100.0);
             }
         }
     }

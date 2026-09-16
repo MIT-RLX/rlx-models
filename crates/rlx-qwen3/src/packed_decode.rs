@@ -62,10 +62,10 @@ pub fn rewrite_matmuls_to_packed(
             continue;
         }
         let (x_id, w_id) = (n.inputs[0], n.inputs[1]);
-        if let Op::Param { name } = &g.node(w_id).op {
-            if let Some(info) = lookup(name) {
-                todo.push((n.id, x_id, w_id, name.clone(), info));
-            }
+        if let Op::Param { name } = &g.node(w_id).op
+            && let Some(info) = lookup(name)
+        {
+            todo.push((n.id, x_id, w_id, name.clone(), info));
         }
     }
     // Phase 2 (mutate): re-declare the weight U8 + retarget the matmul op/inputs.

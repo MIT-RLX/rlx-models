@@ -84,11 +84,11 @@ impl VoiceEmbedding {
     }
 
     pub fn save_f32(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("create {}", parent.display()))?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
         }
         let bytes: Vec<u8> = self.data.iter().flat_map(|v| v.to_le_bytes()).collect();
         std::fs::write(path, bytes).with_context(|| format!("write {}", path.display()))?;

@@ -101,9 +101,14 @@ impl WeightLoader for CheckpointParamLoader {
     }
 
     fn take(&mut self, key: &str) -> anyhow::Result<(Vec<f32>, Vec<usize>)> {
+        // `remove`, not `get().cloned()`. This is `WeightLoader::take` on `&mut self`, and the
+        // only caller — `WeightMap::drain_loader` — snapshots the key list up front and takes
+        // each key exactly once. Cloning meant the loader kept the entire backbone alive in f32
+        // while the `WeightMap` filled with a second copy of it: ~15 GB each for the 4B
+        // checkpoint, on top of the graph arenas, which is what made voxtral-tts OOM at load.
+        // Moving also makes `remaining_keys` mean what it says.
         self.params
-            .get(key)
-            .cloned()
+            .remove(key)
             .ok_or_else(|| anyhow::anyhow!("missing weight {key}"))
     }
 

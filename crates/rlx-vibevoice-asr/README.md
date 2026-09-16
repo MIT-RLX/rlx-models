@@ -1,55 +1,72 @@
 # rlx-vibevoice-asr
 
-Native RLX port of **[microsoft/VibeVoice-ASR-BitNet](https://huggingface.co/microsoft/VibeVoice-ASR-BitNet)** —
-a CPU-first speech-recognition model that loads Microsoft's shipped GGUFs directly.
+Native RLX port of Microsoft **VibeVoice-ASR**:
 
-## Pipeline
+| Variant | Hub | Weights |
+|---------|-----|---------|
+| **Streaming-7B** | [VibeVoice-ASR-Streaming-7B](https://huggingface.co/microsoft/VibeVoice-ASR-Streaming-7B) | BF16 safetensors (~17 GB) |
+| **BitNet** | [VibeVoice-ASR-BitNet](https://huggingface.co/microsoft/VibeVoice-ASR-BitNet) | I8_S VAE + I2_S LM GGUFs |
+
+## Streaming-7B pipeline
 
 ```
-24 kHz mono audio ─▶ RMS normalize (−25 dBFS) ─▶ pad to 3200
-   ├─▶ acoustic ConvNeXt VAE encoder (I8_S) ─▶ SpeechConnector ─▶ [T, 1536]
-   └─▶ semantic ConvNeXt VAE encoder (I8_S) ─▶ SpeechConnector ─▶ [T, 1536]
-              (element-wise sum) ─▶ speech features
-                     │
-   Qwen2.5 chat prompt with N=ceil(samples/3200) <|speech_pad|> rows
-                     │  (speech rows overwritten by the summed features)
-                     ▼
-   BitNet Qwen2-1.5B decoder (I2_S ternary projections + Q6_K token embeddings
-   + F16 lm_head, 28 layers, GQA 12/2, RoPE θ=1e6) ─▶ greedy decode ─▶ text
+24 kHz mono (normalize_audio=false for this checkpoint)
+  → encode_then_split (default for files): one VAE pass → feature chunks
+     or split_then_encode: per-segment VAE (live mic)
+  → acoustic ConvNeXt VAE (GELU) → SpeechConnector → [T, 3584]
+  → semantic ConvNeXt VAE (GELU) → SpeechConnector → [T, 3584]
+  → element-wise sum
+  → Qwen2.5-7B KV streaming:
+       prompt prefill
+       per chunk: [<|object_ref_start|> | feats | <|object_ref_end|>]
+       greedy until <|text_chunk_end|>
 ```
 
-## BitNet GGUF support
+**Speed / accuracy defaults:** acoustic mean (deterministic), VAE graphs cached by
+padded length, LM weights dequantized once into RAM, intermediate speech frames
+skip `lm_head` (~25× fewer vocab matmuls per chunk), file path uses one encode.
 
-The shipped quantization types are Microsoft's own, added to the RLX framework
-(`rlx-gguf`) during this port:
-
-- **`I2_S` (ggml type 36)** — 2-bit ternary. 128-element blocks (32 bytes each);
-  code ∈ {0,1,2} → `(code − 1)·scale`; one per-tensor f32 scale at byte offset
-  `n/4`. Verified byte-for-byte against the shipped weights.
-- **`I8_S` (ggml type 37)** — symmetric int8, `w = int8·scale`, per-tensor scale
-  at offset `n`.
-
-The LM projections are dequantized to f32 on load today (correctness-first);
-transcoding them to rlx's packed `TQ2_0` DequantMatMul path (numerically exact
-for ternary) is the tracked follow-up for the full BitNet memory win.
-
-## CLI
+All RLX backends: `cpu`, `metal`, `mlx`, `cuda`, `rocm`, `gpu` (wgpu), `vulkan`, `coreml`/`ane`.
 
 ```bash
-cargo run -p rlx-vibevoice-asr --features cpu,tokenizer --release -- \
-    --vae  vibeasr-vae-encoder-i8_s.gguf \
-    --lm   vibeasr-lm-i2_s-embed-q6_k.gguf \
-    --audio input.wav \
-    --tokenizer tokenizer.json    # defaults to a sibling of --lm
+just features=all-backends test-vibevoice-asr-backends
 ```
 
-Add `--json` for the segment-JSON prompt (Start/End/Speaker/Content). Backends:
-`--features metal|mlx|cuda|gpu|vulkan` (CPU is the reference / fastest-to-set-up path).
+Synthetic VAE encode (BitNet ReLU + Streaming GELU) runs on every available
+device and checks CPU agreement (`max|Δ| < 2e-3`). Unavailable backends skip.
+
+## Streaming CLI
+
+```bash
+just fetch-vibevoice-asr-streaming
+just vibevoice-asr-streaming -- --audio clip.wav --device metal
+# or:
+cargo run -p rlx-vibevoice-asr --release --features tokenizer,apple-silicon -- \
+    --model-dir .cache/vibevoice-asr-streaming-7b \
+    --audio clip.wav --device metal --context-info "Microsoft,VibeVoice"
+# live-style per-chunk encode:
+#   --encode split_then_encode
+# stage timing:
+#   RLX_VIBEVOICE_ASR_TIMING=1 …
+```
+
+Env: `RLX_VIBEVOICE_ASR_STREAMING_DIR` (default `.cache/vibevoice-asr-streaming-7b`),
+`RLX_VIBEVOICE_ASR_ENCODE=split` for mic path, `RLX_VIBEVOICE_ASR_TIMING=1` for RTF logs.
+
+## BitNet GGUF CLI
+
+```bash
+cargo run -p rlx-vibevoice-asr --features tokenizer --release -- \
+    --vae  vibeasr-vae-encoder-i8_s.gguf \
+    --lm   vibeasr-lm-i2_s-embed-q6_k.gguf \
+    --audio input.wav
+```
+
+BitNet path: ReLU FFN in the VAE (I8_S reference), packed `I2_S`→`Q2_0` LM by default (`VIBEASR_DENSE=1` for dense f32).
 
 ## Status
 
-- ✅ Framework `I2_S`/`I8_S` dequant (unit-tested + validated on real GGUF bytes)
-- ✅ Audio front-end, prompt/tokenizer, ConvNeXt VAE encoder graph (all backends), LM wiring
-- ✅ Compiles; 13 unit tests pass
-- ⏳ End-to-end numeric validation against the real 1.77 GB GGUFs
-- ⏳ Packed `TQ2_0` LM path (BitNet memory win)
+- Streaming-7B: safetensors load, GELU VAE, embeds prefill / KV-continue / decode, chunked generate
+- BitNet: GGUF load, unit tests; e2e numeric validation still pending real weights
+- Backends: `just features=all-backends test-vibevoice-asr-backends` (CPU+Metal+MLX+wgpu+Vulkan+CoreML verified; CUDA/ROCm skip when absent)
+- Env-gated Streaming e2e: `RLX_VIBEVOICE_ASR_STREAMING_DIR` + short wav

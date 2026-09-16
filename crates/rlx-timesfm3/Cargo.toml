@@ -1,0 +1,69 @@
+[package]
+name = "rlx-timesfm3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Google TimesFM-3 multivariate time-series foundation model on RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-runtime = { workspace = true }
+anyhow = { workspace = true }
+ndarray = "0.16"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+safetensors = { workspace = true }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[[bin]]
+name = "rlx-timesfm3"
+path = "src/bin/rlx_timesfm3.rs"
+
+[[test]]
+name = "synth_forward"
+path = "tests/synth_forward.rs"
+
+[[test]]
+name = "host_rlx_parity"
+path = "tests/host_rlx_parity.rs"
+
+[[test]]
+name = "backend_quick_check"
+path = "tests/backend_quick_check.rs"
+
+[[test]]
+name = "core_parity_dev"
+path = "tests/core_parity_dev.rs"
+required-features = ["dev"]
+
+[features]
+default = []
+dev = []
+hf-download = ["dep:hf-hub"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+coreml = ["rlx-runtime/coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[lints]
+workspace = true

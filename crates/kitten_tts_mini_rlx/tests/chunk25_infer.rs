@@ -14,10 +14,10 @@ use kitten_tts_mini_rlx::compile_profile::{compile_slot_length, compile_waveform
 use rlx_runtime::Device;
 
 fn max_wave_for_test(runtime_tokens: usize) -> usize {
-    if let Ok(v) = std::env::var("KITTEN_MAX_WAVE") {
-        if let Ok(n) = v.parse::<usize>() {
-            return n.max(1);
-        }
+    if let Ok(v) = std::env::var("KITTEN_MAX_WAVE")
+        && let Ok(n) = v.parse::<usize>()
+    {
+        return n.max(1);
     }
     if kitten_tts_mini_rlx::compile_profile::env_flag("KITTEN_RLX_HEAVY") {
         return 367_200;

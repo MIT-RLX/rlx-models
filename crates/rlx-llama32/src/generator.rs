@@ -440,13 +440,13 @@ impl PackedGgufPrefill {
         });
         attach_f32_params(&mut logits, params);
         upload_packed_borrowed(&mut logits, &packed, &loader)?;
-        if self.feed.embed_lazy.is_none() {
-            if let Some(host) = embed_host {
-                self.feed.embed_lazy = Some(host);
-                self.feed
-                    .embed_scratch
-                    .resize(self.feed.upper_seq * self.feed.hidden, 0.0);
-            }
+        if self.feed.embed_lazy.is_none()
+            && let Some(host) = embed_host
+        {
+            self.feed.embed_lazy = Some(host);
+            self.feed
+                .embed_scratch
+                .resize(self.feed.upper_seq * self.feed.hidden, 0.0);
         }
         self.logits = Some(logits);
         Ok(())
@@ -3376,23 +3376,22 @@ impl Llama32Generator {
                 self.decode_compile_cache_hidden.as_ref().unwrap(),
                 past_seq,
             );
-            if cuda_lazy_kv_enabled(exec_device) && bucket_idx > 0 {
-                if let Some(compiled) = self
+            if cuda_lazy_kv_enabled(exec_device)
+                && bucket_idx > 0
+                && let Some(compiled) = self
                     .decode_compile_cache_hidden
                     .as_mut()
                     .and_then(|c| c.compiled_for_key_mut(flush_plan.prev_key))
-                {
-                    if let Some(cache) = self.cache.as_mut() {
-                        maybe_flush_resident_kv_before_bucket(
-                            compiled,
-                            cache,
-                            &flush_plan,
-                            past_seq,
-                            kv_dim,
-                            n_layers,
-                        )?;
-                    }
-                }
+                && let Some(cache) = self.cache.as_mut()
+            {
+                maybe_flush_resident_kv_before_bucket(
+                    compiled,
+                    cache,
+                    &flush_plan,
+                    past_seq,
+                    kv_dim,
+                    n_layers,
+                )?;
             }
             if !device_kv_rebind {
                 if let Some(cache_mut) = self.decode_compile_cache_hidden.as_mut() {
@@ -3604,23 +3603,22 @@ impl Llama32Generator {
             let device_kv_rebind = cuda_device_kv_rebind_enabled(exec_device) && bucket_idx > 0;
             let flush_plan =
                 resident_bucket_flush_plan(self.decode_compile_cache.as_ref().unwrap(), past_seq);
-            if cuda_lazy_kv_enabled(exec_device) && bucket_idx > 0 {
-                if let Some(compiled) = self
+            if cuda_lazy_kv_enabled(exec_device)
+                && bucket_idx > 0
+                && let Some(compiled) = self
                     .decode_compile_cache
                     .as_mut()
                     .and_then(|c| c.compiled_for_key_mut(flush_plan.prev_key))
-                {
-                    if let Some(cache) = self.cache.as_mut() {
-                        maybe_flush_resident_kv_before_bucket(
-                            compiled,
-                            cache,
-                            &flush_plan,
-                            past_seq,
-                            kv_dim,
-                            n_layers,
-                        )?;
-                    }
-                }
+                && let Some(cache) = self.cache.as_mut()
+            {
+                maybe_flush_resident_kv_before_bucket(
+                    compiled,
+                    cache,
+                    &flush_plan,
+                    past_seq,
+                    kv_dim,
+                    n_layers,
+                )?;
             }
 
             if needs_compile {
@@ -3779,12 +3777,10 @@ impl Llama32Generator {
             .next()
             .context("resident decode logits missing")?;
 
-        if sync_host {
-            if let Some(cache) = self.cache.as_mut() {
-                for (i, (nk, nv)) in new_rows.into_iter().enumerate() {
-                    cache.layers_k[i].extend_from_slice(&nk);
-                    cache.layers_v[i].extend_from_slice(&nv);
-                }
+        if sync_host && let Some(cache) = self.cache.as_mut() {
+            for (i, (nk, nv)) in new_rows.into_iter().enumerate() {
+                cache.layers_k[i].extend_from_slice(&nk);
+                cache.layers_v[i].extend_from_slice(&nv);
             }
         }
         Ok(logits)

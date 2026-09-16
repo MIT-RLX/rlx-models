@@ -929,15 +929,14 @@ impl GemmaPackedSession {
         if self.packed_buckets_loaded.contains(&upper) {
             return;
         }
-        if let Some(template_upper) = self.packed_param_template_upper {
-            if template_upper != upper
-                && self
-                    .decode_cache
-                    .try_copy_params_between_uppers(upper, template_upper)
-            {
-                self.packed_buckets_loaded.insert(upper);
-                return;
-            }
+        if let Some(template_upper) = self.packed_param_template_upper
+            && template_upper != upper
+            && self
+                .decode_cache
+                .try_copy_params_between_uppers(upper, template_upper)
+        {
+            self.packed_buckets_loaded.insert(upper);
+            return;
         }
         let compiled = self
             .decode_cache

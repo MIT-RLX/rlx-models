@@ -53,28 +53,28 @@ fn hf_to_gguf_name(name: &str) -> String {
         "output.weight" => return "output.weight".into(),
         _ => {}
     }
-    if let Some(rest) = name.strip_prefix("model.layers.") {
-        if let Some((idx, suffix)) = rest.split_once('.') {
-            let mapped = match suffix {
-                "operator_norm.weight" => Some("attn_norm.weight"),
-                "ffn_norm.weight" => Some("ffn_norm.weight"),
-                "conv.in_proj.weight" => Some("shortconv.in_proj.weight"),
-                "conv.conv.weight" => Some("shortconv.conv.weight"),
-                "conv.out_proj.weight" => Some("shortconv.out_proj.weight"),
-                "self_attn.q_proj.weight" => Some("attn_q.weight"),
-                "self_attn.k_proj.weight" => Some("attn_k.weight"),
-                "self_attn.v_proj.weight" => Some("attn_v.weight"),
-                "self_attn.out_proj.weight" => Some("attn_output.weight"),
-                "self_attn.q_layernorm.weight" => Some("attn_q_norm.weight"),
-                "self_attn.k_layernorm.weight" => Some("attn_k_norm.weight"),
-                "feed_forward.w1.weight" => Some("ffn_gate.weight"),
-                "feed_forward.w3.weight" => Some("ffn_up.weight"),
-                "feed_forward.w2.weight" => Some("ffn_down.weight"),
-                _ => None,
-            };
-            if let Some(g) = mapped {
-                return format!("blk.{idx}.{g}");
-            }
+    if let Some(rest) = name.strip_prefix("model.layers.")
+        && let Some((idx, suffix)) = rest.split_once('.')
+    {
+        let mapped = match suffix {
+            "operator_norm.weight" => Some("attn_norm.weight"),
+            "ffn_norm.weight" => Some("ffn_norm.weight"),
+            "conv.in_proj.weight" => Some("shortconv.in_proj.weight"),
+            "conv.conv.weight" => Some("shortconv.conv.weight"),
+            "conv.out_proj.weight" => Some("shortconv.out_proj.weight"),
+            "self_attn.q_proj.weight" => Some("attn_q.weight"),
+            "self_attn.k_proj.weight" => Some("attn_k.weight"),
+            "self_attn.v_proj.weight" => Some("attn_v.weight"),
+            "self_attn.out_proj.weight" => Some("attn_output.weight"),
+            "self_attn.q_layernorm.weight" => Some("attn_q_norm.weight"),
+            "self_attn.k_layernorm.weight" => Some("attn_k_norm.weight"),
+            "feed_forward.w1.weight" => Some("ffn_gate.weight"),
+            "feed_forward.w3.weight" => Some("ffn_up.weight"),
+            "feed_forward.w2.weight" => Some("ffn_down.weight"),
+            _ => None,
+        };
+        if let Some(g) = mapped {
+            return format!("blk.{idx}.{g}");
         }
     }
     name.to_string()

@@ -187,6 +187,40 @@ impl Qwen25VlRunnerBuilder {
     }
 }
 
+/// Absolute mRoPE position for the next token to decode.
+///
+/// mRoPE positions do not advance one per token. Image tokens occupy a *grid*,
+/// so a 299-token image spans about 23 positions rather than 299, and the text
+/// after it resumes just past the image's extent. The next position is
+/// therefore one beyond the last position the **prompt** used, plus one per
+/// token already decoded — not `past_seq`, which counts KV entries and so
+/// overcounts by the whole image.
+///
+/// This used to index the prompt's sections by `past_seq - 1`, which is in range
+/// only for the *first* decode step. From the second onwards it fell off the end
+/// and fell back to `past_seq + 1`. That is wrong in both cases, but by wildly
+/// different amounts:
+///
+/// * **Text-only** — off by exactly one, from the second token on. A constant
+///   offset preserves the relative distances RoPE actually encodes, so
+///   generation stayed coherent and nothing looked broken.
+/// * **With an image** — off by the whole difference between the KV length and
+///   the image's positional extent. For a 299-token image that is ~275
+///   positions, applied from the second decoded token onward, so generation
+///   started correctly and then collapsed. It reads as "the model lost the
+///   thread", not as a position bug.
+///
+/// The benign case is why this survived: the visible symptom only appears with
+/// an image, and only after the first token.
+pub(crate) fn next_decode_position(sections: Option<&[[usize; 4]]>, past_seq: usize) -> usize {
+    let prompt_len = sections.map(|s| s.len()).unwrap_or(past_seq);
+    let last_prompt_pos = sections
+        .and_then(|s| s.last())
+        .map(|sec| sec[0])
+        .unwrap_or(prompt_len.saturating_sub(1));
+    last_prompt_pos + past_seq.saturating_sub(prompt_len) + 1
+}
+
 pub struct Qwen25VlRunner {
     lm: Option<Qwen3Runner>,
     lm_cfg: Qwen25VlLmConfig,
@@ -232,18 +266,63 @@ impl Qwen25VlRunner {
         self.lm.as_ref().map(|l| l.device()).unwrap_or(self.device)
     }
 
+    /// Next-token logits for a text-only prompt.
+    ///
+    /// Routed through the same `ModelFlow` prefill the multimodal path uses.
+    /// It used to delegate to an inner `Qwen3Runner` that
+    /// [`Qwen25VlRunnerBuilder::build`] never constructs — the field is
+    /// hardcoded `None`, deliberately, so a packed GGUF is not opened twice — so
+    /// every call failed with "requires `.weights(...)` LM GGUF" *even when
+    /// handed one*, blaming the caller for a path that could not exist.
     pub fn predict_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
-        self.lm
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("predict_logits requires .weights(...) LM GGUF"))?
-            .predict_logits(prompt_ids)
+        let prefill = self.assemble_text_only(prompt_ids)?;
+        self.prefill_from_assembled(prefill)
     }
 
+    /// Greedy text-only generation, stopping at `stop_token`.
+    pub fn generate_text_stoppable(
+        &mut self,
+        prompt_ids: &[u32],
+        max_tokens: usize,
+        stop_token: Option<u32>,
+    ) -> Result<Vec<u32>> {
+        self.clear_aif_decode();
+        let logits = self.predict_logits(prompt_ids)?;
+        self.generate_from_prefill_logits(logits, max_tokens, stop_token)
+    }
+
+    /// Greedy text-only generation, stopping at `<|im_end|>`.
     pub fn generate_text(&mut self, prompt_ids: &[u32], max_tokens: usize) -> Result<Vec<u32>> {
-        self.lm
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("generate_text requires .weights(...) LM GGUF"))?
-            .generate_stoppable(prompt_ids, max_tokens, |_| true)
+        self.generate_text_stoppable(prompt_ids, max_tokens, Some(crate::IM_END_TOKEN))
+    }
+
+    /// Embed `ids` straight from the token table, with no image span.
+    ///
+    /// Text tokens carry `[t, t, t, 0]` in every mRoPE section, which is what
+    /// plain 1-D positions reduce to — so a text-only prompt needs no special
+    /// case in the trunk, only an assembly that supplies no vision.
+    fn assemble_text_only(&mut self, ids: &[u32]) -> Result<MultimodalPrefill> {
+        anyhow::ensure!(!ids.is_empty(), "empty prompt");
+        let n_embd = self.lm_cfg.lm.hidden_size;
+        let embed = self.ensure_embed_cached()?;
+        let mut hidden = vec![0f32; ids.len() * n_embd];
+        for (t, &id) in ids.iter().enumerate() {
+            let src = id as usize * n_embd;
+            anyhow::ensure!(
+                src + n_embd <= embed.len(),
+                "token id {id} is past the end of a {}-row embedding table",
+                embed.len() / n_embd
+            );
+            hidden[t * n_embd..(t + 1) * n_embd].copy_from_slice(&embed[src..src + n_embd]);
+        }
+        Ok(MultimodalPrefill {
+            hidden,
+            mrope_sections: (0..ids.len()).map(|t| [t, t, t, 0]).collect(),
+            last_token_idx: ids.len() - 1,
+            seq: ids.to_vec(),
+            vision_start_idx: 0,
+            n_vision_tokens: 0,
+        })
     }
 
     pub fn encode_image(&mut self, rgb: &[u8], w: usize, h: usize) -> Result<VisionEncodeOutput> {
@@ -459,13 +538,7 @@ impl Qwen25VlRunner {
         let layers_k = cache.layers_k.clone();
         let layers_v = cache.layers_v.clone();
 
-        let abs_pos = self
-            .mrope_positions
-            .as_ref()
-            .and_then(|s| s.get(past_seq.saturating_sub(1)))
-            .map(|sec| sec[0])
-            .unwrap_or(past_seq);
-        let (cos, sin) = mrope_decode_feeds(&self.lm_cfg, abs_pos + 1);
+        let (cos, sin) = mrope_decode_feeds(&self.lm_cfg, self.next_decode_position(past_seq));
 
         self.ensure_lm_weights_cache()?;
         let mut weight_loader = ArcCacheLoader::new(&self.lm_weights_cache);
@@ -473,6 +546,7 @@ impl Qwen25VlRunner {
             batch: 1,
             past_seq,
             export_qk: true,
+            tap_layers: Vec::new(),
             use_custom_mask: false,
             ..Default::default()
         };
@@ -635,6 +709,20 @@ impl Qwen25VlRunner {
         self.prefill_from_assembled_opts(prefill, opts)
     }
 
+    /// Post-RoPE Q and GQA-expanded K per layer, from the last probe prefill.
+    ///
+    /// Each entry is `[seq, num_attention_heads * head_dim]`, so a head's slice
+    /// for position `t` starts at `t * n_heads * head_dim + head * head_dim`.
+    /// `None` unless the prefill ran through
+    /// [`Self::prefill_from_assembled_probe`]. Exposed so callers can score
+    /// attention themselves — [`Self::probe_aif_native`] answers one specific
+    /// question about these tensors, not every question.
+    pub fn last_prefill_qk(&self) -> Option<(&[Vec<f32>], &[Vec<f32>])> {
+        self.last_prefill_qk_layers
+            .as_ref()
+            .map(|(q, k)| (q.as_slice(), k.as_slice()))
+    }
+
     fn prefill_from_assembled_opts(
         &mut self,
         prefill: MultimodalPrefill,
@@ -761,6 +849,10 @@ impl Qwen25VlRunner {
         self.prefill_from_assembled_probe(prefill)
     }
 
+    fn next_decode_position(&self, past_seq: usize) -> usize {
+        next_decode_position(self.mrope_positions.as_deref(), past_seq)
+    }
+
     pub fn decode_step(&mut self, token_id: u32) -> Result<Vec<f32>> {
         let blocked = self.aif_blocked_keys.clone();
         self.decode_step_masked(token_id, blocked.as_deref())
@@ -779,13 +871,7 @@ impl Qwen25VlRunner {
         let layers_k = self.decode_cache.as_ref().unwrap().layers_k.clone();
         let layers_v = self.decode_cache.as_ref().unwrap().layers_v.clone();
 
-        let abs_pos = self
-            .mrope_positions
-            .as_ref()
-            .and_then(|s| s.get(past_seq.saturating_sub(1)))
-            .map(|sec| sec[0])
-            .unwrap_or(past_seq);
-        let (cos, sin) = mrope_decode_feeds(&self.lm_cfg, abs_pos + 1);
+        let (cos, sin) = mrope_decode_feeds(&self.lm_cfg, self.next_decode_position(past_seq));
 
         self.ensure_lm_weights_cache()?;
         let mut weight_loader = ArcCacheLoader::new(&self.lm_weights_cache);
@@ -988,4 +1074,99 @@ fn argmax_token(logits: &[f32]) -> u32 {
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i as u32)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod decode_position_tests {
+    use super::next_decode_position;
+
+    /// Text tokens carry `[t, t, t, 0]`, so decoding continues one position per
+    /// token from the end of the prompt.
+    #[test]
+    fn text_only_positions_are_consecutive() {
+        let sections: Vec<[usize; 4]> = (0..5).map(|t| [t, t, t, 0]).collect();
+        for step in 0..4 {
+            assert_eq!(
+                next_decode_position(Some(&sections), 5 + step),
+                5 + step,
+                "text decode step {step}"
+            );
+        }
+    }
+
+    /// An image compresses many tokens into few positions: 8 image tokens on a
+    /// 4x2 grid advance `t` by 1, not by 8. Decoding must resume from where the
+    /// prompt's positions ended, and advance by one per token from there — the
+    /// old code jumped to `past_seq` from the second token on, which here would
+    /// be 13 instead of 6.
+    #[test]
+    fn image_positions_resume_from_the_prompt_not_the_kv_length() {
+        // 2 text, 8 image (all at t = 2), 2 text resuming at 3 and 4.
+        let mut sections: Vec<[usize; 4]> = vec![[0, 0, 0, 0], [1, 1, 1, 0]];
+        sections.extend((0..8).map(|i| [2, i / 4, i % 4, 0]));
+        sections.push([3, 3, 3, 0]);
+        sections.push([4, 4, 4, 0]);
+        let prompt_len = sections.len();
+        assert_eq!(prompt_len, 12);
+
+        for step in 0..5 {
+            assert_eq!(
+                next_decode_position(Some(&sections), prompt_len + step),
+                5 + step,
+                "image decode step {step} must continue the prompt's positions"
+            );
+        }
+    }
+
+    /// The old formula, kept so the tests above are demonstrably not vacuous.
+    /// It agrees only on the *first* decode step; after that it is off by one on
+    /// text (harmless, a constant shift) and by the image's whole span with an
+    /// image (fatal).
+    fn old_buggy_position(sections: Option<&[[usize; 4]]>, past_seq: usize) -> usize {
+        sections
+            .and_then(|s| s.get(past_seq.saturating_sub(1)))
+            .map(|sec| sec[0])
+            .unwrap_or(past_seq)
+            + 1
+    }
+
+    #[test]
+    fn the_old_formula_diverges_after_the_first_decode_step() {
+        // Text: agrees at step 0, then drifts by a constant one. Harmless in
+        // practice, which is exactly why nobody noticed.
+        let text: Vec<[usize; 4]> = (0..5).map(|t| [t, t, t, 0]).collect();
+        assert_eq!(
+            old_buggy_position(Some(&text), 5),
+            next_decode_position(Some(&text), 5)
+        );
+        for step in 1..4 {
+            assert_eq!(
+                old_buggy_position(Some(&text), 5 + step),
+                next_decode_position(Some(&text), 5 + step) + 1,
+                "text drifts by exactly one from the second token"
+            );
+        }
+
+        let mut img: Vec<[usize; 4]> = vec![[0, 0, 0, 0], [1, 1, 1, 0]];
+        img.extend((0..8).map(|i| [2, i / 4, i % 4, 0]));
+        img.push([3, 3, 3, 0]);
+        img.push([4, 4, 4, 0]);
+        // First step agrees — which is why generation always *started* fine.
+        assert_eq!(
+            old_buggy_position(Some(&img), img.len()),
+            next_decode_position(Some(&img), img.len())
+        );
+        // Second step is where it ran off the end of the prompt.
+        assert_ne!(
+            old_buggy_position(Some(&img), img.len() + 1),
+            next_decode_position(Some(&img), img.len() + 1)
+        );
+        assert_eq!(old_buggy_position(Some(&img), img.len() + 1), 14);
+        assert_eq!(next_decode_position(Some(&img), img.len() + 1), 6);
+    }
+
+    #[test]
+    fn falls_back_to_the_kv_length_without_sections() {
+        assert_eq!(next_decode_position(None, 7), 7);
+    }
 }

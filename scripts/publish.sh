@@ -62,10 +62,10 @@
 #   4. Crates marked `publish = false` or in workspace.exclude (see SKIPPED)
 #      are not published — cargo skips them; this script lists the rest.
 #
-# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.14) from the RLX repo
+# Prerequisite: publish upstream `rlx*` crates (crates.io 0.2.16) from the RLX repo
 # before `rlx-models` path deps resolve on the registry.
 #
-# 177 publishable workspace crates in 10 tiers (tier 9 = facade `rlx-models`,
+# 195 publishable workspace crates in 11 tiers (tier 10 = facade `rlx-models`,
 # alone and last). Tiers are dependency *levels*: a crate sits at
 # `1 + max(tier of its in-workspace path deps)`, so every dep of a crate is
 # strictly earlier and `validate_publish_order` below holds by construction.
@@ -158,15 +158,16 @@ SKIPPED=(
 # and `[dev-dependencies]` (including optional) against crates.io. Within
 # a tier, list deps before dependents (e.g. rlx-cpu before rlx-splat).
 TIERS=(
-    "kitten_tts_mini_rlx rlx-asr rlx-assets rlx-audio-blocks rlx-citrinet rlx-confucius rlx-demucs rlx-diamond rlx-diarize rlx-dramabox rlx-fish rlx-guardrails rlx-irodori rlx-llama-base rlx-model-hub rlx-omnivoice rlx-onnx-decompose rlx-outetts rlx-protocol rlx-quant-calib rlx-qwen3-aligner rlx-roformer-sep rlx-rvc rlx-ssm rlx-vlm-base rlx-wav2vec2-asr"
+    "kitten_tts_mini_rlx rlx-asr rlx-assets rlx-audio-blocks rlx-citrinet rlx-confucius rlx-demucs rlx-denoise rlx-diamond rlx-dramabox rlx-fish rlx-guardrails rlx-irodori rlx-llama-base rlx-model-hub rlx-omnivoice rlx-onnx-decompose rlx-outetts rlx-protocol rlx-quant-calib rlx-qwen3-aligner rlx-roformer-sep rlx-rvc rlx-sanotts rlx-ssm rlx-ten-vad-core rlx-vlm-base rlx-wav2vec2-asr"
     "rlx-ace-step rlx-glm-tts rlx-heartmula rlx-higgs rlx-index-tts rlx-inflect-v2 rlx-kroko rlx-mamba rlx-models-core rlx-seed-vc rlx-stable-audio rlx-tune rlx-vevo rlx-voxcpm"
-    "rlx-bert rlx-cli rlx-dflash rlx-encodec rlx-facodec rlx-inflect-nano rlx-llada2 rlx-nanocodec rlx-nomic rlx-sam-ir rlx-snac rlx-speechtokenizer rlx-vibevoice rlx-vision rlx-wavtokenizer rlx-xcodec"
-    "rlx-bioclip2 rlx-clinicalbert rlx-conformer-ctc rlx-dac rlx-deepseek rlx-diffusiongemma rlx-dinov2 rlx-dinov3 rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-grounding-dino rlx-hoct rlx-inkling rlx-llama4 rlx-minimax rlx-motif rlx-nemotron-asr rlx-ocr rlx-ocr2 rlx-ppocrv6 rlx-sam rlx-siglip2 rlx-tiny-tts rlx-uni2 rlx-unlimited-ocr rlx-vad rlx-vjepa2 rlx-wake rlx-wav2vec2-bert"
-    "rlx-glm4moe rlx-jamba rlx-kimi-k3 rlx-ling rlx-minimax-h3 rlx-nanowakeword rlx-parakeet rlx-porcupine rlx-qwen3 rlx-sam2 rlx-sam3 rlx-trellis2 rlx-tsac rlx-tts rlx-vit-elastic rlx-vlash rlx-voxrt rlx-wakeword-core rlx-whisper"
-    "rlx-aec rlx-eval rlx-f5tts rlx-flux2 rlx-hviske rlx-kittentts rlx-locateanything rlx-melotts rlx-metavoice rlx-mimi rlx-miotts rlx-miratts rlx-moss-nano rlx-nemotron-omni rlx-omnicoder rlx-openvoice rlx-openwakeword rlx-parlertts rlx-pocket-tts rlx-qwen25-vl rlx-qwen3-asr rlx-qwen35 rlx-serve rlx-soprano rlx-supertonic rlx-vibevoice-asr"
-    "rlx-fara rlx-gemma rlx-gepard rlx-kokoro rlx-kyutai-tts rlx-laguna rlx-lfm rlx-llama32 rlx-luxtts rlx-moshi rlx-neutrino rlx-piper rlx-qwen3-tts rlx-qwen3-vl rlx-sesame rlx-wakeword rlx-zonos"
-    "rlx-bonsai rlx-carbon rlx-chatterbox rlx-cohere rlx-eagle3 rlx-glm rlx-gpt-oss rlx-granite rlx-lfm-vl rlx-minicpm5 rlx-mistral rlx-mllama rlx-nanbeige rlx-nemotron rlx-neutts rlx-openai rlx-orpheus rlx-phi rlx-qwen3-tts-train rlx-styletts2 rlx-tinyllama rlx-voxtral rlx-voxtral-tts rlx-zipvoice"
-    "rlx-maya1 rlx-mistral-vl rlx-voxtral-tts-train"
+    "rlx-bert rlx-cli rlx-encodec rlx-facodec rlx-inflect-nano rlx-llada2 rlx-nanocodec rlx-nomic rlx-sam-ir rlx-snac rlx-speechtokenizer rlx-vibevoice rlx-vision rlx-wavtokenizer rlx-xcodec"
+    "rlx-bioclip2 rlx-clinicalbert rlx-conformer-ctc rlx-dac rlx-deepseek rlx-diffusiongemma rlx-dinov2 rlx-dinov3 rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-glm5next rlx-grounding-dino rlx-hoct rlx-inkling rlx-llama4 rlx-minimax rlx-motif rlx-nemotron-asr rlx-neuralhash rlx-ocr rlx-ocr2 rlx-ppocrv6 rlx-sam rlx-siglip2 rlx-ten-vad rlx-timesfm3 rlx-tiny-tts rlx-uni2 rlx-unlimited-ocr rlx-vad rlx-vjepa2 rlx-wake rlx-wav2vec2-bert"
+    "rlx-glm4moe rlx-jamba rlx-kimi-k3 rlx-ling rlx-minimax-h3 rlx-nanowakeword rlx-parakeet rlx-porcupine rlx-qwen3 rlx-sam2 rlx-sam3 rlx-translate rlx-trellis2 rlx-tsac rlx-tts rlx-vit-elastic rlx-vlash rlx-voxrt rlx-wakeword-core rlx-wespeaker"
+    "rlx-dflash rlx-diarize rlx-eval rlx-flux2 rlx-locateanything rlx-omnicoder rlx-openwakeword rlx-qwen25-vl rlx-qwen35 rlx-serve rlx-vibevoice-asr"
+    "rlx-fara rlx-gemma rlx-laguna rlx-lfm rlx-llama32 rlx-neutrino rlx-qwen3-vl rlx-s1 rlx-wakeword rlx-whisper"
+    "rlx-aec rlx-bonsai rlx-carbon rlx-chatterbox rlx-cohere rlx-eagle3 rlx-f0 rlx-f5tts rlx-fireredaudio rlx-gepard rlx-glm rlx-gpt-oss rlx-granite rlx-hviske rlx-hy-mt rlx-kittentts rlx-lfm-vl rlx-melotts rlx-metavoice rlx-mimi rlx-minicpm5 rlx-miotts rlx-miratts rlx-mistral rlx-mllama rlx-moonshine rlx-moss-nano rlx-nanbeige rlx-nemotron rlx-nemotron-omni rlx-neutts rlx-nllb rlx-openai rlx-openvoice rlx-orpheus rlx-parlertts rlx-phi rlx-pocket-tts rlx-qwen3-asr rlx-soprano rlx-supertonic rlx-tada rlx-tinyllama rlx-translategemma rlx-voxtral rlx-voxtral-tts"
+    "rlx-kokoro rlx-kyutai-tts rlx-luxtts rlx-maya1 rlx-mistral-vl rlx-moshi rlx-piper rlx-qwen3-tts rlx-sesame rlx-voice-gender rlx-voxtral-tts-train rlx-zonos"
+    "rlx-qwen3-tts-train rlx-styletts2 rlx-zipvoice"
     "rlx-models"
 )
 
@@ -245,8 +246,11 @@ validate_tier_coverage() {
             missing+=("$name")
         fi
     done < <(
+        # `.publish` is null for a publishable crate and an array (usually empty)
+        # when `publish = false`. Only the former needs a tier.
         cargo metadata --no-deps --format-version 1 2>/dev/null \
-            | jq -r '.workspace_members[] as $m | .packages[] | select(.id == $m) | .name'
+            | jq -r '.workspace_members[] as $m | .packages[]
+                     | select(.id == $m) | select(.publish == null) | .name'
     )
 
     for c in "${listed[@]}"; do

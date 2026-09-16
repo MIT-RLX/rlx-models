@@ -243,21 +243,19 @@ fn main() -> anyhow::Result<()> {
     if std::env::args().any(|a| a == "--f0path") {
         let nodes = import.hir.nodes();
         for n in nodes.iter() {
-            if let Some(nm) = n.name.as_deref() {
-                if nm.contains("F0_proj")
+            if let Some(nm) = n.name.as_deref()
+                && (nm.contains("F0_proj")
                     || nm == "/decoder/Unsqueeze"
                     || nm.contains("f0_upsamp")
                     || nm.contains("/If")
-                    || nm.contains("F0IfSelect")
-                {
-                    let dims: Vec<usize> =
-                        n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
-                    eprintln!(
-                        "{:>62} {:>16} {dims:?}",
-                        nm,
-                        format!("{:?}", n.op).chars().take(16).collect::<String>()
-                    );
-                }
+                    || nm.contains("F0IfSelect"))
+            {
+                let dims: Vec<usize> = n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
+                eprintln!(
+                    "{:>62} {:>16} {dims:?}",
+                    nm,
+                    format!("{:?}", n.op).chars().take(16).collect::<String>()
+                );
             }
         }
         return Ok(());
@@ -266,16 +264,15 @@ fn main() -> anyhow::Result<()> {
     if std::env::args().any(|a| a == "--sine") {
         let nodes = import.hir.nodes();
         for n in nodes.iter() {
-            if let Some(nm) = n.name.as_deref() {
-                if nm.contains("l_sin_gen/") {
-                    let dims: Vec<usize> =
-                        n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
-                    eprintln!(
-                        "{:>60} {:>18} {dims:?}",
-                        nm,
-                        format!("{:?}", n.op).chars().take(18).collect::<String>()
-                    );
-                }
+            if let Some(nm) = n.name.as_deref()
+                && nm.contains("l_sin_gen/")
+            {
+                let dims: Vec<usize> = n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
+                eprintln!(
+                    "{:>60} {:>18} {dims:?}",
+                    nm,
+                    format!("{:?}", n.op).chars().take(18).collect::<String>()
+                );
             }
         }
         return Ok(());

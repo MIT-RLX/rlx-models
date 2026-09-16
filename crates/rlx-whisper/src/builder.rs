@@ -1211,12 +1211,10 @@ impl<'a> WhisperBuilder<'a> {
         mask: MaskKind,
     ) -> Result<HirNodeId> {
         let chunk = self.opts.encoder_attn_chunk;
-        if false {
-            if let Some(fused) = self.fused_enc {
-                return self.encoder_self_attn_fused(
-                    fused, layer, x, ow, ob, seq, n_head, head_dim, scale, mask, chunk,
-                );
-            }
+        if false && let Some(fused) = self.fused_enc {
+            return self.encoder_self_attn_fused(
+                fused, layer, x, ow, ob, seq, n_head, head_dim, scale, mask, chunk,
+            );
         }
         if chunk == 0 || seq <= chunk {
             return self.mha(

@@ -247,7 +247,7 @@ pub fn build_ling_decode_flow_quant(
 }
 
 /// As [`build_ling_decode_flow_with`], plus `lm_head_f16`: store the LM head as
-/// F16. See [`linear_f16`].
+/// F16. See the private `linear_f16` helper.
 pub fn build_ling_decode_flow_opts(
     cfg: &LingConfig,
     weights: &mut WeightMap,

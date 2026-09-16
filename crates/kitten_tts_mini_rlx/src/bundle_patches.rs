@@ -42,6 +42,29 @@ const EXPAND_I64_ALIGN: &str = "onnx.ExpandI64Align";
 /// Vocoder hop: waveform samples per alignment frame (matches ONNX mini 0.8).
 pub const SAMPLES_PER_ALIGNMENT_FRAME: usize = 600;
 
+/// Granularity every waveform cap must respect.
+///
+/// The vocoder divides `max_wave` two different ways: the NSF sine chain runs at
+/// `MEL_DIV` (the `f0_upsamp` nearest ×300), and the generator AdaIN wave-frame cap runs at
+/// [`SAMPLES_PER_ALIGNMENT_FRAME`]. Both use `div_ceil`, so a cap that is not a whole number
+/// of *both* makes the upsampled sine source **longer than the wave axis it is pinned to**:
+/// `frame_cap(200_000) * MEL_DIV = 200_100 ≠ 200_000`. MLX rejects the resulting `Reshape`
+/// outright; CPU/Metal accept it and read a 100-sample-misaligned harmonic source.
+pub const WAVEFORM_CAP_ALIGNMENT: usize = SAMPLES_PER_ALIGNMENT_FRAME;
+const _: () = assert!(WAVEFORM_CAP_ALIGNMENT.is_multiple_of(MEL_DIV));
+
+/// Round a waveform cap **down** to [`WAVEFORM_CAP_ALIGNMENT`], so `frame_cap(n) * MEL_DIV == n`.
+///
+/// Down, not up: the caps that violate the invariant are memory ceilings (the wgpu 32 k
+/// storage bind, the Vulkan 80 k `maxStorageBufferRange`), and rounding up would push past the
+/// limit they exist to enforce. The cost is under one alignment frame — 25 ms at 24 kHz.
+pub fn align_waveform_cap(samples: usize) -> usize {
+    if samples == 0 {
+        return 0;
+    }
+    (samples / WAVEFORM_CAP_ALIGNMENT).max(1) * WAVEFORM_CAP_ALIGNMENT
+}
+
 fn max_alignment_frames(sequence_length: usize, max_waveform_samples: usize) -> usize {
     mel_align::compile_mel_cap(
         sequence_length,
@@ -79,15 +102,15 @@ fn find_concat_output(hir: &HirModule) -> Option<HirNodeId> {
     for idx in 0..hir.len() {
         let id = HirNodeId(idx as u32);
         let node = hir.node(id);
-        if let HirOp::Mir(Op::Param { name }) = &node.op {
-            if name == CONCAT_SEQUENCE_STUB {
-                return Some(id);
-            }
+        if let HirOp::Mir(Op::Param { name }) = &node.op
+            && name == CONCAT_SEQUENCE_STUB
+        {
+            return Some(id);
         }
-        if let HirOp::Mir(Op::Custom { name, .. }) = &node.op {
-            if name == CONCAT_FROM_SEQUENCE || name == CONCAT_FROM_SEQUENCE_ONNX {
-                return Some(id);
-            }
+        if let HirOp::Mir(Op::Custom { name, .. }) = &node.op
+            && (name == CONCAT_FROM_SEQUENCE || name == CONCAT_FROM_SEQUENCE_ONNX)
+        {
+            return Some(id);
         }
     }
     None
@@ -121,6 +144,19 @@ fn find_node_by_name(hir: &HirModule, name: &str) -> Option<HirNodeId> {
     None
 }
 
+/// Last node carrying `name`, i.e. the one downstream consumers read.
+///
+/// The importer lowers a single ONNX op into a *chain* (for Resize: an `ensure_nchw_4d`
+/// reshape, the resize itself, then a reshape back) and stamps the ONNX node name on more than
+/// one link. [`find_node_by_name`] returns the first, which is an input of the chain rather
+/// than its result — rewriting that one leaves every consumer still reading the untouched tail.
+fn find_last_node_by_name(hir: &HirModule, name: &str) -> Option<HirNodeId> {
+    (0..hir.len()).rev().find_map(|idx| {
+        let id = HirNodeId(idx as u32);
+        (hir.node(id).name.as_deref() == Some(name)).then_some(id)
+    })
+}
+
 fn rewire_hir_inputs(hir: &mut HirModule, from: HirNodeId, to: HirNodeId) {
     for idx in 0..hir.len() {
         let id = HirNodeId(idx as u32);
@@ -142,10 +178,10 @@ fn find_shape_of_tensor(hir: &HirModule, tensor: HirNodeId) -> Option<HirNodeId>
     }
     for idx in 0..hir.len() {
         let id = HirNodeId(idx as u32);
-        if let HirOp::Mir(Op::Param { name }) = &hir.node(id).op {
-            if name == SHAPE8_STUB {
-                return Some(id);
-            }
+        if let HirOp::Mir(Op::Param { name }) = &hir.node(id).op
+            && name == SHAPE8_STUB
+        {
+            return Some(id);
         }
     }
     None
@@ -166,10 +202,10 @@ fn find_gather_5(hir: &HirModule) -> Option<HirNodeId> {
             if idx_node.name.as_deref() == Some("onnx::Range_4162") {
                 return Some(id);
             }
-            if let HirOp::Mir(Op::Param { name }) = &idx_node.op {
-                if name == "onnx::Range_4162" {
-                    return Some(id);
-                }
+            if let HirOp::Mir(Op::Param { name }) = &idx_node.op
+                && name == "onnx::Range_4162"
+            {
+                return Some(id);
             }
         }
     }
@@ -180,10 +216,10 @@ fn find_gather_axis0_from(hir: &HirModule, source: HirNodeId) -> Option<HirNodeI
     for idx in 0..hir.len() {
         let id = HirNodeId(idx as u32);
         let node = hir.node(id);
-        if let HirOp::Mir(Op::Gather { axis: 0 }) = &node.op {
-            if node.inputs.first() == Some(&source) {
-                return Some(id);
-            }
+        if let HirOp::Mir(Op::Gather { axis: 0 }) = &node.op
+            && node.inputs.first() == Some(&source)
+        {
+            return Some(id);
         }
     }
     None
@@ -195,19 +231,19 @@ fn find_alignment_range_input(hir: &HirModule, concat_id: HirNodeId) -> Option<H
     }
     for idx in 0..hir.len() {
         let id = HirNodeId(idx as u32);
-        if let HirOp::Mir(Op::Param { name }) = &hir.node(id).op {
-            if name == RANGE_2_STUB {
-                return Some(id);
-            }
+        if let HirOp::Mir(Op::Param { name }) = &hir.node(id).op
+            && name == RANGE_2_STUB
+        {
+            return Some(id);
         }
     }
     for idx in 0..hir.len() {
         let id = HirNodeId(idx as u32);
         let node = hir.node(id);
-        if let HirOp::Mir(Op::Binary(BinaryOp::Add)) = &node.op {
-            if node.inputs.first() == Some(&concat_id) {
-                return node.inputs.get(1).copied();
-            }
+        if let HirOp::Mir(Op::Binary(BinaryOp::Add)) = &node.op
+            && node.inputs.first() == Some(&concat_id)
+        {
+            return node.inputs.get(1).copied();
         }
     }
     None
@@ -586,7 +622,11 @@ fn inject_f0_nearest_upsample(hir: &mut HirModule, max_waveform_samples: usize) 
     if !is_f0_select {
         return false;
     }
-    let Some(resize_id) = find_node_by_name(hir, "/decoder/generator/f0_upsamp/Resize") else {
+    // Last, not first: the voicing-mask `Greater` reads the tail of the imported resize chain
+    // (see [`find_last_node_by_name`]). Replacing the head left `Greater` on a stale rank-4
+    // `[1,1,300,seq]` alias while the loop below patched its output to `[1,max_wave,1]` —
+    // a rank-reducing "broadcast" that no backend can execute.
+    let Some(resize_id) = find_last_node_by_name(hir, "/decoder/generator/f0_upsamp/Resize") else {
         return false;
     };
     let max_wave = max_waveform_samples
@@ -650,6 +690,26 @@ fn inject_f0_nearest_upsample(hir: &mut HirModule, max_waveform_samples: usize) 
             && name != "/decoder/generator/m_source/l_sin_gen/Cast"
         {
             continue;
+        }
+        if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+            let ins: Vec<String> = hir
+                .node(id)
+                .inputs
+                .iter()
+                .map(|&i| {
+                    format!(
+                        "{}{:?}",
+                        hir.node(i).name.as_deref().unwrap_or("<unnamed>"),
+                        hir.node(i).shape.dims()
+                    )
+                })
+                .collect();
+            eprintln!(
+                "[f0_upsamp_repair] {name} op={:?} out={:?} inputs=[{}]",
+                hir.node(id).op,
+                hir.node(id).shape.dims(),
+                ins.join(", ")
+            );
         }
         match &hir.node(id).op {
             HirOp::Mir(Op::Expand { .. }) => {
@@ -768,10 +828,10 @@ fn inject_vocoder_waveform_slice(hir: &mut HirModule, max_waveform_samples: usiz
     let Some(slice_id) = find_node_by_name(hir, SLICE_3_NODE) else {
         return false;
     };
-    if let HirOp::Mir(Op::Custom { name, .. }) = &hir.node(slice_id).op {
-        if name == VOCODER_WAVEFORM_SLICE {
-            return true;
-        }
+    if let HirOp::Mir(Op::Custom { name, .. }) = &hir.node(slice_id).op
+        && name == VOCODER_WAVEFORM_SLICE
+    {
+        return true;
     }
     let Some(input) = hir.node(slice_id).inputs.first().copied() else {
         return false;
@@ -866,13 +926,12 @@ pub fn inject_vocoder_dynamic_alignment(
         if inject_alignment_scatter_indices(hir, concat_id, align_id, max_frames) {
             patched = true;
         }
-        if let Some(shape8_id) = find_shape_of_tensor(hir, concat_id) {
-            if let Some(gather_id) =
+        if let Some(shape8_id) = find_shape_of_tensor(hir, concat_id)
+            && let Some(gather_id) =
                 find_gather_axis0_from(hir, shape8_id).or_else(|| find_gather_5(hir))
-            {
-                hir.node_mut(gather_id).inputs[0] = align_id;
-                patched = true;
-            }
+        {
+            hir.node_mut(gather_id).inputs[0] = align_id;
+            patched = true;
         }
         if inject_mel_shape9_dynamic(hir, align_id) {
             patched = true;
@@ -978,22 +1037,24 @@ pub fn set_import_sequence_length(seq: usize) {
 }
 
 pub fn set_import_max_waveform_samples(samples: usize) {
+    // Every shape in `explicit_vocoder_shape` is derived from this value via either `max_wave`
+    // or `frame_cap(max_wave)`; the two only agree on a [`WAVEFORM_CAP_ALIGNMENT`] boundary.
+    // Normalize here so no caller can compile a graph whose sine source outruns its wave axis.
+    let samples = align_waveform_cap(samples);
     IMPORT_MAX_WAVEFORM.store(samples, Ordering::Release);
     // Compile paths call `set_compile_sequence_length` immediately before this, so the compile
     // seq is already in the env. Record the mel cap into a process-global so the active-frame
     // InstanceNorm kernel (on rayon executors) can scale its window for the upsampled prosody
     // blocks. Skip when either dim is unknown (probe/warmup) to avoid poisoning the global.
-    if let Some(seq) = crate::opts::compile_sequence_length_from_env() {
-        if samples > 0 && seq > 0 {
-            let cap = mel_align::compile_mel_cap(
-                seq,
-                samples,
-                crate::bundle_compile::max_frames_per_token(),
-            );
-            crate::opts::set_runtime_mel_cap(cap);
-            // Wave-rate generator AdaINs scale by the wave-frame cap, not the mel cap.
-            crate::opts::set_runtime_wave_cap(samples.div_ceil(SAMPLES_PER_ALIGNMENT_FRAME));
-        }
+    if let Some(seq) = crate::opts::compile_sequence_length_from_env()
+        && samples > 0
+        && seq > 0
+    {
+        let cap =
+            mel_align::compile_mel_cap(seq, samples, crate::bundle_compile::max_frames_per_token());
+        crate::opts::set_runtime_mel_cap(cap);
+        // Wave-rate generator AdaINs scale by the wave-frame cap, not the mel cap.
+        crate::opts::set_runtime_wave_cap(samples.div_ceil(SAMPLES_PER_ALIGNMENT_FRAME));
     }
 }
 
@@ -1685,10 +1746,10 @@ mod f0_bypass_tests {
         let mut hir = import.hir;
         let if_id = (0..hir.len()).find_map(|idx| {
             let id = rlx_ir::hir::HirNodeId(idx as u32);
-            if let HirOp::Param { name } = &hir.node(id).op {
-                if name == "__stub__//If_output_0" {
-                    return Some(id);
-                }
+            if let HirOp::Param { name } = &hir.node(id).op
+                && name == "__stub__//If_output_0"
+            {
+                return Some(id);
             }
             None
         });
@@ -1752,10 +1813,10 @@ mod f0_bypass_tests {
         let bypass = (0..hir.len()).find_map(|idx| {
             let id = rlx_ir::hir::HirNodeId(idx as u32);
             let node = hir.node(id);
-            if let HirOp::Mir(Op::Custom { name, .. }) = &node.op {
-                if name == F0_IF_SELECT {
-                    return Some(id);
-                }
+            if let HirOp::Mir(Op::Custom { name, .. }) = &node.op
+                && name == F0_IF_SELECT
+            {
+                return Some(id);
             }
             None
         });
@@ -1770,17 +1831,17 @@ mod f0_bypass_tests {
         let bypass = (0..hir.len()).find_map(|idx| {
             let id = rlx_ir::hir::HirNodeId(idx as u32);
             let node = hir.node(id);
-            if let HirOp::Mir(Op::Custom { name, .. }) = &node.op {
-                if name == F0_IF_SELECT {
-                    let feeds_n = node.inputs.iter().any(|&inp| {
-                        hir.node(inp)
-                            .name
-                            .as_deref()
-                            .is_some_and(|n| n.contains("N_proj"))
-                    });
-                    if feeds_n {
-                        return Some(id);
-                    }
+            if let HirOp::Mir(Op::Custom { name, .. }) = &node.op
+                && name == F0_IF_SELECT
+            {
+                let feeds_n = node.inputs.iter().any(|&inp| {
+                    hir.node(inp)
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| n.contains("N_proj"))
+                });
+                if feeds_n {
+                    return Some(id);
                 }
             }
             None

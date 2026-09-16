@@ -1,7 +1,7 @@
 //! TSAC decode on RLX backends.
 //!
 //! TSAC's decoder is the Descript-DAC 44.1 kHz decoder (latent 1024, decoder dim
-//! 1536, upsample rates [8,8,4,2] → 512× hop). We reuse `rlx-dac`'s HIR graph
+//! 1536, upsample rates \[8,8,4,2\] → 512× hop). We reuse `rlx-dac`'s HIR graph
 //! (verified bit-exact on cpu/metal/mlx/wgpu) and feed it the *exact* weights the
 //! C reference uses: the vendored `dequant_weights` is exposed via FFI so the q8
 //! group-scale + weight-norm math is identical. The RVQ codebook → latent step is

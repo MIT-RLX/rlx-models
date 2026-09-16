@@ -33,6 +33,13 @@ fn cell_rows(rows: &[BenchRow]) -> BTreeMap<(String, String), &BenchRow> {
     best
 }
 
+fn fmt_mb(v: Option<u64>) -> String {
+    match v {
+        Some(mb) => format!("{mb}"),
+        None => "—".into(),
+    }
+}
+
 fn fmt_rtf(v: Option<f64>) -> String {
     match v {
         Some(x) => format!("{x:.2}×"),
@@ -144,6 +151,17 @@ pub fn write_markdown(path: &Path, rows: &[BenchRow], host_note: &str) -> Result
         &device_cols,
         &cells,
         |r| fmt_ms(r.wall_ms),
+    );
+    // Peak RSS attributable to the model: the process high-water mark minus what the harness
+    // (Whisper scorer, runtime) had already reached before the adapter was built. Every cell
+    // runs in its own worker process, so the mark is not polluted by other models.
+    write_metric_table(
+        &mut md,
+        "Peak RAM (MB, model only — excludes harness/Whisper)",
+        &models,
+        &device_cols,
+        &cells,
+        |r| fmt_mb(r.rss.map(|m| m.model_mb)),
     );
     write_metric_table(
         &mut md,

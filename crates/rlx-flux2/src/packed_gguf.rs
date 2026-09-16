@@ -58,34 +58,34 @@ pub fn load_flux2_from_gguf(path: &Path) -> Result<(WeightMap, Flux2PackedParams
 
     for key in &keys {
         let max_key = remap_checkpoint_key(key, bfl);
-        if let Some(prefix) = max_key.strip_suffix(".weight") {
-            if let Some((bytes, scheme, shape)) = loader.take_packed(key)? {
-                ensure!(shape.len() == 2, "{key}: expected 2D weight, got {shape:?}");
-                let in_dim = shape[0];
-                let out_dim = shape[1];
-                let bias_key = format!("{prefix}.bias");
-                let bias = if let Some(bk) = keys
-                    .iter()
-                    .find(|k| remap_checkpoint_key(k, bfl) == bias_key)
-                {
-                    let (b, bshape) = loader.take(bk)?;
-                    ensure!(bshape == vec![out_dim], "{bias_key}: shape mismatch");
-                    b
-                } else {
-                    vec![0.0f32; out_dim]
-                };
-                gguf_linears.insert(
-                    prefix.to_string(),
-                    Flux2GgufLinearPacked {
-                        w_q: bytes,
-                        scheme,
-                        in_dim,
-                        out_dim,
-                        bias,
-                    },
-                );
-                continue;
-            }
+        if let Some(prefix) = max_key.strip_suffix(".weight")
+            && let Some((bytes, scheme, shape)) = loader.take_packed(key)?
+        {
+            ensure!(shape.len() == 2, "{key}: expected 2D weight, got {shape:?}");
+            let in_dim = shape[0];
+            let out_dim = shape[1];
+            let bias_key = format!("{prefix}.bias");
+            let bias = if let Some(bk) = keys
+                .iter()
+                .find(|k| remap_checkpoint_key(k, bfl) == bias_key)
+            {
+                let (b, bshape) = loader.take(bk)?;
+                ensure!(bshape == vec![out_dim], "{bias_key}: shape mismatch");
+                b
+            } else {
+                vec![0.0f32; out_dim]
+            };
+            gguf_linears.insert(
+                prefix.to_string(),
+                Flux2GgufLinearPacked {
+                    w_q: bytes,
+                    scheme,
+                    in_dim,
+                    out_dim,
+                    bias,
+                },
+            );
+            continue;
         }
         let (data, shape) = loader.take(key)?;
         f32_tensors.insert(max_key, (data, shape));

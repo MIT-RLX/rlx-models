@@ -33,20 +33,20 @@ fn main() {
             m.id, m.runner, m.arches
         );
     }
-    if let Ok(p) = std::env::var("RLX_REGISTRY_PROBE_GGUF") {
-        if !p.is_empty() {
-            let path = std::path::Path::new(&p);
-            let arch = gguf_architecture_from_path(path).expect("arch");
-            let runner = runner_for_gguf_arch(&arch);
-            println!(
-                "live gguf={} arch={} runner={:?}",
-                path.display(),
-                arch,
-                runner
-            );
-            assert_eq!(arch, "laguna");
-            assert_eq!(runner, Some("laguna"));
-        }
+    if let Ok(p) = std::env::var("RLX_REGISTRY_PROBE_GGUF")
+        && !p.is_empty()
+    {
+        let path = std::path::Path::new(&p);
+        let arch = gguf_architecture_from_path(path).expect("arch");
+        let runner = runner_for_gguf_arch(&arch);
+        println!(
+            "live gguf={} arch={} runner={:?}",
+            path.display(),
+            arch,
+            runner
+        );
+        assert_eq!(arch, "laguna");
+        assert_eq!(runner, Some("laguna"));
     }
     println!("registry_probe ok");
 }

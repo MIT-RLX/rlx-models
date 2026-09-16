@@ -293,11 +293,11 @@ impl CpuKernel for ScatterNdKernel {
         let out = output.expect_f32_mut("output")?;
         let indices = inputs[1].expect_i64("indices")?;
         let updates = inputs[2].expect_f32("updates")?;
-        if let Some(data) = inputs[0].as_f32() {
-            if !std::ptr::eq(data.as_ptr(), out.as_ptr()) {
-                let n = data.len().min(out.len());
-                out[..n].copy_from_slice(&data[..n]);
-            }
+        if let Some(data) = inputs[0].as_f32()
+            && !std::ptr::eq(data.as_ptr(), out.as_ptr())
+        {
+            let n = data.len().min(out.len());
+            out[..n].copy_from_slice(&data[..n]);
         }
         let data_shape = shape_for_buffer(out.len(), &shape_usize(inputs[0].shape()));
         let indices_shape = shape_for_buffer(indices.len(), &shape_usize(inputs[1].shape()));
@@ -364,11 +364,11 @@ impl CpuKernel for ScatterElementsKernel {
             let out = output.expect_i64_mut("output")?;
             let indices = inputs[1].expect_i64("indices")?;
             let updates = inputs[2].expect_i64("updates")?;
-            if let Some(data) = inputs[0].as_i64() {
-                if !std::ptr::eq(data.as_ptr(), out.as_ptr()) {
-                    let n = data.len().min(out.len());
-                    out[..n].copy_from_slice(&data[..n]);
-                }
+            if let Some(data) = inputs[0].as_i64()
+                && !std::ptr::eq(data.as_ptr(), out.as_ptr())
+            {
+                let n = data.len().min(out.len());
+                out[..n].copy_from_slice(&data[..n]);
             }
             let n = out.len().min(indices.len()).min(updates.len());
             for i in 0..n {
@@ -382,11 +382,11 @@ impl CpuKernel for ScatterElementsKernel {
             let out = output.expect_f32_mut("output")?;
             let indices = inputs[1].expect_i64("indices")?;
             let updates = inputs[2].expect_f32("updates")?;
-            if let Some(data) = inputs[0].as_f32() {
-                if !std::ptr::eq(data.as_ptr(), out.as_ptr()) {
-                    let n = data.len().min(out.len());
-                    out[..n].copy_from_slice(&data[..n]);
-                }
+            if let Some(data) = inputs[0].as_f32()
+                && !std::ptr::eq(data.as_ptr(), out.as_ptr())
+            {
+                let n = data.len().min(out.len());
+                out[..n].copy_from_slice(&data[..n]);
             }
             let data_shape = shape_for_buffer(out.len(), &shape_usize(inputs[0].shape()));
             scatter_elements(out, &data_shape, indices, updates, axis);

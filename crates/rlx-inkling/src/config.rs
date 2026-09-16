@@ -588,17 +588,15 @@ struct HfMtp {
 
 impl HfRoot {
     fn into_config(self) -> Result<InklingConfig> {
-        if let Some(mt) = &self.model_type {
-            if mt != MODEL_TYPE {
-                bail!("rlx-inkling: expected model_type={MODEL_TYPE}, got {mt}");
-            }
+        if let Some(mt) = &self.model_type
+            && mt != MODEL_TYPE
+        {
+            bail!("rlx-inkling: expected model_type={MODEL_TYPE}, got {mt}");
         }
-        if let Some(archs) = &self.architectures {
-            if !archs.iter().any(|a| a == ARCHITECTURE) {
-                bail!(
-                    "rlx-inkling: expected architectures containing {ARCHITECTURE}, got {archs:?}"
-                );
-            }
+        if let Some(archs) = &self.architectures
+            && !archs.iter().any(|a| a == ARCHITECTURE)
+        {
+            bail!("rlx-inkling: expected architectures containing {ARCHITECTURE}, got {archs:?}");
         }
 
         let t = self.text_config;

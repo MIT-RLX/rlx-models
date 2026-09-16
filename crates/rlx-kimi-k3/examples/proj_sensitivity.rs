@@ -44,10 +44,10 @@ fn quantized(
 ) -> KdaWeights {
     let mut w = base.clone();
     let q = |name: &str, v: &mut Vec<f32>, k: usize, n: usize| {
-        if let Some(&m) = plan.get(name) {
-            if m != WeightQuant::None {
-                *v = fake_quant_weight(v, k, n, m);
-            }
+        if let Some(&m) = plan.get(name)
+            && m != WeightQuant::None
+        {
+            *v = fake_quant_weight(v, k, n, m);
         }
     };
     for &(name, k, n) in dims {

@@ -20,7 +20,7 @@
 //! | `OCR2_DEVICE` | backend selector for the CLI (cpu/metal/mlx/cuda/gpu/vulkan/coreml) |
 //! | `OCR2_REPEAT` | run the CLI pipeline N times in-process (warm-timing aid) |
 //! | `OCR2_TIMING` | print per-stage timings |
-//! | `OCR2_NO_FUSION` | disable conv+bias+act fusion in the detector |
+//! | `OCR2_NO_FUSION` | disable conv+bias+act / matmul+bias fusion in both stages |
 //! | `OCR2_RESCORE_DEBUG` | print each beam candidate's rec/rescore/total |
 //! | `OCR2_LEX_W` | override the lexicon rescoring weight |
 //!
@@ -36,7 +36,9 @@ pub fn timing() -> bool {
     set("OCR2_TIMING")
 }
 
-/// Disable conv+bias+act fusion when compiling the detector (`OCR2_NO_FUSION`).
+/// Disable operator fusion when compiling either stage (`OCR2_NO_FUSION`) —
+/// conv+bias+act in the detector's encoder, matmul+bias in the recognizer's head.
+/// Kept as a knob for A/B measurement; fusion is on by default.
 pub fn no_fusion() -> bool {
     set("OCR2_NO_FUSION")
 }

@@ -1,6 +1,6 @@
 [package]
 name = "rlx-models"
-version = "0.2.14"
+version = "0.2.16"
 edition.workspace = true
 rust-version.workspace = true
 description = "Model loading for RLX — config parsing, safetensors weights, graph builders"
@@ -57,8 +57,10 @@ rlx-vjepa2 = { workspace = true, optional = true }
 rlx-wav2vec2-bert = { workspace = true, optional = true }
 rlx-wav2vec2-asr = { workspace = true, optional = true }
 rlx-diarize = { workspace = true, optional = true }
+rlx-wespeaker = { workspace = true, optional = true }
 rlx-whisper = { workspace = true, optional = true, features = ["tokenizer", "timestamps"] }
 rlx-vad = { workspace = true, optional = true }
+rlx-ten-vad = { workspace = true, optional = true }
 rlx-wake = { workspace = true, optional = true }
 rlx-wakeword-core = { workspace = true, optional = true }
 rlx-wakeword = { workspace = true, optional = true }
@@ -69,6 +71,7 @@ rlx-voxrt = { workspace = true, optional = true }
 rlx-aec = { workspace = true, optional = true }
 rlx-voxtral = { workspace = true, optional = true }
 rlx-qwen3-asr = { workspace = true, optional = true }
+rlx-vibevoice-asr = { workspace = true, optional = true }
 rlx-conformer-ctc = { workspace = true, optional = true }
 rlx-funasr = { workspace = true, optional = true }
 rlx-nemotron-asr = { workspace = true, optional = true }
@@ -105,9 +108,19 @@ rlx-chatterbox = { workspace = true, optional = true }
 rlx-mistral = { workspace = true, optional = true }
 rlx-bonsai = { workspace = true, optional = true }
 rlx-neutrino = { workspace = true, optional = true }
+rlx-s1 = { workspace = true, optional = true }
+rlx-fireredaudio = { workspace = true, optional = true }
 rlx-minicpm5 = { workspace = true, optional = true, features = ["tokenizer"] }
 rlx-nanbeige = { workspace = true, optional = true, features = ["tokenizer"] }
 rlx-tinyllama = { workspace = true, optional = true, features = ["tokenizer"] }
+rlx-hy-mt = { workspace = true, optional = true }
+rlx-translategemma = { workspace = true, optional = true }
+rlx-translate = { workspace = true, optional = true }
+rlx-nllb = { workspace = true, optional = true }
+rlx-moonshine = { workspace = true, optional = true }
+rlx-timesfm3 = { workspace = true, optional = true }
+rlx-f0 = { workspace = true, optional = true }
+rlx-voice-gender = { workspace = true, optional = true }
 rlx-phi = { workspace = true, optional = true }
 rlx-omnicoder = { workspace = true, optional = true }
 rlx-granite = { workspace = true, optional = true }
@@ -179,6 +192,15 @@ embed = ["dep:rlx-embed", "rlx-embed/embed"]
 flux2 = ["dep:rlx-flux2"]
 diamond = ["dep:rlx-diamond"]
 qwen3 = ["dep:rlx-qwen3"]
+hy-mt = ["dep:rlx-hy-mt", "qwen3"]
+translategemma = ["dep:rlx-translategemma", "gemma"]
+# On-device system NMT: reads what the OS installed, ships no weights.
+translate = ["dep:rlx-translate"]
+nllb = ["dep:rlx-nllb"]
+moonshine = ["dep:rlx-moonshine"]
+timesfm3 = ["dep:rlx-timesfm3"]
+f0 = ["dep:rlx-f0"]
+voice-gender = ["dep:rlx-voice-gender", "f0"]
 # Long-context KV: disk-tiered HNSW context store (`mmap-kv`) and the optional
 # dual-encoder for semantic block retrieval (`dual-encoder`, pulls rlx-embed).
 mmap-kv = ["qwen3", "rlx-qwen3?/mmap-kv"]
@@ -194,6 +216,8 @@ mistral = ["dep:rlx-mistral"]
 mistral-vl = ["dep:rlx-mistral-vl", "mistral", "llama32"]
 bonsai = ["dep:rlx-bonsai"]
 neutrino = ["dep:rlx-neutrino"]
+s1 = ["dep:rlx-s1"]
+fireredaudio = ["dep:rlx-fireredaudio"]
 minicpm5 = ["dep:rlx-minicpm5"]
 nanbeige = ["dep:rlx-nanbeige"]
 tinyllama = ["dep:rlx-tinyllama"]
@@ -220,9 +244,10 @@ vjepa2 = ["dep:rlx-vjepa2"]
 florence2 = ["dep:rlx-florence2"]
 locateanything = ["dep:rlx-locateanything"]
 unlimited-ocr = ["dep:rlx-unlimited-ocr"]
-diarize = ["dep:rlx-diarize"]
+diarize = ["dep:rlx-diarize", "dep:rlx-wespeaker", "rlx-diarize/wespeaker"]
 whisper = ["dep:rlx-whisper"]
 vad = ["dep:rlx-vad"]
+ten-vad = ["dep:rlx-ten-vad"]
 wake = ["dep:rlx-wake"]
 wakeword = ["dep:rlx-wakeword", "dep:rlx-wakeword-core", "wake"]
 openwakeword = ["dep:rlx-openwakeword", "wake"]
@@ -232,6 +257,7 @@ voxrt = ["dep:rlx-voxrt", "wake"]
 aec = ["dep:rlx-aec"]
 voxtral = ["dep:rlx-voxtral"]
 qwen3-asr = ["dep:rlx-qwen3-asr"]
+vibevoice-asr = ["dep:rlx-vibevoice-asr"]
 conformer-ctc = ["dep:rlx-conformer-ctc"]
 funasr = ["dep:rlx-funasr"]
 nemotron-asr = ["dep:rlx-nemotron-asr"]
@@ -319,24 +345,31 @@ llm = [
     "minicpm5",
     "nanbeige",
     "tinyllama",
+    "hy-mt",
+    "translategemma",
+    "nllb",
     "omnicoder",
     "bonsai",
     "neutrino",
+    "s1",
     "inkling",
     "laguna",
     "llama-base",
 ]
 asr = [
     "whisper",
+    "moonshine",
     "wav2vec2-bert",
     "wav2vec2-asr",
     "voxtral",
     "qwen3-asr",
+    "vibevoice-asr",
     "conformer-ctc",
     "streaming-asr",
     "funasr",
     "nemotron-asr",
     "vad",
+    "ten-vad",
     "diarize",
     "aec",
     "wakeword",
@@ -344,6 +377,8 @@ asr = [
     "nanowakeword",
     "porcupine",
     "voxrt",
+    "f0",
+    "voice-gender",
 ]
 tts = ["kyutai-tts", "kittentts", "rlx-tts", "kokoro", "supertonic", "luxtts", "zipvoice", "moss-nano", "maya1", "miratts", "f5tts", "piper", "orpheus", "neutts", "qwen3-tts", "voxtral-tts", "tsac", "melotts", "openvoice", "parlertts", "metavoice", "chatterbox", "gepard"]
 vision-models = [
@@ -379,6 +414,7 @@ hf-download = [
     "rlx-minicpm5?/hf-download",
     "rlx-nanbeige?/hf-download",
     "rlx-tinyllama?/hf-download",
+    "rlx-hy-mt?/hf-download",
     "rlx-locateanything?/hf-download",
     "rlx-unlimited-ocr?/hf-download",
     "rlx-qwen3-tts?/hf-download",
@@ -406,6 +442,8 @@ metal = [
     "rlx-clinicalbert?/metal",
     "rlx-bonsai?/metal",
     "rlx-neutrino?/metal",
+    "rlx-s1?/metal",
+    "rlx-fireredaudio?/metal",
     "rlx-cohere?/metal",
     "rlx-dinov2?/metal",
     "rlx-dinov3?/metal",
@@ -425,6 +463,10 @@ metal = [
     "rlx-minicpm5?/metal",
     "rlx-nanbeige?/metal",
     "rlx-tinyllama?/metal",
+    "rlx-hy-mt?/metal",
+    "rlx-translategemma?/metal",
+    "rlx-moonshine?/metal",
+    "rlx-voice-gender?/metal",
     "rlx-mistral?/metal",
     "rlx-moshi?/metal",
     "rlx-kyutai-tts?/metal",
@@ -441,6 +483,7 @@ metal = [
     "rlx-f5tts?/metal",
     "rlx-piper?/metal",
     "rlx-florence2?/metal",
+    "rlx-nllb?/metal",
     "rlx-nomic?/metal",
     "rlx-ocr?/metal",
     "rlx-asr?/metal",
@@ -457,13 +500,17 @@ metal = [
     "rlx-vjepa2?/metal",
     "rlx-voxtral?/metal",
     "rlx-qwen3-asr?/metal",
+    "rlx-vibevoice-asr?/metal",
     "rlx-vad?/metal",
+    "rlx-ten-vad?/metal",
     "rlx-nemotron-asr?/metal",
     "rlx-funasr?/metal",
     "rlx-conformer-ctc?/metal",
+    "rlx-timesfm3?/metal",
     "rlx-voxtral-tts?/metal",
     "rlx-wav2vec2-bert?/metal",
     "rlx-whisper?/metal",
+    "rlx-diarize?/metal",
     "rlx-wake?/metal",
     "rlx-wakeword?/metal",
     "rlx-openwakeword?/metal",
@@ -480,6 +527,8 @@ mlx = [
     "rlx-clinicalbert?/mlx",
     "rlx-bonsai?/mlx",
     "rlx-neutrino?/mlx",
+    "rlx-s1?/mlx",
+    "rlx-fireredaudio?/mlx",
     "rlx-cohere?/mlx",
     "rlx-dinov2?/mlx",
     "rlx-dinov3?/mlx",
@@ -499,6 +548,10 @@ mlx = [
     "rlx-minicpm5?/mlx",
     "rlx-nanbeige?/mlx",
     "rlx-tinyllama?/mlx",
+    "rlx-hy-mt?/mlx",
+    "rlx-translategemma?/mlx",
+    "rlx-moonshine?/mlx",
+    "rlx-voice-gender?/mlx",
     "rlx-mistral?/mlx",
     "rlx-moshi?/mlx",
     "rlx-kyutai-tts?/mlx",
@@ -515,6 +568,7 @@ mlx = [
     "rlx-f5tts?/mlx",
     "rlx-piper?/mlx",
     "rlx-florence2?/mlx",
+    "rlx-nllb?/mlx",
     "rlx-nomic?/mlx",
     "rlx-ocr?/mlx",
     "rlx-asr?/mlx",
@@ -531,13 +585,17 @@ mlx = [
     "rlx-vjepa2?/mlx",
     "rlx-voxtral?/mlx",
     "rlx-qwen3-asr?/mlx",
+    "rlx-vibevoice-asr?/mlx",
     "rlx-vad?/mlx",
+    "rlx-ten-vad?/mlx",
     "rlx-nemotron-asr?/mlx",
     "rlx-funasr?/mlx",
     "rlx-conformer-ctc?/mlx",
+    "rlx-timesfm3?/mlx",
     "rlx-voxtral-tts?/mlx",
     "rlx-wav2vec2-bert?/mlx",
     "rlx-whisper?/mlx",
+    "rlx-diarize?/mlx",
     "rlx-wake?/mlx",
     "rlx-wakeword?/mlx",
     "rlx-openwakeword?/mlx",
@@ -555,12 +613,20 @@ coreml = [
     "rlx-minicpm5?/coreml",
     "rlx-nanbeige?/coreml",
     "rlx-tinyllama?/coreml",
+    "rlx-hy-mt?/coreml",
+    "rlx-translategemma?/coreml",
+    "rlx-moonshine?/coreml",
+    "rlx-voice-gender?/coreml",
     "rlx-phi?/coreml",
     "rlx-qwen3?/coreml",
+    "rlx-s1?/coreml",
+    "rlx-fireredaudio?/coreml",
     "rlx-qwen35?/coreml",
     "rlx-fara?/coreml",
     "rlx-whisper?/coreml",
+    "rlx-diarize?/coreml",
     "rlx-qwen3-asr?/coreml",
+    "rlx-vibevoice-asr?/coreml",
     "rlx-voxtral?/coreml",
     "rlx-asr?/coreml",
     "rlx-nemotron-asr?/coreml",
@@ -576,6 +642,8 @@ gpu = [
     "rlx-clinicalbert?/gpu",
     "rlx-bonsai?/gpu",
     "rlx-neutrino?/gpu",
+    "rlx-s1?/gpu",
+    "rlx-fireredaudio?/gpu",
     "rlx-cohere?/gpu",
     "rlx-dinov2?/gpu",
     "rlx-dinov3?/gpu",
@@ -595,6 +663,10 @@ gpu = [
     "rlx-minicpm5?/gpu",
     "rlx-nanbeige?/gpu",
     "rlx-tinyllama?/gpu",
+    "rlx-hy-mt?/gpu",
+    "rlx-translategemma?/gpu",
+    "rlx-moonshine?/gpu",
+    "rlx-voice-gender?/gpu",
     "rlx-mistral?/gpu",
     "rlx-moshi?/gpu",
     "rlx-kyutai-tts?/gpu",
@@ -611,6 +683,7 @@ gpu = [
     "rlx-f5tts?/gpu",
     "rlx-piper?/gpu",
     "rlx-florence2?/gpu",
+    "rlx-nllb?/gpu",
     "rlx-nomic?/gpu",
     "rlx-ocr?/gpu",
     "rlx-asr?/gpu",
@@ -627,13 +700,17 @@ gpu = [
     "rlx-vjepa2?/gpu",
     "rlx-voxtral?/gpu",
     "rlx-qwen3-asr?/gpu",
+    "rlx-vibevoice-asr?/gpu",
     "rlx-vad?/gpu",
+    "rlx-ten-vad?/gpu",
     "rlx-nemotron-asr?/gpu",
     "rlx-funasr?/gpu",
     "rlx-conformer-ctc?/gpu",
+    "rlx-timesfm3?/gpu",
     "rlx-voxtral-tts?/gpu",
     "rlx-wav2vec2-bert?/gpu",
     "rlx-whisper?/gpu",
+    "rlx-diarize?/gpu",
     "rlx-wake?/gpu",
     "rlx-wakeword?/gpu",
     "rlx-openwakeword?/gpu",
@@ -654,6 +731,8 @@ vulkan = [
     "rlx-clinicalbert?/vulkan",
     "rlx-bonsai?/vulkan",
     "rlx-neutrino?/vulkan",
+    "rlx-s1?/vulkan",
+    "rlx-fireredaudio?/vulkan",
     "rlx-cohere?/vulkan",
     "rlx-dinov2?/vulkan",
     "rlx-dinov3?/vulkan",
@@ -673,6 +752,10 @@ vulkan = [
     "rlx-minicpm5?/vulkan",
     "rlx-nanbeige?/vulkan",
     "rlx-tinyllama?/vulkan",
+    "rlx-hy-mt?/vulkan",
+    "rlx-translategemma?/vulkan",
+    "rlx-moonshine?/vulkan",
+    "rlx-voice-gender?/vulkan",
     "rlx-mistral?/vulkan",
     "rlx-moshi?/vulkan",
     "rlx-kyutai-tts?/vulkan",
@@ -694,10 +777,13 @@ vulkan = [
     "rlx-vjepa2?/vulkan",
     "rlx-voxtral?/vulkan",
     "rlx-qwen3-asr?/vulkan",
+    "rlx-vibevoice-asr?/vulkan",
     "rlx-vad?/vulkan",
+    "rlx-ten-vad?/vulkan",
     "rlx-nemotron-asr?/vulkan",
     "rlx-funasr?/vulkan",
     "rlx-conformer-ctc?/vulkan",
+    "rlx-timesfm3?/vulkan",
     "rlx-voxtral-tts?/vulkan",
     "rlx-wav2vec2-bert?/vulkan",
     "rlx-whisper?/vulkan",
@@ -716,6 +802,8 @@ cuda = [
     "rlx-clinicalbert?/cuda",
     "rlx-bonsai?/cuda",
     "rlx-neutrino?/cuda",
+    "rlx-s1?/cuda",
+    "rlx-fireredaudio?/cuda",
     "rlx-cohere?/cuda",
     "rlx-dinov2?/cuda",
     "rlx-dinov3?/cuda",
@@ -735,6 +823,10 @@ cuda = [
     "rlx-minicpm5?/cuda",
     "rlx-nanbeige?/cuda",
     "rlx-tinyllama?/cuda",
+    "rlx-hy-mt?/cuda",
+    "rlx-translategemma?/cuda",
+    "rlx-moonshine?/cuda",
+    "rlx-voice-gender?/cuda",
     "rlx-mistral?/cuda",
     "rlx-moshi?/cuda",
     "rlx-kyutai-tts?/cuda",
@@ -751,6 +843,7 @@ cuda = [
     "rlx-f5tts?/cuda",
     "rlx-piper?/cuda",
     "rlx-florence2?/cuda",
+    "rlx-nllb?/cuda",
     "rlx-nomic?/cuda",
     "rlx-ocr?/cuda",
     "rlx-asr?/cuda",
@@ -767,13 +860,17 @@ cuda = [
     "rlx-vjepa2?/cuda",
     "rlx-voxtral?/cuda",
     "rlx-qwen3-asr?/cuda",
+    "rlx-vibevoice-asr?/cuda",
     "rlx-vad?/cuda",
+    "rlx-ten-vad?/cuda",
     "rlx-nemotron-asr?/cuda",
     "rlx-funasr?/cuda",
     "rlx-conformer-ctc?/cuda",
+    "rlx-timesfm3?/cuda",
     "rlx-voxtral-tts?/cuda",
     "rlx-wav2vec2-bert?/cuda",
     "rlx-whisper?/cuda",
+    "rlx-diarize?/cuda",
     "rlx-wake?/cuda",
     "rlx-wakeword?/cuda",
     "rlx-openwakeword?/cuda",
@@ -789,6 +886,8 @@ rocm = [
     "rlx-clinicalbert?/rocm",
     "rlx-bonsai?/rocm",
     "rlx-neutrino?/rocm",
+    "rlx-s1?/rocm",
+    "rlx-fireredaudio?/rocm",
     "rlx-cohere?/rocm",
     "rlx-dinov2?/rocm",
     "rlx-dinov3?/rocm",
@@ -808,6 +907,10 @@ rocm = [
     "rlx-minicpm5?/rocm",
     "rlx-nanbeige?/rocm",
     "rlx-tinyllama?/rocm",
+    "rlx-hy-mt?/rocm",
+    "rlx-translategemma?/rocm",
+    "rlx-moonshine?/rocm",
+    "rlx-voice-gender?/rocm",
     "rlx-mistral?/rocm",
     "rlx-moshi?/rocm",
     "rlx-kyutai-tts?/rocm",
@@ -818,6 +921,7 @@ rocm = [
     "rlx-supertonic?/rocm",
     "rlx-miratts?/rocm",
     "rlx-florence2?/rocm",
+    "rlx-nllb?/rocm",
     "rlx-nomic?/rocm",
     "rlx-ocr?/rocm",
     "rlx-omnicoder?/rocm",
@@ -833,10 +937,13 @@ rocm = [
     "rlx-vjepa2?/rocm",
     "rlx-voxtral?/rocm",
     "rlx-qwen3-asr?/rocm",
+    "rlx-vibevoice-asr?/rocm",
     "rlx-vad?/rocm",
+    "rlx-ten-vad?/rocm",
     "rlx-nemotron-asr?/rocm",
     "rlx-funasr?/rocm",
     "rlx-conformer-ctc?/rocm",
+    "rlx-timesfm3?/rocm",
     "rlx-asr?/rocm",
     "rlx-voxtral-tts?/rocm",
     "rlx-wav2vec2-bert?/rocm",
@@ -1379,6 +1486,18 @@ required-features = ["tinyllama"]
 [[test]]
 name = "tinyllama_backend_parity"
 required-features = ["llama32", "tinyllama"]
+
+[[test]]
+name = "hy_mt_backend_parity"
+required-features = ["hy-mt", "qwen3"]
+
+[[test]]
+name = "moonshine_backend_parity"
+required-features = ["moonshine"]
+
+[[test]]
+name = "nllb_backend_parity"
+required-features = ["nllb"]
 
 [[test]]
 name = "vision_gguf_compile"

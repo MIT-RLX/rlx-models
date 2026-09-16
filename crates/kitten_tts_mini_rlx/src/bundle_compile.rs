@@ -452,15 +452,14 @@ pub fn compile_probe_graph(
     let _ = bundle_dir;
     ensure_kernels_registered();
     let key = probe_cache_key(device, opts, probe_name);
-    if probe_graph_cache_enabled() {
-        if let Some(hit) = probe_graph_cache()
+    if probe_graph_cache_enabled()
+        && let Some(hit) = probe_graph_cache()
             .lock()
             .expect("probe cache")
             .get(&key)
             .cloned()
-        {
-            return Ok(hit);
-        }
+    {
+        return Ok(hit);
     }
     // Probes target runtime token width; headroom compile length breaks static ActCopy shapes.
     let (mut hir, params) = prepare_hir_for_compile(
@@ -502,15 +501,14 @@ pub fn compile_multi_probe_graph(
     }
     let labels: Vec<&str> = probes.iter().map(|(_, l)| *l).collect();
     let key = multi_probe_cache_key(device, opts, &labels);
-    if probe_graph_cache_enabled() {
-        if let Some(hit) = probe_graph_cache()
+    if probe_graph_cache_enabled()
+        && let Some(hit) = probe_graph_cache()
             .lock()
             .expect("probe cache")
             .get(&key)
             .cloned()
-        {
-            return Ok(hit);
-        }
+    {
+        return Ok(hit);
     }
     let (mut hir, params) = prepare_hir_for_compile(
         import.hir.clone(),
@@ -740,10 +738,10 @@ fn duration_refine_iters(active_tokens: usize) -> usize {
     // Short utterances need a few carry passes (true single-pass diverges from ORT).
     // Cap well below the parity fixed-point budget — early-exit still applies.
     if active_tokens <= 32 {
-        if let Ok(raw) = std::env::var("KITTEN_RLX_DURATION_ITERS") {
-            if let Ok(n) = raw.parse::<usize>() {
-                return n.clamp(1, DURATION_FIXED_POINT_ITERS);
-            }
+        if let Ok(raw) = std::env::var("KITTEN_RLX_DURATION_ITERS")
+            && let Ok(n) = raw.parse::<usize>()
+        {
+            return n.clamp(1, DURATION_FIXED_POINT_ITERS);
         }
         // Production: 4 is enough for hello-class IPA on CPU/Cuda/Vulkan (peak-held).
         // Parity keeps the full 24-iter budget.
@@ -855,18 +853,18 @@ pub fn run_kitten_inference(
         return outs;
     }
 
-    if let Some(wave_arc) = &graphs.waveform_only {
-        if compile_profile::production_waveform_only_infer() || graphs.duration_refine.is_none() {
-            let mut wave = wave_arc.lock().expect("waveform graph");
-            // Waveform-only graphs strip the duration loop; seed carry from ORT when available.
-            if let Some(hint) = alignment_duration {
-                set_duration_carry(&mut wave, hint);
-                apply_alignment_hint(&mut wave, hint, active_tokens);
-            } else {
-                reset_duration_carry(&mut wave, compile_seq);
-            }
-            return wave.run_typed(inputs);
+    if let Some(wave_arc) = &graphs.waveform_only
+        && (compile_profile::production_waveform_only_infer() || graphs.duration_refine.is_none())
+    {
+        let mut wave = wave_arc.lock().expect("waveform graph");
+        // Waveform-only graphs strip the duration loop; seed carry from ORT when available.
+        if let Some(hint) = alignment_duration {
+            set_duration_carry(&mut wave, hint);
+            apply_alignment_hint(&mut wave, hint, active_tokens);
+        } else {
+            reset_duration_carry(&mut wave, compile_seq);
         }
+        return wave.run_typed(inputs);
     }
 
     if let (Some(dur_arc), Some(wave_arc)) = (&graphs.duration_refine, &graphs.waveform_only) {
@@ -929,13 +927,13 @@ pub fn run_kitten_inference(
                 set_duration_carry(&mut dur, &dur_bytes);
                 prev_carry = Some(dur_bytes);
             }
-            if duration_parity_cache_enabled() {
-                if let Some(ref d) = last_dur {
-                    duration_parity_cache()
-                        .lock()
-                        .expect("duration parity cache")
-                        .insert(fp, d.clone());
-                }
+            if duration_parity_cache_enabled()
+                && let Some(ref d) = last_dur
+            {
+                duration_parity_cache()
+                    .lock()
+                    .expect("duration parity cache")
+                    .insert(fp, d.clone());
             }
             last_dur
         };
@@ -990,18 +988,20 @@ pub fn run_kitten_inference(
             apply_alignment_hint(&mut g, hint, active_tokens);
             outs = g.run_typed(inputs);
         }
-    } else if active_tokens >= 32 && carry_seed.is_none() && alignment_duration.is_none() {
-        if let Some(dur_bytes) = first_duration_i64_bytes(&outs) {
-            if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
-                eprintln!(
-                    "[kitten] wide-seq second pass (duration bytes={})",
-                    dur_bytes.len()
-                );
-            }
-            apply_alignment_hint(&mut g, &dur_bytes, active_tokens);
-            set_duration_carry(&mut g, &dur_bytes);
-            outs = run_with_duration_fixed_point_on_graph(&mut g, inputs);
+    } else if active_tokens >= 32
+        && carry_seed.is_none()
+        && alignment_duration.is_none()
+        && let Some(dur_bytes) = first_duration_i64_bytes(&outs)
+    {
+        if compile_profile::env_flag("KITTEN_RLX_DEBUG_DURATION") {
+            eprintln!(
+                "[kitten] wide-seq second pass (duration bytes={})",
+                dur_bytes.len()
+            );
         }
+        apply_alignment_hint(&mut g, &dur_bytes, active_tokens);
+        set_duration_carry(&mut g, &dur_bytes);
+        outs = run_with_duration_fixed_point_on_graph(&mut g, inputs);
     }
     outs
 }
@@ -1021,14 +1021,14 @@ fn compile_hir_profile(
         "{key_prefix}_{}",
         compile_profile::aot_cache_suffix(profile)
     );
-    if mem_graph_cache_enabled() {
-        if let Some(hit) = mem_graph_cache().lock().expect("mem graph cache").get(&key) {
-            let mut compiled = hit.clone();
-            if let Some(carry) = carry_bytes {
-                compiled.set_param_typed(crate::opts::DURATION_CARRY, carry, DType::I64);
-            }
-            return Ok(compiled);
+    if mem_graph_cache_enabled()
+        && let Some(hit) = mem_graph_cache().lock().expect("mem graph cache").get(&key)
+    {
+        let mut compiled = hit.clone();
+        if let Some(carry) = carry_bytes {
+            compiled.set_param_typed(crate::opts::DURATION_CARRY, carry, DType::I64);
         }
+        return Ok(compiled);
     }
     let (mut hir, params) =
         prepare_hir_for_compile(hir, params, typed, sequence_length, max_waveform_samples);
@@ -1925,15 +1925,15 @@ pub fn run_parity_thunk_profile(
         ("speed", speed.as_slice(), DType::F32),
     ];
     let outs = run_kitten_inference(graphs, &inputs, None, None);
-    if let Some((wave, dt)) = outs.first() {
-        if *dt == DType::F32 {
-            let n = wave.len() / 4;
-            let peak = wave
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs())
-                .fold(0.0f32, f32::max);
-            eprintln!("[kitten] parity profile waveform: {n} samples peak={peak:.4}");
-        }
+    if let Some((wave, dt)) = outs.first()
+        && *dt == DType::F32
+    {
+        let n = wave.len() / 4;
+        let peak = wave
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!("[kitten] parity profile waveform: {n} samples peak={peak:.4}");
     }
     Ok(())
 }

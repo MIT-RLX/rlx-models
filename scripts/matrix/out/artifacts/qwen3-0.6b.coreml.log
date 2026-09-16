@@ -1,0 +1,6 @@
+$ /Users/Shared/rlx-models/target/release/rlx-qwen3 --weights weights/Qwen3-0.6B-gguf/Qwen3-0.6B-Q4_K_M.gguf --device coreml --prompt-ids 9707,11,1879 --max-tokens 24
+
+--- stdout ---
+
+--- stderr ---
+rlx-qwen3: qwen3: device Ane is not supported (use auto|cpu|metal|mps|mlx|cuda|rocm|hip|gpu|wgpu|vulkan)

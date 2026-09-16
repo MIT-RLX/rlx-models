@@ -211,10 +211,10 @@ impl NanbeigeRunnerBuilder {
 /// CLI entry — validates weights, applies [`BackendPlan`] defaults, then
 /// delegates to `rlx_llama32::cli::run`.
 pub fn cli_run(args: &[String]) -> Result<()> {
-    if let Some(first) = args.iter().position(|a| a == "--weights") {
-        if let Some(path) = args.get(first + 1) {
-            validate_weights_kind(Path::new(path))?;
-        }
+    if let Some(first) = args.iter().position(|a| a == "--weights")
+        && let Some(path) = args.get(first + 1)
+    {
+        validate_weights_kind(Path::new(path))?;
     }
 
     let mut args = args.to_vec();

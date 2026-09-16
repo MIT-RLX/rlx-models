@@ -142,10 +142,10 @@ pub fn format_chatml_with(messages: &[ChatMessage], opts: ChatFormatOpts) -> Str
 /// Convenience: system (optional) + user prompt → ChatML messages.
 pub fn messages_from_prompt(system: Option<&str>, user: &str) -> Vec<ChatMessage> {
     let mut msgs = Vec::new();
-    if let Some(s) = system {
-        if !s.is_empty() {
-            msgs.push(ChatMessage::system(s));
-        }
+    if let Some(s) = system
+        && !s.is_empty()
+    {
+        msgs.push(ChatMessage::system(s));
     }
     msgs.push(ChatMessage::user(user));
     msgs

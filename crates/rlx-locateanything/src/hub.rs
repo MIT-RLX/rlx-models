@@ -73,10 +73,10 @@ pub fn hf_snapshot_dir(_repo_id: &str) -> Result<PathBuf> {
 
 /// Best-effort checkpoint directory: `RLX_LOCATEANYTHING_DIR` → HF cache → `just fetch` layout.
 pub fn default_model_dir() -> Result<PathBuf> {
-    if let Ok(raw) = std::env::var("RLX_LOCATEANYTHING_DIR") {
-        if let Some(p) = crate::fixtures::resolve_model_dir_path(&raw) {
-            return Ok(p);
-        }
+    if let Ok(raw) = std::env::var("RLX_LOCATEANYTHING_DIR")
+        && let Some(p) = crate::fixtures::resolve_model_dir_path(&raw)
+    {
+        return Ok(p);
     }
 
     if let Ok(p) = hf_snapshot_dir(LocateAnythingConfig::HF_MODEL_ID) {

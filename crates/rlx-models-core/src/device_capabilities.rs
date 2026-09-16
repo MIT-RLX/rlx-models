@@ -119,18 +119,16 @@ pub fn device_memory_for_moe_offload(device: Device) -> Option<(usize, usize)> {
     if let (Ok(free), Ok(total)) = (
         std::env::var("RLX_CUDA_FREE_BYTES"),
         std::env::var("RLX_CUDA_TOTAL_BYTES"),
-    ) {
-        if let (Ok(f), Ok(t)) = (free.parse(), total.parse()) {
-            return Some((f, t));
-        }
+    ) && let (Ok(f), Ok(t)) = (free.parse(), total.parse())
+    {
+        return Some((f, t));
     }
     if let (Ok(free), Ok(total)) = (
         std::env::var("RLX_DEVICE_FREE_BYTES"),
         std::env::var("RLX_DEVICE_TOTAL_BYTES"),
-    ) {
-        if let (Ok(f), Ok(t)) = (free.parse(), total.parse()) {
-            return Some((f, t));
-        }
+    ) && let (Ok(f), Ok(t)) = (free.parse(), total.parse())
+    {
+        return Some((f, t));
     }
     match device {
         Device::Metal | Device::Mlx | Device::Ane => {

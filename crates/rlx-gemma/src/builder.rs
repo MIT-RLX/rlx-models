@@ -407,15 +407,13 @@ pub fn drain_gemma_packed_weights_ext(
         // RMSNorm / QK-norm weights stay F32 in the graph (delta-gamma path);
         // mixed-quant GGUF may still expose them as Q5_0 etc.
         let force_f32 = canonical.contains("layernorm") || canonical.contains("_norm.weight");
-        if !force_f32 {
-            if let Some((scheme, shape)) = loader.packed_meta(&key) {
-                let nbytes = loader
-                    .tensor_bytes_borrowed(&key)
-                    .ok_or_else(|| anyhow::anyhow!("packed {key}: bytes unavailable"))?
-                    .len();
-                packed_list.push((canonical, key, scheme, shape, nbytes));
-                continue;
-            }
+        if !force_f32 && let Some((scheme, shape)) = loader.packed_meta(&key) {
+            let nbytes = loader
+                .tensor_bytes_borrowed(&key)
+                .ok_or_else(|| anyhow::anyhow!("packed {key}: bytes unavailable"))?
+                .len();
+            packed_list.push((canonical, key, scheme, shape, nbytes));
+            continue;
         }
         let (data, shape) = if should_transpose_gemma_drain_weight(&canonical) {
             loader.take_transposed(&key)?

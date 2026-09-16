@@ -225,23 +225,24 @@ impl CompiledMinistralLm {
 
     fn run_prefill(&mut self, seq: usize, embeds: &[f32]) -> Result<Vec<Vec<f32>>> {
         if self.sharded.is_some() {
-            let params = self.ensure_backbone_params()?.clone();
-            let mut sharded = self.sharded.take().unwrap();
-            let max_seq = self.prefill_max_seq;
-            let n_layers = self.n_layers;
-            let result = run_prefill_sharded(
-                &mut sharded,
-                &self.cfg,
-                self.device,
-                max_seq,
-                &params,
-                &mut self.graph_params,
-                seq,
-                embeds,
-                n_layers,
-            );
-            self.sharded = Some(sharded);
-            return result;
+            return self.with_backbone_params(|me, params| {
+                let mut sharded = me.sharded.take().unwrap();
+                let max_seq = me.prefill_max_seq;
+                let n_layers = me.n_layers;
+                let result = run_prefill_sharded(
+                    &mut sharded,
+                    &me.cfg,
+                    me.device,
+                    max_seq,
+                    params,
+                    &mut me.graph_params,
+                    seq,
+                    embeds,
+                    n_layers,
+                );
+                me.sharded = Some(sharded);
+                result
+            })?;
         }
         let binding = DimBinding::batch_seq(1, seq);
         let opts = prefill_compile_options(self.device, binding.clone());
@@ -301,29 +302,30 @@ impl CompiledMinistralLm {
             "missing KV cache (past_len={past_len})"
         );
         if self.sharded.is_some() {
-            let params = self.ensure_backbone_params()?.clone();
-            let mut sharded = self.sharded.take().unwrap();
-            let decode_max_past = self.decode_max_past;
-            let kv_dim = self.kv_dim;
-            let n_layers = self.n_layers;
-            let kv = self.kv_caches.clone();
-            let result = run_decode_sharded(
-                &mut sharded,
-                &self.cfg,
-                self.device,
-                decode_max_past,
-                &params,
-                &mut self.graph_params,
-                past_len,
-                embed,
-                cos,
-                sin,
-                &kv,
-                kv_dim,
-                n_layers,
-            );
-            self.sharded = Some(sharded);
-            return result;
+            return self.with_backbone_params(|me, params| {
+                let mut sharded = me.sharded.take().unwrap();
+                let decode_max_past = me.decode_max_past;
+                let kv_dim = me.kv_dim;
+                let n_layers = me.n_layers;
+                let kv = me.kv_caches.clone();
+                let result = run_decode_sharded(
+                    &mut sharded,
+                    &me.cfg,
+                    me.device,
+                    decode_max_past,
+                    params,
+                    &mut me.graph_params,
+                    past_len,
+                    embed,
+                    cos,
+                    sin,
+                    &kv,
+                    kv_dim,
+                    n_layers,
+                );
+                me.sharded = Some(sharded);
+                result
+            })?;
         }
         for (i, cache) in self.kv_caches.iter().enumerate() {
             ensure!(
@@ -479,6 +481,24 @@ impl CompiledMinistralLm {
         Ok(())
     }
 
+    /// Run `f` with the backbone snapshot moved out of `self`, then put it back.
+    ///
+    /// The snapshot is the whole backbone in f32 — ~15 GB for the 4B checkpoint. The call sites
+    /// below only need it by shared reference; they were cloning it purely because
+    /// `ensure_backbone_params` borrows `&mut self` and they also touch `self.sharded` /
+    /// `self.graph_params`. Moving it out satisfies the borrow checker for the price of a
+    /// pointer instead of a second copy of the model.
+    fn with_backbone_params<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self, &WeightSnapshot) -> T,
+    ) -> Result<T> {
+        self.ensure_backbone_params()?;
+        let params = self.backbone_params.take().expect("ensured just above");
+        let out = f(self, &params);
+        self.backbone_params = Some(params);
+        Ok(out)
+    }
+
     fn ensure_backbone_params(&mut self) -> Result<&WeightSnapshot> {
         if self.backbone_params.is_none() {
             let mut params = snapshot_backbone_params(&self.store)?;
@@ -492,23 +512,21 @@ impl CompiledMinistralLm {
 }
 
 fn prefill_max_seq(cfg: &TextConfig) -> usize {
-    if let Ok(raw) = std::env::var("RLX_VOXTRAL_TTS_MAX_SEQ") {
-        if let Ok(v) = raw.parse::<usize>() {
-            if v > 0 {
-                return v.min(cfg.max_position_embeddings);
-            }
-        }
+    if let Ok(raw) = std::env::var("RLX_VOXTRAL_TTS_MAX_SEQ")
+        && let Ok(v) = raw.parse::<usize>()
+        && v > 0
+    {
+        return v.min(cfg.max_position_embeddings);
     }
     DEFAULT_PREFILL_MAX_SEQ.min(cfg.max_position_embeddings)
 }
 
 fn decode_max_past(cfg: &TextConfig) -> usize {
-    if let Ok(raw) = std::env::var("RLX_VOXTRAL_TTS_MAX_PAST") {
-        if let Ok(v) = raw.parse::<usize>() {
-            if v > 0 {
-                return v.min(cfg.max_position_embeddings);
-            }
-        }
+    if let Ok(raw) = std::env::var("RLX_VOXTRAL_TTS_MAX_PAST")
+        && let Ok(v) = raw.parse::<usize>()
+        && v > 0
+    {
+        return v.min(cfg.max_position_embeddings);
     }
     DEFAULT_DECODE_MAX_PAST.min(cfg.max_position_embeddings)
 }

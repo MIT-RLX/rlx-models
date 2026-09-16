@@ -1210,6 +1210,7 @@ fn fusion_report(g: &rlx_ir::Graph, tag: &str, backend: &str) {
         dispatch: false,
         fusion: true,
         numeric: false,
+        ..Default::default()
     };
     let report = check_graph(g, &opts);
     for b in &report.backends {

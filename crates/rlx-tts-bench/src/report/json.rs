@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::metrics::{NoiseMetrics, SpectralMetrics, WhisperMetrics};
+use crate::metrics::{NoiseMetrics, RssMetrics, SpectralMetrics, WhisperMetrics};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchRow {
@@ -26,6 +26,7 @@ pub struct BenchRow {
     pub whisper: Option<WhisperMetrics>,
     pub spectral: Option<SpectralMetrics>,
     pub noise: Option<NoiseMetrics>,
+    pub rss: Option<RssMetrics>,
     pub wav_rel: Option<String>,
 }
 
@@ -43,6 +44,10 @@ pub struct ModelSummary {
     pub n_ok: usize,
     pub median_rtf: Option<f64>,
     pub median_whisper_cov: Option<f64>,
+    /// Worst-case model-attributable peak RSS across this model's cells, in MB.
+    /// The acceptance criterion is "same-or-less RAM than the reference", so the
+    /// summary reports the max rather than the median.
+    pub max_model_rss_mb: Option<u64>,
 }
 
 pub fn write_results_jsonl(path: &Path, rows: &[BenchRow]) -> Result<()> {
@@ -112,12 +117,14 @@ pub fn write_summary_json(path: &Path, rows: &[BenchRow]) -> Result<Summary> {
             .filter_map(|r| r.whisper.as_ref().map(|w| w.coverage))
             .collect();
         covs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let max_model_rss_mb = ok.iter().filter_map(|r| r.rss.map(|m| m.model_mb)).max();
         model_sum.insert(
             model.clone(),
             ModelSummary {
                 n_ok: ok.len(),
                 median_rtf: rtfs.get(rtfs.len() / 2).copied(),
                 median_whisper_cov: covs.get(covs.len() / 2).copied(),
+                max_model_rss_mb,
             },
         );
     }

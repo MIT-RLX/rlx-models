@@ -404,17 +404,17 @@ fn sample_tokens(
     }
     for q in 0..N_CODEBOOKS {
         let mut row = logits[q * vocab..(q + 1) * vocab].to_vec();
-        if opts.repetition_penalty != 1.0 {
-            if let Some(g) = generated {
-                let window = 2usize.min(g[q].len());
-                let start = g[q].len() - window;
-                for &tok in &g[q][start..] {
-                    let t = tok.clamp(0, (vocab - 1) as i64) as usize;
-                    if row[t] <= 0.0 {
-                        row[t] *= opts.repetition_penalty;
-                    } else {
-                        row[t] /= opts.repetition_penalty;
-                    }
+        if opts.repetition_penalty != 1.0
+            && let Some(g) = generated
+        {
+            let window = 2usize.min(g[q].len());
+            let start = g[q].len() - window;
+            for &tok in &g[q][start..] {
+                let t = tok.clamp(0, (vocab - 1) as i64) as usize;
+                if row[t] <= 0.0 {
+                    row[t] *= opts.repetition_penalty;
+                } else {
+                    row[t] /= opts.repetition_penalty;
                 }
             }
         }

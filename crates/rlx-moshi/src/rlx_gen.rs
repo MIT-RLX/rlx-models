@@ -124,23 +124,23 @@ impl RlxLm {
     fn sum_embeds(&self, text_token: Option<u32>, audio_tokens: &[Option<u32>]) -> Vec<f32> {
         let d = self.dims.d_model;
         let mut emb = vec![0.0f32; d];
-        if let Some(tt) = text_token {
-            if let Some((data, shape)) = self.weights.get("text_emb.weight") {
-                let row = shape[1];
-                let base = tt as usize * row;
-                for i in 0..d {
-                    emb[i] += data[base + i];
-                }
+        if let Some(tt) = text_token
+            && let Some((data, shape)) = self.weights.get("text_emb.weight")
+        {
+            let row = shape[1];
+            let base = tt as usize * row;
+            for i in 0..d {
+                emb[i] += data[base + i];
             }
         }
         for (cb, tok) in audio_tokens.iter().enumerate() {
-            if let Some(t) = tok {
-                if let Some((data, shape)) = self.weights.get(&format!("emb.{cb}.weight")) {
-                    let row = shape[1];
-                    let base = *t as usize * row;
-                    for i in 0..d {
-                        emb[i] += data[base + i];
-                    }
+            if let Some(t) = tok
+                && let Some((data, shape)) = self.weights.get(&format!("emb.{cb}.weight"))
+            {
+                let row = shape[1];
+                let base = *t as usize * row;
+                for i in 0..d {
+                    emb[i] += data[base + i];
                 }
             }
         }

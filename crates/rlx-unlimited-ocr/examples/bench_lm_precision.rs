@@ -147,13 +147,13 @@ fn main() -> Result<()> {
             );
         }
         for r in &rows {
-            if let Some(c) = r.corr {
-                if c < 0.9 {
-                    eprintln!(
-                        "  WARN: {} prefill corr={c:.4} vs F32 — treat as unusable for generation",
-                        r.prec
-                    );
-                }
+            if let Some(c) = r.corr
+                && c < 0.9
+            {
+                eprintln!(
+                    "  WARN: {} prefill corr={c:.4} vs F32 — treat as unusable for generation",
+                    r.prec
+                );
             }
         }
         if let Some(smallest) = rows
@@ -167,10 +167,10 @@ fn main() -> Result<()> {
         }
     }
 
-    if args.greedy_steps > 0 {
-        if let Err(e) = run_greedy_match(&cfg, device, args, &precisions, &embeds) {
-            eprintln!("[bench] greedy match FAILED: {e:#}");
-        }
+    if args.greedy_steps > 0
+        && let Err(e) = run_greedy_match(&cfg, device, args, &precisions, &embeds)
+    {
+        eprintln!("[bench] greedy match FAILED: {e:#}");
     }
     Ok(())
 }

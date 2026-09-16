@@ -67,23 +67,23 @@ pub const FAMILY: &str = "Qwen3-VL";
 const ACCEPTED_ARCHES: &[&str] = &["qwen3vl", "qwen3vlmoe", "qwen3_vl", "qwen3-vl"];
 
 pub fn cli_run(args: &[String]) -> Result<()> {
-    if let Some(first) = args.iter().position(|a| a == "--weights") {
-        if let Some(path) = args.get(first + 1) {
-            let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
-                .with_context(|| format!("rlx-qwen3-vl: parse {path}"))?;
-            if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
-                bail!(
-                    "rlx-qwen3-vl: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
-                    cfg.arch
-                );
-            }
-            eprintln!(
-                "[rlx-qwen3-vl] {path}: arch `{}` accepted. Use the library API \
-                 (Qwen3VlVisionRunner::builder()) for image inference.",
+    if let Some(first) = args.iter().position(|a| a == "--weights")
+        && let Some(path) = args.get(first + 1)
+    {
+        let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
+            .with_context(|| format!("rlx-qwen3-vl: parse {path}"))?;
+        if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
+            bail!(
+                "rlx-qwen3-vl: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
                 cfg.arch
             );
-            return Ok(());
         }
+        eprintln!(
+            "[rlx-qwen3-vl] {path}: arch `{}` accepted. Use the library API \
+                 (Qwen3VlVisionRunner::builder()) for image inference.",
+            cfg.arch
+        );
+        return Ok(());
     }
     bail!(
         "rlx-qwen3-vl: usage: --weights <lm.gguf>; for image inference use the \

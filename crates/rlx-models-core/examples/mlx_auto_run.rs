@@ -36,30 +36,30 @@ fn parse_device(s: Option<&str>) -> Device {
 /// Prompt ids from `--ids a,b,c`, else `<dir>/oracle.json`.prompt_ids, else
 /// the Qwen3 France prompt as a fallback.
 fn prompt_ids(args: &[String], dir: &Path) -> (Vec<u32>, Option<i64>) {
-    if let Some(pos) = args.iter().position(|a| a == "--ids") {
-        if let Some(list) = args.get(pos + 1) {
-            let ids = list
-                .split(',')
-                .filter_map(|s| s.trim().parse::<u32>().ok())
-                .collect();
-            return (ids, None);
-        }
+    if let Some(pos) = args.iter().position(|a| a == "--ids")
+        && let Some(list) = args.get(pos + 1)
+    {
+        let ids = list
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u32>().ok())
+            .collect();
+        return (ids, None);
     }
-    if let Ok(bytes) = std::fs::read(dir.join("oracle.json")) {
-        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            let ids: Vec<u32> = v
-                .get("prompt_ids")
-                .and_then(|x| x.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_u64().map(|n| n as u32))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let oracle = v.get("prefill_argmax").and_then(|x| x.as_i64());
-            if !ids.is_empty() {
-                return (ids, oracle);
-            }
+    if let Ok(bytes) = std::fs::read(dir.join("oracle.json"))
+        && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+    {
+        let ids: Vec<u32> = v
+            .get("prompt_ids")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_u64().map(|n| n as u32))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let oracle = v.get("prefill_argmax").and_then(|x| x.as_i64());
+        if !ids.is_empty() {
+            return (ids, oracle);
         }
     }
     (vec![785, 6722, 315, 9625, 374], None)

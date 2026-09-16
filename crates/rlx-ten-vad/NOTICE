@@ -1,0 +1,51 @@
+rlx-ten-vad
+===========
+
+This crate is a Rust port of TEN-VAD and embeds its model weights.
+
+Upstream
+--------
+  Project:   TEN-VAD (https://github.com/TEN-framework/ten-vad)
+  Copyright: © 2025 Agora
+  License:   Apache License 2.0 WITH ADDITIONAL CONDITIONS
+
+The upstream LICENSE adds conditions to Apache-2.0 that Apache-2.0 does not
+contain, and that GPL-3.0 does not permit adding. In particular:
+
+  1. You may not Deploy the ten-vad in a way that competes with Agora's
+     offerings and/or that allows others to compete with Agora's offerings,
+     including without limitation enabling any third party to develop or
+     deploy Applications.
+
+  3. Derivative Works of the ten-vad remain subject to this Open Source
+     License.
+
+  You may include the following notice in the documentation of your
+  Application(s): "Powered by ten-vad".
+
+Because this crate is a Derivative Work (a port of the upstream C sources) and
+because `weights/ten_vad.safetensors` is derived from upstream's
+`src/onnx_model/ten-vad.onnx`, both remain subject to the upstream terms in
+addition to whatever licence covers the rest of this repository. Read the
+upstream LICENSE in full before redistributing this crate or a binary that
+links it.
+
+Third-party code inherited from upstream
+----------------------------------------
+`src/pitch.rs` is derived, by way of TEN-VAD's `src/pitch_est.cc`, from
+`compute_frame_features()` and `process_superframe()` in LPCNet's
+`lpcnet_enc.c`:
+
+  Project:   LPCNet (https://github.com/xiph/LPCNet)
+  License:   BSD-2-Clause (lpcnet_enc.c), BSD-3-Clause (project)
+  Copyright: © 2017-2019 Mozilla
+             © 2007-2017 Jean-Marc Valin
+             © 2005-2017 Xiph.Org Foundation
+             © 2003-2004 Mark Borgerding
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the conditions in the upstream
+  NOTICES file are met. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+  CONTRIBUTORS ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+  NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+  PARTICULAR PURPOSE ARE DISCLAIMED.

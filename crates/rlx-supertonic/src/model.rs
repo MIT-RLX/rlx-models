@@ -256,6 +256,19 @@ impl Supertonic {
         format!("rlx-native/{:?}", self.device)
     }
 
+    /// Drop every length-keyed Metal/CPU compiled subgraph (params + scratch).
+    ///
+    /// Call between utterances under low-memory / iOS so (T, L) variants do not
+    /// accumulate. Prefer after a full `synthesize`, not mid-pipeline.
+    pub fn clear_graph_cache(&self) {
+        self.model.clear_named_cache();
+    }
+
+    /// Keep at most `max_entries` named graphs (0 = clear).
+    pub fn trim_graph_cache(&self, max_entries: usize) {
+        self.model.trim_named_cache(max_entries);
+    }
+
     /// Run one native subgraph (compile via the AOT-cached `TinyModel`, then
     /// execute), returning the first output as `f32`. `named` binds the graph's
     /// distinct symbolic length dims (e.g. `text_length`, `latent_length`).
@@ -422,6 +435,14 @@ impl Supertonic {
             peak >= MIN_AUDIBLE_PEAK,
             "synthesized audio is silent (peak={peak:.2e})"
         );
+        // Optional: trim length-keyed Metal graphs. Off by default — aggressive
+        // per-cue eviction thrash-recompiles the DiT and raises peak RSS.
+        // Set RLX_TTS_GRAPH_CACHE=<N> on long jobs / iOS when needed.
+        if let Ok(cap) = std::env::var("RLX_TTS_GRAPH_CACHE")
+            && let Ok(n) = cap.parse::<usize>()
+        {
+            self.model.trim_named_cache(n);
+        }
         Ok(audio)
     }
 

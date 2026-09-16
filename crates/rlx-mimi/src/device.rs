@@ -36,6 +36,7 @@ pub fn candle_codec_available(device: Device) -> bool {
         | Device::Xdna
         | Device::OneApi
         | Device::Hexagon
+        | Device::Egpu
         | Device::WebGpu => false,
     }
 }

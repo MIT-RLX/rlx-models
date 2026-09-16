@@ -455,12 +455,12 @@ impl ContinuousBatcher {
             let sid = entry.seq_id;
             // A prefill chunk only yields a sampleable token once the whole
             // prompt is cached; decode entries always sample.
-            if entry.kind == BatchKind::Prefill {
-                if let Some(s) = self.seqs.get_mut(&sid) {
-                    s.prefilled += entry.input_tokens.len();
-                    if s.prefilled < s.prompt_len {
-                        continue; // more prefill chunks pending
-                    }
+            if entry.kind == BatchKind::Prefill
+                && let Some(s) = self.seqs.get_mut(&sid)
+            {
+                s.prefilled += entry.input_tokens.len();
+                if s.prefilled < s.prompt_len {
+                    continue; // more prefill chunks pending
                 }
             }
             let Some(mut row) = logits.get(&sid).cloned() else {

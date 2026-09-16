@@ -77,6 +77,10 @@ pub fn run_suite(cfg: &RunConfig) -> Result<Vec<BenchRow>> {
         }
 
         for &device in &cfg.devices {
+            // Before `make_adapter`: `ru_maxrss` is monotonic, so the only way to attribute
+            // memory to this model is to subtract what the process had already reached — the
+            // Whisper scorer is loaded above and can outweigh a small TTS model.
+            let rss = crate::metrics::RssTracker::new();
             let adapter = match make_adapter(model, device) {
                 Ok(a) => a,
                 Err(e) => {
@@ -118,6 +122,7 @@ pub fn run_suite(cfg: &RunConfig) -> Result<Vec<BenchRow>> {
                             cfg,
                             &mut whisper,
                             &mut cpu_refs,
+                            &rss,
                         )
                     })) {
                         Ok(Ok(row)) => row,
@@ -199,6 +204,7 @@ fn run_one(
     cfg: &RunConfig,
     whisper: &mut Option<WhisperState>,
     cpu_refs: &mut HashMap<(String, String, String), (Vec<f32>, u32)>,
+    rss: &crate::metrics::RssTracker,
 ) -> Result<BenchRow> {
     let clone_path_owned: Option<PathBuf> = match scenario {
         "clone" => Some(resolve_clone_ref(cfg)?),
@@ -308,32 +314,32 @@ fn run_one(
         None
     };
 
-    if let Some(min_fox) = cfg.fail_under_fox {
-        if phrase_id == "short" && scenario == "plain" {
-            if let Some(w) = whisper_m.as_ref() {
-                if w.fox_hits < min_fox {
-                    let fox_hits = w.fox_hits;
-                    let mut row = ok_row(
-                        model,
-                        device_label(device),
-                        phrase_id,
-                        scenario,
-                        wall_ms,
-                        rtf,
-                        audio_sec,
-                        &result,
-                        cosine_vs_cpu,
-                        whisper_m,
-                        None,
-                        None,
-                        Some(wav_name),
-                    );
-                    row.status = "failed".into();
-                    row.error = Some(format!("fox hits {fox_hits} < --fail-under-fox {min_fox}"));
-                    return Ok(row);
-                }
-            }
-        }
+    if let Some(min_fox) = cfg.fail_under_fox
+        && phrase_id == "short"
+        && scenario == "plain"
+        && let Some(w) = whisper_m.as_ref()
+        && w.fox_hits < min_fox
+    {
+        let fox_hits = w.fox_hits;
+        let mut row = ok_row(
+            model,
+            device_label(device),
+            phrase_id,
+            scenario,
+            wall_ms,
+            rtf,
+            audio_sec,
+            &result,
+            cosine_vs_cpu,
+            whisper_m,
+            None,
+            None,
+            Some(rss.metrics()),
+            Some(wav_name),
+        );
+        row.status = "failed".into();
+        row.error = Some(format!("fox hits {fox_hits} < --fail-under-fox {min_fox}"));
+        return Ok(row);
     }
 
     let spectral = if cfg.spectral {
@@ -398,6 +404,7 @@ fn run_one(
         whisper_m,
         spectral,
         noise,
+        Some(rss.metrics()),
         Some(wav_name),
     ))
 }
@@ -458,6 +465,7 @@ fn skipped_row(
         whisper: None,
         spectral: None,
         noise: None,
+        rss: None,
         wav_rel: None,
     }
 }
@@ -486,6 +494,7 @@ pub fn failed_row(
         whisper: None,
         spectral: None,
         noise: None,
+        rss: None,
         wav_rel: None,
     }
 }
@@ -503,6 +512,7 @@ fn ok_row(
     whisper: Option<crate::metrics::WhisperMetrics>,
     spectral: Option<crate::metrics::SpectralMetrics>,
     noise: Option<crate::metrics::NoiseMetrics>,
+    rss: Option<crate::metrics::RssMetrics>,
     wav_name: Option<String>,
 ) -> BenchRow {
     BenchRow {
@@ -522,6 +532,7 @@ fn ok_row(
         whisper,
         spectral,
         noise,
+        rss,
         wav_rel: wav_name.map(|n| format!("wav/{n}")),
     }
 }

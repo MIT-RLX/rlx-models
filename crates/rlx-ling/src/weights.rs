@@ -23,7 +23,7 @@
 //!   down_proj.weight  [hidden, moe_inter]
 //! ```
 //! [`rlx_deepseek::moe::emit_deepseek_moe`] with
-//! [`DeepseekMoeDims::experts_pretransposed`] wants them stacked *and* already in
+//! `DeepseekMoeDims::experts_pretransposed` wants them stacked *and* already in
 //! `GroupedMatMul`'s `[E, K, N]` layout:
 //! ```text
 //!   experts.gate_up_proj  [E, hidden, 2*moe_inter]   (gate cols then up cols)

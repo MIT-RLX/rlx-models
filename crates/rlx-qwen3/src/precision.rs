@@ -77,7 +77,7 @@ dequant_forms! {
         QuantScheme::GgufIQ3S, QuantScheme::GgufIQ1S, QuantScheme::GgufIQ1M,
         QuantScheme::GgufTQ1_0, QuantScheme::GgufTQ2_0, QuantScheme::GgufMXFP4,
         QuantScheme::GgufNVFP4, QuantScheme::GgufQ1_0, QuantScheme::GgufQ2_0,
-        QuantScheme::GgufFV5, QuantScheme::GgufFV5B,
+        QuantScheme::GgufFV5, QuantScheme::GgufFV5B, QuantScheme::GgufG8_0,
     ],
     // Affine / MLX / int-block / FP8 — separate code + scale + zp/bias operands.
     affine4: [

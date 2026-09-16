@@ -213,14 +213,13 @@ fn build_report(
     let mut shard_sniffs = Vec::new();
 
     for (file, sniff) in shards {
-        if architecture.is_empty() {
-            if let Some(a) = file
+        if architecture.is_empty()
+            && let Some(a) = file
                 .metadata
                 .get("general.architecture")
                 .and_then(MetaValue::as_str)
-            {
-                architecture = a.to_string();
-            }
+        {
+            architecture = a.to_string();
         }
         if split_count.is_none() {
             split_count = meta_u32(&file, "split.count").or_else(|| {

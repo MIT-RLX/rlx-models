@@ -47,7 +47,8 @@ pub mod tokenizer;
 pub use config::{LN_EPS, SIGLIP_MEAN, SIGLIP_STD, Siglip2Config, TextCfg, Variant, VisionCfg};
 pub use flow::{build_text_flow, build_vision_flow};
 pub use preprocess::{
-    PoolingWeights, VisionEmbedWeights, assemble_vision_hidden, siglip_normalize_nchw,
+    PoolingWeights, VisionEmbedWeights, assemble_vision_hidden, extract_pooling_weights,
+    extract_vision_embed_weights, siglip_normalize_nchw,
 };
 pub use runner::{Siglip2Runner, Siglip2RunnerBuilder, ensure_model_dir};
 pub use text_embed::{TextEmbedWeights, assemble_text_hidden};

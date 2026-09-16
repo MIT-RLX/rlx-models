@@ -218,9 +218,14 @@ pub fn run(args: &[String]) -> Result<()> {
             let mut pipeline = WhisperPipeline::new(runner, opts);
             #[cfg(feature = "diarize")]
             if diarize {
-                pipeline = pipeline.with_diarizer(rlx_diarize::DiarizeSession::new(
-                    rlx_diarize::DiarizeConfig::default(),
-                ));
+                let cfg = rlx_diarize::DiarizeConfig::default()
+                    .with_auto_wespeaker(&[
+                        std::path::Path::new("weights"),
+                        std::path::Path::new("models"),
+                        std::path::Path::new("../weights"),
+                    ])
+                    .with_device(device);
+                pipeline = pipeline.with_diarizer(rlx_diarize::DiarizeSession::new(cfg)?);
             }
             let transcript = pipeline.run(&pcm)?;
             let rendered = output_format.render(&transcript)?;

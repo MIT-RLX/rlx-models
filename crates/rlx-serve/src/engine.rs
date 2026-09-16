@@ -315,12 +315,12 @@ impl Engine for SingleEngine {
 
         // Snapshot the prompt-only KV (cache covers exactly the prompt now)
         // so future requests sharing this prefix can skip its prefill.
-        if let Some(c) = &self.cache {
-            if let Some(snap) = runner.export_session() {
-                c.lock()
-                    .expect("cache mutex poisoned")
-                    .insert(snap.tokens, snap.kv);
-            }
+        if let Some(c) = &self.cache
+            && let Some(snap) = runner.export_session()
+        {
+            c.lock()
+                .expect("cache mutex poisoned")
+                .insert(snap.tokens, snap.kv);
         }
 
         let mut detok = StreamingDetokenizer::new(&self.tokenizer, true);

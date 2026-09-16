@@ -34,12 +34,11 @@ use crate::backbone::{BackboneModel, DEFAULT_N_CTX};
 fn best_device() -> Device {
     use rlx_runtime::device_ext::is_available;
 
-    if let Ok(name) = std::env::var("RLX_DEVICE") {
-        if let Some(d) = parse_device_name(&name) {
-            if matches!(d, Device::Cpu) || is_available(d) {
-                return d;
-            }
-        }
+    if let Ok(name) = std::env::var("RLX_DEVICE")
+        && let Some(d) = parse_device_name(&name)
+        && (matches!(d, Device::Cpu) || is_available(d))
+    {
+        return d;
     }
     [
         Device::Metal,

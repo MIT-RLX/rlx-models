@@ -134,11 +134,11 @@ impl SpeechTokenizer {
     }
 
     pub fn write_prompt_tokens(path: &Path, tokens: &[u32]) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("create {}", parent.display()))?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
         }
         let body: String = tokens
             .iter()

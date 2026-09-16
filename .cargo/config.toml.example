@@ -1,8 +1,8 @@
-# Local RLX development — patch crates.io 0.2.14 with a sibling checkout.
+# Local RLX development — patch crates.io 0.2.16 with a sibling checkout.
 #
 # Layout (recommended):
 #   rlx-workspace/
-#     rlx/           ← upstream RLX repo (v0.2.14+)
+#     rlx/           ← upstream RLX repo (v0.2.16+)
 #     rlx-models/    ← this repo
 #
 # Enable local RLX:
@@ -12,8 +12,8 @@
 #   rm .cargo/config.toml
 #
 # Rules:
-# - Root Cargo.toml `[workspace.dependencies]` pins `rlx*` at ^0.2.14.
-# - `rlx-distributed` requires rlx-driver 0.2.14+ (`ProcessGroup`, `TcpTransport`, …).
+# - Root Cargo.toml `[workspace.dependencies]` pins `rlx*` at ^0.2.16.
+# - `rlx-distributed` requires rlx-driver 0.2.16+ (`ProcessGroup`, `TcpTransport`, …).
 # - Every crate uses `{ workspace = true }` — no path deps to ../rlx in committed files.
 # - Patches apply only when `.cargo/config.toml` exists (gitignored).
 # - Patch ALL entries below together; a partial patch can mix path/registry builds and break native `links` (e.g. mlx-sys).
@@ -28,6 +28,7 @@ rlx-opt = { path = "../rlx/crates/core/rlx-opt" }
 rlx-optim = { path = "../rlx/crates/core/rlx-optim" }
 rlx-autodiff = { path = "../rlx/crates/core/rlx-autodiff" }
 rlx-fusion = { path = "../rlx/crates/core/rlx-fusion" }
+rlx-fpga = { path = "../rlx/crates/backends/rlx-fpga" }
 rlx-driver = { path = "../rlx/crates/core/rlx-driver" }
 rlx-cpu = { path = "../rlx/crates/backends/rlx-cpu" }
 rlx-gguf = { path = "../rlx/crates/io/rlx-gguf" }
@@ -35,6 +36,9 @@ rlx-pkg = { path = "../rlx/crates/io/rlx-pkg" }
 rlx-nemo = { path = "../rlx/crates/io/rlx-nemo" }
 rlx-text = { path = "../rlx/crates/io/rlx-text" }
 rlx-onnx-import = { path = "../rlx/crates/io/rlx-onnx-import" }
+rlx-tensor = { path = "../rlx/crates/core/rlx-tensor" }
+rlx-collectives = { path = "../rlx/crates/core/rlx-collectives" }
+rlx-opscope = { path = "../rlx/crates/tooling/rlx-opscope" }
 rlx-metal = { path = "../rlx/crates/backends/rlx-metal" }
 rlx-mlx = { path = "../rlx/crates/backends/rlx-mlx" }
 rlx-mlx-sys = { path = "../rlx/crates/backends/rlx-mlx-sys" }

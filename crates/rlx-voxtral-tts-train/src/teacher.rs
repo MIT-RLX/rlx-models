@@ -109,10 +109,10 @@ impl TeacherCache {
         wav_idx: usize,
     ) -> Result<DistillBatch> {
         let key = (wav_idx, hash_text(text));
-        if env_flag("PRECOMPUTE_DISTILL") {
-            if let Some(batch) = self.batch_cache.get(&key) {
-                return Ok(batch.clone());
-            }
+        if env_flag("PRECOMPUTE_DISTILL")
+            && let Some(batch) = self.batch_cache.get(&key)
+        {
+            return Ok(batch.clone());
         }
 
         let batch = self.build_batch_inner(text, voice_name, reference_wav, max_seq)?;

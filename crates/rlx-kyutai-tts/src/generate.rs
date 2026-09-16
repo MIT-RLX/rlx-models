@@ -261,10 +261,10 @@ impl GenerateState {
             .skip(stream_delay + LEAD_TRIM)
             .map(|f| sanitize(f))
             .collect();
-        if let Some(end) = end_step {
-            if end < out.len() {
-                out.truncate(end);
-            }
+        if let Some(end) = end_step
+            && end < out.len()
+        {
+            out.truncate(end);
         }
         out
     }
@@ -299,10 +299,10 @@ pub fn generate_codes(
     let mut state = GenerateState::new(model.config(), tokenizer, prompt, cfg)?;
     let max_steps = state.cfg.max_steps;
     while state.step_idx() < max_steps {
-        if let Some(e) = state.tts_state.end_step {
-            if state.step_idx() >= e + state.stream_delay + FINAL_PADDING {
-                break;
-            }
+        if let Some(e) = state.tts_state.end_step
+            && state.step_idx() >= e + state.stream_delay + FINAL_PADDING
+        {
+            break;
         }
         state.step(model)?;
     }

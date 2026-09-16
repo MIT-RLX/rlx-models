@@ -277,10 +277,10 @@ fn fmt_bytes(n: u64) -> String {
 ///
 /// Override with `RLX_UNLIMITED_OCR_ASSUME_RAM_BYTES` (tests / forced Auto).
 pub fn available_ram_bytes() -> u64 {
-    if let Ok(s) = std::env::var("RLX_UNLIMITED_OCR_ASSUME_RAM_BYTES") {
-        if let Ok(n) = s.parse::<u64>() {
-            return n;
-        }
+    if let Ok(s) = std::env::var("RLX_UNLIMITED_OCR_ASSUME_RAM_BYTES")
+        && let Ok(n) = s.parse::<u64>()
+    {
+        return n;
     }
     platform_available_ram().unwrap_or(8 << 30)
 }

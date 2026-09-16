@@ -83,10 +83,10 @@ impl MetaTokenizer {
             for i in 0..parts.len() - 1 {
                 let mut merged = parts[i].clone();
                 merged.extend_from_slice(&parts[i + 1]);
-                if let Some(&rank) = self.ranks.get(&merged) {
-                    if best.map(|(_, r)| rank < r).unwrap_or(true) {
-                        best = Some((i, rank));
-                    }
+                if let Some(&rank) = self.ranks.get(&merged)
+                    && best.map(|(_, r)| rank < r).unwrap_or(true)
+                {
+                    best = Some((i, rank));
                 }
             }
             let Some((i, _)) = best else { break };

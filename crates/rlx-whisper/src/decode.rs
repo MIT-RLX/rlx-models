@@ -74,10 +74,8 @@ pub fn initial_prompt_opts_ex(
             ids.push(id);
         }
     }
-    if !timestamps {
-        if let Some(id) = tokenizer.token_to_id(NO_TIMESTAMPS_TOKEN) {
-            ids.push(id);
-        }
+    if !timestamps && let Some(id) = tokenizer.token_to_id(NO_TIMESTAMPS_TOKEN) {
+        ids.push(id);
     }
     Ok(ids)
 }

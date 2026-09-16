@@ -32,10 +32,10 @@ use rlx_runtime::{Device, parse_device};
 use crate::{MiraConfig, tokens};
 
 fn resolve_lm_device(requested: Device) -> Device {
-    if let Ok(v) = std::env::var("RLX_MIRATTS_LM_DEVICE") {
-        if let Ok(d) = parse_device(v.trim()) {
-            return d;
-        }
+    if let Ok(v) = std::env::var("RLX_MIRATTS_LM_DEVICE")
+        && let Ok(d) = parse_device(v.trim())
+    {
+        return d;
     }
     // GPU graph compile for the 0.5B AR is slow/fragile on first use; keep LM on host.
     match requested {

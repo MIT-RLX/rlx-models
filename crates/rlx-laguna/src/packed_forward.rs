@@ -236,10 +236,8 @@ fn packed_gemm_ex(
     force_serial: bool,
 ) -> Result<Vec<f32>> {
     // Experts: fused host — each slab pointer would force a Metal re-upload.
-    if !expert {
-        if let Some(dev) = maybe_accel(accel, m) {
-            return dev.matmul(x, bytes, m, k, n, scheme);
-        }
+    if !expert && let Some(dev) = maybe_accel(accel, m) {
+        return dev.matmul(x, bytes, m, k, n, scheme);
     }
     let mut y = vec![0.0; m * n];
     if expert {
@@ -868,13 +866,11 @@ fn moe_mlp(
         && !env_flag("RLX_LAGUNA_DEVICE_MOE_DISABLE");
     let want_batched_host = env_flag("RLX_LAGUNA_BATCHED_MOE");
 
-    if want_device_moe {
-        if let Some(dev) = accel {
-            return moe_mlp_batched_device(
-                dev, x, &scores, shared, seq, h, ne, top_k, inter, scale, norm_topk, bias, g_bytes,
-                g_scheme, u_bytes, u_scheme, d_bytes, d_scheme,
-            );
-        }
+    if want_device_moe && let Some(dev) = accel {
+        return moe_mlp_batched_device(
+            dev, x, &scores, shared, seq, h, ne, top_k, inter, scale, norm_topk, bias, g_bytes,
+            g_scheme, u_bytes, u_scheme, d_bytes, d_scheme,
+        );
     }
     if want_batched_host {
         return moe_mlp_batched_host(

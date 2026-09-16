@@ -50,16 +50,16 @@ const ACCEPTED_ARCHES: &[&str] = &["minimax-m2", "minimax_m2", "minimax"];
 // Runner now lives in `runner` module — see `MiniMaxRunner`.
 
 pub fn cli_run(args: &[String]) -> Result<()> {
-    if let Some(first) = args.iter().position(|a| a == "--weights") {
-        if let Some(path) = args.get(first + 1) {
-            let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
-                .with_context(|| format!("rlx-minimax: parse {path}"))?;
-            if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
-                bail!(
-                    "rlx-minimax: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
-                    cfg.arch
-                );
-            }
+    if let Some(first) = args.iter().position(|a| a == "--weights")
+        && let Some(path) = args.get(first + 1)
+    {
+        let cfg = LlamaBaseConfig::from_gguf_path(Path::new(path))
+            .with_context(|| format!("rlx-minimax: parse {path}"))?;
+        if !ACCEPTED_ARCHES.contains(&cfg.arch.as_str()) {
+            bail!(
+                "rlx-minimax: {path}: GGUF arch = `{}`, expected one of {ACCEPTED_ARCHES:?}",
+                cfg.arch
+            );
         }
     }
     bail!("rlx-minimax: runner-level state plumbing still TODO")

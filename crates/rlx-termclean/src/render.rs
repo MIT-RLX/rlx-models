@@ -297,14 +297,15 @@ fn wrap_layout(rng: &mut Rng, id: u64) -> Sample {
     let mut hyph_head: Option<(usize, String)> = None;
     if lines.len() > 1 && rng.chance(0.35) {
         let hb = rng.below(lines.len() - 1);
-        if let Some(fw) = lines[hb + 1].first().cloned() {
-            if fw.is_ascii() && fw.len() >= 4 {
-                let k = rng.range(2, fw.len() - 1);
-                let head = fw[..k].to_string();
-                let tail = fw[k..].to_string();
-                lines[hb + 1][0] = tail;
-                hyph_head = Some((hb, head));
-            }
+        if let Some(fw) = lines[hb + 1].first().cloned()
+            && fw.is_ascii()
+            && fw.len() >= 4
+        {
+            let k = rng.range(2, fw.len() - 1);
+            let head = fw[..k].to_string();
+            let tail = fw[k..].to_string();
+            lines[hb + 1][0] = tail;
+            hyph_head = Some((hb, head));
         }
     }
 
@@ -317,12 +318,12 @@ fn wrap_layout(rng: &mut Rng, id: u64) -> Sample {
             }
             scr.content(w);
         }
-        if let Some((hb, head)) = &hyph_head {
-            if *hb == i {
-                scr.content(" ");
-                scr.content(head);
-                scr.chrome("-");
-            }
+        if let Some((hb, head)) = &hyph_head
+            && *hb == i
+        {
+            scr.content(" ");
+            scr.content(head);
+            scr.chrome("-");
         }
         if i + 1 < n {
             scr.nl();
