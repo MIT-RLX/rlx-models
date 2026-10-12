@@ -32,12 +32,12 @@ use support::gguf_path;
 const DEFAULT_MMPROJ: &str = "/tmp/rlx-models/Qwen3.5-0.8B-mmproj.gguf";
 
 fn mmproj_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("QWEN35_MMPROJ_PATH") {
-        if !p.is_empty() {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                return Some(path);
-            }
+    if let Ok(p) = std::env::var("QWEN35_MMPROJ_PATH")
+        && !p.is_empty()
+    {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            return Some(path);
         }
     }
     let path = PathBuf::from(DEFAULT_MMPROJ);
@@ -153,7 +153,7 @@ fn qwen35_real_gguf_mmproj_assembled_prefill() {
     let prefill = mm
         .assemble(
             |s| Ok(s.bytes().map(|b| (b as u32 % 31 + 1).max(1)).collect()),
-            &w.token_embd(),
+            w.token_embd(),
             cfg.hidden_size,
             0,
         )

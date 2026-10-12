@@ -78,6 +78,84 @@ let path = resolve_weight_query(
 
 Also re-exported from `rlx_models::` and `rlx_cli::`.
 
+## Running any model (`lm_registry`)
+
+Two registries, deliberately separate:
+
+| registry | answers | depends on |
+|---|---|---|
+| `model_registry` | *which crate handles this architecture* — arches, HF `model_type`s, a hint | nothing (static table) |
+| `lm_registry` | *construct it* | the model crate, so it is registered at runtime |
+
+A constructor is a plain `fn(&Path, &LmBuildOptions) -> Result<Box<dyn LmRunner>>`,
+so **any crate — in this workspace or outside it — can add a model**:
+
+```rust
+use rlx_models_core::lm_registry::{LmBuildOptions, LmRunnerRegistration, register_lm_runner};
+
+register_lm_runner(LmRunnerRegistration {
+    runner: "mine",
+    build: |path, opts| Ok(Box::new(MyRunner::open(path, opts.device)?)),
+});
+```
+
+Then `rlx_models::run::auto_runner` builds it like any builtin, and
+`LmBuildOptions::servable()` gives it the host-driven decode pair for free even
+if it implements only `predict_logits`.
+
+**Capabilities are declared, not discovered.** `with_mmproj()` says the
+constructor accepts a vision encoder; without it, `build_lm_runner` refuses an
+mmproj centrally and appends the family's `mmproj_note`. That used to be four
+hand-written checks inside the dispatch, which meant a newly registered family
+silently *ignored* an mmproj the caller asked for — the worst outcome of the
+three, because the request looks honoured. `lm_runner_supports_mmproj(name)`
+answers the same question without building anything.
+
+`LmRunnerRegistration` is `#[non_exhaustive]`: construct it with `new()` and
+the builder methods. The type will grow as families declare more capabilities,
+and a struct literal would break every registrant on each addition. An external crate needs `rlx-models-core`
+and `rlx-runtime` — **not** the ~200-crate facade.
+
+This replaced a hardcoded `match` inside the facade, which had three costs: an
+out-of-tree crate could not add a family at all; every new family meant editing
+the facade, and that edit is easy to forget — `rlx-qwen4exp` and `rlx-minimax`
+both shipped complete `LmRunner` implementations that nothing could reach,
+because their own test suites passed without the arm; and using the generic path
+meant linking every family. Registration also makes the set **enumerable**, so
+`registered_lm_runners()` lets a test assert that each constructor is reachable
+from the architecture tables rather than a human keeping a list in sync.
+
+## Serving any `LmRunner` (`lm_host_driven`)
+
+`LmRunner` has two decode shapes: `generate`, which owns the loop, and the
+**host-driven** pair `prefill_logits` + `decode_logits`, which an HTTP server
+needs so that sampling and stop handling stay above the model. The trait's
+default for the pair is `unsupported`, and most model families here have not
+overridden it.
+
+The pair cannot be defaulted in the trait — `decode_logits(token)` is stateful
+and a trait default has nowhere to keep the context. `HostDriven` keeps it:
+
+```rust
+use rlx_models_core::lm_host_driven::HostDriven;
+use rlx_runtime::lm::LmRunner;
+
+let mut runner: HostDriven<dyn LmRunner> = HostDriven::new(boxed_runner);
+let logits = runner.prefill_logits(&prompt_ids)?;
+```
+
+`rlx_models::run::auto_runner_servable(path)` is the end of this chain: it
+sniffs any supported checkpoint, builds the right family's runner, and wraps it
+so the host-driven pair always works — one call from a path to something a
+server can drive.
+
+It takes `Box<dyn LmRunner>` (what callers actually hold; `Box<dyn LmRunner>`
+does not itself implement `LmRunner`), probes capability lazily on the first
+real prefill rather than calling into the model at construction, and only falls
+back on an *unsupported* error — a real failure is returned as-is. The fallback
+is **quadratic**; `is_passthrough()` reports whether it is engaged and
+`reprefills()` counts it. See [`rlx-serve`](../rlx-serve)'s `host_drivable`.
+
 ## MXFP4 encoder
 
 [`mxfp4_pack`](src/mxfp4_pack.rs) is rlx's f32 → MXFP4 **encoder** — E2M1 nibbles

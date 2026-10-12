@@ -35,7 +35,7 @@
 //! DAT has no relative-position *table*; it has a small MLP
 //! (`DynamicPosBias`) that maps a displacement `(dy, dx)` to a per-head bias.
 //! Its inputs (`rpe_biases`) are a fixed buffer and its weights are frozen at
-//! inference, so [`dynamic_pos_bias`] evaluates the whole MLP on the host and
+//! inference, so `dynamic_pos_bias` evaluates the whole MLP on the host and
 //! injects the result as a constant — the graph never sees a `Linear` there.
 //! `BatchNorm2d` is likewise folded to a per-channel scale/shift pair.
 //!

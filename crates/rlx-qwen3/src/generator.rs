@@ -825,6 +825,23 @@ impl Qwen3Generator {
         self
     }
 
+    /// `true` when no disk-tiered KV store is attached.
+    ///
+    /// Always true without `mmap-kv`, where there is nothing to attach: the
+    /// field is gated on that feature, so a bare `self.kv_store.is_none()` at
+    /// the use site compiles only in the non-default build — which is how this
+    /// came to be needed.
+    fn kv_store_absent(&self) -> bool {
+        #[cfg(feature = "mmap-kv")]
+        {
+            self.kv_store.is_none()
+        }
+        #[cfg(not(feature = "mmap-kv"))]
+        {
+            true
+        }
+    }
+
     /// Enable the disk-tiered million-token context store as the retention
     /// backend (see [`KvStoreConfig`]): aged-out blocks are offloaded (append-
     /// once, quantized) and each decode step the top-k query-relevant blocks
@@ -1076,11 +1093,12 @@ impl Qwen3Generator {
             )
         };
         // hybrid3 applies the gate internally; rrf / pure-embed gate here.
-        if st.relevance_gate > 0.0 && (st.rrf || pure_embed) {
-            if let Some(top) = hits.first().map(|r| r.score) {
-                let floor = st.relevance_gate * top;
-                hits.retain(|r| r.score >= floor);
-            }
+        if st.relevance_gate > 0.0
+            && (st.rrf || pure_embed)
+            && let Some(top) = hits.first().map(|r| r.score)
+        {
+            let floor = st.relevance_gate * top;
+            hits.retain(|r| r.score >= floor);
         }
         // Recover span text from the frozen original stream when set (interleave
         // re-prefills clobber the live `self.tokens`), else the live history.
@@ -1387,7 +1405,29 @@ impl Qwen3Generator {
         // The token we feed into decode is whatever's after the cached
         // prefix in `self.tokens`. After a prior cached step this is
         // the just-sampled token; after seeding it's the same.
-        if self.tokens.len() <= past_seq {
+        //
+        // That holds only while the cache really IS a prefix of `self.tokens`.
+        // With the KV store attached it is not: the retrieval splice rebuilds
+        // the cache out of kept + retrieved rows and sets
+        // `past_len = entries.len()` (see the `Src::Kept` / `Src::Retrieved`
+        // rebuild in `apply_retention`), so the row count tracks the retrieved
+        // context, not the token history. A short new prompt against a long
+        // retained context then legitimately has `past_seq > tokens.len()` —
+        // and this check rejected it, which killed every turn after the first in
+        // a session: measured through NeuroSkill's daemon on Qwen3-0.6B, 0 of 8
+        // multi-turn turns survived with the store on, all 8 with it off, the
+        // failure being `cache invariant violated: tokens.len() 38 <= past_seq
+        // 260`.
+        //
+        // What the step actually needs is a token to feed, which the
+        // `tokens.is_empty()` guard at the top of this function already
+        // guarantees. Positions stay correct independently of the row count:
+        // `abs_pos` below is the newest token's absolute position, and the
+        // retrieved rows carry their own (the manager sorts its resident
+        // metadata by `abs_pos` for exactly this reason). So keep the strict
+        // prefix check only where a violation really is a bug — an unspliced
+        // cache — and let a spliced one through.
+        if self.kv_store_absent() && self.tokens.len() <= past_seq {
             anyhow::bail!(
                 "cache invariant violated: tokens.len() {} <= past_seq {}",
                 self.tokens.len(),
@@ -1404,16 +1444,51 @@ impl Qwen3Generator {
         // Branch: Q-export one-shot (retrieval Q·K scoring) > bucketed compile
         // cache > plain one-shot. The Q-export path rebuilds the graph per step
         // (slower) but captures the model's query for block relevance scoring.
-        let (logits, new_k, new_v) = if self.q_scoring {
-            self.decode_step_oneshot_q(past_seq, abs_pos, input_tok)?
-        } else if self.decode_compile_cache.is_some()
-            && self
+        //
+        // Both one-shot paths rebuild the decode graph from `weights_cache`,
+        // which the native-packed constructor deliberately leaves EMPTY (the
+        // projections lower to `Op::DequantMatMul` over the GGUF blob instead
+        // — see `new_native_packed_decode`). So for a packed runner they
+        // cannot produce an answer, only
+        // `weight not found: model.embed_tokens.weight` from the first
+        // `WeightMap::take`. That error names a tensor and says nothing about
+        // the real cause, and it cost a downstream caller a long hunt through
+        // GGUF-vs-safetensors tensor naming before the actual problem — a
+        // decode-bucket ladder that only reached `max_seq + 64` — turned up.
+        // Refuse with the cause instead, the way the batched paths already do
+        // ("past_seq … outside decode buckets").
+        let bucket_hit = self
+            .decode_compile_cache
+            .as_ref()
+            .and_then(|c| c.bucket_for(past_seq as u64))
+            .is_some();
+        if self.native_packed_gguf.is_some() && (self.q_scoring || !bucket_hit) {
+            let covered = self
                 .decode_compile_cache
                 .as_ref()
-                .unwrap()
-                .bucket_for(past_seq as u64)
-                .is_some()
-        {
+                .and_then(|c| c.buckets().last().map(|r| r.end - 1));
+            let reason = if self.q_scoring {
+                "query_scoring (Q·K retrieval) forces the one-shot decode path, which is F32-only"
+                    .to_string()
+            } else {
+                format!(
+                    "past_seq {past_seq} is outside the decode buckets ({})",
+                    match covered {
+                        Some(up) => format!("ladder covers 1..={up}"),
+                        None => "no decode compile cache".to_string(),
+                    }
+                )
+            };
+            anyhow::bail!(
+                "qwen3 packed decode: {reason}. A packed (K-quant GGUF) runner has no F32 \
+                 decode fallback — raise the runner's context so the ladder covers this \
+                 length (`Qwen3RunnerBuilder::max_seq`, default 128 → buckets to 256), or \
+                 build the runner with `packed_weights(false)`."
+            );
+        }
+        let (logits, new_k, new_v) = if self.q_scoring {
+            self.decode_step_oneshot_q(past_seq, abs_pos, input_tok)?
+        } else if bucket_hit {
             self.decode_step_bucketed(past_seq, abs_pos, input_tok)?
         } else {
             self.decode_step_oneshot(past_seq, abs_pos, input_tok)?
@@ -2033,11 +2108,11 @@ impl Qwen3Generator {
                             st.lexical_weight > 0.0,
                             st.dense_weight > 0.0,
                         );
-                        if st.relevance_gate > 0.0 {
-                            if let Some(top) = h.first().map(|r| r.score) {
-                                let floor = st.relevance_gate * top;
-                                h.retain(|r| r.score >= floor);
-                            }
+                        if st.relevance_gate > 0.0
+                            && let Some(top) = h.first().map(|r| r.score)
+                        {
+                            let floor = st.relevance_gate * top;
+                            h.retain(|r| r.score >= floor);
                         }
                         h
                     } else if pure_embed {
@@ -2045,11 +2120,11 @@ impl Qwen3Generator {
                         // past a few hundred blocks; exact is correct AND cheap at
                         // ≤~1M-token block granularity). Relevance-gate applied below.
                         let mut h = st.store.retrieve_embed_exact(&eq, st.topk);
-                        if st.relevance_gate > 0.0 {
-                            if let Some(top) = h.first().map(|r| r.score) {
-                                let floor = st.relevance_gate * top;
-                                h.retain(|r| r.score >= floor);
-                            }
+                        if st.relevance_gate > 0.0
+                            && let Some(top) = h.first().map(|r| r.score)
+                        {
+                            let floor = st.relevance_gate * top;
+                            h.retain(|r| r.score >= floor);
                         }
                         h
                     } else {

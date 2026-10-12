@@ -56,7 +56,12 @@ pub struct AudioConfig {
     pub out_dims: usize,      // output_proj_dims 1536
     pub sub_ch: [usize; 2],   // subsampling_conv_channels [128, 32]
     pub feature_size: usize,  // 128 mel bins
-    pub invalid_logit: f32,   // attention_invalid_logits_value -1e9
+    /// `use_clipped_linears`: every audio linear carries learned
+    /// `input_min`/`input_max`/`output_min`/`output_max` scalars and clamps
+    /// around the matmul. `google/embeddinggemma-2` sets it; Gemma 4 E2B does
+    /// not, and its checkpoint ships no bound tensors at all.
+    pub use_clipped_linears: bool,
+    pub invalid_logit: f32, // attention_invalid_logits_value -1e9
 }
 
 impl Default for AudioConfig {
@@ -77,6 +82,8 @@ impl Default for AudioConfig {
             sub_ch: [128, 32],
             feature_size: 128,
             invalid_logit: -1.0e9,
+            // Gemma 4 E2B, the default this describes, ships no bound tensors.
+            use_clipped_linears: false,
         }
     }
 }
@@ -146,6 +153,50 @@ pub fn audio_block_mask(cfg: &AudioConfig, seq: usize) -> (Vec<f32>, usize) {
 }
 
 // ── weight helpers (shared with the vision tower's conventions) ─────
+/// A `Gemma4ClippableLinear`: clamp the input, matmul (no bias), clamp the
+/// output.
+///
+/// `pfx` is the module path *without* `.linear.weight` — the weight lives at
+/// `{pfx}.linear.weight` and the four bounds at `{pfx}.{input,output}_{min,max}`.
+///
+/// The bounds are scalar buffers that the reference initializes to `±inf`, so
+/// an untrained bound means "no clipping". Rather than emitting
+/// `clamp(x, -inf, inf)` and relying on every backend to treat that as the
+/// identity, a non-finite bound is simply not emitted — same arithmetic, and no
+/// infinities in the graph.
+fn clipped_linear(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    w: &mut dyn WeightLoader,
+    pfx: &str,
+    x: NodeId,
+    clipped: bool,
+) -> Result<NodeId> {
+    let weight = load_t(g, params, w, &format!("{pfx}.linear.weight"))?;
+    if !clipped {
+        return Ok(g.mm(x, weight));
+    }
+    let bound = |w: &mut dyn WeightLoader, which: &str| -> Option<f32> {
+        // Absent is as good as untrained: both mean "do not clip".
+        let (v, _) = w.take(&format!("{pfx}.{which}")).ok()?;
+        v.first().copied().filter(|b| b.is_finite())
+    };
+    let in_min = bound(w, "input_min");
+    let in_max = bound(w, "input_max");
+    let out_min = bound(w, "output_min");
+    let out_max = bound(w, "output_max");
+
+    let x = match (in_min, in_max) {
+        (None, None) => x,
+        (lo, hi) => g.clamp_(x, lo.unwrap_or(f32::MIN), hi.unwrap_or(f32::MAX)),
+    };
+    let y = g.mm(x, weight);
+    Ok(match (out_min, out_max) {
+        (None, None) => y,
+        (lo, hi) => g.clamp_(y, lo.unwrap_or(f32::MIN), hi.unwrap_or(f32::MAX)),
+    })
+}
+
 fn load_t(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
@@ -291,11 +342,23 @@ fn feed_forward(
         h,
         cfg.eps,
     )?;
-    let w1 = load_t(g, params, w, &format!("{pfx}.ffw_layer_1.linear.weight"))?;
-    let a = g.mm(normed, w1);
+    let a = clipped_linear(
+        g,
+        params,
+        w,
+        &format!("{pfx}.ffw_layer_1"),
+        normed,
+        cfg.use_clipped_linears,
+    )?;
     let a = g.silu(a);
-    let w2 = load_t(g, params, w, &format!("{pfx}.ffw_layer_2.linear.weight"))?;
-    let b = g.mm(a, w2);
+    let b = clipped_linear(
+        g,
+        params,
+        w,
+        &format!("{pfx}.ffw_layer_2"),
+        a,
+        cfg.use_clipped_linears,
+    )?;
     let b = rms(
         g,
         params,
@@ -338,8 +401,14 @@ fn light_conv(
         h,
         cfg.eps,
     )?;
-    let ws = load_t(g, params, w, &format!("{pfx}.linear_start.linear.weight"))?;
-    let st = g.mm(normed, ws); // [B,seq,2h]
+    let st = clipped_linear(
+        g,
+        params,
+        w,
+        &format!("{pfx}.linear_start"),
+        normed,
+        cfg.use_clipped_linears,
+    )?; // [B,seq,2h]
     // GLU(dim=-1): a · sigmoid(b)
     let a = g.narrow_(st, 2, 0, h);
     let bgate = g.narrow_(st, 2, h, h);
@@ -377,8 +446,14 @@ fn light_conv(
         cfg.eps,
     )?;
     let conv = g.silu(conv);
-    let we = load_t(g, params, w, &format!("{pfx}.linear_end.linear.weight"))?;
-    let end = g.mm(conv, we); // [B,seq,h]
+    let end = clipped_linear(
+        g,
+        params,
+        w,
+        &format!("{pfx}.linear_end"),
+        conv,
+        cfg.use_clipped_linears,
+    )?; // [B,seq,h]
     Ok(g.add(x, end))
 }
 
@@ -435,12 +510,10 @@ fn audio_attention(
     let npos = ctx / 2 + 1;
     let f = DType::F32;
 
-    let qw = load_t(g, params, w, &format!("{pfx}.q_proj.linear.weight"))?;
-    let kw = load_t(g, params, w, &format!("{pfx}.k_proj.linear.weight"))?;
-    let vw = load_t(g, params, w, &format!("{pfx}.v_proj.linear.weight"))?;
-    let q = g.mm(x, qw);
-    let k = g.mm(x, kw);
-    let v = g.mm(x, vw);
+    let c = cfg.use_clipped_linears;
+    let q = clipped_linear(g, params, w, &format!("{pfx}.q_proj"), x, c)?;
+    let k = clipped_linear(g, params, w, &format!("{pfx}.k_proj"), x, c)?;
+    let v = clipped_linear(g, params, w, &format!("{pfx}.v_proj"), x, c)?;
     let q = g.reshape_(q, vec![batch as i64, seq as i64, nh as i64, hd as i64]);
     let k = g.reshape_(k, vec![batch as i64, seq as i64, nh as i64, hd as i64]);
     let v = g.reshape_(v, vec![batch as i64, seq as i64, nh as i64, hd as i64]);
@@ -599,8 +672,14 @@ fn audio_attention(
     let o = g.transpose_(o, vec![0, 2, 3, 1, 4]); // [B,nb,chunk,nh,hd]
     let o = g.reshape_(o, vec![batch as i64, (nb * chunk) as i64, h as i64]);
     let o = g.narrow_(o, 1, 0, seq); // drop block padding
-    let pw = load_t(g, params, w, &format!("{pfx}.post.linear.weight"))?;
-    Ok(g.mm(o, pw))
+    clipped_linear(
+        g,
+        params,
+        w,
+        &format!("{pfx}.post"),
+        o,
+        cfg.use_clipped_linears,
+    )
 }
 
 /// One conformer block: FF1 → (norm_pre_attn → attn → norm_post_attn + res) →

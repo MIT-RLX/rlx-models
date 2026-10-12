@@ -56,3 +56,7 @@ path = "src/bin/rlx_llama32.rs"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Driving a pipeline across threads, for the parity test only.
+rlx-distributed = { workspace = true }

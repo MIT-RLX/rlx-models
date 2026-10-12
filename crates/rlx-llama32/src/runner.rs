@@ -17,10 +17,11 @@ use crate::prefill_mode::MetalGgufPrefillMode;
 use crate::{Llama32Config, Llama32Generator, llama32_cfg_from_gguf};
 use anyhow::{Context, Result, anyhow, bail};
 use rlx_cli::{LmRunner, WeightFormat};
+use rlx_core::lm_builder::LmBuilderCommon;
 use rlx_gguf::{GgufFile, MetaValue};
 use rlx_qwen3::SampleOpts;
 use rlx_runtime::Device;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // ────────────────────────────────────────────────────────────────
 // LLaMA-3.2 runner — Meta Llama 3.x small LMs (1B / 3B).
@@ -37,13 +38,10 @@ pub type Llama32ConfigSource = rlx_runtime::ConfigSource<Llama32Config>;
 
 #[derive(Debug, Clone)]
 pub struct Llama32RunnerBuilder {
-    weights: Option<PathBuf>,
-    config: Option<Llama32ConfigSource>,
-    device: Option<Device>,
-    max_seq: Option<usize>,
-    max_memory_gb: Option<f32>,
-    stream: bool,
+    common: LmBuilderCommon<Llama32Config>,
+    /// Family-local: `rlx_qwen3::SampleOpts`, not the `rlx_runtime` one.
     sample: Option<SampleOpts>,
+    /// Family-local: `rlx_cli::WeightFormat`, not the `rlx_runtime` one.
     format: Option<WeightFormat>,
     /// `None` = auto (packed when GGUF ≥ 256 MB). `Some(_)` is an explicit override.
     packed_weights: Option<bool>,
@@ -55,12 +53,7 @@ pub struct Llama32RunnerBuilder {
 impl Default for Llama32RunnerBuilder {
     fn default() -> Self {
         Self {
-            weights: None,
-            config: None,
-            device: None,
-            max_seq: None,
-            max_memory_gb: None,
-            stream: true,
+            common: LmBuilderCommon::default(),
             sample: None,
             format: None,
             packed_weights: None,
@@ -70,45 +63,15 @@ impl Default for Llama32RunnerBuilder {
 }
 
 impl Llama32RunnerBuilder {
-    pub fn weights<P: Into<PathBuf>>(mut self, path: P) -> Self {
-        self.weights = Some(path.into());
-        self
-    }
+    rlx_core::lm_builder_setters!(Llama32Config);
 
+    /// Override the format inferred from the weights path.
     pub fn format(mut self, fmt: WeightFormat) -> Self {
         self.format = Some(fmt);
         self
     }
 
-    pub fn config(mut self, src: Llama32ConfigSource) -> Self {
-        self.config = Some(src);
-        self
-    }
-
-    pub fn config_value(self, cfg: Llama32Config) -> Self {
-        self.config(Llama32ConfigSource::Explicit(cfg))
-    }
-
-    pub fn device(mut self, d: Device) -> Self {
-        self.device = Some(d);
-        self
-    }
-
-    pub fn max_seq(mut self, n: usize) -> Self {
-        self.max_seq = Some(n);
-        self
-    }
-
-    pub fn max_memory_gb(mut self, gb: f32) -> Self {
-        self.max_memory_gb = Some(gb);
-        self
-    }
-
-    pub fn stream(mut self, on: bool) -> Self {
-        self.stream = on;
-        self
-    }
-
+    /// Sampling options for `generate`. Default `SampleOpts::greedy()`.
     pub fn sample(mut self, opts: SampleOpts) -> Self {
         self.sample = Some(opts);
         self
@@ -131,9 +94,7 @@ impl Llama32RunnerBuilder {
     }
 
     pub fn build(self) -> Result<Llama32Runner> {
-        let weights_path = self
-            .weights
-            .ok_or_else(|| anyhow!("weights path required (call .weights(...))"))?;
+        let weights_path = self.common.weights_path()?.to_path_buf();
         let format = match self.format {
             Some(f) => f,
             None => {
@@ -144,26 +105,24 @@ impl Llama32RunnerBuilder {
                 }
             }
         };
-        let device = self.device.unwrap_or(Device::Cpu);
-        let max_seq = self.max_seq.unwrap_or(128);
-        let stream = self.stream;
+        // `device_or`, not `device_or_auto`: this family has always fallen
+        // back to the CPU rather than picking a device, and so have qwen3 and
+        // qwen35. Only gemma auto-picks. Kept as-is here so a builder
+        // cleanup does not quietly move three families onto the GPU.
+        let device = self.common.device_or(Device::Cpu);
+        let max_seq = self.common.max_seq_or(128);
+        let stream = self.common.stream;
         let sample = self.sample.unwrap_or_else(SampleOpts::greedy);
 
         let (cfg, total_bytes_estimate) = match format {
-            WeightFormat::Gguf => load_llama32_gguf_config(&weights_path, self.config.as_ref())?,
+            WeightFormat::Gguf => {
+                load_llama32_gguf_config(&weights_path, self.common.config.as_ref())?
+            }
             WeightFormat::Safetensors => {
-                load_llama32_safetensors_config(&weights_path, self.config.as_ref())?
+                load_llama32_safetensors_config(&weights_path, self.common.config.as_ref())?
             }
         };
-
-        if let Some(cap_gb) = self.max_memory_gb {
-            let est_gb = total_bytes_estimate as f32 / (1024.0 * 1024.0 * 1024.0);
-            if est_gb > cap_gb {
-                bail!(
-                    "weights would dequant to ~{est_gb:.1} GB at F32, exceeds cap {cap_gb:.1} GB"
-                );
-            }
-        }
+        self.common.check_memory_cap(total_bytes_estimate)?;
 
         let use_packed = self.packed_weights.unwrap_or_else(|| {
             matches!(format, WeightFormat::Gguf)
@@ -242,6 +201,11 @@ pub struct Llama32Runner {
     generator: Llama32Generator,
     cfg: Llama32Config,
     sample: SampleOpts,
+    /// Retained for builder API compatibility. Every generate path now
+    /// invokes the caller's per-token callback per token — it is the only
+    /// token sink and carries the stop signal — so this no longer gates
+    /// anything. Same resolution as `rlx-qwen3`'s and `rlx-gemma`'s.
+    #[allow(dead_code)]
     stream: bool,
     device: Device,
     packed_weights: bool,
@@ -327,18 +291,17 @@ impl Llama32Runner {
         n_new: usize,
         mut on_token: impl FnMut(u32),
     ) -> Result<Vec<u32>> {
-        self.generator.prefill(prompt_ids);
-        let tokens = if self.stream {
-            self.generator
-                .generate_cached_with(n_new, self.sample, &mut on_token)?
-        } else {
-            let toks = self.generator.generate_cached(n_new, self.sample)?;
-            for &t in &toks {
-                on_token(t);
-            }
-            toks
-        };
-        Ok(tokens)
+        // One loop, through `generate_until`. The `stream(false)` branch this
+        // replaces collected every token first and only then replayed the
+        // callback: identical ids in identical order, except that a caller
+        // asking to be told per token was told at the end instead — and a
+        // stop could not take effect at all, which is what made the trait
+        // impl's dropped bool invisible. qwen3 and gemma settled this the
+        // same way.
+        self.generate_until(prompt_ids, n_new, |tok| {
+            on_token(tok);
+            true
+        })
     }
 
     /// KV-cached generation with an early stop. `keep_going` is called with
@@ -368,15 +331,34 @@ impl LmRunner for Llama32Runner {
     fn predict_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
         Llama32Runner::predict_logits(self, prompt_ids)
     }
+
+    /// The host-driven decode pair. Both already existed on the runner; not
+    /// forwarding them here left every caller that samples for itself —
+    /// anything applying a temperature, a stop string, a logit bias or
+    /// log-probs — with "host-driven logits decode unsupported", and so
+    /// unable to generate at all through this trait.
+    fn prefill_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        Llama32Runner::predict_logits(self, prompt_ids)
+    }
+
+    fn decode_logits(&mut self, token: u32) -> Result<Vec<f32>> {
+        Llama32Runner::decode_get_logits(self, token)
+    }
+
     fn generate(
         &mut self,
         prompt_ids: &[u32],
         n_new: usize,
         on_token: &mut dyn FnMut(u32) -> bool,
     ) -> Result<Vec<u32>> {
-        Llama32Runner::generate(self, prompt_ids, n_new, |tok| {
-            let _ = on_token(tok);
-        })
+        // `generate_until` honours the callback's `false`; the plain
+        // `generate` cannot, and routing through it dropped every reason a
+        // caller has to end a turn early — EOS, a stop string, a repetition
+        // guard — so a turn always ran the full `n_new`. (Its non-streaming
+        // branch is worse than it looks: it collects every token first and
+        // only then replays the callback, so a stop could not have been acted
+        // on even if the bool had been read.)
+        Llama32Runner::generate_until(self, prompt_ids, n_new, on_token)
     }
 }
 
@@ -453,6 +435,12 @@ fn load_llama32_safetensors_config(
         Some(Llama32ConfigSource::Embedded) => {
             bail!("ConfigSource::Embedded only valid for GGUF; pass JsonFile for safetensors")
         }
+        // Beside the weights — which means *inside* them when the path is a
+        // model directory rather than a file. A server hands over whichever
+        // the model library recorded, and looking in the parent of a
+        // directory lands one level too high, with an error naming a path
+        // the user never mentioned.
+        None if path.is_dir() => path.join("config.json"),
         None => path
             .parent()
             .ok_or_else(|| anyhow!("weights path has no parent dir"))?
@@ -480,4 +468,50 @@ fn default_st_size_estimate(path: &Path) -> u64 {
         return sum;
     }
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod builder_api_tests {
+    use super::*;
+
+    /// The chainable setter surface is public API, and it is now generated
+    /// by `rlx_core::lm_builder_setters!` rather than written out here.
+    ///
+    /// Two things this pins that a compile does not: that every setter still
+    /// exists under its old name and signature, and that the macro writes
+    /// each value into the field the builder actually reads. A setter wired
+    /// to the wrong field of the right type — `max_seq` into `max_memory_gb`
+    /// — compiles, and then the model is built with someone else's number.
+    #[test]
+    fn every_setter_still_exists_and_lands_where_build_reads_it() {
+        let b = Llama32Runner::builder()
+            .weights("/tmp/does-not-need-to-exist.gguf")
+            .config(Llama32ConfigSource::Embedded)
+            .device(Device::Cpu)
+            .max_seq(77)
+            .max_memory_gb(1.5)
+            .stream(false)
+            .sample(SampleOpts::greedy())
+            .format(WeightFormat::Gguf);
+
+        assert_eq!(
+            b.common.weights.as_deref(),
+            Some(std::path::Path::new("/tmp/does-not-need-to-exist.gguf"))
+        );
+        assert!(matches!(
+            b.common.config,
+            Some(Llama32ConfigSource::Embedded)
+        ));
+        assert_eq!(b.common.device, Some(Device::Cpu));
+        assert_eq!(b.common.max_seq, Some(77));
+        assert_eq!(b.common.max_memory_gb, Some(1.5));
+        assert!(!b.common.stream);
+        assert!(b.sample.is_some());
+        assert!(matches!(b.format, Some(WeightFormat::Gguf)));
+
+        // Unset stays unset, which is what keeps auto-device reachable.
+        let d = Llama32Runner::builder();
+        assert!(d.common.device.is_none());
+        assert!(d.common.max_seq.is_none());
+    }
 }

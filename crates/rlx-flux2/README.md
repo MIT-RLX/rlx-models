@@ -63,10 +63,10 @@ Lower-level pieces are all re-exported from the crate root:
 | Config | [`Flux2Config`](src/config.rs) (`flux2_dev`, `flux2_klein_9b`, `tiny`) |
 | Transformer forward | [`flux2_transformer_forward`](src/forward.rs), `Flux2ForwardInput`; graph builders in [`hir_builder`](src/hir_builder.rs) / [`builder`](src/builder.rs) |
 | Weights | [`extract_flux2_weights`](src/weights.rs), `adapt_bfl_weights`, NVFP4 packed loaders in [`packed`](src/packed.rs) / [`packed_gguf`](src/packed_gguf.rs) |
-| Text encoder | [`encode_flux2_prompt`](src/text_encoder.rs), `Flux2TextEncoderGraph` |
-| VAE | [`flux2_vae_decode`](src/vae.rs) / `flux2_vae_encode`, `Flux2VaeConfig` |
+| Text encoder | [`encode_flux2_prompt`](src/text_encoder/), `Flux2TextEncoderGraph` |
+| VAE | [`flux2_vae_decode`](src/vae/) / `flux2_vae_encode`, `Flux2VaeConfig` |
 | Scheduler / flow | [`flow_match_euler_step`](src/scheduler.rs), `sample_rectified_flow`, `generate_to_rgb` |
-| Guidance | Diamond posterior-sampling guidance in [`diamond`](src/diamond.rs) (`sample_rectified_flow_diamond`, reward hooks from [rlx-diamond](../rlx-diamond)) |
+| Guidance | Diamond posterior-sampling guidance in [`diamond`](src/diamond/) (`sample_rectified_flow_diamond`, reward hooks from [rlx-diamond](../rlx-diamond)) |
 
 ## Compile policy
 
@@ -79,4 +79,4 @@ Denoiser + VAE use compiled HIR on non-CPU backends. The text encoder uses compi
 ## How it fits
 
 - The text encoder is a Qwen3-shaped trunk from [rlx-qwen3](../rlx-qwen3); guidance rewards come from [rlx-diamond](../rlx-diamond).
-- Packed weights load through [rlx-gguf](../rlx-gguf); graphs compile and run via [rlx-ir](../rlx-ir) / [rlx-flow](../rlx-flow) / [rlx-runtime](../rlx-runtime).
+- Packed weights load through [rlx-gguf](https://docs.rs/rlx-gguf); graphs compile and run via [rlx-ir](https://docs.rs/rlx-ir) / [rlx-flow](https://docs.rs/rlx-flow) / [rlx-runtime](https://docs.rs/rlx-runtime).

@@ -2,6 +2,1390 @@
 
 ## Unreleased
 
+### Release prep: no upstream blocker left
+
+`docs/releasing.md` named `rlx-torch-ckpt` as the *current* hard blocker — an
+upstream crate that had never been uploaded, which makes the whole workspace
+unresolvable once the local path patch is removed (cargo resolves dev-deps at
+lock time, so a fresh clone cannot even load it). **It shipped: 0.2.16 and
+0.2.17 are both on the sparse index**, as is `rlx-opscope`, the previous
+blocker. `check-publishable.py --release` now reports only the two clean-tree
+problems, which are the uncommitted working tree and nothing to do with
+publishability.
+
+**34 manifests now inherit the workspace version.** They carried a literal
+`version = "0.2.16"` instead of `version.workspace = true`, which is the trap
+the 0.2.16 bump already paid for once: a workspace-table-only bump misses them
+and the crates silently ship at the old number. All 34 read exactly the
+workspace version, so the conversion is a no-op today — verified by diffing
+`cargo metadata` before and after, all 212 package versions byte-identical —
+and the next bump is one line instead of 35. The three crates left alone are
+in `[workspace.exclude]` and have no workspace to inherit from; one of them,
+`bench_matmul_rlx`, also pins `rlx-ir` and `rlx-runtime` at a literal
+`0.2.16` for the same reason, which is the one place the documented
+direct-upstream-pin trap still lives (`publish = false`, so it only affects
+opt-in manifest-path builds).
+
+So the gates stand as: `rust-lint-gate.sh --workspace` ok — `cargo fmt --all
+-- --check` clean, `clippy --workspace --all-targets -D warnings` clean,
+rustdoc `-D warnings` clean — `check-models-catalog.py` OK (184 families / 16
+categories, and the hand-maintained counts in `README.md` and `MODELS.md`
+agree — memory says those drift every release; they did not this time),
+`check-publishable.py` OK across 200 publishable crates, and
+`publish.sh --list` validating tier coverage with no gaps — including the two
+new untracked crates, `rlx-fgd` (correctly `publish = false`) and
+`rlx-qwen4exp`.
+
+`lint-all` deliberately omits feature states, so `check-feature-states.py`
+was run separately over the eight crates whose feature-gated code changed
+this session — `rlx-models-core`, `rlx-gemma`, `rlx-llama32`, `rlx-qwen3`,
+`rlx-qwen3-vl`, `rlx-mistral`, `rlx-minimax`, `rlx-qwen35` — all ok in both
+states. The `--changed` sweep was abandoned rather than waited out: 149
+modified files span thirty-odd crates at two full compiles each, and the
+crates it would have added are ones nothing in this session touched behind a
+feature gate.
+
+**One decision deliberately left to be made rather than made implicitly.**
+Upstream is **0.2.17** while this workspace is 0.2.16 and pins upstream at
+`^0.2.16`, which admits 0.2.17 — and the local `../rlx` checkout *is* 0.2.17.
+So the patched local build and a registry build resolve identically (no
+pin-vs-checkout drift of the kind that bit the 0.2.14 cycle), but rlx-models
+0.2.16 would ship built against upstream 0.2.17. Either bump both to 0.2.17 or
+pin `=0.2.16` on purpose; now written into `docs/releasing.md` as a
+precondition instead of being rediscovered next cycle.
+
+Also fixed in this file: the entry recording that deduplicating the LM
+builders was *not* done still sat above the entry recording that it was.
+
+### `microsoft/AesCode-8B` / `-32B` — stock Qwen3-VL, and the wiring they needed
+
+AesCode generates infographics (slides, posters, dashboards) as editable
+HTML/CSS from a prompt plus an image-generated aesthetic reference.
+Architecturally there is nothing new: **AesCode-8B matches
+`Qwen/Qwen3-VL-8B-Instruct` field for field and AesCode-32B matches
+`Qwen3-VL-32B-Instruct`** — text dims, `rope_theta` 5e6, `mrope_section
+[24, 20, 20]` with `mrope_interleaved`, and a tower of depth 27 / hidden 1152
+/ patch 16 / merge 2 / deepstack `[8, 16, 24]`. Each README names the base
+model, bartowski's GGUFs record it in `general.base_model.0.name`, and the
+chat template is byte-identical to stock Qwen3-VL's. So this is identify-then-
+wire, per `docs/adding-a-model.md`, not a port. All of it established from
+`config.json` and GGUF headers read over HTTP range requests — nothing
+downloaded.
+
+**The gap that mattered: a Qwen3-VL safetensors directory resolved to
+nothing.** `rlx-qwen3-vl`'s registry entry listed four GGUF arch spellings
+and an **empty** `hf_model_types`, and only the GGUF list is consulted for a
+GGUF. So `AesCode-8B-Q4_K_M.gguf` (arch `qwen3vl`) found the runner while the
+original safetensors checkpoint (`model_type: qwen3_vl`) found no runner at
+all. Now `&["qwen3_vl", "qwen3_vl_moe"]`, with both directions asserted in
+`auto_runner_coverage`.
+
+**The vision config was reading four fields fewer than it was given.**
+`spatial_merge_size`, `temporal_patch_size`, `num_position_embeddings` and
+`deepstack_visual_indexes` were all silently dropped — serde ignores unknown
+fields — so a real Qwen3-VL config parsed *successfully* into a geometry this
+crate's graph cannot compute. That graph emits one embedding per patch from
+the final layer only; a Qwen3-VL tower merges 2x2 patches and feeds three
+intermediate layers to the LM as well. Run it anyway and the language model
+gets **4x too many vision tokens drawn from the wrong features** — it answers
+confidently about an image it effectively did not see.
+
+The fields are read now, and `Qwen3VlVisionConfig::validate_supported`
+refuses, naming the merge factor, the token multiple, and where the real
+implementation is (`rlx-qwen35`'s `vision/` module, which `rlx-qwen3-vl`
+already depends on). `rlx-qwen4exp`'s mmproj reader already refused deepstack
+for the same reason, so this makes the two agree. A refusal is the right
+answer here: the alternative is a VLM that looks like it works.
+
+**So what runs today.** The text path: `qwen3_vl`/`qwen3vl` both resolve, and
+`Qwen3Config::from_file` parses either AesCode out of its nested
+`text_config` with `rope_theta` 5e6 intact (pinned by a test — a defaulted
+1e6 would be a model that degrades with context rather than one that fails).
+For text-only input Qwen3-VL's interleaved M-RoPE degenerates to the 1-D RoPE
+`rlx-qwen3` implements, so the trunk is correct, not approximated. The vision
+path refuses. Since AesCode's whole premise is the image reference, **these
+models are not usefully runnable until the tower is ported** — stated plainly
+in `MODELS.md` rather than implied by a green test.
+
+**Also corrected:** `rlx-qwen3-vl` was catalogued as `STUB (PLAN.md M7)` in
+both `MODELS.md` and its `Cargo.toml` description. That undersold half of it
+and oversold the other: the LM integration, `LmRunner` impl,
+`generate_multimodal` plumbing and image preprocessing are real, while the
+tower is the incomplete part. Both now say which half is which.
+`check-models-catalog.py` enforces that the two agree, which is how the stale
+description surfaced.
+
+One piece of dead code went with it: `Qwen3VlRunner::build`'s no-HF-config
+fallback built a `Qwen3VlVisionConfig`, threw it away with `let _ = cfg;`, and
+then built the identical struct again inline.
+
+### The LM builders now share one definition — and the reason they could not before
+
+`rlx-gemma`, `rlx-llama32` and `rlx-qwen3` each declared the same nine
+builder fields and wrote the same setters over them. Those fields are now
+`rlx_core::lm_builder::LmBuilderCommon<Cfg>` and the setters come from
+`rlx_core::lm_builder_setters!(FamilyConfig)`. The public chain is unchanged —
+`Qwen3Runner::builder().weights(..).device(..).max_seq(..)` still compiles
+exactly as before.
+
+**Why upstream's builder was never adopted — it is not what I first thought.**
+`rlx_runtime::LmRunnerBuilder<Cfg>` has these field names already and has had
+zero users in this workspace. I assumed the blocker was that it stores
+resolved values (`device: Device`) where the families store `Option<_>`, and
+`None` is what means "pick a device for this machine". That is true and it
+matters. But the harder reason only surfaced when the macro failed to compile:
+**it is typed against a different `SampleOpts` and `WeightFormat`.** This
+workspace has two of each — `rlx_qwen3::SampleOpts` beside
+`rlx_runtime::SampleOpts`, and `rlx_cli::WeightFormat` beside
+`rlx_runtime::WeightFormat` — same names, distinct types. Every family builder
+uses the first of each pair; upstream's builder uses the second. Adopting it
+means converting between two identically-named types at every call site.
+
+So `sample` and `format` stay family-local: their types live in `rlx-qwen3`
+and `rlx-cli`, both of which depend on `rlx-models-core`, so naming them in
+the shared struct would be a dependency cycle. **Collapsing the two
+`SampleOpts` (and the two `WeightFormat`) into one type each is the
+prerequisite for finishing this**, and it is a wider change than a builder
+cleanup — recorded rather than started.
+
+**Two divergences the merge exposed**, both preserved rather than quietly
+changed:
+
+- **`.build()` without `.device(..)` runs gemma on the GPU and llama32,
+  qwen3 and qwen35 on the CPU.** gemma calls `pick_lm_device` and logs it;
+  the other three do `unwrap_or(Device::Cpu)` silently. That reads downstream
+  as "gemma is mysteriously faster". The shared type offers both policies as
+  named methods — `device_or_auto(tag)` and `device_or(default)` — so each
+  call site states which it uses instead of burying it in an `unwrap_or`.
+  Converging them changes the default device for three crates and belongs in
+  its own commit.
+- **`packed_weights` means different things.** gemma and llama32 auto-enable
+  it for a GGUF over 256 MiB (gemma forces it off for multimodal); qwen3 does
+  too, with an extra Metal small-model exception — and qwen3's doc still
+  claimed "Default false". Behaviour, not duplication, so each family keeps
+  its own field, setter and doc.
+
+One improvement folded in rather than lost: qwen3's memory-cap error carried a
+second sentence telling the caller what to do about it ("raise the cap or pick
+a smaller model") that gemma's and llama32's copies lacked. The shared
+`check_memory_cap` keeps it, so all three now say it.
+
+**`rlx-qwen35` is deliberately left out.** It shares five of the setters but
+has no `max_memory_gb` and no `stream`, so adopting the macro would *add* a
+`max_memory_gb` setter that its `build()` ignores. A memory cap that silently
+does nothing is worse than the duplication it would remove.
+
+**Guarded.** Each of the three crates gets
+`every_setter_still_exists_and_lands_where_build_reads_it`, which calls the
+whole chain and asserts where each value landed — plus that unset stays unset,
+which is what keeps auto-device reachable. A compile cannot catch a setter
+wired to the wrong field of the right type (`max_seq` into `max_memory_gb`);
+sabotaging exactly that fails all three tests. `LmBuilderCommon` has five of
+its own covering both device policies, the cap, and the "call `.weights(...)`"
+error.
+
+This is not a line-count win: ~100 lines of duplicated fields and setters
+collapse into a 296-line module that is half documentation and tests. The win
+is one definition, one set of defaults (they had already drifted — `stream`
+was `true` in llama32 and `false` in the two that reached it through
+`#[derive(Default)]`), and the two findings above written down where the next
+person will hit them.
+
+### Host-driven decode went from 3 families to 8
+
+`LmRunner::{prefill_logits, decode_logits}` is the pair that hands the decode
+loop to the caller — its own sampling, logit bias, log-probs and stop
+detection — and it is what `rlx-serve` drives. Only **llama32, qwen3 and
+qwen4exp** implemented it. Everything else fell through to `generate`, which
+means the family's own `SampleOpts` instead of the caller's and no per-token
+logit access at all. The `HostDriven` adapter makes that fall-back work, which
+is exactly why nobody noticed it was happening.
+
+In every case added here the capability already existed one layer down and
+only the trait wiring was missing:
+
+- **gemma** — `GemmaGenerator::prefill_get_last_logits` / `decode_get_logits`
+  have been there all along (and are validated by
+  `incremental_decode_logits_match_full_prefill`).
+- **mistral** — wraps `Llama32Runner`, which has both halves; the wrapper
+  just never exposed them.
+- **lfm-vl / mistral-vl / qwen3-vl** — forward to their inner text runner.
+  Forwarding is right even when an inner family lacks the pair: the trait
+  default and the inner's refusal are the same "unsupported" error, so a
+  probing consumer sees no difference, while a family that *does* support it
+  stops being hidden behind the wrapper.
+
+**The two left out are left out on purpose**, now said so in code.
+`minimax-m3` re-forwards the whole context and keeps no KV cache, so a
+one-token `decode_logits` has nothing to advance — a KV cache is the
+prerequisite, not trait wiring. `qwen35-spec` *is* a decode loop: the draft
+proposes, the target verifies, and the accept/reject sampler decides how many
+tokens a step yields; a caller stepping one token at a time would get the
+target model with none of the speculation.
+
+**A test I wrote and then deleted.** I added a greedy end-to-end comparison —
+host-driven loop versus the family's own decode — and a sabotage walked
+straight through it: gemma's synthetic test config decodes a *constant*
+(`[8, 8, 8, 8]`), so feeding `decode_get_logits` the wrong token changed
+nothing. The pre-existing `incremental_decode_logits_match_full_prefill`
+already guards the composition that matters and does not depend on the output
+being varied, so the weak test is gone and that one now says what it guards.
+A test a sabotage ignores is worse than no test, because it reads as coverage.
+
+### `stream` no longer gates anything in llama32, gemma or qwen3
+
+Three crates that share eleven identical builder setters disagreed on what
+`stream` defaults to: llama32 set `true` explicitly, gemma and qwen3 got
+`false` from `#[derive(Default)]`. Chasing which was right turned out to be
+the wrong question — qwen3 had already retired the field as vestigial
+(`#[allow(dead_code)]`, setter kept for API compatibility) when its callback
+became the only token sink.
+
+One stale doc fell out of it: qwen3's `stream()` setter promised "Default
+true. Setting false makes `generate` collect all tokens before returning" —
+both halves wrong, since the builder derives `Default` (so it was `false`)
+and the collecting branch was already gone. All three setters now say they
+are accepted and ignored. The one in-repo caller that actually wanted
+streaming, gemma's multimodal CLI, was passing `.stream(true)` explicitly, so
+nothing was silently broken — the knob is simply moot now.
+
+gemma and llama32 now match. Every `stream(false)` branch was the same
+collect-then-replay shape: generate all tokens, *then* replay the callback
+over them. Identical ids in identical order — the only difference was that a
+caller asking to be told per token was told at the end instead. It is also
+why the dropped stop bool was invisible: on that branch a stop could not have
+taken effect even if the bool had been read. One loop now, either way, and
+the field is documented as vestigial in all three.
+
+The builders were deduplicated after this, against the reservation recorded
+here first — see *The LM builders now share one definition* above, including
+the reason that reservation was aimed at the wrong obstacle.
+
+### Five families ignored `LmRunner::generate`'s stop signal
+
+The trait callback is `FnMut(u32) -> bool`, where `false` means stop. Fixing
+qwen3's impl (which discarded it — see the entry below) raised the obvious
+question, and the answer was that the same `let _ = on_token(tok)` sat in four
+more places. An audit of every `impl LmRunner for` in the workspace:
+
+| family | before | now |
+| --- | --- | --- |
+| `rlx-gemma` | dropped the bool, no stoppable loop existed at any level | stoppable loop in the generator, the packed session and the runner |
+| `rlx-llama32` | dropped the bool — though `generate_until` was right there | trait impl routes to `generate_until` |
+| `rlx-mistral` | dropped the bool (wraps llama32) | `generate_until` forwards to llama32's |
+| `rlx-qwen35` (spec) | dropped the bool, deliberately | honoured; the stated reason does not hold, see below |
+| `rlx-qwen3` | the MLX-packed route still dropped it | `generate_packed_stoppable` |
+| lfm-vl, mistral-vl, qwen3-vl, qwen4exp | already forwarded | unchanged |
+| `minimax-m3` | no `generate` impl | unchanged — the trait default honours it |
+
+What it cost a caller: generation always ran the full `n_new`, so EOS, a user
+stop string, a stray `</think>` and a degenerate-repetition guard were all
+unreachable; `finish_reason` was permanently "length"; and every turn paid for
+tokens the caller had already rejected.
+
+**Who was affected, precisely.** `rlx-serve` was not: it drives
+`prefill_logits` / `decode_logits` itself and owns its token loop and its stop
+matching (`serve/stop.rs`). The callers that pay are the ones that hand the
+loop to the family — the CLI dispatch, `rlx-llm-bench`, `rlx-eval`, the
+per-crate chat examples, and out-of-tree consumers. Worth stating because
+"the server is fine" is the reason this survived: the most-exercised path in
+the workspace does not go through `LmRunner::generate` at all.
+
+While checking callers, one near-miss: `rlx-dflash`'s `DflashLoop::generate`
+takes `stop: FnMut(u32) -> bool` where **`true`** means stop, the opposite of
+`LmRunner`'s `on_token`, and two of its examples pass `|_| false` meaning
+"never stop". Different trait, so nothing broke — but the two conventions
+living one crate apart is a trap, and `|_| false` means opposite things in
+files a few directories from each other.
+
+**Two findings worth keeping.** llama32's and gemma's non-streaming branches
+collected every token *first* and only then replayed the callback — so a stop
+could not have taken effect there even if the bool had been read. A stoppable
+generate has to go through the decode loop, not around it, and both now use
+one loop regardless of `stream`.
+
+And qwen35's deferral — "speculative-decode stop semantics need to interact
+with the accept/reject sampler" — does not survive reading the loop: it
+*already* abandons the rest of a verified batch whenever `n_new` falls inside
+one, so mid-batch truncation is a state the decoder has to tolerate either
+way. Honouring the signal costs nothing that the budget path did not already
+cost.
+
+Every new loop uses the contract the trait default and llama32's
+`generate_until` already documented: `false` halts *after* that token, which
+is included in the result (the caller has seen it, and callers splice on what
+they were handed).
+
+**Guarded where it is cheap to guard.** `generate_cached_until_stops_when_the_callback_says_so`
+in `rlx-gemma`'s generator tests runs on a tiny synthetic model — no weights,
+no `#[ignore]` — with a companion test that an always-`true` callback still
+spends the whole budget, so the stop is a stop rather than an off-by-one. Two
+sabotages confirm it bites: dropping the bool (the original bug) and checking
+it before the token instead of after. qwen3's real-weight
+`lm_runner_honours_stop` test passes on a Qwen3-0.6B GGUF, and is worth noting
+for what it did *not* cover: `packed_weights(true)` on a GGUF builds a native
+packed *generator*, so it never reached the `PackedForward` route where the
+remaining qwen3 bug was. A passing stop test is not evidence that every packed
+path stops.
+
+### Tooling — `just lint-features`, for the states no gate builds
+
+`just lint` builds **default features only**, so code behind an optional feature
+is compiled by nothing. That hides a specific, repeatable break: a field
+declared `#[cfg(feature = "x")]` and used without the gate compiles for whoever
+turned `x` on and fails the build for everyone else. A 2026-08 sweep found ~90
+such errors; `rlx-qwen3`'s `kv_store` (fixed below) was another, and it broke
+the default build of `rlx-serve` and everything downstream of it.
+
+`scripts/check-feature-states.py` lints each package twice — no features, then
+all of its own features except those needing a toolchain the host lacks (CUDA,
+ROCm, Vulkan, MKL are *skipped*, not failed: a red build there means "you do not
+have CUDA", which is not a finding). Three ways to call it:
+
+    just lint-features rlx-qwen3     # named packages
+    just lint-features --changed     # whatever you are editing
+    just lint-features --all         # every package with features
+
+It is deliberately **not** in `just lint`: the full sweep is minutes of
+compilation, and the point is to make the check cheap to run on the crate in
+front of you.
+
+The states it checks are a crate's **default** features and its default
+features **plus every optional extra**. It deliberately does not test
+`--no-default-features`: most crates here declare a default their core path
+requires (`rlx-whisper` is `default = ["tokenizer", "timestamps"]` with the
+tokenizer behind a `dep:`), so a featureless build fails *by design* — 11
+errors for whisper — and reporting that is noise, not a finding. `--bare` opts
+in for a crate that genuinely claims to support it. The first version of this
+script got that wrong and spent its first run excavating an unsupported
+configuration.
+
+What the supported states do catch, and the default gate cannot: 5
+collapsible-`if` errors behind optional features across `rlx-qwen3`,
+`rlx-qwen3-tts` and `rlx-whisper`, plus feature-gated imports that are unused
+without their feature (`rlx-qwen35`'s `anyhow::Context`, four of
+`rlx-whisper`'s). All fixed; those crates now pass both states.
+
+### `rlx-qwen3` — FIXED: the default build was broken by a feature-gated field
+
+`Qwen3Generator::kv_store` is declared `#[cfg(feature = "mmap-kv")]`, and the
+cache-invariant check in the decode step read it ungated, so `cargo build -p
+rlx-qwen3` failed without that feature — and with it `rlx-serve`, which depends
+on it. Replaced with `kv_store_absent()`, which answers `true` where there is no
+store to attach, preserving the documented intent: the strict prefix check
+applies only to an unspliced cache. Verified in both feature states, which is
+the half that is easy to skip — gating a use site is how the mirror-image
+`unused` error gets introduced.
+
+### `rlx-qwen3` — `synth` + the pipeline stage's first automated test
+
+`Qwen3PipelineDecodeStage` had **no** automated coverage: five examples drive
+it, every one needing real weights. That is a bad place for a distributed
+stage, because its failures live at the seams — which tensor crosses a cut,
+which rank owns the embedding and which the head, how the KV cache is sliced —
+and each produces plausible, well-scaled, wrong logits.
+
+`tests/pipeline_equivalence.rs` now compares a 1-, 2- and 4-way split against
+the monolithic generator's logits, driving the `BlockRunner`s by hand in rank
+order (no transport needed), on the glm5next pattern. Two sabotages confirm it
+bites: relaying ranks low-to-high instead of high-to-low (rank 0 owns the head)
+diverges by 1.0 relative, and the monolithic reference had to be sliced to its
+last position — `sequence_logits` returns every position, which the first
+version of the test got wrong and the length assertion caught.
+
+That needed weights an integration test can reach, so `rlx_qwen3::synth` is a
+**public** module — the same reason `rlx-qwen4exp::synth` is. It is not a move
+of the existing helper: `flow.rs`'s test-private `synthetic_weights` is
+single-layer and **all zeros**, which is fine for checking that a graph builds
+and useless for checking that two paths agree, since with zero weights every
+path produces the same constant. `synth` gives N layers of deterministic
+non-zero weights, seeded per layer.
+
+A third sabotage found a blind spot worth recording: with *identical*
+per-layer weights both equivalence tests still pass, because an interchangeable
+layer stack cannot reveal a layer-order mistake. The thing that catches it is
+`synth`'s own `each_layer_has_its_own_weights`, so that unit test is
+load-bearing for the integration test rather than a formality — stated in the
+test's module docs.
+
+### `rlx-qwen3` — the pipeline stage folded onto `FamilyPipelineStage`
+
+llama32 reaches the shared `PipelineFamily` abstraction in a 68-line impl;
+qwen3 hand-rolled 886 lines of `seed` / `decode_recompile` / `decode_bucketed`
+beside it. Now gone: `Qwen3Family` is 95 lines of two graph builders, four
+shapes and `decode_inputs`, and `Qwen3PipelineDecodeStage` is a type alias for
+`FamilyPipelineStage<Qwen3Family>` with `stage()` / `stage_with_layers()`
+constructors — the same shape `rlx-llama32` already had, so the two families
+now read alike. The file is 886 → 672 lines and the shared stage is the only
+copy of the KV cache, the decode step, the weight filter and the bucketed
+compile cache.
+
+**What made it look harder than it was.** qwen3's stage renumbered every
+per-layer tensor to a local index (`model.layers.{g}` → `model.layers.{g-start}`),
+cloning the whole block's weights per rank, because its graph builders count
+layers from zero. `Qwen3DecoderStage` and `Qwen3DecodeLayerStage` turn out to
+carry `layer_prefix` (weights) and `layer_idx` (cache slot) as separate public
+fields, so a layer can read global weight names while keeping a local
+`past_k_{i}` slot — no upstream change, and the shared stage's *default*
+`block_weights` then fits qwen3 exactly.
+
+**The guard had a hole, and the hole was the tolerance.** The equivalence test
+above drives each stage once, which only ever exercises `seed` — so the two
+decode paths, where a generation spends all of its time, were uncovered.
+`a_decode_step_matches_prefilling_the_longer_prompt` now relays two decode
+steps at world 1/2/4 through *both* the recompile and the bucketed-cache path
+and compares against prefilling the longer prompt.
+
+Measuring it first is what made it a real test. On the CPU every prefill width
+here is **bit-exact** against the monolithic graph and the bucketed decode
+differs by 4.7e-7, while a decode position stuck at zero every step — the
+classic way to break this — moves the logits by only **1.5e-4** relative at
+this size. The 2e-3 tolerance the prefill tests were written with therefore
+passes a model that re-attends position zero forever: sabotage confirmed it,
+twice, before the tolerance came down to 1e-5. Both sabotages (frozen position;
+every layer of a block reading the block's first layer) now fail only the
+decode test, which is the discrimination worth having.
+
+### `rlx-qwen3` — Metal parity tests failed a plain `cargo test`
+
+`tests/metal_decode_graph_parity.rs` is gated on macOS but not on the `metal`
+feature, and `Session::new(Device::Metal)` *panics* on a build without the
+backend rather than erroring — so 10 of its 11 tests failed `cargo test -p
+rlx-qwen3` on a Mac, for want of a backend rather than a parity break. Now
+skips with a message, the way the other backend-parity tests here do, and still
+passes 11/11 under `--features metal`.
+
+### `rlx-llama32` / `rlx-qwen3` / `rlx-qwen35` — one single-bucket decode cache, not seven
+
+`BucketedCompileCache::new(device, vec![1..max + 1])` — one bucket covering
+every past length — was written out at **seven** places: llama32's generator,
+qwen35's runner (twice), the shared pipeline block, qwen3's pipeline stage, and
+a parity test. Worse than the repetition, it had been *dealt with* five
+different ways: three rewrites to dodge
+`clippy::single_range_in_vec_init` (which suggests `(1..n).collect()`, a type
+error here since `new` takes `Vec<Range<u64>>`) and two
+`#[allow]`s with their own explanatory comments.
+
+Now `rlx_core::flow_util::single_bucket_decode_cache(device, max_past)`, with
+the `#[allow]` and its justification in the one place that constructs the
+thing. Every 1-based call site routes through it.
+
+Writing the test for it found a bug the duplication had been hiding:
+`max_past = 0` produces `1..1`, an **empty** range that matches no length, so
+the cache silently never hits — a performance cliff with no error anywhere.
+Every existing call site happened to clamp with `.max(1)` before calling; the
+helper now clamps so the next one cannot forget.
+
+Not unified: `rlx-whisper`'s `vec![0..2]`, which seeds a power-of-two ladder in
+a loop rather than being a single bucket — different lower bound, different
+purpose, and its `#[allow]` is legitimate.
+
+Also formatted `rlx-llama32` and `rlx-qwen3` (13 `cargo fmt` diffs across
+`flow.rs`, `lib.rs`, `pipeline_block.rs` and a new `lm_runner_honours_stop.rs`
+test). Clippy was already clean in both crates in both feature states.
+
+### `rlx-models-core` — `lm_registry`: any crate can add a model to the generic path
+
+The dispatch behind `auto_runner` was a hardcoded `match runner_name { .. }`
+inside the `rlx-models` facade. Three costs, one of which had already been paid
+twice:
+
+* **An out-of-tree crate could not add a model.** Its options were to patch the
+  facade or to tell users to call its builder directly, giving up every caller
+  that goes through the generic path.
+* **Every new family meant editing the facade**, and that edit is easy to
+  forget: `rlx-qwen4exp` and `rlx-minimax` both shipped complete `LmRunner`
+  implementations that nothing could reach, because their own test suites
+  passed without the arm.
+* **Using the generic path meant linking ~200 crates**, since the facade
+  depends on every family it might dispatch to.
+
+`rlx_core::lm_registry` inverts it. A constructor is a plain
+`fn(&Path, &LmBuildOptions) -> Result<Box<dyn LmRunner>>`, and any crate
+registers one for its own name:
+
+```rust
+register_lm_runner(LmRunnerRegistration {
+    runner: "mine",
+    build: |path, opts| Ok(Box::new(MyRunner::open(path, opts.device)?)),
+});
+```
+
+`auto_runner` then builds it like a builtin, and `LmBuildOptions::servable()`
+gives it the host-driven decode pair even if it implements only
+`predict_logits`. An external crate needs `rlx-models-core` and `rlx-runtime`,
+not the facade. `AutoOptions` is now an alias of `LmBuildOptions` so the type
+is nameable without the facade; registration is idempotent, and a later
+registration of the same name overrides a builtin, which is what a host
+embedding this needs.
+
+The eleven builtin families are registered by `register_builtin_lm_runners`
+(idempotent, called from `auto_runner_with`), each as a two-line wrapper over
+the existing dispatch body — so the arm logic is unchanged and the refactor is
+a rewiring rather than a rewrite.
+
+**Capabilities are declared on the registration.** `with_mmproj()` marks a
+family whose constructor accepts a vision encoder; `build_lm_runner` then
+refuses an mmproj for the others centrally, appending that family's
+`mmproj_note` to say what to do instead. This replaced **four** hand-written
+`if mmproj.is_some() { bail!(..) }` checks inside the dispatch — and the
+scattered version had a worse failure than duplication: a newly registered
+family that forgot the check silently *ignored* an mmproj the caller asked for,
+which looks like success. `lm_runner_supports_mmproj(name)` exposes the same
+answer without building anything, and a test pins the declarations against
+which arms actually thread an mmproj (verified: dropping `with_mmproj()` from
+`qwen35` fails it).
+
+`LmRunnerRegistration` is `#[non_exhaustive]` with a `new()` + builder-method
+constructor, so the next capability field does not break every registrant. That
+has teeth already: the coverage test is a separate crate and could no longer
+use a struct literal, which is the intended protection.
+
+The payoff in tests: the set is **enumerable**, so
+`every_registered_constructor_is_reachable_by_a_sniff` replaces two
+hand-maintained lists with a real question — can anything actually select each
+family. It catches a mis-registered name (verified: renaming one registration
+to `minimax-m3-TYPO` fails it), which a list of expected names never could.
+
+### TPU accepted for causal LMs (`tpu` feature)
+
+`Device::Tpu` was rejected for every LM — `validate_lm_device` allowed only the
+seven standard backends plus `Device::Ane` under `coreml`, so `--device tpu`
+failed at validation even though `rlx-tpu` (5.6k lines, libtpu via PJRT) exists
+upstream and `rlx-runtime` already exposes it as `tpu = ["cpu", "dep:rlx-tpu"]`.
+SAM has accepted it all along via `validate_sam_device`.
+
+Now gated exactly like CoreML/ANE: `validate_lm_device` accepts `Device::Tpu`
+when the crate is built with `tpu`, and without it says which feature to
+enable rather than calling the device unsupported. The distinction matters —
+`OpenGl` and `Hexagon` have no backend at all and stay refused unconditionally,
+while TPU is a backend this build simply did not compile in. `is_lm_device`
+(the device *class*, used for help strings and menus) accepts TPU regardless of
+features, because hiding an enableable backend from a `--device` list is the
+wrong answer; `LM_DEVICE_NAMES` lists it.
+
+Forwarding features added to `rlx-models-core` and `rlx-qwen4exp`, and the
+facade's pre-existing `tpu` feature extended to reach them. Deliberately narrow
+rather than enumerating every model crate.
+
+`rlx_qwen4exp::runner::scan_state_for` needed no change and is right by
+construction: it promotes only CPU/Metal/wgpu to `ScanState::InPlace`, so TPU
+gets `Portable` — the correct conservative default for a backend whose
+in-place carry semantics are unverified.
+
+**Untested on hardware.** There is no TPU here, so what is verified is that the
+device is accepted, routed and refused correctly in both feature states —
+`tests/auto_runner_coverage.rs` asserts opposite outcomes with and without the
+feature, and `device_capabilities`' own tests cover the class/validation split.
+Whether a graph actually executes on libtpu is unproven by anything in this
+repo.
+
+### `rlx-models` — the universal runner could not reach `qwen4exp`, and returned runners a server cannot drive
+
+`rlx_models::run::auto_runner(path)` sniffs a checkpoint and builds the right
+family's runner. Two gaps made "run anything" less than true.
+
+**`qwen4exp` was unreachable.** The crate was written, tested and documented
+without ever being registered: `general.architecture = qwen4exp` sniffed to
+nothing, so the one entry point that is supposed to run any checkpoint could
+not run the model whose own suite has 117 tests. Now registered (arch
+`qwen4exp`, HF `qwen4_exp` / `qwen4_exp_text`), added as an optional dependency
+of the facade behind feature `qwen4exp`, and given a dispatch arm.
+`tests/auto_runner_coverage.rs` asserts that **every** dispatch arm has a
+registry entry pointing at it, so the next crate cannot be forgotten the same
+way — the crate's own tests all pass without it, which is why this went
+unnoticed.
+
+**A returned runner may not be drivable.** `auto_runner` hands back the
+family's own runner, whose host-driven pair (`prefill_logits` /
+`decode_logits`) defaults to *unsupported*. New `auto_runner_servable` wraps
+whatever was built in `HostDriven`, so one call goes from a path to something
+`rlx_serve::run_generation` can drive whatever the family implements.
+
+**Every runner ran on the CPU.** The dispatch never called the builders'
+`.device()`, and `auto_runner`'s signature did not mention a device, so there
+was no way to ask for one — on a Metal machine every family built through the
+multiplexer ran on the CPU, silently. New `AutoOptions { device, mmproj,
+servable }` and `auto_runner_with(path, &opts)` is now the one real entry point;
+the four existing `auto_runner*` functions are thin wrappers over it, so the
+next knob does not mean a fifth function. The device is threaded through all
+eleven arms, and the only `Device::Cpu` left in the module is the documented
+default.
+
+The device is also **validated in the dispatch**, before the config is read:
+an exotic request (`Device::Tpu`, `OpenGl`, `Hexagon`) now fails naming the
+device and the sniffed family rather than being discovered as a shape error
+three layers down, uniformly for every family. That is what makes the plumbing
+observable without weights — if `AutoOptions::device` were dropped, `Tpu` would
+be indistinguishable from `Cpu` and both would report the same missing metadata
+key. What remains unproven by any test is that no individual arm *omits*
+`.device(device)`; the compiler confirms each call site exists, but a future arm
+could forget one.
+
+**`minimax-m3` had an `LmRunner` impl and no dispatch arm**, so the multiplexer
+could not build it. Added, with the same `feature`-gated shape as the others.
+`tests/auto_runner_coverage.rs` now asserts the invariant in **both**
+directions: every dispatch arm has a registry entry (or the arm is dead), and
+every family with an `LmRunner` impl has one (or it is unreachable). Both halves
+were verified to fail when a registration is removed.
+
+Also: an unreachable-but-known family now names the crate that handles it,
+taken from the registry hint — and the hint is looked up by the **architecture**
+rather than the runner name, since `phi3` → runner `phi` is not an arch.
+`hint_for_hf_model_type` added as the `model_type` counterpart.
+
+Fixing this surfaced a test file that had been **uncompilable** under the
+`runner` feature: `tests/qwen35_forward_check.rs` called
+`build_qwen35_{prefill_cache,decode}_hir_dynamic_ext` with 9 and 7 arguments
+against 8-parameter signatures. No gate builds that feature, so nothing caught
+it. Eight more collapsible-`if` and `needless_borrow` errors in the same feature
+state are fixed too.
+
+### `rlx-serve` / `rlx-models-core` — eight of ten model families could not be served
+
+`rlx_serve::run_generation` drives a model through the **host-driven** pair,
+`prefill_logits` then `decode_logits` per token, because sampling, logit bias,
+log-probs and stop handling all belong above the model. `LmRunner`'s default for
+that pair returns *unsupported*, and it is called with `?` — so a family that
+has not implemented it does not run slowly, it fails on the first request.
+
+A survey of the ten model families implementing `LmRunner` found that **two**
+have the pair (`rlx-qwen3`, `rlx-qwen4exp`) and **one** has session
+export/restore (`rlx-qwen3`), which `RunnerBatchRunner::new` requires and bails
+without. Gemma, Llama-3.2, Mistral, the Qwen3.5 speculative runner and all four
+VLMs override only `predict_logits`.
+
+The pair cannot be defaulted in the trait: `decode_logits(token)` is stateful
+and a trait default has nowhere to keep the context. `rlx_core::lm_host_driven::HostDriven`
+keeps it — it tracks the tokens seen and answers each step by re-running
+`predict_logits` over the whole context — and `rlx_serve::host_drivable` wraps a
+runner in it. The result is correct and **quadratic**, which is the same bargain
+the trait already strikes for `generate`'s default, and it is the difference
+between a family being slow and being unavailable. A family that implements the
+pair natively is detected on the first prefill and passed through untouched.
+
+Three details worth stating:
+
+- **The capability probe is lazy.** Deciding at construction would mean calling
+  into a model before the caller has asked for anything; instead the first real
+  `prefill_logits` is tried on the inner runner, and only an *unsupported* error
+  falls back. A real failure (out of memory, a bad prompt) is returned as-is
+  rather than retried down a different path, where it would surface as a
+  confusing error or a wrong answer.
+- **It takes `Box<dyn LmRunner>`**, because that is what a caller holds and
+  `Box<dyn LmRunner>` does not itself implement `LmRunner` — an adapter generic
+  over a sized `R` would have been unusable by the one caller it exists for. The
+  crate's doctest is what caught that.
+- The test asserts the wrapped loop reproduces the model's own `generate` chain
+  exactly: the adapter may change the cost, never the tokens.
+
+### `rlx-qwen4exp` — Qwen3.8-Flash-Next (the Qwen4 architecture)
+
+New crate for `general.architecture = qwen4exp` / HF
+`Qwen4ExpForConditionalGeneration`, the first published checkpoint of the Qwen4
+architecture (`512x56B`). 48 layers: 36 Qwen3.5-style GatedDeltaNet linear
+layers, 12 gated GQA layers behind a QSA block indexer, a 512-expert MoE at
+every layer, and one PLE n-gram embedding module. Text prefill runs end to end.
+
+Four parts of this architecture are not variations on anything already in the
+workspace, and each has a failure mode that produces plausible output rather
+than an error:
+
+- **Hyper-connections replace every layer norm.** Four parallel residual streams,
+  a grouped RMSNorm plus low-rank gated mixer at each of three sites per layer —
+  and no `attn_norm`, `ffn_norm` or `output_norm` tensor anywhere in the
+  checkpoint. The final mixer *is* the output norm. The scatter back into the
+  streams is the identity weighted per stream, **not** the Sinkhorn-projected
+  `comb` matrix of [`rlx-glm5next`]'s mHC or [`rlx-motif`]'s; the three
+  implementations differ in the input norm, the gate shape and the scatter, and
+  must not be cross-ported.
+
+- **PLE is 51 billion hashed parameters.** `per_layer_token_embd` is
+  `[160, 320001536]` — larger than the rest of the model — and is addressed by a
+  hash of the trailing token window rather than by token id. The crate takes the
+  embeddings as a graph input and gathers rows on the host behind a
+  `PleRowSource` trait, so the table never enters an arena. The hash constants
+  (three 45-bit SplitMix64-derived multipliers; a distinct prime modulus and
+  table offset per hash head) are **derived** from `(seed, vocab_size)` and then
+  checked against the values the checkpoint publishes: they agree exactly,
+  including the padded row count. `validate` refuses a checkpoint where they do
+  not, because the failure is reading the wrong rows of a 320-million-row table
+  with no other symptom.
+
+- **The two GQA expansions go opposite ways.** The GGUF converter permutes the
+  linear layers' 48 value heads from grouped to tiled order (and with them
+  `attn_gate`, `ssm_alpha`/`ssm_beta`, `ssm_a`, `ssm_dt.bias`, `ssm_conv1d`'s v
+  channels and `ssm_out`'s columns), so those take a whole-block repeat; the
+  attention layers were not permuted and keep `repeat_kv`'s interleave. The
+  tiled case agrees with the interleaved one only for v-heads 0 and 47 and flips
+  the sign of every head in between.
+
+- **QSA is exactly dense causal attention below 2048 tokens.** 512 blocks of 4
+  mean-pooled keys plus each query's incomplete tail reconstruct `0..=q`
+  exactly, so the attention layer drops the indexer and takes the fused causal
+  path. Pinned numerically on real weights by running the full selection
+  machinery against the short-circuit — an equivalence between two independently
+  spelled paths, which a dense-config-vs-sparse-config test cannot be.
+
+Validated on the **published weights** without downloading the model:
+`scripts/qwen4exp_subset.py` range-fetches `blk.1` (GatedDeltaNet + PLE) and
+`blk.3` (gated attention + QSA) with 8 of each block's 512 experts into a valid
+186 MB standalone GGUF (`just qwen4exp-real`). That covers both layer kinds, the
+converter's sign and offset conventions (`ssm_a` is pre-negated `-exp(A_log)`;
+the norm gains are pre-offset by 1 — both silent when read the wrong way), and
+the QSA equivalence. Separately, the tensor manifest is checked against the real
+1224-tensor list for all 48 blocks in both directions — names *and* orientations
+— from header data alone.
+
+**Incremental decode, chunked prefill, the MTP draft block and the multimodal
+seam are all wired too**, and `decode == prefill` is checked on the real
+weights:
+
+- **One builder serves decode and chunked prefill** (`chunk = 1` vs `chunk > 1`),
+  because every stateful piece is spelled differently from the stateless
+  prefill — a grouped `Op::Conv` versus a sum of shifted copies, `Op::GatedDeltaNet`
+  versus `…_carry`, a synthesized causal mask versus a `[chunk, cap+chunk]`
+  bias, the whole token array versus a two-token host-side hash window. Sharing
+  the code means one equivalence test covers both. The per-token state is 96%
+  one tensor: the scan matrix is `48 · 128²` floats per linear layer, 113 MB
+  across 36 layers, which `ScanState::InPlace` keeps on-device where the backend
+  allows it.
+- **A PLE layer keeps three cache rows, not two** — the reference's
+  `number_of_conv_states = 3`. The third is the trailing `ngram_size − 1` token
+  *ids*, which is not a tensor: it lives on the host, because the hash does.
+  Forgetting it makes every n-gram at a chunk boundary hash as if the sequence
+  had just started.
+- **Right padding is exact, and only the exported state needs help.** The
+  convolution and the scan are both causal, so a real position never reads a
+  pad; what padding breaks is the state the *next* chunk resumes from. A
+  `pad_mask` zeroes the scan's gate and beta (making a step an exact no-op) and
+  a `conv_shift` gathers the convolution window ending at the last real token.
+  A test compares the exported state of a padded chunk against an
+  exactly-sized one — the only test that can see either mechanism.
+- **The MTP block reads the hyper-connection residual, not the hidden state**,
+  and `eh_proj` is `cat([fc_embedding, fc_hidden], dim=1)` applied *per stream*
+  on the feature axis. So the trunk is built once at `OutputKind::HcResidual`
+  and that one residual feeds both the draft block and a separate head flow;
+  splitting the trunk there is checked not to change its logits, because
+  otherwise every acceptance decision would be made against a model the trunk
+  is not.
+- **The vision tower is a native port** (`vit`), not a call into another crate.
+  The architecture is Qwen3-VL's — llama.cpp's converter says so outright
+  (`class Qwen4ExpVisionModel(Qwen3VLVisionModel)`) — but the implementation is
+  a `ModelFlow` over a `WeightSource` like the rest of this crate, so a
+  quantized `mmproj-Q8_0.gguf` runs **packed** and nothing is transposed on the
+  host: the GGUF already reports `[out, in]`, and `v.patch_embd.weight` already
+  arrives as `Op::Conv`'s `[out_c, in_c, kh, kw]`. Six details carry it, and
+  each has a plausible wrong answer: the patch embedding is **two**
+  convolutions summed (a 2-frame temporal window with a still image in both);
+  tokens are permuted into spatial-merge blocks *before* the transformer, which
+  is the only reason the merger's reshape is a reshape — so the position table
+  must be permuted identically and the RoPE coordinates generated in that
+  order; the learned position table is **bilinearly resized** from its 48²
+  grid; the axial RoPE puts `[row | column]` frequencies in the first half of
+  each head and duplicates them into the second, which is what makes
+  `rotate_half` pair row with row; the block FFN is the **tanh** GELU while the
+  merger is the **exact erf** one; and `v.post_ln` is the *merger's* norm,
+  applied once, not a post-block norm.
+
+  `rlx-qwen35` ships the same tower and its captions are known-good on real
+  Qwen3.6-27B weights, so it is kept as a **dev-dependency oracle**:
+  `tests/vit_parity.rs` compares the two element for element on identical
+  weights. Nothing in `src/` touches it. (That required one additive change
+  upstream — `rlx-qwen35` re-exported `MmProjWeights` but not its `blocks`
+  field type, so the bundle could be read and never constructed.)
+
+- **The multimodal seam** (`vision`) supplies what is qwen4exp-specific rather
+  than Qwen3-VL-generic: a host-assembled `inputs_embeds` (`host_embed`, which
+  also keeps a 1.2 GB `token_embd` off the device), the `image_token_id`
+  substitution the **PLE hash** needs at vision positions — a *different* array
+  from the prompt ids — and the M-RoPE advance of `max(nx, ny)` per image
+  rather than its token count.
+
+- **A runner, so the model can be run rather than assembled** (`runner`).
+  Everything else in the crate hands back a `BuiltModel` and leaves the driving
+  to the caller — compile it, derive the M-RoPE tables, gather the n-gram rows
+  against the right history, thread 36 layers of recurrent state, pad the chunk,
+  re-read the exported state. `Qwen4ExpRunner::open` does that once and
+  implements `rlx_runtime::LmRunner`, so `prefill_logits` + `decode_logits` give
+  a host-driven loop the HTTP server shape can use and `generate_greedy` gives
+  the simple one. Three things make it fast rather than merely convenient: the
+  step graph is **compiled once** and reused (a sibling port paid 50x for
+  compiling per step); `prefill_chunk` above 1 advances several positions per
+  `run()` through a second graph, with the cost stated — the weights are then
+  resident twice, so the default is 1; and `RunnerOptions::single_sequence`
+  moves the GatedDeltaNet scan into a device-resident param, which is 96% of
+  this model's per-token host traffic (113 MB across 36 layers), on exactly the
+  backends where that survives to the next `run()` (`scan_state_for`: CPU,
+  Metal, wgpu — MLX and CoreML freeze it at zero, which is a wrong answer, not
+  a slow one).
+
+  Chunked prefill flowing into one-token decode needed one addition in `decode`:
+  `DecodeSession::set_chunk`. The two graphs pack their output differently but
+  the state they thread does not, so the session is re-pointed at the other
+  layout with its cache, convolution windows and n-gram history intact. It
+  validates the layout against the chunk rather than trusting the pairing,
+  because a mismatch would parse the next `commit` at the wrong offsets and
+  silently corrupt the cache.
+
+  `tests/runner.rs` pins the runner against the explicit loop it replaces
+  **bit for bit** — same graph, same inputs, so any difference is a threading
+  mistake rather than arithmetic, and a one-position M-RoPE slip (2.1e-3
+  relative) would scrape through the 2e-3 tolerance a looser test would use.
+  The chunked-into-decode test sits at 1e-5: 200x the legitimate chunk-3 vs
+  chunk-1 reduction-order noise (4.9e-8), 50x under the state loss it exists to
+  catch (5.2e-4).
+
+- **The n-gram table read lazily, which is what makes the real checkpoint
+  runnable** (`ple::GgufPleRows`). `per_layer_token_embd` is 51 billion
+  parameters — `[160, 320001536]`, ~28 GB as the published IQ4_NL — and a decode
+  step wants **nine** of its 320 million rows. Holding it is not an option, and
+  neither is mapping it: borrowing tensor bytes from an mmap makes every page it
+  touches resident, and on macOS that memory cannot be returned without
+  `munmap`. So this seeks and reads the quantization blocks a row overlaps and
+  nothing else. For the published type that is exactly 5 IQ4_NL blocks of 18
+  bytes — **90 bytes per row** — and `tests/ple_rows.rs` pins that geometry
+  against the real checkpoint's header. The block arithmetic is *derived* from
+  `rlx_gguf::bytes_for_public` rather than tabulated, so an f32, k-quant or
+  i-quant table all work and a row straddling a block boundary just reads both.
+  `Qwen4ExpRunner::open` attaches one automatically when the file carries the
+  table; `RunnerOptions::ple_table` points at the right shard of a split
+  checkpoint, and an explicit path that fails to open is an error rather than a
+  silent fallback to zeros.
+
+  The oracle is the crate's own whole-tensor dequantization — a lazily read row
+  has to equal that slice **exactly**, since both end up in the same
+  `dequant_typed`, so only the index-to-offset arithmetic is under test. The
+  straddling fixture earns its place: dropping the within-block offset is
+  invisible to a 160-wide row (160 is 5 whole blocks) and only a width that does
+  not divide the block catches it.
+
+- **Experts paged off disk** (`paged_moe::PagedMoeLayer`), the last piece
+  between the port and the full checkpoint. The model is `512 × 56B`: every one
+  of its 48 layers carries 512 experts across three banks and a token fires
+  **10**. Reading only what fires costs ~49 MB per token per layer against the
+  2.5 GB a layer's resident banks need. This rides on the model-agnostic
+  `rlx_distributed::ExpertPager` built for GLM-5.3, so what is new here is the
+  qwen4exp half: `MoeDims::paged`, which makes the graph's expert index a
+  **constant** (`arange(seq) * top_k + k`) so the gather can happen outside the
+  graph, and `moe::emit_qwen4exp_router`, the routing half on its own.
+
+  The router is extracted rather than reimplemented on the host, and runs as its
+  own compiled graph before the paged one. Chicken and egg: you cannot gather
+  the experts a token fires until you know which they are, and the graph that
+  would tell you is the graph you are trying to feed. Deriving top-k on the host
+  instead would rest on the host and the graph accumulating a 512-wide dot
+  product identically — which a BLAS threshold or a device change moves
+  silently, and a flipped pick weights the token by another expert's matrix and
+  looks entirely normal.
+
+  `tests/paged_moe.rs` runs the whole loop against the same layer with all 512
+  experts resident, because each piece is wrong in a way that still produces
+  finite, well-scaled output. Both failure modes were induced to check the test
+  sees them: reversing slot order (the mistake that pairs a token with another
+  token's gate) diverges 6.5e-3 relative against a 1e-5 tolerance, and ignoring
+  the `paged` flag — so the graph indexes slot-width banks by global expert id —
+  fails in the backend rather than silently.
+
+`PagedMoeLayer::from_gguf` pages the checkpoint in **the only form it ships
+in**: quantized. `register_gguf_expert_banks` (upstream, header-only) already
+served quantized expert slices, but the layer declared f32 slots and its
+geometry check refused the mismatch — correctly, since reading quantized bytes
+into an f32 slot produces garbage weights. Now each fired expert is
+dequantized on its way into its slot, and the dtype is read **per bank per
+layer** out of the header rather than assumed, because it is not uniform:
+`blk.0`'s gate and up banks are IQ1_S where `blk.1`'s are IQ2_XXS, and every
+`ffn_down_exps` is IQ4_NL. Validated on the published subset — `blk.1` paged
+from its real IQ2_XXS/IQ4_NL banks agrees with the same layer over the whole
+dequantized banks. Feeding the quantized bytes to the graph *directly*, as
+`DequantGroupedMatMul` over packed slot banks, would avoid both the host
+dequantization and the f32 arena; that is an optimization left on the table,
+not a correctness gap.
+
+Each dimension bundle is now derived in exactly one place —
+`HcDims::from_config`, `GdnDims`, `AttnDims`, `QsaDims`, `MoeDims`,
+`PleDims` — and prefill, chunked prefill, the decode step, the MTP block and
+the real-weight tests all call it. There were **four** copies of those seven
+derivations, one of them in the tests, which is the arrangement where a test
+quietly measures a slightly different model than the builder constructs. The
+two genuine knobs stay explicit at the call site (`force_emit` for the QSA
+indexer, `paged` for the expert banks), as does decode's `cap + chunk` — the
+indexer sees the whole cache plus the step, not just the step.
+
+Every test in the crate runs over the one fixture in `synth`, whose shapes
+`tests/tensor_manifest.rs` checks against the real 1224-tensor list — so no
+test carries a second copy of the tensor contract to drift out of date.
+
+Each of the four equivalences was checked to actually fail: sabotaging the
+dilated tap offset, the scan carry, the conv shift, the pad masking, the second
+patch convolution or the position-table permutation breaks exactly one of them.
+`tests/vit_parity.rs` also records the two things it is *blind* to — the
+cos/sin table generation (covered by a closed-form unit test instead) and which
+GELU is which (the two agree to ~3e-4, so no end-to-end comparison resolves it)
+— rather than implying coverage it does not have.
+
+`scripts/qwen4exp_subset.py --mmproj 3` applies the same range-slicing trick to
+the tower: 3 of its 27 blocks plus every global, ~172 MB instead of 904 MB, with
+`clip.vision.block_count` rewritten to match (`just qwen4exp-vision-real`).
+
+Not done: end-to-end generation on the full 48-layer checkpoint (expert paging
+at scale, not a missing capability); decode past the 2048-position QSA budget,
+which needs a position-ordered indexer-key cache and is *refused* rather than
+silently run dense; left padding and multi-sequence packing; the tokenizer /
+chat template; and the tower's deepstack path and video (both refused rather
+than approximated — `deepstack_visual_indexes` is `[]` in the published
+checkpoint, and video would need the two patch kernels fed *different* frames).
+
+### `rlx-fgd` — Section 4.3: radiance fields
+
+Inverse rendering, the paper's fourth and largest experiment: recover a scene's
+density and view-dependent colour from posed images by descending the
+photometric loss of Equation 11 in function space. Adds a volumetric renderer
+(DDA voxel traversal with exact per-voxel integration — `σ` is constant inside a
+voxel, so `T·(1−e^{−σΔt})·c` is the integral, not an approximation of it), the
+NeRF camera model, spherical harmonics with their RKHS kernel, a
+`VoxelGrid` representation, and the NeRF-Synthetic loader. Runs natively and in
+parallel rather than through an RLX graph: the work is pointer-chasing ray
+marching, not dense linear algebra.
+
+**Proposition A.3's gradient is checked against finite differences of the loss**
+— the only check that distinguishes a correct Jacobian from a plausible one.
+Both sides are Monte-Carlo, so it is a convergence claim: 10% disagreement at
+256 rays/pixel and 4096 samples/voxel, 3% at 2048/32768, and **0.4%** at
+16384/262144, for density and colour alike.
+
+Four departures from the reference implementation:
+
+- **The colour gradient is closed-form, not fitted.** `∇_{c_k}L(x, ·)` is a sum
+  of kernels `K(ω_i, ·)`, and `K(ω,ω') = Σ_j Y_j(ω)Y_j(ω')` is the reproducing
+  kernel of the harmonics' span — so expanding it gives the coefficients
+  directly. The representation holds the colour gradient *exactly* in the
+  direction variable; only the spatial part is ever approximated. The reference
+  fits the harmonics by least squares over sampled directions instead, which
+  agrees when that system has full rank and silently drops components when it
+  does not. This removes the direction sampling, the pseudo-inverse and that
+  failure mode at once.
+
+- **Refinement has to re-impose the visual hull**, which is what the new
+  `Functional::after_refine` hook is for. A coarse voxel straddling the
+  silhouette counts as occupied; its children outside the hull inherit its
+  density, and the gradient is identically zero there, so nothing ever takes it
+  away. Measured on the test scene: the run stalls at `1.08e-3` / 30.5 dB with
+  the halo against `1.09e-4` / 37.3 dB once it is removed — a permanent blocky
+  shell around the object. Found by noticing the adaptive run plateaued while
+  the same grid trained from scratch did not.
+
+- **Directions are normalised everywhere.** The reference's RKHS kernel
+  normalises its arguments; its renderer evaluates the harmonics at the raw ray
+  direction, whose length varies across the image plane. The harmonics are only
+  orthonormal on the sphere.
+
+- **The density and colour error terms are weighted consistently.** The
+  reference's density residual carries a ½ that its colour residual and both
+  norms do not, understating the density half of `RelErr`'s numerator by √2
+  against its own denominator; its two density branches also disagree with each
+  other about it.
+
+`tests/radiance.rs` adds 13 tests in all. Besides the finite-difference check:
+harmonics orthonormal by quadrature and against the addition theorem, the
+renderer against the closed form for a uniform medium, `Camera::project` as the
+exact inverse of `Camera::ray_through`, the mid-march stop against a separate
+march, and an end-to-end reconstruction scored on viewpoints never trained on.
+
+On the synthetic scene, adaptive beats every fixed grid whose cost fits its
+budget (`2.2×` below fixed 32³ at ε = 5.0, the next rung up costing 50% more
+than it spent) but does not dominate the *interpolated* fixed frontier — it
+sits 13–20% above it at equal work, consistently across ε. The frontier is not
+purchasable (fixed grids come in powers of two) and the scene is two smooth
+blobs that 32³ nearly resolves, so there is little for a coarse phase to
+exploit; the paper's Ficus scene has structure at scales a coarse grid cannot
+see.
+
+### `rlx-fgd` — new: functional gradient descent with adaptive representations
+
+Rust port of [arXiv:2606.16926](https://arxiv.org/abs/2606.16926) (Csillag et
+al., NeurIPS 2026): Algorithm 1, the convergence theory of Section 3.1, and the
+paper's `L²` fitting, RKHS regression and wave-equation tasks. `Refinement::Fixed`
+turns the same driver into the paper's fixed-representation baseline, so the
+central comparison runs on one code path. Section 4.3 (radiance fields) is not
+implemented in that first pass; it landed in the entry above.
+
+Three things the port had to pin down that the reference code leaves loose:
+
+- **The `L²` error estimator understated the quantity Algorithm 1 tests.** The
+  fitted constant on a cell is the *sample* mean, so it is itself off by
+  `O(σ/√N)`; the unbiased estimate of `‖g − ∇L(f)‖²` there is `s²(1 + 1/N)` with
+  `s²` Bessel-corrected. The reference divides by `N`, which is low by
+  `(N−1)/(N+1)` — 29% at its `N = 8`. With the biased form, Lemma 3.5's bound was
+  violated at steps of a real run (`L = 1.3231e-3` against a bound of
+  `1.3202e-3`); with the corrected one it holds with ≥4.5% margin at every step,
+  at every sample count tried. `tests/theory.rs` checks this against a run rather
+  than re-deriving it.
+
+- **Losses have to be reported on a quadrature pinned for the whole run.** A
+  quadrature read off the iterate's own grid changes scale exactly when the
+  representation refines, so each refinement becomes a step change in the
+  reported loss that has nothing to do with the iterate. That makes the
+  adaptive-versus-fixed comparison — the entire point of Figure 1 — meaningless.
+  It showed up first as the wave loss *rising* on the first step at every step
+  size, including arbitrarily small ones, which is not something a step size can
+  cause.
+
+- **Two different tolerances.** Algorithm 1's `ε` is not the `RelErr` bound in
+  Propositions 3.6/3.8: running at `ε` guarantees `RelErr ≤ ε/(1+ε)`
+  (Theorem 3.10(i)), and the theorem is stated for `ε ∈ (0,1)`, which is exactly
+  what keeps that under the `1/2` Lemma 3.5 needs. The authors' own `ε = 3`
+  teaser and `ε = 50` wave runs sit outside it. `Report::guarantees_hold` reports
+  which case a run is in.
+
+Verified: Lemma 3.5 and Proposition 3.8's rate against real runs; the `L^∞`
+Lipschitz bound against the actual sup-norm error at non-centre points;
+Proposition A.2's `α`/`β` against Assumptions 3.3/3.4 numerically; `h` and `ĥ`
+confirmed a Fourier pair by direct quadrature; the wave solve recovers its
+initial condition at `+0.976` correlation. Section 4.1's gradient kernel is
+compiled to RLX and matches the `f64` host reference on CPU/Metal/MLX/wgpu (2e-6),
+including making the same refinement decisions.
+
+### `rlx-kev` — FIXED: a warm-started run exported a checkpoint missing the model
+
+`--init-from` folded the checkpoint's adapter into the base weights and fitted a
+*fresh* rank-16 adapter on top. That trains a correct model — and then exports
+only the new delta. Loading the result the normal way (`base + adapter`, which
+is what `--run <dir> --base <dir>` does) silently dropped everything the
+checkpoint knew.
+
+Measured on real weights, a two-step delta run from kev-0.8b:
+
+    kev-0.8b source adapter   total ||B|| = 86.8524
+    delta-run output          total ||B|| = 0.3469     ratio 0.0040
+
+The output was, to three significant figures, the bare base model. Since the
+released recipe **is** a continuation round (`init_from:
+jaredpalmer/kev-0.8b`), reproducing it this way was impossible.
+
+Composing on export is not available: a rank-16 adapter cannot represent the
+sum of two rank-16 deltas. The fix is the thing peft and kev already do —
+**continue the same adapter**. The base now stays bare for a warm start, and
+`train::restore_adapter` seeds the checkpoint's `A`/`B` into the trainable
+parameters. After the fix, the same run:
+
+    delta-run output (fixed)  total ||B|| = 86.8586    ratio 1.0001
+
+i.e. the whole source adapter plus two steps of training, and step 1 opens at
+loss 0.0038 against a chance floor of 0.2878.
+
+`restore_adapter` inverts `export_adapter`'s transpose exactly (peft `A [r, in]`
+/ `B [out, r]`; graph `A [in, r]` / `B [r, out]`). Neither side bakes in
+`alpha/rank` — the graph applies it as an op and `merge_into` applies it on load
+— so this is a pure re-layout with no rescaling. Rank mismatch is refused with
+the `--lora-rank` to rerun with, rather than restored wrong.
+
+Pinned as a **round trip** — restore an adapter, export it again, compare tensor
+for tensor — because that is the property that makes an export self-contained,
+and a transpose dropped on either side leaves both files the same size and shape.
+The test also asserts the fresh graph's `B` is zero first, so it cannot pass
+vacuously.
+
+This was found by checking a claim rather than trusting it: the previous entry
+added a README line pointing users at `--init-from` for the published recipe,
+which was worth verifying before shipping.
+
+### `rlx-kev` — FIXED: `--init-from` threw the trained pointer head away
+
+`--init-from` is documented as "warm-start the adapter **+ head** from this
+checkpoint". It restored the adapter and silently discarded the head: nothing in
+the training path ever read `head.safetensors` back, and `build_train_graph`
+unconditionally seeds the head from a hashed PRNG.
+
+So a warm start merged the backbone correctly and then bolted a *random readout*
+onto it. The model scored at chance at step 0 and had to relearn the head from
+scratch — which defeats the point of warm-starting, and makes the released
+recipe unreproducible, because that recipe **is** a continuation round
+(`init_from: jaredpalmer/kev-0.8b`).
+
+Measured end-to-end after the fix, warm-starting from kev-0.8b:
+
+    start: warm from /Volumes/FOUR/kev/kev-0.8b
+    restored the pointer head from /Volumes/FOUR/kev/kev-0.8b
+    epoch 0 step 1/3: loss 0.0000 (chance 0.3385) grad_norm 0.00
+
+Loss 0.0000 against a chance floor of 0.3385 — the model is immediately correct,
+because it is kev-0.8b. With a random head it could only have scored at chance:
+a random readout cannot rank options.
+
+`train::restore_head` inverts the transpose `Trainer::pointer_head` applies (the
+graph stores `[d, dp]`, `PointerHead` holds `nn.Linear`'s `[dp, d]`) and refuses
+a head whose dimensions disagree rather than restoring a mismatched one. It runs
+only on the first graph build; the 27 later shape rebuilds already carry every
+parameter across.
+
+The test does not settle for "the parameters changed" — a dropped transpose
+changes them too and is still wrong. It asserts the restored head reads back
+*equal to the trained one*, and separately that the fresh head genuinely differed
+first, so it cannot pass vacuously. Mutation-tested by replacing the transpose
+with an identity copy: it fails.
+
+### Release note — `rlx-kev` Metal *training* needs upstream fixes not in rlx 0.2.16
+
+Checked against the actual published crates rather than the local `../rlx`
+checkout, which is dirty and masks this.
+
+**The API surface is clean.** Nothing in rlx-models' compiled code calls an
+upstream symbol missing from crates.io 0.2.16. `ArenaWidthPolicy` is used only
+as `Native` / `Hybrid`, both published; the `NativeHalfWidened` /
+`NativeBf16Widened` variants added during this work appear *only in a doc
+comment*. `WeightSource::take_packed_bank` is present in published `rlx-flow`
+0.2.16 at the same line. So rlx-models 0.2.16 builds from the registry.
+
+**The behaviour is not.** The Metal backward fixes that `rlx-kev --train
+--device metal` depends on are absent from published `rlx-metal` 0.2.16 —
+verified by unpacking the crate: no `uses_at` guard in `src/thunk/mod.rs`, no
+`round_bf16_f32` in `src/kernels.rs`. Against the registry build, Metal returns
+NaN or zero for most Qwen3.5 trunk parameter gradients while computing the
+forward bit-identically, which is the bug that cost a 2-hour training run.
+
+It fails *loudly* rather than silently: `Trainer::optimizer_step` refuses a
+non-finite gradient norm and names the worst parameter. Forward and decode are
+unaffected on every backend, as is CPU training.
+
+So the choice before publishing is either to ship 0.2.16 with that caveat
+documented, or to hold `rlx-kev`'s `train` feature until an upstream release
+carries the Metal fixes. That is a judgement call about the release, not
+something to decide silently in a changelog.
+
+### Release prep — catalog, publish tiers, and two retracted claims in the docs
+
+`just lint-all`'s gates found three publish blockers introduced by the new
+`rlx-kev` crate, all of the classes the playbook in `docs/releasing.md` exists
+to catch:
+
+* **Four `include_str!` targets were gitignored.** `crates/*/tests/fixtures/*.json`
+  is a repo-wide net, and kev's four golden fixtures (890 B - 124 KB) fell under
+  it. They are compile-time inputs, so a fresh clone could not build those test
+  targets at all. Added to the existing negation list alongside rlx-tada,
+  rlx-glm5next and rlx-chatterbox, which exist for exactly this reason.
+* **`rlx-kev` was in no publish tier**, so `publish.sh` would silently never
+  ship it. Placed in tier 6: it depends on `rlx-qwen35` (tier 5),
+  `rlx-models-core` and `rlx-tune` (both tier 1). The validator checks tier
+  *membership* but never *ordering*, so ordering was verified separately against
+  `cargo metadata` — 0 violations across all 199 publishable crates.
+* **`rlx-kev` was filed under "Vision-language & multimodal"**, which it is not —
+  it is a text-only decision model with no vision and no generation. Moved to
+  "Language models (text LLMs & reasoning)". This also explains the catalog
+  check's complaint that the VLM row said 12 with 13 rows present: the move
+  fixes that count without touching it. Totals corrected 182 -> 183 in MODELS.md
+  and the three places README.md repeats them.
+
+A fourth problem was found by hand rather than by a gate, and the gate now
+covers it: the `rlx-kev` row contained `max |Δp| 1.4e-5`, whose **unescaped
+pipes split the markdown table**, giving that row 5 cells where the header has
+3. GitHub renders it wrong — but worse, `check-models-catalog.py` reads the
+backend cell as `cells[2]`, so it had been validating a prefix truncated at the
+first stray pipe. It was the only such row in all 183. Reworded to `max abs(Δp)`,
+and `parse_rows` now reports the cell count so a row whose width disagrees with
+its header is an error that explains the truncation. Mutation-tested by putting
+the pipes back: the check fires and names the crate.
+
+Two claims in `crates/rlx-kev/README.md` were **retracted**, since shipping docs
+should not carry numbers that later measurement contradicted:
+
+* "The fix costs ~2x on a Metal training step" — the fusion it blames fires on
+  0 of 34 candidate anchors in that graph, and the 2x was machine contention
+  (identical work timed 492 s vs 1062 s). A step is compute-bound: 10.2 s
+  measured against ~6.2 s of f32 FLOPs.
+* The 154-step run's **0.3389** was quoted against the broken run's 0.2845
+  without its chance floor, which is **0.3059**. It is at chance. The README now
+  says so.
+
+The divergence write-up was also superseded: the Adam-moment carry across shape
+rebuilds attenuated it, but the mechanism was `rlx-tune`'s shared bias-correction
+counter (see above).
+
+### `rlx-kev` — the documented reproduction command had the wrong learning rate
+
+`kev-0.8b`'s own `training_config.json` says `lr: 2e-05` and `head_lr: 0.0`
+(which means "use `lr`"). The README's "Reproducing the released recipe" block
+said `--lr 1e-4 --head-lr 1e-3` — 5x and 50x the reference. Corrected, and the
+README now states what that config actually describes: `init_from:
+"jaredpalmer/kev-0.8b"` with `replay: 6000`, i.e. the released checkpoint is the
+output of a **continuation round** (round 15), not of one cold run. `0.8136` is
+an iteratively-refined model's score, and a cold single-epoch run should not be
+expected to match it.
+
+### `rlx-tune` — FIXED: Adam's bias correction was shared across parameters
+
+`Optimizer::step` is called once per *parameter*, and `Adam::step` incremented a
+step counter stored on the optimizer. So `t` advanced by the number of
+trainables on every optimizer step, not by one — with rank-16 LoRA on all
+targets of a 24-layer model that is ~340 per step.
+
+The smallest demonstration: two parameters, same initial value, same gradient,
+same optimizer, same step. Adam is elementwise and carries no cross-parameter
+state, so they must move identically. They did not — `-1.0` and `-0.744`,
+decided purely by iteration order.
+
+The consequence is not a small numerical wobble. After the very first optimizer
+step `t >= 340`, so `1 - beta^t` is 1 to machine precision and bias correction
+is **off for the rest of training**. Uncorrected, `v` is badly underestimated
+while it warms up (`beta2 = 0.999`), so `m / sqrt(v)` is inflated — the
+effective learning rate for a constant gradient is
+
+    step     1     5    10    25    50   100   153   400
+    mult  1.70  5.24  6.42  5.91  4.50  3.24  2.65  1.74
+
+peaking at **6.5x** around step 13 and still **2.65x** at step 153 — which is
+exactly the OneCycle peak of the kev run (`pct_start 0.1` of 1529 steps). A
+recipe asking for `1e-4` was really training at several times that through the
+entire ramp. That is the divergence this port has been chasing: loss 1.06 at
+step 50 -> 4.33 at step 100, above every `ln(n_options)` chance floor.
+
+Fixed by keeping the step count in the per-parameter state entry — `(m, v, t)`
+— which is what PyTorch's `state['step']` is and why it is per parameter there.
+
+Three tests pin it, and the middle one matters: two identical parameters also
+agree with each other when bias correction is disabled *for everyone*, so
+`the_first_adam_update_has_magnitude_lr` separately pins that the correction is
+actually applied (Adam's first update is `lr` regardless of gradient scale).
+The third checks a parameter stepped n times alongside another still warms up
+like one stepped n times alone — the bug is invisible to any single-tensor
+smoke test, which is how it survived.
+
+`FlatAdam` was checked and is correct: it steps the whole parameter bucket at
+once, so its counter already advances once per optimizer step.
+
+### `rlx-kev` — a long training run now survives being killed
+
+The suite-training path exported the adapter and head exactly once, after the
+final optimizer step. A full run is 1529 steps at ~27 s/step — 8-14 hours — so a
+run that is killed, OOMs, or hits a thermal stall at hour 13 left nothing behind.
+One already had.
+
+`--checkpoint-every <N>` (default 100, 0 disables) now exports mid-run. The
+write costs 0.1 s, so at the default it is under a thousandth of the run.
+
+The write is staged rather than in-place, which is the part that matters. A
+periodic checkpoint written directly into the output directory is *worse* than
+no checkpoint during its write window: the process dies mid-file and now the new
+checkpoint is torn and the previous one is already gone. So the full set is
+built in `<out>/.staging` and each file is `rename`d into place — atomic within
+a filesystem, and staging is a child of the output directory, so a kill at any
+instant leaves either the old file or the new one, never half of either.
+
+The tokenizer is now copied before the first step rather than after the last, so
+a checkpoint written mid-run is a complete, loadable directory on its own.
+
+Verified by actually doing it: a run was `kill -9`ed immediately after its second
+checkpoint, and the output directory held a complete, loadable checkpoint
+(`adapter_config.json`, `adapter_model.safetensors`, `head.json`,
+`head.safetensors`, `tokenizer.json`) with no `.staging` residue.
+`a_periodic_checkpoint_overwrites_in_place_and_stays_loadable` pins the
+properties in CI: staging never outlives a successful write, every round loads
+through `LoraAdapter::open`, and — so the test cannot pass on three identical
+copies of an untrained export — the merged weights must differ after two further
+optimizer steps.
+
+### `rlx-kev` — the shape-padding speed lever is measured and closed
+
+`examples/pad_audit` runs the real `shape_batches` packer over the real corpus
+on CPU with no model weights, so the answer covers all 12,576 records instead of
+whatever a short GPU run happens to sample. That distinction mattered: the
+"~32% padding" figure quoted earlier in this work came from a 120-record run and
+is **wrong at full scale**. The corpus numbers are
+
+    3057 batches over 15378 examples, budget 2048, max_rows 8
+    slot 4019456 positions: real 79.9%, unfilled rows 4.3%, seq padding 15.8%
+      seq padding splits: bucket rounding 5.7%, within-batch spread 10.1%
+
+The small run over-reported because the packer pads each `(seq, opts)` group's
+tail batch to a constant row count; with 19 shapes over 120 records nearly every
+batch *is* a tail batch (22% unfilled rows), while at full scale groups are deep
+and that falls to 4.3%. Both measurements are consistent once group depth is
+accounted for.
+
+So the ceiling on this lever is 1/0.799 = **1.25x**, and the dominant single
+component is within-batch length spread — rows of one record are a shared state
+prefix plus option branches of genuinely different lengths, which no regrouping
+removes.
+
+The two knobs that look like they control this do not. Sweeping
+`KEV_TRAIN_TOKEN_BUDGET` over 1024..8192 against `max_rows` 8 and 16 — eight
+configurations — moves total computed positions from 4.10M to 3.91M, under 3%:
+
+    budget 1024 rows  8: real 78.4%  idle 6.1%  seq 15.5%   slots 4099008
+    budget 2048 rows  8: real 79.9%  idle 4.3%  seq 15.8%   slots 4019456  (default)
+    budget 4096 rows 16: real 82.1%  idle 1.7%  seq 16.2%   slots 3912832  (best)
+    budget 8192 rows 16: real 81.6%  idle 2.3%  seq 16.1%   slots 3937856
+
+Raising the budget trades unfilled rows against sequence padding almost
+one-for-one. The comment at the knob claiming it "trades these two against each
+other" as a tuning opportunity has been corrected to say it is an arena-headroom
+setting, not a speed setting.
+
+Taken with the earlier finding that a step is compute-bound (10.2 s/step
+measured against ~6.2 s of f32 FLOPs), and that identical work has timed 492 s
+against 1062 s purely from machine contention, every remaining padding gain is
+smaller than the measurement noise. This lever is closed; the training log keeps
+reporting the split so a future change to the corpus is visible without rerunning
+the audit.
+
+### `rlx-kev` — scores and losses are reported against their chance floor
+
+The training log now prints the chance floor of the batches each window came
+from, and marks `AT CHANCE` when the loss is not beating it. The floor moves with
+the shape mix — `ln 2` on a yes/no bucket, `ln 128` on banking77 — so a bare loss
+is unreadable: 0.709 looks excellent and is exactly chance at two options.
+
+Evaluation gained the same thing: `eval::Metrics` carries `chance_accuracy`
+(`mean(1/n_options)`) and `chance_nll` (`mean(ln n_options)`), prints both
+inline, and adds `at_chance()` plus an
+`<== AT CHANCE` marker. Neither is a constant on this suite: `decision-v7` mixes
+2-option yes/no with banking77's 77 intents, so the floor moves with the sample.
+
+This is the diagnostic that was missing. Every failure this crate has hit —
+a backend returning NaN gradients, a learning rate diverging — presents as
+"plausible loss, chance accuracy", and `ln 2 = 0.693` reads like a *good* loss if
+the comparison in your head is zero. It is what let a 1529-step run complete,
+report a falling loss, and score 0.2845 against a published 0.8136.
+
+`eval::score` also visits records in **shape order** rather than suite order. One
+graph is compiled per `(rows, seq)` bucket, and a suite is ordered by source, so
+consecutive records asked for unrelated shapes and the model recompiled on almost
+every one. Metrics are order-independent, which a new test pins so a future
+running-statistic cannot quietly make them otherwise.
+
+The training loop reports what its shape bucketing costs, in both directions:
+graph-rebuild count and time, and **shape utilisation** — `real_tokens /
+(rows × seq)`, the fraction of each step's compute that is not padding.
+`KEV_TRAIN_TOKEN_BUDGET` trades one against the other, and neither was visible
+before.
+
+Measured on a 25-step run: 19 rebuilds cost 236 s of 492 s (48%) at ~12.4 s each
+— of which ~2-4 s is loading the base, 3-21 s building the graph and 10-21 s
+Metal compiling it — and utilisation was **68%**. So rebuilds dominate a *short*
+run but are ~6 min of a full 1529-step one, while the 32% padding is the cost that
+scales. Worth knowing before optimizing either: the intuition that reloading the
+1.7 GB base per rebuild was the problem was wrong, and measuring said so.
+
+### `rlx-tune` — Adam state survives a graph rebuild
+
+`Adam` grew `take_state` / `restore_state` (and `AdamState`), because a caller
+that has to recompile — a new input shape, say — must not silently get a fresh
+optimizer. Dropping `m`/`v` restarts the bias correction, so the step right after
+each rebuild is effectively un-normalized.
+
+`rlx-kev`'s recipe hit exactly that: it compiles one graph per
+(rows, seq, max_options) bucket and rebuilds the trainer on every shape change —
+28 times in a full `decision-v7` epoch. It carried the adapter and head weights
+across but not the moments, and a comment claimed `Trainer::rebuild_at` handled
+it, a function that never existed. With 28 restarts during the OneCycle ramp the
+run diverged: loss 1.06 at step 50 → 4.33 at step 100 with a pre-clip grad norm
+of 1294 → 9.41 by step 150, above every `ln(n_options)` chance floor. That was
+invisible until Metal's backward was fixed, because before that the gradients
+were NaN or zero and nothing moved at all.
+
+`Adam::step` now also re-initialises a restored moment pair whose length no longer
+matches its parameter, instead of indexing past the end.
+
 ### `rlx-upscale` — single-image super-resolution (15 architectures)
 
 New crate covering both tiers of the current super-resolution landscape, native

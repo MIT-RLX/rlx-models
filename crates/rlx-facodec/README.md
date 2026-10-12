@@ -1,7 +1,7 @@
 # rlx-facodec
 
 [FACodec](https://huggingface.co/amphion/naturalspeech3_facodec) (NaturalSpeech 3
-factorized codec) decoder ported to [rlx-runtime](../rlx-runtime) graphs, running
+factorized codec) decoder ported to [rlx-runtime](https://docs.rs/rlx-runtime) graphs, running
 natively and **bit-exactly on every backend** (CPU / Metal / MLX / CUDA / ROCm /
 wgpu / Vulkan).
 

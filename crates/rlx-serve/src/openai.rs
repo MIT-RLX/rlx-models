@@ -129,10 +129,7 @@ impl ChatCompletionRequest {
     pub fn turns(&self) -> Vec<ChatTurn> {
         self.messages
             .iter()
-            .map(|m| ChatTurn {
-                role: m.role.clone(),
-                content: m.content.clone(),
-            })
+            .map(|m| ChatTurn::new(m.role.clone(), m.content.clone()))
             .collect()
     }
 
@@ -160,10 +157,7 @@ impl ChatCompletionRequest {
                     .collect();
                 rlx_guardrails::compact_messages(msgs, budget)
                     .into_iter()
-                    .map(|m| ChatTurn {
-                        role: m.role,
-                        content: m.content,
-                    })
+                    .map(|m| ChatTurn::new(m.role, m.content))
                     .collect()
             }
             None => self.turns(),

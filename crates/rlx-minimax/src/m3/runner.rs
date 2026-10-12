@@ -294,4 +294,10 @@ impl LmRunner for MiniMaxM3Runner {
     fn predict_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
         self.forward_last_logits(prompt_ids)
     }
+    // No `prefill_logits` / `decode_logits`: this runner re-forwards the
+    // whole context (`forward_last_logits`) and keeps no KV cache, so there
+    // is nothing for a one-token `decode_logits` to advance. Host-driven
+    // consumers therefore get the trait's default `generate`, which re-runs
+    // the prefill per token — correct, and as slow as it sounds. A KV cache
+    // is the prerequisite, not trait wiring.
 }

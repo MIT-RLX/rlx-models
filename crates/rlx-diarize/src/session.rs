@@ -43,21 +43,26 @@ impl Default for DiarizeConfig {
 
 impl DiarizeConfig {
     /// Resolve WeSpeaker dir from `RLX_WESPEAKER_DIR` / `RLX_WESPEAKER_ONNX` or roots.
+    /// The `mut` binding lives inside the gated block on purpose: taking
+    /// `mut self` instead makes it an `unused_mut` error whenever `wespeaker`
+    /// is off, which is the default feature set the lint gate builds.
     pub fn with_auto_wespeaker(self, search_roots: &[&Path]) -> Self {
         if self.wespeaker_dir.is_some() {
             return self;
         }
         #[cfg(feature = "wespeaker")]
         {
+            let mut me = self;
             if let Some(dir) = rlx_wespeaker::resolve_model_dir(search_roots) {
-                self.wespeaker_dir = Some(dir);
+                me.wespeaker_dir = Some(dir);
             }
+            me
         }
         #[cfg(not(feature = "wespeaker"))]
         {
             let _ = search_roots;
+            self
         }
-        self
     }
 
     pub fn with_device(mut self, device: Device) -> Self {

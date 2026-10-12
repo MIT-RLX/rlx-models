@@ -49,7 +49,7 @@ Times the ViT-L vision trunk per backend and compares against the host reference
 
 ## How it fits
 
-Depends on [rlx-sam](../rlx-sam) (compile profiles `sam3_profile_default` / `sam3_profile_near_weights`) and [rlx-gguf](../rlx-gguf) for packed GGUF weights. Sits alongside [rlx-sam2](../rlx-sam2) in the segmentation family; host tensor kernels are shared via `rlx_core::host_kernels`.
+Depends on [rlx-sam](../rlx-sam) (compile profiles `sam3_profile_default` / `sam3_profile_near_weights`) and [rlx-gguf](https://docs.rs/rlx-gguf) for packed GGUF weights. Sits alongside [rlx-sam2](../rlx-sam2) in the segmentation family; host tensor kernels are shared via `rlx_core::host_kernels`.
 
 ## Tests
 

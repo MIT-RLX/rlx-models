@@ -31,7 +31,7 @@
 //! input: the relative-position bias (a *gather* of a learned table through a
 //! fixed index) and the shifted-window attention mask (a `0`/`−100` pattern
 //! fixed by the tile geometry). At inference the table is frozen, so the gather
-//! is performed once at build time in [`rpe_bias`] and injected as a constant.
+//! is performed once at build time in `rpe_bias` and injected as a constant.
 //! That removes a `Gather` from the hot path of every block and keeps the mask
 //! at `[1, nW, 1, N, N]` — broadcast over heads — rather than materializing the
 //! `[B·nW, nH, N, N]` bias a fused-attention op would demand. For a 192×192

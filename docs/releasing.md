@@ -12,7 +12,11 @@ publishes a subset of its own crates. The two lines are **not** lockstep —
 upstream has published versions that rlx-models never did.
 
 1. **Every upstream pin must exist on crates.io.** This has been the hard
-   blocker twice: `rlx-opscope` (0.2.16 cycle) and `rlx-torch-ckpt` (current).
+   blocker twice: `rlx-opscope` (0.2.16 cycle) and `rlx-torch-ckpt`. **Both
+   are shipped as of 2026-10-11** (0.2.16 and 0.2.17 on the sparse index), so
+   there is currently no upstream blocker — `check-publishable.py --release`
+   reports only the clean-tree problems. Re-check rather than assume: a new
+   upstream crate reintroduces this class instantly.
    A single unpublished upstream crate makes the *whole workspace*
    unresolvable — `cargo metadata` fails outright once the local path patch is
    removed, so a fresh clone or CI box cannot even load the workspace. A
@@ -24,6 +28,16 @@ upstream has published versions that rlx-models never did.
    successfully and then fails to compile for everyone.
 
 Both are checked by `python3 scripts/check-publishable.py --release`.
+
+### Pin the upstream version deliberately
+
+Upstream is **0.2.17**; this workspace is 0.2.16 and pins upstream at
+`^0.2.16`, which admits 0.2.17. The local `../rlx` checkout is 0.2.17 too, so
+the patched build and a registry build resolve to the same thing — there is no
+drift of the kind that bit the 0.2.14 cycle. It does mean rlx-models 0.2.16
+would ship built against upstream 0.2.17. Before the next release, either bump
+the pins and the workspace version to 0.2.17, or pin `=0.2.16` on purpose.
+Leaving it implicit is how the two lines drift apart.
 
 ## Gates
 

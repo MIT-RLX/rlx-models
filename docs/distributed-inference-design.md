@@ -536,9 +536,12 @@ Done (in `rlx-models`, pipeline parallelism L3–L5):
   - `Qwen3PipelineStage: rlx_distributed::BlockRunner`.
   - **KV-cached decode path** — `crates/rlx-qwen3/src/pipeline_decode.rs`:
     `Qwen3PipelineDecodeStage` seeds a per-block KV cache from the prompt
-    (local-index block graph with K/V export), then runs a single-token decode
-    graph each step (O(layers)/token, not O(seq·layers)). Same coordinator,
-    same hand-off; the stage is stateful (`cache: Option<KvCacheState>`).
+    (block graph with local cache slots, global weight names, and K/V export),
+    then runs a single-token decode graph each step (O(layers)/token, not
+    O(seq·layers)). Same coordinator, same hand-off; the stage is stateful
+    (`cache: Option<KvCacheState>`). It is now a type alias for the shared
+    `FamilyPipelineStage<Qwen3Family>`, so being a rank is written once for
+    every family rather than per crate.
     **Validated over TCP** (`decode_pipeline_matches_cached_generator`, 2/3-rank,
     both recompile and cached paths): reproduces the single-node KV-cached
     generator's greedy sequence exactly. Opt in to a **per-block bucketed

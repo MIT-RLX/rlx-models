@@ -15,6 +15,7 @@ pub mod cli;
 pub mod config;
 pub mod flow;
 pub mod generator;
+pub mod pipeline_block;
 pub mod prefill_mode;
 pub mod rope;
 pub mod runner;

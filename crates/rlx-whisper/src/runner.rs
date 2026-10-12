@@ -23,17 +23,22 @@ use crate::backend::{
     metal_compile_guard, prefill_cache_key, whisper_decoder_device, whisper_encoder_device,
     whisper_use_gpu_kv,
 };
-use crate::batch::{batched_prompt_f32, replicate_encoder_for_beams};
+use crate::batch::batched_prompt_f32;
+// Only the `tokenizer`-gated batch decoders below use these, so an ungated
+// import is a hard error under `-D warnings` in the default build.
+#[cfg(feature = "tokenizer")]
+use crate::batch::replicate_encoder_for_beams;
 use crate::builder::WhisperGraphOpts;
 use crate::cache::{
     WhisperCrossCache, WhisperKvCache, apply_bucketed_decode_step, cross_from_outputs,
     kv_from_prefill_outputs,
 };
 use crate::config::WhisperConfig;
+#[cfg(feature = "tokenizer")]
 use crate::decode::{
-    EOT_TOKEN, SuppressionMask, batched_logits_row_owned, beam_search_decode_kv,
-    beam_search_decode_kv_batched, initial_prompt_opts_ex, last_logits_row,
+    EOT_TOKEN, batched_logits_row_owned, beam_search_decode_kv_batched, initial_prompt_opts_ex,
 };
+use crate::decode::{SuppressionMask, beam_search_decode_kv, last_logits_row};
 use crate::fused::{FusedDecoderWeights, FusedEncoderWeights};
 use crate::mel::stack_mels;
 #[cfg(all(feature = "tokenizer", feature = "timestamps"))]
@@ -42,7 +47,9 @@ use crate::timestamp_parse::build_transcript;
 use crate::transcript::WhisperTranscript;
 #[cfg(all(feature = "tokenizer", any(feature = "word-dtw", feature = "word-w2v")))]
 use crate::transcript::{WordAlignMode, WordTiming};
-use crate::vad::{VadConfig, segments_by_vad};
+use crate::vad::VadConfig;
+#[cfg(feature = "tokenizer")]
+use crate::vad::segments_by_vad;
 use crate::weights::WhisperWeightPrefix;
 use anyhow::{Context, Result, bail, ensure};
 use rlx_core::flow_util::{
@@ -1707,7 +1714,7 @@ impl WhisperRunner {
     }
 
     #[cfg(all(feature = "tokenizer", any(feature = "word-dtw", feature = "word-w2v")))]
-    /// Fill [`TranscriptSegment::words`] using DTW or Wav2Vec2 forced alignment.
+    /// Fill [`TranscriptSegment::words`](crate::transcript::TranscriptSegment::words) using DTW or Wav2Vec2 forced alignment.
     ///
     /// DTW on Metal/CUDA runs a compiled align-hidden graph on the encoder device, then
     /// batched cross-attention QK on CPU. Falls back to parallel CPU forward on `Cpu`.

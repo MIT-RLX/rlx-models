@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use tokenizers::Tokenizer;
 
-/// Tokenizer with helpers tailored to the [`ClinicalBertRunner`] input layout.
+/// Tokenizer with helpers tailored to the [`ClinicalBertRunner`](crate::runner::ClinicalBertRunner) input layout.
 pub struct ClinicalBertTokenizer {
     inner: Tokenizer,
 }

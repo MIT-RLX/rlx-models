@@ -27,12 +27,12 @@ use std::path::{Path, PathBuf};
 const DEFAULT_Q4: &str = "/tmp/rlx-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf";
 
 fn gguf_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("LLAMA32_GGUF_PATH") {
-        if !p.is_empty() {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                return Some(path);
-            }
+    if let Ok(p) = std::env::var("LLAMA32_GGUF_PATH")
+        && !p.is_empty()
+    {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            return Some(path);
         }
     }
     if std::env::var("LLAMA32_RUN_GGUF_PARITY").ok().as_deref() != Some("1") {

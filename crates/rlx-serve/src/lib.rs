@@ -22,7 +22,7 @@ pub use backend::{ModelBackend, RegistryBackend, SingleBackend};
 pub use batch::{
     BatchRunner, BatchedEngine, ContinuousBatcher, FusedBatchRunner, RunnerBatchRunner,
 };
-pub use engine::{Engine, GenRequest, SingleEngine, StreamItem};
+pub use engine::{ChatToolCall, Engine, GenRequest, SingleEngine, StreamItem, host_drivable};
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

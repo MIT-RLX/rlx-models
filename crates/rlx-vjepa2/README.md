@@ -20,5 +20,5 @@ Modules: `config`, `builder`, `encoder`, `predictor`, `pooler`, `layers`, `flow`
 
 ## How it fits
 
-- Core graph layer: [rlx-flow](../../rlx) / [rlx-ir](../../rlx).
+- Core graph layer: [rlx-flow](https://docs.rs/rlx-flow) / [rlx-ir](https://docs.rs/rlx-ir).
 - Sibling image backbone: [rlx-dinov2](../rlx-dinov2).

@@ -423,15 +423,15 @@ fn interleave_recall(
             chunk_toks.push(t);
             let s = tok.decode(&chunk_toks, true).unwrap_or_default();
             // Stop the moment a SEARCH: or ANSWER: line is complete (has a newline).
-            if let Some(p) = s.rfind("SEARCH:") {
-                if s[p + 7..].contains('\n') {
-                    return false;
-                }
+            if let Some(p) = s.rfind("SEARCH:")
+                && s[p + 7..].contains('\n')
+            {
+                return false;
             }
-            if let Some(p) = s.rfind("ANSWER:") {
-                if s[p + 7..].contains('\n') {
-                    return false;
-                }
+            if let Some(p) = s.rfind("ANSWER:")
+                && s[p + 7..].contains('\n')
+            {
+                return false;
             }
             true
         })?;
@@ -1932,10 +1932,10 @@ fn main() -> anyhow::Result<()> {
             if let Err(e) = bert_op_inspect(&enc_repo, 256, &out_dir, "encoder") {
                 eprintln!("[op-inspect:encoder] skipped: {e}");
             }
-            if !rerank_repo.is_empty() {
-                if let Err(e) = bert_op_inspect(&rerank_repo, 192, &out_dir, "reranker") {
-                    eprintln!("[op-inspect:reranker] skipped: {e}");
-                }
+            if !rerank_repo.is_empty()
+                && let Err(e) = bert_op_inspect(&rerank_repo, 192, &out_dir, "reranker")
+            {
+                eprintln!("[op-inspect:reranker] skipped: {e}");
             }
         }
     }

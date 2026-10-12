@@ -56,7 +56,7 @@ Lower-level entry points are also public: `runner.encode_audio(&mel)` (encoder +
 |---|---|
 | Whisper-style audio encoder | [`rlx-whisper`](../rlx-whisper) |
 | Llama text decoder trunk | [`rlx-llama32`](../rlx-llama32) |
-| Compile / device routing | [`rlx-runtime`](../rlx-runtime) |
+| Compile / device routing | [`rlx-runtime`](https://docs.rs/rlx-runtime) |
 
 The decoder compiles the prefill and a single fixed-cap decode graph once, then serves every `past_len` by padding the KV cache to the bucket and masking padded slots (`bucket_decode_mask` + `compact_bucketed_kv_buffer`) — no per-token recompile.
 

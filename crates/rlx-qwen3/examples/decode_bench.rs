@@ -18,7 +18,7 @@ mod common;
 use common::{Shape, Tensors, argmax, qwen3, synth};
 use rlx_distributed::{NetTransport, PipelineCoordinator, ProcessGroup};
 use rlx_qwen3::Qwen3Config;
-use rlx_qwen3::pipeline_decode::Qwen3PipelineDecodeStage;
+use rlx_qwen3::pipeline_decode;
 use rlx_runtime::Device;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -44,7 +44,7 @@ fn run(world: u32, cached: bool, cfg: &Qwen3Config, w: &Tensors, prompt: &[u32],
             thread::spawn(move || {
                 let t = NetTransport::from_listener(rank as u32, world, listener, addrs, 4 << 20)
                     .unwrap();
-                let stage = Qwen3PipelineDecodeStage::new(
+                let stage = pipeline_decode::stage(
                     (*cfg).clone(),
                     Device::Cpu,
                     rank as u32,

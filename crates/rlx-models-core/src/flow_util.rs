@@ -51,6 +51,34 @@ impl WeightSource for WeightMapSource<'_> {
     }
 }
 
+/// A compile cache with **one** bucket covering `1..=max_past` decode positions.
+///
+/// Five places in this workspace built this by hand as
+/// `BucketedCompileCache::new(device, vec![1..max + 1])` — llama32's generator,
+/// qwen35's runner, the shared pipeline block, qwen3's pipeline stage and a
+/// parity test. Besides being repeated, that spelling trips
+/// `clippy::single_range_in_vec_init`, because `vec![1..n]` reads as
+/// `(1..n).collect()` at a glance; the same lint was fixed independently in
+/// three of those files before this helper existed.
+///
+/// One bucket means one compiled graph serves every past length, which is the
+/// right trade when the graph is dynamic over `past` and recompiling per length
+/// would dominate. Use [`BucketedCompileCache::new`] directly for a real
+/// bucket ladder.
+pub fn single_bucket_decode_cache(device: Device, max_past: usize) -> BucketedCompileCache {
+    // Clamp here rather than trusting the caller: `max_past = 0` would give
+    // `1..1`, an **empty** range that matches no length at all, so the cache
+    // would silently never hit. Every call site happened to clamp already;
+    // one of them forgetting is a performance cliff with no error.
+    let max = max_past.max(1) as u64;
+    // `new` takes `Vec<Range<u64>>`, so clippy's suggested "collect the range"
+    // rewrite is a type error here rather than a simplification. Allowed once,
+    // in the one place that constructs this, instead of at seven call sites.
+    #[allow(clippy::single_range_in_vec_init)]
+    let buckets = vec![1..(max + 1)];
+    BucketedCompileCache::new(device, buckets)
+}
+
 pub fn built_from_hir(
     hir: HirModule,
     params: std::collections::HashMap<String, Vec<f32>>,
@@ -333,4 +361,37 @@ where
         },
         options,
     )
+}
+
+#[cfg(test)]
+mod single_bucket_tests {
+    use super::*;
+
+    /// One bucket, covering every past length from 1 to `max_past`.
+    ///
+    /// The point of the helper is that five call sites agreed on this shape and
+    /// spelled it five ways; this pins the shape so they can keep agreeing.
+    #[test]
+    fn the_bucket_spans_one_to_max_inclusive() {
+        let c = single_bucket_decode_cache(Device::Cpu, 8);
+        let b: Vec<_> = c.buckets().cloned().collect();
+        assert_eq!(b.len(), 1, "exactly one bucket");
+        assert_eq!(b[0], 1..9, "1..=8 as a half-open range");
+    }
+
+    /// `max_past = 0` yields a usable bucket, not an empty range.
+    ///
+    /// Found by writing this test: without the clamp the helper returns
+    /// `1..1`, which is empty, so the cache matches no length and silently
+    /// never hits — a performance cliff with no error anywhere. Every existing
+    /// call site clamped before calling; the helper now does it so the next
+    /// one cannot forget.
+    #[test]
+    fn a_zero_max_is_not_an_empty_bucket() {
+        let c = single_bucket_decode_cache(Device::Cpu, 0);
+        let b: Vec<_> = c.buckets().cloned().collect();
+        assert_eq!(b.len(), 1);
+        assert!(!b[0].is_empty(), "an empty bucket would match no length");
+        assert_eq!(b[0], 1..2, "clamped to cover a single past position");
+    }
 }

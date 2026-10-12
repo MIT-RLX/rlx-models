@@ -1,7 +1,7 @@
 # rlx-nanocodec
 
 [NVIDIA NanoCodec](https://huggingface.co/nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps)
-(NeMo `nemo-nano-codec-22khz-*`) decoder ported to [rlx-runtime](../rlx-runtime)
+(NeMo `nemo-nano-codec-22khz-*`) decoder ported to [rlx-runtime](https://docs.rs/rlx-runtime)
 graphs, running natively and **bit-exactly on every backend** (CPU / Metal / MLX /
 CUDA / ROCm / wgpu / Vulkan).
 

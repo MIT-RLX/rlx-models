@@ -121,7 +121,12 @@ crates/rlx-whisper/fixtures/
 !crates/rlx-orpheus/tests/fixtures/orpheus_hi_codes.txt
 !crates/rlx-tada/tests/fixtures/*.json
 !crates/rlx-glm5next/tests/fixtures/*.json
+!crates/rlx-qwen4exp/tests/fixtures/*.json
+!crates/rlx-qwen35/tests/fixtures/*.json
+!crates/rlx-gemma/tests/fixtures/*.json
+!crates/rlx-qwen3-vl/tests/fixtures/*.json
 !crates/rlx-chatterbox/tests/fixtures/*.json
+!crates/rlx-kev/tests/fixtures/*.json
 
 # Same class, but excluded by a *directory* rule (`crates/*/weights/`,
 # `crates/rlx-whisper/fixtures/`) rather than a glob. Git never descends into an

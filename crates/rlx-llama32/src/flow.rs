@@ -214,6 +214,12 @@ pub struct Llama32Flow<'a> {
     after_layers: Vec<FlowStage>,
     layer_fn: Option<LayerFn>,
     flow_patch: Option<FlowPatchFn>,
+    /// Build only this slice of the model's layers. `None` builds all of
+    /// them. See [`Llama32Flow::layer_range`].
+    layer_range: Option<std::ops::Range<usize>>,
+    /// Apply the model's final norm. See
+    /// [`Llama32Flow::without_final_norm`].
+    final_norm: bool,
 }
 
 impl fmt::Debug for Llama32Flow<'_> {
@@ -259,6 +265,8 @@ impl<'a> Llama32Flow<'a> {
             after_layers: Vec::new(),
             layer_fn: None,
             flow_patch: None,
+            layer_range: None,
+            final_norm: true,
         }
     }
 
@@ -341,6 +349,39 @@ impl<'a> Llama32Flow<'a> {
     pub fn last_token_logits(mut self) -> Self {
         self.with_lm_head = true;
         self.last_logits_only = true;
+        self
+    }
+
+    /// Build only layers `range`, with execution indices `0..range.len()`
+    /// and weights taken from `model.layers.{range.start + i}`.
+    ///
+    /// For running one model across several machines: each rank holds a
+    /// contiguous block of layers and needs a graph over just those, while
+    /// the weights keep the names they have in the checkpoint. The two
+    /// indices were already separate here — a layer-sharing model reuses one
+    /// weight set across several execution slots — so a block is expressed
+    /// by shifting the weight index rather than by renaming anything.
+    ///
+    /// An empty or out-of-range slice is refused at `build` rather than
+    /// quietly producing a model with no layers in it.
+    pub fn layer_range(mut self, range: std::ops::Range<usize>) -> Self {
+        self.layer_range = Some(range);
+        self
+    }
+
+    /// Leave off the model's final norm.
+    ///
+    /// For a block that is not the end of the model: the final norm belongs
+    /// once, immediately before the head, and a block in the middle that
+    /// applied it would hand the next block an already-normalised hidden
+    /// state — and the next one would normalise it again.
+    ///
+    /// Deliberately *not* folded into [`Self::hidden_only`]. That one says
+    /// "give me hidden states instead of logits", which is what a caller
+    /// extracting whole-model embeddings wants — and for them the final norm
+    /// is part of the model, not something to skip.
+    pub fn without_final_norm(mut self) -> Self {
+        self.final_norm = false;
         self
     }
 
@@ -476,7 +517,7 @@ impl<'a> Llama32Flow<'a> {
         let layer_fn = self.layer_fn.clone();
         let export = self.with_kv_outputs;
         let physical = cfg.physical_layers();
-        let kv_layers = cfg.kv_layers();
+        let (kv_layers, weight_base) = block_layers(&self.layer_range, cfg.kv_layers(), physical)?;
         let skip_loop_final_norm = cfg.skip_loop_final_norm;
         flow = flow.repeat_layers(kv_layers, {
             let spec = decoder_spec.clone();
@@ -485,7 +526,7 @@ impl<'a> Llama32Flow<'a> {
                 let weight_idx = if physical == 0 {
                     0
                 } else {
-                    exec_idx % physical
+                    weight_base + (exec_idx % physical)
                 };
                 let base = if let Some(ref f) = layer_fn {
                     f(LlamaLayerCtx::Prefill {
@@ -550,7 +591,9 @@ impl<'a> Llama32Flow<'a> {
             };
         }
 
-        flow = flow.final_norm(eps);
+        if self.final_norm {
+            flow = flow.final_norm(eps);
+        }
 
         if let Some(patch) = self.flow_patch {
             flow = patch(flow);
@@ -663,7 +706,7 @@ impl<'a> Llama32Flow<'a> {
 
         let layer_fn = self.layer_fn.clone();
         let physical = cfg.physical_layers();
-        let kv_layers = cfg.kv_layers();
+        let (kv_layers, weight_base) = block_layers(&self.layer_range, cfg.kv_layers(), physical)?;
         let skip_loop_final_norm = cfg.skip_loop_final_norm;
         flow = flow.repeat_layers(kv_layers, {
             let spec = decode_spec.clone();
@@ -672,7 +715,7 @@ impl<'a> Llama32Flow<'a> {
                 let weight_idx = if physical == 0 {
                     0
                 } else {
-                    exec_idx % physical
+                    weight_base + (exec_idx % physical)
                 };
                 let base = if let Some(ref f) = layer_fn {
                     f(LlamaLayerCtx::Decode {
@@ -712,7 +755,11 @@ impl<'a> Llama32Flow<'a> {
         // `model.embed_tokens.weight` even for callers that only wanted hidden
         // states — which is a hard load failure for a checkpoint whose
         // embedding table lives outside the decoder's weight map.
-        let flow = flow.final_norm(eps);
+        let flow = if self.final_norm {
+            flow.final_norm(eps)
+        } else {
+            flow
+        };
         let flow = if self.with_lm_head {
             flow.lm_head(cfg.vocab_size, h, cfg.tie_word_embeddings)
         } else {
@@ -839,6 +886,26 @@ pub struct Llama32DecodeOpts {
     pub profile: Option<CompileProfile>,
 }
 
+/// How many layers to execute, and what to add to each execution index to
+/// reach its weights.
+///
+/// `(all, 0)` for a whole model; a slice of it when a layer range was given.
+/// A free function rather than a method because `build` has already moved
+/// parts of the builder by the time it needs this.
+fn block_layers(
+    range: &Option<std::ops::Range<usize>>,
+    all: usize,
+    physical: usize,
+) -> Result<(usize, usize)> {
+    let Some(range) = range.clone() else {
+        return Ok((all, 0));
+    };
+    if range.is_empty() || range.end > physical {
+        anyhow::bail!("layer range {range:?} is not a slice of this model's {physical} layers");
+    }
+    Ok((range.len(), range.start))
+}
+
 pub fn build_llama32_prefill_flow(
     cfg: &Llama32Config,
     weights: &mut dyn WeightLoader,
@@ -877,4 +944,161 @@ pub fn build_llama32_decode_built(
     opts: &Llama32DecodeOpts,
 ) -> Result<BuiltModel> {
     Llama32Flow::from_decode_opts(cfg, opts).build(weights)
+}
+
+#[cfg(test)]
+mod layer_range_tests {
+    use super::*;
+    use crate::config::Llama32Config;
+    use rlx_core::weight_map::WeightMap;
+    use std::collections::HashMap;
+
+    fn cfg(layers: usize) -> Llama32Config {
+        Llama32Config {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: layers,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            max_position_embeddings: 32,
+            rms_norm_eps: 1e-5,
+            rope_theta: 500_000.0,
+            hidden_act: "silu".into(),
+            tie_word_embeddings: false,
+            attention_bias: false,
+            head_dim: None,
+            rope_scaling: None,
+            embedding_scale: None,
+            residual_scale: None,
+            attention_scale: None,
+            logit_scale: None,
+            num_loops: 1,
+            skip_loop_final_norm: false,
+            rope_style: rlx_ir::RopeStyle::NeoX,
+            gguf_arch: None,
+            rope_dim: None,
+            sliding_window: None,
+            sliding_window_pattern: None,
+            final_logit_softcap: None,
+        }
+    }
+
+    /// Every weight a whole model of `layers` layers needs, so a build can
+    /// be asked which of them it actually took.
+    fn weights(c: &Llama32Config) -> WeightMap {
+        let h = c.hidden_size;
+        let dh = c.head_dim();
+        let q = c.num_attention_heads * dh;
+        let kv = c.num_key_value_heads * dh;
+        let im = c.intermediate_size;
+        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
+        let mut put = |k: String, shape: Vec<usize>| {
+            let n: usize = shape.iter().product();
+            // Small distinct values; the graph only has to build, not be right.
+            let data = (0..n).map(|i| ((i % 7) as f32 + 1.0) * 0.01).collect();
+            t.insert(k, (data, shape));
+        };
+        put("model.embed_tokens.weight".into(), vec![c.vocab_size, h]);
+        for l in 0..c.num_hidden_layers {
+            let p = format!("model.layers.{l}");
+            put(format!("{p}.input_layernorm.weight"), vec![h]);
+            put(format!("{p}.post_attention_layernorm.weight"), vec![h]);
+            put(format!("{p}.self_attn.q_proj.weight"), vec![q, h]);
+            put(format!("{p}.self_attn.k_proj.weight"), vec![kv, h]);
+            put(format!("{p}.self_attn.v_proj.weight"), vec![kv, h]);
+            put(format!("{p}.self_attn.o_proj.weight"), vec![h, q]);
+            put(format!("{p}.mlp.gate_proj.weight"), vec![im, h]);
+            put(format!("{p}.mlp.up_proj.weight"), vec![im, h]);
+            put(format!("{p}.mlp.down_proj.weight"), vec![h, im]);
+        }
+        put("model.norm.weight".into(), vec![h]);
+        put("lm_head.weight".into(), vec![c.vocab_size, h]);
+        WeightMap::from_tensors(t)
+    }
+
+    /// Which `model.layers.N` indices a built graph pulled weights for.
+    fn layers_taken(built: &BuiltModel) -> Vec<usize> {
+        let mut seen: Vec<usize> = built
+            .params()
+            .keys()
+            .filter_map(|k| k.strip_prefix("model.layers."))
+            .filter_map(|rest| rest.split('.').next()?.parse().ok())
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen
+    }
+
+    #[test]
+    fn a_block_takes_its_own_layers_weights_and_no_others() {
+        // The point of the range: rank 1 of a 2-way split over 8 layers
+        // builds four layers, and they are the checkpoint's layers 4..8 —
+        // not 0..4 renamed.
+        let c = cfg(8);
+        let built = Llama32Flow::for_prefill(&c, 1, 3)
+            .layer_range(4..8)
+            .inputs_embeds()
+            .hidden_only()
+            .export_kv()
+            .build(&mut weights(&c))
+            .expect("a middle block should build");
+        assert_eq!(layers_taken(&built), vec![4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn the_first_block_starts_at_zero() {
+        let c = cfg(8);
+        let built = Llama32Flow::for_prefill(&c, 1, 3)
+            .layer_range(0..4)
+            .hidden_only()
+            .export_kv()
+            .build(&mut weights(&c))
+            .expect("a first block should build");
+        assert_eq!(layers_taken(&built), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn no_range_still_builds_the_whole_model() {
+        // The default must be untouched: every existing caller passes no
+        // range at all.
+        let c = cfg(4);
+        let built = Llama32Flow::for_prefill(&c, 1, 3)
+            .export_kv()
+            .build(&mut weights(&c))
+            .expect("a whole model should build");
+        assert_eq!(layers_taken(&built), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_decode_block_takes_the_same_layers_as_its_prefill() {
+        // They must agree, or the KV a block seeded would be read by a graph
+        // over different weights.
+        let c = cfg(8);
+        let built = Llama32Flow::for_decode(&c, 1, 5)
+            .layer_range(4..8)
+            .inputs_embeds()
+            .hidden_only()
+            .build(&mut weights(&c))
+            .expect("a middle decode block should build");
+        assert_eq!(layers_taken(&built), vec![4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn a_range_that_is_not_a_slice_of_the_model_is_refused() {
+        // Each of these would otherwise build a graph quietly missing
+        // layers, which has no shape error to catch it.
+        let c = cfg(4);
+        for bad in [0..0, 2..2, 0..5, 4..8] {
+            let err = Llama32Flow::for_prefill(&c, 1, 3)
+                .layer_range(bad.clone())
+                .export_kv()
+                .build(&mut weights(&c))
+                .expect_err(&format!("{bad:?} should be refused"));
+            assert!(
+                format!("{err:#}").contains("not a slice"),
+                "{bad:?}: {err:#}"
+            );
+        }
+    }
 }

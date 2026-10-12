@@ -22,7 +22,7 @@ use rlx_core::gguf_support::{
     GgufModelFamily, ResolveWeightsOptions, assert_gguf_family, gguf_f32_bytes_estimate,
     resolve_weights_file_with_options,
 };
-use rlx_core::pick_lm_device;
+use rlx_core::lm_builder::LmBuilderCommon;
 use rlx_qwen3::SampleOpts;
 use rlx_runtime::Device;
 use std::path::{Path, PathBuf};
@@ -38,13 +38,10 @@ pub type GemmaConfigSource = rlx_runtime::ConfigSource<GemmaConfig>;
 
 #[derive(Debug, Clone, Default)]
 pub struct GemmaRunnerBuilder {
-    weights: Option<PathBuf>,
-    config: Option<GemmaConfigSource>,
-    device: Option<Device>,
-    max_seq: Option<usize>,
-    max_memory_gb: Option<f32>,
-    stream: bool,
+    common: LmBuilderCommon<GemmaConfig>,
+    /// Family-local: `rlx_qwen3::SampleOpts`, not the `rlx_runtime` one.
     sample: Option<SampleOpts>,
+    /// Family-local: `rlx_cli::WeightFormat`, not the `rlx_runtime` one.
     format: Option<WeightFormat>,
     /// `None` = auto (packed GGUF when file ≥ 256 MiB on disk).
     packed_weights: Option<bool>,
@@ -56,45 +53,15 @@ pub struct GemmaRunnerBuilder {
 }
 
 impl GemmaRunnerBuilder {
-    pub fn weights<P: Into<PathBuf>>(mut self, path: P) -> Self {
-        self.weights = Some(path.into());
-        self
-    }
+    rlx_core::lm_builder_setters!(GemmaConfig);
 
+    /// Override the format inferred from the weights path.
     pub fn format(mut self, fmt: WeightFormat) -> Self {
         self.format = Some(fmt);
         self
     }
 
-    pub fn config(mut self, src: GemmaConfigSource) -> Self {
-        self.config = Some(src);
-        self
-    }
-
-    pub fn config_value(self, cfg: GemmaConfig) -> Self {
-        self.config(GemmaConfigSource::Explicit(cfg))
-    }
-
-    pub fn device(mut self, d: Device) -> Self {
-        self.device = Some(d);
-        self
-    }
-
-    pub fn max_seq(mut self, n: usize) -> Self {
-        self.max_seq = Some(n);
-        self
-    }
-
-    pub fn max_memory_gb(mut self, gb: f32) -> Self {
-        self.max_memory_gb = Some(gb);
-        self
-    }
-
-    pub fn stream(mut self, on: bool) -> Self {
-        self.stream = on;
-        self
-    }
-
+    /// Sampling options for `generate`. Default `SampleOpts::greedy()`.
     pub fn sample(mut self, opts: SampleOpts) -> Self {
         self.sample = Some(opts);
         self
@@ -131,36 +98,23 @@ impl GemmaRunnerBuilder {
             prefer_gguf_substring: Some(rlx_core::DEFAULT_GGUF_PREFER_SUBSTR),
             ..Default::default()
         };
-        let weights_path = resolve_weights_file_with_options(
-            self.weights
-                .as_ref()
-                .ok_or_else(|| anyhow!("weights path required (call .weights(...))"))?,
-            &resolve,
-        )?;
+        let weights_path =
+            resolve_weights_file_with_options(self.common.weights_path()?, &resolve)?;
         let format = WeightFormat::resolve(&weights_path, self.format)?;
-        let device = self.device.unwrap_or_else(pick_lm_device);
-        if self.device.is_none() {
-            eprintln!("[gemma-runner] auto device → {device:?}");
-        }
-        let max_seq = self.max_seq.unwrap_or(128);
-        let stream = self.stream;
+        let device = self.common.device_or_auto("gemma");
+        let max_seq = self.common.max_seq_or(128);
+        let stream = self.common.stream;
         let sample = self.sample.unwrap_or_else(SampleOpts::greedy);
 
         let (cfg, total_bytes_estimate) = match format {
-            WeightFormat::Gguf => load_gemma_gguf_config(&weights_path, self.config.as_ref())?,
+            WeightFormat::Gguf => {
+                load_gemma_gguf_config(&weights_path, self.common.config.as_ref())?
+            }
             WeightFormat::Safetensors => {
-                load_gemma_safetensors_config(&weights_path, self.config.as_ref())?
+                load_gemma_safetensors_config(&weights_path, self.common.config.as_ref())?
             }
         };
-
-        if let Some(cap_gb) = self.max_memory_gb {
-            let est_gb = total_bytes_estimate as f32 / (1024.0 * 1024.0 * 1024.0);
-            if est_gb > cap_gb {
-                bail!(
-                    "weights would dequant to ~{est_gb:.1} GB at F32, exceeds cap {cap_gb:.1} GB"
-                );
-            }
-        }
+        self.common.check_memory_cap(total_bytes_estimate)?;
 
         let mmproj_path = self.mmproj.clone();
         // Multimodal fuse needs `model.embed_tokens` via the F32 generator.
@@ -217,7 +171,7 @@ impl GemmaRunnerBuilder {
                 let mm_cfg = resolve_mm_config(
                     self.mm_config.as_deref(),
                     &weights_path,
-                    self.config.as_ref(),
+                    self.common.config.as_ref(),
                 )?;
                 if !mm_cfg.has_vision() && !mm_cfg.has_audio() {
                     bail!(
@@ -277,6 +231,11 @@ pub struct GemmaRunner {
     generator: Option<GemmaGenerator>,
     cfg: GemmaConfig,
     sample: SampleOpts,
+    /// Retained for builder API compatibility. Every generate path now
+    /// invokes the caller's per-token callback per token — it is the only
+    /// token sink and carries the stop signal — so this no longer gates
+    /// anything. Same resolution as `rlx-qwen3`'s.
+    #[allow(dead_code)]
     stream: bool,
     device: Device,
     packed: Option<crate::packed_session::GemmaPackedSession>,
@@ -344,24 +303,40 @@ impl GemmaRunner {
         n_new: usize,
         mut on_token: impl FnMut(u32),
     ) -> Result<Vec<u32>> {
-        if self.packed.is_some() {
-            return self.generate_packed(prompt_ids, n_new, on_token);
+        self.generate_until(prompt_ids, n_new, |tok| {
+            on_token(tok);
+            true
+        })
+    }
+
+    /// [`Self::generate`], but `keep_going` returning `false` ends the turn
+    /// after that token (which is included in the result).
+    ///
+    /// Both weight paths honour it. Note what the old `generate` did on the
+    /// unpacked non-streaming branch: it collected every token first and only
+    /// then replayed the callback, so a stop could not have taken effect even
+    /// if the bool had been read. A stoppable generate therefore has to go
+    /// through the decode loop, not around it.
+    pub fn generate_until(
+        &mut self,
+        prompt_ids: &[u32],
+        n_new: usize,
+        mut keep_going: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        let sample = self.sample;
+        if let Some(packed) = self.packed.as_mut() {
+            return packed.generate_until(prompt_ids, n_new, sample, keep_going);
         }
         let generator = self
             .generator
             .as_mut()
             .ok_or_else(|| anyhow!("F32 generator unavailable in packed_weights mode"))?;
         generator.prefill(prompt_ids);
-        let tokens = if self.stream {
-            generator.generate_cached_with(n_new, self.sample, &mut on_token)?
-        } else {
-            let toks = generator.generate_cached(n_new, self.sample)?;
-            for &t in &toks {
-                on_token(t);
-            }
-            toks
-        };
-        Ok(tokens)
+        // One loop whether or not the caller wanted streaming: `self.stream`
+        // decided which of two loops ran, and the non-streaming one replayed
+        // the callback only after collecting everything, which is why a stop
+        // could not take effect there.
+        generator.generate_cached_until(n_new, sample, &mut keep_going)
     }
 
     /// EAGLE3-style generate with a per-step **aux hidden state**
@@ -434,23 +409,18 @@ impl GemmaRunner {
             .generator
             .as_mut()
             .ok_or_else(|| anyhow!("F32 generator unavailable in packed_weights mode"))?;
-        let tokens = if self.stream {
-            generator.generate_from_embeds_with(
-                prompt_ids,
-                inputs_embeds,
-                n_new,
-                self.sample,
-                &mut on_token,
-            )?
-        } else {
-            let toks =
-                generator.generate_from_embeds(prompt_ids, inputs_embeds, n_new, self.sample)?;
-            for &t in &toks {
-                on_token(t);
-            }
-            toks
-        };
-        Ok(tokens)
+        // Always the per-token variant. The `stream(false)` branch this
+        // replaces collected every token first and only then replayed the
+        // callback, so the ids and their order were identical and the only
+        // difference was that a caller asking to be told per token was told
+        // at the end instead. qwen3 settled this the same way.
+        generator.generate_from_embeds_with(
+            prompt_ids,
+            inputs_embeds,
+            n_new,
+            self.sample,
+            &mut on_token,
+        )
     }
 
     /// Build fused inputs + run generation (text LM weights must include `model.embed_tokens.weight`).
@@ -484,29 +454,15 @@ impl GemmaRunner {
             .generator
             .as_mut()
             .ok_or_else(|| anyhow!("F32 generator unavailable in packed_weights mode"))?;
-        let tokens = if self.stream {
-            generator.generate_from_embeds_with_bias_and_callback(
-                token_ids,
-                &embeds,
-                attn_bias,
-                n_new,
-                self.sample,
-                &mut on_token,
-            )?
-        } else {
-            let toks = generator.generate_from_embeds_with_bias(
-                token_ids,
-                &embeds,
-                attn_bias,
-                n_new,
-                self.sample,
-            )?;
-            for &t in &toks {
-                on_token(t);
-            }
-            toks
-        };
-        Ok(tokens)
+        // Per-token, always; see `generate_from_embeds`.
+        generator.generate_from_embeds_with_bias_and_callback(
+            token_ids,
+            &embeds,
+            attn_bias,
+            n_new,
+            self.sample,
+            &mut on_token,
+        )
     }
 
     /// End-to-end multimodal generate from RGB pixels (LmRunner / skill path).
@@ -581,10 +537,34 @@ impl LmRunner for GemmaRunner {
         n_new: usize,
         on_token: &mut dyn FnMut(u32) -> bool,
     ) -> Result<Vec<u32>> {
-        // Inherent generate ignores stop signal — drop the bool.
-        GemmaRunner::generate(self, prompt_ids, n_new, |tok| {
-            let _ = on_token(tok);
-        })
+        GemmaRunner::generate_until(self, prompt_ids, n_new, on_token)
+    }
+
+    /// Host-driven decode: the caller owns sampling, logit bias, log-probs
+    /// and stop detection, and this only hands back raw logits.
+    ///
+    /// Gemma had neither half, so every consumer of the host-driven pair —
+    /// `rlx-serve` among them — fell back to `generate`, which means the
+    /// family's own greedy/`SampleOpts` sampling instead of the caller's and
+    /// no per-token logit access. The generator has had both halves all
+    /// along (`prefill_get_last_logits` seeds the KV cache and returns the
+    /// last row; `decode_get_logits` advances it by one); only the trait
+    /// wiring was missing. Unavailable in packed (GGUF-quantized) mode,
+    /// which is the same limit qwen3 states.
+    fn prefill_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        let g = self
+            .generator
+            .as_mut()
+            .ok_or_else(|| anyhow!("F32 generator unavailable (packed_weights mode)"))?;
+        g.prefill_get_last_logits(prompt_ids)
+    }
+
+    fn decode_logits(&mut self, token: u32) -> Result<Vec<f32>> {
+        let g = self
+            .generator
+            .as_mut()
+            .ok_or_else(|| anyhow!("F32 generator unavailable (packed_weights mode)"))?;
+        g.decode_get_logits(token)
     }
 
     fn supports_multimodal(&self) -> bool {
@@ -715,4 +695,47 @@ fn load_gemma_safetensors_config(
 
 fn default_st_size_estimate(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod builder_api_tests {
+    use super::*;
+
+    /// The chainable setter surface is public API, and it is now generated
+    /// by `rlx_core::lm_builder_setters!` rather than written out here.
+    ///
+    /// Two things this pins that a compile does not: that every setter still
+    /// exists under its old name and signature, and that the macro writes
+    /// each value into the field the builder actually reads. A setter wired
+    /// to the wrong field of the right type — `max_seq` into `max_memory_gb`
+    /// — compiles, and then the model is built with someone else's number.
+    #[test]
+    fn every_setter_still_exists_and_lands_where_build_reads_it() {
+        let b = GemmaRunner::builder()
+            .weights("/tmp/does-not-need-to-exist.gguf")
+            .config(GemmaConfigSource::Embedded)
+            .device(Device::Cpu)
+            .max_seq(77)
+            .max_memory_gb(1.5)
+            .stream(false)
+            .sample(SampleOpts::greedy())
+            .format(WeightFormat::Gguf);
+
+        assert_eq!(
+            b.common.weights.as_deref(),
+            Some(std::path::Path::new("/tmp/does-not-need-to-exist.gguf"))
+        );
+        assert!(matches!(b.common.config, Some(GemmaConfigSource::Embedded)));
+        assert_eq!(b.common.device, Some(Device::Cpu));
+        assert_eq!(b.common.max_seq, Some(77));
+        assert_eq!(b.common.max_memory_gb, Some(1.5));
+        assert!(!b.common.stream);
+        assert!(b.sample.is_some());
+        assert!(matches!(b.format, Some(WeightFormat::Gguf)));
+
+        // Unset stays unset, which is what keeps auto-device reachable.
+        let d = GemmaRunner::builder();
+        assert!(d.common.device.is_none());
+        assert!(d.common.max_seq.is_none());
+    }
 }

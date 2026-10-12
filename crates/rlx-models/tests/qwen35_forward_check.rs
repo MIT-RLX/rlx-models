@@ -533,9 +533,19 @@ fn qwen35_dynamic_decode_specializes_per_past_seq() {
     let max_seq = 8;
     let mut cache = Qwen35CompileCache::new(Device::Cpu, 4);
 
-    let built =
-        build_qwen35_decode_hir_dynamic_ext(&cfg, weights.clone(), 1, max_seq, false, false, false)
-            .expect("dynamic decode HIR");
+    // The trailing `false` is `force_host_embed`: this check wants the
+    // embedding gathered in the graph, as the default decode path does.
+    let built = build_qwen35_decode_hir_dynamic_ext(
+        &cfg,
+        weights.clone(),
+        1,
+        max_seq,
+        false,
+        false,
+        false,
+        false,
+    )
+    .expect("dynamic decode HIR");
     let template_params = built.1;
 
     let mut template_loaded = false;
@@ -553,7 +563,7 @@ fn qwen35_dynamic_decode_specializes_per_past_seq() {
                 }
                 template_loaded = true;
                 build_qwen35_decode_hir_dynamic_ext(
-                    &cfg_c, weights_c, 1, max_seq, false, false, false,
+                    &cfg_c, weights_c, 1, max_seq, false, false, false, false,
                 )
                 .expect("dynamic decode HIR")
                 .0

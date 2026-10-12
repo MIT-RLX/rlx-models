@@ -243,11 +243,25 @@ fn default_rope_local_base_freq() -> f64 {
 impl GemmaConfig {
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let data = std::fs::read_to_string(path)?;
+        let value: serde_json::Value = serde_json::from_str(&data)?;
+        Self::from_hf_value(&value, &data)
+    }
+
+    /// Parse an already-decoded `config.json`.
+    ///
+    /// `raw` is the original text, used only for the arch sniff — some
+    /// checkpoints name their generation in a nested `model_type` that the
+    /// typed fields do not carry. Pass the same JSON you decoded; an empty
+    /// string just means the sniff has nothing to go on.
+    ///
+    /// This exists so a wrapper config (`embedding_gemma2`, which nests a
+    /// Gemma 4 under its own `text_config`) can hand over the subtree it
+    /// already holds instead of writing a temp file to call [`Self::from_file`].
+    pub fn from_hf_value(value: &serde_json::Value, raw: &str) -> anyhow::Result<Self> {
         // Gemma 4 unified (e.g. `google/gemma-4-12B`) nests the LM
         // hyperparameters under `text_config` because the same file
         // also carries vision + audio configs. Pick that subtree if
         // it looks like the unified shape, otherwise stay flat.
-        let value: serde_json::Value = serde_json::from_str(&data)?;
         let lm_value = match value.get("text_config") {
             Some(tc) if tc.is_object() => tc.clone(),
             _ => value.clone(),
@@ -255,7 +269,7 @@ impl GemmaConfig {
         let lm_value = normalize_hf_null_usize_fields(lm_value);
         let mut cfg: Self = serde_json::from_value(lm_value)?;
         if cfg.arch == GemmaArch::Gemma {
-            cfg.arch = infer_arch_from_json(&data);
+            cfg.arch = infer_arch_from_json(raw);
         }
         Ok(cfg)
     }

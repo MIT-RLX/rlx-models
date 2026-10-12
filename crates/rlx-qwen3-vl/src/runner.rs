@@ -78,6 +78,11 @@ impl Qwen3VlVisionRunnerBuilder {
                 ));
             }
         };
+        // A real Qwen3-VL export states geometry this graph does not
+        // implement (2x2 patch merging, deepstack taps). Refuse here rather
+        // than emit the wrong number of vision tokens from the wrong
+        // features — see `Qwen3VlVisionConfig::validate_supported`.
+        cfg.validate_supported()?;
 
         let mut wm = rlx_core::load_weight_map(&mmproj, &[])
             .with_context(|| format!("rlx-qwen3-vl: load weights {mmproj:?}"))?;

@@ -21,11 +21,12 @@ use rlx_core::gguf_support::{
     GgufModelFamily, ResolveWeightsOptions, assert_gguf_family, gguf_f32_bytes_estimate,
     resolve_weights_file_with_options,
 };
+use rlx_core::lm_builder::LmBuilderCommon;
 use rlx_core::weight_loader::GgufLoader;
 use rlx_flow::CompileProfile;
 use rlx_gguf::{GgufFile, MetaValue};
 use rlx_runtime::{Device, Session};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Precision policy for the Qwen3 inference graph. Today only `F32`
 /// is exact; the others toggle the corresponding env-vars on the
@@ -87,16 +88,14 @@ fn auto_metal_env(device: Device, key: &'static str, applies: bool) {
 /// Builder for [`Qwen3Runner`]. See the module docs for usage.
 #[derive(Debug, Clone, Default)]
 pub struct Qwen3RunnerBuilder {
-    weights: Option<PathBuf>,
-    config: Option<Qwen3ConfigSource>,
-    device: Option<Device>,
-    max_seq: Option<usize>,
+    common: LmBuilderCommon<Qwen3Config>,
     precision: Option<Precision>,
-    max_memory_gb: Option<f32>,
-    stream: bool,
     use_mtp: bool,
+    /// Family-local: `rlx_qwen3::SampleOpts` (this crate's), not the
+    /// `rlx_runtime` one of the same name.
     sample: Option<SampleOpts>,
-    // Format override — defaults to autodetection from weights extension.
+    /// Family-local: `rlx_cli::WeightFormat`, not the `rlx_runtime` one.
+    /// Defaults to autodetection from the weights extension.
     format: Option<WeightFormat>,
     /// Keep K-quant weights packed in the arena and emit
     /// `Op::DequantMatMul` per matmul instead of F32-dequanting at
@@ -115,69 +114,17 @@ pub struct Qwen3RunnerBuilder {
 }
 
 impl Qwen3RunnerBuilder {
-    /// Path to the weights file (safetensors or gguf — autodetected
-    /// from the extension; pass `.format(...)` to override).
-    pub fn weights<P: Into<PathBuf>>(mut self, path: P) -> Self {
-        self.weights = Some(path.into());
-        self
-    }
+    rlx_core::lm_builder_setters!(Qwen3Config);
 
-    /// Override the autodetected weight format.
+    /// Override the format inferred from the weights path.
     pub fn format(mut self, fmt: WeightFormat) -> Self {
         self.format = Some(fmt);
-        self
-    }
-
-    /// Set the Qwen3 config source. Default behavior depends on
-    /// `weights`:
-    ///   - GGUF: `Qwen3ConfigSource::Embedded` (read from metadata)
-    ///   - Safetensors: `Qwen3ConfigSource::JsonFile(<weights_dir>/config.json)`
-    pub fn config(mut self, src: Qwen3ConfigSource) -> Self {
-        self.config = Some(src);
-        self
-    }
-
-    /// Convenience: explicit `Qwen3Config` (shorthand for
-    /// `.config(Qwen3ConfigSource::Explicit(cfg))`).
-    pub fn config_value(self, cfg: Qwen3Config) -> Self {
-        self.config(Qwen3ConfigSource::Explicit(cfg))
-    }
-
-    /// Inference device. Default `Device::Cpu`.
-    pub fn device(mut self, d: Device) -> Self {
-        self.device = Some(d);
-        self
-    }
-
-    /// Maximum prefill sequence length. Compiles the graph once for
-    /// this bucket size; longer prompts get truncated, shorter ones
-    /// are padded. Default 128.
-    pub fn max_seq(mut self, n: usize) -> Self {
-        self.max_seq = Some(n);
         self
     }
 
     /// Precision policy (see [`Precision`]). Default `Precision::F32`.
     pub fn precision(mut self, p: Precision) -> Self {
         self.precision = Some(p);
-        self
-    }
-
-    /// Soft memory ceiling in gigabytes. The runner doesn't enforce
-    /// this — it estimates the dequant-to-f32 footprint at build
-    /// time and returns an error if the estimate exceeds the
-    /// ceiling, so the caller can pick a smaller model or a more
-    /// aggressive quant before blowing host RAM.
-    pub fn max_memory_gb(mut self, gb: f32) -> Self {
-        self.max_memory_gb = Some(gb);
-        self
-    }
-
-    /// Stream tokens via `on_token` as they're decoded. Default true.
-    /// Setting false makes `generate` collect all tokens before
-    /// returning (smaller stdout, marginally faster for tiny gens).
-    pub fn stream(mut self, on: bool) -> Self {
-        self.stream = on;
         self
     }
 
@@ -232,10 +179,7 @@ impl Qwen3RunnerBuilder {
     /// graph. Expensive — call once and reuse the resulting
     /// [`Qwen3Runner`] across many `generate` calls.
     pub fn build(self) -> Result<Qwen3Runner> {
-        let weights_in = self
-            .weights
-            .as_ref()
-            .ok_or_else(|| anyhow!("weights path required (call .weights(...))"))?;
+        let weights_in = self.common.weights_path()?;
         let resolve = ResolveWeightsOptions {
             prefer_gguf_substring: self
                 .prefer_gguf
@@ -245,16 +189,19 @@ impl Qwen3RunnerBuilder {
         };
         let weights_path = resolve_weights_file_with_options(weights_in, &resolve)?;
         let format = WeightFormat::resolve(&weights_path, self.format)?;
-        let device = self.device.unwrap_or(Device::Cpu);
-        let max_seq = self.max_seq.unwrap_or(128);
+        // `device_or`, not `device_or_auto`: this family has always fallen
+        // back to the CPU rather than picking a device. Only gemma
+        // auto-picks; see `LmBuilderCommon::device_or`.
+        let device = self.common.device_or(Device::Cpu);
+        let max_seq = self.common.max_seq_or(128);
         let precision = self.precision.unwrap_or_default();
         let sample = self.sample.unwrap_or_else(SampleOpts::greedy);
 
         // Load config + estimate memory before touching the weights.
         let (cfg, total_bytes_estimate) = match format {
-            WeightFormat::Gguf => load_gguf_config(&weights_path, self.config.as_ref())?,
+            WeightFormat::Gguf => load_gguf_config(&weights_path, self.common.config.as_ref())?,
             WeightFormat::Safetensors => {
-                load_safetensors_config(&weights_path, self.config.as_ref())?
+                load_safetensors_config(&weights_path, self.common.config.as_ref())?
             }
         };
 
@@ -320,15 +267,7 @@ impl Qwen3RunnerBuilder {
         auto_metal_env(device, "RLX_QWEN3_INPLACE_KV", true);
         validate_device(&cfg, device, packed)?;
 
-        if let Some(cap_gb) = self.max_memory_gb {
-            let est_gb = total_bytes_estimate as f32 / (1024.0 * 1024.0 * 1024.0);
-            if est_gb > cap_gb {
-                bail!(
-                    "weights would dequant to ~{est_gb:.1} GB at F32, exceeds cap {cap_gb:.1} GB. \
-                     Either raise --max-memory-gb or pick a smaller / more-aggressively-quantized model."
-                );
-            }
-        }
+        self.common.check_memory_cap(total_bytes_estimate)?;
 
         // Set the F16 LM-head env-var before instantiating the
         // generator so the graph builder picks it up.
@@ -439,7 +378,7 @@ impl Qwen3RunnerBuilder {
             generator,
             cfg,
             sample,
-            stream: self.stream,
+            stream: self.common.stream,
             device,
             packed,
         })
@@ -722,6 +661,27 @@ impl Qwen3Runner {
         n_new: usize,
         mut on_token: impl FnMut(u32),
     ) -> Result<Vec<u32>> {
+        self.generate_packed_stoppable(prompt_ids, n_new, |tok| {
+            on_token(tok);
+            true
+        })
+    }
+
+    /// [`Self::generate_packed`], but the callback can end the turn.
+    ///
+    /// Returning `false` halts generation *after* that token, which is
+    /// included in the result — the same contract as
+    /// [`Self::generate_stoppable`] and llama32's `generate_until`. This path
+    /// used to drop the bool, so an MLX-packed runner ran the full `n_new`
+    /// whatever its caller said; the GGUF `packed_weights(true)` route builds
+    /// a native packed *generator* instead and so never came through here,
+    /// which is why the stop test did not catch it.
+    pub fn generate_packed_stoppable(
+        &mut self,
+        prompt_ids: &[u32],
+        n_new: usize,
+        mut on_token: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
         if self.packed.is_none() {
             bail!("generate_packed() only works in packed_weights(true) mode");
         }
@@ -730,9 +690,11 @@ impl Qwen3Runner {
         for _ in 0..n_new {
             let logits = self.predict_logits(&history)?;
             let next = crate::sample_token(&logits, self.sample) as u32;
-            on_token(next);
             history.push(next);
             out.push(next);
+            if !on_token(next) {
+                break;
+            }
         }
         Ok(out)
     }
@@ -755,15 +717,12 @@ impl Qwen3Runner {
         &mut self,
         prompt_ids: &[u32],
         n_new: usize,
-        mut on_token: impl FnMut(u32) -> bool,
+        on_token: impl FnMut(u32) -> bool,
     ) -> Result<Vec<u32>> {
         if self.packed.is_some() {
-            // Packed mode: route to the autoregressive prefill loop.
-            // No streaming-callback collation needed — `generate_packed`
-            // already calls `on_token` per id.
-            return self.generate_packed(prompt_ids, n_new, |tok| {
-                let _ = on_token(tok);
-            });
+            // Packed mode: route to the autoregressive prefill loop, which
+            // calls `on_token` per id and honours its stop signal.
+            return self.generate_packed_stoppable(prompt_ids, n_new, on_token);
         }
         let generator = self
             .generator
@@ -1034,10 +993,21 @@ impl LmRunner for Qwen3Runner {
         n_new: usize,
         on_token: &mut dyn FnMut(u32) -> bool,
     ) -> Result<Vec<u32>> {
-        // Inherent generate ignores stop signal — drop the bool.
-        Qwen3Runner::generate(self, prompt_ids, n_new, |tok| {
-            let _ = on_token(tok);
-        })
+        // Forward the stop signal. Dropping it (as this did) threw away every
+        // reason a caller has to end a turn early — chat EOS, user stop
+        // strings, a stray `</think>`, and the degenerate-repetition guard —
+        // so generation always ran the full `n_new`.
+        //
+        // On a small model that is the difference between an answer and
+        // nonsense: Qwen3-0.6B asked for the capital of France emitted 303
+        // tokens of "The capital of France's capital of France's …" because its
+        // caller's repetition guard returned `false` on about the tenth token
+        // and nothing was listening. It also made `finish_reason` permanently
+        // "length", and every turn paid for tokens the caller had already
+        // rejected. `generate_stoppable` honours the bool; qwen35's
+        // `LmRunner::generate` already forwards it — this path was the one left
+        // behind.
+        Qwen3Runner::generate_stoppable(self, prompt_ids, n_new, on_token)
     }
     /// Host-driven decode: delegate to the F32 generator's raw-logits path
     /// (`prefill_get_last_logits` seeds the KV cache and returns the last
@@ -1093,6 +1063,18 @@ impl LmRunner for Qwen3Runner {
             None
         }
     }
+}
+
+/// Read a Qwen3 config out of a GGUF file's metadata, without loading any
+/// weights.
+///
+/// For callers that need to know the model's shape before deciding what to
+/// load — a pipeline rank works out which layers are its own from
+/// `num_hidden_layers`, and reading the whole checkpoint first is exactly
+/// what sharding exists to avoid.
+pub fn qwen3_config_from_gguf_path(path: &Path) -> Result<Qwen3Config> {
+    let raw = assert_gguf_family(path, GgufModelFamily::Qwen3)?;
+    qwen3_cfg_from_gguf(&raw)
 }
 
 fn load_gguf_config(
@@ -1280,6 +1262,53 @@ fn qwen3_cfg_from_gguf(raw: &GgufFile) -> Result<Qwen3Config> {
             .unwrap_or(0),
         expert_weights_scale: get_f32("qwen3.expert_weights_scale").unwrap_or(1.0),
     })
+}
+
+#[cfg(test)]
+mod builder_api_tests {
+    use super::*;
+
+    /// The chainable setter surface is public API, and it is now generated
+    /// by `rlx_core::lm_builder_setters!` rather than written out here.
+    ///
+    /// Two things this pins that a compile does not: that every setter still
+    /// exists under its old name and signature, and that the macro writes
+    /// each value into the field the builder actually reads. A setter wired
+    /// to the wrong field of the right type — `max_seq` into
+    /// `max_memory_gb` — compiles, and then the model is built with someone
+    /// else's number.
+    #[test]
+    fn every_setter_still_exists_and_lands_where_build_reads_it() {
+        let b = Qwen3Runner::builder()
+            .weights("/tmp/does-not-need-to-exist.gguf")
+            .config(Qwen3ConfigSource::Embedded)
+            .device(Device::Cpu)
+            .max_seq(77)
+            .max_memory_gb(1.5)
+            .stream(false)
+            .sample(SampleOpts::greedy())
+            .format(WeightFormat::Gguf)
+            .precision(Precision::F32)
+            .prefer_gguf_quant("Q4_K_M");
+
+        assert_eq!(
+            b.common.weights.as_deref(),
+            Some(std::path::Path::new("/tmp/does-not-need-to-exist.gguf"))
+        );
+        assert!(matches!(b.common.config, Some(Qwen3ConfigSource::Embedded)));
+        assert_eq!(b.common.device, Some(Device::Cpu));
+        assert_eq!(b.common.max_seq, Some(77));
+        assert_eq!(b.common.max_memory_gb, Some(1.5));
+        assert!(!b.common.stream);
+        assert!(b.sample.is_some());
+        assert!(matches!(b.format, Some(WeightFormat::Gguf)));
+        // Family-specific setters must survive the shared ones.
+        assert_eq!(b.prefer_gguf.as_deref(), Some("Q4_K_M"));
+
+        let d = Qwen3Runner::builder();
+        assert!(d.common.device.is_none());
+        assert!(d.common.max_seq.is_none());
+    }
 }
 
 #[cfg(test)]

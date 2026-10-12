@@ -1234,10 +1234,30 @@ impl GemmaGenerator {
         opts: SampleOpts,
         mut on_token: impl FnMut(u32),
     ) -> Result<Vec<u32>> {
+        self.generate_cached_until(n, opts, |tok| {
+            on_token(tok);
+            true
+        })
+    }
+
+    /// Like [`generate_cached_with`](Self::generate_cached_with) but the
+    /// callback returns whether to keep going. Returning `false` stops the
+    /// loop *after* the just-sampled token has been observed, so a caller can
+    /// halt on an end-of-sequence id (or any other stop condition) without
+    /// spending decode steps past it — the freshly sampled token is still
+    /// included in the returned slice. Same contract as llama32's.
+    pub fn generate_cached_until(
+        &mut self,
+        n: usize,
+        opts: SampleOpts,
+        mut keep_going: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
         let start = self.tokens.len();
         for _ in 0..n {
             let tok = self.step_cached(opts)?;
-            on_token(tok);
+            if !keep_going(tok) {
+                break;
+            }
         }
         Ok(self.tokens[start..].to_vec())
     }
@@ -1492,6 +1512,50 @@ mod tests {
         }
     }
 
+    /// A `false` from the callback ends the loop, and does so *after* the
+    /// token it was called with.
+    ///
+    /// This is the contract `LmRunner::generate` is documented to have and,
+    /// until now, could not keep for this family: there was no stoppable
+    /// cached loop at all, so the trait impl dropped the bool and every turn
+    /// ran its full budget — EOS, a user stop string and a repetition guard
+    /// all ignored. The off-by-one is the half worth pinning down: the
+    /// stopping token belongs in the result, because the caller has already
+    /// seen it and callers splice on what they were handed.
+    #[test]
+    fn generate_cached_until_stops_when_the_callback_says_so() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let mut gn = GemmaGenerator::from_loader(cfg.clone(), &mut wm, Device::Cpu).unwrap();
+        gn.prefill(&[5, 6]);
+
+        let mut seen = 0usize;
+        let out = gn
+            .generate_cached_until(16, SampleOpts::greedy(), |_tok| {
+                seen += 1;
+                seen < 3
+            })
+            .unwrap();
+
+        assert_eq!(seen, 3, "callback ran past its own stop");
+        assert_eq!(out.len(), 3, "the stopping token is part of the result");
+        assert_eq!(gn.tokens().len(), 2 + 3, "no decode steps past the stop");
+    }
+
+    /// Returning `true` throughout is still the full budget, so the stop
+    /// above is a stop and not an off-by-one somewhere.
+    #[test]
+    fn generate_cached_until_runs_the_whole_budget_when_never_stopped() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let mut gn = GemmaGenerator::from_loader(cfg.clone(), &mut wm, Device::Cpu).unwrap();
+        gn.prefill(&[5, 6]);
+        let out = gn
+            .generate_cached_until(4, SampleOpts::greedy(), |_| true)
+            .unwrap();
+        assert_eq!(out.len(), 4);
+    }
+
     #[test]
     fn step_cached_with_aux_populates_last_aux() {
         // EAGLE3 wiring smoke test: enabling the aux tap on a small
@@ -1598,6 +1662,18 @@ mod tests {
     }
 
     #[test]
+    /// Also the guard for `LmRunner::{prefill_logits, decode_logits}`, which
+    /// gemma now exposes: the trait pair is a straight delegation to these
+    /// two, and what can go subtly wrong is exactly what this checks — a
+    /// prefill that returns the last row without seeding the cache, or a
+    /// decode that advances it wrongly, both yielding plausible logits that
+    /// disagree with a full prefill of the same prefix.
+    ///
+    /// A greedy end-to-end comparison was tried instead and thrown away:
+    /// this synthetic config decodes a constant (`[8, 8, 8, 8]`), so feeding
+    /// `decode_get_logits` the wrong token changed nothing and the sabotage
+    /// passed. Comparing against a full prefill does not depend on the
+    /// output being varied.
     fn incremental_decode_logits_match_full_prefill() {
         let cfg = tiny_cfg();
         let prompt: Vec<u32> = vec![1, 2, 3, 5];

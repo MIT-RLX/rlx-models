@@ -114,20 +114,56 @@ pub fn build_multimodal_mrope_sections(
     text_len_after: usize,
     text_start_pos: usize,
 ) -> Vec<[usize; 4]> {
-    let mut out = Vec::with_capacity(text_len_before + nx * ny + text_len_after);
-    for i in 0..text_len_before {
-        let p = text_start_pos + i;
-        out.push([p, p, p, 0]);
-    }
-    let pos_0 = text_start_pos + text_len_before;
-    let n_vision = nx * ny;
-    for i in 0..n_vision {
-        out.push(image_decoder_pos(nx, ny, pos_0, i));
-    }
-    let after_start = pos_0 + image_chunk_n_pos(nx, ny);
-    for i in 0..text_len_after {
-        let p = after_start + i;
-        out.push([p, p, p, 0]);
+    build_multimodal_mrope_sections_multi(
+        &[text_len_before, text_len_after],
+        &[ImageGrid { nx, ny }],
+        text_start_pos,
+    )
+}
+
+/// One image's patch grid, as the vision tower reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageGrid {
+    pub nx: usize,
+    pub ny: usize,
+}
+
+/// Positions for a prompt carrying any number of images.
+///
+/// `text_runs` is the text between the images, so it holds one more entry than
+/// `images`: run, image, run, image, … run.
+///
+/// An image advances the position by [`image_chunk_n_pos`] rather than by its
+/// token count. Its patches share positions across the spatial sections, so a
+/// 16×16 image occupies 256 tokens but only 16 positions — and text after a
+/// second image would land in the middle of the first one's range if this
+/// counted tokens instead.
+pub fn build_multimodal_mrope_sections_multi(
+    text_runs: &[usize],
+    images: &[ImageGrid],
+    text_start_pos: usize,
+) -> Vec<[usize; 4]> {
+    debug_assert_eq!(
+        text_runs.len(),
+        images.len() + 1,
+        "one text run before each image and one after the last"
+    );
+
+    let tokens: usize =
+        text_runs.iter().sum::<usize>() + images.iter().map(|g| g.nx * g.ny).sum::<usize>();
+    let mut out = Vec::with_capacity(tokens);
+    let mut pos = text_start_pos;
+
+    for (i, &run) in text_runs.iter().enumerate() {
+        for _ in 0..run {
+            out.push([pos, pos, pos, 0]);
+            pos += 1;
+        }
+        let Some(grid) = images.get(i) else { continue };
+        for patch in 0..grid.nx * grid.ny {
+            out.push(image_decoder_pos(grid.nx, grid.ny, pos, patch));
+        }
+        pos += image_chunk_n_pos(grid.nx, grid.ny);
     }
     out
 }
@@ -141,6 +177,42 @@ mod tests {
     fn multimodal_sections_length_matches_token_count() {
         let sec = build_multimodal_mrope_sections(2, 3, 2, 1, 0);
         assert_eq!(sec.len(), 2 + 6 + 1);
+    }
+
+    #[test]
+    fn two_images_each_get_their_own_span() {
+        let runs = [1usize, 2, 1];
+        let grids = [ImageGrid { nx: 2, ny: 2 }, ImageGrid { nx: 3, ny: 1 }];
+        let sec = build_multimodal_mrope_sections_multi(&runs, &grids, 0);
+        assert_eq!(sec.len(), 1 + 4 + 2 + 3 + 1);
+    }
+
+    /// Text after a second image must not land inside the first image's
+    /// position range: an image spans fewer positions than it has tokens, so
+    /// counting tokens would overlap them.
+    #[test]
+    fn positions_never_go_backwards_across_images() {
+        let grids = [ImageGrid { nx: 4, ny: 4 }, ImageGrid { nx: 2, ny: 2 }];
+        let sec = build_multimodal_mrope_sections_multi(&[1, 1, 1], &grids, 0);
+        let temporal: Vec<usize> = sec.iter().map(|s| s[0]).collect();
+        assert!(
+            temporal.windows(2).all(|w| w[1] >= w[0]),
+            "positions must not go backwards: {temporal:?}"
+        );
+    }
+
+    /// One image through the multi path is the single-image path.
+    #[test]
+    fn the_single_image_builder_is_the_multi_one() {
+        let one = build_multimodal_mrope_sections(3, 2, 2, 4, 7);
+        let many = build_multimodal_mrope_sections_multi(&[3, 4], &[ImageGrid { nx: 2, ny: 2 }], 7);
+        assert_eq!(one, many);
+    }
+
+    #[test]
+    fn no_images_is_plain_text_positions() {
+        let sec = build_multimodal_mrope_sections_multi(&[3], &[], 5);
+        assert_eq!(sec, vec![[5, 5, 5, 0], [6, 6, 6, 0], [7, 7, 7, 0]]);
     }
 
     #[test]

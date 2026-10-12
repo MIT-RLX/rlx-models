@@ -132,7 +132,7 @@ The crate embeds **`weights/silero_vad_16k.safetensors`** at compile time:
 const SAFETENSORS: &[u8] = include_bytes!("../../weights/silero_vad_16k.safetensors");
 ```
 
-On first use, bytes are parsed with [`rlx_core::embedded_safetensors::EmbeddedSafetensors`](../../rlx-models-core/src/embedded_safetensors.rs) and cached in a `OnceLock`. No filesystem access unless you call `SileroWeights::load(path)`.
+On first use, bytes are parsed with [`rlx_core::embedded_safetensors::EmbeddedSafetensors`](../rlx-models-core/src/embedded_safetensors.rs) and cached in a `OnceLock`. No filesystem access unless you call `SileroWeights::load(path)`.
 
 ### Not the same as the HF download
 

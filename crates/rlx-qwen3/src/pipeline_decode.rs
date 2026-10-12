@@ -11,13 +11,19 @@
 //! O(layers) per token instead of O(seq·layers).
 //!
 //! Each rank owns a contiguous layer range but builds its block graph with
-//! **local** layer indices `0..block_len` (so `bind_decode_inputs` and the
-//! `past_k_{i}` cache slots line up), and its weights are remapped from
-//! global `model.layers.{g}.*` to local `model.layers.{g-start}.*`. The
-//! cross-block hand-off is the same as the prefill pipeline: First embeds
-//! tokens, Middle/Last adopt an `inputs_embeds` hidden tensor, Last runs
-//! the final norm + LM head. The stage is stateful — its `cache` is `None`
-//! until the first call seeds it.
+//! **local** layer indices `0..block_len`, so `bind_decode_inputs` and the
+//! `past_k_{i}` cache slots line up. Weight *names* stay global: each layer
+//! rebases its own prefix to `model.layers.{start + local}`, which is what
+//! lets a rank bind the tensor map it was handed instead of a renumbered
+//! clone of it. The cross-block hand-off is
+//! the same as the prefill pipeline: First embeds tokens, Middle/Last adopt
+//! an `inputs_embeds` hidden tensor, Last runs the final norm + LM head.
+//!
+//! Being a rank at all — the KV cache, the decode step, keeping only this
+//! block's weights, the bucketed compile cache — is
+//! [`rlx_core::pipeline_block::FamilyPipelineStage`], shared with every
+//! other family. What is left here is [`Qwen3Family`]: two graphs, a few
+//! shapes, and how this family is told its position.
 //!
 //! Drives the same [`PipelineCoordinator`](rlx_distributed::PipelineCoordinator):
 //! on the first `forward_step` the cache is empty so every block seeds from
@@ -25,30 +31,20 @@
 
 use crate::config::Qwen3Config;
 use crate::flow::{qwen3_lm_head_stage, rope_tables, validate_cfg};
-use anyhow::{Result, bail};
-use rlx_core::autoregressive::{
-    KvCacheState, kv_from_prefill_outputs, run_bucketed_kv_decode, split_decode_logits_kv,
-};
+use anyhow::Result;
 use rlx_core::flow_bridge::{WeightLoaderSource, compile_options_from_profile};
-use rlx_core::flow_util::graph_from_built;
+use rlx_core::pipeline_block::{FamilyPipelineStage, PipelineFamily, Tensors};
 use rlx_core::weight_loader::WeightLoader;
-use rlx_core::weight_map::WeightMap;
-use rlx_distributed::{
-    BlockInput, BlockOutput, BlockRole, BlockRunner, block_role, pipeline_layer_range,
-};
 use rlx_flow::blocks::{
-    Qwen3DecodeLayerSpec, Qwen3DecoderSpec, RopeTablesStage, qwen3_decode_layer_fused,
-    qwen3_prefill_layer_fused_kv,
+    Qwen3DecodeLayerSpec, Qwen3DecodeLayerStage, Qwen3DecoderSpec, Qwen3DecoderStage,
+    RopeTablesStage,
 };
-use rlx_flow::{BuiltModel, CompileProfile, ModelFlow, SideOutputs};
+use rlx_flow::{BuiltModel, CompileProfile, FlowStage, ModelFlow, SideOutputs};
 use rlx_ir::logical_kernel::KernelDispatchConfig;
 use rlx_ir::{DType, Shape};
-use rlx_runtime::attn_mask::bucket_decode_mask;
-use rlx_runtime::compile_cache::{BucketedCompileCache, CacheRunInput};
-use rlx_runtime::{CompileOptions, Device, Session};
-use std::collections::HashMap;
-
-type Tensors = HashMap<String, (Vec<f32>, Vec<usize>)>;
+use rlx_runtime::{CompileOptions, Device};
+use std::ops::Range;
+use std::sync::Arc;
 
 fn rope_slice(cfg: &Qwen3Config, pos: usize) -> (Vec<f32>, Vec<f32>) {
     let dh = cfg.head_dim;
@@ -64,6 +60,48 @@ fn rope_slice(cfg: &Qwen3Config, pos: usize) -> (Vec<f32>, Vec<f32>) {
     (cos, sin)
 }
 
+/// One prefill layer whose **weights** come from the global layer index
+/// `weight_base + local`, while its position in the block graph stays
+/// `local`.
+///
+/// A rank holds a slice of the model, but the checkpoint names every layer
+/// by its global index. Rebasing the weight prefix here is what lets a rank
+/// bind the tensor map it was handed; the alternative — renaming every
+/// per-layer tensor to a local index — clones the whole block's weights per
+/// rank, and makes the layer order invisible to anything downstream.
+fn seed_layer(
+    local: usize,
+    weight_base: usize,
+    spec: Qwen3DecoderSpec,
+    kv_sink: &SideOutputs,
+) -> FlowStage {
+    let mut stage = Qwen3DecoderStage::layer_with_kv(local, spec, kv_sink.inner());
+    stage.layer_prefix = format!("model.layers.{}", weight_base + local);
+    FlowStage::Named {
+        name: format!("layer{local}"),
+        inner: Arc::new(FlowStage::Qwen3Decoder(stage)),
+    }
+}
+
+/// As [`seed_layer`], for the single-token decode graph.
+///
+/// `layer_idx` stays `local` deliberately: it indexes this block's
+/// `past_k_{i}` / `past_v_{i}` cache slots, which are numbered from zero
+/// per rank, whereas `layer_prefix` names weights in the checkpoint.
+fn decode_layer(
+    local: usize,
+    weight_base: usize,
+    spec: Qwen3DecodeLayerSpec,
+    kv_out: &SideOutputs,
+) -> FlowStage {
+    let mut stage = Qwen3DecodeLayerStage::layer(local, spec, kv_out.inner());
+    stage.layer_prefix = format!("model.layers.{}", weight_base + local);
+    FlowStage::Named {
+        name: format!("layer{local}"),
+        inner: Arc::new(FlowStage::Qwen3DecodeLayer(stage)),
+    }
+}
+
 /// Prefill graph for one block over `block_len` local layers, exporting
 /// per-layer K/V (to seed the cache). First/Single embed `input_ids`;
 /// others adopt the `inputs_embeds` hidden tensor. Logits blocks gather
@@ -74,6 +112,7 @@ fn build_block_seed(
     batch: usize,
     seq: usize,
     block_len: usize,
+    weight_base: usize,
     embed_input: bool,
     produce_logits: bool,
 ) -> Result<BuiltModel> {
@@ -119,7 +158,7 @@ fn build_block_seed(
     flow = flow.repeat_layers(block_len, {
         let spec = spec.clone();
         let sink = sink.clone();
-        move |i| qwen3_prefill_layer_fused_kv(i, spec.clone(), sink.inner())
+        move |i| seed_layer(i, weight_base, spec.clone(), &sink)
     });
 
     let built = if produce_logits {
@@ -143,6 +182,7 @@ fn build_block_decode(
     batch: usize,
     past_seq: usize,
     block_len: usize,
+    weight_base: usize,
     embed_input: bool,
     produce_logits: bool,
     use_custom_mask: bool,
@@ -198,7 +238,7 @@ fn build_block_decode(
     flow = flow.repeat_layers(block_len, {
         let spec = dspec.clone();
         let sink = kv_out.clone();
-        move |i| qwen3_decode_layer_fused(i, spec.clone(), sink.inner())
+        move |i| decode_layer(i, weight_base, spec.clone(), &sink)
     });
 
     let built = if produce_logits {
@@ -213,332 +253,150 @@ fn build_block_decode(
     Ok(built.with_extra_hir_outputs(kv_out.drain()))
 }
 
-/// Stateful KV-cached pipeline stage for one rank.
-pub struct Qwen3PipelineDecodeStage {
+/// Qwen3's answer to [`PipelineFamily`]: the two graphs and the handful of
+/// shapes that make this family this family.
+///
+/// Everything about *being* a rank — seeding a KV cache from the prompt,
+/// decoding a token per call, holding only this block's weights, the
+/// bucketed compile cache — lives once in [`FamilyPipelineStage`].
+pub struct Qwen3Family {
     cfg: Qwen3Config,
-    device: Device,
-    role: BlockRole,
-    block_len: usize,
-    embed_input: bool,
-    produce_logits: bool,
-    batch: usize,
-    /// Weights for this block, remapped to local layer indices.
-    weights: Tensors,
-    /// `None` until the first call seeds it from the prompt.
-    cache: Option<KvCacheState>,
-    /// Optional bucketed compile cache. When set, decode steps reuse a
-    /// compiled graph per power-of-two `past_seq` bucket (custom mask +
-    /// padded K/V) instead of recompiling each step — O(log N) compiles
-    /// over a generation instead of O(N).
-    decode_cache: Option<BucketedCompileCache>,
 }
 
-impl Qwen3PipelineDecodeStage {
-    pub fn new(
-        cfg: Qwen3Config,
-        device: Device,
-        rank: u32,
-        world: u32,
-        all_weights: Tensors,
-    ) -> Self {
-        let range = pipeline_layer_range(cfg.num_hidden_layers, rank, world);
-        let role = block_role(rank, world);
-        let (embed_input, produce_logits) = match role {
-            BlockRole::Single => (true, true),
-            BlockRole::First => (true, false),
-            BlockRole::Middle => (false, false),
-            BlockRole::Last => (false, true),
-        };
-        let start = range.start;
-        let block_len = range.len();
+impl Qwen3Family {
+    pub fn new(cfg: Qwen3Config) -> Self {
+        Self { cfg }
+    }
 
-        // Filter to this block + remap per-layer names to local indices.
-        let mut weights = Tensors::new();
-        for (k, v) in all_weights {
-            if let Some(rest) = k.strip_prefix("model.layers.") {
-                let mut it = rest.splitn(2, '.');
-                let idx: usize = it.next().unwrap_or("").parse().unwrap_or(usize::MAX);
-                let suffix = it.next().unwrap_or("");
-                if range.contains(&idx) {
-                    weights.insert(format!("model.layers.{}.{suffix}", idx - start), v);
-                }
-            } else if k == "model.embed_tokens.weight" {
-                if embed_input || (produce_logits && cfg.tie_word_embeddings) {
-                    weights.insert(k, v);
-                }
-            } else if k == "model.norm.weight" {
-                if produce_logits {
-                    weights.insert(k, v);
-                }
-            } else if k == "lm_head.weight" && produce_logits && !cfg.tie_word_embeddings {
-                weights.insert(k, v);
-            }
-        }
+    pub fn config(&self) -> &Qwen3Config {
+        &self.cfg
+    }
+}
 
-        Self {
-            cfg,
-            device,
-            role,
-            block_len,
-            embed_input,
-            produce_logits,
-            batch: 1,
+impl PipelineFamily for Qwen3Family {
+    fn seed_graph(
+        &self,
+        weights: &mut dyn WeightLoader,
+        batch: usize,
+        seq: usize,
+        layers: Range<usize>,
+        embed: bool,
+        logits: bool,
+    ) -> Result<BuiltModel> {
+        build_block_seed(
+            &self.cfg,
             weights,
-            cache: None,
-            decode_cache: None,
-        }
+            batch,
+            seq,
+            layers.len(),
+            layers.start,
+            embed,
+            logits,
+        )
     }
 
-    /// Enable the bucketed decode compile cache (compile once per
-    /// power-of-two `past_seq` bucket up to `max_past`). Strongly
-    /// recommended for steady-state generation.
-    pub fn with_decode_cache(mut self, max_past: usize) -> Self {
-        self.decode_cache = Some(BucketedCompileCache::power_of_two_ladder(
-            self.device,
-            1,
-            max_past.max(1) as u64,
-        ));
-        self
+    fn decode_graph(
+        &self,
+        weights: &mut dyn WeightLoader,
+        batch: usize,
+        past: usize,
+        layers: Range<usize>,
+        embed: bool,
+        logits: bool,
+        custom_mask: bool,
+    ) -> Result<BuiltModel> {
+        build_block_decode(
+            &self.cfg,
+            weights,
+            batch,
+            past,
+            layers.len(),
+            layers.start,
+            embed,
+            logits,
+            custom_mask,
+        )
     }
 
-    pub fn role(&self) -> BlockRole {
-        self.role
+    fn num_hidden_layers(&self) -> usize {
+        self.cfg.num_hidden_layers
     }
 
-    fn opts(&self, decode: bool) -> CompileOptions {
+    fn hidden_size(&self) -> usize {
+        self.cfg.hidden_size
+    }
+
+    fn kv_proj_dim(&self) -> usize {
+        self.cfg.kv_proj_dim()
+    }
+
+    fn tie_word_embeddings(&self) -> bool {
+        self.cfg.tie_word_embeddings
+    }
+
+    /// Qwen3 is told its position as rope tables sliced on the host — unlike
+    /// llama, which takes the position itself and derives them in the graph.
+    fn decode_inputs(&self, past: usize) -> Vec<(&'static str, Vec<f32>)> {
+        let (cos, sin) = rope_slice(&self.cfg, past);
+        vec![("rope_cos", cos), ("rope_sin", sin)]
+    }
+
+    fn compile_options(&self, device: Device, decode: bool) -> CompileOptions {
         let profile = if decode {
             CompileProfile::qwen3_decode()
         } else {
             CompileProfile::qwen3_prefill()
         };
-        compile_options_from_profile(&profile, self.device, KernelDispatchConfig::default())
-    }
-
-    /// First call: prefill the whole input, seeding the cache.
-    fn seed(&mut self, input: BlockInput<'_>) -> Result<Vec<f32>> {
-        let seq = match &input {
-            BlockInput::Tokens(t) => t.len(),
-            BlockInput::Hidden(hh) => hh.len() / (self.batch * self.cfg.hidden_size),
-        };
-        let mut wm = WeightMap::from_tensors(self.weights.clone());
-        let built = build_block_seed(
-            &self.cfg,
-            &mut wm,
-            self.batch,
-            seq,
-            self.block_len,
-            self.embed_input,
-            self.produce_logits,
-        )?;
-        let (graph, params) = graph_from_built(built)?;
-        let mut compiled = Session::new(self.device).compile_with(graph, &self.opts(false));
-        for (n, d) in &params {
-            compiled.set_param(n, d);
-        }
-        let outputs = match input {
-            BlockInput::Tokens(t) => {
-                let ids: Vec<f32> = t.iter().map(|&x| x as f32).collect();
-                compiled.run(&[("input_ids", ids.as_slice())])
-            }
-            BlockInput::Hidden(hh) => compiled.run(&[("inputs_embeds", hh)]),
-        };
-        let (main, kv) = kv_from_prefill_outputs(
-            outputs,
-            self.batch,
-            seq,
-            self.cfg.kv_proj_dim(),
-            self.block_len,
-        )?;
-        self.cache = Some(kv);
-        Ok(main)
-    }
-
-    /// Steady-state decode, recompiling the graph each step (no cache).
-    fn decode_recompile(&mut self, input: BlockInput<'_>) -> Result<Vec<f32>> {
-        let past = self.cache.as_ref().unwrap().past_len;
-        let (cos, sin) = rope_slice(&self.cfg, past);
-
-        let mut wm = WeightMap::from_tensors(self.weights.clone());
-        let built = build_block_decode(
-            &self.cfg,
-            &mut wm,
-            self.batch,
-            past,
-            self.block_len,
-            self.embed_input,
-            self.produce_logits,
-            false,
-        )?;
-        let (graph, params) = graph_from_built(built)?;
-        let mut compiled = Session::new(self.device).compile_with(graph, &self.opts(true));
-        for (n, d) in &params {
-            compiled.set_param(n, d);
-        }
-
-        // Build the input list. Owned buffers live until after `run`.
-        let (main_name, main_buf): (&str, Vec<f32>) = match input {
-            BlockInput::Tokens(t) => {
-                if t.len() <= past {
-                    bail!("decode: token history len {} <= past {past}", t.len());
-                }
-                ("input_ids", vec![t[past] as f32])
-            }
-            BlockInput::Hidden(hh) => {
-                let per = self.batch * self.cfg.hidden_size;
-                if hh.len() != per {
-                    bail!(
-                        "decode: expected one hidden position ({per} f32), got {}",
-                        hh.len()
-                    );
-                }
-                ("inputs_embeds", hh.to_vec())
-            }
-        };
-        let key_strs: Vec<String> = (0..self.block_len)
-            .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
-            .collect();
-        let cache = self.cache.as_ref().unwrap();
-        let mut inputs: Vec<(&str, &[f32])> = Vec::with_capacity(3 + 2 * self.block_len);
-        inputs.push((main_name, main_buf.as_slice()));
-        inputs.push(("rope_cos", cos.as_slice()));
-        inputs.push(("rope_sin", sin.as_slice()));
-        for i in 0..self.block_len {
-            inputs.push((key_strs[2 * i].as_str(), cache.layers_k[i].as_slice()));
-            inputs.push((key_strs[2 * i + 1].as_str(), cache.layers_v[i].as_slice()));
-        }
-        let outputs = compiled.run(&inputs);
-        let (main, layers_k, layers_v) = split_decode_logits_kv(outputs, self.block_len)?;
-
-        let c = self.cache.as_mut().unwrap();
-        c.past_len = past + 1;
-        c.layers_k = layers_k;
-        c.layers_v = layers_v;
-        Ok(main)
-    }
-
-    /// Steady-state decode reusing a per-bucket compiled graph (custom
-    /// mask + padded K/V), via the shared bucketed driver. Same result as
-    /// [`Self::decode_recompile`] but O(log N) compiles per generation.
-    fn decode_bucketed(&mut self, input: BlockInput<'_>) -> Result<Vec<f32>> {
-        let past = self.cache.as_ref().unwrap().past_len;
-        let (cos, sin) = rope_slice(&self.cfg, past);
-        let kv = self.cache.as_ref().unwrap().clone();
-        let opts = self.opts(true);
-        let kv_dim = self.cfg.kv_proj_dim();
-        let block_len = self.block_len;
-        let embed = self.embed_input;
-        let logits = self.produce_logits;
-
-        // The new token (First/Single) or its hidden (Middle/Last).
-        let (main_name, main_buf): (&str, Vec<f32>) = match input {
-            BlockInput::Tokens(t) => {
-                if t.len() <= past {
-                    bail!("decode: token history len {} <= past {past}", t.len());
-                }
-                ("input_ids", vec![t[past] as f32])
-            }
-            BlockInput::Hidden(hh) => {
-                let per = self.batch * self.cfg.hidden_size;
-                if hh.len() != per {
-                    bail!(
-                        "decode: expected one hidden position ({per} f32), got {}",
-                        hh.len()
-                    );
-                }
-                ("inputs_embeds", hh.to_vec())
-            }
-        };
-
-        // Bucket upper bound for this `past`, and the matching mask.
-        let cache_dec = self.decode_cache.as_mut().unwrap();
-        let upper = cache_dec
-            .bucket_for(past as u64)
-            .and_then(|idx| cache_dec.buckets().nth(idx).map(|r| (r.end - 1) as usize))
-            .unwrap_or(past);
-        let mask = bucket_decode_mask(past, upper);
-
-        let fixed = [
-            CacheRunInput {
-                name: main_name,
-                data: &main_buf,
-                row_inner: None,
-            },
-            CacheRunInput {
-                name: "rope_cos",
-                data: &cos,
-                row_inner: None,
-            },
-            CacheRunInput {
-                name: "rope_sin",
-                data: &sin,
-                row_inner: None,
-            },
-            CacheRunInput {
-                name: "mask",
-                data: &mask,
-                row_inner: None,
-            },
-        ];
-
-        let cfg = self.cfg.clone();
-        let weights = self.weights.clone();
-        let (main, layers_k, layers_v) = run_bucketed_kv_decode(
-            cache_dec,
-            past,
-            &kv,
-            kv_dim,
-            block_len,
-            &fixed,
-            |upper| {
-                let mut wm = WeightMap::from_tensors(weights.clone());
-                let built = build_block_decode(
-                    &cfg,
-                    &mut wm,
-                    1,
-                    upper as usize,
-                    block_len,
-                    embed,
-                    logits,
-                    true,
-                )
-                .expect("block decode graph");
-                graph_from_built(built).expect("block decode graph parts")
-            },
-            &opts,
-        )?;
-
-        let c = self.cache.as_mut().unwrap();
-        c.past_len = past + 1;
-        c.layers_k = layers_k;
-        c.layers_v = layers_v;
-        Ok(main)
+        compile_options_from_profile(&profile, device, KernelDispatchConfig::default())
     }
 }
 
-impl BlockRunner for Qwen3PipelineDecodeStage {
-    fn role(&self) -> BlockRole {
-        self.role
-    }
+/// One rank's block of a Qwen3 model.
+pub type Qwen3PipelineDecodeStage = FamilyPipelineStage<Qwen3Family>;
 
-    fn run(&mut self, input: BlockInput<'_>) -> Result<BlockOutput> {
-        let main = if self.cache.is_none() {
-            self.seed(input)?
-        } else if self.decode_cache.is_some() {
-            self.decode_bucketed(input)?
-        } else {
-            self.decode_recompile(input)?
-        };
-        Ok(if self.produce_logits {
-            BlockOutput::Logits(main)
-        } else {
-            BlockOutput::Hidden(main)
-        })
-    }
+/// This rank's block, with the layers split evenly.
+pub fn stage(
+    cfg: Qwen3Config,
+    device: Device,
+    rank: u32,
+    world: u32,
+    all_weights: Tensors,
+) -> Qwen3PipelineDecodeStage {
+    FamilyPipelineStage::new(Qwen3Family::new(cfg), device, rank, world, all_weights)
+}
+
+/// This rank's block, with its layers given rather than split evenly.
+///
+/// An even split is only right when the machines are alike: give a 16 GB
+/// laptop and a 64 GB desktop seven layers each and the laptop decides how
+/// fast the whole pipeline runs, or fails to hold its block at all.
+///
+/// **Every rank must be given the same overall split.** The ranges decide
+/// which weights a rank loads and how many layers its graph has; two ranks
+/// disagreeing runs some layers twice and others never, with no shape error
+/// to catch it.
+pub fn stage_with_layers(
+    cfg: Qwen3Config,
+    device: Device,
+    rank: u32,
+    world: u32,
+    all_weights: Tensors,
+    layers: Range<usize>,
+) -> Qwen3PipelineDecodeStage {
+    FamilyPipelineStage::with_layer_range(
+        Qwen3Family::new(cfg),
+        device,
+        rank,
+        world,
+        all_weights,
+        layers,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rlx_core::weight_map::WeightMap;
     use rlx_distributed::{NetTransport, PipelineCoordinator, ProcessGroup};
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::sync::Arc;
@@ -642,6 +500,69 @@ mod tests {
         g.generate_cached(n, opts).unwrap()
     }
 
+    /// Spin up `world` loopback ranks and return what each one generated.
+    /// Every rank should return the same ids, because the sampled token is
+    /// broadcast.
+    fn pipeline_outputs(
+        c: &Qwen3Config,
+        w: &Tensors,
+        prompt: &[u32],
+        n: usize,
+        cached: bool,
+        world: u32,
+    ) -> Vec<Vec<u32>> {
+        pipeline_outputs_with(c, w, prompt, n, cached, world, 64)
+    }
+
+    /// As above, but with an explicit decode-cache ceiling — the ladder's
+    /// top bucket. A server sizes it from the model's context window, which
+    /// is far larger than any test prompt, so the bucket a short sequence
+    /// lands in is not the same one a `max_past` of 64 gives.
+    #[allow(clippy::too_many_arguments)]
+    fn pipeline_outputs_with(
+        c: &Qwen3Config,
+        w: &Tensors,
+        prompt: &[u32],
+        n: usize,
+        cached: bool,
+        world: u32,
+        max_past: usize,
+    ) -> Vec<Vec<u32>> {
+        let listeners: Vec<TcpListener> = (0..world)
+            .map(|_| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap())
+            .collect();
+        let addrs: Vec<SocketAddr> = listeners.iter().map(|l| l.local_addr().unwrap()).collect();
+        let c = Arc::new(c.clone());
+        let w = Arc::new(w.clone());
+        let prompt = Arc::new(prompt.to_vec());
+
+        let handles: Vec<_> = listeners
+            .into_iter()
+            .enumerate()
+            .map(|(rank, listener)| {
+                let (addrs, c, w, prompt) = (addrs.clone(), c.clone(), w.clone(), prompt.clone());
+                thread::spawn(move || {
+                    let t =
+                        NetTransport::from_listener(rank as u32, world, listener, addrs, 1 << 20)
+                            .unwrap();
+                    let stage = stage((*c).clone(), Device::Cpu, rank as u32, world, (*w).clone());
+                    let mut stage = if cached {
+                        stage.with_decode_cache(max_past)
+                    } else {
+                        stage
+                    };
+                    let coord = PipelineCoordinator::new(ProcessGroup::new(Arc::new(t)));
+                    let mut tokens = (*prompt).clone();
+                    coord
+                        .generate(&mut stage, &mut tokens, n, argmax, |_| false)
+                        .unwrap()
+                })
+            })
+            .collect();
+
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    }
+
     #[test]
     fn decode_pipeline_matches_cached_generator() {
         let c = cfg();
@@ -654,58 +575,97 @@ mod tests {
         // path must reproduce the reference.
         for cached in [false, true] {
             for world in [2u32, 3] {
-                let listeners: Vec<TcpListener> = (0..world)
-                    .map(|_| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap())
-                    .collect();
-                let addrs: Vec<SocketAddr> =
-                    listeners.iter().map(|l| l.local_addr().unwrap()).collect();
-                let c = Arc::new(c.clone());
-                let w = Arc::new(w.clone());
-                let prompt = Arc::new(prompt.clone());
-
-                let handles: Vec<_> = listeners
+                for (rank, produced) in pipeline_outputs(&c, &w, &prompt, n, cached, world)
                     .into_iter()
                     .enumerate()
-                    .map(|(rank, listener)| {
-                        let (addrs, c, w, prompt) =
-                            (addrs.clone(), c.clone(), w.clone(), prompt.clone());
-                        thread::spawn(move || {
-                            let t = NetTransport::from_listener(
-                                rank as u32,
-                                world,
-                                listener,
-                                addrs,
-                                1 << 20,
-                            )
-                            .unwrap();
-                            let stage = Qwen3PipelineDecodeStage::new(
-                                (*c).clone(),
-                                Device::Cpu,
-                                rank as u32,
-                                world,
-                                (*w).clone(),
-                            );
-                            let mut stage = if cached {
-                                stage.with_decode_cache(64)
-                            } else {
-                                stage
-                            };
-                            let coord = PipelineCoordinator::new(ProcessGroup::new(Arc::new(t)));
-                            let mut tokens = (*prompt).clone();
-                            coord
-                                .generate(&mut stage, &mut tokens, n, argmax, |_| false)
-                                .unwrap()
-                        })
-                    })
-                    .collect();
-
-                for (rank, h) in handles.into_iter().enumerate() {
-                    let produced = h.join().unwrap();
+                {
                     assert_eq!(
                         produced, reference,
                         "cached={cached} world={world} rank={rank}"
                     );
                 }
+            }
+        }
+    }
+
+    /// Shaped like Qwen3-0.6B: 28 layers (so a world of 2 splits 14/14),
+    /// tied embeddings, and `num_heads * head_dim != hidden_size`. Narrow
+    /// enough to run in a test.
+    fn cfg_realistic() -> Qwen3Config {
+        Qwen3Config {
+            vocab_size: 256,
+            hidden_size: 64,
+            intermediate_size: 128,
+            num_hidden_layers: 28,
+            num_attention_heads: 8,
+            num_key_value_heads: 4,
+            head_dim: 32,
+            max_position_embeddings: 512,
+            rms_norm_eps: 1e-6,
+            rope_theta: 1_000_000.0,
+            hidden_act: "silu".into(),
+            tie_word_embeddings: true,
+            attention_bias: false,
+            qk_norm: true,
+            sliding_window: None,
+            max_window_layers: usize::MAX,
+            use_sliding_window: false,
+            num_experts: 0,
+            num_experts_used: 0,
+            expert_ffn_size: 0,
+            shared_expert_ffn_size: 0,
+            expert_weights_scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn a_deep_pipeline_matches_the_generator_at_a_server_sized_cache() {
+        // The combination a server actually runs: many layers, tied
+        // embeddings, and a decode cache sized from the context window
+        // rather than from the prompt. Sharded output diverged from
+        // single-machine output on the *first decode step* under exactly
+        // this shape while the small-config test passed.
+        let c = cfg_realistic();
+        let mut w = synth(&c);
+        w.remove("lm_head.weight");
+        let prompt = vec![3u32, 17, 42, 8, 1, 99];
+        let n = 6usize;
+        let reference = reference_cached(&c, &w, &prompt, n);
+
+        for world in [2u32, 3] {
+            for (rank, produced) in
+                pipeline_outputs_with(&c, &w, &prompt, n, true, world, c.max_position_embeddings)
+                    .into_iter()
+                    .enumerate()
+            {
+                assert_eq!(produced, reference, "world={world} rank={rank}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tied_lm_head_works_on_the_last_block() {
+        // Tied embeddings mean there is no `lm_head.weight`: the embedding
+        // table *is* the head. The block that holds the head is the one that
+        // does not embed, so nothing in its graph reads that table — and the
+        // tied head has to read it itself. It did not, and every real tied
+        // model (which is most small ones) failed its first prefill with
+        // "missing model.embed_tokens.weight for tied lm_head".
+        let mut c = cfg();
+        c.tie_word_embeddings = true;
+        let mut w = synth(&c);
+        w.remove("lm_head.weight");
+
+        let prompt = vec![1u32, 5, 3, 2, 7];
+        let n = 4usize;
+        let reference = reference_cached(&c, &w, &prompt, n);
+
+        for world in [2u32, 3] {
+            for (rank, produced) in pipeline_outputs(&c, &w, &prompt, n, true, world)
+                .into_iter()
+                .enumerate()
+            {
+                assert_eq!(produced, reference, "world={world} rank={rank}");
             }
         }
     }

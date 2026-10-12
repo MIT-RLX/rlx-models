@@ -35,7 +35,7 @@
 //! # Pixel shuffle
 //!
 //! [`Builder::pixel_shuffle`] is the reshape/permute/reshape PyTorch uses,
-//! written at rank 5 (see [`rank5`]). The permutation is not a last-two-axis
+//! written at rank 5 (see `rank5`). The permutation is not a last-two-axis
 //! swap, so on CPU it falls to the
 //! general N-D index walk — which is why it is emitted once per forward (at the
 //! very end, on the smallest tensor in the graph) and never inside a block.

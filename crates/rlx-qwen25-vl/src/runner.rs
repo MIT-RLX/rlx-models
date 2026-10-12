@@ -17,8 +17,7 @@
 
 use crate::aif::{
     AifConfig, AifDynamicsMode, AifProbe, NativePrefillProbeInputs, VisionKeySpan,
-    decode_mask_row_causal, dynamics_from_graph_qk_decode_step, dynamics_from_graph_qk_layers,
-    native_prefill_probe,
+    dynamics_from_graph_qk_decode_step, dynamics_from_graph_qk_layers, native_prefill_probe,
 };
 use crate::config::Qwen25VlLmConfig;
 use crate::lm::load_lm_config_from_gguf;
@@ -30,12 +29,16 @@ use crate::multimodal::{MultimodalPrefill, MultimodalPrompt};
 use crate::vision::{Qwen25VlVisionEncoder, VisionEncodeOutput};
 use anyhow::{Context, Result, bail};
 use rlx_core::WeightMap;
-use rlx_core::autoregressive::{KvCacheState, split_decode_logits_kv};
+use rlx_core::autoregressive::KvCacheState;
+use rlx_core::autoregressive::run_bucketed_kv_decode;
 use rlx_core::flow_util::compile_built;
 use rlx_core::weight_loader::{ArcCacheLoader, ArcF32Tensor, GgufLoader};
+use rlx_qwen3::builder::build_qwen3_decode_graph_sized_ext;
 use rlx_qwen3::flow::{Qwen3DecodeOpts, build_qwen3_decode_built};
 use rlx_qwen3::{Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder, SampleOpts};
 use rlx_runtime::Device;
+use rlx_runtime::attn_mask::bucket_decode_mask;
+use rlx_runtime::compile_cache::{BucketedCompileCache, CacheRunInput};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -183,6 +186,23 @@ impl Qwen25VlRunnerBuilder {
             aif_dynamics_mode: self.aif_dynamics_mode,
             last_prefill_logits: None,
             last_decode_qk_layers: None,
+            // A ladder from 64 up to the context: a short conversation compiles
+            // one small graph, a long one grows through a handful of buckets
+            // rather than recompiling per token.
+            // Coarser than the decode ladder: a prefill graph is the expensive
+            // one to compile, and a conversation's prompt grows a turn at a
+            // time, so wide buckets mean a few compiles over a session rather
+            // than one per message.
+            prefill_graphs: Some(BucketedCompileCache::power_of_two_ladder(
+                device,
+                128,
+                max_seq.max(128) as u64,
+            )),
+            decode_graphs: Some(BucketedCompileCache::power_of_two_ladder(
+                device,
+                64,
+                max_seq.max(64) as u64,
+            )),
         })
     }
 }
@@ -247,6 +267,20 @@ pub struct Qwen25VlRunner {
     last_prefill_logits: Option<Vec<f32>>,
     /// Per-layer (Q, K) from the last decode-step AIF probe (when enabled).
     last_decode_qk_layers: Option<(Vec<Vec<f32>>, Vec<Vec<f32>>)>,
+    /// Compiled prefill graphs, one per range of prompt lengths.
+    ///
+    /// Without this every request recompiled the prefill graph and re-uploaded
+    /// every weight: ~20 s before the first token *per message*, and ~12 GB of
+    /// fresh allocation each time.
+    prefill_graphs: Option<BucketedCompileCache>,
+    /// Compiled decode graphs, one per range of context lengths.
+    ///
+    /// Without this every token rebuilt and recompiled the whole decode graph:
+    /// measured on Qwen2.5-VL-3B that was ~15 seconds per token, nearly all of
+    /// it the compiler. Each bucket compiles one graph specialised at its upper
+    /// bound; the host pads the K/V to that capacity and supplies a mask, so
+    /// one compiled graph serves every length in its range.
+    decode_graphs: Option<BucketedCompileCache>,
 }
 
 impl Qwen25VlRunner {
@@ -364,14 +398,29 @@ impl Qwen25VlRunner {
         h: usize,
         tokenizer: impl FnMut(&str) -> Result<Vec<u32>>,
     ) -> Result<Vec<f32>> {
-        let vision = self.encode_image(rgb, w, h)?;
+        self.prefill_multimodal_many(prompt, &[(rgb, w, h)], tokenizer)
+    }
+
+    /// As [`Self::prefill_multimodal`], for a prompt carrying several images.
+    ///
+    /// The prompt holds one `<__media__>` per image, in the order they were
+    /// attached. Each is encoded by the tower and spliced into its own span,
+    /// so a question about two pictures is answered about both rather than
+    /// about whichever one happened to be first.
+    pub fn prefill_multimodal_many(
+        &mut self,
+        prompt: &str,
+        images: &[(&[u8], usize, usize)],
+        tokenizer: impl FnMut(&str) -> Result<Vec<u32>>,
+    ) -> Result<Vec<f32>> {
+        let visions = images
+            .iter()
+            .map(|(rgb, w, h)| self.encode_image(rgb, *w, *h))
+            .collect::<Result<Vec<_>>>()?;
         let n_embd = self.lm_cfg.lm.hidden_size;
         let embed = self.ensure_embed_cached()?;
-        let mm = MultimodalPrompt {
-            prompt,
-            vision: &vision,
-        };
-        let prefill = mm.assemble(tokenizer, &embed, n_embd, 0)?;
+        let prefill =
+            crate::multimodal::assemble_many(prompt, &visions, tokenizer, &embed, n_embd, 0)?;
         self.prefill_from_assembled(prefill)
     }
 
@@ -748,24 +797,115 @@ impl Qwen25VlRunner {
         }
 
         self.ensure_lm_weights_cache()?;
-        let mut weight_loader = ArcCacheLoader::new(&self.lm_weights_cache);
-        let built = build_qwen25_vl_prefill_mrope_built(
-            &self.lm_cfg,
-            &mut weight_loader,
-            &opts,
-            Some(&prefill.mrope_sections),
-        )?;
-        let mut compiled = compile_built(built, self.device)?;
 
-        let head_half = self.lm_cfg.head_half();
-        let (rope_cos, rope_sin) =
-            mrope_prefill_feeds(&self.lm_cfg, seq, Some(&prefill.mrope_sections), head_half);
+        // Compiled fresh every request, which costs ~20 s before the first
+        // token and re-uploads every weight.
+        //
+        // The obvious fix — a bucketed compile cache with the prompt
+        // right-padded up to the bucket, exactly as the decode path does — was
+        // built and measured here, and it *changes the model's answer*: the
+        // same image came back "Red." compiled at the exact length and "A deep
+        // red." padded to 128. Both are right about the picture, which is what
+        // makes shipping it unacceptable rather than merely imperfect. Padded
+        // positions are not inert, because this prefill graph has no mask
+        // input to exclude them with.
+        //
+        // The fix is therefore a prefill graph that takes an explicit
+        // attention mask, the way `build_qwen3_decode_graph_sized_ext` does
+        // for decode. Until then this stays slow and correct.
+        // The compiled prefill graph is shared by every prompt whose length
+        // falls in the same bucket, and the prompt is right-padded up to that
+        // bucket's extent. Attention is causal, so a real token never attends
+        // to a padded one.
+        //
+        // The padding repeats the last real row rather than writing zeros, and
+        // that is not cosmetic. Measured on Qwen2.5-VL-3B with the same image:
+        //
+        //     unpadded              'Red.'
+        //     padded with zeros     'A deep red.'
+        //     padded with a copy    'Red.'
+        //
+        // A zero row is degenerate — RMSNorm over it divides by its own norm —
+        // and whatever that produces reaches the real positions. A copy of a
+        // row the model already produced is finite and ordinary, and then
+        // causality does the rest: the answer is identical to the unpadded one.
+        let padded = self
+            .prefill_graphs
+            .as_ref()
+            .and_then(|c| c.bucket_upper_for_key(seq as u64))
+            .map(|u| u as usize)
+            .filter(|u| *u >= seq)
+            .unwrap_or(seq);
+        let h = self.lm_cfg.lm.hidden_size;
+
+        let mut hidden_in = prefill.hidden.clone();
+        let mut sections = prefill.mrope_sections.clone();
+        if padded > seq {
+            let last: Vec<f32> = hidden_in[(seq - 1) * h..seq * h].to_vec();
+            for _ in seq..padded {
+                hidden_in.extend_from_slice(&last);
+            }
+            // Positions continue rather than repeating: two rows at the same
+            // position is not a state the real sequence can be in.
+            let mut next = sections.last().map(|s| s[0] + 1).unwrap_or(0);
+            while sections.len() < padded {
+                sections.push([next, next, next, 0]);
+                next += 1;
+            }
+            opts.seq = padded;
+        }
+
+        let cfg = self.lm_cfg.clone();
+        let weights = self.lm_weights_cache.clone();
+        let build_opts = opts.clone();
+        let build_sections = sections.clone();
+        let options = rlx_runtime::CompileOptions::default();
+        let cache = self
+            .prefill_graphs
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("prefill: no compile cache"))?;
+        let t_prefill = std::time::Instant::now();
+        let compiled_before = cache.compiled_count();
+        let (_, compiled) = cache
+            .ensure_graph_with_params(
+                seq as u64,
+                |_upper| {
+                    // Only a compile miss reaches here.
+                    let mut loader = ArcCacheLoader::new(&weights);
+                    let built = build_qwen25_vl_prefill_mrope_built(
+                        &cfg,
+                        &mut loader,
+                        &build_opts,
+                        Some(&build_sections),
+                    )
+                    .expect("qwen2.5-vl prefill graph");
+                    rlx_core::flow_util::graph_from_built(built)
+                        .expect("qwen2.5-vl prefill lowering")
+                },
+                &options,
+            )
+            .ok_or_else(|| {
+                anyhow::anyhow!("a prompt of {seq} tokens is outside the prefill buckets")
+            })?;
+
+        let head_half = cfg.head_half();
+        let (rope_cos, rope_sin) = mrope_prefill_feeds(&cfg, padded, Some(&sections), head_half);
 
         let outputs = compiled.run(&[
-            ("prefill_hidden", prefill.hidden.as_slice()),
+            ("prefill_hidden", hidden_in.as_slice()),
             ("rope_cos", rope_cos.as_slice()),
             ("rope_sin", rope_sin.as_slice()),
         ]);
+        if std::env::var_os("RLX_VL_DECODE_TRACE").is_some() {
+            eprintln!(
+                "vl prefill: seq={seq} padded={padded} compiled {compiled_before}->{} in {:.0} ms",
+                self.prefill_graphs
+                    .as_ref()
+                    .map(|c| c.compiled_count())
+                    .unwrap_or(0),
+                t_prefill.elapsed().as_secs_f64() * 1e3
+            );
+        }
 
         let n_layers = self.lm_cfg.lm.num_hidden_layers;
         let layout = crate::prefill_side::PrefillSideLayout {
@@ -778,17 +918,23 @@ impl Qwen25VlRunner {
             outputs.len(),
             layout.expected_outputs()
         );
-        let (hidden, layers_k, layers_v, qk) = layout.parse_kv_qk(outputs.into_iter())?;
+        let (hidden, mut layers_k, mut layers_v, qk) = layout.parse_kv_qk(outputs.into_iter())?;
         if let Some((q_layers, k_layers)) = qk {
             self.last_prefill_qk_layers = Some((q_layers, k_layers));
         } else {
             self.last_prefill_qk_layers = None;
         }
-        let h = self.lm_cfg.lm.hidden_size;
+        // Everything past the real prompt is padding: its hidden row is not
+        // the answer's, and its KV rows would be attended to on the next token.
+        let hidden = &hidden[..(seq * h).min(hidden.len())];
+        let kv_dim = self.lm_cfg.lm.kv_proj_dim();
+        for layer in layers_k.iter_mut().chain(layers_v.iter_mut()) {
+            layer.truncate(seq * kv_dim);
+        }
         let hidden_last = hidden[hidden.len().saturating_sub(h)..].to_vec();
         self.last_prefill_hidden = Some(hidden_last);
         self.last_assembled_prefill = Some(prefill);
-        let logits = self.lm_head_logits(&hidden)?;
+        let logits = self.lm_head_logits(hidden)?;
         let kv = KvCacheState {
             past_len: seq,
             layers_kv_base: vec![0; layers_k.len()],
@@ -868,46 +1014,122 @@ impl Qwen25VlRunner {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("decode_step: call prefill_from_assembled first"))?
             .past_len;
-        let layers_k = self.decode_cache.as_ref().unwrap().layers_k.clone();
-        let layers_v = self.decode_cache.as_ref().unwrap().layers_v.clone();
 
         let (cos, sin) = mrope_decode_feeds(&self.lm_cfg, self.next_decode_position(past_seq));
-
         self.ensure_lm_weights_cache()?;
-        let mut weight_loader = ArcCacheLoader::new(&self.lm_weights_cache);
-        let use_custom_mask = blocked_keys.is_some_and(|b| !b.is_empty());
-        let opts = Qwen3DecodeOpts {
-            batch: 1,
-            past_seq,
-            use_custom_mask,
-            ..Default::default()
-        };
-        let built = build_qwen3_decode_built(&self.lm_cfg.lm, &mut weight_loader, &opts)?;
-        let mut compiled = compile_built(built, self.device)?;
+
+        let n_layers = self.lm_cfg.lm.num_hidden_layers;
+        let kv_dim = self.lm_cfg.lm.kv_proj_dim();
+
+        // Which compiled graph serves this length. The graph is specialised at
+        // the bucket's upper bound and the K/V padded up to it, so a run of
+        // tokens inside one bucket compiles nothing at all.
+        // `bucket_upper_for_key` already reports `range.end - 1`, which is the
+        // extent the graph is compiled at and therefore the width the mask has
+        // to match. Subtracting again makes the mask one short, and MLX refuses
+        // the run rather than reading past it.
+        let upper = self
+            .decode_graphs
+            .as_ref()
+            .and_then(|c| c.bucket_upper_for_key(past_seq as u64))
+            .map(|u| u as usize)
+            .unwrap_or(past_seq);
+
+        // Real keys are visible, padding is not. A blocked-key set from the AIF
+        // probe closes some of the real ones on top of that.
+        let mut mask = bucket_decode_mask(past_seq, upper);
+        if let Some(blocked) = blocked_keys {
+            for &k in blocked {
+                if k < mask.len() {
+                    mask[k] = 0.0;
+                }
+            }
+        }
 
         let input_ids = [token_id as f32];
-        let mut inputs: Vec<(&str, &[f32])> = vec![
-            ("input_ids", input_ids.as_slice()),
-            ("rope_cos", cos.as_slice()),
-            ("rope_sin", sin.as_slice()),
+        let fixed = [
+            CacheRunInput {
+                name: "input_ids",
+                data: &input_ids,
+                row_inner: None,
+            },
+            CacheRunInput {
+                name: "rope_cos",
+                data: &cos,
+                row_inner: None,
+            },
+            CacheRunInput {
+                name: "rope_sin",
+                data: &sin,
+                row_inner: None,
+            },
+            CacheRunInput {
+                name: "mask",
+                data: &mask,
+                row_inner: None,
+            },
         ];
-        let mask_row;
-        if let Some(blocked) = blocked_keys {
-            mask_row = decode_mask_row_causal(past_seq, blocked);
-            inputs.push(("mask", mask_row.as_slice()));
-        }
-        let key_strs: Vec<String> = (0..self.lm_cfg.lm.num_hidden_layers)
-            .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
-            .collect();
-        for i in 0..self.lm_cfg.lm.num_hidden_layers {
-            inputs.push((&key_strs[2 * i], layers_k[i].as_slice()));
-            inputs.push((&key_strs[2 * i + 1], layers_v[i].as_slice()));
-        }
 
-        let outputs = compiled.run(&inputs);
-        let (logits, new_k, new_v) =
-            split_decode_logits_kv(outputs, self.lm_cfg.lm.num_hidden_layers)?;
-        let cache_mut = self.decode_cache.as_mut().unwrap();
+        let kv = self.decode_cache.as_ref().expect("checked above").clone();
+        let cfg = self.lm_cfg.lm.clone();
+        let weights = self.lm_weights_cache.clone();
+        let options = rlx_runtime::CompileOptions::default();
+        // Decode reads the weights as F32: a 1.9 GB Q4 checkpoint becomes
+        // ~11 GB resident, and since decode is bound by weight bytes read per
+        // token that is most of what is left of the cost.
+        //
+        // The packed path (`run_bucketed_kv_decode_packed` with
+        // `build_qwen3_decode_graph_sized_packed`) is the obvious fix and was
+        // measured here: on Qwen2.5-VL-3B Q4_K_M it was *worse* — 3.4 s/token
+        // against 1.65, with resident memory going from 11.4 GB to 26.3 GB.
+        // Whatever is wrong there is in the packed lowering, not in this call
+        // site, so this keeps the faster path rather than the tidier-looking
+        // one. The measurement is recorded so the next attempt starts from it.
+        let cache = self
+            .decode_graphs
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("decode_step: no compile cache"))?;
+
+        let t_step = std::time::Instant::now();
+        let compiled_before = cache.compiled_count();
+        let (logits, new_k, new_v) = run_bucketed_kv_decode(
+            cache,
+            past_seq,
+            &kv,
+            kv_dim,
+            n_layers,
+            &fixed,
+            |upper| {
+                // Only a compile miss pays for this; a steady-state decode step
+                // never reaches the closure.
+                let mut loader = ArcCacheLoader::new(&weights);
+                build_qwen3_decode_graph_sized_ext(
+                    &cfg,
+                    &mut loader,
+                    1,
+                    upper as usize,
+                    // The mask is always supplied, because the padded rows have
+                    // to be closed whatever the AIF probe is doing.
+                    true,
+                )
+                .expect("qwen2.5-vl bucketed decode graph")
+            },
+            &options,
+        )?;
+
+        if std::env::var_os("RLX_VL_DECODE_TRACE").is_some() {
+            let after = self
+                .decode_graphs
+                .as_ref()
+                .map(|c| c.compiled_count())
+                .unwrap_or(0);
+            eprintln!(
+                "vl decode step: past_seq={past_seq} upper={upper} \
+                 compiled {compiled_before}->{after} in {:.0} ms",
+                t_step.elapsed().as_secs_f64() * 1e3
+            );
+        }
+        let cache_mut = self.decode_cache.as_mut().expect("checked above");
         cache_mut.past_len = past_seq + 1;
         cache_mut.layers_k = new_k;
         cache_mut.layers_v = new_v;

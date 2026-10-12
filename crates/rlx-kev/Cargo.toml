@@ -20,22 +20,43 @@ rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true }
 rlx-qwen35 = { workspace = true }
 rlx-torch-ckpt = { workspace = true }
+rlx-tune = { path = "../rlx-tune", version = "0.2.16", optional = true }
+rlx-autodiff = { workspace = true, optional = true }
+rlx-compile = { workspace = true, optional = true }
+rlx-fusion = { workspace = true, optional = true }
+sha2 = { version = "0.10", optional = true }
 tokenizers = { workspace = true, optional = true }
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"], optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+
+[dev-dependencies]
+safetensors = { workspace = true }
+rlx-core = { workspace = true }
 
 [features]
-default = ["tokenizer"]
+default = ["tokenizer", "prefix-cache"]
 # Text in / text out. Without it the crate is ids-only: `Encoder` still runs
 # from a caller-supplied `TokenizerLike`, which is what the golden-vector
 # tests use (no tokenizer.json needed).
 tokenizer = ["dep:tokenizers"]
+# State-prefix caching: encode a repeated state once instead of once per
+# question per request. Opt-in at RUNTIME (`--prefix-cache`) because it costs
+# extra compiled parameter arenas; see src/prefix.rs.
+prefix-cache = []
+# LoRA + pointer-head training (rlx-tune, rlx-autodiff).
+train = ["dep:rlx-tune", "dep:rlx-autodiff", "dep:rlx-compile", "dep:rlx-fusion", "dep:sha2"]
+# TypeSafe-compatible HTTP sidecar (`rlx-kev --serve`).
+serve = ["tokenizer", "dep:axum", "dep:tokio", "dep:tower-http"]
 metal = ["rlx-qwen35/metal", "rlx-runtime/metal"]
 mlx = ["rlx-qwen35/mlx", "rlx-runtime/mlx"]
 cuda = ["rlx-qwen35/cuda", "rlx-runtime/cuda"]
 rocm = ["rlx-qwen35/rocm", "rlx-runtime/rocm"]
 gpu = ["rlx-qwen35/gpu", "rlx-runtime/gpu"]
 vulkan = ["rlx-qwen35/vulkan", "rlx-runtime/vulkan"]
-all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+coreml = ["rlx-qwen35/coreml", "rlx-core/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
@@ -43,6 +64,68 @@ portable-gpu = ["gpu"]
 [[bin]]
 name = "rlx-kev"
 path = "src/bin/rlx_kev.rs"
+
+# Everything below needs a real tokenizer.json to do anything.
+[[example]]
+name = "dump_hidden"
+required-features = ["tokenizer"]
+
+[[example]]
+name = "train_nan_probe"
+required-features = ["train", "tokenizer"]
+
+[[example]]
+name = "bf16_probe"
+required-features = ["train"]
+
+[[example]]
+name = "bf16_sweep"
+required-features = ["train"]
+
+[[example]]
+name = "checkpoint_bench"
+required-features = ["train"]
+
+[[example]]
+name = "pad_audit"
+required-features = ["train", "tokenizer"]
+
+[[example]]
+name = "prefix_probe"
+required-features = ["tokenizer", "prefix-cache"]
+
+
+
+
+
+
+[[example]]
+name = "dump_layers"
+required-features = ["tokenizer"]
+
+[[test]]
+name = "real_weights"
+required-features = ["tokenizer"]
+
+[[test]]
+name = "recipe_parity"
+required-features = ["train"]
+
+[[test]]
+name = "pyrandom_parity"
+required-features = ["train"]
+
+[[test]]
+name = "train_graph"
+required-features = ["train"]
+
+[[test]]
+name = "continuation_equivalence"
+required-features = ["tokenizer", "prefix-cache"]
+
+[[test]]
+name = "real_checkpoint"
+required-features = ["tokenizer"]
 
 [lints]
 workspace = true

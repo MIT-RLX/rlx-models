@@ -39,7 +39,8 @@ pub const STANDARD_DEVICES: &[Device] = &[
 pub const STANDARD_DEVICE_NAMES: &str = "auto|cpu|metal|mps|mlx|cuda|rocm|hip|gpu|wgpu|vulkan";
 
 /// [`STANDARD_DEVICE_NAMES`] plus CoreML / ANE when the `coreml` feature is enabled.
-pub const LM_DEVICE_NAMES: &str = "auto|cpu|metal|mps|mlx|cuda|rocm|hip|gpu|wgpu|vulkan|coreml|ane";
+pub const LM_DEVICE_NAMES: &str =
+    "auto|cpu|metal|mps|mlx|cuda|rocm|hip|gpu|wgpu|vulkan|coreml|ane|tpu";
 
 /// Preferred causal-LM inference order on this host (excludes ANE — request `coreml` explicitly).
 pub const LM_INFERENCE_DEVICE_PRIORITY: &[Device] = &[
@@ -79,9 +80,14 @@ pub fn is_standard_device(device: Device) -> bool {
     STANDARD_DEVICES.contains(&device)
 }
 
-/// Causal LM runners: standard backends plus CoreML (`Device::Ane`) with `coreml`.
+/// Causal LM runners: standard backends, plus CoreML (`Device::Ane`) and TPU
+/// (`Device::Tpu`).
+///
+/// Unlike [`validate_lm_device`] this does not consider features — it answers
+/// "is this device in the LM device *class*", which is what a `--device` help
+/// string or a device menu wants. Use `validate_lm_device` before building.
 pub fn is_lm_device(device: Device) -> bool {
-    is_standard_device(device) || device == Device::Ane
+    is_standard_device(device) || device == Device::Ane || device == Device::Tpu
 }
 
 /// Fail fast on exotic runtime devices (TPU, ANE, OpenGL, …).
@@ -96,7 +102,14 @@ pub fn validate_standard_device(family: &str, device: Device) -> Result<()> {
     }
 }
 
-/// Like [`validate_standard_device`], but allows `Device::Ane` when built with `coreml`.
+/// Like [`validate_standard_device`], but allows the two devices that are real
+/// backends yet not "standard": `Device::Ane` with `coreml`, and `Device::Tpu`
+/// with `tpu`.
+///
+/// Both are gated on their feature rather than accepted unconditionally,
+/// because a build without the backend compiled in cannot reach the hardware —
+/// and saying so here is better than a missing-symbol or an unsupported-op
+/// failure later.
 pub fn validate_lm_device(family: &str, device: Device) -> Result<()> {
     if device == Device::Ane {
         #[cfg(feature = "coreml")]
@@ -105,6 +118,16 @@ pub fn validate_lm_device(family: &str, device: Device) -> Result<()> {
         bail!(
             "{family}: device Ane requires the `coreml` feature \
              (enable `coreml` or `apple-silicon` on this crate)"
+        );
+    }
+    if device == Device::Tpu {
+        #[cfg(feature = "tpu")]
+        return Ok(());
+        #[cfg(not(feature = "tpu"))]
+        bail!(
+            "{family}: device Tpu requires the `tpu` feature \
+             (enable `tpu` on this crate; it forwards to rlx-runtime/tpu, \
+             which drives libtpu through PJRT)"
         );
     }
     validate_standard_device(family, device)
@@ -249,5 +272,53 @@ mod tests {
     fn resolve_auto_picks_fastest() {
         let d = resolve_lm_device_str("test", "auto").unwrap();
         assert_eq!(d, pick_lm_device());
+    }
+}
+
+#[cfg(test)]
+mod tpu_tests {
+    use super::*;
+
+    /// TPU is in the LM device *class* regardless of features.
+    ///
+    /// `is_lm_device` answers "could an LM ever run here", which is what a
+    /// `--device` help string needs; whether *this build* can is
+    /// `validate_lm_device`'s question. Conflating the two is how a device
+    /// menu ends up hiding a backend the user could enable.
+    #[test]
+    fn tpu_is_an_lm_device_class_member() {
+        assert!(is_lm_device(Device::Tpu));
+        assert!(is_lm_device(Device::Ane));
+        assert!(!is_standard_device(Device::Tpu), "but not `standard`");
+        // Genuinely unsupported devices stay out of both.
+        for d in [Device::OpenGl, Device::Hexagon, Device::Xdna] {
+            assert!(!is_lm_device(d), "{d:?}");
+        }
+        assert!(
+            LM_DEVICE_NAMES.contains("tpu"),
+            "and the help string says so"
+        );
+    }
+
+    /// Validation follows the feature, and says which one to enable.
+    #[test]
+    fn validating_tpu_follows_the_feature() {
+        let r = validate_lm_device("qwen4exp", Device::Tpu);
+        if cfg!(feature = "tpu") {
+            assert!(r.is_ok(), "with the feature on: {r:?}");
+        } else {
+            let msg = format!("{:#}", r.expect_err("no tpu feature"));
+            assert!(msg.contains("`tpu` feature"), "{msg}");
+            assert!(msg.contains("qwen4exp"), "and names the family: {msg}");
+        }
+        // The standard devices are unaffected either way.
+        assert!(validate_lm_device("qwen4exp", Device::Cpu).is_ok());
+        assert!(validate_lm_device("qwen4exp", Device::OpenGl).is_err());
+    }
+
+    /// SAM accepted TPU before LMs did, and still does.
+    #[test]
+    fn sam_still_accepts_tpu_unconditionally() {
+        assert!(validate_sam_device("sam", Device::Tpu).is_ok());
     }
 }

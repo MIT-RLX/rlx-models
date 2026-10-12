@@ -1,0 +1,13 @@
+{
+  "state": "Shoes arrived two weeks late and in the wrong size. Also I see two charges on my card. Please <|fim_prefix|> fix this ASAP!",
+  "model": "kev-latest",
+  "questions": {
+    "department": {"type": "choice", "instructions": "Which team should handle this?",
+                   "criteria": {"returns": "Exchanges, refunds, wrong or damaged items",
+                                "shipping": "Delivery status, delays, lost packages",
+                                "billing": null}},
+    "escalate":    {"type": "noul",  "instructions": "Does this need urgent human attention?"},
+    "frustration": {"type": "score", "instructions": {"task": "How frustrated is the customer?", "scale": [0, 1, 2]},
+                    "criteria": ["Calm", "Frustrated", "Very angry"]}
+  }
+}

@@ -36,6 +36,109 @@ use rlx_qwen35::{Qwen35Config, Qwen35Weights};
 
 use crate::lora::{LoraAdapter, module_path_for_gguf};
 
+/// Number of real decoder layers in an HF checkpoint, from the tensor names.
+///
+/// `Qwen35Config::from_hf_config_value` computes the trunk depth as
+/// `num_hidden_layers - mtp_num_hidden_layers`. That is right for a
+/// GGUF-derived layout, where llama.cpp appends the MTP block as the last
+/// `blk.N` — but **wrong for HF safetensors**, where `Qwen3.5-0.8B-Base`
+/// carries `model.language_model.layers.0..23` *and* a separate `mtp.*`
+/// module. Trusting the config there drops the last decoder layer and the
+/// model still runs, one block short.
+///
+/// So count the layers that actually exist. `mtp.layers.N` is excluded: it is
+/// a different module, and we never build the MTP head.
+fn hf_decoder_layer_count<'a>(keys: impl Iterator<Item = &'a str>) -> Option<usize> {
+    let mut max_idx: Option<usize> = None;
+    for k in keys {
+        if k.starts_with("mtp.") || k.contains(".mtp.") {
+            continue;
+        }
+        let Some(rest) = k.split(".layers.").nth(1) else {
+            continue;
+        };
+        let Some(idx) = rest.split('.').next().and_then(|d| d.parse::<usize>().ok()) else {
+            continue;
+        };
+        max_idx = Some(max_idx.map_or(idx, |m: usize| m.max(idx)));
+    }
+    max_idx.map(|m| m + 1)
+}
+
+/// Converts HF-native tensors into the form the `rlx-qwen35` builder expects.
+///
+/// The builder was written against llama.cpp-converted GGUFs, and the GGUF
+/// converter does not just rename tensors — it *transforms* one. The Gated
+/// DeltaNet decay coefficient is stored in HF as `linear_attn.A_log`, and
+/// llama.cpp writes `A = -exp(A_log)` into `blk.N.ssm_a`. The builder then
+/// uses `ssm_a` directly (`decay = exp(A · softplus(dt))`), with a comment
+/// recording that applying `-exp` a second time was a real bug once.
+///
+/// Feeding raw `A_log` through that path is silently catastrophic in a way
+/// that is easy to miss: at position 0 the recurrent state is zero, so the
+/// decay is unobservable and the first token is *exact*. Every later position
+/// compounds the error. On Qwen3.5-0.8B the raw `A_log` even contains a
+/// positive entry, so that head's state **grows** instead of decaying.
+pub struct HfQwen35Fixups<L: WeightLoader> {
+    inner: L,
+    converted: usize,
+}
+
+impl<L: WeightLoader> HfQwen35Fixups<L> {
+    pub fn new(inner: L) -> Self {
+        Self {
+            inner,
+            converted: 0,
+        }
+    }
+
+    /// How many `ssm_a` tensors were converted from `A_log`.
+    pub fn converted(&self) -> usize {
+        self.converted
+    }
+
+    /// `ssm_a` is the only tensor whose *values* differ between the HF and
+    /// GGUF layouts.
+    fn is_a_log(key: &str) -> bool {
+        key.ends_with(".ssm_a") || key.ends_with("linear_attn.A_log")
+    }
+
+    fn fix(&mut self, key: &str, data: &mut [f32]) {
+        if !Self::is_a_log(key) {
+            return;
+        }
+        for v in data.iter_mut() {
+            *v = -v.exp();
+        }
+        self.converted += 1;
+    }
+}
+
+impl<L: WeightLoader> WeightLoader for HfQwen35Fixups<L> {
+    fn format_id(&self) -> &'static str {
+        self.inner.format_id()
+    }
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+    fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let (mut data, shape) = self.inner.take(key)?;
+        self.fix(key, &mut data);
+        Ok((data, shape))
+    }
+    fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let (mut data, shape) = self.inner.take_transposed(key)?;
+        self.fix(key, &mut data);
+        Ok((data, shape))
+    }
+    fn remaining_keys(&self) -> Vec<String> {
+        self.inner.remaining_keys()
+    }
+    fn arch_hint(&self) -> Option<&str> {
+        self.inner.arch_hint()
+    }
+}
+
 /// Wraps a loader and folds a peft LoRA into every targeted tensor as it is
 /// taken.
 pub struct LoraMergingLoader<L: WeightLoader> {
@@ -137,6 +240,12 @@ pub struct KevWeights {
     pub merged: usize,
 }
 
+/// Load an HF Qwen3.5 base with **no** adapter — the cold start for training.
+pub fn load_merged_base_only(base_dir: &Path) -> Result<KevWeights> {
+    let empty = LoraAdapter::empty();
+    load_merged(base_dir, empty)
+}
+
 /// Load an HF Qwen3.5 base directory and fold `adapter` into it.
 ///
 /// `base_dir` is a plain `Qwen/Qwen3.5-*-Base` snapshot (`config.json` +
@@ -144,12 +253,24 @@ pub struct KevWeights {
 /// than running a partially-adapted model.
 pub fn load_merged(base_dir: &Path, adapter: LoraAdapter) -> Result<KevWeights> {
     let cfg_path = base_dir.join("config.json");
-    let cfg = Qwen35Config::from_hf_config_json(&cfg_path)
+    let mut cfg = Qwen35Config::from_hf_config_json(&cfg_path)
         .with_context(|| format!("reading {}", cfg_path.display()))?;
 
     let base = SafetensorsMmapLoader::open(base_dir)
         .with_context(|| format!("opening safetensors in {}", base_dir.display()))?;
-    let mut loader = LoraMergingLoader::new(HfTranslatingLoader::new(base), adapter);
+
+    // Reconcile the trunk depth against the tensors on disk — see
+    // `hf_decoder_layer_count`. We never build the MTP head, so every real
+    // decoder layer is a trunk layer and `nextn_predict_layers` is 0.
+    if let Some(found) = hf_decoder_layer_count(base.checkpoint().keys()) {
+        let from_cfg = cfg.num_hidden_layers - cfg.nextn_predict_layers;
+        if found != from_cfg {
+            cfg.num_hidden_layers = found;
+            cfg.nextn_predict_layers = 0;
+        }
+    }
+    let mut loader =
+        LoraMergingLoader::new(HfQwen35Fixups::new(HfTranslatingLoader::new(base)), adapter);
 
     let weights = Qwen35Weights::from_loader(&mut loader, &cfg)
         .with_context(|| format!("assembling Qwen3.5 weights from {}", base_dir.display()))?;
@@ -175,4 +296,100 @@ pub fn load_merged(base_dir: &Path, adapter: LoraAdapter) -> Result<KevWeights> 
         weights,
         merged: loader.merged_count(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A loader serving one named tensor, to drive the wrappers directly.
+    struct One {
+        key: String,
+        data: Vec<f32>,
+        shape: Vec<usize>,
+    }
+
+    impl WeightLoader for One {
+        fn format_id(&self) -> &'static str {
+            "test"
+        }
+        fn len(&self) -> usize {
+            1
+        }
+        fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+            if key != self.key {
+                anyhow::bail!("no such tensor: {key}");
+            }
+            Ok((self.data.clone(), self.shape.clone()))
+        }
+        fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+            self.take(key)
+        }
+        fn remaining_keys(&self) -> Vec<String> {
+            vec![self.key.clone()]
+        }
+    }
+
+    /// `ssm_a` must arrive as `-exp(A_log)`.
+    ///
+    /// Getting this wrong is invisible at position 0 — the recurrent state is
+    /// zero there, so the decay does nothing — and compounds afterwards. On
+    /// Qwen3.5-0.8B one `A_log` entry is positive, so the raw value makes
+    /// that head's state *grow*.
+    #[test]
+    fn a_log_becomes_a_negative_decay_coefficient() {
+        let a_log = vec![0.2559f32, -2.0312, -6.5938];
+        let mut l = HfQwen35Fixups::new(One {
+            key: "blk.0.ssm_a".into(),
+            data: a_log.clone(),
+            shape: vec![3],
+        });
+        let (got, shape) = l.take("blk.0.ssm_a").expect("take");
+        assert_eq!(shape, vec![3]);
+        assert_eq!(l.converted(), 1);
+        for (g, raw) in got.iter().zip(&a_log) {
+            assert!((g - -raw.exp()).abs() < 1e-6, "got {g} for A_log {raw}");
+            assert!(*g < 0.0, "a decay coefficient must be negative, got {g}");
+        }
+        // The positive A_log is exactly the entry that would make the state grow.
+        assert!(a_log[0] > 0.0 && got[0] < 0.0);
+    }
+
+    #[test]
+    fn other_tensors_pass_through_untouched() {
+        let data = vec![1.0f32, -2.0, 3.0];
+        let mut l = HfQwen35Fixups::new(One {
+            key: "blk.0.attn_q.weight".into(),
+            data: data.clone(),
+            shape: vec![3],
+        });
+        let (got, _) = l.take("blk.0.attn_q.weight").expect("take");
+        assert_eq!(got, data);
+        assert_eq!(l.converted(), 0);
+    }
+
+    /// The trunk depth must come from the tensors, not from
+    /// `num_hidden_layers - mtp_num_hidden_layers`: HF keeps MTP in a
+    /// separate `mtp.*` module, so that subtraction drops a real layer.
+    #[test]
+    fn decoder_layers_are_counted_from_the_tensor_names() {
+        let keys = [
+            "model.language_model.embed_tokens.weight",
+            "model.language_model.layers.0.self_attn.q_proj.weight",
+            "model.language_model.layers.22.mlp.up_proj.weight",
+            "model.language_model.layers.23.mlp.up_proj.weight",
+            // Separate module — must NOT extend the trunk.
+            "mtp.layers.0.self_attn.q_proj.weight",
+            "mtp.fc.weight",
+        ];
+        assert_eq!(hf_decoder_layer_count(keys.into_iter()), Some(24));
+    }
+
+    #[test]
+    fn layer_count_is_none_without_any_layers() {
+        assert_eq!(
+            hf_decoder_layer_count(["model.embed_tokens.weight"].into_iter()),
+            None
+        );
+    }
 }

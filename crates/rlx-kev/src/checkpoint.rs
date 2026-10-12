@@ -29,6 +29,10 @@
 //! `head.pt` is read natively — it is a STORED zip, so the pickle root comes
 //! out without libtorch or Python.
 //!
+//! A checkpoint trained by `crate::train` (feature `train`) writes `head.json` +
+//! `head.safetensors` instead (round-tripping through a torch pickle would be
+//! pointless), and both layouts load here.
+//!
 //! # Temperature is never guessed
 //!
 //! The calibration temperature exists only in `head.pt`. If it cannot be read
@@ -83,16 +87,23 @@ impl Checkpoint {
     /// Open `dir`, reading `head.pt` for the metadata.
     pub fn open(dir: &Path) -> Result<Self> {
         let head_pt = dir.join("head.pt");
-        if !head_pt.exists() {
+        let head_json = dir.join("head.json");
+        let meta = if head_pt.exists() {
+            let root = read_torch_pickle_root(&head_pt)
+                .with_context(|| format!("reading {}", head_pt.display()))?;
+            meta_from_pickle(&root)
+                .with_context(|| format!("reading metadata from {}", head_pt.display()))?
+        } else if head_json.exists() {
+            let text = std::fs::read_to_string(&head_json)
+                .with_context(|| format!("reading {}", head_json.display()))?;
+            meta_from_json(&text)
+                .with_context(|| format!("reading metadata from {}", head_json.display()))?
+        } else {
             bail!(
-                "{} is not a kev run directory (no head.pt)",
+                "{} is not a kev run directory (no head.pt or head.json)",
                 dir.display()
             );
-        }
-        let root = read_torch_pickle_root(&head_pt)
-            .with_context(|| format!("reading {}", head_pt.display()))?;
-        let meta = meta_from_pickle(&root)
-            .with_context(|| format!("reading metadata from {}", head_pt.display()))?;
+        };
         Ok(Self {
             dir: dir.to_path_buf(),
             meta,
@@ -126,14 +137,19 @@ impl Checkpoint {
     /// `adapter_config.json`, parsed.
     pub fn adapter_config(&self) -> Result<serde_json::Value> {
         let p = self.dir.join("adapter_config.json");
-        let text = std::fs::read_to_string(&p)
-            .with_context(|| format!("reading {}", p.display()))?;
+        let text =
+            std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
         serde_json::from_str(&text).with_context(|| format!("parsing {}", p.display()))
     }
 
     /// Load the pointer head, inferring `hidden` from the stored shapes.
     pub fn pointer_head(&self) -> Result<PointerHead> {
-        let p = self.dir.join("head.pt");
+        let pt = self.dir.join("head.pt");
+        let st = self.dir.join("head.safetensors");
+        if !pt.exists() && st.exists() {
+            return self.pointer_head_safetensors(&st);
+        }
+        let p = pt;
         let m = PtModel::open(&p).with_context(|| format!("opening {}", p.display()))?;
 
         let get = |name: &str| -> Result<(Vec<f32>, Vec<usize>)> {
@@ -160,15 +176,7 @@ impl Checkpoint {
                 self.meta.head_dim
             );
         }
-        PointerHead::new(
-            qw,
-            qb,
-            kw,
-            kb,
-            hidden,
-            head_dim,
-            self.meta.temperature,
-        )
+        PointerHead::new(qw, qb, kw, kb, hidden, head_dim, self.meta.temperature)
     }
 }
 
@@ -248,16 +256,76 @@ fn meta_from_pickle(root: &PkValue) -> Result<Meta> {
     if let Some(v) = find(&items, "weights_dtype").and_then(as_string) {
         meta.weights_dtype = v;
     }
-    meta.temperature = find(&items, "temperature").and_then(as_f32).ok_or_else(|| {
-        anyhow!(
-            "head.pt has no `temperature`. Refusing to default to 1.0: the fitted \
+    meta.temperature = find(&items, "temperature")
+        .and_then(as_f32)
+        .ok_or_else(|| {
+            anyhow!(
+                "head.pt has no `temperature`. Refusing to default to 1.0: the fitted \
              value is what makes the probabilities calibrated, and substituting 1.0 \
              leaves every argmax unchanged while roughly doubling the confident-error \
              rate. Pass an explicit temperature if this checkpoint predates calibration."
-        )
-    })?;
+            )
+        })?;
     if !(meta.temperature.is_finite() && meta.temperature > 0.0) {
         bail!("head.pt temperature is {}", meta.temperature);
+    }
+    Ok(meta)
+}
+
+impl Checkpoint {
+    /// The `head.safetensors` form written by [`crate::train::export_head`].
+    fn pointer_head_safetensors(&self, path: &Path) -> Result<PointerHead> {
+        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let st = safetensors::SafeTensors::deserialize(&bytes)
+            .map_err(|e| anyhow!("{}: {e}", path.display()))?;
+        let get = |name: &str| -> Result<(Vec<f32>, Vec<usize>)> {
+            let v = st
+                .tensor(name)
+                .map_err(|e| anyhow!("{}: {name}: {e}", path.display()))?;
+            let shape = v.shape().to_vec();
+            let data = rlx_core::safetensors_checkpoint::tensor_view_to_f32(name, v)?;
+            Ok((data, shape))
+        };
+        let (qw, qs) = get("head.q.weight")?;
+        let (qb, _) = get("head.q.bias")?;
+        let (kw, ks) = get("head.k.weight")?;
+        let (kb, _) = get("head.k.bias")?;
+        if qs.len() != 2 || ks != qs {
+            bail!("head.safetensors: q/k must be identical rank-2 tensors, got {qs:?} / {ks:?}");
+        }
+        PointerHead::new(qw, qb, kw, kb, qs[1], qs[0], self.meta.temperature)
+    }
+}
+
+/// Parse the `head.json` sidecar written by [`crate::train::export_head`].
+fn meta_from_json(text: &str) -> Result<Meta> {
+    let v: serde_json::Value = serde_json::from_str(text)?;
+    let mut meta = Meta {
+        base: v["base"].as_str().unwrap_or_default().to_string(),
+        base_revision: v["base_revision"].as_str().map(str::to_string),
+        ..Meta::default()
+    };
+    if let Some(n) = v["lora"].as_u64() {
+        meta.lora = n as usize;
+    }
+    if let Some(n) = v["head_dim"].as_u64() {
+        meta.head_dim = n as usize;
+    }
+    if let Some(b) = v["option_isolation"].as_bool() {
+        meta.option_isolation = b;
+    }
+    if let Some(b) = v["special_embeddings"].as_bool() {
+        meta.special_embeddings = b;
+    }
+    if let Some(s) = v["weights_dtype"].as_str() {
+        meta.weights_dtype = s.to_string();
+    }
+    meta.temperature = v["temperature"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("head.json has no `temperature`; refusing to default to 1.0"))?
+        as f32;
+    if !(meta.temperature.is_finite() && meta.temperature > 0.0) {
+        bail!("head.json temperature is {}", meta.temperature);
     }
     Ok(meta)
 }

@@ -70,10 +70,10 @@ fn main() -> Result<()> {
     let mut ref_ids: Option<Vec<u32>> = None;
 
     for dev in candidates {
-        if let Some(o) = &only {
-            if !format!("{dev:?}").to_lowercase().contains(o.as_str()) {
-                continue;
-            }
+        if let Some(o) = &only
+            && !format!("{dev:?}").to_lowercase().contains(o.as_str())
+        {
+            continue;
         }
         // CPU is always present; skip accelerators that don't probe available.
         if dev != Device::Cpu && !is_available(dev) {

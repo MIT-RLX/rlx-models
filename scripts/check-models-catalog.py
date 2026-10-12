@@ -60,7 +60,14 @@ def metadata():
 
 
 def parse_rows(text):
-    """-> [(section, crate, description, backend_cell)] for every table row."""
+    """-> [(section, crate, description, backend_cell, n_cells)] for every row.
+
+    `n_cells` is reported so callers can catch an unescaped `|` inside a cell.
+    Markdown splits on it, so the row silently gains columns and the backend
+    cell this function returns is a *truncated* prefix — the backend checks
+    below then validate text that is not what the row says. GitHub renders the
+    row wrong too.
+    """
     rows, section = [], None
     for line in text.split("\n"):
         head = re.match(r"^## (.+)$", line)
@@ -74,7 +81,7 @@ def parse_rows(text):
             continue
         if set(cells[0]) <= set("-: ") or cells[0].lower() in ("crate", "category"):
             continue
-        rows.append((section, cells[0].strip("`"), cells[1], cells[2]))
+        rows.append((section, cells[0].strip("`"), cells[1], cells[2], len(cells)))
     return rows
 
 
@@ -94,7 +101,7 @@ def main():
     rows = parse_rows(text)
     problems = []
 
-    listed = {crate for _, crate, _, _ in rows}
+    listed = {crate for _, crate, _, _, _ in rows}
     publishable = {
         n for n, p in pkgs.items()
         if p.get("publish") is None
@@ -103,11 +110,18 @@ def main():
     }
     for crate in sorted(publishable - listed):
         problems.append(f"missing from MODELS.md: {crate}")
-    for section, crate, _, _ in rows:
+    for section, crate, _, _, _ in rows:
         if crate not in pkgs and not (ROOT / "crates" / crate).is_dir():
             problems.append(f"row names a crate that does not exist: {crate} [{section}]")
 
-    for section, crate, desc, cell in rows:
+    for section, crate, desc, cell, ncells in rows:
+        if ncells != 3:
+            problems.append(
+                f"{crate}: table row has {ncells} cells, expected 3 — an "
+                f"unescaped '|' inside a cell (escape it as '\\|' or reword). "
+                f"The backend cell is truncated at the stray pipe, so the "
+                f"checks below are reading only part of it [{section}]"
+            )
         if crate not in pkgs:
             continue  # workspace-excluded (e.g. embedded targets): no metadata to compare
         feats = set(pkgs[crate].get("features", {}))

@@ -90,6 +90,18 @@ impl LoraAdapter {
         self.pairs.get(module_path)
     }
 
+    /// An adapter that targets nothing — the cold start for training, where
+    /// the base weights are used as they are.
+    pub fn empty() -> Self {
+        Self {
+            r: 0,
+            alpha: 0.0,
+            use_rslora: false,
+            target_modules: Vec::new(),
+            pairs: HashMap::new(),
+        }
+    }
+
     /// Read `dir/adapter_config.json` and `dir/adapter_model.safetensors`.
     pub fn open(dir: &Path) -> Result<Self> {
         let cfg_path = dir.join("adapter_config.json");
@@ -130,8 +142,8 @@ impl LoraAdapter {
         }
 
         let st_path = dir.join("adapter_model.safetensors");
-        let bytes = std::fs::read(&st_path)
-            .with_context(|| format!("reading {}", st_path.display()))?;
+        let bytes =
+            std::fs::read(&st_path).with_context(|| format!("reading {}", st_path.display()))?;
         let st = safetensors::SafeTensors::deserialize(&bytes)
             .map_err(|e| anyhow!("{}: {e}", st_path.display()))?;
 
@@ -200,7 +212,13 @@ impl LoraAdapter {
     ///
     /// Returns `false` when the adapter does not target `module_path`, so a
     /// caller can distinguish "no adapter here" from "merged".
-    pub fn merge_into(&self, module_path: &str, w: &mut [f32], out: usize, inn: usize) -> Result<bool> {
+    pub fn merge_into(
+        &self,
+        module_path: &str,
+        w: &mut [f32],
+        out: usize,
+        inn: usize,
+    ) -> Result<bool> {
         let Some(p) = self.pairs.get(module_path) else {
             return Ok(false);
         };
@@ -250,12 +268,9 @@ enum Side {
 /// the `base_model.model.` prefix depends on what was wrapped, so both are
 /// handled rather than assumed.
 fn split_lora_key(key: &str) -> Option<(String, Side)> {
-    let (head, side) = if let Some(h) = strip_lora(key, "lora_A") {
-        (h, Side::A)
-    } else if let Some(h) = strip_lora(key, "lora_B") {
-        (h, Side::B)
-    } else {
-        return None;
+    let (head, side) = match strip_lora(key, "lora_A") {
+        Some(h) => (h, Side::A),
+        None => (strip_lora(key, "lora_B")?, Side::B),
     };
     let head = head.strip_prefix("base_model.model.").unwrap_or(head);
     let head = head.strip_prefix("base_model.").unwrap_or(head);
@@ -277,11 +292,7 @@ fn strip_lora<'a>(key: &'a str, marker: &str) -> Option<&'a str> {
 pub fn module_path_for_gguf(gguf: &str) -> Option<String> {
     let hf = rlx_core::weight_loader::gguf_to_hf_qwen35_name(gguf)?;
     let hf = hf.strip_suffix(".weight").unwrap_or(&hf);
-    for prefix in [
-        "model.language_model.",
-        "language_model.model.",
-        "model.",
-    ] {
+    for prefix in ["model.language_model.", "language_model.model.", "model."] {
         if let Some(rest) = hf.strip_prefix(prefix) {
             return Some(rest.to_string());
         }

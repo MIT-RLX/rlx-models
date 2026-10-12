@@ -41,14 +41,14 @@
 //! silent error: the network still runs, the output is still an image, and it
 //! is simply attending over the wrong pixels. They are therefore built by two
 //! separate functions with the factor order spelled out, and
-//! [`tests::grid_and_block_partitions_differ`] pins that they disagree.
+//! `tests::grid_and_block_partitions_differ` pins that they disagree.
 //!
 //! # The checkpoints carry profiler droppings
 //!
 //! Released OmniSR weights were saved after a `thop` profiling pass, so roughly
 //! three quarters of the tensors in the file are `total_ops` / `total_params`
 //! scalars registered as buffers on every module. They are stripped on load —
-//! see [`crate::weights::strip_profiler_buffers`].
+//! see `weights::strip_profiler_buffers`.
 
 use anyhow::{Result, ensure};
 use rlx_core::weight_map::WeightMap;

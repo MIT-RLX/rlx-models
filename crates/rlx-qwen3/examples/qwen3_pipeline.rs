@@ -45,7 +45,7 @@ use common::argmax;
 use rlx_distributed::{DistConfig, ParallelMode, PipelineCoordinator};
 use rlx_qwen3::Qwen3Config;
 use rlx_qwen3::pipeline::Qwen3PipelineStage;
-use rlx_qwen3::pipeline_decode::Qwen3PipelineDecodeStage;
+use rlx_qwen3::pipeline_decode;
 use rlx_runtime::Device;
 use std::collections::HashMap;
 
@@ -170,7 +170,7 @@ fn main() -> Result<()> {
 
     let generated = if args.decode {
         let mut stage =
-            Qwen3PipelineDecodeStage::new(cfg, args.device, dist.rank, dist.world_size, weights);
+            pipeline_decode::stage(cfg, args.device, dist.rank, dist.world_size, weights);
         coord.generate(&mut stage, &mut tokens, args.max_tokens, argmax, |_| false)?
     } else {
         let mut stage =

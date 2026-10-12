@@ -1,0 +1,5451 @@
+{
+ "_provenance": "kev/data.py augment+none_pair+materialize on v7/decision-v7 train records, seed 0.",
+ "cases": [
+  {
+   "id": "yelp/train/388287",
+   "epoch": 0,
+   "augmented": {
+    "rating": {
+     "criteria": null,
+     "label": null
+    },
+    "recommend": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    2,
+    0
+   ],
+   "options": [
+    [
+     "1 star: terrible experience",
+     "2 stars: poor",
+     "3 stars: average",
+     "4 stars: good",
+     "5 stars: excellent"
+    ],
+    [
+     "no: Negative or mixed",
+     "yes: Clearly positive overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "contrastive/volume_discount/v3-control-volume_discount-0022/b",
+   "epoch": 0,
+   "augmented": {
+    "decision": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "List price",
+     "Volume discount",
+     "Wholesale rate"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "dbpedia14/train/409769",
+   "epoch": 0,
+   "augmented": {
+    "category": {
+     "criteria": [
+      "meanoftransportation",
+      "album",
+      "film",
+      "building",
+      "officeholder",
+      "animal",
+      "writtenwork",
+      "village",
+      "artist",
+      "naturalplace",
+      "athlete",
+      "educationalinstitution",
+      "company",
+      "plant"
+     ],
+     "label": "plant"
+    }
+   },
+   "labels": [
+    13
+   ],
+   "options": [
+    [
+     "meanoftransportation",
+     "album",
+     "film",
+     "building",
+     "officeholder",
+     "animal",
+     "writtenwork",
+     "village",
+     "artist",
+     "naturalplace",
+     "athlete",
+     "educationalinstitution",
+     "company",
+     "plant"
+    ]
+   ],
+   "pair": [
+    {
+     "category": {
+      "criteria": [
+       "plant",
+       "naturalplace",
+       "writtenwork",
+       "album",
+       "educationalinstitution",
+       "meanoftransportation",
+       "no_match",
+       "building",
+       "officeholder",
+       "film",
+       "village",
+       "artist",
+       "animal",
+       "company",
+       "athlete"
+      ],
+      "label": "plant"
+     }
+    },
+    {
+     "category": {
+      "criteria": [
+       "naturalplace",
+       "writtenwork",
+       "album",
+       "educationalinstitution",
+       "meanoftransportation",
+       "no_match",
+       "building",
+       "officeholder",
+       "film",
+       "village",
+       "artist",
+       "animal",
+       "company",
+       "athlete"
+      ],
+      "label": "no_match"
+     }
+    }
+   ]
+  },
+  {
+   "id": "contrastive/spend_threshold/v3-control-spend_threshold-0054/a",
+   "epoch": 0,
+   "augmented": {
+    "decision": {
+     "criteria": [
+      "director_signoff",
+      "rejected",
+      "auto_approved"
+     ],
+     "label": "auto_approved"
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "director_signoff: Requires director sign-off",
+     "rejected: Rejected outright",
+     "auto_approved: Approved without further review"
+    ]
+   ],
+   "pair": [
+    {
+     "decision": {
+      "criteria": [
+       "auto_approved",
+       "other",
+       "rejected",
+       "director_signoff"
+      ],
+      "label": "auto_approved"
+     }
+    },
+    {
+     "decision": {
+      "criteria": [
+       "other",
+       "rejected",
+       "director_signoff"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "banking77/train/2344",
+   "epoch": 0,
+   "augmented": {
+    "intent": {
+     "criteria": [
+      "declined_cash_withdrawal",
+      "card_linking",
+      "fiat_currency_support",
+      "pending_card_payment",
+      "supported_cards_and_currencies",
+      "order_physical_card",
+      "card_payment_fee_charged",
+      "top_up_reverted",
+      "passcode_forgotten",
+      "atm_support",
+      "get_disposable_virtual_card",
+      "terminate_account",
+      "verify_top_up",
+      "Refund_not_showing_up",
+      "lost_or_stolen_phone",
+      "topping_up_by_card",
+      "lost_or_stolen_card",
+      "top_up_by_card_charge",
+      "card_acceptance",
+      "card_delivery_estimate",
+      "pending_top_up",
+      "unable_to_verify_identity",
+      "virtual_card_not_working",
+      "verify_my_identity",
+      "card_swallowed",
+      "transfer_into_account",
+      "beneficiary_not_allowed",
+      "reverted_card_payment?",
+      "balance_not_updated_after_bank_transfer",
+      "age_limit",
+      "top_up_failed",
+      "transfer_not_received_by_recipient",
+      "receiving_money",
+      "apple_pay_or_google_pay",
+      "change_pin",
+      "contactless_not_working",
+      "pin_blocked",
+      "request_refund",
+      "balance_not_updated_after_cheque_or_cash_deposit",
+      "edit_personal_details",
+      "country_support",
+      "activate_my_card",
+      "card_not_working",
+      "top_up_by_cash_or_cheque",
+      "compromised_card",
+      "automatic_top_up",
+      "disposable_card_limits",
+      "exchange_via_app",
+      "extra_charge_on_statement",
+      "top_up_limits",
+      "pending_cash_withdrawal",
+      "cash_withdrawal_not_recognised",
+      "exchange_charge",
+      "declined_card_payment",
+      "getting_spare_card",
+      "card_payment_wrong_exchange_rate",
+      "declined_transfer",
+      "wrong_exchange_rate_for_cash_withdrawal",
+      "get_physical_card",
+      "transfer_fee_charged",
+      "wrong_amount_of_cash_received",
+      "cash_withdrawal_charge",
+      "transfer_timing",
+      "card_payment_not_recognised",
+      "getting_virtual_card",
+      "verify_source_of_funds",
+      "failed_transfer",
+      "visa_or_mastercard",
+      "direct_debit_payment_not_recognised",
+      "top_up_by_bank_transfer_charge",
+      "card_arrival",
+      "card_about_to_expire",
+      "why_verify_identity",
+      "exchange_rate",
+      "transaction_charged_twice",
+      "cancel_transfer",
+      "pending_transfer"
+     ],
+     "label": "wrong_amount_of_cash_received"
+    }
+   },
+   "labels": [
+    60
+   ],
+   "options": [
+    [
+     "declined_cash_withdrawal: Issue concerning declined cash withdrawal",
+     "card_linking: Issue concerning card linking",
+     "fiat_currency_support",
+     "pending_card_payment",
+     "supported_cards_and_currencies: Issue concerning supported cards and currencies",
+     "order_physical_card: Issue concerning order physical card",
+     "card_payment_fee_charged",
+     "top_up_reverted",
+     "passcode_forgotten",
+     "atm_support: Issue concerning atm support",
+     "get_disposable_virtual_card",
+     "terminate_account",
+     "verify_top_up",
+     "Refund_not_showing_up",
+     "lost_or_stolen_phone: Issue concerning lost or stolen phone",
+     "topping_up_by_card: Issue concerning topping up by card",
+     "lost_or_stolen_card: Issue concerning lost or stolen card",
+     "top_up_by_card_charge",
+     "card_acceptance: Issue concerning card acceptance",
+     "card_delivery_estimate: Issue concerning card delivery estimate",
+     "pending_top_up: Issue concerning pending top up",
+     "unable_to_verify_identity: Issue concerning unable to verify identity",
+     "virtual_card_not_working: Issue concerning virtual card not working",
+     "verify_my_identity",
+     "card_swallowed: Issue concerning card swallowed",
+     "transfer_into_account: Issue concerning transfer into account",
+     "beneficiary_not_allowed",
+     "reverted_card_payment?: Issue concerning reverted card payment?",
+     "balance_not_updated_after_bank_transfer",
+     "age_limit: Issue concerning age limit",
+     "top_up_failed: Issue concerning top up failed",
+     "transfer_not_received_by_recipient: Issue concerning transfer not received by recipient",
+     "receiving_money: Issue concerning receiving money",
+     "apple_pay_or_google_pay",
+     "change_pin",
+     "contactless_not_working: Issue concerning contactless not working",
+     "pin_blocked",
+     "request_refund: Issue concerning request refund",
+     "balance_not_updated_after_cheque_or_cash_deposit",
+     "edit_personal_details: Issue concerning edit personal details",
+     "country_support",
+     "activate_my_card",
+     "card_not_working",
+     "top_up_by_cash_or_cheque",
+     "compromised_card",
+     "automatic_top_up: Issue concerning automatic top up",
+     "disposable_card_limits: Issue concerning disposable card limits",
+     "exchange_via_app: Issue concerning exchange via app",
+     "extra_charge_on_statement: Issue concerning extra charge on statement",
+     "top_up_limits",
+     "pending_cash_withdrawal: Issue concerning pending cash withdrawal",
+     "cash_withdrawal_not_recognised",
+     "exchange_charge",
+     "declined_card_payment: Issue concerning declined card payment",
+     "getting_spare_card: Issue concerning getting spare card",
+     "card_payment_wrong_exchange_rate: Issue concerning card payment wrong exchange rate",
+     "declined_transfer",
+     "wrong_exchange_rate_for_cash_withdrawal: Issue concerning wrong exchange rate for cash withdrawal",
+     "get_physical_card: Issue concerning get physical card",
+     "transfer_fee_charged: Issue concerning transfer fee charged",
+     "wrong_amount_of_cash_received",
+     "cash_withdrawal_charge: Issue concerning cash withdrawal charge",
+     "transfer_timing",
+     "card_payment_not_recognised",
+     "getting_virtual_card",
+     "verify_source_of_funds: Issue concerning verify source of funds",
+     "failed_transfer: Issue concerning failed transfer",
+     "visa_or_mastercard: Issue concerning visa or mastercard",
+     "direct_debit_payment_not_recognised",
+     "top_up_by_bank_transfer_charge: Issue concerning top up by bank transfer charge",
+     "card_arrival: Issue concerning card arrival",
+     "card_about_to_expire: Issue concerning card about to expire",
+     "why_verify_identity: Issue concerning why verify identity",
+     "exchange_rate: Issue concerning exchange rate",
+     "transaction_charged_twice",
+     "cancel_transfer",
+     "pending_transfer: Issue concerning pending transfer"
+    ]
+   ],
+   "pair": [
+    {
+     "intent": {
+      "criteria": [
+       "direct_debit_payment_not_recognised",
+       "contactless_not_working",
+       "failed_transfer",
+       "card_payment_fee_charged",
+       "top_up_limits",
+       "extra_charge_on_statement",
+       "top_up_by_bank_transfer_charge",
+       "card_linking",
+       "card_arrival",
+       "card_delivery_estimate",
+       "declined_cash_withdrawal",
+       "activate_my_card",
+       "country_support",
+       "pending_cash_withdrawal",
+       "transfer_fee_charged",
+       "unable_to_verify_identity",
+       "card_about_to_expire",
+       "request_refund",
+       "getting_virtual_card",
+       "age_limit",
+       "change_pin",
+       "top_up_by_cash_or_cheque",
+       "exchange_via_app",
+       "beneficiary_not_allowed",
+       "get_disposable_virtual_card",
+       "card_acceptance",
+       "top_up_failed",
+       "visa_or_mastercard",
+       "atm_support",
+       "wrong_amount_of_cash_received",
+       "pending_transfer",
+       "none",
+       "verify_source_of_funds",
+       "apple_pay_or_google_pay",
+       "compromised_card",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "getting_spare_card",
+       "exchange_charge",
+       "transfer_into_account",
+       "order_physical_card",
+       "Refund_not_showing_up",
+       "cancel_transfer",
+       "verify_top_up",
+       "receiving_money",
+       "top_up_reverted",
+       "cash_withdrawal_not_recognised",
+       "verify_my_identity",
+       "pending_top_up",
+       "disposable_card_limits",
+       "fiat_currency_support",
+       "reverted_card_payment?",
+       "why_verify_identity",
+       "topping_up_by_card",
+       "pending_card_payment",
+       "card_payment_not_recognised",
+       "card_not_working",
+       "lost_or_stolen_card",
+       "get_physical_card",
+       "top_up_by_card_charge",
+       "transfer_timing",
+       "cash_withdrawal_charge",
+       "card_payment_wrong_exchange_rate",
+       "virtual_card_not_working",
+       "supported_cards_and_currencies",
+       "pin_blocked",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "balance_not_updated_after_bank_transfer",
+       "transaction_charged_twice",
+       "lost_or_stolen_phone",
+       "exchange_rate",
+       "declined_card_payment",
+       "declined_transfer",
+       "passcode_forgotten",
+       "terminate_account",
+       "card_swallowed",
+       "automatic_top_up",
+       "transfer_not_received_by_recipient",
+       "edit_personal_details"
+      ],
+      "label": "wrong_amount_of_cash_received"
+     }
+    },
+    {
+     "intent": {
+      "criteria": [
+       "direct_debit_payment_not_recognised",
+       "contactless_not_working",
+       "failed_transfer",
+       "card_payment_fee_charged",
+       "top_up_limits",
+       "extra_charge_on_statement",
+       "top_up_by_bank_transfer_charge",
+       "card_linking",
+       "card_arrival",
+       "card_delivery_estimate",
+       "declined_cash_withdrawal",
+       "activate_my_card",
+       "country_support",
+       "pending_cash_withdrawal",
+       "transfer_fee_charged",
+       "unable_to_verify_identity",
+       "card_about_to_expire",
+       "request_refund",
+       "getting_virtual_card",
+       "age_limit",
+       "change_pin",
+       "top_up_by_cash_or_cheque",
+       "exchange_via_app",
+       "beneficiary_not_allowed",
+       "get_disposable_virtual_card",
+       "card_acceptance",
+       "top_up_failed",
+       "visa_or_mastercard",
+       "atm_support",
+       "pending_transfer",
+       "none",
+       "verify_source_of_funds",
+       "apple_pay_or_google_pay",
+       "compromised_card",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "getting_spare_card",
+       "exchange_charge",
+       "transfer_into_account",
+       "order_physical_card",
+       "Refund_not_showing_up",
+       "cancel_transfer",
+       "verify_top_up",
+       "receiving_money",
+       "top_up_reverted",
+       "cash_withdrawal_not_recognised",
+       "verify_my_identity",
+       "pending_top_up",
+       "disposable_card_limits",
+       "fiat_currency_support",
+       "reverted_card_payment?",
+       "why_verify_identity",
+       "topping_up_by_card",
+       "pending_card_payment",
+       "card_payment_not_recognised",
+       "card_not_working",
+       "lost_or_stolen_card",
+       "get_physical_card",
+       "top_up_by_card_charge",
+       "transfer_timing",
+       "cash_withdrawal_charge",
+       "card_payment_wrong_exchange_rate",
+       "virtual_card_not_working",
+       "supported_cards_and_currencies",
+       "pin_blocked",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "balance_not_updated_after_bank_transfer",
+       "transaction_charged_twice",
+       "lost_or_stolen_phone",
+       "exchange_rate",
+       "declined_card_payment",
+       "declined_transfer",
+       "passcode_forgotten",
+       "terminate_account",
+       "card_swallowed",
+       "automatic_top_up",
+       "transfer_not_received_by_recipient",
+       "edit_personal_details"
+      ],
+      "label": "none"
+     }
+    }
+   ]
+  },
+  {
+   "id": "contrastive/sla_response/v3-control-sla_response-0058/a",
+   "epoch": 0,
+   "augmented": {
+    "decision": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "Met",
+     "Minor breach",
+     "Major breach"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "dbpedia14/train/362676",
+   "epoch": 0,
+   "augmented": {
+    "category": {
+     "criteria": [
+      "meanoftransportation",
+      "building",
+      "animal",
+      "film",
+      "athlete",
+      "naturalplace",
+      "artist",
+      "plant",
+      "educationalinstitution",
+      "village",
+      "album",
+      "writtenwork",
+      "officeholder",
+      "company"
+     ],
+     "label": "animal"
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "meanoftransportation",
+     "building",
+     "animal",
+     "film",
+     "athlete",
+     "naturalplace",
+     "artist",
+     "plant",
+     "educationalinstitution",
+     "village",
+     "album",
+     "writtenwork",
+     "officeholder",
+     "company"
+    ]
+   ],
+   "pair": [
+    {
+     "category": {
+      "criteria": [
+       "naturalplace",
+       "plant",
+       "educationalinstitution",
+       "film",
+       "building",
+       "writtenwork",
+       "athlete",
+       "album",
+       "other",
+       "artist",
+       "village",
+       "company",
+       "animal",
+       "officeholder",
+       "meanoftransportation"
+      ],
+      "label": "animal"
+     }
+    },
+    {
+     "category": {
+      "criteria": [
+       "naturalplace",
+       "plant",
+       "educationalinstitution",
+       "film",
+       "building",
+       "writtenwork",
+       "athlete",
+       "album",
+       "other",
+       "artist",
+       "village",
+       "company",
+       "officeholder",
+       "meanoftransportation"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "agnews/train/55900",
+   "epoch": 0,
+   "augmented": {
+    "topic": {
+     "criteria": [
+      "world",
+      "business",
+      "sports",
+      "scitech"
+     ],
+     "label": "scitech"
+    },
+    "is_business": {
+     "criteria": null,
+     "label": null
+    },
+    "is_scitech": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    3,
+    0,
+    1
+   ],
+   "options": [
+    [
+     "world: World news: politics, international affairs, conflicts",
+     "business: Business: companies, markets, economy, finance",
+     "sports",
+     "scitech"
+    ],
+    [
+     "no",
+     "yes"
+    ],
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": [
+    {
+     "topic": {
+      "criteria": [
+       "sports",
+       "unknown",
+       "scitech",
+       "world",
+       "business"
+      ],
+      "label": "scitech"
+     }
+    },
+    {
+     "topic": {
+      "criteria": [
+       "sports",
+       "unknown",
+       "world",
+       "business"
+      ],
+      "label": "unknown"
+     }
+    }
+   ]
+  },
+  {
+   "id": "trec/train/5011",
+   "epoch": 0,
+   "augmented": {
+    "answer_type": {
+     "criteria": [
+      "abbreviation",
+      "entity",
+      "description",
+      "human",
+      "location",
+      "number"
+     ],
+     "label": "description"
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "abbreviation: Asks what an abbreviation stands for",
+     "entity: Asks about a thing, object, animal, product, or creative work",
+     "description: Asks for a definition, description, reason, or manner",
+     "human: Asks about a person, group, or organisation",
+     "location: Asks about a place",
+     "number: Asks for a number, date, count, or other numeric value"
+    ]
+   ],
+   "pair": [
+    {
+     "answer_type": {
+      "criteria": [
+       "human",
+       "number",
+       "description",
+       "location",
+       "not_listed",
+       "entity",
+       "abbreviation"
+      ],
+      "label": "description"
+     }
+    },
+    {
+     "answer_type": {
+      "criteria": [
+       "human",
+       "number",
+       "location",
+       "not_listed",
+       "entity",
+       "abbreviation"
+      ],
+      "label": "not_listed"
+     }
+    }
+   ]
+  },
+  {
+   "id": "contrastive/return_window/v3-control-return_window-0037/a",
+   "epoch": 0,
+   "augmented": {
+    "decision": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "yelp/train/490423",
+   "epoch": 0,
+   "augmented": {
+    "rating": {
+     "criteria": null,
+     "label": null
+    },
+    "recommend": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    3,
+    1
+   ],
+   "options": [
+    [
+     "1 star: terrible experience",
+     "2 stars: poor",
+     "3 stars: average",
+     "4 stars: good",
+     "5 stars: excellent"
+    ],
+    [
+     "no: Negative or mixed",
+     "yes: Clearly positive overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "composition/v7-composition/rand:unless(or(0,1),2)/1/relevant/a",
+   "epoch": 0,
+   "augmented": {
+    "decision": {
+     "criteria": [
+      "reject",
+      "accept"
+     ],
+     "label": "accept"
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "reject: The policy does not permit this case",
+     "accept: The policy permits this case"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "trec/train/2310",
+   "epoch": 0,
+   "augmented": {
+    "answer_type": {
+     "criteria": [
+      "not_listed",
+      "description",
+      "abbreviation",
+      "number",
+      "location",
+      "entity"
+     ],
+     "label": "not_listed"
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "not_listed: Not listed here",
+     "description: Asks for a definition, description, reason, or manner",
+     "abbreviation: Asks what an abbreviation stands for",
+     "number: Asks for a number, date, count, or other numeric value",
+     "location: Asks about a place",
+     "entity: Asks about a thing, object, animal, product, or creative work"
+    ]
+   ],
+   "pair": [
+    {
+     "answer_type": {
+      "criteria": [
+       "entity",
+       "location",
+       "abbreviation",
+       "description",
+       "none",
+       "number",
+       "human"
+      ],
+      "label": "human"
+     }
+    },
+    {
+     "answer_type": {
+      "criteria": [
+       "entity",
+       "location",
+       "abbreviation",
+       "description",
+       "none",
+       "number"
+      ],
+      "label": "none"
+     }
+    }
+   ]
+  },
+  {
+   "id": "dbpedia14/train/494953",
+   "epoch": 0,
+   "augmented": {
+    "category": {
+     "criteria": [
+      "film",
+      "building",
+      "writtenwork",
+      "artist",
+      "purple",
+      "meanoftransportation",
+      "company",
+      "plant",
+      "officeholder",
+      "educationalinstitution",
+      "athlete",
+      "animal",
+      "village",
+      "album",
+      "naturalplace"
+     ],
+     "label": "film"
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "film",
+     "building",
+     "writtenwork",
+     "artist",
+     "purple: The colour purple",
+     "meanoftransportation",
+     "company",
+     "plant",
+     "officeholder",
+     "educationalinstitution",
+     "athlete",
+     "animal",
+     "village",
+     "album",
+     "naturalplace"
+    ]
+   ],
+   "pair": [
+    {
+     "category": {
+      "criteria": [
+       "animal",
+       "naturalplace",
+       "officeholder",
+       "company",
+       "album",
+       "building",
+       "village",
+       "film",
+       "meanoftransportation",
+       "none_of_the_above",
+       "artist",
+       "plant",
+       "athlete",
+       "writtenwork",
+       "educationalinstitution"
+      ],
+      "label": "film"
+     }
+    },
+    {
+     "category": {
+      "criteria": [
+       "animal",
+       "naturalplace",
+       "officeholder",
+       "company",
+       "album",
+       "building",
+       "village",
+       "meanoftransportation",
+       "none_of_the_above",
+       "artist",
+       "plant",
+       "athlete",
+       "writtenwork",
+       "educationalinstitution"
+      ],
+      "label": "none_of_the_above"
+     }
+    }
+   ]
+  },
+  {
+   "id": "agnews/train/114942",
+   "epoch": 0,
+   "augmented": {
+    "topic": {
+     "criteria": [
+      "sports",
+      "world",
+      "business",
+      "scitech"
+     ],
+     "label": "scitech"
+    },
+    "is_scitech": {
+     "criteria": null,
+     "label": null
+    },
+    "is_world": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    3,
+    1,
+    0
+   ],
+   "options": [
+    [
+     "sports",
+     "world",
+     "business: Business: companies, markets, economy, finance",
+     "scitech: what: Science and technology: research, gadgets, software, space"
+    ],
+    [
+     "no",
+     "yes"
+    ],
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": [
+    {
+     "topic": {
+      "criteria": [
+       "none",
+       "business",
+       "world",
+       "sports",
+       "scitech"
+      ],
+      "label": "scitech"
+     }
+    },
+    {
+     "topic": {
+      "criteria": [
+       "none",
+       "business",
+       "world",
+       "sports"
+      ],
+      "label": "none"
+     }
+    }
+   ]
+  },
+  {
+   "id": "banking77/train/1267",
+   "epoch": 0,
+   "augmented": {
+    "intent": {
+     "criteria": [
+      "disposable_card_limits",
+      "passcode_forgotten",
+      "transaction_charged_twice",
+      "getting_spare_card",
+      "exchange_charge",
+      "pending_card_payment",
+      "apple_pay_or_google_pay",
+      "exchange_rate",
+      "pending_transfer",
+      "balance_not_updated_after_cheque_or_cash_deposit",
+      "transfer_not_received_by_recipient",
+      "unable_to_verify_identity",
+      "top_up_limits",
+      "pending_cash_withdrawal",
+      "topping_up_by_card",
+      "cash_withdrawal_charge",
+      "card_payment_fee_charged",
+      "card_not_working",
+      "atm_support",
+      "card_payment_wrong_exchange_rate",
+      "request_refund",
+      "virtual_card_not_working",
+      "visa_or_mastercard",
+      "contactless_not_working",
+      "order_physical_card",
+      "terminate_account",
+      "verify_my_identity",
+      "verify_source_of_funds",
+      "beneficiary_not_allowed",
+      "receiving_money",
+      "transfer_into_account",
+      "card_payment_not_recognised",
+      "fiat_currency_support",
+      "card_swallowed",
+      "card_arrival",
+      "pending_top_up",
+      "edit_personal_details",
+      "top_up_by_cash_or_cheque",
+      "get_disposable_virtual_card",
+      "activate_my_card",
+      "direct_debit_payment_not_recognised",
+      "verify_top_up",
+      "declined_transfer",
+      "top_up_by_card_charge",
+      "transfer_fee_charged",
+      "wrong_exchange_rate_for_cash_withdrawal",
+      "Refund_not_showing_up",
+      "declined_card_payment",
+      "reverted_card_payment?",
+      "pin_blocked",
+      "cancel_transfer",
+      "top_up_reverted",
+      "automatic_top_up",
+      "declined_cash_withdrawal",
+      "top_up_failed",
+      "why_verify_identity",
+      "exchange_via_app",
+      "cash_withdrawal_not_recognised",
+      "card_acceptance",
+      "age_limit",
+      "country_support",
+      "wrong_amount_of_cash_received",
+      "top_up_by_bank_transfer_charge",
+      "balance_not_updated_after_bank_transfer",
+      "lost_or_stolen_phone",
+      "transfer_timing",
+      "getting_virtual_card",
+      "supported_cards_and_currencies",
+      "compromised_card",
+      "lost_or_stolen_card",
+      "get_physical_card",
+      "extra_charge_on_statement",
+      "card_about_to_expire",
+      "failed_transfer",
+      "change_pin",
+      "card_delivery_estimate",
+      "card_linking"
+     ],
+     "label": "card_not_working"
+    }
+   },
+   "labels": [
+    17
+   ],
+   "options": [
+    [
+     "disposable_card_limits: disposable card limits",
+     "passcode_forgotten",
+     "transaction_charged_twice",
+     "getting_spare_card",
+     "exchange_charge: exchange charge",
+     "pending_card_payment",
+     "apple_pay_or_google_pay: apple pay or google pay",
+     "exchange_rate: exchange rate",
+     "pending_transfer: pending transfer",
+     "balance_not_updated_after_cheque_or_cash_deposit: balance not updated after cheque or cash deposit",
+     "transfer_not_received_by_recipient: transfer not received by recipient",
+     "unable_to_verify_identity: unable to verify identity",
+     "top_up_limits: top up limits",
+     "pending_cash_withdrawal",
+     "topping_up_by_card: topping up by card",
+     "cash_withdrawal_charge: cash withdrawal charge",
+     "card_payment_fee_charged: card payment fee charged",
+     "card_not_working: card not working",
+     "atm_support: atm support",
+     "card_payment_wrong_exchange_rate",
+     "request_refund",
+     "virtual_card_not_working",
+     "visa_or_mastercard: visa or mastercard",
+     "contactless_not_working",
+     "order_physical_card",
+     "terminate_account",
+     "verify_my_identity",
+     "verify_source_of_funds: verify source of funds",
+     "beneficiary_not_allowed",
+     "receiving_money: receiving money",
+     "transfer_into_account: transfer into account",
+     "card_payment_not_recognised",
+     "fiat_currency_support: fiat currency support",
+     "card_swallowed",
+     "card_arrival: card arrival",
+     "pending_top_up",
+     "edit_personal_details",
+     "top_up_by_cash_or_cheque: top up by cash or cheque",
+     "get_disposable_virtual_card: get disposable virtual card",
+     "activate_my_card: activate my card",
+     "direct_debit_payment_not_recognised",
+     "verify_top_up",
+     "declined_transfer: declined transfer",
+     "top_up_by_card_charge: top up by card charge",
+     "transfer_fee_charged",
+     "wrong_exchange_rate_for_cash_withdrawal",
+     "Refund_not_showing_up",
+     "declined_card_payment: declined card payment",
+     "reverted_card_payment?: reverted card payment?",
+     "pin_blocked",
+     "cancel_transfer: cancel transfer",
+     "top_up_reverted: top up reverted",
+     "automatic_top_up: automatic top up",
+     "declined_cash_withdrawal: declined cash withdrawal",
+     "top_up_failed",
+     "why_verify_identity: why verify identity",
+     "exchange_via_app",
+     "cash_withdrawal_not_recognised",
+     "card_acceptance: card acceptance",
+     "age_limit",
+     "country_support",
+     "wrong_amount_of_cash_received: wrong amount of cash received",
+     "top_up_by_bank_transfer_charge",
+     "balance_not_updated_after_bank_transfer",
+     "lost_or_stolen_phone: lost or stolen phone",
+     "transfer_timing",
+     "getting_virtual_card: getting virtual card",
+     "supported_cards_and_currencies",
+     "compromised_card: compromised card",
+     "lost_or_stolen_card: lost or stolen card",
+     "get_physical_card",
+     "extra_charge_on_statement: extra charge on statement",
+     "card_about_to_expire: card about to expire",
+     "failed_transfer: failed transfer",
+     "change_pin",
+     "card_delivery_estimate",
+     "card_linking"
+    ]
+   ],
+   "pair": [
+    {
+     "intent": {
+      "criteria": [
+       "reverted_card_payment?",
+       "card_swallowed",
+       "extra_charge_on_statement",
+       "receiving_money",
+       "compromised_card",
+       "terminate_account",
+       "exchange_via_app",
+       "request_refund",
+       "cash_withdrawal_not_recognised",
+       "pending_transfer",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "top_up_limits",
+       "card_acceptance",
+       "pending_top_up",
+       "card_linking",
+       "top_up_by_bank_transfer_charge",
+       "pending_cash_withdrawal",
+       "verify_my_identity",
+       "direct_debit_payment_not_recognised",
+       "exchange_charge",
+       "getting_spare_card",
+       "pending_card_payment",
+       "verify_top_up",
+       "top_up_by_cash_or_cheque",
+       "lost_or_stolen_card",
+       "get_physical_card",
+       "change_pin",
+       "activate_my_card",
+       "cancel_transfer",
+       "beneficiary_not_allowed",
+       "declined_transfer",
+       "top_up_failed",
+       "wrong_amount_of_cash_received",
+       "transfer_fee_charged",
+       "transfer_into_account",
+       "top_up_reverted",
+       "declined_cash_withdrawal",
+       "transfer_timing",
+       "automatic_top_up",
+       "card_not_working",
+       "topping_up_by_card",
+       "order_physical_card",
+       "card_about_to_expire",
+       "transaction_charged_twice",
+       "exchange_rate",
+       "failed_transfer",
+       "country_support",
+       "balance_not_updated_after_bank_transfer",
+       "Refund_not_showing_up",
+       "declined_card_payment",
+       "cash_withdrawal_charge",
+       "age_limit",
+       "visa_or_mastercard",
+       "disposable_card_limits",
+       "contactless_not_working",
+       "virtual_card_not_working",
+       "card_payment_fee_charged",
+       "atm_support",
+       "card_payment_not_recognised",
+       "verify_source_of_funds",
+       "supported_cards_and_currencies",
+       "get_disposable_virtual_card",
+       "transfer_not_received_by_recipient",
+       "card_payment_wrong_exchange_rate",
+       "fiat_currency_support",
+       "why_verify_identity",
+       "lost_or_stolen_phone",
+       "apple_pay_or_google_pay",
+       "edit_personal_details",
+       "top_up_by_card_charge",
+       "card_arrival",
+       "none_of_the_above",
+       "card_delivery_estimate",
+       "getting_virtual_card",
+       "unable_to_verify_identity",
+       "passcode_forgotten",
+       "pin_blocked"
+      ],
+      "label": "card_not_working"
+     }
+    },
+    {
+     "intent": {
+      "criteria": [
+       "reverted_card_payment?",
+       "card_swallowed",
+       "extra_charge_on_statement",
+       "receiving_money",
+       "compromised_card",
+       "terminate_account",
+       "exchange_via_app",
+       "request_refund",
+       "cash_withdrawal_not_recognised",
+       "pending_transfer",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "top_up_limits",
+       "card_acceptance",
+       "pending_top_up",
+       "card_linking",
+       "top_up_by_bank_transfer_charge",
+       "pending_cash_withdrawal",
+       "verify_my_identity",
+       "direct_debit_payment_not_recognised",
+       "exchange_charge",
+       "getting_spare_card",
+       "pending_card_payment",
+       "verify_top_up",
+       "top_up_by_cash_or_cheque",
+       "lost_or_stolen_card",
+       "get_physical_card",
+       "change_pin",
+       "activate_my_card",
+       "cancel_transfer",
+       "beneficiary_not_allowed",
+       "declined_transfer",
+       "top_up_failed",
+       "wrong_amount_of_cash_received",
+       "transfer_fee_charged",
+       "transfer_into_account",
+       "top_up_reverted",
+       "declined_cash_withdrawal",
+       "transfer_timing",
+       "automatic_top_up",
+       "topping_up_by_card",
+       "order_physical_card",
+       "card_about_to_expire",
+       "transaction_charged_twice",
+       "exchange_rate",
+       "failed_transfer",
+       "country_support",
+       "balance_not_updated_after_bank_transfer",
+       "Refund_not_showing_up",
+       "declined_card_payment",
+       "cash_withdrawal_charge",
+       "age_limit",
+       "visa_or_mastercard",
+       "disposable_card_limits",
+       "contactless_not_working",
+       "virtual_card_not_working",
+       "card_payment_fee_charged",
+       "atm_support",
+       "card_payment_not_recognised",
+       "verify_source_of_funds",
+       "supported_cards_and_currencies",
+       "get_disposable_virtual_card",
+       "transfer_not_received_by_recipient",
+       "card_payment_wrong_exchange_rate",
+       "fiat_currency_support",
+       "why_verify_identity",
+       "lost_or_stolen_phone",
+       "apple_pay_or_google_pay",
+       "edit_personal_details",
+       "top_up_by_card_charge",
+       "card_arrival",
+       "none_of_the_above",
+       "card_delivery_estimate",
+       "getting_virtual_card",
+       "unable_to_verify_identity",
+       "passcode_forgotten",
+       "pin_blocked"
+      ],
+      "label": "none_of_the_above"
+     }
+    }
+   ]
+  },
+  {
+   "id": "agnews/train/67120",
+   "epoch": 0,
+   "augmented": {
+    "topic": {
+     "criteria": [
+      "scitech",
+      "business",
+      "world",
+      "pancakes",
+      "sports"
+     ],
+     "label": "scitech"
+    },
+    "is_sports": {
+     "criteria": null,
+     "label": null
+    },
+    "is_scitech": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    0,
+    0,
+    1
+   ],
+   "options": [
+    [
+     "scitech: Science and technology: research, gadgets, software, space",
+     "business: Business: companies, markets, economy, finance",
+     "world",
+     "pancakes: A recipe for pancakes",
+     "sports: Sports: games, athletes, teams, results"
+    ],
+    [
+     "no",
+     "yes"
+    ],
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": [
+    {
+     "topic": {
+      "criteria": [
+       "business",
+       "sports",
+       "other",
+       "scitech",
+       "world"
+      ],
+      "label": "scitech"
+     }
+    },
+    {
+     "topic": {
+      "criteria": [
+       "business",
+       "sports",
+       "other",
+       "world"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "mnli/train/168353",
+   "epoch": 0,
+   "augmented": {
+    "relation": {
+     "criteria": [
+      "no_match",
+      "contradiction",
+      "entailment"
+     ],
+     "label": "no_match"
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "no_match: No option matches",
+     "contradiction: what: The hypothesis contradicts the premise",
+     "entailment"
+    ]
+   ],
+   "pair": [
+    {
+     "relation": {
+      "criteria": [
+       "contradiction",
+       "none_of_the_above",
+       "entailment",
+       "neutral"
+      ],
+      "label": "neutral"
+     }
+    },
+    {
+     "relation": {
+      "criteria": [
+       "contradiction",
+       "none_of_the_above",
+       "entailment"
+      ],
+      "label": "none_of_the_above"
+     }
+    }
+   ]
+  },
+  {
+   "id": "dbpedia14/train/409246",
+   "epoch": 0,
+   "augmented": {
+    "category": {
+     "criteria": [
+      "village",
+      "athlete",
+      "meanoftransportation",
+      "writtenwork",
+      "plant",
+      "artist",
+      "album",
+      "animal",
+      "company",
+      "educationalinstitution",
+      "officeholder",
+      "film",
+      "naturalplace",
+      "building"
+     ],
+     "label": "plant"
+    }
+   },
+   "labels": [
+    4
+   ],
+   "options": [
+    [
+     "village",
+     "athlete",
+     "meanoftransportation",
+     "writtenwork",
+     "plant",
+     "artist",
+     "album",
+     "animal",
+     "company",
+     "educationalinstitution",
+     "officeholder",
+     "film",
+     "naturalplace",
+     "building"
+    ]
+   ],
+   "pair": [
+    {
+     "category": {
+      "criteria": [
+       "company",
+       "album",
+       "meanoftransportation",
+       "officeholder",
+       "writtenwork",
+       "animal",
+       "artist",
+       "village",
+       "none",
+       "athlete",
+       "educationalinstitution",
+       "building",
+       "naturalplace",
+       "plant",
+       "film"
+      ],
+      "label": "plant"
+     }
+    },
+    {
+     "category": {
+      "criteria": [
+       "company",
+       "album",
+       "meanoftransportation",
+       "officeholder",
+       "writtenwork",
+       "animal",
+       "artist",
+       "village",
+       "none",
+       "athlete",
+       "educationalinstitution",
+       "building",
+       "naturalplace",
+       "film"
+      ],
+      "label": "none"
+     }
+    }
+   ]
+  },
+  {
+   "id": "agnews/train/33598",
+   "epoch": 0,
+   "augmented": {
+    "topic": {
+     "criteria": [
+      "business",
+      "world",
+      "scitech",
+      "other"
+     ],
+     "label": "other"
+    },
+    "is_scitech": {
+     "criteria": null,
+     "label": null
+    },
+    "is_world": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    3,
+    0,
+    0
+   ],
+   "options": [
+    [
+     "business: Business: companies, markets, economy, finance",
+     "world: World news: politics, international affairs, conflicts",
+     "scitech: what: Science and technology: research, gadgets, software, space",
+     "other: Other"
+    ],
+    [
+     "no",
+     "yes"
+    ],
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": [
+    {
+     "topic": {
+      "criteria": [
+       "business",
+       "scitech",
+       "other",
+       "world",
+       "sports"
+      ],
+      "label": "sports"
+     }
+    },
+    {
+     "topic": {
+      "criteria": [
+       "business",
+       "scitech",
+       "other",
+       "world"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "agnews/train/98617",
+   "epoch": 0,
+   "augmented": {
+    "topic": {
+     "criteria": [
+      "world",
+      "sports",
+      "business",
+      "scitech"
+     ],
+     "label": "business"
+    },
+    "is_business": {
+     "criteria": null,
+     "label": null
+    },
+    "is_scitech": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    2,
+    1,
+    0
+   ],
+   "options": [
+    [
+     "world: World news: politics, international affairs, conflicts",
+     "sports",
+     "business: what: Business: companies, markets, economy, finance",
+     "scitech"
+    ],
+    [
+     "no",
+     "yes"
+    ],
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": [
+    {
+     "topic": {
+      "criteria": [
+       "sports",
+       "business",
+       "scitech",
+       "world",
+       "other"
+      ],
+      "label": "business"
+     }
+    },
+    {
+     "topic": {
+      "criteria": [
+       "sports",
+       "scitech",
+       "world",
+       "other"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "yelp/train/393306",
+   "epoch": 0,
+   "augmented": {
+    "rating": {
+     "criteria": null,
+     "label": null
+    },
+    "recommend": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    4,
+    1
+   ],
+   "options": [
+    [
+     "1 star: terrible experience",
+     "2 stars: poor",
+     "3 stars: average",
+     "4 stars: good",
+     "5 stars: excellent"
+    ],
+    [
+     "no: Negative or mixed",
+     "yes: Clearly positive overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "imdb/train/1101",
+   "epoch": 0,
+   "augmented": {
+    "positive": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "no: The reviewer disliked the film overall",
+     "yes: The reviewer liked the film overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "mnli/train/318284",
+   "epoch": 0,
+   "augmented": {
+    "relation": {
+     "criteria": [
+      "entailment",
+      "neutral",
+      "contradiction"
+     ],
+     "label": "contradiction"
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "entailment: what: The hypothesis follows from the premise",
+     "neutral: The hypothesis may or may not be true given the premise",
+     "contradiction"
+    ]
+   ],
+   "pair": [
+    {
+     "relation": {
+      "criteria": [
+       "entailment",
+       "other",
+       "neutral",
+       "contradiction"
+      ],
+      "label": "contradiction"
+     }
+    },
+    {
+     "relation": {
+      "criteria": [
+       "entailment",
+       "other",
+       "neutral"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "sst5/train/7651",
+   "epoch": 0,
+   "augmented": {
+    "sentiment": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    3
+   ],
+   "options": [
+    [
+     "very negative",
+     "negative",
+     "neutral",
+     "positive",
+     "very positive"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "trec/train/1968",
+   "epoch": 0,
+   "augmented": {
+    "answer_type": {
+     "criteria": [
+      "number",
+      "abbreviation",
+      "description",
+      "entity",
+      "human",
+      "location"
+     ],
+     "label": "description"
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "number: Asks for a number, date, count, or other numeric value",
+     "abbreviation: Asks what an abbreviation stands for",
+     "description: Asks for a definition, description, reason, or manner",
+     "entity: Asks about a thing, object, animal, product, or creative work",
+     "human: Asks about a person, group, or organisation",
+     "location: Asks about a place"
+    ]
+   ],
+   "pair": [
+    {
+     "answer_type": {
+      "criteria": [
+       "entity",
+       "abbreviation",
+       "location",
+       "description",
+       "human",
+       "number",
+       "other"
+      ],
+      "label": "description"
+     }
+    },
+    {
+     "answer_type": {
+      "criteria": [
+       "entity",
+       "abbreviation",
+       "location",
+       "human",
+       "number",
+       "other"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "boolq/train/7762",
+   "epoch": 0,
+   "augmented": {
+    "answer": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "mnli/train/273924",
+   "epoch": 0,
+   "augmented": {
+    "relation": {
+     "criteria": [
+      "neutral",
+      "contradiction",
+      "entailment"
+     ],
+     "label": "contradiction"
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "neutral",
+     "contradiction",
+     "entailment: what: The hypothesis follows from the premise"
+    ]
+   ],
+   "pair": [
+    {
+     "relation": {
+      "criteria": [
+       "neutral",
+       "entailment",
+       "other",
+       "contradiction"
+      ],
+      "label": "contradiction"
+     }
+    },
+    {
+     "relation": {
+      "criteria": [
+       "neutral",
+       "entailment",
+       "other"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "boolq/train/5054",
+   "epoch": 0,
+   "augmented": {
+    "answer": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "mnli/train/89823",
+   "epoch": 0,
+   "augmented": {
+    "relation": {
+     "criteria": [
+      "contradiction",
+      "entailment",
+      "neutral"
+     ],
+     "label": "entailment"
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "contradiction: The hypothesis contradicts the premise",
+     "entailment: what: The hypothesis follows from the premise",
+     "neutral: what: The hypothesis may or may not be true given the premise"
+    ]
+   ],
+   "pair": [
+    {
+     "relation": {
+      "criteria": [
+       "neutral",
+       "other",
+       "contradiction",
+       "entailment"
+      ],
+      "label": "entailment"
+     }
+    },
+    {
+     "relation": {
+      "criteria": [
+       "neutral",
+       "other",
+       "contradiction"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "imdb/train/6501",
+   "epoch": 0,
+   "augmented": {
+    "positive": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "no: The reviewer disliked the film overall",
+     "yes: The reviewer liked the film overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "imdb/train/17934",
+   "epoch": 0,
+   "augmented": {
+    "positive": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "no: The reviewer disliked the film overall",
+     "yes: The reviewer liked the film overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "contrastive/warranty_claim/v3-control-warranty_claim-0051/a",
+   "epoch": 0,
+   "augmented": {
+    "decision": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "Covered in full",
+     "Covered at half cost",
+     "Not covered"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "trec/train/4788",
+   "epoch": 0,
+   "augmented": {
+    "answer_type": {
+     "criteria": [
+      "abbreviation",
+      "entity",
+      "human",
+      "description",
+      "location",
+      "number"
+     ],
+     "label": "human"
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "abbreviation: Asks what an abbreviation stands for",
+     "entity: Asks about a thing, object, animal, product, or creative work",
+     "human: Asks about a person, group, or organisation",
+     "description: Asks for a definition, description, reason, or manner",
+     "location: Asks about a place",
+     "number: Asks for a number, date, count, or other numeric value"
+    ]
+   ],
+   "pair": [
+    {
+     "answer_type": {
+      "criteria": [
+       "entity",
+       "location",
+       "abbreviation",
+       "number",
+       "description",
+       "other",
+       "human"
+      ],
+      "label": "human"
+     }
+    },
+    {
+     "answer_type": {
+      "criteria": [
+       "entity",
+       "location",
+       "abbreviation",
+       "number",
+       "description",
+       "other"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "composition/v7-composition/rand:not(and(0,or(1,2)))/2/relevant/b",
+   "epoch": 0,
+   "augmented": {
+    "decision": {
+     "criteria": [
+      "reject",
+      "accept"
+     ],
+     "label": "reject"
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "reject: The policy does not permit this case",
+     "accept: The policy permits this case"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "amazon/train/190471",
+   "epoch": 0,
+   "augmented": {
+    "stars": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    4
+   ],
+   "options": [
+    [
+     "1 star: very negative",
+     "2 stars: negative",
+     "3 stars: mixed",
+     "4 stars: positive",
+     "5 stars: very positive"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "amazon/train/72881",
+   "epoch": 0,
+   "augmented": {
+    "stars": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "1 star: very negative",
+     "2 stars: negative",
+     "3 stars: mixed",
+     "4 stars: positive",
+     "5 stars: very positive"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "dbpedia14/train/325413",
+   "epoch": 0,
+   "augmented": {
+    "category": {
+     "criteria": [
+      "album",
+      "plant",
+      "artist",
+      "meanoftransportation",
+      "building",
+      "company",
+      "animal",
+      "officeholder",
+      "educationalinstitution",
+      "film",
+      "other",
+      "naturalplace",
+      "village",
+      "writtenwork",
+      "athlete"
+     ],
+     "label": "village"
+    }
+   },
+   "labels": [
+    12
+   ],
+   "options": [
+    [
+     "album",
+     "plant",
+     "artist",
+     "meanoftransportation",
+     "building",
+     "company",
+     "animal",
+     "officeholder",
+     "educationalinstitution",
+     "film",
+     "other: None of the listed options apply",
+     "naturalplace",
+     "village",
+     "writtenwork",
+     "athlete"
+    ]
+   ],
+   "pair": [
+    {
+     "category": {
+      "criteria": [
+       "film",
+       "officeholder",
+       "meanoftransportation",
+       "animal",
+       "athlete",
+       "other",
+       "educationalinstitution",
+       "artist",
+       "company",
+       "album",
+       "writtenwork",
+       "naturalplace",
+       "village",
+       "building",
+       "plant"
+      ],
+      "label": "village"
+     }
+    },
+    {
+     "category": {
+      "criteria": [
+       "film",
+       "officeholder",
+       "meanoftransportation",
+       "animal",
+       "athlete",
+       "other",
+       "educationalinstitution",
+       "artist",
+       "company",
+       "album",
+       "writtenwork",
+       "naturalplace",
+       "building",
+       "plant"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "banking77/train/8906",
+   "epoch": 0,
+   "augmented": {
+    "intent": {
+     "criteria": [
+      "card_payment_not_recognised",
+      "visa_or_mastercard",
+      "pending_cash_withdrawal",
+      "pending_card_payment",
+      "declined_card_payment",
+      "card_not_working",
+      "pending_transfer",
+      "lost_or_stolen_card",
+      "verify_top_up",
+      "fiat_currency_support",
+      "exchange_charge",
+      "apple_pay_or_google_pay",
+      "passcode_forgotten",
+      "top_up_by_card_charge",
+      "activate_my_card",
+      "topping_up_by_card",
+      "card_arrival",
+      "get_disposable_virtual_card",
+      "country_support",
+      "get_physical_card",
+      "declined_cash_withdrawal",
+      "age_limit",
+      "extra_charge_on_statement",
+      "lost_or_stolen_phone",
+      "card_swallowed",
+      "terminate_account",
+      "transfer_into_account",
+      "exchange_rate",
+      "top_up_failed",
+      "top_up_reverted",
+      "wrong_amount_of_cash_received",
+      "top_up_by_cash_or_cheque",
+      "transfer_timing",
+      "disposable_card_limits",
+      "balance_not_updated_after_bank_transfer",
+      "getting_spare_card",
+      "cash_withdrawal_charge",
+      "card_payment_fee_charged",
+      "card_linking",
+      "why_verify_identity",
+      "balance_not_updated_after_cheque_or_cash_deposit",
+      "change_pin",
+      "edit_personal_details",
+      "card_delivery_estimate",
+      "cancel_transfer",
+      "supported_cards_and_currencies",
+      "getting_virtual_card",
+      "top_up_limits",
+      "contactless_not_working",
+      "failed_transfer",
+      "wrong_exchange_rate_for_cash_withdrawal",
+      "transfer_not_received_by_recipient",
+      "receiving_money",
+      "order_physical_card",
+      "cash_withdrawal_not_recognised",
+      "verify_source_of_funds",
+      "pending_top_up",
+      "unable_to_verify_identity",
+      "direct_debit_payment_not_recognised",
+      "Refund_not_showing_up",
+      "reverted_card_payment?",
+      "request_refund",
+      "transfer_fee_charged",
+      "top_up_by_bank_transfer_charge",
+      "card_acceptance",
+      "beneficiary_not_allowed",
+      "virtual_card_not_working",
+      "verify_my_identity",
+      "card_payment_wrong_exchange_rate",
+      "pin_blocked",
+      "declined_transfer",
+      "card_about_to_expire",
+      "exchange_via_app",
+      "atm_support",
+      "compromised_card",
+      "transaction_charged_twice",
+      "automatic_top_up"
+     ],
+     "label": "cash_withdrawal_not_recognised"
+    }
+   },
+   "labels": [
+    54
+   ],
+   "options": [
+    [
+     "card_payment_not_recognised: Customer asks about card payment not recognised",
+     "visa_or_mastercard: Customer asks about visa or mastercard",
+     "pending_cash_withdrawal: Customer asks about pending cash withdrawal",
+     "pending_card_payment",
+     "declined_card_payment: Customer asks about declined card payment",
+     "card_not_working",
+     "pending_transfer",
+     "lost_or_stolen_card: Customer asks about lost or stolen card",
+     "verify_top_up: Customer asks about verify top up",
+     "fiat_currency_support: Customer asks about fiat currency support",
+     "exchange_charge: Customer asks about exchange charge",
+     "apple_pay_or_google_pay",
+     "passcode_forgotten",
+     "top_up_by_card_charge",
+     "activate_my_card",
+     "topping_up_by_card: Customer asks about topping up by card",
+     "card_arrival: Customer asks about card arrival",
+     "get_disposable_virtual_card",
+     "country_support: Customer asks about country support",
+     "get_physical_card: Customer asks about get physical card",
+     "declined_cash_withdrawal",
+     "age_limit: Customer asks about age limit",
+     "extra_charge_on_statement",
+     "lost_or_stolen_phone",
+     "card_swallowed: Customer asks about card swallowed",
+     "terminate_account",
+     "transfer_into_account: Customer asks about transfer into account",
+     "exchange_rate",
+     "top_up_failed",
+     "top_up_reverted: Customer asks about top up reverted",
+     "wrong_amount_of_cash_received: Customer asks about wrong amount of cash received",
+     "top_up_by_cash_or_cheque",
+     "transfer_timing",
+     "disposable_card_limits",
+     "balance_not_updated_after_bank_transfer",
+     "getting_spare_card: Customer asks about getting spare card",
+     "cash_withdrawal_charge",
+     "card_payment_fee_charged: Customer asks about card payment fee charged",
+     "card_linking",
+     "why_verify_identity: Customer asks about why verify identity",
+     "balance_not_updated_after_cheque_or_cash_deposit",
+     "change_pin",
+     "edit_personal_details",
+     "card_delivery_estimate: Customer asks about card delivery estimate",
+     "cancel_transfer: Customer asks about cancel transfer",
+     "supported_cards_and_currencies: Customer asks about supported cards and currencies",
+     "getting_virtual_card: Customer asks about getting virtual card",
+     "top_up_limits: Customer asks about top up limits",
+     "contactless_not_working: Customer asks about contactless not working",
+     "failed_transfer",
+     "wrong_exchange_rate_for_cash_withdrawal",
+     "transfer_not_received_by_recipient",
+     "receiving_money: Customer asks about receiving money",
+     "order_physical_card: Customer asks about order physical card",
+     "cash_withdrawal_not_recognised: Customer asks about cash withdrawal not recognised",
+     "verify_source_of_funds: Customer asks about verify source of funds",
+     "pending_top_up",
+     "unable_to_verify_identity: Customer asks about unable to verify identity",
+     "direct_debit_payment_not_recognised: Customer asks about direct debit payment not recognised",
+     "Refund_not_showing_up",
+     "reverted_card_payment?: Customer asks about reverted card payment?",
+     "request_refund: Customer asks about request refund",
+     "transfer_fee_charged",
+     "top_up_by_bank_transfer_charge: Customer asks about top up by bank transfer charge",
+     "card_acceptance: Customer asks about card acceptance",
+     "beneficiary_not_allowed",
+     "virtual_card_not_working",
+     "verify_my_identity: Customer asks about verify my identity",
+     "card_payment_wrong_exchange_rate",
+     "pin_blocked: Customer asks about pin blocked",
+     "declined_transfer",
+     "card_about_to_expire: Customer asks about card about to expire",
+     "exchange_via_app: Customer asks about exchange via app",
+     "atm_support: Customer asks about atm support",
+     "compromised_card: Customer asks about compromised card",
+     "transaction_charged_twice",
+     "automatic_top_up"
+    ]
+   ],
+   "pair": [
+    {
+     "intent": {
+      "criteria": [
+       "country_support",
+       "apple_pay_or_google_pay",
+       "disposable_card_limits",
+       "balance_not_updated_after_bank_transfer",
+       "card_linking",
+       "transfer_timing",
+       "supported_cards_and_currencies",
+       "activate_my_card",
+       "Refund_not_showing_up",
+       "beneficiary_not_allowed",
+       "change_pin",
+       "get_physical_card",
+       "card_about_to_expire",
+       "transfer_fee_charged",
+       "order_physical_card",
+       "visa_or_mastercard",
+       "failed_transfer",
+       "cash_withdrawal_not_recognised",
+       "card_arrival",
+       "getting_virtual_card",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "receiving_money",
+       "card_swallowed",
+       "declined_card_payment",
+       "terminate_account",
+       "verify_source_of_funds",
+       "why_verify_identity",
+       "automatic_top_up",
+       "exchange_charge",
+       "top_up_by_bank_transfer_charge",
+       "top_up_reverted",
+       "pending_cash_withdrawal",
+       "lost_or_stolen_phone",
+       "age_limit",
+       "get_disposable_virtual_card",
+       "transfer_into_account",
+       "virtual_card_not_working",
+       "direct_debit_payment_not_recognised",
+       "lost_or_stolen_card",
+       "top_up_limits",
+       "passcode_forgotten",
+       "extra_charge_on_statement",
+       "card_payment_wrong_exchange_rate",
+       "card_payment_fee_charged",
+       "transfer_not_received_by_recipient",
+       "pending_top_up",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "transaction_charged_twice",
+       "cash_withdrawal_charge",
+       "card_acceptance",
+       "pending_card_payment",
+       "compromised_card",
+       "declined_cash_withdrawal",
+       "top_up_failed",
+       "atm_support",
+       "card_not_working",
+       "exchange_rate",
+       "card_payment_not_recognised",
+       "edit_personal_details",
+       "wrong_amount_of_cash_received",
+       "verify_my_identity",
+       "getting_spare_card",
+       "top_up_by_cash_or_cheque",
+       "unable_to_verify_identity",
+       "card_delivery_estimate",
+       "reverted_card_payment?",
+       "topping_up_by_card",
+       "declined_transfer",
+       "other",
+       "exchange_via_app",
+       "request_refund",
+       "cancel_transfer",
+       "pending_transfer",
+       "contactless_not_working",
+       "pin_blocked",
+       "verify_top_up",
+       "fiat_currency_support",
+       "top_up_by_card_charge"
+      ],
+      "label": "cash_withdrawal_not_recognised"
+     }
+    },
+    {
+     "intent": {
+      "criteria": [
+       "country_support",
+       "apple_pay_or_google_pay",
+       "disposable_card_limits",
+       "balance_not_updated_after_bank_transfer",
+       "card_linking",
+       "transfer_timing",
+       "supported_cards_and_currencies",
+       "activate_my_card",
+       "Refund_not_showing_up",
+       "beneficiary_not_allowed",
+       "change_pin",
+       "get_physical_card",
+       "card_about_to_expire",
+       "transfer_fee_charged",
+       "order_physical_card",
+       "visa_or_mastercard",
+       "failed_transfer",
+       "card_arrival",
+       "getting_virtual_card",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "receiving_money",
+       "card_swallowed",
+       "declined_card_payment",
+       "terminate_account",
+       "verify_source_of_funds",
+       "why_verify_identity",
+       "automatic_top_up",
+       "exchange_charge",
+       "top_up_by_bank_transfer_charge",
+       "top_up_reverted",
+       "pending_cash_withdrawal",
+       "lost_or_stolen_phone",
+       "age_limit",
+       "get_disposable_virtual_card",
+       "transfer_into_account",
+       "virtual_card_not_working",
+       "direct_debit_payment_not_recognised",
+       "lost_or_stolen_card",
+       "top_up_limits",
+       "passcode_forgotten",
+       "extra_charge_on_statement",
+       "card_payment_wrong_exchange_rate",
+       "card_payment_fee_charged",
+       "transfer_not_received_by_recipient",
+       "pending_top_up",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "transaction_charged_twice",
+       "cash_withdrawal_charge",
+       "card_acceptance",
+       "pending_card_payment",
+       "compromised_card",
+       "declined_cash_withdrawal",
+       "top_up_failed",
+       "atm_support",
+       "card_not_working",
+       "exchange_rate",
+       "card_payment_not_recognised",
+       "edit_personal_details",
+       "wrong_amount_of_cash_received",
+       "verify_my_identity",
+       "getting_spare_card",
+       "top_up_by_cash_or_cheque",
+       "unable_to_verify_identity",
+       "card_delivery_estimate",
+       "reverted_card_payment?",
+       "topping_up_by_card",
+       "declined_transfer",
+       "other",
+       "exchange_via_app",
+       "request_refund",
+       "cancel_transfer",
+       "pending_transfer",
+       "contactless_not_working",
+       "pin_blocked",
+       "verify_top_up",
+       "fiat_currency_support",
+       "top_up_by_card_charge"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "imdb/train/17818",
+   "epoch": 0,
+   "augmented": {
+    "positive": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "no: The reviewer disliked the film overall",
+     "yes: The reviewer liked the film overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "yelp/train/388287",
+   "epoch": 1,
+   "augmented": {
+    "rating": {
+     "criteria": null,
+     "label": null
+    },
+    "recommend": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    2,
+    0
+   ],
+   "options": [
+    [
+     "1 star: terrible experience",
+     "2 stars: poor",
+     "3 stars: average",
+     "4 stars: good",
+     "5 stars: excellent"
+    ],
+    [
+     "no: Negative or mixed",
+     "yes: Clearly positive overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "contrastive/volume_discount/v3-control-volume_discount-0022/b",
+   "epoch": 1,
+   "augmented": {
+    "decision": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "List price",
+     "Volume discount",
+     "Wholesale rate"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "dbpedia14/train/409769",
+   "epoch": 1,
+   "augmented": {
+    "category": {
+     "criteria": [
+      "village",
+      "album",
+      "artist",
+      "animal",
+      "naturalplace",
+      "educationalinstitution",
+      "officeholder",
+      "meanoftransportation",
+      "building",
+      "company",
+      "plant",
+      "athlete",
+      "film",
+      "writtenwork"
+     ],
+     "label": "plant"
+    }
+   },
+   "labels": [
+    10
+   ],
+   "options": [
+    [
+     "village",
+     "album",
+     "artist",
+     "animal",
+     "naturalplace",
+     "educationalinstitution",
+     "officeholder",
+     "meanoftransportation",
+     "building",
+     "company",
+     "plant",
+     "athlete",
+     "film",
+     "writtenwork"
+    ]
+   ],
+   "pair": [
+    {
+     "category": {
+      "criteria": [
+       "educationalinstitution",
+       "village",
+       "meanoftransportation",
+       "plant",
+       "writtenwork",
+       "album",
+       "other",
+       "film",
+       "building",
+       "officeholder",
+       "animal",
+       "artist",
+       "naturalplace",
+       "athlete",
+       "company"
+      ],
+      "label": "plant"
+     }
+    },
+    {
+     "category": {
+      "criteria": [
+       "educationalinstitution",
+       "village",
+       "meanoftransportation",
+       "writtenwork",
+       "album",
+       "other",
+       "film",
+       "building",
+       "officeholder",
+       "animal",
+       "artist",
+       "naturalplace",
+       "athlete",
+       "company"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "contrastive/spend_threshold/v3-control-spend_threshold-0054/a",
+   "epoch": 1,
+   "augmented": {
+    "decision": {
+     "criteria": [
+      "director_signoff",
+      "auto_approved",
+      "rejected"
+     ],
+     "label": "auto_approved"
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "director_signoff: Requires director sign-off",
+     "auto_approved: Approved without further review",
+     "rejected: Rejected outright"
+    ]
+   ],
+   "pair": [
+    {
+     "decision": {
+      "criteria": [
+       "auto_approved",
+       "director_signoff",
+       "none_of_the_above",
+       "rejected"
+      ],
+      "label": "auto_approved"
+     }
+    },
+    {
+     "decision": {
+      "criteria": [
+       "director_signoff",
+       "none_of_the_above",
+       "rejected"
+      ],
+      "label": "none_of_the_above"
+     }
+    }
+   ]
+  },
+  {
+   "id": "banking77/train/2344",
+   "epoch": 1,
+   "augmented": {
+    "intent": {
+     "criteria": [
+      "getting_spare_card",
+      "get_disposable_virtual_card",
+      "contactless_not_working",
+      "automatic_top_up",
+      "cancel_transfer",
+      "card_payment_not_recognised",
+      "get_physical_card",
+      "pending_transfer",
+      "disposable_card_limits",
+      "pending_top_up",
+      "exchange_rate",
+      "card_delivery_estimate",
+      "top_up_by_cash_or_cheque",
+      "balance_not_updated_after_cheque_or_cash_deposit",
+      "exchange_charge",
+      "card_linking",
+      "change_pin",
+      "declined_cash_withdrawal",
+      "topping_up_by_card",
+      "age_limit",
+      "top_up_by_bank_transfer_charge",
+      "cash_withdrawal_charge",
+      "reverted_card_payment?",
+      "supported_cards_and_currencies",
+      "direct_debit_payment_not_recognised",
+      "top_up_reverted",
+      "wrong_amount_of_cash_received",
+      "visa_or_mastercard",
+      "top_up_by_card_charge",
+      "compromised_card",
+      "verify_source_of_funds",
+      "lost_or_stolen_card",
+      "exchange_via_app",
+      "lost_or_stolen_phone",
+      "pending_card_payment",
+      "transfer_timing",
+      "apple_pay_or_google_pay",
+      "activate_my_card",
+      "top_up_failed",
+      "top_up_limits",
+      "extra_charge_on_statement",
+      "card_payment_wrong_exchange_rate",
+      "transfer_fee_charged",
+      "receiving_money",
+      "transfer_into_account",
+      "virtual_card_not_working",
+      "cash_withdrawal_not_recognised",
+      "pending_cash_withdrawal",
+      "transaction_charged_twice",
+      "pin_blocked",
+      "passcode_forgotten",
+      "card_payment_fee_charged",
+      "card_arrival",
+      "wrong_exchange_rate_for_cash_withdrawal",
+      "fiat_currency_support",
+      "unable_to_verify_identity",
+      "declined_transfer",
+      "atm_support",
+      "beneficiary_not_allowed",
+      "edit_personal_details",
+      "transfer_not_received_by_recipient",
+      "getting_virtual_card",
+      "verify_top_up",
+      "card_about_to_expire",
+      "Refund_not_showing_up",
+      "order_physical_card",
+      "declined_card_payment",
+      "card_acceptance",
+      "card_swallowed",
+      "why_verify_identity",
+      "terminate_account",
+      "verify_my_identity",
+      "balance_not_updated_after_bank_transfer",
+      "card_not_working",
+      "request_refund",
+      "country_support",
+      "failed_transfer"
+     ],
+     "label": "wrong_amount_of_cash_received"
+    }
+   },
+   "labels": [
+    26
+   ],
+   "options": [
+    [
+     "getting_spare_card: Issue concerning getting spare card",
+     "get_disposable_virtual_card",
+     "contactless_not_working: Issue concerning contactless not working",
+     "automatic_top_up: Issue concerning automatic top up",
+     "cancel_transfer",
+     "card_payment_not_recognised",
+     "get_physical_card: Issue concerning get physical card",
+     "pending_transfer: Issue concerning pending transfer",
+     "disposable_card_limits: Issue concerning disposable card limits",
+     "pending_top_up: Issue concerning pending top up",
+     "exchange_rate: Issue concerning exchange rate",
+     "card_delivery_estimate: Issue concerning card delivery estimate",
+     "top_up_by_cash_or_cheque",
+     "balance_not_updated_after_cheque_or_cash_deposit",
+     "exchange_charge",
+     "card_linking: Issue concerning card linking",
+     "change_pin",
+     "declined_cash_withdrawal: Issue concerning declined cash withdrawal",
+     "topping_up_by_card: Issue concerning topping up by card",
+     "age_limit: Issue concerning age limit",
+     "top_up_by_bank_transfer_charge: Issue concerning top up by bank transfer charge",
+     "cash_withdrawal_charge: Issue concerning cash withdrawal charge",
+     "reverted_card_payment?: Issue concerning reverted card payment?",
+     "supported_cards_and_currencies: Issue concerning supported cards and currencies",
+     "direct_debit_payment_not_recognised",
+     "top_up_reverted",
+     "wrong_amount_of_cash_received",
+     "visa_or_mastercard: Issue concerning visa or mastercard",
+     "top_up_by_card_charge",
+     "compromised_card",
+     "verify_source_of_funds: Issue concerning verify source of funds",
+     "lost_or_stolen_card: Issue concerning lost or stolen card",
+     "exchange_via_app: Issue concerning exchange via app",
+     "lost_or_stolen_phone: Issue concerning lost or stolen phone",
+     "pending_card_payment",
+     "transfer_timing",
+     "apple_pay_or_google_pay",
+     "activate_my_card",
+     "top_up_failed: Issue concerning top up failed",
+     "top_up_limits",
+     "extra_charge_on_statement: Issue concerning extra charge on statement",
+     "card_payment_wrong_exchange_rate: Issue concerning card payment wrong exchange rate",
+     "transfer_fee_charged: Issue concerning transfer fee charged",
+     "receiving_money: Issue concerning receiving money",
+     "transfer_into_account: Issue concerning transfer into account",
+     "virtual_card_not_working: Issue concerning virtual card not working",
+     "cash_withdrawal_not_recognised",
+     "pending_cash_withdrawal: Issue concerning pending cash withdrawal",
+     "transaction_charged_twice",
+     "pin_blocked",
+     "passcode_forgotten",
+     "card_payment_fee_charged",
+     "card_arrival: Issue concerning card arrival",
+     "wrong_exchange_rate_for_cash_withdrawal: Issue concerning wrong exchange rate for cash withdrawal",
+     "fiat_currency_support",
+     "unable_to_verify_identity: Issue concerning unable to verify identity",
+     "declined_transfer",
+     "atm_support: Issue concerning atm support",
+     "beneficiary_not_allowed",
+     "edit_personal_details: Issue concerning edit personal details",
+     "transfer_not_received_by_recipient: Issue concerning transfer not received by recipient",
+     "getting_virtual_card",
+     "verify_top_up",
+     "card_about_to_expire: Issue concerning card about to expire",
+     "Refund_not_showing_up",
+     "order_physical_card: Issue concerning order physical card",
+     "declined_card_payment: Issue concerning declined card payment",
+     "card_acceptance: Issue concerning card acceptance",
+     "card_swallowed: Issue concerning card swallowed",
+     "why_verify_identity: Issue concerning why verify identity",
+     "terminate_account",
+     "verify_my_identity",
+     "balance_not_updated_after_bank_transfer",
+     "card_not_working",
+     "request_refund: Issue concerning request refund",
+     "country_support",
+     "failed_transfer: Issue concerning failed transfer"
+    ]
+   ],
+   "pair": [
+    {
+     "intent": {
+      "criteria": [
+       "card_payment_fee_charged",
+       "pending_top_up",
+       "pending_card_payment",
+       "exchange_via_app",
+       "card_arrival",
+       "terminate_account",
+       "atm_support",
+       "beneficiary_not_allowed",
+       "getting_spare_card",
+       "top_up_by_cash_or_cheque",
+       "visa_or_mastercard",
+       "transfer_into_account",
+       "card_payment_not_recognised",
+       "topping_up_by_card",
+       "transfer_fee_charged",
+       "compromised_card",
+       "card_not_working",
+       "contactless_not_working",
+       "cancel_transfer",
+       "card_acceptance",
+       "declined_cash_withdrawal",
+       "card_swallowed",
+       "edit_personal_details",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "lost_or_stolen_card",
+       "none",
+       "age_limit",
+       "cash_withdrawal_charge",
+       "card_payment_wrong_exchange_rate",
+       "top_up_failed",
+       "cash_withdrawal_not_recognised",
+       "request_refund",
+       "wrong_amount_of_cash_received",
+       "balance_not_updated_after_bank_transfer",
+       "why_verify_identity",
+       "exchange_rate",
+       "top_up_by_card_charge",
+       "declined_transfer",
+       "unable_to_verify_identity",
+       "card_delivery_estimate",
+       "exchange_charge",
+       "extra_charge_on_statement",
+       "card_linking",
+       "activate_my_card",
+       "passcode_forgotten",
+       "card_about_to_expire",
+       "get_disposable_virtual_card",
+       "top_up_limits",
+       "Refund_not_showing_up",
+       "transaction_charged_twice",
+       "pending_transfer",
+       "disposable_card_limits",
+       "change_pin",
+       "verify_my_identity",
+       "top_up_reverted",
+       "virtual_card_not_working",
+       "lost_or_stolen_phone",
+       "pending_cash_withdrawal",
+       "pin_blocked",
+       "declined_card_payment",
+       "country_support",
+       "top_up_by_bank_transfer_charge",
+       "failed_transfer",
+       "reverted_card_payment?",
+       "transfer_not_received_by_recipient",
+       "getting_virtual_card",
+       "direct_debit_payment_not_recognised",
+       "fiat_currency_support",
+       "supported_cards_and_currencies",
+       "order_physical_card",
+       "verify_source_of_funds",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "transfer_timing",
+       "automatic_top_up",
+       "get_physical_card",
+       "receiving_money",
+       "verify_top_up",
+       "apple_pay_or_google_pay"
+      ],
+      "label": "wrong_amount_of_cash_received"
+     }
+    },
+    {
+     "intent": {
+      "criteria": [
+       "card_payment_fee_charged",
+       "pending_top_up",
+       "pending_card_payment",
+       "exchange_via_app",
+       "card_arrival",
+       "terminate_account",
+       "atm_support",
+       "beneficiary_not_allowed",
+       "getting_spare_card",
+       "top_up_by_cash_or_cheque",
+       "visa_or_mastercard",
+       "transfer_into_account",
+       "card_payment_not_recognised",
+       "topping_up_by_card",
+       "transfer_fee_charged",
+       "compromised_card",
+       "card_not_working",
+       "contactless_not_working",
+       "cancel_transfer",
+       "card_acceptance",
+       "declined_cash_withdrawal",
+       "card_swallowed",
+       "edit_personal_details",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "lost_or_stolen_card",
+       "none",
+       "age_limit",
+       "cash_withdrawal_charge",
+       "card_payment_wrong_exchange_rate",
+       "top_up_failed",
+       "cash_withdrawal_not_recognised",
+       "request_refund",
+       "balance_not_updated_after_bank_transfer",
+       "why_verify_identity",
+       "exchange_rate",
+       "top_up_by_card_charge",
+       "declined_transfer",
+       "unable_to_verify_identity",
+       "card_delivery_estimate",
+       "exchange_charge",
+       "extra_charge_on_statement",
+       "card_linking",
+       "activate_my_card",
+       "passcode_forgotten",
+       "card_about_to_expire",
+       "get_disposable_virtual_card",
+       "top_up_limits",
+       "Refund_not_showing_up",
+       "transaction_charged_twice",
+       "pending_transfer",
+       "disposable_card_limits",
+       "change_pin",
+       "verify_my_identity",
+       "top_up_reverted",
+       "virtual_card_not_working",
+       "lost_or_stolen_phone",
+       "pending_cash_withdrawal",
+       "pin_blocked",
+       "declined_card_payment",
+       "country_support",
+       "top_up_by_bank_transfer_charge",
+       "failed_transfer",
+       "reverted_card_payment?",
+       "transfer_not_received_by_recipient",
+       "getting_virtual_card",
+       "direct_debit_payment_not_recognised",
+       "fiat_currency_support",
+       "supported_cards_and_currencies",
+       "order_physical_card",
+       "verify_source_of_funds",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "transfer_timing",
+       "automatic_top_up",
+       "get_physical_card",
+       "receiving_money",
+       "verify_top_up",
+       "apple_pay_or_google_pay"
+      ],
+      "label": "none"
+     }
+    }
+   ]
+  },
+  {
+   "id": "contrastive/sla_response/v3-control-sla_response-0058/a",
+   "epoch": 1,
+   "augmented": {
+    "decision": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "Met",
+     "Minor breach",
+     "Major breach"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "dbpedia14/train/362676",
+   "epoch": 1,
+   "augmented": {
+    "category": {
+     "criteria": [
+      "building",
+      "athlete",
+      "animal",
+      "film",
+      "village",
+      "company",
+      "writtenwork",
+      "educationalinstitution",
+      "officeholder",
+      "album",
+      "artist",
+      "naturalplace",
+      "meanoftransportation",
+      "plant"
+     ],
+     "label": "animal"
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "building",
+     "athlete",
+     "animal",
+     "film",
+     "village",
+     "company",
+     "writtenwork",
+     "educationalinstitution",
+     "officeholder",
+     "album",
+     "artist",
+     "naturalplace",
+     "meanoftransportation",
+     "plant"
+    ]
+   ],
+   "pair": [
+    {
+     "category": {
+      "criteria": [
+       "educationalinstitution",
+       "building",
+       "village",
+       "plant",
+       "meanoftransportation",
+       "writtenwork",
+       "unknown",
+       "officeholder",
+       "athlete",
+       "film",
+       "naturalplace",
+       "album",
+       "animal",
+       "artist",
+       "company"
+      ],
+      "label": "animal"
+     }
+    },
+    {
+     "category": {
+      "criteria": [
+       "educationalinstitution",
+       "building",
+       "village",
+       "plant",
+       "meanoftransportation",
+       "writtenwork",
+       "unknown",
+       "officeholder",
+       "athlete",
+       "film",
+       "naturalplace",
+       "album",
+       "artist",
+       "company"
+      ],
+      "label": "unknown"
+     }
+    }
+   ]
+  },
+  {
+   "id": "agnews/train/55900",
+   "epoch": 1,
+   "augmented": {
+    "topic": {
+     "criteria": [
+      "sports",
+      "world",
+      "scitech",
+      "business"
+     ],
+     "label": "scitech"
+    },
+    "is_business": {
+     "criteria": null,
+     "label": null
+    },
+    "is_scitech": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    2,
+    0,
+    1
+   ],
+   "options": [
+    [
+     "sports",
+     "world: World news: politics, international affairs, conflicts",
+     "scitech",
+     "business: Business: companies, markets, economy, finance"
+    ],
+    [
+     "no",
+     "yes"
+    ],
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": [
+    {
+     "topic": {
+      "criteria": [
+       "no_match",
+       "world",
+       "business",
+       "sports",
+       "scitech"
+      ],
+      "label": "scitech"
+     }
+    },
+    {
+     "topic": {
+      "criteria": [
+       "no_match",
+       "world",
+       "business",
+       "sports"
+      ],
+      "label": "no_match"
+     }
+    }
+   ]
+  },
+  {
+   "id": "trec/train/5011",
+   "epoch": 1,
+   "augmented": {
+    "answer_type": {
+     "criteria": [
+      "abbreviation",
+      "number",
+      "human",
+      "description",
+      "entity",
+      "location"
+     ],
+     "label": "description"
+    }
+   },
+   "labels": [
+    3
+   ],
+   "options": [
+    [
+     "abbreviation: Asks what an abbreviation stands for",
+     "number: Asks for a number, date, count, or other numeric value",
+     "human: Asks about a person, group, or organisation",
+     "description: Asks for a definition, description, reason, or manner",
+     "entity: Asks about a thing, object, animal, product, or creative work",
+     "location: Asks about a place"
+    ]
+   ],
+   "pair": [
+    {
+     "answer_type": {
+      "criteria": [
+       "description",
+       "abbreviation",
+       "number",
+       "location",
+       "entity",
+       "other",
+       "human"
+      ],
+      "label": "description"
+     }
+    },
+    {
+     "answer_type": {
+      "criteria": [
+       "abbreviation",
+       "number",
+       "location",
+       "entity",
+       "other",
+       "human"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "contrastive/return_window/v3-control-return_window-0037/a",
+   "epoch": 1,
+   "augmented": {
+    "decision": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "yelp/train/490423",
+   "epoch": 1,
+   "augmented": {
+    "rating": {
+     "criteria": null,
+     "label": null
+    },
+    "recommend": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    3,
+    1
+   ],
+   "options": [
+    [
+     "1 star: terrible experience",
+     "2 stars: poor",
+     "3 stars: average",
+     "4 stars: good",
+     "5 stars: excellent"
+    ],
+    [
+     "no: Negative or mixed",
+     "yes: Clearly positive overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "composition/v7-composition/rand:unless(or(0,1),2)/1/relevant/a",
+   "epoch": 1,
+   "augmented": {
+    "decision": {
+     "criteria": [
+      "taxes",
+      "accept",
+      "reject"
+     ],
+     "label": "accept"
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "taxes: Unrelated: quarterly tax filing",
+     "accept: The policy permits this case",
+     "reject: The policy does not permit this case"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "trec/train/2310",
+   "epoch": 1,
+   "augmented": {
+    "answer_type": {
+     "criteria": [
+      "human",
+      "other",
+      "entity",
+      "location",
+      "number",
+      "description",
+      "abbreviation"
+     ],
+     "label": "human"
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "human: Asks about a person, group, or organisation",
+     "other: An answer not covered by the other options",
+     "entity: Asks about a thing, object, animal, product, or creative work",
+     "location: Asks about a place",
+     "number: Asks for a number, date, count, or other numeric value",
+     "description: Asks for a definition, description, reason, or manner",
+     "abbreviation: Asks what an abbreviation stands for"
+    ]
+   ],
+   "pair": [
+    {
+     "answer_type": {
+      "criteria": [
+       "other",
+       "abbreviation",
+       "number",
+       "location",
+       "description",
+       "human",
+       "entity"
+      ],
+      "label": "human"
+     }
+    },
+    {
+     "answer_type": {
+      "criteria": [
+       "other",
+       "abbreviation",
+       "number",
+       "location",
+       "description",
+       "entity"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "dbpedia14/train/494953",
+   "epoch": 1,
+   "augmented": {
+    "category": {
+     "criteria": [
+      "company",
+      "officeholder",
+      "naturalplace",
+      "writtenwork",
+      "meanoftransportation",
+      "village",
+      "building",
+      "athlete",
+      "animal",
+      "film",
+      "artist",
+      "album",
+      "educationalinstitution",
+      "plant"
+     ],
+     "label": "film"
+    }
+   },
+   "labels": [
+    9
+   ],
+   "options": [
+    [
+     "company",
+     "officeholder",
+     "naturalplace",
+     "writtenwork",
+     "meanoftransportation",
+     "village",
+     "building",
+     "athlete",
+     "animal",
+     "film",
+     "artist",
+     "album",
+     "educationalinstitution",
+     "plant"
+    ]
+   ],
+   "pair": [
+    {
+     "category": {
+      "criteria": [
+       "writtenwork",
+       "village",
+       "officeholder",
+       "album",
+       "building",
+       "animal",
+       "educationalinstitution",
+       "other",
+       "athlete",
+       "naturalplace",
+       "plant",
+       "artist",
+       "company",
+       "meanoftransportation",
+       "film"
+      ],
+      "label": "film"
+     }
+    },
+    {
+     "category": {
+      "criteria": [
+       "writtenwork",
+       "village",
+       "officeholder",
+       "album",
+       "building",
+       "animal",
+       "educationalinstitution",
+       "other",
+       "athlete",
+       "naturalplace",
+       "plant",
+       "artist",
+       "company",
+       "meanoftransportation"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "agnews/train/114942",
+   "epoch": 1,
+   "augmented": {
+    "topic": {
+     "criteria": [
+      "scitech",
+      "world",
+      "sports",
+      "business"
+     ],
+     "label": "scitech"
+    },
+    "is_scitech": {
+     "criteria": null,
+     "label": null
+    },
+    "is_world": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    0,
+    1,
+    0
+   ],
+   "options": [
+    [
+     "scitech: what: Science and technology: research, gadgets, software, space",
+     "world",
+     "sports",
+     "business: Business: companies, markets, economy, finance"
+    ],
+    [
+     "no",
+     "yes"
+    ],
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": [
+    {
+     "topic": {
+      "criteria": [
+       "none_of_the_above",
+       "business",
+       "sports",
+       "world",
+       "scitech"
+      ],
+      "label": "scitech"
+     }
+    },
+    {
+     "topic": {
+      "criteria": [
+       "none_of_the_above",
+       "business",
+       "sports",
+       "world"
+      ],
+      "label": "none_of_the_above"
+     }
+    }
+   ]
+  },
+  {
+   "id": "banking77/train/1267",
+   "epoch": 1,
+   "augmented": {
+    "intent": {
+     "criteria": [
+      "transfer_timing",
+      "card_arrival",
+      "apple_pay_or_google_pay",
+      "pending_card_payment",
+      "card_swallowed",
+      "direct_debit_payment_not_recognised",
+      "change_pin",
+      "top_up_by_cash_or_cheque",
+      "card_delivery_estimate",
+      "unable_to_verify_identity",
+      "receiving_money",
+      "pending_cash_withdrawal",
+      "lost_or_stolen_card",
+      "beneficiary_not_allowed",
+      "Refund_not_showing_up",
+      "getting_spare_card",
+      "cash_withdrawal_not_recognised",
+      "transfer_into_account",
+      "reverted_card_payment?",
+      "top_up_reverted",
+      "failed_transfer",
+      "exchange_charge",
+      "card_about_to_expire",
+      "wrong_exchange_rate_for_cash_withdrawal",
+      "pending_top_up",
+      "exchange_rate",
+      "age_limit",
+      "country_support",
+      "card_acceptance",
+      "top_up_by_card_charge",
+      "transfer_not_received_by_recipient",
+      "cancel_transfer",
+      "cash_withdrawal_charge",
+      "top_up_limits",
+      "transfer_fee_charged",
+      "verify_my_identity",
+      "card_payment_fee_charged",
+      "automatic_top_up",
+      "card_payment_not_recognised",
+      "declined_cash_withdrawal",
+      "virtual_card_not_working",
+      "fiat_currency_support",
+      "atm_support",
+      "top_up_by_bank_transfer_charge",
+      "lost_or_stolen_phone",
+      "card_not_working",
+      "balance_not_updated_after_cheque_or_cash_deposit",
+      "terminate_account",
+      "why_verify_identity",
+      "top_up_failed",
+      "card_payment_wrong_exchange_rate",
+      "compromised_card",
+      "pending_transfer",
+      "supported_cards_and_currencies",
+      "edit_personal_details",
+      "balance_not_updated_after_bank_transfer",
+      "getting_virtual_card",
+      "verify_source_of_funds",
+      "activate_my_card",
+      "declined_transfer",
+      "declined_card_payment",
+      "disposable_card_limits",
+      "get_disposable_virtual_card",
+      "exchange_via_app",
+      "passcode_forgotten",
+      "wrong_amount_of_cash_received",
+      "verify_top_up",
+      "visa_or_mastercard",
+      "topping_up_by_card",
+      "contactless_not_working",
+      "extra_charge_on_statement",
+      "request_refund",
+      "pin_blocked",
+      "transaction_charged_twice",
+      "get_physical_card",
+      "card_linking",
+      "order_physical_card"
+     ],
+     "label": "card_not_working"
+    }
+   },
+   "labels": [
+    45
+   ],
+   "options": [
+    [
+     "transfer_timing",
+     "card_arrival: card arrival",
+     "apple_pay_or_google_pay: apple pay or google pay",
+     "pending_card_payment",
+     "card_swallowed",
+     "direct_debit_payment_not_recognised",
+     "change_pin",
+     "top_up_by_cash_or_cheque: top up by cash or cheque",
+     "card_delivery_estimate",
+     "unable_to_verify_identity: unable to verify identity",
+     "receiving_money: receiving money",
+     "pending_cash_withdrawal",
+     "lost_or_stolen_card: lost or stolen card",
+     "beneficiary_not_allowed",
+     "Refund_not_showing_up",
+     "getting_spare_card",
+     "cash_withdrawal_not_recognised",
+     "transfer_into_account: transfer into account",
+     "reverted_card_payment?: reverted card payment?",
+     "top_up_reverted: top up reverted",
+     "failed_transfer: failed transfer",
+     "exchange_charge: exchange charge",
+     "card_about_to_expire: card about to expire",
+     "wrong_exchange_rate_for_cash_withdrawal",
+     "pending_top_up",
+     "exchange_rate: exchange rate",
+     "age_limit",
+     "country_support",
+     "card_acceptance: card acceptance",
+     "top_up_by_card_charge: top up by card charge",
+     "transfer_not_received_by_recipient: transfer not received by recipient",
+     "cancel_transfer: cancel transfer",
+     "cash_withdrawal_charge: cash withdrawal charge",
+     "top_up_limits: top up limits",
+     "transfer_fee_charged",
+     "verify_my_identity",
+     "card_payment_fee_charged: card payment fee charged",
+     "automatic_top_up: automatic top up",
+     "card_payment_not_recognised",
+     "declined_cash_withdrawal: declined cash withdrawal",
+     "virtual_card_not_working",
+     "fiat_currency_support: fiat currency support",
+     "atm_support: atm support",
+     "top_up_by_bank_transfer_charge",
+     "lost_or_stolen_phone: lost or stolen phone",
+     "card_not_working: card not working",
+     "balance_not_updated_after_cheque_or_cash_deposit: balance not updated after cheque or cash deposit",
+     "terminate_account",
+     "why_verify_identity: why verify identity",
+     "top_up_failed",
+     "card_payment_wrong_exchange_rate",
+     "compromised_card: compromised card",
+     "pending_transfer: pending transfer",
+     "supported_cards_and_currencies",
+     "edit_personal_details",
+     "balance_not_updated_after_bank_transfer",
+     "getting_virtual_card: getting virtual card",
+     "verify_source_of_funds: verify source of funds",
+     "activate_my_card: activate my card",
+     "declined_transfer: declined transfer",
+     "declined_card_payment: declined card payment",
+     "disposable_card_limits: disposable card limits",
+     "get_disposable_virtual_card: get disposable virtual card",
+     "exchange_via_app",
+     "passcode_forgotten",
+     "wrong_amount_of_cash_received: wrong amount of cash received",
+     "verify_top_up",
+     "visa_or_mastercard: visa or mastercard",
+     "topping_up_by_card: topping up by card",
+     "contactless_not_working",
+     "extra_charge_on_statement: extra charge on statement",
+     "request_refund",
+     "pin_blocked",
+     "transaction_charged_twice",
+     "get_physical_card",
+     "card_linking",
+     "order_physical_card"
+    ]
+   ],
+   "pair": [
+    {
+     "intent": {
+      "criteria": [
+       "receiving_money",
+       "transfer_into_account",
+       "cancel_transfer",
+       "get_physical_card",
+       "exchange_via_app",
+       "cash_withdrawal_not_recognised",
+       "topping_up_by_card",
+       "pending_top_up",
+       "top_up_by_bank_transfer_charge",
+       "passcode_forgotten",
+       "pending_card_payment",
+       "disposable_card_limits",
+       "transfer_timing",
+       "card_payment_wrong_exchange_rate",
+       "extra_charge_on_statement",
+       "pending_transfer",
+       "reverted_card_payment?",
+       "get_disposable_virtual_card",
+       "declined_transfer",
+       "getting_virtual_card",
+       "unable_to_verify_identity",
+       "card_not_working",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "balance_not_updated_after_bank_transfer",
+       "exchange_charge",
+       "compromised_card",
+       "transfer_not_received_by_recipient",
+       "order_physical_card",
+       "wrong_amount_of_cash_received",
+       "declined_card_payment",
+       "request_refund",
+       "card_payment_fee_charged",
+       "verify_my_identity",
+       "card_swallowed",
+       "card_arrival",
+       "atm_support",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "getting_spare_card",
+       "transaction_charged_twice",
+       "virtual_card_not_working",
+       "exchange_rate",
+       "lost_or_stolen_card",
+       "none",
+       "top_up_by_cash_or_cheque",
+       "fiat_currency_support",
+       "age_limit",
+       "edit_personal_details",
+       "supported_cards_and_currencies",
+       "contactless_not_working",
+       "direct_debit_payment_not_recognised",
+       "verify_source_of_funds",
+       "terminate_account",
+       "top_up_failed",
+       "visa_or_mastercard",
+       "card_payment_not_recognised",
+       "card_acceptance",
+       "top_up_reverted",
+       "pending_cash_withdrawal",
+       "change_pin",
+       "Refund_not_showing_up",
+       "card_linking",
+       "why_verify_identity",
+       "top_up_limits",
+       "lost_or_stolen_phone",
+       "activate_my_card",
+       "declined_cash_withdrawal",
+       "card_delivery_estimate",
+       "beneficiary_not_allowed",
+       "transfer_fee_charged",
+       "pin_blocked",
+       "card_about_to_expire",
+       "cash_withdrawal_charge",
+       "top_up_by_card_charge",
+       "country_support",
+       "failed_transfer",
+       "automatic_top_up",
+       "apple_pay_or_google_pay",
+       "verify_top_up"
+      ],
+      "label": "card_not_working"
+     }
+    },
+    {
+     "intent": {
+      "criteria": [
+       "receiving_money",
+       "transfer_into_account",
+       "cancel_transfer",
+       "get_physical_card",
+       "exchange_via_app",
+       "cash_withdrawal_not_recognised",
+       "topping_up_by_card",
+       "pending_top_up",
+       "top_up_by_bank_transfer_charge",
+       "passcode_forgotten",
+       "pending_card_payment",
+       "disposable_card_limits",
+       "transfer_timing",
+       "card_payment_wrong_exchange_rate",
+       "extra_charge_on_statement",
+       "pending_transfer",
+       "reverted_card_payment?",
+       "get_disposable_virtual_card",
+       "declined_transfer",
+       "getting_virtual_card",
+       "unable_to_verify_identity",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "balance_not_updated_after_bank_transfer",
+       "exchange_charge",
+       "compromised_card",
+       "transfer_not_received_by_recipient",
+       "order_physical_card",
+       "wrong_amount_of_cash_received",
+       "declined_card_payment",
+       "request_refund",
+       "card_payment_fee_charged",
+       "verify_my_identity",
+       "card_swallowed",
+       "card_arrival",
+       "atm_support",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "getting_spare_card",
+       "transaction_charged_twice",
+       "virtual_card_not_working",
+       "exchange_rate",
+       "lost_or_stolen_card",
+       "none",
+       "top_up_by_cash_or_cheque",
+       "fiat_currency_support",
+       "age_limit",
+       "edit_personal_details",
+       "supported_cards_and_currencies",
+       "contactless_not_working",
+       "direct_debit_payment_not_recognised",
+       "verify_source_of_funds",
+       "terminate_account",
+       "top_up_failed",
+       "visa_or_mastercard",
+       "card_payment_not_recognised",
+       "card_acceptance",
+       "top_up_reverted",
+       "pending_cash_withdrawal",
+       "change_pin",
+       "Refund_not_showing_up",
+       "card_linking",
+       "why_verify_identity",
+       "top_up_limits",
+       "lost_or_stolen_phone",
+       "activate_my_card",
+       "declined_cash_withdrawal",
+       "card_delivery_estimate",
+       "beneficiary_not_allowed",
+       "transfer_fee_charged",
+       "pin_blocked",
+       "card_about_to_expire",
+       "cash_withdrawal_charge",
+       "top_up_by_card_charge",
+       "country_support",
+       "failed_transfer",
+       "automatic_top_up",
+       "apple_pay_or_google_pay",
+       "verify_top_up"
+      ],
+      "label": "none"
+     }
+    }
+   ]
+  },
+  {
+   "id": "agnews/train/67120",
+   "epoch": 1,
+   "augmented": {
+    "topic": {
+     "criteria": [
+      "none",
+      "sports",
+      "scitech",
+      "business",
+      "world"
+     ],
+     "label": "scitech"
+    },
+    "is_sports": {
+     "criteria": null,
+     "label": null
+    },
+    "is_scitech": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    2,
+    0,
+    1
+   ],
+   "options": [
+    [
+     "none",
+     "sports: Sports: games, athletes, teams, results",
+     "scitech: Science and technology: research, gadgets, software, space",
+     "business: Business: companies, markets, economy, finance",
+     "world"
+    ],
+    [
+     "no",
+     "yes"
+    ],
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": [
+    {
+     "topic": {
+      "criteria": [
+       "other",
+       "scitech",
+       "sports",
+       "world",
+       "business"
+      ],
+      "label": "scitech"
+     }
+    },
+    {
+     "topic": {
+      "criteria": [
+       "other",
+       "sports",
+       "world",
+       "business"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "mnli/train/168353",
+   "epoch": 1,
+   "augmented": {
+    "relation": {
+     "criteria": [
+      "contradiction",
+      "neutral",
+      "entailment"
+     ],
+     "label": "neutral"
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "contradiction: what: The hypothesis contradicts the premise",
+     "neutral: The hypothesis may or may not be true given the premise",
+     "entailment"
+    ]
+   ],
+   "pair": [
+    {
+     "relation": {
+      "criteria": [
+       "entailment",
+       "contradiction",
+       "none_of_the_above",
+       "neutral"
+      ],
+      "label": "neutral"
+     }
+    },
+    {
+     "relation": {
+      "criteria": [
+       "entailment",
+       "contradiction",
+       "none_of_the_above"
+      ],
+      "label": "none_of_the_above"
+     }
+    }
+   ]
+  },
+  {
+   "id": "dbpedia14/train/409246",
+   "epoch": 1,
+   "augmented": {
+    "category": {
+     "criteria": [
+      "album",
+      "writtenwork",
+      "film",
+      "plant",
+      "other",
+      "naturalplace",
+      "educationalinstitution",
+      "company",
+      "animal",
+      "officeholder",
+      "athlete",
+      "village",
+      "meanoftransportation",
+      "building",
+      "artist"
+     ],
+     "label": "plant"
+    }
+   },
+   "labels": [
+    3
+   ],
+   "options": [
+    [
+     "album",
+     "writtenwork",
+     "film",
+     "plant",
+     "other: Other",
+     "naturalplace",
+     "educationalinstitution",
+     "company",
+     "animal",
+     "officeholder",
+     "athlete",
+     "village",
+     "meanoftransportation",
+     "building",
+     "artist"
+    ]
+   ],
+   "pair": [
+    {
+     "category": {
+      "criteria": [
+       "animal",
+       "meanoftransportation",
+       "officeholder",
+       "athlete",
+       "company",
+       "building",
+       "artist",
+       "album",
+       "plant",
+       "educationalinstitution",
+       "naturalplace",
+       "village",
+       "writtenwork",
+       "film",
+       "other"
+      ],
+      "label": "plant"
+     }
+    },
+    {
+     "category": {
+      "criteria": [
+       "animal",
+       "meanoftransportation",
+       "officeholder",
+       "athlete",
+       "company",
+       "building",
+       "artist",
+       "album",
+       "educationalinstitution",
+       "naturalplace",
+       "village",
+       "writtenwork",
+       "film",
+       "other"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "agnews/train/33598",
+   "epoch": 1,
+   "augmented": {
+    "topic": {
+     "criteria": [
+      "business",
+      "scitech",
+      "sports",
+      "world"
+     ],
+     "label": "sports"
+    },
+    "is_scitech": {
+     "criteria": null,
+     "label": null
+    },
+    "is_world": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    2,
+    0,
+    0
+   ],
+   "options": [
+    [
+     "business: Business: companies, markets, economy, finance",
+     "scitech: what: Science and technology: research, gadgets, software, space",
+     "sports",
+     "world: World news: politics, international affairs, conflicts"
+    ],
+    [
+     "no",
+     "yes"
+    ],
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": [
+    {
+     "topic": {
+      "criteria": [
+       "business",
+       "sports",
+       "world",
+       "not_listed",
+       "scitech"
+      ],
+      "label": "sports"
+     }
+    },
+    {
+     "topic": {
+      "criteria": [
+       "business",
+       "world",
+       "not_listed",
+       "scitech"
+      ],
+      "label": "not_listed"
+     }
+    }
+   ]
+  },
+  {
+   "id": "agnews/train/98617",
+   "epoch": 1,
+   "augmented": {
+    "topic": {
+     "criteria": [
+      "sports",
+      "world",
+      "no_match",
+      "scitech"
+     ],
+     "label": "no_match"
+    },
+    "is_business": {
+     "criteria": null,
+     "label": null
+    },
+    "is_scitech": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    2,
+    1,
+    0
+   ],
+   "options": [
+    [
+     "sports",
+     "world: World news: politics, international affairs, conflicts",
+     "no_match: No option matches",
+     "scitech"
+    ],
+    [
+     "no",
+     "yes"
+    ],
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": [
+    {
+     "topic": {
+      "criteria": [
+       "business",
+       "world",
+       "sports",
+       "scitech",
+       "other"
+      ],
+      "label": "business"
+     }
+    },
+    {
+     "topic": {
+      "criteria": [
+       "world",
+       "sports",
+       "scitech",
+       "other"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "yelp/train/393306",
+   "epoch": 1,
+   "augmented": {
+    "rating": {
+     "criteria": null,
+     "label": null
+    },
+    "recommend": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    4,
+    1
+   ],
+   "options": [
+    [
+     "1 star: terrible experience",
+     "2 stars: poor",
+     "3 stars: average",
+     "4 stars: good",
+     "5 stars: excellent"
+    ],
+    [
+     "no: Negative or mixed",
+     "yes: Clearly positive overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "imdb/train/1101",
+   "epoch": 1,
+   "augmented": {
+    "positive": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "no: The reviewer disliked the film overall",
+     "yes: The reviewer liked the film overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "mnli/train/318284",
+   "epoch": 1,
+   "augmented": {
+    "relation": {
+     "criteria": [
+      "contradiction",
+      "entailment",
+      "neutral"
+     ],
+     "label": "contradiction"
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "contradiction",
+     "entailment: what: The hypothesis follows from the premise",
+     "neutral: The hypothesis may or may not be true given the premise"
+    ]
+   ],
+   "pair": [
+    {
+     "relation": {
+      "criteria": [
+       "contradiction",
+       "neutral",
+       "no_match",
+       "entailment"
+      ],
+      "label": "contradiction"
+     }
+    },
+    {
+     "relation": {
+      "criteria": [
+       "neutral",
+       "no_match",
+       "entailment"
+      ],
+      "label": "no_match"
+     }
+    }
+   ]
+  },
+  {
+   "id": "sst5/train/7651",
+   "epoch": 1,
+   "augmented": {
+    "sentiment": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    3
+   ],
+   "options": [
+    [
+     "very negative",
+     "negative",
+     "neutral",
+     "positive",
+     "very positive"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "trec/train/1968",
+   "epoch": 1,
+   "augmented": {
+    "answer_type": {
+     "criteria": [
+      "entity",
+      "description",
+      "human",
+      "number",
+      "location",
+      "abbreviation",
+      "no_match"
+     ],
+     "label": "description"
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "entity: Asks about a thing, object, animal, product, or creative work",
+     "description: Asks for a definition, description, reason, or manner",
+     "human: Asks about a person, group, or organisation",
+     "number: Asks for a number, date, count, or other numeric value",
+     "location: Asks about a place",
+     "abbreviation: Asks what an abbreviation stands for",
+     "no_match: No option matches"
+    ]
+   ],
+   "pair": [
+    {
+     "answer_type": {
+      "criteria": [
+       "description",
+       "location",
+       "abbreviation",
+       "entity",
+       "number",
+       "other",
+       "human"
+      ],
+      "label": "description"
+     }
+    },
+    {
+     "answer_type": {
+      "criteria": [
+       "location",
+       "abbreviation",
+       "entity",
+       "number",
+       "other",
+       "human"
+      ],
+      "label": "other"
+     }
+    }
+   ]
+  },
+  {
+   "id": "boolq/train/7762",
+   "epoch": 1,
+   "augmented": {
+    "answer": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "mnli/train/273924",
+   "epoch": 1,
+   "augmented": {
+    "relation": {
+     "criteria": [
+      "neutral",
+      "other",
+      "entailment"
+     ],
+     "label": "other"
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "neutral",
+     "other: An answer not covered by the other options",
+     "entailment: what: The hypothesis follows from the premise"
+    ]
+   ],
+   "pair": [
+    {
+     "relation": {
+      "criteria": [
+       "neutral",
+       "contradiction",
+       "entailment",
+       "no_match"
+      ],
+      "label": "contradiction"
+     }
+    },
+    {
+     "relation": {
+      "criteria": [
+       "neutral",
+       "entailment",
+       "no_match"
+      ],
+      "label": "no_match"
+     }
+    }
+   ]
+  },
+  {
+   "id": "boolq/train/5054",
+   "epoch": 1,
+   "augmented": {
+    "answer": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "no",
+     "yes"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "mnli/train/89823",
+   "epoch": 1,
+   "augmented": {
+    "relation": {
+     "criteria": [
+      "entailment",
+      "contradiction",
+      "neutral"
+     ],
+     "label": "entailment"
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "entailment: what: The hypothesis follows from the premise",
+     "contradiction: The hypothesis contradicts the premise",
+     "neutral: what: The hypothesis may or may not be true given the premise"
+    ]
+   ],
+   "pair": [
+    {
+     "relation": {
+      "criteria": [
+       "not_listed",
+       "entailment",
+       "neutral",
+       "contradiction"
+      ],
+      "label": "entailment"
+     }
+    },
+    {
+     "relation": {
+      "criteria": [
+       "not_listed",
+       "neutral",
+       "contradiction"
+      ],
+      "label": "not_listed"
+     }
+    }
+   ]
+  },
+  {
+   "id": "imdb/train/6501",
+   "epoch": 1,
+   "augmented": {
+    "positive": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    0
+   ],
+   "options": [
+    [
+     "no: The reviewer disliked the film overall",
+     "yes: The reviewer liked the film overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "imdb/train/17934",
+   "epoch": 1,
+   "augmented": {
+    "positive": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "no: The reviewer disliked the film overall",
+     "yes: The reviewer liked the film overall"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "contrastive/warranty_claim/v3-control-warranty_claim-0051/a",
+   "epoch": 1,
+   "augmented": {
+    "decision": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "Covered in full",
+     "Covered at half cost",
+     "Not covered"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "trec/train/4788",
+   "epoch": 1,
+   "augmented": {
+    "answer_type": {
+     "criteria": [
+      "description",
+      "number",
+      "human",
+      "entity",
+      "abbreviation",
+      "location"
+     ],
+     "label": "human"
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "description: Asks for a definition, description, reason, or manner",
+     "number: Asks for a number, date, count, or other numeric value",
+     "human: Asks about a person, group, or organisation",
+     "entity: Asks about a thing, object, animal, product, or creative work",
+     "abbreviation: Asks what an abbreviation stands for",
+     "location: Asks about a place"
+    ]
+   ],
+   "pair": [
+    {
+     "answer_type": {
+      "criteria": [
+       "number",
+       "none_of_the_above",
+       "human",
+       "abbreviation",
+       "entity",
+       "description",
+       "location"
+      ],
+      "label": "human"
+     }
+    },
+    {
+     "answer_type": {
+      "criteria": [
+       "number",
+       "none_of_the_above",
+       "abbreviation",
+       "entity",
+       "description",
+       "location"
+      ],
+      "label": "none_of_the_above"
+     }
+    }
+   ]
+  },
+  {
+   "id": "composition/v7-composition/rand:not(and(0,or(1,2)))/2/relevant/b",
+   "epoch": 1,
+   "augmented": {
+    "decision": {
+     "criteria": [
+      "accept",
+      "pancakes",
+      "reject"
+     ],
+     "label": "reject"
+    }
+   },
+   "labels": [
+    2
+   ],
+   "options": [
+    [
+     "accept: The policy permits this case",
+     "pancakes: A recipe for pancakes",
+     "reject: The policy does not permit this case"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "amazon/train/190471",
+   "epoch": 1,
+   "augmented": {
+    "stars": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    4
+   ],
+   "options": [
+    [
+     "1 star: very negative",
+     "2 stars: negative",
+     "3 stars: mixed",
+     "4 stars: positive",
+     "5 stars: very positive"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "amazon/train/72881",
+   "epoch": 1,
+   "augmented": {
+    "stars": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "1 star: very negative",
+     "2 stars: negative",
+     "3 stars: mixed",
+     "4 stars: positive",
+     "5 stars: very positive"
+    ]
+   ],
+   "pair": []
+  },
+  {
+   "id": "dbpedia14/train/325413",
+   "epoch": 1,
+   "augmented": {
+    "category": {
+     "criteria": [
+      "plant",
+      "artist",
+      "educationalinstitution",
+      "album",
+      "naturalplace",
+      "film",
+      "building",
+      "company",
+      "animal",
+      "meanoftransportation",
+      "writtenwork",
+      "officeholder",
+      "athlete",
+      "village"
+     ],
+     "label": "village"
+    }
+   },
+   "labels": [
+    13
+   ],
+   "options": [
+    [
+     "plant",
+     "artist",
+     "educationalinstitution",
+     "album",
+     "naturalplace",
+     "film",
+     "building",
+     "company",
+     "animal",
+     "meanoftransportation",
+     "writtenwork",
+     "officeholder",
+     "athlete",
+     "village"
+    ]
+   ],
+   "pair": [
+    {
+     "category": {
+      "criteria": [
+       "building",
+       "animal",
+       "album",
+       "company",
+       "none",
+       "athlete",
+       "village",
+       "educationalinstitution",
+       "naturalplace",
+       "officeholder",
+       "plant",
+       "film",
+       "writtenwork",
+       "meanoftransportation",
+       "artist"
+      ],
+      "label": "village"
+     }
+    },
+    {
+     "category": {
+      "criteria": [
+       "building",
+       "animal",
+       "album",
+       "company",
+       "none",
+       "athlete",
+       "educationalinstitution",
+       "naturalplace",
+       "officeholder",
+       "plant",
+       "film",
+       "writtenwork",
+       "meanoftransportation",
+       "artist"
+      ],
+      "label": "none"
+     }
+    }
+   ]
+  },
+  {
+   "id": "banking77/train/8906",
+   "epoch": 1,
+   "augmented": {
+    "intent": {
+     "criteria": [
+      "balance_not_updated_after_cheque_or_cash_deposit",
+      "reverted_card_payment?",
+      "cancel_transfer",
+      "getting_virtual_card",
+      "failed_transfer",
+      "card_arrival",
+      "terminate_account",
+      "balance_not_updated_after_bank_transfer",
+      "card_delivery_estimate",
+      "declined_transfer",
+      "passcode_forgotten",
+      "apple_pay_or_google_pay",
+      "fiat_currency_support",
+      "top_up_reverted",
+      "exchange_charge",
+      "getting_spare_card",
+      "pending_top_up",
+      "atm_support",
+      "top_up_by_cash_or_cheque",
+      "declined_card_payment",
+      "receiving_money",
+      "exchange_rate",
+      "verify_top_up",
+      "card_linking",
+      "card_acceptance",
+      "visa_or_mastercard",
+      "contactless_not_working",
+      "virtual_card_not_working",
+      "country_support",
+      "wrong_exchange_rate_for_cash_withdrawal",
+      "lost_or_stolen_phone",
+      "get_physical_card",
+      "pending_card_payment",
+      "exchange_via_app",
+      "pending_transfer",
+      "wrong_amount_of_cash_received",
+      "card_payment_not_recognised",
+      "compromised_card",
+      "pending_cash_withdrawal",
+      "request_refund",
+      "cash_withdrawal_not_recognised",
+      "edit_personal_details",
+      "order_physical_card",
+      "transfer_into_account",
+      "declined_cash_withdrawal",
+      "verify_source_of_funds",
+      "change_pin",
+      "Refund_not_showing_up",
+      "beneficiary_not_allowed",
+      "automatic_top_up",
+      "top_up_failed",
+      "supported_cards_and_currencies",
+      "disposable_card_limits",
+      "card_payment_wrong_exchange_rate",
+      "transaction_charged_twice",
+      "pin_blocked",
+      "activate_my_card",
+      "top_up_by_card_charge",
+      "age_limit",
+      "verify_my_identity",
+      "cash_withdrawal_charge",
+      "direct_debit_payment_not_recognised",
+      "top_up_limits",
+      "why_verify_identity",
+      "lost_or_stolen_card",
+      "transfer_timing",
+      "card_about_to_expire",
+      "top_up_by_bank_transfer_charge",
+      "transfer_not_received_by_recipient",
+      "extra_charge_on_statement",
+      "topping_up_by_card",
+      "card_payment_fee_charged",
+      "card_not_working",
+      "card_swallowed",
+      "get_disposable_virtual_card",
+      "unable_to_verify_identity",
+      "transfer_fee_charged"
+     ],
+     "label": "cash_withdrawal_not_recognised"
+    }
+   },
+   "labels": [
+    40
+   ],
+   "options": [
+    [
+     "balance_not_updated_after_cheque_or_cash_deposit",
+     "reverted_card_payment?: Customer asks about reverted card payment?",
+     "cancel_transfer: Customer asks about cancel transfer",
+     "getting_virtual_card: Customer asks about getting virtual card",
+     "failed_transfer",
+     "card_arrival: Customer asks about card arrival",
+     "terminate_account",
+     "balance_not_updated_after_bank_transfer",
+     "card_delivery_estimate: Customer asks about card delivery estimate",
+     "declined_transfer",
+     "passcode_forgotten",
+     "apple_pay_or_google_pay",
+     "fiat_currency_support: Customer asks about fiat currency support",
+     "top_up_reverted: Customer asks about top up reverted",
+     "exchange_charge: Customer asks about exchange charge",
+     "getting_spare_card: Customer asks about getting spare card",
+     "pending_top_up",
+     "atm_support: Customer asks about atm support",
+     "top_up_by_cash_or_cheque",
+     "declined_card_payment: Customer asks about declined card payment",
+     "receiving_money: Customer asks about receiving money",
+     "exchange_rate",
+     "verify_top_up: Customer asks about verify top up",
+     "card_linking",
+     "card_acceptance: Customer asks about card acceptance",
+     "visa_or_mastercard: Customer asks about visa or mastercard",
+     "contactless_not_working: Customer asks about contactless not working",
+     "virtual_card_not_working",
+     "country_support: Customer asks about country support",
+     "wrong_exchange_rate_for_cash_withdrawal",
+     "lost_or_stolen_phone",
+     "get_physical_card: Customer asks about get physical card",
+     "pending_card_payment",
+     "exchange_via_app: Customer asks about exchange via app",
+     "pending_transfer",
+     "wrong_amount_of_cash_received: Customer asks about wrong amount of cash received",
+     "card_payment_not_recognised: Customer asks about card payment not recognised",
+     "compromised_card: Customer asks about compromised card",
+     "pending_cash_withdrawal: Customer asks about pending cash withdrawal",
+     "request_refund: Customer asks about request refund",
+     "cash_withdrawal_not_recognised: Customer asks about cash withdrawal not recognised",
+     "edit_personal_details",
+     "order_physical_card: Customer asks about order physical card",
+     "transfer_into_account: Customer asks about transfer into account",
+     "declined_cash_withdrawal",
+     "verify_source_of_funds: Customer asks about verify source of funds",
+     "change_pin",
+     "Refund_not_showing_up",
+     "beneficiary_not_allowed",
+     "automatic_top_up",
+     "top_up_failed",
+     "supported_cards_and_currencies: Customer asks about supported cards and currencies",
+     "disposable_card_limits",
+     "card_payment_wrong_exchange_rate",
+     "transaction_charged_twice",
+     "pin_blocked: Customer asks about pin blocked",
+     "activate_my_card",
+     "top_up_by_card_charge",
+     "age_limit: Customer asks about age limit",
+     "verify_my_identity: Customer asks about verify my identity",
+     "cash_withdrawal_charge",
+     "direct_debit_payment_not_recognised: Customer asks about direct debit payment not recognised",
+     "top_up_limits: Customer asks about top up limits",
+     "why_verify_identity: Customer asks about why verify identity",
+     "lost_or_stolen_card: Customer asks about lost or stolen card",
+     "transfer_timing",
+     "card_about_to_expire: Customer asks about card about to expire",
+     "top_up_by_bank_transfer_charge: Customer asks about top up by bank transfer charge",
+     "transfer_not_received_by_recipient",
+     "extra_charge_on_statement",
+     "topping_up_by_card: Customer asks about topping up by card",
+     "card_payment_fee_charged: Customer asks about card payment fee charged",
+     "card_not_working",
+     "card_swallowed: Customer asks about card swallowed",
+     "get_disposable_virtual_card",
+     "unable_to_verify_identity: Customer asks about unable to verify identity",
+     "transfer_fee_charged"
+    ]
+   ],
+   "pair": [
+    {
+     "intent": {
+      "criteria": [
+       "card_not_working",
+       "exchange_charge",
+       "top_up_by_cash_or_cheque",
+       "wrong_amount_of_cash_received",
+       "top_up_reverted",
+       "card_delivery_estimate",
+       "balance_not_updated_after_bank_transfer",
+       "pending_cash_withdrawal",
+       "transfer_into_account",
+       "visa_or_mastercard",
+       "reverted_card_payment?",
+       "unable_to_verify_identity",
+       "card_linking",
+       "pin_blocked",
+       "transfer_fee_charged",
+       "apple_pay_or_google_pay",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "top_up_limits",
+       "exchange_via_app",
+       "declined_cash_withdrawal",
+       "exchange_rate",
+       "virtual_card_not_working",
+       "card_payment_fee_charged",
+       "transfer_not_received_by_recipient",
+       "no_match",
+       "cancel_transfer",
+       "get_physical_card",
+       "pending_card_payment",
+       "lost_or_stolen_card",
+       "getting_spare_card",
+       "top_up_by_bank_transfer_charge",
+       "lost_or_stolen_phone",
+       "request_refund",
+       "failed_transfer",
+       "disposable_card_limits",
+       "transfer_timing",
+       "contactless_not_working",
+       "top_up_by_card_charge",
+       "transaction_charged_twice",
+       "fiat_currency_support",
+       "passcode_forgotten",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "card_arrival",
+       "activate_my_card",
+       "card_payment_not_recognised",
+       "pending_top_up",
+       "age_limit",
+       "card_swallowed",
+       "change_pin",
+       "atm_support",
+       "topping_up_by_card",
+       "terminate_account",
+       "country_support",
+       "receiving_money",
+       "supported_cards_and_currencies",
+       "card_about_to_expire",
+       "edit_personal_details",
+       "verify_top_up",
+       "order_physical_card",
+       "card_payment_wrong_exchange_rate",
+       "cash_withdrawal_not_recognised",
+       "cash_withdrawal_charge",
+       "declined_card_payment",
+       "direct_debit_payment_not_recognised",
+       "getting_virtual_card",
+       "automatic_top_up",
+       "Refund_not_showing_up",
+       "compromised_card",
+       "why_verify_identity",
+       "verify_source_of_funds",
+       "pending_transfer",
+       "get_disposable_virtual_card",
+       "beneficiary_not_allowed",
+       "declined_transfer",
+       "extra_charge_on_statement",
+       "card_acceptance",
+       "verify_my_identity",
+       "top_up_failed"
+      ],
+      "label": "cash_withdrawal_not_recognised"
+     }
+    },
+    {
+     "intent": {
+      "criteria": [
+       "card_not_working",
+       "exchange_charge",
+       "top_up_by_cash_or_cheque",
+       "wrong_amount_of_cash_received",
+       "top_up_reverted",
+       "card_delivery_estimate",
+       "balance_not_updated_after_bank_transfer",
+       "pending_cash_withdrawal",
+       "transfer_into_account",
+       "visa_or_mastercard",
+       "reverted_card_payment?",
+       "unable_to_verify_identity",
+       "card_linking",
+       "pin_blocked",
+       "transfer_fee_charged",
+       "apple_pay_or_google_pay",
+       "wrong_exchange_rate_for_cash_withdrawal",
+       "top_up_limits",
+       "exchange_via_app",
+       "declined_cash_withdrawal",
+       "exchange_rate",
+       "virtual_card_not_working",
+       "card_payment_fee_charged",
+       "transfer_not_received_by_recipient",
+       "no_match",
+       "cancel_transfer",
+       "get_physical_card",
+       "pending_card_payment",
+       "lost_or_stolen_card",
+       "getting_spare_card",
+       "top_up_by_bank_transfer_charge",
+       "lost_or_stolen_phone",
+       "request_refund",
+       "failed_transfer",
+       "disposable_card_limits",
+       "transfer_timing",
+       "contactless_not_working",
+       "top_up_by_card_charge",
+       "transaction_charged_twice",
+       "fiat_currency_support",
+       "passcode_forgotten",
+       "balance_not_updated_after_cheque_or_cash_deposit",
+       "card_arrival",
+       "activate_my_card",
+       "card_payment_not_recognised",
+       "pending_top_up",
+       "age_limit",
+       "card_swallowed",
+       "change_pin",
+       "atm_support",
+       "topping_up_by_card",
+       "terminate_account",
+       "country_support",
+       "receiving_money",
+       "supported_cards_and_currencies",
+       "card_about_to_expire",
+       "edit_personal_details",
+       "verify_top_up",
+       "order_physical_card",
+       "card_payment_wrong_exchange_rate",
+       "cash_withdrawal_charge",
+       "declined_card_payment",
+       "direct_debit_payment_not_recognised",
+       "getting_virtual_card",
+       "automatic_top_up",
+       "Refund_not_showing_up",
+       "compromised_card",
+       "why_verify_identity",
+       "verify_source_of_funds",
+       "pending_transfer",
+       "get_disposable_virtual_card",
+       "beneficiary_not_allowed",
+       "declined_transfer",
+       "extra_charge_on_statement",
+       "card_acceptance",
+       "verify_my_identity",
+       "top_up_failed"
+      ],
+      "label": "no_match"
+     }
+    }
+   ]
+  },
+  {
+   "id": "imdb/train/17818",
+   "epoch": 1,
+   "augmented": {
+    "positive": {
+     "criteria": null,
+     "label": null
+    }
+   },
+   "labels": [
+    1
+   ],
+   "options": [
+    [
+     "no: The reviewer disliked the film overall",
+     "yes: The reviewer liked the film overall"
+    ]
+   ],
+   "pair": []
+  }
+ ]
+}

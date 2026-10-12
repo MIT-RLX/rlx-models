@@ -23,4 +23,4 @@ cargo run -p rlx-eagle3 --example load_real_draft
 ## How it fits
 
 - [rlx-qwen3](../rlx-qwen3) / [rlx-gemma](../rlx-gemma) — target models the draft accelerates.
-- Builds on the core [rlx-ir](../../rlx) / [rlx-flow](../../rlx) graph layer for the draft network.
+- Builds on the core [rlx-ir](https://docs.rs/rlx-ir) / [rlx-flow](https://docs.rs/rlx-flow) graph layer for the draft network.

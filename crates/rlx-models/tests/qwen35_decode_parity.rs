@@ -32,12 +32,12 @@ const DEFAULT_MTP: &str = "/tmp/rlx-models/Qwen3.5-0.8B-MTP-GGUF/Qwen3.5-0.8B-Q4
 const STEPS: usize = 8;
 
 fn gguf_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("QWEN35_GGUF_PATH") {
-        if !p.is_empty() {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                return Some(path);
-            }
+    if let Ok(p) = std::env::var("QWEN35_GGUF_PATH")
+        && !p.is_empty()
+    {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            return Some(path);
         }
     }
     PathBuf::from(DEFAULT)
@@ -46,12 +46,12 @@ fn gguf_path() -> Option<PathBuf> {
 }
 
 fn mtp_gguf_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("QWEN35_MTP_GGUF_PATH") {
-        if !p.is_empty() {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                return Some(path);
-            }
+    if let Ok(p) = std::env::var("QWEN35_MTP_GGUF_PATH")
+        && !p.is_empty()
+    {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            return Some(path);
         }
     }
     PathBuf::from(DEFAULT_MTP)

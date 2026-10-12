@@ -83,6 +83,17 @@ impl MistralRunner {
     pub fn clear_multimodal_embed_override(&mut self) {
         self.inner.clear_multimodal_embed_override();
     }
+    /// KV-cached generation with an early stop; `keep_going` returning
+    /// `false` halts after that token, which is included in the result.
+    pub fn generate_until(
+        &mut self,
+        prompt_ids: &[u32],
+        n_new: usize,
+        keep_going: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        self.inner.generate_until(prompt_ids, n_new, keep_going)
+    }
+
     pub fn generate(
         &mut self,
         prompt_ids: &[u32],
@@ -109,9 +120,20 @@ impl LmRunner for MistralRunner {
         n_new: usize,
         on_token: &mut dyn FnMut(u32) -> bool,
     ) -> Result<Vec<u32>> {
-        MistralRunner::generate(self, prompt_ids, n_new, |tok| {
-            let _ = on_token(tok);
-        })
+        // Forwards to llama32's stoppable path; see the note there.
+        MistralRunner::generate_until(self, prompt_ids, n_new, on_token)
+    }
+
+    /// Host-driven decode, forwarded to the wrapped llama32 runner, which
+    /// has had both halves all along — this wrapper simply never exposed
+    /// them, so a host-driven consumer silently got the `generate` fallback
+    /// (family sampling instead of the caller's, and no logit access).
+    fn prefill_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        self.inner.predict_logits(prompt_ids)
+    }
+
+    fn decode_logits(&mut self, token: u32) -> Result<Vec<f32>> {
+        self.inner.decode_get_logits(token)
     }
 }
 

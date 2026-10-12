@@ -122,6 +122,15 @@ pub fn runner_for_hf_model_type(model_type: &str) -> Option<&'static str> {
     lookup_hf_model_type(model_type).and_then(|r| r.runner)
 }
 
+/// User-facing hint for an HF `model_type` (crate + brief usage).
+///
+/// The `model_type` counterpart of [`hint_for_gguf_arch`] — a safetensors
+/// directory sniffs to a `model_type`, and an error about it should name the
+/// crate just as a GGUF's would.
+pub fn hint_for_hf_model_type(model_type: &str) -> Option<&'static str> {
+    lookup_hf_model_type(model_type).map(|r| r.hint)
+}
+
 /// User-facing hint for a GGUF arch (crate + brief usage).
 pub fn hint_for_gguf_arch(arch: &str) -> Option<&'static str> {
     lookup_gguf_arch(arch).map(|r| r.hint)
@@ -207,10 +216,28 @@ fn register_builtin_gguf_models() {
         family: Some(GgufModelFamily::Qwen35),
         hint: "rlx-qwen35 (mlx-community 4-bit affine dirs load via MlxLoader; `--packed` for GGUF)",
     });
+    // Qwen3.8-Flash-Next — `qwen4exp`, the Qwen4 preview architecture. A
+    // separate entry rather than another `qwen35` arch because the trunk
+    // differs structurally: hyper-connections replace every layer norm, the
+    // MoE is 512-expert with a gated shared expert, and one layer reads a
+    // 51-billion-parameter hashed n-gram table.
+    register_gguf_model(GgufModelRegistration {
+        id: "qwen4exp",
+        arches: &["qwen4exp"],
+        hf_model_types: &["qwen4_exp", "qwen4exp", "qwen4_exp_text"],
+        runner: Some("qwen4exp"),
+        family: None,
+        hint: "rlx-qwen4exp (Qwen3.8-Flash-Next; needs the n-gram table shard — \
+               see RunnerOptions::ple_table)",
+    });
     register_gguf_model(GgufModelRegistration {
         id: "qwen3-vl",
         arches: &["qwen3vl", "qwen3vlmoe", "qwen3_vl", "qwen3-vl"],
-        hf_model_types: &[],
+        // Was empty, so a Qwen3-VL *safetensors* directory sniffed to
+        // nothing while its GGUF conversion resolved fine — the arch list
+        // above is only consulted for GGUF. `microsoft/AesCode-8B` and
+        // `-32B` are stock Qwen3-VL fine-tunes and say `qwen3_vl`.
+        hf_model_types: &["qwen3_vl", "qwen3_vl_moe"],
         runner: Some("qwen3-vl"),
         family: Some(GgufModelFamily::Qwen3Vl),
         hint: "rlx-qwen3-vl (`Qwen3VlRunner::builder().weights(...).mmproj(...)`)",

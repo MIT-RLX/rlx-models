@@ -44,6 +44,7 @@ pub mod precision;
 mod profile;
 pub mod sampling;
 pub mod spec;
+pub mod synth;
 pub mod tool_call;
 
 pub use builder::{
@@ -61,12 +62,14 @@ pub use flow::{
 #[cfg(feature = "mmap-kv")]
 pub use generator::KvStoreConfig;
 pub use generator::Qwen3Generator;
-pub use high_level_runner::{Precision, Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder};
+pub use high_level_runner::{
+    Precision, Qwen3ConfigSource, Qwen3Runner, Qwen3RunnerBuilder, qwen3_config_from_gguf_path,
+};
 pub use pipeline::{
     BlockSpec, Qwen3PipelineStage, block_weight_filter, build_qwen3_block_built,
     build_qwen3_block_graph,
 };
-pub use pipeline_decode::Qwen3PipelineDecodeStage;
+pub use pipeline_decode::{Qwen3Family, Qwen3PipelineDecodeStage};
 pub use profile::{QWEN3_PROFILE_FILE, qwen3_profile_default, qwen3_profile_near_weights};
 pub use sampling::{
     SampleOpts, apply_repetition_penalty, sample_token, sample_token_at, softmax_logits,

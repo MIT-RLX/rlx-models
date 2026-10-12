@@ -15,7 +15,7 @@
 
 //! Talker speculative-decoding AR loop — `cfg(feature = "speculative-decode")`.
 //!
-//! Wraps [`Qwen3TtsMegakernel`] with a [`synthesize_codec_ar_speculative`]
+//! Wraps [`Qwen3TtsMegakernel`] with a [`Qwen3TtsMegakernel::synthesize_codec_ar_speculative`]
 //! variant of [`crate::megakernel::Qwen3TtsMegakernel::synthesize_codec_ar`]
 //! that uses a [`DraftModel`] to propose `K` future g0 codec tokens,
 //! verifies them in a single batched talker forward, and commits the
@@ -81,14 +81,14 @@ pub struct SpecConfig<'a, D: DraftModel> {
     /// committed g0 tokens are all identical, the megakernel skips
     /// speculation for that step and does plain single-token AR instead.
     /// This breaks the runaway-acceptance pathology that affects any draft
-    /// whose proposals don't vary across the K slots (e.g. [`TrivialDraft`]).
+    /// whose proposals don't vary across the K slots (e.g. [`TrivialDraft`](crate::talker::speculative::TrivialDraft)).
     /// Set to `0` to disable. Default is 3.
     pub cascade_guard_window: usize,
     /// When `Some(n)`, use self-speculative early-exit drafting: the
     /// talker's first `n` transformer layers act as the draft model.
     /// Bypasses the [`DraftModel`] dispatch entirely — drafts and
     /// per-position codec_embs are produced inline by the megakernel via
-    /// [`TalkerEagerModel::early_exit_decode_step`].
+    /// [`TalkerEagerModel::early_exit_decode_step`](crate::talker::eager::TalkerEagerModel::early_exit_decode_step).
     ///
     /// `n` should be roughly `talker_layers / 6..4` (e.g. 4–7 layers for a
     /// 28-layer talker). Smaller → cheaper draft but lower acceptance;

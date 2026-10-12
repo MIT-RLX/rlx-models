@@ -38,8 +38,8 @@ pub use weights::MmProjWeights;
 #[cfg(feature = "qwen35-vlm")]
 #[allow(unused_imports)] // public API re-exports
 pub use preprocess::{resize_rgb_nearest, rgb_to_nchw_f32, smart_resize};
-#[cfg(feature = "qwen35-vlm")]
-#[allow(unused_imports)] // public API re-exports
+// Plain data structs with no optional dependency in them, and `MmProjWeights`
+// cannot be constructed without naming them, so they are unconditional.
 pub use weights::{DeepstackWeights, VisionBlockWeights};
 
 #[cfg(feature = "qwen35-vlm")]

@@ -61,6 +61,9 @@ cuda = ["rlx-runtime/cuda", "dep:rlx-cuda"]
 rocm = ["rlx-runtime/rocm", "dep:rlx-rocm"]
 vulkan = ["rlx-runtime/vulkan", "dep:rlx-wgpu"]
 coreml = ["rlx-runtime/coreml"]
+# Google TPU via libtpu/PJRT. Pure forwarding, like `coreml`: the backend
+# lives in rlx-runtime, this only makes it reachable.
+tpu = ["rlx-runtime/tpu"]
 # Text in / text out for the DeepSeek-V4.1 runner. Without it the runner still
 # generates, but on token ids and with a caller-supplied vocabulary.
 tokenizer = ["dep:tokenizers"]

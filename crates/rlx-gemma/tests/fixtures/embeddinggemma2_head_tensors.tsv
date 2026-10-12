@@ -1,0 +1,19 @@
+# google/embeddinggemma-2 — tensors outside the per-layer stacks,
+# read from the published safetensors header. name<TAB>shape
+# total tensors in the checkpoint: 1376
+audio_tower.output_proj.bias	1536
+audio_tower.output_proj.weight	1536,1024
+audio_tower.subsample_conv_projection.input_proj_linear.weight	1024,1024
+audio_tower.subsample_conv_projection.layer0.conv.weight	128,1,3,3
+audio_tower.subsample_conv_projection.layer0.norm.weight	128
+audio_tower.subsample_conv_projection.layer1.conv.weight	32,128,3,3
+audio_tower.subsample_conv_projection.layer1.norm.weight	32
+embed_audio.embedding_projection.weight	512,1536
+embed_vision.embedding_projection.weight	512,768
+language_model.embed_tokens.weight	262144,512
+language_model.embedding_projection.weight	768,512
+language_model.norm.weight	512
+language_model.ple.per_layer_model_projection.weight	12288,512
+language_model.ple.per_layer_projection_norm.weight	512
+vision_tower.patch_embedder.input_proj.weight	768,768
+vision_tower.patch_embedder.position_embedding_table	2,10240,768

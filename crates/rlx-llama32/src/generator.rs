@@ -2381,11 +2381,7 @@ impl Llama32Generator {
             .unwrap_or(SINGLE_BUCKET_MIN_BYTES);
         let max = max_past.max(1) as u64;
         if cutoff > 0 && packed_bytes.is_some_and(|b| b >= cutoff) {
-            // One bucket spanning the whole range — `new` takes `Vec<Range<u64>>`,
-            // so the `single_range_in_vec_init` "collect the range" fix is a type
-            // error here, not a simplification.
-            #[allow(clippy::single_range_in_vec_init)]
-            return BucketedCompileCache::new(device, vec![1..max + 1]);
+            return rlx_core::flow_util::single_bucket_decode_cache(device, max as usize);
         }
         BucketedCompileCache::power_of_two_ladder(device, /*min*/ 1, max)
     }

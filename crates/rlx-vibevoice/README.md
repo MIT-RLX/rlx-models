@@ -1,7 +1,7 @@
 # rlx-vibevoice
 
 [VibeVoice](https://huggingface.co/microsoft/VibeVoice-1.5B)'s **acoustic σ-VAE
-tokenizer decoder** ported to [rlx-runtime](../rlx-runtime) graphs, running
+tokenizer decoder** ported to [rlx-runtime](https://docs.rs/rlx-runtime) graphs, running
 natively and **bit-exactly on every backend** (CPU / Metal / MLX / CUDA / ROCm /
 wgpu / Vulkan).
 

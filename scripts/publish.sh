@@ -149,6 +149,7 @@ SKIPPED=(
     rlx-tts-bench
     rlx-vision-bench
     rlx-termclean
+    rlx-fgd
 )
 
 # Tier definitions. Each array entry is a single tier; space-separated
@@ -164,7 +165,7 @@ TIERS=(
     "rlx-bioclip2 rlx-clinicalbert rlx-conformer-ctc rlx-dac rlx-deepseek rlx-diffusiongemma rlx-dinov2 rlx-dinov3 rlx-dsv41 rlx-embed rlx-fft rlx-florence2 rlx-funasr rlx-glm5next rlx-grounding-dino rlx-hoct rlx-inkling rlx-llama4 rlx-minimax rlx-motif rlx-nemotron-asr rlx-neuralhash rlx-ocr rlx-ocr2 rlx-ppocrv6 rlx-sam rlx-siglip2 rlx-ten-vad rlx-timesfm3 rlx-tiny-tts rlx-uni2 rlx-unlimited-ocr rlx-upscale rlx-vad rlx-vjepa2 rlx-wake rlx-wav2vec2-bert"
     "rlx-glm4moe rlx-jamba rlx-jina-ocr rlx-kimi-k3 rlx-ling rlx-minimax-h3 rlx-nanowakeword rlx-parakeet rlx-porcupine rlx-qwen3 rlx-sam2 rlx-sam3 rlx-translate rlx-trellis2 rlx-tsac rlx-tts rlx-vit-elastic rlx-vlash rlx-voxrt rlx-wakeword-core rlx-wespeaker"
     "rlx-dflash rlx-diarize rlx-eval rlx-flux2 rlx-locateanything rlx-omnicoder rlx-openwakeword rlx-qwen25-vl rlx-qwen35 rlx-serve rlx-vibevoice-asr"
-    "rlx-fara rlx-gemma rlx-laguna rlx-lfm rlx-llama32 rlx-neutrino rlx-qwen3-vl rlx-s1 rlx-wakeword rlx-whisper"
+    "rlx-fara rlx-gemma rlx-kev rlx-laguna rlx-lfm rlx-llama32 rlx-neutrino rlx-qwen3-vl rlx-qwen4exp rlx-s1 rlx-wakeword rlx-whisper"
     "rlx-aec rlx-bonsai rlx-carbon rlx-chatterbox rlx-cohere rlx-eagle3 rlx-f0 rlx-f5tts rlx-fireredaudio rlx-gepard rlx-glm rlx-gpt-oss rlx-granite rlx-hviske rlx-hy-mt rlx-kittentts rlx-lfm-vl rlx-melotts rlx-metavoice rlx-mimi rlx-minicpm5 rlx-miotts rlx-miratts rlx-mistral rlx-mllama rlx-moonshine rlx-moss-nano rlx-nanbeige rlx-nemotron rlx-nemotron-omni rlx-neutts rlx-nllb rlx-openai rlx-openvoice rlx-orpheus rlx-parlertts rlx-phi rlx-pocket-tts rlx-qwen3-asr rlx-soprano rlx-supertonic rlx-tada rlx-tinyllama rlx-translategemma rlx-voxtral rlx-voxtral-tts"
     "rlx-kokoro rlx-kyutai-tts rlx-luxtts rlx-maya1 rlx-mistral-vl rlx-moshi rlx-piper rlx-qwen3-tts rlx-sesame rlx-voice-gender rlx-voxtral-tts-train rlx-zonos"
     "rlx-qwen3-tts-train rlx-styletts2 rlx-zipvoice"
@@ -486,6 +487,9 @@ list_tiers() {
                 ;;
             rlx-gemma-inflect-nano)
                 echo "  - rlx-gemma-inflect-nano   (publish = false; Gemma + Inflect demo)"
+                ;;
+            rlx-fgd)
+                echo "  - rlx-fgd                  (publish = false; arXiv:2606.16926 reproduction)"
                 ;;
             rlx-narma10)
                 echo "  - rlx-narma10              (publish = false; NARMA-10 reference)"

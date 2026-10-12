@@ -44,4 +44,4 @@ use rlx_quant_calib::{group_quant_bytes, write_gguf_file, SinkTensor};
 ## How it fits
 
 - Consumed by [`rlx-tune`](../rlx-tune) (DWQ, training-time flows) and any model crate that ships quantized GGUF weights.
-- Depends only on [`rlx-gguf`](../rlx-gguf) for the serialization sink — no runtime/backend deps, so calibration is pure CPU host code.
+- Depends only on [`rlx-gguf`](https://docs.rs/rlx-gguf) for the serialization sink — no runtime/backend deps, so calibration is pure CPU host code.

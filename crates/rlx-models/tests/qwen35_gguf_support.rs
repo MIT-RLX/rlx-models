@@ -33,12 +33,12 @@ pub const BENCH_DECODE_TOKENS_SHORT_ROW: usize = 8;
 
 /// Resolve real weights: `QWEN35_GGUF_PATH` or [`DEFAULT_GGUF`].
 pub fn gguf_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("QWEN35_GGUF_PATH") {
-        if !p.is_empty() {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                return Some(path);
-            }
+    if let Ok(p) = std::env::var("QWEN35_GGUF_PATH")
+        && !p.is_empty()
+    {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            return Some(path);
         }
     }
     let path = PathBuf::from(DEFAULT_GGUF);

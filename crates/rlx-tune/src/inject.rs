@@ -40,8 +40,19 @@ pub enum FuseMode {
     Unfused,
 }
 
-/// Emit `y = x·W + scale·((x·A)·B)` in either fusion mode. `r` is the rank;
-/// `out_shape` is the matmul output shape; `x` has its last dim contracted.
+/// A per-target dropout mask input: its name and the shape the caller must
+/// feed. See [`inject_lora_dropout`].
+#[derive(Debug, Clone)]
+pub struct DropoutMask {
+    pub name: String,
+    pub shape: Vec<usize>,
+}
+
+/// Emit `y = x·W + scale·((dropout(x)·A)·B)` in either fusion mode. `r` is the
+/// rank; `out_shape` is the matmul output shape; `x` has its last dim
+/// contracted. `drop` is an optional mask multiplied into the LoRA branch's
+/// input only — never the frozen base path, matching peft.
+#[allow(clippy::too_many_arguments)]
 fn lora_forward(
     g: &mut Graph,
     x: NodeId,
@@ -52,12 +63,27 @@ fn lora_forward(
     out_shape: Shape,
     scale: f32,
     mode: FuseMode,
+    drop: Option<NodeId>,
 ) -> NodeId {
     match mode {
-        FuseMode::Fused => g.lora_matmul(x, w, a, b, scale, out_shape),
+        FuseMode::Fused => {
+            // The fused op has no place to put the mask, so fall back to the
+            // explicit form when dropout is on rather than silently ignoring it.
+            match drop {
+                None => g.lora_matmul(x, w, a, b, scale, out_shape),
+                Some(_) => {
+                    lora_forward(g, x, w, a, b, r, out_shape, scale, FuseMode::Unfused, drop)
+                }
+            }
+        }
         FuseMode::Unfused => {
             let f = DType::F32;
             let base = g.matmul(x, w, out_shape.clone());
+            // Dropout applies to the adapter branch only.
+            let x = match drop {
+                Some(m) => g.mul(x, m),
+                None => x,
+            };
             let mut xa_dims: Vec<usize> = g
                 .shape(x)
                 .dims()
@@ -81,11 +107,34 @@ fn lora_forward(
 /// Rewrite `forward` with LoRA on every matching `MatMul`, in the chosen
 /// [`FuseMode`]. Returns the new graph and the injected `A`/`B` params.
 pub fn inject_lora(forward: &Graph, spec: &LoraSpec, mode: FuseMode) -> (Graph, Vec<AdapterParam>) {
+    let (g, params, _) = inject_lora_dropout(forward, spec, mode);
+    (g, params)
+}
+
+/// [`inject_lora`] with `LoraSpec::dropout` honoured.
+///
+/// Dropout is emitted as a **multiply by a host-supplied mask input**, one per
+/// targeted module, rather than a new op: it needs no backend support, its
+/// backward is `mul`'s (already correct everywhere), and the caller keeps
+/// control of the RNG — which matters when a run has to be reproducible.
+///
+/// Feed each returned [`DropoutMask`] a fresh Bernoulli(`1 - p`) sample scaled
+/// by `1/(1 - p)` (inverted dropout, so nothing has to change at inference),
+/// or all-ones to disable it. **An unbound mask input reads zeros**, which
+/// would silently zero the whole adapter branch — so a caller that ignores
+/// these must pass `dropout = 0.0` and get an empty vector back.
+pub fn inject_lora_dropout(
+    forward: &Graph,
+    spec: &LoraSpec,
+    mode: FuseMode,
+) -> (Graph, Vec<AdapterParam>, Vec<DropoutMask>) {
     let r = spec.rank;
     let f = DType::F32;
     let mut new = Graph::new(forward.name.clone());
     let mut map: Vec<NodeId> = Vec::with_capacity(forward.nodes().len());
     let mut params: Vec<AdapterParam> = Vec::new();
+    let mut masks: Vec<DropoutMask> = Vec::new();
+    let use_dropout = spec.dropout > 0.0;
 
     for node in forward.nodes() {
         let inputs: Vec<NodeId> = node.inputs.iter().map(|i| map[i.0 as usize]).collect();
@@ -122,6 +171,18 @@ pub fn inject_lora(forward: &Graph, spec: &LoraSpec, mode: FuseMode) -> (Graph, 
                     node: b,
                     shape: vec![r, n],
                 });
+                let drop = use_dropout.then(|| {
+                    let dims: Vec<usize> = new
+                        .shape(x)
+                        .dims()
+                        .iter()
+                        .map(|d| d.unwrap_static())
+                        .collect();
+                    let name = format!("lora.{wname}.dropout");
+                    let id = new.input(name.clone(), Shape::new(&dims, f));
+                    masks.push(DropoutMask { name, shape: dims });
+                    id
+                });
                 lora_forward(
                     &mut new,
                     x,
@@ -132,6 +193,7 @@ pub fn inject_lora(forward: &Graph, spec: &LoraSpec, mode: FuseMode) -> (Graph, 
                     node.shape.clone(),
                     spec.scale(),
                     mode,
+                    drop,
                 )
             }
             None => new.append_node(
@@ -146,7 +208,22 @@ pub fn inject_lora(forward: &Graph, spec: &LoraSpec, mode: FuseMode) -> (Graph, 
 
     let outs = forward.outputs.iter().map(|o| map[o.0 as usize]).collect();
     new.set_outputs(outs);
-    (new, params)
+    (new, params, masks)
+}
+
+/// Sample an inverted-dropout mask: `1/(1-p)` with probability `1-p`, else 0.
+///
+/// Inverted so the expected activation is unchanged and inference needs no
+/// rescaling. `p == 0` yields all ones.
+pub fn sample_dropout_mask(len: usize, p: f32, rng: &mut impl FnMut() -> f32) -> Vec<f32> {
+    if p <= 0.0 {
+        return vec![1.0; len];
+    }
+    let keep = 1.0 - p;
+    let scale = 1.0 / keep;
+    (0..len)
+        .map(|_| if rng() < keep { scale } else { 0.0 })
+        .collect()
 }
 
 /// Rewrite `forward` with **DoRA** (weight-decomposed LoRA) on every matching
@@ -222,8 +299,18 @@ pub fn inject_dora(forward: &Graph, spec: &DoraSpec, mode: FuseMode) -> (Graph, 
                 let rescale = new.div(mag, norm); // [n]
 
                 // LoRA direction (fused/unfused), then per-column magnitude.
-                let lora_out =
-                    lora_forward(&mut new, x, w, a, b, r, node.shape.clone(), scale, mode);
+                let lora_out = lora_forward(
+                    &mut new,
+                    x,
+                    w,
+                    a,
+                    b,
+                    r,
+                    node.shape.clone(),
+                    scale,
+                    mode,
+                    None,
+                );
                 new.mul(lora_out, rescale) // broadcast [n] over the batch
             }
             None => new.append_node(

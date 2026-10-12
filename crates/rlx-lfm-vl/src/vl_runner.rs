@@ -251,6 +251,22 @@ impl LmRunner for LfmVlRunner {
         // Use LmRunner impl on LfmRunner (honours stop signal).
         LmRunner::generate(&mut self.lm, prompt_ids, n_new, on_token)
     }
+
+    /// Host-driven decode, forwarded to the inner text runner.
+    ///
+    /// Forwarding is the right default even when the inner family does not
+    /// support it: the trait's own default and the inner's refusal are the
+    /// same "unsupported" error, so a consumer that probes for the pair sees
+    /// no difference — while a family that *does* support it stops being
+    /// hidden behind this wrapper and silently downgraded to the `generate`
+    /// fallback (family sampling instead of the caller's, no logit access).
+    fn prefill_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        LmRunner::prefill_logits(&mut self.lm, prompt_ids)
+    }
+
+    fn decode_logits(&mut self, token: u32) -> Result<Vec<f32>> {
+        LmRunner::decode_logits(&mut self.lm, token)
+    }
     fn supports_multimodal(&self) -> bool {
         self.has_vision()
     }

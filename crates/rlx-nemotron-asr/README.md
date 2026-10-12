@@ -20,7 +20,7 @@ Model card: <https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>
 ```
 
 Native `.nemo` reading lives in the sibling crate
-[`rlx-nemo`](../../../rlx/crates/rlx-nemo) (tar + `torch.save` zip + a minimal
+[`rlx-nemo`](https://docs.rs/rlx-nemo) (tar + `torch.save` zip + a minimal
 torch pickle VM + YAML). Everything in this crate is derived from the `.nemo`'s
 `model_config.yaml`; no hyperparameters are hard-coded.
 

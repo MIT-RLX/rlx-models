@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit: cargo fmt + clippy on staged Rust files (warnings as errors).
+# Pre-commit: cargo fmt + clippy + rustdoc on staged Rust files (warnings as errors).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

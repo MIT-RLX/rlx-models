@@ -387,7 +387,18 @@ pub fn sample_token_stateful(
     let mut work = logits.to_vec();
     let chain = opts.into_chain();
     let mut rng = Philox4x32::new(opts.seed.wrapping_add(step));
-    chain.sample(&mut work, history, state, &mut rng)
+    // `greedy` is not a chain step — it changes how the chain *ends*. Without
+    // this branch the chain always finished with a multinomial draw, so a
+    // caller asking for `temperature = 0` got a sample from the full
+    // distribution: usually the top token, because the distribution is
+    // usually sharp, and occasionally not. Deterministic decoding was not
+    // deterministic, and the difference only showed up as the odd
+    // inexplicable word.
+    if opts.greedy {
+        chain.sample_argmax(&mut work, history, state, &mut rng)
+    } else {
+        chain.sample(&mut work, history, state, &mut rng)
+    }
 }
 
 fn sample_token_inner(logits: &[f32], opts: SampleOpts, step: u64) -> usize {
@@ -640,6 +651,58 @@ mod tests {
         let mut logits = vec![0.1, 0.5, 0.2, -1.0];
         apply_logit_bias(&mut logits, &[(2, 1.0)]);
         assert_eq!(sample_token(&logits, SampleOpts::greedy()), 2);
+    }
+
+    /// A distribution with a clear winner that is nonetheless easy to miss:
+    /// the top token holds about 73% of the mass, so a multinomial draw
+    /// picks something else roughly one time in four.
+    fn soft_logits() -> Vec<f32> {
+        let mut v = vec![0.0f32; 64];
+        v[13] = 3.0;
+        v[7] = 1.5;
+        v[42] = 1.0;
+        v[5] = 0.5;
+        v
+    }
+
+    #[test]
+    fn zero_temperature_is_deterministic_through_the_chain() {
+        // `greedy` is not a chain step, and the chain always ended in a
+        // multinomial draw — so this asked for determinism and got a sample.
+        // With a sharp distribution it looked right most of the time, which
+        // is why it survived.
+        let opts = SampleOpts::greedy();
+        let logits = soft_logits();
+        for step in 0..200u64 {
+            let got = sample_token_with_history(&logits, &opts, &[], step);
+            assert_eq!(got, 13, "step {step} did not take the top token");
+        }
+    }
+
+    #[test]
+    fn greedy_still_honours_a_repetition_penalty() {
+        // Deterministic means "do not roll dice", not "ignore my other
+        // settings": a penalised token must still lose.
+        let mut opts = SampleOpts::greedy();
+        opts.repetition_penalty = 10.0;
+        opts.repetition_window = 8;
+        let logits = soft_logits();
+        // 13 has already been produced, so the penalty should push it below 7.
+        let got = sample_token_with_history(&logits, &opts, &[13], 0);
+        assert_eq!(got, 7, "the penalty did not move the greedy choice");
+    }
+
+    #[test]
+    fn a_positive_temperature_still_samples() {
+        // The other half of the contract: this one is *meant* to vary.
+        let mut opts = SampleOpts::greedy();
+        opts.greedy = false;
+        opts.temperature = 2.0;
+        let logits = soft_logits();
+        let picks: std::collections::HashSet<u32> = (0..200u64)
+            .map(|s| sample_token_with_history(&logits, &opts, &[], s))
+            .collect();
+        assert!(picks.len() > 1, "sampling returned one token every time");
     }
 
     #[test]

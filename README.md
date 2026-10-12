@@ -2,7 +2,7 @@
 
 Concrete model graph builders + weight loaders for RLX — the "what actually runs" layer.
 
-**[182 model families](MODELS.md)** across 16 categories — language & multimodal LLMs, vision, speech (ASR/TTS), audio codecs, and more — each a standalone crate under `crates/`. See **[MODELS.md](MODELS.md)** for the complete catalog with per-model backend support.
+**[184 model families](MODELS.md)** across 16 categories — language & multimodal LLMs, vision, speech (ASR/TTS), audio codecs, and more — each a standalone crate under `crates/`. See **[MODELS.md](MODELS.md)** for the complete catalog with per-model backend support.
 
 Standalone repo: [github.com/MIT-RLX/rlx-models](https://github.com/MIT-RLX/rlx-models). Clone next to [`rlx`](https://github.com/MIT-RLX/rlx):
 
@@ -51,9 +51,9 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 
 ## Model catalog
 
-This workspace ships **182 model families** (one crate per architecture), plus 4 training crates and shared infrastructure. Highlights:
+This workspace ships **184 model families** (one crate per architecture), plus 4 training crates and shared infrastructure. Highlights:
 
-- **36 language models** — Qwen3 / 3.5 / 3.6 / 3.8, Llama 3.2 / 4, Gemma, DeepSeek-V3 / V4, GLM-4.x / GLM-5.3, MiniMax, Jamba, Mamba, Phi, gpt-oss, Ling 3.0, Motif-3, MiniCPM5, TinyLlama, … plus two **diffusion LMs** (DiffusionGemma, LLaDA2) and speculative-decoding drafters (EAGLE3, DFlash).
+- **38 language models** — Qwen3 / 3.5 / 3.6 / 3.8 / 3.8-Flash-Next, Llama 3.2 / 4, Gemma, DeepSeek-V3 / V4, GLM-4.x / GLM-5.3, MiniMax, Jamba, Mamba, Phi, gpt-oss, Ling 3.0, Motif-3, MiniCPM5, TinyLlama, … plus two **diffusion LMs** (DiffusionGemma, LLaDA2) and speculative-decoding drafters (EAGLE3, DFlash).
 - **12 vision-language / omni** — Fara1.5, Qwen2.5-VL, Llama-3.2-Vision, Florence-2, LocateAnything, Kimi-K3, Inkling, …
 - **10 vision** encoders / detection / segmentation — DINOv2 / v3, SigLIP 2, V-JEPA 2, SAM 1 / 2 / 3, Grounding DINO, NeuralHash — plus **5 biomedical** (incl. Carbon DNA LMs), **3 embedding**, and **4 image / video / 3D generation** models (FLUX.2, TRELLIS.2, a Monte-Carlo render denoiser).
 - **2 time-series** forecasters — Google TimesFM-3, plus a NARMA-10 / echo-state-network parity baseline.
@@ -80,7 +80,7 @@ rlx-models/
 
 ### Crates
 
-The table below highlights shared infrastructure and a selection of model crates; for the **complete** model list (all 182 families, with backends) see **[MODELS.md](MODELS.md)**.
+The table below highlights shared infrastructure and a selection of model crates; for the **complete** model list (all 184 families, with backends) see **[MODELS.md](MODELS.md)**.
 
 | Crate | Model / role |
 |---|---|
@@ -104,6 +104,7 @@ The table below highlights shared infrastructure and a selection of model crates
 | `rlx-sam-ir` | shared mask-decoder IR |
 | `rlx-qwen3` | Qwen3 LM |
 | `rlx-qwen35` | Qwen3.5 / 3.6 |
+| [`rlx-qwen4exp`](crates/rlx-qwen4exp/README.md) | Qwen3.8-Flash-Next (PLE + GDN/QSA + 512-expert MoE, decode, MTP, native ViT) |
 | [`rlx-s1`](crates/rlx-s1/README.md) | S1-mini by Superwhisper ([superwhisper/s1-mini](https://huggingface.co/superwhisper/s1-mini)); ASR transcript text normalization on a Qwen3-0.6B fine-tune — fillers, self-corrections, punctuation, spoken numbers/dates/currency/emails; token-identical to `transformers` greedy |
 | [`rlx-fara`](crates/rlx-fara/README.md) | Microsoft Fara1.5 CUA ([Fara1.5-4B](https://huggingface.co/microsoft/Fara1.5-4B) / [9B](https://huggingface.co/microsoft/Fara1.5-9B); Qwen3.5 multimodal) |
 | `rlx-llama32` | LLaMA 3.2 |
@@ -127,6 +128,7 @@ The table below highlights shared infrastructure and a selection of model crates
 | [`rlx-conformer-ctc`](crates/rlx-conformer-ctc/README.md) | NVIDIA NeMo Conformer-CTC (`stt_en_conformer_ctc_small`, native `.nemo`) |
 | `rlx-diarize` | Speaker diarization (embedding + clustering) |
 | [`rlx-fft`](crates/rlx-fft/README.md) | Learned butterfly FFT, Welch PSD, fast top-K spectral peaks |
+| [`rlx-fgd`](crates/rlx-fgd/README.md) | Functional gradient descent with adaptive representations ([arXiv:2606.16926](https://arxiv.org/abs/2606.16926)) — Algorithm 1 + Section 3.1 theory + all four experiments |
 | [`rlx-vad`](crates/rlx-vad/README.md) | Earshot + Silero VAD (embedded weights, 16 kHz) |
 | [`rlx-ten-vad`](crates/rlx-ten-vad/README.md) | TEN-VAD port (embedded weights, 16 kHz, pitch-aware) |
 | [`rlx-wake`](crates/rlx-wake/README.md) | Shared wake-word API / mel / WakeCnn / ternary |
@@ -355,6 +357,7 @@ just fetch-minicpm5-gguf Q4_K_M
 - **`qwen3-tts`** — Qwen3-TTS Base (voice clone) + CustomVoice. ECAPA x-vector, 28-layer talker, 16-group code predictor, 12 Hz Mimi decode. [`VoiceClone`](crates/rlx-qwen3-tts/README.md#library-api) API, progressive streaming, and `bidirectional_voice_chat` (Whisper → Qwen3-0.6B → TTS). See [Qwen3-TTS](#qwen3-tts).
 - **`voxtral-tts`** — Voxtral-4B-TTS native inference (Tekken tokenizer, codec decode, compiled LM). **`voxtral-tts-train`** — RLX autodiff training for reference-audio cloning (codec encoder + full attention LoRA). See [Voxtral TTS](#voxtral-tts).
 - **`jlens`** — **Jacobian lens**: read out what an internal activation is disposed to make a model *say*, via `lens_l(h) = unembed(J_l · h)` with `J_l = E[∂h_final/∂h_l]`. A native port of the reference for *Verbalizable Representations Form a Global Workspace in Language Models*, **validated against it to 1.3–2.8e-6**. Model-agnostic behind one `LensModel` trait — four implementations (Qwen3.5 hybrid GGUF, Qwen3 dense safetensors, DINOv3, Qwen2.5-VL). Fits on CPU/Metal/MLX/CUDA/ROCm (agreeing to ~1e-7); *applying* a fitted lens is a forward pass, so any backend can do it. `examples/vl_report.rs` is one command for the whole vision-language picture — per-layer attention, per-word image masks, patch segmentation, transported word readout. See [Interpretability](#interpretability--the-jacobian-lens) and [crates/rlx-jlens/README.md](crates/rlx-jlens/README.md).
+- **`fgd`** — **Functional gradient descent with adaptive representations** ([arXiv:2606.16926](https://arxiv.org/abs/2606.16926), NeurIPS 2026): gradient descent in *function space* rather than on a fixed parametrisation. A fixed approximation of the (infinite-dimensional) functional gradient leaves an error floor the iteration never gets below; the paper refines the representation mid-optimisation using a test built only from computable quantities, and folds that approximation into the convergence proof. Algorithm 1, the Section 3.1 theory in closed form, and **all four experiments** — `L²` fitting, RKHS regression over decision trees in `L^∞`, the wave equation in Sobolev/frequency space, and radiance fields (a DDA volumetric renderer with exact per-voxel integration, NeRF cameras, spherical-harmonic colour). `Refinement::Fixed` turns the same driver into the paper's fixed-representation baseline, so both sides of the comparison run on one code path. Verified rather than assumed: the descent lemma and the Polyak-Łojasiewicz rate against real runs, the `L^∞` Lipschitz bound against the actual sup-norm error, and **Proposition A.3's radiance gradient against finite differences of the loss** (agreeing to 0.4%). Seven defects in the authors' reference code are documented in [crates/rlx-fgd/README.md](crates/rlx-fgd/README.md).
 - **`run`** — `Qwen3Runner`, `SamRunner`, … builders for one-call inference.
 
 ## Text-to-speech (TTS)
@@ -1119,13 +1122,24 @@ rm -f .cargo/config.toml
 cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.16, no path source
 ```
 
+Adding a model: [docs/adding-a-model.md](docs/adding-a-model.md) — identifying
+the architecture, getting the tensor manifest from a header without downloading
+weights, the test discipline, and the gates.
+
 Pre-flight (same gates as `scripts/publish.sh` / `just lint` / CI):
 
 ```sh
 just fmt-check
-just lint
+just lint                        # clippy + rustdoc, -D warnings, default features
+just lint-features --changed     # the states `just lint` cannot see
 cargo test --workspace --release --exclude kitten_tts_mini_rlx
 ```
+
+`just lint` builds **default features only**, so code behind an optional
+feature is compiled by nothing — the class of break where a field declared
+`#[cfg(feature = "x")]` is read without the gate. `just lint-features` checks
+each package's default features and its default + every optional extra; see
+[AGENTS.md](AGENTS.md#verification).
 
 Local auto-gate on commit: `just install-hooks` (sets `core.hooksPath=.githooks`). Cursor agents also rustfmt on edit and re-run the scoped gate on turn end.
 
@@ -1197,6 +1211,7 @@ Asset helpers: [`rlx-assets`](crates/rlx-assets/README.md) (`native-pack` featur
 | `sam`, `sam2`, `sam3` | yes | yes (`sam` / `mobile-sam` / `sam2` F32 drain). **SAM3**: F32 drain or K-quant via fused CPU `gguf_matmul` (ViT, text, detector host+IR, seg cross-attn/mask/scoring, 1×1 inst/sem `DequantMatMul` IR); 3×3 pixel conv stays packed at load (one-time dequant cache on host, materialize for tier-1 IR compile) | **SAM1 ViT-H / SAM2**: no official Hub GGUF — [segment+anything](https://huggingface.co/models?library=gguf&search=segment+anything) (0), [sam2.1](https://huggingface.co/models?library=gguf&search=sam2.1) (0). **MobileSAM**: [mobilesam](https://huggingface.co/models?library=gguf&search=mobilesam) (2), e.g. [Acly/MobileSAM-GGUF](https://huggingface.co/Acly/MobileSAM-GGUF) (`mobile-sam`). **SAM3**: [sam3](https://huggingface.co/models?library=gguf&search=sam3) (1) — [rob-laz/sam3-gguf](https://huggingface.co/rob-laz/sam3-gguf) (`sam3`). Beware [TheBloke/SAM-GGUF](https://huggingface.co/TheBloke/SAM-GGUF) — 7B **chat LM** (`llama`), not Segment Anything. | production (encoder + mask path) |
 | `qwen3` | yes | yes (Q4_K_M / Q5_K_M / Q6_K) | **yes** — [qwen3](https://huggingface.co/models?library=gguf&search=qwen3) (many); e.g. `unsloth/Qwen3-*-GGUF` | top-1 vs HF (`parity-candle` + weights) |
 | `qwen35` | — | yes | **yes** — same hub space; e.g. `Qwen/Qwen3.5-0.8B-Base`, `unsloth/Qwen3.5-0.8B-GGUF`, `unsloth/Qwen3.6-27B-MTP-GGUF`, `unsloth/Qwen3.8-27B-GGUF` (VLM: text GGUF + CLIP `mmproj-*.gguf`; hybrid gated-DeltaNet + periodic attention, MTP head; Q3_K_S text generation coherent on CPU/Metal, verified vs llama.cpp; `just fetch-qwen35-08b`, `just fetch-qwen36-27b`, `just fetch-qwen38-27b`). Qwen3.8-27B is the same `qwen35` arch as Qwen3.6-27B — identical metadata, 866-tensor layout and tokenizer; see [crates/rlx-qwen35/README.md](crates/rlx-qwen35/README.md#qwen38-27b). `Doses-AI/Pestle-27B-Ternary-GGUF` also loads here (`just fetch-pestle-27b`): Qwen3.6-27B with Pestle factorized ternary projections (`Q2_0` factor pairs + `G8_0` embed/lm_head + one dense BF16 block) — greedy-identical to the `mortar.cpp` reference on Metal; both schemes + the factorized graph verified on **all 7** backends | coherent vs llama.cpp (`QWEN35_GGUF_PATH` / `parity-llama`) |
+| `qwen4exp` | yes | yes (packed projections and expert banks; host-gathered PLE) | **yes** — e.g. [`unsloth/Qwen3.8-Flash-Next-GGUF`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF), [`ggml-org/Qwen3.8-Flash-Next-GGUF`](https://huggingface.co/ggml-org/Qwen3.8-Flash-Next-GGUF) (`general.architecture = qwen4exp`; the 51 B-parameter `per_layer_token_embd` n-gram table is gathered host-side, never a graph param) | both block kinds **and decode-vs-prefill** on published weights via a 186 MB range-sliced subset (`just qwen4exp-real`); tensor manifest + orientations checked against the real 1224-tensor list for all 48 blocks; prefill / chunked prefill / decode / MTP / native ViT all run (the tower on 3 real mmproj blocks, and element-for-element against `rlx-qwen35`'s independent implementation); no end-to-end generation on the full 48-layer checkpoint |
 | `llama32` | yes | yes | **yes** — [llama-3.2](https://huggingface.co/models?library=gguf&search=llama-3.2) (~5k) | vs llama.cpp when `LLAMA32_GGUF_PATH` |
 | `minicpm5` | yes | yes (`llama`) | **yes** — [MiniCPM5-1B-GGUF](https://huggingface.co/openbmb/MiniCPM5-1B-GGUF) (Q4_K_M / Q8_0 / F16) | vs PyTorch (`minicpm5_parity`); `rlx-minicpm5` 0.2.6 on `rlx-llama32` 0.2.6; GGUF packed CPU/Metal |
 | `tinyllama` | yes | yes (`llama`) | **yes** — [TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF](https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF) (Q4_K_M / Q8_0 / Q6_K) | real-weight GGUF packed prefill vs CPU (`tinyllama_backend_gguf_check`); wraps `rlx-llama32` |
@@ -1211,7 +1226,7 @@ To discover GGUF on the Hub: open [Models → library GGUF](https://huggingface.
 
 ### Backends
 
-Every model family targets the same standard backends: **CPU, Metal, MLX, CUDA, ROCm, WGPU (`gpu`), Vulkan**. SAM also accepts **`tpu`**. Policy lives in [`rlx_core::device_capabilities`](crates/rlx-core/src/device_capabilities.rs); runners call `validate_standard_device` (or `validate_sam_device`) at build time.
+Every model family targets the same standard backends: **CPU, Metal, MLX, CUDA, ROCm, WGPU (`gpu`), Vulkan**. SAM also accepts **`tpu`**. Policy lives in [`rlx_core::device_capabilities`](crates/rlx-models-core/src/device_capabilities.rs); runners call `validate_standard_device` (or `validate_sam_device`) at build time.
 
 Enable GPU at compile time with matching features on `rlx-models` or any model crate, e.g. `cargo build -p rlx-qwen3 --features all-backends` or `cargo run -p rlx-models --features metal --bin rlx-run -- qwen3 …`. Per-crate binaries (`rlx-qwen3`, `rlx-sam3`, …) expose the same feature names. CLI: `cpu`, `metal`/`mps`, `mlx`, `cuda`, `rocm`/`hip`, `gpu`/`wgpu`, `vulkan`.
 
@@ -1257,6 +1272,7 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | Crate | README |
 |-------|--------|
 | `rlx-jlens` | [crates/rlx-jlens/README.md](crates/rlx-jlens/README.md) |
+| `rlx-fgd` | [crates/rlx-fgd/README.md](crates/rlx-fgd/README.md) |
 | `rlx-fft` | [crates/rlx-fft/README.md](crates/rlx-fft/README.md) |
 | `rlx-qwen3-tts` | [crates/rlx-qwen3-tts/README.md](crates/rlx-qwen3-tts/README.md) |
 | `rlx-kittentts` | [crates/rlx-kittentts/README.md](crates/rlx-kittentts/README.md) |
@@ -1268,6 +1284,7 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `rlx-sanotts` | [crates/rlx-sanotts/README.md](crates/rlx-sanotts/README.md) |
 | `rlx-tada` | [crates/rlx-tada/README.md](crates/rlx-tada/README.md) |
 | `rlx-glm5next` | [crates/rlx-glm5next/README.md](crates/rlx-glm5next/README.md) |
+| `rlx-qwen4exp` | [crates/rlx-qwen4exp/README.md](crates/rlx-qwen4exp/README.md) |
 | `rlx-timesfm3` | [crates/rlx-timesfm3/README.md](crates/rlx-timesfm3/README.md) |
 | `rlx-denoise` | [crates/rlx-denoise/README.md](crates/rlx-denoise/README.md) |
 | `rlx-nllb` | [crates/rlx-nllb/README.md](crates/rlx-nllb/README.md) |

@@ -41,7 +41,7 @@ Graph builders are public for embedding the encoder in a larger model: `build_wa
 
 ## How it fits
 
-- `Wav2Vec2-BERT` is the speech front-end used by downstream ASR/audio stacks; the encoder graph is described with the shared `rlx-flow` DSL and compiled through [`rlx-runtime`](../rlx-runtime).
+- `Wav2Vec2-BERT` is the speech front-end used by downstream ASR/audio stacks; the encoder graph is described with the shared `rlx-flow` DSL and compiled through [`rlx-runtime`](https://docs.rs/rlx-runtime).
 - Distinct from [`rlx-wav2vec2-asr`](../rlx-wav2vec2-asr) (classic Wav2Vec2 CTC forced alignment for word timestamps).
 
 ## Tests

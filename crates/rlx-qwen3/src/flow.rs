@@ -452,16 +452,27 @@ pub fn build_qwen3_decode_built(
             kv_dt,
         )
     } else {
-        // In-place KV (`RLX_QWEN3_INPLACE_KV`) needs one extra row so the
-        // KvAppend output (`[batch, past_seq+1, kv_dim]`) can alias this buffer.
-        Shape::new(
-            &[
-                batch,
-                opts.past_seq + rlx_ir::env::flag("RLX_QWEN3_INPLACE_KV") as usize,
-                kv_dim,
-            ],
-            kv_dt,
-        )
+        // Exactly `past_seq` rows — no spare row.
+        //
+        // In-place KV (`Op::KvAppend`) does need one extra row so its output can
+        // alias this buffer, and `RLX_QWEN3_INPLACE_KV` used to add it here. But
+        // the decode layer emits `KvAppend` only when the CACHE CONTRACT is
+        // present (`bind_decode_inputs_with_capacity`, which sets
+        // `kv_past_len`), and both decode flows below bind with plain
+        // `bind_decode_inputs` — so `KvAppend` is never emitted and the spare row
+        // was never used. It was not harmless: the layer's `concat_` then
+        // produced `[batch, past_seq + 2, kv_dim]`, putting the new token's row
+        // at index `past_seq + 1`, while every consumer reads it at `past_seq`
+        // (`feed_kv_row`, `read_output_row`, `split_bucketed_decode_kv_per_layer`)
+        // and the attention mask is only `past_seq + 1` wide. Readers therefore
+        // got the untouched spare row — zeros — so the KV cache never grew and
+        // decode repeated the previous token. `auto_metal_env` turns that flag on
+        // for Metal, which is why it showed there and not on the CPU.
+        //
+        // Re-enabling in-place KV means switching these flows to
+        // `bind_decode_inputs_with_capacity` and adding the row back together
+        // with it, so the shape and the op can never disagree again.
+        Shape::new(&[batch, opts.past_seq, kv_dim], kv_dt)
     };
 
     let decode_spec = Qwen3DecodeLayerSpec {
@@ -579,16 +590,27 @@ pub fn build_qwen3_decode_embeds_built(
             kv_dt,
         )
     } else {
-        // In-place KV (`RLX_QWEN3_INPLACE_KV`) needs one extra row so the
-        // KvAppend output (`[batch, past_seq+1, kv_dim]`) can alias this buffer.
-        Shape::new(
-            &[
-                batch,
-                opts.past_seq + rlx_ir::env::flag("RLX_QWEN3_INPLACE_KV") as usize,
-                kv_dim,
-            ],
-            kv_dt,
-        )
+        // Exactly `past_seq` rows — no spare row.
+        //
+        // In-place KV (`Op::KvAppend`) does need one extra row so its output can
+        // alias this buffer, and `RLX_QWEN3_INPLACE_KV` used to add it here. But
+        // the decode layer emits `KvAppend` only when the CACHE CONTRACT is
+        // present (`bind_decode_inputs_with_capacity`, which sets
+        // `kv_past_len`), and both decode flows below bind with plain
+        // `bind_decode_inputs` — so `KvAppend` is never emitted and the spare row
+        // was never used. It was not harmless: the layer's `concat_` then
+        // produced `[batch, past_seq + 2, kv_dim]`, putting the new token's row
+        // at index `past_seq + 1`, while every consumer reads it at `past_seq`
+        // (`feed_kv_row`, `read_output_row`, `split_bucketed_decode_kv_per_layer`)
+        // and the attention mask is only `past_seq + 1` wide. Readers therefore
+        // got the untouched spare row — zeros — so the KV cache never grew and
+        // decode repeated the previous token. `auto_metal_env` turns that flag on
+        // for Metal, which is why it showed there and not on the CPU.
+        //
+        // Re-enabling in-place KV means switching these flows to
+        // `bind_decode_inputs_with_capacity` and adding the row back together
+        // with it, so the shape and the op can never disagree again.
+        Shape::new(&[batch, opts.past_seq, kv_dim], kv_dt)
     };
 
     let decode_spec = Qwen3DecodeLayerSpec {

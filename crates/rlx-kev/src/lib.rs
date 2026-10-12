@@ -35,7 +35,7 @@
 //! |---|---|
 //! | [`api`] | `POST /v1/systemone` shapes, `render`, typed answers |
 //! | [`encode`] | packing a record into tokens; the delimiter protocol |
-//! | [`pointer`] | the readout head and its calibration temperature |
+//! | [`mod@pointer`] | the readout head and its calibration temperature |
 //! | [`lora`] | reading a peft adapter and folding it into base weights |
 //! | [`weights`] | HF Qwen3.5 base + merged adapter → `Qwen35Weights` |
 //! | [`checkpoint`] | a run directory: `head.pt`, adapter, tokenizer |
@@ -61,18 +61,31 @@ pub mod api;
 pub mod checkpoint;
 pub mod cli;
 pub mod encode;
+#[cfg(feature = "train")]
+pub mod eval;
+pub mod json;
 pub mod lora;
 pub mod model;
 pub mod pointer;
+#[cfg(feature = "prefix-cache")]
+pub mod prefix;
+#[cfg(feature = "train")]
+pub mod pyrandom;
+#[cfg(feature = "train")]
+pub mod recipe;
+#[cfg(feature = "serve")]
+pub mod serve;
+#[cfg(feature = "train")]
+pub mod train;
 pub mod weights;
 
 pub use api::{Answer, Question, Record, RecordQuestion, SystemOneRequest, to_answers, to_record};
 pub use checkpoint::{Checkpoint, Meta};
 pub use encode::{Encoder, Encoding, Row, TokenizerLike, rows_of};
 pub use lora::LoraAdapter;
-pub use model::{DecisionModel, ShapePolicy, Usage};
+pub use model::{DecisionModel, RowHidden, RowReadout, ShapePolicy, Usage};
 pub use pointer::PointerHead;
-pub use weights::{KevWeights, LoraMergingLoader, load_merged};
+pub use weights::{HfQwen35Fixups, KevWeights, LoraMergingLoader, load_merged};
 
 #[cfg(feature = "tokenizer")]
 pub use encode::HfTokenizer;
@@ -112,7 +125,18 @@ mod load {
             .with_context(|| format!("loading {}", tok_path.display()))?;
         let encoder = Encoder::new(tok)?;
 
-        DecisionModel::new(encoder, head, merged.cfg, merged.weights, device, policy)
+        // Let the model release the ~3.5 GB bundle after each build; a
+        // reshape re-reads it rather than keeping it resident forever.
+        let (base_owned, run_owned) = (base_dir.to_path_buf(), run_dir.to_path_buf());
+        let reload: crate::model::WeightsReloader = Box::new(move || {
+            let adapter = LoraAdapter::open(&run_owned)?;
+            Ok(crate::weights::load_merged(&base_owned, adapter)?.weights)
+        });
+
+        Ok(
+            DecisionModel::new(encoder, head, merged.cfg, merged.weights, device, policy)?
+                .with_reloader(reload),
+        )
     }
 }
 

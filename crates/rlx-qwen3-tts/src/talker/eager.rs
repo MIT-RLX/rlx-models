@@ -644,7 +644,7 @@ impl TalkerEagerModel {
     ///
     /// Positions used for RoPE are `[past_len + rope_delta + i]` for
     /// `i in 0..m`, matching the per-step decode path. The causal mask is
-    /// implicit in [`gqa_attention`] via `kv_off = t_k - t_q = past_len`.
+    /// implicit in `gqa_attention` via `kv_off = t_k - t_q = past_len`.
     ///
     /// This is the "verifier" half of speculative decoding: callers pass
     /// `K + 1` embeddings (last-accepted-input + K drafted-inputs), get back

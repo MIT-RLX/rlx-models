@@ -258,7 +258,39 @@ pub fn build_qwen3_decode_graph_sized_ext(
         packed: false,
         profile: None,
     };
-    build_qwen3_decode_graph(cfg, weights, &opts)
+    let built = build_qwen3_decode_graph(cfg, weights, &opts);
+    if let Ok((g, _)) = &built
+        && rlx_ir::env::flag("RLX_QWEN3_DUMP_GRAPH")
+    {
+        dump_graph_summary(g, past_seq);
+    }
+    built
+}
+
+/// Op histogram + output shapes for a built graph.
+///
+/// Exists to diff the graph a real model builds against the one a test builds:
+/// when a test reproduces the model's config and still passes, the difference is
+/// in the graph, and this is the cheapest way to see which op differs.
+fn dump_graph_summary(g: &Graph, past_seq: usize) {
+    use std::collections::BTreeMap;
+    let mut hist: BTreeMap<String, usize> = BTreeMap::new();
+    for node in g.nodes() {
+        *hist.entry(format!("{:?}", node.op.kind())).or_default() += 1;
+    }
+    let shapes: Vec<String> = g
+        .outputs
+        .iter()
+        .take(5)
+        .map(|id| format!("{:?}", g.node(*id).shape.dims()))
+        .collect();
+    eprintln!(
+        "[qwen3-decode-graph] past_seq={past_seq} nodes={} outputs={} first_shapes={} ops={:?}",
+        g.nodes().len(),
+        g.outputs.len(),
+        shapes.join(" "),
+        hist
+    );
 }
 
 /// Emit a sized `(batch, past_seq)` decode-graph builder: fill a

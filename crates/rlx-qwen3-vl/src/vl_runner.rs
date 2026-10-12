@@ -78,10 +78,18 @@ impl Qwen3VlRunnerBuilder {
             .device(device)
             .max_seq(max_seq);
         // Prefer packed path for large GGUFs (same heuristic as other runners).
-        if weights
-            .metadata()
-            .map(|m| m.len() >= 256 * 1024 * 1024)
-            .unwrap_or(false)
+        //
+        // GGUF only: the packed loader reads a GGUF's tensor table, and asking
+        // for it on safetensors fails the load outright — which is what every
+        // HuggingFace VL checkpoint is.
+        let is_gguf = weights
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+        if is_gguf
+            && weights
+                .metadata()
+                .map(|m| m.len() >= 256 * 1024 * 1024)
+                .unwrap_or(false)
         {
             lm_builder = lm_builder.packed_weights(true);
         }
@@ -96,21 +104,15 @@ impl Qwen3VlRunnerBuilder {
                 if let Some(cfg_path) = hf {
                     vb = vb.hf_config(cfg_path);
                 } else {
-                    // Synthesize vision config from LM hidden size when no HF config.
-                    let mut cfg = crate::config::Qwen3VlVisionConfig {
-                        hidden_size: 1152,
-                        num_hidden_layers: 27,
-                        num_attention_heads: 16,
-                        intermediate_size: 4304,
-                        image_size: 384,
-                        patch_size: 14,
-                        num_channels: 3,
-                        layer_norm_eps: 1e-6,
-                        projector_output_dim: lm.config().hidden_size,
-                    };
-                    // Prefer projector dim = LM hidden.
-                    cfg.projector_output_dim = lm.config().hidden_size;
-                    let _ = cfg;
+                    // No HF config beside the mmproj: synthesize one. The
+                    // merge/deepstack fields describe what this crate's graph
+                    // actually implements (neither), not what a real Qwen3-VL
+                    // export states — a checkpoint that states otherwise is
+                    // refused in `Qwen3VlVisionRunner::build`.
+                    //
+                    // `patch_size: 14` is SigLIP's; Qwen3-VL uses 16. Left as
+                    // it was rather than corrected blind, because this path is
+                    // a guess either way and the HF config is the fix.
                     vb = vb.config(crate::config::Qwen3VlVisionConfig {
                         hidden_size: 1152,
                         num_hidden_layers: 27,
@@ -121,6 +123,10 @@ impl Qwen3VlRunnerBuilder {
                         num_channels: 3,
                         layer_norm_eps: 1e-6,
                         projector_output_dim: lm.config().hidden_size,
+                        spatial_merge_size: 1,
+                        temporal_patch_size: 1,
+                        num_position_embeddings: None,
+                        deepstack_visual_indexes: Vec::new(),
                     });
                 }
                 Some(
@@ -443,6 +449,22 @@ impl LmRunner for Qwen3VlRunner {
         on_token: &mut dyn FnMut(u32) -> bool,
     ) -> Result<Vec<u32>> {
         self.generate_text(prompt_ids, n_new, on_token)
+    }
+
+    /// Host-driven decode, forwarded to the inner text runner.
+    ///
+    /// Forwarding is the right default even when the inner family does not
+    /// support it: the trait's own default and the inner's refusal are the
+    /// same "unsupported" error, so a consumer that probes for the pair sees
+    /// no difference — while a family that *does* support it stops being
+    /// hidden behind this wrapper and silently downgraded to the `generate`
+    /// fallback (family sampling instead of the caller's, no logit access).
+    fn prefill_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+        LmRunner::prefill_logits(&mut self.lm, prompt_ids)
+    }
+
+    fn decode_logits(&mut self, token: u32) -> Result<Vec<f32>> {
+        LmRunner::decode_logits(&mut self.lm, token)
     }
     fn supports_multimodal(&self) -> bool {
         self.has_vision()

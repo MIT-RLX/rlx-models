@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Silero VAD integration via [`rlx-vad`] (optional feature).
+//! Silero VAD integration via [`rlx_vad`] (optional feature).
 
 use crate::audio::{SAMPLE_RATE, SpeechSegment};
 

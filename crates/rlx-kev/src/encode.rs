@@ -377,7 +377,9 @@ mod hf {
         /// Detokenize, keeping special tokens — used only for the
         /// billing-style `usage.output_tokens` count.
         pub fn decode(&self, ids: &[u32]) -> Result<String> {
-            self.0.decode(ids, false).map_err(|e| anyhow::anyhow!("{e}"))
+            self.0
+                .decode(ids, false)
+                .map_err(|e| anyhow::anyhow!("{e}"))
         }
     }
 

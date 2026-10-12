@@ -193,6 +193,35 @@ fn finish_bucketed_decode(
     }
     let raw =
         run_bucketed_decode_on_compiled(compiled, upper, past_seq, batch, specs, output_inners);
+    if rlx_ir::env::flag("RLX_DECODE_DUMP_KV_ROWS") {
+        let kd = kv_dims[0];
+        // Both K and V, and both the last real row and the appended one: "K is
+        // zero but V is not" points at the K-only part of the layer (QK-norm),
+        // where "both zero" points at the shared projection input.
+        for (label, idx) in [("K", 1usize), ("V", 2usize)] {
+            if let Some(t) = raw.get(idx) {
+                let rows = t.len() / kd.max(1);
+                let row_sum = |r: usize| -> f64 {
+                    t[r * kd..(r + 1) * kd].iter().map(|v| v.abs() as f64).sum()
+                };
+                let nonzero = (0..rows).filter(|r| row_sum(*r) > 0.0).count();
+                let last = rows.saturating_sub(1);
+                eprintln!(
+                    "[kv-out-rows] layer0 {label} rows={rows} nonzero={nonzero} upper={upper} \
+                     past={past_seq} row[upper={upper}]={:.1} row[last={last}]={:.1} \
+                     nonzero_at={:?}",
+                    row_sum(upper.min(last)),
+                    row_sum(last),
+                    (0..rows).filter(|r| row_sum(*r) > 0.0).collect::<Vec<_>>(),
+                );
+            }
+        }
+        eprintln!(
+            "[kv-out-shape] outputs={} lens={:?}",
+            raw.len(),
+            raw.iter().map(|v| v.len()).collect::<Vec<_>>()
+        );
+    }
     split_bucketed_decode_kv_per_layer(raw, past_seq, kv_dims, kv_dims.len(), batch)
 }
 
@@ -1016,17 +1045,12 @@ pub fn compile_cache_ensure_graph<'a>(
     params: HashMap<String, Vec<f32>>,
     options: &CompileOptions,
 ) -> &'a mut CompiledGraph {
-    if !cache.contains(key) {
-        let compiled = cache.get_or_compile_with_options(key, || graph, options);
-        for (name, data) in &params {
-            compiled.set_param(name, data);
-        }
-    }
-    cache.get_or_compile_with_options(
-        key,
-        || panic!("compile_cache_ensure_graph: missing {key}"),
-        options,
-    )
+    // `ensure_with_params` retains a sibling entry's weight buffer when the
+    // layout matches and uploads only when it cannot. Entries in a prefill cache
+    // are one model at several prompt lengths, so they all want the same weights
+    // — uploading per entry made the cache's own hit rate the thing that cost the
+    // memory (~4.6 GB per extra prefill graph for an f32 0.6B model).
+    cache.ensure_with_params(key, graph, &params, options)
 }
 
 #[cfg(test)]

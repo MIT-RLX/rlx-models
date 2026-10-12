@@ -1245,10 +1245,10 @@ fn finish_build(
         // Single bucket at exact `max_seq`. Decode pins to that upper bound
         // (avoids mid-stream recompiles under low-mem); a power-of-two ladder
         // would only pad further (e.g. 39→64) with no benefit under pinning.
-        let max = max_seq.max(1) as u64;
-        // One exact-`max_seq` bucket (not a collected integer range).
-        #[allow(clippy::single_range_in_vec_init)]
-        Some(BucketedCompileCache::new(device, vec![1..(max + 1)]))
+        Some(rlx_core::flow_util::single_bucket_decode_cache(
+            device,
+            max_seq.max(1),
+        ))
     } else {
         None
     };
@@ -2111,12 +2111,23 @@ impl Qwen35Runner {
         if config.preset == ExecutionPreset::Qwen35Decode {
             return Ok(Session::new(self.device).compile_hir_with(hir, &opts)?);
         }
-        let cache = self
-            .predict_hir_cache
-            .get_or_insert_with(|| make_qwen35_dyn_cache(self.device, 64, None));
-        let hir = hir;
-        get_or_specialize_hir_with_options(cache, &config, || hir.clone(), &opts, |_| Ok(()))?;
-        if self.device == Device::Cpu {
+        // `predict_hir_cache` is only ever READ on the CPU path (it is written
+        // here and nowhere else), so populate it only there.
+        //
+        // This used to specialize into the cache unconditionally and discard the
+        // result, then — on every non-CPU device — compile the whole graph a
+        // second time to get something to return. Both compiles are full ones:
+        // measured on Qwen3.5-0.8B-Q4_K_M/Metal, rlx-metal ran its pipeline
+        // twice over the same 1648 nodes, down to byte-identical plans
+        // (66298834948 B planned, 9777934340 B accepted) and identical scratch
+        // offsets, allocating **10.80 GB of Metal buffers each time**. One of
+        // those arenas was never reachable — 42% of the process's entire 25.9 GB
+        // of buffers, on a 532 MB model — plus ~2s of duplicate compile.
+        let device = self.device;
+        if device == Device::Cpu {
+            let cache = self
+                .predict_hir_cache
+                .get_or_insert_with(|| make_qwen35_dyn_cache(device, 64, None));
             let compiled = get_or_specialize_hir_with_options(
                 cache,
                 &config,
@@ -2126,7 +2137,7 @@ impl Qwen35Runner {
             )?;
             return Ok(compiled.clone());
         }
-        Ok(Session::new(self.device).compile_hir_with(hir, &opts)?)
+        Ok(Session::new(device).compile_hir_with(hir, &opts)?)
     }
 
     fn lm_loader(&self) -> Option<&GgufLoader> {
@@ -2580,11 +2591,12 @@ impl Qwen35Runner {
             // eviction into a speed win. Safe to rebuild: the decode graph
             // compiles lazily on first decode (after this call).
             if self.decode_compile_cache.is_some() {
-                let bound = (sinks + window + self.kv_slack + 16) as u64;
-                // One exact bucket at the eviction bound (not a collected integer range).
-                #[allow(clippy::single_range_in_vec_init)]
-                let buckets = vec![1..(bound + 1)];
-                self.decode_compile_cache = Some(BucketedCompileCache::new(self.device, buckets));
+                let bound = sinks + window + self.kv_slack + 16;
+                // One exact bucket at the eviction bound.
+                self.decode_compile_cache = Some(rlx_core::flow_util::single_bucket_decode_cache(
+                    self.device,
+                    bound,
+                ));
             }
             // The decode graph reads RLX_QWEN35_GPU_KV at (lazy) compile time and
             // the resident graph shape is incompatible with host-fed eviction;

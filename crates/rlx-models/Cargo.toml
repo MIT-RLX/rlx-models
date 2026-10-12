@@ -1,6 +1,6 @@
 [package]
 name = "rlx-models"
-version = "0.2.16"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Model loading for RLX — config parsing, safetensors weights, graph builders"
@@ -43,6 +43,7 @@ rlx-llama32 = { workspace = true, optional = true }
 rlx-gemma = { workspace = true, optional = true }
 rlx-llada2 = { workspace = true, optional = true }
 rlx-qwen35 = { workspace = true, optional = true }
+rlx-qwen4exp = { workspace = true, optional = true }
 rlx-minimax = { workspace = true, optional = true }
 rlx-fara = { workspace = true, optional = true }
 rlx-qwen25-vl = { workspace = true, optional = true }
@@ -207,6 +208,7 @@ voice-gender = ["dep:rlx-voice-gender", "f0"]
 mmap-kv = ["qwen3", "rlx-qwen3?/mmap-kv"]
 dual-encoder = ["mmap-kv", "rlx-qwen3?/dual-encoder"]
 qwen35 = ["dep:rlx-qwen35"]
+qwen4exp = ["dep:rlx-qwen4exp"]
 minimax = ["dep:rlx-minimax"]
 fara = ["dep:rlx-fara", "qwen35"]
 llama32 = ["dep:rlx-llama32"]
@@ -965,7 +967,10 @@ rocm = [
     "rlx-porcupine?/rocm",
     "rlx-voxrt?/rocm",
 ]
-tpu = ["rlx-runtime/tpu"]
+# Google TPU via libtpu/PJRT. Forwards to the crates that have a `tpu`
+# feature; not every model crate does, because the backend is unverified on
+# hardware here.
+tpu = ["rlx-runtime/tpu", "rlx-core/tpu", "rlx-qwen4exp?/tpu"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
 parity-candle = [
     "dep:candle-core",

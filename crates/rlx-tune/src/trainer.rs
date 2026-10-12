@@ -40,8 +40,42 @@ pub struct Adam {
     pub beta1: f32,
     pub beta2: f32,
     pub eps: f32,
-    t: i32,
-    state: HashMap<String, (Vec<f32>, Vec<f32>)>,
+    /// Per-parameter `(m, v, t)`. The step count lives *inside* the entry, not
+    /// on the optimizer: `Optimizer::step` is called once per parameter, so a
+    /// shared counter advances by the number of trainables per optimizer step
+    /// and every parameter after the first is bias-corrected as though it were
+    /// hundreds of steps further along. PyTorch keeps `state['step']`
+    /// per parameter for the same reason.
+    state: HashMap<String, (Vec<f32>, Vec<f32>, i32)>,
+}
+
+/// An [`Adam`]'s moment estimates plus its step count, moved out as one value.
+///
+/// Opaque on purpose: the only thing a caller should do with it is put it back.
+#[derive(Debug, Default)]
+pub struct AdamState {
+    state: HashMap<String, (Vec<f32>, Vec<f32>, i32)>,
+}
+
+impl Adam {
+    /// Move the moments and step count out, to carry them across a rebuild of
+    /// the graph they were accumulated for.
+    ///
+    /// Two `Adam`s over the same parameter names are the same optimizer, and a
+    /// caller that has to recompile (a new input shape, say) must not silently
+    /// get a fresh one: dropping `m`/`v` restarts the bias correction, so the
+    /// step right after each rebuild is effectively un-normalized. Do that a few
+    /// dozen times during a learning-rate ramp and training diverges.
+    pub fn take_state(&mut self) -> AdamState {
+        AdamState {
+            state: std::mem::take(&mut self.state),
+        }
+    }
+
+    /// Put back what [`take_state`](Self::take_state) moved out.
+    pub fn restore_state(&mut self, s: AdamState) {
+        self.state = s.state;
+    }
 }
 
 impl Adam {
@@ -51,7 +85,6 @@ impl Adam {
             beta1: 0.9,
             beta2: 0.999,
             eps: 1e-8,
-            t: 0,
             state: HashMap::new(),
         }
     }
@@ -59,13 +92,23 @@ impl Adam {
 
 impl Optimizer for Adam {
     fn step(&mut self, name: &str, param: &mut [f32], grad: &[f32]) {
-        self.t += 1;
-        let (m, v) = self
+        let (m, v, t) = self
             .state
             .entry(name.to_string())
-            .or_insert_with(|| (vec![0.0; param.len()], vec![0.0; param.len()]));
-        let bc1 = 1.0 - self.beta1.powi(self.t);
-        let bc2 = 1.0 - self.beta2.powi(self.t);
+            .or_insert_with(|| (vec![0.0; param.len()], vec![0.0; param.len()], 0));
+        *t += 1;
+        // A restored state (see `restore_state`) is keyed by name, and a caller
+        // could hand back moments for a parameter that has since changed length.
+        // Indexing on would panic; start that parameter over instead, which is
+        // the same thing a first-ever step does.
+        if m.len() != param.len() || v.len() != param.len() {
+            m.clear();
+            m.resize(param.len(), 0.0);
+            v.clear();
+            v.resize(param.len(), 0.0);
+        }
+        let bc1 = 1.0 - self.beta1.powi(*t);
+        let bc2 = 1.0 - self.beta2.powi(*t);
         for i in 0..param.len() {
             let g = grad.get(i).copied().unwrap_or(0.0);
             m[i] = self.beta1 * m[i] + (1.0 - self.beta1) * g;

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Qwen3-VL runner (vision + Qwen3 MoE LM) — STUB (PLAN.md M7)"
+description = "Qwen3-VL runner for RLX — text path works (dense or MoE LM); vision tower incomplete (no 2x2 patch merge or deepstack)"
 keywords.workspace = true
 categories.workspace = true
 

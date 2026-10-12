@@ -124,7 +124,7 @@ impl PointerHead {
                 self.hidden
             );
         }
-        if h_opts.len() % self.hidden != 0 {
+        if !h_opts.len().is_multiple_of(self.hidden) {
             bail!(
                 "option hidden block of {} is not a multiple of {}",
                 h_opts.len(),

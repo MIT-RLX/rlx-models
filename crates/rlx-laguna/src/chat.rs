@@ -103,6 +103,7 @@ impl LagunaChat {
                 ChatRenderOptions {
                     add_generation_prompt: true,
                     enable_thinking,
+                    ..Default::default()
                 },
             )
             .or_else(|e| {
@@ -118,6 +119,7 @@ impl LagunaChat {
                     ChatRenderOptions {
                         add_generation_prompt: true,
                         enable_thinking,
+                        ..Default::default()
                     },
                 )
             })?;
@@ -178,6 +180,7 @@ mod tests {
                 ChatRenderOptions {
                     add_generation_prompt: true,
                     enable_thinking: false,
+                    ..Default::default()
                 },
             )
             .unwrap();

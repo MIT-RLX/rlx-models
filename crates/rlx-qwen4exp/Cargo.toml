@@ -1,0 +1,61 @@
+[package]
+name = "rlx-qwen4exp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Qwen3.8-Flash-Next (qwen4exp) — hyper-connection residuals, GatedDeltaNet + QSA attention, PLE n-gram embeddings and a 512-expert MoE — for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-core = { workspace = true }
+rlx-cpu = { workspace = true }
+# `gguf` brings `register_gguf_expert_banks`, which reads a checkpoint's expert
+# bank offsets out of its header — the paged path's entry point for real weights.
+rlx-distributed = { workspace = true, features = ["gguf"] }
+rlx-flow = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-llada2 = { workspace = true }
+rlx-runtime = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+rlx-cli = { workspace = true }
+# A parity ORACLE, not a dependency: `rlx-qwen35` ships the same Qwen3-VL tower
+# and its captions are known-good on real weights, so `tests/vit_parity.rs`
+# compares this crate's native port against it element for element on identical
+# synthetic weights. Dev-only — nothing in `src/` touches it.
+rlx-qwen35 = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# The vision tower (`vit`) and the multimodal seam (`vision`): mmproj load,
+# image encode, embedding splice, 3-D M-RoPE. Off by default so a text-only
+# build does not pay for the convolution and image-preprocessing code.
+vision = []
+metal = ["rlx-runtime/metal"]
+mlx = ["rlx-runtime/mlx"]
+cuda = ["rlx-runtime/cuda"]
+rocm = ["rlx-runtime/rocm"]
+gpu = ["rlx-runtime/gpu"]
+vulkan = ["rlx-runtime/vulkan"]
+coreml = ["rlx-runtime/coreml", "rlx-core/coreml"]
+# Google TPU via libtpu/PJRT. The scan state stays `Portable` on it — see
+# `runner::scan_state_for`, which only promotes CPU/Metal/wgpu.
+tpu = ["rlx-runtime/tpu", "rlx-core/tpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+full = ["vision", "all-backends"]
+apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

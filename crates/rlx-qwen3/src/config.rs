@@ -123,7 +123,37 @@ fn default_qk_norm() -> bool {
 impl Qwen3Config {
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let data = std::fs::read_to_string(path)?;
-        let mut cfg: Self = serde_json::from_str(&data)?;
+        Self::from_json_str(&data)
+    }
+
+    /// Parse a `config.json`, flat or nested.
+    ///
+    /// A vision-language checkpoint keeps the language model's fields under
+    /// `text_config`, beside a `vision_config` for the tower. Parsing the top
+    /// level of one of those fails on `vocab_size` — a long way from saying
+    /// "this is a VL config", which is what the error means.
+    pub fn from_json_str(data: &str) -> anyhow::Result<Self> {
+        let value: serde_json::Value = serde_json::from_str(data)?;
+        let body = match value.get("text_config") {
+            Some(nested) if nested.is_object() => {
+                // `vocab_size` and `tie_word_embeddings` live at the top level
+                // in some exports and in `text_config` in others, so the outer
+                // object fills whatever the inner one left out.
+                let mut merged = nested.clone();
+                if let (Some(m), Some(outer)) = (merged.as_object_mut(), value.as_object()) {
+                    for key in ["vocab_size", "tie_word_embeddings", "torch_dtype", "dtype"] {
+                        if !m.contains_key(key)
+                            && let Some(v) = outer.get(key)
+                        {
+                            m.insert(key.to_string(), v.clone());
+                        }
+                    }
+                }
+                merged
+            }
+            _ => value,
+        };
+        let mut cfg: Self = serde_json::from_value(body)?;
         cfg.fill_derived_defaults()?;
         Ok(cfg)
     }
@@ -208,6 +238,75 @@ impl Qwen3Config {
 
 #[cfg(test)]
 mod tests {
+    /// A vision-language checkpoint keeps the language model under
+    /// `text_config`. Parsing the top level of one fails on `vocab_size`,
+    /// which says nothing about the actual problem.
+    #[test]
+    fn a_nested_vl_config_is_read_as_the_language_model() {
+        let json = r#"{
+            "architectures": ["Qwen3VLForConditionalGeneration"],
+            "model_type": "qwen3_vl",
+            "vision_config": { "hidden_size": 1152, "patch_size": 16 },
+            "text_config": {
+                "hidden_size": 2048,
+                "num_hidden_layers": 28,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "intermediate_size": 6144,
+                "vocab_size": 151936,
+                "head_dim": 128,
+                "rms_norm_eps": 1e-6,
+                "max_position_embeddings": 262144
+            }
+        }"#;
+        let cfg = super::Qwen3Config::from_json_str(json).expect("a VL config parses");
+        assert_eq!(cfg.vocab_size, 151936);
+        assert_eq!(cfg.hidden_size, 2048);
+        assert_eq!(cfg.num_hidden_layers, 28);
+    }
+
+    /// Some exports put these at the top level and leave them out of the
+    /// nested block, so the outer object fills what the inner one omits.
+    #[test]
+    fn the_outer_object_supplies_what_the_nested_one_omits() {
+        let json = r#"{
+            "model_type": "qwen3_vl",
+            "vocab_size": 151936,
+            "tie_word_embeddings": true,
+            "text_config": {
+                "hidden_size": 1024,
+                "num_hidden_layers": 4,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 4,
+                "intermediate_size": 2048,
+                "head_dim": 128,
+                "rms_norm_eps": 1e-6,
+                "max_position_embeddings": 4096
+            }
+        }"#;
+        let cfg = super::Qwen3Config::from_json_str(json).expect("parses");
+        assert_eq!(cfg.vocab_size, 151936);
+        assert!(cfg.tie_word_embeddings);
+    }
+
+    /// And a plain text config still parses exactly as it did.
+    #[test]
+    fn a_flat_config_is_unaffected() {
+        let json = r#"{
+            "hidden_size": 1024,
+            "num_hidden_layers": 4,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 4,
+            "intermediate_size": 2048,
+            "vocab_size": 100,
+            "head_dim": 128,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 4096
+        }"#;
+        let cfg = super::Qwen3Config::from_json_str(json).expect("parses");
+        assert_eq!(cfg.vocab_size, 100);
+    }
+
     use super::*;
 
     #[test]

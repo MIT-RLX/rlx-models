@@ -58,16 +58,105 @@ use std::path::Path;
 /// [`auto_sniff`] arch-dispatch and constructs the per-family runner
 /// via its default builder.
 ///
-/// Today this covers the four `text` LM families with a stable
-/// `predict_logits` API: `qwen3`, `qwen35`, `gemma`, `llama32`. Other
-/// families (vision-language, diffusion, embed) don't fit the
-/// `LmRunner` shape and return an error here. They keep their
-/// per-family builders.
+/// Covers the LM families reachable from the multiplexer: `qwen3`, `qwen35`,
+/// `qwen4exp`, `gemma`, `llama32`, `mistral`, `lfm`, `qwen3-vl`, `llama4`,
+/// `mllama`. Other families (diffusion, embedding, audio) do not fit the
+/// `LmRunner` shape and return an error naming the crate that does handle
+/// them. They keep their per-family builders.
+///
+/// The runner comes back as the family built it, which means the **host-driven
+/// decode pair may be unsupported**: `LmRunner::prefill_logits` /
+/// `decode_logits` default to an error, and most families have not overridden
+/// them. If you are driving the loop yourself — a server, a sampler with logit
+/// bias, anything that owns token selection — use
+/// [`auto_runner_servable`] instead, which guarantees the pair.
 ///
 /// PLAN.md M3. The `LmRunner` trait gained a default `generate(..)`
 /// in M8, so a boxed runner from this function can stream tokens too.
 pub fn auto_runner(path: &Path) -> Result<Box<dyn LmRunner>> {
-    auto_runner_with_mmproj(path, None)
+    auto_runner_with(path, &AutoOptions::default())
+}
+
+/// How to build a runner from a path.
+///
+/// An alias for [`rlx_core::lm_registry::LmBuildOptions`], which is where the
+/// type lives so a crate registering its own family can name it without
+/// depending on this facade.
+pub type AutoOptions = rlx_core::lm_registry::LmBuildOptions;
+
+/// Build a runner for any supported checkpoint.
+///
+/// The one entry point the others delegate to.
+pub fn auto_runner_with(path: &Path, opts: &AutoOptions) -> Result<Box<dyn LmRunner>> {
+    register_builtin_lm_runners();
+    let sniff = auto_sniff(path)?;
+    // Reject an exotic device before any family reads a config or loads
+    // tensors: uniform message, and it fails before the I/O.
+    rlx_core::device_capabilities::validate_lm_device(sniff.runner_name, opts.device)?;
+
+    if !rlx_core::lm_registry::lm_runner_is_registered(sniff.runner_name) {
+        // A known architecture with no constructor. The metadata registry
+        // knows which crate handles it, so say so rather than leaving the
+        // caller to grep — looked up by the **architecture**, since the table
+        // is keyed on that and `phi3` -> runner `phi` is not an arch.
+        let hint = match &sniff.from {
+            rlx_cli::auto_dispatch::SniffedFrom::GgufArch(a) => {
+                rlx_core::model_registry::hint_for_gguf_arch(a)
+            }
+            rlx_cli::auto_dispatch::SniffedFrom::SafetensorsConfig(t) => {
+                rlx_core::model_registry::hint_for_hf_model_type(t)
+            }
+        }
+        .map(|h| format!(" — try {h}"))
+        .unwrap_or_default();
+        bail!(
+            "auto_runner: runner `{}` (sniffed from {:?}) has no registered `LmRunner` \
+             constructor{hint}",
+            sniff.runner_name,
+            sniff.from
+        );
+    }
+
+    // `build_lm_runner` honours `opts.servable` itself.
+    rlx_core::lm_registry::build_lm_runner(sniff.runner_name, sniff.path.as_path(), opts)
+}
+
+/// [`auto_runner`], guaranteed to support the host-driven decode pair.
+///
+/// `prefill_logits` + `decode_logits` is the shape a server needs, because
+/// sampling, logit bias, log-probs and stop handling all belong above the
+/// model. The trait's default for that pair is *unsupported* and only a couple
+/// of families override it, so a runner that came straight from
+/// [`auto_runner`] may refuse the first request.
+///
+/// This wraps whatever was built in [`rlx_core::lm_host_driven::HostDriven`],
+/// which answers each step by re-running `predict_logits` over the whole
+/// context. A family that implements the pair natively is detected on the first
+/// prefill and passed through untouched, so the wrapper costs nothing where it
+/// is not needed — and where it is needed, it is **quadratic**. That is the
+/// difference between a family being slow and being unavailable.
+///
+/// ```no_run
+/// # use std::path::Path;
+/// let mut runner = rlx_models::run::auto_runner_servable(Path::new("model.gguf"))?;
+/// let logits = runner.prefill_logits(&[9707, 11])?;
+/// # let _ = logits;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn auto_runner_servable(path: &Path) -> Result<Box<dyn LmRunner>> {
+    auto_runner_with(path, &AutoOptions::default().servable())
+}
+
+/// [`auto_runner_servable`] with an mmproj vision encoder.
+pub fn auto_runner_servable_with_mmproj(
+    path: &Path,
+    mmproj: Option<&Path>,
+) -> Result<Box<dyn LmRunner>> {
+    let opts = AutoOptions {
+        mmproj: mmproj.map(|p| p.to_path_buf()),
+        ..AutoOptions::default().servable()
+    };
+    auto_runner_with(path, &opts)
 }
 
 /// Same as [`auto_runner`] but also attaches an mmproj vision encoder
@@ -84,21 +173,32 @@ pub fn auto_runner(path: &Path) -> Result<Box<dyn LmRunner>> {
 /// For other families, a non-`None` `mmproj` **errors** instead of being
 /// silently ignored — callers that want text-only should pass `None`.
 pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box<dyn LmRunner>> {
-    let sniff = auto_sniff(path)?;
-    let weights = sniff.path.as_path();
+    let opts = AutoOptions {
+        mmproj: mmproj.map(|p| p.to_path_buf()),
+        ..Default::default()
+    };
+    auto_runner_with(path, &opts)
+}
+
+/// The builtin families, dispatched by name.
+///
+/// Registered into [`rlx_core::lm_registry`] by [`register_builtin_lm_runners`]
+/// rather than being reachable only from a `match` here — that is what lets an
+/// out-of-tree crate add a family, and what makes the set enumerable.
+fn build_builtin(name: &str, path: &Path, opts: &AutoOptions) -> Result<Box<dyn LmRunner>> {
+    let device = opts.device;
+    let mmproj = opts.mmproj_path();
+    let weights = path;
     // Packed-K-quant auto-detection is now inside each runner's
     // `.build()` (matches llama.cpp's behaviour — K-quant tensors stay
     // packed in memory, never materialise to a dense F32 matrix).
-    let runner: Box<dyn LmRunner> = match sniff.runner_name {
-        "qwen3" => {
-            if mmproj.is_some() {
-                bail!(
-                    "auto_runner_with_mmproj: runner `qwen3` does not attach mmproj — \
-                     use a `qwen3vl*` GGUF with the qwen3-vl runner, or omit mmproj for text-only"
-                );
-            }
-            Box::new(Qwen3Runner::builder().weights(weights).build()?)
-        }
+    let runner: Box<dyn LmRunner> = match name {
+        "qwen3" => Box::new(
+            Qwen3Runner::builder()
+                .weights(weights)
+                .device(device)
+                .build()?,
+        ),
         "qwen35" => {
             // When mmproj is requested, prefer plain Qwen35Runner (vision) over
             // MTP SpecRunner — speculative decode + mmproj is not wired together.
@@ -107,31 +207,69 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
                 Box::new(
                     rlx_qwen35::Qwen35SpecRunner::builder()
                         .weights(weights)
+                        .device(device)
                         .build()?,
                 )
             } else {
-                let mut b = Qwen35Runner::builder().weights(weights);
+                let mut b = Qwen35Runner::builder().weights(weights).device(device);
                 if let Some(mp) = mmproj {
                     b = b.mmproj(mp);
                 }
                 Box::new(b.build()?)
             }
         }
+        "minimax-m3" => {
+            #[cfg(feature = "minimax")]
+            {
+                let w = weights.to_str().ok_or_else(|| {
+                    anyhow::anyhow!("auto_runner: {weights:?} is not valid UTF-8")
+                })?;
+                // `None` config path: it is read from the `config.json` beside
+                // the weights, which is how a HF checkpoint ships.
+                Box::new(rlx_minimax::m3::runner::MiniMaxM3Runner::from_pretrained(
+                    w, None, device,
+                )?) as Box<dyn LmRunner>
+            }
+            #[cfg(not(feature = "minimax"))]
+            {
+                bail!(
+                    "auto_runner: runner `minimax-m3` requires feature `minimax` \
+                     (enable rlx-models/minimax)"
+                );
+            }
+        }
+        "qwen4exp" => {
+            #[cfg(feature = "qwen4exp")]
+            {
+                use rlx_qwen4exp::runner::{Qwen4ExpRunner, RunnerOptions};
+                // `open` attaches the n-gram table when the file carries it;
+                // a split checkpoint needs `RunnerOptions::ple_table`, which
+                // this entry point cannot guess — the runner then refuses on
+                // the first step rather than reading zeros.
+                Box::new(Qwen4ExpRunner::open(weights, RunnerOptions::new(device))?)
+                    as Box<dyn LmRunner>
+            }
+            #[cfg(not(feature = "qwen4exp"))]
+            {
+                bail!(
+                    "auto_runner: runner `qwen4exp` requires feature `qwen4exp` \
+                     (enable rlx-models/qwen4exp)"
+                );
+            }
+        }
         "gemma" => {
-            let mut b = GemmaRunner::builder().weights(weights);
+            let mut b = GemmaRunner::builder().weights(weights).device(device);
             if let Some(mp) = mmproj {
                 b = b.mmproj(mp);
             }
             Box::new(b.build()?)
         }
-        "llama32" => {
-            if mmproj.is_some() {
-                bail!(
-                    "auto_runner_with_mmproj: runner `llama32` has no multimodal path — omit mmproj"
-                );
-            }
-            Box::new(Llama32Runner::builder().weights(weights).build()?)
-        }
+        "llama32" => Box::new(
+            Llama32Runner::builder()
+                .weights(weights)
+                .device(device)
+                .build()?,
+        ),
         "mistral" => {
             if let Some(mp) = mmproj {
                 #[cfg(feature = "mistral-vl")]
@@ -140,6 +278,7 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
                         rlx_mistral_vl::MistralVlRunner::builder()
                             .weights(weights)
                             .mmproj(mp)
+                            .device(device)
                             .build()?,
                     ) as Box<dyn LmRunner>
                 }
@@ -157,6 +296,7 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
                     Box::new(
                         rlx_mistral::MistralRunner::builder()
                             .weights(weights)
+                            .device(device)
                             .build()?,
                     ) as Box<dyn LmRunner>
                 }
@@ -198,19 +338,23 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
                     .map(|e| e.eq_ignore_ascii_case("gguf"))
                     .unwrap_or(false);
                 if is_gguf {
-                    Box::new(rlx_lfm::Lfm2GgufRunner::open(
-                        weights,
-                        rlx_runtime::Device::Cpu,
-                    )?) as Box<dyn LmRunner>
+                    Box::new(rlx_lfm::Lfm2GgufRunner::open(weights, device)?) as Box<dyn LmRunner>
                 } else {
-                    Box::new(rlx_lfm::LfmRunner::builder().weights(weights).build()?)
+                    Box::new(
+                        rlx_lfm::LfmRunner::builder()
+                            .weights(weights)
+                            .device(device)
+                            .build()?,
+                    )
                 }
             }
         }
         "qwen3-vl" => {
             #[cfg(feature = "qwen3-vl")]
             {
-                let mut b = rlx_qwen3_vl::Qwen3VlRunner::builder().weights(weights);
+                let mut b = rlx_qwen3_vl::Qwen3VlRunner::builder()
+                    .weights(weights)
+                    .device(device);
                 if let Some(mp) = mmproj {
                     b = b.mmproj(mp);
                 }
@@ -218,7 +362,6 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
             }
             #[cfg(not(feature = "qwen3-vl"))]
             {
-                let _ = mmproj;
                 bail!(
                     "auto_runner_with_mmproj: runner `qwen3-vl` requires feature `qwen3-vl` \
                      (enable rlx-models/qwen3-vl)"
@@ -229,7 +372,6 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
         // runners without an `LmRunner` impl — `auto_runner` can't box them. Point
         // the caller at the right builder instead of the generic "no LmRunner".
         "llama4" => {
-            let _ = mmproj;
             bail!(
                 "auto_runner: `llama4` is a safetensors-checkpoint runner (MoE + native \
                  vision), not an LmRunner/GGUF path — build it directly with \
@@ -238,7 +380,6 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
             );
         }
         "mllama" => {
-            let _ = mmproj;
             bail!(
                 "auto_runner: `mllama` (Llama-3.2-Vision, cross-attention) is a \
                  safetensors-checkpoint runner, not an LmRunner/GGUF path — build it directly \
@@ -246,21 +387,80 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
             );
         }
         other => {
-            if mmproj.is_some() {
-                bail!(
-                    "auto_runner_with_mmproj: runner `{other}` (sniffed from {:?}) does not \
-                     support mmproj — omit mmproj for text-only, or use a supported VL family",
-                    sniff.from
-                );
-            }
-            bail!(
-                "auto_runner: runner `{other}` (sniffed from {:?}) has no `LmRunner` impl yet — \
-                 use its per-family builder directly",
-                sniff.from
-            )
+            // Unreachable via the registry: every name below is registered to
+            // this function, and an unregistered one is refused earlier, where
+            // the sniff is still in scope to name the crate that handles it.
+            bail!("auto_runner: `{other}` has no builtin constructor");
         }
     };
     Ok(runner)
+}
+
+/// One `fn` per builtin name: a constructor is a plain `fn` pointer and cannot
+/// capture its own name, so each gets a two-line wrapper over [`build_builtin`].
+macro_rules! builtin_ctor {
+    ($fname:ident, $name:literal) => {
+        fn $fname(path: &Path, opts: &AutoOptions) -> Result<Box<dyn LmRunner>> {
+            build_builtin($name, path, opts)
+        }
+    };
+}
+
+builtin_ctor!(ctor_qwen3, "qwen3");
+builtin_ctor!(ctor_qwen35, "qwen35");
+builtin_ctor!(ctor_qwen4exp, "qwen4exp");
+builtin_ctor!(ctor_gemma, "gemma");
+builtin_ctor!(ctor_llama32, "llama32");
+builtin_ctor!(ctor_mistral, "mistral");
+builtin_ctor!(ctor_lfm, "lfm");
+builtin_ctor!(ctor_qwen3_vl, "qwen3-vl");
+builtin_ctor!(ctor_llama4, "llama4");
+builtin_ctor!(ctor_mllama, "mllama");
+builtin_ctor!(ctor_minimax_m3, "minimax-m3");
+
+/// Register every builtin family's constructor.
+///
+/// Idempotent and cheap; [`auto_runner_with`] calls it, so a caller never has
+/// to. An out-of-tree crate adds itself exactly the same way, with
+/// [`rlx_core::lm_registry::register_lm_runner`] — nothing here is privileged,
+/// and registering the same name later overrides a builtin.
+pub fn register_builtin_lm_runners() {
+    use rlx_core::lm_registry::{LmRunnerCtor, LmRunnerRegistration, register_lm_runner};
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        // Capabilities are declared here, so `build_lm_runner` can refuse an
+        // mmproj centrally instead of each family checking for itself — and a
+        // family that forgets cannot silently ignore one.
+        let regs = [
+            LmRunnerRegistration::new("qwen3", ctor_qwen3 as LmRunnerCtor).mmproj_note(
+                "use a `qwen3vl*` GGUF with the qwen3-vl runner, or omit mmproj for text-only",
+            ),
+            LmRunnerRegistration::new("qwen35", ctor_qwen35).with_mmproj(),
+            LmRunnerRegistration::new("qwen4exp", ctor_qwen4exp).mmproj_note(
+                "qwen4exp multimodal needs the vision seam (rlx_qwen4exp::vision), which this \
+                 entry point does not wire",
+            ),
+            LmRunnerRegistration::new("gemma", ctor_gemma).with_mmproj(),
+            LmRunnerRegistration::new("llama32", ctor_llama32)
+                .mmproj_note("llama32 has no multimodal path"),
+            LmRunnerRegistration::new("mistral", ctor_mistral).with_mmproj(),
+            LmRunnerRegistration::new("lfm", ctor_lfm).with_mmproj(),
+            LmRunnerRegistration::new("qwen3-vl", ctor_qwen3_vl).with_mmproj(),
+            LmRunnerRegistration::new("llama4", ctor_llama4).mmproj_note(
+                "llama4 is a safetensors-checkpoint runner; build it with \
+                 `rlx_llama4::Llama4VlRunner::from_checkpoint` for image input",
+            ),
+            LmRunnerRegistration::new("mllama", ctor_mllama).mmproj_note(
+                "mllama takes its vision tower from the checkpoint, not a separate mmproj",
+            ),
+            LmRunnerRegistration::new("minimax-m3", ctor_minimax_m3).mmproj_note(
+                "the M3 VL variant takes its vision config from the checkpoint's config.json",
+            ),
+        ];
+        for reg in regs {
+            register_lm_runner(reg);
+        }
+    });
 }
 
 /// Peek at a GGUF's `<arch>.nextn_predict_layers` metadata key without

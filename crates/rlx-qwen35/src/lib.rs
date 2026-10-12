@@ -108,8 +108,8 @@ pub use builder::{
     emit_qwen35_full_attn_prefill_layer, emit_qwen35_gdn_prefill_layer, emit_qwen35_prefill_tail,
 };
 pub use cache::{
-    Qwen35DecodeCache, Qwen35LayerState, build_decode_attention_mask, decode_step_feeds,
-    last_token_indices, pack_input_ids, pad_kv_to_bucket, prompt_pad_mask_feeds,
+    Qwen35DecodeCache, Qwen35LayerState, build_decode_attention_mask, build_verify_bias_mask,
+    decode_step_feeds, last_token_indices, pack_input_ids, pad_kv_to_bucket, prompt_pad_mask_feeds,
     recurrent_output_count, seed_cache_from_outputs, slice_kv_from_bucket, zero_prompt_padding_kv,
     zero_recurrent_inputs,
 };
@@ -160,6 +160,9 @@ pub use vision::{
 };
 #[cfg(feature = "qwen35-vlm")]
 pub use vision::{encode_image_file, load_rgb_image};
+// `MmProjWeights` is re-exported above but its `blocks` field type was not, so
+// the bundle could be read and never constructed from outside this crate.
+pub use vision::{DeepstackWeights, VisionBlockWeights};
 pub use weights::{
     MatWeight, PestleFactor, Proj, Qwen35FullAttnLayer, Qwen35LayerFfn, Qwen35LinearLayer,
     Qwen35MoeFfn, Qwen35MtpLayer, Qwen35TrunkLayer, Qwen35Weights,

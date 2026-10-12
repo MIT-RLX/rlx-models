@@ -391,24 +391,25 @@ fn calibrate_actmax(
         let inputs: Vec<NodeId> = node.inputs.iter().map(|i| id_map[i]).collect();
         let nid = tg.add_node(node.op.clone(), inputs.clone(), node.shape.clone());
         id_map.insert(node.id, nid);
-        if matches!(node.op, Op::MatMul) && node.inputs.len() >= 2 {
-            if let Op::Param { name } = &g.node(node.inputs[1]).op {
-                let act = inputs[0];
-                let ash = tg.shape(act).clone();
-                let rank = ash.rank();
-                let k = ash.dim(rank - 1).unwrap_static();
-                let abs = tg.add_node(Op::Activation(Activation::Abs), vec![act], ash.clone());
-                let mut rd: Vec<usize> = (0..rank).map(|i| ash.dim(i).unwrap_static()).collect();
-                (0..rank - 1).for_each(|i| rd[i] = 1);
-                let cmax = tg.reduce(
-                    abs,
-                    ReduceOp::Max,
-                    (0..rank - 1).collect(),
-                    true,
-                    Shape::new(&rd, DType::F32),
-                );
-                tap_nodes.push((name.clone(), cmax, k));
-            }
+        if matches!(node.op, Op::MatMul)
+            && node.inputs.len() >= 2
+            && let Op::Param { name } = &g.node(node.inputs[1]).op
+        {
+            let act = inputs[0];
+            let ash = tg.shape(act).clone();
+            let rank = ash.rank();
+            let k = ash.dim(rank - 1).unwrap_static();
+            let abs = tg.add_node(Op::Activation(Activation::Abs), vec![act], ash.clone());
+            let mut rd: Vec<usize> = (0..rank).map(|i| ash.dim(i).unwrap_static()).collect();
+            (0..rank - 1).for_each(|i| rd[i] = 1);
+            let cmax = tg.reduce(
+                abs,
+                ReduceOp::Max,
+                (0..rank - 1).collect(),
+                true,
+                Shape::new(&rd, DType::F32),
+            );
+            tap_nodes.push((name.clone(), cmax, k));
         }
     }
     let mut outs: Vec<NodeId> = g.outputs.iter().map(|i| id_map[i]).collect();
@@ -455,16 +456,16 @@ fn calibrate_smooth(
     let mut raw = WeightMap::from_file(st.to_str().unwrap()).expect("safetensors");
     let mut s_map = HashMap::new();
     for (name, am) in &actmax {
-        if let Ok((d, shape)) = raw.take(name) {
-            if shape.len() == 2 {
-                let (out_d, in_d) = (shape[0], shape[1]);
-                let mut wmax = vec![0f32; in_d];
-                for i in 0..out_d {
-                    for j in 0..in_d {
-                        let a = d[i * in_d + j].abs();
-                        if a > wmax[j] {
-                            wmax[j] = a;
-                        }
+        if let Ok((d, shape)) = raw.take(name)
+            && shape.len() == 2
+        {
+            let (out_d, in_d) = (shape[0], shape[1]);
+            let mut wmax = vec![0f32; in_d];
+            for i in 0..out_d {
+                for j in 0..in_d {
+                    let a = d[i * in_d + j].abs();
+                    if a > wmax[j] {
+                        wmax[j] = a;
                     }
                 }
                 let s: Vec<f32> = (0..in_d)

@@ -29,6 +29,7 @@ pub mod audio_codec;
 pub mod audio_ops_ir;
 pub mod autoregressive;
 pub mod backend_matrix;
+pub mod block_weights;
 pub mod codec_bench;
 pub mod config;
 pub mod dataprocessing;
@@ -37,6 +38,7 @@ pub mod distributed_bridge;
 pub mod dsv41;
 pub(crate) mod dsv41_block;
 pub(crate) mod dsv41_csa;
+pub mod pipeline_block;
 
 pub mod dsv41_chunk;
 pub mod dsv41_decode;
@@ -64,6 +66,20 @@ pub mod gpu_kv;
 pub mod host_kernels;
 pub mod image_preprocess;
 pub mod lm;
+pub mod lm_builder;
+pub mod lm_host_driven;
+pub mod lm_registry;
+
+/// Types that [`lm_builder_setters!`](crate::lm_builder_setters) names in
+/// its expansion.
+///
+/// A macro cannot rely on what the calling crate happens to have imported,
+/// or on `rlx-runtime` being in scope under that name — several crates
+/// alias it. Going through `$crate::reexport` makes the expansion depend
+/// only on this crate being reachable, which `$crate` guarantees.
+pub mod reexport {
+    pub use rlx_runtime::{ConfigSource, Device};
+}
 pub mod mlx_coverage;
 pub mod mlx_npz_convert;
 pub mod model_registry;

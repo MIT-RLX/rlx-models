@@ -2462,6 +2462,25 @@ impl GemmaPackedSession {
         sample: SampleOpts,
         mut on_token: impl FnMut(u32),
     ) -> Result<Vec<u32>> {
+        self.generate_until(prompt_ids, n_new, sample, |tok| {
+            on_token(tok);
+            true
+        })
+    }
+
+    /// [`Self::generate`], but `keep_going` returning `false` ends the turn
+    /// after that token.
+    ///
+    /// This loop already stops on an end-of-generation id of its own accord;
+    /// what it could not do is stop for a reason only the caller knows — a
+    /// user stop string, a repetition guard, a client disconnecting.
+    pub fn generate_until(
+        &mut self,
+        prompt_ids: &[u32],
+        n_new: usize,
+        sample: SampleOpts,
+        mut keep_going: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
         let vocab = self.cfg.vocab_size;
         let greedy = sample.greedy
             && sample.is_classic()
@@ -2505,10 +2524,10 @@ impl GemmaPackedSession {
         // measured over a fixed step count instead of stopping at the first EOG.
         let ignore_eog = rlx_ir::env::flag("RLX_GEMMA_IGNORE_EOG");
 
-        on_token(first);
+        let mut keep = keep_going(first);
         self.tokens.push(first);
         let mut out = vec![first];
-        if self.cfg.is_eog_token(first) && !ignore_eog {
+        if (self.cfg.is_eog_token(first) && !ignore_eog) || !keep {
             return Ok(out);
         }
 
@@ -2524,9 +2543,12 @@ impl GemmaPackedSession {
             if self.cfg.is_eog_token(next) && !ignore_eog {
                 break;
             }
-            on_token(next);
+            keep = keep_going(next);
             self.tokens.push(next);
             out.push(next);
+            if !keep {
+                break;
+            }
         }
         Ok(out)
     }

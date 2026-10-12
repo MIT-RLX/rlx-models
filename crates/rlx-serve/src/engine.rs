@@ -13,6 +13,7 @@
 
 use crate::stop;
 use anyhow::Result;
+use rlx_core::lm_host_driven::HostDriven;
 use rlx_core::prompt_cache::PromptCache;
 use rlx_qwen3::SampleOpts;
 use rlx_qwen3::sampling::{apply_logit_bias, sample_token_with_history, softmax_logits};
@@ -80,6 +81,39 @@ pub enum StreamItem {
 pub struct ChatTurn {
     pub role: String,
     pub content: String,
+    /// Tool calls this turn made, when `role` is `assistant`.
+    ///
+    /// A tool-use conversation is multi-turn: the model calls, the caller runs the
+    /// tool, and the result comes back as a `tool` turn. For that to read as a
+    /// continuation the model's own call has to still be in the transcript —
+    /// without it the model is handed a result for a call it has no record of
+    /// making, and typically calls the same tool again. Tool-capable chat
+    /// templates render these into the assistant turn.
+    ///
+    /// `arguments` stays a JSON value: templates `tojson` it themselves, so
+    /// pre-stringifying would double-encode.
+    pub tool_calls: Vec<ChatToolCall>,
+    /// Which tool produced this turn's content, when `role` is `tool`.
+    pub tool_name: Option<String>,
+}
+
+/// A tool call attached to an assistant turn.
+#[derive(Debug, Clone)]
+pub struct ChatToolCall {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl ChatTurn {
+    /// A turn with no tool structure.
+    pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_name: None,
+        }
+    }
 }
 
 /// `/v1/models` entry.
@@ -115,6 +149,23 @@ pub fn top_logprobs(logits: &[f32], chosen: u32, k: usize) -> TokenLogprob {
 /// applying `logit_bias`, computing log-probs, detokenizing, and checking
 /// EOS / stop strings — pushing [`StreamItem`]s to `emit`. `emit` returns
 /// `false` to abort early (e.g. the client disconnected).
+/// Make `runner` drivable by [`run_generation`] whatever its family has
+/// implemented.
+///
+/// [`run_generation`] needs the host-driven pair — `prefill_logits` then
+/// `decode_logits` — because sampling, logit bias, log-probs and stop handling
+/// all live above the model. The trait's default for that pair is *unsupported*
+/// and most families in this workspace have not overridden it, so serving them
+/// fails on the first request rather than running slowly.
+///
+/// This wraps such a runner in [`HostDriven`], which answers each step by
+/// re-running `predict_logits` over the whole context. The result is correct
+/// and **quadratic**: prefer a family that implements the pair natively, which
+/// this detects and passes through untouched on the first prefill.
+pub fn host_drivable(runner: Box<dyn LmRunner>) -> Box<dyn LmRunner> {
+    Box::new(HostDriven::new(runner))
+}
+
 pub fn run_generation(
     runner: &mut dyn LmRunner,
     req: &GenRequest,
@@ -193,13 +244,127 @@ pub fn decode_loop(
     Ok(())
 }
 
+/// One image, decoded and ready for a vision tower.
+///
+/// 8-bit RGB, row-major, three bytes per pixel — the shape every vision
+/// preprocessor in this workspace takes. Decoding happens at the edge, so the
+/// engine never has to know PNG from JPEG.
+#[derive(Debug, Clone)]
+pub struct VisionImage {
+    pub rgb: Vec<u8>,
+    pub width: usize,
+    pub height: usize,
+}
+
+impl VisionImage {
+    /// Whether the buffer is the size the dimensions claim.
+    ///
+    /// Checked rather than trusted: a short buffer reaching a vision tower is
+    /// an out-of-bounds read deep inside a kernel, where the error says
+    /// nothing about the image that caused it.
+    pub fn is_consistent(&self) -> bool {
+        self.width > 0 && self.height > 0 && self.rgb.len() == self.width * self.height * 3
+    }
+}
+
 /// The server-facing seam. Hides how many runners / sessions back the model.
 pub trait Engine: Send + Sync {
     fn model_cards(&self) -> Vec<ModelCard>;
     /// Encode chat messages (via the model's chat template) to token ids.
     fn encode_chat(&self, turns: &[ChatTurn]) -> Result<Vec<u32>>;
+    /// As [`Self::encode_chat`], but also describing callable tools to the model.
+    ///
+    /// `tools` are OpenAI-style function specs. Tool-capable chat templates have
+    /// a `tools` branch that renders them into a system block; without it the
+    /// model is never told the tools exist, answers in prose, and the caller
+    /// cannot tell "unsupported" from "the model chose not to call anything".
+    ///
+    /// Defaults to ignoring them, which is correct for an engine whose template
+    /// has no tools branch — pair the override with [`Self::supports_tools`] so a
+    /// caller can be told rather than guess.
+    fn encode_chat_with_tools(
+        &self,
+        turns: &[ChatTurn],
+        tools: &[serde_json::Value],
+    ) -> Result<Vec<u32>> {
+        let _ = tools;
+        self.encode_chat(turns)
+    }
+    /// As [`Self::encode_chat_with_tools`], but also saying whether the model
+    /// should reason before answering.
+    ///
+    /// A reasoning model's template gates its thought channel on
+    /// `enable_thinking`. Left alone it renders whatever the template defaults
+    /// to, which is what every caller got before this existed.
+    fn encode_chat_full(
+        &self,
+        turns: &[ChatTurn],
+        tools: &[serde_json::Value],
+        think: Option<bool>,
+    ) -> Result<Vec<u32>> {
+        let _ = think;
+        self.encode_chat_with_tools(turns, tools)
+    }
+
+    /// Whether this engine's chat template can be told about tools.
+    fn supports_tools(&self) -> bool {
+        false
+    }
+
+    /// Whether this engine's chat template has a thought channel to gate.
+    fn supports_thinking(&self) -> bool {
+        false
+    }
+
+    /// Whether this engine has a vision tower and can be given images.
+    fn supports_vision(&self) -> bool {
+        false
+    }
+
+    /// Render chat turns to the prompt *text* a multimodal entry point takes.
+    ///
+    /// The text path exists because a vision model does not take token ids: the
+    /// image's embeddings are spliced into the sequence where its placeholder
+    /// sits, so the splice has to happen before tokenizing is finished. An
+    /// engine with no vision tower never needs this.
+    fn render_chat(
+        &self,
+        turns: &[ChatTurn],
+        tools: &[serde_json::Value],
+        think: Option<bool>,
+    ) -> Result<String> {
+        let _ = (turns, tools, think);
+        anyhow::bail!("this engine renders prompts to token ids, not to text")
+    }
+
+    /// Run a request whose prompt carries images.
+    ///
+    /// Refusing by default is deliberate. The alternative — dropping the images
+    /// and running the text — answers as though the picture had been looked at,
+    /// which is the worst way to be wrong about an image.
+    fn run_vision(
+        &self,
+        req: &GenRequest,
+        prompt: &str,
+        images: &[VisionImage],
+        emit: &mut dyn FnMut(StreamItem) -> bool,
+    ) -> Result<()> {
+        let _ = (req, prompt, images, emit);
+        anyhow::bail!("this model has no vision tower, so it cannot be shown an image")
+    }
     /// Encode a raw completion prompt to token ids.
     fn encode_text(&self, text: &str) -> Result<Vec<u32>>;
+
+    /// Encode text that *continues* an already-templated prompt.
+    ///
+    /// Distinct from `encode_text` because that one starts a sequence and adds
+    /// whatever special tokens the tokenizer prepends; appending those again in
+    /// the middle of a rendered chat prompt would put a second start marker
+    /// inside the assistant's turn. The default is `encode_text`, which is
+    /// right for the many tokenizers that add nothing.
+    fn encode_continuation(&self, text: &str) -> Result<Vec<u32>> {
+        self.encode_text(text)
+    }
     /// EOS token ids that terminate generation.
     fn eos_ids(&self) -> Vec<u32>;
     /// Decode a single token id to its text (for logprob alternatives).
@@ -399,6 +564,76 @@ mod tests {
             stop_strings: vec![],
             want_logprobs: None,
         }
+    }
+
+    /// A family with only `predict_logits` cannot be served, and `host_drivable`
+    /// is what makes it servable.
+    ///
+    /// This is the gap itself: `run_generation` needs `prefill_logits`, the
+    /// trait's default for it is an error, and eight of the ten model families
+    /// in this workspace have not overridden it — so the first request fails
+    /// rather than running slowly.
+    #[test]
+    fn host_drivable_makes_a_predict_only_runner_servable() {
+        struct PredictOnly {
+            next: std::cell::Cell<u32>,
+        }
+        impl LmRunner for PredictOnly {
+            fn family(&self) -> &'static str {
+                "predict-only"
+            }
+            fn vocab_size(&self) -> usize {
+                16
+            }
+            fn predict_logits(&mut self, prompt_ids: &[u32]) -> Result<Vec<f32>> {
+                // Argmax walks forward with the context length, so losing
+                // context shows up as a repeated token.
+                let mut v = vec![0.0f32; 16];
+                let pick = (prompt_ids.len() % 16) as u32;
+                self.next.set(pick);
+                v[pick as usize] = 1.0;
+                Ok(v)
+            }
+        }
+
+        // Unwrapped: the first call fails, and says why.
+        let mut bare: Box<dyn LmRunner> = Box::new(PredictOnly {
+            next: std::cell::Cell::new(0),
+        });
+        let err = run_generation(
+            bare.as_mut(),
+            &req(3),
+            &mut |_| Ok(String::new()),
+            &mut |_| true,
+        )
+        .expect_err("a predict-only family cannot be served");
+        assert!(
+            format!("{err:#}").contains("unsupported"),
+            "expected the trait's unsupported error, got: {err:#}"
+        );
+
+        // Wrapped: the same request runs, and the ids follow the context length.
+        let mut wrapped = host_drivable(Box::new(PredictOnly {
+            next: std::cell::Cell::new(0),
+        }));
+        let mut ids = Vec::new();
+        run_generation(
+            wrapped.as_mut(),
+            &req(3),
+            &mut |_| Ok(String::new()),
+            &mut |item| {
+                if let StreamItem::Token { id, .. } = item {
+                    ids.push(id);
+                }
+                true
+            },
+        )
+        .expect("the wrapped runner serves");
+        assert_eq!(
+            ids,
+            vec![3, 4, 5],
+            "prompt is 3 long, so context grows 3,4,5"
+        );
     }
 
     #[test]

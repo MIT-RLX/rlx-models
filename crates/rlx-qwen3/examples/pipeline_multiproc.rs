@@ -25,7 +25,7 @@ use common::{Shape, argmax, qwen3, synth};
 use rlx_core::weight_map::WeightMap;
 use rlx_distributed::launch::worker_args;
 use rlx_distributed::{DistConfig, LocalCluster, ParallelMode, PipelineCoordinator, WorkerArgs};
-use rlx_qwen3::pipeline_decode::Qwen3PipelineDecodeStage;
+use rlx_qwen3::pipeline_decode;
 use rlx_runtime::Device;
 use std::str::FromStr;
 
@@ -55,7 +55,7 @@ fn worker(w: WorkerArgs, device: Device) {
     let weights = synth(&c);
     let dist = DistConfig::load(&w.hostfile, Some(w.rank), ParallelMode::Pipeline).unwrap();
     let group = dist.connect().expect("connect");
-    let mut stage = Qwen3PipelineDecodeStage::new(c, device, dist.rank, dist.world_size, weights)
+    let mut stage = pipeline_decode::stage(c, device, dist.rank, dist.world_size, weights)
         .with_decode_cache(64);
     let coord = PipelineCoordinator::new(group);
     let mut tokens = PROMPT.to_vec();

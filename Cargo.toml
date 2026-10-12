@@ -36,6 +36,7 @@ members = [
     "crates/rlx-clinicalbert",
     "crates/rlx-nomic",
     "crates/rlx-narma10",
+    "crates/rlx-fgd",
     "crates/rlx-vision",
     "crates/rlx-dinov2",
     "crates/rlx-dinov3",
@@ -76,6 +77,7 @@ members = [
     "crates/rlx-motif",
     "crates/rlx-diffusiongemma",
     "crates/rlx-qwen35",
+    "crates/rlx-qwen4exp",
     "crates/rlx-fara",
     "crates/rlx-qwen25-vl",
     "crates/rlx-flux2",
@@ -351,6 +353,7 @@ rlx-ling = { path = "crates/rlx-ling", version = "0.2.16" }
 rlx-motif = { path = "crates/rlx-motif", version = "0.2.16" }
 rlx-diffusiongemma = { path = "crates/rlx-diffusiongemma", version = "0.2.16" }
 rlx-qwen35 = { path = "crates/rlx-qwen35", version = "0.2.16" }
+rlx-qwen4exp = { path = "crates/rlx-qwen4exp", version = "0.2.16" }
 rlx-fara = { path = "crates/rlx-fara", version = "0.2.16" }
 rlx-qwen25-vl = { path = "crates/rlx-qwen25-vl", version = "0.2.16" }
 rlx-flux2 = { path = "crates/rlx-flux2", version = "0.2.16" }

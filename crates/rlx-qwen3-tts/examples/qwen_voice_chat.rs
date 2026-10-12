@@ -1764,10 +1764,10 @@ fn main() -> Result<()> {
 
 #[cfg(feature = "mic")]
 fn maybe_play_reply(pcm: &[f32], args: &Args) {
-    if args.play {
-        if let Err(e) = mic::play_pcm(pcm, TTS_RATE) {
-            eprintln!("playback failed: {e}");
-        }
+    if args.play
+        && let Err(e) = mic::play_pcm(pcm, TTS_RATE)
+    {
+        eprintln!("playback failed: {e}");
     }
 }
 

@@ -89,9 +89,32 @@ impl Qwen35SpecRunner {
         n_new: usize,
         mut on_token: F,
     ) -> Result<Vec<u32>> {
+        self.generate_until(prompt_ids, n_new, |tok| {
+            on_token(tok);
+            true
+        })
+    }
+
+    /// [`Self::generate`], but `keep_going` returning `false` ends the turn
+    /// after that token.
+    ///
+    /// Speculative decode verifies a batch at a time, so a stop lands inside
+    /// a batch the verifier has already accepted and the remainder is
+    /// dropped. That was the stated reason this path ignored the caller's
+    /// stop signal, and it does not hold: the loop *already* abandons the
+    /// rest of a batch whenever `n_new` falls inside one, so stopping is a
+    /// state the decoder has to tolerate either way. Ignoring the signal
+    /// bought nothing and cost every caller its EOS, stop strings and
+    /// repetition guard.
+    pub fn generate_until<F: FnMut(u32) -> bool>(
+        &mut self,
+        prompt_ids: &[u32],
+        n_new: usize,
+        mut keep_going: F,
+    ) -> Result<Vec<u32>> {
         let mut context: Vec<u32> = prompt_ids.to_vec();
         let mut produced: Vec<u32> = Vec::with_capacity(n_new);
-        while produced.len() < n_new {
+        'outer: while produced.len() < n_new {
             let accepted = self.decoder.step(&context);
             if accepted.is_empty() {
                 break;
@@ -101,8 +124,10 @@ impl Qwen35SpecRunner {
                     break;
                 }
                 produced.push(*tok);
-                on_token(*tok);
                 context.push(*tok);
+                if !keep_going(*tok) {
+                    break 'outer;
+                }
             }
         }
         Ok(produced)
@@ -209,12 +234,17 @@ impl LmRunner for Qwen35SpecRunner {
         n_new: usize,
         on_token: &mut dyn FnMut(u32) -> bool,
     ) -> Result<Vec<u32>> {
-        // Use the inherent SpecRunner generate (speculative decode).
-        // The inherent signature takes `FnMut(u32)` so we drop the
-        // bool — speculative-decode stop semantics need to interact
-        // with the accept/reject sampler, which is its own design.
-        Qwen35SpecRunner::generate(self, prompt_ids, n_new, |tok| {
-            let _ = on_token(tok);
-        })
+        // Speculative decode, stopping at the token the caller refused
+        // rather than at the end of the budget; see `generate_until` for why
+        // the mid-batch truncation that implies is already a state this loop
+        // produces on its own.
+        Qwen35SpecRunner::generate_until(self, prompt_ids, n_new, on_token)
     }
+    // No `prefill_logits` / `decode_logits` on purpose. Those hand the
+    // caller the decode loop, and this runner *is* a decode loop: the draft
+    // proposes, the target verifies, and the accept/reject sampler decides
+    // how many tokens a step yields. A host-driven consumer stepping one
+    // token at a time would get the target model with none of the
+    // speculation — the plain `qwen35` runner, slower, under a name that
+    // promises otherwise. `generate` is the right surface here.
 }

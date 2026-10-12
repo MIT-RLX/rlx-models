@@ -56,6 +56,6 @@ pub use loss::{cross_entropy_masked, dpo_loss_from_margin};
 pub use resident::ResidentTrainer;
 pub use rlx_runtime::Device;
 pub use trainer::{
-    Adam, AdamConfig, Checkpoint, DpConfig, LrSchedule, Optimizer, ParamSlot, StepMetrics, Trainer,
-    lora_linear, train, train_dp, train_dp_with,
+    Adam, AdamConfig, AdamState, Checkpoint, DpConfig, LrSchedule, Optimizer, ParamSlot,
+    StepMetrics, Trainer, lora_linear, train, train_dp, train_dp_with,
 };

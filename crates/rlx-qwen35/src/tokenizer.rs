@@ -15,7 +15,12 @@
 
 //! Optional HuggingFace `tokenizer.json` bridge for Qwen3.5 CLI use.
 
-use anyhow::{Context, Result};
+// `Context` is only in scope for the `.with_context` calls inside the gated
+// loaders below, so it is unused — and a hard error under `-D warnings` — in
+// the default build.
+#[cfg(feature = "qwen35-tokenizer")]
+use anyhow::Context;
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 /// Resolve a tokenizer path: explicit `--tokenizer`, sibling of the

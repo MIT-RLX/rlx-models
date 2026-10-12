@@ -1,0 +1,47 @@
+{
+ "_provenance": "Probabilities from the REFERENCE implementation (jaredpalmer/kev kev/model.py DecisionModel, peft-merged fp32 on CPU) for jaredpalmer/kev-0.8b on Qwen/Qwen3.5-0.8B-Base @ the revision head.pt pins. Request = examples/ticket.json. Regenerate with scripts/kev_reference_probs.py.",
+ "_run": "jaredpalmer/kev-0.8b",
+ "_base": "Qwen/Qwen3.5-0.8B-Base",
+ "temperature": 2.3510958125672174,
+ "meta": [
+  {
+   "id": "department",
+   "keys": [
+    "returns",
+    "shipping",
+    "billing"
+   ]
+  },
+  {
+   "id": "escalate",
+   "keys": [
+    "false",
+    "true"
+   ]
+  },
+  {
+   "id": "frustration",
+   "keys": [
+    "0",
+    "1",
+    "2"
+   ]
+  }
+ ],
+ "probs": [
+  [
+   0.31530338525772095,
+   0.4748280644416809,
+   0.20986856520175934
+  ],
+  [
+   0.2430172562599182,
+   0.7569827437400818
+  ],
+  [
+   0.028265487402677536,
+   0.6402117609977722,
+   0.33152270317077637
+  ]
+ ]
+}

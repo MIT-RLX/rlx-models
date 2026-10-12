@@ -1367,7 +1367,7 @@ checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -1378,7 +1378,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -1393,7 +1393,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -3479,8 +3479,8 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
+ "windows-link 0.1.3",
+ "windows-result 0.3.4",
 ]
 
 [[package]]
@@ -3652,7 +3652,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.19",
- "windows 0.62.2",
+ "windows 0.54.0",
 ]
 
 [[package]]
@@ -4039,7 +4039,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -6653,7 +6653,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "once_cell",
@@ -6673,7 +6673,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -6686,7 +6686,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -7300,7 +7300,7 @@ dependencies = [
 
 [[package]]
 name = "rlx"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "rlx-driver",
@@ -7372,7 +7372,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-autodiff"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "half",
  "rlx-fusion",
@@ -7517,7 +7517,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-collectives"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rlx-cpu",
  "rlx-driver",
@@ -7526,7 +7526,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-compile"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rlx-autodiff",
  "rlx-fusion",
@@ -7556,7 +7556,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-coreml"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "bytemuck",
  "cc",
@@ -7573,11 +7573,11 @@ dependencies = [
 
 [[package]]
 name = "rlx-cortexm"
-version = "0.2.16"
+version = "0.2.17"
 
 [[package]]
 name = "rlx-cpu"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "gemm 0.19.0",
  "half",
@@ -7591,7 +7591,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-cuda"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "bytemuck",
  "cudarc 0.19.8",
@@ -7631,7 +7631,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-dduf"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "half",
@@ -7756,11 +7756,12 @@ dependencies = [
 
 [[package]]
 name = "rlx-distributed"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "libc",
  "rlx-driver",
+ "rlx-gguf",
  "rlx-ir",
  "rlx-runtime",
  "serde",
@@ -7777,7 +7778,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-driver"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "half",
  "iroh",
@@ -7936,6 +7937,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-fgd"
+version = "0.2.16"
+dependencies = [
+ "anyhow",
+ "image",
+ "rayon",
+ "rlx-ir",
+ "rlx-runtime",
+ "serde_json",
+]
+
+[[package]]
 name = "rlx-fireredaudio"
 version = "0.2.16"
 dependencies = [
@@ -7981,7 +7994,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-flow"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -8016,7 +8029,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-fpga"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rlx-cortexm",
  "rlx-ir",
@@ -8046,7 +8059,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-fusion"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rlx-ir",
 ]
@@ -8115,7 +8128,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-gguf"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -8189,11 +8202,11 @@ dependencies = [
 
 [[package]]
 name = "rlx-gpu-dispatch"
-version = "0.2.16"
+version = "0.2.17"
 
 [[package]]
 name = "rlx-gpu-host"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "bytemuck",
  "half",
@@ -8206,7 +8219,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-gpu-kernels"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rlx-gpu-dispatch",
  "rlx-ir",
@@ -8365,7 +8378,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-ir"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "aes 0.9.2",
  "bincode 1.3.3",
@@ -8438,15 +8451,23 @@ name = "rlx-kev"
 version = "0.2.16"
 dependencies = [
  "anyhow",
+ "axum",
+ "rlx-autodiff",
+ "rlx-compile",
+ "rlx-fusion",
  "rlx-ir",
  "rlx-models-core",
  "rlx-qwen35",
  "rlx-runtime",
  "rlx-torch-ckpt",
+ "rlx-tune",
  "safetensors 0.7.0",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokenizers",
+ "tokio",
+ "tower-http",
 ]
 
 [[package]]
@@ -8664,6 +8685,7 @@ dependencies = [
  "anyhow",
  "rlx-cli",
  "rlx-cpu",
+ "rlx-distributed",
  "rlx-flow",
  "rlx-gguf",
  "rlx-ir",
@@ -8750,7 +8772,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-macros"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8798,7 +8820,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-metal"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "bytemuck",
  "half",
@@ -8996,7 +9018,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mlx"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "half",
  "libc",
@@ -9013,7 +9035,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mlx-io"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "half",
@@ -9029,7 +9051,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mlx-sys"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "cc",
  "cmake",
@@ -9148,6 +9170,7 @@ dependencies = [
  "rlx-qwen3-tts",
  "rlx-qwen3-vl",
  "rlx-qwen35",
+ "rlx-qwen4exp",
  "rlx-runtime",
  "rlx-s1",
  "rlx-sam",
@@ -9366,7 +9389,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-nemo"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -9582,7 +9605,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-oneapi"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "half",
  "libloading 0.8.9",
@@ -9608,7 +9631,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-onnx-import"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -9625,7 +9648,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-onnx-proto"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "protobuf",
 ]
@@ -9674,7 +9697,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-opscope"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rlx-autodiff",
  "rlx-fusion",
@@ -9684,7 +9707,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-opt"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rlx-autodiff",
  "rlx-compile",
@@ -9694,7 +9717,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-optim"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rayon",
 ]
@@ -9796,7 +9819,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-pkg"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "bincode 1.3.3",
@@ -10050,8 +10073,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlx-rocm"
+name = "rlx-qwen4exp"
 version = "0.2.16"
+dependencies = [
+ "anyhow",
+ "rlx-cli",
+ "rlx-cpu",
+ "rlx-distributed",
+ "rlx-flow",
+ "rlx-gguf",
+ "rlx-ir",
+ "rlx-llada2",
+ "rlx-models-core",
+ "rlx-qwen35",
+ "rlx-runtime",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rlx-rocm"
+version = "0.2.17"
 dependencies = [
  "libloading 0.8.9",
  "rlx-cpu",
@@ -10075,7 +10117,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-runtime"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "half",
@@ -10437,7 +10479,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tensor"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rlx-autodiff",
  "rlx-ir",
@@ -10461,7 +10503,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-text"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "minijinja",
@@ -10552,7 +10594,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-torch-ckpt"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "anyhow",
  "flate2",
@@ -10561,7 +10603,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-tpu"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "libloading 0.8.9",
  "prost 0.13.5",
@@ -10721,7 +10763,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-unfuse"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rlx-ir",
 ]
@@ -11022,7 +11064,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-vulkan"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "ash",
  "bytemuck",
@@ -11128,7 +11170,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-webgl"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "js-sys",
  "rlx-autodiff",
@@ -11155,7 +11197,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-wgpu"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "bytemuck",
  "half",
@@ -11244,7 +11286,7 @@ dependencies = [
 
 [[package]]
 name = "rlxsl"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "rlx-ir",
 ]
@@ -13832,7 +13874,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -14393,8 +14435,8 @@ dependencies = [
  "log",
  "serde",
  "thiserror 2.0.19",
- "windows 0.62.2",
- "windows-core 0.62.2",
+ "windows 0.61.3",
+ "windows-core 0.61.2",
 ]
 
 [[package]]

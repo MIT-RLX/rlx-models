@@ -120,10 +120,10 @@ impl WhisperPipeline {
         }
 
         #[cfg(feature = "diarize")]
-        if self.opts.diarize {
-            if let Some(ref mut diar) = self.diarizer {
-                assign_speakers(diar, pcm, &mut transcript)?;
-            }
+        if self.opts.diarize
+            && let Some(ref mut diar) = self.diarizer
+        {
+            assign_speakers(diar, pcm, &mut transcript)?;
         }
 
         Ok(transcript)

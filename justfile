@@ -65,9 +65,35 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
-# Clippy with warnings as errors (same bar as CI / publish).
+# Clippy + rustdoc with warnings as errors (same bar as CI / publish).
 lint:
     ./scripts/rust-lint-gate.sh --workspace
+
+# Just the rustdoc half of `lint`: broken `[`intra-doc links`]`, public docs
+# pointing at private items, redundant link targets. Nothing else in the repo
+# runs rustdoc, so these warn silently and ship as literal brackets.
+lint-docs *PKGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{PKGS}}" ]; then
+      RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --keep-going
+    else
+      args=""
+      for p in {{PKGS}}; do args="$args -p $p"; done
+      # shellcheck disable=SC2086
+      RUSTDOCFLAGS="-D warnings" cargo doc $args --no-deps --keep-going
+    fi
+
+# Lint a crate in its NON-default feature states — the class `lint` cannot see.
+# `lint` builds default features only, so a field declared `#[cfg(feature =
+# "x")]` and used without the gate compiles for whoever enabled x and breaks the
+# build for everyone else. Checks each package with no features and with all of
+# its own buildable ones (GPU-toolchain features are skipped, not failed).
+#   just lint-features rlx-qwen3        # named packages
+#   just lint-features --changed        # whatever you are editing
+#   just lint-features --all            # every package with features
+lint-features *ARGS:
+    python3 scripts/check-feature-states.py {{ARGS}}
 
 # Verify MODELS.md against cargo metadata (missing crates, stale backend
 # cells, counts that no longer add up). Metadata only — no build.
@@ -79,7 +105,7 @@ check-catalog:
 check-publishable:
     python3 scripts/check-publishable.py
 
-# fmt-check + clippy (-D warnings) + docs/publish preflight.
+# fmt-check + clippy + rustdoc (-D warnings) + catalog/publish preflight.
 lint-all: fmt-check lint check-catalog check-publishable
 
 # Everything lint-all does, plus the two gates that only matter immediately
@@ -553,6 +579,61 @@ fetch-glm5next-subset:
 glm5next-real: fetch-glm5next-subset
     RLX_GLM5NEXT_GGUF="{{real_weights_dir}}/glm5next/GLM-5.3-Flash-blk0-blk3-e8.gguf" \
       cargo test -p rlx-glm5next --test real_weights --test packed_weights -- --nocapture
+
+# unsloth/Qwen3.8-Flash-Next-GGUF, but only the parts worth testing. The model
+# is 512x56B; `per_layer_token_embd` alone — the 51-billion-weight n-gram table
+# — is ~28 GB. A GGUF header carries every tensor's byte offset, so `blk.1`
+# (GatedDeltaNet + the model's one PLE module), `blk.3` (gated attention + the
+# QSA indexer), 8 of each block's 512 routed experts, and the three
+# `output_hc_*` tensors come out of one shard via HTTP range requests as a valid
+# ~186 MB single-file GGUF. The n-gram table is skipped on purpose: the crate
+# gathers its rows on the host, so it is never a graph parameter.
+# Then: just qwen4exp-real
+fetch-qwen4exp-subset:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="{{real_weights_dir}}/qwen38-flash-next-subset"
+    mkdir -p "$dest"
+    out="$dest/qwen4exp-blk1-blk3.gguf"
+    if [ ! -s "$out" ]; then
+      python3 scripts/qwen4exp_subset.py --experts 8 "$out"
+    fi
+    ls -lh "$dest"
+
+# The rlx-qwen4exp real-weight tests against that subset: the converter's sign
+# and offset conventions, both block kinds end to end, the QSA short-circuit
+# against the selection machinery it skips, and decode reproducing prefill.
+qwen4exp-real: fetch-qwen4exp-subset
+    RLX_QWEN4EXP_GGUF="{{real_weights_dir}}/qwen38-flash-next-subset/qwen4exp-blk1-blk3.gguf" \
+      cargo test -p rlx-qwen4exp --features vision --test real_weights -- --nocapture
+
+# The vision tower on real weights, without the 904 MB mmproj: 3 of its 27
+# blocks plus all the globals (patch embedding, the 2304-row position table,
+# the merger), with `clip.vision.block_count` rewritten. ~172 MB.
+fetch-qwen4exp-mmproj:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="{{real_weights_dir}}/qwen38-flash-next-subset"
+    mkdir -p "$dest"
+    out="$dest/mmproj-3blk.gguf"
+    if [ ! -s "$out" ]; then
+      python3 scripts/qwen4exp_subset.py --mmproj 3 "$out"
+    fi
+    ls -lh "$dest"
+
+# Everything rlx-qwen4exp can check without weights: both config readers, the
+# PLE hash against the published constants, the tensor manifest and
+# orientations for all 48 blocks, the MTP and mmproj contracts, the native ViT
+# against rlx-qwen35's independent implementation of the same tower, and the
+# three equivalences (decode == prefill, chunked == single-shot, padded state ==
+# exact state).
+qwen4exp-test:
+    cargo test -p rlx-qwen4exp --features vision
+
+# The vision tests with the real mmproj slice bound.
+qwen4exp-vision-real: fetch-qwen4exp-mmproj
+    RLX_QWEN4EXP_MMPROJ="{{real_weights_dir}}/qwen38-flash-next-subset/mmproj-3blk.gguf" \
+      cargo test -p rlx-qwen4exp --features vision --test vision -- --nocapture
 
 # prism-ml/Ternary-Bonsai-27B (qwen35 arch, Q2_0_g128 packed). ~7.2 GB.
 fetch-ternary-bonsai27b:
@@ -3640,3 +3721,32 @@ unlink:
 
 # Re-link from a freshly edited example (unlink, then link).
 relink: unlink link-local
+
+# --- Functional gradient descent with adaptive representations (arXiv:2606.16926) ---
+
+# Figure 1 — adaptive grids vs fixed-resolution FGD on L² fitting.
+fgd-teaser *ARGS:
+    cargo run -p rlx-fgd --release --example teaser {{ARGS}}
+
+# Figure 2 — RKHS regression with adaptive decision trees.
+fgd-regression *ARGS:
+    cargo run -p rlx-fgd --release --example kernel_regression {{ARGS}}
+
+# Figure 3 — the wave equation solved in frequency space.
+fgd-wave *ARGS:
+    cargo run -p rlx-fgd --release --example wave_equation {{ARGS}}
+
+test-fgd *ARGS:
+    cargo test -p rlx-fgd --release {{ARGS}}
+
+# Needs `--features all-backends` (or apple-silicon / nvidia-gpu / amd-gpu).
+test-fgd-backends *ARGS:
+    cargo test -p rlx-fgd --test backend_parity --release {{feature_args}} {{ARGS}}
+
+# Figure 4 — inverse rendering with adaptive voxel grids.
+fgd-radiance *ARGS:
+    cargo run -p rlx-fgd --release --example radiance {{ARGS}}
+
+# Fetch one NeRF-Synthetic scene for `fgd-radiance` — ~38 MB pulled out of a 1.27 GB archive by HTTP range requests.
+fetch-nerf-synthetic SCENE="ficus" *ARGS:
+    python3 scripts/fetch_nerf_synthetic.py {{SCENE}} {{ARGS}}

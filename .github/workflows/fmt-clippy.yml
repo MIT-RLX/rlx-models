@@ -31,6 +31,13 @@ jobs:
 
       - name: cargo clippy (-D warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # rustdoc's link lints are warn-by-default and nothing else here runs
+      # rustdoc, so a broken `[`Thing`]` ships as literal brackets. Default
+      # features, which is also what docs.rs builds (no crate sets
+      # `[package.metadata.docs.rs]`), so this matches the published docs.
+      # --keep-going: rustdoc stops at the first failing crate otherwise.
+      - name: cargo doc (-D warnings)
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --keep-going
       # MODELS.md is hand-maintained but claims to be generated from each
       # crate's Cargo.toml, and drifts every release (missing crates, stale
       # backend cells, counts that no longer add up). Cheap: metadata only.

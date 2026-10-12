@@ -30,7 +30,7 @@
 //! step and the two sides of a U-Net skip no longer line up. The reference
 //! reconciles them with negative `F.pad` — a centre crop — and the constants
 //! (4, 16, 20, 1) are not slack: they are exactly the accumulated shrinkage of
-//! the branch they rejoin. [`crop`] is therefore checked against the sibling it
+//! the branch they rejoin. `crop` is therefore checked against the sibling it
 //! is about to be added to, because an off-by-one here produces a correctly
 //! shaped tensor built from misaligned pixels.
 //!

@@ -594,13 +594,14 @@ pub use qwen35::{
 pub use rlx_flux2::{Flux2Output, Flux2Runner, Flux2RunnerBuilder};
 #[cfg(feature = "runner")]
 pub use run::{
-    ConfigSource, DinoV2Output, DinoV2Runner, DinoV2RunnerBuilder, DinoV2Variant, Llama32Runner,
-    Llama32RunnerBuilder, LmRunner, ModelRunner, Precision, Qwen3Runner, Qwen3RunnerBuilder,
-    SamArch, SamPredictionAny, SamRunner, SamRunnerBuilder, Vjepa2Output, Vjepa2PoolOutput,
-    Vjepa2PredictOutput, Vjepa2Runner, Vjepa2RunnerBuilder, Wav2Vec2BertRunner,
-    Wav2Vec2BertRunnerBuilder, WeightFormat, debug_resolve_name, dispatch, dispatch_help,
-    list_mtp_keys, open_gguf_loader, open_loader, open_loader_resolved, open_loader_with_format,
-    register_runner, registered_runners, run_registered,
+    AutoOptions, ConfigSource, DinoV2Output, DinoV2Runner, DinoV2RunnerBuilder, DinoV2Variant,
+    Llama32Runner, Llama32RunnerBuilder, LmRunner, ModelRunner, Precision, Qwen3Runner,
+    Qwen3RunnerBuilder, SamArch, SamPredictionAny, SamRunner, SamRunnerBuilder, Vjepa2Output,
+    Vjepa2PoolOutput, Vjepa2PredictOutput, Vjepa2Runner, Vjepa2RunnerBuilder, Wav2Vec2BertRunner,
+    Wav2Vec2BertRunnerBuilder, WeightFormat, auto_runner, auto_runner_servable,
+    auto_runner_servable_with_mmproj, auto_runner_with_mmproj, debug_resolve_name, dispatch,
+    dispatch_help, list_mtp_keys, open_gguf_loader, open_loader, open_loader_resolved,
+    open_loader_with_format, register_runner, registered_runners, run_registered,
 };
 #[cfg(feature = "sam")]
 pub use sam::{

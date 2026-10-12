@@ -200,7 +200,7 @@ pub trait DraftModel {
 /// already moves throughput in the right direction.
 ///
 /// The draft is **stateless w.r.t. logits**: the megakernel passes them in
-/// via the trait's [`DraftModel::set_current_logits`] hook before each
+/// via the trait's [`DraftModel::set_step_context`] hook before each
 /// `propose` call. If the megakernel hasn't set them yet (utterance start
 /// or after `reset`), `propose` falls back to repeating the history's
 /// last g0 — same as [`TrivialDraft`].
