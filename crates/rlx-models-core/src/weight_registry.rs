@@ -65,9 +65,20 @@ fn open_safetensors(path: &Path) -> Result<Box<dyn WeightLoader>> {
             crate::safetensors_checkpoint::SafetensorsMmapLoader::open(&dir)?,
         ));
     }
-    let path_str = path
+    // A directory holding a single `model.safetensors` and no index. The
+    // comment above promises a directory is acceptable and only the sharded
+    // case delivered on it; the unsharded one passed the directory down to a
+    // reader of files, which fails with "is a directory" several frames from
+    // here, naming the directory and no reason. Anyone handed a model
+    // directory passes the directory.
+    let file = if path.is_dir() {
+        dir.join("model.safetensors")
+    } else {
+        path.to_path_buf()
+    };
+    let path_str = file
         .to_str()
-        .ok_or_else(|| anyhow!("non-utf8 path {:?}", path))?;
+        .ok_or_else(|| anyhow!("non-utf8 path {:?}", file))?;
     Ok(Box::new(WeightMap::from_file(path_str)?))
 }
 
@@ -397,6 +408,41 @@ mod tests {
         assert_eq!(format_for_extension("gguf"), Some("gguf"));
         assert_eq!(format_for_extension("safetensors"), Some("safetensors"));
         assert_eq!(format_for_extension("bin"), None);
+    }
+
+    /// A safetensors file with one tiny tensor in it.
+    fn one_tensor_file() -> Vec<u8> {
+        let header = br#"{"t":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#;
+        let mut out = (header.len() as u64).to_le_bytes().to_vec();
+        out.extend_from_slice(header);
+        out.extend_from_slice(&1.0f32.to_le_bytes());
+        out.extend_from_slice(&2.0f32.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn a_directory_holding_one_safetensors_file_opens_like_the_file_does() {
+        // Sharded checkpoints are named by their directory and unsharded
+        // ones by their file, but anyone holding a model directory passes
+        // the directory for both — and this used to reach a reader of files
+        // and fail with "is a directory", several frames from the caller and
+        // naming no reason.
+        let dir = std::env::temp_dir().join(format!("rlx-wr-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("model.safetensors"), one_tensor_file()).unwrap();
+
+        let mut from_dir = open_weight_loader(&dir).expect("opening the directory");
+        let mut from_file =
+            open_weight_loader(&dir.join("model.safetensors")).expect("opening the file");
+        let mut a = from_dir.remaining_keys();
+        let mut b = from_file.remaining_keys();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "a directory and the file in it must load the same");
+        assert!(a.iter().any(|k| k == "t"), "{a:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

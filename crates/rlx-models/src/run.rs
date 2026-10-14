@@ -92,7 +92,7 @@ pub fn auto_runner_with(path: &Path, opts: &AutoOptions) -> Result<Box<dyn LmRun
     let sniff = auto_sniff(path)?;
     // Reject an exotic device before any family reads a config or loads
     // tensors: uniform message, and it fails before the I/O.
-    rlx_core::device_capabilities::validate_lm_device(sniff.runner_name, opts.device)?;
+    rlx_core::device_capabilities::validate_lm_device(sniff.runner_name, opts.device_or_auto())?;
 
     if !rlx_core::lm_registry::lm_runner_is_registered(sniff.runner_name) {
         // A known architecture with no constructor. The metadata registry
@@ -186,17 +186,25 @@ pub fn auto_runner_with_mmproj(path: &Path, mmproj: Option<&Path>) -> Result<Box
 /// rather than being reachable only from a `match` here — that is what lets an
 /// out-of-tree crate add a family, and what makes the set enumerable.
 fn build_builtin(name: &str, path: &Path, opts: &AutoOptions) -> Result<Box<dyn LmRunner>> {
-    let device = opts.device;
+    let device = opts.device_or_auto();
     let mmproj = opts.mmproj_path();
     let weights = path;
     // Packed-K-quant auto-detection is now inside each runner's
     // `.build()` (matches llama.cpp's behaviour — K-quant tensors stay
     // packed in memory, never materialise to a dense F32 matrix).
+    // Families that take an explicit context get `opts.max_seq` below. The
+    // rest pick it up through `LmCommonBuilder::max_seq_or`, which falls back to
+    // `RLX_LM_MAX_SEQ` — so no family is stuck on the 128 default just because
+    // its arm here has not been threaded yet.
+    if let Some(n) = opts.max_seq {
+        rlx_ir::env::set("RLX_LM_MAX_SEQ", n.to_string());
+    }
     let runner: Box<dyn LmRunner> = match name {
         "qwen3" => Box::new(
             Qwen3Runner::builder()
                 .weights(weights)
                 .device(device)
+                .max_seq_opt(opts.max_seq)
                 .build()?,
         ),
         "qwen35" => {
@@ -208,10 +216,14 @@ fn build_builtin(name: &str, path: &Path, opts: &AutoOptions) -> Result<Box<dyn 
                     rlx_qwen35::Qwen35SpecRunner::builder()
                         .weights(weights)
                         .device(device)
+                        .max_seq_opt(opts.max_seq)
                         .build()?,
                 )
             } else {
-                let mut b = Qwen35Runner::builder().weights(weights).device(device);
+                let mut b = Qwen35Runner::builder()
+                    .weights(weights)
+                    .device(device)
+                    .max_seq_opt(opts.max_seq);
                 if let Some(mp) = mmproj {
                     b = b.mmproj(mp);
                 }
@@ -258,7 +270,10 @@ fn build_builtin(name: &str, path: &Path, opts: &AutoOptions) -> Result<Box<dyn 
             }
         }
         "gemma" => {
-            let mut b = GemmaRunner::builder().weights(weights).device(device);
+            let mut b = GemmaRunner::builder()
+                .weights(weights)
+                .device(device)
+                .max_seq_opt(opts.max_seq);
             if let Some(mp) = mmproj {
                 b = b.mmproj(mp);
             }
@@ -268,6 +283,7 @@ fn build_builtin(name: &str, path: &Path, opts: &AutoOptions) -> Result<Box<dyn 
             Llama32Runner::builder()
                 .weights(weights)
                 .device(device)
+                .max_seq_opt(opts.max_seq)
                 .build()?,
         ),
         "mistral" => {

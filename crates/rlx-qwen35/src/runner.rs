@@ -225,6 +225,15 @@ impl Qwen35RunnerBuilder {
         self
     }
 
+    /// [`Self::max_seq`] from an `Option`, leaving the default on `None`.
+    /// For callers forwarding an optional context (`LmBuildOptions::max_seq`).
+    pub fn max_seq_opt(mut self, n: Option<usize>) -> Self {
+        if let Some(n) = n {
+            self.max_seq = Some(n);
+        }
+        self
+    }
+
     /// Compile the static prefill graph at `n` (must be ≤ [`Self::max_seq`]).
     /// Decode capacity stays at `max_seq`. Used by `--fast` so a short prompt
     /// does not pay full-`max_seq` packed GEMMs.
@@ -2918,14 +2927,50 @@ impl Qwen35Runner {
         // F32 embedding table (or packed GGUF LM head via lm_loader).
         if self.fast_greedy_lm_head {
             let n_embd = self.cfg.hidden_size;
-            let hidden = &outs[logits_idx];
-            anyhow::ensure!(
-                hidden.len() == self.batch * n_embd,
-                "qwen35: fast_greedy predict expected hidden [{}, {}], got len={}",
-                self.batch,
-                n_embd,
-                hidden.len()
-            );
+            // The predict graph emits EITHER the last position's hidden row per
+            // sequence (`[batch, n_embd]`) or every padded position
+            // (`[batch, max_seq, n_embd]`), and which one is a property of the
+            // BACKEND, not of this call: Metal narrows to the last row inside
+            // the graph, while the CPU thunk path hands back the whole tensor.
+            //
+            // Assuming the narrow shape made `predict_logits` fail outright on
+            // CPU — `expected hidden [1, 1024], got len=86016`, which is
+            // max_seq x n_embd — so `LmRunner::predict_logits` was unusable for
+            // this family on CPU even though `generate` worked, and anything
+            // comparing prefill logits across devices could not run at all.
+            //
+            // Take each sequence's last REAL token (`last_idx`), not the last
+            // padded row: the padding is zeros, so scoring it would return the
+            // same meaningless argmax for every prompt.
+            let full = &outs[logits_idx];
+            let hidden_owned: Vec<f32> = if full.len() == self.batch * n_embd {
+                full.clone()
+            } else if full.len() == self.batch * self.max_seq * n_embd {
+                let mut v = Vec::with_capacity(self.batch * n_embd);
+                for b in 0..self.batch {
+                    let row = b * self.max_seq + last_idx[b] as usize;
+                    let off = row * n_embd;
+                    anyhow::ensure!(
+                        off + n_embd <= full.len(),
+                        "qwen35: last-token row {row} out of range in hidden len={}",
+                        full.len()
+                    );
+                    v.extend_from_slice(&full[off..off + n_embd]);
+                }
+                v
+            } else {
+                anyhow::bail!(
+                    "qwen35: fast_greedy predict expected hidden [{}, {}] or [{}, {}, {}], \
+                     got len={}",
+                    self.batch,
+                    n_embd,
+                    self.batch,
+                    self.max_seq,
+                    n_embd,
+                    full.len()
+                );
+            };
+            let hidden = &hidden_owned;
             let mut per_batch = Vec::with_capacity(self.batch);
             for b in 0..self.batch {
                 let h = &hidden[b * n_embd..(b + 1) * n_embd];

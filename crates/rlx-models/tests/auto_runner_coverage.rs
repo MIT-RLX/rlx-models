@@ -200,14 +200,25 @@ fn auto_options_carry_the_device_and_default_to_cpu() {
     use rlx_runtime::Device;
 
     let d = AutoOptions::default();
-    assert_eq!(d.device, Device::Cpu, "the documented default");
+    // NOT `Device::Cpu`. This assertion used to read
+    // `assert_eq!(d.device, Device::Cpu, "the documented default")`, which
+    // documented a bug: every `auto_runner*` convenience builds
+    // `AutoOptions::default()`, so an unset device meant "CPU" and callers on
+    // GPU machines quietly got CPU inference from a function called `auto_`.
+    // `None` is the fix — "unspecified" is now distinguishable from "CPU".
+    assert!(d.device.is_none(), "an unset device must stay unspecified");
+    assert_eq!(
+        d.device_or_auto(),
+        rlx_core::device_capabilities::pick_lm_device(),
+        "unspecified resolves to this machine's pick, not CPU"
+    );
     assert!(d.mmproj.is_none());
     assert!(!d.servable, "wrapping is opt-in");
 
     let m = AutoOptions::new(Device::Metal)
         .mmproj("mmproj.gguf")
         .servable();
-    assert_eq!(m.device, Device::Metal);
+    assert_eq!(m.device, Some(Device::Metal));
     assert_eq!(
         m.mmproj.as_deref(),
         Some(std::path::Path::new("mmproj.gguf"))

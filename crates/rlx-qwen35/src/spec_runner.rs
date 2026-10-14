@@ -163,6 +163,15 @@ impl Qwen35SpecRunnerBuilder {
         self.max_seq = Some(n);
         self
     }
+
+    /// [`Self::max_seq`] from an `Option`, leaving the default on `None`.
+    /// For callers forwarding an optional context (`LmBuildOptions::max_seq`).
+    pub fn max_seq_opt(mut self, n: Option<usize>) -> Self {
+        if let Some(n) = n {
+            self.max_seq = Some(n);
+        }
+        self
+    }
     pub fn draft_len(mut self, n: usize) -> Self {
         self.draft_len = Some(n);
         self

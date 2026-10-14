@@ -439,11 +439,33 @@ pub fn run_bucketed_kv_decode<F>(
 where
     F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>),
 {
-    run_bucketed_kv_decode_keyed_batched(
+    run_bucketed_kv_decode_spare(
+        cache, past_seq, 0, kv, kv_dim, num_layers, fixed_inputs, build, options,
+    )
+}
+
+/// [`run_bucketed_kv_decode`] against a cache declared with `kv_spare_rows` of
+/// spare capacity — see [`run_bucketed_kv_decode_keyed_batched_spare`].
+pub fn run_bucketed_kv_decode_spare<F>(
+    cache: &mut BucketedCompileCache,
+    past_seq: usize,
+    kv_spare_rows: usize,
+    kv: &LayerKvCache,
+    kv_dim: usize,
+    num_layers: usize,
+    fixed_inputs: &[CacheRunInput<'_>],
+    build: F,
+    options: &CompileOptions,
+) -> Result<DecodeLogitsKv>
+where
+    F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>),
+{
+    run_bucketed_kv_decode_keyed_batched_spare(
         cache,
         past_seq as u64,
         past_seq,
         1,
+        kv_spare_rows,
         kv,
         kv_dim,
         num_layers,
@@ -499,13 +521,44 @@ pub fn run_bucketed_kv_decode_keyed_batched<F>(
 where
     F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>),
 {
+    run_bucketed_kv_decode_keyed_batched_spare(
+        cache, cache_key, past_seq, batch, 0, kv, kv_dim, num_layers, fixed_inputs, build,
+        options,
+    )
+}
+
+/// [`run_bucketed_kv_decode_keyed_batched`] for a graph whose `past_k_*` /
+/// `past_v_*` inputs were declared with `kv_spare_rows` of SPARE CAPACITY past
+/// the bucket (`ModelFlow::bind_decode_inputs_with_capacity`), so its decode
+/// layers append the new row in place (`Op::KvAppend`) instead of concat-copying
+/// the whole O(context) cache every token.
+///
+/// The pad target has to match what the graph declared, which is why this is a
+/// separate entry point: pad to `upper` against a capacity-shaped input and the
+/// run feeds one row too few, silently.
+pub fn run_bucketed_kv_decode_keyed_batched_spare<F>(
+    cache: &mut BucketedCompileCache,
+    cache_key: u64,
+    past_seq: usize,
+    batch: usize,
+    kv_spare_rows: usize,
+    kv: &LayerKvCache,
+    kv_dim: usize,
+    num_layers: usize,
+    fixed_inputs: &[CacheRunInput<'_>],
+    build: F,
+    options: &CompileOptions,
+) -> Result<DecodeLogitsKv>
+where
+    F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>),
+{
     let batch = batch.max(1);
     let (upper_u64, compiled) = cache
         .ensure_graph_with_params(cache_key, build, options)
         .ok_or_else(|| anyhow::anyhow!("cache_key {cache_key} outside decode buckets"))?;
     let upper = upper_u64 as usize;
 
-    let row_upper = upper_u64.saturating_mul(batch as u64);
+    let row_upper = (upper_u64 + kv_spare_rows as u64).saturating_mul(batch as u64);
     let padded_k: Vec<Vec<f32>> = kv
         .layers_k
         .iter()
@@ -571,13 +624,36 @@ pub fn run_bucketed_kv_decode_packed<F>(
 where
     F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>),
 {
+    run_bucketed_kv_decode_packed_spare(
+        cache, past_seq, 0, kv, kv_dim, num_layers, fixed_inputs, build, options,
+    )
+}
+
+/// [`run_bucketed_kv_decode_packed`] against a cache declared with
+/// `kv_spare_rows` of spare capacity — see
+/// [`run_bucketed_kv_decode_keyed_batched_spare`] for why the pad target is a
+/// separate entry point rather than a guess.
+pub fn run_bucketed_kv_decode_packed_spare<F>(
+    cache: &mut BucketedCompileCache,
+    past_seq: usize,
+    kv_spare_rows: usize,
+    kv: &LayerKvCache,
+    kv_dim: usize,
+    num_layers: usize,
+    fixed_inputs: &[CacheRunInput<'_>],
+    build: F,
+    options: &CompileOptions,
+) -> Result<DecodeLogitsKv>
+where
+    F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>),
+{
     let batch = 1usize;
     let (upper_u64, compiled) = cache
         .ensure_graph_with_packed(past_seq as u64, build, options)
         .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?;
     let upper = upper_u64 as usize;
 
-    let row_upper = upper_u64.saturating_mul(batch as u64);
+    let row_upper = (upper_u64 + kv_spare_rows as u64).saturating_mul(batch as u64);
     let padded_k: Vec<Vec<f32>> = kv
         .layers_k
         .iter()
