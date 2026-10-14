@@ -225,6 +225,15 @@ impl Qwen35RunnerBuilder {
         self
     }
 
+    /// [`Self::max_seq`] from an `Option`, leaving the default on `None`.
+    /// For callers forwarding an optional context (`LmBuildOptions::max_seq`).
+    pub fn max_seq_opt(mut self, n: Option<usize>) -> Self {
+        if let Some(n) = n {
+            self.max_seq = Some(n);
+        }
+        self
+    }
+
     /// Compile the static prefill graph at `n` (must be ≤ [`Self::max_seq`]).
     /// Decode capacity stays at `max_seq`. Used by `--fast` so a short prompt
     /// does not pay full-`max_seq` packed GEMMs.

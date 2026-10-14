@@ -258,13 +258,14 @@ impl Qwen3RunnerBuilder {
         // thereafter. Measured +16% decode (24.5→28.5 tok/s), token-identical
         // (M4 Pro, 0.6B). Metal + unpacked, respects an explicit override.
         auto_metal_env(device, "RLX_QWEN3_BAKE_WEIGHTS", !packed);
-        // In-place KV append on Metal: the decode KV-cache update lowers to a
-        // first-class `Op::KvAppend` that writes the single new row into the
-        // (aliased) cache buffer instead of `concat`-copying the whole O(context)
-        // cache each token. Measured +27% @2k ctx, +42% @4k (grows with context),
-        // token-identical (M4 Pro, 0.6B). Metal, incl. the packed decode graph
-        // (KvAppend is backend-generic + token-identical); respects an override.
-        auto_metal_env(device, "RLX_QWEN3_INPLACE_KV", true);
+        // In-place KV append is NOT set here any more. It is driven by the
+        // decode cache contract in `flow::kv_spare_rows` / `bind_decode_inputs_for`
+        // — the declared cache shape and the emitted op have to agree, and an
+        // env var set next to the unrelated Metal knobs could not guarantee
+        // that (it previously named `RLX_QWEN3_INPLACE_KV` while the layer had
+        // moved to the opt-OUT `RLX_QWEN3_NO_INPLACE_KV`, so this line enabled
+        // nothing at all). `Op::KvAppend` is portable, so it is on for every
+        // device; opt out with `RLX_QWEN3_NO_INPLACE_KV=1`.
         validate_device(&cfg, device, packed)?;
 
         self.common.check_memory_cap(total_bytes_estimate)?;

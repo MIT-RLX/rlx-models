@@ -73,22 +73,48 @@ use rlx_runtime::lm::LmRunner;
 /// functions, so adding a knob does not add an entry point.
 #[derive(Debug, Clone)]
 pub struct LmBuildOptions {
-    /// Device handed to the family's builder.
-    pub device: Device,
+    /// Device handed to the family's builder. `None` = pick one for this
+    /// machine; see [`Self::device_or_auto`].
+    ///
+    /// `Option` because "the caller did not choose" and "the caller chose CPU"
+    /// are different instructions, and a bare `Device` cannot tell them apart.
+    /// This field used to be a bare `Device` defaulting to `Device::Cpu`, so
+    /// every `AutoOptions::default()` caller — `auto_runner`,
+    /// `auto_runner_with_mmproj`, `auto_runner_servable*` — silently asked for
+    /// CPU on a machine with a GPU, and got it. The name says `auto`; the
+    /// default said CPU. `LmBuilderCommon` had already drawn this exact
+    /// distinction for the same reason (see its module docs); the registry's
+    /// options type had not.
+    pub device: Option<Device>,
     /// Vision encoder, for families that accept one. A constructor that has no
     /// multimodal path must **error** on `Some` rather than ignore it.
     pub mmproj: Option<PathBuf>,
     /// Wrap the result in [`crate::lm_host_driven::HostDriven`] so
     /// `prefill_logits` / `decode_logits` work whatever the family implements.
     pub servable: bool,
+    /// Context the runner is built for, in tokens. `None` leaves the family
+    /// default.
+    ///
+    /// This is NOT a tuning knob, it is a correctness one. Families size their
+    /// bucketed decode compile cache from `max_seq`, and the shared default is
+    /// 128 — so an `auto_runner` caller that never set it got a decode ladder
+    /// covering ~256 tokens of past. One token beyond that the bucket lookup
+    /// misses, and a native-packed (K-quant GGUF) runner has no F32 decode
+    /// fallback to drop to, so the chat dies with
+    /// `weight not found: model.embed_tokens.weight` — which reads like a
+    /// tensor-naming problem and is really the context cap. Every caller that
+    /// wanted a real context therefore had to bypass `auto_runner` and reach
+    /// for the family builder directly, which is how a routing cascade grows.
+    pub max_seq: Option<usize>,
 }
 
 impl Default for LmBuildOptions {
     fn default() -> Self {
         LmBuildOptions {
-            device: Device::Cpu,
+            device: None,
             mmproj: None,
             servable: false,
+            max_seq: None,
         }
     }
 }
@@ -96,8 +122,24 @@ impl Default for LmBuildOptions {
 impl LmBuildOptions {
     pub fn new(device: Device) -> Self {
         LmBuildOptions {
-            device,
+            device: Some(device),
             ..Default::default()
+        }
+    }
+
+    /// The caller's device, or one picked for this machine.
+    ///
+    /// Resolve this ONCE per build and hand the result to every family builder,
+    /// so a single `auto_runner` call cannot put two parts of the same model on
+    /// two different devices.
+    pub fn device_or_auto(&self) -> Device {
+        match self.device {
+            Some(d) => d,
+            None => {
+                let d = crate::device_capabilities::pick_lm_device();
+                eprintln!("[auto-runner] auto device → {d:?}");
+                d
+            }
         }
     }
     pub fn mmproj(mut self, path: impl Into<PathBuf>) -> Self {
@@ -107,6 +149,11 @@ impl LmBuildOptions {
     /// Guarantee the host-driven decode pair.
     pub fn servable(mut self) -> Self {
         self.servable = true;
+        self
+    }
+    /// Build for `tokens` of context. See [`Self::max_seq`].
+    pub fn max_seq(mut self, tokens: usize) -> Self {
+        self.max_seq = Some(tokens);
         self
     }
     /// The mmproj path, if any.
@@ -356,18 +403,41 @@ mod tests {
         assert_eq!(r.family(), "second", "the later registration wins");
     }
 
+    /// `Default` must mean "unspecified", not "CPU".
+    ///
+    /// The previous version of this test asserted `device == Device::Cpu`, which
+    /// locked the bug in rather than catching it: every `auto_runner*`
+    /// convenience builds `LmBuildOptions::default()`, so every caller that did
+    /// not name a device silently ran on CPU on a machine with a GPU — the
+    /// opposite of what the `auto_` prefix promises. A passing test asserting
+    /// the wrong default is worse than no test, because it answers the question
+    /// before anyone thinks to ask it.
     #[test]
-    fn options_default_to_cpu_and_are_builder_shaped() {
+    fn an_unset_device_means_unspecified_not_cpu() {
         let d = LmBuildOptions::default();
-        assert_eq!(d.device, Device::Cpu);
+        assert!(d.device.is_none(), "the default must not pin a device");
+        assert_eq!(
+            d.device_or_auto(),
+            crate::device_capabilities::pick_lm_device(),
+            "an unset device resolves to this machine's pick"
+        );
         assert!(d.mmproj_path().is_none());
         assert!(!d.servable);
-        let o = LmBuildOptions::new(Device::Metal)
-            .mmproj("m.gguf")
-            .servable();
-        assert_eq!(o.device, Device::Metal);
+        assert!(d.max_seq.is_none());
+
+        let o = LmBuildOptions::new(Device::Metal).mmproj("m.gguf").servable();
+        assert_eq!(o.device, Some(Device::Metal));
+        assert_eq!(o.device_or_auto(), Device::Metal);
         assert_eq!(o.mmproj_path(), Some(Path::new("m.gguf")));
         assert!(o.servable);
+
+        // The distinction that motivates the `Option`: an explicit CPU request
+        // must stay CPU and never be re-resolved to a GPU.
+        assert_eq!(
+            LmBuildOptions::new(Device::Cpu).device_or_auto(),
+            Device::Cpu,
+            "explicit CPU is a choice, not an absence of one"
+        );
     }
 }
 

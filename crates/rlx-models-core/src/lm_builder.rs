@@ -126,7 +126,21 @@ impl<Cfg> LmBuilderCommon<Cfg> {
     }
 
     pub fn max_seq_or(&self, default: usize) -> usize {
-        self.max_seq.unwrap_or(default)
+        // `RLX_LM_MAX_SEQ` lets a caller that cannot reach the builder raise the
+        // context — notably anything going through `auto_runner`, whose
+        // `LmBuildOptions` has no max_seq knob. Without it a tool driving the
+        // public `LmRunner` interface is stuck at each family's default ladder
+        // (128 for qwen3), which is short enough that long-context decode
+        // behaviour simply cannot be observed from outside.
+        //
+        // An EXPLICIT builder value still wins: the env var raises a default, it
+        // does not override a caller who stated a context.
+        self.max_seq.unwrap_or_else(|| {
+            rlx_ir::env::var("RLX_LM_MAX_SEQ")
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(default)
+        })
     }
 
     /// Refuse a model that would not fit the caller's stated budget.
@@ -197,6 +211,16 @@ macro_rules! lm_builder_setters {
         /// Longest sequence the compiled graphs must handle.
         pub fn max_seq(mut self, n: usize) -> Self {
             self.common.max_seq = Some(n);
+            self
+        }
+
+        /// [`Self::max_seq`] from an `Option`, leaving the family default on
+        /// `None`. For callers forwarding an optional context they were handed
+        /// (`LmBuildOptions::max_seq`) rather than one they chose.
+        pub fn max_seq_opt(mut self, n: Option<usize>) -> Self {
+            if let Some(n) = n {
+                self.common.max_seq = Some(n);
+            }
             self
         }
 

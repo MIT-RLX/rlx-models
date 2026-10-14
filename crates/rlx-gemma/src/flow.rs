@@ -763,6 +763,18 @@ impl<'a> GemmaFlow<'a> {
             flow = flow.input("mask", Shape::new(&[self.batch, self.past_seq + 1], f));
         }
 
+        // One spare row per cache so the decode layer writes the new token's
+        // K/V in place (`Op::KvAppend`) rather than `concat`-copying the whole
+        // O(context) cache every token. Same predicate the layer decides with
+        // (`rlx_flow::blocks::kv_spare_rows`, via `blocks::append_kv_row`), so
+        // the declared shape and the emitted op cannot disagree. A dynamic
+        // `past_seq` has no fixed slot to write into and keeps `concat`.
+        let kv_spare = if self.dynamic_past {
+            0
+        } else {
+            rlx_flow::blocks::kv_spare_rows(&[self.batch])
+        };
+
         // Per-layer past-K/V shapes — sliding layers ship the base
         // num_kv_heads * head_dim, full-attention layers may ship a
         // smaller (Gemma 4 12B: 1 * 512 = 512 instead of 8 * 256 =
@@ -779,7 +791,7 @@ impl<'a> GemmaFlow<'a> {
                     f,
                 )
             } else {
-                Shape::new(&[self.batch, self.past_seq, layer_kv_dim], f)
+                Shape::new(&[self.batch, self.past_seq + kv_spare, layer_kv_dim], f)
             };
             flow = flow
                 .input(format!("past_k_{layer_idx}"), shape.clone())
@@ -800,8 +812,16 @@ impl<'a> GemmaFlow<'a> {
             }
         }
 
+        flow = if kv_spare > 0 {
+            flow.bind_decode_inputs_with_capacity(
+                cfg.num_hidden_layers,
+                self.use_custom_mask,
+                self.past_seq,
+            )
+        } else {
+            flow.bind_decode_inputs(cfg.num_hidden_layers, self.use_custom_mask, true)
+        };
         flow = flow
-            .bind_decode_inputs(cfg.num_hidden_layers, self.use_custom_mask, true)
             .zero_beta_named("gemma.zero_beta.hidden", h)
             .token_embed()
             .raw_stage(FlowStage::EmbedScale(EmbedScaleStage::new(h)))

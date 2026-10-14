@@ -1486,6 +1486,53 @@ mod tests {
         WeightMap::from_tensors(synthetic_tensors(cfg))
     }
 
+
+    /// The in-place KV contract has to stay WIRED, not merely available.
+    ///
+    /// `blocks::kv_cache` can be healthy while this flow quietly emits
+    /// `concat` — which is how the optimisation was lost the first time in
+    /// another crate: the layer gated on the contract, no flow declared it,
+    /// and nothing failed because `concat` is CORRECT, only O(context).
+    /// Numerical tests (including `gemma4_decode_backend_parity`) pass either
+    /// way, so the graph is the only place the difference is visible.
+    #[test]
+    fn decode_graph_appends_kv_in_place() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let past_seq = 4;
+        let opts = crate::flow::GemmaDecodeOpts::new(1, past_seq);
+        let (graph, _) = crate::flow::build_gemma_decode_graph(&cfg, &mut wm, &opts)
+            .expect("gemma decode graph should build");
+        let appends = graph
+            .nodes()
+            .iter()
+            .filter(|n| matches!(n.op, rlx_ir::Op::KvAppend { .. }))
+            .count();
+        assert_eq!(
+            appends,
+            2 * cfg.num_hidden_layers,
+            "gemma decode fell back to concat: expected one KvAppend per K and per V"
+        );
+    }
+
+    /// `batch > 1` cannot alias a `[batch, seq, kv_dim]` cache at axis 1, so it
+    /// must stay on `concat` rather than declare a spare row nothing writes.
+    #[test]
+    fn batched_decode_graph_keeps_concat() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let opts = crate::flow::GemmaDecodeOpts::new(2, 4);
+        let (graph, _) = crate::flow::build_gemma_decode_graph(&cfg, &mut wm, &opts)
+            .expect("batched gemma decode graph should build");
+        assert!(
+            !graph
+                .nodes()
+                .iter()
+                .any(|n| matches!(n.op, rlx_ir::Op::KvAppend { .. })),
+            "batched gemma decode must not emit KvAppend: the prefix is strided"
+        );
+    }
+
     #[test]
     fn generator_drains_loader_and_runs_one_step() {
         let cfg = tiny_cfg();

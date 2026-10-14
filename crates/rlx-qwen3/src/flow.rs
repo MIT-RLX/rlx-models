@@ -414,6 +414,40 @@ fn decode_weight_source<'a>(
     }
 }
 
+/// Rows of spare capacity to declare on the decode K/V cache inputs.
+///
+/// Thin wrapper over [`rlx_flow::blocks::kv_spare_rows`] for this crate's
+/// `[batch, seq, kv_dim]` cache layout. It MUST stay the shared predicate: the
+/// decode layer decides whether to emit `Op::KvAppend` from the same function
+/// (via `blocks::append_kv_row`), and if the two ever disagree the cache gets a
+/// spare row that `concat` then fills at the wrong index — readers see zeros,
+/// the cache stops growing, and decode repeats the previous token.
+///
+/// `batch > 1` yields 0 (keeps `concat`): the `[..pos + 1]` output of a strided
+/// prefix cannot alias the cache. Declaring the spare row anyway corrupts every
+/// sequence after the first, which
+/// `generator::tests::batched_decode_matches_single_sequence` catches.
+pub(crate) fn kv_spare_rows(batch: usize) -> usize {
+    rlx_flow::blocks::kv_spare_rows(&[batch])
+}
+
+/// Bind the decode inputs, declaring the CACHE CONTRACT when the caches were
+/// given spare capacity (see [`kv_spare_rows`]).
+///
+/// A dynamic-`past_seq` cache has no spare row to write into, so it keeps the
+/// plain binding and its layers keep emitting `concat`.
+fn bind_decode_inputs_for(
+    flow: ModelFlow,
+    num_layers: usize,
+    opts: &Qwen3DecodeOpts,
+) -> ModelFlow {
+    if opts.dynamic_past || kv_spare_rows(opts.batch) == 0 {
+        flow.bind_decode_inputs(num_layers, opts.use_custom_mask, true)
+    } else {
+        flow.bind_decode_inputs_with_capacity(num_layers, opts.use_custom_mask, opts.past_seq)
+    }
+}
+
 pub fn build_qwen3_decode_built(
     cfg: &Qwen3Config,
     weights: &mut dyn WeightLoader,
@@ -452,27 +486,24 @@ pub fn build_qwen3_decode_built(
             kv_dt,
         )
     } else {
-        // Exactly `past_seq` rows — no spare row.
+        // `past_seq` rows plus `kv_spare_rows()`, so `Op::KvAppend`'s output can
+        // alias this buffer and the decode layer writes the new token's row in
+        // place instead of `concat`-copying the whole O(context) cache every
+        // token. That concat was 16% of decode GPU time at ctx 256, 30% at 1024
+        // and ~33% at 2048 — a constant 2 dispatches/layer whose cost grows with
+        // context while the real work is one row.
         //
-        // In-place KV (`Op::KvAppend`) does need one extra row so its output can
-        // alias this buffer, and `RLX_QWEN3_INPLACE_KV` used to add it here. But
-        // the decode layer emits `KvAppend` only when the CACHE CONTRACT is
-        // present (`bind_decode_inputs_with_capacity`, which sets
-        // `kv_past_len`), and both decode flows below bind with plain
-        // `bind_decode_inputs` — so `KvAppend` is never emitted and the spare row
-        // was never used. It was not harmless: the layer's `concat_` then
-        // produced `[batch, past_seq + 2, kv_dim]`, putting the new token's row
-        // at index `past_seq + 1`, while every consumer reads it at `past_seq`
-        // (`feed_kv_row`, `read_output_row`, `split_bucketed_decode_kv_per_layer`)
-        // and the attention mask is only `past_seq + 1` wide. Readers therefore
-        // got the untouched spare row — zeros — so the KV cache never grew and
-        // decode repeated the previous token. `auto_metal_env` turns that flag on
-        // for Metal, which is why it showed there and not on the CPU.
-        //
-        // Re-enabling in-place KV means switching these flows to
-        // `bind_decode_inputs_with_capacity` and adding the row back together
-        // with it, so the shape and the op can never disagree again.
-        Shape::new(&[batch, opts.past_seq, kv_dim], kv_dt)
+        // The shape here and the CACHE CONTRACT at `bind_decode_inputs_for`
+        // below both come from `kv_spare_rows()`, which reads the same env var
+        // the layer gates on, so the declared shape and the emitted op cannot
+        // disagree. That matters: a spare row WITHOUT the contract leaves the
+        // layer on `concat_`, which then yields `[batch, past_seq + 2, kv_dim]`
+        // with the new row at `past_seq + 1` while every consumer reads it at
+        // `past_seq` (`feed_kv_row`, `read_output_row`,
+        // `split_bucketed_decode_kv_per_layer`) and the mask is only
+        // `past_seq + 1` wide — readers get the untouched spare row, zeros, the
+        // cache never grows, and decode repeats the previous token.
+        Shape::new(&[batch, opts.past_seq + kv_spare_rows(batch), kv_dim], kv_dt)
     };
 
     let decode_spec = Qwen3DecodeLayerSpec {
@@ -525,8 +556,7 @@ pub fn build_qwen3_decode_built(
     }
 
     let export_qk = opts.export_qk;
-    let built = flow
-        .bind_decode_inputs(cfg.num_hidden_layers, opts.use_custom_mask, true)
+    let built = bind_decode_inputs_for(flow, cfg.num_hidden_layers, opts)
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh)
         .token_embed()
@@ -590,27 +620,24 @@ pub fn build_qwen3_decode_embeds_built(
             kv_dt,
         )
     } else {
-        // Exactly `past_seq` rows — no spare row.
+        // `past_seq` rows plus `kv_spare_rows()`, so `Op::KvAppend`'s output can
+        // alias this buffer and the decode layer writes the new token's row in
+        // place instead of `concat`-copying the whole O(context) cache every
+        // token. That concat was 16% of decode GPU time at ctx 256, 30% at 1024
+        // and ~33% at 2048 — a constant 2 dispatches/layer whose cost grows with
+        // context while the real work is one row.
         //
-        // In-place KV (`Op::KvAppend`) does need one extra row so its output can
-        // alias this buffer, and `RLX_QWEN3_INPLACE_KV` used to add it here. But
-        // the decode layer emits `KvAppend` only when the CACHE CONTRACT is
-        // present (`bind_decode_inputs_with_capacity`, which sets
-        // `kv_past_len`), and both decode flows below bind with plain
-        // `bind_decode_inputs` — so `KvAppend` is never emitted and the spare row
-        // was never used. It was not harmless: the layer's `concat_` then
-        // produced `[batch, past_seq + 2, kv_dim]`, putting the new token's row
-        // at index `past_seq + 1`, while every consumer reads it at `past_seq`
-        // (`feed_kv_row`, `read_output_row`, `split_bucketed_decode_kv_per_layer`)
-        // and the attention mask is only `past_seq + 1` wide. Readers therefore
-        // got the untouched spare row — zeros — so the KV cache never grew and
-        // decode repeated the previous token. `auto_metal_env` turns that flag on
-        // for Metal, which is why it showed there and not on the CPU.
-        //
-        // Re-enabling in-place KV means switching these flows to
-        // `bind_decode_inputs_with_capacity` and adding the row back together
-        // with it, so the shape and the op can never disagree again.
-        Shape::new(&[batch, opts.past_seq, kv_dim], kv_dt)
+        // The shape here and the CACHE CONTRACT at `bind_decode_inputs_for`
+        // below both come from `kv_spare_rows()`, which reads the same env var
+        // the layer gates on, so the declared shape and the emitted op cannot
+        // disagree. That matters: a spare row WITHOUT the contract leaves the
+        // layer on `concat_`, which then yields `[batch, past_seq + 2, kv_dim]`
+        // with the new row at `past_seq + 1` while every consumer reads it at
+        // `past_seq` (`feed_kv_row`, `read_output_row`,
+        // `split_bucketed_decode_kv_per_layer`) and the mask is only
+        // `past_seq + 1` wide — readers get the untouched spare row, zeros, the
+        // cache never grows, and decode repeats the previous token.
+        Shape::new(&[batch, opts.past_seq + kv_spare_rows(batch), kv_dim], kv_dt)
     };
 
     let decode_spec = Qwen3DecodeLayerSpec {
@@ -644,8 +671,7 @@ pub fn build_qwen3_decode_embeds_built(
             .input(format!("past_v_{layer_idx}"), past_kv_shape.clone());
     }
 
-    let built = flow
-        .bind_decode_inputs(cfg.num_hidden_layers, opts.use_custom_mask, true)
+    let built = bind_decode_inputs_for(flow, cfg.num_hidden_layers, opts)
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh)
         .repeat_layers(cfg.num_hidden_layers, {
@@ -1170,6 +1196,79 @@ mod tests {
         let built = Qwen3Flow::for_decode(&cfg, 1, 4).build(&mut wm).unwrap();
         let hir = built.into_hir().unwrap();
         assert!(hir.outputs.len() >= 3, "logits + new K/V");
+    }
+
+    /// The in-place KV contract must stay WIRED, not merely implemented.
+    ///
+    /// This optimisation landed once and then silently reverted: the decode
+    /// layer started gating `Op::KvAppend` on the cache contract, neither decode
+    /// flow was migrated to `bind_decode_inputs_with_capacity`, and the runner
+    /// went on setting a flag nothing read any more. No test failed — decode
+    /// just quietly went back to `concat`-copying the whole O(context) cache
+    /// every token (measured 16% of decode GPU time at ctx 256, 30% at 1024,
+    /// ~33% at 2048). Only a graph-level assertion catches that class of
+    /// regression, because the slow path is perfectly CORRECT.
+    #[test]
+    fn decode_graph_appends_kv_in_place() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let past_seq = 4;
+        let opts = Qwen3DecodeOpts {
+            batch: 1,
+            past_seq,
+            ..Default::default()
+        };
+        let (graph, _) = build_qwen3_decode_graph(&cfg, &mut wm, &opts).unwrap();
+
+        let appends = graph
+            .nodes()
+            .iter()
+            .filter(|n| matches!(n.op, rlx_ir::Op::KvAppend { .. }))
+            .count();
+        assert_eq!(
+            appends,
+            2 * cfg.num_hidden_layers,
+            "decode fell back to concat: expected one KvAppend per K and per V cache"
+        );
+
+        // The other half of the contract. A spare row without the op, or the op
+        // without the spare row, is the silent-corruption case `kv_spare_rows`
+        // documents — so assert the shape too, not just the op.
+        let past_k = graph.input_id("past_k_0").expect("past_k_0 input");
+        assert_eq!(
+            graph.node(past_k).shape.dim(1).unwrap_static(),
+            past_seq + 1,
+            "cache must declare the spare row the in-place append writes into"
+        );
+    }
+
+    /// `batch > 1` cannot alias a `[batch, seq, kv_dim]` cache at axis 1 (the
+    /// `[..pos + 1]` prefix is strided), so batched decode must stay on `concat`
+    /// — and must not declare a spare row nothing ever writes.
+    #[test]
+    fn batched_decode_graph_keeps_concat() {
+        let cfg = tiny_cfg();
+        let mut wm = synthetic_weights(&cfg);
+        let past_seq = 4;
+        let opts = Qwen3DecodeOpts {
+            batch: 2,
+            past_seq,
+            ..Default::default()
+        };
+        let (graph, _) = build_qwen3_decode_graph(&cfg, &mut wm, &opts).unwrap();
+        assert!(
+            !graph
+                .nodes()
+                .iter()
+                .any(|n| matches!(n.op, rlx_ir::Op::KvAppend { .. })),
+            "batched decode must not emit KvAppend: the strided prefix cannot alias"
+        );
+        let past_k = graph.input_id("past_k_0").expect("past_k_0 input");
+        assert_eq!(
+            graph.node(past_k).shape.dim(1).unwrap_static(),
+            past_seq,
+            "batched cache must not carry an unused spare row"
+        );
     }
 
     #[test]

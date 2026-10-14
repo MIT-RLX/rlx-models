@@ -45,7 +45,7 @@ use crate::sampling::{SampleOpts, sample_token};
 use anyhow::{Context, Result};
 use rlx_core::autoregressive::{
     DecodeLogitsKv, KvCacheState, compile_cache_ensure_graph, kv_from_prefill_outputs,
-    prefill_cache_key, run_bucketed_kv_decode, run_bucketed_kv_decode_packed,
+    prefill_cache_key, run_bucketed_kv_decode_packed_spare, run_bucketed_kv_decode_spare,
     split_decode_logits_kv, split_decode_logits_kv_aux,
 };
 use rlx_core::flow_bridge::compile_options_from_profile;
@@ -2521,9 +2521,10 @@ impl Qwen3Generator {
         // when set.
         if let Some(gguf) = native_gguf {
             let cfg = cfg.clone();
-            return run_bucketed_kv_decode_packed(
+            return run_bucketed_kv_decode_packed_spare(
                 cache_dec,
                 past_seq,
+                crate::flow::kv_spare_rows(1),
                 &kv,
                 kv_dim,
                 n_layers,
@@ -2548,9 +2549,10 @@ impl Qwen3Generator {
         // graph structure — RoPE / QK-norm / GQA / KV-cache / SwiGLU — is
         // unchanged, so numerics match the F32 path (DequantMatMul ≡ dequant+matmul).
         if let Some(pw) = packed {
-            return run_bucketed_kv_decode_packed(
+            return run_bucketed_kv_decode_packed_spare(
                 cache_dec,
                 past_seq,
+                crate::flow::kv_spare_rows(1),
                 &kv,
                 kv_dim,
                 n_layers,
@@ -2584,9 +2586,10 @@ impl Qwen3Generator {
                 &decode_opts,
             );
         }
-        run_bucketed_kv_decode(
+        run_bucketed_kv_decode_spare(
             cache_dec,
             past_seq,
+            crate::flow::kv_spare_rows(1),
             &kv,
             kv_dim,
             n_layers,

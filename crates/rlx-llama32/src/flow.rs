@@ -625,6 +625,21 @@ impl<'a> Llama32Flow<'a> {
         let half = n_rot / 2;
 
         let hidden_shape = Shape::new(&[self.batch, 1, h], f);
+        // One spare row so the decode layer writes the new token's K/V IN PLACE
+        // (`Op::KvAppend`) instead of `concat`-copying the whole O(context) cache
+        // every token. Derived from the same predicate the layer decides with
+        // (`rlx_flow::blocks::kv_spare_rows`, used by `blocks::append_kv_row`),
+        // so the declared shape and the emitted op cannot disagree — a spare row
+        // fed to `concat` would put the new row one index past where every
+        // reader looks, and decode would silently repeat the previous token.
+        //
+        // A dynamic-`past_seq` cache has no fixed slot to write into, so it
+        // stays on `concat`.
+        let kv_spare = if self.dynamic_past {
+            0
+        } else {
+            rlx_flow::blocks::kv_spare_rows(&[self.batch])
+        };
         let past_kv_shape = if self.dynamic_past {
             Shape::from_dims(
                 &[
@@ -635,7 +650,7 @@ impl<'a> Llama32Flow<'a> {
                 f,
             )
         } else {
-            Shape::new(&[self.batch, self.past_seq, kv_dim], f)
+            Shape::new(&[self.batch, self.past_seq + kv_spare, kv_dim], f)
         };
 
         let decode_spec = LlamaDecodeLayerSpec {
@@ -692,13 +707,17 @@ impl<'a> Llama32Flow<'a> {
             )));
         }
 
-        flow = flow
-            .bind_decode_inputs(
+        let need_past_kv = self.past_seq > 0 || self.dynamic_past || self.use_custom_mask;
+        flow = if kv_spare > 0 && need_past_kv {
+            flow.bind_decode_inputs_with_capacity(
                 cfg.kv_layers(),
                 self.use_custom_mask,
-                self.past_seq > 0 || self.dynamic_past || self.use_custom_mask,
+                self.past_seq,
             )
-            .zero_beta_named("llama32.zero_beta.hidden", h);
+        } else {
+            flow.bind_decode_inputs(cfg.kv_layers(), self.use_custom_mask, need_past_kv)
+        };
+        flow = flow.zero_beta_named("llama32.zero_beta.hidden", h);
         if !self.inputs_embeds {
             flow = flow.token_embed();
         }
@@ -1028,6 +1047,52 @@ mod layer_range_tests {
         seen.sort_unstable();
         seen.dedup();
         seen
+    }
+
+    /// The in-place KV contract has to stay WIRED, not merely available.
+    ///
+    /// `Op::KvAppend` and the shared `blocks::kv_cache` helper can both be
+    /// perfectly healthy while this flow quietly emits `concat` — that is
+    /// exactly how the optimisation was lost the first time, in another crate:
+    /// the layer started gating on the contract, no flow declared it, and
+    /// nothing failed because `concat` is CORRECT, just O(context). Assert on
+    /// the graph, because behaviour cannot tell the two apart.
+    #[test]
+    fn decode_graph_appends_kv_in_place() {
+        let c = cfg(2);
+        let past_seq = 4;
+        let built = Llama32Flow::for_decode(&c, 1, past_seq)
+            .build(&mut weights(&c))
+            .expect("decode flow should build");
+        let hir = built.into_hir().expect("hir");
+        let appends = hir
+            .nodes()
+            .iter()
+            .filter(|n| matches!(n.op, rlx_ir::HirOp::Mir(rlx_ir::Op::KvAppend { .. })))
+            .count();
+        assert_eq!(
+            appends,
+            2 * c.kv_layers(),
+            "llama32 decode fell back to concat: expected one KvAppend per K and per V"
+        );
+    }
+
+    /// `batch > 1` cannot alias a `[batch, seq, kv_dim]` cache at axis 1, so it
+    /// must stay on `concat` rather than declare a spare row nothing writes.
+    #[test]
+    fn batched_decode_graph_keeps_concat() {
+        let c = cfg(2);
+        let built = Llama32Flow::for_decode(&c, 2, 4)
+            .build(&mut weights(&c))
+            .expect("batched decode flow should build");
+        let hir = built.into_hir().expect("hir");
+        assert!(
+            !hir
+                .nodes()
+                .iter()
+                .any(|n| matches!(n.op, rlx_ir::HirOp::Mir(rlx_ir::Op::KvAppend { .. }))),
+            "batched llama32 decode must not emit KvAppend: the prefix is strided"
+        );
     }
 
     #[test]
