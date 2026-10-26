@@ -60,11 +60,15 @@ fn main() -> anyhow::Result<()> {
     ];
     for (i, ((name, rfile), (bytes, _))) in labels.iter().zip(refs).zip(outs.iter()).enumerate() {
         let v: Vec<f32> = bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let reference: Vec<f32> = std::fs::read(dir.join(rfile))?
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let c = cos_finite(&v, &reference);

@@ -276,6 +276,22 @@ impl<'a> VocoderBuilder<'a> {
     }
 }
 
+/// The vocoder over `t_frames` frames as a graph — `mel` `[1, n_mels,
+/// t_frames, 1]` → the waveform — and its params (named by the checkpoint).
+pub fn vocoder_hir(
+    w: &Weights,
+    cfg: &VocoderConfig,
+    t_frames: usize,
+) -> (HirModule, HashMap<String, Vec<f32>>) {
+    VocoderBuilder {
+        w,
+        cfg,
+        hir: HirModule::new("inflect_nano_vocoder"),
+        params: HashMap::new(),
+    }
+    .build(t_frames)
+}
+
 /// Compiled vocoder graph for a fixed frame length on a chosen device.
 pub struct VocoderGraph {
     compiled: rlx_runtime::CompiledGraph,
@@ -284,7 +300,7 @@ pub struct VocoderGraph {
 }
 
 fn aot_root() -> PathBuf {
-    std::env::var("RLX_INFLECT_NANO_AOT")
+    rlx_ir::env::var_result("RLX_INFLECT_NANO_AOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir().join("rlx-inflect-nano-aot"))
 }

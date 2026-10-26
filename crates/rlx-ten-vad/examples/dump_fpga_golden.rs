@@ -22,11 +22,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let raw = std::fs::read(root.join("tests/fixtures/reference_features.f32"))?;
     let rows: Vec<Vec<f32>> = raw
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect::<Vec<_>>()
-        .chunks_exact(FEATURE_LEN)
-        .map(<[f32]>::to_vec)
+        .as_chunks::<FEATURE_LEN>()
+        .0
+        .iter()
+        .map(|row| row.to_vec())
         .collect();
 
     let mut net = FixedNet::embedded();

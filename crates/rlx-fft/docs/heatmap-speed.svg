@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="969" height="438" viewBox="0 0 969 438" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="969" height="438" viewBox="0 0 969 438" font-family="Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="969" height="438" fill="#fff"/>
 <text x="484.5" y="30" text-anchor="middle" font-size="19" font-weight="700" fill="#222">FFT latency over n_fft × batch (ms/iter, lower=greener)</text>
 <text x="484.5" y="50" text-anchor="middle" font-size="12" fill="#666">top row runs on CPU (rustfft = optimized reference; ANE host-fallback ≈ CPU) · bottom row on GPU · wgpu `cap` = exceeds dispatch envelope</text>

@@ -19,7 +19,9 @@ fn i64_le(v: &[i64]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 fn as_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -35,8 +37,9 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 }
 
 fn main() -> Result<()> {
-    unsafe { std::env::set_var("RLX_DBG_BINF", "1") };
-    let dir = std::env::var("RLX_PARLER_DIR").unwrap_or_else(|_| "weights/tts/parlertts".into());
+    rlx_ir::env::set("RLX_DBG_BINF", "1");
+    let dir = rlx_ir::env::var_result("RLX_PARLER_DIR")
+        .unwrap_or_else(|_| "weights/tts/parlertts".into());
     let dir = Path::new(&dir);
     let path = dir.join("onnx/text_encoder_probe.onnx");
     let tok =
@@ -71,7 +74,7 @@ fn main() -> Result<()> {
     // RLX_NO_PASSES: disable fusion/DCE/const-fold so exposing intermediates as
     // graph outputs does NOT perturb the compiled graph (non-confounded probe).
     let mut copts = CompileOptions::default();
-    let key = if std::env::var_os("RLX_NO_PASSES").is_some() {
+    let key = if rlx_ir::env::var_os("RLX_NO_PASSES").is_some() {
         copts.dce = false;
         copts.constant_folding = false;
         copts.fusion_opts.skip_fusion = true;
@@ -93,12 +96,16 @@ fn main() -> Result<()> {
     let as_dtype = |b: &[u8], d: DType| -> Vec<f32> {
         match d {
             DType::I64 => b
-                .chunks_exact(8)
-                .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f32)
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| i64::from_le_bytes(*c) as f32)
                 .collect(),
             DType::I32 => b
-                .chunks_exact(4)
-                .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f32)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| i32::from_le_bytes(*c) as f32)
                 .collect(),
             _ => as_f32(b),
         }
@@ -147,7 +154,8 @@ fn main() -> Result<()> {
                 cosine(a, b)
             );
             // Per-128-key-row divergence scan (softmax [.,.,q,128]).
-            if std::env::var_os("RLX_SCAN").is_some() && a.len() == b.len() && a.len() % 128 == 0 {
+            if rlx_ir::env::var_os("RLX_SCAN").is_some() && a.len() == b.len() && a.len() % 128 == 0
+            {
                 let nrows = a.len() / 128;
                 let mut worst = (1.0f64, 0usize);
                 let mut nbad = 0;
@@ -161,7 +169,7 @@ fn main() -> Result<()> {
                         worst = (c, r);
                     }
                 }
-                let r = std::env::var("RLX_SCAN_ROW")
+                let r = rlx_ir::env::var_result("RLX_SCAN_ROW")
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(worst.1);
@@ -182,7 +190,7 @@ fn main() -> Result<()> {
                     bb.iter().map(|x| format!("{x:.4e}")).collect::<Vec<_>>()
                 );
             }
-            if std::env::var_os("RLX_ROW").is_some() && a.len() == b.len() {
+            if rlx_ir::env::var_os("RLX_ROW").is_some() && a.len() == b.len() {
                 // row 0 (head0, query0): first 6 + last 6 keys, native vs ort
                 let k = 128.min(a.len());
                 let show = |v: &[f32]| {

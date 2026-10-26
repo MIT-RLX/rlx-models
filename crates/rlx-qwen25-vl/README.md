@@ -87,4 +87,4 @@ just test-qwen25-vl-parity           # HF parity (needs weights; via rlx-models)
 
 ## Features
 
-`tokenizer` (HF tokenizers, default), `qwen25-vl-vision` (image preprocess, default), and backend forwards `metal` / `mlx` / `cuda` / `rocm` / `gpu` / `vulkan` (plus `all-backends`, `apple-silicon`, `nvidia-gpu`, `amd-gpu`, `portable-gpu`).
+`tokenizer` (HF tokenizers, default), `qwen25-vl-vision` (image preprocess, default), and backend forwards `metal` / `mlx` / `cuda` / `rocm` / `gpu` / `vulkan` (plus `all-backends`, `macos-gpu`, `nvidia-gpu`, `amd-gpu`, `portable-gpu`).

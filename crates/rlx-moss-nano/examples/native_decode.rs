@@ -11,14 +11,17 @@ fn i32b(v: &[i32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 fn asf(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 
 fn main() -> anyhow::Result<()> {
-    let dir =
-        PathBuf::from(std::env::var("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()));
+    let dir = PathBuf::from(
+        rlx_ir::env::var_result("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()),
+    );
     let cfg = BundleConfig {
         model: String::new(),
         sample_rate: 48000,

@@ -1,0 +1,23 @@
+# Qwen3.5's multimodal turn as an RLX program (WebAssembly): each picture
+# preprocessed and through the package's vision tower, the prompt assembled
+# around it, prompt and reply through the package's decode step. Built by
+# `rlx-qwen35`'s exporter, so it stands outside the workspace.
+[package]
+name = "rlx-qwen35-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+anyhow = "1"
+serde_json = "1"
+
+[features]
+# Named by the crate's own `preprocess.rs`; never on here.
+qwen35-vlm = []
+
+[workspace]

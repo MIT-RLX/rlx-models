@@ -72,7 +72,7 @@ the reference table), and `CarbonRunner::generate_ids*` for the token-id path.
 Carbon is a plain Llama graph, so it runs on every backend `rlx-llama32`
 supports. Backend features pass straight through: `metal`, `mlx`, `cuda`,
 `rocm`, `gpu` (wgpu), `vulkan`, `coreml`, and the `all-backends` /
-`apple-silicon` bundles. The `tokenizer` feature (off by default) pulls in the
+`macos-gpu` bundles. The `tokenizer` feature (off by default) pulls in the
 `tokenizers` crate for the base BPE; without it the runner/CLI are token-ids
 only.
 
@@ -90,15 +90,15 @@ Run the parameterized example on any device:
 cargo run -p rlx-carbon --example dna_generate --features tokenizer --release -- \
   --model weights/Carbon-500M --device cpu --prompt ATGGCGACCTTTAGCGATCTG --max-tokens 48
 
-# Apple GPU / ANE (Metal | mlx | gpu | coreml)
-cargo run -p rlx-carbon --example dna_generate --features tokenizer,apple-silicon --release -- \
+# Metal GPU / ANE (Metal | mlx | gpu | coreml)
+cargo run -p rlx-carbon --example dna_generate --features tokenizer,macos-gpu --release -- \
   --model weights/Carbon-500M --device metal --prompt ATGGCGACCTTTAGCGATCTG
 
 # NVIDIA / AMD / portable Vulkan
 cargo run -p rlx-carbon --example dna_generate --features tokenizer,cuda --release -- --device cuda --model DIR
 ```
 
-Or via `just`: `just features=apple-silicon carbon --model DIR --device metal --prompt ATGG…`.
+Or via `just`: `just features=macos-gpu carbon --model DIR --device metal --prompt ATGG…`.
 
 Carbon-500M is intended primarily as a **draft model** for speculative decoding
 against the larger Carbon variants.

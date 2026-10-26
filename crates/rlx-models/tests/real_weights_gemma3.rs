@@ -15,7 +15,9 @@ use rlx_runtime::Device;
 use std::path::PathBuf;
 
 fn weights_path() -> Option<PathBuf> {
-    std::env::var("RLX_GEMMA3_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_GEMMA3_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 
 #[test]
@@ -79,7 +81,11 @@ fn chat_template_on_real_gemma3() {
 
 #[test]
 fn forward_inference_real_weights() {
-    if std::env::var("RLX_GEMMA3_RUN_INFERENCE").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_GEMMA3_RUN_INFERENCE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_GEMMA3_RUN_INFERENCE=1");
         return;
     }

@@ -1,10 +1,7 @@
 // RLX — versatile ML compiler + runtime.
 // Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna. GPLv3.
 
-//! Apple Voice / Espresso `streaming_encoder_64_16` native forward.
-//!
-//! Pack tensors are a reconstruction of the macOS Espresso/ANE streaming ASR
-//! encoder (not NeMo offline Conformer). Contract matches E5 captures:
+//! streaming encoder 64_16 native forward.
 //!
 //! - mel window 389 → subsample ×6 → **64** encoder frames / chunk
 //! - **lookahead 16** (TEXT-K `att_k_cache` history)
@@ -54,7 +51,7 @@ struct NativeLayer {
     gamma: Vec<f32>,
 }
 
-/// Streaming caches matching Apple E5 `streaming_encoder_64_16` I/O.
+/// Streaming caches matching E5 `streaming_encoder_64_16` I/O.
 #[derive(Clone, Debug)]
 pub struct StreamingState {
     /// `[28, 512, 7]` left taps for causal fused conv (layout: layer-major).
@@ -109,7 +106,7 @@ impl StreamingState {
     }
 }
 
-/// Native Apple-streaming layer stack + CTC head.
+/// Native layer stack + CTC head.
 pub struct NativeEncoder {
     input_w: Vec<f32>,
     input_w_t: bool,
@@ -244,7 +241,7 @@ impl NativeEncoder {
         if mel.is_empty() {
             bail!("empty mel");
         }
-        // Apple streaming hop ≈ one encoder chunk of new mel (64×6 = 384).
+        // reference streaming hop ≈ one encoder chunk of new mel (64×6 = 384).
         let hop = CHUNK_FRAMES * SUBSAMPLE;
         let mut chunks = mel_windows(mel, FOLDED_MEL_FRAMES, hop);
         if let Some(n) = max_chunks {
@@ -266,7 +263,7 @@ impl NativeEncoder {
         })
     }
 
-    /// One Apple streaming chunk; updates `state` caches in place.
+    /// One streaming chunk; updates `state` caches in place.
     pub fn forward_chunk(
         &self,
         feat389: &[Vec<f32>],
@@ -404,7 +401,7 @@ fn ffn_macaron(x: &[f32], layer: &NativeLayer) -> Vec<f32> {
     out
 }
 
-/// Causal fused conv using `cnn_cache` left taps (Apple k=7 streaming).
+/// Causal fused conv using `cnn_cache` left taps (reference k=7 streaming).
 ///
 /// For each frame t, average the 7-frame window (6 cache taps + current), apply
 /// fused `conv.weight`, take first DIM channels. Updates cache to the last 7
@@ -740,7 +737,7 @@ fn matmul_rows(
     }
 }
 
-fn log_softmax_row(row: &mut [f32]) {
+pub(crate) fn log_softmax_row(row: &mut [f32]) {
     let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     if !max.is_finite() {
         let v = -(row.len() as f32).ln();

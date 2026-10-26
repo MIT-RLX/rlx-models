@@ -155,7 +155,7 @@ on real weights.
 
 ### CoreML / ANE
 
-Apple's MPSGraph **miscompiles** the shape the Gated DeltaNet prologue emits:
+MPSGraph **miscompiles** the shape the Gated DeltaNet prologue emits:
 a fused projection narrowed at a non-zero offset, passed through
 `sigmoid`/`softplus`, then reshaped. MPS rewrites the reshape onto the
 narrow's *parent* and drops the offset:

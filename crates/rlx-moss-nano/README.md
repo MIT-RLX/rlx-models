@@ -52,7 +52,7 @@ just moss-nano-backends
 ```
 
 ```bash
-cargo run -p rlx-moss-nano --release --features apple-silicon -- \
+cargo run -p rlx-moss-nano --release --features macos-gpu -- \
   --text "The quick brown fox jumps over the lazy dog." \
   --voice Trump --device metal --out /tmp/moss.wav
 ```

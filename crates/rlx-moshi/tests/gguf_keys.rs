@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 #[test]
 fn gguf_tensor_count_matches_eager_keys() {
-    let path = match std::env::var("RLX_MOSHI_Q8_GGUF") {
+    let path = match rlx_ir::env::var_result("RLX_MOSHI_Q8_GGUF") {
         Ok(p) => PathBuf::from(p),
         Err(_) => {
             eprintln!("skip gguf_tensor_count_matches_eager_keys (set RLX_MOSHI_Q8_GGUF)");
@@ -30,7 +30,7 @@ fn gguf_tensor_count_matches_eager_keys() {
 
 #[test]
 fn gguf_load_selected_keys() {
-    let path = match std::env::var("RLX_MOSHI_Q8_GGUF") {
+    let path = match rlx_ir::env::var_result("RLX_MOSHI_Q8_GGUF") {
         Ok(p) => PathBuf::from(p),
         Err(_) => {
             eprintln!("skip gguf_load_selected_keys (set RLX_MOSHI_Q8_GGUF)");

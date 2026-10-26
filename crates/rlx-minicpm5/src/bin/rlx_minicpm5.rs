@@ -17,7 +17,11 @@ use rlx_minicpm5::cli_run;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if let Err(e) = rlx_cli::take_number_format(&mut args) {
+        eprintln!("rlx-minicpm5: {e:#}");
+        return ExitCode::FAILURE;
+    }
     match cli_run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

@@ -356,7 +356,9 @@ fn load_st(path: &Path) -> Result<HashMap<String, Vec<f32>>> {
         );
         let vals: Vec<f32> = t
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         out.insert(name.to_string(), vals);
@@ -364,7 +366,7 @@ fn load_st(path: &Path) -> Result<HashMap<String, Vec<f32>>> {
     Ok(out)
 }
 
-fn load_first_args(dir: &Path) -> Result<FirstStageArgs> {
+pub(crate) fn load_first_args(dir: &Path) -> Result<FirstStageArgs> {
     let p = dir.join("first_stage_args.json");
     if !p.is_file() {
         return Ok(FirstStageArgs::default());
@@ -388,7 +390,7 @@ fn load_first_args(dir: &Path) -> Result<FirstStageArgs> {
     Ok(args)
 }
 
-fn load_second_args(dir: &Path) -> Result<SecondStageArgs> {
+pub(crate) fn load_second_args(dir: &Path) -> Result<SecondStageArgs> {
     let p = dir.join("second_stage_args.json");
     if !p.is_file() {
         return Ok(SecondStageArgs::default());

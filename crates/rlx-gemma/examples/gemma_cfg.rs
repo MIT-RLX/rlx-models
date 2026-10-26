@@ -8,7 +8,7 @@
 use anyhow::Result;
 
 fn main() -> Result<()> {
-    let path = std::env::var("RLX_GEMMA3_GGUF").expect("RLX_GEMMA3_GGUF");
+    let path = rlx_ir::env::var_result("RLX_GEMMA3_GGUF").expect("RLX_GEMMA3_GGUF");
     let raw = rlx_gguf::GgufFile::from_path(&path)?;
     let cfg = rlx_gemma::gemma_cfg_from_gguf(&raw)?;
     println!("arch                  = {:?}", cfg.arch);

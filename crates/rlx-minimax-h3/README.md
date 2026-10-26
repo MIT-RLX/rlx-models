@@ -66,7 +66,7 @@ parameters, **13.01B** of them in the AdaLN branches — matching the model card
 | wgpu | cos 1.000000, rel 2.3e-7 | cos 1.000000, rel 1.8e-7 | cos 1.000000, rel 6.5e-7 |
 
 ```bash
-cargo test -p rlx-minimax-h3 --release --features apple-silicon --test backends -- --nocapture
+cargo test -p rlx-minimax-h3 --release --features macos-gpu --test backends -- --nocapture
 ```
 
 ### The partial-RoPE bug

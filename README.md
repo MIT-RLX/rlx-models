@@ -2,7 +2,7 @@
 
 Concrete model graph builders + weight loaders for RLX — the "what actually runs" layer.
 
-**[184 model families](MODELS.md)** across 16 categories — language & multimodal LLMs, vision, speech (ASR/TTS), audio codecs, and more — each a standalone crate under `crates/`. See **[MODELS.md](MODELS.md)** for the complete catalog with per-model backend support.
+**[200 model families](MODELS.md)** across 16 categories — language & multimodal LLMs, vision, speech (ASR/TTS), audio codecs, and more — each a standalone crate under `crates/`. See **[MODELS.md](MODELS.md)** for the complete catalog with per-model backend support.
 
 Standalone repo: [github.com/MIT-RLX/rlx-models](https://github.com/MIT-RLX/rlx-models). Clone next to [`rlx`](https://github.com/MIT-RLX/rlx):
 
@@ -36,6 +36,7 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 - [Adding a new model](#adding-a-new-model)
 - [Interpretability — the Jacobian lens](#interpretability--the-jacobian-lens)
 - [Compile profiles](#compile-profiles-tier-1)
+- [Settings (`RLX_*`)](#settings-rlx_)
 - [Qwen3](#qwen3)
 - [MiniCPM5](#minicpm5)
 - [Qwen3-TTS](#qwen3-tts)
@@ -51,13 +52,13 @@ Agent-oriented quick reference: [AGENTS.md](AGENTS.md).
 
 ## Model catalog
 
-This workspace ships **184 model families** (one crate per architecture), plus 4 training crates and shared infrastructure. Highlights:
+This workspace ships **200 model families** (one crate per architecture), plus 4 training crates and shared infrastructure. Highlights:
 
-- **38 language models** — Qwen3 / 3.5 / 3.6 / 3.8 / 3.8-Flash-Next, Llama 3.2 / 4, Gemma, DeepSeek-V3 / V4, GLM-4.x / GLM-5.3, MiniMax, Jamba, Mamba, Phi, gpt-oss, Ling 3.0, Motif-3, MiniCPM5, TinyLlama, … plus two **diffusion LMs** (DiffusionGemma, LLaDA2) and speculative-decoding drafters (EAGLE3, DFlash).
-- **12 vision-language / omni** — Fara1.5, Qwen2.5-VL, Llama-3.2-Vision, Florence-2, LocateAnything, Kimi-K3, Inkling, …
-- **10 vision** encoders / detection / segmentation — DINOv2 / v3, SigLIP 2, V-JEPA 2, SAM 1 / 2 / 3, Grounding DINO, NeuralHash — plus **5 biomedical** (incl. Carbon DNA LMs), **3 embedding**, and **4 image / video / 3D generation** models (FLUX.2, TRELLIS.2, a Monte-Carlo render denoiser).
-- **2 time-series** forecasters — Google TimesFM-3, plus a NARMA-10 / echo-state-network parity baseline.
-- **15 ASR** and **45 TTS / speech-LM** models, **11 neural audio codecs**, and **19 speech front-end / wake-word / DSP** crates (TEN-VAD down to bare-metal RISC-V and FPGA), plus voice conversion, music generation, source separation, OCR, and robotics (VLA).
+- **43 language models** — Qwen3 / 3.5 / 3.6 / 3.8 / 3.8-Flash-Next, Llama 3.2 / 4, Gemma, DeepSeek-V3 / V4 / V4.1, GLM-4.x / GLM-5.3, MiniMax, Jamba, Mamba, Phi, gpt-oss, Ling 3.0, Motif-3, MiniCPM5 / MiniCPM-SALA, Laguna, Bonsai, TinyLlama, … plus two **diffusion LMs** (DiffusionGemma, LLaDA2) and speculative-decoding drafters (EAGLE3, DFlash).
+- **14 vision-language / omni** — Fara1.5, Qwen2.5-VL, Qwen3-VL, MiniCPM-V, Llama-3.2-Vision, Llama 4, Florence-2, LocateAnything, Kimi-K3, Nemotron-Omni, Inkling, …
+- **12 vision** encoders / detection / segmentation / matting — DINOv2 / v3, SigLIP 2, V-JEPA 2, SAM 1 / 2 / 3, Grounding DINO, BiRefNet, NeuralHash — plus **5 biomedical** (incl. Carbon DNA LMs), **5 embedding** (incl. EmbeddingGemma, jina-v5), and **8 image / video / 3D generation** models (FLUX.1, FLUX.2, FLUX 3 Image Klein, Open Genmoji, TRELLIS.2, super-resolution, a Monte-Carlo render denoiser, Diamond Maps reward alignment).
+- **3 time-series** forecasters — Google TimesFM-3, Mistral Timestral, plus a NARMA-10 / echo-state-network parity baseline.
+- **16 ASR** and **47 TTS / speech-LM** models, **11 neural audio codecs**, and **20 speech front-end / wake-word / DSP** crates (TEN-VAD down to bare-metal RISC-V and FPGA), plus voice conversion, music generation, source separation, OCR, and robotics (VLA).
 
 See **[MODELS.md](MODELS.md)** for the complete list — every model, its crate, a one-line description, and the backends it supports (CPU · Metal · MLX · CUDA · ROCm · wgpu · Vulkan).
 
@@ -80,7 +81,7 @@ rlx-models/
 
 ### Crates
 
-The table below highlights shared infrastructure and a selection of model crates; for the **complete** model list (all 184 families, with backends) see **[MODELS.md](MODELS.md)**.
+The table below highlights shared infrastructure and a selection of model crates; for the **complete** model list (all 200 families, with backends) see **[MODELS.md](MODELS.md)**.
 
 | Crate | Model / role |
 |---|---|
@@ -98,7 +99,7 @@ The table below highlights shared infrastructure and a selection of model crates
 | [`rlx-hoct`](crates/rlx-hoct/README.md) | HOCT cell tracking (regionprops → edge transformer → ILP) |
 | `rlx-bioclip2` | BioCLIP-2 (OpenCLIP ViT-L-14) |
 | [`rlx-siglip2`](crates/rlx-siglip2/README.md) | SigLIP 2 (fixed-resolution + NaFlex) |
-| [`rlx-neuralhash`](crates/rlx-neuralhash/README.md) | Apple NeuralHash perceptual image hashing (native Espresso → rlx-ir) |
+| [`rlx-neuralhash`](crates/rlx-neuralhash/README.md) | NeuralHash perceptual image hashing (vendor network read natively → rlx-ir) |
 | `rlx-embed` | embedding runtime |
 | `rlx-sam` / `sam2` / `sam3` | SAM family |
 | `rlx-sam-ir` | shared mask-decoder IR |
@@ -214,7 +215,7 @@ Pass model CLI flags after `--`. MiniCPM5 details: [crates/rlx-minicpm5/README.m
 | `rlx-hoct` | `rlx-hoct` | `just fetch-hoct && just hoct -- track -m .cache/hoct/general_v0.safetensors --labels labels.raw -o /tmp/out` ([docs](crates/rlx-hoct/README.md)) |
 | `rlx-bioclip2` | `rlx-bioclip2` | `cargo run -p rlx-bioclip2 --bin rlx-bioclip2 --release -- --model-dir weights/bioclip-2 --image photo.jpg --labels "cat,dog"` |
 | `rlx-siglip2` | `rlx-siglip2` | `cargo run -p rlx-siglip2 --bin rlx-siglip2 --release -- --model-dir weights/siglip2-base-224 --image photo.jpg --labels "cat,dog"` |
-| `rlx-neuralhash` | `rlx-neuralhash` | `R=/System/Library/Frameworks/Vision.framework/Versions/A/Resources; cargo run -p rlx-neuralhash --bin rlx-neuralhash --release -- --net $R/NeuralHashv3b_fp16-current.espresso.net --seed $R/neuralhash_128x96_seed1.dat --image photo.jpg` ([docs](crates/rlx-neuralhash/README.md)) |
+| `rlx-neuralhash` | `rlx-neuralhash` | `R=/System/Library/Frameworks/Vision.framework/Versions/A/Resources; cargo run -p rlx-neuralhash --bin rlx-neuralhash --release --  --seed $R/neuralhash_128x96_seed1.dat --image photo.jpg` ([docs](crates/rlx-neuralhash/README.md)) |
 | `rlx-vjepa2` | `rlx-vjepa2` | `cargo run -p rlx-vjepa2 --bin rlx-vjepa2 --release -- …` |
 | `rlx-wav2vec2-bert` | `rlx-wav2vec2-bert` | `cargo run -p rlx-wav2vec2-bert --bin rlx-wav2vec2-bert --release -- …` |
 | `rlx-whisper` | `rlx-whisper` | `cargo run -p rlx-whisper --bin rlx-whisper --release -- --weights model.safetensors --wav audio16k.wav` |
@@ -342,14 +343,14 @@ just fetch-minicpm5-gguf Q4_K_M
 - **`hoct`** — Higher-Order Cell Tracking Transformer ([arXiv:2607.11754](https://arxiv.org/abs/2607.11754)): regionprops → kNN graph → edge transformer → HiGHS ILP → CTC/GEFF. CLI: `rlx-hoct`. See [crates/rlx-hoct/README.md](crates/rlx-hoct/README.md).
 - **`bioclip2`** — BioCLIP-2, an OpenCLIP ViT-L-14 (image + text towers → shared 768-d embeddings, zero-shot). Pure-Rust PIL preprocessing; 100% parity vs `open_clip` on CPU/Metal/MLX/wgpu. CLI: `rlx-bioclip2`. See [crates/rlx-bioclip2/README.md](crates/rlx-bioclip2/README.md).
 - **`siglip2`** — [SigLIP 2](https://huggingface.co/blog/siglip2) sigmoid-loss image + text encoder (attention-pooling MAP head, `gelu_pytorch_tanh`, multilingual Gemma tokenizer, sigmoid zero-shot). Both the **fixed-resolution** (`siglip2-base-patch16-224`, …) and **NaFlex** (variable resolution/aspect ratio) families. Pure-Rust preprocessing; HuggingFace parity (cos = 1.0) on CPU/Metal/MLX/wgpu/CUDA. CLI: `rlx-siglip2`. See [crates/rlx-siglip2/README.md](crates/rlx-siglip2/README.md).
-- **`neuralhash`** — Apple [NeuralHash](https://github.com/AsuharietYgvar/AppleNeuralHash2ONNX) perceptual image hashing: 225-layer MobileNetV3 (instance-norm + hard-swish + squeeze-excite) → 128 floats, then a `[96, 128]` seed projection → 96-bit hash. The architecture is read natively from the vendor's `NeuralHashv3b_fp16-current.espresso.{net,shape,weights}` container that macOS installs in `Vision.framework` (LZFSE `pbze` decoded inline) and built as an rlx-ir graph — ONNX is a validation-only path behind the `onnx-parity` feature. **Bit-identical hashes vs. an independent PyTorch reference on the shipping macOS model**, and across all 7 backends. Model files are never redistributed. PIL-exact bicubic preprocessing (99.98% bit-exact vs Pillow). CLI: `rlx-neuralhash`. See [crates/rlx-neuralhash/README.md](crates/rlx-neuralhash/README.md).
+- **`neuralhash`** — [NeuralHash](https://github.com/AsuharietYgvar/AppleNeuralHash2ONNX) perceptual image hashing: 225-layer MobileNetV3 (instance-norm + hard-swish + squeeze-excite) → 128 floats, then a `[96, 128]` seed projection → 96-bit hash. The architecture is read natively from the  container that installs the framework (LZFSE `pbze` decoded inline) and built as an rlx-ir graph — ONNX is a validation-only path behind the `onnx-parity` feature. **Bit-identical hashes vs. an independent PyTorch reference on the shipping macOS model**, and across all 7 backends. Model files are never redistributed. PIL-exact bicubic preprocessing (99.98% bit-exact vs Pillow). CLI: `rlx-neuralhash`. See [crates/rlx-neuralhash/README.md](crates/rlx-neuralhash/README.md).
 - **`sam`**, **`sam2`**, **`sam3`** — Segment Anything encoders + mask decoders. Optional `sam.rlx.toml` next to weights (reference: `crates/rlx-sam/src/sam.rlx.toml`).
 - **`flux2`** — FLUX.2 rectified-flow denoiser. `rlx-flux2` CLI; presets `flux2_dev()`, `flux2_klein_4b()`, `flux2_klein_9b()`. VAE, CFG, img2img, LoRA, `hf-download`, `rlx-flux2-serve`. GPU backends via `rlx-models` features (`metal`, `cuda`, …).
 - **`embed`** — `RlxEmbed`, registry, tokenizers, pooling. `from_pretrained` with `hf-download`.
 - **`config`**, **`weight_loader`** — HF config parsing; `WeightMap` + `GgufLoader` (K-quants, MTP isolation).
 - **`fft`** — Learned butterfly FFT, mel/Welch pipelines, IO-aware Welch peak picker (`AutoWelchPeaks`), fused `Op::WelchPeaks` on GPU. CLI: `rlx-fft`. See [crates/rlx-fft/README.md](crates/rlx-fft/README.md).
 - **`mamba`** — Mamba1 SSM block (`rlx-mamba`); SSM via `rlx-ssm` + `SelectiveScan`. See [crates/rlx-mamba/README.md](crates/rlx-mamba/README.md).
-- **`lfm`** — [LiquidAI LFM2 / LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF) hybrid **ShortConv + GQA-attention** decoder. GGUF (`arch=lfm2`) via `Lfm2GgufRunner` (per-layer attn/conv routing from `attention.head_count_kv`, depthwise causal conv, SwiGLU, tied head); CLI `rlx-lfm` / example `lfm2_generate`. Text via the GGUF gpt2 BPE (`--features tokenizer`); weights stay packed (`DequantMatMul`). **Incremental O(n) decode** (per-layer conv-state + KV cache; token-identical to the O(n²) re-prefill reference) with a **cached compiled graph** (warm `generate` calls skip build + weight re-attach — ~3× faster). Build `--release`: ~5 tok/s CPU, ~7.5 tok/s Metal on LFM2.5-2.6B-Q4_K_M (F32 dequant cache is the fast path — do **not** set `RLX_DEQUANT_CACHE=0`, ~8× slower). **CPU decode defaults to the wide-matmul int8 fast path** (~2× TPS — LFM2.5-1.2B-Q4_K_M ~19 → ~29 tok/s; routes the LM head + large FFN GEMVs to a parallel int8 kernel, small matmuls stay on AMX/Accelerate). It quantizes the activation to Q8 (not bit-identical to the F32 path, can flip rare near-tie greedy tokens); override the crossover with `RLX_Q4K_FUSED_MIN_N=<n>` (set huge to disable). GPU decode keeps a **device-resident KV cache** (Metal/MLX/CUDA/ROCm; `bind_gpu_handle` + logits-only readback — no per-step KV host round-trip) and computes the tied lm_head as `embed @ hiddenᵀ` (transposes the tiny activation, not the ~512 MB embedding, each step) — bit-identical and a general win (LFM2.5-1.2B-Q4_K_M: **Metal ~65 → ~97 tok/s**). Combined with **stride-based rank-3 seq-major attention on CUDA** (no per-step KV transpose; `RLX_CUDA_ATTN_RANK4=1` reverts) this **~2×'d CUDA decode** (~17 → ~35 tok/s, → ~39 with `RLX_CUDA_Q4K_GEMV_COOP=1`). Token-identical across CPU/Metal/MLX/CUDA. Coherent on CPU/Metal/MLX + wgpu ("The capital of France is" ⇒ " Paris."; wgpu/Vulkan auto-fall back to host CPU exec — native ShortConv on those backends is WIP). Legacy SSM decode path also present.
+- **`lfm`** — [LiquidAI LFM2 / LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF) hybrid **ShortConv + GQA-attention** decoder. GGUF (`arch=lfm2`) via `Lfm2GgufRunner` (per-layer attn/conv routing from `attention.head_count_kv`, depthwise causal conv, SwiGLU, tied head); CLI `rlx-lfm` / example `lfm2_generate`. Text via the GGUF gpt2 BPE (`--features tokenizer`); weights stay packed (`DequantMatMul`). **Incremental O(n) decode** (per-layer conv-state + KV cache; token-identical to the O(n²) re-prefill reference) with a **cached compiled graph** (warm `generate` calls skip build + weight re-attach — ~3× faster). Build `--release`: ~5 tok/s CPU, ~7.5 tok/s Metal on LFM2.5-2.6B-Q4_K_M (F32 dequant cache is the fast path — do **not** set `RLX_DEQUANT_CACHE=0`, ~8× slower). **CPU decode defaults to the wide-matmul int8 fast path** (~2× TPS — LFM2.5-1.2B-Q4_K_M ~19 → ~29 tok/s; routes the LM head + large FFN GEMVs to a parallel int8 kernel, small matmuls stay on AMX/Accelerate). It quantizes the activation to Q8 (not bit-identical to the F32 path, can flip rare near-tie greedy tokens); override the crossover with `RLX_Q4K_FUSED_MIN_N=<n>` (set huge to disable). GPU decode keeps a **device-resident KV cache** (Metal/MLX/CUDA/ROCm; `bind_gpu_handle` + logits-only readback — no per-step KV host round-trip) and computes the tied lm_head as `embed @ hiddenᵀ` (transposes the tiny activation, not the ~512 MB embedding, each step) — bit-identical and a general win (LFM2.5-1.2B-Q4_K_M: **Metal ~65 → ~97 tok/s**). Combined with **stride-based rank-3 seq-major attention on CUDA** (no per-step KV transpose; `RLX_CUDA_ATTN_RANK4=1` reverts) this **~2×'d CUDA decode** (~17 → ~35 tok/s, → ~39 with `RLX_CUDA_Q4K_GEMV_COOP=1`). Token-identical across CPU/Metal/MLX/CUDA. Coherent on CPU/Metal/MLX/wgpu/Vulkan ("The capital of France is" ⇒ " Paris."); wgpu and Vulkan run the graph natively, and `Device::OpenGl` (the WebGL2 planner, attention legalized into matmul + softmax) matches HF on LFM2.5-230M to 5.6e-5. Legacy SSM decode path also present.
 - **`minimax`**, **`nemotron`** — hybrid runners using `rlx-ssm` decode-step stages.
 - **`minicpm5`** — MiniCPM5 edge LMs (Llama-shaped 1B). Wraps `Llama32Runner`; safetensors + GGUF. See [MiniCPM5](#minicpm5) and [crates/rlx-minicpm5/README.md](crates/rlx-minicpm5/README.md).
 - **`tinyllama`** — TinyLlama-1.1B (Llama-shaped; 2048 hidden, 22 layers). Wraps `Llama32Runner`; safetensors + GGUF. See [TinyLlama](#tinyllama) and [crates/rlx-tinyllama/README.md](crates/rlx-tinyllama/README.md).
@@ -362,7 +363,7 @@ just fetch-minicpm5-gguf Q4_K_M
 
 ## Text-to-speech (TTS)
 
-Nine inference crates cover lightweight edge models through multi‑billion‑parameter voice clones. Build GPU binaries with the same feature names as LMs (`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, `all-backends`, `apple-silicon`). Training crates are listed separately below. Cross-backend Whisper/RTF notes: [TTS.md](TTS.md) (see the Cross-backend parity & benchmarks section).
+Nine inference crates cover lightweight edge models through multi‑billion‑parameter voice clones. Build GPU binaries with the same feature names as LMs (`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, `all-backends`, `macos-gpu`). Training crates are listed separately below. Cross-backend Whisper/RTF notes: [TTS.md](TTS.md) (see the Cross-backend parity & benchmarks section).
 
 ### Models
 
@@ -371,15 +372,18 @@ Nine inference crates cover lightweight edge models through multi‑billion‑pa
 | [Qwen3-TTS](crates/rlx-qwen3-tts/README.md) | `rlx-qwen3-tts` | 0.6B | 24 kHz | HF safetensors ([Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base), [CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice)) | ECAPA clone + preset speakers | progressive + batched PCM | `just qwen3-tts`, `jfk_voice_clone` | production — duplex voice chat, HF parity tests |
 | [Voxtral-4B-TTS](docker/voxtral-tts/README.md) | `rlx-voxtral-tts` | 4B | 24 kHz | HF safetensors ([Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603)) | preset voices + reference clone (train encoder) | — | `just voxtral-tts` | production — native RLX codec + compiled LM |
 | [KittenTTS mini](crates/rlx-kittentts/README.md) | `rlx-kittentts` | ~15M | 24 kHz | native [`kitten_tts_mini_rlx`](crates/kitten_tts_mini_rlx/README.md) bundle or optional ONNX ([KittenML/kitten-tts-mini-0.8](https://huggingface.co/KittenML/kitten-tts-mini-0.8)) | named voices (Jasper, …); IPA or `--features espeak` text | — | `just kittentts`, `just fetch-kittentts` | production — native RLX graph default; optional ORT (`--features onnx`) |
+| [KittenTTS 2](crates/rlx-kittentts2/README.md) | `rlx-kittentts2` | 1.7B LM | 24 kHz | [`KittenML/kitten-tts-2`](https://huggingface.co/KittenML/kitten-tts-2) ternary LM (→ lossless `Q2_0` GGUF) + [`chatterbox-turbo`](https://huggingface.co/ResembleAI/chatterbox-turbo) S3Gen | 123 built-in voices + clone from a reference clip, expression tags | — | `just fetch-kittentts2` / `just kittentts2 "…"` / `just kittentts2-clone …` | parity vs PyTorch (CPU/Metal/MLX/wgpu; LM also CUDA/Vulkan), LM + flow + vocoder + cloning + text normalizer + `student_w4` decoder |
 | [RLX TTS](crates/rlx-tts/README.md) | `rlx-tts` | FastSpeech2 + WaveRNN h448 | 24 kHz | [`eugenehp/rlx-tts`](https://huggingface.co/eugenehp/rlx-tts) `rlx-tts.rlxp` | product path | — | `just fetch-rlx-tts` / `just tts-demo` | production — packed `.rlxp` + native RLX |
 | [Orpheus](crates/rlx-orpheus/README.md) | `rlx-orpheus` | 3B | 24 kHz | GGUF LM + SNAC safetensors | 8 built-in + zero-shot clone (pretrained GGUF) | ~2k-sample PCM chunks | `just orpheus`, `just orpheus-demo` | production — Metal LM + eager or CoreML SNAC |
 | [NeuTTS](crates/rlx-neutts/) | `rlx-neutts` | Nano / Air | 24 kHz | llama-tagged GGUF + NeuCodec safetensors | reference-audio clone | — | library API (`NeuTTS::load_with_decoder_on`) | production backbone + eager NeuCodec; no standalone CLI yet |
 | [Kyutai TTS 1.6B](crates/rlx-kyutai-tts/README.md) | `rlx-kyutai-tts` | 1.6B | 24 kHz | HF safetensors ([tts-1.6b-en_fr](https://huggingface.co/kyutai/tts-1.6b-en_fr)) | `speaker_wavs` cross-attn conditioning | planned | `just kyutai-tts` | production — DSM generate + Mimi; DepFormer eager |
-| [Pocket TTS](crates/rlx-pocket-tts/README.md) | `rlx-pocket-tts` | ~100M | 24 kHz | safetensors ([ungated mirror](https://huggingface.co/Verylicious/pocket-tts-ungated)) | preset `audio_prompt` embeddings | flow LM (faster than realtime on CPU) | `cargo run -p rlx-pocket-tts --example generate --features hf-download` | production on CPU/Accelerate; optional RLX backends via `rlx` feature |
+| [Pocket TTS](crates/rlx-pocket-tts/README.md) | `rlx-pocket-tts` | 1.9M–~300M | 24 kHz | safetensors ([kyutai/pocket-tts-without-voice-cloning](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning); gated [kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts) for cloning) | released voice states, WAV cloning | flow LM + streaming Mimi decoder | `just fetch-pocket-tts` then `just pocket-tts` | rlx graphs on every backend; parity vs upstream on CPU/Metal/MLX/wgpu |
 | [TinyTTS](crates/rlx-tiny-tts/) / [MeloTTS](crates/rlx-melotts/) | `rlx-tiny-tts` | VITS2 | 44.1 kHz | [`eugenehp/tiny-tts-rlx`](https://huggingface.co/eugenehp/tiny-tts-rlx) `tiny-tts.rlxp` | MALE / FEMALE | — | `just fetch-tiny-tts` / `just melotts-demo` | production — nested graphs; MeloTTS is an alias |
 | [Soprano 1.1](crates/rlx-soprano/README.md) | `rlx-soprano` | ~80M | 32 kHz | [`eugenehp/soprano`](https://huggingface.co/eugenehp/soprano) `soprano.rlxp` | single voice | — | `just fetch-soprano` / `just soprano-demo` | production — nested backbone + Vocos; no Hub ONNX |
 | [MOSS-TTS-Nano](crates/rlx-moss-nano/README.md) | `rlx-moss-nano` | 0.1B | 48 kHz stereo | [`eugenehp/moss-nano`](https://huggingface.co/eugenehp/moss-nano) `moss-nano.rlxp` | 18 builtin voices | — | `just fetch-moss-nano` / `just moss-nano` | production — hierarchical AR + codec; no Hub ONNX |
 | [sanoTTS](crates/rlx-sanotts/README.md) | `rlx-sanotts` | ~1.5M | 22.05 kHz | [`ampixa/sanoTTS`](https://huggingface.co/ampixa/sanoTTS) fp16 voice packs | 7 packs, 3 languages | — | `rlx-sanotts say "…" --voice-dir …` | production — host reference gated against upstream numpy; frame stack + decoder on RLX graph |
+| [Fish Audio S2-Pro](crates/rlx-fish/README.md) | `rlx-fish` | 4.5B | 44.1 kHz | HF safetensors + `codec.pth` ([`fishaudio/s2-pro`](https://huggingface.co/fishaudio/s2-pro)) | speaker-tagged dialogue + clone from reference clips | — | `just fetch-fish-s2` / `just fish-s2 "…"` | parity vs PyTorch (full model, greedy frames identical); CPU/Metal/MLX/wgpu; ~5× slower than real time on M4 Pro |
+| [Fish Audio Drama 3](crates/rlx-fish/README.md) | `rlx-fish` | 35B MoE (FP8 experts) | 44.1 kHz | HF safetensors ([`fishaudio/drama-3`](https://huggingface.co/fishaudio/drama-3), 40 GB) | speaker tags, `[cues]`, clone from reference clips | — | `just fetch-fish-drama3` / `just fish-drama3 "…"` | parity vs PyTorch (4-layer cut + full tower); experts on the host from mapped FP8; ~4 s/frame |
 | [HumeAI TADA](crates/rlx-tada/README.md) | `rlx-tada` | 1B | 24 kHz | HF safetensors ([`HumeAI/tada-1b`](https://huggingface.co/HumeAI/tada-1b) + [`HumeAI/tada-codec`](https://huggingface.co/HumeAI/tada-codec)) | zero-shot clone from a reference clip (`.tadaprompt`) | — | `just tada-prompt` / `just tada-speak` | production — Llama-3.2 backbone + flow-matching acoustic/duration head; CPU/Metal/MLX/wgpu/Vulkan/CoreML |
 | [Inflect-Nano](crates/rlx-inflect-nano/README.md) | `rlx-inflect-nano` | ~4.6M | 24 kHz | exported safetensors bundle | single speaker | — | `rlx-inflect-nano --text "…"` | production — standalone Rust frontend; vocoder on RLX graph or CoreML (ORT) |
 
@@ -397,10 +401,10 @@ Nine inference crates cover lightweight edge models through multi‑billion‑pa
 | Qwen3-TTS | `VoiceClone` API, progressive streaming (`StreamMode::Progressive`), duplex voice chat (Whisper + Qwen3 LM), CustomVoice presets, optional `incremental-decode` / `speculative-decode` features |
 | Voxtral-4B-TTS | Tekken tokenizer, compiled Ministral LM, reference WAV clone after native encoder training |
 | KittenTTS | Smallest footprint; **native RLX default** (`kitten_tts_mini_rlx`); optional ORT via `--features onnx` / `native-fast` for Metal |
-| Orpheus | Emotive tags (`<laugh>`, …), SNAC on Apple ANE (`--device coreml`), streaming decode, GGUF Q4_K_M |
+| Orpheus | Emotive tags (`<laugh>`, …), SNAC on ANE (`--device coreml`), streaming decode, GGUF Q4_K_M |
 | NeuTTS | On-device clone; GGUF backbone via `rlx-llama32`; optional `burn-gpu` NeuCodec |
 | Kyutai TTS | Depth-multiplexed Helium + DepFormer, 32 codebooks, en/fr SPM; `KyutaiTtsSession::generate` → Mimi PCM |
-| Pocket TTS | Kyutai FlowLM + Mimi decoder path; Whisper-validated; CPU-first |
+| Pocket TTS | Kyutai FlowLM + Mimi; all 27 released configs (7 languages, 2M–24-layer); teacher-forced parity ~1e-5 vs upstream |
 | TinyTTS / MeloTTS | VITS2 at 44.1 kHz; nested `graphs/*.rlxp`; monotonic alignment in Rust glue |
 | Soprano | ~80M Qwen3 AR + Vocos @ 32 kHz; nested `.rlxp`; Whisper-validated |
 | MOSS-TTS-Nano | Hierarchical AR codec-LM @ 48 kHz stereo; 18 builtin voices; nested `.rlxp` |
@@ -421,7 +425,7 @@ Legend: ✅ supported · ⚠️ partial (host fallback, ORT EP, or opt-in featur
 | NeuTTS LM | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | ⚠️ | Same routing as `rlx-llama32` / GGUF packed rules |
 | NeuTTS codec | ✅ | — | — | — | — | ⚠️ | — | Eager ndarray; optional Burn wgpu (`burn-gpu`) |
 | Kyutai TTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Temporal LM on RLX; DepFormer eager; Mimi decode |
-| Pocket TTS | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | Default Accelerate/ndarray CPU; enable `rlx` + backend features for GPU graph |
+| Pocket TTS | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | ⚠️ | rlx graphs; parity-tested on CPU, Metal, MLX, wgpu; CUDA/ROCm/Vulkan built but not run |
 | TinyTTS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device ane` with `--features coreml` |
 | Inflect-Nano | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | ❌ | Vocoder RLX graph; CoreML via static-shape ORT (`--features coreml`) |
 
@@ -634,6 +638,20 @@ just test-quick
 
 Real-GGUF / backend checks: set `QWEN35_GGUF_PATH` (LMs) or vision env vars (`SAM3_GGUF_PATH`, `DINOV2_GGUF_PATH`, `FLUX_GGUF_PATH`, `W2V_BERT_GGUF_PATH`). Drain: `cargo test -p rlx-models --test vision_gguf_load --release`. Compile quick check: `cargo test -p rlx-models --test vision_gguf_compile --release` (SAM3 also needs `VISION_GGUF_COMPILE=1`; W2V-BERT needs `RLX_W2V_BERT_DIR` with `config.json`). FLUX: `cargo test -p rlx-models --test flux2_gguf_runner_quick_check --release` (`FLUX_GGUF_PATH` / `FLUX_MODEL_ROOT`; optional `FLUX_VAE_DIR` for VAE encode). Q4_0 fused matmul: `cargo test -p rlx-models --test gguf_legacy_quant_matmul --release`; Metal parity: `GGUF_LEGACY_METAL_PARITY=1` with `--features metal`. Enable `metal` / `mlx` / `cuda` / `parity-llama` per test file where noted.
 
+## Settings (`RLX_*`)
+
+Every `RLX_*` variable is read and written through `rlx_ir::env`
+(`var`, `var_result`, `flag`, `parse_or`, `set`, `remove`), never `std::env`
+directly. A code override (`rlx_ir::env::set`) wins over the process
+environment, so a setting made in code reaches every reader; and in the
+browser, which has no process environment, `rlx-models-web`'s
+`set_setting(key, value)` is the way to change one. Helpers handed a key at
+run time that may also be a foreign name (`HF_TOKEN`, `CUDA_PATH`) use
+`rlx_ir::env::read` / `read_os`, which route only `RLX_*` keys through the
+overrides. Build scripts keep `std::env` (they read Cargo's environment).
+Upstream names are catalogued in `../rlx/docs/rlx-env-vars.md`
+(`just check-rlx-env-vars` there).
+
 ## Qwen3
 
 Prefill + decode on all seven standard backends (CPU, Metal, MLX, CUDA, ROCm, WGPU, Vulkan). Enable matching features at build time (`cargo build -p rlx-qwen3 --features all-backends`). Synthetic checks: `just features=all-backends test-qwen3-backends`. Parity: 100% top-1 vs HF (`tests/qwen3_parity.rs`).
@@ -703,13 +721,13 @@ let (_path, map) = weights::open_map(path)?;
 
 **Splits:** Multi-part GGUF (`split.count` > 1) auto-merges when all parts are in the same directory; otherwise `rlx-inspect` lists missing shards.
 
-**Legacy quants:** `Q4_0` / `Q8_0` support packed `DequantMatMul` on **CPU** and **Metal** (fused MSL dequant+matmul, 32-element blocks). Set `RLX_DISABLE_METAL_DEQUANT_GPU=1` to force host dequant on Apple GPUs.
+**Legacy quants:** `Q4_0` / `Q8_0` support packed `DequantMatMul` on **CPU** and **Metal** (fused MSL dequant+matmul, 32-element blocks). Set `RLX_DISABLE_METAL_DEQUANT_GPU=1` to force host dequant on Metal GPUs.
 
 **Q4_K CPU decode fast path (opt-in):** By default, CPU Q4_K decode matmuls (`m == 1`) route to the cached-F32 + Accelerate/AMX path. For **wide** matmuls (LM head, large FFN) the parallel int8 (Q8·Q4_K) kernel is faster — measured ~3× at `n ≈ 128k` (tie near `n ≈ 3k`, AMX ahead below). Set `RLX_Q4K_FUSED_MIN_N=<n>` (e.g. `4096`) to route decode GEMVs with output width `≥ n` to that kernel — **~15–25% faster CPU decode** on Q4_K models (LFM2.5, Qwen, Llama, …). Trade-off: the fused path quantizes the *activation* to Q8_K (llama.cpp-style), so it is **not** bit-identical to the F32 path and can flip occasional near-tie greedy tokens; left **disabled by default** to preserve F32 decode fidelity (and decode↔prefill parity). Bandwidth-bound at large `n`, so an SDOT/dotprod kernel wouldn't add more.
 
 **Example:** `cargo run -p rlx-models --example custom_weight_format`
 
-### Apple Silicon
+### macOS arm64
 
 Metal lowers to MPSGraph (per shape). Env toggles:
 
@@ -756,7 +774,7 @@ just fetch-minicpm5
 just minicpm5-chat "What is 2+2? Answer in one sentence."
 ```
 
-`minicpm5_chat.py` tokenizes with the official template, then runs `rlx-minicpm5` (defaults to **CPU** for reliable KV decode on Apple Silicon).
+`minicpm5_chat.py` tokenizes with the official template, then runs `rlx-minicpm5` (defaults to **CPU** for reliable KV decode on macOS arm64).
 
 ### Library
 
@@ -968,7 +986,7 @@ just unlimited-ocr -- --pdf document.pdf --max-tokens 8192
 just fetch-qwen3-tts-base
 export RLX_QWEN3_TTS_DIR=.cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base
 
-cargo build -p rlx-qwen3-tts --release --features apple-silicon --bin jfk_voice_clone
+cargo build -p rlx-qwen3-tts --release --features macos-gpu --bin jfk_voice_clone
 ./target/release/jfk_voice_clone \
   --model-dir $RLX_QWEN3_TTS_DIR \
   --ref-wav assets/jfk/jfk_voice_clone.wav \
@@ -985,7 +1003,7 @@ just fetch-qwen3 && just fetch-whisper-base   # LM + ASR weights
 just voice-chat-demo                          # → /tmp/voice_chat_roundtrip/
 ```
 
-`--turbo` preloads all models, streams LM tokens, and uses batched TTS by default (`--streaming-tts` for progressive partial-decode). Measured stop-speaking → first audio ≈ **5.1 s** on Apple Silicon (see [voice_chat_latency.svg](crates/rlx-qwen3-tts/examples/charts/voice_chat_latency.svg)).
+`--turbo` preloads all models, streams LM tokens, and uses batched TTS by default (`--streaming-tts` for progressive partial-decode). Measured stop-speaking → first audio ≈ **5.1 s** on macOS arm64 (see [voice_chat_latency.svg](crates/rlx-qwen3-tts/examples/charts/voice_chat_latency.svg)).
 
 ### Streaming API
 
@@ -1115,11 +1133,11 @@ burnembed (`/Users/Shared/burnembed`) re-exports `rlx_models::embed` with `--fea
 
 ### Publishing (crates.io)
 
-Prerequisite: upstream **`rlx*`** **0.2.16** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
+Prerequisite: upstream **`rlx*`** **0.2.19** published from the [RLX](https://github.com/MIT-RLX/rlx) repo. Verify registry resolution without a local patch:
 
 ```sh
 rm -f .cargo/config.toml
-cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.16, no path source
+cargo tree -p rlx-models-core -i rlx-runtime   # expect v0.2.19, no path source
 ```
 
 Adding a model: [docs/adding-a-model.md](docs/adding-a-model.md) — identifying
@@ -1216,7 +1234,7 @@ Asset helpers: [`rlx-assets`](crates/rlx-assets/README.md) (`native-pack` featur
 | `minicpm5` | yes | yes (`llama`) | **yes** — [MiniCPM5-1B-GGUF](https://huggingface.co/openbmb/MiniCPM5-1B-GGUF) (Q4_K_M / Q8_0 / F16) | vs PyTorch (`minicpm5_parity`); `rlx-minicpm5` 0.2.6 on `rlx-llama32` 0.2.6; GGUF packed CPU/Metal |
 | `tinyllama` | yes | yes (`llama`) | **yes** — [TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF](https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF) (Q4_K_M / Q8_0 / Q6_K) | real-weight GGUF packed prefill vs CPU (`tinyllama_backend_gguf_check`); wraps `rlx-llama32` |
 | `carbon` | yes | yes (`llama`) | **yes** — [HuggingFaceBio/Carbon-500M](https://huggingface.co/HuggingFaceBio/Carbon-500M) safetensors (bf16); larger Carbon 3B/8B share the tokenizer | DNA LM: stock `model_type = llama` routes to `llama32`; native hybrid Qwen3-BPE + DNA-6mer tokenizer (`rlx-carbon`) |
-| `lfm` | — | yes (`lfm2`) | **yes** — [LiquidAI/LFM2.5-2.6B-GGUF](https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF) (BF16 / F16 / Q4_0 / Q4_K_M / Q5_K_M / Q6_K / Q8_0) | hybrid ShortConv + GQA-attention (`Lfm2GgufRunner`, packed `DequantMatMul`); **token-identical greedy CPU/Metal/MLX/CUDA** (1.2B-Q4_K_M decode ~97 Metal / ~35 CUDA / ~31 CPU tok/s) + wgpu (host-exec) |
+| `lfm` | — | yes (`lfm2`) | **yes** — [LiquidAI/LFM2.5-2.6B-GGUF](https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF) (BF16 / F16 / Q4_0 / Q4_K_M / Q5_K_M / Q6_K / Q8_0) | hybrid ShortConv + GQA-attention (`Lfm2GgufRunner`, packed `DequantMatMul`); **token-identical greedy CPU/Metal/MLX/CUDA** (1.2B-Q4_K_M decode ~97 Metal / ~35 CUDA / ~31 CPU tok/s) + wgpu / Vulkan / WebGL2 (native) |
 | `llada2` | yes | — | **preview** — [llada2](https://huggingface.co/models?library=gguf&search=llada2) (1): [LLaDA2.0-mini-preview-GGUF](https://huggingface.co/wsbagnsv1/LLaDA2.0-mini-preview-GGUF) (`llada2`) | vs PyTorch when `LLADA2_MODEL_DIR` |
 | `flux2` | yes (BFL / NVFP4 safetensors) | yes (denoiser `.gguf`, `architecture: flux`; K-quant GGUF uses packed `DequantMatMul`; `Flux2Runner` + VAE/TE safetensors) | **yes** — [flux2](https://huggingface.co/models?library=gguf&search=flux2) (~53); e.g. [unsloth/FLUX.2-klein-9B-GGUF](https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF), [city96/FLUX.2-dev-gguf](https://huggingface.co/city96/FLUX.2-dev-gguf) | GGUF = denoiser only; VAE + Qwen3 TE still safetensors dirs |
 | `vjepa2` | yes | yes (`vjepa2` / `vjepa`, F32 drain) | **no** Hub GGUF yet — [vjepa](https://huggingface.co/models?library=gguf&search=vjepa) (0) | synthetic + optional weight checks |
@@ -1240,12 +1258,12 @@ Legend: ✅ supported · ⚠️ partial (host fallback or open runtime gap) · �
 | `bioclip2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [`BioClip2Runner`](crates/rlx-bioclip2/src/runner.rs) `--device`; 100% open_clip parity verified on cpu/metal/mlx/wgpu |
 | `sam`, `sam2`, `sam3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | SAM v1 also accepts `tpu`; CPU/Metal/MLX most exercised in CI |
 | `qwen3` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | packed GGUF: CPU + Metal native; MLX/wgpu/CUDA prefill via CPU path (`rlx_core::packed_gguf_*`); MTP decode not wired |
-| `qwen35` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device` on all backends; some ops use host GDN/dequant on GPU; MoE offload may keep experts on host |
+| `qwen35` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `--device` on all backends; some ops use host GDN/dequant on GPU; MoE offload may keep experts on host. Qwen3.5-0.8B (HF) is token-identical to transformers on wgpu (active-extent prefill is off there: wgpu shrinks every step, which zeroed half the exported GDN state) and on `--device opengl` — the WebGL2 planner, run natively; GatedDeltaNet unrolls on backends without it, carrying the final state out. In the browser (WebGPU) via `rlx-models-web`'s `Qwen35Generator` from a Q4_K_M or BF16 GGUF kept packed — `just fetch-qwen35-web` |
 | `llama32` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `rlx-llama32` 0.2.6: Metal decode guard + packed GGUF helpers; same packed rules as Qwen3 |
 | `minicpm5` | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Wraps `rlx-llama32`; safetensors decode on CPU/Metal; GGUF `--packed` parity on CPU/Metal (MLX/wgpu tests use CPU prefill path) |
 | `tinyllama` | ✅ | ✅ | ✅ | ⚠️ | — | ⚠️ | — | Wraps `rlx-llama32`; GGUF `--packed` parity CPU/Metal/MLX; CUDA prefill on CPU; wgpu buffer limits on some GPUs |
-| `carbon` | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | ⚠️ | DNA LM wrapping `rlx-llama32`; **byte-identical greedy DNA continuation verified on CPU/Metal/MLX/wgpu + CoreML (ANE)**; CUDA/ROCm/Vulkan inherited from `rlx-llama32` (no local hw). `--features apple-silicon`; example `dna_generate` |
-| `lfm` | ✅ | ✅ | ✅¹ | ✅ | ⚠️² | ✅³ | ⚠️³ | LFM2 / LFM2.5 hybrid ShortConv + attention (`Lfm2GgufRunner`, **packed** GGUF `DequantMatMul`). **Token-identical greedy across CPU/Metal/MLX/CUDA.** Decode on LFM2.5-1.2B-Q4_K_M: **~97 Metal · ~35 CUDA** (→~39 `RLX_CUDA_Q4K_GEMV_COOP=1`) **· ~31 CPU** (int8 fast path default) **· ~5 MLX** tok/s. CUDA validated on RTX 3080 Ti — **~2×** from computing the tied lm_head as `embed @ hiddenᵀ` (transpose the tiny activation, not the ~512 MB embedding) + stride-based rank-3 seq-major attention (both bit-exact; `RLX_CUDA_ATTN_RANK4=1` reverts). ¹MLX coherent but slow: Q4_K has no on-device fused kernel so it dequants to f32 (use Metal on Apple). ²ROCm: `rlx-rocm` builds, but ROCm 7 dropped MI100/gfx908 (no HSA agent). ³wgpu/Vulkan correct via host-CPU-exec fallback (native ShortConv WIP; `RLX_LFM_FORCE_NATIVE=1`). Example `lfm2_generate` |
+| `carbon` | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | ⚠️ | DNA LM wrapping `rlx-llama32`; **byte-identical greedy DNA continuation verified on CPU/Metal/MLX/wgpu + CoreML (ANE)**; CUDA/ROCm/Vulkan inherited from `rlx-llama32` (no local hw). `--features macos-gpu`; example `dna_generate` |
+| `lfm` | ✅ | ✅ | ✅¹ | ✅ | ⚠️² | ✅³ | ✅³ | LFM2 / LFM2.5 hybrid ShortConv + attention (`Lfm2GgufRunner`, **packed** GGUF `DequantMatMul`). **Token-identical greedy across CPU/Metal/MLX/CUDA.** Decode on LFM2.5-1.2B-Q4_K_M: **~97 Metal · ~35 CUDA** (→~39 `RLX_CUDA_Q4K_GEMV_COOP=1`) **· ~31 CPU** (int8 fast path default) **· ~5 MLX** tok/s. CUDA validated on RTX 3080 Ti — **~2×** from computing the tied lm_head as `embed @ hiddenᵀ` (transpose the tiny activation, not the ~512 MB embedding) + stride-based rank-3 seq-major attention (both bit-exact; `RLX_CUDA_ATTN_RANK4=1` reverts). ¹MLX coherent but slow: Q4_K has no on-device fused kernel so it dequants to f32 (use Metal on macOS). ²ROCm: `rlx-rocm` builds, but ROCm 7 dropped MI100/gfx908 (no HSA agent). ³wgpu/Vulkan run natively (the old host-CPU fallback is gone; `RLX_PACKED_GGUF_{WGPU,VULKAN}_HOST=1` forces it), and in the browser via `rlx-models-web` (WebGPU, WebGL2). Example `lfm2_generate` |
 | `llada2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | MoE predictive expert offload on all standard backends (GPU uses resident experts + host fallback) |
 | `flux2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Full pipeline; text encoder compiled on Metal/MLX by default, host once on CUDA/ROCm/WGPU/Vulkan |
 | `vjepa2` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Runner `--device` |
@@ -1283,9 +1301,11 @@ Model-specific runbooks live next to each crate. Agent quick reference: [AGENTS.
 | `rlx-inflect-nano` | [crates/rlx-inflect-nano/README.md](crates/rlx-inflect-nano/README.md) |
 | `rlx-sanotts` | [crates/rlx-sanotts/README.md](crates/rlx-sanotts/README.md) |
 | `rlx-tada` | [crates/rlx-tada/README.md](crates/rlx-tada/README.md) |
+| `rlx-fish` | [crates/rlx-fish/README.md](crates/rlx-fish/README.md) |
 | `rlx-glm5next` | [crates/rlx-glm5next/README.md](crates/rlx-glm5next/README.md) |
 | `rlx-qwen4exp` | [crates/rlx-qwen4exp/README.md](crates/rlx-qwen4exp/README.md) |
 | `rlx-timesfm3` | [crates/rlx-timesfm3/README.md](crates/rlx-timesfm3/README.md) |
+| `rlx-timestral` | [crates/rlx-timestral/README.md](crates/rlx-timestral/README.md) |
 | `rlx-denoise` | [crates/rlx-denoise/README.md](crates/rlx-denoise/README.md) |
 | `rlx-nllb` | [crates/rlx-nllb/README.md](crates/rlx-nllb/README.md) |
 | `rlx-translate` | [crates/rlx-translate/README.md](crates/rlx-translate/README.md) |

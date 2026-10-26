@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 fn export_dir() -> Option<PathBuf> {
     let d = PathBuf::from(
-        std::env::var("RLX_TRANSLATE_EXPORT")
+        rlx_ir::env::var_result("RLX_TRANSLATE_EXPORT")
             .unwrap_or_else(|_| "/Volumes/FOUR/rlx-translate-export".to_string()),
     );
     d.join("index.json").is_file().then_some(d)
@@ -48,8 +48,10 @@ fn safetensors_of(path: &std::path::Path) -> HashMap<String, (Vec<usize>, Vec<f3
         .map(|(n, t)| {
             let v: Vec<f32> = t
                 .data()
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().expect("4 bytes")))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect();
             (n, (t.shape().to_vec(), v))
         })
@@ -91,7 +93,9 @@ fn gguf_matches_the_safetensors_it_was_staged_from() {
                 // F16 storage: compare against the f32 source.
                 assert_eq!(t.dtype, rlx_gguf::GgmlType::F16, "{key}: unexpected dtype");
                 let got: Vec<f32> = bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
                     .collect();
                 assert_eq!(got.len(), want.len(), "{key}: element count differs");

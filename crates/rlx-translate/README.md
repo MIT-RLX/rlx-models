@@ -3,7 +3,7 @@
 the OS's on-device machine translation, natively on RLX.
 
 macOS 15+ ships `Translation.framework`. Its low-latency path is a classic NMT
-stack — a sed-script normalizer, SentencePiece, a multilingual Espresso
+stack — a sed-script normalizer, SentencePiece, a multilingual
 encoder-decoder under beam search, and a stack of pre/post-processing blocks —
 all described by a JSON **Quasar** config that the OS installs *separately from
 the weights*.
@@ -11,7 +11,7 @@ the weights*.
 ```
 text ──normalizer (sed script)──▶ tokenizer ──▶ phrasebook lookup
      ──SentencePiece encode────▶ [control tokens] + ids
-     ──Espresso NMT, beam 3────▶ target ids
+     ──NMT, beam 3────▶ target ids
      ──SentencePiece decode────▶ structured prediction ──▶ case map ──▶ text
 ```
 
@@ -45,7 +45,7 @@ what the operating system installed.
 | Do-not-translate (`dnt`) | done — identifier spans, learned by probing the OS |
 | Output punctuation (`postproc`) | done |
 | SentencePiece vocabulary (`spm`) | done — 168 000 pieces |
-| Espresso graph reader (`net`) | done — all 9 installed graphs |
+| Network graph reader (`net`) | done — all 9 installed graphs |
 | CPU evaluator (`exec`) | done — all 11 layer types |
 | Export to safetensors (`export`) | done — verified at cosine 0.999993 |
 | Convert to safetensors + GGUF + `.rlxp` (`convert`) | done — 7 bundles, 96 graphs, 6215 tensors |
@@ -96,43 +96,12 @@ the 14 pivots brings it to 855 sentences at chrF 0.955.)
 
 ### The weights are a second download
 
-The config asset (`com.apple.MobileAsset.UAF.Translation.Assets`, ~33 MB)
-arrives on its own and contains **no weights** — only the per-pair configs, a
-language identifier and an endpointer. The model files live in separately named
-assets that appear only once a language is installed:
-
 * `MT-bi-en-es-de-it-fr-pt-nl-20` — one multilingual bidirectional model covering
   en/es/de/it/fr/pt/nl, holding `MT/spm.model`, `MT/pyespresso.mdl.bin`, the
-  Espresso graphs, `MT/normalizer.pat`, `MT/tokenizer.pat`,
+  network graphs, `MT/normalizer.pat`, `MT/tokenizer.pat`,
   `MT/gender_defaults_list` and the quality-estimator tables.
 * `MT-bi-…-partial-<lang>-20` — that language's decoder, handover and input graphs.
 * `PB-<lang>` — per-source-language phrasebooks.
-
-### Installing without the UI
-
-`tools/install-language.m` asks the OS to fetch its own assets, so a machine can
-be provisioned from a script:
-
-```sh
-clang -fobjc-arc -framework Foundation -o install-language \
-    crates/rlx-translate/tools/install-language.m
-./install-language                # list locales and their state
-./install-language en_US fr_FR    # install (this REPLACES the current set)
-```
-
-Expect ~700 MB per locale: a locale pulls its MT models plus the much larger ASR
-and TTS assets for that language.
-
-MobileAsset's own API will not do this. `MAAssetQuery`/`MAAsset` refuse
-`com.apple.MobileAsset.UAF.Translation.Assets` unless the caller holds the private
-entitlement `com.apple.private.assets.accessible-asset-types` —
-`queryMetaDataSync` returns 5 and `startCatalogDownload:` returns 12 — and that
-cannot be self-granted under SIP. `_LTDLanguageAssetService` in
-`TranslationDaemon.framework` sits above that gate and works from an ordinary
-unsigned process.
-
-System Settings → General → Language & Region → *Translation Languages* does the
-same thing by hand.
 
 ### Variants matter
 
@@ -142,11 +111,6 @@ normally installed, so `Assets::best_config` picks the variant whose files
 actually resolve rather than the lowest number. `Assets::resolve` deliberately
 has no "search every root for the tail of the path" fallback — variants share
 inner paths (`MT/spm.model`), so that fallback silently returns the wrong model.
-
-On disk an asset is an opaque `<sha1>.asset/AssetData/`; the logical name lives
-in its `Info.plist` as `AssetSpecifier` (`com.apple.sequoia.asset.mt.bi-…-fr.20`)
-and is matched against the config's spelling (`MT-bi-…-partial-fr-20`) through
-`normalize_asset_name`.
 
 ### Usage
 
@@ -350,14 +314,14 @@ that all 416 configs survived the round trip.
 
 Despite the name and the config's `"model-type": "espresso"`, the file holds no
 weights — it is ~77 KB of typed key/value records naming graphs and tensors. The
-weights sit beside it in the **classic Espresso triple** (`*.espresso.net` /
+weights sit beside it in the **classic vendor triple** (`*.espresso.net` /
 `.shape` / `.weights`), the same container `rlx-neuralhash` already reads.
 
 Framing: one leading `0x00`, then `<key><space><value>` where a bool is a single
 `T`/`F` byte with no separator, an int is tag `0x04` plus a little-endian u32,
 and a string runs to the next space. Because bools run straight into the
 following key (`…IsEspresso TSourceInputStr…`) the stream can only be walked with
-a schema — `espresso::KEYS` — and an unknown key is an error rather than a guess.
+a schema — `netfile::KEYS` — and an unknown key is an error rather than a guess.
 
 `rlx-translate probe <file>` prints the decoded manifest. For the shipped model:
 
@@ -382,15 +346,6 @@ gathers the tied embedding and applies softmax.
 
 The trailing `<InputSymbolTable>` framing is not decoded yet;
 `Manifest::symbol_table_offset` reports where it begins.
-
-### Two engines
-
-`TranslationSession.Strategy` (macOS 26.4) selects between them:
-
-* `.lowLatency` — the Espresso NMT this crate targets.
-* `.highFidelity` — **not an NMT**. It prompts the on-device foundation model
-  (`com.apple.fm.language.instruct_3b.machine_translation.generic`) with a fixed
-  "You are an expert translator…" instruction. Out of scope here.
 
 ### Direction is a token, not a model
 

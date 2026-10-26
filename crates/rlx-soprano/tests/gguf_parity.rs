@@ -31,7 +31,7 @@ fn peak_norm_cosine(a: &[f32], b: &[f32]) -> f64 {
 }
 
 fn resolve_loose_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("RLX_SOPRANO_DIR") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_SOPRANO_DIR") {
         return PathBuf::from(p);
     }
     let candidates = [
@@ -56,15 +56,15 @@ fn loose_vs_gguf_pcm_parity_short() -> Result<()> {
         );
         return Ok(());
     }
-    let gguf_out = std::env::var("RLX_SOPRANO_GGUF")
+    let gguf_out = rlx_ir::env::var_result("RLX_SOPRANO_GGUF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             std::env::temp_dir().join(format!("rlx-soprano-parity-{}.gguf", std::process::id()))
         });
-    let text = std::env::var("RLX_TEXT")
+    let text = rlx_ir::env::var_result("RLX_TEXT")
         .unwrap_or_else(|_| "The quick brown fox jumps over the lazy dog.".into());
     let opts = InferOpts {
-        max_new_tokens: std::env::var("RLX_MAX_TOKENS")
+        max_new_tokens: rlx_ir::env::var_result("RLX_MAX_TOKENS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(96),

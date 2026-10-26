@@ -30,7 +30,7 @@
 //!
 //! Manual run:
 //! ```sh
-//! cargo run --release -p rlx-qwen3-tts --features apple-silicon \
+//! cargo run --release -p rlx-qwen3-tts --features macos-gpu \
 //!   --example bidirectional_voice_chat -- --turbo \
 //!   --ref-wav assets/jfk/jfk_voice_clone.wav \
 //!   --input-wav crates/rlx-qwen3-tts/examples/audio/voice_chat_question.wav \
@@ -46,7 +46,7 @@
 //! - Streaming ASR (`--streaming-asr`, on in `--turbo`): partial Whisper while mic chunks
 //!   arrive; turn starts with prefetched transcript (0 s ASR at flush)
 //! - Mic turns flush on shorter silence (`--silence-ms 300`) without waiting for EOF
-//! - Apple Silicon: Whisper + TTS on **Metal (MPS)**; Qwen3 LM on **MLX** (Metal LM
+//! - macOS arm64: Whisper + TTS on **Metal (MPS)**; Qwen3 LM on **MLX** (Metal LM
 //!   autoregressive decode is incorrect on safetensors until fixed upstream).
 //!   RLX routes through GPU/MPS, not Core ML ANE directly.
 //! - `--turbo` / `--gpu-perf`: F16 Whisper, F16 LM-head, bucket precompile,
@@ -97,7 +97,7 @@ struct Args {
     out_dir: PathBuf,
     /// Device for Whisper + TTS (Metal recommended).
     device: Device,
-    /// Qwen3-0.6B LM device — defaults to fastest working GPU (`mlx` on Apple Silicon).
+    /// Qwen3-0.6B LM device — defaults to fastest working GPU (`mlx` on macOS arm64).
     qwen3_device: Device,
     mic_chunk_ms: u32,
     silence_ms: u32,
@@ -333,14 +333,14 @@ impl PartialAsrTracker {
 }
 
 fn parse_args() -> Result<Args> {
-    let mut qwen3_weights = std::env::var("RLX_QWEN3_WEIGHTS")
+    let mut qwen3_weights = rlx_ir::env::var_result("RLX_QWEN3_WEIGHTS")
         .map(PathBuf::from)
-        .or_else(|_| std::env::var("RLX_QWEN3_DIR").map(PathBuf::from))
+        .or_else(|_| rlx_ir::env::var_result("RLX_QWEN3_DIR").map(PathBuf::from))
         .unwrap_or_else(|_| PathBuf::from("weights/Qwen3-0.6B"));
-    let mut tts_model_dir = std::env::var("RLX_QWEN3_TTS_DIR")
+    let mut tts_model_dir = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base"));
-    let mut whisper_dir = std::env::var("RLX_WHISPER_DIR")
+    let mut whisper_dir = rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/whisper-base.en"));
     let mut ref_wav = PathBuf::from("assets/jfk/jfk_voice_clone.wav");
@@ -692,7 +692,7 @@ fn pick_device(name: &str) -> Result<Device> {
 }
 
 /// Fast LM backend. Metal autoregressive decode on safetensors Qwen3 is currently
-/// incorrect (repeats token 83940); MLX matches CPU and is faster on Apple Silicon.
+/// incorrect (repeats token 83940); MLX matches CPU and is faster on macOS arm64.
 fn whisper_tiny_dir() -> PathBuf {
     PathBuf::from(".cache/whisper-tiny")
 }
@@ -714,7 +714,7 @@ fn resolve_qwen3_weights_path(weights_in: &Path, device: Device, gpu_perf: bool)
     if weights_in.is_file() {
         return weights_in.to_path_buf();
     }
-    let prefer_gguf = std::env::var("RLX_QWEN3_PREFER_GGUF")
+    let prefer_gguf = rlx_ir::env::var_result("RLX_QWEN3_PREFER_GGUF")
         .ok()
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
     let has_st = weights_in.join("model.safetensors").is_file();
@@ -748,13 +748,13 @@ fn apply_gpu_perf_env(args: &Args) {
         if std::env::var("VECLIB_MAXIMUM_THREADS").is_err() {
             std::env::set_var("VECLIB_MAXIMUM_THREADS", "1");
         }
-        std::env::set_var("RLX_QWEN3_TTS_PRECOMPILE_BUCKETS", "1");
-        std::env::set_var("RLX_QWEN3_TTS_WAV_NORMALIZE", "1");
+        rlx_ir::env::set("RLX_QWEN3_TTS_PRECOMPILE_BUCKETS", "1");
+        rlx_ir::env::set("RLX_QWEN3_TTS_WAV_NORMALIZE", "1");
         if args.device == Device::Metal {
-            std::env::set_var("RLX_QWEN3_TTS_GPU_KV", "1");
+            rlx_ir::env::set("RLX_QWEN3_TTS_GPU_KV", "1");
         }
         if args.metal_tts_native {
-            std::env::set_var("RLX_QWEN3_TTS_METAL_DECODE_NATIVE", "1");
+            rlx_ir::env::set("RLX_QWEN3_TTS_METAL_DECODE_NATIVE", "1");
         }
     }
 }
@@ -774,7 +774,7 @@ fn pick_lm_device() -> Device {
     } else if is_available(Device::Metal) {
         eprintln!(
             "warning: Qwen3 Metal LM decode is known-bad on safetensors — \
-             use `--qwen3-device mlx` on Apple Silicon or `--qwen3-device cpu` for correctness"
+             use `--qwen3-device mlx` on macOS arm64 or `--qwen3-device cpu` for correctness"
         );
         Device::Metal
     } else {
@@ -786,7 +786,7 @@ fn warn_if_metal_lm(device: Device) {
     if device == Device::Metal {
         eprintln!(
             "warning: `--qwen3-device metal` may produce garbage LM output on safetensors weights; \
-             prefer `mlx` (Apple Silicon) or `cpu`"
+             prefer `mlx` (macOS arm64) or `cpu`"
         );
     }
 }
@@ -2279,12 +2279,16 @@ fn read_wav_f32_with_rate(path: &Path) -> Result<(Vec<f32>, u32)> {
     let pcm_bytes = &bytes[data_off..];
     let pcm = if bps == 16 {
         pcm_bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
             .collect()
     } else {
         pcm_bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
     };

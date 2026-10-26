@@ -35,6 +35,9 @@ pub mod backbone;
 
 pub mod runner;
 
+#[cfg(feature = "export")]
+pub mod export;
+
 pub use decoder::{
     ENCODER_DEFAULT_INPUT_SAMPLES, ENCODER_SAMPLE_RATE, ENCODER_SAMPLES_PER_TOKEN, NeuCodecDecoder,
     NeuCodecEncoder, SAMPLE_RATE, SAMPLES_PER_TOKEN,

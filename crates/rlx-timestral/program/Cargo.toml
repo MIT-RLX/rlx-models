@@ -1,0 +1,25 @@
+# The forecaster's host logic as an RLX program (WebAssembly): the packed
+# rows' scaling, masks and positions, the block-by-block decode, covariates,
+# symmetric averaging and the quantile map, around the package's network.
+# Built by `rlx-timestral`'s exporter, so it stands outside the workspace.
+[package]
+name = "rlx-timestral-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+anyhow = "1"
+ndarray = "0.16"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# Named by the crate's own `forecaster.rs`; never on here.
+hf-download = []
+
+[workspace]

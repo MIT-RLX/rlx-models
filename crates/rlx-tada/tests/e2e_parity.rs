@@ -60,7 +60,7 @@ struct Fixture {
 
 #[test]
 fn matches_the_upstream_generation_loop() {
-    let Some(tok_dir) = std::env::var_os("RLX_TADA_TOKENIZER") else {
+    let Some(tok_dir) = rlx_ir::env::var_os("RLX_TADA_TOKENIZER") else {
         eprintln!("RLX_TADA_TOKENIZER not set — skipping end-to-end parity");
         return;
     };

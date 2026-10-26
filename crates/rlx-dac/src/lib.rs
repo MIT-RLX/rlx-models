@@ -9,6 +9,8 @@ pub mod codec;
 pub mod codes;
 pub mod config;
 pub mod download;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod graph;
 pub mod layers;
 pub mod ops;

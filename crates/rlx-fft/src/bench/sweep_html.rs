@@ -79,7 +79,7 @@ pub fn render_sweep_html(report: &SweepReport) -> String {
   * {{ box-sizing: border-box; }}
   body {{
     margin: 0;
-    font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: "SF Pro Text", BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--bg);
     color: var(--text);
     line-height: 1.5;

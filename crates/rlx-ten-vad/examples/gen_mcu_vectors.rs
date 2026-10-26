@@ -33,8 +33,10 @@ fn main() -> anyhow::Result<()> {
     );
     let frames = raw.len() / (stack_len * 4);
     let feats: Vec<i32> = raw
-        .chunks_exact(4)
-        .map(|b| i32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| i32::from_le_bytes(*b))
         .collect();
 
     let old = std::fs::read(dir.join("probs_q15.bin")).unwrap_or_default();

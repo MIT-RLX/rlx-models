@@ -370,23 +370,33 @@ impl RawTensor {
 fn plain_to_f32(key: &str, bytes: &[u8], dt: Dtype) -> Result<Vec<f32>> {
     Ok(match dt {
         Dtype::F32 => bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
         Dtype::BF16 => bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| half::bf16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         Dtype::F16 => bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         Dtype::I32 => bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
             .collect(),
         Dtype::I64 => bytes
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32)
             .collect(),
         other => bail!(
@@ -574,7 +584,9 @@ mod tests {
     use crate::dsv41_quant::{DEFAULT_BLOCK, DsV41Loader};
 
     fn weights_dir() -> Option<std::path::PathBuf> {
-        std::env::var("RLX_DSV41_WEIGHTS").ok().map(Into::into)
+        rlx_ir::env::var_result("RLX_DSV41_WEIGHTS")
+            .ok()
+            .map(Into::into)
     }
 
     /// The streaming loader must agree with the mmap loader bit for bit on real

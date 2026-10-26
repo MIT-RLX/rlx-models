@@ -197,7 +197,10 @@ pub fn load_npz(path: &Path) -> Result<Vec<(String, NpyArray)>> {
     let mut out = Vec::new();
     for i in 0..zip.len() {
         let mut file = zip.by_index(i)?;
-        let name = file.name().to_string();
+        let name = file
+            .name()
+            .with_context(|| format!("npz entry {i} name"))?
+            .to_string();
         if name.ends_with('/') {
             continue;
         }

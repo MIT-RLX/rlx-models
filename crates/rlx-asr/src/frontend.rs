@@ -123,7 +123,7 @@ fn mel_filterbank(sr: u32, n_fft: usize, n_mels: usize) -> Vec<Vec<f32>> {
         mels.push(mmin + (mmax - mmin) * i as f32 / (n_mels as f32 + 1.0));
     }
     let hz: Vec<f32> = mels.iter().map(|&m| mel_to_hz(m)).collect();
-    let mut bins: Vec<usize> = hz
+    let bins: Vec<usize> = hz
         .iter()
         .map(|&f| {
             let b = ((n_fft as f32 + 1.0) * f / sr as f32).floor() as isize;
@@ -135,7 +135,8 @@ fn mel_filterbank(sr: u32, n_fft: usize, n_mels: usize) -> Vec<Vec<f32>> {
         let left = bins[m];
         let mut center = bins[m + 1];
         let mut right = bins[m + 2];
-        // Match tools/audio_io.py::_mel_filterbank width bump.
+        // Match tools/audio_io.py::_mel_filterbank width bump. The bump is
+        // local to this filter: the next filter reads the original edges.
         if center == left {
             center += 1;
         }
@@ -154,8 +155,6 @@ fn mel_filterbank(sr: u32, n_fft: usize, n_mels: usize) -> Vec<Vec<f32>> {
                 filters[m][k] = 1.0 - i as f32 / fall as f32;
             }
         }
-        bins[m + 1] = center;
-        bins[m + 2] = right;
     }
     filters
 }
@@ -179,6 +178,111 @@ fn rfft_power(frame: &[f32]) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Each filter's `(left, center, right)` bins as `tools/audio_io.py`'s
+    /// `_mel_filterbank` computes them (16 kHz, 512-point FFT, 80 mels, after
+    /// the width bump); they reproduce its bank exactly. The port used to write
+    /// bumped edges back for the next filter, which made 7 of 80 filters wrong
+    /// (and underflowed in debug builds).
+    const REFERENCE_EDGES: [(usize, usize, usize); 80] = [
+        (0, 1, 2),
+        (1, 2, 3),
+        (2, 3, 4),
+        (2, 3, 4),
+        (3, 4, 5),
+        (4, 5, 6),
+        (5, 6, 7),
+        (6, 7, 8),
+        (7, 8, 9),
+        (8, 9, 10),
+        (8, 9, 10),
+        (9, 10, 11),
+        (10, 11, 13),
+        (11, 13, 14),
+        (13, 14, 15),
+        (14, 15, 16),
+        (15, 16, 17),
+        (16, 17, 18),
+        (17, 18, 20),
+        (18, 20, 21),
+        (20, 21, 22),
+        (21, 22, 24),
+        (22, 24, 25),
+        (24, 25, 27),
+        (25, 27, 28),
+        (27, 28, 30),
+        (28, 30, 32),
+        (30, 32, 33),
+        (32, 33, 35),
+        (33, 35, 37),
+        (35, 37, 39),
+        (37, 39, 41),
+        (39, 41, 43),
+        (41, 43, 45),
+        (43, 45, 47),
+        (45, 47, 49),
+        (47, 49, 51),
+        (49, 51, 54),
+        (51, 54, 56),
+        (54, 56, 59),
+        (56, 59, 61),
+        (59, 61, 64),
+        (61, 64, 66),
+        (64, 66, 69),
+        (66, 69, 72),
+        (69, 72, 75),
+        (72, 75, 78),
+        (75, 78, 81),
+        (78, 81, 85),
+        (81, 85, 88),
+        (85, 88, 91),
+        (88, 91, 95),
+        (91, 95, 99),
+        (95, 99, 102),
+        (99, 102, 106),
+        (102, 106, 110),
+        (106, 110, 115),
+        (110, 115, 119),
+        (115, 119, 123),
+        (119, 123, 128),
+        (123, 128, 133),
+        (128, 133, 137),
+        (133, 137, 142),
+        (137, 142, 148),
+        (142, 148, 153),
+        (148, 153, 158),
+        (153, 158, 164),
+        (158, 164, 170),
+        (164, 170, 176),
+        (170, 176, 182),
+        (176, 182, 189),
+        (182, 189, 195),
+        (189, 195, 202),
+        (195, 202, 209),
+        (202, 209, 216),
+        (209, 216, 224),
+        (216, 224, 231),
+        (224, 231, 239),
+        (231, 239, 248),
+        (239, 248, 256),
+    ];
+
+    #[test]
+    fn mel_filterbank_matches_the_python_reference() {
+        let fb = mel_filterbank(16_000, 512, 80);
+        for (m, &(l, c, r)) in REFERENCE_EDGES.iter().enumerate() {
+            for k in 0..257 {
+                let want = if (l..c).contains(&k) {
+                    (k - l) as f32 / (c - l) as f32
+                } else if (c..r).contains(&k) {
+                    1.0 - (k - c) as f32 / (r - c) as f32
+                } else {
+                    0.0
+                };
+                assert!((fb[m][k] - want).abs() < 1e-6, "filter {m} bin {k}");
+            }
+        }
+    }
     use super::*;
 
     #[test]
@@ -287,7 +391,9 @@ mod tests {
         }
         let off = data_off.expect("data chunk");
         let samples: Vec<i16> = bytes[off..off + data_sz]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
         let pcm: Vec<f32> = if ch <= 1 {

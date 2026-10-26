@@ -230,15 +230,16 @@ pub const KEYS: &[(&str, &str)] = &[
 
 /// Parses `name`, reporting the variable that was wrong rather than ignoring
 /// it — a typo in a sweep script should not read as "this lever does nothing".
-fn var<T: std::str::FromStr>(name: &str) -> Result<Option<T>>
+/// `get` looks a full variable name up: the environment, or one `key=value`.
+fn var<T: std::str::FromStr>(get: Lookup<'_>, name: &str) -> Result<Option<T>>
 where
     T::Err: std::fmt::Display,
 {
     let full = format!("{ENV_PREFIX}{name}");
-    match std::env::var(&full) {
-        Err(_) => Ok(None),
-        Ok(v) if v.trim().is_empty() => Ok(None),
-        Ok(v) => v
+    match get(&full) {
+        None => Ok(None),
+        Some(v) if v.trim().is_empty() => Ok(None),
+        Some(v) => v
             .trim()
             .parse::<T>()
             .map(Some)
@@ -246,9 +247,12 @@ where
     }
 }
 
-fn flag(name: &str) -> Result<Option<bool>> {
-    Ok(var::<String>(name)?.map(|v| !matches!(v.as_str(), "0" | "false" | "no" | "off")))
+fn flag(get: Lookup<'_>, name: &str) -> Result<Option<bool>> {
+    Ok(var::<String>(get, name)?.map(|v| !matches!(v.as_str(), "0" | "false" | "no" | "off")))
 }
+
+/// Where [`Tuning`] reads a setting's value from, by full variable name.
+type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 impl Tuning {
     /// Defaults with every `RLX_TRANSLATE_*` variable applied over the top.
@@ -261,59 +265,64 @@ impl Tuning {
 
     /// Applies the environment to an existing set of settings.
     pub fn override_from_env(&mut self) -> Result<()> {
-        if let Some(v) = var("NO_REPEAT")? {
+        self.override_from(&|full| rlx_ir::env::read(full).ok())
+    }
+
+    /// Applies every setting `get` has a value for.
+    fn override_from(&mut self, get: Lookup<'_>) -> Result<()> {
+        if let Some(v) = var(get, "NO_REPEAT")? {
             self.no_repeat_ngram = v;
         }
-        if let Some(v) = var("NO_REPEAT_CHARS")? {
+        if let Some(v) = var(get, "NO_REPEAT_CHARS")? {
             self.no_repeat_char_ngram = v;
         }
-        if let Some(v) = var("LENGTH_PENALTY")? {
+        if let Some(v) = var(get, "LENGTH_PENALTY")? {
             self.length_penalty = Some(v);
         }
-        if let Some(v) = flag("NORM_COSTS")? {
+        if let Some(v) = flag(get, "NORM_COSTS")? {
             self.norm_costs = Some(v);
         }
         // `NO_SHORTLIST` was this lever's first name and is in sweep scripts.
-        if let Some(v) = flag("NO_SHORTLIST")?.or(flag("IGNORE_SHORTLIST")?) {
+        if let Some(v) = flag(get, "NO_SHORTLIST")?.or(flag(get, "IGNORE_SHORTLIST")?) {
             self.ignore_shortlist = v;
         }
-        if let Some(v) = flag("INCREMENTAL")? {
+        if let Some(v) = flag(get, "INCREMENTAL")? {
             self.incremental = v;
         }
-        if let Some(v) = flag("DOMAIN_TAG_LAST")? {
+        if let Some(v) = flag(get, "DOMAIN_TAG_LAST")? {
             self.domain_tag_last = v;
         }
-        if let Some(v) = var("BEAM")? {
+        if let Some(v) = var(get, "BEAM")? {
             self.beam = Some(v);
         }
-        if let Some(v) = var("RS_BEAM")? {
+        if let Some(v) = var(get, "RS_BEAM")? {
             self.rs_beam = Some(v);
         }
-        if let Some(v) = flag("RS_BEAM_PRUNE")? {
+        if let Some(v) = flag(get, "RS_BEAM_PRUNE")? {
             self.rs_beam_prune = v;
         }
-        if let Some(v) = var("MAX_LEN")? {
+        if let Some(v) = var(get, "MAX_LEN")? {
             self.max_len = Some(v);
         }
-        if let Some(v) = var("MAX_SOURCE_TOKENS")? {
+        if let Some(v) = var(get, "MAX_SOURCE_TOKENS")? {
             self.max_source_tokens = Some(v);
         }
-        if let Some(v) = var("MAX_LEN_FLOOR")? {
+        if let Some(v) = var(get, "MAX_LEN_FLOOR")? {
             self.max_len_floor = Some(v);
         }
-        if let Some(v) = var("MAX_LEN_RELATIVE")? {
+        if let Some(v) = var(get, "MAX_LEN_RELATIVE")? {
             self.max_len_relative = Some(v);
         }
-        if let Some(v) = var("STOP_AFTER")? {
+        if let Some(v) = var(get, "STOP_AFTER")? {
             self.stop_after = Some(v);
         }
-        if let Some(v) = var("NBEST_MULTIPLE")? {
+        if let Some(v) = var(get, "NBEST_MULTIPLE")? {
             self.nbest_multiple = v;
         }
-        if let Some(v) = var("BEAM_MULTIPLE")? {
+        if let Some(v) = var(get, "BEAM_MULTIPLE")? {
             self.beam_multiple = v;
         }
-        if let Some(v) = var("BEAM_FLOOR")? {
+        if let Some(v) = var(get, "BEAM_FLOOR")? {
             self.beam_floor = v;
         }
         Ok(())
@@ -336,19 +345,13 @@ impl Tuning {
                 .collect::<Vec<_>>()
                 .join(" ")
         );
-        // Reuse the env parsers so a CLI flag and a variable cannot disagree
-        // about what a value means.
+        // The env parsers, fed this one value, so a CLI flag and a variable
+        // cannot disagree about what a value means. (It used to be written
+        // into the process environment and read back, which races with any
+        // other thread doing the same.)
         let full = format!("{ENV_PREFIX}{k}");
-        let prior = std::env::var(&full).ok();
-        // SAFETY-adjacent: single-threaded CLI argument parsing, restored below.
-        unsafe { std::env::set_var(&full, value) };
         let mut fresh = self.clone();
-        let r = fresh.override_from_env();
-        match prior {
-            Some(p) => unsafe { std::env::set_var(&full, p) },
-            None => unsafe { std::env::remove_var(&full) },
-        }
-        r?;
+        fresh.override_from(&|name| (name == full).then(|| value.to_string()))?;
         *self = fresh;
         Ok(())
     }

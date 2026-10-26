@@ -1,0 +1,60 @@
+[package]
+name = "rlx-d1"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "LiquidAI d1 System One decision models (LFM2.5-VL backbone) for RLX — typed questions over text, JSON and images, answered in one forward pass"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+image = { workspace = true }
+serde_json = { workspace = true }
+tokenizers = { workspace = true, features = ["onig"] }
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-lfm = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-siglip2 = { workspace = true }
+
+[dev-dependencies]
+safetensors = { workspace = true }
+rlx-runtime = { workspace = true, features = ["program"] }
+rlx-text = { workspace = true }
+tempfile = "3"
+
+[features]
+default = []
+# `export::export_rlxp`: d1 as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export"]
+metal = ["rlx-runtime/metal", "rlx-lfm/metal", "rlx-siglip2/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-lfm/mlx", "rlx-siglip2/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-lfm/cuda", "rlx-siglip2/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-lfm/rocm", "rlx-siglip2/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-lfm/gpu", "rlx-siglip2/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-lfm/vulkan", "rlx-siglip2/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+macos-gpu = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[[test]]
+name = "export_rlxp"
+path = "tests/export_rlxp.rs"
+required-features = ["export"]
+
+[[bin]]
+name = "rlx-d1"
+path = "src/bin/rlx_d1.rs"
+
+[lints]
+workspace = true

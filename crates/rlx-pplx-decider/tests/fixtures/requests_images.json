@@ -1,0 +1,131 @@
+[
+ {
+  "state": "A picture from a geometry worksheet.",
+  "images": [
+   "img/shapes_1400x900.png"
+  ],
+  "questions": {
+   "red_shape": {
+    "type": "choice",
+    "instructions": "Which shape is red?",
+    "criteria": {
+     "circle": null,
+     "square": null,
+     "triangle": null
+    }
+   },
+   "blue_square": {
+    "type": "noul",
+    "instructions": "Is there a blue square in the picture?"
+   },
+   "background": {
+    "type": "score",
+    "instructions": "How busy is the background?",
+    "criteria": [
+     "plain",
+     "some pattern",
+     "very busy"
+    ]
+   }
+  }
+ },
+ {
+  "state": {
+   "source": "camera",
+   "note": "check the dominant colour"
+  },
+  "images": [
+   "img/small_200x120.png"
+  ],
+  "questions": {
+   "colour": {
+    "type": "choice",
+    "criteria": {
+     "red": null,
+     "green": null,
+     "blue": null,
+     "gray": null
+    }
+   }
+  }
+ },
+ {
+  "state": "Scanned page attached by the user. Classify it.",
+  "images": [
+   "img/document_1240x1754.png"
+  ],
+  "questions": {
+   "kind": {
+    "type": "choice",
+    "criteria": {
+     "photo": "A photograph",
+     "document": "A text document or form",
+     "chart": "Only a chart",
+     "screenshot": "A screenshot of an app"
+    }
+   },
+   "has_table": {
+    "type": "noul",
+    "instructions": "Does the page contain a table?"
+   },
+   "largest_alpha": {
+    "type": "choice",
+    "instructions": "In the table, which sample has the largest Alpha?",
+    "criteria": {
+     "first": null,
+     "second": null,
+     "third": null
+    }
+   }
+  }
+ },
+ {
+  "state": "Two pictures from the same user.",
+  "images": [
+   "img/shapes_1400x900.png",
+   "img/small_200x120.png"
+  ],
+  "questions": {
+   "first_has_circle": {
+    "type": "noul",
+    "instructions": "Does the first picture contain a circle?"
+   },
+   "second_has_circle": {
+    "type": "noul",
+    "instructions": "Does the second picture contain a circle?"
+   }
+  }
+ },
+ {
+  "state": "Photo from a pet owner (JPEG).",
+  "images": [
+   "img/cats_320x240.jpg"
+  ],
+  "questions": {
+   "count": {
+    "type": "score",
+    "instructions": "How many cats are in the picture?",
+    "criteria": [
+     "none",
+     "one",
+     "two",
+     "three or more"
+    ]
+   },
+   "remote": {
+    "type": "noul",
+    "instructions": "Is there a TV remote control in the picture?"
+   },
+   "surface": {
+    "type": "choice",
+    "instructions": "What are the cats lying on?",
+    "criteria": {
+     "floor": null,
+     "pink blanket": null,
+     "grass": null,
+     "table": null
+    }
+   }
+  }
+ }
+]

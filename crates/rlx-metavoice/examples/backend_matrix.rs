@@ -24,18 +24,18 @@ use rlx_runtime::{Device, is_available};
 const DEFAULT_TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 
 fn main() -> anyhow::Result<()> {
-    let dir = std::env::var("RLX_METAVOICE_DIR")
+    let dir = rlx_ir::env::var_result("RLX_METAVOICE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_LOCAL_DIR));
-    let enc = std::env::var("RLX_ENCODEC_PATH")
+    let enc = rlx_ir::env::var_result("RLX_ENCODEC_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_ENCODEC_PATH));
-    let text = std::env::var("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.to_string());
-    let max_tokens: usize = std::env::var("RLX_MAX_TOKENS")
+    let text = rlx_ir::env::var_result("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.to_string());
+    let max_tokens: usize = rlx_ir::env::var_result("RLX_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(864);
-    let ref_wav = std::env::var("RLX_REFERENCE")
+    let ref_wav = rlx_ir::env::var_result("RLX_REFERENCE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| dir.join("bria_16k.wav"));
 
@@ -59,25 +59,25 @@ fn main() -> anyhow::Result<()> {
         devices.iter().map(|(_, l)| *l).collect::<Vec<_>>()
     );
 
-    let cache = std::env::var("RLX_CODES_CACHE")
+    let cache = rlx_ir::env::var_result("RLX_CODES_CACHE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp/metavoice_codes.json"));
     let t0 = Instant::now();
     let cpu = MetaVoice::open_with_encodec(&dir, &enc, Device::Cpu)?;
     // Default greedy; set RLX_SAMPLE=1 for top-p (seed 1337).
-    let greedy = std::env::var_os("RLX_SAMPLE").is_none();
+    let greedy = rlx_ir::env::var_os("RLX_SAMPLE").is_none();
     let opts = InferOpts {
         max_new_tokens: max_tokens,
         greedy,
-        temperature: std::env::var("RLX_TEMP")
+        temperature: rlx_ir::env::var_result("RLX_TEMP")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1.0),
-        top_p: std::env::var("RLX_TOP_P")
+        top_p: rlx_ir::env::var_result("RLX_TOP_P")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.95),
-        seed: std::env::var("RLX_SEED")
+        seed: rlx_ir::env::var_result("RLX_SEED")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1337),
@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
         "[opts] greedy={} max_tokens={} seed={} guidance={}",
         opts.greedy, opts.max_new_tokens, opts.seed, opts.guidance_scale
     );
-    let codes = if cache.is_file() && std::env::var_os("RLX_FORCE_RESYNTH").is_none() {
+    let codes = if cache.is_file() && rlx_ir::env::var_os("RLX_FORCE_RESYNTH").is_none() {
         eprintln!("[cache] loading codes from {}", cache.display());
         let raw = std::fs::read_to_string(&cache)?;
         serde_json::from_str::<Vec<Vec<u32>>>(&raw)?
@@ -174,7 +174,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn parse_devices() -> Vec<(Device, &'static str)> {
-    let raw = std::env::var("RLX_DEVICES")
+    let raw = rlx_ir::env::var_result("RLX_DEVICES")
         .unwrap_or_else(|_| "cpu,metal,mlx,wgpu,coreml,cuda".to_string());
     let mut out = Vec::new();
     for part in raw.split(',') {
@@ -220,7 +220,7 @@ fn short(s: &str) -> String {
 }
 
 fn load_whisper() -> Option<rlx_whisper::WhisperRunner> {
-    let dir = if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    let dir = if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         PathBuf::from(d)
     } else {
         for name in ["whisper-tiny", "whisper-tiny.en", "whisper-base.en"] {

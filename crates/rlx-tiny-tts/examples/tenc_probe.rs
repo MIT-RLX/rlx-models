@@ -9,7 +9,9 @@ use rlx_tiny_tts::model::import_graph;
 
 fn rd_i64(name: &str) -> Vec<i64> {
     let b = std::fs::read(format!("/tmp/ttsdump/{name}.f32")).expect("read dump");
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as i64)
         .collect()
 }
@@ -37,7 +39,7 @@ fn main() -> anyhow::Result<()> {
         "[report] lowered={} stubbed={} unsupported={:?}",
         report.lowered, report.stubbed, report.unsupported
     );
-    if std::env::var("RLX_REACH").is_ok() {
+    if rlx_ir::env::var_result("RLX_REACH").is_ok() {
         // Reachability from m_p (output index 1) back to inputs.
         let mp = hir.outputs[1];
         let mut seen = std::collections::HashSet::new();
@@ -70,7 +72,7 @@ fn main() -> anyhow::Result<()> {
             seen.len()
         );
     }
-    if let Ok(tap) = std::env::var("RLX_TAP") {
+    if let Ok(tap) = rlx_ir::env::var_result("RLX_TAP") {
         let mut found = None;
         for (i, n) in hir.nodes().iter().enumerate() {
             if n.name.as_deref() == Some(tap.as_str()) {
@@ -89,7 +91,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    if std::env::var("RLX_LISTPARAMS").is_ok() {
+    if rlx_ir::env::var_result("RLX_LISTPARAMS").is_ok() {
         for (k, v) in &params {
             if k.contains("conv_q.weight") {
                 let am = v.iter().map(|x| x.abs()).sum::<f32>() / v.len().max(1) as f32;
@@ -140,16 +142,22 @@ fn main() -> anyhow::Result<()> {
         // are comparable, not skipped.
         let v: Vec<f32> = match dt {
             DType::F32 => bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
             DType::I64 => bytes
-                .chunks_exact(8)
-                .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f32)
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| i64::from_le_bytes(*c) as f32)
                 .collect(),
             DType::I32 => bytes
-                .chunks_exact(4)
-                .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f32)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| i32::from_le_bytes(*c) as f32)
                 .collect(),
             DType::Bool | DType::U8 => bytes.iter().map(|&b| b as f32).collect(),
             _ => {

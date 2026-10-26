@@ -1,0 +1,9 @@
+# `rlx_runtime::search` alone (it is `rlx-search`), for kev's program.
+[package]
+name = "rlx-kev-runtime"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[dependencies]
+rlx-search = "0.2.19"

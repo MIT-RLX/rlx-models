@@ -125,7 +125,7 @@ fn linear(x: ArrayView2<f32>, w: &Array2<f32>) -> Array2<f32> {
 
 /// Abramowitz & Stegun 7.1.26 — max abs error ~1.5e-7.
 #[inline]
-fn erf_approx(x: f32) -> f32 {
+pub(crate) fn erf_approx(x: f32) -> f32 {
     let a1 = 0.254_829_6_f32;
     let a2 = -0.284_496_72_f32;
     let a3 = 1.421_413_8_f32;

@@ -21,7 +21,7 @@ Once upon a time in a quiet valley, a traveler paused by the river and listened 
 to the wind in the trees.";
 
 fn iters() -> usize {
-    std::env::var("RLX_ITERS")
+    rlx_ir::env::var_result("RLX_ITERS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3)
@@ -37,7 +37,7 @@ fn backends() -> Vec<(Device, &'static str)> {
         (Device::Ane, "ane"),
         (Device::Vulkan, "vulkan"),
     ];
-    if let Ok(raw) = std::env::var("RLX_DEVICES") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_DEVICES") {
         let want: Vec<_> = raw
             .split(',')
             .map(|s| s.trim().to_ascii_lowercase())

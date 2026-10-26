@@ -33,8 +33,8 @@ fn main() -> anyhow::Result<()> {
         "RLX_QWEN3_BAKE_WEIGHTS",
         "RLX_QWEN3_GQA_NATIVE",
     ] {
-        if std::env::var_os(k).is_none() {
-            unsafe { std::env::set_var(k, "1") };
+        if rlx_ir::env::read_os(k).is_none() {
+            rlx_ir::env::set(k, "1");
         }
     }
     let cfg_t = Qwen3Config::from_file(Path::new(dir).join("config.json").as_path())?;

@@ -5,13 +5,15 @@ use anyhow::{Context, Result};
 use rlx_models_core::weight_loader::{MlxLoader, WeightLoader};
 
 fn f32le(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 
 fn main() -> Result<()> {
-    let dir = std::env::var("RLX_DSV4_DIR").context("RLX_DSV4_DIR")?;
+    let dir = rlx_ir::env::var_result("RLX_DSV4_DIR").context("RLX_DSV4_DIR")?;
     let mut l = MlxLoader::open_lazy(&dir)?;
     let key = "model.layers.0.ffn.switch_mlp.gate_proj.weight";
     let p = l.take_packed_mlx(key)?.context("packed")?;

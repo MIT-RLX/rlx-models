@@ -316,7 +316,7 @@ fn fmt_bytes(n: u64) -> String {
 ///
 /// Override with `RLX_UNLIMITED_OCR_ASSUME_RAM_BYTES` (tests / forced Auto).
 pub fn available_ram_bytes() -> u64 {
-    if let Ok(s) = std::env::var("RLX_UNLIMITED_OCR_ASSUME_RAM_BYTES")
+    if let Ok(s) = rlx_ir::env::var_result("RLX_UNLIMITED_OCR_ASSUME_RAM_BYTES")
         && let Ok(n) = s.parse::<u64>()
     {
         return n;
@@ -445,7 +445,7 @@ pub fn f16_bytes_to_f32(src: &[u8]) -> Result<Vec<f32>> {
         bail!("f16 bytes length {} not multiple of 2", src.len());
     }
     let mut out = Vec::with_capacity(src.len() / 2);
-    for chunk in src.chunks_exact(2) {
+    for chunk in src.as_chunks::<2>().0.iter() {
         out.push(half::f16::from_le_bytes([chunk[0], chunk[1]]).to_f32());
     }
     Ok(out)
@@ -457,7 +457,7 @@ pub fn bf16_bytes_to_f32(src: &[u8]) -> Result<Vec<f32>> {
         bail!("bf16 bytes length {} not multiple of 2", src.len());
     }
     let mut out = Vec::with_capacity(src.len() / 2);
-    for chunk in src.chunks_exact(2) {
+    for chunk in src.as_chunks::<2>().0.iter() {
         out.push(half::bf16::from_le_bytes([chunk[0], chunk[1]]).to_f32());
     }
     Ok(out)

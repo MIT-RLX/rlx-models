@@ -8,7 +8,7 @@ use rlx_runtime::Device;
 use rlx_whisper::{SAMPLE_RATE as WR, WhisperRunner};
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         if p.join("model.safetensors").is_file() {
             return Some(p);

@@ -45,7 +45,9 @@ fn main() -> Result<()> {
         ]);
         let o: Vec<f32> = out[0]
             .0
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let mut bad = 0;
@@ -105,7 +107,9 @@ fn main() -> Result<()> {
     let out = g.run_typed(&[("x", &le(&xin), DType::F32)]);
     let o: Vec<f32> = out[0]
         .0
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     println!("scalar-Mul out: {:?}", o);

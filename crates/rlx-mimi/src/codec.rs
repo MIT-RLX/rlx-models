@@ -98,6 +98,13 @@ impl MimiCodec {
         }
     }
 
+    /// The decode path's weights and the quantizer: what
+    /// [`Self::decode_codes`] runs.
+    #[cfg(feature = "export")]
+    pub(crate) fn decode_parts(&self) -> (DecodeWeights<'_>, &SplitRvq) {
+        (self.decode_weights(), &self.eager.quantizer)
+    }
+
     fn decode_weights(&self) -> DecodeWeights<'_> {
         DecodeWeights {
             upsample: &self.eager.upsample,

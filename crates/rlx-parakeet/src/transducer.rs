@@ -18,7 +18,7 @@
 
 use anyhow::{Result, ensure};
 use rlx_audio_blocks::decoders::tdt::{
-    TdtDecodeResult, TdtDecoderCore, TdtJointStep, run_tdt_greedy_duration_loop,
+    SosState, TdtDecodeResult, TdtDecoderCore, TdtJointStep, run_tdt_greedy_duration_loop,
 };
 use rlx_nemotron_asr::decoder::{PredState, PredictionNet};
 
@@ -29,12 +29,14 @@ use crate::joint::TdtJoint;
 /// The prediction network is the token-serial recurrence; the joint is applied
 /// once per candidate frame. State (the LSTM `(h, c)` per layer and the current
 /// prediction hidden) is carried across the whole utterance, primed by the SOS
-/// step, exactly as NeMo's transducer greedy search does.
+/// step, exactly as NeMo's transducer greedy search does ([`SosState::Carry`];
+/// see [`TdtCore::with_sos_state`]).
 pub struct TdtCore<'a> {
     pred: &'a PredictionNet,
     joint: &'a TdtJoint,
     state: PredState,
     pred_out: Vec<f32>,
+    sos_state: SosState,
 }
 
 impl<'a> TdtCore<'a> {
@@ -44,7 +46,14 @@ impl<'a> TdtCore<'a> {
             pred_out: Vec::new(),
             pred,
             joint,
+            sos_state: SosState::Carry,
         }
+    }
+
+    /// Keep or drop the state the SOS step produces (default: keep).
+    pub fn with_sos_state(mut self, sos_state: SosState) -> Self {
+        self.sos_state = sos_state;
+        self
     }
 }
 
@@ -56,10 +65,12 @@ impl TdtDecoderCore for TdtCore<'_> {
 
     fn predict_start(&mut self, _blank_id: i32) {
         // SOS: step the recurrence from the zero state with a zero input, and
-        // *carry* the resulting state forward (NeMo semantics).
+        // (NeMo semantics, the default) carry the resulting state forward.
         let (po, st) = self.pred.step(None, &self.state);
         self.pred_out = po;
-        self.state = st;
+        if self.sos_state == SosState::Carry {
+            self.state = st;
+        }
     }
 
     fn predict_token(&mut self, token_id: i32) {

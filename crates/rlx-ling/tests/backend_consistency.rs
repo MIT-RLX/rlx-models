@@ -28,7 +28,7 @@ use rlx_runtime::Device;
 use std::collections::HashMap;
 
 fn alt_device() -> Option<Device> {
-    let s = std::env::var("RLX_TEST_DEVICE").ok()?;
+    let s = rlx_ir::env::var_result("RLX_TEST_DEVICE").ok()?;
     let s = s.trim();
     if s.is_empty() || s.eq_ignore_ascii_case("cpu") {
         return None;
@@ -253,7 +253,7 @@ fn parity_fixture_matches_cpu() {
         eprintln!("skipping: set RLX_TEST_DEVICE to a non-CPU backend");
         return;
     };
-    let Ok(dir) = std::env::var("RLX_LING_PARITY_DIR") else {
+    let Ok(dir) = rlx_ir::env::var_result("RLX_LING_PARITY_DIR") else {
         eprintln!("skipping: set RLX_LING_PARITY_DIR (see parity_reference.rs)");
         return;
     };

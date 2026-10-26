@@ -5,20 +5,22 @@
 //! `weights/tts/tiny-tts-rlx/graphs/decoder.rlxp` (legacy `onnx/decoder.onnx`).
 //!
 //! ```bash
-//! cargo run -p rlx-tiny-tts --release --example dec_probe --features apple-silicon -- metal
+//! cargo run -p rlx-tiny-tts --release --example dec_probe --features macos-gpu -- metal
 //! ```
 use rlx_runtime::{AotCache, CompileOptions, DType};
 use rlx_tiny_tts::model::import_graph;
 use std::path::PathBuf;
 
 fn dump_dir() -> PathBuf {
-    PathBuf::from(std::env::var("RLX_TTS_DUMP").unwrap_or_else(|_| "/tmp/ttsdump".into()))
+    PathBuf::from(rlx_ir::env::var_result("RLX_TTS_DUMP").unwrap_or_else(|_| "/tmp/ttsdump".into()))
 }
 
 fn rd(name: &str) -> Vec<f32> {
     std::fs::read(dump_dir().join(format!("{name}.f32")))
         .expect("read dump")
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -27,7 +29,7 @@ fn f32_bytes(v: &[f32]) -> Vec<u8> {
 }
 
 fn decoder_path() -> PathBuf {
-    if let Ok(p) = std::env::var("RLX_TINY_TTS_DECODER") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_TINY_TTS_DECODER") {
         return PathBuf::from(p);
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/tiny-tts-rlx");
@@ -48,7 +50,7 @@ fn main() -> anyhow::Result<()> {
     let path = decoder_path();
     anyhow::ensure!(path.is_file(), "missing decoder graph {}", path.display());
     let (mut hir, params, _r) = import_graph(&path, "decoder", length, true)?;
-    if let Ok(tap) = std::env::var("RLX_TAP") {
+    if let Ok(tap) = rlx_ir::env::var_result("RLX_TAP") {
         let mut found = None;
         for (i, n) in hir.nodes().iter().enumerate() {
             if n.name.as_deref() == Some(tap.as_str()) {
@@ -87,7 +89,9 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
         let v: Vec<f32> = b
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         std::fs::write(format!("/tmp/rlx_dec/out{i}.f32"), f32_bytes(&v))?;

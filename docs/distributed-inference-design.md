@@ -3,14 +3,14 @@
 Status: **In progress** — L0 transport (in `../rlx`), L3/L4/L5 pipeline
 parallelism (in `rlx-models`), L2 in-graph tensor-parallel collectives (host-sync
 *and* GPU-resident), the cached/decode pipeline path, and the MLX-jaccl link are
-all implemented and tested; the pipeline runs **on the Apple GPU via MLX** as
+all implemented and tested; the pipeline runs **on the Metal GPU via MLX** as
 separate processes. See §11.3 "Implementation status". Remaining: a true
 **multi-machine** run (needs ≥2 Thunderbolt-linked boxes) and a real
 checkpoint + tokenizer.
 Scope: pipeline parallelism **and** tensor parallelism for LLM inference in
 `rlx-models`, with a Thunderbolt-capable network transport, plus the
 supporting changes in the `../rlx` compiler/runtime.
-Target hardware: mixed (Apple Silicon over Thunderbolt/Ethernet first; CUDA
+Target hardware: mixed (macOS arm64 over Thunderbolt/Ethernet first; CUDA
 boxes later).
 
 This doc is written against the real code in the two repos as of the current
@@ -50,7 +50,7 @@ runs on MLX's Python runtime, which ships the entire distributed stack:
 - `mx.distributed.init()` → process group with `rank()` / `size()`.
 - Collectives `all_sum`, `all_gather`; point-to-point `send`, `recv_like`.
 - The `mlx.launch` launcher + `hosts.json` hostfile, with `ring` (TCP) and
-  `jaccl` (Apple-accelerated, Thunderbolt-capable) backends.
+  `jaccl` (macOS-accelerated, Thunderbolt-capable) backends.
 
 mlx-lm's two modes map to ours exactly:
 
@@ -279,7 +279,7 @@ Promote collectives to real IR ops for fusion + on-GPU execution:
   concat along axis 0 × world_size.
 - Backends lower to a GPU-resident path (Metal: keep buffers on-device, DMA
   straight from `MTLBuffer`; CUDA: NCCL `ncclAllReduce`). This is where the
-  Thunderbolt RDMA fast path (§8) plugs in for Apple Silicon.
+  Thunderbolt RDMA fast path (§8) plugs in for macOS arm64.
 
 **Decision:** build **6A first** (unblocks TP correctness with zero IR risk),
 then 6B as a perf pass once PP+TP are correct end-to-end.
@@ -361,7 +361,7 @@ are solid.
 
 ## 8. L0 fast path — Thunderbolt RDMA transport
 
-Goal: low-latency one-sided `put`/`get` between Apple Silicon Macs over
+Goal: low-latency one-sided `put`/`get` between M-series Macs over
 Thunderbolt, so TP all-reduce isn't bottlenecked by TCP/CPU copies.
 
 Reality check on macOS:
@@ -370,7 +370,7 @@ Reality check on macOS:
   `TcpTransport` over that link is the **safe baseline** and likely "good
   enough" for PP (which sends one hidden state per token) and for an initial TP.
 - True InfiniBand-style RDMA *verbs* are not generally available on macOS.
-  Apple's high-throughput multi-machine path is what **MLX's `jaccl`/`ring`
+  The macOS high-throughput multi-machine path is what **MLX's `jaccl`/`ring`
   backends** already use under the hood.
 
 So two realistic options for the fast path:
@@ -379,9 +379,9 @@ So two realistic options for the fast path:
 distributed C++ API in `rlx-mlx-sys` (it currently does **not**; verified) and
 implement `Transport`/`SymmetricTransport` by delegating `all_sum`/`all_gather`/
 `send`/`recv` to MLX, launched with its `jaccl` backend over Thunderbolt. We
-inherit Apple-tuned Thunderbolt transport for free. Cost: a new FFI surface in
+inherit macOS-tuned Thunderbolt transport for free. Cost: a new FFI surface in
 `rlx-mlx-sys/src/ffi.rs` + an `MlxTransport` impl; only works when the MLX
-backend is present. **Recommended for the Apple-Silicon case.**
+backend is present. **Recommended for the macOS arm64 case.**
 
 **Option B — Native Thunderbolt DMA transport.** Implement `SymmetricTransport`
 directly: register a symmetric heap per rank, exchange addresses at init, and
@@ -393,7 +393,7 @@ TCP-over-Thunderbolt implementation," and treat zero-copy DMA as a stretch
 goal. On CUDA boxes this same trait is implemented with NCCL/`ncclSend`+RDMA.
 
 **Decision:** ship `TcpTransport` (works over Thunderbolt Bridge) for
-correctness; add **Option A (MLX `jaccl`)** as the Apple fast path; keep the
+correctness; add **Option A (MLX `jaccl`)** as the macOS fast path; keep the
 `SymmetricTransport` seam so a native DMA/NCCL backend can drop in later without
 touching L1–L5.
 
@@ -573,7 +573,7 @@ through `PipelineCoordinator::generate` reproduces the monolithic recompute
 sequence token-for-token (`pipeline_generate_matches_monolithic_greedy_sequence`).
 
 **GPU validation ✅.** The same `pipeline_multiproc` example takes a `--device`
-selector and has been run on the **actual Apple M4 Pro GPU via MLX**
+selector and has been run on the **actual M4 Pro GPU via MLX**
 (`--features mlx --device mlx`): 3 separate OS processes, each executing its
 Qwen3 layer range — the full **KV-cached decode** block graph — device-resident
 on the GPU through the registered `MlxBackend`, communicating over real TCP
@@ -707,7 +707,7 @@ cargo run -p rlx-qwen3 --example qwen3_pipeline --features metal -- \
     --device metal --decode --rank 0 --hostfile hosts.json --model … --prompt-ids …
 ```
 
-**On the Apple GPU, end-to-end, no checkpoint needed (verified).** The
+**On the Metal GPU, end-to-end, no checkpoint needed (verified).** The
 self-spawning multi-process example runs all ranks on the M4 Pro GPU via MLX:
 
 ```bash
@@ -736,7 +736,7 @@ let t = TcpTransport::bind(rank, world, peers, DEFAULT_HEAP_BYTES)?;       // Et
 // let t = ThunderboltTransport::bind(rank, world, tb_peers, DEFAULT_HEAP_BYTES)?;
 let group = ProcessGroup::new(Arc::new(t));
 
-// Apple fast path (requires the MLX build; launched via mlx.launch):
+// macOS fast path (requires the MLX build; launched via mlx.launch):
 // let t = rlx_mlx::MlxTransport::init(/*strict=*/true, "jaccl")?;
 // let group = ProcessGroup::new(Arc::new(t));
 ```
@@ -752,7 +752,7 @@ let group = ProcessGroup::new(Arc::new(t));
 3. **M2 — Tensor parallel, one model (custom-op collectives).** §6A + §7.2 for
    Qwen3. Parity test: 2-rank TP == single-node. Measure host-sync all-reduce
    overhead.
-4. **M3 — Apple fast path.** R10 (`MlxTransport` via MLX `jaccl`) **or** ring
+4. **M3 — macOS fast path.** R10 (`MlxTransport` via MLX `jaccl`) **or** ring
    collectives over Thunderbolt; benchmark vs TCP.
 5. **M4 — Generalize.** M5–M6: shared helpers, second/third model family.
 6. **M5 — Native collective ops (perf).** §6B / R11: GPU-resident
@@ -780,7 +780,7 @@ headline capability — *run a model too big for one Mac* — with the least ris
 
 ## 14. Open questions / decisions for you
 
-1. **Apple fast path:** commit to **Option A (bind MLX `jaccl`)** for the Mac
+1. **macOS fast path:** commit to **Option A (bind MLX `jaccl`)** for the Mac
    case, or build the native Thunderbolt transport (Option B) from the start?
    A is far less work and battle-tested; B avoids an MLX dependency for
    distribution.

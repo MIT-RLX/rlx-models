@@ -14,6 +14,7 @@ categories.workspace = true
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+safetensors = { workspace = true }
 rlx-ir = { workspace = true }
 rlx-autodiff = { workspace = true }
 rlx-runtime = { workspace = true }
@@ -25,7 +26,7 @@ rlx-quant-calib = { workspace = true }
 # default (CPU) build stays dependency-light and cross-platform.
 [features]
 default = []
-metal = ["rlx-runtime/metal"] # Apple Silicon GPU
+metal = ["rlx-runtime/metal"] # macOS arm64 GPU
 cuda = ["rlx-runtime/cuda"]   # NVIDIA GPU
 gpu = ["rlx-runtime/gpu"]     # wgpu (Metal/Vulkan/DX)
 

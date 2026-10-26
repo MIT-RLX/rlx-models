@@ -2,7 +2,7 @@
 # RLX — versatile ML compiler + runtime.
 # Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna. GPLv3.
 #
-# Fit per-bin affine frontend LS: our mel → Apple e5_feature.
+# Fit per-bin affine frontend LS: our mel → reference e5_feature.
 # Writes frontend_fbank_ls_cross_wav_{a,b}.bin under --out-dir / RLX_ASR_DIR.
 #
 # Usage:

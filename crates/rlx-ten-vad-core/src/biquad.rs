@@ -79,9 +79,7 @@ impl<const N: usize> Biquad<N> {
     }
 
     pub fn reset(&mut self) {
-        for s in &mut self.state {
-            *s = [0.0; 2];
-        }
+        self.state.fill([0.0; 2]);
     }
 
     /// Filter `buf` in place through every section, in order.

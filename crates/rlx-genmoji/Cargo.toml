@@ -1,0 +1,51 @@
+[package]
+name = "rlx-genmoji"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Open Genmoji for RLX: local-LM prompt rewrite + FLUX.1 [dev] emoji LoRA + transparent sticker output"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-flux1 = { workspace = true }
+rlx-core = { workspace = true }
+rlx-qwen3 = { workspace = true }
+rlx-qwen35 = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-sam = { workspace = true }
+rlx-subject-lift = { workspace = true }
+rlx-birefnet = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-text = { workspace = true }
+rlx-upscale = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+image = { workspace = true }
+tokenizers = { workspace = true }
+ureq = { version = "2.12", features = ["json"] }
+
+[[bin]]
+name = "rlx-genmoji"
+path = "src/bin/rlx_genmoji.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+metal = ["rlx-flux1/metal", "rlx-qwen3/metal", "rlx-qwen35/metal", "rlx-upscale/metal", "rlx-sam/metal", "rlx-subject-lift/metal", "rlx-birefnet/metal"]
+mlx = ["rlx-flux1/mlx", "rlx-qwen3/mlx", "rlx-qwen35/mlx", "rlx-upscale/mlx", "rlx-sam/mlx", "rlx-subject-lift/mlx", "rlx-birefnet/mlx"]
+cuda = ["rlx-flux1/cuda", "rlx-qwen3/cuda", "rlx-qwen35/cuda", "rlx-upscale/cuda", "rlx-sam/cuda", "rlx-subject-lift/cuda", "rlx-birefnet/cuda"]
+rocm = ["rlx-flux1/rocm", "rlx-qwen3/rocm", "rlx-qwen35/rocm", "rlx-upscale/rocm", "rlx-sam/rocm", "rlx-subject-lift/rocm", "rlx-birefnet/rocm"]
+gpu = ["rlx-flux1/gpu", "rlx-qwen3/gpu", "rlx-qwen35/gpu", "rlx-upscale/gpu", "rlx-sam/gpu", "rlx-subject-lift/gpu", "rlx-birefnet/gpu"]
+vulkan = ["rlx-flux1/vulkan", "rlx-qwen3/vulkan", "rlx-qwen35/vulkan", "rlx-upscale/vulkan", "rlx-sam/vulkan", "rlx-subject-lift/vulkan", "rlx-birefnet/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+macos-gpu = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

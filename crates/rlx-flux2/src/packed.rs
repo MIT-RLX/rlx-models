@@ -143,7 +143,9 @@ pub fn load_flux2_nvfp4_from_file(path: &Path) -> Result<Flux2PackedParams> {
             .find(|(n, _)| n.as_str() == bias_name)
             .map(|(_, v)| {
                 v.data()
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect()
             })

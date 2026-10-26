@@ -9,12 +9,12 @@ use rlx_parakeet::Parakeet;
 use rlx_runtime::Device;
 
 fn main() -> Result<()> {
-    let nemo = std::env::var("RLX_PARAKEET_NEMO")
+    let nemo = rlx_ir::env::var_result("RLX_PARAKEET_NEMO")
         .context("set RLX_PARAKEET_NEMO to a Parakeet-TDT .nemo checkpoint")?;
     let wav_path = std::env::args()
         .nth(1)
         .context("usage: transcribe <audio.wav>")?;
-    let dev = match std::env::var("RLX_DEV").as_deref() {
+    let dev = match rlx_ir::env::var_result("RLX_DEV").as_deref() {
         Ok("metal") => Device::Metal,
         Ok("mlx") => Device::Mlx,
         _ => Device::Cpu,

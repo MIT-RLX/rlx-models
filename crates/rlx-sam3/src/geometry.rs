@@ -39,7 +39,7 @@ pub fn encode_geometry_native(
     let tokens = (box_tokens + point_tokens).max(1);
     let mut features = vec![0.0; tokens * SAM3_DET_DIM];
     if let Some(b) = boxes {
-        for (i, chunk) in b.chunks_exact(4).enumerate() {
+        for (i, chunk) in b.as_chunks::<4>().0.iter().enumerate() {
             for (j, v) in chunk.iter().enumerate() {
                 features[i * SAM3_DET_DIM + j] = *v;
             }
@@ -47,7 +47,7 @@ pub fn encode_geometry_native(
     }
     if let Some((coords, labels)) = points {
         let base = box_tokens;
-        for (i, xy) in coords.chunks_exact(2).enumerate() {
+        for (i, xy) in coords.as_chunks::<2>().0.iter().enumerate() {
             let row = base + i;
             if row >= tokens {
                 break;

@@ -46,7 +46,7 @@ pub enum KernelVariant {
 impl KernelVariant {
     /// Parse `RLX_TTS_KERNEL` (`fast` | `precise` | `inherit`); `Fast` otherwise.
     pub fn from_env() -> Self {
-        match std::env::var("RLX_TTS_KERNEL")
+        match rlx_ir::env::var_result("RLX_TTS_KERNEL")
             .unwrap_or_default()
             .to_ascii_lowercase()
             .as_str()
@@ -82,7 +82,7 @@ impl KernelVariant {
                 env::set("RLX_CUDA_NO_TF32", "1");
                 env::set("RLX_CUDA_PARITY", "1");
                 // wgpu: skip f16 weight mirrors / coop shortcuts for ODE-sensitive
-                // graphs (F5 DiT). Still not Metal-class; prefer Metal DiT on Apple.
+                // graphs (F5 DiT). Still not Metal-class; prefer Metal DiT on macOS.
                 env::set("RLX_WGPU_MATMUL_F32_ONLY", "1");
                 env::set("RLX_WGPU_NO_F16_MIRROR", "1");
             }
@@ -201,7 +201,9 @@ fn f32_bytes(v: &[f32]) -> Vec<u8> {
 fn as_f32((bytes, dt): &(Vec<u8>, DType)) -> Result<Vec<f32>> {
     anyhow::ensure!(*dt == DType::F32, "expected F32 output, got {dt:?}");
     Ok(bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
@@ -216,7 +218,7 @@ impl TinyModel {
         // pinned it in the process env — so `RLX_FAST_CONV=0` still forces the
         // bit-exact reference. Set at construction, before any conv runs (the
         // rlx-cpu flag is read + cached on first use).
-        if std::env::var_os("RLX_FAST_CONV").is_none() {
+        if rlx_ir::env::var_os("RLX_FAST_CONV").is_none() {
             rlx_ir::env::set("RLX_FAST_CONV", "1");
         }
         Self {
@@ -403,7 +405,7 @@ impl TinyModel {
         if matches!(device, Device::Ane) {
             crate::coreml::ensure_coreml_units_for_tts();
         }
-        let no_opt = std::env::var("RLX_NO_OPT").is_ok();
+        let no_opt = rlx_ir::env::var_result("RLX_NO_OPT").is_ok();
         let (k_dce, k_fold, k_fuse) = if no_opt {
             (false, false, false)
         } else {
@@ -418,7 +420,7 @@ impl TinyModel {
             .map(|(k, v)| format!("{k}{v}"))
             .collect::<Vec<_>>()
             .join("_");
-        let tap_tag = std::env::var("RLX_ONNX_TAP")
+        let tap_tag = rlx_ir::env::var_result("RLX_ONNX_TAP")
             .ok()
             .filter(|s| !s.is_empty())
             .map(|s| format!("_tap{:016x}", fnv1a(&s)))
@@ -454,7 +456,7 @@ impl TinyModel {
             should_decompose_conv_transpose(device),
             named,
         )?;
-        if std::env::var_os("RLX_PHASE_TIMING").is_some() {
+        if rlx_ir::env::var_os("RLX_PHASE_TIMING").is_some() {
             eprintln!(
                 "[phase] import({component}) = {}ms",
                 _t_imp.elapsed().as_millis()
@@ -503,7 +505,7 @@ impl TinyModel {
         let mut compiled = cache
             .compile_hir_cached(&cache_key, device, hir, &copts)
             .map_err(|e| anyhow::anyhow!("compile {component}: {e}"))?;
-        if std::env::var_os("RLX_PHASE_TIMING").is_some() {
+        if rlx_ir::env::var_os("RLX_PHASE_TIMING").is_some() {
             eprintln!(
                 "[phase] rlx_compile({component}) = {}ms",
                 _t_cmp.elapsed().as_millis()
@@ -590,8 +592,8 @@ impl TinyModel {
         let c = self.cfg.inter_channels; // latent channels (== g/m_p channel width)
 
         // ── 1. Text encoder ──────────────────────────────────────────────
-        let stage_dbg = std::env::var("RLX_TTS_STAGE").is_ok();
-        let time_dbg = std::env::var("RLX_TTS_TIME").is_ok();
+        let stage_dbg = rlx_ir::env::var_result("RLX_TTS_STAGE").is_ok();
+        let time_dbg = rlx_ir::env::var_result("RLX_TTS_TIME").is_ok();
         macro_rules! tick {
             () => {
                 std::time::Instant::now()
@@ -682,7 +684,7 @@ impl TinyModel {
 
         // ── 3. Alignment + latent sampling (Rust glue) ───────────────────
         let (w_ceil, y_len) = glue::durations(&logw, &x_mask, opts.length_scale);
-        if std::env::var("RLX_TTS_DBG").is_ok() {
+        if rlx_ir::env::var_result("RLX_TTS_DBG").is_ok() {
             eprintln!("[dbg] w_ceil={w_ceil:?} y_len={y_len}");
         }
         let attn = glue::alignment_path(&w_ceil, y_len);
@@ -721,7 +723,7 @@ impl TinyModel {
         dbg_mag("z(flow)", &z);
         dbg_dump("z", &z);
         dbg_dump("g", &as_f32(&enc_out[4]).unwrap_or_default());
-        if let Ok(p) = std::env::var("RLX_TTS_DUMP") {
+        if let Ok(p) = rlx_ir::env::var_result("RLX_TTS_DUMP") {
             std::fs::write(format!("{p}/dims.txt"), format!("c={c} y_len={y_len}\n")).ok();
         }
 
@@ -759,7 +761,7 @@ impl TinyModel {
 
 /// Env-gated (`RLX_TTS_DUMP=<dir>`) raw-f32 dump for ORT cross-validation.
 fn dbg_dump(name: &str, v: &[f32]) {
-    if let Ok(dir) = std::env::var("RLX_TTS_DUMP") {
+    if let Ok(dir) = rlx_ir::env::var_result("RLX_TTS_DUMP") {
         let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
         std::fs::write(format!("{dir}/{name}.f32"), bytes).ok();
     }
@@ -767,7 +769,7 @@ fn dbg_dump(name: &str, v: &[f32]) {
 
 /// Env-gated (`RLX_TTS_DBG`) magnitude print for cross-backend divergence triage.
 fn dbg_mag(name: &str, v: &[f32]) {
-    if std::env::var("RLX_TTS_DBG").is_err() {
+    if rlx_ir::env::var_result("RLX_TTS_DBG").is_err() {
         return;
     }
     let n = v.len().max(1);
@@ -916,6 +918,56 @@ pub fn import_graph_named(
     )
     .with_context(|| format!("lower {}", path.display()))?;
     Ok((hir, params, report))
+}
+
+/// [`import_graph_named`] as the rlx graph a package holds: lowered, the
+/// params that hold one value throughout baked as constants (as
+/// [`TinyModel`]'s compile bakes them), the others renamed `name.` + theirs.
+/// Returns the graph and those params.
+pub fn import_rlx_graph(
+    path: &Path,
+    name: &str,
+    length: usize,
+    named_lengths: &[(&str, usize)],
+) -> Result<(rlx_ir::Graph, HashMap<String, Vec<f32>>)> {
+    let (hir, mut params, report) = import_graph_named(path, name, length, false, named_lengths)?;
+    anyhow::ensure!(
+        report.stubbed == 0 && report.unsupported.is_empty(),
+        "{}: {} ops stubbed ({:?}), unsupported {:?}",
+        path.display(),
+        report.stubbed,
+        report.stubbed_nodes,
+        report.unsupported
+    );
+    let mut g = hir
+        .lower_to_mir()
+        .map_err(|e| anyhow::anyhow!("lower {}: {e:?}", path.display()))?
+        .into_graph();
+    rlx_ir::dynamic::sync_graph_shapes(&mut g);
+    let uniform = uniform_fill_bindings(&params);
+    let mut g = rlx_ir::stateful::rebuild(&g, |out, _, node, _| {
+        let rlx_ir::Op::Param { name: p } = &node.op else {
+            return Ok(None);
+        };
+        Ok(Some(match uniform.get(p) {
+            Some(v) => out.add_node(
+                rlx_ir::Op::Constant {
+                    data: v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+                },
+                vec![],
+                node.shape.clone(),
+            ),
+            None => out.param(format!("{name}.{p}"), node.shape.clone()),
+        }))
+    })
+    .map_err(anyhow::Error::msg)?;
+    g.name = name.into();
+    params.retain(|k, _| !uniform.contains_key(k));
+    let params = params
+        .into_iter()
+        .map(|(k, v)| (format!("{name}.{k}"), v))
+        .collect();
+    Ok((g, params))
 }
 
 /// Params whose values are a single repeated fill (affine-free LN γ=1 / β=0,

@@ -233,7 +233,7 @@ pub fn orpheus_frame_codes_to_token_ids(codes: &[i32]) -> Option<Vec<u32>> {
         return None;
     }
     let mut out = Vec::with_capacity(codes.len());
-    for chunk in codes.chunks_exact(7) {
+    for chunk in codes.as_chunks::<7>().0.iter() {
         out.extend_from_slice(&frame_codes_to_token_ids(chunk)?);
     }
     Some(out)

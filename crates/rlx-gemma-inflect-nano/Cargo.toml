@@ -12,6 +12,7 @@ categories.workspace = true
 publish = false
 
 [dependencies]
+rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 rlx-cli = { workspace = true }
 rlx-gemma = { workspace = true }
@@ -33,7 +34,7 @@ gpu = ["rlx-gemma/gpu", "rlx-inflect-nano/gpu", "rlx-runtime/gpu"]
 vulkan = ["rlx-gemma/vulkan", "rlx-inflect-nano/vulkan", "rlx-runtime/vulkan"]
 coreml = ["rlx-gemma/coreml", "rlx-runtime/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml", "rlx-gemma/apple-silicon"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml", "rlx-gemma/macos-gpu"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]

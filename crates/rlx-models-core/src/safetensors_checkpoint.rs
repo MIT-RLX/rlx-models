@@ -66,8 +66,45 @@ impl SafetensorsCheckpoint {
         })
     }
 
+    /// One safetensors file (no index): only that file's tensors, mapped
+    /// lazily — not every `*.safetensors` that happens to share its directory.
+    pub fn open_file(file: &Path) -> Result<Self> {
+        let dir = file
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let name = file
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+            .context("non-utf8 safetensors filename")?;
+        let mmap = map_file(file)?;
+        let st = SafeTensors::deserialize(mmap.as_ref()).context("parse safetensors")?;
+        let index: HashMap<String, String> = st
+            .names()
+            .into_iter()
+            .map(|k| (k.to_string(), name.clone()))
+            .collect();
+        if index.is_empty() {
+            bail!("no safetensors tensors in {file:?}");
+        }
+        Ok(Self {
+            dir,
+            index,
+            shards: Mutex::new(HashMap::from([(name, mmap)])),
+        })
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// The dtype a tensor is stored in, read from its shard's header.
+    pub fn stored_dtype(&self, name: &str) -> Option<safetensors::Dtype> {
+        let shard = self.index.get(name)?;
+        let mmap = self.mmap_shard(shard).ok()?;
+        let st = SafeTensors::deserialize(mmap.as_ref()).ok()?;
+        st.tensor(name).ok().map(|v| v.dtype())
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &str> {
@@ -188,7 +225,21 @@ impl SafetensorsCheckpoint {
         if tensors.is_empty() {
             bail!("no requested tensors loaded from {:?}", self.dir);
         }
-        Ok(WeightMap::from_tensors(tensors))
+        let mut map = WeightMap::from_tensors(tensors);
+        // On-disk dtypes, one header parse per shard.
+        let shards: HashSet<&String> = want.iter().filter_map(|k| self.index.get(k)).collect();
+        for shard in shards {
+            let mmap = self.mmap_shard(shard)?;
+            let st = SafeTensors::deserialize(mmap.as_ref()).context("parse safetensors")?;
+            for (name, view) in st.tensors() {
+                if want.contains(&name)
+                    && let Some(d) = crate::weight_map::safetensors_float_dtype(view.dtype())
+                {
+                    map.set_stored_dtype(name, d);
+                }
+            }
+        }
+        Ok(map)
     }
 
     fn index_from_dir(dir: &Path) -> Result<HashMap<String, String>> {
@@ -277,15 +328,19 @@ fn read_tensor_row_f32(
             let row_bytes = cols * 4;
             let off = row * row_bytes;
             Ok(bytes[off..off + row_bytes]
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect())
         }
         safetensors::Dtype::F16 => {
             let row_bytes = cols * 2;
             let off = row * row_bytes;
             Ok(bytes[off..off + row_bytes]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect())
         }
@@ -293,7 +348,9 @@ fn read_tensor_row_f32(
             let row_bytes = cols * 2;
             let off = row * row_bytes;
             Ok(bytes[off..off + row_bytes]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| half::bf16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect())
         }
@@ -310,23 +367,35 @@ pub fn tensor_view_to_f32(
     name: &str,
     view: safetensors::tensor::TensorView<'_>,
 ) -> Result<Vec<f32>> {
-    let bytes = view.data();
-    Ok(match view.dtype() {
+    raw_to_f32(name, view.dtype(), view.data())
+}
+
+/// Convert one tensor's raw little-endian bytes to F32.
+pub fn raw_to_f32(name: &str, dtype: safetensors::Dtype, bytes: &[u8]) -> Result<Vec<f32>> {
+    Ok(match dtype {
         safetensors::Dtype::F32 => super::weight_map::bytes_to_f32_vec(bytes),
         safetensors::Dtype::F16 => bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         safetensors::Dtype::BF16 => bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| half::bf16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         safetensors::Dtype::I64 => bytes
-            .chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f32)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| i64::from_le_bytes(*c) as f32)
             .collect(),
         safetensors::Dtype::I32 => bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
             .collect(),
         safetensors::Dtype::C64 => return Ok(vec![]),
@@ -348,6 +417,24 @@ impl SafetensorsMmapLoader {
             ckpt: SafetensorsCheckpoint::open(dir)?,
             taken: HashSet::new(),
         })
+    }
+
+    /// One unindexed safetensors file, mapped lazily.
+    pub fn open_file(file: &Path) -> Result<Self> {
+        Ok(Self {
+            ckpt: SafetensorsCheckpoint::open_file(file)?,
+            taken: HashSet::new(),
+        })
+    }
+
+    /// `key`, or the Hunyuan norm alias the eager [`WeightMap`] would accept.
+    fn resolve(&self, key: &str) -> Option<String> {
+        if self.ckpt.contains(key) {
+            return Some(key.to_string());
+        }
+        crate::weight_map::hunyuan_norm_aliases(key)
+            .into_iter()
+            .find(|a| self.ckpt.contains(a))
     }
 
     pub fn checkpoint(&self) -> &SafetensorsCheckpoint {
@@ -372,11 +459,14 @@ impl crate::weight_loader::WeightLoader for SafetensorsMmapLoader {
     }
 
     fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
-        if self.taken.contains(key) {
+        let Some(real) = self.resolve(key) else {
+            bail!("weight not found: {key}");
+        };
+        if self.taken.contains(&real) {
             bail!("weight already taken: {key}");
         }
-        let (data, shape) = self.ckpt.load_tensor_f32(key)?;
-        self.taken.insert(key.to_string());
+        let (data, shape) = self.ckpt.load_tensor_f32(&real)?;
+        self.taken.insert(real);
         Ok((data, shape))
     }
 
@@ -386,13 +476,20 @@ impl crate::weight_loader::WeightLoader for SafetensorsMmapLoader {
             bail!("transpose requires 2D, got {shape:?}");
         }
         let (rows, cols) = (shape[0], shape[1]);
-        let mut transposed = vec![0f32; data.len()];
-        for i in 0..rows {
-            for j in 0..cols {
-                transposed[j * rows + i] = data[i * cols + j];
-            }
-        }
-        Ok((transposed, vec![cols, rows]))
+        Ok((
+            crate::weight_map::transpose_2d(&data, rows, cols),
+            vec![cols, rows],
+        ))
+    }
+
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        use safetensors::Dtype as S;
+        Some(match self.ckpt.stored_dtype(&self.resolve(key)?)? {
+            S::F32 => rlx_ir::DType::F32,
+            S::F16 => rlx_ir::DType::F16,
+            S::BF16 => rlx_ir::DType::BF16,
+            _ => return None,
+        })
     }
 
     fn remaining_keys(&self) -> Vec<String> {

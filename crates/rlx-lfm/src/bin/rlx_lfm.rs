@@ -16,6 +16,7 @@
 //! `rlx-lfm` binary entry point — LFM2 / LFM2.5 GGUF text generation.
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    rlx_cli::take_number_format(&mut args)?;
     rlx_lfm::cli::run(&args)
 }

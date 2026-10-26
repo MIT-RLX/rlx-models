@@ -32,7 +32,7 @@ impl GptConfig {
     }
 
     /// The default showcase config — ~2.8M parameters, trains to coherent
-    /// TinyStories text on Apple GPU (Metal) in minutes.
+    /// TinyStories text on Metal GPU (Metal) in minutes.
     pub fn default_metal() -> Self {
         Self {
             vocab: 256,

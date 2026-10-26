@@ -61,7 +61,7 @@ Validated against an independent `transformers`-library reference
 | decoder prefill (argmax) | ✓ match | ✓ match | ✓ match |
 | **e2e token ids** | **exact** | **exact** | **exact** |
 
-`cpu`/`metal`/`mlx`/`gpu`(wgpu, =`vulkan`) all build on Apple Silicon;
+`cpu`/`metal`/`mlx`/`gpu`(wgpu, =`vulkan`) all build on macOS arm64;
 `cuda`/`rocm` need their SDKs. The audio encoder is bit-exact on every backend.
 
 **Metal note:** the *fused* Metal decoder kernels accumulate fp drift that flips
@@ -74,7 +74,7 @@ token-exact output; CPU/MLX keep fusion. Reproduce parity with
 
 ## Benchmark
 
-`Qwen3-ASR-0.6B`, 5 s clip, Apple M4 Pro, release. Graphs are compiled once and
+`Qwen3-ASR-0.6B`, 5 s clip, M4 Pro, release. Graphs are compiled once and
 reused, so timings reflect backend compute (the per-step weight reload in
 `AsrRunner::generate` — a backend-independent I/O cost — is excluded).
 Reproduce with `examples/bench.rs`:

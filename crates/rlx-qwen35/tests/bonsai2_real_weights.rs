@@ -25,7 +25,7 @@ use rlx_qwen35::{Qwen35Config, Qwen35TrunkLayer, Qwen35Weights};
 use std::path::PathBuf;
 
 fn fixture() -> Option<PathBuf> {
-    std::env::var_os("RLX_QWEN35_BONSAI2_GGUF").map(PathBuf::from)
+    rlx_ir::env::var_os("RLX_QWEN35_BONSAI2_GGUF").map(PathBuf::from)
 }
 
 macro_rules! skip_without_fixture {
@@ -67,7 +67,7 @@ fn ternary_payload_decodes_to_three_values_per_group() {
     let mut zero = 0usize;
     let mut pos = 0usize;
     let mut neg = 0usize;
-    for (b, blk) in vals.chunks_exact(128).enumerate() {
+    for (b, blk) in vals.as_chunks::<128>().0.iter().enumerate() {
         let d = blk.iter().fold(0f32, |a, v| a.max(v.abs()));
         for &v in blk {
             assert!(
@@ -241,10 +241,9 @@ fn lazy_embed_rows_match_the_materialized_table() {
     let n_embd = cfg.hidden_size;
 
     let mut l_dense = rlx_core::weight_loader::GgufLoader::from_file(p).expect("loader");
-    // SAFETY: single-threaded test; read during load.
-    unsafe { std::env::set_var("RLX_QWEN35_NO_LAZY_EMBED", "1") };
+    rlx_ir::env::set("RLX_QWEN35_NO_LAZY_EMBED", "1");
     let dense = Qwen35Weights::from_loader_packed(&mut l_dense, &cfg).expect("dense load");
-    unsafe { std::env::remove_var("RLX_QWEN35_NO_LAZY_EMBED") };
+    rlx_ir::env::remove("RLX_QWEN35_NO_LAZY_EMBED");
     assert!(!dense.embed_is_lazy(), "control bundle should be dense");
 
     let mut l_lazy = rlx_core::weight_loader::GgufLoader::from_file(p).expect("loader");

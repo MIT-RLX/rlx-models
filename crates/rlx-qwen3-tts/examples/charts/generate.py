@@ -15,8 +15,8 @@
 
 """Generate SVG charts for the rlx-qwen3-tts README.
 
-All numbers are measured on an Apple M3 Pro running this crate's
-benches (cargo run --release --features apple-silicon -p rlx-qwen3-tts).
+All numbers are measured on an M3 Pro running this crate's
+benches (cargo run --release --features macos-gpu -p rlx-qwen3-tts).
 """
 
 import matplotlib.pyplot as plt
@@ -143,7 +143,7 @@ def chart_amx_comparison():
     ax.set_xticks(x)
     ax.set_xticklabels(shapes, fontsize=9)
     ax.set_ylabel("Time per matvec (µs, lower is better)")
-    ax.set_title("BF16 NEON vs Apple AMX-via-sgemm at CP / Talker matrix shapes",
+    ax.set_title("BF16 NEON vs AMX-via-sgemm at CP / Talker matrix shapes",
                  weight="bold")
     ax.legend(loc="upper left")
     ax.set_yscale("log")
@@ -280,7 +280,7 @@ def chart_real_time_factor():
             va="bottom", weight="bold")
     ax.set_ylim(0, 1.6)
     ax.set_ylabel("Real-time factor (wall ÷ audio out)")
-    ax.set_title("Real-time factor — Apple M3 Pro, Metal + CPU hybrid", weight="bold")
+    ax.set_title("Real-time factor — M3 Pro, Metal + CPU hybrid", weight="bold")
     save(fig, "rtf.svg")
 
 

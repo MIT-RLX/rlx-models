@@ -54,7 +54,7 @@ pub fn resolve_lm_device(requested: Device) -> Device {
 
 /// Devices to exercise in multi-backend tests (env `RLX_KYUTAI_TTS_DEVICES`).
 pub fn test_devices() -> Vec<Device> {
-    let raw = std::env::var("RLX_KYUTAI_TTS_DEVICES").unwrap_or_else(|_| "cpu".into());
+    let raw = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DEVICES").unwrap_or_else(|_| "cpu".into());
     if raw.eq_ignore_ascii_case("all") {
         return all_compiled_devices();
     }

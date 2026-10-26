@@ -113,7 +113,7 @@ fn main() -> Result<()> {
         ("ORPHEUS_SAMPLE_LONG_WAV", "sample_hello_rlx"),
         ("ORPHEUS_SAMPLE_LONGER_WAV", "sample_longer"),
     ] {
-        let Some(wav) = std::env::var(env_key)
+        let Some(wav) = rlx_ir::env::read(env_key)
             .ok()
             .filter(|p| !p.is_empty())
             .map(PathBuf::from)

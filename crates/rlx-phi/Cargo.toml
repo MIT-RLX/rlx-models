@@ -28,7 +28,7 @@ gpu = ["rlx-llama32/gpu"]
 vulkan = ["rlx-llama32/vulkan"]
 coreml = ["rlx-llama32/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["rlx-llama32/apple-silicon"]
+macos-gpu = ["rlx-llama32/macos-gpu"]
 
 [lints]
 workspace = true

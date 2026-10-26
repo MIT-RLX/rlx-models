@@ -106,7 +106,7 @@ impl MelFilterBank {
     }
 
     /// The dense `[MEL_BANDS, SPECTRUM_BINS]` matrix the banded form encodes.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "alloc"))]
     fn dense(&self) -> alloc::vec::Vec<f32> {
         let mut coeff = alloc::vec![0.0f32; MEL_BANDS * SPECTRUM_BINS];
         for j in 0..MEL_BANDS {
@@ -234,6 +234,13 @@ impl Frontend {
     pub fn spectrum(&self) -> &[f32] {
         &self.bin_pow
     }
+}
+
+/// The mel filterbank as a dense `[MEL_BANDS, SPECTRUM_BINS]` matrix (its
+/// zeros exact), for building the frontend as a graph.
+#[cfg(feature = "alloc")]
+pub fn mel_matrix() -> alloc::vec::Vec<f32> {
+    MelFilterBank::new().dense()
 }
 
 /// Apply pre-emphasis to `src`, threading `prev` across calls.

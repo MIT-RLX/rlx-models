@@ -72,9 +72,10 @@ fn rotate_row(
     for i in 0..half {
         let c = cos[pos * half + i];
         let s = sin[pos * half + i];
-        let x0 = x[[row, col_off + i]];
-        let x1 = x[[row, col_off + half + i]];
-        x[[row, col_off + i]] = x0 * c - x1 * s;
-        x[[row, col_off + half + i]] = x0 * s + x1 * c;
+        // Adjacent pairs (GPT-J): the checkpoint's q/k are Mistral-native.
+        let x0 = x[[row, col_off + 2 * i]];
+        let x1 = x[[row, col_off + 2 * i + 1]];
+        x[[row, col_off + 2 * i]] = x0 * c - x1 * s;
+        x[[row, col_off + 2 * i + 1]] = x0 * s + x1 * c;
     }
 }

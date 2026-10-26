@@ -36,8 +36,8 @@ fn dims() -> MlaDims {
 
 fn run(vdim: bool) -> Vec<f32> {
     match vdim {
-        true => unsafe { std::env::set_var("RLX_MLA_VDIM", "1") },
-        false => unsafe { std::env::set_var("RLX_MLA_VDIM", "0") },
+        true => rlx_ir::env::set("RLX_MLA_VDIM", "1"),
+        false => rlx_ir::env::set("RLX_MLA_VDIM", "0"),
     }
     let d = dims();
     let nh = d.num_heads;
@@ -67,7 +67,7 @@ fn run(vdim: bool) -> Vec<f32> {
 fn mla_vdim_matches_pad() {
     let vdim = run(true);
     let pad = run(false);
-    unsafe { std::env::remove_var("RLX_MLA_VDIM") };
+    rlx_ir::env::remove("RLX_MLA_VDIM");
     assert_eq!(vdim.len(), pad.len(), "output length differs");
     assert!(vdim.iter().all(|v| v.is_finite()));
     let max_abs = vdim

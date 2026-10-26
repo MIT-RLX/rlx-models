@@ -56,7 +56,7 @@ pub fn run_reference_with_env(
             .with_context(|| "run docker reference")?
     } else {
         Command::new(
-            std::env::var("RLX_QWEN25_VL_PYTHON").unwrap_or_else(|_| "python3".into()),
+            rlx_ir::env::var_result("RLX_QWEN25_VL_PYTHON").unwrap_or_else(|_| "python3".into()),
         )
         .arg(helper_dir.join("dump_reference.py"))
         .env("RLX_QWEN25_VL_IMAGE", image)
@@ -187,7 +187,7 @@ fn forward_hf_env() -> Vec<(String, String)> {
         "HF_TOKEN",
         "HF_HOME",
     ] {
-        if let Ok(v) = std::env::var(name) {
+        if let Ok(v) = rlx_ir::env::read(name) {
             out.push((name.to_string(), v));
         }
     }
@@ -209,7 +209,7 @@ fn parse_npy_f32(bytes: &[u8]) -> Result<Vec<f32>> {
     let data = npy_payload(bytes)?;
     anyhow::ensure!(data.len().is_multiple_of(4), "npy f32 payload size");
     Ok(data
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
@@ -220,13 +220,13 @@ fn parse_npy_u32(bytes: &[u8]) -> Result<Vec<u32>> {
     if header.contains("'int64'") || header.contains("<i8") {
         anyhow::ensure!(data.len().is_multiple_of(8), "npy i64 payload size");
         Ok(data
-            .chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as u32)
+            .as_chunks::<8>().0.iter()
+            .map(|c| i64::from_le_bytes(*c) as u32)
             .collect())
     } else {
         anyhow::ensure!(data.len().is_multiple_of(4), "npy u32 payload size");
         Ok(data
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect())
     }

@@ -61,7 +61,7 @@ fn all_backend_devices() -> Vec<Device> {
 }
 
 fn default_weights() -> anyhow::Result<PathBuf> {
-    if let Ok(w) = env::var("RLX_MINICPM5_WEIGHTS") {
+    if let Ok(w) = rlx_ir::env::var_result("RLX_MINICPM5_WEIGHTS") {
         return Ok(PathBuf::from(w));
     }
     let dir = env::var("MINICPM5_MODEL_DIR")

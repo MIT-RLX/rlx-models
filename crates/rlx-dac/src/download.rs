@@ -8,7 +8,7 @@ pub const HF_DAC_16KHZ: &str = "hance-ai/descript-audio-codec-16khz";
 pub const HF_DAC_44KHZ: &str = "hance-ai/descript-audio-codec-44khz";
 
 pub fn default_dac_dir() -> PathBuf {
-    std::env::var("RLX_DAC_DIR")
+    rlx_ir::env::var_result("RLX_DAC_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/dac/24khz"))
 }

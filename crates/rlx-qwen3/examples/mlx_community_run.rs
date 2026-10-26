@@ -109,8 +109,8 @@ fn main() -> Result<()> {
     }
     if rlx_ir::env::flag("RLX_DIAG_HIDDEN") {
         let h = probe_hidden(&cfg, dir, device)?;
-        let out =
-            std::env::var("RLX_DIAG_OUT").unwrap_or_else(|_| ".mlx-test/diag_hidden.bin".into());
+        let out = rlx_ir::env::var_result("RLX_DIAG_OUT")
+            .unwrap_or_else(|_| ".mlx-test/diag_hidden.bin".into());
         let mut f = std::io::BufWriter::new(std::fs::File::create(&out)?);
         for v in &h {
             f.write_all(&v.to_le_bytes())?;
@@ -118,7 +118,7 @@ fn main() -> Result<()> {
         eprintln!(
             "DIAG hidden: len={} stage={:?} -> {out}",
             h.len(),
-            std::env::var("RLX_DIAG_STAGE").ok()
+            rlx_ir::env::var_result("RLX_DIAG_STAGE").ok()
         );
         return Ok(());
     }
@@ -151,7 +151,7 @@ fn main() -> Result<()> {
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
         .unwrap();
     eprintln!("prefill argmax = {argmax}  (oracle = 12095 \" Paris\")");
-    let out_path = std::env::var("RLX_DIAG_OUT").unwrap_or_else(|_| {
+    let out_path = rlx_ir::env::var_result("RLX_DIAG_OUT").unwrap_or_else(|_| {
         "/Users/Shared/rlx-models/.mlx-test/rlx_prefill_last_logits.bin".into()
     });
     let mut f = std::io::BufWriter::new(std::fs::File::create(&out_path)?);

@@ -204,7 +204,7 @@ impl SwinBackbone {
             self.eps,
         )?;
 
-        let prof = std::env::var("RLX_GDINO_PROFILE").is_ok();
+        let prof = rlx_ir::env::var_result("RLX_GDINO_PROFILE").is_ok();
         let (mut cur_h, mut cur_w) = (gh, gw);
         let mut feature_maps = Vec::new();
         for (s, stage) in self.stages.iter().enumerate() {

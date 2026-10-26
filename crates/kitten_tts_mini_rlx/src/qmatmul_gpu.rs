@@ -27,7 +27,7 @@ mod metal {
     use rlx_metal::mtl::Buffer;
 
     fn env_flag(name: &str) -> bool {
-        std::env::var(name).is_ok_and(|v| {
+        rlx_ir::env::read(name).is_ok_and(|v| {
             v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
         })
     }

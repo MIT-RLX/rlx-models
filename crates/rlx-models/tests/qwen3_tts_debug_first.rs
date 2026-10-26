@@ -30,7 +30,10 @@ fn repo_root() -> PathBuf {
 
 #[test]
 fn debug_first_group0_hi() {
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
@@ -76,7 +79,11 @@ fn debug_first_group0_hi() {
         }
     }
     let h_last = hidden.row(hidden.nrows() - 1);
-    if std::env::var("RLX_QWEN3_TTS_DUMP_CP").ok().as_deref() == Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_DUMP_CP")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         let path = repo_root().join(".cache/qwen3-tts/cp_past_hidden.json");
         std::fs::create_dir_all(path.parent().unwrap()).ok();
         let vec: Vec<f32> = h_last.iter().copied().collect();
@@ -99,7 +106,11 @@ fn debug_first_group0_hi() {
         "HF frame0=[1995, 1642, 988, 1088, 246, 1543, 1579, 437, 1356, 86, 1042, 248, 1555, 781, 1772, 374]"
     );
 
-    if std::env::var("RLX_QWEN3_TTS_CP_SCAN").ok().as_deref() == Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_SCAN")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         let golden = [
             1995u32, 1642, 988, 1088, 246, 1543, 1579, 437, 1356, 86, 1042, 248, 1555, 781, 1772,
             374,

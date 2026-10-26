@@ -50,7 +50,7 @@ use std::sync::Arc;
 /// utterance. Caching the lowered LIR turns that into a backend-compile on
 /// every run after the first.
 pub fn aot_cache(kind: &str) -> AotCache {
-    let dir = std::env::var_os("RLX_TADA_CACHE_DIR")
+    let dir = rlx_ir::env::var_os("RLX_TADA_CACHE_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("rlx_tada_aot"));
     AotCache::new(dir.join(kind))

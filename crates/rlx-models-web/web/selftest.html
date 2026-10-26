@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>rlx-models-web self-test</title>
+<pre id="log"></pre>
+<script type="module">
+// ?model=<id from models.js>: load it in the worker, run the matching task on
+// a fixed input, POST {ok, model, result, ms} to /__result (see serve.py).
+import { MODELS } from "./models.js";
+const id = new URLSearchParams(location.search).get("model") ?? "moonshine-streaming-tiny";
+const spec = MODELS[id];
+const log = (s) => (document.getElementById("log").textContent += s + "\n");
+const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+const ask = (msg, transfer) => new Promise((resolve, reject) => {
+  worker.onmessage = ({ data }) => {
+    if (data.type === "progress") return;
+    if (data.type === "error") reject(new Error(data.text));
+    else resolve(data);
+  };
+  worker.postMessage(msg, transfer ?? []);
+});
+const report = (body) => fetch("/__result", { method: "POST", body: JSON.stringify(body) });
+
+try {
+  const t0 = performance.now();
+  await ask({ type: "load", id, backend: new URLSearchParams(location.search).get("backend") ?? "cpu", weightsBase: new URL("../../../weights", location.href).href.replace(/\/$/, "") });
+  const t1 = performance.now();
+  let result;
+  if (spec.kind === "asr") {
+    const b = new DataView(await (await fetch("../../../assets/harness/jfk_16k.wav")).arrayBuffer());
+    let off = 12, pcm;
+    while (off < b.byteLength) {
+      const id4 = String.fromCharCode(...[0, 1, 2, 3].map((i) => b.getUint8(off + i)));
+      const len = b.getUint32(off + 4, true);
+      if (id4 === "data") { pcm = Float32Array.from({ length: len / 2 }, (_, i) => b.getInt16(off + 8 + 2 * i, true) / 32768); break; }
+      off += 8 + len + (len & 1);
+    }
+    result = (await ask({ type: "asr", pcm }, [pcm.buffer])).text;
+  } else if (spec.kind === "embed") {
+    result = (await ask({ type: "embed", texts: ["Which planet is known as the Red Planet?", "Mars, often called the Red Planet, has a thin atmosphere."], prompt: "query" })).sims[0][1];
+  } else {
+    result = (await ask({ type: "gen", prompt: "<|startoftext|><|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n", maxTokens: 12 })).text;
+  }
+  const t2 = performance.now();
+  log(JSON.stringify(result));
+  await report({ ok: true, model: id, result, load_ms: Math.round(t1 - t0), run_ms: Math.round(t2 - t1), ua: navigator.userAgent });
+} catch (e) {
+  log(String(e));
+  await report({ ok: false, model: id, error: String(e?.message ?? e) });
+}
+</script>

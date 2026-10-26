@@ -118,8 +118,10 @@ pub fn load(path: &Path) -> Result<(GptConfig, Vec<(String, Vec<f32>)>, Option<B
         let mut data_buf = vec![0u8; data_len * 4];
         r.read_exact(&mut data_buf)?;
         let data: Vec<f32> = data_buf
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         params.push((name, data));
     }

@@ -369,9 +369,12 @@ pub fn model_type_runner_name(model_type: &str) -> Option<&'static str> {
 
 /// Sniff `model_type` from the `config.json` next to a safetensors file.
 fn read_model_type_from_sidecar(path: &Path) -> Result<Option<String>> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| anyhow!("safetensors path {path:?} has no parent dir"))?;
+    let dir = if path.is_dir() {
+        path
+    } else {
+        path.parent()
+            .ok_or_else(|| anyhow!("safetensors path {path:?} has no parent dir"))?
+    };
     let cfg = dir.join("config.json");
     if !cfg.is_file() {
         return Ok(None);
@@ -387,7 +390,13 @@ fn read_model_type_from_sidecar(path: &Path) -> Result<Option<String>> {
 /// Resolve `path` to a single weight file, then sniff the runner.
 pub fn auto_sniff(path: &Path) -> Result<SniffedRunner> {
     let file = resolve_weights_file(path)?;
-    let ext = file.extension().and_then(|s| s.to_str()).unwrap_or("");
+    // A sharded HF checkpoint resolves to its directory (it has a
+    // `model.safetensors.index.json`), whose name has no weight extension.
+    let ext = if file.is_dir() {
+        "safetensors"
+    } else {
+        file.extension().and_then(|s| s.to_str()).unwrap_or("")
+    };
     match ext {
         "gguf" => {
             let arch = gguf_architecture_from_path(&file)?;
@@ -490,6 +499,19 @@ mod tests {
         assert_eq!(arch_runner_name("gemma"), Some("gemma"));
         assert_eq!(arch_runner_name("gemma2"), Some("gemma"));
         assert_eq!(arch_runner_name("gemma3"), Some("gemma"));
+    }
+
+    /// A sharded HF checkpoint (`model.safetensors.index.json`) resolves to
+    /// its directory; the sniff must still read its `config.json`.
+    #[test]
+    fn auto_sniff_reads_sharded_safetensors_dir() {
+        let dir = std::env::temp_dir().join(format!("rlx-sniff-sharded-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"model_type": "qwen3"}"#).unwrap();
+        std::fs::write(dir.join("model.safetensors.index.json"), "{}").unwrap();
+        let sniffed = auto_sniff(&dir).unwrap();
+        assert_eq!(sniffed.runner_name, "qwen3");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

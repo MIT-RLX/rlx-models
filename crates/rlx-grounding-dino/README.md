@@ -65,7 +65,7 @@ cargo run -p rlx-grounding-dino --release -- \
     --image cat.jpg --text "a cat." --box-threshold 0.3 --text-threshold 0.25
 ```
 
-GPU feature builds (host path, device reported): `--features apple-silicon`
+GPU feature builds (host path, device reported): `--features macos-gpu`
 (Metal+MLX+wgpu), `--features cuda`, or `--features all-backends`.
 
 ## Library
@@ -111,7 +111,7 @@ cargo test -p rlx-grounding-dino -- --ignored   # real-weights parity (needs set
   kernel is self-contained here (no engine GPU symbols on the default path); the
   matching engine host-delegate kernels are shipped in `../rlx` for **CPU, Metal
   and MLX** (`rlx_cpu` / `rlx_metal` / `rlx_mlx` `ms_deform_attn`), enabled via
-  the `engine-apple` feature + the `../rlx` patch.
+  the `engine-metal-mlx` feature + the `../rlx` patch.
 - ✅ **WGPU**: engine `Step::MsDeformAttnHost` (lowering + host-delegate executor in
   `rlx-wgpu`), **tested on `Device::Gpu`** — `ir_deform_matches_native_wgpu` passes
   (native-vs-wgpu `< 1e-4`).
@@ -149,11 +149,11 @@ CUDA, ROCm) via the shared `rlx_cpu` compute.
 > `.cargo/config.toml` (copied from `.cargo/config.toml.example`). The GPU engine
 > kernels added for the deformable op live in that checkout.
 
-### Enabling the on-device deformable op on Apple GPUs
+### Enabling the on-device deformable op on Metal GPUs
 
 ```bash
 cp .cargo/config.toml.example .cargo/config.toml   # patch rlx* → ../rlx
-cargo test -p rlx-grounding-dino --features engine-apple   # Metal + MLX kernels
+cargo test -p rlx-grounding-dino --features engine-metal-mlx   # Metal + MLX kernels
 cargo test -p rlx-grounding-dino --features gpu \
     deform_attn_ir::tests::ir_deform_matches_native_wgpu   # WGPU on-device
 ```

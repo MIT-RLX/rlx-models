@@ -123,6 +123,51 @@ pub fn mrope_prefill_feeds(
     (cos, sin)
 }
 
+/// Which M-RoPE section each rotary pair reads: `[4, head_half]` of 0 and
+/// 1, so that each section's columns of the text rows
+/// ([`mrope_prefill_feeds`], where every section is at the same position)
+/// gathered at that section's position, masked and summed, give the row at
+/// any positions — what a graph that takes positions instead of rows
+/// computes. Checked against [`mrope_row_for_sections`] before returning.
+pub fn mrope_section_masks(cfg: &Qwen35Config, head_half: usize) -> anyhow::Result<Vec<f32>> {
+    const SECTIONS: usize = 4;
+    let mut masks = vec![0f32; SECTIONS * head_half];
+    let mut owned = vec![false; head_half];
+    for k in 0..SECTIONS {
+        let mut at = [0usize; SECTIONS];
+        at[k] = 1;
+        let (_, sin) = mrope_row_for_sections(cfg, at, head_half);
+        for (i, &v) in sin.iter().enumerate() {
+            if v != 0.0 && !owned[i] {
+                masks[k * head_half + i] = 1.0;
+                owned[i] = true;
+            }
+        }
+    }
+    // Pairs that never rotate: any section gives cos 1, sin 0.
+    for (i, o) in owned.iter().enumerate() {
+        if !o {
+            masks[i] = 1.0;
+        }
+    }
+    let (cos_t, sin_t) = mrope_prefill_feeds(cfg, 64, None, head_half);
+    for at in [[3usize, 17, 41, 0], [60, 2, 9, 0], [5, 5, 30, 0]] {
+        let (c, s) = mrope_row_for_sections(cfg, at, head_half);
+        for i in 0..head_half {
+            let (mut cc, mut ss) = (0f32, 0f32);
+            for k in 0..SECTIONS {
+                let m = masks[k * head_half + i];
+                cc += cos_t[at[k] * head_half + i] * m;
+                ss += sin_t[at[k] * head_half + i] * m;
+            }
+            if cc != c[i] || ss != s[i] {
+                anyhow::bail!("M-RoPE pair {i} is no one section's at positions {at:?}");
+            }
+        }
+    }
+    Ok(masks)
+}
+
 /// Slice MRoPE cos/sin at absolute text position `pos`.
 pub fn mrope_slice_at_pos(
     cfg: &Qwen35Config,

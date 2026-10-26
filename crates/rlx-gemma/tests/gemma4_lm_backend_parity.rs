@@ -21,7 +21,7 @@
 //! divergence.
 //!
 //! ```bash
-//! cargo test -p rlx-gemma --test gemma4_lm_backend_parity --features apple-silicon
+//! cargo test -p rlx-gemma --test gemma4_lm_backend_parity --features macos-gpu
 //! ```
 //!
 //! Per-backend tolerance versus CPU (measured on a tiny 6-layer
@@ -38,7 +38,7 @@
 //!
 //! ## Background on the Metal precision path
 //!
-//! Apple Silicon `simdgroup_float8x8` matmul instructions use
+//! macOS arm64 `simdgroup_float8x8` matmul instructions use
 //! reduced-precision internal accumulators (~fp16 class for the
 //! tensor-multiply step). For production inference of large LMs the
 //! resulting ~1e-3 relative error is well-bounded and the 10–100×
@@ -197,16 +197,24 @@ fn synthetic_weights(cfg: &GemmaConfig) -> WeightMap {
             format!("{lp}.input_layernorm.weight"),
             (ramp(h, 0.001, salt), vec![h]),
         );
-        // Layer-norm names depend on Gemma version. Gemma 1 ships
-        // `post_attention_layernorm`; Gemma 2/3/4 ship both
-        // pre+post feedforward variants. Emit the right set so the
-        // weight loader doesn't 404.
-        if cfg.arch == GemmaArch::Gemma {
-            t.insert(
-                format!("{lp}.post_attention_layernorm.weight"),
-                (ramp(h, 0.001, salt + 12), vec![h]),
-            );
-        } else {
+        // Every real Gemma 3/4 layer has per-head Q/K norms; Gemma 2/3/4
+        // all normalize the attention output.
+        t.insert(
+            format!("{lp}.self_attn.q_norm.weight"),
+            (ramp(dh, 0.001, salt + 13), vec![dh]),
+        );
+        t.insert(
+            format!("{lp}.self_attn.k_norm.weight"),
+            (ramp(dh, 0.001, salt + 14), vec![dh]),
+        );
+        // Every Gemma ships `post_attention_layernorm` (Gemma 1 uses it as
+        // the pre-FFN norm, Gemma 2/3/4 on the attention output); Gemma 2/3/4
+        // add the pre/post feedforward pair.
+        t.insert(
+            format!("{lp}.post_attention_layernorm.weight"),
+            (ramp(h, 0.001, salt + 12), vec![h]),
+        );
+        if cfg.arch != GemmaArch::Gemma {
             t.insert(
                 format!("{lp}.pre_feedforward_layernorm.weight"),
                 (ramp(h, 0.001, salt + 10), vec![h]),
@@ -267,11 +275,7 @@ fn ensure_metal_precise() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        // SAFETY: this runs in the test process before any thread
-        // has called into the Metal backend. After this point the
-        // var stays set for the lifetime of the test binary, so
-        // there is no concurrent read/write race.
-        unsafe { std::env::set_var("RLX_METAL_PRECISE", "1") };
+        rlx_ir::env::set("RLX_METAL_PRECISE", "1");
     });
 }
 
@@ -280,7 +284,7 @@ fn run_prefill_on(device: Device) -> Result<Vec<f32>> {
 }
 
 fn run_prefill_on_cfg(device: Device, cfg: GemmaConfig) -> Result<Vec<f32>> {
-    // Apple Silicon's `simdgroup_float8x8` matmul units use reduced
+    // M-series `simdgroup_float8x8` matmul units use reduced
     // internal-accumulator precision (~fp16 class) — fine for
     // production but visible (~1e-1 absolute) on tiny parity-test
     // logits. The scalar `naive` sgemm variant restores full fp32

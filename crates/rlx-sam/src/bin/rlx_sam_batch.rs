@@ -164,7 +164,11 @@ fn main() -> Result<()> {
             // of each view so we can sanity-check the threshold. SAM
             // logits typically range ~[-30, +30]; a healthy mask has
             // positive logits inside the segmented region.
-            if std::env::var("RLX_SAM_DEBUG_LOGITS").ok().as_deref() == Some("1") {
+            if rlx_ir::env::var_result("RLX_SAM_DEBUG_LOGITS")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
                 let mut lo = f32::INFINITY;
                 let mut hi = f32::NEG_INFINITY;
                 let mut sum = 0.0_f64;

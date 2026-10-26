@@ -348,7 +348,7 @@ mod tests {
     /// When real weights are on disk, every expected key must be present.
     #[test]
     fn expected_keys_match_checkpoint_when_present() {
-        let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+        let dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| crate::download::default_kyutai_tts_dir());
         let path = dir.join(crate::download::TTS_WEIGHTS_FILE);

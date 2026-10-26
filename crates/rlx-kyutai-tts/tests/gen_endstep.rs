@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 #[test]
 fn print_generation_trace() {
-    let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_kyutai_tts_dir());
     if !dir.join("dsm_tts_1e68beda@240.safetensors").is_file() {
@@ -79,7 +79,7 @@ fn print_generation_trace() {
 
 #[test]
 fn print_long_prompt_entries() {
-    let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| default_kyutai_tts_dir());
     if !dir.join("dsm_tts_1e68beda@240.safetensors").is_file() {

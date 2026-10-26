@@ -61,7 +61,7 @@ fn rlx_logits_greedy(dev: Device, path: &PathBuf, ids: &[u32]) -> Result<(Vec<us
 }
 
 fn main() -> Result<()> {
-    let path: PathBuf = std::env::var("RLX_GEMMA3_GGUF")
+    let path: PathBuf = rlx_ir::env::var_result("RLX_GEMMA3_GGUF")
         .expect("RLX_GEMMA3_GGUF")
         .into();
 

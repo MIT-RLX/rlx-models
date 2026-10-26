@@ -6,7 +6,7 @@ a compact, end-to-end showcase of the **RLX training flow**: the model graph is
 written in the [`rlx!`](../../../rlx/crates/core/rlx-tensor) DSL, gradients come
 from `rlx-tensor`'s autodiff, and the loop uses **Muon + AdamW** (Muon on the
 2-D weight matrices, AdamW on the embeddings/biases/norms) with a warmup-cosine
-schedule, running on Apple GPU (Metal) or CPU, with a live progress bar.
+schedule, running on Metal GPU (Metal) or CPU, with a live progress bar.
 
 TinyStories is purpose-built for this: a few-million-parameter model trained on
 it produces fluent, coherent short stories, so a from-scratch run finishes in
@@ -97,7 +97,7 @@ cargo run --release -p rlx-tinystories --bin rlx-tinystories-generate -- \
 
 ### Features
 
-- `metal` *(default)* — train on Apple GPU. Drop with `--no-default-features`
+- `metal` *(default)* — train on Metal GPU. Drop with `--no-default-features`
   for a pure-CPU build.
 - `download` *(default)* — enable the Hub auto-download (`hf-hub`). Without it,
   `--data` is required.
@@ -230,5 +230,5 @@ gained (all additive):
   quantizer (RNE, subnormals, saturation), named formats (`f16`, `bf16`,
   `f8e4m3`, `bf8`/`e5m2`, `nvf4`/`e2m1`, …), `parse_format()`, and
   per-tensor-scaled `quantize_slice_scaled` (MXFP4/NVFP4 microscaling).
-- **Muon on Apple silicon**: `rlx-optim` routes Muon's Newton–Schulz through
+- **Muon on macOS arm64**: `rlx-optim` routes Muon's Newton–Schulz through
   **Accelerate/AMX** `cblas_sgemm` on macOS — ~7× faster Muon training.

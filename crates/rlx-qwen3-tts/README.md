@@ -1,6 +1,6 @@
 # rlx-qwen3-tts
 
-Native Rust Qwen3-TTS: Qwen3-shaped talker + 16-group code predictor + 12 Hz Mimi speech tokenizer. **No Python at inference.** Runs on Apple Silicon (Metal + AMX), CPU, MLX, and CUDA.
+Native Rust Qwen3-TTS: Qwen3-shaped talker + 16-group code predictor + 12 Hz Mimi speech tokenizer. **No Python at inference.** Runs on macOS arm64 (Metal + AMX), CPU, MLX, and CUDA.
 
 | Mode | Checkpoint | Use case |
 |------|------------|----------|
@@ -54,7 +54,7 @@ JFK reference clip (bundled): `assets/jfk/jfk_voice_clone.wav`
 ### 2 · Build
 
 ```bash
-cargo build -p rlx-qwen3-tts --release --features apple-silicon \
+cargo build -p rlx-qwen3-tts --release --features macos-gpu \
   --bin jfk_voice_clone
 ```
 
@@ -93,9 +93,9 @@ Open `VoiceClone` once, generate many utterances. Save `SpeakerReference` as JSO
 | Goal | Command | Time to first result |
 |------|---------|----------------------|
 | **One WAV clone** | `jfk_voice_clone` (above) | ~10 s cold / ~8 s warm |
-| **Walkthrough** (extract ref, JSON round-trip, 3 clips) | `cargo run -p rlx-qwen3-tts --example voice_clone_walkthrough --features apple-silicon -- …` | ~30 s |
-| **Streaming TTFA bench** | `cargo run -p rlx-qwen3-tts --example streaming_walkthrough --features apple-silicon` | ~2 min |
-| **Full duplex voice chat** | `cargo run -p rlx-qwen3-tts --example bidirectional_voice_chat --features apple-silicon -- --turbo …` | ~20 s after preload |
+| **Walkthrough** (extract ref, JSON round-trip, 3 clips) | `cargo run -p rlx-qwen3-tts --example voice_clone_walkthrough --features macos-gpu -- …` | ~30 s |
+| **Streaming TTFA bench** | `cargo run -p rlx-qwen3-tts --example streaming_walkthrough --features macos-gpu` | ~2 min |
+| **Full duplex voice chat** | `cargo run -p rlx-qwen3-tts --example bidirectional_voice_chat --features macos-gpu -- --turbo …` | ~20 s after preload |
 
 Environment overrides: `RLX_QWEN3_TTS_DIR`, `RLX_QWEN3_WEIGHTS`, `RLX_WHISPER_DIR`.
 
@@ -103,7 +103,7 @@ Environment overrides: `RLX_QWEN3_TTS_DIR`, `RLX_QWEN3_WEIGHTS`, `RLX_WHISPER_DI
 
 ## Duplex voice chat demo
 
-Mic WAV → Whisper → Qwen3-0.6B (MLX) → Qwen3-TTS JFK clone (Metal, progressive streaming). Measured on Apple Silicon with `--turbo`.
+Mic WAV → Whisper → Qwen3-0.6B (MLX) → Qwen3-TTS JFK clone (Metal, progressive streaming). Measured on macOS arm64 with `--turbo`.
 
 ![Voice-chat roundtrip latency](examples/charts/voice_chat_latency.svg)
 
@@ -128,7 +128,7 @@ Mic WAV → Whisper → Qwen3-0.6B (MLX) → Qwen3-TTS JFK clone (Metal, progres
 One-time startup (same process): open **3.3 s** + preload **13.9 s**. Dominant per-turn cost: **Qwen3 LM (4.25 s)**; TTS progressive TTFA adds **0.82 s**.
 
 ```bash
-VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-qwen3-tts --features apple-silicon \
+VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-qwen3-tts --features macos-gpu \
   --example bidirectional_voice_chat -- \
   --turbo \
   --ref-wav assets/jfk/jfk_voice_clone.wav \
@@ -179,7 +179,7 @@ afplay crates/rlx-qwen3-tts/examples/audio/rlx_intro.wav
 
 All charts: `cd crates/rlx-qwen3-tts/examples/charts && python3 generate.py`
 
-### Clone speed (Apple M3 Pro, Metal + CPU hybrid)
+### Clone speed (M3 Pro, Metal + CPU hybrid)
 
 ![Real-time factor](examples/charts/rtf.svg)
 
@@ -273,7 +273,7 @@ Runnable walkthrough:
 
 ```bash
 cargo run --release -p rlx-qwen3-tts --example voice_clone_walkthrough \
-  --features apple-silicon -- \
+  --features macos-gpu -- \
   --ref-wav assets/jfk/jfk_voice_clone.wav \
   --out-dir /tmp/jfk_clones
 ```

@@ -73,11 +73,18 @@ fn cp_metal_layer_count_bisect() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -119,11 +126,18 @@ fn talker_vs_cp_weights_one_layer_metal() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -174,11 +188,18 @@ fn talker_layer_count_metal_parity() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -218,11 +239,18 @@ fn talker_28l_metal_real_hi_prompt() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -305,11 +333,18 @@ fn talker_layer0_input_rms_cpu_vs_metal() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -365,11 +400,18 @@ fn talker_1l_decode_graph_cpu_vs_metal_session() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -477,11 +519,18 @@ fn talker_2l_decode_graph_cpu_vs_metal_session() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -594,11 +643,18 @@ fn talker_2l_bucketed_decode_cpu_vs_metal() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -747,19 +803,26 @@ fn talker_engine_2l_vs_inline_bucketed_metal() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
-        eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
-        return;
-    }
-    if std::env::var("RLX_QWEN3_TTS_METAL_COMPILED")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
         .ok()
         .as_deref()
         != Some("1")
-        || std::env::var("RLX_QWEN3_TTS_METAL_DECODE_NATIVE")
+    {
+        eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
+        return;
+    }
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_COMPILED")
+        .ok()
+        .as_deref()
+        != Some("1")
+        || rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_DECODE_NATIVE")
             .ok()
             .as_deref()
             != Some("1")
@@ -894,11 +957,18 @@ fn talker_1l_decode_graph_qk_norm_off_cpu_vs_metal() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -995,15 +1065,22 @@ fn talker_decode_layer_bisect_metal_native() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
-    if std::env::var("RLX_QWEN3_TTS_METAL_DECODE_NATIVE")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_DECODE_NATIVE")
         .ok()
         .as_deref()
         != Some("1")

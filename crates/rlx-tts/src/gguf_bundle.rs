@@ -123,7 +123,7 @@ pub fn open_gguf(gguf_path: &Path) -> Result<RlxTts> {
 
     let mut encoder = Weights::from_map(encoder);
     let mut decoder = Weights::from_map(decoder);
-    if std::env::var_os("RLX_FS2_F16_PARAMS").is_some() {
+    if rlx_ir::env::var_os("RLX_FS2_F16_PARAMS").is_some() {
         encoder.f16_round_params();
         decoder.f16_round_params();
     }
@@ -177,7 +177,7 @@ pub fn open_rlxp(rlxp_path: &Path) -> Result<RlxTts> {
 
     let mut encoder = Weights::from_map(encoder);
     let mut decoder = Weights::from_map(decoder);
-    if std::env::var_os("RLX_FS2_F16_PARAMS").is_some() {
+    if rlx_ir::env::var_os("RLX_FS2_F16_PARAMS").is_some() {
         encoder.f16_round_params();
         decoder.f16_round_params();
     }
@@ -406,7 +406,7 @@ fn manifest_from_gguf(file: &GgufFile, extract_dir: &Path) -> Result<BundleManif
     })
 }
 
-/// Sanitize a loose-bundle `manifest.json` (strip Apple source fields, set voice ids).
+/// Sanitize a loose-bundle `manifest.json` (strip macOS source fields, set voice ids).
 pub fn sanitize_manifest(path: &Path) -> Result<()> {
     let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let mut man: serde_json::Value =

@@ -91,7 +91,7 @@ pub enum RopeScaling {
 impl RopeScaling {
     /// Inverse frequency for rotary dimension `i` (`0..head_dim/2`) given the
     /// base `theta` and `head_dim` — mirrors HF `_compute_*_parameters`.
-    fn inv_freq(&self, i: usize, head_dim: usize, theta: f64) -> f64 {
+    pub fn inv_freq(&self, i: usize, head_dim: usize, theta: f64) -> f64 {
         let d = head_dim as f64;
         let base = theta.powf(-(2.0 * i as f64) / d); // 1/θ^(2i/d)
         match self {
@@ -151,7 +151,7 @@ impl RopeScaling {
 
     /// Scalar multiplied into the cos/sin tables (YaRN's `attention_factor`);
     /// 1.0 for every other scheme.
-    fn mscale(&self) -> f64 {
+    pub fn mscale(&self) -> f64 {
         match self {
             RopeScaling::Yarn {
                 factor,
@@ -312,7 +312,9 @@ impl DecoderSpec {
 /// Reinterpret a little-endian f32 byte buffer as `Vec<f32>` (MLX affine
 /// scales / biases arrive from rlx-mlx-io as raw bytes).
 fn f32_from_le_bytes(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -480,10 +482,50 @@ pub(crate) struct Proj {
     pub(crate) bias: Option<NodeId>,
 }
 
+/// Dense weight matrices kept below f32 by a builder: name -> (little-endian
+/// bytes, dtype), uploaded with `set_param_typed`.
+pub type TypedParams = HashMap<String, (Vec<u8>, DType)>;
+
+/// Where a builder puts dense (non-packed) projection matrices: f32 in its
+/// `params` map, or — when [`WeightStorage`](crate::weight_storage::WeightStorage)
+/// resolves to a half type — at 2 B/elem in [`Self::typed`]. Packed quantized
+/// weights are never affected.
+#[derive(Debug, Default)]
+pub struct DenseStore {
+    pub storage: crate::weight_storage::WeightStorage,
+    pub typed: TypedParams,
+}
+
+impl DenseStore {
+    pub fn new(storage: crate::weight_storage::WeightStorage) -> Self {
+        Self {
+            storage,
+            typed: TypedParams::new(),
+        }
+    }
+
+    /// Everything f32 — the behaviour of builders that take no store.
+    pub fn f32() -> Self {
+        Self::new(crate::weight_storage::WeightStorage::F32)
+    }
+}
+
 pub(crate) fn load_proj(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    weights: &mut dyn WeightLoader,
+    key: &str,
+) -> Result<Proj> {
+    load_proj_stored(g, params, packed, &mut DenseStore::f32(), weights, key)
+}
+
+/// [`load_proj`] with the dense fallback honouring `store`.
+pub(crate) fn load_proj_stored(
+    g: &mut Graph,
+    params: &mut HashMap<String, Vec<f32>>,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    store: &mut DenseStore,
     weights: &mut dyn WeightLoader,
     key: &str,
 ) -> Result<Proj> {
@@ -631,8 +673,23 @@ pub(crate) fn load_proj(
             bias: None,
         });
     }
-    // Dense F32 fallback (transpose to [in, out]).
-    let w = load_p(g, params, weights, key, /*transpose*/ true)?;
+    // Dense fallback (transpose to [in, out]): f32, or the store's half type.
+    let dtype = store.storage.resolve(weights.stored_dtype(key));
+    if dtype == DType::F32 {
+        let w = load_p(g, params, weights, key, /*transpose*/ true)?;
+        return Ok(Proj {
+            w,
+            scheme: None,
+            scale: None,
+            bias: None,
+        });
+    }
+    let (data, shape) = weights.take_transposed(key)?;
+    let w = g.param(key, Shape::new(&shape, dtype));
+    store.typed.insert(
+        key.to_string(),
+        (crate::weight_storage::encode_f32(&data, dtype), dtype),
+    );
     Ok(Proj {
         w,
         scheme: None,
@@ -1237,6 +1294,7 @@ fn build_lfm2_shortconv(
     g: &mut Graph,
     params: &mut HashMap<String, Vec<f32>>,
     packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    store: &mut DenseStore,
     weights: &mut dyn WeightLoader,
     lp: &str,
     x: NodeId,
@@ -1247,10 +1305,11 @@ fn build_lfm2_shortconv(
     k: usize,
 ) -> Result<NodeId> {
     let f = DType::F32;
-    let in_p = load_proj(
+    let in_p = load_proj_stored(
         g,
         params,
         packed,
+        store,
         weights,
         &format!("{lp}.conv.in_proj.weight"),
     )?;
@@ -1271,10 +1330,11 @@ fn build_lfm2_shortconv(
         k,
     )?;
     let y = g.mul(c_part, conv_out);
-    let out_p = load_proj(
+    let out_p = load_proj_stored(
         g,
         params,
         packed,
+        store,
         weights,
         &format!("{lp}.conv.out_proj.weight"),
     )?;
@@ -1295,6 +1355,41 @@ pub fn build_lfm2_prefill(
     weights: &mut dyn WeightLoader,
     seq: usize,
     packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    build_lfm2_prefill_ext(spec, weights, seq, packed, false)
+}
+
+/// [`build_lfm2_prefill`], optionally with the vocabulary left to the host —
+/// as [`build_lfm2_decode_ext`]: input `inputs_embeds [1, seq, hidden]`,
+/// output the final-normed hidden `[seq, hidden]`, no embedding table in the
+/// graph (WebGL cannot hold one, nor a `[seq, vocab]` logits texture).
+pub fn build_lfm2_prefill_ext(
+    spec: &Lfm2Spec,
+    weights: &mut dyn WeightLoader,
+    seq: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    host_vocab: bool,
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    build_lfm2_prefill_stored(
+        spec,
+        weights,
+        seq,
+        packed,
+        host_vocab,
+        &mut DenseStore::f32(),
+    )
+}
+
+/// [`build_lfm2_prefill_ext`] with dense projection matrices stored as
+/// `store` says (e.g. kept bf16 for a bf16 checkpoint); those land in
+/// `store.typed` instead of the returned f32 map.
+pub fn build_lfm2_prefill_stored(
+    spec: &Lfm2Spec,
+    weights: &mut dyn WeightLoader,
+    seq: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    host_vocab: bool,
+    store: &mut DenseStore,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
     let mut g = Graph::new("lfm2_prefill");
     let mut params: HashMap<String, Vec<f32>> = HashMap::new();
@@ -1330,16 +1425,23 @@ pub fn build_lfm2_prefill(
     let sin_id = g.param("lfm.rope.sin", Shape::new(&[seq, half], f));
     params.insert("lfm.rope.sin".into(), sin_data);
 
-    let input_ids = g.input("input_ids", Shape::new(&[batch, seq], DType::I32));
-    // Tied embed: [vocab, hidden] dequant'd F32; reused (transposed) as LM head.
-    let embed_w = load_p(
-        &mut g,
-        &mut params,
-        weights,
-        "model.embed_tokens.weight",
-        false,
-    )?;
-    let mut h_id = g.gather_(embed_w, input_ids, 0); // [batch, seq, hidden]
+    let (mut h_id, embed_w) = if host_vocab {
+        (
+            g.input("inputs_embeds", Shape::new(&[batch, seq, h], f)),
+            None,
+        )
+    } else {
+        let input_ids = g.input("input_ids", Shape::new(&[batch, seq], DType::I32));
+        // Tied embed: [vocab, hidden] dequant'd F32; reused (transposed) as LM head.
+        let embed_w = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            "model.embed_tokens.weight",
+            false,
+        )?;
+        (g.gather_(embed_w, input_ids, 0), Some(embed_w)) // [batch, seq, hidden]
+    };
 
     for il in 0..spec.num_hidden_layers {
         let lp = format!("model.layers.{il}");
@@ -1354,24 +1456,27 @@ pub fn build_lfm2_prefill(
 
         let mixed = if spec.full_attn_layers.contains(&il) {
             let kv_dim = nkv * dh;
-            let q_p = load_proj(
+            let q_p = load_proj_stored(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &format!("{lp}.self_attn.q_proj.weight"),
             )?;
-            let k_p = load_proj(
+            let k_p = load_proj_stored(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &format!("{lp}.self_attn.k_proj.weight"),
             )?;
-            let v_p = load_proj(
+            let v_p = load_proj_stored(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &format!("{lp}.self_attn.v_proj.weight"),
             )?;
@@ -1412,10 +1517,11 @@ pub fn build_lfm2_prefill(
                 vec![q_rope, k_rep, v_rep],
                 attn_shape,
             );
-            let o_p = load_proj(
+            let o_p = load_proj_stored(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &format!("{lp}.self_attn.out_proj.weight"),
             )?;
@@ -1425,6 +1531,7 @@ pub fn build_lfm2_prefill(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &lp,
                 normed,
@@ -1446,24 +1553,27 @@ pub fn build_lfm2_prefill(
             0.0,
         )?;
         let ffn_normed = g.rms_norm(h_after, ffn_norm, zero_beta_hidden, eps);
-        let w1 = load_proj(
+        let w1 = load_proj_stored(
             &mut g,
             &mut params,
             packed,
+            store,
             weights,
             &format!("{lp}.feed_forward.w1.weight"),
         )?;
-        let w3 = load_proj(
+        let w3 = load_proj_stored(
             &mut g,
             &mut params,
             packed,
+            store,
             weights,
             &format!("{lp}.feed_forward.w3.weight"),
         )?;
-        let w2 = load_proj(
+        let w2 = load_proj_stored(
             &mut g,
             &mut params,
             packed,
+            store,
             weights,
             &format!("{lp}.feed_forward.w2.weight"),
         )?;
@@ -1484,6 +1594,10 @@ pub fn build_lfm2_prefill(
     )?;
     let hidden = g.rms_norm(h_id, final_norm, zero_beta_hidden, eps);
     let hidden_2d = g.reshape_(hidden, vec![(batch * seq) as i64, h as i64]);
+    let Some(embed_w) = embed_w else {
+        g.set_outputs(vec![hidden_2d]);
+        return Ok((g, params));
+    };
     // Tied LM head: logits = hidden @ embedᵀ.
     let embed_t = g.transpose_(embed_w, vec![1, 0]); // [hidden, vocab]
     let logits = g.mm(hidden_2d, embed_t); // [seq, vocab]
@@ -1516,6 +1630,43 @@ pub fn build_lfm2_decode(
     max_kv: usize,
     packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    build_lfm2_decode_ext(spec, weights, max_kv, packed, false)
+}
+
+/// [`build_lfm2_decode`], optionally with the vocabulary left to the host:
+/// with `host_vocab` the graph takes `inputs_embeds [1, 1, hidden]` instead of
+/// `token_id`, returns the final-normed hidden `[1, hidden]` instead of logits,
+/// and never loads `model.embed_tokens.weight`. The caller gathers the row and
+/// applies the tied LM head. WebGL needs this: every tensor is one 2-D texture,
+/// and a `[65536, 1024]` table is past the 16384-texel side limit.
+pub fn build_lfm2_decode_ext(
+    spec: &Lfm2Spec,
+    weights: &mut dyn WeightLoader,
+    max_kv: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    host_vocab: bool,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
+    build_lfm2_decode_stored(
+        spec,
+        weights,
+        max_kv,
+        packed,
+        host_vocab,
+        &mut DenseStore::f32(),
+    )
+}
+
+/// [`build_lfm2_decode_ext`] with dense projection matrices stored as `store`
+/// says; see [`build_lfm2_prefill_stored`].
+#[allow(clippy::type_complexity)]
+pub fn build_lfm2_decode_stored(
+    spec: &Lfm2Spec,
+    weights: &mut dyn WeightLoader,
+    max_kv: usize,
+    packed: &mut HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
+    host_vocab: bool,
+    store: &mut DenseStore,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<String>)> {
     let mut g = Graph::new("lfm2_decode");
     let mut params: HashMap<String, Vec<f32>> = HashMap::new();
     let f = DType::F32;
@@ -1540,15 +1691,19 @@ pub fn build_lfm2_decode(
     let write_oh = g.input("kv_write_oh", Shape::new(&[1, max_kv, 1], f));
     let write_inv = g.input("kv_write_inv", Shape::new(&[1, max_kv, 1], f));
 
-    let token = g.input("token_id", Shape::new(&[1, 1], DType::I32));
-    let embed_w = load_p(
-        &mut g,
-        &mut params,
-        weights,
-        "model.embed_tokens.weight",
-        false,
-    )?;
-    let mut h_id = g.gather_(embed_w, token, 0); // [1,1,hidden]
+    let (mut h_id, embed_w) = if host_vocab {
+        (g.input("inputs_embeds", Shape::new(&[1, 1, h], f)), None)
+    } else {
+        let token = g.input("token_id", Shape::new(&[1, 1], DType::I32));
+        let embed_w = load_p(
+            &mut g,
+            &mut params,
+            weights,
+            "model.embed_tokens.weight",
+            false,
+        )?;
+        (g.gather_(embed_w, token, 0), Some(embed_w)) // [1,1,hidden]
+    };
 
     let mut extra_outs: Vec<(String, NodeId)> = Vec::new();
 
@@ -1565,24 +1720,27 @@ pub fn build_lfm2_decode(
 
         let mixed = if spec.full_attn_layers.contains(&il) {
             // ── GQA attention over the cached KV (single query at `pos`) ──
-            let q_p = load_proj(
+            let q_p = load_proj_stored(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &format!("{lp}.self_attn.q_proj.weight"),
             )?;
-            let k_p = load_proj(
+            let k_p = load_proj_stored(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &format!("{lp}.self_attn.k_proj.weight"),
             )?;
-            let v_p = load_proj(
+            let v_p = load_proj_stored(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &format!("{lp}.self_attn.v_proj.weight"),
             )?;
@@ -1636,20 +1794,22 @@ pub fn build_lfm2_decode(
                 vec![q_rope, k_rep, v_rep, key_mask],
                 attn_shape,
             );
-            let o_p = load_proj(
+            let o_p = load_proj_stored(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &format!("{lp}.self_attn.out_proj.weight"),
             )?;
             emit_proj(&mut g, attn, &o_p, Shape::new(&[1, 1, h], f))
         } else {
             // ── ShortConv with conv-state cache ──
-            let in_p = load_proj(
+            let in_p = load_proj_stored(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &format!("{lp}.conv.in_proj.weight"),
             )?;
@@ -1688,10 +1848,11 @@ pub fn build_lfm2_decode(
             let conv_sum = g.sum(prod, vec![1], false); // Σ over kc → [1,cdim]
             let conv_out = g.reshape_(conv_sum, vec![1, 1, cdim as i64]); // [1,1,cdim]
             let y = g.mul(c_part, conv_out);
-            let out_p = load_proj(
+            let out_p = load_proj_stored(
                 &mut g,
                 &mut params,
                 packed,
+                store,
                 weights,
                 &format!("{lp}.conv.out_proj.weight"),
             )?;
@@ -1708,24 +1869,27 @@ pub fn build_lfm2_decode(
             0.0,
         )?;
         let ffn_normed = g.rms_norm(h_after, ffn_norm, zero_beta_hidden, eps);
-        let w1 = load_proj(
+        let w1 = load_proj_stored(
             &mut g,
             &mut params,
             packed,
+            store,
             weights,
             &format!("{lp}.feed_forward.w1.weight"),
         )?;
-        let w3 = load_proj(
+        let w3 = load_proj_stored(
             &mut g,
             &mut params,
             packed,
+            store,
             weights,
             &format!("{lp}.feed_forward.w3.weight"),
         )?;
-        let w2 = load_proj(
+        let w2 = load_proj_stored(
             &mut g,
             &mut params,
             packed,
+            store,
             weights,
             &format!("{lp}.feed_forward.w2.weight"),
         )?;
@@ -1746,6 +1910,16 @@ pub fn build_lfm2_decode(
     )?;
     let hidden = g.rms_norm(h_id, final_norm, zero_beta_hidden, eps);
     let hidden_2d = g.reshape_(hidden, vec![1, h as i64]);
+    let Some(embed_w) = embed_w else {
+        let mut outputs = vec![hidden_2d];
+        let mut names = Vec::with_capacity(extra_outs.len());
+        for (name, node) in extra_outs {
+            names.push(name);
+            outputs.push(node);
+        }
+        g.set_outputs(outputs);
+        return Ok((g, params, names));
+    };
     // Tied lm_head as `embed_w @ hiddenᵀ` (→ [vocab,1] → [1,vocab]) instead of
     // `hidden @ embed_wᵀ`. This transposes the tiny [1,hidden] activation rather
     // than the huge [vocab,hidden] embedding EVERY decode step — the latter was
@@ -2265,7 +2439,7 @@ fn build_deepseek_moe_c(
             vec![glu, down_c, down_s, down_b, e_idx],
             Shape::new(&[rows, h], f),
         );
-        let weighted = if std::env::var("RLX_DSV4_DBG").as_deref() == Ok("noweight") {
+        let weighted = if rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() == Ok("noweight") {
             down
         } else {
             g.mul(down, w_col)
@@ -2312,7 +2486,7 @@ fn build_deepseek_moe_c(
     let sglu = g.mul(sgate_act, sup);
     let sdown = emit_proj(g, sglu, &sd, Shape::new(&[rows, h], f));
 
-    let out = match std::env::var("RLX_DSV4_DBG").as_deref() {
+    let out = match rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() {
         Ok("routed") | Ok("noweight") => routed,
         Ok("shared") => sdown,
         _ => g.add(routed, sdown),
@@ -3983,7 +4157,7 @@ pub fn build_deepseek_v4_stage(
     let ql = spec.q_lora_rank;
     let eps = spec.rms_norm_eps;
     let rows = seq;
-    let dbg_layer: usize = std::env::var("RLX_DSV4_DBGLAYER")
+    let dbg_layer: usize = rlx_ir::env::var_result("RLX_DSV4_DBGLAYER")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(layers.start);
@@ -4157,7 +4331,7 @@ pub fn build_deepseek_v4_stage(
             0.0,
         )?;
         let qr = g.rms_norm(qr, qn, zb_ql, eps);
-        if std::env::var("RLX_DSV4_DBG").as_deref() == Ok("qa") && il == dbg_layer {
+        if rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() == Ok("qa") && il == dbg_layer {
             g.set_outputs(vec![qr]);
             return Ok((g, params));
         }
@@ -4169,7 +4343,7 @@ pub fn build_deepseek_v4_stage(
             &format!("{lp}.attn.wq_b.weight"),
         )?;
         let q = emit_proj(&mut g, qr, &wqb, Shape::new(&[rows, nh * hd], f));
-        if std::env::var("RLX_DSV4_DBG").as_deref() == Ok("qb") && il == dbg_layer {
+        if rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() == Ok("qb") && il == dbg_layer {
             g.set_outputs(vec![q]);
             return Ok((g, params));
         }
@@ -4182,7 +4356,7 @@ pub fn build_deepseek_v4_stage(
             &[hd],
         );
         let qn2 = per_head_rms(&mut g, q, q_ones, zb_hd, 1, rows, nh, hd, spec.rms_norm_eps);
-        if std::env::var("RLX_DSV4_DBG").as_deref() == Ok("qhr") && il == dbg_layer {
+        if rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() == Ok("qhr") && il == dbg_layer {
             g.set_outputs(vec![qn2]);
             return Ok((g, params));
         }
@@ -4408,11 +4582,11 @@ pub fn build_deepseek_v4_stage(
             (kv, mask_win, seq)
         };
         let q3 = g.reshape_(q, vec![rows as i64, nh as i64, hd as i64]);
-        if std::env::var("RLX_DSV4_DBG").as_deref() == Ok("kv") && il == dbg_layer {
+        if rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() == Ok("kv") && il == dbg_layer {
             g.set_outputs(vec![kv_all]);
             return Ok((g, params));
         }
-        if std::env::var("RLX_DSV4_DBG").as_deref() == Ok("q") && il == dbg_layer {
+        if rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() == Ok("q") && il == dbg_layer {
             g.set_outputs(vec![q3]);
             return Ok((g, params));
         }
@@ -4423,7 +4597,7 @@ pub fn build_deepseek_v4_stage(
             &format!("{lp}.attn.attn_sink"),
             false,
         )?;
-        if std::env::var("RLX_DSV4_DBG").as_deref() == Ok("xa") && il == dbg_layer {
+        if rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() == Ok("xa") && il == dbg_layer {
             g.set_outputs(vec![xa]);
             return Ok((g, params));
         }
@@ -4441,7 +4615,7 @@ pub fn build_deepseek_v4_stage(
             n_keys,
             &format!("{lp}.sa"),
         );
-        if std::env::var("RLX_DSV4_DBG").as_deref() == Ok("o") && il == dbg_layer {
+        if rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() == Ok("o") && il == dbg_layer {
             g.set_outputs(vec![o]);
             return Ok((g, params));
         }
@@ -4476,7 +4650,7 @@ pub fn build_deepseek_v4_stage(
             dpg,
             d,
         );
-        if std::env::var("RLX_DSV4_DBG").as_deref() == Ok("olora") && il == dbg_layer {
+        if rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() == Ok("olora") && il == dbg_layer {
             g.set_outputs(vec![attn_out]);
             return Ok((g, params));
         }
@@ -4484,7 +4658,7 @@ pub fn build_deepseek_v4_stage(
 
         // DEBUG: output hidden right after the attention block of the first layer
         // to isolate attention-vs-FFN explosion (RLX_DSV4_DBG=attn).
-        if std::env::var("RLX_DSV4_DBG").as_deref() == Ok("attn") && il == dbg_layer {
+        if rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref() == Ok("attn") && il == dbg_layer {
             g.set_outputs(vec![h]);
             return Ok((g, params));
         }
@@ -4594,7 +4768,7 @@ pub fn build_deepseek_v4_stage(
             g.reshape_(moe, vec![rows as i64, d as i64])
         };
         if matches!(
-            std::env::var("RLX_DSV4_DBG").as_deref(),
+            rlx_ir::env::var_result("RLX_DSV4_DBG").as_deref(),
             Ok("moe") | Ok("routed") | Ok("shared") | Ok("noweight")
         ) && il == dbg_layer
         {
@@ -6539,7 +6713,10 @@ impl V4Decoder {
         // model fits ~1× (its resident size, e.g. ~90 GB for 2-bit) instead of ~2×
         // (~180 GB → OOM on a 64 GB box). Costs a 2nd read of the codes (fast on NVMe);
         // default OFF (eager) since a stage that fits doesn't need it.
-        let stream = std::env::var("RLX_DSV4_STREAM_COMPILE").ok().as_deref() == Some("1");
+        let stream = rlx_ir::env::var_result("RLX_DSV4_STREAM_COMPILE")
+            .ok()
+            .as_deref()
+            == Some("1");
         let (compiled, out_names) = if stream {
             use rlx_distributed::{Param, ParamSource};
             let (g, params, out_names, manifest) = {
@@ -7282,7 +7459,7 @@ fn v4_configure_stream(s: &std::net::TcpStream) {
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
-        let buf: libc::c_int = std::env::var("RLX_V4_SOCKBUF")
+        let buf: libc::c_int = rlx_ir::env::var_result("RLX_V4_SOCKBUF")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(4 * 1024 * 1024);
@@ -7324,7 +7501,9 @@ fn v4_recv_tensor(s: &mut std::net::TcpStream) -> std::io::Result<Vec<f32>> {
     let mut buf = vec![0u8; n * 4];
     s.read_exact(&mut buf)?;
     Ok(buf
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
@@ -12807,7 +12986,7 @@ fn cfg_usize(v: &serde_json::Value, key: &str) -> Option<usize> {
 /// `rope_type`/`type` == `"llama3"` piecewise rescale and `"linear"`;
 /// unknown / `"default"` / `null` → [`RopeScaling::None`]. `text` supplies
 /// `max_position_embeddings` for llama3's original-context fallback.
-fn parse_rope_scaling(rs: Option<&serde_json::Value>, text: &serde_json::Value) -> RopeScaling {
+pub fn parse_rope_scaling(rs: Option<&serde_json::Value>, text: &serde_json::Value) -> RopeScaling {
     let Some(obj) = rs.and_then(|x| x.as_object()) else {
         return RopeScaling::None;
     };
@@ -13258,6 +13437,19 @@ pub fn classify_config(v: &serde_json::Value) -> ModelSupport {
         (
             false,
             format!("MoE ({arch}): {num_experts} experts, unvalidated layout"),
+        )
+    } else if cfg_usize(text, "num_loops").is_some_and(|n| n > 1) {
+        // Nanbeige: the layers run again with shared weights; the builder
+        // runs them once.
+        (false, "looped layers (`num_loops`)".to_string())
+    } else if ["scale_emb", "scale_depth", "dim_model_base"]
+        .iter()
+        .any(|k| text.get(*k).is_some_and(|v| !v.is_null()))
+    {
+        // MiniCPM's muP scales, which the builder does not apply.
+        (
+            false,
+            "muP scales (`scale_emb` / `scale_depth`)".to_string(),
         )
     } else if !act_ok {
         (false, format!("non-SwiGLU activation `{hidden_act}`"))

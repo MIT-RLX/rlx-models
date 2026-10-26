@@ -23,7 +23,7 @@ A family is "native-complete" only when all three pass:
    to a **dev-only oracle** behind a `parity-*` feature — never in default/ship.
 
 2. **Perf gate.** Native throughput **≥ reference** on the target backend
-   (metal on Apple Silicon — benchmarked fastest, ~1144 docs/s for embeddings vs
+   (metal on macOS arm64 — benchmarked fastest, ~1144 docs/s for embeddings vs
    MLX ~833 / CPU ~296). Measured by a bench/example committed with the port.
 
 3. **Removal gate.** Default features pull only rlx-native crates; the alien dep
@@ -123,7 +123,7 @@ is whole-model graph compilation that ort/candle/rten (op-by-op dispatch) can't 
   per-op kernel launches + intermediate allocations.
 - **CompileProfile per backend.** Compile with the device-matched profile
   (`compile_options_for_profile`), cache the `CompiledGraph`, reuse across calls.
-  Default to metal on Apple Silicon (benchmarked fastest); fall back cpu.
+  Default to metal on macOS arm64 (benchmarked fastest); fall back cpu.
 - **Optimized tensors.** Load weights in the reference's quantization
   (kitten qmatmul, GGUF q-formats via `rlx-gguf`; safetensors otherwise) and use
   native q-matmul kernels — the `kitten_tts_mini_rlx` `ffn_qmatmul_ref` /

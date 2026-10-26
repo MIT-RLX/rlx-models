@@ -5,6 +5,8 @@
 // (Encoder = encodec_24khz — reuse rlx-encodec; WIP.)
 
 pub mod encoder;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod graph;
 pub mod istft;
 pub mod model;

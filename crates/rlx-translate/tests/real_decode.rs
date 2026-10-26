@@ -17,9 +17,15 @@
 
 use rlx_translate::assets::Assets;
 use rlx_translate::decode::{DecoderState, Nmt};
-use rlx_translate::espresso::Manifest;
+use rlx_translate::netfile::Manifest;
 use rlx_translate::spm::Vocab;
 use std::path::PathBuf;
+
+/// Directory holding `reference/<src>-<dst>.tsv` dumps from the OS translator
+/// (`RLX_TRANSLATE_REFERENCE_ROOT`); tests that need one skip without it.
+fn reference_root() -> String {
+    rlx_ir::env::var_result("RLX_TRANSLATE_REFERENCE_ROOT").unwrap_or_default()
+}
 
 /// The bundle covering `lang`, plus every other MT dir for per-language graphs.
 fn bundle(lang: &str) -> Option<(PathBuf, Vec<PathBuf>, Vocab)> {
@@ -925,10 +931,7 @@ fn score_decoding_against_the_os_reference() {
         eprintln!("skipping: no bundle covering fr");
         return;
     };
-    let refpath = format!(
-        "{}/reference/en_US-fr_FR.tsv",
-        "/private/tmp/claude-501/-Users-Shared-rlx-models/08f4eb12-43ad-4c0c-a2c5-39438cf10ea7/scratchpad"
-    );
+    let refpath = format!("{}/reference/en_US-fr_FR.tsv", reference_root());
     let Ok(text) = std::fs::read_to_string(&refpath) else {
         eprintln!("skipping: no reference dump at {refpath}");
         return;
@@ -944,7 +947,7 @@ fn score_decoding_against_the_os_reference() {
             cases.push((s.to_string(), t.to_string()));
         }
         if cases.len()
-            >= std::env::var("RLX_TEST_N")
+            >= rlx_ir::env::var_result("RLX_TEST_N")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(6)
@@ -1048,7 +1051,7 @@ fn score_decoding_against_the_os_reference() {
     let mean = tot_f1 / n.max(1) as f64;
     eprintln!(
         "GATHER={} mean F1 = {mean:.4} over {n} sentences",
-        std::env::var("RLX_TRANSLATE_GATHER").unwrap_or_else(|_| "quartile".into()),
+        rlx_ir::env::var_result("RLX_TRANSLATE_GATHER").unwrap_or_else(|_| "quartile".into()),
     );
     // Locks in the working protocol. Measured at 0.82 over 40 reference
     // sentences; this floor is low enough to tolerate sentence-set noise but
@@ -1072,10 +1075,7 @@ fn control_token_protocol_sweep() {
         eprintln!("skipping: no bundle covering fr");
         return;
     };
-    let refpath = format!(
-        "{}/reference/en_US-fr_FR.tsv",
-        "/private/tmp/claude-501/-Users-Shared-rlx-models/08f4eb12-43ad-4c0c-a2c5-39438cf10ea7/scratchpad"
-    );
+    let refpath = format!("{}/reference/en_US-fr_FR.tsv", reference_root());
     let Ok(text) = std::fs::read_to_string(&refpath) else {
         eprintln!("skipping: no reference dump");
         return;
@@ -1393,7 +1393,7 @@ fn teacher_forced_next_token() {
 
 /// Has the encoder's self-attention saturated?
 ///
-/// Espresso emits no explicit `1/sqrt(head_dim)` layer, so either the query
+/// The format emits no explicit `1/sqrt(head_dim)` layer, so either the query
 /// weights absorb it or it is missing. A saturated softmax (max-prob 1.0,
 /// entropy 0) is a hard argmax that throws away the source mixing, and it
 /// degrades output without destroying it — which is the symptom.
@@ -1554,10 +1554,7 @@ fn teacher_forced_mean_log_rank() {
         eprintln!("skipping: no bundle covering fr");
         return;
     };
-    let refpath = format!(
-        "{}/reference/en_US-fr_FR.tsv",
-        "/private/tmp/claude-501/-Users-Shared-rlx-models/08f4eb12-43ad-4c0c-a2c5-39438cf10ea7/scratchpad"
-    );
+    let refpath = format!("{}/reference/en_US-fr_FR.tsv", reference_root());
     let Ok(text) = std::fs::read_to_string(&refpath) else {
         eprintln!("skipping: no reference dump");
         return;
@@ -1577,7 +1574,7 @@ fn teacher_forced_mean_log_rank() {
     // piece, which threw away every sentence with an apostrophe.
     // `RLX_TEST_SKIP` holds out a different slice of the reference dump, so a
     // parameter tuned on one set can be checked on another.
-    let skip: usize = std::env::var("RLX_TEST_SKIP")
+    let skip: usize = rlx_ir::env::var_result("RLX_TEST_SKIP")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
@@ -1601,11 +1598,13 @@ fn teacher_forced_mean_log_rank() {
         src.extend(vocab.encode(s));
         // `AddSrcEos T` says the source is terminated, but not with which piece.
         // The target side terminates with `<s>`, so try both.
-        src.push(if std::env::var("RLX_SRC_EOS").as_deref() == Ok("bos") {
-            bos
-        } else {
-            eos
-        });
+        src.push(
+            if rlx_ir::env::var_result("RLX_SRC_EOS").as_deref() == Ok("bos") {
+                bos
+            } else {
+                eos
+            },
+        );
         cases.push((src, g));
         if cases.len() >= 8 {
             break;
@@ -1670,7 +1669,7 @@ fn teacher_forced_mean_log_rank() {
         }
         eprintln!(
             "  gather={:<10} decoder_positions={with_pos:<5} mean log-rank {:.3}  top-1 {top1}/{n}",
-            std::env::var("RLX_TRANSLATE_GATHER").unwrap_or_else(|_| "quartile".into()),
+            rlx_ir::env::var_result("RLX_TRANSLATE_GATHER").unwrap_or_else(|_| "quartile".into()),
             tot / n.max(1) as f64
         );
         eprintln!("     end-of-sentence ranks: {stop_ranks:?}");
@@ -1690,10 +1689,7 @@ fn control_token_placement_by_log_rank() {
         eprintln!("skipping: no bundle covering fr");
         return;
     };
-    let refpath = format!(
-        "{}/reference/en_US-fr_FR.tsv",
-        "/private/tmp/claude-501/-Users-Shared-rlx-models/08f4eb12-43ad-4c0c-a2c5-39438cf10ea7/scratchpad"
-    );
+    let refpath = format!("{}/reference/en_US-fr_FR.tsv", reference_root());
     let Ok(text) = std::fs::read_to_string(&refpath) else {
         eprintln!("skipping: no reference dump");
         return;
@@ -2054,10 +2050,7 @@ fn decoder_bos_sweep() {
         eprintln!("skipping: no bundle covering fr");
         return;
     };
-    let refpath = format!(
-        "{}/reference/en_US-fr_FR.tsv",
-        "/private/tmp/claude-501/-Users-Shared-rlx-models/08f4eb12-43ad-4c0c-a2c5-39438cf10ea7/scratchpad"
-    );
+    let refpath = format!("{}/reference/en_US-fr_FR.tsv", reference_root());
     let Ok(text) = std::fs::read_to_string(&refpath) else {
         eprintln!("skipping: no reference dump");
         return;

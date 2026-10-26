@@ -200,10 +200,10 @@ fn tensor_to_bf16_bytes(raw: &[u8], dtype: safetensors::Dtype) -> Result<Vec<u8>
         safetensors::Dtype::F32 => {
             ensure!(raw.len().is_multiple_of(4));
             Ok(raw
-                .chunks_exact(4)
-                .flat_map(|chunk| {
-                    bf16::from_f32(f32::from_le_bytes(chunk.try_into().unwrap())).to_le_bytes()
-                })
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|chunk| bf16::from_f32(f32::from_le_bytes(*chunk)).to_le_bytes())
                 .collect())
         }
         safetensors::Dtype::BF16 => Ok(raw.to_vec()),

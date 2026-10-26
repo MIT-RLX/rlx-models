@@ -29,7 +29,7 @@ use rlx_whisper::{SAMPLE_RATE as WR, WhisperRunner};
 const TEXT: &str = "The quick brown fox jumps over the lazy dog near the river bank.";
 
 fn piper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_PIPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_PIPER_DIR") {
         let p = PathBuf::from(d);
         if p.join("rlx-split/enc_p.onnx").is_file() {
             return Some(p);
@@ -39,7 +39,7 @@ fn piper_dir() -> Option<PathBuf> {
     p.join("rlx-split/enc_p.onnx").is_file().then_some(p)
 }
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         return ready(PathBuf::from(d));
     }
     let c = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");

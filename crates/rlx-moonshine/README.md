@@ -50,4 +50,4 @@ let text = model.transcribe(&pcm)?;
 
 ## Backend features
 
-`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, `coreml`, `all-backends`, `apple-silicon` — same pattern as `rlx-whisper`.
+`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, `coreml`, `all-backends`, `macos-gpu` — same pattern as `rlx-whisper`.

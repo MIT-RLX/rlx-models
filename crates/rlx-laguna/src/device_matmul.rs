@@ -426,7 +426,7 @@ fn build_swiglu_graph(
 /// Parse `cpu|host|metal|mlx|gpu|wgpu|coreml|ane|auto` for Laguna CLI.
 ///
 /// `auto` prefers the host fused GGUF path — Metal/MLX DequantMatMul is slower
-/// for MoE decode / short chat prefills on current Apple Silicon measurements.
+/// for MoE decode / short chat prefills on current macOS arm64 measurements.
 pub fn parse_device(s: &str) -> Result<Option<Device>> {
     match s.trim().to_ascii_lowercase().as_str() {
         "cpu" | "host" => Ok(None),

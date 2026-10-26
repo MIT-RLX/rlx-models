@@ -43,7 +43,7 @@ rlx-wake-train — custom wake-word training in RLX (no PyTorch / ONNX train)
   mlp     --pos DIR --neg DIR --keyword NAME --out FILE [--epochs N] [--device DEV]
   synth   --out-dir DIR [--n-pos N] [--n-neg N]
 
---device accepts cpu|metal|mlx|cuda|…|all|apple-silicon (comma list).
+--device accepts cpu|metal|mlx|cuda|…|all|macos-gpu (comma list).
 Numerics use rlx-cpu BLAS; --device validates each RLX backend is available.
 positives/ and negatives/ must contain 16 kHz (or resamplable) mono WAVs.
 "

@@ -39,11 +39,15 @@ fn tf32(st: &SafeTensors<'_>, name: &str) -> Result<Vec<f32>> {
     let raw = t.data();
     match t.dtype() {
         Dtype::F32 => Ok(raw
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect()),
         Dtype::BF16 => Ok(raw
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| {
                 let bits = u32::from(u16::from_le_bytes([b[0], b[1]])) << 16;
                 f32::from_bits(bits)
@@ -231,7 +235,10 @@ fn res_layer_ir(
     ag.mul(sum, inv)
 }
 
-fn build_gepard_graph(w: &NanoWeights, t: usize) -> Result<(rlx_ir::Graph, NamedTensors, usize)> {
+pub(crate) fn build_gepard_graph(
+    w: &NanoWeights,
+    t: usize,
+) -> Result<(rlx_ir::Graph, NamedTensors, usize)> {
     let c_in = w.pre_conv.c_in; // 32
 
     let mut hir = HirModule::new("gepard_decode");

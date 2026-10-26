@@ -34,6 +34,63 @@ pub fn prefill_cache_key(batch: usize, seq: usize) -> u64 {
     ((batch as u64) << 32) | (seq as u64)
 }
 
+/// A decode-ladder floor to opt into — **not** the default, because measuring
+/// it did not justify one.
+///
+/// A ladder floored at 1 goes 1,2,4,…,129..257, so a chat growing a few tokens
+/// per turn crosses a boundary most turns and compiles a new decode graph each
+/// time (~1.7s on Qwen3-0.6B/Metal). Flooring at 256 makes everything up to 256
+/// share one graph — four compiles become one. That sounds like a clear win and
+/// is not: the floor MOVES the cost rather than removing it, because the first
+/// turn now compiles the wide graph immediately.
+///
+/// Measured through the daemon on the same harness (6 growing turns,
+/// Qwen3-0.6B/Metal), floor 1 vs 256:
+/// * per-turn: `4.2, 2.5, 0.7, 3.7, 0.7, 0.7` vs `6.7, 2.4, 0.7, 1.9, 0.7, 0.8`
+/// * total turn time 12.5s vs 13.2s — a wash, inside turn-1 variance
+/// * long-generation decode 23.6 vs 23.5 tok/s — no difference above the floor
+/// * isolated sub-floor decode cost: ~5% (30.9 vs 29.4 tok/s, best-of-3)
+///
+/// So it is left off. Two cheaper lessons from getting here: a first pass read
+/// single runs and "found" a 2.8x decode regression that a rerun inverted, so
+/// long-generation tok/s needs best-of-N; and an isolated A/B favoured the
+/// floor while the production-shaped canary did not, so prefer the harness that
+/// mimics the real request pattern.
+pub const MIN_DECODE_BUCKET: usize = 256;
+
+/// Narrowest prefill bucket worth compiling. Below this the compile stops being
+/// amortised by the compute it saves, and most real turns are longer anyway.
+pub const MIN_PREFILL_BUCKET: usize = 256;
+
+/// Width to compile (or look up) a prefill graph at for a prompt of `need`
+/// tokens, capped at `cap` (the family's compiled maximum).
+///
+/// **The shared policy, so every family buckets the same way.** Two failure
+/// modes it exists to prevent, both measured:
+///
+/// 1. Pinning the width at `cap`. A family that compiles one prefill graph at
+///    `max_seq` computes the whole context for every prompt, so TTFT tracks the
+///    CONTEXT SETTING rather than the prompt — Qwen3.5-0.8B/Metal took 1.7-2.7s
+///    for a 15-token prompt at max_seq 2048 and ~11.5s at 8192, for identical
+///    work. Metal cannot escape this by trimming at run time: it is deliberately
+///    kept on the full-bucket MPSGraph path (see
+///    [`packed_prefill_active_extent_enabled`]), whose own rationale names pow2
+///    bucketing as the mitigation.
+/// 2. Keying on the exact prompt length. That recompiles for every new length
+///    and evicts a small cache almost immediately, trading padded compute for
+///    repeated compiles.
+///
+/// Powers of two from [`MIN_PREFILL_BUCKET`] give at most
+/// `log2(cap / MIN_PREFILL_BUCKET)` distinct graphs per session with at most 2x
+/// padded compute, which is the right side of both trades.
+pub fn prefill_bucket_for(need: usize, cap: usize) -> usize {
+    let floor = MIN_PREFILL_BUCKET.min(cap.max(1));
+    need.max(floor)
+        .next_power_of_two()
+        .min(cap.max(1))
+        .max(floor)
+}
+
 /// Whether packed prefill should hint [`CompiledGraph::set_active_extent`].
 ///
 /// Skips padded rows when `actual_seq < upper_seq` on CPU, MLX, and wgpu/Vulkan.
@@ -64,6 +121,58 @@ pub fn packed_prefill_active_extent_enabled(device: Device) -> bool {
         device,
         Device::Cpu | Device::Mlx | Device::Gpu | Device::Vulkan
     )
+}
+
+#[cfg(test)]
+mod prefill_bucket_tests {
+    use super::*;
+
+    #[test]
+    fn buckets_are_pow2_floored_and_capped() {
+        // Short prompts collapse onto one bucket — that is the point: 16 and
+        // 128 tokens must not compile two graphs.
+        assert_eq!(prefill_bucket_for(1, 8192), MIN_PREFILL_BUCKET);
+        assert_eq!(prefill_bucket_for(16, 8192), MIN_PREFILL_BUCKET);
+        assert_eq!(prefill_bucket_for(256, 8192), 256);
+        assert_eq!(prefill_bucket_for(257, 8192), 512);
+        assert_eq!(prefill_bucket_for(1024, 8192), 1024);
+        // Never over the cap, even when the next power of two would be.
+        assert_eq!(prefill_bucket_for(5000, 8192), 8192);
+        assert_eq!(prefill_bucket_for(9000, 8192), 8192);
+        // A cap under the floor wins: a model compiled for 128 cannot be asked
+        // for a 256-wide graph.
+        assert_eq!(prefill_bucket_for(16, 128), 128);
+        assert_eq!(prefill_bucket_for(1, 1), 1);
+    }
+
+    #[test]
+    fn a_bucket_is_never_shorter_than_the_prompt() {
+        // The whole contract: the graph must fit the prompt, or prefill either
+        // bails or silently truncates the context.
+        for cap in [128usize, 512, 2048, 8192] {
+            for need in [1usize, 2, 255, 256, 257, 1000, 4095, 4096, 8191] {
+                if need > cap {
+                    continue;
+                }
+                let b = prefill_bucket_for(need, cap);
+                assert!(b >= need, "bucket {b} < prompt {need} (cap {cap})");
+                assert!(b <= cap, "bucket {b} > cap {cap}");
+            }
+        }
+    }
+
+    #[test]
+    fn growth_is_monotonic_in_the_prompt() {
+        // Runners keep the live graph when it is already wide enough, so a
+        // non-monotonic policy would make them recompile on a SHORTER prompt.
+        let cap = 8192;
+        let mut prev = 0;
+        for need in (1..cap).step_by(37) {
+            let b = prefill_bucket_for(need, cap);
+            assert!(b >= prev, "bucket shrank at need {need}: {prev} → {b}");
+            prev = b;
+        }
+    }
 }
 
 /// Run a packed prefill graph, trimming compute to `actual_seq` rows inside bucket `upper_seq`.
@@ -440,7 +549,15 @@ where
     F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>),
 {
     run_bucketed_kv_decode_spare(
-        cache, past_seq, 0, kv, kv_dim, num_layers, fixed_inputs, build, options,
+        cache,
+        past_seq,
+        0,
+        kv,
+        kv_dim,
+        num_layers,
+        fixed_inputs,
+        build,
+        options,
     )
 }
 
@@ -522,7 +639,16 @@ where
     F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>),
 {
     run_bucketed_kv_decode_keyed_batched_spare(
-        cache, cache_key, past_seq, batch, 0, kv, kv_dim, num_layers, fixed_inputs, build,
+        cache,
+        cache_key,
+        past_seq,
+        batch,
+        0,
+        kv,
+        kv_dim,
+        num_layers,
+        fixed_inputs,
+        build,
         options,
     )
 }
@@ -558,17 +684,13 @@ where
         .ok_or_else(|| anyhow::anyhow!("cache_key {cache_key} outside decode buckets"))?;
     let upper = upper_u64 as usize;
 
-    let row_upper = (upper_u64 + kv_spare_rows as u64).saturating_mul(batch as u64);
-    let padded_k: Vec<Vec<f32>> = kv
-        .layers_k
-        .iter()
-        .map(|k| pad_rows(k, kv_dim, row_upper))
-        .collect();
-    let padded_v: Vec<Vec<f32>> = kv
-        .layers_v
-        .iter()
-        .map(|v| pad_rows(v, kv_dim, row_upper))
-        .collect();
+    // Each sequence of the `[batch, past, kv]` cache padded to its own
+    // `upper (+ spare)` rows.
+    let rows = upper_u64 + kv_spare_rows as u64;
+    let pad =
+        |host: &Vec<f32>| pad_kv_sequences(host, batch, kv.past_len, kv_dim, kv.past_len, rows);
+    let padded_k: Vec<Vec<f32>> = kv.layers_k.iter().map(pad).collect();
+    let padded_v: Vec<Vec<f32>> = kv.layers_v.iter().map(pad).collect();
     let key_names = past_kv_input_names(num_layers);
 
     let mut specs: Vec<CacheRunInput<'_>> = Vec::with_capacity(fixed_inputs.len() + 2 * num_layers);
@@ -625,7 +747,15 @@ where
     F: FnOnce(u64) -> (Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>),
 {
     run_bucketed_kv_decode_packed_spare(
-        cache, past_seq, 0, kv, kv_dim, num_layers, fixed_inputs, build, options,
+        cache,
+        past_seq,
+        0,
+        kv,
+        kv_dim,
+        num_layers,
+        fixed_inputs,
+        build,
+        options,
     )
 }
 
@@ -653,17 +783,13 @@ where
         .ok_or_else(|| anyhow::anyhow!("past_seq {past_seq} outside decode buckets"))?;
     let upper = upper_u64 as usize;
 
-    let row_upper = (upper_u64 + kv_spare_rows as u64).saturating_mul(batch as u64);
-    let padded_k: Vec<Vec<f32>> = kv
-        .layers_k
-        .iter()
-        .map(|k| pad_rows(k, kv_dim, row_upper))
-        .collect();
-    let padded_v: Vec<Vec<f32>> = kv
-        .layers_v
-        .iter()
-        .map(|v| pad_rows(v, kv_dim, row_upper))
-        .collect();
+    // Each sequence of the `[batch, past, kv]` cache padded to its own
+    // `upper (+ spare)` rows.
+    let rows = upper_u64 + kv_spare_rows as u64;
+    let pad =
+        |host: &Vec<f32>| pad_kv_sequences(host, batch, kv.past_len, kv_dim, kv.past_len, rows);
+    let padded_k: Vec<Vec<f32>> = kv.layers_k.iter().map(pad).collect();
+    let padded_v: Vec<Vec<f32>> = kv.layers_v.iter().map(pad).collect();
     let key_names = past_kv_input_names(num_layers);
 
     let mut specs: Vec<CacheRunInput<'_>> = Vec::with_capacity(fixed_inputs.len() + 2 * num_layers);
@@ -837,6 +963,44 @@ pub fn run_bucketed_kv_decode_hir_scratch<F>(
 where
     F: FnOnce(u64) -> (HirModule, HashMap<String, Vec<f32>>),
 {
+    run_bucketed_kv_decode_hir_scratch_spare(
+        cache,
+        past_seq,
+        0,
+        kv,
+        kv_dims,
+        num_layers,
+        padded_k,
+        padded_v,
+        fixed_inputs,
+        build,
+        options,
+    )
+}
+
+/// [`run_bucketed_kv_decode_hir_scratch`] for decode graphs whose `past_k_*` /
+/// `past_v_*` were declared with `kv_spare_rows` of spare capacity
+/// (`rlx_flow::blocks::kv_spare_rows`): each cache is uploaded `upper +
+/// kv_spare_rows` rows long, the last ones being the slot the step writes in
+/// place. Uploading only `upper` rows leaves the declared input short — CPU
+/// reads past it leniently, MLX refuses the graph.
+#[allow(clippy::too_many_arguments)]
+pub fn run_bucketed_kv_decode_hir_scratch_spare<F>(
+    cache: &mut BucketedCompileCache,
+    past_seq: usize,
+    kv_spare_rows: usize,
+    kv: &LayerKvCache,
+    kv_dims: &[usize],
+    num_layers: usize,
+    padded_k: &mut [Vec<f32>],
+    padded_v: &mut [Vec<f32>],
+    fixed_inputs: &[CacheRunInput<'_>],
+    build: F,
+    options: &CompileOptions,
+) -> Result<DecodeLogitsKv>
+where
+    F: FnOnce(u64) -> (HirModule, HashMap<String, Vec<f32>>),
+{
     let key = past_seq as u64;
     let (upper_u64, compiled) = cache
         .ensure_hir_with_params(key, build, options)
@@ -848,7 +1012,7 @@ where
     }
     for i in 0..num_layers {
         let kd = kv_dims[i];
-        let need = upper * kd;
+        let need = (upper + kv_spare_rows) * kd;
         if padded_k[i].len() != need {
             padded_k[i].resize(need, 0.0);
             padded_v[i].resize(need, 0.0);
@@ -1082,6 +1246,32 @@ pub fn split_bucketed_decode_kv(
     Ok((logits, new_k, new_v))
 }
 
+/// `rows` rows of each of `batch` sequences (`[batch, past, kv]` row-major,
+/// as `LayerKvCache` keeps them), each padded with zeros to `upper` rows.
+pub fn pad_kv_sequences(
+    host: &[f32],
+    batch: usize,
+    past: usize,
+    kv_dim: usize,
+    rows: usize,
+    upper: u64,
+) -> Vec<f32> {
+    if batch <= 1 {
+        let n = (rows * kv_dim).min(host.len());
+        return pad_rows(&host[..n], kv_dim, upper);
+    }
+    let upper = upper as usize;
+    let mut out = vec![0.0; batch * upper * kv_dim];
+    for b in 0..batch {
+        let take = rows.min(past).min(upper) * kv_dim;
+        let src = b * past * kv_dim;
+        if let Some(rows) = host.get(src..src + take) {
+            out[b * upper * kv_dim..b * upper * kv_dim + take].copy_from_slice(rows);
+        }
+    }
+    out
+}
+
 /// Compact pad-to-upper K/V (new token at row `upper`) to contiguous `past_len` rows.
 ///
 /// GPU-resident decode feeds the full `(upper + 1) * row_size` buffer back into handles;
@@ -1095,7 +1285,23 @@ pub fn compact_bucketed_kv_buffer(
     if past_len == 0 {
         return Vec::new();
     }
-    let row_size = batch * kv_dim;
+    if batch > 1 {
+        // `[batch, cap, kv]`, each sequence its past rows then its new one
+        // last (a batched step concatenates: its caches cannot alias).
+        let cap = buf.len() / (batch * kv_dim).max(1);
+        let mut out = Vec::with_capacity(batch * past_len * kv_dim);
+        for b in 0..batch {
+            let seq = &buf[b * cap * kv_dim..(b + 1) * cap * kv_dim];
+            if cap <= past_len {
+                out.extend_from_slice(seq);
+                continue;
+            }
+            out.extend_from_slice(&seq[..(past_len - 1) * kv_dim]);
+            out.extend_from_slice(&seq[(cap - 1) * kv_dim..]);
+        }
+        return out;
+    }
+    let row_size = kv_dim;
     if buf.len() < row_size {
         return buf.to_vec();
     }

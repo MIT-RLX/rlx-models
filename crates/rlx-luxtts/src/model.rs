@@ -35,7 +35,9 @@ fn i64_bytes(v: &[i64]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 fn as_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -375,7 +377,7 @@ impl LuxTts {
             // luxtts's mel divergence is the CFM flow or upstream/quality. Any
             // RLX_ONNX_TAP tensor lands at outs[1..] → dumped for op-level bisect.
             if step == 0
-                && let Some(dir) = std::env::var_os("RLX_LUX_DUMP")
+                && let Some(dir) = rlx_ir::env::var_os("RLX_LUX_DUMP")
             {
                 let dir = std::path::PathBuf::from(dir);
                 let _ = std::fs::create_dir_all(&dir);
@@ -435,7 +437,7 @@ impl LuxTts {
         // Parity bisection (dev): dump each subgraph boundary so a Python
         // onnxruntime run can diff native vs ort per stage + do spectral/temporal
         // analysis on the final waveform.
-        if let Some(dir) = std::env::var_os("RLX_LUX_DUMP") {
+        if let Some(dir) = rlx_ir::env::var_os("RLX_LUX_DUMP") {
             let dir = std::path::PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
             let d32 = |name: &str, v: &[f32]| {

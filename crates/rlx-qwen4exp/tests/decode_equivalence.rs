@@ -35,7 +35,7 @@ use rlx_runtime::Device;
 const TOKENS: [u32; 6] = [3, 11, 7, 11, 2, 19];
 
 fn dev() -> Device {
-    std::env::var("RLX_TEST_DEVICE")
+    rlx_ir::env::var_result("RLX_TEST_DEVICE")
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| rlx_cli::parse_device(&s).expect("bad RLX_TEST_DEVICE"))

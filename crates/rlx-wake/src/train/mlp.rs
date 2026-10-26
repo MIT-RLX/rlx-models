@@ -28,7 +28,7 @@ impl MlpWeights {
         let mut rng = seed;
         let mut next = || {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            ((rng >> 33) as f32 / u32::MAX as f32) * 0.04 - 0.02
+            ((rng >> 33) as f32 / (1u64 << 31) as f32) * 0.04 - 0.02
         };
         Self {
             fc1_w: (0..cfg.hidden * cfg.in_dim).map(|_| next()).collect(),

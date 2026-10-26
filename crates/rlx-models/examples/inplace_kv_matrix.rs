@@ -129,7 +129,7 @@ fn file_gb(path: &PathBuf) -> f64 {
         .unwrap_or(f64::NAN)
 }
 
-fn label_of(path: &PathBuf) -> String {
+fn label_of(path: &std::path::Path) -> String {
     path.file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| path.display().to_string())
@@ -151,8 +151,7 @@ fn run_cell(
     }
     let opts = rlx_models::run::AutoOptions::new(device).max_seq(max_seq);
     let t_load = Instant::now();
-    let mut runner =
-        rlx_models::run::auto_runner_with(path, &opts).context("auto_runner_with")?;
+    let mut runner = rlx_models::run::auto_runner_with(path, &opts).context("auto_runner_with")?;
     let load_s = t_load.elapsed().as_secs_f64();
     let family = runner.family();
     let rss = (rss_mb() - rss_before).max(0.0);
@@ -202,10 +201,7 @@ fn main() -> Result<()> {
         }
     }
     let devices: Vec<Device> = match args.next() {
-        Some(s) => s
-            .split(',')
-            .map(parse_device)
-            .collect::<Result<Vec<_>>>()?,
+        Some(s) => s.split(',').map(parse_device).collect::<Result<Vec<_>>>()?,
         None => vec![Device::Cpu],
     };
     let n_new: usize = match args.next() {
@@ -252,7 +248,7 @@ fn main() -> Result<()> {
 
     println!(
         "[matrix] models={:?} | devices={:?} | prompt={prompt_len} | n_new={n_new} | reps={reps} | max_seq={max_seq}",
-        paths.iter().map(label_of).collect::<Vec<_>>(),
+        paths.iter().map(|p| label_of(p)).collect::<Vec<_>>(),
         available
     );
 
@@ -304,8 +300,17 @@ fn main() -> Result<()> {
 
     println!(
         "[matrix] {:<26} {:<7} {:<8} {:<9} {:>7} {:>8} {:>8} {:>10} {:>12} {:>9} {:>8}",
-        "model", "family", "device", "arm", "file GB", "+rss MB", "TTFT s", "decode t/s",
-        "max|dlogit|", "cosine", "prefix"
+        "model",
+        "family",
+        "device",
+        "arm",
+        "file GB",
+        "+rss MB",
+        "TTFT s",
+        "decode t/s",
+        "max|dlogit|",
+        "cosine",
+        "prefix"
     );
     for c in &cells {
         // Reference is the first cell OF THE SAME MODEL: comparing logits across
@@ -351,32 +356,34 @@ fn main() -> Result<()> {
     // ── the hard gate: within a device, the two arms must agree exactly ──────
     let mut failures = 0usize;
     for path in &paths {
-      let model = label_of(path);
-      for &device in &available {
-        let ip = cells
-            .iter()
-            .find(|c| c.model == model && c.device == device && c.inplace);
-        let cc = cells
-            .iter()
-            .find(|c| c.model == model && c.device == device && !c.inplace);
-        if let (Some(ip), Some(cc)) = (ip, cc) {
-            if ip.tokens != cc.tokens {
-                let at = ip.tokens.iter().zip(&cc.tokens).position(|(a, b)| a != b);
-                println!("[matrix] FAIL {model} {device:?}: in-place diverges from concat at index {at:?}");
-                println!("[matrix]   concat  : {:?}", cc.tokens);
-                println!("[matrix]   in-place: {:?}", ip.tokens);
-                failures += 1;
-            } else {
-                let speedup = ip.decode_tps() / cc.decode_tps();
-                println!(
-                    "[matrix] {model} {device:?}: token-identical ({} tokens), decode \
+        let model = label_of(path);
+        for &device in &available {
+            let ip = cells
+                .iter()
+                .find(|c| c.model == model && c.device == device && c.inplace);
+            let cc = cells
+                .iter()
+                .find(|c| c.model == model && c.device == device && !c.inplace);
+            if let (Some(ip), Some(cc)) = (ip, cc) {
+                if ip.tokens != cc.tokens {
+                    let at = ip.tokens.iter().zip(&cc.tokens).position(|(a, b)| a != b);
+                    println!(
+                        "[matrix] FAIL {model} {device:?}: in-place diverges from concat at index {at:?}"
+                    );
+                    println!("[matrix]   concat  : {:?}", cc.tokens);
+                    println!("[matrix]   in-place: {:?}", ip.tokens);
+                    failures += 1;
+                } else {
+                    let speedup = ip.decode_tps() / cc.decode_tps();
+                    println!(
+                        "[matrix] {model} {device:?}: token-identical ({} tokens), decode \
                      {speedup:.2}x, logits max|d| {:.3e}",
-                    ip.tokens.len(),
-                    compare(&ip.logits, &cc.logits).0
-                );
+                        ip.tokens.len(),
+                        compare(&ip.logits, &cc.logits).0
+                    );
+                }
             }
         }
-      }
     }
     if failures > 0 {
         bail!("{failures} (model, device) cell(s) changed output under in-place KV append");

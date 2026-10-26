@@ -13,6 +13,8 @@ readme = "README.md"
 publish = false
 
 [dependencies]
+rlx-ir = { workspace = true }
+rlx-search = { workspace = true }
 anyhow = { workspace = true }
 # The training stack: `dsl` = the `rlx! { … }` graph DSL, `optim` = autodiff +
 # CPU eval + the rlx_optim optimizers (AdamW, LR schedules, Func::train_step*).
@@ -21,14 +23,14 @@ rlx-tensor = { workspace = true, features = ["dsl", "optim"] }
 # index init (`--init-from`) and the distillation teacher (`--distill`). No new
 # runtime IO/params — only the init/distill procedure. Default-features off so a
 # `--no-default-features` CPU build never pulls Metal/download.
-rlx-tinystories = { path = "../rlx-tinystories", version = "0.2.16", default-features = false }
+rlx-tinystories = { path = "../rlx-tinystories", version = "0.2.19", default-features = false }
 # TinyStories fetch (synchronous ureq client) — pulled by the `download` feature.
 hf-hub = { workspace = true, optional = true }
 # mmap the byte-level corpus so a multi-GB train split never lives in RAM.
 memmap2 = "0.9"
 
 [features]
-# Metal on by default (Apple GPU training); drop with --no-default-features for
+# Metal on by default (Metal GPU training); drop with --no-default-features for
 # a pure-CPU build, and add `download` to auto-fetch TinyStories from the Hub.
 default = ["metal", "download"]
 metal = ["rlx-tensor/eval-metal", "rlx-tinystories/metal"]

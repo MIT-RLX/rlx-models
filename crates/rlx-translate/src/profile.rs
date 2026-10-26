@@ -31,7 +31,7 @@ thread_local! {
 pub fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
-        std::env::var("RLX_TRANSLATE_PROFILE")
+        rlx_ir::env::var_result("RLX_TRANSLATE_PROFILE")
             .map(|v| !matches!(v.as_str(), "" | "0" | "false" | "no" | "off"))
             .unwrap_or(false)
     })

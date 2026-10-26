@@ -27,7 +27,7 @@
 //! plus per-backend dispatch limits — and feeds the formula. [`auto_max_fft_batch`]
 //! is the one-call convenience.
 //!
-//! On Apple Silicon every backend (CPU / Metal / MLX / wgpu / ANE) draws from the
+//! On macOS arm64 every backend (CPU / Metal / MLX / wgpu / ANE) draws from the
 //! same unified pool, so one `hw.memsize` budget is correct across all of them.
 //! On a discrete GPU the memory bound is VRAM, which we can't introspect here —
 //! override with `RLX_FFT_MEM_BUDGET_MB` in that case.
@@ -175,7 +175,7 @@ pub fn detect_device_caps(device: Device) -> DeviceCaps {
 }
 
 fn mem_budget_override() -> Option<u64> {
-    std::env::var("RLX_FFT_MEM_BUDGET_MB")
+    rlx_ir::env::var_result("RLX_FFT_MEM_BUDGET_MB")
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
         .map(|mb| mb * 1024 * 1024)
@@ -279,13 +279,13 @@ mod tests {
     fn clamp_lowers_over_cap_batch() {
         // Force the wgpu cap via a huge memory override so dispatch is the bound.
         // SAFETY: single-threaded test; env set+read locally.
-        unsafe { std::env::set_var("RLX_FFT_MEM_BUDGET_MB", "1048576") }; // 1 TiB
+        rlx_ir::env::set("RLX_FFT_MEM_BUDGET_MB", "1048576"); // 1 TiB
         let (b, why) = clamp_batch(Device::Gpu, FftProblem::f32(256), 200_000);
         assert_eq!(b, 65535);
         assert_eq!(why, Some(LimitedBy::Dispatch));
         let (b2, why2) = clamp_batch(Device::Gpu, FftProblem::f32(256), 1024);
         assert_eq!(b2, 1024);
         assert_eq!(why2, None);
-        unsafe { std::env::remove_var("RLX_FFT_MEM_BUDGET_MB") };
+        rlx_ir::env::remove("RLX_FFT_MEM_BUDGET_MB");
     }
 }

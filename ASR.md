@@ -1,6 +1,6 @@
 # RLX ASR backend benchmark
 
-Apples-to-apples comparison of the RLX ASR crates across **4 clips × 4 models ×
+Like-for-like comparison of the RLX ASR crates across **4 clips × 4 models ×
 5 backends**, via the shared driver `rlx_core::asr_bench` (each crate's
 `examples/bench_asr.rs`). Same protocol for every model: batch baseline +
 chunked-streaming sweep, reporting **WER/CER · RTF · BSF · peak RSS**.
@@ -13,7 +13,7 @@ chunked-streaming sweep, reporting **WER/CER · RTF · BSF · peak RSS**.
 - **Metrics:** WER/CER (lower=better, vs human/canonical reference), **RTF** =
   audio÷wall (higher=faster; >1 beats real-time), BSF = streaming÷batch WER,
   peak RSS via `getrusage`.
-- **Backends:** cpu, metal, mlx, gpu (wgpu), ane (CoreML). Apple Silicon.
+- **Backends:** cpu, metal, mlx, gpu (wgpu), ane (CoreML). macOS arm64.
 - **WER is bit-stable across all 5 backends** for every (model, clip) — so the
   accuracy tables list one WER per model×clip; speed/memory vary by backend.
 

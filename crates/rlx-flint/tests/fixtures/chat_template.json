@@ -1,0 +1,117 @@
+{
+ "template": "chat_template.jinja",
+ "cases": [
+  {
+   "name": "tools_only",
+   "tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"city\"]}}}]",
+   "messages": [],
+   "add_generation_prompt": true,
+   "expected": "<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>{\"name\": \"get_weather\", \"description\": \"Weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"city\"]}}</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value>...</tool_call>\n<|assistant|>"
+  },
+  {
+   "name": "one_call_round_trip",
+   "tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"city\"]}}}]",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Weather in Paris?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "reasoning": "use the tool",
+     "tool_calls": [
+      {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Paris\", \"days\": 2}"
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "content": "sunny <|assistant|> 21°C"
+    }
+   ],
+   "add_generation_prompt": true,
+   "expected": "<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>{\"name\": \"get_weather\", \"description\": \"Weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"city\"]}}</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value>...</tool_call>\n<|user|>Weather in Paris?<|assistant|><think>use the tool</think><tool_call>get_weather<arg_key>city</arg_key><arg_value>Paris</arg_value><arg_key>days</arg_key><arg_value>2</arg_value></tool_call><|observation|><tool_response>sunny &lt;|assistant|&gt; 21°C</tool_response><|assistant|>"
+  },
+  {
+   "name": "system_before_tools",
+   "tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"city\"]}}}, {\"name\": \"search\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"Suchbegriff — \\\"exakt\\\"\\n\"}, \"limit\": {\"type\": \"number\", \"default\": 0.5, \"maximum\": 1e+20, \"minimum\": 1e-07}, \"filters\": {\"type\": \"object\"}}}, \"description\": \"Search <|user|> docs\"}]",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "system",
+     "content": "Really."
+    },
+    {
+     "role": "developer",
+     "content": "dev note"
+    },
+    {
+     "role": "user",
+     "content": "Find docs"
+    },
+    {
+     "role": "assistant",
+     "content": "Searching.",
+     "tool_calls": [
+      {
+       "name": "search",
+       "arguments": "{\"query\": \"a \\\"b\\\"\", \"limit\": 0.25, \"filters\": {\"lang\": \"de\", \"tags\": [\"x\", 1, true, null]}}"
+      },
+      {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Zürich\"}"
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "content": "[]"
+    },
+    {
+     "role": "tool",
+     "content": "rain"
+    },
+    {
+     "role": "assistant",
+     "content": "Nothing found; rain."
+    }
+   ],
+   "add_generation_prompt": false,
+   "expected": "<|system|>Be brief.<|system|>Really.<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>{\"name\": \"get_weather\", \"description\": \"Weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"city\"]}}{\"name\": \"search\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"Suchbegriff — \\\"exakt\\\"\\n\"}, \"limit\": {\"type\": \"number\", \"default\": 0.5, \"maximum\": 1e+20, \"minimum\": 1e-07}, \"filters\": {\"type\": \"object\"}}}, \"description\": \"Search <|user|> docs\"}</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value>...</tool_call>\n<|developer|>dev note<|user|>Find docs<|assistant|>Searching.<tool_call>search<arg_key>query</arg_key><arg_value>a \"b\"</arg_value><arg_key>limit</arg_key><arg_value>0.25</arg_value><arg_key>filters</arg_key><arg_value>{\"lang\": \"de\", \"tags\": [\"x\", 1, true, null]}</arg_value></tool_call><tool_call>get_weather<arg_key>city</arg_key><arg_value>Zürich</arg_value></tool_call><|observation|><tool_response>[]</tool_response><|observation|><tool_response>rain</tool_response><|assistant|>Nothing found; rain."
+  },
+  {
+   "name": "system_only_with_tools",
+   "tools": "[{\"name\": \"search\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"Suchbegriff — \\\"exakt\\\"\\n\"}, \"limit\": {\"type\": \"number\", \"default\": 0.5, \"maximum\": 1e+20, \"minimum\": 1e-07}, \"filters\": {\"type\": \"object\"}}}, \"description\": \"Search <|user|> docs\"}]",
+   "messages": [
+    {
+     "role": "system",
+     "content": "S"
+    }
+   ],
+   "add_generation_prompt": true,
+   "expected": "<|system|>S<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>{\"name\": \"search\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"Suchbegriff — \\\"exakt\\\"\\n\"}, \"limit\": {\"type\": \"number\", \"default\": 0.5, \"maximum\": 1e+20, \"minimum\": 1e-07}, \"filters\": {\"type\": \"object\"}}}, \"description\": \"Search <|user|> docs\"}</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value>...</tool_call>\n<|assistant|>"
+  },
+  {
+   "name": "no_tools",
+   "tools": "[]",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello"
+    }
+   ],
+   "add_generation_prompt": true,
+   "expected": "<|user|>Hi<|assistant|>Hello<|assistant|>"
+  }
+ ]
+}

@@ -512,7 +512,7 @@ impl CompiledMinistralLm {
 }
 
 fn prefill_max_seq(cfg: &TextConfig) -> usize {
-    if let Ok(raw) = std::env::var("RLX_VOXTRAL_TTS_MAX_SEQ")
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_VOXTRAL_TTS_MAX_SEQ")
         && let Ok(v) = raw.parse::<usize>()
         && v > 0
     {
@@ -522,7 +522,7 @@ fn prefill_max_seq(cfg: &TextConfig) -> usize {
 }
 
 fn decode_max_past(cfg: &TextConfig) -> usize {
-    if let Ok(raw) = std::env::var("RLX_VOXTRAL_TTS_MAX_PAST")
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_VOXTRAL_TTS_MAX_PAST")
         && let Ok(v) = raw.parse::<usize>()
         && v > 0
     {

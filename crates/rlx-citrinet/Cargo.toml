@@ -12,6 +12,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+rlx-search = { workspace = true }
 
 [lints]
 workspace = true

@@ -54,7 +54,7 @@ pub fn render_multi_train_html(report: &MultiTrainReport) -> String {
     --bg: #0f1419; --panel: #1a2332; --text: #e6edf3; --muted: #8b949e;
     --border: #30363d; --accent: #58a6ff; --fast: #238636;
   }}
-  body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  body {{ margin: 0; font-family: BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--bg); color: var(--text); line-height: 1.5; }}
   header {{ padding: 2rem 2.5rem 1rem; border-bottom: 1px solid var(--border); }}
   h1 {{ margin: 0 0 0.5rem; font-size: 1.75rem; }}

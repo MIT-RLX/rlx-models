@@ -402,7 +402,7 @@ impl UnlimitedOcrConfig {
 
     pub fn from_json_str(data: &str) -> Result<Self> {
         let raw: RawUnlimitedOcrConfig =
-            serde_json::from_str(data).context("parse Unlimited-OCR config.json")?;
+            rlx_core::config::from_hf_json(data).context("parse Unlimited-OCR config.json")?;
         Ok(Self::resolve(raw))
     }
 

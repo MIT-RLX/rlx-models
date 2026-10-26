@@ -47,9 +47,8 @@ fn main() {
     );
 
     // ---- accuracy vs the real 32-app val labels + ML comparison ----
-    let dir = std::env::args().nth(1).unwrap_or_else(|| {
-        "/private/tmp/claude-501/-Users-Shared-rlx-models/47c4aeaa-f216-4fbb-9241-d0928201ee4a/scratchpad/multi".to_string()
-    });
+    // Optional: the dataset directory (`multi/` from the data generator).
+    let dir = std::env::args().nth(1).unwrap_or_default();
     match (
         std::fs::read_to_string(format!("{dir}/val_input.txt")),
         std::fs::read_to_string(format!("{dir}/val_tags.txt")),

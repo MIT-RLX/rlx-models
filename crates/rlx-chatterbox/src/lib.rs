@@ -24,6 +24,8 @@
 
 pub mod common;
 
+#[cfg(feature = "export")]
+pub mod export;
 /// Native ort-free runtime — imports the ONNX graphs → rlx-ir → compile → run
 /// on any RLX backend (cpu/metal/mlx/wgpu/coreml).
 #[cfg(feature = "native")]

@@ -64,10 +64,9 @@ fn parse_device(s: &str) -> Result<Device> {
 
 /// One build + generate. A fresh runner each time so the decode graph is
 /// recompiled under the current flag rather than reused from the other arm.
-fn one(path: &PathBuf, device: Device, prompt: &[u32], n_new: usize) -> Result<Run> {
+fn one(path: &std::path::Path, device: Device, prompt: &[u32], n_new: usize) -> Result<Run> {
     let opts = rlx_models::run::AutoOptions::new(device);
-    let mut runner =
-        rlx_models::run::auto_runner_with(path, &opts).context("auto_runner_with")?;
+    let mut runner = rlx_models::run::auto_runner_with(path, &opts).context("auto_runner_with")?;
     let family = runner.family();
 
     let t0 = Instant::now();
@@ -92,9 +91,10 @@ fn one(path: &PathBuf, device: Device, prompt: &[u32], n_new: usize) -> Result<R
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let path = PathBuf::from(args.next().context(
-        "usage: inplace_kv_ab <checkpoint> [device] [n_new] [prompt_len] [reps]",
-    )?);
+    let path = PathBuf::from(
+        args.next()
+            .context("usage: inplace_kv_ab <checkpoint> [device] [n_new] [prompt_len] [reps]")?,
+    );
     let device = match args.next() {
         Some(s) => parse_device(&s)?,
         None => Device::Cpu,

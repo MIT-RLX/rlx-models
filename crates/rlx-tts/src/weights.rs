@@ -138,7 +138,9 @@ fn decode_f32(dtype: &str, raw: &[u8]) -> Result<Vec<f32>> {
                 "F32 byte length not multiple of 4"
             );
             Ok(raw
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect())
         }
@@ -148,7 +150,9 @@ fn decode_f32(dtype: &str, raw: &[u8]) -> Result<Vec<f32>> {
                 "F16 byte length not multiple of 2"
             );
             Ok(raw
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| {
                     let bits = u16::from_le_bytes([c[0], c[1]]);
                     half::f16::from_bits(bits).to_f32()

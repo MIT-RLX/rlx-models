@@ -123,7 +123,7 @@ fn run_loss(device: Device, force_cpu_bwd: bool, forward_only: bool) -> f64 {
 
 #[test]
 fn lora_26layer_loss_cpu_vs_metal() {
-    if std::env::var("RLX_VOXTRAL_TTS_TRAIN_GPU_STEP")
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_TRAIN_GPU_STEP")
         .ok()
         .as_deref()
         != Some("1")
@@ -161,7 +161,7 @@ fn lora_26layer_loss_cpu_vs_metal() {
 
 #[test]
 fn lora_13layer_forward_cpu_vs_metal() {
-    if std::env::var("RLX_VOXTRAL_TTS_TRAIN_GPU_STEP")
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_TRAIN_GPU_STEP")
         .ok()
         .as_deref()
         != Some("1")

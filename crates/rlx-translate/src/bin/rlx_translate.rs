@@ -18,7 +18,7 @@
 use anyhow::{Context, Result, bail};
 use rlx_translate::assets::{Assets, load_config};
 use rlx_translate::casemap::sentence_case;
-use rlx_translate::espresso;
+use rlx_translate::netfile;
 use rlx_translate::normalizer::Normalizer;
 use rlx_translate::phrasebook::Phrasebook;
 use rlx_translate::pipeline::{Support, TranslationPlan};
@@ -98,7 +98,7 @@ fn split_settings(raw: &[String]) -> Result<(Vec<String>, Tuning)> {
             continue;
         }
         tuning.set(k, v)?;
-        unsafe { std::env::set_var(format!("{}{norm}", rlx_translate::tuning::ENV_PREFIX), v) };
+        rlx_ir::env::set(format!("{}{norm}", rlx_translate::tuning::ENV_PREFIX), v);
     }
     Ok((positional, tuning))
 }
@@ -144,7 +144,7 @@ fn main() -> Result<()> {
             // reported, so they are not part of `Tuning` — but someone asking
             // "what can I set?" wants them in the same list.
             println!("\n  execution and diagnostics (environment only)\n");
-            let assets = std::env::var(format!("{}ASSETS", rlx_translate::tuning::ENV_PREFIX))
+            let assets = rlx_ir::env::read(&format!("{}ASSETS", rlx_translate::tuning::ENV_PREFIX))
                 .unwrap_or_else(|_| "system".to_string());
             for (k, v, help) in [
                 (
@@ -160,7 +160,7 @@ fn main() -> Result<()> {
                 ("assets", assets, "colon-separated extra asset roots"),
                 (
                     "trace",
-                    std::env::var(format!("{}TRACE", rlx_translate::tuning::ENV_PREFIX))
+                    rlx_ir::env::read(&format!("{}TRACE", rlx_translate::tuning::ENV_PREFIX))
                         .is_ok()
                         .to_string(),
                     "print the stage graph's trace",
@@ -361,7 +361,7 @@ fn probe(file: Option<&String>) -> Result<()> {
     let Some(file) = file else {
         bail!("expected a pyespresso.mdl.bin path\n\n{USAGE}");
     };
-    let m = espresso::Manifest::load(file)?;
+    let m = netfile::Manifest::load(file)?;
     println!("engine: {}", m.str("BEspressoEngine").unwrap_or("?"));
     println!("decoder layers: {}", m.decoder_layers());
     println!("target languages: {:?}", m.languages());
@@ -563,7 +563,7 @@ fn translate(pair_arg: Option<&String>, text: Option<&String>) -> Result<()> {
         }
         None => println!("\nno stage produced a translation"),
     }
-    if std::env::var("RLX_TRANSLATE_TRACE").is_ok() {
+    if rlx_ir::env::var_result("RLX_TRANSLATE_TRACE").is_ok() {
         for (name, v) in &out.trace {
             if let Some(t) = v {
                 println!("  trace {name:<38} {t:?}");
@@ -630,7 +630,7 @@ fn load_nmt(
 /// reproduce what the OS actually produces" is the right one, and this is the
 /// oracle for it.
 fn os_output(pair: &LangPair) -> Option<std::collections::HashMap<String, String>> {
-    let dir = std::env::var("RLX_TRANSLATE_REFERENCE").ok()?;
+    let dir = rlx_ir::env::var_result("RLX_TRANSLATE_REFERENCE").ok()?;
     let text = std::fs::read_to_string(
         Path::new(&dir).join(format!("{}-{}.tsv", pair.source, pair.target)),
     )
@@ -766,7 +766,7 @@ fn bench(only: Option<&String>) -> Result<()> {
                 ours.push((src.clone(), got.to_string()));
                 if want.iter().any(|w| got == *w) {
                     exact += 1;
-                } else if std::env::var("RLX_BENCH_SHOW").is_ok() {
+                } else if rlx_ir::env::var_result("RLX_BENCH_SHOW").is_ok() {
                     println!("    PB   {pair} {src:?}\n      got  {got:?}\n      want {want:?}");
                 }
             } else {
@@ -835,7 +835,7 @@ fn bench(only: Option<&String>) -> Result<()> {
                         .any(|w| got.trim().eq_ignore_ascii_case(w.trim()))
                     {
                         nmt_exact += 1;
-                    } else if std::env::var("RLX_BENCH_SHOW").is_ok() {
+                    } else if rlx_ir::env::var_result("RLX_BENCH_SHOW").is_ok() {
                         println!(
                             "    NMT  {pair} {src:?}\n      got  {got:?}\n      want {want:?}"
                         );
@@ -904,7 +904,8 @@ fn bench(only: Option<&String>) -> Result<()> {
                     ap_exact += 1;
                 }
                 ap_chrf += rlx_translate::score::chrf(got, theirs);
-                if got.trim() != theirs.trim() && std::env::var("RLX_BENCH_SHOW").is_ok() {
+                if got.trim() != theirs.trim() && rlx_ir::env::var_result("RLX_BENCH_SHOW").is_ok()
+                {
                     println!(
                         "    VS-OS {pair} {src:?}\n      ours  {got:?}\n      os    {theirs:?}"
                     );
@@ -1219,11 +1220,11 @@ fn export(out: Option<&String>, lang: Option<&str>) -> Result<()> {
     // (embedding/encoder/readout) have the SAME file name in every bundle, so
     // resolving them by name across all directories silently mixes a 48k-vocab
     // bundle's embedding with another bundle's decoder.
-    let manifests: Vec<(std::path::PathBuf, espresso::Manifest)> = dirs
+    let manifests: Vec<(std::path::PathBuf, netfile::Manifest)> = dirs
         .iter()
         .filter(|d| d.join("pyespresso.mdl.bin").exists())
         .filter_map(|d| {
-            espresso::Manifest::load(d.join("pyespresso.mdl.bin"))
+            netfile::Manifest::load(d.join("pyespresso.mdl.bin"))
                 .ok()
                 .map(|m| (d.clone(), m))
         })
@@ -1352,7 +1353,7 @@ fn convert(out: Option<&String>, dtype: Option<&str>) -> Result<()> {
         if !d.join("pyespresso.mdl.bin").exists() {
             continue;
         }
-        let Ok(m) = espresso::Manifest::load(d.join("pyespresso.mdl.bin")) else {
+        let Ok(m) = netfile::Manifest::load(d.join("pyespresso.mdl.bin")) else {
             continue;
         };
         let langs = m.languages();

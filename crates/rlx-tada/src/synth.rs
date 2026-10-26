@@ -167,7 +167,7 @@ impl Synthesizer {
             );
         }
         let out_gaps = gaps[skip..].to_vec();
-        if std::env::var_os("RLX_TADA_TRACE").is_some() {
+        if rlx_ir::env::var_os("RLX_TADA_TRACE").is_some() {
             // Duration blow-ups are TADA's characteristic failure, and they are
             // invisible in the waveform until it is already minutes long.
             eprintln!(

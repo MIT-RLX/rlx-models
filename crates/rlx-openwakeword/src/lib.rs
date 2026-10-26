@@ -17,6 +17,8 @@
 
 pub mod cli;
 pub mod embedding;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod phrase;
 pub mod session;
 pub mod train;

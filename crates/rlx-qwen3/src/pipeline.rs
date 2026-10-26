@@ -37,7 +37,7 @@
 //! the monolithic [`crate::builder::build_qwen3_graph_sized_last_logits`]).
 
 use crate::config::Qwen3Config;
-use crate::flow::{qwen3_lm_head_stage, rope_tables, validate_cfg};
+use crate::flow::{qwen3_lm_head_stage, rope_stage, validate_cfg};
 use anyhow::{Result, anyhow, bail};
 use rlx_core::flow_bridge::{WeightLoaderSource, compile_options_from_profile};
 use rlx_core::flow_util::graph_from_built;
@@ -46,7 +46,7 @@ use rlx_core::weight_map::WeightMap;
 use rlx_distributed::{
     BlockInput, BlockOutput, BlockRole, BlockRunner, block_role, pipeline_layer_range,
 };
-use rlx_flow::blocks::{Qwen3DecoderSpec, RopeTablesStage, qwen3_prefill_layer_fused};
+use rlx_flow::blocks::{Qwen3DecoderSpec, qwen3_prefill_layer_fused};
 use rlx_flow::{BuiltModel, CompileProfile, ModelFlow, plugin_named};
 use rlx_ir::logical_kernel::KernelDispatchConfig;
 use rlx_ir::{DType, Graph, Shape};
@@ -120,7 +120,6 @@ pub fn build_qwen3_block_built(
     let dh = cfg.head_dim;
     let eps = cfg.rms_norm_eps as f32;
     let hidden_shape = Shape::new(&[batch, seq, h], f);
-    let (cos_data, sin_data) = rope_tables(cfg);
 
     let decoder_spec = Qwen3DecoderSpec {
         num_heads: cfg.num_attention_heads,
@@ -133,6 +132,7 @@ pub fn build_qwen3_block_built(
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
         mask: crate::builder::attn_mask_kind(cfg),
+        moe: None,
     };
 
     let mut flow = ModelFlow::new("qwen3_block").with_profile(CompileProfile::qwen3_prefill());
@@ -146,12 +146,7 @@ pub fn build_qwen3_block_built(
 
     // Shared params the layers reference by name.
     flow = flow
-        .rope_tables(RopeTablesStage::param(
-            cfg.max_position_embeddings,
-            dh / 2,
-            cos_data,
-            sin_data,
-        ))
+        .rope_tables(rope_stage(cfg))
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh);
 

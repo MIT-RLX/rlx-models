@@ -15,6 +15,8 @@
 //! just soprano-demo
 //! ```
 
+#[cfg(feature = "export")]
+pub mod export;
 pub mod gguf_bundle;
 pub mod native;
 pub mod native_qwen3;

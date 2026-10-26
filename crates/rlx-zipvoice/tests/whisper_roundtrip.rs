@@ -26,7 +26,7 @@ const PROMPT_TEXT: &str = "Hello from Kokoro. This is a test of speech synthesis
 const TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 
 fn model_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_ZIPVOICE_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_ZIPVOICE_DIR") {
         let p = PathBuf::from(d);
         if p.join("tokens.txt").is_file() {
             return Some(p);
@@ -36,7 +36,7 @@ fn model_dir() -> Option<PathBuf> {
     (p.join("tokens.txt").is_file() && p.join("onnx/vocoder_spec.onnx").is_file()).then_some(p)
 }
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         return ready(PathBuf::from(d));
     }
     let c = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");

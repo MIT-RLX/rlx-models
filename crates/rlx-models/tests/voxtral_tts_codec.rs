@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 #[test]
 fn codec_decoder_loads_from_checkpoint() {
-    let dir = match std::env::var("RLX_VOXTRAL_TTS_DIR") {
+    let dir = match rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR") {
         Ok(d) => PathBuf::from(d),
         Err(_) => {
             eprintln!("skip codec_decoder_loads_from_checkpoint: set RLX_VOXTRAL_TTS_DIR");

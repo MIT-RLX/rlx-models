@@ -22,7 +22,7 @@ const TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 
 fn env_dir(var: &str, default: &str) -> Option<PathBuf> {
     let candidates = [
-        std::env::var(var).ok().map(PathBuf::from),
+        rlx_ir::env::read(var).ok().map(PathBuf::from),
         Some(PathBuf::from(default)),
         Some(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -39,7 +39,7 @@ fn env_dir(var: &str, default: &str) -> Option<PathBuf> {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         if p.join("config.json").exists() {
             return Some(p);
@@ -147,7 +147,9 @@ fn load_npy_f32(path: &std::path::Path) -> Option<Vec<f32>> {
     };
     Some(
         b[start + hlen..]
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )

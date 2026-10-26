@@ -28,7 +28,7 @@ Packed production path (no quant→F32 expand):
 | GGUF header sniff | `--weights` — metadata only |
 | Packed mmap load | `--packed-load` — mats stay quantized; norms/biases native F32 |
 | Packed generate | KV-cached greedy decode (prefill + one-token steps) |
-| Device accel | `--device metal\|mlx\|cpu` — `Op::DequantMatMul` for packed mats (Metal preferred on Apple) |
+| Device accel | `--device metal\|mlx\|cpu` — `Op::DequantMatMul` for packed mats (Metal preferred on macOS) |
 | Tokenizer + chat | `--tokenizer-dir` + `--prompt` / `--system` (Jinja; strips HF `{% generation %}`) |
 | OpenAI HTTP | [`rlx-openai`](../rlx-openai) `--engine laguna` (or crate `--serve`); **greedy only** |
 | YaRN @ full layers | inv-freq via `rlx_flow::rope::yarn_scaled_inv_freq` + `attention_factor` scale; SWA keeps plain RoPE |
@@ -85,15 +85,15 @@ just laguna -- --weights .cache/laguna-s --prefer Q4_K_M --packed-load \
   --max-tokens 32 --prompt-ids 1,2,3
 
 # Packed generate with in-crate tokenizer + chat template
-# (host fused kernels are fastest for MoE chat/decode on Apple Silicon;
+# (host fused kernels are fastest for MoE chat/decode on macOS arm64;
 #  `--device metal` is skipped when prompt_len < 128)
-just features=apple-silicon laguna -- \
+just features=macos-gpu laguna -- \
   --weights .cache/laguna-s --prefer Q4_K_M --packed-load \
   --device metal --tokenizer-dir .cache/laguna-s \
   --prompt "Say hello" --max-tokens 8
 
-# Packed generate on Metal (needs apple-silicon / metal feature)
-just features=apple-silicon laguna -- --weights .cache/laguna-s --prefer Q4_K_M \
+# Packed generate on Metal (needs macos-gpu / metal feature)
+just features=macos-gpu laguna -- --weights .cache/laguna-s --prefer Q4_K_M \
   --packed-load --device metal --max-tokens 32 --prompt-ids …
 
 # DequantMatMul backend speed + parity
@@ -116,14 +116,14 @@ Inference stays on **RLX**. The Unsloth / Poolside GGUF is the weight format —
 Use the central host ([`rlx-openai`](../rlx-openai/README.md)):
 
 ```bash
-just features=apple-silicon,laguna openai-serve -- \
+just features=macos-gpu,laguna openai-serve -- \
   --engine laguna --weights .cache/laguna-s --prefer Q4_K_M \
   --tokenizer-dir .cache/laguna-s --device metal \
   --host 127.0.0.1 --port 8080 --model-id laguna
 ```
 
 `LagunaEngine` is greedy-only (`temperature` / `top_p` ignored). Single-model
-convenience: `just features=apple-silicon laguna-serve -- --weights … --tokenizer-dir …`.
+convenience: `just features=macos-gpu laguna-serve -- --weights … --tokenizer-dir …`.
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/models | jq .

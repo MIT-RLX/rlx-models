@@ -199,7 +199,7 @@ fn ram_budget_bytes(a: &Args) -> Option<usize> {
     if let Some(g) = a.max_ram_gb {
         return Some((g * 1e9) as usize);
     }
-    if let Ok(v) = std::env::var("RLX_MAX_RAM_BYTES")
+    if let Ok(v) = rlx_ir::env::var_result("RLX_MAX_RAM_BYTES")
         && let Ok(b) = v.parse::<usize>()
     {
         return Some(b);
@@ -355,7 +355,7 @@ fn main() -> Result<()> {
     // Backward-kernel benchmark: warm the compile cache, then time forward-only
     // (`run_on` of the loss) vs fwd+bwd (`value_and_grad_all().run_on`). The
     // difference is the backward. `RLX_BENCH_BWD=1` → print + exit.
-    if std::env::var("RLX_BENCH_BWD").is_ok() {
+    if rlx_ir::env::var_result("RLX_BENCH_BWD").is_ok() {
         let (tok, tgt) = batcher.sample(&train_data, &mut rng);
         let feed: &[(&str, &[f32])] = &[("tok_ids", &tok), ("tgt_ids", &tgt)];
         let vg = m.value_and_grad_all();
@@ -436,7 +436,7 @@ fn main() -> Result<()> {
     // GPU-idle bubble) from the fwd+bwd graph, on the real model's parameter
     // shapes. `RLX_BENCH_OPT=1` times `step_batch` best-of-N for serial
     // (Muon then AdamW) vs `RLX_TS_OPT_OVERLAP=1` (Muon ∥ AdamW), then exits.
-    if std::env::var("RLX_BENCH_OPT").is_ok() {
+    if rlx_ir::env::var_result("RLX_BENCH_OPT").is_ok() {
         use rlx_tensor::{OptItem, Optimizer};
         opt.set_lr(args.lr);
         let names: Vec<String> = m.param_names();
@@ -476,9 +476,7 @@ fn main() -> Result<()> {
             datas.iter().map(|d| d.len()).sum::<usize>()
         );
         let mut time_mode = |overlap: &str, iters: usize| -> f64 {
-            unsafe {
-                std::env::set_var("RLX_TS_OPT_OVERLAP", overlap);
-            }
+            rlx_ir::env::set("RLX_TS_OPT_OVERLAP", overlap);
             let mut best = f64::INFINITY;
             for it in 0..iters {
                 let mut items: Vec<OptItem> = datas
@@ -525,7 +523,7 @@ fn main() -> Result<()> {
     // Full training-step benchmark: warm the compile cache + optimizer state,
     // then time the real step (fwd + bwd + grad-clip + Muon/AdamW update).
     // `RLX_BENCH_TRAIN=1` → print tokens/s + per-step ms and exit.
-    if std::env::var("RLX_BENCH_TRAIN").is_ok() {
+    if rlx_ir::env::var_result("RLX_BENCH_TRAIN").is_ok() {
         let bt = (cfg.batch * cfg.block_size) as f64;
         let mut step_of = |m: Func, step: usize| -> Func {
             let (tok, tgt) = batcher.sample(&train_data, &mut rng);
@@ -558,7 +556,7 @@ fn main() -> Result<()> {
     // the global grad norm and loss to JSONL, then take the real optimizer step.
     // Grads come from `value_and_grad_all` (pre-clip); the identical feed then
     // drives `train_step` so the recorded grads match the ones that trained.
-    if let Ok(path) = std::env::var("RLX_RECORD_GRADS") {
+    if let Ok(path) = rlx_ir::env::var_result("RLX_RECORD_GRADS") {
         use std::io::Write;
         let names = m.param_names();
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);

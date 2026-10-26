@@ -100,12 +100,10 @@ fn nomic_layer_fusion_matches_unfused() {
 
     let run = |disable: bool| -> (Vec<f32>, u64) {
         // The fusion is decided at compile time, gated by this env var.
-        unsafe {
-            if disable {
-                std::env::set_var("RLX_DISABLE_NOMIC_FUSION", "1");
-            } else {
-                std::env::remove_var("RLX_DISABLE_NOMIC_FUSION");
-            }
+        if disable {
+            rlx_ir::env::set("RLX_DISABLE_NOMIC_FUSION", "1");
+        } else {
+            rlx_ir::env::remove("RLX_DISABLE_NOMIC_FUSION");
         }
         rlx_cpu::thunk::FUSED_NOMIC_LAYER_COUNT.store(0, Ordering::Relaxed);
         let mut c = Session::new(Device::Cpu).compile(graph.clone());
@@ -125,9 +123,7 @@ fn nomic_layer_fusion_matches_unfused() {
 
     let (fused, fired_on) = run(false);
     let (reference, fired_off) = run(true);
-    unsafe {
-        std::env::remove_var("RLX_DISABLE_NOMIC_FUSION");
-    }
+    rlx_ir::env::remove("RLX_DISABLE_NOMIC_FUSION");
 
     // Non-vacuous only when running against the patched local rlx (the published
     // crate ships the fusion disabled). Don't hard-fail on published rlx.

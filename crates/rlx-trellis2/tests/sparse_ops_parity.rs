@@ -23,7 +23,9 @@ fn f32s(st: &SafeTensors, name: &str) -> Vec<f32> {
     st.tensor(name)
         .unwrap()
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -31,14 +33,16 @@ fn i32s(st: &SafeTensors, name: &str) -> Vec<i32> {
     st.tensor(name)
         .unwrap()
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 
 #[test]
 fn submanifold_conv_matches_dense() {
-    let Ok(refp) = std::env::var("RLX_TRELLIS2_SUBM_REF") else {
+    let Ok(refp) = rlx_ir::env::var_result("RLX_TRELLIS2_SUBM_REF") else {
         eprintln!("skipping subm conv parity: set RLX_TRELLIS2_SUBM_REF");
         return;
     };
@@ -47,7 +51,9 @@ fn submanifold_conv_matches_dense() {
 
     let coords_flat = i32s(&st, "coords");
     let coords: Vec<[i32; 3]> = coords_flat
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]])
         .collect();
     let feats = f32s(&st, "feats");

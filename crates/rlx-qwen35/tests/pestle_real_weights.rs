@@ -25,7 +25,7 @@ use rlx_qwen35::{Qwen35Config, Qwen35LayerFfn, Qwen35TrunkLayer, Qwen35Weights};
 use std::path::PathBuf;
 
 fn fixture() -> Option<PathBuf> {
-    std::env::var_os("RLX_QWEN35_PESTLE_GGUF").map(PathBuf::from)
+    rlx_ir::env::var_os("RLX_QWEN35_PESTLE_GGUF").map(PathBuf::from)
 }
 
 #[test]

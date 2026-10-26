@@ -168,12 +168,12 @@ fn main() -> anyhow::Result<()> {
         let mut interleaved: Vec<f32> = Vec::new();
         match (fmt_tag, bits) {
             (1, 16) => {
-                for c in seg.chunks_exact(2) {
+                for c in seg.as_chunks::<2>().0.iter() {
                     interleaved.push(i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0);
                 }
             }
             (3, 32) => {
-                for c in seg.chunks_exact(4) {
+                for c in seg.as_chunks::<4>().0.iter() {
                     interleaved.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
                 }
             }

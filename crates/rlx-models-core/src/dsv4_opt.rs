@@ -82,7 +82,7 @@ pub fn ensure_registered() {
         #[cfg(feature = "gpu")]
         rlx_wgpu::wgpu_gpu_custom::register_wgpu_gpu_kernel(Arc::new(HcGateWgpu));
         // CUDA/ROCm native kernels (NVRTC/hipRTC) — written mirroring the validated
-        // CPU/Metal/wgpu logic; NOT compiled on Apple hardware, validate on remote.
+        // CPU/Metal/wgpu logic; NOT compiled on macOS hardware, validate on remote.
         #[cfg(feature = "cuda")]
         rlx_cuda::hc_sinkhorn_gate::register();
         #[cfg(feature = "rocm")]

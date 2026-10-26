@@ -10,7 +10,7 @@ use rlx_tsac::{
 };
 
 fn parity_enabled() -> bool {
-    std::env::var("RLX_TSAC_PARITY").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_TSAC_PARITY").ok().as_deref() == Some("1")
 }
 
 fn fixture_wav() -> std::path::PathBuf {

@@ -227,8 +227,8 @@ pub fn load(path: impl AsRef<Path>) -> Result<(DenoiseNet, Vec<Vec<f32>>)> {
         );
         ensure!(off + elems * 4 <= bytes.len(), "{}: truncated", spec.name);
         let mut values = Vec::with_capacity(elems);
-        for chunk in bytes[off..off + elems * 4].chunks_exact(4) {
-            values.push(f32::from_le_bytes(chunk.try_into()?));
+        for chunk in bytes[off..off + elems * 4].as_chunks::<4>().0.iter() {
+            values.push(f32::from_le_bytes(*chunk));
         }
         off += elems * 4;
         params.push(values);

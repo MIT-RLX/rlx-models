@@ -37,7 +37,7 @@ pub fn native_backward_from_env() -> bool {
         "RLX_VOXTRAL_TTS_TRAIN_NATIVE_BACKWARD",
         "RLX_VOXTRAL_TTS_TRAIN_MLX_NATIVE_BACKWARD",
     ] {
-        if std::env::var(key)
+        if rlx_ir::env::read(key)
             .ok()
             .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
         {
@@ -54,7 +54,7 @@ pub fn mlx_native_backward_from_env() -> bool {
 
 /// When set, skip GPU backward lowering and force CPU backward (hybrid).
 pub fn backward_cpu_only_from_env() -> bool {
-    std::env::var("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_CPU")
+    rlx_ir::env::var_result("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_CPU")
         .ok()
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
 }

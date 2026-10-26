@@ -699,7 +699,7 @@ pub(crate) struct W2vSemanticRunner {
 #[cfg(feature = "w2v-bert")]
 impl W2vSemanticRunner {
     pub(crate) fn try_from_env(layer: usize) -> Result<Option<Self>> {
-        let dir = match std::env::var("RLX_W2V_BERT_DIR")
+        let dir = match rlx_ir::env::var_result("RLX_W2V_BERT_DIR")
             .ok()
             .filter(|p| !p.is_empty())
             .map(PathBuf::from)

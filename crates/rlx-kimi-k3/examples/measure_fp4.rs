@@ -33,7 +33,7 @@ fn dims(hidden: usize, seq: usize) -> KdaDims {
 }
 
 fn run(w: &KdaWeights, d: KdaDims, x: &[f32], mode: &str) -> Vec<f32> {
-    unsafe { std::env::set_var("RLX_KIMI_QUANT", mode) };
+    rlx_ir::env::set("RLX_KIMI_QUANT", mode);
     let mut hir = HirModule::new("kda");
     let mut g = HirMut::new(&mut hir);
     let hin = g.input("h", Shape::new(&[1, d.seq, d.hidden], DType::F32));
@@ -42,7 +42,7 @@ fn run(w: &KdaWeights, d: KdaDims, x: &[f32], mode: &str) -> Vec<f32> {
     g.set_outputs(vec![out]);
     let mut c = compile_built(built_from_hir(hir, p).unwrap(), Device::Cpu).unwrap();
     let y = c.run(&[("h", x)]).remove(0);
-    unsafe { std::env::remove_var("RLX_KIMI_QUANT") };
+    rlx_ir::env::remove("RLX_KIMI_QUANT");
     y
 }
 

@@ -83,7 +83,9 @@ fn f32_le(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 fn as_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -606,12 +608,7 @@ fn split_utterances(
 }
 
 fn argmax(v: &[f32]) -> usize {
-    v.iter()
-        .enumerate()
-        .filter(|(_, x)| x.is_finite())
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i)
-        .unwrap_or(0)
+    rlx_runtime::search::argmax(v)
 }
 
 fn sample_top_p(

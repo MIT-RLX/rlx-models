@@ -15,15 +15,17 @@
 
 //! MTP speculative decoding for Qwen3.5.
 //!
-//! **Two-phase decode:** `propose` prefills on `context`, runs the MTP
-//! draft loop on a checkpointed cache, then restores the checkpoint so
-//! rejected tokens never touch GDN conv/SSM state. After accept/reject,
+//! **Two-phase decode:** `propose` runs the MTP draft loop on a
+//! checkpointed cache, then restores the checkpoint so rejected tokens
+//! never touch GDN conv/SSM state. After accept/reject,
 //! `SpecDecoder::step` calls [`Speculator::commit`] on draft and target
 //! so GDN state advances only for accepted tokens.
 //!
-//! **Target cache reuse:** [`Qwen35TrunkTarget`] keeps decode state across
-//! spec rounds when `context` extends the prior prefix — verify skips
-//! reprefill when the synced prefix matches.
+//! **Cache reuse:** [`Qwen35MtpDraft`] and [`Qwen35TrunkTarget`] both keep
+//! decode state across spec rounds when `context` extends the prior prefix,
+//! so a round costs O(draft len) decode steps rather than a prefill of the
+//! whole context (MAX's verify→commit rollback, without a state ring: the
+//! verify never writes the live cache).
 
 use crate::runner::Qwen35Runner;
 use anyhow::Result;
@@ -35,25 +37,25 @@ fn truncate_logits(logits: &[f32], vocab: usize) -> &[f32] {
 }
 
 fn argmax(xs: &[f32]) -> u32 {
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &v) in xs.iter().enumerate() {
-        if v > best_v {
-            best_v = v;
-            best = i;
-        }
-    }
-    best as u32
+    rlx_runtime::search::argmax_u32(xs)
 }
 
 /// Draft proposer: samples from MTP head logits when available.
 pub struct Qwen35MtpDraft {
     inner: Qwen35Runner,
+    /// Prefix the runner decode cache + `pending_logits` correspond to.
+    synced_context: Vec<u32>,
+    /// Draft logits for the token after `synced_context` (when warm).
+    pending_logits: Option<Vec<f32>>,
 }
 
 impl Qwen35MtpDraft {
     pub fn new(runner: Qwen35Runner) -> Self {
-        Self { inner: runner }
+        Self {
+            inner: runner,
+            synced_context: Vec::new(),
+            pending_logits: None,
+        }
     }
 
     pub fn runner(&self) -> &Qwen35Runner {
@@ -92,12 +94,17 @@ impl Qwen35MtpDraft {
             });
         }
 
-        self.inner.reset_decode_cache();
-        let seed = self.inner.prefill_seed_for_decode(context)?;
+        let warm = self.synced_context == context
+            && self.pending_logits.is_some()
+            && self.inner.decode_cache_checkpoint().is_some();
+        let mut logits = if warm {
+            self.pending_logits.clone().unwrap()
+        } else {
+            self.seed_from_context(context)?
+        };
         let checkpoint = self.inner.decode_cache_checkpoint();
 
         let vocab = self.inner.lm_vocab_size();
-        let mut logits = seed.mtp_logits.unwrap_or(seed.trunk_logits);
         let mut tokens = Vec::with_capacity(n);
         let mut probs = Vec::with_capacity(n);
 
@@ -116,10 +123,34 @@ impl Qwen35MtpDraft {
         Ok(DraftProposal { tokens, probs })
     }
 
-    fn commit_inner(&mut self, context: &[u32], accepted: &[u32]) -> Result<()> {
+    fn seed_from_context(&mut self, context: &[u32]) -> Result<Vec<f32>> {
         self.inner.reset_decode_cache();
-        self.inner.prefill_seed_for_decode(context)?;
-        self.inner.commit_decode_tokens(accepted)?;
+        let seed = self.inner.prefill_seed_for_decode(context)?;
+        let logits = seed.mtp_logits.unwrap_or(seed.trunk_logits);
+        self.synced_context = context.to_vec();
+        self.pending_logits = Some(logits.clone());
+        Ok(logits)
+    }
+
+    /// Advance the warm cache by `accepted` (O(accepted) decode steps) instead
+    /// of re-prefilling `context ++ accepted` every round. GDN conv/SSM state
+    /// only ever sees accepted tokens: `propose` restores its checkpoint.
+    fn commit_inner(&mut self, context: &[u32], accepted: &[u32]) -> Result<()> {
+        if self.synced_context != context || self.inner.decode_cache_checkpoint().is_none() {
+            self.seed_from_context(context)?;
+        }
+        let mtp = self.inner.has_mtp_logits_path();
+        let mut logits = self.pending_logits.take();
+        for &tok in accepted {
+            logits = Some(if mtp {
+                self.inner.decode_get_mtp_logits(tok)?
+            } else {
+                self.inner.decode_get_logits(tok)?
+            });
+        }
+        self.synced_context = context.to_vec();
+        self.synced_context.extend_from_slice(accepted);
+        self.pending_logits = logits;
         Ok(())
     }
 }
@@ -446,5 +477,93 @@ mod tests {
         assert_eq!(target.synced_context, extended);
         let _ = target.verify(&extended, &[6]);
         assert_eq!(target.synced_context, extended);
+    }
+
+    fn make_draft(cfg: &Qwen35Config) -> Qwen35MtpDraft {
+        Qwen35MtpDraft::new(
+            Qwen35RunnerBuilder::default()
+                .inline_weights(cfg.clone(), synth_weights(cfg))
+                .device(Device::Cpu)
+                .max_seq(32)
+                .last_logits_only(true)
+                .enable_mtp(true)
+                .mtp_logits_path(true)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn assert_caches_close(
+        a: &crate::cache::Qwen35DecodeCache,
+        b: &crate::cache::Qwen35DecodeCache,
+    ) {
+        use crate::cache::Qwen35LayerState as L;
+        assert_eq!(a.past_seq, b.past_seq);
+        assert_eq!(a.abs_pos, b.abs_pos);
+        let close = |x: &[f32], y: &[f32], what: &str| {
+            assert_eq!(x.len(), y.len(), "{what} len");
+            for (p, q) in x.iter().zip(y) {
+                assert!((p - q).abs() < 1e-4, "{what}: {p} vs {q}");
+            }
+        };
+        for (la, lb) in a.layers.iter().zip(&b.layers) {
+            match (la, lb) {
+                (
+                    L::Linear {
+                        conv_state: ca,
+                        ssm_state: sa,
+                    },
+                    L::Linear {
+                        conv_state: cb,
+                        ssm_state: sb,
+                    },
+                ) => {
+                    close(ca, cb, "conv_state");
+                    close(sa, sb, "ssm_state");
+                }
+                (
+                    L::FullAttn {
+                        past_k: ka,
+                        past_v: va,
+                        ..
+                    },
+                    L::FullAttn {
+                        past_k: kb,
+                        past_v: vb,
+                        ..
+                    },
+                ) => {
+                    close(ka, kb, "past_k");
+                    close(va, vb, "past_v");
+                }
+                _ => panic!("layer kind mismatch"),
+            }
+        }
+    }
+
+    /// The warm draft commit advances GDN conv/SSM + KV state to what a cold
+    /// prefill of `context ++ accepted` lands, and the next round reuses it.
+    #[test]
+    fn mtp_draft_commit_matches_cold_prefill() {
+        let cfg = tiny_cfg();
+        let mut draft = make_draft(&cfg);
+        let context = vec![1u32, 2, 3];
+        let p = draft.propose(&context, 3);
+        assert_eq!(p.tokens.len(), 3);
+        let accepted = vec![p.tokens[0], 7];
+        draft.commit(&context, &accepted);
+        let extended: Vec<u32> = context.iter().chain(&accepted).copied().collect();
+        assert_eq!(draft.synced_context, extended);
+        let warm = draft.inner.decode_cache_checkpoint().unwrap();
+
+        let mut cold = make_draft(&cfg);
+        cold.seed_from_context(&extended).unwrap();
+        assert_caches_close(&warm, &cold.inner.decode_cache_checkpoint().unwrap());
+
+        // Next round proposes from the warm cache without reseeding, and the
+        // propose checkpoint/restore leaves the committed state untouched.
+        let _ = draft.propose(&extended, 2);
+        assert_eq!(draft.synced_context, extended);
+        assert_caches_close(&warm, &draft.inner.decode_cache_checkpoint().unwrap());
     }
 }

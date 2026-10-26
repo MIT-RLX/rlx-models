@@ -18,6 +18,8 @@ pub mod config;
 pub mod depformer;
 pub mod device;
 pub mod download;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod generate;
 pub mod gguf;
 pub mod lm;

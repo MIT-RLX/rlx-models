@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 
 pub fn env_gguf_path(var: &str) -> Option<PathBuf> {
-    let p = std::env::var(var).ok().filter(|s| !s.is_empty())?;
+    let p = rlx_ir::env::read(var).ok().filter(|s| !s.is_empty())?;
     let path = PathBuf::from(p);
     if path.is_file() {
         Some(path)
@@ -31,7 +31,7 @@ pub fn env_gguf_path(var: &str) -> Option<PathBuf> {
 }
 
 pub fn env_path(var: &str) -> Option<PathBuf> {
-    let p = std::env::var(var).ok().filter(|s| !s.is_empty())?;
+    let p = rlx_ir::env::read(var).ok().filter(|s| !s.is_empty())?;
     let path = PathBuf::from(p);
     if path.exists() {
         Some(path)

@@ -8,7 +8,6 @@ use crate::session::{GenerationConfig, MoshiSession};
 use anyhow::{Context, Result};
 use rlx_mimi::audio::write_wav_mono;
 use rlx_runtime::Device;
-use std::env;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,5 +174,5 @@ Env:
   RLX_MOSHI_VOICE       Default voice when variant unset (moshiko, moshika)
 "
     );
-    let _ = env::var("RLX_MOSHI_DIR");
+    let _ = rlx_ir::env::var_result("RLX_MOSHI_DIR");
 }

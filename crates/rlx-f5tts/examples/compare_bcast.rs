@@ -7,14 +7,18 @@ fn to_f32(b: &[u8], dt: DType) -> Vec<f32> {
             if b.len() == 580 {
                 b.iter().map(|&x| x as f32).collect()
             } else {
-                b.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                b.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c))
                     .collect()
             }
         }
         _ => b
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
     }
 }

@@ -14,7 +14,7 @@ const FOX: [&str; 6] = ["quick", "brown", "fox", "jumps", "lazy", "dog"];
 
 fn main() -> anyhow::Result<()> {
     let dir = PathBuf::from(
-        std::env::var("RLX_F5TTS_DIR").unwrap_or_else(|_| "weights/tts/f5tts".into()),
+        rlx_ir::env::var_result("RLX_F5TTS_DIR").unwrap_or_else(|_| "weights/tts/f5tts".into()),
     );
     let out = PathBuf::from(
         std::env::var("OUT").unwrap_or_else(|_| "tmp/f5tts_wavs/validated.wav".into()),
@@ -96,7 +96,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         return whisper_ready(&p).then_some(p);
     }

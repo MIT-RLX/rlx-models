@@ -57,14 +57,14 @@ fn tensor_to_f32(tv: &TensorView<'_>) -> Result<Vec<f32>> {
     match tv.dtype() {
         safetensors::Dtype::F32 => {
             let mut out = vec![0f32; n];
-            for (i, chunk) in tv.data().chunks_exact(4).enumerate() {
+            for (i, chunk) in tv.data().as_chunks::<4>().0.iter().enumerate() {
                 out[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
             }
             Ok(out)
         }
         safetensors::Dtype::BF16 => {
             let mut out = vec![0f32; n];
-            for (i, chunk) in tv.data().chunks_exact(2).enumerate() {
+            for (i, chunk) in tv.data().as_chunks::<2>().0.iter().enumerate() {
                 let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
                 out[i] = bf16_to_f32(bits);
             }

@@ -20,6 +20,9 @@
 //! one-hot language vector into the encoder features before the joint.
 
 use anyhow::{Result, ensure};
+use rlx_audio_blocks::decoders::tdt::{
+    SosState, TdtDecoderCore, TdtJointStep, run_tdt_greedy_duration_loop,
+};
 use rlx_flow::WeightSource;
 
 use crate::config::AsrConfig;
@@ -340,6 +343,9 @@ impl PromptKernel {
 /// Greedy RNN-T decode over encoder frames `enc` (`[t_frames, d_model]`).
 /// `lang` is the one-hot (or empty) language vector. Returns emitted token
 /// ids (blank excluded).
+///
+/// The loop is `rlx_audio_blocks`' TDT greedy loop with one duration, `0`: a
+/// blank advances a frame, a token stays on it (up to `max_symbols_per_step`).
 pub fn greedy_decode(
     cfg: &AsrConfig,
     pred: &PredictionNet,
@@ -349,52 +355,96 @@ pub fn greedy_decode(
     d_model: usize,
     lang: &[f32],
 ) -> Vec<u32> {
-    let blank = joint.n_classes - 1;
     let t_frames = enc.len().checked_div(d_model).unwrap_or(0);
+    if t_frames == 0 {
+        return Vec::new();
+    }
+    let mut core = RnntCore {
+        pred,
+        joint,
+        prompt,
+        lang,
+        state: pred.zero_state(),
+        pred_out: Vec::new(),
+        frame: None,
+        sos_state: cfg.sos_state,
+    };
+    let out = run_tdt_greedy_duration_loop(
+        &mut core,
+        &enc[..t_frames * d_model],
+        t_frames,
+        d_model,
+        (joint.n_classes - 1) as i32,
+        &[0],
+        cfg.max_symbols_per_step.max(1),
+    )
+    .expect("shapes are checked above");
+    out.token_ids.into_iter().map(|t| t as u32).collect()
+}
 
-    let mut tokens = Vec::new();
-    let mut state = pred.zero_state();
-    let (mut pred_out, _) = pred.step(None, &state); // SOS
+/// A [`TdtDecoderCore`] over the Nemotron prediction net + joint, with every
+/// step's duration `0` (plain RNN-T).
+struct RnntCore<'a> {
+    pred: &'a PredictionNet,
+    joint: &'a Joint,
+    prompt: Option<&'a PromptKernel>,
+    lang: &'a [f32],
+    state: PredState,
+    pred_out: Vec<f32>,
+    /// The frame last projected (by address) and its projection: the loop
+    /// asks for the same frame once per emitted token.
+    frame: Option<(*const f32, Vec<f32>)>,
+    sos_state: SosState,
+}
 
-    for t in 0..t_frames {
-        let frame = &enc[t * d_model..(t + 1) * d_model];
-        // Language fusion (Nemotron prompt_kernel) re-projects the frame;
-        // the joint then sees a plain d_model vector (no lang concat).
-        let fused = match prompt {
-            Some(pk) => pk.fuse(frame, lang),
-            None => frame.to_vec(),
-        };
-        let enc_proj = joint.enc_proj(&fused, &[]);
-        let mut emitted = 0;
-        loop {
-            let logits = joint.logits(&enc_proj, &pred_out);
-            let best = argmax(&logits);
-            if best == blank {
-                break;
-            }
-            tokens.push(best as u32);
-            let (po, st) = pred.step(Some(best), &state);
-            pred_out = po;
-            state = st;
-            emitted += 1;
-            if emitted >= cfg.max_symbols_per_step {
-                break;
-            }
+impl TdtDecoderCore for RnntCore<'_> {
+    fn reset_state(&mut self) {
+        self.state = self.pred.zero_state();
+        self.pred_out.clear();
+        self.frame = None;
+    }
+
+    fn predict_start(&mut self, _blank_id: i32) {
+        // SOS output from the zero state. With `SosState::Discard` (this
+        // decoder's default) the state stays zero and the first token steps
+        // from it; with `Carry` it steps from the post-SOS state, as NeMo does.
+        let (pred_out, state) = self.pred.step(None, &self.state);
+        self.pred_out = pred_out;
+        if self.sos_state == SosState::Carry {
+            self.state = state;
         }
     }
-    tokens
+
+    fn predict_token(&mut self, token_id: i32) {
+        let (pred_out, state) = self.pred.step(Some(token_id as usize), &self.state);
+        self.pred_out = pred_out;
+        self.state = state;
+    }
+
+    fn joint_step_argmax(&mut self, encoder_frame: &[f32]) -> TdtJointStep {
+        let key = encoder_frame.as_ptr();
+        if self.frame.as_ref().is_none_or(|(k, _)| *k != key) {
+            // Language fusion (Nemotron prompt_kernel) re-projects the frame;
+            // the joint then sees a plain d_model vector (no lang concat).
+            let fused = match self.prompt {
+                Some(pk) => pk.fuse(encoder_frame, self.lang),
+                None => encoder_frame.to_vec(),
+            };
+            self.frame = Some((key, self.joint.enc_proj(&fused, &[])));
+        }
+        let enc_proj = &self.frame.as_ref().expect("projected above").1;
+        let logits = self.joint.logits(enc_proj, &self.pred_out);
+        let best = argmax(&logits);
+        TdtJointStep {
+            label: best as i32,
+            label_score: logits[best],
+            duration_index: 0,
+        }
+    }
 }
 
 fn argmax(v: &[f32]) -> usize {
-    let mut best = 0usize;
-    let mut bv = f32::NEG_INFINITY;
-    for (i, &x) in v.iter().enumerate() {
-        if x > bv {
-            bv = x;
-            best = i;
-        }
-    }
-    best
+    rlx_runtime::search::argmax(v)
 }
 
 #[cfg(test)]
@@ -468,6 +518,129 @@ mod tests {
         assert!(toks.contains(&0));
         // It must terminate (blank caps), not loop forever.
         assert!(toks.len() <= cfg.max_symbols_per_step + 1);
+    }
+
+    /// The loop `greedy_decode` ran before it moved onto the shared TDT loop,
+    /// verbatim with `carry = false`; `carry = true` keeps the post-SOS state
+    /// (NeMo).
+    fn previous_greedy_decode(
+        cfg: &AsrConfig,
+        pred: &PredictionNet,
+        joint: &Joint,
+        prompt: Option<&PromptKernel>,
+        enc: &[f32],
+        d_model: usize,
+        lang: &[f32],
+        carry: bool,
+    ) -> Vec<u32> {
+        let blank = joint.n_classes - 1;
+        let t_frames = enc.len().checked_div(d_model).unwrap_or(0);
+
+        let mut tokens = Vec::new();
+        let mut state = pred.zero_state();
+        let (mut pred_out, sos) = pred.step(None, &state); // SOS
+        if carry {
+            state = sos;
+        }
+
+        for t in 0..t_frames {
+            let frame = &enc[t * d_model..(t + 1) * d_model];
+            // Language fusion (Nemotron prompt_kernel) re-projects the frame;
+            // the joint then sees a plain d_model vector (no lang concat).
+            let fused = match prompt {
+                Some(pk) => pk.fuse(frame, lang),
+                None => frame.to_vec(),
+            };
+            let enc_proj = joint.enc_proj(&fused, &[]);
+            let mut emitted = 0;
+            loop {
+                let logits = joint.logits(&enc_proj, &pred_out);
+                let best = argmax(&logits);
+                if best == blank {
+                    break;
+                }
+                tokens.push(best as u32);
+                let (po, st) = pred.step(Some(best), &state);
+                pred_out = po;
+                state = st;
+                emitted += 1;
+                if emitted >= cfg.max_symbols_per_step {
+                    break;
+                }
+            }
+        }
+        tokens
+    }
+
+    /// Deterministic pseudo-random weights in `[-scale, scale)`.
+    fn rand_vec(n: usize, seed: &mut u64, scale: f32) -> Vec<f32> {
+        (0..n)
+            .map(|_| {
+                *seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                ((*seed >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * scale
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shared_loop_matches_the_previous_greedy_decode() {
+        let mut cfg = mk_cfg();
+        let (vocab, dim, d_model, hidden) = (6usize, 4usize, 5usize, 7usize);
+        let n_classes = vocab + 1;
+        let (mut differ, mut discarded) = (0usize, Vec::new());
+        for case in 0..200u64 {
+            let mut seed = case + 1;
+            let lstm = LstmCell::new(
+                dim,
+                dim,
+                rand_vec(4 * dim * dim, &mut seed, 0.8),
+                rand_vec(4 * dim * dim, &mut seed, 0.8),
+                rand_vec(4 * dim, &mut seed, 0.5),
+                rand_vec(4 * dim, &mut seed, 0.5),
+            )
+            .unwrap();
+            let pred = PredictionNet::new(
+                rand_vec(vocab * dim, &mut seed, 1.0),
+                dim,
+                vocab,
+                vec![lstm],
+            )
+            .unwrap();
+            let mut net_b = rand_vec(n_classes, &mut seed, 0.5);
+            // Bias toward blank on some cases so frames both emit and advance.
+            net_b[vocab] += (case % 4) as f32 * 0.4;
+            let joint = Joint {
+                enc_w: rand_vec(hidden * d_model, &mut seed, 0.7),
+                enc_b: rand_vec(hidden, &mut seed, 0.2),
+                enc_in: d_model,
+                pred_w: rand_vec(hidden * dim, &mut seed, 0.7),
+                pred_b: rand_vec(hidden, &mut seed, 0.2),
+                pred_in: dim,
+                net_w: rand_vec(n_classes * hidden, &mut seed, 1.5),
+                net_b,
+                joint_hidden: hidden,
+                n_classes,
+                lang_dim: 0,
+            };
+            cfg.max_symbols_per_step = 1 + (case % 3) as usize;
+            let enc = rand_vec(9 * d_model, &mut seed, 1.0);
+            for (sos_state, carry) in [(SosState::Discard, false), (SosState::Carry, true)] {
+                cfg.sos_state = sos_state;
+                let want =
+                    previous_greedy_decode(&cfg, &pred, &joint, None, &enc, d_model, &[], carry);
+                let got = greedy_decode(&cfg, &pred, &joint, None, &enc, d_model, &[]);
+                assert_eq!(got, want, "case {case} {sos_state:?}");
+                differ += (sos_state == SosState::Carry && got != discarded) as usize;
+                discarded = got;
+            }
+        }
+        // The two rules are distinct decodes, not a no-op setting.
+        assert!(
+            differ > 0,
+            "carrying the SOS state never changed the output"
+        );
     }
 
     fn mk_cfg() -> AsrConfig {

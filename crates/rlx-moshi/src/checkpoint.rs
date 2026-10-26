@@ -126,7 +126,7 @@ impl MoshiCheckpoint {
 
     /// Read `RLX_MOSHI_CHECKPOINT`, defaulting to Candle bf16 safetensors.
     pub fn from_env_or_default() -> Self {
-        std::env::var("RLX_MOSHI_CHECKPOINT")
+        rlx_ir::env::var_result("RLX_MOSHI_CHECKPOINT")
             .ok()
             .and_then(|s| Self::parse(&s))
             .unwrap_or(Self::Bf16Safetensors)

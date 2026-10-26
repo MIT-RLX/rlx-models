@@ -94,7 +94,9 @@ fn main() -> Result<()> {
         "embeds file is not f32-aligned"
     );
     let embeds: Vec<f32> = raw
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     ensure!(
@@ -115,7 +117,7 @@ fn main() -> Result<()> {
     // Eager host path: no graph compiler, no arena, no backend kernels. If this
     // agrees with the reference and the compiled path does not, the bug is in
     // lowering/execution rather than in the algorithm.
-    if std::env::var("RLX_JINA_EAGER").is_ok() {
+    if rlx_ir::env::var_result("RLX_JINA_EAGER").is_ok() {
         use rlx_unlimited_ocr::lm_flow::LmFlow;
         let mut flow = LmFlow::from_config(cfg.lm.clone());
         flow.load(&store)?;
@@ -143,7 +145,7 @@ fn main() -> Result<()> {
 
     // Raw prefill graph: outputs are [logits, k0, v0, k1, v1, ...], so the
     // per-layer KV localizes a divergence to the layer that introduces it.
-    if std::env::var("RLX_JINA_DUMP_KV").is_ok() {
+    if rlx_ir::env::var_result("RLX_JINA_DUMP_KV").is_ok() {
         use rlx_core::flow_util::compile_built;
         use rlx_unlimited_ocr::lm_graph::build_unlimited_ocr_prefill_built_from_pack;
         let built = build_unlimited_ocr_prefill_built_from_pack(&cfg.lm, &pack, 1, n_tokens)?;

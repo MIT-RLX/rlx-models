@@ -48,7 +48,7 @@ fn main() -> Result<()> {
         .config_path(whisper_dir.join("config.json"))
         .tokenizer_path(whisper_dir.join("tokenizer.json"))
         .device(Device::Cpu)
-        .language("en")
+        .language(rlx_ir::env::var_result("RLX_WHISPER_LANGUAGE").unwrap_or_else(|_| "en".into()))
         .build()?;
     let transcript = whisper.transcribe_greedy(&pcm_16k)?;
     println!("transcript: {transcript:?}");
@@ -56,7 +56,7 @@ fn main() -> Result<()> {
 }
 
 fn resolve_whisper_dir() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(dir) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(dir);
         if p.join("model.safetensors").is_file() {
             return Ok(p);

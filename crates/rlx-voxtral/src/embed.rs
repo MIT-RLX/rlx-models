@@ -80,15 +80,10 @@ pub fn fuse_inputs_embeds(
 
 /// Greedy argmax on a logits row `[vocab]`.
 pub fn argmax_token(logits: &[f32]) -> u32 {
-    logits
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i as u32)
-        .unwrap_or(0)
+    rlx_runtime::search::argmax_u32(logits)
 }
 
-fn language_code_token_id(_model_dir: Option<&Path>, lang: &str) -> Result<u32> {
+pub(crate) fn language_code_token_id(_model_dir: Option<&Path>, lang: &str) -> Result<u32> {
     match lang {
         "en" => Ok(1262),
         "fr" => Ok(7064),

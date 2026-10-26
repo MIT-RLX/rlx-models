@@ -363,7 +363,7 @@ impl DiffusionHead {
         Ok(out)
     }
 
-    fn build_solver(
+    pub(crate) fn build_solver(
         &self,
         opts: &SolveOptions,
     ) -> Result<(HirModule, crate::builder::NamedTensors)> {

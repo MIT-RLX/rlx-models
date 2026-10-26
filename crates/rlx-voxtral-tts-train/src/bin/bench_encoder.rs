@@ -332,18 +332,14 @@ fn bench_backward_inner(
     runs: usize,
     warmup: usize,
 ) -> Result<(Duration, Duration, Device, String)> {
-    unsafe {
-        env::remove_var("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_CPU");
-        env::remove_var("RLX_VOXTRAL_TTS_TRAIN_NATIVE_BACKWARD");
-        env::remove_var("RLX_VOXTRAL_TTS_TRAIN_MLX_NATIVE_BACKWARD");
-    }
+    rlx_ir::env::remove("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_CPU");
+    rlx_ir::env::remove("RLX_VOXTRAL_TTS_TRAIN_NATIVE_BACKWARD");
+    rlx_ir::env::remove("RLX_VOXTRAL_TTS_TRAIN_MLX_NATIVE_BACKWARD");
     match hybrid {
-        Some(HybridMode::Hybrid) => unsafe {
-            env::set_var("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_CPU", "1");
-        },
-        Some(HybridMode::Native) if device != Device::Cpu => unsafe {
-            env::set_var("RLX_VOXTRAL_TTS_TRAIN_NATIVE_BACKWARD", "1");
-        },
+        Some(HybridMode::Hybrid) => rlx_ir::env::set("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_CPU", "1"),
+        Some(HybridMode::Native) if device != Device::Cpu => {
+            rlx_ir::env::set("RLX_VOXTRAL_TTS_TRAIN_NATIVE_BACKWARD", "1")
+        }
         _ => {}
     }
 
@@ -387,11 +383,9 @@ fn run_metal_profile(
     mel: &[f32],
     stft: &[f32],
 ) -> Result<()> {
-    unsafe {
-        env::remove_var("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_CPU");
-        env::set_var("RLX_VOXTRAL_TTS_TRAIN_NATIVE_BACKWARD", "1");
-        env::set_var("RLX_METAL_THUNK_PROFILE", "1");
-    }
+    rlx_ir::env::remove("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_CPU");
+    rlx_ir::env::set("RLX_VOXTRAL_TTS_TRAIN_NATIVE_BACKWARD", "1");
+    rlx_ir::env::set("RLX_METAL_THUNK_PROFILE", "1");
     let (active, mut exec) =
         compile_train_backward(Device::Metal, train.backward.clone(), "bench-profile")
             .context("compile profile")?;

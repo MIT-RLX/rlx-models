@@ -10,7 +10,10 @@ use rlx_runtime::{CompileOptions, Device, Session};
 use std::collections::HashMap;
 
 type Packed = HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>;
-const HA: &str = "/private/tmp/claude-501/-Users-Shared-rlx-models/b3447056-e916-4a44-8d5c-f126828edfd6/scratchpad/h_a.f32";
+/// Stage-1 output handed to the second run (`RLX_DSV4_SAVE` writes it).
+fn h_a_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("dsv4_split_check_h_a.f32")
+}
 
 fn run_stage(
     dir: &str,
@@ -45,7 +48,7 @@ fn mag(v: &[f32]) -> f32 {
 }
 
 fn main() -> Result<()> {
-    let dir = std::env::var("RLX_DSV4_DIR").context("RLX_DSV4_DIR")?;
+    let dir = rlx_ir::env::var_result("RLX_DSV4_DIR").context("RLX_DSV4_DIR")?;
     let cfg: serde_json::Value =
         serde_json::from_slice(&std::fs::read(format!("{dir}/config.json"))?)?;
     let spec = DeepseekV4Spec::from_config(&cfg)?;
@@ -55,17 +58,17 @@ fn main() -> Result<()> {
         .map(|&x| x as f32)
         .collect();
 
-    if std::env::var("RLX_DSV4_WHOLE").is_ok() {
+    if rlx_ir::env::var_result("RLX_DSV4_WHOLE").is_ok() {
         // Run layers 0..4 as ONE graph; with RLX_DSV4_DBGLAYER=3 + DBG=o this
         // outputs layer 3's attention `o` computed IN-GRAPH (first=true).
         let out = run_stage(&dir, &spec, seq, 0, 4, true, false, ("input_ids", &ids))?;
         println!(
             "WHOLE stage(0..4) [DBG={:?} layer3]: max|abs| {:.3e} sample {:?}",
-            std::env::var("RLX_DSV4_DBG").ok(),
+            rlx_ir::env::var_result("RLX_DSV4_DBG").ok(),
             mag(&out),
             &out[..4]
         );
-        if let Ok(p) = std::env::var("RLX_DSV4_OUT") {
+        if let Ok(p) = rlx_ir::env::var_result("RLX_DSV4_OUT") {
             std::fs::write(
                 p,
                 out.iter()
@@ -75,10 +78,10 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    if std::env::var("RLX_DSV4_SAVE").is_ok() {
+    if rlx_ir::env::var_result("RLX_DSV4_SAVE").is_ok() {
         let h_a = run_stage(&dir, &spec, seq, 0, 3, true, false, ("input_ids", &ids))?;
         let bytes: Vec<u8> = h_a.iter().flat_map(|f| f.to_le_bytes()).collect();
-        std::fs::write(HA, &bytes)?;
+        std::fs::write(h_a_path(), &bytes)?;
         println!(
             "saved h_a: {} floats, max|abs| {:.3e}",
             h_a.len(),
@@ -87,19 +90,21 @@ fn main() -> Result<()> {
         return Ok(());
     }
     // load h_a, run stage 3..4 (non-first). RLX_DSV4_DBG=attn/moe/routed localizes.
-    let raw = std::fs::read(HA)?;
+    let raw = std::fs::read(h_a_path())?;
     let h_a: Vec<f32> = raw
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let x = run_stage(&dir, &spec, seq, 3, 4, false, false, ("hidden_in", &h_a))?;
     println!(
         "stage(3..4|h_a) [DBG={:?}]: max|abs| {:.3e} sample {:?}",
-        std::env::var("RLX_DSV4_DBG").ok(),
+        rlx_ir::env::var_result("RLX_DSV4_DBG").ok(),
         mag(&x),
         &x[..4]
     );
-    if let Ok(p) = std::env::var("RLX_DSV4_OUT") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_DSV4_OUT") {
         std::fs::write(
             p,
             x.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>(),

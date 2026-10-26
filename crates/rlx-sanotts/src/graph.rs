@@ -55,7 +55,7 @@ use rlx_ir::op::PadMode;
 use rlx_ir::{DType, HirGraphExt, HirModule, Op, Shape};
 use rlx_runtime::{AotCache, CompileOptions, Device};
 
-use crate::config::{AcousticConfig, DecoderConfig};
+use crate::config::{AcousticConfig, DecoderConfig, DurationConfig};
 use crate::model::{STAGES, check_decoder};
 use crate::ops::Mat;
 use crate::voicepack::TensorStore;
@@ -79,7 +79,7 @@ pub const DEFAULT_BUCKET_FRAMES: usize = 32;
 /// Bucket granularity, overridable with `RLX_SANOTTS_BUCKET` (0 or 1 disables
 /// bucketing and compiles an exact-length graph per utterance).
 pub fn bucket_frames() -> usize {
-    std::env::var("RLX_SANOTTS_BUCKET")
+    rlx_ir::env::var_result("RLX_SANOTTS_BUCKET")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(DEFAULT_BUCKET_FRAMES)
@@ -93,6 +93,8 @@ pub fn bucket_capacity(frames: usize) -> usize {
 }
 
 struct Builder<'a> {
+    /// The duration student's tensors (only the token graphs read them).
+    du: Option<&'a TensorStore>,
     ac: &'a TensorStore,
     ac_cfg: &'a AcousticConfig,
     de: &'a TensorStore,
@@ -155,6 +157,7 @@ impl Builder<'_> {
 
     fn store(&self, which: Store) -> &TensorStore {
         match which {
+            Store::Duration => self.du.expect("the duration store"),
             Store::Acoustic => self.ac,
             Store::Decoder => self.de,
         }
@@ -439,8 +442,119 @@ impl Builder<'_> {
     }
 }
 
+/// A token-rate stage as a graph, over `n` tokens.
+#[derive(Clone, Copy, Debug)]
+pub enum TokenStage {
+    /// The duration student: `ids` `[n]` i32 and `features` `[1, 3, n, 1]`
+    /// (position, length hint, validity) → `log_duration` `[1, 1, n, 1]`.
+    Duration,
+    /// The acoustic student's token half: `ids` and `features` `[1, 2, n,
+    /// 1]` (position, log duration share) → `tokens` `[1, hidden, n, 1]`.
+    Tokens,
+}
+
+impl Builder<'_> {
+    /// `stage` over `n` tokens; `mask0` `[1, 1, n, 1]` an input (all ones).
+    fn build_tokens(
+        mut self,
+        stage: TokenStage,
+        depth: usize,
+        n: usize,
+    ) -> Result<(HirModule, HashMap<String, Vec<f32>>)> {
+        let (store, rows, input_proj, blocks) = match stage {
+            TokenStage::Duration => (Store::Duration, 3, "input_proj", "blocks"),
+            TokenStage::Tokens => (Store::Acoustic, 2, "token_input_proj", "token_blocks"),
+        };
+        self.lens = vec![n];
+        let (embed, sh) = self.store(store).get("embedding.weight")?;
+        let (embed, sh) = (embed.clone(), sh.clone());
+        let hidden = sh[1];
+        let table = self.param(&format!("{}embedding.weight", store.prefix()), embed, &sh);
+        let ids = HirMut::new(&mut self.hir).input("ids", Shape::new(&[n], DType::I32));
+        let features =
+            HirMut::new(&mut self.hir).input("features", Shape::new(&[1, rows, n, 1], DType::F32));
+        self.masks =
+            vec![HirMut::new(&mut self.hir).input("mask0", Shape::new(&[1, 1, n, 1], DType::F32))];
+        let x = self.m().gather_(table, ids, 0);
+        let x = self.m().transpose_(x, vec![1, 0]);
+        let x = self.m().reshape_(x, vec![1, hidden as i64, n as i64, 1]);
+        let x = self.m().concat_(vec![x, features], 1);
+        let (mut h, _) = self.conv_same(x, store, input_proj, 1, 0)?;
+        for i in 0..depth {
+            h = self.residual_conv_block(h, store, &format!("{blocks}.{i}"), 0)?;
+        }
+        if let TokenStage::Duration = stage {
+            let (out, _) = self.conv_same(h, store, "output", 1, 0)?;
+            h = out;
+        }
+        HirMut::new(&mut self.hir).set_outputs(vec![h]);
+        Ok((self.hir, self.params))
+    }
+}
+
+/// `stage`'s graph over `n` tokens, and its params (named by store:
+/// `du.…`, `ac.…`).
+#[allow(clippy::too_many_arguments)]
+pub fn token_graph(
+    du: &TensorStore,
+    du_cfg: &DurationConfig,
+    ac: &TensorStore,
+    ac_cfg: &AcousticConfig,
+    de: &TensorStore,
+    de_cfg: &DecoderConfig,
+    stage: TokenStage,
+    n: usize,
+) -> Result<(HirModule, HashMap<String, Vec<f32>>)> {
+    Builder {
+        du: Some(du),
+        ac,
+        ac_cfg,
+        de,
+        de_cfg,
+        hir: HirModule::new("sanotts_tokens"),
+        params: HashMap::new(),
+        masks: Vec::new(),
+        lens: Vec::new(),
+    }
+    .build_tokens(
+        stage,
+        match stage {
+            TokenStage::Duration => du_cfg.depth,
+            TokenStage::Tokens => ac_cfg.token_depth,
+        },
+        n,
+    )
+}
+
+/// The frame-rate acoustic stack and the decoder over exactly `frames`
+/// frames: `frame_input` `[1, hidden + 3, frames, 1]` and the masks
+/// `mask{l}` (all ones) → the latent and the audio. Its params.
+pub fn frame_graph(
+    ac: &TensorStore,
+    ac_cfg: &AcousticConfig,
+    de: &TensorStore,
+    de_cfg: &DecoderConfig,
+    frames: usize,
+) -> Result<(HirModule, HashMap<String, Vec<f32>>)> {
+    check_decoder(de_cfg)?;
+    let (hir, params, _) = Builder {
+        du: None,
+        ac,
+        ac_cfg,
+        de,
+        de_cfg,
+        hir: HirModule::new("sanotts_frames"),
+        params: HashMap::new(),
+        masks: Vec::new(),
+        lens: Vec::new(),
+    }
+    .build(frames)?;
+    Ok((hir, params))
+}
+
 #[derive(Clone, Copy)]
 enum Store {
+    Duration,
     Acoustic,
     Decoder,
 }
@@ -448,6 +562,7 @@ enum Store {
 impl Store {
     fn prefix(self) -> &'static str {
         match self {
+            Store::Duration => "du.",
             Store::Acoustic => "ac.",
             Store::Decoder => "de.",
         }
@@ -455,7 +570,7 @@ impl Store {
 }
 
 fn aot_root() -> PathBuf {
-    std::env::var("RLX_SANOTTS_AOT")
+    rlx_ir::env::var_result("RLX_SANOTTS_AOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir().join("rlx-sanotts-aot"))
 }
@@ -498,6 +613,7 @@ impl FrameGraph {
             ac_cfg,
             de,
             de_cfg,
+            du: None,
             hir: HirModule::new("sanotts_frames"),
             params: HashMap::new(),
             masks: Vec::new(),

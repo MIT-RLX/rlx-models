@@ -24,6 +24,8 @@ rlx-gguf = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+# `Instant` that works on wasm32 (std's panics there).
+web-time = "1"
 safetensors = { workspace = true }
 tokenizers = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
@@ -32,6 +34,18 @@ llama-cpp-2 = { workspace = true, optional = true }
 # Decodes an image with the `image` crate, so it needs the VLM feature that
 # pulls that optional dep in (workspace builds unify it in; a standalone
 # `-p rlx-qwen35` / `cargo publish` build does not).
+[dev-dependencies]
+# The export test opens the package as any rlx program does.
+rlx-text = { workspace = true }
+tempfile = "3"
+rlx-runtime = { workspace = true, features = ["program"] }
+image = { workspace = true }
+
+[[test]]
+name = "export_vl"
+path = "tests/export_vl.rs"
+required-features = ["export"]
+
 [[example]]
 name = "dump_vision_emb"
 required-features = ["qwen35-vlm"]
@@ -48,16 +62,19 @@ tokenizer = ["dep:tokenizers", "qwen35-tokenizer"]
 # fall through to the "support not compiled" branch.
 qwen35-tokenizer = ["dep:tokenizers"]
 qwen35-vlm = ["dep:image"]
+# `export::export_rlxp`: a GGUF as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "qwen35-tokenizer"]
 parity-llama = ["dep:llama-cpp-2"]
 metal = ["rlx-runtime/metal"]
 mlx = ["rlx-runtime/mlx"]
 cuda = ["rlx-runtime/cuda"]
 rocm = ["rlx-runtime/rocm"]
 gpu = ["rlx-runtime/gpu"]
+webgl = ["rlx-runtime/opengl"]
 vulkan = ["rlx-runtime/vulkan"]
 coreml = ["rlx-runtime/coreml", "rlx-core/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]

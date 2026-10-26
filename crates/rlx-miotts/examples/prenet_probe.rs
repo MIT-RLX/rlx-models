@@ -32,7 +32,9 @@ fn main() -> anyhow::Result<()> {
     t.truncate(100);
     let idx: Vec<i64> = t.iter().map(|&x| x as i64).collect();
     let emb: Vec<f32> = std::fs::read(dir.join("en_female.f32"))?
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let ib: Vec<u8> = idx.iter().flat_map(|x| x.to_le_bytes()).collect();
@@ -43,11 +45,15 @@ fn main() -> anyhow::Result<()> {
     ]);
     let v: Vec<f32> = outs[0]
         .0
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let reference: Vec<f32> = std::fs::read(dir.join("prenet_ref.f32"))?
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let n = v.len().min(reference.len());

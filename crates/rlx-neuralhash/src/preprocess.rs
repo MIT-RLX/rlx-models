@@ -114,7 +114,7 @@ mod tests {
     fn channels_are_planar_not_interleaved() {
         // Pure red source → plane 0 is +1, planes 1 and 2 are -1.
         let mut rgb = vec![0u8; 6 * 6 * 3];
-        for px in rgb.chunks_exact_mut(3) {
+        for px in rgb.as_chunks_mut::<3>().0 {
             px[0] = 255;
         }
         let t = from_rgb8(&rgb, 6, 6).unwrap();

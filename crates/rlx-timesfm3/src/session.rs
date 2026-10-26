@@ -199,7 +199,7 @@ impl TimesFM3Session {
 
 /// When set, run the compiled core on CPU instead of the host reference (parity debugging).
 fn use_compiled_core_on_cpu() -> bool {
-    std::env::var("RLX_TIMESFM3_COMPILED_CORE")
+    rlx_ir::env::var_result("RLX_TIMESFM3_COMPILED_CORE")
         .ok()
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }

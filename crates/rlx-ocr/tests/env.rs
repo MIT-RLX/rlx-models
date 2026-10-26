@@ -16,9 +16,9 @@
 //! Shared env helpers (`OCR_*` preferred; `OCRS_*` legacy).
 
 pub fn env_var(primary: &str, legacy: &str) -> Option<String> {
-    std::env::var(primary)
+    rlx_ir::env::read(primary)
         .ok()
-        .or_else(|| std::env::var(legacy).ok())
+        .or_else(|| rlx_ir::env::read(legacy).ok())
 }
 
 #[allow(dead_code)]

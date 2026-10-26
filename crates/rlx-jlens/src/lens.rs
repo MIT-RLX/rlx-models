@@ -207,11 +207,15 @@ impl JacobianLens {
             let raw = view.data();
             let values: Vec<f32> = match view.dtype() {
                 Dtype::F16 => raw
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
                     .collect(),
                 Dtype::F32 => raw
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect(),
                 other => bail!("{name} has dtype {other:?}; expected F16 or F32"),

@@ -41,22 +41,24 @@ pub fn load_weights(dir: &Path) -> anyhow::Result<LoadedWeights> {
         match view.dtype() {
             safetensors::tensor::Dtype::F32 => {
                 let mut data = Vec::with_capacity(view.data().len() / 4);
-                for chunk in view.data().chunks_exact(4) {
+                for chunk in view.data().as_chunks::<4>().0.iter() {
                     data.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
                 f32.insert(name.to_string(), (data, shape));
             }
             safetensors::tensor::Dtype::I64 => {
                 let mut data = Vec::with_capacity(view.data().len() / 8);
-                for chunk in view.data().chunks_exact(8) {
-                    data.push(i64::from_le_bytes(chunk.try_into().unwrap()));
+                for chunk in view.data().as_chunks::<8>().0.iter() {
+                    data.push(i64::from_le_bytes(*chunk));
                 }
                 i64.insert(name.to_string(), (data, shape));
             }
             safetensors::tensor::Dtype::F16 => {
                 let data: Vec<f32> = view
                     .data()
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
                     .collect();
                 f32.insert(name.to_string(), (data, shape));
@@ -64,7 +66,9 @@ pub fn load_weights(dir: &Path) -> anyhow::Result<LoadedWeights> {
             safetensors::tensor::Dtype::BF16 => {
                 let data: Vec<f32> = view
                     .data()
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| {
                         let bits = u16::from_le_bytes([c[0], c[1]]);
                         f32::from_bits((bits as u32) << 16)

@@ -96,15 +96,7 @@ fn force_token(logits: &mut [f32], token: u32) {
 }
 
 fn argmax(a: &[f32]) -> u32 {
-    let mut bi = 0u32;
-    let mut bv = f32::NEG_INFINITY;
-    for (i, &v) in a.iter().enumerate() {
-        if v > bv {
-            bv = v;
-            bi = i as u32;
-        }
-    }
-    bi
+    rlx_runtime::search::argmax_u32(a)
 }
 
 impl Florence2Model {

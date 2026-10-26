@@ -5,7 +5,7 @@
 //!
 //! Run:
 //! ```bash
-//! cargo run --release -p rlx-gemma --features "apple-silicon" --example e2b_logits_diff
+//! cargo run --release -p rlx-gemma --features "macos-gpu" --example e2b_logits_diff
 //! ```
 
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ const PROMPT_IDS: &[u32] = &[818, 5279, 529, 7001, 563];
 const BUCKET: usize = 16;
 
 fn ckpt_dir() -> Result<PathBuf> {
-    if let Some(d) = std::env::var_os("RLX_GEMMA4_E2B_DIR") {
+    if let Some(d) = rlx_ir::env::var_os("RLX_GEMMA4_E2B_DIR") {
         let p = PathBuf::from(d);
         return Ok(p);
     }

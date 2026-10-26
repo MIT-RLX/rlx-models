@@ -25,7 +25,9 @@
 use std::path::PathBuf;
 
 fn bonsai27b_path() -> Option<PathBuf> {
-    std::env::var("RLX_BONSAI27B_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_BONSAI27B_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 
 #[test]

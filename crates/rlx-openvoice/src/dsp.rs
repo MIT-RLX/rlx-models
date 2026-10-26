@@ -25,7 +25,7 @@ pub const N_FREQ: usize = N_FFT / 2 + 1; // 513
 pub const SR: u32 = 22050;
 
 /// Periodic Hann window (`torch.hann_window(n)`, periodic=True).
-fn hann_periodic(n: usize) -> Vec<f32> {
+pub fn hann_periodic(n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| {
             let x = std::f32::consts::PI * i as f32 / n as f32;

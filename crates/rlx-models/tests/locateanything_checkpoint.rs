@@ -29,7 +29,7 @@ use rlx_locateanything::{
 use std::path::PathBuf;
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("RLX_LOCATEANYTHING_DIR")
+    rlx_ir::env::var_result("RLX_LOCATEANYTHING_DIR")
         .ok()
         .map(PathBuf::from)
 }

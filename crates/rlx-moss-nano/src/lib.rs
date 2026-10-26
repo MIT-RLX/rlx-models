@@ -24,6 +24,8 @@
 
 pub mod config;
 pub mod dsp;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod gguf_bundle;
 pub mod native;
 pub mod variant;

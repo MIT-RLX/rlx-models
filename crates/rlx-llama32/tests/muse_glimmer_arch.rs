@@ -512,7 +512,7 @@ fn muse_tokens() -> Vec<u32> {
 /// show up here).
 ///
 /// Skips (rather than fails) when the backend isn't present on the host, so the
-/// same test binary is meaningful on Apple, NVIDIA and AMD machines.
+/// same test binary is meaningful on macOS, NVIDIA and AMD machines.
 #[allow(dead_code)]
 fn assert_backend_parity(device: Device, tol: f32) {
     if !is_available(device) {
@@ -729,13 +729,13 @@ fn muse_glimmer_wgpu_matches_reference() {
     // diff vs the reference:
     //
     //   adapter                  reuse ON (default)        reuse OFF
-    //   Apple Metal              llama 9.5e-7 / muse 4.8e-7    unchanged
+    //   Metal              llama 9.5e-7 / muse 4.8e-7    unchanged
     //   NVIDIA Vulkan (3080 Ti)  llama 1.4e-2…1.9e-2,          llama 1.4e-6
     //                            muse 1.6e-3…4.8e-3           muse 6.0e-7
     //   AMD Vulkan (MI100 box)   llama 1.9e-2 / muse 6.1e-4    llama 1.4e-6
     //                                                         muse 6.0e-7
     //
-    // Only the Apple Metal adapter is clean under reuse; both Vulkan-backed
+    // Only the Metal adapter is clean under reuse; both Vulkan-backed
     // adapters corrupt, and the values vary run to run (so it is a reuse/
     // ordering hazard, not fp precision). Plain Llama drifts 4-30× MORE than
     // Muse Glimmer, so this is a pre-existing executor bug on the shared
@@ -746,7 +746,8 @@ fn muse_glimmer_wgpu_matches_reference() {
     // check; without it we only bound the corruption so the suite stays green on
     // affected adapters instead of masking the arch behind a loose tolerance
     // everywhere.
-    let strict = std::env::var("RLX_ARENA_NO_REUSE").is_ok_and(|v| v == "1" || v == "true");
+    let strict =
+        rlx_ir::env::var_result("RLX_ARENA_NO_REUSE").is_ok_and(|v| v == "1" || v == "true");
     if strict {
         assert_backend_parity(Device::Gpu, 1e-3);
     } else {
@@ -761,7 +762,7 @@ fn muse_glimmer_wgpu_matches_reference() {
 #[cfg(feature = "coreml")]
 #[test]
 fn muse_glimmer_coreml_matches_reference() {
-    // CoreML lowers through `Device::Ane` (Apple Neural Engine).
+    // CoreML lowers through `Device::Ane` (Neural Engine).
     assert_backend_parity(Device::Ane, 2e-3);
 }
 

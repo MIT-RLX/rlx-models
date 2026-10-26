@@ -38,13 +38,13 @@ use std::path::PathBuf;
 use rlx_models::run::auto_runner;
 
 fn fixture() -> Option<PathBuf> {
-    let p = std::env::var_os("RLX_PARITY_GGUF").map(PathBuf::from)?;
+    let p = rlx_ir::env::var_os("RLX_PARITY_GGUF").map(PathBuf::from)?;
     p.is_file().then_some(p)
 }
 
 fn parse_prompt_ids() -> Vec<u32> {
-    let s =
-        std::env::var("RLX_PARITY_PROMPT_IDS").unwrap_or_else(|_| "1,2,3,4,5,6,7,8".to_string());
+    let s = rlx_ir::env::var_result("RLX_PARITY_PROMPT_IDS")
+        .unwrap_or_else(|_| "1,2,3,4,5,6,7,8".to_string());
     s.split(',')
         .map(|x| x.trim().parse::<u32>().expect("prompt id parse"))
         .collect()

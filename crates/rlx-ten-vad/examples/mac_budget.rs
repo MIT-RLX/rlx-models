@@ -166,11 +166,15 @@ fn main() {
     )
     .expect("reference features");
     let rows: Vec<Vec<f32>> = raw
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect::<Vec<_>>()
-        .chunks_exact(41)
-        .map(<[f32]>::to_vec)
+        .as_chunks::<41>()
+        .0
+        .iter()
+        .map(|row| row.to_vec())
         .collect();
     let (mean_z, best_frame) = conv_out_sparsity(&rows);
     println!("\nactivation sparsity into lstm1 (post-ReLU, exact zeros)\n");

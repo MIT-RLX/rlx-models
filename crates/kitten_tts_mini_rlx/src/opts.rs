@@ -163,8 +163,8 @@ pub struct CompileSequenceLengthGuard {
 impl CompileSequenceLengthGuard {
     pub fn set(seq: usize) -> Self {
         let guard = Self {
-            rlx: std::env::var(COMPILE_SEQUENCE_LENGTH_ENV).ok(),
-            legacy: std::env::var(LEGACY_SEQUENCE_LENGTH_ENV).ok(),
+            rlx: rlx_ir::env::read(COMPILE_SEQUENCE_LENGTH_ENV).ok(),
+            legacy: rlx_ir::env::read(LEGACY_SEQUENCE_LENGTH_ENV).ok(),
         };
         RUNTIME_SEQUENCE_OVERRIDE.with(|c| c.set(Some(seq)));
         set_compile_sequence_length(seq);
@@ -179,9 +179,7 @@ impl Drop for CompileSequenceLengthGuard {
         RUNTIME_MEL_FRAMES.with(|c| c.set(None));
         match &self.rlx {
             Some(v) => crate::set_env_var(COMPILE_SEQUENCE_LENGTH_ENV, v),
-            None => unsafe {
-                std::env::remove_var(COMPILE_SEQUENCE_LENGTH_ENV);
-            },
+            None => rlx_ir::env::unset(COMPILE_SEQUENCE_LENGTH_ENV),
         }
         match &self.legacy {
             Some(v) => crate::set_env_var(LEGACY_SEQUENCE_LENGTH_ENV, v),
@@ -197,8 +195,8 @@ pub fn compile_sequence_length_from_env() -> Option<usize> {
     if let Some(seq) = RUNTIME_SEQUENCE_OVERRIDE.with(|c| c.get()) {
         return Some(seq);
     }
-    std::env::var(COMPILE_SEQUENCE_LENGTH_ENV)
-        .or_else(|_| std::env::var(LEGACY_SEQUENCE_LENGTH_ENV))
+    rlx_ir::env::read(COMPILE_SEQUENCE_LENGTH_ENV)
+        .or_else(|_| rlx_ir::env::read(LEGACY_SEQUENCE_LENGTH_ENV))
         .ok()
         .and_then(|s| s.parse().ok())
 }

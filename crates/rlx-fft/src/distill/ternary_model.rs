@@ -1256,12 +1256,8 @@ mod tests {
     fn ref_spectrum_training_reduces_error() {
         let mut model = DistilledTernaryFftModel::new(64, 16, 16_000.0);
         if let SpectrumCorrection::Band(ref mut band) = model.denoiser {
-            for w in &mut band.weights {
-                *w = 0.7;
-            }
-            for b in &mut band.bias {
-                *b = 0.05;
-            }
+            band.weights.fill(0.7);
+            band.bias.fill(0.05);
         }
         let batch = 4;
         let signal: Vec<f32> = (0..batch * 64).map(|i| (i as f32 * 0.03).sin()).collect();

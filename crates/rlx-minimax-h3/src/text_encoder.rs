@@ -175,15 +175,21 @@ fn decode_f32(dtype: safetensors::Dtype, data: &[u8], n: usize) -> Result<Vec<f3
     use safetensors::Dtype;
     let out: Vec<f32> = match dtype {
         Dtype::F32 => data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
         Dtype::F16 => data
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         Dtype::BF16 => data
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| half::bf16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         other => bail!("unsupported conditioning dtype {other:?}; use f32, f16 or bf16"),
@@ -196,11 +202,15 @@ fn decode_u32(dtype: safetensors::Dtype, data: &[u8], n: usize) -> Result<Vec<u3
     use safetensors::Dtype;
     let out: Vec<u32> = match dtype {
         Dtype::I64 | Dtype::U64 => data
-            .chunks_exact(8)
-            .map(|c| u64::from_le_bytes(c.try_into().expect("8 bytes")) as u32)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c) as u32)
             .collect(),
         Dtype::I32 | Dtype::U32 => data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
         Dtype::U8 | Dtype::I8 => data.iter().map(|&b| b as u32).collect(),

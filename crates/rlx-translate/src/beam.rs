@@ -16,8 +16,8 @@
 //! Beam search for the `PDecTranslatorBlock` stage.
 //!
 //! The search is generic over [`NmtDecoder`], so it is exercised by unit tests
-//! against a scripted decoder and will drive the Espresso model unchanged once
-//! [`crate::espresso`] can load one.
+//! against a scripted decoder and will drive the NMT model unchanged once
+//! [`crate::netfile`] can load one.
 //!
 //! # What is and is not pinned down
 //!
@@ -36,6 +36,7 @@
 
 use crate::pdec::PDecParams;
 use anyhow::{Result, ensure};
+use rlx_search::{BeamConfig, BeamSearch, Constraint, FinishRule, LiveAtEnd, Scores};
 use std::collections::BTreeSet;
 
 /// The model side of beam search.
@@ -135,19 +136,15 @@ pub struct SearchOptions {
     pub length_penalty: Option<f64>,
 }
 
-#[derive(Clone)]
-struct Live {
-    /// Control tokens followed by generated ids.
-    prefix: Vec<u32>,
-    score: f64,
-    generated: usize,
-}
-
 /// Runs beam search.
 ///
 /// `priming` is the target-side control token ids (see
 /// [`crate::pdec::PDecParams::target_tokens`]); they seed every hypothesis and
 /// are stripped from the results. `source_len` sets the length budget.
+///
+/// The engine is [`rlx_search::BeamSearch`]: each hypothesis proposes its top
+/// `beam`, every EOS candidate finishes, and the search stops once
+/// `finished_score` hypotheses are complete and no live one can overtake them.
 pub fn search(
     decoder: &mut dyn NmtDecoder,
     params: &PDecParams,
@@ -157,164 +154,87 @@ pub fn search(
 ) -> Result<Vec<Hypothesis>> {
     let vocab = decoder.vocab_size();
     ensure!(vocab > 0, "decoder reports an empty vocabulary");
-    let eos = decoder.eos_id();
-    let budget = params.length_budget(source_len);
     let beam = params.beam.max(1);
     let want = params.nbest.max(1);
+    let alpha = options
+        .length_penalty
+        .unwrap_or(if params.norm_costs { 1.0 } else { 0.0 });
+
+    let mut cfg = BeamConfig::new(beam, params.length_budget(source_len))
+        .stop([decoder.eos_id()])
+        .length_penalty(alpha);
+    // Top `beam` continuations of each hypothesis is enough: no hypothesis
+    // outside its own top `beam` can enter the global top `beam` once every
+    // parent contributes that many.
+    cfg.proposals = beam;
+    cfg.scores = Scores::LogProbs;
+    cfg.finish = FinishRule::Any;
     // `finished_score` stops once this many hypotheses are complete.
-    let finished_target = params.stop_mode_finished_score_beam.max(want);
-
-    let mut live = vec![Live {
-        prefix: priming.to_vec(),
-        score: 0.0,
-        generated: 0,
-    }];
-    let mut finished: Vec<Hypothesis> = Vec::new();
-
-    for _ in 0..budget {
-        if live.is_empty() {
-            break;
-        }
-
-        let mut candidates: Vec<Live> = Vec::with_capacity(live.len() * beam);
-        for hyp in &live {
-            let lp = decoder.log_probs(&hyp.prefix)?;
-            ensure!(
-                lp.len() == vocab,
-                "decoder returned {} log-probs for a vocabulary of {vocab}",
-                lp.len()
-            );
-            // Top `beam` continuations of this hypothesis is enough: no
-            // hypothesis outside its own top `beam` can enter the global top
-            // `beam` once every parent contributes that many.
-            let mut idx: Vec<u32> = (0..vocab as u32)
-                .filter(|i| !options.suppressed.contains(i))
-                .collect();
-            idx.sort_unstable_by(|a, b| {
-                lp[*b as usize]
-                    .partial_cmp(&lp[*a as usize])
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.cmp(b))
-            });
-            for &tok in idx.iter().take(beam) {
-                let s = lp[tok as usize];
-                if !s.is_finite() {
-                    continue;
-                }
-                if repeats_ngram(&hyp.prefix, tok, options.no_repeat_ngram) {
-                    continue;
-                }
-                if options.no_repeat_char_ngram > 0 {
-                    let mut next = hyp.prefix.clone();
-                    next.push(tok);
-                    if decoder
-                        .surface(&next)
-                        .is_some_and(|t| repeats_char_run(&t, options.no_repeat_char_ngram))
-                    {
-                        continue;
-                    }
-                }
-                let mut prefix = hyp.prefix.clone();
-                prefix.push(tok);
-                candidates.push(Live {
-                    prefix,
-                    score: hyp.score + s as f64,
-                    generated: hyp.generated + 1,
-                });
-            }
-        }
-
-        if candidates.is_empty() {
-            break;
-        }
-
-        // Rank, split off completions, keep the top `beam` live.
-        candidates.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let mut next: Vec<Live> = Vec::with_capacity(beam);
-        for cand in candidates {
-            let last = *cand.prefix.last().expect("candidate has a token");
-            if last == eos {
-                let tokens: Vec<u32> = cand.prefix[priming.len()..cand.prefix.len() - 1].to_vec();
-                finished.push(finish(
-                    tokens,
-                    cand.score,
-                    params.norm_costs,
-                    options.length_penalty,
-                ));
-            } else if next.len() < beam {
-                next.push(cand);
-            }
-        }
-
-        if let PruningPolicy::RelativeToBest { factor } = options.pruning
-            && let Some(best) = next.first().map(|h| h.score)
-        {
-            let cutoff = best - factor * best.abs();
-            next.retain(|h| h.score >= cutoff);
-        }
-
-        live = next;
-
-        // `finished_score`: stop when enough hypotheses are complete and no
-        // live one can still overtake the worst kept completion. Scores are
-        // log-probabilities, so a live hypothesis only ever decreases.
-        if finished.len() >= finished_target {
-            finished.sort_by(|a, b| {
-                b.normalized_score
-                    .partial_cmp(&a.normalized_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            let worst_kept = finished[finished_target - 1].score;
-            if live.iter().all(|h| h.score <= worst_kept) {
-                break;
-            }
-        }
-    }
-
+    cfg.pool = params.stop_mode_finished_score_beam.max(want);
+    cfg.stop_when_unbeatable = true;
     // Budget exhausted with hypotheses still running: keep them, since the OS
     // reports a truncated translation rather than nothing (`maxTokensReached`).
-    if finished.is_empty() {
-        for hyp in live {
-            let tokens = hyp.prefix[priming.len()..].to_vec();
-            finished.push(finish(
-                tokens,
-                hyp.score,
-                params.norm_costs,
-                options.length_penalty,
-            ));
-        }
-    }
+    cfg.live_at_end = LiveAtEnd::IfNoneFinished;
+    cfg.nbest = want;
+    cfg.suppress = options.suppressed.iter().copied().collect();
+    cfg.no_repeat_ngram = options.no_repeat_ngram;
+    cfg.prune_relative = match options.pruning {
+        PruningPolicy::Disabled => None,
+        PruningPolicy::RelativeToBest { factor } => Some(factor),
+    };
 
-    finished.sort_by(|a, b| {
-        b.normalized_score
-            .partial_cmp(&a.normalized_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    finished.truncate(want);
-    Ok(finished)
+    let checked = |lp: Vec<f32>| -> Result<Vec<f32>> {
+        ensure!(
+            lp.len() == vocab,
+            "decoder returned {} log-probs for a vocabulary of {vocab}",
+            lp.len()
+        );
+        Ok(lp)
+    };
+    let mut rows = vec![checked(decoder.log_probs(priming)?)?];
+    let mut bs = BeamSearch::new(cfg, priming);
+    while !bs.is_done() {
+        let refs: Vec<&[f32]> = rows.iter().map(Vec::as_slice).collect();
+        let veto = &mut CharRunVeto {
+            decoder: &*decoder,
+            n: options.no_repeat_char_ngram,
+        };
+        let Some(step) = bs.advance(&refs, veto) else {
+            break;
+        };
+        rows = (0..step.len())
+            .map(|i| checked(decoder.log_probs(step.sequence(i))?))
+            .collect::<Result<_>>()?;
+    }
+    Ok(bs
+        .finish()
+        .into_iter()
+        .map(|h| Hypothesis {
+            tokens: h.tokens,
+            score: h.score,
+            normalized_score: h.normalized,
+        })
+        .collect())
 }
 
-/// Would appending `tok` repeat an `n`-gram the prefix already contains?
-///
-/// Subword loops are what this catches: `ornithorynque` decoded as
-/// `ornitho`+`rnith`+`aque` repeats a bigram mid-word, and length
-/// normalization then *rewards* the longer broken hypothesis — measured, the
-/// malformed output scored -5.142 raw against -4.333 for the clean one, yet
-/// won on normalized score.
-fn repeats_ngram(prefix: &[u32], tok: u32, n: usize) -> bool {
-    if n == 0 || prefix.len() + 1 < n {
-        return false;
+/// [`SearchOptions::no_repeat_char_ngram`]: needs the decoded text, so it runs
+/// per proposal rather than as a vocabulary mask.
+struct CharRunVeto<'a> {
+    decoder: &'a dyn NmtDecoder,
+    n: usize,
+}
+
+impl Constraint for CharRunVeto<'_> {
+    fn reject(&mut self, sequence: &[u32], token: u32) -> bool {
+        if self.n == 0 {
+            return false;
+        }
+        let mut next = sequence.to_vec();
+        next.push(token);
+        self.decoder
+            .surface(&next)
+            .is_some_and(|t| repeats_char_run(&t, self.n))
     }
-    let tail = &prefix[prefix.len() + 1 - n..];
-    // The candidate n-gram is the last n-1 emitted tokens plus `tok`.
-    prefix
-        .windows(n)
-        .any(|w| w[..n - 1] == *tail && w[n - 1] == tok)
 }
 
 /// Does `text` end with a run of `n` characters that appears earlier in it?
@@ -329,25 +249,6 @@ fn repeats_char_run(text: &str, n: usize) -> bool {
     }
     let tail = &c[c.len() - n..];
     c[..c.len() - 1].windows(n).any(|w| w == tail)
-}
-
-fn finish(
-    tokens: Vec<u32>,
-    score: f64,
-    norm_costs: bool,
-    length_penalty: Option<f64>,
-) -> Hypothesis {
-    let alpha = length_penalty.unwrap_or(if norm_costs { 1.0 } else { 0.0 });
-    let normalized_score = if alpha != 0.0 && !tokens.is_empty() {
-        score / (tokens.len() as f64).powf(alpha)
-    } else {
-        score
-    };
-    Hypothesis {
-        tokens,
-        score,
-        normalized_score,
-    }
 }
 
 #[cfg(test)]
@@ -449,16 +350,315 @@ mod tests {
         assert_eq!(out[0].tokens, vec![0]);
     }
 
+    /// The search as it was before it moved onto `rlx_search`, verbatim.
+    mod previous {
+        use super::super::{Hypothesis, NmtDecoder, PruningPolicy, SearchOptions};
+        use crate::pdec::PDecParams;
+        use anyhow::{Result, ensure};
+
+        #[derive(Clone)]
+        struct Live {
+            /// Control tokens followed by generated ids.
+            prefix: Vec<u32>,
+            score: f64,
+            generated: usize,
+        }
+
+        /// Runs beam search.
+        ///
+        /// `priming` is the target-side control token ids (see
+        /// [`crate::pdec::PDecParams::target_tokens`]); they seed every hypothesis and
+        /// are stripped from the results. `source_len` sets the length budget.
+        pub fn old_search(
+            decoder: &mut dyn NmtDecoder,
+            params: &PDecParams,
+            priming: &[u32],
+            source_len: usize,
+            options: &SearchOptions,
+        ) -> Result<Vec<Hypothesis>> {
+            let vocab = decoder.vocab_size();
+            ensure!(vocab > 0, "decoder reports an empty vocabulary");
+            let eos = decoder.eos_id();
+            let budget = params.length_budget(source_len);
+            let beam = params.beam.max(1);
+            let want = params.nbest.max(1);
+            // `finished_score` stops once this many hypotheses are complete.
+            let finished_target = params.stop_mode_finished_score_beam.max(want);
+
+            let mut live = vec![Live {
+                prefix: priming.to_vec(),
+                score: 0.0,
+                generated: 0,
+            }];
+            let mut finished: Vec<Hypothesis> = Vec::new();
+
+            for _ in 0..budget {
+                if live.is_empty() {
+                    break;
+                }
+
+                let mut candidates: Vec<Live> = Vec::with_capacity(live.len() * beam);
+                for hyp in &live {
+                    let lp = decoder.log_probs(&hyp.prefix)?;
+                    ensure!(
+                        lp.len() == vocab,
+                        "decoder returned {} log-probs for a vocabulary of {vocab}",
+                        lp.len()
+                    );
+                    // Top `beam` continuations of this hypothesis is enough: no
+                    // hypothesis outside its own top `beam` can enter the global top
+                    // `beam` once every parent contributes that many.
+                    let mut idx: Vec<u32> = (0..vocab as u32)
+                        .filter(|i| !options.suppressed.contains(i))
+                        .collect();
+                    idx.sort_unstable_by(|a, b| {
+                        lp[*b as usize]
+                            .partial_cmp(&lp[*a as usize])
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| a.cmp(b))
+                    });
+                    for &tok in idx.iter().take(beam) {
+                        let s = lp[tok as usize];
+                        if !s.is_finite() {
+                            continue;
+                        }
+                        if repeats_ngram(&hyp.prefix, tok, options.no_repeat_ngram) {
+                            continue;
+                        }
+                        if options.no_repeat_char_ngram > 0 {
+                            let mut next = hyp.prefix.clone();
+                            next.push(tok);
+                            if decoder
+                                .surface(&next)
+                                .is_some_and(|t| repeats_char_run(&t, options.no_repeat_char_ngram))
+                            {
+                                continue;
+                            }
+                        }
+                        let mut prefix = hyp.prefix.clone();
+                        prefix.push(tok);
+                        candidates.push(Live {
+                            prefix,
+                            score: hyp.score + s as f64,
+                            generated: hyp.generated + 1,
+                        });
+                    }
+                }
+
+                if candidates.is_empty() {
+                    break;
+                }
+
+                // Rank, split off completions, keep the top `beam` live.
+                candidates.sort_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                let mut next: Vec<Live> = Vec::with_capacity(beam);
+                for cand in candidates {
+                    let last = *cand.prefix.last().expect("candidate has a token");
+                    if last == eos {
+                        let tokens: Vec<u32> =
+                            cand.prefix[priming.len()..cand.prefix.len() - 1].to_vec();
+                        finished.push(finish(
+                            tokens,
+                            cand.score,
+                            params.norm_costs,
+                            options.length_penalty,
+                        ));
+                    } else if next.len() < beam {
+                        next.push(cand);
+                    }
+                }
+
+                if let PruningPolicy::RelativeToBest { factor } = options.pruning
+                    && let Some(best) = next.first().map(|h| h.score)
+                {
+                    let cutoff = best - factor * best.abs();
+                    next.retain(|h| h.score >= cutoff);
+                }
+
+                live = next;
+
+                // `finished_score`: stop when enough hypotheses are complete and no
+                // live one can still overtake the worst kept completion. Scores are
+                // log-probabilities, so a live hypothesis only ever decreases.
+                if finished.len() >= finished_target {
+                    finished.sort_by(|a, b| {
+                        b.normalized_score
+                            .partial_cmp(&a.normalized_score)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    let worst_kept = finished[finished_target - 1].score;
+                    if live.iter().all(|h| h.score <= worst_kept) {
+                        break;
+                    }
+                }
+            }
+
+            // Budget exhausted with hypotheses still running: keep them, since the OS
+            // reports a truncated translation rather than nothing (`maxTokensReached`).
+            if finished.is_empty() {
+                for hyp in live {
+                    let tokens = hyp.prefix[priming.len()..].to_vec();
+                    finished.push(finish(
+                        tokens,
+                        hyp.score,
+                        params.norm_costs,
+                        options.length_penalty,
+                    ));
+                }
+            }
+
+            finished.sort_by(|a, b| {
+                b.normalized_score
+                    .partial_cmp(&a.normalized_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            finished.truncate(want);
+            Ok(finished)
+        }
+
+        /// Would appending `tok` repeat an `n`-gram the prefix already contains?
+        ///
+        /// Subword loops are what this catches: `ornithorynque` decoded as
+        /// `ornitho`+`rnith`+`aque` repeats a bigram mid-word, and length
+        /// normalization then *rewards* the longer broken hypothesis — measured, the
+        /// malformed output scored -5.142 raw against -4.333 for the clean one, yet
+        /// won on normalized score.
+        fn repeats_ngram(prefix: &[u32], tok: u32, n: usize) -> bool {
+            if n == 0 || prefix.len() + 1 < n {
+                return false;
+            }
+            let tail = &prefix[prefix.len() + 1 - n..];
+            // The candidate n-gram is the last n-1 emitted tokens plus `tok`.
+            prefix
+                .windows(n)
+                .any(|w| w[..n - 1] == *tail && w[n - 1] == tok)
+        }
+
+        /// Does `text` end with a run of `n` characters that appears earlier in it?
+        ///
+        /// Only the *final* run is tested, because every earlier one was already
+        /// rejected when it was the final one — so this stays O(len) per candidate
+        /// rather than rescanning the whole hypothesis.
+        fn repeats_char_run(text: &str, n: usize) -> bool {
+            let c: Vec<char> = text.chars().collect();
+            if n == 0 || c.len() <= n {
+                return false;
+            }
+            let tail = &c[c.len() - n..];
+            c[..c.len() - 1].windows(n).any(|w| w == tail)
+        }
+
+        fn finish(
+            tokens: Vec<u32>,
+            score: f64,
+            norm_costs: bool,
+            length_penalty: Option<f64>,
+        ) -> Hypothesis {
+            let alpha = length_penalty.unwrap_or(if norm_costs { 1.0 } else { 0.0 });
+            let normalized_score = if alpha != 0.0 && !tokens.is_empty() {
+                score / (tokens.len() as f64).powf(alpha)
+            } else {
+                score
+            };
+            Hypothesis {
+                tokens,
+                score,
+                normalized_score,
+            }
+        }
+    }
+
+    /// Log-probs that depend on the whole prefix, so hypotheses differ.
+    struct Hashed {
+        vocab: usize,
+        eos: u32,
+        seed: u64,
+    }
+
+    impl NmtDecoder for Hashed {
+        fn vocab_size(&self) -> usize {
+            self.vocab
+        }
+        fn eos_id(&self) -> u32 {
+            self.eos
+        }
+        fn log_probs(&mut self, prefix: &[u32]) -> Result<Vec<f32>> {
+            let mut h = 0xcbf2_9ce4_8422_2325u64 ^ self.seed;
+            for &t in prefix {
+                h = (h ^ t as u64).wrapping_mul(0x0100_0000_01b3);
+            }
+            let mut row: Vec<f32> = (0..self.vocab)
+                .map(|i| {
+                    let mut x = h ^ (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                    x ^= x >> 31;
+                    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                    (x >> 40) as f32 / (1u64 << 24) as f32 * 6.0
+                })
+                .collect();
+            let m = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let lse = m + row.iter().map(|v| (v - m).exp()).sum::<f32>().ln();
+            row.iter_mut().for_each(|v| *v -= lse);
+            Ok(row)
+        }
+        fn surface(&self, tokens: &[u32]) -> Option<String> {
+            Some(
+                tokens
+                    .iter()
+                    .map(|&t| (b'a' + (t % 4) as u8) as char)
+                    .collect(),
+            )
+        }
+    }
+
     #[test]
-    fn norm_costs_reranks_by_length() {
-        let mut p = params(2, 2);
-        p.norm_costs = true;
-        // A 1-token hypothesis at -1.0 total beats a 3-token one at -1.5 total
-        // on raw score, but loses on per-token score (-1.0 vs -0.5).
-        let short = finish(vec![7], -1.0, true, None);
-        let long = finish(vec![7, 8, 9], -1.5, true, None);
-        assert!(short.score > long.score);
-        assert!(long.normalized_score > short.normalized_score);
+    fn matches_the_previous_search() {
+        for seed in 0..150u64 {
+            for (beam, nbest, norm, lp, finished_beam) in [
+                (1, 1, true, None, 1),
+                (3, 2, true, None, 3),
+                (4, 3, false, None, 2),
+                (3, 3, true, Some(0.6), 4),
+            ] {
+                let mut p = params(beam, nbest);
+                p.norm_costs = norm;
+                p.stop_mode_finished_score_beam = finished_beam;
+                p.max_seq_length = 6;
+                p.max_seq_length_floor = 6;
+                let variants = [
+                    SearchOptions {
+                        length_penalty: lp,
+                        ..SearchOptions::default()
+                    },
+                    SearchOptions {
+                        suppressed: [3u32, 5].into_iter().collect(),
+                        pruning: PruningPolicy::RelativeToBest { factor: 0.8 },
+                        no_repeat_char_ngram: 3,
+                        length_penalty: lp,
+                        ..SearchOptions::default()
+                    },
+                ];
+                for opts in &variants {
+                    let mk = || Hashed {
+                        vocab: 7,
+                        eos: 2,
+                        seed,
+                    };
+                    let want = previous::old_search(&mut mk(), &p, &[6, 6], 4, opts).unwrap();
+                    let got = search(&mut mk(), &p, &[6, 6], 4, opts).unwrap();
+                    assert_eq!(got.len(), want.len(), "seed {seed} beam {beam}");
+                    for (g, w) in got.iter().zip(&want) {
+                        assert_eq!(g.tokens, w.tokens, "seed {seed} beam {beam}");
+                        assert!((g.score - w.score).abs() < 1e-9);
+                        assert!((g.normalized_score - w.normalized_score).abs() < 1e-9);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -73,6 +73,8 @@ pub mod codec;
 
 /// STEP 4 (done): `s_encoder.onnx` (mel → 32 global tokens) for voice cloning.
 pub mod encoder;
+#[cfg(feature = "export")]
+pub mod export;
 
 /// Qwen2 LM configuration (subset), parsed from the model's `config.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,7 +304,7 @@ impl MiraTts {
 /// VRAM held and 0% util. Default codec+speaker to CPU; override with
 /// `RLX_MIRATTS_CODEC_DEVICE=cuda|gpu`.
 fn resolve_codec_device(requested: Device) -> Device {
-    if let Ok(v) = std::env::var("RLX_MIRATTS_CODEC_DEVICE")
+    if let Ok(v) = rlx_ir::env::var_result("RLX_MIRATTS_CODEC_DEVICE")
         && let Ok(d) = parse_device(v.trim())
     {
         return d;
@@ -316,7 +318,7 @@ fn resolve_codec_device(requested: Device) -> Device {
 /// Cap AR length for smoke/bench. Default [`MAX_SPEECH_FRAMES`]; override with
 /// `RLX_MIRATTS_MAX_SPEECH` (clamped to `1..=MAX_SPEECH_FRAMES`).
 fn resolve_max_speech_frames() -> usize {
-    std::env::var("RLX_MIRATTS_MAX_SPEECH")
+    rlx_ir::env::var_result("RLX_MIRATTS_MAX_SPEECH")
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .map(|n: usize| n.clamp(1, MAX_SPEECH_FRAMES))

@@ -92,7 +92,7 @@ fn run_synth(horizon: usize, return_quantiles: bool, device: Option<&str>) -> Re
         Some(name) => resolve_device(name)?,
         None => Device::Cpu,
     };
-    if dev == Device::Cpu && std::env::var("RLX_TIMESFM3_COMPILED_CORE").is_err() {
+    if dev == Device::Cpu && rlx_ir::env::var_result("RLX_TIMESFM3_COMPILED_CORE").is_err() {
         let cfg = TimesFM3Config::synth_tiny();
         let model = TimesFM3Model::synth(cfg, 42);
         let ctx: Vec<f32> = (0..128).map(|t| (t as f32 * 0.1).sin()).collect();

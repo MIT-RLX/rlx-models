@@ -15,11 +15,11 @@ const DEFAULT_TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 const FOX_WORDS: [&str; 6] = ["quick", "brown", "fox", "jumps", "lazy", "dog"];
 
 fn main() -> anyhow::Result<()> {
-    let model = std::env::var("RLX_KOKORO_DIR")
+    let model = rlx_ir::env::var_result("RLX_KOKORO_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_model_dir());
-    let text = std::env::var("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
-    let voice = std::env::var("RLX_VOICE").unwrap_or_else(|_| "af_heart".into());
+    let text = rlx_ir::env::var_result("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
+    let voice = rlx_ir::env::var_result("RLX_VOICE").unwrap_or_else(|_| "af_heart".into());
     let devices = parse_devices();
 
     println!("== StyleTTS2 Kokoro cross-backend (native graph-split RLX path) ==");
@@ -91,7 +91,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn parse_devices() -> Vec<(Device, &'static str)> {
-    if let Ok(raw) = std::env::var("RLX_DEVICES") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_DEVICES") {
         return raw
             .split(',')
             .filter_map(|s| {
@@ -133,7 +133,7 @@ fn load_whisper() -> WhisperRunner {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         return whisper_ready(&p).then_some(p);
     }

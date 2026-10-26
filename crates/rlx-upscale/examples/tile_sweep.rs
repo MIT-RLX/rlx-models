@@ -89,7 +89,7 @@ fn main() -> Result<()> {
     let image = image.context("--image is required")?;
 
     // A child measures one tile and prints a single row.
-    if let Ok(t) = std::env::var(CHILD_TILE) {
+    if let Ok(t) = rlx_ir::env::read(CHILD_TILE) {
         return measure(&model, &image, device, t.parse()?);
     }
 

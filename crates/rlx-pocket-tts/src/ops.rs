@@ -66,7 +66,7 @@ fn erf(x: f32) -> f32 {
 
 /// `y = x @ W^T + b`, with `x: [N, in]`, `W: [out, in]`, `b: [out]?`, returns `[N, out]`.
 ///
-/// On Apple targets with the `accelerate` feature, routes through CBLAS sgemm.
+/// On macOS targets with the `accelerate` feature, routes through CBLAS sgemm.
 /// Elsewhere falls back to ndarray's dot product.
 pub fn linear(x: ArrayView2<f32>, w: ArrayView2<f32>, b: Option<ArrayView1<f32>>) -> Array2<f32> {
     let (n, c_in) = x.dim();

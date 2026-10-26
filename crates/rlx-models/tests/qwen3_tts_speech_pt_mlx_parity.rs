@@ -24,7 +24,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("RLX_QWEN3_TTS_DIR")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("speech_tokenizer/model.safetensors").is_file())
@@ -75,7 +75,11 @@ fn corr(a: &[f32], b: &[f32]) -> f32 {
 
 #[test]
 fn speech_pt_mlx_near_cpu_on_golden_frames() {
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }

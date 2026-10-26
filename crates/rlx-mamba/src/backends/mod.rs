@@ -17,7 +17,7 @@
 //!
 //! `cpu` is always built. The accelerator backends are feature-gated
 //! and additionally `#[cfg(target_os = ...)]`-gated where appropriate
-//! (Metal/MLX only build on Apple; CUDA pulls native NVIDIA libs;
+//! (Metal/MLX only build on macOS; CUDA pulls native NVIDIA libs;
 //! wgpu/ROCm have their own platform constraints).
 
 pub mod cpu;

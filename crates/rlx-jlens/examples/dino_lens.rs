@@ -158,7 +158,7 @@ fn main() -> Result<()> {
     // identity path, so `J ≈ I + (what the blocks did)`. That is checkable
     // without fitting anything: if ‖h‖ grows sharply with depth, the identity
     // path does not dominate and no average linear map can bridge the gap.
-    if std::env::var("RLX_DINO_NORMS_ONLY").is_ok() {
+    if rlx_ir::env::var_result("RLX_DINO_NORMS_ONLY").is_ok() {
         let all: Vec<usize> = (0..target).collect();
         let stack = model.stack(&all, target, 1, seq)?;
         let mut fwd = Session::new(device).compile(stack.tapped.graph().clone());

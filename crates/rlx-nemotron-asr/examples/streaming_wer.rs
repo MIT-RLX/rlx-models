@@ -71,10 +71,10 @@ fn main() -> Result<()> {
         ));
     }
 
-    let device_s = std::env::var("RLX_NEMOTRON_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device_s = rlx_ir::env::var_result("RLX_NEMOTRON_DEVICE").unwrap_or_else(|_| "cpu".into());
     let device = parse_standard_device("nemotron-asr", &device_s)?;
-    let chunks = parse_chunks(&std::env::var("RLX_NEMOTRON_CHUNKS").unwrap_or_default());
-    let reference = std::env::var("RLX_NEMOTRON_REFERENCE")
+    let chunks = parse_chunks(&rlx_ir::env::var_result("RLX_NEMOTRON_CHUNKS").unwrap_or_default());
+    let reference = rlx_ir::env::var_result("RLX_NEMOTRON_REFERENCE")
         .ok()
         .map(std::fs::read_to_string)
         .transpose()?
@@ -189,7 +189,7 @@ fn print_report(rows: &[Row], have_reference: bool) {
 }
 
 fn env_path(key: &str) -> Option<std::path::PathBuf> {
-    std::env::var(key).ok().map(std::path::PathBuf::from)
+    rlx_ir::env::read(key).ok().map(std::path::PathBuf::from)
 }
 
 /// Parse a comma list of chunk seconds; defaults to `[1, 2, 4]` when empty.

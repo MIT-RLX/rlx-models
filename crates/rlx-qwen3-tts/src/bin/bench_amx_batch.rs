@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Probe whether Accelerate's sgemm uses Apple AMX more aggressively as N grows.
+//! Probe whether Accelerate's sgemm uses AMX more aggressively as N grows.
 //!
 //! If sgemm(M, K, N=16) costs not-much-more than sgemm(M, K, N=1), we have a
 //! free 16× per-call FLOPs upgrade — and Option B (batching substeps) becomes

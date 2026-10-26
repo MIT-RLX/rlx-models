@@ -28,7 +28,7 @@ struct Loaded {
 }
 
 fn cases(pair: &LangPair, n: usize) -> Vec<(String, String)> {
-    let Ok(dir) = std::env::var("RLX_TRANSLATE_REFERENCE") else {
+    let Ok(dir) = rlx_ir::env::var_result("RLX_TRANSLATE_REFERENCE") else {
         return Vec::new();
     };
     let path = PathBuf::from(dir).join(format!("{}-{}.tsv", pair.source, pair.target));
@@ -46,7 +46,7 @@ fn cases(pair: &LangPair, n: usize) -> Vec<(String, String)> {
 
 #[test]
 fn pivot_directions_reproduce_the_os() {
-    let per: usize = std::env::var("RLX_TEST_N")
+    let per: usize = rlx_ir::env::var_result("RLX_TEST_N")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
@@ -131,12 +131,12 @@ fn pivot_directions_reproduce_the_os() {
                 )?;
                 // The repetition levers were rejected earlier on lexicon data,
                 // where repetition never happens. This corpus is where it does.
-                if let Ok(v) = std::env::var("RLX_TRANSLATE_NO_REPEAT")
+                if let Ok(v) = rlx_ir::env::var_result("RLX_TRANSLATE_NO_REPEAT")
                     && let Ok(k) = v.parse::<usize>()
                 {
                     m.set_no_repeat_ngram(k);
                 }
-                if let Ok(v) = std::env::var("RLX_TRANSLATE_NO_REPEAT_CHARS")
+                if let Ok(v) = rlx_ir::env::var_result("RLX_TRANSLATE_NO_REPEAT_CHARS")
                     && let Ok(k) = v.parse::<usize>()
                 {
                     m.set_no_repeat_char_ngram(k);

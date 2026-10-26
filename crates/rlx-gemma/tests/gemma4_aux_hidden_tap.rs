@@ -131,8 +131,20 @@ fn synthetic_weights(cfg: &GemmaConfig) -> WeightMap {
             (ramp(h, 0.001, salt), vec![h]),
         );
         t.insert(
+            format!("{lp}.post_attention_layernorm.weight"),
+            (ramp(h, 0.001, salt + 12), vec![h]),
+        );
+        t.insert(
             format!("{lp}.pre_feedforward_layernorm.weight"),
             (ramp(h, 0.001, salt + 10), vec![h]),
+        );
+        t.insert(
+            format!("{lp}.self_attn.q_norm.weight"),
+            (ramp(dh, 0.001, salt + 13), vec![dh]),
+        );
+        t.insert(
+            format!("{lp}.self_attn.k_norm.weight"),
+            (ramp(dh, 0.001, salt + 14), vec![dh]),
         );
         t.insert(
             format!("{lp}.post_feedforward_layernorm.weight"),

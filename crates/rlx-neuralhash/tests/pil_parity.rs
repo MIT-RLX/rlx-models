@@ -14,7 +14,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Preprocessing parity against Pillow — the one stage of the pipeline that can
-//! be pinned to ground truth without Apple's weights.
+//! be pinned to ground truth without the vendor's weights.
 //!
 //! The fixture below was produced by running the reference chain verbatim
 //! against Pillow 11 (`Image.resize` with no `resample=`, i.e. BICUBIC):

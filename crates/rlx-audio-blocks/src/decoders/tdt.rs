@@ -30,6 +30,19 @@
 
 use anyhow::{Result, bail, ensure};
 
+/// What the prediction network holds after the start-of-sequence step, for a
+/// [`TdtDecoderCore::predict_start`] to follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SosState {
+    /// Carry the state the SOS step produced into the first token's step
+    /// (NeMo greedy search; Parakeet).
+    #[default]
+    Carry,
+    /// Keep only the SOS step's output; the first token steps from the zero
+    /// state (`rlx-nemotron-asr`'s decoder).
+    Discard,
+}
+
 /// The argmax result of a single TDT joint step.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TdtJointStep {

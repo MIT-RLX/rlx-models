@@ -215,6 +215,66 @@ impl KimiLinearConfig {
     pub fn situ_linear_beta(&self) -> Option<f32> {
         self.activation_situ_linear_beta
     }
+
+    /// The graph-builder shapes for a `[batch, seq]` input, all read off this
+    /// config (KDA heads/conv from `linear_attn_config`, MLA ranks, LatentMoE
+    /// widths, situ betas). The routed-expert latent width is
+    /// `routed_expert_hidden_size`, falling back to `hidden_size` for a
+    /// non-latent MoE.
+    pub fn flow_config(&self, batch: usize, seq: usize) -> crate::flow::FlowConfig {
+        let hidden = self.hidden_size;
+        let eps = self.rms_norm_eps;
+        let la = self.linear_attn_config.as_ref();
+        let situ_beta = self.situ_beta();
+        let situ_linear_beta = self.situ_linear_beta();
+        crate::flow::FlowConfig {
+            hidden,
+            vocab: self.vocab_size,
+            attn_res_block_size: self.attn_res_block_size.unwrap_or(12).max(1),
+            eps,
+            kda: crate::kda::KdaDims {
+                hidden,
+                num_heads: la.map_or(96, |c| c.num_heads),
+                head_dim: la.map_or(128, |c| c.head_dim),
+                conv_kernel: la.map_or(4, |c| c.short_conv_kernel_size),
+                gate_lower_bound: la.and_then(|c| c.gate_lower_bound),
+                eps,
+                batch,
+                seq,
+            },
+            mla: crate::mla::MlaDims {
+                hidden,
+                num_heads: self.num_attention_heads,
+                q_lora_rank: self.q_lora_rank.unwrap_or(hidden),
+                kv_lora_rank: self.kv_lora_rank,
+                qk_nope_head_dim: self.qk_nope_head_dim,
+                qk_rope_head_dim: self.qk_rope_head_dim,
+                v_head_dim: self.v_head_dim,
+                eps,
+                batch,
+                seq,
+            },
+            moe: crate::moe::MoeDims {
+                hidden,
+                latent: self.routed_expert_hidden_size.unwrap_or(hidden),
+                moe_inter: self.moe_intermediate_size,
+                num_experts: self.num_experts.unwrap_or(0),
+                top_k: self.num_experts_per_token,
+                num_shared: self.num_shared_experts,
+                routed_scaling: self.routed_scaling_factor,
+                eps,
+                situ_beta,
+                situ_linear_beta,
+                batch,
+                seq,
+            },
+            dense_inter: self.intermediate_size,
+            situ_beta,
+            situ_linear_beta,
+            batch,
+            seq,
+        }
+    }
 }
 
 /// The vision ViT tower config (`config.json["vision_config"]`).

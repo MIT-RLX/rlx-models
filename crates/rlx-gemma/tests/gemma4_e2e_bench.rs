@@ -21,7 +21,7 @@
 //! compile / prefill / decode with tok/s.
 //!
 //! ```bash
-//! cargo test -p rlx-gemma --release --features apple-silicon \
+//! cargo test -p rlx-gemma --release --features macos-gpu \
 //!     --test gemma4_e2e_bench bench_e2e_all_backends -- --nocapture --test-threads=1
 //! ```
 //!
@@ -29,16 +29,16 @@
 //! warmup separately from hot prefill / TTFT / steady decode tok/s.
 //!
 //! # Lite (fast Metal smoke, ~2 min):
-//! RLX_GEMMA4_BENCH_LITE=1 cargo test -p rlx-gemma --release --features apple-silicon \
+//! RLX_GEMMA4_BENCH_LITE=1 cargo test -p rlx-gemma --release --features macos-gpu \
 //!     --test gemma4_e2e_bench bench_synthetic_metal -- --nocapture --test-threads=1
 //!
 //! # Heavier (12/48 layers, slower compile):
 //! RLX_GEMMA4_BENCH_LAYERS=12 cargo test -p rlx-gemma --release \
-//!     --features apple-silicon --test gemma4_e2e_bench -- --nocapture
+//!     --features macos-gpu --test gemma4_e2e_bench -- --nocapture
 //!
 //! # Real weights when available:
 //! RLX_GEMMA4_FIXTURE=/path/to/fixture cargo test -p rlx-gemma --release \
-//!     --features apple-silicon --test gemma4_e2e_bench bench_real_weights -- --nocapture
+//!     --features macos-gpu --test gemma4_e2e_bench bench_real_weights -- --nocapture
 //! ```
 
 mod gemma4_bench_common;
@@ -126,27 +126,27 @@ const MM_WORKLOADS: &[MmWorkload] = &[
 // ── 12B-shaped config + weights ──────────────────────────────────
 
 fn bench_layers() -> usize {
-    std::env::var("RLX_GEMMA4_BENCH_LAYERS")
+    rlx_ir::env::var_result("RLX_GEMMA4_BENCH_LAYERS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(6)
 }
 
 fn bench_hidden() -> usize {
-    std::env::var("RLX_GEMMA4_BENCH_HIDDEN")
+    rlx_ir::env::var_result("RLX_GEMMA4_BENCH_HIDDEN")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1024)
 }
 
 fn bench_full_scale() -> bool {
-    std::env::var("RLX_GEMMA4_BENCH_FULL")
+    rlx_ir::env::var_result("RLX_GEMMA4_BENCH_FULL")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
 
 fn bench_lite() -> bool {
-    std::env::var("RLX_GEMMA4_BENCH_LITE")
+    rlx_ir::env::var_result("RLX_GEMMA4_BENCH_LITE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
         .unwrap_or(false)
 }
@@ -276,6 +276,20 @@ fn synthetic_weights(cfg: &GemmaConfig) -> WeightMap {
         t.insert(
             format!("{lp}.input_layernorm.weight"),
             (ramp(h, 0.001, salt), vec![h]),
+        );
+        // Every real Gemma 3/4 layer has per-head Q/K norms; Gemma 2/3/4
+        // all normalize the attention output.
+        t.insert(
+            format!("{lp}.post_attention_layernorm.weight"),
+            (ramp(h, 0.001, salt + 12), vec![h]),
+        );
+        t.insert(
+            format!("{lp}.self_attn.q_norm.weight"),
+            (ramp(dh, 0.001, salt + 13), vec![dh]),
+        );
+        t.insert(
+            format!("{lp}.self_attn.k_norm.weight"),
+            (ramp(dh, 0.001, salt + 14), vec![dh]),
         );
         t.insert(
             format!("{lp}.pre_feedforward_layernorm.weight"),
@@ -870,11 +884,11 @@ fn backends_to_bench() -> Vec<Device> {
 // ── Optional real-weight bench ───────────────────────────────────
 
 fn fixture_dir() -> Option<PathBuf> {
-    std::env::var_os("RLX_GEMMA4_FIXTURE").map(PathBuf::from)
+    rlx_ir::env::var_os("RLX_GEMMA4_FIXTURE").map(PathBuf::from)
 }
 
 fn fixture_weights_path(dir: &Path) -> PathBuf {
-    if let Ok(p) = std::env::var("RLX_GEMMA4_WEIGHTS") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_GEMMA4_WEIGHTS") {
         return PathBuf::from(p);
     }
     for name in [
@@ -955,7 +969,7 @@ fn bench_real_weights_on(device: Device) -> Result<()> {
     let weights_str = weights
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("non-utf8 weights path"))?;
-    let decode_steps = std::env::var("RLX_GEMMA4_REAL_DECODE_STEPS")
+    let decode_steps = rlx_ir::env::var_result("RLX_GEMMA4_REAL_DECODE_STEPS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(32usize);
@@ -967,7 +981,7 @@ fn bench_real_weights_on(device: Device) -> Result<()> {
 
     if is_gguf {
         use rlx_gemma::GemmaConfigSource;
-        let max_seq = std::env::var("RLX_GEMMA4_MAX_SEQ")
+        let max_seq = rlx_ir::env::var_result("RLX_GEMMA4_MAX_SEQ")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(128usize);
@@ -986,7 +1000,7 @@ fn bench_real_weights_on(device: Device) -> Result<()> {
             "[gemma4 bench] GGUF packed path max_seq={max_seq} (prefill + bucketed decode KV cache) session_build={session_ms:.0} ms"
         );
         for (name, prompt) in REAL_PROMPTS {
-            if std::env::var("RLX_GEMMA4_BENCH_ONE").is_ok() && *name != "short_chat" {
+            if rlx_ir::env::var_result("RLX_GEMMA4_BENCH_ONE").is_ok() && *name != "short_chat" {
                 continue;
             }
             let ids = encode_prompt_auto(&weights, Some(tokenizer.as_path()), prompt)?;

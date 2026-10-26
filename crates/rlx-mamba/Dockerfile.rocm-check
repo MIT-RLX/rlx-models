@@ -22,7 +22,7 @@
 #                -t rlx-mamba-rocm-check \
 #                /Users/Shared
 #
-# On Apple Silicon this runs under linux/amd64 QEMU emulation and is
+# On macOS arm64 this runs under linux/amd64 QEMU emulation and is
 # slow (rust compile is CPU-heavy). On an x86_64 Linux host it's fast.
 
 FROM --platform=linux/amd64 rocm/dev-ubuntu-22.04:latest

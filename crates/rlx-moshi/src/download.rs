@@ -18,7 +18,7 @@ pub fn default_moshi_dir_for(variant: MoshiVariant, checkpoint: MoshiCheckpoint)
 
 /// Resolve Moshi LM directory: `RLX_MOSHI_DIR` or voice/checkpoint-scoped cache.
 pub fn default_moshi_dir() -> PathBuf {
-    std::env::var("RLX_MOSHI_DIR")
+    rlx_ir::env::var_result("RLX_MOSHI_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             default_moshi_dir_for(

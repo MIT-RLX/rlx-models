@@ -76,7 +76,7 @@ fn encoder_encode_w2v_silence() {
         eprintln!("skip encoder_encode_w2v_silence: set NEUTTS_ENCODER_PATH");
         return;
     };
-    if std::env::var("RLX_W2V_BERT_DIR")
+    if rlx_ir::env::var_result("RLX_W2V_BERT_DIR")
         .ok()
         .filter(|p| !p.is_empty())
         .is_none()
@@ -113,7 +113,7 @@ fn encoder_encode_wav() {
         eprintln!("skip encoder_encode_wav: set NEUTTS_ENCODER_PATH");
         return;
     };
-    if std::env::var("RLX_W2V_BERT_DIR")
+    if rlx_ir::env::var_result("RLX_W2V_BERT_DIR")
         .ok()
         .filter(|p| !p.is_empty())
         .is_none()

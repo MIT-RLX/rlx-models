@@ -119,7 +119,8 @@ pub fn build_qwen35_vision_hir(
     // while plain batched matmul (`sgemm`) is fast. Decompose SDPA into
     // matmul→softmax→matmul so the tower rides the fast GEMM path on every backend.
     // `RLX_QWEN35_VISION_SDPA_DECOMP=0` restores the fused op.
-    let decompose_attn = std::env::var("RLX_QWEN35_VISION_SDPA_DECOMP").as_deref() != Ok("0");
+    let decompose_attn =
+        rlx_ir::env::var_result("RLX_QWEN35_VISION_SDPA_DECOMP").as_deref() != Ok("0");
 
     let mut deepstack_outs: Vec<NodeId> = Vec::new();
 
@@ -723,7 +724,10 @@ fn param_mat_dt(
 /// `RLX_QWEN35_VISION_F16` overrides: `0`/`off`/`f32` → all F32; `1`/`all` → all
 /// F16; a comma list of roles (e.g. `ffn,out`) → only those F16, the rest F32.
 fn vision_weight_dtype(role: &str) -> DType {
-    match std::env::var("RLX_QWEN35_VISION_F16").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_QWEN35_VISION_F16")
+        .ok()
+        .as_deref()
+    {
         Some("0") | Some("off") | Some("f32") | Some("none") => DType::F32,
         Some(list)
             if !matches!(list, "1" | "all") && !list.split(',').any(|r| r.trim() == role) =>

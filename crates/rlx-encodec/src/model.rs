@@ -84,7 +84,9 @@ fn t_f32(st: &SafeTensors<'_>, name: &str) -> Result<Vec<f32>> {
     let raw = t.data();
     Ok(match t.dtype() {
         Dtype::F32 => raw
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect(),
         dt => anyhow::bail!("tensor {name}: unsupported dtype {dt:?}"),

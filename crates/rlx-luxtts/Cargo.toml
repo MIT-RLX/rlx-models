@@ -11,6 +11,7 @@ categories.workspace = true
 repository.workspace = true
 
 [dependencies]
+rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -22,7 +23,10 @@ rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx-tiny-tts = { workspace = true }
 # Bundled espeak-ng phonemizer only (reused; LuxTTS is a char-level espeak-IPA
 # tokenizer like KittenTTS).
-rlx-kittentts = { path = "../rlx-kittentts", version = "0.2.16", default-features = false }
+rlx-kittentts = { path = "../rlx-kittentts", version = "0.2.19", default-features = false }
+rlx-core = { workspace = true, optional = true }
+espeak-ng = { version = "0.2.0", optional = true, default-features = false, features = ["bundled-data-en"] }
+tempfile = { version = "3", optional = true }
 
 [dependencies.hf-hub]
 workspace = true
@@ -42,10 +46,15 @@ gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu", "rlx-kittentts/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
 coreml = ["rlx-runtime/coreml", "rlx-tiny-tts/coreml"]
 all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 hf-download = ["dep:hf-hub"]
+# `export::export_rlxp`: LuxTTS as an `.rlxp` package (its graphs rlx IR —
+# the log-mel and the ISTFT too — its frontend and flow-matching loop a
+# program).
+export = ["espeak", "dep:rlx-core", "rlx-core/export", "dep:espeak-ng", "dep:tempfile"]
 
 [dev-dependencies]
+rlx-runtime = { workspace = true, features = ["program"] }
 rlx-whisper = { workspace = true }
 
 [[bin]]

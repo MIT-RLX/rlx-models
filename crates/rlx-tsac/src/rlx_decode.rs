@@ -441,7 +441,7 @@ fn load_conv_raw(
 
 /// True when the standard-DAC weight-norm experiment is enabled (`RLX_STD=1`).
 fn std_weightnorm() -> bool {
-    std::env::var("RLX_STD").is_ok()
+    rlx_ir::env::var_result("RLX_STD").is_ok()
 }
 
 /// Raw q8-dequantized `weight_v` in on-disk `[d0][d1][d2]` layout.

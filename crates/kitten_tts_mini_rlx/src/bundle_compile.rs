@@ -94,7 +94,7 @@ pub fn bundle_dir_near_weights(weights: &Path) -> Option<PathBuf> {
         return Some(local);
     }
     for key in [crate::opts::ONNX_BUNDLE_ENV, crate::opts::LEGACY_BUNDLE_ENV] {
-        if let Ok(p) = std::env::var(key) {
+        if let Ok(p) = rlx_ir::env::read(key) {
             let p = PathBuf::from(p);
             if p.join("graph.json").is_file() {
                 return p.canonicalize().ok().or(Some(p));
@@ -126,7 +126,7 @@ pub fn skip_fusion_from_env() -> bool {
 }
 
 fn env_flag(name: &str) -> bool {
-    std::env::var(name)
+    rlx_ir::env::read(name)
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
 }
 
@@ -136,12 +136,12 @@ pub fn rng_options_from_env() -> RngOptions {
         return RngOptions::zero();
     }
     let seed = std::env::var("KITTEN_RLX_RNG_SEED")
-        .or_else(|_| std::env::var("RLX_RNG_SEED"))
+        .or_else(|_| rlx_ir::env::var_result("RLX_RNG_SEED"))
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(42);
     let backend = std::env::var("KITTEN_RLX_RNG_BACKEND")
-        .or_else(|_| std::env::var("RLX_RNG_BACKEND"))
+        .or_else(|_| rlx_ir::env::var_result("RLX_RNG_BACKEND"))
         .ok()
         .as_deref()
         .map(str::to_ascii_lowercase);
@@ -213,7 +213,7 @@ pub fn ensure_kernels_registered() {
     // Route rank-3 InstanceNorms (F0/N AdaIN) to the active-mel-frame host kernel so they
     // don't normalize over the padded mel slot. `rlx-onnx-import` reads this at lower time,
     // so it must be set before any bundle import. Callers may pre-set it; keep idempotent.
-    if std::env::var("RLX_KITTEN_INORM_ACTIVE").is_err() {
+    if rlx_ir::env::var_result("RLX_KITTEN_INORM_ACTIVE").is_err() {
         crate::set_env_var("RLX_KITTEN_INORM_ACTIVE", "1");
     }
     KERNELS.call_once(register_native_kernels);
@@ -322,8 +322,10 @@ pub fn probe_output_f32_at(outs: &[(Vec<u8>, DType)], probe_index: usize) -> Opt
     }
     Some(
         bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
     )
 }
@@ -699,14 +701,18 @@ fn duration_output_as_i64_bytes(bytes: &[u8], dtype: DType) -> Option<Vec<u8>> {
         DType::I64 => Some(bytes.to_vec()),
         DType::F32 => {
             let vals: Vec<i64> = bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).round() as i64)
                 .collect();
             Some(vals.iter().flat_map(|v| v.to_le_bytes()).collect())
         }
         DType::I32 => {
             let vals: Vec<i64> = bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as i64)
                 .collect();
             Some(vals.iter().flat_map(|v| v.to_le_bytes()).collect())
@@ -756,8 +762,10 @@ fn duration_refine_iters(active_tokens: usize) -> usize {
 
 fn alignment_frames_from_duration_bytes(dur_bytes: &[u8], active_tokens: usize) -> usize {
     let vals: Vec<i64> = dur_bytes
-        .chunks_exact(8)
-        .map(|c| i64::from_le_bytes(c.try_into().expect("i64")))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| i64::from_le_bytes(*c))
         .collect();
     crate::alignment::alignment_frame_count(&vals[..active_tokens.min(vals.len())])
 }
@@ -1388,17 +1396,23 @@ fn load_bundle_f32_param(
     let out: Vec<f32> = match view.dtype() {
         safetensors::tensor::Dtype::F32 => view
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect(),
         safetensors::tensor::Dtype::F16 => view
             .data()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]).to_f32())
             .collect(),
         safetensors::tensor::Dtype::BF16 => view
             .data()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| {
                 let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
                 f32::from_bits((bits as u32) << 16)
@@ -1406,7 +1420,9 @@ fn load_bundle_f32_param(
             .collect(),
         safetensors::tensor::Dtype::I32 => view
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|chunk| i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f32)
             .collect(),
         safetensors::tensor::Dtype::U8 | safetensors::tensor::Dtype::I8 => {
@@ -1930,7 +1946,9 @@ pub fn run_parity_thunk_profile(
     {
         let n = wave.len() / 4;
         let peak = wave
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs())
             .fold(0.0f32, f32::max);
         eprintln!("[kitten] parity profile waveform: {n} samples peak={peak:.4}");

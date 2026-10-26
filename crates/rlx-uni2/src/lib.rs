@@ -61,6 +61,8 @@
 
 pub mod cli;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod preprocess;
 pub mod runner;

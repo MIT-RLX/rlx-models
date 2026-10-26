@@ -185,15 +185,7 @@ impl MiniMaxRunner {
 }
 
 fn argmax_u32(logits: &[f32]) -> u32 {
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &v) in logits.iter().enumerate() {
-        if v > best_v {
-            best_v = v;
-            best = i;
-        }
-    }
-    best as u32
+    rlx_runtime::search::argmax_u32(logits)
 }
 
 #[derive(Debug, Clone, Default)]

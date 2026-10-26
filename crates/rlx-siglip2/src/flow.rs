@@ -46,7 +46,17 @@ use rlx_core::weight_map::WeightMap;
 /// A linear layer `x @ Wᵀ + b`, loading HF `nn.Linear` params under `prefix`
 /// (`{prefix}.weight` `[out, in]`, `{prefix}.bias` `[out]`).
 fn emit_linear(emit: &mut Emit<'_>, prefix: &str, x: HirNodeId) -> Result<HirNodeId> {
-    let w = emit.load_param(&format!("{prefix}.weight"), true)?;
+    emit_linear_dt(emit, prefix, x, DType::F32)
+}
+
+/// [`emit_linear`] with the weight matrix stored as `dtype` (the bias stays f32).
+fn emit_linear_dt(
+    emit: &mut Emit<'_>,
+    prefix: &str,
+    x: HirNodeId,
+    dtype: DType,
+) -> Result<HirNodeId> {
+    let w = emit.load_param_typed(&format!("{prefix}.weight"), true, dtype)?;
     let b = emit.load_param(&format!("{prefix}.bias"), false)?;
     let mut gb = HirMut::new(emit.hir());
     let mm = gb.mm(x, w);
@@ -56,6 +66,7 @@ fn emit_linear(emit: &mut Emit<'_>, prefix: &str, x: HirNodeId) -> Result<HirNod
 /// Emit one pre-LN SigLIP encoder layer under `prefix` (e.g.
 /// `"vision_model.encoder.layers.3"`). `mask`, if present, is a binary
 /// key-padding mask `[batch, seq]` (1 = attend, 0 = padded); NaFlex only.
+#[allow(clippy::too_many_arguments)]
 fn emit_encoder_layer(
     emit: &mut Emit<'_>,
     prefix: &str,
@@ -64,6 +75,7 @@ fn emit_encoder_layer(
     eps: f32,
     mask: Option<HirNodeId>,
     input: &FlowValue,
+    weight_dtype: DType,
 ) -> Result<FlowValue> {
     let head_dim = width / heads;
     let shape = input.shape.clone();
@@ -76,9 +88,24 @@ fn emit_encoder_layer(
         let mut gb = HirMut::new(emit.hir());
         gb.ln(x, ln1_g, ln1_b, eps)
     };
-    let q = emit_linear(emit, &format!("{prefix}.self_attn.q_proj"), normed1)?;
-    let k = emit_linear(emit, &format!("{prefix}.self_attn.k_proj"), normed1)?;
-    let v = emit_linear(emit, &format!("{prefix}.self_attn.v_proj"), normed1)?;
+    let q = emit_linear_dt(
+        emit,
+        &format!("{prefix}.self_attn.q_proj"),
+        normed1,
+        weight_dtype,
+    )?;
+    let k = emit_linear_dt(
+        emit,
+        &format!("{prefix}.self_attn.k_proj"),
+        normed1,
+        weight_dtype,
+    )?;
+    let v = emit_linear_dt(
+        emit,
+        &format!("{prefix}.self_attn.v_proj"),
+        normed1,
+        weight_dtype,
+    )?;
     let attn = {
         let mut gb = HirMut::new(emit.hir());
         let attn_shape = rlx_ir::shape::attention_shape(gb.shape(q));
@@ -87,7 +114,12 @@ fn emit_encoder_layer(
             None => gb.attention_kind(q, k, v, heads, head_dim, MaskKind::None, attn_shape),
         }
     };
-    let attn_out = emit_linear(emit, &format!("{prefix}.self_attn.out_proj"), attn)?;
+    let attn_out = emit_linear_dt(
+        emit,
+        &format!("{prefix}.self_attn.out_proj"),
+        attn,
+        weight_dtype,
+    )?;
     let res1 = {
         let mut gb = HirMut::new(emit.hir());
         gb.add(x, attn_out)
@@ -100,17 +132,107 @@ fn emit_encoder_layer(
         let mut gb = HirMut::new(emit.hir());
         gb.ln(res1, ln2_g, ln2_b, eps)
     };
-    let fc1 = emit_linear(emit, &format!("{prefix}.mlp.fc1"), normed2)?;
+    let fc1 = emit_linear_dt(emit, &format!("{prefix}.mlp.fc1"), normed2, weight_dtype)?;
     let act = {
         let mut gb = HirMut::new(emit.hir());
         gb.gelu_approx(fc1)
     };
-    let fc2 = emit_linear(emit, &format!("{prefix}.mlp.fc2"), act)?;
+    let fc2 = emit_linear_dt(emit, &format!("{prefix}.mlp.fc2"), act, weight_dtype)?;
     let out = {
         let mut gb = HirMut::new(emit.hir());
         gb.add(res1, fc2)
     };
     Ok(emit.wrap(out, shape))
+}
+
+/// Shape of a NaFlex SigLIP2 vision encoder for [`build_naflex_encoder`].
+#[derive(Debug, Clone)]
+pub struct NaflexEncoderSpec {
+    /// Weight-name prefix of the tower, e.g. `"vision_model"` for a SigLIP2
+    /// checkpoint or `"model.vision_tower.vision_model"` inside LFM2-VL.
+    pub prefix: String,
+    pub width: usize,
+    pub heads: usize,
+    pub layers: usize,
+    /// `3 · patch_size²`, the flattened patch length.
+    pub patch_dim: usize,
+    /// Compiled sequence length (the processor's `max_num_patches`).
+    pub seq: usize,
+    pub eps: f32,
+    /// Storage dtype of the linear weight matrices (F32, or F16 / BF16 to keep
+    /// them at 2 B/elem; the math stays f32). Norms and biases stay f32.
+    pub weight_dtype: DType,
+}
+
+/// A NaFlex SigLIP2 vision encoder without the pooling head, for models
+/// that consume the patch sequence (LFM2-VL and other VLMs).
+///
+/// Inputs (batch 1):
+/// * `pixel_values [1, seq, patch_dim]` — the processor's patches, padded;
+/// * `pos_embed [1, seq, width]` — the position grid resized to this image
+///   ([`crate::naflex::resize_position_grid`]), padded;
+/// * `key_mask [1, seq]` — 1 for real patches, 0 for padding.
+///
+/// The patch embedding (`embeddings.patch_embedding`, an `nn.Linear`) runs
+/// in the graph. Output `last_hidden_state [1, seq, width]` is after
+/// `post_layernorm`; rows past the real patch count are padding.
+pub fn build_naflex_encoder(
+    spec: &NaflexEncoderSpec,
+    weights: &mut WeightMap,
+) -> Result<BuiltModel> {
+    let f = DType::F32;
+    let (seq, width, heads, eps) = (spec.seq, spec.width, spec.heads, spec.eps);
+    let weight_dtype = spec.weight_dtype;
+    let shape = Shape::new(&[1, seq, width], f);
+    let prefix = spec.prefix.clone();
+    let mut flow = ModelFlow::new("siglip2_naflex_encoder")
+        .with_profile(CompileProfile::encoder())
+        .input("pixel_values", Shape::new(&[1, seq, spec.patch_dim], f))
+        .input("pos_embed", shape.clone())
+        .input("key_mask", Shape::new(&[1, seq], f));
+    {
+        let (prefix, shape) = (prefix.clone(), shape.clone());
+        flow = flow.plugin_named("vision.embed", move |emit, _| {
+            let pv = emit.flow_input("pixel_values")?.hir_id();
+            let pos = emit.flow_input("pos_embed")?.hir_id();
+            let patches = emit_linear_dt(
+                emit,
+                &format!("{prefix}.embeddings.patch_embedding"),
+                pv,
+                weight_dtype,
+            )?;
+            let mut gb = HirMut::new(emit.hir());
+            let out = gb.add(patches, pos);
+            Ok(Some(emit.wrap(out, shape.clone())))
+        });
+    }
+    for i in 0..spec.layers {
+        let layer = format!("{prefix}.encoder.layers.{i}");
+        flow = flow.plugin_named(format!("vision.layer{i}"), move |emit, prev| {
+            let input = prev.ok_or_else(|| anyhow::anyhow!("vision layer requires hidden"))?;
+            let mask = emit.flow_input("key_mask")?.hir_id();
+            Ok(Some(emit_encoder_layer(
+                emit,
+                &layer,
+                width,
+                heads,
+                eps,
+                Some(mask),
+                &input,
+                weight_dtype,
+            )?))
+        });
+    }
+    flow = flow.plugin_named("vision.post_ln", move |emit, prev| {
+        let encoded = prev.ok_or_else(|| anyhow::anyhow!("post_ln requires hidden"))?;
+        let g = emit.load_param(&format!("{prefix}.post_layernorm.weight"), false)?;
+        let b = emit.load_param(&format!("{prefix}.post_layernorm.bias"), false)?;
+        let mut gb = HirMut::new(emit.hir());
+        let out = gb.ln(encoded.hir_id(), g, b, eps);
+        Ok(Some(emit.wrap(out, shape.clone())))
+    });
+    flow.output("last_hidden_state")
+        .build_with(&mut WeightMapSource(weights), None)
 }
 
 /// Build the vision tower flow. Input `"hidden"` is `[batch, seq, width]`
@@ -153,7 +275,8 @@ pub fn build_vision_flow(
             } else {
                 None
             };
-            let out = emit_encoder_layer(emit, &prefix, width, heads, eps, mask, &input)?;
+            let out =
+                emit_encoder_layer(emit, &prefix, width, heads, eps, mask, &input, DType::F32)?;
             Ok(Some(out))
         });
     }
@@ -297,7 +420,8 @@ pub fn build_text_flow(
         let prefix = format!("text_model.encoder.layers.{i}");
         flow = flow.plugin_named(format!("text.layer{i}"), move |emit, prev| {
             let input = prev.ok_or_else(|| anyhow::anyhow!("text layer requires hidden"))?;
-            let out = emit_encoder_layer(emit, &prefix, width, heads, eps, None, &input)?;
+            let out =
+                emit_encoder_layer(emit, &prefix, width, heads, eps, None, &input, DType::F32)?;
             Ok(Some(out))
         });
     }

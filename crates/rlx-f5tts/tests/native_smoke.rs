@@ -24,7 +24,7 @@ use rlx_f5tts::{F5Native, InferOpts};
 use rlx_runtime::Device;
 
 fn model_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_F5TTS_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_F5TTS_DIR") {
         let p = PathBuf::from(d);
         if p.join("F5_Transformer.onnx").is_file() {
             return Some(p);

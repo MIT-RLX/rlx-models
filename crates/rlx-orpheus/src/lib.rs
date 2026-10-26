@@ -8,6 +8,8 @@
 
 pub mod decoder;
 pub mod download;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod tokens;
 
 #[cfg(feature = "llama")]

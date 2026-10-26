@@ -31,7 +31,7 @@ struct RefExport {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_kyutai_tts_dir());
     if dir.join("dsm_tts_1e68beda@240.safetensors").is_file() {
@@ -43,7 +43,7 @@ fn model_dir() -> Option<PathBuf> {
 }
 
 fn ref_path() -> PathBuf {
-    std::env::var("RLX_KYUTAI_MIMI_CODES_REF")
+    rlx_ir::env::var_result("RLX_KYUTAI_MIMI_CODES_REF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp/py_mimi_codes.json"))
 }

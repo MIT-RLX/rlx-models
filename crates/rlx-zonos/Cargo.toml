@@ -23,9 +23,15 @@ serde_json = { workspace = true }
 safetensors = { workspace = true }
 hound = "3"
 matrixmultiply = "0.3"
+# `export`: espeak-ng's English data for the package's program.
+espeak-ng = { version = "0.2.0", optional = true, default-features = false, features = ["bundled-data-en"] }
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 rlx-whisper = { workspace = true }
+rlx-text = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
 
 [[bin]]
 name = "rlx-zonos"
@@ -33,6 +39,8 @@ path = "src/bin/rlx_zonos.rs"
 
 [features]
 default = ["espeak"]
+# `export::export_rlxp`: Zonos as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-dac/export", "dep:espeak-ng", "dep:tempfile"]
 espeak = ["dep:rlx-kittentts", "rlx-kittentts/espeak"]
 metal = ["rlx-runtime/metal", "rlx-dac/metal"]
 mlx = ["rlx-runtime/mlx", "rlx-dac/mlx"]
@@ -42,7 +50,7 @@ gpu = ["rlx-runtime/gpu", "rlx-dac/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-dac/vulkan"]
 coreml = ["rlx-runtime/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 

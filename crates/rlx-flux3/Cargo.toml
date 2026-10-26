@@ -1,0 +1,51 @@
+[package]
+name = "rlx-flux3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "FLUX 3 Image Klein (base + distilled) text-to-image and editing for RLX: Qwen3-VL text encoder, per-mode DiT, FLUX.2 autoencoder, local prompt upsampler"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-flux1 = { workspace = true }
+rlx-flux2 = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-qwen35 = { workspace = true }
+rlx-rng = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-text = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+half = { workspace = true }
+image = { workspace = true }
+tokenizers = { workspace = true }
+rayon = "1.10"
+
+[[bin]]
+name = "rlx-flux3"
+path = "src/bin/rlx_flux3.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-flux1/metal", "rlx-qwen35/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-flux1/mlx", "rlx-qwen35/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-flux1/cuda", "rlx-qwen35/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-flux1/rocm", "rlx-qwen35/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-flux1/gpu", "rlx-qwen35/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-flux1/vulkan", "rlx-qwen35/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+macos-gpu = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

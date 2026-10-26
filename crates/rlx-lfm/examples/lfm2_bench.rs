@@ -3,7 +3,7 @@
 //!   cargo run -p rlx-lfm --example lfm2_bench --features tokenizer --release -- \
 //!       --weights FILE.gguf --device cpu --max-tokens 64
 //!
-//! For Metal/MLX add `--features tokenizer,apple-silicon`; CUDA/ROCm/Vulkan add
+//! For Metal/MLX add `--features tokenizer,macos-gpu`; CUDA/ROCm/Vulkan add
 //! the matching feature. Warms the compiled graph + dequant cache first, then
 //! reports:  TTFT (prefill → first token) and steady-state decode tok/s.
 use anyhow::{Result, anyhow};
@@ -14,7 +14,7 @@ use std::time::Instant;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut weights: Option<String> = std::env::var("RLX_LFM_WEIGHTS").ok();
+    let mut weights: Option<String> = rlx_ir::env::var_result("RLX_LFM_WEIGHTS").ok();
     let mut device = "cpu".to_string();
     let mut prompt = "The capital of France is".to_string();
     let mut max_tokens = 64usize;

@@ -32,7 +32,7 @@ pub fn sample_image_path() -> PathBuf {
 
 /// `RLX_LOCATEANYTHING_IMAGE` when set, otherwise [`sample_image_path`].
 pub fn probe_image_path() -> PathBuf {
-    std::env::var("RLX_LOCATEANYTHING_IMAGE")
+    rlx_ir::env::var_result("RLX_LOCATEANYTHING_IMAGE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| sample_image_path())
 }

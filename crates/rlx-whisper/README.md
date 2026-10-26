@@ -75,7 +75,7 @@ Call [`WhisperRunner::prepare_pcm_geometry`](src/runner.rs) (or `mel_frames_for_
 
 ## Performance (JFK, whisper-tiny, ~11 s)
 
-Approximate `timestamps+dtw` on Apple Silicon (1 warmup run):
+Approximate `timestamps+dtw` on macOS arm64 (1 warmup run):
 
 | Backend | ASR ms | Align ms | Total ms | RTF |
 |---------|--------|----------|----------|-----|

@@ -227,7 +227,9 @@ fn load_safetensors(path: &Path) -> HashMap<String, (Vec<f32>, Vec<usize>)> {
         );
         let data: Vec<f32> = t
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         out.insert(name.to_string(), (data, t.shape().to_vec()));

@@ -67,7 +67,10 @@ impl Qwen3TtsMegakernel {
     ) -> Result<Self> {
         ensure_metal_lowering_env(device);
         E2EPipelinePlan::for_device(device).log_plan();
-        let debug = std::env::var("RLX_QWEN3_TTS_OPEN_TIMING").ok().as_deref() == Some("1");
+        let debug = rlx_ir::env::var_result("RLX_QWEN3_TTS_OPEN_TIMING")
+            .ok()
+            .as_deref()
+            == Some("1");
         let t = std::time::Instant::now();
         let talker = TalkerEngine::open(store, talker_cfg, device)?;
         if debug {
@@ -401,7 +404,11 @@ impl Qwen3TtsMegakernel {
                     talker_secs +=
                         (frame_timings.talk_logits_ms + frame_timings.talk_decode_ms) / 1000.0;
                     cp_secs += frame_timings.cp_ms / 1000.0;
-                    if std::env::var("RLX_QWEN3_TTS_SYNTH_DEBUG").ok().as_deref() == Some("1") {
+                    if rlx_ir::env::var_result("RLX_QWEN3_TTS_SYNTH_DEBUG")
+                        .ok()
+                        .as_deref()
+                        == Some("1")
+                    {
                         eprintln!("step {step} g0={g0}");
                     }
                     let idx = codec_frames.len();

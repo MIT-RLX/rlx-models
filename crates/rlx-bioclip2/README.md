@@ -54,7 +54,7 @@ to ~1 LSB.
 
 The crate exposes the standard RLX backend features
 (`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, plus `all-backends` /
-`apple-silicon` / `nvidia-gpu` / `amd-gpu` / `portable-gpu`). The towers compile
+`macos-gpu` / `nvidia-gpu` / `amd-gpu` / `portable-gpu`). The towers compile
 through the backend-agnostic `rlx-runtime` session, so any enabled + available
 device runs the same graph.
 

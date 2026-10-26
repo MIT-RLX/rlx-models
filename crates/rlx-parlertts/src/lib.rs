@@ -29,6 +29,8 @@
 //! `weights/tts/parler-dac/` (Descript DAC). See crate `README.md`.
 
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod native;
 
 pub use config::{

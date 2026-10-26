@@ -112,7 +112,7 @@ fn main() -> Result<()> {
 
     let path: std::path::PathBuf = match weights {
         Some(p) => p.into(),
-        None => match std::env::var("RLX_JLENS_QWEN35_GGUF") {
+        None => match rlx_ir::env::var_result("RLX_JLENS_QWEN35_GGUF") {
             Ok(p) => p.into(),
             Err(_) => {
                 let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

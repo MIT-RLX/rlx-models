@@ -38,6 +38,9 @@ pub mod distributed_bridge;
 pub mod dsv41;
 pub(crate) mod dsv41_block;
 pub(crate) mod dsv41_csa;
+#[cfg(feature = "export")]
+pub mod export;
+pub mod package_export;
 pub mod pipeline_block;
 
 pub mod dsv41_chunk;
@@ -85,6 +88,7 @@ pub mod mlx_npz_convert;
 pub mod model_registry;
 pub mod moe_weights;
 pub mod mxfp4_pack;
+pub mod ordered_json;
 pub mod parity;
 pub mod pretrain;
 pub mod prompt_cache;
@@ -93,9 +97,11 @@ pub mod safetensors_checkpoint;
 pub mod standard_decoder;
 pub mod vision_ops_ir;
 pub mod voice_clone;
+pub mod weight_graph;
 pub mod weight_loader;
 pub mod weight_map;
 pub mod weight_registry;
+pub mod weight_storage;
 pub mod weights;
 pub mod weights_discover;
 
@@ -110,7 +116,8 @@ pub use audio_codec::{
 pub use device_capabilities::{
     LM_DEVICE_NAMES, LM_INFERENCE_DEVICE_PRIORITY, STANDARD_DEVICE_NAMES, STANDARD_DEVICES,
     device_memory_for_moe_offload, is_lm_device, is_standard_device, pick_lm_device,
-    resolve_lm_device_str, validate_lm_device, validate_sam_device, validate_standard_device,
+    resolve_lm_device_str, validate_browser_capable_device, validate_lm_device,
+    validate_sam_device, validate_standard_device,
 };
 
 pub use gguf_config::{
@@ -126,20 +133,21 @@ pub use gguf_resolve::{
     resolve_gguf_tensor_name,
 };
 pub use gguf_support::{
-    GgufModelFamily, ResolveWeightsOptions, assert_gguf_family, gguf_architecture_from_path,
-    gguf_architecture_str, gguf_f32_bytes_estimate, gguf_family_for_arch,
-    gguf_safetensors_only_hint, gguf_split_hint, gguf_split_siblings, gguf_validate_arch,
-    laguna_allow_f32_expand, list_gguf_files_in_dir, load_gguf_file, resolve_weights_file,
-    resolve_weights_file_with_options,
+    GgufModelFamily, ResolveWeightsOptions, assert_gguf_family, assert_gguf_family_of,
+    gguf_architecture_from_path, gguf_architecture_str, gguf_f32_bytes_estimate,
+    gguf_family_for_arch, gguf_safetensors_only_hint, gguf_split_hint, gguf_split_siblings,
+    gguf_validate_arch, laguna_allow_f32_expand, list_gguf_files_in_dir, load_gguf_file,
+    resolve_weights_file, resolve_weights_file_with_options,
 };
 
 pub use asset_source::{AssetProvider, AssetSource, LocalDir, SourceSpec, load_materialized};
 pub use autoregressive::{
-    KvCacheState, compact_bucketed_kv_buffer, compile_cache_ensure_graph, infer_prefill_kv_seq,
-    kv_from_prefill_outputs, kv_from_prefill_outputs_per_layer,
-    packed_prefill_active_extent_enabled, past_kv_input_names, prefill_cache_key,
-    run_bucketed_kv_decode, run_bucketed_kv_decode_graph_layers_scratch,
-    run_bucketed_kv_decode_hir, run_bucketed_kv_decode_hir_scratch,
+    KvCacheState, MIN_DECODE_BUCKET, MIN_PREFILL_BUCKET, compact_bucketed_kv_buffer,
+    compile_cache_ensure_graph, infer_prefill_kv_seq, kv_from_prefill_outputs,
+    kv_from_prefill_outputs_per_layer, packed_prefill_active_extent_enabled, pad_kv_sequences,
+    past_kv_input_names, prefill_bucket_for, prefill_cache_key, run_bucketed_kv_decode,
+    run_bucketed_kv_decode_graph_layers_scratch, run_bucketed_kv_decode_hir,
+    run_bucketed_kv_decode_hir_scratch, run_bucketed_kv_decode_hir_scratch_spare,
     run_bucketed_kv_decode_hir_uniform, run_bucketed_kv_decode_keyed,
     run_bucketed_kv_decode_keyed_batched, run_packed_prefill, split_bucketed_decode_kv,
     split_bucketed_decode_kv_per_layer, split_decode_logits_kv, split_decode_logits_kv_aux,
@@ -149,7 +157,9 @@ pub use distributed_bridge::{
     LoadKind, LoaderParamSource, ManifestParamSource, MapParamSource, StructureLoader,
     run_decoder_pipeline_local,
 };
-pub use embedded_safetensors::EmbeddedSafetensors;
+pub use embedded_safetensors::{
+    EmbeddedSafetensors, SafetensorsBytesLoader, SafetensorsSource, TensorRows,
+};
 pub use flow_bridge::{
     apply_compile_profile, compile_graph_encoder, compile_graph_gemma_decode,
     compile_graph_gemma_prefill, compile_graph_legacy, compile_graph_llama32_decode,
@@ -173,10 +183,10 @@ pub use flow_util::{
 pub use gguf_resolve::ensure_builtin_resolvers;
 pub use gguf_support::DEFAULT_GGUF_PREFER_SUBSTR;
 pub use gpu_kv::{
-    GpuKvBinding, GpuKvCacheSet, cross_attn_gpu_handles_ready, device_supports_gpu_kv,
-    install_cross_attn_gpu_handles, install_gpu_kv_handles, reinstall_gpu_kv_handles,
-    run_bucketed_kv_decode_gpu, run_bucketed_kv_decode_gpu_hir, run_bucketed_kv_mtp_gpu,
-    sync_gpu_kv_to_host,
+    GpuKvBinding, GpuKvCacheSet, KvLayout, cross_attn_gpu_handles_ready, device_supports_gpu_kv,
+    install_cross_attn_gpu_handles, install_gpu_kv_handles, install_gpu_kv_handles_as,
+    reinstall_gpu_kv_handles, run_bucketed_kv_decode_gpu, run_bucketed_kv_decode_gpu_hir,
+    run_bucketed_kv_mtp_gpu, sync_gpu_kv_to_host, sync_gpu_kv_to_host_as,
 };
 pub use lm::{FlowBuildExt, into_compile_parts};
 pub use mlx_coverage::{CoverageStatus, CoverageVia, ModelCoverage, classify_coverage};

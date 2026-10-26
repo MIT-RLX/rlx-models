@@ -44,7 +44,7 @@ fn real_conv(store: &WeightStore, prefix: &str) -> Result<Array3<f32>> {
 
 fn main() -> Result<()> {
     let tdir = default_tsac_dir();
-    let ddir = std::env::var("RLX_DAC_DIR").unwrap_or_else(|_| ".cache/dac44".into());
+    let ddir = rlx_ir::env::var_result("RLX_DAC_DIR").unwrap_or_else(|_| ".cache/dac44".into());
     let ddir = std::path::PathBuf::from(ddir);
     std::fs::create_dir_all(&ddir).ok();
     let st_path = ddir.join("model.safetensors");

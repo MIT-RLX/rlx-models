@@ -20,7 +20,7 @@
 // ```bash
 // export RLX_QWEN3_TTS_DIR=.cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice
 // RLX_QWEN3_TTS_DEVICE=metal RLX_QWEN3_TTS_TIMING=1 \
-//   cargo run -p rlx-models --example qwen3_tts_rtf_bench --release --features apple-silicon
+//   cargo run -p rlx-models --example qwen3_tts_rtf_bench --release --features macos-gpu
 // RLX_QWEN3_TTS_DEVICE=mlx  RLX_QWEN3_TTS_TIMING=1 ...
 // RLX_QWEN3_TTS_METAL_MPSGRAPH=1 ...   # Metal + MPSGraph (experimental)
 // ```
@@ -31,7 +31,7 @@ use rlx_runtime::{Device, is_available};
 use std::path::PathBuf;
 
 fn pick_device() -> Device {
-    if let Ok(s) = std::env::var("RLX_QWEN3_TTS_DEVICE") {
+    if let Ok(s) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DEVICE") {
         if s.eq_ignore_ascii_case("auto") || s.eq_ignore_ascii_case("fastest") {
             return rlx_qwen3_tts::synth_opts::fastest_device();
         }
@@ -54,7 +54,7 @@ fn main() -> anyhow::Result<()> {
     if !is_available(device) {
         anyhow::bail!("device {device:?} not available on this host");
     }
-    let mpsgraph_req = std::env::var("RLX_QWEN3_TTS_METAL_MPSGRAPH")
+    let mpsgraph_req = rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_MPSGRAPH")
         .ok()
         .as_deref()
         == Some("1");
@@ -63,10 +63,13 @@ fn main() -> anyhow::Result<()> {
         "[rtf-bench] device={device:?} metal_mpsgraph={mpsgraph} (req={mpsgraph_req}) talker_eager_default_metal={} metal_compiled={} mlx_compiled={}",
         device == Device::Metal,
         rlx_qwen3_tts::compile_opts::talker_metal_native_compile(device),
-        std::env::var("RLX_QWEN3_TTS_MLX_COMPILED").ok().as_deref() == Some("1"),
+        rlx_ir::env::var_result("RLX_QWEN3_TTS_MLX_COMPILED")
+            .ok()
+            .as_deref()
+            == Some("1"),
     );
 
-    let model_dir = std::env::var("RLX_QWEN3_TTS_DIR")
+    let model_dir = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice"));
     let mut session = Qwen3TtsSession::open(&model_dir, device)?;

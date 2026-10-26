@@ -1,0 +1,21 @@
+# Moshi's host logic as an RLX program (WebAssembly): the crate's own
+# one-way generation loop and `sampling.rs` over the
+# package's graphs. Built by `rlx-moshi`'s exporter, so it stands
+# outside the workspace.
+[package]
+name = "rlx-moshi-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+anyhow = "1"
+ndarray = "0.16"
+rand = { version = "0.8", default-features = false, features = ["alloc", "std_rng"] }
+
+[workspace]

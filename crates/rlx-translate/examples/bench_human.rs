@@ -32,16 +32,16 @@ fn main() -> Result<()> {
     // Two shapes of reference set. FLORES is aligned across *languages*, so the
     // human reference is line `i` of the target locale's file. Tatoeba is
     // aligned per *pair*, so it comes in a per-direction TSV beside the source.
-    let flores = std::env::var("RLX_TRANSLATE_FLORES").ok();
-    let pools = std::env::var("RLX_TRANSLATE_HUMAN").ok();
+    let flores = rlx_ir::env::var_result("RLX_TRANSLATE_FLORES").ok();
+    let pools = rlx_ir::env::var_result("RLX_TRANSLATE_HUMAN").ok();
     if flores.is_none() && pools.is_none() {
         anyhow::bail!(
             "set RLX_TRANSLATE_FLORES (aligned per locale) or RLX_TRANSLATE_HUMAN (per direction)"
         );
     }
-    let refs = std::env::var("RLX_TRANSLATE_REFERENCE")
+    let refs = rlx_ir::env::var_result("RLX_TRANSLATE_REFERENCE")
         .map_err(|_| anyhow!("set RLX_TRANSLATE_REFERENCE to the OS's output"))?;
-    let per: usize = std::env::var("RLX_TEST_N")
+    let per: usize = rlx_ir::env::var_result("RLX_TEST_N")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(usize::MAX);
@@ -55,7 +55,7 @@ fn main() -> Result<()> {
         })
         .collect();
     names.sort();
-    if let Ok(only) = std::env::var("RLX_TEST_PAIR") {
+    if let Ok(only) = rlx_ir::env::var_result("RLX_TEST_PAIR") {
         let keep: Vec<&str> = only.split(',').map(str::trim).collect();
         names.retain(|n| keep.contains(&n.as_str()));
     }
@@ -162,7 +162,7 @@ fn main() -> Result<()> {
                 continue;
             };
             let Some(got) = out.text else { continue };
-            if std::env::var("RLX_BENCH_SHOW").is_ok() {
+            if rlx_ir::env::var_result("RLX_BENCH_SHOW").is_ok() {
                 println!("  src   {src}");
                 println!("  human {human}");
                 println!("  os    {os_ref}");

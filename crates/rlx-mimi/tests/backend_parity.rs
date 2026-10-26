@@ -10,7 +10,7 @@ fn model_dir() -> Option<PathBuf> {
     if dir.join("model.safetensors").is_file() {
         Some(dir)
     } else {
-        std::env::var("RLX_MIMI_DIR")
+        rlx_ir::env::var_result("RLX_MIMI_DIR")
             .ok()
             .map(PathBuf::from)
             .filter(|p| p.join("model.safetensors").is_file())
@@ -51,7 +51,11 @@ fn graph_matches_eager_on_real_weights() {
     // Slow (compiles the full graph on real weights per backend) and drives
     // every GPU at once; opt-in so it doesn't contend with the lib's fast
     // synthetic cross-backend tests under a parallel `cargo test`.
-    if std::env::var("RLX_MIMI_BACKEND_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_MIMI_BACKEND_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip graph_matches_eager_on_real_weights (set RLX_MIMI_BACKEND_PARITY=1)");
         return;
     }

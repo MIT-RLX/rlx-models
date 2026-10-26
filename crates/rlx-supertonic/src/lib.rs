@@ -36,6 +36,8 @@
 
 pub mod config;
 pub mod download;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod model;
 pub mod tokenize;
 pub mod voices;

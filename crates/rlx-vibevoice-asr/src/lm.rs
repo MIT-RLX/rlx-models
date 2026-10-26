@@ -16,7 +16,9 @@
 
 use anyhow::{Result, anyhow, ensure};
 use rlx_core::autoregressive::run_packed_prefill;
-use rlx_core::autoregressive::{KvCacheState, kv_from_prefill_outputs, run_bucketed_kv_decode};
+use rlx_core::autoregressive::{
+    KvCacheState, kv_from_prefill_outputs, run_bucketed_kv_decode_spare,
+};
 use rlx_core::build_standard_decoder_packed;
 use rlx_core::flow_bridge::{WeightLoaderSource, compile_options_from_profile};
 use rlx_core::flow_bridge::{
@@ -360,9 +362,13 @@ impl VibeLm {
             let g = self.g.clone();
             let pc = self.packed_cache.clone();
             let cfg_c = cfg.clone();
-            let (logits, new_k, new_v) = run_bucketed_kv_decode(
+            // Explicit spare-row count rather than relying on the runtime
+            // zero-filling a short feed: the decode flow declares the row, so
+            // the feed should state it.
+            let (logits, new_k, new_v) = run_bucketed_kv_decode_spare(
                 &mut decode_cache,
                 past_seq,
+                rlx_flow::blocks::kv_spare_rows(&[1]),
                 &kv,
                 kv_dim,
                 layers,
@@ -524,6 +530,7 @@ fn build_prefill_built(
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
         mask: rlx_ir::op::MaskKind::Causal,
+        moe: None,
     };
 
     let kv_sink = SideOutputs::new();

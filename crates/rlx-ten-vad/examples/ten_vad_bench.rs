@@ -93,7 +93,7 @@ fn main() -> Result<()> {
         let mut emph = vec![0.0f32; HOP_SIZE];
         let mut prev = 0.0f32;
         let mut v = Vec::with_capacity(frames * CONTEXT_FRAMES * FEATURE_LEN);
-        for raw in pcm.chunks_exact(HOP_SIZE) {
+        for raw in pcm.as_chunks::<HOP_SIZE>().0.iter() {
             pre_emphasis(raw, &mut prev, &mut emph);
             fe.push(raw, &emph);
             v.extend_from_slice(fe.context());
@@ -133,7 +133,9 @@ fn main() -> Result<()> {
         let mut vad = TenVad::new(cfg)?;
         let t0 = std::time::Instant::now();
         let streamed: Vec<f32> = pcm
-            .chunks_exact(HOP_SIZE)
+            .as_chunks::<HOP_SIZE>()
+            .0
+            .iter()
             .map(|c| vad.process_scaled(c).map(|f| f.probability))
             .collect::<Result<_>>()?;
         let stream_s = t0.elapsed().as_secs_f64();

@@ -346,8 +346,8 @@ fitting in cache.
 ## Backends
 
 CPU by default; `metal`, `mlx`, `cuda`, `rocm`, `gpu` (wgpu), `vulkan` and
-`coreml` (Apple Neural Engine) are feature flags, with `all-backends` and
-`apple-silicon` as bundles.
+`coreml` (Neural Engine) are feature flags, with `all-backends` and
+`macos-gpu` as bundles.
 
 **All fifteen architectures run on all six locally-testable backends.**
 `tests/backends.rs` runs every backend compiled into the build against CPU and
@@ -406,7 +406,7 @@ backends that do have the kernel still use it.
 
 Route 3 is why MambaIRv2 runs on the ANE at all: CoreML leaves `SelectiveScan`
 *deliberately* unclaimed so the rewriter emits the compact `Op::Scan` form,
-because Apple's compiler is superlinear in program size and the unrolled version
+because the Metal shader compiler is superlinear in program size and the unrolled version
 takes 307 s to compile at length 1000. A claim-only matrix would call that a gap.
 
 ### Rank 5 is a hard ceiling on CoreML
@@ -455,7 +455,7 @@ Metal is the *fastest* backend on a small conv-only graph and the slowest on a
 large one, while MLX barely notices the difference — so pick by graph size, not
 by family. This is a property of the Metal backend's per-dispatch overhead, not
 of anything in this crate; it is recorded here because the naive reading
-("Metal is the native Apple backend, so use Metal") is wrong for tier 2.
+("Metal is the native macOS backend, so use Metal") is wrong for tier 2.
 
 On MLX, MambaIRv2 falls back from compiled to `MlxMode::Lazy` — `ArgSort` cannot
 be evaluated inside a traced graph — and still agrees. The fallback is automatic

@@ -251,7 +251,9 @@ fn decode(raw: &[u8], dtype: &str) -> Result<Vec<f32>> {
             if !raw.len().is_multiple_of(2) {
                 bail!("float16 tensor has odd byte length {}", raw.len());
             }
-            raw.chunks_exact(2)
+            raw.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| f32::from(half::f16::from_le_bytes([c[0], c[1]])))
                 .collect()
         }
@@ -262,16 +264,22 @@ fn decode(raw: &[u8], dtype: &str) -> Result<Vec<f32>> {
                     raw.len()
                 );
             }
-            raw.chunks_exact(4)
+            raw.as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect()
         }
         "int32" => raw
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
             .collect(),
         "int64" => raw
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32)
             .collect(),
         other => bail!("unsupported dtype {other:?}"),

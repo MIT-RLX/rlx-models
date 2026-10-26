@@ -58,7 +58,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     let pcm: Vec<f32> = std::fs::read(input)?
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32)
         .collect();
 
@@ -71,7 +73,7 @@ fn main() -> anyhow::Result<()> {
     let mut emph = vec![0.0f32; HOP_SIZE];
     let mut prev = 0.0f32;
     let mut frames = 0usize;
-    for raw in pcm.chunks_exact(HOP_SIZE) {
+    for raw in pcm.as_chunks::<HOP_SIZE>().0.iter() {
         pre_emphasis(raw, &mut prev, &mut emph);
         let info = frontend.push(raw, &emph);
         put(&mut bin, frontend.spectrum());
@@ -90,7 +92,9 @@ fn score_features(path: &str, prefix: &str) -> anyhow::Result<()> {
 
     let stride = CONTEXT_FRAMES * FEATURE_LEN;
     let feats: Vec<f32> = std::fs::read(path)?
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
     anyhow::ensure!(

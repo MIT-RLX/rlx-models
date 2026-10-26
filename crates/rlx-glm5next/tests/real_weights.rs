@@ -49,7 +49,7 @@ use rlx_runtime::Device;
 const ENV: &str = "RLX_GLM5NEXT_GGUF";
 
 fn dev() -> Device {
-    std::env::var("RLX_TEST_DEVICE")
+    rlx_ir::env::var_result("RLX_TEST_DEVICE")
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| rlx_cli::parse_device(&s).expect("bad RLX_TEST_DEVICE"))
@@ -58,7 +58,7 @@ fn dev() -> Device {
 
 /// `(config, weights)` from the subset file, or `None` to skip.
 fn load() -> Option<(Glm5NextConfig, WeightMap)> {
-    let path = std::env::var(ENV).ok().filter(|s| !s.is_empty())?;
+    let path = rlx_ir::env::read(ENV).ok().filter(|s| !s.is_empty())?;
     if !std::path::Path::new(&path).exists() {
         eprintln!("skip: {ENV}={path} does not exist");
         return None;

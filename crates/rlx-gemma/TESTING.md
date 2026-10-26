@@ -4,11 +4,11 @@ Comprehensive guide to the test suites in this crate: what each
 exercises, expected tolerances, when to set knobs, and how to run on
 each backend.
 
-## Quick start (Apple Silicon)
+## Quick start (macOS arm64)
 
 ```bash
 # Full suite on CPU + Metal + MLX + wgpu in one go.
-cargo test -p rlx-gemma --features apple-silicon
+cargo test -p rlx-gemma --features macos-gpu
 ```
 
 Expected: 54 lib + 8 projector + 28 prefill LM + 4 decode + 8
@@ -35,8 +35,8 @@ test suite:
 | Backend | Tolerance | Measured | Notes |
 |---|---|---|---|
 | CPU | reference | n/a | Reference path |
-| MLX | `1e-5` | ~`8e-8` | Essentially bit-exact (Apple's MLX uses fp32 throughout for f32 graphs) |
-| wgpu | `1e-3` | ~`1e-6` | fp32-precise on Apple Silicon |
+| MLX | `1e-5` | ~`8e-8` | Essentially bit-exact (MLX uses fp32 throughout for f32 graphs) |
+| wgpu | `1e-3` | ~`1e-6` | fp32-precise on macOS arm64 |
 | Metal | `1e-3` | ~`1e-6` | **Requires** `RLX_METAL_PRECISE=1` (see below). Without it, drift is ~1e-1 due to `simdgroup_float8x8` reduced-precision accumulators |
 | CUDA / ROCm / Vulkan | `1e-2` | not run on this Mac | Hardware-gated; the tests auto-skip when `is_available()` returns false |
 
@@ -95,8 +95,8 @@ when debugging bucketed-decode parity.
 # CPU only (default)
 cargo test -p rlx-gemma
 
-# Apple Silicon (Metal + MLX + wgpu)
-cargo test -p rlx-gemma --features apple-silicon
+# macOS arm64 (Metal + MLX + wgpu)
+cargo test -p rlx-gemma --features macos-gpu
 
 # Compile-only check (cuda/rocm/vulkan don't need a live driver)
 cargo test -p rlx-gemma --features cuda --no-run

@@ -18,17 +18,18 @@ use rlx_models_core::weight_loader::MlxLoader;
 use std::collections::HashMap;
 
 fn env_flag(k: &str) -> bool {
-    matches!(std::env::var(k).as_deref(), Ok("1") | Ok("true"))
+    matches!(rlx_ir::env::read(k).as_deref(), Ok("1") | Ok("true"))
 }
 
 fn main() -> Result<()> {
-    let dir = std::env::var("RLX_DSV4_DIR").context("set RLX_DSV4_DIR to the checkpoint dir")?;
-    let lr = std::env::var("RLX_DSV4_LAYERS").unwrap_or_else(|_| "0:18".into());
+    let dir = rlx_ir::env::var_result("RLX_DSV4_DIR")
+        .context("set RLX_DSV4_DIR to the checkpoint dir")?;
+    let lr = rlx_ir::env::var_result("RLX_DSV4_LAYERS").unwrap_or_else(|_| "0:18".into());
     let (a, b) = lr.split_once(':').context("RLX_DSV4_LAYERS=A:B")?;
     let (a, b): (usize, usize) = (a.parse()?, b.parse()?);
     let first = env_flag("RLX_DSV4_FIRST");
     let last = env_flag("RLX_DSV4_LAST");
-    let seq: usize = std::env::var("RLX_DSV4_SEQ")
+    let seq: usize = rlx_ir::env::var_result("RLX_DSV4_SEQ")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8);

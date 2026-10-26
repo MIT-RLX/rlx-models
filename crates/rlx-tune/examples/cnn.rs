@@ -129,7 +129,7 @@ fn gen_batch(seed: u32, nb: usize, templates: &[Vec<f32>]) -> (Vec<f32>, Vec<f32
 fn main() -> anyhow::Result<()> {
     // Fast CPU conv (im2col + BLAS) by default — ~10× over the naive reference
     // kernel, same result. Override with `RLX_FAST_CONV=0`.
-    if std::env::var_os("RLX_FAST_CONV").is_none() {
+    if rlx_ir::env::var_os("RLX_FAST_CONV").is_none() {
         rlx_ir::env::set("RLX_FAST_CONV", "1");
     }
     let args: Vec<String> = std::env::args().collect();

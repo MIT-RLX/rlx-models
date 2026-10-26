@@ -5,13 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "On-device system machine translation (Quasar pipeline: SentencePiece + Espresso NMT) for RLX"
+description = "On-device system machine translation (Quasar pipeline: SentencePiece + NMT) for RLX"
 keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
 readme = "README.md"
 
 [dependencies]
+rlx-ir = { workspace = true }
+rlx-search = { workspace = true }
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
 anyhow = { workspace = true }

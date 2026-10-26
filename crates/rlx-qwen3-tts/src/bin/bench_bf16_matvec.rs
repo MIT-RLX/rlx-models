@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Benchmark BF16-weight × F32-input matvec vs Apple Accelerate sgemv.
+//! Benchmark BF16-weight × F32-input matvec vs Accelerate sgemv.
 //!
 //! Validates correctness and measures speedup at CP-relevant matrix sizes
 //! before integrating into the CP forward path.
@@ -153,7 +153,7 @@ fn bench_one(seed: u64, shape: Shape, iters: usize) {
         .collect();
     // BF16-quantize the weight matrix (truncating round) into u16 storage.
     let w_bf16: Vec<u16> = w_f32.iter().map(|&v| f32_to_bf16_bits(v)).collect();
-    // Reconstruct the f32-as-bf16 reference for an apples-to-apples accuracy check.
+    // Reconstruct the f32-as-bf16 reference for an like-for-like accuracy check.
     let w_f32_as_bf16: Vec<f32> = w_bf16
         .iter()
         .map(|&bits| f32::from_bits((bits as u32) << 16))

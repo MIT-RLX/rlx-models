@@ -15,20 +15,22 @@
 
 //! `rlx-lfm` CLI — LFM2 / LFM2.5 GGUF text generation.
 
-use crate::lfm2_gguf::{Lfm2GgufRunner, resolve_gguf};
+use crate::lfm2_gguf::{Lfm2GgufRunner, is_lfm2_hf_dir, resolve_gguf};
 use anyhow::{Context, Result, anyhow, bail};
 use rlx_cli::{parse_standard_device, req};
 use std::path::PathBuf;
 
 const HELP: &str = "\
-rlx-lfm — LiquidAI LFM2 / LFM2.5 GGUF text generation (hybrid ShortConv + attention)
+rlx-lfm — LiquidAI LFM2 / LFM2.5 text generation (hybrid ShortConv + attention)
 
 USAGE:
   rlx-lfm --weights <FILE.gguf|DIR> --prompt \"...\" [options]
+  rlx-lfm --weights <HF-DIR> --prompt \"...\" [options]
   rlx-lfm --weights <FILE.gguf|DIR> --prompt-ids 1,2,3 [options]
 
 OPTIONS:
-  --weights <PATH>     .gguf file (or a directory containing one)
+  --weights <PATH>     .gguf file (or a directory containing one), or an HF
+                       safetensors directory (e.g. LiquidAI/LFM2.5-230M)
   --prompt <TEXT>      text prompt (requires the `tokenizer` feature)
   --prompt-ids <a,b>   raw token ids instead of --prompt
   --device <NAME>      cpu | metal | mlx | cuda | rocm | gpu | vulkan (default cpu)
@@ -76,7 +78,11 @@ pub fn run(args: &[String]) -> Result<()> {
     }
 
     let weights = weights.ok_or_else(|| anyhow!("--weights is required"))?;
-    let gguf = resolve_gguf(&weights)?;
+    let gguf = if is_lfm2_hf_dir(&weights) {
+        weights
+    } else {
+        resolve_gguf(&weights)?
+    };
     let dev = parse_standard_device("lfm", &device)?;
 
     eprintln!("[rlx-lfm] loading {} on {dev:?}", gguf.display());
@@ -122,7 +128,11 @@ fn resolve_prompt_ids(
         return Ok(ids);
     }
     let text = prompt.ok_or_else(|| anyhow!("provide --prompt or --prompt-ids"))?;
-    rlx_qwen35::encode_prompt_from_gguf(gguf, text)
+    if gguf.is_dir() {
+        rlx_qwen35::encode_prompt_auto(gguf, None, text)
+    } else {
+        rlx_qwen35::encode_prompt_from_gguf(gguf, text)
+    }
 }
 
 #[cfg(not(feature = "tokenizer"))]
@@ -156,7 +166,7 @@ fn generate(
     let mut last_len = 0usize;
     runner.generate(ids, max_tokens, |tok| {
         generated.push(tok);
-        if let Ok(text) = rlx_qwen35::decode_ids_from_gguf(gguf, &generated, skip_special) {
+        if let Ok(text) = detokenize(gguf, &generated, skip_special) {
             if text.len() >= last_len {
                 print!("{}", &text[last_len..]);
             } else {
@@ -168,10 +178,21 @@ fn generate(
         true
     })?;
     println!();
-    if let Ok(full) = rlx_qwen35::decode_ids_from_gguf(gguf, &generated, skip_special) {
+    if let Ok(full) = detokenize(gguf, &generated, skip_special) {
         eprintln!("[rlx-lfm] continuation:\n{full}");
     }
     Ok(generated)
+}
+
+/// Detokenize through the HF `tokenizer.json` for a directory, or the
+/// GGUF-embedded BPE for a `.gguf`.
+#[cfg(feature = "tokenizer")]
+fn detokenize(weights: &std::path::Path, ids: &[u32], skip_special: bool) -> Result<String> {
+    if weights.is_dir() {
+        rlx_qwen35::decode_ids_auto(weights, None, ids, skip_special)
+    } else {
+        rlx_qwen35::decode_ids_from_gguf(weights, ids, skip_special)
+    }
 }
 
 #[cfg(not(feature = "tokenizer"))]

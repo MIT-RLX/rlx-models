@@ -250,6 +250,25 @@ fn build_builtin(name: &str, path: &Path, opts: &AutoOptions) -> Result<Box<dyn 
                 );
             }
         }
+        "flint" => {
+            #[cfg(feature = "flint")]
+            {
+                // A HF checkpoint directory; experts are paged from it, so the
+                // 80 GB of bf16 never has to fit in RAM.
+                let mut ro = rlx_flint::RunnerOptions::new(device);
+                if let Some(n) = opts.max_seq {
+                    ro.max_context = n;
+                }
+                Box::new(rlx_flint::FlintRunner::open(weights, ro)?) as Box<dyn LmRunner>
+            }
+            #[cfg(not(feature = "flint"))]
+            {
+                bail!(
+                    "auto_runner: runner `flint` requires feature `flint` \
+                     (enable rlx-models/flint)"
+                );
+            }
+        }
         "qwen4exp" => {
             #[cfg(feature = "qwen4exp")]
             {
@@ -345,7 +364,7 @@ fn build_builtin(name: &str, path: &Path, opts: &AutoOptions) -> Result<Box<dyn 
                     );
                 }
             } else {
-                // LFM2 / LFM2.5 GGUFs use the hybrid ShortConv+attention arch
+                // LFM2 / LFM2.5 use the hybrid ShortConv+attention arch
                 // (`Lfm2GgufRunner`); the legacy `LfmRunner` only handles the
                 // older SSM variant and bails on ShortConv tensors.
                 let is_gguf = weights
@@ -353,7 +372,9 @@ fn build_builtin(name: &str, path: &Path, opts: &AutoOptions) -> Result<Box<dyn 
                     .and_then(|s| s.to_str())
                     .map(|e| e.eq_ignore_ascii_case("gguf"))
                     .unwrap_or(false);
-                if is_gguf {
+                // HF LFM2/LFM2.5 directories (`layer_types` in config.json) are
+                // the same hybrid arch and take the same runner.
+                if is_gguf || rlx_lfm::is_lfm2_hf_dir(weights) {
                     Box::new(rlx_lfm::Lfm2GgufRunner::open(weights, device)?) as Box<dyn LmRunner>
                 } else {
                     Box::new(
@@ -433,6 +454,7 @@ builtin_ctor!(ctor_qwen3_vl, "qwen3-vl");
 builtin_ctor!(ctor_llama4, "llama4");
 builtin_ctor!(ctor_mllama, "mllama");
 builtin_ctor!(ctor_minimax_m3, "minimax-m3");
+builtin_ctor!(ctor_flint, "flint");
 
 /// Register every builtin family's constructor.
 ///
@@ -472,6 +494,7 @@ pub fn register_builtin_lm_runners() {
             LmRunnerRegistration::new("minimax-m3", ctor_minimax_m3).mmproj_note(
                 "the M3 VL variant takes its vision config from the checkpoint's config.json",
             ),
+            LmRunnerRegistration::new("flint", ctor_flint).mmproj_note("Flint is text-only"),
         ];
         for reg in regs {
             register_lm_runner(reg);

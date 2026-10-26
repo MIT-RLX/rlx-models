@@ -26,6 +26,8 @@
 pub mod attention;
 pub mod cli;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod moe;
 pub mod preprocess;

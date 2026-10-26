@@ -30,7 +30,7 @@ use std::time::Instant;
 /// Whether `RLX_TADA_PROFILE` is set. Read once.
 pub fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("RLX_TADA_PROFILE").is_some())
+    *ON.get_or_init(|| rlx_ir::env::var_os("RLX_TADA_PROFILE").is_some())
 }
 
 /// Emit one trace line. The format string carries its own leading indent.

@@ -26,6 +26,10 @@ use rlx_runtime::Device;
 /// native runtime backend into the `rlx-qwen35` binary.
 pub fn validate_device(cfg: &Qwen35Config, device: Device, packed_weights: bool) -> Result<()> {
     let _ = (cfg, packed_weights);
+    // The browser backends: WebGPU, and WebGL2 (natively, its planner on the CPU).
+    if matches!(device, Device::WebGpu | Device::OpenGl) {
+        return Ok(());
+    }
     validate_lm_device("qwen35", device)
 }
 

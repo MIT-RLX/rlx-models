@@ -40,6 +40,8 @@ optional = true
 default = ["cli"]
 cli = []
 hf-download = ["dep:hf-hub", "rlx-mimi/hf-download"]
+# `export::export_rlxp`: Kyutai TTS as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-mimi/export"]
 
 metal = ["rlx-runtime/metal", "rlx-mimi/metal"]
 mlx = ["rlx-runtime/mlx", "rlx-mimi/mlx"]
@@ -48,7 +50,7 @@ rocm = ["rlx-runtime/rocm", "rlx-mimi/rocm"]
 vulkan = ["rlx-runtime/vulkan", "rlx-mimi/vulkan"]
 gpu = ["rlx-runtime/gpu", "rlx-mimi/gpu"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+macos-gpu = ["metal", "mlx", "gpu"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu", "vulkan"]
@@ -68,6 +70,10 @@ candle-nn = { version = "0.9.2" }
 moshi = { version = "0.6.4", default-features = false }
 safetensors = { workspace = true }
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
+tempfile = "3"
+rlx-text = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
 rlx-mimi = { workspace = true }
 anyhow = { workspace = true }
 criterion = { workspace = true }

@@ -80,7 +80,9 @@ fn f32_le(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 fn as_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -123,7 +125,7 @@ impl NativeParler {
         };
         let (hir, mut params, _r, _m) =
             build_hir_from_onnx_file(&path, opts).with_context(|| format!("import {component}"))?;
-        if std::env::var_os("RLX_DIM_DBG").is_some() {
+        if rlx_ir::env::var_os("RLX_DIM_DBG").is_some() {
             for n in hir.nodes() {
                 if let rlx_ir::hir::HirOp::Input { name } = &n.op {
                     eprintln!("[hir-input] {component}::{name} {:?}", n.shape.dims());
@@ -246,7 +248,7 @@ impl NativeParler {
             // returns only the codebook stream (`seq == t`, sample at `step`).
             let logits = as_f32(&out[0].0);
             let seq = logits.len() / (K * VOCAB);
-            if step == 0 && std::env::var_os("RLX_PARLER_DBG").is_some() {
+            if step == 0 && rlx_ir::env::var_os("RLX_PARLER_DBG").is_some() {
                 eprintln!(
                     "[parler-dbg] pt={pt} enc_len={enc_len} t={t} full={full} → decoder seq={seq} (prefix={})",
                     seq.saturating_sub(t)
@@ -333,7 +335,7 @@ impl NativeParler {
             ));
         }
 
-        if std::env::var_os("RLX_PARLER_DEBUG").is_some() {
+        if rlx_ir::env::var_os("RLX_PARLER_DEBUG").is_some() {
             for (k, r) in rows.iter().enumerate() {
                 let uniq: std::collections::HashSet<u32> = r.iter().copied().collect();
                 let mn = r.iter().copied().min().unwrap_or(0);
@@ -395,15 +397,7 @@ fn hash64(s: &str) -> u64 {
 }
 
 fn argmax(row: &[f32]) -> usize {
-    let mut best = 0usize;
-    let mut bv = f32::NEG_INFINITY;
-    for (i, &v) in row.iter().enumerate() {
-        if v > bv {
-            bv = v;
-            best = i;
-        }
-    }
-    best
+    rlx_runtime::search::argmax(row)
 }
 
 /// Temperature + top-k multinomial sample over logits.

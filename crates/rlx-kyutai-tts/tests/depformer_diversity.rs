@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 #[test]
 fn depformer_produces_diverse_codebooks() {
-    let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| default_kyutai_tts_dir());
     let wpath = dir.join(TTS_WEIGHTS_FILE);

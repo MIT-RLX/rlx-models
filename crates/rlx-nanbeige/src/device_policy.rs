@@ -42,11 +42,11 @@ pub fn working_set_bytes(cfg: &Llama32Config, max_seq: usize) -> usize {
 }
 
 fn env_usize(key: &str) -> Option<usize> {
-    std::env::var(key).ok()?.parse().ok()
+    rlx_ir::env::read(key).ok()?.parse().ok()
 }
 
 fn device_mem_budget_bytes(device: Device) -> Option<usize> {
-    if let Ok(b) = std::env::var("RLX_NANBEIGE_MEM_BUDGET_BYTES") {
+    if let Ok(b) = rlx_ir::env::var_result("RLX_NANBEIGE_MEM_BUDGET_BYTES") {
         return b.parse().ok();
     }
     // Looped Transformer: weights shared, but KV + compile arenas scale with
@@ -119,7 +119,7 @@ impl BackendPlan {
                 bucketed_decode: true,
                 prefill_cache: 4,
                 allow_full_f32: true,
-                note: "MLX preferred on Apple Silicon (bucketed decode for dense F32)",
+                note: "MLX preferred on macOS arm64 (bucketed decode for dense F32)",
             },
             Device::Metal => Self {
                 max_seq: 96,
@@ -248,32 +248,28 @@ pub fn assert_full_model_fits(cfg: &Llama32Config, device: Device, max_seq: usiz
 /// graphs are ~2k nodes; the MLX default compile cap (1536) forces Lazy and
 /// makes real 3B F32 impractically slow.
 pub fn prepare(device: Device) {
-    // SAFETY: single-threaded prepare before concurrent runtime use.
-    unsafe {
-        if matches!(device, Device::Mlx) && std::env::var_os("RLX_MLX_COMPILE_MAX_NODES").is_none()
-        {
-            // Prefill ≈2013 nodes, decode ≈1930 for Nanbeige4.2-3B (22×2 loops).
-            std::env::set_var("RLX_MLX_COMPILE_MAX_NODES", "4096");
+    if matches!(device, Device::Mlx) && rlx_ir::env::var_os("RLX_MLX_COMPILE_MAX_NODES").is_none() {
+        // Prefill ≈2013 nodes, decode ≈1930 for Nanbeige4.2-3B (22×2 loops).
+        rlx_ir::env::set("RLX_MLX_COMPILE_MAX_NODES", "4096");
+    }
+    if matches!(device, Device::Mlx | Device::Metal) {
+        // Dense F32 3B leaves high RSS after Compiled prefill; default 80%
+        // soft cap then rejects decode (+4–12 GiB peak estimate).
+        if rlx_ir::env::var_os("RLX_SOFT_MEMORY_FRACTION").is_none() {
+            rlx_ir::env::set("RLX_SOFT_MEMORY_FRACTION", "0.95");
         }
-        if matches!(device, Device::Mlx | Device::Metal) {
-            // Dense F32 3B leaves high RSS after Compiled prefill; default 80%
-            // soft cap then rejects decode (+4–12 GiB peak estimate).
-            if std::env::var_os("RLX_SOFT_MEMORY_FRACTION").is_none() {
-                std::env::set_var("RLX_SOFT_MEMORY_FRACTION", "0.95");
-            }
-            // Orpheus Q4 bucket peaks (~12 GiB) overstate mmap F32 IR/temps.
-            if std::env::var_os("RLX_DECODE_BUCKET_PEAK_BYTES").is_none() {
-                std::env::set_var(
-                    "RLX_DECODE_BUCKET_PEAK_BYTES",
-                    (2usize * 1024 * 1024 * 1024).to_string(),
-                );
-            }
-            if std::env::var_os("RLX_DECODE_ONESHOT_PEAK_BYTES").is_none() {
-                std::env::set_var(
-                    "RLX_DECODE_ONESHOT_PEAK_BYTES",
-                    (1024usize * 1024 * 1024).to_string(),
-                );
-            }
+        // Orpheus Q4 bucket peaks (~12 GiB) overstate mmap F32 IR/temps.
+        if rlx_ir::env::var_os("RLX_DECODE_BUCKET_PEAK_BYTES").is_none() {
+            rlx_ir::env::set(
+                "RLX_DECODE_BUCKET_PEAK_BYTES",
+                (2usize * 1024 * 1024 * 1024).to_string(),
+            );
+        }
+        if rlx_ir::env::var_os("RLX_DECODE_ONESHOT_PEAK_BYTES").is_none() {
+            rlx_ir::env::set(
+                "RLX_DECODE_ONESHOT_PEAK_BYTES",
+                (1024usize * 1024 * 1024).to_string(),
+            );
         }
     }
 }

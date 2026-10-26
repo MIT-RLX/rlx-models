@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         Device::Cpu
     };
-    let model_dir = std::env::var("RLX_QWEN3_TTS_DIR")
+    let model_dir = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice"));
     let mut session = Qwen3TtsSession::open(&model_dir, device)?;

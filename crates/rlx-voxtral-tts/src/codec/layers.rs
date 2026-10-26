@@ -16,7 +16,7 @@
 //! Shared codec conv + transformer blocks (encoder and decoder).
 
 use crate::config::CodecArgs;
-use crate::math::{conv_transpose1d, conv1d, linear2, rms_norm, swiglu};
+use crate::math::{conv_transpose1d, conv1d_replicate, linear2, rms_norm, swiglu};
 use anyhow::{Context, Result, ensure};
 use ndarray::{Array1, Array2, Array3, ArrayView1, ArrayView2};
 use std::collections::HashMap;
@@ -24,6 +24,7 @@ use std::collections::HashMap;
 pub(crate) const CODEC_NORM_EPS: f32 = 1e-2;
 
 pub(crate) enum CodecConvBlock {
+    /// A causal conv, its left context replicated (`pad_mode="replicate"`).
     Forward {
         weight: Array3<f32>,
         stride: usize,
@@ -69,8 +70,9 @@ impl CodecLayer {
         let q = linear2(h.view(), self.wq.view(), None);
         let k = linear2(h.view(), self.wk.view(), None);
         let v = linear2(h.view(), self.wv.view(), None);
-        let qn = rms_norm(q.view(), self.q_norm.view(), self.head_dim as f32 * 1e-6);
-        let kn = rms_norm(k.view(), self.k_norm.view(), self.head_dim as f32 * 1e-6);
+        // `qk_norm_eps` (1e-6), over all heads at once.
+        let qn = rms_norm(q.view(), self.q_norm.view(), 1e-6);
+        let kn = rms_norm(k.view(), self.k_norm.view(), 1e-6);
         let attn = alibi_attention(
             qn.view(),
             kn.view(),
@@ -127,7 +129,7 @@ pub(crate) fn run_conv(x: &Array2<f32>, conv: &CodecConvBlock) -> Array2<f32> {
             weight,
             stride,
             pad_left,
-        } => conv1d(x.view(), weight.view(), *stride, *pad_left),
+        } => conv1d_replicate(x.view(), weight.view(), *stride, *pad_left),
         CodecConvBlock::Transpose {
             weight,
             stride,
@@ -320,7 +322,8 @@ fn alibi_attention(
     for hi in 0..n_heads {
         let kv_h = hi / repeats;
         for qi in 0..t {
-            let mut weights = vec![0f32; t];
+            // Keys outside the causal window stay at -inf (weight 0).
+            let mut weights = vec![f32::NEG_INFINITY; t];
             let mut max_w = f32::NEG_INFINITY;
             for ki in 0..t {
                 if qi < ki {

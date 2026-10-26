@@ -29,13 +29,18 @@ use std::path::Path;
 
 pub mod cli;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod lfm2_gguf;
 pub mod runner;
 
 pub use config::LfmConfig;
 pub use flow::{lfm_decode_layer_plugin, lfm_decode_layer_plugin_with_sink};
-pub use lfm2_gguf::{GgufNameShim, Lfm2GgufRunner, lfm2_spec_from_gguf, resolve_gguf};
+pub use lfm2_gguf::{
+    GgufNameShim, Lfm2GgufRunner, is_lfm2_hf_dir, lfm2_spec_from_gguf, lfm2_spec_from_hf_config,
+    lfm2_text_config, resolve_gguf,
+};
 pub use runner::{LfmRunner, LfmRunnerBuilder};
 
 pub const PLAN_MILESTONE: &str = "M5";

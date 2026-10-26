@@ -41,7 +41,7 @@ device and checks CPU agreement (`max|Δ| < 2e-3`). Unavailable backends skip.
 just fetch-vibevoice-asr-streaming
 just vibevoice-asr-streaming -- --audio clip.wav --device metal
 # or:
-cargo run -p rlx-vibevoice-asr --release --features tokenizer,apple-silicon -- \
+cargo run -p rlx-vibevoice-asr --release --features tokenizer,macos-gpu -- \
     --model-dir .cache/vibevoice-asr-streaming-7b \
     --audio clip.wav --device metal --context-info "Microsoft,VibeVoice"
 # live-style per-chunk encode:

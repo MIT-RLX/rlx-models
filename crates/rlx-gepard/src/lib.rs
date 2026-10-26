@@ -43,6 +43,8 @@ pub mod cli;
 pub mod codec_ops;
 pub mod compiled_session;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod gepard_decoder;
 pub mod qformer;

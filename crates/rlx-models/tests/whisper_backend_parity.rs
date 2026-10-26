@@ -32,7 +32,7 @@ fn cache_root() -> PathBuf {
 }
 
 fn tiny_dir() -> PathBuf {
-    std::env::var("RLX_WHISPER_DIR")
+    rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| cache_root().join("whisper-tiny"))
 }

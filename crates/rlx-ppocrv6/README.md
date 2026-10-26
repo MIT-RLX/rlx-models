@@ -23,7 +23,7 @@ just ppocrv6 -- --tier tiny --model-dir .cache/ppocrv6/tiny --image page.png --d
 Or with Cargo:
 
 ```bash
-cargo run -p rlx-ppocrv6 --release --features apple-silicon -- \
+cargo run -p rlx-ppocrv6 --release --features macos-gpu -- \
   --tier small --model-dir .cache/ppocrv6/small --image page.png --device metal
 ```
 
@@ -74,15 +74,15 @@ Verified on `hello.png` → readable `Hello OCR` / `HelloOCR`:
 | Backend | Feature | Notes |
 |---------|---------|--------|
 | CPU | (default) | Reference |
-| Metal | `metal` / `apple-silicon` | |
-| MLX | `mlx` / `apple-silicon` | Lazy fallback for FPN `ConvTranspose2d` |
-| wgpu | `gpu` / `apple-silicon` | `--device gpu` |
-| CoreML / ANE | `coreml` / `apple-silicon` | Defaults to Neural Engine; avoid `RLX_COREML_UNITS=gpu` on small (SVTR Softmax) |
+| Metal | `metal` / `macos-gpu` | |
+| MLX | `mlx` / `macos-gpu` | Lazy fallback for FPN `ConvTranspose2d` |
+| wgpu | `gpu` / `macos-gpu` | `--device gpu` |
+| CoreML / ANE | `coreml` / `macos-gpu` | Defaults to Neural Engine; avoid `RLX_COREML_UNITS=gpu` on small (SVTR Softmax) |
 | Vulkan | `vulkan` | |
 | CUDA | `cuda` / `nvidia-gpu` | Verified on NVIDIA (e.g. RTX 3080 Ti) |
 
 ```bash
-cargo build -p rlx-ppocrv6 --release --features apple-silicon
+cargo build -p rlx-ppocrv6 --release --features macos-gpu
 cargo build -p rlx-ppocrv6 --release --features cuda
 ```
 

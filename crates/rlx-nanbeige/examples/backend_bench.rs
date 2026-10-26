@@ -10,7 +10,7 @@
 //!
 //! ```sh
 //! cargo run -p rlx-nanbeige --example backend_bench --features all-backends --release
-//! cargo run -p rlx-nanbeige --example backend_bench --features apple-silicon --release -- \
+//! cargo run -p rlx-nanbeige --example backend_bench --features macos-gpu --release -- \
 //!   --weights /tmp/rlx-weights/Nanbeige4.2-3B --device mlx
 //! just bench-nanbeige-backends
 //! ```

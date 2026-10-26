@@ -124,7 +124,7 @@ impl LoweringOpts {
     pub fn for_device(device: Device) -> Self {
         let _ = device;
         let mut o = Self::default();
-        let off = |k: &str| std::env::var_os(k).is_some();
+        let off = |k: &str| rlx_ir::env::read_os(k).is_some();
         if off("RLX_NEURALHASH_NO_FUSED_NORM") {
             o.fused_norm = false;
         }
@@ -265,7 +265,7 @@ impl Builder {
                 let [_, in_c, in_h, in_w] = get_shape(&op.ins[0])?;
                 if *global {
                     // Exact mean over H·W — no kernel/padding edge cases, and it
-                    // is what an Espresso global average pool computes.
+                    // is what the vendor's global average pool computes.
                     ensure!(
                         matches!(kind, PoolKind::Avg),
                         "global max pooling is not supported ({:?})",
@@ -361,7 +361,7 @@ impl Builder {
             OpKind::InstanceNorm { scale, shift, eps } => {
                 // Instance norm is exactly `GroupNorm` with one group per
                 // channel — each group is `1 × H × W`, so the statistics are
-                // the per-`(N, C)` spatial mean/variance Espresso wants.
+                // the per-`(N, C)` spatial mean/variance The format wants.
                 //
                 // Emitting the single fused op instead of the
                 // mean/sub/mul/mean/add/rsqrt/mul/mul/add chain removes eight
@@ -510,7 +510,7 @@ impl Builder {
             Act::Sigmoid => self.hir_mut().activation(Activation::Sigmoid, x, s),
             Act::Tanh => self.hir_mut().activation(Activation::Tanh, x, s),
             // rlx-ir has both natively; `crate::spec::fuse_hard_activations`
-            // rewrites Espresso's four-op chains onto them.
+            // rewrites the format's four-op chains onto them.
             Act::HardSigmoid => self.hir_mut().activation(Activation::HardSigmoid, x, s),
             Act::HardSwish => self.hir_mut().activation(Activation::HardSwish, x, s),
             Act::Linear { alpha, beta } => {
@@ -535,7 +535,7 @@ impl Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::espresso::{BlobShape, EspressoNet};
+    use crate::netfile::{BlobShape, NetFile};
     use half::f16;
     use rlx_runtime::Session;
 
@@ -559,9 +559,9 @@ mod tests {
         v.iter().flat_map(|x| x.to_le_bytes()).collect()
     }
 
-    fn build_and_run(net: &EspressoNet, input: &[f32]) -> Vec<Vec<f32>> {
-        let spec = NeuralHashSpec::from_espresso(net).unwrap();
-        let mut wm = crate::weights::from_espresso(net).unwrap();
+    fn build_and_run(net: &NetFile, input: &[f32]) -> Vec<Vec<f32>> {
+        let spec = NeuralHashSpec::from_netfile(net).unwrap();
+        let mut wm = crate::weights::from_netfile(net).unwrap();
         let (graph, params) = build_graph(&spec, &mut wm).unwrap();
         let mut c = Session::new(Device::Cpu).compile(graph);
         rlx_core::flow_util::attach_built_params(&mut c, params, &[]);
@@ -595,8 +595,7 @@ mod tests {
         ]}"#;
         // W = [[1, 2], [0, -1]] (out, in); b = [0.5, -0.5]
         let weights = container(&[(0, f16b(&[1.0, 2.0, 0.0, -1.0])), (1, f32b(&[0.5, -0.5]))]);
-        let net =
-            EspressoNet::from_parts(net_json, &weights, shapes(&[("i", [1, 2, 1, 1])])).unwrap();
+        let net = NetFile::from_parts(net_json, &weights, shapes(&[("i", [1, 2, 1, 1])])).unwrap();
         // x = [3, 5] (channel 0 = 3, channel 1 = 5)
         let out = build_and_run(&net, &[3.0, 5.0]);
         // y0 = 1*3 + 2*5 + 0.5 = 13.5 ; y1 = 0*3 + -1*5 - 0.5 = -5.5
@@ -620,8 +619,7 @@ mod tests {
         k[4] = 1.0;
         k[9 + 4] = 1.0;
         let weights = container(&[(0, f16b(&k))]);
-        let net =
-            EspressoNet::from_parts(net_json, &weights, shapes(&[("i", [1, 2, 4, 4])])).unwrap();
+        let net = NetFile::from_parts(net_json, &weights, shapes(&[("i", [1, 2, 4, 4])])).unwrap();
         let x: Vec<f32> = (0..2 * 4 * 4).map(|i| i as f32).collect();
         let out = build_and_run(&net, &x);
         // Identity kernel + SAME padding → output equals input.
@@ -649,8 +647,7 @@ mod tests {
             (1, f16b(&[1.0, 0.0, 0.0, 1.0])), // ip weight [nC=2, nB=2] identity
             (2, f32b(&[0.0, 1.0])),
         ]);
-        let net =
-            EspressoNet::from_parts(net_json, &weights, shapes(&[("i", [1, 2, 2, 2])])).unwrap();
+        let net = NetFile::from_parts(net_json, &weights, shapes(&[("i", [1, 2, 2, 2])])).unwrap();
         // channel 0 = [1,1,1,1] (mean 1), channel 1 = [2,2,2,2] (mean 2)
         let x = vec![1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0];
         let out = build_and_run(&net, &x);
@@ -669,8 +666,7 @@ mod tests {
           {"type":"elementwise","name":"se","top":"o","bottom":"i,g","operation":1}
         ]}"#;
         let net =
-            EspressoNet::from_parts(net_json, &container(&[]), shapes(&[("i", [1, 1, 2, 2])]))
-                .unwrap();
+            NetFile::from_parts(net_json, &container(&[]), shapes(&[("i", [1, 1, 2, 2])])).unwrap();
         let x = vec![1.0, 2.0, 3.0, 4.0]; // mean 2.5
         let out = build_and_run(&net, &x);
         for (o, i) in out[0].iter().zip(x.iter()) {
@@ -696,8 +692,8 @@ mod tests {
                 ]}}"#
             );
             let weights = container(&[(0, f16b(&[1.0]))]);
-            let net = EspressoNet::from_parts(&net_json, &weights, shapes(&[("i", [1, 1, 1, 5])]))
-                .unwrap();
+            let net =
+                NetFile::from_parts(&net_json, &weights, shapes(&[("i", [1, 1, 1, 5])])).unwrap();
             let x = vec![-8.0, -2.0, 0.0, 3.0, 9.0];
             let out = build_and_run(&net, &x);
             for (o, v) in out[0].iter().zip(x.iter()) {
@@ -721,8 +717,7 @@ mod tests {
         ]}"#;
         // kernel [1, 1] over width: y[x] = i[x] + i[x+1], last tap sees the pad.
         let weights = container(&[(0, f16b(&[1.0, 1.0]))]);
-        let net =
-            EspressoNet::from_parts(net_json, &weights, shapes(&[("i", [1, 1, 1, 3])])).unwrap();
+        let net = NetFile::from_parts(net_json, &weights, shapes(&[("i", [1, 1, 1, 3])])).unwrap();
         let out = build_and_run(&net, &[1.0, 2.0, 4.0]);
         // width stays 3: [1+2, 2+4, 4+0]
         assert_eq!(out[0].len(), 3);
@@ -739,9 +734,8 @@ mod tests {
            "C":1,"K":1,"Nx":1,"Ny":1,"has_biases":0,"blob_weights_f16":0}
         ]}"#;
         let weights = container(&[(0, f16b(&[1.0]))]);
-        let net =
-            EspressoNet::from_parts(net_json, &weights, shapes(&[("i", [1, 1, 1, 1])])).unwrap();
-        let spec = NeuralHashSpec::from_espresso(&net).unwrap();
+        let net = NetFile::from_parts(net_json, &weights, shapes(&[("i", [1, 1, 1, 1])])).unwrap();
+        let spec = NeuralHashSpec::from_netfile(&net).unwrap();
         let mut empty = WeightMap::from_tensors(HashMap::new());
         let e = format!("{:#}", build_graph(&spec, &mut empty).unwrap_err());
         assert!(e.contains("c.weight"), "{e}");

@@ -6,7 +6,7 @@
 # HuggingFace transformers. It mirrors `crates/rlx-llm-bench/src/quality/mod.rs`
 # EXACTLY — same prompt rendering, same continuation scoring, same GSM8K few-shot
 # and last-number extraction — so accuracy on the SAME cached JSONL docs is a
-# true apples-to-apples check of the Rust harness (and of rlx's model inference
+# true like-for-like check of the Rust harness (and of rlx's model inference
 # when run on the same weights).
 #
 # Usage:

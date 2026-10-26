@@ -381,7 +381,7 @@ pub(crate) fn inject_if_proj_bypass(hir: &mut HirModule, stub: &str, proj_id: Hi
         crate::bundle_compile::max_frames_per_token(),
     );
     let f0_frames = mel_cap.saturating_mul(2).max(frame_cap(max_wave));
-    if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+    if rlx_ir::env::var_result("RLX_KITTEN_F0_DEBUG").is_ok() {
         eprintln!(
             "[if_inject] stub={} stub_shape={:?} max_wave={} mel_cap={mel_cap} f0_frames={f0_frames}",
             stub,
@@ -691,7 +691,7 @@ fn inject_f0_nearest_upsample(hir: &mut HirModule, max_waveform_samples: usize) 
         {
             continue;
         }
-        if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+        if rlx_ir::env::var_result("RLX_KITTEN_F0_DEBUG").is_ok() {
             let ins: Vec<String> = hir
                 .node(id)
                 .inputs
@@ -726,7 +726,7 @@ fn inject_f0_nearest_upsample(hir: &mut HirModule, max_waveform_samples: usize) 
             _ => {}
         }
     }
-    if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+    if rlx_ir::env::var_result("RLX_KITTEN_F0_DEBUG").is_ok() {
         eprintln!("[f0_upsamp_repair] Resize→F0NearestUpsample×{MEL_DIV} out=[1,{max_wave},1]");
     }
     repair_f0n_conv_shapes(hir, max_wave);
@@ -793,7 +793,7 @@ fn repair_f0n_conv_shapes(hir: &mut HirModule, max_wave: usize) {
         if let Some(id) = add_id {
             hir.node_mut(id).shape = Shape::new(&[1, 1, mel_cap], DType::F32);
         }
-        if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+        if rlx_ir::env::var_result("RLX_KITTEN_F0_DEBUG").is_ok() {
             eprintln!(
                 "[f0n_conv_repair] {conv_name} → Conv[1,1,1,{mel_cap}] Add[1,1,{mel_cap}] (was stub ~5)"
             );
@@ -1452,7 +1452,7 @@ fn patch_narrow_wave_vocoder_shapes(nodes: &mut [BundleNode], max_wave: usize) {
             .filter(|d| *d == "bool" || *d == "f32" || *d == "i64")
             .unwrap_or("f32");
         let meta = serde_json::json!({ "shape": shape, "dtype": dtype });
-        if std::env::var("RLX_KITTEN_SHAPE_DEBUG").is_ok()
+        if rlx_ir::env::var_result("RLX_KITTEN_SHAPE_DEBUG").is_ok()
             && (node.name.contains("l_sin_gen/Cast")
                 || node.name.contains("l_sin_gen/Greater")
                 || node.name.contains("generator/Transpose")

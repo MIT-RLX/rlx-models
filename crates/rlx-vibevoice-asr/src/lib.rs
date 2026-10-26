@@ -11,6 +11,8 @@
 pub mod audio;
 pub mod config;
 pub mod embed;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod lm;
 pub mod load_streaming;
 pub mod prompt;

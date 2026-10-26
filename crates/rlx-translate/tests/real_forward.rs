@@ -13,15 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Runs the real Espresso graphs on the real installed weights.
+//! Runs the real network graphs on the real installed weights.
 //!
 //! Every intermediate is checked against `.espresso.shape`, so a wiring or
 //! layout mistake fails at the offending layer. Skips when nothing is installed.
 
 use rlx_translate::assets::Assets;
-use rlx_translate::espresso::Manifest;
 use rlx_translate::exec::{Env, Value, run_checked};
 use rlx_translate::net::Graph;
+use rlx_translate::netfile::Manifest;
 use rlx_translate::tensor::Tensor;
 use std::path::PathBuf;
 
@@ -207,7 +207,7 @@ fn handover_graph_produces_every_cross_attention_tensor() {
     );
 }
 
-/// The export folds Espresso's `dynamic_quantize -> inner_product ->
+/// The export folds the format's `dynamic_quantize -> inner_product ->
 /// dynamic_dequantize` triple into a single f32 linear
 /// `y = x · (W_int8 / w_scale) + b`. That is an analytical argument about the
 /// activation scale cancelling; this measures it on a real weight matrix.

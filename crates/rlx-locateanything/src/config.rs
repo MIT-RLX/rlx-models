@@ -201,7 +201,7 @@ impl LocateAnythingConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("read LocateAnything config {path:?}"))?;
-        let mut cfg: Self = serde_json::from_str(&data)
+        let mut cfg: Self = rlx_core::config::from_hf_json(&data)
             .with_context(|| format!("parse LocateAnything config {path:?}"))?;
         let dir = path.parent().unwrap_or(Path::new("."));
         cfg.preprocessor =

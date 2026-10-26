@@ -60,7 +60,7 @@ use rlx_ir::shape::Dim;
 use rlx_ir::{DType, Graph, Shape};
 
 use super::config::Llama32Config;
-use super::rope::{build_rope_tables, resolve_inv_freq, rope_slice};
+use super::rope::{resolve_inv_freq, rope_slice};
 use rlx_core::flow_bridge::{WeightLoaderSource, load_compile_profile};
 use rlx_core::weight_loader::WeightLoader;
 
@@ -208,6 +208,9 @@ pub struct Llama32Flow<'a> {
     with_kv_outputs: bool,
     last_logits_only: bool,
     use_custom_mask: bool,
+    /// Decode reads its RoPE row from `rope_cos` / `rope_sin` inputs. See
+    /// [`Llama32Flow::rope_inputs`].
+    rope_inputs: bool,
     inputs_embeds: bool,
     profile: Option<CompileProfile>,
     before_layers: Vec<FlowStage>,
@@ -259,6 +262,7 @@ impl<'a> Llama32Flow<'a> {
             with_kv_outputs: false,
             last_logits_only: false,
             use_custom_mask: false,
+            rope_inputs: false,
             inputs_embeds: false,
             profile: None,
             before_layers: Vec::new(),
@@ -395,6 +399,14 @@ impl<'a> Llama32Flow<'a> {
         self
     }
 
+    /// Decode takes its RoPE row as `rope_cos` / `rope_sin` inputs
+    /// (`[1, n_rot / 2]`) rather than gathering it at `position`: the
+    /// step a package's stateful decode feeds.
+    pub fn rope_inputs(mut self) -> Self {
+        self.rope_inputs = true;
+        self
+    }
+
     pub fn profile(mut self, profile: CompileProfile) -> Self {
         self.profile = Some(profile);
         self
@@ -475,8 +487,6 @@ impl<'a> Llama32Flow<'a> {
 
         let rope_factors = weights.take("rope_freqs.weight").ok().map(|(data, _)| data);
         let inv_freq = resolve_inv_freq(cfg, rope_factors.as_deref());
-        let (cos_data, sin_data) = build_rope_tables(&inv_freq, cfg.max_position_embeddings);
-
         let decoder_spec = LlamaDecoderSpec {
             num_heads: cfg.num_attention_heads,
             head_dim: dh,
@@ -502,11 +512,9 @@ impl<'a> Llama32Flow<'a> {
         }
 
         flow = flow
-            .rope_tables(RopeTablesStage::param(
+            .rope_tables(RopeTablesStage::from_inv_freq(
                 cfg.max_position_embeddings,
-                inv_freq.len(),
-                cos_data,
-                sin_data,
+                &inv_freq,
             ))
             .zero_beta_named("llama32.zero_beta.hidden", h);
         if !self.inputs_embeds {
@@ -667,8 +675,6 @@ impl<'a> Llama32Flow<'a> {
 
         let rope_factors = weights.take("rope_freqs.weight").ok().map(|(data, _)| data);
         let inv_freq = resolve_inv_freq(cfg, rope_factors.as_deref());
-        let (cos_data, sin_data) = build_rope_tables(&inv_freq, cfg.max_position_embeddings);
-
         let kv_out = SideOutputs::new();
 
         let mut flow = ModelFlow::new("llama32_decode").with_profile(profile);
@@ -690,14 +696,16 @@ impl<'a> Llama32Flow<'a> {
             }
         }
 
-        if self.dynamic_past || self.use_custom_mask {
+        if self.rope_inputs {
+            flow = flow
+                .input("rope_cos", Shape::new(&[1, half], f))
+                .input("rope_sin", Shape::new(&[1, half], f));
+        } else if self.dynamic_past || self.use_custom_mask {
             flow = flow.input("position", Shape::new(&[1], DType::F32));
             flow = flow
-                .rope_tables(RopeTablesStage::param(
+                .rope_tables(RopeTablesStage::from_inv_freq(
                     cfg.max_position_embeddings,
-                    half,
-                    cos_data,
-                    sin_data,
+                    &inv_freq,
                 ))
                 .gather_decode_rope(half);
         } else {
@@ -708,14 +716,17 @@ impl<'a> Llama32Flow<'a> {
         }
 
         let need_past_kv = self.past_seq > 0 || self.dynamic_past || self.use_custom_mask;
-        flow = if kv_spare > 0 && need_past_kv {
-            flow.bind_decode_inputs_with_capacity(
+        flow = if need_past_kv {
+            flow.bind_decode_inputs_for_kv_spare(
                 cfg.kv_layers(),
                 self.use_custom_mask,
                 self.past_seq,
+                kv_spare,
             )
         } else {
-            flow.bind_decode_inputs(cfg.kv_layers(), self.use_custom_mask, need_past_kv)
+            // No cache inputs are declared at all, so there is nothing to bind
+            // a capacity contract against.
+            flow.bind_decode_inputs(cfg.kv_layers(), self.use_custom_mask, false)
         };
         flow = flow.zero_beta_named("llama32.zero_beta.hidden", h);
         if !self.inputs_embeds {
@@ -1087,8 +1098,7 @@ mod layer_range_tests {
             .expect("batched decode flow should build");
         let hir = built.into_hir().expect("hir");
         assert!(
-            !hir
-                .nodes()
+            !hir.nodes()
                 .iter()
                 .any(|n| matches!(n.op, rlx_ir::HirOp::Mir(rlx_ir::Op::KvAppend { .. }))),
             "batched llama32 decode must not emit KvAppend: the prefix is strided"

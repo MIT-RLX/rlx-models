@@ -403,7 +403,7 @@ pub(crate) fn round_f16(x: f32) -> f32 {
 
 /// Like [`apply_stage`] but simulates fp16: twiddles and butterfly outputs are
 /// rounded to f16 (compute stays f32 — matches f16-storage / f32-accumulate HW
-/// like the Apple Neural Engine).
+/// like the Neural Engine).
 pub(crate) fn apply_stage_f16(
     buf: &[f32],
     next: &mut [f32],

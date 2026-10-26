@@ -137,7 +137,10 @@ fn main() {
         cfg.deterministic,
         if multinode {
             if matches!(std::env::var("TOPOLOGY").as_deref(), Ok("iroh"))
-                || matches!(std::env::var("RLX_TRANSPORT").as_deref(), Ok("iroh"))
+                || matches!(
+                    rlx_ir::env::var_result("RLX_TRANSPORT").as_deref(),
+                    Ok("iroh")
+                )
             {
                 "multi-node over iroh (relays + discovery)"
             } else {

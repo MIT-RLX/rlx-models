@@ -1,0 +1,24 @@
+# Fish Audio Drama 3's host logic as an RLX program (WebAssembly): the
+# prompt (the crate's `drama3_text.rs` and `prompt.rs`), the backbone with
+# its routed experts, the tower with the crate's sampler (`sampling.rs`),
+# and the codec. Built by `rlx-fish`'s exporter, so it stands outside the
+# workspace.
+[package]
+name = "rlx-fish-drama3-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+anyhow = "1"
+
+# `prompt.rs`'s own tokenizer impls (the host tokenizes here).
+[features]
+tokenizer = []
+
+[workspace]

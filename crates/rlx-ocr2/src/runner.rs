@@ -153,23 +153,9 @@ impl Recognizer {
     }
 
     fn ctc_greedy(&self, logits: &[f32], seq: usize) -> String {
-        let mut out = String::new();
-        let mut prev = usize::MAX;
-        for t in 0..seq {
-            let row = &logits[t * NUM_CLASSES..(t + 1) * NUM_CLASSES];
-            let mut best = 0usize;
-            let mut best_v = row[0];
-            for (c, &v) in row.iter().enumerate().skip(1) {
-                if v > best_v {
-                    best_v = v;
-                    best = c;
-                }
-            }
-            if best != prev {
-                self.push_class(&mut out, best);
-            }
-            prev = best;
-        }
-        out
+        let path =
+            rlx_search::ctc::greedy(&logits[..seq * NUM_CLASSES], NUM_CLASSES, self.blank as u32);
+        let labels: Vec<usize> = path.tokens.iter().map(|t| t.id as usize).collect();
+        self.labels_to_string(&labels)
     }
 }

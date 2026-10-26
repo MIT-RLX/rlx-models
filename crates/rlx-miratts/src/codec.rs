@@ -94,7 +94,7 @@ impl MiraCodec {
             ("speech_tokens", &i64_bytes(&speech), DType::I64),
             ("context_tokens", &i32_bytes(&context), DType::I32),
         ]);
-        if std::env::var("RLX_MIRA_DBG").is_ok() {
+        if rlx_ir::env::var_result("RLX_MIRA_DBG").is_ok() {
             for (i, (b, dt)) in out.iter().enumerate() {
                 let elems = b.len() / if *dt == DType::F16 { 2 } else { 4 };
                 eprintln!("[mira-codec] out[{i}] elems={elems} dtype={dt:?}");
@@ -125,11 +125,15 @@ fn i32_bytes(v: &[i32]) -> Vec<u8> {
 fn bytes_to_f32(b: &[u8], dt: DType) -> Vec<f32> {
     match dt {
         DType::F16 => b
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]])))
             .collect(),
         _ => b
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     }

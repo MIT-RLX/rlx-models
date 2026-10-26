@@ -43,15 +43,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
-dependencies = [
- "derive_arbitrary",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -65,7 +56,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bench_matmul_relu"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "anyhow",
  "rlx-ir",
@@ -92,12 +83,6 @@ checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
 ]
-
-[[package]]
-name = "bumpalo"
-version = "3.20.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "bytemuck"
@@ -288,17 +273,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
-name = "derive_arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -307,17 +281,6 @@ dependencies = [
  "block-buffer",
  "crypto-common 0.1.7",
  "subtle",
-]
-
-[[package]]
-name = "displaydoc"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.3",
 ]
 
 [[package]]
@@ -401,12 +364,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hashbrown"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-
-[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -428,16 +385,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "707114b52a152fa7bdb290cd7cd5912d9467273b6d74e21b8d81aca1f8533f6b"
 dependencies = [
  "typenum",
-]
-
-[[package]]
-name = "indexmap"
-version = "2.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
-dependencies = [
- "equivalent",
- "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -510,10 +457,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "log"
-version = "0.4.32"
+name = "libm"
+version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "malloc_buf"
@@ -559,7 +506,7 @@ dependencies = [
  "half",
  "num-bigint",
  "py_literal",
- "zip 0.6.6",
+ "zip",
 ]
 
 [[package]]
@@ -756,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-autodiff"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "half",
  "rlx-fusion",
@@ -766,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-compile"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "rlx-autodiff",
  "rlx-fusion",
@@ -775,23 +722,27 @@ dependencies = [
 
 [[package]]
 name = "rlx-cpu"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "half",
+ "libm",
  "rayon",
  "rlx-gguf",
  "rlx-ir",
  "rlx-mlx-io",
  "rlx-opt",
+ "rlx-pocketfft",
+ "rlxsl",
  "strum_macros",
 ]
 
 [[package]]
 name = "rlx-cuda"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "bytemuck",
  "cudarc",
+ "half",
  "libloading 0.8.9",
  "rlx-cpu",
  "rlx-gguf",
@@ -806,19 +757,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlx-dduf"
-version = "0.2.16"
-dependencies = [
- "anyhow",
- "half",
- "safetensors",
- "serde_json",
- "zip 2.4.2",
-]
-
-[[package]]
 name = "rlx-driver"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "half",
  "rlx-ir",
@@ -826,14 +766,15 @@ dependencies = [
 
 [[package]]
 name = "rlx-fusion"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "rlx-ir",
+ "rlx-pocketfft",
 ]
 
 [[package]]
 name = "rlx-gguf"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -841,15 +782,16 @@ dependencies = [
  "libc",
  "memmap2",
  "rayon",
+ "rlx-ir",
 ]
 
 [[package]]
 name = "rlx-gpu-dispatch"
-version = "0.2.16"
+version = "0.2.19"
 
 [[package]]
 name = "rlx-gpu-host"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "bytemuck",
  "half",
@@ -862,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-gpu-kernels"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "rlx-gpu-dispatch",
  "rlx-ir",
@@ -871,10 +813,11 @@ dependencies = [
 
 [[package]]
 name = "rlx-ir"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "aes 0.9.2",
  "bincode",
+ "libm",
  "serde",
  "serde_json",
  "smallvec",
@@ -882,7 +825,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-macros"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -891,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-metal"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "bytemuck",
  "half",
@@ -910,7 +853,7 @@ dependencies = [
 
 [[package]]
 name = "rlx-mlx-io"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "anyhow",
  "half",
@@ -925,19 +868,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlx-nemo"
-version = "0.2.16"
-dependencies = [
- "anyhow",
- "flate2",
- "half",
- "rlx-ir",
- "serde_yaml",
-]
-
-[[package]]
 name = "rlx-opt"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "rlx-autodiff",
  "rlx-compile",
@@ -946,29 +878,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlx-pkg"
-version = "0.2.16"
-dependencies = [
- "anyhow",
- "bincode",
- "memmap2",
- "rayon",
- "rlx-dduf",
- "rlx-gguf",
- "rlx-ir",
- "rlx-mlx-io",
- "rlx-nemo",
- "serde",
- "serde_json",
- "serde_yaml",
- "xxhash-rust",
- "zip 2.4.2",
- "zstd 0.13.3",
-]
+name = "rlx-pocketfft"
+version = "0.2.19"
 
 [[package]]
 name = "rlx-runtime"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "anyhow",
  "half",
@@ -977,30 +892,32 @@ dependencies = [
  "rlx-compile",
  "rlx-cpu",
  "rlx-cuda",
- "rlx-dduf",
  "rlx-driver",
  "rlx-gguf",
  "rlx-gpu-dispatch",
  "rlx-ir",
  "rlx-macros",
  "rlx-metal",
- "rlx-mlx-io",
  "rlx-opt",
- "rlx-pkg",
+ "rlx-search",
  "serde",
  "serde_json",
 ]
 
 [[package]]
+name = "rlx-search"
+version = "0.2.19"
+
+[[package]]
 name = "rlx-unfuse"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "rlx-ir",
 ]
 
 [[package]]
 name = "rlxsl"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "rlx-ir",
 ]
@@ -1012,18 +929,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
-name = "ryu"
-version = "1.0.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
 name = "safetensors"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "675656c1eabb620b921efea4f9199f97fc86e36dd6ffd1fbbe48d0f59a4987f5"
 dependencies = [
- "hashbrown 0.16.1",
+ "hashbrown",
  "serde",
  "serde_json",
 ]
@@ -1069,19 +980,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
 ]
 
 [[package]]
@@ -1225,12 +1123,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1241,12 +1133,6 @@ name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
-
-[[package]]
-name = "xxhash-rust"
-version = "0.8.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
 
 [[package]]
 name = "zerocopy"
@@ -1285,24 +1171,7 @@ dependencies = [
  "pbkdf2",
  "sha1",
  "time",
- "zstd 0.11.2+zstd.1.5.2",
-]
-
-[[package]]
-name = "zip"
-version = "2.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
-dependencies = [
- "arbitrary",
- "crc32fast",
- "crossbeam-utils",
- "displaydoc",
- "flate2",
- "indexmap",
- "memchr",
- "thiserror",
- "zopfli",
+ "zstd",
 ]
 
 [[package]]
@@ -1312,33 +1181,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
-name = "zopfli"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249"
-dependencies = [
- "bumpalo",
- "crc32fast",
- "log",
- "simd-adler32",
-]
-
-[[package]]
 name = "zstd"
 version = "0.11.2+zstd.1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20cc960326ece64f010d2d2107537f26dc589a6573a316bd5b1dba685fa5fde4"
 dependencies = [
- "zstd-safe 5.0.2+zstd.1.5.2",
-]
-
-[[package]]
-name = "zstd"
-version = "0.13.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
-dependencies = [
- "zstd-safe 7.2.4",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -1348,15 +1196,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d2a5585e04f9eea4b2a3d1eca508c4dee9592a89ef6f450c11719da0726f4db"
 dependencies = [
  "libc",
- "zstd-sys",
-]
-
-[[package]]
-name = "zstd-safe"
-version = "7.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
-dependencies = [
  "zstd-sys",
 ]
 
@@ -1372,60 +1211,80 @@ dependencies = [
 
 [[patch.unused]]
 name = "rlx"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-collectives"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-distributed"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-flow"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-fpga"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-mlx"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-mlx-sys"
-version = "0.2.16"
+version = "0.2.19"
+
+[[patch.unused]]
+name = "rlx-nemo"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-onnx-import"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-opscope"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-optim"
-version = "0.2.16"
+version = "0.2.19"
+
+[[patch.unused]]
+name = "rlx-pkg"
+version = "0.2.19"
+
+[[patch.unused]]
+name = "rlx-program"
+version = "0.2.19"
+
+[[patch.unused]]
+name = "rlx-rng"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-rocm"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-tensor"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-text"
-version = "0.2.16"
+version = "0.2.19"
+
+[[patch.unused]]
+name = "rlx-torch-ckpt"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-vulkan"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-wgpu"
-version = "0.2.16"
+version = "0.2.19"

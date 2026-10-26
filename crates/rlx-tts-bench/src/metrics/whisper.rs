@@ -39,7 +39,7 @@ pub fn try_load_whisper() -> Option<WhisperState> {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         if whisper_ready(&p) {
             return Some(p);

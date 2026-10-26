@@ -34,7 +34,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("RLX_VOXTRAL_TTS_DIR")
+    rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
@@ -76,7 +76,11 @@ fn voxtral_tts_codec_decode_vllm_codes() {
         eprintln!("skip: set RLX_VOXTRAL_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_VOXTRAL_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_VOXTRAL_TTS_PARITY=1");
         return;
     }

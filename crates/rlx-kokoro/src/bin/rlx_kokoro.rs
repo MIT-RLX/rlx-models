@@ -103,7 +103,7 @@ fn run() -> Result<()> {
     }
 
     let data_dir = data
-        .or_else(|| std::env::var_os("RLX_KOKORO_DIR").map(PathBuf::from))
+        .or_else(|| rlx_ir::env::var_os("RLX_KOKORO_DIR").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(rlx_kokoro::DEFAULT_LOCAL_DIR));
 
     let device =

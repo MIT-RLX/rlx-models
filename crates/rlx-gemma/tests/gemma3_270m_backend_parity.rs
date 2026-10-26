@@ -4,7 +4,7 @@
 //! ```sh
 //! RLX_GEMMA3_GGUF=/tmp/rlx-weights/gemma-3-270m.gguf \
 //! cargo test -p rlx-gemma --test gemma3_270m_backend_parity \
-//!   --features apple-silicon --release -- --test-threads=1 --nocapture
+//!   --features macos-gpu --release -- --test-threads=1 --nocapture
 //! ```
 
 use rlx_gemma::GemmaRunner;
@@ -20,7 +20,9 @@ const HF_CHAT_IDS: &[u32] = &[
 const GREEDY_STEPS: usize = 16;
 
 fn weights() -> Option<PathBuf> {
-    std::env::var("RLX_GEMMA3_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_GEMMA3_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 
 fn greedy_on(device: Device) -> Vec<u32> {

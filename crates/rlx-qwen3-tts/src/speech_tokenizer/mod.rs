@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn decode_one_golden_frame() {
-        let dir = match std::env::var("RLX_QWEN3_TTS_DIR") {
+        let dir = match rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR") {
             Ok(d) => std::path::PathBuf::from(d),
             Err(_) => return,
         };

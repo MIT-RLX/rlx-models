@@ -220,7 +220,7 @@ impl RlxKyutaiTtsModel {
         // Same shape of trace as the eager reference in `model.rs`, so the two text heads can be
         // diffed step-for-step. The correct distribution is dominated by `pad` (3) and
         // `new_word` (0) with every real word token masked to ~-17.
-        if std::env::var_os("RLX_KYUTAI_TTS_TRACE").is_some() {
+        if rlx_ir::env::var_os("RLX_KYUTAI_TTS_TRACE").is_some() {
             let mut top: Vec<(usize, f32)> = text_logits.iter().copied().enumerate().collect();
             top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             eprintln!(

@@ -16,7 +16,7 @@
 //! Backend matrix: compiled HOCT score head on every available RLX device.
 //!
 //! ```sh
-//! cargo test -p rlx-hoct --test backend_parity --features apple-silicon --release
+//! cargo test -p rlx-hoct --test backend_parity --features macos-gpu --release
 //! just features=all-backends test-hoct-backends
 //! ```
 

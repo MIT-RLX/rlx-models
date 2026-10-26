@@ -40,6 +40,8 @@
 
 pub mod audio;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod frontend;
 #[cfg(feature = "rlx-graph")]
 pub mod graph;

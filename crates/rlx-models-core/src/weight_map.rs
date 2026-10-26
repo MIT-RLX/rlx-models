@@ -87,10 +87,24 @@ pub fn transpose_2d(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {
 /// Map of tensor name → (f32 data, shape).
 pub struct WeightMap {
     tensors: HashMap<String, (Vec<f32>, Vec<usize>)>,
+    /// The float dtype each tensor had on disk (safetensors loads record it),
+    /// for [`crate::weight_storage::WeightStorage::Auto`]. Empty for maps built
+    /// in memory.
+    stored: HashMap<String, rlx_ir::DType>,
+}
+
+/// A safetensors dtype as the rlx float dtype it widens from, if it is one.
+pub(crate) fn safetensors_float_dtype(d: safetensors::Dtype) -> Option<rlx_ir::DType> {
+    Some(match d {
+        safetensors::Dtype::F32 => rlx_ir::DType::F32,
+        safetensors::Dtype::F16 => rlx_ir::DType::F16,
+        safetensors::Dtype::BF16 => rlx_ir::DType::BF16,
+        _ => return None,
+    })
 }
 
 /// HF ↔ Hunyuan Q/K-norm name aliases (HY-MT `query_layernorm` / `key_layernorm`).
-fn hunyuan_norm_aliases(key: &str) -> Vec<String> {
+pub(crate) fn hunyuan_norm_aliases(key: &str) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(prefix) = key.strip_suffix("self_attn.q_norm.weight") {
         out.push(format!("{prefix}self_attn.query_layernorm.weight"));
@@ -126,7 +140,10 @@ impl WeightMap {
             let (data, shape) = loader.take(&key)?;
             tensors.insert(key, (data, shape));
         }
-        Ok(Self { tensors })
+        Ok(Self {
+            tensors,
+            stored: HashMap::new(),
+        })
     }
 
     /// Drain with policy; returns packed K-quants separately when the loader supports `take_packed`.
@@ -171,7 +188,13 @@ impl WeightMap {
             }
             _ => {}
         }
-        Ok((Self { tensors }, packed))
+        Ok((
+            Self {
+                tensors,
+                stored: HashMap::new(),
+            },
+            packed,
+        ))
     }
 
     /// Resolve a file or weights directory, then load (safetensors or GGUF).
@@ -207,28 +230,40 @@ impl WeightMap {
             safetensors::SafeTensors::deserialize(&data).with_context(|| "parsing safetensors")?;
 
         let mut tensors = HashMap::new();
+        let mut stored = HashMap::new();
         for (name, view) in st.tensors() {
             if exclude.contains(name.as_str()) {
                 continue;
+            }
+            if let Some(d) = safetensors_float_dtype(view.dtype()) {
+                stored.insert(name.to_string(), d);
             }
             let shape: Vec<usize> = view.shape().to_vec();
             let bytes = view.data();
             let f32_data = match view.dtype() {
                 safetensors::Dtype::F32 => bytes_to_f32_vec(bytes),
                 safetensors::Dtype::F16 => bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
                     .collect(),
                 safetensors::Dtype::BF16 => bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| half::bf16::from_le_bytes([c[0], c[1]]).to_f32())
                     .collect(),
                 safetensors::Dtype::I64 => bytes
-                    .chunks_exact(8)
-                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f32)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| i64::from_le_bytes(*c) as f32)
                     .collect(),
                 safetensors::Dtype::I32 => bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
                     .collect(),
                 safetensors::Dtype::C64 => {
@@ -243,7 +278,28 @@ impl WeightMap {
             tensors.insert(name.to_string(), (f32_data, shape));
         }
 
-        Ok(Self { tensors })
+        Ok(Self { tensors, stored })
+    }
+
+    /// The float dtype `key` had on disk, when this map was loaded from a file.
+    pub fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        self.stored.get(key).copied()
+    }
+
+    /// Attach recorded on-disk dtypes (runners that cache weights as f32 and
+    /// rebuild maps per graph keep the dtypes beside the cache).
+    pub fn with_stored_dtypes(mut self, dtypes: &HashMap<String, rlx_ir::DType>) -> Self {
+        for k in self.tensors.keys() {
+            if let Some(&d) = dtypes.get(k) {
+                self.stored.insert(k.clone(), d);
+            }
+        }
+        self
+    }
+
+    /// Record `key`'s on-disk dtype (loaders that build a map themselves).
+    pub fn set_stored_dtype(&mut self, key: impl Into<String>, dtype: rlx_ir::DType) {
+        self.stored.insert(key.into(), dtype);
     }
 
     /// Take a tensor by name (removes from map). Returns (data, shape).
@@ -283,6 +339,15 @@ impl WeightMap {
             .any(|alt| self.tensors.contains_key(&alt))
     }
 
+    /// Take every remaining tensor, leaving the map empty.
+    ///
+    /// 63 model crates spelled this as `for k in keys { p.insert(k, wm.take(&k)?) }`
+    /// (some as `if let Ok(v) = wm.take(&k)`, which can never skip: a key from
+    /// [`Self::keys`] is always present); this is the same drain.
+    pub fn take_all(&mut self) -> HashMap<String, (Vec<f32>, Vec<usize>)> {
+        std::mem::take(&mut self.tensors)
+    }
+
     /// List all keys.
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.tensors.keys().map(|s| s.as_str())
@@ -298,7 +363,10 @@ impl WeightMap {
 
     /// Create from pre-built HashMap (for testing without safetensors files).
     pub fn from_tensors(tensors: HashMap<String, (Vec<f32>, Vec<usize>)>) -> Self {
-        Self { tensors }
+        Self {
+            tensors,
+            stored: HashMap::new(),
+        }
     }
 
     /// Add (or replace) a tensor. For checkpoint preprocessors that synthesize
@@ -333,6 +401,7 @@ impl WeightMap {
     /// Load and merge every `*.safetensors` file in `dir` (e.g. HF `text_encoder/`).
     pub fn from_safetensors_dir(dir: &Path) -> Result<Self> {
         let mut merged = HashMap::new();
+        let mut stored = HashMap::new();
         let mut any = false;
         for entry in std::fs::read_dir(dir).with_context(|| format!("read_dir {dir:?}"))? {
             let entry = entry?;
@@ -347,12 +416,16 @@ impl WeightMap {
             for (k, v) in part.tensors {
                 merged.insert(k, v);
             }
+            stored.extend(part.stored);
             any = true;
         }
         if !any {
             anyhow::bail!("no .safetensors files in {dir:?}");
         }
-        Ok(Self { tensors: merged })
+        Ok(Self {
+            tensors: merged,
+            stored,
+        })
     }
 
     /// Rename keys in-place (e.g. strip `model.` HuggingFace prefix).
@@ -363,7 +436,11 @@ impl WeightMap {
         let keys: Vec<String> = self.tensors.keys().cloned().collect();
         for old in keys {
             if let Some(v) = self.tensors.remove(&old) {
+                let dt = self.stored.remove(&old);
                 let new = f(old);
+                if let Some(d) = dt {
+                    self.stored.insert(new.clone(), d);
+                }
                 self.tensors.insert(new, v);
             }
         }
@@ -416,7 +493,9 @@ pub(crate) fn bytes_to_f32_vec(bytes: &[u8]) -> Vec<f32> {
         f32s.to_vec()
     } else {
         bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
     }
@@ -482,6 +561,7 @@ mod tests {
                 "w".to_string(),
                 (vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]),
             )]),
+            stored: HashMap::new(),
         };
         let (data, shape) = wm.take_transposed("w").unwrap();
         assert_eq!(shape, vec![3, 2]);

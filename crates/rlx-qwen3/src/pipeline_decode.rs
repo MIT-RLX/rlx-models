@@ -134,6 +134,7 @@ fn build_block_seed(
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
         mask: crate::builder::attn_mask_kind(cfg),
+        moe: None,
     };
     let sink = SideOutputs::new();
 
@@ -207,6 +208,7 @@ fn build_block_decode(
         batch,
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
+        moe: None,
     };
     let kv_out = SideOutputs::new();
 

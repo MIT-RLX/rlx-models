@@ -237,7 +237,10 @@ impl CpEagerModel {
         ensure!(h == self.hidden);
         let start_pos = self.past_len;
         let mut x = embeds.to_owned();
-        let layerdbg = std::env::var("RLX_QWEN3_TTS_CP_LAYERDBG").ok().as_deref() == Some("1");
+        let layerdbg = rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_LAYERDBG")
+            .ok()
+            .as_deref()
+            == Some("1");
         for (li, layer) in self.layers.iter().enumerate() {
             x = layer.forward(
                 x.view(),
@@ -462,14 +465,22 @@ impl CpEagerModel {
         self.reset_kv();
         let e0 = talker_codec.row(group0 as usize);
         self.forward_prefill_two(talker_hidden, e0)?;
-        if std::env::var("RLX_QWEN3_TTS_CP_LAYERDBG").ok().as_deref() == Some("1") {
+        if rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_LAYERDBG")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
             eprintln!(
                 "embeds[0,:8] = {:?}",
                 talker_hidden.iter().take(8).collect::<Vec<_>>()
             );
             eprintln!("embeds[1,:8] = {:?}", e0.iter().take(8).collect::<Vec<_>>());
         }
-        if std::env::var("RLX_QWEN3_TTS_CP_LAYERDBG").ok().as_deref() == Some("1") {
+        if rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_LAYERDBG")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
             eprintln!(
                 "cp eager hs[-1,:8] = {:?}",
                 self.last_hidden.iter().take(8).collect::<Vec<_>>()
@@ -1039,7 +1050,10 @@ fn load_layer(map: &HashMap<String, (Vec<f32>, Vec<usize>)>, i: usize) -> Result
 }
 
 fn cp_bf16_enabled() -> bool {
-    std::env::var("RLX_QWEN3_TTS_CP_BF16").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_BF16")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// BF16-weight × F32-input matvec via NEON `vshll_n_u16`. Output is F32.
@@ -1358,7 +1372,7 @@ mod forward_one_tests {
 
     #[test]
     fn forward_one_matches_forward_on_single_token() {
-        let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR")
+        let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
             .ok()
             .map(std::path::PathBuf::from)
         else {

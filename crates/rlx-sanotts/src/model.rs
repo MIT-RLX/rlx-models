@@ -32,7 +32,7 @@ use crate::voicepack::TensorStore;
 
 /// Fallback id for phonemes outside a component's trained vocab. Schwa is a
 /// neutral, always-in-vocab choice — the same fallback the ESP32/WASM ports use.
-const SCHWA_FALLBACK_ID: i64 = 59;
+pub const SCHWA_FALLBACK_ID: i64 = 59;
 
 /// Residual-bank dilations per branch. (Kernel sizes come from the weights.)
 const BANK_DIL1: [usize; 3] = [1, 2, 3];

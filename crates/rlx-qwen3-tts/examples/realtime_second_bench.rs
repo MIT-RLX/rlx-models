@@ -16,10 +16,10 @@
 //! Metal latency check: warm session → stream until 1 s PCM is emitted.
 //!
 //! Target: `StreamConfig::realtime_second()` delivers 1 s of audio in ≤ 1.2 s
-//! wall on a warm Apple Silicon Metal session.
+//! wall on a warm macOS arm64 Metal session.
 //!
 //! ```sh
-//! cargo run --release -p rlx-qwen3-tts --features apple-silicon \
+//! cargo run --release -p rlx-qwen3-tts --features macos-gpu \
 //!   --example realtime_second_bench
 //! ```
 //!
@@ -38,7 +38,7 @@ const TARGET: &str = "Count one two three four five six seven eight nine ten.";
 const STRETCH_BUDGET: f64 = 1.2;
 
 fn model_dir() -> PathBuf {
-    std::env::var("RLX_QWEN3_TTS_DIR")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base"))
 }
@@ -82,7 +82,7 @@ fn stream_until_one_sec(
 }
 
 fn budget_secs() -> f64 {
-    std::env::var("RLX_QWEN3_TTS_REALTIME_BUDGET")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_REALTIME_BUDGET")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3.0)
@@ -148,7 +148,7 @@ fn main() -> Result<()> {
         m.to_one_sec
     );
 
-    if std::env::var("RLX_QWEN3_TTS_REALTIME_ASSERT")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_REALTIME_ASSERT")
         .ok()
         .as_deref()
         == Some("1")

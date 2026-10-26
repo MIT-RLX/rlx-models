@@ -35,7 +35,8 @@ pub fn make(device: Device) -> Result<Box<dyn TtsAdapter>> {
         .device(device)
         .build()
         .context("load voxtral-tts")?;
-    let voice = std::env::var("RLX_VOXTRAL_VOICE").unwrap_or_else(|_| "neutral_female".into());
+    let voice =
+        rlx_ir::env::var_result("RLX_VOXTRAL_VOICE").unwrap_or_else(|_| "neutral_female".into());
     Ok(Box::new(VoxtralAdapter { inner, dir, voice }))
 }
 

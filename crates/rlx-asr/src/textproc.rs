@@ -316,7 +316,7 @@ impl Hammer {
                 match Fst::from_bytes(&data) {
                     Ok(f) => fsts.push(f),
                     Err(e) => {
-                        if std::env::var_os("RLX_ASR_FST_DEBUG").is_some() {
+                        if rlx_ir::env::var_os("RLX_ASR_FST_DEBUG").is_some() {
                             eprintln!("[rlx-asr] skip FST {stem}: {e:#}");
                         }
                     }

@@ -20,7 +20,7 @@
 //! exactly so the same `lmz/candle-sam` safetensors checkpoint loads
 //! without remapping.
 
-use super::config::{SAM_EMBED_HW, SAM_IMG_SIZE, SAM_PROMPT_EMBED_DIM};
+use super::config::{SAM_EMBED_HW, SAM_PROMPT_EMBED_DIM};
 use super::prompt_mask_ir::SamPromptMaskCompiled;
 use anyhow::{Result, ensure};
 use rlx_core::weight_map::WeightMap;
@@ -56,6 +56,18 @@ pub struct PromptEncoderWeights {
     pub embed_dim: usize,
     /// `mask_in_chans` from candle's `Sam::new` (= 16 for ViT-B).
     pub mask_in_chans: usize,
+}
+
+impl PromptEncoderWeights {
+    /// What the point and box embeddings read ([`super::points`]).
+    pub fn points(&self) -> super::points::PointWeights<'_> {
+        super::points::PointWeights {
+            embed_dim: self.embed_dim,
+            pe_gaussian: &self.pe_gaussian,
+            not_a_point_embed: &self.not_a_point_embed,
+            point_embeddings: &self.point_embeddings,
+        }
+    }
 }
 
 pub(super) fn extract_prompt_encoder_weights(
@@ -162,42 +174,8 @@ pub fn prompt_encoder_forward(
     let hw = SAM_EMBED_HW;
 
     // ── Sparse embeddings ─────────────────────────────────────────
-    let pad_points = boxes.is_none();
-    let mut sparse = Vec::new();
-
-    if let Some((coords, labels)) = points {
-        let n = labels.len();
-        ensure!(
-            coords.len() == n * 2,
-            "points coords len {} ≠ N·2 ({}·2)",
-            coords.len(),
-            n
-        );
-        // Candle adds 0.5 to point coords.
-        let mut pts: Vec<f32> = coords.iter().map(|c| c + 0.5).collect();
-        let mut lbls = labels.to_vec();
-        if pad_points {
-            // Pad with a single "not-a-point" sentinel (label -1).
-            pts.push(0.0);
-            pts.push(0.0);
-            lbls.push(-1.0);
-        }
-        let n_padded = lbls.len();
-        let emb = embed_points_and_boxes(w, &pts, n_padded, /*is_box=*/ false, Some(&lbls))?;
-        sparse.extend_from_slice(&emb);
-    }
-    if let Some(box_coords) = boxes {
-        let m = box_coords.len() / 4;
-        ensure!(box_coords.len() == m * 4, "boxes len must be multiple of 4");
-        let coords_with_half: Vec<f32> = box_coords.iter().map(|c| c + 0.5).collect();
-        let emb = embed_points_and_boxes(w, &coords_with_half, m * 2, /*is_box=*/ true, None)?;
-        sparse.extend_from_slice(&emb);
-    }
-    let num_sparse_tokens = if sparse.is_empty() {
-        0
-    } else {
-        sparse.len() / e
-    };
+    let sparse = super::points::sparse_embeddings(&w.points(), points, boxes)?;
+    let num_sparse_tokens = sparse.len() / e;
 
     // ── Dense embeddings ──────────────────────────────────────────
     let dense_embeddings = match masks {
@@ -215,7 +193,7 @@ pub fn prompt_encoder_forward(
     };
 
     // ── Image PE: random-Fourier encoding of a hw·hw normalized grid ──
-    let image_pe = compute_image_pe(w, hw, hw);
+    let image_pe = super::points::image_pe(&w.points(), hw, hw);
 
     Ok(PromptEncoderOutput {
         sparse_embeddings: sparse,
@@ -223,102 +201,6 @@ pub fn prompt_encoder_forward(
         dense_embeddings,
         image_pe,
     })
-}
-
-/// Random-Fourier positional encoding for a `(h, w)` grid.
-/// Output shape `[embed_dim, h, w]`.
-fn compute_image_pe(w: &PromptEncoderWeights, h: usize, ww: usize) -> Vec<f32> {
-    let e = w.embed_dim;
-    let half = e / 2;
-    let mut out = vec![0f32; e * h * ww];
-    // For each (y, x) cell, normalize to (x+0.5)/w, (y+0.5)/h, then map
-    // through the Gaussian + sin/cos pe_encoding.
-    for y in 0..h {
-        let fy = (y as f32 + 0.5) / h as f32;
-        for x in 0..ww {
-            let fx = (x as f32 + 0.5) / ww as f32;
-            // Candle's pe_encoding: coords = 2*coords - 1, then @ M, then *2π
-            let cx = fx * 2.0 - 1.0;
-            let cy = fy * 2.0 - 1.0;
-            // [cx, cy] @ gaussian [2, half]  → [half]
-            for k in 0..half {
-                let mut acc = cx * w.pe_gaussian[k] + cy * w.pe_gaussian[half + k];
-                acc *= 2.0 * std::f32::consts::PI;
-                out[k * h * ww + y * ww + x] = acc.sin();
-                out[(half + k) * h * ww + y * ww + x] = acc.cos();
-            }
-        }
-    }
-    out
-}
-
-/// Apply the Gaussian + sin/cos PE to arbitrary `[N, 2]` coords already
-/// in `[0, 1]` (or with extra padding columns that are passed through
-/// unchanged via the candle convention). Returns `[N, embed_dim]`.
-fn pe_encode_normalized(w: &PromptEncoderWeights, coords: &[f32], n: usize) -> Vec<f32> {
-    let e = w.embed_dim;
-    let half = e / 2;
-    let mut out = vec![0f32; n * e];
-    for i in 0..n {
-        let cx = coords[i * 2] * 2.0 - 1.0;
-        let cy = coords[i * 2 + 1] * 2.0 - 1.0;
-        for k in 0..half {
-            let mut acc = cx * w.pe_gaussian[k] + cy * w.pe_gaussian[half + k];
-            acc *= 2.0 * std::f32::consts::PI;
-            out[i * e + k] = acc.sin();
-            out[i * e + half + k] = acc.cos();
-        }
-    }
-    out
-}
-
-/// Embed N points or N boxes (each box becomes 2 corner points).
-///
-/// For points: applies labels to add per-label embeddings.
-/// For boxes: adds `point_embeddings[2]` to first corner, `[3]` to second.
-fn embed_points_and_boxes(
-    w: &PromptEncoderWeights,
-    coords_in_pixels: &[f32], // [n*2]
-    n: usize,
-    is_box: bool,
-    labels: Option<&[f32]>,
-) -> Result<Vec<f32>> {
-    let e = w.embed_dim;
-    // Normalize pixel coords to [0,1] using SAM_IMG_SIZE.
-    let img = SAM_IMG_SIZE as f32;
-    let normed: Vec<f32> = coords_in_pixels.iter().map(|c| c / img).collect();
-    let mut emb = pe_encode_normalized(w, &normed, n);
-
-    if is_box {
-        // Box: 2 corners per box. Alternate [2], [3] per pair.
-        for i in 0..n {
-            let pe_idx = if i % 2 == 0 { 2 } else { 3 };
-            for k in 0..e {
-                emb[i * e + k] += w.point_embeddings[pe_idx * e + k];
-            }
-        }
-    } else if let Some(lbls) = labels {
-        ensure!(lbls.len() == n, "labels len {} ≠ n {n}", lbls.len());
-        for i in 0..n {
-            let label = lbls[i];
-            if label < 0.0 {
-                // "not-a-point" padding token replaces the PE entirely.
-                for k in 0..e {
-                    emb[i * e + k] = w.not_a_point_embed[k];
-                }
-            } else if label == 0.0 {
-                for k in 0..e {
-                    emb[i * e + k] += w.point_embeddings[k];
-                }
-            } else {
-                // label == 1.0 (foreground)
-                for k in 0..e {
-                    emb[i * e + k] += w.point_embeddings[e + k];
-                }
-            }
-        }
-    }
-    Ok(emb)
 }
 
 /// Mask downscaling: Conv(k=2, s=2) → LN2d → GELU → Conv(k=2, s=2)

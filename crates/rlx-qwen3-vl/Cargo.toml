@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Qwen3-VL runner for RLX — text path works (dense or MoE LM); vision tower incomplete (no 2x2 patch merge or deepstack)"
+description = "Qwen3-VL for RLX — the runner's text path works (dense or MoE LM), its vision tower is incomplete; `export` writes a full dense package (vision tower, deepstack, multimodal RoPE)"
 keywords.workspace = true
 categories.workspace = true
 
@@ -28,6 +28,14 @@ serde_json = { workspace = true }
 
 [features]
 default = []
+# `export::export_rlxp`: a checkpoint as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-qwen3/export"]
+metal = ["rlx-runtime/metal"]
+
+[dev-dependencies]
+# The export test opens the package as any rlx program does.
+rlx-text = { workspace = true }
+tempfile = "3"
 
 [lints]
 workspace = true

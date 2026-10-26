@@ -402,13 +402,17 @@ mod tests {
             safetensors::tensor::Dtype::I8 => t.data().iter().map(|&b| b as i8 as i32).collect(),
             safetensors::tensor::Dtype::I64 => t
                 .data()
-                .chunks_exact(8)
-                .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as i32)
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| i64::from_le_bytes(*c) as i32)
                 .collect(),
             safetensors::tensor::Dtype::F32 => t
                 .data()
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()).round() as i32)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c).round() as i32)
                 .collect(),
             _ => vec![0],
         }

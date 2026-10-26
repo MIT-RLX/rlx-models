@@ -1129,7 +1129,7 @@ pub fn read_e2e_json(path: &std::path::Path) -> Result<E2eBenchReport> {
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
-/// Merge multiple device-specific e2e reports (e.g. Apple Silicon + CUDA rig) into one table/HTML.
+/// Merge multiple device-specific e2e reports (e.g. macOS arm64 + CUDA rig) into one table/HTML.
 pub fn merge_e2e_reports(reports: &[E2eBenchReport]) -> Result<E2eBenchReport> {
     ensure!(!reports.is_empty(), "merge_e2e_reports: empty input");
     let mut merged = reports[0].clone();

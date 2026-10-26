@@ -35,7 +35,7 @@ EXEMPT_EXACT = {
     "rlx-assets", "rlx-vision", "rlx-text", "rlx-audio-blocks", "rlx-tune",
     "rlx-pkg", "rlx-embed", "rlx-guardrails", "rlx-llama-base", "rlx-vlm-base",
     "rlx-model-hub", "rlx-openai", "rlx-protocol", "rlx-onnx-decompose",
-    "rlx-quant-calib", "rlx-sam-ir", "rlx-fft", "rlx-ssm",
+    "rlx-quant-calib", "rlx-sam-ir", "rlx-fft", "rlx-ssm", "rlx-models-plugin",
 }
 EXEMPT_PREFIX = ("bench_", "kitten_")
 

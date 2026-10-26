@@ -73,7 +73,9 @@ fn read_npy_f32(path: &Path) -> Result<Vec<f32>> {
         "{path:?}: expected <f4 dtype, header={hdr}"
     );
     Ok(b[data_start..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }

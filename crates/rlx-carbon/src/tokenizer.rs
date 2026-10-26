@@ -21,7 +21,7 @@
 //! ids at the DNA boundary (`dna_start_id`) and dispatching each run to the
 //! matching detokenizer.
 
-use crate::dna_config::{DnaConfig, parse_dna_region, split_by_dna_tags};
+use crate::dna_config::DnaConfig;
 use anyhow::{Context, Result};
 use std::path::Path;
 use tokenizers::Tokenizer;
@@ -99,106 +99,40 @@ impl HybridDnaTokenizer {
     /// the input has no `<dna>` tag, the whole input is treated as one DNA
     /// region (`<dna>…</dna>`). `None` uses the config default.
     pub fn encode_opt(&self, text: &str, auto_dna_tags: Option<bool>) -> Result<Vec<u32>> {
-        let use_auto = auto_dna_tags.unwrap_or(self.dna.auto_dna_tags);
-        let wrapped;
-        let text = if use_auto && !text.contains("<dna>") {
-            wrapped = format!("<dna>{text}</dna>");
-            wrapped.as_str()
-        } else {
-            text
-        };
-
-        let mut ids = Vec::new();
-        for (content, is_dna) in split_by_dna_tags(text) {
-            if is_dna {
-                let region = parse_dna_region(&content);
-                if region.has_start {
-                    ids.push(self.dna.begin_id());
-                }
-                if !region.content.is_empty() {
-                    ids.extend(self.dna.process_dna_sequence_ids(&region.content));
-                }
-                if region.has_end {
-                    ids.push(self.dna.end_id());
-                }
-            } else {
-                let enc = self
-                    .base
-                    .encode(content.as_str(), false)
-                    .map_err(|e| anyhow::anyhow!("base BPE encode: {e}"))?;
-                ids.extend_from_slice(enc.get_ids());
-            }
-        }
-        Ok(ids)
+        let auto = auto_dna_tags.unwrap_or(self.dna.auto_dna_tags);
+        crate::hybrid::encode(&Base(&self.base), &self.dna, text, auto)
     }
 
     /// Decode token ids to text, dispatching DNA ids to the 6-mer table and
     /// base ids to the Qwen3 BPE. Mirrors `HybridDNATokenizer.decode`.
     pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> Result<String> {
-        // Python drops eos/pad up front when skipping specials.
-        let filtered: Vec<u32>;
-        let ids: &[u32] = if skip_special_tokens {
-            filtered = ids
-                .iter()
-                .copied()
-                .filter(|&t| t != self.eos_id && t != self.pad_id)
-                .collect();
-            &filtered
-        } else {
-            ids
-        };
+        crate::hybrid::decode(
+            &Base(&self.base),
+            &self.dna,
+            ids,
+            skip_special_tokens,
+            self.eos_id,
+            self.pad_id,
+        )
+    }
+}
 
-        let begin = self.dna.begin_id();
-        let end = self.dna.end_id();
-        let oov = self.dna.oov_id();
+/// The base Qwen3 BPE, as [`crate::hybrid`] reads it.
+struct Base<'a>(&'a Tokenizer);
 
-        let mut out = String::new();
-        let mut i = 0;
-        while i < ids.len() {
-            let tid = ids[i];
-            if tid == begin {
-                i += 1;
-                let mut dna_seq = String::new();
-                while i < ids.len() && ids[i] != end {
-                    if let Some(tok) = self.dna.id_to_dna_token(ids[i]) {
-                        dna_seq.push_str(&tok);
-                    }
-                    i += 1;
-                }
-                if skip_special_tokens {
-                    out.push_str(&dna_seq);
-                } else {
-                    out.push_str("<dna>");
-                    out.push_str(&dna_seq);
-                    if i < ids.len() && ids[i] == end {
-                        out.push_str("</dna>");
-                        i += 1;
-                    }
-                }
-            } else if self.dna.is_dna_id(tid) {
-                let is_special = tid == begin || tid == end || tid == oov;
-                if !(skip_special_tokens && is_special) {
-                    if let Some(tok) = self.dna.id_to_dna_token(tid) {
-                        out.push_str(&tok);
-                    }
-                }
-                i += 1;
-            } else {
-                let start = i;
-                while i < ids.len() && !self.dna.is_dna_id(ids[i]) {
-                    i += 1;
-                }
-                let text_ids = &ids[start..i];
-                if !text_ids.is_empty() {
-                    let s = self
-                        .base
-                        .decode(text_ids, skip_special_tokens)
-                        .map_err(|e| anyhow::anyhow!("base BPE decode: {e}"))?;
-                    out.push_str(&s);
-                }
-            }
-        }
-        Ok(out)
+impl crate::hybrid::Bpe for Base<'_> {
+    fn encode(&self, text: &str) -> Result<Vec<u32>> {
+        let enc = self
+            .0
+            .encode(text, false)
+            .map_err(|e| anyhow::anyhow!("base BPE encode: {e}"))?;
+        Ok(enc.get_ids().to_vec())
+    }
+
+    fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> Result<String> {
+        self.0
+            .decode(ids, skip_special_tokens)
+            .map_err(|e| anyhow::anyhow!("base BPE decode: {e}"))
     }
 }
 

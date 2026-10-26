@@ -41,7 +41,7 @@ impl HybridOptimizer {
         // Newton–Schulz iteration count (default 5, the published value). Fewer
         // iterations = fewer small matmuls per weight = cheaper optimizer step,
         // at the cost of a less-orthogonal update. `RLX_TS_NS_STEPS` overrides.
-        let ns_steps: u32 = std::env::var("RLX_TS_NS_STEPS")
+        let ns_steps: u32 = rlx_ir::env::var_result("RLX_TS_NS_STEPS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(5);
@@ -51,7 +51,7 @@ impl HybridOptimizer {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let shards: usize = std::env::var("RLX_TS_MUON_SHARDS")
+        let shards: usize = rlx_ir::env::var_result("RLX_TS_MUON_SHARDS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(cores.min(8))
@@ -78,7 +78,7 @@ impl HybridOptimizer {
         // small from-scratch model on the larger BPE vocab (NaNs even with z-loss +
         // trust-cap). `RLX_TS_NO_MUON=1` routes everything to AdamW — matching
         // rlx-tiny's all-AdamW recipe for a like-for-like optimizer comparison.
-        if std::env::var("RLX_TS_NO_MUON").as_deref() == Ok("1") {
+        if rlx_ir::env::var_result("RLX_TS_NO_MUON").as_deref() == Ok("1") {
             return false;
         }
         shape.len() == 2 && !name.starts_with("wte") && !name.starts_with("wpe")
@@ -159,7 +159,7 @@ impl Optimizer for HybridOptimizer {
         let k = self.muon.len().min(n.max(1));
         let force_serial = k <= 1
             && !muon_items.is_empty()
-            && std::env::var("RLX_TS_OPT_OVERLAP").as_deref() != Ok("1");
+            && rlx_ir::env::var_result("RLX_TS_OPT_OVERLAP").as_deref() != Ok("1");
         if force_serial {
             // K=1, overlap off → original serial behavior, no threads.
             for it in muon_items.iter_mut() {
@@ -223,7 +223,7 @@ fn l2(x: &[f32]) -> f32 {
 /// coherently until the attention softmax overflowed to NaN (~step 400); 0.02/0.01
 /// train cleanly at the same quality. So Muon works by default (no `RLX_TS_NO_MUON`).
 fn trust_rho() -> f32 {
-    std::env::var("RLX_TS_TRUST_RHO")
+    rlx_ir::env::var_result("RLX_TS_TRUST_RHO")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.02)

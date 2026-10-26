@@ -15,26 +15,21 @@ use rlx_runtime::Device;
 /// `RLX_COREML_UNITS`. Idempotent.
 pub fn ensure_coreml_units_for_tts() {
     static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        match std::env::var("RLX_COREML_UNITS") {
-            Ok(v) if !v.is_empty() => {
-                eprintln!(
-                    "[tiny-tts] CoreML: honoring RLX_COREML_UNITS={v} \
+    ONCE.call_once(|| match rlx_ir::env::var_result("RLX_COREML_UNITS") {
+        Ok(v) if !v.is_empty() => {
+            eprintln!(
+                "[tiny-tts] CoreML: honoring RLX_COREML_UNITS={v} \
                      (Neural-Engine BNNS can SIGSEGV on large TTS graphs — \
                      prefer gpu|all if you hit crashes)"
-                );
-            }
-            _ => {
-                // SAFETY: set once at first Ane compile, before CoreML loads models.
-                unsafe {
-                    std::env::set_var("RLX_COREML_UNITS", "gpu");
-                }
-                eprintln!(
-                    "[tiny-tts] CoreML: set RLX_COREML_UNITS=gpu \
+            );
+        }
+        _ => {
+            rlx_ir::env::set("RLX_COREML_UNITS", "gpu");
+            eprintln!(
+                "[tiny-tts] CoreML: set RLX_COREML_UNITS=gpu \
                      (pins f16 TTS graphs off Neural-Engine BNNS; \
                       fp32 already defaults to CPU+GPU in rlx-coreml)"
-                );
-            }
+            );
         }
     });
 }
@@ -54,7 +49,7 @@ pub fn resolve_tts_device(requested: Device) -> Device {
 /// Tag for AOT cache keys so a change of compute units does not reuse a package
 /// finalized under a different policy.
 pub fn coreml_units_cache_tag() -> String {
-    match std::env::var("RLX_COREML_UNITS") {
+    match rlx_ir::env::var_result("RLX_COREML_UNITS") {
         Ok(v) if !v.is_empty() => format!("_cml{v}"),
         _ => "_cmlgpu".into(), // matches the default we install above
     }

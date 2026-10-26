@@ -40,7 +40,7 @@ pub const CONFIG_FILE: &str = "config.json";
 
 /// Default `.cache/…` path for the env-default checkpoint.
 pub fn default_kyutai_tts_dir() -> PathBuf {
-    std::env::var("RLX_KYUTAI_TTS_DIR")
+    rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| KyutaiTtsCheckpoint::from_env_or_default().default_cache_dir())
 }
@@ -52,7 +52,7 @@ pub fn default_mimi_dir() -> PathBuf {
 
 /// Default cache for `kyutai/tts-voices` embeddings.
 pub fn default_voices_dir() -> PathBuf {
-    std::env::var("RLX_KYUTAI_TTS_VOICES_DIR")
+    rlx_ir::env::var_result("RLX_KYUTAI_TTS_VOICES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/kyutai-tts-voices"))
 }

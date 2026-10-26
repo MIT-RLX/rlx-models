@@ -46,7 +46,11 @@ impl StateDict {
         // Locate <prefix>data.pkl
         let mut pkl_name = None;
         for i in 0..zip.len() {
-            let name = zip.by_index(i)?.name().to_string();
+            let name = zip
+                .by_index(i)?
+                .name()
+                .with_context(|| format!("zip index {i} name"))?
+                .to_string();
             if name.ends_with("data.pkl") {
                 pkl_name = Some(name);
                 break;

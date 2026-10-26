@@ -28,8 +28,8 @@ fn main() -> anyhow::Result<()> {
         "RLX_QWEN3_BAKE_WEIGHTS",
         "RLX_QWEN3_GQA_NATIVE",
     ] {
-        if std::env::var_os(k).is_none() {
-            unsafe { std::env::set_var(k, "1") };
+        if rlx_ir::env::read_os(k).is_none() {
+            rlx_ir::env::set(k, "1");
         }
     }
     let store_on = std::env::var("STORE").ok().as_deref() == Some("1");
@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
         let dir = std::env::temp_dir().join("rlx_splice_store");
         let _ = std::fs::remove_dir_all(&dir);
         let envn = |k: &str, d: usize| {
-            std::env::var(k)
+            rlx_ir::env::read(k)
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(d)

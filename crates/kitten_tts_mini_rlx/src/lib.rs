@@ -67,10 +67,16 @@ pub use opts::GraphOptions;
 pub use seq_cache::{CachedSeqGraphs, SeqGraphCache};
 pub use weights::{load_weights, native_weights_available, resolve_weights_file};
 
-/// Set a process environment variable (Rust 2024 `set_var` wrapper).
+/// Set a variable: `RLX_*` through `rlx_ir::env` (where every `RLX_*` read
+/// looks), anything else (`KITTEN_*`) in the process environment.
 pub fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
-    // SAFETY: compile paths and tests set env before graph build / worker threads.
-    unsafe { std::env::set_var(key, value) }
+    let k = key.as_ref().to_string_lossy();
+    if k.starts_with("RLX_") {
+        rlx_ir::env::set(&*k, value.as_ref().to_string_lossy());
+    } else {
+        // SAFETY: compile paths and tests set env before graph build / worker threads.
+        unsafe { std::env::set_var(key, value) }
+    }
 }
 
 #[cfg(feature = "native")]

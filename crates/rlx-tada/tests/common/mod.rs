@@ -25,7 +25,7 @@ use std::str::FromStr;
 /// how a backend that quietly computes something else gets caught at the
 /// component that does it rather than at the waveform.
 pub fn device() -> Device {
-    match std::env::var("RLX_TADA_TEST_DEVICE") {
+    match rlx_ir::env::var_result("RLX_TADA_TEST_DEVICE") {
         Ok(name) if !name.is_empty() => {
             Device::from_str(&name).unwrap_or_else(|e| panic!("bad RLX_TADA_TEST_DEVICE: {e}"))
         }

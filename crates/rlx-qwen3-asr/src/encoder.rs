@@ -250,6 +250,27 @@ pub fn build_encoder_built(
     weights: &mut WeightMap,
     geom: &AudioGeometry,
 ) -> Result<rlx_flow::BuiltModel> {
+    build_encoder(cfg, weights, geom, false)
+}
+
+/// [`build_encoder_built`] with the attention windows an input: `"window"`
+/// `[num_audio_tokens]`, each token's window index (as f32), its bias
+/// `−1e9 · (wᵢ − wⱼ)²` computed in the graph (0 within a window) — one graph
+/// for any windowing, as a package runs it.
+pub fn build_encoder_windowed(
+    cfg: &AudioEncoderConfig,
+    weights: &mut WeightMap,
+    geom: &AudioGeometry,
+) -> Result<rlx_flow::BuiltModel> {
+    build_encoder(cfg, weights, geom, true)
+}
+
+fn build_encoder(
+    cfg: &AudioEncoderConfig,
+    weights: &mut WeightMap,
+    geom: &AudioGeometry,
+    window_input: bool,
+) -> Result<rlx_flow::BuiltModel> {
     let f = DType::F32;
     let d = cfg.d_model;
     let ds = cfg.downsample_hidden_size;
@@ -336,7 +357,28 @@ pub fn build_encoder_built(
     // the bias-free fast path.
     let seq = geom.num_audio_tokens;
     let nh = cfg.encoder_attention_heads;
-    let win_bias = if geom.windows.len() > 1 {
+    let win_bias = if window_input {
+        let w = b.hir.input("window", Shape::new(&[seq], f));
+        let col = b.g().reshape_(w, vec![seq as i64, 1]);
+        let col = b.g().expand_(col, vec![seq as i64, seq as i64]);
+        let row = b.g().reshape_(w, vec![1, seq as i64]);
+        let row = b.g().expand_(row, vec![seq as i64, seq as i64]);
+        let d = b.g().sub(col, row);
+        let d2 = b.g().mul(d, d);
+        let neg = b.g().add_node(
+            Op::Constant {
+                data: (-1e9f32).to_le_bytes().to_vec(),
+            },
+            vec![],
+            Shape::new(&[1], f),
+        );
+        let bias = b.g().mul(d2, neg);
+        let bias = b.g().reshape_(bias, vec![1, 1, seq as i64, seq as i64]);
+        Some(
+            b.g()
+                .expand_(bias, vec![1, nh as i64, seq as i64, seq as i64]),
+        )
+    } else if geom.windows.len() > 1 {
         let data = window_bias_data(&geom.windows, nh);
         Some(b.register_param("qwen3_asr.audio.winmask", data, &[1, nh, seq, seq]))
     } else {

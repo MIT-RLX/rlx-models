@@ -146,19 +146,17 @@ fn worker(a: &[String]) -> Result<()> {
     // A CUDA stage here (~42 GB) dwarfs the 3080 Ti's 16 GB VRAM, so page it via
     // managed memory (RLX_CUDA_UNIFIED) rather than OOM on a resident cudaMalloc.
     // The operator can still force resident VRAM by exporting the flag to "0".
-    if matches!(dev, Device::Cuda) && std::env::var_os("RLX_CUDA_UNIFIED").is_none() {
-        // SAFETY: single-threaded at this point (set before the Session/arena or
-        // any worker thread is created).
-        unsafe { std::env::set_var("RLX_CUDA_UNIFIED", "1") };
+    if matches!(dev, Device::Cuda) && rlx_ir::env::var_os("RLX_CUDA_UNIFIED").is_none() {
+        rlx_ir::env::set("RLX_CUDA_UNIFIED", "1");
     }
     // wgpu: this model's stacked MoE weights are large — one proj's 256-expert
     // codes tensor is ~2 GiB, above wgpu's default 2 GiB storage-binding cap, so
     // the sharded arena can't place it (a single tensor can't span shards).
     // Large-buffer mode unclamps to the device max (RADV supports 4 GiB bindings).
     if matches!(dev, Device::Gpu | Device::WebGpu)
-        && std::env::var_os("RLX_WGPU_LARGE_BUFFERS").is_none()
+        && rlx_ir::env::var_os("RLX_WGPU_LARGE_BUFFERS").is_none()
     {
-        unsafe { std::env::set_var("RLX_WGPU_LARGE_BUFFERS", "1") };
+        rlx_ir::env::set("RLX_WGPU_LARGE_BUFFERS", "1");
     }
 
     let cfg: serde_json::Value =
@@ -234,7 +232,7 @@ fn worker(a: &[String]) -> Result<()> {
     // node with a synthetic input, print the stage forward time, then exit. No
     // coordinator / network / other nodes — lets us profile a stage in isolation
     // (with RLX_HD_PROFILE for the dtoh/compute split) despite a flaky cluster.
-    if std::env::var_os("RLX_DSV4_SELFTEST").is_some() {
+    if rlx_ir::env::var_os("RLX_DSV4_SELFTEST").is_some() {
         let in_name = if first { "input_ids" } else { "hidden_in" };
         // Boundary input shape: first stage takes input_ids [1,seq]; others take
         // hidden_in [seq, hc_mult, dim] (matches build_deepseek_v4_stage).

@@ -1,0 +1,28 @@
+# RLX TTS's host logic as an RLX program (WebAssembly, wasm32-wasip1): the
+# crate's text frontend (`src/frontend`, `src/ops.rs`), durations and
+# pitch / energy buckets, the WaveRNN noise (the portable BNNS AES-CTR
+# stream) and the output post. Built by `rlx-tts`'s exporter, so it stands
+# outside the workspace.
+[package]
+name = "rlx-tts-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+# `BnnsAesCtr128`, the stream the runner's `WaveRnnRng::Bnns` draws.
+rlx-ir = "0.2.19"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+# The frontend's (`src/frontend`, `src/ops.rs`).
+regex = "1"
+ndarray = "0.16"
+half = "2"
+rlx_cpu = { path = "shims/rlx-cpu", package = "rlx-tts-program-vmath" }
+
+[workspace]

@@ -11,10 +11,13 @@
 //! learned-query softmax attention over `{snapshots…, prefix_sum}`. At each block
 //! boundary the incoming stream is snapshotted and the direct residual is reset.
 
-use crate::common::{act, linear, reg, scalar_const};
+use crate::common::{act, linear, reg, scalar_const, tap};
 use crate::kda::{KdaDims, KdaWeights, build_kda_decode_step, build_kda_layer};
 use crate::mla::{MlaDims, MlaWeights, build_mla_decode_step, build_mla_layer};
-use crate::moe::{DenseMlpWeights, MoeDims, MoeWeights, build_dense_mlp, build_latent_moe};
+use crate::moe::{
+    DenseMlpWeights, FixedRouting, MoeDims, MoeWeights, build_dense_mlp, build_latent_moe,
+    build_latent_moe_fixed,
+};
 use anyhow::Result;
 use rlx_ir::hir::{HirMut, HirNodeId};
 use rlx_ir::op::Activation;
@@ -124,15 +127,149 @@ fn apply_attn_res(
     let denom = act(g, Activation::Sqrt, denom_pre, Shape::new(&[rows, m, 1], f));
     let kf = g.div(v, denom); // [rows, m, hidden]
 
-    // query = norm_w ⊙ proj_w  (host-precomputed) → [1, 1, hidden]
-    let q_data: Vec<f32> = norm_w.iter().zip(proj_w).map(|(a, b)| a * b).collect();
-    let q = reg(g, params, &format!("{name}.query"), q_data, &[1, 1, hidden]);
+    // query = norm_w ⊙ proj_w → [1, 1, hidden]: host-precomputed for inference,
+    // in-graph from the two checkpoint vectors under canonical params.
+    let q = if crate::common::canonical_params() {
+        let n = reg(
+            g,
+            params,
+            &format!("{name}.norm"),
+            norm_w.to_vec(),
+            &[1, 1, hidden],
+        );
+        let p = reg(
+            g,
+            params,
+            &format!("{name}.proj"),
+            proj_w.to_vec(),
+            &[1, 1, hidden],
+        );
+        g.mul(n, p)
+    } else {
+        let q_data: Vec<f32> = norm_w.iter().zip(proj_w).map(|(a, b)| a * b).collect();
+        reg(g, params, &format!("{name}.query"), q_data, &[1, 1, hidden])
+    };
     let kq = g.mul(kf, q); // [rows, m, hidden]
     let scores = g.sum(kq, vec![2], false); // [rows, m]
     let probs = g.sm(scores, 1); // softmax over m
     let probs3 = g.reshape_(probs, vec![rows as i64, m as i64, 1]);
     let weighted = g.mul(probs3, v); // [rows, m, hidden]
     g.sum(weighted, vec![1], false) // [rows, hidden]  (weighted avg of raw v)
+}
+
+/// The part of a layer before its attention: the self-attention residual mix of
+/// the incoming stream over the snapshots, the block-boundary snapshot (which
+/// also resets the residual), and the input norm. Returns `(attn_in, stream,
+/// snapshots)` — `stream` is the running residual the attention output adds to
+/// (`None` right after a boundary).
+fn attn_prelude(
+    g: &mut HirMut,
+    params: &mut Params,
+    i: usize,
+    incoming: HirNodeId,
+    mut snapshots: Vec<HirNodeId>,
+    lw: &LayerWeights,
+    cfg: &FlowConfig,
+) -> (HirNodeId, Option<HirNodeId>, Vec<HirNodeId>) {
+    let (b, s, hidden) = (cfg.batch, cfg.seq, cfg.hidden);
+    tap(g, format!("l{i}.in"), incoming);
+    let mut stream = Some(incoming);
+    let mut hs = incoming;
+    if !snapshots.is_empty() {
+        let mixed = apply_attn_res(
+            g,
+            params,
+            &format!("l{i}.sa_res"),
+            incoming,
+            &snapshots,
+            &lw.sa_res_proj,
+            &lw.sa_res_norm,
+            b * s,
+            hidden,
+            cfg.eps,
+        );
+        hs = g.reshape_(mixed, vec![b as i64, s as i64, hidden as i64]);
+        tap(g, format!("l{i}.sa_res"), hs);
+    }
+    if i.is_multiple_of(cfg.attn_res_block_size) {
+        snapshots.push(incoming);
+        stream = None;
+    }
+    let hn = rms_norm(
+        g,
+        params,
+        &format!("l{i}.input_ln"),
+        hs,
+        &lw.input_ln,
+        hidden,
+        cfg.eps,
+    );
+    tap(g, format!("l{i}.attn_in"), hn);
+    (hn, stream, snapshots)
+}
+
+/// The part between attention and FFN: add the attention output to the
+/// residual, mix it over the snapshots, post norm. Returns `(ffn_in, stream)`.
+#[allow(clippy::too_many_arguments)]
+fn ffn_prelude(
+    g: &mut HirMut,
+    params: &mut Params,
+    i: usize,
+    stream: Option<HirNodeId>,
+    attn: HirNodeId,
+    snapshots: &[HirNodeId],
+    lw: &LayerWeights,
+    cfg: &FlowConfig,
+) -> (HirNodeId, HirNodeId) {
+    let (b, s, hidden) = (cfg.batch, cfg.seq, cfg.hidden);
+    tap(g, format!("l{i}.attn_out"), attn);
+    let ps = match stream {
+        Some(p) => g.add(p, attn),
+        None => attn,
+    };
+    let mixed = apply_attn_res(
+        g,
+        params,
+        &format!("l{i}.mlp_res"),
+        ps,
+        snapshots,
+        &lw.mlp_res_proj,
+        &lw.mlp_res_norm,
+        b * s,
+        hidden,
+        cfg.eps,
+    );
+    let mixed = g.reshape_(mixed, vec![b as i64, s as i64, hidden as i64]);
+    tap(g, format!("l{i}.mlp_res"), mixed);
+    let mn = rms_norm(
+        g,
+        params,
+        &format!("l{i}.post_ln"),
+        mixed,
+        &lw.post_ln,
+        hidden,
+        cfg.eps,
+    );
+    tap(g, format!("l{i}.ffn_in"), mn);
+    (mn, ps)
+}
+
+fn prefill_attention(
+    g: &mut HirMut,
+    params: &mut Params,
+    i: usize,
+    hn: HirNodeId,
+    lw: &LayerWeights,
+    cfg: &FlowConfig,
+) -> Result<HirNodeId> {
+    match &lw.attn {
+        AttnWeights::Kda(kw) => {
+            build_kda_layer(g, params, &format!("l{i}.self_attn"), hn, kw, cfg.kda)
+        }
+        AttnWeights::Mla(mw) => {
+            build_mla_layer(g, params, &format!("l{i}.self_attn"), hn, mw, cfg.mla)
+        }
+    }
 }
 
 /// Build the KimiLinear text decoder on `h_in` `[batch, seq, hidden]` (embeddings);
@@ -183,112 +320,18 @@ pub fn build_kimi_text_stage(
     let mut hidden_t = hidden_in; // [b, s, hidden]
 
     for (li, lw) in layers.iter().enumerate() {
-        let i = layer_offset + li;
-        let incoming = hidden_t;
-        // prefix_sum for this layer; `None` after a block boundary resets the residual.
-        let mut stream = Some(incoming);
-
-        // (1) self-attention residual mix (skip when there are no snapshots)
-        let mut hs = incoming;
-        if !snapshots.is_empty() {
-            let mixed = apply_attn_res(
-                g,
-                params,
-                &format!("l{i}.sa_res"),
-                incoming,
-                &snapshots,
-                &lw.sa_res_proj,
-                &lw.sa_res_norm,
-                rows,
-                hidden,
-                cfg.eps,
-            );
-            hs = bsh(g, mixed);
-        }
-
-        // (2) block boundary: snapshot the incoming stream, reset the residual
-        if i.is_multiple_of(cfg.attn_res_block_size) {
-            snapshots.push(incoming);
-            stream = None;
-        }
-
-        // (3) input norm → attention (raw output)
-        let hn = rms_norm(
+        let (h, snaps) = build_layer(
             g,
             params,
-            &format!("l{i}.input_ln"),
-            hs,
-            &lw.input_ln,
-            hidden,
-            cfg.eps,
-        );
-        let attn = match &lw.attn {
-            AttnWeights::Kda(kw) => {
-                build_kda_layer(g, params, &format!("l{i}.self_attn"), hn, kw, cfg.kda)?
-            }
-            AttnWeights::Mla(mw) => {
-                build_mla_layer(g, params, &format!("l{i}.self_attn"), hn, mw, cfg.mla)?
-            }
-        };
-
-        // (4) accumulate attention into the stream
-        stream = Some(match stream {
-            Some(p) => g.add(p, attn),
-            None => attn,
-        });
-
-        // (5) mlp residual mix → post norm → FFN
-        let ps = stream.expect("stream set after attn");
-        let mixed = apply_attn_res(
-            g,
-            params,
-            &format!("l{i}.mlp_res"),
-            ps,
-            &snapshots,
-            &lw.mlp_res_proj,
-            &lw.mlp_res_norm,
-            rows,
-            hidden,
-            cfg.eps,
-        );
-        let mixed = bsh(g, mixed);
-        let mn = rms_norm(
-            g,
-            params,
-            &format!("l{i}.post_ln"),
-            mixed,
-            &lw.post_ln,
-            hidden,
-            cfg.eps,
-        );
-        let ffn = match &lw.ffn {
-            FfnWeights::Dense(dw) => build_dense_mlp(
-                g,
-                params,
-                &format!("l{i}.mlp"),
-                mn,
-                dw,
-                hidden,
-                cfg.dense_inter,
-                b,
-                s,
-                cfg.situ_beta,
-                cfg.situ_linear_beta,
-            )?,
-            FfnWeights::Moe(mw) => build_latent_moe(
-                g,
-                params,
-                &format!("l{i}.block_sparse_moe"),
-                mn,
-                mw,
-                cfg.moe,
-            )?,
-        };
-
-        // (6) accumulate FFN into the stream → carry to the next layer
-        let ps = stream.expect("stream set");
-        stream = Some(g.add(ps, ffn));
-        hidden_t = stream.expect("stream set");
+            layer_offset + li,
+            hidden_t,
+            snapshots,
+            lw,
+            cfg,
+            None,
+        )?;
+        hidden_t = h;
+        snapshots = snaps;
     }
 
     // Non-last stage: the boundary is the hidden state + the accumulated
@@ -312,6 +355,7 @@ pub fn build_kimi_text_stage(
         cfg.eps,
     );
     let final_mixed = bsh(g, final_mixed);
+    tap(g, "out_res", final_mixed);
     let normed = rms_norm(
         g,
         params,
@@ -321,12 +365,76 @@ pub fn build_kimi_text_stage(
         hidden,
         cfg.eps,
     );
+    tap(g, "final_norm", normed);
     let n2d = g.reshape_(normed, vec![rows as i64, hidden as i64]);
     let logits = linear(
         g, params, "lm_head", "weight", n2d, &w.lm_head, hidden, cfg.vocab,
     );
     let logits3 = g.reshape_(logits, vec![b as i64, s as i64, cfg.vocab as i64]);
     Ok((logits3, Vec::new()))
+}
+
+/// Build ONE decoder layer `i` on `hidden_in` `[b,s,hidden]` with the incoming
+/// Attention-Residual `snapshots`; returns `(hidden_out, snapshots_out)`. The
+/// body of [`build_kimi_text_stage`], exposed so a caller can build, run or
+/// differentiate one layer at a time (streamed training, activation dumps).
+///
+/// `routing` replaces the in-graph MoE routing with a host-chosen expert set over
+/// a compact bank ([`crate::moe::build_latent_moe_fixed`]); `None` routes in-graph
+/// over the layer's full expert bank. Ignored for dense-FFN layers.
+#[allow(clippy::too_many_arguments)]
+pub fn build_layer(
+    g: &mut HirMut,
+    params: &mut Params,
+    i: usize,
+    hidden_in: HirNodeId,
+    snapshots: Vec<HirNodeId>,
+    lw: &LayerWeights,
+    cfg: &FlowConfig,
+    routing: Option<&FixedRouting>,
+) -> Result<(HirNodeId, Vec<HirNodeId>)> {
+    let (b, s, hidden) = (cfg.batch, cfg.seq, cfg.hidden);
+    let (hn, stream, snapshots) = attn_prelude(g, params, i, hidden_in, snapshots, lw, cfg);
+    let attn = prefill_attention(g, params, i, hn, lw, cfg)?;
+    let (mn, ps) = ffn_prelude(g, params, i, stream, attn, &snapshots, lw, cfg);
+    let ffn = match &lw.ffn {
+        FfnWeights::Dense(dw) => build_dense_mlp(
+            g,
+            params,
+            &format!("l{i}.mlp"),
+            mn,
+            dw,
+            hidden,
+            cfg.dense_inter,
+            b,
+            s,
+            cfg.situ_beta,
+            cfg.situ_linear_beta,
+        )?,
+        FfnWeights::Moe(mw) => match routing {
+            Some(r) => build_latent_moe_fixed(
+                g,
+                params,
+                &format!("l{i}.block_sparse_moe"),
+                mn,
+                mw,
+                r,
+                cfg.moe,
+            )?,
+            None => build_latent_moe(
+                g,
+                params,
+                &format!("l{i}.block_sparse_moe"),
+                mn,
+                mw,
+                cfg.moe,
+            )?,
+        },
+    };
+    tap(g, format!("l{i}.ffn_out"), ffn);
+    let out = g.add(ps, ffn);
+    tap(g, format!("l{i}.out"), out);
+    Ok((out, snapshots))
 }
 
 /// Build a layer's body **up to (but excluding) the FFN**: self-attention
@@ -375,47 +483,13 @@ pub fn build_layer_decode_step(
     params: &mut Params,
     layer_index: usize,
     hidden_in: HirNodeId,
-    mut snapshots: Vec<HirNodeId>,
+    snapshots: Vec<HirNodeId>,
     attn_in: AttnDecodeIn,
     lw: &LayerWeights,
     cfg: &FlowConfig,
 ) -> Result<(HirNodeId, HirNodeId, Vec<HirNodeId>, AttnDecodeOut)> {
-    let (b, s, hidden) = (cfg.batch, cfg.seq, cfg.hidden);
-    let rows = b * s;
     let i = layer_index;
-    let bsh = |g: &mut HirMut, x: HirNodeId| g.reshape_(x, vec![b as i64, s as i64, hidden as i64]);
-
-    let incoming = hidden_in;
-    let mut stream = Some(incoming);
-    let mut hs = incoming;
-    if !snapshots.is_empty() {
-        let mixed = apply_attn_res(
-            g,
-            params,
-            &format!("l{i}.sa_res"),
-            incoming,
-            &snapshots,
-            &lw.sa_res_proj,
-            &lw.sa_res_norm,
-            rows,
-            hidden,
-            cfg.eps,
-        );
-        hs = bsh(g, mixed);
-    }
-    if i.is_multiple_of(cfg.attn_res_block_size) {
-        snapshots.push(incoming);
-        stream = None;
-    }
-    let hn = rms_norm(
-        g,
-        params,
-        &format!("l{i}.input_ln"),
-        hs,
-        &lw.input_ln,
-        hidden,
-        cfg.eps,
-    );
+    let (hn, stream, snapshots) = attn_prelude(g, params, i, hidden_in, snapshots, lw, cfg);
     // ── attention: O(1) decode step (state threaded), else identical to prefill ──
     let name = format!("l{i}.self_attn");
     let (attn, attn_out) = match (&lw.attn, attn_in) {
@@ -446,33 +520,7 @@ pub fn build_layer_decode_step(
         }
         _ => anyhow::bail!("layer {i}: attention weights / decode-state kind mismatch"),
     };
-    stream = Some(match stream {
-        Some(p) => g.add(p, attn),
-        None => attn,
-    });
-    let ps = stream.expect("stream set after attn");
-    let mixed = apply_attn_res(
-        g,
-        params,
-        &format!("l{i}.mlp_res"),
-        ps,
-        &snapshots,
-        &lw.mlp_res_proj,
-        &lw.mlp_res_norm,
-        rows,
-        hidden,
-        cfg.eps,
-    );
-    let mixed = bsh(g, mixed);
-    let mn = rms_norm(
-        g,
-        params,
-        &format!("l{i}.post_ln"),
-        mixed,
-        &lw.post_ln,
-        hidden,
-        cfg.eps,
-    );
+    let (mn, ps) = ffn_prelude(g, params, i, stream, attn, &snapshots, lw, cfg);
     Ok((mn, ps, snapshots, attn_out))
 }
 
@@ -481,81 +529,14 @@ pub fn build_layer_pre_ffn(
     params: &mut Params,
     layer_index: usize,
     hidden_in: HirNodeId,
-    mut snapshots: Vec<HirNodeId>,
+    snapshots: Vec<HirNodeId>,
     lw: &LayerWeights,
     cfg: &FlowConfig,
 ) -> Result<(HirNodeId, HirNodeId, Vec<HirNodeId>)> {
-    let (b, s, hidden) = (cfg.batch, cfg.seq, cfg.hidden);
-    let rows = b * s;
     let i = layer_index;
-    let bsh = |g: &mut HirMut, x: HirNodeId| g.reshape_(x, vec![b as i64, s as i64, hidden as i64]);
-
-    let incoming = hidden_in;
-    let mut stream = Some(incoming);
-    let mut hs = incoming;
-    if !snapshots.is_empty() {
-        let mixed = apply_attn_res(
-            g,
-            params,
-            &format!("l{i}.sa_res"),
-            incoming,
-            &snapshots,
-            &lw.sa_res_proj,
-            &lw.sa_res_norm,
-            rows,
-            hidden,
-            cfg.eps,
-        );
-        hs = bsh(g, mixed);
-    }
-    if i.is_multiple_of(cfg.attn_res_block_size) {
-        snapshots.push(incoming);
-        stream = None;
-    }
-    let hn = rms_norm(
-        g,
-        params,
-        &format!("l{i}.input_ln"),
-        hs,
-        &lw.input_ln,
-        hidden,
-        cfg.eps,
-    );
-    let attn = match &lw.attn {
-        AttnWeights::Kda(kw) => {
-            build_kda_layer(g, params, &format!("l{i}.self_attn"), hn, kw, cfg.kda)?
-        }
-        AttnWeights::Mla(mw) => {
-            build_mla_layer(g, params, &format!("l{i}.self_attn"), hn, mw, cfg.mla)?
-        }
-    };
-    stream = Some(match stream {
-        Some(p) => g.add(p, attn),
-        None => attn,
-    });
-    let ps = stream.expect("stream set after attn");
-    let mixed = apply_attn_res(
-        g,
-        params,
-        &format!("l{i}.mlp_res"),
-        ps,
-        &snapshots,
-        &lw.mlp_res_proj,
-        &lw.mlp_res_norm,
-        rows,
-        hidden,
-        cfg.eps,
-    );
-    let mixed = bsh(g, mixed);
-    let mn = rms_norm(
-        g,
-        params,
-        &format!("l{i}.post_ln"),
-        mixed,
-        &lw.post_ln,
-        hidden,
-        cfg.eps,
-    );
+    let (hn, stream, snapshots) = attn_prelude(g, params, i, hidden_in, snapshots, lw, cfg);
+    let attn = prefill_attention(g, params, i, hn, lw, cfg)?;
+    let (mn, ps) = ffn_prelude(g, params, i, stream, attn, &snapshots, lw, cfg);
     Ok((mn, ps, snapshots))
 }
 
@@ -591,6 +572,7 @@ pub fn build_head(
         cfg.eps,
     );
     let final_mixed = g.reshape_(final_mixed, vec![b as i64, s as i64, hidden as i64]);
+    tap(g, "out_res", final_mixed);
     let normed = rms_norm(
         g,
         params,
@@ -600,11 +582,12 @@ pub fn build_head(
         hidden,
         cfg.eps,
     );
+    tap(g, "final_norm", normed);
     let n2d = g.reshape_(normed, vec![rows as i64, hidden as i64]);
     // bf16-resident head: an `[hidden, vocab]` BF16 param (bytes fed post-compile
     // via `set_param_typed`) drives the CPU dequant-on-the-fly `SgemmBf16` — half
     // the weight memory traffic. Else the plain f32 `linear`.
-    let logits = if lm_head_bf16 {
+    let logits = if lm_head_bf16 && !crate::common::canonical_params() {
         let w = g.param(
             "lm_head.weight",
             Shape::new(&[hidden, cfg.vocab], DType::BF16),

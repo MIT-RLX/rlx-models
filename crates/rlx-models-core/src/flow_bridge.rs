@@ -41,6 +41,9 @@ impl rlx_flow::WeightSource for WeightLoaderSource<'_> {
     }
     // `take_packed` intentionally left at the trait default (`None`): the plain
     // adapter always dequantizes to F32, so existing flows are unchanged.
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        self.0.stored_dtype(key)
+    }
 }
 
 /// Packed-aware [`WeightLoader`] → [`rlx_flow::WeightSource`] adapter.
@@ -67,6 +70,10 @@ impl rlx_flow::WeightSource for PackedWeightLoaderSource<'_> {
     /// `DequantMatMul` instead of dequantizing to F32. `PackedWeightTensor` is
     /// `(w_q, scheme, [out_dim, in_dim])`; bias (when any) is applied by the
     /// caller as a separate add, matching the F32 matmul path.
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        self.0.stored_dtype(key)
+    }
+
     fn take_packed(&mut self, key: &str) -> anyhow::Result<Option<rlx_flow::GgufPackedLinear>> {
         Ok(self.0.take_packed(key)?.and_then(|(w_q, scheme, shape)| {
             // A 3-D tensor is an expert bank, not a linear — `GgufPackedLinear`

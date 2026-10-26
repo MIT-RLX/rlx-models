@@ -73,7 +73,8 @@ pub fn run_hf_python_probe(
     vlmevalkit: bool,
 ) -> Result<AifProbe> {
     let script = probe_single_script()?;
-    let python = std::env::var("RLX_QWEN25_VL_PYTHON").unwrap_or_else(|_| "python3".into());
+    let python =
+        rlx_ir::env::var_result("RLX_QWEN25_VL_PYTHON").unwrap_or_else(|_| "python3".into());
     std::fs::create_dir_all(out_dir)?;
     let status = Command::new(&python)
         .arg(&script)
@@ -93,7 +94,7 @@ pub fn run_hf_python_probe(
 }
 
 fn probe_single_script() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("RLX_QWEN25_VL_AIF_PROBE_SCRIPT") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_QWEN25_VL_AIF_PROBE_SCRIPT") {
         return Ok(PathBuf::from(p));
     }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -118,7 +119,7 @@ fn forward_hf_env() -> Vec<(String, String)> {
         "HF_HOME",
     ]
     .into_iter()
-    .filter_map(|name| std::env::var(name).ok().map(|v| (name.to_string(), v)))
+    .filter_map(|name| rlx_ir::env::read(name).ok().map(|v| (name.to_string(), v)))
     .collect()
 }
 
@@ -133,7 +134,9 @@ fn parse_npy_f32(bytes: &[u8]) -> Result<Vec<f32>> {
     let data = &bytes[10 + header_len..];
     anyhow::ensure!(data.len().is_multiple_of(4), "npy f32 payload size");
     Ok(data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }

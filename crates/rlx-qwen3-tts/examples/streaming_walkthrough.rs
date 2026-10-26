@@ -25,7 +25,7 @@
 //!
 //! Run:
 //!   cargo run --release -p rlx-qwen3-tts --example streaming_walkthrough \
-//!     --features apple-silicon
+//!     --features macos-gpu
 
 use anyhow::Result;
 use rlx_qwen3_tts::{StreamConfig, StreamControl, StreamEvent, VoiceClone};

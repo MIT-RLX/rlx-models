@@ -349,11 +349,7 @@ fn arr2(
 }
 
 fn argmax(v: &[f32]) -> u32 {
-    v.iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-        .map(|(i, _)| i as u32)
-        .unwrap_or(0)
+    rlx_runtime::search::argmax_u32(v)
 }
 
 struct XorShift64(u64);

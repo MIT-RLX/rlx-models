@@ -109,74 +109,199 @@ impl<'a> MultimodalPrompt<'a> {
     /// embeddings, and build MRoPE section positions.
     pub fn assemble(
         &self,
-        mut tokenizer: impl FnMut(&str) -> anyhow::Result<Vec<u32>>,
+        tokenizer: impl FnMut(&str) -> anyhow::Result<Vec<u32>>,
         token_embd_table: &[f32],
         n_embd: usize,
         text_start_pos: usize,
     ) -> anyhow::Result<MultimodalPrefill> {
+        MultiImagePrompt {
+            prompt: self.prompt,
+            images: std::slice::from_ref(self.vision),
+        }
+        .assemble(tokenizer, token_embd_table, n_embd, text_start_pos)
+    }
+}
+
+/// [`MultimodalPrompt`] with several images: the `i`-th [`MEDIA_MARKER`] in
+/// `prompt` takes `images[i]`.
+///
+/// Positions follow HF `get_rope_index`: text runs on one counter; an image
+/// starting at `p` puts its tokens at `(p, p + row, p + col)` and the text
+/// after it resumes at `p + max(rows, cols)`.
+pub struct MultiImagePrompt<'a> {
+    pub prompt: &'a str,
+    pub images: &'a [super::encoder::VisionEncodeOutput],
+}
+
+impl MultiImagePrompt<'_> {
+    /// Assemble with token embeddings looked up in a dense `[vocab, n_embd]`
+    /// table (ids past the table embed as zeros).
+    pub fn assemble(
+        &self,
+        tokenizer: impl FnMut(&str) -> anyhow::Result<Vec<u32>>,
+        token_embd_table: &[f32],
+        n_embd: usize,
+        text_start_pos: usize,
+    ) -> anyhow::Result<MultimodalPrefill> {
+        let vocab = token_embd_table.len() / n_embd;
+        self.assemble_with(
+            tokenizer,
+            |ids| {
+                let mut out = Vec::with_capacity(ids.len() * n_embd);
+                for &t in ids {
+                    let t = t as usize;
+                    if t >= vocab {
+                        out.extend(std::iter::repeat_n(0.0f32, n_embd));
+                    } else {
+                        out.extend_from_slice(&token_embd_table[t * n_embd..(t + 1) * n_embd]);
+                    }
+                }
+                Ok(out)
+            },
+            n_embd,
+            text_start_pos,
+        )
+    }
+
+    /// Assemble with token embeddings from `embed` (`ids → [ids.len(), n_embd]`),
+    /// e.g. [`crate::Qwen35Runner::embed_tokens`] over a packed table that is
+    /// never expanded whole.
+    pub fn assemble_with(
+        &self,
+        tokenizer: impl FnMut(&str) -> anyhow::Result<Vec<u32>>,
+        embed: impl FnMut(&[u32]) -> anyhow::Result<Vec<f32>>,
+        n_embd: usize,
+        text_start_pos: usize,
+    ) -> anyhow::Result<MultimodalPrefill> {
+        Ok(self
+            .assemble_with_mask(tokenizer, embed, n_embd, text_start_pos)?
+            .0)
+    }
+
+    /// [`Self::assemble_with`], and which tokens are an image's rows.
+    pub fn assemble_with_mask(
+        &self,
+        mut tokenizer: impl FnMut(&str) -> anyhow::Result<Vec<u32>>,
+        mut embed: impl FnMut(&[u32]) -> anyhow::Result<Vec<f32>>,
+        n_embd: usize,
+        text_start_pos: usize,
+    ) -> anyhow::Result<(MultimodalPrefill, Vec<bool>)> {
         let parts: Vec<&str> = self.prompt.split(MEDIA_MARKER).collect();
-        if parts.len() != 2 {
+        if parts.len() != self.images.len() + 1 {
             return Err(anyhow::anyhow!(
-                "prompt must contain exactly one `{MEDIA_MARKER}` marker"
+                "prompt has {} `{MEDIA_MARKER}` marker(s) for {} image(s)",
+                parts.len() - 1,
+                self.images.len()
             ));
         }
-        let before_ids = tokenizer(parts[0])?;
         let start_ids = tokenizer(VISION_START)?;
         let end_ids = tokenizer(VISION_END)?;
-        let after_ids = tokenizer(parts[1])?;
-        let n_vision = self.vision.n_tokens;
-        let mut seq = before_ids.clone();
-        seq.extend(start_ids.iter().copied());
-        let n_start = start_ids.len();
-        let vision_start = seq.len();
-        seq.extend(std::iter::repeat_n(0u32, n_vision));
-        seq.extend(end_ids.iter().copied());
-        let n_end = end_ids.len();
-        seq.extend(after_ids.iter().copied());
-
-        let vocab = token_embd_table.len() / n_embd;
-        let mut hidden = Vec::with_capacity(seq.len() * n_embd);
-        for &tid in &seq {
-            let t = tid as usize;
-            if t >= vocab {
-                hidden.extend(std::iter::repeat_n(0.0f32, n_embd));
-            } else {
-                let off = t * n_embd;
-                hidden.extend_from_slice(&token_embd_table[off..off + n_embd]);
+        let mut seq: Vec<u32> = Vec::new();
+        let mut hidden: Vec<f32> = Vec::new();
+        let mut sections: Vec<[usize; 4]> = Vec::new();
+        let mut pos = text_start_pos;
+        let mut is_image: Vec<bool> = Vec::new();
+        let mut push_text = |ids: &[u32],
+                             seq: &mut Vec<u32>,
+                             hidden: &mut Vec<f32>,
+                             sections: &mut Vec<[usize; 4]>,
+                             pos: &mut usize|
+         -> anyhow::Result<()> {
+            let e = embed(ids)?;
+            anyhow::ensure!(e.len() == ids.len() * n_embd, "embedding width");
+            hidden.extend_from_slice(&e);
+            for &tid in ids {
+                seq.push(tid);
+                sections.push([*pos, *pos, *pos, 0]);
+                *pos += 1;
             }
+            Ok(())
+        };
+        for (i, part) in parts.iter().enumerate() {
+            let ids = tokenizer(part)?;
+            push_text(&ids, &mut seq, &mut hidden, &mut sections, &mut pos)?;
+            let Some(v) = self.images.get(i) else {
+                break;
+            };
+            push_text(&start_ids, &mut seq, &mut hidden, &mut sections, &mut pos)?;
+            anyhow::ensure!(
+                v.embeddings.len() == v.n_tokens * n_embd,
+                "image {i}: {} embedding values for {} tokens of width {n_embd}",
+                v.embeddings.len(),
+                v.n_tokens
+            );
+            is_image.resize(seq.len(), false);
+            for t in 0..v.n_tokens {
+                seq.push(0);
+                is_image.push(true);
+                sections.push(image_decoder_pos(v.grid_x, v.grid_y, pos, t));
+            }
+            hidden.extend_from_slice(&v.embeddings);
+            pos += image_chunk_n_pos(v.grid_x, v.grid_y);
+            push_text(&end_ids, &mut seq, &mut hidden, &mut sections, &mut pos)?;
         }
-        hidden = merge_text_and_vision_embd(
-            &hidden,
-            vocab,
-            n_embd,
-            &seq,
-            &self.vision.embeddings,
-            vision_start,
-            n_vision,
-        );
-
-        let text_before = before_ids.len() + n_start;
-        let text_after = n_end + after_ids.len();
-        let mrope_sections = build_multimodal_mrope_sections(
-            text_before,
-            self.vision.grid_x,
-            self.vision.grid_y,
-            text_after,
-            text_start_pos,
-        );
-
-        Ok(MultimodalPrefill {
-            hidden,
-            mrope_sections,
-            last_token_idx: seq.len().saturating_sub(1),
-            seq,
-        })
+        is_image.resize(seq.len(), false);
+        Ok((
+            MultimodalPrefill {
+                hidden,
+                mrope_sections: sections,
+                last_token_idx: seq.len().saturating_sub(1),
+                seq,
+            },
+            is_image,
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_images_resume_text_after_each_grid() {
+        use super::super::encoder::VisionEncodeOutput;
+        let img = |gx: usize, gy: usize, v: f32| VisionEncodeOutput {
+            embeddings: vec![v; gx * gy * 2],
+            grid_x: gx,
+            grid_y: gy,
+            n_tokens: gx * gy,
+        };
+        let images = [img(2, 1, 7.0), img(1, 3, 9.0)];
+        let table: Vec<f32> = (0..20).map(|i| i as f32).collect(); // vocab 10, n_embd 2
+        let tok = |s: &str| -> anyhow::Result<Vec<u32>> {
+            Ok(match s {
+                VISION_START => vec![1],
+                VISION_END => vec![2],
+                "" => vec![],
+                t => vec![t.len() as u32 + 2],
+            })
+        };
+        let p = MultiImagePrompt {
+            prompt: "a<__media__>bb<__media__>c",
+            images: &images,
+        }
+        .assemble(tok, &table, 2, 0)
+        .unwrap();
+        // a, <s>, img0 (2), </s>, bb, <s>, img1 (3), </s>, c
+        assert_eq!(p.seq.len(), 1 + 1 + 2 + 1 + 1 + 1 + 3 + 1 + 1);
+        let s = &p.mrope_sections;
+        assert_eq!(s[1], [1, 1, 1, 0]); // <s>
+        assert_eq!(s[3], [2, 2, 3, 0]); // img0 row 0 col 1
+        assert_eq!(s[4], [4, 4, 4, 0]); // </s> at 2 + max(1, 2)
+        assert_eq!(s[8], [7, 8, 7, 0]); // img1 row 1
+        assert_eq!(s[9], [7, 9, 7, 0]); // img1 row 2
+        assert_eq!(s[10], [10, 10, 10, 0]); // </s> at 7 + 3
+        assert_eq!(&p.hidden[2 * 2..2 * 3], &[7.0, 7.0]);
+        // A marker count that does not match is an error, not a silent splice.
+        assert!(
+            MultiImagePrompt {
+                prompt: "x<__media__>",
+                images: &images,
+            }
+            .assemble(tok, &table, 2, 0)
+            .is_err()
+        );
+    }
 
     #[test]
     fn image_chunk_n_pos_is_max_grid() {

@@ -38,15 +38,18 @@ pub fn codec_frame_budget(text: &str, gen_cfg_max: usize, user_max_frames: usize
 /// Defer talker decode-bucket compile until synthesis frames (fast one-shot CLI).
 /// Set `RLX_QWEN3_TTS_PRECOMPILE_BUCKETS=1` to precompile all buckets through the utterance horizon at warmup.
 pub fn lazy_talk_buckets() -> bool {
-    if std::env::var("RLX_QWEN3_TTS_PRECOMPILE_BUCKETS")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PRECOMPILE_BUCKETS")
         .ok()
         .as_deref()
         == Some("1")
     {
         return false;
     }
-    std::env::var("RLX_QWEN3_TTS_LAZY_BUCKETS").ok().as_deref() != Some("0")
-        || std::env::var("RLX_QWEN3_TTS_SKIP_BUCKET_WARMUP")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_LAZY_BUCKETS")
+        .ok()
+        .as_deref()
+        != Some("0")
+        || rlx_ir::env::var_result("RLX_QWEN3_TTS_SKIP_BUCKET_WARMUP")
             .ok()
             .as_deref()
             == Some("1")
@@ -74,27 +77,39 @@ pub fn talk_bucket_execution_warmup(horizon: usize) -> bool {
 }
 
 pub fn synth_timing_enabled() -> bool {
-    std::env::var("RLX_QWEN3_TTS_TIMING").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_TIMING")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// Per-frame talker/CP/decode ms (`RLX_QWEN3_TTS_STEP_TIMING=1`).
 pub fn step_timing_enabled() -> bool {
-    std::env::var("RLX_QWEN3_TTS_STEP_TIMING").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_STEP_TIMING")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// Megakernel synthesis path (default on). Set `RLX_QWEN3_TTS_MEGAKERNEL=0` to disable GPU KV seeding / pipeline warmup.
 pub fn megakernel_fast_path() -> bool {
-    std::env::var("RLX_QWEN3_TTS_MEGAKERNEL").ok().as_deref() != Some("0")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_MEGAKERNEL")
+        .ok()
+        .as_deref()
+        != Some("0")
 }
 
 /// Prefer RLX fused graphs end-to-end when parity allows (`RLX_QWEN3_TTS_FUSED_E2E=0` to opt out).
 pub fn fused_e2e_target() -> bool {
-    std::env::var("RLX_QWEN3_TTS_FUSED_E2E").ok().as_deref() != Some("0")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_FUSED_E2E")
+        .ok()
+        .as_deref()
+        != Some("0")
 }
 
 /// Host CP greedy + compiled talker decode per frame. Default on GPU sessions.
 pub fn codec_frame_fused_enabled(device: Device) -> bool {
-    match std::env::var("RLX_QWEN3_TTS_CODEC_FRAME_FUSED")
+    match rlx_ir::env::var_result("RLX_QWEN3_TTS_CODEC_FRAME_FUSED")
         .ok()
         .as_deref()
     {
@@ -106,7 +121,7 @@ pub fn codec_frame_fused_enabled(device: Device) -> bool {
 
 /// Warm/run full CP+talker megagraph for parity or bench (`RLX_QWEN3_TTS_CODEC_FRAME_MEGAGRAPH=1`).
 pub fn codec_frame_megagraph_enabled() -> bool {
-    std::env::var("RLX_QWEN3_TTS_CODEC_FRAME_MEGAGRAPH")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_CODEC_FRAME_MEGAGRAPH")
         .ok()
         .as_deref()
         == Some("1")
@@ -114,7 +129,7 @@ pub fn codec_frame_megagraph_enabled() -> bool {
 
 /// Dry-run every decode bucket on the synthesis path (slow warmup). Default: boundary crossings only.
 pub fn warmup_all_talk_buckets() -> bool {
-    std::env::var("RLX_QWEN3_TTS_WARMUP_ALL_BUCKETS")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_WARMUP_ALL_BUCKETS")
         .ok()
         .as_deref()
         == Some("1")
@@ -130,7 +145,10 @@ pub fn megakernel_gpu_kv_default(device: Device) -> bool {
 
 /// Scale quiet PCM to ~0.95 peak before writing WAV. Opt in: `RLX_QWEN3_TTS_WAV_NORMALIZE=1`.
 pub fn wav_peak_normalize_enabled() -> bool {
-    std::env::var("RLX_QWEN3_TTS_WAV_NORMALIZE").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_WAV_NORMALIZE")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// Best available accelerator for Qwen3-TTS (Metal → MLX → CUDA → ROCm → CPU).

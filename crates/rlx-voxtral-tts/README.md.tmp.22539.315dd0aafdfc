@@ -57,5 +57,5 @@ in `voice_clone` (`encode_reference_wav`, `clone_from_reference_audio`).
 - Fine-tune / voice-clone training lives in [rlx-voxtral-tts-train](../rlx-voxtral-tts-train)
   (codec encoder + LoRA, injected back into `consolidated.safetensors`).
 
-Feature bundles `metal`/`mlx`/`cuda`/`rocm`/`gpu`/`vulkan` (and `apple-silicon`,
+Feature bundles `metal`/`mlx`/`cuda`/`rocm`/`gpu`/`vulkan` (and `macos-gpu`,
 `all-backends`, …) forward the device to `rlx-runtime`.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Fit encoder.body_out_ls.A from Apple capture_work (teacher mel + encoder cache).
+# Fit encoder.body_out_ls.A from reference capture_work (teacher mel + encoder cache).
 #
 #   enc_fold = subsample(teacher_feat) @ input_proj @ bodyR
 #   A = ridge_ls(enc_fold, enc_teacher)

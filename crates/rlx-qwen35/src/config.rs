@@ -101,6 +101,26 @@ pub fn mtp_draft_vocab_size(full_vocab: usize, fast_mtp: bool) -> usize {
 }
 
 impl Qwen35Config {
+    /// Whether the GGUF's full-attention layers are causal.
+    ///
+    /// `{arch}.attention.causal` (llama.cpp's key) defaults to `true`; an
+    /// encoder-style checkpoint such as `pplx-decider` writes `false`, meaning
+    /// the full-attention layers see the whole sequence. Nothing in this
+    /// struct records it because the generative runner cannot serve such a
+    /// file — see [`crate::Qwen35Flow::bidirectional_attention`].
+    pub fn gguf_attention_causal(raw: &GgufFile) -> bool {
+        let arch = raw
+            .metadata
+            .get("general.architecture")
+            .and_then(MetaValue::as_str)
+            .unwrap_or("qwen35");
+        let prefix = arch.strip_suffix("moe").unwrap_or(arch);
+        !matches!(
+            raw.metadata.get(&format!("{prefix}.attention.causal")),
+            Some(MetaValue::Bool(false))
+        )
+    }
+
     /// Read from a GGUF file with `general.architecture` in
     /// `{qwen35, qwen35moe, qwen36, qwen36moe}`. Qwen3.6 reuses the
     /// Qwen3.5 trunk; only the metadata-key prefix differs (`qwen36.*`

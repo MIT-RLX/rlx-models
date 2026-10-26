@@ -51,7 +51,7 @@ fn probe_image() -> PathBuf {
 }
 
 fn python_bin() -> Option<String> {
-    std::env::var("RLX_UNLIMITED_OCR_PYTHON")
+    rlx_ir::env::var_result("RLX_UNLIMITED_OCR_PYTHON")
         .ok()
         .or_else(|| std::env::var("PYTHON").ok())
         .or_else(|| Some("python3".into()))

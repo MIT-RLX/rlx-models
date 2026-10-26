@@ -29,13 +29,13 @@ use rlx_voxtral::{VoxtralAudioConfig, VoxtralConfig, pcm_to_mel, transcription_p
 use std::path::PathBuf;
 
 fn ref_path() -> PathBuf {
-    std::env::var("RLX_VOXTRAL_REF")
+    rlx_ir::env::var_result("RLX_VOXTRAL_REF")
         .unwrap_or_else(|_| ".cache/voxtral_ref_jfk.json".into())
         .into()
 }
 
 fn wav_path() -> PathBuf {
-    std::env::var("RLX_VOXTRAL_WAV")
+    rlx_ir::env::var_result("RLX_VOXTRAL_WAV")
         .unwrap_or_else(|_| ".cache/whisper-bench/jfk_16k.wav".into())
         .into()
 }

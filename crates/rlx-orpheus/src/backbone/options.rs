@@ -113,7 +113,7 @@ impl BackboneLoadOptions {
 
 fn metal_prefill_for_device(device: Device) -> MetalGgufPrefillMode {
     for key in prefill_env_keys(device) {
-        if let Ok(s) = std::env::var(key)
+        if let Ok(s) = rlx_ir::env::read(key)
             && let Some(m) = MetalGgufPrefillMode::parse(&s)
         {
             return m;

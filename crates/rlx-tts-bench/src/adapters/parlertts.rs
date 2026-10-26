@@ -27,12 +27,12 @@ pub fn make(device: Device) -> Result<Box<dyn TtsAdapter>> {
         .hints
         .resolve_dir()
         .ok_or_else(|| anyhow::anyhow!(meta().hints.missing_reason()))?;
-    let dac = std::env::var("RLX_PARLER_DAC_DIR")
+    let dac = rlx_ir::env::var_result("RLX_PARLER_DAC_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_DAC_DIR));
     let inner = NativeParler::open(&dir, &dac, device).context("load parlertts")?;
-    let description =
-        std::env::var("RLX_PARLER_DESCRIPTION").unwrap_or_else(|_| DEFAULT_DESCRIPTION.to_string());
+    let description = rlx_ir::env::var_result("RLX_PARLER_DESCRIPTION")
+        .unwrap_or_else(|_| DEFAULT_DESCRIPTION.to_string());
     Ok(Box::new(ParlerAdapter { inner, description }))
 }
 

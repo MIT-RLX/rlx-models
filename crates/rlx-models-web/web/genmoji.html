@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open Genmoji in your browser — rlx</title>
+<style>
+  :root { --bg: #fafafa; --fg: #1d1d1f; --muted: #6e6e73; --accent: #0a84ff; --card: #fff; --line: #e5e5ea; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111; --fg: #f2f2f7; --muted: #98989f; --card: #1c1c1e; --line: #2c2c2e; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 20px 60px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin: 14px 0; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  input[type=text] { flex: 1; min-width: 220px; font: inherit; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  button, select { font: inherit; padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--card); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  label { color: var(--muted); }
+  .k { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .04em; margin-top: 10px; }
+  .v { white-space: pre-wrap; word-break: break-word; }
+  .flux { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 6px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  #log, #imgLog { color: var(--muted); font-size: 13px; white-space: pre-wrap; max-height: 160px; overflow: auto; }
+  .chips span { display: inline-block; padding: 2px 9px; margin: 2px 4px 2px 0; border-radius: 999px;
+    border: 1px solid var(--line); font-size: 13px; }
+  .chips span.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Open Genmoji in your browser</h1>
+  <p class="sub">The Genmoji prompt pipeline running entirely in this tab: Qwen3.5-0.8B rewrites your
+    description and sorts it into object / animal / person, split by layer across several Web Workers.
+    The image runs here too: FLUX.1 [dev] (12B) with the Open Genmoji LoRA, split across 8 more WebGPU workers
+    (plus T5 and CLIP/VAE workers) — about 19 GB of GPU memory, so a desktop with plenty of RAM.</p>
+
+  <div class="card">
+    <div class="row">
+      <label for="workers">Workers</label>
+      <select id="workers"><option>1</option><option selected>2</option><option>3</option><option>4</option><option>6</option></select>
+      <label for="backend">Backend</label>
+      <select id="backend"><option value="webgpu" selected>WebGPU</option><option value="cpu">CPU (wasm)</option></select>
+      <button id="load" class="primary">Load model</button>
+    </div>
+    <div class="bar"><div id="progress"></div></div>
+    <div id="log"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <input id="desc" type="text" value="flying pig" placeholder="Describe an emoji…" disabled>
+      <button id="go" class="primary" disabled>Make prompt</button>
+    </div>
+    <div class="k">Rewrite</div><div id="rewrite" class="v">—</div>
+    <div class="k">Category</div><div id="category" class="chips">—</div>
+    <div class="k">FLUX prompt</div><div id="flux" class="v flux">—</div>
+    <div class="k">Same image natively (rlx-models)</div><div id="cmd" class="v flux">—</div>
+    <div class="k">Timing</div><div id="timing" class="v">—</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="loadImg">Load image models (~19 GB)</button>
+      <label>FLUX.1 [dev] + emoji LoRA in this tab: 13 more workers, ~19 GB of GPU memory.</label>
+    </div>
+    <div class="bar"><div id="imgProgress"></div></div>
+    <div id="imgLog"></div>
+    <div class="row" style="margin-top: 12px; align-items: flex-start">
+      <div id="sticker" style="width: 256px; height: 256px; border-radius: 12px;
+        background: repeating-conic-gradient(#8883 0% 25%, transparent 0% 50%) 50% / 24px 24px"></div>
+      <div class="v" id="imgTiming" style="flex: 1">—</div>
+    </div>
+  </div>
+</main>
+<script type="module" src="./genmoji.js"></script>
+</body>
+</html>

@@ -95,8 +95,10 @@ sys.stdout.buffer.write(v.astype(np.float32).tobytes())
         .output()
         .expect("python");
     out.stdout
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
@@ -223,8 +225,10 @@ fn main() -> anyhow::Result<()> {
             kitten_tts_mini_rlx::bundle_compile::run_with_duration_fixed_point(&mut graph, &inputs);
         if let Some((wave, _)) = outs.first() {
             let s: Vec<f32> = wave
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect();
             let peak = s.iter().fold(0.0f32, |a, &x| a.max(x.abs()));
             // active audio = runtime_mel * 600 samples; split active vs padded tail.

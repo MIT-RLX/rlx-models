@@ -460,28 +460,36 @@ fn trim_waveform_exact(audio: &mut Vec<f32>, duration: &[i64], token_len: usize)
 
 fn decode_f32_waveform(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 
 fn decode_i64_tensor(bytes: &[u8]) -> Vec<i64> {
     bytes
-        .chunks_exact(8)
-        .map(|c| i64::from_le_bytes(c.try_into().expect("i64 chunk")))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| i64::from_le_bytes(*c))
         .collect()
 }
 
 fn decode_duration_f32(bytes: &[u8]) -> Vec<i64> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).round() as i64)
         .collect()
 }
 
 fn decode_duration_i32(bytes: &[u8]) -> Vec<i64> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as i64)
         .collect()
 }

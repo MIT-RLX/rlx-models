@@ -64,7 +64,9 @@ fn i64_bytes(v: &[i64]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 fn as_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -343,7 +345,7 @@ impl Supertonic {
 
         // Parity dump (dev): write the exact subgraph inputs (incl. the sampled
         // noise) so a Python onnxruntime run can be compared bit-for-bit.
-        if let Some(dir) = std::env::var_os("RLX_ST_PARITY_DUMP") {
+        if let Some(dir) = rlx_ir::env::var_os("RLX_ST_PARITY_DUMP") {
             let dir = std::path::PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
             dump_f32(&dir.join("style_dp.f32"), &voice.dp.data);
@@ -426,7 +428,7 @@ impl Supertonic {
         let n = ((duration * self.cfg.sample_rate as f32) as usize).min(wav.len());
         let audio = wav[..n.max(1)].to_vec();
 
-        if let Some(dir) = std::env::var_os("RLX_ST_PARITY_DUMP") {
+        if let Some(dir) = rlx_ir::env::var_os("RLX_ST_PARITY_DUMP") {
             dump_f32(&std::path::PathBuf::from(dir).join("audio_rlx.f32"), &audio);
         }
 
@@ -438,7 +440,7 @@ impl Supertonic {
         // Optional: trim length-keyed Metal graphs. Off by default — aggressive
         // per-cue eviction thrash-recompiles the DiT and raises peak RSS.
         // Set RLX_TTS_GRAPH_CACHE=<N> on long jobs / iOS when needed.
-        if let Ok(cap) = std::env::var("RLX_TTS_GRAPH_CACHE")
+        if let Ok(cap) = rlx_ir::env::var_result("RLX_TTS_GRAPH_CACHE")
             && let Ok(n) = cap.parse::<usize>()
         {
             self.model.trim_named_cache(n);
@@ -585,7 +587,7 @@ impl Supertonic {
             te_o.len(),
             emb_shape_o
         );
-        if let Some(d) = std::env::var_os("RLX_ST_TE_DUMP") {
+        if let Some(d) = rlx_ir::env::var_os("RLX_ST_TE_DUMP") {
             let d = std::path::PathBuf::from(d);
             let _ = std::fs::create_dir_all(&d);
             dump_f32(&d.join("te_native.f32"), &te_n);

@@ -105,7 +105,9 @@ pub fn parse_npy(data: &[u8]) -> Result<(Vec<usize>, Vec<f32>)> {
 
     // Read f32 values
     let values: Vec<f32> = data_bytes[..n_elements * 4]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| {
             let arr = [b[0], b[1], b[2], b[3]];
             if big_endian {
@@ -208,7 +210,11 @@ pub fn load_npz(path: &Path) -> Result<HashMap<String, NpyArray>> {
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).context("Failed to read ZIP entry")?;
-        let name = entry.name().trim_end_matches(".npy").to_string();
+        let name = entry
+            .name()
+            .with_context(|| format!("npz entry {i} name"))?
+            .trim_end_matches(".npy")
+            .to_string();
 
         let mut buf = Vec::with_capacity(entry.size() as usize);
         entry

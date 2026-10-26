@@ -23,7 +23,8 @@ use rlx_ir::{DType, Graph, HirGraphExt, Shape};
 use rlx_runtime::{CompiledGraph, Device};
 use std::collections::HashMap;
 
-type MlpGraphParts = (Graph, HashMap<String, Vec<f32>>, usize, usize);
+/// An MLP graph, its params, and its input and output widths.
+pub type MlpGraphParts = (Graph, HashMap<String, Vec<f32>>, usize, usize);
 
 /// One `Linear` + optional ReLU (all but last layer).
 #[derive(Clone)]
@@ -111,7 +112,9 @@ impl MlpReluCompiled {
     }
 }
 
-fn build_mlp_graph(layers: &[MlpLayerSpec], rows: usize) -> Result<MlpGraphParts> {
+/// The ReLU MLP over `rows` rows (input `x`), without the sigmoid
+/// [`MlpReluCompiled`] may apply on the host.
+pub fn build_mlp_graph(layers: &[MlpLayerSpec], rows: usize) -> Result<MlpGraphParts> {
     anyhow::ensure!(!layers.is_empty(), "mlp needs at least one layer");
     let in_d = layers[0].in_d;
     let out_d = layers.last().unwrap().out_d;

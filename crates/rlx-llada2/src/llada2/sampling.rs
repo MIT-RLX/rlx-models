@@ -115,15 +115,8 @@ fn softmax(logits: &[f32]) -> Vec<f32> {
 }
 
 fn argmax(probs: &[f32]) -> (u32, f32) {
-    let mut best_i = 0usize;
-    let mut best_v = probs[0];
-    for (i, &v) in probs.iter().enumerate().skip(1) {
-        if v > best_v {
-            best_v = v;
-            best_i = i;
-        }
-    }
-    (best_i as u32, best_v)
+    let i = rlx_runtime::search::argmax(probs);
+    (i as u32, probs[i])
 }
 
 fn sample_multinomial(probs: &[f32]) -> (u32, f32) {

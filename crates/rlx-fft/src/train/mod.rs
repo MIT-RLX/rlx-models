@@ -80,7 +80,7 @@ pub fn train_butterfly(cfg: &TrainConfig) -> Result<TrainResult> {
 }
 
 pub fn eager_train_from_env() -> bool {
-    std::env::var("RLX_FFT_EAGER_TRAIN")
+    rlx_ir::env::var_result("RLX_FFT_EAGER_TRAIN")
         .ok()
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
 }

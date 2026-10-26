@@ -167,7 +167,12 @@ pub fn run(args: &[String]) -> Result<()> {
             "[rlx-gemma] packed streaming: each token costs ~one full prefill (low-memory path)"
         );
     }
+    // `--no-stream` prints the whole completion once generation ends.
+    let mut generated = Vec::new();
     runner.generate(&ids, max_tokens, |tok| {
+        if !stream {
+            generated.push(tok);
+        }
         if stream {
             match crate::decode_token_auto(&weights, tokenizer.as_deref(), tok) {
                 Ok(piece) => {
@@ -180,6 +185,12 @@ pub fn run(args: &[String]) -> Result<()> {
         printed += 1;
     })?;
     let dt = t0.elapsed();
+    for &tok in &generated {
+        match crate::decode_token_auto(&weights, tokenizer.as_deref(), tok) {
+            Ok(piece) => print!("{piece}"),
+            Err(_) => print!("{tok} "),
+        }
+    }
     println!();
     eprintln!(
         "[rlx-gemma] generated {printed} tokens in {:.2?} ({:.1} tok/s)",

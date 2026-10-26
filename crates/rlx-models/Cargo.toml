@@ -44,14 +44,33 @@ rlx-gemma = { workspace = true, optional = true }
 rlx-llada2 = { workspace = true, optional = true }
 rlx-qwen35 = { workspace = true, optional = true }
 rlx-qwen4exp = { workspace = true, optional = true }
+rlx-flint = { workspace = true, optional = true }
 rlx-minimax = { workspace = true, optional = true }
 rlx-fara = { workspace = true, optional = true }
 rlx-qwen25-vl = { workspace = true, optional = true }
+rlx-siglip2 = { workspace = true, optional = true }
+rlx-snac = { path = "../rlx-snac", version = "0.2.19", optional = true }
+rlx-nanocodec = { path = "../rlx-nanocodec", version = "0.2.19", optional = true }
+rlx-wavtokenizer = { path = "../rlx-wavtokenizer", version = "0.2.19", optional = true }
+rlx-xcodec = { path = "../rlx-xcodec", version = "0.2.19", optional = true }
+rlx-vibevoice = { path = "../rlx-vibevoice", version = "0.2.19", optional = true }
+rlx-facodec = { path = "../rlx-facodec", version = "0.2.19", optional = true }
+rlx-encodec = { path = "../rlx-encodec", version = "0.2.19", optional = true }
+rlx-speechtokenizer = { path = "../rlx-speechtokenizer", version = "0.2.19", optional = true }
+rlx-dac = { path = "../rlx-dac", version = "0.2.19", optional = true, default-features = false }
+# A package's tokenizer, for `export::check_package` (as the language bindings
+# load it).
+rlx-text = { workspace = true, optional = true }
 rlx-qwen3-vl = { workspace = true, optional = true }
 rlx-lfm-vl = { workspace = true, optional = true }
+rlx-minicpm-v = { workspace = true, optional = true }
+rlx-minicpm-sala = { workspace = true, optional = true }
+rlx-d1 = { workspace = true, optional = true }
 rlx-mistral-vl = { workspace = true, optional = true }
 rlx-llama4 = { workspace = true, optional = true }
 rlx-mllama = { workspace = true, optional = true }
+rlx-flux1 = { workspace = true, optional = true }
+rlx-flux3 = { workspace = true, optional = true }
 rlx-flux2 = { workspace = true, optional = true }
 rlx-diamond = { workspace = true, optional = true }
 rlx-vjepa2 = { workspace = true, optional = true }
@@ -93,6 +112,16 @@ rlx-luxtts = { workspace = true, optional = true }
 rlx-zipvoice = { workspace = true, optional = true }
 rlx-moss-nano = { workspace = true, optional = true }
 rlx-maya1 = { workspace = true, optional = true }
+rlx-soprano = { workspace = true, optional = true }
+rlx-kittentts2 = { workspace = true, optional = true }
+rlx-sesame = { workspace = true, optional = true }
+rlx-zonos = { workspace = true, optional = true }
+rlx-pocket-tts = { workspace = true, optional = true }
+rlx-fish = { workspace = true, optional = true }
+rlx-tada = { workspace = true, optional = true }
+rlx-sanotts = { workspace = true, optional = true }
+rlx-inflect-nano = { workspace = true, optional = true }
+rlx-parakeet = { workspace = true, optional = true }
 rlx-miratts = { workspace = true, optional = true }
 rlx-f5tts = { workspace = true, optional = true }
 rlx-piper = { workspace = true, optional = true }
@@ -114,13 +143,24 @@ rlx-s1 = { workspace = true, optional = true }
 rlx-fireredaudio = { workspace = true, optional = true }
 rlx-minicpm5 = { workspace = true, optional = true, features = ["tokenizer"] }
 rlx-nanbeige = { workspace = true, optional = true, features = ["tokenizer"] }
+rlx-neuralhash = { workspace = true, optional = true }
+rlx-upscale = { workspace = true, optional = true }
+rlx-birefnet = { workspace = true, optional = true }
+rlx-subject-lift = { workspace = true, optional = true }
 rlx-tinyllama = { workspace = true, optional = true, features = ["tokenizer"] }
 rlx-hy-mt = { workspace = true, optional = true }
 rlx-translategemma = { workspace = true, optional = true }
 rlx-translate = { workspace = true, optional = true }
 rlx-nllb = { workspace = true, optional = true }
 rlx-moonshine = { workspace = true, optional = true }
+rlx-moonshine-streaming = { workspace = true, optional = true }
+rlx-embeddinggemma = { workspace = true, optional = true }
+rlx-jina-v5 = { workspace = true, optional = true }
 rlx-timesfm3 = { workspace = true, optional = true }
+rlx-timestral = { workspace = true, optional = true }
+rlx-pplx-decider = { workspace = true, optional = true }
+rlx-kev = { workspace = true, optional = true }
+rlx-carbon = { workspace = true, optional = true }
 rlx-f0 = { workspace = true, optional = true }
 rlx-voice-gender = { workspace = true, optional = true }
 rlx-phi = { workspace = true, optional = true }
@@ -147,6 +187,7 @@ bytemuck = { workspace = true }
 llama-cpp-2 = { workspace = true, optional = true }
 hf-hub = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
+rlx-tune = { path = "../rlx-tune", version = "0.2.19", optional = true }
 rlx-metal = { workspace = true, optional = true }
 rlx-mlx = { workspace = true, optional = true }
 # Adapter introspection for the wgpu/vulkan backend checks in tests/.
@@ -191,16 +232,27 @@ uni2 = ["dep:rlx-uni2"]
 hoct = ["dep:rlx-hoct"]
 bioclip2 = ["dep:rlx-bioclip2"]
 embed = ["dep:rlx-embed", "rlx-embed/embed"]
+flux1 = ["dep:rlx-flux1"]
+flux3 = ["dep:rlx-flux3"]
 flux2 = ["dep:rlx-flux2"]
 diamond = ["dep:rlx-diamond"]
 qwen3 = ["dep:rlx-qwen3"]
+# Fine-tuning / quantization-aware training of LMs (`rlx_models::lm_train`, `rlx-run qat`).
+train = ["runner", "dep:rlx-tune", "dep:tokenizers"]
 hy-mt = ["dep:rlx-hy-mt", "qwen3"]
 translategemma = ["dep:rlx-translategemma", "gemma"]
 # On-device system NMT: reads what the OS installed, ships no weights.
 translate = ["dep:rlx-translate"]
 nllb = ["dep:rlx-nllb"]
 moonshine = ["dep:rlx-moonshine"]
+moonshine-streaming = ["dep:rlx-moonshine-streaming"]
+embeddinggemma = ["dep:rlx-embeddinggemma"]
+jina-v5 = ["dep:rlx-jina-v5"]
 timesfm3 = ["dep:rlx-timesfm3"]
+timestral = ["dep:rlx-timestral"]
+pplx-decider = ["dep:rlx-pplx-decider"]
+kev = ["dep:rlx-kev"]
+carbon = ["dep:rlx-carbon"]
 f0 = ["dep:rlx-f0"]
 voice-gender = ["dep:rlx-voice-gender", "f0"]
 # Long-context KV: disk-tiered HNSW context store (`mmap-kv`) and the optional
@@ -209,6 +261,7 @@ mmap-kv = ["qwen3", "rlx-qwen3?/mmap-kv"]
 dual-encoder = ["mmap-kv", "rlx-qwen3?/dual-encoder"]
 qwen35 = ["dep:rlx-qwen35"]
 qwen4exp = ["dep:rlx-qwen4exp"]
+flint = ["dep:rlx-flint"]
 minimax = ["dep:rlx-minimax"]
 fara = ["dep:rlx-fara", "qwen35"]
 llama32 = ["dep:rlx-llama32"]
@@ -223,6 +276,10 @@ s1 = ["dep:rlx-s1"]
 fireredaudio = ["dep:rlx-fireredaudio"]
 minicpm5 = ["dep:rlx-minicpm5"]
 nanbeige = ["dep:rlx-nanbeige"]
+neuralhash = ["dep:rlx-neuralhash"]
+upscale = ["dep:rlx-upscale"]
+birefnet = ["dep:rlx-birefnet"]
+subject-lift = ["dep:rlx-subject-lift"]
 tinyllama = ["dep:rlx-tinyllama"]
 phi = ["dep:rlx-phi"]
 omnicoder = ["dep:rlx-omnicoder"]
@@ -234,6 +291,12 @@ cohere = ["dep:rlx-cohere"]
 lfm = ["dep:rlx-lfm"]
 qwen3-vl = ["dep:rlx-qwen3-vl", "qwen3"]
 lfm-vl = ["dep:rlx-lfm-vl", "lfm"]
+# OpenBMB MiniCPM-V 4.6 / 4.7 (Qwen3.5 trunk): `rlx_models::minicpm_v`.
+minicpm-v = ["dep:rlx-minicpm-v", "qwen35"]
+# OpenBMB MiniCPM-SALA (sparse + Lightning hybrid): `rlx_models::minicpm_sala`.
+minicpm-sala = ["dep:rlx-minicpm-sala"]
+# LiquidAI d1 System One decision models (LFM2.5-VL backbone): `rlx_models::d1`.
+d1 = ["dep:rlx-d1"]
 # Llama-4 (MoE + native vision) and Llama-3.2-Vision (mllama, cross-attention).
 # Both are safetensors-checkpoint runners (`from_checkpoint(dir, device)`), not
 # `LmRunner`/GGUF — used via their own builders, not `auto_runner`.
@@ -250,6 +313,112 @@ jina-ocr = ["dep:rlx-jina-ocr"]
 unlimited-ocr = ["dep:rlx-unlimited-ocr"]
 diarize = ["dep:rlx-diarize", "dep:rlx-wespeaker", "rlx-diarize/wespeaker"]
 whisper = ["dep:rlx-whisper"]
+siglip2 = ["dep:rlx-siglip2"]
+snac = ["dep:rlx-snac"]
+nanocodec = ["dep:rlx-nanocodec"]
+wavtokenizer = ["dep:rlx-wavtokenizer"]
+xcodec = ["dep:rlx-xcodec"]
+vibevoice = ["dep:rlx-vibevoice"]
+facodec = ["dep:rlx-facodec"]
+encodec = ["dep:rlx-encodec"]
+speechtokenizer = ["dep:rlx-speechtokenizer"]
+dac = ["dep:rlx-dac"]
+# `rlx_models::export` and the `rlx-export` command: a checkpoint of any family
+# enabled beside it written as an `.rlxp` package rlx runs alone, through the one
+# exporter (`rlx_core::export`). With `runner`, `--check` decodes the package
+# against the family's own `LmRunner`.
+export = [
+    "rlx-core/export",
+    # `--check` tokenizes its prompts with the checkpoint's tokenizer.json.
+    "rlx-core/tokenizer",
+    "dep:tokenizers",
+    "dep:rlx-text",
+    "rlx-qwen3?/export",
+    "rlx-gemma?/export",
+    "rlx-qwen3-vl?/export",
+    "rlx-qwen25-vl?/export",
+    "rlx-qwen35?/export",
+    "rlx-embed?/export",
+    "rlx-whisper?/export",
+    "rlx-siglip2?/export",
+    "rlx-lfm?/export",
+    "rlx-llama4?/export",
+    "rlx-minimax?/export",
+    "rlx-dinov2?/export",
+    "rlx-dinov3?/export",
+    "rlx-uni2?/export",
+    "rlx-embeddinggemma?/export",
+    "rlx-jina-v5?/export",
+    "rlx-snac?/export",
+    "rlx-nanocodec?/export",
+    "rlx-wavtokenizer?/export",
+    "rlx-xcodec?/export",
+    "rlx-vibevoice?/export",
+    "rlx-facodec?/export",
+    "rlx-encodec?/export",
+    "rlx-speechtokenizer?/export",
+    "rlx-dac?/export",
+    "rlx-mimi?/export",
+    "rlx-bioclip2?/export",
+    "rlx-ten-vad?/export",
+    "rlx-moonshine-streaming?/export",
+    "rlx-kokoro?/export",
+    "rlx-piper?/export",
+    "rlx-supertonic?/export",
+    "rlx-luxtts?/export",
+    "rlx-zipvoice?/export",
+    "rlx-f5tts?/export",
+    "rlx-melotts?/export",
+    "rlx-openvoice?/export",
+    "rlx-parlertts?/export",
+    "rlx-moss-nano?/export",
+    "rlx-llama32?/export",
+    "rlx-orpheus?/export",
+    "rlx-maya1?/export",
+    "rlx-neutts?/export",
+    "rlx-soprano?/export",
+    "rlx-chatterbox?/export",
+    "rlx-kittentts2?/export",
+    "rlx-miratts?/export",
+    "rlx-sesame?/export",
+    "rlx-zonos?/export",
+    "rlx-metavoice?/export",
+    "rlx-gepard?/export",
+    "rlx-pocket-tts?/export",
+    "rlx-voxtral-tts?/export",
+    "rlx-fish?/export",
+    "rlx-tts?/export",
+    "rlx-tada?/export",
+    "rlx-nemotron-asr?/export",
+    "rlx-parakeet?/export",
+    "rlx-funasr?/export",
+    "rlx-qwen3-asr?/export",
+    "rlx-voxtral?/export",
+    "rlx-wake?/export",
+    "rlx-openwakeword?/export",
+    "rlx-sanotts?/export",
+    "rlx-inflect-nano?/export",
+    "rlx-kyutai-tts?/export",
+    "rlx-moshi?/export",
+    "rlx-qwen3-tts?/export",
+    "rlx-nanbeige?/export",
+    "rlx-hy-mt?/export",
+    "rlx-neuralhash?/export",
+    "rlx-upscale?/export",
+    "rlx-birefnet?/export",
+    "rlx-subject-lift?/export",
+    "rlx-conformer-ctc?/export",
+    "rlx-wespeaker?/export",
+    "rlx-timestral?/export",
+    "rlx-sam?/export",
+    "rlx-pplx-decider?/export",
+    "rlx-d1?/export",
+    "rlx-kev?/export",
+    "rlx-carbon?/export",
+    "rlx-minicpm-v?/export",
+    "rlx-vad?/export",
+    "rlx-moonshine?/export",
+]
 vad = ["dep:rlx-vad"]
 ten-vad = ["dep:rlx-ten-vad"]
 wake = ["dep:rlx-wake"]
@@ -263,6 +432,7 @@ voxtral = ["dep:rlx-voxtral"]
 qwen3-asr = ["dep:rlx-qwen3-asr"]
 vibevoice-asr = ["dep:rlx-vibevoice-asr"]
 conformer-ctc = ["dep:rlx-conformer-ctc"]
+wespeaker = ["dep:rlx-wespeaker"]
 funasr = ["dep:rlx-funasr"]
 nemotron-asr = ["dep:rlx-nemotron-asr"]
 wav2vec2-bert = ["dep:rlx-wav2vec2-bert"]
@@ -284,6 +454,16 @@ luxtts = ["dep:rlx-luxtts"]
 zipvoice = ["dep:rlx-zipvoice"]
 moss-nano = ["dep:rlx-moss-nano"]
 maya1 = ["dep:rlx-maya1"]
+soprano = ["dep:rlx-soprano"]
+kittentts2 = ["dep:rlx-kittentts2"]
+sesame = ["dep:rlx-sesame"]
+zonos = ["dep:rlx-zonos"]
+pocket-tts = ["dep:rlx-pocket-tts"]
+fish = ["dep:rlx-fish"]
+tada = ["dep:rlx-tada"]
+sanotts = ["dep:rlx-sanotts"]
+inflect-nano = ["dep:rlx-inflect-nano"]
+parakeet = ["dep:rlx-parakeet"]
 miratts = ["dep:rlx-miratts"]
 f5tts = ["dep:rlx-f5tts"]
 piper = ["dep:rlx-piper"]
@@ -320,6 +500,7 @@ runner = [
     "llama4",
     "mllama",
     "minimax",
+    "flint",
     "dinov2",
     "dinov3",
     "uni2",
@@ -332,7 +513,18 @@ runner = [
 ]
 
 # ── Capability groups ───────────────────────────────────────────────────────
-encoders = ["bert", "clinicalbert", "nomic", "vision", "embed", "dinov2", "uni2", "bioclip2"]
+encoders = [
+    "bert",
+    "clinicalbert",
+    "nomic",
+    "vision",
+    "embed",
+    "embeddinggemma",
+    "jina-v5",
+    "dinov2",
+    "uni2",
+    "bioclip2",
+]
 llm = [
     "runner",
     "qwen3",
@@ -363,6 +555,7 @@ llm = [
 asr = [
     "whisper",
     "moonshine",
+    "moonshine-streaming",
     "wav2vec2-bert",
     "wav2vec2-asr",
     "voxtral",
@@ -394,7 +587,9 @@ vision-models = [
     "locateanything",
     "jina-ocr",
     "unlimited-ocr",
+    "flux1",
     "flux2",
+    "flux3",
     "diamond",
     "dinov2",
     "uni2",
@@ -458,21 +653,29 @@ metal = [
     "rlx-hoct?/metal",
     "rlx-bioclip2?/metal",
     "rlx-embed?/metal",
+    "rlx-flux1?/metal",
+    "rlx-flux3?/metal",
     "rlx-flux2?/metal",
     "rlx-gemma?/metal",
     "rlx-granite?/metal",
     "rlx-llada2?/metal",
+    "rlx-flint?/metal",
     "rlx-llama32?/metal",
     "rlx-lfm?/metal",
     "rlx-locateanything?/metal",
     "rlx-jina-ocr?/metal",
     "rlx-unlimited-ocr?/metal",
+    "rlx-minicpm-v?/metal",
+    "rlx-minicpm-sala?/metal",
     "rlx-minicpm5?/metal",
     "rlx-nanbeige?/metal",
     "rlx-tinyllama?/metal",
     "rlx-hy-mt?/metal",
     "rlx-translategemma?/metal",
     "rlx-moonshine?/metal",
+    "rlx-moonshine-streaming?/metal",
+    "rlx-embeddinggemma?/metal",
+    "rlx-jina-v5?/metal",
     "rlx-voice-gender?/metal",
     "rlx-mistral?/metal",
     "rlx-moshi?/metal",
@@ -514,6 +717,7 @@ metal = [
     "rlx-funasr?/metal",
     "rlx-conformer-ctc?/metal",
     "rlx-timesfm3?/metal",
+    "rlx-timestral?/metal",
     "rlx-voxtral-tts?/metal",
     "rlx-wav2vec2-bert?/metal",
     "rlx-whisper?/metal",
@@ -544,21 +748,29 @@ mlx = [
     "rlx-hoct?/mlx",
     "rlx-bioclip2?/mlx",
     "rlx-embed?/mlx",
+    "rlx-flux1?/mlx",
+    "rlx-flux3?/mlx",
     "rlx-flux2?/mlx",
     "rlx-gemma?/mlx",
     "rlx-granite?/mlx",
     "rlx-llada2?/mlx",
+    "rlx-flint?/mlx",
     "rlx-llama32?/mlx",
     "rlx-lfm?/mlx",
     "rlx-locateanything?/mlx",
     "rlx-jina-ocr?/mlx",
     "rlx-unlimited-ocr?/mlx",
+    "rlx-minicpm-v?/mlx",
+    "rlx-minicpm-sala?/mlx",
     "rlx-minicpm5?/mlx",
     "rlx-nanbeige?/mlx",
     "rlx-tinyllama?/mlx",
     "rlx-hy-mt?/mlx",
     "rlx-translategemma?/mlx",
     "rlx-moonshine?/mlx",
+    "rlx-moonshine-streaming?/mlx",
+    "rlx-embeddinggemma?/mlx",
+    "rlx-jina-v5?/mlx",
     "rlx-voice-gender?/mlx",
     "rlx-mistral?/mlx",
     "rlx-moshi?/mlx",
@@ -600,6 +812,7 @@ mlx = [
     "rlx-funasr?/mlx",
     "rlx-conformer-ctc?/mlx",
     "rlx-timesfm3?/mlx",
+    "rlx-timestral?/mlx",
     "rlx-voxtral-tts?/mlx",
     "rlx-wav2vec2-bert?/mlx",
     "rlx-whisper?/mlx",
@@ -624,6 +837,9 @@ coreml = [
     "rlx-hy-mt?/coreml",
     "rlx-translategemma?/coreml",
     "rlx-moonshine?/coreml",
+    "rlx-moonshine-streaming?/coreml",
+    "rlx-embeddinggemma?/coreml",
+    "rlx-jina-v5?/coreml",
     "rlx-voice-gender?/coreml",
     "rlx-phi?/coreml",
     "rlx-qwen3?/coreml",
@@ -660,6 +876,8 @@ gpu = [
     "rlx-hoct?/gpu",
     "rlx-bioclip2?/gpu",
     "rlx-embed?/gpu",
+    "rlx-flux1?/gpu",
+    "rlx-flux3?/gpu",
     "rlx-flux2?/gpu",
     "rlx-gemma?/gpu",
     "rlx-granite?/gpu",
@@ -669,12 +887,17 @@ gpu = [
     "rlx-locateanything?/gpu",
     "rlx-jina-ocr?/gpu",
     "rlx-unlimited-ocr?/gpu",
+    "rlx-minicpm-v?/gpu",
+    "rlx-minicpm-sala?/gpu",
     "rlx-minicpm5?/gpu",
     "rlx-nanbeige?/gpu",
     "rlx-tinyllama?/gpu",
     "rlx-hy-mt?/gpu",
     "rlx-translategemma?/gpu",
     "rlx-moonshine?/gpu",
+    "rlx-moonshine-streaming?/gpu",
+    "rlx-embeddinggemma?/gpu",
+    "rlx-jina-v5?/gpu",
     "rlx-voice-gender?/gpu",
     "rlx-mistral?/gpu",
     "rlx-moshi?/gpu",
@@ -716,6 +939,7 @@ gpu = [
     "rlx-funasr?/gpu",
     "rlx-conformer-ctc?/gpu",
     "rlx-timesfm3?/gpu",
+    "rlx-timestral?/gpu",
     "rlx-voxtral-tts?/gpu",
     "rlx-wav2vec2-bert?/gpu",
     "rlx-whisper?/gpu",
@@ -727,7 +951,7 @@ gpu = [
     "rlx-porcupine?/gpu",
     "rlx-voxrt?/gpu",
 ]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
@@ -750,6 +974,8 @@ vulkan = [
     "rlx-hoct?/vulkan",
     "rlx-bioclip2?/vulkan",
     "rlx-embed?/vulkan",
+    "rlx-flux1?/vulkan",
+    "rlx-flux3?/vulkan",
     "rlx-flux2?/vulkan",
     "rlx-gemma?/vulkan",
     "rlx-granite?/vulkan",
@@ -759,12 +985,17 @@ vulkan = [
     "rlx-locateanything?/vulkan",
     "rlx-jina-ocr?/vulkan",
     "rlx-unlimited-ocr?/vulkan",
+    "rlx-minicpm-v?/vulkan",
+    "rlx-minicpm-sala?/vulkan",
     "rlx-minicpm5?/vulkan",
     "rlx-nanbeige?/vulkan",
     "rlx-tinyllama?/vulkan",
     "rlx-hy-mt?/vulkan",
     "rlx-translategemma?/vulkan",
     "rlx-moonshine?/vulkan",
+    "rlx-moonshine-streaming?/vulkan",
+    "rlx-embeddinggemma?/vulkan",
+    "rlx-jina-v5?/vulkan",
     "rlx-voice-gender?/vulkan",
     "rlx-mistral?/vulkan",
     "rlx-moshi?/vulkan",
@@ -794,6 +1025,7 @@ vulkan = [
     "rlx-funasr?/vulkan",
     "rlx-conformer-ctc?/vulkan",
     "rlx-timesfm3?/vulkan",
+    "rlx-timestral?/vulkan",
     "rlx-voxtral-tts?/vulkan",
     "rlx-wav2vec2-bert?/vulkan",
     "rlx-whisper?/vulkan",
@@ -822,6 +1054,8 @@ cuda = [
     "rlx-hoct?/cuda",
     "rlx-bioclip2?/cuda",
     "rlx-embed?/cuda",
+    "rlx-flux1?/cuda",
+    "rlx-flux3?/cuda",
     "rlx-flux2?/cuda",
     "rlx-gemma?/cuda",
     "rlx-granite?/cuda",
@@ -831,12 +1065,17 @@ cuda = [
     "rlx-locateanything?/cuda",
     "rlx-jina-ocr?/cuda",
     "rlx-unlimited-ocr?/cuda",
+    "rlx-minicpm-v?/cuda",
+    "rlx-minicpm-sala?/cuda",
     "rlx-minicpm5?/cuda",
     "rlx-nanbeige?/cuda",
     "rlx-tinyllama?/cuda",
     "rlx-hy-mt?/cuda",
     "rlx-translategemma?/cuda",
     "rlx-moonshine?/cuda",
+    "rlx-moonshine-streaming?/cuda",
+    "rlx-embeddinggemma?/cuda",
+    "rlx-jina-v5?/cuda",
     "rlx-voice-gender?/cuda",
     "rlx-mistral?/cuda",
     "rlx-moshi?/cuda",
@@ -878,6 +1117,7 @@ cuda = [
     "rlx-funasr?/cuda",
     "rlx-conformer-ctc?/cuda",
     "rlx-timesfm3?/cuda",
+    "rlx-timestral?/cuda",
     "rlx-voxtral-tts?/cuda",
     "rlx-wav2vec2-bert?/cuda",
     "rlx-whisper?/cuda",
@@ -907,6 +1147,8 @@ rocm = [
     "rlx-hoct?/rocm",
     "rlx-bioclip2?/rocm",
     "rlx-embed?/rocm",
+    "rlx-flux1?/rocm",
+    "rlx-flux3?/rocm",
     "rlx-flux2?/rocm",
     "rlx-gemma?/rocm",
     "rlx-granite?/rocm",
@@ -916,12 +1158,17 @@ rocm = [
     "rlx-locateanything?/rocm",
     "rlx-jina-ocr?/rocm",
     "rlx-unlimited-ocr?/rocm",
+    "rlx-minicpm-v?/rocm",
+    "rlx-minicpm-sala?/rocm",
     "rlx-minicpm5?/rocm",
     "rlx-nanbeige?/rocm",
     "rlx-tinyllama?/rocm",
     "rlx-hy-mt?/rocm",
     "rlx-translategemma?/rocm",
     "rlx-moonshine?/rocm",
+    "rlx-moonshine-streaming?/rocm",
+    "rlx-embeddinggemma?/rocm",
+    "rlx-jina-v5?/rocm",
     "rlx-voice-gender?/rocm",
     "rlx-mistral?/rocm",
     "rlx-moshi?/rocm",
@@ -956,6 +1203,7 @@ rocm = [
     "rlx-funasr?/rocm",
     "rlx-conformer-ctc?/rocm",
     "rlx-timesfm3?/rocm",
+    "rlx-timestral?/rocm",
     "rlx-asr?/rocm",
     "rlx-voxtral-tts?/rocm",
     "rlx-wav2vec2-bert?/rocm",
@@ -1116,6 +1364,11 @@ required-features = ["runner"]
 path = "examples/skill_replacement.rs"
 
 [[bin]]
+name = "rlx-export"
+path = "src/bin/rlx_export.rs"
+required-features = ["export"]
+
+[[bin]]
 name = "rlx-run"
 path = "src/bin/rlx_run.rs"
 # Drives each family's `cli::run`; needs the generic runner stack plus minicpm5.
@@ -1187,7 +1440,7 @@ name = "llada2_numerical_parity"
 required-features = ["llada2"]
 
 [[test]]
-name = "llama32_apple_parity"
+name = "llama32_metal_mlx_parity"
 required-features = ["llama32"]
 
 [[test]]
@@ -1640,3 +1893,24 @@ required-features = ["whisper"]
 
 [lints]
 workspace = true
+
+[[example]]
+name = "lm_f64_check"
+required-features = ["train"]
+
+
+[[example]]
+name = "lm_format_ppl"
+required-features = ["train"]
+
+[[example]]
+name = "inplace_kv_ab"
+required-features = ["runner"]
+
+[[example]]
+name = "inplace_kv_matrix"
+required-features = ["runner"]
+
+[[example]]
+name = "prefill_scaling"
+required-features = ["runner"]

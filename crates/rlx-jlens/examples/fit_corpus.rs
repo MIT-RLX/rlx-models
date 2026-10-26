@@ -120,7 +120,7 @@ fn weights_path(explicit: Option<String>) -> Result<std::path::PathBuf> {
     if let Some(p) = explicit {
         return Ok(p.into());
     }
-    if let Ok(p) = std::env::var("RLX_JLENS_QWEN35_GGUF") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_JLENS_QWEN35_GGUF") {
         return Ok(p.into());
     }
     let dir =

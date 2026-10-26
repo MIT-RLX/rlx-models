@@ -40,6 +40,8 @@
 //! [TEN-framework/ten-vad]: https://github.com/TEN-framework/ten-vad
 
 pub mod device;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod model;
 pub mod segments;
 pub mod session;

@@ -182,13 +182,17 @@ pub(crate) fn tensor_view_to_f32(raw: &[u8], dtype: safetensors::Dtype) -> Resul
         safetensors::Dtype::F32 => {
             ensure!(raw.len().is_multiple_of(4));
             Ok(raw
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect())
         }
         safetensors::Dtype::BF16 => Ok(raw
-            .chunks_exact(2)
-            .map(|c| half::bf16::from_le_bytes(c.try_into().unwrap()).to_f32())
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| half::bf16::from_le_bytes(*c).to_f32())
             .collect()),
         other => bail!("unsupported overlay dtype {other:?}"),
     }
@@ -489,7 +493,7 @@ mod tests {
 
     #[test]
     fn init_encoder_from_decoder_seeds_input_proj() {
-        let dir = match std::env::var("RLX_VOXTRAL_TTS_DIR") {
+        let dir = match rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR") {
             Ok(d) if !d.is_empty() => std::path::PathBuf::from(d),
             _ => {
                 eprintln!(

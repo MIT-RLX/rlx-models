@@ -16,6 +16,7 @@ publish = false
 # feature pulls the rlx tensor/autodiff/optim stack + Metal backend for the
 # Phase-0 training spike (and, later, the real encoder-decoder).
 [dependencies]
+rlx-ir = { workspace = true }
 # Base features are inference-only (`eval-metal` → CPU+Metal forward). The
 # `train` feature unifies `optim` on top for the autodiff/optimizer stack; the
 # DEFAULT build pulls neither (pure-std, zero-dep).

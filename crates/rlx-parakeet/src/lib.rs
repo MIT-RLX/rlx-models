@@ -38,11 +38,12 @@
 //!   prediction net (reused from `rlx-nemotron-asr`) + the [`TdtJoint`], and
 //!   exposes [`Parakeet::transcribe`] (`pcm → text`) driving the TDT decode.
 //!
-//! Status: arch + CPU smoke + **e2e wired**. The `.nemo` → log-mel → encoder →
-//! TDT greedy decode → SentencePiece text path is implemented in
-//! [`runner::Parakeet`]; real-weight transcription parity is gated on a local
-//! Parakeet-TDT `.nemo` checkpoint (not yet present).
+//! Status: checked against Hugging Face transformers on
+//! `nvidia/parakeet-tdt-0.6b-v3` (transcripts word for word); exported as an
+//! `.rlxp` package with feature `export`.
 
+#[cfg(feature = "export")]
+pub mod export;
 pub mod joint;
 pub mod runner;
 pub mod transducer;

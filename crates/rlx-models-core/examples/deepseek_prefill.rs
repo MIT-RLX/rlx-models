@@ -29,7 +29,9 @@ fn read_npy_f32(p: &Path) -> Result<Vec<f32>> {
     anyhow::ensure!(&b[..6] == b"\x93NUMPY", "not npy");
     let hlen = 10 + u16::from_le_bytes([b[8], b[9]]) as usize;
     Ok(b[hlen..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
@@ -43,7 +45,7 @@ fn main() -> Result<()> {
     let u = |k: &str| c[k].as_u64().unwrap() as usize;
     // DeepSeek YaRN: scale the rope inv_freq + fold mscale² into the attention scale.
     let qk = u("qk_nope_head_dim") + u("qk_rope_head_dim");
-    let no_yarn = std::env::var("RLX_DS_NOYARN").is_ok();
+    let no_yarn = rlx_ir::env::var_result("RLX_DS_NOYARN").is_ok();
     let rs = c.get("rope_scaling").filter(|_| !no_yarn);
     let (rope_scaling, attn_score_scale) = match rs
         .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("yarn"))
@@ -94,7 +96,7 @@ fn main() -> Result<()> {
         rope_theta: c["rope_theta"].as_f64().unwrap_or(10000.0),
         rope_scaling,
         attn_score_scale,
-        rope_neox: std::env::var("RLX_DS_NEOX").is_ok(),
+        rope_neox: rlx_ir::env::var_result("RLX_DS_NEOX").is_ok(),
         rms_norm_eps: c["rms_norm_eps"].as_f64().unwrap_or(1e-5) as f32,
     };
     eprintln!(

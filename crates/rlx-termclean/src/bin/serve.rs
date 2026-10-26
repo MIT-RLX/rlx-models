@@ -71,7 +71,7 @@ async fn termclean(State(st): State<AppState>, Json(req): Json<Req>) -> Json<Res
 
 #[tokio::main]
 async fn main() {
-    let mut weights: Option<String> = std::env::var("RLX_TERMCLEAN_WEIGHTS").ok();
+    let mut weights: Option<String> = rlx_ir::env::var_result("RLX_TERMCLEAN_WEIGHTS").ok();
     let mut host = "127.0.0.1".to_string();
     let mut port: u16 = 8081;
 

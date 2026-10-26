@@ -11,10 +11,11 @@ categories.workspace = true
 repository.workspace = true
 
 [dependencies]
+rlx-ir = { workspace = true }
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
 rlx-runtime = { workspace = true }
-rlx-qwen35 = { path = "../rlx-qwen35", version = "0.2.16", default-features = false }
+rlx-qwen35 = { path = "../rlx-qwen35", version = "0.2.19", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -35,7 +36,7 @@ gpu = ["rlx-runtime/gpu", "rlx-qwen35/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-qwen35/vulkan"]
 coreml = ["rlx-runtime/coreml", "rlx-qwen35/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]

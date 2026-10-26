@@ -35,7 +35,7 @@ use rlx_voxtral_tts::{VoxtralTtsConfig, VoxtralTtsWeightStore};
 
 #[allow(dead_code)]
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("RLX_VOXTRAL_TTS_DIR")
+    rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("consolidated.safetensors").is_file())

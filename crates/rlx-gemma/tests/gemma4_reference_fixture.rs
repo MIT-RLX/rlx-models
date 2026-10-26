@@ -55,7 +55,7 @@
 //! ```bash
 //! RLX_GEMMA4_FIXTURE=/path/to/fixture \
 //!   cargo test -p rlx-gemma --test gemma4_reference_fixture \
-//!     --features apple-silicon -- --nocapture
+//!     --features macos-gpu -- --nocapture
 //! ```
 
 use anyhow::{Context, Result};
@@ -71,7 +71,7 @@ struct ReferenceDump {
 }
 
 fn fixture_dir() -> Option<PathBuf> {
-    std::env::var_os("RLX_GEMMA4_FIXTURE").map(PathBuf::from)
+    rlx_ir::env::var_os("RLX_GEMMA4_FIXTURE").map(PathBuf::from)
 }
 
 fn load_reference(dir: &std::path::Path) -> Result<ReferenceDump> {

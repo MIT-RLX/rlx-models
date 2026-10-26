@@ -155,7 +155,7 @@ def forward_folded(feat389: np.ndarray, pack: dict) -> tuple[np.ndarray, np.ndar
 
 
 def teacher_encoder_chunks(teacher_work: Path, wav: Path) -> list[np.ndarray] | None:
-    """Load Apple E5 encoder caches [64×512] when golden teacher_work exists."""
+    """Load E5 encoder caches [64×512] when golden teacher_work exists."""
     stem = Path(wav).stem
     d = teacher_work / stem
     if not d.is_dir():

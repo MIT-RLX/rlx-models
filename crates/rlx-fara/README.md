@@ -21,7 +21,7 @@ just fara --model-dir .cache/fara/4b --image shot.png \
 Or:
 
 ```bash
-cargo run -p rlx-fara --release --features apple-silicon,hf-download -- \
+cargo run -p rlx-fara --release --features macos-gpu,hf-download -- \
   --size 4b --download --image shot.png --goal "Open example.com" --device cpu
 ```
 

@@ -50,8 +50,10 @@ sys.stdout.buffer.write(v.astype(np.float32).tobytes())
         .output()
         .expect("python");
     out.stdout
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
@@ -178,8 +180,10 @@ fn main() -> anyhow::Result<()> {
         );
         if let Some((wave, _)) = outs.first() {
             let peak = wave
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()).abs())
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c).abs())
                 .fold(0.0f32, f32::max);
             eprintln!(
                 "seq_cache waveform peak={peak:.4e} samples={}",
@@ -240,8 +244,10 @@ fn main() -> anyhow::Result<()> {
     let outs = run_parity_inputs(&mut graph, seq, &ids, &style);
     if let Some((wave, _)) = outs.first() {
         let peak = wave
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()).abs())
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c).abs())
             .fold(0.0f32, f32::max);
         eprintln!(
             "graph output waveform peak={peak:.4e} samples={}",

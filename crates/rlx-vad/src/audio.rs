@@ -63,7 +63,7 @@ pub fn parse_wav_mono_f32(bytes: &[u8]) -> Result<(usize, Vec<f32>)> {
         bail!("truncated WAV data");
     }
     let mut pcm = Vec::with_capacity(data_len / 2);
-    for chunk in bytes[off..off + data_len].chunks_exact(2) {
+    for chunk in bytes[off..off + data_len].as_chunks::<2>().0.iter() {
         let s = i16::from_le_bytes([chunk[0], chunk[1]]);
         pcm.push(s as f32 / i16::MAX as f32);
     }

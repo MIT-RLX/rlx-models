@@ -129,6 +129,43 @@ pub fn build_qwen3_graph_sized_last_logits_packed(
     seq: usize,
     with_kv_outputs: bool,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>)> {
+    build_qwen3_graph_sized_last_logits_packed_ext(cfg, weights, batch, seq, with_kv_outputs, false)
+}
+
+/// [`build_qwen3_graph_sized_last_logits_packed`] that, with `host_embed`,
+/// takes an `inputs_embeds` `[batch, seq, hidden]` input instead of holding
+/// the token-embedding table (see `HostEmbed` in the generator).
+pub fn build_qwen3_graph_sized_last_logits_packed_ext(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    seq: usize,
+    with_kv_outputs: bool,
+    host_embed: bool,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>)> {
+    build_qwen3_graph_sized_last_logits_packed_dyn(
+        cfg,
+        weights,
+        batch,
+        seq,
+        with_kv_outputs,
+        host_embed,
+        false,
+    )
+}
+
+/// [`build_qwen3_graph_sized_last_logits_packed_ext`] that can read the
+/// last real position from a `last_token_idx` input, so one graph compiled
+/// at a bucketed length serves every shorter, end-padded prompt.
+pub fn build_qwen3_graph_sized_last_logits_packed_dyn(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    seq: usize,
+    with_kv_outputs: bool,
+    host_embed: bool,
+    last_token_from_input: bool,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>)> {
     let opts = crate::flow::Qwen3PrefillOpts {
         batch,
         seq,
@@ -136,13 +173,13 @@ pub fn build_qwen3_graph_sized_last_logits_packed(
         with_kv_outputs,
         with_qk_outputs: false,
         last_logits_only: true,
-        last_token_from_input: false,
+        last_token_from_input,
         packed: true,
         profile: None,
         rope_cos: None,
         rope_sin: None,
     };
-    let mut built = crate::flow::build_qwen3_prefill_built(cfg, weights, &opts)?;
+    let mut built = crate::flow::build_qwen3_prefill_built_with(cfg, weights, &opts, host_embed)?;
     let packed_params: Vec<(String, Vec<u8>)> = std::mem::take(&mut built.typed_params)
         .into_iter()
         .map(|(name, bytes, _dtype)| (name, bytes))
@@ -363,15 +400,37 @@ pub fn build_qwen3_decode_graph_sized_packed(
     batch: usize,
     past_seq: usize,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>)> {
-    use crate::flow::{Qwen3DecodeOpts, build_qwen3_decode_built};
+    build_qwen3_decode_graph_sized_packed_ext(cfg, weights, batch, past_seq, false, false)
+}
+
+/// [`build_qwen3_decode_graph_sized_packed`] with an optional host-gathered
+/// embedding (`inputs_embeds` `[batch, 1, hidden]` replaces `input_ids`) and
+/// an optional `mask` input `[batch, past_seq + 1]` (as the F32
+/// [`build_qwen3_decode_graph_sized_ext`] takes).
+///
+/// A bucketed caller needs the mask: without it the graph's causal mask hides
+/// nothing from the one decode query, so the zero-padded rows between the real
+/// context and the bucket's top attend too — each a score-0 key that takes a
+/// share of the softmax. Small next to real scores, but it grows with the
+/// padding and changes the generated text with the bucket size.
+pub fn build_qwen3_decode_graph_sized_packed_ext(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    past_seq: usize,
+    host_embed: bool,
+    use_custom_mask: bool,
+) -> Result<(Graph, HashMap<String, Vec<f32>>, Vec<(String, Vec<u8>)>)> {
+    use crate::flow::{Qwen3DecodeOpts, build_qwen3_decode_built_with};
 
     let opts = Qwen3DecodeOpts {
         batch,
         past_seq,
         packed: true,
+        use_custom_mask,
         ..Default::default()
     };
-    let mut built = build_qwen3_decode_built(cfg, weights, &opts)?;
+    let mut built = build_qwen3_decode_built_with(cfg, weights, &opts, host_embed)?;
     // Move the U8 blobs out before lowering (the graph keeps only the U8 param
     // *placeholders*; the bytes ride alongside for the runner to bind).
     let packed_params: Vec<(String, Vec<u8>)> = std::mem::take(&mut built.typed_params)

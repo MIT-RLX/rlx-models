@@ -27,6 +27,8 @@ pub mod cli;
 pub mod codec;
 pub mod config;
 pub mod decode_shard_layer;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod generation;
 pub mod lm_flow;
 pub mod load;

@@ -1,0 +1,49 @@
+[package]
+name = "rlx-flux1"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "FLUX.1 [dev]/[schnell] text-to-image (T5-XXL + CLIP-L + MMDiT + VAE, diffusers LoRAs) for RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-flux2 = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+safetensors = { workspace = true }
+half = { workspace = true }
+image = { workspace = true }
+tokenizers = { workspace = true }
+rayon = "1.10"
+
+[[bin]]
+name = "rlx-flux1"
+path = "src/bin/rlx_flux1.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-flux2/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-flux2/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-flux2/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-flux2/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-flux2/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-flux2/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+macos-gpu = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]

@@ -1,7 +1,7 @@
 //! Compare greedy backbone audio-token IDs: ORT (KV cache) vs RLX full-recompute.
 //!
 //! ```bash
-//! cargo run -p rlx-soprano --release --example backbone_tok_diag --features apple-silicon
+//! cargo run -p rlx-soprano --release --example backbone_tok_diag --features macos-gpu
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -12,9 +12,9 @@ use rlx_soprano::{DEFAULT_LOCAL_DIR, InferOpts, NativeSoprano};
 
 fn main() -> anyhow::Result<()> {
     let dir = PathBuf::from(DEFAULT_LOCAL_DIR);
-    let text = std::env::var("RLX_TEXT")
+    let text = rlx_ir::env::var_result("RLX_TEXT")
         .unwrap_or_else(|_| "The quick brown fox jumps over the lazy dog.".into());
-    let n: usize = std::env::var("RLX_STEPS")
+    let n: usize = rlx_ir::env::var_result("RLX_STEPS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(48);

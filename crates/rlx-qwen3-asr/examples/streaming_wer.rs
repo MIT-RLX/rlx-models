@@ -67,11 +67,11 @@ fn main() -> Result<()> {
         return skip(&format!("RLX_QWEN3_WAV not found: {}", wav_path.display()));
     }
 
-    let device_s = std::env::var("RLX_QWEN3_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device_s = rlx_ir::env::var_result("RLX_QWEN3_DEVICE").unwrap_or_else(|_| "cpu".into());
     let device = parse_standard_device("qwen3-asr", &device_s)?;
-    let system = std::env::var("RLX_QWEN3_SYSTEM").unwrap_or_default();
-    let chunks = parse_chunks(&std::env::var("RLX_QWEN3_CHUNKS").unwrap_or_default());
-    let reference = std::env::var("RLX_QWEN3_REFERENCE")
+    let system = rlx_ir::env::var_result("RLX_QWEN3_SYSTEM").unwrap_or_default();
+    let chunks = parse_chunks(&rlx_ir::env::var_result("RLX_QWEN3_CHUNKS").unwrap_or_default());
+    let reference = rlx_ir::env::var_result("RLX_QWEN3_REFERENCE")
         .ok()
         .map(std::fs::read_to_string)
         .transpose()?
@@ -187,7 +187,7 @@ fn print_report(rows: &[Row], have_reference: bool) {
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
-    std::env::var(key).ok().map(PathBuf::from)
+    rlx_ir::env::read(key).ok().map(PathBuf::from)
 }
 
 fn skip(reason: &str) -> Result<()> {

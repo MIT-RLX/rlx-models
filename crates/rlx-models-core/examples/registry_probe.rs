@@ -33,7 +33,7 @@ fn main() {
             m.id, m.runner, m.arches
         );
     }
-    if let Ok(p) = std::env::var("RLX_REGISTRY_PROBE_GGUF")
+    if let Ok(p) = rlx_ir::env::var_result("RLX_REGISTRY_PROBE_GGUF")
         && !p.is_empty()
     {
         let path = std::path::Path::new(&p);

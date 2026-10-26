@@ -44,11 +44,15 @@ fn main() -> anyhow::Result<()> {
     for (i, (name, rf)) in labels.iter().zip(refs).enumerate() {
         let v: Vec<f32> = outs[i]
             .0
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let reference: Vec<f32> = std::fs::read(dir.join(rf))?
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         println!(

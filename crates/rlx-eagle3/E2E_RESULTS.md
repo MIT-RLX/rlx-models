@@ -15,7 +15,7 @@ cargo run -p rlx-eagle3 --release --features "mlx metal" \
 - Compiles **3 graphs** per backend (past_seq=0, 1, 2), each runs once per `propose()`
 - KV cache maintained host-side across the 3 steps
 - Greedy argmax sampling; d2t offset map applied per step
-- Hardware: Apple M4 Pro, 64 GiB unified, macOS
+- Hardware: M4 Pro, 64 GiB unified, macOS
 
 ## Results — tokens/second (higher is faster)
 
@@ -38,7 +38,7 @@ cargo run -p rlx-eagle3 --release --features "mlx metal" \
 
 ### Metal numerical drift
 
-Metal proposes a different sequence `[661, 51505, 43157]` vs CPU/MLX's `[808, 1872, 236751]`. This is the known Apple Silicon `simdgroup_float8x8` reduced-precision matmul issue — same drift that `rlx-gemma` workarounds with `RLX_METAL_PRECISE=1`.
+Metal proposes a different sequence `[661, 51505, 43157]` vs CPU/MLX's `[808, 1872, 236751]`. This is the known macOS arm64 `simdgroup_float8x8` reduced-precision matmul issue — same drift that `rlx-gemma` workarounds with `RLX_METAL_PRECISE=1`.
 
 Setting `RLX_METAL_PRECISE=1` on this bench **did not** fix it (still drifts to `[661, ...]`). The flag is read by `rlx-gemma`'s Metal sgemm path, not by the generic `Session::compile(Device::Metal)` route this bench uses. Plumbing the precise flag through rlx-runtime's Metal MIR lowering is the right fix — out of scope for this commit.
 
@@ -61,6 +61,6 @@ Fixed in `build_draft_step_graph`: at past_seq=0 we skip the concat with past_k/
 
 1. **Plumb `RLX_METAL_PRECISE` through `Session::compile`** so Metal numerical parity holds. Unlocks claiming Metal's 22 t/s as a real, parity-clean number.
 2. **Wire HIR draft into `Eagle3Speculator::propose`** in place of the scalar reference. Currently `propose()` panics with `unimplemented!()`; the HIR runner from this bench is the replacement.
-3. **Build verifier glue** (`rlx-gemma` → `VerifierHiddenSource`) so we can run a true end-to-end EAGLE3 pipeline (verifier + draft) and compare apples-to-apples vs llama.cpp's 6.1 t/s.
+3. **Build verifier glue** (`rlx-gemma` → `VerifierHiddenSource`) so we can run a true end-to-end EAGLE3 pipeline (verifier + draft) and compare like-for-like vs llama.cpp's 6.1 t/s.
 4. **f16/bf16 sweep on the full step.** Single-op dtype change didn't help; multi-op may.
 5. **MLX-side fix for `Op::Gather` host-eval** — add to `first_host_eval_op` so future graphs that include gather don't panic, just gracefully fall back to Lazy.

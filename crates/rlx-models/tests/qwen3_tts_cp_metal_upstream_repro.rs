@@ -77,11 +77,18 @@ fn print_upstream_repro(
 
 #[test]
 fn cp_metal_upstream_repro_prefill_cpu_parity() {
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -115,11 +122,18 @@ fn cp_metal_upstream_repro_prefill_cpu_parity() {
 
 #[test]
 fn cp_compiled_metal_session_vs_cpu_session() {
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -147,11 +161,18 @@ fn cp_metal_upstream_repro_prefill_metal_gap() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -178,8 +199,11 @@ fn cp_metal_upstream_repro_prefill_metal_gap() {
     let d = max_abs(&eager_last, &compiled_last);
     print_upstream_repro("Metal", "prefill", d, &eager_last, &compiled_last, cp_cfg);
     eprintln!("cp upstream repro prefill Metal max_abs = {d}");
-    if std::env::var("RLX_QWEN3_TTS_CP_METAL").ok().as_deref() == Some("1")
-        && std::env::var("RLX_QWEN3_TTS_METAL_COMPILED")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_METAL")
+        .ok()
+        .as_deref()
+        == Some("1")
+        && rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_COMPILED")
             .ok()
             .as_deref()
             == Some("1")

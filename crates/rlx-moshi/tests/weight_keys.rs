@@ -2,7 +2,7 @@ use rlx_moshi::{MoshiVariant, expected_lm_keys, load_lm_weights, open_lm, resolv
 use std::path::PathBuf;
 
 fn moshi_dir() -> Option<PathBuf> {
-    std::env::var("RLX_MOSHI_DIR")
+    rlx_ir::env::var_result("RLX_MOSHI_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("model.safetensors").is_file())

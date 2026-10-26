@@ -73,7 +73,9 @@ impl TextConfig {
             rope_scaling: None,
             num_loops: 1,
             skip_loop_final_norm: false,
-            rope_style: rlx_ir::RopeStyle::NeoX,
+            // Mistral-native (`consolidated`) q/k rotate adjacent pairs: vLLM
+            // permutes them to NeoX halves on load; unpermuted, they are GPT-J.
+            rope_style: rlx_ir::RopeStyle::GptJ,
             gguf_arch: None,
             rope_dim: None,
             sliding_window: None,

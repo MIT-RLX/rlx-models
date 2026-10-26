@@ -49,7 +49,7 @@ static CACHE: OnceLock<Mutex<ExpertCache>> = OnceLock::new();
 fn cache() -> &'static Mutex<ExpertCache> {
     CACHE.get_or_init(|| {
         // budget from RLX_KIMI_EXPERT_CACHE (MB); 0/unset = accounting-only (no residency).
-        let budget = std::env::var("RLX_KIMI_EXPERT_CACHE")
+        let budget = rlx_ir::env::var_result("RLX_KIMI_EXPERT_CACHE")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0)
@@ -82,7 +82,8 @@ pub fn note_routing(rows: usize, n_uniq: usize) {
 
 /// Is any IO instrumentation active (cache residency OR stats reporting)?
 pub fn io_opt_active() -> bool {
-    std::env::var("RLX_KIMI_EXPERT_CACHE").is_ok() || std::env::var("RLX_KIMI_IO_STATS").is_ok()
+    rlx_ir::env::var_result("RLX_KIMI_EXPERT_CACHE").is_ok()
+        || rlx_ir::env::var_result("RLX_KIMI_IO_STATS").is_ok()
 }
 
 /// Fetch a cached expert (moving it to MRU). `None` on miss.

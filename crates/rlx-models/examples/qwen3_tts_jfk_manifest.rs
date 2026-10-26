@@ -268,7 +268,7 @@ fn transcript_quality(text: &str) -> i32 {
 fn open_whisper_runner() -> anyhow::Result<Option<WhisperRunner>> {
     use rlx_runtime::Device;
 
-    let weights = std::env::var("RLX_WHISPER_DIR")
+    let weights = rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("model.safetensors").is_file())
@@ -344,7 +344,9 @@ fn resample_ffmpeg_16k(path: &Path) -> anyhow::Result<Option<Vec<f32>>> {
         return Ok(None);
     }
     let pcm: Vec<f32> = bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Ok(Some(pcm))

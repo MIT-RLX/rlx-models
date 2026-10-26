@@ -178,7 +178,7 @@ RANK=0 WORLD=2 PEERS=10.0.0.1:29500,10.0.0.2:29500  my-trainer
 RANK=1 WORLD=2 PEERS=10.0.0.1:29500,10.0.0.2:29500  my-trainer
 ```
 
-`from_env` reads `RANK`/`WORLD` (+ `PEERS`, or `DISCOVER=1`; `TOPOLOGY=mesh|star`) via `rlx-driver`'s `Node`, so the wire is TCP, Thunderbolt on Apple Silicon, or in-process — unchanged. **Efficient by default:** every step packs all gradients into one bucket and does a single bandwidth-optimal ring all-reduce (K per-parameter reduces → one), the rank-0 weight sync fused into one broadcast. N-way DP is numerically identical to single-node training on the union of the shards — the crate's tests assert it.
+`from_env` reads `RANK`/`WORLD` (+ `PEERS`, or `DISCOVER=1`; `TOPOLOGY=mesh|star`) via `rlx-driver`'s `Node`, so the wire is TCP, Thunderbolt on macOS arm64, or in-process — unchanged. **Efficient by default:** every step packs all gradients into one bucket and does a single bandwidth-optimal ring all-reduce (K per-parameter reduces → one), the rank-0 weight sync fused into one broadcast. N-way DP is numerically identical to single-node training on the union of the shards — the crate's tests assert it.
 
 ### 2. One command, no hostfile — `--nnodes N`
 

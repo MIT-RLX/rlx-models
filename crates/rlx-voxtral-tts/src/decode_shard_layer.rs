@@ -15,6 +15,7 @@
 
 //! Decode layer for wgpu LM shards — global checkpoint keys, local `past_k_*` inputs.
 
+use rlx_flow::blocks::append_kv_row;
 use rlx_flow::blocks::{CustomStage, LlamaDecodeLayerSpec};
 use rlx_flow::{FlowStage, SideOutputs};
 use rlx_ir::HirGraphExt;
@@ -68,8 +69,16 @@ pub fn tts_decode_shard_layer(
             let q_rope = gb.rope(q, decode.cos, decode.sin, spec.head_dim);
             let k_rope = gb.rope(k, decode.cos, decode.sin, spec.head_dim);
 
-            let new_k = gb.concat_(vec![past_k, k_rope], 1);
-            let new_v = gb.concat_(vec![past_v, v], 1);
+            // Grow the K/V cache through the shared helper so this layer is
+            // ready for the in-place append the moment a flow declares the
+            // cache contract. Behaviour is UNCHANGED until then: with
+            // `decode.past_len == None` it emits exactly the `concat` it always
+            // did. Doing it this way round matters — a flow that declared a
+            // spare row against a hand-rolled `concat` here would write the new
+            // token at `past_len + 1` while this crate's readback takes a front
+            // prefix, so it would silently pick up a zero row instead.
+            let new_k = append_kv_row(&mut gb, past_k, k_rope, 1, decode.past_len);
+            let new_v = append_kv_row(&mut gb, past_v, v, 1, decode.past_len);
             kv_out.lock().expect("kv out").push(new_k);
             kv_out.lock().expect("kv out").push(new_v);
 

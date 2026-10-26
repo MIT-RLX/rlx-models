@@ -14,7 +14,7 @@ const WEIGHT_FILES: &[&str] = &[
 ];
 
 pub fn default_tsac_dir() -> PathBuf {
-    std::env::var("RLX_TSAC_DIR")
+    rlx_ir::env::var_result("RLX_TSAC_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/tsac"))
 }
@@ -26,7 +26,7 @@ pub fn resolve_install_dir(explicit: Option<&Path>) -> PathBuf {
 }
 
 pub fn resolve_tsac_bin(install_dir: &Path) -> PathBuf {
-    std::env::var("RLX_TSAC_BIN")
+    rlx_ir::env::var_result("RLX_TSAC_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|_| install_dir.join("tsac"))
 }

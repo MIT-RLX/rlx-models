@@ -10,7 +10,7 @@
 # Env:
 #   OUT_DIR      default /tmp/rlx-tts-asr-validate
 #   MODELS       comma list or "available" (default) / "all"
-#   FEATURES     cargo features for rlx-tts-bench (default rlx-tts,matrix-onnx,apple-silicon)
+#   FEATURES     cargo features for rlx-tts-bench (default rlx-tts,matrix-onnx,macos-gpu)
 #   SKIP_ASR=1   skip rlx-asr pass
 #   SKIP_EXACT=1 skip rlx-tts exact suite
 #   MIN_COVERAGE default 0.5 (Whisper content-word coverage gate via --fail-under-fox for fox)
@@ -19,7 +19,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 OUT_DIR="${OUT_DIR:-/tmp/rlx-tts-asr-validate}"
-FEATURES="${FEATURES:-rlx-tts,matrix-onnx,apple-silicon}"
+FEATURES="${FEATURES:-rlx-tts,matrix-onnx,macos-gpu}"
 MODELS="${MODELS:-available}"
 MIN_FOX="${MIN_FOX:-4}"
 export RLX_WHISPER_DIR="${RLX_WHISPER_DIR:-.cache/whisper-base.en}"

@@ -8,7 +8,7 @@
 
 Checkpoint inventory, tokenizer assembly, and greedy decode checks pass against the published HF weights (`just test-unlimited-ocr-parity`). Exact HF token/text e2e needs a Python env with `transformers≈4.46` (the checkpoint’s `transformers_version`) plus `addict` / `einops` / `easydict` / `torchvision` — set `RLX_UNLIMITED_OCR_PYTHON` to that interpreter. Newer transformers builds fail to import the custom `modeling_deepseekv2.py`.
 
-Backend matrix: synthetic tiny MoE `compile_built` + `.run` on CPU/Metal/wgpu (`just features=apple-silicon test-unlimited-ocr-backends`), including **Q8/Q4 packed-IR** prefill+decode (Q4 soft-pack asserts F16 `lm_head` + U8 experts). CUDA/ROCm/Vulkan compile via `--features all-backends` (runtime gated by `is_available`). MLX currently skips MoE run — `GroupedMatMul` / `DequantGrouped` runtime shapes diverge on that backend. Full-checkpoint greedy token parity vs CPU is env-gated (`RLX_UNLIMITED_OCR_TOKEN_PARITY=1` / `just features=apple-silicon test-unlimited-ocr-token-parity`) and forces F32 pack.
+Backend matrix: synthetic tiny MoE `compile_built` + `.run` on CPU/Metal/wgpu (`just features=macos-gpu test-unlimited-ocr-backends`), including **Q8/Q4 packed-IR** prefill+decode (Q4 soft-pack asserts F16 `lm_head` + U8 experts). CUDA/ROCm/Vulkan compile via `--features all-backends` (runtime gated by `is_available`). MLX currently skips MoE run — `GroupedMatMul` / `DequantGrouped` runtime shapes diverge on that backend. Full-checkpoint greedy token parity vs CPU is env-gated (`RLX_UNLIMITED_OCR_TOKEN_PARITY=1` / `just features=macos-gpu test-unlimited-ocr-token-parity`) and forces F32 pack.
 
 ## Architecture
 
@@ -72,14 +72,14 @@ PDF pages are rasterized with `pdftoppm` (Poppler) at 300 DPI.
 
 ```bash
 # Tiny synthetic MoE — memory + latency (mean/p50) + accuracy vs F32
-just features=apple-silicon bench-unlimited-ocr-lm-precision --device metal
+just features=macos-gpu bench-unlimited-ocr-lm-precision --device metal
 
 # Full HF LM — skip F32 pack in the sweep; still builds F32 ref for accuracy
-just features=apple-silicon bench-unlimited-ocr-lm-precision --full --device metal \
+just features=macos-gpu bench-unlimited-ocr-lm-precision --full --device metal \
   --precisions f16,q8_0,q4_0 --seq 8 --decode-steps 4 --greedy-steps 4
 
 # Latency only
-just features=apple-silicon bench-unlimited-ocr-lm-precision --device metal --no-accuracy
+just features=macos-gpu bench-unlimited-ocr-lm-precision --device metal --no-accuracy
 ```
 
 Columns: host pack MiB, U8 typed-param MiB, pack ms, prefill/decode mean+p50 ms, tok/s, Pearson corr vs F32, max|err|, top-1 match, top-K Jaccard %. Optional `--greedy-steps N` compares N greedy argmax tokens vs an F32 reference chain.
@@ -104,8 +104,8 @@ println!("{}", out.text);
 
 ```bash
 cargo test -p rlx-unlimited-ocr --lib
-just features=apple-silicon test-unlimited-ocr-backends        # tiny MoE compile+run
-just features=apple-silicon test-unlimited-ocr-token-parity    # real weights; large RAM
+just features=macos-gpu test-unlimited-ocr-backends        # tiny MoE compile+run
+just features=macos-gpu test-unlimited-ocr-token-parity    # real weights; large RAM
 cargo check -p rlx-unlimited-ocr --features all-backends
 just test-unlimited-ocr-parity   # needs RLX_UNLIMITED_OCR_DIR (+ optional RLX_UNLIMITED_OCR_PYTHON)
 ```
@@ -115,7 +115,7 @@ just test-unlimited-ocr-parity   # needs RLX_UNLIMITED_OCR_DIR (+ optional RLX_U
 - MoE LM on RLX backends (vision host); `--lm-precision auto|f32|f16|bf16|q8_0|q4_0`
 - Q8/Q4 packed IR; Q4 soft-packs attn/`lm_head`/dense/shared as F16
 - Metal+Q4 disables fused grouped GEMV by default until upstream ships the split-nibble `q4_0_mv_f32` fix (set `RLX_METAL_GROUPED_GEMV_DISABLE=0` on a fixed RLX build)
-- Bench: `just features=apple-silicon bench-unlimited-ocr-lm-precision --full --device metal --greedy-steps 4`
+- Bench: `just features=macos-gpu bench-unlimited-ocr-lm-precision --full --device metal --greedy-steps 4`
 
 Publish: upstream `rlx*` **0.2.14** is on crates.io; this repo’s `rlx-cli` / `rlx-models-core` **0.2.14** are not yet — `./scripts/publish.sh` from tier 0 (`--list`). `rlx-unlimited-ocr` is tier 3.
 

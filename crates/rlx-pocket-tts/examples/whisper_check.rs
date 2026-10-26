@@ -41,15 +41,15 @@ fn main() -> Result<()> {
     let assets = rlx_pocket_tts::download::fetch_default_assets()?;
     let voice_path = rlx_pocket_tts::download::fetch_voice(&voice_name)?;
     let mut cfg = PocketTtsConfig::english();
-    if let Ok(s) = std::env::var("POCKET_TTS_TEMP") {
-        if let Ok(v) = s.parse() {
-            cfg.temperature = v;
-        }
+    if let Ok(s) = std::env::var("POCKET_TTS_TEMP")
+        && let Ok(v) = s.parse()
+    {
+        cfg.temperature = v;
     }
-    if let Ok(s) = std::env::var("POCKET_TTS_STEPS") {
-        if let Ok(v) = s.parse() {
-            cfg.lsd_decode_steps = v;
-        }
+    if let Ok(s) = std::env::var("POCKET_TTS_STEPS")
+        && let Ok(v) = s.parse()
+    {
+        cfg.lsd_decode_steps = v;
     }
     eprintln!("temp={} steps={}", cfg.temperature, cfg.lsd_decode_steps);
     let model = TtsModel::open_with_config(&assets.weights, &assets.tokenizer, cfg)?;
@@ -104,7 +104,7 @@ fn main() -> Result<()> {
 }
 
 fn resolve_whisper_dir() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(dir) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(dir);
         if p.join("model.safetensors").is_file() {
             return Ok(p);

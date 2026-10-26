@@ -21,9 +21,10 @@ hound = "3"
 clap = { version = "4", features = ["derive"] }
 unicode-normalization = "0.1"
 
-# rlx-ir graph path (multi-backend). Optional so the host-eager CPU reference
+# `RLX_*` settings are read through `rlx_ir::env` everywhere.
+rlx-ir = { workspace = true }
+# rlx graph path (multi-backend). Optional so the host-eager CPU reference
 # and its parity tests build without dragging in the compiler stack.
-rlx-ir = { workspace = true, optional = true }
 rlx-runtime = { workspace = true, optional = true, default-features = false, features = ["cpu"] }
 
 # Pure-Rust espeak-ng for the Piper-lineage G2P frontend. 0.1.3 reads a voice's
@@ -33,6 +34,10 @@ rlx-runtime = { workspace = true, optional = true, default-features = false, fea
 # Both fixes are now released; the `[patch.crates-io]` this used to need is gone.
 espeak-ng = { version = "0.2.0", optional = true, default-features = false }
 
+# `export::export_rlxp` (the `export` feature).
+rlx-core = { workspace = true, optional = true }
+tempfile = { version = "3", optional = true }
+
 [dependencies.hf-hub]
 workspace = true
 optional = true
@@ -40,7 +45,7 @@ optional = true
 [features]
 default = ["rlx-graph", "espeak"]
 # Build the rlx-ir graph backend (compiled per device → runs on every rlx backend).
-rlx-graph = ["dep:rlx-ir", "dep:rlx-runtime", "rlx-runtime/cpu"]
+rlx-graph = ["dep:rlx-runtime", "rlx-runtime/cpu"]
 # espeak-ng text frontend (English data only). Without it the crate still
 # synthesizes from phoneme ids.
 espeak = ["dep:espeak-ng", "espeak-ng/bundled-data-en"]
@@ -55,15 +60,28 @@ gpu = ["rlx-graph", "rlx-runtime/gpu"]
 vulkan = ["rlx-graph", "rlx-runtime/vulkan"]
 coreml = ["rlx-graph", "rlx-runtime/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
 hf-download = ["dep:hf-hub"]
+# `export::export_rlxp`: a sanoTTS voice as an `.rlxp` package rlx runs alone.
+export = ["rlx-graph", "espeak", "dep:rlx-core", "rlx-core/export", "dep:tempfile"]
 
 [[bin]]
 name = "rlx-sanotts"
 path = "src/bin/rlx_sanotts.rs"
+
+[dev-dependencies]
+tempfile = "3"
+rlx-text = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
+
+[[test]]
+name = "export_rlxp"
+path = "tests/export_rlxp.rs"
+required-features = ["export"]
 
 [[test]]
 name = "reference_parity"

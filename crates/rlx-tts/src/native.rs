@@ -83,6 +83,22 @@ impl Default for OutputPost {
     }
 }
 
+impl OutputPost {
+    /// The post's settings, as a package program reads them.
+    #[cfg(feature = "export")]
+    pub(crate) fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "volume_global": self.volume_global,
+            "volume_peak_ratio": self.volume_peak_ratio,
+            "volume_smoothing": self.volume_smoothing,
+            "leading_silence_ms": self.leading_silence_ms,
+            "wr_leading_silence_frames": self.wr_leading_silence_frames,
+            "wr_trailing_trim_samples": self.wr_trailing_trim_samples,
+            "wr_mulaw_iir_alpha": self.wr_mulaw_iir_alpha,
+        })
+    }
+}
+
 pub(crate) fn load_output_post(bundle_dir: &Path) -> OutputPost {
     let mut post = OutputPost::default();
     let path = ["post.cfg", "pipeline.cfg"]
@@ -181,7 +197,7 @@ impl RlxTts {
         let _ = &manifest.format;
         let encoder = Weights::load(&dir.join(&manifest.files.encoder))?;
         let decoder = Weights::load(&dir.join(&manifest.files.decoder))?;
-        let (encoder, decoder) = if std::env::var_os("RLX_FS2_F16_PARAMS").is_some() {
+        let (encoder, decoder) = if rlx_ir::env::var_os("RLX_FS2_F16_PARAMS").is_some() {
             let mut encoder = encoder;
             let mut decoder = decoder;
             encoder.f16_round_params();
@@ -202,7 +218,7 @@ impl RlxTts {
     /// then a few relative fallbacks (including legacy `.cache/rlx-tts`).
     pub fn open_default() -> Result<Self> {
         let mut candidates = Vec::new();
-        if let Ok(d) = std::env::var("RLX_TTS_BUNDLE") {
+        if let Ok(d) = rlx_ir::env::var_result("RLX_TTS_BUNDLE") {
             candidates.push(PathBuf::from(d));
         }
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -250,7 +266,7 @@ impl RlxTts {
         };
         drop(mel);
         if let Some(alpha) = self.post.wr_mulaw_iir_alpha
-            && std::env::var_os("RLX_TTS_NO_MULAW_IIR").is_none()
+            && rlx_ir::env::var_os("RLX_TTS_NO_MULAW_IIR").is_none()
         {
             apply_wavernn_mulaw_iir(&mut pcm, alpha);
         }
@@ -258,7 +274,7 @@ impl RlxTts {
         if trim > 0 && pcm.len() > trim {
             pcm.truncate(pcm.len() - trim);
         }
-        if std::env::var_os("RLX_TTS_NO_VOLUME").is_none() {
+        if rlx_ir::env::var_os("RLX_TTS_NO_VOLUME").is_none() {
             apply_output_volume(
                 &mut pcm,
                 self.post.volume_global,
@@ -266,8 +282,8 @@ impl RlxTts {
                 self.post.volume_smoothing,
             );
         }
-        let pad_ms = if std::env::var_os("RLX_TTS_NO_LEADING_SILENCE").is_some()
-            || (skip > 0 && std::env::var_os("RLX_TTS_FORCE_LEADING_SILENCE").is_none())
+        let pad_ms = if rlx_ir::env::var_os("RLX_TTS_NO_LEADING_SILENCE").is_some()
+            || (skip > 0 && rlx_ir::env::var_os("RLX_TTS_FORCE_LEADING_SILENCE").is_none())
         {
             0
         } else {

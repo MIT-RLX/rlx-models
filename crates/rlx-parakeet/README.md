@@ -26,10 +26,7 @@ let out = tdt_greedy_decode(&pred, &joint, &enc, &durations, max_symbols_per_ste
 
 ## Status
 
-Arch + CPU smoke. Transducer head, TDT core, and greedy decode are implemented and
-unit-tested against a synthetic model (skip-by-duration, blank consumption,
-zero-duration symbol cap, shape checks).
-
-**Next:** wire the real FastConformer encoder graph (builder already lives in
-`rlx-nemotron-asr`) and `.nemo` weight loading for an end-to-end `transcribe`, then
-real-weight parity against NeMo.
+Checked against Hugging Face transformers (`parakeet_tdt`) on
+`nvidia/parakeet-tdt-0.6b-v3`: the JFK Rust speech transcribed word for word,
+punctuation included. `export::export_rlxp` (feature `export`) writes it as
+an `.rlxp` package rlx runs alone, whose transcript is the runner's.

@@ -226,7 +226,7 @@ fn pick_device() -> Device {
 /// `Sam::forward` here — its `sam.rs` does).
 ///
 /// Set `RLX_SAM_DEVICE=metal` (and build `--features metal`) to run
-/// the rlx encoder on Apple GPU.
+/// the rlx encoder on Metal GPU.
 #[test]
 fn sam_end_to_end_parity_vs_candle() -> Result<()> {
     let Some(weights) = weights_path() else {

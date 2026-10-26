@@ -43,3 +43,39 @@ pub fn zipvoice_opts() -> InferOpts {
         ..InferOpts::default()
     }
 }
+
+/// Export ZipVoice as an `.rlxp` package rlx runs alone — text and a
+/// voice to clone in (`options.prompt`), 24 kHz speech out — by LuxTTS'
+/// exporter ([`rlx_luxtts::export::export_family`]) with [`zipvoice_opts`]
+/// for its sampler's defaults.
+#[cfg(feature = "export")]
+pub mod export {
+    use std::path::Path;
+
+    use rlx_core::export::{ExportOptions, ExportReport};
+
+    /// Export the ZipVoice checkpoint in `dir` (as LuxTTS': `tokens.txt`,
+    /// `encoder_body.onnx`, `fm_decoder.onnx`, `onnx/vocoder_spec.onnx`).
+    pub fn export_rlxp(
+        dir: &Path,
+        out: &Path,
+        opts: &ExportOptions,
+    ) -> anyhow::Result<ExportReport> {
+        rlx_luxtts::export::export_family(
+            dir,
+            out,
+            opts,
+            "zipvoice",
+            "rlx-zipvoice",
+            &super::zipvoice_opts(),
+        )
+    }
+
+    /// Register this crate's exporter ([`rlx_core::export::register_exporter`]).
+    pub fn register() {
+        use rlx_core::export::{Exporter, register_exporter};
+        register_exporter(
+            Exporter::new("zipvoice", "text-to-speech", export_rlxp).claims(&["zipvoice"]),
+        );
+    }
+}

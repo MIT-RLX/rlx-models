@@ -108,7 +108,8 @@ pub fn build_decode_graph(w: &XcodecWeights, t: usize) -> Result<(rlx_ir::Graph,
     }
     let xtc = ag.ct_to_tc(x, DIM, t);
     let xtc = ag.layer_norm(xtc, DIM, &w.final_ln_w, &w.final_ln_b, EPS);
-    let out = ag.linear_bias(xtc, t, DIM, 2 * (N_FFT / 2 + 1), &w.out_w, &w.out_b); // [T, 1282]
+    let width = w.out_b.len(); // 2 · (n_fft / 2 + 1): 1282
+    let out = ag.linear_bias(xtc, t, DIM, width, &w.out_w, &w.out_b);
 
     let params = std::mem::take(&mut ag.params);
     Ok((finish_graph(hir, out)?, params))

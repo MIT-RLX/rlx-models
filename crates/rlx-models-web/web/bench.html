@@ -1,0 +1,113 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>rlx-models-web bench</title>
+<pre id="log"></pre>
+<script type="module">
+// ?model=<id in models.js>&backend=cpu|webgpu|webgl&runs=N[&set=RLX_KEY=value…] — fetch + build the model,
+// time the first call (includes graph compile) and N warm calls, POST the
+// report to /__result (serve.py). Runs on the main thread: nothing else here.
+import init, { Files, Transcriber, Embedder, TextGenerator, Qwen35Generator, init_webgpu, set_setting } from "./pkg/rlx_models_web.js";
+import { MODELS } from "./models.js";
+
+const q = new URLSearchParams(location.search);
+const id = q.get("model") ?? "moonshine-streaming-tiny";
+const backend = q.get("backend") ?? "cpu";
+const runs = Number(q.get("runs") ?? 5);
+const genTokens = Number(q.get("n") ?? 32); // tokens per generation call
+const spec = MODELS[id];
+const log = (s) => (console.log(s), (document.getElementById("log").textContent += s + "\n"));
+const report = (body) => fetch("/__result", { method: "POST", body: JSON.stringify(body) });
+const now = () => performance.now();
+// Panics reach JS only as "unreachable"; their message goes to console.error.
+const consoleErrors = [];
+const consoleError = console.error.bind(console);
+console.error = (...a) => (consoleErrors.push(a.map(String).join(" ")), consoleError(...a));
+const median = (xs) => [...xs].sort((a, b) => a - b)[xs.length >> 1];
+
+const SHORT = "Mars, often called the Red Planet, has a thin atmosphere of carbon dioxide.";
+const LONG = Array.from({ length: 12 }, (_, i) =>
+  `Paragraph ${i}: the archive keeps letters, maps and ledgers from the harbour office, sorted by year and by the ship that carried them.`).join(" ");
+
+async function wav16k(url) {
+  const b = new DataView(await (await fetch(url)).arrayBuffer());
+  for (let off = 12; off < b.byteLength; ) {
+    const tag = String.fromCharCode(...[0, 1, 2, 3].map((i) => b.getUint8(off + i)));
+    const len = b.getUint32(off + 4, true);
+    if (tag === "data") return Float32Array.from({ length: len / 2 }, (_, i) => b.getInt16(off + 8 + 2 * i, true) / 32768);
+    off += 8 + len + (len & 1);
+  }
+  throw new Error("no data chunk");
+}
+
+try {
+  const wasm = await init();
+  const wasmMb = () => Math.round(wasm.memory.buffer.byteLength / 1e6);
+  for (const kv of q.getAll("set")) {
+    const i = kv.indexOf("=");
+    set_setting(kv.slice(0, i), kv.slice(i + 1));
+  }
+  if (backend === "webgpu" && !(await init_webgpu())) throw new Error("no WebGPU adapter");
+  const base = new URL("../../../weights", location.href).href.replace(/\/$/, "");
+  const t0 = now();
+  const files = new Files();
+  for (const name of spec.files)
+    files.add(name, new Uint8Array(await (await fetch(`${base}/${spec.dir}/${name}`)).arrayBuffer()));
+  const mb = files.size / 1e6;
+  log(`fetched ${Math.round(mb)} MB; wasm memory ${wasmMb()} MB`);
+  const t1 = now();
+  let model, call, unit, extra = async () => ({});
+  if (spec.kind === "asr") {
+    model = new Transcriber(files, backend);
+    const pcm = await wav16k("../../../assets/harness/jfk_16k.wav");
+    const secs = pcm.length / 16000;
+    call = async () => (backend === "webgpu" ? await model.transcribe_async(pcm) : model.transcribe(pcm));
+    unit = (ms) => ({ audio_s: secs, x_realtime: +(secs / (ms / 1e3)).toFixed(2) });
+  } else if (spec.kind === "embed") {
+    model = new Embedder(files, id, "retrieval", backend);
+    const one = backend === "webgpu" ? (t) => model.embed_async(t, "document") : async (t) => model.embed(t, "document");
+    // Each length is its own compiled bucket (and wasm keeps one graph), so
+    // time them separately: `call` is the long text, the short one is extra.
+    call = async () => await one(LONG);
+    unit = () => ({ text_tokens: "~330" });
+    extra = async () => {
+      const v = await one(SHORT);
+      const w = [];
+      for (let i = 0; i < runs; i++) { const s = now(); await one(SHORT); w.push(now() - s); }
+      return { short_warm_median_ms: Math.round(median(w)), short_embedding: Array.from(v) };
+    };
+  } else if (spec.kind === "qwen35") {
+    model = new Qwen35Generator(files, backend, 256);
+    const prompt = "<|im_start|>user\nWrite a short paragraph about the sea.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
+    const n = genTokens;
+    call = async () => (backend === "webgpu" ? await model.generate_async(prompt, n) : model.generate(prompt, n));
+    unit = (ms) => ({ new_tokens: n, tok_per_s: +(n / (ms / 1e3)).toFixed(1) });
+  } else {
+    model = new TextGenerator(files, backend);
+    const prompt = "<|startoftext|><|im_start|>user\nWrite a short paragraph about the sea.<|im_end|>\n<|im_start|>assistant\n";
+    const n = genTokens;
+    call = async () => (backend === "webgpu" ? await model.generate_async(prompt, n) : model.generate(prompt, n));
+    unit = (ms) => ({ new_tokens: n, tok_per_s: +(n / (ms / 1e3)).toFixed(1) });
+  }
+  log(`built in ${Math.round(now() - t1)} ms; wasm memory ${wasmMb()} MB; first call…`);
+  const t2 = now();
+  const first = await call();
+  log(`first call ${Math.round(now() - t2)} ms`);
+  const t3 = now();
+  const warm = [];
+  for (let i = 0; i < runs; i++) { const s = now(); await call(); warm.push(now() - s); }
+  const med = median(warm);
+  const more = await extra();
+  const r = {
+    ok: true, model: id, backend, settings: q.getAll("set"), ua: navigator.userAgent, mb: Math.round(mb),
+    fetch_ms: Math.round(t1 - t0), build_ms: Math.round(t2 - t1), first_ms: Math.round(t3 - t2),
+    warm_median_ms: Math.round(med), warm_ms: warm.map(Math.round), ...unit(med),
+    sample: typeof first === "string" ? first.slice(0, 80) : undefined,
+    ...more,
+  };
+  log(JSON.stringify({ ...r, short_embedding: undefined }, null, 1));
+  await report(r);
+} catch (e) {
+  log(String(e?.stack ?? e));
+  await report({ ok: false, model: id, backend, error: String(e?.message ?? e), console: consoleErrors.slice(-3) });
+}
+</script>

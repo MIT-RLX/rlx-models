@@ -13,6 +13,8 @@ pub mod builder;
 pub mod capabilities;
 pub mod cli;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod generator;
 pub mod pipeline_block;

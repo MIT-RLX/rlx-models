@@ -16,7 +16,7 @@
 //! Tier-0 BERT encoder flow — native [`ModelFlow`] assembly.
 
 use anyhow::Result;
-use rlx_flow::{BertQkvStyle, BuiltModel, CompileProfile, ModelFlow};
+use rlx_flow::{BertQkvStyle, BuiltModel, CompileProfile, ModelFlow, WeightSource};
 use rlx_ir::{DType, Shape};
 use std::borrow::Cow;
 
@@ -48,14 +48,15 @@ impl BertKeys {
     /// (vs MPNet) Q/K/V layout.
     const QKV_PROBE: &'static str = "encoder.layer.0.attention.self.query.weight";
 
-    /// Detect the `bert.` prefix and Q/K/V weight layout from the checkpoint.
-    fn detect(weights: &WeightMap) -> Self {
-        let prefix = if weights.has(&format!("bert.{}", Self::WORD_EMBEDDINGS)) {
+    /// Detect the `bert.` prefix and Q/K/V weight layout from the checkpoint,
+    /// given whether it `has` a key.
+    fn detect(has: impl Fn(&str) -> bool) -> Self {
+        let prefix = if has(&format!("bert.{}", Self::WORD_EMBEDDINGS)) {
             "bert."
         } else {
             ""
         };
-        let qkv_style = if weights.has(&format!("{prefix}{}", Self::QKV_PROBE)) {
+        let qkv_style = if has(&format!("{prefix}{}", Self::QKV_PROBE)) {
             BertQkvStyle::Bert
         } else {
             BertQkvStyle::Mpnet
@@ -100,6 +101,7 @@ pub struct BertFlow<'a> {
     batch: usize,
     seq: usize,
     profile: CompileProfile,
+    host_embeddings: bool,
 }
 
 impl<'a> BertFlow<'a> {
@@ -109,7 +111,17 @@ impl<'a> BertFlow<'a> {
             batch,
             seq,
             profile: CompileProfile::encoder(),
+            host_embeddings: false,
         }
+    }
+
+    /// Take the token embeddings as an `inputs_embeds` `[batch, seq, hidden]`
+    /// input (the caller gathers rows of `word_embeddings_key()`), so the
+    /// vocabulary table — most of a small encoder's weights — lives in no
+    /// compiled graph. Position and token-type embeddings stay in the graph.
+    pub fn with_host_embeddings(mut self, on: bool) -> Self {
+        self.host_embeddings = on;
+        self
     }
 
     pub fn with_profile(mut self, profile: CompileProfile) -> Self {
@@ -118,7 +130,13 @@ impl<'a> BertFlow<'a> {
     }
 
     pub fn build(self, weights: &mut WeightMap) -> Result<BuiltModel> {
-        let keys = BertKeys::detect(weights);
+        self.build_from(&mut WeightMapSource(weights))
+    }
+
+    /// [`Self::build`] from any weight source — one that hands out packed
+    /// (int8 / GGUF) projections builds them as fused `DequantMatMul`s.
+    pub fn build_from(self, weights: &mut dyn WeightSource) -> Result<BuiltModel> {
+        let keys = BertKeys::detect(|k| weights.has(k));
 
         let f = DType::F32;
         let eps = self.cfg.layer_norm_eps as f32;
@@ -129,7 +147,10 @@ impl<'a> BertFlow<'a> {
             .input("attention_mask", Shape::new(&[self.batch, self.seq], f))
             .input("token_type_ids", Shape::new(&[self.batch, self.seq], f))
             .input("position_ids", Shape::new(&[self.batch, self.seq], f))
-            .embed(keys.word_embeddings())
+            .when(!self.host_embeddings, |f| f.embed(keys.word_embeddings()))
+            .when(self.host_embeddings, |f| {
+                f.embed_host(keys.word_embeddings(), self.cfg.hidden_size)
+            })
             .gather_add("position_ids", keys.position_embeddings())
             .gather_add("token_type_ids", keys.token_type_embeddings())
             .layer_norm(keys.embeddings_ln_weight(), keys.embeddings_ln_bias(), eps)
@@ -143,8 +164,14 @@ impl<'a> BertFlow<'a> {
             )
             .output("hidden_states");
 
-        flow.build(&mut WeightMapSource(weights))
+        flow.build(weights)
     }
+}
+
+/// The token-embedding key of a checkpoint (`bert.`-prefixed or not), for a
+/// caller gathering rows itself ([`BertFlow::with_host_embeddings`]).
+pub fn word_embeddings_key(has: impl Fn(&str) -> bool) -> String {
+    BertKeys::detect(has).word_embeddings().into_owned()
 }
 
 pub fn build_bert_built(
@@ -162,13 +189,17 @@ mod tests {
     use crate::test_support::{tiny_bert_weights, weights_with_keys};
     use rlx_core::config::BertConfig;
 
+    fn has_of(w: &WeightMap) -> impl Fn(&str) -> bool + '_ {
+        move |k| w.has(k)
+    }
+
     #[test]
     fn bert_keys_detects_prefix_and_qkv_style() {
         // Bare encoder, BERT-style Q/K/V.
-        let k = BertKeys::detect(&weights_with_keys(&[
+        let k = BertKeys::detect(has_of(&weights_with_keys(&[
             "embeddings.word_embeddings.weight",
             "encoder.layer.0.attention.self.query.weight",
-        ]));
+        ])));
         assert_eq!(k.layer_prefix(), "");
         assert_eq!(
             k.word_embeddings().as_ref(),
@@ -179,9 +210,9 @@ mod tests {
         // `bert.`-prefixed, no BERT-style query key → Mpnet layout. The prefix
         // is applied to every key — checked structurally, not by re-pinning a
         // second full key literal.
-        let k2 = BertKeys::detect(&weights_with_keys(&[
+        let k2 = BertKeys::detect(has_of(&weights_with_keys(&[
             "bert.embeddings.word_embeddings.weight",
-        ]));
+        ])));
         assert_eq!(k2.layer_prefix(), "bert");
         assert!(k2.embeddings_ln_bias().starts_with("bert."));
         assert!(matches!(k2.qkv_style, BertQkvStyle::Mpnet));

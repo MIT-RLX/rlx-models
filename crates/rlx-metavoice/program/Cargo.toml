@@ -1,0 +1,24 @@
+# MetaVoice's host logic as an RLX program (WebAssembly, wasm32-wasip1): the
+# BPE tokenizer, the speaker embedding's framing, the first stage's sampling
+# loop with classifier-free guidance (its caches kept in slots), the coarse
+# books split, the second stage and EnCodec. Built by `rlx-metavoice`'s
+# exporter, so it stands outside the workspace.
+[package]
+name = "rlx-metavoice-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The runner's tokenizer (`src/tokenize.rs`).
+anyhow = "1"
+base64 = "0.22"
+regex = { package = "fancy-regex", version = "0.14" }
+
+[workspace]

@@ -195,8 +195,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 // Sliding-window prefill attention → linear TTFT (lossy on middle
                 // context). Read by the builder via RLX_QWEN35_SWA_WINDOW.
                 let w: usize = it.next().context("--swa-window")?.parse()?;
-                // SAFETY: single-threaded CLI setup before runner construction.
-                unsafe { std::env::set_var("RLX_QWEN35_SWA_WINDOW", w.to_string()) };
+                rlx_ir::env::set("RLX_QWEN35_SWA_WINDOW", w.to_string());
             }
             "--prompt-ids" => {
                 let raw = it.next().context("--prompt-ids")?;
@@ -372,8 +371,7 @@ pub fn run(args: &[String]) -> Result<()> {
 
     if spec_decode && max_tokens > 0 {
         // Batched verify reads the host KV mirror; force non-resident.
-        // SAFETY: single-threaded CLI setup before runner construction.
-        unsafe { std::env::set_var("RLX_QWEN35_GPU_KV", "0") };
+        rlx_ir::env::set("RLX_QWEN35_GPU_KV", "0");
         let draft_runner = build_runner(true)?;
         let target_runner = build_runner(false)?;
         let draft = crate::Qwen35MtpDraft::new(draft_runner);
@@ -408,14 +406,12 @@ pub fn run(args: &[String]) -> Result<()> {
         // The decode graph reads RLX_QWEN35_GPU_KV at compile time; the resident
         // graph shape is incompatible with the host-fed eviction path, so force
         // non-resident BEFORE the runner (and its decode graph) is built.
-        // SAFETY: single-threaded CLI setup, before any runner construction.
-        unsafe { std::env::set_var("RLX_QWEN35_GPU_KV", "0") };
+        rlx_ir::env::set("RLX_QWEN35_GPU_KV", "0");
     }
     if verify_selftest {
         // verify_forward reads the host KV mirror, which the resident path leaves
         // stale — force non-resident so both paths see the same cache.
-        // SAFETY: single-threaded CLI setup before runner construction.
-        unsafe { std::env::set_var("RLX_QWEN35_GPU_KV", "0") };
+        rlx_ir::env::set("RLX_QWEN35_GPU_KV", "0");
         let mut runner = build_runner(false)?;
         let seed = runner.prefill_seed_for_decode(&prompt_ids)?;
         let t0 = seed
@@ -616,8 +612,7 @@ pub fn run(args: &[String]) -> Result<()> {
         // verify_forward (decision, no commit) + prefill_chunk (commit). Output
         // MUST equal greedy; this validates the speculative accept/reject logic
         // before merging verify+commit into one forward for the speedup.
-        // SAFETY: single-threaded CLI setup before runner construction.
-        unsafe { std::env::set_var("RLX_QWEN35_GPU_KV", "0") };
+        rlx_ir::env::set("RLX_QWEN35_GPU_KV", "0");
         let mut runner = build_runner(false)?;
         let amax = |v: &[f32]| -> u32 {
             v.iter()
@@ -764,8 +759,7 @@ pub fn run(args: &[String]) -> Result<()> {
 
     if prefix_cache_bench {
         // prefill_chunk reuses the host KV mirror → non-resident.
-        // SAFETY: single-threaded CLI setup before runner construction.
-        unsafe { std::env::set_var("RLX_QWEN35_GPU_KV", "0") };
+        rlx_ir::env::set("RLX_QWEN35_GPU_KV", "0");
         let mut runner = build_runner(false)?;
         let prompt = prompt_ids.clone();
         // Split the prompt into a shared prefix + a 16-token "new query" suffix.
@@ -801,8 +795,7 @@ pub fn run(args: &[String]) -> Result<()> {
 
     if chunk_prefill > 0 {
         // Chunked prefill needs the host KV mirror (non-resident).
-        // SAFETY: single-threaded CLI setup before runner construction.
-        unsafe { std::env::set_var("RLX_QWEN35_GPU_KV", "0") };
+        rlx_ir::env::set("RLX_QWEN35_GPU_KV", "0");
         let mut runner = build_runner(false)?;
         let window = if kv_window > 0 { kv_window } else { 512 };
         println!(
@@ -972,7 +965,7 @@ pub fn run(args: &[String]) -> Result<()> {
             });
             // Decode-only timing: first token = prefill/TTFT done; time the rest.
             // RLX_BENCH_NOSTOP forces the full max_tokens (ignore EOS) for clean tps.
-            let bench_nostop = std::env::var_os("RLX_BENCH_NOSTOP").is_some();
+            let bench_nostop = rlx_ir::env::var_os("RLX_BENCH_NOSTOP").is_some();
             let ttft = std::cell::Cell::new(None::<std::time::Instant>);
             let ndec = std::cell::Cell::new(0usize);
             let gen_t0 = std::time::Instant::now();
@@ -1077,7 +1070,7 @@ pub fn run(args: &[String]) -> Result<()> {
                     for &t in &close_ids {
                         emit(t);
                     }
-                    let more = if std::env::var_os("RLX_QWEN35_REPREFILL").is_some() {
+                    let more = if rlx_ir::env::var_os("RLX_QWEN35_REPREFILL").is_some() {
                         // Legacy / parity path: re-prefill the whole
                         // prompt+think+close before answering.
                         let mut cont_prompt = prompt_ids.clone();

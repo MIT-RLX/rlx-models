@@ -21,7 +21,7 @@ impl AifDynamicsMode {
     }
 
     pub fn from_env() -> Self {
-        std::env::var("RLX_AIF_DYNAMICS")
+        rlx_ir::env::var_result("RLX_AIF_DYNAMICS")
             .ok()
             .and_then(|s| Self::parse(&s))
             .unwrap_or_default()

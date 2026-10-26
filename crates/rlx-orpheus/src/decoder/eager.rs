@@ -452,7 +452,7 @@ pub(crate) fn load_npy_f32(path: &Path) -> Result<Vec<f32>> {
     };
     let data_off = 10 + header_len;
     let mut out = Vec::with_capacity(elem_count);
-    for chunk in bytes[data_off..].chunks_exact(4).take(elem_count) {
+    for chunk in bytes[data_off..].as_chunks::<4>().0.iter().take(elem_count) {
         out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     Ok(out)

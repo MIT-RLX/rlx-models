@@ -80,17 +80,10 @@ impl CitrinetConfig {
 /// CTC greedy decode over per-frame argmax token ids: collapse consecutive
 /// duplicates, then drop the blank. Returns the emitted token sequence.
 pub fn ctc_greedy_decode(frame_ids: &[i32], blank_id: i32) -> Vec<i32> {
-    let mut out = Vec::new();
-    let mut prev: Option<i32> = None;
-    for &id in frame_ids {
-        if prev != Some(id) {
-            if id != blank_id {
-                out.push(id);
-            }
-            prev = Some(id);
-        }
-    }
-    out
+    rlx_search::ctc::collapse(frame_ids.iter().map(|&id| id as u32), blank_id as u32)
+        .into_iter()
+        .map(|id| id as i32)
+        .collect()
 }
 
 /// CTC greedy decode straight from per-frame logits (`[frames][num_classes]`):
@@ -98,17 +91,7 @@ pub fn ctc_greedy_decode(frame_ids: &[i32], blank_id: i32) -> Vec<i32> {
 pub fn ctc_greedy_decode_logits(logits: &[Vec<f32>], blank_id: i32) -> Vec<i32> {
     let ids: Vec<i32> = logits
         .iter()
-        .map(|frame| {
-            let mut best = 0usize;
-            let mut bv = f32::NEG_INFINITY;
-            for (i, &v) in frame.iter().enumerate() {
-                if v > bv {
-                    bv = v;
-                    best = i;
-                }
-            }
-            best as i32
-        })
+        .map(|frame| rlx_search::argmax(frame) as i32)
         .collect();
     ctc_greedy_decode(&ids, blank_id)
 }

@@ -29,9 +29,6 @@ pub struct GepardCompiledSession {
     device: Device,
     hidden_size: usize,
     token_embd: Arc<[f32]>,
-    /// Folded `(1 + w)` output RMSNorm gamma (HF Qwen3.5).
-    output_norm: Vec<f32>,
-    rms_eps: f32,
     runner: Qwen35Runner,
     max_seq: usize,
     pub last_timing: GepardTiming,
@@ -49,14 +46,12 @@ impl GepardCompiledSession {
         let (qcfg, qweights) = load_gepard_qwen35_bundle(&st, &cfg.backbone)?;
         let hidden_size = cfg.backbone.hidden_size;
         let token_embd = qweights.token_embd_arc();
-        let output_norm = qweights.output_norm.clone();
-        let rms_eps = cfg.backbone.rms_norm_eps as f32;
 
         // TTS context is short (prompt + ~400–800 frames). Prefer a leaner CUDA
         // decode graph; override with RLX_GEPARD_MAX_SEQ. Default 1024 covers
         // the bench long paragraph (≈560 frames + prefill) without OOM from
         // dynamic past growth past a 512 ceiling.
-        let max_seq = std::env::var("RLX_GEPARD_MAX_SEQ")
+        let max_seq = rlx_ir::env::var_result("RLX_GEPARD_MAX_SEQ")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1024usize)
@@ -92,19 +87,10 @@ impl GepardCompiledSession {
             device,
             hidden_size,
             token_embd,
-            output_norm,
-            rms_eps,
             runner,
             max_seq,
             last_timing: GepardTiming::default(),
         })
-    }
-
-    /// Final RMSNorm for decode/prefill trunks that export the pre-norm residual.
-    /// Prefill-cache with `fast_greedy_lm_head` still emits post-layer `h` for some
-    /// decode specializations; matching eager always applies this once on the host.
-    fn apply_output_norm(&self, h: &[f32]) -> Vec<f32> {
-        rms_norm_gamma(h, &self.output_norm, self.rms_eps)
     }
 
     /// Gather text token embeddings from the backbone table (host-side).
@@ -162,9 +148,9 @@ impl GepardCompiledSession {
             let emb = &inputs[t * hidden..(t + 1) * hidden];
             trunk = self.runner.decode_hidden_state(&mut cache, emb)?;
         }
-        // Decode / sequential prefill trunks are pre-final-norm residuals;
-        // apply the folded HF `(1+w)` RMSNorm once (matches eager backbone).
-        let sos = self.apply_output_norm(&trunk);
+        // Prefill and decode trunks both arrive `output_norm`ed (the runner's
+        // `fast_greedy_lm_head` export), matching the eager backbone.
+        let sos = trunk;
         self.last_timing.prefill_ms = t0.elapsed().as_secs_f64() * 1000.0;
         // Sequential token steps leave prompt_lens at 1; mark the full prompt so
         // bucketed masks treat the prefix as prompt (generated count stays correct).
@@ -186,8 +172,7 @@ impl GepardCompiledSession {
         cache: &mut Qwen35DecodeCache,
         frame_embed: &[f32],
     ) -> Result<Vec<f32>> {
-        let h = self.runner.decode_hidden_state(cache, frame_embed)?;
-        Ok(self.apply_output_norm(&h))
+        self.runner.decode_hidden_state(cache, frame_embed)
     }
 
     /// Record AR loop wall time (call after the frame loop).
@@ -197,14 +182,9 @@ impl GepardCompiledSession {
     }
 }
 
-fn rms_norm_gamma(x: &[f32], gamma: &[f32], eps: f32) -> Vec<f32> {
-    let rms = (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + eps).sqrt();
-    x.iter().zip(gamma).map(|(v, g)| v / rms * g).collect()
-}
-
 fn env_truthy(key: &str) -> bool {
     matches!(
-        std::env::var(key).ok().as_deref(),
+        rlx_ir::env::read(key).ok().as_deref(),
         Some("1") | Some("true") | Some("yes") | Some("on")
     )
 }
@@ -215,7 +195,7 @@ fn env_truthy(key: &str) -> bool {
 /// Force eager CPU AR with `RLX_GEPARD_EAGER_AR=1`.
 pub(crate) fn backbone_runner_device(requested: Device) -> Device {
     if matches!(
-        std::env::var("RLX_GEPARD_EAGER_AR").as_deref(),
+        rlx_ir::env::var_result("RLX_GEPARD_EAGER_AR").as_deref(),
         Ok("1") | Ok("true") | Ok("on")
     ) {
         return Device::Cpu;

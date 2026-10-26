@@ -15,7 +15,7 @@ pub struct WeightHints {
 impl WeightHints {
     pub fn resolve_dir(&self) -> Option<PathBuf> {
         for key in &self.env_keys {
-            if let Ok(v) = std::env::var(key) {
+            if let Ok(v) = rlx_ir::env::read(key) {
                 let p = PathBuf::from(v);
                 if p.is_file() || self.dir_ready(&p) {
                     return Some(p);

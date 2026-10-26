@@ -17,6 +17,7 @@ name = "rlx-tts-bench"
 path = "src/main.rs"
 
 [dependencies]
+rlx-ir = { workspace = true }
 libc = "0.2"
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
@@ -208,7 +209,7 @@ coreml = [
     "rlx-piper?/coreml",
     "rlx-luxtts?/coreml",
 ]
-apple-silicon = ["metal", "mlx", "gpu"]
+macos-gpu = ["metal", "mlx", "gpu"]
 all-backends = ["metal", "mlx", "cuda", "gpu", "coreml"]
 
 [lints]

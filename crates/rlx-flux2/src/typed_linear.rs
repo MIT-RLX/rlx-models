@@ -77,11 +77,15 @@ pub fn load_typed_linears_from_bytes(
             let bias = match view.dtype() {
                 safetensors::Dtype::F32 => decode_f32(bytes),
                 safetensors::Dtype::F16 => bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
                     .collect(),
                 safetensors::Dtype::BF16 => bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| half::bf16::from_le_bytes([c[0], c[1]]).to_f32())
                     .collect(),
                 other => anyhow::bail!("unsupported bias dtype {other:?} for {name}"),
@@ -141,7 +145,9 @@ pub fn load_typed_linears_from_bytes(
 
 fn decode_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

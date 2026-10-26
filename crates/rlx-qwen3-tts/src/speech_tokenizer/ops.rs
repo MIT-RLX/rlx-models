@@ -65,8 +65,11 @@ pub fn linear2(
     out
 }
 
+/// `nn.GELU()`: the exact, erf-based GELU (the reference's ConvNeXt).
 pub fn gelu(x: ArrayView2<f32>) -> Array2<f32> {
-    x.mapv(|v| 0.5 * v * (1.0 + (v * std::f32::consts::FRAC_2_SQRT_PI * 0.5).tanh()))
+    x.mapv(|v| {
+        0.5 * v * (1.0 + super::encoder_transformer::erf_approx(v / std::f32::consts::SQRT_2))
+    })
 }
 
 pub fn layer_norm(
@@ -719,22 +722,30 @@ mod transconv_tests {
         let stride = 2usize;
         let t_out = 44usize;
         let x: Vec<f32> = x_bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let x = Array2::from_shape_vec((in_ch, t_in), x).expect("x shape");
         let w: Vec<f32> = w_bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let w = Array3::from_shape_vec((in_ch, out_ch, k), w).expect("w shape");
         let b: Vec<f32> = std::fs::read("/tmp/up0_b.bin")
             .expect("b")
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let hf: Vec<f32> = y_bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let ref_out = conv_transpose1d(x.view(), w.view(), Some(ArrayView1::from(&b)), stride);

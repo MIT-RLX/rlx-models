@@ -347,7 +347,7 @@ impl TenVadBatch {
         let mut feats = Vec::with_capacity(frames * stride);
         let mut emph = vec![0.0f32; HOP_SIZE];
         let mut prev = 0.0f32;
-        for raw in pcm.chunks_exact(HOP_SIZE) {
+        for raw in pcm.as_chunks::<HOP_SIZE>().0.iter() {
             pre_emphasis(raw, &mut prev, &mut emph);
             self.frontend.push(raw, &emph);
             feats.extend_from_slice(self.frontend.context());
@@ -440,7 +440,7 @@ mod tests {
         .unwrap();
         let pcm = tone(64 * 8, 200.0);
         let mut scored = Vec::new();
-        for chunk in pcm.chunks_exact(64) {
+        for chunk in pcm.as_chunks::<64>().0.iter() {
             scored.push(vad.process_i16(chunk).unwrap().scored());
         }
         // 256 / 64 = 4 calls before the first score.
@@ -463,7 +463,7 @@ mod tests {
             last_fast = fast.process_i16(chunk).unwrap().probability;
         }
         let mut last_slow = 0.0;
-        for chunk in pcm.chunks_exact(HOP_SIZE) {
+        for chunk in pcm.as_chunks::<HOP_SIZE>().0.iter() {
             last_slow = slow.process_i16(chunk).unwrap().probability;
         }
         assert!(

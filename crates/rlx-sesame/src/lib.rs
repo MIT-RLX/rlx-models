@@ -6,6 +6,8 @@
 pub mod cli;
 pub mod config;
 pub mod depth;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod generate;
 pub mod nn;
 pub mod session;

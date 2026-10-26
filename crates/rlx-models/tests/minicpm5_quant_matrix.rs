@@ -15,14 +15,14 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn gguf_dir() -> PathBuf {
-    std::env::var("RLX_MINICPM5_GGUF_DIR")
+    rlx_ir::env::var_result("RLX_MINICPM5_GGUF_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp/rlx-weights/MiniCPM5-1B-GGUF"))
 }
 
 fn gguf_path(quant: &str) -> Option<PathBuf> {
     let env_key = format!("RLX_MINICPM5_GGUF_{quant}");
-    if let Ok(p) = std::env::var(&env_key) {
+    if let Ok(p) = rlx_ir::env::read(&env_key) {
         let path = PathBuf::from(p);
         if path.is_file() {
             return Some(path);

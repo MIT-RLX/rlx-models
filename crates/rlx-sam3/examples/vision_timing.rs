@@ -53,13 +53,13 @@ fn main() -> Result<()> {
         .next()
         .context("usage: vision_timing <weights.gguf|weights.safetensors>")?;
 
-    let iters: usize = std::env::var("RLX_SAM3_VISION_ITERS")
+    let iters: usize = rlx_ir::env::var_result("RLX_SAM3_VISION_ITERS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3);
 
     let devices_csv =
-        std::env::var("RLX_SAM3_VISION_DEVICES").unwrap_or_else(|_| "host,metal".into());
+        rlx_ir::env::var_result("RLX_SAM3_VISION_DEVICES").unwrap_or_else(|_| "host,metal".into());
     let devices: Vec<String> = devices_csv
         .split(',')
         .map(|s| s.trim().to_string())

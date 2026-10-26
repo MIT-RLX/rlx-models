@@ -3,12 +3,14 @@
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
-    let dir = PathBuf::from(std::env::var("RLX_F5TTS_DIR").unwrap_or("weights/tts/f5tts".into()));
+    let dir = PathBuf::from(
+        rlx_ir::env::var_result("RLX_F5TTS_DIR").unwrap_or("weights/tts/f5tts".into()),
+    );
     let comp = std::env::var("COMP").unwrap_or("F5_Preprocess".into());
     let path = dir.join(format!("{comp}.onnx"));
     // Same named dims as the native path for the smoke inputs (n=12000, t=9, md=141).
     let env = |k: &str, def: usize| {
-        std::env::var(k)
+        rlx_ir::env::read(k)
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(def)

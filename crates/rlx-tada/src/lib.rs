@@ -52,6 +52,8 @@ pub mod backbone;
 pub mod builder;
 pub mod codec;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod gray;
 pub mod head;
 pub mod local_attn;

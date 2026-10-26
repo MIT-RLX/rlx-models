@@ -60,6 +60,8 @@ crates/rlx-qwen3-tts/tests/fixtures/speaker_parity.safetensors
 # wasm-pack output
 crates/rlx-wakeword-wasm/pkg/
 crates/rlx-wakeword-wasm/web/pkg-web/
+crates/rlx-models-web/pkg-node/
+crates/rlx-models-web/web/pkg/
 
 # Ad-hoc audio at repo root (crate examples/audio/ is tracked)
 /*.wav
@@ -122,11 +124,16 @@ crates/rlx-whisper/fixtures/
 !crates/rlx-tada/tests/fixtures/*.json
 !crates/rlx-glm5next/tests/fixtures/*.json
 !crates/rlx-qwen4exp/tests/fixtures/*.json
+!crates/rlx-minicpm-sala/tests/fixtures/*.json
 !crates/rlx-qwen35/tests/fixtures/*.json
 !crates/rlx-gemma/tests/fixtures/*.json
 !crates/rlx-qwen3-vl/tests/fixtures/*.json
 !crates/rlx-chatterbox/tests/fixtures/*.json
 !crates/rlx-kev/tests/fixtures/*.json
+!crates/rlx-d1/tests/fixtures/*.json
+!crates/rlx-pplx-decider/tests/fixtures/*.json
+!crates/rlx-kittentts2/tests/fixtures/*.json
+!crates/rlx-flint/tests/fixtures/*.json
 
 # Same class, but excluded by a *directory* rule (`crates/*/weights/`,
 # `crates/rlx-whisper/fixtures/`) rather than a glob. Git never descends into an

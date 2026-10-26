@@ -12,10 +12,11 @@ repository.workspace = true
 readme = "README.md"
 
 [dependencies]
+rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx-qwen3 = { workspace = true }
-rlx-xcodec = { path = "../rlx-xcodec", version = "0.2.16", default-features = false, features = ["cpu"] }
-rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.16", default-features = false }
+rlx-xcodec = { path = "../rlx-xcodec", version = "0.2.19", default-features = false, features = ["cpu"] }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.19", default-features = false }
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
 tokenizers = { workspace = true }
 anyhow = { workspace = true }
@@ -23,11 +24,12 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 hound = "3"
 clap = { version = "4", features = ["derive"] }
-
-[dev-dependencies]
-rlx-ir = { workspace = true }
+rlx-core = { workspace = true, optional = true }
 
 [features]
+# `export::export_rlxp`: MioTTS as an `.rlxp` package (Qwen3's `generate`
+# entry, the codec's graphs, a program).
+export = ["dep:rlx-core", "rlx-core/export", "rlx-qwen3/export", "rlx-tiny-tts/export"]
 default = []
 metal = ["rlx-runtime/metal", "rlx-qwen3/metal", "rlx-tiny-tts/metal"]
 mlx = ["rlx-runtime/mlx", "rlx-qwen3/mlx", "rlx-tiny-tts/mlx"]
@@ -37,7 +39,7 @@ gpu = ["rlx-runtime/gpu", "rlx-qwen3/gpu", "rlx-tiny-tts/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-qwen3/vulkan", "rlx-tiny-tts/vulkan"]
 coreml = ["rlx-runtime/coreml", "rlx-qwen3/coreml", "rlx-tiny-tts/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 
 [[bin]]
 name = "rlx-miotts"
@@ -85,3 +87,8 @@ path = "examples/norm1_probe.rs"
 [[example]]
 name = "in_only_probe"
 path = "examples/in_only_probe.rs"
+
+[dev-dependencies]
+rlx-runtime = { workspace = true, features = ["program"] }
+rlx-text = { workspace = true }
+tempfile = "3"

@@ -1,0 +1,10 @@
+# `rlx_core::image_preprocess` alone, for MiniCPM-V's program.
+[package]
+name = "rlx-minicpm-v-core"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

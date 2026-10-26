@@ -145,14 +145,15 @@ struct StftMag {
 fn stft_mag(pcm: &[f32], window: &[f32]) -> StftMag {
     let pad = N_FFT / 2;
     let mut padded = Vec::with_capacity(pcm.len() + 2 * pad);
+    // `center=True`'s reflect padding (`np.pad(mode="reflect")`): the
+    // samples after the first, and before the last, mirrored.
+    let last = pcm.len().saturating_sub(1);
     for i in (1..=pad).rev() {
-        let j = pcm.len().saturating_sub(i);
-        padded.push(pcm[j]);
+        padded.push(pcm[i.min(last)]);
     }
     padded.extend_from_slice(pcm);
     for i in 1..=pad {
-        let j = pcm.len().saturating_sub(i);
-        padded.push(pcm[j]);
+        padded.push(pcm[last.saturating_sub(i)]);
     }
     let n_frames = if padded.len() >= N_FFT {
         1 + (padded.len() - N_FFT) / HOP_LENGTH
@@ -199,6 +200,12 @@ fn cached_hann_window(n: usize) -> Arc<Vec<f32>> {
 }
 
 /// Mel filterbank, memoized by `n_mels` (constant `SAMPLE_RATE`/`N_FFT`).
+/// Whisper's Slaney mel filters at 16 kHz, `[n_mels, n_fft / 2 + 1]`: what
+/// [`pcm_to_log_mel`] weighs each frame's power by.
+pub fn mel_filters(n_mels: usize) -> Vec<f32> {
+    cached_mel_filterbank(n_mels).as_ref().clone()
+}
+
 fn cached_mel_filterbank(n_mels: usize) -> Arc<Vec<f32>> {
     static CACHE: OnceLock<Mutex<HashMap<usize, Arc<Vec<f32>>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -209,7 +216,7 @@ fn cached_mel_filterbank(n_mels: usize) -> Arc<Vec<f32>> {
         .clone()
 }
 
-fn hann_window(n: usize) -> Vec<f32> {
+pub(crate) fn hann_window(n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| {
             let x = std::f32::consts::PI * i as f32 / n as f32;
@@ -240,7 +247,7 @@ fn mel_to_hz(mel: f64) -> f64 {
     }
 }
 
-fn mel_filterbank(sample_rate: f64, n_fft: usize, n_mels: usize) -> Vec<f32> {
+pub(crate) fn mel_filterbank(sample_rate: f64, n_fft: usize, n_mels: usize) -> Vec<f32> {
     let fmax = sample_rate * 0.5;
     let n_freq = n_fft / 2 + 1;
     let fftfreqs: Vec<f64> = (0..n_freq)

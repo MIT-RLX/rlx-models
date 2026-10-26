@@ -157,8 +157,8 @@ fn main() -> anyhow::Result<()> {
             "RLX_QWEN3_BAKE_WEIGHTS",
             "RLX_QWEN3_GQA_NATIVE",
         ] {
-            if std::env::var_os(k).is_none() {
-                unsafe { std::env::set_var(k, "1") };
+            if rlx_ir::env::read_os(k).is_none() {
+                rlx_ir::env::set(k, "1");
             }
         }
     }
@@ -426,7 +426,7 @@ fn main() -> anyhow::Result<()> {
         let mut hit_eos = false;
         // Diagnostic: RLX_QWEN_CHAT_NOSTREAM=1 skips per-token tokenizer decode +
         // print so pure generator throughput can be isolated from streaming cost.
-        let nostream = std::env::var_os("RLX_QWEN_CHAT_NOSTREAM").is_some();
+        let nostream = rlx_ir::env::var_os("RLX_QWEN_CHAT_NOSTREAM").is_some();
         let t0 = std::time::Instant::now();
         // Pre-compile the decode buckets this reply is likely to cross so the
         // ~seconds-per-bucket compile lands here (counted in TTFT) instead of

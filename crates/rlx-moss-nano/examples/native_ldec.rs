@@ -6,8 +6,9 @@ use rlx_tiny_tts::model::TinyModel;
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
-    let dir =
-        PathBuf::from(std::env::var("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()));
+    let dir = PathBuf::from(
+        rlx_ir::env::var_result("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()),
+    );
     let cfg = BundleConfig {
         model: String::new(),
         sample_rate: 48000,
@@ -43,7 +44,9 @@ fn main() -> anyhow::Result<()> {
     eprintln!("ldec produced {} outputs", out.len());
     for (i, (b, dt)) in out.iter().enumerate() {
         let v: Vec<f32> = b
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let pk = v.iter().fold(0.0f32, |m, &x| m.max(x.abs()));

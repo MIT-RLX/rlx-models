@@ -2,7 +2,7 @@
 //
 // ```sh
 // RLX_BENCH_N_NEW=16 cargo run -p rlx-models --release \
-//   --features gemma,phi,llama32,metal,mlx,coreml,apple-silicon \
+//   --features gemma,phi,llama32,metal,mlx,coreml,macos-gpu \
 //   --example bench_small_lm -- \
 //   gemma /tmp/rlx-weights/gemma-3-270m.gguf all
 // ```
@@ -15,7 +15,7 @@ use std::time::Instant;
 const PROMPT_IDS: &[u32] = &[2, 100, 101, 102, 103, 104, 105, 106];
 
 fn n_new() -> usize {
-    std::env::var("RLX_BENCH_N_NEW")
+    rlx_ir::env::var_result("RLX_BENCH_N_NEW")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(16)

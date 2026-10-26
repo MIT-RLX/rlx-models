@@ -781,6 +781,9 @@ impl<T: TokenizerLike> DecisionModel<T> {
             // flow is asked for the normed hidden instead of logits.
             fast_greedy_lm_head: true,
             profile: None,
+            residual_out: false,
+            greedy_token: false,
+            multi_row: false,
         };
         let (hir, params, packed) = rlx_qwen35::build_qwen35_decode_model_flow(
             &self.cfg,

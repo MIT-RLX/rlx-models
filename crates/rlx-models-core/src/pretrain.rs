@@ -106,7 +106,7 @@ pub fn trainable_params(graph: &Graph, loss: NodeId) -> Vec<Trainable> {
     // exists for is silent: a parameter excluded here still has a value, still runs
     // in the forward, and the loss still goes down a little, so a frozen attention
     // stack looks like a weak objective rather than a bug.
-    if std::env::var("RLX_PRETRAIN_DEBUG").is_ok_and(|v| v != "0") {
+    if rlx_ir::env::var_result("RLX_PRETRAIN_DEBUG").is_ok_and(|v| v != "0") {
         let excluded: Vec<&str> = graph
             .nodes()
             .iter()

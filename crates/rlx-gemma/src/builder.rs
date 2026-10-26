@@ -363,7 +363,7 @@ pub fn drain_gemma_packed_weights_ext(
     let mut embed_packed: Option<(Vec<u8>, rlx_ir::quant::QuantScheme, Vec<usize>)> = None;
     // RLX_GEMMA_LAZY_EMBED_DISABLE=1 forces the legacy `take()`+f32-gather path
     // even when packed bytes are available, for parity bisection.
-    let lazy_disabled = std::env::var("RLX_GEMMA_LAZY_EMBED_DISABLE")
+    let lazy_disabled = rlx_ir::env::var_result("RLX_GEMMA_LAZY_EMBED_DISABLE")
         .ok()
         .as_deref()
         == Some("1");
@@ -469,8 +469,8 @@ pub fn drain_gemma_packed_weights_ext(
     // overhead llama.cpp hides via fused MSL kernels per layer. Every
     // backend (rlx-cpu / rlx-metal / rlx-mlx) gets the win for free via
     // its existing matmul + narrow lowerings.
-    let fuse_gate_up = std::env::var("RLX_GEMMA_NO_FUSE_GATE_UP").as_deref() != Ok("1");
-    let fuse_qkv = std::env::var("RLX_GEMMA_NO_FUSE_QKV").as_deref() != Ok("1");
+    let fuse_gate_up = rlx_ir::env::var_result("RLX_GEMMA_NO_FUSE_GATE_UP").as_deref() != Ok("1");
+    let fuse_qkv = rlx_ir::env::var_result("RLX_GEMMA_NO_FUSE_QKV").as_deref() != Ok("1");
     let num_layers = cfg.num_hidden_layers;
     // Fusion now concatenates the borrow *recipes* (ordered GGUF keys), not the
     // bytes: at attach the components are borrowed from the mmap and copied into
@@ -1041,15 +1041,15 @@ pub fn build_gemma_graph_sized_packed_ext(
     //   9: attn_out after post_attention_norm
     //  10: residual h_id + attn_out
     //  11: layer 0 final h (post-FFN add)
-    let tap_l0 = std::env::var("RLX_TAP_L0").ok().is_some();
-    let tap_layer: usize = std::env::var("RLX_TAP_LAYER")
+    let tap_l0 = rlx_ir::env::var_result("RLX_TAP_L0").ok().is_some();
+    let tap_layer: usize = rlx_ir::env::var_result("RLX_TAP_LAYER")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let mut l0_taps: Vec<NodeId> = Vec::new();
     // RLX_TAP_ALL: append every layer's final hidden state as a graph output,
     // for full-trajectory parity bisection against HF hidden_states.
-    let tap_all = std::env::var("RLX_TAP_ALL").ok().is_some();
+    let tap_all = rlx_ir::env::var_result("RLX_TAP_ALL").ok().is_some();
     let mut all_layer_taps: Vec<NodeId> = Vec::new();
 
     for layer in 0..num_layers {

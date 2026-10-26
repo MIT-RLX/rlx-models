@@ -40,7 +40,7 @@ use crate::config::GemmaConfig;
 use crate::rope::{resolve_inv_freq, rope_slice};
 use anyhow::{Context, Result};
 use rlx_core::autoregressive::{
-    KvCacheState, kv_from_prefill_outputs_per_layer, run_bucketed_kv_decode_hir_scratch,
+    KvCacheState, kv_from_prefill_outputs_per_layer, run_bucketed_kv_decode_hir_scratch_spare,
     split_decode_logits_kv, split_decode_logits_kv_aux,
 };
 use rlx_core::flow_bridge::compile_options_from_profile;
@@ -69,7 +69,7 @@ pub fn decode_profile_for_device(device: Device) -> CompileProfile {
 /// `RLX_DISABLE_MPSGRAPH=1` (Metal thunk path + `fuse_decode_mlp`). Default:
 /// MPSGraph (faster on Gemma 270M). Opt into thunks for fused MLP kernels.
 fn metal_thunk_decode_requested() -> bool {
-    std::env::var("RLX_GEMMA_METAL_THUNK_DECODE")
+    rlx_ir::env::var_result("RLX_GEMMA_METAL_THUNK_DECODE")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
 }
 
@@ -92,9 +92,9 @@ where
 }
 
 /// Packed prefill on Metal: default to the thunk + fused Q4 path instead of
-/// whole-graph MPSGraph (often faster for small Gemma buckets on Apple Silicon).
+/// whole-graph MPSGraph (often faster for small Gemma buckets on macOS arm64).
 fn metal_prefill_thunk_enabled() -> bool {
-    match std::env::var("RLX_GEMMA_METAL_THUNK_PREFILL")
+    match rlx_ir::env::var_result("RLX_GEMMA_METAL_THUNK_PREFILL")
         .ok()
         .as_deref()
     {
@@ -121,7 +121,7 @@ where
 /// When `RLX_GEMMA_METAL_UNFUSED_DECODE=1`, disable tier-1 fusion on Metal decode
 /// (MPSGraph GQA reshape workaround). Default: fusion **on** for throughput.
 fn metal_unfused_decode_requested() -> bool {
-    std::env::var("RLX_GEMMA_METAL_UNFUSED_DECODE")
+    rlx_ir::env::var_result("RLX_GEMMA_METAL_UNFUSED_DECODE")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
 }
 
@@ -170,6 +170,11 @@ pub struct GemmaGenerator {
     decode_dynamic_cache: Option<DynamicDimCompileCache>,
     /// Resolved RoPE inverse frequencies (includes Llama 3 scaling).
     inv_freq: Vec<f64>,
+    /// Full-attention layers' inverse frequencies when they differ from the
+    /// sliding layers' (Gemma 3 `rope_theta` vs `rope_local_base_freq`, Gemma 4
+    /// p-RoPE). The dynamic decode graph then reads them as
+    /// `rope_cos_global` / `rope_sin_global`.
+    global_inv_freq: Option<Vec<f64>>,
     /// Tier-1 compile profile for prefill graphs.
     prefill_profile: CompileProfile,
     /// Tier-1 compile profile for decode graphs.
@@ -202,6 +207,9 @@ struct DecodeInputScratch {
     mask: Vec<f32>,
     cos: Vec<f32>,
     sin: Vec<f32>,
+    /// Full-attention rows (`rope_*_global`) when that table differs.
+    global_cos: Vec<f32>,
+    global_sin: Vec<f32>,
 }
 
 /// Per-session padded K/V upload buffers (resized when bucket upper changes).
@@ -222,16 +230,27 @@ impl DecodeInputScratch {
         }
     }
 
-    fn fill_rope(&mut self, inv_freq: &[f64], pos: usize) {
-        let half = inv_freq.len();
-        self.cos.resize(half, 0.0);
-        self.sin.resize(half, 0.0);
-        for (i, &freq) in inv_freq.iter().enumerate() {
-            let angle = pos as f64 * freq;
-            let (s, c) = angle.sin_cos();
-            self.cos[i] = c as f32;
-            self.sin[i] = s as f32;
+    fn fill_rope(&mut self, inv_freq: &[f64], global_inv_freq: Option<&[f64]>, pos: usize) {
+        fill_rope_row(&mut self.cos, &mut self.sin, inv_freq, pos);
+        match global_inv_freq {
+            Some(inv) => fill_rope_row(&mut self.global_cos, &mut self.global_sin, inv, pos),
+            None => {
+                self.global_cos.clear();
+                self.global_sin.clear();
+            }
         }
+    }
+}
+
+fn fill_rope_row(cos: &mut Vec<f32>, sin: &mut Vec<f32>, inv_freq: &[f64], pos: usize) {
+    let half = inv_freq.len();
+    cos.resize(half, 0.0);
+    sin.resize(half, 0.0);
+    for (i, &freq) in inv_freq.iter().enumerate() {
+        let angle = pos as f64 * freq;
+        let (s, c) = angle.sin_cos();
+        cos[i] = c as f32;
+        sin[i] = s as f32;
     }
 }
 
@@ -250,7 +269,7 @@ fn gemma_use_gpu_kv(device: Device) -> bool {
     if !device_supports_gpu_kv(device) {
         return false;
     }
-    match std::env::var("RLX_GEMMA_GPU_KV").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_GEMMA_GPU_KV").ok().as_deref() {
         Some("0") | Some("false") | Some("no") => false,
         Some("1") | Some("true") | Some("yes") => true,
         // Host readback path is faster on Gemma Metal today; Whisper/Qwen3-TTS differ.
@@ -294,6 +313,11 @@ impl GemmaGenerator {
             .get("rope_freqs.weight")
             .map(|(d, _)| d.as_slice());
         let inv_freq = resolve_inv_freq(&cfg, rope_factors);
+        // Same table the decode flow sizes its `rope_*_global` inputs from.
+        let global_inv_freq = crate::rope::global_rope_params(&cfg).map(|(theta, n_rot)| {
+            crate::rope::resolve_global_inv_freq(&cfg, rope_factors)
+                .unwrap_or_else(|| crate::rope::default_inv_freq(theta, n_rot))
+        });
         Ok(Self {
             cfg,
             weights_cache,
@@ -307,6 +331,7 @@ impl GemmaGenerator {
             decode_compile_cache: None,
             decode_dynamic_cache: None,
             inv_freq,
+            global_inv_freq,
             prefill_profile: CompileProfile::gemma_prefill(),
             decode_profile: metal_decode_profile(device, CompileProfile::gemma_decode()),
             pending_prefill_embeds: None,
@@ -468,7 +493,7 @@ impl GemmaGenerator {
     }
 
     fn inference_dynamic_decode() -> bool {
-        std::env::var("RLX_GEMMA_DYNAMIC_DECODE").is_ok_and(|v| {
+        rlx_ir::env::var_result("RLX_GEMMA_DYNAMIC_DECODE").is_ok_and(|v| {
             v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
         })
     }
@@ -834,6 +859,10 @@ impl GemmaGenerator {
         }
 
         let (cos, sin) = compute_rope_slice(&self.inv_freq, past_seq);
+        let global = self
+            .global_inv_freq
+            .as_deref()
+            .map(|inv| compute_rope_slice(inv, past_seq));
         let input_ids_f32 = [input_tok as f32];
         let key_strs: Vec<String> = (0..self.cfg.num_hidden_layers)
             .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
@@ -843,6 +872,10 @@ impl GemmaGenerator {
         inputs.push(("input_ids", input_ids_f32.as_slice()));
         inputs.push(("rope_cos", cos.as_slice()));
         inputs.push(("rope_sin", sin.as_slice()));
+        if let Some((gc, gs)) = &global {
+            inputs.push(("rope_cos_global", gc.as_slice()));
+            inputs.push(("rope_sin_global", gs.as_slice()));
+        }
         for i in 0..self.cfg.num_hidden_layers {
             inputs.push((&key_strs[2 * i], cache.layers_k[i].as_slice()));
             inputs.push((&key_strs[2 * i + 1], cache.layers_v[i].as_slice()));
@@ -876,7 +909,8 @@ impl GemmaGenerator {
 
         self.decode_scratch.ensure_bucket(upper, &kv_dims);
         self.decode_inputs.fill_mask(past_seq, upper);
-        self.decode_inputs.fill_rope(&self.inv_freq, past_seq);
+        self.decode_inputs
+            .fill_rope(&self.inv_freq, self.global_inv_freq.as_deref(), past_seq);
 
         let input_ids_f32 = [input_tok as f32];
         let fixed = [
@@ -901,6 +935,20 @@ impl GemmaGenerator {
                 row_inner: None,
             },
         ];
+        let global = [
+            CacheRunInput {
+                name: "rope_cos_global",
+                data: &self.decode_inputs.global_cos,
+                row_inner: None,
+            },
+            CacheRunInput {
+                name: "rope_sin_global",
+                data: &self.decode_inputs.global_sin,
+                row_inner: None,
+            },
+        ];
+        let n_fixed = if self.global_inv_freq.is_some() { 6 } else { 4 };
+        let fixed: Vec<CacheRunInput<'_>> = fixed.into_iter().chain(global).take(n_fixed).collect();
 
         if self.use_gpu_kv && self.decode_compile_cache.is_some() {
             let key = past_seq as u64;
@@ -976,9 +1024,11 @@ impl GemmaGenerator {
             padded_k, padded_v, ..
         } = &mut self.decode_scratch;
         metal_decode_compile_guard(self.device, true, || {
-            run_bucketed_kv_decode_hir_scratch(
+            // Same predicate the decode flow declares `past_k_*` with.
+            run_bucketed_kv_decode_hir_scratch_spare(
                 cache_dec,
                 past_seq,
+                rlx_flow::blocks::kv_spare_rows(&[1]),
                 kv_cache,
                 &kv_dims,
                 n_layers,
@@ -1485,7 +1535,6 @@ mod tests {
     fn synthetic_weights(cfg: &GemmaConfig) -> WeightMap {
         WeightMap::from_tensors(synthetic_tensors(cfg))
     }
-
 
     /// The in-place KV contract has to stay WIRED, not merely available.
     ///

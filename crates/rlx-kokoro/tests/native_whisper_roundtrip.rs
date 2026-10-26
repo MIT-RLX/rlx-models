@@ -17,7 +17,7 @@ use rlx_whisper::{SAMPLE_RATE as WHISPER_RATE, WhisperRunner};
 const TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 
 fn kokoro_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_KOKORO_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_KOKORO_DIR") {
         let p = PathBuf::from(d);
         return has_split(&p).then_some(p);
     }
@@ -35,7 +35,7 @@ fn has_split(model_dir: &std::path::Path) -> bool {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         return whisper_if_ready(PathBuf::from(d));
     }
     let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");

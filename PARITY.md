@@ -378,17 +378,17 @@ Findings surfaced:
   wgpu-the-abstraction (mac-wgpu=Metal passes) — it's specific to the Linux
   wgpu (Vulkan-backed) + rocm lowering. Deep, remote-only; low priority since
   cpu/metal/mlx/coreml/vulkan/cuda all pass.
-- **kokoro Apple-GPU regression (open, local).** Was "cos 1.0 all 5 backends";
+- **kokoro Metal-GPU regression (open, local).** Was "cos 1.0 all 5 backends";
   now on mac: cpu ✅, **wgpu ✅ 0.984**, but **metal ❌ −0.051, mlx 💥 panic**
   (`Reshape [1,512,384] ⟵ Gather [192,384]` — element-count mismatch 73728≠196608,
   a shape-inference/lowering bug), **coreml ❌** (`mps.reshape` shape incompatible).
-  All three Apple-GPU failures are reshape-related. **Root cause (analyzed):** the
+  All three Metal-GPU failures are reshape-related. **Root cause (analyzed):** the
   mlx Reshape lowering already uses the *runtime* input shape (`env.rs:459`
   `x.shape()`), so the panic means the Gather genuinely produced `[192,384]` at
   runtime on mlx while the reshape needs `[512,384]` — a **data-dependent
   dynamic-shape divergence** in kokoro's decoder (gather length = Σdurations /
   length-regulator differs on mlx vs cpu), NOT a general reshape bug. Deep +
-  kokoro-specific (needs the duration/alignment path to match cpu on Apple GPU).
+  kokoro-specific (needs the duration/alignment path to match cpu on Metal GPU).
   cpu + wgpu tolerate it (runtime buffer sizing). Needs a focused session, not a
   cron slice.
   **UPDATE (2026-08): MLX decoder REGRESSED then FIXED (real op fix).** Bench
@@ -453,7 +453,7 @@ Findings surfaced:
   the qwen35 `clear_host_dense_projections` (runner.rs) now skips the release when
   `weights_path` is empty (inline_weights has no on-disk source to reload from),
   so Metal/MLX decode no longer panics with "F32 projections released, no weights
-  path". Metal runs (11.9 s). Helps any inline_weights qwen35 backbone on Apple
+  path". Metal runs (11.9 s). Helps any inline_weights qwen35 backbone on macOS
   GPU. **gepard fox 0/6 → 6/6 FIXED (2026-08):** not a port bug — the bench ran
   gepard's default temperature sampling (0.4) which **free-runs into coherent but
   WRONG words** ("The love is a cure…"); **greedy is faithful** (whisper "The quick

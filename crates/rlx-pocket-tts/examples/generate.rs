@@ -41,10 +41,10 @@ fn main() -> Result<()> {
     );
 
     let mut opts = GenerationOptions::default();
-    if let Ok(s) = std::env::var("POCKET_TTS_SEED") {
-        if let Ok(v) = s.parse::<u64>() {
-            opts.seed = v;
-        }
+    if let Ok(s) = std::env::var("POCKET_TTS_SEED")
+        && let Ok(v) = s.parse::<u64>()
+    {
+        opts.seed = v;
     }
     eprintln!("generating: {text:?}  seed={}", opts.seed);
     let start = std::time::Instant::now();

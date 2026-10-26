@@ -102,6 +102,46 @@ struct Sizes {
     head: u64,
 }
 
+/// The planner's cost model for a Kimi-K3 checkpoint: resident backbone per
+/// layer, routed experts as paged bytes (active fraction `top_k / experts`),
+/// and the per-layer cache read off the config — KDA layers hold a fixed
+/// recurrent state, MLA layers in this runner cache expanded keys/values.
+fn kimi_model_cost(t: &KimiLinearConfig, sz: &Sizes, per_layer: u64) -> ModelCost {
+    use rlx_distributed::cluster::{BlockKv, KvProfile};
+    let n_layers = t.num_hidden_layers.max(1);
+    let cfg = t.flow_config(1, 1);
+    let experts = t.num_experts.unwrap_or(0).max(1) as u64;
+    let per_layer_expert = sz.experts / n_layers as u64;
+    let blocks = (0..n_layers)
+        .map(|i| {
+            if t.is_kda_layer(i) {
+                let (h, hd, k) = (cfg.kda.num_heads, cfg.kda.head_dim, cfg.kda.conv_kernel);
+                BlockKv::Recurrent {
+                    state_bytes: ((h * hd * hd + 3 * h * hd * (k - 1)) * 4) as u64,
+                }
+            } else {
+                let m = cfg.mla;
+                BlockKv::Attention {
+                    bytes_per_token: (m.num_heads * (m.qk() + m.v_head_dim) * 4) as u64,
+                }
+            }
+        })
+        .collect();
+    ModelCost {
+        n_layers,
+        per_layer_bytes: per_layer,
+        per_layer_expert_bytes: per_layer_expert,
+        per_layer_expert_active_bytes: per_layer_expert * t.num_experts_per_token as u64 / experts,
+        embed_bytes: sz.embed,
+        head_bytes: sz.head,
+        per_layer_flops: 1.0,
+        kv: KvProfile::inferred(blocks),
+        // bf16 backbone (2 B/param) + MXFP4 experts (4.25 bits/param).
+        params: sz.backbone / 2 + sz.experts * 8 * 100 / 425,
+        hidden_size: t.hidden_size,
+    }
+}
+
 /// Read a safetensors file's JSON header (the leading u64 length + that many
 /// bytes) without mapping the tensor data.
 fn read_st_header(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>> {
@@ -209,13 +249,7 @@ fn cmd_plan(args: &[String]) -> Result<()> {
 
     // Resident model = backbone only; experts are paged (not counted per-layer).
     let per_layer = (sz.backbone.saturating_sub(sz.embed + sz.head)) / n_layers.max(1) as u64;
-    let model = ModelCost {
-        n_layers,
-        per_layer_bytes: per_layer,
-        embed_bytes: sz.embed,
-        head_bytes: sz.head,
-        per_layer_flops: 1.0,
-    };
+    let model = kimi_model_cost(t, &sz, per_layer);
 
     let nodes: Vec<(NodeCaps, NodeConfig)> =
         cfg.nodes.iter().map(|n| (caps_for(n), n.clone())).collect();
@@ -356,13 +390,7 @@ fn cmd_design(args: &[String]) -> Result<()> {
 
     // Backbone: layer-sharded, RESIDENT (needed every token — can't page it).
     let per_layer = (sz.backbone.saturating_sub(sz.embed + sz.head)) / n_layers.max(1) as u64;
-    let model = ModelCost {
-        n_layers,
-        per_layer_bytes: per_layer,
-        embed_bytes: sz.embed,
-        head_bytes: sz.head,
-        per_layer_flops: 1.0,
-    };
+    let model = kimi_model_cost(t, &sz, per_layer);
     let nodes: Vec<(NodeCaps, NodeConfig)> =
         cfg.nodes.iter().map(|n| (caps_for(n), n.clone())).collect();
     let reserve = (cfg.reserve_ram_gb * 1e9) as u64;
@@ -1236,7 +1264,7 @@ fn cmd_generate(args: &[String]) -> Result<()> {
         .collect();
     let n_gen: usize = opt(args, "--gen").and_then(|s| s.parse().ok()).unwrap_or(4);
 
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
     let kc = KimiK3Config::load(Path::new(model_dir).join("config.json"))?;
     let tc = kc.text_config.clone();
     let n_layers: usize = opt(args, "--layers")
@@ -1279,7 +1307,7 @@ fn cmd_logits(args: &[String]) -> Result<()> {
         .split(',')
         .filter_map(|s| s.trim().parse().ok())
         .collect();
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
     let kc = KimiK3Config::load(Path::new(model_dir).join("config.json"))?;
     let tc = kc.text_config.clone();
     let n_layers: usize = opt(args, "--layers")
@@ -1329,7 +1357,7 @@ fn cmd_load_cmp(args: &[String]) -> Result<()> {
     let model_dir = opt(args, "--model-dir").context("--model-dir <dir> required")?;
     let nvme = opt(args, "--nvme").unwrap_or("/Users/Shared/rlx-models/.nvme");
     let q8 = format!("{nvme}/kimi-q8");
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
     let kc = KimiK3Config::load(Path::new(model_dir).join("config.json"))?;
     let _tc = kc.text_config.clone();
     let n_layers: usize = opt(args, "--layers")
@@ -1415,7 +1443,7 @@ fn cmd_page_bench(args: &[String]) -> Result<()> {
     let base: usize = opt(args, "--base")
         .and_then(|s| s.parse().ok())
         .unwrap_or(300);
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
     let lp = format!("language_model.model.layers.{layer}");
     // two disjoint cold expert sets: [base, base+n) for mmap, [base+n, base+2n) for pread
     let mut set_a = Vec::new();
@@ -1574,7 +1602,7 @@ fn cmd_quantize_backbone(args: &[String]) -> Result<()> {
     let scheme = opt(args, "--scheme").unwrap_or("both");
     std::fs::create_dir_all(&q8_dir)?;
     std::fs::create_dir_all(&q4_dir)?;
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
     let kc = KimiK3Config::load(Path::new(model_dir).join("config.json"))?;
     let tc = kc.text_config.clone();
     let n_layers: usize = opt(args, "--layers")
@@ -1748,7 +1776,7 @@ fn cmd_specgen(args: &[String]) -> Result<()> {
     let n_gen: usize = opt(args, "--gen").and_then(|s| s.parse().ok()).unwrap_or(6);
     let k: usize = opt(args, "--k").and_then(|s| s.parse().ok()).unwrap_or(4);
 
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
     let kc = KimiK3Config::load(Path::new(model_dir).join("config.json"))?;
     let tc = kc.text_config.clone();
     let n_layers: usize = opt(args, "--layers")
@@ -1815,7 +1843,7 @@ fn cmd_vision(args: &[String]) -> Result<()> {
     let vc = kc
         .vision_config
         .context("config.json has no vision_config")?;
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
     let (w, mut d) = ck.load_vision(&vc)?;
     // override the patch grid for a light smoke run (must be merge-aligned).
     let g_al = grid - grid % d.merge.max(1);
@@ -1911,7 +1939,7 @@ fn cmd_vlm(args: &[String]) -> Result<()> {
     let hidden = tc.hidden_size; // LM hidden = vision projector out (7168)
     let patch = vc.patch_size;
 
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
 
     // ── synthetic image [3, H, W], grid merge-aligned so M vision tokens = (gh/2)² ──
     let g_al = (grid - grid % vc.merge_kernel_size.first().copied().unwrap_or(2)).max(2);
@@ -2011,7 +2039,7 @@ fn cmd_run(args: &[String]) -> Result<()> {
         .collect();
     let seq = tokens.len().max(1);
 
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
     let kc = KimiK3Config::load(Path::new(model_dir).join("config.json"))?;
     let tc = &kc.text_config;
     let n_layers: usize = opt(args, "--layers")
@@ -2107,56 +2135,22 @@ fn cmd_run(args: &[String]) -> Result<()> {
 // worker / dist — the layer-pipeline distributed runner (fast NVMe per node)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build the real Kimi-K3 `FlowConfig` for a given sequence length.
+/// Open the checkpoint after checking `config.json` against its tensor shapes,
+/// and print the scalar settings the shapes cannot confirm.
+fn open_checked(model_dir: impl AsRef<Path>) -> Result<CheckpointLoader> {
+    let dir = model_dir.as_ref();
+    let tc = KimiK3Config::load(dir.join("config.json"))?.text_config;
+    let mut ck = CheckpointLoader::open(dir)?;
+    rlx_kimi_k3::source::verify_flow_dims(&tc, &mut ck)?;
+    eprintln!("config: {}", rlx_kimi_k3::source::numerics_summary(&tc));
+    Ok(ck)
+}
+
+/// The real Kimi-K3 `FlowConfig` for a sequence length, from `config.json`
+/// (checked against the checkpoint's tensor shapes by
+/// `source::verify_flow_dims` when the checkpoint is opened).
 fn kimi_flow_cfg(tc: &KimiLinearConfig, seq: usize) -> FlowConfig {
-    let hidden = tc.hidden_size;
-    FlowConfig {
-        hidden,
-        vocab: tc.vocab_size,
-        attn_res_block_size: tc.attn_res_block_size.unwrap_or(12),
-        eps: 1e-5,
-        kda: KdaDims {
-            hidden,
-            num_heads: 96,
-            head_dim: 128,
-            conv_kernel: 4,
-            gate_lower_bound: Some(-5.0),
-            eps: 1e-5,
-            batch: 1,
-            seq,
-        },
-        mla: MlaDims {
-            hidden,
-            num_heads: 96,
-            q_lora_rank: 1536,
-            kv_lora_rank: 512,
-            qk_nope_head_dim: 128,
-            qk_rope_head_dim: 64,
-            v_head_dim: 128,
-            eps: 1e-5,
-            batch: 1,
-            seq,
-        },
-        moe: MoeDims {
-            hidden,
-            latent: 3584,
-            moe_inter: 3072,
-            num_experts: 896,
-            top_k: 16,
-            num_shared: 2,
-            routed_scaling: 2.5,
-            eps: 1e-5,
-            situ_beta: 4.0,
-            situ_linear_beta: Some(25.0),
-            batch: 1,
-            seq,
-        },
-        dense_inter: 33792,
-        situ_beta: 4.0,
-        situ_linear_beta: Some(25.0),
-        batch: 1,
-        seq,
-    }
+    tc.flow_config(1, seq)
 }
 
 /// `worker` — serve a layer range from the LOCAL checkpoint over TCP.
@@ -2221,7 +2215,7 @@ fn cmd_dgen(args: &[String]) -> Result<()> {
 
     let kc = KimiK3Config::load(Path::new(model_dir).join("config.json"))?;
     let tc = kc.text_config;
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
     eprintln!(
         "dgen: prompt {prompt:?} + {n_gen} tokens → {} stages {stages:?}",
         stages.len()
@@ -2269,7 +2263,7 @@ fn cmd_dist(args: &[String]) -> Result<()> {
     let kc = KimiK3Config::load(Path::new(model_dir).join("config.json"))?;
     let tc = kc.text_config;
     let cfg = kimi_flow_cfg(&tc, tokens.len());
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
 
     eprintln!(
         "coordinator: prompt {tokens:?} → {} stages {stages:?}",
@@ -2482,7 +2476,7 @@ fn cmd_expert_run(args: &[String]) -> Result<()> {
         .filter_map(|s| s.trim().parse().ok())
         .collect();
     let world = peers.len() as u32;
-    let mut ck = CheckpointLoader::open(model_dir)?;
+    let mut ck = open_checked(model_dir)?;
     let kc = KimiK3Config::load(Path::new(model_dir).join("config.json"))?;
     let tc = kc.text_config.clone();
     let d = kimi_flow_cfg(&tc, 1).moe;

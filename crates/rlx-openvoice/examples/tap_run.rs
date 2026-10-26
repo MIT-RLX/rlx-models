@@ -30,7 +30,7 @@ fn main() -> Result<()> {
         .context("parse t")?;
     eprintln!("[tap_run] t={t} onnx={}", onnx.display());
 
-    let device = match std::env::var("RLX_TAP_DEVICE").as_deref() {
+    let device = match rlx_ir::env::var_result("RLX_TAP_DEVICE").as_deref() {
         Ok("metal") => Device::Metal,
         Ok("mlx") => Device::Mlx,
         _ => Device::Cpu,

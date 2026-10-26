@@ -103,7 +103,7 @@ fn main() -> Result<()> {
         &mut loader,
         1,
         seq,
-        /*with_lm_head*/ std::env::var("RLX_NO_LM_HEAD").is_err(),
+        /*with_lm_head*/ rlx_ir::env::var_result("RLX_NO_LM_HEAD").is_err(),
         /*last_logits_only*/ false,
         /*with_kv_outputs*/ false,
         &mut packed,
@@ -142,7 +142,7 @@ fn main() -> Result<()> {
         // hit it. If the model's f32 footprint exceeds the cache budget the
         // later passes do not speed up — that is LRU thrash, and it is the
         // decode-time cost too.
-        let passes: usize = std::env::var("RLX_FWD_PASSES")
+        let passes: usize = rlx_ir::env::var_result("RLX_FWD_PASSES")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1);
@@ -164,7 +164,7 @@ fn main() -> Result<()> {
     };
 
     let logits = &out[0];
-    if std::env::var("RLX_NO_LM_HEAD").is_ok() {
+    if rlx_ir::env::var_result("RLX_NO_LM_HEAD").is_ok() {
         eprintln!("[no-lm-head] output len {}", logits.len());
         return Ok(());
     }

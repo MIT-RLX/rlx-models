@@ -20,8 +20,8 @@ pub enum KyutaiTtsBackend {
 
 impl KyutaiTtsBackend {
     pub fn open(model_dir: &Path, cfg: KyutaiTtsConfig, device: Device) -> Result<Self> {
-        let force_eager = std::env::var_os("RLX_KYUTAI_TTS_EAGER").is_some();
-        let force_native = std::env::var_os("RLX_KYUTAI_TTS_NATIVE").is_some();
+        let force_eager = rlx_ir::env::var_os("RLX_KYUTAI_TTS_EAGER").is_some();
+        let force_native = rlx_ir::env::var_os("RLX_KYUTAI_TTS_NATIVE").is_some();
         let use_rlx = !force_eager || force_native;
         if use_rlx {
             if device != Device::Cpu {

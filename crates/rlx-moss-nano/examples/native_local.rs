@@ -22,8 +22,9 @@ fn cfg() -> BundleConfig {
 }
 
 fn main() -> anyhow::Result<()> {
-    let dir =
-        PathBuf::from(std::env::var("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()));
+    let dir = PathBuf::from(
+        rlx_ir::env::var_result("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()),
+    );
     let model = TinyModel::new(dir, cfg());
     let n_vq = 16usize;
 
@@ -57,8 +58,10 @@ fn main() -> anyhow::Result<()> {
                 b.len() / 8,
                 format!(
                     "i64 {:?}",
-                    b.chunks_exact(8)
-                        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    b.as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| i64::from_le_bytes(*c))
                         .take(26)
                         .collect::<Vec<_>>()
                 ),
@@ -67,7 +70,9 @@ fn main() -> anyhow::Result<()> {
                 b.len() / 4,
                 format!(
                     "i32 {:?}",
-                    b.chunks_exact(4)
+                    b.as_chunks::<4>()
+                        .0
+                        .iter()
                         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                         .take(26)
                         .collect::<Vec<_>>()
@@ -81,7 +86,9 @@ fn main() -> anyhow::Result<()> {
                 b.len() / 4,
                 format!(
                     "f32 {:?}",
-                    b.chunks_exact(4)
+                    b.as_chunks::<4>()
+                        .0
+                        .iter()
                         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                         .take(26)
                         .collect::<Vec<_>>()

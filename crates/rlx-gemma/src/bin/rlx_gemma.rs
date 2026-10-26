@@ -17,7 +17,11 @@ use rlx_gemma::{cli, multimodal_cli};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let mut raw: Vec<String> = std::env::args().skip(1).collect();
+    if let Err(e) = rlx_cli::take_number_format(&mut raw) {
+        eprintln!("rlx-gemma: {e:#}");
+        return ExitCode::FAILURE;
+    }
     let (multimodal, args): (bool, Vec<String>) = if raw.iter().any(|a| a == "--multimodal") {
         (
             true,

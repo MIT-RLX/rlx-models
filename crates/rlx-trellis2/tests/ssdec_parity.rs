@@ -27,7 +27,9 @@ fn read_f32(st: &SafeTensors, name: &str) -> (Vec<f32>, Vec<usize>) {
     let t = st.tensor(name).unwrap();
     let v = t
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     (v, t.shape().to_vec())
@@ -43,8 +45,8 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 #[test]
 fn ssdec_matches_pytorch() {
     let (Ok(ckpt), Ok(refp)) = (
-        std::env::var("RLX_TRELLIS2_SSDEC_CKPT"),
-        std::env::var("RLX_TRELLIS2_SSDEC_REF"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SSDEC_CKPT"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SSDEC_REF"),
     ) else {
         eprintln!("skipping ssdec parity: set RLX_TRELLIS2_SSDEC_CKPT + RLX_TRELLIS2_SSDEC_REF");
         return;

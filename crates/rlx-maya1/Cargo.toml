@@ -28,9 +28,17 @@ gpu = ["rlx-runtime/gpu", "rlx-orpheus/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-orpheus/vulkan"]
 all-backends = ["metal", "mlx", "coreml", "cuda", "gpu", "vulkan"]
 hf-download = ["rlx-orpheus/hf-download"]
+# `export::export_rlxp`: Maya1 as an `.rlxp` package rlx runs alone.
+export = ["rlx-orpheus/export"]
 
 [dev-dependencies]
+rlx-ir = { workspace = true }
 rlx-whisper = { workspace = true }
+serde_json = { workspace = true }
+rlx-text = { workspace = true }
+tempfile = "3"
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
 
 [[bin]]
 name = "rlx-maya1"

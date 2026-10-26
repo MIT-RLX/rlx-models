@@ -101,7 +101,7 @@ impl WaveRnnOpts {
     /// Override with `RLX_WR_PORTABLE_BNNS=1` or set [`Self::rng`] explicitly.
     pub fn product_default() -> Self {
         let mut opts = Self::default();
-        if std::env::var_os("RLX_WR_PORTABLE_BNNS").is_some() {
+        if rlx_ir::env::var_os("RLX_WR_PORTABLE_BNNS").is_some() {
             opts.rng = WaveRnnRng::Bnns;
             return opts;
         }
@@ -226,8 +226,8 @@ impl<'a> WaveRnn<'a> {
                 .collect();
             NativeBnnsFullyConnected::new(&weights, input, output, bias, relu)
         };
-        let use_native_fc =
-            opts.rng == WaveRnnRng::NativeBnns && std::env::var_os("RLX_WR_PORTABLE_FC").is_none();
+        let use_native_fc = opts.rng == WaveRnnRng::NativeBnns
+            && rlx_ir::env::var_os("RLX_WR_PORTABLE_FC").is_none();
         let mut native_mel_fc = use_native_fc
             .then(|| make_fc(mel_w, N_MELS, GATES, Some(mel_b), false))
             .flatten();
@@ -281,14 +281,14 @@ impl<'a> WaveRnn<'a> {
         };
 
         let mut scratch = Scratch::new();
-        let flip_bits = std::env::var("RLX_WR_BITS_NOFLIP").is_err();
-        let fixed_coarse = std::env::var("RLX_WR_FIXED_COARSE").is_ok();
+        let flip_bits = rlx_ir::env::var_result("RLX_WR_BITS_NOFLIP").is_err();
+        let fixed_coarse = rlx_ir::env::var_result("RLX_WR_FIXED_COARSE").is_ok();
         // product bit-feedback path
         // Coarse channel held at 0 in product bit-feedback.
         // Opt out with `RLX_WR_COARSE_AR=1` (or `RLX_WR_FIXED_COARSE=1`).
-        let zero_coarse_bit = std::env::var_os("RLX_WR_COARSE_AR").is_none()
-            && std::env::var_os("RLX_WR_FIXED_COARSE").is_none()
-            && std::env::var_os("RLX_WR_PORTABLE_BNNS").is_none();
+        let zero_coarse_bit = rlx_ir::env::var_os("RLX_WR_COARSE_AR").is_none()
+            && rlx_ir::env::var_os("RLX_WR_FIXED_COARSE").is_none()
+            && rlx_ir::env::var_os("RLX_WR_PORTABLE_BNNS").is_none();
 
         for frame in 0..n_frames {
             let mel_row = mel.row(frame);
@@ -325,12 +325,12 @@ impl<'a> WaveRnn<'a> {
                 } else {
                     (coarse_bit, prev_fine)
                 };
-                let b0 = if std::env::var_os("RLX_WR_BITS_NO_F16").is_some() {
+                let b0 = if rlx_ir::env::var_os("RLX_WR_BITS_NO_F16").is_some() {
                     b0
                 } else {
                     f16_act(b0)
                 };
-                let b1 = if std::env::var_os("RLX_WR_BITS_NO_F16").is_some() {
+                let b1 = if rlx_ir::env::var_os("RLX_WR_BITS_NO_F16").is_some() {
                     b1
                 } else {
                     f16_act(b1)
@@ -413,22 +413,23 @@ impl<'a> WaveRnn<'a> {
                 } else {
                     sampled_coarse
                 };
-                let coarse_scaled = if std::env::var_os("RLX_WR_SCALE_LEFT").is_some() {
+                let coarse_scaled = if rlx_ir::env::var_os("RLX_WR_SCALE_LEFT").is_some() {
                     (coarse as f32) * 2.0 / 255.0 - 1.0
-                } else if std::env::var_os("RLX_WR_HALFBIN").is_some() {
+                } else if rlx_ir::env::var_os("RLX_WR_HALFBIN").is_some() {
                     ((coarse as f32) + 0.5) * (2.0 / 255.0) - 1.0
                 } else {
                     (coarse as f32) * (2.0 / 255.0) - 1.0
                 };
-                let inject_f16 = opts.inject_f16 || std::env::var_os("RLX_WR_INJECT_F16").is_some();
+                let inject_f16 =
+                    opts.inject_f16 || rlx_ir::env::var_os("RLX_WR_INJECT_F16").is_some();
                 let coarse_inj = if inject_f16 {
                     f16_act(coarse_scaled)
-                } else if std::env::var_os("RLX_WR_INJECT_LEFT").is_some() {
+                } else if rlx_ir::env::var_os("RLX_WR_INJECT_LEFT").is_some() {
                     (coarse as f32) * 2.0 / 255.0 - 1.0
                 } else {
                     coarse_scaled
                 };
-                let inject_w_f16 = std::env::var_os("RLX_WR_INJECT_W_F16").is_some();
+                let inject_w_f16 = rlx_ir::env::var_os("RLX_WR_INJECT_W_F16").is_some();
 
                 for j in 0..SUB_GATES {
                     let w = if inject_w_f16 {
@@ -438,7 +439,7 @@ impl<'a> WaveRnn<'a> {
                     };
                     scratch.fine_ig[j] = scratch.ig[SUB_GATES + j] + coarse_inj * w;
                 }
-                if std::env::var_os("RLX_WR_FINE_IG_F16").is_some() {
+                if rlx_ir::env::var_os("RLX_WR_FINE_IG_F16").is_some() {
                     for v in scratch.fine_ig.iter_mut() {
                         *v = f16_act(*v);
                     }
@@ -492,7 +493,7 @@ impl<'a> WaveRnn<'a> {
 
                 h[..SUB].copy_from_slice(&scratch.h_coarse);
                 h[SUB..].copy_from_slice(&scratch.h_fine);
-                if std::env::var_os("RLX_WR_H_F16").is_some() {
+                if rlx_ir::env::var_os("RLX_WR_H_F16").is_some() {
                     for v in h.iter_mut() {
                         *v = f16_act(*v);
                     }
@@ -500,7 +501,7 @@ impl<'a> WaveRnn<'a> {
 
                 pcm.push(coarse_scaled);
                 pcm.push(fine_scaled);
-                if std::env::var_os("RLX_WR_PCM_F16").is_some() {
+                if rlx_ir::env::var_os("RLX_WR_PCM_F16").is_some() {
                     prev_coarse = f16_act(coarse_scaled);
                     prev_fine = f16_act(fine_scaled);
                 } else {
@@ -667,7 +668,7 @@ mod tests {
         let o = WaveRnnOpts::product_default();
         #[cfg(target_os = "macos")]
         {
-            if std::env::var_os("RLX_WR_PORTABLE_BNNS").is_none() {
+            if rlx_ir::env::var_os("RLX_WR_PORTABLE_BNNS").is_none() {
                 assert_eq!(o.rng, WaveRnnRng::NativeBnns);
                 assert_eq!(o.seed, Some(16_807));
                 assert_eq!(o.gumbel_beta, 0.01);

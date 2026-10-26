@@ -5,6 +5,8 @@
 //! embeddings (`en_female`, …). Codec runs on any RLX backend; LM is eager CPU.
 
 pub mod codec;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod lm;
 pub mod session;
 pub mod tokens;

@@ -30,7 +30,7 @@
 use rlx_cli::{CompatibilityStatus, check_hf_repo};
 
 fn net_enabled() -> bool {
-    std::env::var("RLX_NET_TESTS").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_NET_TESTS").ok().as_deref() == Some("1")
 }
 
 #[test]

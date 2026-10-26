@@ -84,6 +84,8 @@ pub mod depformer;
 pub mod depformer_stream;
 pub mod device;
 pub mod download;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod fuser;
 pub mod generate;
 pub mod low_rank_embedding;

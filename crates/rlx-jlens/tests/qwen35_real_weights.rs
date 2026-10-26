@@ -30,7 +30,7 @@ const SEQ: usize = 24;
 const SKIP_FIRST: usize = 4;
 
 fn weights_path() -> Option<std::path::PathBuf> {
-    if let Ok(p) = std::env::var("RLX_JLENS_QWEN35_GGUF") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_JLENS_QWEN35_GGUF") {
         let p = std::path::PathBuf::from(p);
         return p.is_file().then_some(p);
     }
@@ -71,7 +71,7 @@ macro_rules! model_or_skip {
 /// the crate must be built with the matching feature or the backend is not
 /// compiled in.
 fn device() -> Device {
-    match std::env::var("RLX_JLENS_DEVICE") {
+    match rlx_ir::env::var_result("RLX_JLENS_DEVICE") {
         Ok(s) if !s.is_empty() => {
             rlx_runtime::parse_device(&s).unwrap_or_else(|e| panic!("RLX_JLENS_DEVICE: {e}"))
         }

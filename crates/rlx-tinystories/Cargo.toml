@@ -13,6 +13,8 @@ readme = "README.md"
 publish = false
 
 [dependencies]
+rlx-ir = { workspace = true }
+rlx-search = { workspace = true }
 anyhow = { workspace = true }
 # The training stack: `dsl` = the `rlx! { … }` graph DSL, `optim` = autodiff +
 # CPU eval + the rlx_optim optimizers (AdamW, LR schedules, Func::train_step*).
@@ -27,7 +29,7 @@ memmap2 = "0.9"
 rlx-opscope = { workspace = true }
 
 [features]
-# Metal on by default (Apple GPU training); drop with --no-default-features for
+# Metal on by default (Metal GPU training); drop with --no-default-features for
 # a pure-CPU build, and add `download` to auto-fetch TinyStories from the Hub.
 default = ["metal", "download"]
 metal = ["rlx-tensor/eval-metal"]

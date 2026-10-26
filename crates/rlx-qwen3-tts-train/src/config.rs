@@ -59,7 +59,7 @@ impl Default for JfkLoraConfig {
 }
 
 pub fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
+    rlx_ir::env::read(key)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)

@@ -21,7 +21,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         if p.join("model.safetensors").is_file() {
             return Some(p);
@@ -72,10 +72,10 @@ pub fn e2e_on_device(device: Device, label: &str) -> Result<bool> {
         eprintln!("{label}: skipped (not available)");
         return Ok(false);
     }
-    let model_dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let model_dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_kyutai_tts_dir());
-    let mimi_dir = std::env::var("RLX_MIMI_DIR")
+    let mimi_dir = rlx_ir::env::var_result("RLX_MIMI_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_mimi_dir());
     if !weights_ready(&model_dir, &mimi_dir) {
@@ -87,8 +87,8 @@ pub fn e2e_on_device(device: Device, label: &str) -> Result<bool> {
         return Ok(false);
     }
 
-    let prompt =
-        std::env::var("RLX_KYUTAI_TTS_VALIDATE_PROMPT").unwrap_or_else(|_| "Hello.".into());
+    let prompt = rlx_ir::env::var_result("RLX_KYUTAI_TTS_VALIDATE_PROMPT")
+        .unwrap_or_else(|_| "Hello.".into());
     eprintln!("{label}: synthesising {prompt:?} on {device:?} …");
     let mut session = KyutaiTtsSession::open_on(&model_dir, &mimi_dir, device)?;
     session.set_voice(KyutaiTtsVoice::new(DEFAULT_VOICE_NAME));
@@ -117,7 +117,11 @@ macro_rules! e2e_backend_test {
     ($name:ident, $dev:expr, $label:literal) => {
         #[test]
         fn $name() -> Result<()> {
-            if std::env::var("RLX_KYUTAI_TTS_E2E").ok().as_deref() != Some("1") {
+            if rlx_ir::env::var_result("RLX_KYUTAI_TTS_E2E")
+                .ok()
+                .as_deref()
+                != Some("1")
+            {
                 eprintln!(concat!("skip ", $label, ": set RLX_KYUTAI_TTS_E2E=1"));
                 return Ok(());
             }
@@ -137,7 +141,11 @@ e2e_backend_test!(e2e_vulkan, Device::Vulkan, "Vulkan");
 
 #[test]
 fn e2e_all_available_backends() -> Result<()> {
-    if std::env::var("RLX_KYUTAI_TTS_E2E").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_KYUTAI_TTS_E2E")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip e2e_all: set RLX_KYUTAI_TTS_E2E=1");
         return Ok(());
     }

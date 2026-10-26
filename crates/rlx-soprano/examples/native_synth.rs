@@ -26,7 +26,8 @@ fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(256);
 
-    let dir = std::env::var("RLX_SOPRANO_DIR").unwrap_or_else(|_| "weights/tts/soprano".into());
+    let dir =
+        rlx_ir::env::var_result("RLX_SOPRANO_DIR").unwrap_or_else(|_| "weights/tts/soprano".into());
     let st = std::env::var("SOPRANO_BACKBONE_ST").context("set SOPRANO_BACKBONE_ST")?;
     let device = parse_device(&dev).context("device")?;
 

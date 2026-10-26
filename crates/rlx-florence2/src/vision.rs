@@ -93,13 +93,13 @@ impl Florence2Builder<'_> {
             cur_c = out_c;
 
             let ws = v.window_size;
-            let stop_stage = std::env::var("RLX_FLORENCE2_VISION_STOP_STAGE")
+            let stop_stage = rlx_ir::env::var_result("RLX_FLORENCE2_VISION_STOP_STAGE")
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok());
-            let stop_depth = std::env::var("RLX_FLORENCE2_VISION_STOP_DEPTH")
+            let stop_depth = rlx_ir::env::var_result("RLX_FLORENCE2_VISION_STOP_DEPTH")
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok());
-            let stop_phase = std::env::var("RLX_FLORENCE2_VISION_STOP_PHASE").ok();
+            let stop_phase = rlx_ir::env::var_result("RLX_FLORENCE2_VISION_STOP_PHASE").ok();
             for depth in 0..v.depths[stage] {
                 toks =
                     self.spatial_block(stage, depth, toks, h, w, cur_c, v.num_heads[stage], ws)?;

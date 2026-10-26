@@ -14,6 +14,7 @@ repository.workspace = true
 rlx-core = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-ir = { workspace = true }
+rlx-search = { workspace = true }
 rlx-runtime = { workspace = true }
 anyhow = { workspace = true }
 bytemuck = { workspace = true }

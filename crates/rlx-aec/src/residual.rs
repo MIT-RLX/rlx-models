@@ -62,7 +62,9 @@ fn tensor_f32(tensors: &SafeTensors, name: &str) -> Result<Vec<f32>> {
     ensure!(t.dtype() == safetensors::Dtype::F32, "{name}: expected F32");
     let bytes = t.data();
     Ok(bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }

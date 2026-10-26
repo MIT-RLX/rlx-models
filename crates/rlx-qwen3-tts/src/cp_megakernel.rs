@@ -154,7 +154,10 @@ impl CpMegakernelGreedy {
 
 /// CPU eager CP megakernel for codec-frame fusion (default on GPU sessions).
 pub fn cp_megakernel_enabled(device: Device) -> bool {
-    match std::env::var("RLX_QWEN3_TTS_CP_MEGAKERNEL").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_MEGAKERNEL")
+        .ok()
+        .as_deref()
+    {
         Some("0") => false,
         Some("1") => true,
         _ => {

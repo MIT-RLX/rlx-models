@@ -655,6 +655,59 @@ fn qwen35_runner_dynamic_prefill_seeds_decode() {
     }
 }
 
+/// Dynamic prefill computes what static prefill does — last logits and the
+/// decode step seeded from its exported conv/SSM/KV state — at lengths both
+/// below and at the compiled extent.
+#[test]
+fn qwen35_dynamic_prefill_matches_static() {
+    let cfg = synth::tiny_cfg();
+    let weights = synth::synth_weights(&cfg);
+    let runner = |dynamic: bool| {
+        Qwen35RunnerBuilder::default()
+            .inline_weights(cfg.clone(), weights.clone())
+            .device(Device::Cpu)
+            .max_seq(8)
+            .enable_mtp(false)
+            .dynamic_prefill(dynamic)
+            .last_logits_only(true)
+            .build()
+            .expect("runner")
+    };
+    let (mut dyn_r, mut static_r) = (runner(true), runner(false));
+    for prompt in [&[1u32, 2, 3][..], &[5u32, 1, 4, 2, 6, 3, 7][..]] {
+        let a = dyn_r
+            .prefill_get_last_logits(prompt)
+            .expect("dynamic prefill");
+        let b = static_r
+            .prefill_get_last_logits(prompt)
+            .expect("static prefill");
+        let d = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            d < 1e-4,
+            "prefill logits differ by {d} at len {}",
+            prompt.len()
+        );
+        let a = dyn_r.decode_get_logits(9).expect("dynamic decode");
+        let b = static_r.decode_get_logits(9).expect("static decode");
+        let d = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            d < 1e-4,
+            "decode after prefill differs by {d} at len {}",
+            prompt.len()
+        );
+        dyn_r.reset_decode_cache();
+        static_r.reset_decode_cache();
+    }
+}
+
 fn argmax(logits: &[f32]) -> u32 {
     logits
         .iter()
@@ -811,14 +864,12 @@ fn qwen35_aot_cache_warm_start() {
     let lir_files: Vec<_> = fs::read_dir(&dir)
         .expect("read AOT dir")
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path().extension().is_some_and(|x| x == "json")
-                && e.file_name().to_string_lossy().ends_with(".lir.json")
-        })
+        // `rlx_runtime::aot_cache` writes `{key}.lir.bin` (+ `.meta.json`).
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".lir.bin"))
         .collect();
     assert!(
         !lir_files.is_empty(),
-        "AOT cache should persist at least one *.lir.json under {:?}",
+        "AOT cache should persist at least one *.lir.bin under {:?}",
         dir
     );
 

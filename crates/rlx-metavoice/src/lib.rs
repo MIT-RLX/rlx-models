@@ -17,6 +17,8 @@
 //! requested RLX [`Device`].
 
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod first_stage;
 pub mod native;
 pub mod second_stage;

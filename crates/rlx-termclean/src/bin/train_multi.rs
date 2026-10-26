@@ -463,7 +463,8 @@ fn main() {
         }
     }
     let dir = positional.unwrap_or_else(|| {
-        "/private/tmp/claude-501/-Users-Shared-rlx-models/47c4aeaa-f216-4fbb-9241-d0928201ee4a/scratchpad/multi".to_string()
+        eprintln!("usage: pass the dataset directory (`multi/` from the data generator)");
+        std::process::exit(2)
     });
     const EPOCHS: usize = 80;
 

@@ -106,7 +106,9 @@ pub struct GemmaConfig {
     pub rms_norm_eps: f64,
     #[serde(default = "default_rope_theta")]
     pub rope_theta: f64,
-    #[serde(default)]
+    /// Absent from many Gemma `config.json`s; transformers (and the GGUF path
+    /// below) default it to true.
+    #[serde(default = "default_tie_word_embeddings")]
     pub tie_word_embeddings: bool,
     #[serde(default)]
     pub attention_bias: bool,
@@ -154,8 +156,9 @@ pub struct GemmaConfig {
     #[serde(default)]
     pub attention_k_eq_v: bool,
     /// When `"vision"`, media placeholder spans use bidirectional
-    /// attention on sliding layers (Gemma 4 unified).
-    #[serde(default)]
+    /// attention on sliding layers (Gemma 4 unified). Gemma 3 configs carry
+    /// a boolean here (`false` = none, `true` = `"all"`).
+    #[serde(default, deserialize_with = "bool_or_string")]
     pub use_bidirectional_attention: Option<String>,
 
     // ── Gemma 4 E2B (mobile / edge) additions ──────────────────────
@@ -613,11 +616,17 @@ impl GemmaConfig {
 
     /// RoPE base frequency for layer `i`. Falls back to the
     /// top-level `rope_theta` when the unified map omits the entry.
+    /// Gemma 4 names per-layer θ in `rope_parameters`; Gemma 3 rotates its
+    /// sliding layers with `rope_local_base_freq` and its full layers with
+    /// `rope_theta`.
     pub fn layer_rope_theta(&self, layer: usize) -> f64 {
-        self.layer_rope_parameters(layer)
-            .and_then(|p| p.rope_theta)
-            .map(|t| t as f64)
-            .unwrap_or(self.rope_theta)
+        if let Some(t) = self.layer_rope_parameters(layer).and_then(|p| p.rope_theta) {
+            return t as f64;
+        }
+        if self.arch == GemmaArch::Gemma3 && !self.is_full_attention_layer(layer) {
+            return self.rope_local_base_freq;
+        }
+        self.rope_theta
     }
 
     fn layer_rope_parameters(&self, layer: usize) -> Option<&GemmaRopeParameters> {
@@ -708,7 +717,9 @@ fn infer_arch_from_json(raw: &str) -> GemmaArch {
         }
         // gemma-3n (`gemma3n` / `gemma3n_text`) shares the Gemma-3 layer style
         // (per-head q/k norm, no v-norm, dual local/global RoPE, sandwich norms).
+        // Text-only Gemma 3 checkpoints (270m, 1b) say `gemma3_text`.
         if raw.contains("\"gemma3\"")
+            || raw.contains("\"gemma3_text\"")
             || raw.contains("\"gemma3n\"")
             || raw.contains("\"gemma3n_text\"")
         {
@@ -935,10 +946,11 @@ pub fn gemma_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<GemmaConfig> {
         tie_word_embeddings: get_bool("gemma.tie_word_embeddings").unwrap_or(true),
         attention_bias: get_bool("gemma.attention.bias").unwrap_or(false),
         head_dim,
-        attn_logit_softcapping: if std::env::var("RLX_GEMMA_NO_ATTN_SOFTCAP").as_deref() == Ok("1")
+        attn_logit_softcapping: if rlx_ir::env::var_result("RLX_GEMMA_NO_ATTN_SOFTCAP").as_deref()
+            == Ok("1")
         {
             None
-        } else if let Ok(v) = std::env::var("RLX_GEMMA_ATTN_SOFTCAP_FORCE") {
+        } else if let Ok(v) = rlx_ir::env::var_result("RLX_GEMMA_ATTN_SOFTCAP_FORCE") {
             v.parse::<f32>().ok()
         } else {
             get_f32("gemma.attn_logit_softcapping")
@@ -1025,6 +1037,26 @@ fn gemma_eog_tokens_from_gguf(raw: &GgufFile, arch: GemmaArch) -> Vec<u32> {
     ids.sort_unstable();
     ids.dedup();
     ids
+}
+
+/// `use_bidirectional_attention`: Gemma 4 names a mode (`"vision"`), Gemma 3
+/// ships a boolean.
+fn bool_or_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Flag(bool),
+        Mode(String),
+    }
+    Ok(match Option::<Either>::deserialize(d)? {
+        None | Some(Either::Flag(false)) => None,
+        Some(Either::Flag(true)) => Some("all".into()),
+        Some(Either::Mode(m)) => Some(m),
+    })
+}
+
+fn default_tie_word_embeddings() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -1305,6 +1337,8 @@ mod tests {
         cfg.head_dim = Some(64);
         cfg.num_key_value_heads = 2;
         cfg.rope_theta = 1_000.0;
+        // Gemma 3 sliding layers take θ from `rope_local_base_freq`.
+        cfg.rope_local_base_freq = 1_000.0;
         for i in 0..cfg.num_hidden_layers {
             assert_eq!(cfg.layer_head_dim(i), 64);
             assert_eq!(cfg.layer_num_kv_heads(i), 2);
@@ -1425,5 +1459,33 @@ mod tests {
         assert!(!cfg.is_kv_shared_layer(0));
         assert_eq!(cfg.kv_source_layer(0), 0);
         assert_eq!(cfg.layer_intermediate_size(0), cfg.intermediate_size);
+    }
+
+    /// Gemma 3 sliding layers rotate with `rope_local_base_freq`, full layers
+    /// with `rope_theta`.
+    #[test]
+    fn gemma3_sliding_layers_use_local_rope_theta() {
+        let raw = r#"{"model_type": "gemma3_text", "hidden_size": 640, "intermediate_size": 2048,
+                "num_hidden_layers": 6, "num_attention_heads": 4, "num_key_value_heads": 1,
+                "head_dim": 256, "vocab_size": 64, "max_position_embeddings": 4096, "rope_theta": 1000000.0,
+                "rope_local_base_freq": 10000.0, "sliding_window": 512,
+                "layer_types": ["sliding_attention", "sliding_attention", "sliding_attention",
+                                "sliding_attention", "sliding_attention", "full_attention"]}"#;
+        let cfg = GemmaConfig::from_hf_value(&serde_json::from_str(raw).unwrap(), raw).unwrap();
+        assert_eq!(cfg.arch, GemmaArch::Gemma3);
+        assert_eq!(cfg.layer_rope_theta(0), 10_000.0);
+        assert_eq!(cfg.layer_rope_theta(5), 1_000_000.0);
+    }
+
+    /// gemma-3-270m / gemma-3-1b ship `model_type: "gemma3_text"`; reading
+    /// them as Gemma 1 drops the sandwich and q/k norms.
+    #[test]
+    fn gemma3_text_model_type_is_gemma3() {
+        assert_eq!(
+            infer_arch_from_json(
+                r#"{"model_type": "gemma3_text", "architectures": ["Gemma3ForCausalLM"]}"#
+            ),
+            GemmaArch::Gemma3
+        );
     }
 }

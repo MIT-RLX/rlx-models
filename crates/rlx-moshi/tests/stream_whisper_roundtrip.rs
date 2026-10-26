@@ -24,7 +24,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn moshi_dir() -> Option<PathBuf> {
-    std::env::var("RLX_MOSHI_DIR")
+    rlx_ir::env::var_result("RLX_MOSHI_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("model.safetensors").is_file())
@@ -35,7 +35,7 @@ fn moshi_dir() -> Option<PathBuf> {
 }
 
 fn mimi_dir() -> Option<PathBuf> {
-    std::env::var("RLX_MIMI_DIR")
+    rlx_ir::env::var_result("RLX_MIMI_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("model.safetensors").is_file())
@@ -46,7 +46,7 @@ fn mimi_dir() -> Option<PathBuf> {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         if p.join("model.safetensors").is_file() {
             return Some(p);
@@ -63,7 +63,7 @@ fn whisper_dir() -> Option<PathBuf> {
 }
 
 fn input_wav() -> PathBuf {
-    if let Ok(p) = std::env::var("RLX_MOSHI_STREAM_WAV") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_MOSHI_STREAM_WAV") {
         return PathBuf::from(p);
     }
     repo_root().join("crates/rlx-qwen3-tts/examples/audio/ask_not.wav")
@@ -175,7 +175,7 @@ fn streaming_roundtrip_on_device(device: Device) -> Result<()> {
 
     let pcm_in = load_wav_mono(&wav_in, MIMI_RATE)?;
     ensure!(!pcm_in.is_empty(), "empty input wav");
-    let max_steps = std::env::var("RLX_MOSHI_STREAM_MAX_STEPS")
+    let max_steps = rlx_ir::env::var_result("RLX_MOSHI_STREAM_MAX_STEPS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| (pcm_in.len() / FRAME_SAMPLES).clamp(8, 32));
@@ -217,7 +217,11 @@ fn streaming_roundtrip_on_device(device: Device) -> Result<()> {
 
 #[test]
 fn streaming_duplex_pcm_whisper_roundtrip() -> Result<()> {
-    if std::env::var("RLX_MOSHI_STREAM_E2E").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_MOSHI_STREAM_E2E")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_MOSHI_STREAM_E2E=1 and fetch weights");
         return Ok(());
     }

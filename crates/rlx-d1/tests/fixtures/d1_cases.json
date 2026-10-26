@@ -1,0 +1,163 @@
+[
+  {
+    "name": "readme_text",
+    "state": "I was charged twice this month, please refund one of them.",
+    "questions": {
+      "refund": {"type": "noul", "instructions": "Is the customer asking for a refund?"},
+      "team": {
+        "type": "choice",
+        "instructions": "Which team should handle this?",
+        "criteria": {
+          "billing": "Charges, refunds, invoices",
+          "technical": "App or site faults",
+          "fraud": "Suspected unauthorised use"
+        }
+      },
+      "urgency": {
+        "type": "score",
+        "instructions": "How urgent is this?",
+        "criteria": ["Can wait", "Today", "Blocking the customer now"]
+      }
+    }
+  },
+  {
+    "name": "json_state",
+    "state": {
+      "ticket": {
+        "id": 123,
+        "subject": "Login fails",
+        "body": "Line one\nLine two \"quoted\"\tTabbed",
+        "priority": 2.5,
+        "ratio": 1e-05,
+        "big": 12345678901234567.0,
+        "whole": 3.0,
+        "tags": ["auth", "web"],
+        "vip": true,
+        "note": null,
+        "empty_list": [],
+        "empty_obj": {}
+      },
+      "zeta": "last key first in sorted order? no",
+      "alpha": 1
+    },
+    "questions": {
+      "is_bug": {
+        "type": "noul",
+        "instructions": "Is this a software defect?",
+        "criteria": {"true": "Something in the product is broken", "false": "Anything else"}
+      },
+      "severity": {
+        "type": "score",
+        "instructions": "Rate the severity.",
+        "criteria": ["Trivial", "Minor", "Major", "Critical", "Outage"]
+      }
+    }
+  },
+  {
+    "name": "many_options",
+    "state": "Could you tell me how to change the PIN on my card?",
+    "questions": {
+      "intent": {
+        "type": "choice",
+        "instructions": "Which banking intent is this?",
+        "criteria": {
+          "activate_card": "Activate a new card",
+          "card_arrival": "When will my card arrive",
+          "change_pin": "Change the card PIN",
+          "lost_card": "Report a lost card",
+          "stolen_card": "Report a stolen card",
+          "card_declined": "Card payment was declined",
+          "atm_withdrawal": "Problem withdrawing cash",
+          "balance": "Check the account balance",
+          "transfer": "Send money to someone",
+          "transfer_pending": "A transfer is still pending",
+          "exchange_rate": "Currency exchange rates",
+          "top_up": "Add money to the account",
+          "top_up_failed": "Top-up did not go through",
+          "refund": "Get a refund",
+          "direct_debit": "Set up a direct debit",
+          "close_account": "Close the account",
+          "verify_identity": "Identity verification",
+          "update_address": "Change my address",
+          "fees": "Questions about fees",
+          "virtual_card": "Get a virtual card",
+          "apple_pay": "Apple Pay or Google Pay",
+          "contactless": "Contactless not working",
+          "statement": "Get a statement",
+          "interest": "Interest rates",
+          "loan": "Apply for a loan",
+          "mortgage": "Mortgage questions",
+          "overdraft": "Overdraft limits",
+          "fraud": "Suspicious transactions",
+          "app_login": "Cannot log in to the app",
+          "other": null
+        }
+      }
+    }
+  },
+  {
+    "name": "letter_options",
+    "state": {"question": "Which planet is known as the Red Planet?"},
+    "questions": {
+      "answer": {
+        "type": "choice",
+        "instructions": "Pick the correct answer.",
+        "criteria": {"A": "Venus", "B": "Mars", "C": "Jupiter", "D": "Saturn"}
+      }
+    }
+  },
+  {
+    "name": "unicode",
+    "state": "Привет! Мой заказ так и не пришёл 😡 — помогите, пожалуйста.",
+    "questions": {
+      "angry": {"type": "noul", "instructions": "Is the customer upset?"},
+      "language": {
+        "type": "choice",
+        "instructions": "What language is the message in?",
+        "criteria": {"english": "English", "russian": "Russian", "ukrainian": "Ukrainian", "other_language": null}
+      }
+    }
+  },
+  {
+    "name": "cats_image",
+    "state": null,
+    "images": ["cats.jpg"],
+    "questions": {
+      "cats": {
+        "type": "choice",
+        "instructions": "How many cats are there?",
+        "criteria": {"one": "One", "two": "Two", "more": "Three or more"}
+      }
+    }
+  },
+  {
+    "name": "cats_image_multi",
+    "state": "A photo from my living room.",
+    "images": ["cats.jpg"],
+    "questions": {
+      "sofa": {"type": "noul", "instructions": "Is there a sofa or couch in the picture?"},
+      "remote": {"type": "noul", "instructions": "Is there a remote control in the picture?"}
+    }
+  },
+  {
+    "name": "shapes_tiled",
+    "state": null,
+    "images": ["shapes_1400x900.png"],
+    "questions": {
+      "shape": {
+        "type": "choice",
+        "instructions": "Which shapes are in the image?",
+        "criteria": {"circle_and_square": "A red circle and a blue square", "two_circles": "Two circles", "nothing": "No shapes"}
+      },
+      "colorful": {"type": "score", "instructions": "How colorful is the image?", "criteria": ["Grey", "Some colour", "Very colourful"]}
+    }
+  },
+  {
+    "name": "small_image",
+    "state": {"context": "A product photo"},
+    "images": ["small_200x120.png"],
+    "questions": {
+      "yellow": {"type": "noul", "instructions": "Is there something yellow in the image?"}
+    }
+  }
+]

@@ -24,7 +24,10 @@ use std::path::PathBuf;
 
 #[test]
 fn cp_eager_matches_hf_on_dumped_past_hidden() {
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
@@ -42,7 +45,11 @@ fn cp_eager_matches_hf_on_dumped_past_hidden() {
     let groups = cp.predict_groups_slice(&past, 1995).unwrap();
     eprintln!("eager={groups:?}");
 
-    if std::env::var("RLX_QWEN3_TTS_CP_COMPILED").ok().as_deref() == Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_COMPILED")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         let cp_cfg = cfg.code_predictor();
         let mut wm = store.load_code_predictor_backbone().unwrap();
         let weights = remap_code_predictor_weights(&mut wm).unwrap();

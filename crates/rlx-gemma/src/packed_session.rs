@@ -243,7 +243,10 @@ fn gemma_packed_gpu_kv_enabled(device: Device, exec_device: Device) -> bool {
     if exec_device != device || !device_supports_gpu_kv(device) {
         return false;
     }
-    match std::env::var("RLX_GEMMA_PACKED_GPU_KV").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_GEMMA_PACKED_GPU_KV")
+        .ok()
+        .as_deref()
+    {
         Some("0") | Some("false") | Some("no") => false,
         Some("1") | Some("true") | Some("yes") => true,
         _ => matches!(
@@ -387,12 +390,12 @@ where
 }
 
 fn packed_timing_enabled() -> bool {
-    std::env::var("RLX_GEMMA_PACKED_TIMING")
+    rlx_ir::env::var_result("RLX_GEMMA_PACKED_TIMING")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
 }
 
 fn decode_prewarm_enabled(device: Device) -> bool {
-    match std::env::var("RLX_GEMMA_PACKED_WARM_DECODE")
+    match rlx_ir::env::var_result("RLX_GEMMA_PACKED_WARM_DECODE")
         .ok()
         .as_deref()
     {
@@ -459,7 +462,7 @@ fn gpu_gather_embed_enabled(cfg: &GemmaConfig, device: Device) -> bool {
     if rlx_ir::env::flag("RLX_GEMMA_HOST_EMBED_GATHER") {
         return false;
     }
-    let cap_mb = std::env::var("RLX_GEMMA_GPU_EMBED_MAX_MB")
+    let cap_mb = rlx_ir::env::var_result("RLX_GEMMA_GPU_EMBED_MAX_MB")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(128);
@@ -471,13 +474,13 @@ fn gpu_gather_embed_enabled(cfg: &GemmaConfig, device: Device) -> bool {
 }
 
 fn prefill_prewarm_enabled() -> bool {
-    std::env::var("RLX_GEMMA_PACKED_WARM_PREFILL")
+    rlx_ir::env::var_result("RLX_GEMMA_PACKED_WARM_PREFILL")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
         .unwrap_or(false)
 }
 
 fn warm_past_seqs(max_seq: usize) -> Vec<usize> {
-    if let Ok(raw) = std::env::var("RLX_GEMMA_PACKED_WARM_PAST") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_GEMMA_PACKED_WARM_PAST") {
         if let Ok(one) = raw.parse::<usize>() {
             return vec![one];
         }
@@ -677,7 +680,7 @@ impl GemmaPackedSession {
             .ok_or_else(|| anyhow!("non-utf8 weights path"))?
             .to_string();
 
-        let trace_init = std::env::var("RLX_GEMMA_TRACE_INIT").is_ok();
+        let trace_init = rlx_ir::env::var_result("RLX_GEMMA_TRACE_INIT").is_ok();
         macro_rules! step {
             ($t:expr, $msg:expr) => {
                 if trace_init {
@@ -1008,7 +1011,7 @@ impl GemmaPackedSession {
     }
 
     fn ensure_prefill_bucket_kind(&mut self, seq: usize, hidden_only: bool) -> Result<()> {
-        let trace = std::env::var("RLX_GEMMA_TRACE_INIT").is_ok();
+        let trace = rlx_ir::env::var_result("RLX_GEMMA_TRACE_INIT").is_ok();
         let key = prefill_cache_key(seq, hidden_only);
         if self.prefill_cache.contains(key) {
             return Ok(());
@@ -1081,7 +1084,7 @@ impl GemmaPackedSession {
             .prefill_cache_cpu
             .as_mut()
             .context("Metal session missing CPU prefill cache")?;
-        let trace = std::env::var("RLX_GEMMA_TRACE_INIT").is_ok();
+        let trace = rlx_ir::env::var_result("RLX_GEMMA_TRACE_INIT").is_ok();
         let key = prefill_cache_key(seq, hidden_only);
         if cache.contains(key) {
             return Ok(());
@@ -1407,7 +1410,7 @@ impl GemmaPackedSession {
 
         let kv_dims = self.per_layer_kv_dims();
         let mut outputs = outputs;
-        if std::env::var("RLX_TAP_L0").ok().is_some() {
+        if rlx_ir::env::var_result("RLX_TAP_L0").ok().is_some() {
             let expected_kv = 2 * self.cfg.num_hidden_layers;
             let total_kv_logits = 1 + expected_kv;
             if outputs.len() > total_kv_logits {
@@ -2188,7 +2191,7 @@ impl GemmaPackedSession {
         if logits.len() < vocab {
             bail!("decode logits short: {} < {vocab}", logits.len());
         }
-        if std::env::var("RLX_GEMMA_DECODE_DEBUG").is_ok() {
+        if rlx_ir::env::var_result("RLX_GEMMA_DECODE_DEBUG").is_ok() {
             let mut tops: Vec<(usize, f32)> = logits[..vocab]
                 .iter()
                 .enumerate()

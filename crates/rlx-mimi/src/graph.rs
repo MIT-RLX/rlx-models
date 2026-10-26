@@ -487,7 +487,7 @@ fn transformer_layer(
 }
 
 /// Build cos/sin `[t, head_dim]` (rotate-half layout) from `inv_freq`.
-fn rope_tables(inv_freq: &[f32], t: usize) -> (Vec<f32>, Vec<f32>) {
+pub(crate) fn rope_tables(inv_freq: &[f32], t: usize) -> (Vec<f32>, Vec<f32>) {
     let half = inv_freq.len();
     let d = half * 2;
     let mut cos = vec![0f32; t * d];
@@ -505,7 +505,7 @@ fn rope_tables(inv_freq: &[f32], t: usize) -> (Vec<f32>, Vec<f32>) {
     (cos, sin)
 }
 
-fn sliding_causal_mask(t: usize, window: usize) -> Vec<f32> {
+pub(crate) fn sliding_causal_mask(t: usize, window: usize) -> Vec<f32> {
     let mut m = vec![f32::NEG_INFINITY; t * t];
     for i in 0..t {
         let lo = i.saturating_sub(window - 1);

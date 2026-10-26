@@ -131,9 +131,11 @@ fn parse_backbone(v: Option<&Value>) -> Result<BackboneConfig> {
     if let Some(n) = u_field(o, "intermediate_size") {
         c.intermediate_size = n;
     }
-    let layers = u_field(o, "num_hidden_layers").unwrap_or(c.num_hidden_layers);
-    let mtp = u_field(o, "mtp_num_hidden_layers").unwrap_or(0);
-    c.num_hidden_layers = layers.saturating_sub(mtp);
+    // The trunk's layers: `mtp_num_hidden_layers` counts the MTP head's
+    // apart (`layer_types` lists exactly `num_hidden_layers`).
+    if let Some(n) = u_field(o, "num_hidden_layers") {
+        c.num_hidden_layers = n;
+    }
     if let Some(n) = u_field(o, "num_attention_heads") {
         c.num_attention_heads = n;
     }

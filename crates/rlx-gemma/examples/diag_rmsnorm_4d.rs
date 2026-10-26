@@ -104,7 +104,7 @@ fn main() -> Result<()> {
     g.outputs = vec![q_out];
 
     let _ = CompileOptions::default();
-    let dev = std::env::var("RLX_DIAG_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let dev = rlx_ir::env::var_result("RLX_DIAG_DEVICE").unwrap_or_else(|_| "cpu".into());
     let device = match dev.as_str() {
         "metal" => Device::Metal,
         "mlx" => Device::Mlx,

@@ -96,6 +96,14 @@ pub mod bioclip2 {
 pub mod embed {
     pub use rlx_embed::*;
 }
+#[cfg(feature = "flux1")]
+pub mod flux1 {
+    pub use rlx_flux1::*;
+}
+#[cfg(feature = "flux3")]
+pub mod flux3 {
+    pub use rlx_flux3::*;
+}
 #[cfg(feature = "flux2")]
 pub mod flux2 {
     pub use rlx_flux2::*;
@@ -129,10 +137,42 @@ pub mod nllb {
 pub mod moonshine {
     pub use rlx_moonshine::*;
 }
+#[cfg(feature = "moonshine-streaming")]
+pub mod moonshine_streaming {
+    pub use rlx_moonshine_streaming::*;
+}
+#[cfg(feature = "embeddinggemma")]
+pub mod embeddinggemma {
+    pub use rlx_embeddinggemma::*;
+}
+#[cfg(feature = "jina-v5")]
+pub mod jina_v5 {
+    pub use rlx_jina_v5::*;
+}
 
 #[cfg(feature = "timesfm3")]
 pub mod timesfm3 {
     pub use rlx_timesfm3::*;
+}
+
+#[cfg(feature = "timestral")]
+pub mod timestral {
+    pub use rlx_timestral::*;
+}
+
+#[cfg(feature = "pplx-decider")]
+pub mod pplx_decider {
+    pub use rlx_pplx_decider::*;
+}
+
+#[cfg(feature = "kev")]
+pub mod kev {
+    pub use rlx_kev::*;
+}
+
+#[cfg(feature = "carbon")]
+pub mod carbon {
+    pub use rlx_carbon::*;
 }
 #[cfg(feature = "f0")]
 pub mod f0 {
@@ -161,6 +201,18 @@ pub mod qwen3_vl {
 #[cfg(feature = "lfm-vl")]
 pub mod lfm_vl {
     pub use rlx_lfm_vl::*;
+}
+#[cfg(feature = "minicpm-v")]
+pub mod minicpm_v {
+    pub use rlx_minicpm_v::*;
+}
+#[cfg(feature = "minicpm-sala")]
+pub mod minicpm_sala {
+    pub use rlx_minicpm_sala::*;
+}
+#[cfg(feature = "d1")]
+pub mod d1 {
+    pub use rlx_d1::*;
 }
 #[cfg(feature = "mistral-vl")]
 pub mod mistral_vl {
@@ -482,6 +534,12 @@ pub mod twoway_transformer_ir {
 
 #[cfg(feature = "runner")]
 pub mod run;
+
+#[cfg(feature = "export")]
+pub mod export;
+
+#[cfg(feature = "train")]
+pub mod lm_train;
 #[cfg(feature = "runner")]
 mod sam_runner;
 

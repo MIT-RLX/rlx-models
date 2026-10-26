@@ -14,11 +14,11 @@ use rlx_runtime::Device;
 
 #[test]
 fn parakeet_tdt_transcribes_end_to_end() {
-    let Ok(nemo) = std::env::var("RLX_PARAKEET_NEMO") else {
+    let Ok(nemo) = rlx_ir::env::var_result("RLX_PARAKEET_NEMO") else {
         eprintln!("skip: set RLX_PARAKEET_NEMO to a Parakeet-TDT .nemo checkpoint");
         return;
     };
-    let wav_path = std::env::var("RLX_PARAKEET_WAV")
+    let wav_path = rlx_ir::env::var_result("RLX_PARAKEET_WAV")
         .unwrap_or_else(|_| "assets/harness/jfk_16k.wav".to_string());
 
     let pk = Parakeet::open(Path::new(&nemo), Device::Cpu).expect("open parakeet");

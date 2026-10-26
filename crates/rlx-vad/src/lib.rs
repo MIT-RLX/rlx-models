@@ -19,6 +19,8 @@
 
 pub mod audio;
 pub mod device;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod marblenet;
 pub mod ops;
 pub mod segments;

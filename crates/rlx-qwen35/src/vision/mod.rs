@@ -28,7 +28,7 @@ pub use config::MmProjConfig;
 pub use encoder::{Qwen35VisionEncoder, VisionEncodeOutput, load_vision_encoder};
 pub use flow::{Qwen35VisionFlow, build_qwen35_vision_built};
 pub use multimodal::{
-    MEDIA_MARKER, MultimodalPrefill, MultimodalPrompt, VISION_END, VISION_START,
+    MEDIA_MARKER, MultiImagePrompt, MultimodalPrefill, MultimodalPrompt, VISION_END, VISION_START,
     build_multimodal_mrope_sections, image_chunk_n_pos, image_decoder_pos,
     merge_text_and_vision_embd,
 };

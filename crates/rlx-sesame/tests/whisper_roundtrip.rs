@@ -161,7 +161,7 @@ fn long_words() -> Vec<&'static str> {
 
 /// Default seed for the long paragraph (validated Whisper ≥14/15).
 fn long_seed() -> u64 {
-    std::env::var("RLX_SESAME_LONG_SEED")
+    rlx_ir::env::var_result("RLX_SESAME_LONG_SEED")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(42)

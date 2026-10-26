@@ -16,21 +16,21 @@
 //! `rlx-neuralhash` command line: hash images, inspect the network, compare hashes.
 //!
 //! A single-image run mirrors `nnhash.py` — same inputs, same 24-character hex
-//! on stdout — except the network is Apple's Espresso container read directly
+//! on stdout — except the network is the vendor's network container read directly
 //! rather than a converted ONNX file.
 
 use anyhow::{Context, Result, anyhow, bail};
 use rlx_cli::{parse_standard_device, req};
 use std::path::PathBuf;
 
-use crate::espresso::EspressoNet;
 use crate::hash::NeuralHash;
 use crate::model::NeuralHashModel;
+use crate::netfile::NetFile;
 use crate::spec::NeuralHashSpec;
 use crate::{NeuralHasher, seed::SeedMatrix};
 
 const HELP: &str = "\
-rlx-neuralhash — Apple NeuralHash perceptual image hashing on RLX
+rlx-neuralhash — NeuralHash perceptual image hashing on RLX
 
 Usage:
   rlx-neuralhash --net <NeuralHashv3b-current.espresso.net> --seed <seed.dat> \\
@@ -39,7 +39,7 @@ Usage:
   rlx-neuralhash --compare <hash-a> <hash-b>
 
 Model:
-  --net <path>       Apple's NeuralHashv3b espresso net. The sibling .shape and
+  --net <path>       the vendor's NeuralHashv3b network file. The sibling .shape and
                      .weights files are located automatically, and the LZFSE
                      `pbze` container current macOS uses is decompressed inline.
                      The architecture is read from this container and built as
@@ -62,11 +62,11 @@ Hashing:
   --distances        Print the pairwise Hamming distance matrix over the batch.
   --bench <n>        Time n forward passes of the first image (after a warm-up)
                      and report graph size, compile time and per-image latency.
-  --no-fuse          Emit Espresso's literal hard-swish chains instead of the
+  --no-fuse          Emit the format's literal hard-swish chains instead of the
                      fused activations. Same hash, more ops — for A/B timing.
 
 Inspection:
-  --inspect          Print the Espresso layer-type histogram and the derived
+  --inspect          Print the network layer-type histogram and the derived
                      native op list, then exit. Run this first against a model
                      you have not used before: unsupported layer types are
                      named here rather than silently skipped.
@@ -106,9 +106,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 println!("{HELP}");
                 return Ok(());
             }
-            "--net" | "--espresso" | "--model" => {
-                net_path = Some(PathBuf::from(req(args, &mut i)?))
-            }
+            "--net" | "--model" => net_path = Some(PathBuf::from(req(args, &mut i)?)),
             "--seed" => seed_path = Some(PathBuf::from(req(args, &mut i)?)),
             "--image" => images.push(PathBuf::from(req(args, &mut i)?)),
             "--device" => device = req(args, &mut i)?,
@@ -178,9 +176,9 @@ pub fn run(args: &[String]) -> Result<()> {
     })?;
 
     if inspect || export_spec.is_some() {
-        let net = EspressoNet::open(&net_path)?;
+        let net = NetFile::open(&net_path)?;
         if inspect {
-            println!("espresso format_version: {}", net.format_version);
+            println!("net format_version: {}", net.format_version);
             println!(
                 "layers: {}  weight blobs: {}",
                 net.layers.len(),
@@ -192,7 +190,7 @@ pub fn run(args: &[String]) -> Result<()> {
             }
             println!("\nlayers:\n{}", net.layer_report());
         }
-        let spec = NeuralHashSpec::from_espresso(&net)?;
+        let spec = NeuralHashSpec::from_netfile(&net)?;
         if inspect {
             println!(
                 "derived native spec: {} ops, input {:?} {:?}, output {:?} ({} floats)",
@@ -238,7 +236,7 @@ pub fn run(args: &[String]) -> Result<()> {
         net_path.display()
     );
     let build_start = std::time::Instant::now();
-    let model = NeuralHashModel::open_espresso_fused(&net_path, device, fuse)?;
+    let model = NeuralHashModel::open_netfile_fused(&net_path, device, fuse)?;
     let build = build_start.elapsed();
     let mut hasher = NeuralHasher::from_parts(model, seed);
 

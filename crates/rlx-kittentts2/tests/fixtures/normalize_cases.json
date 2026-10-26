@@ -1,0 +1,1002 @@
+[
+{
+"input": "I paid $12.50 for 3 books.",
+"normalized": "I paid twelve dollars fifty cents for three books.",
+"raw": "I paid $12.50 for 3 books."
+},
+{
+"input": "The meeting is on January 5th, 2024 at 3:30 PM.",
+"normalized": "The meeting is on january fifth, twenty twenty four at three thirty PM.",
+"raw": "The meeting is on January 5th, 2024 at 3:30 PM."
+},
+{
+"input": "Call me at 555-123-4567 tomorrow.",
+"normalized": "Call me at five five five, one two three, four five six seven tomorrow.",
+"raw": "Call me at 555-123-4567 tomorrow."
+},
+{
+"input": "It costs €5 or £3.99, depending.",
+"normalized": "It costs five euros or three pounds ninety nine pence, depending.",
+"raw": "It costs €5 or £3.99, depending."
+},
+{
+"input": "We ran 10km in 45 minutes.",
+"normalized": "We ran ten kilometers in forty five minutes.",
+"raw": "We ran 10km in 45 minutes."
+},
+{
+"input": "The temperature dropped to -5°C overnight.",
+"normalized": "The temperature dropped to minus five degrees Celsius overnight.",
+"raw": "The temperature dropped to -5°C overnight."
+},
+{
+"input": "Only 25% of people agreed.",
+"normalized": "Only twenty five percent of people agreed.",
+"raw": "Only 25% of people agreed."
+},
+{
+"input": "Chapter IV begins on page 112.",
+"normalized": "Chapter IV begins on page one hundred and twelve.",
+"raw": "Chapter IV begins on page 112."
+},
+{
+"input": "He finished 1st, she came 2nd and I was 23rd.",
+"normalized": "He finished first, she came second and I was twenty third.",
+"raw": "He finished 1st, she came 2nd and I was 23rd."
+},
+{
+"input": "Add 1/2 cup of sugar and 3/4 tsp of salt.",
+"normalized": "Add one half cup of sugar and three quarters tsp of salt.",
+"raw": "Add 1/2 cup of sugar and 3/4 tsp of salt."
+},
+{
+"input": "Dr. Smith lives at 221B Baker St.",
+"normalized": "Doctor Smith lives at two hundred twenty one B Baker St.",
+"raw": "Dr. Smith lives at 221B Baker St."
+},
+{
+"input": "The year 1999 was wild; 2000 was calmer.",
+"normalized": "The year nineteen ninety nine was wild; two thousand was calmer.",
+"raw": "The year 1999 was wild; 2000 was calmer."
+},
+{
+"input": "Visit https://example.com or email me at john.doe@example.org.",
+"normalized": "Visit HTTPS colon slash slash example dot com or email me at john dot doe at example dot org.",
+"raw": "Visit https://example.com or email me at john.doe@example.org."
+},
+{
+"input": "The ratio is 3:2 and pi is about 3.14159.",
+"normalized": "The ratio is three:two and pi is about three point one four one five nine.",
+"raw": "The ratio is 3:2 and pi is about 3.14159."
+},
+{
+"input": "It weighs 2.5 kg and is 30 cm long.",
+"normalized": "It weighs two point five kilograms and is thirty centimeters long.",
+"raw": "It weighs 2.5 kg and is 30 cm long."
+},
+{
+"input": "Version 2.1.3 ships on 12/25/2025.",
+"normalized": "Version two. one point three ships on december twenty fifth twenty twenty five.",
+"raw": "Version 2.1.3 ships on 12/25/2025."
+},
+{
+"input": "I have 1,234,567 reasons.",
+"normalized": "I have one million two hundred thirty four thousand five hundred and sixty seven reasons.",
+"raw": "I have 1,234,567 reasons."
+},
+{
+"input": "[joyful] We won the grant <laugh> I can (((hardly))) believe it!",
+"normalized": "[joyful] We won the grant <laugh> I can (((hardly))) believe it!",
+"raw": "[joyful] We won the grant <laugh> I can (((hardly))) believe it!"
+},
+{
+"input": "The 90s were great, the 1980s even better.",
+"normalized": "The nineties were great, the nineteen eighties even better.",
+"raw": "The 90s were great, the 1980s even better."
+},
+{
+"input": "Mr. and Mrs. Jones arrived at 7am.",
+"normalized": "Mister and misses Jones arrived at seven AM.",
+"raw": "Mr. and Mrs. Jones arrived at 7am."
+},
+{
+"input": "Flight AA123 departs at 06:45.",
+"normalized": "Flight AA one hundred twenty three departs at six forty five.",
+"raw": "Flight AA123 departs at 06:45."
+},
+{
+"input": "That's 100 mph!",
+"normalized": "That's one hundred miles per hour!",
+"raw": "That's 100 mph!"
+},
+{
+"input": "Room 404 — not found.",
+"normalized": "Room four hundred and four, not found.",
+"raw": "Room 404, not found."
+},
+{
+"input": "He said \"12 test\" then left.",
+"normalized": "He said “twelve test” then left.",
+"raw": "He said \"12 test\" then left."
+},
+{
+"input": "It was 5' 11\" tall.",
+"normalized": "It was five' eleven inches tall.",
+"raw": "It was 5' 11\" tall."
+},
+{
+"input": "Prices rose 3.5x in 2 years.",
+"normalized": "Prices rose three point five x in two years.",
+"raw": "Prices rose 3.5x in 2 years."
+},
+{
+"input": "We need 3 x 4 meters.",
+"normalized": "We need three x four meters.",
+"raw": "We need 3 x 4 meters."
+},
+{
+"input": "Is it 2? Or 3!",
+"normalized": "Is it two? Or three!",
+"raw": "Is it 2? Or 3!"
+},
+{
+"input": "I'm 21 years old.",
+"normalized": "I'm twenty one years old.",
+"raw": "I'm 21 years old."
+},
+{
+"input": "Nothing to normalize here at all.",
+"normalized": "Nothing to normalize here at all.",
+"raw": "Nothing to normalize here at all."
+},
+{
+"input": "e.g. this, i.e. that, etc.",
+"normalized": "For example this, that is that, etcetera.",
+"raw": "E.g. this, i.e. that, etc."
+},
+{
+"input": "A $1.5 million deal and a $2B fund.",
+"normalized": "A one point five million dollars deal and a two billion dollars fund.",
+"raw": "A $1.5 million deal and a $2B fund."
+},
+{
+"input": "On 2023-10-05 we shipped.",
+"normalized": "On october fifth twenty twenty three we shipped.",
+"raw": "On 2023-10-05 we shipped."
+},
+{
+"input": "Set the timer for 1h 30m.",
+"normalized": "Set the timer for one H thirty M.",
+"raw": "Set the timer for 1h 30m."
+},
+{
+"input": "Section [3] says x < 5.",
+"normalized": "Section, three, says x < five.",
+"raw": "Section, 3, says x < 5."
+},
+{
+"input": "We got 0.5 points.",
+"normalized": "We got zero point five points.",
+"raw": "We got 0.5 points."
+},
+{
+"input": "Order #42 is ready.",
+"normalized": "Order hash forty two is ready.",
+"raw": "Order #42 is ready."
+},
+{
+"input": "It is -12 degrees.",
+"normalized": "It is minus twelve degrees.",
+"raw": "It is -12 degrees."
+},
+{
+"input": "1 apple, 2 apples.",
+"normalized": "One apple, two apples.",
+"raw": "1 Apple, 2 apples."
+},
+{
+"input": "The 4th of July.",
+"normalized": "The fourth of July.",
+"raw": "The 4th of July."
+},
+{
+"input": "11th $74.68 only costs price",
+"normalized": "Eleventh seventy four dollars sixty eight cents only costs price.",
+"raw": "11Th $74.68 only costs price."
+},
+{
+"input": "Price 9 we $596.07 812 1st!",
+"normalized": "Price nine we five hundred and ninety six dollars seven cents eight hundred and twelve first!",
+"raw": "Price 9 we $596.07 812 1st!"
+},
+{
+"input": "Costs saw 189505 only $381.12.",
+"normalized": "Costs saw one eight nine five zero five only three hundred and eighty one dollars twelve cents.",
+"raw": "Costs saw 189505 only $381.12."
+},
+{
+"input": "We 56045 60% 5924 is 4:05 64895?",
+"normalized": "We five six zero four five sixty percent five thousand nine hundred and twenty four is four o five six four eight nine five?",
+"raw": "We 56045 60% 5924 is 4:05 64895?"
+},
+{
+"input": "Only 1st 96 at and costs 5263809 about",
+"normalized": "Only first ninety six at and costs five two six three eight zero nine about.",
+"raw": "Only 1st 96 at and costs 5263809 about."
+},
+{
+"input": "9% 31/5/2021 2:03 5:41 861850 for and?",
+"normalized": "Nine percent the thirty first of may twenty twenty one two o three five forty one eight six one eight five zero for and?",
+"raw": "9% 31/5/2021 2:03 5:41 861850 For and?"
+},
+{
+"input": "3rd price 98?",
+"normalized": "Third price ninety eight?",
+"raw": "3Rd price 98?"
+},
+{
+"input": "7:25 49.7 costs is",
+"normalized": "Seven twenty five forty nine point seven costs is.",
+"raw": "7:25 49.7 Costs is."
+},
+{
+"input": "435469 101st 95.8 is we only saw on 74231?",
+"normalized": "Four three five four six nine one hundred first ninety five point eight is we only saw on seven four two three one?",
+"raw": "435469 101St 95.8 is we only saw on 74231?"
+},
+{
+"input": "9:39 $757.06 9383022 on",
+"normalized": "Nine thirty nine seven hundred and fifty seven dollars six cents nine three eight three zero two two on.",
+"raw": "9:39 $757.06 9383022 On."
+},
+{
+"input": "1019 we price?",
+"normalized": "Ten nineteen we price?",
+"raw": "1019 We price?"
+},
+{
+"input": "The 13299 22nd we $152.81 about $485.15.",
+"normalized": "The one three two nine nine twenty second we one hundred and fifty two dollars eighty one cents about four hundred and eighty five dollars fifteen cents.",
+"raw": "The 13299 22nd we $152.81 about $485.15."
+},
+{
+"input": "7870 2 about 8:53 9:01 costs for 8 and.",
+"normalized": "Seven thousand eight hundred and seventy two about eight fifty three nine o one costs for eight and.",
+"raw": "7870 2 About 8:53 9:01 costs for 8 and."
+},
+{
+"input": "17/6/1942 we 8433856 we $807.97 26/4/2002 4:12 748.",
+"normalized": "The seventeenth of june nineteen forty two we eight four three three eight five six we eight hundred and seven dollars ninety seven cents the twenty sixth of april two thousand two four twelve seven hundred and forty eight.",
+"raw": "17/6/1942 We 8433856 we $807.97 26/4/2002 4:12 748."
+},
+{
+"input": "61% for $352.57?",
+"normalized": "Sixty one percent for three hundred and fifty two dollars fifty seven cents?",
+"raw": "61% For $352.57?"
+},
+{
+"input": "Price we at $921.78 16/11/1988.",
+"normalized": "Price we at nine hundred and twenty one dollars seventy eight cents the sixteenth of november nineteen eighty eight.",
+"raw": "Price we at $921.78 16/11/1988."
+},
+{
+"input": "$931.49 97% is and for on 2:46 is only",
+"normalized": "Nine hundred and thirty one dollars forty nine cents ninety seven percent is and for on two forty six is only.",
+"raw": "$931.49 97% Is and for on 2:46 is only."
+},
+{
+"input": "$626.76 101st 15.591 the 93% $539.95 43.4 7/1/1964 costs!",
+"normalized": "Six hundred and twenty six dollars seventy six cents one hundred first fifteen point five nine one the ninety three percent five hundred and thirty nine dollars ninety five cents forty three point four july first nineteen sixty four costs!",
+"raw": "$626.76 101St 15.591 the 93% $539.95 43.4 7/1/1964 costs!"
+},
+{
+"input": "557 is for at $834.66 costs is 7 78%.",
+"normalized": "Five hundred and fifty seven is for at eight hundred and thirty four dollars sixty six cents costs is seven seventy eight percent.",
+"raw": "557 Is for at $834.66 costs is 7 78%."
+},
+{
+"input": "23% only 9:03 costs 1738 5.7 price 3652 9%",
+"normalized": "Twenty three percent only nine o three costs seventeen thirty eight five point seven price three thousand six hundred and fifty two nine percent.",
+"raw": "23% Only 9:03 costs 1738 5.7 price 3652 9%."
+},
+{
+"input": "$517.77 290650 62657 89 944!",
+"normalized": "Five hundred and seventeen dollars seventy seven cents two nine zero six five zero six two six five seven eighty nine nine hundred and forty four!",
+"raw": "$517.77 290650 62657 89 944!"
+},
+{
+"input": "On at and price saw 20% 64.35 is 2nd.",
+"normalized": "On at and price saw twenty percent sixty four point three five is second.",
+"raw": "On at and price saw 20% 64.35 is 2nd."
+},
+{
+"input": "16.280 6/12/2010 11th we price 1:21",
+"normalized": "Sixteen point two eight zero june twelfth twenty ten eleventh we price one twenty one.",
+"raw": "16.280 6/12/2010 11Th we price 1:21."
+},
+{
+"input": "7:21 524 1st 2nd 1st saw.",
+"normalized": "Seven twenty one five hundred and twenty four first second first saw.",
+"raw": "7:21 524 1St 2nd 1st saw."
+},
+{
+"input": "Is 87% 34% costs 57.059 saw for price the.",
+"normalized": "Is eighty seven percent thirty four percent costs fifty seven point zero five nine saw for price the.",
+"raw": "Is 87% 34% costs 57.059 saw for price the."
+},
+{
+"input": "Only 3/5/1931 566 saw $44.67 2:10 is saw $543.97!",
+"normalized": "Only march fifth nineteen thirty one five hundred and sixty six saw forty four dollars sixty seven cents two ten is saw five hundred and forty three dollars ninety seven cents!",
+"raw": "Only 3/5/1931 566 saw $44.67 2:10 is saw $543.97!"
+},
+{
+"input": "And about 33% the 9:12",
+"normalized": "And about thirty three percent the nine twelve.",
+"raw": "And about 33% the 9:12."
+},
+{
+"input": "10.628 at 8301 we!",
+"normalized": "Ten point six two eight at eight thousand three hundred and one we!",
+"raw": "10.628 At 8301 we!"
+},
+{
+"input": "For 3:25 1st 1/2/2060 5:27!",
+"normalized": "For three twenty five first january second twenty sixty five twenty seven!",
+"raw": "For 3:25 1st 1/2/2060 5:27!"
+},
+{
+"input": "On 22/5/2053 saw.",
+"normalized": "On the twenty second of may twenty fifty three saw.",
+"raw": "On 22/5/2053 saw."
+},
+{
+"input": "Saw saw about 22nd the 3rd!",
+"normalized": "Saw saw about twenty second the third!",
+"raw": "Saw saw about 22nd the 3rd!"
+},
+{
+"input": "About at and costs 12%?",
+"normalized": "About at and costs twelve percent?",
+"raw": "About at and costs 12%?"
+},
+{
+"input": "On 368 and only 2nd $733.76 about 8:09 only!",
+"normalized": "On three hundred and sixty eight and only second seven hundred and thirty three dollars seventy six cents about eight o nine only!",
+"raw": "On 368 and only 2nd $733.76 about 8:09 only!"
+},
+{
+"input": "23/9/2060 for 18%.",
+"normalized": "The twenty third of september twenty sixty for eighteen percent.",
+"raw": "23/9/2060 For 18%."
+},
+{
+"input": "12:43 101st the and price at 19755 $697.31 7.",
+"normalized": "Twelve forty three one hundred first the and price at one nine seven five five six hundred and ninety seven dollars thirty one cents seven.",
+"raw": "12:43 101St the and price at 19755 $697.31 7."
+},
+{
+"input": "89.8 $67.95 5:51 saw we and 11th 3/8/2075?",
+"normalized": "Eighty nine point eight sixty seven dollars ninety five cents five fifty one saw we and eleventh march eighth twenty seventy five?",
+"raw": "89.8 $67.95 5:51 Saw we and 11th 3/8/2075?"
+},
+{
+"input": "And $79.76 saw $709.38 $136.01 4403 1st 11:31 costs?",
+"normalized": "And seventy nine dollars seventy six cents saw seven hundred and nine dollars thirty eight cents one hundred and thirty six dollars one cent four thousand four hundred and three first eleven thirty one costs?",
+"raw": "And $79.76 saw $709.38 $136.01 4403 1st 11:31 costs?"
+},
+{
+"input": "1988148 22nd price 1.75 costs 11th?",
+"normalized": "One nine eight eight one four eight twenty second price one point seven five costs eleventh?",
+"raw": "1988148 22Nd price 1.75 costs 11th?"
+},
+{
+"input": "We price costs about and 5!",
+"normalized": "We price costs about and five!",
+"raw": "We price costs about and 5!"
+},
+{
+"input": "48.6 at 7:19 7:22 price 1/6/2092?",
+"normalized": "Forty eight point six at seven nineteen seven twenty two price january sixth twenty ninety two?",
+"raw": "48.6 At 7:19 7:22 price 1/6/2092?"
+},
+{
+"input": "We 12:18 price only on 7% the 10/11/1938 saw",
+"normalized": "We twelve eighteen price only on seven percent the october eleventh nineteen thirty eight saw.",
+"raw": "We 12:18 price only on 7% the 10/11/1938 saw."
+},
+{
+"input": "About 55% 81.196 costs 84491 for only!",
+"normalized": "About fifty five percent eighty one point one nine six costs eight four four nine one for only!",
+"raw": "About 55% 81.196 costs 84491 for only!"
+},
+{
+"input": "16/1/2040 at saw for 11:16 we costs $122.21!",
+"normalized": "The sixteenth of january twenty forty at saw for eleven sixteen we costs one hundred and twenty two dollars twenty one cents!",
+"raw": "16/1/2040 At saw for 11:16 we costs $122.21!"
+},
+{
+"input": "At 5453 11th",
+"normalized": "At five thousand four hundred and fifty three eleventh.",
+"raw": "At 5453 11th."
+},
+{
+"input": "11 costs we only!",
+"normalized": "Eleven costs we only!",
+"raw": "11 Costs we only!"
+},
+{
+"input": "7:24 costs saw?",
+"normalized": "Seven twenty four costs saw?",
+"raw": "7:24 Costs saw?"
+},
+{
+"input": "Saw 128 9:40 28% we and saw 28/1/1932 for",
+"normalized": "Saw one hundred and twenty eight nine forty twenty eight percent we and saw the twenty eighth of january nineteen thirty two for.",
+"raw": "Saw 128 9:40 28% we and saw 28/1/1932 for."
+},
+{
+"input": "6 92.816 15/4/1927 is 114179 101st 8:05.",
+"normalized": "Six ninety two point eight one six the fifteenth of april nineteen twenty seven is one one four one seven nine one hundred first eight o five.",
+"raw": "6 92.816 15/4/1927 Is 114179 101st 8:05."
+},
+{
+"input": "30% 10 3:40?",
+"normalized": "Thirty percent ten three forty?",
+"raw": "30% 10 3:40?"
+},
+{
+"input": "$715.97 price only saw only costs at?",
+"normalized": "Seven hundred and fifteen dollars ninety seven cents price only saw only costs at?",
+"raw": "$715.97 Price only saw only costs at?"
+},
+{
+"input": "$904.31 70 on 5:03 at",
+"normalized": "Nine hundred and four dollars thirty one cents seventy on five o three at.",
+"raw": "$904.31 70 On 5:03 at."
+},
+{
+"input": "And about the?",
+"normalized": "And about the?",
+"raw": "And about the?"
+},
+{
+"input": "And the 95% 3/4/2026 3rd 25% we saw.",
+"normalized": "And the ninety five percent march fourth twenty twenty six third twenty five percent we saw.",
+"raw": "And the 95% 3/4/2026 3rd 25% we saw."
+},
+{
+"input": "28 59157 2nd 5.4 2nd for on",
+"normalized": "Twenty eight five nine one five seven second five point four second for on.",
+"raw": "28 59157 2Nd 5.4 2nd for on."
+},
+{
+"input": "73.3 32.9 $537.95 680 6:21 price saw on.",
+"normalized": "Seventy three point three thirty two point nine five hundred and thirty seven dollars ninety five cents six hundred and eighty six twenty one price saw on.",
+"raw": "73.3 32.9 $537.95 680 6:21 Price saw on."
+},
+{
+"input": "2nd saw 14/2/1912 4:23 3162 for 3.03!",
+"normalized": "Second saw the fourteenth of february nineteen twelve four twenty three three thousand one hundred and sixty two for three dot zero three exclamation mark.",
+"raw": "2Nd saw 14/2/1912 4:23 3162 for 3.03!"
+},
+{
+"input": "$414.05 at the for only saw only for 6:59?",
+"normalized": "Four hundred and fourteen dollars five cents at the for only saw only for six fifty nine?",
+"raw": "$414.05 At the for only saw only for 6:59?"
+},
+{
+"input": "Only 63.4 we for 11th?",
+"normalized": "Only sixty three point four we for eleventh?",
+"raw": "Only 63.4 we for 11th?"
+},
+{
+"input": "17% 18.294 for 78% about 9994472.",
+"normalized": "Seventeen percent eighteen point two nine four for seventy eight percent about nine nine nine four four seven two.",
+"raw": "17% 18.294 For 78% about 9994472."
+},
+{
+"input": "Is price $493.70 54 98.78 $213.12 for",
+"normalized": "Is price four hundred and ninety three dollars seventy cents fifty four ninety eight point seven eight two hundred and thirteen dollars twelve cents for.",
+"raw": "Is price $493.70 54 98.78 $213.12 for."
+},
+{
+"input": "On 246345 11:48 saw?",
+"normalized": "On two four six three four five eleven forty eight saw?",
+"raw": "On 246345 11:48 saw?"
+},
+{
+"input": "260 4:28 we saw 57.83.",
+"normalized": "Two hundred and sixty four twenty eight we saw fifty seven point eight three.",
+"raw": "260 4:28 We saw 57.83."
+},
+{
+"input": "We 83 84% 1 we 30/6/1910?",
+"normalized": "We eighty three eighty four percent one we the thirtieth of june nineteen ten?",
+"raw": "We 83 84% 1 we 30/6/1910?"
+},
+{
+"input": "We $847.74 price is",
+"normalized": "We eight hundred and forty seven dollars seventy four cents price is.",
+"raw": "We $847.74 price is."
+},
+{
+"input": "And 1st $726.79 the is saw for!",
+"normalized": "And first seven hundred and twenty six dollars seventy nine cents the is saw for!",
+"raw": "And 1st $726.79 the is saw for!"
+},
+{
+"input": "About about saw the 71% 1661 85% 559936 is",
+"normalized": "About about saw the seventy one percent sixteen sixty one eighty five percent five five nine nine three six is.",
+"raw": "About about saw the 71% 1661 85% 559936 is."
+},
+{
+"input": "Saw $427.06 only 41.4 26/6/2064 for the is",
+"normalized": "Saw four hundred and twenty seven dollars six cents only forty one point four the twenty sixth of june twenty sixty four for the is.",
+"raw": "Saw $427.06 only 41.4 26/6/2064 for the is."
+},
+{
+"input": "13/10/1993 16 costs!",
+"normalized": "The thirteenth of october nineteen ninety three sixteen costs!",
+"raw": "13/10/1993 16 Costs!"
+},
+{
+"input": "51% only 73.7 saw is 10.88 26% the",
+"normalized": "Fifty one percent only seventy three point seven saw is ten point eight eight twenty six percent the.",
+"raw": "51% Only 73.7 saw is 10.88 26% the."
+},
+{
+"input": "And for $844.20 $877.28 $629.25",
+"normalized": "And for eight hundred and forty four dollars twenty cents eight hundred and seventy seven dollars twenty eight cents six hundred and twenty nine dollars twenty five cents.",
+"raw": "And for $844.20 $877.28 $629.25."
+},
+{
+"input": "6 15.65 we 2nd.",
+"normalized": "Six fifteen point six five we second.",
+"raw": "6 15.65 We 2nd."
+},
+{
+"input": "22/1/2070 4/7/2053 5137420 $315.74 on $457.64 the.",
+"normalized": "The twenty second of january twenty seventy april seventh twenty fifty three five one three seven four two zero three hundred and fifteen dollars seventy four cents on four hundred and fifty seven dollars sixty four cents the.",
+"raw": "22/1/2070 4/7/2053 5137420 $315.74 On $457.64 the."
+},
+{
+"input": "11th only 59% 26/8/2002 is about at.",
+"normalized": "Eleventh only fifty nine percent the twenty sixth of august two thousand two is about at.",
+"raw": "11Th only 59% 26/8/2002 is about at."
+},
+{
+"input": "$84.93 for 8",
+"normalized": "Eighty four dollars ninety three cents for eight.",
+"raw": "$84.93 For 8."
+},
+{
+"input": "2nd price 101st 2:12 at is 12:59 about?",
+"normalized": "Second price one hundred first two twelve at is twelve fifty nine about?",
+"raw": "2Nd price 101st 2:12 at is 12:59 about?"
+},
+{
+"input": "Only at costs 11th!",
+"normalized": "Only at costs eleventh!",
+"raw": "Only at costs 11th!"
+},
+{
+"input": "Costs about is and 67.97 saw costs.",
+"normalized": "Costs about is and sixty seven point nine seven saw costs.",
+"raw": "Costs about is and 67.97 saw costs."
+},
+{
+"input": "31/8/2042 925404 25.203 $403.94 34% about 338 57%!",
+"normalized": "The thirty first of august twenty forty two nine two five four zero four twenty five point two zero three four hundred and three dollars ninety four cents thirty four percent about three hundred and thirty eight fifty seven percent!",
+"raw": "31/8/2042 925404 25.203 $403.94 34% About 338 57%!"
+},
+{
+"input": "$980.06 costs and 22nd?",
+"normalized": "Nine hundred and eighty dollars six cents costs and twenty second?",
+"raw": "$980.06 Costs and 22nd?"
+},
+{
+"input": "The saw $442.53 2 85604 the about costs?",
+"normalized": "The saw four hundred and forty two dollars fifty three cents two eight five six zero four the about costs?",
+"raw": "The saw $442.53 2 85604 the about costs?"
+},
+{
+"input": "Only is only 6/3/1903 24.4 10 and?",
+"normalized": "Only is only june third nineteen oh three twenty four point four ten and?",
+"raw": "Only is only 6/3/1903 24.4 10 and?"
+},
+{
+"input": "2% costs 59.472 costs 4:10 4.400.",
+"normalized": "Two percent costs fifty nine point four seven two costs four ten four point four zero zero.",
+"raw": "2% Costs 59.472 costs 4:10 4.400."
+},
+{
+"input": "Is price costs $201.18 costs $519.82",
+"normalized": "Is price costs two hundred and one dollars eighteen cents costs five hundred and nineteen dollars eighty two cents.",
+"raw": "Is price costs $201.18 costs $519.82."
+},
+{
+"input": "$520.39 and for 92% 7154 8:05 8:11 price and.",
+"normalized": "Five hundred and twenty dollars thirty nine cents and for ninety two percent seven thousand one hundred and fifty four eight o five eight eleven price and.",
+"raw": "$520.39 And for 92% 7154 8:05 8:11 price and."
+},
+{
+"input": "For 94.29 5:40",
+"normalized": "For ninety four point two nine five forty.",
+"raw": "For 94.29 5:40."
+},
+{
+"input": "67% 3rd $988.27 costs saw 84.2 101st 19.19?",
+"normalized": "Sixty seven percent third nine hundred and eighty eight dollars twenty seven cents costs saw eighty four point two one hundred first one nine dot one nine question mark.",
+"raw": "67% 3Rd $988.27 costs saw 84.2 101st 19.19?"
+},
+{
+"input": "And 98.166 8902297 1:27 2nd 808 only.",
+"normalized": "And ninety eight point one six six eight nine zero two two nine seven one twenty seven second eight hundred and eight only.",
+"raw": "And 98.166 8902297 1:27 2nd 808 only."
+},
+{
+"input": "14.5 only 34.5 1:02 and $713.08 2:54?",
+"normalized": "Fourteen point five only thirty four point five one o two and seven hundred and thirteen dollars eight cents two fifty four?",
+"raw": "14.5 Only 34.5 1:02 and $713.08 2:54?"
+},
+{
+"input": "69% 6.595 1st we.",
+"normalized": "Sixty nine percent six point five nine five first we.",
+"raw": "69% 6.595 1St we."
+},
+{
+"input": "And and $488.12!",
+"normalized": "And and four hundred and eighty eight dollars twelve cents!",
+"raw": "And and $488.12!"
+},
+{
+"input": "83% about saw.",
+"normalized": "Eighty three percent about saw.",
+"raw": "83% About saw."
+},
+{
+"input": "Saw about 76.924 4825945 $31.52.",
+"normalized": "Saw about seventy six point nine two four four eight two five nine four five thirty one dollars fifty two cents.",
+"raw": "Saw about 76.924 4825945 $31.52."
+},
+{
+"input": "5 8 904123 19/5/1943 costs the.",
+"normalized": "Five eight nine zero four one two three the nineteenth of may nineteen forty three costs the.",
+"raw": "5 8 904123 19/5/1943 Costs the."
+},
+{
+"input": "3023 22nd costs is we!",
+"normalized": "Three thousand and twenty three twenty second costs is we!",
+"raw": "3023 22Nd costs is we!"
+},
+{
+"input": "And 63% 90% 10 price on.",
+"normalized": "And sixty three percent ninety percent ten price on.",
+"raw": "And 63% 90% 10 price on."
+},
+{
+"input": "2.5 on 50.12 101st at only.",
+"normalized": "Two point five on fifty point one two one hundred first at only.",
+"raw": "2.5 On 50.12 101st at only."
+},
+{
+"input": "20358 15/11/2041 3:29 saw 42",
+"normalized": "Two zero three five eight the fifteenth of november twenty forty one three twenty nine saw forty two.",
+"raw": "20358 15/11/2041 3:29 Saw 42."
+},
+{
+"input": "23.8 for 20/3/2085 we 10:33 we we for.",
+"normalized": "Twenty three point eight for the twentieth of march twenty eighty five we ten thirty three we we for.",
+"raw": "23.8 For 20/3/2085 we 10:33 we we for."
+},
+{
+"input": "1st is 3rd 7:17!",
+"normalized": "First is third seven seventeen!",
+"raw": "1St is 3rd 7:17!"
+},
+{
+"input": "$109.35 on 6",
+"normalized": "One hundred and nine dollars thirty five cents on six.",
+"raw": "$109.35 On 6."
+},
+{
+"input": "And the only 1:47 on 10:47 $866.29 $668.99!",
+"normalized": "And the only one forty seven on ten forty seven eight hundred and sixty six dollars twenty nine cents six hundred and sixty eight dollars ninety nine cents!",
+"raw": "And the only 1:47 on 10:47 $866.29 $668.99!"
+},
+{
+"input": "Price 266 $100.53 on 11:10 on 9 17/11/2069!",
+"normalized": "Price two hundred and sixty six one hundred dollars fifty three cents on eleven ten on nine the seventeenth of november twenty sixty nine!",
+"raw": "Price 266 $100.53 on 11:10 on 9 17/11/2069!"
+},
+{
+"input": "The at 10.64 91 26% 9 91 10?",
+"normalized": "The at ten point six four ninety one twenty six percent nine ninety one ten?",
+"raw": "The at 10.64 91 26% 9 91 10?"
+},
+{
+"input": "For 2nd 2nd price 10:22 $258.35 the.",
+"normalized": "For second second price ten twenty two two hundred and fifty eight dollars thirty five cents the.",
+"raw": "For 2nd 2nd price 10:22 $258.35 the."
+},
+{
+"input": "On $691.45 3?",
+"normalized": "On six hundred and ninety one dollars forty five cents three?",
+"raw": "On $691.45 3?"
+},
+{
+"input": "Costs 11th 16 6.889 and 18 and 26/7/2019?",
+"normalized": "Costs eleventh sixteen six point eight eight nine and eighteen and the twenty sixth of july twenty nineteen?",
+"raw": "Costs 11th 16 6.889 and 18 and 26/7/2019?"
+},
+{
+"input": "99 12/4/1968 11:16 101st the 36% and at 83532.",
+"normalized": "Ninety nine december fourth nineteen sixty eight eleven sixteen one hundred first the thirty six percent and at eight three five three two.",
+"raw": "99 12/4/1968 11:16 101St the 36% and at 83532."
+},
+{
+"input": "15.28 2/2/2044 78.4 648 12036 price $256.77 is!",
+"normalized": "Fifteen point two eight february second twenty forty four seventy eight point four six hundred and forty eight one two zero three six price two hundred and fifty six dollars seventy seven cents is!",
+"raw": "15.28 2/2/2044 78.4 648 12036 Price $256.77 is!"
+},
+{
+"input": "45% 27% 79.2 $704.77.",
+"normalized": "Forty five percent twenty seven percent seventy nine point two seven hundred and four dollars seventy seven cents.",
+"raw": "45% 27% 79.2 $704.77."
+},
+{
+"input": "54.850 7/8/2077 price 8:42 55.51 is 7661 89",
+"normalized": "Fifty four point eight five zero july eighth twenty seventy seven price eight forty two fifty five point five one is seven thousand six hundred and sixty one eighty nine.",
+"raw": "54.850 7/8/2077 Price 8:42 55.51 is 7661 89."
+},
+{
+"input": "78590 1/3/1982 65222 $860.59?",
+"normalized": "Seven eight five nine zero january third nineteen eighty two six five two two two eight hundred and sixty dollars fifty nine cents?",
+"raw": "78590 1/3/1982 65222 $860.59?"
+},
+{
+"input": "And and and only for 33.0",
+"normalized": "And and and only for thirty three point zero.",
+"raw": "And and and only for 33.0."
+},
+{
+"input": "19% for is and at 71%!",
+"normalized": "Nineteen percent for is and at seventy one percent!",
+"raw": "19% For is and at 71%!"
+},
+{
+"input": "On the 10/6/2026 costs 22nd?",
+"normalized": "On the october sixth twenty twenty six costs twenty second?",
+"raw": "On the 10/6/2026 costs 22nd?"
+},
+{
+"input": "$810.15 about 3:37 1st.",
+"normalized": "Eight hundred and ten dollars fifteen cents about three thirty seven first.",
+"raw": "$810.15 About 3:37 1st."
+},
+{
+"input": "7:34 4921 the at $673.07 70%",
+"normalized": "Seven thirty four four thousand nine hundred and twenty one the at six hundred and seventy three dollars seven cents seventy percent.",
+"raw": "7:34 4921 The at $673.07 70%."
+},
+{
+"input": "And 10:56 4:02 $468.80 13% $890.04 price.",
+"normalized": "And ten fifty six four o two four hundred and sixty eight dollars eighty cents thirteen percent eight hundred and ninety dollars four cents price.",
+"raw": "And 10:56 4:02 $468.80 13% $890.04 price."
+},
+{
+"input": "5/5/2043 5:11 about only $956.06",
+"normalized": "May fifth twenty forty three five eleven about only nine hundred and fifty six dollars six cents.",
+"raw": "5/5/2043 5:11 About only $956.06."
+},
+{
+"input": "1993920 54% 7314 and only 101st 11th",
+"normalized": "One nine nine three nine two zero fifty four percent seven thousand three hundred and fourteen and only one hundred first eleventh.",
+"raw": "1993920 54% 7314 And only 101st 11th."
+},
+{
+"input": "And 80 the and price price the?",
+"normalized": "And eighty the and price price the?",
+"raw": "And 80 the and price price the?"
+},
+{
+"input": "3070 36.587 3:46 38% $726.63 935 101st the.",
+"normalized": "Three thousand and seventy thirty six point five eight seven three forty six thirty eight percent seven hundred and twenty six dollars sixty three cents nine hundred and thirty five one hundred first the.",
+"raw": "3070 36.587 3:46 38% $726.63 935 101St the."
+},
+{
+"input": "10:05 saw 3:55 20/1/1980 only 8:43 price and!",
+"normalized": "Ten o five saw three fifty five the twentieth of january nineteen eighty only eight forty three price and!",
+"raw": "10:05 Saw 3:55 20/1/1980 only 8:43 price and!"
+},
+{
+"input": "62% at 22nd saw and 10:21 24/1/1938 $316.74",
+"normalized": "Sixty two percent at twenty second saw and ten twenty one the twenty fourth of january nineteen thirty eight three hundred and sixteen dollars seventy four cents.",
+"raw": "62% At 22nd saw and 10:21 24/1/1938 $316.74."
+},
+{
+"input": "And we 37% 6:16?",
+"normalized": "And we thirty seven percent six sixteen?",
+"raw": "And we 37% 6:16?"
+},
+{
+"input": "The is 74% costs 8:22 72571",
+"normalized": "The is seventy four percent costs eight twenty two seven two five seven one.",
+"raw": "The is 74% costs 8:22 72571."
+},
+{
+"input": "For 23.403 on 32 6 8 99% on 906?",
+"normalized": "For twenty three point four zero three on thirty two six eight ninety nine percent on nine hundred and six?",
+"raw": "For 23.403 on 32 6 8 99% on 906?"
+},
+{
+"input": "24 price for only 8474 8/1/2026?",
+"normalized": "Twenty four price for only eight thousand four hundred and seventy four august first twenty twenty six?",
+"raw": "24 Price for only 8474 8/1/2026?"
+},
+{
+"input": "And 2 the costs $96.04 only 27994 saw at!",
+"normalized": "And two the costs ninety six dollars four cents only two seven nine nine four saw at!",
+"raw": "And 2 the costs $96.04 only 27994 saw at!"
+},
+{
+"input": "11/4/1946 the costs for 1076859",
+"normalized": "November fourth nineteen forty six the costs for one zero seven six eight five nine.",
+"raw": "11/4/1946 The costs for 1076859."
+},
+{
+"input": "2:16 we $979.85",
+"normalized": "Two sixteen we nine hundred and seventy nine dollars eighty five cents.",
+"raw": "2:16 We $979.85."
+},
+{
+"input": "Is we 2nd saw?",
+"normalized": "Is we second saw?",
+"raw": "Is we 2nd saw?"
+},
+{
+"input": "90.5 costs 11:48",
+"normalized": "Ninety point five costs eleven forty eight.",
+"raw": "90.5 Costs 11:48."
+},
+{
+"input": "About 26% $305.75",
+"normalized": "About twenty six percent three hundred and five dollars seventy five cents.",
+"raw": "About 26% $305.75."
+},
+{
+"input": "$482.41 on at at is 89.22 4:51 we only?",
+"normalized": "Four hundred and eighty two dollars forty one cents on at at is eighty nine point two two four fifty one we only?",
+"raw": "$482.41 On at at is 89.22 4:51 we only?"
+},
+{
+"input": "At 11th 21/2/2015 3rd 16/2/2060 about the at!",
+"normalized": "At eleventh the twenty first of february twenty fifteen third the sixteenth of february twenty sixty about the at!",
+"raw": "At 11th 21/2/2015 3rd 16/2/2060 about the at!"
+},
+{
+"input": "9/7/2005 the saw is price at.",
+"normalized": "September seventh two thousand five the saw is price at.",
+"raw": "9/7/2005 The saw is price at."
+},
+{
+"input": "1st $806.85 55.99 we?",
+"normalized": "First eight hundred and six dollars eighty five cents fifty five point nine nine we?",
+"raw": "1St $806.85 55.99 we?"
+},
+{
+"input": "2nd 9.76 is for 2nd 1st",
+"normalized": "Second nine point seven six is for second first.",
+"raw": "2Nd 9.76 is for 2nd 1st."
+},
+{
+"input": "18368 costs about on only is 91 only price",
+"normalized": "One eight three six eight costs about on only is ninety one only price.",
+"raw": "18368 Costs about on only is 91 only price."
+},
+{
+"input": "We and 4:37 the for 928984 343 and 16/2/1903",
+"normalized": "We and four thirty seven the for nine two eight nine eight four three hundred and forty three and the sixteenth of february nineteen oh three.",
+"raw": "We and 4:37 the for 928984 343 and 16/2/1903."
+},
+{
+"input": "4467093 only 12/1/1941 10:38 12/9/2014 1st for about 49%.",
+"normalized": "Four four six seven zero nine three only december first nineteen forty one ten thirty eight december ninth twenty fourteen first for about forty nine percent.",
+"raw": "4467093 Only 12/1/1941 10:38 12/9/2014 1st for about 49%."
+},
+{
+"input": "31/12/2026 the 17612 price is!",
+"normalized": "The thirty first of december twenty twenty six the one seven six one two price is!",
+"raw": "31/12/2026 The 17612 price is!"
+},
+{
+"input": "Costs 4% for!",
+"normalized": "Costs four percent for!",
+"raw": "Costs 4% for!"
+},
+{
+"input": "Only $475.66 at price 1:17.",
+"normalized": "Only four hundred and seventy five dollars sixty six cents at price one seventeen.",
+"raw": "Only $475.66 at price 1:17."
+},
+{
+"input": "99812 price is 29 only 2692.",
+"normalized": "Nine nine eight one two price is twenty nine only twenty six ninety two.",
+"raw": "99812 Price is 29 only 2692."
+},
+{
+"input": "On 68893 the 44% about 10:51 3rd 72%.",
+"normalized": "On six eight eight nine three the forty four percent about ten fifty one third seventy two percent.",
+"raw": "On 68893 the 44% about 10:51 3rd 72%."
+},
+{
+"input": "979719 on $11.46 is on!",
+"normalized": "Nine seven nine seven one nine on eleven dollars forty six cents is on!",
+"raw": "979719 On $11.46 is on!"
+},
+{
+"input": "$230.17 on 59% $828.05 and $939.86 $643.69.",
+"normalized": "Two hundred and thirty dollars seventeen cents on fifty nine percent eight hundred and twenty eight dollars five cents and nine hundred and thirty nine dollars eighty six cents six hundred and forty three dollars sixty nine cents.",
+"raw": "$230.17 On 59% $828.05 and $939.86 $643.69."
+},
+{
+"input": "Price 3877 3rd about $123.07 35181 only!",
+"normalized": "Price three thousand eight hundred and seventy seven third about one hundred and twenty three dollars seven cents three five one eight one only!",
+"raw": "Price 3877 3rd about $123.07 35181 only!"
+},
+{
+"input": "Is 91.559 we 12:34 at $583.28",
+"normalized": "Is ninety one point five five nine we twelve thirty four at five hundred and eighty three dollars twenty eight cents.",
+"raw": "Is 91.559 we 12:34 at $583.28."
+},
+{
+"input": "471 30.37 31 we!",
+"normalized": "Four hundred and seventy one thirty point three seven thirty one we!",
+"raw": "471 30.37 31 We!"
+},
+{
+"input": "51964 about we about 899 3rd the!",
+"normalized": "Five one nine six four about we about eight hundred and ninety nine third the!",
+"raw": "51964 About we about 899 3rd the!"
+},
+{
+"input": "About the 7380249 price 774517 41.675 and!",
+"normalized": "About the seven three eight zero two four nine price seven seven four five one seven forty one point six seven five and!",
+"raw": "About the 7380249 price 774517 41.675 and!"
+},
+{
+"input": "$283.66 for 99.56 91% $720.16 price costs.",
+"normalized": "Two hundred and eighty three dollars sixty six cents for ninety nine point five six ninety one percent seven hundred and twenty dollars sixteen cents price costs.",
+"raw": "$283.66 For 99.56 91% $720.16 price costs."
+},
+{
+"input": "Only saw 20/2/1997 23/8/1973 5:22 costs",
+"normalized": "Only saw the twentieth of february nineteen ninety seven the twenty third of august nineteen seventy three five twenty two costs.",
+"raw": "Only saw 20/2/1997 23/8/1973 5:22 costs."
+},
+{
+"input": "For 16/7/2013 costs is on 5 only 31/6/1952",
+"normalized": "For the sixteenth of july twenty thirteen costs is on five only the thirty first of june nineteen fifty two.",
+"raw": "For 16/7/2013 costs is on 5 only 31/6/1952."
+},
+{
+"input": "Saw 4912 77.348",
+"normalized": "Saw four thousand nine hundred and twelve seventy seven point three four eight.",
+"raw": "Saw 4912 77.348."
+},
+{
+"input": "24/11/2010 about and the $537.29 about 588606!",
+"normalized": "The twenty fourth of november twenty ten about and the five hundred and thirty seven dollars twenty nine cents about five eight eight six zero six!",
+"raw": "24/11/2010 About and the $537.29 about 588606!"
+},
+{
+"input": "11th only 58.740 1547577!",
+"normalized": "Eleventh only fifty eight point seven four zero one five four seven five seven seven!",
+"raw": "11Th only 58.740 1547577!"
+},
+{
+"input": "Price 17/3/1928 $301.88 costs 42.1?",
+"normalized": "Price the seventeenth of march nineteen twenty eight three hundred and one dollars eighty eight cents costs four two dot one question mark.",
+"raw": "Price 17/3/1928 $301.88 costs 42.1?"
+}
+]

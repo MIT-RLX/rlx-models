@@ -472,7 +472,7 @@ impl BackboneEngine {
 
 pub fn prefer_eager() -> bool {
     matches!(
-        std::env::var("RLX_ZONOS_EAGER").ok().as_deref(),
+        rlx_ir::env::var_result("RLX_ZONOS_EAGER").ok().as_deref(),
         Some("1") | Some("true") | Some("yes")
     )
 }
@@ -492,7 +492,7 @@ pub fn default_max_seq(max_new_tokens: usize, prefix_len: usize) -> usize {
 pub fn suggest_max_tokens(phoneme_len: usize, speaking_rate: f32) -> usize {
     let rate = speaking_rate.clamp(5.0, 40.0);
     let frames = ((phoneme_len as f32) * (86.0 / rate) * 1.25).ceil() as usize + 64;
-    let ceiling = std::env::var("RLX_ZONOS_MAX_TOKENS")
+    let ceiling = rlx_ir::env::var_result("RLX_ZONOS_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(86 * 24);
@@ -502,7 +502,7 @@ pub fn suggest_max_tokens(phoneme_len: usize, speaking_rate: f32) -> usize {
 /// Compile-seq upper for a device. GPU backends keep a leaner decode graph so
 /// short→long upgrade in one process does not OOM.
 pub fn compile_upper_cap(device: Device, need: usize) -> usize {
-    let env_cap = std::env::var("RLX_ZONOS_MAX_SEQ")
+    let env_cap = rlx_ir::env::var_result("RLX_ZONOS_MAX_SEQ")
         .ok()
         .and_then(|s| s.parse().ok());
     let default_cap = match device {

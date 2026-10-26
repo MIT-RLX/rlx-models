@@ -25,6 +25,8 @@
 
 pub mod config;
 pub mod dsp;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod model;
 pub mod tokenize;
 

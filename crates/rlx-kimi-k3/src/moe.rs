@@ -12,7 +12,7 @@
 //! `routed_expert_up_proj` lifts `L → hidden`. Two always-on shared experts run in
 //! `hidden` space and are added after the up-projection.
 
-use crate::common::{linear, reg, situ};
+use crate::common::{linear, reg, scalar_const, situ, tap};
 use anyhow::Result;
 use rlx_ir::hir::{HirMut, HirNodeId};
 use rlx_ir::op::{Activation, Op};
@@ -29,7 +29,7 @@ type Params = HashMap<String, Vec<f32>>;
 /// Set `RLX_KIMI_BATCHED_MOE=0` to fall back to the exact per-k unroll (bit-for-
 /// bit vs the reference; the batched path differs by ~1e-6 in reduction order).
 fn batched_moe() -> bool {
-    std::env::var("RLX_KIMI_BATCHED_MOE")
+    rlx_ir::env::var_result("RLX_KIMI_BATCHED_MOE")
         .map(|v| v != "0")
         .unwrap_or(true)
 }
@@ -95,6 +95,7 @@ pub fn build_dense_mlp(
     let up = linear(g, params, prefix, "up_proj", h2d, &w.up, hidden, inter);
     let gate_up = g.concat_(vec![gate, up], 1);
     let hx = situ(g, gate_up, rows, inter, situ_beta, situ_linear_beta);
+    tap(g, format!("{prefix}.act"), hx);
     let down = linear(g, params, prefix, "down_proj", hx, &w.down, inter, hidden);
     Ok(g.reshape_(down, vec![batch as i64, seq as i64, hidden as i64]))
 }
@@ -158,7 +159,17 @@ pub fn build_latent_moe(
         Shape::new(&[rows, k * 2], f),
     );
     let top_idx = g.narrow_(packed, 1, 0, k);
-    let top_probs = g.narrow_(packed, 1, k, k);
+    // Canonical params (training): the routing weights are re-derived from the
+    // router sigmoid through a differentiable gather, so `gate.weight` takes a
+    // gradient; the gate op's own weights are identical but carry none.
+    let top_probs = if crate::common::canonical_params() {
+        routed_probs(g, sig, top_idx, rows, k, d.routed_scaling)
+    } else {
+        g.narrow_(packed, 1, k, k)
+    };
+    tap(g, format!("{prefix}.router"), sig);
+    tap(g, format!("{prefix}.top_idx"), top_idx);
+    tap(g, format!("{prefix}.top_probs"), top_probs);
 
     // ── Latent down-projection: experts operate on [rows, L] ──
     let h_lat = linear(
@@ -249,6 +260,8 @@ pub fn build_latent_moe(
         acc.expect("top_k >= 1")
     };
 
+    tap(g, format!("{prefix}.h_lat"), h_lat);
+    tap(g, format!("{prefix}.routed"), routed);
     // ── latent RMSNorm + up-projection: [rows, L] → [rows, hidden] ──
     let norm_w = reg(
         g,
@@ -317,6 +330,8 @@ pub fn build_latent_moe(
         hidden,
     );
 
+    tap(g, format!("{prefix}.routed_up"), routed_h);
+    tap(g, format!("{prefix}.shared"), shared);
     let out = g.add(routed_h, shared);
     Ok(g.reshape_(out, vec![b as i64, s as i64, hidden as i64]))
 }
@@ -738,6 +753,7 @@ pub fn build_moe_experts_paged(
         }
         acc.expect("top_k >= 1")
     };
+    tap(g, format!("{prefix}.routed"), routed);
     let norm_w = reg(
         g,
         params,
@@ -803,6 +819,120 @@ pub fn build_moe_experts_paged(
         shared_inter,
         hidden,
     );
+    tap(g, format!("{prefix}.routed_up"), routed_h);
+    tap(g, format!("{prefix}.shared"), shared);
     let out = g.add(routed_h, shared);
     Ok(g.reshape_(out, vec![b as i64, s as i64, hidden as i64]))
+}
+
+/// Routing weights for already-chosen experts, differentiable in the router:
+/// `p = sigmoid_scores[row, idx]`, renormalized over the `k` picks when `k > 1`,
+/// times `routed_scaling` — the `noaux_tc` weighting (the score-correction bias
+/// steers the selection only, never the weights). `idx` is `[rows, k]` f32 global
+/// expert ids; gradient flows to `sig` alone.
+pub fn routed_probs(
+    g: &mut HirMut,
+    sig: HirNodeId,
+    idx: HirNodeId,
+    rows: usize,
+    k: usize,
+    routed_scaling: f32,
+) -> HirNodeId {
+    let picked = g.add_node(
+        Op::GatherElements { axis: 1 },
+        vec![sig, idx],
+        Shape::new(&[rows, k], DType::F32),
+    );
+    let normed = if k > 1 {
+        let sum = g.sum(picked, vec![1], true); // [rows, 1]
+        let tiny = scalar_const(g, 1e-20);
+        let denom = g.add(sum, tiny);
+        g.div(picked, denom)
+    } else {
+        picked
+    };
+    if (routed_scaling - 1.0).abs() > f32::EPSILON {
+        let sc = scalar_const(g, routed_scaling);
+        g.mul(normed, sc)
+    } else {
+        normed
+    }
+}
+
+/// The experts a [`build_latent_moe_fixed`] layer runs over: chosen on the host,
+/// then paged as a compact bank.
+pub struct FixedRouting {
+    /// `[rows, k]` global expert ids, as a graph input (f32).
+    pub idx: HirNodeId,
+    /// `[rows, k]` ids into the compact bank below, as a graph input (f32).
+    pub compact_idx: HirNodeId,
+    /// `[n, L, 2·mi]` gate/up weights of the compact bank.
+    pub gate_up: Vec<f32>,
+    /// `[n, mi, L]` down weights of the compact bank.
+    pub down: Vec<f32>,
+    /// Experts in the compact bank (may include zero padding past the real ones).
+    pub n: usize,
+}
+
+/// [`build_latent_moe`] with the expert **selection fixed by the host** and the
+/// experts supplied as a compact bank — the form a model whose expert banks do
+/// not fit in memory can still differentiate. The router, latent projections,
+/// norm and shared experts are ordinary params; the routing weights come from
+/// [`routed_probs`], so the router keeps its gradient. Same forward value as
+/// [`build_latent_moe`] given the same selection.
+pub fn build_latent_moe_fixed(
+    g: &mut HirMut,
+    params: &mut Params,
+    prefix: &str,
+    h_in: HirNodeId,
+    w: &MoeWeights,
+    routing: &FixedRouting,
+    d: MoeDims,
+) -> Result<HirNodeId> {
+    let f = DType::F32;
+    let (b, s, hidden, l, e, k) = (d.batch, d.seq, d.hidden, d.latent, d.num_experts, d.top_k);
+    let rows = b * s;
+    let h2d = g.reshape_(h_in, vec![rows as i64, hidden as i64]);
+    let router_w = reg(
+        g,
+        params,
+        &format!("{prefix}.gate.weight"),
+        w.router.clone(),
+        &[hidden, e],
+    );
+    let logits = g.mm(h2d, router_w);
+    let sig = g.add_node(
+        Op::Activation(Activation::Sigmoid),
+        vec![logits],
+        Shape::new(&[rows, e], f),
+    );
+    let probs = routed_probs(g, sig, routing.idx, rows, k, d.routed_scaling);
+    tap(g, format!("{prefix}.router"), sig);
+    tap(g, format!("{prefix}.top_idx"), routing.idx);
+    tap(g, format!("{prefix}.top_probs"), probs);
+    let h_lat = linear(
+        g,
+        params,
+        prefix,
+        "routed_expert_down_proj",
+        h2d,
+        &w.down_latent,
+        hidden,
+        l,
+    );
+    tap(g, format!("{prefix}.h_lat"), h_lat);
+    build_moe_experts_paged(
+        g,
+        params,
+        prefix,
+        h_in,
+        h_lat,
+        routing.compact_idx,
+        probs,
+        &routing.gate_up,
+        &routing.down,
+        routing.n,
+        w,
+        d,
+    )
 }

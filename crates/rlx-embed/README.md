@@ -38,12 +38,30 @@ Lower-level entry points: `RlxEmbed`, `compile_model` / `compile_model_cpu`, `as
 
 ## Features
 
-`embed` (tokenizers, **default**) · `hf-download` (Hub fetch) · backends `metal` / `mlx` / `cuda` / `rocm` / `gpu` / `vulkan` / `coreml` (+ `all-backends`, `apple-silicon`, …).
+`embed` (tokenizers, **default**) · `hf-download` (Hub fetch) · `export` (`.rlxp` packages) · backends `metal` / `mlx` / `cuda` / `rocm` / `gpu` / `vulkan` / `coreml` (+ `all-backends`, `macos-gpu`, …).
 
 ```sh
 cargo test -p rlx-embed
-cargo build -p rlx-embed --features apple-silicon --release
+cargo build -p rlx-embed --features macos-gpu --release
 ```
+
+## Export as an `.rlxp` package
+
+`export` writes a checkpoint as a package that rlx runs with no rlx-models
+code. `Model.open("e5.rlxp").embed(texts)` then works from any rlx language
+binding:
+
+```rust,ignore
+rlx_embed::export::export_rlxp("multilingual-e5-base".as_ref(), "e5.rlxp".as_ref(), &Default::default())?;
+```
+
+The package holds the encoder graph at sequence lengths 16 to 512, an `embed`
+entry, the tokenizer, and the `README.md` as its model card, with the
+card's `license`. Weights that equal a checkpoint tensor, directly or
+transposed, are referenced from `model.safetensors`, and the derived ones
+(the fused attention weights) are embedded. multilingual-e5-base becomes an
+89 MB package. To check it against `embed_with_rlx`:
+`RLX_TEST_EMBED=<checkpoint dir> cargo test -p rlx-embed --features export --test export_rlxp`.
 
 ## License
 

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// Verifies the IR decoder produces parity-class output on every Apple
+// Verifies the IR decoder produces parity-class output on every macOS
 // backend the build is compiled with: CPU always, Metal under `--features
 // metal`, MLX under `--features mlx`. Uses the same reference dump as
 // the parity test.
@@ -29,7 +29,9 @@ use std::time::Instant;
 fn read_f32(path: &Path) -> Vec<f32> {
     let bytes = std::fs::read(path).expect("read");
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

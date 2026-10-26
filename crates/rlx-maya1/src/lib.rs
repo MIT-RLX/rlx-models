@@ -27,6 +27,9 @@
 //! by a natural-language description (age/gender/accent/pitch/emotion) rather
 //! than a preset; inline emotion tags like `<laugh>`, `<whisper>` are supported.
 
+#[cfg(feature = "export")]
+pub mod export;
+
 use std::path::Path;
 
 use anyhow::{Context, Result};

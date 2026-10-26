@@ -24,9 +24,16 @@ rlx-runtime = { workspace = true }
 rlx-opt = { workspace = true }
 rlx-cpu = { workspace = true }
 hf-hub = { workspace = true, optional = true }
-tokenizers = { workspace = true, optional = true }
 candle-core = { workspace = true, optional = true }
 half = { workspace = true, optional = true }
+
+
+# The workspace pin carries no regex backend (see the root Cargo.toml).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokenizers = { workspace = true, optional = true, features = ["onig"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokenizers = { workspace = true, optional = true, features = ["unstable_wasm"] }
 
 [features]
 default = []
@@ -41,6 +48,9 @@ pooler = []
 mlm = []
 # Convenience: both heads.
 heads = ["pooler", "mlm"]
+# The `embed` exporter (`rlx-embed`) checked against this crate's runner
+# (`tests/export_rlxp.rs`): ClinicalBERT is a BERT checkpoint it takes.
+export = ["rlx-core/export"]
 # Replace OpenBLAS with Intel MKL on Windows / Linux x86 hosts. macOS
 # stays on Accelerate. Pass through to rlx-cpu via the workspace patch
 # table so the same cargo build picks MKL for every BLAS call (matmul,
@@ -53,7 +63,7 @@ rocm = ["rlx-bert/rocm", "rlx-runtime/rocm"]
 gpu = ["rlx-bert/gpu", "rlx-runtime/gpu"]
 vulkan = ["rlx-bert/vulkan", "rlx-runtime/vulkan"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+macos-gpu = ["metal", "mlx", "gpu"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
@@ -64,6 +74,9 @@ path = "src/bin/rlx_clinicalbert.rs"
 
 [dev-dependencies]
 criterion = { workspace = true }
+rlx-embed = { workspace = true, features = ["export"] }
+rlx-text = { workspace = true }
+tempfile = "3"
 
 [[bench]]
 name = "encoder"

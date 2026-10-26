@@ -19,12 +19,12 @@ per-crate `--serve` and the Qwen3-only `rlx-serve` binary.
 | `lfm` | `lfm` | `SingleEngine` |
 
 `all-engines` enables every optional family. Backend features:
-`apple-silicon`, `metal`, `mlx`, `cuda`, `all-backends`.
+`macos-gpu`, `metal`, `mlx`, `cuda`, `all-backends`.
 
 ## Run
 
 ```bash
-just features=apple-silicon,laguna openai-serve -- \
+just features=macos-gpu,laguna openai-serve -- \
   --host 127.0.0.1 --port 8080 \
   --engine qwen3 --weights /path/to/qwen3 --model-id qwen3 --device metal \
   --engine laguna --weights /path/to/Laguna.gguf --tokenizer-dir /path/tok \

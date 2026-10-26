@@ -79,7 +79,7 @@ fn main() -> Result<()> {
 
     let cpu_pre = run(Device::Cpu, false, &dir, &cfg, &ple, &ids_f32, bucket)?;
 
-    if std::env::var("RLX_TAP_ALL").ok().is_some() {
+    if rlx_ir::env::var_result("RLX_TAP_ALL").ok().is_some() {
         let mut bld = GemmaQatLoader::open(&dir)?;
         let mut packed = HashMap::new();
         let (g, p) = rlx_gemma::builder::build_gemma_graph_sized_packed_ext(

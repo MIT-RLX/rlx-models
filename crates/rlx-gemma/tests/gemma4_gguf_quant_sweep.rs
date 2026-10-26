@@ -23,7 +23,7 @@
 //! RLX_GEMMA4_FIXTURE=/path/to/gemma4-12B-it \
 //!   RLX_GEMMA4_QUANTS=all \
 //!   RLX_GEMMA4_MAX_SEQ=128 RLX_GEMMA4_REAL_DECODE_STEPS=8 \
-//!   cargo test -p rlx-gemma --release --features apple-silicon \
+//!   cargo test -p rlx-gemma --release --features macos-gpu \
 //!   --test gemma4_gguf_quant_sweep bench_all_quants -- --nocapture --test-threads=1
 //!
 //! # Optional: move Metal prefill JIT to session build (RLX_GEMMA_PACKED_WARM_PREFILL=1)
@@ -69,7 +69,7 @@ const ALL_Q_QUANTS: &[&str] = &[
 ];
 
 fn quant_list_from_env() -> Option<Vec<String>> {
-    let raw = std::env::var("RLX_GEMMA4_QUANTS").ok()?;
+    let raw = rlx_ir::env::var_result("RLX_GEMMA4_QUANTS").ok()?;
     if raw.eq_ignore_ascii_case("all") || raw == "*" {
         return Some(ALL_Q_QUANTS.iter().map(|s| (*s).to_string()).collect());
     }
@@ -83,18 +83,18 @@ fn quant_list_from_env() -> Option<Vec<String>> {
 }
 
 fn fixture_dir() -> Option<PathBuf> {
-    std::env::var_os("RLX_GEMMA4_FIXTURE").map(PathBuf::from)
+    rlx_ir::env::var_os("RLX_GEMMA4_FIXTURE").map(PathBuf::from)
 }
 
 fn bench_max_seq() -> usize {
-    std::env::var("RLX_GEMMA4_MAX_SEQ")
+    rlx_ir::env::var_result("RLX_GEMMA4_MAX_SEQ")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(128)
 }
 
 fn decode_steps() -> usize {
-    std::env::var("RLX_GEMMA4_REAL_DECODE_STEPS")
+    rlx_ir::env::var_result("RLX_GEMMA4_REAL_DECODE_STEPS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8)
@@ -224,7 +224,9 @@ fn load_ref_artifacts(dir: &Path) -> Result<(Vec<f32>, Vec<u32>)> {
         bail!("ref_logits.f32 length mismatch");
     }
     let logits: Vec<f32> = logits_bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let tokens_bytes = std::fs::read(d.join("ref_tokens.u32"))?;
@@ -232,7 +234,9 @@ fn load_ref_artifacts(dir: &Path) -> Result<(Vec<f32>, Vec<u32>)> {
         bail!("ref_tokens.u32 length mismatch");
     }
     let tokens: Vec<u32> = tokens_bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Ok((logits, tokens))
@@ -499,7 +503,7 @@ fn bench_quant_isolated() -> Result<()> {
         eprintln!("[gemma4 quant sweep] bench_quant_isolated: RLX_GEMMA4_FIXTURE unset — skip");
         return Ok(());
     };
-    let Some(quant_path) = std::env::var_os("RLX_GEMMA4_QUANT_PATH").map(PathBuf::from) else {
+    let Some(quant_path) = rlx_ir::env::var_os("RLX_GEMMA4_QUANT_PATH").map(PathBuf::from) else {
         eprintln!("[gemma4 quant sweep] bench_quant_isolated: RLX_GEMMA4_QUANT_PATH unset — skip");
         return Ok(());
     };

@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn default_model_dir() -> PathBuf {
-    env::var("RLX_WHISPER_DIR")
+    rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/whisper-tiny"))
 }

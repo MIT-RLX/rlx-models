@@ -126,7 +126,8 @@ impl Tokenizer {
         Ok(Self::new(pieces))
     }
 
-    fn piece(&self, id: u32) -> Option<&str> {
+    /// The piece of token `id`.
+    pub fn piece(&self, id: u32) -> Option<&str> {
         self.pieces.get(id as usize).map(|s| s.as_str())
     }
 

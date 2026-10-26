@@ -34,7 +34,7 @@ Tokenizer / chat template: use the HF `tokenizer.json` next to the weights (`--t
 GPU:
 
 ```sh
-just features=apple-silicon nanbeige -- --weights "$WEIGHTS" --device metal --prompt-ids 1,42 --max-tokens 8
+just features=macos-gpu nanbeige -- --weights "$WEIGHTS" --device metal --prompt-ids 1,42 --max-tokens 8
 ```
 
 ## Library
@@ -62,7 +62,7 @@ Prefill + decode with `num_loops = 2` is exercised on every standard RLX device
 
 ```sh
 just features=all-backends test-nanbeige-backends
-just features=apple-silicon test-nanbeige-backends
+just features=macos-gpu test-nanbeige-backends
 cargo run -p rlx-nanbeige --example backend_matrix --features all-backends --release
 ```
 
@@ -76,12 +76,12 @@ decode, and whether full BF16/F32 3B is allowed (wgpu/Vulkan → synth/GGUF only
 ```sh
 # Synthetic looped graphs (safe on every backend)
 just features=all-backends bench-nanbeige-backends
-just features=apple-silicon bench-nanbeige-backends
+just features=macos-gpu bench-nanbeige-backends
 
 # Real 3B F32 (mmap-on-take; ~1× device-resident params + KV). MLX sets
 # RLX_MLX_COMPILE_MAX_NODES=4096 so looped graphs stay Compiled (not Lazy).
 just fetch-nanbeige
-just features=apple-silicon bench-nanbeige-backends -- \
+just features=macos-gpu bench-nanbeige-backends -- \
   --weights /tmp/rlx-weights/Nanbeige4.2-3B --device mlx
 ```
 
@@ -90,7 +90,7 @@ Overrides: `RLX_NANBEIGE_MAX_SEQ`, `RLX_NANBEIGE_PROMPT_LEN`,
 `RLX_MLX_COMPILE_MAX_NODES` (default 4096 via `prepare` when unset),
 `RLX_SOFT_MEMORY_FRACTION` (default 0.95 on Metal/MLX via `prepare`).
 
-Observed on Apple M4 Pro (synth looped graphs): **MLX** wins accelerator prefill/decode;
+Observed on M4 Pro (synth looped graphs): **MLX** wins accelerator prefill/decode;
 Metal prefill is much slower on short prompts; wgpu/Vulkan use a smaller portable graph
 and are not used for full BF16/F32 3B (storage-buffer / RAM limits). Full F32 3B uses
 safetensors mmap-on-take (no eager host drain) so peak RSS is roughly one device copy

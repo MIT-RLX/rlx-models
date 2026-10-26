@@ -59,8 +59,8 @@ fn lstms5_fc_gemm_add_vs_ort() {
             .output()
             .unwrap()
             .stdout
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>().0.iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect()
     } else {
         vec![0.0; 256]
@@ -140,8 +140,8 @@ fn lstms5_add2_and_concat4_vs_ort() {
             .output()
             .unwrap()
             .stdout
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>().0.iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect()
     } else {
         style
@@ -247,8 +247,8 @@ fn text_encoder1_concat1_vs_ort() {
             .output()
             .unwrap()
             .stdout
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>().0.iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect()
     } else {
         vec![0.0; 256]

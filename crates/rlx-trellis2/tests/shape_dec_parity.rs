@@ -28,7 +28,9 @@ fn f32s(st: &SafeTensors, name: &str) -> (Vec<f32>, Vec<usize>) {
     let t = st.tensor(name).unwrap();
     let v = t
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     (v, t.shape().to_vec())
@@ -37,7 +39,9 @@ fn i32s(st: &SafeTensors, name: &str) -> Vec<i32> {
     st.tensor(name)
         .unwrap()
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -57,8 +61,8 @@ fn shape_dec_cfg() -> SparseVaeConfig {
 #[test]
 fn shape_decoder_matches_transcription() {
     let (Ok(ckpt), Ok(refp)) = (
-        std::env::var("RLX_TRELLIS2_SHAPEDEC_CKPT"),
-        std::env::var("RLX_TRELLIS2_SHAPEDEC_REF"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SHAPEDEC_CKPT"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SHAPEDEC_REF"),
     ) else {
         eprintln!(
             "skipping shape dec parity: set RLX_TRELLIS2_SHAPEDEC_CKPT + RLX_TRELLIS2_SHAPEDEC_REF"
@@ -78,7 +82,9 @@ fn shape_decoder_matches_transcription() {
     let out_c = oshape[1];
 
     let coords: Vec<[i32; 3]> = in_coords
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]])
         .collect();
     let latent = SparseTensor::new(in_latent, coords, lat_c);
@@ -96,7 +102,9 @@ fn shape_decoder_matches_transcription() {
 
     // match by coordinate (both should produce identical coord sets)
     let ref_coords: Vec<[i32; 3]> = out_coords
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]])
         .collect();
     let mut ref_map: HashMap<[i32; 3], usize> = HashMap::new();

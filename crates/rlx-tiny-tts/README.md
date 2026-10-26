@@ -16,7 +16,7 @@ just fetch-tiny-tts          # eugenehp/tiny-tts-rlx → tiny-tts.rlxp
 just tiny-tts-backends       # CPU / Metal / MLX cosine vs CPU
 just export-tiny-tts-rlxp    # pack from local sources → nested graphs
 
-cargo run -p rlx-tiny-tts --release --features apple-silicon -- \
+cargo run -p rlx-tiny-tts --release --features macos-gpu -- \
   --data weights/tts/tiny-tts-rlx --text "The weather is nice today." \
   --device metal --out out.wav
 # or: --data weights/tts/tiny-tts-rlx/tiny-tts.rlxp
@@ -102,13 +102,13 @@ Subgraphs compile per device, so TinyTTS runs on every RLX backend:
 | Feature | `--device` | Backend |
 |---------|-----------|---------|
 | `cpu` (default) | `cpu` | rlx-cpu (numeric reference) |
-| `metal` | `metal` | Apple Metal |
-| `mlx` | `mlx` | Apple MLX |
+| `metal` | `metal` | Metal |
+| `mlx` | `mlx` | MLX |
 | `cuda` / `rocm` | `cuda` / `rocm` | NVIDIA / AMD |
 | `gpu` / `vulkan` | `gpu` | wgpu (Metal / Vulkan / DX12) |
-| `coreml` | `ane` / `coreml` | Apple CoreML — auto `RLX_COREML_UNITS=gpu` (Neural-Engine BNNS crashes on many TTS graphs) |
+| `coreml` | `ane` / `coreml` | CoreML — auto `RLX_COREML_UNITS=gpu` (Neural-Engine BNNS crashes on many TTS graphs) |
 
-Convenience bundles: `apple-silicon`, `nvidia-gpu`, `amd-gpu`, `all-backends`.
+Convenience bundles: `macos-gpu`, `nvidia-gpu`, `amd-gpu`, `all-backends`.
 
 ## Examples
 

@@ -69,13 +69,30 @@ pub fn pad1d_reflect(x: ArrayView2<f32>, pad_left: usize, pad_right: usize) -> A
         for ti in 0..t {
             out[[ci, ti + pad_left]] = x[[ci, ti]];
         }
+        // torch `reflect`: the edge sample itself is not repeated.
         for pi in 0..pad_left {
-            let src = pi.min(t.saturating_sub(1));
+            let src = (pi + 1).min(t.saturating_sub(1));
             out[[ci, pad_left - 1 - pi]] = x[[ci, src]];
         }
         for pi in 0..pad_right {
-            let src = (t.saturating_sub(1)).saturating_sub(pi);
+            let src = (t.saturating_sub(2)).saturating_sub(pi);
             out[[ci, pad_left + t + pi]] = x[[ci, src]];
+        }
+    }
+    out
+}
+
+/// `x` left-padded by `pad_left` copies of its first sample (torch
+/// `replicate`).
+pub fn pad1d_replicate_left(x: ArrayView2<f32>, pad_left: usize) -> Array2<f32> {
+    let (c, t) = x.dim();
+    let mut out = Array2::<f32>::zeros((c, t + pad_left));
+    for ci in 0..c {
+        for pi in 0..pad_left {
+            out[[ci, pi]] = x[[ci, 0]];
+        }
+        for ti in 0..t {
+            out[[ci, ti + pad_left]] = x[[ci, ti]];
         }
     }
     out
@@ -87,8 +104,21 @@ pub fn conv1d(
     stride: usize,
     pad_left: usize,
 ) -> Array2<f32> {
+    conv1d_padded(pad1d_reflect(x, pad_left, 0).view(), weight, stride)
+}
+
+/// [`conv1d`] with the left context replicated, not reflected.
+pub fn conv1d_replicate(
+    x: ArrayView2<f32>,
+    weight: ArrayView3<f32>,
+    stride: usize,
+    pad_left: usize,
+) -> Array2<f32> {
+    conv1d_padded(pad1d_replicate_left(x, pad_left).view(), weight, stride)
+}
+
+fn conv1d_padded(padded: ArrayView2<f32>, weight: ArrayView3<f32>, stride: usize) -> Array2<f32> {
     let (out_ch, in_ch, k) = weight.dim();
-    let padded = pad1d_reflect(x, pad_left, 0);
     let t_pad = padded.dim().1;
     let t_out = (t_pad - k) / stride + 1;
     let mut out = Array2::<f32>::zeros((out_ch, t_out));

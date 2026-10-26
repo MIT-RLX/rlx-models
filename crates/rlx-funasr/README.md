@@ -73,8 +73,9 @@ PyTorch checkpoint:
   stream + raw storage blocks, recovers `_rebuild_tensor_v2` metadata, and
   converts storages (f16 / bf16 / f64 / int) to `f32`.
 
-CMVN is applied only when `config.yaml`'s `frontend_conf.cmvn_file` is non-null
-(Paraformer uses `am.mvn`; SenseVoice ships an unused one and disables it). The
+CMVN is the model directory's `am.mvn` whenever it is there, as FunASR's
+loader applies it (SenseVoice's `config.yaml` says `cmvn_file: null`, and its
+official pipeline still normalizes with the shipped `am.mvn`). The
 vocabulary size is taken from the checkpoint's output weight, not assumed.
 
 Tokenization reads `tokens.json` / `tokens.txt`, or a SentencePiece

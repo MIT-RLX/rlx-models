@@ -32,7 +32,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn default_model_dir() -> PathBuf {
-    env::var("RLX_VOXTRAL_TTS_DIR")
+    rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/voxtral/Voxtral-4B-TTS"))
 }

@@ -188,7 +188,7 @@ pub fn build_clinicalbert_with_mlm_built(
     // 5. Emit both encoder and head outputs. Compile profile + typed_params
     //    carry over from the encoder build.
     graph.set_outputs(vec![hidden_id, mlm_logits]);
-    if std::env::var("RLX_CLINICALBERT_DEBUG").is_ok() {
+    if rlx_ir::env::var_result("RLX_CLINICALBERT_DEBUG").is_ok() {
         eprintln!(
             "[rlx-clinicalbert::builder] graph.outputs = {:?}",
             graph

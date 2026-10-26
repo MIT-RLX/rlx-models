@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bench Bonsai-27B across RLX backends: complex prompt, prefill + per-token.
 #
-# Local (Apple Silicon):
+# Local (macOS arm64):
 #   scripts/matrix/bonsai27b_bench.sh
 #
 # On the CUDA host (after sync):
@@ -28,7 +28,7 @@ export RLX_CUDA_NO_CUDNN="${RLX_CUDA_NO_CUDNN:-1}"
 export RLX_KV_CACHE_MAX_RESIDENT="${RLX_KV_CACHE_MAX_RESIDENT:-1}"
 
 COMPLEX_PROMPT="${BONSAI_PROMPT:-$(cat <<'EOF'
-You are advising a systems engineer who must choose an inference backend for a 27B hybrid transformer (gated-DeltaNet + full attention, 1-bit Q1_0 weights). Write a structured brief that: (1) contrasts latency vs VRAM tradeoffs for Metal, MLX, CUDA, and WebGPU; (2) explains why packed 1-bit weights change the memory story versus FP16; (3) lists three failure modes when a GatedDeltaNet op falls back to host readback; (4) ends with a concrete recommendation for interactive chat on a 64GB Apple Silicon Mac and on a 16GB RTX 3080 Ti laptop. Use short numbered sections and keep the tone precise.
+You are advising a systems engineer who must choose an inference backend for a 27B hybrid transformer (gated-DeltaNet + full attention, 1-bit Q1_0 weights). Write a structured brief that: (1) contrasts latency vs VRAM tradeoffs for Metal, MLX, CUDA, and WebGPU; (2) explains why packed 1-bit weights change the memory story versus FP16; (3) lists three failure modes when a GatedDeltaNet op falls back to host readback; (4) ends with a concrete recommendation for interactive chat on a 64GB M-series Mac and on a 16GB RTX 3080 Ti laptop. Use short numbered sections and keep the tone precise.
 EOF
 )}"
 
@@ -81,7 +81,7 @@ if [ "$MODE" = "cuda-only" ]; then
   # Bound discrete VRAM: keep one large decode bucket resident.
   export RLX_KV_CACHE_MAX_RESIDENT="${RLX_KV_CACHE_MAX_RESIDENT:-1}"
 else
-  FEATURES="${BONSAI_FEATURES:-apple-silicon,gpu}"
+  FEATURES="${BONSAI_FEATURES:-macos-gpu,gpu}"
   if [ -n "${BONSAI_BACKENDS:-}" ]; then
     IFS=',' read -r -a BACKENDS <<< "$BONSAI_BACKENDS"
   else

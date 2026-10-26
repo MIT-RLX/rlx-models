@@ -2,7 +2,7 @@
 # RLX — versatile ML compiler + runtime.
 # Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna. GPLv3.
 #
-# Fit linear body map B: enc ≈ h @ B from Apple capture_work speech dumps.
+# Fit linear body map B: enc ≈ h @ B from reference capture_work speech dumps.
 # Writes body_map_ls.B.bin under RLX_ASR_DIR (or --out).
 #
 # Usage:

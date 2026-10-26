@@ -14,13 +14,13 @@ use rlx_models::run::{CompatibilityStatus, check_path};
 use std::path::PathBuf;
 
 fn weights_path() -> Option<PathBuf> {
-    std::env::var("RLX_MINICPM5_WEIGHTS")
+    rlx_ir::env::var_result("RLX_MINICPM5_WEIGHTS")
         .ok()
         .map(PathBuf::from)
 }
 
 fn tokenizer_path() -> Option<PathBuf> {
-    std::env::var("RLX_MINICPM5_TOKENIZER")
+    rlx_ir::env::var_result("RLX_MINICPM5_TOKENIZER")
         .ok()
         .map(PathBuf::from)
         .or_else(|| {
@@ -84,7 +84,11 @@ fn compat_check_safetensors_file() {
 
 #[test]
 fn forward_inference_minicpm5_1b() {
-    if std::env::var("RLX_MINICPM5_RUN_INFERENCE").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_MINICPM5_RUN_INFERENCE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_MINICPM5_RUN_INFERENCE=1");
         return;
     }

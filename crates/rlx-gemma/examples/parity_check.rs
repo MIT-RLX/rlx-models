@@ -5,12 +5,12 @@
 //   cargo run -p rlx-gemma --release --features "tokenizer parity-llama" \
 //     --example parity_check -- <gguf> llama
 //
-//   cargo run -p rlx-gemma --release --features "tokenizer apple-silicon" \
+//   cargo run -p rlx-gemma --release --features "tokenizer macos-gpu" \
 //     --example parity_check -- <gguf> rlx
 //
 // Or both in one process:
 //
-//   cargo run -p rlx-gemma --release --features "tokenizer apple-silicon parity-llama" \
+//   cargo run -p rlx-gemma --release --features "tokenizer macos-gpu parity-llama" \
 //     --example parity_check -- <gguf> both
 
 use anyhow::{Context, Result, bail};
@@ -115,7 +115,7 @@ fn logit_stats(label: &str, logits: &[f32]) -> Option<(usize, f32)> {
 }
 
 fn prompt_ids(gguf: &Path) -> Result<Vec<u32>> {
-    if let Ok(raw) = std::env::var("RLX_PARITY_IDS") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_PARITY_IDS") {
         let ids: Result<Vec<u32>> = raw
             .split(',')
             .map(|s| s.trim().parse().context("RLX_PARITY_IDS parse"))

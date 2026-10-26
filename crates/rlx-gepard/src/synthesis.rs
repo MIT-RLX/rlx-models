@@ -375,6 +375,34 @@ impl GepardSynthesizer {
         model_path: &Path,
         ref_codes: Option<&[u32]>,
     ) -> Result<Vec<f32>> {
+        let frames = self.eager_frames(text, cfg, model_path, ref_codes)?;
+        self.decode_frames(&frames)
+    }
+
+    /// The eager CPU AR loop's frames (32 FSQ channels each) for `text`.
+    pub fn generate_frames(&self, text: &str) -> Result<Vec<Vec<u32>>> {
+        let cfg = self.config();
+        self.eager_frames(
+            text,
+            &cfg,
+            &self.bundle_path.join("model.safetensors"),
+            None,
+        )
+    }
+
+    /// Frames → 22.05 kHz PCM through the NanoCodec decoder.
+    pub fn decode_frames(&self, frames: &[Vec<u32>]) -> Result<Vec<f32>> {
+        frames_to_audio_with_codec(frames, self.gepard_decoder.as_ref())
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    fn eager_frames(
+        &self,
+        text: &str,
+        cfg: &GepardConfig,
+        model_path: &Path,
+        ref_codes: Option<&[u32]>,
+    ) -> Result<Vec<Vec<u32>>> {
         let bytes = load_safetensors_bytes(model_path)?;
         let st = SafeTensors::deserialize(&bytes)
             .with_context(|| format!("parse {}", model_path.display()))?;
@@ -462,9 +490,7 @@ impl GepardSynthesizer {
             "[gepard] AR {} frames (max={max_frames} stop_th={stop_th} temp={temp} rep={rep_pen})",
             frames.len()
         );
-
-        frames_to_audio_with_codec(&frames, self.gepard_decoder.as_ref())
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        Ok(frames)
     }
 
     fn synthesize_compiled(
@@ -586,7 +612,7 @@ fn default_config() -> GepardConfig {
 fn use_backend_ar(device: Device) -> bool {
     // Eager CPU AR override (debug / parity A/B).
     if matches!(
-        std::env::var("RLX_GEPARD_EAGER_AR").as_deref(),
+        rlx_ir::env::var_result("RLX_GEPARD_EAGER_AR").as_deref(),
         Ok("1") | Ok("true") | Ok("on")
     ) {
         return false;
@@ -596,7 +622,9 @@ fn use_backend_ar(device: Device) -> bool {
 
 fn prefer_compiled() -> bool {
     matches!(
-        std::env::var("RLX_GEPARD_COMPILED").ok().as_deref(),
+        rlx_ir::env::var_result("RLX_GEPARD_COMPILED")
+            .ok()
+            .as_deref(),
         Some("1") | Some("true") | Some("yes")
     )
 }

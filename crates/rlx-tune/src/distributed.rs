@@ -234,7 +234,7 @@ impl<T: SymmetricTransport + Send + Sync> GradComm for RdmaGradComm<T> {
 }
 
 /// [`GradComm`] over an rlx-driver [`ProcessGroup`] — the mesh [`from_env`]
-/// hands back (TCP over the network, Thunderbolt on Apple Silicon, or an
+/// hands back (TCP over the network, Thunderbolt on macOS arm64, or an
 /// in-process channel). Gradient averaging rides the group's
 /// **bandwidth-optimal ring all-reduce**, so a fused bucket moves only
 /// `~2·(n-1)/n · len` floats per rank regardless of world size, and — unlike
@@ -290,7 +290,7 @@ impl GradComm for ProcessGroupGradComm {
                 self.group
                     .all_reduce_typed(&mut bytes, DType::BF16, ReduceKind::Mean)
                     .expect("process-group bf16 all_reduce");
-                for (x, c) in v.iter_mut().zip(bytes.chunks_exact(2)) {
+                for (x, c) in v.iter_mut().zip(bytes.as_chunks::<2>().0.iter()) {
                     let bf = u16::from_le_bytes([c[0], c[1]]);
                     *x = f32::from_bits((bf as u32) << 16);
                 }

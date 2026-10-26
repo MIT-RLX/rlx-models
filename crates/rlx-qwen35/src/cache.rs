@@ -44,7 +44,7 @@ pub enum Qwen35LayerState {
 /// Parse `RLX_QWEN35_KV_QUANT` → scheme (full-attn layers only).
 fn kv_quant_from_env() -> Option<rlx_runtime::quantized_kv::KvQuant> {
     use rlx_runtime::quantized_kv::KvQuant;
-    match std::env::var("RLX_QWEN35_KV_QUANT")
+    match rlx_ir::env::var_result("RLX_QWEN35_KV_QUANT")
         .ok()
         .as_deref()
         .map(str::trim)
@@ -333,6 +333,17 @@ pub fn pad_kv_to_bucket(
     kv_cols: usize,
 ) -> Vec<f32> {
     let rows = bucket_upper + rlx_ir::env::flag("RLX_QWEN35_INPLACE_KV") as usize;
+    pad_kv_to_rows(src, batch, actual_past, rows, kv_cols)
+}
+
+/// Pad `[batch, actual, kv_cols]` K/V to `[batch, rows, kv_cols]` with zeros.
+pub fn pad_kv_to_rows(
+    src: &[f32],
+    batch: usize,
+    actual_past: usize,
+    rows: usize,
+    kv_cols: usize,
+) -> Vec<f32> {
     let mut out = vec![0f32; batch * rows * kv_cols];
     for b in 0..batch {
         let src_base = b * actual_past * kv_cols;
@@ -545,6 +556,40 @@ pub fn decode_step_feeds(
     // When set, feed flat `[batch * hidden]` as `inputs_embeds` (Gepard audio frames).
     custom_embed: Option<&[f32]>,
 ) -> anyhow::Result<Vec<(String, Vec<f32>)>> {
+    decode_step_feeds_resident(
+        cfg,
+        cache,
+        tokens,
+        rope_cos,
+        rope_sin,
+        bucket_upper,
+        generated_per_row,
+        host_embed_table,
+        custom_embed,
+        false,
+        false,
+    )
+}
+
+/// [`decode_step_feeds`] leaving out what lives on the device between steps:
+/// the Gated DeltaNet `conv_state` / `ssm_state` (`skip_state`) and the
+/// full-attention `past_k` / `past_v` (`skip_kv`). Their host copies are stale
+/// then, so they must not be read — padding a stale KV mirror to the current
+/// `past_seq` reads past its end.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_step_feeds_resident(
+    cfg: &Qwen35Config,
+    cache: &Qwen35DecodeCache,
+    tokens: &[u32],
+    rope_cos: &[f32],
+    rope_sin: &[f32],
+    bucket_upper: Option<usize>,
+    generated_per_row: &[usize],
+    host_embed_table: Option<&[f32]>,
+    custom_embed: Option<&[f32]>,
+    skip_state: bool,
+    skip_kv: bool,
+) -> anyhow::Result<Vec<(String, Vec<f32>)>> {
     use anyhow::bail;
 
     if tokens.len() != cache.batch {
@@ -598,6 +643,9 @@ pub fn decode_step_feeds(
                 },
                 false,
             ) => {
+                if skip_state {
+                    continue;
+                }
                 feeds.push((format!("conv_state_l{il}"), conv_state.clone()));
                 feeds.push((format!("ssm_state_l{il}"), ssm_state.clone()));
             }
@@ -606,7 +654,7 @@ pub fn decode_step_feeds(
                 // arena handles and grown in-place by Op::KvAppend — never fed from
                 // host. Skip building the O(ctx) feed (the host mirror is also stale
                 // here since the resident path doesn't append per-token).
-                if rlx_ir::env::flag("RLX_QWEN35_GPU_KV") {
+                if skip_kv || rlx_ir::env::flag("RLX_QWEN35_GPU_KV") {
                     continue;
                 }
                 let (past_k, past_v) = full_attn_kv_f32(layer)?;
@@ -883,6 +931,12 @@ pub fn advance_cache_from_decode_outputs_n(
     use anyhow::{Context, bail};
     let n_head = logit_output_count(mtp_logits_path);
     let n_extra = recurrent_output_count(cfg);
+    // A trailing greedy-token output (`Qwen35DecodeOpts::greedy_token`) is
+    // not part of the cache; callers that want the token split it off first.
+    let mut outputs = outputs;
+    if outputs.len() == n_head + n_extra + 1 {
+        outputs.pop();
+    }
     if outputs.len() != n_head + n_extra {
         bail!(
             "decode: expected {} outputs, got {}",
@@ -928,13 +982,20 @@ pub fn advance_cache_from_decode_outputs_n(
         None
     };
 
-    let mut new_layers = Vec::with_capacity(cache.layers.len());
+    let old_layers = std::mem::take(&mut cache.layers);
+    let mut new_layers = Vec::with_capacity(old_layers.len());
     let kinds = trunk_layer_kinds(cfg);
-    for (il, layer) in cache.layers.iter().enumerate() {
+    for (il, layer) in old_layers.into_iter().enumerate() {
         let is_full = kinds[il];
         if is_full {
             let k = iter.next().context("new_k missing")?;
             let v = iter.next().context("new_v missing")?;
+            if k.is_empty() && v.is_empty() {
+                // Not read back: the cache stayed on the device (resident
+                // handles grown in place), so the host copy is left as it was.
+                new_layers.push(layer);
+                continue;
+            }
             let (k, v) = if let Some(upper) = bucket_upper {
                 // Bucketed verify: KV is `concat(past_padded[upper], new[n_new])`;
                 // slice back to the dense `new_past` rows (n_new-aware).
@@ -958,10 +1019,18 @@ pub fn advance_cache_from_decode_outputs_n(
         } else {
             let conv = iter.next().context("conv_state missing")?;
             let ssm = iter.next().context("ssm_state missing")?;
-            new_layers.push(Qwen35LayerState::Linear {
-                conv_state: conv,
-                ssm_state: ssm,
-            });
+            if conv.is_empty() && ssm.is_empty() {
+                // Not read back: the state stayed on the device (a GPU handle
+                // fed from this output), so the host copy is left as it was —
+                // stale until the next read-back (see the runner's resident
+                // GDN state).
+                new_layers.push(layer);
+            } else {
+                new_layers.push(Qwen35LayerState::Linear {
+                    conv_state: conv,
+                    ssm_state: ssm,
+                });
+            }
         }
     }
     cache.past_seq = new_past;

@@ -679,8 +679,10 @@ fn quantised(
 fn read_f32(p: &Path) -> Vec<f32> {
     std::fs::read(p)
         .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
@@ -938,8 +940,10 @@ fn main() -> anyhow::Result<()> {
     // Reference clip, for scoring only — never trained on.
     let ref_rows: Vec<Vec<f32>> =
         read_f32(&root.join("crates/rlx-ten-vad/tests/fixtures/reference_features.f32"))
-            .chunks_exact(FEATURE_LEN)
-            .map(<[f32]>::to_vec)
+            .as_chunks::<FEATURE_LEN>()
+            .0
+            .iter()
+            .map(|row| row.to_vec())
             .collect();
     let published =
         read_f32(&root.join("crates/rlx-ten-vad/tests/fixtures/reference_probs_onnx.f32"));

@@ -75,7 +75,7 @@ impl TalkerTeacher {
 }
 
 fn use_gpu_teacher(device: Device) -> bool {
-    if std::env::var("RLX_QWEN3_TTS_TRAIN_EAGER")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_TRAIN_EAGER")
         .ok()
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
     {

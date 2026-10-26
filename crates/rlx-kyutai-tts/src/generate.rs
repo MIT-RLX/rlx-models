@@ -146,7 +146,7 @@ impl GenerateState {
             .process(self.step_idx, &mut self.tts_state, sampled);
         self.text_input = depformer_text;
 
-        if std::env::var_os("RLX_KYUTAI_TTS_TRACE").is_some() && self.step_idx < 35 {
+        if rlx_ir::env::var_os("RLX_KYUTAI_TTS_TRACE").is_some() && self.step_idx < 35 {
             eprintln!(
                 "trace step={} end={:?} text_in={} sampled={} depformer_text={} lm_frames={}",
                 self.step_idx,
@@ -164,7 +164,7 @@ impl GenerateState {
             model.depformer_step(&hidden, depformer_text, &mut self.sampler)?
         };
 
-        if std::env::var_os("RLX_KYUTAI_TTS_TRACE").is_some()
+        if rlx_ir::env::var_os("RLX_KYUTAI_TTS_TRACE").is_some()
             && self.step_idx >= self.stream_delay
             && self.step_idx < self.stream_delay + 8
         {

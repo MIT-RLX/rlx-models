@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4);
-    let device = env::var("RLX_DEVICE")
+    let device = rlx_ir::env::var_result("RLX_DEVICE")
         .ok()
         .map(|s| parse_llada2_device(&s))
         .transpose()?

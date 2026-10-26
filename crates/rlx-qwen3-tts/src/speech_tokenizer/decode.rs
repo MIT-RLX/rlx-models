@@ -1182,7 +1182,7 @@ fn apply_rope_matrix_offset(
     }
 }
 
-fn load_decoder_config(tok_dir: &Path) -> Result<DecoderConfig> {
+pub(crate) fn load_decoder_config(tok_dir: &Path) -> Result<DecoderConfig> {
     let raw =
         std::fs::read(tok_dir.join("config.json")).context("read speech_tokenizer/config.json")?;
     let v: serde_json::Value = serde_json::from_slice(&raw)?;
@@ -1564,7 +1564,7 @@ mod kv_cache_tests {
     /// of varying sizes, runs incremental, concatenates, and compares.
     #[test]
     fn kv_cache_matches_full_pre_transformer() {
-        let dir = match std::env::var("RLX_QWEN3_TTS_DIR") {
+        let dir = match rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR") {
             Ok(d) => std::path::PathBuf::from(d),
             Err(_) => return,
         };
@@ -1626,7 +1626,7 @@ mod kv_cache_tests {
     /// that's the foundation of the rest of the conv chain rewrite.
     #[test]
     fn conv1d_incremental_matches_full() {
-        let dir = match std::env::var("RLX_QWEN3_TTS_DIR") {
+        let dir = match rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR") {
             Ok(d) => std::path::PathBuf::from(d),
             Err(_) => return,
         };

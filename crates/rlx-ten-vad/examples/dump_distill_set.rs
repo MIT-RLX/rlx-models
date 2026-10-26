@@ -159,7 +159,7 @@ fn frames_of(pcm: &[i16], feats: &mut Vec<f32>, probs: &mut Vec<f32>) {
     let mut net = Net::new(embedded_net());
     let mut prev = 0.0f32;
     let mut emph = vec![0.0f32; HOP_SIZE];
-    for hop in pcm.chunks_exact(HOP_SIZE) {
+    for hop in pcm.as_chunks::<HOP_SIZE>().0.iter() {
         let raw: Vec<f32> = hop.iter().map(|&s| f32::from(s)).collect();
         pre_emphasis(&raw, &mut prev, &mut emph);
         fe.push(&raw, &emph);

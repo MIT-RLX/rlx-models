@@ -44,7 +44,7 @@ cargo run -p rlx-trellis2 --release -- \
   --pipeline-type 512 --dry
 
 # Shape-only 512³ on Metal (compiled DiT + DINOv3)
-cargo run -p rlx-trellis2 --release --features apple-silicon -- \
+cargo run -p rlx-trellis2 --release --features macos-gpu -- \
   --model-dir /path/to/TRELLIS.2-4B \
   --ss-decoder-dir /path/to/TRELLIS-image-large/ckpts \
   --dinov3-weights /path/to/dinov3-vitl16.safetensors \
@@ -54,7 +54,7 @@ cargo run -p rlx-trellis2 --release --features apple-silicon -- \
   --output /tmp/trellis.obj
 
 # Force host DiT (parity / debugging)
-cargo run -p rlx-trellis2 --release --features apple-silicon -- \
+cargo run -p rlx-trellis2 --release --features macos-gpu -- \
   … --device metal --eager-dit --steps 1
 
 # Textured 512³ → vertex-colored PLY/GLB (host DiT is slow; use --steps N for a short run)

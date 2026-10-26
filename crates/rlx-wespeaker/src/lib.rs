@@ -12,6 +12,8 @@
 //! Optional `onnx` feature keeps ORT for parity against the upstream packed
 //! ONNX — not used on the ship path.
 
+#[cfg(feature = "export")]
+pub mod export;
 pub mod fbank;
 mod native;
 

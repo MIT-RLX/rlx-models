@@ -23,7 +23,10 @@ use std::path::PathBuf;
 
 #[test]
 fn native_embeds_match_hf_ie() {
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         return;
     };
     let ie_path =

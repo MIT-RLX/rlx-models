@@ -24,7 +24,7 @@ huggingface-cli download Hinotsuba/OpenVoice-ONNX-v2 --local-dir weights/tts/ope
 ## Usage
 
 ```bash
-cargo run -p rlx-openvoice --bin rlx-openvoice --features apple-silicon -- \
+cargo run -p rlx-openvoice --bin rlx-openvoice --features macos-gpu -- \
     --ref-wav reference.wav \
     --text "The quick brown fox jumps over the lazy dog." --out out.wav
 ```

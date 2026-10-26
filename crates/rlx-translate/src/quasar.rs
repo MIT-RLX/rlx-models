@@ -19,7 +19,7 @@
 //! macOS ships one config per pair per variant as
 //! `mt_app.<src>-<tgt>.<variant>.json` (and the daemon symlinks the selected
 //! one in as `mt-quasar-config.json`). The config is the authoritative spec:
-//! it names the SentencePiece model, the Espresso NMT, every pre/post
+//! it names the SentencePiece model, the NMT, every pre/post
 //! processing block, the decode hyper-parameters, and — per language pair —
 //! the *graph* wiring those blocks together.
 //!
@@ -102,7 +102,7 @@ pub enum BlockKind {
     PhraseBook,
     /// SentencePiece encode or decode; see [`Block::spm_action`].
     SentencePiece,
-    /// The NMT itself — beam search over the Espresso model.
+    /// The NMT itself — beam search over the NMT model.
     PDecTranslator,
     /// Forced alignment through the same NMT, for span projection.
     PDecForceAlign,

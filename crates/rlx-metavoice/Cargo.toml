@@ -15,6 +15,7 @@ rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx-encodec = { workspace = true }
+rlx-ir = { workspace = true, optional = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -42,9 +43,15 @@ gpu = ["rlx-runtime/gpu", "rlx-encodec/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-encodec/vulkan"]
 coreml = ["rlx-runtime/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
+# `export::export_rlxp`: MetaVoice as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-encodec/export", "dep:rlx-ir"]
 
 [dev-dependencies]
+rlx-ir = { workspace = true }
 rlx-whisper = { workspace = true }
+tempfile = "3"
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }

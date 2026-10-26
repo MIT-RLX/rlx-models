@@ -4,7 +4,7 @@ use rlx_supertonic::{InferOpts, Supertonic, Voice};
 fn main() -> anyhow::Result<()> {
     let dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/supertonic-3");
-    let dev = match std::env::var("RLX_DEV").as_deref() {
+    let dev = match rlx_ir::env::var_result("RLX_DEV").as_deref() {
         Ok("metal") => Device::Metal,
         Ok("mlx") => Device::Mlx,
         Ok("gpu") => Device::Gpu,

@@ -41,7 +41,7 @@ cuda = ["rlx-runtime/cuda"]
 gpu = ["rlx-runtime/gpu"]
 vulkan = ["rlx-runtime/vulkan"]
 coreml = ["rlx-runtime/coreml", "rlx-core/coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
 
 [[bin]]

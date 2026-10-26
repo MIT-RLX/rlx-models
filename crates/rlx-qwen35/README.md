@@ -156,7 +156,7 @@ just qwen35 -- --weights weights/Qwen3.5-0.8B-Base --chat --prompt "Hello" --max
 # Generic local GGUF path
 just qwen35 -- --weights model.gguf --prompt "Hello" --max-tokens 32
 # or:
-cargo run -p rlx-qwen35 --release --features apple-silicon -- \
+cargo run -p rlx-qwen35 --release --features macos-gpu -- \
   --weights model.gguf --packed --device metal --fast \
   --prompt "What is the capital of France?"
 ```

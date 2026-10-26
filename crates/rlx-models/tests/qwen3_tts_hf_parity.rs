@@ -38,7 +38,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("RLX_QWEN3_TTS_DIR")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("model.safetensors").is_file())
@@ -70,7 +70,11 @@ fn qwen3_tts_greedy_codec_frames_match_hf() {
         eprintln!("skip: set RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -158,11 +162,15 @@ fn qwen3_tts_session_reuse_matches_hf_golden() {
         eprintln!("skip: set RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_QWEN3_TTS_PARITY=1");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_METAL_DECODE_NATIVE")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_DECODE_NATIVE")
         .ok()
         .as_deref()
         == Some("1")
@@ -211,7 +219,11 @@ fn qwen3_tts_greedy_speech_decode_produces_pcm() {
         eprintln!("skip: set RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_QWEN3_TTS_PARITY=1");
         return;
     };

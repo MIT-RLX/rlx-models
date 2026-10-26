@@ -133,30 +133,33 @@ pub fn flux2_vae_decode(
 
     let eps = 1e-6f32;
     let groups = cfg.norm_num_groups;
-    for resnet in &weights.mid_resnets {
+    // diffusers `UNetMidBlock2D`: resnet₀ → attention → resnet₁.
+    for (i, resnet) in weights.mid_resnets.iter().enumerate() {
         x = resnet_forward(&x, resnet, batch, channels, h, w, eps, groups)?;
         channels = resnet.conv2.out_c;
-    }
-    if let Some(attn) = &weights.mid_attn {
-        x = spatial_attention(
-            &x,
-            batch,
-            channels,
-            h,
-            w,
-            &attn.to_q.weight,
-            &attn.to_q.bias,
-            &attn.to_k.weight,
-            &attn.to_k.bias,
-            &attn.to_v.weight,
-            &attn.to_v.bias,
-            &attn.to_out.weight,
-            &attn.to_out.bias,
-            &attn.norm.gamma,
-            &attn.norm.beta,
-            groups,
-            eps,
-        );
+        if i == 0
+            && let Some(attn) = &weights.mid_attn
+        {
+            x = spatial_attention(
+                &x,
+                batch,
+                channels,
+                h,
+                w,
+                &attn.to_q.weight,
+                &attn.to_q.bias,
+                &attn.to_k.weight,
+                &attn.to_k.bias,
+                &attn.to_v.weight,
+                &attn.to_v.bias,
+                &attn.to_out.weight,
+                &attn.to_out.bias,
+                &attn.norm.gamma,
+                &attn.norm.beta,
+                groups,
+                eps,
+            );
+        }
     }
 
     for block in &weights.up_blocks {

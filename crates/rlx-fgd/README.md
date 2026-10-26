@@ -106,7 +106,7 @@ as the wave propagates. At the default `--max-level 5` the same check gives
 
 ```bash
 cargo test -p rlx-fgd --release
-just features=apple-silicon test-fgd-backends     # Metal / MLX / wgpu parity
+just features=macos-gpu test-fgd-backends     # Metal / MLX / wgpu parity
 ```
 
 - `tests/theory.rs` — the closed forms against the algebra of the proofs

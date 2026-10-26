@@ -11,7 +11,9 @@
 //   generation (~25× fewer vocab projections per audio chunk).
 
 use anyhow::{Result, anyhow, ensure};
-use rlx_core::autoregressive::{KvCacheState, kv_from_prefill_outputs, run_bucketed_kv_decode};
+use rlx_core::autoregressive::{
+    KvCacheState, kv_from_prefill_outputs, run_bucketed_kv_decode_spare,
+};
 use rlx_core::flow_bridge::{WeightLoaderSource, compile_options_from_profile};
 use rlx_core::flow_util::{compile_built, graph_from_built};
 use rlx_core::weight_loader::WeightLoader;
@@ -333,9 +335,10 @@ impl StreamLm {
 
         let snap = self.lm_snap.clone();
         let cfg_c = cfg.clone();
-        let (logits, new_k, new_v) = run_bucketed_kv_decode(
+        let (logits, new_k, new_v) = run_bucketed_kv_decode_spare(
             decode_cache,
             past_seq,
+            rlx_flow::blocks::kv_spare_rows(&[batch.max(1)]),
             kv,
             kv_dim,
             layers,
@@ -419,6 +422,7 @@ fn build_stream_prefill_built(
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
         mask: rlx_ir::op::MaskKind::Causal,
+        moe: None,
     };
     let kv_sink = SideOutputs::new();
     let mut flow = ModelFlow::new("vibeasr_stream_prefill")
@@ -450,7 +454,7 @@ fn build_stream_prefill_built(
     Ok(built)
 }
 
-fn build_stream_decode_embeds_built(
+pub(crate) fn build_stream_decode_embeds_built(
     cfg: &Qwen3Config,
     weights: &mut dyn WeightLoader,
     batch: usize,
@@ -471,7 +475,12 @@ fn build_stream_decode_embeds_built(
     let half = dh / 2;
     let kv_dim = cfg.kv_proj_dim();
     let hidden_shape = Shape::new(&[batch, 1, h], f);
-    let past_kv_shape = Shape::new(&[batch, past_seq, kv_dim], f);
+    // One spare row so the (already migrated) qwen3 decode layer writes the new
+    // token's K/V in place via `Op::KvAppend` instead of `concat`-copying the
+    // whole O(context) cache every step. Same shared predicate the layer decides
+    // with, so the declared shape and the emitted op cannot disagree.
+    let kv_spare = rlx_flow::blocks::kv_spare_rows(&[batch]);
+    let past_kv_shape = Shape::new(&[batch, past_seq + kv_spare, kv_dim], f);
     let decode_spec = Qwen3DecodeLayerSpec {
         num_heads: nh,
         num_kv_heads: nkv,
@@ -483,6 +492,7 @@ fn build_stream_decode_embeds_built(
         batch,
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
+        moe: None,
     };
     let kv_out = SideOutputs::new();
     let name = if with_lm_head {
@@ -502,7 +512,7 @@ fn build_stream_decode_embeds_built(
             .input(format!("past_v_{layer_idx}"), past_kv_shape.clone());
     }
     let flow = flow
-        .bind_decode_inputs(cfg.num_hidden_layers, true, true)
+        .bind_decode_inputs_for_kv_spare(cfg.num_hidden_layers, true, past_seq, kv_spare)
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh)
         .repeat_layers(cfg.num_hidden_layers, {
@@ -544,7 +554,7 @@ fn rope_tables(cfg: &Qwen3Config) -> (Vec<f32>, Vec<f32>) {
     (cos, sin)
 }
 
-fn rope_slice(cfg: &Qwen3Config, pos: usize) -> (Vec<f32>, Vec<f32>) {
+pub(crate) fn rope_slice(cfg: &Qwen3Config, pos: usize) -> (Vec<f32>, Vec<f32>) {
     let dh = cfg.head_dim;
     let half = dh / 2;
     let mut cos = vec![0f32; half];

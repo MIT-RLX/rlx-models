@@ -64,23 +64,15 @@ pub struct TokenAlignment {
     pub end_frame: usize,
 }
 
-const NEG_INF: f32 = f32::NEG_INFINITY;
-
 /// Monotonic Viterbi forced alignment of `targets` onto `log_probs`
 /// (`[frames][vocab]`). Each token consumes one or more consecutive frames, the
 /// path advances through the tokens in order (no skips, no reordering), and every
 /// frame is assigned to exactly one token. Returns each token's frame span.
 ///
 /// Requires `frames >= targets.len() >= 1` (one frame minimum per token).
+/// The DP is [`rlx_search::monotonic_align`].
 pub fn forced_align(log_probs: &[Vec<f32>], targets: &[i32]) -> Result<Vec<TokenAlignment>> {
-    let t_frames = log_probs.len();
-    let n = targets.len();
-    ensure!(n >= 1, "need at least one target token");
-    ensure!(
-        t_frames >= n,
-        "need at least as many frames ({t_frames}) as tokens ({n})"
-    );
-    let vocab = log_probs[0].len();
+    let vocab = log_probs.first().map_or(0, Vec::len);
     ensure!(
         log_probs.iter().all(|row| row.len() == vocab),
         "ragged log_probs rows"
@@ -91,63 +83,14 @@ pub fn forced_align(log_probs: &[Vec<f32>], targets: &[i32]) -> Result<Vec<Token
             "target token {tok} out of vocab range {vocab}"
         );
     }
-
-    let emit = |t: usize, l: usize| -> f32 { log_probs[t][targets[l] as usize] };
-
-    // dp[t][l] = best score aligning frames 0..=t with the path ending on token l.
-    // back[t][l] = true if we advanced from l-1 (else stayed on l).
-    let mut dp = vec![vec![NEG_INF; n]; t_frames];
-    let mut back = vec![vec![false; n]; t_frames];
-
-    dp[0][0] = emit(0, 0);
-    for t in 1..t_frames {
-        for l in 0..n {
-            // A token l can only be reached by frame t if t >= l (need l prior frames).
-            if l > t {
-                continue;
-            }
-            let stay = dp[t - 1][l];
-            let advance = if l > 0 { dp[t - 1][l - 1] } else { NEG_INF };
-            let (prev, adv) = if advance > stay {
-                (advance, true)
-            } else {
-                (stay, false)
-            };
-            if prev == NEG_INF {
-                continue;
-            }
-            dp[t][l] = prev + emit(t, l);
-            back[t][l] = adv;
-        }
-    }
-    ensure!(
-        dp[t_frames - 1][n - 1] > NEG_INF,
-        "no valid alignment path (check frame/token counts)"
-    );
-
-    // Backtrack: assign a token index to every frame.
-    let mut frame_token = vec![0usize; t_frames];
-    let mut l = n - 1;
-    for t in (0..t_frames).rev() {
-        frame_token[t] = l;
-        if back[t][l] {
-            l -= 1; // we advanced into l at frame t → previous frame was l-1
-        }
-    }
-    debug_assert_eq!(l, 0);
-
-    // Collapse frame assignments into per-token spans.
-    let mut spans = vec![(usize::MAX, 0usize); n];
-    for (t, &tok_idx) in frame_token.iter().enumerate() {
-        let (s, e) = &mut spans[tok_idx];
-        *s = (*s).min(t);
-        *e = (*e).max(t + 1);
-    }
-    Ok((0..n)
-        .map(|l| TokenAlignment {
-            token: targets[l],
-            start_frame: spans[l].0,
-            end_frame: spans[l].1,
+    let ids: Vec<u32> = targets.iter().map(|&t| t as u32).collect();
+    let spans = rlx_search::monotonic_align(&log_probs.concat(), vocab, &ids)?;
+    Ok(spans
+        .into_iter()
+        .map(|s| TokenAlignment {
+            token: s.token as i32,
+            start_frame: s.start,
+            end_frame: s.end,
         })
         .collect())
 }

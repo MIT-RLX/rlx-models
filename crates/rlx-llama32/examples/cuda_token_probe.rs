@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
     if native_decode {
         unsafe { std::env::set_var("ORPHEUS_CUDA_NATIVE_DECODE", "1") };
     }
-    unsafe { std::env::set_var("RLX_CUDA_ARENA_POOL", "0") };
+    rlx_ir::env::set("RLX_CUDA_ARENA_POOL", "0");
 
     let cpu = if cuda_only {
         Vec::new()

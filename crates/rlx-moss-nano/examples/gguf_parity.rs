@@ -32,7 +32,7 @@ fn peak_norm_cosine(a: &[f32], b: &[f32]) -> f64 {
 
 fn main() -> Result<()> {
     let dir = PathBuf::from(
-        std::env::var("RLX_MOSS_DIR").unwrap_or_else(|_| DEFAULT_LOCAL_DIR.to_string()),
+        rlx_ir::env::var_result("RLX_MOSS_DIR").unwrap_or_else(|_| DEFAULT_LOCAL_DIR.to_string()),
     );
     ensure!(
         dir.join("moss_tts_prefill.onnx").is_file(),
@@ -44,7 +44,7 @@ fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8);
-    let gguf_out = std::env::var("RLX_MOSS_GGUF")
+    let gguf_out = rlx_ir::env::var_result("RLX_MOSS_GGUF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| dir.join(DEFAULT_GGUF_NAME));
 

@@ -195,7 +195,9 @@ impl GemmaQatLoader {
         let (bytes, dt, _shape) = self.ckpt.tensor_raw(name)?;
         anyhow::ensure!(dt == Dtype::F32, "{name}: scale must be F32, got {dt:?}");
         Ok(bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect())
     }
@@ -244,7 +246,9 @@ impl GemmaQatLoader {
         let dim = Self::unpacked_cols(qshape[1], bits);
         let (sbytes, _sdt, sshape) = self.ckpt.tensor_raw(&format!("{base}.embedding_scale"))?;
         let scale: Vec<f32> = sbytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         anyhow::ensure!(
@@ -288,7 +292,9 @@ impl GemmaQatLoader {
         let dim = Self::unpacked_cols(packed_cols, bits);
         let (sbytes, _sdt, sshape) = self.ckpt.tensor_raw(&format!("{base}.embedding_scale"))?;
         let scale: Vec<f32> = sbytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let groups = if sshape == [vocab, 1] {
@@ -519,15 +525,21 @@ impl GemmaQatLoader {
 fn bytes_view_to_f32(bytes: &[u8], dt: Dtype) -> Result<Vec<f32>> {
     Ok(match dt {
         Dtype::F32 => bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
         Dtype::F16 => bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         Dtype::BF16 => bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| half::bf16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         other => bail!("unsupported float dtype {other:?}"),
@@ -660,7 +672,7 @@ mod tests {
 
     /// Resolve the downloaded checkpoint dir (HF cache snapshot) if present.
     fn fixture_dir() -> Option<std::path::PathBuf> {
-        if let Some(d) = std::env::var_os("RLX_GEMMA4_E2B_DIR") {
+        if let Some(d) = rlx_ir::env::var_os("RLX_GEMMA4_E2B_DIR") {
             let p = std::path::PathBuf::from(d);
             return p.join("config.json").is_file().then_some(p);
         }
@@ -771,7 +783,9 @@ mod tests {
             .join("../../fixtures/gemma4_e2b/per_layer_inputs.bin");
         if let Ok(raw) = std::fs::read(&bin) {
             let hf: Vec<f32> = raw
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             assert_eq!(hf.len(), pli.len(), "pli len mismatch");

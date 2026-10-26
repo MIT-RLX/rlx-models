@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
         r.unwrap_or(false)
     };
 
-    if std::env::var_os("RLX_KEV_DIFF").is_some() {
+    if rlx_ir::env::var_os("RLX_KEV_DIFF").is_some() {
         // First node where `dev` disagrees with the CPU under the same policy.
         for (i, nd) in amp.nodes().iter().enumerate() {
             if nd
@@ -129,7 +129,7 @@ fn main() -> anyhow::Result<()> {
         println!("no divergence");
         return Ok(());
     }
-    if let Ok(pair) = std::env::var("RLX_KEV_PAIR") {
+    if let Ok(pair) = rlx_ir::env::var_result("RLX_KEV_PAIR") {
         let idx: Vec<usize> = pair.split(',').map(|t| t.parse().unwrap()).collect();
         let mut gg: Graph = amp.clone();
         gg.set_outputs(idx.iter().map(|&i| amp.nodes()[i].id).collect());
@@ -152,7 +152,7 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    if let Ok(r) = std::env::var("RLX_KEV_RANGE") {
+    if let Ok(r) = rlx_ir::env::var_result("RLX_KEV_RANGE") {
         let (a, b) = r.split_once('-').expect("lo-hi");
         for i in a.parse::<usize>()?..=b.parse::<usize>()? {
             let nd = &amp.nodes()[i];
@@ -177,7 +177,7 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    if let Ok(idx) = std::env::var("RLX_KEV_ROOT") {
+    if let Ok(idx) = rlx_ir::env::var_result("RLX_KEV_ROOT") {
         let i: usize = idx.parse()?;
         let id = amp.nodes()[i].id;
         println!(

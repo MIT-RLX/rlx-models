@@ -42,7 +42,7 @@ fn force(
 }
 
 fn main() -> Result<()> {
-    let dir = std::env::var("RLX_TRANSLATE_REFERENCE")
+    let dir = rlx_ir::env::var_result("RLX_TRANSLATE_REFERENCE")
         .map_err(|_| anyhow::anyhow!("set RLX_TRANSLATE_REFERENCE"))?;
     let assets = Assets::discover();
     let (mut searchable, mut model, mut checked) = (0usize, 0usize, 0usize);

@@ -26,13 +26,23 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
-tokenizers = { workspace = true, optional = true }
+half = { workspace = true }
 hf-hub = { workspace = true, optional = true }
+
+
+# The workspace pin carries no regex backend (see the root Cargo.toml).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokenizers = { workspace = true, optional = true, features = ["onig"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokenizers = { workspace = true, optional = true, features = ["unstable_wasm"] }
 
 [features]
 default = ["embed"]
 embed = ["dep:tokenizers"]
 hf-download = ["dep:hf-hub"]
+# `export::export_rlxp`: an encoder as an `.rlxp` package rlx runs alone.
+export = ["embed", "rlx-core/export"]
 metal = ["rlx-runtime/metal"]
 mlx = ["rlx-runtime/mlx"]
 cuda = ["rlx-runtime/cuda"]
@@ -41,10 +51,16 @@ gpu = ["rlx-runtime/gpu"]
 vulkan = ["rlx-runtime/vulkan"]
 coreml = ["rlx-runtime/coreml", "rlx-runtime/ane"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+macos-gpu = ["metal", "mlx", "gpu"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
+
+[dev-dependencies]
+# The export test opens the package as any rlx program does, with rlx-text's
+# tokenizer.
+rlx-text = { workspace = true }
+tempfile = "3"
 
 [lints]
 workspace = true

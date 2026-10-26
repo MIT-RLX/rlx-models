@@ -42,7 +42,7 @@ impl Drop for TempPath {
 }
 
 fn env_dir(key: &str) -> Option<PathBuf> {
-    std::env::var(key).ok().map(PathBuf::from)
+    rlx_ir::env::read(key).ok().map(PathBuf::from)
 }
 
 #[test]

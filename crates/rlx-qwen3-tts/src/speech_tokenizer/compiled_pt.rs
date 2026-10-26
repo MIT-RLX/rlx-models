@@ -35,10 +35,14 @@ const PT_PREFIX: &str = "decoder.pre_transformer";
 const PT_MAX_SEQ: usize = 512;
 
 pub fn speech_pt_use_compiled(device: Device) -> bool {
-    if std::env::var("RLX_QWEN3_TTS_SPEECH_EAGER").ok().as_deref() == Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_SPEECH_EAGER")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         return false;
     }
-    if std::env::var("RLX_QWEN3_TTS_SPEECH_COMPILED")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_SPEECH_COMPILED")
         .ok()
         .as_deref()
         == Some("1")

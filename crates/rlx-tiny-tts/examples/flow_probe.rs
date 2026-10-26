@@ -10,7 +10,9 @@ use rlx_tiny_tts::model::import_graph;
 
 fn rd(name: &str) -> Vec<f32> {
     let b = std::fs::read(format!("/tmp/ttsdump/{name}.f32")).expect("read dump");
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -34,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     // Perturbation-free tap: import_graph already ran propagate_shapes with only the
     // real graph output, so appending an HIR output here cannot change any resolved
     // shape. Find the node by its ONNX name and expose it as the last output.
-    if let Ok(tap) = std::env::var("RLX_TAP") {
+    if let Ok(tap) = rlx_ir::env::var_result("RLX_TAP") {
         let mut found = None;
         for (i, n) in hir.nodes().iter().enumerate() {
             if n.name.as_deref() == Some(tap.as_str()) {
@@ -104,7 +106,9 @@ fn main() -> anyhow::Result<()> {
     for (i, (bytes, dt)) in out.iter().enumerate() {
         anyhow::ensure!(*dt == DType::F32, "output {i} dtype {dt:?}");
         let v: Vec<f32> = bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let mean = v.iter().map(|x| x.abs()).sum::<f32>() / v.len().max(1) as f32;

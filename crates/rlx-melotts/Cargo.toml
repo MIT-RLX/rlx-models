@@ -11,11 +11,13 @@ categories.workspace = true
 repository.workspace = true
 
 [dependencies]
+rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # MeloTTS/VITS2 inference is provided by the shared rlx-tiny-tts engine
 # (ONNX-imported → native rlx-ir graphs, all backends whisper-validated).
 rlx-tiny-tts = { workspace = true }
+rlx-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 rlx-whisper = { workspace = true }
@@ -34,9 +36,11 @@ gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
 coreml = ["rlx-tiny-tts/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
+# `export::export_rlxp`: MeloTTS as an `.rlxp` package (TinyTTS' exporter).
+export = ["rlx-tiny-tts/export", "dep:rlx-core"]
 
 [lints]
 workspace = true

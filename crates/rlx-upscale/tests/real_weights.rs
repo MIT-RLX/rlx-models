@@ -156,7 +156,7 @@ fn psnr(a: &[u8], b: &[u8]) -> f64 {
 
 #[test]
 fn real_checkpoints_round_trip_through_a_downscale() {
-    let Some(dir) = std::env::var_os("RLX_UPSCALE_MODELS") else {
+    let Some(dir) = rlx_ir::env::var_os("RLX_UPSCALE_MODELS") else {
         eprintln!("RLX_UPSCALE_MODELS not set; skipping real-weight tests");
         return;
     };
@@ -177,7 +177,7 @@ fn real_checkpoints_round_trip_through_a_downscale() {
 
     // Tier 2 on CPU is minutes per model; `RLX_UPSCALE_DEVICE=metal` (or any
     // other backend compiled in) makes the suite practical to run routinely.
-    let device = match std::env::var("RLX_UPSCALE_DEVICE") {
+    let device = match rlx_ir::env::var_result("RLX_UPSCALE_DEVICE") {
         Ok(name) => rlx_upscale::parse_upscale_device(&name)
             .unwrap_or_else(|e| panic!("RLX_UPSCALE_DEVICE={name}: {e:#}")),
         Err(_) => Device::Cpu,

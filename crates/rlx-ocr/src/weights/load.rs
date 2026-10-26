@@ -68,16 +68,22 @@ fn drain_safetensors_bytes(data: &[u8]) -> Result<WeightMap> {
                     bail!("{name}: invalid f32 byte length");
                 }
                 bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect()
             }
             safetensors::Dtype::F16 => bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| ::half::f16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect(),
             safetensors::Dtype::BF16 => bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| ::half::bf16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect(),
             other => bail!("{name}: unsupported dtype {other:?}"),

@@ -26,9 +26,9 @@ fn lines(p: &std::path::Path) -> Vec<String> {
 }
 
 fn main() -> Result<()> {
-    let dir = std::env::var("RLX_TRANSLATE_FLORES")
+    let dir = rlx_ir::env::var_result("RLX_TRANSLATE_FLORES")
         .map_err(|_| anyhow!("set RLX_TRANSLATE_FLORES to the aligned corpus"))?;
-    let per: usize = std::env::var("RLX_TEST_N")
+    let per: usize = rlx_ir::env::var_result("RLX_TEST_N")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5);

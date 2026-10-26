@@ -801,7 +801,7 @@ fn tensor_to_f32(view: &safetensors::tensor::TensorView<'_>) -> Result<Vec<f32>>
                 bail!("F32 tensor data length not multiple of 4");
             }
             let mut out = Vec::with_capacity(raw.len() / 4);
-            for ch in raw.chunks_exact(4) {
+            for ch in raw.as_chunks::<4>().0.iter() {
                 out.push(f32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]]));
             }
             Ok(out)
@@ -812,7 +812,7 @@ fn tensor_to_f32(view: &safetensors::tensor::TensorView<'_>) -> Result<Vec<f32>>
                 bail!("F16 tensor data length not multiple of 2");
             }
             let mut out = Vec::with_capacity(raw.len() / 2);
-            for ch in raw.chunks_exact(2) {
+            for ch in raw.as_chunks::<2>().0.iter() {
                 let bits = u16::from_le_bytes([ch[0], ch[1]]);
                 out.push(f16_to_f32(bits));
             }
@@ -824,7 +824,7 @@ fn tensor_to_f32(view: &safetensors::tensor::TensorView<'_>) -> Result<Vec<f32>>
                 bail!("BF16 tensor data length not multiple of 2");
             }
             let mut out = Vec::with_capacity(raw.len() / 2);
-            for ch in raw.chunks_exact(2) {
+            for ch in raw.as_chunks::<2>().0.iter() {
                 // bf16 = top 16 bits of an f32.
                 let bits = u32::from(u16::from_le_bytes([ch[0], ch[1]])) << 16;
                 out.push(f32::from_bits(bits));

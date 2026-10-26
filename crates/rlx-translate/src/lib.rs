@@ -17,14 +17,14 @@
 //!
 //! macOS 15+ ships a `Translation.framework` whose low-latency path is a
 //! classic NMT stack: a sed-script normalizer, SentencePiece, a multilingual
-//! Espresso encoder-decoder driven by beam search, and a stack of pre/post
+//! NMT encoder-decoder driven by beam search, and a stack of pre/post
 //! processing blocks. All of it is described by a JSON **Quasar** config that
 //! the OS installs separately from the weights.
 //!
 //! ```text
 //!   text ──normalizer (sed script)──▶ tokenizer ──▶ phrasebook lookup
 //!        ──SentencePiece encode────▶ [control tokens] + ids
-//!        ──Espresso NMT, beam 3────▶ target ids
+//!        ──NMT, beam 3────▶ target ids
 //!        ──SentencePiece decode────▶ structured prediction ──▶ case map ──▶ text
 //! ```
 //!
@@ -42,7 +42,7 @@
 //! - [`pipeline`] resolves a pair's stage DAG into an ordered plan, and
 //!   [`execute`] runs it: phrasebook, SentencePiece, translator, quality
 //!   estimator, case map, do-not-translate.
-//! - [`espresso`] parses `pyespresso.mdl.bin`, which is a *manifest* rather
+//! - [`netfile`] parses `pyespresso.mdl.bin`, which is a *manifest* rather
 //!   than a weight container: it names a shared encoder/embedding/readout plus
 //!   per-language decoder, handover and input graphs, in the classic
 //!   `.espresso.{net,shape,weights}` triple. [`net`] reads those and [`exec`]
@@ -102,11 +102,11 @@ pub mod casemap;
 pub mod convert;
 pub mod decode;
 pub mod dnt;
-pub mod espresso;
 pub mod exec;
 pub mod execute;
 pub mod export;
 pub mod net;
+pub mod netfile;
 pub mod normalizer;
 pub mod pdec;
 pub mod phrasebook;
@@ -124,8 +124,8 @@ pub mod tuning;
 pub use assets::{Assets, Availability};
 pub use beam::{Hypothesis, NmtDecoder, SearchOptions};
 pub use casemap::sentence_case;
-pub use espresso::Manifest;
 pub use net::{Graph, Shape, Weights};
+pub use netfile::Manifest;
 pub use normalizer::Normalizer;
 pub use pdec::PDecParams;
 pub use phrasebook::Phrasebook;

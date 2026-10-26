@@ -16,7 +16,7 @@
 
 # Fine-tune Qwen3-TTS-12Hz-0.6B-Base on chunked JFK → CustomVoice speaker "jfk".
 #
-# BACKEND=metal  — PyTorch SFT on Apple MPS (Metal)
+# BACKEND=metal  — PyTorch SFT on MPS (Metal)
 # BACKEND=mlx    — HF prepare (MPS/CPU) + native RLX talker LoRA on MLX
 #
 # Prereqs: just qwen3-tts-jfk-prep && just fetch-qwen3-tts-base
@@ -104,7 +104,7 @@ if [[ "$BACKEND" == "mlx" ]]; then
   N_TRAIN="$(wc -l < "$TRAIN_JSONL" | tr -d ' ')"
   MLX_STEPS="${MLX_STEPS_PER_EPOCH:-$N_TRAIN}"
   export RLX_QWEN3_TTS_TRAIN_GRAD_ACCUM="${GRAD_ACCUM}"
-  cargo run -p rlx-qwen3-tts-train --bin rlx-qwen3-tts-train --features mlx,apple-silicon --release -- \
+  cargo run -p rlx-qwen3-tts-train --bin rlx-qwen3-tts-train --features mlx,macos-gpu --release -- \
     jfk-lora \
     --model-dir "$BASE_DIR" \
     --train-jsonl "$TRAIN_JSONL" \

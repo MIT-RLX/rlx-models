@@ -329,7 +329,7 @@ pub const MHC_SINKHORN_FLOOR: f32 = 1e-8;
 
 impl MotifConfig {
     pub fn from_json_str(s: &str) -> Result<Self> {
-        Ok(serde_json::from_str(s)?)
+        rlx_core::config::from_hf_json(s)
     }
 
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {

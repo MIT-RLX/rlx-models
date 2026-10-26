@@ -45,7 +45,7 @@ fn hidden_last_token(device: Device, dir: &std::path::Path, cfg: &GemmaConfig) -
         // with_kv_outputs: RLX_E2B_KV_OUT=1 forces K/V to be graph outputs,
         // extending their liveness to graph-end — tests whether the wgpu arena
         // is aliasing the long-lived shared K/V buffer (layers 20–34).
-        std::env::var("RLX_E2B_KV_OUT").is_ok(),
+        rlx_ir::env::var_result("RLX_E2B_KV_OUT").is_ok(),
         &mut packed,
         None,
         None,
@@ -55,7 +55,7 @@ fn hidden_last_token(device: Device, dir: &std::path::Path, cfg: &GemmaConfig) -
     // RLX_E2B_PLAIN_COMPILE=1 bypasses compile_e2b_prefill (gemma_prefill
     // profile + fusion.skip + Metal guard) and uses the plain Session::compile
     // — the same path the (passing) single-DequantMatMul wgpu parity test uses.
-    let mut c = if std::env::var("RLX_E2B_PLAIN_COMPILE").is_ok() {
+    let mut c = if rlx_ir::env::var_result("RLX_E2B_PLAIN_COMPILE").is_ok() {
         let mut c = rlx_runtime::Session::new(device).compile(g);
         for (name, data) in &p {
             c.set_param(name, data.as_slice());
@@ -95,7 +95,9 @@ fn hidden_last_token(device: Device, dir: &std::path::Path, cfg: &GemmaConfig) -
     // graph outputs. Cache the CPU tap VECTORS, then for each device compute the
     // cross-backend per-tap L2 (rms hides the direction error) — the tap whose
     // relL2 JUMPS above the prior tap is the amplifying op.
-    if std::env::var("RLX_TAP_L0").is_ok() || std::env::var("RLX_TAP_ALL").is_ok() {
+    if rlx_ir::env::var_result("RLX_TAP_L0").is_ok()
+        || rlx_ir::env::var_result("RLX_TAP_ALL").is_ok()
+    {
         use std::sync::OnceLock;
         static CPU_TAPS: OnceLock<Vec<Vec<f32>>> = OnceLock::new();
         if device == Device::Cpu {

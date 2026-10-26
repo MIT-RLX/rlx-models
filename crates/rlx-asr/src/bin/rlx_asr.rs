@@ -35,7 +35,7 @@ fn parse_args() -> Result<(PathBuf, PathBuf)> {
     if a.len() < 2 || a[1] != "transcribe" {
         usage();
     }
-    let mut dir = std::env::var_os("RLX_ASR_DIR").map(PathBuf::from);
+    let mut dir = rlx_ir::env::var_os("RLX_ASR_DIR").map(PathBuf::from);
     let mut wav = None;
     let mut i = 2;
     while i < a.len() {
@@ -88,7 +88,9 @@ fn read_wav_mono(path: &Path) -> Result<(Vec<f32>, u32)> {
         bail!("only 16-bit PCM wav supported");
     }
     let samples: Vec<i16> = data
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
     let mono: Vec<f32> = if ch == 1 {

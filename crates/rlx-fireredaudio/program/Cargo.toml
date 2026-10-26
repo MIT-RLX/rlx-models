@@ -1,0 +1,19 @@
+# FireRedAudio's host logic as an RLX program (WebAssembly): the signal's
+# padding, the mel's chunks and masks, the chatml prompt with its audio
+# placeholders, and the prompt and reply through the package's step. Built by
+# `rlx-fireredaudio`'s exporter, so it stands outside the workspace.
+[package]
+name = "rlx-fireredaudio-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+anyhow = "1"
+serde_json = "1"
+
+[workspace]

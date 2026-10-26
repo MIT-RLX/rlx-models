@@ -58,8 +58,8 @@ use rlx_core::flow_util::{
 use rlx_core::validate_standard_device;
 use rlx_core::weight_map::WeightMap;
 use rlx_core::{
-    GpuKvBinding, cross_attn_gpu_handles_ready, install_cross_attn_gpu_handles,
-    run_bucketed_kv_decode_gpu, run_bucketed_kv_decode_keyed_batched, sync_gpu_kv_to_host,
+    GpuKvBinding, KvLayout, cross_attn_gpu_handles_ready, install_cross_attn_gpu_handles,
+    run_bucketed_kv_decode_gpu, run_bucketed_kv_decode_keyed_batched, sync_gpu_kv_to_host_as,
 };
 use rlx_ir::DType;
 use rlx_runtime::attn_mask::bucket_decode_mask;
@@ -475,11 +475,12 @@ impl WhisperRunner {
             .extend(tokens.iter().map(|&t| t as f32));
         self.decode_pos_ix.clear();
         self.decode_pos_ix.resize(tokens.len(), past_seq as f32);
-        let mask = bucket_decode_mask(past_seq, upper);
-        if self.decode_mask.len() != mask.len() {
-            self.decode_mask = mask;
-        } else {
-            self.decode_mask.copy_from_slice(&mask);
+        // One mask row per sequence (`mask` is `[batch, upper + 1]`): every
+        // sequence of a batched step is at the same position.
+        let row = bucket_decode_mask(past_seq, upper);
+        self.decode_mask.clear();
+        for _ in 0..tokens.len().max(1) {
+            self.decode_mask.extend_from_slice(&row);
         }
     }
 
@@ -925,6 +926,9 @@ impl WhisperRunner {
             }
         }
 
+        // Whisper's step returns each cache as `concat(past, new)`.
+        self.gpu_kv_binding.layout = KvLayout::AppendLast;
+        self.gpu_kv_binding.batch = batch;
         let upper_u = upper as u64;
         let prev_upper = self.gpu_kv_binding.upper;
         let bucket_changed = prev_upper != 0 && prev_upper != upper_u;
@@ -970,7 +974,7 @@ impl WhisperRunner {
         if (sync_kv_to_host || leaves_bucket || force_host_kv)
             && let Some(compiled) = self.decode_compile_cache.compiled_for_key_mut(key)
         {
-            sync_gpu_kv_to_host(compiled, cache, d_model, n_layers)?;
+            sync_gpu_kv_to_host_as(compiled, cache, d_model, n_layers, &self.gpu_kv_binding)?;
         }
         Ok(logits)
     }
@@ -1418,6 +1422,7 @@ impl WhisperRunner {
         let (prefill_logits, cache) = self.prefill_prompt(&cross, prompt, batch)?;
         let eot = self.eot_id()?;
         let cross_ref = &cross;
+        let mut suppression = self.suppression.clone();
         let suffixes = beam_search_decode_kv_batched(
             &prefill_logits,
             prompt.len(),
@@ -1427,6 +1432,7 @@ impl WhisperRunner {
             self.max_decode_steps,
             self.graph_ctx.cfg.vocab_size,
             eot,
+            &mut suppression,
             |tokens, cache| self.decode_step_batch(cross_ref, tokens, cache, batch, true),
         )?;
         suffixes
@@ -1485,6 +1491,7 @@ impl WhisperRunner {
             return self.decode_tokens(&tokens);
         }
         let (prefill_logits, base_cache) = self.prefill_prompt(cross_ref, &prompt, 1)?;
+        let mut suppression = self.suppression.clone();
         let extra = beam_search_decode_kv(
             &prefill_logits,
             prompt.len(),
@@ -1493,11 +1500,11 @@ impl WhisperRunner {
             beam_size,
             self.max_decode_steps,
             self.graph_ctx.cfg.vocab_size,
+            &mut suppression,
             |token, cache| {
                 let mut branch = cache.clone();
                 let logits = self.decode_step(cross_ref, token, &mut branch, 1)?;
-                let mut row = last_logits_row(&logits, 1, self.graph_ctx.cfg.vocab_size);
-                self.suppression.apply(&mut row);
+                let row = last_logits_row(&logits, 1, self.graph_ctx.cfg.vocab_size);
                 Ok((row, branch))
             },
         )?;
@@ -1948,6 +1955,7 @@ impl WhisperRunner {
             );
         }
         let (prefill_logits, base_cache) = self.prefill_prompt(cross_ref, &prompt, 1)?;
+        let mut suppression = self.suppression.clone();
         let extra = beam_search_decode_kv(
             &prefill_logits,
             prompt.len(),
@@ -1956,11 +1964,11 @@ impl WhisperRunner {
             beam_size,
             self.max_decode_steps,
             self.graph_ctx.cfg.vocab_size,
+            &mut suppression,
             |token, cache| {
                 let mut branch = cache.clone();
                 let logits = self.decode_step(cross_ref, token, &mut branch, 1)?;
-                let mut row = last_logits_row(&logits, 1, self.graph_ctx.cfg.vocab_size);
-                self.suppression.apply(&mut row);
+                let row = last_logits_row(&logits, 1, self.graph_ctx.cfg.vocab_size);
                 Ok((row, branch))
             },
         )?;
@@ -2030,6 +2038,7 @@ impl WhisperRunner {
         let (prefill_logits, cache) = self.prefill_prompt(&cross, prompt, batch)?;
         let eot = self.eot_id()?;
         let cross_ref = &cross;
+        let mut suppression = self.suppression.clone();
         let suffixes = beam_search_decode_kv_batched(
             &prefill_logits,
             prompt.len(),
@@ -2039,6 +2048,7 @@ impl WhisperRunner {
             self.max_decode_steps,
             self.graph_ctx.cfg.vocab_size,
             eot,
+            &mut suppression,
             |tokens, cache| self.decode_step_batch(cross_ref, tokens, cache, batch, true),
         )?;
         Ok(suffixes

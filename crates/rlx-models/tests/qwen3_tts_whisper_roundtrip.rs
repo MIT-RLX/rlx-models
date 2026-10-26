@@ -52,7 +52,7 @@ fn repo_cache() -> PathBuf {
 }
 
 fn qwen3_dir() -> Option<PathBuf> {
-    std::env::var("RLX_QWEN3_TTS_DIR")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("model.safetensors").is_file())
@@ -63,7 +63,7 @@ fn qwen3_dir() -> Option<PathBuf> {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         if p.join("model.safetensors").is_file() {
             return Some(p);
@@ -214,10 +214,7 @@ fn golden_hi_speech_decode_whisper_base() -> Result<()> {
 
     let device = synth_device();
     // GPU conv matmul path still diverges on full decode (see golden_codec_decode_cpu_matches_metal).
-    // SAFETY: test-only — force CPU conv so golden codec → PCM matches HF before Whisper ASR.
-    unsafe {
-        std::env::set_var("RLX_QWEN3_TTS_SPEECH_CONV_CPU", "1");
-    }
+    rlx_ir::env::set("RLX_QWEN3_TTS_SPEECH_CONV_CPU", "1");
     let frames = load_golden_hi_codec();
     eprintln!(
         "[golden-decode] device={device:?} speech_conv={}",

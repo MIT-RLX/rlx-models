@@ -76,7 +76,7 @@ pub fn build_voxtral_prefill_built(
 
     // Debug bisection: RLX_VOXTRAL_NLAYERS caps the decoder layer count so we can
     // split "layers" from the "final_norm + lm_head" tail (0 = head-only).
-    let n_layers = std::env::var("RLX_VOXTRAL_NLAYERS")
+    let n_layers = rlx_ir::env::var_result("RLX_VOXTRAL_NLAYERS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .map(|n| n.min(llama.num_hidden_layers))
@@ -103,11 +103,11 @@ pub fn build_voxtral_prefill_built(
             // logits, so the culprit is a shared LM op on Metal (RoPE / RMSNorm /
             // causal-mask SDPA), which the Whisper encoder doesn't use. CPU + MLX are
             // correct. Kept the toggle for op-level bisection of the rlx-metal kernel.
-            if std::env::var("RLX_VOXTRAL_ATTNONLY").is_ok() {
+            if rlx_ir::env::var_result("RLX_VOXTRAL_ATTNONLY").is_ok() {
                 stages.push(llama_prefill_layer_attn_only(i, spec.clone()));
-            } else if std::env::var("RLX_VOXTRAL_MLPONLY").is_ok() {
+            } else if rlx_ir::env::var_result("RLX_VOXTRAL_MLPONLY").is_ok() {
                 stages.push(llama_prefill_layer_mlp_only(i, spec.clone()));
-            } else if std::env::var("RLX_VOXTRAL_COMPOSED").is_ok() {
+            } else if rlx_ir::env::var_result("RLX_VOXTRAL_COMPOSED").is_ok() {
                 stages.push(llama_prefill_layer_composed(i, spec.clone()));
             } else {
                 stages.push(llama_prefill_layer_fused(i, spec.clone()));

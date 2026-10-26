@@ -15,7 +15,7 @@ fn main() -> Result<()> {
 
     // Build a short mono 44.1k clip (~24 frames) for a fast C decode.
     let (mut pcm, _sr) = audio::load_wav_f32(&src, rlx_tsac::SAMPLE_RATE)?;
-    let frames: usize = std::env::var("RLX_DBG_FRAMES")
+    let frames: usize = rlx_ir::env::var_result("RLX_DBG_FRAMES")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(24);

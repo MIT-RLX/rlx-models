@@ -46,6 +46,9 @@ struct EncoderBuilder<'a> {
     cfg: &'a AsrConfig,
     f: DType,
     uid: usize,
+    /// The cache-aware attention's `chunked_limited` mask as an additive
+    /// bias `[1, 1, T, T]` (0 or a large negative), from `att_context_size`.
+    att_bias: Option<HirNodeId>,
 }
 
 impl<'a> EncoderBuilder<'a> {
@@ -115,6 +118,32 @@ impl<'a> EncoderBuilder<'a> {
     }
 
     /// σ(x) = 1 / (1 + e^{-x}).
+    /// Inference BatchNorm over the channels of `[1, T, d]`: `(x − mean) ·
+    /// w / √(var + 1e-5) + b`, its scale and shift folded from the running
+    /// statistics.
+    fn batch_norm(
+        &mut self,
+        x: HirNodeId,
+        w: &str,
+        b: &str,
+        mean: &str,
+        var: &str,
+        d: usize,
+    ) -> Result<HirNodeId> {
+        let (w, _) = self.weights.take(w, false)?;
+        let (b, _) = self.weights.take(b, false)?;
+        let (mean, _) = self.weights.take(mean, false)?;
+        let (var, _) = self.weights.take(var, false)?;
+        let scale: Vec<f32> = (0..d).map(|i| w[i] / (var[i] + 1e-5).sqrt()).collect();
+        let shift: Vec<f32> = (0..d).map(|i| b[i] - mean[i] * scale[i]).collect();
+        let sk = self.fresh("bn_scale");
+        let scale = self.synth(&sk, scale, &[1, 1, d]);
+        let hk = self.fresh("bn_shift");
+        let shift = self.synth(&hk, shift, &[1, 1, d]);
+        let y = self.g().mul(x, scale);
+        Ok(self.g().add(y, shift))
+    }
+
     fn sigmoid(&mut self, x: HirNodeId) -> HirNodeId {
         let neg = self.g().neg(x);
         let e = self.g().exp(neg);
@@ -197,6 +226,15 @@ impl<'a> EncoderBuilder<'a> {
         let scores = self.g().add(ac, bd);
         let sc = self.scalar(scale);
         let scores = self.g().mul(scores, sc);
+        let scores = match self.att_bias {
+            Some(bias) => {
+                let bias = self
+                    .g()
+                    .expand_(bias, vec![1, nh as i64, t as i64, t as i64]);
+                self.g().add(scores, bias)
+            }
+            None => scores,
+        };
         let attn = self.g().sm(scores, -1); // softmax over keys
 
         let ctx = self.g().mm(attn, v); // [1,nh,T,hd]
@@ -254,9 +292,20 @@ impl<'a> EncoderBuilder<'a> {
 
         // depthwise_conv: Conv1d(d, d, k, groups=d), causal padding.
         let h = self.depthwise(h, &p(keys::CONV_DW_W), &p(keys::CONV_DW_B), d, k, t)?;
-        // conv_norm_type = layer_norm (no BatchNorm running stats in the
-        // checkpoint) — normalize over channels (the last axis of [1,T,d]).
-        let h = self.layer_norm(h, &p(keys::CONV_BN_W), &p(keys::CONV_BN_B))?;
+        // conv_norm_type: layer_norm over channels (the last axis of
+        // [1,T,d]), or batch_norm from its running statistics.
+        let h = if cfg.conv_batch_norm {
+            self.batch_norm(
+                h,
+                &p(keys::CONV_BN_W),
+                &p(keys::CONV_BN_B),
+                &p(keys::CONV_BN_MEAN),
+                &p(keys::CONV_BN_VAR),
+                d,
+            )?
+        } else {
+            self.layer_norm(h, &p(keys::CONV_BN_W), &p(keys::CONV_BN_B))?
+        };
         let h = self.g().silu(h);
         // pointwise_conv2: Conv1d(d, d, 1) == linear.
         let h = self.pointwise(h, &p(keys::CONV_PW2_W), Some(&p(keys::CONV_PW2_B)), d, d)?;
@@ -308,13 +357,25 @@ impl<'a> EncoderBuilder<'a> {
         t: usize,
     ) -> Result<HirNodeId> {
         let f = self.f;
-        let pad_l = k - 1;
+        let (pad_l, pad_r) = if self.cfg.causal_conv {
+            (k - 1, 0)
+        } else {
+            ((k - 1) / 2, (k - 1) / 2)
+        };
         let xt = self.g().transpose_(x, vec![0, 2, 1]); // [1,d,T]
         let nchw = self.g().reshape_(xt, vec![1, d as i64, t as i64, 1]);
-        // Explicit left-pad along the time (H) axis for causality.
-        let zkey = self.fresh("dw_causal_pad");
-        let zeros = self.synth(&zkey, vec![0.0; d * pad_l], &[1, d, pad_l, 1]);
-        let padded = self.g().concat_(vec![zeros, nchw], 2); // [1,d,T+k-1,1]
+        // Explicit padding along the time (H) axis: left only when causal.
+        let mut parts = Vec::new();
+        if pad_l > 0 {
+            let zkey = self.fresh("dw_causal_pad");
+            parts.push(self.synth(&zkey, vec![0.0; d * pad_l], &[1, d, pad_l, 1]));
+        }
+        parts.push(nchw);
+        if pad_r > 0 {
+            let zkey = self.fresh("dw_pad_right");
+            parts.push(self.synth(&zkey, vec![0.0; d * pad_r], &[1, d, pad_r, 1]));
+        }
+        let padded = self.g().concat_(parts, 2); // [1,d,T+k-1,1]
         let (wd, _) = self.weights.take(w, false)?; // [d,1,k]
         let wkey = self.fresh("dw_w");
         let wnode = self.synth(&wkey, wd, &[d, 1, k, 1]);
@@ -367,10 +428,10 @@ impl<'a> EncoderBuilder<'a> {
 
     // ── dw_striding subsampling: mel [1, n_mels, T] -> [1, T/8, d_model] ──
     //
-    // Per stride-2 stage (kernel 3): time is **causal** (left-pad k-1) and
-    // frequency uses NeMo's `ceil_mode` reduction (`f -> f/2 + 1`). For
-    // n_mels=128: 128 -> 65 -> 33 -> 17, so the flattened width fed to
-    // `pre_encode.out` is `conv_channels * 17`.
+    // Per stride-2 stage (kernel 3). With `causal_downsampling` both axes are
+    // padded `(k - 1, stride - 1)` — left 2, right 1 — so time stays causal
+    // and each axis goes `n -> n/2 + 1` (n_mels=128: 128 -> 65 -> 33 -> 17,
+    // so the flattened width fed to `pre_encode.out` is `conv_channels * 17`).
     fn subsample(&mut self, mel: HirNodeId, mel_frames: usize) -> Result<(HirNodeId, usize)> {
         let cfg = self.cfg;
         let c = cfg.subsampling_conv_channels;
@@ -384,11 +445,15 @@ impl<'a> EncoderBuilder<'a> {
         let mut in_c = 1usize;
         let n_stages = (cfg.subsampling_factor as f64).log2().round() as usize;
         for stage in 0..n_stages {
-            // time: causal (left k-1, right 0); freq: symmetric 1 + ceil extra.
-            let pt = 2usize; // k - 1
-            let pf_r = 2 - (freq % 2); // 2 for even, 1 for odd -> ceil reduction
-            let t2 = (t + pt - 3) / 2 + 1;
-            let f2 = (freq + 1 + pf_r - 3) / 2 + 1;
+            // Causal: both axes padded `(k - 1, stride - 1)` = (2, 1), time
+            // causal as NeMo's `CausalConv2D`; else `(k - 1) / 2` = 1 each side.
+            let pad = if cfg.causal_downsampling {
+                [2, 1, 2, 1]
+            } else {
+                [1, 1, 1, 1]
+            };
+            let t2 = (t + pad[0] + pad[1] - 3) / 2 + 1;
+            let f2 = (freq + pad[2] + pad[3] - 3) / 2 + 1;
             let (wkey, bkey) = if stage == 0 {
                 (
                     keys::pre_encode_conv(0, "weight"),
@@ -411,7 +476,7 @@ impl<'a> EncoderBuilder<'a> {
                 [t, freq],
                 3,
                 2,
-                [pt, 0, 1, pf_r],
+                pad,
                 groups,
             )?;
             if stage > 0 {
@@ -517,7 +582,7 @@ impl<'a> EncoderBuilder<'a> {
 }
 
 /// Sinusoidal Transformer-XL relative positional encoding `[2T-1, d]`.
-fn rel_pos_encoding(t: usize, d: usize) -> Vec<f32> {
+pub(crate) fn rel_pos_encoding(t: usize, d: usize) -> Vec<f32> {
     let pos_len = 2 * t - 1;
     let mut pe = vec![0.0f32; pos_len * d];
     for (row, p) in (0..pos_len).enumerate() {
@@ -535,6 +600,39 @@ fn rel_pos_encoding(t: usize, d: usize) -> Vec<f32> {
     pe
 }
 
+/// The `chunked_limited` attention of a cache-aware encoder (`[left,
+/// right]` frames of context) as an additive bias `[t, t]`: frames fall in
+/// chunks of `right + 1`, and a query reads its own chunk and the `left /
+/// (right + 1)` chunks before it (NeMo's `att_context_style:
+/// chunked_limited`). Offline decoding must keep it: the model never saw
+/// further context.
+pub fn chunked_limited_bias(t: usize, [left, right]: [usize; 2]) -> Vec<f32> {
+    let chunk = right + 1;
+    let back = left / chunk;
+    let mut out = vec![0f32; t * t];
+    for q in 0..t {
+        for k in 0..t {
+            let (qc, kc) = (q / chunk, k / chunk);
+            if kc > qc || qc - kc > back {
+                out[q * t + k] = -1e30;
+            }
+        }
+    }
+    out
+}
+
+/// A part of the encoder graph ([`build_encoder_part_hir`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderPart {
+    /// `mel` `[1, n_mels, mel_frames]` → `[1, t, d_model]`.
+    Whole,
+    /// The subsampling alone: `mel` → `[1, t, d_model]`.
+    Subsampling,
+    /// The conformer blocks alone: `x` `[1, t, d_model]` (`frames` is `t`)
+    /// → `[1, t, d_model]`.
+    Layers,
+}
+
 /// Build the FastConformer encoder graph for `mel_frames` mel columns.
 /// Returns the HIR (output `[1, enc_frames, d_model]`) and its params.
 pub fn build_encoder_hir(
@@ -542,11 +640,27 @@ pub fn build_encoder_hir(
     weights: &mut dyn WeightSource,
     mel_frames: usize,
 ) -> Result<(HirModule, HashMap<String, Vec<f32>>, usize)> {
-    ensure!(mel_frames > 0, "mel_frames must be > 0");
+    build_encoder_part_hir(cfg, weights, mel_frames, EncoderPart::Whole)
+}
+
+/// [`build_encoder_hir`]'s `part`, at `frames` (mel frames; encoder frames
+/// for [`EncoderPart::Layers`]). Returns the HIR, its params and the encoder
+/// frames.
+pub fn build_encoder_part_hir(
+    cfg: &AsrConfig,
+    weights: &mut dyn WeightSource,
+    frames: usize,
+    part: EncoderPart,
+) -> Result<(HirModule, HashMap<String, Vec<f32>>, usize)> {
+    ensure!(frames > 0, "frames must be > 0");
     let f = DType::F32;
     let mut hir = HirModule::new("nemotron_asr_encoder").with_fusion_policy(FusionPolicy::Direct);
     let mut params = HashMap::new();
-    let mel = hir.input("mel", Shape::new(&[1, cfg.n_mels, mel_frames], f));
+    let input = if part == EncoderPart::Layers {
+        hir.input("x", Shape::new(&[1, frames, cfg.d_model], f))
+    } else {
+        hir.input("mel", Shape::new(&[1, cfg.n_mels, frames], f))
+    };
 
     let mut b = EncoderBuilder {
         hir: &mut hir,
@@ -555,17 +669,30 @@ pub fn build_encoder_hir(
         cfg,
         f,
         uid: 0,
+        att_bias: None,
     };
 
-    let (mut x, t) = b.subsample(mel, mel_frames)?;
+    let (mut x, t) = if part == EncoderPart::Layers {
+        (input, frames)
+    } else {
+        b.subsample(input, frames)?
+    };
     ensure!(
         t > 0,
-        "subsampling produced 0 frames for {mel_frames} mel frames"
+        "subsampling produced 0 frames for {frames} mel frames"
     );
+    if part == EncoderPart::Subsampling {
+        hir.outputs = vec![x];
+        return Ok((hir, params, t));
+    }
 
     // Relative positional encoding param, shared across layers.
     let pe = rel_pos_encoding(t, cfg.d_model);
     let pos = b.synth("_enc.rel_pos_encoding", pe, &[1, 2 * t - 1, cfg.d_model]);
+    if cfg.chunked_attention {
+        let mask = chunked_limited_bias(t, cfg.att_context_size);
+        b.att_bias = Some(b.synth("_enc.att_context_bias", mask, &[1, 1, t, t]));
+    }
 
     for layer in 0..cfg.n_layers {
         x = b.block(layer, x, pos, t)?;

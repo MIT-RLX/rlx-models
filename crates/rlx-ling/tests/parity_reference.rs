@@ -26,7 +26,7 @@ use rlx_runtime::Device;
 use std::path::PathBuf;
 
 fn dev() -> Device {
-    std::env::var("RLX_TEST_DEVICE")
+    rlx_ir::env::var_result("RLX_TEST_DEVICE")
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| rlx_cli::parse_device(&s).expect("bad RLX_TEST_DEVICE"))
@@ -34,7 +34,7 @@ fn dev() -> Device {
 }
 
 fn fixture_dir() -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var("RLX_LING_PARITY_DIR").ok()?);
+    let dir = PathBuf::from(rlx_ir::env::var_result("RLX_LING_PARITY_DIR").ok()?);
     if dir.join("model.safetensors").is_file() {
         Some(dir)
     } else {
@@ -67,7 +67,9 @@ fn matches_pytorch_reference() {
             .expect("ids json");
     let raw = std::fs::read(dir.join("logits.f32")).expect("reference logits");
     let expect: Vec<f32> = raw
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
 

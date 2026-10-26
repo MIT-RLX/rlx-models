@@ -47,7 +47,10 @@ fn log_backend_plan(device: Device) {
         "compiled"
     };
     let fusion = if matches!(device, Device::Mlx | Device::Gpu | Device::Vulkan)
-        || std::env::var("RLX_QWEN3_TTS_FUSION_SKIP").ok().as_deref() == Some("1")
+        || rlx_ir::env::var_result("RLX_QWEN3_TTS_FUSION_SKIP")
+            .ok()
+            .as_deref()
+            == Some("1")
     {
         "off"
     } else {
@@ -72,7 +75,10 @@ fn log_backend_plan(device: Device) {
         );
     }
     if crate::synth_opts::megakernel_fast_path() {
-        let gpu_kv = match std::env::var("RLX_QWEN3_TTS_GPU_KV").ok().as_deref() {
+        let gpu_kv = match rlx_ir::env::var_result("RLX_QWEN3_TTS_GPU_KV")
+            .ok()
+            .as_deref()
+        {
             Some("0") => "off",
             Some("1") => "on (forced)",
             _ if crate::synth_opts::megakernel_gpu_kv_default(device) => "on (megakernel default)",
@@ -102,10 +108,10 @@ fn parse_tts_device(s: &str) -> Result<Device> {
 }
 
 pub fn run(args: &[String]) -> Result<()> {
-    let mut model_dir = std::env::var("RLX_QWEN3_TTS_DIR")
+    let mut model_dir = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice"));
-    let mut device = std::env::var("RLX_QWEN3_TTS_DEVICE")
+    let mut device = rlx_ir::env::var_result("RLX_QWEN3_TTS_DEVICE")
         .ok()
         .map(|s| parse_tts_device(&s))
         .transpose()?
@@ -114,7 +120,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut bench_talker = false;
     let mut prefill_seq = 128usize;
     let mut decode_steps = 64usize;
-    let mut text = std::env::var("RLX_QWEN3_TTS_TEXT")
+    let mut text = rlx_ir::env::var_result("RLX_QWEN3_TTS_TEXT")
         .unwrap_or_else(|_| String::from("Hello from RLX Qwen3-TTS."));
     let mut speaker = String::from("vivian");
     let mut language = String::from("English");

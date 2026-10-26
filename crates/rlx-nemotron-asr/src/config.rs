@@ -18,6 +18,7 @@
 //! constants are only fallbacks used when a field is absent.
 
 use anyhow::{Result, ensure};
+use rlx_audio_blocks::decoders::tdt::SosState;
 use rlx_nemo::NemoConfig;
 
 /// FastConformer encoder + RNN-T decoder hyperparameters.
@@ -44,6 +45,17 @@ pub struct AsrConfig {
     pub att_context_size: [usize; 2],
     /// Switchable streaming presets `[left, right]` (cache-aware).
     pub att_context_presets: Vec<[usize; 2]>,
+    /// `att_context_style: chunked_limited`: attention reads the query's
+    /// chunk of `right + 1` frames and `left / (right + 1)` chunks before it.
+    pub chunked_attention: bool,
+    /// `causal_downsampling`: the subsampling convs pad `(k - 1, stride - 1)`
+    /// on both axes rather than `(k - 1) / 2` each side.
+    pub causal_downsampling: bool,
+    /// `conv_context_size: causal`: the conv module's depthwise conv pads
+    /// `k − 1` on the left; otherwise `(k − 1) / 2` each side.
+    pub causal_conv: bool,
+    /// `conv_norm_type: batch_norm` (its running statistics), else LayerNorm.
+    pub conv_batch_norm: bool,
 
     // ── RNN-T prediction net + joint ──
     pub pred_hidden: usize,
@@ -55,6 +67,11 @@ pub struct AsrConfig {
     pub blank_id: usize,
     /// Max non-blank symbols emitted per encoder frame in greedy decode.
     pub max_symbols_per_step: usize,
+    /// Whether greedy decode carries the prediction net's post-SOS state into
+    /// the first token's step. This decoder's own rule is
+    /// [`SosState::Discard`] (the default here); [`SosState::Carry`] is NeMo's
+    /// greedy search, as Parakeet decodes.
+    pub sos_state: SosState,
 
     // ── language conditioning (Nemotron 3.5) ──
     /// Width of the one-hot language vector fused into the decoder input.
@@ -106,6 +123,10 @@ impl AsrConfig {
             .unwrap_or(256);
 
         let (att_context_size, att_context_presets) = parse_att_context(cfg);
+        let chunked_attention = cfg.get_str("encoder.att_context_style") == Some("chunked_limited");
+        let causal_downsampling = cfg.get_bool("encoder.causal_downsampling").unwrap_or(false);
+        let causal_conv = cfg.get_str("encoder.conv_context_size") == Some("causal");
+        let conv_batch_norm = cfg.get_str("encoder.conv_norm_type") == Some("batch_norm");
 
         let pred_hidden = cfg
             .get_usize("decoder.prednet.pred_hidden")
@@ -153,12 +174,17 @@ impl AsrConfig {
             subsampling_conv_channels,
             att_context_size,
             att_context_presets,
+            chunked_attention,
+            causal_downsampling,
+            causal_conv,
+            conv_batch_norm,
             pred_hidden,
             pred_rnn_layers,
             joint_hidden,
             vocab_size,
             blank_id,
             max_symbols_per_step: 10,
+            sos_state: SosState::Discard,
             num_languages,
         };
         c.validate()?;

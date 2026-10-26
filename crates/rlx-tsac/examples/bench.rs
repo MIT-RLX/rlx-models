@@ -11,7 +11,7 @@
 //     entirely on the chosen rlx backend (cpu/metal/mlx/wgpu). This is the
 //     GPU-native path — no CPU transformer in the loop.
 //   * `Native` = Bellard's libnc transformer-entropy codec. Its only GPU backend
-//     is CUDA (`libnc_cuda.so`); on Apple GPUs the transformer falls back to CPU,
+//     is CUDA (`libnc_cuda.so`); on Metal GPUs the transformer falls back to CPU,
 //     so it is *not* benchmarked here. Use `examples/perf_bench.rs` for that path.
 //
 // `Correct` needs Descript-DAC-44 kHz weights (`model.safetensors` + a 44 kHz

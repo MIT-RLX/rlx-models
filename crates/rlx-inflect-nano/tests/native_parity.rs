@@ -12,7 +12,7 @@ use safetensors::SafeTensors;
 use serde_json::Value;
 
 fn data_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_INFLECT_NANO_DATA") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_INFLECT_NANO_DATA") {
         let p = PathBuf::from(d);
         return p.join("config.json").exists().then_some(p);
     }
@@ -25,7 +25,9 @@ fn read_f32(st: &SafeTensors, name: &str) -> (Vec<f32>, Vec<usize>) {
     let v = st.tensor(name).expect(name);
     let data = v
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     (data, v.shape().to_vec())
@@ -34,8 +36,10 @@ fn read_f32(st: &SafeTensors, name: &str) -> (Vec<f32>, Vec<usize>) {
 fn read_i64(st: &SafeTensors, name: &str) -> Vec<i64> {
     let v = st.tensor(name).expect(name);
     v.data()
-        .chunks_exact(8)
-        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| i64::from_le_bytes(*c))
         .collect()
 }
 

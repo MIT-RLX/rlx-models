@@ -30,7 +30,7 @@ fn dims(seq: usize) -> KdaDims {
 }
 
 fn run(w: &KdaWeights, d: KdaDims, x: &[f32], mode: &str) -> Vec<f32> {
-    unsafe { std::env::set_var("RLX_KIMI_QUANT", mode) };
+    rlx_ir::env::set("RLX_KIMI_QUANT", mode);
     let mut hir = HirModule::new("kda");
     let mut g = HirMut::new(&mut hir);
     let hin = g.input("h", Shape::new(&[1, d.seq, d.hidden], DType::F32));
@@ -81,7 +81,7 @@ fn kda_weight_quant_precision() {
     rng.fill_normal(&mut x);
 
     let base = run(&w, d, &x, "off");
-    unsafe { std::env::remove_var("RLX_KIMI_QUANT") };
+    rlx_ir::env::remove("RLX_KIMI_QUANT");
     assert!(base.iter().all(|v| v.is_finite()));
 
     // per-mode: compression is theoretical (int8 ~2× vs bf16, int4 ~4×).
@@ -92,7 +92,7 @@ fn kda_weight_quant_precision() {
     );
     for (mode, comp) in [("int8", "2.0"), ("int8t", "2.0"), ("int4", "3.6")] {
         let q = run(&w, d, &x, mode);
-        unsafe { std::env::remove_var("RLX_KIMI_QUANT") };
+        rlx_ir::env::remove("RLX_KIMI_QUANT");
         let (mx, rel, snr) = err(&base, &q);
         assert!(
             q.iter().all(|v| v.is_finite()),

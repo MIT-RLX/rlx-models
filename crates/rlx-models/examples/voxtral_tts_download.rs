@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
-    let dest = std::env::var("RLX_VOXTRAL_TTS_DIR")
+    let dest = rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/voxtral/Voxtral-4B-TTS-2603"));
 

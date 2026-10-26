@@ -89,8 +89,10 @@ pub fn log_mel(cfg: &AsrConfig, pcm: &[f32], frontend: Option<&Frontend>) -> Mel
         }
     }
 
-    // center=True reflect padding by n_fft/2 on both sides.
-    let padded = reflect_pad(&sig, n_fft / 2);
+    // center=True zero padding (`pad_mode="constant"`) by n_fft/2 on both sides.
+    let mut padded = vec![0.0f32; n_fft / 2];
+    padded.extend_from_slice(&sig);
+    padded.resize(padded.len() + n_fft / 2, 0.0);
     let n_frames = if padded.len() >= n_fft {
         1 + (padded.len() - n_fft) / hop
     } else {
@@ -132,8 +134,17 @@ pub fn log_mel(cfg: &AsrConfig, pcm: &[f32], frontend: Option<&Frontend>) -> Mel
         }
     }
 
+    // Frames past `floor(len / hop)` are no part of the audio: left out of
+    // the normalization's statistics and zeroed, as the feature extractor
+    // masks them.
+    let valid = (pcm.len() / hop).clamp(1, n_frames);
     if cfg.normalize == "per_feature" {
-        normalize_per_feature(&mut data, cfg.n_mels, n_frames);
+        normalize_per_feature(&mut data, cfg.n_mels, n_frames, valid);
+    }
+    for mi in 0..cfg.n_mels {
+        for fi in valid..n_frames {
+            data[mi * n_frames + fi] = 0.0;
+        }
     }
 
     MelSpectrogram {
@@ -144,16 +155,21 @@ pub fn log_mel(cfg: &AsrConfig, pcm: &[f32], frontend: Option<&Frontend>) -> Mel
 }
 
 /// Per-mel-bin standardization over the time axis (unbiased std + eps),
-/// matching NeMo `normalize_batch(..., "per_feature")`.
-fn normalize_per_feature(data: &mut [f32], n_mels: usize, n_frames: usize) {
+/// matching NeMo `normalize_batch(..., "per_feature")`: the statistics of
+/// the first `valid` frames (the audio's), applied to every frame.
+fn normalize_per_feature(data: &mut [f32], n_mels: usize, n_frames: usize, valid: usize) {
     if n_frames == 0 {
         return;
     }
     for mi in 0..n_mels {
         let row = &mut data[mi * n_frames..(mi + 1) * n_frames];
-        let mean = row.iter().sum::<f32>() / n_frames as f32;
-        let var = if n_frames > 1 {
-            row.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / (n_frames as f32 - 1.0)
+        let mean = row[..valid].iter().sum::<f32>() / valid as f32;
+        let var = if valid > 1 {
+            row[..valid]
+                .iter()
+                .map(|v| (v - mean) * (v - mean))
+                .sum::<f32>()
+                / (valid as f32 - 1.0)
         } else {
             0.0
         };
@@ -163,25 +179,6 @@ fn normalize_per_feature(data: &mut [f32], n_mels: usize, n_frames: usize) {
             *v = (*v - mean) / denom;
         }
     }
-}
-
-fn reflect_pad(x: &[f32], pad: usize) -> Vec<f32> {
-    if x.is_empty() {
-        return vec![0.0; 2 * pad];
-    }
-    let n = x.len();
-    let mut out = Vec::with_capacity(n + 2 * pad);
-    // Left reflect: x[pad], x[pad-1], …, x[1] (np.pad 'reflect' excludes the edge).
-    for i in (1..=pad).rev() {
-        out.push(x[i.min(n - 1)]);
-    }
-    out.extend_from_slice(x);
-    // Right reflect: x[n-2], x[n-3], …
-    for i in 1..=pad {
-        let idx = n.saturating_sub(1 + i);
-        out.push(x[idx]);
-    }
-    out
 }
 
 /// Periodic Hann window of length `win`, centered (zero-padded) into `n_fft`.

@@ -1,0 +1,21 @@
+# Gepard's host logic as an RLX program (WebAssembly): the prompt (the
+# host's tokenizer, the text repeated), each frame's 32 channels sampled
+# from the heads (the runner's `fastrand` stream), the stop head, the FSQ
+# dequantization and the decoder. Built by `rlx-gepard`'s exporter, so it
+# stands outside the workspace.
+[package]
+name = "rlx-gepard-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+# The runner's sampler stream.
+fastrand = { version = "=2.5.0", default-features = false }
+
+[workspace]

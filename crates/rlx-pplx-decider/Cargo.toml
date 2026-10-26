@@ -1,0 +1,67 @@
+[package]
+name = "rlx-pplx-decider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Perplexity pplx-decider classifiers (Qwen3.5, non-causal full attention, protocol v3) for RLX — typed questions over a state, answered in one forward pass"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+image = { workspace = true }
+# libjpeg-turbo, built from the crate's bundled source with cmake (set
+# TURBOJPEG_SOURCE=pkg-config to link a system copy instead).
+turbojpeg = { version = "1.5", default-features = false, features = ["cmake", "pkg-config"], optional = true }
+tokenizers = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-qwen35 = { workspace = true }
+rlx-runtime = { workspace = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+sha2 = "0.10"
+rlx-runtime = { workspace = true, features = ["program"] }
+serde_json = { workspace = true }
+tempfile = "3"
+rlx-text = { workspace = true }
+
+[features]
+default = []
+# `export::export_rlxp`: the decider as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-qwen35/export", "dep:serde_json"]
+# Decode JPEG with libjpeg-turbo — what PIL, and so the reference processor,
+# uses — instead of the pure-Rust decoder, which differs on ~1.4% of a
+# photo's bytes (by up to 3 levels) and moves logits by up to ~0.03.
+# Needs cmake and a C compiler at build time.
+libjpeg-turbo = ["dep:turbojpeg"]
+metal = ["rlx-runtime/metal", "rlx-qwen35/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-qwen35/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-qwen35/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-qwen35/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-qwen35/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-qwen35/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+macos-gpu = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+portable-gpu = ["gpu"]
+
+[[test]]
+name = "export_rlxp"
+path = "tests/export_rlxp.rs"
+required-features = ["export"]
+
+[[bin]]
+name = "rlx-pplx-decider"
+path = "src/bin/rlx_pplx_decider.rs"
+
+[lints]
+workspace = true

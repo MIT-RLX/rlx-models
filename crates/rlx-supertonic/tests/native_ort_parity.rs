@@ -28,7 +28,7 @@ use rlx_supertonic::{InferOpts, Supertonic, Voice};
 const TEXT: &str = "Hello from Supertonic, running natively on RLX.";
 
 fn supertonic_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_SUPERTONIC_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_SUPERTONIC_DIR") {
         let p = PathBuf::from(d);
         if p.join("onnx/tts.json").is_file() {
             return Some(p);

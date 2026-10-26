@@ -38,7 +38,7 @@ gpu = ["rlx-llama32/gpu"]
 vulkan = ["rlx-llama32/vulkan"]
 coreml = ["rlx-llama32/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 
 [[bin]]
 name = "rlx-tinyllama"

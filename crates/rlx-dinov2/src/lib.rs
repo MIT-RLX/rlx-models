@@ -29,6 +29,8 @@
 pub mod builder;
 pub mod cli;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod packed_gguf;
 pub mod preprocess;

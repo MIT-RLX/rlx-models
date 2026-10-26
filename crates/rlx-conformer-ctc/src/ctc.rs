@@ -88,24 +88,7 @@ impl CtcHead {
 
 /// Greedy CTC: argmax per frame → collapse repeats → drop blank.
 pub fn greedy_decode(logits: &[f32], t: usize, num_classes: usize, blank_id: usize) -> Vec<u32> {
-    let mut ids = Vec::new();
-    let mut prev = blank_id;
-    for ti in 0..t {
-        let row = &logits[ti * num_classes..(ti + 1) * num_classes];
-        let mut best = 0usize;
-        let mut best_v = f32::NEG_INFINITY;
-        for (c, &v) in row.iter().enumerate() {
-            if v > best_v {
-                best_v = v;
-                best = c;
-            }
-        }
-        if best != blank_id && best != prev {
-            ids.push(best as u32);
-        }
-        prev = best;
-    }
-    ids
+    rlx_search::ctc::greedy(&logits[..t * num_classes], num_classes, blank_id as u32).ids()
 }
 
 #[cfg(test)]

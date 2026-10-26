@@ -18,13 +18,15 @@
 use crate::cache::{
     Qwen35DecodeCache, Qwen35LayerState, advance_cache_from_decode_outputs,
     advance_cache_from_decode_outputs_n, advance_cache_resident_inplace, build_verify_bias_mask,
-    decode_step_feeds, full_attn_kv_f32, last_token_indices, maybe_pack_full_attn_kv,
-    pack_input_ids, pad_kv_to_bucket, seed_cache_from_outputs, trunk_layer_kinds,
-    zero_prompt_padding_kv, zero_recurrent_inputs,
+    decode_step_feeds, decode_step_feeds_resident, full_attn_kv_f32, last_token_indices,
+    logit_output_count, maybe_pack_full_attn_kv, pack_input_ids, pad_kv_to_bucket, pad_kv_to_rows,
+    recurrent_output_count, seed_cache_from_outputs, trunk_layer_kinds, zero_prompt_padding_kv,
+    zero_recurrent_inputs,
 };
 use crate::capabilities::validate_device;
 use crate::config::Qwen35Config;
 use crate::encode_prompt_auto;
+use crate::hf;
 use crate::lm_head::{
     greedy_lm_head_argmax, lm_head_logits_row, sample_lm_cap, sample_lm_head_from_hidden,
 };
@@ -39,8 +41,8 @@ use crate::weights::Qwen35Weights;
 use crate::{
     PackedParams, build_qwen35_decode_hir_dynamic_ext, build_qwen35_decode_hir_ext,
     build_qwen35_hir_sized_ext, build_qwen35_prefill_cache_hir_dynamic_ext,
-    build_qwen35_prefill_cache_hir_ext, build_qwen35_prefill_hidden_cache_hir_dynamic_ext,
-    build_qwen35_prefill_hidden_cache_hir_ext, build_qwen35_verify_hir,
+    build_qwen35_prefill_hidden_cache_hir_dynamic_ext, build_qwen35_prefill_hidden_cache_hir_ext,
+    build_qwen35_verify_hir,
 };
 use rlx_core::WeightLoader;
 use rlx_runtime::MoeExpertStore;
@@ -102,21 +104,21 @@ use anyhow::{Context, Result, anyhow, bail};
 use rlx_core::flow_bridge::{
     compile_options_for_packed_gguf_prefill_with_profile, compile_options_from_profile,
 };
-use rlx_core::gguf_support::{GgufModelFamily, assert_gguf_family, resolve_weights_file};
+use rlx_core::gguf_support::{GgufModelFamily, resolve_weights_file};
 use rlx_core::weight_loader::GgufLoader;
 use rlx_core::{packed_prefill_active_extent_enabled, run_packed_prefill};
 use rlx_flow::ModelExecutionConfig;
 use rlx_flow::{CompileProfile, ExecutionPreset};
 use rlx_ir::CompilationMode;
 use rlx_ir::logical_kernel::KernelDispatchConfig;
-use rlx_qwen3::sampling::{SampleOpts, sample_token};
+use rlx_qwen3::sampling::{SampleOpts, sample_token_at};
 use rlx_runtime::compile_cache::BucketedCompileCache;
 use rlx_runtime::{AotCache, CompileOptions, Device, Session, trim_accelerator_arena_pool};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 /// Source for the Qwen3.5 / 3.6 config. Mirrors `Qwen3ConfigSource`
 /// so callers using `Qwen35RunnerBuilder` have the same shape as
@@ -135,6 +137,9 @@ pub type Qwen35ConfigSource = rlx_runtime::ConfigSource<Qwen35Config>;
 
 #[derive(Default, Debug)]
 pub struct Qwen35RunnerBuilder {
+    /// A GGUF already in memory ([`Self::gguf_loader`]); takes the place of
+    /// `weights` where there is no file system (the browser).
+    gguf_loader: Option<InMemoryGguf>,
     weights: Option<PathBuf>,
     config: Option<Qwen35ConfigSource>,
     device: Option<Device>,
@@ -150,6 +155,7 @@ pub struct Qwen35RunnerBuilder {
     /// explicit user overrides.
     packed_weights: Option<bool>,
     runtime_mrope: bool,
+    mrope_interleaved: Option<bool>,
     mrope_section_positions: Option<Vec<[usize; 4]>>,
     batch: Option<usize>,
     bucketed_decode: Option<bool>,
@@ -193,11 +199,24 @@ pub struct Qwen35RunnerBuilder {
     force_host_embed: bool,
     /// Skip eager decode/predict warm (Gepard / low-mem).
     skip_warm: bool,
+    /// Run only stage `.0` of `.1` of a layer pipeline ([`Self::pipeline_stage`]).
+    pipeline_stage: Option<(usize, usize)>,
+    /// Rows per step-at-a-time decode run ([`Self::decode_rows`]); 0 = 1.
+    decode_rows: usize,
 }
 
 impl Qwen35RunnerBuilder {
     pub fn weights(mut self, path: impl Into<PathBuf>) -> Self {
         self.weights = Some(path.into());
+        self
+    }
+
+    /// Build from a GGUF already parsed into memory instead of a path —
+    /// `GgufLoader::from_gguf_file(GgufFile::from_reader(&mut Cursor::new(bytes))?)`.
+    /// Quantized weights stay packed (`DequantMatMul`); nothing is expanded to
+    /// f32 on the host, which is what lets Qwen3.5-0.8B fit in a wasm32 page.
+    pub fn gguf_loader(mut self, loader: GgufLoader) -> Self {
+        self.gguf_loader = Some(InMemoryGguf(loader));
         self
     }
 
@@ -260,6 +279,16 @@ impl Qwen35RunnerBuilder {
         self.runtime_mrope = on;
         self
     }
+    /// Override whether M-RoPE sections are interleaved (`t h w t h w …`)
+    /// rather than contiguous. A GGUF does not record it — llama.cpp derives
+    /// it from the architecture (`qwen35` → `LLAMA_ROPE_TYPE_IMROPE`), and
+    /// [`Qwen35Config::from_gguf`] leaves it off — so a caller feeding real
+    /// 2-D image positions through a GGUF trunk sets it here. Text-only
+    /// prompts (`t = h = w`) rotate the same either way.
+    pub fn mrope_interleaved(mut self, on: bool) -> Self {
+        self.mrope_interleaved = Some(on);
+        self
+    }
     /// Per-token MRoPE section positions `[t,h,w,extra]` (length = prompt seq).
     pub fn mrope_section_positions(mut self, positions: Vec<[usize; 4]>) -> Self {
         self.mrope_section_positions = Some(positions);
@@ -317,6 +346,8 @@ impl Qwen35RunnerBuilder {
     }
 
     /// Compile hidden-state prefill graphs without mmproj (Gepard / custom embed prefill).
+    /// The token-id prefill graph then compiles on its first prompt rather
+    /// than at build.
     pub fn hidden_prefill(mut self, on: bool) -> Self {
         self.hidden_prefill = on;
         self
@@ -329,8 +360,32 @@ impl Qwen35RunnerBuilder {
     }
 
     /// Skip warming decode buckets / predict graph at build time.
+    /// Load and run only stage `index` of a `count`-stage layer pipeline: a
+    /// contiguous run of whole `full_attention_interval` groups of trunk
+    /// layers ([`pipeline_stage_layers`]), renumbered from `blk.0`, plus the
+    /// token embedding (first stage) and the final norm and LM head (last
+    /// stage). Every other tensor is dropped from the GGUF, so the stage holds
+    /// roughly `1/count` of the weights. Drive it with [`Qwen35Runner::stage_prefill`]
+    /// and [`Qwen35Runner::stage_decode`], passing each stage's
+    /// [`StageOutput::Hidden`] to the next. GGUF only; batch 1; no MTP.
+    pub fn pipeline_stage(mut self, index: usize, count: usize) -> Self {
+        self.pipeline_stage = Some((index, count));
+        self
+    }
+
     pub fn skip_warm(mut self, on: bool) -> Self {
         self.skip_warm = on;
+        self
+    }
+
+    /// Run step-at-a-time decode ([`Qwen35Runner::stage_rows`]) as fixed
+    /// `rows`-row graphs: up to `rows` tokens per run — several prompt
+    /// tokens at once, or a token and the drafts that follow it for a
+    /// speculative check — at somewhat more than the cost of one. Rows past
+    /// a step's real ones are padding the graph leaves out of the state.
+    /// Batch 1; 1 (the default) keeps one-token decode.
+    pub fn decode_rows(mut self, rows: usize) -> Self {
+        self.decode_rows = rows;
         self
     }
 
@@ -412,6 +467,25 @@ impl Qwen35RunnerBuilder {
     }
 
     pub fn build(self) -> Result<Qwen35Runner> {
+        let rows = self.decode_rows.max(1);
+        let mut runner = self.build_inner()?;
+        if rows > 1 {
+            if runner.batch != 1 || runner.decode_compile_cache.is_none() {
+                bail!("qwen35: decode_rows needs batch 1 and bucketed decode");
+            }
+            if rows > 8 {
+                bail!("qwen35: decode_rows is at most 8 (the GEMV kernels' row group)");
+            }
+            // Graphs compiled while building (warm-up) are one-row graphs.
+            if let Some(cache) = runner.decode_compile_cache.as_mut() {
+                cache.clear_compiled();
+            }
+            runner.decode_rows = rows;
+        }
+        Ok(runner)
+    }
+
+    fn build_inner(mut self) -> Result<Qwen35Runner> {
         let device = self.device.unwrap_or(Device::Cpu);
         let max_seq = self.max_seq.unwrap_or(128);
         let prefill_seq = self.prefill_seq.unwrap_or(max_seq).clamp(1, max_seq);
@@ -421,6 +495,19 @@ impl Qwen35RunnerBuilder {
         let batch = self.batch.unwrap_or(1);
         if batch == 0 {
             bail!("qwen35: batch must be >= 1");
+        }
+        if let Some((index, count)) = self.pipeline_stage {
+            if index >= count {
+                bail!("qwen35: pipeline stage {index} of {count}");
+            }
+            if batch != 1 || self.enable_mtp || self.mtp_logits_path {
+                bail!("qwen35: a pipeline stage runs batch 1 without MTP");
+            }
+            if self.inline_weights.is_some() {
+                bail!("qwen35: pipeline_stage needs a GGUF (path or gguf_loader)");
+            }
+            // Every stage but the first takes hidden states, not token ids.
+            self.force_host_embed = true;
         }
 
         // PLAN.md M1: safetensors load path for HauhauCS catalog rows
@@ -432,22 +519,53 @@ impl Qwen35RunnerBuilder {
         // wrap it in `HfTranslatingLoader` so GGUF-named lookups
         // succeed against HF tensor names, and run the standard
         // `Qwen35Weights::from_loader` drain.
-        if let Some(src) = self.config.as_ref()
+        //
+        // With no config source, an HF directory (`config.json`, safetensors,
+        // no `.gguf`) such as `Qwen/Qwen3.5-0.8B` takes this path too, reading
+        // its own `config.json`.
+        let detected_hf = match (self.config.as_ref(), self.weights.as_deref()) {
+            (None | Some(Qwen35ConfigSource::Embedded), Some(w)) => hf_config_path(w),
+            _ => None,
+        };
+        let config_src = detected_hf
+            .clone()
+            .map(Qwen35ConfigSource::JsonFile)
+            .or_else(|| self.config.clone());
+        if let Some(src) = config_src.as_ref()
             && !matches!(src, Qwen35ConfigSource::Embedded)
         {
+            if self.pipeline_stage.is_some() {
+                bail!("qwen35: pipeline_stage needs a GGUF, not a safetensors checkpoint");
+            }
             let weights_path = self
                 .weights
                 .as_ref()
                 .ok_or_else(|| anyhow!("weights path required (call .weights(...))"))?
                 .clone();
             if self.packed_weights == Some(true) {
-                bail!("qwen35: packed_weights requires GGUF; safetensors path is dequant-only");
+                if detected_hf.is_none() {
+                    bail!("qwen35: packed_weights requires GGUF; safetensors path is dequant-only");
+                }
+                eprintln!("[qwen35] HF safetensors dir: packed weights need GGUF, loading dense");
             }
             let (model_dir, resolved, mut mmap_loader) = load_hf_mmap_loader(&weights_path)?;
             let cfg = match src {
                 Qwen35ConfigSource::Embedded => unreachable!(),
-                Qwen35ConfigSource::JsonFile(p) => Qwen35Config::from_hf_config_json(p)
-                    .with_context(|| format!("qwen35: parse HF config {p:?}"))?,
+                Qwen35ConfigSource::JsonFile(p) => {
+                    let mut cfg = Qwen35Config::from_hf_config_json(p)
+                        .with_context(|| format!("qwen35: parse HF config {p:?}"))?;
+                    // `from_hf_config_json` subtracts the MTP depth, which is
+                    // right for a GGUF-derived layout but drops the last real
+                    // layer of an HF checkpoint, where MTP is a separate
+                    // `mtp.*` module (see `hf::hf_decoder_layer_count`).
+                    let keys = mmap_loader.remaining_keys();
+                    if let Some(found) = hf::hf_decoder_layer_count(keys.iter().map(String::as_str))
+                    {
+                        cfg.num_hidden_layers = found;
+                        cfg.nextn_predict_layers = 0;
+                    }
+                    cfg
+                }
                 Qwen35ConfigSource::Explicit(cfg) => cfg.clone(),
             };
             if self.enable_mtp && cfg.nextn_predict_layers == 0 {
@@ -478,7 +596,7 @@ impl Qwen35RunnerBuilder {
                         .iter()
                         .any(|k| k.starts_with("model.visual."));
                     if has_visual {
-                        let t_vis = std::time::Instant::now();
+                        let t_vis = Instant::now();
                         let vweights =
                             crate::vision::MmProjWeights::from_hf_visual(&vcfg, &mut *mmap_loader)
                                 .with_context(|| {
@@ -497,8 +615,9 @@ impl Qwen35RunnerBuilder {
                 }
             }
 
-            let mut loader = rlx_core::HfTranslatingLoader::new(mmap_loader);
-            let t = std::time::Instant::now();
+            // HF stores `A_log`; the GGUF-shaped builder wants `-exp(A_log)`.
+            let mut loader = hf::hf_weight_loader(mmap_loader);
+            let t = Instant::now();
             let weights = Qwen35Weights::from_loader(&mut loader, &cfg)?;
             eprintln!(
                 "[qwen35] read safetensors weights in {:.2?} \
@@ -539,6 +658,7 @@ impl Qwen35RunnerBuilder {
                 self.hidden_prefill,
                 self.force_host_embed,
                 self.skip_warm,
+                false,
             );
         }
 
@@ -588,24 +708,59 @@ impl Qwen35RunnerBuilder {
                 self.hidden_prefill,
                 self.force_host_embed,
                 self.skip_warm,
+                false,
             );
         }
 
-        let weights_path = resolve_weights_file(
-            &self
-                .weights
-                .ok_or_else(|| anyhow!("weights path required (call .weights(...))"))?,
-        )?;
+        let in_memory = self.gguf_loader.take().map(|g| g.0);
+        // An in-memory GGUF has no path; an empty one reads as "no file next to
+        // the weights" everywhere downstream (profiles, re-reads, mmproj).
+        let weights_path = if in_memory.is_some() {
+            PathBuf::new()
+        } else {
+            resolve_weights_file(
+                self.weights
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("weights path required (call .weights(...))"))?,
+            )?
+        };
         let _t_total = Instant::now();
         let t = Instant::now();
-        let raw = assert_gguf_family(&weights_path, GgufModelFamily::Qwen35)?;
-        let mut loader = GgufLoader::from_file(
-            weights_path
-                .to_str()
-                .ok_or_else(|| anyhow!("non-utf8 weights path"))?,
-        )?;
+        // Build the loader FIRST, then validate and read config off the file it
+        // already parsed. `assert_gguf_family` used to parse its own copy, so
+        // this prologue parsed the same GGUF twice — ~0.5s of the 1.45s
+        // "loaded GGUF metadata" phase on a 0.5 GB checkpoint — to compare one
+        // architecture string. `GgufLoader::file()`'s own docs ask callers not
+        // to "re-parse 800+ tensor headers a second time"; this is that caller.
+        let mut loader = match in_memory {
+            Some(loader) => loader,
+            None => GgufLoader::from_file(
+                weights_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("non-utf8 weights path"))?,
+            )?,
+        };
         loader.include_mtp(true);
-        let cfg = Qwen35Config::from_gguf(&raw)?;
+        rlx_core::assert_gguf_family_of(loader.file(), &weights_path, GgufModelFamily::Qwen35)?;
+        if !Qwen35Config::gguf_attention_causal(loader.file()) {
+            bail!(
+                "qwen35: {} declares non-causal full attention \
+                 (`attention.causal = false`), so it is a classifier, not a text \
+                 generator; run it with its own crate (pplx-decider: `rlx-pplx-decider`)",
+                weights_path.display()
+            );
+        }
+        let mut cfg = Qwen35Config::from_gguf(loader.file())?;
+        if let Some(on) = self.mrope_interleaved {
+            cfg.mrope_interleaved = on;
+        }
+        let residual_out = match self.pipeline_stage {
+            Some((index, count)) => {
+                slice_pipeline_stage(&mut loader, &mut cfg, index, count)?;
+                index + 1 < count
+            }
+            None => false,
+        };
         eprintln!(
             "[qwen35] loaded GGUF metadata in {:.2?} \
              (layers={}, hidden={}, ssm_state={})",
@@ -629,7 +784,7 @@ impl Qwen35RunnerBuilder {
         // the size heuristic (≥ 256 MB → packed) for legacy quant
         // formats. Explicit `.packed_weights(_)` overrides.
         let packed = self.packed_weights.unwrap_or_else(|| {
-            if raw.tensors.values().any(|t| {
+            if loader.file().tensors.values().any(|t| {
                 matches!(
                     t.dtype,
                     rlx_gguf::GgmlType::Q2K
@@ -644,10 +799,22 @@ impl Qwen35RunnerBuilder {
             }) {
                 return true;
             }
-            std::fs::metadata(&weights_path)
-                .ok()
-                .map(|m| m.len() >= 256 * 1024 * 1024)
-                .unwrap_or(false)
+            // An in-memory GGUF has no file to stat; size it from the tensor
+            // table instead, or a BF16 file would load dense F32.
+            let bytes = if weights_path.as_os_str().is_empty() {
+                loader
+                    .file()
+                    .tensors
+                    .values()
+                    .filter_map(|t| rlx_gguf::bytes_for_public(t.dtype, t.n_elements()))
+                    .sum::<usize>() as u64
+            } else {
+                std::fs::metadata(&weights_path)
+                    .ok()
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            };
+            bytes >= 256 * 1024 * 1024
         });
         // Packed GGUF stays on the requested device by default (see
         // `packed_gguf_execution_device`). Opt into CPU with
@@ -677,7 +844,6 @@ impl Qwen35RunnerBuilder {
             if packed { "packed" } else { "F32" },
             t.elapsed(),
         );
-
         finish_build(
             cfg,
             weights,
@@ -731,9 +897,100 @@ impl Qwen35RunnerBuilder {
             self.hidden_prefill,
             self.force_host_embed,
             self.skip_warm,
+            residual_out,
         )
     }
 }
+
+/// Trunk layers stage `index` of a `count`-stage pipeline runs: the trunk
+/// split into whole `full_attention_interval` groups (each group ends in its
+/// one full-attention layer, so every stage sees the same layer pattern from
+/// its own `blk.0`), the groups shared out as evenly as they go. Qwen3.5-0.8B
+/// has 24 layers in groups of 4, so at most 6 stages.
+pub fn pipeline_stage_layers(
+    cfg: &Qwen35Config,
+    index: usize,
+    count: usize,
+) -> Result<std::ops::Range<usize>> {
+    let interval = cfg.full_attention_interval.max(1);
+    let n_main = cfg.num_hidden_layers - cfg.nextn_predict_layers;
+    if !n_main.is_multiple_of(interval) {
+        bail!("qwen35: {n_main} trunk layers do not split into groups of {interval}");
+    }
+    let groups = n_main / interval;
+    if count == 0 || count > groups || index >= count {
+        bail!("qwen35: stage {index} of {count}, but the trunk has {groups} layer groups");
+    }
+    let start = index * groups / count * interval;
+    let end = (index + 1) * groups / count * interval;
+    Ok(start..end)
+}
+
+/// The tensor a pipeline stage keeps under `name`, renamed for the stage
+/// (`blk.N` → `blk.{N - start}`), or `None` if the stage does not hold it.
+fn stage_tensor_name(
+    name: &str,
+    layers: &std::ops::Range<usize>,
+    first: bool,
+    last: bool,
+    tied: bool,
+) -> Option<String> {
+    if let Some(rest) = name.strip_prefix("blk.") {
+        let (n, tail) = rest.split_once('.')?;
+        let n: usize = n.parse().ok()?;
+        return layers
+            .contains(&n)
+            .then(|| format!("blk.{}.{tail}", n - layers.start));
+    }
+    let keep = match name {
+        // A tied LM head reads the embedding table, so the last stage keeps it too.
+        "token_embd.weight" => first || (last && tied),
+        "output.weight" => last,
+        _ => true,
+    };
+    keep.then(|| name.to_string())
+}
+
+/// Which tensors of a Qwen3.5 GGUF stage `index` of `count` reads
+/// ([`Qwen35RunnerBuilder::pipeline_stage`]), from the header alone — so a
+/// stage can fetch just those ([`rlx_gguf::GgufFile::tensor_ranges`]) instead
+/// of the whole file.
+pub fn pipeline_stage_keeps(
+    file: &rlx_gguf::GgufFile,
+    index: usize,
+    count: usize,
+) -> Result<impl Fn(&str) -> bool + use<>> {
+    let layers = pipeline_stage_layers(&Qwen35Config::from_gguf(file)?, index, count)?;
+    let (first, last) = (index == 0, index + 1 == count);
+    let tied = file.get("output.weight").is_none();
+    Ok(move |name: &str| stage_tensor_name(name, &layers, first, last, tied).is_some())
+}
+
+/// Cut a GGUF down to one pipeline stage (see
+/// [`Qwen35RunnerBuilder::pipeline_stage`]) and shrink `cfg` to match.
+fn slice_pipeline_stage(
+    loader: &mut GgufLoader,
+    cfg: &mut Qwen35Config,
+    index: usize,
+    count: usize,
+) -> Result<()> {
+    let layers = pipeline_stage_layers(cfg, index, count)?;
+    let (first, last) = (index == 0, index + 1 == count);
+    let tied = loader.file().get("output.weight").is_none();
+    loader.retain_tensors(|name| stage_tensor_name(name, &layers, first, last, tied))?;
+    eprintln!(
+        "[qwen35] pipeline stage {index}/{count}: layers {}..{} ({} tensors kept)",
+        layers.start,
+        layers.end,
+        loader.file().tensors.len()
+    );
+    cfg.num_hidden_layers = layers.len();
+    cfg.nextn_predict_layers = 0;
+    Ok(())
+}
+
+/// Smallest decode bucket on wgpu (see the ladder in `finish_build`).
+const WGPU_DECODE_MIN_BUCKET: usize = 256;
 
 fn make_qwen35_dyn_cache(
     device: Device,
@@ -769,6 +1026,13 @@ fn release_host_dense_enabled(device: Device, weights: &Qwen35Weights) -> bool {
 }
 
 /// Static prefill-cache compile via tier-0 [`BuiltModel`] + [`Qwen35CompileCache`].
+/// Width to compile the static text-prefill graph at for a prompt of `need`
+/// tokens. Delegates to the SHARED policy so this family buckets like every
+/// other — see `rlx_core::prefill_bucket_for` for why pow2 and why not `cap`.
+fn prefill_bucket_for(need: usize, cap: usize) -> usize {
+    rlx_core::prefill_bucket_for(need, cap)
+}
+
 fn compile_static_prefill_cache(
     cfg: &Qwen35Config,
     weights: Arc<Qwen35Weights>,
@@ -780,6 +1044,7 @@ fn compile_static_prefill_cache(
     enable_mtp_head: bool,
     fast_mtp: bool,
     fast_greedy_lm_head: bool,
+    residual_out: bool,
     aot_cache_dir: Option<&std::path::Path>,
 ) -> Result<(
     rlx_runtime::CompiledGraph,
@@ -792,6 +1057,7 @@ fn compile_static_prefill_cache(
     flow_opts.enable_mtp_head = enable_mtp_head;
     flow_opts.fast_mtp = fast_mtp;
     flow_opts.fast_greedy_lm_head = fast_greedy_lm_head;
+    flow_opts.residual_out = residual_out;
     flow_opts.profile = Some(prefill_profile.clone());
 
     let t_build = Instant::now();
@@ -834,6 +1100,24 @@ fn compile_static_prefill_cache(
         packed.len()
     );
     Ok((compiled, params, packed))
+}
+
+/// `config.json` of an HF Qwen3.5 directory: `weights` is a directory (or a
+/// `.safetensors` file in one) holding `config.json` and no `.gguf`.
+fn hf_config_path(weights: &Path) -> Option<PathBuf> {
+    let dir = if weights.is_dir() {
+        weights
+    } else if weights.extension().and_then(|s| s.to_str()) == Some("safetensors") {
+        weights.parent()?
+    } else {
+        return None;
+    };
+    let cfg = dir.join("config.json");
+    let has_gguf = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("gguf"));
+    (cfg.is_file() && !has_gguf).then_some(cfg)
 }
 
 /// Open a checkpoint directory as either an mlx-community affine-quantized
@@ -913,7 +1197,7 @@ fn load_hf_mmap_loader(weights_path: &Path) -> Result<(PathBuf, PathBuf, Box<dyn
 /// back to the LM device. The encoder additionally falls back to CPU per-backend
 /// if the chosen one can't compile the tower.
 fn resolve_vision_device(lm_device: Device) -> Device {
-    match std::env::var("RLX_QWEN35_VISION_DEVICE")
+    match rlx_ir::env::var_result("RLX_QWEN35_VISION_DEVICE")
         .ok()
         .as_deref()
         .map(str::trim)
@@ -956,17 +1240,25 @@ fn finish_build(
     hidden_prefill: bool,
     force_host_embed: bool,
     skip_warm: bool,
+    residual_out: bool,
 ) -> Result<Qwen35Runner> {
     let weights = Arc::new(weights);
     // wgpu/WebGPU can't bind a large F32 `token_embd` as one storage buffer —
+    // nor WebGL hold it in one texture —
     // force host-gathered embeds via the runner flag (not a process-wide env)
     // so parallel backend tests don't poison each other.
     let caller_force_host_embed = force_host_embed;
-    let force_host_embed = force_host_embed || matches!(device, Device::Gpu | Device::WebGpu);
+    let force_host_embed =
+        force_host_embed || matches!(device, Device::Gpu | Device::WebGpu | Device::OpenGl);
     if caller_force_host_embed {
-        // SAFETY: single-threaded runner build; env read at HIR compile time for
-        // legacy prefill paths that still consult RLX_QWEN35_HOST_EMBED.
-        unsafe { std::env::set_var("RLX_QWEN35_HOST_EMBED", "1") };
+        rlx_ir::env::set("RLX_QWEN35_HOST_EMBED", "1");
+    }
+    // The browser backends cannot hold the table at all (WebGL: one texture of
+    // at most 16384 texels a side; it is 248320 x 1024 for Qwen3.5-0.8B), and
+    // the prefill paths read this setting rather than the device. An
+    // in-process override — wasm32 has no process environment to set.
+    if matches!(device, Device::OpenGl | Device::WebGpu) {
+        rlx_ir::env::set("RLX_QWEN35_HOST_EMBED", "1");
     }
     // Metal decode optimizations, both token-identical (measured on qwen3.5-0.8B
     // packed @2K): in-place KV append (`Op::KvAppend` instead of concat-copying
@@ -974,32 +1266,29 @@ fn finish_build(
     // projections (one `[n_embd, 2*n_v]` matmul vs two tiny GEMVs, +~18%).
     // Default-on; set the vars to `0` to disable.
     if matches!(device, Device::Metal) {
-        // SAFETY: single-threaded runner build; env read at decode HIR compile time.
-        unsafe {
-            // Resident KV (RLX_QWEN35_GPU_KV) RELIES on in-place KV: the past_k/v
-            // handles are bound resident once per bucket (arena = source of truth),
-            // and `Op::KvAppend` accumulates new rows in-place in the arena — no
-            // per-token host feed, no `feed_kv_row`. So keep inplace ON.
-            if std::env::var("RLX_QWEN35_INPLACE_KV").is_err() {
-                std::env::set_var("RLX_QWEN35_INPLACE_KV", "1");
-            }
-            if std::env::var("RLX_QWEN35_FUSE_SSM").is_err() {
-                std::env::set_var("RLX_QWEN35_FUSE_SSM", "1");
-            }
-            // GQA-native: skip the K/V head-widening narrow+concat (the SDPA
-            // kernels index shared kv heads internally). Token-identical; removes
-            // an O(ctx) concat that was ~18% of decode GPU-time @8K (+17% @8K).
-            if std::env::var("RLX_QWEN35_GQA_NATIVE").is_err() {
-                std::env::set_var("RLX_QWEN35_GQA_NATIVE", "1");
-            }
-            // Resident KV: bind past_k/v as resident arena handles once, grow them
-            // in-place with Op::KvAppend + an O(1) intra-buffer row relocate — no
-            // per-token host KV re-upload (`pad_kv_to_bucket`, the O(ctx) IO cost).
-            // batch==1 only (batch>1 falls back to the host feed path). Token-
-            // identical; +42% @4K, +68% @8K (grows with ctx).
-            if std::env::var("RLX_QWEN35_GPU_KV").is_err() {
-                std::env::set_var("RLX_QWEN35_GPU_KV", "1");
-            }
+        // Resident KV (RLX_QWEN35_GPU_KV) RELIES on in-place KV: the past_k/v
+        // handles are bound resident once per bucket (arena = source of truth),
+        // and `Op::KvAppend` accumulates new rows in-place in the arena — no
+        // per-token host feed, no `feed_kv_row`. So keep inplace ON.
+        if rlx_ir::env::var_result("RLX_QWEN35_INPLACE_KV").is_err() {
+            rlx_ir::env::set("RLX_QWEN35_INPLACE_KV", "1");
+        }
+        if rlx_ir::env::var_result("RLX_QWEN35_FUSE_SSM").is_err() {
+            rlx_ir::env::set("RLX_QWEN35_FUSE_SSM", "1");
+        }
+        // GQA-native: skip the K/V head-widening narrow+concat (the SDPA
+        // kernels index shared kv heads internally). Token-identical; removes
+        // an O(ctx) concat that was ~18% of decode GPU-time @8K (+17% @8K).
+        if rlx_ir::env::var_result("RLX_QWEN35_GQA_NATIVE").is_err() {
+            rlx_ir::env::set("RLX_QWEN35_GQA_NATIVE", "1");
+        }
+        // Resident KV: bind past_k/v as resident arena handles once, grow them
+        // in-place with Op::KvAppend + an O(1) intra-buffer row relocate — no
+        // per-token host KV re-upload (`pad_kv_to_bucket`, the O(ctx) IO cost).
+        // batch==1 only (batch>1 falls back to the host feed path). Token-
+        // identical; +42% @4K, +68% @8K (grows with ctx).
+        if rlx_ir::env::var_result("RLX_QWEN35_GPU_KV").is_err() {
+            rlx_ir::env::set("RLX_QWEN35_GPU_KV", "1");
         }
     } else if matches!(device, Device::Cuda) {
         // Declare the parameter-sharing scope: this runner compiles a prefill
@@ -1009,21 +1298,18 @@ fn finish_build(
         // in the same process gets its own region. No-op unless
         // `RLX_CUDA_SHARED_PARAMS=1`.
         rlx_runtime::set_param_sharing_scope(&weights_path.to_string_lossy());
-        // SAFETY: single-threaded runner build; env read at decode HIR compile time.
-        unsafe {
-            // Resident KV on CUDA (rlx-cuda gained `Op::KvAppend`). Same rationale
-            // as the Metal block: bind past_k/v as resident arena handles and grow
-            // them in place rather than re-uploading the padded cache every token
-            // — measured at ~91 MB/token of HtoD on qwen3.5-0.8B @ctx 320.
-            // Resident KV REQUIRES in-place KV append, so both go together.
-            // `FUSE_SSM` / `GQA_NATIVE` are measured on Metal only and stay off
-            // here until they are validated on CUDA.
-            if std::env::var("RLX_QWEN35_INPLACE_KV").is_err() {
-                std::env::set_var("RLX_QWEN35_INPLACE_KV", "1");
-            }
-            if std::env::var("RLX_QWEN35_GPU_KV").is_err() {
-                std::env::set_var("RLX_QWEN35_GPU_KV", "1");
-            }
+        // Resident KV on CUDA (rlx-cuda gained `Op::KvAppend`). Same rationale
+        // as the Metal block: bind past_k/v as resident arena handles and grow
+        // them in place rather than re-uploading the padded cache every token
+        // — measured at ~91 MB/token of HtoD on qwen3.5-0.8B @ctx 320.
+        // Resident KV REQUIRES in-place KV append, so both go together.
+        // `FUSE_SSM` / `GQA_NATIVE` are measured on Metal only and stay off
+        // here until they are validated on CUDA.
+        if rlx_ir::env::var_result("RLX_QWEN35_INPLACE_KV").is_err() {
+            rlx_ir::env::set("RLX_QWEN35_INPLACE_KV", "1");
+        }
+        if rlx_ir::env::var_result("RLX_QWEN35_GPU_KV").is_err() {
+            rlx_ir::env::set("RLX_QWEN35_GPU_KV", "1");
         }
     } else {
         // rlx-rocm / rlx-wgpu / rlx-cpu / rlx-mlx still lack `Op::KvAppend` and
@@ -1041,11 +1327,18 @@ fn finish_build(
         // Also clear Metal-only opts that poison later runners in the same
         // process (backend matrix / parallel tests): GQA-native Attention is
         // Metal SDPA-only — MLX cannot reshape shared-KV heads that way.
-        unsafe {
-            std::env::set_var("RLX_QWEN35_GPU_KV", "0");
-            std::env::set_var("RLX_QWEN35_GQA_NATIVE", "0");
-            std::env::set_var("RLX_QWEN35_INPLACE_KV", "0");
-            std::env::set_var("RLX_QWEN35_FUSE_SSM", "0");
+        rlx_ir::env::set("RLX_QWEN35_GPU_KV", "0");
+        rlx_ir::env::set("RLX_QWEN35_GQA_NATIVE", "0");
+        rlx_ir::env::set("RLX_QWEN35_INPLACE_KV", "0");
+        rlx_ir::env::set("RLX_QWEN35_FUSE_SSM", "0");
+        // rlx-wgpu does implement `Op::KvAppend` now, and its step-at-a-time
+        // decode keeps the KV cache in resident handles grown in place
+        // (`keep_state_resident`) — which needs the in-place graph. The
+        // host-fed driver above stays off.
+        if matches!(device, Device::Gpu | Device::WebGpu)
+            && rlx_core::device_supports_gpu_kv(device)
+        {
+            rlx_ir::env::set("RLX_QWEN35_INPLACE_KV", "1");
         }
     }
     // Auto-enable the low-mem compile/upload path for large models: it skips the
@@ -1053,9 +1346,8 @@ fn finish_build(
     // instead of a multi-GB owned cache copy, and drops the decode-bucket warm —
     // roughly halving peak RSS (Qwen3.6-27B: ~33 GB → ~18–24 GB) so the model
     // survives concurrent memory pressure. Explicit `RLX_LOW_MEM_COMPILE` wins.
-    if cfg.hidden_size >= 4096 && std::env::var("RLX_LOW_MEM_COMPILE").is_err() {
-        // SAFETY: single-threaded runner build; env read at compile time below.
-        unsafe { std::env::set_var("RLX_LOW_MEM_COMPILE", "1") };
+    if cfg.hidden_size >= 4096 && rlx_ir::env::var_result("RLX_LOW_MEM_COMPILE").is_err() {
+        rlx_ir::env::set("RLX_LOW_MEM_COMPILE", "1");
         eprintln!(
             "[qwen35] large model (hidden={}): auto-enabling low-mem compile \
              (lower peak RSS; set RLX_LOW_MEM_COMPILE=0 to disable)",
@@ -1148,6 +1440,21 @@ fn finish_build(
 
     let t = Instant::now();
     let aot = aot_cache_dir.as_ref().map(AotCache::new);
+    // Start the static prefill graph NARROW and let it grow per prompt. It used
+    // to be compiled at `prefill_seq` (= the context setting), so both load and
+    // every first token paid a full-context prefill no matter how short the
+    // prompt. `RLX_QWEN35_PREFILL_BUCKET0` pins the starting width for an A/B.
+    let initial_prefill_bucket = rlx_ir::env::var("RLX_QWEN35_PREFILL_BUCKET0")
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| v.clamp(1, prefill_seq))
+        .unwrap_or_else(|| prefill_bucket_for(rlx_core::MIN_PREFILL_BUCKET, prefill_seq));
+
+    // A hidden-prefill runner takes its prompts as embeddings: the text
+    // prefill graph may never run, and compiled at load it holds a whole copy
+    // of the weights (on CPU, where graphs cannot share them, ~5 GB of the
+    // MiniCPM-V-1B runner's peak). `ensure_static_prefill_cache` compiles it
+    // on the first token-id prompt instead.
+    let defer_static_prefill = hidden_prefill && !dynamic_prefill;
     let (cache_params, cache_packed, mut prefill_cache, prefill_dynamic_cache) = if dynamic_prefill
     {
         // Dense F32 (HF BF16→F32) already lives in `weights`. Eagerly
@@ -1187,22 +1494,30 @@ fn finish_build(
             None,
             Some(make_qwen35_dyn_cache(device, 32, aot_cache_dir.as_deref())),
         )
+    } else if defer_static_prefill {
+        eprintln!("[qwen35] hidden prefill: text prefill graph compiles on first use");
+        (HashMap::new(), HashMap::new(), None, None)
     } else {
+        // Compile at the NARROW bucket, not `prefill_seq`. This graph is what
+        // the first turn runs on, so sizing it to the whole context made both
+        // load and first-token latency scale with a setting rather than with
+        // the prompt. It grows on demand in `ensure_static_prefill_cache`.
         let (compiled, cache_params, cache_packed) = compile_static_prefill_cache(
             &cfg,
             weights.clone(),
             batch,
-            prefill_seq,
+            initial_prefill_bucket,
             device,
             &prefill_profile,
             runtime_mrope,
             mtp_logits_path,
             fast_mtp,
             fast_greedy_lm_head,
+            residual_out,
             aot_cache_dir.as_deref(),
         )?;
         eprintln!(
-            "[qwen35] compiled prefill-cache via BuiltModel in {:.2?} (params={}, packed={}, seq={prefill_seq})",
+            "[qwen35] compiled prefill-cache via BuiltModel in {:.2?} (params={}, packed={}, seq={initial_prefill_bucket} of cap {prefill_seq})",
             t.elapsed(),
             cache_params.len(),
             cache_packed.len(),
@@ -1251,13 +1566,30 @@ fn finish_build(
     }
 
     let decode_compile_cache = if bucketed_decode {
-        // Single bucket at exact `max_seq`. Decode pins to that upper bound
-        // (avoids mid-stream recompiles under low-mem); a power-of-two ladder
-        // would only pad further (e.g. 39→64) with no benefit under pinning.
-        Some(rlx_core::flow_util::single_bucket_decode_cache(
-            device,
-            max_seq.max(1),
-        ))
+        if matches!(device, Device::Gpu | Device::WebGpu) && max_seq > WGPU_DECODE_MIN_BUCKET {
+            // wgpu: a power-of-two ladder from 256. A single bucket at
+            // `max_seq` made every step attend over (and feed, mask and copy)
+            // the whole context: the browser's 2048-token context decoded at
+            // ~20 tok/s where the 256-token one ran ~39, for the same short
+            // answer. Each rung reached compiles once (and holds its own copy
+            // of the packed weights — wgpu does not share them); the
+            // step-at-a-time decode carries its resident state across rungs.
+            Some(
+                rlx_runtime::compile_cache::BucketedCompileCache::power_of_two_ladder(
+                    device,
+                    WGPU_DECODE_MIN_BUCKET as u64,
+                    max_seq as u64,
+                ),
+            )
+        } else {
+            // Single bucket at exact `max_seq`. Decode pins to that upper bound
+            // (avoids mid-stream recompiles under low-mem); a power-of-two ladder
+            // would only pad further (e.g. 39→64) with no benefit under pinning.
+            Some(rlx_core::flow_util::single_bucket_decode_cache(
+                device,
+                max_seq.max(1),
+            ))
+        }
     } else {
         None
     };
@@ -1311,6 +1643,13 @@ fn finish_build(
         );
     }
 
+    // 0 when there is no static graph (dynamic prefill), so the first
+    // `ensure_static_prefill_cache` compiles rather than trusting a stale width.
+    let prefill_cache_seq = if prefill_cache.is_some() {
+        initial_prefill_bucket
+    } else {
+        0
+    };
     let mut runner = Qwen35Runner {
         compiled: None,
         prefill_cache,
@@ -1336,6 +1675,7 @@ fn finish_build(
         batch,
         max_seq,
         prefill_seq,
+        prefill_cache_seq,
         last_logits_only,
         enable_mtp,
         mtp_logits_path,
@@ -1368,6 +1708,13 @@ fn finish_build(
         kv_window: 0,
         kv_slack: 0,
         multimodal_phase_cb: None,
+        residual_out,
+        stage_generated: 0,
+        stage_last_trunk: None,
+        gdn_resident: None,
+        stage_sampler: None,
+        decode_rows: 1,
+        rows_undo: None,
     };
 
     if let Some(ref mut compiled) = runner.prefill_cache {
@@ -1392,10 +1739,17 @@ fn finish_build(
     //   decode bucket (~1s) so the first generate is not cold.
     // - `RLX_QWEN35_WARM_DECODE=1`: force warm; drops prefill first unless the
     //   short-context keep-prefill rule applies.
-    let force_warm = matches!(std::env::var("RLX_QWEN35_WARM_DECODE").as_deref(), Ok("1"));
+    let force_warm = matches!(
+        rlx_ir::env::var_result("RLX_QWEN35_WARM_DECODE").as_deref(),
+        Ok("1")
+    );
     let short_ctx = runner.max_seq <= 128
         && matches!(runner.device, Device::Metal | Device::Mlx | Device::Cuda);
+    // `RLX_QWEN35_SKIP_WARM=1` skips the eager decode/predict warm without the
+    // other side effects of `RLX_LOW_MEM_COMPILE`, so the warm's cost can be
+    // weighed against what it actually saves on the first request.
     let skip_warm = skip_warm
+        || rlx_ir::env::flag("RLX_QWEN35_SKIP_WARM")
         || rlx_core::gguf_support::low_mem_compile()
         || (runner.gguf_loader.is_some()
             && matches!(
@@ -1413,10 +1767,14 @@ fn finish_build(
             runner.warm_predict_graph()?;
         }
     } else if !skip_warm {
+        let t_warm = Instant::now();
         runner.warm_decode_graphs()?;
+        eprintln!("[qwen35] warmed decode graphs in {:.2?}", t_warm.elapsed());
         // Prefill-cache generate never touches the predict graph; warming it
         // is wasted work unless explicitly requested.
-        if runner.prefill_cache.is_none() || rlx_ir::env::flag("RLX_QWEN35_WARM_PREDICT") {
+        if (runner.prefill_cache.is_none() && !defer_static_prefill)
+            || rlx_ir::env::flag("RLX_QWEN35_WARM_PREDICT")
+        {
             runner.warm_predict_graph()?;
         }
     }
@@ -1464,6 +1822,14 @@ impl Qwen35Runner {
             return Ok((None, Some(self.gather_host_embeds(&ids)?)));
         }
         Ok((Some(self.weights.token_embd()), None))
+    }
+
+    /// `[ids.len(), hidden_size]` input embeddings, from the dense or the lazy
+    /// packed table — for callers that splice their own rows in before
+    /// [`Self::generate_from_assembled_with_opts`].
+    pub fn embed_tokens(&self, ids: &[u32]) -> Result<Vec<f32>> {
+        let ids: Vec<f32> = ids.iter().map(|&t| t as f32).collect();
+        self.gather_host_embeds(&ids)
     }
 
     /// Gather `[ids.len(), n_embd]` embeddings for `inputs_embeds`.
@@ -1631,8 +1997,16 @@ pub struct Qwen35Runner {
     device: Device,
     batch: usize,
     max_seq: usize,
-    /// Compiled static prefill sequence length (≤ max_seq).
+    /// CAP on the static prefill width (≤ max_seq). The graph actually
+    /// compiled may be narrower — see `prefill_cache_seq`.
     prefill_seq: usize,
+    /// Width the live `prefill_cache` graph was compiled at, or 0 for none.
+    ///
+    /// Grows monotonically towards `prefill_seq` as prompts get longer, and a
+    /// wider graph serves a shorter prompt, so a session recompiles at most
+    /// log2(prefill_seq / MIN_PREFILL_BUCKET) times — a few hundred ms each
+    /// (compile ~540ms + upload ~150ms), against seconds saved per turn.
+    prefill_cache_seq: usize,
     last_logits_only: bool,
     enable_mtp: bool,
     mtp_logits_path: bool,
@@ -1679,6 +2053,87 @@ pub struct Qwen35Runner {
     /// the image is encoded, "prefill" before the LM prefill). See
     /// [`rlx_cli::LmRunner::set_multimodal_phase_callback`].
     multimodal_phase_cb: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
+    /// A pipeline stage other than the last: graphs end at the residual stream.
+    residual_out: bool,
+    /// Decode steps since the last stage prefill ([`Self::stage_decode`]).
+    stage_generated: usize,
+    /// The last stage's output for the last position of its latest
+    /// `stage_prefill` (logits, or the hidden row under
+    /// `fast_greedy_lm_head`), for [`Qwen35Runner::stage_scores`].
+    stage_last_trunk: Option<Vec<f32>>,
+    /// Upper bound of the decode bucket whose graph holds this sequence's
+    /// state as GPU handles (wgpu step-at-a-time decode); the host copy in the
+    /// decode cache is stale meanwhile. `None` after a prefill.
+    gdn_resident: Option<u64>,
+    /// Sampling for the step-at-a-time drivers ([`Qwen35Runner::set_sampling`]);
+    /// `None` = greedy.
+    stage_sampler: Option<StageSampler>,
+    /// Rows per decode run ([`Qwen35RunnerBuilder::decode_rows`]).
+    decode_rows: usize,
+    /// What [`Qwen35Runner::stage_rows_undo`] needs to cut the last
+    /// [`Qwen35Runner::stage_rows`] back.
+    rows_undo: Option<RowsUndo>,
+}
+
+/// The state before a multi-row step, and the step's input, kept so the step
+/// can be cut back to its first rows (a speculative check that only partly
+/// held).
+struct RowsUndo {
+    cache: Qwen35DecodeCache,
+    /// The decode bucket the step ran on, and whether that graph copied its
+    /// recurrent inputs aside on the device. Otherwise `cache` holds them: the
+    /// step was host-fed, or it seeded the device from `cache` itself.
+    bucket_key: u64,
+    saved_on_device: bool,
+    tokens: Vec<u32>,
+    hidden: Option<Vec<f32>>,
+}
+
+/// Host-side sampling state for step-at-a-time decode: the chain built from a
+/// `rlx_runtime::SampleOpts`, its RNG, and this sequence's generated tokens
+/// (the history repetition / presence penalties look at).
+struct StageSampler {
+    chain: rlx_runtime::samplers::SamplerChain,
+    state: rlx_runtime::samplers::SamplerState,
+    rng: rlx_ir::Philox4x32,
+    history: Vec<u32>,
+    greedy: bool,
+}
+
+impl StageSampler {
+    /// The next token where `guess` was guessed, from one row of logits:
+    /// greedy, the most likely token (after the chain's penalties); sampling,
+    /// `guess` with the probability the chain gives it, else a draw from the
+    /// chain's distribution without it — together exactly the distribution
+    /// of an ordinary draw. Recorded in the history either way.
+    fn judge(&mut self, logits: &mut [f32], guess: u32) -> u32 {
+        use rlx_runtime::samplers::{sample_from_probs, softmax_inplace};
+        for step in &self.chain.steps {
+            step.apply(logits, &self.history, &mut self.state, &mut self.rng);
+        }
+        let t = if self.greedy {
+            rlx_runtime::samplers::argmax_logits(logits)
+        } else {
+            softmax_inplace(logits);
+            let g = guess as usize;
+            let p = logits.get(g).copied().unwrap_or(0.0);
+            if self.rng.next_f32() < p {
+                guess
+            } else {
+                // The rest of the distribution, renormalized.
+                if g < logits.len() {
+                    logits[g] = 0.0;
+                }
+                let sum: f32 = logits.iter().sum();
+                if sum > 0.0 {
+                    logits.iter_mut().for_each(|x| *x /= sum);
+                }
+                sample_from_probs(logits, &mut self.rng)
+            }
+        };
+        self.history.push(t);
+        t
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1746,9 +2201,10 @@ impl Qwen35Runner {
     /// Reload dense F32 projections when they were released after a prior
     /// Metal/MLX upload. Supports safetensors model dirs and packed GGUF files.
     fn ensure_dense_projections_resident(&mut self) -> Result<()> {
-        if self.weights.has_dense_f32_projections() {
-            return Ok(());
-        }
+        // Reload when anything was released, not only when everything was: the
+        // LM head stays resident through a release, so a "still has some dense
+        // weight" test would skip the reload and build the next graph from
+        // emptied layer matrices.
         if !self.weights.has_cleared_f32_projection_shells() {
             return Ok(());
         }
@@ -1792,7 +2248,7 @@ impl Qwen35Runner {
             );
         }
         let (_model_dir, _resolved, mmap_loader) = load_hf_mmap_loader(&self.weights_path)?;
-        let mut loader = rlx_core::HfTranslatingLoader::new(mmap_loader);
+        let mut loader = hf::hf_weight_loader(mmap_loader);
         let mut fresh = Qwen35Weights::from_loader(&mut loader, &self.cfg)?;
         // Keep the live embedding table (host-embed / multimodal splice).
         fresh.set_token_embd(emb);
@@ -1831,25 +2287,46 @@ impl Qwen35Runner {
         );
     }
 
-    fn ensure_static_prefill_cache(&mut self) -> Result<()> {
-        if self.prefill_cache.is_some() || self.dynamic_prefill {
+    /// Ensure a static prefill graph wide enough for `need` tokens.
+    ///
+    /// Reuses the live graph when it is already at least as wide — a wider
+    /// graph computes more padding but is correct, and recompiling to shrink
+    /// would thrash on alternating prompt lengths. Only growth recompiles.
+    fn ensure_static_prefill_cache(&mut self, need: usize) -> Result<()> {
+        if self.dynamic_prefill {
             return Ok(());
         }
+        let bucket = prefill_bucket_for(need, self.prefill_seq);
+        if self.prefill_cache.is_some() && self.prefill_cache_seq >= bucket {
+            return Ok(());
+        }
+        if self.prefill_cache.is_some() {
+            eprintln!(
+                "[qwen35] prefill bucket {} → {bucket} (prompt {need} tokens, cap {})",
+                self.prefill_cache_seq, self.prefill_seq
+            );
+            self.drop_prefill_cache();
+        }
+        // The first compile may have released the host F32 projections
+        // (`release_host_dense_enabled`); a wider bucket needs them again.
+        self.ensure_dense_projections_resident()?;
         let aot_dir = self.aot_cache.as_ref().map(|c| c.root().to_path_buf());
         let (compiled, params, packed) = compile_static_prefill_cache(
             &self.cfg,
             self.weights.clone(),
             self.batch,
-            self.prefill_seq,
+            bucket,
             self.device,
             &self.prefill_profile,
             self.runtime_mrope,
             self.enable_mtp || self.mtp_logits_path,
             self.fast_mtp,
             self.fast_greedy_lm_head,
+            self.residual_out,
             aot_dir.as_deref(),
         )?;
         self.prefill_cache = Some(compiled);
+        self.prefill_cache_seq = bucket;
         if !params.is_empty() {
             self.prefill_cache_params = params;
         }
@@ -2047,7 +2524,17 @@ impl Qwen35Runner {
         };
         // Packed Q1_0 / K-quant: disable fusion for both prefill and decode.
         if self.gguf_loader.is_some() {
-            compile_options_for_packed_gguf_prefill_with_profile(profile, self.device)
+            let mut opts =
+                compile_options_for_packed_gguf_prefill_with_profile(profile, self.device);
+            // wgpu still fuses element-wise chains: the pattern fusions that
+            // made packed graphs skip fusion rewrite matmuls and norms, and
+            // these leave both alone. Without them a Qwen3.5 decode step ran
+            // ~470 separate unary / binary / expand dispatches.
+            if matches!(self.device, Device::Gpu | Device::WebGpu) {
+                opts.fusion_opts.skip_fusion = false;
+                opts.fusion_opts.elementwise_only = true;
+            }
+            opts
         } else {
             compile_options_from_profile(profile, self.device, KernelDispatchConfig::default())
         }
@@ -2088,6 +2575,10 @@ impl Qwen35Runner {
     }
     pub fn lm_vocab_size(&self) -> usize {
         self.weights.lm_vocab_size(&self.cfg)
+    }
+    /// True when decode steps can return MTP head logits.
+    pub fn has_mtp_logits_path(&self) -> bool {
+        self.mtp_logits_path
     }
 
     /// True when an mmproj vision encoder was loaded at build time.
@@ -2165,17 +2656,25 @@ impl Qwen35Runner {
         Ok(toks)
     }
 
-    fn sample_batch_from_hidden(&self, hidden: &[f32], opts: SampleOpts) -> Result<Vec<u32>> {
+    /// `steps[b]`: tokens row `b` has generated so far (see [`row_sampler`]).
+    fn sample_batch_from_hidden(
+        &self,
+        hidden: &[f32],
+        opts: SampleOpts,
+        steps: &[usize],
+    ) -> Result<Vec<u32>> {
         let n_embd = self.cfg.hidden_size;
         let mut toks = Vec::with_capacity(self.batch);
         for b in 0..self.batch {
             let h = &hidden[b * n_embd..(b + 1) * n_embd];
+            let (row_opts, step) = row_sampler(opts, b, steps);
             toks.push(sample_lm_head_from_hidden(
                 &self.weights,
                 &self.cfg,
                 h,
                 self.lm_loader(),
-                opts,
+                row_opts,
+                step,
             )?);
         }
         Ok(toks)
@@ -2415,15 +2914,38 @@ impl Qwen35Runner {
     /// the key climbed every power-of-two rung (multi-second Metal recompiles
     /// mid-stream). Pinning to the max bucket compiles once and pads masks to
     /// `upper` (already supported by `decode_step_feeds`).
+    /// Whether bucketed decode graphs end with the greedy token as an extra
+    /// output (`Qwen35DecodeOpts::greedy_token`): on wgpu, where the step-at-a-
+    /// time decode then reads back one id per step instead of the logits
+    /// (~1 MB for a 248k vocabulary). Needs the in-graph LM head.
+    fn greedy_token_output(&self) -> bool {
+        matches!(self.device, Device::Gpu | Device::WebGpu)
+            && !self.fast_greedy_lm_head
+            && !self.residual_out
+            && !self.mtp_logits_path
+    }
+
     fn decode_bucket_key(&self, past_seq: u64) -> u64 {
-        let max_upper = self
-            .decode_compile_cache
-            .as_ref()
-            .and_then(|c| c.buckets().map(|r| r.end.saturating_sub(1)).max());
-        match max_upper {
+        let Some(cache) = self.decode_compile_cache.as_ref() else {
+            return past_seq;
+        };
+        // A ladder (wgpu): the position picks its rung. Pinning to the largest
+        // rung, as for a single bucket, ran every step at full context.
+        if cache.buckets().count() > 1 {
+            return past_seq;
+        }
+        match cache.buckets().map(|r| r.end.saturating_sub(1)).max() {
             Some(u) if u >= past_seq => u,
             _ => past_seq,
         }
+    }
+
+    /// The decode bucket's upper bound for a cache of `past_seq` tokens.
+    fn decode_bucket_upper(&self, past_seq: u64) -> Option<u64> {
+        let key = self.decode_bucket_key(past_seq);
+        self.decode_compile_cache
+            .as_ref()?
+            .bucket_upper_for_key(key)
     }
 
     /// Compile decode HIR for `key`'s bucket (if needed) and upload packed GGUF params once.
@@ -2462,16 +2984,27 @@ impl Qwen35Runner {
         let fast_mtp = self.fast_mtp;
         let fast_greedy = self.fast_greedy_lm_head;
         let host_embed = self.host_embed;
-        let (hir, params, packed) = build_qwen35_decode_hir_ext(
+        let mut opts = crate::flow::Qwen35DecodeOpts::step(batch, upper as usize);
+        opts.use_custom_mask = true;
+        opts.force_host_embed = host_embed;
+        opts.enable_mtp_head = mtp_logits_path;
+        opts.fast_mtp = fast_mtp;
+        opts.fast_greedy_lm_head = fast_greedy;
+        opts.residual_out = self.residual_out;
+        opts.greedy_token = self.greedy_token_output();
+        if self.decode_rows > 1 {
+            // A fixed-row step: every row scored, an additive per-row mask
+            // (causal among the new rows, padding of the bucket blocked) and
+            // a row mask for the recurrent layers.
+            opts.seq = self.decode_rows;
+            opts.verify_all = true;
+            opts.bias_mask = true;
+            opts.multi_row = true;
+        }
+        let (hir, params, packed) = crate::flow::build_qwen35_decode_model_flow(
             &cfg,
             std::sync::Arc::clone(&self.weights),
-            batch,
-            upper as usize,
-            true,
-            mtp_logits_path,
-            fast_mtp,
-            fast_greedy,
-            host_embed,
+            &opts,
         )
         .context("qwen35 decode HIR")?;
         if release {
@@ -2509,6 +3042,16 @@ impl Qwen35Runner {
             {
                 if cache_mut.try_share_params_from_donor(upper) {
                     packed_nbytes = packed_param_bytes(self.gguf_loader.as_ref(), &packed);
+                } else if let Some(prefill) = self.prefill_cache.as_ref()
+                    && cache_mut
+                        .compiled_for_key_mut(key)
+                        .is_some_and(|c| c.share_params_from(prefill))
+                {
+                    // The first rung takes the prefill graph's copy of the
+                    // packed weights where the backend can share it; later
+                    // rungs then take it from this one.
+                    packed_nbytes = packed_param_bytes(self.gguf_loader.as_ref(), &packed);
+                    cache_mut.set_weight_donor(upper);
                 } else {
                     let compiled = cache_mut
                         .compiled_for_key_mut(key)
@@ -2611,8 +3154,7 @@ impl Qwen35Runner {
             // the resident graph shape is incompatible with host-fed eviction;
             // force non-resident at the env level too. Best-effort — for a
             // guaranteed effect, set it before the runner is built.
-            // SAFETY: single-threaded runner config, before first decode.
-            unsafe { std::env::set_var("RLX_QWEN35_GPU_KV", "0") };
+            rlx_ir::env::set("RLX_QWEN35_GPU_KV", "0");
         }
     }
 
@@ -2669,7 +3211,7 @@ impl Qwen35Runner {
         // is the bisection harness for "all-zero logits" symptoms: the
         // log shows which layer first emits zero/NaN. Requires
         // `last_logits_only=true` (the assertion is in the builder).
-        let debug_layers = std::env::var("RLX_QWEN35_DEBUG_LAYERS")
+        let debug_layers = rlx_ir::env::var_result("RLX_QWEN35_DEBUG_LAYERS")
             .map(|v| v == "1")
             .unwrap_or(false);
         self.ensure_dense_projections_resident()?;
@@ -2829,7 +3371,7 @@ impl Qwen35Runner {
         // the predict graph (see `ensure_predict_compiled`). Dump stats
         // here so the next debugger can locate which layer first emits
         // zero/NaN values without re-running the entire 18-min cycle.
-        if std::env::var("RLX_QWEN35_DEBUG_LAYERS").as_deref() == Ok("1") {
+        if rlx_ir::env::var_result("RLX_QWEN35_DEBUG_LAYERS").as_deref() == Ok("1") {
             // When `export_trunk_layer_hiddens` is on, builder emits:
             //   outs[0] = post-embed last token [batch, n_embd]
             //   outs[1..n_layers] = after trunk layers 0..n_layers-1
@@ -2837,7 +3379,7 @@ impl Qwen35Runner {
             // (layer hiddens are pushed *before* the LM head — see builder).
             let n_layers = self.cfg.num_hidden_layers - self.cfg.nextn_predict_layers;
             let n_embd = self.cfg.hidden_size;
-            let dump_dir = std::env::var("RLX_QWEN35_DUMP_LAYERS")
+            let dump_dir = rlx_ir::env::var_result("RLX_QWEN35_DUMP_LAYERS")
                 .ok()
                 .map(PathBuf::from);
             if let Some(ref dir) = dump_dir {
@@ -2912,7 +3454,8 @@ impl Qwen35Runner {
         }
         let n_layers = self.cfg.num_hidden_layers - self.cfg.nextn_predict_layers;
         // With DEBUG_LAYERS, layer hiddens precede logits in `outs`.
-        let logits_idx = if std::env::var("RLX_QWEN35_DEBUG_LAYERS").as_deref() == Ok("1") {
+        let logits_idx = if rlx_ir::env::var_result("RLX_QWEN35_DEBUG_LAYERS").as_deref() == Ok("1")
+        {
             n_layers + 1
         } else {
             0
@@ -3136,8 +3679,8 @@ impl Qwen35Runner {
         );
 
         let bench = rlx_ir::env::flag("RLX_QWEN35_BENCH");
-        let t_all = std::time::Instant::now();
-        let t_prefill = std::time::Instant::now();
+        let t_all = Instant::now();
+        let t_prefill = Instant::now();
         let (trunk, mut cache, _) = self.prefill_seed_decode_cache(prompts)?;
         // Bound a long prompt's KV immediately so the first decode steps read a
         // capped cache (sink+window). No-op unless enabled.
@@ -3165,7 +3708,7 @@ impl Qwen35Runner {
         let mut active = vec![true; self.batch];
         let mut row_gen_count = vec![0usize; self.batch];
 
-        let t_decode = std::time::Instant::now();
+        let t_decode = Instant::now();
         let mut step_timer = crate::trace::StepTimer::start();
         let mut next_tokens = if self.fast_greedy_lm_head && opts.greedy {
             crate::trace::log_lm_head_path("host_greedy");
@@ -3174,7 +3717,7 @@ impl Qwen35Runner {
             && sample_lm_cap(&opts, self.lm_vocab_size()) < self.lm_vocab_size()
         {
             crate::trace::log_lm_head_path("host_sample");
-            step_timer.time_lm(|| self.sample_batch_from_hidden(&trunk, opts))?
+            step_timer.time_lm(|| self.sample_batch_from_hidden(&trunk, opts, &row_gen_count))?
         } else {
             crate::trace::log_lm_head_path("graph_or_logits");
             let logits =
@@ -3184,7 +3727,13 @@ impl Qwen35Runner {
                 let fp = crate::trace::fingerprint(row, 16);
                 crate::trace::emit_tap("prefill", Some(0), None, "logits", &fp);
             }
-            sample_logits_batch(&logits, self.lm_vocab_size(), self.batch, opts)
+            sample_logits_batch(
+                &logits,
+                self.lm_vocab_size(),
+                self.batch,
+                opts,
+                &row_gen_count,
+            )
         };
         if n_new > 0 {
             for b in 0..self.batch {
@@ -3460,7 +4009,7 @@ impl Qwen35Runner {
         if let Some(p) = &phase {
             p("vision");
         }
-        let t_vis = std::time::Instant::now();
+        let t_vis = Instant::now();
         let vision = {
             let enc = self
                 .vision_encoder
@@ -3524,7 +4073,7 @@ impl Qwen35Runner {
         tokenizer: Option<&std::path::Path>,
         n_new: usize,
         opts: SampleOpts,
-        mut on_token: F,
+        on_token: F,
     ) -> Result<Vec<u32>>
     where
         F: FnMut(u32) -> bool,
@@ -3535,14 +4084,63 @@ impl Qwen35Runner {
                 self.batch
             );
         }
-        self.decode_cache = None;
-        // Fresh sequence — invalidate any GPU-resident K/V binding so the first
-        // decode step re-seeds from this prompt's cache (see the same reset in
-        // `prefill_seed_decode_cache`). `prefill_multimodal_trunk` does not route
-        // through that function, so without this a second multimodal turn would
-        // decode against the previous turn's resident K/V.
-        self.gpu_kv_upper = 0;
+        self.reset_for_multimodal_sequence();
         let (trunk, _) = self.prefill_multimodal_trunk(prompt, rgb, img_w, img_h, tokenizer)?;
+        self.generate_after_multimodal_prefill(trunk, n_new, opts, on_token)
+    }
+
+    /// Autoregressive generation (batch=1) from a prompt whose embeddings and
+    /// M-RoPE positions were assembled by the caller — for VLM families that
+    /// put their own vision tower in front of this trunk (`rlx-minicpm-v`).
+    ///
+    /// Decode continues from the last prefill position (`sections.last()[0] +
+    /// 1`), which equals HF's `max(position_ids) + 1` whenever the prompt ends
+    /// in text, as every chat template does.
+    pub fn generate_from_assembled_with_opts<F>(
+        &mut self,
+        prefill: MultimodalPrefill,
+        n_new: usize,
+        opts: SampleOpts,
+        on_token: F,
+    ) -> Result<Vec<u32>>
+    where
+        F: FnMut(u32) -> bool,
+    {
+        if self.batch != 1 {
+            bail!(
+                "qwen35: generate_from_assembled requires batch=1 (runner batch={})",
+                self.batch
+            );
+        }
+        self.reset_for_multimodal_sequence();
+        self.mrope_section_positions = Some(prefill.mrope_sections.clone());
+        let (trunk, _, _) = self.prefill_seed_from_hidden(prefill)?;
+        self.generate_after_multimodal_prefill(trunk, n_new, opts, on_token)
+    }
+
+    /// Fresh sequence — invalidate any GPU-resident K/V binding so the first
+    /// decode step re-seeds from this prompt's cache (see the same reset in
+    /// `prefill_seed_decode_cache`). The hidden prefill does not route through
+    /// that function, so without this a second multimodal turn would decode
+    /// against the previous turn's resident K/V.
+    fn reset_for_multimodal_sequence(&mut self) {
+        self.decode_cache = None;
+        self.gpu_kv_upper = 0;
+        self.gdn_resident = None;
+    }
+
+    /// Decode loop shared by the multimodal entry points: sample from the
+    /// prefill trunk, then step the cache the hidden prefill seeded.
+    fn generate_after_multimodal_prefill<F>(
+        &mut self,
+        trunk: Vec<f32>,
+        n_new: usize,
+        opts: SampleOpts,
+        mut on_token: F,
+    ) -> Result<Vec<u32>>
+    where
+        F: FnMut(u32) -> bool,
+    {
         let mut cache = self
             .decode_cache
             .take()
@@ -3571,10 +4169,10 @@ impl Qwen35Runner {
         } else if self.fast_greedy_lm_head
             && sample_lm_cap(&opts, self.lm_vocab_size()) < self.lm_vocab_size()
         {
-            self.sample_batch_from_hidden(&trunk, opts)?
+            self.sample_batch_from_hidden(&trunk, opts, &[0])?
         } else {
             let logits = self.trunk_to_logits(trunk, self.fast_greedy_lm_head)?;
-            sample_logits_batch(&logits, self.lm_vocab_size(), 1, opts)
+            sample_logits_batch(&logits, self.lm_vocab_size(), 1, opts, &[0])
         };
         let mut generated = Vec::new();
         if n_new > 0 {
@@ -3633,6 +4231,173 @@ impl Qwen35Runner {
         &mut self,
         prompts: &[Vec<u32>],
     ) -> Result<(Vec<f32>, Qwen35DecodeCache, Option<Vec<f32>>)> {
+        let job = self.prefill_prepare(prompts)?;
+        let seq = job.seq;
+        let feeds = job.feed_refs();
+        let has_moe = self.moe_offload.is_some();
+        let num_experts = self.cfg.num_experts;
+        let moe_masks = self
+            .moe_offload
+            .as_ref()
+            .map(|m| m.per_layer_resident_masks());
+        self.bind_moe_host_weights();
+
+        let outs = if self.dynamic_prefill {
+            let config = self.execution_config(prefill_config(self.batch, seq));
+            let compile_opts = self.dyn_compile_options(&config);
+            let compiled = {
+                let cache = self
+                    .prefill_dynamic_cache
+                    .as_mut()
+                    .expect("dynamic prefill cache");
+                let cfg = self.cfg.clone();
+                let weights = self.weights.clone();
+                let runtime_mrope = self.runtime_mrope;
+                let mtp_logits_path = self.mtp_logits_path;
+                let fast_mtp = self.fast_mtp;
+                let fast_greedy = self.fast_greedy_lm_head;
+                let max_seq = self.max_seq;
+                let need_extract =
+                    self.prefill_cache_params.is_empty() && self.prefill_cache_packed.is_empty();
+                let captured =
+                    std::cell::RefCell::new(None::<(HashMap<String, Vec<f32>>, PackedParams)>);
+                let cache_params = &self.prefill_cache_params;
+                let cache_packed = &self.prefill_cache_packed;
+                let gguf_loader = &mut self.gguf_loader;
+                let packed_bytes_cache = &mut self.packed_bytes_cache;
+                get_or_specialize_hir_with_options(
+                    cache,
+                    &config,
+                    || {
+                        // The cache builds this ONCE and specializes it per
+                        // length, so it must be the dynamic-SEQ HIR. A static
+                        // HIR at the first prompt's length was reused verbatim
+                        // for every later length (its KV export stayed that
+                        // long). The conv-state concat that motivated it is now
+                        // laid out per piece (`build_linear_layer`).
+                        let (hir, params, packed) = build_qwen35_prefill_cache_hir_dynamic_ext(
+                            &cfg,
+                            weights.clone(),
+                            1,
+                            max_seq,
+                            runtime_mrope,
+                            mtp_logits_path,
+                            fast_mtp,
+                            fast_greedy,
+                        )
+                        .expect("dynamic prefill HIR");
+                        if need_extract {
+                            *captured.borrow_mut() = Some((params, packed));
+                        }
+                        hir
+                    },
+                    &compile_opts,
+                    |c| {
+                        // Deferred extract (dense F32): only the specialization
+                        // that built the template captured the params. Every
+                        // later prompt length is a new compiled graph that
+                        // needs them too — re-extract rather than keep a
+                        // second host copy, which the deferral exists to avoid.
+                        let fresh = captured.borrow_mut().take().map(Ok).or_else(|| {
+                            need_extract.then(|| {
+                                build_qwen35_prefill_cache_hir_dynamic_ext(
+                                    &cfg,
+                                    weights.clone(),
+                                    1,
+                                    max_seq,
+                                    runtime_mrope,
+                                    mtp_logits_path,
+                                    fast_mtp,
+                                    fast_greedy,
+                                )
+                                .map(|(_, params, packed)| (params, packed))
+                            })
+                        });
+                        if let Some(extracted) = fresh {
+                            let (params, packed) = extracted?;
+                            for (name, data) in &params {
+                                c.set_param(name, data);
+                            }
+                            upload_packed_opt(c, gguf_loader.as_mut(), &packed, packed_bytes_cache)
+                                .map(|_| ())
+                        } else {
+                            for (name, data) in cache_params {
+                                c.set_param(name, data);
+                            }
+                            upload_packed_opt(
+                                c,
+                                gguf_loader.as_mut(),
+                                cache_packed,
+                                packed_bytes_cache,
+                            )
+                            .map(|_| ())
+                        }
+                    },
+                )?
+            };
+            if has_moe {
+                compiled.enable_moe_topk_capture(num_experts);
+                if let Some(layers) = &moe_masks {
+                    push_moe_residency(compiled, layers);
+                }
+            }
+            let outs = compiled.run(&feeds);
+            if let Some(layers) = compiled.take_moe_topk_capture()
+                && let Some(mo) = self.moe_offload.as_mut()
+            {
+                let store = self.moe_store.as_ref();
+                if refresh_moe_from_capture(mo, store, compiled, &layers, 0, true)
+                    && let Some(store) = self.moe_store.as_ref()
+                {
+                    store.apply_to_compiled(compiled);
+                }
+            }
+            outs
+        } else {
+            let compiled = self.prefill_cache.as_mut().expect("static prefill cache");
+            if has_moe {
+                compiled.enable_moe_topk_capture(num_experts);
+                if let Some(layers) = &moe_masks {
+                    push_moe_residency(compiled, layers);
+                }
+            }
+            // wgpu / Vulkan implement active extent by shrinking EVERY step's
+            // leading dimension by `seq / prefill_cache_seq` — right for
+            // sequence-major tensors only. The exported GDN `ssm_state`
+            // `[B, H, D, D]` and conv window are not, so half of them came back
+            // zero and generation was wrong from the first token (Qwen3.5-0.8B
+            // HF dir). Run the full bucket there; the graph masks the padding.
+            let outs = if packed_prefill_active_extent_enabled(self.device)
+                && !matches!(self.device, Device::Gpu | Device::WebGpu | Device::Vulkan)
+                && seq > 0
+                && seq < self.prefill_cache_seq
+            {
+                run_packed_prefill(compiled, self.device, seq, self.prefill_cache_seq, &feeds)
+            } else {
+                compiled.run(&feeds)
+            };
+            let layers = if has_moe {
+                compiled.take_moe_topk_capture()
+            } else {
+                None
+            };
+            if let (Some(mo), Some(layers)) = (self.moe_offload.as_mut(), layers) {
+                let store = self.moe_store.as_ref();
+                if refresh_moe_from_capture(mo, store, compiled, &layers, 0, true)
+                    && let Some(store) = self.moe_store.as_ref()
+                {
+                    store.apply_to_compiled(compiled);
+                }
+            }
+            outs
+        };
+        self.prefill_finish(&job, outs)
+    }
+
+    /// Everything a prefill run needs, before it runs: the static graph
+    /// compiled for the prompt length and the owned feeds. Split from
+    /// [`Self::prefill_seed_decode_cache`] so the browser can `await` the run.
+    fn prefill_prepare(&mut self, prompts: &[Vec<u32>]) -> Result<PrefillJob> {
         if prompts.len() != self.batch {
             bail!(
                 "qwen35: expected {} prompts (batch={}), got {}",
@@ -3657,8 +4422,8 @@ impl Qwen35Runner {
         // binding so the first decode step of this sequence re-seeds from the fresh
         // host cache below.
         self.gpu_kv_upper = 0;
-
-        self.ensure_static_prefill_cache()?;
+        // Likewise the resident Gated DeltaNet state of the step-at-a-time path.
+        self.gdn_resident = None;
 
         let prompt_lens: Vec<usize> = prompts.iter().map(|p| p.len()).collect();
         let seq = prompt_lens.iter().copied().max().unwrap();
@@ -3668,6 +4433,9 @@ impl Qwen35Runner {
                 self.max_seq
             );
         }
+        // After the length check: the prefill width is chosen FROM `seq`, and a
+        // rejected prompt should not trigger a recompile.
+        self.ensure_static_prefill_cache(seq)?;
         let prefill_pad = if self.dynamic_prefill {
             seq
         } else {
@@ -3677,7 +4445,7 @@ impl Qwen35Runner {
                     self.prefill_seq
                 );
             }
-            self.prefill_seq
+            self.prefill_cache_seq
         };
 
         let input_ids = pack_input_ids(prompts, prefill_pad)?;
@@ -3726,138 +4494,32 @@ impl Qwen35Runner {
             feeds.push((name.as_str(), data.as_slice()));
         }
 
-        let has_moe = self.moe_offload.is_some();
-        let num_experts = self.cfg.num_experts;
-        let moe_masks = self
-            .moe_offload
-            .as_ref()
-            .map(|m| m.per_layer_resident_masks());
-        self.bind_moe_host_weights();
+        let feeds: Vec<(String, Vec<f32>)> = feeds
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_vec()))
+            .collect();
+        Ok(PrefillJob {
+            seq,
+            prompt_lens,
+            feeds,
+        })
+    }
 
-        let outs = if self.dynamic_prefill {
-            let config = self.execution_config(prefill_config(self.batch, seq));
-            let compile_opts = self.dyn_compile_options(&config);
-            let compiled = {
-                let cache = self
-                    .prefill_dynamic_cache
-                    .as_mut()
-                    .expect("dynamic prefill cache");
-                let cfg = self.cfg.clone();
-                let weights = self.weights.clone();
-                let runtime_mrope = self.runtime_mrope;
-                let mtp_logits_path = self.mtp_logits_path;
-                let fast_mtp = self.fast_mtp;
-                let fast_greedy = self.fast_greedy_lm_head;
-                let need_extract =
-                    self.prefill_cache_params.is_empty() && self.prefill_cache_packed.is_empty();
-                let captured =
-                    std::cell::RefCell::new(None::<(HashMap<String, Vec<f32>>, PackedParams)>);
-                let cache_params = &self.prefill_cache_params;
-                let cache_packed = &self.prefill_cache_packed;
-                let gguf_loader = &mut self.gguf_loader;
-                let packed_bytes_cache = &mut self.packed_bytes_cache;
-                get_or_specialize_hir_with_options(
-                    cache,
-                    &config,
-                    || {
-                        // Concrete-seq static HIR: avoids Dynamic(SEQ)+Static(k-1)
-                        // causal-pad concat, which MPSGraph mis-sizes.
-                        let (hir, params, packed) = build_qwen35_prefill_cache_hir_ext(
-                            &cfg,
-                            weights.clone(),
-                            1,
-                            seq,
-                            runtime_mrope,
-                            mtp_logits_path,
-                            fast_mtp,
-                            fast_greedy,
-                        )
-                        .expect("static prefill HIR at concrete seq");
-                        if need_extract {
-                            *captured.borrow_mut() = Some((params, packed));
-                        }
-                        hir
-                    },
-                    &compile_opts,
-                    |c| {
-                        if let Some((params, packed)) = captured.borrow_mut().take() {
-                            for (name, data) in &params {
-                                c.set_param(name, data);
-                            }
-                            upload_packed_opt(c, gguf_loader.as_mut(), &packed, packed_bytes_cache)
-                                .map(|_| ())
-                        } else {
-                            for (name, data) in cache_params {
-                                c.set_param(name, data);
-                            }
-                            upload_packed_opt(
-                                c,
-                                gguf_loader.as_mut(),
-                                cache_packed,
-                                packed_bytes_cache,
-                            )
-                            .map(|_| ())
-                        }
-                    },
-                )?
-            };
-            if has_moe {
-                compiled.enable_moe_topk_capture(num_experts);
-                if let Some(layers) = &moe_masks {
-                    push_moe_residency(compiled, layers);
-                }
-            }
-            let outs = compiled.run(&feeds);
-            if let Some(layers) = compiled.take_moe_topk_capture()
-                && let Some(mo) = self.moe_offload.as_mut()
-            {
-                let store = self.moe_store.as_ref();
-                if refresh_moe_from_capture(mo, store, compiled, &layers, 0, true)
-                    && let Some(store) = self.moe_store.as_ref()
-                {
-                    store.apply_to_compiled(compiled);
-                }
-            }
-            outs
-        } else {
-            let compiled = self.prefill_cache.as_mut().expect("static prefill cache");
-            if has_moe {
-                compiled.enable_moe_topk_capture(num_experts);
-                if let Some(layers) = &moe_masks {
-                    push_moe_residency(compiled, layers);
-                }
-            }
-            let outs = if packed_prefill_active_extent_enabled(self.device)
-                && seq > 0
-                && seq < self.prefill_seq
-            {
-                run_packed_prefill(compiled, self.device, seq, self.prefill_seq, &feeds)
-            } else {
-                compiled.run(&feeds)
-            };
-            let layers = if has_moe {
-                compiled.take_moe_topk_capture()
-            } else {
-                None
-            };
-            if let (Some(mo), Some(layers)) = (self.moe_offload.as_mut(), layers) {
-                let store = self.moe_store.as_ref();
-                if refresh_moe_from_capture(mo, store, compiled, &layers, 0, true)
-                    && let Some(store) = self.moe_store.as_ref()
-                {
-                    store.apply_to_compiled(compiled);
-                }
-            }
-            outs
-        };
+    /// Seed the decode cache from a prefill run's outputs.
+    fn prefill_finish(
+        &mut self,
+        job: &PrefillJob,
+        outs: Vec<Vec<f32>>,
+    ) -> Result<(Vec<f32>, Qwen35DecodeCache, Option<Vec<f32>>)> {
+        let (seq, prompt_lens) = (job.seq, &job.prompt_lens);
         let (trunk, mut cache, mtp_logits) = seed_cache_from_outputs(
             &self.cfg,
             self.batch,
             seq,
-            &prompt_lens,
+            prompt_lens,
             outs,
             self.mtp_logits_path,
-            self.fast_greedy_lm_head,
+            self.fast_greedy_lm_head || self.residual_out,
         )?;
         zero_prompt_padding_kv(&self.cfg, &mut cache, seq);
         crate::trace::emit_cache_tap(&cache);
@@ -3937,7 +4599,9 @@ impl Qwen35Runner {
         )
         .context("hidden prefill HIR at bucket seq")?;
         // Free host before Metal compile; decode reloads from mmap after the
-        // prefill arena is dropped.
+        // prefill arena is dropped. The LM head is kept (see
+        // `clear_dense_f32_projections`): `trunk_to_logits` runs it on the host
+        // as soon as this graph returns.
         if release {
             self.clear_host_dense_projections();
         }
@@ -4115,16 +4779,21 @@ impl Qwen35Runner {
                         && matches!(self.device, Device::Metal | Device::Mlx | Device::Cuda))
             }
         };
+        // A concrete-seq graph (`!use_static_hidden`) is dropped on entry by
+        // the next turn whatever the device, so holding it through decode buys
+        // nothing — on CPU it was a whole copy of the weights (~4 GB of the
+        // MiniCPM-V-1B runner) resident beside the decode graph.
         if !keep_prefill
-            && matches!(
-                self.device,
-                Device::Cuda
-                    | Device::Rocm
-                    | Device::Gpu
-                    | Device::Vulkan
-                    | Device::Metal
-                    | Device::Mlx
-            )
+            && (!use_static_hidden
+                || matches!(
+                    self.device,
+                    Device::Cuda
+                        | Device::Rocm
+                        | Device::Gpu
+                        | Device::Vulkan
+                        | Device::Metal
+                        | Device::Mlx
+                ))
         {
             self.drop_hidden_prefill_cache();
         }
@@ -4215,7 +4884,7 @@ impl Qwen35Runner {
                 return self.argmax_batch_from_hidden(&trunk);
             }
             if sample_lm_cap(&opts, vocab) < vocab {
-                return self.sample_batch_from_hidden(&trunk, opts);
+                return self.sample_batch_from_hidden(&trunk, opts, generated_per_row);
             }
         }
         let logits = self.decode_forward_logits_batch(cache, tokens, generated_per_row, false)?;
@@ -4229,6 +4898,7 @@ impl Qwen35Runner {
             self.lm_vocab_size(),
             self.batch,
             opts,
+            generated_per_row,
         ))
     }
 
@@ -4801,7 +5471,7 @@ impl Qwen35Runner {
         while pos < prompt.len() {
             // Bound the KV before the next chunk (attention stays ~window-sized).
             crate::cache::evict_kv_sink_window(&self.cfg, &mut cache, sinks, window, 0);
-            if std::env::var_os("RLX_QWEN35_CHUNK_DBG").is_some() {
+            if rlx_ir::env::var_os("RLX_QWEN35_CHUNK_DBG").is_some() {
                 eprintln!(
                     "[chunk-dbg] past_seq={} (bounded?) pos={pos}",
                     cache.past_seq
@@ -4894,6 +5564,958 @@ impl Qwen35Runner {
             self.mtp_logits_path,
             self.fast_greedy_lm_head,
         )
+    }
+
+    /// Feeds for one host-fed bucketed decode step (the bucket compiled if it
+    /// was not). The browser driver's half of [`Self::decode_step_bucketed_raw`].
+    fn decode_bucketed_prepare(
+        &mut self,
+        cache: &Qwen35DecodeCache,
+        tokens: &[u32],
+        generated_per_row: &[usize],
+        custom_embed: Option<&[f32]>,
+    ) -> Result<DecodeJob> {
+        let past_seq = cache.past_seq;
+        let (cos, sin) = self.mrope_decode_rope_at_past(cache.abs_pos);
+        let bucket_key = self.decode_bucket_key(past_seq as u64);
+        let upper = self.ensure_decode_bucket_compiled(past_seq as u64)?;
+        // Step-at-a-time decode on wgpu keeps its state on the device
+        // (`keep_state_resident`); the host copies are not fed then.
+        let resident = self.batch == 1
+            && matches!(self.device, Device::Gpu | Device::WebGpu)
+            && rlx_core::device_supports_gpu_kv(self.device);
+        let kv_resident = resident && rlx_ir::env::flag("RLX_QWEN35_INPLACE_KV");
+        let (embed_tbl, lazy_rows) = self.embed_feed_for(tokens, custom_embed)?;
+        let feeds = decode_step_feeds_resident(
+            &self.cfg,
+            cache,
+            tokens,
+            &cos,
+            &sin,
+            Some(upper),
+            generated_per_row,
+            embed_tbl,
+            custom_embed.or(lazy_rows.as_deref()),
+            resident,
+            kv_resident,
+        )?;
+        let mut job = DecodeJob {
+            bucket_key,
+            upper,
+            feeds,
+            read: None,
+            n_outputs: logit_output_count(self.mtp_logits_path) + recurrent_output_count(&self.cfg),
+            kv_feed: None,
+            kv_rows: 1,
+            token_out: None,
+        };
+        if self.greedy_token_output() {
+            // Sampling reads the logits; the token output is then left unread.
+            if self.stage_sampler.is_none() {
+                job.token_out = Some(job.n_outputs);
+            }
+            job.n_outputs += 1;
+        }
+        if resident {
+            let pad = rlx_ir::env::flag("RLX_QWEN35_INPLACE_KV") as usize;
+            self.keep_state_resident(&mut job, cache, kv_resident, pad, cache.past_seq as u64 + 1)?;
+        }
+        Ok(job)
+    }
+
+    /// Keep the decode state on the device across step-at-a-time decode steps
+    /// (wgpu), so it is neither uploaded nor read back each token:
+    ///
+    /// - each Gated DeltaNet layer's `conv_state` / `ssm_state` input becomes a
+    ///   GPU handle fed from its own output after every run (~19 MB each way
+    ///   per token for Qwen3.5-0.8B);
+    /// - with in-place KV (`RLX_QWEN35_INPLACE_KV`, on for wgpu), each
+    ///   full-attention layer's `past_k` / `past_v` becomes a handle the graph
+    ///   appends to: it writes the new row at the bucket's last row, and
+    ///   `feed_kv_row` moves that row to the cache's next position after the
+    ///   run (the cache grows with the context, so this matters more the longer
+    ///   the conversation).
+    ///
+    /// Each length bucket is its own graph. The handles are seeded from the
+    /// host cache when a bucket's graph is first used for this sequence, so the
+    /// step BEFORE a bucket change reads everything back (the host copy is
+    /// stale otherwise). `RLX_DISABLE_GPU_KV` turns this off.
+    ///
+    /// `kv_pad` is how many rows past the bucket the graph declares its KV
+    /// inputs with (1 for an in-place append, 0 for a multi-row step), and
+    /// `next_key` the bucket key of the step after this one.
+    fn keep_state_resident(
+        &mut self,
+        job: &mut DecodeJob,
+        cache: &Qwen35DecodeCache,
+        kv_resident: bool,
+        kv_pad: usize,
+        next_key: u64,
+    ) -> Result<()> {
+        let base = logit_output_count(self.mtp_logits_path);
+        let kinds = trunk_layer_kinds(&self.cfg);
+        let kv_cols = self.cfg.num_key_value_heads * self.cfg.key_length;
+        // Rungs are identified by their upper bound: the key is the position
+        // itself on a ladder, so it changes every step.
+        let rung = job.upper as u64;
+        if self.gdn_resident != Some(rung) {
+            let (past, upper, batch) = (cache.past_seq, job.upper, cache.batch);
+            let compiled = self.decode_bucket_graph(job.bucket_key);
+            for (il, &is_full) in kinds.iter().enumerate() {
+                let (a, b, out) = if is_full {
+                    if !kv_resident {
+                        continue;
+                    }
+                    let (pk, pv) = full_attn_kv_f32(&cache.layers[il])?;
+                    (
+                        (
+                            format!("past_k_l{il}"),
+                            pad_kv_to_rows(&pk, batch, past, upper + kv_pad, kv_cols),
+                        ),
+                        (
+                            format!("past_v_l{il}"),
+                            pad_kv_to_rows(&pv, batch, past, upper + kv_pad, kv_cols),
+                        ),
+                        base + 2 * il,
+                    )
+                } else {
+                    let Qwen35LayerState::Linear {
+                        conv_state,
+                        ssm_state,
+                    } = &cache.layers[il]
+                    else {
+                        bail!("qwen35: layer {il} holds no Gated DeltaNet state");
+                    };
+                    (
+                        (format!("conv_state_l{il}"), conv_state.clone()),
+                        (format!("ssm_state_l{il}"), ssm_state.clone()),
+                        base + 2 * il,
+                    )
+                };
+                for ((name, data), out) in [(a, out), (b, out + 1)] {
+                    if !compiled.bind_gpu_handle(&name, &data) {
+                        bail!("qwen35: the decode graph has no input {name} to keep resident");
+                    }
+                    if is_full {
+                        compiled.register_kv_row_feed(&name, out);
+                    } else {
+                        compiled.set_gpu_handle_feed(&name, out);
+                    }
+                }
+            }
+            self.gdn_resident = Some(rung);
+        }
+        if kv_resident {
+            job.kv_feed = Some((job.upper, cache.past_seq, kv_cols));
+        }
+        // Read everything back on the last step in this rung: the next one's
+        // graph is seeded from the host copy.
+        if self.decode_bucket_upper(next_key) == Some(rung) {
+            // The greedy token, when the graph has it, stands in for the logits.
+            let token_out = job.token_out;
+            job.read = Some(
+                (0..job.n_outputs)
+                    .filter(|&i| match token_out {
+                        Some(t) if i == t => true,
+                        _ if i >= base + kinds.len() * 2 => false,
+                        Some(_) if i < base => false,
+                        _ => i < base || (kinds[(i - base) / 2] && !kv_resident),
+                    })
+                    .collect(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Run a prepared decode step: read back what the job asks for, fold the
+    /// new KV rows into resident handles, and return the outputs at their graph
+    /// positions.
+    fn run_decode_job(&mut self, job: &DecodeJob) -> Vec<Vec<f32>> {
+        let feeds = job.feed_refs();
+        let compiled = self.decode_bucket_graph(job.bucket_key);
+        let outs = compiled.run_read_outputs(&feeds, job.read.as_deref());
+        if let Some((src, dst, cols)) = job.kv_feed {
+            for i in 0..job.kv_rows {
+                compiled.feed_kv_row(src + i, dst + i, cols);
+            }
+        }
+        job.expand(outs)
+    }
+
+    /// [`Self::run_decode_job`] for the browser, where a WebGPU readback
+    /// cannot block.
+    #[cfg(target_arch = "wasm32")]
+    async fn run_decode_job_async(&mut self, job: &DecodeJob) -> Result<Vec<Vec<f32>>> {
+        let feeds = job.feed_refs();
+        let compiled = self.decode_bucket_graph(job.bucket_key);
+        let outs = compiled
+            .run_read_outputs_async(&feeds, job.read.as_deref())
+            .await
+            .map_err(|e| anyhow!("qwen35: {e}"))?;
+        if let Some((src, dst, cols)) = job.kv_feed {
+            for i in 0..job.kv_rows {
+                compiled.feed_kv_row(src + i, dst + i, cols);
+            }
+        }
+        Ok(job.expand(outs))
+    }
+
+    /// The compiled bucket a [`DecodeJob`] runs on.
+    fn decode_bucket_graph(&mut self, bucket_key: u64) -> &mut rlx_runtime::CompiledGraph {
+        let decode_opts = self.bucketed_decode_compile_options();
+        let cache_mut = self.decode_compile_cache.as_mut().expect("bucketed decode");
+        cache_mut
+            .ensure_hir_with_params(
+                bucket_key,
+                |_| panic!("decode bucket must be compiled"),
+                &decode_opts,
+            )
+            .expect("decode bucket missing after ensure")
+            .1
+    }
+
+    /// The one configuration the step-at-a-time drivers implement: batch 1,
+    /// static prefill, host-fed bucketed decode, no MoE offload.
+    fn stepwise_supported(&self) -> Result<()> {
+        if self.batch != 1
+            || self.dynamic_prefill
+            || self.dynamic_decode
+            || self.decode_compile_cache.is_none()
+            || self.use_gpu_kv
+            || self.moe_offload.is_some()
+        {
+            bail!(
+                "qwen35: step-at-a-time generation needs batch 1, static prefill, \
+                 host-fed bucketed decode and no MoE offload"
+            );
+        }
+        Ok(())
+    }
+
+    /// Sample the step-at-a-time drivers' tokens ([`Self::generate_stepwise`],
+    /// `generate_async`, [`Self::stage_prefill`] / [`Self::stage_decode`] on
+    /// the last pipeline stage) with `opts` — temperature, top-k / top-p,
+    /// repetition / presence penalties over this sequence's own tokens — from
+    /// a `seed`; `None` goes back to greedy. Greedy decoding is what the
+    /// on-device token output computes; sampling reads the logits back
+    /// instead (~1 MB per token for a 248k vocabulary). Small models need it:
+    /// greedy Qwen3.5-0.8B often repeats itself and never ends its turn.
+    /// Needs the in-graph LM head (not `fast_greedy_lm_head`).
+    pub fn set_sampling(&mut self, opts: Option<(rlx_runtime::SampleOpts, u64)>) -> Result<()> {
+        self.stage_sampler = match opts {
+            None => None,
+            Some((o, seed)) => {
+                if self.fast_greedy_lm_head && !self.residual_out {
+                    bail!(
+                        "qwen35: sampling needs the in-graph LM head (fast_greedy_lm_head is on)"
+                    );
+                }
+                Some(StageSampler {
+                    chain: o.into_chain(),
+                    state: rlx_runtime::samplers::SamplerState::new(),
+                    rng: rlx_ir::Philox4x32::new(seed),
+                    history: Vec::new(),
+                    greedy: o.is_greedy(),
+                })
+            }
+        };
+        Ok(())
+    }
+
+    /// The next token from a prefill trunk or a decode step's first output:
+    /// sampled when [`Self::set_sampling`] is on, else the on-device greedy
+    /// `token` when the graph produced one, else a host argmax.
+    fn pick_token(&mut self, out0: Vec<f32>, token: Option<u32>) -> Result<u32> {
+        let vocab = self.lm_vocab_size();
+        if let Some(s) = self.stage_sampler.as_mut() {
+            let mut logits = out0;
+            logits.truncate(vocab);
+            let t = if s.greedy {
+                s.chain
+                    .sample_argmax(&mut logits, &s.history, &mut s.state, &mut s.rng)
+            } else {
+                s.chain
+                    .sample(&mut logits, &s.history, &mut s.state, &mut s.rng)
+            };
+            s.history.push(t);
+            return Ok(t);
+        }
+        match token {
+            Some(t) => Ok(t),
+            None => self.greedy_from(out0),
+        }
+    }
+
+    /// A new sequence: the sampler's history starts empty.
+    fn reset_sampler_history(&mut self) {
+        if let Some(s) = self.stage_sampler.as_mut() {
+            s.history.clear();
+        }
+    }
+
+    /// Greedy token from a prefill trunk or a decode step's first output.
+    fn greedy_from(&self, out0: Vec<f32>) -> Result<u32> {
+        let ids = if self.fast_greedy_lm_head {
+            self.argmax_batch_from_hidden(&out0)?
+        } else {
+            sample_logits_batch(&out0, self.lm_vocab_size(), 1, SampleOpts::greedy(), &[0])
+        };
+        ids.first()
+            .copied()
+            .ok_or_else(|| anyhow!("qwen35: no token"))
+    }
+
+    /// Greedy generation one graph run at a time — static prefill, then one
+    /// host-fed bucketed decode run per token. The same loop as
+    /// `generate_async` (wasm32) with blocking runs; it exists so that loop has
+    /// a native twin to test against [`Self::generate`].
+    pub fn generate_stepwise(
+        &mut self,
+        prompt: &[u32],
+        n_new: usize,
+        mut on_token: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        self.stepwise_supported()?;
+        let job = self.prefill_prepare(&[prompt.to_vec()])?;
+        let outs = {
+            let feeds = job.feed_refs();
+            let compiled = self.prefill_cache.as_mut().expect("static prefill cache");
+            compiled.run(&feeds)
+        };
+        let (trunk, mut cache, _) = self.prefill_finish(&job, outs)?;
+        let mut out = Vec::with_capacity(n_new);
+        self.reset_sampler_history();
+        let mut tok = self.pick_token(trunk, None)?;
+        while out.len() < n_new {
+            out.push(tok);
+            if !on_token(tok) || out.len() >= n_new {
+                break;
+            }
+            if cache.past_seq >= self.max_seq - 1 {
+                bail!("qwen35: decode cache reached max_seq={}", self.max_seq);
+            }
+            let job = self.decode_bucketed_prepare(&cache, &[tok], &[out.len()], None)?;
+            let mut outs = self.run_decode_job(&job);
+            let token = job.take_token(&mut outs);
+            let (first, _) = advance_cache_from_decode_outputs(
+                &self.cfg,
+                &mut cache,
+                outs,
+                Some(job.upper),
+                self.mtp_logits_path,
+                self.mtp_logits_path,
+                self.fast_greedy_lm_head,
+            )?;
+            tok = self.pick_token(first, token)?;
+        }
+        Ok(out)
+    }
+
+    /// [`Self::generate_stepwise`] for the browser, where a WebGPU readback
+    /// cannot block: every graph run is awaited.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn generate_async(
+        &mut self,
+        prompt: &[u32],
+        n_new: usize,
+        mut on_token: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        self.stepwise_supported()?;
+        let job = self.prefill_prepare(&[prompt.to_vec()])?;
+        let outs = {
+            let feeds = job.feed_refs();
+            let compiled = self.prefill_cache.as_mut().expect("static prefill cache");
+            compiled
+                .run_async(&feeds)
+                .await
+                .map_err(|e| anyhow!("qwen35: {e}"))?
+        };
+        let (trunk, mut cache, _) = self.prefill_finish(&job, outs)?;
+        let mut out = Vec::with_capacity(n_new);
+        self.reset_sampler_history();
+        let mut tok = self.pick_token(trunk, None)?;
+        while out.len() < n_new {
+            out.push(tok);
+            if !on_token(tok) || out.len() >= n_new {
+                break;
+            }
+            if cache.past_seq >= self.max_seq - 1 {
+                bail!("qwen35: decode cache reached max_seq={}", self.max_seq);
+            }
+            let job = self.decode_bucketed_prepare(&cache, &[tok], &[out.len()], None)?;
+            let mut outs = self.run_decode_job_async(&job).await?;
+            let token = job.take_token(&mut outs);
+            let (first, _) = advance_cache_from_decode_outputs(
+                &self.cfg,
+                &mut cache,
+                outs,
+                Some(job.upper),
+                self.mtp_logits_path,
+                self.mtp_logits_path,
+                self.fast_greedy_lm_head,
+            )?;
+            tok = self.pick_token(first, token)?;
+        }
+        Ok(out)
+    }
+
+    /// A pipeline stage's prefill input as a prepared run: token ids for the
+    /// first stage, the previous stage's hidden rows (zero-padded to the
+    /// compiled width) for the rest.
+    fn stage_prefill_prepare(&mut self, input: StageInput<'_>) -> Result<PrefillJob> {
+        self.stepwise_supported()?;
+        let n_embd = self.cfg.hidden_size;
+        let (prompt, hidden) = match input {
+            StageInput::Tokens(t) => (t.to_vec(), None),
+            StageInput::Hidden(h) => {
+                if h.is_empty() || !h.len().is_multiple_of(n_embd) {
+                    bail!(
+                        "qwen35: stage hidden input of {} floats, not [n, {n_embd}]",
+                        h.len()
+                    );
+                }
+                // Placeholder ids: they size the prompt and its padding mask;
+                // the rows themselves come from `inputs_embeds`.
+                (vec![0u32; h.len() / n_embd], Some(h))
+            }
+        };
+        let mut job = self.prefill_prepare(&[prompt])?;
+        if let Some(h) = hidden {
+            let padded = job
+                .feeds
+                .iter()
+                .find(|(k, _)| k == "input_ids")
+                .map(|(_, v)| v.len())
+                .ok_or_else(|| anyhow!("qwen35: prefill feeds have no input_ids"))?;
+            let mut rows = h.to_vec();
+            rows.resize(padded * n_embd, 0.0);
+            job.feeds.retain(|(k, _)| k != "inputs_embeds");
+            job.feeds.push(("inputs_embeds".into(), rows));
+        }
+        Ok(job)
+    }
+
+    /// Seed this stage's decode cache from its prefill run and produce what
+    /// goes downstream.
+    fn stage_prefill_finish(
+        &mut self,
+        job: &PrefillJob,
+        outs: Vec<Vec<f32>>,
+    ) -> Result<StageOutput> {
+        let rows = job.prompt_lens[0] * self.cfg.hidden_size;
+        let hidden = match (self.residual_out, outs.first()) {
+            (true, Some(h)) if h.len() >= rows => Some(h[..rows].to_vec()),
+            (true, _) => bail!("qwen35: stage prefill returned no hidden rows"),
+            (false, _) => None,
+        };
+        let (trunk, _, _) = self.prefill_finish(job, outs)?;
+        self.stage_generated = 0;
+        match hidden {
+            Some(h) => Ok(StageOutput::Hidden(h)),
+            None => {
+                self.reset_sampler_history();
+                self.stage_last_trunk = Some(trunk.clone());
+                Ok(StageOutput::Token(self.pick_token(trunk, None)?))
+            }
+        }
+    }
+
+    /// Logits of `ids` at the position after the last stage's latest
+    /// [`Self::stage_prefill`]: prefill-path values, for scoring a few
+    /// candidate tokens (the decode path's logits are not scaled like the
+    /// full model's; see the `LmRunner` impl). Last stage only.
+    pub fn stage_scores(&self, ids: &[u32]) -> Result<Vec<f32>> {
+        let trunk = self
+            .stage_last_trunk
+            .clone()
+            .ok_or_else(|| anyhow!("qwen35: stage_scores before a last-stage prefill"))?;
+        let logits = self.trunk_to_logits(trunk, self.fast_greedy_lm_head)?;
+        ids.iter()
+            .map(|&i| {
+                logits
+                    .get(i as usize)
+                    .copied()
+                    .ok_or_else(|| anyhow!("qwen35: token {i} is past the vocabulary"))
+            })
+            .collect()
+    }
+
+    /// One decode step's run for this stage; hands back the cache it advances.
+    fn stage_decode_prepare(
+        &mut self,
+        input: StageInput<'_>,
+    ) -> Result<(DecodeJob, Qwen35DecodeCache)> {
+        let cache = self
+            .decode_cache
+            .take()
+            .ok_or_else(|| anyhow!("qwen35: stage_decode before stage_prefill"))?;
+        let n_embd = self.cfg.hidden_size;
+        let (tok, embed) = match input {
+            StageInput::Tokens(&[t]) => (t, None),
+            StageInput::Hidden(h) if h.len() == n_embd => (0, Some(h)),
+            _ => {
+                self.decode_cache = Some(cache);
+                bail!("qwen35: a stage decode step takes one token or one [{n_embd}] row");
+            }
+        };
+        if cache.past_seq >= self.max_seq - 1 {
+            self.decode_cache = Some(cache);
+            bail!("qwen35: decode cache reached max_seq={}", self.max_seq);
+        }
+        self.stage_generated += 1;
+        match self.decode_bucketed_prepare(&cache, &[tok], &[self.stage_generated], embed) {
+            Ok(job) => Ok((job, cache)),
+            Err(e) => {
+                self.decode_cache = Some(cache);
+                Err(e)
+            }
+        }
+    }
+
+    fn stage_decode_finish(
+        &mut self,
+        job: &DecodeJob,
+        mut cache: Qwen35DecodeCache,
+        mut outs: Vec<Vec<f32>>,
+    ) -> Result<StageOutput> {
+        let token = job.take_token(&mut outs);
+        let (first, _) = advance_cache_from_decode_outputs(
+            &self.cfg,
+            &mut cache,
+            outs,
+            Some(job.upper),
+            false,
+            false,
+            self.fast_greedy_lm_head || self.residual_out,
+        )?;
+        self.decode_cache = Some(cache);
+        if self.residual_out {
+            Ok(StageOutput::Hidden(first))
+        } else {
+            Ok(StageOutput::Token(self.pick_token(first, token)?))
+        }
+    }
+
+    /// Prefill a prompt through this pipeline stage
+    /// ([`Qwen35RunnerBuilder::pipeline_stage`]; a whole model is the one-stage
+    /// case). Starts a new sequence. The first stage takes the prompt's token
+    /// ids; each later one the previous stage's [`StageOutput::Hidden`]. The
+    /// last stage answers with the first generated token.
+    pub fn stage_prefill(&mut self, input: StageInput<'_>) -> Result<StageOutput> {
+        let job = self.stage_prefill_prepare(input)?;
+        let outs = {
+            let feeds = job.feed_refs();
+            let compiled = self.prefill_cache.as_mut().expect("static prefill cache");
+            compiled.run(&feeds)
+        };
+        self.stage_prefill_finish(&job, outs)
+    }
+
+    /// One decode step through this stage: the newest token (first stage) or
+    /// the previous stage's one hidden row; the last stage answers with the
+    /// next token.
+    pub fn stage_decode(&mut self, input: StageInput<'_>) -> Result<StageOutput> {
+        let (job, cache) = self.stage_decode_prepare(input)?;
+        let outs = self.run_decode_job(&job);
+        self.stage_decode_finish(&job, cache, outs)
+    }
+
+    /// Rows per decode run ([`Qwen35RunnerBuilder::decode_rows`]).
+    pub fn decode_rows(&self) -> usize {
+        self.decode_rows
+    }
+
+    /// One multi-row step through this stage ([`Qwen35RunnerBuilder::decode_rows`]):
+    /// up to `decode_rows` new positions at once — prompt tokens, or a token
+    /// and the drafts after it — as token ids (first stage) or the previous
+    /// stage's hidden rows. All of them enter the context. The last stage
+    /// answers with the next token after every row ([`StageOutput::Tokens`]),
+    /// the others with their hidden rows. With `undo`, the state before the
+    /// step is kept for [`Self::stage_rows_undo`].
+    ///
+    /// `guesses`: the token ids rows 1.. stand for, when they are guesses to
+    /// check rather than prompt tokens (`None` = none). Greedy, a guess holds
+    /// when it is the most likely token; with [`Self::set_sampling`] it is
+    /// kept with the probability the sampler gives it, and a rejected one is
+    /// replaced by a draw from the rest — the same distribution as sampling
+    /// one token at a time. The tokens stop after the first rejected guess.
+    pub fn stage_rows(
+        &mut self,
+        input: StageInput<'_>,
+        undo: bool,
+        guesses: Option<&[u32]>,
+    ) -> Result<StageOutput> {
+        let (job, cache, rows) = self.stage_rows_prepare(input, undo)?;
+        let outs = self.run_decode_job(&job);
+        self.stage_rows_finish(&job, cache, rows, outs, Some(guesses.unwrap_or(&[])))
+    }
+
+    /// [`Self::stage_rows`] for the browser, where a WebGPU readback cannot block.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn stage_rows_async(
+        &mut self,
+        input: StageInput<'_>,
+        undo: bool,
+        guesses: Option<&[u32]>,
+    ) -> Result<StageOutput> {
+        let (job, cache, rows) = self.stage_rows_prepare(input, undo)?;
+        match self.run_decode_job_async(&job).await {
+            Ok(outs) => {
+                self.stage_rows_finish(&job, cache, rows, outs, Some(guesses.unwrap_or(&[])))
+            }
+            Err(e) => {
+                self.decode_cache = Some(cache);
+                Err(e)
+            }
+        }
+    }
+
+    /// Cut the last [`Self::stage_rows`] (run with `undo`) back to its first
+    /// `keep` rows: the state goes back to before it, and those rows run again.
+    /// `keep` equal to the step's rows leaves it as it was.
+    pub fn stage_rows_undo(&mut self, keep: usize) -> Result<()> {
+        let Some(input) = self.rows_undo_begin(keep)? else {
+            return Ok(());
+        };
+        let (job, cache, rows) = self.stage_rows_prepare(input.as_input(), false)?;
+        let outs = self.run_decode_job(&job);
+        self.stage_rows_finish(&job, cache, rows, outs, None)
+            .map(|_| ())
+    }
+
+    /// [`Self::stage_rows_undo`] for the browser.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn stage_rows_undo_async(&mut self, keep: usize) -> Result<()> {
+        let Some(input) = self.rows_undo_begin(keep)? else {
+            return Ok(());
+        };
+        let (job, cache, rows) = self.stage_rows_prepare(input.as_input(), false)?;
+        let outs = self.run_decode_job_async(&job).await;
+        match outs {
+            Ok(outs) => self
+                .stage_rows_finish(&job, cache, rows, outs, None)
+                .map(|_| ()),
+            Err(e) => {
+                self.decode_cache = Some(cache);
+                Err(e)
+            }
+        }
+    }
+
+    /// Restore the state from before the last undoable step; the first `keep`
+    /// rows of its input, to run again (`None` when all of them stand).
+    fn rows_undo_begin(&mut self, keep: usize) -> Result<Option<OwnedStageInput>> {
+        let undo = self
+            .rows_undo
+            .take()
+            .ok_or_else(|| anyhow!("qwen35: stage_rows_undo without an undoable step"))?;
+        let rows = undo
+            .hidden
+            .as_ref()
+            .map_or(undo.tokens.len(), |h| h.len() / self.cfg.hidden_size.max(1));
+        if keep == 0 || keep > rows {
+            bail!("qwen35: stage_rows_undo keeps {keep} of {rows} rows");
+        }
+        if keep == rows {
+            return Ok(None);
+        }
+        if !undo.saved_on_device {
+            // Seed the device from the host copy again on the re-run.
+            self.gdn_resident = None;
+        } else {
+            let restored = self
+                .decode_compile_cache
+                .as_mut()
+                .and_then(|c| c.compiled_for_key_mut(undo.bucket_key))
+                .is_some_and(|g| g.restore_inputs());
+            if !restored {
+                bail!("qwen35: the decode graph lost the state saved before the step");
+            }
+        }
+        self.decode_cache = Some(undo.cache);
+        let n_embd = self.cfg.hidden_size;
+        Ok(Some(match undo.hidden {
+            Some(h) => OwnedStageInput::Hidden(h[..keep * n_embd].to_vec()),
+            None => OwnedStageInput::Tokens(undo.tokens[..keep].to_vec()),
+        }))
+    }
+
+    /// A multi-row step's run, the cache it advances, and its real row count.
+    fn stage_rows_prepare(
+        &mut self,
+        input: StageInput<'_>,
+        undo: bool,
+    ) -> Result<(DecodeJob, Qwen35DecodeCache, usize)> {
+        let r = self.decode_rows;
+        if r < 2 {
+            bail!("qwen35: stage_rows needs a runner built with decode_rows(2..=8)");
+        }
+        let n_embd = self.cfg.hidden_size;
+        let (tokens, hidden): (Vec<u32>, Option<&[f32]>) = match input {
+            StageInput::Tokens(t) => (t.to_vec(), None),
+            StageInput::Hidden(h) if h.len().is_multiple_of(n_embd) => {
+                (vec![0; h.len() / n_embd], Some(h))
+            }
+            StageInput::Hidden(h) => {
+                bail!(
+                    "qwen35: stage hidden input of {} floats, not [n, {n_embd}]",
+                    h.len()
+                )
+            }
+        };
+        let rows = tokens.len();
+        if rows == 0 || rows > r {
+            bail!("qwen35: a multi-row step takes 1..={r} rows, not {rows}");
+        }
+        let cache = self
+            .decode_cache
+            .take()
+            .ok_or_else(|| anyhow!("qwen35: stage_rows before stage_prefill"))?;
+        match self.rows_job(&cache, &tokens, hidden, rows, undo) {
+            Ok((job, saved_on_device)) => {
+                self.rows_undo = undo.then(|| RowsUndo {
+                    cache: cache.clone(),
+                    bucket_key: job.bucket_key,
+                    saved_on_device,
+                    tokens: tokens.clone(),
+                    hidden: hidden.map(<[f32]>::to_vec),
+                });
+                Ok((job, cache, rows))
+            }
+            Err(e) => {
+                self.decode_cache = Some(cache);
+                Err(e)
+            }
+        }
+    }
+
+    /// Feeds and read-back plan for a multi-row step of `rows` real rows, and
+    /// whether the device copied the state aside for an undo.
+    fn rows_job(
+        &mut self,
+        cache: &Qwen35DecodeCache,
+        tokens: &[u32],
+        hidden: Option<&[f32]>,
+        rows: usize,
+        undo: bool,
+    ) -> Result<(DecodeJob, bool)> {
+        let r = self.decode_rows;
+        let past = cache.past_seq;
+        if past + r > self.max_seq {
+            bail!("qwen35: decode cache reached max_seq={}", self.max_seq);
+        }
+        // The bucket must hold the context plus every row of the step.
+        let key = (past + r) as u64;
+        let bucket_key = self.decode_bucket_key(key);
+        let upper = self.ensure_decode_bucket_compiled(key)?;
+        let n_embd = self.cfg.hidden_size;
+
+        let mut ids: Vec<u32> = tokens.to_vec();
+        ids.resize(r, 0);
+        let (mut cos, mut sin) = (Vec::new(), Vec::new());
+        for i in 0..r {
+            let (c, s) = self.mrope_decode_rope_at_past(cache.abs_pos + i);
+            cos.extend_from_slice(&c);
+            sin.extend_from_slice(&s);
+        }
+        let mut feeds: Vec<(String, Vec<f32>)> = vec![
+            ("input_ids".into(), ids.iter().map(|&t| t as f32).collect()),
+            ("rope_cos".into(), cos),
+            ("rope_sin".into(), sin),
+            (
+                "mask".into(),
+                build_verify_bias_mask(1, self.cfg.num_attention_heads, past, r, upper),
+            ),
+        ];
+        // Rows past the real ones leave the recurrent state alone.
+        feeds.extend(crate::cache::prompt_pad_mask_feeds(
+            &self.cfg,
+            1,
+            r,
+            &[rows],
+        ));
+        if let Some(h) = hidden {
+            let mut e = h.to_vec();
+            e.resize(r * n_embd, 0.0);
+            feeds.push(("inputs_embeds".into(), e));
+        } else if self.host_embed {
+            let id_f: Vec<f32> = ids.iter().map(|&t| t as f32).collect();
+            feeds.push(("inputs_embeds".into(), self.gather_host_embeds(&id_f)?));
+        }
+
+        let resident = matches!(self.device, Device::Gpu | Device::WebGpu)
+            && rlx_core::device_supports_gpu_kv(self.device);
+        let kv_cols = self.cfg.num_key_value_heads * self.cfg.key_length;
+        if !resident {
+            for (il, layer) in cache.layers.iter().enumerate() {
+                match layer {
+                    Qwen35LayerState::Linear {
+                        conv_state,
+                        ssm_state,
+                    } => {
+                        feeds.push((format!("conv_state_l{il}"), conv_state.clone()));
+                        feeds.push((format!("ssm_state_l{il}"), ssm_state.clone()));
+                    }
+                    _ => {
+                        let (k, v) = full_attn_kv_f32(layer)?;
+                        feeds.push((
+                            format!("past_k_l{il}"),
+                            pad_kv_to_rows(&k, 1, past, upper, kv_cols),
+                        ));
+                        feeds.push((
+                            format!("past_v_l{il}"),
+                            pad_kv_to_rows(&v, 1, past, upper, kv_cols),
+                        ));
+                    }
+                }
+            }
+        }
+        let mut job = DecodeJob {
+            bucket_key,
+            upper,
+            feeds,
+            read: None,
+            n_outputs: logit_output_count(false) + recurrent_output_count(&self.cfg),
+            kv_feed: None,
+            kv_rows: rows,
+            token_out: None,
+        };
+        if self.greedy_token_output() {
+            if self.stage_sampler.is_none() {
+                job.token_out = Some(job.n_outputs);
+            }
+            job.n_outputs += 1;
+        }
+        let mut saved_on_device = false;
+        if resident {
+            // A bucket's first step seeds its state from the host copy at the
+            // run; until then the device holds something else, so an undo
+            // re-seeds from that copy rather than restoring the device's.
+            let seeding = self.gdn_resident != Some(upper as u64);
+            // Read everything back when the step after this one may need the
+            // next bucket. Judged from the most rows either step can take, not
+            // this one's count: a step and its undo re-run (fewer rows, same
+            // position) then decide alike, and the host copy an undo restores
+            // is never left stale for the bucket change.
+            let _ = rows;
+            self.keep_state_resident(&mut job, cache, true, 0, (past + 2 * r) as u64)?;
+            if undo && !seeding {
+                let names: Vec<String> = trunk_layer_kinds(&self.cfg)
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, is_full)| !**is_full)
+                    .flat_map(|(il, _)| [format!("conv_state_l{il}"), format!("ssm_state_l{il}")])
+                    .collect();
+                let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                let graph = self.decode_bucket_graph(bucket_key);
+                if !graph.save_inputs(&refs) {
+                    bail!("qwen35: this backend cannot keep the decode state for an undo");
+                }
+                saved_on_device = true;
+            }
+        }
+        Ok((job, saved_on_device))
+    }
+
+    /// Fold a multi-row step's run into the cache and produce what goes on.
+    /// `score`: the guesses to judge (see [`Self::stage_rows`]); `None` for an
+    /// undo's re-run, whose tokens were already chosen — it must not draw again.
+    fn stage_rows_finish(
+        &mut self,
+        job: &DecodeJob,
+        mut cache: Qwen35DecodeCache,
+        rows: usize,
+        mut outs: Vec<Vec<f32>>,
+        score: Option<&[u32]>,
+    ) -> Result<StageOutput> {
+        let n_embd = self.cfg.hidden_size;
+        let tokens = match job.token_out {
+            Some(t) if outs.len() > t => outs
+                .pop()
+                .map(|v| v.iter().take(rows).map(|&x| x as u32).collect::<Vec<u32>>()),
+            _ => None,
+        };
+        let first = std::mem::take(&mut outs[0]);
+        // The cache update only needs the state outputs; a one-row stand-in
+        // keeps its shape check happy.
+        outs[0] = vec![0.0; n_embd];
+        advance_cache_from_decode_outputs_n(
+            &self.cfg,
+            &mut cache,
+            rows,
+            outs,
+            Some(job.upper),
+            false,
+            false,
+            true,
+        )?;
+        self.decode_cache = Some(cache);
+        if self.residual_out {
+            if first.len() < rows * n_embd {
+                bail!(
+                    "qwen35: multi-row step returned {} floats of hidden rows",
+                    first.len()
+                );
+            }
+            return Ok(StageOutput::Hidden(first[..rows * n_embd].to_vec()));
+        }
+        let Some(guesses) = score else {
+            return Ok(StageOutput::Tokens(Vec::new()));
+        };
+        if let Some(t) = tokens {
+            return Ok(StageOutput::Tokens(t));
+        }
+        // Sampling, or no on-device token: every row's next token from its
+        // logits (or, under `fast_greedy_lm_head`, its normed hidden row).
+        let stride = first.len() / self.decode_rows.max(1);
+        let vocab = self.lm_vocab_size().min(stride);
+        let mut out = Vec::with_capacity(rows);
+        for i in 0..rows {
+            let row = first[i * stride..(i + 1) * stride].to_vec();
+            if i + 1 == rows {
+                out.push(self.pick_token(row, None)?);
+            } else if let (Some(&guess), Some(s)) = (guesses.get(i), self.stage_sampler.as_mut()) {
+                let mut row = row;
+                row.truncate(vocab);
+                let t = s.judge(&mut row, guess);
+                out.push(t);
+                if t != guess {
+                    break;
+                }
+            } else {
+                out.push(self.greedy_from(row)?);
+            }
+        }
+        Ok(StageOutput::Tokens(out))
+    }
+
+    /// [`Self::stage_prefill`] for the browser, where a WebGPU readback cannot
+    /// block.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn stage_prefill_async(&mut self, input: StageInput<'_>) -> Result<StageOutput> {
+        let job = self.stage_prefill_prepare(input)?;
+        let outs = {
+            let feeds = job.feed_refs();
+            let compiled = self.prefill_cache.as_mut().expect("static prefill cache");
+            compiled
+                .run_async(&feeds)
+                .await
+                .map_err(|e| anyhow!("qwen35: {e}"))?
+        };
+        self.stage_prefill_finish(&job, outs)
+    }
+
+    /// [`Self::stage_decode`] for the browser.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn stage_decode_async(&mut self, input: StageInput<'_>) -> Result<StageOutput> {
+        let (job, cache) = self.stage_decode_prepare(input)?;
+        match self.run_decode_job_async(&job).await {
+            Ok(outs) => self.stage_decode_finish(&job, cache, outs),
+            Err(e) => {
+                self.decode_cache = Some(cache);
+                Err(e)
+            }
+        }
     }
 
     /// GPU-resident KV bucketed decode step (Metal, batch==1). Full-attn K/V
@@ -5107,6 +6729,46 @@ impl rlx_cli::LmRunner for Qwen35Runner {
         let out = Qwen35Runner::predict_logits(self, prompt_ids)?;
         Ok(out.logits)
     }
+
+    // The host-driven pair is deliberately NOT forwarded, though
+    // `prefill_get_last_logits` and `decode_get_logits` exist and would
+    // make this family fast through a server.
+    //
+    // This decode path's logits are scaled about 10-11x smaller than
+    // prefill's, and the factor is data-dependent. Fitting the two against
+    // each other as `reprefill ~ k*decode + c`, on real weights with the
+    // model's own token ids:
+    //
+    //   step 0 (prefill vs prefill)   k = 1.0000   residual 0.00002
+    //   step 1 (decode vs re-prefill) k = 10.9819  residual 3.28
+    //   step 2                        k = 11.3600  residual 3.47
+    //   step 3                        k = 10.0883  residual 3.74
+    //
+    // A varying k is what a final-norm discrepancy looks like: the divisor
+    // depends on the hidden state, so it moves per step. k = 1 exactly for
+    // prefill-against-prefill says the comparison is sound.
+    //
+    // Greedy decoding survives this, because scaling by a positive factor
+    // keeps the argmax: all four tokens match re-prefill AND match
+    // llama.cpp on the same gguf and the same ids. So the family's own
+    // `generate` has always produced the right tokens at temperature 0.
+    // Anything that reads logit *values* does not survive it — a softmax
+    // over logits 11x too small is far flatter, so temperature, top-p and
+    // reported log-probs are all distorted, and at temperature 1 sampling
+    // approaches uniform.
+    //
+    // Leaving the pair unimplemented makes a server fall back to
+    // re-prefilling the whole context, which is quadratic but correctly
+    // scaled. Forward these once the scale matches; the check is
+    // `examples/decode_path_parity.rs`, which reports the fit directly.
+    //
+    // Two warnings for whoever re-measures this, both learned the hard way
+    // here. Use the model's OWN tokenizer: feeding another Qwen's ids makes
+    // every margin a near-tie, and the residual noise then flips tokens and
+    // looks like a far worse bug than this one. And do not judge by
+    // |delta| at all — a large difference that preserves order changes
+    // nothing, and only the fit and the ordering tell them apart.
+
     fn generate(
         &mut self,
         prompt_ids: &[u32],
@@ -5149,11 +6811,31 @@ impl rlx_cli::LmRunner for Qwen35Runner {
     }
 }
 
-fn sample_logits_batch(logits: &[f32], vocab: usize, batch: usize, opts: SampleOpts) -> Vec<u32> {
+/// Row `b`'s sampler for its next token: its own Philox stream
+/// (`seed + b·2³²`), advanced by `steps[b]`, the tokens it has generated so
+/// far. Row 0 is `sample_token_at(seed, step)`, as a single-sequence decode.
+/// (Every row and step used to draw the stream's first number, so each token
+/// was taken at the same quantile of its distribution.)
+fn row_sampler(opts: SampleOpts, b: usize, steps: &[usize]) -> (SampleOpts, u64) {
+    let row = SampleOpts {
+        seed: opts.seed.wrapping_add((b as u64) << 32),
+        ..opts
+    };
+    (row, steps.get(b).copied().unwrap_or(0) as u64)
+}
+
+fn sample_logits_batch(
+    logits: &[f32],
+    vocab: usize,
+    batch: usize,
+    opts: SampleOpts,
+    steps: &[usize],
+) -> Vec<u32> {
     let mut out = Vec::with_capacity(batch);
     for b in 0..batch {
         let row = &logits[b * vocab..(b + 1) * vocab];
-        out.push(sample_token(row, opts) as u32);
+        let (row_opts, step) = row_sampler(opts, b, steps);
+        out.push(sample_token_at(row, row_opts, step) as u32);
     }
     out
 }
@@ -5170,4 +6852,198 @@ fn dense_generated_per_row(cache: &Qwen35DecodeCache) -> Vec<usize> {
             cache.past_seq.saturating_sub(pl)
         })
         .collect()
+}
+
+/// [`GgufLoader`] behind the builder's `Debug` derive.
+struct InMemoryGguf(GgufLoader);
+
+impl std::fmt::Debug for InMemoryGguf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "InMemoryGguf({} tensors)", self.0.file().tensors.len())
+    }
+}
+
+/// What a pipeline stage takes in ([`Qwen35Runner::stage_prefill`],
+/// [`Qwen35Runner::stage_decode`]).
+#[derive(Clone, Copy, Debug)]
+pub enum StageInput<'a> {
+    /// Token ids — the first stage. A decode step takes exactly one.
+    Tokens(&'a [u32]),
+    /// The previous stage's [`StageOutput::Hidden`]: `[n, hidden]` row-major
+    /// (`n` = prompt length for prefill, 1 for a decode step).
+    Hidden(&'a [f32]),
+}
+
+/// What a pipeline stage hands on.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StageOutput {
+    /// The last stage's greedy next token.
+    Token(u32),
+    /// The last stage's next token after each row of a multi-row step
+    /// ([`Qwen35Runner::stage_rows`]), one per real row.
+    Tokens(Vec<u32>),
+    /// Every other stage's residual stream, `[n, hidden]` row-major — the
+    /// next stage's [`StageInput::Hidden`].
+    Hidden(Vec<f32>),
+}
+
+/// An owned [`StageInput`], kept for a re-run.
+enum OwnedStageInput {
+    Tokens(Vec<u32>),
+    Hidden(Vec<f32>),
+}
+
+impl OwnedStageInput {
+    fn as_input(&self) -> StageInput<'_> {
+        match self {
+            Self::Tokens(t) => StageInput::Tokens(t),
+            Self::Hidden(h) => StageInput::Hidden(h),
+        }
+    }
+}
+
+/// A prepared prefill run (see `Qwen35Runner::prefill_prepare`).
+struct PrefillJob {
+    seq: usize,
+    prompt_lens: Vec<usize>,
+    feeds: Vec<(String, Vec<f32>)>,
+}
+
+impl PrefillJob {
+    fn feed_refs(&self) -> Vec<(&str, &[f32])> {
+        self.feeds
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect()
+    }
+}
+
+/// A prepared host-fed bucketed decode step.
+struct DecodeJob {
+    bucket_key: u64,
+    upper: usize,
+    feeds: Vec<(String, Vec<f32>)>,
+    /// Outputs to read back, when not all (the rest stayed on the device).
+    read: Option<Vec<usize>>,
+    /// Outputs the decode graph has.
+    n_outputs: usize,
+    /// After the run, move each resident KV handle's new row: `(from the row
+    /// the graph wrote, to the cache's next row, row width)`.
+    kv_feed: Option<(usize, usize, usize)>,
+    /// Rows the KV feed moves (the step's real rows), from `kv_feed`'s first.
+    kv_rows: usize,
+    /// Index of the greedy-token output (`greedy_token_output`), the last.
+    token_out: Option<usize>,
+}
+
+impl DecodeJob {
+    /// Split the greedy-token output (the last) off a run's outputs, leaving
+    /// the layout the cache update expects; the token, if it was read.
+    fn take_token(&self, outs: &mut Vec<Vec<f32>>) -> Option<u32> {
+        let t = self.token_out?;
+        if outs.len() <= t {
+            return None;
+        }
+        outs.pop()
+            .and_then(|v| v.first().copied())
+            .map(|id| id as u32)
+    }
+
+    /// The run's outputs at their graph positions, an empty `Vec` for each
+    /// one that was not read back.
+    fn expand(&self, outs: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
+        let Some(read) = &self.read else {
+            return outs;
+        };
+        let mut full = vec![Vec::new(); self.n_outputs];
+        for (&i, o) in read.iter().zip(outs) {
+            full[i] = o;
+        }
+        full
+    }
+
+    fn feed_refs(&self) -> Vec<(&str, &[f32])> {
+        self.feeds
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod judge_tests {
+    use super::StageSampler;
+
+    fn sampler(top_k: Option<u32>, seed: u64) -> StageSampler {
+        let mut o = rlx_runtime::SampleOpts::nucleus(0.8, 0.95);
+        o.top_k = top_k;
+        StageSampler {
+            chain: o.into_chain(),
+            state: rlx_runtime::samplers::SamplerState::new(),
+            rng: rlx_ir::Philox4x32::new(seed),
+            history: Vec::new(),
+            greedy: false,
+        }
+    }
+
+    /// Judging a guess draws from the same distribution as an ordinary draw:
+    /// token frequencies over many trials agree, for a likely guess, an
+    /// unlikely one and one the chain filters out entirely (top-k).
+    #[test]
+    fn judged_guess_has_the_sampling_distribution() {
+        let logits = [2.0f32, 1.5, 0.3, -0.5, -1.0, 0.9, -3.0, 0.0];
+        let n = 200_000;
+        for (guess, top_k) in [(0u32, None), (4, None), (6, Some(4))] {
+            let mut plain = vec![0usize; logits.len()];
+            let mut judged = vec![0usize; logits.len()];
+            let (mut a, mut b) = (sampler(top_k, 1), sampler(top_k, 2));
+            for _ in 0..n {
+                let mut l = logits.to_vec();
+                let t = a.chain.sample(&mut l, &[], &mut a.state, &mut a.rng);
+                plain[t as usize] += 1;
+                b.history.clear();
+                let mut l = logits.to_vec();
+                judged[b.judge(&mut l, guess) as usize] += 1;
+            }
+            for i in 0..logits.len() {
+                let (p, q) = (plain[i] as f64 / n as f64, judged[i] as f64 / n as f64);
+                assert!(
+                    (p - q).abs() < 0.006,
+                    "guess {guess}, token {i}: {p:.4} vs {q:.4}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod sampling_tests {
+    use super::{SampleOpts, sample_logits_batch};
+
+    /// Sampling advances per token and differs per row: a flat distribution
+    /// sampled 64 times gives many tokens, and rows at one step disagree.
+    #[test]
+    fn batch_sampling_draws_a_fresh_number_per_row_and_step() {
+        let vocab = 1000;
+        let opts = SampleOpts::temperature(1.0, 42);
+        let flat = vec![0.0f32; vocab];
+        let mut seen = std::collections::HashSet::new();
+        for step in 0..64 {
+            seen.insert(sample_logits_batch(&flat, vocab, 1, opts, &[step])[0]);
+        }
+        assert!(
+            seen.len() > 40,
+            "only {} distinct tokens in 64 steps",
+            seen.len()
+        );
+        let rows = flat.repeat(4);
+        let toks = sample_logits_batch(&rows, vocab, 4, opts, &[3, 3, 3, 3]);
+        let distinct: std::collections::HashSet<_> = toks.iter().collect();
+        assert!(distinct.len() > 1, "rows drew the same number: {toks:?}");
+        // Row 0 is the single-sequence stream.
+        assert_eq!(
+            toks[0],
+            rlx_qwen3::sampling::sample_token_at(&flat, opts, 3) as u32
+        );
+    }
 }

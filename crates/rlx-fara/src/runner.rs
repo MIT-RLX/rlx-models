@@ -96,14 +96,14 @@ impl FaraRunnerBuilder {
             .skip_warm(true);
         // Prefer streaming / host-release defaults for BF16 safetensors on
         // unified memory without overriding an explicit user env.
-        if std::env::var_os("RLX_LOW_MEM_COMPILE").is_none() {
-            unsafe { std::env::set_var("RLX_LOW_MEM_COMPILE", "1") };
+        if rlx_ir::env::var_os("RLX_LOW_MEM_COMPILE").is_none() {
+            rlx_ir::env::set("RLX_LOW_MEM_COMPILE", "1");
         }
-        if std::env::var_os("RLX_QWEN35_RELEASE_HOST_WEIGHTS").is_none() {
-            unsafe { std::env::set_var("RLX_QWEN35_RELEASE_HOST_WEIGHTS", "1") };
+        if rlx_ir::env::var_os("RLX_QWEN35_RELEASE_HOST_WEIGHTS").is_none() {
+            rlx_ir::env::set("RLX_QWEN35_RELEASE_HOST_WEIGHTS", "1");
         }
-        if std::env::var_os("RLX_QWEN35_KEEP_PREFILL").is_none() {
-            unsafe { std::env::set_var("RLX_QWEN35_KEEP_PREFILL", "0") };
+        if rlx_ir::env::var_os("RLX_QWEN35_KEEP_PREFILL").is_none() {
+            rlx_ir::env::set("RLX_QWEN35_KEEP_PREFILL", "0");
         }
         eprintln!(
             "[rlx-fara] low-mem build: skip_warm=true max_seq={max_seq} host_embed=true \

@@ -32,7 +32,7 @@ const PROMPT: [u32; 4] = [5, 11, 2, 19];
 const N_NEW: usize = 6;
 
 fn dev() -> Device {
-    std::env::var("RLX_TEST_DEVICE")
+    rlx_ir::env::var_result("RLX_TEST_DEVICE")
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| rlx_cli::parse_device(&s).expect("bad RLX_TEST_DEVICE"))
@@ -351,4 +351,48 @@ fn generation_is_deterministic() {
             .expect("generate")
     };
     assert_eq!(run(), run(), "decode is not deterministic");
+}
+
+/// The host LM head (`fast_greedy_lm_head`, the builder default) must score
+/// decode steps exactly as the in-graph head does.
+///
+/// Every other test here turns the host head off. With it on, the decode
+/// graph exported the hidden state *before* `output_norm`, which the host
+/// head does not apply, so decode logits came out unnormalized — about 10×
+/// too small on Qwen3.5-0.8B. With a unit `output_norm` (what `synth_weights`
+/// builds) a missing norm is a uniform rescale and greedy argmax cannot see
+/// it, so this uses a non-unit gamma and compares values, not argmax.
+#[test]
+fn host_lm_head_decode_matches_graph_lm_head() {
+    let (cfg, mut w) = model(4, false);
+    for (i, g) in w.output_norm.iter_mut().enumerate() {
+        *g = 1.5 + hashed(0x77, i);
+    }
+    let decode_logits = |host_head: bool| -> Vec<Vec<f32>> {
+        let mut r = Qwen35RunnerBuilder::default()
+            .inline_weights(cfg.clone(), w.clone())
+            .device(dev())
+            .fast_greedy_lm_head(host_head)
+            .max_seq(PROMPT.len() + N_NEW + 2)
+            .build()
+            .expect("build runner");
+        let mut rows = vec![r.prefill_get_last_logits(&PROMPT).expect("prefill")];
+        for t in [3u32, 7, 1] {
+            rows.push(r.decode_get_logits(t).expect("decode"));
+        }
+        rows
+    };
+    let host = decode_logits(true);
+    let graph = decode_logits(false);
+    for (step, (h, g)) in host.iter().zip(&graph).enumerate() {
+        let worst = h
+            .iter()
+            .zip(g)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            worst < 1e-4,
+            "step {step}: host-head logits differ from graph-head logits by {worst}"
+        );
+    }
 }

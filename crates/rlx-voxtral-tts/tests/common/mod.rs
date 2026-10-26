@@ -27,7 +27,9 @@ pub const PREFILL_SEQ: usize = 4;
 pub const DECODE_STEPS: usize = 2;
 
 pub fn model_dir() -> Option<PathBuf> {
-    let env = std::env::var("RLX_VOXTRAL_TTS_DIR").ok().map(PathBuf::from);
+    let env = rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR")
+        .ok()
+        .map(PathBuf::from);
     let mut candidates = env.into_iter().chain([
         PathBuf::from(".cache/voxtral/Voxtral-4B-TTS-2603"),
         PathBuf::from("../../.cache/voxtral/Voxtral-4B-TTS-2603"),

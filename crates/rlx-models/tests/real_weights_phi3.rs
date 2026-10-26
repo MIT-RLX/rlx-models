@@ -15,7 +15,9 @@ use rlx_runtime::Device;
 use std::path::PathBuf;
 
 fn weights_path() -> Option<PathBuf> {
-    std::env::var("RLX_PHI3_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_PHI3_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 
 #[test]
@@ -57,7 +59,11 @@ fn compat_check_reports_phi3_supported() {
 
 #[test]
 fn forward_inference_real_weights() {
-    if std::env::var("RLX_PHI3_RUN_INFERENCE").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_PHI3_RUN_INFERENCE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_PHI3_RUN_INFERENCE=1");
         return;
     }

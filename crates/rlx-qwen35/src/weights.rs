@@ -665,6 +665,12 @@ impl Qwen35Weights {
     }
 
     /// Drop host F32 projection storage after device upload (keeps norms / embd).
+    ///
+    /// An untied `output` (LM head) stays resident: the host LM head scores
+    /// the hidden prefill's last row and samples decode steps, with nothing
+    /// reloading the projections in between. A tied head reads `token_embd`,
+    /// which is never released either, so both layouts keep one vocab-sized
+    /// table on the host.
     pub fn clear_dense_f32_projections(&mut self) {
         fn clear_mat(m: &mut MatWeight) {
             if let MatWeight::F32(v) = m {
@@ -723,9 +729,6 @@ impl Qwen35Weights {
                 clear_mat(h);
             }
         }
-        if let Some(o) = self.output.as_mut() {
-            clear_mat(o);
-        }
     }
 }
 
@@ -750,6 +753,7 @@ impl Qwen35Weights {
     ///
     /// Memory savings on Qwen3.6-27B-Q4_K_M: ~65 GB → ~16 GB.
     pub fn from_loader_packed(loader: &mut GgufLoader, cfg: &Qwen35Config) -> Result<Self> {
+        loader.keep_bf16(keep_bf16_enabled());
         // Capture the raw pointer first so the &mut borrow that
         // follows doesn't alias it (Rust's borrow checker rejects
         // `&mut loader` and `loader as *mut` in the same call).
@@ -824,7 +828,12 @@ impl Qwen35Weights {
             _ => None,
         };
 
-        let mut token_embd_raw = if lazy_embed.is_some() {
+        // A pipeline stage past the first (`Qwen35RunnerBuilder::pipeline_stage`)
+        // takes hidden states, so its GGUF has no embedding table to read.
+        let no_embd = loader
+            .gguf_file()
+            .is_some_and(|f| f.get("token_embd.weight").is_none());
+        let mut token_embd_raw = if lazy_embed.is_some() || no_embd {
             Vec::new()
         } else {
             take_f32(loader, "token_embd.weight")?
@@ -898,6 +907,15 @@ impl Qwen35Weights {
     }
 }
 
+/// `RLX_QWEN35_KEEP_BF16`: keep a GGUF's `BF16` matmul weights packed as
+/// bf16 (`QuantScheme::GgufBF16`, through `DequantMatMul` like the block
+/// quants) instead of widening them to f32 on the host. Halves the host and
+/// device footprint of a BF16 checkpoint — what lets Qwen3.5-0.8B BF16 load
+/// in a wasm32 page. Needs a backend with a bf16 `DequantMatMul` (CPU, wgpu).
+pub(crate) fn keep_bf16_enabled() -> bool {
+    rlx_ir::env::flag("RLX_QWEN35_KEEP_BF16")
+}
+
 fn peek_gguf_packed_mat(loader: *mut GgufLoader, key: &str) -> Option<MatWeight> {
     use rlx_gguf::GgmlType;
     use rlx_ir::quant::QuantScheme;
@@ -914,9 +932,22 @@ fn peek_gguf_packed_mat(loader: *mut GgufLoader, key: &str) -> Option<MatWeight>
         // distinct type id; PTQ1_0 is base-3 ternary at group 128.
         GgmlType::PQ2_0 => QuantScheme::GgufQ2_0,
         GgmlType::PTQ1_0 => QuantScheme::GgufPtq1_0,
+        GgmlType::BF16 if keep_bf16_enabled() => QuantScheme::GgufBF16,
+        // The 32-weight block formats: a Q8_0 checkpoint stores the tied
+        // head as Q8_0, and widening that to f32 is ~1 GB for a 248k vocab.
+        GgmlType::Q8_0 => QuantScheme::GgufQ8_0,
+        GgmlType::Q4_0 => QuantScheme::GgufQ4_0,
+        GgmlType::Q5_0 => QuantScheme::GgufQ5_0,
+        GgmlType::IQ4NL => QuantScheme::GgufIQ4NL,
+        GgmlType::IQ4XS => QuantScheme::GgufIQ4XS,
+        GgmlType::Q4_1
+            if rlx_core::weight_loader::dequant_matmul_supported(QuantScheme::GgufQ4_1) =>
+        {
+            QuantScheme::GgufQ4_1
+        }
         // Deliberately narrower than `rlx_core::weight_loader::
         // ggml_type_to_quant_scheme`: only the schemes this crate's packed
-        // LM-head path is tested on. Widening it is a separate change.
+        // LM-head path is tested on.
         _ => return None,
     };
     let mut shape = t.shape.clone();

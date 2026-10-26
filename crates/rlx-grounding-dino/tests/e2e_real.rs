@@ -50,9 +50,11 @@ fn iou(a: &[f32; 4], b: &[f64]) -> f32 {
 #[test]
 #[ignore = "needs real checkpoint + Python reference dump (set RLX_GDINO_*)"]
 fn matches_hf_reference() {
-    let dir = std::env::var("RLX_GDINO_DIR").expect("set RLX_GDINO_DIR to the HF snapshot dir");
-    let image = std::env::var("RLX_GDINO_IMAGE").expect("set RLX_GDINO_IMAGE");
-    let refdir = std::env::var("RLX_GDINO_REF").expect("set RLX_GDINO_REF to reference output dir");
+    let dir =
+        rlx_ir::env::var_result("RLX_GDINO_DIR").expect("set RLX_GDINO_DIR to the HF snapshot dir");
+    let image = rlx_ir::env::var_result("RLX_GDINO_IMAGE").expect("set RLX_GDINO_IMAGE");
+    let refdir = rlx_ir::env::var_result("RLX_GDINO_REF")
+        .expect("set RLX_GDINO_REF to reference output dir");
 
     let dir = Path::new(&dir);
     let cfg = GroundingDinoConfig::from_file(&dir.join("config.json")).unwrap();

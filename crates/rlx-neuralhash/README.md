@@ -1,6 +1,6 @@
 # rlx-neuralhash
 
-Apple **NeuralHash** perceptual image hashing, implemented natively on RLX.
+**NeuralHash** perceptual image hashing, implemented natively on RLX.
 
 Same inputs and the same 24-character hex output as the widely-used
 [reference implementation](https://github.com/AsuharietYgvar/AppleNeuralHash2ONNX),
@@ -22,7 +22,7 @@ Validated against the model macOS installs at
 
 | check | result |
 |---|---|
-| 225-layer graph derived from the vendor container | ✅ all 226 activation shapes match Apple's own `.espresso.shape` sidecar |
+| 225-layer graph derived from the vendor container | ✅ all 226 activation shapes match the vendor's own and a sidecar |
 | hash vs. an independent PyTorch implementation | ✅ **bit-identical (96/96) on every image tried** |
 | descriptor vs. that implementation | ✅ cos ≈ 1.0, relative error 1e-7 … 2e-4 |
 | declared preprocessing (`transform_params`) | ✅ matches this crate's `x·2/255 − 1` RGB chain exactly |
@@ -33,8 +33,8 @@ Validated against the model macOS installs at
 
 | stage | module | what it does |
 |-------|--------|--------------|
-| `NeuralHashv3b_fp16-current.espresso.{net,shape,weights}` | `espresso` | decompresses the LZFSE `pbze` container, parses the JSON layer list, the blob-shape sidecar and the `{u64 count}{index,size}×N{payloads}` weight table |
-| → `NeuralHashSpec` | `spec` | normalizes Espresso layers into rlx-level ops with resolved NCHW shapes; serializable to JSON |
+| `NeuralHashv3b_fp16-current.{net,shape,weights}` | local | decompresses the LZFSE `pbze` container, parses the JSON layer list, the blob-shape sidecar and the `{u64 count}{index,size}×N{payloads}` weight table |
+| → `NeuralHashSpec` | `spec` | normalizes layers into rlx-level ops with resolved NCHW shapes; serializable to JSON |
 | → `WeightMap` | `weights` | f16 conv kernels, f32 biases, interleaved instance-norm parameters, `inner_product` transposed to `[in, out]` |
 | → `rlx_ir::Graph` | `flow` | native ops: `Conv2d` (incl. depthwise), `GroupNorm`, `HardSwish`/`HardSigmoid`, `Pool`, `Clamp`, `MatMul`; lowering is device-aware (see Performance) |
 | → `CompiledGraph` | `model` | compiles for CPU / Metal / MLX / CUDA / ROCm / wgpu / Vulkan |
@@ -45,10 +45,10 @@ community `model.onnx`; nothing in `NeuralHasher` can reach it.
 
 ### The architecture
 
-MobileNetV3-shaped, 225 Espresso layers (→ 150 rlx ops after fusion):
+MobileNetV3-shaped, 225 layers (→ 150 rlx ops after fusion):
 
 * 54 convolutions (3×3 / 5×5 depthwise, 1×1 pointwise, stride 1–2, SAME/VALID)
-* 35 **instance** norms — Espresso spells them `batchnorm`, but
+* 35 **instance** norms — spells them `batchnorm`, but
   `training_instancenorm = 1` means statistics come from the input at runtime
 * 118 elementwise ops, most of them explicit hard-swish chains
   (`+3` → `clamp(0,6)` → `×1/6` → `×x`) and squeeze-excite gates
@@ -64,9 +64,9 @@ are already installed:
 
 ```console
 $ ls /System/Library/Frameworks/Vision.framework/Versions/A/Resources/ | grep -i neuralhash
-NeuralHashv3b_fp16-current.espresso.net
-NeuralHashv3b_fp16-current.espresso.shape
-NeuralHashv3b_fp16-current.espresso.weights
+NeuralHashv3b_fp16-current.*.net
+NeuralHashv3b_fp16-current.*.shape
+NeuralHashv3b_fp16-current.*.weights
 neuralhash_128x96_seed1.dat
 ```
 
@@ -83,7 +83,7 @@ little-endian f32 matrix — 49 280 bytes exactly.
 $ R=/System/Library/Frameworks/Vision.framework/Versions/A/Resources
 
 # Hash one image (equivalent to `python3 nnhash.py model.onnx seed1.dat image.jpg`)
-$ rlx-neuralhash --net $R/NeuralHashv3b_fp16-current.espresso.net \
+$ rlx-neuralhash --net $R/NeuralHashv3b_fp16-current.*.net \
                  --seed $R/neuralhash_128x96_seed1.dat --image photo.jpg
 e5bf5a36875588b358477ce3
 
@@ -96,13 +96,13 @@ $ rlx-neuralhash --compare ab14febaa837b6c1484c35e6 ab14febaa837b6c1484c3de6
 3
 ```
 
-`--inspect` prints the Espresso layer-type histogram, the derived native op
+`--inspect` prints the layer-type histogram, the derived native op
 list with shapes, and validates the I/O contract. Run it first against a model
-you have not used before: an Espresso layer type outside the supported set is
+you have not used before: an layer type outside the supported set is
 reported by name there rather than silently skipped.
 
 ```console
-$ rlx-neuralhash --net $R/NeuralHashv3b_fp16-current.espresso.net --inspect
+$ rlx-neuralhash --net $R/NeuralHashv3b_fp16-current.*.net --inspect
 $ rlx-neuralhash --net $R/... --export-spec neuralhash.json
 ```
 
@@ -113,8 +113,8 @@ use rlx_neuralhash::{NeuralHash, NeuralHasher};
 use rlx_runtime::Device;
 
 let r = "/System/Library/Frameworks/Vision.framework/Versions/A/Resources";
-let mut hasher = NeuralHasher::open_espresso(
-    format!("{r}/NeuralHashv3b_fp16-current.espresso.net"),
+let mut hasher = NeuralHasher::open(
+    format!("{r}/NeuralHashv3b_fp16-current.*.net"),
     format!("{r}/neuralhash_128x96_seed1.dat"),
     Device::Metal,
 )?;
@@ -131,7 +131,7 @@ Identical 96-bit hashes on all seven standard rlx backends:
 
 | host | backends | fixture |
 |---|---|---|
-| Apple M-series (macOS 26.4) | `cpu`, `metal`, `mlx`, `gpu` (wgpu), `vulkan` | Apple's real weights **and** synthetic |
+| M-series (macOS 26.4) | `cpu`, `metal`, `mlx`, `gpu` (wgpu), `vulkan` | the shipping weights **and** synthetic |
 | NVIDIA RTX 3080 Ti (Linux) | `cpu`, `cuda`, `gpu`, `vulkan` | synthetic |
 | AMD gfx908 (Linux) | `cpu`, `rocm`, `gpu`, `vulkan` | synthetic |
 
@@ -148,7 +148,7 @@ $ cargo test -p rlx-neuralhash --release --test backends --features all-backends
 
 ## Performance
 
-The Espresso graph is 225 layers, but a naive emitter expands it to far more rlx
+The graph is 225 layers, but a naive emitter expands it to far more rlx
 nodes — instance norm into a nine-op statistics chain, every conv bias into a
 materialized `Expand`, every hard-swish into four elementwise ops. Three changes
 cut the graph by 58% with **bit-identical hashes**:
@@ -157,7 +157,7 @@ cut the graph by 58% with **bit-identical hashes**:
 |---|---|
 | instance norm → one `GroupNorm` (one group per channel) | −8 full-tensor passes × 35 norms |
 | bias / squeeze-excite gating via implicit broadcast instead of `Expand` | stops materializing a feature map per conv |
-| Espresso's `+3 → clamp(0,6) → ×1/6 → ×x` chains → native `HardSwish` / `HardSigmoid` | 4 ops → 1 (or 2 for a gate), ×28 |
+| Model's `+3 → clamp(0,6) → ×1/6 → ×x` chains → native `HardSwish` / `HardSigmoid` | 4 ops → 1 (or 2 for a gate), ×28 |
 
 Measured on the real model, interleaved best-of-8 (the machine was loaded, so
 read the ratios rather than the absolute times):
@@ -170,7 +170,7 @@ read the ratios rather than the absolute times):
 | mlx | 1109 nodes, 52 ms | 460 nodes, 47 ms | **1.1×** |
 
 `--bench <n>` reports graph size, build time and steady-state latency;
-`--no-fuse` emits the literal Espresso chains for A/B timing (same hash).
+`--no-fuse` emits the literal chains for A/B timing (same hash).
 
 ### The wgpu GroupNorm fix
 
@@ -254,7 +254,7 @@ is not a cryptographic hash and offers no integrity or authenticity guarantee.
 $ cargo test -p rlx-neuralhash --release --features all-backends
 ```
 
-* `tests/real_model.rs` — Apple's installed model: graph derivation against the
+* `tests/real_model.rs` — the OS-installed model: graph derivation against the
   `.shape` sidecar, declared `transform_params`, determinism, and the
   perceptual invariants. Skips cleanly when the model is absent.
 * `tests/backends.rs` — cross-backend agreement, synthetic and real.
@@ -266,5 +266,5 @@ $ cargo test -p rlx-neuralhash --release --features all-backends
 ## Features
 
 `metal`, `mlx`, `cuda`, `rocm`, `gpu` (wgpu), `vulkan`, plus the aggregates
-`all-backends`, `apple-silicon`, `nvidia-gpu`, `amd-gpu`, `portable-gpu`.
+`all-backends`, `macos-gpu`, `nvidia-gpu`, `amd-gpu`, `portable-gpu`.
 `onnx-parity` enables the validation-only ONNX cross-check.

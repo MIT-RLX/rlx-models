@@ -23,7 +23,7 @@
 //! (c) With `--features onnx` it also times the original ONNX Runtime path
 //!     (`synthesize_ort`, CPU EP) and reports the rlx-vs-ort speedup per backend.
 //!
-//! Run (Apple Silicon):
+//! Run (macOS arm64):
 //!   cargo run --release --example backend_matrix \
 //!     --features "metal,mlx,gpu,coreml,onnx" -- weights/tts/supertonic-3
 //!
@@ -38,7 +38,7 @@ use rlx_supertonic::{InferOpts, Supertonic, Voice};
 const TEXT: &str = "The quick brown fox jumps over the lazy dog near the river bank.";
 const WARMUP: usize = 1;
 fn iters() -> usize {
-    std::env::var("RLX_ITERS")
+    rlx_ir::env::var_result("RLX_ITERS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3)
@@ -55,7 +55,7 @@ fn backends() -> Vec<(Device, &'static str)> {
         (Device::Vulkan, "vulkan"),
         (Device::Ane, "CoreML"),
     ];
-    if let Ok(raw) = std::env::var("RLX_DEVICES") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_DEVICES") {
         let want: Vec<_> = raw
             .split(',')
             .map(|s| s.trim().to_ascii_lowercase())
@@ -238,7 +238,7 @@ fn short(s: &str) -> String {
 use rlx_whisper::{SAMPLE_RATE as WHISPER_RATE, WhisperRunner};
 
 fn load_whisper() -> Option<WhisperRunner> {
-    let d = std::env::var("RLX_WHISPER_DIR")
+    let d = rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .map(PathBuf::from)
         .ok()
         .or_else(|| {

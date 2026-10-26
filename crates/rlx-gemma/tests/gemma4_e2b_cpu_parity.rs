@@ -21,7 +21,7 @@ use rlx_gemma::qat_loader::GemmaQatLoader;
 use rlx_runtime::Device;
 
 fn fixture_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("RLX_GEMMA4_E2B_DIR") {
+    if let Some(d) = rlx_ir::env::var_os("RLX_GEMMA4_E2B_DIR") {
         let p = PathBuf::from(d);
         return p.join("config.json").is_file().then_some(p);
     }
@@ -37,7 +37,9 @@ fn fixture_dir() -> Option<PathBuf> {
 fn read_f32_bin(p: &std::path::Path) -> Option<Vec<f32>> {
     let raw = std::fs::read(p).ok()?;
     Some(
-        raw.chunks_exact(4)
+        raw.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )
@@ -67,7 +69,7 @@ fn gemma4_e2b_cpu_logits_match_hf() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let fx = manifest.join("../../fixtures/gemma4_e2b");
     // Our F32 forward skips activation SRQ, so compare against the no-SRQ HF
-    // reference (apples-to-apples). The with-SRQ reference predicts the same
+    // reference (like-for-like). The with-SRQ reference predicts the same
     // next token but its final-softcapped logit distribution differs.
     let fx_nosrq = manifest.join("../../fixtures/gemma4_e2b_nosrq");
     let Some(hf_last) = read_f32_bin(&fx_nosrq.join("last_logits.bin"))

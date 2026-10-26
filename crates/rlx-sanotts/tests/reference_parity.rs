@@ -31,7 +31,7 @@ use rlx_sanotts::{Mat, Synthesizer};
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn voice_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("RLX_SANOTTS_VOICE_DIR") {
+    if let Ok(dir) = rlx_ir::env::var_result("RLX_SANOTTS_VOICE_DIR") {
         let p = PathBuf::from(dir);
         return p.join("manifest.json").is_file().then_some(p);
     }
@@ -57,14 +57,18 @@ macro_rules! voice_or_skip {
 
 fn read_i32(name: &str) -> Vec<i32> {
     let raw = std::fs::read(format!("{FIXTURES}/{name}")).expect(name);
-    raw.chunks_exact(4)
+    raw.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 
 fn read_f32(name: &str) -> Vec<f32> {
     let raw = std::fs::read(format!("{FIXTURES}/{name}")).expect(name);
-    raw.chunks_exact(4)
+    raw.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

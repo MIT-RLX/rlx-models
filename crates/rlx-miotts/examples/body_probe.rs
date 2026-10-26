@@ -50,7 +50,9 @@ fn main() -> anyhow::Result<()> {
     t.resize(100, 0);
     let idx: Vec<i64> = t.iter().map(|&x| x as i64).collect();
     let emb: Vec<f32> = std::fs::read(fx.join("en_female.f32"))?
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let ib: Vec<u8> = idx.iter().flat_map(|x| x.to_le_bytes()).collect();
@@ -61,20 +63,28 @@ fn main() -> anyhow::Result<()> {
     ]);
     let mag: Vec<f32> = outs[0]
         .0
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let phase: Vec<f32> = outs[1]
         .0
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let mag_ref: Vec<f32> = std::fs::read(fx.join("fox_mag_ort.f32"))?
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let phase_ref: Vec<f32> = std::fs::read(fx.join("fox_phase_ort.f32"))?
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     println!(

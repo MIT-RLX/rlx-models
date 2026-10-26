@@ -44,6 +44,8 @@ pub mod cache;
 pub mod cif;
 pub mod cli;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod frontend;
 pub mod paraformer;
 pub mod pipeline;

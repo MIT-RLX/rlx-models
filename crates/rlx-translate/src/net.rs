@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Reader for the Espresso graph triple the NMT actually ships in:
+//! Reader for the network graph triple the NMT actually ships in:
 //! `<name>.espresso.net` (JSON layer list), `.espresso.shape` (per-blob
 //! geometry) and a `.espresso.weights` blob table.
 //!
@@ -22,7 +22,7 @@
 //! `"storage": "embedding.espresso.weights"` and ships no container of its own,
 //! because the readout gathers the tied embedding table.
 //!
-//! [`crate::espresso::Manifest`] names which graphs exist; this loads one.
+//! [`crate::netfile::Manifest`] names which graphs exist; this loads one.
 //!
 //! # Weights container
 //!
@@ -48,7 +48,7 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Geometry of one blob, in Espresso's `(n, k, h, w)` order with `w` innermost.
+/// Geometry of one blob, in the format's `(n, k, h, w)` order with `w` innermost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {
     pub rank: usize,
@@ -68,7 +68,7 @@ impl Shape {
         self.len() == 0
     }
 
-    /// Dimensions outermost-first, trimmed to `rank`. Espresso stores `w`
+    /// Dimensions outermost-first, trimmed to `rank`. The format stores `w`
     /// innermost, so a rank-2 `[h, w]` blob is a sequence of `h` rows of `w`.
     pub fn dims(&self) -> Vec<usize> {
         let all = [self.n, self.k, self.h, self.w];
@@ -251,13 +251,15 @@ impl Weights {
             raw.len()
         );
         Ok(raw
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().expect("four bytes")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect())
     }
 }
 
-/// A loaded Espresso graph: layers, declared shapes and weights.
+/// A loaded network graph: layers, declared shapes and weights.
 #[derive(Debug)]
 pub struct Graph {
     pub name: String,

@@ -43,7 +43,9 @@ fn read_f32(st: &SafeTensors, name: &str) -> (Vec<f32>, Vec<usize>) {
     let t = st.tensor(name).unwrap_or_else(|_| panic!("missing {name}"));
     let bytes = t.data();
     let v: Vec<f32> = bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     (v, t.shape().to_vec())
@@ -53,7 +55,9 @@ fn read_i32(st: &SafeTensors, name: &str) -> (Vec<i32>, Vec<usize>) {
     let t = st.tensor(name).unwrap_or_else(|_| panic!("missing {name}"));
     let bytes = t.data();
     let v: Vec<i32> = bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     (v, t.shape().to_vec())
@@ -111,10 +115,10 @@ fn iou_coords(a: &[[i32; 3]], b: &[[i32; 3]]) -> (f32, usize, usize, usize) {
 #[test]
 fn structure_inject_matches_python_occ() {
     let (Ok(flow_p), Ok(dec_p), Ok(inj_p), Ok(occ_p)) = (
-        std::env::var("RLX_TRELLIS2_SSFLOW_CKPT"),
-        std::env::var("RLX_TRELLIS2_SSDEC_CKPT"),
-        std::env::var("RLX_TRELLIS2_SS_INJECT"),
-        std::env::var("RLX_TRELLIS2_SS_OCC_REF"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SSFLOW_CKPT"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SSDEC_CKPT"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SS_INJECT"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SS_OCC_REF"),
     ) else {
         eprintln!(
             "skipping: set RLX_TRELLIS2_SSFLOW_CKPT, RLX_TRELLIS2_SSDEC_CKPT, \
@@ -138,7 +142,9 @@ fn structure_inject_matches_python_occ() {
     let (occ_flat, occ_shape) = read_i32(&occ_st, "occ_xyz");
     assert_eq!(occ_shape, vec![occ_flat.len() / 3, 3]);
     let py_xyz: Vec<[i32; 3]> = occ_flat
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]])
         .collect();
 
@@ -162,7 +168,7 @@ fn structure_inject_matches_python_occ() {
         rescale_t: 5.0,
     };
 
-    let device = if std::env::var("RLX_TRELLIS2_DIT_DEVICE").as_deref() == Ok("metal") {
+    let device = if rlx_ir::env::var_result("RLX_TRELLIS2_DIT_DEVICE").as_deref() == Ok("metal") {
         Device::Metal
     } else {
         Device::Cpu
@@ -206,7 +212,7 @@ fn structure_inject_matches_python_occ() {
     let sample = flow_euler_sample(model_v, &noise, &cond, &neg, &scfg);
     eprintln!("ss sample done in {:.1}s", t0.elapsed().as_secs_f64());
 
-    if let Ok(sample_p) = std::env::var("RLX_TRELLIS2_SS_SAMPLE") {
+    if let Ok(sample_p) = rlx_ir::env::var_result("RLX_TRELLIS2_SS_SAMPLE") {
         let bytes = std::fs::read(&sample_p).expect("read sample ref");
         let st = SafeTensors::deserialize(&bytes).expect("parse sample");
         let (py_sample, _) = read_f32(&st, "sample");
@@ -237,7 +243,7 @@ fn structure_inject_matches_python_occ() {
     eprintln!("occupancy IoU={iou:.4} inter={inter} rust={n_r} python={n_p}");
 
     // Persist for offline comparison / mesh preview.
-    if let Ok(dump) = std::env::var("RLX_TRELLIS2_OCC_DUMP") {
+    if let Ok(dump) = rlx_ir::env::var_result("RLX_TRELLIS2_OCC_DUMP") {
         let mut flat = Vec::with_capacity(rust_xyz.len() * 3);
         for c in &rust_xyz {
             flat.extend_from_slice(c);
@@ -262,8 +268,8 @@ fn structure_inject_matches_python_occ() {
 #[test]
 fn ssdec_on_python_sample_matches_occ() {
     let (Ok(dec_p), Ok(sample_p)) = (
-        std::env::var("RLX_TRELLIS2_SSDEC_CKPT"),
-        std::env::var("RLX_TRELLIS2_SS_SAMPLE"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SSDEC_CKPT"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SS_SAMPLE"),
     ) else {
         eprintln!("skipping: set RLX_TRELLIS2_SSDEC_CKPT + RLX_TRELLIS2_SS_SAMPLE");
         return;
@@ -288,7 +294,9 @@ fn ssdec_on_python_sample_matches_occ() {
     if st.tensor("occ_xyz").is_ok() {
         let (occ_flat, _) = read_i32(&st, "occ_xyz");
         let py_xyz: Vec<[i32; 3]> = occ_flat
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|c| [c[0], c[1], c[2]])
             .collect();
         let (iou, inter, n_r, n_p) = iou_coords(&rust_xyz, &py_xyz);
@@ -301,7 +309,7 @@ fn ssdec_on_python_sample_matches_occ() {
         );
     }
 
-    if let Ok(out_p) = std::env::var("RLX_TRELLIS2_SS_SAMPLE_OUT") {
+    if let Ok(out_p) = rlx_ir::env::var_result("RLX_TRELLIS2_SS_SAMPLE_OUT") {
         // Write sample + rust-decoded occ for inject parity refs.
         let mut flat = Vec::with_capacity(rust_xyz.len() * 3);
         for c in &rust_xyz {
@@ -342,9 +350,9 @@ fn write_sample_occ_safetensors(
 #[test]
 fn dinov3_matches_python_cond_optional() {
     let (Ok(inj_p), Ok(rgb_p), Ok(dino_w)) = (
-        std::env::var("RLX_TRELLIS2_SS_INJECT"),
-        std::env::var("RLX_TRELLIS2_PRE_RGB"),
-        std::env::var("RLX_TRELLIS2_DINOV3"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SS_INJECT"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_PRE_RGB"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_DINOV3"),
     ) else {
         eprintln!("skipping DINO check: set RLX_TRELLIS2_SS_INJECT, PRE_RGB, DINOV3");
         return;
@@ -387,7 +395,7 @@ fn dinov3_matches_python_cond_optional() {
     assert!(cos > 0.99, "DINO cond cosine {cos} too low");
 
     // Also compare against the same NCHW the Python dump used (isolates resize).
-    if let Ok(refs) = std::env::var("RLX_TRELLIS2_DINO_REFS") {
+    if let Ok(refs) = rlx_ir::env::var_result("RLX_TRELLIS2_DINO_REFS") {
         let bytes = std::fs::read(&refs).unwrap();
         let st = SafeTensors::deserialize(&bytes).unwrap();
         let (nchw, nchw_shape) = read_f32(&st, "nchw");
@@ -431,8 +439,8 @@ fn read_npy_u8_hwc(path: &str) -> (usize, usize, Vec<u8>) {
 #[test]
 fn dit_onestep_inject_matches_python() {
     let (Ok(flow_p), Ok(ref_p)) = (
-        std::env::var("RLX_TRELLIS2_SSFLOW_CKPT"),
-        std::env::var("RLX_TRELLIS2_SS_ONESTEP"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SSFLOW_CKPT"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SS_ONESTEP"),
     ) else {
         eprintln!("skipping: set SSFLOW_CKPT + SS_ONESTEP");
         return;

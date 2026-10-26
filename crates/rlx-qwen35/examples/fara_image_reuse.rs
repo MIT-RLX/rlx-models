@@ -10,7 +10,7 @@
 //! ```bash
 //! FARA_IMG_DIR=/path/to/pngs \
 //! cargo run -p rlx-qwen35 --example fara_image_reuse --release \
-//!   --features "apple-silicon,qwen35-vlm,tokenizer" -- --device metal
+//!   --features "macos-gpu,qwen35-vlm,tokenizer" -- --device metal
 //! ```
 
 use anyhow::{Context, Result};

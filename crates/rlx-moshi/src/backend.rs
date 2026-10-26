@@ -33,7 +33,7 @@ impl MoshiLm {
         device: Device,
     ) -> Result<Self> {
         // Native RLX graph backend: explicit opt-in, or any non-CPU device.
-        if std::env::var_os("RLX_MOSHI_NATIVE").is_some() || device != Device::Cpu {
+        if rlx_ir::env::var_os("RLX_MOSHI_NATIVE").is_some() || device != Device::Cpu {
             return Ok(Self::Rlx(RlxLm::open(
                 model_dir, variant, checkpoint, device,
             )?));

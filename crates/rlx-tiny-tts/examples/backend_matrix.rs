@@ -1,7 +1,7 @@
 //! TinyTTS / MeloTTS cross-backend parity (cosine vs CPU) + audibility.
 //!
 //! ```bash
-//! cargo run -p rlx-tiny-tts --release --example backend_matrix --features apple-silicon \
+//! cargo run -p rlx-tiny-tts --release --example backend_matrix --features macos-gpu \
 //!   -- weights/tts/melotts
 //! RLX_DEVICES=cpu,gpu,vulkan cargo run -p rlx-tiny-tts --release --example backend_matrix \
 //!   --features all-backends -- weights/tiny-tts-rlx
@@ -23,8 +23,8 @@ fn main() -> anyhow::Result<()> {
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("weights/tts/melotts"));
-    let text = std::env::var("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
-    let cos_min: f32 = std::env::var("RLX_COS_MIN")
+    let text = rlx_ir::env::var_result("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
+    let cos_min: f32 = rlx_ir::env::var_result("RLX_COS_MIN")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.95);
@@ -90,7 +90,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn parse_devices() -> Vec<(Device, &'static str)> {
-    if let Ok(raw) = std::env::var("RLX_DEVICES") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_DEVICES") {
         return raw
             .split(',')
             .filter_map(|s| {

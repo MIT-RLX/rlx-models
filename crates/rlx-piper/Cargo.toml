@@ -11,15 +11,19 @@ categories.workspace = true
 repository.workspace = true
 
 [dependencies]
+rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 hound = "3"
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # Bundled espeak-ng phonemizer (reused for the espeak G2P frontend).
-rlx-kittentts = { path = "../rlx-kittentts", version = "0.2.16", default-features = false }
+rlx-kittentts = { path = "../rlx-kittentts", version = "0.2.19", default-features = false }
 # Native (ort-free) rlx-ir path: import + compile + run the split subgraphs.
-rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.16", default-features = false, optional = true }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.19", default-features = false, optional = true }
+rlx-core = { workspace = true, optional = true }
+espeak-ng = { version = "0.2.0", optional = true, default-features = false, features = ["bundled-data-en"] }
+tempfile = { version = "3", optional = true }
 
 [dependencies.hf-hub]
 workspace = true
@@ -30,7 +34,7 @@ default = ["native", "espeak"]
 espeak = ["rlx-kittentts/espeak"]
 # Native (ort-free) multi-backend path over rlx-onnx-import + rlx-ir.
 native = ["dep:rlx-tiny-tts"]
-# Native Apple CoreML / Neural Engine path (`--device ane`).
+# Native CoreML / Neural Engine path (`--device ane`).
 coreml = ["native", "rlx-tiny-tts/coreml"]
 metal = ["rlx-runtime/metal", "rlx-kittentts/metal", "rlx-tiny-tts?/metal"]
 mlx = ["rlx-runtime/mlx", "rlx-kittentts/mlx", "rlx-tiny-tts?/mlx"]
@@ -38,10 +42,14 @@ cuda = ["rlx-runtime/cuda", "rlx-kittentts/cuda", "rlx-tiny-tts?/cuda"]
 gpu = ["rlx-runtime/gpu", "rlx-kittentts/gpu", "rlx-tiny-tts?/gpu"]
 vulkan = ["native", "rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
 all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 hf-download = ["dep:hf-hub"]
+# `export::export_rlxp`: a Piper voice as an `.rlxp` package (its graphs rlx
+# IR, its frontend a program).
+export = ["native", "dep:rlx-core", "rlx-core/export", "dep:espeak-ng", "dep:tempfile"]
 
 [dev-dependencies]
+rlx-runtime = { workspace = true, features = ["program"] }
 rlx-whisper = { workspace = true }
 
 [[bin]]

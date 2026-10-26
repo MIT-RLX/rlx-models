@@ -18,7 +18,7 @@ use rlx_translate::score::{center, cosine_centered};
 
 /// Directory of the sentence embedder, if one is installed.
 fn embed_model() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("RLX_EMBED_MODEL") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_EMBED_MODEL") {
         let p = PathBuf::from(p);
         return p.join("config.json").is_file().then_some(p);
     }
@@ -285,7 +285,7 @@ fn our_translations_match_the_os_and_cosine_can_tell() {
         eprintln!("skipping: no sentence embedder installed");
         return;
     };
-    let refdir = match std::env::var("RLX_TRANSLATE_REFERENCE") {
+    let refdir = match rlx_ir::env::var_result("RLX_TRANSLATE_REFERENCE") {
         Ok(d) => PathBuf::from(d),
         Err(_) => {
             eprintln!("skipping: set RLX_TRANSLATE_REFERENCE to the OS's output dump");
@@ -411,7 +411,7 @@ fn our_translations_match_the_os_and_cosine_can_tell() {
         );
         // Persist the decoded text: re-running this test costs ~25 minutes, and
         // anything worth looking at afterwards only needs the strings.
-        if let Ok(dir) = std::env::var("RLX_TRANSLATE_DUMP") {
+        if let Ok(dir) = rlx_ir::env::var_result("RLX_TRANSLATE_DUMP") {
             let rows: Vec<serde_json::Value> = cases
                 .iter()
                 .zip(&ours)

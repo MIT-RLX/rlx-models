@@ -234,7 +234,7 @@ impl Qwen3TtsConfig {
         let path = dir.join("config.json");
         let text =
             std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-        serde_json::from_str(&text).context("parse config.json")
+        rlx_core::config::from_hf_json(&text).context("parse config.json")
     }
 
     pub fn talker(&self) -> &TalkerConfig {

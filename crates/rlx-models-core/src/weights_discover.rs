@@ -322,7 +322,7 @@ fn candidate_source_roots() -> Vec<(WeightSourceKind, PathBuf)> {
     out.push((WeightSourceKind::RlxLocal, PathBuf::from(".cache")));
     out.push((WeightSourceKind::RlxLocal, rlx_temp_weights_dir()));
 
-    for p in split_path_list(std::env::var_os("RLX_WEIGHTS_PATHS")) {
+    for p in split_path_list(rlx_ir::env::var_os("RLX_WEIGHTS_PATHS")) {
         out.push((WeightSourceKind::Extra, p));
     }
 
@@ -341,7 +341,7 @@ fn local_app_data() -> Option<PathBuf> {
 
 fn env_path(keys: &[&str]) -> Option<PathBuf> {
     for k in keys {
-        if let Ok(v) = std::env::var(k) {
+        if let Ok(v) = rlx_ir::env::read(k) {
             let t = v.trim();
             if !t.is_empty() {
                 return Some(PathBuf::from(t));

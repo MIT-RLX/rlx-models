@@ -15,17 +15,17 @@ const DEFAULT_TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 const FOX_WORDS: [&str; 6] = ["quick", "brown", "fox", "jumps", "lazy", "dog"];
 
 fn main() -> anyhow::Result<()> {
-    let model = std::env::var("RLX_MOSS_DIR")
+    let model = rlx_ir::env::var_result("RLX_MOSS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_LOCAL_DIR));
-    let text = std::env::var("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
-    let voice = std::env::var("RLX_VOICE").unwrap_or_else(|_| "Trump".into());
+    let text = rlx_ir::env::var_result("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
+    let voice = rlx_ir::env::var_result("RLX_VOICE").unwrap_or_else(|_| "Trump".into());
     let opts = NativeOpts {
-        max_frames: std::env::var("RLX_FRAMES")
+        max_frames: rlx_ir::env::var_result("RLX_FRAMES")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(64),
-        seed: std::env::var("RLX_SEED")
+        seed: rlx_ir::env::var_result("RLX_SEED")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0),
@@ -120,7 +120,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn parse_devices() -> Vec<(Device, &'static str)> {
-    if let Ok(raw) = std::env::var("RLX_DEVICES") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_DEVICES") {
         return raw
             .split(',')
             .filter_map(|s| {
@@ -162,7 +162,7 @@ fn load_whisper() -> WhisperRunner {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         return whisper_ready(&p).then_some(p);
     }

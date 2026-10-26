@@ -250,7 +250,7 @@ impl HydraLite {
         // is confidence-gated; lexicon still wins for known words). Opt out:
         // `RLX_TTS_NO_TORCHN=1`. Force-load even without safetensors:
         // `RLX_TTS_LOAD_TORCHN=1`.
-        let torchn = if std::env::var_os("RLX_TTS_NO_TORCHN").is_some() {
+        let torchn = if rlx_ir::env::var_os("RLX_TTS_NO_TORCHN").is_some() {
             None
         } else {
             TorchnG2p::load_prefer_sidecar(&frontend_dir).ok()
@@ -258,9 +258,9 @@ impl HydraLite {
         let rewrite = {
             let dat = frontend_dir.join("rewrite_rule.dat");
             let map = frontend_dir.join("rewrite_map.json");
-            if std::env::var_os("RLX_TTS_LOAD_REWRITE_DAT").is_some() && dat.is_file() {
+            if rlx_ir::env::var_os("RLX_TTS_LOAD_REWRITE_DAT").is_some() && dat.is_file() {
                 RewriteRules::load(&dat).ok()
-            } else if std::env::var_os("RLX_TTS_HARVEST_REWRITE").is_some() && dat.is_file() {
+            } else if rlx_ir::env::var_os("RLX_TTS_HARVEST_REWRITE").is_some() && dat.is_file() {
                 RewriteRules::load_harvest_only(&dat).ok()
             } else if map.is_file() {
                 RewriteRules::load_map_only(&map).ok()
@@ -270,7 +270,7 @@ impl HydraLite {
         };
         // TN: load R-list literals by default when present (BinaryGraph ordinal
         // tables still incomplete). Opt out: `RLX_TTS_NO_TN_DAT=1`.
-        let tn = if std::env::var_os("RLX_TTS_NO_TN_DAT").is_some() {
+        let tn = if rlx_ir::env::var_os("RLX_TTS_NO_TN_DAT").is_some() {
             None
         } else {
             frontend_dir
@@ -305,7 +305,7 @@ impl HydraLite {
         .into_iter()
         .find(|p| p.is_file())
         .and_then(|p| LhpAlphabet::load_to_lhp(p).ok());
-        let phbk = if std::env::var_os("RLX_TTS_LOAD_PHBK").is_some() {
+        let phbk = if rlx_ir::env::var_os("RLX_TTS_LOAD_PHBK").is_some() {
             frontend_dir
                 .join("phbk")
                 .is_file()

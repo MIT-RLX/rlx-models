@@ -27,7 +27,7 @@ const DESC: &str = "Realistic female voice in her 20s with a British accent. Nor
 const TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 
 fn gguf_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("RLX_MAYA1_GGUF") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_MAYA1_GGUF") {
         let p = PathBuf::from(p);
         if p.is_file() {
             return Some(p);
@@ -45,7 +45,7 @@ fn gguf_path() -> Option<PathBuf> {
         .find(|p| p.extension().is_some_and(|x| x == "gguf"))
 }
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         return ready(PathBuf::from(d));
     }
     let c = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");

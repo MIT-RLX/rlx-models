@@ -159,7 +159,7 @@ fn main() -> Result<()> {
     };
     let finite = |id: NodeId| eval(id).is_some_and(|v| v.iter().all(|x| x.is_finite()));
 
-    if let Ok(spec) = std::env::var("RLX_KEV_NODE") {
+    if let Ok(spec) = rlx_ir::env::var_result("RLX_KEV_NODE") {
         for tok in spec.split(',') {
             let id = NodeId(tok.trim().parse().expect("node id"));
             let node = bwd.node(id);

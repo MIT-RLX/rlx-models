@@ -21,14 +21,18 @@ const P: &str = "language_model.model.layers.0.self_attn";
 
 fn bf16_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| half::bf16::from_bits(u16::from_le_bytes([c[0], c[1]])).to_f32())
         .collect()
 }
 
 fn f32_of(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

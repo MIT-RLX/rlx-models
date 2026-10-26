@@ -191,7 +191,7 @@ fn default_hidden_act() -> String {
 impl Llama32Config {
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let data = std::fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&data)?)
+        rlx_core::config::from_hf_json(&data)
     }
 
     pub fn from_gguf(raw: &GgufFile) -> anyhow::Result<Self> {
@@ -581,23 +581,27 @@ pub fn llama32_cfg_from_gguf(raw: &GgufFile) -> anyhow::Result<Llama32Config> {
 /// `llama.vocab_size`; older llama-tagged files (TinyLlama, SmolLM2, …) often
 /// only expose `tokenizer.ggml.tokens` or an embed row count.
 fn infer_vocab_size_from_gguf(raw: &GgufFile) -> usize {
-    if let Some(v) = raw
+    let arch = raw
         .metadata
-        .get("llama.vocab_size")
-        .and_then(MetaValue::as_u32)
-    {
-        return v as usize;
+        .get("general.architecture")
+        .and_then(MetaValue::as_str)
+        .unwrap_or("llama");
+    for key in [format!("{arch}.vocab_size"), "llama.vocab_size".to_string()] {
+        if let Some(v) = raw.metadata.get(&key).and_then(MetaValue::as_u32) {
+            return v as usize;
+        }
     }
     if let Some(MetaValue::Array(tokens)) = raw.metadata.get("tokenizer.ggml.tokens")
         && !tokens.is_empty()
     {
         return tokens.len();
     }
+    // GGUF dims are innermost first: the embedding is `[hidden, vocab]`.
     for name in ["token_embd.weight", "model.embed_tokens.weight"] {
         if let Some(t) = raw.tensors.get(name)
-            && !t.shape.is_empty()
+            && let Some(&rows) = t.shape.last()
         {
-            return t.shape[0];
+            return rows;
         }
     }
     128_256
@@ -632,6 +636,31 @@ mod tests {
         assert_eq!(cfg.head_dim(), 64);
         assert_eq!(cfg.kv_group_size(), 4);
         assert!(cfg.rope_scaling.is_some());
+    }
+
+    #[test]
+    fn a_transformers_5_config_keeps_its_llama3_scaling() {
+        // transformers 5 saves theta and scaling only in `rope_parameters`.
+        let dir = std::env::temp_dir().join(format!("llama32-tf5-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"vocab_size": 128256, "hidden_size": 2048, "intermediate_size": 8192,
+                "num_hidden_layers": 16, "num_attention_heads": 32,
+                "num_key_value_heads": 8, "max_position_embeddings": 131072,
+                "rms_norm_eps": 1e-05, "tie_word_embeddings": true,
+                "rope_parameters": {"rope_type": "llama3", "factor": 32.0,
+                    "high_freq_factor": 4.0, "low_freq_factor": 1.0,
+                    "original_max_position_embeddings": 8192, "rope_theta": 500000.0}}"#,
+        )
+        .unwrap();
+        let cfg = Llama32Config::from_file(&path).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(cfg.rope_theta, 500000.0);
+        let s = cfg.rope_scaling.expect("the llama3 scaling");
+        assert_eq!((s.factor, s.original_max_position_embeddings), (32.0, 8192));
+        assert_eq!(s.rope_type, Llama32RopeType::Llama3);
     }
 
     #[test]

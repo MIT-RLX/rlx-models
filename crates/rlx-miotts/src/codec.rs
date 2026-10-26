@@ -124,7 +124,7 @@ impl MioCodec {
         let phase = as_f32(&outs[1]).context("phase")?;
         // Parity bisection (dev): dump the exact decoder_body I/O so a Python
         // onnxruntime run can diff native mag/phase (isolates decoder_body vs ISTFT).
-        if let Some(dir) = std::env::var_os("RLX_MIO_DUMP") {
+        if let Some(dir) = rlx_ir::env::var_os("RLX_MIO_DUMP") {
             let dir = std::path::PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
             let dump = |name: &str, b: &[u8]| {
@@ -177,7 +177,9 @@ impl MioCodec {
 fn as_f32((bytes, dt): &(Vec<u8>, DType)) -> Result<Vec<f32>> {
     anyhow::ensure!(*dt == DType::F32, "expected F32, got {dt:?}");
     Ok(bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
@@ -199,7 +201,9 @@ pub fn load_preset_embedding(presets_dir: &Path, preset_id: &str) -> Result<Vec<
 fn load_f32_bin(path: &Path) -> Result<Vec<f32>> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     Ok(bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }

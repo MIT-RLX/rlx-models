@@ -66,7 +66,10 @@ fn max_abs(a: &[f32], b: &[f32]) -> f32 {
 
 #[test]
 fn eager_prefill_last_row_near_compiled() {
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
@@ -110,15 +113,22 @@ fn metal_session_eager_prefill_kv_matches_eager() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
-    if std::env::var("RLX_QWEN3_TTS_METAL_COMPILED")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_COMPILED")
         .ok()
         .as_deref()
         == Some("1")
@@ -169,15 +179,22 @@ fn metal_decode_with_eager_kv_matches_eager() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
-    if std::env::var("RLX_QWEN3_TTS_METAL_COMPILED")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_COMPILED")
         .ok()
         .as_deref()
         != Some("1")
@@ -222,7 +239,11 @@ fn metal_decode_with_eager_kv_matches_eager() {
 
     let d = max_abs(&h_eag, &h_m);
     eprintln!("metal decode (eager KV) vs eager hidden max_abs={d}");
-    if std::env::var("RLX_QWEN3_TTS_DECODE_DEBUG").ok().as_deref() == Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_DECODE_DEBUG")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         eprintln!("eager[:8] = {:?}", &h_eag[..8.min(hidden)]);
         eprintln!("metal[:8] = {:?}", &h_m[..8.min(hidden)]);
         eprintln!("past_len={}", metal.past_len());
@@ -240,15 +261,22 @@ fn metal_native_decode_with_gpu_kv_matches_eager() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
-    if std::env::var("RLX_QWEN3_TTS_METAL_COMPILED")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_COMPILED")
         .ok()
         .as_deref()
         != Some("1")
@@ -256,7 +284,7 @@ fn metal_native_decode_with_gpu_kv_matches_eager() {
         eprintln!("skip: RLX_QWEN3_TTS_METAL_COMPILED=1");
         return;
     }
-    if std::env::var("RLX_QWEN3_TTS_METAL_DECODE_NATIVE")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_DECODE_NATIVE")
         .ok()
         .as_deref()
         != Some("1")
@@ -264,7 +292,11 @@ fn metal_native_decode_with_gpu_kv_matches_eager() {
         eprintln!("skip: RLX_QWEN3_TTS_METAL_DECODE_NATIVE=1");
         return;
     }
-    if std::env::var("RLX_QWEN3_TTS_GPU_KV").ok().as_deref() == Some("0") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_GPU_KV")
+        .ok()
+        .as_deref()
+        == Some("0")
+    {
         eprintln!("skip: unset RLX_QWEN3_TTS_GPU_KV=0 for GPU KV test");
         return;
     }
@@ -335,11 +367,14 @@ fn metal_native_decode_with_gpu_kv_matches_eager() {
 
 #[test]
 fn cpu_compiled_decode_with_eager_kv_matches_eager() {
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_METAL_COMPILED")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_COMPILED")
         .ok()
         .as_deref()
         == Some("1")
@@ -396,15 +431,22 @@ fn metal_compiled_decode_matches_cpu_compiled_with_shared_kv() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
-    if std::env::var("RLX_QWEN3_TTS_METAL_COMPILED")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_COMPILED")
         .ok()
         .as_deref()
         != Some("1")
@@ -461,15 +503,22 @@ fn metal_compiled_decode_after_golden_frame0_matches_eager() {
         eprintln!("skip: Metal unavailable");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
-    if std::env::var("RLX_QWEN3_TTS_METAL_COMPILED")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_COMPILED")
         .ok()
         .as_deref()
         != Some("1")
@@ -534,11 +583,14 @@ fn metal_compiled_decode_after_golden_frame0_matches_eager() {
 
 #[test]
 fn cpu_compiled_decode_after_golden_frame0_matches_eager() {
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_METAL_COMPILED")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_COMPILED")
         .ok()
         .as_deref()
         == Some("1")

@@ -44,14 +44,5 @@ pub fn any_eos(tokens: &[u32]) -> bool {
 
 /// Argmax of one beam's logprob row.
 pub fn argmax_token(logprob: &[f32], beam: usize) -> u32 {
-    let row = &logprob[beam * VOCAB..(beam + 1) * VOCAB];
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &v) in row.iter().enumerate() {
-        if v > best_v {
-            best_v = v;
-            best = i;
-        }
-    }
-    best as u32
+    rlx_runtime::search::argmax_u32(&logprob[beam * VOCAB..(beam + 1) * VOCAB])
 }

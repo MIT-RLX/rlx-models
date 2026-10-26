@@ -62,7 +62,14 @@ impl CodecDecoder {
         );
 
         let mut blocks = Vec::new();
-        let mut window = cfg.attn_sliding_window_size;
+        // The decoder starts at the window the encoder's 2x downsamplings
+        // left, and doubles it at each 2x upsampling.
+        let halvings = cfg
+            .encoder_convs_strides()
+            .iter()
+            .filter(|&&s| s > 1)
+            .count();
+        let mut window = cfg.attn_sliding_window_size >> halvings;
         let mut block_idx = 0usize;
 
         blocks.push(DecoderBlock::Conv(CodecConvBlock::Forward {
@@ -97,8 +104,9 @@ impl CodecDecoder {
                         &format!("{prefix}decoder_blocks.{block_idx}"),
                     )?,
                     stride: st,
-                    trim_left: total_pad - (total_pad / 2),
-                    trim_right: total_pad / 2,
+                    // `trim_ratio = 1`: all of it from the right.
+                    trim_left: 0,
+                    trim_right: total_pad,
                 }));
                 if st > 1 {
                     window *= 2;

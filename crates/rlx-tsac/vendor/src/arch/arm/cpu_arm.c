@@ -15,7 +15,7 @@
 #include <arm_neon.h>
 static unsigned long tsac_getauxval(unsigned long _type) {
     (void)_type;
-    return (1UL << 1); /* ASIMD / NEON always on Apple Silicon */
+    return (1UL << 1); /* ASIMD / NEON always on macOS arm64 */
 }
 #define getauxval tsac_getauxval
 #ifndef AT_HWCAP

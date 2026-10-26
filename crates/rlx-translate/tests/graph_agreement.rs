@@ -20,14 +20,14 @@ use rlx_translate::quasar::LangPair;
 
 /// Every direction the dump holds, in a stable order.
 fn directions() -> Vec<LangPair> {
-    let Ok(dir) = std::env::var("RLX_TRANSLATE_REFERENCE") else {
+    let Ok(dir) = rlx_ir::env::var_result("RLX_TRANSLATE_REFERENCE") else {
         return Vec::new();
     };
     // A comma-separated list, because a tuning A/B wants a handful of
     // directions run twice rather than all 52 run once: the full sweep is an
     // hour on this machine, which is longer than the patience any lever
     // deserves before it has shown anything.
-    let only: Option<Vec<String>> = std::env::var("RLX_TEST_PAIR")
+    let only: Option<Vec<String>> = rlx_ir::env::var_result("RLX_TEST_PAIR")
         .ok()
         .map(|v| v.split(',').map(|p| p.trim().to_string()).collect());
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -50,7 +50,7 @@ fn directions() -> Vec<LangPair> {
 }
 
 fn reference(pair: &LangPair) -> Vec<(String, String)> {
-    let Ok(dir) = std::env::var("RLX_TRANSLATE_REFERENCE") else {
+    let Ok(dir) = rlx_ir::env::var_result("RLX_TRANSLATE_REFERENCE") else {
         return Vec::new();
     };
     let path = PathBuf::from(dir).join(format!("{}-{}.tsv", pair.source, pair.target));
@@ -67,7 +67,7 @@ fn reference(pair: &LangPair) -> Vec<(String, String)> {
 
 #[test]
 fn the_graph_reproduces_the_os_output() {
-    let n: usize = std::env::var("RLX_TEST_N")
+    let n: usize = rlx_ir::env::var_result("RLX_TEST_N")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);

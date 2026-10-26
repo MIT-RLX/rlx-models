@@ -37,7 +37,7 @@ fn workspace_root() -> std::path::PathBuf {
 
 fn model_dir() -> Option<std::path::PathBuf> {
     let candidates = [
-        std::env::var("RLX_QWEN3_TTS_DIR")
+        rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
             .ok()
             .map(std::path::PathBuf::from),
         Some(workspace_root().join(".cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base")),

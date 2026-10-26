@@ -13,22 +13,31 @@ repository.workspace = true
 # Step 2 (LM) wired via rlx-qwen3 (Qwen2 = Qwen3 with qk_norm=false,
 # attention_bias=true). The codec (steps 3–4) will add rlx Vocos/ISTFT + WavLM.
 [dependencies]
+rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx-qwen3 = { workspace = true }
 # Native codec decode: import + compile + run detokenizer.onnx (codes → waveform).
-rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.16", default-features = false }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.19", default-features = false }
 tokenizers = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 hound = "3"
+# `export`: the package's own entry points.
+rlx-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Intelligibility round-trip: decode → Whisper ASR (native RLX, no ort at runtime).
 rlx-whisper = { workspace = true }
+tempfile = "3"
+rlx-text = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
 
 [features]
 default = []
+# `export::export_rlxp`: MiraTTS as an `.rlxp` package rlx runs alone.
+export = ["dep:rlx-core", "rlx-core/export", "rlx-qwen3/export"]
 metal = ["rlx-runtime/metal", "rlx-qwen3/metal", "rlx-tiny-tts/metal"]
 mlx = ["rlx-runtime/mlx", "rlx-qwen3/mlx", "rlx-tiny-tts/mlx"]
 cuda = ["rlx-runtime/cuda", "rlx-qwen3/cuda", "rlx-tiny-tts/cuda"]

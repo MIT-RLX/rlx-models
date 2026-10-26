@@ -12,7 +12,7 @@
 
 use crate::common::{
     WeightQuant, act, bf16_backbone_active, emit_int8_resident, fake_quant_weight,
-    int8_backbone_active, resolve_quant, scalar_const, sigmoid,
+    int8_backbone_active, resolve_quant, scalar_const, sigmoid, tap,
 };
 use anyhow::Result;
 use rlx_ir::hir::{HirMut, HirNodeId};
@@ -27,7 +27,7 @@ type Params = HashMap<String, Vec<f32>>;
 /// `RLX_KDA_CHUNK` enables it; a value in `2..=16` sets the chunk size, anything
 /// else (e.g. `1`, `on`) uses FlashKDA's default of 16.
 fn kda_chunk_size() -> Option<usize> {
-    let v = std::env::var("RLX_KDA_CHUNK").ok()?;
+    let v = rlx_ir::env::var_result("RLX_KDA_CHUNK").ok()?;
     match v.trim().parse::<usize>() {
         Ok(n) if (2..=16).contains(&n) => Some(n),
         _ => Some(16),
@@ -37,7 +37,7 @@ fn kda_chunk_size() -> Option<usize> {
 /// Whether the chunked KDA prefill uses the `Op::Scan`-based K2 (O(1) graph size)
 /// instead of the unrolled chunk loop. `RLX_KDA_CHUNK_SCAN=1`. Bit-identical.
 fn kda_chunk_use_scan() -> bool {
-    std::env::var("RLX_KDA_CHUNK_SCAN")
+    rlx_ir::env::var_result("RLX_KDA_CHUNK_SCAN")
         .ok()
         .map(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"))
         .unwrap_or(false)
@@ -147,6 +147,20 @@ fn fused_input_proj(
     // (2nd/3rd most sensitive) even though they share one fused matmul. For fixed
     // int8/int4/off this is identical to quantizing the whole fused matrix (per-out-
     // channel scales are column-independent); the bf16-backbone path is untouched.
+    if crate::common::canonical_params() {
+        // One matmul per checkpoint tensor, under its checkpoint module name.
+        let mut lin = |name: &str, wi: &[f32], out: usize| {
+            linear(g, params, prefix, name, x2d, wi, hidden, out)
+        };
+        return (
+            lin("q_proj", &w.q_proj, proj),
+            lin("k_proj", &w.k_proj, proj),
+            lin("v_proj", &w.v_proj, proj),
+            lin("f_a_proj", &w.f_a, hd),
+            lin("b_proj", &w.b_proj, h),
+            lin("g_proj", &w.g_proj, proj),
+        );
+    }
     let parts: [(&[f32], usize, &str); 6] = [
         (&w.q_proj, proj, "q_proj"),
         (&w.k_proj, proj, "k_proj"),
@@ -301,7 +315,7 @@ fn depthwise_conv1d_causal(
     // The shift-multiply-accumulate default is ~1.6–2× faster on the full KDA
     // layer (real dims: proj=96·128=12288 channels, k=4) — the transposes moved
     // that wide tensor twice, strided. Kept as an escape hatch.
-    if std::env::var_os("RLX_KDA_CONV_OLD").is_some() {
+    if rlx_ir::env::var_os("RLX_KDA_CONV_OLD").is_some() {
         let width = seq + k - 1;
         let bcw = g.transpose_(padded, vec![0, 2, 1]);
         let nchw = g.reshape_(bcw, vec![batch as i64, channels as i64, width as i64, 1]);
@@ -320,11 +334,21 @@ fn depthwise_conv1d_causal(
         let bcs = g.reshape_(conv, vec![batch as i64, channels as i64, seq as i64]);
         return g.transpose_(bcs, vec![0, 2, 1]);
     }
+    // Canonical params: the whole `[channels, k]` weight is one leaf (the
+    // checkpoint's `[c, 1, k]` in the same element order) and each tap is an
+    // in-graph slice of it, so the conv weight takes a gradient as one tensor.
+    let whole = crate::common::canonical_params()
+        .then(|| reg(g, params, name, weight.to_vec(), &[channels, k]));
     let mut acc: Option<HirNodeId> = None;
     for j in 0..k {
-        // Tap j across all channels: weight is [channels, k] (k-minor).
-        let tap: Vec<f32> = (0..channels).map(|c| weight[c * k + j]).collect();
-        let wj = reg(g, params, &format!("{name}.tap{j}"), tap, &[1, 1, channels]);
+        let wj = if let Some(wn) = whole {
+            let col = g.narrow_(wn, 1, j, 1); // [channels, 1]
+            g.reshape_(col, vec![1, 1, channels as i64])
+        } else {
+            // Tap j across all channels: weight is [channels, k] (k-minor).
+            let tap: Vec<f32> = (0..channels).map(|c| weight[c * k + j]).collect();
+            reg(g, params, &format!("{name}.tap{j}"), tap, &[1, 1, channels])
+        };
         let shifted = g.narrow_(padded, 1, j, seq); // [b, s, channels]
         let term = g.mul(shifted, wj); // broadcast [1,1,channels]
         acc = Some(match acc {
@@ -403,6 +427,9 @@ pub fn build_kda_layer(
     let vh = g.reshape_(vc, vec![b as i64, s as i64, h as i64, hd as i64]);
     let q_l2 = l2_norm(g, qh, &bshd, d.eps);
     let k_l2 = l2_norm(g, kh, &bshd, d.eps);
+    tap(g, format!("{prefix}.q"), q_l2);
+    tap(g, format!("{prefix}.k"), k_l2);
+    tap(g, format!("{prefix}.v"), vh);
 
     // (4) per-channel log-decay gate g_log [b,s,h,hd]  (f_a from the fused proj)
     let f_b = linear(g, params, prefix, "f_b_proj", f_a, &w.f_b, hd, proj);
@@ -454,6 +481,8 @@ pub fn build_kda_layer(
     // (5) beta = sigmoid(b_proj(x)) [b,s,h]  (b_proj from the fused proj)
     let beta = sigmoid(g, beta, Shape::new(&[rows, h], DType::F32));
     let beta = g.reshape_(beta, vec![b as i64, s as i64, h as i64]);
+    tap(g, format!("{prefix}.decay"), g_log);
+    tap(g, format!("{prefix}.beta"), beta);
 
     // (6) per-channel gated delta-net recurrence. Opt-in FlashKDA chunked-parallel
     // form (`RLX_KDA_CHUNK`), else the native sequential `Op::GatedDeltaNet`.
@@ -491,6 +520,8 @@ pub fn build_kda_layer(
     // (7) FusedRMSNormGated(sigmoid): rms_norm(scan * sigmoid(g_proj(x)))  (g from fused)
     let g2 = g.reshape_(g2, vec![b as i64, s as i64, h as i64, hd as i64]);
     let g2_sig = sigmoid(g, g2, Shape::new(&bshd, DType::F32));
+    tap(g, format!("{prefix}.scan"), scan);
+    tap(g, format!("{prefix}.out_gate"), g2_sig);
     let gated = g.mul(scan, g2_sig);
     let o_norm_w = reg(
         g,
@@ -507,6 +538,7 @@ pub fn build_kda_layer(
         &[hd],
     );
     let o = g.rms_norm(gated, o_norm_w, zero_beta, d.eps);
+    tap(g, format!("{prefix}.o_norm_out"), o);
 
     // (8) o_proj → raw attention output (the residual is added by the caller /
     // the AttnRes block-residual accumulation).
@@ -577,6 +609,13 @@ fn depthwise_conv1d_carry(
     (out, new_state)
 }
 
+/// Taps (suffixes of `l{i}.self_attn.`) a KDA decode step exposes for state
+/// logging, in record order: the recurrence inputs `k`, `v`, `decay`, `beta`
+/// (they and the previous scan state give the next scan state exactly), then the
+/// raw pre-conv projections `q_raw`, `k_raw`, `v_raw` (the conv windows are the
+/// last `conv_kernel - 1` of them).
+pub const DECODE_STATE_TAPS: [&str; 7] = ["k", "v", "decay", "beta", "q_raw", "k_raw", "v_raw"];
+
 /// One KDA **decode step** — process `d.seq` NEW tokens O(1) in the prefix length
 /// by carrying the short-conv state and the recurrent scan state, instead of
 /// re-scanning the whole sequence. `conv_state_{q,k,v}` are `[b, k-1, proj]`
@@ -609,6 +648,10 @@ pub fn build_kda_decode_step(
     let q3 = g.reshape_(q, vec![b as i64, s as i64, proj as i64]);
     let k3 = g.reshape_(k, vec![b as i64, s as i64, proj as i64]);
     let v3 = g.reshape_(v, vec![b as i64, s as i64, proj as i64]);
+    // Raw pre-conv projections: the next conv windows are the last `k-1` of them.
+    tap(g, format!("{prefix}.q_raw"), q3);
+    tap(g, format!("{prefix}.k_raw"), k3);
+    tap(g, format!("{prefix}.v_raw"), v3);
 
     // Conv with carried state (returns the next state too).
     let (qc, ncs_q) = depthwise_conv1d_carry(
@@ -699,6 +742,12 @@ pub fn build_kda_decode_step(
 
     let beta = sigmoid(g, beta, Shape::new(&[rows, h], DType::F32));
     let beta = g.reshape_(beta, vec![b as i64, s as i64, h as i64]);
+    // The recurrence's per-token inputs: with the previous scan state they
+    // determine the next one exactly (see `DECODE_STATE_TAPS`).
+    tap(g, format!("{prefix}.k"), k_l2);
+    tap(g, format!("{prefix}.v"), vh);
+    tap(g, format!("{prefix}.decay"), g_log);
+    tap(g, format!("{prefix}.beta"), beta);
 
     // Carried scan: resume from `scan_state`, write it back in place.
     let scan = g.gated_delta_net_carry_pc(

@@ -140,26 +140,33 @@ pub fn weight_files(weights: &Path) -> Result<Vec<PathBuf>> {
     if !weights.is_dir() {
         bail!("no weights at {weights:?}");
     }
-    let mut safetensors = Vec::new();
-    let mut gguf = Vec::new();
-    for entry in std::fs::read_dir(weights).with_context(|| format!("reading {weights:?}"))? {
-        let path = entry?.path();
-        match path.extension().and_then(|e| e.to_str()) {
-            Some(e) if e.eq_ignore_ascii_case("safetensors") => safetensors.push(path),
-            Some(e) if e.eq_ignore_ascii_case("gguf") => gguf.push(path),
-            _ => {}
-        }
-    }
-    // Safetensors wins where both are present, matching what the
-    // whole-model loader picks for the same directory.
-    let mut files = if safetensors.is_empty() {
-        gguf
-    } else {
-        safetensors
-    };
+    // Which format a directory means is decided once, in
+    // `crate::weight_registry::resolve_format`, and this asks rather than
+    // deciding again. It used to prefer safetensors and claim that matched
+    // the whole-model loader; it did not, and a directory holding a
+    // safetensors and a quantised GGUF of the same model therefore ran
+    // different weights split than whole.
+    let format = crate::weight_registry::resolve_format(weights)?;
+    let exts: Vec<&'static str> = crate::weight_registry::list_registered_formats()
+        .into_iter()
+        .find(|r| r.id == format)
+        .map(|r| r.extensions.to_vec())
+        .unwrap_or_default();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(weights)
+        .with_context(|| format!("reading {weights:?}"))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| exts.iter().any(|w| e.eq_ignore_ascii_case(w)))
+        })
+        .collect();
     if files.is_empty() {
-        bail!("no .safetensors or .gguf file in {weights:?}");
+        bail!("no {format} weights in {weights:?}");
     }
+    // Sorted, so every rank reading the same directory walks it in the same
+    // order.
     files.sort();
     Ok(files)
 }
@@ -544,16 +551,31 @@ mod tests {
     }
 
     #[test]
-    fn safetensors_wins_over_gguf_in_the_same_directory() {
-        // Whichever the whole-model loader would pick for this directory,
-        // so a block does not end up reading a different quantisation of
-        // the same model than its peers.
+    fn a_directory_holding_both_formats_is_refused_rather_than_guessed() {
+        // Found by a parity test on a real checkpoint directory holding
+        // `model.safetensors` and a Q4_K_M GGUF: split it answered " Paris.
+        // The capital of Italy is Rome", whole it answered " Paris. The
+        // capital of France is also", because the two paths loaded
+        // different quantisations. Both answers are right for the weights
+        // that ran; the directory was the ambiguous thing.
         let d = tmpdir("both");
         touch(&d, "model.gguf");
         touch(&d, "model.safetensors");
-        let files = weight_files(&d).unwrap();
-        assert_eq!(files.len(), 1);
-        assert!(files[0].to_string_lossy().ends_with(".safetensors"));
+        let err = weight_files(&d).unwrap_err().to_string();
+        assert!(err.contains("more than one weight format"), "{err}");
+        // Both named, so the reader knows what to pass instead.
+        assert!(err.contains("model.safetensors"), "{err}");
+        assert!(err.contains("model.gguf"), "{err}");
+    }
+
+    #[test]
+    fn one_format_on_its_own_is_taken_without_complaint() {
+        let d = tmpdir("st-only");
+        touch(&d, "model.safetensors");
+        assert_eq!(weight_files(&d).unwrap().len(), 1);
+        let g = tmpdir("gguf-only");
+        touch(&g, "model.gguf");
+        assert_eq!(weight_files(&g).unwrap().len(), 1);
     }
 
     #[test]
@@ -561,7 +583,7 @@ mod tests {
         let d = tmpdir("empty");
         touch(&d, "config.json");
         let err = weight_files(&d).unwrap_err().to_string();
-        assert!(err.contains("no .safetensors or .gguf"), "{err}");
+        assert!(err.contains("registered weight"), "{err}");
         let err = weight_files(&d.join("nope")).unwrap_err().to_string();
         assert!(err.contains("no weights at"), "{err}");
     }

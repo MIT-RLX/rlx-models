@@ -40,6 +40,9 @@
 
 pub mod cli;
 pub mod dna_config;
+#[cfg(feature = "export")]
+pub mod export;
+pub mod hybrid;
 pub mod runner;
 #[cfg(feature = "tokenizer")]
 pub mod tokenizer;

@@ -17,19 +17,21 @@ fn main() {
     // Work dir (parity fixtures) and onnx dir are machine-independent: the work
     // dir defaults under the OS temp dir, the onnx dir is resolved relative to
     // this crate (`CARGO_MANIFEST_DIR/../../weights/...`). Both overridable by env.
-    let d = std::env::var("RLX_ST_WORK")
+    let d = rlx_ir::env::var_result("RLX_ST_WORK")
         .unwrap_or_else(|_| format!("{}/st_ve_parity", std::env::temp_dir().display()));
     let meta: serde_json::Value =
         serde_json::from_slice(&std::fs::read(format!("{d}/meta.json")).unwrap()).unwrap();
     let t = meta["t"].as_u64().unwrap() as usize;
     let l = meta["l"].as_u64().unwrap() as usize;
 
-    let onnx_dir = PathBuf::from(std::env::var("RLX_ST_ONNX_DIR").unwrap_or_else(|_| {
-        format!(
-            "{}/../../weights/tts/supertonic-3/onnx",
-            env!("CARGO_MANIFEST_DIR")
-        )
-    }));
+    let onnx_dir = PathBuf::from(
+        rlx_ir::env::var_result("RLX_ST_ONNX_DIR").unwrap_or_else(|_| {
+            format!(
+                "{}/../../weights/tts/supertonic-3/onnx",
+                env!("CARGO_MANIFEST_DIR")
+            )
+        }),
+    );
     let cfg = BundleConfig {
         model: String::new(),
         sample_rate: 44100,
@@ -44,7 +46,7 @@ fn main() {
         gin_channels: 80,
     };
     let m = TinyModel::new(onnx_dir, cfg);
-    let device = match std::env::var("RLX_DEV").as_deref() {
+    let device = match rlx_ir::env::var_result("RLX_DEV").as_deref() {
         Ok("mlx") => Device::Mlx,
         Ok("metal") => Device::Metal,
         _ => Device::Cpu,
@@ -80,7 +82,7 @@ fn main() {
     let out = g.run_typed(&inputs);
     // Report finiteness of every output (main + RLX_ONNX_TAP taps) to localize
     // where nan/inf is born. Tap order matches RLX_ONNX_TAP, appended after out[0].
-    let tap_names: Vec<String> = std::env::var("RLX_ONNX_TAP")
+    let tap_names: Vec<String> = rlx_ir::env::var_result("RLX_ONNX_TAP")
         .unwrap_or_default()
         .split(',')
         .map(|s| s.trim().to_string())
@@ -88,7 +90,9 @@ fn main() {
         .collect();
     for (i, (bytes, dt)) in out.iter().enumerate() {
         let f: Vec<f32> = bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
         let nan = f.iter().filter(|v| v.is_nan()).count();

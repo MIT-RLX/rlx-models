@@ -48,7 +48,7 @@ fn hf_cache_mtp_q4() -> Option<PathBuf> {
 
 fn mtp_gguf_path() -> Option<PathBuf> {
     for key in ["QWEN35_MTP_GGUF_PATH", "QWEN35_GGUF_PATH"] {
-        if let Ok(p) = std::env::var(key)
+        if let Ok(p) = rlx_ir::env::read(key)
             && !p.is_empty()
         {
             let path = PathBuf::from(p);

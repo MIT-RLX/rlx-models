@@ -29,7 +29,9 @@ fn read_npy_f32(path: &Path) -> Result<Vec<f32>> {
     anyhow::ensure!(&b[..6] == b"\x93NUMPY", "{path:?}: not a .npy");
     let hlen = 10 + u16::from_le_bytes([b[8], b[9]]) as usize;
     Ok(b[hlen..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }

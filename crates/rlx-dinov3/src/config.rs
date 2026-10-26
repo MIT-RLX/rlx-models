@@ -142,7 +142,7 @@ impl DinoV3Config {
     /// Deserialize a checkpoint's `config.json` (HF `DINOv3ViTConfig` fields).
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let data = std::fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&data)?)
+        rlx_core::config::from_hf_json(&data)
     }
 
     /// Per-head width (`hidden_size / num_attention_heads`).

@@ -38,10 +38,10 @@ struct Reference {
 }
 
 fn fixture_paths() -> Option<(PathBuf, PathBuf)> {
-    let model = std::env::var_os("RLX_SIGLIP2_MODEL")
+    let model = rlx_ir::env::var_os("RLX_SIGLIP2_MODEL")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("weights/siglip2-base-224"));
-    let fixture = std::env::var_os("RLX_SIGLIP2_FIXTURE")
+    let fixture = rlx_ir::env::var_os("RLX_SIGLIP2_FIXTURE")
         .map(PathBuf::from)
         .unwrap_or_else(|| model.join("fixture"));
     let ref_json = fixture.join("reference.json");
@@ -52,10 +52,10 @@ fn fixture_paths() -> Option<(PathBuf, PathBuf)> {
 }
 
 fn naflex_fixture_paths() -> Option<(PathBuf, PathBuf)> {
-    let model = std::env::var_os("RLX_SIGLIP2_NAFLEX_MODEL")
+    let model = rlx_ir::env::var_os("RLX_SIGLIP2_NAFLEX_MODEL")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("weights/siglip2-base-naflex"));
-    let fixture = std::env::var_os("RLX_SIGLIP2_NAFLEX_FIXTURE")
+    let fixture = rlx_ir::env::var_os("RLX_SIGLIP2_NAFLEX_FIXTURE")
         .map(PathBuf::from)
         .unwrap_or_else(|| model.join("fixture"));
     let ref_json = fixture.join("reference.json");

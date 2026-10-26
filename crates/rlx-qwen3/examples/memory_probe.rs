@@ -568,9 +568,9 @@ fn run_policy(
     // `kvstore[:BLOCK:SINKS:RECENT:TOPK:NEIGH]` = disk-tiered context store.
     let is_kvstore = spec.eq_ignore_ascii_case("kvstore") || spec.starts_with("kvstore:");
     if spec.eq_ignore_ascii_case("full") || spec.eq_ignore_ascii_case("none") || is_kvstore {
-        unsafe { std::env::remove_var("RLX_QWEN3_RETENTION") };
+        rlx_ir::env::remove("RLX_QWEN3_RETENTION");
     } else {
-        unsafe { std::env::set_var("RLX_QWEN3_RETENTION", spec) };
+        rlx_ir::env::set("RLX_QWEN3_RETENTION", spec);
     }
 
     let mut runner = Qwen3Runner::builder()
@@ -680,7 +680,7 @@ fn run_policy(
                 use rlx_qwen3::embedder::BlockEmbedder as _;
                 // Encoder repo (env-configurable). Default is bge-small-en-v1.5
                 // (384-d retrieval encoder); any HF sentence encoder works.
-                let repo = std::env::var("RLX_QWEN3_EMBED_REPO")
+                let repo = rlx_ir::env::var_result("RLX_QWEN3_EMBED_REPO")
                     .unwrap_or_else(|_| "BAAI/bge-small-en-v1.5".to_string());
                 // Run the retrieval encoder on the SAME device as the LM (so
                 // `--device metal` keeps everything on the GPU — no pure-CPU leg).
@@ -847,7 +847,7 @@ fn run_policy(
                 ttft = Some(t0.elapsed());
                 d_ret_text = Some(notes_seen);
                 eprintln!("      [INTERLEAVE needle[{i}] hops={hops}] answer={answer:?}");
-                if std::env::var_os("RLX_PROBE_DEBUG_NOTES").is_some() {
+                if rlx_ir::env::var_os("RLX_PROBE_DEBUG_NOTES").is_some() {
                     eprintln!("{transcript}");
                 }
                 out = tok
@@ -950,7 +950,7 @@ fn run_policy(
                     }
                 }
                 d_ret_text = Some(notes.to_lowercase());
-                if std::env::var_os("RLX_PROBE_DEBUG_NOTES").is_some() {
+                if rlx_ir::env::var_os("RLX_PROBE_DEBUG_NOTES").is_some() {
                     eprintln!(
                         "      [D notes for needle[{i}] ask={:?}]\n{}",
                         needles[i].ask, notes
@@ -1443,10 +1443,8 @@ fn main() -> anyhow::Result<()> {
     // quantized mirror actually feeds attention (the Metal GPU-resident path
     // keeps its own on-device KV; the native int8-V kernel is the follow-up).
     if args.iter().any(|a| a == "--kv-quant") {
-        unsafe {
-            std::env::set_var("RLX_QWEN3_KV_QUANT", "1");
-            std::env::set_var("RLX_QWEN3_NO_GPU_KV", "1");
-        }
+        rlx_ir::env::set("RLX_QWEN3_KV_QUANT", "1");
+        rlx_ir::env::set("RLX_QWEN3_NO_GPU_KV", "1");
     }
     // These are Metal-only peak-decode levers: F16-resident weights need the
     // backend to convert f32→f16 param bytes at bind (Metal does via
@@ -1474,8 +1472,8 @@ fn main() -> anyhow::Result<()> {
             "RLX_QWEN3_BAKE_WEIGHTS",
             "RLX_QWEN3_GQA_NATIVE",
         ] {
-            if std::env::var_os(k).is_none() {
-                unsafe { std::env::set_var(k, "1") };
+            if rlx_ir::env::read_os(k).is_none() {
+                rlx_ir::env::set(k, "1");
             }
         }
     } else if !f16_off && !sel_device.eq_ignore_ascii_case("metal") {
@@ -1839,7 +1837,7 @@ fn main() -> anyhow::Result<()> {
     // needles past the resident window, while keeping the total short enough that
     // qwen3-0.6B still generates coherently at recall time (it collapses to an
     // immediate EOS past ~1k tokens — a model limit, not a retrieval one).
-    let fillers_per_plant: usize = std::env::var("RLX_PROBE_FILL")
+    let fillers_per_plant: usize = rlx_ir::env::var_result("RLX_PROBE_FILL")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
@@ -1927,7 +1925,7 @@ fn main() -> anyhow::Result<()> {
         // captured above / per-policy).
         #[cfg(feature = "dual-encoder")]
         {
-            let enc_repo = std::env::var("RLX_QWEN3_EMBED_REPO")
+            let enc_repo = rlx_ir::env::var_result("RLX_QWEN3_EMBED_REPO")
                 .unwrap_or_else(|_| "BAAI/bge-small-en-v1.5".to_string());
             if let Err(e) = bert_op_inspect(&enc_repo, 256, &out_dir, "encoder") {
                 eprintln!("[op-inspect:encoder] skipped: {e}");

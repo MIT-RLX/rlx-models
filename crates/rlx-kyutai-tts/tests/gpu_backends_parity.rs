@@ -18,7 +18,10 @@ use parity_common::{assert_frames_match, model_dir, rlx_codes, short_gen_cfg};
 use rlx_runtime::{Device, is_available};
 
 fn gpu_parity_all() -> bool {
-    std::env::var("RLX_KYUTAI_GPU_PARITY").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_KYUTAI_GPU_PARITY")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 fn rlx_matches_cpu(device: Device, label: &str) -> Result<()> {

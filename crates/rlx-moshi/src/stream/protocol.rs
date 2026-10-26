@@ -60,7 +60,7 @@ pub fn decode_ws_message(data: &[u8]) -> anyhow::Result<Option<(WsMsgType, Vec<f
             let payload = &data[1..];
             ensure_audio_payload(payload)?;
             let mut pcm = Vec::with_capacity(payload.len() / 4);
-            for chunk in payload.chunks_exact(4) {
+            for chunk in payload.as_chunks::<4>().0.iter() {
                 pcm.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
             Ok(Some((kind, pcm)))

@@ -23,7 +23,7 @@ Three subgraphs:
 | **CPU** | ✅ | 6/6 fox; speech/HF ≈22 dB (PyTorch-class) |
 | **Metal** | ✅ on-device | DiT on Metal; fox 6/6 @ NFE=32 (NFE=8 under-denoises on CPU too) |
 | **MLX** | ✅ on-device | fox 6/6, traj cos≈1.0 vs CPU |
-| **wgpu** | ✅ on-device | Apple `--device gpu` still routes DiT to Metal by default. True wgpu DiT (`RLX_F5_WGPU_DIT=1`): traj mad≈1e-8 vs CPU, fox **6/6** @ NFE=32 (Transpose(Param) bind fixed in `rlx-wgpu`). |
+| **wgpu** | ✅ on-device | On macOS, `--device gpu` still routes DiT to Metal by default. True wgpu DiT (`RLX_F5_WGPU_DIT=1`): traj mad≈1e-8 vs CPU, fox **6/6** @ NFE=32 (Transpose(Param) bind fixed in `rlx-wgpu`). |
 | **CUDA** | ✅ on-device | RoPE `ScatterNd` via `force_indices_f32` |
 | **CoreML** | ✅ on-device | `Device::Ane`; MIL `scatter_nd`; `RLX_COREML_UNITS=gpu` via `resolve_tts_device` |
 | **Vulkan** | ✅ wired | `--device vulkan` on `all-backends`; DiT stays on-device |
@@ -56,7 +56,7 @@ speech bar — do not treat other files in `tmp/f5tts_wavs/` (Metal noise, NFE=8
 truncated refs) as validated.
 
 ```bash
-cargo run -p rlx-f5tts --release --features apple-silicon -- \
+cargo run -p rlx-f5tts --release --features macos-gpu -- \
   --ref-wav crates/rlx-f5tts/tests/fixtures/prompt.wav \
   --ref-text "Hello from Kokoro. This is a test of speech synthesis in Rust." \
   --text "The quick brown fox jumps over the lazy dog." \
@@ -70,7 +70,7 @@ cargo run -p rlx-f5tts --release --features apple-silicon -- \
 - DiT runs on the requested device. Opt out to CPU with `RLX_F5_CPU_DIT=1`.
   Metal keeps output-ancestor arena pin when the graph has ScatterNd (F5 RoPE)
   even above the 4 GiB MPS cliff — unpinning saved almost nothing and could
-  corrupt the ODE. Apple `--device gpu` routes DiT to Metal unless
+  corrupt the ODE. On macOS, `--device gpu` routes DiT to Metal unless
   `RLX_F5_WGPU_DIT=1`. True wgpu DiT matches Metal/CPU after the
   `Transpose(Param)` bind-window fix in `rlx-wgpu`.
 

@@ -25,8 +25,8 @@
 //!   --weights /path/LFM2.5-2.6B-Q4_K_M.gguf --device cpu \
 //!   --prompt "The capital of France is" --max-tokens 24
 //!
-//! # Apple GPU (metal | mlx | gpu)
-//! cargo run -p rlx-lfm --example lfm2_generate --features tokenizer,apple-silicon --release -- \
+//! # Metal GPU (metal | mlx | gpu)
+//! cargo run -p rlx-lfm --example lfm2_generate --features tokenizer,macos-gpu --release -- \
 //!   --weights DIR_OR_FILE.gguf --device metal --prompt "Q: 2+2? A:"
 //!
 //! # NVIDIA / AMD / Vulkan
@@ -41,7 +41,7 @@ use std::path::PathBuf;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut weights: Option<String> = std::env::var("RLX_LFM_WEIGHTS").ok();
+    let mut weights: Option<String> = rlx_ir::env::var_result("RLX_LFM_WEIGHTS").ok();
     let mut device = "cpu".to_string();
     let mut prompt = "The capital of France is".to_string();
     let mut max_tokens = 24usize;

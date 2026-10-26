@@ -9,7 +9,7 @@
 //! attention output before `o_proj`. Value is zero-padded to `qk_head_dim` for the
 //! fused attention op, then sliced back to `v_head_dim` (matching HF's flash path).
 
-use crate::common::{linear, reg, sigmoid};
+use crate::common::{linear, reg, sigmoid, tap};
 use anyhow::Result;
 use rlx_ir::hir::{HirMut, HirNodeId};
 use rlx_ir::op::{MaskKind, PadMode};
@@ -50,7 +50,13 @@ impl MlaDims {
 /// on and `num_heads * qk()` when it is off. `decode_full`'s harness sized both
 /// caches at `qk` width and so could not build its decode graph at all.
 pub fn mla_vdim() -> bool {
-    std::env::var("RLX_MLA_VDIM")
+    // Graphs built for training / activation dumps take the zero-padded V path:
+    // same value, and rlx-autodiff has no backward for asymmetric-V attention.
+    // Decode graphs (the KV-cache shape this switch governs) are never canonical.
+    if crate::common::canonical_params() {
+        return false;
+    }
+    rlx_ir::env::var_result("RLX_MLA_VDIM")
         .map(|v| v != "0")
         .unwrap_or(true)
 }
@@ -88,6 +94,21 @@ fn fused_down_proj(
     ql: usize,
     ckvl: usize,
 ) -> (HirNodeId, HirNodeId) {
+    if crate::common::canonical_params() {
+        // One matmul per checkpoint tensor (see `common::CanonicalParams`).
+        let q = linear(g, params, prefix, "q_a_proj", x2d, &w.q_a_proj, hidden, ql);
+        let ckv = linear(
+            g,
+            params,
+            prefix,
+            "kv_a_proj_with_mqa",
+            x2d,
+            &w.kv_a_proj_with_mqa,
+            hidden,
+            ckvl,
+        );
+        return (q, ckv);
+    }
     let parts: [(&[f32], usize); 2] = [(&w.q_a_proj, ql), (&w.kv_a_proj_with_mqa, ckvl)];
     let total = ql + ckvl;
     // Prequant-load: q_a came in empty; the fused int8 codes are mmapped by name in
@@ -259,6 +280,7 @@ fn mla_out(
     // ── sigmoid output gate + o_proj ──
     let gate = linear(g, params, prefix, "g_proj", x2d, &w.g_proj, hidden, h * vd);
     let gate = sigmoid(g, gate, Shape::new(&[rows, h * vd], f));
+    tap(g, format!("{prefix}.out_gate"), gate);
     let attn = g.mul(attn, gate);
     let out = linear(g, params, prefix, "o_proj", attn, &w.o_proj, h * vd, hidden);
     g.reshape_(out, vec![b as i64, s as i64, hidden as i64])
@@ -278,6 +300,9 @@ pub fn build_mla_layer(
     let vd = d.v_head_dim;
     let x2d = g.reshape_(h_in, vec![rows as i64, hidden as i64]);
     let (qf, kf, vf) = mla_qkv(g, params, prefix, x2d, w, d);
+    tap(g, format!("{prefix}.q"), qf);
+    tap(g, format!("{prefix}.k"), kf);
+    tap(g, format!("{prefix}.v"), vf);
     let attn_raw = if mla_vdim() {
         g.attention_kind_vdim(
             qf,
@@ -300,6 +325,7 @@ pub fn build_mla_layer(
             Shape::new(&[b, s, h * qk], DType::F32),
         )
     };
+    tap(g, format!("{prefix}.attn"), attn_raw);
     // Raw attention output — the residual is added by the AttnRes accumulation.
     Ok(mla_out(g, params, prefix, x2d, attn_raw, w, d))
 }

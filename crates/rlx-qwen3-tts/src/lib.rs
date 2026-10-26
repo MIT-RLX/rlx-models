@@ -50,6 +50,8 @@ pub mod config;
 pub mod cp_frame;
 pub mod cp_greedy;
 pub mod cp_megakernel;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod fused_e2e;
 pub mod fusion_bench;
 pub mod gpu_pipeline;

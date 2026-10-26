@@ -22,6 +22,7 @@
 
 use crate::config::{AttnGating, LagunaConfig, RopeLayerParams};
 use crate::device_matmul::DeviceMatmul;
+use crate::eager::softmax_row;
 use crate::packed::{LagunaPackedFfn, LagunaPackedWeights, MatWeight};
 use anyhow::{Result, anyhow, bail};
 use rayon::prelude::*;
@@ -58,19 +59,6 @@ fn rms_norm(x: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
         }
     }
     out
-}
-
-fn softmax_row(logits: &mut [f32]) {
-    let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let mut sum = 0.0;
-    for v in logits.iter_mut() {
-        *v = (*v - max).exp();
-        sum += *v;
-    }
-    let inv = 1.0 / sum.max(1e-12);
-    for v in logits.iter_mut() {
-        *v *= inv;
-    }
 }
 
 pub(crate) fn rope_inv_freq(rope: &RopeLayerParams, rot_dim: usize) -> Vec<f64> {
@@ -186,7 +174,7 @@ fn mat_bytes<'a>(
 }
 
 /// Metal/MLX DequantMatMul launch+upload overhead dominates MoE decode (`m=1`)
-/// and typical chat prefills on Apple Silicon; host fused `gguf_matmul` wins in
+/// and typical chat prefills on macOS arm64; host fused `gguf_matmul` wins in
 /// `backend_bench` even at seq=8. Keep the device path for large batch/`m`.
 pub const DEVICE_MATMUL_MIN_M: usize = 128;
 
@@ -551,7 +539,7 @@ fn pick_topk_experts(
 
 fn env_flag(name: &str) -> bool {
     matches!(
-        std::env::var(name).as_deref(),
+        rlx_ir::env::read(name).as_deref(),
         Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
     )
 }

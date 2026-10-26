@@ -37,8 +37,8 @@ struct Reference {
 }
 
 fn fixture_paths() -> Option<(PathBuf, PathBuf)> {
-    let fixture = std::env::var_os("RLX_BIOCLIP2_FIXTURE")?;
-    let model = std::env::var_os("RLX_BIOCLIP2_MODEL")
+    let fixture = rlx_ir::env::var_os("RLX_BIOCLIP2_FIXTURE")?;
+    let model = rlx_ir::env::var_os("RLX_BIOCLIP2_MODEL")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("weights/bioclip-2"));
     let ref_json = PathBuf::from(fixture).join("reference.json");

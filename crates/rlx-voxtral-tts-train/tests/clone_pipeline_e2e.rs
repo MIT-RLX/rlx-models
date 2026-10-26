@@ -97,14 +97,18 @@ fn clone_pipeline_export_inject_keys() {
 
 #[test]
 fn rig_real_model_when_env_set() {
-    let model_dir = match std::env::var("RLX_VOXTRAL_TTS_DIR") {
+    let model_dir = match rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR") {
         Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
         _ => {
             eprintln!("skip rig_real_model_when_env_set (RLX_VOXTRAL_TTS_DIR unset)");
             return;
         }
     };
-    if std::env::var("RLX_VOXTRAL_TTS_TRAIN_RIG").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_TRAIN_RIG")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip rig_real_model_when_env_set (RLX_VOXTRAL_TTS_TRAIN_RIG!=1)");
         return;
     }

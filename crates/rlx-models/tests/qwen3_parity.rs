@@ -454,7 +454,7 @@ fn qwen3_full_parity_sweep_cpu() -> Result<()> {
     run_full_sweep_on(Device::Cpu, "CPU")
 }
 
-/// Same sweep on the MLX (Apple Silicon GPU) backend. MLX's
+/// Same sweep on the MLX (macOS arm64 GPU) backend. MLX's
 /// `fast::scaled_dot_product_attention` supports every `MaskKind`
 /// natively (Causal, Custom, None, SlidingWindow) and handles
 /// arbitrary Lq vs Lk — so the prefill graph runs unmodified.

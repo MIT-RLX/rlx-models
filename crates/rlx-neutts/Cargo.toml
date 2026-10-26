@@ -13,6 +13,7 @@ build = "build.rs"
 exclude = ["models/"]
 
 [dependencies]
+rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 thiserror = "1"
 once_cell = "1"
@@ -37,6 +38,14 @@ rlx = { workspace = true, optional = true }
 # llama.cpp reference for parity tests only.
 llama-cpp-2 = { workspace = true, optional = true }
 
+# `export`: NeuCodec's decoder as XCodec2's graphs, espeak-ng's data for
+# the package's program.
+rlx-xcodec = { path = "../rlx-xcodec", version = "0.2.19", optional = true }
+rlx-gguf = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+espeak-ng = { version = "0.2.0", optional = true, default-features = false, features = ["bundled-data-en"] }
+tempfile = { version = "3", optional = true }
+
 [dependencies.burn]
 version = "0.20"
 optional = true
@@ -58,6 +67,21 @@ llama = [
     "rlx-llama32/tokenizer",
 ]
 backbone = ["llama"]
+# `export::export_rlxp`: a NeuTTS GGUF and NeuCodec's decoder as an `.rlxp`
+# package rlx runs alone.
+export = [
+    "llama",
+    "rlx-core/export",
+    "rlx-qwen3/export",
+    "rlx-llama32/export",
+    "rlx-qwen35/qwen35-tokenizer",
+    "dep:rlx-xcodec",
+    "dep:rlx-gguf",
+    "rlx-xcodec/export",
+    "dep:serde_json",
+    "dep:espeak-ng",
+    "dep:tempfile",
+]
 # llama.cpp cross-check (requires `llama` for side-by-side parity tests).
 parity-llama-cpp = ["dep:llama-cpp-2", "llama", "rlx-qwen35/parity-llama"]
 burn = ["dep:burn"]
@@ -75,7 +99,7 @@ gpu = ["rlx-llama32/gpu"]
 burn-gpu = ["burn", "wgpu"]
 coreml = ["rlx-runtime/coreml", "rlx-llama32/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "burn-gpu", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu", "vulkan"]
@@ -86,6 +110,11 @@ rlx-neutts = { path = ".", features = ["codec", "fast", "llama", "rlx"] }
 rlx-qwen35 = { workspace = true }
 # examples/synth_metal.rs: discover the backbone GGUF via the HF hub (no hard-coded cache path).
 hf-hub = { workspace = true }
+rlx-text = { workspace = true }
+tempfile = "3"
+serde_json = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
 
 [lints]
 workspace = true

@@ -204,6 +204,11 @@ a use site is how the mirror-image `unused` error gets introduced.
 
 Do not commit unless asked.
 
+A runner can also become a package rlx runs with no rlx-models code: give the
+family an exporter over `rlx_core::export` and check it against the runner
+with `rlx-export <checkpoint> -o model.rlxp --check` —
+[exporting.md](exporting.md).
+
 ## 7. A worked example of steps 1–3
 
 [qwen-image-2.1-port-notes.md](qwen-image-2.1-port-notes.md) is this process

@@ -83,30 +83,33 @@ pub fn flux2_vae_encode(
         cur_w = ww;
     }
 
-    for resnet in &weights.encoder_mid_resnets {
+    // diffusers `UNetMidBlock2D`: resnet₀ → attention → resnet₁.
+    for (i, resnet) in weights.encoder_mid_resnets.iter().enumerate() {
         x = resnet_forward(&x, resnet, batch, channels, cur_h, cur_w, eps, groups)?;
         channels = resnet.conv2.out_c;
-    }
-    if let Some(attn) = &weights.encoder_mid_attn {
-        x = spatial_attention(
-            &x,
-            batch,
-            channels,
-            cur_h,
-            cur_w,
-            &attn.to_q.weight,
-            &attn.to_q.bias,
-            &attn.to_k.weight,
-            &attn.to_k.bias,
-            &attn.to_v.weight,
-            &attn.to_v.bias,
-            &attn.to_out.weight,
-            &attn.to_out.bias,
-            &attn.norm.gamma,
-            &attn.norm.beta,
-            groups,
-            eps,
-        );
+        if i == 0
+            && let Some(attn) = &weights.encoder_mid_attn
+        {
+            x = spatial_attention(
+                &x,
+                batch,
+                channels,
+                cur_h,
+                cur_w,
+                &attn.to_q.weight,
+                &attn.to_q.bias,
+                &attn.to_k.weight,
+                &attn.to_k.bias,
+                &attn.to_v.weight,
+                &attn.to_v.bias,
+                &attn.to_out.weight,
+                &attn.to_out.bias,
+                &attn.norm.gamma,
+                &attn.norm.beta,
+                groups,
+                eps,
+            );
+        }
     }
 
     x = group_norm(

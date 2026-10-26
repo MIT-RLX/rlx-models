@@ -4,7 +4,7 @@
 //! RLX_TSAC_E2E=1 cargo test -p rlx-tsac --test rlx_backend --release -- --nocapture
 //! # GPU backends:
 //! RLX_TSAC_E2E=1 cargo test -p rlx-tsac --test rlx_backend --release \
-//!   --features apple-silicon -- --nocapture
+//!   --features macos-gpu -- --nocapture
 //! ```
 
 use rlx_runtime::{Device, is_available};
@@ -13,7 +13,7 @@ use rlx_tsac::{TsacBackendKind, TsacCodec, TsacOptions, audio, default_tsac_dir,
 use std::path::PathBuf;
 
 fn e2e_enabled() -> bool {
-    std::env::var("RLX_TSAC_E2E").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_TSAC_E2E").ok().as_deref() == Some("1")
 }
 
 fn fixture_wav() -> PathBuf {

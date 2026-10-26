@@ -130,12 +130,22 @@ pub fn encode_prompt_from_gguf(weights: &Path, text: &str) -> Result<Vec<u32>> {
     Ok(enc.get_ids().to_vec())
 }
 
+/// The `tokenizer.json` a GGUF's metadata describes (`build_gguf_tokenizer`):
+/// what a package exported from the GGUF alone tokenizes with.
+#[cfg(feature = "qwen35-tokenizer")]
+pub fn gguf_tokenizer_json(weights: &Path) -> Result<Vec<u8>> {
+    let tok = build_gguf_tokenizer(weights)?;
+    tok.to_string(false)
+        .map(String::into_bytes)
+        .map_err(|e| anyhow::anyhow!("serialize tokenizer: {e}"))
+}
+
 /// Reconstruct a byte-level-BPE `Tokenizer` from the vocab + merges embedded in
 /// GGUF metadata (`tokenizer.ggml.{tokens, merges, token_type}`). Expensive
 /// (opens the GGUF, parses a large vocab) — callers should go through
 /// [`cached_tokenizer`] so this runs once per file.
 #[cfg(feature = "qwen35-tokenizer")]
-fn build_gguf_tokenizer(weights: &Path) -> Result<tokenizers::Tokenizer> {
+pub(crate) fn build_gguf_tokenizer(weights: &Path) -> Result<tokenizers::Tokenizer> {
     use rlx_gguf::{GgufFile, MetaValue};
     use tokenizers::AddedToken;
     use tokenizers::Tokenizer;
@@ -199,7 +209,33 @@ fn build_gguf_tokenizer(weights: &Path) -> Result<tokenizers::Tokenizer> {
         .build()
         .map_err(|e| anyhow::anyhow!("build BPE from GGUF vocab: {e}"))?;
     let mut tok = Tokenizer::new(bpe);
-    tok.with_pre_tokenizer(Some(ByteLevel::new(false, true, true)));
+    // Qwen's tokenizer.json splits with its own regex and then byte-level
+    // encodes without GPT-2's split; GPT-2's regex leaves runs like "\n\n"
+    // as two tokens where Qwen has one (198 198 vs 271). Other vocabularies
+    // keep the GPT-2 split they were built around.
+    let pre = raw
+        .metadata
+        .get("tokenizer.ggml.pre")
+        .and_then(MetaValue::as_str);
+    let qwen = qwen_split_regex(pre);
+    match qwen {
+        Some(regex) => {
+            tok.with_pre_tokenizer(Some(qwen_pre_tokenizer(regex)?));
+        }
+        None => {
+            tok.with_pre_tokenizer(Some(ByteLevel::new(false, true, true)));
+        }
+    }
+    // Qwen's tokenizer.json always declares an NFC normalizer; most GGUFs
+    // do not carry `normalizer.nfc`, so the pre-tokenizer implies it.
+    if qwen.is_some()
+        || matches!(
+            raw.metadata.get("tokenizer.ggml.normalizer.nfc"),
+            Some(MetaValue::Bool(true))
+        )
+    {
+        tok.with_normalizer(Some(tokenizers::normalizers::unicode::NFC));
+    }
     // Also set the byte-level DECODER. The pre-tokenizer alone is enough to
     // ENCODE, but this same tokenizer is cached by path and reused by
     // `decode_ids_from_gguf` (same `cached_tokenizer` key = the weights path).
@@ -241,6 +277,41 @@ fn build_gguf_tokenizer(weights: &Path) -> Result<tokenizers::Tokenizer> {
     }
 
     Ok(tok)
+}
+
+/// Qwen2's pre-tokenizer split, as written in its `tokenizer.json`.
+pub const QWEN2_SPLIT_REGEX: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
+/// Qwen3.5's: Qwen2's with combining marks (`\p{M}`) kept inside words.
+pub const QWEN35_SPLIT_REGEX: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
+/// The split regex for a GGUF `tokenizer.ggml.pre`, when it is a Qwen one.
+pub fn qwen_split_regex(pre: Option<&str>) -> Option<&'static str> {
+    match pre? {
+        "qwen2" => Some(QWEN2_SPLIT_REGEX),
+        "qwen35" => Some(QWEN35_SPLIT_REGEX),
+        _ => None,
+    }
+}
+
+/// Qwen's pre-tokenizer: an isolating regex split, then byte-level encoding
+/// with no further split (the `Sequence` Qwen's `tokenizer.json` declares).
+#[cfg(feature = "qwen35-tokenizer")]
+pub fn qwen_pre_tokenizer(regex: &str) -> Result<tokenizers::pre_tokenizers::PreTokenizerWrapper> {
+    use tokenizers::pre_tokenizers::byte_level::ByteLevel;
+    use tokenizers::pre_tokenizers::sequence::Sequence;
+    use tokenizers::pre_tokenizers::split::{Split, SplitPattern};
+    let split = Split::new(
+        SplitPattern::Regex(regex.to_owned()),
+        tokenizers::SplitDelimiterBehavior::Isolated,
+        false,
+    )
+    .map_err(|e| anyhow::anyhow!("Qwen split regex: {e}"))?;
+    Ok(Sequence::new(vec![
+        split.into(),
+        ByteLevel::new(false, false, false).into(),
+    ])
+    .into())
 }
 
 #[cfg(not(feature = "qwen35-tokenizer"))]

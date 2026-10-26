@@ -1,0 +1,19 @@
+# Voxtral's host logic as an RLX program (WebAssembly): the signal's
+# padding, the transcription prompt, the greedy decode over the package's
+# graphs and the tekken decoding. Built by `rlx-voxtral`'s exporter, so it stands
+# outside the workspace.
+[package]
+name = "rlx-voxtral-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+base64 = "0.22"
+
+[workspace]

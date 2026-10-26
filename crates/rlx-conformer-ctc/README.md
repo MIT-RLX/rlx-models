@@ -81,7 +81,7 @@ compile cache is updated on first use of each mel-length bucket.
 |---------|---------|
 | `metal` / `mlx` / `cuda` / `rocm` / `gpu` / `vulkan` / `coreml` | Forwarded to `rlx-runtime` |
 | `all-backends` | All of the above |
-| `apple-silicon` | `metal` + `mlx` + `gpu` + `coreml` |
+| `macos-gpu` | `metal` + `mlx` + `gpu` + `coreml` |
 | `nvidia-gpu` | `cuda` |
 
 ## Backends
@@ -89,7 +89,7 @@ compile cache is updated on first use of each mel-length bucket.
 | Device | Notes |
 |--------|--------|
 | `cpu` | Always available |
-| `metal` / `mlx` | Apple Silicon (`--features apple-silicon`) |
+| `metal` / `mlx` | macOS arm64 (`--features macos-gpu`) |
 | `gpu` (wgpu) | Portable GPU; compile cache reuse supported |
 | `cuda` | NVIDIA hosts (`--features nvidia-gpu`) |
 | `vulkan` / `rocm` | When the host adapter is available |

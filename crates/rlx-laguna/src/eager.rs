@@ -85,7 +85,7 @@ fn linear(x: &[f32], w: &[f32], seq: usize, out_dim: usize, in_dim: usize) -> Ve
     y
 }
 
-fn softmax_row(logits: &mut [f32]) {
+pub(crate) fn softmax_row(logits: &mut [f32]) {
     let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0.0;
     for v in logits.iter_mut() {

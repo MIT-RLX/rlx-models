@@ -369,7 +369,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // ── Dual encoder (bge-small, cached) for semantic embeddings ──
-    let repo = std::env::var("RLX_QWEN3_EMBED_REPO")
+    let repo = rlx_ir::env::var_result("RLX_QWEN3_EMBED_REPO")
         .unwrap_or_else(|_| "BAAI/bge-small-en-v1.5".to_string());
     eprintln!("[1m] loading sentence encoder {repo} …");
     let enc =
@@ -386,15 +386,15 @@ fn main() -> anyhow::Result<()> {
     // 1M-node scale (env `RLX_1M_EF`). Also raise the embedding index's build
     // quality (ef_construction + graph degree m/m0), since a low-quality graph
     // caps recall no matter how big ef_search is.
-    let ef: usize = std::env::var("RLX_1M_EF")
+    let ef: usize = rlx_ir::env::var_result("RLX_1M_EF")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4000);
-    let ef_construction: usize = std::env::var("RLX_1M_EFC")
+    let ef_construction: usize = rlx_ir::env::var_result("RLX_1M_EFC")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(200);
-    let hm: usize = std::env::var("RLX_1M_M")
+    let hm: usize = rlx_ir::env::var_result("RLX_1M_M")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(16);

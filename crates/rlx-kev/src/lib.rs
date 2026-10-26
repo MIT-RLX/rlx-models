@@ -63,6 +63,8 @@ pub mod cli;
 pub mod encode;
 #[cfg(feature = "train")]
 pub mod eval;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod json;
 pub mod lora;
 pub mod model;

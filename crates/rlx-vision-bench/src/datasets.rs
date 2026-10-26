@@ -428,7 +428,7 @@ fn load_local_or_synthetic(
     n_train: usize,
     n_test: usize,
 ) -> (Split, Split, bool) {
-    if let Ok(dir) = std::env::var(env) {
+    if let Ok(dir) = rlx_ir::env::read(env) {
         match load_raw_dir(Path::new(&dir), spec) {
             Ok((tr, te)) => {
                 eprintln!("  {}: loaded raw tensors from {env}={dir}", kind.name());
@@ -464,7 +464,9 @@ fn load_raw_dir(dir: &Path, spec: DataSpec) -> Result<(Split, Split), String> {
         if b.len() % 4 != 0 {
             return Err(format!("{}: not f32-aligned", p.display()));
         }
-        Ok(b.chunks_exact(4)
+        Ok(b.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect())
     };

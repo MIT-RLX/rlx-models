@@ -243,6 +243,172 @@ fn precompute_coeffs(in_size: usize, out_size: usize, filter: Filter) -> Vec<(us
     coeffs
 }
 
+/// Pillow's `Image.resize(size, filter)` on an RGB image, bit-exact.
+///
+/// [`pil_resize_rgb8`] accumulates in `f32`; Pillow quantizes the filter
+/// weights to 22-bit fixed point and accumulates in integers, and the two
+/// disagree by one level on a few pixels in 10^4 on a large downscale. This
+/// is Pillow's arithmetic (`normalize_coeffs_8bpc` + `ImagingResample*_8bpc`),
+/// for callers whose reference is Pillow's exact output — LFM2-VL's
+/// `cap_pixels`, for one.
+pub fn pil_resize_rgb8_exact(
+    src: &[u8],
+    w: usize,
+    h: usize,
+    dw: usize,
+    dh: usize,
+    filter: Filter,
+) -> Vec<u8> {
+    fixed_point_resize_rgb8(src, w, h, dw, dh, filter, WeightPrecision::Pillow)
+}
+
+/// PyTorch's antialiased resize of a `uint8` RGB image —
+/// `torchvision.transforms.v2.functional.resize(t, [dh, dw], interpolation,
+/// antialias=True)` on a `uint8` tensor, as HF image processors built on the
+/// torchvision backend (LFM2-VL, Qwen-VL fast processors, …) call it.
+///
+/// Same separable structure as Pillow (horizontal pass, then vertical, with a
+/// rounded 8-bit intermediate) and the same filter windows, but torch
+/// quantizes the weights to **int16 at a per-axis precision**: the largest
+/// `p < 22` with `round(w_max · 2^(p+1)) < 2^15`. Pillow uses a fixed 22-bit
+/// precision instead, which disagrees with torch by one level on ~0.2% of
+/// pixels. Bit-exact against torch 2.14 / torchvision 0.29 on downscales and
+/// upscales.
+pub fn torch_resize_rgb8_aa(
+    src: &[u8],
+    w: usize,
+    h: usize,
+    dw: usize,
+    dh: usize,
+    filter: Filter,
+) -> Vec<u8> {
+    fixed_point_resize_rgb8(src, w, h, dw, dh, filter, WeightPrecision::TorchInt16)
+}
+
+/// How filter weights are quantized before the integer accumulation.
+#[derive(Clone, Copy)]
+enum WeightPrecision {
+    /// Fixed 22 bits (Pillow's `PRECISION_BITS = 32 - 8 - 2`).
+    Pillow,
+    /// One precision per axis, the most that keeps the largest weight in
+    /// int16 (torch's `_compute_int16_weights`).
+    TorchInt16,
+}
+
+/// Separable two-pass integer resample (horizontal, rounded to 8 bits,
+/// then vertical) shared by Pillow's and torch's 8-bit paths; they differ
+/// only in [`WeightPrecision`].
+fn fixed_point_resize_rgb8(
+    src: &[u8],
+    w: usize,
+    h: usize,
+    dw: usize,
+    dh: usize,
+    filter: Filter,
+    precision: WeightPrecision,
+) -> Vec<u8> {
+    if w == dw && h == dh {
+        return src.to_vec();
+    }
+    let (hcoeffs, hp) = fixed_point_coeffs(w, dw, filter, precision);
+    let mut tmp = vec![0u8; dw * h * 3];
+    for y in 0..h {
+        let row = y * w * 3;
+        for (ox, (xmin, ws)) in hcoeffs.iter().enumerate() {
+            let mut acc = [1i64 << (hp - 1); 3];
+            for (i, &wt) in ws.iter().enumerate() {
+                let p = row + (xmin + i) * 3;
+                for (c, a) in acc.iter_mut().enumerate() {
+                    *a += wt * src[p + c] as i64;
+                }
+            }
+            let d = (y * dw + ox) * 3;
+            for (c, a) in acc.iter().enumerate() {
+                tmp[d + c] = (a >> hp).clamp(0, 255) as u8;
+            }
+        }
+    }
+    let (vcoeffs, vp) = fixed_point_coeffs(h, dh, filter, precision);
+    let mut out = vec![0u8; dw * dh * 3];
+    for (oy, (ymin, ws)) in vcoeffs.iter().enumerate() {
+        for ox in 0..dw {
+            let mut acc = [1i64 << (vp - 1); 3];
+            for (i, &wt) in ws.iter().enumerate() {
+                let p = ((ymin + i) * dw + ox) * 3;
+                for (c, a) in acc.iter_mut().enumerate() {
+                    *a += wt * tmp[p + c] as i64;
+                }
+            }
+            let d = (oy * dw + ox) * 3;
+            for (c, a) in acc.iter().enumerate() {
+                out[d + c] = (a >> vp).clamp(0, 255) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// Filter windows as [`precompute_coeffs`] (in `f64`), quantized at
+/// `precision` with rounding half away from zero. Returns the windows and
+/// the precision in bits.
+fn fixed_point_coeffs(
+    in_size: usize,
+    out_size: usize,
+    filter: Filter,
+    precision: WeightPrecision,
+) -> (Vec<(usize, Vec<i64>)>, u32) {
+    let scale = in_size as f64 / out_size as f64;
+    let filterscale = scale.max(1.0);
+    let support = filter.support() * filterscale;
+    let inv = 1.0 / filterscale;
+    let mut windows = Vec::with_capacity(out_size);
+    let mut w_max = 0.0f64;
+    for xx in 0..out_size {
+        let center = (xx as f64 + 0.5) * scale;
+        let xmin = ((center - support + 0.5).floor() as isize).max(0) as usize;
+        let xmax = ((center + support + 0.5).floor() as isize).min(in_size as isize) as usize;
+        let mut ws: Vec<f64> = (0..xmax.saturating_sub(xmin))
+            .map(|i| filter.kernel(((xmin + i) as f64 - center + 0.5) * inv))
+            .collect();
+        let total: f64 = ws.iter().sum();
+        if total != 0.0 {
+            for v in &mut ws {
+                *v /= total;
+            }
+        }
+        w_max = ws.iter().copied().fold(w_max, f64::max);
+        windows.push((xmin, ws));
+    }
+    let bits = match precision {
+        WeightPrecision::Pillow => 22,
+        WeightPrecision::TorchInt16 => {
+            let mut p = 0u32;
+            while p < 22 {
+                if (0.5 + w_max * (1u64 << (p + 1)) as f64) as i64 >= (1 << 15) {
+                    break;
+                }
+                p += 1;
+            }
+            p
+        }
+    };
+    let one = (1u64 << bits) as f64;
+    let quantized = windows
+        .into_iter()
+        .map(|(xmin, ws)| {
+            let q = ws
+                .into_iter()
+                .map(|v| {
+                    let s = v * one;
+                    (if v < 0.0 { s - 0.5 } else { s + 0.5 }) as i64
+                })
+                .collect();
+            (xmin, q)
+        })
+        .collect();
+    (quantized, bits)
+}
+
 #[inline]
 fn clip8(v: f32) -> u8 {
     // Pillow rounds half up then clamps to the u8 range.

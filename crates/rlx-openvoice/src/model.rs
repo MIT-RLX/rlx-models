@@ -38,7 +38,9 @@ fn i64_bytes(v: &[i64]) -> Vec<u8> {
 }
 fn as_f32((bytes, _dt): &(Vec<u8>, DType)) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -114,7 +116,7 @@ impl OpenVoice {
                 time_major[frame * nfreq + f] = spec[f * t + frame];
             }
         }
-        if std::env::var("RLX_OV_STAGE").is_ok() {
+        if rlx_ir::env::var_result("RLX_OV_STAGE").is_ok() {
             eprintln!("[ov] tone_extract t={t} nfreq={nfreq}");
         }
         let out = self.tone.run_graph(
@@ -161,7 +163,7 @@ impl OpenVoice {
 
         // Parity dump (dev): write the exact tone_color inputs so a reference
         // onnxruntime run can be compared against the native output.
-        if let Ok(dir) = std::env::var("RLX_OV_DUMP") {
+        if let Ok(dir) = rlx_ir::env::var_result("RLX_OV_DUMP") {
             let d = std::path::Path::new(&dir);
             let _ = std::fs::create_dir_all(d);
             let wf = |name: &str, v: &[f32]| {
@@ -174,7 +176,7 @@ impl OpenVoice {
             let _ = std::fs::write(d.join("meta.txt"), format!("t={t} tau={tau}"));
         }
 
-        if std::env::var("RLX_OV_STAGE").is_ok() {
+        if rlx_ir::env::var_result("RLX_OV_STAGE").is_ok() {
             eprintln!("[ov] tone_color t={t}");
         }
         // 4) native tone_color conversion → waveform [1,1,samples]
@@ -192,7 +194,7 @@ impl OpenVoice {
         )?;
         anyhow::ensure!(!out.is_empty(), "tone_color returned no output");
         let wav = as_f32(&out[0]);
-        if let Ok(dir) = std::env::var("RLX_OV_DUMP") {
+        if let Ok(dir) = rlx_ir::env::var_result("RLX_OV_DUMP") {
             let _ = std::fs::write(
                 std::path::Path::new(&dir).join("native_out.f32"),
                 f32_bytes(&wav),

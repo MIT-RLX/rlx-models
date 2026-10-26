@@ -393,7 +393,9 @@ fn decode_audio(root: &Path, a: &Args) -> Result<()> {
     }
     let data: Vec<f32> = t
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let mut sig = Signal::from_data(shape[0], data)?;
@@ -439,7 +441,9 @@ fn decode_video(root: &Path, a: &Args) -> Result<()> {
     }
     let mut data: Vec<f32> = t
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
 

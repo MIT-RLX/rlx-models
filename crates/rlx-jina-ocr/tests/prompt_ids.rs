@@ -65,7 +65,7 @@ fn ids(v: &serde_json::Value) -> Vec<u32> {
 
 /// A directory holding `tokenizer.json`, weights or not.
 fn tokenizer_dir() -> Option<PathBuf> {
-    if let Ok(raw) = std::env::var("RLX_JINA_OCR_DIR") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_JINA_OCR_DIR") {
         let p = PathBuf::from(raw);
         if p.join("tokenizer.json").is_file() {
             return Some(p);

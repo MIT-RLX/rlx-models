@@ -13,10 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Espresso weight blobs → a [`WeightMap`] keyed by the names
+//! Network weight blobs → a [`WeightMap`] keyed by the names
 //! [`crate::spec`] assigns.
 //!
-//! Layouts, matching Apple's storage:
+//! Layouts, matching the vendor's storage:
 //!
 //! | layer           | blob                 | dtype | stored shape       | exposed as |
 //! |-----------------|----------------------|-------|--------------------|------------|
@@ -33,11 +33,11 @@ use anyhow::{Context, Result, ensure};
 use rlx_core::weight_map::WeightMap;
 use std::collections::HashMap;
 
-use crate::espresso::{EspressoLayer, EspressoNet};
+use crate::netfile::{NetFile, NetLayer};
 use crate::spec::{is_input_layer, tensor_base_for};
 
 /// Extract every weight tensor referenced by the network.
-pub fn from_espresso(net: &EspressoNet) -> Result<WeightMap> {
+pub fn from_netfile(net: &NetFile) -> Result<WeightMap> {
     let mut tensors: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
     let mut used: HashMap<String, usize> = HashMap::new();
 
@@ -55,7 +55,7 @@ pub fn from_espresso(net: &EspressoNet) -> Result<WeightMap> {
         }
         .with_context(|| {
             format!(
-                "espresso layer {i}/{} {:?} (type {})",
+                "network layer {i}/{} {:?} (type {})",
                 net.layers.len(),
                 l.name,
                 l.kind
@@ -71,7 +71,7 @@ pub fn from_espresso(net: &EspressoNet) -> Result<WeightMap> {
 
 type Tensor = (String, Vec<f32>, Vec<usize>);
 
-fn conv_tensors(net: &EspressoNet, l: &EspressoLayer, base: &str) -> Result<Vec<Tensor>> {
+fn conv_tensors(net: &NetFile, l: &NetLayer, base: &str) -> Result<Vec<Tensor>> {
     let out_c = l.req_int(&["C", "n_output_channels", "outputChannels"])? as usize;
     let k_in = l.req_int(&["K", "n_input_channels", "inputChannels"])? as usize;
     let kw = l.int_or(&["Nx", "kernel_x", "size_x", "kernelWidth"], 1) as usize;
@@ -82,7 +82,7 @@ fn conv_tensors(net: &EspressoNet, l: &EspressoLayer, base: &str) -> Result<Vec<
         "convolution {:?}: n_groups={groups} does not divide K={k_in}",
         l.name
     );
-    // Espresso's `K` counts total input channels; the kernel is stored with the
+    // The format's `K` counts total input channels; the kernel is stored with the
     // per-group depth, i.e. `[C, K / n_groups, Ny, Nx]`. Depthwise layers rely
     // on this: `C=16, K=16, n_groups=16` stores 16·1·3·3, not 16·16·3·3.
     let per_group = k_in / groups;
@@ -126,7 +126,7 @@ fn conv_tensors(net: &EspressoNet, l: &EspressoLayer, base: &str) -> Result<Vec<
 /// The interleaving is not cosmetic: reading the blob as four contiguous
 /// `C`-blocks yields a scale vector that is 25% zeros and 25% ones, which
 /// still runs and still produces a hash — just the wrong one.
-fn norm_tensors(net: &EspressoNet, l: &EspressoLayer, base: &str) -> Result<Vec<Tensor>> {
+fn norm_tensors(net: &NetFile, l: &NetLayer, base: &str) -> Result<Vec<Tensor>> {
     let c = l.req_int(&["C"])? as usize;
     let idx = l
         .blob(&["blob_batchnorm_params", "blob_params"])
@@ -147,7 +147,7 @@ fn norm_tensors(net: &EspressoNet, l: &EspressoLayer, base: &str) -> Result<Vec<
     ])
 }
 
-fn ip_tensors(net: &EspressoNet, l: &EspressoLayer, base: &str) -> Result<Vec<Tensor>> {
+fn ip_tensors(net: &NetFile, l: &NetLayer, base: &str) -> Result<Vec<Tensor>> {
     let n_in = l.req_int(&["nB", "n_input", "inputChannels"])? as usize;
     let n_out = l.req_int(&["nC", "n_output", "outputChannels"])? as usize;
 
@@ -224,7 +224,7 @@ mod tests {
         v.iter().flat_map(|x| x.to_le_bytes()).collect()
     }
 
-    fn tiny_net(weights: Vec<u8>) -> EspressoNet {
+    fn tiny_net(weights: Vec<u8>) -> NetFile {
         let net_json = r#"{"layers": [
           {"type":"input","name":"i","top":"i","bottom":""},
           {"type":"convolution","name":"c","top":"a","bottom":"i",
@@ -236,14 +236,14 @@ mod tests {
         let mut shapes = HashMap::new();
         shapes.insert(
             "i".to_string(),
-            crate::espresso::BlobShape {
+            crate::netfile::BlobShape {
                 n: 1,
                 c: 3,
                 h: 4,
                 w: 4,
             },
         );
-        EspressoNet::from_parts(net_json, &weights, shapes).unwrap()
+        NetFile::from_parts(net_json, &weights, shapes).unwrap()
     }
 
     fn tiny_weights() -> Vec<u8> {
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn extracts_conv_and_ip_with_declared_shapes() {
         let net = tiny_net(tiny_weights());
-        let mut wm = from_espresso(&net).unwrap();
+        let mut wm = from_netfile(&net).unwrap();
         let (w, s) = wm.take("c.weight").unwrap();
         assert_eq!(s, vec![2, 3, 1, 1]);
         assert_eq!(w, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn inner_product_weights_are_transposed_to_in_by_out() {
         let net = tiny_net(tiny_weights());
-        let mut wm = from_espresso(&net).unwrap();
+        let mut wm = from_netfile(&net).unwrap();
         let (w, s) = wm.take("head.weight").unwrap();
         // Stored [nC=3, nB=2] row-major = [[1,2],[3,4],[5,6]];
         // exposed [nB=2, nC=3] = [[1,3,5],[2,4,6]].
@@ -280,8 +280,8 @@ mod tests {
     #[test]
     fn spec_and_weights_agree_on_names() {
         let net = tiny_net(tiny_weights());
-        let spec = NeuralHashSpec::from_espresso(&net).unwrap();
-        let wm = from_espresso(&net).unwrap();
+        let spec = NeuralHashSpec::from_netfile(&net).unwrap();
+        let wm = from_netfile(&net).unwrap();
         let mut from_wm: Vec<String> = wm.keys().map(|s| s.to_string()).collect();
         from_wm.sort();
         let mut from_spec = spec.weight_names();
@@ -307,16 +307,16 @@ mod tests {
         let mut shapes = HashMap::new();
         shapes.insert(
             "i".to_string(),
-            crate::espresso::BlobShape {
+            crate::netfile::BlobShape {
                 n: 1,
                 c: 3,
                 h: 4,
                 w: 4,
             },
         );
-        let net = EspressoNet::from_parts(net_json, &weights, shapes).unwrap();
-        let spec = NeuralHashSpec::from_espresso(&net).unwrap();
-        let mut wm = from_espresso(&net).unwrap();
+        let net = NetFile::from_parts(net_json, &weights, shapes).unwrap();
+        let spec = NeuralHashSpec::from_netfile(&net).unwrap();
+        let mut wm = from_netfile(&net).unwrap();
         assert_eq!(spec.weight_names(), vec!["conv.weight", "conv#1.weight"]);
         assert_eq!(wm.take("conv.weight").unwrap().0, vec![1.0, 2.0, 3.0]);
         assert_eq!(wm.take("conv#1.weight").unwrap().0, vec![9.0]);
@@ -333,10 +333,7 @@ mod tests {
         ]);
         let net = tiny_net(weights);
         // `WeightMap` is not `Debug`, so take the error out of the `Result`.
-        let e = format!(
-            "{:#}",
-            from_espresso(&net).err().expect("expected an error")
-        );
+        let e = format!("{:#}", from_netfile(&net).err().expect("expected an error"));
         assert!(e.contains("expected 6"), "{e}");
         assert!(e.contains("type convolution"), "{e}");
     }

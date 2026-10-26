@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 /// Default cache dir: `<repo>/.cache/whisper-bench`.
 pub fn bench_cache_dir() -> PathBuf {
-    std::env::var("RLX_WHISPER_BENCH_DIR")
+    rlx_ir::env::var_result("RLX_WHISPER_BENCH_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_bench_cache_dir())
 }
@@ -31,14 +31,14 @@ fn default_bench_cache_dir() -> PathBuf {
 
 /// OpenAI Whisper test clip (16 kHz mono). Override with `RLX_WHISPER_WAV`.
 pub fn jfk_wav_path() -> PathBuf {
-    std::env::var("RLX_WHISPER_WAV")
+    rlx_ir::env::var_result("RLX_WHISPER_WAV")
         .map(PathBuf::from)
         .unwrap_or_else(|_| bench_cache_dir().join("jfk_16k.wav"))
 }
 
 /// Greedy reference transcript for [`jfk_wav_path`]. Override with `RLX_WHISPER_REFERENCE`.
 pub fn jfk_reference_path() -> PathBuf {
-    std::env::var("RLX_WHISPER_REFERENCE")
+    rlx_ir::env::var_result("RLX_WHISPER_REFERENCE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| bench_cache_dir().join("jfk.reference.txt"))
 }

@@ -41,11 +41,12 @@ struct SynthWeights {
 
 impl SynthWeights {
     fn new(cfg: &AsrConfig) -> Self {
-        // Mirror the encoder's ceil-mode frequency reduction (f -> f/2 + 1).
+        // Mirror the encoder's frequency reduction: padded (2, 1) when causal,
+        // 1 each side otherwise.
+        let pad = if cfg.causal_downsampling { 3 } else { 2 };
         let mut f = cfg.n_mels;
         for _ in 0..(cfg.subsampling_factor as f64).log2().round() as usize {
-            let pf_r = 2 - (f % 2);
-            f = (f + 1 + pf_r - 3) / 2 + 1;
+            f = (f + pad - 3) / 2 + 1;
         }
         Self {
             d: cfg.d_model,

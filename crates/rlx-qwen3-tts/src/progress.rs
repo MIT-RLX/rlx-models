@@ -25,7 +25,10 @@ pub struct Progress {
 
 impl Progress {
     pub fn new(label: &'static str, total: usize) -> Self {
-        let enabled = std::env::var("RLX_QWEN3_TTS_NO_PROGRESS").ok().as_deref() != Some("1");
+        let enabled = rlx_ir::env::var_result("RLX_QWEN3_TTS_NO_PROGRESS")
+            .ok()
+            .as_deref()
+            != Some("1");
         Self {
             label,
             total: total.max(1),

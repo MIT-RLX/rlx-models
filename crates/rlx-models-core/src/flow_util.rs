@@ -49,6 +49,9 @@ impl WeightSource for WeightMapSource<'_> {
     fn has(&self, key: &str) -> bool {
         self.0.has(key)
     }
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        self.0.stored_dtype(key)
+    }
 }
 
 /// A compile cache with **one** bucket covering `1..=max_past` decode positions.
@@ -66,17 +69,12 @@ impl WeightSource for WeightMapSource<'_> {
 /// would dominate. Use [`BucketedCompileCache::new`] directly for a real
 /// bucket ladder.
 pub fn single_bucket_decode_cache(device: Device, max_past: usize) -> BucketedCompileCache {
-    // Clamp here rather than trusting the caller: `max_past = 0` would give
-    // `1..1`, an **empty** range that matches no length at all, so the cache
-    // would silently never hit. Every call site happened to clamp already;
-    // one of them forgetting is a performance cliff with no error.
-    let max = max_past.max(1) as u64;
-    // `new` takes `Vec<Range<u64>>`, so clippy's suggested "collect the range"
-    // rewrite is a type error here rather than a simplification. Allowed once,
-    // in the one place that constructs this, instead of at seven call sites.
-    #[allow(clippy::single_range_in_vec_init)]
-    let buckets = vec![1..(max + 1)];
-    BucketedCompileCache::new(device, buckets)
+    // One bucket is the one-rung case of a ladder, so it is built by the
+    // same function rather than by a second copy of the range arithmetic —
+    // including the clamp, because `max_past = 0` would otherwise give
+    // `1..1`, an empty range matching no length at all, and a cache that
+    // silently never hits.
+    BucketedCompileCache::geometric_ladder(device, max_past as u64, 1)
 }
 
 pub fn built_from_hir(

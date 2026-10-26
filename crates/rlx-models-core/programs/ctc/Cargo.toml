@@ -1,0 +1,18 @@
+# Greedy CTC transcription as an RLX program (WebAssembly), shared by every
+# CTC family's exporter: the features, the encoder at the bucket the runner
+# pads to, the collapse and the piece table. Built by the exporters, so it
+# stands outside the workspace.
+[package]
+name = "rlx-ctc-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+
+[workspace]
