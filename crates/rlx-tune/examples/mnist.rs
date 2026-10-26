@@ -261,7 +261,7 @@ fn main() -> anyhow::Result<()> {
     // kernel for this CNN, same result. Override with `RLX_FAST_CONV=0`. Set
     // per process (before any conv compiles), so it also covers spawned /
     // remote ranks, which each run `main`.
-    if std::env::var_os("RLX_FAST_CONV").is_none() {
+    if rlx_ir::env::var_os("RLX_FAST_CONV").is_none() {
         rlx_ir::env::set("RLX_FAST_CONV", "1");
     }
     let args: Vec<String> = std::env::args().collect();
@@ -283,7 +283,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let dir: PathBuf = sval("--data")
-        .or_else(|| std::env::var("RLX_MNIST_DIR").ok())
+        .or_else(|| rlx_ir::env::var_result("RLX_MNIST_DIR").ok())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/rlx-mnist")

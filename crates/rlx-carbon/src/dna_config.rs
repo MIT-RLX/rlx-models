@@ -34,7 +34,7 @@
 //! Everything in this module is pure (no base tokenizer, no I/O beyond
 //! [`DnaConfig::from_file`]), so the id math is unit-testable on its own.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Base ordering used to number k-mers: `A=0, T=1, C=2, G=3`
@@ -56,7 +56,7 @@ fn default_special_tokens() -> Vec<String> {
 }
 
 /// Parsed `dna_config.json` describing the DNA half of the hybrid vocabulary.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DnaConfig {
     /// k-mer width (Carbon: 6).
     pub k: usize,

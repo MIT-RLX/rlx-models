@@ -10,7 +10,7 @@ const FOX: &str = "The quick brown fox jumps over the lazy dog.";
 const FOX_WORDS: [&str; 6] = ["quick", "brown", "fox", "jumps", "lazy", "dog"];
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         return Some(PathBuf::from(p));
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");

@@ -102,6 +102,18 @@ pub fn validate_standard_device(family: &str, device: Device) -> Result<()> {
     }
 }
 
+/// Like [`validate_standard_device`], but also accepts the browser backends —
+/// `Device::WebGpu` and `Device::OpenGl` (WebGL2) — for models whose graphs
+/// have been checked on them. Natively `OpenGl` runs the WebGL planner on the
+/// CPU (`rlx-webgl`'s `exec_cpu`), which is how such a check runs without a
+/// browser.
+pub fn validate_browser_capable_device(family: &str, device: Device) -> Result<()> {
+    if matches!(device, Device::WebGpu | Device::OpenGl) {
+        return Ok(());
+    }
+    validate_standard_device(family, device)
+}
+
 /// Like [`validate_standard_device`], but allows the two devices that are real
 /// backends yet not "standard": `Device::Ane` with `coreml`, and `Device::Tpu`
 /// with `tpu`.
@@ -117,7 +129,7 @@ pub fn validate_lm_device(family: &str, device: Device) -> Result<()> {
         #[cfg(not(feature = "coreml"))]
         bail!(
             "{family}: device Ane requires the `coreml` feature \
-             (enable `coreml` or `apple-silicon` on this crate)"
+             (enable `coreml` or `macos-gpu` on this crate)"
         );
     }
     if device == Device::Tpu {
@@ -136,19 +148,19 @@ pub fn validate_lm_device(family: &str, device: Device) -> Result<()> {
 /// `(free_bytes, total_bytes)` for TIDE MoE VRAM budget sizing.
 ///
 /// Override with `RLX_CUDA_FREE_BYTES` / `RLX_CUDA_TOTAL_BYTES` or
-/// `RLX_DEVICE_FREE_BYTES` / `RLX_DEVICE_TOTAL_BYTES`. On Apple Silicon
+/// `RLX_DEVICE_FREE_BYTES` / `RLX_DEVICE_TOTAL_BYTES`. On macOS arm64
 /// (Metal / MLX), falls back to unified memory when env vars are unset.
 pub fn device_memory_for_moe_offload(device: Device) -> Option<(usize, usize)> {
     if let (Ok(free), Ok(total)) = (
-        std::env::var("RLX_CUDA_FREE_BYTES"),
-        std::env::var("RLX_CUDA_TOTAL_BYTES"),
+        rlx_ir::env::var_result("RLX_CUDA_FREE_BYTES"),
+        rlx_ir::env::var_result("RLX_CUDA_TOTAL_BYTES"),
     ) && let (Ok(f), Ok(t)) = (free.parse(), total.parse())
     {
         return Some((f, t));
     }
     if let (Ok(free), Ok(total)) = (
-        std::env::var("RLX_DEVICE_FREE_BYTES"),
-        std::env::var("RLX_DEVICE_TOTAL_BYTES"),
+        rlx_ir::env::var_result("RLX_DEVICE_FREE_BYTES"),
+        rlx_ir::env::var_result("RLX_DEVICE_TOTAL_BYTES"),
     ) && let (Ok(f), Ok(t)) = (free.parse(), total.parse())
     {
         return Some((f, t));
@@ -238,7 +250,7 @@ pub fn unavailable_compiled_devices() -> Vec<Device> {
 /// CPU ran" from a silent pass into a failure — which is what CI wants, and what
 /// a developer checking a specific backend wants.
 pub fn required_devices() -> Vec<String> {
-    std::env::var("RLX_REQUIRE_DEVICES")
+    rlx_ir::env::var_result("RLX_REQUIRE_DEVICES")
         .ok()
         .map(|s| {
             s.split(',')

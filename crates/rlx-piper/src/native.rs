@@ -101,7 +101,7 @@ impl NativeVits {
             inter_channels: CHANNELS,
             gin_channels: 0,
         };
-        let enc_device = match std::env::var("RLX_PIPER_ENC_DEVICE").as_deref() {
+        let enc_device = match rlx_ir::env::var_result("RLX_PIPER_ENC_DEVICE").as_deref() {
             Ok("gpu") | Ok("device") => device,
             _ => Device::Cpu,
         };
@@ -155,7 +155,7 @@ impl NativeVits {
         let length_scale = length_scale.unwrap_or(self.cfg.length_scale);
         // Cross-backend cosine needs a deterministic mean path (no SDP / z noise).
         let deterministic = matches!(
-            std::env::var("RLX_PIPER_DETERMINISTIC").as_deref(),
+            rlx_ir::env::var_result("RLX_PIPER_DETERMINISTIC").as_deref(),
             Ok("1") | Ok("true") | Ok("on")
         );
         let noise_w = if deterministic { 0.0 } else { self.cfg.noise_w };
@@ -295,7 +295,9 @@ fn gaussian(n: usize, scale: f32, seed: u64) -> Vec<f32> {
 
 fn as_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
 }

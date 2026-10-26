@@ -25,7 +25,7 @@ pub fn make(device: Device) -> Result<Box<dyn TtsAdapter>> {
         .hints
         .resolve_dir()
         .ok_or_else(|| anyhow::anyhow!(meta().hints.missing_reason()))?;
-    let dac = std::env::var("RLX_DAC_DIR")
+    let dac = rlx_ir::env::var_result("RLX_DAC_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_DAC_DIR));
     let inner = NativeZonos::open(&dir, &dac, device).context("load zonos")?;

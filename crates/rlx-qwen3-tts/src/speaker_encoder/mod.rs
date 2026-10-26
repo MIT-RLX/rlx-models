@@ -46,7 +46,10 @@ pub fn encode_reference_wav(
 /// Same as [`encode_reference_wav`] but the WAV has already been decoded to
 /// mono `f32` at the speaker encoder's sample rate.
 pub fn encode_pcm(model_dir: &Path, store: &Qwen3TtsWeightStore, pcm: &[f32]) -> Result<Vec<f32>> {
-    let debug = std::env::var("RLX_QWEN3_TTS_SPK_TIMING").ok().as_deref() == Some("1");
+    let debug = rlx_ir::env::var_result("RLX_QWEN3_TTS_SPK_TIMING")
+        .ok()
+        .as_deref()
+        == Some("1");
     let t0 = std::time::Instant::now();
     let cfg = SpeakerEncoderConfig::from_model_dir(model_dir)?;
     if debug {

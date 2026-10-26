@@ -46,14 +46,18 @@ fn i64_le(v: &[i64]) -> Vec<u8> {
 }
 fn as_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 fn as_i64(bytes: &[u8]) -> Vec<i64> {
     bytes
-        .chunks_exact(8)
-        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| i64::from_le_bytes(*c))
         .collect()
 }
 
@@ -81,7 +85,9 @@ fn hm_i64(hm: &HashMap<String, (Vec<u8>, DType)>, name: &str) -> Result<Vec<i64>
     Ok(match d {
         DType::I64 => as_i64(b),
         DType::I32 => b
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as i64)
             .collect(),
         _ => as_f32(b).into_iter().map(|x| x.round() as i64).collect(),
@@ -133,19 +139,14 @@ impl NativeChatterBox {
         // fast-conv path (2.4× faster end-to-end, whisper-identical) unless the
         // caller pinned it. `fast_conv_enabled()` caches this in a OnceLock, so it
         // must be set before the first conv runs — here at construction is safe.
-        if std::env::var_os("RLX_FAST_CONV").is_none() {
-            // SAFETY: called at load time, before any rlx compute thread starts.
-            unsafe {
-                std::env::set_var("RLX_FAST_CONV", "1");
-            }
+        if rlx_ir::env::var_os("RLX_FAST_CONV").is_none() {
+            rlx_ir::env::set("RLX_FAST_CONV", "1");
         }
         // Same BNNS crash as TinyModel TTS graphs — pin CoreML via shared policy.
         let device = if matches!(device, Device::Ane) {
             // ChatterBox does not depend on rlx-tiny-tts; mirror resolve_tts_device.
-            if std::env::var_os("RLX_COREML_UNITS").is_none() {
-                unsafe {
-                    std::env::set_var("RLX_COREML_UNITS", "gpu");
-                }
+            if rlx_ir::env::var_os("RLX_COREML_UNITS").is_none() {
+                rlx_ir::env::set("RLX_COREML_UNITS", "gpu");
                 eprintln!(
                     "[chatterbox] CoreML: set RLX_COREML_UNITS=gpu \
                      (Neural-Engine BNNS crashes on large TTS MIL graphs)"
@@ -164,9 +165,9 @@ impl NativeChatterBox {
         // speech tokens → noise). The hand-authored rlx-llama32 graph is
         // bit-exact on Metal — auto-select it when native weights are present
         // unless the caller forced the ONNX LM (`RLX_CB_ONNX_LM=1`).
-        let force_onnx_lm = std::env::var_os("RLX_CB_ONNX_LM").is_some();
-        let want_native = std::env::var_os("RLX_CB_NATIVE_LM").is_some()
-            || std::env::var_os("RLX_CB_NATIVE_LM_KV").is_some()
+        let force_onnx_lm = rlx_ir::env::var_os("RLX_CB_ONNX_LM").is_some();
+        let want_native = rlx_ir::env::var_os("RLX_CB_NATIVE_LM").is_some()
+            || rlx_ir::env::var_os("RLX_CB_NATIVE_LM_KV").is_some()
             || (matches!(device, Device::Metal | Device::Gpu) && !force_onnx_lm);
         let native_weights_ok = dir.join("native/t3_lm.safetensors").is_file();
         let native_lm = want_native && native_weights_ok;
@@ -188,7 +189,7 @@ impl NativeChatterBox {
             tokenizer,
             graphs: Mutex::new(HashMap::new()),
             native_lm,
-            native_lm_kv: std::env::var_os("RLX_CB_NATIVE_LM_KV").is_some(),
+            native_lm_kv: rlx_ir::env::var_os("RLX_CB_NATIVE_LM_KV").is_some(),
         })
     }
 
@@ -259,7 +260,7 @@ impl NativeChatterBox {
     /// and `set_param` (fast steady state); low-mem trades that for a much lower
     /// PEAK RSS (the LM, estimator and vocoder never coexist).
     fn release(&self, prefix: &str) {
-        if std::env::var_os("RLX_CB_LOW_MEM").is_some() {
+        if rlx_ir::env::var_os("RLX_CB_LOW_MEM").is_some() {
             self.graphs
                 .lock()
                 .unwrap()
@@ -362,7 +363,7 @@ impl NativeChatterBox {
             decompose_conv_transpose: true,
             ..Default::default()
         };
-        let prof = std::env::var_os("RLX_PROFILE").is_some();
+        let prof = rlx_ir::env::var_os("RLX_PROFILE").is_some();
         let t0 = std::time::Instant::now();
         let (hir, mut params, _report, manifest) =
             build_hir_from_onnx_file(&path, opts).with_context(|| format!("import {component}"))?;
@@ -464,7 +465,7 @@ impl NativeChatterBox {
             g.set_param(&name, &data);
         }
         g.finalize_params();
-        if std::env::var_os("RLX_PROFILE").is_some() {
+        if rlx_ir::env::var_os("RLX_PROFILE").is_some() {
             eprintln!(
                 "[compile] native T3 LM (rlx-llama32) s{compile_len} on {lm_dev:?}: {:?}",
                 t0.elapsed()
@@ -836,7 +837,7 @@ impl NativeChatterBox {
         ref_sr: u32,
         opts: &SynthOpts,
     ) -> Result<Vec<f32>> {
-        let prof = std::env::var_os("RLX_PROFILE").is_some();
+        let prof = rlx_ir::env::var_os("RLX_PROFILE").is_some();
         let mut t = std::time::Instant::now();
         let mut lap = |name: &str| {
             if prof {
@@ -894,7 +895,7 @@ impl NativeChatterBox {
             let mut embeds = embeds;
             for seq in (prompt_seq..).take(opts.max_frames) {
                 let logits = self.lm_logits_last(&embeds, seq, compile_len)?;
-                if std::env::var_os("RLX_CB_LOGIT_DIAG").is_some() {
+                if rlx_ir::env::var_os("RLX_CB_LOGIT_DIAG").is_some() {
                     let mut i0 = 0usize;
                     for i in 1..logits.len() {
                         if logits[i] > logits[i0] {
@@ -931,7 +932,7 @@ impl NativeChatterBox {
         anyhow::ensure!(!generated.is_empty(), "no speech tokens generated");
         // Debug: dump the generated speech-token IDs per device so CPU vs Metal
         // AR divergence can be localized (RLX_CB_DUMP_TOKENS=1 → /tmp/cb_tokens_<dev>.txt).
-        if std::env::var_os("RLX_CB_DUMP_TOKENS").is_some() {
+        if rlx_ir::env::var_os("RLX_CB_DUMP_TOKENS").is_some() {
             let dev = format!("{:?}", self.device).to_lowercase();
             let path = format!("/tmp/cb_tokens_{dev}.txt");
             let s = generated
@@ -987,7 +988,7 @@ impl NativeChatterBox {
         let tf = mu.len() / 80;
         let plane = 80 * tf;
         lap("flow_encoder");
-        let dbg = std::env::var_os("RLX_DBG").is_some();
+        let dbg = rlx_ir::env::var_os("RLX_DBG").is_some();
         let stat = |n: &str, v: &[f32]| {
             let (mn, mx) = v
                 .iter()
@@ -1030,7 +1031,7 @@ impl NativeChatterBox {
         let mut mask2 = Vec::with_capacity(2 * tf);
         mask2.extend_from_slice(&mask);
         mask2.extend_from_slice(&mask);
-        let n_steps = std::env::var("RLX_CB_STEPS")
+        let n_steps = rlx_ir::env::var_result("RLX_CB_STEPS")
             .ok()
             .and_then(|s| s.parse().ok())
             .filter(|&n| n >= 1)
@@ -1079,7 +1080,7 @@ impl NativeChatterBox {
         if dbg {
             stat("mel", &mel);
         }
-        if let Some(p) = std::env::var_os("RLX_DUMP_MEL") {
+        if let Some(p) = rlx_ir::env::var_os("RLX_DUMP_MEL") {
             let bytes: Vec<u8> = mel.iter().flat_map(|x| x.to_le_bytes()).collect();
             std::fs::write(&p, &bytes).ok();
             eprintln!("[dbg] dumped mel [80,{gen_frames}] to {:?}", p);
@@ -1102,7 +1103,7 @@ impl NativeChatterBox {
             stat("magnitude", &mag);
             stat("phase", &phase);
         }
-        if let Some(p) = std::env::var_os("RLX_DUMP_MAG") {
+        if let Some(p) = rlx_ir::env::var_os("RLX_DUMP_MAG") {
             let mut b: Vec<u8> = (mag.len() as u32).to_le_bytes().to_vec();
             b.extend(mag.iter().flat_map(|x| x.to_le_bytes()));
             b.extend(phase.iter().flat_map(|x| x.to_le_bytes()));

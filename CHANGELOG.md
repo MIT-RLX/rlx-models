@@ -2,6 +2,888 @@
 
 ## Unreleased
 
+## 0.2.19 — 200 model families, one exporter, upstream rlx 0.2.19 (2026-10-25)
+
+First release since 0.2.11 on crates.io; 0.2.14 and 0.2.16 were prepared but
+never published, so their notes below ship here.
+
+### Upstream rlx 0.2.19
+
+- Every upstream `rlx*` pin is `^0.2.19` (was `^0.2.16`, with `rlx-search`
+  at `^0.2.18` and `rlx-rng` at `^0.2.17`), including `rlx-program` in the
+  standalone `program/` manifests. The workspace version follows: 0.2.19.
+- All 32 pinned upstream crates resolve from crates.io, `rlx-torch-ckpt`
+  included, so a fresh clone builds without a sibling `../rlx`.
+- `scripts/publish.sh`: `rlx-sanotts` moved from tier 0 to tier 2 (it depends
+  on `rlx-models-core`, tier 1), and `rlx-models-plugin`, previously in no
+  tier and so never published, gets its own final tier after the facade.
+
+### Renamed features and options
+
+- Every crate in the repo is versioned 0.2.19, including the standalone
+  `program/` crates and `rlx-qwen3-ps5` / `rlx-ten-vad-mcu`.
+
+### Recursive Flint (`rlx-flint`)
+
+- **New crate** for [`RecursiveSI/flint`](https://huggingface.co/RecursiveSI/flint),
+  Recursive's 39.8B-total / ~2.5B-active coding MoE (`model_type = flint`, BF16
+  safetensors). Follows the only published implementation, the SGLang plugin in
+  the model repo: 35 sliding-window (513) + 14 full-attention layers, RoPE on
+  sliding layers only, per-head QK RMSNorm, learned per-head attention sinks
+  (decomposed as an extra softmax column — `Op::Attention` has no sink input),
+  sigmoid top-6-of-256 routing (reusing `rlx-llada2`'s gate kernel with one
+  group) plus an ungated shared expert. Chat template, tokenizer, CLI
+  `rlx-flint` (`just flint`), `FlintRunner` as an `LmRunner`, registered as
+  `flint` for `auto_runner` (facade feature `flint`).
+- `FlintRunner` never holds the 74 GB of routed experts: each layer is a graph
+  (attention, router, shared expert), the fired experts are read from the
+  checkpoint into bank slots, and one weightless routed graph serves all 47
+  sparse layers. Non-expert weights stay bf16-resident (lossless, ~14 GB peak
+  RSS on CPU). The key/value cache lives on the host, pre-transposed, with
+  sliding layers in a 512-slot ring.
+- Parity vs `scripts/flint_reference.py` (a torch transcription of the SGLang
+  model) on the full checkpoint: logits within 3e-4 (magnitudes to ~100) and
+  top-1 identical at every position, through token-by-token decode and chunked
+  prefill, on CPU and Metal; on synthetic weights in CI (`tests/fixtures`).
+  ~1.5 tok/s decode on CPU.
+- Tool calling: `chat::render_with_tools` writes the template's tool
+  preamble, assistant `<tool_call>`s and `<|observation|>` results
+  (byte-identical to `chat_template.jinja` through transformers, fixture from
+  `scripts/flint_chat_reference.py`); `tools::parse_reply` reads reasoning,
+  content and calls back out, typed by the tool schema. CLI `--tools FILE`.
+- Experts are now picked on the host from the layer graph's router scores
+  (the gate kernel's CPU body, `rlx_cpu::llada2_gate`), so the paged runner
+  no longer needs the custom op: parity on the full checkpoint now also holds
+  on MLX, Vulkan and wgpu.
+- Routed experts now run on the host straight from the checkpoint's bf16
+  bytes (`experts::add_routed`: 64-row `pread` blocks, bf16 dot products, f32
+  accumulate) instead of being decoded to f32, transposed into banks and run
+  through a grouped-GEMM graph. Same parity; expert time on a warm page cache
+  9.4 s → ~2.2 s over the 11-token parity run, CPU decode 0.53 → 0.74 tok/s on
+  a busy machine, where a long generation is now bound by the disk.
+- Opt-in expert read-ahead (`--prefetch`, `prefetch` module): layer l + 1's
+  experts are guessed from layer l's router input (80% of guesses fire) and
+  handed to the OS as read-ahead. Off by default until a quiet-machine A/B
+  shows a speedup.
+- Quantized routed experts: `rlx-flint quantize --scheme q8_0|q4_0` (`just
+  flint-quantize`) writes llama.cpp-style Q8_0 (40 GB) / Q4_0 (21 GB) expert
+  stores, read with `--experts DIR`; NEON block dots match the bf16 dot's cost
+  per weight. Teacher-forced over 158 tokens: perplexity 5.61 (bf16) → 5.86
+  (Q8_0, 96% top-1 agreement) → 5.94 (Q4_0, 90%). End-to-end speed could not
+  be measured on the shared machine.
+
+### Perplexity pplx-decider (`rlx-pplx-decider`)
+
+- **New crate** for [`perplexity-ai/pplx-decider-flash-gguf-v1.2`](https://huggingface.co/perplexity-ai/pplx-decider-flash-gguf-v1.2):
+  a Qwen3.5-4B classifier answering typed questions (`choice` / `noul` /
+  `score`) about a text or JSON state in one forward pass, protocol v3
+  (every question shares one sequence, one `<|fim_suffix|>` readout each).
+  Library (`PplxDecider::decide` returns the reference's JSON), CLI
+  `rlx-pplx-decider` (`just pplx-decider`), runs the Q8_0 GGUF packed
+  (6 GB peak on Metal). Images through the F16 mmproj: the processor's
+  `smart_resize` + torch's int16 bicubic antialias resize (pixels bit-exact),
+  Qwen3.5's 3-D M-RoPE for image tokens.
+- Parity vs Perplexity's own `pplx_decider` code (`scripts/pplx_decider_reference.py`),
+  on CPU, Metal and MLX: prompt byte-identical, token ids exact, logits within
+  4.5e-4 (probabilities 2.5e-5) of the reference run on the dequantized GGUF,
+  probabilities within 4.7e-3 of the bf16 checkpoint. Images (four requests,
+  upscale / downscale / multi-image, Metal): resized pixels, expanded tokens and
+  M-RoPE positions identical, vision tower 2.2e-4, logits 2.2e-4 of the
+  reference on the Q8_0 + mmproj weights.
+- **`rlx-qwen35`**: `Qwen35VisionEncoder::load` / `encode_nchw` — encode
+  pixels a caller preprocessed itself (the built-in path resizes
+  nearest-neighbour). Note for GGUF callers with image positions:
+  `Qwen35Config::from_gguf` leaves `mrope_interleaved` off, and Qwen3.5 needs
+  it on (a contiguous layout is invisible on text and wrong on images).
+  The vision encoder now defaults MLX to fused attention like CPU (decomposed
+  kept every layer's scores alive: 95 GB vs 52 GB peak, 57 s vs 35 s on a
+  1408x896 image).
+- **`rlx-pplx-decider` speed/memory**: CPU dequant cache off by default
+  (prefill-only: 5 GB vs 19 GB, as fast or faster), finer length buckets,
+  shapes that cannot share weights are dropped before the next compiles,
+  and an opt-in `libjpeg-turbo` feature that decodes JPEG byte-identically to
+  the reference (the pure-Rust decoder moved logits by up to 0.026).
+- **Upstream `rlx` (needed for the numbers above; not in 0.2.16)**:
+  `rlx-compile` CPU in-order planner drops the host-indexing output-ancestor
+  pin (a single `Gather` used to pin every activation; Qwen3-VL tower 24.8 →
+  4.9 GB); `rlx-mlx` runs GGUF Q8_0 as native affine 8-bit `quantized_matmul`,
+  lowers per-head Gated DeltaNet to MLX's fused `fast::gated_delta_update`,
+  releases lazy-graph intermediates at their last use (Qwen3.5-4B MLX prefill
+  peak 21.7 → 10 GB at 1024 tokens, text suite 144 s → 11 s), and exposes the
+  allocator cache (`RLX_MLX_CACHE_LIMIT`, `clear_cache`, `memory_stats`,
+  `RLX_MLX_MEM_TRACE`). Opt-outs: `RLX_PIN_OUTPUT_ANCESTORS=1`,
+  `RLX_MLX_Q8_0_DEQUANT=1`, `RLX_MLX_GDN_UNROLL=1`, `RLX_MLX_KEEP_ENV=1`.
+- **`rlx-qwen35`**: `Qwen35Flow::bidirectional_attention(key_padding_mask)` —
+  non-causal full-attention layers with an optional `attn_key_mask` input, so
+  right-padded batches stay exact; `Qwen35Config::gguf_attention_causal`, and
+  the generative runner now refuses a GGUF that declares
+  `attention.causal = false` instead of running it causally.
+- **`rlx-qwen35` fix**: the tokenizer rebuilt from GGUF metadata ignored
+  `tokenizer.ggml.pre` and NFC, splitting with GPT-2's regex — `"\n\n"`
+  became `198 198` instead of `271`, so every GGUF-only chat prompt was
+  off-distribution. It now uses Qwen2's / Qwen3.5's split regex and NFC
+  (`QWEN2_SPLIT_REGEX`, `QWEN35_SPLIT_REGEX`, `qwen_pre_tokenizer`).
+- **`rlx-qwen35` fix**: a `Qwen35Flow` without an embed stage handed
+  `input_ids` to the layers instead of `hidden` (the first declared input
+  starts the flow).
+
+### Fish Audio S2-Pro and Drama 3 (`rlx-fish`)
+
+- **`rlx-fish` rewritten** from a config-only stub into working ports of
+  [`fishaudio/s2-pro`](https://huggingface.co/fishaudio/s2-pro) (dual-AR:
+  36-layer Qwen3-shaped slow backbone + 4-layer fast decoder) and
+  [`fishaudio/drama-3`](https://huggingface.co/fishaudio/drama-3) (40-layer
+  Qwen3.5-MoE hybrid, Gated DeltaNet + gated attention, 256 block-FP8 experts
+  run on the host from the mapped shards, 13-layer codebook tower), plus the
+  shared 44.1 kHz codec (`codec.pth`: causal DAC + transformer-wrapped RVQ),
+  text chunking / speaker turns / voice cloning as in each reference, and the
+  `rlx-fish s2|drama3|codec` CLI (`just fish-s2`, `just fish-drama3`).
+- Parity vs the official PyTorch code (`scripts/fish_reference.py`): codec
+  waveform 3e-6, encode 440/440 codes; S2-Pro full model 8 greedy frames
+  identical; Drama 3 (4-layer cut + full tower) frames identical — on CPU,
+  Metal, MLX and wgpu. Whisper reads S2, S2 voice-cloned and Drama 3 output
+  back verbatim.
+- **`rlx-models-core`**: `audio::resample_sinc`, the torchaudio-matching
+  resampler, moved here from `rlx-tada` (which re-exports it).
+- Needs upstream `rlx` past 0.2.18 (`CompiledGraph::param_already_set`,
+  `rlx_runtime::with_param_sharing_scope`, `rlx_flow::storage`) and benefits
+  from its new Metal bf16 decode GEMVs and contiguous concat.
+
+### KittenTTS 2 (`rlx-kittentts2`)
+
+- **New crate** for [`KittenML/kitten-tts-2`](https://huggingface.co/KittenML/kitten-tts-2):
+  1.7B Qwen3 speech LM with ternary linears + chatterbox-turbo S3Gen (meanflow
+  conformer/U-Net flow, HiFT vocoder), 123 built-in voices, expression tags,
+  sentence chunking, and **voice cloning** from a reference clip (S3 tokenizer,
+  pyannote x-vector, CAM++ via `rlx-funasr`, Matcha mel / Kaldi fbank). At parity with the upstream PyTorch package in f32 on CPU
+  and Metal (48/48 greedy tokens; waveform |Δ| ≤ 4e-5); Whisper reads the fox
+  pangram back 6/6. `just fetch-kittentts2`, `just kittentts2 "…"`.
+- The shipped `kittenml-ternary-1.58` checkpoint transcodes **losslessly** to a
+  `Q2_0` GGUF (each 128-wide `{-s, 0, +s}` group is one `Q2_0` block), so the
+  existing packed `rlx-qwen3` path runs it.
+- **`rlx-qwen3`**: `Qwen3Generator::prefill_embeds_get_last_logits` (prefill
+  from caller-built embeddings, native packed), `step_cached_logits` +
+  `push_token` (decode without the built-in sampler), `enable_host_embed` (host
+  embedding gather on any device).
+- **`rlx-qwen3`: MLX resident decode failed with `missing input 'past_k_0'` —
+  FIXED.** The resident K/V handles were bound with `upper` rows while the
+  decode graph declares `upper + kv_spare_rows`; Metal sized the buffer from
+  the graph and hid it, MLX checks shapes. The bind now pads like the host path.
+- Ported the rest of upstream: the written→spoken **text normalizer**
+  (`kitten_text_processing`'s NeMo WFST grammars, embedded, walked natively;
+  400/400 sentences identical), **Whisper transcription** of a clone reference
+  when no transcript is given (feature `transcribe`), **reference clips ≥ 30 s**
+  (windowed S3 tokenization), and the distilled **`student_w4` decoder**
+  (BitNet flow, 1 step; `--decoder student_w4`).
+- Backends: LM parity on CPU, Metal, MLX, wgpu (macOS), CUDA and Vulkan.
+  wgpu decode 0.3 → 5–9 tok/s on macOS: `rlx-wgpu`'s fused GGUF GEMV had no
+  `Q2_0` branch, so all 197 ternary projections per token went through
+  dequant-to-scratch with a submit and host sync each; `Q2_0` now runs in the
+  cooperative 32-weight sub-block kernel (`dequant_gemv_b32x16`), within 3e-5
+  of an exact f64 reference.
+  wgpu on NVIDIA too, after two upstream `rlx-wgpu` / `rlx-gpu-host` fixes:
+  discrete adapters run copies on the host and defer the device write, and
+  (1) the hosted `BufferCopy` branch skipped the flush before the next GPU
+  section, so each layer's attention ran before its KV-append row landed;
+  (2) a host step reading a range flushed only a deferred write keyed at
+  exactly its start, missing a row deferred *inside* the cache. Both silently
+  dropped the newest token from every decode step. Tests
+  `host_buffer_copy_flush.rs`, `host_kv_append_host_reader.rs` (reproduce on
+  any adapter via `RLX_WGPU_HOST_BUFFER_COPY=1` / `RLX_WGPU_FORCE_HOST=1`).
+  **`rlx-qwen3`**: the native packed prefill now buckets and caches its
+  compiled graph (prefill 6–9 s → ~2 s per chunk); `RLX_QWEN3_KEEP_BF16` keeps
+  BF16 GGUF tensors packed, so with `RLX_PACKED_LM_HEAD` a tied BF16 embedding
+  is the LM head with no f32 copy (wgpu uses this — the f32 head is 1.3 GB).
+  The transcoded GGUF keeps the embedding BF16 (was F16; older files are
+  re-transcoded on load). **`rlx-models-core`**: `GgufLoader::take_packed`
+  honours `keep_bf16`.
+- Upstream `rlx` fixes found here: MLX runs `Q2_0` through native
+  `quantized_matmul` (was host dequant); Vulkan has a `Q2_0` GEMV (decode had
+  drifted onto a near-tie through the host int8 path); wgpu's f16 GEMM read
+  `vec4`s at misaligned offsets for odd `n`, and mirrored big f32 weights to
+  f16 when they fit a binding anyway; **rlx-compile pinned the whole ancestor
+  chain** of every `DequantMatMul` input (and of every hosted structural op's
+  inputs) to graph end, where only the tensor and the views it aliases need
+  it — a packed Qwen3-1.7B prefill planned 2.6 GiB with almost no slot reused,
+  now 1.4 GiB.
+
+### Fixes and dedup from the decode audit
+
+- **`rlx-asr`: wrong mel filterbank — FIXED.** The port wrote each filter's
+  bumped edges back for the next filter; `tools/audio_io.py` does not. 7 of 80
+  filters differed from the reference (up to 1.0) in release builds, and the
+  edge subtraction underflowed in debug (3 tests panicked). Pinned by
+  `mel_filterbank_matches_the_python_reference`.
+- **`rlx-qwen35`: sampled decode reused one random number — FIXED.** Every
+  step and every batch row drew `Philox(seed)`'s first value, so each token was
+  taken at the same quantile of its distribution. Rows now get their own
+  stream (`seed + b·2³²`) advanced per generated token; row 0 equals
+  `sample_token_at(seed, step)`.
+- **`rlx-qwen3` sampling** (also used by gemma, llama32, qwen35, orpheus, …):
+  the inline temperature/top-k/top-p path full-sorted the vocabulary twice
+  per token; it now runs through `rlx_runtime`'s `SamplerChain`
+  (`SampleOpts::into_chain` maps onto `rlx_runtime::lm::SampleOpts`). At
+  temperature 0.6 / top-k 20 / top-p 0.95 on a 151,936-entry row: 2.9 ms →
+  0.6 ms per token, the same token in 1500 of 1500 seeded draws.
+- **`rlx-nemotron-asr`**: greedy RNN-T runs on `rlx-audio-blocks`' TDT loop
+  (duration `0`), like Parakeet; `shared_loop_matches_the_previous_greedy_decode`
+  pins it over 200 random nets. **Either SOS rule:** new
+  `rlx_audio_blocks::decoders::tdt::SosState { Carry, Discard }` — `Carry`
+  (NeMo greedy search) keeps the prediction net's post-SOS state for the first
+  token, `Discard` steps it from zero. Nemotron keeps its own `Discard` by
+  default (`AsrConfig::sos_state`); Parakeet keeps `Carry`
+  (`TdtCore::with_sos_state` to switch).
+- **`rlx-translate`: `Tuning::set` no longer writes the process environment**
+  to reuse the env parsers (it raced with any other thread; the `tuning` tests
+  failed in parallel). It feeds the one value to the same parser; it no longer
+  re-applies unrelated `RLX_TRANSLATE_*` variables.
+- `rlx-asr` / `rlx-laguna`: byte-identical in-crate softmax copies merged.
+  `rlx-dac`: `decoding` gated on `export` (was dead code without it, failing
+  `clippy -D warnings` for every dependent). `rlx-ocr`: collapsible-if lint.
+
+### Decoders share `rlx-search`
+
+Beam search, CTC decoding and forced alignment now run on `rlx-search`
+(needs rlx 0.2.18; local dev picks it up through `.cargo/config.toml`).
+
+- **`rlx-whisper`**: beam search follows `openai/whisper`'s `BeamSearchDecoder`
+  (`beams + 1` proposals, finished pool, ranked by `score / len`); it used to
+  keep finished hypotheses in the beam and rank by raw score, which favors
+  short output. The KV search scores only kept hypotheses (`beams` decoder
+  steps a token, was `beams²`). **Fixed:** batched multi-region beam search
+  fed each parent's argmax instead of the chosen token and dropped the first
+  generated token; `suppress_tokens` were not applied to the first step and
+  `begin_suppress_tokens` never in beam mode. Greedy `argmax_next` no longer
+  log-softmaxes the row (argmax is unchanged by the shift).
+- **`rlx-ocr`**: **Fixed** CTC beam search keyed prefixes by label *and*
+  frame and moved repeat-after-blank mass onto the wrong prefix; it disagreed
+  with rten's `CtcDecoder::decode_beam` on 141 of 150 test inputs, now on 0
+  (`ctc_beam_matches_reference`).
+- **`rlx-translate`**: `beam::search` is a configuration of the shared engine;
+  `matches_the_previous_search` pins it to the old implementation (1200
+  cases, tokens identical, scores within 1e-9). `no_repeat_ngram` now masks
+  before each hypothesis's top-k instead of dropping blocked proposals after
+  it (off by default).
+- **`rlx-asr`, `rlx-ocr2`, `rlx-funasr`, `rlx-conformer-ctc`, `rlx-citrinet`,
+  `rlx-qwen3-aligner`, `rlx-qwen3`**: their CTC prefix beam (two identical
+  copies), CTC greedy, Viterbi aligner and greedy argmax delegate to
+  `rlx-search`; public signatures unchanged. Prefix-beam ties are broken by
+  label sequence, not `HashMap` order.
+- **Greedy argmax in 30 more crates** (every LM/VL/TTS/ASR runner with its own
+  copy) calls `rlx_runtime::search::argmax`: lane-parallel, 46 µs vs 164 µs on a
+  151,936-entry row. The copies written as `max_by(partial_cmp)`
+  (`rlx-tiny`, `rlx-tinystories`, `rlx-soprano`, `rlx-qwen25-vl`,
+  `rlx-metavoice`, `rlx-voxtral`, `rlx-voxtral-tts`, `rlx-qwen3-asr`,
+  `rlx-fireredaudio`, `rlx-locateanything`) returned the *last* index on an
+  exact tie and panicked on NaN; they now return the first, as torch and numpy
+  do, and skip NaN.
+
+### One exporter for every family: `rlx_core::export`, `rlx-export`
+
+- **`rlx_core::export`** (`rlx-models-core`, feature `export`): what every
+  exporter shares, in one place. `Checkpoint` (a Hugging Face directory or a
+  GGUF: config, tokenizer, chat template, stop ids, sampling defaults, card),
+  `Package` (the one writer: functions, entries, sidecars, held tensors, and
+  params referenced from the checkpoint), `Referencer` over safetensors *and*
+  GGUF files (`open_gguf_only`, `packed`), `ExportOptions` / `ExportReport`
+  for every family, `rope::Rope` (tables from `rope_scaling`: llama3,
+  linear, YaRN, LongRoPE), `decoder::{Decoder, export_decoder}` (moved from
+  rlx-qwen3), `graph::export_stages` (any graphs as a `pipeline` entry),
+  `check::check_generate` (a package's decode against a runner's), and the
+  exporter registry (`register_exporter`, `detect`, `export`): a checkpoint
+  goes to the family that claims its `model_type` / GGUF architecture, else
+  to the exporter named as its runner.
+- **`rlx-export`** (`rlx-models`, feature `export`): `rlx-export <checkpoint>
+  -o model.rlxp [--check]`. `--check` (with `runner`) decodes the package
+  against the family's `LmRunner`, prompts in the package's chat template,
+  each side ending at the package's stop ids. `rlx_models::export::
+  {export_checkpoint, check_package, register_builtin_exporters}`.
+- **Every exporter ported**: qwen3, gemma, qwen3-vl, qwen25-vl, qwen35, embed
+  (and rerankers), whisper and siglip2 write through `Package` and take the
+  shared options (`texts` for an encoder's batch; `frontend_package` for
+  Whisper's and SigLIP's front ends). Each crate has `export::register()`.
+- **New**: Llama 3.x with scaled RoPE (`rope_scaling` was refused), Mistral
+  (context stops at its sliding window), LFM2 / LFM2.5 (`rlx-lfm`, feature
+  `export`: the step's mask and row write computed from `position`, every
+  cache a variable, symbolic in its capacity).
+- **Audio codec decoders and NomicBERT**: SNAC, NanoCodec, WavTokenizer,
+  XCodec2, VibeVoice, FACodec, EnCodec, SpeechTokenizer, DAC and Mimi as
+  `pipeline` packages for any number of codes, the runners' host steps in
+  the graph (SNAC's codebook lookup, NanoCodec's FSQ, the Vocos inverse
+  STFT — `export::audio` —, FACodec's speaker timbre, EnCodec's and
+  SpeechTokenizer's residual-codebook sum and LSTM, DAC's and Mimi's
+  projected codebooks, Mimi's sliding-window mask from positions), each
+  checked against its runner on real weights. NomicBERT through the
+  `embed` exporter, and ClinicalBERT too (checked against
+  `ClinicalBertRunner`). `graph::{symbolic_in, broadcast_params,
+  per_size}` (a table may follow unit axes: `[1, t, d]`); a `Checkpoint`
+  may be a lone `.safetensors`.
+- **Parler-TTS, MioTTS and MOSS-TTS-Nano** (`rlx-parlertts`, `rlx-miotts`,
+  `rlx-moss-nano`, feature `export`): language-model TTS as packages rlx
+  runs alone, their sampling loops programs. Parler's decoder keeps its
+  logits host-side (a slot) and `pick` reads one step; its DAC is
+  `rlx_dac::export::dac_functions`. MioTTS is Qwen3's package
+  (`export_decoder_with`, `rlx_qwen3::export::export_rlxp_with`) with the
+  codec's graphs, its program generating through `entry.run`. Lifts: a
+  baked causal mask (`Lift::Triangle`); a length-shaped param is refused.
+  `audio::istft_same` (magnitude and phase, `padding="same"`). Parler
+  matches its runner at cosine 1.0, MioTTS's codec at 1.0 and its LM's
+  first sampled codes exactly, MOSS's frames exactly (its runner's own codec
+  decode is NaN; the package's is onnxruntime's within 8.5e-6).
+- **Orpheus and Maya1** (`rlx-orpheus`, `rlx-maya1`, feature `export`):
+  the GGUF Llama's language-model package
+  (`rlx_llama32::export::export_gguf_with`) with SNAC's lookup and decoder
+  (`rlx_snac::export::snac_functions`) and a program: the prompt, the
+  language model a token at a time, its logits penalized `penalty^count`
+  and sampled through the host's `sample` (rlx's `sample` host service,
+  new), the seven codes of each frame, SNAC, the peak normalization.
+  Maya1 is Orpheus' package (`export_flavor`) with its description prompt
+  and greedy decoding. Orpheus' first 28 sampled codes are the runner's;
+  SNAC on the runner's codes at cosine 0.99997. Maya1's speech, greedy end
+  to end, at cosine 0.99995.
+- **Soprano 1.1** (`rlx-soprano`, feature `export`): its backbone and Vocos
+  decoder ONNX converted to rlx IR once (the backbone with its past caches
+  empty, as the runner recomputes the whole context; symbolic in the
+  tokens and the frames), the runner's host logic a program — the prompt,
+  its sampler (temperature, the repetition penalty, top-k, top-p, its
+  xorshift stream), the chunking, the offline crop. Its audio tokens are
+  the runner's, sampled (32) and greedy (29), and its speech too (cosine
+  1.0); no op in the package is an ONNX one.
+- **ChatterBox** (`rlx-chatterbox`, feature `export`): its five ONNX
+  graphs converted to rlx IR once, each symbolic in its lengths (the flow
+  encoder in all the tokens, the prompt's tokens and its mel frames — its
+  dims `2·tokens − 1` and `2·tokens − frames`, which rlx's fit now finds), T3
+  as rlx-llama32's graph over `native/t3_lm.safetensors` (referenced), the
+  default voice's conditioning computed by rlx at export, and the runner's
+  host logic a program: the prompt embeds, T3 over the context padded as
+  the runner pads it, the sampler, the CFM Euler solver with guidance,
+  HiFT's inverse STFT, the onset polish. Its speech tokens, mel and speech
+  are the runner's (native T3), sampled and greedy. A cloned reference is
+  2 to 4 s: past 100 units (4 s) the encoder's speaker branch pads to a
+  multiple of 200 frames, one graph per step of it; the runner's own import
+  of `audio_features` is onnxruntime's at cosine 0.945 only (the package
+  matches the runner).
+- **RLX TTS** (`rlx-tts`, feature `export`): FastSpeech2's eager encoder
+  and decoder as graphs (symbolic in phones and frames), the sample-level
+  WaveRNN as one `Op::Scan` a mel frame (the portable path's f16-rounded
+  activations, its Gumbel-max), and the crate's text frontend, durations,
+  buckets and output post in a program (drawing the BNNS AES-CTR stream of
+  `WaveRnnRng::Bnns`). The mel is the runner's within 1e-6; the vocoder its
+  portable path's for the first ~570 samples, then the runner's fused GRU
+  arithmetic and the scan's separate ops part (greedy alike); Whisper reads
+  the package's speech exactly. Its macOS default (`NativeBnns`, the vendor's
+  private Gumbel stream) is not reproducible off macOS, and greedy decoding
+  is not intelligible ("the click brown fox").
+- **Fish Audio S2-Pro** (`rlx-fish`, feature `export`; facade feature
+  `fish`, new): the crate's slow, fast and codec graphs (its builders now
+  return them uncompiled too), their RoPE inputs table rows, the steps'
+  new keys and values written into their caches, the codec symbolic in the
+  frames (its window mask pinned to the sliding window, which equals the
+  causal mask below it); the conversation, sampler and dual-AR loop in a
+  program. Its 24 frames are the runner's, the codec's speech on them at
+  cosine 1.0.
+- **Qwen3-TTS's speech decoder was 0.84 off the reference** (`rlx-qwen3-tts`):
+  its ConvNeXt upsampling used `0.5·v·(1 + tanh(v·FRAC_2_SQRT_PI/2))` — the
+  `2/√π` constant (not `√(2/π)`) and no cubic term — where the official
+  `qwen-tts` decoder uses `nn.GELU()`, the exact erf form. Every utterance's
+  waveform was affected (max |d| 0.84 at peak 0.87 on fixed codes); now
+  4.8e-5 (`tests/speech_decoder_reference.rs`, fixture from
+  `scripts/speech_decoder_reference.py`). The talker and code predictor
+  were right: CustomVoice greedy frames are `qwen-tts`'s, 30 of 30
+  (`tests/custom_voice_reference.rs`, `scripts/custom_voice_reference.py`).
+- **Qwen3-TTS CustomVoice** (`rlx-qwen3-tts`, feature `export`; exporter
+  `qwen3-tts`): the text/codec embedding rows, the codec head, the talker's
+  prompt and stateful step, the code predictor's prompt, step and per-group
+  heads and embeddings, and the 12 Hz speech decoder, over the checkpoint's
+  tensors; the program assembles the CustomVoice prompt and runs the codec
+  and code-predictor loops. Greedy, 30 of 30 frames `qwen-tts`'s, speech
+  cosine 1.0. The talker and code predictor name their weights alike
+  (`model.layers.*`): the code predictor's are `cp.`, and merging two
+  graphs' params now refuses one name with two values (it had silently
+  bound the code predictor's five layers into the talker).
+- **Moshi** (`rlx-moshi`, feature `export`; exporter `moshi`): Moshiko
+  one-way as graphs over the checkpoint's bf16 tensors by name — the
+  embeddings, the temporal step, a DepFormer slice per codebook — plus
+  Mimi; the program feeds the prompt a token a frame with the delayed codes
+  and samples with the crate's own sampler. Greedy and sampled, its frames
+  are the runner's (10 of 10). `Package::reference_named` now records each
+  half-precision tensor's dtype, so `weights_as_stored` keeps them bf16.
+- **Kyutai TTS** (`rlx-kyutai-tts`, feature `export`; exporter
+  `kyutai-tts`): every graph reads the checkpoint's bf16 tensors by their
+  own names (`Package::reference_named`, nothing copied) — the embeddings,
+  the speaker conditioning, the temporal step with its cross-attention, a
+  DepFormer step per codebook (its per-step weights narrowed from the
+  stacked projections) — plus Mimi (`rlx_mimi::export::mimi_functions`).
+  The SentencePiece model becomes a `tokenizer.json` (`rlx_core::export::spm`, the
+  protobuf read directly). The program is the crate's own generation loop,
+  state machine, delays and sampler built to wasm. Greedy, its frames and
+  speech are the runner's (cosine 0.9999999995); sampled, 22 of 34 frames.
+- **Inflect-Nano** (`rlx-inflect-nano`, feature `export`; exporter
+  `inflect-nano`): MicroFastSpeech as two graphs (the encoder and prosody
+  heads; the frame stack through the bidirectional GRU and postnet, as
+  `Op::Gru`) and the vocoder (`graph::vocoder_hir`); the crate's own text
+  frontend — CMUdict, g2p, the POS tagger, the BERT tokenizer — built to
+  wasm in the program via `#[path]`. Its speech is the host reference's at
+  cosine ≥ 0.99999996.
+- **sanoTTS** (`rlx-sanotts`, feature `export`; exporter `sanotts`): the
+  duration student and the acoustic token stack as graphs symbolic in the
+  tokens (`graph::token_graph`), the frame stack and decoder symbolic in the
+  frames (`graph::frame_graph`, the masks inputs of ones); espeak-ng, the
+  phoneme table, the half-to-even durations and the expansion to frames in a
+  program. Its speech is the host reference's within 5.1e-6.
+- **Wake words** (`rlx-wake` and `rlx-openwakeword`, feature `export`;
+  exporters `nanowakeword`, `porcupine`, `voxrt`, `openwakeword`): the mel
+  frontend as a graph and the scoring nets (the wake CNN one graph per
+  window length; openWakeWord's embedding and phrase head), one program
+  streaming 80 ms pushes as the engines do, with threshold and cooldown.
+  Every push's score is the engine's. The stub weights every wake crate
+  ships and trains from were all negative: `(rng >> 33) / u32::MAX` spans
+  [0, 0.5), so `· 0.02 − 0.01` never reached above 0 — every ReLU dead and
+  every push scored sigmoid(bias). Now [0, 1) (`rlx-wake` stub and MLP
+  init, `rlx-wakeword-core`, `rlx-openwakeword`); the `student_*.safetensors`
+  in the crates were saved from the old stub and still score a constant.
+- **Voxtral** (`rlx-voxtral`, feature `export`; exporter `voxtral`): the
+  Whisper log-mel over whole 30 s windows, the encoder (its
+  batch-broadcast biases one held slice, `broadcast_params`) and projector
+  symbolic in the windows, the prompt's embedding, the Llama prompt graph
+  and step — whose caches carry the decode's in-place append row, so the
+  program's mask and caches are `cap` rows with the token's last; tekken
+  decoding in the program. Its transcripts are the runner's on both JFK
+  clips, and the runner's are transformers' (`scripts/voxtral_reference.py`,
+  with mistral-common).
+- **Qwen3-ASR** (`rlx-qwen3-asr`, feature `export`; exporter `qwen3-asr`):
+  Whisper's log-mel as a graph (now `rlx_core::export::audio::whisper_log_mel`,
+  shared), the audio tower symbolic in its chunks and audio rows (each row's
+  attention window an input, the block-diagonal bias computed in the graph:
+  `build_encoder_windowed`), the prompt's embedding with the audio's rows
+  written in, the Qwen3 decoder's prompt graph and its stateful step; the
+  padding, chunk layout, chat prompt, greedy decode and the text after
+  `<asr_text>` in a program. Its transcripts are the runner's on both JFK
+  clips, and the runner's are transformers' (`scripts/qwen3_asr_reference.py`
+  on the `-hf` checkpoint).
+- **Whisper's STFT padding** (`rlx-whisper`): `center=True` reflects the
+  signal's first samples into the left pad; `stft_mag` copied its *last*
+  ones there (a wrap, zeros for any clip padded to 30 s) and mirrored the
+  right edge including the edge sample. Frame 0 was 0.39 off
+  `WhisperFeatureExtractor` in the log mel, frame 1 0.027; now 1.6e-5. Every
+  model on `rlx_whisper::pcm_to_log_mel` (Whisper, Voxtral, FireRedASR)
+  reads it; the Whisper package's front end graph reflects too (it had zeros).
+- **Paraformer** (`rlx-funasr`, exporter now `funasr`, by `config.yaml`'s
+  `model`): the SAN-M encoder with the CIF predictor's alphas and the
+  decoder (symbolic in the frames and the tokens) as graphs; the frontend
+  and the integrate-and-fire (`cif.rs`) in the program SenseVoice shares.
+  Its transcripts are the runner's, which reads FunASR's.
+- **SenseVoiceSmall** (`rlx-funasr`, feature `export`): the encoder, its
+  prompt rows and the CTC argmax as one graph symbolic in the frames; the
+  crate's frontend, the collapse and the pieces in a program. Its
+  transcripts are the runner's. The runner never applied CMVN: `am.mvn`'s
+  first bracketed vector is a `<Splice>` block's `[ 0 ]`, which it took for
+  the shift, and the length mismatch then skipped normalization silently
+  (now the last two vectors, and a mismatch is an error); and it read
+  `cmvn_file: null` as off, where FunASR's loader uses the directory's
+  `am.mvn` whenever it is there. With both its logits are FunASR's within
+  1.3e-4 (`scripts/funasr_reference.py`, which turns off the frontend's
+  dither: FunASR dithers at inference, so its own output changes run to
+  run).
+- **Parakeet-TDT** (`rlx-parakeet`, feature `export`; facade `parakeet`,
+  new): through Nemotron's exporter, now a FastConformer transducer
+  exporter (`rlx_nemotron_asr::export::transducer_rlxp`: TDT durations, the
+  start-of-sequence state kept or not, the language prompt only where the
+  model reads one). Its transcript is the runner's. The runner had never
+  run on real weights and transcribed nothing; checked against the Hugging
+  Face port (`parakeet-tdt-0.6b-v3`), it now reads the clip as the reference
+  does, punctuation included, after the encoder learned the non-streaming
+  FastConformer: depthwise convs padded `(k − 1) / 2` each side
+  (`conv_context_size` not `causal`), BatchNorm from running statistics
+  (`conv_norm_type: batch_norm`), and per-feature normalization over the
+  audio's frames alone (n − 1 dof), the frame past them zeroed after.
+- **Nemotron 3.5 ASR** (`rlx-nemotron-asr`, feature `export`; facade
+  `nemotron-asr`): the frontend, the FastConformer (subsampling symbolic in
+  the mel frames, its layers in the encoder frames), the prompt kernel and
+  joint projection, the prediction LSTMs' step and the joint as graphs; the
+  greedy RNN-T search and the pieces in a program. Its transcript is the
+  runner's. The runner had dropped words ("we choose to write our software
+  and not because it is safe and free garbage"); against the Hugging Face
+  port (`scripts/nemotron_reference.py`) three fixes made it read the clip
+  as the reference does, its encoder within 2e-6: the cache-aware
+  `chunked_limited` attention mask was never applied; a
+  `causal_downsampling` subsampling pads both axes `(k − 1, stride − 1)`
+  (a non-causal one `(k − 1) / 2` each side), where it padded time
+  `(2, 0)` and frequency `(1, 2 − f mod 2)`; and the STFT is zero-padded
+  (`pad_mode="constant"`), not reflected, the frame past the audio zeroed.
+  `rlx_core::export::audio::nemo_features_with` frames audio so
+  (`NemoPadding`).
+- **HumeAI TADA** (`rlx-tada`, feature `export`; facade feature `tada`,
+  new): the rows' embedding, the Llama-3.2 backbone's prompt and step
+  graphs (both guidance branches), the flow-matching head's ODE solve as one
+  graph, and the codec decoder (its segment mask computed in the graph) in a
+  package; the prompt plan, noise, durations and trims in a program, the
+  voice prompt a sidecar. Its frame gaps are the runner's, its speech at
+  cosine 1.0. `just fetch-tada` passed several `--include` patterns to one
+  flag, which this `hf` reads as file names: the codec encoder and
+  `tokenizer.json` were never fetched.
+- **Fish Audio Drama 3** (`rlx-fish`, exporter `fish-drama3`, claims
+  `fish_omni`): each backbone layer's prompt and step graph (the runner's
+  builders, uncompiled), the routed experts as one `experts` graph whose FP8
+  weights and block scales are inputs the program has the host read for the
+  run (eight experts a run, dequantized in the graph), the final norm and
+  main-token head, each tower layer's prompt and step graph with its code
+  embeddings gathered in the graph, and S2-Pro's codec. The 39 GB
+  checkpoint is referenced by name (`Package::reference_named`), no tensor
+  read at export. The prompt (`drama3_text.rs`, `prompt.rs`), routing,
+  repetition-aware sampling and the tower loop in a program. Its 8 frames
+  are the runner's, the codec's speech on them at cosine 1.0.
+- **Voxtral-4B-TTS** (`rlx-voxtral-tts`, feature `export`): the backbone as
+  a prompt and a step graph (fixed-capacity caches written in place; the
+  step embeds the last frame's codes), the semantic head and flow-matching
+  transformer's Euler steps as one `acoustic` graph, the audio tokenizer's
+  decoder symbolic in the frames, the checkpoint's weights referenced; the
+  Tekken BPE, speech prompt, the runner's noise stream and code
+  quantization in a program. Its 24 frames are the runner's, the codec's
+  speech on them at cosine 1.0.
+- **Voxtral-4B-TTS runner fixed** (`rlx-voxtral-tts`): it spoke nothing
+  intelligible (Whisper heard "the" in 16 s, no end of audio). Against
+  vLLM-Omni / mistral_common: the Mistral-native q/k need GPT-J RoPE (vLLM
+  permutes them to NeoX halves on load); the eager attention and the
+  codec's ALiBi attention started masked scores at 0, not -inf (future and
+  out-of-window keys leaked — the CPU prefill is eager, and it flipped the
+  first semantic code); the flow started from noise scaled by `sigma`, not
+  1; the codec decoder's window starts at 2 (16 halved by the encoder's
+  downsamplings), its first conv pads by replication, its transposed convs
+  trim from the right, its reflect padding excludes the edge, and its q/k
+  norms use `qk_norm_eps`. It now says the text (Whisper exact); its codec
+  matches a PyTorch transcription of vLLM-Omni at cosine 0.9999999992
+  (`scripts/voxtral_reference.py`).
+- **Pocket TTS** (`rlx-pocket-tts`, feature `export`; facade feature
+  `pocket-tts`, new): the crate's FlowLM step and Mimi decoder block, their
+  RoPE inputs table rows read at a position, the step's new keys and values
+  written into its caches; the released voices' states and the host-side
+  embeddings as files; the runner's chunking (`text.rs`), noise stream, EOS
+  rule and block decoding in a program. Its speech is `PocketTts::generate`'s
+  (cosine 1.0, the same sample counts), one chunk and two, sampled and at
+  temperature 0.
+- **Gepard** (`rlx-gepard`, feature `export`): the eager Qwen3.5 backbone
+  as a prompt graph and a step graph (gated attention, `(1 + w)` norms,
+  GQA, fixed-capacity caches written in place; the step embeds the last
+  frame's codes), both ending in the codebook and stop heads, the
+  checkpoint's weights referenced; the HiFi-GAN decoder symbolic in the
+  frames; the runner's prompt, `fastrand` sampler and stop rule in a
+  program. Greedy and sampled, its 40 frames are the runner's; the decoder
+  on them at cosine 1.0. (`GepardSynthesizer::generate_frames` /
+  `decode_frames`, new, split the eager loop from the decoder.)
+- **MetaVoice-1B** (`rlx-metavoice`, feature `export`): its eager CPU
+  first stage as a prompt graph and a step graph over the guidance pair,
+  each layer's caches a fixed number of rows the program picks a request
+  (the step writes its row in place; a cache that grew a row a step
+  compiled a 1.2B-parameter graph a step), its weights referenced; the
+  second stage, the speaker encoder (DFT mel, `Op::Lstm`) and EnCodec's
+  functions (`rlx_encodec::export::encodec_functions`, new); the runner's
+  BPE, voice partials, guided argmax / nucleus loop, codebook split and
+  post-processing in a program. Greedy and sampled, its 40 tokens are the
+  runner's; the fine codes, the Bria voice's embedding and the speech match
+  (cosine ≥ 0.999999999).
+- **Zonos v0.1** (`rlx-zonos`, feature `export`): its backbone (the crate's
+  CFG prefill graph, symbolic in the context, its RoPE inputs made params),
+  the prefix conditioner's projection, the frames' embeddings, the heads,
+  DAC's functions and the conditioning's small tensors; the runner's loop in
+  a program (espeak-ng, the Fourier and language rows, guidance, the delay
+  pattern, its sampler and EOS rules). Greedy and sampled, its 24 frames are
+  the runner's; DAC on them at cosine 1.0.
+- **Sesame CSM-1B** (`rlx-sesame`, feature `export`): its eager CPU
+  backbone and depth decoder as rlx-llama32 graphs over embedded rows (the
+  checkpoint's weights referenced, renamed back from the flow's), frame
+  embedding, heads and projection graphs, Mimi's functions
+  (`rlx_mimi::export::mimi_functions`, new), and the runner's loop in a
+  program (its `fastrand` top-k). Greedy, the first 118 of 128 codes are the
+  runner's; Mimi on the runner's frames at cosine 1.0. (Its sampler's
+  `select_nth_unstable` orders candidates by their exact values, so sampled
+  frames part sooner.)
+- **MiraTTS** (`rlx-miratts`, feature `export`): the Qwen2 LM's package,
+  BiCodec's `detokenizer` and `s_encoder` as rlx IR at the runner's fixed
+  sizes, the reference's mel as a graph (its DFT and filterbank matmuls, so
+  the program does none of it), and a program for the prompt, the sampling
+  (`penalty^count`, the host's `sample` with min-p) and the glue. A
+  reference's global tokens, the LM's sampled codes and the audio are the
+  runner's.
+- **KittenTTS 2** (`rlx-kittentts2`, feature `export`): the `Q2_0` speech
+  LM's package with a `speaker` medium — `spk_proj` and a prefill over
+  embedded rows, the speaker's row at the prompt's start token
+  (`rlx_qwen3::export::export_gguf_media`, new; rlx's `Model::run` now
+  takes media beside `input_ids`) — S3Gen's four stages symbolic in their
+  lengths (the encoder's two relative-position tables slices of one), each
+  voice's conditioning, and the crate's own frontend in the program (its
+  NeMo grammars, chunking, prompts, sampler) with the flow loop and HiFT's
+  host DSP. The LM's prompt logits are the runner's within 8e-5, S3Gen on
+  the runner's tokens exact (cosine 1.0); greedy text to speech keeps the
+  runner's first 42 codec tokens, then a near tie between its packed LM and
+  the package's tips.
+- **FIXED: `build_qwen3_prefill_embeds_built` ignored `with_lm_head`** — it
+  returned the hidden states where a caller asked for logits (the
+  Qwen3-VL runner's prefill read its first token's logits from them).
+- **NeuTTS** (`rlx-neutts`, feature `export`): a GGUF backbone and
+  NeuCodec's decoder as one package rlx runs alone. The backbone is the
+  GGUF's language-model package — Air's Qwen2 GGUF through
+  `rlx_qwen3::export::export_gguf_with` (new: a Qwen2 / Qwen3 GGUF's config
+  from its metadata, its tokenizer from a builder the caller passes), Nano's
+  Llama GGUF through `rlx_llama32::export::export_gguf_with` (new: GPT-J
+  RoPE, `rope_freqs.weight`; the decode step reads its RoPE row as inputs,
+  `Llama32Flow::rope_inputs`). NeuCodec is XCodec2's graphs
+  (`rlx_xcodec::export::decoder_functions`, its weights' `generator.`
+  prefix and head width now read) after an FSQ lookup graph. The program
+  phonemizes with espeak-ng (its English data in the package), builds the
+  prompt around a reference voice (`samples/` beside the GGUF), samples
+  top-k 50 / top-p 0.9 through the host's `sample` and decodes the speech
+  tokens. NeuCodec matches transformers' `NeuCodecModel.decode`
+  (`scripts/neucodec_reference.py`) at cosine 1.0, within 2e-6; the
+  backbone's first 28 sampled codes are the runner's.
+- **FIXED: NeuTTS' own NeuCodec decoder** (eager and burn) disagreed with
+  transformers' (cosine −0.1): FSQ digits scaled to {−1, −⅓, ⅓, 1} rather
+  than {−1, −½, 0, ½}, RoPE by time position where the reference's (by
+  head index) cancels, and `center` trimming rather than Vocos' "same"
+  padding. Now cosine 1.0 against `NeuCodecModel.decode`; `fsq_encode`
+  inverts the new scale as transformers' quantizer does (its tanh bound,
+  rounding half to even).
+- **FIXED, found exporting NeuTTS:** `Qwen3Runner::predict_logits` on the
+  F32 path returned a one-element placeholder (the sampled id), not logits
+  — every caller sampling from it read garbage; it now returns the
+  prompt's last row (`prefill_get_last_logits`). NeuTTS' backbone refused
+  Qwen2 GGUFs (Air) — it runs them through `Qwen3Runner` now; it decoded
+  each token skipping special tokens, so its speech tokens never reached
+  the code parser; and it sampled every token from the same draw
+  (`sample_token`, step 0) — now `seed + step`.
+- **TinyTTS / MeloTTS** (`rlx-tiny-tts`, `rlx-melotts`, feature `export`)
+  and **OpenVoice v2** (`rlx-openvoice`, feature `export`) as packages rlx
+  runs alone. The English frontend is a program (rlx-inflect-nano's code;
+  its WordPiece groups the host's tokenizer), its neural G2P — Rust in the
+  runner — rlx graphs (`g2p_encode`, `g2p_decode`, one GRU step each).
+  OpenVoice is MeloTTS' package (`export_with`) with the tone extractor,
+  the converter and the spectrogram (`audio::spectrogram`) as graphs,
+  cloning `options.prompt`. TinyTTS within 3e-6 of the runner, OpenVoice at
+  cosine 0.999999999. `symbolic_in_lifted_many` builds at any number of
+  sizes.
+- **F5-TTS** (`rlx-f5tts`, feature `export`) and **ZipVoice**
+  (`rlx-zipvoice`, feature `export`) as packages rlx runs alone, cloning
+  `options.prompt`. F5's three graphs are symbolic in the reference's
+  samples, the ids and the frames — the STFT's frames and the frames past
+  the reference's quotients of those — the same samples as `F5Native`
+  (off by 0). ZipVoice is LuxTTS' exporter (`export_family`) with its
+  sampler's defaults (cosine 0.99999999975 against the runner).
+- **Supertonic-3** (`rlx-supertonic`, feature `export`) and **LuxTTS**
+  (`rlx-luxtts`, feature `export`) as packages rlx runs alone: each a
+  program around rlx graphs symbolic in their lengths — Supertonic's four
+  in the text and latent lengths (the same samples as `Supertonic`,
+  English and Spanish); LuxTTS's encoder, vocoder head, prompt log-mel,
+  ISTFT and a flow decoder per frames mod 4, cloning the voice
+  `options.prompt` gives (cosine ≥ 0.999999998 against `LuxTts`).
+  `rlx_core::export::audio` gains `log_mel` (an STFT as matmuls by
+  `stft_bases`) and `istft_center` (`torch.istft(center=True)`), checked
+  against LuxTTS' Rust DSP. `symbolic_in_lifted` lifts a constant holding
+  a length (counted out, `sum(ones[n])`) and a countdown (repeats
+  reversed), and `symbolic_in_lifted_sizes` takes several symbols.
+- **Piper** (`rlx-piper`, feature `export`): a Piper voice as a package
+  rlx runs alone, text in, speech out — its frontend a program (espeak-ng,
+  the tokenizer, the runner's seeded flow noise, the length regulator), its
+  encoder, stochastic duration predictor, prior and decoder rlx graphs. The
+  duration predictor, Rust in the runner, is an rlx graph (`sdp_graph`):
+  the rational-quadratic spline's inverse for every element, the bin a
+  count of the edges below, outside the interval passed through
+  (`Op::Where`) — the same durations as `Sdp::durations`. The sample
+  counts of `NativeVits` and the samples within 7e-6.
+  `rlx_tiny_tts::model::import_rlx_graph` imports an ONNX graph as a
+  package holds it (Kokoro's exporter uses it too); `symbolic_in` and
+  `symbolic_in_lifted` fit from their three sizes
+  (`rlx_ir::dynamic::generalize_checked`) and name the first line a
+  mismatch differs in.
+- **Kokoro-82M** (`rlx-kokoro`, feature `export`): text in, speech out,
+  with no rlx-models code — its frontend a program (espeak-ng, the text
+  preprocessor, the vocabulary, the voices, the length regulator, the
+  ISTFT normalization; `program/`, wasm32-wasip1), its encoder and
+  decoder rlx graphs symbolic in the phonemes and the frames, imported
+  once from the runner's ONNX at export. The same samples as
+  `NativeKokoro` on two voices (off by 0, at lengths past the ones the
+  graphs were generalized from). `graph::symbolic_in_lifted` makes a graph
+  symbolic whose builder bakes length-dependent constants: runs, blocks
+  repeated with a step (aranges, repeat indices, upsampler staircases —
+  clamped too — and interpolation weights, rebuilt in the graph), index
+  tables.
+- **`export::program`**: build a model's program crate for wasm32 and add
+  it to a package as an entry of kind `program` (rlx's WebAssembly host
+  logic), for the models whose glue graphs say badly.
+- **Moonshine v2 streaming** (`rlx-moonshine-streaming`, feature `export`):
+  a `transcribe` package — the CMVN/`asinh` front end and its masks from
+  the audio's real length, the encoder (its position rows held once), the
+  decoder with no step, one function per 16-token bucket symbolic in the
+  encoder's length. Tiny, small and medium transcribe the JFK clip (and a
+  cut of it) word for word as `MoonshineStreaming::transcribe` does.
+- **TEN-VAD** (`rlx-ten-vad`, feature `export`): a clip of PCM in, a voice
+  probability per hop out, with no host DSP — the frontend, the LPC pitch
+  estimate (Levinson-Durbin unrolled, summed in the runner's order) and
+  its two recurrences as `Op::Scan` (the anti-alias biquad over the
+  samples, the Viterbi over the frames), then the network as an `Op::Scan`
+  whose body is the runner's streaming graph, reset where the runner
+  resets. Within 4e-6 of `TenVad` over 2000 hops. `rlx-ten-vad-core`
+  gives the graph its tables (`pitch::tables`, `frontend::mel_matrix`).
+- **BioCLIP-2** (`rlx-bioclip2`, feature `export`): one package, opened
+  as one model — the entries `image` (a pipeline: OpenCLIP's preprocessing
+  as a graph, `export::vision::clip_resize_crop`, Pillow's antialiased
+  bicubic of the shortest side with its fixed-point passes and the center
+  crop) and `text` (an `embed` entry) — checked against `BioClip2Runner`
+  on the real weights. `Pipeline::package` returns the package unwritten,
+  so an exporter adds entries beside the pipeline (`Pipeline::functions`,
+  `Package::rename_entry`); `Checkpoint` reads an OpenCLIP directory.
+- **Vision transformers and text embedders**: DINOv2, DINOv3 and UNI2 as
+  image-in `pipeline` packages (`export::vision`: the runners' resize, patch
+  tokens and class row as graphs; `vision::export_vit`), EmbeddingGemma and
+  jina-embeddings-v5 (`--variant` its task) as `embed` packages with the
+  runners' host steps — embeddings, masks, pooling, dense head, last-token
+  pooling — in the graph. `graph::Pipeline` for any stages; a `variant`
+  export option. Checked against each runner: random weights for the ViTs,
+  the real checkpoints for the embedders (within 1.5e-7).
+- **Every LM runner that can be expressed**: Llama 4 and MiniMax M3
+  (`rlx-llama4` / `rlx-minimax`, feature `export`) as full-sequence packages
+  (`decoder::Forward` / `export_forward`: a `generate` entry with no step,
+  the prompt function over the whole context each token, as their runners
+  do; one function per length where the graph is not symbolic in it), and
+  `export::standard`: any dense decoder `standard_decoder` builds from its
+  `config.json`, the exporter `detect` falls back to. Each is checked against
+  its runner on random weights its test writes (`check::write_checkpoint`).
+  Not exported, with why: mllama (host image tiling), qwen4exp (host n-gram
+  embeddings from an external table). `docs/exporting.md` maps the other
+  crates by what each needs.
+- **Checked against the runners** with `rlx-export --check`, greedy tokens
+  identical and logits within 3e-6: Qwen3-0.6B (CPU, Metal), Qwen3.5-0.8B
+  Q4_K_M, LFM2.5-230M, and random-weight Llama 3 (scaled RoPE) and Mistral
+  checkpoints. See `docs/exporting.md`.
+
+### Package exporters: Llama family, Gemma, rerankers, Qwen2.5-VL
+
+- **`rlx_qwen3::export::export_decoder` + `Decoder`**: the Qwen3 exporter
+  over a trait (graphs, sizes, RoPE tables, optional check, multimodal hooks),
+  so other decoder families reuse it. Checkpoints sharded by
+  `model.safetensors.index.json` export (one weight source per shard). Prompt
+  functions at fixed batch sizes (`prefill_batches`, 2/4/8);
+  `chat_template.jinja` read when `tokenizer_config.json` has none.
+- **Exports within memory.** Builders take a lazy mmap loader
+  (`SafetensorsMmapLoader`: each tensor read when taken) instead of the
+  whole checkpoint widened to f32, and each build's params go straight to
+  `package_export::Referencer`, which fingerprints the checkpoint one tensor
+  at a time and keeps only the params no checkpoint tensor equals — the
+  first build's params are decided before the second is built. Qwen2.5-VL-3B:
+  37 GB → 25 GB peak, 332 s → 97 s.
+- **Llama / Mistral / Qwen2** through it, family from `model_type`:
+  `qk_norm` off for those types and Qwen2's Q/K/V bias on unless the config
+  says otherwise; scaled RoPE refused. SmolLM2-135M: the same 20 greedy
+  tokens as `transformers` (CPU, Metal).
+- **`rlx_gemma::export`** (feature `export`): Gemma 3 text checkpoints,
+  both RoPE tables (sliding and full layers'). Sliding layers mask with a
+  second step input, `mask_local` (`GemmaFlow::windowed_mask`), which the
+  stateful step computes for their window (`Decoder::windows`), so the
+  context runs past `sliding_window`. Gemma 3 270M
+  (`unsloth/gemma-3-270m-it`, the ungated mirror): `transformers`' 20
+  greedy tokens, its chat, batch = alone; an 886-token prompt (window 512)
+  within 3.6e-4 of `transformers`' logits and its 20 tokens (CPU, Metal).
+- **Fixed: Gemma 3 / 4 decode with fed RoPE rows used the sliding table on
+  full-attention layers.** With a custom mask or a dynamic past (every
+  bucketed and dynamic decode, `GemmaRunner`'s included) the
+  `rope_cos_global` inputs were declared but unread, so full-attention
+  layers' keys took the wrong rotation: logits off by up to 7 within 18
+  tokens, greedy text drifting after a dozen. Now 9e-5 from the prompt
+  graph. (rlx-flow's Gemma decode layer also keeps `score_scale` and the
+  logit soft-cap under a custom mask; it dropped them, which mattered for
+  Gemma 2.)
+- **`rlx_embed::export::export_reranker_rlxp`**: a cross-encoder's classifier
+  head (BERT pooler + classifier, or RoBERTa's) appended to the encoder, a
+  `score` entry. ms-marco-MiniLM-L6-v2 within 2e-6 of `transformers`.
+- **`rlx_qwen3_vl::export`** (feature `export`): dense Qwen3-VL from its
+  Hugging Face checkpoint — the vision tower built from IR ops, symbolic in
+  the image's grid (one graph for every size): the processor's patch order
+  as reshape/transpose, both frames' patch weights summed, the learned
+  position grid bilinearly interpolated and the 2-D RoPE rows computed in
+  the graph from the grid; LayerNorm, GELU-tanh MLPs, the merger and the
+  three deepstack mergers; images of any size resized as the processor
+  does, the language model's step and prompt from
+  rlx-qwen3's graphs (its `model.language_model.*` tensors renamed), and a
+  prefill adding the deepstack features after layers 0-2. Interleaved
+  multimodal RoPE. Qwen3-VL-2B-Instruct on a 448×448 image: the same
+  sentence as `transformers` (18 tokens), CPU and Metal. Video: a second
+  tower for frame pairs (the frames' patch weights apart), each pair its own
+  placeholder run. Qwen3-VL-MoE (`qwen3_vl_moe`, every layer sparse): the
+  experts through rlx-flow's `Qwen3Moe`; a random-weight checkpoint's image
+  and video prefill logits within 2e-5 of `transformers`', CPU and Metal.
+- **Configs saved by transformers 5 keep their RoPE.** transformers 5 writes
+  `rope_theta` and the scaling (`rope_type`, `factor`, …, `mrope_section`)
+  only inside `rope_parameters`; readers of the older layout fell back to
+  their default theta and no scaling, rotating every position wrong
+  (Qwen3-VL-MoE logits off by 1.7; a Llama 3.2 would lose its `llama3`
+  scaling). `rlx_core::config::legacy_rope_keys` / `from_hf_json` restore
+  `rope_theta`, `partial_rotary_factor` and `rope_scaling` where missing;
+  used by qwen3, llama32, llada2, ling, motif, locateanything, qwen3-tts,
+  sesame, tada, dinov3, mimi, minimax-h3, minimax (M3), nemotron and
+  unlimited-ocr.
+- **`rlx_qwen25_vl::export`** (feature `export`): Qwen2.5-VL from its
+  Hugging Face checkpoint alone — the vision tower from `visual.*` (no mmproj
+  GGUF), symbolic in the image's grid: window attention as a bias over each
+  patch's window id (the same attention as HF's reordering into windows,
+  tokens left in place), RoPE rows from the grid, the pixels' normalization
+  in the graph; any image size, resized as the processor does; token
+  embeddings; a prefill from embeddings and multimodal RoPE rows; the step
+  reading its tables at `position + rope_offset`. Video: a frame-pair tower and one
+  placeholder run, pair `g` at time position `g · tokens_per_second` (the
+  processor's 2 fps).
+
+### rlx-kimi-k3: training, inspection, distributed training, sizing
+
+- **Training** (`train`, `train_stream`, `layer_exec`): full-weight and LoRA
+  next-token training. `stream` keeps one layer resident and backpropagates
+  layer by layer through vector–Jacobian products, MoE layers over a compact
+  bank of the experts they picked; `whole` trains the whole graph through
+  `rlx_tune::Trainer` (data-parallel via `GradComm`). Streamed gradients equal
+  whole-graph gradients for every trained param; whole-graph gradients match
+  central finite differences. PEFT adapters, merged or full checkpoints that
+  write only the changed tensors and link the rest, resumable state.
+- **Canonical params** (`common::CanonicalParams`): graphs built for training
+  or dumps have one param per checkpoint tensor (fusions done in-graph), mapped
+  back by `export::hf_name`; the router trains through a differentiable gather.
+- **Inspection** (`inspect`, CLI `weights` / `trace` / `graph`): weight
+  inventory, statistics and dumps (MXFP4 dequantized); every named
+  intermediate per layer, expert picks, and per-layer input gradients.
+- **Distributed** (`dist`, rewritten): one worker serves prefix, decode and
+  training; heartbeat frames bound every read; config and layer-range agreement
+  checked before work; thread per connection; per-sequence decode state with
+  pipelined `generate_batch`; GPipe-style `PipelineTrainer` matching
+  single-node training step for step.
+- **Decode speed**: MoE layers reuse their dense weights and compiled router /
+  experts graphs across tokens instead of re-reading, re-transposing and
+  recompiling them every token, plus an optional dequantized-expert LRU
+  (`RLX_KIMI_EXPERT_CACHE`): 2.2× less CPU per decode token (3.1× with the
+  LRU) on `examples/decode_bench`, bit-identical.
+- **Resident KDA state**: each KDA layer's recurrent state stays in its cached
+  decode graph between tokens instead of a host round trip per token (~0.9 GB
+  per token on the real model); multiple sequences share a cache by parking.
+  Bit-identical on CPU and Metal; −27% CPU per token on the CPU benchmark.
+- **Config-derived dims everywhere**: the cluster examples no longer hard-code
+  the model dimensions; `source::verify_flow_dims` checks `config.json` against
+  the checkpoint's tensor shapes whenever a checkpoint is opened.
+- **Dense residency** (`common::set_dense_residency`, `--dense f32|bf16|int8`):
+  first-class instead of env-only. bf16 residency was wrong on CPU (relative
+  error ~1.4 per layer) until the upstream rlx-cpu `Concat` fix for 2-byte
+  types; it needs an upstream release containing that fix.
+- **KDA state log** (feature `state-log`): per-token recurrence inputs plus
+  periodic snapshots; every KDA state rebuilds bit-exactly.
+- **Sizing** (`sizing`, CLI `size`): node counts per resource and a roofline
+  speed estimate from the config alone.
+- **Shared code moved upstream**: the pipeline's RPC (heartbeat-framed request /
+  reply, thread-per-connection server, checked codec) and stage planning now
+  live in `rlx-distributed` (`rpc`, `stages` — planning on its `LayerSplit`); the
+  sizing roofline in `rlx-distributed::cluster::sizing`; the optimizer is
+  `rlx-optim`'s AdamW (two groups, decayed / exempt). `rlx-kimi-k3` keeps only
+  the model-specific parts and needs an upstream release containing them.
+- **Synthetic checkpoints** (`synth`): the real tensor layout at toy size, so
+  every checkpoint path is testable without the 1.6 TB model.
+- Fixed: the `kimi_k3_cluster` example builds again (it predated the current
+  `rlx-distributed` `ModelCost` fields).
+
+
 ### Release prep: no upstream blocker left
 
 `docs/releasing.md` named `rlx-torch-ckpt` as the *current* hard blocker — an
@@ -1597,7 +2479,7 @@ test.
 
 #### Backends: all fifteen on everything testable here
 
-`coreml` is now a feature, so the **Apple Neural Engine** is reachable — it was
+`coreml` is now a feature, so the **Neural Engine** is reachable — it was
 not merely unwired, it was unreachable: no feature existed, `parse_standard_device`
 rejects `Device::Ane` outright, MIL caps tensor rank at **5** while pixel shuffle
 and window partition are naturally rank-6, and four activations (`Mish`,
@@ -2523,7 +3405,7 @@ alone are listed at the end, with the reason checked rather than assumed.
   against the closed form: touching-collinear (0), parallel-offset (2), and
   skew (5).
 - **Two more test files had not compiled in a long time.**
-  `llama32_apple_parity.rs` and `llama32_gpu_backend_parity.rs` — the actual
+  `llama32_metal_mlx_parity.rs` and `llama32_gpu_backend_parity.rs` — the actual
   CPU-vs-GPU comparisons — were missing three `Llama32Config` fields. Being
   feature-gated, nothing noticed. They run now.
 - **`glass_posterior_runs` could not fail.** `sample_posterior` writes into an
@@ -2929,7 +3811,7 @@ those is a hole, and all three had something in them.
   `split_vjp` as *both* a function and a module, and an unescaped `[8,8,4,2]`
   that rustdoc read as a link. Use `--keep-going`: rustdoc stops at the first
   failing crate, so a naive loop finds them one at a time.
-- **Non-default features.** A 131-crate sweep under `apple-silicon`/`espeak`
+- **Non-default features.** A 131-crate sweep under `macos-gpu`/`espeak`
   found `rlx-neuralhash`'s `tests/backends.rs` failing to compile with any
   backend feature on: `let all = vec![…]` followed by `#[cfg]`-gated
   `all.push(…)`. Invisible by default because every push is cfg'd out. Fixed with
@@ -3083,7 +3965,7 @@ than the median, because the criterion is "same-or-less RAM than the reference".
 
 First measured row: **luxtts cpu = 13 380 MB at RTF 0.55**.
 
-### LuxTTS — wgpu unblocked (all 5 Apple backends)
+### LuxTTS — wgpu unblocked (all 5 macOS backends)
 
 `rlx-luxtts` now runs on **cpu, metal, mlx, wgpu and coreml, all at cos 0.99848** vs CPU.
 wgpu previously panicked before producing a sample. The tracked symptom ("remainder with
@@ -3724,14 +4606,14 @@ engines or machinery.
     are trimmed before they reach the cache, which the test pins by comparing
     cache lengths as well as contents.
 
-- **`rlx-neuralhash` — Apple NeuralHash perceptual image hashing.** 360×360 →
+- **`rlx-neuralhash` — NeuralHash perceptual image hashing.** 360×360 →
   128-float descriptor → `[96, 128]` seed projection → 96-bit hash, matching the
   [reference implementation](https://github.com/AsuharietYgvar/AppleNeuralHash2ONNX)'s
   `nnhash.py` output. The architecture is read natively from the vendor's
-  Espresso container that macOS installs in `Vision.framework` — 225 layers,
-  MobileNetV3-shaped with **instance** norm (Espresso spells it `batchnorm` with
+  container that installs in the framework — 225 layers,
+  MobileNetV3-shaped with **instance** norm (spells it `batchnorm` with
   `training_instancenorm`), hard-swish written out as four elementwise ops, and
-  squeeze-excite gates. `espresso` parses the container (LZFSE `pbze` decoded
+  squeeze-excite gates. Then it parses the container (LZFSE `pbze` decoded
   inline via `libcompression`), `spec` normalizes it to a serializable op list,
   `flow` emits rlx-ir. ONNX is a validation-only path behind `onnx-parity`;
   the default build has no ONNX dependency. No model data is shipped or

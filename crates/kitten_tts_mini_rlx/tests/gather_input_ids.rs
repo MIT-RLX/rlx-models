@@ -41,8 +41,10 @@ fn minimal_gather_i64_session_smoke() {
     let outs = exec.run_typed(&[("input_ids", &ids_bytes, DType::I64)]);
     let emb: Vec<f32> = outs[0]
         .0
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     assert!((emb[0] - 0.0).abs() < 1e-5);
     assert!((emb[128] - 50.0).abs() < 1e-5);
@@ -118,8 +120,10 @@ fn word_embedding_gather_matches_weight_rows() {
     ]);
     let (emb_bytes, _) = outs.first().expect("probe output");
     let emb: Vec<f32> = emb_bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     assert_eq!(emb.len(), seq * 128);
 
@@ -130,8 +134,10 @@ fn word_embedding_gather_matches_weight_rows() {
         .expect("emb weight");
     let w: Vec<f32> = w
         .data()
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     let cols = 128usize;
 

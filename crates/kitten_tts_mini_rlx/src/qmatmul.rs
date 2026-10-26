@@ -334,8 +334,10 @@ mod tests {
         let ws = std::fs::read("/tmp/q1_ws.bin").unwrap();
         let wzp = std::fs::read("/tmp/q1_wzp.bin").unwrap();
         let act_f32: Vec<f32> = act
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         let w_i8: Vec<i8> = w.iter().map(|&b| b as i8).collect();
         let w_scale = f32::from_le_bytes(ws.try_into().unwrap());

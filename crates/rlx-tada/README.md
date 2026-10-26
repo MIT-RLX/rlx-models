@@ -167,7 +167,7 @@ head evaluations become a single `run` per token.
 
 ## Performance
 
-Measured on an Apple Mac mini, `tada-1b`, default 10 ODE steps and guidance on
+Measured on an Mac mini, `tada-1b`, default 10 ODE steps and guidance on
 (so every step runs two backbone branches).
 
 | | before | after |
@@ -282,7 +282,7 @@ The backbone step is ~98 ms.
 
 ## Backends
 
-All five Apple-available backends produce the same audio. 2.7 s of speech from a
+All five macOS-available backends produce the same audio. 2.7 s of speech from a
 cached voice prompt, `tada-1b`, default settings:
 
 | backend | time | RTF | peak RSS | 78-test suite | waveform vs CPU |

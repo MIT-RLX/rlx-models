@@ -29,7 +29,7 @@ use rlx_minimax_h3::vae_audio::{H3AudioDecoder, Signal, denormalize_latents};
 use std::path::PathBuf;
 
 fn root() -> Option<PathBuf> {
-    let p = PathBuf::from(std::env::var("RLX_MINIMAX_H3").ok()?);
+    let p = PathBuf::from(rlx_ir::env::var_result("RLX_MINIMAX_H3").ok()?);
     p.is_dir().then_some(p)
 }
 

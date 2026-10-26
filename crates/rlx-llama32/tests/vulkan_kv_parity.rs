@@ -24,7 +24,7 @@ use rlx_runtime::{Device, is_available};
 
 fn gguf_path() -> Option<String> {
     for k in ["LLAMA32_GGUF", "ORPHEUS_GGUF_PATH"] {
-        if let Ok(p) = std::env::var(k)
+        if let Ok(p) = rlx_ir::env::read(k)
             && std::path::Path::new(&p).is_file()
         {
             return Some(p);

@@ -76,7 +76,9 @@ fn main() -> Result<()> {
     let tokens: Vec<u32> = if let Some(p) = tokens_path {
         let bytes = std::fs::read(&p).with_context(|| format!("reading {p}"))?;
         bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as u32)
             .collect()
     } else {

@@ -18,14 +18,14 @@ fn root() -> PathBuf {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    let p = std::env::var("RLX_CHATTERBOX_DIR")
+    let p = rlx_ir::env::var_result("RLX_CHATTERBOX_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| root().join(DEFAULT_LOCAL_DIR));
     p.join("onnx/speech_encoder.onnx").is_file().then_some(p)
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         return whisper_ready(&p).then_some(p);
     }

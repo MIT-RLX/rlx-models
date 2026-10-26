@@ -1,0 +1,65 @@
+<!doctype html><meta charset="utf-8"><title>FLUX.1 denoiser across workers — spike</title>
+<pre id="o" style="font: 13px ui-monospace, monospace"></pre>
+<script type="module">
+// One denoiser step of FLUX.1 [dev] + emoji LoRAs, split across N WebGPU
+// workers, against the native output (`examples/web_reference.rs`).
+// ?workers=N&url=…gguf&ref=…dir ; POSTs a JSON report to /__result.
+const q = new URLSearchParams(location.search);
+const N = Number(q.get("workers") ?? 8);
+const GROUP = Number(q.get("group") ?? 1);
+const ROOT = new URL("../../../", location.href).href;
+const URL_ = q.get("url") ?? `${ROOT}weights/web/genmoji/flux1-dev-genmoji-fast-q8_0.gguf`;
+const REF = q.get("ref") ?? `${ROOT}target/genmoji-spike/ref`;
+const out = document.getElementById("o");
+const log = (s) => (out.textContent += s + "\n");
+const f32 = async (name) => new Float32Array(await (await fetch(`${REF}/${name}`)).arrayBuffer());
+const report = { ok: false, workers: N, stages: [] };
+try {
+  const meta = await (await fetch(`${REF}/meta.json`)).json();
+  const [img, txt, pooled, want] = await Promise.all(["img.bin", "txt.bin", "pooled.bin", "want.bin"].map(f32));
+  let nextId = 0;
+  const pending = new Map();
+  const workers = Array.from({ length: N }, () => {
+    const w = new Worker("./flux_spike_worker.js", { type: "module" });
+    w.onmessage = ({ data }) => {
+      if (data.progress) return;
+      const p = pending.get(data.id); pending.delete(data.id);
+      data.ok ? p.ok(data) : p.err(new Error(data.error));
+    };
+    w.onerror = (e) => { for (const p of pending.values()) p.err(new Error(e.message ?? "worker error")); };
+    return w;
+  });
+  const call = (w, op, args = {}, transfer = []) => new Promise((ok, err) => {
+    const id = nextId++; pending.set(id, { ok, err }); w.postMessage({ id, op, ...args }, transfer);
+  });
+  const t0 = performance.now();
+  // Load one stage at a time: each fetch + compile peaks on its own.
+  for (let i = 0; i < N; i++) {
+    const r = await call(workers[i], "load", { url: URL_, index: i, count: N, txtLen: meta.txt_len, gridH: meta.grid_h, gridW: meta.grid_w, backend: "webgpu", group: GROUP });
+    log(`stage ${i + 1}/${N}: ${r.parts} — ${r.fetched_mb} MB in ${r.fetch_ms} ms, built in ${r.build_ms} ms, wasm ${r.memory_mb} MB`);
+    report.stages.push(r);
+  }
+  report.load_ms = Math.round(performance.now() - t0);
+  for (let rep = 0; rep < 2; rep++) {
+    const s0 = performance.now();
+    let x = img, vec = null;
+    const ms = [];
+    for (let i = 0; i < N; i++) {
+      const r = await call(workers[i], "step", { input: x, txt: i === 0 ? txt : null, vec, pooled, t: meta.t, guidance: meta.guidance });
+      x = r.out; vec = r.vec; ms.push(r.ms);
+      if (rep === 1) report[`parts${i}`] = r.part_ms;
+    }
+    const stepMs = Math.round(performance.now() - s0);
+    let num = 0, den = 0, maxAbs = 0;
+    for (let k = 0; k < want.length; k++) { const d = x[k] - want[k]; num += d * d; den += want[k] * want[k]; maxAbs = Math.max(maxAbs, Math.abs(d)); }
+    const rel = Math.sqrt(num / den);
+    log(`step ${rep + 1}: ${stepMs} ms (stages ${ms.join(", ")} ms) — vs native: rel ${rel.toExponential(2)}, max |Δ| ${maxAbs.toExponential(2)}`);
+    report[`step${rep + 1}`] = { ms: stepMs, stages: ms, rel, maxAbs };
+  }
+  report.ok = report.step2.rel < 2e-2;
+} catch (e) {
+  report.error = String(e?.message ?? e);
+  log(`Error: ${report.error}`);
+}
+await fetch("/__result", { method: "POST", body: JSON.stringify(report) }).catch(() => {});
+</script>

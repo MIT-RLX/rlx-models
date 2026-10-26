@@ -176,7 +176,8 @@ fn gqa_attention(
         for hi in 0..n_heads {
             let kv_h = hi / repeats;
             let mut max_w = f32::NEG_INFINITY;
-            let mut weights = vec![0f32; t_k];
+            // Future keys stay at -inf (weight 0).
+            let mut weights = vec![f32::NEG_INFINITY; t_k];
             for ki in 0..t_k {
                 if ki > qi + (t_k - t_q) {
                     continue;

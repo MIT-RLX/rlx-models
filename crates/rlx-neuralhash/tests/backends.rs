@@ -25,7 +25,7 @@
 //! * [`rlx_neuralhash::synth`] — synthetic weights, real geometry, and every
 //!   layer form the shipping model uses. Runs anywhere, so this is what
 //!   validates CUDA and ROCm hosts, which have no `Vision.framework`.
-//! * Apple's installed model, when present (macOS only).
+//! * the OS-installed model, when present (macOS only).
 //!
 //! Enable backends with the matching cargo features, e.g.
 //! `cargo test -p rlx-neuralhash --release --test backends --features all-backends`.
@@ -111,14 +111,14 @@ fn scene(w: usize, h: usize, variant: u32) -> Vec<u8> {
 
 /// Run one image through `device`, returning the hash and descriptor.
 fn run_on(
-    net: &rlx_neuralhash::EspressoNet,
+    net: &rlx_neuralhash::NetFile,
     seed: &SeedMatrix,
     device: Device,
     px: &[u8],
     w: usize,
     h: usize,
 ) -> (NeuralHash, Vec<f32>) {
-    let model = NeuralHashModel::from_espresso(net, device)
+    let model = NeuralHashModel::from_netfile(net, device)
         .unwrap_or_else(|e| panic!("build for {device:?}: {e:#}"));
     let mut hasher = NeuralHasher::from_parts(model, seed.clone());
     let input = rlx_neuralhash::preprocess::from_rgb8(px, w, h).unwrap();
@@ -207,14 +207,14 @@ fn real_model() -> Option<(PathBuf, PathBuf)> {
     None
 }
 
-/// Same check against Apple's real weights, where they exist.
+/// Same check against the shipping weights, where they exist.
 #[test]
 fn every_compiled_backend_agrees_on_the_real_model() {
     let Some((net_p, seed_p)) = real_model() else {
-        eprintln!("skip: Apple NeuralHash model not installed under {RESOURCES}");
+        eprintln!("skip: NeuralHash model not installed under {RESOURCES}");
         return;
     };
-    let net = rlx_neuralhash::EspressoNet::open(&net_p).expect("parse container");
+    let net = rlx_neuralhash::NetFile::open(&net_p).expect("parse container");
     let seed = SeedMatrix::open(&seed_p).expect("parse seed");
 
     let (w, h) = (640usize, 480usize);

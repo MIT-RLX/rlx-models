@@ -31,13 +31,13 @@ CoreML is **native RLX** (no ONNX). The RVQ lookup stays on the host; only the c
 | `codec` (default) | SNAC decoder (eager) |
 | `coreml` | SNAC on `Device::Ane` (macOS; pulls `rlx-ir`, `rlx-runtime/coreml`) |
 | `metal` / `mlx` / `cuda` / `gpu` / … | Forwarded to `rlx-llama32` for LM; **`cuda` also enables `snac-rlx`** so SNAC conv follows the LM GPU (`SnacExec::Cuda`) |
-| `apple-silicon` | `metal` + `mlx` + `gpu` + `coreml` |
+| `macos-gpu` | `metal` + `mlx` + `gpu` + `coreml` |
 | `hf-download` | `--download` flags via `hf-hub` |
 
 Build examples:
 
 ```bash
-cargo build -p rlx-orpheus --release --features apple-silicon   # Metal LM + CoreML SNAC
+cargo build -p rlx-orpheus --release --features macos-gpu   # Metal LM + CoreML SNAC
 cargo build -p rlx-orpheus --release --features all-backends    # every LM backend + coreml
 ```
 
@@ -102,10 +102,10 @@ just orpheus -- \
 
 | `--device` | LM | SNAC |
 |------------|-----|------|
-| `auto` | Best GPU (Metal on Apple Silicon, else CUDA/ROCm/wgpu/Vulkan) | Same GPU when `snac-rlx` (Metal/MLX/wgpu/CUDA); else eager CPU |
+| `auto` | Best GPU (Metal on macOS arm64, else CUDA/ROCm/wgpu/Vulkan) | Same GPU when `snac-rlx` (Metal/MLX/wgpu/CUDA); else eager CPU |
 | `metal` / `mlx` / `gpu` / `wgpu` | Selected RLX backend (KV decode on GPU) | Native RLX SNAC on that device |
 | `cuda` / `rocm` | Selected RLX backend | Native RLX SNAC on CUDA (`ORPHEUS_SNAC_DEVICE=cpu` forces eager) |
-| `coreml` | Metal (or best Apple GPU) | Native RLX `Device::Ane` |
+| `coreml` | Metal (or best Metal GPU) | Native RLX `Device::Ane` |
 
 CoreML needs `--features coreml` at build time:
 
@@ -245,4 +245,4 @@ just test-orpheus-backends-whisper named_voice_whisper_wgpu
 - **Multi-utterance:** reuse one [`OrpheusTts`] session and call [`OrpheusTts::synthesize_batch`] (same backbone load as [`examples/batch_demos.rs`]).
 - **Parity:** SNAC `z_q` + PCM vs Python within ~1e-3 when noise fixtures exist; per-decoder-stage parity with `export_snac_decoder.py --parity-layers`; CoreML SNAC vs eager within ~0.08 max abs diff (fp16 on ANE). LM: Metal `for_tts` greedy tokens match CPU synthesis reference (`metal_prefill_parity` tests).
 - **Serving / throughput:** Orpheus is autoregressive (one SNAC slot token per LM step) — unlike chat LLMs there is no prefill/decode asymmetry to exploit for continuous batching today. [`rlx-serve`](../../crates/rlx-serve) continuous + fused batching targets [`Qwen3Generator::forward_batch_decode`](../../crates/rlx-qwen3/src/generator.rs); **`Llama32Generator` has no batched decode yet**, so multi-request TTS throughput is **one utterance per backbone lock** until batched Llama decode lands. Reuse [`OrpheusTts::synthesize_batch`] or a job queue for now.
-- **Tensor parallel:** [`rlx-distributed`](https://docs.rs/rlx-distributed) implements in-graph TP (Megatron MLP + head-sharded attention) for **Qwen3** blocks on the research path — **not wired for Llama-3B / Orpheus**. A 3B Orpheus model fits one Apple Silicon or consumer GPU; TP would help multi-node serving once Llama blocks expose the same collectives (see [distributed-inference-design.md](../../docs/distributed-inference-design.md)).
+- **Tensor parallel:** [`rlx-distributed`](https://docs.rs/rlx-distributed) implements in-graph TP (Megatron MLP + head-sharded attention) for **Qwen3** blocks on the research path — **not wired for Llama-3B / Orpheus**. A 3B Orpheus model fits one macOS arm64 or consumer GPU; TP would help multi-node serving once Llama blocks expose the same collectives (see [distributed-inference-design.md](../../docs/distributed-inference-design.md)).

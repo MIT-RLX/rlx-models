@@ -37,13 +37,13 @@ fn melo_dir() -> Option<PathBuf> {
     .find(|p| p.join("config.json").is_file())
 }
 fn ov_dir() -> Option<PathBuf> {
-    let p = std::env::var("RLX_OPENVOICE_DIR")
+    let p = rlx_ir::env::var_result("RLX_OPENVOICE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| root().join("weights/tts/openvoice"));
     (p.join("tone_color.onnx").is_file() && p.join("tone_extract.onnx").is_file()).then_some(p)
 }
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         return ready(PathBuf::from(d));
     }
     let c = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");

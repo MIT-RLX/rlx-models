@@ -390,7 +390,7 @@ fn main() -> Result<()> {
         assets.join("jfk_rust_speech.wav"),
         assets.join("jfk_voice_clone.wav"),
     ];
-    if let Ok(one) = env::var("RLX_VAD_JFK_WAV") {
+    if let Ok(one) = rlx_ir::env::var_result("RLX_VAD_JFK_WAV") {
         files = vec![one.into()];
     }
     files.retain(|p| p.is_file());

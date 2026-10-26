@@ -24,7 +24,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("RLX_QWEN3_TTS_DIR")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("model.safetensors").is_file())
@@ -51,7 +51,11 @@ fn load_golden_hi() -> Vec<Vec<u32>> {
 
 #[test]
 fn qwen3_tts_greedy_codec_frames_match_hf_on_mlx() {
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }

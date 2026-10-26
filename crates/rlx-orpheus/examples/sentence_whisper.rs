@@ -97,7 +97,7 @@ fn main() -> Result<()> {
         eprintln!("wrote codes {}", codes_path);
     }
 
-    let whisper_dir = std::env::var("RLX_WHISPER_DIR")
+    let whisper_dir = rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/Users/Shared/rlx-models/.cache/whisper-base.en"));
     let wav16 = out.with_extension("16k.wav");
@@ -114,8 +114,8 @@ fn main() -> Result<()> {
         bail!("ffmpeg failed");
     }
 
-    let whisper_bin =
-        std::env::var("RLX_WHISPER_BIN").unwrap_or_else(|_| "target/release/rlx-whisper".into());
+    let whisper_bin = rlx_ir::env::var_result("RLX_WHISPER_BIN")
+        .unwrap_or_else(|_| "target/release/rlx-whisper".into());
     let output = Command::new(&whisper_bin)
         .args([
             "--weights",

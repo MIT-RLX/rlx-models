@@ -22,7 +22,7 @@ use rlx_whisper::bench_fixture::{
 };
 
 fn whisper_dir() -> Option<std::path::PathBuf> {
-    std::env::var("RLX_WHISPER_DIR")
+    rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .ok()
         .map(std::path::PathBuf::from)
         .or_else(|| {

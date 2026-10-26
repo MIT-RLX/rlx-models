@@ -70,8 +70,8 @@ fn weights(d: &VisionDims) -> VisionWeights {
 /// (mean_run_ms, compile_ms, checksum) for one fusion setting.
 fn bench(label: &str, threshold: Option<&str>, grid: usize, iters: usize) -> (f64, f64, f64) {
     match threshold {
-        Some(t) => unsafe { std::env::set_var("RLX_FUSE_ATTN_THRESHOLD", t) },
-        None => unsafe { std::env::remove_var("RLX_FUSE_ATTN_THRESHOLD") },
+        Some(t) => rlx_ir::env::set("RLX_FUSE_ATTN_THRESHOLD", t),
+        None => rlx_ir::env::remove("RLX_FUSE_ATTN_THRESHOLD"),
     }
     let d = dims(grid);
     let w = weights(&d);

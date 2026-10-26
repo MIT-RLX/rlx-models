@@ -19,9 +19,9 @@
 
 mod detector;
 mod fft;
-mod filters;
+pub(crate) mod filters;
 mod predictor;
-mod weights;
+pub(crate) mod weights;
 
 pub use detector::Detector;
 

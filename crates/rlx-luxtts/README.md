@@ -58,7 +58,7 @@ BNNS AOT SIGSEGVs on these CFM graphs). TinyModel also pins
 available for non-CoreML GPU.
 
 **CUDA (NVIDIA):** RTF ≈1.4×, cos **0.99979** vs CPU, whisper **0.85** (same known
-espeak coverage as Apple backends).
+espeak coverage as macOS backends).
 
 ## Known limitation
 

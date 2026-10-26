@@ -167,3 +167,110 @@ mod tests {
         assert_eq!(cfg.layer_norm_eps, 1e-12);
     }
 }
+
+/// Restore the RoPE keys transformers 5 folds into `rope_parameters` in the
+/// `config.json` it saves: `rope_theta` (and `partial_rotary_factor`) back
+/// at the top level, and a non-default `rope_type`'s parameters back as
+/// `rope_scaling` (with the old `type` alias), each only where the config
+/// lacks it (`rope_scaling` also for a default type carrying more, such as
+/// Qwen-VL's `mrope_section`). A reader of the older layout otherwise falls back to its
+/// default theta and no scaling, and every position rotates wrong with no
+/// error. Applied to the top level and to each `*_config` object in it
+/// (`text_config`, …); a per-layer-type map (`rope_parameters:
+/// {full_attention: {…}, …}`, Gemma) is left for its own reader.
+pub fn legacy_rope_keys(config: &mut serde_json::Value) {
+    use serde_json::Value;
+    let Some(obj) = config.as_object_mut() else {
+        return;
+    };
+    for (key, child) in obj.iter_mut() {
+        if key.ends_with("_config") && child.is_object() {
+            legacy_rope_keys(child);
+        }
+    }
+    let Some(rp) = obj
+        .get("rope_parameters")
+        .and_then(Value::as_object)
+        .cloned()
+    else {
+        return;
+    };
+    if !rp.contains_key("rope_theta") && !rp.contains_key("rope_type") {
+        return;
+    }
+    for key in ["rope_theta", "partial_rotary_factor"] {
+        if !obj.contains_key(key)
+            && let Some(v) = rp.get(key)
+        {
+            obj.insert(key.into(), v.clone());
+        }
+    }
+    let kind = rp
+        .get("rope_type")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    // Scaling, or anything else the old `rope_scaling` carried
+    // (`mrope_section` with a default type, Qwen-VL).
+    let more = rp.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "rope_type" | "rope_theta" | "partial_rotary_factor"
+        )
+    });
+    if (kind != "default" || more) && obj.get("rope_scaling").is_none_or(Value::is_null) {
+        let mut scaling = rp.clone();
+        scaling.remove("rope_theta");
+        scaling
+            .entry("type")
+            .or_insert_with(|| Value::String(kind.into()));
+        obj.insert("rope_scaling".into(), Value::Object(scaling));
+    }
+}
+
+/// A Hugging Face `config.json` as `T`, read through [`legacy_rope_keys`].
+pub fn from_hf_json<T: serde::de::DeserializeOwned>(text: &str) -> anyhow::Result<T> {
+    let mut value: serde_json::Value = serde_json::from_str(text)?;
+    legacy_rope_keys(&mut value);
+    Ok(serde_json::from_value(value)?)
+}
+
+#[cfg(test)]
+mod legacy_rope_tests {
+    use super::legacy_rope_keys;
+    use serde_json::json;
+
+    #[test]
+    fn a_transformers_5_config_gets_its_theta_and_scaling_back() {
+        // What transformers 5 saves for Llama 3.2.
+        let mut c = json!({"rope_parameters": {"rope_type": "llama3", "factor": 32.0,
+            "high_freq_factor": 4.0, "low_freq_factor": 1.0,
+            "original_max_position_embeddings": 8192, "rope_theta": 500000.0},
+            "text_config": {"rope_parameters": {"rope_theta": 5e6, "rope_type": "default"}}});
+        legacy_rope_keys(&mut c);
+        assert_eq!(c["rope_theta"], json!(500000.0));
+        assert_eq!(c["rope_scaling"]["rope_type"], json!("llama3"));
+        assert_eq!(c["rope_scaling"]["type"], json!("llama3"));
+        assert_eq!(c["rope_scaling"]["factor"], json!(32.0));
+        assert!(c["rope_scaling"].get("rope_theta").is_none());
+        assert_eq!(c["text_config"]["rope_theta"], json!(5e6));
+        assert!(c["text_config"].get("rope_scaling").is_none());
+        let mut vl = json!({"rope_parameters": {"rope_type": "default", "rope_theta": 1e6,
+            "mrope_section": [16, 24, 24]}});
+        legacy_rope_keys(&mut vl);
+        assert_eq!(vl["rope_scaling"]["mrope_section"], json!([16, 24, 24]));
+        assert_eq!(vl["rope_scaling"]["type"], json!("default"));
+    }
+
+    #[test]
+    fn keys_a_config_has_and_per_layer_maps_are_left_alone() {
+        let mut c = json!({"rope_theta": 1e4, "rope_scaling": {"type": "linear", "factor": 2.0},
+            "rope_parameters": {"rope_theta": 5e6, "rope_type": "yarn", "factor": 4.0}});
+        let before = c.clone();
+        legacy_rope_keys(&mut c);
+        assert_eq!(c, before);
+        let mut g = json!({"rope_parameters": {"full_attention": {"rope_theta": 1e6}}});
+        let before = g.clone();
+        legacy_rope_keys(&mut g);
+        assert_eq!(g, before);
+    }
+}

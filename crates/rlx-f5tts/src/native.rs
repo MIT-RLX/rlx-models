@@ -232,7 +232,7 @@ impl F5Native {
             "preprocess expected 7 outputs, got {}",
             pre.len()
         );
-        if std::env::var("RLX_F5_DBG").is_ok() {
+        if rlx_ir::env::var_result("RLX_F5_DBG").is_ok() {
             let names = [
                 "noise",
                 "rope_cos",
@@ -255,7 +255,7 @@ impl F5Native {
             }
             eprintln!("[f5-dbg] d(max_duration)={d} t(text_ids)={t} n(audio)={n}");
         }
-        if let Ok(dir) = std::env::var("RLX_F5_DUMP_PP") {
+        if let Ok(dir) = rlx_ir::env::var_result("RLX_F5_DUMP_PP") {
             let _ = std::fs::create_dir_all(&dir);
             let names = [
                 "noise",
@@ -272,7 +272,7 @@ impl F5Native {
             }
             eprintln!("[f5-dbg] dumped rlx preprocess to {dir} (md={d} t={t} n={n})");
         }
-        if std::env::var("RLX_F5_STOP_AFTER_PRE").is_ok() {
+        if rlx_ir::env::var_result("RLX_F5_STOP_AFTER_PRE").is_ok() {
             return Ok(vec![0.0; 100]);
         }
         // Output order (graph decl): noise, rope_cos, rope_sin, cat_mel_text,
@@ -318,8 +318,8 @@ impl F5Native {
             let (n2, ndt) = as_feed(&out_bytes, out_dt, dit_dev);
             noise = n2;
             noise_dt = ndt;
-            if std::env::var("RLX_F5_DBG").is_ok() {
-                let all = std::env::var("RLX_F5_DBG_ALL_STEPS").is_ok();
+            if rlx_ir::env::var_result("RLX_F5_DBG").is_ok() {
+                let all = rlx_ir::env::var_result("RLX_F5_DBG_ALL_STEPS").is_ok();
                 if all || step == 0 || step + 1 == ode_steps {
                     let v = to_f32(&noise, noise_dt);
                     let pk = v.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
@@ -361,7 +361,7 @@ impl F5Native {
 }
 
 fn max_duration_cap() -> usize {
-    std::env::var("RLX_F5_MAX_DURATION")
+    rlx_ir::env::var_result("RLX_F5_MAX_DURATION")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_MAX_DURATION)
@@ -511,7 +511,7 @@ fn i64_scalar(b: &[u8]) -> i64 {
 ///
 /// Default: same as `requested`. Metal/MLX match CPU across the full NFE chain
 /// (fox 6/6). Discrete GPUs use f32-uniform ScatterNd with `force_indices_f32`.
-/// Opt out with `RLX_F5_CPU_DIT=1`. Apple wgpu DiT still drifts; when Metal is
+/// Opt out with `RLX_F5_CPU_DIT=1`. macOS wgpu DiT still drifts; when Metal is
 /// available, route DiT there unless `RLX_F5_WGPU_DIT=1`.
 fn dit_exec_device(requested: Device) -> Device {
     if env_truthy("RLX_F5_CPU_DIT") {
@@ -551,7 +551,7 @@ fn dit_exec_device(requested: Device) -> Device {
 }
 
 fn env_truthy(key: &str) -> bool {
-    match std::env::var(key) {
+    match rlx_ir::env::read(key) {
         Ok(v) => matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
@@ -587,11 +587,15 @@ fn as_feed(bytes: &[u8], dt: DType, device: Device) -> (Vec<u8>, DType) {
 fn to_f32(b: &[u8], dt: DType) -> Vec<f32> {
     match dt {
         DType::F16 => b
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         _ => b
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     }

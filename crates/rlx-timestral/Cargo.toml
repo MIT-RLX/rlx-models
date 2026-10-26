@@ -1,0 +1,69 @@
+[package]
+name = "rlx-timestral"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Mistral Timestral time-series foundation models (5M-209M) on RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-tune = { path = "../rlx-tune", version = "0.2.19" }
+anyhow = { workspace = true }
+ndarray = "0.16"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dependencies.hf-hub]
+workspace = true
+optional = true
+
+[[bin]]
+name = "rlx-timestral"
+path = "src/bin/rlx_timestral.rs"
+
+[[test]]
+name = "backend_quick_check"
+path = "tests/backend_quick_check.rs"
+
+[[test]]
+name = "reference_parity"
+path = "tests/reference_parity.rs"
+
+[[test]]
+name = "export_rlxp"
+path = "tests/export_rlxp.rs"
+required-features = ["export"]
+
+[dev-dependencies]
+rlx-runtime = { workspace = true, features = ["program"] }
+tempfile = "3"
+
+[features]
+default = []
+hf-download = ["dep:hf-hub"]
+# `export::export_rlxp`: Timestral as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+metal = ["rlx-core/metal"]
+mlx = ["rlx-core/mlx"]
+cuda = ["rlx-core/cuda"]
+rocm = ["rlx-core/rocm"]
+gpu = ["rlx-core/gpu"]
+vulkan = ["rlx-core/vulkan"]
+coreml = ["rlx-core/coreml"]
+tpu = ["rlx-core/tpu"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+
+[lints]
+workspace = true

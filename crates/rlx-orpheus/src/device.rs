@@ -9,7 +9,7 @@ use rlx_runtime::{Device, is_available};
 /// Resolved execution targets for Orpheus (LM device + SNAC backend).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OrpheusRuntimeDevice {
-    /// RLX GGUF backbone device (Metal on Apple Silicon by default).
+    /// RLX GGUF backbone device (Metal on macOS arm64 by default).
     pub lm: Device,
     /// Where the SNAC conv decoder runs (defaults to follow the LM GPU).
     pub snac: crate::decoder::SnacExec,
@@ -47,7 +47,7 @@ pub fn default_snac_exec(lm: Device) -> crate::decoder::SnacExec {
 }
 
 fn env_flag(name: &str) -> Option<bool> {
-    match std::env::var(name).ok().as_deref() {
+    match rlx_ir::env::read(name).ok().as_deref() {
         Some("1") | Some("true") | Some("TRUE") => Some(true),
         Some("0") | Some("false") | Some("FALSE") => Some(false),
         _ => None,
@@ -58,7 +58,7 @@ fn env_flag(name: &str) -> Option<bool> {
 ///
 /// MLX native decode is validated (code-for-code parity with CPU via the
 /// interleaved/GPT-J RoPE flavor) but stays opt-in via `ORPHEUS_MLX_KV=1`:
-/// Metal is the default Apple accelerator and MLX prefill still falls back to
+/// Metal is the default macOS accelerator and MLX prefill still falls back to
 /// CPU F32, so MLX is an alternative rather than the default path.
 pub fn lm_kv_decode_supported(device: Device) -> bool {
     match device {
@@ -71,7 +71,7 @@ pub fn lm_kv_decode_supported(device: Device) -> bool {
 
 /// Best accelerator for Orpheus LM inference on the current host.
 ///
-/// Order: Metal (Apple) → CUDA (NVIDIA) → ROCm (AMD) → wgpu → Vulkan → CPU.
+/// Order: Metal (macOS) → CUDA (NVIDIA) → ROCm (AMD) → wgpu → Vulkan → CPU.
 /// MLX is skipped unless [`lm_kv_decode_supported`] (`ORPHEUS_MLX_KV=1`).
 pub fn preferred_synth_device() -> Device {
     for device in [
@@ -139,7 +139,7 @@ pub fn resolve_orpheus_device(s: &str) -> Result<OrpheusRuntimeDevice> {
     if s.eq_ignore_ascii_case("coreml") {
         let lm = preferred_synth_device_lenient();
         if !matches!(lm, Device::Metal | Device::Mlx | Device::Cpu) {
-            bail!("coreml SNAC path expects an Apple host with Metal or MLX; got lm={lm:?}");
+            bail!("coreml SNAC path expects an macOS host with Metal or MLX; got lm={lm:?}");
         }
         return Ok(OrpheusRuntimeDevice {
             lm,
@@ -179,9 +179,9 @@ mod tests {
         assert!(lm_kv_decode_supported(Device::Vulkan));
     }
 
-    // `resolve_orpheus_device("coreml")` bails unless the LM lands on an Apple
+    // `resolve_orpheus_device("coreml")` bails unless the LM lands on a macOS
     // backend (Metal/MLX/CPU); on a CUDA host it resolves to Cuda and errors by
-    // design. The ANE SNAC path only exists on Apple.
+    // design. The ANE SNAC path only exists on macOS.
     #[test]
     #[cfg(target_os = "macos")]
     fn resolve_coreml_sets_snac_flag() {

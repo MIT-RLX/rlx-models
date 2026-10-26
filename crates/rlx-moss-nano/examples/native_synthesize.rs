@@ -16,8 +16,9 @@ fn parse_device(s: &str) -> Device {
 }
 
 fn main() -> anyhow::Result<()> {
-    let dir =
-        PathBuf::from(std::env::var("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()));
+    let dir = PathBuf::from(
+        rlx_ir::env::var_result("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()),
+    );
     let text = std::env::var("TEXT").unwrap_or("Hello, this is a native test.".into());
     let voice = std::env::var("VOICE").unwrap_or_else(|_| String::new());
     let maxf: usize = std::env::var("MAXF")

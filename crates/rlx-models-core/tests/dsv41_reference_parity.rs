@@ -48,20 +48,17 @@ struct EnvGuard(&'static str, Option<String>);
 
 impl EnvGuard {
     fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: callers hold `graph_guard()`.
-        unsafe { std::env::set_var(key, value) };
+        let prev = rlx_ir::env::read(key).ok();
+        rlx_ir::env::set(key, value);
         EnvGuard(key, prev)
     }
 }
 
 impl Drop for EnvGuard {
     fn drop(&mut self) {
-        unsafe {
-            match &self.1 {
-                Some(v) => std::env::set_var(self.0, v),
-                None => std::env::remove_var(self.0),
-            }
+        match &self.1 {
+            Some(v) => rlx_ir::env::set(self.0, v),
+            None => rlx_ir::env::unset(self.0),
         }
     }
 }
@@ -71,28 +68,22 @@ struct TapGuard;
 
 impl TapGuard {
     fn set(stage: &str, layer: usize) -> Self {
-        // SAFETY: callers hold `graph_guard()`, so no other test is reading
-        // these while they change.
-        unsafe {
-            std::env::set_var("RLX_DSV41_DBG", stage);
-            std::env::set_var("RLX_DSV41_DBGLAYER", layer.to_string());
-        }
+        rlx_ir::env::set("RLX_DSV41_DBG", stage);
+        rlx_ir::env::set("RLX_DSV41_DBGLAYER", layer.to_string());
         TapGuard
     }
 }
 
 impl Drop for TapGuard {
     fn drop(&mut self) {
-        unsafe {
-            std::env::remove_var("RLX_DSV41_DBG");
-            std::env::remove_var("RLX_DSV41_DBGLAYER");
-        }
+        rlx_ir::env::remove("RLX_DSV41_DBG");
+        rlx_ir::env::remove("RLX_DSV41_DBGLAYER");
     }
 }
 
 fn fixture() -> Value {
     // An override points the test at a full (untrimmed) dump while iterating.
-    let path = std::env::var("RLX_DSV41_REF").unwrap_or_else(|_| {
+    let path = rlx_ir::env::var_result("RLX_DSV41_REF").unwrap_or_else(|_| {
         format!(
             "{}/tests/fixtures/dsv41_toy_ref.json",
             env!("CARGO_MANIFEST_DIR")
@@ -904,7 +895,7 @@ fn real_layer_attention_matches_reference() {
     let cfg: Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
     let spec = DeepseekV41Spec::from_config(&cfg).unwrap();
 
-    let Some(dir) = std::env::var_os("RLX_DSV41_WEIGHTS") else {
+    let Some(dir) = rlx_ir::env::var_os("RLX_DSV41_WEIGHTS") else {
         for (n, dg) in &digests {
             // the digests still have to be self-consistent without the weights
             let seq = dg["seq"].as_u64().unwrap() as usize;
@@ -1081,7 +1072,7 @@ fn engram_token_map_matches_the_real_tokenizer() {
     let e = spec.engram.as_ref().expect("GA config has Engram");
     assert_eq!(e.compressed_vocab_size, 99_092);
 
-    let Some(dir) = std::env::var_os("RLX_DSV41_WEIGHTS") else {
+    let Some(dir) = rlx_ir::env::var_os("RLX_DSV41_WEIGHTS") else {
         eprintln!("skipping: set RLX_DSV41_WEIGHTS to a dir holding tokenizer.json");
         return;
     };
@@ -1229,7 +1220,7 @@ fn dequant_matches_reference_on_real_bytes() {
         "no FP4 tensor in the digest"
     );
 
-    let Some(dir) = std::env::var_os("RLX_DSV41_WEIGHTS") else {
+    let Some(dir) = rlx_ir::env::var_os("RLX_DSV41_WEIGHTS") else {
         eprintln!("skipping: set RLX_DSV41_WEIGHTS (see scripts/dsv41_ref, --what quant)");
         return;
     };
@@ -1486,7 +1477,7 @@ fn arena_reuse_is_deterministic() {
     use rlx_models_core::weight_loader::WeightLoader;
 
     let _graph = graph_guard();
-    let Some(dir) = std::env::var_os("RLX_DSV41_WEIGHTS") else {
+    let Some(dir) = rlx_ir::env::var_os("RLX_DSV41_WEIGHTS") else {
         eprintln!("skipping: set RLX_DSV41_WEIGHTS (see scripts/dsv41_ref)");
         return;
     };
@@ -1687,7 +1678,7 @@ fn real_moe_matches_reference_on_routed_experts() {
     use rlx_models_core::weight_loader::WeightLoader;
 
     let _graph = graph_guard();
-    let Ok(dir) = std::env::var("RLX_DSV41_WEIGHTS") else {
+    let Ok(dir) = rlx_ir::env::var_result("RLX_DSV41_WEIGHTS") else {
         eprintln!("set RLX_DSV41_WEIGHTS to run this");
         return;
     };

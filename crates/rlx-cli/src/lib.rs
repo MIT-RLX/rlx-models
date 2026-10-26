@@ -30,7 +30,7 @@ pub mod mtmd;
 pub mod registry;
 pub mod weights_resolve;
 
-pub use args::req;
+pub use args::{req, take_number_format, take_weight_storage};
 pub use auto_dispatch::{
     SniffedFrom, SniffedRunner, UnimplementedArch, arch_runner_name, auto_dispatch,
     auto_runner_name, auto_sniff, known_unimplemented_arch, known_unimplemented_keys,

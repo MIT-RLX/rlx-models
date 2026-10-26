@@ -18,7 +18,9 @@ fn dir() -> Option<PathBuf> {
 fn rd(p: &std::path::Path) -> Option<Vec<f32>> {
     let r = std::fs::read(p).ok()?;
     Some(
-        r.chunks_exact(4)
+        r.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )

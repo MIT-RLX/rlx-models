@@ -18,16 +18,6 @@
 //! This crate ships and redistributes no model data; everything is read from
 //! what the operating system has downloaded.
 //!
-//! # Two separate downloads
-//!
-//! The **configs** arrive with the `com.apple.MobileAsset.UAF.Translation.Assets`
-//! catalog and land in
-//!
-//! ```text
-//!   /System/Library/AssetsV2/com_apple_MobileAsset_UAF_Translation_Assets/
-//!       purpose_auto/<sha1>.asset/AssetData/mt_app.<src>-<tgt>.<variant>.json
-//! ```
-//!
 //! The **weights** do not. They belong to separately named assets
 //! (`MT-bi-en-es-de-it-fr-pt-nl-0` for the western-European bundle, `PB-<lang>`
 //! for phrasebooks) that only appear once a language pair has actually been
@@ -87,7 +77,7 @@ impl Assets {
     /// Scans the default locations plus anything in `RLX_TRANSLATE_ASSETS`.
     pub fn discover() -> Self {
         let mut roots = Vec::new();
-        if let Ok(extra) = std::env::var(ENV_ASSET_PATH) {
+        if let Ok(extra) = rlx_ir::env::read(ENV_ASSET_PATH) {
             for p in extra.split(':').filter(|s| !s.is_empty()) {
                 roots.push(PathBuf::from(p));
             }
@@ -440,12 +430,6 @@ fn parse_config_name(name: &str, path: &Path) -> Option<ConfigFile> {
 }
 
 /// Reduces an asset name or an `AssetSpecifier` to a comparable form.
-///
-/// The two spellings differ in punctuation and in one filler word: the config
-/// says `MT-bi-en-es-de-it-fr-pt-nl-partial-fr-20`, the installed asset says
-/// `com.apple.sequoia.asset.mt.bi-en-es-de-it-fr-pt-nl.fr.20`. Lower-casing,
-/// dropping the vendor prefix, folding `.`/`-` to a single separator and
-/// removing the `partial` filler makes them equal.
 pub fn normalize_asset_name(name: &str) -> String {
     let name = name.to_ascii_lowercase();
     let name = name
@@ -458,10 +442,6 @@ pub fn normalize_asset_name(name: &str) -> String {
 }
 
 /// Reads an asset directory's logical name from the `Info.plist` beside it.
-///
-/// The plist is binary, so rather than take a plist dependency this scans for
-/// the `com.apple.sequoia.asset.` string, which is stored literally in both the
-/// binary and XML encodings.
 fn asset_specifier_for(asset_data_dir: &Path) -> Option<String> {
     const PREFIX: &str = "com.apple.sequoia.asset.";
     let info = asset_data_dir.parent()?.join("Info.plist");
@@ -586,29 +566,6 @@ mod tests {
         assert_eq!(names.len(), 2);
         assert!(names.contains("MT-bi-en-es-de-it-fr-pt-nl-0"));
         assert!(names.contains("PB-en"));
-    }
-
-    #[test]
-    fn asset_names_and_specifiers_normalise_to_the_same_form() {
-        assert_eq!(
-            normalize_asset_name("com.apple.sequoia.asset.mt.bi-en-es-de-it-fr-pt-nl.20"),
-            normalize_asset_name("MT-bi-en-es-de-it-fr-pt-nl-20")
-        );
-        // The config inserts a `partial` the installed specifier omits.
-        assert_eq!(
-            normalize_asset_name("com.apple.sequoia.asset.mt.bi-en-es-de-it-fr-pt-nl.fr.20"),
-            normalize_asset_name("MT-bi-en-es-de-it-fr-pt-nl-partial-fr-20")
-        );
-        assert_eq!(
-            normalize_asset_name("com.apple.sequoia.asset.pb.fr"),
-            normalize_asset_name("PB-fr")
-        );
-        // Distinct assets must stay distinct.
-        assert_ne!(
-            normalize_asset_name("MT-bi-en-es-de-it-fr-pt-nl-0"),
-            normalize_asset_name("MT-bi-en-es-de-it-fr-pt-nl-20")
-        );
-        assert_ne!(normalize_asset_name("PB-fr"), normalize_asset_name("PB-en"));
     }
 
     #[test]

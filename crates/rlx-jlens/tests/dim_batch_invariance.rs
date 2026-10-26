@@ -103,7 +103,7 @@ fn cpu_is_dim_batch_invariant() {
 /// scratch sizing and dispatch grids can go wrong. Skips when absent.
 fn real_model() -> Option<(Qwen35LensModel, std::path::PathBuf)> {
     use rlx_core::weight_loader::GgufLoader;
-    let path: std::path::PathBuf = match std::env::var("RLX_JLENS_QWEN35_GGUF") {
+    let path: std::path::PathBuf = match rlx_ir::env::var_result("RLX_JLENS_QWEN35_GGUF") {
         Ok(p) => p.into(),
         Err(_) => {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -686,8 +686,7 @@ fn assert_matches_cpu(device: Device, label: &str) {
     // measures the decomposition, not the backend. Pin both sides to the same
     // path — the library honours an explicit setting and leaves it alone.
     if !rlx_jlens::gdn_backward_is_fused_on(device) {
-        // SAFETY: single-threaded test setup, before any graph is built.
-        unsafe { std::env::set_var("RLX_GDN_UNFUSE_FOR_AD", "1") };
+        rlx_ir::env::set("RLX_GDN_UNFUSE_FOR_AD", "1");
         eprintln!("{label} has no fused delta-net backward; pinning CPU to the same unfused path");
     }
     let model = Qwen35LensModel::new(tiny_cfg(), synth_weights(&tiny_cfg()));
@@ -767,12 +766,12 @@ fn first_divergent_node_vs_cpu() {
     use rlx_jlens::{Tap, TappedGraph};
     use rlx_runtime::Session;
 
-    let Ok(dev_name) = std::env::var("RLX_JLENS_DIAG_DEVICE") else {
+    let Ok(dev_name) = rlx_ir::env::var_result("RLX_JLENS_DIAG_DEVICE") else {
         eprintln!("set RLX_JLENS_DIAG_DEVICE (cuda|rocm|metal|mlx)");
         return;
     };
     let device = rlx_runtime::parse_device(&dev_name).expect("device");
-    let layer: usize = std::env::var("RLX_JLENS_DIAG_LAYER")
+    let layer: usize = rlx_ir::env::var_result("RLX_JLENS_DIAG_LAYER")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
@@ -781,7 +780,7 @@ fn first_divergent_node_vs_cpu() {
         return;
     };
     if !rlx_jlens::gdn_backward_is_fused_on(device) {
-        unsafe { std::env::set_var("RLX_GDN_UNFUSE_FOR_AD", "1") };
+        rlx_ir::env::set("RLX_GDN_UNFUSE_FOR_AD", "1");
     }
 
     let (batch, seq) = (8usize, 24usize);
@@ -924,12 +923,12 @@ fn layer_representations_vs_cpu() {
     use rlx_jlens::{JacobianLens, Readout, rank_of};
     use rlx_runtime::Session;
 
-    let Ok(dev_name) = std::env::var("RLX_JLENS_DIAG_DEVICE") else {
+    let Ok(dev_name) = rlx_ir::env::var_result("RLX_JLENS_DIAG_DEVICE") else {
         eprintln!("set RLX_JLENS_DIAG_DEVICE");
         return;
     };
     let device = rlx_runtime::parse_device(&dev_name).expect("device");
-    let lens_path = std::env::var("RLX_JLENS_DIAG_LENS")
+    let lens_path = rlx_ir::env::var_result("RLX_JLENS_DIAG_LENS")
         .unwrap_or_else(|_| "/tmp/big.lens.safetensors".to_string());
     let Ok(lens) = JacobianLens::load(&lens_path) else {
         eprintln!("no lens at {lens_path}; skipping");
@@ -1034,7 +1033,7 @@ fn layer_representations_vs_cpu() {
 fn stack_forward_first_divergent_node() {
     use rlx_runtime::Session;
 
-    let Ok(dev_name) = std::env::var("RLX_JLENS_DIAG_DEVICE") else {
+    let Ok(dev_name) = rlx_ir::env::var_result("RLX_JLENS_DIAG_DEVICE") else {
         eprintln!("set RLX_JLENS_DIAG_DEVICE");
         return;
     };
@@ -1053,7 +1052,7 @@ fn stack_forward_first_divergent_node() {
     // Shrinking the trunk moves the *end* of the graph without moving any
     // individual layer, which separates "this layer is miscomputed" from
     // "whatever sits last in the arena is".
-    let target: usize = std::env::var("RLX_JLENS_DIAG_TARGET")
+    let target: usize = rlx_ir::env::var_result("RLX_JLENS_DIAG_TARGET")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(model.n_layers() - 1);

@@ -24,7 +24,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("RLX_QWEN3_TTS_DIR")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("speech_tokenizer/model.safetensors").is_file())
@@ -55,7 +55,11 @@ fn golden_codec_decode_cpu_matches_metal() {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -98,7 +102,11 @@ fn golden_codec_decode_length_and_peak() {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -119,7 +127,11 @@ fn golden_codec_decode_hf_pcm_parity() {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
@@ -129,7 +141,11 @@ fn golden_codec_decode_hf_pcm_parity() {
         return;
     }
     let frames = load_golden_hi();
-    if std::env::var("RLX_QWEN3_TTS_SPEECH_DUMP").ok().as_deref() == Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_SPEECH_DUMP")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         use rlx_qwen3_tts::speech_tokenizer::St12HzDecoder;
         let mut dec = St12HzDecoder::open(&model_dir).expect("open");
         let pcm = dec.decode(&frames, Device::Cpu).expect("decode");

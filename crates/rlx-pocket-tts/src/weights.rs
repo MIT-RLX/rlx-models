@@ -111,7 +111,7 @@ impl WeightFile {
 
 fn bytes_to_f32(raw: &[u8]) -> Vec<f32> {
     let mut out = Vec::with_capacity(raw.len() / 4);
-    for chunk in raw.chunks_exact(4) {
+    for chunk in raw.as_chunks::<4>().0.iter() {
         out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     out
@@ -119,7 +119,7 @@ fn bytes_to_f32(raw: &[u8]) -> Vec<f32> {
 
 fn bf16_bytes_to_f32(raw: &[u8]) -> Vec<f32> {
     let mut out = Vec::with_capacity(raw.len() / 2);
-    for chunk in raw.chunks_exact(2) {
+    for chunk in raw.as_chunks::<2>().0.iter() {
         let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
         out.push(bf16::from_bits(bits).to_f32());
     }
@@ -128,7 +128,7 @@ fn bf16_bytes_to_f32(raw: &[u8]) -> Vec<f32> {
 
 fn f16_bytes_to_f32(raw: &[u8]) -> Vec<f32> {
     let mut out = Vec::with_capacity(raw.len() / 2);
-    for chunk in raw.chunks_exact(2) {
+    for chunk in raw.as_chunks::<2>().0.iter() {
         let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
         out.push(half::f16::from_bits(bits).to_f32());
     }

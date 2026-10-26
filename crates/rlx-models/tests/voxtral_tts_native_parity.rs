@@ -34,7 +34,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("RLX_VOXTRAL_TTS_DIR")
+    rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
@@ -105,7 +105,7 @@ fn voxtral_tts_native_stage0_vs_vllm() {
         eprintln!("skip: set RLX_VOXTRAL_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_VOXTRAL_TTS_NATIVE_PARITY")
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_NATIVE_PARITY")
         .ok()
         .as_deref()
         != Some("1")
@@ -140,11 +140,8 @@ fn voxtral_tts_native_stage0_vs_vllm() {
     assert!(!prompt.is_empty());
 
     // Eager LM matches the hand-ported reference; compiled backbone is exercised separately.
-    // SAFETY: test-only env toggle before opening the runner.
-    unsafe {
-        std::env::set_var("RLX_VOXTRAL_TTS_EAGER", "1");
-        std::env::set_var("RLX_VOXTRAL_TTS_ACOUSTIC_EAGER", "1");
-    }
+    rlx_ir::env::set("RLX_VOXTRAL_TTS_EAGER", "1");
+    rlx_ir::env::set("RLX_VOXTRAL_TTS_ACOUSTIC_EAGER", "1");
     let mut runner = VoxtralTtsRunnerBuilder::default()
         .model_dir(&model_dir)
         .device(rlx_runtime::Device::Cpu)

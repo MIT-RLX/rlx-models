@@ -109,7 +109,7 @@ pub fn run(args: &[String]) -> Result<()> {
                     .to_str()
                     .ok_or_else(|| anyhow::anyhow!("non-utf8 --image path"))?,
             )?;
-            let tok_path = std::env::var("RLX_QWEN25_VL_TOKENIZER")
+            let tok_path = rlx_ir::env::var_result("RLX_QWEN25_VL_TOKENIZER")
                 .ok()
                 .map(PathBuf::from)
                 .or_else(|| crate::resolve_tokenizer_path(&weights));

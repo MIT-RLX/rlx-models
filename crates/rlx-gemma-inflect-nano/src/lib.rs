@@ -21,14 +21,14 @@ use rlx_runtime::{Device, is_available};
 
 /// Default Gemma 3 270M IT GGUF (`just fetch-gemma3-270m`).
 pub fn default_gemma_gguf() -> PathBuf {
-    std::env::var_os("RLX_GEMMA3_GGUF")
+    rlx_ir::env::var_os("RLX_GEMMA3_GGUF")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp/rlx-weights/gemma-3-270m.gguf"))
 }
 
 /// HuggingFace `tokenizer.json` for Gemma 3 270M (sibling of the GGUF by default).
 pub fn default_gemma_tokenizer() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("RLX_GEMMA3_TOKENIZER") {
+    if let Some(p) = rlx_ir::env::var_os("RLX_GEMMA3_TOKENIZER") {
         return Some(PathBuf::from(p));
     }
     resolve_tokenizer_path(&default_gemma_gguf(), None)
@@ -36,7 +36,7 @@ pub fn default_gemma_tokenizer() -> Option<PathBuf> {
 
 /// Default Inflect-Nano RLX bundle (`scripts/export_inflect_nano.py`).
 pub fn default_inflect_data_dir() -> PathBuf {
-    std::env::var_os("RLX_INFLECT_NANO_DATA")
+    rlx_ir::env::var_os("RLX_INFLECT_NANO_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("weights/inflect-nano-rlx"))
 }

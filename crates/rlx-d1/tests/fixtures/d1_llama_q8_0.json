@@ -1,0 +1,269 @@
+{
+ "llama_cpp": "b1-84e66d0",
+ "backend": "metal (-ngl 99)",
+ "model": "d1-3B-Q8_0.gguf",
+ "mmproj": "mmproj-d1-3B-Q8_0.gguf",
+ "cases": [
+  {
+   "name": "readme_text",
+   "system_one": {
+    "answers": {
+     "refund": {
+      "type": "noul",
+      "noul": 0.9899887170003228
+     },
+     "team": {
+      "type": "choice",
+      "choice": "billing",
+      "probabilities": {
+       "billing": 0.9838211690636125,
+       "technical": 0.010460313972367451,
+       "fraud": 0.005718516964020204
+      },
+      "confidence": 0.9757317535954187
+     },
+     "urgency": {
+      "type": "score",
+      "score": 0.7593593669352694,
+      "legend": {
+       "0": "Can wait",
+       "1": "Today",
+       "2": "Blocking the customer now"
+      },
+      "probabilities": {
+       "0": 0.33713981278341537,
+       "1": 0.5663610074978997,
+       "2": 0.0964991797186848
+      },
+      "confidence": 0.34954151124684973
+     }
+    },
+    "usage": {
+     "input_tokens": 154,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "name": "json_state",
+   "system_one": {
+    "answers": {
+     "is_bug": {
+      "type": "noul",
+      "noul": 0.9485205660441607
+     },
+     "severity": {
+      "type": "score",
+      "score": 1.584368517783315,
+      "legend": {
+       "0": "Trivial",
+       "1": "Minor",
+       "2": "Major",
+       "3": "Critical",
+       "4": "Outage"
+      },
+      "probabilities": {
+       "0": 0.10388912290003145,
+       "1": 0.3869288458147066,
+       "2": 0.3439001696962177,
+       "3": 0.15148811378000387,
+       "4": 0.013793747809040385
+      },
+      "confidence": 0.33987769701385173
+     }
+    },
+    "usage": {
+     "input_tokens": 381,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "name": "many_options",
+   "system_one": {
+    "answers": {
+     "intent": {
+      "type": "choice",
+      "choice": "change_pin",
+      "probabilities": {
+       "activate_card": 0.0003127784554401998,
+       "card_arrival": 0.0005032944976042433,
+       "change_pin": 0.9919525521546199,
+       "lost_card": 0.0008975438020215375,
+       "stolen_card": 0.0005180999275482595,
+       "card_declined": 0.0005161883366157898,
+       "atm_withdrawal": 0.0003360253632208505,
+       "balance": 0.0003143681849397988,
+       "transfer": 0.0003232874456996888,
+       "transfer_pending": 0.00019395646475685655,
+       "exchange_rate": 0.00011130146421490704,
+       "top_up": 0.00012332762335410578,
+       "top_up_failed": 0.00019370968520044575,
+       "refund": 7.640050344254742e-05,
+       "direct_debit": 0.00015297283756233361,
+       "close_account": 0.0001009049459841428,
+       "verify_identity": 0.00010133069912654413,
+       "update_address": 0.00010107657445112497,
+       "fees": 9.913084087394923e-05,
+       "virtual_card": 0.00013265653053252252,
+       "apple_pay": 0.0005062091779757892,
+       "contactless": 9.720494790170004e-05,
+       "statement": 0.0006579835286109682,
+       "interest": 0.0001868533489186872,
+       "loan": 0.00012472616620161738,
+       "mortgage": 9.286194351335271e-05,
+       "overdraft": 0.000251117070787014,
+       "fraud": 0.00012925264919272486,
+       "app_login": 0.00019760016757581515,
+       "other": 0.0006952846621122658
+      },
+      "confidence": 0.991675053953055
+     }
+    },
+    "usage": {
+     "input_tokens": 218,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "name": "letter_options",
+   "system_one": {
+    "answers": {
+     "answer": {
+      "type": "choice",
+      "choice": "B",
+      "probabilities": {
+       "A": 0.007240839473784382,
+       "B": 0.9838839663385239,
+       "C": 0.004128831208266241,
+       "D": 0.004746362979425351
+      },
+      "confidence": 0.9785119551180319
+     }
+    },
+    "usage": {
+     "input_tokens": 53,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "name": "unicode",
+   "system_one": {
+    "answers": {
+     "angry": {
+      "type": "noul",
+      "noul": 0.9874739201405904
+     },
+     "language": {
+      "type": "choice",
+      "choice": "russian",
+      "probabilities": {
+       "english": 0.015623864403929811,
+       "russian": 0.9389641485635932,
+       "ukrainian": 0.015047607744709498,
+       "other_language": 0.030364379287767543
+      },
+      "confidence": 0.9186188647514576
+     }
+    },
+    "usage": {
+     "input_tokens": 109,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "name": "cats_image",
+   "system_one": {
+    "answers": {
+     "cats": {
+      "type": "choice",
+      "choice": "two",
+      "probabilities": {
+       "one": 0.006255697553755688,
+       "two": 0.9852008527854778,
+       "more": 0.008543449660766577
+      },
+      "confidence": 0.9778012791782165
+     }
+    },
+    "usage": {
+     "input_tokens": 271,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "name": "cats_image_multi",
+   "system_one": {
+    "answers": {
+     "sofa": {
+      "type": "noul",
+      "noul": 0.987016372246827
+     },
+     "remote": {
+      "type": "noul",
+      "noul": 0.9900221403513796
+     }
+    },
+    "usage": {
+     "input_tokens": 541,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "name": "shapes_tiled",
+   "system_one": {
+    "answers": {
+     "shape": {
+      "type": "choice",
+      "choice": "circle_and_square",
+      "probabilities": {
+       "circle_and_square": 0.9888291316762045,
+       "two_circles": 0.005680149522822848,
+       "nothing": 0.005490718800972824
+      },
+      "confidence": 0.9832436975143065
+     },
+     "colorful": {
+      "type": "score",
+      "score": 1.916276122307588,
+      "legend": {
+       "0": "Grey",
+       "1": "Some colour",
+       "2": "Very colourful"
+      },
+      "probabilities": {
+       "0": 0.005320297357715561,
+       "1": 0.07308328297698079,
+       "2": 0.9215964196653036
+      },
+      "confidence": 0.8744141834613821
+     }
+    },
+    "usage": {
+     "input_tokens": 3626,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "name": "small_image",
+   "system_one": {
+    "answers": {
+     "yellow": {
+      "type": "noul",
+      "noul": 0.9827752159578967
+     }
+    },
+    "usage": {
+     "input_tokens": 116,
+     "output_tokens": 0
+    }
+   }
+  }
+ ]
+}

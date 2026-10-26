@@ -63,8 +63,8 @@ the plain-ViT and UNI2-SwiGLU topologies:
 | Backend | Forward / inference | Autodiff backward (training + pruning gradient) |
 |---|---|---|
 | CPU | ✅ bit-exact reference | ✅ |
-| Metal (Apple) | ✅ | ✅ |
-| MLX (Apple) | ✅ | ✅ |
+| Metal (macOS) | ✅ | ✅ |
+| MLX (macOS) | ✅ | ✅ |
 | wgpu | ✅ | ✅ |
 | CUDA (RTX 3080 Ti) | ✅ | ✅ |
 | Vulkan (RTX 3080 Ti) | ✅ | ✅ |

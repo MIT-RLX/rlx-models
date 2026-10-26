@@ -22,7 +22,7 @@
 //! coverage.
 //!
 //! ```bash
-//! cargo test -p rlx-gemma --test gemma4_decode_backend_parity --features apple-silicon
+//! cargo test -p rlx-gemma --test gemma4_decode_backend_parity --features macos-gpu
 //! ```
 //!
 //! Runs `GemmaGenerator::prefill` followed by `decode_get_logits` on
@@ -172,6 +172,20 @@ fn synthetic_weights(cfg: &GemmaConfig) -> WeightMap {
             format!("{lp}.input_layernorm.weight"),
             (ramp(h, 0.001, salt), vec![h]),
         );
+        // Every real Gemma 3/4 layer has per-head Q/K norms; Gemma 2/3/4
+        // all normalize the attention output.
+        t.insert(
+            format!("{lp}.post_attention_layernorm.weight"),
+            (ramp(h, 0.001, salt + 12), vec![h]),
+        );
+        t.insert(
+            format!("{lp}.self_attn.q_norm.weight"),
+            (ramp(dh, 0.001, salt + 13), vec![dh]),
+        );
+        t.insert(
+            format!("{lp}.self_attn.k_norm.weight"),
+            (ramp(dh, 0.001, salt + 14), vec![dh]),
+        );
         t.insert(
             format!("{lp}.pre_feedforward_layernorm.weight"),
             (ramp(h, 0.001, salt + 10), vec![h]),
@@ -221,8 +235,7 @@ fn ensure_metal_precise() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        // SAFETY: set once before any backend thread reads it.
-        unsafe { std::env::set_var("RLX_METAL_PRECISE", "1") };
+        rlx_ir::env::set("RLX_METAL_PRECISE", "1");
     });
 }
 

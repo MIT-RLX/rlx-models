@@ -64,26 +64,26 @@ static DISCRETE_DEFAULTS_APPLIED: AtomicBool = AtomicBool::new(false);
 // ---------------------------------------------------------------------------
 
 fn env_truthy(key: &str) -> bool {
-    std::env::var(key)
+    rlx_ir::env::read(key)
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
 }
 
 fn env_falsy(key: &str) -> bool {
-    std::env::var(key)
+    rlx_ir::env::read(key)
         .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("no"))
 }
 
 fn env_disabled(key: &str) -> bool {
-    std::env::var(key)
+    rlx_ir::env::read(key)
         .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
 }
 
 fn env_usize(key: &str) -> Option<usize> {
-    std::env::var(key).ok()?.parse().ok()
+    rlx_ir::env::read(key).ok()?.parse().ok()
 }
 
 fn set_env_default(key: &str, value: &str) -> bool {
-    if std::env::var(key).is_err() {
+    if rlx_ir::env::read(key).is_err() {
         crate::set_env_var(key, value);
         true
     } else {
@@ -509,7 +509,7 @@ mod tests {
         #[cfg(not(target_os = "macos"))]
         {
             if std::env::var("KITTEN_RLX_CPU_DURATION").is_err()
-                && std::env::var("RLX_KITTEN_GPU_DURATION").is_err()
+                && rlx_ir::env::var_result("RLX_KITTEN_GPU_DURATION").is_err()
             {
                 assert_eq!(duration_device(Device::Vulkan), Device::Vulkan);
                 assert_eq!(duration_device(Device::Gpu), Device::Cpu);

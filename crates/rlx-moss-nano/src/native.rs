@@ -45,12 +45,16 @@ fn i32_le(v: &[i32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 fn as_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 fn as_i32(b: &[u8]) -> Vec<i32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -64,8 +68,10 @@ fn as_i32_dyn(b: &[u8], dt: DType) -> Vec<i32> {
     match dt {
         DType::F32 => as_f32(b).iter().map(|&x| x.round() as i32).collect(),
         DType::I64 => b
-            .chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as i32)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| i64::from_le_bytes(*c) as i32)
             .collect(),
         _ => as_i32(b),
     }
@@ -170,7 +176,7 @@ impl MossNative {
         // pin it to CPU so the sampled code stream — hence the whole render — is
         // bit-identical on every backend. The expensive prefill + codec stay on
         // `device` (except Metal prefill — see `component_device`).
-        let sampler_dev = match std::env::var("RLX_MOSS_SAMPLER_DEVICE").as_deref() {
+        let sampler_dev = match rlx_ir::env::var_result("RLX_MOSS_SAMPLER_DEVICE").as_deref() {
             Ok("gpu") | Ok("device") => device,
             _ => Device::Cpu,
         };
@@ -199,7 +205,7 @@ impl MossNative {
     /// `RLX_MOSS_CODEC_DEVICE=gpu`.
     fn component_device(&self, component: &str) -> Device {
         if component == "moss_tts_prefill" {
-            match std::env::var("RLX_MOSS_PREFILL_DEVICE").as_deref() {
+            match rlx_ir::env::var_result("RLX_MOSS_PREFILL_DEVICE").as_deref() {
                 Ok("gpu") | Ok("device") => return self.device,
                 Ok("cpu") => return Device::Cpu,
                 _ => {}
@@ -209,7 +215,7 @@ impl MossNative {
             }
         }
         if component == "moss_audio_tokenizer_decode_full" {
-            match std::env::var("RLX_MOSS_CODEC_DEVICE").as_deref() {
+            match rlx_ir::env::var_result("RLX_MOSS_CODEC_DEVICE").as_deref() {
                 Ok("gpu") | Ok("device") => return self.device,
                 Ok("cpu") => return Device::Cpu,
                 _ => {}

@@ -15,7 +15,7 @@
 
 //! Extensible weight-format registry — register custom loaders for new extensions.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -76,6 +76,15 @@ fn open_safetensors(path: &Path) -> Result<Box<dyn WeightLoader>> {
     } else {
         path.to_path_buf()
     };
+    // Lazily mapped, like the sharded case: the eager `WeightMap` converted
+    // the WHOLE checkpoint to f32 up front (12.5 GB for a 3B bf16 model) before
+    // any builder asked for a tensor, and builders that keep weights at their
+    // stored width (`WeightStorage`) need the dtype it erased.
+    if file.is_file() {
+        return Ok(Box::new(
+            crate::safetensors_checkpoint::SafetensorsMmapLoader::open_file(&file)?,
+        ));
+    }
     let path_str = file
         .to_str()
         .ok_or_else(|| anyhow!("non-utf8 path {:?}", file))?;
@@ -166,49 +175,124 @@ pub fn format_for_extension(ext: &str) -> Option<&'static str> {
 }
 
 /// Open a single file via the format registry.
-pub fn open_weight_loader(path: &Path) -> Result<Box<dyn WeightLoader>> {
-    // HF model directories (sharded safetensors) have no extension — detect by index.
+/// Which registered format a weights path means.
+///
+/// One answer, because there used to be three and they disagreed. A
+/// checkpoint directory holding both `model.safetensors` and a quantised
+/// `.gguf` of the same weights is two different models as far as the output
+/// is concerned, and the format detector preferred GGUF while the loader
+/// registry preferred safetensors. A model loaded whole and the same model
+/// loaded in blocks could therefore run different weights, and the only
+/// symptom was an answer that was plausible and different — which is how
+/// this was found, by a parity test that was looking for something else.
+///
+/// Returns `Err` for a directory holding more than one format: there is no
+/// choice to make here that is not a guess at what somebody meant, and
+/// guessing is what caused the problem. A directory holding one format, or
+/// a path naming a file, resolves as it always did.
+///
+/// `mlx` is reported for an mlx-community quantised directory, whose
+/// `.safetensors` files carry packed `uint32` tensors the plain safetensors
+/// reader cannot dequantise.
+pub fn resolve_format(path: &Path) -> Result<&'static str> {
     if path.is_dir() {
-        // mlx-community quantized dirs are safetensors dirs whose `.weight`
-        // tensors are packed uint32 + `.scales`/`.biases` sidecars — the plain
-        // safetensors loader can't dequant them. Route to the MLX loader.
         if dir_is_mlx_quant(path) {
-            let p = path
-                .to_str()
-                .ok_or_else(|| anyhow!("non-utf8 path {:?}", path))?;
-            return Ok(Box::new(MlxLoader::open(p)?));
+            return Ok("mlx");
         }
-        if path.join("model.safetensors.index.json").is_file()
-            || path.join("model.safetensors").is_file()
-        {
+        let mut present: Vec<(&'static str, PathBuf)> = Vec::new();
+        for reg in formats() {
+            if let Some(f) = first_file_of(path, reg.extensions) {
+                present.push((reg.id, f));
+            }
+        }
+        return match present.len() {
+            0 => bail!(
+                "no weights in {path:?}: nothing with a registered weight \
+                 extension. Registered extensions: .{}",
+                crate::registered_extensions_hint()
+            ),
+            1 => Ok(present[0].0),
+            _ => {
+                let names: Vec<String> = present
+                    .iter()
+                    .map(|(id, f)| {
+                        format!(
+                            "{id} ({})",
+                            f.file_name().unwrap_or_default().to_string_lossy()
+                        )
+                    })
+                    .collect();
+                bail!(
+                    "{path:?} holds more than one weight format — {}. These are \
+                     different quantisations and decode to different tokens, so \
+                     pass the file you mean rather than the directory.",
+                    names.join(" and ")
+                )
+            }
+        };
+    }
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    format_for_extension(ext).ok_or_else(|| {
+        anyhow!(
+            "unsupported weight extension {ext:?} on {path:?}; registered: .{}",
+            crate::registered_extensions_hint()
+        )
+    })
+}
+
+/// The first file in `dir` with any of `exts`, in a stable order.
+fn first_file_of(dir: &Path, exts: &[&str]) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|e| exts.iter().any(|w| e.eq_ignore_ascii_case(w)))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().next()
+}
+
+pub fn open_weight_loader(path: &Path) -> Result<Box<dyn WeightLoader>> {
+    // What a path means is decided in one place, so that this and
+    // `block_weights::weight_files` and the format detector cannot disagree
+    // about a directory and load different weights for the same model.
+    let format = resolve_format(path)?;
+    if format == "mlx" {
+        // mlx-community quantised dirs are safetensors dirs whose `.weight`
+        // tensors are packed uint32 with `.scales`/`.biases` sidecars — the
+        // plain safetensors reader cannot dequantise them.
+        let p = path
+            .to_str()
+            .ok_or_else(|| anyhow!("non-utf8 path {:?}", path))?;
+        return Ok(Box::new(MlxLoader::open(p)?));
+    }
+    if path.is_dir() {
+        // `open_safetensors` takes the directory and finds the shards or the
+        // single file; the others want the file itself.
+        if format == "safetensors" {
             return open_safetensors(path)
                 .with_context(|| format!("opening {:?} as format safetensors", path));
         }
-        // Prefer a lone .gguf in the directory.
-        if let Ok(rd) = std::fs::read_dir(path) {
-            let ggufs: Vec<PathBuf> = rd
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.extension()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
-                })
-                .collect();
-            if ggufs.len() == 1 {
-                return open_gguf(&ggufs[0])
-                    .with_context(|| format!("opening {:?} as format gguf", ggufs[0]));
-            }
-        }
+        let reg = formats()
+            .into_iter()
+            .find(|r| r.id == format)
+            .ok_or_else(|| anyhow!("format {format} is registered but has no opener"))?;
+        let file = first_file_of(path, reg.extensions)
+            .ok_or_else(|| anyhow!("no {format} file in {path:?}"))?;
+        return (reg.open)(&file).with_context(|| format!("opening {:?} as format {format}", file));
     }
 
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     for reg in formats() {
-        if reg.extensions.contains(&ext) {
+        if reg.id == format {
             return (reg.open)(path)
                 .with_context(|| format!("opening {:?} as format {}", path, reg.id));
         }
     }
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let known = registered_extensions_hint();
     Err(anyhow!(
         "unsupported weight extension `.{ext}` for {path:?}\n\
@@ -403,6 +487,97 @@ mod tests {
         }
     }
 
+    fn tmpdir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("rlx-resolve-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn one_format_in_a_directory_resolves_to_it() {
+        let d = tmpdir("st");
+        std::fs::write(d.join("model.safetensors"), b"").unwrap();
+        assert_eq!(resolve_format(&d).unwrap(), "safetensors");
+        let g = tmpdir("gg");
+        std::fs::write(g.join("model.gguf"), b"").unwrap();
+        assert_eq!(resolve_format(&g).unwrap(), "gguf");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&g);
+    }
+
+    #[test]
+    fn a_file_resolves_by_its_extension() {
+        assert_eq!(
+            resolve_format(Path::new("/m/model.safetensors")).unwrap(),
+            "safetensors"
+        );
+        assert_eq!(resolve_format(Path::new("/m/model.gguf")).unwrap(), "gguf");
+        assert!(resolve_format(Path::new("/m/model.bin")).is_err());
+    }
+
+    #[test]
+    fn two_formats_in_a_directory_is_an_error_naming_both() {
+        // The disagreement this function exists to end: a directory holding
+        // `model.safetensors` and a Q4 GGUF of the same weights answered
+        // differently depending on which path loaded it, because the
+        // detector preferred GGUF and the loader preferred safetensors.
+        let d = tmpdir("both");
+        std::fs::write(d.join("model.safetensors"), b"").unwrap();
+        std::fs::write(d.join("model.gguf"), b"").unwrap();
+        let err = resolve_format(&d).unwrap_err().to_string();
+        assert!(err.contains("more than one weight format"), "{err}");
+        assert!(err.contains("model.safetensors"), "{err}");
+        assert!(err.contains("model.gguf"), "{err}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_loader_and_the_block_reader_agree_on_every_directory() {
+        // Not that they return the same thing — they return different
+        // things — but that neither resolves a directory the other would
+        // refuse, and both act on the same format. One policy, asked twice.
+        for (name, files) in [
+            ("agree-st", vec!["model.safetensors"]),
+            ("agree-gg", vec!["model.gguf"]),
+            (
+                "agree-shards",
+                vec![
+                    "model-00001-of-00002.safetensors",
+                    "model-00002-of-00002.safetensors",
+                ],
+            ),
+            ("agree-both", vec!["model.safetensors", "model.gguf"]),
+            ("agree-none", vec!["config.json"]),
+        ] {
+            let d = tmpdir(name);
+            for f in &files {
+                std::fs::write(d.join(f), b"").unwrap();
+            }
+            let resolved = resolve_format(&d);
+            let listed = crate::block_weights::weight_files(&d);
+            assert_eq!(
+                resolved.is_ok(),
+                listed.is_ok(),
+                "{name}: resolve_format ok={} but weight_files ok={}",
+                resolved.is_ok(),
+                listed.is_ok()
+            );
+            if let (Ok(fmt), Ok(fs)) = (&resolved, &listed) {
+                let exts: Vec<&str> = list_registered_formats()
+                    .into_iter()
+                    .find(|r| &r.id == fmt)
+                    .map(|r| r.extensions.to_vec())
+                    .unwrap_or_default();
+                for f in fs {
+                    let e = f.extension().and_then(|s| s.to_str()).unwrap_or("");
+                    assert!(exts.contains(&e), "{name}: {f:?} is not a {fmt} file");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
     #[test]
     fn format_for_extension_builtin() {
         assert_eq!(format_for_extension("gguf"), Some("gguf"));
@@ -432,8 +607,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("model.safetensors"), one_tensor_file()).unwrap();
 
-        let mut from_dir = open_weight_loader(&dir).expect("opening the directory");
-        let mut from_file =
+        let from_dir = open_weight_loader(&dir).expect("opening the directory");
+        let from_file =
             open_weight_loader(&dir.join("model.safetensors")).expect("opening the file");
         let mut a = from_dir.remaining_keys();
         let mut b = from_file.remaining_keys();

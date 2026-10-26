@@ -8,6 +8,12 @@ use rlx_cli::{dispatch, register_cli, run_inspect};
 use std::process::ExitCode;
 
 fn register_builtins() {
+    #[cfg(feature = "train")]
+    register_cli(
+        "qat",
+        "Fine-tune / quantization-aware-train an LM checkpoint on a text file",
+        rlx_models::lm_train::cli,
+    );
     register_cli(
         "qwen3",
         "Run a Qwen3 LM (safetensors or gguf)",

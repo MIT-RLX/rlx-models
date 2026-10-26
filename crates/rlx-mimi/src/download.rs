@@ -10,7 +10,7 @@ pub const HF_MIMI_REPO: &str = "kyutai/mimi";
 pub const MIMI_CANDLE_SIDECAR: &str = "tokenizer-e351c8d8-checkpoint125.safetensors";
 
 pub fn default_mimi_dir() -> PathBuf {
-    std::env::var("RLX_MIMI_DIR")
+    rlx_ir::env::var_result("RLX_MIMI_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/mimi"))
 }

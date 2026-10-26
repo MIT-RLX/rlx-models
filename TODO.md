@@ -56,7 +56,7 @@ This backlog is being worked by a recurring `/loop` (cron `*/10 * * * *`). Each 
 
 1. Read this Progress section and the **Next-up queue** below. Pick the **top unfinished** queue item.
 2. Implement **one increment**: scaffold the crate (or extend the named crate), build the architecture, and add **CPU smoke tests** — reuse existing rlx blocks/crates wherever possible (see the "already implemented" table above; most models are `{shared LM/codec/vocoder} + thin glue`).
-3. Register any new crate in the workspace `Cargo.toml` (members list **and** `[workspace.dependencies]`, `version = "0.2.16"`).
+3. Register any new crate in the workspace `Cargo.toml` (members list **and** `[workspace.dependencies]`, `version = "0.2.19"`).
 4. `cargo test -p <crate>` must pass before moving on.
 5. Update this doc: check the item off, add a one-line result, and advance the queue.
 6. **Do not `git commit`.** Depth = arch + CPU smoke first; real-weight parity + all-backend runs are follow-ups gated on checkpoints/RAM (log them, don't block on them).

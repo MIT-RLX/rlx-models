@@ -37,15 +37,18 @@
 
 pub mod cli;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod naflex;
+pub mod pos_grid;
 pub mod preprocess;
 pub mod runner;
 pub mod text_embed;
 pub mod tokenizer;
 
 pub use config::{LN_EPS, SIGLIP_MEAN, SIGLIP_STD, Siglip2Config, TextCfg, Variant, VisionCfg};
-pub use flow::{build_text_flow, build_vision_flow};
+pub use flow::{NaflexEncoderSpec, build_naflex_encoder, build_text_flow, build_vision_flow};
 pub use preprocess::{
     PoolingWeights, VisionEmbedWeights, assemble_vision_hidden, extract_pooling_weights,
     extract_vision_embed_weights, siglip_normalize_nchw,

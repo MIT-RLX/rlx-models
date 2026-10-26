@@ -15,7 +15,7 @@ use rlx_runtime::{Device, Session};
 
 /// `RLX_DSV41_DEVICE=metal|mlx|gpu|cpu` — which backend to bisect.
 fn device() -> Device {
-    match std::env::var("RLX_DSV41_DEVICE")
+    match rlx_ir::env::var_result("RLX_DSV41_DEVICE")
         .unwrap_or_default()
         .as_str()
     {
@@ -33,7 +33,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 fn main() -> anyhow::Result<()> {
-    let path = std::env::var("RLX_DSV41_REF").unwrap_or_else(|_| {
+    let path = rlx_ir::env::var_result("RLX_DSV41_REF").unwrap_or_else(|_| {
         format!(
             "{}/tests/fixtures/dsv41_toy_ref.json",
             env!("CARGO_MANIFEST_DIR")
@@ -130,31 +130,24 @@ fn main() -> anyhow::Result<()> {
         println!("── {:?} vs Cpu ──", device());
         for il in 0..spec.n_layers {
             for stage in all_stages {
-                unsafe {
-                    std::env::set_var("RLX_DSV41_DBG", stage);
-                    std::env::set_var("RLX_DSV41_DBGLAYER", il.to_string());
-                }
+                rlx_ir::env::set("RLX_DSV41_DBG", stage);
+                rlx_ir::env::set("RLX_DSV41_DBGLAYER", il.to_string());
                 let (Ok(cpu), Ok(dev)) = (run_on(Device::Cpu), run_on(device())) else {
                     continue; // this tap does not exist on this layer
                 };
                 report(&format!("{stage}.{il}"), &dev, &cpu);
             }
         }
-        unsafe {
-            std::env::remove_var("RLX_DSV41_DBG");
-            std::env::remove_var("RLX_DSV41_DBGLAYER");
-        }
+        rlx_ir::env::remove("RLX_DSV41_DBG");
+        rlx_ir::env::remove("RLX_DSV41_DBGLAYER");
         let (cpu, dev) = (run_on(Device::Cpu)?, run_on(device())?);
         report("logits", &dev, &cpu);
         return Ok(());
     }
 
     for (stage, il) in plan {
-        // SAFETY: single-threaded example; the builder reads these at graph time.
-        unsafe {
-            std::env::set_var("RLX_DSV41_DBG", &stage);
-            std::env::set_var("RLX_DSV41_DBGLAYER", il.to_string());
-        }
+        rlx_ir::env::set("RLX_DSV41_DBG", &stage);
+        rlx_ir::env::set("RLX_DSV41_DBGLAYER", il.to_string());
         let key = format!("{}.{il}", stage_key(&stage));
         let raw: Vec<f64> = inter[&key]
             .as_array()
@@ -208,10 +201,8 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    unsafe {
-        std::env::remove_var("RLX_DSV41_DBG");
-        std::env::remove_var("RLX_DSV41_DBGLAYER");
-    }
+    rlx_ir::env::remove("RLX_DSV41_DBG");
+    rlx_ir::env::remove("RLX_DSV41_DBGLAYER");
     let got = run()?;
     let want: Vec<f32> = fx["logits"]
         .as_array()

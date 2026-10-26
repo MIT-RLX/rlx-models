@@ -117,7 +117,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let correct_active = matches!(backend, TsacBackendKind::Correct)
         || (matches!(backend, TsacBackendKind::Auto)
             && crate::correct::weights_available(&crate::correct::default_dir())
-            && std::env::var("RLX_TSAC_ENGINE").ok().as_deref() != Some("native"));
+            && rlx_ir::env::var_result("RLX_TSAC_ENGINE").ok().as_deref() != Some("native"));
     if !device_set && correct_active {
         device = crate::correct::best_device();
     }

@@ -266,7 +266,7 @@ fn build_encoder_core(
     let (h, nh, hd, eps) = (cfg.hidden, cfg.heads, cfg.head_dim, cfg.eps);
     let p = num_patches;
     // Debug: RLX_VIS_TAP=<point> returns layer-0 intermediate for backend bisection.
-    let vis_tap = std::env::var("RLX_VIS_TAP").unwrap_or_default();
+    let vis_tap = rlx_ir::env::var_result("RLX_VIS_TAP").unwrap_or_default();
 
     let pixels = g.input("vision_pixels", Shape::new(&[batch, p, 3 * 16 * 16], f));
     let pos_embed = g.input("vision_pos_embed", Shape::new(&[batch, p, h], f));

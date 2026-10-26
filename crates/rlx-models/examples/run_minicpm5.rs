@@ -18,7 +18,7 @@ use rlx_runtime::Device;
 use std::path::PathBuf;
 
 fn weights_path() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("RLX_MINICPM5_WEIGHTS") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_MINICPM5_WEIGHTS") {
         return Ok(PathBuf::from(p));
     }
     let default = PathBuf::from("/tmp/rlx-weights/MiniCPM5-1B/model-00000-of-00001.safetensors");
@@ -33,7 +33,7 @@ fn weights_path() -> Result<PathBuf> {
 
 fn main() -> Result<()> {
     let weights = weights_path()?;
-    let device = std::env::var("RLX_MINICPM5_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device = rlx_ir::env::var_result("RLX_MINICPM5_DEVICE").unwrap_or_else(|_| "cpu".into());
     let device = match device.as_str() {
         "cpu" => Device::Cpu,
         "metal" | "mps" => Device::Metal,
@@ -42,7 +42,7 @@ fn main() -> Result<()> {
         other => anyhow::bail!("RLX_MINICPM5_DEVICE: unsupported {other:?}"),
     };
 
-    let max_seq: usize = std::env::var("RLX_MINICPM5_MAX_SEQ")
+    let max_seq: usize = rlx_ir::env::var_result("RLX_MINICPM5_MAX_SEQ")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(512);
@@ -64,7 +64,7 @@ fn main() -> Result<()> {
         cfg.num_key_value_heads,
     );
 
-    let prompt: Vec<u32> = match std::env::var("RLX_MINICPM5_PROMPT_IDS") {
+    let prompt: Vec<u32> = match rlx_ir::env::var_result("RLX_MINICPM5_PROMPT_IDS") {
         Ok(s) => s
             .split(',')
             .map(|t| t.trim().parse::<u32>())
@@ -73,7 +73,7 @@ fn main() -> Result<()> {
         Err(_) => vec![1, 42, 314, 2718],
     };
 
-    let n_new: usize = std::env::var("RLX_MINICPM5_MAX_TOKENS")
+    let n_new: usize = rlx_ir::env::var_result("RLX_MINICPM5_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(16);

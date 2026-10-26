@@ -22,7 +22,7 @@
 use std::path::PathBuf;
 
 fn ternary_bonsai27b_path() -> Option<PathBuf> {
-    std::env::var("RLX_TERNARY_BONSAI27B_GGUF")
+    rlx_ir::env::var_result("RLX_TERNARY_BONSAI27B_GGUF")
         .ok()
         .map(PathBuf::from)
 }

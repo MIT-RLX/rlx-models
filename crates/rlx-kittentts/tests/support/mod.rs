@@ -143,7 +143,7 @@ pub fn normalize_words_for_test(text: &str) -> Vec<String> {
 }
 
 pub fn whisper_asr_dir() -> Option<std::path::PathBuf> {
-    if let Ok(dir) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(dir) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         return whisper_dir_if_ready(std::path::PathBuf::from(dir));
     }
     let cache = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");

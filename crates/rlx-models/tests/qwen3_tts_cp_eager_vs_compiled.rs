@@ -39,15 +39,25 @@ fn pick_gpu_device() -> Option<Device> {
 
 #[test]
 fn cp_eager_matches_compiled_groups_for_g0_1995() {
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
-    let device = match std::env::var("RLX_QWEN3_TTS_CP_COMPILED").ok().as_deref() {
+    let device = match rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_COMPILED")
+        .ok()
+        .as_deref()
+    {
         Some("1") => pick_gpu_device().expect("RLX_QWEN3_TTS_CP_COMPILED=1 needs MLX/Metal/CUDA"),
         _ => {
             eprintln!("skip: set RLX_QWEN3_TTS_CP_COMPILED=1 to run compiled CP parity");
@@ -103,7 +113,10 @@ fn cp_eager_matches_compiled_groups_for_g0_1995() {
         .unwrap();
 
     let cp_device = if device == Device::Metal
-        && std::env::var("RLX_QWEN3_TTS_CP_METAL").ok().as_deref() != Some("1")
+        && rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_METAL")
+            .ok()
+            .as_deref()
+            != Some("1")
     {
         Device::Cpu
     } else {

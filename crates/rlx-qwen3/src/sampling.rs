@@ -29,10 +29,7 @@
 //! by `rlx-runtime/src/spec_decode.rs`. Same seed → same sequence.
 
 use rlx_ir::Philox4x32;
-use rlx_runtime::samplers::{
-    Dry, DynamicTemperature, MinP, MirostatV1, MirostatV2, RepetitionPenalty, SamplerChain,
-    SamplerState, Temperature, TopK, TopNSigma, TopP, TypicalP, Xtc,
-};
+use rlx_runtime::samplers::{SamplerChain, SamplerState};
 
 // Re-export the host-side logit-bias processor so callers (e.g. the server)
 // can apply OpenAI `logit_bias` to a raw logits row before sampling.
@@ -246,95 +243,54 @@ impl SampleOpts {
             && (self.repetition_penalty - 1.0).abs() < f32::EPSILON
     }
 
-    /// Build a `rlx_runtime::SamplerChain` from these options. See
-    /// `rlx_runtime::SampleOpts::into_chain` — same ordering.
+    /// Build a `rlx_runtime::SamplerChain` from these options: the chain of
+    /// [`rlx_runtime::lm::SampleOpts::into_chain`], same ordering.
     pub fn into_chain(&self) -> SamplerChain {
-        let mut b = SamplerChain::builder();
-        if (self.repetition_penalty - 1.0).abs() > f32::EPSILON
-            || self.frequency_penalty != 0.0
-            || self.presence_penalty != 0.0
-        {
-            b = b.push(RepetitionPenalty {
-                penalty: self.repetition_penalty,
-                frequency: self.frequency_penalty,
-                presence: self.presence_penalty,
-                last_n: self.repetition_window,
-            });
+        self.to_runtime().into_chain()
+    }
+
+    /// The same settings as [`rlx_runtime::lm::SampleOpts`] (which owns
+    /// `dry_sequence_breakers` as a `Vec`, so is not `Copy`).
+    pub fn to_runtime(&self) -> rlx_runtime::lm::SampleOpts {
+        rlx_runtime::lm::SampleOpts {
+            // Temperature `<= 0` is "no scaling" here; greediness is the
+            // separate `greedy` flag. The runtime reads `<= 0` as greedy and
+            // adds a 1e-6 temperature, so pass the neutral value instead.
+            temperature: if self.temperature > 0.0 {
+                self.temperature
+            } else {
+                1.0
+            },
+            top_p: self.top_p,
+            top_k: (self.top_k > 0).then_some(self.top_k as u32),
+            repetition_penalty: self.repetition_penalty,
+            dynamic_temp: self.dynamic_temp,
+            dynamic_temp_exponent: self.dynamic_temp_exponent,
+            typical_p: self.typical_p,
+            top_n_sigma: self.top_n_sigma,
+            min_p: self.min_p,
+            xtc_threshold: self.xtc_threshold,
+            xtc_prob: self.xtc_prob,
+            dry_multiplier: self.dry_multiplier,
+            dry_base: self.dry_base,
+            dry_allowed_length: self.dry_allowed_length,
+            dry_max_ngram: self.dry_max_ngram,
+            dry_sequence_breakers: self.dry_sequence_breakers
+                [..self.dry_sequence_breakers_len as usize]
+                .to_vec(),
+            mirostat: match self.mirostat {
+                MirostatMode::Off => rlx_runtime::lm::MirostatMode::Off,
+                MirostatMode::V1 => rlx_runtime::lm::MirostatMode::V1,
+                MirostatMode::V2 => rlx_runtime::lm::MirostatMode::V2,
+            },
+            mirostat_tau: self.mirostat_tau,
+            mirostat_eta: self.mirostat_eta,
+            mirostat_m: self.mirostat_m,
+            frequency_penalty: self.frequency_penalty,
+            presence_penalty: self.presence_penalty,
+            repetition_window: self.repetition_window,
+            min_keep: self.min_keep,
         }
-        if self.dry_multiplier > 0.0 {
-            b = b.push(Dry {
-                multiplier: self.dry_multiplier,
-                base: self.dry_base,
-                allowed_length: self.dry_allowed_length,
-                max_ngram: self.dry_max_ngram,
-                sequence_breakers: self.dry_sequence_breakers
-                    [..self.dry_sequence_breakers_len as usize]
-                    .to_vec(),
-            });
-        }
-        if self.mirostat == MirostatMode::Off {
-            if let Some((mn, mx)) = self.dynamic_temp {
-                b = b.push(DynamicTemperature {
-                    min: mn,
-                    max: mx,
-                    exponent: self.dynamic_temp_exponent,
-                });
-            } else if self.temperature > 0.0 && (self.temperature - 1.0).abs() > f32::EPSILON {
-                b = b.push(Temperature {
-                    t: self.temperature,
-                });
-            }
-        }
-        if self.top_k > 0 {
-            b = b.push(TopK { k: self.top_k });
-        }
-        if self.typical_p < 1.0 && self.typical_p > 0.0 {
-            b = b.push(TypicalP {
-                p: self.typical_p,
-                min_keep: self.min_keep,
-            });
-        }
-        if self.top_p < 1.0 && self.top_p > 0.0 {
-            b = b.push(TopP {
-                p: self.top_p,
-                min_keep: self.min_keep,
-            });
-        }
-        if self.min_p > 0.0 {
-            b = b.push(MinP {
-                p: self.min_p,
-                min_keep: self.min_keep,
-            });
-        }
-        if self.top_n_sigma > 0.0 {
-            b = b.push(TopNSigma {
-                n: self.top_n_sigma,
-            });
-        }
-        if self.xtc_prob > 0.0 && self.xtc_threshold > 0.0 {
-            b = b.push(Xtc {
-                threshold: self.xtc_threshold,
-                prob: self.xtc_prob,
-                min_keep: self.min_keep,
-            });
-        }
-        match self.mirostat {
-            MirostatMode::Off => {}
-            MirostatMode::V1 => {
-                b = b.push(MirostatV1 {
-                    tau: self.mirostat_tau,
-                    eta: self.mirostat_eta,
-                    m: self.mirostat_m,
-                });
-            }
-            MirostatMode::V2 => {
-                b = b.push(MirostatV2 {
-                    tau: self.mirostat_tau,
-                    eta: self.mirostat_eta,
-                });
-            }
-        }
-        b.build()
     }
 }
 
@@ -349,10 +305,11 @@ pub fn sample_token(logits: &[f32], opts: SampleOpts) -> usize {
 /// Callers should pass the zero-based index of the token being sampled
 /// (0 for the first post-prefill token, then 1, 2, …).
 pub fn sample_token_at(logits: &[f32], opts: SampleOpts, step: u64) -> usize {
-    // Fast classic path: untouched legacy behaviour for callers that
-    // don't engage any advanced sampler. Saves a Vec clone + chain build.
-    if opts.is_classic() {
-        return sample_token_inner(logits, opts, step);
+    // Plain greedy: temperature, top-k and top-p never drop the top token, so
+    // the chain would end on the same argmax; skip building it.
+    if opts.greedy && opts.is_classic() {
+        assert!(!logits.is_empty(), "sample_token: empty logits");
+        return argmax(logits);
     }
     sample_token_with_history(logits, &opts, &[], step) as usize
 }
@@ -401,102 +358,8 @@ pub fn sample_token_stateful(
     }
 }
 
-fn sample_token_inner(logits: &[f32], opts: SampleOpts, step: u64) -> usize {
-    assert!(!logits.is_empty(), "sample_token: empty logits");
-
-    if opts.greedy {
-        return argmax(logits);
-    }
-
-    // 1. temperature: divide logits, in place on a working copy.
-    let mut work: Vec<f32> = if opts.temperature > 0.0 && opts.temperature != 1.0 {
-        logits.iter().map(|&l| l / opts.temperature).collect()
-    } else {
-        logits.to_vec()
-    };
-
-    // 2. top_k: mask everything outside the K highest logits.
-    if opts.top_k > 0 && opts.top_k < work.len() {
-        let mut indexed: Vec<(usize, f32)> =
-            work.iter().enumerate().map(|(i, &v)| (i, v)).collect();
-        // Partial sort: nth_element-style, descending.
-        indexed.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let cutoff = indexed[opts.top_k - 1].1;
-        for v in work.iter_mut() {
-            if *v < cutoff {
-                *v = f32::NEG_INFINITY;
-            }
-        }
-    }
-
-    // 3. softmax (numerically stable).
-    let max = work.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let mut probs: Vec<f32> = work.iter().map(|&l| (l - max).exp()).collect();
-    let sum: f32 = probs.iter().sum();
-    if sum > 0.0 {
-        for p in probs.iter_mut() {
-            *p /= sum;
-        }
-    } else {
-        // All -inf (shouldn't happen post-softmax): fall back to greedy.
-        return argmax(logits);
-    }
-
-    // 4. top_p: nucleus cutoff over sorted-descending probability.
-    if opts.top_p < 1.0 && opts.top_p > 0.0 {
-        let mut order: Vec<usize> = (0..probs.len()).collect();
-        order.sort_unstable_by(|&a, &b| {
-            probs[b]
-                .partial_cmp(&probs[a])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let mut cum = 0.0f32;
-        let mut keep = vec![false; probs.len()];
-        for &i in &order {
-            cum += probs[i];
-            keep[i] = true;
-            if cum >= opts.top_p {
-                break;
-            }
-        }
-        let mut renorm = 0.0f32;
-        for (i, p) in probs.iter_mut().enumerate() {
-            if !keep[i] {
-                *p = 0.0;
-            } else {
-                renorm += *p;
-            }
-        }
-        if renorm > 0.0 {
-            for p in probs.iter_mut() {
-                *p /= renorm;
-            }
-        }
-    }
-
-    // 5. multinomial sample.
-    let mut rng = Philox4x32::new(opts.seed.wrapping_add(step));
-    let u = rng.next_f32();
-    let mut acc = 0.0f32;
-    for (i, &p) in probs.iter().enumerate() {
-        acc += p;
-        if u < acc {
-            return i;
-        }
-    }
-    probs.len() - 1
-}
-
 fn argmax(xs: &[f32]) -> usize {
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &v) in xs.iter().enumerate() {
-        if v > best_v {
-            best_v = v;
-            best = i;
-        }
-    }
-    best
+    rlx_runtime::search::argmax(xs)
 }
 
 /// HF-style repetition penalty using per-token occurrence counts.

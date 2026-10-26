@@ -41,6 +41,8 @@ default = ["tokenizer"]
 # synthesizes from caller-supplied token ids.
 tokenizer = ["dep:tokenizers"]
 hf-download = ["dep:hf-hub"]
+# `export::export_rlxp`: TADA as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export"]
 
 metal = ["rlx-runtime/metal", "rlx-dac/metal", "rlx-llama32/metal"]
 mlx = ["rlx-runtime/mlx", "rlx-dac/mlx", "rlx-llama32/mlx"]
@@ -53,10 +55,16 @@ vulkan = ["rlx-runtime/vulkan", "rlx-dac/vulkan", "rlx-llama32/vulkan"]
 # every graph in the process, including the codec's.
 coreml = ["rlx-runtime/coreml", "rlx-core/coreml", "rlx-llama32/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
+
+[dev-dependencies]
+tempfile = "3"
+rlx-text = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
 
 [[bin]]
 name = "rlx-tada"

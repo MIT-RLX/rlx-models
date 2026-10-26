@@ -32,7 +32,7 @@ use crate::nn;
 use anyhow::{Context, Result, ensure};
 use rlx_core::flow_bridge::WeightLoaderSource;
 use rlx_core::weight_loader::WeightLoader;
-use rlx_flow::blocks::{LmHeadStage, RopeTablesStage};
+use rlx_flow::blocks::{LmHeadStage, RopeTablesStage, append_kv_row};
 use rlx_flow::escape::Emit;
 use rlx_flow::{BuiltModel, CompileProfile, FlowStage, FlowValue, ModelFlow, SideOutputs};
 use rlx_ir::hir::HirMut;
@@ -403,7 +403,34 @@ fn build_decode_inner(
     let typed = TypedParamSink::new();
 
     let hidden_shape = Shape::new(&[batch, seq, h], f);
-    let past_kv_shape = Shape::new(&[batch, past_seq, kv_dim], f);
+    // One spare row so the decode layer writes the new token's K/V in place
+    // (`Op::KvAppend`) instead of `concat`-copying the O(context) cache each
+    // step. Needs no host change:
+    //   * the feed supplies exactly `past_seq` rows and a short feed is
+    //     zero-filled — precisely what the spare row should hold before the
+    //     append overwrites it (full-causal feeds `layer.k` padded to its
+    //     bucket; the windowed path feeds `past_for_decode`, one row shorter
+    //     than the buffer because it drops the slot about to be recycled);
+    //   * the K/V length attention sees is `past_seq + 1` either way, so the
+    //     host masks (`past_seq + 1`, new token at `[past_seq]`) are unchanged;
+    //   * the readback takes the LAST row of the K/V output
+    //     (`lm_device.rs`: `full_k[(n_full - 1) * kv_w..]`), which `KvAppend`
+    //     leaves at the index `concat` put it.
+    //
+    // ONE STEP ONLY. `Op::KvAppend` writes a single row, so chunk decode
+    // (`seq > 1`, which this crate uses for speculative/chunked runs) must keep
+    // `concat`. Declaring the spare row there appends `seq` rows ON TOP of the
+    // reserved one, so attention reads a zero row in the middle of the history
+    // and every position shifts — caught by
+    // `chunk_decode::chunk_decode_matches_stepwise_decode` (off by ~1.0 per
+    // position). The spare row is only ever correct where the layer appends
+    // exactly one row.
+    let kv_spare = if seq == 1 {
+        rlx_flow::blocks::kv_spare_rows(&[batch])
+    } else {
+        0
+    };
+    let past_kv_shape = Shape::new(&[batch, past_seq + kv_spare, kv_dim], f);
 
     let kv_sink = SideOutputs::new();
     let hidden_sink = with_hidden.then(|| kv_sink.clone());
@@ -438,7 +465,7 @@ fn build_decode_inner(
     }
 
     flow = flow
-        .bind_decode_inputs(cfg.num_hidden_layers, use_custom_mask, true)
+        .bind_decode_inputs_for_kv_spare(cfg.num_hidden_layers, use_custom_mask, past_seq, kv_spare)
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh);
 
@@ -898,8 +925,11 @@ fn run_layer(
             spec.num_kv_heads,
             spec.head_dim,
         );
-        let new_k = gb.concat_(vec![past_k, k_rope], 1);
-        let new_v = gb.concat_(vec![past_v, v], 1);
+        // Grow the cache through the shared helper, so this crate-local layer
+        // honours the same cache contract as the shared decode layers. With
+        // `decode.past_len == None` it emits exactly the `concat` it always did.
+        let new_k = append_kv_row(&mut gb, past_k, k_rope, 1, decode.past_len);
+        let new_v = append_kv_row(&mut gb, past_v, v, 1, decode.past_len);
         kv_sink.inner().lock().expect("kv sink").push(new_k);
         kv_sink.inner().lock().expect("kv sink").push(new_v);
         (q_rope, new_k, new_v)

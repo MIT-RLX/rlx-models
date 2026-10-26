@@ -3,7 +3,9 @@
 fn main() -> anyhow::Result<()> {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let x: Vec<f32> = std::fs::read(&a[0])?
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
     let mut spec = vec![0f32; 1024];

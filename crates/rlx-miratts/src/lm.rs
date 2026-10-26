@@ -32,7 +32,7 @@ use rlx_runtime::{Device, parse_device};
 use crate::{MiraConfig, tokens};
 
 fn resolve_lm_device(requested: Device) -> Device {
-    if let Ok(v) = std::env::var("RLX_MIRATTS_LM_DEVICE")
+    if let Ok(v) = rlx_ir::env::var_result("RLX_MIRATTS_LM_DEVICE")
         && let Ok(d) = parse_device(v.trim())
     {
         return d;
@@ -174,15 +174,7 @@ impl MiraLm {
 }
 
 fn argmax(v: &[f32]) -> usize {
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &x) in v.iter().enumerate() {
-        if x > best_v {
-            best_v = x;
-            best = i;
-        }
-    }
-    best
+    rlx_runtime::search::argmax(v)
 }
 
 #[cfg(test)]

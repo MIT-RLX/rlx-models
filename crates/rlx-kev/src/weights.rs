@@ -32,112 +32,11 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use rlx_core::safetensors_checkpoint::SafetensorsMmapLoader;
 use rlx_core::weight_loader::{HfTranslatingLoader, WeightLoader};
+pub use rlx_qwen35::hf::HfQwen35Fixups;
+use rlx_qwen35::hf::hf_decoder_layer_count;
 use rlx_qwen35::{Qwen35Config, Qwen35Weights};
 
 use crate::lora::{LoraAdapter, module_path_for_gguf};
-
-/// Number of real decoder layers in an HF checkpoint, from the tensor names.
-///
-/// `Qwen35Config::from_hf_config_value` computes the trunk depth as
-/// `num_hidden_layers - mtp_num_hidden_layers`. That is right for a
-/// GGUF-derived layout, where llama.cpp appends the MTP block as the last
-/// `blk.N` — but **wrong for HF safetensors**, where `Qwen3.5-0.8B-Base`
-/// carries `model.language_model.layers.0..23` *and* a separate `mtp.*`
-/// module. Trusting the config there drops the last decoder layer and the
-/// model still runs, one block short.
-///
-/// So count the layers that actually exist. `mtp.layers.N` is excluded: it is
-/// a different module, and we never build the MTP head.
-fn hf_decoder_layer_count<'a>(keys: impl Iterator<Item = &'a str>) -> Option<usize> {
-    let mut max_idx: Option<usize> = None;
-    for k in keys {
-        if k.starts_with("mtp.") || k.contains(".mtp.") {
-            continue;
-        }
-        let Some(rest) = k.split(".layers.").nth(1) else {
-            continue;
-        };
-        let Some(idx) = rest.split('.').next().and_then(|d| d.parse::<usize>().ok()) else {
-            continue;
-        };
-        max_idx = Some(max_idx.map_or(idx, |m: usize| m.max(idx)));
-    }
-    max_idx.map(|m| m + 1)
-}
-
-/// Converts HF-native tensors into the form the `rlx-qwen35` builder expects.
-///
-/// The builder was written against llama.cpp-converted GGUFs, and the GGUF
-/// converter does not just rename tensors — it *transforms* one. The Gated
-/// DeltaNet decay coefficient is stored in HF as `linear_attn.A_log`, and
-/// llama.cpp writes `A = -exp(A_log)` into `blk.N.ssm_a`. The builder then
-/// uses `ssm_a` directly (`decay = exp(A · softplus(dt))`), with a comment
-/// recording that applying `-exp` a second time was a real bug once.
-///
-/// Feeding raw `A_log` through that path is silently catastrophic in a way
-/// that is easy to miss: at position 0 the recurrent state is zero, so the
-/// decay is unobservable and the first token is *exact*. Every later position
-/// compounds the error. On Qwen3.5-0.8B the raw `A_log` even contains a
-/// positive entry, so that head's state **grows** instead of decaying.
-pub struct HfQwen35Fixups<L: WeightLoader> {
-    inner: L,
-    converted: usize,
-}
-
-impl<L: WeightLoader> HfQwen35Fixups<L> {
-    pub fn new(inner: L) -> Self {
-        Self {
-            inner,
-            converted: 0,
-        }
-    }
-
-    /// How many `ssm_a` tensors were converted from `A_log`.
-    pub fn converted(&self) -> usize {
-        self.converted
-    }
-
-    /// `ssm_a` is the only tensor whose *values* differ between the HF and
-    /// GGUF layouts.
-    fn is_a_log(key: &str) -> bool {
-        key.ends_with(".ssm_a") || key.ends_with("linear_attn.A_log")
-    }
-
-    fn fix(&mut self, key: &str, data: &mut [f32]) {
-        if !Self::is_a_log(key) {
-            return;
-        }
-        for v in data.iter_mut() {
-            *v = -v.exp();
-        }
-        self.converted += 1;
-    }
-}
-
-impl<L: WeightLoader> WeightLoader for HfQwen35Fixups<L> {
-    fn format_id(&self) -> &'static str {
-        self.inner.format_id()
-    }
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-    fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
-        let (mut data, shape) = self.inner.take(key)?;
-        self.fix(key, &mut data);
-        Ok((data, shape))
-    }
-    fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
-        let (mut data, shape) = self.inner.take_transposed(key)?;
-        self.fix(key, &mut data);
-        Ok((data, shape))
-    }
-    fn remaining_keys(&self) -> Vec<String> {
-        self.inner.remaining_keys()
-    }
-    fn arch_hint(&self) -> Option<&str> {
-        self.inner.arch_hint()
-    }
-}
 
 /// Wraps a loader and folds a peft LoRA into every targeted tensor as it is
 /// taken.

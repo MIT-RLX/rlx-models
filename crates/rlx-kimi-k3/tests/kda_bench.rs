@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 fn dev() -> Device {
-    match std::env::var("RLX_TEST_DEVICE").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_TEST_DEVICE").ok().as_deref() {
         Some("metal") | Some("mtl") => Device::Metal,
         Some("mlx") => Device::Mlx,
         Some("gpu") | Some("wgpu") => Device::Gpu,
@@ -44,7 +44,7 @@ fn fill(n: usize, seed: u64) -> Vec<f32> {
 }
 
 fn env_usize(k: &str, d: usize) -> usize {
-    std::env::var(k)
+    rlx_ir::env::read(k)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(d)
@@ -54,7 +54,7 @@ fn env_usize(k: &str, d: usize) -> usize {
 #[ignore = "benchmark; run with --ignored --nocapture"]
 fn kda_layer_throughput() {
     let hidden = env_usize("RLX_BENCH_HIDDEN", 2048);
-    let seqs: Vec<usize> = std::env::var("RLX_BENCH_SEQ")
+    let seqs: Vec<usize> = rlx_ir::env::var_result("RLX_BENCH_SEQ")
         .unwrap_or_else(|_| "64,256".into())
         .split(',')
         .filter_map(|s| s.trim().parse().ok())

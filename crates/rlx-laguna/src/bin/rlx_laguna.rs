@@ -14,7 +14,11 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if let Err(e) = rlx_cli::take_number_format(&mut args) {
+        eprintln!("rlx-laguna: {e:#}");
+        std::process::exit(2);
+    }
     if let Err(e) = rlx_laguna::cli::run(&args) {
         eprintln!("rlx-laguna: {e:#}");
         std::process::exit(1);

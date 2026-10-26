@@ -72,6 +72,29 @@ impl LayerKv {
 
 pub struct DeviceKvCache {
     layers: Vec<LayerKv>,
+    /// Identifies THIS cache, so resident device handles bound from it are
+    /// never reused for a different one.
+    ///
+    /// Load-bearing: resident K/V that is re-seeded only when the bucket
+    /// changes answers the PREVIOUS prompt on a second generate() with the
+    /// same runner — a real bug shipped once in rlx-qwen35's Metal path. Every
+    /// prefill mints a new cache, so comparing ids catches it; comparing bucket
+    /// widths does not.
+    id: u64,
+}
+
+/// Mints [`DeviceKvCache::id`].
+static KV_CACHE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// What a decode graph's resident K/V handles currently hold.
+#[derive(Debug, Clone, Copy)]
+struct ResidentKv {
+    /// The cache the handles were bound from.
+    cache_id: u64,
+    /// Rows of real history in the handles — must equal the incoming cache's
+    /// `valid`, or a step was taken outside this path (speculative rollback,
+    /// a chunk step) and the handles are stale.
+    valid: usize,
 }
 
 impl DeviceKvCache {
@@ -103,6 +126,12 @@ pub struct CompiledLm {
     decode: HashMap<usize, CompiledGraph>,
     /// Verify graphs, keyed by `(bucket, chunk width)`.
     chunk: HashMap<(usize, usize, bool), CompiledGraph>,
+    /// What each decode graph's resident K/V handles hold, keyed by `past_seq`.
+    /// Absent = the next step must (re)bind.
+    resident: HashMap<usize, ResidentKv>,
+    /// Decode graphs whose backend refused the resident contract — those keep
+    /// the host feed forever rather than retrying every step.
+    resident_unsupported: std::collections::HashSet<usize>,
 }
 
 impl CompiledLm {
@@ -115,6 +144,8 @@ impl CompiledLm {
             prefill: HashMap::new(),
             decode: HashMap::new(),
             chunk: HashMap::new(),
+            resident: HashMap::new(),
+            resident_unsupported: std::collections::HashSet::new(),
         }
     }
 
@@ -139,6 +170,16 @@ impl CompiledLm {
     /// Compiled prefill graphs, keyed by sequence length.
     pub fn compiled_prefill_graphs(&self) -> usize {
         self.prefill.len()
+    }
+
+    /// Decode graphs currently holding a RESIDENT K/V cache.
+    ///
+    /// Exposed so a test can tell "the resident path agrees with the host feed"
+    /// apart from "the resident path never ran" — the two look identical in
+    /// output, and the fallback is silent by design (an unsupported backend,
+    /// a windowed checkpoint, or `RLX_DISABLE_GPU_KV`).
+    pub fn resident_decode_graphs(&self) -> usize {
+        self.resident.len()
     }
 
     pub fn embed_tokens(&self, ids: &[u32]) -> Result<Vec<f32>> {
@@ -271,7 +312,14 @@ impl CompiledLm {
                 ring_pos: None,
             });
         }
-        Ok((logits, DeviceKvCache { layers }, tapped))
+        Ok((
+            logits,
+            DeviceKvCache {
+                layers,
+                id: KV_CACHE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            },
+            tapped,
+        ))
     }
 
     /// Rolling-window span, or `None` when the checkpoint has no sliding window
@@ -351,6 +399,37 @@ impl CompiledLm {
 
         let _ = self.ensure_decode(past_seq)?;
         let device = self.device;
+
+        // RESIDENT K/V, full-causal only.
+        //
+        // The in-place append (`Op::KvAppend`) made the cache GROWTH O(1), but
+        // handing the whole padded cache back in as a `past_k_*` input every
+        // step is O(context) on its own, and measurement said it is the bigger
+        // half: `tests/inplace_kv_bench.rs` showed per-step time still growing
+        // ~6x from 256 to 4096 rows with the append on. So keep the cache
+        // resident in the executable, feed nothing, and fold the one new row in
+        // on device — which is also where the append's output already is, since
+        // it aliases the bound buffer.
+        //
+        // The WINDOWED path cannot do this: `past_for_decode` drops the slot
+        // about to be recycled, so its feed is not a monotonically growing
+        // prefix of one buffer.
+        let want_resident = window.is_none()
+            && !self.resident_unsupported.contains(&past_seq)
+            && resident_kv_device(device);
+        let rebind = want_resident
+            && self
+                .resident
+                .get(&past_seq)
+                .copied()
+                .is_none_or(|r| r.cache_id != kv.id || r.valid != past_valid);
+        if rebind && !self.bind_resident_kv(past_seq, kv, kv_w, n_layers) {
+            self.resident_unsupported.insert(past_seq);
+            self.resident.remove(&past_seq);
+        }
+        let resident = want_resident && !self.resident_unsupported.contains(&past_seq);
+
+        let read_only_logits = resident.then_some([0usize]);
         let outs = lm_runtime_guard_for_pack(device, &self.weights, || {
             let compiled = self.decode.get_mut(&past_seq).expect("decode");
             let mut run_pairs: Vec<(&str, &[f32])> = vec![
@@ -361,7 +440,9 @@ impl CompiledLm {
             if let Some(mask) = &mask {
                 run_pairs.push(("mask", mask.as_slice()));
             }
-            if windowed_feeds.is_empty() {
+            if resident {
+                // Nothing to feed: the handles hold the history.
+            } else if windowed_feeds.is_empty() {
                 for (i, (kn, vn)) in past_names.iter().enumerate() {
                     let layer = &kv.layers[i];
                     run_pairs.push((kn.as_str(), layer.k.as_slice()));
@@ -372,9 +453,42 @@ impl CompiledLm {
                     run_pairs.push((name.as_str(), data.as_slice()));
                 }
             }
-            compiled.run(&run_pairs)
+            match &read_only_logits {
+                Some(idx) => compiled.run_read_outputs(&run_pairs, Some(idx)),
+                None => compiled.run(&run_pairs),
+            }
         });
         let logits = outs.first().context("decode missing logits")?.clone();
+
+        if resident {
+            // The append wrote the new row at `past_seq` (the spare row), not at
+            // `valid` — the graph is compiled for a fixed bucket and cannot know
+            // how much of it is real. Read that one row (O(1)) to keep the host
+            // mirror able to re-seed a wider bucket, then relocate it on device.
+            let compiled = self.decode.get_mut(&past_seq).expect("decode");
+            for i in 0..n_layers {
+                let k_new = compiled
+                    .read_output_row(1 + 2 * i, past_seq, kv_w)
+                    .with_context(|| format!("resident K row read, layer {i}"))?;
+                let v_new = compiled
+                    .read_output_row(2 + 2 * i, past_seq, kv_w)
+                    .with_context(|| format!("resident V row read, layer {i}"))?;
+                apply_ring_update(&mut kv.layers[i], &k_new, &v_new, kv_w, window)?;
+            }
+            ensure!(
+                compiled.feed_kv_row(past_seq, past_valid, kv_w),
+                "resident K/V row feed refused after binding succeeded"
+            );
+            self.resident.insert(
+                past_seq,
+                ResidentKv {
+                    cache_id: kv.id,
+                    valid: past_valid + 1,
+                },
+            );
+            return Ok(logits);
+        }
+
         ensure!(
             outs.len() == 1 + 2 * n_layers,
             "decode: expected {} outputs, got {}",
@@ -395,6 +509,55 @@ impl CompiledLm {
         }
 
         Ok(logits)
+    }
+
+    /// Bind this graph's `past_k_*` / `past_v_*` inputs as resident handles
+    /// seeded from the host cache, and register which output carries each
+    /// grown cache. `false` = the backend does not support it.
+    ///
+    /// Padded to the DECLARED input width, which is `past_seq + 1` whenever the
+    /// flow took the spare row for the in-place append — not `past_seq`.
+    fn bind_resident_kv(
+        &mut self,
+        past_seq: usize,
+        kv: &DeviceKvCache,
+        kv_w: usize,
+        n_layers: usize,
+    ) -> bool {
+        let Some(compiled) = self.decode.get_mut(&past_seq) else {
+            return false;
+        };
+        if !compiled.capabilities().kv_resident {
+            return false;
+        }
+        let spare = rlx_flow::blocks::kv_spare_rows(&[1]);
+        let width = (past_seq + spare) * kv_w;
+        let mut pad = vec![0f32; width];
+        for i in 0..n_layers {
+            let (k_name, v_name) = (format!("past_k_{i}"), format!("past_v_{i}"));
+            for (name, src) in [(&k_name, &kv.layers[i].k), (&v_name, &kv.layers[i].v)] {
+                pad.clear();
+                pad.resize(width, 0.0);
+                let n = src.len().min(width);
+                pad[..n].copy_from_slice(&src[..n]);
+                if !compiled.bind_gpu_handle(name.as_str(), &pad) {
+                    return false;
+                }
+            }
+            if !compiled.register_kv_row_feed(&k_name, 1 + 2 * i)
+                || !compiled.register_kv_row_feed(&v_name, 2 + 2 * i)
+            {
+                return false;
+            }
+        }
+        self.resident.insert(
+            past_seq,
+            ResidentKv {
+                cache_id: kv.id,
+                valid: kv.valid(),
+            },
+        );
+        true
     }
 }
 
@@ -619,6 +782,57 @@ pub const KV_BUCKET: usize = 256;
 /// Smallest multiple of [`KV_BUCKET`] that is `>= n`, and at least `KV_BUCKET`.
 fn bucket_for(n: usize) -> usize {
     n.max(1).div_ceil(KV_BUCKET) * KV_BUCKET
+}
+
+/// Opt into resident K/V only on backends where THIS crate's parity tests have
+/// actually run.
+///
+/// The row-feed contract is backend-wide and `capabilities().kv_resident` says
+/// whether a backend implements it — but implementing it is not the same as
+/// getting it right, and two backends have shipped real bugs in exactly this
+/// path: rlx-qwen35's Metal resident cache answered the previous prompt on a
+/// second generate(), and wgpu's native GGUF decode got stuck repeating a
+/// token. Both were silent. So the default is the set that
+/// `tests/resident_kv_parity.rs` has been run against, and anything else needs
+/// `RLX_UNLIMITED_OCR_RESIDENT_KV_ANY=1` — a request to measure, not a claim
+/// that it works. `RLX_DISABLE_GPU_KV=1` turns the whole path off.
+///
+/// The verified set, and what each entry rests on:
+///
+/// * **CPU, Metal** — parity green on an M-series mac; 1.46-1.61x per decode
+///   step over the host feed (`tests/inplace_kv_bench.rs`).
+/// * **CUDA** — parity green on an RTX 3080 Ti (both debug and release,
+///   including the stale-handle and rollback cases), and by far the biggest win
+///   measured anywhere: **3.0x @256, 3.96x @1024, 4.6x @2048**, four runs on an
+///   idle box agreeing to within 0.5% (0.50/0.86/1.33ms resident vs
+///   1.50/3.40/6.10ms host-feed). The gain grows with context because the feed
+///   it removes is O(context) — a per-step PCIe upload of the whole padded
+///   cache, 16.8 MB at the bench config, out of pageable host memory — while
+///   the resident arm only grows with the attention it genuinely does.
+///
+///   Take the box's load average before quoting any of this. The first pass
+///   here was measured while that machine ran someone else's benchmark and read
+///   1.91x; contention is roughly additive, so it hits the faster arm hardest
+///   and squeezes ratios toward 1.0. Same code, same config, idle: 4.6x.
+///
+/// Not in the set: mlx, wgpu, vulkan, rocm. Not "broken" — untested, and wgpu
+/// is where the known bug was, so promote one only by running the parity tests
+/// on it with the override and then adding it here.
+fn resident_kv_device(device: Device) -> bool {
+    if !rlx_core::gpu_kv::device_supports_resident_kv_row_feed(device) {
+        return false;
+    }
+    matches!(device, Device::Cpu | Device::Metal | Device::Cuda)
+        || rlx_ir::env::flag("RLX_UNLIMITED_OCR_RESIDENT_KV_ANY")
+}
+
+/// Whether [`CompiledLm`] will keep its K/V cache resident on `device`.
+///
+/// Public so the parity tests can tell "this backend is outside the verified
+/// set" (skip, and say so) from "this backend is in it and the resident path
+/// still did not engage" (a bug). See [`resident_kv_device`].
+pub fn resident_kv_available(device: Device) -> bool {
+    resident_kv_device(device)
 }
 
 /// Past tensors fed into the decode graph.

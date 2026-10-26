@@ -251,23 +251,23 @@ fn decode_into(raw: &[u8], dtype: Dt, out: &mut [f32], key: &str) -> Result<()> 
     let _ = key;
     match dtype {
         Dt::F32 => {
-            for (o, c) in out.iter_mut().zip(raw.chunks_exact(4)) {
+            for (o, c) in out.iter_mut().zip(raw.as_chunks::<4>().0.iter()) {
                 *o = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
             }
         }
         Dt::Bf16 => {
-            for (o, c) in out.iter_mut().zip(raw.chunks_exact(2)) {
+            for (o, c) in out.iter_mut().zip(raw.as_chunks::<2>().0.iter()) {
                 *o = bf16::from_le_bytes([c[0], c[1]]).to_f32();
             }
         }
         Dt::F16 => {
-            for (o, c) in out.iter_mut().zip(raw.chunks_exact(2)) {
+            for (o, c) in out.iter_mut().zip(raw.as_chunks::<2>().0.iter()) {
                 *o = f16::from_le_bytes([c[0], c[1]]).to_f32();
             }
         }
         Dt::I64 => {
-            for (o, c) in out.iter_mut().zip(raw.chunks_exact(8)) {
-                *o = i64::from_le_bytes(c.try_into().unwrap()) as f32;
+            for (o, c) in out.iter_mut().zip(raw.as_chunks::<8>().0.iter()) {
+                *o = i64::from_le_bytes(*c) as f32;
             }
         }
     }

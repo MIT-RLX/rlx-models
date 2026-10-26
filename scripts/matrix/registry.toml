@@ -233,7 +233,7 @@ download = { mode = "flag" }
 extra = "--data weights/tts/f5tts"
 validate = { rule = "tts", coverage_pass = 0.5, coverage_warn = 0.3, cosine_pass = 0.85, cosine_warn = 0.65 }
 license = { nc = true, gated = false }
-notes = "CC-BY-NC; DiT on-device CUDA/Vulkan; Apple gpu→Metal DiT unless RLX_F5_WGPU_DIT=1"
+notes = "CC-BY-NC; DiT on-device CUDA/Vulkan; macOS gpu→Metal DiT unless RLX_F5_WGPU_DIT=1"
 
 [[models]]
 name = "styletts2"

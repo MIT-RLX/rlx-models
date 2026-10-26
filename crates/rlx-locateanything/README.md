@@ -22,7 +22,7 @@ This is a **3B VLM** (299 vision tokens at 640px side + hybrid MTP decode). Expe
 just locateanything-demo   # ~2–4 min CPU typical (384px, 32 tokens)
 ```
 
-**GPU backends:** build with `--features apple-silicon` (Metal + MLX + wgpu), `cuda`, or `all-backends`. `just locateanything-demo` picks `apple-silicon` on macOS and `nvidia-gpu` on Linux when available. MoonViT uses decomposed 2D RoPE on MLX/wgpu/Vulkan/Metal. Until per-backend GPU parity lands, **vision + LM graphs run on the CPU host** for every non-CPU `--device` (Metal/MLX/CUDA/WGPU/Vulkan) so grounding output matches CPU/HF; the CLI still reports your chosen device. GPU-resident KV is disabled while on the CPU host path.
+**GPU backends:** build with `--features macos-gpu` (Metal + MLX + wgpu), `cuda`, or `all-backends`. `just locateanything-demo` picks `macos-gpu` on macOS and `nvidia-gpu` on Linux when available. MoonViT uses decomposed 2D RoPE on MLX/wgpu/Vulkan/Metal. Until per-backend GPU parity lands, **vision + LM graphs run on the CPU host** for every non-CPU `--device` (Metal/MLX/CUDA/WGPU/Vulkan) so grounding output matches CPU/HF; the CLI still reports your chosen device. GPU-resident KV is disabled while on the CPU host path.
 
 ## Setup
 
@@ -198,15 +198,15 @@ RLX_LOCATEANYTHING_DIR=$RLX_LOCATEANYTHING_DIR \
 
 | Feature set | Devices |
 |-------------|---------|
-| `metal` | Apple GPU (Metal) |
-| `mlx` | Apple MLX |
+| `metal` | Metal GPU (Metal) |
+| `mlx` | MLX |
 | `cuda` / `rocm` | NVIDIA / AMD |
 | `gpu` / `vulkan` | wgpu (Vulkan) |
-| `apple-silicon` | Metal + MLX + wgpu |
+| `macos-gpu` | Metal + MLX + wgpu |
 | `all-backends` | All of the above |
 
 ```bash
-cargo build -p rlx-locateanything --features apple-silicon
+cargo build -p rlx-locateanything --features macos-gpu
 cargo build -p rlx-locateanything --features all-backends
 just features=all-backends test-locateanything-backends
 just features=all-backends test-locateanything-moonvit-backends

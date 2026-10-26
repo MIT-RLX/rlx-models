@@ -1847,7 +1847,7 @@ z
     </g>
    </g>
    <g id="text_20">
-    <!-- BF16 NEON vs Apple AMX-via-sgemm at CP / Talker matrix shapes -->
+    <!-- BF16 NEON vs AMX-via-sgemm at CP / Talker matrix shapes -->
     <g transform="translate(110.61925 17.229938) scale(0.132 -0.132)">
      <defs>
       <path id="DejaVuSans-Bold-42" d="M 2456 2859 

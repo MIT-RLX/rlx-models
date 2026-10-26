@@ -68,7 +68,9 @@ fn main() -> Result<()> {
     let image = synthesize_image();
     let tokens: Vec<u32> = if let Some(p) = rlx_ir::env::var("RLX_SAM3_TOKENS_BIN") {
         std::fs::read(&p)?
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as u32)
             .collect()
     } else {

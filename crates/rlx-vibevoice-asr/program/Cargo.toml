@@ -1,0 +1,18 @@
+# VibeVoice-ASR-Streaming's host logic as an RLX program (WebAssembly): the
+# audio cut into segments, each segment's features, and the prompt, speech
+# and chunk tokens through the package's step. Built by
+# `rlx-vibevoice-asr`'s exporter, so it stands outside the workspace.
+[package]
+name = "rlx-vibevoice-asr-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+
+[workspace]

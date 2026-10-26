@@ -370,10 +370,14 @@ fn register_builtin_gguf_models() {
             "gemma4_unified",
         ],
         // gemma4moe HF type stays unimplemented until routing is validated.
+        // `gemma3_text` (gemma-3-270m / 1b) is plain Gemma 3: without it here
+        // the TranslateGemma entry above claims it, and no runner is
+        // registered under that name.
         hf_model_types: &[
             "gemma",
             "gemma2",
             "gemma3",
+            "gemma3_text",
             "gemma3n",
             "gemma4",
             "gemma4_text",
@@ -492,6 +496,17 @@ fn register_builtin_gguf_models() {
         family: None,
         hint: "rlx-nllb (`NllbRunner::builder().weights(...).build()`; FLORES-200 lang codes)",
     });
+    // Recursive Flint — sliding/full hybrid attention with learned sinks and a
+    // sigmoid-routed 256-expert MoE. BF16 safetensors only; the runner pages
+    // the routed experts off disk.
+    register_gguf_model(GgufModelRegistration {
+        id: "flint",
+        arches: &[],
+        hf_model_types: &["flint"],
+        runner: Some("flint"),
+        family: None,
+        hint: "rlx-flint (`FlintRunner::open(dir, RunnerOptions::new(device))`; experts paged from disk)",
+    });
     register_gguf_model(GgufModelRegistration {
         id: "minimax-m3",
         arches: &["minimax-m3", "minimax_m3"],
@@ -564,6 +579,7 @@ mod tests {
         );
         assert_eq!(family_for_gguf_arch("phi3"), Some(GgufModelFamily::Llama32));
         assert_eq!(runner_for_gguf_arch("phi3"), Some("phi"));
+        assert_eq!(runner_for_hf_model_type("gemma3_text"), Some("gemma"));
         // Granite dense + ExaOne 3.x route to the llama32 runner.
         assert_eq!(runner_for_gguf_arch("granite"), Some("llama32"));
         assert_eq!(

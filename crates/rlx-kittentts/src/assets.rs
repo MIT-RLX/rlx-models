@@ -80,7 +80,7 @@ impl ModelLayout {
 /// Best-effort model directory for CLI and tests.
 pub fn default_model_dir() -> Result<PathBuf> {
     for key in ["RLX_KITTENTTS_DIR", "KITTENTTS_MODEL_DIR"] {
-        if let Ok(raw) = std::env::var(key) {
+        if let Ok(raw) = rlx_ir::env::read(key) {
             let p = PathBuf::from(&raw);
             if layout_exists(&p) {
                 return Ok(p);
@@ -181,7 +181,7 @@ pub fn find_rlx_bundle(weights_dir: &Path) -> Option<PathBuf> {
         return Some(dir);
     }
     if let Ok(raw) =
-        std::env::var("RLX_ONNX_BUNDLE").or_else(|_| std::env::var("KITTEN_RLX_BUNDLE"))
+        rlx_ir::env::var_result("RLX_ONNX_BUNDLE").or_else(|_| std::env::var("KITTEN_RLX_BUNDLE"))
     {
         let p = PathBuf::from(raw);
         if p.join("graph.json").is_file() {

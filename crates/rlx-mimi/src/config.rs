@@ -65,7 +65,7 @@ impl MimiConfig {
         let path = model_dir.join("config.json");
         let text =
             std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-        serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
+        rlx_core::config::from_hf_json(&text).with_context(|| format!("parse {}", path.display()))
     }
 
     /// SEANet hop length before the stride-2 frame-rate downsample.

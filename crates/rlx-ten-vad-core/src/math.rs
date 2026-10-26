@@ -21,7 +21,7 @@
 //!
 //! The distinction is not cosmetic. The log-mel and the pitch band energies are
 //! held **bit-identical** to the upstream C reference, and that holds against
-//! *the platform's* libm — Apple's and glibc's already differ in the last place.
+//! *the platform's* libm — macOS's and glibc's already differ in the last place.
 //! Swapping in the `libm` crate changes them again. `std` builds therefore keep
 //! the platform path so the parity fixtures still hold; `no_std` builds take
 //! `libm`'s answer, which has the compensating virtue of being identical on

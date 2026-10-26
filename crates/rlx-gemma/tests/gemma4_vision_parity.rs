@@ -25,7 +25,9 @@ fn dir() -> Option<PathBuf> {
 fn rd(p: &Path) -> Option<Vec<f32>> {
     let r = std::fs::read(p).ok()?;
     Some(
-        r.chunks_exact(4)
+        r.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )
@@ -33,7 +35,9 @@ fn rd(p: &Path) -> Option<Vec<f32>> {
 fn rd_i32(p: &Path) -> Option<Vec<i32>> {
     let r = std::fs::read(p).ok()?;
     Some(
-        r.chunks_exact(4)
+        r.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )
@@ -119,7 +123,7 @@ fn vision_wgpu_bisect() {
     let pos_embed = rd(&fx.join("pos_embed.bin")).expect("pos_embed");
     let posi = rd_i32(&fx.join("positions.bin")).expect("positions");
     let cfg = VisionConfig {
-        layers: std::env::var("RLX_VIS_LAYERS")
+        layers: rlx_ir::env::var_result("RLX_VIS_LAYERS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1),
@@ -148,7 +152,7 @@ fn vision_wgpu_bisect() {
     let maxc = oc.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     let n = oc.len().min(og.len());
     let gcos = cos(&oc[..n], &og[..n]); // global cos, robust to any tap width
-    let tap = std::env::var("RLX_VIS_TAP").unwrap_or_else(|_| "full".into());
+    let tap = rlx_ir::env::var_result("RLX_VIS_TAP").unwrap_or_else(|_| "full".into());
     eprintln!(
         "[vis bisect L={} tap={tap}] cpu-vs-wgpu cos = {gcos:.6}, cpu maxabs = {maxc:.4}, wgpu maxabs = {maxg:.4}, len {}/{}",
         cfg.layers,

@@ -26,14 +26,14 @@ use anyhow::{Context, Result, bail};
 use rlx_core::validate_standard_device;
 use rlx_llama_base::LlamaBaseConfig;
 use rlx_llama32::{Llama32Runner, Llama32RunnerBuilder};
-use rlx_qwen3::{SampleOpts, sample_token};
+use rlx_qwen3::{Qwen3Runner, Qwen3RunnerBuilder, SampleOpts, sample_token, sample_token_at};
 use rlx_qwen35::{decode_ids_from_gguf, encode_prompt_from_gguf};
 use rlx_runtime::Device;
 
 use crate::tokens::STOP_TOKEN;
 
 fn env_truthy(name: &str) -> bool {
-    std::env::var(name)
+    rlx_ir::env::read(name)
         .ok()
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
@@ -41,9 +41,33 @@ fn env_truthy(name: &str) -> bool {
 /// Default context window (must match Python's `max_context = 2048`).
 pub const DEFAULT_N_CTX: u32 = 2048;
 
-/// NeuTTS backbone — RLX Llama-3.2 runner over a llama-tagged GGUF.
+/// The backbone's runner: rlx-llama32's for a llama-tagged GGUF (Nano),
+/// rlx-qwen3's for a Qwen2 one (Air).
+enum Runner {
+    Llama(Llama32Runner),
+    Qwen(Qwen3Runner),
+}
+
+impl Runner {
+    fn predict_logits(&mut self, ids: &[u32]) -> Result<Vec<f32>> {
+        match self {
+            Runner::Llama(r) => r.predict_logits(ids),
+            Runner::Qwen(r) => r.predict_logits(ids),
+        }
+    }
+
+    fn generate(&mut self, ids: &[u32], n: usize) -> Result<Vec<u32>> {
+        match self {
+            Runner::Llama(r) => r.generate(ids, n, |_| {}),
+            Runner::Qwen(r) => r.generate(ids, n, |_| {}),
+        }
+    }
+}
+
+/// NeuTTS backbone — RLX Llama-3.2 runner over a llama-tagged GGUF, or
+/// Qwen3's over a Qwen2 one.
 pub struct BackboneModel {
-    runner: Mutex<Llama32Runner>,
+    runner: Mutex<Runner>,
     weights: PathBuf,
     n_ctx: u32,
     pub seed: Option<u32>,
@@ -90,24 +114,33 @@ impl BackboneModel {
         validate_standard_device("neutts", device)?;
         let base = LlamaBaseConfig::from_gguf_path(path)
             .with_context(|| format!("parse GGUF {:?}", path))?;
-        // NeuTTS Nano/Air GGUFs are llama-tagged (same layout as LLaMA 3.2 / Bonsai).
-        if base.arch != "llama" {
-            bail!(
-                "rlx-neutts: expected `general.architecture = llama` in {}; got `{}`. \
-                 Point at a NeuTTS / Llama-shaped GGUF.",
-                path.display(),
-                base.arch
-            );
-        }
-
-        let runner = Llama32RunnerBuilder::default()
-            .weights(path)
-            .max_seq(n_ctx as usize)
-            .device(device)
-            .packed_weights(packed_weights)
-            .sample(SampleOpts::greedy())
-            .build()
-            .context("build Llama32Runner for NeuTTS backbone")?;
+        // NeuTTS Nano's GGUF is llama-tagged (LLaMA 3.2's layout), Air's Qwen2.
+        let runner = match base.arch.as_str() {
+            "llama" => Runner::Llama(
+                Llama32RunnerBuilder::default()
+                    .weights(path)
+                    .max_seq(n_ctx as usize)
+                    .device(device)
+                    .packed_weights(packed_weights)
+                    .sample(SampleOpts::greedy())
+                    .build()
+                    .context("build Llama32Runner for NeuTTS backbone")?,
+            ),
+            "qwen2" => Runner::Qwen(
+                Qwen3RunnerBuilder::default()
+                    .weights(path)
+                    .max_seq(n_ctx as usize)
+                    .device(device)
+                    .packed_weights(packed_weights)
+                    .sample(SampleOpts::greedy())
+                    .build()
+                    .context("build Qwen3Runner for NeuTTS backbone")?,
+            ),
+            arch => bail!(
+                "rlx-neutts: expected `general.architecture` llama or qwen2 in {}; got `{arch}`.",
+                path.display()
+            ),
+        };
 
         eprintln!(
             "[backbone/rlx-llama32] loaded {} (hidden={}, layers={})",
@@ -177,13 +210,15 @@ impl BackboneModel {
             .lock()
             .map_err(|e| anyhow::anyhow!("backbone runner lock poisoned: {e}"))?;
 
-        for _ in 0..max_new_tokens {
+        for step in 0..max_new_tokens {
             let logits = runner
                 .predict_logits(&ids)
                 .context("RLX backbone predict_logits failed")?;
-            let next = sample_token(&logits, sample) as u32;
+            // Each token its own draw, from the stream `seed + step`.
+            let next = sample_token_at(&logits, sample, u64::from(step)) as u32;
 
-            let piece = decode_ids_from_gguf(&self.weights, std::slice::from_ref(&next), true)
+            // Special tokens kept: the speech tokens are added ones.
+            let piece = decode_ids_from_gguf(&self.weights, std::slice::from_ref(&next), false)
                 .with_context(|| format!("decode token {next}"))?;
 
             if piece.is_empty() {
@@ -238,7 +273,7 @@ impl BackboneModel {
             }
             return Ok(out);
         }
-        runner.generate(prompt_ids, n, |_| {})
+        runner.generate(prompt_ids, n)
     }
 
     /// Greedy text generation for parity tests (deterministic vs llama.cpp reference).

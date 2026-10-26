@@ -63,12 +63,7 @@ pub fn fuse_inputs_embeds(
 
 /// Greedy argmax over a `[vocab]` logits row.
 pub fn argmax_token(logits: &[f32]) -> u32 {
-    logits
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i as u32)
-        .unwrap_or(0)
+    rlx_runtime::search::argmax_u32(logits)
 }
 
 /// Number of `<|audio_pad|>` placeholders in a prompt.

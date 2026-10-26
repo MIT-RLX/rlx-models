@@ -1,0 +1,29 @@
+# The decider's protocol as an RLX program (WebAssembly): the prompt
+# rendered and tokenized, question chunks, each answer's distribution,
+# around the package's graphs. Built by `rlx-pplx-decider`'s exporter, so it
+# stands outside the workspace.
+[package]
+name = "rlx-pplx-decider-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+anyhow = "1"
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# `protocol.rs` and `vision.rs` read `rlx_core::{ordered_json, image_preprocess}`:
+# those files, under the name they are imported by.
+rlx-core = { package = "rlx-pplx-decider-json", path = "json" }
+
+[features]
+# Named by the crate's own `vision.rs`; never on here.
+libjpeg-turbo = []
+# Named by Qwen3.5's `preprocess.rs`; never on here.
+qwen35-vlm = []
+
+[workspace]

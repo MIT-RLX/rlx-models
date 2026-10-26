@@ -9,9 +9,9 @@
 //! and **accuracy** (vs F32 reference logits).
 //!
 //! ```bash
-//! just features=apple-silicon bench-unlimited-ocr-lm-precision --device metal
+//! just features=macos-gpu bench-unlimited-ocr-lm-precision --device metal
 //!
-//! just features=apple-silicon bench-unlimited-ocr-lm-precision --full \
+//! just features=macos-gpu bench-unlimited-ocr-lm-precision --full \
 //!   --device metal --precisions f16,q8_0,q4_0 --seq 8 --decode-steps 4
 //! ```
 

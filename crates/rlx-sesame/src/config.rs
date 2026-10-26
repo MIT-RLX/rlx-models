@@ -103,7 +103,7 @@ impl SesameConfig {
         let path = path.as_ref();
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("read config {}", path.display()))?;
-        serde_json::from_str(&data).with_context(|| format!("parse {}", path.display()))
+        rlx_core::config::from_hf_json(&data).with_context(|| format!("parse {}", path.display()))
     }
 
     pub fn audio_sample_rate(&self) -> u32 {

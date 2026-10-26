@@ -47,8 +47,10 @@ fn corr(a: &[f32], b: &[f32]) -> f32 {
 fn f32_out(outs: &[(Vec<u8>, rlx_runtime::DType)], idx: usize) -> Vec<f32> {
     outs.get(idx)
         .map(|(b, _)| {
-            b.chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            b.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect()
         })
         .unwrap_or_default()
@@ -247,8 +249,10 @@ fn main() -> anyhow::Result<()> {
     let peak = |outs: &[(Vec<u8>, rlx_runtime::DType)]| {
         outs.first()
             .map(|(b, _)| {
-                b.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()).abs())
+                b.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c).abs())
                     .fold(0.0f32, f32::max)
             })
             .unwrap_or(0.0)

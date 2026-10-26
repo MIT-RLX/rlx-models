@@ -21,6 +21,8 @@ pub mod config;
 pub mod detect;
 pub mod detect_swin;
 pub mod device;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod graph;
 pub mod nn;
 pub mod runner;

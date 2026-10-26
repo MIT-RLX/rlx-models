@@ -25,7 +25,8 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use rlx_runtime::Device;
 

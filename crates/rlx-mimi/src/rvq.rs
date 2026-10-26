@@ -122,6 +122,17 @@ impl SplitRvq {
         frames
     }
 
+    /// Each codebook `[size, dim]` with its branch's output projection
+    /// `[hidden, dim]`, in code order (the semantic codebooks first): code
+    /// `k` adds `proj_k · codebook_k[code]`, as [`Self::decode_frames`] sums.
+    #[cfg(feature = "export")]
+    pub(crate) fn decoding(&self) -> Vec<(&Array2<f32>, &Array2<f32>)> {
+        [&self.semantic, &self.acoustic]
+            .into_iter()
+            .flat_map(|b| b.layers.iter().map(move |l| (&l.embed, &b.output_proj_w)))
+            .collect()
+    }
+
     pub fn decode_frames(&self, frames: &[Vec<u32>]) -> Array2<f32> {
         let t = frames.len();
         if t == 0 {

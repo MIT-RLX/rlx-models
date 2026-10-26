@@ -291,7 +291,7 @@ impl KyutaiTtsModel {
         let normed = rms_norm(h.view(), &self.out_norm_alpha);
         let text_logits = linear(normed.view(), &self.text_linear);
         let row = text_logits.row(0).to_owned();
-        if std::env::var_os("RLX_KYUTAI_TTS_TRACE").is_some() {
+        if rlx_ir::env::var_os("RLX_KYUTAI_TTS_TRACE").is_some() {
             let mut top: Vec<(usize, f32)> = row.iter().copied().enumerate().collect();
             top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             eprintln!(

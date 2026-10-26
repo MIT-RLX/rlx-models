@@ -1,0 +1,22 @@
+# KittenTTS 2's host logic as an RLX program (WebAssembly, wasm32-wasip1):
+# the text frontend (the crate's normalizer and prompt builder), the speech
+# LM's sampler and the glue to S3Gen's graphs. Built by `rlx-kittentts2`'s
+# exporter, so it stands outside the workspace.
+[package]
+name = "rlx-kittentts2-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[workspace]

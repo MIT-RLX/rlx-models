@@ -331,13 +331,7 @@ pub fn score_confidence(p: &[f32]) -> f32 {
 /// in the Python. Tie-breaking direction matters: an MLX `TopK` that broke
 /// ties toward the *largest* index has bitten this codebase before.
 pub fn argmax(p: &[f32]) -> usize {
-    let mut best = 0usize;
-    for (i, v) in p.iter().enumerate().skip(1) {
-        if *v > p[best] {
-            best = i;
-        }
-    }
-    best
+    rlx_runtime::search::argmax(p)
 }
 
 /// Round to 2 decimals the way Python's `round(x, 2)` does, and return `f64`

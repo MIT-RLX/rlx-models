@@ -29,7 +29,9 @@ use rlx_carbon::HybridDnaTokenizer;
 use std::path::PathBuf;
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("RLX_CARBON_MODEL").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_CARBON_MODEL")
+        .ok()
+        .map(PathBuf::from)
 }
 
 #[test]

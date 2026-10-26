@@ -49,7 +49,9 @@ pub fn load_text_weights(dir: impl AsRef<Path>) -> Result<TextWeights> {
         bail!("weights.bin length {} not multiple of 4", bytes.len());
     }
     let floats: Vec<f32> = bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let mut tensors = HashMap::new();
@@ -69,7 +71,9 @@ pub fn load_logits(dir: impl AsRef<Path>) -> Result<Vec<f32>> {
         bail!("logits.bin bad len");
     }
     Ok(bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }

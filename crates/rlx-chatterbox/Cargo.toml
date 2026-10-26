@@ -18,16 +18,21 @@ half = { workspace = true }
 tokenizers = { workspace = true }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # Native (ort-free) path: import the ONNX graphs → rlx-ir HIR → compile → run.
-rlx-ir = { workspace = true, optional = true }
+rlx-ir = { workspace = true }
 rlx-onnx-import = { workspace = true, optional = true }
 # Hand-authored native T3 LM (rlx-llama32 graph, NOT ONNX-imported) + WeightMap.
 rlx-llama32 = { workspace = true, optional = true }
 rlx-core = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tempfile = "3"
+rlx-text = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
 
 [[bin]]
 name = "rlx-chatterbox"
@@ -59,7 +64,10 @@ required-features = ["native"]
 default = ["native"]
 # Native ort-free runtime (rlx-onnx-import → compile → run). Backend-agnostic;
 # pair with metal/mlx/… for GPU binaries.
-native = ["dep:rlx-onnx-import", "dep:rlx-ir", "dep:rlx-llama32", "dep:rlx-core"]
+native = ["dep:rlx-onnx-import", "dep:rlx-llama32", "dep:rlx-core"]
+# `export::export_rlxp`: ChatterBox as an `.rlxp` package rlx runs alone
+# (its ONNX converted to rlx IR once, its host logic a program).
+export = ["native", "rlx-core/export", "rlx-llama32/export", "dep:serde_json"]
 metal = ["native", "rlx-runtime/metal"]
 mlx = ["native", "rlx-runtime/mlx"]
 cuda = ["native", "rlx-runtime/cuda"]
@@ -68,7 +76,7 @@ gpu = ["native", "rlx-runtime/gpu"]
 vulkan = ["native", "rlx-runtime/vulkan"]
 coreml = ["native", "rlx-runtime/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 # Legacy aliases used by older recipes / docs.
 native-metal = ["metal"]
 native-mlx = ["mlx"]

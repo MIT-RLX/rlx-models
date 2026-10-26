@@ -34,6 +34,23 @@ use crate::transducer::tdt_greedy_decode;
 const DEFAULT_TDT_DURATIONS: &[i32] = &[0, 1, 2, 3, 4];
 
 /// A loaded Parakeet-TDT model ready to transcribe.
+/// The TDT duration table of `model` (it indexes the joint's duration head).
+/// NeMo exports it under one of a few keys; the canonical `[0, 1, 2, 3, 4]`
+/// otherwise.
+pub fn tdt_durations(model: &NemoModel) -> Vec<i32> {
+    [
+        "model.model_defaults.tdt_durations",
+        "model.joint.jointnet.tdt_durations",
+        "model.joint.durations",
+        "model.durations",
+        "model.tdt_durations",
+    ]
+    .iter()
+    .find_map(|k| model.config().get_i64_vec(k))
+    .map(|v| v.into_iter().map(|d| d as i32).collect())
+    .unwrap_or_else(|| DEFAULT_TDT_DURATIONS.to_vec())
+}
+
 pub struct Parakeet {
     model: NemoModel,
     cfg: AsrConfig,
@@ -51,19 +68,7 @@ impl Parakeet {
         let model = NemoModel::open(path).with_context(|| format!("open {}", path.display()))?;
         let cfg = AsrConfig::from_nemo(model.config())?;
 
-        // TDT duration table (indexes the joint's duration head). NeMo exports it
-        // under one of a few keys; fall back to the canonical [0,1,2,3,4].
-        let durations: Vec<i32> = [
-            "model.model_defaults.tdt_durations",
-            "model.joint.jointnet.tdt_durations",
-            "model.joint.durations",
-            "model.durations",
-            "model.tdt_durations",
-        ]
-        .iter()
-        .find_map(|k| model.config().get_i64_vec(k))
-        .map(|v| v.into_iter().map(|d| d as i32).collect())
-        .unwrap_or_else(|| DEFAULT_TDT_DURATIONS.to_vec());
+        let durations = tdt_durations(&model);
         let num_durations = durations.len();
 
         let (pred, joint) = {

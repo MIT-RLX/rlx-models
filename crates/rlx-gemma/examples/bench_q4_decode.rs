@@ -46,7 +46,7 @@ use tokenizers::Tokenizer;
 const PROMPT: &str =
     "Explain in one short paragraph what speculative decoding is and why EAGLE3 is fast.";
 fn n_new() -> usize {
-    std::env::var("RLX_BENCH_N_NEW")
+    rlx_ir::env::var_result("RLX_BENCH_N_NEW")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(4) // default small enough to complete even if decode is very slow
@@ -59,7 +59,7 @@ fn n_new() -> usize {
 /// back to a `[<bos>, 100..]` synthetic sequence if the tokenizer
 /// file isn't available — useful for perf-only runs.
 fn prompt_ids() -> Vec<u32> {
-    let tok_path = std::env::var("RLX_BENCH_TOKENIZER").unwrap_or_else(|_| {
+    let tok_path = rlx_ir::env::var_result("RLX_BENCH_TOKENIZER").unwrap_or_else(|_| {
         "/Users/Shared/rlx-models/.eagle3-bench/weights/target_metadata/tokenizer.json".into()
     });
     if Path::new(&tok_path).exists()
@@ -108,7 +108,7 @@ fn bench_one(device: Device, label: &str, weights: &str) -> Result<Phases> {
     // Diagnostic: get logits from a fresh predict_logits call so we can
     // tell if the broken `[0,0,…]` output (#50) is from degenerate logits
     // (all-zero or NaN) vs greedy collapse to the actually-best token.
-    if std::env::var("RLX_BENCH_LOGIT_DIAG").is_ok() {
+    if rlx_ir::env::var_result("RLX_BENCH_LOGIT_DIAG").is_ok() {
         let t0 = Instant::now();
         let logits = runner
             .predict_logits(&prompt_ids)

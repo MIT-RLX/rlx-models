@@ -16,7 +16,7 @@ RUN apt-get update \
 WORKDIR /src
 COPY vendor/ vendor/
 
-# Avoid AVX-512 in the reference image (linux/amd64 under QEMU on Apple hosts).
+# Avoid AVX-512 in the reference image (linux/amd64 under QEMU on macOS hosts).
 RUN perl -pi -e 's/ -mavx512f -mavx512vl -mavx512bw//g' vendor/CMakeLists.txt \
     && cmake -S vendor -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build -j"$(nproc)"

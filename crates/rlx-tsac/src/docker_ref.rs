@@ -17,8 +17,9 @@ pub struct DockerRefOptions {
 impl Default for DockerRefOptions {
     fn default() -> Self {
         Self {
-            image: std::env::var("RLX_TSAC_REF_IMAGE").unwrap_or_else(|_| DEFAULT_REF_IMAGE.into()),
-            platform: std::env::var("RLX_TSAC_DOCKER_PLATFORM")
+            image: rlx_ir::env::var_result("RLX_TSAC_REF_IMAGE")
+                .unwrap_or_else(|_| DEFAULT_REF_IMAGE.into()),
+            platform: rlx_ir::env::var_result("RLX_TSAC_DOCKER_PLATFORM")
                 .unwrap_or_else(|_| DEFAULT_REF_PLATFORM.into()),
         }
     }

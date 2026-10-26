@@ -26,7 +26,7 @@
 //! worker thread (lower TTFA). `PerFrame` runs full synthesis but fires
 //! [`StreamEvent::FrameProduced`] during AR for progress UIs.
 //!
-//! ## Measured (Apple M3 Pro, ~10 s utterance, 2-run average)
+//! ## Measured (M3 Pro, ~10 s utterance, 2-run average)
 //!
 //! | Mode | TTFA | RTF (wall ÷ audio) | Use case |
 //! |---|---:|---:|---|
@@ -137,7 +137,7 @@ impl StreamConfig {
 
     /// Shortcut for lowest-latency live streaming. Equivalent to
     /// `Self::progressive(4).with_chunk_samples(8_000)` — first audio in
-    /// ~1.8 s on Apple M3 Pro, then ~0.33 s chunks at 24 kHz. Trades ~3× more
+    /// ~1.8 s on M3 Pro, then ~0.33 s chunks at 24 kHz. Trades ~3× more
     /// total CPU for the latency win.
     pub fn live_low_latency() -> Self {
         Self::progressive(4).with_chunk_samples(8_000)
@@ -150,7 +150,7 @@ impl StreamConfig {
     /// keeping time-to-1 s near the AR floor (~12 × per-frame talker+CP).
     ///
     /// Use on `Device::Metal` with a reused [`crate::VoiceClone`] (amortize
-    /// open/compile). First utterance after cold open is slower. On Apple
+    /// open/compile). First utterance after cold open is slower. On macOS
     /// Silicon set `VECLIB_MAXIMUM_THREADS=1` for best per-frame latency.
     pub fn realtime_second() -> Self {
         Self::progressive(12).with_chunk_samples(24_000)

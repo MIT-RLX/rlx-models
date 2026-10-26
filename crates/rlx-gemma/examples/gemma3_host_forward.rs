@@ -9,7 +9,7 @@ use rlx_gemma::config::{GemmaArch, GemmaConfig, gemma_cfg_from_gguf};
 use std::path::PathBuf;
 
 fn parse_ids() -> Result<Vec<u32>> {
-    if let Ok(raw) = std::env::var("RLX_PARITY_IDS") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_PARITY_IDS") {
         return raw
             .split(',')
             .map(|s| s.trim().parse().context("RLX_PARITY_IDS"))
@@ -325,8 +325,8 @@ fn main() -> Result<()> {
     let cfg = gemma_cfg_from_gguf(&raw)?;
     let mut loader = GgufLoader::from_file(path.to_string_lossy().as_ref())?;
     let embed = take_w(&mut loader, "model.embed_tokens.weight")?;
-    let use_v_norm = std::env::var("RLX_HOST_V_NORM").ok().as_deref() != Some("0");
-    let max_layers = std::env::var("RLX_HOST_MAX_LAYERS")
+    let use_v_norm = rlx_ir::env::var_result("RLX_HOST_V_NORM").ok().as_deref() != Some("0");
+    let max_layers = rlx_ir::env::var_result("RLX_HOST_MAX_LAYERS")
         .ok()
         .and_then(|s| s.parse().ok());
     let hidden = forward_with_embed(&cfg, &mut loader, &ids, &embed, max_layers, use_v_norm)?;

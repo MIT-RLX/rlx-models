@@ -147,6 +147,7 @@ fn llama32_host_greedy_lm_enabled(
     exec_device: Device,
     weights_deferred: bool,
     is_gguf: bool,
+    has_output_weight: bool,
 ) -> bool {
     if !is_gguf || !weights_deferred {
         return false;
@@ -154,7 +155,9 @@ fn llama32_host_greedy_lm_enabled(
     if rlx_ir::env::flag("RLX_LLAMA32_GRAPH_LM_HEAD") {
         return false;
     }
-    if !(cfg.tie_word_embeddings || cfg.is_phi_arch()) {
+    // The host head is the embedding: a Phi GGUF ties it unless it carries
+    // its own `output.weight` (Phi-3-mini does, Phi-4-mini does not).
+    if !(cfg.tie_word_embeddings || (cfg.is_phi_arch() && !has_output_weight)) {
         return false;
     }
     matches!(
@@ -834,7 +837,10 @@ fn packed_bucketed_cuda_full_kv_readback(device: Device) -> bool {
     }
     std::env::var("ORPHEUS_RESIDENT_KV").ok().as_deref() == Some("0")
         || std::env::var("ORPHEUS_VULKAN_RESIDENT_KV").ok().as_deref() == Some("0")
-        || std::env::var("RLX_CUDA_FULL_KV_READBACK").ok().as_deref() == Some("1")
+        || rlx_ir::env::var_result("RLX_CUDA_FULL_KV_READBACK")
+            .ok()
+            .as_deref()
+            == Some("1")
 }
 
 /// Bucketed packed decode: full K/V tensor readback instead of per-row
@@ -2028,8 +2034,15 @@ impl Llama32Generator {
         if is_gguf {
             g.gguf_block_quant = gguf_has_block_quant_matmul(weights_path);
             let exec = packed_gguf_execution_device(device);
-            g.host_greedy_lm =
-                llama32_host_greedy_lm_enabled(&g.cfg, exec, g.weights_deferred, is_gguf);
+            let has_output_weight = rlx_gguf::GgufFile::from_path(weights_path)
+                .is_ok_and(|raw| raw.tensors.contains_key("output.weight"));
+            g.host_greedy_lm = llama32_host_greedy_lm_enabled(
+                &g.cfg,
+                exec,
+                g.weights_deferred,
+                is_gguf,
+                has_output_weight,
+            );
             if g.host_greedy_lm {
                 eprintln!(
                     "[llama32-runner] greedy decode: host tied-lm_head argmax (skip in-graph vocab matmul)"
@@ -2150,7 +2163,7 @@ impl Llama32Generator {
             // the CPU host path; opt into native wgpu decode (for testing the
             // kernels / once the arena fix lands) via `ORPHEUS_WGPU_NATIVE=1`.
             Device::Gpu => std::env::var("ORPHEUS_WGPU_NATIVE").ok().as_deref() != Some("1"),
-            // Vulkan (MoltenVK on Apple, native Vulkan on Linux): RoPE-GptJ
+            // Vulkan (MoltenVK on macOS, native Vulkan on Linux): RoPE-GptJ
             // (`rope.comp` style 1) + native GGUF Q4_K/Q6_K decode GEMV
             // (`dequant_matmul.comp`, `m == 1`) kernels are implemented; prefill
             // stays on CPU F32 (see `prefill_device`). Native on-device decode is

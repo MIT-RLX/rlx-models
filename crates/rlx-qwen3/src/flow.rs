@@ -312,6 +312,19 @@ pub fn build_qwen3_prefill_built(
     weights: &mut dyn WeightLoader,
     opts: &Qwen3PrefillOpts,
 ) -> Result<BuiltModel> {
+    build_qwen3_prefill_built_with(cfg, weights, opts, false)
+}
+
+/// [`build_qwen3_prefill_built`] with the token embedding optionally gathered
+/// on the host: `host_embed` swaps the in-graph table + gather for an
+/// `inputs_embeds` `[batch, seq, hidden]` input (`EmbedStage::host_hidden`),
+/// so the graph holds no copy of the vocab-sized table.
+pub(crate) fn build_qwen3_prefill_built_with(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    opts: &Qwen3PrefillOpts,
+    host_embed: bool,
+) -> Result<BuiltModel> {
     validate_cfg(cfg)?;
 
     let profile = opts
@@ -328,7 +341,6 @@ pub fn build_qwen3_prefill_built(
     let seq = opts.seq;
 
     let hidden_shape = Shape::new(&[batch, seq, h], f);
-    let (cos_data, sin_data) = rope_tables(cfg);
     let decoder_spec = Qwen3DecoderSpec {
         num_heads: nh,
         num_kv_heads: nkv,
@@ -340,6 +352,7 @@ pub fn build_qwen3_prefill_built(
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
         mask: crate::builder::attn_mask_kind(cfg),
+        moe: None,
     };
 
     let kv_sink = SideOutputs::new();
@@ -352,23 +365,38 @@ pub fn build_qwen3_prefill_built(
         // Declaring F32 here bit-reinterpreted the float bytes as ints inside
         // the gather kernel, producing garbled-token streams.
         .input("input_ids", Shape::new(&[batch, seq], DType::I32))
-        .rope_tables(RopeTablesStage::param(
-            cfg.max_position_embeddings,
-            dh / 2,
-            cos_data,
-            sin_data,
-        ))
+        .rope_tables(rope_stage(cfg))
         .zero_beta_named("zero_beta", h)
-        .zero_beta_named("zero_beta.head", dh)
-        .token_embed();
+        .zero_beta_named("zero_beta.head", dh);
+    flow = if host_embed {
+        flow.embed_host("model.embed_tokens.weight", h)
+    } else {
+        flow.token_embed()
+    };
 
     flow = flow.repeat_layers(cfg.num_hidden_layers, {
+        let moes: Vec<_> = (0..cfg.num_hidden_layers)
+            .map(|l| cfg.layer_moe(l))
+            .collect();
         let spec = decoder_spec.clone();
         let sink = kv_sink.clone();
         let qk = qk_sink.clone();
         let export_kv = opts.with_kv_outputs;
         let export_qk = opts.with_qk_outputs;
-        move |i| qwen3_prefill_layer_side(i, spec.clone(), &sink, &qk, export_kv, export_qk)
+        move |i| {
+            qwen3_prefill_layer_side(
+                i,
+                {
+                    let mut spec = spec.clone();
+                    spec.moe = moes[i].clone();
+                    spec
+                },
+                &sink,
+                &qk,
+                export_kv,
+                export_qk,
+            )
+        }
     });
 
     if opts.with_lm_head && opts.last_logits_only {
@@ -440,18 +468,59 @@ fn bind_decode_inputs_for(
     flow: ModelFlow,
     num_layers: usize,
     opts: &Qwen3DecodeOpts,
+    tokens: usize,
 ) -> ModelFlow {
-    if opts.dynamic_past || kv_spare_rows(opts.batch) == 0 {
-        flow.bind_decode_inputs(num_layers, opts.use_custom_mask, true)
+    // A dynamic-`past_seq` cache has no fixed slot to write into, so it keeps
+    // `concat` regardless of the predicate; nor does a step of several
+    // tokens (`KvAppend` writes one row).
+    let spare = if opts.dynamic_past || tokens > 1 {
+        0
     } else {
-        flow.bind_decode_inputs_with_capacity(num_layers, opts.use_custom_mask, opts.past_seq)
-    }
+        kv_spare_rows(opts.batch)
+    };
+    flow.bind_decode_inputs_for_kv_spare(num_layers, opts.use_custom_mask, opts.past_seq, spare)
 }
 
 pub fn build_qwen3_decode_built(
     cfg: &Qwen3Config,
     weights: &mut dyn WeightLoader,
     opts: &Qwen3DecodeOpts,
+) -> Result<BuiltModel> {
+    build_qwen3_decode_built_with(cfg, weights, opts, false)
+}
+
+/// [`build_qwen3_decode_built`] with an optional host-gathered embedding
+/// (`inputs_embeds` `[batch, 1, hidden]`); see [`build_qwen3_prefill_built_with`].
+pub(crate) fn build_qwen3_decode_built_with(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    opts: &Qwen3DecodeOpts,
+    host_embed: bool,
+) -> Result<BuiltModel> {
+    build_qwen3_decode_tokens(cfg, weights, opts, host_embed, 1)
+}
+
+/// A decode step of `tokens` tokens after a `past_seq`-row cache: what a
+/// speculative decoder checks its draft with. Their logits `[batch,
+/// tokens, vocab]`; each cache `concat(past, the tokens' rows)`. With
+/// `use_custom_mask`, `mask` is an additive `[batch, heads, tokens,
+/// past_seq + tokens]` bias (each token its own row: causal within the
+/// draft, the cache's padding left out).
+pub fn build_qwen3_check_built(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    opts: &Qwen3DecodeOpts,
+    tokens: usize,
+) -> Result<BuiltModel> {
+    build_qwen3_decode_tokens(cfg, weights, opts, false, tokens)
+}
+
+fn build_qwen3_decode_tokens(
+    cfg: &Qwen3Config,
+    weights: &mut dyn WeightLoader,
+    opts: &Qwen3DecodeOpts,
+    host_embed: bool,
+    tokens: usize,
 ) -> Result<BuiltModel> {
     validate_cfg(cfg)?;
 
@@ -469,7 +538,7 @@ pub fn build_qwen3_decode_built(
     let half = dh / 2;
     let kv_dim = cfg.kv_proj_dim();
 
-    let hidden_shape = Shape::new(&[batch, 1, h], f);
+    let hidden_shape = Shape::new(&[batch, tokens, h], f);
     // F16-resident KV cache matches the F16 K/V the decode layer stores.
     let kv_dt = if rlx_ir::env::flag("RLX_QWEN3_F16_KV") {
         DType::F16
@@ -503,7 +572,8 @@ pub fn build_qwen3_decode_built(
         // `split_bucketed_decode_kv_per_layer`) and the mask is only
         // `past_seq + 1` wide — readers get the untouched spare row, zeros, the
         // cache never grows, and decode repeats the previous token.
-        Shape::new(&[batch, opts.past_seq + kv_spare_rows(batch), kv_dim], kv_dt)
+        let spare = if tokens > 1 { 0 } else { kv_spare_rows(batch) };
+        Shape::new(&[batch, opts.past_seq + spare, kv_dim], kv_dt)
     };
 
     let decode_spec = Qwen3DecodeLayerSpec {
@@ -517,6 +587,7 @@ pub fn build_qwen3_decode_built(
         batch,
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
+        moe: None,
     };
 
     let kv_out = SideOutputs::new();
@@ -538,15 +609,20 @@ pub fn build_qwen3_decode_built(
 
     // Ragged decode supplies one RoPE row per sequence (`[batch, half]`); the
     // default shares a single row across the batch (`[1, half]`).
-    let rope_rows = if opts.ragged_rope { batch } else { 1 };
+    let rope_rows = if opts.ragged_rope { batch } else { tokens };
     let mut flow = ModelFlow::new("qwen3_decode")
         .with_profile(profile)
-        .input("input_ids", Shape::new(&[batch, 1], DType::I32))
+        .input("input_ids", Shape::new(&[batch, tokens], DType::I32))
         .input("rope_cos", Shape::new(&[rope_rows, half], f))
         .input("rope_sin", Shape::new(&[rope_rows, half], f));
 
     if opts.use_custom_mask {
-        flow = flow.input("mask", Shape::new(&[batch, opts.past_seq + 1], f));
+        let mask = if tokens > 1 {
+            Shape::new(&[batch, nh, tokens, opts.past_seq + tokens], f)
+        } else {
+            Shape::new(&[batch, opts.past_seq + 1], f)
+        };
+        flow = flow.input("mask", mask);
     }
 
     for layer_idx in 0..cfg.num_hidden_layers {
@@ -556,17 +632,39 @@ pub fn build_qwen3_decode_built(
     }
 
     let export_qk = opts.export_qk;
-    let built = bind_decode_inputs_for(flow, cfg.num_hidden_layers, opts)
+    let flow = bind_decode_inputs_for(flow, cfg.num_hidden_layers, opts, tokens)
         .zero_beta_named("zero_beta", h)
-        .zero_beta_named("zero_beta.head", dh)
-        .token_embed()
+        .zero_beta_named("zero_beta.head", dh);
+    let flow = if host_embed {
+        flow.embed_host("model.embed_tokens.weight", h)
+    } else {
+        flow.token_embed()
+    };
+    let built = flow
         .repeat_layers(cfg.num_hidden_layers, {
+            let moes: Vec<_> = (0..cfg.num_hidden_layers)
+                .map(|l| cfg.layer_moe(l))
+                .collect();
             let spec = decode_spec.clone();
             let kv = kv_out.clone();
             let qk = qk_out.clone();
             let tap = tap_out.clone();
             let taps = tap_layers.clone();
-            move |i| qwen3_decode_layer_side_tap(i, spec.clone(), &kv, &qk, &tap, export_qk, &taps)
+            move |i| {
+                qwen3_decode_layer_side_tap(
+                    i,
+                    {
+                        let mut spec = spec.clone();
+                        spec.moe = moes[i].clone();
+                        spec
+                    },
+                    &kv,
+                    &qk,
+                    &tap,
+                    export_qk,
+                    &taps,
+                )
+            }
         })
         .final_norm(eps)
         .raw_stage(qwen3_lm_head_stage(cfg))
@@ -637,7 +735,10 @@ pub fn build_qwen3_decode_embeds_built(
         // `split_bucketed_decode_kv_per_layer`) and the mask is only
         // `past_seq + 1` wide — readers get the untouched spare row, zeros, the
         // cache never grows, and decode repeats the previous token.
-        Shape::new(&[batch, opts.past_seq + kv_spare_rows(batch), kv_dim], kv_dt)
+        Shape::new(
+            &[batch, opts.past_seq + kv_spare_rows(batch), kv_dim],
+            kv_dt,
+        )
     };
 
     let decode_spec = Qwen3DecodeLayerSpec {
@@ -651,6 +752,7 @@ pub fn build_qwen3_decode_embeds_built(
         batch,
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
+        moe: None,
     };
 
     let kv_out = SideOutputs::new();
@@ -671,13 +773,26 @@ pub fn build_qwen3_decode_embeds_built(
             .input(format!("past_v_{layer_idx}"), past_kv_shape.clone());
     }
 
-    let built = bind_decode_inputs_for(flow, cfg.num_hidden_layers, opts)
+    let built = bind_decode_inputs_for(flow, cfg.num_hidden_layers, opts, 1)
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh)
         .repeat_layers(cfg.num_hidden_layers, {
+            let moes: Vec<_> = (0..cfg.num_hidden_layers)
+                .map(|l| cfg.layer_moe(l))
+                .collect();
             let spec = decode_spec.clone();
             let sink = kv_out.clone();
-            move |i| qwen3_decode_layer_fused(i, spec.clone(), sink.inner())
+            move |i| {
+                qwen3_decode_layer_fused(
+                    i,
+                    {
+                        let mut spec = spec.clone();
+                        spec.moe = moes[i].clone();
+                        spec
+                    },
+                    sink.inner(),
+                )
+            }
         })
         .final_norm(eps)
         .output("hidden_states")
@@ -710,11 +825,12 @@ pub fn build_qwen3_prefill_embeds_built(
 
     let hidden_shape = Shape::new(&[batch, seq, h], f);
     let half = dh / 2;
-    let (cos_data, sin_data) = match (&opts.rope_cos, &opts.rope_sin) {
-        (Some(c), Some(s)) => (c.clone(), s.clone()),
-        _ => rope_tables(cfg),
+    let rope = match (&opts.rope_cos, &opts.rope_sin) {
+        (Some(c), Some(s)) => {
+            RopeTablesStage::param(cfg.max_position_embeddings, half, c.clone(), s.clone())
+        }
+        _ => rope_stage(cfg),
     };
-    let rope_max_pos = cfg.max_position_embeddings;
     let decoder_spec = Qwen3DecoderSpec {
         num_heads: nh,
         num_kv_heads: nkv,
@@ -726,6 +842,7 @@ pub fn build_qwen3_prefill_embeds_built(
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
         mask: crate::builder::attn_mask_kind(cfg),
+        moe: None,
     };
 
     let kv_sink = SideOutputs::new();
@@ -734,22 +851,33 @@ pub fn build_qwen3_prefill_embeds_built(
     let mut flow = ModelFlow::new("qwen3_prefill_embeds")
         .with_profile(profile)
         .input("inputs_embeds", hidden_shape)
-        .rope_tables(RopeTablesStage::param(
-            rope_max_pos,
-            half,
-            cos_data,
-            sin_data,
-        ))
+        .rope_tables(rope)
         .zero_beta_named("zero_beta", h)
         .zero_beta_named("zero_beta.head", dh);
 
     flow = flow.repeat_layers(cfg.num_hidden_layers, {
+        let moes: Vec<_> = (0..cfg.num_hidden_layers)
+            .map(|l| cfg.layer_moe(l))
+            .collect();
         let spec = decoder_spec.clone();
         let sink = kv_sink.clone();
         let qk = qk_sink.clone();
         let export_kv = opts.with_kv_outputs;
         let export_qk = opts.with_qk_outputs;
-        move |i| qwen3_prefill_layer_side(i, spec.clone(), &sink, &qk, export_kv, export_qk)
+        move |i| {
+            qwen3_prefill_layer_side(
+                i,
+                {
+                    let mut spec = spec.clone();
+                    spec.moe = moes[i].clone();
+                    spec
+                },
+                &sink,
+                &qk,
+                export_kv,
+                export_qk,
+            )
+        }
     });
 
     if opts.last_logits_only {
@@ -758,9 +886,15 @@ pub fn build_qwen3_prefill_embeds_built(
 
     flow = flow.final_norm(eps);
 
-    let mut built = flow
-        .output("hidden_states")
-        .build(&mut WeightLoaderSource(weights))?;
+    // `with_lm_head`: the logits, as the ids prefill makes them.
+    let mut built = if opts.with_lm_head {
+        flow.raw_stage(qwen3_lm_head_stage(cfg))
+            .output("logits")
+            .build(&mut WeightLoaderSource(weights))?
+    } else {
+        flow.output("hidden_states")
+            .build(&mut WeightLoaderSource(weights))?
+    };
 
     if opts.with_kv_outputs {
         let mut extra = kv_sink.drain();
@@ -864,6 +998,19 @@ pub(crate) fn validate_cfg(cfg: &Qwen3Config) -> Result<()> {
     // Qwen 2 / 2.5 ship `attention_bias=true` (explicit bias on Q/K/V);
     // the builder loads + adds the bias vectors. Qwen 3 sets `false`.
     Ok(())
+}
+
+/// `1 / θ^(2i/d)` for each rotated pair.
+fn rope_inv_freq(cfg: &Qwen3Config) -> Vec<f64> {
+    let dh = cfg.head_dim;
+    (0..dh / 2)
+        .map(|i| 1.0 / cfg.rope_theta.powf((2 * i) as f64 / dh as f64))
+        .collect()
+}
+
+/// The prefill RoPE tables, with their f64 residual under the f64 format.
+pub(crate) fn rope_stage(cfg: &Qwen3Config) -> RopeTablesStage {
+    RopeTablesStage::from_inv_freq(cfg.max_position_embeddings, &rope_inv_freq(cfg))
 }
 
 pub(crate) fn rope_tables(cfg: &Qwen3Config) -> (Vec<f32>, Vec<f32>) {

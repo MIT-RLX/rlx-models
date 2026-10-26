@@ -1,11 +1,11 @@
 # Qwen3.5 performance notes
 
-Hardware notes below are from development machines (Apple Silicon and NVIDIA RTX). Re-measure locally with `RLX_QWEN35_BENCH=1`.
+Hardware notes below are from development machines (macOS arm64 and NVIDIA RTX). Re-measure locally with `RLX_QWEN35_BENCH=1`.
 
 ## Quick CLI bench
 
 ```bash
-RLX_QWEN35_BENCH=1 cargo run -p rlx-qwen35 --release --features apple-silicon -- \
+RLX_QWEN35_BENCH=1 cargo run -p rlx-qwen35 --release --features macos-gpu -- \
   --weights model.gguf --packed --device metal --fast \
   --temperature 0.0 --seed 0 --max-tokens 16 \
   --prompt "What is the capital of France?"
@@ -77,7 +77,7 @@ Expected post-Tier C: **CPU 5–15 tok/s**, Metal/MLX closer to CPU on decode (s
 
 ## Qwen3.8-27B on Metal — quant choice dominates decode
 
-Apple M4 Pro (14-core, 64 GB, ~273 GB/s), `--device metal --packed`,
+M4 Pro (14-core, 64 GB, ~273 GB/s), `--device metal --packed`,
 `max_seq=32`, 12 tokens. **Steady state = mean of steps 2+** from
 `RLX_QWEN35_DECODE_TRACE=1`; step 1 is a ~1.9 s cold outlier that skews any
 `tok/s` averaged over a short run.

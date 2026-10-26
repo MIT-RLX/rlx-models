@@ -1,0 +1,29 @@
+# kev's protocol as an RLX program (WebAssembly): the request encoded,
+# its rows shaped, the pointer head over the gathered states, each answer,
+# around the package's graphs. Built by `rlx-kev`'s exporter, so it
+# stands outside the workspace.
+[package]
+name = "rlx-kev-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `json.rs` reads `rlx_core::ordered_json`: that one file, under the
+# name it is imported by.
+rlx-core = { package = "rlx-kev-json", path = "json" }
+# `api.rs` reads `rlx_runtime::search::argmax`: `rlx-search`, under that name.
+rlx-runtime = { package = "rlx-kev-runtime", path = "runtime" }
+
+[features]
+# Named by the crate's own `encode.rs`; never on here.
+tokenizer = []
+
+[workspace]

@@ -27,7 +27,7 @@ pub struct RefExport {
 }
 
 pub fn model_dir() -> Option<PathBuf> {
-    let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_kyutai_tts_dir());
     if dir.join("dsm_tts_1e68beda@240.safetensors").is_file() {
@@ -39,7 +39,7 @@ pub fn model_dir() -> Option<PathBuf> {
 }
 
 pub fn mimi_codes_ref_path() -> PathBuf {
-    std::env::var("RLX_KYUTAI_MIMI_CODES_REF")
+    rlx_ir::env::var_result("RLX_KYUTAI_MIMI_CODES_REF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp/py_mimi_codes.json"))
 }
@@ -121,7 +121,10 @@ pub fn assert_frames_match(label: &str, reference: &[Vec<u32>], actual: &[Vec<u3
 }
 
 pub fn codes_parity_enabled() -> bool {
-    std::env::var("RLX_KYUTAI_CODES_PARITY").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_KYUTAI_CODES_PARITY")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 pub fn load_moshi_reference(path: &Path) -> Result<RefExport> {

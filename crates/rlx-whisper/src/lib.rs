@@ -44,6 +44,8 @@ pub mod cache;
 pub mod cli;
 pub mod config;
 pub mod decode;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod fused;
 pub mod mel;

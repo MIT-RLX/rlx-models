@@ -71,11 +71,11 @@ impl TtsAdapter for LuxAdapter {
         // short fox phrase ≈63 chars works), so don't split it; longer text is
         // packed into `chunk_max`-sized pieces safely under the fm_decoder
         // shape-bug threshold.
-        let whole_max = std::env::var("RLX_LUXTTS_WHOLE_MAX")
+        let whole_max = rlx_ir::env::var_result("RLX_LUXTTS_WHOLE_MAX")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(72usize);
-        let chunk_max = std::env::var("RLX_LUXTTS_MAX_CHARS")
+        let chunk_max = rlx_ir::env::var_result("RLX_LUXTTS_MAX_CHARS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(52usize);

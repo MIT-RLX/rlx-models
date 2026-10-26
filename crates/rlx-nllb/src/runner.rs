@@ -233,17 +233,17 @@ impl NllbModel {
     /// Override with `RLX_NLLB_ENC_CACHE` / `RLX_NLLB_DEC_CACHE`. When over the
     /// limit, drop all graphs (weights stay); next cue rebuilds only what it needs.
     pub fn trim_compile_cache(&mut self) {
-        let low_mem = std::env::var("RLX_LOW_MEMORY")
+        let low_mem = rlx_ir::env::var_result("RLX_LOW_MEMORY")
             .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
         let enc_default = if low_mem { 2usize } else { 8usize };
         let dec_default = if low_mem { 4usize } else { 16usize };
-        let enc_cap = std::env::var("RLX_NLLB_ENC_CACHE")
+        let enc_cap = rlx_ir::env::var_result("RLX_NLLB_ENC_CACHE")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(enc_default)
             .clamp(1, 64);
-        let dec_cap = std::env::var("RLX_NLLB_DEC_CACHE")
+        let dec_cap = rlx_ir::env::var_result("RLX_NLLB_DEC_CACHE")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(dec_default)

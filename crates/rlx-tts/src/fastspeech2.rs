@@ -96,7 +96,7 @@ impl<'a> FastSpeech2<'a> {
         let prenet_b = self.e("encoder.prenet.bias")?;
         let x_cf = to_channels_first(&x_embed);
         let mut h_cf = conv1d_same(&x_cf, prenet_w, HIDDEN, HIDDEN, 9, Some(prenet_b), 1);
-        if std::env::var_os("RLX_FS2_NO_PRENET_RELU").is_none() {
+        if rlx_ir::env::var_os("RLX_FS2_NO_PRENET_RELU").is_none() {
             for v in h_cf.iter_mut() {
                 *v = v.max(0.0);
             }
@@ -195,7 +195,7 @@ impl<'a> FastSpeech2<'a> {
                 }
             }
         }
-        if std::env::var_os("RLX_FS2_DEBUG_DURS").is_some() {
+        if rlx_ir::env::var_os("RLX_FS2_DEBUG_DURS").is_some() {
             eprintln!(
                 "fs2 dur_raw[:20]={:?} durs={:?} sum={}",
                 &dur[..dur.len().min(20)],
@@ -296,7 +296,7 @@ impl<'a> FastSpeech2<'a> {
             Some(self.e(&format!("encoder.block{i}.ffn0.bias"))?),
             1,
         );
-        if std::env::var_os("RLX_FS2_NO_FFN_RELU").is_none() {
+        if rlx_ir::env::var_os("RLX_FS2_NO_FFN_RELU").is_none() {
             for v in ff.iter_mut() {
                 *v = v.max(0.0);
             }

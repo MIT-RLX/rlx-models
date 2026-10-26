@@ -26,7 +26,9 @@ use rlx_runtime::Device;
 use std::path::PathBuf;
 
 fn weights() -> Option<PathBuf> {
-    std::env::var("RLX_LFM_WEIGHTS").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_LFM_WEIGHTS")
+        .ok()
+        .map(PathBuf::from)
 }
 
 #[test]

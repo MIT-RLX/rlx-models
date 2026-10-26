@@ -98,21 +98,7 @@ impl Paraformer {
     pub fn encode(&self, feats: &[f32], t: usize) -> Result<Vec<f32>> {
         let in_dim = self.cfg.encoder.input_size;
         ensure!(feats.len() == t * in_dim, "feature length mismatch");
-        let cfg = &self.cfg;
-        let weights = &self.weights;
-        let build = || -> anyhow::Result<rlx_flow::BuiltModel> {
-            let mut params = HashMap::new();
-            let mut hir =
-                HirModule::new("paraformer_encoder").with_fusion_policy(FusionPolicy::Direct);
-            {
-                let mut src = RefSource(weights);
-                let mut g = Graph::new(&mut hir, &mut params, &mut src);
-                let x = g.input("feats", &[1, t, in_dim]);
-                let enc = build_sanm_encoder(&mut g, x, &cfg.encoder, "encoder", t, false)?;
-                g.set_output(enc);
-            }
-            built_from_hir(hir, params)
-        };
+        let build = || self.encoder_model(t);
         self.enc_cache
             .run(t as u64, self.device, build, &[("feats", feats)])?
             .into_iter()
@@ -132,22 +118,7 @@ impl Paraformer {
         let d = self.cfg.decoder.dim;
         ensure!(encoder_out.len() == t * d, "encoder length mismatch");
         ensure!(acoustic.len() == l * d, "acoustic length mismatch");
-        let cfg = &self.cfg;
-        let weights = &self.weights;
-        let build = || -> anyhow::Result<rlx_flow::BuiltModel> {
-            let mut params = HashMap::new();
-            let mut hir =
-                HirModule::new("paraformer_decoder").with_fusion_policy(FusionPolicy::Direct);
-            {
-                let mut src = RefSource(weights);
-                let mut g = Graph::new(&mut hir, &mut params, &mut src);
-                let memory = g.input("memory", &[1, t, d]);
-                let tgt = g.input("tgt", &[1, l, d]);
-                let logits = build_decoder(&mut g, tgt, memory, cfg, l, t)?;
-                g.set_output(logits);
-            }
-            built_from_hir(hir, params)
-        };
+        let build = || self.decoder_model(t, l);
         let key = ((t as u64) << 32) | l as u64;
         self.dec_cache
             .run(
@@ -159,6 +130,44 @@ impl Paraformer {
             .into_iter()
             .next()
             .context("paraformer decoder produced no output")
+    }
+
+    /// The encoder at `t` frames as a model, uncompiled: `feats` `[1, t,
+    /// input_size]` → `[1, t, d]`.
+    pub fn encoder_model(&self, t: usize) -> Result<rlx_flow::BuiltModel> {
+        let in_dim = self.cfg.encoder.input_size;
+        let mut params = HashMap::new();
+        let mut hir = HirModule::new("paraformer_encoder").with_fusion_policy(FusionPolicy::Direct);
+        {
+            let mut src = RefSource(&self.weights);
+            let mut g = Graph::new(&mut hir, &mut params, &mut src);
+            let x = g.input("feats", &[1, t, in_dim]);
+            let enc = build_sanm_encoder(&mut g, x, &self.cfg.encoder, "encoder", t, false)?;
+            g.set_output(enc);
+        }
+        built_from_hir(hir, params)
+    }
+
+    /// The decoder at `t` frames and `l` tokens as a model, uncompiled:
+    /// `memory` `[1, t, d]`, `tgt` `[1, l, d]` → logits `[1, l, vocab]`.
+    pub fn decoder_model(&self, t: usize, l: usize) -> Result<rlx_flow::BuiltModel> {
+        let d = self.cfg.decoder.dim;
+        let mut params = HashMap::new();
+        let mut hir = HirModule::new("paraformer_decoder").with_fusion_policy(FusionPolicy::Direct);
+        {
+            let mut src = RefSource(&self.weights);
+            let mut g = Graph::new(&mut hir, &mut params, &mut src);
+            let memory = g.input("memory", &[1, t, d]);
+            let tgt = g.input("tgt", &[1, l, d]);
+            let logits = build_decoder(&mut g, tgt, memory, &self.cfg, l, t)?;
+            g.set_output(logits);
+        }
+        built_from_hir(hir, params)
+    }
+
+    /// The checkpoint's tensors.
+    pub fn weights(&self) -> &WeightMap {
+        &self.weights
     }
 
     /// Load the CIF predictor head weights from the checkpoint.

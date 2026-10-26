@@ -28,7 +28,7 @@
 //! rest are library knobs read through the accessors below.
 
 fn set(key: &str) -> bool {
-    std::env::var(key).is_ok()
+    rlx_ir::env::read(key).is_ok()
 }
 
 /// Print per-stage timings (`OCR2_TIMING`).

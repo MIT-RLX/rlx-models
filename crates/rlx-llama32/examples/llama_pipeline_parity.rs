@@ -121,6 +121,32 @@ fn through_the_trait(weights: &str, prompt: &[u32], n: usize) -> Result<Vec<u32>
     Ok(out)
 }
 
+/// (2c) Re-prefilling the whole context each step — what
+/// `rlx_runtime::HostDriven` falls back to for a family with no cached
+/// pair.
+///
+/// Here as a control. On qwen3.5 this disagrees with the cached decode by
+/// 11-14 in the logits from the first decode step, and the open question is
+/// which side is wrong. Running it on a family whose cached decode is
+/// already known to agree with its own generator answers that: if it
+/// agrees here, re-prefill is sound and qwen3.5 has a real bug; if it
+/// disagrees here too, re-prefilling a lengthened sequence is not
+/// equivalent in this codebase and the qwen3.5 result says nothing about
+/// qwen3.5.
+fn re_prefill(c: &Llama32Config, w: &Tensors, prompt: &[u32], n: usize) -> Result<Vec<u32>> {
+    let mut wm = WeightMap::from_tensors(w.clone());
+    let mut g = Llama32Generator::from_loader(c.clone(), &mut wm, Device::Cpu)?;
+    let mut context = prompt.to_vec();
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let logits = g.prefill_get_last_logits(&context)?;
+        let tok = argmax(&logits);
+        out.push(tok);
+        context.push(tok);
+    }
+    Ok(out)
+}
+
 /// (3) The pipeline stage across `world` ranks on loopback.
 fn pipelined(
     c: &Llama32Config,
@@ -246,6 +272,10 @@ fn main() -> Result<()> {
         (
             "same, via LmRunner  ",
             through_the_trait(&weights_file, &prompt_ids, tokens),
+        ),
+        (
+            "re-prefill each step",
+            re_prefill(&cfg, &weights, &prompt_ids, tokens),
         ),
         (
             "pipeline, world 1   ",

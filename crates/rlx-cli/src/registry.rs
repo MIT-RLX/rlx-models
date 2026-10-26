@@ -58,6 +58,9 @@ pub fn run_registered(name: &str, args: &[String]) -> Result<Option<()>> {
 }
 
 pub fn dispatch(args: &[String]) -> Result<()> {
+    let mut args = args.to_vec();
+    crate::take_number_format(&mut args)?;
+    let args = &args[..];
     let Some(sub) = args.first() else {
         eprintln!("{}", dispatch_help());
         return Ok(());

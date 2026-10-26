@@ -1,7 +1,7 @@
 # Qwen3-0.6B Decode Optimization — Levers, Measurements, Strategy
 
 Goal: **fast end-to-end inference with the best accuracy and the most TPS** for
-Qwen3-0.6B on Apple Silicon (M4 Pro, Metal). This documents every lever
+Qwen3-0.6B on macOS arm64 (M4 Pro, Metal). This documents every lever
 investigated, what was measured, what shipped, and what to build next — so the
 dead ends are not re-litigated.
 

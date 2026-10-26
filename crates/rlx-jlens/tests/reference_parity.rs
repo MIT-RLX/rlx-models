@@ -59,7 +59,7 @@ fn reference() -> Option<BTreeMap<usize, Vec<f32>>> {
 }
 
 fn model() -> Option<Qwen3LensModel> {
-    let dir = match std::env::var("RLX_JLENS_QWEN3_DIR") {
+    let dir = match rlx_ir::env::var_result("RLX_JLENS_QWEN3_DIR") {
         Ok(p) => std::path::PathBuf::from(p),
         Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../weights/Qwen3-0.6B"),
     };

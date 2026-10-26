@@ -14,7 +14,7 @@ use rlx_whisper::{SAMPLE_RATE as WHISPER_RATE, WhisperRunner, normalize_transcri
 use std::path::PathBuf;
 
 fn model_dir() -> Option<PathBuf> {
-    let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_kyutai_tts_dir());
     if dir.join("dsm_tts_1e68beda@240.safetensors").is_file() {
@@ -85,7 +85,7 @@ fn generate_whisper_and_spectral_diag() -> Result<()> {
         return Ok(());
     };
 
-    let mimi_dir = std::env::var("RLX_MIMI_DIR")
+    let mimi_dir = rlx_ir::env::var_result("RLX_MIMI_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_mimi_dir());
 

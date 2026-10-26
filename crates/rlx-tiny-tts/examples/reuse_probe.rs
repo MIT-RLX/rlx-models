@@ -11,7 +11,9 @@ use rlx_tiny_tts::{InferOpts, TinyTts};
 fn read_f32(dir: &str, name: &str) -> Vec<f32> {
     let bytes = std::fs::read(format!("{dir}/{name}.f32")).unwrap_or_default();
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -43,9 +45,9 @@ fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&d1).ok();
     std::fs::create_dir_all(&d2).ok();
 
-    unsafe { std::env::set_var("RLX_TTS_DUMP", d1.to_str().unwrap()) };
+    rlx_ir::env::set("RLX_TTS_DUMP", d1.to_str().unwrap());
     let w1 = model.synthesize_on(text, device, &opts)?;
-    unsafe { std::env::set_var("RLX_TTS_DUMP", d2.to_str().unwrap()) };
+    rlx_ir::env::set("RLX_TTS_DUMP", d2.to_str().unwrap());
     let w2 = model.synthesize_on(text, device, &opts)?;
 
     let (s1, s2) = (d1.to_str().unwrap(), d2.to_str().unwrap());

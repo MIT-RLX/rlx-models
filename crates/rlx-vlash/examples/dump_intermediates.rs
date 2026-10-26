@@ -42,7 +42,9 @@ fn read_bin(dir: &Path, name: &str) -> Result<Vec<f32>> {
     let p = dir.join(format!("{name}.bin"));
     let bytes = std::fs::read(&p).with_context(|| format!("read {}", p.display()))?;
     Ok(bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }

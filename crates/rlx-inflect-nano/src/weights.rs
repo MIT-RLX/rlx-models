@@ -24,7 +24,9 @@ impl Weights {
             let data: Vec<f32> = match view.dtype() {
                 Dtype::F32 => view
                     .data()
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect(),
                 other => anyhow::bail!("unexpected dtype {other:?} for tensor {name}"),

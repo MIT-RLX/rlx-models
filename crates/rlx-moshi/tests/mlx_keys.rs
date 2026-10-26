@@ -26,7 +26,7 @@ fn mlx_key_mapping_samples() {
 
 #[test]
 fn mlx_dequant_tensor_count() {
-    let path = match std::env::var("RLX_MOSHI_MLX_Q4") {
+    let path = match rlx_ir::env::var_result("RLX_MOSHI_MLX_Q4") {
         Ok(p) => p,
         Err(_) => {
             eprintln!("skip mlx_dequant_tensor_count (set RLX_MOSHI_MLX_Q4)");

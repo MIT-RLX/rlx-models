@@ -16,12 +16,12 @@ use rlx_zonos::{
 const DEFAULT_TEXT: &str = "Hello from Zonos.";
 
 fn main() -> anyhow::Result<()> {
-    let model_dir = std::env::var("RLX_ZONOS_DIR")
+    let model_dir = rlx_ir::env::var_result("RLX_ZONOS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_LOCAL_DIR));
     let dac_dir = PathBuf::from(DEFAULT_DAC_DIR);
-    let text = std::env::var("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
-    let max_tokens: usize = std::env::var("RLX_MAX_TOKENS")
+    let text = rlx_ir::env::var_result("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
+    let max_tokens: usize = rlx_ir::env::var_result("RLX_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(256);
@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn load_whisper() -> Option<rlx_whisper::WhisperRunner> {
-    let dir = std::env::var("RLX_WHISPER_DIR")
+    let dir = rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .ok()
         .map(PathBuf::from)
         .or_else(|| {

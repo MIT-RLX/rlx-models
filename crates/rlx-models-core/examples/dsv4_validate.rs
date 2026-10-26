@@ -21,7 +21,7 @@ use rlx_runtime::{Device, Session};
 use std::collections::HashMap;
 
 fn main() -> Result<()> {
-    let dir = std::env::var("RLX_DSV4_DIR")
+    let dir = rlx_ir::env::var_result("RLX_DSV4_DIR")
         .context("set RLX_DSV4_DIR to a mlx-community/DeepSeek-V4-Flash-* directory")?;
     let ids: Vec<u32> = std::env::args()
         .nth(1)
@@ -85,7 +85,7 @@ fn main() -> Result<()> {
     let finite = logits.iter().all(|v| v.is_finite());
     println!("[dsv4] prefill seq={seq} → last-token argmax = {argmax}  finite = {finite}");
 
-    if let Ok(oracle) = std::env::var("RLX_DSV4_ORACLE_ARGMAX") {
+    if let Ok(oracle) = rlx_ir::env::var_result("RLX_DSV4_ORACLE_ARGMAX") {
         let oracle: usize = oracle
             .trim()
             .parse()

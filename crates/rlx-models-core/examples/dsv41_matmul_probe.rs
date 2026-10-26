@@ -141,7 +141,7 @@ fn run_sink(rows: usize, nh: usize, hd: usize, nk: usize, runs: usize) -> bool {
 }
 
 fn main() {
-    let runs: usize = std::env::var("RLX_DSV41_RUNS")
+    let runs: usize = rlx_ir::env::var_result("RLX_DSV41_RUNS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(40);

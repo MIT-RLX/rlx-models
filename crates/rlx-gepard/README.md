@@ -18,7 +18,7 @@ just gepard-parity
 CLI:
 
 ```bash
-cargo run -p rlx-gepard --bin rlx-gepard --release --features apple-silicon -- \
+cargo run -p rlx-gepard --bin rlx-gepard --release --features macos-gpu -- \
   --weights weights/tts/gepard \
   --text "Hello from Gepard." \
   --device metal \
@@ -50,7 +50,7 @@ Env:
 - `RLX_GEPARD_COMPILED=1` — force compiled AR even on CPU.
 - Default: compiled AR for non-CPU devices; eager for CPU.
 
-### Apple Silicon note
+### macOS arm64 note
 
 Metal Qwen3.5 decode currently diverges from CPU; when `--device metal` is selected,
 backbone AR is routed to **MLX** (NanoCodec still runs on Metal). Prefill/decode use
@@ -60,7 +60,7 @@ backbone AR is routed to **MLX** (NanoCodec still runs on Metal). Prefill/decode
 SIGKILL on this machine); validate MLX via:
 
 ```bash
-cargo run -p rlx-gepard --bin rlx-gepard --release --features apple-silicon -- \
+cargo run -p rlx-gepard --bin rlx-gepard --release --features macos-gpu -- \
   --weights weights/tts/gepard --device mlx --seed 54 --out /tmp/gepard_fox_mlx.wav
 ```
 
@@ -89,7 +89,7 @@ sampling seed **54**.
 
 ## Backends
 
-Build with `--features apple-silicon`, `nvidia-gpu`, or `all-backends`.
+Build with `--features macos-gpu`, `nvidia-gpu`, or `all-backends`.
 
 ## Tests
 

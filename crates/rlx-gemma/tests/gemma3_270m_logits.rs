@@ -3,7 +3,7 @@
 //! ```sh
 //! RLX_GEMMA3_GGUF=/tmp/rlx-weights/gemma-3-270m.gguf \
 //! RLX_GEMMA3_RUN_LLAMA_PARITY=1 \
-//! cargo test -p rlx-gemma --features "apple-silicon parity-llama" \
+//! cargo test -p rlx-gemma --features "macos-gpu parity-llama" \
 //!   --test gemma3_270m_logits --release -- --test-threads=1 --nocapture
 //! ```
 
@@ -13,7 +13,9 @@ use rlx_runtime::Device;
 use std::path::PathBuf;
 
 fn weights() -> Option<PathBuf> {
-    std::env::var("RLX_GEMMA3_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_GEMMA3_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 
 /// HF `unsloth/gemma-3-270m-it` chat ids for
@@ -83,7 +85,11 @@ fn logits_parity_stats(rlx: &[f32], llama: &[f32]) -> (f32, f32) {
 #[cfg(feature = "parity-llama")]
 #[test]
 fn gemma3_270m_top1_matches_llama_on_hf_chat_prompt() {
-    if std::env::var("RLX_GEMMA3_RUN_LLAMA_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_GEMMA3_RUN_LLAMA_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_GEMMA3_RUN_LLAMA_PARITY=1");
         return;
     }
@@ -164,7 +170,11 @@ fn gemma3_270m_incremental_decode_matches_one_shot_prefill() {
 #[cfg(feature = "parity-llama")]
 #[test]
 fn gemma3_270m_prefill_top32_and_logit_stats_match_llama() {
-    if std::env::var("RLX_GEMMA3_RUN_LLAMA_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_GEMMA3_RUN_LLAMA_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_GEMMA3_RUN_LLAMA_PARITY=1");
         return;
     }
@@ -217,7 +227,11 @@ fn gemma3_270m_prefill_top32_and_logit_stats_match_llama() {
 #[cfg(feature = "parity-llama")]
 #[test]
 fn gemma3_270m_hidden_cosine_matches_llama() {
-    if std::env::var("RLX_GEMMA3_RUN_LLAMA_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_GEMMA3_RUN_LLAMA_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_GEMMA3_RUN_LLAMA_PARITY=1");
         return;
     }
@@ -259,7 +273,11 @@ fn gemma3_270m_hidden_cosine_matches_llama() {
 #[cfg(feature = "parity-llama")]
 #[test]
 fn gemma3_270m_greedy_decode_matches_llama_short_and_long() {
-    if std::env::var("RLX_GEMMA3_RUN_LLAMA_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_GEMMA3_RUN_LLAMA_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_GEMMA3_RUN_LLAMA_PARITY=1");
         return;
     }

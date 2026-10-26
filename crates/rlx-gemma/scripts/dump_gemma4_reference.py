@@ -35,7 +35,7 @@ Usage:
 pip install torch transformers accelerate
 FIXTURE_DIR=$HOME/gemma4-fixture python3 dump_gemma4_reference.py
 RLX_GEMMA4_FIXTURE=$FIXTURE_DIR \
-    cargo test -p rlx-gemma --test gemma4_reference_fixture --features apple-silicon
+    cargo test -p rlx-gemma --test gemma4_reference_fixture --features macos-gpu
 ```
 
 The fixture directory must also contain the HF `config.json`,

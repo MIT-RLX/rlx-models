@@ -91,7 +91,7 @@ the deep stage (1024 ch, 32 groups, 2304 tokens):
   being concatenated.
 
 Every op is regression-tested in isolation
-(`cargo test -p rlx-florence2 --features apple-silicon --test florence2_op_diag`),
+(`cargo test -p rlx-florence2 --features macos-gpu --test florence2_op_diag`),
 and `tests/florence2_backend_parity.rs` checks the real checkpoint across
 backends (set `RLX_FLORENCE2_BISECT=metal` for a per-stage/per-depth bisection).
 

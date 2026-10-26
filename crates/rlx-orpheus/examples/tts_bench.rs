@@ -5,13 +5,13 @@
 //!
 //! ```bash
 //! just fetch-orpheus fetch-orpheus-snac fetch-whisper
-//! cargo run -p rlx-orpheus --example tts_bench --release --features apple-silicon -- \
+//! cargo run -p rlx-orpheus --example tts_bench --release --features macos-gpu -- \
 //!   --devices all --whisper
 //!
 //! # Voice clone (pretrained GGUF + encoded reference JSON):
 //! ORPHEUS_PRETRAINED_GGUF=/path/pretrained.gguf \
 //! ORPHEUS_CLONE_REF_JSON=/tmp/jfk_orpheus_ref.json \
-//! cargo run -p rlx-orpheus --example tts_bench --release --features apple-silicon -- \
+//! cargo run -p rlx-orpheus --example tts_bench --release --features macos-gpu -- \
 //!   --devices metal --voice-clone --whisper
 //! ```
 
@@ -300,7 +300,7 @@ fn default_snac() -> Option<PathBuf> {
 }
 
 fn resolve_whisper_dir() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(dir) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(dir);
         if p.join("model.safetensors").is_file() {
             return Ok(p);

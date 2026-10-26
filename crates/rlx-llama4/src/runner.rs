@@ -38,6 +38,28 @@ pub struct Llama4Runner {
     rope: HashMap<usize, (Vec<f32>, Vec<f32>)>, // by max_len
 }
 
+/// A checkpoint's text weights under the names the text graph asks for: a
+/// multimodal checkpoint's `language_model.model.*` / `language_model.lm_head.*`
+/// as `model.*` / `lm_head.*`, its vision weights dropped.
+pub fn text_weights(full: &mut dyn WeightLoader) -> Result<WeightMap> {
+    let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
+    for k in full.remaining_keys() {
+        if k.starts_with("vision_model.") || k.starts_with("multi_modal_projector.") {
+            let _ = full.take(&k)?; // drop vision weights (text runner)
+            continue;
+        }
+        let (d, s) = full.take(&k)?;
+        if let Some(r) = k.strip_prefix("language_model.model.") {
+            t.insert(format!("model.{r}"), (d, s));
+        } else if let Some(r) = k.strip_prefix("language_model.lm_head.") {
+            t.insert(format!("lm_head.{r}"), (d, s));
+        } else {
+            t.insert(k, (d, s)); // model.* / lm_head.weight (text-only checkpoints)
+        }
+    }
+    Ok(WeightMap::from_tensors(t))
+}
+
 impl Llama4Runner {
     /// Load a Llama-4 checkpoint directory (text weights; vision ignored).
     pub fn from_checkpoint(dir: impl AsRef<Path>, device: Device) -> Result<Self> {
@@ -45,26 +67,10 @@ impl Llama4Runner {
         let cfg = Llama4TextConfig::from_file(dir.join("config.json"))?;
         let mut full = WeightMap::from_safetensors_dir(dir)
             .with_context(|| format!("loading llama4 safetensors from {}", dir.display()))?;
-
-        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
-        for k in full.remaining_keys() {
-            if k.starts_with("vision_model.") || k.starts_with("multi_modal_projector.") {
-                let _ = full.take(&k)?; // drop vision weights (text runner)
-                continue;
-            }
-            let (d, s) = full.take(&k)?;
-            if let Some(r) = k.strip_prefix("language_model.model.") {
-                t.insert(format!("model.{r}"), (d, s));
-            } else if let Some(r) = k.strip_prefix("language_model.lm_head.") {
-                t.insert(format!("lm_head.{r}"), (d, s));
-            } else {
-                t.insert(k, (d, s)); // model.* / lm_head.weight (text-only checkpoints)
-            }
-        }
         Ok(Self {
             cfg,
             device,
-            weights: Some(WeightMap::from_tensors(t)),
+            weights: Some(text_weights(&mut full)?),
             graph: None,
             rope: HashMap::new(),
         })

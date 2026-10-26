@@ -40,11 +40,13 @@ use rlx_models::run::{ChatTemplate, CompatibilityStatus, check_path};
 use std::path::PathBuf;
 
 fn weights_path() -> Option<PathBuf> {
-    std::env::var("RLX_LLAMA32_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_LLAMA32_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 
 fn tokenizer_path() -> Option<PathBuf> {
-    std::env::var("RLX_LLAMA32_TOKENIZER")
+    rlx_ir::env::var_result("RLX_LLAMA32_TOKENIZER")
         .ok()
         .map(PathBuf::from)
         .or_else(|| {
@@ -176,7 +178,11 @@ fn chat_template_on_llama32_1b() {
 /// is roughly 20 s wall clock.
 #[test]
 fn forward_inference_llama32_1b() {
-    if std::env::var("RLX_LLAMA32_RUN_INFERENCE").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_LLAMA32_RUN_INFERENCE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_LLAMA32_RUN_INFERENCE=1");
         return;
     }

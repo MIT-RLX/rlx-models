@@ -35,7 +35,7 @@ Defaults: **greedy** argmax, `--max-tokens 864`, `--seed 1337`, speaker from
 ## Whisper + backend matrix
 
 ```bash
-# Apple Silicon
+# macOS arm64
 cargo run -p rlx-metavoice --release --example backend_matrix \
   --features "metal,mlx,gpu,coreml"
 

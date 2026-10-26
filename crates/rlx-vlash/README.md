@@ -61,7 +61,7 @@ cargo test -p rlx-vlash --features vulkan --test smoke -- --nocapture
 cargo test -p rlx-vlash --features cuda   --test smoke -- --nocapture   # NVIDIA
 ```
 
-Metal / MLX / wgpu / Vulkan are verified to run both variants on Apple silicon;
+Metal / MLX / wgpu / Vulkan are verified to run both variants on macOS arm64;
 CUDA / ROCm are wired identically (need NVIDIA / AMD hardware). `all-backends`
 enables the lot.
 

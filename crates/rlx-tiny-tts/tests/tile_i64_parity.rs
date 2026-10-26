@@ -24,8 +24,10 @@ fn onnx_tile_i64_matches_onnxruntime() {
     let x = std::fs::read(d.join("x.i64")).expect("x.i64");
     let refy: Vec<i64> = std::fs::read(d.join("y_ref.i64"))
         .expect("y_ref")
-        .chunks_exact(8)
-        .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|b| i64::from_le_bytes(*b))
         .collect();
     assert!(!refy.is_empty());
     let mut g =
@@ -33,8 +35,10 @@ fn onnx_tile_i64_matches_onnxruntime() {
     let out = g.run_typed(&[("x", &x, DType::I64)]);
     let (bytes, _dt) = out.into_iter().next().expect("out");
     let y: Vec<i64> = bytes
-        .chunks_exact(8)
-        .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|b| i64::from_le_bytes(*b))
         .collect();
     assert_eq!(
         y.len(),

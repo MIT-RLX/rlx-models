@@ -422,7 +422,7 @@ fn parse_units_sidecar(bytes: &[u8]) -> Vec<String> {
 /// Roots searched for pack sources (published tree + optional cache).
 fn pack_source_roots(root: &Path) -> Vec<PathBuf> {
     let mut out = vec![root.to_path_buf()];
-    if let Some(p) = std::env::var_os("RLX_ASR_PACK_SRC") {
+    if let Some(p) = rlx_ir::env::var_os("RLX_ASR_PACK_SRC") {
         out.push(PathBuf::from(p));
     }
     if let Some(repo) = root.parent().and_then(|p| p.parent()) {
@@ -437,7 +437,7 @@ fn first_existing(cands: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn resolve_encoder_npz(root: &Path) -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("RLX_ASR_ENCODER_NPZ") {
+    if let Some(p) = rlx_ir::env::var_os("RLX_ASR_ENCODER_NPZ") {
         let p = PathBuf::from(p);
         if p.is_file() {
             return Some(p);
@@ -570,7 +570,7 @@ fn add_npy(
     match arr.dtype {
         NpyDType::F32 => {
             let mut v = Vec::with_capacity(arr.n_elements());
-            for c in arr.data.chunks_exact(4) {
+            for c in arr.data.as_chunks::<4>().0 {
                 v.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
             }
             add_f32(w, names, name, arr.shape.clone(), &v)
@@ -578,7 +578,7 @@ fn add_npy(
         NpyDType::F64 => {
             // Downcast debug/fit dumps to f32 for the runtime pack.
             let mut v = Vec::with_capacity(arr.n_elements());
-            for c in arr.data.chunks_exact(8) {
+            for c in arr.data.as_chunks::<8>().0 {
                 let x = f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
                 v.push(x as f32);
             }
@@ -588,7 +588,7 @@ fn add_npy(
         NpyDType::I64 => {
             // Token id dumps — store as F32 ids for simplicity.
             let mut v = Vec::with_capacity(arr.n_elements());
-            for c in arr.data.chunks_exact(8) {
+            for c in arr.data.as_chunks::<8>().0 {
                 let x = i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
                 v.push(x as f32);
             }
@@ -907,7 +907,7 @@ pub fn resolve_rlxp_path(root: &Path) -> Option<PathBuf> {
 
 /// Resolve `model.gguf` under an ASR root (or `RLX_ASR_GGUF`).
 pub fn resolve_gguf_path(root: &Path) -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("RLX_ASR_GGUF") {
+    if let Some(p) = rlx_ir::env::var_os("RLX_ASR_GGUF") {
         let p = PathBuf::from(p);
         if p.is_file() {
             return Some(p);

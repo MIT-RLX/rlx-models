@@ -29,14 +29,14 @@ const PROMPTS: &[(&str, &str)] = &[
 ];
 
 fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
+    rlx_ir::env::read(key)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key)
+    rlx_ir::env::read(key)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)

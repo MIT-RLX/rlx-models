@@ -92,7 +92,7 @@ cargo build -p rlx-ocr2 --features metal      # or: mlx, cuda, gpu (wgpu), vulka
 ```
 
 Convenience groups: `all-backends`, `metal-mlx`, plus `blas-accelerate` for a faster
-CPU BLAS on Apple. `rlxp` (default on) adds `.rlxp` packaging; turn it off with
+CPU BLAS on macOS. `rlxp` (default on) adds `.rlxp` packaging; turn it off with
 `--no-default-features` to drop the `rlx-pkg` dependency.
 
 ## Environment knobs

@@ -103,6 +103,7 @@ pub fn build_locateanything_prefill_mtp_built(
         qk_norm: qcfg.qk_norm,
         attention_bias: qcfg.attention_bias,
         mask: MaskKind::Causal,
+        moe: None,
     };
 
     let mut flow = ModelFlow::new("locateanything_mtp_prefill")
@@ -264,6 +265,7 @@ pub fn build_locateanything_mtp_kv_built(
         qk_norm: qcfg.qk_norm,
         attention_bias: qcfg.attention_bias,
         mask: MaskKind::Causal,
+        moe: None,
     };
 
     let mut flow = ModelFlow::new("locateanything_mtp_kv")
@@ -443,6 +445,7 @@ fn build_locateanything_prefill_built_ext(
         qk_norm: qcfg.qk_norm,
         attention_bias: qcfg.attention_bias,
         mask: MaskKind::Causal,
+        moe: None,
     };
 
     let kv_sink = SideOutputs::new();

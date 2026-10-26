@@ -338,7 +338,8 @@ fn batch_fill(one: &[Ex]) -> Vec<Ex> {
 
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| {
-        "/private/tmp/claude-501/-Users-Shared-rlx-models/47c4aeaa-f216-4fbb-9241-d0928201ee4a/scratchpad/htop_train".to_string()
+        eprintln!("usage: pass the dataset directory (`htop_train/` from the data generator)");
+        std::process::exit(2)
     });
     const EPOCHS: usize = 45;
 

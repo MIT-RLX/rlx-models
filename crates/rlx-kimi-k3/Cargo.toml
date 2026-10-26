@@ -13,13 +13,20 @@ readme = "README.md"
 
 [dependencies]
 rlx-cli = { workspace = true }
+clap = { version = "4", features = ["derive"] }
 rlx-core = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true }
 rlx-deepseek = { workspace = true }
 rlx-llada2 = { workspace = true }
-rlx-distributed = { workspace = true, optional = true }
+# Liveness-checked RPC + stage planning (dist.rs); expert offload (feature `cluster`).
+rlx-distributed = { workspace = true }
+# Training (LoRA injection, optimizers, data-parallel gradient reduction) and
+# the layer VJPs the streamed trainer chains.
+rlx-tune = { path = "../rlx-tune", version = "0.2.19" }
+rlx-autodiff = { workspace = true }
+rlx-optim = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 memmap2 = "0.9"
@@ -49,20 +56,23 @@ workspace = true
 
 [features]
 default = []
-# Multi-node pipeline: placement planning against the real checkpoint + a
-# reduced local forward. Pulls in the model-agnostic distributed runtime.
-cluster = ["dep:rlx-distributed"]
-metal = ["rlx-runtime/metal", "rlx-deepseek/metal"]
+# MoE expert-parallel offload (`dist_experts`) and the `kimi_k3_cluster`
+# example. The layer pipeline (`dist`) is always built.
+cluster = []
+# KDA state log: per-token recurrence inputs + periodic snapshots, from which
+# every KDA state of a generation rebuilds exactly (`state_log`).
+state-log = []
+metal = ["rlx-runtime/metal", "rlx-deepseek/metal", "rlx-tune/metal"]
 mlx = ["rlx-runtime/mlx", "rlx-deepseek/mlx"]
-cuda = ["rlx-runtime/cuda", "rlx-deepseek/cuda"]
+cuda = ["rlx-runtime/cuda", "rlx-deepseek/cuda", "rlx-tune/cuda"]
 rocm = ["rlx-runtime/rocm", "rlx-deepseek/rocm"]
-gpu = ["rlx-runtime/gpu", "rlx-deepseek/gpu"]
+gpu = ["rlx-runtime/gpu", "rlx-deepseek/gpu", "rlx-tune/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-deepseek/vulkan"]
 coreml = ["rlx-runtime/coreml", "rlx-core/coreml", "rlx-deepseek/coreml"]
 amx-sme = ["rlx-runtime/amx-sme"]
 amx-bnns = ["rlx-runtime/amx-bnns"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]

@@ -115,7 +115,7 @@ fn main() -> Result<()> {
     let host_head = (matches!(device, Device::Gpu) || rlx_ir::env::flag("RLX_FORCE_HOST_HEAD"))
         && !rlx_ir::env::flag("RLX_WGPU_INGRAPH_HEAD")
         && !diag_hidden
-        && std::env::var("RLX_DIAG_STAGE").is_err();
+        && rlx_ir::env::var_result("RLX_DIAG_STAGE").is_err();
     if host_head {
         eprintln!(
             "[mlx_auto_run] trunk on {device:?}, LM head on host \
@@ -224,7 +224,7 @@ fn main() -> Result<()> {
     // Report raw stats (not argmax) whenever the graph output isn't full logits:
     // RLX_DIAG_HIDDEN (with_lm_head=false trunk) OR RLX_DIAG_STAGE=head_input
     // (with_lm_head=true but output overridden to the gathered last-token hidden).
-    let stats_mode = diag_hidden || std::env::var("RLX_DIAG_STAGE").is_ok();
+    let stats_mode = diag_hidden || rlx_ir::env::var_result("RLX_DIAG_STAGE").is_ok();
     if stats_mode {
         // Trunk-hidden bisection: report stats so a zeroed/collapsed stage on
         // a specific backend is obvious without a host oracle.
@@ -235,7 +235,8 @@ fn main() -> Result<()> {
             .map(|x| (*x as f64) * (*x as f64))
             .sum::<f64>()
             .sqrt();
-        let stage = std::env::var("RLX_DIAG_STAGE").unwrap_or_else(|_| "final_norm".into());
+        let stage =
+            rlx_ir::env::var_result("RLX_DIAG_STAGE").unwrap_or_else(|_| "final_norm".into());
         let head: Vec<f32> = logits.iter().take(6).copied().collect();
         eprintln!("DIAG hidden stage={stage} len={n} nonzero={nonzero} l2={l2:.4} head={head:?}");
         let dev_tag = format!("{device:?}").to_lowercase();

@@ -36,6 +36,7 @@ use rlx_runtime::compile_cache::{BucketedCompileCache, CacheRunInput};
 use rlx_runtime::{CompileOptions, Device, Session};
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 /// Weights as the stages take them: name → (values, shape).
 pub type Tensors = HashMap<String, (Vec<f32>, Vec<usize>)>;
@@ -142,7 +143,7 @@ pub struct FamilyPipelineStage<F: PipelineFamily> {
     embed_input: bool,
     produce_logits: bool,
     batch: usize,
-    weights: Tensors,
+    weights: Arc<Tensors>,
     cache: Option<KvCacheState>,
     decode_cache: Option<BucketedCompileCache>,
 }
@@ -169,7 +170,8 @@ impl<F: PipelineFamily> FamilyPipelineStage<F> {
     ) -> Self {
         let role = block_role(rank, world);
         let (embed_input, produce_logits) = crate::block_weights::block_ends(rank, world);
-        let weights = family.block_weights(all_weights, &layers, embed_input, produce_logits);
+        let weights =
+            Arc::new(family.block_weights(all_weights, &layers, embed_input, produce_logits));
         Self {
             family,
             device,
@@ -195,19 +197,35 @@ impl<F: PipelineFamily> FamilyPipelineStage<F> {
         self
     }
 
-    /// As [`Self::with_decode_cache`], but `1` compiles a single graph
-    /// spanning the whole context instead of a ladder.
-    pub fn with_decode_buckets(self, buckets: usize, max_past: usize) -> Self {
-        let max = max_past.max(1) as u64;
-        if buckets <= 1 {
-            let mut this = self;
-            this.decode_cache = Some(crate::flow_util::single_bucket_decode_cache(
-                this.device,
-                max as usize,
-            ));
-            return this;
-        }
-        self.with_decode_cache(max_past)
+    /// Compile `buckets` decode graphs spanning the context.
+    ///
+    /// The count is the dial between speed and memory, and both ends are
+    /// expensive. Every bucket is a separately compiled graph holding its
+    /// own copy of this block's parameters; one bucket pads every step out
+    /// to the full context. Measured on a 135M model split two ways,
+    /// max-seq 512, both ranks together:
+    ///
+    /// ```text
+    ///   power-of-two ladder (10 graphs)   90-94 ms/token    4669 MB
+    ///   one graph                        135-140 ms/token   2064 MB
+    /// ```
+    ///
+    /// So 1.5x the speed for 2.26x the memory — which is the wrong way
+    /// round for a model being split *because* it does not fit. A count
+    /// between the two was not expressible before: anything above 1 got the
+    /// full ladder regardless.
+    ///
+    /// `usize::MAX` asks for the power-of-two ladder by name.
+    pub fn with_decode_buckets(mut self, buckets: usize, max_past: usize) -> Self {
+        let max = max_past.max(1);
+        self.decode_cache = Some(if buckets == usize::MAX {
+            BucketedCompileCache::power_of_two_ladder(self.device, 1, max as u64)
+        } else {
+            // `geometric_ladder` handles the one-rung case, so there is no
+            // separate branch for a single bucket.
+            BucketedCompileCache::geometric_ladder(self.device, max as u64, buckets)
+        });
+        self
     }
 
     pub fn role(&self) -> BlockRole {
@@ -232,7 +250,7 @@ impl<F: PipelineFamily> FamilyPipelineStage<F> {
         if seq == 0 {
             bail!("a prefill needs at least one position");
         }
-        let mut wm = WeightMap::from_tensors(self.weights.clone());
+        let mut wm = WeightMap::from_tensors((*self.weights).clone());
         let built = self.family.seed_graph(
             &mut wm,
             self.batch,
@@ -291,12 +309,12 @@ impl<F: PipelineFamily> FamilyPipelineStage<F> {
     fn decode_bucketed(&mut self, input: BlockInput<'_>) -> Result<Vec<f32>> {
         let past = self.cache.as_ref().expect("seeded").past_len;
         let extra = self.family.decode_inputs(past);
-        let kv = self.cache.as_ref().expect("seeded").clone();
         let opts = self.family.compile_options(self.device, true);
         let kv_dim = self.family.kv_proj_dim();
         let block_len = self.layers.len();
         let (main_name, main_buf) = self.decode_input(input, past)?;
 
+        let kv = self.cache.as_ref().expect("seeded");
         let cache_dec = self.decode_cache.as_mut().expect("bucketed");
         let upper = cache_dec
             .bucket_for(past as u64)
@@ -325,19 +343,19 @@ impl<F: PipelineFamily> FamilyPipelineStage<F> {
             });
         }
 
-        let weights = self.weights.clone();
+        let weights = Arc::clone(&self.weights);
         let layers = self.layers.clone();
         let family = &self.family;
         let (batch, embed, logits) = (self.batch, self.embed_input, self.produce_logits);
         let (main, layers_k, layers_v) = run_bucketed_kv_decode(
             cache_dec,
             past,
-            &kv,
+            kv,
             kv_dim,
             block_len,
             &fixed,
             |upper| {
-                let mut wm = WeightMap::from_tensors(weights.clone());
+                let mut wm = WeightMap::from_tensors((*weights).clone());
                 let built = family
                     .decode_graph(
                         &mut wm,
@@ -366,10 +384,12 @@ impl<F: PipelineFamily> FamilyPipelineStage<F> {
     fn decode_recompile(&mut self, input: BlockInput<'_>) -> Result<Vec<f32>> {
         let past = self.cache.as_ref().expect("seeded").past_len;
         let extra = self.family.decode_inputs(past);
-        let kv = self.cache.as_ref().expect("seeded").clone();
         let (main_name, main_buf) = self.decode_input(input, past)?;
 
-        let mut wm = WeightMap::from_tensors(self.weights.clone());
+        // Borrowed, not cloned: copying the KV cache per token is
+        // O(context) per token and quadratic over a generation.
+        let kv = self.cache.as_ref().expect("seeded");
+        let mut wm = WeightMap::from_tensors((*self.weights).clone());
         let built = self.family.decode_graph(
             &mut wm,
             self.batch,

@@ -13,6 +13,8 @@
 
 pub mod config;
 pub mod device_policy;
+#[cfg(feature = "export")]
+pub mod export;
 
 #[cfg(feature = "hf-download")]
 pub mod download;

@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
-    let dest = std::env::var("RLX_QWEN3_TTS_BASE_DIR")
+    let dest = rlx_ir::env::var_result("RLX_QWEN3_TTS_BASE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base"));
 

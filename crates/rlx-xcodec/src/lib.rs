@@ -4,6 +4,8 @@
 // rlx-runtime graphs running natively on every backend; the ISTFT runs on the
 // host. (FSQ dequant + w2v-BERT encoder are out of scope here.)
 
+#[cfg(feature = "export")]
+pub mod export;
 pub mod graph;
 pub mod istft;
 pub mod model;

@@ -22,7 +22,7 @@ pub fn meta() -> AdapterMeta {
 
 fn resolve_gguf() -> Option<PathBuf> {
     for key in ["ORPHEUS_PRETRAINED_GGUF", "ORPHEUS_GGUF_PATH"] {
-        if let Ok(p) = std::env::var(key) {
+        if let Ok(p) = rlx_ir::env::read(key) {
             let p = PathBuf::from(p);
             if p.is_file() {
                 return Some(p);

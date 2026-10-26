@@ -27,18 +27,22 @@ use std::path::PathBuf;
 
 #[test]
 fn synthesize_with_cloned_voice_env_gated() {
-    let model_dir = match std::env::var("RLX_VOXTRAL_TTS_DIR") {
+    let model_dir = match rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR") {
         Ok(v) if !v.is_empty() => PathBuf::from(v),
         _ => {
             eprintln!("skip synthesize_with_cloned_voice_env_gated (RLX_VOXTRAL_TTS_DIR unset)");
             return;
         }
     };
-    if std::env::var("RLX_VOXTRAL_TTS_TRAIN_RIG").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_TRAIN_RIG")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip synthesize_with_cloned_voice_env_gated (RLX_VOXTRAL_TTS_TRAIN_RIG!=1)");
         return;
     }
-    let ref_wav = std::env::var("RLX_VOXTRAL_TTS_REF_WAV")
+    let ref_wav = rlx_ir::env::var_result("RLX_VOXTRAL_TTS_REF_WAV")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.is_file());

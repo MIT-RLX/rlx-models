@@ -26,6 +26,8 @@ pub mod cli;
 pub mod config;
 pub mod embed;
 pub mod encoder;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod lm_flow;
 pub mod load;
 pub mod projector;

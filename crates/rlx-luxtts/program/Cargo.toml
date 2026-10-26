@@ -1,0 +1,20 @@
+# LuxTTS's host logic as an RLX program (WebAssembly, wasm32-wasip1): the
+# phonemizer and tokenizer, the prompt's padding, the length regulator, the
+# noise and the flow-matching loop around the package's graphs. Built by
+# `rlx-luxtts`'s exporter, so it stands outside the workspace.
+[package]
+name = "rlx-luxtts-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+anyhow = "1"
+serde_json = "1"
+espeak-ng = { version = "0.2.0", default-features = false }
+
+[workspace]

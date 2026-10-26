@@ -19,8 +19,8 @@ Policy for placement, wave caps, and QMatMul lives in
 cargo build -p rlx-kittentts --features native --release
 # NVIDIA-style: cuda + wgpu + vulkan
 cargo build -p rlx-kittentts --release --features native,cuda,gpu,vulkan
-# Apple: metal / mlx / apple-silicon
-cargo build -p rlx-kittentts --release --features native,apple-silicon
+# macOS: metal / mlx / macos-gpu
+cargo build -p rlx-kittentts --release --features native,macos-gpu
 ```
 
 ## Weights (recommended)

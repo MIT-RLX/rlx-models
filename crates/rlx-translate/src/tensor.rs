@@ -13,9 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Dense f32 tensors in Espresso's layout.
+//! Dense f32 tensors in the vendor layout.
 //!
-//! Espresso describes every blob as `(n, k, h, w)` with **`w` innermost**, and
+//! The format describes every blob as `(n, k, h, w)` with **`w` innermost**, and
 //! `.espresso.shape` reports a `_rank` saying how many of those are meaningful.
 //! A rank-2 activation is therefore `[h, w]` — `h` rows of `w` features — which
 //! is the transpose of how a transformer is usually written down, so the layout
@@ -111,7 +111,7 @@ impl Tensor {
 
     /// Reinterprets the buffer under new dimensions. One dimension may be `-1`
     /// (passed as `None`) and is solved from the element count, matching
-    /// Espresso's `dst_*` of `-1`.
+    /// The format's `dst_*` of `-1`.
     pub fn reshape(&self, dims: &[Option<usize>]) -> Result<Self> {
         let known: usize = dims.iter().flatten().product();
         let holes = dims.iter().filter(|d| d.is_none()).count();

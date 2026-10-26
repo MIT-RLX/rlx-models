@@ -27,11 +27,19 @@ use std::path::PathBuf;
 
 #[test]
 fn cp_mlx_compiled_near_eager_on_hi() {
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY=1");
         return;
     }
-    if std::env::var("RLX_QWEN3_TTS_CP_COMPILED").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_COMPILED")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_CP_COMPILED=1");
         return;
     }
@@ -43,7 +51,10 @@ fn cp_mlx_compiled_near_eager_on_hi() {
         eprintln!("skip: no MLX/Metal");
         return;
     };
-    let model_dir = match std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) {
+    let model_dir = match rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    {
         Some(p) if p.join("model.safetensors").is_file() => p,
         _ => {
             eprintln!("skip: RLX_QWEN3_TTS_DIR");

@@ -2,12 +2,12 @@
 //!
 //! ```bash
 //! # logits top-5 (any --device: cpu|metal|mlx|gpu|cuda|…)
-//! cargo run -p rlx-qwen35 --example fara_text_probe --release --features apple-silicon -- \
+//! cargo run -p rlx-qwen35 --example fara_text_probe --release --features macos-gpu -- \
 //!   --model-dir .cache/fara/4b --device metal
 //!
 //! # full last-token hidden coverage (32 layers + embed)
 //! RLX_QWEN35_DEBUG_LAYERS=1 RLX_QWEN35_RELEASE_HOST_WEIGHTS=0 \
-//! cargo run -p rlx-qwen35 --example fara_text_probe --release --features apple-silicon -- \
+//! cargo run -p rlx-qwen35 --example fara_text_probe --release --features macos-gpu -- \
 //!   --model-dir .cache/fara/4b --device metal --dump-layers /tmp/fara_rlx_layers
 //!
 //! # backend matrix (skips unavailable)
@@ -100,7 +100,7 @@ fn main() -> Result<()> {
         }
     }
 
-    let debug_layers = env::var("RLX_QWEN35_DEBUG_LAYERS").as_deref() == Ok("1");
+    let debug_layers = rlx_ir::env::var_result("RLX_QWEN35_DEBUG_LAYERS").as_deref() == Ok("1");
     if dump_layers.is_some() && !debug_layers {
         anyhow::bail!("--dump-layers requires RLX_QWEN35_DEBUG_LAYERS=1");
     }

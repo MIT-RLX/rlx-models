@@ -268,9 +268,21 @@ pub fn assert_gguf_family(path: &Path, expected: GgufModelFamily) -> Result<Gguf
     } else {
         GgufFile::from_path(path).with_context(|| format!("opening GGUF {path:?}"))?
     };
-    let arch = gguf_architecture_str(&raw).unwrap_or("unknown");
+    assert_gguf_family_of(&raw, path, expected)?;
+    Ok(raw)
+}
+
+/// [`assert_gguf_family`] against a GGUF that is ALREADY parsed.
+///
+/// The check itself only reads `general.architecture`, so a caller holding a
+/// `GgufFile` (e.g. via `GgufLoader::file()`) should not pay a second parse to
+/// run it. `assert_gguf_family` parsing its own copy meant a runner that also
+/// built a loader parsed the same file twice — ~0.5s of a 1.45s "loaded GGUF
+/// metadata" phase on a 0.5 GB checkpoint, for a string comparison.
+pub fn assert_gguf_family_of(raw: &GgufFile, path: &Path, expected: GgufModelFamily) -> Result<()> {
+    let arch = gguf_architecture_str(raw).unwrap_or("unknown");
     if expected.accepts_arch(arch) {
-        return Ok(raw);
+        return Ok(());
     }
     if let Some(actual) = gguf_family_for_arch(arch) {
         bail!(
@@ -498,7 +510,9 @@ pub fn gguf_split_siblings(path: &Path) -> Result<Option<Vec<PathBuf>>> {
 /// peak RSS (targets constrained machines / iOS-class RAM).
 pub fn low_mem_compile() -> bool {
     matches!(
-        std::env::var("RLX_LOW_MEM_COMPILE").ok().as_deref(),
+        rlx_ir::env::var_result("RLX_LOW_MEM_COMPILE")
+            .ok()
+            .as_deref(),
         Some("1") | Some("true") | Some("on") | Some("yes")
     )
 }
@@ -510,7 +524,9 @@ pub fn low_mem_compile() -> bool {
 /// for the per-file `F32-expand≈` estimate before draining.
 pub fn laguna_allow_f32_expand() -> bool {
     matches!(
-        std::env::var("RLX_LAGUNA_ALLOW_F32_EXPAND").ok().as_deref(),
+        rlx_ir::env::var_result("RLX_LAGUNA_ALLOW_F32_EXPAND")
+            .ok()
+            .as_deref(),
         Some("1") | Some("true") | Some("on") | Some("yes")
     )
 }

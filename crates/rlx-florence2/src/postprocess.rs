@@ -143,7 +143,7 @@ fn parse_bboxes(
     let (w, h) = image_size;
     let mut out = Vec::new();
     for seg in segment(ids, tk)? {
-        for chunk in seg.locs.chunks_exact(4) {
+        for chunk in seg.locs.as_chunks::<4>().0.iter() {
             out.push(BBoxInstance {
                 bbox: [
                     dequant(chunk[0], w),
@@ -167,7 +167,7 @@ fn parse_ocr(
     let (w, h) = image_size;
     let mut out = Vec::new();
     for seg in segment(ids, tk)? {
-        for chunk in seg.locs.chunks_exact(8) {
+        for chunk in seg.locs.as_chunks::<8>().0.iter() {
             let mut quad = [0f64; 8];
             for p in 0..4 {
                 quad[p * 2] = dequant(chunk[p * 2], w);
@@ -196,7 +196,7 @@ fn parse_polygons(
             continue;
         }
         let mut poly = Vec::new();
-        for pair in seg.locs.chunks_exact(2) {
+        for pair in seg.locs.as_chunks::<2>().0.iter() {
             poly.push(dequant(pair[0], w));
             poly.push(dequant(pair[1], h));
         }

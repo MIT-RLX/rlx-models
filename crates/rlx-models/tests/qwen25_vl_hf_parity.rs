@@ -38,17 +38,23 @@ const TOL_HIDDEN_COS: f64 = 0.05;
 const WARN_LOGITS_MAX_DIFF: f32 = 2.0;
 
 fn env_path(name: &str) -> Option<PathBuf> {
-    std::env::var(name).ok().map(PathBuf::from)
+    rlx_ir::env::read(name).ok().map(PathBuf::from)
 }
 
 fn ref_runner_ready() -> bool {
-    std::env::var("RLX_QWEN25_VL_DOCKER").ok().as_deref() == Some("1")
-        || std::env::var("RLX_QWEN25_VL_PYTHON").is_ok()
+    rlx_ir::env::var_result("RLX_QWEN25_VL_DOCKER")
+        .ok()
+        .as_deref()
+        == Some("1")
+        || rlx_ir::env::var_result("RLX_QWEN25_VL_PYTHON").is_ok()
 }
 
 fn hf_model_ready() -> bool {
-    std::env::var("RLX_QWEN25_VL_HF_DIR").is_ok()
-        || std::env::var("RLX_QWEN25_VL_DOWNLOAD").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_QWEN25_VL_HF_DIR").is_ok()
+        || rlx_ir::env::var_result("RLX_QWEN25_VL_DOWNLOAD")
+            .ok()
+            .as_deref()
+            == Some("1")
 }
 
 fn load_image_path() -> Option<PathBuf> {
@@ -61,7 +67,10 @@ fn dump_reference(image: &Path) -> ReferenceDump {
 
 fn dump_reference_with_env(image: &Path, extra_env: &[(&str, &str)]) -> ReferenceDump {
     let out_dir = tempfile::tempdir().expect("tempdir");
-    let use_docker = std::env::var("RLX_QWEN25_VL_DOCKER").ok().as_deref() == Some("1");
+    let use_docker = rlx_ir::env::var_result("RLX_QWEN25_VL_DOCKER")
+        .ok()
+        .as_deref()
+        == Some("1");
     run_reference_with_env(image, out_dir.path(), use_docker, extra_env).expect("reference dump")
 }
 
@@ -262,7 +271,10 @@ fn qwen25_vl_reference_dump_reload() {
     };
 
     let out_dir = tempfile::tempdir().expect("tempdir");
-    let use_docker = std::env::var("RLX_QWEN25_VL_DOCKER").ok().as_deref() == Some("1");
+    let use_docker = rlx_ir::env::var_result("RLX_QWEN25_VL_DOCKER")
+        .ok()
+        .as_deref()
+        == Some("1");
     if use_docker {
         run_docker_reference(&image, out_dir.path()).expect("docker reference");
     } else {
@@ -439,7 +451,7 @@ fn qwen25_vl_aif_mu_decode() {
 
 fn dynamics_atol() -> f32 {
     // Default tolerance for Q4_K_M LM + native graph Q/K vs HF F32 attentions.
-    std::env::var("RLX_AIF_DYNAMICS_ATOL")
+    rlx_ir::env::var_result("RLX_AIF_DYNAMICS_ATOL")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.06)

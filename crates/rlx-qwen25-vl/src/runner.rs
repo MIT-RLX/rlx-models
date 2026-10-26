@@ -896,7 +896,7 @@ impl Qwen25VlRunner {
             ("rope_cos", rope_cos.as_slice()),
             ("rope_sin", rope_sin.as_slice()),
         ]);
-        if std::env::var_os("RLX_VL_DECODE_TRACE").is_some() {
+        if rlx_ir::env::var_os("RLX_VL_DECODE_TRACE").is_some() {
             eprintln!(
                 "vl prefill: seq={seq} padded={padded} compiled {compiled_before}->{} in {:.0} ms",
                 self.prefill_graphs
@@ -1117,7 +1117,7 @@ impl Qwen25VlRunner {
             &options,
         )?;
 
-        if std::env::var_os("RLX_VL_DECODE_TRACE").is_some() {
+        if rlx_ir::env::var_os("RLX_VL_DECODE_TRACE").is_some() {
             let after = self
                 .decode_graphs
                 .as_ref()
@@ -1290,12 +1290,7 @@ impl Qwen25VlRunner {
 }
 
 fn argmax_token(logits: &[f32]) -> u32 {
-    logits
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i as u32)
-        .unwrap_or(0)
+    rlx_runtime::search::argmax_u32(logits)
 }
 
 #[cfg(test)]

@@ -24,7 +24,10 @@ use std::path::PathBuf;
 
 #[test]
 fn warm_generate_reuses_compiled_graph() {
-    let Some(w) = std::env::var("RLX_LFM_WEIGHTS").ok().map(PathBuf::from) else {
+    let Some(w) = rlx_ir::env::var_result("RLX_LFM_WEIGHTS")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: set RLX_LFM_WEIGHTS=<LFM2 .gguf>");
         return;
     };

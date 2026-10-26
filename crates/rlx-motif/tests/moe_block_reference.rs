@@ -34,7 +34,7 @@ const SEQ: usize = 5;
 const PREFIX: &str = "model.layers.0.moe";
 
 fn dev() -> Device {
-    std::env::var("RLX_TEST_DEVICE")
+    rlx_ir::env::var_result("RLX_TEST_DEVICE")
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| rlx_cli::parse_device(&s).expect("bad RLX_TEST_DEVICE"))

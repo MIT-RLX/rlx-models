@@ -16,7 +16,7 @@ use rlx_tiny_tts::{BundleConfig, Device};
 use std::path::PathBuf;
 
 fn main() {
-    let work = std::env::var("RLX_ST_WORK")
+    let work = rlx_ir::env::var_result("RLX_ST_WORK")
         .unwrap_or_else(|_| format!("{}/st_graph", std::env::temp_dir().display()));
     let man: serde_json::Value =
         serde_json::from_slice(&std::fs::read(format!("{work}/manifest.json")).unwrap()).unwrap();
@@ -37,12 +37,14 @@ fn main() {
         .unwrap_or_default();
     let named_ref: Vec<(&str, usize)> = named.iter().map(|(k, v)| (k.as_str(), *v)).collect();
 
-    let onnx_dir = PathBuf::from(std::env::var("RLX_ST_ONNX_DIR").unwrap_or_else(|_| {
-        format!(
-            "{}/../../weights/tts/supertonic-3/onnx",
-            env!("CARGO_MANIFEST_DIR")
-        )
-    }));
+    let onnx_dir = PathBuf::from(
+        rlx_ir::env::var_result("RLX_ST_ONNX_DIR").unwrap_or_else(|_| {
+            format!(
+                "{}/../../weights/tts/supertonic-3/onnx",
+                env!("CARGO_MANIFEST_DIR")
+            )
+        }),
+    );
     let cfg = BundleConfig {
         model: String::new(),
         sample_rate: 44100,
@@ -56,7 +58,7 @@ fn main() {
         inter_channels: 80,
         gin_channels: 80,
     };
-    let device = match std::env::var("RLX_DEV").as_deref() {
+    let device = match rlx_ir::env::var_result("RLX_DEV").as_deref() {
         Ok("mlx") => Device::Mlx,
         Ok("metal") => Device::Metal,
         _ => Device::Cpu,

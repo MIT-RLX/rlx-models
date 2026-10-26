@@ -3,7 +3,7 @@
 // Exercises the non-trivial DaViT ops (6-D window partition reshape/permute,
 // 4-D batched matmul for channel attention, mean+keepdim, concat) on a tiny
 // graph and compares each GPU backend to the CPU result, to localise backend
-// coverage gaps. Weight-free; run with `--features apple-silicon`.
+// coverage gaps. Weight-free; run with `--features macos-gpu`.
 
 #![cfg(any(feature = "metal", feature = "mlx"))]
 

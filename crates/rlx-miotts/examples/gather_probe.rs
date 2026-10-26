@@ -25,11 +25,15 @@ fn main() -> anyhow::Result<()> {
     let outs = g.run_typed(&[("idx", &bytes, DType::I64)]);
     let v: Vec<f32> = outs[0]
         .0
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let reference: Vec<f32> = std::fs::read(dir.join("gather_ref.f32"))?
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     println!("rlx elems={} ref={}", v.len(), reference.len());

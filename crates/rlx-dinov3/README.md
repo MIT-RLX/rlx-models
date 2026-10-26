@@ -71,14 +71,14 @@ Backend selection forwards to `rlx-runtime`; the crate code is backend-agnostic.
 | feature | backend |
 |---|---|
 | *(default)* | CPU |
-| `metal` | Apple Metal |
-| `mlx` | Apple MLX |
+| `metal` | Metal |
+| `mlx` | MLX |
 | `gpu` | wgpu (portable GPU) |
 | `cuda` | NVIDIA CUDA |
 | `vulkan` | Vulkan |
 | `rocm` | AMD ROCm |
 | `all-backends` | all of the above |
-| `apple-silicon` | `metal, mlx, gpu` |
+| `macos-gpu` | `metal, mlx, gpu` |
 
 ## Weights
 
@@ -106,10 +106,10 @@ fixture, so the architecture can be validated with **no gated download**:
 All four backends are **bit-exact** vs HF, for both the standard-GELU and
 gated-GeGLU MLP. CUDA / Vulkan / ROCm use the same primitive ops (`mm` / `add` /
 `rope` / `attention` / `layer_norm` / `gelu` / `mul`) that those backends already
-lower, so they are supported by construction (not run on the Apple-Silicon dev
+lower, so they are supported by construction (not run on the M-series dev
 host).
 
-> **Metal note.** Reaching bit-exactness required a backend fix: Apple's MPSGraph
+> **Metal note.** Reaching bit-exactness required a backend fix: MPSGraph
 > (and the fused `sgemm` epilogue) mis-execute an **erf-GELU fused onto a
 > matmul+bias** — an O(1) divergence, hidden under the trailing LayerNorm.
 > tanh-GELU is unaffected, which is why DINOv2 never showed it. `rlx-metal` now

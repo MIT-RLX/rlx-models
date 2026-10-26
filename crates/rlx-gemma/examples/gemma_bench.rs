@@ -20,7 +20,7 @@ const HF_CHAT_IDS: &[u32] = &[
 const DECODE_STEPS: usize = 32;
 
 fn weights() -> PathBuf {
-    std::env::var("RLX_GEMMA3_GGUF")
+    rlx_ir::env::var_result("RLX_GEMMA3_GGUF")
         .expect("set RLX_GEMMA3_GGUF")
         .into()
 }

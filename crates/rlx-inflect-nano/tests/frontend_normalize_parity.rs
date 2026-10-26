@@ -7,7 +7,7 @@ use rlx_inflect_nano::frontend::{clean_tinytts_text, normalize_text};
 use serde_json::Value;
 
 fn corpus_path() -> Option<PathBuf> {
-    let base = std::env::var("RLX_INFLECT_NANO_DATA")
+    let base = rlx_ir::env::var_result("RLX_INFLECT_NANO_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/inflect-nano-rlx")

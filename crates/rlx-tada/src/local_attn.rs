@@ -56,8 +56,8 @@ pub struct LocalAttnStack {
     prefix: String,
     pub layers: Vec<Layer>,
     /// `[max_seq, head_dim / 2]`, split out of the checkpoint's `rope_freqs`.
-    cos: Vec<f32>,
-    sin: Vec<f32>,
+    pub(crate) cos: Vec<f32>,
+    pub(crate) sin: Vec<f32>,
     pub max_seq: usize,
     pub d_model: usize,
     pub num_heads: usize,
@@ -105,7 +105,7 @@ impl LocalAttnStack {
         let max_seq = shape[0];
         let mut cos = Vec::with_capacity(max_seq * half);
         let mut sin = Vec::with_capacity(max_seq * half);
-        for chunk in flat.chunks_exact(2) {
+        for chunk in flat.as_chunks::<2>().0.iter() {
             cos.push(chunk[0]);
             sin.push(chunk[1]);
         }
@@ -142,13 +142,26 @@ impl LocalAttnStack {
                 self.max_seq
             );
         }
+        let half = self.head_dim() / 2;
+        let cos = ctx.param(self.cos[..seq * half].to_vec(), &[seq, half]);
+        let sin = ctx.param(self.sin[..seq * half].to_vec(), &[seq, half]);
+        self.build_with(ctx, x, bias, seq, cos, sin)
+    }
+
+    /// [`Self::build`] with the RoPE rows `cos` / `sin` (`[seq, head_dim /
+    /// 2]`) given.
+    pub(crate) fn build_with(
+        &self,
+        ctx: &mut Ctx,
+        x: HirNodeId,
+        bias: HirNodeId,
+        seq: usize,
+        cos: HirNodeId,
+        sin: HirNodeId,
+    ) -> Result<HirNodeId> {
         let d = self.d_model;
         let h = self.num_heads;
         let hd = self.head_dim();
-        let half = hd / 2;
-
-        let cos = ctx.param(self.cos[..seq * half].to_vec(), &[seq, half]);
-        let sin = ctx.param(self.sin[..seq * half].to_vec(), &[seq, half]);
 
         let mut cur = x;
         for layer in &self.layers {

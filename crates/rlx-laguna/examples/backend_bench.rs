@@ -5,7 +5,7 @@
 //! Reference is host [`rlx_cpu::gguf_matmul`] (same kernel as packed generate).
 //!
 //! ```bash
-//! cargo run -p rlx-laguna --example backend_bench --release --features apple-silicon -- \
+//! cargo run -p rlx-laguna --example backend_bench --release --features macos-gpu -- \
 //!   --weights .cache/laguna-xs/Laguna-XS-2.1-Q4_K_M.gguf
 //! ```
 

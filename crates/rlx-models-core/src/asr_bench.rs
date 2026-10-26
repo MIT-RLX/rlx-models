@@ -194,7 +194,7 @@ fn emit(crate_name: &str, device: &str, audio_seconds: f64, rows: &[AsrBenchRow]
     let pct = |o: Option<f64>| o.map_or("na".into(), |v| format!("{:.2}", v * 100.0));
     let num = |o: Option<f64>| o.map_or("na".into(), |v| format!("{v:.3}"));
     // Hypothesis text dump for debugging backend divergence (set RLX_ASR_DEBUG_TEXT).
-    if std::env::var_os("RLX_ASR_DEBUG_TEXT").is_some() {
+    if rlx_ir::env::var_os("RLX_ASR_DEBUG_TEXT").is_some() {
         for r in rows {
             eprintln!("[hyp {crate_name}/{device}/{}] {:?}", r.label, r.text);
         }

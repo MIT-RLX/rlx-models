@@ -626,22 +626,13 @@ impl Qwen3Runner {
             }
             return Ok(logits[..vocab].to_vec());
         }
-        // F32 path: prefill then read the last logits from the
-        // generator's step path (one-step decode).
+        // F32 path: the prompt's last logits row, the generator's cache
+        // seeded with the prompt.
         let generator = self
             .generator
             .as_mut()
             .ok_or_else(|| anyhow!("F32 generator is not available in packed_weights mode"))?;
-        generator.prefill(prompt_ids);
-        let _tok = generator.step_cached(self.sample)?;
-        // The generator doesn't expose its logits buffer publicly
-        // today; round-trip via the speculator-style scoring
-        // helpers would require new public API. For now,
-        // `predict_logits` on the F32 path returns a placeholder
-        // single-element vec containing the sampled token id as
-        // an f32 so callers get *something* — the packed path is
-        // the one with full logit access.
-        Ok(vec![_tok as f32])
+        generator.prefill_get_last_logits(prompt_ids)
     }
 
     /// Generate `n_new` tokens via repeated packed-mode prefills.

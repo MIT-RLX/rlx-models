@@ -15,7 +15,7 @@
 
 //! The compiled NeuralHash descriptor network: `[1, 3, 360, 360]` → 128 floats.
 //!
-//! Entirely native. The architecture comes from Apple's Espresso container via
+//! Entirely native. The architecture comes from the vendor's network container via
 //! [`crate::spec`], the graph from [`crate::flow`], and execution from
 //! `rlx-runtime` — there is no ONNX runtime on this path, and the `onnx-parity`
 //! feature that can import `model.onnx` exists only to diff against this.
@@ -28,7 +28,7 @@ use rlx_flow::CompileProfile;
 use rlx_runtime::{CompiledGraph, Device, Session};
 use std::path::Path;
 
-use crate::espresso::EspressoNet;
+use crate::netfile::NetFile;
 use crate::preprocess::{INPUT_ELEMS, INPUT_SIZE};
 use crate::seed::EMBED_DIM;
 use crate::spec::NeuralHashSpec;
@@ -44,44 +44,44 @@ pub struct NeuralHashModel {
 impl NeuralHashModel {
     /// Build from `NeuralHashv3b_fp16-current.espresso.net` (its `.shape` and
     /// `.weights` siblings are located automatically).
-    pub fn open_espresso(net: impl AsRef<Path>, device: Device) -> Result<Self> {
-        Self::open_espresso_fused(net, device, true)
+    pub fn open_netfile(net: impl AsRef<Path>, device: Device) -> Result<Self> {
+        Self::open_netfile_fused(net, device, true)
     }
 
-    /// [`Self::open_espresso`] with the fusion pass toggled (see
-    /// [`Self::from_espresso_fused`]).
-    pub fn open_espresso_fused(net: impl AsRef<Path>, device: Device, fuse: bool) -> Result<Self> {
+    /// [`Self::open_netfile`] with the fusion pass toggled (see
+    /// [`Self::from_netfile_fused`]).
+    pub fn open_netfile_fused(net: impl AsRef<Path>, device: Device, fuse: bool) -> Result<Self> {
         let net = net.as_ref();
         ensure!(
             net.is_file(),
-            "neuralhash: espresso net not found at {}. On macOS the shipping model is \
+            "neuralhash: network file not found at {}. On macOS the shipping model is \
              /System/Library/Frameworks/Vision.framework/Versions/A/Resources/\
              NeuralHashv3b_fp16-current.espresso.net (with its .shape and .weights \
              siblings); earlier OS versions name it NeuralHashv3b-current. See the README.",
             net.display()
         );
-        let net = EspressoNet::open(net)?;
-        Self::from_espresso_fused(&net, device, fuse)
+        let net = NetFile::open(net)?;
+        Self::from_netfile_fused(&net, device, fuse)
     }
 
-    /// Build from an already-parsed Espresso container.
-    pub fn from_espresso(net: &EspressoNet, device: Device) -> Result<Self> {
-        Self::from_espresso_fused(net, device, true)
+    /// Build from an already-parsed network container.
+    pub fn from_netfile(net: &NetFile, device: Device) -> Result<Self> {
+        Self::from_netfile_fused(net, device, true)
     }
 
     /// Build with the hard-swish / hard-sigmoid fusion pass toggled.
     ///
-    /// `fuse = false` emits Espresso's literal four-op chains. Both forms must
+    /// `fuse = false` emits the format's literal four-op chains. Both forms must
     /// hash identically — that is what makes fusion safe to enable by default —
     /// so this exists for A/B timing and for the parity test that pins them.
-    pub fn from_espresso_fused(net: &EspressoNet, device: Device, fuse: bool) -> Result<Self> {
+    pub fn from_netfile_fused(net: &NetFile, device: Device, fuse: bool) -> Result<Self> {
         let spec = if fuse {
-            NeuralHashSpec::from_espresso(net)
+            NeuralHashSpec::from_netfile(net)
         } else {
-            NeuralHashSpec::from_espresso_unfused(net)
+            NeuralHashSpec::from_netfile_unfused(net)
         }
-        .context("deriving the native architecture from the Espresso layer list")?;
-        let weights = crate::weights::from_espresso(net).context("extracting Espresso weights")?;
+        .context("deriving the native architecture from the network's layer list")?;
+        let weights = crate::weights::from_netfile(net).context("extracting network weights")?;
         Self::from_spec(spec, weights, device)
     }
 
@@ -168,12 +168,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_espresso_net_is_a_clear_error() {
-        let s = err(NeuralHashModel::open_espresso(
+    fn missing_net_file_is_a_clear_error() {
+        let s = err(NeuralHashModel::open_netfile(
             "/nonexistent/NeuralHashv3b.espresso.net",
             Device::Cpu,
         ));
-        assert!(s.contains("espresso net not found"), "{s}");
+        assert!(s.contains("network file not found"), "{s}");
         assert!(s.contains("NeuralHashv3b"), "{s}");
     }
 

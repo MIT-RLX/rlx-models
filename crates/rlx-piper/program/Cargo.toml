@@ -1,0 +1,19 @@
+# Piper's host logic as an RLX program (WebAssembly, wasm32-wasip1): the
+# phonemizer, the tokenizer, the flow noise and the length regulator between
+# the package's graphs. Built by `rlx-piper`'s exporter, so it stands outside
+# the workspace.
+[package]
+name = "rlx-piper-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+espeak-ng = { version = "0.2.0", default-features = false }
+
+[workspace]

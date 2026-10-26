@@ -21,7 +21,7 @@
 //!
 //! # Direction is a token, not a model
 //!
-//! One multilingual Espresso model serves every pair in its bundle
+//! One multilingual NMT model serves every pair in its bundle
 //! (`MT-bi-en-es-de-it-fr-pt-nl-0` covers en/es/de/it/fr/pt/nl, both ways).
 //! Direction comes from control tokens prepended to the source and target
 //! streams, NLLB-style:

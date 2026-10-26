@@ -40,17 +40,16 @@ fn has_flag(args: &[String], name: &str) -> bool {
 /// Cap Rayon width for Laguna MoE unless the user already set `RLX_WORKERS`.
 ///
 /// Expert-parallel decode + attention-head parallel oversubscribe easily on
-/// full logical CPU counts; 4–8 workers measured fastest on Apple Silicon.
+/// full logical CPU counts; 4–8 workers measured fastest on macOS arm64.
 fn ensure_moe_worker_default() {
-    if std::env::var_os("RLX_WORKERS").is_some() {
+    if rlx_ir::env::var_os("RLX_WORKERS").is_some() {
         return;
     }
     let hint = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(8);
     let w = (hint / 2).clamp(4, 8);
-    // SAFETY: CLI entry before any rlx-cpu Rayon pool init.
-    unsafe { std::env::set_var("RLX_WORKERS", w.to_string()) };
+    rlx_ir::env::set("RLX_WORKERS", w.to_string());
 }
 
 fn parse_prompt_ids(args: &[String], default: &[u32]) -> Result<Vec<u32>> {
@@ -126,8 +125,7 @@ pub fn run(args: &[String]) -> Result<()> {
     }
 
     if has_flag(args, "--allow-f32-expand") {
-        // SAFETY: CLI startup before any Laguna load; mirrors env opt-in.
-        unsafe { std::env::set_var("RLX_LAGUNA_ALLOW_F32_EXPAND", "1") };
+        rlx_ir::env::set("RLX_LAGUNA_ALLOW_F32_EXPAND", "1");
         eprintln!(
             "rlx-laguna: F32 expand ENABLED (RLX_LAGUNA_ALLOW_F32_EXPAND=1) — \
              check `--weights` sniff for F32-expand≈ before full drain"
@@ -369,27 +367,27 @@ fn packed_load_gguf(path: PathBuf, args: &[String]) -> Result<()> {
         let device_s = flag_value(args, "--device").unwrap_or_else(|| "cpu".into());
         let force_device = has_flag(args, "--force-device")
             || matches!(
-                std::env::var("RLX_LAGUNA_FORCE_DEVICE").as_deref(),
+                rlx_ir::env::var_result("RLX_LAGUNA_FORCE_DEVICE").as_deref(),
                 Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
             );
         if has_flag(args, "--batched-moe") {
-            unsafe { std::env::set_var("RLX_LAGUNA_BATCHED_MOE", "1") };
+            rlx_ir::env::set("RLX_LAGUNA_BATCHED_MOE", "1");
         }
         if has_flag(args, "--device-moe") {
-            unsafe { std::env::set_var("RLX_LAGUNA_DEVICE_MOE", "1") };
+            rlx_ir::env::set("RLX_LAGUNA_DEVICE_MOE", "1");
         }
         if has_flag(args, "--no-device-moe") {
-            unsafe { std::env::set_var("RLX_LAGUNA_DEVICE_MOE_DISABLE", "1") };
+            rlx_ir::env::set("RLX_LAGUNA_DEVICE_MOE_DISABLE", "1");
         }
         let batched_host = matches!(
-            std::env::var("RLX_LAGUNA_BATCHED_MOE").as_deref(),
+            rlx_ir::env::var_result("RLX_LAGUNA_BATCHED_MOE").as_deref(),
             Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
         );
         let device_moe = matches!(
-            std::env::var("RLX_LAGUNA_DEVICE_MOE").as_deref(),
+            rlx_ir::env::var_result("RLX_LAGUNA_DEVICE_MOE").as_deref(),
             Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
         ) && !matches!(
-            std::env::var("RLX_LAGUNA_DEVICE_MOE_DISABLE").as_deref(),
+            rlx_ir::env::var_result("RLX_LAGUNA_DEVICE_MOE_DISABLE").as_deref(),
             Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
         );
         let mut accel = match crate::device_matmul::parse_device(&device_s)? {
@@ -609,7 +607,7 @@ Device: short MoE chat/decode stays on host fused kernels (faster); pass
   for attn/shared mats. Opt in to resident MoE with `--device-moe` /
   RLX_LAGUNA_DEVICE_MOE=1 (expert stacks stay on GPU after first upload per layer).
   Host batched MoE: `--batched-moe` / RLX_LAGUNA_BATCHED_MOE=1.
-Metal/MLX/wgpu/CoreML: build with --features all-backends (or apple-silicon).
+Metal/MLX/wgpu/CoreML: build with --features all-backends (or macos-gpu).
 F32 expand: off by default; RLX_LAGUNA_ALLOW_F32_EXPAND=1 or --allow-f32-expand.
 OpenAI: prefer `rlx-openai` (just openai-serve).
 

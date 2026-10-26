@@ -62,7 +62,7 @@ pub fn resolve_gemma4_config(dir: &Path, gguf: &Path) -> Result<GemmaConfig> {
 
 /// Single device from `RLX_GEMMA4_DEVICE` (`mlx` | `metal` | `cpu`), else Metal on macOS.
 pub fn bench_device_from_env() -> Device {
-    if let Ok(raw) = std::env::var("RLX_GEMMA4_DEVICE") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_GEMMA4_DEVICE") {
         match raw.to_ascii_lowercase().as_str() {
             "mlx"
                 if cfg!(all(target_os = "macos", feature = "mlx")) && is_available(Device::Mlx) =>
@@ -89,7 +89,7 @@ pub fn bench_device_from_env() -> Device {
 /// Devices to run when `RLX_GEMMA4_DEVICE` is unset: Metal then MLX on macOS, else CPU.
 #[allow(dead_code)]
 pub fn bench_devices_from_env() -> Vec<Device> {
-    if std::env::var("RLX_GEMMA4_DEVICE").is_ok() {
+    if rlx_ir::env::var_result("RLX_GEMMA4_DEVICE").is_ok() {
         return vec![bench_device_from_env()];
     }
     let mut out = Vec::new();

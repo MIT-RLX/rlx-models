@@ -11,6 +11,8 @@ pub mod config;
 pub mod conv;
 pub mod device;
 pub mod download;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod graph;
 pub mod layout;
 pub mod rvq;

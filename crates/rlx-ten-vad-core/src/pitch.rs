@@ -183,7 +183,7 @@ impl Bands {
 ///
 /// Built once at construction. The cosine table costs 1024 `cos` calls; the
 /// matrix itself is ~17 k multiply-adds.
-#[cfg(any(feature = "fast-pitch", test))]
+#[cfg(any(feature = "fast-pitch", feature = "alloc", test))]
 fn ac_matrix(bands: &Bands) -> [[f32; LPC_ORDER + 1]; NB_BANDS] {
     let mut cos_tab = [0.0f32; FFT_SIZE];
     for (i, c) in cos_tab.iter_mut().enumerate() {
@@ -650,6 +650,88 @@ impl PitchEstimator {
         self.update_excitation(time_signal);
         self.update_xcorr();
         self.estimate()
+    }
+}
+
+/// The pitch estimator's fixed tables, for building it as a graph (the
+/// `rlx-ten-vad` package exporter): each the estimator's own, as it reads
+/// it.
+#[cfg(feature = "alloc")]
+pub mod tables {
+    use super::*;
+    use alloc::vec::Vec;
+
+    /// Bands.
+    pub const BANDS: usize = NB_BANDS;
+    /// LPC order.
+    pub const ORDER: usize = LPC_ORDER;
+    /// Viterbi states (`MAX_PERIOD − MIN_PERIOD`).
+    pub const STATES: usize = DIF_PERIOD;
+    /// The longest period, in 4 kHz samples.
+    pub const MAX_LAG: usize = MAX_PERIOD;
+    /// The lag-sharpening span (`MAX_PERIOD − 2·MIN_PERIOD`).
+    pub const SHARPEN: usize = MAX_PERIOD - 2 * MIN_PERIOD;
+    /// Half-frame correlation length.
+    pub const HALF: usize = CORR_HALF;
+    /// The excitation buffer.
+    pub const EXCITATION: usize = EXC_LEN;
+    /// Half-frames the Viterbi spans.
+    pub const SUBFRAMES: usize = N_SUB;
+    /// Samples the LPC input lags the frame by.
+    pub const ALIGN: usize = XCORR_TRAINING_OFFSET;
+    /// The voicing threshold and the processing rate.
+    pub const VOICED: f32 = VOICED_THR;
+    pub const RATE: f32 = PROC_FS;
+    /// Decimation.
+    pub const DECIMATE: usize = RESAMPLE;
+
+    /// `[NBINS, BANDS]`: the triangular band analysis, the end bands doubled,
+    /// as a matrix (`energy[b] = Σ_k p[k]·m[k][b]`).
+    pub fn band_energy() -> Vec<f32> {
+        let bands = Bands::new();
+        let mut m = alloc::vec![0.0f32; NBINS * NB_BANDS];
+        let mut t = 0usize;
+        for i in 0..NB_BANDS - 1 {
+            for j in 0..bands.size[i] {
+                let frac = bands.frac[t];
+                t += 1;
+                let acc = (bands.offset[i] + j).min(NBINS - 1);
+                m[acc * NB_BANDS + i] += 1.0 - frac;
+                m[acc * NB_BANDS + i + 1] += frac;
+            }
+        }
+        for k in 0..NBINS {
+            m[k * NB_BANDS] *= 2.0;
+            m[k * NB_BANDS + NB_BANDS - 1] *= 2.0;
+        }
+        m
+    }
+
+    /// The DCT table, `dct[i·BANDS + j]`, and its scale `√(2/BANDS)`.
+    pub fn dct() -> (Vec<f32>, f32) {
+        (dct_table().to_vec(), math::sqrt(2.0f32 / NB_BANDS as f32))
+    }
+
+    /// `[BANDS, ORDER + 1]`: band gains → autocorrelation lags (the
+    /// `fast-pitch` map; the default path takes an inverse FFT to the same
+    /// values, rounded otherwise).
+    pub fn autocorrelation() -> Vec<f32> {
+        ac_matrix(&Bands::new()).iter().flatten().copied().collect()
+    }
+
+    /// Each band's LPC compensation.
+    pub fn lpc_compensation() -> [f32; NB_BANDS] {
+        BAND_LPC_COMP
+    }
+
+    /// The Viterbi's transition penalty for a jump of `m` states.
+    pub fn path_penalty() -> Vec<f32> {
+        (0..=DIF_PERIOD)
+            .map(|m| {
+                let mag = m as f32;
+                MAXPATH_W * mag * mag
+            })
+            .collect()
     }
 }
 

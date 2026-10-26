@@ -16,7 +16,7 @@ const DEFAULT_TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 const FOX_WORDS: [&str; 6] = ["quick", "brown", "fox", "jumps", "lazy", "dog"];
 
 fn main() -> anyhow::Result<()> {
-    let dir = std::env::var("RLX_GEPARD_DIR")
+    let dir = rlx_ir::env::var_result("RLX_GEPARD_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("weights/tts/gepard"));
     anyhow::ensure!(
@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
         "missing nano_dec_1.89kbps.safetensors"
     );
 
-    let text = std::env::var("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
+    let text = rlx_ir::env::var_result("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
     let devices = parse_devices();
     let mut whisper = load_whisper();
 
@@ -119,7 +119,7 @@ fn trim(s: &str, n: usize) -> &str {
 }
 
 fn parse_devices() -> Vec<(Device, &'static str)> {
-    let raw = std::env::var("RLX_DEVICES")
+    let raw = rlx_ir::env::var_result("RLX_DEVICES")
         .unwrap_or_else(|_| "cpu,metal,mlx,gpu,cuda,vulkan,coreml".into());
     let mut out = Vec::new();
     for part in raw.split(',') {
@@ -141,7 +141,7 @@ fn parse_devices() -> Vec<(Device, &'static str)> {
 }
 
 fn load_whisper() -> Option<rlx_whisper::WhisperRunner> {
-    let dir = std::env::var("RLX_WHISPER_DIR")
+    let dir = rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .ok()
         .map(PathBuf::from)
         .or_else(|| {

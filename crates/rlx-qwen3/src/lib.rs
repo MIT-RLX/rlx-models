@@ -34,9 +34,12 @@ pub mod capabilities;
 pub mod cli;
 pub mod config;
 pub mod embedder;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod generator;
 pub mod high_level_runner;
+mod host_embed;
 pub mod packed_decode;
 pub mod pipeline;
 pub mod pipeline_decode;

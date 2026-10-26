@@ -13,9 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Apple NeuralHash perceptual image hashing, natively on RLX.
+//! NeuralHash perceptual image hashing, natively on RLX.
 //!
-//! A native port of [AppleNeuralHash2ONNX](https://github.com/AsuharietYgvar/AppleNeuralHash2ONNX)'s
+//! A native port of the [NeuralHash ONNX export](https://github.com/AsuharietYgvar/AppleNeuralHash2ONNX)'s
 //! `nnhash.py`. The pipeline is four stages:
 //!
 //! ```text
@@ -37,7 +37,7 @@
 //!   NeuralHashv3b_fp16-current.espresso.weights  (f16/f32 blobs)   ─┘
 //! ```
 //!
-//! [`espresso`] parses the container, [`spec`] normalizes it into a
+//! [`netfile`] parses the container, [`spec`] normalizes it into a
 //! serializable architecture description, [`weights`] extracts the tensors and
 //! [`flow`] emits the graph. Nothing on the inference path touches ONNX; the
 //! optional `onnx-parity` feature exists only to diff the native graph against
@@ -60,7 +60,7 @@
 //! use rlx_runtime::Device;
 //!
 //! let r = "/System/Library/Frameworks/Vision.framework/Versions/A/Resources";
-//! let mut hasher = NeuralHasher::open_espresso(
+//! let mut hasher = NeuralHasher::open_netfile(
 //!     format!("{r}/NeuralHashv3b_fp16-current.espresso.net"),
 //!     format!("{r}/neuralhash_128x96_seed1.dat"),
 //!     Device::Cpu,
@@ -90,10 +90,12 @@
 //! carries no integrity or authenticity guarantee.
 
 pub mod cli;
-pub mod espresso;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod hash;
 pub mod model;
+pub mod netfile;
 pub mod preprocess;
 pub mod seed;
 pub mod spec;
@@ -105,9 +107,9 @@ pub mod weights;
 #[cfg(feature = "onnx-parity")]
 pub mod parity;
 
-pub use espresso::EspressoNet;
 pub use hash::{HASH_BITS, HASH_BYTES, NeuralHash};
 pub use model::NeuralHashModel;
+pub use netfile::NetFile;
 pub use preprocess::{INPUT_ELEMS, INPUT_SIZE};
 pub use seed::{EMBED_DIM, SEED_FILE_BYTES, SEED_HEADER_BYTES, SeedMatrix};
 pub use spec::NeuralHashSpec;
@@ -123,8 +125,8 @@ pub struct NeuralHasher {
 }
 
 impl NeuralHasher {
-    /// Load the Espresso network and the `[96, 128]` seed matrix.
-    pub fn open_espresso(
+    /// Load the network and the `[96, 128]` seed matrix.
+    pub fn open_netfile(
         net: impl AsRef<Path>,
         seed: impl AsRef<Path>,
         device: Device,
@@ -132,7 +134,7 @@ impl NeuralHasher {
         // Parse the seed first: it is cheap and catches the most common setup
         // mistake before the graph build.
         let seed = SeedMatrix::open(seed)?;
-        let model = NeuralHashModel::open_espresso(net, device)?;
+        let model = NeuralHashModel::open_netfile(net, device)?;
         Ok(Self { model, seed })
     }
 

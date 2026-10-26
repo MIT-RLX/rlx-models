@@ -19,5 +19,16 @@ rlx-nemo         = { workspace = true }
 rlx-core         = { workspace = true }
 rlx-runtime      = { workspace = true }
 
+[features]
+# `export::export_rlxp`: Parakeet-TDT as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-nemotron-asr/export"]
+
+[dev-dependencies]
+rlx-ir = { workspace = true }
+tempfile = "3"
+serde_json = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
+
 [lints]
 workspace = true

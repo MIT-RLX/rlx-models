@@ -638,7 +638,10 @@ fn build_block(
     (q, keys_out)
 }
 
-fn build_transformer_graph(
+/// The two-way transformer over `q_n` tokens and `k_n` image positions
+/// (inputs `tokens`, `image_seq`, `image_pe`; with `masked`, the attention
+/// masks too): outputs the queries, then the keys.
+pub fn build_transformer_graph(
     spec: &TwoWayTransformerSpec,
     q_n: usize,
     k_n: usize,

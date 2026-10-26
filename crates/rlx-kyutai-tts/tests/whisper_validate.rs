@@ -32,7 +32,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         if p.join("model.safetensors").is_file() {
             return Some(p);
@@ -91,7 +91,7 @@ fn transcribe_wav(wav_path: &Path) -> Result<String> {
 /// Mode 1: validate a pre-existing TTS WAV.
 #[test]
 fn whisper_validates_static_kyutai_tts_wav() -> Result<()> {
-    let wav = match std::env::var("RLX_KYUTAI_TTS_VALIDATE_WAV").ok() {
+    let wav = match rlx_ir::env::var_result("RLX_KYUTAI_TTS_VALIDATE_WAV").ok() {
         Some(p) => PathBuf::from(p),
         None => {
             eprintln!(
@@ -120,7 +120,7 @@ fn whisper_validates_static_kyutai_tts_wav() -> Result<()> {
         "whisper returned an empty transcript"
     );
 
-    if let Ok(prompt) = std::env::var("RLX_KYUTAI_TTS_VALIDATE_PROMPT") {
+    if let Ok(prompt) = rlx_ir::env::var_result("RLX_KYUTAI_TTS_VALIDATE_PROMPT") {
         let prompt_norm = normalize_transcript(&prompt);
         let hit = prompt_norm
             .split_whitespace()
@@ -143,7 +143,11 @@ fn whisper_validates_static_kyutai_tts_wav() -> Result<()> {
 /// Mode 2: synthesise with native Kyutai TTS, then transcribe with Whisper.
 #[test]
 fn kyutai_tts_to_whisper_e2e_roundtrip() -> Result<()> {
-    if std::env::var("RLX_KYUTAI_TTS_E2E").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_KYUTAI_TTS_E2E")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_KYUTAI_TTS_E2E=1 to drive Kyutai TTS → Whisper");
         return Ok(());
     }
@@ -152,7 +156,7 @@ fn kyutai_tts_to_whisper_e2e_roundtrip() -> Result<()> {
     ensure!(cfg.dim == 2048, "config drift: dim {}", cfg.dim);
     ensure!(cfg.n_q == 32, "config drift: n_q {}", cfg.n_q);
 
-    let model_dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let model_dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_kyutai_tts_dir());
     let weights = model_dir.join("dsm_tts_1e68beda@240.safetensors");
@@ -163,7 +167,7 @@ fn kyutai_tts_to_whisper_e2e_roundtrip() -> Result<()> {
         );
         return Ok(());
     }
-    let mimi_dir = std::env::var("RLX_MIMI_DIR")
+    let mimi_dir = rlx_ir::env::var_result("RLX_MIMI_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_mimi_dir());
     if !mimi_dir.join("model.safetensors").is_file()
@@ -182,17 +186,18 @@ fn kyutai_tts_to_whisper_e2e_roundtrip() -> Result<()> {
         return Ok(());
     }
 
-    let prompt =
-        std::env::var("RLX_KYUTAI_TTS_VALIDATE_PROMPT").unwrap_or_else(|_| "Hello.".into());
+    let prompt = rlx_ir::env::var_result("RLX_KYUTAI_TTS_VALIDATE_PROMPT")
+        .unwrap_or_else(|_| "Hello.".into());
     // Eager CPU LM is the default when device is Cpu (avoids GPU requirement in e2e rigs).
-    let device = std::env::var("RLX_KYUTAI_TTS_E2E_DEVICE")
+    let device = rlx_ir::env::var_result("RLX_KYUTAI_TTS_E2E_DEVICE")
         .ok()
         .map(|s| resolve_kyutai_tts_device(&s))
         .transpose()?
         .unwrap_or_else(|| resolve_kyutai_tts_device("auto").unwrap());
     let mut session = KyutaiTtsSession::open_on(&model_dir, &mimi_dir, device)?;
     session.set_voice(KyutaiTtsVoice::new(
-        std::env::var("RLX_KYUTAI_TTS_VOICE").unwrap_or_else(|_| DEFAULT_VOICE_NAME.into()),
+        rlx_ir::env::var_result("RLX_KYUTAI_TTS_VOICE")
+            .unwrap_or_else(|_| DEFAULT_VOICE_NAME.into()),
     ));
     let gen_cfg = GenerationConfig {
         max_steps: 80,

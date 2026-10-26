@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>rlx-models-web: two workers</title>
+<pre id="log"></pre>
+<script type="module">
+// ?model=<id in models.js>&workers=2&n=32 — start N workers at once, each
+// loading the whole model into its own wasm instance + WebGPU device, and
+// generating concurrently. POSTs every worker's report to /__result.
+import { MODELS } from "./models.js";
+const q = new URLSearchParams(location.search);
+const spec = MODELS[q.get("model") ?? "qwen3.5-0.8b-q4km"];
+const workers = Number(q.get("workers") ?? 2), n = Number(q.get("n") ?? 32);
+const base = new URL(`../../../weights/${spec.dir}`, location.href).href;
+const prompt = "<|im_start|>user\nWrite a short paragraph about the sea.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
+const log = (s) => (console.log(s), (document.getElementById("log").textContent += s + "\n"));
+const t0 = performance.now();
+const results = await Promise.all(Array.from({ length: workers }, (_, id) => new Promise((resolve) => {
+  const w = new Worker("./two_worker.js", { type: "module" });
+  w.onmessage = ({ data }) => (log(JSON.stringify(data)), resolve(data), w.terminate());
+  w.onerror = (e) => resolve({ id, ok: false, error: String(e.message) });
+  w.postMessage({ id, base, files: spec.files, prompt, n });
+})));
+const report = { ok: results.every((r) => r.ok), workers, wall_ms: Math.round(performance.now() - t0), results };
+await fetch("/__result", { method: "POST", body: JSON.stringify(report) });
+</script>

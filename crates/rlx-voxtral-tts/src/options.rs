@@ -33,8 +33,11 @@ impl Default for VoxtralTtsOptions {
     fn default() -> Self {
         Self {
             device: Device::Cpu,
-            eager_lm: std::env::var("RLX_VOXTRAL_TTS_EAGER").ok().as_deref() == Some("1"),
-            eager_acoustic: std::env::var("RLX_VOXTRAL_TTS_ACOUSTIC_EAGER")
+            eager_lm: rlx_ir::env::var_result("RLX_VOXTRAL_TTS_EAGER")
+                .ok()
+                .as_deref()
+                == Some("1"),
+            eager_acoustic: rlx_ir::env::var_result("RLX_VOXTRAL_TTS_ACOUSTIC_EAGER")
                 .ok()
                 .as_deref()
                 == Some("1"),

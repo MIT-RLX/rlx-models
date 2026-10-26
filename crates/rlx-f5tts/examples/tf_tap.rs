@@ -66,11 +66,15 @@ fn main() -> anyhow::Result<()> {
     for (i, (bytes, dt)) in out.iter().enumerate() {
         let v: Vec<f32> = match dt {
             rlx_runtime::DType::F16 => bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect(),
             _ => bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
         };

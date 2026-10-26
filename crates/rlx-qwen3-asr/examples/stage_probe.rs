@@ -131,11 +131,11 @@ fn run_decode(
 }
 
 fn main() -> Result<()> {
-    let model_dir: PathBuf = std::env::var("RLX_ASR_MODEL")
+    let model_dir: PathBuf = rlx_ir::env::var_result("RLX_ASR_MODEL")
         .unwrap_or_else(|_| "/Users/Shared/qwen3-asr-0.6b".into())
         .into();
-    let wav = std::env::var("RLX_ASR_WAV").expect("set RLX_ASR_WAV");
-    let dev_s = std::env::var("RLX_ASR_DEVICE").unwrap_or_else(|_| "gpu".into());
+    let wav = rlx_ir::env::var_result("RLX_ASR_WAV").expect("set RLX_ASR_WAV");
+    let dev_s = rlx_ir::env::var_result("RLX_ASR_DEVICE").unwrap_or_else(|_| "gpu".into());
     let device = rlx_core::asr_bench::parse_device(&dev_s)?;
 
     let cfg = Qwen3AsrConfig::from_file(&model_dir.join("config.json"))?;

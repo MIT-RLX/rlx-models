@@ -31,16 +31,22 @@ fn dev_from(s: &str) -> Device {
 fn to_f32(b: &[u8], dt: DType) -> Vec<f32> {
     match dt {
         DType::F16 => b
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         DType::I64 => b
-            .chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f32)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| i64::from_le_bytes(*c) as f32)
             .collect(),
         _ => b
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
     }
 }
@@ -219,7 +225,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         if whisper_ready(&p) {
             return Some(p);

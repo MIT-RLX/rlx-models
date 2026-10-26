@@ -1523,6 +1523,13 @@ impl<'a> WhisperBuilder<'a> {
 
     fn broadcast_pos(&mut self, pos: HirNodeId, seq: usize, d: usize) -> Result<HirNodeId> {
         let batch = self.batch;
+        // One position row per sequence (a batched step gathers each at its
+        // own `pos_ix`): already `[batch, seq, d]`.
+        if batch > 1 && self.hir.node(pos).shape.num_elements() == Some(batch * seq * d) {
+            return Ok(self
+                .g()
+                .reshape_(pos, vec![batch as i64, seq as i64, d as i64]));
+        }
         let pos3 = self.g().reshape_(pos, vec![1, seq as i64, d as i64]);
         let ones =
             self.register_param(&format!("pos_broadcast_{seq}"), vec![1.0; batch], &[batch])?;

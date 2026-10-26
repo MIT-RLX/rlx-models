@@ -23,7 +23,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use crate::backward_prep::prepare_backward_for_device;
 
 pub fn backward_cpu_only_from_env() -> bool {
-    std::env::var("RLX_QWEN3_TTS_TRAIN_BACKWARD_CPU")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_TRAIN_BACKWARD_CPU")
         .ok()
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
 }

@@ -32,7 +32,9 @@ fn split_dir() -> PathBuf {
 fn read_f32(p: &PathBuf) -> Vec<f32> {
     std::fs::read(p)
         .unwrap_or_else(|_| panic!("read {}", p.display()))
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
 }
@@ -40,8 +42,10 @@ fn read_f32(p: &PathBuf) -> Vec<f32> {
 fn read_i64(p: &PathBuf) -> Vec<i64> {
     std::fs::read(p)
         .unwrap_or_else(|_| panic!("read {}", p.display()))
-        .chunks_exact(8)
-        .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|b| i64::from_le_bytes(*b))
         .collect()
 }
 

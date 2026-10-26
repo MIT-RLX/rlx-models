@@ -16,7 +16,8 @@ use anyhow::Result;
 use rlx_onnx_import::{ImportOptions, build_hir_from_onnx_file};
 
 fn main() -> Result<()> {
-    let dir = std::env::var("RLX_PARLER_DIR").unwrap_or_else(|_| "weights/tts/parlertts".into());
+    let dir = rlx_ir::env::var_result("RLX_PARLER_DIR")
+        .unwrap_or_else(|_| "weights/tts/parlertts".into());
     let path = Path::new(&dir).join("onnx/text_encoder.onnx");
     // Match native_parity's exact config (sequence_length + t + batch_size; NO `b`).
     let mut named: HashMap<String, usize> = HashMap::new();
@@ -56,7 +57,7 @@ fn main() -> Result<()> {
         "final_layer_norm/Div",
         "final_layer_norm/Mul",
     ];
-    if std::env::var_os("RLX_TRACE_ATTN").is_some() {
+    if rlx_ir::env::var_os("RLX_TRACE_ATTN").is_some() {
         // Full block.0/layer.0/SelfAttention node list in topo order.
         for n in hir.nodes() {
             let Some(nm) = n.name.as_deref() else {

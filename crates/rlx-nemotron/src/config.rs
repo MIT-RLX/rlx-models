@@ -199,8 +199,8 @@ impl NemotronHybridConfig {
     pub fn from_hf_config_json(path: &Path) -> Result<Self> {
         let raw =
             std::fs::read_to_string(path).map_err(|e| anyhow!("nemotron-h: read {path:?}: {e}"))?;
-        let cfg: HfNemotron =
-            serde_json::from_str(&raw).map_err(|e| anyhow!("nemotron-h: parse {path:?}: {e}"))?;
+        let cfg: HfNemotron = rlx_core::config::from_hf_json(&raw)
+            .map_err(|e| anyhow!("nemotron-h: parse {path:?}: {e}"))?;
         let head_dim = cfg
             .head_dim
             .unwrap_or(cfg.hidden_size / cfg.num_attention_heads);

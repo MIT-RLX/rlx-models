@@ -90,12 +90,10 @@ fn bench_talk_decode_with_eager_flag(
     decode_steps: usize,
     label: &'static str,
 ) -> Result<TalkerDecodeBenchReport> {
-    unsafe {
-        if force_eager {
-            std::env::set_var("RLX_QWEN3_TTS_TALKER_EAGER", "1");
-        } else {
-            std::env::set_var("RLX_QWEN3_TTS_TALKER_EAGER", "0");
-        }
+    if force_eager {
+        rlx_ir::env::set("RLX_QWEN3_TTS_TALKER_EAGER", "1");
+    } else {
+        rlx_ir::env::set("RLX_QWEN3_TTS_TALKER_EAGER", "0");
     }
     let hidden = talker_cfg.hidden_size;
     let mut talker = TalkerEngine::open(store, talker_cfg, session_device)?;
@@ -173,9 +171,7 @@ pub fn bench_fusion_ab(
         talker_decode_steps,
         "rlx fused",
     )?;
-    unsafe {
-        std::env::remove_var("RLX_QWEN3_TTS_TALKER_EAGER");
-    }
+    rlx_ir::env::remove("RLX_QWEN3_TTS_TALKER_EAGER");
 
     let (cp_eager, cp_compiled) = bench_cp_ab(store, cp_cfg, h_last.view(), cp_frames, warmup)?;
 

@@ -17,7 +17,7 @@
 #
 # Per-stage SAM3 bench on host PyTorch — supports cpu / mps via
 # BENCH_DEVICE=cpu|mps. Mirrors `bench.py` but runs on the host so
-# we can hit Apple Silicon GPU (MPS).
+# we can hit macOS arm64 GPU (MPS).
 
 import os, sys, time, types
 

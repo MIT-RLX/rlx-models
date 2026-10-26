@@ -38,7 +38,7 @@ use rlx_runtime::Device;
 const LAYER: usize = 0;
 
 fn dev() -> Device {
-    std::env::var("RLX_TEST_DEVICE")
+    rlx_ir::env::var_result("RLX_TEST_DEVICE")
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| rlx_cli::parse_device(&s).expect("bad RLX_TEST_DEVICE"))
@@ -46,7 +46,7 @@ fn dev() -> Device {
 }
 
 fn dir() -> Option<PathBuf> {
-    let d = PathBuf::from(std::env::var("RLX_DG_REAL_LAYER_DIR").ok()?);
+    let d = PathBuf::from(rlx_ir::env::var_result("RLX_DG_REAL_LAYER_DIR").ok()?);
     assert!(
         d.join("layer_meta.json").is_file(),
         "run the reference first"
@@ -56,7 +56,9 @@ fn dir() -> Option<PathBuf> {
 
 fn read_f32(dir: &Path, name: &str) -> Vec<f32> {
     let raw = std::fs::read(dir.join(format!("{name}.bin"))).unwrap();
-    raw.chunks_exact(4)
+    raw.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

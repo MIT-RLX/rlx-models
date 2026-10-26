@@ -1,0 +1,104 @@
+[package]
+name = "rlx-qwen3-ps5"
+version = "0.2.19"
+edition = "2024"
+publish = false
+license = "GPL-3.0-only"
+description = "Qwen3 GGUF decode on a jailbroken PS5's CPU — an rlx-ps5 payload"
+
+# Standalone: cross-built for the PS5 by rlx's `just ps5 build --manifest-path`,
+# so it stays out of the rlx-models workspace build and CI.
+[workspace]
+
+[[bin]]
+name = "qwen3-ps5"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+rlx-qwen3 = { path = "../rlx-qwen3" }
+rlx-gguf = "^0.2.19"
+# The PS5 platform layer (thread count, weight locking, _exit, compat shims,
+# portable-gemm). Expects rlx checked out next to rlx-models.
+rlx-ps5 = { path = "../../../rlx/crates/backends/rlx-ps5" }
+
+[profile.release]
+debug = 1
+
+# rlx-models pins published rlx; rlx-ps5 is local. Put every rlx crate on the
+# local checkout so the graph holds ONE copy of each — otherwise the
+# `RLX_WORKERS` that `rlx_ps5::init()` sets lands in a different rlx-ir than the
+# one rlx-cpu reads.
+[patch.crates-io]
+rlx = { path = "../../../rlx/crates/rlx" }
+rlx-autodiff = { path = "../../../rlx/crates/core/rlx-autodiff" }
+rlx-bake = { path = "../../../rlx/crates/io/rlx-bake" }
+rlx-bbo = { path = "../../../rlx/crates/numerics/rlx-bbo" }
+rlx-bench = { path = "../../../rlx/crates/tooling/rlx-bench" }
+rlx-cerebras = { path = "../../../rlx/crates/backends/rlx-cerebras" }
+rlx-check = { path = "../../../rlx/crates/tooling/rlx-check" }
+rlx-collectives = { path = "../../../rlx/crates/core/rlx-collectives" }
+rlx-compile = { path = "../../../rlx/crates/core/rlx-compile" }
+rlx-coreml = { path = "../../../rlx/crates/backends/rlx-coreml" }
+rlx-cortexm = { path = "../../../rlx/crates/backends/rlx-cortexm" }
+rlx-cortexm-trainer = { path = "../../../rlx/crates/backends/rlx-cortexm/trainer" }
+rlx-cpu = { path = "../../../rlx/crates/backends/rlx-cpu" }
+rlx-cuda = { path = "../../../rlx/crates/backends/rlx-cuda" }
+rlx-dduf = { path = "../../../rlx/crates/io/rlx-dduf" }
+rlx-distributed = { path = "../../../rlx/crates/core/rlx-distributed" }
+rlx-driver = { path = "../../../rlx/crates/core/rlx-driver" }
+rlx-extend = { path = "../../../rlx/crates/core/rlx-extend" }
+rlx-fdm = { path = "../../../rlx/crates/numerics/rlx-fdm" }
+rlx-lbm = { path = "../../../rlx/crates/numerics/rlx-lbm" }
+rlx-flow = { path = "../../../rlx/crates/core/rlx-flow" }
+rlx-fpga = { path = "../../../rlx/crates/backends/rlx-fpga" }
+rlx-fusion = { path = "../../../rlx/crates/core/rlx-fusion" }
+rlx-geo = { path = "../../../rlx/crates/numerics/rlx-geo" }
+rlx-gguf = { path = "../../../rlx/crates/io/rlx-gguf" }
+rlx-gguf-convert = { path = "../../../rlx/crates/io/rlx-gguf-convert" }
+rlx-gpu-host = { path = "../../../rlx/crates/backends/rlx-gpu-host" }
+rlx-gpu-dispatch = { path = "../../../rlx/crates/backends/rlx-gpu-dispatch" }
+rlx-gpu-kernels = { path = "../../../rlx/crates/backends/rlx-gpu-kernels" }
+rlx-hub = { path = "../../../rlx/crates/io/rlx-hub" }
+rlx-hwprofile = { path = "../../../rlx/crates/tooling/rlx-hwprofile" }
+rlx-ir = { path = "../../../rlx/crates/core/rlx-ir" }
+rlx-linalg = { path = "../../../rlx/crates/numerics/rlx-linalg" }
+rlx-peft = { path = "../../../rlx/crates/numerics/rlx-peft" }
+rlx-rng = { path = "../../../rlx/crates/numerics/rlx-rng" }
+rlx-macros = { path = "../../../rlx/crates/core/rlx-macros" }
+rlx-metal = { path = "../../../rlx/crates/backends/rlx-metal" }
+rlx-mlx = { path = "../../../rlx/crates/backends/rlx-mlx" }
+rlx-mlx-io = { path = "../../../rlx/crates/io/rlx-mlx-io" }
+rlx-mlx-sys = { path = "../../../rlx/crates/backends/rlx-mlx-sys" }
+rlx-nemo = { path = "../../../rlx/crates/io/rlx-nemo" }
+rlx-torch-ckpt = { path = "../../../rlx/crates/io/rlx-torch-ckpt" }
+rlx-oneapi = { path = "../../../rlx/crates/backends/rlx-oneapi" }
+rlx-onnx = { path = "../../../rlx/crates/io/rlx-onnx" }
+rlx-onnx-conformance = { path = "../../../rlx/crates/io/rlx-onnx-conformance" }
+rlx-onnx-import = { path = "../../../rlx/crates/io/rlx-onnx-import" }
+rlx-onnx-proto = { path = "../../../rlx/crates/io/rlx-onnx-proto" }
+rlx-opscope = { path = "../../../rlx/crates/tooling/rlx-opscope" }
+rlx-opt = { path = "../../../rlx/crates/core/rlx-opt" }
+rlx-optim = { path = "../../../rlx/crates/core/rlx-optim" }
+rlx-pkg = { path = "../../../rlx/crates/io/rlx-pkg" }
+rlx-qnn = { path = "../../../rlx/crates/backends/rlx-qnn" }
+rlx-rl = { path = "../../../rlx/crates/numerics/rlx-rl" }
+rlx-rocm = { path = "../../../rlx/crates/backends/rlx-rocm" }
+rlx-runtime = { path = "../../../rlx/crates/core/rlx-runtime" }
+rlx-sparse = { path = "../../../rlx/crates/numerics/rlx-sparse" }
+rlx-tensor = { path = "../../../rlx/crates/core/rlx-tensor" }
+rlx-text = { path = "../../../rlx/crates/io/rlx-text" }
+rlx-torch-import = { path = "../../../rlx/crates/io/rlx-torch-import" }
+rlx-tpu = { path = "../../../rlx/crates/backends/rlx-tpu" }
+rlx-umap = { path = "../../../rlx/crates/numerics/rlx-umap" }
+rlx-unfuse = { path = "../../../rlx/crates/core/rlx-unfuse" }
+rlx-vq = { path = "../../../rlx/crates/numerics/rlx-vq" }
+rlx-vulkan = { path = "../../../rlx/crates/backends/rlx-vulkan" }
+rlx-ffi = { path = "../../../rlx/crates/bindings/rlx-ffi" }
+rlx-js = { path = "../../../rlx/crates/bindings/rlx-js" }
+rlx-web = { path = "../../../rlx/crates/bindings/rlx-web" }
+rlx-webgl = { path = "../../../rlx/crates/backends/rlx-webgl" }
+rlx-wgpu = { path = "../../../rlx/crates/backends/rlx-wgpu" }
+rlx-xdna = { path = "../../../rlx/crates/backends/rlx-xdna" }
+rlx-egpu = { path = "../../../rlx/crates/backends/rlx-egpu" }
+rlxsl = { path = "../../../rlx/crates/tooling/rlxsl" }

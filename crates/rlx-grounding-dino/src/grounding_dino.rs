@@ -202,7 +202,7 @@ impl GroundingDino {
 
         // Env-gated per-stage timing (`RLX_GDINO_PROFILE=1`). Each stage syncs to
         // a host `Vec<f32>`, so the elapsed time is a true wall-clock segment.
-        let profile = std::env::var("RLX_GDINO_PROFILE").is_ok();
+        let profile = rlx_ir::env::var_result("RLX_GDINO_PROFILE").is_ok();
         let mark = |label: &str, t: &std::time::Instant| {
             if profile {
                 eprintln!("[gdino-profile] {label}: {:.3}s", t.elapsed().as_secs_f64());

@@ -157,7 +157,7 @@ fn mel_to_hz(mel: f64) -> f64 {
     }
 }
 
-fn mel_filterbank(sample_rate: f64, n_fft: usize, n_mels: usize) -> Vec<f32> {
+pub(crate) fn mel_filterbank(sample_rate: f64, n_fft: usize, n_mels: usize) -> Vec<f32> {
     let fmax = sample_rate * 0.5;
     let n_freq = n_fft / 2 + 1;
     let fftfreqs: Vec<f64> = (0..n_freq)

@@ -1,7 +1,9 @@
 use rlx_runtime::{DType, Device, Graph, Op, Session, Shape};
 fn to_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+    b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 fn stats(a: &[f32], b: &[f32]) -> (f64, f64) {

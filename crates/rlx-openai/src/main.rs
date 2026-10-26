@@ -6,7 +6,7 @@
 //! Canonical OpenAI HTTP server for RLX chat LMs (`RegistryBackend`).
 //!
 //! ```sh
-//! cargo run -p rlx-openai --release --features laguna,apple-silicon -- \
+//! cargo run -p rlx-openai --release --features laguna,macos-gpu -- \
 //!   --host 127.0.0.1 --port 8080 \
 //!   --engine qwen3 --weights /path/qwen3 --model-id qwen3 --device metal \
 //!   --engine laguna --weights /path/Laguna.gguf --tokenizer-dir /path/tok \
@@ -25,7 +25,7 @@ fn print_help() {
         "rlx-openai — central OpenAI-compatible server for RLX chat LMs
 
 Usage:
-  rlx-openai [--host HOST] [--port N] [--max-tokens N] \\
+  rlx-openai [--host HOST] [--port N] [--max-tokens N] [--number-format FMT] \\
     --engine KIND --weights PATH [--tokenizer-dir DIR] [--model-id ID] \\
       [--device cpu|metal|mlx|…] [--eos IDS] \\
       [--continuous-batching] [--fused] [--max-batch N] [--batch-tokens N] [--kv-bits N] \\
@@ -33,6 +33,9 @@ Usage:
     [--engine KIND …]
 
 Kinds enabled in this build: {}
+
+--number-format FMT (f32, f16, bf16, f8, f6, f4, fNeXmY, …) applies to every
+engine in the process.
 
 Shared flags may appear anywhere. Per-engine flags apply to the preceding
 `--engine` until the next `--engine`.
@@ -74,6 +77,14 @@ fn parse_args(args: &[String]) -> Result<(String, u16, usize, Vec<EngineSpec>)> 
                     .ok_or_else(|| anyhow::anyhow!("--port requires a value"))?
                     .parse()
                     .context("--port")?;
+            }
+            "--number-format" => {
+                i += 1;
+                let spec = args.get(i).context("--number-format requires a value")?;
+                let format = spec
+                    .parse::<rlx_runtime::NumberFormat>()
+                    .map_err(|e| anyhow::anyhow!("--number-format: {e}"))?;
+                rlx_core::lm_registry::apply_number_format(Some(format))?;
             }
             "--max-tokens" => {
                 i += 1;

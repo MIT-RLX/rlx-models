@@ -31,7 +31,7 @@ pub fn resolve_device(name: Option<&str>) -> Result<Device> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| env::var("RLX_DEVICE").ok())
+        .or_else(|| rlx_ir::env::var_result("RLX_DEVICE").ok())
         .unwrap_or_else(|| "auto".to_string());
 
     if label.eq_ignore_ascii_case("auto") {
@@ -52,7 +52,7 @@ pub fn resolve_device(name: Option<&str>) -> Result<Device> {
                 .unwrap_or_else(|| pkg.replace('_', "-"));
             eprintln!(
                 "[{bin}] auto → Cpu (no GPU backend in this binary). \
-                 On Apple Silicon: `cargo build -p {bin} --features metal` \
+                 On macOS arm64: `cargo build -p {bin} --features metal` \
                  (or `just features=metal {}`)",
                 bin.trim_start_matches("rlx-")
             );

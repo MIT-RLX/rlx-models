@@ -22,7 +22,9 @@ fn read_npy_i32(path: &str) -> Result<Vec<i32>> {
     let header_len = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
     let data = &bytes[10 + header_len..];
     Ok(data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }

@@ -112,7 +112,7 @@ pub fn frames_from_audio_codes(cfg: &SesameConfig, frames_codes: &[Vec<u32>]) ->
 }
 
 pub fn default_model_dir() -> std::path::PathBuf {
-    std::env::var_os("RLX_SESAME_DIR")
+    rlx_ir::env::var_os("RLX_SESAME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("weights/tts/sesame"))
 }

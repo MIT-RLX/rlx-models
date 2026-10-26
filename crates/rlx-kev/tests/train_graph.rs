@@ -736,7 +736,7 @@ fn bf16_training_produces_f32_gradients_close_to_the_f32_run() {
 /// is correct on each available one.
 ///
 /// Pinning the policy choice here means changing it has to be deliberate. All
-/// three Apple backends now train correctly under the safe policy, MLX included
+/// three macOS backends now train correctly under the safe policy, MLX included
 /// (it used to fail in the backward).
 #[test]
 fn every_backend_takes_the_safe_bf16_policy_and_trains_correctly() {

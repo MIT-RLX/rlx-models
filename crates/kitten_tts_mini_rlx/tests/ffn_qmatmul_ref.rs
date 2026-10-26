@@ -52,8 +52,10 @@ fn ffn_qmatmul_matches_reference_on_native_ln() {
             .output()
             .expect("style");
         out.stdout
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect()
     };
     let ln_name = "/bert/encoder/albert_layer_groups.0/albert_layers.0/attention/LayerNorm/LayerNormalization";

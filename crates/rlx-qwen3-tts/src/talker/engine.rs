@@ -94,7 +94,10 @@ fn talker_use_gpu_kv(device: Device) -> bool {
     if !device_supports_gpu_kv(device) {
         return false;
     }
-    match std::env::var("RLX_QWEN3_TTS_GPU_KV").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_QWEN3_TTS_GPU_KV")
+        .ok()
+        .as_deref()
+    {
         Some("0") => false,
         Some("1") => true,
         _ => crate::synth_opts::megakernel_gpu_kv_default(device),
@@ -102,7 +105,10 @@ fn talker_use_gpu_kv(device: Device) -> bool {
 }
 
 pub fn talker_use_eager_for_device(device: Device) -> bool {
-    match std::env::var("RLX_QWEN3_TTS_TALKER_EAGER").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_QWEN3_TTS_TALKER_EAGER")
+        .ok()
+        .as_deref()
+    {
         Some("1") => return true,
         Some("0") => return false,
         _ => {}
@@ -115,11 +121,18 @@ pub fn talker_use_eager_for_device(device: Device) -> bool {
         return crate::gpu_pipeline::talker_eager_decode_default(device);
     }
     if device == Device::Mlx {
-        if std::env::var("RLX_QWEN3_TTS_MLX_COMPILED").ok().as_deref() == Some("1") {
+        if rlx_ir::env::var_result("RLX_QWEN3_TTS_MLX_COMPILED")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
             return false;
         }
         if crate::gpu_pipeline::gpu_session_enabled(device)
-            && std::env::var("RLX_QWEN3_TTS_TALKER_EAGER").ok().as_deref() != Some("1")
+            && rlx_ir::env::var_result("RLX_QWEN3_TTS_TALKER_EAGER")
+                .ok()
+                .as_deref()
+                != Some("1")
         {
             return false;
         }
@@ -175,7 +188,10 @@ impl TalkerEngine {
         talker: &TalkerConfig,
         device: Device,
     ) -> Result<Self> {
-        let debug = std::env::var("RLX_QWEN3_TTS_OPEN_TIMING").ok().as_deref() == Some("1");
+        let debug = rlx_ir::env::var_result("RLX_QWEN3_TTS_OPEN_TIMING")
+            .ok()
+            .as_deref()
+            == Some("1");
         let t = std::time::Instant::now();
         let mut talker_wm = store.load_talker_backbone()?;
         if debug {
@@ -1075,7 +1091,11 @@ impl TalkerEngine {
                 self.gpu_kv_binding = GpuKvBinding::default();
             }
             self.past_len = past_seq + 1;
-            if std::env::var("RLX_QWEN3_TTS_DECODE_DEBUG").ok().as_deref() == Some("1") {
+            if rlx_ir::env::var_result("RLX_QWEN3_TTS_DECODE_DEBUG")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
                 let rms = hidden_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
                 let off = upper.saturating_mul(self.hidden);
                 eprintln!(
@@ -1138,7 +1158,11 @@ impl TalkerEngine {
         commit_kv_layers(&mut self.kv.layers_k, &mut self.kv.layers_v, &new_k, &new_v);
         self.kv.past_len = past_seq + 1;
         self.past_len += 1;
-        if std::env::var("RLX_QWEN3_TTS_DECODE_DEBUG").ok().as_deref() == Some("1") {
+        if rlx_ir::env::var_result("RLX_QWEN3_TTS_DECODE_DEBUG")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
             let rms = hidden_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
             let off = upper.saturating_mul(self.hidden);
             eprintln!(

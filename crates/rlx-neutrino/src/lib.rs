@@ -190,15 +190,7 @@ impl NeutrinoRunner {
 
 /// Lowest-index argmax (first maximum, matching the fork's `argmax2`).
 fn argmax(logits: &[f32]) -> usize {
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &v) in logits.iter().enumerate() {
-        if v > best_v {
-            best_v = v;
-            best = i;
-        }
-    }
-    best
+    rlx_search::argmax(logits)
 }
 
 /// Builder for [`NeutrinoRunner`]. Same surface as [`Qwen3RunnerBuilder`] for the

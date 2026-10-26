@@ -87,8 +87,9 @@ pub struct Qwen3Config {
     pub num_experts_used: usize,
     /// FFN inner width for each routed expert. When 0 falls back to
     /// `intermediate_size / num_experts_used` to match upstream defaults.
-    /// GGUF key: `qwen3.expert_feed_forward_length`.
-    #[serde(default)]
+    /// GGUF key: `qwen3.expert_feed_forward_length`; HF key:
+    /// `moe_intermediate_size`.
+    #[serde(default, alias = "moe_intermediate_size")]
     pub expert_ffn_size: usize,
     /// FFN inner width for the always-on shared expert (0 = no shared
     /// expert). GGUF key: `qwen3.expert_shared_feed_forward_length`.
@@ -133,7 +134,14 @@ impl Qwen3Config {
     /// level of one of those fails on `vocab_size` — a long way from saying
     /// "this is a VL config", which is what the error means.
     pub fn from_json_str(data: &str) -> anyhow::Result<Self> {
-        let value: serde_json::Value = serde_json::from_str(data)?;
+        let mut value: serde_json::Value = serde_json::from_str(data)?;
+        // transformers 5 keeps `rope_theta` / `rope_scaling` in `rope_parameters`.
+        rlx_core::config::legacy_rope_keys(&mut value);
+        let model_type = value
+            .get("model_type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("qwen3")
+            .to_string();
         let body = match value.get("text_config") {
             Some(nested) if nested.is_object() => {
                 // `vocab_size` and `tie_word_embeddings` live at the top level
@@ -153,7 +161,18 @@ impl Qwen3Config {
             }
             _ => value,
         };
+        let explicit_qk_norm = body.get("qk_norm").is_some();
+        let explicit_bias = body.get("attention_bias").is_some();
         let mut cfg: Self = serde_json::from_value(body)?;
+        // The rest of the Llama family has no QK-norm, and says nothing of it.
+        if !explicit_qk_norm && matches!(model_type.as_str(), "llama" | "mistral" | "qwen2") {
+            cfg.qk_norm = false;
+        }
+        // A Qwen2 attention block adds its Q/K/V bias unconditionally; its
+        // config has no flag for it.
+        if !explicit_bias && model_type == "qwen2" {
+            cfg.attention_bias = true;
+        }
         cfg.fill_derived_defaults()?;
         Ok(cfg)
     }
@@ -203,6 +222,19 @@ impl Qwen3Config {
     /// will return true; dense Qwen3 returns false.
     pub fn is_moe(&self) -> bool {
         self.num_experts > 0
+    }
+
+    /// Layer `i`'s experts, when the model is MoE: every layer, routing
+    /// weights renormalized — the layout of the Qwen3 MoE releases
+    /// (`decoder_sparse_step: 1`, no `mlp_only_layers`, `norm_topk_prob`;
+    /// an exporter refuses a config that says otherwise).
+    pub fn layer_moe(&self, _i: usize) -> Option<rlx_flow::blocks::Qwen3Moe> {
+        self.is_moe().then(|| rlx_flow::blocks::Qwen3Moe {
+            num_experts: self.num_experts,
+            top_k: self.num_experts_used.max(1),
+            intermediate: self.expert_ffn_dim(),
+            norm_topk_prob: true,
+        })
     }
 
     /// Routed-expert SwiGLU inner width. Falls back to
@@ -346,5 +378,18 @@ mod tests {
         let cfg: Qwen3Config = serde_json::from_str(json).unwrap();
         assert!(!cfg.layer_uses_swa(0));
         assert!(!cfg.layer_uses_swa(1));
+    }
+
+    #[test]
+    fn rope_theta_is_read_from_rope_parameters() {
+        let json = r#"{"text_config": {
+            "vocab_size": 100, "hidden_size": 64, "intermediate_size": 128,
+            "num_hidden_layers": 2, "num_attention_heads": 4,
+            "num_key_value_heads": 2, "head_dim": 16,
+            "max_position_embeddings": 512,
+            "rope_parameters": {"rope_theta": 5000000, "rope_type": "default"}
+        }}"#;
+        let cfg = Qwen3Config::from_json_str(json).unwrap();
+        assert_eq!(cfg.rope_theta, 5_000_000.0);
     }
 }

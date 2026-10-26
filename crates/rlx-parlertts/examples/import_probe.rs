@@ -48,7 +48,7 @@ fn probe(dir: &Path, component: &str, named: &[(&str, usize)], seq: usize) {
             if !report.unsupported.is_empty() {
                 println!("   UNSUPPORTED ops: {:?}", report.unsupported);
             }
-            if std::env::var_os("RLX_DUMP_NARROW").is_some() {
+            if rlx_ir::env::var_os("RLX_DUMP_NARROW").is_some() {
                 use std::collections::BTreeMap;
                 let mut hist: BTreeMap<String, usize> = BTreeMap::new();
                 let mut narrows = 0;
@@ -83,8 +83,8 @@ fn probe(dir: &Path, component: &str, named: &[(&str, usize)], seq: usize) {
 }
 
 fn main() -> Result<()> {
-    let dir =
-        std::env::var("RLX_PARLER_DIR").unwrap_or_else(|_| "weights/tts/parlertts".to_string());
+    let dir = rlx_ir::env::var_result("RLX_PARLER_DIR")
+        .unwrap_or_else(|_| "weights/tts/parlertts".to_string());
     let dir = Path::new(&dir);
     if !dir.join("onnx/decoder.onnx").exists() {
         eprintln!(

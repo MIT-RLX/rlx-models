@@ -28,6 +28,7 @@ compat-net = ["dep:ureq"]
 coreml = ["rlx-core/coreml"]
 
 [dev-dependencies]
+rlx-ir = { workspace = true }
 # Used by tests/chat_templates.rs to deserialize fixture JSON.
 serde = { workspace = true, features = ["derive"] }
 

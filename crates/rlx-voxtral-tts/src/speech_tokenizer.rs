@@ -170,7 +170,7 @@ mod tests {
     use super::*;
 
     fn model_dir() -> Option<PathBuf> {
-        std::env::var("RLX_VOXTRAL_TTS_DIR")
+        rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR")
             .ok()
             .map(PathBuf::from)
             .filter(|p| p.join(TEKKEN_FILE).is_file())

@@ -51,11 +51,11 @@ use rlx_qwen35::{Qwen35Runner, llama_reference};
 use rlx_runtime::Device;
 
 fn parity_fixture() -> Option<PathBuf> {
-    std::env::var_os("RLX_QWEN35_PARITY_GGUF").map(PathBuf::from)
+    rlx_ir::env::var_os("RLX_QWEN35_PARITY_GGUF").map(PathBuf::from)
 }
 
 fn parity_prompt_ids() -> Vec<u32> {
-    std::env::var("RLX_QWEN35_PARITY_PROMPT_IDS")
+    rlx_ir::env::var_result("RLX_QWEN35_PARITY_PROMPT_IDS")
         .ok()
         .map(|s| {
             s.split(',')
@@ -67,7 +67,7 @@ fn parity_prompt_ids() -> Vec<u32> {
 }
 
 fn parity_max_seq() -> usize {
-    std::env::var("RLX_QWEN35_PARITY_MAX_SEQ")
+    rlx_ir::env::var_result("RLX_QWEN35_PARITY_MAX_SEQ")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|n| *n > 0)

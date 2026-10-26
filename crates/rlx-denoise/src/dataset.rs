@@ -121,8 +121,8 @@ impl Dataset {
         );
 
         let mut data = Vec::with_capacity(want);
-        for chunk in bytes[header..].chunks_exact(4) {
-            data.push(f32::from_le_bytes(chunk.try_into()?));
+        for chunk in bytes[header..].as_chunks::<4>().0.iter() {
+            data.push(f32::from_le_bytes(*chunk));
         }
 
         // A NaN anywhere in an input plane propagates through every convolution

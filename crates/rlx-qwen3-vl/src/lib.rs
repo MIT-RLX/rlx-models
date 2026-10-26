@@ -42,6 +42,8 @@ use rlx_llama_base::LlamaBaseConfig;
 use std::path::Path;
 
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod multimodal;
 pub mod preprocess;

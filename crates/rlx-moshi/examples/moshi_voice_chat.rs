@@ -24,18 +24,18 @@
 //! monologue" is printed as it goes.
 //!
 //! Moshi is a 7B model at 12.5 Hz (80 ms/frame): real-time needs a GPU
-//! (`--features apple-silicon` → Metal/MLX). On CPU it runs but far slower than
+//! (`--features macos-gpu` → Metal/MLX). On CPU it runs but far slower than
 //! real-time.
 //!
 //! Quick run (download ~8 GB Q8 + ~385 MB Mimi first):
 //! ```sh
 //! just fetch-mimi && just fetch-moshi-q8
 //! # batch: drive Moshi from a WAV, write its reply
-//! cargo run --release -p rlx-moshi --features apple-silicon \
+//! cargo run --release -p rlx-moshi --features macos-gpu \
 //!   --example moshi_voice_chat -- --device metal \
 //!   --input-wav some_speech.wav --out-wav /tmp/moshi_reply.wav
 //! # live mic ↔ speaker (use headphones — Moshi is full-duplex and will hear itself):
-//! cargo run --release -p rlx-moshi --features apple-silicon,mic \
+//! cargo run --release -p rlx-moshi --features macos-gpu,mic \
 //!   --example moshi_voice_chat -- --device metal --mic --secs 60
 //! ```
 
@@ -189,7 +189,7 @@ fn main() -> Result<()> {
     println!("└───────────────────────────────────────────────────────────────");
     if args.device == Device::Cpu {
         eprintln!(
-            "warning: Moshi 7B on CPU is far below real-time — use `--device metal` (apple-silicon build)"
+            "warning: Moshi 7B on CPU is far below real-time — use `--device metal` (macos-gpu build)"
         );
     }
 
@@ -296,7 +296,7 @@ fn run_mic(args: &Args) -> Result<()> {
 
 #[cfg(not(feature = "mic"))]
 fn run_mic(_args: &Args) -> Result<()> {
-    bail!("--mic requires the `mic` cargo feature: rebuild with `--features apple-silicon,mic`")
+    bail!("--mic requires the `mic` cargo feature: rebuild with `--features macos-gpu,mic`")
 }
 
 // ── WAV + resample helpers ───────────────────────────────────────────────────

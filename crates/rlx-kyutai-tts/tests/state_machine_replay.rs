@@ -12,7 +12,7 @@ const PY_OUT: &[u32] = &[
 
 #[test]
 fn rust_state_machine_matches_python_temp0_trace() {
-    let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| default_kyutai_tts_dir());
     if !dir.join("dsm_tts_1e68beda@240.safetensors").is_file() {

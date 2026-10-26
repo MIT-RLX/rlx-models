@@ -106,7 +106,11 @@ fn metal_compiled_lm_matches_eager() {
         eprintln!("skip: set RLX_VOXTRAL_TTS_DIR with consolidated.safetensors");
         return;
     };
-    if std::env::var("RLX_VOXTRAL_TTS_METAL_LM").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_METAL_LM")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_VOXTRAL_TTS_METAL_LM=1 for full Metal forward parity");
         return;
     }
@@ -137,7 +141,11 @@ fn metal_compiled_lm_forward_smoke() {
 #[test]
 #[cfg(feature = "gpu")]
 fn wgpu_compiled_lm_forward_smoke() {
-    if std::env::var("RLX_VOXTRAL_TTS_WGPU_LM").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_WGPU_LM")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!(
             "skip: set RLX_VOXTRAL_TTS_WGPU_LM=1 for full wgpu forward (layer-sharded; slow first run)"
         );
@@ -153,7 +161,11 @@ fn wgpu_compiled_lm_matches_eager() {
         eprintln!("skip: set RLX_VOXTRAL_TTS_DIR with consolidated.safetensors");
         return;
     };
-    if std::env::var("RLX_VOXTRAL_TTS_WGPU_LM").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_WGPU_LM")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_VOXTRAL_TTS_WGPU_LM=1 for full wgpu forward parity");
         return;
     };

@@ -14,9 +14,9 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! End-to-end coverage of the whole crate at real NeuralHash geometry, on a
-//! synthetic Espresso container.
+//! synthetic network container.
 //!
-//! Apple's `NeuralHashv3b` weights cannot be redistributed, so these tests
+//! The vendor's `NeuralHashv3b` weights cannot be redistributed, so these tests
 //! stand up a MobileNetV3-shaped network with the same input/output contract
 //! (`[1, 3, 360, 360]` → 128 floats) and deterministic pseudo-random weights.
 //! That exercises every seam the real model uses — strided conv, asymmetric
@@ -25,7 +25,7 @@
 //! packing — without any vendor file.
 
 use half::f16;
-use rlx_neuralhash::espresso::{BlobShape, EspressoNet};
+use rlx_neuralhash::netfile::{BlobShape, NetFile};
 use rlx_neuralhash::seed::EMBED_DIM;
 use rlx_neuralhash::{
     HASH_BITS, NeuralHash, NeuralHashModel, NeuralHashSpec, NeuralHasher, SeedMatrix,
@@ -112,7 +112,7 @@ const NET_JSON: &str = r#"{
   ]
 }"#;
 
-fn synthetic_net() -> EspressoNet {
+fn synthetic_net() -> NetFile {
     let mut r = Lcg::new(0x4e48_4153_4831_3233);
     let weights = container(&[
         (0, f16b(&r.vec(8 * 3 * 3 * 3, 0.4))), // stem w [8,3,3,3]
@@ -136,7 +136,7 @@ fn synthetic_net() -> EspressoNet {
             w: 360,
         },
     );
-    EspressoNet::from_parts(NET_JSON, &weights, shapes).expect("parse synthetic espresso net")
+    NetFile::from_parts(NET_JSON, &weights, shapes).expect("parse synthetic network file")
 }
 
 /// A synthetic but non-degenerate `[96, 128]` projection.
@@ -196,19 +196,19 @@ fn image(w: usize, h: usize, variant: u32) -> Vec<u8> {
 
 fn hasher() -> NeuralHasher {
     let net = synthetic_net();
-    let model = NeuralHashModel::from_espresso(&net, Device::Cpu).expect("build native model");
+    let model = NeuralHashModel::from_netfile(&net, Device::Cpu).expect("build native model");
     NeuralHasher::from_parts(model, synthetic_seed())
 }
 
 #[test]
 fn derived_spec_matches_the_neuralhash_contract() {
     let net = synthetic_net();
-    let spec = NeuralHashSpec::from_espresso(&net).unwrap();
+    let spec = NeuralHashSpec::from_netfile(&net).unwrap();
     assert_eq!(spec.input_shape, [1, 3, 360, 360]);
     assert_eq!(spec.output_dim(), EMBED_DIM);
     spec.validate_neuralhash_io().unwrap();
 
-    // Spot-check the geometry chain the espresso fields imply.
+    // Spot-check the geometry chain the network-file fields imply.
     let shape_of = |blob: &str| spec.ops.iter().find(|o| o.out == blob).unwrap().shape;
     assert_eq!(shape_of("s"), [1, 8, 180, 180], "stride-2 3x3 pad-1 stem");
     assert_eq!(shape_of("d"), [1, 8, 90, 90], "depthwise, SAME padding");
@@ -262,7 +262,7 @@ fn different_images_hash_differently() {
 #[test]
 fn descriptor_is_finite_and_128_wide() {
     let net = synthetic_net();
-    let mut model = NeuralHashModel::from_espresso(&net, Device::Cpu).unwrap();
+    let mut model = NeuralHashModel::from_netfile(&net, Device::Cpu).unwrap();
     let input = rlx_neuralhash::preprocess::from_rgb8(&image(400, 300, 3), 400, 300).unwrap();
     let d = model.embed(&input).unwrap();
     assert_eq!(d.len(), EMBED_DIM);
@@ -281,7 +281,7 @@ fn exported_spec_rebuilds_the_same_model() {
     // The spec is meant to be a complete, standalone architecture description:
     // round-tripping it through JSON and rebuilding must not change a bit.
     let net = synthetic_net();
-    let spec = NeuralHashSpec::from_espresso(&net).unwrap();
+    let spec = NeuralHashSpec::from_netfile(&net).unwrap();
     let reloaded = NeuralHashSpec::from_json(&spec.to_json().unwrap()).unwrap();
     assert_eq!(spec, reloaded);
 
@@ -289,7 +289,7 @@ fn exported_spec_rebuilds_the_same_model() {
     let mut direct = hasher();
     let expected = direct.hash_rgb8(&img, 300, 300).unwrap();
 
-    let weights = rlx_neuralhash::weights::from_espresso(&net).unwrap();
+    let weights = rlx_neuralhash::weights::from_netfile(&net).unwrap();
     let model = NeuralHashModel::from_spec(reloaded, weights, Device::Cpu).unwrap();
     let mut rebuilt = NeuralHasher::from_parts(model, synthetic_seed());
     assert_eq!(rebuilt.hash_rgb8(&img, 300, 300).unwrap(), expected);
@@ -318,7 +318,7 @@ fn descriptor_dot_seed_matches_the_reference_formula() {
     // Recompute `seed1.dot(embedding)` + binary step by hand and compare with
     // what the pipeline produced, pinning the two against each other.
     let net = synthetic_net();
-    let mut model = NeuralHashModel::from_espresso(&net, Device::Cpu).unwrap();
+    let mut model = NeuralHashModel::from_netfile(&net, Device::Cpu).unwrap();
     let seed = synthetic_seed();
     let input = rlx_neuralhash::preprocess::from_rgb8(&image(500, 400, 7), 500, 400).unwrap();
     let d = model.embed(&input).unwrap();
@@ -346,8 +346,8 @@ fn fusion_is_value_preserving() {
     use rlx_neuralhash::synth;
     let net = synth::synthetic_net(0xF05E).unwrap();
     let seed = synth::synthetic_seed(0xF05E);
-    let fused = NeuralHashModel::from_espresso_fused(&net, Device::Cpu, true).unwrap();
-    let plain = NeuralHashModel::from_espresso_fused(&net, Device::Cpu, false).unwrap();
+    let fused = NeuralHashModel::from_netfile_fused(&net, Device::Cpu, true).unwrap();
+    let plain = NeuralHashModel::from_netfile_fused(&net, Device::Cpu, false).unwrap();
     assert!(
         fused.graph_nodes() < plain.graph_nodes(),
         "fusion did not shrink the graph ({} vs {})",

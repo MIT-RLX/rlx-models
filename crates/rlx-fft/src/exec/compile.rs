@@ -28,7 +28,7 @@ thread_local! {
 
 /// Env knob (also set by the global `--precision` CLI flag) selecting the float
 /// dtype used when compiling FFT graphs. Default `f32`; `f16` lets the butterfly
-/// / mask / denoiser graph run on fp16 silicon (Apple Neural Engine via CoreML,
+/// / mask / denoiser graph run on fp16 silicon (Neural Engine via CoreML,
 /// Metal/MLX half), at the cost of accuracy — train a butterfly for the target
 /// precision to recover it.
 pub const PRECISION_ENV: &str = "RLX_FFT_PRECISION";

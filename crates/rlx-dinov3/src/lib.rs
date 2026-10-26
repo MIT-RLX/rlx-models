@@ -41,6 +41,8 @@
 pub mod cli;
 /// Model configuration + variant presets.
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 /// Native encoder graph assembly (RoPE attention + MLP plugins).
 pub mod flow;
 /// Host-side patch embedding + token assembly.

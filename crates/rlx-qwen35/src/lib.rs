@@ -67,7 +67,12 @@ mod chat;
 pub mod cli;
 mod config;
 pub mod execution;
+#[cfg(feature = "export")]
+pub mod export;
+#[cfg(feature = "export")]
+pub mod export_vl;
 mod flow;
+pub mod hf;
 #[cfg(feature = "parity-llama")]
 pub mod llama_reference;
 mod lm_head;
@@ -92,10 +97,13 @@ pub use chat::{
     THINK_BUDGET_CLOSE, ThinkingBudgetWatch, encode_chat, encode_chat_auto, encode_chat_auto_with,
     format_chatml, format_chatml_with, messages_from_prompt, parse_messages_json, split_thinking,
 };
+pub use tokenizer::{QWEN2_SPLIT_REGEX, QWEN35_SPLIT_REGEX, qwen_split_regex};
 pub use tokenizer::{
     decode_ids, decode_ids_auto, decode_ids_from_gguf, encode_prompt, encode_prompt_auto,
     encode_prompt_from_gguf, resolve_tokenizer_path,
 };
+#[cfg(feature = "qwen35-tokenizer")]
+pub use tokenizer::{gguf_tokenizer_json, qwen_pre_tokenizer};
 
 pub use builder::{
     PackedParams, Qwen35BsLayout, build_qwen35_decode_graph, build_qwen35_decode_graph_ext,
@@ -105,7 +113,8 @@ pub use builder::{
     build_qwen35_prefill_cache_hir_dynamic_ext, build_qwen35_prefill_cache_hir_ext,
     build_qwen35_prefill_hidden_cache_hir_dynamic_ext, build_qwen35_prefill_hidden_cache_hir_ext,
     build_qwen35_prefix_graph, build_qwen35_trunk_export_graph, build_qwen35_verify_hir,
-    emit_qwen35_full_attn_prefill_layer, emit_qwen35_gdn_prefill_layer, emit_qwen35_prefill_tail,
+    emit_qwen35_full_attn_bidirectional_layer, emit_qwen35_full_attn_prefill_layer,
+    emit_qwen35_gdn_prefill_layer, emit_qwen35_prefill_tail,
 };
 pub use cache::{
     Qwen35DecodeCache, Qwen35LayerState, build_decode_attention_mask, build_verify_bias_mask,
@@ -120,8 +129,8 @@ pub use execution::{
     get_or_specialize_hir_with_options, hidden_prefill_config, prefill_config,
 };
 pub use flow::{
-    Qwen35DecodeFlow, Qwen35DecodeOpts, Qwen35Flow, Qwen35LayerCtx, Qwen35LayerProbeFlow,
-    Qwen35PrefillCacheFlow, Qwen35PrefillCacheOpts, Qwen35TrunkExportOpts,
+    ATTN_KEY_MASK, Qwen35DecodeFlow, Qwen35DecodeOpts, Qwen35Flow, Qwen35LayerCtx,
+    Qwen35LayerProbeFlow, Qwen35PrefillCacheFlow, Qwen35PrefillCacheOpts, Qwen35TrunkExportOpts,
     build_qwen35_decode_built, build_qwen35_decode_flow, build_qwen35_decode_model_flow,
     build_qwen35_layer_probe_model_flow, build_qwen35_prefill_built,
     build_qwen35_prefill_cache_built, build_qwen35_prefill_cache_flow,
@@ -143,20 +152,21 @@ pub use rlx_llada2::tide::{
 };
 pub use rlx_qwen3::sampling::{SampleOpts, sample_token};
 pub use rope::{
-    mrope_prefill_feeds, mrope_row_for_sections, mrope_slice_at_pos, supports_multimodal_mrope,
-    text_section_pos,
+    mrope_prefill_feeds, mrope_row_for_sections, mrope_section_masks, mrope_slice_at_pos,
+    supports_multimodal_mrope, text_section_pos,
 };
 pub use runner::{
     Qwen35ConfigSource, Qwen35PrefillOutput, Qwen35PrefillSeed, Qwen35Runner, Qwen35RunnerBuilder,
+    StageInput, StageOutput, pipeline_stage_keeps, pipeline_stage_layers,
 };
 pub use spec::{Qwen35MtpDraft, Qwen35TrunkTarget, speculative_decode_round};
 pub use spec_runner::{Qwen35SpecRunner, Qwen35SpecRunnerBuilder};
 pub use vision::{
-    MEDIA_MARKER, MmProjConfig, MmProjWeights, MultimodalPrefill, MultimodalPrompt,
-    Qwen35VisionEncoder, Qwen35VisionFlow, VISION_END, VISION_START, VisionEncodeOutput,
-    build_multimodal_mrope_sections, build_qwen35_vision_built, build_qwen35_vision_graph,
-    build_qwen35_vision_hir, build_vision_positions, image_chunk_n_pos, image_decoder_pos,
-    load_vision_encoder, merge_text_and_vision_embd, preprocess_rgb,
+    MEDIA_MARKER, MmProjConfig, MmProjWeights, MultiImagePrompt, MultimodalPrefill,
+    MultimodalPrompt, Qwen35VisionEncoder, Qwen35VisionFlow, VISION_END, VISION_START,
+    VisionEncodeOutput, build_multimodal_mrope_sections, build_qwen35_vision_built,
+    build_qwen35_vision_graph, build_qwen35_vision_hir, build_vision_positions, image_chunk_n_pos,
+    image_decoder_pos, load_vision_encoder, merge_text_and_vision_embd, preprocess_rgb,
 };
 #[cfg(feature = "qwen35-vlm")]
 pub use vision::{encode_image_file, load_rgb_image};

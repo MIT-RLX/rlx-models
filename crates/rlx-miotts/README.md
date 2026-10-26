@@ -37,7 +37,7 @@ just miotts-backends   # LM once → codec per Device → Whisper fox
 CLI:
 
 ```bash
-cargo run -p rlx-miotts --release --features apple-silicon -- \
+cargo run -p rlx-miotts --release --features macos-gpu -- \
   --text "The quick brown fox jumps over the lazy dog." \
   --preset en_female --device metal --seed 42 --output /tmp/miotts.wav
 ```

@@ -1,0 +1,20 @@
+# FunASR's host logic as an RLX program (WebAssembly), for SenseVoiceSmall
+# and Paraformer: the crate's Kaldi fbank / LFR / CMVN frontend
+# (`frontend.rs`), the CTC collapse or the CIF (`cif.rs`), and the pieces. Built by `rlx-funasr`'s exporter, so it stands outside the
+# workspace.
+[package]
+name = "rlx-funasr-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+anyhow = "1"
+rustfft = "6"
+
+[workspace]

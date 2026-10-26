@@ -8,8 +8,9 @@ use rlx_tiny_tts::BundleConfig;
 use rlx_tiny_tts::model::TinyModel;
 
 fn main() -> anyhow::Result<()> {
-    let dir =
-        PathBuf::from(std::env::var("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()));
+    let dir = PathBuf::from(
+        rlx_ir::env::var_result("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()),
+    );
     let cfg = BundleConfig {
         model: String::new(),
         sample_rate: 48000,
@@ -77,8 +78,10 @@ fn main() -> anyhow::Result<()> {
         match dt {
             DType::I64 => {
                 let v: Vec<i64> = bytes
-                    .chunks_exact(8)
-                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| i64::from_le_bytes(*c))
                     .collect();
                 eprintln!(
                     "  out[{i}] i64 elems={} first={:?}",
@@ -88,7 +91,9 @@ fn main() -> anyhow::Result<()> {
             }
             DType::I32 => {
                 let v: Vec<i32> = bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 eprintln!(
@@ -106,7 +111,9 @@ fn main() -> anyhow::Result<()> {
             }
             _ => {
                 let v: Vec<f32> = bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 let pk = v.iter().fold(0.0f32, |m, &x| m.max(x.abs()));

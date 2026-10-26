@@ -29,7 +29,7 @@ use rlx_runtime::{Device, is_available};
 const PROMPT_TEXT: &str = "Hello from Kokoro. This is a test of speech synthesis in Rust.";
 const TEXT: &str = "The quick brown fox jumps over the lazy dog near the river bank.";
 fn iters() -> usize {
-    std::env::var("RLX_ITERS")
+    rlx_ir::env::var_result("RLX_ITERS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3)
@@ -46,7 +46,7 @@ fn backends() -> Vec<(Device, &'static str)> {
         (Device::Ane, "CoreML"),
         (Device::Vulkan, "vulkan"),
     ];
-    if let Ok(raw) = std::env::var("RLX_DEVICES") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_DEVICES") {
         let want: Vec<_> = raw
             .split(',')
             .map(|s| s.trim().to_ascii_lowercase())
@@ -185,7 +185,7 @@ fn short(s: &str) -> String {
 use rlx_whisper::{SAMPLE_RATE as WHISPER_RATE, WhisperRunner};
 
 fn load_whisper() -> Option<WhisperRunner> {
-    let d = std::env::var("RLX_WHISPER_DIR")
+    let d = rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .map(PathBuf::from)
         .ok()
         .or_else(|| {

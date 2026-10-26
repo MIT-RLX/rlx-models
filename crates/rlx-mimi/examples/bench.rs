@@ -21,7 +21,7 @@ const CRATE: &str = "rlx-mimi";
 #[allow(clippy::vec_init_then_push)]
 fn main() -> Result<()> {
     let (dur, iters) = cb::parse_dur_iters();
-    let dir = std::env::var_os("RLX_MIMI_DIR")
+    let dir = rlx_ir::env::var_os("RLX_MIMI_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(".cache/mimi"));
     if !dir.join("model.safetensors").is_file() {

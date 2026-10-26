@@ -14,7 +14,7 @@ cargo run -p rlx-eagle3 --release --features "mlx metal" \
 - Shape: `[V_draft=32000, H_draft=5376]` → 656 MB f32
 - Op: `mm(x[1, B, 5376], W[5376, 32000])` → `logits[1, B, 32000]`
 - 5 warmup + 100 timed iterations
-- Hardware: Apple M4 Pro, 64 GiB unified, macOS
+- Hardware: M4 Pro, 64 GiB unified, macOS
 
 ## Per-row µs (lower = faster)
 
@@ -59,7 +59,7 @@ Steps 1–2 are sub-µs. Steps 3–4 are MLX runtime work, opaque to us. **No kn
 
 ### Why Metal MPS doesn't have this floor
 
-MPS dispatches synchronously and has highly tuned matrix-vector kernels (special `simdgroup_float8x8` paths for skinny matmul). MLX's matmul is generic GEMM-based and pays a kernel-dispatch latency on Apple Silicon that's larger than MPS's. For *one* op, MPS wins; for fused multi-op graphs, MLX's compile model would catch up.
+MPS dispatches synchronously and has highly tuned matrix-vector kernels (special `simdgroup_float8x8` paths for skinny matmul). MLX's matmul is generic GEMM-based and pays a kernel-dispatch latency on macOS arm64 that's larger than MPS's. For *one* op, MPS wins; for fused multi-op graphs, MLX's compile model would catch up.
 
 ## Implications for the EAGLE3 draft port
 
@@ -77,7 +77,7 @@ Concrete next steps, in order of effort:
 
 2. **Verify `Array::from_f32_slice_view` for the param.** It's used (`build_leaf_for` checks `dtype == F32` + length match). Confirm the underlying `rlx_mlx_array_from_data_view` actually pins the buffer for GPU residency without re-uploading.
 
-3. **Profile MLX's matmul kernel for `(1, K) @ (K, N)` shapes.** The Apple-Silicon-tuned kernel paths in MLX may not cover this skinny shape — they're optimized for `(B*S, K) @ (K, N)` with large B*S. An MLX issue / PR to expose a `matvec` op would be the right escalation.
+3. **Profile MLX's matmul kernel for `(1, K) @ (K, N)` shapes.** The M-series-tuned kernel paths in MLX may not cover this skinny shape — they're optimized for `(B*S, K) @ (K, N)` with large B*S. An MLX issue / PR to expose a `matvec` op would be the right escalation.
 
 4. **Try `MlxMode::AsyncCommit`** — defers the eval/wait. Only helps if `propose()` chains multiple ops between readbacks.
 

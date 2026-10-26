@@ -136,7 +136,7 @@ impl EncoderTrainConfig {
             verbose: true,
             resume_weights: env::var("RESUME_WEIGHTS").ok().map(PathBuf::from),
             resume_step: env_usize("RESUME_STEP", 0),
-            device: env::var("RLX_DEVICE").ok(),
+            device: rlx_ir::env::var_result("RLX_DEVICE").ok(),
             checkpoint_every_epoch: env_usize("CHECKPOINT_EVERY_EPOCH", 0),
             report_path: env::var("TRAIN_REPORT").ok().map(PathBuf::from),
             eval_wav: env::var("EVAL_WAV").ok().map(PathBuf::from),
@@ -190,7 +190,7 @@ impl LoraTrainConfig {
             verbose: true,
             resume_weights: env::var("RESUME_WEIGHTS").ok().map(PathBuf::from),
             resume_step: env_usize("RESUME_STEP", 0),
-            device: env::var("RLX_DEVICE").ok(),
+            device: rlx_ir::env::var_result("RLX_DEVICE").ok(),
         }
     }
 }
@@ -248,34 +248,34 @@ pub fn cosine_lr(step: usize, total: usize, lr_max: f64, lr_min: f64) -> f64 {
 }
 
 pub fn env_flag(name: &str) -> bool {
-    env::var(name)
+    rlx_ir::env::read(name)
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
 
 fn env_flag_default(name: &str, default: bool) -> bool {
-    env::var(name)
+    rlx_ir::env::read(name)
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(default)
 }
 
 pub fn env_usize(name: &str, default: usize) -> usize {
-    env::var(name)
+    rlx_ir::env::read(name)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
 }
 
 fn env_f32(name: &str, default: f32) -> f32 {
-    env::var(name)
+    rlx_ir::env::read(name)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
 }
 
 fn env_f64(name: &str, default: f64) -> f64 {
-    env::var(name)
+    rlx_ir::env::read(name)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)

@@ -144,6 +144,45 @@ fn ctc_greedy_matches_reference_logic() {
     assert_eq!(steps, vec![(1, 0), (2, 2)]);
 }
 
+/// Beam search against rten's `CtcDecoder::decode_beam`, the decoder this port
+/// follows: same label sequence, same total log-probability.
+#[test]
+fn ctc_beam_matches_reference() {
+    #[cfg(feature = "rten-inference")]
+    for seed in 0..50u64 {
+        let (frames, classes) = (14, 6);
+        let mut flat = Vec::with_capacity(frames * classes);
+        for t in 0..frames {
+            let row: Vec<f32> = (0..classes)
+                .map(|c| {
+                    let mut x = (seed << 40) ^ ((t as u64) << 20) ^ c as u64;
+                    x = x.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                    x ^= x >> 29;
+                    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                    (x >> 40) as f32 / (1u64 << 24) as f32 * 6.0
+                })
+                .collect();
+            let m = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let lse = m + row.iter().map(|v| (v - m).exp()).sum::<f32>().ln();
+            flat.extend(row.iter().map(|v| v - lse));
+        }
+        let tensor = NdTensor::from_data([frames, classes], flat);
+        for width in [1u32, 4, 10] {
+            let hyp = rlx_ocr::ctc::decode(tensor.view(), DecodeMethod::BeamSearch { width });
+            let ref_hyp = rten::ctc::CtcDecoder::new().decode_beam(tensor.view(), width);
+            let labels: Vec<u32> = hyp.steps().iter().map(|s| s.label).collect();
+            let ref_labels: Vec<u32> = ref_hyp.steps().iter().map(|s| s.label).collect();
+            assert_eq!(labels, ref_labels, "seed {seed} width {width}");
+            assert!(
+                (hyp.score() - ref_hyp.score()).abs() < 1e-4,
+                "seed {seed} width {width}: {} vs {}",
+                hyp.score(),
+                ref_hyp.score()
+            );
+        }
+    }
+}
+
 fn model_dir() -> Option<PathBuf> {
     if let Some(dir) = bench_env::env_var("OCR_MODEL_DIR", "OCRS_MODEL_DIR") {
         return Some(PathBuf::from(dir));
@@ -344,17 +383,18 @@ fn ocr_pipeline_matches_reference() -> Result<()> {
         }
     }
 
-    if let (Some(ref_line), Some(rlx_line)) = (ref_lines.first(), rlx_lines.first()) {
-        if !ref_line.is_empty() && !rlx_line.is_empty() {
-            let ref_prep = reference.prepare_recognition_input(&ref_in, ref_line)?;
-            let rlx_prep = rlx.prepare_recognition_input(&rlx_in, rlx_line)?;
-            assert_eq!(ref_prep.shape(), rlx_prep.shape());
-            let prep_err = tensors_max_abs_diff(ref_prep.view(), rlx_prep.view());
-            assert!(
-                prep_err <= PREPROCESS_MAX_ABS,
-                "prepare_recognition_input max abs diff {prep_err}"
-            );
-        }
+    if let (Some(ref_line), Some(rlx_line)) = (ref_lines.first(), rlx_lines.first())
+        && !ref_line.is_empty()
+        && !rlx_line.is_empty()
+    {
+        let ref_prep = reference.prepare_recognition_input(&ref_in, ref_line)?;
+        let rlx_prep = rlx.prepare_recognition_input(&rlx_in, rlx_line)?;
+        assert_eq!(ref_prep.shape(), rlx_prep.shape());
+        let prep_err = tensors_max_abs_diff(ref_prep.view(), rlx_prep.view());
+        assert!(
+            prep_err <= PREPROCESS_MAX_ABS,
+            "prepare_recognition_input max abs diff {prep_err}"
+        );
     }
 
     let ref_text = reference.get_text(&ref_in)?;

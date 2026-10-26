@@ -1,0 +1,19 @@
+# SAM v1's host logic as an RLX program (WebAssembly): the image's resize
+# and the points' and boxes' embeddings around the package's graphs. Built
+# by `rlx-sam`'s exporter, so it stands outside the workspace.
+[package]
+name = "rlx-sam-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace]

@@ -11,6 +11,7 @@ categories.workspace = true
 repository.workspace = true
 
 [dependencies]
+rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 hound = "3"
 serde = { workspace = true, features = ["derive"] }
@@ -24,13 +25,17 @@ rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx-gguf = { workspace = true }
 rlx-assets = { workspace = true, features = ["rlxp", "native-pack"] }
 # Native RLX runtime: imports the ONNX graphs → rlx-ir → compiled graphs (no ORT).
-rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.16", default-features = false }
+rlx-tiny-tts = { path = "../rlx-tiny-tts", version = "0.2.19", default-features = false }
+rlx-core = { workspace = true, optional = true }
 
 [dependencies.hf-hub]
 workspace = true
 optional = true
 
 [features]
+# `export::export_rlxp`: MOSS-TTS-Nano as an `.rlxp` package (its graphs rlx
+# IR, its frame loop a program).
+export = ["dep:rlx-core", "rlx-core/export", "rlx-tiny-tts/export"]
 # Native only (rlx-onnx-import → rlx runtime, NO ONNX Runtime). ort/onnx removed.
 default = []
 metal = ["rlx-runtime/metal", "rlx-tiny-tts/metal"]
@@ -40,10 +45,13 @@ gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu"]
 coreml = ["rlx-runtime/coreml", "rlx-tiny-tts/coreml"]
 vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
 all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 hf-download = ["dep:hf-hub"]
 
 [dev-dependencies]
+rlx-runtime = { workspace = true, features = ["program"] }
+rlx-text = { workspace = true }
+tempfile = "3"
 rlx-whisper = { workspace = true }
 
 [[bin]]
@@ -53,7 +61,7 @@ path = "src/bin/rlx_moss_nano.rs"
 [[example]]
 name = "backend_matrix"
 # Device-agnostic at runtime (guards on `is_available`); build with whatever
-# backend features are enabled (`apple-silicon` on Mac, `cuda` on NVIDIA).
+# backend features are enabled (`macos-gpu` on Mac, `cuda` on NVIDIA).
 
 [lints]
 workspace = true

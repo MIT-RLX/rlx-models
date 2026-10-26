@@ -1,7 +1,7 @@
 //! Text → StyleTTS2 (Kokoro native) → Whisper fox word coverage.
 //!
 //! ```bash
-//! cargo test -p rlx-styletts2 --release --features apple-silicon --test whisper_roundtrip -- --nocapture
+//! cargo test -p rlx-styletts2 --release --features macos-gpu --test whisper_roundtrip -- --nocapture
 //! ```
 
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ const TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 const FOX_WORDS: [&str; 6] = ["quick", "brown", "fox", "jumps", "lazy", "dog"];
 
 fn model_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_KOKORO_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_KOKORO_DIR") {
         let p = PathBuf::from(d);
         return has_split(&p).then_some(p);
     }
@@ -31,7 +31,7 @@ fn has_split(model_dir: &std::path::Path) -> bool {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         return whisper_ready(&p).then_some(p);
     }

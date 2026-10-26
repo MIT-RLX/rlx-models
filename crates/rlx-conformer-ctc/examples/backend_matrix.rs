@@ -126,11 +126,11 @@ fn norm(s: &str) -> String {
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
-    std::env::var_os(key).map(PathBuf::from)
+    rlx_ir::env::read_os(key).map(PathBuf::from)
 }
 
 fn parse_devices() -> Vec<(Device, &'static str)> {
-    if let Ok(raw) = std::env::var("RLX_DEVICES") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_DEVICES") {
         return raw
             .split(',')
             .filter_map(|s| match s.trim().to_ascii_lowercase().as_str() {

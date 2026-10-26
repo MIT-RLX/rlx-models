@@ -22,7 +22,7 @@ fancy-regex = { version = "0.14", optional = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 rlx = { workspace = true, optional = true, default-features = false }
-rlx-ir = { workspace = true, optional = true }
+rlx-ir = { workspace = true }
 kitten_tts_mini_rlx = { workspace = true, optional = true }
 
 # 0.1.3 was the first release that reads a voice's `dictrules` (0.1.2 silently
@@ -39,7 +39,7 @@ optional = true
 
 [features]
 default = ["native", "rlx"]
-native = ["dep:kitten_tts_mini_rlx", "dep:rlx-ir", "kitten_tts_mini_rlx/cpu", "kitten_tts_mini_rlx/native"]
+native = ["dep:kitten_tts_mini_rlx", "kitten_tts_mini_rlx/cpu", "kitten_tts_mini_rlx/native"]
 native-fast = ["native", "kitten_tts_mini_rlx/native-fast", "metal"]
 rlx = ["dep:rlx", "rlx/cpu"]
 metal = [
@@ -62,7 +62,7 @@ gpu = [
 vulkan = ["rlx-runtime/vulkan"]
 coreml = ["rlx-runtime/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 full = ["native", "rlx", "all-backends"]
 hf-download = ["dep:hf-hub"]
 espeak = ["dep:espeak-ng", "dep:fancy-regex"]

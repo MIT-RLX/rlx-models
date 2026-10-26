@@ -37,11 +37,13 @@ use rlx_models::run::{ChatTemplate, CompatibilityStatus, check_path};
 use std::path::PathBuf;
 
 fn weights_path() -> Option<PathBuf> {
-    std::env::var("RLX_QWEN25_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_QWEN25_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 
 fn tokenizer_path() -> Option<PathBuf> {
-    std::env::var("RLX_QWEN25_TOKENIZER")
+    rlx_ir::env::var_result("RLX_QWEN25_TOKENIZER")
         .ok()
         .map(PathBuf::from)
         .or_else(|| {
@@ -136,7 +138,11 @@ fn chat_template_on_qwen2_5() {
 /// CPU even at 0.5B.
 #[test]
 fn forward_inference_real_qwen2_5() {
-    if std::env::var("RLX_QWEN25_RUN_INFERENCE").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN25_RUN_INFERENCE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_QWEN25_RUN_INFERENCE=1");
         return;
     }

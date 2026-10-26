@@ -29,13 +29,7 @@ pub fn log_mel_fbank(pcm: &[f32]) -> Vec<[f32; N_MELS]> {
         }
     }
     let filters = mel_filterbank();
-    let window: Vec<f32> = (0..FRAME_LENGTH)
-        .map(|i| {
-            let t = 2.0 * std::f32::consts::PI * i as f32 / (FRAME_LENGTH as f32 - 1.0);
-            let hann = 0.5 - 0.5 * t.cos();
-            hann.powf(0.85)
-        })
-        .collect();
+    let window = povey_window();
     let n_frames = 1 + (x.len() - FRAME_LENGTH) / FRAME_SHIFT;
     let mut out = Vec::with_capacity(n_frames);
     for f in 0..n_frames {
@@ -58,6 +52,17 @@ pub fn log_mel_fbank(pcm: &[f32]) -> Vec<[f32; N_MELS]> {
     out
 }
 
+/// Kaldi's Povey window over a frame: `hann^0.85`, symmetric.
+pub fn povey_window() -> Vec<f32> {
+    (0..FRAME_LENGTH)
+        .map(|i| {
+            let t = 2.0 * std::f32::consts::PI * i as f32 / (FRAME_LENGTH as f32 - 1.0);
+            let hann = 0.5 - 0.5 * t.cos();
+            hann.powf(0.85)
+        })
+        .collect()
+}
+
 fn hz_to_mel(hz: f32) -> f32 {
     1127.0 * (1.0 + hz / 700.0).ln()
 }
@@ -66,7 +71,9 @@ fn mel_to_hz(mel: f32) -> f32 {
     700.0 * ((mel / 1127.0).exp() - 1.0)
 }
 
-fn mel_filterbank() -> Vec<Vec<f32>> {
+/// The 80 triangular filters over the 257 bins, as [`log_mel_fbank`] applies
+/// them.
+pub fn mel_filterbank() -> Vec<Vec<f32>> {
     let n_freqs = N_FFT / 2 + 1;
     let fmin = 20.0f32;
     let fmax = SAMPLE_RATE as f32 / 2.0;

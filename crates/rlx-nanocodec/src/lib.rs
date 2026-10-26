@@ -5,6 +5,8 @@
 // bit-exactly on every backend. FSQ dequant is pure host arithmetic; the
 // causal HiFi-GAN generator runs on-device. (The encoder is out of scope here.)
 
+#[cfg(feature = "export")]
+pub mod export;
 pub mod graph;
 pub mod model;
 

@@ -50,7 +50,7 @@ fn load_and_synth_short_when_weights_present() {
         return;
     }
     // Keep this cheap: load is ~35s; short greedy AR is the gate.
-    if std::env::var_os("RLX_METAVOICE_E2E").is_none() {
+    if rlx_ir::env::var_os("RLX_METAVOICE_E2E").is_none() {
         eprintln!("skip: set RLX_METAVOICE_E2E=1 for first-stage+EnCodec e2e");
         return;
     }

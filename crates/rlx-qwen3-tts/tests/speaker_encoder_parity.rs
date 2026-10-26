@@ -29,7 +29,7 @@ use safetensors::SafeTensors;
 use std::path::PathBuf;
 
 fn base_dir() -> Option<PathBuf> {
-    let env = std::env::var("RLX_QWEN3_TTS_BASE_DIR")
+    let env = rlx_ir::env::var_result("RLX_QWEN3_TTS_BASE_DIR")
         .map(PathBuf::from)
         .ok()
         .filter(|p| p.is_dir());
@@ -71,7 +71,7 @@ fn tensor_f32(st: &SafeTensors<'_>, name: &str) -> (Vec<f32>, Vec<usize>) {
     let bytes = t.data();
     assert!(bytes.len() % 4 == 0);
     let mut data = Vec::with_capacity(bytes.len() / 4);
-    for c in bytes.chunks_exact(4) {
+    for c in bytes.as_chunks::<4>().0.iter() {
         data.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
     }
     (data, shape)

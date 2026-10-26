@@ -98,6 +98,7 @@ pub fn build_qwen25_vl_prefill_mrope_built(
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
         mask: MaskKind::Causal,
+        moe: None,
     };
 
     let kv_sink = SideOutputs::new();

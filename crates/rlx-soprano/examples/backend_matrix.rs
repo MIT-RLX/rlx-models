@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! cargo run -p rlx-soprano --release --example backend_matrix \
-//!   --features apple-silicon
+//!   --features macos-gpu
 //! ```
 //!
 //! Env: `RLX_SOPRANO_DIR`, `RLX_TEXT`, `RLX_MAX_TOKENS`, `RLX_DEVICES`,
@@ -28,7 +28,7 @@ fn soprano_loose_or_pack(dir: &std::path::Path) -> bool {
 }
 
 fn main() -> anyhow::Result<()> {
-    let dir = std::env::var("RLX_SOPRANO_DIR")
+    let dir = rlx_ir::env::var_result("RLX_SOPRANO_DIR")
         .map(PathBuf::from)
         .ok()
         .or_else(|| {
@@ -38,8 +38,8 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/soprano")
         });
-    let text = std::env::var("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.to_string());
-    let max_tokens: usize = std::env::var("RLX_MAX_TOKENS")
+    let text = rlx_ir::env::var_result("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.to_string());
+    let max_tokens: usize = rlx_ir::env::var_result("RLX_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(96);
@@ -61,17 +61,17 @@ fn main() -> anyhow::Result<()> {
     let opts = InferOpts {
         max_new_tokens: max_tokens,
         // Default greedy for cross-backend parity; set RLX_SAMPLE=1 for sampling.
-        greedy: std::env::var_os("RLX_SAMPLE").is_none()
-            || std::env::var_os("RLX_GREEDY").is_some(),
-        temperature: std::env::var("RLX_TEMP")
+        greedy: rlx_ir::env::var_os("RLX_SAMPLE").is_none()
+            || rlx_ir::env::var_os("RLX_GREEDY").is_some(),
+        temperature: rlx_ir::env::var_result("RLX_TEMP")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.3),
-        top_p: std::env::var("RLX_TOP_P")
+        top_p: rlx_ir::env::var_result("RLX_TOP_P")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.95),
-        seed: std::env::var("RLX_SEED")
+        seed: rlx_ir::env::var_result("RLX_SEED")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1337),
@@ -164,7 +164,7 @@ fn parse_devices() -> Vec<(Device, &'static str)> {
         (Device::Cuda, "CUDA"),
         (Device::Vulkan, "vulkan"),
     ];
-    if let Ok(s) = std::env::var("RLX_DEVICES") {
+    if let Ok(s) = rlx_ir::env::var_result("RLX_DEVICES") {
         let want: Vec<&str> = s
             .split(',')
             .map(str::trim)
@@ -207,7 +207,7 @@ fn short(s: &str) -> String {
 }
 
 fn load_whisper() -> Option<rlx_whisper::WhisperRunner> {
-    let d = std::env::var("RLX_WHISPER_DIR")
+    let d = rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .map(PathBuf::from)
         .ok()
         .or_else(|| {

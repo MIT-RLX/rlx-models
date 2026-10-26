@@ -24,10 +24,14 @@
 pub mod config;
 pub mod tokenize;
 
+#[cfg(feature = "export")]
+pub mod export;
 #[cfg(feature = "native")]
 pub mod native;
 #[cfg(feature = "native")]
 pub mod sdp;
+#[cfg(feature = "export")]
+pub mod sdp_graph;
 
 pub use config::{DEFAULT_HF_REPO, DEFAULT_LOCAL_DIR, PiperConfig, find_voice};
 #[cfg(feature = "native")]

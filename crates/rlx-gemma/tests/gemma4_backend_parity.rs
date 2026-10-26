@@ -23,8 +23,8 @@
 //! GPU).
 //!
 //! ```bash
-//! # All Apple backends + CPU on macOS:
-//! cargo test -p rlx-gemma --test gemma4_backend_parity --features apple-silicon
+//! # All macOS backends + CPU on macOS:
+//! cargo test -p rlx-gemma --test gemma4_backend_parity --features macos-gpu
 //!
 //! # CPU-only baseline (always runs):
 //! cargo test -p rlx-gemma --test gemma4_backend_parity

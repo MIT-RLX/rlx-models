@@ -98,7 +98,7 @@ pub fn production_waveform_only_infer() -> bool {
     false
 }
 
-/// On Apple Silicon, prefer Metal over CPU for production unless opted out.
+/// On macOS arm64, prefer Metal over CPU for production unless opted out.
 pub fn prefer_metal_device(device: rlx_runtime::Device) -> rlx_runtime::Device {
     if device != rlx_runtime::Device::Cpu {
         return device;
@@ -134,7 +134,7 @@ pub fn duration_external_fixed_point_enabled() -> bool {
 }
 
 pub fn env_flag(name: &str) -> bool {
-    std::env::var(name)
+    rlx_ir::env::read(name)
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
 }
 
@@ -250,11 +250,11 @@ pub fn apply_device_runtime_defaults(device: rlx_runtime::Device) {
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if device == rlx_runtime::Device::Metal {
             if std::env::var("KITTEN_RLX_QMATMUL_INGRAPH").is_err()
-                && std::env::var("RLX_METAL_ONNX_QMATMUL_GPU").is_err()
+                && rlx_ir::env::var_result("RLX_METAL_ONNX_QMATMUL_GPU").is_err()
             {
                 crate::set_env_var("KITTEN_RLX_QMATMUL_INGRAPH", "1");
             }
-            if std::env::var("RLX_METAL_PIPELINE_CACHE").is_err() {
+            if rlx_ir::env::var_result("RLX_METAL_PIPELINE_CACHE").is_err() {
                 if let Ok(aot) = std::env::var("KITTEN_RLX_AOT_CACHE") {
                     crate::set_env_var(
                         "RLX_METAL_PIPELINE_CACHE",

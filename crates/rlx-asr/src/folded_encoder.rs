@@ -9,7 +9,7 @@
 //! 3. Else pack `frontend.body_residual_ls.R` (`enc = h @ R`), optional `body_out_ls.A`
 //!
 //! Live path also applies `body_h_map_ls.M` after input_proj when frontend is LS
-//! (`h = h @ M`), bridging our-mel projections toward Apple teacher-h.
+//! (`h = h @ M`), bridging our-mel projections toward teacher-h.
 //!
 //! Mirrors `tools/e2e_native_whole.py::forward_folded`.
 
@@ -18,6 +18,7 @@ use crate::env::{
     frontend_mode, h_map_enabled,
 };
 use crate::gguf_io::AsrPack;
+use crate::native_encoder::log_softmax_row;
 use crate::spec::{AED_WINDOW_FRAMES, DECODER_DIM, MEL_BINS, SUBSAMPLE, VOCAB};
 use anyhow::{Context, Result, bail};
 use std::path::Path;
@@ -48,7 +49,7 @@ pub struct FoldedEncoder {
     input_w_t: bool,
     input_b: Option<Vec<f32>>,
     body_r: Vec<f32>,
-    /// Preferred Apple-capture LS map `enc = h @ B` (replaces pack bodyR when present).
+    /// Preferred reference-capture LS map `enc = h @ B` (replaces pack bodyR when present).
     body_map: Option<Vec<f32>>,
     /// Optional CE residual MLP: `enc = h@B + tanh(h@W1+b1)@W2 + b2` (HID=512).
     body_mlp: Option<BodyMlpCe>,
@@ -58,7 +59,7 @@ pub struct FoldedEncoder {
     /// Per-bin affine calibration (optional, silence target).
     cal_a: Option<Vec<f32>>,
     cal_b: Option<Vec<f32>>,
-    /// Cross-wav LS affine to Apple speech features (optional).
+    /// Cross-wav LS affine to reference speech features (optional).
     ls_a: Option<Vec<f32>>,
     ls_b: Option<Vec<f32>>,
     /// Live-path h-space LS: `h = h @ M` after input_proj (our-mel → teacher-h).
@@ -369,29 +370,6 @@ fn matmul_rows(
     }
 }
 
-fn log_softmax_row(row: &mut [f32]) {
-    let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    if !max.is_finite() {
-        let v = -(row.len() as f32).ln();
-        row.fill(v);
-        return;
-    }
-    let mut sum = 0f32;
-    for x in row.iter_mut() {
-        *x = (*x - max).exp();
-        sum += *x;
-    }
-    if sum <= 0.0 || !sum.is_finite() {
-        let v = -(row.len() as f32).ln();
-        row.fill(v);
-        return;
-    }
-    let log_sum = sum.ln();
-    for x in row.iter_mut() {
-        *x = (*x).ln() - log_sum;
-    }
-}
-
 /// Pad/truncate encoder frames into AED window cache.
 fn enc_to_aed_cache(enc: &[f32]) -> Vec<f32> {
     let n_enc_frames = enc.len() / DECODER_DIM;
@@ -530,7 +508,9 @@ fn load_f32_file(path: &Path, expected: usize) -> Option<Vec<f32>> {
         return None;
     }
     Some(
-        raw.chunks_exact(4)
+        raw.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )
@@ -596,7 +576,9 @@ fn load_f32_sidecar_matrix(dir: &Path, name: &str) -> Option<Vec<f32>> {
         return None;
     }
     Some(
-        raw.chunks_exact(4)
+        raw.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )
@@ -631,7 +613,9 @@ fn load_f32_sidecar(dir: &Path, name: &str) -> Option<Vec<f32>> {
         return None;
     }
     let v: Vec<f32> = raw
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     if v.len() >= MEL_BINS {
@@ -786,13 +770,10 @@ mod tests {
         if !root.join("model.rlxp").is_file() {
             return;
         }
-        // SAFETY: test-only process-local env for sidecar loading.
-        unsafe {
-            std::env::set_var("RLX_ASR_DIR", root);
-            std::env::set_var("RLX_ASR_H_MAP", "1");
-            std::env::set_var("RLX_ASR_BODY_MLP", "1");
-            std::env::set_var("RLX_ASR_FRONTEND", "ls");
-        }
+        rlx_ir::env::set("RLX_ASR_DIR", root.to_string_lossy());
+        rlx_ir::env::set("RLX_ASR_H_MAP", "1");
+        rlx_ir::env::set("RLX_ASR_BODY_MLP", "1");
+        rlx_ir::env::set("RLX_ASR_FRONTEND", "ls");
         let Ok(shape_s) = std::fs::read_to_string("/tmp/rust_ask_mel_shape.txt") else {
             return;
         };
@@ -801,7 +782,9 @@ mod tests {
         let f: usize = parts.next().unwrap().parse().unwrap();
         let raw = std::fs::read("/tmp/rust_ask_mel.bin").unwrap();
         let mel_flat: Vec<f32> = raw
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let mut mel: Vec<Vec<f32>> = mel_flat.chunks(f).map(|r| r.to_vec()).collect();

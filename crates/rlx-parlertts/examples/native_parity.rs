@@ -31,7 +31,9 @@ fn f32_le(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 fn as_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -72,12 +74,12 @@ impl Native {
         let key = format!("parity_{component}_s{seq}");
         // Toggle passes off to isolate which one drops the T5 mask (RLX_NO_PASSES=1).
         let mut copts = CompileOptions::default();
-        if std::env::var_os("RLX_NO_PASSES").is_some() {
+        if rlx_ir::env::var_os("RLX_NO_PASSES").is_some() {
             copts.dce = false;
             copts.constant_folding = false;
             copts.fusion_opts.skip_fusion = true; // disable the attention-block fusion
         }
-        let dev = match std::env::var("RLX_DEVICE").as_deref() {
+        let dev = match rlx_ir::env::var_result("RLX_DEVICE").as_deref() {
             Ok("metal") => Device::Metal,
             Ok("mlx") => Device::Mlx,
             Ok("wgpu") => Device::WebGpu,
@@ -104,9 +106,10 @@ impl Native {
 fn main() -> Result<()> {
     // Decoder import trips one spurious binary_infer; best-effort-continue and let
     // THIS parity check decide whether that shape choice is numerically correct.
-    unsafe { std::env::set_var("RLX_DBG_BINF", "1") };
+    rlx_ir::env::set("RLX_DBG_BINF", "1");
 
-    let dir = std::env::var("RLX_PARLER_DIR").unwrap_or_else(|_| "weights/tts/parlertts".into());
+    let dir = rlx_ir::env::var_result("RLX_PARLER_DIR")
+        .unwrap_or_else(|_| "weights/tts/parlertts".into());
     let dir = Path::new(&dir).to_path_buf();
     let tok =
         Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|e| anyhow::anyhow!("{e}"))?;

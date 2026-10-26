@@ -33,7 +33,7 @@
 //!
 //! Manual run:
 //! ```sh
-//! cargo run --release -p rlx-qwen3-tts --features apple-silicon \
+//! cargo run --release -p rlx-qwen3-tts --features macos-gpu \
 //!   --example qwen_voice_chat -- --fast \
 //!   --asr-dir .cache/qwen3-asr/Qwen3-ASR-0.6B \
 //!   --qwen3-weights weights/Qwen3-0.6B \
@@ -90,7 +90,7 @@ struct Args {
     cycle_voices: bool,
     input_wav: PathBuf,
     out_dir: PathBuf,
-    /// Device for Qwen3-ASR + TTS (Metal recommended on Apple Silicon).
+    /// Device for Qwen3-ASR + TTS (Metal recommended on macOS arm64).
     device: Device,
     /// Device for Qwen3-ASR specifically (defaults to `device`).
     asr_device: Device,
@@ -149,14 +149,14 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args> {
-    let asr_dir = std::env::var("RLX_QWEN3_ASR_DIR")
+    let asr_dir = rlx_ir::env::var_result("RLX_QWEN3_ASR_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/qwen3-asr/Qwen3-ASR-0.6B"));
-    let qwen3_weights = std::env::var("RLX_QWEN3_WEIGHTS")
+    let qwen3_weights = rlx_ir::env::var_result("RLX_QWEN3_WEIGHTS")
         .map(PathBuf::from)
-        .or_else(|_| std::env::var("RLX_QWEN3_DIR").map(PathBuf::from))
+        .or_else(|_| rlx_ir::env::var_result("RLX_QWEN3_DIR").map(PathBuf::from))
         .unwrap_or_else(|_| PathBuf::from("weights/Qwen3-0.6B"));
-    let tts_model_dir = std::env::var("RLX_QWEN3_TTS_DIR")
+    let tts_model_dir = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base"));
 
@@ -409,7 +409,7 @@ fn pick_device(name: &str) -> Result<Device> {
 }
 
 /// Fastest *correct* LM decode backend. Qwen3 safetensors AR decode on Metal is
-/// known-bad (repeats a token); MLX matches CPU and is faster on Apple Silicon.
+/// known-bad (repeats a token); MLX matches CPU and is faster on macOS arm64.
 fn pick_lm_device() -> Device {
     if is_available(Device::Mlx) {
         Device::Mlx
@@ -431,11 +431,9 @@ fn apply_gpu_perf_env(args: &Args) {
     // Push the full TTS pipeline onto Metal (talker + code predictor + codec
     // conv). Independent of --gpu-perf so it can be toggled on its own.
     if args.tts_gpu && args.device == Device::Metal {
-        unsafe {
-            std::env::set_var("RLX_QWEN3_TTS_METAL_DECODE_NATIVE", "1"); // talker
-            std::env::set_var("RLX_QWEN3_TTS_CP_METAL", "1"); // code predictor
-            std::env::set_var("RLX_QWEN3_TTS_SPEECH_CONV_GPU", "1"); // codec decoder conv
-        }
+        rlx_ir::env::set("RLX_QWEN3_TTS_METAL_DECODE_NATIVE", "1"); // talker
+        rlx_ir::env::set("RLX_QWEN3_TTS_CP_METAL", "1"); // code predictor
+        rlx_ir::env::set("RLX_QWEN3_TTS_SPEECH_CONV_GPU", "1"); // codec decoder conv
     }
     if !args.gpu_perf {
         return;
@@ -444,10 +442,10 @@ fn apply_gpu_perf_env(args: &Args) {
         if std::env::var("VECLIB_MAXIMUM_THREADS").is_err() {
             std::env::set_var("VECLIB_MAXIMUM_THREADS", "1");
         }
-        std::env::set_var("RLX_QWEN3_TTS_PRECOMPILE_BUCKETS", "1");
-        std::env::set_var("RLX_QWEN3_TTS_WAV_NORMALIZE", "1");
+        rlx_ir::env::set("RLX_QWEN3_TTS_PRECOMPILE_BUCKETS", "1");
+        rlx_ir::env::set("RLX_QWEN3_TTS_WAV_NORMALIZE", "1");
         if args.device == Device::Metal {
-            std::env::set_var("RLX_QWEN3_TTS_GPU_KV", "1");
+            rlx_ir::env::set("RLX_QWEN3_TTS_GPU_KV", "1");
         }
     }
 }
@@ -919,7 +917,7 @@ fn resolve_qwen3_weights_path(weights_in: &Path) -> PathBuf {
     if weights_in.is_file() {
         return weights_in.to_path_buf();
     }
-    if std::env::var("RLX_QWEN3_PREFER_SAFETENSORS").is_ok() {
+    if rlx_ir::env::var_result("RLX_QWEN3_PREFER_SAFETENSORS").is_ok() {
         return weights_in.to_path_buf();
     }
     let sibling = weights_in
@@ -1603,12 +1601,16 @@ fn read_wav_f32_with_rate(path: &Path) -> Result<(Vec<f32>, u32)> {
     let pcm_bytes = &bytes[data_off..];
     let pcm = if bps == 16 {
         pcm_bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
             .collect()
     } else {
         pcm_bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
     };
@@ -1796,7 +1798,7 @@ fn run_mic(args: &Args) -> Result<()> {
 
 #[cfg(not(feature = "mic"))]
 fn run_mic(_args: &Args) -> Result<()> {
-    bail!("--mic requires the `mic` cargo feature: rebuild with `--features apple-silicon,mic`")
+    bail!("--mic requires the `mic` cargo feature: rebuild with `--features macos-gpu,mic`")
 }
 
 /// Live half-duplex loop: capture mic → end-of-utterance gate → ASR → LM → TTS →

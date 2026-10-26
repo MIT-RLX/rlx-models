@@ -170,7 +170,7 @@ impl MoshiVoice {
 
     /// Read `RLX_MOSHI_VOICE`, defaulting to Moshiko.
     pub fn from_env_or_default() -> Self {
-        std::env::var("RLX_MOSHI_VOICE")
+        rlx_ir::env::var_result("RLX_MOSHI_VOICE")
             .ok()
             .and_then(|s| Self::parse(&s))
             .unwrap_or(Self::Moshiko)

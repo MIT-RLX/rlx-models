@@ -13,11 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! A synthetic Espresso container that mirrors the real NeuralHash network's
+//! A synthetic network container that mirrors the real NeuralHash network's
 //! **op set and geometry** with deterministic pseudo-random weights.
 //!
-//! Apple's `NeuralHashv3b` weights live inside `Vision.framework` and are not
-//! redistributable, so backend validation on non-Apple hardware (CUDA, ROCm)
+//! The vendor's `NeuralHashv3b` weights live inside `Vision.framework` and are not
+//! redistributable, so backend validation on non-macOS hardware (CUDA, ROCm)
 //! runs this instead. It is not a smaller toy: it uses the same input and
 //! output contract (`[1, 3, 360, 360]` → 128 floats) and every layer form the
 //! shipping model contains —
@@ -37,8 +37,8 @@ use anyhow::Result;
 use half::f16;
 use std::collections::HashMap;
 
-use crate::espresso::{BlobShape, EspressoNet};
 use crate::hash::HASH_BITS;
+use crate::netfile::{BlobShape, NetFile};
 use crate::seed::{EMBED_DIM, SeedMatrix};
 
 /// Deterministic weights: an LCG, so any failure reproduces exactly.
@@ -58,7 +58,7 @@ impl Lcg {
     fn vec(&mut self, n: usize, scale: f32) -> Vec<f32> {
         (0..n).map(|_| self.next_f32() * scale).collect()
     }
-    /// Instance-norm parameters in Espresso's interleaved `[gamma, beta, mean,
+    /// Instance-norm parameters in the format's interleaved `[gamma, beta, mean,
     /// variance]` per-channel layout, with the placeholder statistics the real
     /// container carries.
     fn norm_params(&mut self, c: usize) -> Vec<f32> {
@@ -83,7 +83,7 @@ fn f32_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
-/// Pack blobs into Espresso's `.weights` container layout.
+/// Pack blobs into the vendor `.weights` container layout.
 fn container(entries: &[(u64, Vec<u8>)]) -> Vec<u8> {
     let mut out = (entries.len() as u64).to_le_bytes().to_vec();
     for (idx, data) in entries {
@@ -169,7 +169,7 @@ const NET_JSON: &str = r#"{
 }"#;
 
 /// Build the synthetic container. `seed` selects the weight draw.
-pub fn synthetic_net(seed: u64) -> Result<EspressoNet> {
+pub fn synthetic_net(seed: u64) -> Result<NetFile> {
     let mut r = Lcg::new(seed);
     let weights = container(&[
         (0, f16_bytes(&r.vec(16 * 3 * 3 * 3, 0.35))), // stem [16,3,3,3]
@@ -200,7 +200,7 @@ pub fn synthetic_net(seed: u64) -> Result<EspressoNet> {
             w: crate::INPUT_SIZE,
         },
     );
-    EspressoNet::from_parts(NET_JSON, &weights, shapes)
+    NetFile::from_parts(NET_JSON, &weights, shapes)
 }
 
 /// A deterministic, non-degenerate `[96, 128]` output projection.
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn synthetic_net_matches_the_neuralhash_contract() {
         let net = synthetic_net(7).unwrap();
-        let spec = NeuralHashSpec::from_espresso(&net).unwrap();
+        let spec = NeuralHashSpec::from_netfile(&net).unwrap();
         spec.validate_neuralhash_io().unwrap();
         assert_eq!(spec.input_shape, [1, 3, 360, 360]);
         assert_eq!(spec.output, "leaf/logits");
@@ -226,13 +226,13 @@ mod tests {
     /// The point of this fixture is op coverage — assert it really covers the
     /// forms the shipping model uses, so it cannot silently drift into a toy.
     /// Coverage is asserted on the *unfused* spec: the point is that the
-    /// fixture contains every literal Espresso layer form the shipping model
+    /// fixture contains every literal network layer form the shipping model
     /// uses. Fusion then collapses some of them, which
     /// `fusion_rewrites_the_hard_activation_chains` checks separately.
     #[test]
     fn synthetic_net_covers_every_real_op_form() {
         let net = synthetic_net(7).unwrap();
-        let spec = NeuralHashSpec::from_espresso_unfused(&net).unwrap();
+        let spec = NeuralHashSpec::from_netfile_unfused(&net).unwrap();
         let (mut conv, mut dw, mut k5, mut strided, mut fused, mut biased) =
             (false, false, false, false, false, false);
         let (mut norm, mut affine, mut clamp, mut add, mut mul, mut bcast) =
@@ -307,8 +307,8 @@ mod tests {
     #[test]
     fn fusion_rewrites_the_hard_activation_chains() {
         let net = synthetic_net(7).unwrap();
-        let raw = NeuralHashSpec::from_espresso_unfused(&net).unwrap();
-        let fused = NeuralHashSpec::from_espresso(&net).unwrap();
+        let raw = NeuralHashSpec::from_netfile_unfused(&net).unwrap();
+        let fused = NeuralHashSpec::from_netfile(&net).unwrap();
         assert!(
             fused.ops.len() < raw.ops.len(),
             "fusion did not shrink the spec ({} vs {})",

@@ -103,10 +103,10 @@ At the heaviest measured cell (`n_fft 4096 × batch 16k`) Metal (82 ms) beats **
 cargo test --release -p rlx-fft --lib comprehensive_precision_benchmark -- --nocapture
 
 # Hardware × batch (native f32 butterfly across CPU / Metal / WebGPU)
-cargo run --release -p rlx-fft --features apple-silicon -- bench-sweep \
+cargo run --release -p rlx-fft --features macos-gpu -- bench-sweep \
   --n-fft 256 --batch 32,1024,8192,32768 --devices cpu,metal,wgpu --with-butterfly-compiled
 # CPU + Metal scale past wgpu's 65535 dispatch cap (wgpu rows auto-skip):
-cargo run --release -p rlx-fft --features apple-silicon -- bench-sweep \
+cargo run --release -p rlx-fft --features macos-gpu -- bench-sweep \
   --n-fft 256 --batch 65536,131072 --devices cpu,metal --with-butterfly-compiled
 
 # Regenerate the precision/scaling chart from those numbers
@@ -117,7 +117,7 @@ python3 scripts/plot_precision_bench.py   # → docs/precision-benchmark.svg
 echo "device,n_fft,batch,ms,max_err,status" > /tmp/grid5.csv
 for dev in cpu metal mlx wgpu ane; do for n in 64 256 1024 4096; do for b in 32 256 2048 16384 131072; do
   [ $((n*b)) -gt 268435456 ] && { echo "$dev,$n,$b,,,skip" >> /tmp/grid5.csv; continue; }
-  o=$(cargo run -q --release -p rlx-fft --features apple-silicon -- \
+  o=$(cargo run -q --release -p rlx-fft --features macos-gpu -- \
         bench --n-fft $n --batch $b --device $dev --iters 3 2>&1) \
     && l=$(echo "$o" | grep 'rlx Op::Fft') \
     && echo "$dev,$n,$b,$(echo "$l"|awk '{print $3}'),$(echo "$l"|grep -oE 'max_err=[0-9.eE+-]+'|cut -d= -f2),ok" >> /tmp/grid5.csv \
@@ -131,7 +131,7 @@ python3 scripts/plot_speed_heatmap.py > /tmp/heatmap_tables.md   # → docs/heat
 The largest batch a device can run is bounded by two ceilings — **memory** (`batch · n_fft · 2 · elem_bytes · limbs · copies` must fit the working set) and **dispatch** (wgpu/Vulkan reject a compute dispatch above **65535** workgroups/dim — the concrete crash at `batch = 65536`). `max-batch` detects both from the live machine (unified-memory `sysctl` + per-backend grid caps) and reports the safe ceiling:
 
 ```bash
-cargo run --release -p rlx-fft --features apple-silicon -- max-batch \
+cargo run --release -p rlx-fft --features macos-gpu -- max-batch \
   --n-fft 256 --devices cpu,metal,wgpu --dtype f32 --limbs 1
 ```
 
@@ -185,7 +185,7 @@ results straight to global (no separate load/store, ‑2 shared round-trips, ‑
 `__syncthreads`). Larger `n` falls back to the multi-kernel path. `RLX_FFT_GEN=0`
 uses precompiled radix-specialized kernels instead (for A/B).
 
-FFT **kernel** GPU time (ms, batch 1024, nsys), apples-to-apples complex C2C:
+FFT **kernel** GPU time (ms, batch 1024, nsys), like-for-like complex C2C:
 
 | n | `cuda` (orig) | `cufft` path | pure cuFFT | `native-cuda-fft` | vs cuFFT | rel err |
 |---|---|---|---|---|---|---|
@@ -264,18 +264,18 @@ cargo run -p rlx-fft --release -- bench-welch-peaks \
   --n-fft 256 --batch 32 --k 16 --train-steps 0
 
 # Batch sweep + Metal GPU crossover
-cargo run -p rlx-fft --features apple-silicon --release -- bench-welch-peaks \
+cargo run -p rlx-fft --features macos-gpu --release -- bench-welch-peaks \
   --n-fft 256 --batch 32,256,1024,4096,8192 --device metal --train-steps 0 --iters 15
 
 # Force a specific strategy (see table below)
 cargo run -p rlx-fft --release -- bench-welch-peaks \
   --n-fft 256 --batch 32 --strategy ultra
 
-cargo run -p rlx-fft --features apple-silicon --release -- bench-welch-peaks \
+cargo run -p rlx-fft --features macos-gpu --release -- bench-welch-peaks \
   --n-fft 256 --batch 8192 --device metal --strategy rlx
 
 # K sweep — plot latency vs top-K (JSON rows tagged with batch + k)
-cargo run -p rlx-fft --features apple-silicon --release -- bench-welch-peaks \
+cargo run -p rlx-fft --features macos-gpu --release -- bench-welch-peaks \
   --n-fft 256 --batch 8192 --k 4,8,16,32,64 --device metal --train-steps 0 --iters 15 \
   --strategy rlx --json /tmp/welch-k-sweep.json
 ```
@@ -287,11 +287,11 @@ Sweep output ends with a **`k crossover`** table (rustfft / stream / rlx / picke
 Compare baseline interleaved readback, Phase 1 block layout, and Phase 2 fused `Op::WelchPeaks`:
 
 ```bash
-cargo run -p rlx-fft --features dev,apple-silicon --release -- bench-fusion-phases \
+cargo run -p rlx-fft --features dev,macos-gpu --release -- bench-fusion-phases \
   --n-fft 256 --batch 8192 --k 16 --device metal --iters 15
 
 # Batch sweep + JSON
-cargo run -p rlx-fft --features dev,apple-silicon --release -- bench-fusion-phases \
+cargo run -p rlx-fft --features dev,macos-gpu --release -- bench-fusion-phases \
   --n-fft 256 --batch 32,1024,8192 --k 16 --device metal --iters 15 \
   --json /tmp/fusion-phases.json
 ```
@@ -359,7 +359,7 @@ Auto mode estimates each strategy with an **Ayala-style latency–bandwidth mode
 Calibrate with `bench-fusion-phases` (phase-2 fused vs IO-model line; prints `suggested fused_io_compute_scale`) and `bench-welch-peaks` (picker vs rustfft crossover). NVIDIA CUDA: `../rlx/rig.sh bench-rlx-fft-welch-peaks windows 256,1024,8192 cuda` or quick picker check `../rlx/rig.sh bench-welch-peaks-fft windows 8192 cuda` (Mar 2026 rig: CUDA scale **0.43**, auto picker → `rlx_compiled` / `FusedOp` **~19 ms** vs rustfft **~63 ms** at batch 8192). Metal/Mlx use unified-memory rustfft penalties. WGPU/Vulkan use native in-arena `WelchPeaks` at large batch; preliminary WGPU scale ~2.2. `welch_peaks_io_fusion_gate` / `welch_peaks_fusion_gate_breakdown` use `rlx_compile::IoFusionGate` (readback savings minus host-thunk penalty). At compile time, `rlx_compile::SelectPeaksOnlyOutputs` runs in the fusion pipeline when the backend claims `Fft` + `WelchPeaks`: it drops redundant spectrum outputs and promotes peaks-only readback when the IO gate favors fusion (`bench-fusion-phases` **phase3** row). `welch_peaks_fusion_gate_breakdown` exposes `should_fuse_io` vs final `should_fuse` (adds a large-batch compute floor vs block RLX). Auto picker only estimates `rlx` / `learned` when **both** `fused_welch_peaks_auto_viable` and the IO gate pass (Metal rejects fusion below ~batch 512). At runtime, `CompiledRlxWelchPeaksExec::compile_adaptive` picks fused `Op::WelchPeaks` or block FFT + host top-K (`rlx_welch_peaks_exec_kind`). `AutoWelchPeaks::welch_peaks_batch` accepts full 8-segment or fast 2-segment layout; use `welch_peaks_batch_fast` when you already have the fast buffer.
 
 ```bash
-just features=apple-silicon bench-welch-peaks -- --n-fft 256 --batch 1024,8192 --k 16 --device metal
+just features=macos-gpu bench-welch-peaks -- --n-fft 256 --batch 1024,8192 --k 16 --device metal
 just bench-fusion-phases -- --n-fft 256 --batch 1024,8192 --k 16 --device metal --iters 15
 ```
 
@@ -413,7 +413,7 @@ let peaks = picker.welch_peaks_batch_fast(&fast_signal)?;
 | `rlx`, `compiled`, `gpu` | RlxCompiled |
 | `learned`, `learned_compiled` | LearnedCompiled |
 
-### Performance notes (n=256, Apple Silicon reference)
+### Performance notes (n=256, macOS arm64 reference)
 
 | Batch | Best auto pick (typical) | vs full Welch |
 |-------|--------------------------|---------------|
@@ -441,9 +441,9 @@ At inference, `FastLearnedFftModel::welch_peaks_batch` accepts any `WelchPeakPar
 ### Tests
 
 ```bash
-just features=apple-silicon test-rlx-fft-welch-peaks
+just features=macos-gpu test-rlx-fft-welch-peaks
 just test-rlx-fft-fusion-gate
-cargo test -p rlx-fft welch_peaks_compile::tests --features apple-silicon
+cargo test -p rlx-fft welch_peaks_compile::tests --features macos-gpu
 ```
 
 ### Modules

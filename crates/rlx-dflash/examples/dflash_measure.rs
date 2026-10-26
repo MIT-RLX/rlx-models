@@ -405,7 +405,7 @@ fn main() -> Result<()> {
     // fact: HF's `hidden_states[i]` is the INPUT of layer i (== output of i-1),
     // but an exporter may have meant the OUTPUT of layer i. `RLX_DFLASH_TAP_SHIFT=1`
     // tests the other reading; acceptance decides which is right.
-    let shift: usize = std::env::var("RLX_DFLASH_TAP_SHIFT")
+    let shift: usize = rlx_ir::env::var_result("RLX_DFLASH_TAP_SHIFT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);

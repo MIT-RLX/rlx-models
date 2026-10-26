@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(
             "rlx-openwakeword-train --pos DIR --neg DIR --keyword NAME --out-dir DIR \\\n\
-               [--epochs N] [--device cpu|metal|…|all|apple-silicon]\n\
+               [--epochs N] [--device cpu|metal|…|all|macos-gpu]\n\
              or: rlx-openwakeword-train --synth --keyword NAME --out-dir DIR [--device all]"
         );
         return Ok(());

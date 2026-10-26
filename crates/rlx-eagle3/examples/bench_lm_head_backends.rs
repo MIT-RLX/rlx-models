@@ -32,7 +32,7 @@
 //! cargo run -p rlx-eagle3 --release --example bench_lm_head_backends -- \
 //!     /Users/Shared/rlx-models/.eagle3-bench/weights/draft
 //!
-//! # Add MLX (Apple Silicon)
+//! # Add MLX (macOS arm64)
 //! cargo run -p rlx-eagle3 --release --features mlx --example bench_lm_head_backends -- ...
 //!
 //! # Add Metal

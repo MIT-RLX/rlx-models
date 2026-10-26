@@ -5,6 +5,8 @@
 // bit-exactly on every backend. The ConvNeXt causal upsampler runs on-device.
 // (The encoder, semantic tokenizer, and diffusion LM head are out of scope.)
 
+#[cfg(feature = "export")]
+pub mod export;
 pub mod graph;
 pub mod model;
 

@@ -8,6 +8,8 @@
 pub mod codec;
 pub mod config;
 pub mod eager;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod graph;
 pub mod lstm;
 pub mod model;

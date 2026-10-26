@@ -28,7 +28,7 @@ const REF_TEXT: &str = "Hello from Kokoro. This is a test of speech synthesis in
 const TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 
 fn model_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_F5TTS_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_F5TTS_DIR") {
         let p = PathBuf::from(d);
         if p.join("F5_Transformer.onnx").is_file() {
             return Some(p);
@@ -38,7 +38,7 @@ fn model_dir() -> Option<PathBuf> {
     p.join("F5_Transformer.onnx").is_file().then_some(p)
 }
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         return ready(PathBuf::from(d));
     }
     let c = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache");

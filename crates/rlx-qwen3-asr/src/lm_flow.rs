@@ -65,6 +65,7 @@ pub fn build_asr_prefill_built(
         qk_norm: cfg.qk_norm,
         attention_bias: cfg.attention_bias,
         mask: rlx_ir::op::MaskKind::Causal,
+        moe: None,
     };
 
     let kv_sink = SideOutputs::new();

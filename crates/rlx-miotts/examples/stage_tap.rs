@@ -49,7 +49,9 @@ fn main() -> anyhow::Result<()> {
     t.resize(100, 0);
     let idx: Vec<i64> = t.iter().map(|&x| x as i64).collect();
     let emb: Vec<f32> = std::fs::read(dir.join("en_female.f32"))?
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let ib: Vec<u8> = idx.iter().flat_map(|x| x.to_le_bytes()).collect();
@@ -72,7 +74,9 @@ fn main() -> anyhow::Result<()> {
     for (i, name) in labels.iter().enumerate() {
         let v: Vec<f32> = outs[i]
             .0
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let rfile = if i < 2 {
@@ -89,7 +93,9 @@ fn main() -> anyhow::Result<()> {
             dir.join(&rfile)
         };
         let reference: Vec<f32> = std::fs::read(&rpath)?
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         println!(

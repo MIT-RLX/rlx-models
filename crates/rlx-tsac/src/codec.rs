@@ -260,7 +260,7 @@ fn open_engine(install_dir: &Path, options: &TsacOptions, device: Device) -> Res
     // present — a drop-in, correct, all-backend encode+decode path. Falls back to
     // the faithful native codec otherwise (which can still decode tsac-ng files).
     if crate::correct::weights_available(&crate::correct::default_dir())
-        && std::env::var("RLX_TSAC_ENGINE").ok().as_deref() != Some("native")
+        && rlx_ir::env::var_result("RLX_TSAC_ENGINE").ok().as_deref() != Some("native")
         && let Ok(correct) = crate::correct::CorrectCodec::open(options.device, options.quality)
     {
         return Ok(CodecEngine::Correct(correct));
@@ -298,7 +298,7 @@ fn open_engine(install_dir: &Path, options: &TsacOptions, device: Device) -> Res
 }
 
 fn prefer_external(install_dir: &Path) -> bool {
-    if std::env::var("RLX_TSAC_ENGINE").ok().as_deref() == Some("bellard") {
+    if rlx_ir::env::var_result("RLX_TSAC_ENGINE").ok().as_deref() == Some("bellard") {
         return tsac_binary_supported() && resolve_tsac_bin(install_dir).is_file();
     }
     #[cfg(not(feature = "native-codec"))]

@@ -18,7 +18,7 @@
 //! ```bash
 //! just fetch-gemma4-12b-coder-gguf
 //! RLX_GEMMA4_CODER_FIXTURE=.cache/gemma4-12b-coder \
-//!   cargo test -p rlx-gemma --release --features apple-silicon \
+//!   cargo test -p rlx-gemma --release --features macos-gpu \
 //!   --test gemma4_coder_gguf -- --nocapture
 //! ```
 
@@ -37,8 +37,8 @@ const CODER_PROMPT: &str =
     "Write a Python function that returns True when a string is a palindrome.";
 
 fn coder_fixture_dir() -> Option<PathBuf> {
-    std::env::var_os("RLX_GEMMA4_CODER_FIXTURE")
-        .or_else(|| std::env::var_os("RLX_GEMMA4_FIXTURE"))
+    rlx_ir::env::var_os("RLX_GEMMA4_CODER_FIXTURE")
+        .or_else(|| rlx_ir::env::var_os("RLX_GEMMA4_FIXTURE"))
         .map(PathBuf::from)
 }
 
@@ -112,11 +112,11 @@ fn gemma4_coder_packed_runner_generates() -> Result<()> {
     let _cfg = resolve_gemma4_config(&dir, &gguf)?;
 
     let device = bench_device_from_env();
-    let n_new = std::env::var("RLX_GEMMA4_CODER_DECODE_STEPS")
+    let n_new = rlx_ir::env::var_result("RLX_GEMMA4_CODER_DECODE_STEPS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4);
-    let max_seq = std::env::var("RLX_GEMMA4_CODER_MAX_SEQ")
+    let max_seq = rlx_ir::env::var_result("RLX_GEMMA4_CODER_MAX_SEQ")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(256);

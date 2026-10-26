@@ -55,7 +55,7 @@ impl TorchnG2p {
             return Self::load_bpe_json(&json);
         }
         let bin = dir.join("g2p_seq2seq.bin");
-        if bin.is_file() && std::env::var_os("RLX_TTS_LOAD_TORCHN_BIN").is_some() {
+        if bin.is_file() && rlx_ir::env::var_os("RLX_TTS_LOAD_TORCHN_BIN").is_some() {
             return Self::load_bin(&bin);
         }
         bail!(
@@ -206,7 +206,7 @@ impl TorchnG2p {
     }
 
     fn append_src_eos(&self, ids: &mut Vec<u32>) {
-        if std::env::var_os("RLX_TTS_TORCHN_NO_EOS").is_some() || ids.is_empty() {
+        if rlx_ir::env::var_os("RLX_TTS_TORCHN_NO_EOS").is_some() || ids.is_empty() {
             return;
         }
         let eos = self
@@ -276,7 +276,11 @@ impl TorchnG2p {
             return Ok(None);
         }
         // Opt out of Softmax for A/B: `RLX_TTS_TORCHN_DECODE=0`.
-        if std::env::var("RLX_TTS_TORCHN_DECODE").ok().as_deref() == Some("0") {
+        if rlx_ir::env::var_result("RLX_TTS_TORCHN_DECODE")
+            .ok()
+            .as_deref()
+            == Some("0")
+        {
             return Ok(None);
         }
         let Some(path) = &self.weights_path else {
@@ -353,8 +357,8 @@ impl QatLinear {
         // Wide FFN QATs (42) store `zp = -4`. Default: any negative zp → 0
         // (sentinel). `RLX_TTS_TORCHN_ZP_LITERAL=1` keeps the stored value;
         // `RLX_TTS_TORCHN_ZP_FFN_LITERAL=1` keeps only zp≤-4 (FFN) literal.
-        let keep_literal = std::env::var_os("RLX_TTS_TORCHN_ZP_LITERAL").is_some()
-            || (std::env::var_os("RLX_TTS_TORCHN_ZP_FFN_LITERAL").is_some()
+        let keep_literal = rlx_ir::env::var_os("RLX_TTS_TORCHN_ZP_LITERAL").is_some()
+            || (rlx_ir::env::var_os("RLX_TTS_TORCHN_ZP_FFN_LITERAL").is_some()
                 && self.zero_point <= -4);
         let zp = if keep_literal || self.zero_point >= 0 {
             self.zero_point as f32
@@ -363,7 +367,7 @@ impl QatLinear {
         };
         // Bundle stores row-major `[out, in]`. `RLX_TTS_TORCHN_QAT_TRANSPOSE=1`
         // treats storage as `[in, out]` instead (A/B).
-        let transpose = std::env::var_os("RLX_TTS_TORCHN_QAT_TRANSPOSE").is_some();
+        let transpose = rlx_ir::env::var_os("RLX_TTS_TORCHN_QAT_TRANSPOSE").is_some();
         let mut w = vec![0.0f32; self.in_features * self.out_features];
         if transpose {
             for i in 0..self.in_features {
@@ -574,10 +578,10 @@ impl TorchnSelfAttention {
                 }
             }
         }
-        let no_addq = std::env::var_os("RLX_TTS_TORCHN_NO_ADDQ").is_some();
-        let addq_before_o = std::env::var_os("RLX_TTS_TORCHN_ADDQ_BEFORE_O").is_some();
-        let addq_input = std::env::var_os("RLX_TTS_TORCHN_ADDQ_INPUT").is_some();
-        let addq_both = std::env::var_os("RLX_TTS_TORCHN_ADDQ_BOTH").is_some();
+        let no_addq = rlx_ir::env::var_os("RLX_TTS_TORCHN_NO_ADDQ").is_some();
+        let addq_before_o = rlx_ir::env::var_os("RLX_TTS_TORCHN_ADDQ_BEFORE_O").is_some();
+        let addq_input = rlx_ir::env::var_os("RLX_TTS_TORCHN_ADDQ_INPUT").is_some();
+        let addq_both = rlx_ir::env::var_os("RLX_TTS_TORCHN_ADDQ_BOTH").is_some();
         if self.add_query && !no_addq && addq_before_o {
             ctx += &q;
         }
@@ -773,13 +777,13 @@ impl TorchnEncoderBlock {
         // Product default: classic pre-norm residuals (best Softmax ranks so far).
         // Opt out with `RLX_TTS_TORCHN_ENC_POSTNORM=1` for file-order A/B.
         // `RLX_TTS_TORCHN_ENC_RES_SCALE=s`: multiply attn/FFN branches by s before add.
-        let res_scale: f32 = std::env::var("RLX_TTS_TORCHN_ENC_RES_SCALE")
+        let res_scale: f32 = rlx_ir::env::var_result("RLX_TTS_TORCHN_ENC_RES_SCALE")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1.0);
         // Hybrid: pre-norm attention residual + file-order Parallel FFN post-norm.
         // `RLX_TTS_TORCHN_ENC_HYBRID=1`
-        if std::env::var_os("RLX_TTS_TORCHN_ENC_HYBRID").is_some() {
+        if rlx_ir::env::var_os("RLX_TTS_TORCHN_ENC_HYBRID").is_some() {
             let n = self.ln_attn.forward(x)?;
             let mut a = self.attn.forward(&n)?;
             if (res_scale - 1.0).abs() > 1e-8 {
@@ -795,7 +799,7 @@ impl TorchnEncoderBlock {
             return self.ln_ffn.forward(&(h + ff));
         }
         // Product default: classic pre-norm. Opt out: `RLX_TTS_TORCHN_ENC_POSTNORM=1`.
-        if std::env::var_os("RLX_TTS_TORCHN_ENC_POSTNORM").is_none() {
+        if rlx_ir::env::var_os("RLX_TTS_TORCHN_ENC_POSTNORM").is_none() {
             let n = self.ln_attn.forward(x)?;
             let mut a = self.attn.forward(&n)?;
             if (res_scale - 1.0).abs() > 1e-8 {
@@ -813,7 +817,7 @@ impl TorchnEncoderBlock {
             return Ok(y);
         }
         let mut h = self.attn.forward(x)?;
-        if std::env::var_os("RLX_TTS_TORCHN_ENC_ATTN_RES").is_some() {
+        if rlx_ir::env::var_os("RLX_TTS_TORCHN_ENC_ATTN_RES").is_some() {
             if (res_scale - 1.0).abs() > 1e-8 {
                 h.mapv_inplace(|v| v * res_scale);
             }
@@ -848,7 +852,7 @@ impl TorchnEncoder {
     pub fn forward(&self, mut x: ndarray::Array2<f32>) -> Result<ndarray::Array2<f32>> {
         // Product default: pre-norm residuals (ENC_PRENORM). Opt out with
         // `RLX_TTS_TORCHN_ENC_POSTNORM=1` for file-order A/B.
-        let n = std::env::var("RLX_TTS_TORCHN_ENC_LAYERS")
+        let n = rlx_ir::env::var_result("RLX_TTS_TORCHN_ENC_LAYERS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(8) // Softmax ranks peak around L=8; full 16 collapses.
@@ -859,8 +863,8 @@ impl TorchnEncoder {
         // Optional encoder-output renormalization for prenorm magnitude mismatch.
         // `RLX_TTS_TORCHN_ENC_OUT_SCALE=s` multiplies; `ENC_OUT_UNIT=1` L2-normalizes
         // each row to unit length then scales by `ENC_OUT_SCALE` (default 13).
-        if std::env::var_os("RLX_TTS_TORCHN_ENC_OUT_UNIT").is_some() {
-            let target: f32 = std::env::var("RLX_TTS_TORCHN_ENC_OUT_SCALE")
+        if rlx_ir::env::var_os("RLX_TTS_TORCHN_ENC_OUT_UNIT").is_some() {
+            let target: f32 = rlx_ir::env::var_result("RLX_TTS_TORCHN_ENC_OUT_SCALE")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(13.0);
@@ -869,7 +873,7 @@ impl TorchnEncoder {
                 let s = target / n;
                 row.mapv_inplace(|v| v * s);
             }
-        } else if let Ok(s) = std::env::var("RLX_TTS_TORCHN_ENC_OUT_SCALE")
+        } else if let Ok(s) = rlx_ir::env::var_result("RLX_TTS_TORCHN_ENC_OUT_SCALE")
             && let Ok(scale) = s.parse::<f32>()
         {
             x.mapv_inplace(|v| v * scale);
@@ -993,7 +997,7 @@ impl TorchnDecoderBlock {
         //   → cross-MHA (replaces; no residual) → LN
         //   → Parallel(Identity, wide FFN) → LN
         // `RLX_TTS_TORCHN_DEC_PRENORM=1` keeps the older pre-norm+cross-residual path.
-        if std::env::var_os("RLX_TTS_TORCHN_DEC_PRENORM").is_some() {
+        if rlx_ir::env::var_os("RLX_TTS_TORCHN_DEC_PRENORM").is_some() {
             let n = self.ln_avg.forward(x)?;
             let mut h = self.avg_up.forward(&n)?;
             relu_inplace(&mut h);
@@ -1042,15 +1046,15 @@ impl TorchnDecoderBlock {
         // source position. Default: clamp decoder step → source index (shifted
         // by 0). `RLX_TTS_TORCHN_ALIGN_SHIFT=1` uses i→min(i+1,tm-1).
         // `RLX_TTS_TORCHN_ALIGN_WORD=1` always attends to source row 0.
-        let align_shift: usize = std::env::var("RLX_TTS_TORCHN_ALIGN_SHIFT")
+        let align_shift: usize = rlx_ir::env::var_result("RLX_TTS_TORCHN_ALIGN_SHIFT")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let align_word = std::env::var_os("RLX_TTS_TORCHN_ALIGN_WORD").is_some();
+        let align_word = rlx_ir::env::var_os("RLX_TTS_TORCHN_ALIGN_WORD").is_some();
         for head in 0..self.num_heads {
             let hs = head * hdim;
             let supervised = head < self.supervised_heads
-                && std::env::var_os("RLX_TTS_TORCHN_NO_SUPERVISED").is_none();
+                && rlx_ir::env::var_os("RLX_TTS_TORCHN_NO_SUPERVISED").is_none();
             if supervised {
                 for i in 0..t {
                     let src = if align_word {
@@ -1097,10 +1101,10 @@ impl TorchnDecoderBlock {
                 }
             }
         }
-        let no_addq = std::env::var_os("RLX_TTS_TORCHN_NO_ADDQ").is_some();
-        let addq_before_o = std::env::var_os("RLX_TTS_TORCHN_ADDQ_BEFORE_O").is_some();
-        let addq_input = std::env::var_os("RLX_TTS_TORCHN_ADDQ_INPUT").is_some();
-        let addq_both = std::env::var_os("RLX_TTS_TORCHN_ADDQ_BOTH").is_some();
+        let no_addq = rlx_ir::env::var_os("RLX_TTS_TORCHN_NO_ADDQ").is_some();
+        let addq_before_o = rlx_ir::env::var_os("RLX_TTS_TORCHN_ADDQ_BEFORE_O").is_some();
+        let addq_input = rlx_ir::env::var_os("RLX_TTS_TORCHN_ADDQ_INPUT").is_some();
+        let addq_both = rlx_ir::env::var_os("RLX_TTS_TORCHN_ADDQ_BOTH").is_some();
         if self.add_query && !no_addq && addq_before_o {
             ctx += &q;
         }
@@ -1125,7 +1129,7 @@ pub fn probe_greedy_debug(
     word: &str,
     max_phones: usize,
 ) -> Result<(Vec<(f32, u32, String)>, Vec<String>)> {
-    let ids = if std::env::var_os("RLX_TTS_TORCHN_CHARS").is_some() {
+    let ids = if rlx_ir::env::var_os("RLX_TTS_TORCHN_CHARS").is_some() {
         g2p.encode_chars(word)
     } else {
         g2p.encode_word(word)
@@ -1135,14 +1139,14 @@ pub fn probe_greedy_debug(
     let out_emb = TorchnEmbedding::load_output(path)?;
     let proj = TorchnSoftmaxProj::load(path)?;
     let mut x = in_emb.lookup(&ids)?;
-    if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+    if rlx_ir::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
         && let Some(cb) = TorchnCodebook::load(path)?
     {
         cb.add_positions(&mut x)?;
     }
     let bos = g2p.output_symbols.get("<s>").unwrap_or(2);
-    let (h, tag) = if std::env::var_os("RLX_TTS_TORCHN_ENCODE_ONLY").is_some() {
-        let x = if std::env::var_os("RLX_TTS_TORCHN_EMBED_ONLY").is_some() {
+    let (h, tag) = if rlx_ir::env::var_os("RLX_TTS_TORCHN_ENCODE_ONLY").is_some() {
+        let x = if rlx_ir::env::var_os("RLX_TTS_TORCHN_EMBED_ONLY").is_some() {
             x
         } else {
             TorchnEncoder::load(path)?.forward(x)?
@@ -1166,7 +1170,7 @@ pub fn probe_greedy_debug(
             dec_blocks.push(TorchnDecoderBlock::load(path, i)?);
         }
         let mut h = out_emb.lookup(&[bos])?;
-        if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+        if rlx_ir::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
             && let Some(cb) = TorchnCodebook::load(path)?
         {
             cb.add_positions(&mut h)?;
@@ -1280,7 +1284,7 @@ pub fn probe_greedy_phones(
     word: &str,
     max_phones: usize,
 ) -> Result<Vec<String>> {
-    let ids = if std::env::var_os("RLX_TTS_TORCHN_CHARS").is_some() {
+    let ids = if rlx_ir::env::var_os("RLX_TTS_TORCHN_CHARS").is_some() {
         g2p.encode_chars(word)
     } else {
         g2p.encode_word(word)
@@ -1291,7 +1295,7 @@ pub fn probe_greedy_phones(
     let proj = TorchnSoftmaxProj::load(path)?;
     let mut x = in_emb.lookup(&ids)?;
     // EncPos is always part of input Parallel in the bin; opt out with NO_ENCPOS.
-    if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+    if rlx_ir::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
         && let Some(cb) = TorchnCodebook::load(path)?
     {
         cb.add_positions(&mut x)?;
@@ -1300,8 +1304,8 @@ pub fn probe_greedy_phones(
     let bos = g2p.output_symbols.get("<s>").unwrap_or(2);
     let eos = g2p.output_symbols.get("</s>").unwrap_or(bos);
 
-    if std::env::var_os("RLX_TTS_TORCHN_ENCODE_ONLY").is_some() {
-        let x = if std::env::var_os("RLX_TTS_TORCHN_EMBED_ONLY").is_some() {
+    if rlx_ir::env::var_os("RLX_TTS_TORCHN_ENCODE_ONLY").is_some() {
+        let x = if rlx_ir::env::var_os("RLX_TTS_TORCHN_EMBED_ONLY").is_some() {
             x
         } else {
             TorchnEncoder::load(path)?.forward(x)?
@@ -1338,10 +1342,10 @@ pub fn probe_greedy_phones(
     let enc = TorchnEncoder::load(path)?;
     let mut memory = enc.forward(x)?;
     // Product default: word-only memory (drop `</s>`). Opt out: `RLX_TTS_TORCHN_FULL_MEM=1`.
-    if std::env::var_os("RLX_TTS_TORCHN_FULL_MEM").is_none() && memory.nrows() > 1 {
+    if rlx_ir::env::var_os("RLX_TTS_TORCHN_FULL_MEM").is_none() && memory.nrows() > 1 {
         memory = memory.slice(ndarray::s![0..1, ..]).to_owned();
     }
-    let n_dec = std::env::var("RLX_TTS_TORCHN_DEC_LAYERS")
+    let n_dec = rlx_ir::env::var_result("RLX_TTS_TORCHN_DEC_LAYERS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(5)
@@ -1351,7 +1355,7 @@ pub fn probe_greedy_phones(
         dec_blocks.push(TorchnDecoderBlock::load(path, i)?);
     }
     let mut h = out_emb.lookup(&[bos])?;
-    if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+    if rlx_ir::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
         && let Some(cb) = TorchnCodebook::load(path)?
     {
         cb.add_positions(&mut h)?;
@@ -1484,7 +1488,9 @@ fn read_named_tensors(
 fn decode_f32_bytes(raw: &[u8]) -> Result<Vec<f32>> {
     ensure!(raw.len().is_multiple_of(4), "F32 len");
     Ok(raw
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
@@ -1500,7 +1506,9 @@ fn decode_u8(raw: &[u8]) -> Result<Vec<u8>> {
 fn decode_i32(raw: &[u8]) -> Result<Vec<i32>> {
     ensure!(raw.len().is_multiple_of(4), "I32 len");
     Ok(raw
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
@@ -1793,7 +1801,7 @@ mod tests {
     /// --lib enc_identity_softmax_probe -- --nocapture`
     #[test]
     fn enc_identity_softmax_probe() {
-        if std::env::var_os("RLX_TTS_TORCHN_ENC_PROBE").is_none() {
+        if rlx_ir::env::var_os("RLX_TTS_TORCHN_ENC_PROBE").is_none() {
             return;
         }
         let side = cache_frontend("g2p_bpe.json");
@@ -1811,7 +1819,7 @@ mod tests {
         for (w, g) in words.iter().zip(golds) {
             let ids = g2p.encode_word(w);
             let mut x = in_emb.lookup(&ids).expect("lookup");
-            if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+            if rlx_ir::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
                 && let Some(cb) = TorchnCodebook::load(&st).expect("cb")
             {
                 cb.add_positions(&mut x).expect("pos");
@@ -1878,7 +1886,7 @@ mod tests {
     /// enc_layerwise_identity_probe -- --nocapture`
     #[test]
     fn enc_layerwise_identity_probe() {
-        if std::env::var_os("RLX_TTS_TORCHN_LAYER_PROBE").is_none() {
+        if rlx_ir::env::var_os("RLX_TTS_TORCHN_LAYER_PROBE").is_none() {
             return;
         }
         let side = cache_frontend("g2p_bpe.json");
@@ -1894,7 +1902,7 @@ mod tests {
         for w in words {
             let ids = g2p.encode_word(w);
             let mut x = in_emb.lookup(&ids).expect("lu");
-            if std::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
+            if rlx_ir::env::var_os("RLX_TTS_TORCHN_NO_ENCPOS").is_none()
                 && let Some(cb) = TorchnCodebook::load(&st).expect("cb")
             {
                 cb.add_positions(&mut x).expect("pos");
@@ -1952,7 +1960,7 @@ mod tests {
     /// dec_bos_softmax_probe -- --nocapture`
     #[test]
     fn dec_bos_softmax_probe() {
-        if std::env::var_os("RLX_TTS_TORCHN_DEC_PROBE").is_none() {
+        if rlx_ir::env::var_os("RLX_TTS_TORCHN_DEC_PROBE").is_none() {
             return;
         }
         let side = cache_frontend("g2p_bpe.json");
@@ -1980,7 +1988,7 @@ mod tests {
                 cb.add_positions(&mut x).ok();
             }
             let mut memory = TorchnEncoder::load(&st).expect("e").forward(x).expect("m");
-            if std::env::var_os("RLX_TTS_TORCHN_WORD_MEM").is_some() && memory.nrows() > 1 {
+            if rlx_ir::env::var_os("RLX_TTS_TORCHN_WORD_MEM").is_some() && memory.nrows() > 1 {
                 memory = memory.slice(ndarray::s![0..1, ..]).to_owned();
             }
             let bos = g2p.output_symbols.get("<s>").unwrap_or(2);
@@ -1988,7 +1996,7 @@ mod tests {
             if let Some(cb) = TorchnCodebook::load(&st).expect("cb2") {
                 cb.add_positions(&mut h).ok();
             }
-            let n_dec = std::env::var("RLX_TTS_TORCHN_DEC_LAYERS")
+            let n_dec = rlx_ir::env::var_result("RLX_TTS_TORCHN_DEC_LAYERS")
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(5)
@@ -2019,7 +2027,7 @@ mod tests {
             eprintln!(
                 "{w}: gold_rank={rank} g={gscore:.3} top1={top_sym} phones={phones:?} dbg_top={top1}"
             );
-            if std::env::var_os("RLX_TTS_TORCHN_TOP20").is_some() {
+            if rlx_ir::env::var_os("RLX_TTS_TORCHN_TOP20").is_some() {
                 let bos = g2p.output_symbols.get("<s>").unwrap_or(2);
                 let mut scored: Vec<(f32, usize)> = logits
                     .row(0)

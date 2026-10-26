@@ -60,7 +60,7 @@ use rlx_ir::shape::Dim;
 use rlx_ir::{DType, Graph, Shape};
 
 use super::config::{GemmaArch, GemmaConfig};
-use super::rope::{build_rope_tables, resolve_inv_freq};
+use super::rope::resolve_inv_freq;
 use rlx_core::flow_bridge::{WeightLoaderSource, load_compile_profile};
 use rlx_core::weight_loader::WeightLoader;
 
@@ -194,6 +194,9 @@ pub struct GemmaFlow<'a> {
     prefill_hidden: bool,
     /// Sliding layers read additive `attn_bias` for vision bidirectional spans.
     media_attn_bias: bool,
+    /// With `custom_mask`: sliding layers mask with a second input,
+    /// `mask_local` (the step's mask within their window).
+    windowed_mask: bool,
 }
 
 impl fmt::Debug for GemmaFlow<'_> {
@@ -240,6 +243,7 @@ impl<'a> GemmaFlow<'a> {
             flow_patch: None,
             prefill_hidden: false,
             media_attn_bias: false,
+            windowed_mask: false,
         }
     }
 
@@ -357,6 +361,14 @@ impl<'a> GemmaFlow<'a> {
         self
     }
 
+    /// With [`Self::custom_mask`]: the sliding layers' mask a second input,
+    /// `mask_local` (`[batch, past + 1]`, the step's mask within the
+    /// window), so a decode past `sliding_window` stays exact.
+    pub fn windowed_mask(mut self) -> Self {
+        self.windowed_mask = true;
+        self
+    }
+
     pub fn profile(mut self, profile: CompileProfile) -> Self {
         self.profile = Some(profile);
         self
@@ -435,15 +447,13 @@ impl<'a> GemmaFlow<'a> {
 
         let rope_factors = weights.take("rope_freqs.weight").ok().map(|(data, _)| data);
         let inv_freq = resolve_inv_freq(cfg, rope_factors.as_deref());
-        let (cos_data, sin_data) = build_rope_tables(&inv_freq, cfg.max_position_embeddings);
 
         // When Gemma 4 ships split rope_parameters with a distinct
         // full-attention theta and/or partial_rotary_factor, build a
         // second cos/sin table under the "global" slot. The per-layer
         // closure below opts full-attention layers into it via
         // SelfAttnPrefillSpec::with_rope_table("global").
-        let global_rope =
-            secondary_rope_tables(cfg, cfg.max_position_embeddings, rope_factors.as_deref());
+        let global_rope = crate::rope::resolve_global_inv_freq(cfg, rope_factors.as_deref());
 
         let kv_sink = SideOutputs::new();
 
@@ -482,11 +492,9 @@ impl<'a> GemmaFlow<'a> {
         }
 
         flow = flow
-            .rope_tables(RopeTablesStage::param(
+            .rope_tables(RopeTablesStage::from_inv_freq(
                 cfg.max_position_embeddings,
-                inv_freq.len(),
-                cos_data,
-                sin_data,
+                &inv_freq,
             ))
             .zero_beta_named("gemma.zero_beta.hidden", h);
 
@@ -507,14 +515,10 @@ impl<'a> GemmaFlow<'a> {
 
         flow = flow.raw_stages(self.before_layers.iter().cloned());
 
-        if let Some(g) = &global_rope {
-            flow = flow.raw_stage(FlowStage::RopeTables(RopeTablesStage::param_named(
-                "global",
-                cfg.max_position_embeddings,
-                g.half_dim,
-                g.cos.clone(),
-                g.sin.clone(),
-            )));
+        if let Some(inv) = &global_rope {
+            flow = flow.raw_stage(FlowStage::RopeTables(
+                RopeTablesStage::from_inv_freq(cfg.max_position_embeddings, inv).named("global"),
+            ));
         }
 
         let layer_fn = self.layer_fn.clone();
@@ -709,7 +713,12 @@ impl<'a> GemmaFlow<'a> {
 
         let rope_factors = weights.take("rope_freqs.weight").ok().map(|(data, _)| data);
         let inv_freq = resolve_inv_freq(cfg, rope_factors.as_deref());
-        let (rope_cos, rope_sin) = if self.dynamic_past {
+        // RoPE rows are graph inputs whenever one graph serves many positions:
+        // dynamic past, and bucketed decode (custom mask), where the bucket's
+        // upper bound is not the token's position. Only a graph built for one
+        // exact `past_seq` bakes them.
+        let rope_inputs = self.dynamic_past || self.use_custom_mask;
+        let (rope_cos, rope_sin) = if rope_inputs {
             (Vec::new(), Vec::new())
         } else {
             crate::rope::rope_slice(&inv_freq, self.past_seq)
@@ -719,18 +728,19 @@ impl<'a> GemmaFlow<'a> {
         // Dynamic-past mode promotes both default and (Gemma 4) global
         // rope rows to graph inputs so the runner can supply them at
         // step-time.
-        let global_rope_row = if !self.dynamic_past {
+        let global_rope_row = if !rope_inputs {
             secondary_rope_row(cfg, self.past_seq, rope_factors.as_deref())
         } else {
             None
         };
         let global_params = needs_secondary_rope_params(cfg);
+        let global_fed = global_params.is_some();
 
         let mut flow = ModelFlow::new("gemma_decode")
             .with_profile(profile)
             .input("input_ids", Shape::new(&[self.batch, 1], DType::F32));
 
-        if self.dynamic_past {
+        if rope_inputs {
             flow = flow
                 .input("rope_cos", Shape::new(&[1, half], f))
                 .input("rope_sin", Shape::new(&[1, half], f));
@@ -761,6 +771,22 @@ impl<'a> GemmaFlow<'a> {
 
         if self.use_custom_mask {
             flow = flow.input("mask", Shape::new(&[self.batch, self.past_seq + 1], f));
+        }
+        let windowed = self.use_custom_mask && self.windowed_mask && decode_sliding.is_some();
+        if windowed {
+            flow = flow
+                .input(
+                    "mask_local",
+                    Shape::new(&[self.batch, self.past_seq + 1], f),
+                )
+                .raw_stage(FlowStage::Custom(rlx_flow::blocks::CustomStage::named(
+                    "gemma.bind_local_decode_mask",
+                    |emit, val| {
+                        let m = find_hir_input(emit.hir(), "mask_local")?;
+                        emit.set_named("mask_local", m);
+                        Ok(val)
+                    },
+                )));
         }
 
         // One spare row per cache so the decode layer writes the new token's
@@ -798,7 +824,7 @@ impl<'a> GemmaFlow<'a> {
                 .input(format!("past_v_{layer_idx}"), shape);
         }
 
-        if !self.dynamic_past {
+        if !rope_inputs {
             flow = flow.raw_stage(FlowStage::DecodeRopeParams(DecodeRopeParamsStage::new(
                 rope_cos, rope_sin, half,
             )));
@@ -812,16 +838,13 @@ impl<'a> GemmaFlow<'a> {
             }
         }
 
-        flow = if kv_spare > 0 {
-            flow.bind_decode_inputs_with_capacity(
+        flow = flow
+            .bind_decode_inputs_for_kv_spare(
                 cfg.num_hidden_layers,
                 self.use_custom_mask,
                 self.past_seq,
+                kv_spare,
             )
-        } else {
-            flow.bind_decode_inputs(cfg.num_hidden_layers, self.use_custom_mask, true)
-        };
-        flow = flow
             .zero_beta_named("gemma.zero_beta.hidden", h)
             .token_embed()
             .raw_stage(FlowStage::EmbedScale(EmbedScaleStage::new(h)))
@@ -833,7 +856,9 @@ impl<'a> GemmaFlow<'a> {
         let num_layers = cfg.active_num_layers();
         // Per-layer (head_dim, kv_heads, n_rot) — uniform on Gemma <=3,
         // diverges on Gemma 4 12B's full-attention layers.
-        let secondary_rope_active = global_rope_row.is_some();
+        // Baked (one exact position) or fed (`rope_cos_global` inputs): either
+        // way the full-attention layers read the global table.
+        let secondary_rope_active = global_rope_row.is_some() || (rope_inputs && global_fed);
         let per_layer_decode: Vec<PerLayerAttn> = (0..num_layers)
             .map(|i| PerLayerAttn {
                 head_dim: cfg.layer_head_dim(i),
@@ -853,6 +878,10 @@ impl<'a> GemmaFlow<'a> {
         let moe_top_k = cfg.num_experts_used;
         let moe_n_embd = cfg.hidden_size;
         let moe_n_ff = cfg.expert_ffn_dim();
+        // The sliding layers that mask with `mask_local`.
+        let local: Vec<bool> = (0..num_layers)
+            .map(|i| windowed && !cfg.is_full_attention_layer(i))
+            .collect();
         flow = flow.repeat_layers(num_layers, {
             let sink = kv_out.clone();
             let aux_sink = aux_in.clone();
@@ -899,6 +928,7 @@ impl<'a> GemmaFlow<'a> {
                     mask,
                     score_scale: decode_score_scale,
                     attn_logit_softcap: decode_softcap,
+                    mask_input: local[i].then(|| "mask_local".to_string()),
                 };
                 if let Some(ref f) = layer_fn {
                     return f(GemmaLayerCtx::Decode {
@@ -1030,6 +1060,7 @@ struct GlobalRopeTables {
 /// unified config carries a distinct rope_theta or
 /// partial_rotary_factor for full-attention layers. Returns `None`
 /// for Gemma <=3 and for Gemma 4 configs that omit the split.
+#[cfg(test)]
 fn secondary_rope_tables(
     cfg: &GemmaConfig,
     max_pos: usize,

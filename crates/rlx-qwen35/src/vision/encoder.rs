@@ -60,16 +60,17 @@ fn compile_vision(
 ) -> Result<(rlx_runtime::CompiledGraph, Device)> {
     // Decompose SDPA into matmul→softmax→matmul on GPU backends (the fused ViT
     // attention kernel is ~10× slower there; batched GEMM is fast), but keep the
-    // fused op on CPU where its BLAS attention already beats the decomposition.
+    // fused op on CPU where its BLAS attention already beats the decomposition,
+    // and on MLX, whose lazy graph keeps every layer's materialized `[heads, n,
+    // n]` scores alive: a 4928-patch image peaked at 95 GB decomposed vs 52 GB
+    // fused, and ran 57 s vs 35 s (pplx-decider, 1408x896).
     // Only sets the default — an explicit RLX_QWEN35_VISION_SDPA_DECOMP wins.
-    if std::env::var("RLX_QWEN35_VISION_SDPA_DECOMP").is_err() {
-        // SAFETY: single-threaded runner build; env read at vision HIR build below.
-        unsafe {
-            std::env::set_var(
-                "RLX_QWEN35_VISION_SDPA_DECOMP",
-                if device == Device::Cpu { "0" } else { "1" },
-            );
-        }
+    if rlx_ir::env::var_result("RLX_QWEN35_VISION_SDPA_DECOMP").is_err() {
+        let fused = matches!(device, Device::Cpu | Device::Mlx);
+        rlx_ir::env::set(
+            "RLX_QWEN35_VISION_SDPA_DECOMP",
+            if fused { "0" } else { "1" },
+        );
     }
     let built = build_qwen35_vision_built(cfg, weights, img_w, img_h)?;
     if device == Device::Cpu {
@@ -134,17 +135,72 @@ impl Qwen35VisionEncoder {
         })
     }
 
+    /// Load an mmproj GGUF without compiling anything yet: each image size
+    /// compiles on first use. For callers that preprocess themselves and go
+    /// through [`Self::encode_nchw`], so no initial size is meaningful.
+    pub fn load(path: impl AsRef<Path>, device: Device) -> Result<Self> {
+        let path = path.as_ref();
+        let path_str = path.to_str().context("mmproj path utf8")?;
+        let mut loader = GgufLoader::from_file(path_str)?;
+        let cfg = MmProjConfig::from_gguf(loader.file())?;
+        let weights = MmProjWeights::from_loader(&cfg, &mut loader)?;
+        Ok(Self {
+            cfg,
+            weights,
+            cache: std::collections::HashMap::new(),
+            device,
+        })
+    }
+
     pub fn config(&self) -> &MmProjConfig {
         &self.cfg
+    }
+
+    /// Backend in use (CPU after a compile fallback).
+    pub fn device(&self) -> Device {
+        self.device
     }
 
     /// Encode an RGB u8 buffer. Compiles (and caches) a graph per smart-resized
     /// size the first time it's seen; repeat sizes reuse the warm cached graph.
     pub fn encode_rgb(&mut self, rgb: &[u8], w: usize, h: usize) -> Result<VisionEncodeOutput> {
-        let trace = std::env::var("RLX_QWEN35_VISION_TRACE").is_ok();
+        let trace = rlx_ir::env::var_result("RLX_QWEN35_VISION_TRACE").is_ok();
         let t0 = std::time::Instant::now();
         let (nchw, tw, th) = preprocess_rgb(rgb, w, h, &self.cfg);
         let t_pre = t0.elapsed();
+        if trace {
+            eprintln!(
+                "[qwen35] vision preprocess={:.1}ms",
+                t_pre.as_secs_f64() * 1e3
+            );
+        }
+        self.encode_nchw(&nchw, tw, th)
+    }
+
+    /// Encode an already-preprocessed image: `nchw` is `[3, th, tw]`
+    /// normalized pixels, `tw`/`th` multiples of `patch_size * n_merge`.
+    ///
+    /// For callers whose reference preprocesses differently from
+    /// [`preprocess_rgb`] (which resizes nearest-neighbour) — HF's Qwen-VL
+    /// processors resize bicubic with antialiasing, for one. Output rows are
+    /// in merged-token order, row-major over the merged grid.
+    pub fn encode_nchw(
+        &mut self,
+        nchw: &[f32],
+        tw: usize,
+        th: usize,
+    ) -> Result<VisionEncodeOutput> {
+        let trace = rlx_ir::env::var_result("RLX_QWEN35_VISION_TRACE").is_ok();
+        let align = self.cfg.patch_size * self.cfg.n_merge;
+        anyhow::ensure!(
+            tw > 0 && th > 0 && tw.is_multiple_of(align) && th.is_multiple_of(align),
+            "image {tw}x{th} is not a positive multiple of {align}"
+        );
+        anyhow::ensure!(
+            nchw.len() == 3 * tw * th,
+            "nchw holds {} values, expected 3x{th}x{tw}",
+            nchw.len()
+        );
 
         // Compile-on-miss, then reuse: the second+ image at a given size skips the
         // multi-second compile AND the cold first-run (params already resident).
@@ -166,15 +222,14 @@ impl Qwen35VisionEncoder {
         let compiled = self.cache.get_mut(&(tw, th)).expect("graph cached above");
         let tr = std::time::Instant::now();
         let outs = compiled.run(&[
-            ("image", &nchw),
+            ("image", nchw),
             ("vision_rope_cos", &rope_cos),
             ("vision_rope_sin", &rope_sin),
         ]);
         let t_run = tr.elapsed();
         if trace {
             eprintln!(
-                "[qwen35] vision encode breakdown: preprocess={:.1}ms compile(miss)={:.1}ms run={:.1}ms",
-                t_pre.as_secs_f64() * 1e3,
+                "[qwen35] vision encode breakdown: compile(miss)={:.1}ms run={:.1}ms",
                 t_compile.as_secs_f64() * 1e3,
                 t_run.as_secs_f64() * 1e3
             );

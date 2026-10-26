@@ -67,7 +67,7 @@ fn quantized(
 }
 
 fn run_layer(w: &KdaWeights, d: KdaDims, x: &[f32]) -> Vec<f32> {
-    unsafe { std::env::set_var("RLX_KIMI_QUANT", "off") };
+    rlx_ir::env::set("RLX_KIMI_QUANT", "off");
     let mut hir = HirModule::new("kda");
     let mut g = HirMut::new(&mut hir);
     let hin = g.input("h", Shape::new(&[1, d.seq, d.hidden], DType::F32));

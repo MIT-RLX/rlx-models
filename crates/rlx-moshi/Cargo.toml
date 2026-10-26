@@ -46,6 +46,8 @@ cli = []
 hf-download = ["dep:hf-hub"]
 tokio = ["dep:tokio"]
 ws-server = ["tokio", "dep:axum", "dep:futures-util"]
+# `export::export_rlxp`: Moshi one-way as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-mimi/export"]
 
 # Backends are fully native RLX (LM via RlxLm + Mimi codec), candle-free. The LM
 # uses the native graph backend on any non-CPU device (or `RLX_MOSHI_NATIVE=1`).
@@ -55,11 +57,11 @@ cuda = ["rlx-runtime/cuda", "rlx-mimi/cuda"]
 rocm = ["rlx-runtime/rocm", "rlx-mimi/rocm"]
 vulkan = ["rlx-runtime/vulkan", "rlx-mimi/vulkan"]
 gpu = ["rlx-runtime/gpu", "rlx-mimi/gpu"]
-# CoreML / Apple Neural Engine (LM graph only; Mimi stays CPU/Metal).
+# CoreML / Neural Engine (LM graph only; Mimi stays CPU/Metal).
 coreml = ["rlx-runtime/coreml"]
 
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu", "vulkan"]
@@ -85,10 +87,15 @@ name = "ws_server"
 required-features = ["ws-server"]
 
 [dev-dependencies]
+rlx-cpu = { workspace = true }
 rlx-moshi = { path = ".", features = ["cli", "hf-download", "tokio", "metal"] }
 rlx-mimi = { workspace = true, features = ["hf-download"] }
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tempfile = "3"
+rlx-text = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
 
 [[test]]
 name = "config_load"

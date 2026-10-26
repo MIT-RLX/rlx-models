@@ -23,6 +23,8 @@
 //! `sigmoid(x)=1/(1+exp(-x))`, `tanh(x)=2*sigmoid(2x)-1`, nested `fmaf` mix.
 //! Set `RLX_WR_GRU_PLAIN=1` for plain `vvtanhf`.
 
+#[cfg(feature = "export")]
+pub mod export;
 pub mod fastspeech2;
 pub mod frontend;
 mod gguf_bundle;

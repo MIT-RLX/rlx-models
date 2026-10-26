@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use rlx_inflect_nano::{InferOpts, InflectNano};
 
 fn data_dir() -> Option<PathBuf> {
-    let base = std::env::var("RLX_INFLECT_NANO_DATA")
+    let base = rlx_ir::env::var_result("RLX_INFLECT_NANO_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/inflect-nano-rlx")

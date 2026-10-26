@@ -208,7 +208,7 @@ impl PackedExpertSource for PagedMlx<'_> {
             .with_context(|| format!("expert {il}.{e}.{proj} not MLX-packed"))
     }
     fn prewarm(&mut self, experts: &[(usize, usize)]) {
-        if std::env::var("RLX_NO_PREWARM").is_ok() {
+        if rlx_ir::env::var_result("RLX_NO_PREWARM").is_ok() {
             return;
         }
         let keys: Vec<String> = experts

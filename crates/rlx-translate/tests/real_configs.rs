@@ -307,14 +307,14 @@ fn shipped_manifest_parses_and_describes_the_nmt() {
         let Some(path) = assets.resolve(&pdec.model_file) else {
             continue;
         };
-        let m = rlx_translate::espresso::Manifest::load(&path)
+        let m = rlx_translate::netfile::Manifest::load(&path)
             .unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
 
         assert_eq!(m.str("BEspressoEngine"), Some("CPU"));
         assert!(
             m.str("EncoderGraph")
                 .is_some_and(|g| g.ends_with(".espresso.net")),
-            "encoder graph should be an espresso net"
+            "encoder graph should be a network file"
         );
         assert!(
             m.decoder_layers() > 0,

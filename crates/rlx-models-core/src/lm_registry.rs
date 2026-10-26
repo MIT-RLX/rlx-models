@@ -51,7 +51,7 @@
 //! # }
 //!
 //! register_lm_runner(LmRunnerRegistration::new("mine", |path, opts| {
-//!     Ok(Box::new(MyRunner::open(path, opts.device)?))
+//!     Ok(Box::new(MyRunner::open(path, opts.device.unwrap_or(rlx_runtime::Device::Cpu))?))
 //! }));
 //! ```
 //!
@@ -71,7 +71,7 @@ use rlx_runtime::lm::LmRunner;
 ///
 /// One options type rather than a growing family of `build_x_with_y`
 /// functions, so adding a knob does not add an entry point.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LmBuildOptions {
     /// Device handed to the family's builder. `None` = pick one for this
     /// machine; see [`Self::device_or_auto`].
@@ -106,17 +106,23 @@ pub struct LmBuildOptions {
     /// wanted a real context therefore had to bypass `auto_runner` and reach
     /// for the family builder directly, which is how a routing cascade grows.
     pub max_seq: Option<usize>,
-}
-
-impl Default for LmBuildOptions {
-    fn default() -> Self {
-        LmBuildOptions {
-            device: None,
-            mmproj: None,
-            servable: false,
-            max_seq: None,
-        }
-    }
+    /// How numbers are represented while the runner computes (weights and
+    /// every intermediate; see [`rlx_ir::NumberFormat`]). `None` leaves the
+    /// process setting (`RLX_NUMBER_FORMAT`, default `f32`) alone.
+    ///
+    /// Applied per process: families compile decode buckets lazily, long after
+    /// the build returns, so the choice is published through the
+    /// `RLX_NUMBER_FORMAT` override that every compile reads. Building a second
+    /// runner with a different format in the same process changes the first
+    /// one's later compiles too.
+    pub number_format: Option<rlx_ir::NumberFormat>,
+    /// How dense weight matrices are stored ([`crate::weight_storage::WeightStorage`]):
+    /// `auto` keeps a bf16 / f16 checkpoint at its own width (lossless, half
+    /// the memory of f32). `None` leaves the process setting
+    /// (`RLX_WEIGHT_STORAGE`) alone; families built on `rlx-flow` follow it,
+    /// as do families that opt in (`rlx-lfm` defaults to `auto`). Published
+    /// per process like [`Self::number_format`].
+    pub weight_storage: Option<crate::weight_storage::WeightStorage>,
 }
 
 impl LmBuildOptions {
@@ -151,6 +157,18 @@ impl LmBuildOptions {
         self.servable = true;
         self
     }
+    /// Compute in `format`. See [`Self::number_format`].
+    pub fn number_format(mut self, format: rlx_ir::NumberFormat) -> Self {
+        self.number_format = Some(format);
+        self
+    }
+
+    /// Store dense weights as `storage`. See [`Self::weight_storage`].
+    pub fn weight_storage(mut self, storage: crate::weight_storage::WeightStorage) -> Self {
+        self.weight_storage = Some(storage);
+        self
+    }
+
     /// Build for `tokens` of context. See [`Self::max_seq`].
     pub fn max_seq(mut self, tokens: usize) -> Self {
         self.max_seq = Some(tokens);
@@ -269,6 +287,31 @@ pub fn lm_runner_supports_mmproj(runner: &str) -> Option<bool> {
         .map(|r| r.supports_mmproj)
 }
 
+/// Publish `format` to every later compile in this process (see
+/// [`LmBuildOptions::number_format`]); `None` drops a previous code override
+/// so a shell-level `RLX_NUMBER_FORMAT` applies again.
+pub fn apply_number_format(format: Option<rlx_ir::NumberFormat>) -> Result<()> {
+    match format {
+        None => rlx_ir::env::unset("RLX_NUMBER_FORMAT"),
+        // f64 runs natively on the CPU and in double-single on Metal and wgpu;
+        // f64x2 is double-single everywhere.
+        Some(f) => rlx_ir::env::set("RLX_NUMBER_FORMAT", f.to_string()),
+    }
+    Ok(())
+}
+
+/// Publish `storage` as `RLX_WEIGHT_STORAGE` for every later build in this
+/// process (see [`LmBuildOptions::weight_storage`]); `None` drops a previous
+/// code override so a shell-level setting applies again.
+pub fn apply_weight_storage(storage: Option<crate::weight_storage::WeightStorage>) -> Result<()> {
+    let key = crate::weight_storage::WEIGHT_STORAGE_ENV;
+    match storage {
+        None => rlx_ir::env::unset(key),
+        Some(s) => rlx_ir::env::set(key, s.name()),
+    }
+    Ok(())
+}
+
 /// Build a runner by name.
 ///
 /// Errors when nothing is registered for `runner`, listing what is — an
@@ -305,6 +348,8 @@ pub fn build_lm_runner(
             .unwrap_or_default();
         bail!("`{runner}` does not accept an mmproj vision encoder{note}");
     }
+    apply_number_format(opts.number_format)?;
+    apply_weight_storage(opts.weight_storage)?;
     let inner = (reg.build)(path, opts)?;
     Ok(if opts.servable {
         Box::new(crate::lm_host_driven::HostDriven::new(inner))
@@ -425,7 +470,9 @@ mod tests {
         assert!(!d.servable);
         assert!(d.max_seq.is_none());
 
-        let o = LmBuildOptions::new(Device::Metal).mmproj("m.gguf").servable();
+        let o = LmBuildOptions::new(Device::Metal)
+            .mmproj("m.gguf")
+            .servable();
         assert_eq!(o.device, Some(Device::Metal));
         assert_eq!(o.device_or_auto(), Device::Metal);
         assert_eq!(o.mmproj_path(), Some(Path::new("m.gguf")));
@@ -443,6 +490,26 @@ mod tests {
 
 #[cfg(test)]
 mod capability_tests {
+
+    #[test]
+    fn number_format_is_published_and_cleared() {
+        apply_number_format(Some("f8".parse().unwrap())).unwrap();
+        assert_eq!(
+            rlx_ir::env::var("RLX_NUMBER_FORMAT").as_deref(),
+            Some("f8e4m3")
+        );
+        apply_number_format(Some(rlx_ir::NumberFormat::F64x2)).unwrap();
+        assert_eq!(
+            rlx_ir::env::var("RLX_NUMBER_FORMAT").as_deref(),
+            Some("f64x2")
+        );
+        apply_number_format(None).unwrap();
+        assert_ne!(
+            rlx_ir::env::var("RLX_NUMBER_FORMAT").as_deref(),
+            Some("f8e4m3")
+        );
+    }
+
     use super::*;
 
     struct Vl;

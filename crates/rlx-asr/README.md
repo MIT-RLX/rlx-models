@@ -52,14 +52,14 @@ Facade: `rlx-models` feature `streaming-asr` → `rlx_models::streaming_asr`.
 |-------|------|--------|
 | Frontend / VAD / CTC beam / Hammer FSTs / AED | yes | Loads from `model.rlxp` (or legacy GGUF) |
 | Folded encoder → CTC | yes (Rust + Python e2e) | `enc = (mel→proj) @ body_residual_ls.R` — fast; loops on real speech → use Whisper fallback |
-| Native Apple streaming encoder | experimental | `native_encoder.rs` — Espresso `streaming_encoder_64_16` caches; `RLX_ASR_ENCODER=native` |
+| Native streaming encoder | experimental | `native_encoder.rs` — caches; `RLX_ASR_ENCODER=native` |
 
 ## Features / backends
 
 Backend flags mirror other model crates (`metal`, `mlx`, `cuda`, `rocm`, `gpu`,
-`vulkan`, `coreml`, `all-backends`, `apple-silicon`).
+`vulkan`, `coreml`, `all-backends`, `macos-gpu`).
 
 | Host | Typical devices |
 |------|-----------------|
-| Apple Silicon | CPU, Metal, MLX, wgpu, CoreML |
+| macOS arm64 | CPU, Metal, MLX, wgpu, CoreML |
 | Windows / Linux + NVIDIA | CPU, CUDA, wgpu, Vulkan |

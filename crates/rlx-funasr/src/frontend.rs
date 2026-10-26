@@ -90,19 +90,18 @@ pub struct Cmvn {
 }
 
 impl Cmvn {
-    /// Parse the Kaldi-nnet text `am.mvn` (an `<AddShift>` vector followed by a
-    /// `<Rescale>` vector, each wrapped in `[ ... ]`).
+    /// Parse the Kaldi-nnet text `am.mvn`: its last two `[ ... ]` vectors are
+    /// the `<AddShift>` and the `<Rescale>` (a `<Splice>` block's `[ 0 ]` may
+    /// come before them).
     pub fn parse(text: &str) -> Result<Self> {
         let vecs = parse_bracket_vectors(text);
-        if vecs.len() < 2 {
-            bail!(
-                "am.mvn: expected 2 bracketed vectors (AddShift, Rescale), got {}",
-                vecs.len()
-            );
+        let n = vecs.len();
+        if n < 2 || vecs[n - 1].len() != vecs[n - 2].len() {
+            bail!("am.mvn: expected an AddShift and a Rescale vector of one length");
         }
         Ok(Self {
-            neg_mean: vecs[0].clone(),
-            inv_std: vecs[1].clone(),
+            neg_mean: vecs[n - 2].clone(),
+            inv_std: vecs[n - 1].clone(),
         })
     }
 
@@ -116,9 +115,11 @@ impl Cmvn {
     /// Apply `(x + neg_mean) * inv_std` over each `feat_dim`-wide row in place.
     pub fn apply(&self, fb: &mut Fbank) {
         let d = fb.feat_dim;
-        if self.neg_mean.len() != d || self.inv_std.len() != d {
-            return; // shape mismatch: leave features untouched
-        }
+        assert!(
+            self.neg_mean.len() == d && self.inv_std.len() == d,
+            "am.mvn is {} wide; the features {d}",
+            self.neg_mean.len()
+        );
         for f in 0..fb.n_frames {
             let row = &mut fb.data[f * d..(f + 1) * d];
             for (i, v) in row.iter_mut().enumerate() {
@@ -128,24 +129,11 @@ impl Cmvn {
     }
 }
 
-/// Load `am.mvn` only when `config.yaml`'s `frontend_conf.cmvn_file` is set to a
-/// real path (Paraformer); returns `None` when it is `null` (SenseVoice ships an
-/// unused `am.mvn` but disables CMVN).
+/// Load the model directory's `am.mvn`, as FunASR's loader does: it sets
+/// `frontend_conf.cmvn_file` to `am.mvn` whenever the file is there, whatever
+/// `config.yaml` says (SenseVoice's says `null`, and its official pipeline
+/// still normalizes with it). `None` without the file.
 pub fn load_configured_cmvn(dir: &Path) -> Option<Cmvn> {
-    let text = std::fs::read_to_string(dir.join("config.yaml")).ok()?;
-    let mut enabled = false;
-    for line in text.lines() {
-        if let Some(v) = line.trim().strip_prefix("cmvn_file:") {
-            let v = v.trim();
-            enabled = !(v.is_empty()
-                || v.eq_ignore_ascii_case("null")
-                || v.eq_ignore_ascii_case("none")
-                || v == "~");
-        }
-    }
-    if !enabled {
-        return None;
-    }
     let p = dir.join("am.mvn");
     if p.is_file() {
         Cmvn::load(&p).ok()
@@ -436,5 +424,10 @@ mod tests {
         c.apply(&mut fb);
         // (x - mean)*std with neg_mean as additive: (1-1)*2=0, (2-2)*2=0 ...
         assert_eq!(fb.data, vec![0.0, 0.0, 0.0, 0.0]);
+        // A `<Splice>` block's `[ 0 ]` before them (FunASR's own files).
+        let spliced = txt.replace("<Nnet>", "<Nnet> <Splice> 4 4 [ 0 ]");
+        let c = Cmvn::parse(&spliced).unwrap();
+        assert_eq!(c.neg_mean, vec![-1.0, -2.0, -3.0, -4.0]);
+        assert_eq!(c.inv_std, vec![2.0, 2.0, 2.0, 2.0]);
     }
 }

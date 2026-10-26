@@ -110,7 +110,7 @@ fn workspace_root() -> PathBuf {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    let raw = std::env::var("RLX_LOCATEANYTHING_DIR").ok()?;
+    let raw = rlx_ir::env::var_result("RLX_LOCATEANYTHING_DIR").ok()?;
     let path = PathBuf::from(&raw);
     if path.is_absolute() || path.join("config.json").is_file() {
         return Some(path);
@@ -128,7 +128,8 @@ fn fixture_image() -> PathBuf {
 }
 
 fn python_bin() -> PathBuf {
-    let bin = std::env::var("RLX_LOCATEANYTHING_PYTHON").unwrap_or_else(|_| "python3".into());
+    let bin =
+        rlx_ir::env::var_result("RLX_LOCATEANYTHING_PYTHON").unwrap_or_else(|_| "python3".into());
     let path = PathBuf::from(&bin);
     // Only resolve paths with a directory component (e.g. `.venv/bin/python`).
     if bin.contains('/') {
@@ -166,7 +167,7 @@ fn run_hf_reference_with_image(
     image: Option<&Path>,
 ) -> String {
     let cache = model_dir.join(cache_name);
-    if cache.is_file() && std::env::var("RLX_LOCATEANYTHING_PARITY_REFRESH").is_err() {
+    if cache.is_file() && rlx_ir::env::var_result("RLX_LOCATEANYTHING_PARITY_REFRESH").is_err() {
         return std::fs::read_to_string(&cache).expect("read HF parity cache");
     }
     let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

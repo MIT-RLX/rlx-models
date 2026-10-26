@@ -4,7 +4,7 @@ Index of the text-to-speech models ported to RLX, their reported throughput, and
 the **Gemma 3 270M + Inflect-Nano** local voice-chat pairing built on top of them.
 
 > **Unified harness:** [`crates/rlx-tts-bench`](crates/rlx-tts-bench/README.md)
-> (`just tts-bench-apple run …`) produces `results.jsonl`, `report.html`, and
+> (`just features=macos-gpu tts-bench run …`) produces `results.jsonl`, `report.html`, and
 > `BACKENDS.md` (model × device RTF / cosine / Whisper). Cross-backend notes and
 > historical matrices are in the [Cross-backend parity & benchmarks](#cross-backend-parity-benchmarks--matrices)
 > section below.
@@ -16,7 +16,7 @@ the **Gemma 3 270M + Inflect-Nano** local voice-chat pairing built on top of the
 > **fixed** (D2D param copy). **piper CUDA is bit-exact (cos 1.000)**; the other
 > three are un-silenced with a residual sine-source parity drift still open.
 > Also landed: fused-kernel activation completeness (ops 12–28). Vulkan is the
-> strongest GPU path (all TTS 0.975–1.000); Apple backends (Metal/MLX/CoreML/wgpu)
+> strongest GPU path (all TTS 0.975–1.000); macOS backends (Metal/MLX/CoreML/wgpu)
 > remain bit-exact where noted. Full detail + repro in the
 > [Cross-backend parity & benchmarks](#cross-backend-parity-benchmarks--matrices)
 > section below and `PARITY.md`.
@@ -132,15 +132,15 @@ all flags (`--speed`, `--sentence-pause`, `--prime-secs`, `--first-sentence`,
 
 ## Cross-backend parity, benchmarks & matrices
 
-*(Merged from the former `TTS_BACKENDS.md`.)* Apple measurements on this
-Apple-Silicon Mac; NVIDIA CUDA/Vulkan via the remote host (`RLX_CUDA_HOST` / the
+*(Merged from the former `TTS_BACKENDS.md`.)* macOS measurements on this
+M-series Mac; NVIDIA CUDA/Vulkan via the remote host (`RLX_CUDA_HOST` / the
 `scripts/matrix` harness). Harness: `crates/rlx-<model>/examples/backend_matrix.rs`
 (loops `Device` variants via `load_on`, median of 3 timed iters after 1 warmup;
 parity = cosine of the waveform vs the CPU output; whisper = word coverage of the
 reference sentence via `.cache/whisper-tiny` / `whisper-base.en`). "Original" =
 the model's own **ONNX Runtime** path (`synthesize_ort`, CPU EP) run in-process.
 
-### Verified local bench (2026-08, Apple cpu/metal/mlx) — `rlx-tts-bench`
+### Verified local bench (2026-08, macOS cpu/metal/mlx) — `rlx-tts-bench`
 
 Measured live via `rlx-tts-bench run --models all --devices cpu,metal,mlx
 --phrases short --whisper --spectral --noise --clone --iters 1` on this Mac.
@@ -189,7 +189,7 @@ results this session (verified via `rlx-tts-bench` + Whisper):
 | **voxtral-tts** | FAIL "no .f32 embedding" | data-unblocked (4B then OOMs on load — separate) | converted 20 voice `.pt`→`.f32` (`--convert-voices`). |
 | **qwen3-tts** | FAIL "missing tokenizer.json" | **cpu fox 6/6, rtf 0.25×** | built `tokenizer.json` from `vocab.json`+`merges.txt` (Base repo ships none). |
 | **kyutai** | FAIL "missing voice embedding" | runs (data-unblocked) but **fox 0/6** | downloaded voice from `kyutai/tts-voices`; output quality is a separate open bug. |
-| **gepard** | metal/mlx crash + fox **0/6** (babble) | **cpu 6/6, metal 6/6** | two fixes: (1) crash — qwen35 `clear_host_dense_projections` skips release when `weights_path` empty (inline_weights; helps any inline-weights qwen35 on Apple GPU); (2) **0/6 was sampling free-running into coherent-but-wrong words** — greedy is faithful (whisper "The quick brown fox…"), adapter now honors `deterministic`→greedy. Same class as chatterbox. |
+| **gepard** | metal/mlx crash + fox **0/6** (babble) | **cpu 6/6, metal 6/6** | two fixes: (1) crash — qwen35 `clear_host_dense_projections` skips release when `weights_path` empty (inline_weights; helps any inline-weights qwen35 on Metal GPU); (2) **0/6 was sampling free-running into coherent-but-wrong words** — greedy is faithful (whisper "The quick brown fox…"), adapter now honors `deterministic`→greedy. Same class as chatterbox. |
 | **parlertts / MLX** (+cpu greedy) | crashed on MLX for any transcript ≠19 tokens (`from_bytes` nbytes mismatch); cpu greedy errored "seq 439≠433" | **runs on all backends for any text** | two fixes: (1) cpu greedy — derive prompt-prefix from returned `seq` not `pt`; (2) **the MLX crash was a stale AOT cache-key collision** — `$TMPDIR/rlx_parler_native` keyed decoder graphs by `seq` only (not `pt`/`et`), so a graph compiled for one transcript length reloaded for another → baked `prompt_input_ids [1,19]` → MLX strict panic (CPU tolerated). Fix: fold all named dims into the cache key. NB parlertts *greedy* is degenerate (collapses to "the"); bench uses sampling (fox 6/6), GPU cosine gap is benign AR divergence. |
 
 Waveform-cosine is the **wrong parity metric for AR/LM TTS** (chatterbox, orpheus,
@@ -201,13 +201,13 @@ coverage + log-mel cosine, not raw waveform cosine.
 
 | Model | Issue | Fix | Gate |
 |-------|-------|-----|------|
-| ChatterBox | Fox 0/6 false negative | `rlx-whisper` skips lang/task tokens on `.en` checkpoints | Apple Whisper 6/6 |
-| StyleTTS2 / Kokoro native | Decoder garbage (historical) | Remove Cin↔Cout transpose on ONNX `ConvTranspose` (`rlx-onnx-import`). Native default: ORT CPU encoder + RLX decoder (or `RLX_KOKORO_NATIVE_ENC=1`); fox **6/6** CPU/Metal/MLX/wgpu | fox 6/6 Apple |
+| ChatterBox | Fox 0/6 false negative | `rlx-whisper` skips lang/task tokens on `.en` checkpoints | Whisper 6/6 |
+| StyleTTS2 / Kokoro native | Decoder garbage (historical) | Remove Cin↔Cout transpose on ONNX `ConvTranspose` (`rlx-onnx-import`). Native default: ORT CPU encoder + RLX decoder (or `RLX_KOKORO_NATIVE_ENC=1`); fox **6/6** CPU/Metal/MLX/wgpu | fox 6/6 macOS |
 | Soprano | Harness + MLX peak | Default greedy; coverage `len≥2`; Vocos on CPU when backbone is MLX | CPU/Metal/MLX Whisper 1.00 |
-| Piper | Stochastic ORT / GPU enc | Native path; CPU-pinned `enc_p`; `RLX_PIPER_DETERMINISTIC=1` | Apple cos 1.0; NVIDIA CUDA cos≈1.0 |
-| Gepard | Bucketed decode mask/KV slice drift | Fix `slice_kv_from_bucket` + dense `generated` for custom-mask AR; bucketed default | Apple fox 6/6 + long 15/15 |
+| Piper | Stochastic ORT / GPU enc | Native path; CPU-pinned `enc_p`; `RLX_PIPER_DETERMINISTIC=1` | macOS cos 1.0; NVIDIA CUDA cos≈1.0 |
+| Gepard | Bucketed decode mask/KV slice drift | Fix `slice_kv_from_bucket` + dense `generated` for custom-mask AR; bucketed default | macOS fox 6/6 + long 15/15 |
 | MeloTTS / tiny-tts | 512-sample silence | Same CT fix + `ensure_audible` | Local CPU/wgpu/Metal cos 1.0 |
-| MetaVoice | Whisper ~67% | Greedy defaults, speaker required, PCM postprocess | Fox 6/6 Apple |
+| MetaVoice | Whisper ~67% | Greedy defaults, speaker required, PCM postprocess | Fox 6/6 macOS |
 | F5-TTS | DiT GPU mismatch | Metal/MLX on-device fox 6/6; ScatterNd pin over MPS cliff. True wgpu (`RLX_F5_WGPU_DIT=1`): NFE=32 fox **6/6** after (1) unsharded `>bind` arenas → dedicated scratch/virtual stripes (`RLX_WGPU_LARGE_BUFFERS=1`); (2) `Transpose(Param)` binds the act-output stripe + stages the weight | fox 6/6 Metal + true wgpu |
 | Supertonic | Vulkan cos≈0.03 | Host non-last Reduce; true Vulkan cos 1.0 | NVIDIA cos 1.0 |
 
@@ -266,7 +266,7 @@ hypothesis: an arena slot-offset mismatch. See memory `cuda_silent_split_graph_i
 | CoreML | 1.3× | 3399 | 1.00000 | 1.00 |
 | **CUDA** | **2.4×** | **1782** | 0.96463 | 1.00 |
 
-Perfect on Apple backends (bit-identical, cos 1.00000); CUDA matches whisper
+Perfect on macOS backends (bit-identical, cos 1.00000); CUDA matches whisper
 coverage at cos ≈0.965 (TF32 / kernel order).
 
 **vs onnxruntime (original, CPU EP) — 848 ms (5.1× RT):** rlx beats ort-CPU **only

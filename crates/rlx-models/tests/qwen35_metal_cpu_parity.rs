@@ -38,10 +38,9 @@ fn last_logits(device: Device) -> Vec<f32> {
 #[test]
 fn qwen35_host_embed_matches_gather_cpu() {
     let baseline = last_logits(Device::Cpu);
-    // SAFETY: single-threaded test process (see run invocation).
-    unsafe { std::env::set_var("RLX_QWEN35_HOST_EMBED", "1") };
+    rlx_ir::env::set("RLX_QWEN35_HOST_EMBED", "1");
     let host = last_logits(Device::Cpu);
-    unsafe { std::env::remove_var("RLX_QWEN35_HOST_EMBED") };
+    rlx_ir::env::remove("RLX_QWEN35_HOST_EMBED");
     assert_eq!(
         baseline.len(),
         host.len(),
@@ -60,9 +59,9 @@ fn qwen35_host_embed_matches_gather_cpu() {
 
     // Decode too: generated token IDs must be identical with host-embed on/off.
     let base_gen = generated_tokens(Device::Cpu);
-    unsafe { std::env::set_var("RLX_QWEN35_HOST_EMBED", "1") };
+    rlx_ir::env::set("RLX_QWEN35_HOST_EMBED", "1");
     let host_gen = generated_tokens(Device::Cpu);
-    unsafe { std::env::remove_var("RLX_QWEN35_HOST_EMBED") };
+    rlx_ir::env::remove("RLX_QWEN35_HOST_EMBED");
     eprintln!("qwen35 host-embed gen: base={base_gen:?} host={host_gen:?}");
     assert_eq!(
         base_gen, host_gen,
@@ -217,7 +216,7 @@ fn qwen35_tiny_metal_matches_cpu_decode() {
 #[cfg(all(target_os = "macos", feature = "metal"))]
 #[test]
 fn qwen35_bonsai_metal_amp_matches_f32() {
-    let Some(path) = std::env::var("RLX_BONSAI27B_GGUF").ok() else {
+    let Some(path) = rlx_ir::env::var_result("RLX_BONSAI27B_GGUF").ok() else {
         eprintln!("skip: RLX_BONSAI27B_GGUF not set");
         return;
     };
@@ -228,9 +227,9 @@ fn qwen35_bonsai_metal_amp_matches_f32() {
     let prompt = [1u32, 2, 3, 4];
     let generate = |amp: bool| -> Vec<u32> {
         if amp {
-            unsafe { std::env::set_var("RLX_QWEN35_AMP", "1") };
+            rlx_ir::env::set("RLX_QWEN35_AMP", "1");
         } else {
-            unsafe { std::env::remove_var("RLX_QWEN35_AMP") };
+            rlx_ir::env::remove("RLX_QWEN35_AMP");
         }
         let mut runner = Qwen35RunnerBuilder::default()
             .weights(&path)
@@ -245,7 +244,7 @@ fn qwen35_bonsai_metal_amp_matches_f32() {
                 true
             })
             .expect("generate");
-        unsafe { std::env::remove_var("RLX_QWEN35_AMP") };
+        rlx_ir::env::remove("RLX_QWEN35_AMP");
         out
     };
     let f32_gen = generate(false);
@@ -327,7 +326,7 @@ fn qwen35_bighead_metal_matches_cpu() {
 #[cfg(all(target_os = "macos", feature = "metal"))]
 #[test]
 fn qwen35_bonsai27b_metal_matches_cpu() {
-    let Some(path) = std::env::var("RLX_BONSAI27B_GGUF").ok() else {
+    let Some(path) = rlx_ir::env::var_result("RLX_BONSAI27B_GGUF").ok() else {
         eprintln!("skip: RLX_BONSAI27B_GGUF not set");
         return;
     };
@@ -335,11 +334,11 @@ fn qwen35_bonsai27b_metal_matches_cpu() {
         eprintln!("skip: metal unavailable");
         return;
     }
-    let max_seq: usize = std::env::var("RLX_TEST_MAX_SEQ")
+    let max_seq: usize = rlx_ir::env::var_result("RLX_TEST_MAX_SEQ")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(16);
-    let n_prompt: usize = std::env::var("RLX_TEST_PROMPT_LEN")
+    let n_prompt: usize = rlx_ir::env::var_result("RLX_TEST_PROMPT_LEN")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4);

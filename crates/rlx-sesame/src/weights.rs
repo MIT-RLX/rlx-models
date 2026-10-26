@@ -82,7 +82,9 @@ impl KvCache {
 
 fn f32_from_bytes_le(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -102,7 +104,9 @@ fn half_bits_to_f32(h: u16) -> f32 {
 
 fn f16_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| {
             let bits = u16::from_le_bytes([c[0], c[1]]);
             half_bits_to_f32(bits)
@@ -112,7 +116,9 @@ fn f16_to_f32(bytes: &[u8]) -> Vec<f32> {
 
 fn bf16_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| {
             let bits = u16::from_le_bytes([c[0], c[1]]);
             f32::from_bits((bits as u32) << 16)

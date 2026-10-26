@@ -19,7 +19,9 @@ fn dir() -> Option<PathBuf> {
 fn rd(p: &std::path::Path) -> Option<Vec<f32>> {
     let r = std::fs::read(p).ok()?;
     Some(
-        r.chunks_exact(4)
+        r.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )
@@ -39,7 +41,7 @@ fn e2b_trajectory() {
         eprintln!("[traj] no ckpt");
         return;
     };
-    let sub = std::env::var("RLX_E2B_REF").unwrap_or_else(|_| "gemma4_e2b".into());
+    let sub = rlx_ir::env::var_result("RLX_E2B_REF").unwrap_or_else(|_| "gemma4_e2b".into());
     let fx = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("fixtures")
@@ -51,7 +53,7 @@ fn e2b_trajectory() {
     let nl = cfg.num_hidden_layers;
     let lp = GemmaQatLoader::open(&d).unwrap();
     let ple = lp.compute_per_layer_inputs(&cfg, &ids).unwrap();
-    unsafe { std::env::set_var("RLX_TAP_ALL", "1") };
+    rlx_ir::env::set("RLX_TAP_ALL", "1");
     let mut loader = GemmaQatLoader::open(&d).unwrap();
     let mut packed = HashMap::new();
     let (graph, params) = rlx_gemma::builder::build_gemma_graph_sized_packed_ext(

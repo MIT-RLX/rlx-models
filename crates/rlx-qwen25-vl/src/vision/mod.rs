@@ -18,7 +18,7 @@
 mod builder;
 mod config;
 mod encoder;
-mod preprocess;
+pub(crate) mod preprocess;
 mod weights;
 
 pub use builder::build_qwen25_vl_vision_built;

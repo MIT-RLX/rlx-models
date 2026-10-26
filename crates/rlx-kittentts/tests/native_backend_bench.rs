@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! cargo test -p rlx-kittentts --release \
-//!   --features native,apple-silicon \
+//!   --features native,macos-gpu \
 //!   --test native_backend_bench -- --nocapture --test-threads=1
 //!
 //! # NVIDIA: --features native,gpu,cuda,vulkan

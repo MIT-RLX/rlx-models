@@ -220,7 +220,6 @@ impl EncoderBuilder<'_> {
         t_out: usize,
     ) -> Result<HirNodeId> {
         let d = cfg.d_model;
-        let od = cfg.output_dim;
         let t3 = conv_len(t_in);
         let t4 = conv_len(t3);
         ensure!(
@@ -259,7 +258,12 @@ impl EncoderBuilder<'_> {
         // [1, D, 1, T'] → [1, T', D]
         let x = self.g().reshape_(x, vec![1, d as i64, t4 as i64]);
         let x = self.g().transpose_(x, vec![0, 2, 1]);
+        self.adapter_head(x, cfg)
+    }
 
+    /// The adapter after its convolutions: norm, linear, GELU, linear.
+    fn adapter_head(&mut self, x: HirNodeId, cfg: &AudioEncoderConfig) -> Result<HirNodeId> {
+        let od = cfg.output_dim;
         let x = self.layer_norm(
             x,
             AudioWeightPrefix::ADAPTER_LN_W,
@@ -385,6 +389,19 @@ pub fn build_encoder_built(
         1,
         true,
     )?;
+    // The last chunk's padding zeroed before conv2, as the reference's
+    // `padded_mask` does (a lone chunk is built at its own length).
+    let x = if nc > 1 {
+        let tail = geom.n_frames - (nc - 1) * mcl;
+        let mask: Vec<f32> = (0..nc * mcl)
+            .map(|i| f32::from(u8::from(i / mcl < nc - 1 || i % mcl < tail)))
+            .collect();
+        let m = b.register_param("fireredaudio.audio.framemask", mask, &[nc, 1, 1, mcl]);
+        let m = b.g().expand_(m, vec![nc as i64, d as i64, 1, mcl as i64]);
+        b.g().mul(x, m)
+    } else {
+        x
+    };
     let x = b.conv1d(
         x,
         AudioWeightPrefix::CONV2_W,
@@ -431,6 +448,155 @@ pub fn build_encoder_built(
     }
 
     let x = b.adapter(x, cfg, geom.num_after_cnn, geom.num_audio_tokens)?;
+
+    hir.outputs = vec![x];
+    rlx_core::flow_util::built_from_hir(hir, params)
+}
+
+/// The audio encoder over `chunks` whole chunks, as a package runs it: one
+/// graph for any clip within them, its lengths masks the reference's
+/// padding gives. Inputs: `"mel"` `[1, num_mel_bins, chunks · chunk]` (the
+/// clip, zeros after it), `"frames"` `[chunks · chunk]` (1 on the clip's
+/// frames: conv1's output past them zeroed, as the reference's
+/// `padded_mask`), `"window"` `[chunks · t]` (each post-conv row's chunk,
+/// a row past the clip a window of its own: the bias `−1e9 · (wᵢ − wⱼ)²`),
+/// `"valid"` `[chunks · t]` and `"valid3"` `[chunks · t / 2]` (1 on the
+/// rows the adapter's two convolutions read: zero padding past the clip).
+/// Output `[1, chunks · t / 4, output_dim]`, the clip's tokens first.
+#[cfg(feature = "export")]
+pub fn build_encoder_masked(
+    cfg: &AudioEncoderConfig,
+    weights: &mut WeightMap,
+    chunks: usize,
+) -> Result<rlx_flow::BuiltModel> {
+    let f = DType::F32;
+    let d = cfg.d_model;
+    let mels = cfg.num_mel_bins;
+    let nc = chunks;
+    let mcl = cfg.chunk_frames();
+    let t_pc = conv_len(mcl);
+    let seq = nc * t_pc;
+    let (s3, s4) = (conv_len(seq), conv_len(conv_len(seq)));
+    ensure!(
+        s3 == nc * conv_len(t_pc) && s4 == nc * conv_len(conv_len(t_pc)),
+        "a chunk's post-conv rows ({t_pc}) do not halve twice"
+    );
+
+    let mut hir = HirModule::new("fireredaudio_encoder").with_fusion_policy(FusionPolicy::Direct);
+    let mut params = HashMap::new();
+    let mel = hir.input("mel", Shape::new(&[1, mels, nc * mcl], f));
+    let frames = hir.input("frames", Shape::new(&[nc * mcl], f));
+    let window = hir.input("window", Shape::new(&[seq], f));
+    let valid = hir.input("valid", Shape::new(&[seq], f));
+    let valid3 = hir.input("valid3", Shape::new(&[s3], f));
+
+    let mut b = EncoderBuilder {
+        hir: &mut hir,
+        params: &mut params,
+        weights: &mut WeightMapSource(weights),
+        f,
+    };
+
+    let x = b
+        .g()
+        .reshape_(mel, vec![mels as i64, nc as i64, mcl as i64]);
+    let x = b.g().transpose_(x, vec![1, 0, 2]);
+    let x = b
+        .g()
+        .reshape_(x, vec![nc as i64, mels as i64, 1, mcl as i64]);
+    let x = b.conv1d(
+        x,
+        AudioWeightPrefix::CONV1_W,
+        AudioWeightPrefix::CONV1_B,
+        nc,
+        d,
+        mcl,
+        1,
+        1,
+        true,
+    )?;
+    let m = b.g().reshape_(frames, vec![nc as i64, 1, 1, mcl as i64]);
+    let m = b.g().expand_(m, vec![nc as i64, d as i64, 1, mcl as i64]);
+    let x = b.g().mul(x, m);
+    let x = b.conv1d(
+        x,
+        AudioWeightPrefix::CONV2_W,
+        AudioWeightPrefix::CONV2_B,
+        nc,
+        d,
+        t_pc,
+        2,
+        1,
+        true,
+    )?;
+    let x = b.g().reshape_(x, vec![nc as i64, d as i64, t_pc as i64]);
+    let x = b.g().transpose_(x, vec![0, 2, 1]);
+    let pos = b.register_param(
+        "fireredaudio.audio.sinusoid",
+        sinusoid_table(t_pc, d),
+        &[t_pc, d],
+    );
+    let pos = b.g().reshape_(pos, vec![1, t_pc as i64, d as i64]);
+    let x = b.g().add(x, pos);
+    let mut x = b.g().reshape_(x, vec![1, seq as i64, d as i64]);
+
+    let nh = cfg.encoder_attention_heads;
+    let col = b.g().reshape_(window, vec![seq as i64, 1]);
+    let col = b.g().expand_(col, vec![seq as i64, seq as i64]);
+    let row = b.g().reshape_(window, vec![1, seq as i64]);
+    let row = b.g().expand_(row, vec![seq as i64, seq as i64]);
+    let diff = b.g().sub(col, row);
+    let d2 = b.g().mul(diff, diff);
+    let neg = b.g().add_node(
+        Op::Constant {
+            data: (-1e9f32).to_le_bytes().to_vec(),
+        },
+        vec![],
+        Shape::new(&[1], f),
+    );
+    let bias = b.g().mul(d2, neg);
+    let bias = b.g().reshape_(bias, vec![1, 1, seq as i64, seq as i64]);
+    let bias = b
+        .g()
+        .expand_(bias, vec![1, nh as i64, seq as i64, seq as i64]);
+    for layer in 0..cfg.encoder_layers {
+        x = b.encoder_layer(x, layer, cfg, seq, Some(bias))?;
+    }
+
+    // The adapter, zero padding past the clip before each convolution.
+    let m = b.g().reshape_(valid, vec![1, seq as i64, 1]);
+    let m = b.g().expand_(m, vec![1, seq as i64, d as i64]);
+    let x = b.g().mul(x, m);
+    let x = b.g().transpose_(x, vec![0, 2, 1]);
+    let x = b.g().reshape_(x, vec![1, d as i64, 1, seq as i64]);
+    let x = b.conv1d(
+        x,
+        AudioWeightPrefix::ADAPTER_CONV3_W,
+        AudioWeightPrefix::ADAPTER_CONV3_B,
+        1,
+        d,
+        s3,
+        2,
+        1,
+        false,
+    )?;
+    let m = b.g().reshape_(valid3, vec![1, 1, 1, s3 as i64]);
+    let m = b.g().expand_(m, vec![1, d as i64, 1, s3 as i64]);
+    let x = b.g().mul(x, m);
+    let x = b.conv1d(
+        x,
+        AudioWeightPrefix::ADAPTER_CONV4_W,
+        AudioWeightPrefix::ADAPTER_CONV4_B,
+        1,
+        d,
+        s4,
+        2,
+        1,
+        false,
+    )?;
+    let x = b.g().reshape_(x, vec![1, d as i64, s4 as i64]);
+    let x = b.g().transpose_(x, vec![0, 2, 1]);
+    let x = b.adapter_head(x, cfg)?;
 
     hir.outputs = vec![x];
     rlx_core::flow_util::built_from_hir(hir, params)

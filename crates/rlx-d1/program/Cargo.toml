@@ -1,0 +1,23 @@
+# d1's protocol as an RLX program (WebAssembly): the prompt
+# rendered and tokenized, one pass per question, each answer's distribution,
+# around the package's graphs. Built by `rlx-d1`'s exporter, so it
+# stands outside the workspace.
+[package]
+name = "rlx-d1-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+anyhow = "1"
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# `prompt.rs` and `processor.rs` read `rlx_core::{ordered_json, image_preprocess}`:
+# those files, under the name they are imported by.
+rlx-core = { package = "rlx-d1-json", path = "json" }
+
+[workspace]

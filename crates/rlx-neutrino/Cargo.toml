@@ -12,6 +12,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+rlx-search = { workspace = true }
 rlx-qwen3 = { workspace = true }
 rlx-gguf = { workspace = true }
 # Tokenizer + ChatML helpers (Qwen3 byte-level BPE, GGUF-embedded vocab).
@@ -45,7 +46,7 @@ gpu = ["rlx-qwen3/gpu"]
 vulkan = ["rlx-qwen3/vulkan"]
 coreml = ["rlx-qwen3/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]

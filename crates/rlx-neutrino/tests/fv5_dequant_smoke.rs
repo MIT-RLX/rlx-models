@@ -15,7 +15,7 @@ use rlx_ir::{DType, Graph, Op, Shape};
 use rlx_runtime::{Device, Session};
 
 fn dev() -> Device {
-    match std::env::var("RLX_TEST_DEVICE").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_TEST_DEVICE").ok().as_deref() {
         Some("metal") | Some("mtl") => Device::Metal,
         Some("mlx") => Device::Mlx,
         Some("gpu") | Some("wgpu") => Device::Gpu,

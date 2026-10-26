@@ -29,7 +29,7 @@ const PROMPT_IDS: &[u32] = &[818, 5279, 529, 7001, 563]; // "The capital of Fran
 const HF_REFERENCE: &[u32] = &[7001, 563, 7001, 563, 7001, 563, 7001, 563, 7001, 563];
 
 fn ckpt_dir() -> Result<PathBuf> {
-    if let Some(d) = std::env::var_os("RLX_GEMMA4_E2B_DIR") {
+    if let Some(d) = rlx_ir::env::var_os("RLX_GEMMA4_E2B_DIR") {
         let p = PathBuf::from(d);
         if p.join("config.json").is_file() {
             return Ok(p);

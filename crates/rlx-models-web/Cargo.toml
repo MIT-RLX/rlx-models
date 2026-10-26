@@ -1,0 +1,66 @@
+[package]
+name = "rlx-models-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Browser (wasm32) bindings for small RLX models: Moonshine streaming ASR, EmbeddingGemma / jina-v5 / BERT embeddings, LFM2.5 text generation"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rlx-ir = { workspace = true }
+anyhow = { workspace = true }
+rlx-moonshine-streaming = { workspace = true }
+rlx-jina-v5 = { workspace = true }
+rlx-embeddinggemma = { workspace = true }
+# BERT-family sentence encoders (`BertEmbedder`): bge, MiniLM, MedCPT, …
+rlx-embed = { workspace = true }
+rlx-core = { workspace = true }
+rlx-lfm = { workspace = true }
+rlx-qwen35 = { workspace = true }
+# The FLUX.1 denoiser split across workers (`FluxStage`, genmoji.html).
+rlx-flux1 = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-runtime = { workspace = true }
+wasm-bindgen = "0.2"
+# Typed arrays across the stage boundary (`Qwen35Stage`).
+js-sys = "0.3"
+
+[dev-dependencies]
+
+[features]
+default = []
+# WebGPU through wgpu (`backend: "webgpu"`); needs `init_webgpu()` first.
+webgpu = ["rlx-runtime/webgpu"]
+# WebGL2 render-to-texture (`backend: "webgl"`), for browsers without WebGPU.
+webgl = [
+    "rlx-runtime/opengl",
+    "rlx-lfm/webgl",
+    "rlx-moonshine-streaming/webgl",
+    "rlx-embeddinggemma/webgl",
+    "rlx-jina-v5/webgl",
+]
+
+# The workspace pin carries no regex backend (see the root Cargo.toml).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokenizers = { workspace = true, features = ["onig"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokenizers = { workspace = true, features = ["unstable_wasm"] }
+# Rust panics print to the JS console instead of a bare `unreachable` trap.
+console_error_panic_hook = "0.1"
+wasm-bindgen-futures = "0.4"
+# `tokenizers` (through rlx-cli) pulls getrandom; on wasm32 it needs the JS
+# backend: this feature plus `--cfg getrandom_backend="wasm_js"` at build time.
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[lints]
+workspace = true

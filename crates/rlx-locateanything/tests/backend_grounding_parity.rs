@@ -17,7 +17,7 @@
 //!
 //! ```bash
 //! RLX_LOCATEANYTHING_DIR=/path/to/LocateAnything-3B \
-//!   cargo test -p rlx-locateanything --test backend_grounding_parity --features apple-silicon,tokenizer --release
+//!   cargo test -p rlx-locateanything --test backend_grounding_parity --features macos-gpu,tokenizer --release
 //! ```
 
 use rlx_locateanything::fixtures::sample_image_path;
@@ -25,7 +25,7 @@ use rlx_locateanything::{InferenceOptions, LocateAnythingSession};
 use rlx_runtime::Device;
 
 fn model_dir() -> Option<std::path::PathBuf> {
-    std::env::var("RLX_LOCATEANYTHING_DIR")
+    rlx_ir::env::var_result("RLX_LOCATEANYTHING_DIR")
         .ok()
         .map(std::path::PathBuf::from)
 }

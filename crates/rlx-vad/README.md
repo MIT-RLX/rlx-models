@@ -14,7 +14,7 @@ Facade re-export: `rlx_models::vad` (see [crates/rlx-models/src/lib.rs](../rlx-m
 ## Quick start
 
 ```bash
-# Earshot — embedded bin (~5–6 µs/frame on Apple Silicon)
+# Earshot — embedded bin (~5–6 µs/frame on macOS arm64)
 cargo run -p rlx-vad --release -- \
   --backend earshot --wav assets/jfk/jfk_rust_speech.wav
 
@@ -36,11 +36,11 @@ just bench-vad-jfk-all-devices
 
 CLI flags: `--backend earshot|silero`, `--wav PATH`, `--threshold` (override preset), `--device cpu|metal|…`, `--weights PATH` (Silero override only), `--seconds`.
 
-Bench flags: `--devices all|apple-silicon|cpu,metal,…` (see [Benchmarks](#benchmarks-assetsjfk)).
+Bench flags: `--devices all|macos-gpu|cpu,metal,…` (see [Benchmarks](#benchmarks-assetsjfk)).
 
 ## Benchmarks (assets/jfk)
 
-Measured with `cargo run -p rlx-vad --example jfk_bench --release` on Apple Silicon (release, CPU BLAS / Accelerate). Clips: `assets/jfk/jfk_rust_speech.wav` (12.1 s) and `jfk_voice_clone.wav` (5.2 s), each wrapped in 1.5 s silence pads for labeled-region scoring.
+Measured with `cargo run -p rlx-vad --example jfk_bench --release` on macOS arm64 (release, CPU BLAS / Accelerate). Clips: `assets/jfk/jfk_rust_speech.wav` (12.1 s) and `jfk_voice_clone.wav` (5.2 s), each wrapped in 1.5 s silence pads for labeled-region scoring.
 
 ### Latency (clean audio)
 
@@ -83,7 +83,7 @@ Streaming inference runs on **CPU BLAS for every device slot** — 256–512 sam
 
 ```bash
 just test-vad-backends                               # per-device segment + prob parity
-cargo run -p rlx-vad --example jfk_bench --release --features apple-silicon -- --devices apple-silicon
+cargo run -p rlx-vad --example jfk_bench --release --features macos-gpu -- --devices macos-gpu
 ```
 
 ### Segment presets (quality tuning)

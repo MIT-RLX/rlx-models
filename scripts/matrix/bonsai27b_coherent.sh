@@ -15,7 +15,7 @@ SYSTEM="${BONSAI_SYSTEM:-You are a helpful assistant. Answer clearly in English.
 MAX_TOKENS="${BONSAI_MAX_TOKENS:-32}"
 MAX_SEQ="${BONSAI_MAX_SEQ:-64}"
 OUT_DIR="${BONSAI_OUT:-$HERE/out/bonsai27b}"
-FEATURES="${BONSAI_FEATURES:-runner,minicpm5,bonsai,qwen35,apple-silicon}"
+FEATURES="${BONSAI_FEATURES:-runner,minicpm5,bonsai,qwen35,macos-gpu}"
 
 mkdir -p "$OUT_DIR"
 cd "$REPO"

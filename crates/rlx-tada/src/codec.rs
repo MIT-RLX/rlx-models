@@ -215,9 +215,9 @@ impl CodecEncoder {
 pub struct CodecDecoder {
     store: Arc<TensorStore>,
     prefix: String,
-    proj: Linear,
-    stack: LocalAttnStack,
-    cfg: DecoderConfig,
+    pub(crate) proj: Linear,
+    pub(crate) stack: LocalAttnStack,
+    pub(crate) cfg: DecoderConfig,
 }
 
 impl CodecDecoder {
@@ -244,7 +244,7 @@ impl CodecDecoder {
 
     /// See [`CodecEncoder::wav_layers`] — the 530 M-parameter DAC stack is
     /// fused from the mapping per call and dropped once its graph owns it.
-    fn wav_layers(&self) -> Result<rlx_dac::layers::Decoder> {
+    pub(crate) fn wav_layers(&self) -> Result<rlx_dac::layers::Decoder> {
         weights::load_wav_decoder(
             &self.store,
             &format!("{}wav_decoder", self.prefix),

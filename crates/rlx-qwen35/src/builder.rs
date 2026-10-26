@@ -221,6 +221,12 @@ pub(crate) enum AttnCacheMode<'a> {
         /// multiplicative per-key mask `[b, past+seq]` (`MaskKind::Custom`, decode).
         mask_bias: bool,
     },
+    /// Cache-free prefill whose full-attention layers see the whole sequence
+    /// (encoder-style). `key_mask` is an optional per-key `[batch, seq]` mask
+    /// (`1.0` = attend, `0.0` = padding, `MaskKind::Custom`) so a right-padded
+    /// batch stays exact; `None` attends every key. Gated DeltaNet layers stay
+    /// causal regardless — they are recurrent and never read a mask.
+    Bidirectional { key_mask: Option<NodeId> },
 }
 
 /// Build the Qwen3.5 forward IR.
@@ -301,6 +307,7 @@ pub fn build_qwen35_graph_sized_ext(
             fast_mtp,
             fast_greedy_lm_head: export_normed_hidden,
             profile: None,
+            residual_out: false,
         };
         let (built, packed) = crate::flow::build_qwen35_prefill_cache_built(cfg, weights, &opts)?;
         let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
@@ -346,6 +353,9 @@ pub fn build_qwen35_graph_sized_ext(
             fast_mtp,
             fast_greedy_lm_head: !with_lm_head,
             profile: None,
+            residual_out: false,
+            greedy_token: false,
+            multi_row: false,
         };
         let (built, packed) = crate::flow::build_qwen35_decode_built(cfg, weights, &opts)?;
         let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
@@ -581,6 +591,7 @@ pub fn build_qwen35_prefill_cache_graph_ext(
         fast_mtp,
         fast_greedy_lm_head,
         profile: None,
+        residual_out: false,
     };
     let (built, packed) = crate::flow::build_qwen35_prefill_cache_built(cfg, weights, &opts)?;
     let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
@@ -686,6 +697,9 @@ pub fn build_qwen35_verify_hir(
         fast_mtp: false,
         fast_greedy_lm_head: false,
         profile: None,
+        residual_out: false,
+        greedy_token: false,
+        multi_row: false,
     };
     crate::flow::build_qwen35_decode_model_flow(cfg, weights.into(), &opts)
 }
@@ -714,6 +728,9 @@ pub fn build_qwen35_decode_graph_ext(
         fast_mtp,
         fast_greedy_lm_head,
         profile: None,
+        residual_out: false,
+        greedy_token: false,
+        multi_row: false,
     };
     let (built, packed) = crate::flow::build_qwen35_decode_built(cfg, weights, &opts)?;
     let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
@@ -750,6 +767,9 @@ pub(crate) fn build_qwen35_decode_hir_assembled(
         fast_mtp,
         fast_greedy_lm_head: !with_lm_head,
         profile: None,
+        residual_out: false,
+        greedy_token: false,
+        multi_row: false,
     };
     crate::flow::build_qwen35_decode_model_flow(cfg, weights.into(), &opts)
 }
@@ -781,6 +801,7 @@ pub(crate) fn build_qwen35_prefill_cache_hir_assembled(
         with_lm_head,
         fast_greedy_lm_head: export_normed_hidden,
         profile: None,
+        residual_out: false,
     };
     crate::flow::build_qwen35_prefill_cache_model_flow(cfg, weights.into(), &opts)
 }
@@ -1439,21 +1460,9 @@ pub(crate) fn emit_qwen35_gather_last_token(
 }
 
 fn gather_last_token(g: &mut HirMut, h: NodeId, batch: usize, last_token_idx: NodeId) -> NodeId {
-    let hidden = {
-        let dims = g.shape(h).dims();
-        dims[dims.len() - 1].unwrap_static()
-    };
     let idx_2d = g.reshape_(last_token_idx, vec![batch as i64, 1]);
-    let gathered = g.gather_(h, idx_2d, 1);
-    // ONNX `Gather` splices the index's own shape into the output, so a rank-2
-    // index on a rank-3 hidden yields rank 4: `[batch, 1, 1, hidden]`. Element
-    // count and values are right, so CPU reads it back correctly and this looks
-    // fine — but the LM head downstream declares `[batch, 1, vocab]`, and a
-    // backend that sizes its write from the declared rank fills only part of
-    // the buffer. On MLX that returned all-zero logits for every prompt whose
-    // last token was not at index 0. Squeeze the spurious unit axis so the
-    // node's real shape is the one the rest of the graph assumes.
-    g.reshape_(gathered, vec![batch as i64, 1, hidden as i64])
+    // Squeezed to a true rank 3: see `gather_rows_axis1`.
+    rlx_flow::blocks::gather_rows_axis1(g, h, idx_2d, batch)
 }
 
 fn linear_conv_channels(cfg: &Qwen35Config) -> usize {
@@ -1647,12 +1656,29 @@ pub(crate) fn build_linear_layer(
     let (conv_out, conv_padded) = if let Some(rec) = recurrent {
         let padded = g.concat_(vec![rec.conv_state, qkv_3d], 1);
         let out = if bs.dynamic {
-            depthwise_conv1d_op_dynamic(
+            // `Dim` cannot say `SEQ + k - 1`, so the concat above is declared
+            // `SEQ` long and a reshape of it specializes one window short.
+            // Lay each piece out as `[B, C, ·, 1]` first and concatenate
+            // those: the conv's own output (`SEQ`) is then the only length
+            // anything downstream reads.
+            let state_nchw = {
+                let t = g.transpose_(rec.conv_state, vec![0, 2, 1]);
+                g.reshape_(
+                    t,
+                    vec![batch as i64, conv_channels as i64, (k_conv - 1) as i64, 1],
+                )
+            };
+            let new_nchw = {
+                let t = g.transpose_(qkv_3d, vec![0, 2, 1]);
+                g.reshape_(t, vec![batch as i64, conv_channels as i64, -1, 1])
+            };
+            let nchw = g.concat_(vec![state_nchw, new_nchw], 2);
+            depthwise_conv1d_nchw_dynamic(
                 g,
                 params,
                 &name(il, "ssm_conv1d.weight"),
                 &lin.ssm_conv1d,
-                padded,
+                nchw,
                 batch,
                 conv_channels,
                 k_conv,
@@ -1684,23 +1710,48 @@ pub(crate) fn build_linear_layer(
         // so an unbound input reads 0 and reproduces the old narrow exactly.
         let new_conv = if seq > 1 {
             let base: Vec<f32> = (0..k_conv - 1).map(|j| (seq + j) as f32).collect();
-            let base_id = register_param(
-                g,
-                params,
-                &name(il, "gdn_conv_window_base"),
-                base,
-                Shape::new(&[1, k_conv - 1], DType::F32),
-            );
             let shift = g.input(
                 format!("gdn_conv_shift_l{il}"),
                 Shape::new(&[batch, 1], DType::F32),
             );
-            let idx = g.add(base_id, shift);
-            let w = g.gather_(padded, idx, 1);
-            g.reshape_(
-                w,
-                vec![batch as i64, (k_conv - 1) as i64, conv_channels as i64],
-            )
+            let idx = match (bs.dynamic, rec.pad_mask) {
+                // The shift is relative to the length actually run, which a
+                // per-length specialization does not know when built: read it
+                // off the pad mask, `[batch, SEQ]`, as a row of ones summed.
+                (true, Some(pad)) => {
+                    let offsets: Vec<f32> = (0..k_conv - 1).map(|j| j as f32).collect();
+                    let offsets_id = register_param(
+                        g,
+                        params,
+                        &name(il, "gdn_conv_window_offsets"),
+                        offsets,
+                        Shape::new(&[1, k_conv - 1], DType::F32),
+                    );
+                    let one = register_param(
+                        g,
+                        params,
+                        &name(il, "gdn_conv_window_one"),
+                        vec![1.0],
+                        Shape::new(&[1], DType::F32),
+                    );
+                    let zeros = g.sub(pad, pad);
+                    let ones = g.add(zeros, one);
+                    let len = g.sum(ones, vec![1], true);
+                    let start = g.add(len, shift);
+                    g.add(offsets_id, start)
+                }
+                _ => {
+                    let base_id = register_param(
+                        g,
+                        params,
+                        &name(il, "gdn_conv_window_base"),
+                        base,
+                        Shape::new(&[1, k_conv - 1], DType::F32),
+                    );
+                    g.add(base_id, shift)
+                }
+            };
+            rlx_flow::blocks::gather_rows_axis1(g, padded, idx, batch)
         } else {
             g.narrow_(padded, 1, seq, k_conv - 1)
         };
@@ -1988,11 +2039,16 @@ pub(crate) fn build_full_attn_layer(
     let q_rot = g.rope_n(q_normed, cos_id, sin_id, head_dim, n_rot);
     let k_rot = g.rope_n(k_normed, cos_id, sin_id, head_dim, n_rot);
 
+    let mut bidirectional = false;
     let (k_cat, v_cat, attn_seq, attn_mask, attn_mask_bias) = match attn_cache {
         Some(AttnCacheMode::Export { k_out, v_out }) => {
             *k_out = k_rot;
             *v_out = v_packed;
             (k_rot, v_packed, seq, None, false)
+        }
+        Some(AttnCacheMode::Bidirectional { key_mask }) => {
+            bidirectional = true;
+            (k_rot, v_packed, seq, key_mask, false)
         }
         Some(AttnCacheMode::Decode {
             past_k,
@@ -2071,7 +2127,9 @@ pub(crate) fn build_full_attn_layer(
             g.attention(q_rot, k_full, v_full, mask, n_head, head_dim, attn_shape)
         }
     } else {
-        let mask_kind = if seq > 1 && swa_window > 0 {
+        let mask_kind = if bidirectional {
+            MaskKind::None
+        } else if seq > 1 && swa_window > 0 {
             MaskKind::SlidingWindow(swa_window)
         } else {
             MaskKind::Causal
@@ -3168,6 +3226,22 @@ fn depthwise_conv1d_op_dynamic(
 ) -> Result<NodeId> {
     let bcw = g.transpose_(padded_bsc, vec![0, 2, 1]);
     let nchw = g.reshape_(bcw, vec![batch as i64, channels as i64, -1, 1]);
+    depthwise_conv1d_nchw_dynamic(g, params, name, weight, nchw, batch, channels, k)
+}
+
+/// [`depthwise_conv1d_op_dynamic`] from an input already laid out
+/// `[batch, channels, width, 1]`; returns `[batch, SEQ, channels]`.
+#[allow(clippy::too_many_arguments)]
+fn depthwise_conv1d_nchw_dynamic(
+    g: &mut HirMut,
+    params: &mut HashMap<String, Vec<f32>>,
+    name: &str,
+    weight: &[f32],
+    nchw: NodeId,
+    batch: usize,
+    channels: usize,
+    k: usize,
+) -> Result<NodeId> {
     let w_data = pack_depthwise_conv_weight(weight, k, channels);
     let w = register_param(
         g,
@@ -3755,6 +3829,7 @@ pub fn emit_qwen35_decode_trunk_layer(
     dynamic_past_seq: bool,
     decode_mask: Option<HirNodeId>,
     mask_bias: bool,
+    multi_row: bool,
     recur_out: &mut Vec<NodeId>,
 ) -> Result<HirNodeId> {
     let batch = bs.batch;
@@ -3775,10 +3850,20 @@ pub fn emit_qwen35_decode_trunk_layer(
                 format!("ssm_state_l{il}"),
                 Shape::new(&[batch, n_v_heads, n_state, n_state], DType::F32),
             );
+            // A multi-row step runs a fixed number of rows of which only the
+            // first few may be real: the rest are padding the scan must skip
+            // (`gdn_pad_l*`, with `gdn_conv_shift_l*` ending the exported conv
+            // window at the last real row).
+            let pad_mask = (multi_row && bs.seq > 1).then(|| {
+                g.input(
+                    format!("gdn_pad_l{il}"),
+                    Shape::new(&[batch, bs.seq], DType::F32),
+                )
+            });
             let recurrent = LinearRecurrentIo {
                 conv_state,
                 ssm_state,
-                pad_mask: None,
+                pad_mask,
             };
             build_linear_layer(
                 g,
@@ -3889,9 +3974,16 @@ pub fn emit_qwen35_prefill_cache_trunk_layer(
             );
             // Only prefill can carry padding; a 1-token step cannot.
             let pad_mask = (bs.seq > 1).then(|| {
+                // As long as the prompt: `[batch, SEQ]` when the graph is
+                // specialized per length, not the build-time maximum.
+                let len = if bs.dynamic {
+                    Dim::Dynamic(sym::SEQ)
+                } else {
+                    Dim::Static(bs.seq)
+                };
                 g.input(
                     format!("gdn_pad_l{il}"),
-                    Shape::new(&[batch, bs.seq], DType::F32),
+                    Shape::from_dims(&[Dim::Static(batch), len], DType::F32),
                 )
             });
             let recurrent = LinearRecurrentIo {
@@ -3991,6 +4083,41 @@ pub fn emit_qwen35_full_attn_prefill_layer_ext(
         n_rot,
         None,
         export_post_attn,
+    )
+}
+
+/// Full-attention prefill layer whose attention is bidirectional over the
+/// sequence (no causal mask); `key_mask` optionally blocks padded keys.
+/// See [`crate::Qwen35Flow::bidirectional_attention`].
+#[allow(clippy::too_many_arguments)]
+pub fn emit_qwen35_full_attn_bidirectional_layer(
+    g: &mut HirMut,
+    params: &mut HashMap<String, Vec<f32>>,
+    packed: &mut PackedParams,
+    cfg: &Qwen35Config,
+    layer_idx: usize,
+    fa: &Qwen35FullAttnLayer,
+    bs: Qwen35BsLayout,
+    h_in: HirNodeId,
+    cos_id: HirNodeId,
+    sin_id: HirNodeId,
+    key_mask: Option<HirNodeId>,
+) -> Result<HirNodeId> {
+    build_full_attn_layer(
+        g,
+        params,
+        packed,
+        cfg,
+        layer_idx,
+        fa,
+        bs,
+        h_in,
+        cos_id,
+        sin_id,
+        cfg.key_length,
+        cfg.rope_dim_count,
+        Some(AttnCacheMode::Bidirectional { key_mask }),
+        None,
     )
 }
 

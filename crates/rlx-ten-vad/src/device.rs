@@ -91,13 +91,13 @@ pub fn resolve_device(name: &str) -> Result<Device> {
     Ok(device)
 }
 
-/// Parse `--devices cpu,metal`, `all`, or `apple-silicon`.
+/// Parse `--devices cpu,metal`, `all`, or `macos-gpu`.
 pub fn parse_device_list(csv: &str) -> Result<Vec<Device>> {
     let csv = csv.trim();
     if csv.eq_ignore_ascii_case("all") {
         return Ok(available_devices());
     }
-    if csv.eq_ignore_ascii_case("apple-silicon") {
+    if csv.eq_ignore_ascii_case("macos-gpu") {
         let mut out = vec![Device::Cpu];
         for dev in [Device::Metal, Device::Mlx, Device::Gpu, Device::Ane] {
             if is_available(dev) && !out.contains(&dev) {
@@ -113,7 +113,7 @@ pub fn parse_device_list(csv: &str) -> Result<Vec<Device>> {
             continue;
         }
         let dev = resolve_device(part).with_context(|| {
-            format!("parse device {part} ({STANDARD_DEVICE_NAMES}|all|apple-silicon)")
+            format!("parse device {part} ({STANDARD_DEVICE_NAMES}|all|macos-gpu)")
         })?;
         if !out.contains(&dev) {
             out.push(dev);

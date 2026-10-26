@@ -47,7 +47,7 @@ out = []
 def emit(s): out.append(s)
 
 emit(f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
-     f'viewBox="0 0 {W} {H}" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">')
+     f'viewBox="0 0 {W} {H}" font-family="Segoe UI,Helvetica,Arial,sans-serif">')
 emit(f'<rect width="{W}" height="{H}" fill="#ffffff"/>')
 emit(f'<text x="{W/2}" y="32" text-anchor="middle" font-size="20" font-weight="700" '
      f'fill="#222">rlx-fft &#8212; precision ladder &amp; hardware scaling (n=256)</text>')

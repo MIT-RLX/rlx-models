@@ -42,9 +42,9 @@
 //! attention mask**, so a source is encoded at its true length. Padding it out
 //! would put 60 junk positions in front of the decoder's cross-attention.
 
-use crate::espresso::Manifest;
 use crate::exec::{Env, Value, run_checked};
 use crate::net::Graph;
+use crate::netfile::Manifest;
 use crate::pdec::PDecParams;
 use crate::shortlist::Shortlist;
 use crate::spm::Vocab;
@@ -179,7 +179,7 @@ impl Parts {
     ///
     /// `RLX_TRANSLATE_INPUT_GRAPH=target` restores the old keying.
     pub fn for_pair(source: &str, target: &str) -> Self {
-        let by_target = std::env::var("RLX_TRANSLATE_INPUT_GRAPH")
+        let by_target = rlx_ir::env::var_result("RLX_TRANSLATE_INPUT_GRAPH")
             .is_ok_and(|v| v.eq_ignore_ascii_case("target"));
         Parts {
             input: if by_target { target } else { source }.to_string(),

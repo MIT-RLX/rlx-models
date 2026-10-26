@@ -152,8 +152,8 @@ pub(crate) struct Tap {
 
 impl Tap {
     pub fn from_env() -> Self {
-        let want = std::env::var("RLX_DSV41_DBG").ok().map(|stage| {
-            let layer = std::env::var("RLX_DSV41_DBGLAYER")
+        let want = rlx_ir::env::var_result("RLX_DSV41_DBG").ok().map(|stage| {
+            let layer = rlx_ir::env::var_result("RLX_DSV41_DBGLAYER")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);

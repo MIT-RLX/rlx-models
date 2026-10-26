@@ -27,7 +27,9 @@ pub fn load_wav_mono(path: &Path, target_hz: u32) -> Result<Vec<f32>> {
     };
     if spec.channels == 2 {
         let mono: Vec<f32> = samples
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| 0.5 * (c[0] + c[1]))
             .collect();
         samples = mono;

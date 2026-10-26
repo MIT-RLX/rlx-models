@@ -30,7 +30,7 @@ pub const N_MELS: usize = 100;
 pub const N_FREQ: usize = N_FFT / 2 + 1; // 513
 
 /// Periodic Hann window of length `n` (`torch.hann_window(n, periodic=True)`).
-fn hann_periodic(n: usize) -> Vec<f32> {
+pub fn hann_periodic(n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / n as f64).cos() as f32)
         .collect()
@@ -45,7 +45,7 @@ fn mel_to_hz_htk(m: f64) -> f64 {
 
 /// torchaudio `melscale_fbanks` (htk, norm=None). Returns `[N_MELS, N_FREQ]`
 /// row-major (mel-major).
-fn mel_filterbank() -> Vec<f32> {
+pub fn mel_filterbank() -> Vec<f32> {
     let f_min = 0.0;
     let f_max = SR as f64 / 2.0;
     let all_freqs: Vec<f64> = (0..N_FREQ)
@@ -166,7 +166,7 @@ pub fn istft(real: &[f32], imag: &[f32], t_frames: usize) -> Vec<f32> {
     ybuf[pad..out_full - pad].to_vec()
 }
 
-fn reflect_pad(x: &[f32], pad: usize) -> Vec<f32> {
+pub fn reflect_pad(x: &[f32], pad: usize) -> Vec<f32> {
     let n = x.len();
     let mut out = Vec::with_capacity(n + 2 * pad);
     for i in 0..pad {

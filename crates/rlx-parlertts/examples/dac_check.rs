@@ -49,8 +49,10 @@ fn read_npy_i64(path: &str) -> Result<(Vec<i64>, Vec<usize>)> {
     let data_off = 10 + hlen;
     let raw = &buf[data_off..];
     let vals: Vec<i64> = raw
-        .chunks_exact(8)
-        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| i64::from_le_bytes(*c))
         .collect();
     Ok((vals, dims))
 }
@@ -59,7 +61,8 @@ fn main() -> Result<()> {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "weights/tts/parlertts/proto_codes_description.npy".into());
-    let dac_dir = std::env::var("RLX_DAC_DIR").unwrap_or_else(|_| "weights/tts/parler-dac".into());
+    let dac_dir =
+        rlx_ir::env::var_result("RLX_DAC_DIR").unwrap_or_else(|_| "weights/tts/parler-dac".into());
 
     let (vals, dims) = read_npy_i64(&path)?;
     let (k, t) = (dims[0], dims[1]);

@@ -18,7 +18,7 @@ reports false gaps for the other two.
 
 Routes 2 and 3 are deliberate: CoreML, for instance, leaves `SelectiveScan`
 *unclaimed on purpose* so the rewriter produces the compact `Op::Scan` form,
-because Apple's compiler is superlinear in program size. Reading only the claim
+because the Metal shader compiler is superlinear in program size. Reading only the claim
 set would call that a gap when it is a considered optimization.
 
 This reads the op set from `cargo run --example op_coverage --json` and all

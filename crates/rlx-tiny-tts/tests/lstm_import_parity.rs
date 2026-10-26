@@ -32,7 +32,9 @@ fn fixture_dir() -> PathBuf {
 fn read_f32(path: &std::path::Path) -> Vec<f32> {
     std::fs::read(path)
         .unwrap_or_default()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
 }
@@ -57,7 +59,9 @@ fn onnx_lstm_imports_with_onnxruntime_parity() {
     let (y_bytes, dt) = out.into_iter().next().expect("LSTM output");
     assert_eq!(dt, DType::F32);
     let y: Vec<f32> = y_bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
 

@@ -67,6 +67,13 @@ impl AsrTokenizer {
         Ok(enc.get_ids().to_vec())
     }
 
+    /// The tokenizer as a `tokenizer.json` (what a package ships).
+    pub fn to_json(&self) -> Result<String> {
+        self.inner
+            .to_string(false)
+            .map_err(|e| anyhow!("serialize the tokenizer: {e}"))
+    }
+
     /// Decode generated text token ids to a string.
     pub fn decode(&self, ids: &[u32]) -> Result<String> {
         self.inner

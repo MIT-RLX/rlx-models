@@ -32,7 +32,7 @@ fn dims(seq: usize) -> KdaDims {
 }
 
 fn run(w: &KdaWeights, d: KdaDims, x: &[f32], mode: &str) -> Vec<f32> {
-    unsafe { std::env::set_var("RLX_KIMI_QUANT", mode) };
+    rlx_ir::env::set("RLX_KIMI_QUANT", mode);
     let mut hir = HirModule::new("kda");
     let mut g = HirMut::new(&mut hir);
     let hin = g.input("h", Shape::new(&[1, d.seq, d.hidden], DType::F32));
@@ -41,7 +41,7 @@ fn run(w: &KdaWeights, d: KdaDims, x: &[f32], mode: &str) -> Vec<f32> {
     g.set_outputs(vec![out]);
     let mut c = compile_built(built_from_hir(hir, p).unwrap(), Device::Cpu).unwrap();
     let y = c.run(&[("h", x)]).remove(0);
-    unsafe { std::env::remove_var("RLX_KIMI_QUANT") };
+    rlx_ir::env::remove("RLX_KIMI_QUANT");
     y
 }
 
@@ -58,8 +58,8 @@ fn rel(base: &[f32], q: &[f32]) -> f32 {
 #[test]
 fn mixed_policy_and_real_ladder() {
     // ---- part 1: policy logic (no checkpoint needed) ----
-    unsafe { std::env::set_var("RLX_KIMI_QUANT", "mixed") };
-    unsafe { std::env::remove_var("RLX_KIMI_MIXED_HI") };
+    rlx_ir::env::set("RLX_KIMI_QUANT", "mixed");
+    rlx_ir::env::remove("RLX_KIMI_MIXED_HI");
     assert_eq!(
         resolve_quant("o_proj"),
         WeightQuant::Int8Ch,
@@ -77,15 +77,15 @@ fn mixed_policy_and_real_ladder() {
     );
     assert_eq!(resolve_quant("v_proj"), WeightQuant::Int4G64);
     // configurable high-precision set.
-    unsafe { std::env::set_var("RLX_KIMI_MIXED_HI", "o_proj,v_proj") };
+    rlx_ir::env::set("RLX_KIMI_MIXED_HI", "o_proj,v_proj");
     assert_eq!(
         resolve_quant("v_proj"),
         WeightQuant::Int8Ch,
         "RLX_KIMI_MIXED_HI adds v_proj"
     );
     assert_eq!(resolve_quant("q_proj"), WeightQuant::Int4G64);
-    unsafe { std::env::remove_var("RLX_KIMI_MIXED_HI") };
-    unsafe { std::env::remove_var("RLX_KIMI_QUANT") };
+    rlx_ir::env::remove("RLX_KIMI_MIXED_HI");
+    rlx_ir::env::remove("RLX_KIMI_QUANT");
 
     // ---- part 2: real-weight precision ladder int8 < mixed < int4 ----
     if !Path::new(CKPT).join("config.json").exists() {

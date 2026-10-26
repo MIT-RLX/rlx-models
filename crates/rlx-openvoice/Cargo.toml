@@ -11,6 +11,7 @@ categories.workspace = true
 repository.workspace = true
 
 [dependencies]
+rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 hound = "3"
 rustfft = "6"
@@ -19,9 +20,14 @@ rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # extractor run natively too (imported to rlx-ir via rlx-onnx-import, compiled
 # per-device through TinyModel). No ONNX Runtime at runtime.
 rlx-tiny-tts = { workspace = true }
+rlx-core = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 rlx-whisper = { workspace = true }
+rlx-runtime = { workspace = true, features = ["program"] }
+rlx-text = { workspace = true }
+tempfile = "3"
 
 [[bin]]
 name = "rlx-openvoice"
@@ -37,7 +43,10 @@ gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
 coreml = ["rlx-runtime/coreml", "rlx-tiny-tts/coreml"]
 all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
+# `export::export_rlxp`: OpenVoice as an `.rlxp` package (MeloTTS' graphs and
+# the tone converter's, rlx IR; its glue a program).
+export = ["rlx-tiny-tts/export", "dep:rlx-core", "rlx-core/export", "dep:serde_json"]
 
 [lints]
 workspace = true

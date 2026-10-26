@@ -93,7 +93,7 @@ cargo run --release --example generate_wav -p rlx-kyutai-tts -- \
     --out /tmp/kyutai-tts.wav
 
 # Native TTS synthesis (`KyutaiTtsSession::generate`)
-cargo run -p rlx-kyutai-tts --release --features "hf-download,apple-silicon" -- \
+cargo run -p rlx-kyutai-tts --release --features "hf-download,macos-gpu" -- \
     --prompt "Bonjour, comment ça va ?" \
     --voice expresso/ex03-ex01_happy_001 \
     --out-wav /tmp/kyutai.wav \
@@ -104,7 +104,7 @@ cargo run -p rlx-kyutai-tts --release --features "hf-download,apple-silicon" -- 
 
 ## Benches
 
-Native kernel timings at production sizes (Apple Silicon, single-threaded eager ndarray):
+Native kernel timings at production sizes (macOS arm64, single-threaded eager ndarray):
 
 ```bash
 cargo bench -p rlx-kyutai-tts --bench kernels

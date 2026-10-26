@@ -108,7 +108,9 @@ fn read_pt_bf16_payload(path: &Path) -> Result<Vec<bf16>> {
         raw.len()
     );
     Ok(raw
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| bf16::from_le_bytes([c[0], c[1]]))
         .collect())
 }
@@ -118,7 +120,7 @@ mod tests {
     use super::*;
 
     fn model_dir() -> Option<PathBuf> {
-        std::env::var("RLX_VOXTRAL_TTS_DIR")
+        rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR")
             .ok()
             .map(PathBuf::from)
             .filter(|p| p.join("voice_embedding/neutral_female.pt").is_file())

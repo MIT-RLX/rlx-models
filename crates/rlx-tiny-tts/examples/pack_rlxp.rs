@@ -4,7 +4,7 @@
 //! then embeds those plus `config.json` / `frontend/` into `tiny-tts.rlxp`.
 //!
 //! ```bash
-//! cargo run -p rlx-tiny-tts --release --example pack_rlxp --features apple-silicon -- \
+//! cargo run -p rlx-tiny-tts --release --example pack_rlxp --features macos-gpu -- \
 //!   weights/tts/tiny-tts-rlx weights/tts/tiny-tts-rlx/tiny-tts.rlxp
 //! ```
 

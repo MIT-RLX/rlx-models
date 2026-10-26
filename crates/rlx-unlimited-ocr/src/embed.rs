@@ -63,15 +63,7 @@ pub fn fuse_inputs_embeds(
 /// Index of the largest value in `logits` (ties resolved to the first index).
 pub fn argmax_token(logits: &[f32]) -> u32 {
     debug_assert!(!logits.is_empty());
-    let mut best_i = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &v) in logits.iter().enumerate() {
-        if v > best_v {
-            best_v = v;
-            best_i = i;
-        }
-    }
-    best_i as u32
+    rlx_runtime::search::argmax_u32(logits)
 }
 
 #[cfg(test)]

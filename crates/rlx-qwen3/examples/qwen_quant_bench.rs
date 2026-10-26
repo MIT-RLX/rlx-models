@@ -883,16 +883,16 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let pbench_mode = args.iter().any(|a| a == "pbench");
     let mut pbench_force_f32 = false;
-    if pbench_mode && std::env::var_os("RLX_QWEN3_F16_WEIGHTS").is_some() {
+    if pbench_mode && rlx_ir::env::var_os("RLX_QWEN3_F16_WEIGHTS").is_some() {
         // `RLX_QWEN3_F16_WEIGHTS` is decode-generator only. `pbench` runs a
         // full-window forward and CPU reference pass, which cannot consume F16
         // weight params. Clear the process env before any model/runtime setup so
         // every downstream std::env reader sees the safe F32 path.
         pbench_force_f32 = true;
-        unsafe { std::env::remove_var("RLX_QWEN3_F16_WEIGHTS") };
+        rlx_ir::env::remove("RLX_QWEN3_F16_WEIGHTS");
     }
     // Weights dir: $RLX_QWEN_DIR (remote Linux rigs) else the mac default.
-    let base_dir = std::env::var("RLX_QWEN_DIR").unwrap_or_else(|_| BASE.to_string());
+    let base_dir = rlx_ir::env::var_result("RLX_QWEN_DIR").unwrap_or_else(|_| BASE.to_string());
     let cfg =
         Qwen3Config::from_file(&Path::new(&base_dir).join("config.json")).expect("config.json");
     let vocab = cfg.vocab_size;
@@ -2032,7 +2032,7 @@ fn main() {
             "    gated by per-step IO; it's gated by the ONE-TIME weight upload, amortized over the decode length."
         );
         println!(
-            "  • On UNIFIED memory (Apple) the upload is a cheap shared-buffer copy at ~{:.0} GB/s → breaks even in a",
+            "  • On UNIFIED memory (macOS) the upload is a cheap shared-buffer copy at ~{:.0} GB/s → breaks even in a",
             staging_bw
         );
         println!(
@@ -2539,7 +2539,7 @@ fn main() {
                 return;
             }
         };
-        let dir = std::env::var("RLX_QWEN_DIR").unwrap_or_else(|_| BASE.to_string());
+        let dir = rlx_ir::env::var_result("RLX_QWEN_DIR").unwrap_or_else(|_| BASE.to_string());
         let cfg2 =
             Qwen3Config::from_file(&Path::new(&dir).join("config.json")).expect("config.json");
         let tok =
@@ -2664,7 +2664,7 @@ fn main() {
                 return;
             }
         };
-        let dir = std::env::var("RLX_QWEN_DIR").unwrap_or_else(|_| BASE.to_string());
+        let dir = rlx_ir::env::var_result("RLX_QWEN_DIR").unwrap_or_else(|_| BASE.to_string());
         let cfg2 =
             Qwen3Config::from_file(&Path::new(&dir).join("config.json")).expect("config.json");
         let tok =
@@ -2807,7 +2807,7 @@ fn main() {
                 return;
             }
         };
-        let dir = std::env::var("RLX_QWEN_DIR").unwrap_or_else(|_| BASE.to_string());
+        let dir = rlx_ir::env::var_result("RLX_QWEN_DIR").unwrap_or_else(|_| BASE.to_string());
         println!("qwen3-0.6B CROSS-BACKEND forward — device={dev_str}, seq={seq}, weights={dir}");
         let cfg2 =
             Qwen3Config::from_file(&Path::new(&dir).join("config.json")).expect("config.json");

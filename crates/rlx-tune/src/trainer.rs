@@ -449,6 +449,16 @@ pub enum LrSchedule {
 /// Configuration for [`train_dp`], the feature-rich data-parallel trainer.
 #[derive(Clone, Copy, Debug)]
 pub struct DpConfig {
+    /// Quantization-aware training: run the forward in this number format
+    /// (activations rounded in-graph, weights rounded as each step uploads
+    /// them) while gradients and the f32 master weights stay full precision —
+    /// the straight-through estimator. `None` trains in f32.
+    pub qat: Option<rlx_runtime::NumberFormat>,
+    /// The forward passed to the trainer already carries the QAT rounding
+    /// (the caller ran `rlx_runtime::emulate_format` on the model part only,
+    /// leaving a loss head unrounded). The trainer then only rounds each
+    /// step's weight upload in [`Self::qat`].
+    pub qat_forward_rewritten: bool,
     /// Compute device the backward graph compiles to. Defaults to
     /// [`Device::Cpu`]; `Device::Metal` / `Device::Cuda` run the forward +
     /// backward on the GPU (needs the matching `metal` / `cuda` build feature).
@@ -504,6 +514,8 @@ pub struct DpConfig {
 impl Default for DpConfig {
     fn default() -> Self {
         Self {
+            qat: None,
+            qat_forward_rewritten: false,
             device: Device::Cpu,
             adam: AdamConfig::default(),
             shard_optimizer: false,
@@ -544,11 +556,17 @@ impl DpConfig {
         }
     }
     /// Compile / run on `device` (e.g. `Device::Metal`, `Device::Cuda`).
+    /// Quantization-aware training in `format` (see [`Self::qat`]).
+    pub fn qat(mut self, format: rlx_runtime::NumberFormat) -> Self {
+        self.qat = Some(format);
+        self
+    }
+
     pub fn device(mut self, device: Device) -> Self {
         self.device = device;
         self
     }
-    /// Run on the Apple Metal GPU (needs the `metal` build feature).
+    /// Run on the Metal GPU (needs the `metal` build feature).
     pub fn metal(self) -> Self {
         self.device(Device::Metal)
     }
@@ -831,9 +849,12 @@ impl<'c> Trainer<'c> {
         comm: Option<&'c dyn GradComm>,
         cfg: &DpConfig,
     ) -> Result<Self> {
+        let (forward, wrt, options) =
+            prepare_qat(forward, wrt, cfg.qat, cfg.qat_forward_rewritten)?;
+        let wrt = &wrt[..];
         let wrt_ids: Vec<NodeId> = wrt.iter().map(|s| s.node).collect();
         let backward = grad_with_loss(&forward, &wrt_ids);
-        let mut compiled = Session::new(cfg.device).compile_with(backward, &CompileOptions::new());
+        let mut compiled = Session::new(cfg.device).compile_with(backward, &options);
 
         // Engage the collective only when it will actually reduce.
         let comm = comm.filter(|c| c.world_size() > 1);
@@ -1422,8 +1443,10 @@ impl<'a> ByteReader<'a> {
         let n = self.u32()? as usize;
         let bytes = self.take(n * 4)?;
         Ok(bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect())
     }
 }
@@ -1590,6 +1613,72 @@ fn effective_lr(
         LrSchedule::Constant => 1.0,
     };
     min_lr + (base - min_lr) * factor
+}
+
+/// Rewrite `forward` for quantization-aware training in `qat`, re-find the
+/// trainable params in the rewritten graph (by name — the rewrite renumbers
+/// nodes), and pick the compile options for its backward.
+///
+/// Activations are rounded in the forward only, before autodiff, so the
+/// backward never rounds a gradient; `RoundToFormat`'s straight-through
+/// gradient carries it through unchanged. Weights are not rewritten: the
+/// compiled graph rounds each step's upload of the f32 masters, so the forward
+/// sees rounded weights and the optimizer updates the masters.
+pub(crate) fn prepare_qat(
+    forward: Graph,
+    wrt: &[ParamSlot],
+    qat: Option<rlx_runtime::NumberFormat>,
+    forward_rewritten: bool,
+) -> Result<(Graph, Vec<ParamSlot>, CompileOptions)> {
+    use rlx_runtime::NumberFormat;
+    let qat = match qat {
+        None | Some(NumberFormat::F32) => {
+            // A process-wide `RLX_NUMBER_FORMAT` must not reach a training graph:
+            // it would round the backward pass's gradients too.
+            let mut options = CompileOptions::new();
+            options.number_format = None;
+            return Ok((forward, wrt.to_vec(), options));
+        }
+        Some(f @ (NumberFormat::Float { .. } | NumberFormat::Mixed { .. })) => f,
+        Some(f) => anyhow::bail!("QAT in {f} is not available yet"),
+    };
+    let rewritten = if forward_rewritten {
+        forward
+    } else {
+        // Params are rounded on upload (below); the rewrite rounds activations
+        // and values computed from params, as inference does.
+        rlx_runtime::emulate_format::emulate_number_format(
+            forward,
+            qat.weights(),
+            qat.activations(),
+            &Default::default(),
+        )
+    };
+    let by_name: HashMap<&str, NodeId> = rewritten
+        .nodes()
+        .iter()
+        .filter_map(|n| match &n.op {
+            rlx_ir::Op::Param { name } => Some((name.as_str(), n.id)),
+            _ => None,
+        })
+        .collect();
+    let wrt = wrt
+        .iter()
+        .map(|s| {
+            let node = *by_name
+                .get(s.name.as_str())
+                .ok_or_else(|| anyhow::anyhow!("QAT rewrite lost param {}", s.name))?;
+            Ok(ParamSlot {
+                name: s.name.clone(),
+                node,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let options = CompileOptions::new().round_weights_on_upload(NumberFormat::Mixed {
+        weights: qat.weights(),
+        activations: None,
+    });
+    Ok((rewritten, wrt, options))
 }
 
 #[cfg(test)]

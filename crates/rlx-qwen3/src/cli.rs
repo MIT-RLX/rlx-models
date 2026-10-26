@@ -189,14 +189,21 @@ pub fn run(args: &[String]) -> Result<()> {
              (low-memory path for large Q4_K_M GGUFs)"
         );
     }
+    // Without streaming the tokens are printed once generation finishes.
+    let mut held = Vec::new();
     runner.generate(&ids, max_tokens, |tok| {
         if stream {
             print!("{tok} ");
             let _ = std::io::stdout().flush();
+        } else {
+            held.push(tok);
         }
         printed += 1;
     })?;
     let dt = t0.elapsed();
+    for tok in held {
+        print!("{tok} ");
+    }
     println!();
     eprintln!(
         "[rlx-qwen3] generated {printed} tokens in {:.2?} ({:.1} tok/s)",

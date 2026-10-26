@@ -44,7 +44,7 @@ fn uniform_fills(params: &HashMap<String, Vec<f32>>) -> HashMap<String, Vec<f32>
 }
 
 fn main() -> anyhow::Result<()> {
-    let model = std::env::var("RLX_F5TTS_DIR")
+    let model = rlx_ir::env::var_result("RLX_F5TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_LOCAL_DIR));
     let d: usize = std::env::var("MD")

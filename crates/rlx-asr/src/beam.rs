@@ -1,117 +1,47 @@
 // RLX — versatile ML compiler + runtime.
 // Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna. GPLv3.
 
-//! CTC prefix beam search (adapted from `rlx-ocr2::beam`) + segmentation helpers.
+//! CTC prefix beam search ([`rlx_search::PrefixBeam`]) + segmentation helpers.
 
-use std::collections::HashMap;
+use rlx_search::PrefixBeam;
 
-#[inline]
-fn logsumexp(a: f32, b: f32) -> f32 {
-    if a == f32::NEG_INFINITY {
-        b
-    } else if b == f32::NEG_INFINITY {
-        a
-    } else {
-        let m = a.max(b);
-        m + ((a - m).exp() + (b - m).exp()).ln()
-    }
-}
+/// Labels within this many nats of a frame's best score are the only ones
+/// extended; the rest contribute about `e^-9` each.
+const PRUNE_MARGIN: f32 = 9.0;
 
 /// Streaming CTC prefix beam — push one frame at a time, read partial / final.
 #[derive(Clone, Debug)]
 pub struct StreamingCtcBeam {
-    blank: usize,
-    beam: usize,
-    prune_margin: f32,
-    beams: HashMap<Vec<usize>, (f32, f32)>,
-    n_frames: usize,
+    inner: PrefixBeam,
 }
 
 impl StreamingCtcBeam {
     pub fn new(blank: usize, beam: usize) -> Self {
-        let mut beams = HashMap::new();
-        beams.insert(Vec::new(), (0.0, f32::NEG_INFINITY));
         Self {
-            blank,
-            beam: beam.max(1),
-            prune_margin: 9.0,
-            beams,
-            n_frames: 0,
+            inner: PrefixBeam::new(blank as u32, beam).prune_margin(PRUNE_MARGIN),
         }
     }
 
     pub fn reset(&mut self) {
-        self.beams.clear();
-        self.beams.insert(Vec::new(), (0.0, f32::NEG_INFINITY));
-        self.n_frames = 0;
+        self.inner.reset();
     }
 
     pub fn n_frames(&self) -> usize {
-        self.n_frames
+        self.inner.frames()
     }
 
     /// Ingest one log-prob row of length `classes`.
     pub fn push(&mut self, row: &[f32]) {
-        let classes = row.len();
-        let maxlp = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let thresh = maxlp - self.prune_margin;
-        let cands: Vec<usize> = (0..classes)
-            .filter(|&c| c != self.blank && row[c] > thresh)
-            .collect();
-        let mut next: HashMap<Vec<usize>, (f32, f32)> = HashMap::new();
-        let bump =
-            |map: &mut HashMap<Vec<usize>, (f32, f32)>, key: Vec<usize>, db: f32, dnb: f32| {
-                let e = map
-                    .entry(key)
-                    .or_insert((f32::NEG_INFINITY, f32::NEG_INFINITY));
-                e.0 = logsumexp(e.0, db);
-                e.1 = logsumexp(e.1, dnb);
-            };
-        for (prefix, &(pb, pnb)) in &self.beams {
-            bump(
-                &mut next,
-                prefix.clone(),
-                logsumexp(pb, pnb) + row[self.blank],
-                f32::NEG_INFINITY,
-            );
-            let last = prefix.last().copied();
-            for &c in &cands {
-                let lp = row[c];
-                if last == Some(c) {
-                    bump(&mut next, prefix.clone(), f32::NEG_INFINITY, pnb + lp);
-                    let mut np = prefix.clone();
-                    np.push(c);
-                    bump(&mut next, np, f32::NEG_INFINITY, pb + lp);
-                } else {
-                    let mut np = prefix.clone();
-                    np.push(c);
-                    bump(&mut next, np, f32::NEG_INFINITY, logsumexp(pb, pnb) + lp);
-                }
-            }
-        }
-        let mut v: Vec<(Vec<usize>, (f32, f32))> = next.into_iter().collect();
-        v.sort_by(|a, b| {
-            logsumexp(b.1.0, b.1.1)
-                .partial_cmp(&logsumexp(a.1.0, a.1.1))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        v.truncate(self.beam);
-        self.beams = v.into_iter().collect();
-        self.n_frames += 1;
+        self.inner.push(row);
     }
 
     pub fn push_many(&mut self, logp: &[f32], seq: usize, classes: usize) {
-        for t in 0..seq {
-            self.push(&logp[t * classes..(t + 1) * classes]);
-        }
+        self.inner.push_frames(&logp[..seq * classes], classes);
     }
 
     pub fn best(&self) -> (Vec<usize>, f32) {
-        self.beams
-            .iter()
-            .map(|(p, (pb, pnb))| (p.clone(), logsumexp(*pb, *pnb)))
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or_else(|| (Vec::new(), f32::NEG_INFINITY))
+        let p = self.inner.best();
+        (p.tokens.iter().map(|t| t.id as usize).collect(), p.score)
     }
 
     pub fn partial_ids(&self) -> Vec<usize> {
@@ -128,62 +58,13 @@ pub fn ctc_beam_nbest(
     blank: usize,
     beam: usize,
 ) -> Vec<(Vec<usize>, f32)> {
-    let mut beams: HashMap<Vec<usize>, (f32, f32)> = HashMap::new();
-    beams.insert(Vec::new(), (0.0, f32::NEG_INFINITY));
-    const PRUNE_MARGIN: f32 = 9.0;
-    for t in 0..seq {
-        let row = &logp[t * classes..(t + 1) * classes];
-        let maxlp = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let thresh = maxlp - PRUNE_MARGIN;
-        let cands: Vec<usize> = (0..classes)
-            .filter(|&c| c != blank && row[c] > thresh)
-            .collect();
-        let mut next: HashMap<Vec<usize>, (f32, f32)> = HashMap::new();
-        let bump =
-            |map: &mut HashMap<Vec<usize>, (f32, f32)>, key: Vec<usize>, db: f32, dnb: f32| {
-                let e = map
-                    .entry(key)
-                    .or_insert((f32::NEG_INFINITY, f32::NEG_INFINITY));
-                e.0 = logsumexp(e.0, db);
-                e.1 = logsumexp(e.1, dnb);
-            };
-        for (prefix, &(pb, pnb)) in &beams {
-            bump(
-                &mut next,
-                prefix.clone(),
-                logsumexp(pb, pnb) + row[blank],
-                f32::NEG_INFINITY,
-            );
-            let last = prefix.last().copied();
-            for &c in &cands {
-                let lp = row[c];
-                if last == Some(c) {
-                    bump(&mut next, prefix.clone(), f32::NEG_INFINITY, pnb + lp);
-                    let mut np = prefix.clone();
-                    np.push(c);
-                    bump(&mut next, np, f32::NEG_INFINITY, pb + lp);
-                } else {
-                    let mut np = prefix.clone();
-                    np.push(c);
-                    bump(&mut next, np, f32::NEG_INFINITY, logsumexp(pb, pnb) + lp);
-                }
-            }
-        }
-        let mut v: Vec<(Vec<usize>, (f32, f32))> = next.into_iter().collect();
-        v.sort_by(|a, b| {
-            logsumexp(b.1.0, b.1.1)
-                .partial_cmp(&logsumexp(a.1.0, a.1.1))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        v.truncate(beam.max(1));
-        beams = v.into_iter().collect();
-    }
-    let mut out: Vec<(Vec<usize>, f32)> = beams
+    let mut s = StreamingCtcBeam::new(blank, beam);
+    s.push_many(logp, seq, classes);
+    s.inner
+        .nbest()
         .into_iter()
-        .map(|(p, (pb, pnb))| (p, logsumexp(pb, pnb)))
-        .collect();
-    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    out
+        .map(|p| (p.tokens.iter().map(|t| t.id as usize).collect(), p.score))
+        .collect()
 }
 
 /// Split a CTC hypothesis on a segmentation token id (e.g. `▁<segE>`).

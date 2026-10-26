@@ -16,8 +16,8 @@
 //! Compile + run a tiny MoE LM on each available RLX backend.
 //!
 //! ```bash
-//! cargo test -p rlx-unlimited-ocr --test backend_quick_check --features apple-silicon
-//! just features=apple-silicon test-unlimited-ocr-backends
+//! cargo test -p rlx-unlimited-ocr --test backend_quick_check --features macos-gpu
+//! just features=macos-gpu test-unlimited-ocr-backends
 //! ```
 
 use rlx_core::flow_util::compile_built;

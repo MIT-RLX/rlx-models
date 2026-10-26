@@ -21,8 +21,8 @@ See [`prelude`](src/prelude.rs) for the full re-export surface (adapters, suite,
 # Default: matrix-onnx adapters (chatterbox, supertonic, piper, …)
 cargo build -p rlx-tts-bench --release
 
-# Everything + Apple backends
-cargo build -p rlx-tts-bench --release --features "all-models,apple-silicon"
+# Everything + macOS backends
+cargo build -p rlx-tts-bench --release --features "all-models,macos-gpu"
 ```
 
 | Feature | Models |
@@ -32,7 +32,7 @@ cargo build -p rlx-tts-bench --release --features "all-models,apple-silicon"
 | `lm-tts` | orpheus, qwen3-tts, kyutai, kittentts |
 | `rlx-tts` | RLX TTS Gryphon native RLX (`.cache/rlx-tts-rlx`) |
 | `all-models` | union |
-| `apple-silicon` / `all-backends` | forward Metal/MLX/GPU/CUDA to deps |
+| `macos-gpu` / `all-backends` | forward Metal/MLX/GPU/CUDA to deps |
 
 `fake` is always available (synthetic sine) for CLI preflight without weights.
 
@@ -47,16 +47,16 @@ just tts-bench-list
 just tts-bench-quick
 
 # Full matrix → HTML + Markdown backend tables (per model×device workers; survives abort/OOM/hang)
-just tts-bench-apple run --models all --devices auto --phrases short,long \
+just features=macos-gpu tts-bench run --models all --devices auto --phrases short,long \
   --whisper --spectral --noise --clone \
   --out-dir /tmp/tts-bench --html report.html --md BACKENDS.md
 
 # Continue after a kill / crash
-just tts-bench-apple run --models all --devices auto --phrases short,long \
+just features=macos-gpu tts-bench run --models all --devices auto --phrases short,long \
   --whisper --spectral --noise --clone --resume --out-dir /tmp/tts-bench
 
 # Narrow
-cargo run -p rlx-tts-bench --release --features apple-silicon -- \
+cargo run -p rlx-tts-bench --release --features macos-gpu -- \
   run -m chatterbox,supertonic,luxtts -d cpu,metal \
   --phrases short --iters 1 --out-dir /tmp/quick
 ```

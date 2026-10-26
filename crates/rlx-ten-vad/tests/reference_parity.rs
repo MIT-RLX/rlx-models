@@ -70,7 +70,9 @@ fn fixtures() -> PathBuf {
 fn read_f32(name: &str) -> Vec<f32> {
     std::fs::read(fixtures().join(name))
         .unwrap_or_else(|e| panic!("read fixture {name}: {e}"))
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
 }
@@ -78,7 +80,9 @@ fn read_f32(name: &str) -> Vec<f32> {
 fn fixture_pcm() -> Vec<i16> {
     std::fs::read(fixtures().join("synthetic_speech_16k.pcm"))
         .expect("pcm fixture")
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| i16::from_le_bytes([b[0], b[1]]))
         .collect()
 }
@@ -86,8 +90,10 @@ fn fixture_pcm() -> Vec<i16> {
 /// `[frames, FEATURE_LEN]` — the current-frame feature row per frame.
 fn reference_features() -> Vec<Vec<f32>> {
     read_f32("reference_features.f32")
-        .chunks_exact(FEATURE_LEN)
-        .map(<[f32]>::to_vec)
+        .as_chunks::<FEATURE_LEN>()
+        .0
+        .iter()
+        .map(|row| row.to_vec())
         .collect()
 }
 
@@ -194,7 +200,7 @@ fn fixture_pcm_matches_the_generator() {
 /// Two things bound how far that travels, and neither is this port's doing:
 ///
 /// * **`libm` is not bit-portable.** The features go through `ln`, `log10`,
-///   `powf` and `cos`; Apple's and glibc's differ in the last place. On x86_64
+///   `powf` and `cos`; macOS's and glibc's differ in the last place. On x86_64
 ///   Linux 99.1% of values still match to the bit; the rest are a last-place
 ///   `ln` apart, except **feature 40 (pitch)**, where a libm difference enters
 ///   the band energies and compounds through Levinson and the Viterbi track —
@@ -230,7 +236,7 @@ fn frontend_is_bit_identical_to_the_reference_dsp() {
     let (mut checked, mut exact, mut worst_ulp) = (0usize, 0usize, 0i64);
     let mut worst_abs = 0.0f32;
     let mut worst_at = (0usize, 0usize);
-    for (t, (raw, row)) in pcm.chunks_exact(HOP_SIZE).zip(&want).enumerate() {
+    for (t, (raw, row)) in pcm.as_chunks::<HOP_SIZE>().0.iter().zip(&want).enumerate() {
         pre_emphasis(raw, &mut prev, &mut emph);
         frontend.push(raw, &emph);
         let got = &frontend.context()[(CONTEXT_FRAMES - 1) * FEATURE_LEN..];

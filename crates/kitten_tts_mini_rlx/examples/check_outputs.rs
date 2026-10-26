@@ -71,17 +71,21 @@ fn main() -> anyhow::Result<()> {
         if *dt == rlx_ir::DType::I64 && bytes.len() >= 8 {
             let n = bytes.len() / 8;
             let sum: i64 = bytes
-                .chunks_exact(8)
-                .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| i64::from_le_bytes(*c))
                 .sum();
             eprintln!(
                 "  i64 elems={n} sum={sum} first={}",
                 i64::from_le_bytes(bytes[0..8].try_into().unwrap())
             );
             let preview: Vec<i64> = bytes
-                .chunks_exact(8)
+                .as_chunks::<8>()
+                .0
+                .iter()
                 .take(16)
-                .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                .map(|c| i64::from_le_bytes(*c))
                 .collect();
             eprintln!("  i64[0..16]={preview:?}");
         }
@@ -89,7 +93,9 @@ fn main() -> anyhow::Result<()> {
             let n = bytes.len() / 4;
             let first: f32 = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
             let max_abs = bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs())
                 .fold(0.0f32, f32::max);
             eprintln!("  f32 elems={n} first={first} max_abs={max_abs}");

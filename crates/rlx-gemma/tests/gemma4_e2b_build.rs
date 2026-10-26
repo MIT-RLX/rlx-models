@@ -21,7 +21,7 @@ use rlx_gemma::config::GemmaConfig;
 use rlx_gemma::qat_loader::GemmaQatLoader;
 
 fn fixture_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("RLX_GEMMA4_E2B_DIR") {
+    if let Some(d) = rlx_ir::env::var_os("RLX_GEMMA4_E2B_DIR") {
         let p = PathBuf::from(d);
         return p.join("config.json").is_file().then_some(p);
     }

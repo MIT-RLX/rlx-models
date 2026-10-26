@@ -26,7 +26,7 @@ split-K decode attention + fused QKV + small-M F16 GEMM + batch-major KV:
 | MLX | 0.274 | **100%** | **~28–31s** |
 | CPU | 0.274 | **100%** | ~75s |
 
-Metal is at/above MLX on Apple Silicon for this workload (was ~76s). Schedule-split hybrid (`RLX_ZONOS_MPSGRAPH_HYBRID=1`) is still slower than all-thunk F16. `RLX_DISABLE_GPU_KV=1` forces the host pad path.
+Metal is at/above MLX on macOS arm64 for this workload (was ~76s). Schedule-split hybrid (`RLX_ZONOS_MPSGRAPH_HYBRID=1`) is still slower than all-thunk F16. `RLX_DISABLE_GPU_KV=1` forces the host pad path.
 
 Omit `--max-tokens` to size the AR budget from phoneme length + speaking rate
 (up to ~45 s). Long paragraphs also hold off codebook-0 EOS until ~1.05× the

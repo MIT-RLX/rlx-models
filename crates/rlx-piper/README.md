@@ -40,7 +40,7 @@ after every phoneme (Piper's convention).
 | **`coreml`** | **native RLX (ort-free)** | **CoreML / Neural Engine (`--device ane`)** |
 | `onnx` | ONNX Runtime (optional) | CPU (CoreML/CUDA/DirectML unstable for this VITS graph) |
 
-All five native Apple backends verified at cross-backend parity (cosine 1.0 vs CPU;
+All five native macOS backends verified at cross-backend parity (cosine 1.0 vs CPU;
 MLX bit-identical) and whisper round-trip validated end-to-end. **CUDA** (NVIDIA):
 cosine **1.000** vs CPU, RTF ≈11.5× on fox; Whisper coverage can be low on the
 bundled espeak path (same on CPU — not a CUDA divergence).

@@ -65,7 +65,9 @@ fn t_f32(st: &SafeTensors<'_>, name: &str) -> Result<Vec<f32>> {
     let raw = t.data();
     match t.dtype() {
         Dtype::F32 => Ok(raw
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect()),
         dt => anyhow::bail!("{name}: {dt:?}"),
@@ -95,19 +97,27 @@ fn resnet(st: &SafeTensors<'_>, p: &str) -> Result<ResnetW> {
 
 impl XcodecWeights {
     pub fn from_safetensors(bytes: &[u8]) -> Result<Self> {
+        Self::from_safetensors_prefixed(bytes, "")
+    }
+
+    /// [`Self::from_safetensors`] for a decoder whose names start with
+    /// `prefix` (NeuCodec's `generator.`); its head as wide as its weights
+    /// (NeuCodec's 1922: `n_fft` 1920).
+    pub fn from_safetensors_prefixed(bytes: &[u8], prefix: &str) -> Result<Self> {
         let st = SafeTensors::deserialize(bytes).context("parse xcodec decoder")?;
-        let embed = conv(&st, "backbone.embed", DIM, DIM, 7)?;
+        let n = |s: &str| format!("{prefix}{s}");
+        let embed = conv(&st, &n("backbone.embed"), DIM, DIM, 7)?;
         let prior = vec![
-            resnet(&st, "backbone.prior_net.0")?,
-            resnet(&st, "backbone.prior_net.1")?,
+            resnet(&st, &n("backbone.prior_net.0"))?,
+            resnet(&st, &n("backbone.prior_net.1"))?,
         ];
         let post = vec![
-            resnet(&st, "backbone.post_net.0")?,
-            resnet(&st, "backbone.post_net.1")?,
+            resnet(&st, &n("backbone.post_net.0"))?,
+            resnet(&st, &n("backbone.post_net.1"))?,
         ];
         let mut transformers = Vec::new();
         for i in 0..N_LAYERS {
-            let p = format!("backbone.transformers.{i}");
+            let p = n(&format!("backbone.transformers.{i}"));
             let c_attn = t_f32(&st, &format!("{p}.att.c_attn.weight"))?; // [3*DIM, DIM]
             let q = c_attn[0..DIM * DIM].to_vec();
             let k = c_attn[DIM * DIM..2 * DIM * DIM].to_vec();
@@ -130,11 +140,11 @@ impl XcodecWeights {
             prior,
             transformers,
             post,
-            final_ln_w: t_f32(&st, "backbone.final_layer_norm.weight")?,
-            final_ln_b: t_f32(&st, "backbone.final_layer_norm.bias")?,
-            out_w: t_f32(&st, "head.out.weight")?,
-            out_b: t_f32(&st, "head.out.bias")?,
-            window: t_f32(&st, "head.istft.window")?,
+            final_ln_w: t_f32(&st, &n("backbone.final_layer_norm.weight"))?,
+            final_ln_b: t_f32(&st, &n("backbone.final_layer_norm.bias"))?,
+            out_w: t_f32(&st, &n("head.out.weight"))?,
+            out_b: t_f32(&st, &n("head.out.bias"))?,
+            window: t_f32(&st, &n("head.istft.window"))?,
         })
     }
 }

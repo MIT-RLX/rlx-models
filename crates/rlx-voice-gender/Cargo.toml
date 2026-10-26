@@ -30,7 +30,7 @@ coreml = ["rlx-tiny-tts?/coreml", "rlx-runtime/coreml"]
 gpu = ["rlx-tiny-tts?/gpu", "rlx-runtime/gpu"]
 vulkan = ["rlx-tiny-tts?/vulkan", "rlx-runtime/vulkan"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 
 [lints]
 workspace = true

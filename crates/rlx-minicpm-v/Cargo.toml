@@ -1,0 +1,63 @@
+[package]
+name = "rlx-minicpm-v"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MiniCPM-V 4.6 / 4.7 vision-language runner (SigLIP + window merger + Qwen3.5 trunk)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-gguf = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-qwen35 = { workspace = true, features = ["tokenizer"] }
+rlx-minicpm-sala = { workspace = true }
+tokenizers = { workspace = true }
+image = { workspace = true }
+serde_json = { workspace = true }
+web-time = "1"
+
+[dev-dependencies]
+safetensors = { workspace = true }
+rlx-runtime = { workspace = true, features = ["program"] }
+rlx-text = { workspace = true }
+tempfile = "3"
+
+[[example]]
+name = "memory"
+required-features = ["export"]
+
+[[test]]
+name = "export_rlxp"
+path = "tests/export_rlxp.rs"
+required-features = ["export"]
+
+[features]
+# `export::export_rlxp`: MiniCPM-V as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-qwen35/export"]
+default = []
+metal = ["rlx-runtime/metal", "rlx-qwen35/metal", "rlx-minicpm-sala/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-qwen35/mlx", "rlx-minicpm-sala/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-qwen35/cuda", "rlx-minicpm-sala/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-qwen35/rocm", "rlx-minicpm-sala/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-qwen35/gpu", "rlx-minicpm-sala/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-qwen35/vulkan", "rlx-minicpm-sala/vulkan"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+macos-gpu = ["metal", "mlx", "gpu"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+
+[[bin]]
+name = "rlx-minicpm-v"
+path = "src/bin/rlx_minicpm_v.rs"
+
+[lints]
+workspace = true

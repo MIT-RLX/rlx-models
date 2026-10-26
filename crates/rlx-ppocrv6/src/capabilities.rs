@@ -34,12 +34,10 @@ pub fn configure_coreml_for_ocr(device: Device) {
     if !matches!(device, Device::Ane) {
         return;
     }
-    if std::env::var_os("RLX_COREML_UNITS").is_some() {
+    if rlx_ir::env::var_os("RLX_COREML_UNITS").is_some() {
         return;
     }
     // Process-wide toggle read by `rlx-coreml` at compile time; set once before
     // Session::compile. Safe here: OCR engine construction is single-threaded.
-    unsafe {
-        std::env::set_var("RLX_COREML_UNITS", "ane");
-    }
+    rlx_ir::env::set("RLX_COREML_UNITS", "ane");
 }

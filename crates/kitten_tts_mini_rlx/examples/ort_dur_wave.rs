@@ -18,8 +18,10 @@ sys.stdout.buffer.write(z['expr-voice-2-m'][6].astype(np.float32).tobytes())
         .output()
         .unwrap();
     out.stdout
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
@@ -74,8 +76,10 @@ fn main() -> anyhow::Result<()> {
         kitten_tts_mini_rlx::bundle_compile::run_kitten_inference(&graphs, &inputs, None, None);
     let wave: Vec<f32> = outs[0]
         .0
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     stats(&wave, wave.len());
 
@@ -88,8 +92,10 @@ fn main() -> anyhow::Result<()> {
     );
     let wave: Vec<f32> = outs[0]
         .0
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     stats(&wave, 34 * 600);
     Ok(())

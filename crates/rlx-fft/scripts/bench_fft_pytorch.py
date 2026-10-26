@@ -274,7 +274,7 @@ def bench_forward(
                 t = torch.from_numpy(signal).to("mps")
                 return torch.fft.rfft(t, dim=-1).detach().cpu().numpy()
 
-            add("torch_mps_fft", "mps", "PyTorch Metal (Apple GPU)", torch_mps_fft)
+            add("torch_mps_fft", "mps", "PyTorch Metal (Metal GPU)", torch_mps_fft)
             add("torch_mps_rfft", "mps", "PyTorch MPS rfft", torch_mps_rfft)
 
     if cp is not None:
@@ -380,7 +380,7 @@ def rlx_cargo_features() -> str:
     if os.environ.get("RLX_FFT_FEATURES"):
         return os.environ["RLX_FFT_FEATURES"]
     if sys.platform == "darwin":
-        return "apple-silicon"
+        return "macos-gpu"
     return "cpu,cuda,gpu"
 
 

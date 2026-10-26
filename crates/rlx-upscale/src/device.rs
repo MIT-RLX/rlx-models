@@ -36,7 +36,7 @@ pub fn parse_upscale_device(s: &str) -> Result<Device> {
             } else {
                 bail!(
                     "device {s:?} needs the `coreml` feature — rebuild with \
-                     `--features coreml` (or `apple-silicon`, which includes it)"
+                     `--features coreml` (or `macos-gpu`, which includes it)"
                 )
             }
         }

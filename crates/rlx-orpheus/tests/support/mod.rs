@@ -398,7 +398,7 @@ pub fn load_orpheus(gguf: &Path, snac: &Path, device: Device) -> anyhow::Result<
 /// Backbone options for cross-backend **codes** parity tests.
 ///
 /// Default: same dynamic decode path as CPU [`BackboneLoadOptions::synthesis`] on every
-/// device so GPU kernels are compared apples-to-apples. Set `ORPHEUS_FOR_TTS_PARITY=1`
+/// device so GPU kernels are compared like-for-like. Set `ORPHEUS_FOR_TTS_PARITY=1`
 /// to exercise production [`BackboneLoadOptions::for_tts`] (bucket decode on Metal/CUDA).
 pub fn parity_backbone_opts(device: Device) -> BackboneLoadOptions {
     if std::env::var("ORPHEUS_FOR_TTS_PARITY").ok().as_deref() == Some("1") {
@@ -486,7 +486,7 @@ pub fn transcript_covers_reference(reference: &str, transcript: &str, min_ratio:
 }
 
 pub fn whisper_asr_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(dir) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         return whisper_dir_if_ready(PathBuf::from(dir));
     }
     let cache = repo_cache();

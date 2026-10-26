@@ -23,7 +23,9 @@ fn main() -> anyhow::Result<()> {
     let outs = g.run_typed(&[]);
     let v: Vec<f32> = outs[0]
         .0
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     println!("shape elems={} ", v.len());

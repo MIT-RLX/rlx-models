@@ -77,17 +77,23 @@ pub fn load_eager_weight_map(
                 .with_context(|| format!("missing {base}.biases"))?;
             let packed: Vec<u32> = tensor
                 .data()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             let scales_bf16: Vec<u16> = scales
                 .data()
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect();
             let biases_bf16: Vec<u16> = biases
                 .data()
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect();
             let rows = shape[0];
@@ -107,14 +113,18 @@ pub fn load_eager_weight_map(
         } else if tensor.dtype() == safetensors::Dtype::BF16 {
             let flat: Vec<f32> = tensor
                 .data()
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| bf16_to_f32(u16::from_le_bytes([c[0], c[1]])))
                 .collect();
             (flat, shape)
         } else if tensor.dtype() == safetensors::Dtype::F32 {
             let flat: Vec<f32> = tensor
                 .data()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             (flat, shape)

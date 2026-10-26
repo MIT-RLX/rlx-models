@@ -342,8 +342,10 @@ impl Rng {
 
 fn read_f32(p: &Path) -> Vec<f32> {
     let raw = std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-    raw.chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+    raw.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect()
 }
 

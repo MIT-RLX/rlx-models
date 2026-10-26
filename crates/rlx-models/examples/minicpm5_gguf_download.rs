@@ -19,7 +19,7 @@ fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| rlx_minicpm5::default_hf_cache_dir());
 
-    let dest = std::env::var("RLX_MINICPM5_GGUF_DIR")
+    let dest = rlx_ir::env::var_result("RLX_MINICPM5_GGUF_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp/rlx-weights/MiniCPM5-1B-GGUF"));
 

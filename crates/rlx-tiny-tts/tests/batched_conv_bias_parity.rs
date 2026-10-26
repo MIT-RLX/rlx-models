@@ -33,7 +33,9 @@ use rlx_runtime::{DType, Device};
 fn read_f32(path: &std::path::Path) -> Vec<f32> {
     std::fs::read(path)
         .unwrap_or_default()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
 }
@@ -95,7 +97,9 @@ fn onnx_batched_conv_bias_imports_with_onnxruntime_parity() {
 }
 
 fn read_f32_bytes(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

@@ -13,25 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
-// Installs macOS on-device translation language packs without the System
-// Settings UI, so a machine can be provisioned for `rlx-translate` from a
-// script. It asks the OS to download Apple's own assets onto this machine and
-// nothing else; it does not redistribute or extract anything.
-//
-//   clang -fobjc-arc -framework Foundation -o install-language install-language.m
-//   ./install-language                 # list locales and their state
-//   ./install-language fr_FR es_ES     # install these (replaces the current set)
-//
-// Why this exists: MobileAsset's own `MAAssetQuery`/`MAAsset` refuse the
-// `com.apple.MobileAsset.UAF.Translation.Assets` type unless the caller holds
-// the private entitlement `com.apple.private.assets.accessible-asset-types`
-// (`queryMetaDataSync` -> 5, `startCatalogDownload:` -> 12), which cannot be
-// self-granted under SIP. `_LTDLanguageAssetService` sits above that and works
-// from an ordinary unsigned process.
-//
-// NOTE: `setInstalledLocales:` sets the complete list. Pass every locale you
-// want kept, not just the new one. A locale pulls its MT models *and* the much
-// larger ASR and TTS assets for that language (~700 MB for fr_FR).
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

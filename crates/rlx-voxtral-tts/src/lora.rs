@@ -84,7 +84,7 @@ pub fn load_lora_bank(store: &VoxtralTtsWeightStore, cfg: &TextConfig) -> Result
     if !has_lora_weights(store.keys()) {
         return Ok(None);
     }
-    let alpha = std::env::var("RLX_VOXTRAL_TTS_LORA_ALPHA")
+    let alpha = rlx_ir::env::var_result("RLX_VOXTRAL_TTS_LORA_ALPHA")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_LORA_ALPHA);

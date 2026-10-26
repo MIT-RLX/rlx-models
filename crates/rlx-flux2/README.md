@@ -74,7 +74,7 @@ Denoiser + VAE use compiled HIR on non-CPU backends. The text encoder uses compi
 
 ## Features
 
-`flux2-tokenizer` + `flux2-image` (default) · `hf-download` (Hub fetch) · backends `metal` / `mlx` / `cuda` / `rocm` / `gpu` / `vulkan` (+ `all-backends`, `apple-silicon`, `nvidia-gpu`, …).
+`flux2-tokenizer` + `flux2-image` (default) · `hf-download` (Hub fetch) · backends `metal` / `mlx` / `cuda` / `rocm` / `gpu` / `vulkan` (+ `all-backends`, `macos-gpu`, `nvidia-gpu`, …).
 
 ## How it fits
 

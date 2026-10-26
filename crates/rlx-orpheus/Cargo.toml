@@ -32,7 +32,9 @@ rlx-qwen3 = { workspace = true, optional = true }
 rlx-qwen35 = { workspace = true, optional = true }
 rlx-core = { workspace = true, optional = true }
 rlx-runtime = { workspace = true, optional = true }
-rlx-ir = { workspace = true, optional = true }
+rlx-ir = { workspace = true }
+# The package's codec graphs (`export`).
+rlx-snac = { path = "../rlx-snac", version = "0.2.19", optional = true }
 
 [dependencies.hf-hub]
 workspace = true
@@ -53,9 +55,12 @@ llama = [
     "rlx-llama32/tokenizer",
 ]
 hf-download = ["dep:hf-hub"]
+# `export::export_rlxp`: Orpheus as an `.rlxp` package (the GGUF Llama's
+# `generate` entry, SNAC's graphs, the program in `program/`) rlx runs alone.
+export = ["llama", "rlx-core/export", "rlx-llama32/export", "dep:rlx-snac", "rlx-snac/export"]
 # Native RLX SNAC conv decoder (compiled HIR via AotCache) instead of the host
 # eager path — runs the vocoder on a GPU backend. Pulled in by each GPU feature.
-snac-rlx = ["codec", "dep:rlx-ir", "dep:rlx-runtime"]
+snac-rlx = ["codec", "dep:rlx-runtime"]
 metal = ["rlx-llama32/metal", "snac-rlx"]
 mlx = ["rlx-llama32/mlx", "snac-rlx"]
 cuda = ["rlx-llama32/cuda", "snac-rlx", "rlx-runtime/cuda"]
@@ -63,16 +68,19 @@ rocm = ["rlx-llama32/rocm"]
 vulkan = ["rlx-llama32/vulkan"]
 gpu = ["rlx-llama32/gpu", "snac-rlx"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu", "vulkan"]
 coreml = ["snac-rlx", "rlx-runtime/coreml"]
 
 [dev-dependencies]
+rlx-text = { workspace = true }
+tempfile = "3"
 rlx-orpheus = { path = ".", features = ["codec", "llama", "metal", "mlx", "cuda", "gpu", "vulkan", "rocm", "coreml"] }
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
-rlx-runtime = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
 rlx-cli = { workspace = true }
 anyhow = { workspace = true }
 

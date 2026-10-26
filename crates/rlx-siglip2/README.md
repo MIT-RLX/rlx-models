@@ -101,7 +101,7 @@ attention run in the compiled graph — the real per-backend surface.
 ## Backends
 
 Standard RLX backend features (`metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`,
-plus `all-backends` / `apple-silicon` / `nvidia-gpu` / `amd-gpu` /
+plus `all-backends` / `macos-gpu` / `nvidia-gpu` / `amd-gpu` /
 `portable-gpu`). The towers compile through the backend-agnostic `rlx-runtime`
 session, so any enabled + available device runs the same graph. Every operation
 used (LayerNorm, MatMul, Add, tanh-GELU, and cross-/key-padding-masked

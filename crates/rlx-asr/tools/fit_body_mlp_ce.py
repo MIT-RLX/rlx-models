@@ -2,7 +2,7 @@
 # RLX — versatile ML compiler + runtime.
 # Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna. GPLv3.
 #
-# Fit CE residual body MLP from Apple capture_work:
+# Fit CE residual body MLP from reference capture_work:
 #   enc = h @ B + tanh(h @ W1 + b1) @ W2 + b2
 # Supervised by CTC CE vs teacher wp argmax (+ light MSE to teacher enc).
 # Uses all capture windows, momentum SGD, speech-weighted CE.
@@ -205,7 +205,7 @@ def main() -> int:
         arr.astype("<f4").tofile(out / f"body_mlp_ce.{n}.bin")
     (out / "body_mlp_ce.meta.txt").write_text(
         f"hid={HID}\nscore={best[0]}\nepoch={best[2]}\nask={best[3]}\n"
-        f"form=h@B+tanh(h@W1+b1)@W2+b2\ndomain=apple_capture_work\nwindows={len(utts)}\n"
+        f"form=h@B+tanh(h@W1+b1)@W2+b2\ndomain=reference_capture_work\nwindows={len(utts)}\n"
     )
     print(f"wrote {out}/body_mlp_ce.* best_score={best[0]:.3f} ep={best[2]} ask={best[3]!r}")
     return 0

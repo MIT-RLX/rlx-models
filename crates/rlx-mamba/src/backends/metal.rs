@@ -13,22 +13,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Apple Metal backend.
+//! Metal backend.
 //!
 //! Architecture: one growable `rlx_metal::mtl::Buffer` in shared-storage mode,
 //! bump-allocated per `upload`/`alloc`. The matmuls go through
 //! `rlx_metal::blas::metal_sgemm` / `metal_sgemm_bias` (custom MSL
 //! kernels, picked per-shape via `hw_model().pick_sgemm`). Element-wise
 //! ops, the depthwise causal conv1d, and the selective scan run on the
-//! CPU side via the same buffer's `contents()` pointer — Apple Silicon's
+//! CPU side via the same buffer's `contents()` pointer — M-series
 //! unified memory makes that a memory-fence-only operation, not a copy.
 //!
 //! This is the "first useful" Metal backend: matmuls dispatch to the
 //! GPU (where most of the FLOPs live for typical Mamba1 configs); the
 //! rest stays on CPU until a native MSL selective-scan kernel and
-//! per-op MSL element-wise kernels are wired into `rlx-metal`. The
-//! survey in `claude-code-guide` notes both kernels are achievable
-//! (the WGSL/CUDA scan ports are the reference).
+//! per-op MSL element-wise kernels are wired into `rlx-metal`.
 //!
 //! Build:  cargo build -p rlx-mamba --features metal
 

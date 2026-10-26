@@ -37,7 +37,9 @@ fn f32_bytes(v: &[f32]) -> Vec<u8> {
 
 fn as_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -52,13 +54,13 @@ pub fn fit_frames(frames: &[[f32; 80]]) -> Vec<[f32; 80]> {
 
 /// Resolve a WeSpeaker model directory from common roots / env.
 pub fn resolve_model_dir(search_roots: &[&Path]) -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("RLX_WESPEAKER_DIR") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_WESPEAKER_DIR") {
         let pb = PathBuf::from(p);
         if pb.is_dir() {
             return Some(pb);
         }
     }
-    if let Ok(p) = std::env::var("RLX_WESPEAKER_ONNX") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_WESPEAKER_ONNX") {
         // Accept a file path — use its parent (or grandparent if under onnx/).
         let pb = PathBuf::from(p);
         if pb.is_file()

@@ -7,9 +7,9 @@ use std::io::Write;
 use std::path::Path;
 
 fn main() -> anyhow::Result<()> {
-    let dir = std::env::var("RLX_METAVOICE_DIR")?;
-    let enc = std::env::var("RLX_ENCODEC_PATH")?;
-    let dev = match std::env::var("RLX_DEV").as_deref() {
+    let dir = rlx_ir::env::var_result("RLX_METAVOICE_DIR")?;
+    let enc = rlx_ir::env::var_result("RLX_ENCODEC_PATH")?;
+    let dev = match rlx_ir::env::var_result("RLX_DEV").as_deref() {
         Ok("metal") => Device::Metal,
         Ok("mlx") => Device::Mlx,
         _ => Device::Cpu,

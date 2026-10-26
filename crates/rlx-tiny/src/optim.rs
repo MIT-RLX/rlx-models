@@ -139,7 +139,7 @@ fn l2(x: &[f32]) -> f32 {
 
 /// Parse an `f32` tuning override from the environment, falling back to `default`.
 fn env_f32(key: &str, default: f32) -> f32 {
-    std::env::var(key)
+    rlx_ir::env::read(key)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)

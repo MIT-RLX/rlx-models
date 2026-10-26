@@ -162,7 +162,7 @@ impl VoxtralRunner {
 
     pub fn generate(&self, prompt_ids: &[u32], mel: &MelSpectrogram) -> Result<Vec<u32>> {
         let batch = 1;
-        let dbg = std::env::var("RLX_VOXTRAL_DEBUG").is_ok();
+        let dbg = rlx_ir::env::var_result("RLX_VOXTRAL_DEBUG").is_ok();
         let ck = |label: &str, v: &[f32]| {
             if dbg {
                 let sum: f64 = v.iter().map(|&x| x as f64).sum();
@@ -191,12 +191,12 @@ impl VoxtralRunner {
         // Debug bisection: skip the `gather_last_token` tail so the prefill emits
         // logits for ALL positions — lets us compare cpu↔metal↔mlx and tell whether
         // a backend diverges in the layers vs the gather/head tail.
-        let no_gather = std::env::var("RLX_VOXTRAL_NOGATHER").is_ok();
+        let no_gather = rlx_ir::env::var_result("RLX_VOXTRAL_NOGATHER").is_ok();
         let last_logits_only = !no_gather;
         // Debug: drop the per-layer KvTap side outputs (only valid with NOGATHER,
         // which bails before decode needs the KV cache) to test if the tap stage
         // is what corrupts the Metal layer output.
-        let with_kv = std::env::var("RLX_VOXTRAL_NOKV").is_err();
+        let with_kv = rlx_ir::env::var_result("RLX_VOXTRAL_NOKV").is_err();
         let mut wm = self.weight_store.load_language_model_weights()?;
         let prefill_built =
             build_voxtral_prefill_built(&self.cfg, &mut wm, batch, seq, with_kv, last_logits_only)?;

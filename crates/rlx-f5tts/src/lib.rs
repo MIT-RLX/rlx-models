@@ -20,6 +20,8 @@
 
 pub mod config;
 pub mod dsp;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod model;
 /// Native RLX path (no ONNX Runtime): the 3 F5 graphs imported + compiled + run.
 pub mod native;

@@ -13,6 +13,7 @@ readme = "README.md"
 build = "build.rs"
 
 [dependencies]
+rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 hound = "3"
 ndarray = "0.16"
@@ -40,7 +41,7 @@ wgpu = ["gpu"]
 # Download the real Descript-DAC-44kHz as an oracle to validate q8 weight loading.
 oracle = ["rlx-dac/hf-download"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+macos-gpu = ["metal", "mlx", "gpu"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 

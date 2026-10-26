@@ -25,6 +25,8 @@
 //! (`Hinotsuba/OpenVoice-ONNX-v2`).
 
 pub mod dsp;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod model;
 
 pub use model::{OpenVoice, peak_amplitude};

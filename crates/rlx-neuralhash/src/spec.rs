@@ -21,13 +21,13 @@
 //! [`crate::flow`] turns one into an rlx-ir graph, and nothing downstream ever
 //! looks at a vendor container again.
 //!
-//! A spec is produced once by [`NeuralHashSpec::from_espresso`] from the
+//! A spec is produced once by [`NeuralHashSpec::from_netfile`] from the
 //! vendor's `.espresso.net` layer list, and serializes to JSON so the derived
 //! architecture can be pinned in-repo (`--export-spec`) and reviewed.
 //!
 //! # Unsupported layers are hard errors
 //!
-//! Espresso carries ~40 layer types; NeuralHash uses a MobileNetV3-shaped
+//! The format carries ~40 layer types; NeuralHash uses a MobileNetV3-shaped
 //! subset. Anything outside the mapping below aborts the build naming the
 //! layer and its attributes, because a skipped layer would still yield 128
 //! plausible floats and therefore a plausible — but wrong — hash.
@@ -36,7 +36,7 @@ use anyhow::{Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::espresso::{BlobShape, EspressoLayer, EspressoNet};
+use crate::netfile::{BlobShape, NetFile, NetLayer};
 
 /// Pointwise activation, applied either fused onto a conv or standalone.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -103,16 +103,16 @@ pub enum OpKind {
     },
     /// Elementwise combine of every input.
     Elementwise { kind: EwKind },
-    /// Single-input affine `x * alpha + beta` (Espresso `elementwise`
+    /// Single-input affine `x * alpha + beta` (the format's `elementwise`
     /// operations 2 and 3, which carry the scalar in `alpha` / `beta`).
     Affine { alpha: f32, beta: f32 },
-    /// Single-input `clamp(x, min, max)` (Espresso `elementwise` operation 119
+    /// Single-input `clamp(x, min, max)` (the format's `elementwise` operation 119
     /// — the `Relu6` in a hard-swish / hard-sigmoid chain).
     Clamp { min: f32, max: f32 },
     /// Per-channel instance normalization: normalize over `H×W` for each
     /// `(N, C)`, then scale and shift.
     ///
-    /// Espresso spells this `batchnorm` with `training_instancenorm = 1`, which
+    /// The format spells this `batchnorm` with `training_instancenorm = 1`, which
     /// means the statistics come from the *input at runtime* — the stored mean
     /// and variance are placeholders and must not be used.
     InstanceNorm {
@@ -163,19 +163,19 @@ pub struct NeuralHashSpec {
 }
 
 impl NeuralHashSpec {
-    /// Derive the native spec from Apple's Espresso layer list, fusing the
+    /// Derive the native spec from the vendor's layer list, fusing the
     /// hard-swish / hard-sigmoid chains onto single activation ops.
-    pub fn from_espresso(net: &EspressoNet) -> Result<Self> {
+    pub fn from_netfile(net: &NetFile) -> Result<Self> {
         let mut spec = Deriver::new(net).run()?;
         spec.ops = fuse_hard_activations(std::mem::take(&mut spec.ops), &spec.output);
         Ok(spec)
     }
 
-    /// Derive without the fusion pass — the literal Espresso op sequence.
+    /// Derive without the fusion pass — the literal vendor op sequence.
     ///
     /// Only useful for checking that fusion is value-preserving; the fused and
     /// unfused specs must produce identical hashes.
-    pub fn from_espresso_unfused(net: &EspressoNet) -> Result<Self> {
+    pub fn from_netfile_unfused(net: &NetFile) -> Result<Self> {
         Deriver::new(net).run()
     }
 
@@ -241,22 +241,22 @@ impl NeuralHashSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Espresso → spec
+// network file → spec
 // ---------------------------------------------------------------------------
 
 struct Deriver<'a> {
-    net: &'a EspressoNet,
+    net: &'a NetFile,
     shapes: HashMap<String, [usize; 4]>,
     ops: Vec<OpDef>,
     input: Option<String>,
     input_shape: [usize; 4],
-    /// Blob name → tensor name counter, so Espresso's duplicate layer names
+    /// Blob name → tensor name counter, so the format's duplicate layer names
     /// (every LayerNorm is called `instancenorm_test`) stay distinct.
     used_names: HashMap<String, usize>,
 }
 
 impl<'a> Deriver<'a> {
-    fn new(net: &'a EspressoNet) -> Self {
+    fn new(net: &'a NetFile) -> Self {
         Self {
             net,
             shapes: HashMap::new(),
@@ -276,8 +276,8 @@ impl<'a> Deriver<'a> {
         let input = self
             .input
             .clone()
-            .ok_or_else(|| anyhow!("espresso net has no input blob"))?;
-        // Espresso marks the graph output with `attributes.is_output`; fall back
+            .ok_or_else(|| anyhow!("network file has no input blob"))?;
+        // The format marks the graph output with `attributes.is_output`; fall back
         // to the last op for nets that omit it.
         let flagged = self.net.layers.iter().find(|l| {
             l.attrs
@@ -293,11 +293,11 @@ impl<'a> Deriver<'a> {
                 .ops
                 .last()
                 .map(|o| o.out.clone())
-                .ok_or_else(|| anyhow!("espresso net produced no ops"))?,
+                .ok_or_else(|| anyhow!("network file produced no ops"))?,
         };
         ensure!(
             self.ops.iter().any(|o| o.out == output),
-            "espresso net declares output blob {output:?}, which no op produces"
+            "network file declares output blob {output:?}, which no op produces"
         );
         Ok(NeuralHashSpec {
             name: "neuralhash".into(),
@@ -333,9 +333,9 @@ impl<'a> Deriver<'a> {
         }
         let name = match free.as_slice() {
             [one] => (*one).to_string(),
-            [] => bail!("espresso net has no free input blob (every bottom is produced)"),
+            [] => bail!("network file has no free input blob (every bottom is produced)"),
             many => bail!(
-                "espresso net has {} free input blobs {many:?}; this port expects exactly one",
+                "network file has {} free input blobs {many:?}; this port expects exactly one",
                 many.len()
             ),
         };
@@ -352,7 +352,7 @@ impl<'a> Deriver<'a> {
     }
 
     /// A unique, stable tensor-name prefix for `layer`.
-    fn tensor_base(&mut self, layer: &EspressoLayer) -> String {
+    fn tensor_base(&mut self, layer: &NetLayer) -> String {
         tensor_base_for(&mut self.used_names, &layer.name)
     }
 
@@ -371,7 +371,7 @@ impl<'a> Deriver<'a> {
     }
 
     /// Record `out`'s shape, cross-checking the sidecar when present.
-    fn set_shape(&mut self, layer: &EspressoLayer, out: &str, computed: [usize; 4]) -> Result<()> {
+    fn set_shape(&mut self, layer: &NetLayer, out: &str, computed: [usize; 4]) -> Result<()> {
         if let Some(declared) = self.sidecar(out) {
             // The sidecar is authoritative; a mismatch means our stride/pad
             // reading is wrong and every downstream shape would be too.
@@ -387,14 +387,14 @@ impl<'a> Deriver<'a> {
         Ok(())
     }
 
-    fn single_top(&self, l: &EspressoLayer) -> Result<String> {
+    fn single_top(&self, l: &NetLayer) -> Result<String> {
         match l.top.len() {
             1 => Ok(l.top[0].clone()),
             n => bail!("expected exactly 1 `top`, got {n}: {:?}", l.top),
         }
     }
 
-    fn layer(&mut self, _idx: usize, l: &EspressoLayer) -> Result<()> {
+    fn layer(&mut self, _idx: usize, l: &NetLayer) -> Result<()> {
         match l.kind.as_str() {
             k if is_input_layer(k) => self.input_layer(l),
             "convolution" => self.conv(l),
@@ -412,7 +412,7 @@ impl<'a> Deriver<'a> {
             "activation" | "relu" | "relu6" | "sigmoid" | "tanh" | "hard_sigmoid"
             | "hard_swish" | "hardswish" | "hardsigmoid" | "clip" | "scale" => self.activation(l),
             other => bail!(
-                "unsupported Espresso layer type {other:?}. \
+                "unsupported network layer type {other:?}. \
                  Attributes: {:?}. Extend `crate::spec` with a mapping for this type — \
                  skipping it would silently corrupt every hash.",
                 sorted_keys(l)
@@ -420,7 +420,7 @@ impl<'a> Deriver<'a> {
         }
     }
 
-    fn input_layer(&mut self, l: &EspressoLayer) -> Result<()> {
+    fn input_layer(&mut self, l: &NetLayer) -> Result<()> {
         let top = self.single_top(l)?;
         let shape = self
             .sidecar(&top)
@@ -445,7 +445,7 @@ impl<'a> Deriver<'a> {
         Ok(())
     }
 
-    fn conv(&mut self, l: &EspressoLayer) -> Result<()> {
+    fn conv(&mut self, l: &NetLayer) -> Result<()> {
         ensure!(
             l.bottom.len() == 1,
             "convolution takes 1 input, got {:?}",
@@ -468,7 +468,7 @@ impl<'a> Deriver<'a> {
             "convolution {:?}: groups={groups} does not divide in_c={in_c} / out_c={out_c}",
             l.name
         );
-        // Espresso's `K` is the layer's TOTAL input channel count, not the
+        // The format's `K` is the layer's TOTAL input channel count, not the
         // per-group count: a depthwise 3x3 over 16 channels is written
         // `C=16, K=16, n_groups=16` and stores a `[16, 1, 3, 3]` kernel.
         ensure!(
@@ -520,7 +520,7 @@ impl<'a> Deriver<'a> {
         )
     }
 
-    fn pool(&mut self, l: &EspressoLayer) -> Result<()> {
+    fn pool(&mut self, l: &NetLayer) -> Result<()> {
         ensure!(
             l.bottom.len() == 1,
             "pool takes 1 input, got {:?}",
@@ -530,7 +530,7 @@ impl<'a> Deriver<'a> {
         let [n, c, in_h, in_w] = self.shape_of(&l.bottom[0])?;
         let global = l.flag(&["is_global", "global_pooling", "globalPooling"]);
 
-        // Espresso encodes the reduction as `avg_or_max`: **0 = average,
+        // The format encodes the reduction as `avg_or_max`: **0 = average,
         // 1 = max**. Verified against the shipping NeuralHash net, whose ten
         // pools are all `avg_or_max = 0` and are named `.../gap/Mean` — global
         // *average* pooling for the squeeze-excite blocks and the final
@@ -582,7 +582,7 @@ impl<'a> Deriver<'a> {
         )
     }
 
-    /// Espresso's `elementwise` covers both binary combines and single-input
+    /// The format's `elementwise` covers both binary combines and single-input
     /// scalar arithmetic, discriminated by `operation`:
     ///
     /// | `operation` | inputs | meaning                     |
@@ -596,7 +596,7 @@ impl<'a> Deriver<'a> {
     /// The shipping net builds every hard-swish out of 2 → 119 → 3 → 1
     /// (`x * clamp(x + 3, 0, 6) / 6`) rather than using a fused activation, so
     /// these scalar forms are not optional.
-    fn elementwise(&mut self, l: &EspressoLayer) -> Result<()> {
+    fn elementwise(&mut self, l: &NetLayer) -> Result<()> {
         let top = self.single_top(l)?;
         let alpha = l.attrs.get("alpha").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
         let beta = l.attrs.get("beta").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
@@ -680,10 +680,10 @@ impl<'a> Deriver<'a> {
         )
     }
 
-    /// Espresso `batchnorm`. With `training_instancenorm = 1` — which is what
+    /// The format's `batchnorm`. With `training_instancenorm = 1` — which is what
     /// NeuralHash ships — the stored mean/variance are placeholders and the
     /// statistics are computed per `(N, C)` over `H×W` at runtime.
-    fn norm(&mut self, l: &EspressoLayer) -> Result<()> {
+    fn norm(&mut self, l: &NetLayer) -> Result<()> {
         ensure!(
             l.bottom.len() == 1,
             "{} takes 1 input, got {:?}",
@@ -730,7 +730,7 @@ impl<'a> Deriver<'a> {
         )
     }
 
-    fn inner_product(&mut self, l: &EspressoLayer) -> Result<()> {
+    fn inner_product(&mut self, l: &NetLayer) -> Result<()> {
         ensure!(
             l.bottom.len() == 1,
             "inner_product takes 1 input, got {:?}",
@@ -777,7 +777,7 @@ impl<'a> Deriver<'a> {
         )
     }
 
-    fn concat(&mut self, l: &EspressoLayer) -> Result<()> {
+    fn concat(&mut self, l: &NetLayer) -> Result<()> {
         ensure!(
             l.bottom.len() >= 2,
             "concat takes 2+ inputs, got {:?}",
@@ -811,7 +811,7 @@ impl<'a> Deriver<'a> {
         )
     }
 
-    fn rewire(&mut self, l: &EspressoLayer) -> Result<()> {
+    fn rewire(&mut self, l: &NetLayer) -> Result<()> {
         ensure!(
             l.bottom.len() == 1,
             "{} takes 1 input, got {:?}",
@@ -845,7 +845,7 @@ impl<'a> Deriver<'a> {
         )
     }
 
-    fn l2norm(&mut self, l: &EspressoLayer) -> Result<()> {
+    fn l2norm(&mut self, l: &NetLayer) -> Result<()> {
         ensure!(
             l.bottom.len() == 1,
             "l2norm takes 1 input, got {:?}",
@@ -871,7 +871,7 @@ impl<'a> Deriver<'a> {
         )
     }
 
-    fn activation(&mut self, l: &EspressoLayer) -> Result<()> {
+    fn activation(&mut self, l: &NetLayer) -> Result<()> {
         ensure!(
             l.bottom.len() == 1,
             "{} takes 1 input, got {:?}",
@@ -904,11 +904,11 @@ impl<'a> Deriver<'a> {
     /// feature pyramid.
     ///
     /// Observed modes: `1` = SAME (output is `ceil(in / stride)`),
-    /// `2` = VALID (no padding). Espresso also uses `0` for "explicit pads".
+    /// `2` = VALID (no padding). The format also uses `0` for "explicit pads".
     /// SAME is resolved to concrete pads here so the spec stays fully explicit.
     fn padding(
         &self,
-        l: &EspressoLayer,
+        l: &NetLayer,
         kernel: [usize; 2],
         stride: [usize; 2],
         input: [usize; 2],
@@ -967,7 +967,7 @@ impl<'a> Deriver<'a> {
         }
     }
 
-    fn push(&mut self, l: &EspressoLayer, op: OpDef) -> Result<()> {
+    fn push(&mut self, l: &NetLayer, op: OpDef) -> Result<()> {
         self.set_shape(l, &op.out, op.shape)?;
         self.ops.push(op);
         Ok(())
@@ -978,7 +978,7 @@ impl<'a> Deriver<'a> {
 // Fusion: hard-swish / hard-sigmoid chains
 // ---------------------------------------------------------------------------
 
-/// Espresso never emits a fused hard-swish. It spells every one out as four
+/// The format never emits a fused hard-swish. It spells every one out as four
 /// elementwise layers:
 ///
 /// ```text
@@ -1078,9 +1078,9 @@ fn fuse_hard_activations(ops: Vec<OpDef>, graph_output: &str) -> Vec<OpDef> {
     out
 }
 
-/// A unique, stable tensor-name prefix for an Espresso layer name.
+/// A unique, stable tensor-name prefix for an network layer name.
 ///
-/// Espresso reuses layer names freely, so repeats get a `#n` suffix. The
+/// The format reuses layer names freely, so repeats get a `#n` suffix. The
 /// deriver calls this exactly once per non-`input` layer, in order;
 /// [`crate::weights`] replays the same sequence to name the tensors it
 /// extracts, and `spec_and_weights_agree_on_names` pins the two together.
@@ -1102,13 +1102,13 @@ pub(crate) fn tensor_base_for(used: &mut HashMap<String, usize>, name: &str) -> 
     base
 }
 
-/// Espresso layer types that carry no weights and produce no spec op.
+/// network layer types that carry no weights and produce no spec op.
 pub(crate) fn is_input_layer(kind: &str) -> bool {
     matches!(kind, "input" | "input_layer")
 }
 
-/// Activation fused into a convolution by the Espresso optimizer.
-fn fused_act(l: &EspressoLayer) -> Result<Option<Act>> {
+/// Activation fused into a convolution by the vendor optimizer.
+fn fused_act(l: &NetLayer) -> Result<Option<Act>> {
     if l.flag(&["fused_relu"]) {
         return Ok(Some(Act::Relu));
     }
@@ -1128,7 +1128,7 @@ fn fused_act(l: &EspressoLayer) -> Result<Option<Act>> {
 }
 
 /// Activation for a standalone activation layer.
-fn standalone_act(l: &EspressoLayer) -> Result<Act> {
+fn standalone_act(l: &NetLayer) -> Result<Act> {
     match l.kind.as_str() {
         "relu" => return Ok(Act::Relu),
         "relu6" => return Ok(Act::Relu6),
@@ -1198,15 +1198,15 @@ fn out_dim(input: usize, kernel: usize, stride: usize, pad_total: usize) -> Resu
     Ok((padded - kernel) / stride + 1)
 }
 
-fn sorted_keys(l: &EspressoLayer) -> Vec<&str> {
+fn sorted_keys(l: &NetLayer) -> Vec<&str> {
     let mut k: Vec<&str> = l.attrs.keys().map(|s| s.as_str()).collect();
     k.sort_unstable();
     k
 }
 
-fn annotate(e: anyhow::Error, idx: usize, l: &EspressoLayer, total: usize) -> anyhow::Error {
+fn annotate(e: anyhow::Error, idx: usize, l: &NetLayer, total: usize) -> anyhow::Error {
     e.context(format!(
-        "espresso layer {idx}/{total} {:?} (type {})",
+        "network layer {idx}/{total} {:?} (type {})",
         l.name, l.kind
     ))
 }
@@ -1215,7 +1215,7 @@ fn annotate(e: anyhow::Error, idx: usize, l: &EspressoLayer, total: usize) -> an
 mod tests {
     use super::*;
 
-    fn net(layers_json: &str, shapes: &str) -> EspressoNet {
+    fn net(layers_json: &str, shapes: &str) -> NetFile {
         let weights = {
             let mut v = 0u64.to_le_bytes().to_vec();
             v.truncate(8);
@@ -1242,7 +1242,7 @@ mod tests {
                 })
                 .collect()
         };
-        EspressoNet::from_parts(
+        NetFile::from_parts(
             &format!(r#"{{"format_version": 200, "layers": {layers_json}}}"#),
             &weights,
             shapes,
@@ -1262,7 +1262,7 @@ mod tests {
             ]"#,
             r#"{"image": {"n":1,"k":3,"h":360,"w":360}}"#,
         );
-        let spec = NeuralHashSpec::from_espresso(&n).unwrap();
+        let spec = NeuralHashSpec::from_netfile(&n).unwrap();
         assert_eq!(spec.input, "image");
         assert_eq!(spec.input_shape, [1, 3, 360, 360]);
         assert_eq!(spec.ops.len(), 1);
@@ -1296,7 +1296,7 @@ mod tests {
             ]"#,
             r#"{"i": {"n":1,"k":16,"h":32,"w":32}}"#,
         );
-        let spec = NeuralHashSpec::from_espresso(&n).unwrap();
+        let spec = NeuralHashSpec::from_netfile(&n).unwrap();
         // pad_mode SAME with stride 1 → output keeps 32×32.
         assert_eq!(spec.ops[0].shape, [1, 16, 32, 32]);
         match &spec.ops[0].kind {
@@ -1321,7 +1321,7 @@ mod tests {
             ]"#,
             r#"{"i": {"n":1,"k":3,"h":8,"w":8}}"#,
         );
-        let e = format!("{:#}", NeuralHashSpec::from_espresso(&n).unwrap_err());
+        let e = format!("{:#}", NeuralHashSpec::from_netfile(&n).unwrap_err());
         assert!(e.contains("declared K=7"), "{e}");
     }
 
@@ -1337,7 +1337,7 @@ mod tests {
             ]"#,
             r#"{"i": {"n":1,"k":3,"h":8,"w":8}, "o": {"n":1,"k":8,"h":8,"w":8}}"#,
         );
-        let e = format!("{:#}", NeuralHashSpec::from_espresso(&n).unwrap_err());
+        let e = format!("{:#}", NeuralHashSpec::from_netfile(&n).unwrap_err());
         assert!(e.contains("sidecar declares"), "{e}");
     }
 
@@ -1352,7 +1352,7 @@ mod tests {
             ]"#,
             r#"{"i": {"n":1,"k":64,"h":12,"w":12}}"#,
         );
-        let spec = NeuralHashSpec::from_espresso(&n).unwrap();
+        let spec = NeuralHashSpec::from_netfile(&n).unwrap();
         assert_eq!(spec.ops[0].shape, [1, 64, 1, 1]);
         assert_eq!(spec.ops[1].shape, [1, 128, 1, 1]);
         assert_eq!(spec.output, "e");
@@ -1373,7 +1373,7 @@ mod tests {
             ]"#,
             r#"{"i": {"n":1,"k":32,"h":16,"w":16}}"#,
         );
-        let spec = NeuralHashSpec::from_espresso(&n).unwrap();
+        let spec = NeuralHashSpec::from_netfile(&n).unwrap();
         // The `input` layer produces no op, so pool is 0 and the multiply is 1.
         assert_eq!(spec.ops.len(), 2);
         assert_eq!(spec.ops[1].shape, [1, 32, 16, 16]);
@@ -1389,11 +1389,8 @@ mod tests {
             ]"#,
             r#"{"i": {"n":1,"k":3,"h":8,"w":8}}"#,
         );
-        let e = format!("{:#}", NeuralHashSpec::from_espresso(&n).unwrap_err());
-        assert!(
-            e.contains("unsupported Espresso layer type \"lstm\""),
-            "{e}"
-        );
+        let e = format!("{:#}", NeuralHashSpec::from_netfile(&n).unwrap_err());
+        assert!(e.contains("unsupported network layer type \"lstm\""), "{e}");
         assert!(e.contains("some_attr"), "{e}");
         assert!(e.contains("weird"), "{e}");
     }
@@ -1407,7 +1404,7 @@ mod tests {
             ]"#,
             r#"{"i": {"n":1,"k":3,"h":8,"w":8}}"#,
         );
-        let e = format!("{:#}", NeuralHashSpec::from_espresso(&n).unwrap_err());
+        let e = format!("{:#}", NeuralHashSpec::from_netfile(&n).unwrap_err());
         assert!(e.contains("avg_or_max"), "{e}");
     }
 
@@ -1423,7 +1420,7 @@ mod tests {
             ]"#,
             r#"{"i": {"n":1,"k":3,"h":8,"w":8}}"#,
         );
-        let spec = NeuralHashSpec::from_espresso(&n).unwrap();
+        let spec = NeuralHashSpec::from_netfile(&n).unwrap();
         assert_eq!(spec.weight_names(), vec!["conv.weight", "conv#1.weight"]);
     }
 
@@ -1437,7 +1434,7 @@ mod tests {
             ]"#,
             r#"{"i": {"n":1,"k":3,"h":8,"w":8}}"#,
         );
-        let spec = NeuralHashSpec::from_espresso(&n).unwrap();
+        let spec = NeuralHashSpec::from_netfile(&n).unwrap();
         let back = NeuralHashSpec::from_json(&spec.to_json().unwrap()).unwrap();
         assert_eq!(spec, back);
     }

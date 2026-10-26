@@ -63,7 +63,9 @@ impl SeedMatrix {
             bytes.len()
         );
         let rows = payload
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect::<Vec<f32>>();
         Ok(Self { rows })

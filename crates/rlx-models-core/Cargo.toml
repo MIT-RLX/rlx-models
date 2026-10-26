@@ -34,6 +34,8 @@ rlx-mlx-io = { workspace = true }
 rlx-assets = { workspace = true, features = ["rlxp"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Hugging Face model card front matter (`package_export::split_huggingface_card`).
+serde_yaml = "0.9"
 safetensors = { workspace = true }
 half = { workspace = true }
 anyhow = { workspace = true }
@@ -48,7 +50,14 @@ rlx-mlx = { workspace = true, optional = true }
 rlx-wgpu = { workspace = true, optional = true }
 rlx-cuda = { workspace = true, optional = true }
 rlx-rocm = { workspace = true, optional = true }
-tokenizers = { workspace = true, optional = true }
+
+
+# The workspace pin carries no regex backend (see the root Cargo.toml).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokenizers = { workspace = true, optional = true, features = ["onig"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokenizers = { workspace = true, optional = true, features = ["unstable_wasm"] }
 
 [features]
 # Opt-in execution backends, used by the audio_ops_ir cross-backend tests and
@@ -67,9 +76,13 @@ tpu = ["rlx-runtime/tpu"]
 # Text in / text out for the DeepSeek-V4.1 runner. Without it the runner still
 # generates, but on token ids and with a caller-supplied vocabulary.
 tokenizer = ["dep:tokenizers"]
+# `export`: the one `.rlxp` exporter every family's export goes through
+# (`export::{Package, Checkpoint, decoder, graph}`, the exporter registry).
+export = ["rlx-runtime/model-io"]
 
 [dev-dependencies]
-tokenizers = { workspace = true }
+tokenizers = { workspace = true, features = ["onig"] }
+tempfile = "3"
 rlx-opscope = { workspace = true }
 
 [lints]

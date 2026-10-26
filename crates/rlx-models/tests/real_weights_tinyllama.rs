@@ -14,13 +14,13 @@ use rlx_tinyllama::{TinyLlamaRunner, llama_config_from_hf, tinyllama_1_1b_preset
 use std::path::PathBuf;
 
 fn weights_path() -> Option<PathBuf> {
-    std::env::var("RLX_TINYLLAMA_WEIGHTS")
+    rlx_ir::env::var_result("RLX_TINYLLAMA_WEIGHTS")
         .ok()
         .map(PathBuf::from)
 }
 
 fn tokenizer_path() -> Option<PathBuf> {
-    std::env::var("RLX_TINYLLAMA_TOKENIZER")
+    rlx_ir::env::var_result("RLX_TINYLLAMA_TOKENIZER")
         .ok()
         .map(PathBuf::from)
         .or_else(|| {
@@ -84,7 +84,11 @@ fn compat_check_safetensors_file() {
 
 #[test]
 fn forward_inference_tinyllama_1_1b() {
-    if std::env::var("RLX_TINYLLAMA_RUN_INFERENCE").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_TINYLLAMA_RUN_INFERENCE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_TINYLLAMA_RUN_INFERENCE=1");
         return;
     }

@@ -24,7 +24,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn mimi_dir() -> Option<PathBuf> {
-    std::env::var("RLX_MIMI_DIR")
+    rlx_ir::env::var_result("RLX_MIMI_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("model.safetensors").is_file())
@@ -35,7 +35,7 @@ fn mimi_dir() -> Option<PathBuf> {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         if p.join("model.safetensors").is_file() {
             return Some(p);

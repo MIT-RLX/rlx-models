@@ -40,7 +40,7 @@ fn dirs() -> Option<(PathBuf, PathBuf)> {
 ///
 /// **CoreML / ANE is deliberately absent.** It does not merely fail: on a
 /// graph containing `Op::GatedDeltaNet` the emitted MIL passes rlx's own
-/// checks but MPSGraph rejects it and Apple calls `abort()`, taking the test
+/// checks but MPSGraph rejects it and the framework calls `abort()`, taking the test
 /// process with it — so it cannot be reported as a failure, only as a crash.
 /// Reproducible at batch 1 and batch 4:
 ///

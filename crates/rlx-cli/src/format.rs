@@ -14,7 +14,6 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use anyhow::{Result, anyhow};
-use rlx_core::gguf_support::list_gguf_files_in_dir;
 use std::path::Path;
 
 /// What the model file is. Used by runners to pick the right loader.
@@ -26,21 +25,27 @@ pub enum WeightFormat {
 
 impl WeightFormat {
     /// Infer format from a file extension, or from directory contents.
+    ///
+    /// Defers to [`rlx_core::weight_registry::resolve_format`], which is the
+    /// one place that decides what a path means. This used to decide for
+    /// itself and preferred GGUF, while the loader registry preferred
+    /// safetensors — so a directory holding both ran different weights
+    /// depending on which code path reached it first. For a directory
+    /// holding one format, or a path naming a file, the answer is unchanged;
+    /// a directory holding several is now an error that names them instead
+    /// of a silent pick.
     pub fn detect(path: &Path) -> Result<Self> {
         if path.is_dir() {
-            if !list_gguf_files_in_dir(path)?.is_empty() {
-                return Ok(Self::Gguf);
-            }
-            if path.join("model.safetensors").is_file()
-                || path.join("model.safetensors.index.json").is_file()
-            {
-                return Ok(Self::Safetensors);
-            }
-            return Err(anyhow!(
-                "directory {path:?} has no .gguf files and no model.safetensors \
-                 (or model.safetensors.index.json); pass a concrete file or run \
-                 `rlx-inspect {path:?}`"
-            ));
+            return match rlx_core::weight_registry::resolve_format(path)? {
+                "gguf" => Ok(Self::Gguf),
+                // An mlx-quantised directory is safetensors on disk; the
+                // loader routes it onwards by itself.
+                "safetensors" | "mlx" => Ok(Self::Safetensors),
+                other => Err(anyhow!(
+                    "{path:?} holds {other} weights, which this command cannot \
+                     load — it understands safetensors and GGUF"
+                )),
+            };
         }
         Self::from_path(path)
     }

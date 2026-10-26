@@ -17,7 +17,7 @@ use rlx_dac::DacCodec;
 use rlx_runtime::Device;
 use std::path::{Path, PathBuf};
 
-/// Fastest available RLX backend for this codec, measured on Apple silicon:
+/// Fastest available RLX backend for this codec, measured on macOS arm64:
 /// **MLX ≫ Metal > wgpu > CPU** (MLX ~14–26× real-time; CPU ~0.02×). Only
 /// considers backends compiled in *and* available at runtime.
 pub fn best_device() -> Device {
@@ -32,7 +32,7 @@ pub fn best_device() -> Device {
 /// Default directory for the descript-DAC-44kHz weights (`RLX_DAC_DIR` or
 /// `.cache/dac44`).
 pub fn default_dir() -> PathBuf {
-    std::env::var("RLX_DAC_DIR")
+    rlx_ir::env::var_result("RLX_DAC_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/dac44"))
 }

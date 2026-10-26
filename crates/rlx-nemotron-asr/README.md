@@ -39,10 +39,13 @@ cargo run -p rlx-nemotron-asr --bin rlx_nemotron_asr -- \
 
 ## Status
 
-**Verified on the real checkpoint** (`nvidia/nemotron-3.5-asr-streaming-0.6b`,
-2.37 GB gzipped `.nemo`): transcribes correctly on CPU. JFK clip →
-`And so my fellow American ask not what your country can do for you ask what you
-can do for your country`.
+**Checked against Hugging Face transformers** (`Nemotron3_5AsrForRNNT`,
+`scripts/nemotron_reference.py`) on the real checkpoint
+(`nvidia/nemotron-3.5-asr-streaming-0.6b`): mel within 3e-4, encoder within
+2e-6, and the JFK Rust speech transcribed word for word as the reference does
+(`--lang auto`): `My fellow Americans today we choose to write our software in
+Rust not because it is easy, but because it is fast safe and free of garbage
+collection`.
 
 Real-model specifics (all data-driven from the YAML, confirmed via `dump-keys`):
 n_mels=128 / n_fft=512; the model's **own mel filterbank + window are used**

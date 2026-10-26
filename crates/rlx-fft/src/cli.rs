@@ -84,7 +84,7 @@ pub fn run(args: &[String]) -> Result<()> {
         "bench-fusion-phases" => cmd_bench_fusion_phases(&args[1..]),
         #[cfg(not(feature = "dev"))]
         "bench-fusion-phases" => {
-            bail!("bench-fusion-phases requires --features dev (e.g. --features dev,apple-silicon)")
+            bail!("bench-fusion-phases requires --features dev (e.g. --features dev,macos-gpu)")
         }
         other => bail!("unknown subcommand: {other} (try --help)"),
     }
@@ -147,7 +147,7 @@ fn print_help() {
            precision-sweep [--n-fft 256,1024] [--batch B] [--max-iters N] [--seed N] [--json PATH]   # f16-only precision recovery via iterative refinement\n\
            train-distill [--n-fft N] [--batch B] [--n-mels M] [--steps N] [--lr F] [--teacher-steps N] [--json PATH]\n\
            train-distill-ternary [--n-fft N] [--batch B] [--n-mels M] [--steps N] [--compute-weight F] [--teacher-steps N] [--json PATH]\n\
-           bench-e2e [--n-fft N] [--batch B[,B2…]|1-1024] [--n-mels M] [--peak-k K] [--iters N] [--device all|cpu,metal,mlx,wgpu,wgu|apple-silicon|…] [--train-first] [--distill-first] [--ternary-distill] [--steps N] [--distill-steps N] [--compute-weight F] [--no-hard-gates] [--no-compiled] [--no-distilled] [--no-ternary-distilled] [--with-eager-learned] [--json PATH] [--html PATH]\n\
+           bench-e2e [--n-fft N] [--batch B[,B2…]|1-1024] [--n-mels M] [--peak-k K] [--iters N] [--device all|cpu,metal,mlx,wgpu,wgu|macos-gpu|…] [--train-first] [--distill-first] [--ternary-distill] [--steps N] [--distill-steps N] [--compute-weight F] [--no-hard-gates] [--no-compiled] [--no-distilled] [--no-ternary-distilled] [--with-eager-learned] [--json PATH] [--html PATH]\n\
            bench-welch-peaks [--n-fft N] [--batch B[,B2…]|32-8192] [--k K[,K2…]|4-64] [--iters N] [--device auto|cpu|metal|…] [--strategy auto|ultra|fast|rlx|learned] [--train-steps N] [--seed N] [--no-compiled] [--no-ultra-fast] [--json PATH]\n\
            {FUSION_PHASES_HELP}\
          \n\

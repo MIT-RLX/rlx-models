@@ -33,8 +33,12 @@
 //! The F32 graph runs natively on every backend.
 
 use anyhow::{Result, anyhow};
-use rlx_core::standard_decoder::{Lfm2Spec, build_lfm2_decode, build_lfm2_prefill};
-use rlx_core::weight_loader::WeightLoader;
+use rlx_core::standard_decoder::{
+    DenseStore, Lfm2Spec, TypedParams, build_lfm2_decode_stored, build_lfm2_prefill_stored,
+};
+use rlx_core::weight_loader::{PrefixRenameLoader, WeightLoader};
+use rlx_core::weight_storage::{HostTable, WeightStorage};
+use rlx_core::{AssetSource, SafetensorsSource};
 use rlx_flow::CompileProfile;
 use rlx_gguf::{GgufFile, MetaValue};
 use rlx_ir::quant::QuantScheme;
@@ -125,6 +129,9 @@ impl WeightLoader for GgufNameShim {
     fn read_tensor_bytes_into(&self, key: &str, buf: &mut Vec<u8>) -> Result<bool> {
         self.inner
             .read_tensor_bytes_into(&hf_to_gguf_name(key), buf)
+    }
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        self.inner.stored_dtype(&hf_to_gguf_name(key))
     }
     fn remaining_keys(&self) -> Vec<String> {
         self.inner.remaining_keys()
@@ -247,6 +254,152 @@ pub fn lfm2_spec_from_gguf(raw: &GgufFile) -> Result<Lfm2Spec> {
     })
 }
 
+/// The HF directory `path` names, if it is one: a directory with a
+/// `config.json` and no `.gguf`, or a `.safetensors` file inside such a
+/// directory.
+fn hf_dir(path: &Path) -> Option<PathBuf> {
+    let dir = if path.is_dir() {
+        path.to_path_buf()
+    } else if path.extension().and_then(|s| s.to_str()) == Some("safetensors") {
+        path.parent()?.to_path_buf()
+    } else {
+        return None;
+    };
+    if !dir.join("config.json").is_file() || resolve_gguf(&dir).is_ok() {
+        return None;
+    }
+    Some(dir)
+}
+
+/// True when `path` is an HF LFM2 directory whose config describes the hybrid
+/// ShortConv + attention schedule (`layer_types`), as opposed to the legacy
+/// SSM variant [`LfmRunner`](crate::LfmRunner) handles. An LFM2-VL directory
+/// counts too: its text model is read from `text_config`.
+pub fn is_lfm2_hf_dir(path: &Path) -> bool {
+    hf_dir(path)
+        .and_then(|d| std::fs::read_to_string(d.join("config.json")).ok())
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .is_some_and(|v| {
+            lfm2_text_config(&v)
+                .get("layer_types")
+                .is_some_and(|l| l.is_array())
+        })
+}
+
+/// The text-model block of an HF config: `text_config` for LFM2-VL
+/// (`Lfm2VlForConditionalGeneration`), the config itself for plain LFM2.
+pub fn lfm2_text_config(cfg: &serde_json::Value) -> &serde_json::Value {
+    cfg.get("text_config").unwrap_or(cfg)
+}
+
+/// Where an LFM2-VL checkpoint keeps its text model's tensors. The builders
+/// ask for `model.layers.N.*` / `model.embed_tokens.weight`; a VL file stores
+/// them one level down.
+const VL_TEXT_PREFIX: &str = "model.language_model.";
+
+/// Wrap `inner` so text-model keys resolve inside an LFM2-VL checkpoint.
+fn vl_text_loader(inner: Box<dyn WeightLoader>) -> Box<dyn WeightLoader> {
+    Box::new(PrefixRenameLoader::new(inner, "model.", VL_TEXT_PREFIX))
+}
+
+/// Build an [`Lfm2Spec`] from an HF `config.json` value. `intermediate_size`
+/// is passed in rather than read: LFM2.5-350M's config says 6656 while its FFN
+/// tensors are 4608 wide (`block_auto_adjust_ff_dim`), so the caller takes it
+/// from the checkpoint.
+pub fn lfm2_spec_from_hf_config(cfg: &serde_json::Value, intermediate: usize) -> Result<Lfm2Spec> {
+    let u = |k: &str| -> Result<usize> {
+        cfg.get(k)
+            .and_then(serde_json::Value::as_u64)
+            .map(|v| v as usize)
+            .ok_or_else(|| anyhow!("lfm2 config.json: missing {k}"))
+    };
+    let hidden = u("hidden_size")?;
+    let heads = u("num_attention_heads")?;
+    let layer_types = cfg
+        .get("layer_types")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow!("lfm2 config.json: missing layer_types"))?;
+    let full_attn_layers: Vec<usize> = layer_types
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| (t.as_str() == Some("full_attention")).then_some(i))
+        .collect();
+    let layers = u("num_hidden_layers")?;
+    if layer_types.len() != layers {
+        return Err(anyhow!(
+            "lfm2 config.json: {} layer_types for {layers} layers",
+            layer_types.len()
+        ));
+    }
+    let rope_theta = cfg
+        .get("rope_parameters")
+        .and_then(|r| r.get("rope_theta"))
+        .or_else(|| cfg.get("rope_theta"))
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(1_000_000.0);
+    let eps = cfg
+        .get("norm_eps")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(1e-5) as f32;
+    Ok(Lfm2Spec {
+        vocab_size: u("vocab_size")?,
+        hidden_size: hidden,
+        intermediate_size: intermediate,
+        num_hidden_layers: layers,
+        num_attention_heads: heads,
+        num_key_value_heads: u("num_key_value_heads")?,
+        head_dim: hidden / heads,
+        conv_dim: u("conv_dim").unwrap_or(hidden),
+        conv_kernel: u("conv_L_cache").unwrap_or(3),
+        full_attn_layers,
+        rope_theta,
+        rms_norm_eps: eps,
+    })
+}
+
+/// Spec + eos id for an HF LFM2 directory; the FFN width comes from the
+/// layer-0 gate projection. `vl` = the text model sits inside an LFM2-VL
+/// checkpoint (config under `text_config`, tensors under
+/// `model.language_model.`).
+fn lfm2_spec_from_hf(
+    raw_config: &str,
+    weights: &SafetensorsSource,
+    vl: bool,
+) -> Result<(Lfm2Spec, u32)> {
+    let cfg: serde_json::Value =
+        serde_json::from_str(raw_config).map_err(|e| anyhow!("lfm2: parse config.json: {e}"))?;
+    let mut loader = weights.loader()?;
+    if vl {
+        loader = vl_text_loader(loader);
+    }
+    let (_, w1) = loader.take("model.layers.0.feed_forward.w1.weight")?;
+    let intermediate = *w1
+        .first()
+        .ok_or_else(|| anyhow!("lfm2: feed_forward.w1 has no shape"))?;
+    let spec = lfm2_spec_from_hf_config(lfm2_text_config(&cfg), intermediate)?;
+    let eos = cfg
+        .get("eos_token_id")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(u32::MAX, |v| v as u32);
+    Ok((spec, eos))
+}
+
+/// The text model of an HF LFM2 / LFM2-VL directory: its spec, and a loader
+/// whose keys are the text model's (`model.layers.N.*`,
+/// `model.embed_tokens.weight`) whichever layout the checkpoint has.
+pub fn hf_text_model(dir: &Path) -> Result<(Lfm2Spec, Box<dyn WeightLoader>)> {
+    let raw = std::fs::read_to_string(dir.join("config.json"))
+        .map_err(|e| anyhow!("lfm2: read {}/config.json: {e}", dir.display()))?;
+    let vl = serde_json::from_str::<serde_json::Value>(&raw)
+        .map_err(|e| anyhow!("lfm2: parse config.json: {e}"))?
+        .get("text_config")
+        .is_some();
+    let src = SafetensorsSource::File(dir.to_path_buf());
+    let (spec, _) = lfm2_spec_from_hf(&raw, &src, vl)?;
+    let loader = src.loader()?;
+    Ok((spec, if vl { vl_text_loader(loader) } else { loader }))
+}
+
 /// A compiled + weight-attached decode graph, cached and reused across
 /// [`Lfm2GgufRunner::generate`] calls so repeated generations skip the
 /// per-call graph build and the ~1.6 GB weight re-attach.
@@ -254,12 +407,61 @@ struct DecodeSession {
     compiled: rlx_runtime::CompiledGraph,
     names: Vec<String>,
     max_kv: usize,
+    /// `[vocab, hidden]` embedding table when the graph leaves the vocabulary
+    /// to the host (WebGL — see [`build_lfm2_decode_ext`]): token rows are
+    /// gathered from it and the tied LM head applied with it.
+    vocab: Option<Vec<f32>>,
+}
+
+/// A compiled prefill graph; `vocab` is the tied embedding table when the
+/// device keeps the vocabulary on the host (WebGL).
+struct PrefillGraph {
+    compiled: rlx_runtime::CompiledGraph,
+    vocab: Option<Vec<f32>>,
+}
+
+/// The cached graph behind [`Lfm2GgufRunner::hidden_from_embeds`]: input
+/// embeddings in, final-normed hidden out, compiled for `seq` positions.
+struct EmbedsPrefill {
+    seq: usize,
+    compiled: rlx_runtime::CompiledGraph,
+}
+
+/// One decode step's graph inputs, owned.
+struct StepFeed {
+    /// `token_id` (as f32) — or, with a host vocabulary, its embedding row.
+    token: Vec<f32>,
+    cos: Vec<f32>,
+    sin: Vec<f32>,
+    key_mask: Vec<f32>,
+    write_oh: Vec<f32>,
+    write_inv: Vec<f32>,
+}
+
+impl StepFeed {
+    fn inputs(&self, host_vocab: bool) -> [(&str, &[f32]); 6] {
+        [
+            (
+                if host_vocab {
+                    "inputs_embeds"
+                } else {
+                    "token_id"
+                },
+                &self.token,
+            ),
+            ("rope_cos", &self.cos),
+            ("rope_sin", &self.sin),
+            ("key_mask", &self.key_mask),
+            ("kv_write_oh", &self.write_oh),
+            ("kv_write_inv", &self.write_inv),
+        ]
+    }
 }
 
 /// LFM2 / LFM2.5 GGUF text runner (hybrid ShortConv + GQA attention).
 ///
 /// [`generate`](Self::generate) uses **incremental O(n) decode**: one fixed-max
-/// [`build_lfm2_decode`] graph stepped one token at a time, with a per-layer
+/// [`build_lfm2_decode`](rlx_core::standard_decoder::build_lfm2_decode) graph stepped one token at a time, with a per-layer
 /// conv-state cache (ShortConv) and KV cache (attention). Weights stay packed
 /// (`DequantMatMul`). The compiled graph is cached and reused across calls (the
 /// CPU dequant cache is process-global, so warmup is amortized too).
@@ -267,27 +469,105 @@ struct DecodeSession {
 /// as a correctness reference.
 pub struct Lfm2GgufRunner {
     weights: PathBuf,
+    /// Set for an HF safetensors checkpoint (`weights` is then its
+    /// directory, or empty when it came from memory) rather than a `.gguf`.
+    hf: Option<SafetensorsSource>,
+    /// The HF checkpoint is an LFM2-VL one: text tensors live under
+    /// `model.language_model.`.
+    vl: bool,
     device: Device,
     spec: Lfm2Spec,
     eos_id: u32,
     decode: std::sync::Mutex<Option<DecodeSession>>,
+    embeds_prefill: std::sync::Mutex<Option<EmbedsPrefill>>,
+    embed_table: std::sync::OnceLock<HostTable>,
+    /// How dense (non-packed) weight matrices are stored; see
+    /// [`Self::set_weight_storage`].
+    weight_storage: WeightStorage,
 }
 
 impl Lfm2GgufRunner {
-    /// Open a `.gguf` LFM2/LFM2.5 checkpoint and parse its config.
+    /// Open an LFM2/LFM2.5 checkpoint and parse its config: a `.gguf` file, or
+    /// an HF safetensors directory (`config.json` + `model.safetensors`) such
+    /// as `LiquidAI/LFM2.5-230M`. An LFM2-VL directory (`LiquidAI/LFM2.5-VL-3B`,
+    /// `LiquidAI/d1-3B`) opens as its text model; the vision tower is ignored.
     pub fn open(weights: impl Into<PathBuf>, device: Device) -> Result<Self> {
         let weights = weights.into();
+        rlx_core::validate_browser_capable_device("lfm", device)?;
+        if let Some(dir) = hf_dir(&weights) {
+            return Self::open_source(&AssetSource::dir(dir), device);
+        }
         let raw = GgufFile::from_path(&weights)
             .map_err(|e| anyhow!("lfm2: open GGUF {}: {e}", weights.display()))?;
         let spec = lfm2_spec_from_gguf(&raw)?;
         let eos_id = meta_u32(&raw, "tokenizer.ggml.eos_token_id").unwrap_or(u32::MAX);
-        rlx_core::validate_standard_device("lfm", device)?;
         Ok(Self {
             weights,
+            hf: None,
+            vl: false,
             device,
             spec,
             eos_id,
             decode: std::sync::Mutex::new(None),
+            embeds_prefill: std::sync::Mutex::new(None),
+            embed_table: std::sync::OnceLock::new(),
+            weight_storage: WeightStorage::from_env().unwrap_or(WeightStorage::Auto),
+        })
+    }
+
+    /// The checkpoint path: the `.gguf` file, or the HF directory (empty for
+    /// an in-memory checkpoint).
+    pub fn weights_path(&self) -> &Path {
+        &self.weights
+    }
+
+    /// A fresh loader over the checkpoint, presenting the HF tensor names the
+    /// builders request. HF checkpoints already use them; GGUF goes through
+    /// [`GgufNameShim`].
+    fn open_loader(&self) -> Result<Box<dyn WeightLoader>> {
+        if let Some(src) = &self.hf {
+            let loader = src.loader()?;
+            return Ok(if self.vl {
+                vl_text_loader(loader)
+            } else {
+                loader
+            });
+        }
+        let inner = rlx_core::weight_registry::open_weight_loader(&self.weights)
+            .map_err(|e| anyhow!("lfm2: open weights {}: {e}", self.weights.display()))?;
+        Ok(Box::new(GgufNameShim::new(inner)))
+    }
+
+    /// Open an HF-layout checkpoint (`config.json` + safetensors) from any
+    /// [`AssetSource`] — a directory, a `.rlxpack`, or in-memory files (the
+    /// browser path).
+    pub fn open_source(src: &AssetSource, device: Device) -> Result<Self> {
+        rlx_core::validate_browser_capable_device("lfm", device)?;
+        // A directory is opened as a whole so sharded checkpoints load too.
+        let (weights, source) = match src.dir_path() {
+            Some(dir) => (dir.clone(), SafetensorsSource::File(dir)),
+            None => (
+                PathBuf::new(),
+                SafetensorsSource::from_asset(src, "model.safetensors")?,
+            ),
+        };
+        let raw_config = src.read_to_string("config.json")?;
+        let vl = serde_json::from_str::<serde_json::Value>(&raw_config)
+            .map_err(|e| anyhow!("lfm2: parse config.json: {e}"))?
+            .get("text_config")
+            .is_some();
+        let (spec, eos_id) = lfm2_spec_from_hf(&raw_config, &source, vl)?;
+        Ok(Self {
+            weights,
+            hf: Some(source),
+            vl,
+            device,
+            spec,
+            eos_id,
+            decode: std::sync::Mutex::new(None),
+            embeds_prefill: std::sync::Mutex::new(None),
+            embed_table: std::sync::OnceLock::new(),
+            weight_storage: WeightStorage::from_env().unwrap_or(WeightStorage::Auto),
         })
     }
 
@@ -306,20 +586,64 @@ impl Lfm2GgufRunner {
     /// small enough for wgpu. Weight bytes are borrowed straight from the GGUF
     /// mmap at attach (zero-copy). Metal/MLX/wgpu/Vulkan/CoreML dequant on the
     /// selected device; wgpu keeps the packed blobs in a separate buffer.
-    fn compile_for(&self, seq: usize) -> Result<rlx_runtime::CompiledGraph> {
+    fn compile_for(&self, seq: usize) -> Result<PrefillGraph> {
         let seq = seq.max(1);
-        let inner = rlx_core::weight_registry::open_weight_loader(&self.weights)
-            .map_err(|e| anyhow!("lfm2: open weights {}: {e}", self.weights.display()))?;
-        let mut shim = GgufNameShim::new(inner);
-        let exec_device = self.pick_exec_device(&shim);
+        let mut shim = self.open_loader()?;
+        let exec_device = self.pick_exec_device();
+        // WebGL: embedding gather and tied LM head on the host, as in decode.
+        let host_vocab = exec_device == Device::OpenGl;
         let mut packed: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
-        let (graph, params) = build_lfm2_prefill(&self.spec, &mut shim, seq, &mut packed)?;
+        let mut store = DenseStore::new(self.weight_storage);
+        let (graph, params) = build_lfm2_prefill_stored(
+            &self.spec,
+            shim.as_mut(),
+            seq,
+            &mut packed,
+            host_vocab,
+            &mut store,
+        )?;
         let opts = packed_compile_opts(exec_device);
         let mut compiled = rlx_core::flow_bridge::packed_gguf_compile_guard(exec_device, || {
             Session::new(exec_device).compile_with(graph, &opts)
         });
-        self.attach(&mut compiled, &params, &packed, &shim)?;
-        Ok(compiled)
+        self.attach(&mut compiled, &params, &store.typed, &packed, shim.as_ref())?;
+        let vocab = if host_vocab {
+            Some(self.open_loader()?.take("model.embed_tokens.weight")?.0)
+        } else {
+            None
+        };
+        Ok(PrefillGraph { compiled, vocab })
+    }
+
+    /// Logits `[seq, vocab]` for `ids` (padded to the compiled length).
+    fn run_prefill(&self, graph: &mut PrefillGraph, ids: &[u32]) -> Result<Vec<f32>> {
+        let h = self.spec.hidden_size;
+        let Some(table) = graph.vocab.as_deref() else {
+            let ids_f32: Vec<f32> = ids.iter().map(|&t| t as f32).collect();
+            let out = graph.compiled.run(&[("input_ids", ids_f32.as_slice())]);
+            return out
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("lfm2: no logits"));
+        };
+        let mut embeds = Vec::with_capacity(ids.len() * h);
+        for &t in ids {
+            let row = t as usize * h;
+            embeds.extend_from_slice(
+                table
+                    .get(row..row + h)
+                    .ok_or_else(|| anyhow!("lfm2: token {t} past the vocabulary"))?,
+            );
+        }
+        let out = graph.compiled.run(&[("inputs_embeds", embeds.as_slice())]);
+        let hidden = out
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("lfm2: no hidden"))?;
+        Ok(hidden
+            .chunks_exact(h)
+            .flat_map(|row| self.logits_from(Some(table), row.to_vec()))
+            .collect())
     }
 
     /// Attach dense params + packed (mmap-borrowed) weights to a compiled graph.
@@ -327,11 +651,15 @@ impl Lfm2GgufRunner {
         &self,
         compiled: &mut rlx_runtime::CompiledGraph,
         params: &HashMap<String, Vec<f32>>,
+        typed: &TypedParams,
         packed: &HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)>,
-        shim: &GgufNameShim,
+        shim: &dyn WeightLoader,
     ) -> Result<()> {
         for (n, d) in params {
             compiled.set_param(n, d);
+        }
+        for (n, (bytes, dtype)) in typed {
+            compiled.set_param_typed(n, bytes, *dtype);
         }
         // Empty bytes = GGUF zero-copy marker; otherwise the bytes are owned.
         //
@@ -360,28 +688,187 @@ impl Lfm2GgufRunner {
         Ok(())
     }
 
-    /// Choose the device to actually compile/run the packed graph on.
+    /// Choose the device to actually compile/run the graph on.
     ///
-    /// The scheme is fine on every backend (Q4_K), but native **wgpu / Vulkan**
-    /// execution of the LFM2 **ShortConv** graph currently returns incorrect
-    /// output — the depthwise causal conv routes through those backends' host
-    /// round-trip path (an op qwen3 / llama don't use), which is not yet
-    /// correct here; CPU / Metal / MLX are all correct. So run the packed
-    /// prefill on the host CPU for wgpu / Vulkan, giving correct results when
-    /// `--device gpu`/`vulkan` is selected. Metal / MLX / CUDA / ROCm / CoreML
-    /// keep their own device. Override with `RLX_LFM_FORCE_NATIVE=1`.
-    fn pick_exec_device(&self, _shim: &GgufNameShim) -> Device {
-        let native = rlx_core::flow_bridge::packed_gguf_execution_device(self.device);
-        if matches!(native, Device::Gpu | Device::Vulkan)
-            && !rlx_ir::env::flag("RLX_LFM_FORCE_NATIVE")
-        {
-            eprintln!(
-                "[rlx-lfm] {native:?}: native ShortConv execution is not yet correct — \
-                 running the packed prefill on host CPU (set RLX_LFM_FORCE_NATIVE=1 to force native)"
-            );
-            return Device::Cpu;
+    /// wgpu and Vulkan used to be rerouted to the host CPU here because the
+    /// ShortConv graph came out wrong on them. It no longer does: LFM2.5-230M
+    /// (HF) matches transformers on wgpu (logits within 4e-5, same greedy
+    /// tokens) and the LFM2-350M Q4_K_M GGUF generates the CPU's text
+    /// token-for-token on wgpu and Vulkan. The generic
+    /// `RLX_PACKED_GGUF_{WGPU,VULKAN}_HOST` switches still force the host.
+    fn pick_exec_device(&self) -> Device {
+        rlx_core::flow_bridge::packed_gguf_execution_device(self.device)
+    }
+
+    /// How dense (non-packed) weight matrices — and the host copy of the tied
+    /// embedding — are stored. [`WeightStorage::Auto`] (the default) keeps a
+    /// bf16 / f16 checkpoint at its own width, which is lossless: the products
+    /// are the same as with f32 weights at half the memory.
+    /// [`WeightStorage::F32`] restores the old f32 expansion; `F16` / `Bf16`
+    /// convert. GGUF K-quant projections stay packed regardless. Takes effect
+    /// for graphs built after the call (cached graphs are dropped).
+    pub fn set_weight_storage(&mut self, storage: WeightStorage) {
+        if storage != self.weight_storage {
+            self.weight_storage = storage;
+            self.embed_table = std::sync::OnceLock::new();
+            *self.decode.get_mut().unwrap_or_else(|e| e.into_inner()) = None;
+            *self
+                .embeds_prefill
+                .get_mut()
+                .unwrap_or_else(|e| e.into_inner()) = None;
         }
-        native
+    }
+
+    /// [`Self::set_weight_storage`], builder style.
+    pub fn with_weight_storage(mut self, storage: WeightStorage) -> Self {
+        self.set_weight_storage(storage);
+        self
+    }
+
+    pub fn weight_storage(&self) -> WeightStorage {
+        self.weight_storage
+    }
+
+    /// The tied `[vocab, hidden]` embedding table (also the LM head), read
+    /// once and kept on the host at the [weight storage](Self::set_weight_storage)
+    /// width (a bf16 checkpoint's 1 GB f32 table is 0.5 GB).
+    pub fn embed_table(&self) -> Result<&HostTable> {
+        if let Some(t) = self.embed_table.get() {
+            return Ok(t);
+        }
+        // A quantized GGUF table stays packed under `Auto` (rows decode on
+        // demand — lossless, ~4.5x smaller than widening it).
+        // Through the runner's own loader (mmap'd, bytes streamed with pread):
+        // a second `GgufFile::from_path` read the whole checkpoint into memory.
+        if self.hf.is_none() && self.weight_storage == WeightStorage::Auto {
+            let loader = self.open_loader()?;
+            let dtype = loader
+                .gguf_file()
+                .and_then(|f| f.tensors.get("token_embd.weight"))
+                .map(|t| t.dtype);
+            let mut bytes = Vec::new();
+            if let Some(dtype) = dtype
+                && !matches!(
+                    dtype,
+                    rlx_gguf::GgmlType::F32 | rlx_gguf::GgmlType::F16 | rlx_gguf::GgmlType::BF16
+                )
+                && (loader.read_tensor_bytes_into("model.embed_tokens.weight", &mut bytes)?
+                    || loader
+                        .tensor_bytes_borrowed("model.embed_tokens.weight")
+                        .map(|b| bytes = b.to_vec())
+                        .is_some())
+                && let Some(table) = HostTable::packed(bytes, dtype, self.spec.hidden_size)
+                && table.len() == self.spec.vocab_size * self.spec.hidden_size
+            {
+                return Ok(self.embed_table.get_or_init(|| table));
+            }
+        }
+        let mut loader = self.open_loader()?;
+        let key = "model.embed_tokens.weight";
+        let dtype = self.weight_storage.resolve(loader.stored_dtype(key));
+        let (table, shape) = loader.take(key)?;
+        let want = [self.spec.vocab_size, self.spec.hidden_size];
+        if shape != want {
+            return Err(anyhow!(
+                "lfm2: embed_tokens is {shape:?}, config says {want:?}"
+            ));
+        }
+        Ok(self
+            .embed_table
+            .get_or_init(|| HostTable::from_f32(table, dtype)))
+    }
+
+    /// Input embeddings `[ids.len(), hidden]` for token ids.
+    pub fn embed_ids(&self, ids: &[u32]) -> Result<Vec<f32>> {
+        let table = self.embed_table()?;
+        let h = self.spec.hidden_size;
+        let mut out = vec![0f32; ids.len() * h];
+        for (row, &t) in out.chunks_exact_mut(h).zip(ids) {
+            if t as usize >= self.spec.vocab_size {
+                return Err(anyhow!("lfm2: token {t} past the vocabulary"));
+            }
+            table.read_into(t as usize * h, row);
+        }
+        Ok(out)
+    }
+
+    /// One logit of the tied LM head: `embed[id] · hidden` (in f64), for
+    /// callers that score a handful of tokens instead of the vocabulary.
+    pub fn lm_head_logit(&self, id: u32, hidden: &[f32]) -> Result<f64> {
+        let h = self.spec.hidden_size;
+        if hidden.len() != h || id as usize >= self.spec.vocab_size {
+            return Err(anyhow!(
+                "lfm2: lm_head_logit({id}) on {} values",
+                hidden.len()
+            ));
+        }
+        Ok(self.embed_table()?.dot(id as usize * h, hidden))
+    }
+
+    /// Final-normed hidden states `[n, hidden]` of one causal pass over the
+    /// input embeddings `embeds` (`[n, hidden]`, row-major).
+    ///
+    /// For callers that build the input sequence themselves — image features
+    /// scattered over placeholder tokens, a decision model reading one answer
+    /// slot — and score hidden states against [`embed_table`](Self::embed_table)
+    /// (the tied LM head) only where they need to. The graph is compiled for a
+    /// power-of-two length and kept: inputs are right-padded with zeros, which
+    /// a causal stack never lets reach a real position. It is rebuilt when a
+    /// longer input arrives, or when inputs get 4x shorter than it.
+    pub fn hidden_from_embeds(&self, embeds: &[f32]) -> Result<Vec<f32>> {
+        let h = self.spec.hidden_size;
+        if embeds.is_empty() || !embeds.len().is_multiple_of(h) {
+            return Err(anyhow!(
+                "lfm2: {} embedding values is not a whole number of {h}-wide rows",
+                embeds.len()
+            ));
+        }
+        let n = embeds.len() / h;
+        let bucket = n.max(64).next_power_of_two();
+        let mut guard = self
+            .embeds_prefill
+            .lock()
+            .map_err(|_| anyhow!("lfm2: prefill cache poisoned"))?;
+        if guard
+            .as_ref()
+            .is_none_or(|g| g.seq < n || g.seq >= 4 * bucket)
+        {
+            // Drop the old graph (and its weight arena) before building the
+            // next one, so the two never coexist.
+            *guard = None;
+            *guard = Some(self.compile_embeds_prefill(bucket)?);
+        }
+        let graph = guard.as_mut().expect("just built");
+        let mut padded = vec![0f32; graph.seq * h];
+        padded[..embeds.len()].copy_from_slice(embeds);
+        let out = graph
+            .compiled
+            .run(&[("inputs_embeds", padded.as_slice())])
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("lfm2: no hidden"))?;
+        Ok(out[..n * h].to_vec())
+    }
+
+    fn compile_embeds_prefill(&self, seq: usize) -> Result<EmbedsPrefill> {
+        let mut shim = self.open_loader()?;
+        let exec_device = self.pick_exec_device();
+        let mut packed: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
+        let mut store = DenseStore::new(self.weight_storage);
+        let (graph, params) = build_lfm2_prefill_stored(
+            &self.spec,
+            shim.as_mut(),
+            seq,
+            &mut packed,
+            true,
+            &mut store,
+        )?;
+        let opts = packed_compile_opts(exec_device);
+        let mut compiled = rlx_core::flow_bridge::packed_gguf_compile_guard(exec_device, || {
+            Session::new(exec_device).compile_with(graph, &opts)
+        });
+        self.attach(&mut compiled, &params, &store.typed, &packed, shim.as_ref())?;
+        Ok(EmbedsPrefill { seq, compiled })
     }
 
     /// Last-position logits `[vocab]` after a single prefill of `prompt`.
@@ -390,13 +877,8 @@ impl Lfm2GgufRunner {
             return Err(anyhow!("lfm2: empty prompt"));
         }
         let seq = prompt.len();
-        let mut compiled = self.compile_for(seq)?;
-        let ids_f32: Vec<f32> = prompt.iter().map(|&t| t as f32).collect();
-        let out = compiled.run(&[("input_ids", ids_f32.as_slice())]);
-        let logits = out
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("lfm2: no logits"))?;
+        let mut graph = self.compile_for(seq)?;
+        let logits = self.run_prefill(&mut graph, prompt)?;
         let vocab = self.spec.vocab_size;
         Ok(logits[(seq - 1) * vocab..seq * vocab].to_vec())
     }
@@ -415,15 +897,13 @@ impl Lfm2GgufRunner {
         }
         let vocab = self.spec.vocab_size;
         let total = prompt.len() + n_new;
-        let mut compiled = self.compile_for(total)?;
+        let mut graph = self.compile_for(total)?;
         let mut buf = vec![0u32; total];
         buf[..prompt.len()].copy_from_slice(prompt);
         let mut cur = prompt.len();
         let mut out = Vec::with_capacity(n_new);
         while cur < total {
-            let ids_f32: Vec<f32> = buf.iter().map(|&t| t as f32).collect();
-            let res = compiled.run(&[("input_ids", ids_f32.as_slice())]);
-            let logits = res.first().ok_or_else(|| anyhow!("lfm2: no logits"))?;
+            let logits = self.run_prefill(&mut graph, &buf)?;
             let row = &logits[(cur - 1) * vocab..cur * vocab];
             let tok = argmax(row);
             out.push(tok);
@@ -440,10 +920,8 @@ impl Lfm2GgufRunner {
     /// Build + compile + attach a fixed-`max_kv` decode graph (one-time cost,
     /// cached in the runner by [`generate`](Self::generate)).
     fn build_decode_session(&self, max_kv: usize) -> Result<DecodeSession> {
-        let inner = rlx_core::weight_registry::open_weight_loader(&self.weights)
-            .map_err(|e| anyhow!("lfm2: open weights {}: {e}", self.weights.display()))?;
-        let mut shim = GgufNameShim::new(inner);
-        let exec_device = self.pick_exec_device(&shim);
+        let mut shim = self.open_loader()?;
+        let exec_device = self.pick_exec_device();
         // NOTE: this used to force `RLX_Q4K_FUSED_MIN_N=2048` on CPU, citing a
         // ~2× decode win. Removed: the fused kernel quantizes the activation to
         // Q8_K, so once the threshold pulls in the FFN matmuls the error
@@ -496,21 +974,38 @@ impl Lfm2GgufRunner {
         // `prefer_cached_blas`, which routes to the fused kernel on its own when
         // the f32 dequant cache would thrash, independent of this threshold.
         let mut packed: HashMap<String, (Vec<u8>, QuantScheme, Vec<usize>)> = HashMap::new();
-        let (graph, params, names) = build_lfm2_decode(&self.spec, &mut shim, max_kv, &mut packed)?;
+        // WebGL keeps every tensor in one 2-D texture, which a [vocab, hidden]
+        // table outgrows; there the vocabulary stays on the host.
+        let host_vocab = exec_device == Device::OpenGl;
+        let mut store = DenseStore::new(self.weight_storage);
+        let (graph, params, names) = build_lfm2_decode_stored(
+            &self.spec,
+            shim.as_mut(),
+            max_kv,
+            &mut packed,
+            host_vocab,
+            &mut store,
+        )?;
+        let vocab = if host_vocab {
+            Some(self.open_loader()?.take("model.embed_tokens.weight")?.0)
+        } else {
+            None
+        };
         let opts = packed_compile_opts(exec_device);
         let mut compiled = rlx_core::flow_bridge::packed_gguf_compile_guard(exec_device, || {
             Session::new(exec_device).compile_with(graph, &opts)
         });
-        self.attach(&mut compiled, &params, &packed, &shim)?;
+        self.attach(&mut compiled, &params, &store.typed, &packed, shim.as_ref())?;
         Ok(DecodeSession {
             compiled,
             names,
             max_kv,
+            vocab,
         })
     }
 
     /// **O(n)** greedy generation via incremental decode. Steps one token at a
-    /// time over a cached fixed-`max_kv` [`build_lfm2_decode`] graph: each
+    /// time over a cached fixed-`max_kv` [`build_lfm2_decode`](rlx_core::standard_decoder::build_lfm2_decode) graph: each
     /// ShortConv layer keeps a small conv-state, each attention layer keeps a KV
     /// cache, so every step is O(1) FLOP-heavy work. The compiled graph +
     /// attached weights are cached and reused across calls (rebuilt only when a
@@ -526,13 +1021,6 @@ impl Lfm2GgufRunner {
         if prompt.is_empty() {
             return Err(anyhow!("lfm2: empty prompt"));
         }
-        let spec = &self.spec;
-        let dh = spec.head_dim;
-        let half = dh / 2;
-        let kv_dim = spec.num_key_value_heads * spec.head_dim;
-        let cdim = spec.conv_dim;
-        let kc = spec.conv_kernel;
-        let theta = spec.rope_theta;
         let p = prompt.len();
         let need = p + n_new;
 
@@ -548,19 +1036,12 @@ impl Lfm2GgufRunner {
             compiled,
             names,
             max_kv,
+            vocab,
         } = session;
         let max_kv = *max_kv;
 
         // Cache buffers keyed by graph *input* name (zeroed initial state).
-        let mut state: HashMap<String, Vec<f32>> = HashMap::new();
-        for il in 0..spec.num_hidden_layers {
-            if spec.full_attn_layers.contains(&il) {
-                state.insert(format!("k_in_{il}"), vec![0f32; max_kv * kv_dim]);
-                state.insert(format!("v_in_{il}"), vec![0f32; max_kv * kv_dim]);
-            } else {
-                state.insert(format!("conv_state_in_{il}"), vec![0f32; (kc - 1) * cdim]);
-            }
-        }
+        let mut state = self.initial_state(max_kv);
 
         // On GPU backends with device-resident handle support (Metal/MLX/CUDA/
         // ROCm) keep the per-layer KV + conv state ON DEVICE across decode steps:
@@ -604,33 +1085,13 @@ impl Lfm2GgufRunner {
                     None => break,
                 }
             };
-            let s_iter = std::time::Instant::now();
+            // Clock reads only when profiling: `Instant::now` panics on wasm32.
+            let s_iter = profile.then(std::time::Instant::now);
             // Per-step inputs (kept alive across the borrow of `state`).
-            let tok_f = [tok as f32];
-            let mut cos = vec![0f32; half];
-            let mut sin = vec![0f32; half];
-            for i in 0..half {
-                let fr = theta.powf(-(2.0 * i as f64) / dh as f64);
-                let (s, c) = (pos as f64 * fr).sin_cos();
-                cos[i] = c as f32;
-                sin[i] = s as f32;
-            }
-            let mut key_mask = vec![0f32; max_kv];
-            key_mask[..=pos].fill(1.0);
-            let mut write_oh = vec![0f32; max_kv];
-            write_oh[pos] = 1.0;
-            let write_inv: Vec<f32> = write_oh.iter().map(|&x| 1.0 - x).collect();
+            let feed = self.step_feed(vocab.as_deref(), tok, pos, max_kv);
+            let fixed = feed.inputs(vocab.is_some());
 
-            let fixed: [(&str, &[f32]); 6] = [
-                ("token_id", &tok_f[..]),
-                ("rope_cos", &cos),
-                ("rope_sin", &sin),
-                ("key_mask", &key_mask),
-                ("kv_write_oh", &write_oh),
-                ("kv_write_inv", &write_inv),
-            ];
-
-            let s_run = std::time::Instant::now();
+            let s_run = profile.then(std::time::Instant::now);
             let logits: Vec<f32> = if use_gpu_kv {
                 // Resident state stays on device; only logits (slot 0) come back.
                 let mut outs = compiled.run_read_outputs(&fixed, Some(&[0]));
@@ -659,9 +1120,12 @@ impl Lfm2GgufRunner {
                 }
                 logits
             };
+            let logits = self.logits_from(vocab.as_deref(), logits);
             if profile {
-                t_run += s_run.elapsed();
-                t_host += s_run.saturating_duration_since(s_iter);
+                if let (Some(s_iter), Some(s_run)) = (s_iter, s_run) {
+                    t_run += s_run.elapsed();
+                    t_host += s_run.saturating_duration_since(s_iter);
+                }
                 steps += 1;
             }
 
@@ -687,16 +1151,187 @@ impl Lfm2GgufRunner {
     }
 }
 
-fn argmax(row: &[f32]) -> u32 {
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &v) in row.iter().enumerate() {
-        if v > best_v {
-            best_v = v;
-            best = i;
+impl Lfm2GgufRunner {
+    /// Zeroed per-layer state: KV caches for attention layers, the conv
+    /// window for ShortConv layers — keyed by graph input name.
+    fn initial_state(&self, max_kv: usize) -> HashMap<String, Vec<f32>> {
+        let spec = &self.spec;
+        let kv_dim = spec.num_key_value_heads * spec.head_dim;
+        let mut state = HashMap::new();
+        for il in 0..spec.num_hidden_layers {
+            if spec.full_attn_layers.contains(&il) {
+                state.insert(format!("k_in_{il}"), vec![0f32; max_kv * kv_dim]);
+                state.insert(format!("v_in_{il}"), vec![0f32; max_kv * kv_dim]);
+            } else {
+                state.insert(
+                    format!("conv_state_in_{il}"),
+                    vec![0f32; (spec.conv_kernel - 1) * spec.conv_dim],
+                );
+            }
+        }
+        state
+    }
+
+    /// Inputs for decoding `tok` at position `pos`.
+    fn step_feed(&self, vocab: Option<&[f32]>, tok: u32, pos: usize, max_kv: usize) -> StepFeed {
+        let dh = self.spec.head_dim;
+        let half = dh / 2;
+        let mut cos = vec![0f32; half];
+        let mut sin = vec![0f32; half];
+        for i in 0..half {
+            let fr = self.spec.rope_theta.powf(-(2.0 * i as f64) / dh as f64);
+            let (s, c) = (pos as f64 * fr).sin_cos();
+            cos[i] = c as f32;
+            sin[i] = s as f32;
+        }
+        let mut key_mask = vec![0f32; max_kv];
+        key_mask[..=pos].fill(1.0);
+        let mut write_oh = vec![0f32; max_kv];
+        write_oh[pos] = 1.0;
+        let write_inv = write_oh.iter().map(|&x| 1.0 - x).collect();
+        let token = match vocab {
+            Some(table) => {
+                let h = self.spec.hidden_size;
+                table[tok as usize * h..(tok as usize + 1) * h].to_vec()
+            }
+            None => vec![tok as f32],
+        };
+        StepFeed {
+            token,
+            cos,
+            sin,
+            key_mask,
+            write_oh,
+            write_inv,
         }
     }
-    best as u32
+
+    /// Output 0 is the logits — or, with a host vocabulary, the final hidden
+    /// state, scored here against the tied embedding.
+    fn logits_from(&self, vocab: Option<&[f32]>, out0: Vec<f32>) -> Vec<f32> {
+        let Some(table) = vocab else {
+            return out0;
+        };
+        table
+            .chunks_exact(self.spec.hidden_size)
+            .map(|row| row.iter().zip(&out0).map(|(a, b)| a * b).sum())
+            .collect()
+    }
+
+    /// [`generate`](Self::generate) on wasm WebGPU, where reading results back
+    /// from the GPU cannot block. Every step passes the full state through the
+    /// graph (no resident-handle path in the browser).
+    #[cfg(target_arch = "wasm32")]
+    pub async fn generate_async(
+        &self,
+        prompt: &[u32],
+        n_new: usize,
+        mut on_token: impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        if prompt.is_empty() {
+            return Err(anyhow!("lfm2: empty prompt"));
+        }
+        let need = prompt.len() + n_new;
+        // Take the cached session out for the run instead of holding the
+        // mutex across awaits; it goes back when the run ends.
+        let cached = self.decode.lock().unwrap().take();
+        let mut session = match cached {
+            Some(s) if s.max_kv >= need => s,
+            _ => self.build_decode_session(need.div_ceil(128) * 128)?,
+        };
+        let result = self
+            .decode_async(&mut session, prompt, n_new, &mut on_token)
+            .await;
+        *self.decode.lock().unwrap() = Some(session);
+        result
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn decode_async(
+        &self,
+        session: &mut DecodeSession,
+        prompt: &[u32],
+        n_new: usize,
+        on_token: &mut impl FnMut(u32) -> bool,
+    ) -> Result<Vec<u32>> {
+        let max_kv = session.max_kv;
+        let mut state = self.initial_state(max_kv);
+        // Keep the per-layer KV + conv state on the GPU, as `generate` does
+        // natively: bind each `_in_` once, feed it from its `_out_` on the
+        // device, and read back only output 0 — the full state used to make a
+        // host round trip every token.
+        let compiled = &mut session.compiled;
+        let mut resident = rlx_core::device_supports_gpu_kv(compiled.device());
+        if resident {
+            for (j, out_name) in session.names.iter().enumerate() {
+                let in_name = out_name.replace("_out_", "_in_");
+                if let Some(buf) = state.get(&in_name) {
+                    if !compiled.bind_gpu_handle(&in_name, buf) {
+                        resident = false;
+                        break;
+                    }
+                    compiled.set_gpu_handle_feed(&in_name, j + 1);
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(n_new);
+        for pos in 0..max_kv {
+            let tok = match prompt.get(pos) {
+                Some(&t) => t,
+                None => match out.last() {
+                    Some(&t) => t,
+                    None => break,
+                },
+            };
+            let feed = self.step_feed(session.vocab.as_deref(), tok, pos, max_kv);
+            let fixed = feed.inputs(session.vocab.is_some());
+            let wants_logits = pos + 1 >= prompt.len();
+            let first = if resident {
+                // Prompt tokens read nothing back: no wait between them.
+                let read: &[usize] = if wants_logits { &[0] } else { &[] };
+                let mut outs = compiled
+                    .run_read_outputs_async(&fixed, Some(read))
+                    .await
+                    .map_err(|e| anyhow!("lfm2: {e}"))?;
+                if !wants_logits {
+                    continue;
+                }
+                if outs.is_empty() {
+                    return Err(anyhow!("lfm2: no logits"));
+                }
+                outs.swap_remove(0)
+            } else {
+                let mut inputs: Vec<(&str, &[f32])> = fixed.to_vec();
+                for (k, v) in &state {
+                    inputs.push((k.as_str(), v.as_slice()));
+                }
+                let outs = compiled
+                    .run_async(&inputs)
+                    .await
+                    .map_err(|e| anyhow!("lfm2: {e}"))?;
+                let mut outs = outs.into_iter();
+                let first = outs.next().ok_or_else(|| anyhow!("lfm2: no logits"))?;
+                for (name, value) in session.names.iter().zip(outs) {
+                    if let Some(buf) = state.get_mut(&name.replace("_out_", "_in_")) {
+                        buf.copy_from_slice(&value);
+                    }
+                }
+                first
+            };
+            if wants_logits {
+                let nt = argmax(&self.logits_from(session.vocab.as_deref(), first));
+                out.push(nt);
+                if nt == self.eos_id || !on_token(nt) || out.len() >= n_new {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn argmax(row: &[f32]) -> u32 {
+    rlx_runtime::search::argmax_u32(row)
 }
 
 impl rlx_cli::LmRunner for Lfm2GgufRunner {

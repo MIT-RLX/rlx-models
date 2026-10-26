@@ -531,12 +531,16 @@ pub fn sample_greedy_talker_codec(logits: &[f32], vocab_size: usize, codec_eos: 
     // RLX_QWEN3_TTS_SAMPLE=1: temperature + top_k sampling (HF defaults
     // temperature=0.9, top_k=50 for voice clone).
     // RLX_QWEN3_TTS_SEED: seed for reproducible sampling.
-    if std::env::var("RLX_QWEN3_TTS_SAMPLE").ok().as_deref() == Some("1") {
-        let temp: f32 = std::env::var("RLX_QWEN3_TTS_TEMP")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_SAMPLE")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        let temp: f32 = rlx_ir::env::var_result("RLX_QWEN3_TTS_TEMP")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.9);
-        let top_k: usize = std::env::var("RLX_QWEN3_TTS_TOP_K")
+        let top_k: usize = rlx_ir::env::var_result("RLX_QWEN3_TTS_TOP_K")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(50);
@@ -601,7 +605,7 @@ fn sample_topk_talker_codec(
     let r: f32 = RNG.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
-            let rng = match std::env::var("RLX_QWEN3_TTS_SEED")
+            let rng = match rlx_ir::env::var_result("RLX_QWEN3_TTS_SEED")
                 .ok()
                 .and_then(|s| s.parse::<u64>().ok())
             {

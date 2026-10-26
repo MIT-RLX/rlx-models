@@ -1,0 +1,93 @@
+{
+  "type": "KITTEN2",
+  "lm_dir": "lm",
+  "voices": "voices/voices.json",
+  "speaker_embedding": "speaker/model.safetensors",
+  "dtype": "bf16",
+  "speaker_embedding_dim": 512,
+  "sample_rate": 24000,
+  "default_voice": "Bruno",
+  "default_preset": "stable",
+  "decoders": {
+    "student_w4": "decoders/student_w4.pt"
+  },
+  "default_decoder": "default",
+  "decode_presets": {
+    "stable": {
+      "temperature": 0.8,
+      "top_p": 0.8,
+      "top_k": 50,
+      "min_p": 0.0
+    },
+    "expressive": {
+      "temperature": 0.9,
+      "top_p": 0.9,
+      "top_k": 50,
+      "min_p": 0.0
+    }
+  },
+  "generation": {
+    "use_reference_prompt": true,
+    "repetition_window": 50,
+    "emotion_control": "{emo: 1}",
+    "chunk_chars": 380,
+    "chunk_min_chars": 130
+  },
+  "token_map": {
+    "audio_id_base": 151675,
+    "num_audio_tokens": 6561,
+    "speech_start_id": 151669,
+    "speech_end_id": 151670,
+    "text_start_id": 151671,
+    "text_end_id": 151672,
+    "start_id": 151673,
+    "stop_id": 151674,
+    "final_seg_id": 158236,
+    "reference_speech_start_id": 158237,
+    "reference_speech_end_id": 158238,
+    "reference_text_start_id": 158239,
+    "reference_text_end_id": 158240
+  },
+  "lm_packed": "lm/model-ternary.safetensors",
+  "lm_emb4": "lm/model-tl2-emb4.safetensors",
+  "default_weights": "packed",
+  "cpp": {
+    "version": 1,
+    "gguf": {
+      "file": "cpp/model-tq2_1.gguf",
+      "size": 1029076832
+    },
+    "decoders": {
+      "default": {
+        "torchscript": {
+          "file": "cpp/default/decoder.pt",
+          "size": 534310697
+        },
+        "voices": {
+          "file": "cpp/default/voices.json",
+          "size": 103693274
+        }
+      },
+      "student_w4": {
+        "torchscript": {
+          "file": "cpp/student_w4/decoder.pt",
+          "size": 312339253
+        },
+        "voices": {
+          "file": "cpp/student_w4/voices.json",
+          "size": 43934103
+        }
+      },
+      "student_w8": {
+        "torchscript": {
+          "file": "cpp/student_w8/decoder.pt",
+          "size": 312339253
+        },
+        "voices": {
+          "file": "cpp/student_w8/voices.json",
+          "size": 13531605
+        }
+      }
+    }
+  }
+}

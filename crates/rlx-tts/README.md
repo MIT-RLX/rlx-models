@@ -66,7 +66,7 @@ write_wav(&audio, std::path::Path::new("out.wav"))?;
 | Sampler | NativeBnns Gumbel seed 16807, β=0.01 |
 | Post | μ-law+IIR + output volume + leading silence |
 
-Backends: CPU everywhere; Metal/MLX on Apple; CUDA / wgpu / Vulkan on Linux/Windows GPU hosts (`--features cuda` / `gpu` / `all-backends`).
+Backends: CPU everywhere; Metal/MLX on macOS; CUDA / wgpu / Vulkan on Linux/Windows GPU hosts (`--features cuda` / `gpu` / `all-backends`).
 
 ## Stress / backends
 

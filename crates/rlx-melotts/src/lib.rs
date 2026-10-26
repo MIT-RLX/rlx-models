@@ -53,10 +53,10 @@ pub const TINY_TTS_LOCAL_DIR: &str = "weights/tts/tiny-tts-rlx";
 /// `weights/tts/tiny-tts-rlx` → `weights/tiny-tts-rlx` (compat symlink).
 pub fn resolve_bundle_dir() -> Result<PathBuf> {
     let mut cands: Vec<PathBuf> = Vec::new();
-    if let Ok(p) = std::env::var("RLX_MELOTTS_DIR") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_MELOTTS_DIR") {
         cands.push(PathBuf::from(p));
     }
-    if let Ok(p) = std::env::var("RLX_TINY_TTS_DIR") {
+    if let Ok(p) = rlx_ir::env::var_result("RLX_TINY_TTS_DIR") {
         cands.push(PathBuf::from(p));
     }
     cands.push(PathBuf::from(DEFAULT_LOCAL_DIR));
@@ -85,4 +85,33 @@ pub fn is_bundle_dir(dir: &Path) -> bool {
 /// valid bundle / `.rlxp`.
 pub fn load_default() -> Result<MeloTts> {
     MeloTts::load(resolve_bundle_dir()?)
+}
+
+/// Export a MeloTTS bundle as an `.rlxp` package rlx runs alone — by
+/// TinyTTS' exporter ([`rlx_tiny_tts::export::export_family`]), the bundle
+/// being TinyTTS'.
+#[cfg(feature = "export")]
+pub mod export {
+    use std::path::Path;
+
+    use rlx_core::export::{ExportOptions, ExportReport};
+
+    /// Export the MeloTTS bundle in `dir` (`config.json`, `onnx/`,
+    /// `frontend/`) as the package `out`.
+    pub fn export_rlxp(
+        dir: &Path,
+        out: &Path,
+        opts: &ExportOptions,
+    ) -> anyhow::Result<ExportReport> {
+        rlx_tiny_tts::export::export_family(dir, out, opts, "melotts")
+    }
+
+    /// Register this crate's exporter ([`rlx_core::export::register_exporter`]).
+    pub fn register() {
+        use rlx_core::export::{Exporter, register_exporter};
+        register_exporter(
+            Exporter::new("melotts", "text-to-speech", export_rlxp)
+                .claims(&["melotts", "melo", "tinytts", "tiny-tts"]),
+        );
+    }
 }

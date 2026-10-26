@@ -29,7 +29,7 @@ pub fn eval_mode(
     }
 
     // Product path: fused activations + nested fmaf.
-    if std::env::var_os("RLX_WR_GRU_PLAIN").is_none() {
+    if rlx_ir::env::var_os("RLX_WR_GRU_PLAIN").is_none() {
         return eval_with_acts(
             prev,
             rg,

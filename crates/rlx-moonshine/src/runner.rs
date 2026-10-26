@@ -34,7 +34,7 @@ pub struct MoonshineModel {
 }
 
 /// Decoder sequence-length buckets (Florence-style full-prefix graphs).
-pub(crate) const DECODER_BUCKETS: [usize; 11] = [4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256];
+pub const DECODER_BUCKETS: [usize; 11] = [4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256];
 
 /// Buckets pre-compiled before timed ASR (longer buckets compile on first use).
 const PRECOMPILE_DECODER_CAP: usize = 128;

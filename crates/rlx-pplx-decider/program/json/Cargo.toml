@@ -1,0 +1,11 @@
+# `rlx_core::ordered_json` and `image_preprocess`, for the decider's program.
+[package]
+name = "rlx-pplx-decider-json"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+serde = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

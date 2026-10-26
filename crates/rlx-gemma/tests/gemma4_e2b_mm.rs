@@ -224,7 +224,9 @@ fn e2b_fusion_places_media_tokens() {
 fn rd(p: &Path) -> Option<Vec<f32>> {
     let b = std::fs::read(p).ok()?;
     Some(
-        b.chunks_exact(4)
+        b.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )

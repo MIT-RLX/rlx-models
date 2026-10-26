@@ -25,6 +25,8 @@
 //! - XX↔XX (incl. EN→FR): `Translate the following segment into {lang}, without additional explanation.`
 
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod prompt;
 
 use anyhow::{Context, Result};

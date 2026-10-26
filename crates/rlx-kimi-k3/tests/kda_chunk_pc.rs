@@ -18,7 +18,7 @@ use rlx_runtime::{CompiledGraph, Device};
 use std::collections::HashMap;
 
 fn dev() -> Device {
-    match std::env::var("RLX_TEST_DEVICE").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_TEST_DEVICE").ok().as_deref() {
         Some("metal") | Some("mtl") => Device::Metal,
         Some("mlx") => Device::Mlx,
         Some("gpu") | Some("wgpu") => Device::Gpu,
@@ -341,13 +341,13 @@ fn full_kda_layer_chunked_matches_native() {
     let hin = fill(d.batch * d.seq * hidden, 100, 0.2);
 
     // Native sequential path (flag unset).
-    unsafe { std::env::remove_var("RLX_KDA_CHUNK") };
+    rlx_ir::env::remove("RLX_KDA_CHUNK");
     let y_native = build_and_run_layer(d, &w, &hin);
 
     // FlashKDA chunked-parallel path.
-    unsafe { std::env::set_var("RLX_KDA_CHUNK", "16") };
+    rlx_ir::env::set("RLX_KDA_CHUNK", "16");
     let y_chunk = build_and_run_layer(d, &w, &hin);
-    unsafe { std::env::remove_var("RLX_KDA_CHUNK") };
+    rlx_ir::env::remove("RLX_KDA_CHUNK");
 
     assert_eq!(y_native.len(), y_chunk.len());
     assert!(

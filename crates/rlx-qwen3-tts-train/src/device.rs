@@ -19,7 +19,6 @@ use anyhow::{Context, Result, ensure};
 use rlx_cli::parse_standard_device;
 use rlx_core::STANDARD_DEVICE_NAMES;
 use rlx_runtime::{Device, is_available};
-use std::env;
 
 const FAMILY: &str = "qwen3-tts-train";
 
@@ -28,7 +27,7 @@ pub fn resolve_train_device(requested: Option<&str>) -> Result<Device> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| env::var("RLX_DEVICE").ok())
+        .or_else(|| rlx_ir::env::var_result("RLX_DEVICE").ok())
         .unwrap_or_else(|| "auto".to_string());
 
     if name.eq_ignore_ascii_case("auto") {

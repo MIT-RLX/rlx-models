@@ -4,7 +4,7 @@
 //!
 //! Run:
 //! ```bash
-//! RLX_TAP_ALL=1 cargo run --release -p rlx-gemma --features apple-silicon --example e2b_backend_traj
+//! RLX_TAP_ALL=1 cargo run --release -p rlx-gemma --features macos-gpu --example e2b_backend_traj
 //! ```
 
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ use rlx_runtime::Device;
 const PROMPT_IDS: &[u32] = &[818, 5279, 529, 7001, 563];
 
 fn ckpt_dir() -> Result<PathBuf> {
-    if let Some(d) = std::env::var_os("RLX_GEMMA4_E2B_DIR") {
+    if let Some(d) = rlx_ir::env::var_os("RLX_GEMMA4_E2B_DIR") {
         let p = PathBuf::from(d);
         if p.join("config.json").is_file() {
             return Ok(p);
@@ -94,7 +94,7 @@ fn run(
 }
 
 fn main() -> Result<()> {
-    if std::env::var("RLX_TAP_ALL").ok().is_none() {
+    if rlx_ir::env::var_result("RLX_TAP_ALL").ok().is_none() {
         bail!("set RLX_TAP_ALL=1");
     }
     let dir = ckpt_dir()?;

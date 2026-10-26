@@ -9,7 +9,7 @@ use rlx_tsac::{TsacBackendKind, TsacCodec, TsacOptions, default_tsac_dir, ensure
 use std::path::PathBuf;
 
 fn e2e_enabled() -> bool {
-    std::env::var("RLX_TSAC_E2E").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_TSAC_E2E").ok().as_deref() == Some("1")
 }
 
 fn fixture_wav() -> PathBuf {

@@ -1,0 +1,55 @@
+[package]
+name = "rlx-embeddinggemma"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Google EmbeddingGemma-300M text embeddings on RLX (bidirectional Gemma 3 trunk + mean pool + dense head)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-gemma = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+serde_json = { workspace = true }
+tokenizers = { workspace = true, optional = true }
+
+[[bin]]
+name = "rlx-embeddinggemma"
+path = "src/bin/rlx_embeddinggemma.rs"
+required-features = ["tokenizer"]
+
+[dev-dependencies]
+# The export test opens the package as any rlx program does.
+rlx-text = { workspace = true }
+tempfile = "3"
+
+[features]
+default = ["tokenizer"]
+# Text in (`embed_text`); without it only `embed_ids` is available.
+tokenizer = ["dep:tokenizers"]
+# `export::export_rlxp`: a checkpoint as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export"]
+metal = ["rlx-gemma/metal"]
+mlx = ["rlx-gemma/mlx"]
+cuda = ["rlx-gemma/cuda"]
+rocm = ["rlx-gemma/rocm"]
+gpu = ["rlx-gemma/gpu"]
+webgl = ["rlx-runtime/opengl"]
+vulkan = ["rlx-gemma/vulkan"]
+coreml = ["rlx-gemma/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+
+[lints]
+workspace = true

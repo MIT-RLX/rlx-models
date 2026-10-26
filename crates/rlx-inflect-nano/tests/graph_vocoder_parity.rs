@@ -9,7 +9,7 @@ use rlx_inflect_nano::{InferOpts, InflectNano};
 use serde_json::Value;
 
 fn data_dir() -> Option<PathBuf> {
-    let base = std::env::var("RLX_INFLECT_NANO_DATA")
+    let base = rlx_ir::env::var_result("RLX_INFLECT_NANO_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/inflect-nano-rlx")
@@ -65,7 +65,7 @@ fn graph_vocoder_matches_host() {
     assert!(worst < 1e-3, "graph vocoder parity too loose: {worst:.3e}");
 }
 
-/// Same graph, compiled + run on Metal (Apple GPU). Validates the multi-backend
+/// Same graph, compiled + run on Metal (Metal GPU). Validates the multi-backend
 /// path on real GPU hardware and reports timing vs the host-eager path.
 #[cfg(feature = "metal")]
 #[test]

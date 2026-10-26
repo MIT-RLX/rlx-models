@@ -47,7 +47,9 @@ fn read_f32(st: &SafeTensors, name: &str) -> (Vec<f32>, Vec<usize>) {
         .unwrap_or_else(|_| panic!("golden tensor {name} missing"));
     let bytes = t.data();
     let v: Vec<f32> = bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     (v, t.shape().to_vec())
@@ -82,8 +84,8 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 #[test]
 fn ssflow_dit_matches_pytorch() {
     let (Ok(ckpt), Ok(refp)) = (
-        std::env::var("RLX_TRELLIS2_SSFLOW_CKPT"),
-        std::env::var("RLX_TRELLIS2_SSFLOW_REF"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SSFLOW_CKPT"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SSFLOW_REF"),
     ) else {
         eprintln!(
             "skipping ssflow parity: set RLX_TRELLIS2_SSFLOW_CKPT and RLX_TRELLIS2_SSFLOW_REF"
@@ -202,8 +204,8 @@ fn tokens_to_cdhw(t: &[f32], n_pos: usize, ch: usize) -> Vec<f32> {
 #[test]
 fn ssflow_sampler_matches_pytorch() {
     let (Ok(ckpt), Ok(refp)) = (
-        std::env::var("RLX_TRELLIS2_SSFLOW_CKPT"),
-        std::env::var("RLX_TRELLIS2_SSFLOW_SAMPLE_REF"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SSFLOW_CKPT"),
+        rlx_ir::env::var_result("RLX_TRELLIS2_SSFLOW_SAMPLE_REF"),
     ) else {
         eprintln!(
             "skipping sampler parity: set RLX_TRELLIS2_SSFLOW_CKPT + RLX_TRELLIS2_SSFLOW_SAMPLE_REF"

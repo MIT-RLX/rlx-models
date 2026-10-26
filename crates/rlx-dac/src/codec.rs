@@ -73,7 +73,7 @@ impl DacCodec {
     /// Run the encoder on the selected backend. CPU uses the exact ndarray
     /// reference; every other backend runs the compiled rlx graph.
     fn encode_z(&self, input: ArrayView2<f32>) -> Result<Array2<f32>> {
-        if self.device == Device::Cpu && std::env::var_os("RLX_DAC_CPU_GRAPH").is_none() {
+        if self.device == Device::Cpu && rlx_ir::env::var_os("RLX_DAC_CPU_GRAPH").is_none() {
             return Ok(self.encoder.forward(input));
         }
         let in_len = input.shape()[1];
@@ -91,7 +91,7 @@ impl DacCodec {
 
     /// Run the decoder on the selected backend (see [`Self::encode_z`]).
     fn decode_z(&self, z_q: ArrayView2<f32>) -> Result<Array2<f32>> {
-        if self.device == Device::Cpu && std::env::var_os("RLX_DAC_CPU_GRAPH").is_none() {
+        if self.device == Device::Cpu && rlx_ir::env::var_os("RLX_DAC_CPU_GRAPH").is_none() {
             return Ok(self.decoder.forward(z_q));
         }
         let (in_c, in_t) = (z_q.shape()[0], z_q.shape()[1]);

@@ -148,15 +148,14 @@ impl ArenaPin {
     fn new() -> Self {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: the lock serializes every writer of this variable in-process.
-        unsafe { std::env::set_var("RLX_ARENA_NO_REUSE", "1") };
+        rlx_ir::env::set("RLX_ARENA_NO_REUSE", "1");
         ArenaPin(g)
     }
 }
 
 impl Drop for ArenaPin {
     fn drop(&mut self) {
-        unsafe { std::env::remove_var("RLX_ARENA_NO_REUSE") };
+        rlx_ir::env::remove("RLX_ARENA_NO_REUSE");
     }
 }
 

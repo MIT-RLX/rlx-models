@@ -3,9 +3,9 @@
 //! native_smoke` (add `native-metal`/`native-mlx`/… + `--device` for GPU).
 
 fn main() -> anyhow::Result<()> {
-    let dir = std::env::var("RLX_CHATTERBOX_DIR")
+    let dir = rlx_ir::env::var_result("RLX_CHATTERBOX_DIR")
         .unwrap_or_else(|_| "weights/tts/chatterbox".to_string());
-    let dev = std::env::var("RLX_DEVICE").unwrap_or_else(|_| "cpu".to_string());
+    let dev = rlx_ir::env::var_result("RLX_DEVICE").unwrap_or_else(|_| "cpu".to_string());
     let device = rlx_chatterbox::parse_device(&dev).unwrap_or(rlx_chatterbox::Device::Cpu);
     let path = std::path::Path::new(&dir);
     if !path.join("onnx/embed_tokens.onnx").exists() {
@@ -18,9 +18,9 @@ fn main() -> anyhow::Result<()> {
     assert_eq!(hidden, 1024, "expected hidden 1024");
 
     // De-risk the re-exported CFM estimator (the loop body) if present.
-    if std::env::var_os("RLX_EST").is_some() && path.join("onnx/cfm_estimator.onnx").exists() {
+    if rlx_ir::env::var_os("RLX_EST").is_some() && path.join("onnx/cfm_estimator.onnx").exists() {
         let t = std::time::Instant::now();
-        let b: usize = std::env::var("RLX_EST_B")
+        let b: usize = rlx_ir::env::var_result("RLX_EST_B")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(2);
@@ -34,10 +34,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Vocoder-stage bisection: run hift_f0 / hift_src on a dumped mel.
-    if let Some(melp) = std::env::var_os("RLX_BISECT") {
+    if let Some(melp) = rlx_ir::env::var_os("RLX_BISECT") {
         let bytes = std::fs::read(&melp)?;
         let mel: Vec<f32> = bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let t = mel.len() / 80;
@@ -60,17 +62,17 @@ fn main() -> anyhow::Result<()> {
 
     // Greedy token-parity of the native (rlx-llama32) T3 LM vs the ONNX-imported
     // LM in the real AR loop. `RLX_PARITY=1 RLX_FRAMES=N`.
-    if std::env::var_os("RLX_PARITY").is_some() {
+    if rlx_ir::env::var_os("RLX_PARITY").is_some() {
         let (reference, ref_sr) = load_reference(path);
-        let max_frames: usize = std::env::var("RLX_FRAMES")
+        let max_frames: usize = rlx_ir::env::var_result("RLX_FRAMES")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(24);
-        let text = std::env::var("RLX_TEXT")
+        let text = rlx_ir::env::var_result("RLX_TEXT")
             .unwrap_or_else(|_| "The quick brown fox jumps over the lazy dog.".to_string());
         let opts = rlx_chatterbox::SynthOpts {
             max_frames,
-            greedy: std::env::var_os("RLX_CB_GREEDY").is_some(),
+            greedy: rlx_ir::env::var_os("RLX_CB_GREEDY").is_some(),
             ..Default::default()
         };
         let (agree, total, first_div, mean_cos) =
@@ -85,24 +87,24 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Full end-to-end synthesize (all graphs + AR loop) when RLX_FULL is set.
-    if std::env::var_os("RLX_FULL").is_some() {
+    if rlx_ir::env::var_os("RLX_FULL").is_some() {
         // Real reference voice if present (better speaker conditioning + a
         // whisper-checkable result); else a 3 s 220 Hz tone.
         let (reference, ref_sr) = load_reference(path);
-        let max_frames: usize = std::env::var("RLX_FRAMES")
+        let max_frames: usize = rlx_ir::env::var_result("RLX_FRAMES")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(8);
-        let text = std::env::var("RLX_TEXT")
+        let text = rlx_ir::env::var_result("RLX_TEXT")
             .unwrap_or_else(|_| "The quick brown fox jumps over the lazy dog.".to_string());
         let opts = rlx_chatterbox::SynthOpts {
             max_frames,
-            greedy: std::env::var_os("RLX_CB_GREEDY").is_some(),
+            greedy: rlx_ir::env::var_os("RLX_CB_GREEDY").is_some(),
             ..Default::default()
         };
         // `RLX_WARM=N` runs synthesize N times (in-process) to show the warm
         // steady-state (2nd+ calls reuse compiled graphs).
-        let runs: usize = std::env::var("RLX_WARM")
+        let runs: usize = rlx_ir::env::var_result("RLX_WARM")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
@@ -118,13 +120,14 @@ fn main() -> anyhow::Result<()> {
                 t.elapsed(),
             );
         }
-        let out = std::env::var("RLX_OUT").unwrap_or_else(|_| "cb_native.wav".to_string());
+        let out =
+            rlx_ir::env::var_result("RLX_OUT").unwrap_or_else(|_| "cb_native.wav".to_string());
         cb.write_wav(&audio, std::path::Path::new(&out))?;
         println!("[native_smoke] wrote {out}");
 
         // End-to-end whisper round-trip (RLX_WHISPER_DIR override, else
         // .cache/whisper-tiny). Confirms the fully-native pipeline is intelligible.
-        let wd = std::env::var("RLX_WHISPER_DIR")
+        let wd = rlx_ir::env::var_result("RLX_WHISPER_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| {
                 std::path::Path::new("/Users/Shared/rlx-models/.cache/whisper-tiny").to_path_buf()
@@ -164,7 +167,7 @@ fn main() -> anyhow::Result<()> {
 
 /// Load a reference wav (`RLX_REF` override, else `default_voice.wav`), else a tone.
 fn load_reference(dir: &std::path::Path) -> (Vec<f32>, u32) {
-    let p = std::env::var("RLX_REF")
+    let p = rlx_ir::env::var_result("RLX_REF")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| dir.join("default_voice.wav"));
     if let Ok(mut r) = hound::WavReader::open(&p) {

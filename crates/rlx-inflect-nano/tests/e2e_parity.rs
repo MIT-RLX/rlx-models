@@ -8,7 +8,7 @@ use safetensors::SafeTensors;
 use serde_json::Value;
 
 fn data_dir() -> Option<PathBuf> {
-    let base = std::env::var("RLX_INFLECT_NANO_DATA")
+    let base = rlx_ir::env::var_result("RLX_INFLECT_NANO_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/inflect-nano-rlx")
@@ -20,7 +20,9 @@ fn read_f32(st: &SafeTensors, name: &str) -> Vec<f32> {
     st.tensor(name)
         .unwrap()
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

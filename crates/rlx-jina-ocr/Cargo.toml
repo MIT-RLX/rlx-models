@@ -11,6 +11,7 @@ categories.workspace = true
 repository.workspace = true
 
 [dependencies]
+rlx-ir = { workspace = true }
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
 rlx-runtime = { workspace = true }
@@ -34,7 +35,7 @@ rocm = ["rlx-runtime/rocm", "rlx-unlimited-ocr/rocm"]
 gpu = ["rlx-runtime/gpu", "rlx-unlimited-ocr/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-unlimited-ocr/vulkan"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+macos-gpu = ["metal", "mlx", "gpu"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]

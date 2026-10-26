@@ -35,7 +35,7 @@ metal = ["rlx-runtime/metal"]
 mlx = ["rlx-runtime/mlx"]
 cuda = ["rlx-runtime/cuda"]
 all-backends = ["metal", "mlx", "cuda"]
-apple-silicon = ["metal", "mlx"]
+macos-gpu = ["metal", "mlx"]
 
 [[bin]]
 name = "rlx-qwen3-tts-train"

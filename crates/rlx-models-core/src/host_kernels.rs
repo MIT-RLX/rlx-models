@@ -83,6 +83,11 @@ pub fn matmul(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usiz
     blas::sgemm(a, b, out, m, k, n);
 }
 
+/// `out += a @ b` (row-major; `a` `[m, k]`, `b` `[k, n]`).
+pub fn matmul_accumulate(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
+    blas::sgemm_accumulate(a, b, out, m, k, n);
+}
+
 /// `out = alpha * a @ b^T` (no bias). `b` is `[n, k]`.
 pub fn matmul_bt(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize, alpha: f32) {
     blas::sgemm_bt(a, b, out, m, k, n, alpha);

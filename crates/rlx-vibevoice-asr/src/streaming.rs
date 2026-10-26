@@ -67,7 +67,7 @@ impl StreamingAsr {
         let (acoustic, semantic) = store.load_vae_pair()?;
         let lm = StreamLm::load(store, &cfg.lm, device)?;
         let tok = VibeTokenizer::from_file(&model_dir.join("tokenizer.json"))?;
-        let encode_mode = match std::env::var("RLX_VIBEVOICE_ASR_ENCODE")
+        let encode_mode = match rlx_ir::env::var_result("RLX_VIBEVOICE_ASR_ENCODE")
             .unwrap_or_default()
             .to_ascii_lowercase()
             .as_str()
@@ -100,7 +100,7 @@ impl StreamingAsr {
     }
 
     fn timing_enabled() -> bool {
-        std::env::var("RLX_VIBEVOICE_ASR_TIMING").is_ok()
+        rlx_ir::env::var_result("RLX_VIBEVOICE_ASR_TIMING").is_ok()
     }
 
     /// Encode a PCM segment → speech features `[n_frames, hidden]` (acoustic +

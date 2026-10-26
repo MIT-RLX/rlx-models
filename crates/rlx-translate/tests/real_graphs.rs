@@ -13,12 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Loads every Espresso graph macOS installed and checks the reader against
+//! Loads every network graph macOS installed and checks the reader against
 //! them. Skips when no language pack is installed.
 
 use rlx_translate::assets::Assets;
-use rlx_translate::espresso::Manifest;
 use rlx_translate::net::Graph;
+use rlx_translate::netfile::Manifest;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -117,7 +117,7 @@ fn no_graph_uses_a_layer_type_outside_the_known_set() {
     }
     assert!(
         unknown.is_empty(),
-        "unhandled Espresso layer types: {unknown:?}"
+        "unhandled network layer types: {unknown:?}"
     );
 }
 

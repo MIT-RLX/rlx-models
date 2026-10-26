@@ -65,7 +65,7 @@ cargo run -p rlx-llm-bench --release --features metal -- mmlu \
 ```
 
 Backends are cargo features that fan out to the runtime and the model adapters:
-`--features metal|mlx|cuda|rocm|gpu|vulkan|coreml` (or `all-backends`, `apple-silicon`).
+`--features metal|mlx|cuda|rocm|gpu|vulkan|coreml` (or `all-backends`, `macos-gpu`).
 
 ## Datasets
 

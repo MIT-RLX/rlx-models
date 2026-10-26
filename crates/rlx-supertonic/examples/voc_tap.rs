@@ -10,7 +10,7 @@ use rlx_tiny_tts::model::TinyModel;
 fn main() -> anyhow::Result<()> {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../weights/tts/supertonic-3/onnx");
-    let dev = match std::env::var("RLX_DEV").as_deref() {
+    let dev = match rlx_ir::env::var_result("RLX_DEV").as_deref() {
         Ok("metal") => Device::Metal,
         Ok("mlx") => Device::Mlx,
         Ok("gpu") => Device::Gpu,
@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
         .compile_named("vocoder", dev, l, &[("latent_length", l)])
         .map_err(|e| anyhow::anyhow!("compile vocoder: {e:#}"))?;
     let out = g.run_typed(&[("latent", &lat_b, DType::F32)]);
-    let taps: Vec<String> = std::env::var("RLX_ONNX_TAP")
+    let taps: Vec<String> = rlx_ir::env::var_result("RLX_ONNX_TAP")
         .unwrap_or_default()
         .split(',')
         .map(|s| s.trim().to_string())
@@ -57,7 +57,9 @@ fn main() -> anyhow::Result<()> {
     );
     for (i, (bytes, _dt)) in out.iter().enumerate() {
         let v: Vec<f32> = bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
         let amax = v.iter().fold(0.0f32, |m, &x| m.max(x.abs()));

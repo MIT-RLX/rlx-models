@@ -32,7 +32,9 @@ fn f32_le(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 fn as_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -80,16 +82,17 @@ fn main() -> Result<()> {
     let nat: PathBuf =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/chatterbox/native");
     let cfg = Llama32Config::from_file(&nat.join("t3_config.json"))?;
-    let device =
-        rlx_runtime::parse_device(&std::env::var("RLX_DEVICE").unwrap_or_else(|_| "cpu".into()))
-            .unwrap_or(Device::Cpu);
+    let device = rlx_runtime::parse_device(
+        &rlx_ir::env::var_result("RLX_DEVICE").unwrap_or_else(|_| "cpu".into()),
+    )
+    .unwrap_or(Device::Cpu);
     println!("[kv] device = {device:?}");
     let cache = AotCache::new(std::env::temp_dir().join(format!("rlx_t3_kv_parity_{device:?}")));
 
     // Prompt length; then one decode step to position T. `RLX_T3_KV_T=1` makes the only past
     // position 0, where RoPE is the identity — so a pre- vs post-RoPE export mix-up is invisible
     // there and visible for t > 1.
-    let t: usize = std::env::var("RLX_T3_KV_T")
+    let t: usize = rlx_ir::env::var_result("RLX_T3_KV_T")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(6);
@@ -137,7 +140,7 @@ fn main() -> Result<()> {
     //        real KV padded to `upper` rows; mask keeps [0,past_seq)+new@upper. ---
     // Bucket size. `RLX_T3_KV_UPPER=<n>` to vary it; `n == t` removes the zero padding, which
     // separates "the KV handoff is wrong" from "the padded/masked bucket is wrong".
-    let upper: usize = std::env::var("RLX_T3_KV_UPPER")
+    let upper: usize = rlx_ir::env::var_result("RLX_T3_KV_UPPER")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(12);
@@ -184,7 +187,7 @@ fn main() -> Result<()> {
     din.push(("mask".into(), f32_le(&mask), DType::F32));
     // `RLX_T3_KV_POS` overrides the decode position, to pin down whether the flow wants the
     // absolute position of the new token or its index in the bucket.
-    let pos_val: f32 = std::env::var("RLX_T3_KV_POS")
+    let pos_val: f32 = rlx_ir::env::var_result("RLX_T3_KV_POS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(t as f32);

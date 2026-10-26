@@ -8,7 +8,7 @@ pub fn parse_moshi_device(name: &str) -> Result<Device> {
 
 /// Devices to exercise in multi-backend tests (env `RLX_MOSHI_DEVICES`).
 pub fn test_devices() -> Vec<Device> {
-    let raw = std::env::var("RLX_MOSHI_DEVICES").unwrap_or_else(|_| "cpu".into());
+    let raw = rlx_ir::env::var_result("RLX_MOSHI_DEVICES").unwrap_or_else(|_| "cpu".into());
     if raw.eq_ignore_ascii_case("all") {
         return all_compiled_devices();
     }

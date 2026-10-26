@@ -17,14 +17,14 @@ use rlx_whisper::{SAMPLE_RATE as WHISPER_RATE, WhisperRunner};
 const TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 
 fn env_dir(var: &str, default: &str) -> Option<PathBuf> {
-    let d = std::env::var(var)
+    let d = rlx_ir::env::read(var)
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(default));
     d.exists().then_some(d)
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         if p.join("config.json").exists() {
             return Some(p);

@@ -28,19 +28,20 @@ fn main() -> Result<()> {
         .cloned()
         .unwrap_or_else(|| "parler_out.wav".into());
     let description =
-        std::env::var("RLX_PARLER_VOICE").unwrap_or_else(|_| DEFAULT_DESCRIPTION.into());
+        rlx_ir::env::var_result("RLX_PARLER_VOICE").unwrap_or_else(|_| DEFAULT_DESCRIPTION.into());
 
-    let dir = std::env::var("RLX_PARLER_DIR").unwrap_or_else(|_| DEFAULT_LOCAL_DIR.into());
-    let dac = std::env::var("RLX_DAC_DIR").unwrap_or_else(|_| DEFAULT_DAC_DIR.into());
-    let device = std::env::var("RLX_DEVICE")
+    let dir =
+        rlx_ir::env::var_result("RLX_PARLER_DIR").unwrap_or_else(|_| DEFAULT_LOCAL_DIR.into());
+    let dac = rlx_ir::env::var_result("RLX_DAC_DIR").unwrap_or_else(|_| DEFAULT_DAC_DIR.into());
+    let device = rlx_ir::env::var_result("RLX_DEVICE")
         .ok()
         .and_then(|s| parse_device(&s).ok())
         .unwrap_or(Device::Cpu);
-    let max_steps = std::env::var("RLX_PARLER_STEPS")
+    let max_steps = rlx_ir::env::var_result("RLX_PARLER_STEPS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(128usize);
-    let greedy = std::env::var_os("RLX_PARLER_GREEDY").is_some();
+    let greedy = rlx_ir::env::var_os("RLX_PARLER_GREEDY").is_some();
 
     let t0 = std::time::Instant::now();
     let p = NativeParler::open(&dir, &dac, device)?;

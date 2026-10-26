@@ -102,7 +102,7 @@ Forward signature:
 
 ```bash
 just test-hoct-parity                          # weights + JIT fixtures + pipeline
-just features=apple-silicon test-hoct-backends # Metal / MLX / wgpu score head
+just features=macos-gpu test-hoct-backends # Metal / MLX / wgpu score head
 just features=cuda test-hoct-backends          # CUDA (e.g. on an NVIDIA host)
 ```
 

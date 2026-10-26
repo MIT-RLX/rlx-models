@@ -66,7 +66,7 @@ fn bench_infer_opts(text: &str) -> InferOpts {
     let words = text.split_whitespace().count().max(1);
     // Keep fox-length cells under ~2 min on CPU AR (~1.5s/step).
     let scaled = (words * 8 + 32).clamp(48, 96);
-    opts.max_new_tokens = std::env::var("RLX_METAVOICE_MAX_TOKENS")
+    opts.max_new_tokens = rlx_ir::env::var_result("RLX_METAVOICE_MAX_TOKENS")
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(scaled);

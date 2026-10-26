@@ -9,9 +9,9 @@ const DESC: &str = "Realistic female voice in her 20s with a British accent. Nor
 const TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 
 fn main() -> anyhow::Result<()> {
-    let gguf = std::env::var("RLX_MAYA1_GGUF")?;
+    let gguf = rlx_ir::env::var_result("RLX_MAYA1_GGUF")?;
     let snac = std::env::var("ORPHEUS_SNAC_PATH")?;
-    let dev = match std::env::var("RLX_DEV").as_deref() {
+    let dev = match rlx_ir::env::var_result("RLX_DEV").as_deref() {
         Ok("metal") => Device::Metal,
         Ok("mlx") => Device::Mlx,
         Ok("gpu") => Device::Gpu,

@@ -13,10 +13,12 @@ use rlx_soprano::{InferOpts, NativeSoprano, parse_device};
 
 fn setup() -> Option<(NativeSoprano, SopranoQwen3)> {
     let st = std::env::var("SOPRANO_BACKBONE_ST").ok()?;
-    let dir = std::env::var("RLX_SOPRANO_DIR").unwrap_or_else(|_| "weights/tts/soprano".into());
-    let device =
-        parse_device(&std::env::var("RLX_SOPRANO_DEVICE").unwrap_or_else(|_| "cpu".into()))
-            .unwrap();
+    let dir =
+        rlx_ir::env::var_result("RLX_SOPRANO_DIR").unwrap_or_else(|_| "weights/tts/soprano".into());
+    let device = parse_device(
+        &rlx_ir::env::var_result("RLX_SOPRANO_DEVICE").unwrap_or_else(|_| "cpu".into()),
+    )
+    .unwrap();
     let onnx = NativeSoprano::open(&dir, device).expect("open onnx backbone");
     let native = SopranoQwen3::open(Path::new(&st), device).expect("open native backbone");
     Some((onnx, native))

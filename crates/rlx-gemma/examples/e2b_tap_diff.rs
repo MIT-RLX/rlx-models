@@ -42,7 +42,7 @@ const PROMPT_IDS: &[u32] = &[818, 5279, 529, 7001, 563, 7001];
 const BUCKET: usize = 16;
 
 fn ckpt_dir() -> Result<PathBuf> {
-    if let Some(d) = std::env::var_os("RLX_GEMMA4_E2B_DIR") {
+    if let Some(d) = rlx_ir::env::var_os("RLX_GEMMA4_E2B_DIR") {
         let p = PathBuf::from(d);
         if p.join("config.json").is_file() {
             return Ok(p);
@@ -154,7 +154,7 @@ const TAP_NAMES: &[&str] = &[
 ];
 
 fn main() -> Result<()> {
-    if std::env::var("RLX_TAP_L0").ok().is_none() {
+    if rlx_ir::env::var_result("RLX_TAP_L0").ok().is_none() {
         bail!("set RLX_TAP_L0=1 to enable the layer-0 taps");
     }
     let dir = ckpt_dir()?;

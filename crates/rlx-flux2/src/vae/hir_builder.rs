@@ -176,12 +176,15 @@ impl<'a> VaeHirBuilder<'a> {
         x = self.conv2d_bias(x, &self.weights.conv_in, "conv_in", channels, h, w)?;
         channels = self.weights.conv_in.out_c;
 
+        // diffusers `UNetMidBlock2D`: resnet₀ → attention → resnet₁.
         for (i, resnet) in self.weights.mid_resnets.iter().enumerate() {
             x = self.resnet_block(x, resnet, &format!("mid.{i}"), channels, h, w)?;
             channels = resnet.conv2.out_c;
-        }
-        if let Some(attn) = &self.weights.mid_attn {
-            x = self.spatial_attention(x, attn, "mid.attn", channels, h, w)?;
+            if i == 0
+                && let Some(attn) = &self.weights.mid_attn
+            {
+                x = self.spatial_attention(x, attn, "mid.attn", channels, h, w)?;
+            }
         }
 
         for (i, block) in self.weights.up_blocks.iter().enumerate() {
@@ -244,12 +247,15 @@ impl<'a> VaeHirBuilder<'a> {
             w = ww;
         }
 
+        // diffusers `UNetMidBlock2D`: resnet₀ → attention → resnet₁.
         for (i, resnet) in self.weights.encoder_mid_resnets.iter().enumerate() {
             x = self.resnet_block(x, resnet, &format!("encoder.mid.{i}"), channels, h, w)?;
             channels = resnet.conv2.out_c;
-        }
-        if let Some(attn) = &self.weights.encoder_mid_attn {
-            x = self.spatial_attention(x, attn, "encoder.mid.attn", channels, h, w)?;
+            if i == 0
+                && let Some(attn) = &self.weights.encoder_mid_attn
+            {
+                x = self.spatial_attention(x, attn, "encoder.mid.attn", channels, h, w)?;
+            }
         }
 
         let shape = self.nchw(channels, h, w);
@@ -385,22 +391,25 @@ impl<'a> VaeHirBuilder<'a> {
         let seq = h * w;
         let batch = self.batch;
         let bsh = Shape::new(&[batch, seq, channels], self.f);
-        let q2 = self
-            .g()
-            .reshape_(q, vec![batch as i64, seq as i64, channels as i64]);
-        let k2 = self
-            .g()
-            .reshape_(k, vec![batch as i64, seq as i64, channels as i64]);
-        let v2 = self
-            .g()
-            .reshape_(v, vec![batch as i64, seq as i64, channels as i64]);
+        // NCHW → [B, H·W, C]: a transpose, not a reshape (the channel axis
+        // must become the feature axis, token-major).
+        let (b, n, c) = (batch as i64, seq as i64, channels as i64);
+        let tokens = |g: &mut HirMut<'_>, t: HirNodeId| {
+            let flat = g.reshape_(t, vec![b, c, n]);
+            g.transpose_(flat, vec![0, 2, 1])
+        };
+        let (q2, k2, v2) = {
+            let mut g = self.g();
+            (tokens(&mut g, q), tokens(&mut g, k), tokens(&mut g, v))
+        };
         let fixed = self
             .g()
             .attention_kind(q2, k2, v2, 1, channels, MaskKind::None, bsh.clone());
-        let fixed4 = self.g().reshape_(
-            fixed,
-            vec![batch as i64, channels as i64, h as i64, w as i64],
-        );
+        let fixed4 = {
+            let mut g = self.g();
+            let t = g.transpose_(fixed, vec![0, 2, 1]);
+            g.reshape_(t, vec![b, c, h as i64, w as i64])
+        };
         let proj = self.conv2d_bias(
             fixed4,
             &attn.to_out,
@@ -488,9 +497,16 @@ impl<'a> VaeHirBuilder<'a> {
         let w_shape = Shape::new(&[conv.out_c, conv.in_c, 3, 3], self.f);
         let weight = self.register_param(&format!("{name}.weight"), conv.weight.clone(), w_shape);
         let out_shape = self.nchw(conv.out_c, out_h, out_w);
-        let y = self
-            .g()
-            .conv2d(x, weight, [3, 3], [2, 2], [1, 1], 1, out_shape.clone());
+        // LDM `Downsample`: pad bottom/right by one (`F.pad(x, (0, 1, 0, 1))`),
+        // then an unpadded stride-2 conv. A symmetric `padding = 1` gives the
+        // same output size but samples every window one pixel up and left.
+        let mut g = self.g();
+        let padded = g.pad_(
+            x,
+            vec![[0, 0], [0, 0], [0, 1], [0, 1]],
+            rlx_ir::op::PadMode::Constant(0.0),
+        );
+        let y = g.conv2d(padded, weight, [3, 3], [2, 2], [0, 0], 1, out_shape.clone());
         let bias = self.register_param(
             &format!("{name}.bias"),
             conv.bias.clone(),

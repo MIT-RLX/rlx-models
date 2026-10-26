@@ -31,7 +31,7 @@ use rlx_runtime::Device;
 use std::path::PathBuf;
 
 fn cache_dir() -> PathBuf {
-    std::env::var("RLX_WHISPER_DIR")
+    rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache/whisper-tiny")
@@ -39,7 +39,7 @@ fn cache_dir() -> PathBuf {
 }
 
 fn jfk_wav() -> PathBuf {
-    std::env::var("RLX_WHISPER_WAV")
+    rlx_ir::env::var_result("RLX_WHISPER_WAV")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache/whisper-bench/jfk_16k.wav")

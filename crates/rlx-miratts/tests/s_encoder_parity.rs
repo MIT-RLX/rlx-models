@@ -21,12 +21,16 @@ fn s_encoder_matches_ort_fixture() {
     }
     let mel_bytes = std::fs::read(&mel_path).unwrap();
     let mel: Vec<f32> = mel_bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let ref_tok: Vec<u32> = std::fs::read(&tok_path)
         .unwrap()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as u32)
         .collect();
     assert_eq!(ref_tok.len(), 32);

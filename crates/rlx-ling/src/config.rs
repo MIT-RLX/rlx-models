@@ -219,7 +219,7 @@ fn d_pad() -> u32 {
 
 impl LingConfig {
     pub fn from_json_str(s: &str) -> Result<Self> {
-        Ok(serde_json::from_str(s)?)
+        rlx_core::config::from_hf_json(s)
     }
 
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {

@@ -19,8 +19,10 @@ sys.stdout.buffer.write(z['expr-voice-2-m'][6].astype('float32').tobytes())
         .output()
         .unwrap();
     o.stdout
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
@@ -65,8 +67,10 @@ fn main() -> anyhow::Result<()> {
     let outs = run_parity_inputs(&mut g, seq, &ids, &style());
     let bytes = &outs[0].0;
     let v: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     let peak = v.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
     let nz = v.iter().filter(|x| x.abs() > 1e-6).count();

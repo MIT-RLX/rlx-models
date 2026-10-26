@@ -1,0 +1,38 @@
+[package]
+name = "rlx-models-plugin"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+description = "rlx-models as an rlx model plugin: librlx_capi loads it at run time, so every rlx language binding opens these models with Model.open(path)"
+readme = "README.md"
+
+[lib]
+# `cdylib`: the plugin (RLX_MODEL_PLUGINS=…/librlx_models_plugin.*);
+# `rlib`: tests, and static linking where a platform cannot load libraries.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["runner", "whisper", "embed"]
+# The families `rlx_models::run::auto_runner` builds.
+runner = ["rlx-models/runner"]
+# Speech recognition (Whisper) and sentence embeddings (BERT / XLM-R).
+whisper = ["rlx-models/whisper"]
+embed = ["rlx-models/embed"]
+llm = ["rlx-models/llm"]
+all-models = ["rlx-models/all-models"]
+metal = ["rlx-models/metal"]
+mlx = ["rlx-models/mlx"]
+cuda = ["rlx-models/cuda"]
+
+[dependencies]
+rlx-ir = { workspace = true }
+rlx-models  = { path = "../rlx-models", version = "0.2.19", default-features = false }
+rlx-core    = { workspace = true }
+rlx-cli     = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-text    = { workspace = true }
+anyhow      = { workspace = true }
+serde_json  = { workspace = true }

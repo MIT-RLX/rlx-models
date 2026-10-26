@@ -37,7 +37,7 @@ pub fn make(device: Device) -> Result<Box<dyn TtsAdapter>> {
     // on every backend. Prefer an English voice ("Trump" is the validated one),
     // overridable via RLX_MOSS_VOICE.
     let voices = inner.voice_names();
-    let voice = std::env::var("RLX_MOSS_VOICE")
+    let voice = rlx_ir::env::var_result("RLX_MOSS_VOICE")
         .ok()
         .filter(|v| voices.iter().any(|n| n == v))
         .or_else(|| {
@@ -88,7 +88,7 @@ impl TtsAdapter for MossAdapter {
         let gap = (sr as usize) / 20 * ch; // ~50 ms
         for chunk in &chunks {
             let words = chunk.split_whitespace().count().max(1);
-            let base = std::env::var("RLX_MOSS_FRAMES")
+            let base = rlx_ir::env::var_result("RLX_MOSS_FRAMES")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(64);

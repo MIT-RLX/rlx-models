@@ -286,13 +286,5 @@ impl MiniMaxM3VlRunner {
 }
 
 fn argmax(v: &[f32]) -> u32 {
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &x) in v.iter().enumerate() {
-        if x > best_v {
-            best_v = x;
-            best = i;
-        }
-    }
-    best as u32
+    rlx_runtime::search::argmax_u32(v)
 }

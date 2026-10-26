@@ -158,7 +158,7 @@ fn dit_flow_matches_host_synthetic_cpu() {
 
 #[test]
 fn dit_flow_ss_real_weights_optional() {
-    let Ok(ckpt) = std::env::var("RLX_TRELLIS2_SSFLOW_CKPT") else {
+    let Ok(ckpt) = rlx_ir::env::var_result("RLX_TRELLIS2_SSFLOW_CKPT") else {
         eprintln!("skipping: set RLX_TRELLIS2_SSFLOW_CKPT for real-weight dit_flow parity");
         return;
     };
@@ -181,7 +181,7 @@ fn dit_flow_ss_real_weights_optional() {
     let coords = grid_coords(res);
     let t = 500.0f32;
 
-    let device = if std::env::var("RLX_TRELLIS2_DIT_DEVICE").as_deref() == Ok("metal") {
+    let device = if rlx_ir::env::var_result("RLX_TRELLIS2_DIT_DEVICE").as_deref() == Ok("metal") {
         Device::Metal
     } else {
         Device::Cpu

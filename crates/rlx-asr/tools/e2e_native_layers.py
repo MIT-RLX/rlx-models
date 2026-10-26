@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # RLX — GPLv3.
-# Apple Voice / Espresso `streaming_encoder_64_16` native forward probe.
+# Sstreaming encoder 64_16 native forward probe.
 #
 # Matches E5 capture I/O:
 #   mel 389 → ×6 → 64 enc frames

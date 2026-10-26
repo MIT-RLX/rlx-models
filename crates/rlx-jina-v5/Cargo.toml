@@ -1,0 +1,55 @@
+[package]
+name = "rlx-jina-v5"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Jina jina-embeddings-v5-text-nano on RLX (bidirectional EuroBERT trunk + task LoRA + last-token pooling)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
+rlx-llama32 = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+serde_json = { workspace = true }
+tokenizers = { workspace = true, optional = true }
+
+[[bin]]
+name = "rlx-jina-v5"
+path = "src/bin/rlx_jina_v5.rs"
+required-features = ["tokenizer"]
+
+[dev-dependencies]
+# The export test opens the package as any rlx program does.
+rlx-text = { workspace = true }
+tempfile = "3"
+
+[features]
+default = ["tokenizer"]
+# Text in (`embed_text`); without it only `embed_ids` is available.
+tokenizer = ["dep:tokenizers"]
+# `export::export_rlxp`: a checkpoint as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export"]
+metal = ["rlx-llama32/metal"]
+mlx = ["rlx-llama32/mlx"]
+cuda = ["rlx-llama32/cuda"]
+rocm = ["rlx-llama32/rocm"]
+gpu = ["rlx-llama32/gpu"]
+webgl = ["rlx-runtime/opengl"]
+vulkan = ["rlx-llama32/vulkan"]
+coreml = ["rlx-llama32/coreml"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+
+[lints]
+workspace = true

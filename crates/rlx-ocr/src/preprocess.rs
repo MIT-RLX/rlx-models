@@ -167,9 +167,9 @@ fn convert_pixels<
     let mut out_pixels = Vec::with_capacity(height * width);
     if CHANS_LAST {
         let src = src.to_contiguous();
-        let mut iter = src.data().chunks_exact(PIXEL_STRIDE);
-        debug_assert!(iter.remainder().is_empty());
-        for in_pixel in iter.by_ref() {
+        let (pixels, rest) = src.data().as_chunks::<PIXEL_STRIDE>();
+        debug_assert!(rest.is_empty());
+        for in_pixel in pixels {
             let mut pixel = BLACK_VALUE;
             for (c, &w) in chan_weights.iter().enumerate() {
                 pixel += in_pixel[c].into() * w;

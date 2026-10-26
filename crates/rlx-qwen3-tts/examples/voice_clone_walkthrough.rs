@@ -17,7 +17,7 @@
 //!
 //! Run:
 //!   cargo run --release -p rlx-qwen3-tts --example voice_clone_walkthrough \
-//!     --features apple-silicon -- \
+//!     --features macos-gpu -- \
 //!     --ref-wav assets/jfk/jfk_voice_clone.wav \
 //!     --out-dir /tmp/jfk_clones
 //!

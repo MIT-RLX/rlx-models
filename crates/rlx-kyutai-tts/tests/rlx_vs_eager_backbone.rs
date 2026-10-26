@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 fn model_dir() -> Option<PathBuf> {
     let dir = rlx_kyutai_tts::download::default_kyutai_tts_dir();
-    let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or(dir);
     dir.join(rlx_kyutai_tts::download::TTS_WEIGHTS_FILE)

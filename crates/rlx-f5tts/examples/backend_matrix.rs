@@ -18,19 +18,20 @@ const DEFAULT_REF_TEXT: &str = "Hello from Kokoro. This is a test of speech synt
 const FOX_WORDS: [&str; 6] = ["quick", "brown", "fox", "jumps", "lazy", "dog"];
 
 fn main() -> anyhow::Result<()> {
-    let model = std::env::var("RLX_F5TTS_DIR")
+    let model = rlx_ir::env::var_result("RLX_F5TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_LOCAL_DIR));
-    let text = std::env::var("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
-    let ref_text = std::env::var("RLX_REF_TEXT").unwrap_or_else(|_| DEFAULT_REF_TEXT.into());
-    let ref_path = std::env::var("RLX_REF")
+    let text = rlx_ir::env::var_result("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
+    let ref_text =
+        rlx_ir::env::var_result("RLX_REF_TEXT").unwrap_or_else(|_| DEFAULT_REF_TEXT.into());
+    let ref_path = rlx_ir::env::var_result("RLX_REF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/prompt.wav")
         });
     // Official F5 / DakeQQ ONNX default is NFE=32. NFE=16 is Whisper-OK but
     // spectrally hissy vs PyTorch; 32 matches the clean Vocos noise floor.
-    let nfe: usize = std::env::var("RLX_NFE")
+    let nfe: usize = rlx_ir::env::var_result("RLX_NFE")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(32);
@@ -147,7 +148,7 @@ fn synth_one(
 }
 
 fn parse_devices() -> Vec<(Device, &'static str)> {
-    if let Ok(raw) = std::env::var("RLX_DEVICES") {
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_DEVICES") {
         return raw
             .split(',')
             .filter_map(|s| {
@@ -189,7 +190,7 @@ fn load_whisper() -> WhisperRunner {
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         let p = PathBuf::from(d);
         return whisper_ready(&p).then_some(p);
     }

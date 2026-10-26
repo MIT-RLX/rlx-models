@@ -114,7 +114,7 @@ impl LLaDA2MoeConfig {
 
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let data = std::fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&data)?)
+        rlx_core::config::from_hf_json(&data)
     }
 
     pub fn from_tide_repo() -> anyhow::Result<Self> {

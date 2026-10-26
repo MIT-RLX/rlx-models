@@ -38,7 +38,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     #[cfg(feature = "silero")]
-    let wpath = std::env::var("RLX_VAD_SILERO_WEIGHTS").ok();
+    let wpath = rlx_ir::env::var_result("RLX_VAD_SILERO_WEIGHTS").ok();
     #[cfg(feature = "silero")]
     let w = match wpath {
         Some(p) => SileroWeights::load(p.as_ref())?,

@@ -26,7 +26,9 @@ fn read_npy_f32(p: &Path) -> Result<Vec<f32>> {
     anyhow::ensure!(&b[..6] == b"\x93NUMPY", "not npy");
     let hlen = 10 + u16::from_le_bytes([b[8], b[9]]) as usize;
     Ok(b[hlen..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
@@ -62,7 +64,7 @@ fn main() -> Result<()> {
         norm_topk_prob: c["norm_topk_prob"].as_bool().unwrap_or(true),
         rope_theta: c["rope_theta"].as_f64().unwrap_or(1_000_000.0),
         // mlx glm4_moe uses nn.RoPE(traditional=False) = NeoX (rotate-half).
-        rope_neox: std::env::var("RLX_GLM_GPTJ").is_err(),
+        rope_neox: rlx_ir::env::var_result("RLX_GLM_GPTJ").is_err(),
         rms_norm_eps: c["rms_norm_eps"].as_f64().unwrap_or(1e-5) as f32,
     };
     eprintln!(

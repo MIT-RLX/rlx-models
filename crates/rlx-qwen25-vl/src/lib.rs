@@ -42,6 +42,8 @@ pub mod cli;
 pub mod config;
 pub mod decode_side;
 pub mod eval;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod lm;
 pub mod lm_flow;
 pub mod mrope;

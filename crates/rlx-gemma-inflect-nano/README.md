@@ -23,7 +23,7 @@ just gemma-inflect-speak -- --user "What is the capital of France?"
 Or directly:
 
 ```bash
-cargo run --release -p rlx-gemma-inflect-nano --features apple-silicon \
+cargo run --release -p rlx-gemma-inflect-nano --features macos-gpu \
   --example speak -- \
   --device metal --tts-device auto \
   --user "Hello from Gemma and Inflect." \

@@ -28,13 +28,17 @@ use rlx_runtime::{AotCache, CompileOptions, Device};
 
 fn read_f32(p: &Path) -> Result<Vec<f32>> {
     let b = std::fs::read(p).with_context(|| format!("read {}", p.display()))?;
-    Ok(b.chunks_exact(4)
+    Ok(b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
 
 fn as_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -42,7 +46,7 @@ fn as_f32(b: &[u8]) -> Vec<f32> {
 fn main() -> Result<()> {
     let nat: PathBuf =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/chatterbox/native");
-    let dev = std::env::var("RLX_DEVICE").unwrap_or_else(|_| "cpu".to_string());
+    let dev = rlx_ir::env::var_result("RLX_DEVICE").unwrap_or_else(|_| "cpu".to_string());
     let device = rlx_runtime::parse_device(&dev).unwrap_or(Device::Cpu);
     println!("[parity] device = {device:?}");
     let t = 8usize; // matches native_t3_reference.py

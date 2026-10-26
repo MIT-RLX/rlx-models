@@ -38,6 +38,8 @@ mod cli;
 mod config;
 mod embed;
 mod encoder;
+#[cfg(feature = "export")]
+pub mod export;
 mod hf_config;
 mod load;
 mod prefix;

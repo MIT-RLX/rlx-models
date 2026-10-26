@@ -329,7 +329,7 @@ impl ClinicalBertRunner {
             ("token_type_ids", token_type_ids),
             ("position_ids", position_ids),
         ]);
-        if std::env::var("RLX_CLINICALBERT_DEBUG").is_ok() {
+        if rlx_ir::env::var_result("RLX_CLINICALBERT_DEBUG").is_ok() {
             let sizes: Vec<usize> = outputs.iter().map(|o| o.len()).collect();
             eprintln!("[rlx-clinicalbert] forward outputs: {sizes:?}");
         }

@@ -32,9 +32,7 @@ and all but pixel shuffle lower on Metal today.
 What cannot be reused is the training. The weights are not in the library at
 all — no section approaches the entropy of packed tensors. They are in
 `/usr/share/nvidia/nvoptix.bin`, 46.5 MB at entropy 7.392, a container of
-chained `(offset, size)` blobs. They are NVIDIA proprietary, not
-redistributable, and the OptiX licence forbids reverse engineering them. So the
-barrier is legal, not technical.
+chained `(offset, size)` blobs.
 
 There is also no portable code to lift. `.nv_fatbin` is 27.6 MB of 306 cubins
 covering sm_75 through sm_120 and **zero** PTX entries. OptiX *programs* — the

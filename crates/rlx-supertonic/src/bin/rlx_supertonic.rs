@@ -92,7 +92,7 @@ fn run() -> Result<()> {
     }
 
     let dir = data
-        .or_else(|| std::env::var_os("RLX_SUPERTONIC_DIR").map(PathBuf::from))
+        .or_else(|| rlx_ir::env::var_os("RLX_SUPERTONIC_DIR").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_LOCAL_DIR));
 
     if list {

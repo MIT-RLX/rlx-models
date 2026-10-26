@@ -1,0 +1,20 @@
+# F5-TTS's host logic as an RLX program (WebAssembly, wasm32-wasip1): the
+# reference audio's trim, the tokenizer, the chunking and the flow loop
+# around the package's graphs. Built by `rlx-f5tts`'s exporter, so it stands
+# outside the workspace.
+[package]
+name = "rlx-f5tts-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+anyhow = "1"
+serde_json = "1"
+half = "2"
+
+[workspace]

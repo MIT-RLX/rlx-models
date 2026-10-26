@@ -1,7 +1,7 @@
 //! Gepard timing bench — prefill, AR decode, NanoCodec on selected backend.
 //!
 //! ```bash
-//! cargo run -p rlx-gepard --release --example bench_timing --features apple-silicon -- \
+//! cargo run -p rlx-gepard --release --example bench_timing --features macos-gpu -- \
 //!   --device metal --text "The quick brown fox jumps over the lazy dog."
 //! ```
 
@@ -12,7 +12,7 @@ use rlx_gepard::{GepardSynthesizer, InferOpts, default_seed_for_text};
 use rlx_runtime::{Device, is_available};
 
 fn main() -> anyhow::Result<()> {
-    let dir = std::env::var("RLX_GEPARD_DIR")
+    let dir = rlx_ir::env::var_result("RLX_GEPARD_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("weights/tts/gepard"));
     anyhow::ensure!(
@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
         "missing Gepard weights"
     );
 
-    let text = std::env::var("RLX_TEXT")
+    let text = rlx_ir::env::var_result("RLX_TEXT")
         .unwrap_or_else(|_| "The quick brown fox jumps over the lazy dog.".to_string());
     let device = std::env::args()
         .skip_while(|a| a != "--device")

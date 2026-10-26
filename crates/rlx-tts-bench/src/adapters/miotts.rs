@@ -28,11 +28,11 @@ pub fn make(device: Device) -> Result<Box<dyn TtsAdapter>> {
         .hints
         .resolve_dir()
         .ok_or_else(|| anyhow::anyhow!(meta().hints.missing_reason()))?;
-    let codec_dir = std::env::var("RLX_MIOCODEC_DIR")
+    let codec_dir = rlx_ir::env::var_result("RLX_MIOCODEC_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_CODEC_DIR));
     let inner = MioSession::open(&model_dir, &codec_dir, device).context("load miotts")?;
-    let preset = std::env::var("RLX_PRESET").unwrap_or_else(|_| "en_female".into());
+    let preset = rlx_ir::env::var_result("RLX_PRESET").unwrap_or_else(|_| "en_female".into());
     Ok(Box::new(MioAdapter { inner, preset }))
 }
 

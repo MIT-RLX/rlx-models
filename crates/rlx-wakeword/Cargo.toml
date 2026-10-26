@@ -42,7 +42,7 @@ cuda = ["rlx-wake/cuda"]
 rocm = ["rlx-wake/rocm"]
 gpu = ["rlx-wake/gpu"]
 vulkan = ["rlx-wake/vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+macos-gpu = ["metal", "mlx", "gpu"]
 nvidia-gpu = ["cuda"]
 
 [[bin]]

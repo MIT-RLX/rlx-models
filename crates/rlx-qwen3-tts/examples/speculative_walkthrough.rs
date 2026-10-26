@@ -19,7 +19,7 @@
 //!
 //! Run:
 //!   cargo run --release -p rlx-qwen3-tts \
-//!     --features "apple-silicon speculative-decode dev-whisper-validate" \
+//!     --features "macos-gpu speculative-decode dev-whisper-validate" \
 //!     --example speculative_walkthrough -- \
 //!     --ref-wav assets/jfk/jfk_voice_clone.wav \
 //!     --out-dir /tmp/spec_jfk \
@@ -234,7 +234,7 @@ fn metal_realtime_second_check(model_dir: &Path, ref_wav: &Path) -> Result<()> {
         to_1s
     );
     println!("└────────────────────────────────────────────────────────────────");
-    if std::env::var("RLX_QWEN3_TTS_REALTIME_ASSERT")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_REALTIME_ASSERT")
         .ok()
         .as_deref()
         == Some("1")
@@ -410,7 +410,7 @@ mod whisper {
     }
 
     pub fn whisper_dir() -> Option<PathBuf> {
-        if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+        if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
             let p = PathBuf::from(d);
             if p.join("model.safetensors").is_file() {
                 return Some(p);
@@ -531,9 +531,7 @@ fn main() -> Result<()> {
     let args = parse_args();
     std::fs::create_dir_all(&args.out_dir)?;
     let device = pick_device();
-    unsafe {
-        std::env::set_var("RLX_QWEN3_TTS_TALKER_EAGER", "1");
-    }
+    rlx_ir::env::set("RLX_QWEN3_TTS_TALKER_EAGER", "1");
 
     let draft_label = draft_label(&args.draft_choice);
 

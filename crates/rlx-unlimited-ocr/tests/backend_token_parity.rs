@@ -21,7 +21,7 @@
 //!
 //! ```bash
 //! RLX_UNLIMITED_OCR_TOKEN_PARITY=1 cargo test -p rlx-unlimited-ocr \
-//!   --test backend_token_parity --features apple-silicon --release -- --test-threads 1
+//!   --test backend_token_parity --features macos-gpu --release -- --test-threads 1
 //! ```
 
 use rlx_runtime::Device;
@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 fn parity_enabled() -> bool {
     matches!(
-        std::env::var("RLX_UNLIMITED_OCR_TOKEN_PARITY").as_deref(),
+        rlx_ir::env::var_result("RLX_UNLIMITED_OCR_TOKEN_PARITY").as_deref(),
         Ok("1") | Ok("true") | Ok("TRUE")
     )
 }

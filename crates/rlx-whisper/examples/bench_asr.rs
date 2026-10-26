@@ -43,7 +43,7 @@ use rlx_whisper::WhisperRunner;
 
 fn main() -> Result<()> {
     // ── model dir: RLX_ASR_MODEL, fallback WHISPER_MODEL_DIR ──────────────
-    let Some(dir) = std::env::var("RLX_ASR_MODEL")
+    let Some(dir) = rlx_ir::env::var_result("RLX_ASR_MODEL")
         .ok()
         .or_else(|| std::env::var("WHISPER_MODEL_DIR").ok())
         .map(PathBuf::from)
@@ -61,7 +61,10 @@ fn main() -> Result<()> {
     }
 
     // ── audio clip: RLX_ASR_WAV (required) ────────────────────────────────
-    let Some(wav) = std::env::var("RLX_ASR_WAV").ok().map(PathBuf::from) else {
+    let Some(wav) = rlx_ir::env::var_result("RLX_ASR_WAV")
+        .ok()
+        .map(PathBuf::from)
+    else {
         return skip("RLX_ASR_WAV is unset (path to a WAV clip to benchmark)");
     };
     if !wav.is_file() {
@@ -69,11 +72,14 @@ fn main() -> Result<()> {
     }
 
     // ── device ────────────────────────────────────────────────────────────
-    let device_s = std::env::var("RLX_ASR_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device_s = rlx_ir::env::var_result("RLX_ASR_DEVICE").unwrap_or_else(|_| "cpu".into());
     let device = parse_device(&device_s)?;
 
     // ── optional reference transcript ─────────────────────────────────────
-    let reference = match std::env::var("RLX_ASR_REFERENCE").ok().map(PathBuf::from) {
+    let reference = match rlx_ir::env::var_result("RLX_ASR_REFERENCE")
+        .ok()
+        .map(PathBuf::from)
+    {
         Some(p) => Some(
             std::fs::read_to_string(&p)
                 .with_context(|| format!("read reference {}", p.display()))?,
@@ -82,7 +88,7 @@ fn main() -> Result<()> {
     };
 
     // ── chunk sweep ───────────────────────────────────────────────────────
-    let chunks = parse_chunks(&std::env::var("RLX_ASR_CHUNKS").unwrap_or_default());
+    let chunks = parse_chunks(&rlx_ir::env::var_result("RLX_ASR_CHUNKS").unwrap_or_default());
 
     // ── load clip (16 kHz mono PCM, exactly what Whisper expects) ─────────
     let (pcm, audio_s) =
@@ -91,7 +97,7 @@ fn main() -> Result<()> {
     // Multilingual Whisper checkpoints need a forced decoder language token;
     // without it the auto-detect path mis-fires and transcribes to noise. Force
     // the language (RLX_ASR_LANG, default "en"); ".en" models ignore it.
-    let lang = std::env::var("RLX_ASR_LANG").unwrap_or_else(|_| "en".into());
+    let lang = rlx_ir::env::var_result("RLX_ASR_LANG").unwrap_or_else(|_| "en".into());
     let mut runner = WhisperRunner::builder()
         .weights(&weights)
         .device(device)

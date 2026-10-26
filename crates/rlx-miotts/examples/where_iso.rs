@@ -24,11 +24,15 @@ fn main() -> anyhow::Result<()> {
     let outs = g.run_typed(&[("x", &x, rlx_runtime::DType::F32)]);
     let y: Vec<f32> = outs[0]
         .0
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let reference: Vec<f32> = std::fs::read(dir.join("where_bool_isolated_ref.f32"))?
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let mut mism = 0;

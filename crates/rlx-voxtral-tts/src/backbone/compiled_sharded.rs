@@ -32,7 +32,7 @@ use rlx_runtime::compile_cache::{BucketedCompileCache, DynamicDimCompileCache};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn wgpu_layer_shard_size() -> usize {
-    if let Ok(raw) = std::env::var("RLX_VOXTRAL_TTS_WGPU_SHARD_LAYERS")
+    if let Ok(raw) = rlx_ir::env::var_result("RLX_VOXTRAL_TTS_WGPU_SHARD_LAYERS")
         && let Ok(v) = raw.parse::<usize>()
         && v > 0
     {

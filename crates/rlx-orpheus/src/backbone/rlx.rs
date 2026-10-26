@@ -146,7 +146,7 @@ fn decode_bucket_max_past(compile_cap: usize) -> usize {
 }
 
 fn env_flag(name: &str) -> Option<bool> {
-    match std::env::var(name).ok().as_deref() {
+    match rlx_ir::env::read(name).ok().as_deref() {
         Some("1") | Some("true") | Some("TRUE") => Some(true),
         Some("0") | Some("false") | Some("FALSE") => Some(false),
         _ => None,
@@ -623,13 +623,13 @@ mod tests {
 
     impl EnvGuard {
         fn set(key: &'static str, val: &str) -> Self {
-            let prev = std::env::var(key).ok();
+            let prev = rlx_ir::env::read(key).ok();
             unsafe { std::env::set_var(key, val) };
             Self { key, prev }
         }
 
         fn unset(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
+            let prev = rlx_ir::env::read(key).ok();
             unsafe { std::env::remove_var(key) };
             Self { key, prev }
         }

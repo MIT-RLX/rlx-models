@@ -10,7 +10,7 @@
 //! * **coverage** — did the direction produce a translation at all. This is
 //!   what the pivot work changed, and it needs no reference.
 //! * **chrF against the OS** — only meaningful where a reference exists.
-//!   `RLX_TRANSLATE_REFERENCE` defaults to the *non-lexicon* dump, because the
+//!   `RLX_TRANSLATE_REFERENCE` should point at the *non-lexicon* dump, because the
 //!   original one was built by sampling the phrasebook and cannot exercise the
 //!   NMT; scores on it measure the lexicon. Which producer answered is reported
 //!   either way.
@@ -34,14 +34,12 @@ struct Loaded {
     vocab: Vocab,
 }
 
-fn reference_dir() -> PathBuf {
-    PathBuf::from(
-        std::env::var("RLX_TRANSLATE_REFERENCE").unwrap_or_else(|_| {
-            "/private/tmp/claude-501/-Users-Shared-rlx-models/\
-         08f4eb12-43ad-4c0c-a2c5-39438cf10ea7/scratchpad/reference_nonlex"
-                .to_string()
-        }),
-    )
+/// The reference dump to feed and score against, when one is present.
+fn reference_dir() -> Option<PathBuf> {
+    rlx_ir::env::var_result("RLX_TRANSLATE_REFERENCE")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|d| d.is_dir())
 }
 
 /// Reference pairs for a direction, if any.
@@ -61,11 +59,11 @@ fn reference(dir: &std::path::Path, pair: &LangPair, n: usize) -> Vec<(String, S
 
 #[test]
 fn every_installed_direction_runs() {
-    let per: usize = std::env::var("RLX_TEST_N")
+    let per: usize = rlx_ir::env::var_result("RLX_TEST_N")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
-    let limit: usize = std::env::var("RLX_TEST_DIRS")
+    let limit: usize = rlx_ir::env::var_result("RLX_TEST_DIRS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(usize::MAX);
@@ -74,7 +72,10 @@ fn every_installed_direction_runs() {
         eprintln!("skipping: no translation assets installed");
         return;
     }
-    let refdir = reference_dir();
+    let Some(refdir) = reference_dir() else {
+        eprintln!("skipping: set RLX_TRANSLATE_REFERENCE to a reference dump directory");
+        return;
+    };
 
     let mut directions: Vec<LangPair> = Vec::new();
     for p in assets.pairs() {

@@ -32,7 +32,7 @@ use safetensors::SafeTensors;
 use std::path::PathBuf;
 
 fn base_dir() -> Option<PathBuf> {
-    let env = std::env::var("RLX_QWEN3_TTS_BASE_DIR")
+    let env = rlx_ir::env::var_result("RLX_QWEN3_TTS_BASE_DIR")
         .map(PathBuf::from)
         .ok()
         .filter(|p| p.is_dir());
@@ -74,7 +74,7 @@ fn tensor_f32(st: &SafeTensors<'_>, name: &str) -> (Vec<f32>, Vec<usize>) {
     let bytes = t.data();
     assert!(bytes.len() % 4 == 0);
     let mut data = Vec::with_capacity(bytes.len() / 4);
-    for c in bytes.chunks_exact(4) {
+    for c in bytes.as_chunks::<4>().0.iter() {
         data.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
     }
     (data, shape)
@@ -246,8 +246,8 @@ fn st_encoder_rvq_end_to_end() {
     let bytes = codes_tensor.data();
     assert_eq!(bytes.len(), num_q_total * t_codes * 8);
     let mut ref_codes = vec![0i64; num_q_total * t_codes];
-    for (i, c) in bytes.chunks_exact(8).enumerate() {
-        ref_codes[i] = i64::from_le_bytes(c.try_into().unwrap());
+    for (i, c) in bytes.as_chunks::<8>().0.iter().enumerate() {
+        ref_codes[i] = i64::from_le_bytes(*c);
     }
 
     // Load PCM from fixture.

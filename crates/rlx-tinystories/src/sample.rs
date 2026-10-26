@@ -134,9 +134,5 @@ fn sample_row(logits: &[f32], opts: &GenOptions, rng: &mut Rng) -> usize {
 }
 
 fn argmax(xs: &[f32]) -> usize {
-    xs.iter()
-        .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i)
-        .unwrap_or(0)
+    rlx_search::argmax(xs)
 }

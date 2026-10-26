@@ -10,134 +10,150 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "rlx-ten-vad-core"
-version = "0.2.16"
+version = "0.2.19"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "rlx-ten-vad-mcu"
-version = "0.1.0"
+version = "0.2.19"
 dependencies = [
  "rlx-ten-vad-core",
 ]
 
 [[patch.unused]]
 name = "rlx"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-autodiff"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-collectives"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-compile"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-cpu"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-cuda"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-distributed"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-driver"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-flow"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-fpga"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-fusion"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-gguf"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-gpu-host"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-ir"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-metal"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-mlx"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-mlx-io"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-mlx-sys"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-nemo"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-onnx-import"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-opscope"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-opt"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-optim"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-pkg"
-version = "0.2.16"
+version = "0.2.19"
+
+[[patch.unused]]
+name = "rlx-program"
+version = "0.2.19"
+
+[[patch.unused]]
+name = "rlx-rng"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-rocm"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-runtime"
-version = "0.2.16"
+version = "0.2.19"
+
+[[patch.unused]]
+name = "rlx-search"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-tensor"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-text"
-version = "0.2.16"
+version = "0.2.19"
+
+[[patch.unused]]
+name = "rlx-torch-ckpt"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-vulkan"
-version = "0.2.16"
+version = "0.2.19"
 
 [[patch.unused]]
 name = "rlx-wgpu"
-version = "0.2.16"
+version = "0.2.19"

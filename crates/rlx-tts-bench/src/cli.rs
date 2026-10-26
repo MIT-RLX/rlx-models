@@ -256,7 +256,11 @@ fn run(args: RunArgs) -> Result<()> {
 
     let iters = args
         .iters
-        .or_else(|| std::env::var("RLX_ITERS").ok().and_then(|s| s.parse().ok()))
+        .or_else(|| {
+            rlx_ir::env::var_result("RLX_ITERS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+        })
         .unwrap_or(1);
 
     let json_path = if args.json.is_absolute() {

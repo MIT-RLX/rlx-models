@@ -23,7 +23,7 @@ use rlx_runtime::Device;
 use std::path::PathBuf;
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("RLX_QWEN3_TTS_DIR")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.join("model.safetensors").is_file())

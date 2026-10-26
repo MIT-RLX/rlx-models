@@ -5,8 +5,8 @@
 //! - `RLX_ORT_LATENTS=1`: ORT backbone latents → native decoder (isolates Vocos)
 //!
 //! ```bash
-//! cargo run -p rlx-soprano --release --example whisper_roundtrip --features apple-silicon
-//! RLX_ORT_LATENTS=1 cargo run -p rlx-soprano --release --example whisper_roundtrip --features apple-silicon
+//! cargo run -p rlx-soprano --release --example whisper_roundtrip --features macos-gpu
+//! RLX_ORT_LATENTS=1 cargo run -p rlx-soprano --release --example whisper_roundtrip --features macos-gpu
 //! ```
 
 use std::path::PathBuf;
@@ -30,7 +30,7 @@ fn soprano_bundle_present(dir: &std::path::Path) -> bool {
 }
 
 fn main() -> anyhow::Result<()> {
-    let dir = std::env::var("RLX_SOPRANO_DIR")
+    let dir = rlx_ir::env::var_result("RLX_SOPRANO_DIR")
         .map(PathBuf::from)
         .ok()
         .or_else(|| {
@@ -40,18 +40,18 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../weights/tts/soprano")
         });
-    let text = std::env::var("RLX_TEXT").unwrap_or_else(|_| {
-        if std::env::var_os("RLX_BRAND").is_some() {
+    let text = rlx_ir::env::var_result("RLX_TEXT").unwrap_or_else(|_| {
+        if rlx_ir::env::var_os("RLX_BRAND").is_some() {
             BRAND_TEXT.to_string()
         } else {
             DEFAULT_TEXT.to_string()
         }
     });
-    let max_tokens: usize = std::env::var("RLX_MAX_TOKENS")
+    let max_tokens: usize = rlx_ir::env::var_result("RLX_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(96);
-    let ort_latents = std::env::var_os("RLX_ORT_LATENTS").is_some();
+    let ort_latents = rlx_ir::env::var_os("RLX_ORT_LATENTS").is_some();
 
     anyhow::ensure!(
         soprano_bundle_present(&dir),
@@ -84,8 +84,8 @@ fn main() -> anyhow::Result<()> {
 
     let opts = InferOpts {
         max_new_tokens: max_tokens,
-        greedy: std::env::var_os("RLX_GREEDY").is_some()
-            || std::env::var_os("RLX_ORT_LATENTS").is_none(),
+        greedy: rlx_ir::env::var_os("RLX_GREEDY").is_some()
+            || rlx_ir::env::var_os("RLX_ORT_LATENTS").is_none(),
         temperature: 0.3,
         top_p: 0.95,
         seed: 1337,
@@ -136,7 +136,7 @@ fn parse_devices() -> Vec<(Device, &'static str)> {
         (Device::Gpu, "wgpu"),
         (Device::Ane, "CoreML"),
     ];
-    if let Ok(s) = std::env::var("RLX_DEVICES") {
+    if let Ok(s) = rlx_ir::env::var_result("RLX_DEVICES") {
         let want: Vec<&str> = s
             .split(',')
             .map(str::trim)
@@ -153,7 +153,7 @@ fn parse_devices() -> Vec<(Device, &'static str)> {
 }
 
 fn load_whisper() -> Option<rlx_whisper::WhisperRunner> {
-    let d = std::env::var("RLX_WHISPER_DIR")
+    let d = rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .map(PathBuf::from)
         .ok()
         .or_else(|| {
@@ -308,7 +308,9 @@ np.save(npy, hs); print("ok", T)
         (u32::from_le_bytes([b[8], b[9], b[10], b[11]]) as usize, 12)
     };
     let hs: Vec<f32> = b[start + hlen..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let t = hs.len() / HIDDEN;

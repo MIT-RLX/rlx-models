@@ -20,7 +20,7 @@ rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true }
 rlx-qwen35 = { workspace = true }
 rlx-torch-ckpt = { workspace = true }
-rlx-tune = { path = "../rlx-tune", version = "0.2.16", optional = true }
+rlx-tune = { path = "../rlx-tune", version = "0.2.19", optional = true }
 rlx-autodiff = { workspace = true, optional = true }
 rlx-compile = { workspace = true, optional = true }
 rlx-fusion = { workspace = true, optional = true }
@@ -33,6 +33,9 @@ tower-http = { version = "0.6", features = ["cors"], optional = true }
 [dev-dependencies]
 safetensors = { workspace = true }
 rlx-core = { workspace = true }
+rlx-runtime = { workspace = true, features = ["program"] }
+rlx-text = { workspace = true }
+tempfile = "3"
 
 [features]
 default = ["tokenizer", "prefix-cache"]
@@ -44,6 +47,8 @@ tokenizer = ["dep:tokenizers"]
 # question per request. Opt-in at RUNTIME (`--prefix-cache`) because it costs
 # extra compiled parameter arenas; see src/prefix.rs.
 prefix-cache = []
+# `export::export_rlxp`: a kev run as an `.rlxp` package rlx runs alone.
+export = ["tokenizer", "rlx-core/export"]
 # LoRA + pointer-head training (rlx-tune, rlx-autodiff).
 train = ["dep:rlx-tune", "dep:rlx-autodiff", "dep:rlx-compile", "dep:rlx-fusion", "dep:sha2"]
 # TypeSafe-compatible HTTP sidecar (`rlx-kev --serve`).
@@ -56,7 +61,7 @@ gpu = ["rlx-qwen35/gpu", "rlx-runtime/gpu"]
 vulkan = ["rlx-qwen35/vulkan", "rlx-runtime/vulkan"]
 coreml = ["rlx-qwen35/coreml", "rlx-core/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
@@ -102,6 +107,11 @@ required-features = ["tokenizer", "prefix-cache"]
 [[example]]
 name = "dump_layers"
 required-features = ["tokenizer"]
+
+[[test]]
+name = "export_rlxp"
+path = "tests/export_rlxp.rs"
+required-features = ["export"]
 
 [[test]]
 name = "real_weights"

@@ -22,14 +22,14 @@ const LONG_WORDS: [&str; 15] = [
 ];
 
 fn main() -> anyhow::Result<()> {
-    let model = std::env::var("RLX_SESAME_DIR")
+    let model = rlx_ir::env::var_result("RLX_SESAME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_model_dir());
-    let mimi_dir = std::env::var("RLX_MIMI_DIR")
+    let mimi_dir = rlx_ir::env::var_result("RLX_MIMI_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_mimi_dir());
-    let text = std::env::var("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
-    let seed: u64 = std::env::var("RLX_SEED")
+    let text = rlx_ir::env::var_result("RLX_TEXT").unwrap_or_else(|_| DEFAULT_TEXT.into());
+    let seed: u64 = rlx_ir::env::var_result("RLX_SEED")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(42);
@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
     println!("text: {text:?}  seed={seed}");
     println!("model={}  mimi={}", model.display(), mimi_dir.display());
 
-    let cache = std::env::var("RLX_CODES_CACHE")
+    let cache = rlx_ir::env::var_result("RLX_CODES_CACHE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             if text.contains("Courage") {
@@ -56,14 +56,14 @@ fn main() -> anyhow::Result<()> {
         &FOX_WORDS
     };
     let min_hits = if text.contains("Courage") { 12 } else { 5 };
-    let max_frames: usize = std::env::var("RLX_MAX_FRAMES")
+    let max_frames: usize = rlx_ir::env::var_result("RLX_MAX_FRAMES")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(if text.contains("Courage") { 400 } else { 200 });
 
     let t0 = Instant::now();
     let frames: Vec<Vec<u32>> =
-        if cache.is_file() && std::env::var_os("RLX_FORCE_RESYNTH").is_none() {
+        if cache.is_file() && rlx_ir::env::var_os("RLX_FORCE_RESYNTH").is_none() {
             println!("[cache] loading frames from {}", cache.display());
             serde_json::from_str(&std::fs::read_to_string(&cache)?)?
         } else {
@@ -202,7 +202,7 @@ fn trim(s: &str, n: usize) -> &str {
 }
 
 fn parse_devices() -> Vec<(Device, &'static str)> {
-    let raw = std::env::var("RLX_DEVICES")
+    let raw = rlx_ir::env::var_result("RLX_DEVICES")
         .unwrap_or_else(|_| "cpu,metal,mlx,gpu,cuda,vulkan,rocm,coreml".into());
     let mut out = Vec::new();
     for part in raw.split(',') {
@@ -225,7 +225,7 @@ fn parse_devices() -> Vec<(Device, &'static str)> {
 }
 
 fn load_whisper() -> Option<rlx_whisper::WhisperRunner> {
-    let dir = std::env::var("RLX_WHISPER_DIR")
+    let dir = rlx_ir::env::var_result("RLX_WHISPER_DIR")
         .ok()
         .map(PathBuf::from)
         .or_else(|| {

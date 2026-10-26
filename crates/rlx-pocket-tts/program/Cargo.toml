@@ -1,0 +1,24 @@
+# Pocket TTS's host logic as an RLX program (WebAssembly, wasm32-wasip1):
+# the text prepared and chunked (the crate's `text.rs`), each chunk's tokens
+# and frames through the FlowLM step from a voice's cache (kept in slots),
+# the runner's noise stream, the EOS rule, and the Mimi decoder's streaming
+# blocks. Built by `rlx-pocket-tts`'s exporter, so it stands outside the
+# workspace.
+[package]
+name = "rlx-pocket-tts-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+anyhow = "1"
+# The runner's noise stream (`StdRng::seed_from_u64`, `Normal`).
+rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
+rand_distr = { version = "=0.4.3", default-features = false, features = ["std"] }
+
+[workspace]

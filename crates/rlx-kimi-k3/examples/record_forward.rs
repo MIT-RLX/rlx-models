@@ -16,9 +16,7 @@ use rlx_ir::hir::{HirModule, HirMut};
 use rlx_ir::{DType, HirGraphExt, Shape};
 use rlx_kimi_k3::config::{KimiK3Config, KimiLinearConfig};
 use rlx_kimi_k3::flow::{FfnWeights, FlowConfig, build_layer_pre_ffn};
-use rlx_kimi_k3::kda::KdaDims;
-use rlx_kimi_k3::mla::MlaDims;
-use rlx_kimi_k3::moe::{MoeDims, build_dense_mlp};
+use rlx_kimi_k3::moe::build_dense_mlp;
 use rlx_kimi_k3::runner::{apply_head, load_layer_backbone, run_moe_paged};
 use rlx_opscope::{Recorder, StatConfig, inject_matmul_stats};
 use rlx_runtime::{Device, Session};
@@ -27,55 +25,11 @@ use std::path::Path;
 
 const EMB: &str = "language_model.model.embed_tokens.weight";
 
+/// The real Kimi-K3 `FlowConfig` for a sequence length, from `config.json`
+/// (checked against the checkpoint's tensor shapes by
+/// `source::verify_flow_dims` when the checkpoint is opened).
 fn kimi_flow_cfg(tc: &KimiLinearConfig, seq: usize) -> FlowConfig {
-    let hidden = tc.hidden_size;
-    FlowConfig {
-        hidden,
-        vocab: tc.vocab_size,
-        attn_res_block_size: tc.attn_res_block_size.unwrap_or(12),
-        eps: 1e-5,
-        kda: KdaDims {
-            hidden,
-            num_heads: 96,
-            head_dim: 128,
-            conv_kernel: 4,
-            gate_lower_bound: Some(-5.0),
-            eps: 1e-5,
-            batch: 1,
-            seq,
-        },
-        mla: MlaDims {
-            hidden,
-            num_heads: 96,
-            q_lora_rank: 1536,
-            kv_lora_rank: 512,
-            qk_nope_head_dim: 128,
-            qk_rope_head_dim: 64,
-            v_head_dim: 128,
-            eps: 1e-5,
-            batch: 1,
-            seq,
-        },
-        moe: MoeDims {
-            hidden,
-            latent: 3584,
-            moe_inter: 3072,
-            num_experts: 896,
-            top_k: 16,
-            num_shared: 2,
-            routed_scaling: 2.5,
-            eps: 1e-5,
-            situ_beta: 4.0,
-            situ_linear_beta: Some(25.0),
-            batch: 1,
-            seq,
-        },
-        dense_inter: 33792,
-        situ_beta: 4.0,
-        situ_linear_beta: Some(25.0),
-        batch: 1,
-        seq,
-    }
+    tc.flow_config(1, seq)
 }
 
 fn main() -> Result<(), String> {
@@ -108,6 +62,8 @@ fn main() -> Result<(), String> {
 
     let mut ck =
         rlx_kimi_k3::loader::CheckpointLoader::open(&model_dir).map_err(|e| e.to_string())?;
+    rlx_kimi_k3::source::verify_flow_dims(tc, &mut ck).map_err(|e| e.to_string())?;
+    eprintln!("config: {}", rlx_kimi_k3::source::numerics_summary(tc));
     let mut h = ck
         .gather_embed(EMB, &tokens, hidden)
         .map_err(|e| e.to_string())?;

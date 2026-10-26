@@ -38,7 +38,7 @@ fn op_name(op: &Op) -> String {
 /// Either pretty-print the HIR flow, or (RLX_INSPECT_DUMP) emit the lowered
 /// MIR graph as an opscope edge-list.
 fn emit(hir: HirModule, params: P, title: &str) {
-    if std::env::var_os("RLX_INSPECT_DUMP").is_some() {
+    if rlx_ir::env::var_os("RLX_INSPECT_DUMP").is_some() {
         let (g, _) = graph_from_hir(hir, params).expect("lower");
         let nodes = g.nodes();
         let idx: HashMap<NodeId, usize> =

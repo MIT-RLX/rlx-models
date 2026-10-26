@@ -63,8 +63,8 @@ use rlx_runtime::Device;
 ```bash
 cargo test -p rlx-mamba
 cargo test -p rlx-mamba --features wgpu --test wgpu_backend
-cargo test -p rlx-mamba --features metal --test metal_backend   # Apple
-cargo test -p rlx-mamba --features mlx --test mlx_backend       # Apple
+cargo test -p rlx-mamba --features metal --test metal_backend   # macOS
+cargo test -p rlx-mamba --features mlx --test mlx_backend       # macOS
 cargo test -p rlx-mamba --features cuda --test cuda_backend     # NVIDIA host
 ```
 

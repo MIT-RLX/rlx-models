@@ -35,13 +35,19 @@ use rlx_models::{
 use std::path::{Path, PathBuf};
 
 fn smollm_path() -> Option<PathBuf> {
-    std::env::var("RLX_SMOLLM2_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_SMOLLM2_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 fn qwen25_path() -> Option<PathBuf> {
-    std::env::var("RLX_QWEN25_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_QWEN25_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 fn gemma3_path() -> Option<PathBuf> {
-    std::env::var("RLX_GEMMA3_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_GEMMA3_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 
 /// Bonsai stub accepts `llama` arch.
@@ -173,7 +179,11 @@ fn mistral_phi_granite_cohere_reject_wrong_arch() {
 /// (the Qwen 2 path I just fixed).
 #[test]
 fn omnicoder_runs_end_to_end() {
-    if std::env::var("RLX_OMNICODER_RUN_INFERENCE").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_OMNICODER_RUN_INFERENCE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_OMNICODER_RUN_INFERENCE=1");
         return;
     }
@@ -181,7 +191,7 @@ fn omnicoder_runs_end_to_end() {
         eprintln!("skip: RLX_QWEN25_GGUF");
         return;
     };
-    let Some(tokenizer) = std::env::var("RLX_QWEN25_TOKENIZER")
+    let Some(tokenizer) = rlx_ir::env::var_result("RLX_QWEN25_TOKENIZER")
         .ok()
         .map(PathBuf::from)
     else {

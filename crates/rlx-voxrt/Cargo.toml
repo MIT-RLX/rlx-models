@@ -25,7 +25,7 @@ cuda = ["rlx-runtime/cuda", "rlx-wake/cuda"]
 rocm = ["rlx-runtime/rocm", "rlx-wake/rocm"]
 gpu = ["rlx-runtime/gpu", "rlx-wake/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-wake/vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+macos-gpu = ["metal", "mlx", "gpu"]
 
 [[bin]]
 name = "rlx-voxrt"

@@ -33,13 +33,13 @@ pub struct GenerationConfig {
 impl Default for GenerationConfig {
     fn default() -> Self {
         fn env_f64(key: &str, default: f64) -> f64 {
-            std::env::var(key)
+            rlx_ir::env::read(key)
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(default)
         }
         fn env_u64(key: &str, default: u64) -> u64 {
-            std::env::var(key)
+            rlx_ir::env::read(key)
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(default)

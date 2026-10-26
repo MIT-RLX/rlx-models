@@ -19,7 +19,7 @@ use crate::config::Qwen35Config;
 use crate::weights::{MatWeight, Qwen35Weights};
 use anyhow::{Result, anyhow};
 use rlx_core::weight_loader::GgufLoader;
-use rlx_qwen3::sampling::{SampleOpts, sample_token};
+use rlx_qwen3::sampling::{SampleOpts, sample_token_at};
 
 /// How many vocab rows to score for sampling (partial LM head).
 /// Rotate a single hidden row into the LM head's basis.
@@ -195,12 +195,14 @@ pub fn greedy_lm_head_argmax(
 }
 
 /// Sample one token from hidden via partial LM head (top-k logits only).
+/// `step` is the index of the token being sampled ([`sample_token_at`]).
 pub fn sample_lm_head_from_hidden(
     weights: &Qwen35Weights,
     cfg: &Qwen35Config,
     hidden: &[f32],
     loader: Option<&GgufLoader>,
     opts: SampleOpts,
+    step: u64,
 ) -> Result<u32> {
     let n_vocab = weights.lm_vocab_size(cfg);
     let cap = sample_lm_cap(&opts, n_vocab);
@@ -211,7 +213,7 @@ pub fn sample_lm_head_from_hidden(
         }
         let mut logits = vec![f32::NEG_INFINITY; n_vocab];
         logits[idx as usize] = val;
-        return Ok(sample_token(&logits, opts) as u32);
+        return Ok(sample_token_at(&logits, opts, step) as u32);
     }
     let top = lm_topk(weights, cfg, hidden, loader, cap)?;
     let mut logits = vec![f32::NEG_INFINITY; n_vocab];
@@ -220,7 +222,7 @@ pub fn sample_lm_head_from_hidden(
             logits[idx as usize] = val;
         }
     }
-    Ok(sample_token(&logits, opts) as u32)
+    Ok(sample_token_at(&logits, opts, step) as u32)
 }
 
 /// Full `[vocab]` logits row for one hidden vector (host matmul).

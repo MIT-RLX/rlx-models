@@ -30,8 +30,10 @@ fn root() -> PathBuf {
 fn read_i64(p: &PathBuf) -> Vec<i64> {
     std::fs::read(p)
         .unwrap_or_else(|_| panic!("read {}", p.display()))
-        .chunks_exact(8)
-        .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|b| i64::from_le_bytes(*b))
         .collect()
 }
 

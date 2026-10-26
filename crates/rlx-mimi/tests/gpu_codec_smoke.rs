@@ -8,11 +8,16 @@ use std::path::PathBuf;
 
 #[test]
 fn gpu_codec_roundtrip_smoke() {
-    if std::env::var("RLX_MIMI_GPU_SMOKE").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_MIMI_GPU_SMOKE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip gpu_codec_roundtrip_smoke (set RLX_MIMI_GPU_SMOKE=1)");
         return;
     }
-    let device_name = std::env::var("RLX_MIMI_GPU_DEVICE").unwrap_or_else(|_| "metal".into());
+    let device_name =
+        rlx_ir::env::var_result("RLX_MIMI_GPU_DEVICE").unwrap_or_else(|_| "metal".into());
     let requested = parse_mimi_device(&device_name).expect("device");
     if !device_ready(requested) {
         eprintln!("skip: {requested:?} not ready");
@@ -25,7 +30,9 @@ fn gpu_codec_roundtrip_smoke() {
     }
     let mimi_dir = default_mimi_dir();
     rlx_mimi::ensure_weights(&mimi_dir).expect("mimi weights");
-    let moshi_dir = std::env::var("RLX_MOSHI_DIR").ok().map(PathBuf::from);
+    let moshi_dir = rlx_ir::env::var_result("RLX_MOSHI_DIR")
+        .ok()
+        .map(PathBuf::from);
     if resolve_codec_device(requested) != Device::Cpu
         && rlx_mimi::resolve_candle_weights(&mimi_dir, moshi_dir.as_deref()).is_none()
     {

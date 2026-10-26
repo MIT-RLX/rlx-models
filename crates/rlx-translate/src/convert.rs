@@ -41,9 +41,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use rlx_gguf::{GgmlType, GgufWriter, MetaValue};
 
-use crate::espresso::Manifest;
 use crate::export::{ExportedGraph, Staged, stage_graph, write_safetensors};
 use crate::net::Graph;
+use crate::netfile::Manifest;
 
 /// What one converted bundle produced.
 #[derive(Debug, Clone, serde::Serialize)]

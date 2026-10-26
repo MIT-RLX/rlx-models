@@ -1,0 +1,26 @@
+Kitten Text Processing
+
+Bundled grammar data is derived from NVIDIA NeMo Text Processing 1.2.0:
+https://github.com/NVIDIA/NeMo-text-processing
+Copyright NVIDIA CORPORATION and NeMo contributors.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+_token_parser.py, _ordering.py, and _punctuation.py are adapted from
+NeMo Text Processing 1.2.0. Original copyright notices are retained.
+The grammar exporter preserves the upstream cased grammar weights and labels.
+Russian uses deterministic=False, as required by the upstream grammar.
+
+The byte-transducer decoder and package interface are implemented here using
+only the Python standard library. No Pynini, OpenFst, or NeMo executable code
+is required at runtime. OpenFst's documented shortest-path queue ordering
+informs the decoder's tie-breaking behavior.
+
+The unchanged text-normalization fixtures in tests/upstream are from NeMo
+r1.2.0, commit 7efa127d968c081793ebf11fa94dfb4257302d48 (Apache-2.0).
+
+_unicode_data.py contains Unicode character tables exported from Sacremoses
+0.2.0, copyright Sacremoses contributors, licensed under the MIT License
+(see LICENSE-SACREMOSES). _detokenize.py reproduces its relevant behavior.
+
+The output-epsilon removal ordering follows the OpenFst RmEpsilon algorithm
+(Copyright Google, Inc., Apache-2.0); the implementation here uses Python.

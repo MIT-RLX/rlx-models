@@ -57,7 +57,7 @@ fn synthetic_embeds(batch: usize, seq: usize, hidden: usize) -> Vec<f32> {
 
 #[test]
 fn backbone_prefill_matches_cpu() {
-    let Some(root) = std::env::var_os("RLX_TADA_WEIGHTS") else {
+    let Some(root) = rlx_ir::env::var_os("RLX_TADA_WEIGHTS") else {
         eprintln!("RLX_TADA_WEIGHTS not set — skipping real-weight backend check");
         return;
     };

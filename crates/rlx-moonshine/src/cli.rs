@@ -82,7 +82,7 @@ fn load_pcm_f32(path: &PathBuf) -> Result<Vec<f32>> {
         bail!("PCM file length not a multiple of 4");
     }
     let mut out = Vec::with_capacity(bytes.len() / 4);
-    for chunk in bytes.chunks_exact(4) {
+    for chunk in bytes.as_chunks::<4>().0.iter() {
         out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     Ok(out)
@@ -142,7 +142,7 @@ fn parse_wav_mono_f32(bytes: &[u8]) -> Result<Vec<f32>> {
     match (audio_format, bits) {
         (1, 16) => {
             let mut out = Vec::with_capacity(data.len() / 2);
-            for c in data.chunks_exact(2) {
+            for c in data.as_chunks::<2>().0.iter() {
                 let s = i16::from_le_bytes([c[0], c[1]]);
                 out.push(s as f32 / 32768.0);
             }
@@ -150,7 +150,7 @@ fn parse_wav_mono_f32(bytes: &[u8]) -> Result<Vec<f32>> {
         }
         (3, 32) => {
             let mut out = Vec::with_capacity(data.len() / 4);
-            for c in data.chunks_exact(4) {
+            for c in data.as_chunks::<4>().0.iter() {
                 out.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
             }
             Ok(out)

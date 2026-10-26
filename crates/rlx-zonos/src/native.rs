@@ -70,7 +70,7 @@ pub fn load_speaker_emb(path: impl AsRef<Path>) -> Result<Vec<f32>> {
         );
     }
     let mut out = Vec::with_capacity(128);
-    for chunk in bytes.chunks_exact(4) {
+    for chunk in bytes.as_chunks::<4>().0.iter() {
         out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     Ok(out)
@@ -97,7 +97,7 @@ impl NativeZonos {
         // DAC decode backend. On CUDA/ROCm the rlx-dac decode path is unvalidated
         // and diverges (backbone is fine — correct on CPU); `RLX_ZONOS_DAC_DEVICE`
         // overrides (cpu|gpu). Localize/repair cuda DAC, then flip the default.
-        let dac_device = match std::env::var("RLX_ZONOS_DAC_DEVICE").as_deref() {
+        let dac_device = match rlx_ir::env::var_result("RLX_ZONOS_DAC_DEVICE").as_deref() {
             Ok("cpu") => Device::Cpu,
             Ok("gpu") | Ok("device") => device,
             _ => device,
@@ -227,7 +227,7 @@ impl NativeZonos {
         // CPU/Metal/MLX) — a not-yet-fixed cuda kernel bug in flow.rs (GptJ RoPE /
         // GQA attention / mask). Fall back to the host-f32 reference there so the
         // output is correct (slower). `RLX_ZONOS_EAGER=1|0` forces on/off.
-        let use_eager = match std::env::var("RLX_ZONOS_EAGER").as_deref() {
+        let use_eager = match rlx_ir::env::var_result("RLX_ZONOS_EAGER").as_deref() {
             Ok("1") | Ok("true") | Ok("yes") => true,
             Ok("0") | Ok("false") | Ok("no") => false,
             _ => matches!(self.device, Device::Cuda | Device::Rocm),

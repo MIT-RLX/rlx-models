@@ -23,7 +23,7 @@ fn main() -> Result<()> {
         .nth(3)
         .and_then(|s| s.parse().ok())
         .unwrap_or(12);
-    let raw = std::env::var("RLX_LAGUNA_RAW").is_ok();
+    let raw = rlx_ir::env::var_result("RLX_LAGUNA_RAW").is_ok();
 
     let t0 = std::time::Instant::now();
     let runner = LagunaPackedRunner::from_mlx_dir(&dir)?;

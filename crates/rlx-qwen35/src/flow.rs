@@ -52,8 +52,8 @@ pub(crate) fn host_embed_enabled_for_bytes(table_nbytes: usize) -> bool {
 
 use super::builder::{
     PackedParams, Qwen35BsLayout, emit_qwen35_decode_trunk_layer,
-    emit_qwen35_full_attn_prefill_layer, emit_qwen35_gather_last_token,
-    emit_qwen35_gdn_prefill_layer, emit_qwen35_layer_probe_layer,
+    emit_qwen35_full_attn_bidirectional_layer, emit_qwen35_full_attn_prefill_layer,
+    emit_qwen35_gather_last_token, emit_qwen35_gdn_prefill_layer, emit_qwen35_layer_probe_layer,
     emit_qwen35_prefill_cache_trunk_layer, emit_qwen35_prefill_tail,
 };
 use super::config::Qwen35Config;
@@ -155,6 +155,11 @@ pub struct Qwen35Flow<'a> {
     runtime_mrope: bool,
     fast_mtp: bool,
     export_normed_hidden: bool,
+    /// Full-attention layers attend the whole sequence; see
+    /// [`Self::bidirectional_attention`].
+    bidirectional: bool,
+    /// Adds an `attn_key_mask` `[batch, seq]` input to the bidirectional layers.
+    key_padding_mask: bool,
     single_gdn: Option<(usize, Qwen35LinearLayer)>,
     layer_fn: Option<LayerFn>,
     profile: Option<CompileProfile>,
@@ -190,6 +195,8 @@ impl<'a> Qwen35Flow<'a> {
             runtime_mrope: false,
             fast_mtp: false,
             export_normed_hidden: false,
+            bidirectional: false,
+            key_padding_mask: false,
             single_gdn: None,
             layer_fn: None,
             profile: None,
@@ -229,6 +236,8 @@ impl<'a> Qwen35Flow<'a> {
             runtime_mrope: false,
             fast_mtp: false,
             export_normed_hidden: false,
+            bidirectional: false,
+            key_padding_mask: false,
             single_gdn: Some((layer_idx, lin)),
             layer_fn: None,
             profile: None,
@@ -295,6 +304,21 @@ impl<'a> Qwen35Flow<'a> {
         self
     }
 
+    /// Make every full-attention layer bidirectional (no causal mask), as in
+    /// checkpoints whose GGUF declares `qwen35.attention.causal = false`.
+    /// Gated DeltaNet layers stay causal: they are recurrent.
+    ///
+    /// With `key_padding_mask`, the graph takes an `attn_key_mask` input
+    /// `[batch, seq]` (`1.0` = real token, `0.0` = padding) so right-padded
+    /// rows stay exact: the causal layers never read a later pad, and the
+    /// bidirectional ones are told not to. Without it every key is attended,
+    /// which is only correct when `seq` is the exact sequence length.
+    pub fn bidirectional_attention(mut self, key_padding_mask: bool) -> Self {
+        self.bidirectional = true;
+        self.key_padding_mask = key_padding_mask;
+        self
+    }
+
     pub fn profile(mut self, profile: CompileProfile) -> Self {
         self.profile = Some(profile);
         self
@@ -339,6 +363,8 @@ impl<'a> Qwen35Flow<'a> {
         let runtime_mrope = self.runtime_mrope;
         let fast_mtp = self.fast_mtp;
         let export_normed_hidden = self.export_normed_hidden;
+        let bidirectional = self.bidirectional;
+        let key_padding_mask = self.bidirectional && self.key_padding_mask;
         let need_last_idx =
             last_logits_only && (with_lm_head || enable_mtp_head || export_normed_hidden);
 
@@ -382,9 +408,15 @@ impl<'a> Qwen35Flow<'a> {
         let f = DType::F32;
         let rope_shape = Shape::new(&[seq, head_half], f);
 
-        let mut flow = ModelFlow::new(flow_name)
-            .with_profile(profile)
-            .input("input_ids", Shape::new(&[batch, seq], f));
+        // The first declared input starts the tensor flow, so without an
+        // embed stage `hidden` has to come before `input_ids` (which the tail
+        // still reads). Declared the other way round, the layers would be
+        // handed `input_ids` and fail on the first reshape.
+        let mut flow = ModelFlow::new(flow_name).with_profile(profile);
+        if !self.with_embed {
+            flow = flow.input("hidden", hidden.clone());
+        }
+        flow = flow.input("input_ids", Shape::new(&[batch, seq], f));
 
         if runtime_mrope {
             flow = flow
@@ -394,6 +426,10 @@ impl<'a> Qwen35Flow<'a> {
 
         if need_last_idx {
             flow = flow.input("last_token_idx", Shape::new(&[batch], f));
+        }
+
+        if key_padding_mask {
+            flow = flow.input(ATTN_KEY_MASK, Shape::new(&[batch, seq], f));
         }
 
         if self.with_embed {
@@ -406,8 +442,6 @@ impl<'a> Qwen35Flow<'a> {
             } else {
                 flow.embed("token_embd.weight")
             };
-        } else {
-            flow = flow.input("hidden", hidden.clone());
         }
 
         if runtime_mrope {
@@ -457,6 +491,19 @@ impl<'a> Qwen35Flow<'a> {
                     batch,
                     seq,
                 });
+            }
+            if bidirectional
+                && let Some(Qwen35TrunkLayer::FullAttn(fa)) = weights_layers.trunk_layers.get(i)
+            {
+                return full_attn_bidirectional_plugin(
+                    i,
+                    &cfg_layers,
+                    fa.clone(),
+                    Qwen35BsLayout::new(batch, seq, false),
+                    hidden_shape(batch, seq, cfg_layers.hidden_size),
+                    key_padding_mask,
+                    packed_for_layers.clone(),
+                );
             }
             Qwen35LayerCtx {
                 index: i,
@@ -717,6 +764,17 @@ pub struct Qwen35DecodeOpts {
     pub enable_mtp_head: bool,
     pub fast_mtp: bool,
     pub fast_greedy_lm_head: bool,
+    /// Pipeline stage that is not the last: output the residual stream after
+    /// this graph's layers (no final norm, no LM head) for the next stage.
+    pub residual_out: bool,
+    /// Append the greedy next token (`Op::Sample`, an on-device argmax of the
+    /// logits) as one extra output after all the others, so a caller can read
+    /// back one id instead of the whole vocabulary. Only with the LM head.
+    pub greedy_token: bool,
+    /// A fixed `seq`-row step of which only the first few rows may be real
+    /// (`Qwen35RunnerBuilder::decode_rows`): each Gated DeltaNet layer takes a
+    /// `gdn_pad_l*` row mask so padding rows leave its state alone.
+    pub multi_row: bool,
     pub profile: Option<CompileProfile>,
 }
 
@@ -735,6 +793,9 @@ impl Qwen35DecodeOpts {
             fast_mtp: false,
             fast_greedy_lm_head: false,
             profile: None,
+            residual_out: false,
+            greedy_token: false,
+            multi_row: false,
         }
     }
 }
@@ -803,7 +864,8 @@ pub fn build_qwen35_decode_model_flow(
     let batch = opts.batch;
     let seq = opts.seq.max(1);
     let past_len = opts.past_seq;
-    let with_lm_head = !opts.fast_greedy_lm_head;
+    let residual_out = opts.residual_out;
+    let with_lm_head = !opts.fast_greedy_lm_head && !residual_out;
     // The RoPE kernel indexes the cos/sin table with a `n_rot/2` (rot_half) per-row
     // stride — NOT head_dim/2. For PARTIAL rope (rope_dim_count < key_length) a
     // head_half-strided feed makes every seq position ≥ 1 read into the previous
@@ -826,9 +888,10 @@ pub fn build_qwen35_decode_model_flow(
     let bias_mask = opts.bias_mask;
     let n_head = cfg.num_attention_heads;
     let dynamic_past = opts.dynamic_past;
-    let enable_mtp = opts.enable_mtp_head;
+    let enable_mtp = opts.enable_mtp_head && !residual_out;
     let fast_mtp = opts.fast_mtp;
     let verify_all = opts.verify_all;
+    let multi_row = opts.multi_row;
 
     let mut flow = ModelFlow::new("qwen35_decode")
         .input("rope_cos", rope_shape.clone())
@@ -927,6 +990,7 @@ pub fn build_qwen35_decode_model_flow(
                 dynamic_past,
                 mask,
                 bias_mask,
+                multi_row,
                 &mut layer_recur,
             )?;
             recur.lock().expect("recur sink").extend(layer_recur);
@@ -948,8 +1012,14 @@ pub fn build_qwen35_decode_model_flow(
             .as_hir_mut()
             .expect("qwen35 decode flow requires HIR stage");
         let mut gb = HirMut::new(hir);
-        let mut packed = packed_tail.lock().expect("packed sink");
         let h_pre = hidden.hir_id();
+        // A non-last pipeline stage hands the next one the residual stream
+        // itself; the final norm and LM head live in the last stage, whose
+        // weights this stage does not hold.
+        if residual_out {
+            return Ok(Some(emit.wrap(h_pre, hidden.shape.clone())));
+        }
+        let mut packed = packed_tail.lock().expect("packed sink");
         let h_lm = if with_lm_head && !verify_all {
             gb.narrow_(h_pre, 1, seq - 1, 1)
         } else {
@@ -957,7 +1027,12 @@ pub fn build_qwen35_decode_model_flow(
             // draft position's logits, not just the last).
             h_pre
         };
-        let (logits, mtp, _) = emit_qwen35_prefill_tail(
+        // Without the LM head (`fast_greedy_lm_head`) the runner scores the
+        // exported row on the host, which applies no norm — so export the
+        // `output_norm`ed hidden, as the prefill flows do. Exporting `h_lm`
+        // itself left decode logits ~10× too small on Qwen3.5-0.8B: argmax
+        // mostly survived, sampling and near-ties did not.
+        let (logits, mtp, normed) = emit_qwen35_prefill_tail(
             &mut gb,
             emit.params,
             &mut packed,
@@ -972,14 +1047,14 @@ pub fn build_qwen35_decode_model_flow(
             sin,
             with_lm_head,
             enable_mtp,
-            false,
+            !with_lm_head,
             fast_mtp,
             None,
         )?;
         if let Some(mtp_id) = mtp {
             *mtp_out.lock().expect("mtp sink") = Some(mtp_id);
         }
-        let primary = logits.unwrap_or(h_lm);
+        let primary = logits.or(normed).unwrap_or(h_lm);
         let out_rows = if verify_all { seq } else { 1 };
         let out_shape = if with_lm_head {
             Shape::new(&[batch, out_rows, weights_tail.lm_vocab_size(&cfg_tail)], f)
@@ -1002,6 +1077,27 @@ pub fn build_qwen35_decode_model_flow(
     let layer_side = recur_sink.lock().expect("recur sink").clone();
     let mtp = mtp_sink.lock().expect("mtp sink").take();
     built = finish_hir_side_outputs(built, layer_side, mtp);
+    if opts.greedy_token && with_lm_head {
+        let hir = built
+            .module
+            .as_hir_mut()
+            .expect("qwen35 decode flow requires HIR stage");
+        let logits = hir.outputs[0];
+        let token = hir.mir(
+            rlx_ir::Op::Sample {
+                top_k: 0,
+                top_p: 1.0,
+                temperature: 1.0,
+                seed: 0,
+            },
+            vec![logits],
+            // One token per scored row: every row under `verify_all`.
+            Shape::new(&[opts.batch, if verify_all { seq } else { 1 }], DType::F32),
+        );
+        let mut outputs = hir.outputs.clone();
+        outputs.push(token);
+        hir.set_outputs(outputs);
+    }
     let packed = packed_sink.lock().expect("packed sink").clone();
     built
         .into_parts()
@@ -1046,6 +1142,9 @@ pub struct Qwen35PrefillCacheOpts {
     pub fast_mtp: bool,
     pub fast_greedy_lm_head: bool,
     pub profile: Option<CompileProfile>,
+    /// Pipeline stage that is not the last: output the residual stream for
+    /// every position (no last-token gather, final norm or LM head).
+    pub residual_out: bool,
 }
 
 impl Qwen35PrefillCacheOpts {
@@ -1061,6 +1160,7 @@ impl Qwen35PrefillCacheOpts {
             fast_mtp: false,
             fast_greedy_lm_head: false,
             profile: None,
+            residual_out: false,
         }
     }
 }
@@ -1125,9 +1225,11 @@ pub fn build_qwen35_prefill_cache_model_flow(
     let dynamic_seq = opts.dynamic_seq;
     let runtime_mrope = opts.runtime_mrope;
     let prefill_from_hidden = opts.prefill_from_hidden;
-    let with_lm_head = opts.with_lm_head;
-    let export_normed_hidden = opts.fast_greedy_lm_head;
-    let enable_mtp = opts.enable_mtp_head;
+    // A non-last pipeline stage: every position's residual, nothing else.
+    let residual_out = opts.residual_out;
+    let with_lm_head = opts.with_lm_head && !residual_out;
+    let export_normed_hidden = opts.fast_greedy_lm_head && !residual_out;
+    let enable_mtp = opts.enable_mtp_head && !residual_out;
     let fast_mtp = opts.fast_mtp;
     let need_last_idx = with_lm_head || export_normed_hidden;
 
@@ -1335,6 +1437,11 @@ pub fn build_qwen35_prefill_cache_model_flow(
     let packed_tail = packed_sink.clone();
     flow = flow.plugin_named("qwen35.prefill_cache.tail", move |emit, input| {
         let hidden = input.ok_or_else(|| anyhow::anyhow!("prefill-cache tail requires hidden"))?;
+        // A non-last pipeline stage: the residual stream for every position;
+        // the final norm and LM head live in the last stage.
+        if residual_out {
+            return Ok(Some(hidden));
+        }
         let cos = if runtime_mrope {
             emit.flow_input("rope_cos")?.hir_id()
         } else {
@@ -2031,6 +2138,52 @@ fn full_attn_layer_plugin_with_packed(
             for (k, v) in local.drain() {
                 guard.insert(k, v);
             }
+        }
+        Ok(Some(emit.wrap(out, out_shape.clone())))
+    })
+}
+
+/// Graph input name of the bidirectional layers' per-key padding mask.
+pub const ATTN_KEY_MASK: &str = "attn_key_mask";
+
+fn full_attn_bidirectional_plugin(
+    layer_idx: usize,
+    cfg: &Qwen35Config,
+    fa: Qwen35FullAttnLayer,
+    bs: Qwen35BsLayout,
+    out_shape: Shape,
+    key_padding_mask: bool,
+    packed_arc: Arc<Mutex<PackedParams>>,
+) -> FlowStage {
+    let cfg = cfg.clone();
+    plugin_named(format!("qwen35.fa{layer_idx}.bidir"), move |emit, input| {
+        let hidden = input.ok_or_else(|| anyhow::anyhow!("full-attn layer requires hidden"))?;
+        let cos = emit.named(ROPE_COS)?;
+        let sin = emit.named(ROPE_SIN)?;
+        let key_mask = if key_padding_mask {
+            Some(emit.flow_input(ATTN_KEY_MASK)?.hir_id())
+        } else {
+            None
+        };
+        let mut local = PackedParams::new();
+        let (hir, params) = emit.hir_and_params();
+        let mut gb = HirMut::new(hir);
+        let out = emit_qwen35_full_attn_bidirectional_layer(
+            &mut gb,
+            params,
+            &mut local,
+            &cfg,
+            layer_idx,
+            &fa,
+            bs,
+            hidden.hir_id(),
+            cos,
+            sin,
+            key_mask,
+        )?;
+        let mut guard = packed_arc.lock().expect("packed sink");
+        for (k, v) in local.drain() {
+            guard.insert(k, v);
         }
         Ok(Some(emit.wrap(out, out_shape.clone())))
     })

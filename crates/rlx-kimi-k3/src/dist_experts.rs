@@ -99,7 +99,7 @@ impl KimiExpertProvider {
         device: Device,
     ) -> Result<Self> {
         // RLX_KIMI_EXPERT_CACHE = resident cache budget in MB (unset/0 = no cache).
-        let cache_budget = std::env::var("RLX_KIMI_EXPERT_CACHE")
+        let cache_budget = rlx_ir::env::var_result("RLX_KIMI_EXPERT_CACHE")
             .ok()
             .and_then(|s| s.trim().parse::<usize>().ok())
             .map(|mb| mb * 1024 * 1024)
@@ -113,13 +113,13 @@ impl KimiExpertProvider {
             cache: (cache_budget > 0).then(HashMap::new),
             cache_budget,
             cache_bytes: 0,
-            packed: std::env::var("RLX_KIMI_PACKED_EXPERTS")
+            packed: rlx_ir::env::var_result("RLX_KIMI_PACKED_EXPERTS")
                 .map(|v| v != "0")
                 .unwrap_or(false),
-            scaled: std::env::var("RLX_KIMI_SCALED_EXPERTS")
+            scaled: rlx_ir::env::var_result("RLX_KIMI_SCALED_EXPERTS")
                 .map(|v| v != "0")
                 .unwrap_or(false),
-            graph_cache: std::env::var("RLX_KIMI_NO_GRAPH_CACHE")
+            graph_cache: rlx_ir::env::var_result("RLX_KIMI_NO_GRAPH_CACHE")
                 .is_err()
                 .then(HashMap::new),
         })
@@ -784,6 +784,11 @@ pub fn orch_timing_take() -> OrchTiming {
 /// every MoE layer to the workers instead of running it locally.
 pub fn install_cluster_moe(cm: ClusterMoe) {
     CLUSTER_MOE.with(|c| *c.borrow_mut() = Some(cm));
+}
+
+/// Is a cluster MoE context installed on this thread?
+pub fn offload_installed() -> bool {
+    CLUSTER_MOE.with(|c| c.borrow().is_some())
 }
 
 /// Remove and return the installed context.

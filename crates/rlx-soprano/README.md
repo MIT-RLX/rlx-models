@@ -33,7 +33,7 @@ Packed layout embeds:
 ## CLI
 
 ```bash
-cargo run -p rlx-soprano --release --features apple-silicon -- \
+cargo run -p rlx-soprano --release --features macos-gpu -- \
   --text "The quick brown fox jumps over the lazy dog." \
   --device metal \
   --output /tmp/soprano.wav

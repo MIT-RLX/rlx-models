@@ -100,7 +100,7 @@ fn gelu_vae_encode_matches_cpu_on_every_backend() {
 
 #[test]
 fn env_gated_streaming_dir_present() {
-    let Ok(dir) = std::env::var("RLX_VIBEVOICE_ASR_STREAMING_DIR") else {
+    let Ok(dir) = rlx_ir::env::var_result("RLX_VIBEVOICE_ASR_STREAMING_DIR") else {
         eprintln!("skip: RLX_VIBEVOICE_ASR_STREAMING_DIR unset");
         return;
     };

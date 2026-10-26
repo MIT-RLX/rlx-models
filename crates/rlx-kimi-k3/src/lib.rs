@@ -25,15 +25,25 @@ pub mod config;
 pub mod dist;
 #[cfg(feature = "cluster")]
 pub mod dist_experts;
+pub mod export;
 pub mod flow;
+pub mod inspect;
 pub mod io_opt;
 pub mod kda;
 pub mod kda_chunk;
+pub mod layer_exec;
 pub mod loader;
 pub mod mla;
 pub mod moe;
 pub mod prelude;
 pub mod runner;
+pub mod sizing;
+pub mod source;
+#[cfg(feature = "state-log")]
+pub mod state_log;
+pub mod synth;
+pub mod train;
+pub mod train_stream;
 pub mod vision;
 pub mod wrapper;
 

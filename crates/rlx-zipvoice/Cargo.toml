@@ -16,7 +16,8 @@ hound = "3"
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # ZipVoice and LuxTTS share the exact ZipVoice runtime (LuxTTS is ZipVoice-distill
 # fine-tuned); reuse the rlx-luxtts runner + DSP wholesale.
-rlx-luxtts = { path = "../rlx-luxtts", version = "0.2.16" }
+rlx-luxtts = { path = "../rlx-luxtts", version = "0.2.19" }
+rlx-core = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -25,8 +26,15 @@ mlx = ["rlx-runtime/mlx", "rlx-luxtts/mlx"]
 cuda = ["rlx-runtime/cuda", "rlx-luxtts/cuda"]
 gpu = ["rlx-runtime/gpu", "rlx-luxtts/gpu"]
 all-backends = ["metal", "mlx", "cuda", "gpu"]
+# `export::export_rlxp`: ZipVoice as an `.rlxp` package (LuxTTS' exporter,
+# ZipVoice's sampler defaults).
+export = ["rlx-luxtts/export", "dep:rlx-core"]
 
 [dev-dependencies]
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true, features = ["program"] }
+serde_json = { workspace = true }
+tempfile = "3"
 rlx-whisper = { workspace = true }
 
 [[bin]]

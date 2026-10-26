@@ -53,14 +53,14 @@ fn main() -> Result<()> {
         return skip(&format!("RLX_ASR_WAV not found: {}", wav_path.display()));
     }
 
-    let device_s = std::env::var("RLX_ASR_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device_s = rlx_ir::env::var_result("RLX_ASR_DEVICE").unwrap_or_else(|_| "cpu".into());
     let device = parse_device(&device_s)?;
     let device_label = device_s.to_lowercase();
 
-    let lang = std::env::var("RLX_ASR_LANG").unwrap_or_else(|_| "auto".into());
+    let lang = rlx_ir::env::var_result("RLX_ASR_LANG").unwrap_or_else(|_| "auto".into());
 
-    let chunks = parse_chunks(&std::env::var("RLX_ASR_CHUNKS").unwrap_or_default());
-    let reference = std::env::var("RLX_ASR_REFERENCE")
+    let chunks = parse_chunks(&rlx_ir::env::var_result("RLX_ASR_CHUNKS").unwrap_or_default());
+    let reference = rlx_ir::env::var_result("RLX_ASR_REFERENCE")
         .ok()
         .map(std::fs::read_to_string)
         .transpose()?
@@ -90,7 +90,7 @@ fn main() -> Result<()> {
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
-    std::env::var(key).ok().map(PathBuf::from)
+    rlx_ir::env::read(key).ok().map(PathBuf::from)
 }
 
 fn skip(reason: &str) -> Result<()> {

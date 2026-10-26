@@ -382,8 +382,8 @@ fn encode_f32_to_f16_bytes(input: &[u8]) -> Result<Vec<u8>, WireError> {
         });
     }
     let mut out = Vec::with_capacity(input.len() / 2);
-    for chunk in input.chunks_exact(4) {
-        let value = f32::from_le_bytes(chunk.try_into().unwrap());
+    for chunk in input.as_chunks::<4>().0.iter() {
+        let value = f32::from_le_bytes(*chunk);
         out.extend_from_slice(&f16::from_f32(value).to_bits().to_le_bytes());
     }
     Ok(out)
@@ -401,7 +401,7 @@ fn decode_f16_to_f32_bytes(input: &[u8]) -> Result<Vec<u8>, WireError> {
         return Err(WireError::DecodedTooLarge { bytes: decoded });
     }
     let mut out = Vec::with_capacity(decoded);
-    for chunk in input.chunks_exact(2) {
+    for chunk in input.as_chunks::<2>().0.iter() {
         let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
         out.extend_from_slice(&f16::from_bits(bits).to_f32().to_le_bytes());
     }
@@ -430,14 +430,14 @@ fn encode_f32_to_q8_bytes(
         let row_offset = token_index * width * 4;
         let row = &input[row_offset..row_offset + width * 4];
         let mut max_abs = 0.0_f32;
-        for chunk in row.chunks_exact(4) {
-            let value = f32::from_le_bytes(chunk.try_into().unwrap());
+        for chunk in row.as_chunks::<4>().0.iter() {
+            let value = f32::from_le_bytes(*chunk);
             max_abs = max_abs.max(value.abs());
         }
         let scale = if max_abs > 0.0 { max_abs / 127.0 } else { 1.0 };
         scales.extend_from_slice(&scale.to_le_bytes());
-        for chunk in row.chunks_exact(4) {
-            let value = f32::from_le_bytes(chunk.try_into().unwrap());
+        for chunk in row.as_chunks::<4>().0.iter() {
+            let value = f32::from_le_bytes(*chunk);
             let quantized = (value / scale).round().clamp(-127.0, 127.0) as i8;
             packed.push(quantized as u8);
         }
@@ -632,8 +632,10 @@ mod tests {
 
     fn f32_vec(bytes: &[u8]) -> Vec<f32> {
         bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect()
     }
 

@@ -18,7 +18,7 @@ use crate::moe::{
     MoeDims, MoeWeights, build_dense_mlp, build_moe_experts_paged, build_moe_experts_paged_packed,
     build_moe_route,
 };
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use rlx_core::flow_util::{built_from_hir, compile_built};
 use rlx_ir::hir::{HirModule, HirMut};
 use rlx_ir::{DType, HirGraphExt, Shape};
@@ -36,7 +36,7 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 fn bench_on() -> bool {
-    std::env::var("RLX_KIMI_BENCH").is_ok()
+    rlx_ir::env::var_result("RLX_KIMI_BENCH").is_ok()
 }
 /// Add `secs` to step `cat`'s accumulator (once-per-call count).
 fn bench_add(cat: &'static str, secs: f64) {
@@ -146,7 +146,7 @@ pub fn run_moe_paged(
     // In-graph f32 router by default (backend-consistent once the hybrid MLA/KDA
     // miscompile is fixed). `RLX_KIMI_HOST_ROUTER=1` forces the deterministic
     // bf16/f64 host router for extra robustness against genuine near-tie flips.
-    let (top_idx_v, top_probs_v) = if std::env::var("RLX_KIMI_HOST_ROUTER").is_ok() {
+    let (top_idx_v, top_probs_v) = if rlx_ir::env::var_result("RLX_KIMI_HOST_ROUTER").is_ok() {
         timed("moe:host_router", || {
             route_experts_host(h_in, &w.router, &w.e_score_bias, d)
         })
@@ -162,7 +162,7 @@ pub fn run_moe_paged(
     let mut uniq = ids.clone();
     uniq.sort_unstable();
     uniq.dedup();
-    if std::env::var("RLX_KIMI_LOG_EXPERTS").is_ok() {
+    if rlx_ir::env::var_result("RLX_KIMI_LOG_EXPERTS").is_ok() {
         eprintln!("{layer_prefix}: experts {uniq:?}");
     }
     let remap: HashMap<usize, usize> = uniq.iter().enumerate().map(|(i, &e)| (e, i)).collect();
@@ -172,7 +172,7 @@ pub fn run_moe_paged(
     // ROUTE-ONLY (RLX_KIMI_ROUTE_ONLY=1): skip the expensive expert paging+compute and
     // return a zero MoE contribution — for cheaply measuring routing/amortization only
     // (final logits are meaningless; use with a single MoE layer).
-    if std::env::var("RLX_KIMI_ROUTE_ONLY").is_ok() {
+    if rlx_ir::env::var_result("RLX_KIMI_ROUTE_ONLY").is_ok() {
         return Ok(vec![0.0; rows * hidden]);
     }
     let remapped: Vec<f32> = ids.iter().map(|&e| remap[&e] as f32).collect();
@@ -184,10 +184,7 @@ pub fn run_moe_paged(
     // dequant→BLAS (measured), so packed is the default ONLY when experts run on a
     // GPU (the cluster), where it also saves the 4× f32 bandwidth. `RLX_KIMI_PACKED_MOE=1`
     // forces it on (e.g. CPU testing); `RLX_KIMI_NO_PACKED_MOE=1` forces it off.
-    let experts_dev = dev_override("RLX_KIMI_EXPERTS_DEVICE", device);
-    let packed = !std::env::var("RLX_KIMI_NO_PACKED_MOE").is_ok()
-        && (std::env::var("RLX_KIMI_PACKED_MOE").is_ok() || !matches!(experts_dev, Device::Cpu));
-    if packed {
+    if packed_moe(device) {
         return run_moe_experts_packed(
             ck,
             &prefix,
@@ -213,7 +210,7 @@ pub fn run_moe_paged(
             use rayon::prelude::*;
             let mut gate_up = Vec::with_capacity(n_uniq * l * 2 * mi);
             let mut down = Vec::with_capacity(n_uniq * mi * l);
-            if std::env::var("RLX_KIMI_SEQ_PAGING").is_ok() {
+            if rlx_ir::env::var_result("RLX_KIMI_SEQ_PAGING").is_ok() {
                 for &eid in &uniq {
                     let (gu, dn) = ck.load_expert(layer_prefix, eid, l, mi)?;
                     gate_up.extend(gu);
@@ -248,7 +245,7 @@ pub fn run_moe_paged(
     // bf16-resident backbone also covers the MoE DENSE matmuls (latent up-proj +
     // shared experts) — the routed experts stay MXFP4-packed. Collect them into a
     // fresh scope (the layer-body collector was already drained upstream).
-    let bf16_bb = std::env::var("RLX_KIMI_BF16_BACKBONE").is_ok();
+    let bf16_bb = crate::common::bf16_backbone_requested();
     if bf16_bb {
         crate::common::bf16_backbone_begin();
     }
@@ -293,6 +290,197 @@ pub fn run_moe_paged(
             ])
             .remove(0))
     })
+}
+
+/// Run the routed experts as the fused packed-MXFP4 op? It is a GPU kernel — on
+/// CPU it is slower than dequant→BLAS (re-measured with `examples/decode_bench`:
+/// ~3.5×), so only when the experts run on a GPU, unless forced either way with
+/// `RLX_KIMI_PACKED_MOE=1` / `RLX_KIMI_NO_PACKED_MOE=1`.
+fn packed_moe(device: Device) -> bool {
+    let experts_dev = dev_override("RLX_KIMI_EXPERTS_DEVICE", device);
+    rlx_ir::env::var_result("RLX_KIMI_NO_PACKED_MOE").is_err()
+        && (rlx_ir::env::var_result("RLX_KIMI_PACKED_MOE").is_ok()
+            || !matches!(experts_dev, Device::Cpu))
+}
+
+/// Is a cluster expert offload installed (MoE runs remotely)?
+fn moe_offloaded() -> bool {
+    #[cfg(feature = "cluster")]
+    {
+        crate::dist_experts::offload_installed()
+    }
+    #[cfg(not(feature = "cluster"))]
+    {
+        false
+    }
+}
+
+/// [`run_moe_paged`] for one decode token, reusing layer `layer`'s cached MoE
+/// weights and compiled graphs from `cache` (built on first use) and its
+/// dequantized-expert LRU. Same math: the experts graph is the one
+/// [`build_moe_experts_paged`] builds, over a compact bank padded with zero
+/// experts to a power of two (never indexed), so a handful of graphs serve every
+/// routing.
+fn run_moe_cached(
+    ck: &mut CheckpointLoader,
+    layer_prefix: &str,
+    layer: usize,
+    h_in: &[f32],
+    d: MoeDims,
+    device: Device,
+    cache: &mut LayerCache,
+) -> Result<Vec<f32>> {
+    let prefix = format!("{layer_prefix}.block_sparse_moe");
+    let (rows, hidden, l, mi, k) = (d.batch * d.seq, d.hidden, d.latent, d.moe_inter, d.top_k);
+    if let std::collections::hash_map::Entry::Vacant(e) = cache.moe.entry(layer) {
+        let w = timed("moe:load(cache-miss)", || {
+            ck.load_moe_dense(layer_prefix, d)
+        })?;
+        let mut hir = HirModule::new("moe_route");
+        let mut g = HirMut::new(&mut hir);
+        let h_node = g.input("h", Shape::new(&[d.batch, d.seq, hidden], DType::F32));
+        let mut params = HashMap::new();
+        let (h_lat, top_idx, top_probs) = build_moe_route(
+            &mut g,
+            &mut params,
+            &prefix,
+            h_node,
+            &w.router,
+            &w.e_score_bias,
+            &w.down_latent,
+            d,
+        )?;
+        g.set_outputs(vec![h_lat, top_idx, top_probs]);
+        let route = timed("moe:router(compile)", || -> Result<_> {
+            compile_built(
+                built_from_hir(hir, params)?,
+                dev_override("RLX_KIMI_ROUTER_DEVICE", device),
+            )
+        })?;
+        e.insert(MoeDecodeCache {
+            w,
+            route,
+            experts: HashMap::new(),
+        });
+    }
+    let mc = cache.moe.get_mut(&layer).expect("inserted above");
+    let a = timed("moe:router", || mc.route.run(&[("h", h_in)]));
+    let h_lat_v = &a[0];
+    let (top_idx_v, top_probs_v) = if rlx_ir::env::var_result("RLX_KIMI_HOST_ROUTER").is_ok() {
+        route_experts_host(h_in, &mc.w.router, &mc.w.e_score_bias, d)
+    } else {
+        (a[1].clone(), a[2].clone())
+    };
+    let ids: Vec<usize> = top_idx_v
+        .iter()
+        .map(|&x| x.round().max(0.0) as usize)
+        .collect();
+    let mut uniq = ids.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    let remap: HashMap<usize, usize> = uniq.iter().enumerate().map(|(i, &e)| (e, i)).collect();
+    crate::io_opt::note_routing(rows, uniq.len());
+    if rlx_ir::env::var_result("RLX_KIMI_ROUTE_ONLY").is_ok() {
+        return Ok(vec![0.0; rows * hidden]);
+    }
+    let remapped: Vec<f32> = ids.iter().map(|&e| remap[&e] as f32).collect();
+
+    // Experts: LRU hits first, the rest paged concurrently.
+    let mut got: Vec<Option<(std::sync::Arc<Vec<f32>>, std::sync::Arc<Vec<f32>>)>> = uniq
+        .iter()
+        .map(|&e| cache.experts.get((layer, e)))
+        .collect();
+    let missing: Vec<usize> = (0..uniq.len()).filter(|&j| got[j].is_none()).collect();
+    if !missing.is_empty() {
+        use rayon::prelude::*;
+        let ranges: Vec<_> = missing
+            .iter()
+            .map(|&j| ck.expert_ranges(layer_prefix, uniq[j]))
+            .collect::<Result<_>>()?;
+        let loaded: Vec<(Vec<f32>, Vec<f32>)> = timed("moe:paging(disk+dequant)", || {
+            ranges
+                .par_iter()
+                .map(|r| crate::loader::load_expert_ranges(r, l, mi))
+                .collect::<Result<_>>()
+        })?;
+        for (&j, (gu, dn)) in missing.iter().zip(loaded) {
+            let v = (std::sync::Arc::new(gu), std::sync::Arc::new(dn));
+            cache.experts.put((layer, uniq[j]), v.clone());
+            got[j] = Some(v);
+        }
+    }
+    let n = uniq.len().next_power_of_two().max(1);
+    let mut gate_up = Vec::with_capacity(n * l * 2 * mi);
+    let mut down = Vec::with_capacity(n * mi * l);
+    for v in got.into_iter().flatten() {
+        gate_up.extend_from_slice(&v.0);
+        down.extend_from_slice(&v.1);
+    }
+    gate_up.resize(n * l * 2 * mi, 0.0);
+    down.resize(n * mi * l, 0.0);
+
+    let mc = cache.moe.get_mut(&layer).expect("inserted above");
+    if let std::collections::hash_map::Entry::Vacant(e) = mc.experts.entry(n) {
+        let mut hir = HirModule::new("moe_experts");
+        let mut g = HirMut::new(&mut hir);
+        let h_node = g.input("h", Shape::new(&[d.batch, d.seq, hidden], DType::F32));
+        let hlat_node = g.input("hlat", Shape::new(&[rows, l], DType::F32));
+        let idx_node = g.input("idx", Shape::new(&[rows, k], DType::F32));
+        let prob_node = g.input("prob", Shape::new(&[rows, k], DType::F32));
+        let mut params = HashMap::new();
+        let bf16_bb = crate::common::bf16_backbone_requested();
+        if bf16_bb {
+            crate::common::bf16_backbone_begin();
+        }
+        let int8_bb = crate::common::int8_backbone_requested();
+        if int8_bb {
+            crate::common::int8_backbone_begin();
+        }
+        let out = build_moe_experts_paged(
+            &mut g,
+            &mut params,
+            &prefix,
+            h_node,
+            hlat_node,
+            idx_node,
+            prob_node,
+            &gate_up,
+            &down,
+            n,
+            &mc.w,
+            d,
+        )?;
+        g.set_outputs(vec![out]);
+        let mut cb = timed("moe:experts(compile)", || -> Result<_> {
+            compile_built(
+                built_from_hir(hir, params)?,
+                dev_override("RLX_KIMI_EXPERTS_DEVICE", device),
+            )
+        })?;
+        if bf16_bb {
+            for (name, bytes) in crate::common::bf16_backbone_take() {
+                cb.set_param_typed(&name, &bytes, DType::BF16);
+            }
+        }
+        if int8_bb {
+            for (name, bytes) in crate::common::int8_backbone_take() {
+                cb.set_param_typed(&name, &bytes, DType::I8);
+            }
+        }
+        e.insert(cb);
+    }
+    let cb = mc.experts.get_mut(&n).expect("inserted above");
+    cb.set_param(&format!("{prefix}.experts.gate_up"), &gate_up);
+    cb.set_param(&format!("{prefix}.experts.down"), &down);
+    Ok(timed("moe:experts(compute)", || {
+        cb.run(&[
+            ("h", h_in),
+            ("hlat", h_lat_v.as_slice()),
+            ("idx", &remapped),
+            ("prob", &top_probs_v),
+        ])
+        .remove(0)
+    }))
 }
 
 /// OPT #2 expert FFN: stack the fired experts' RAW MXFP4 bytes (codes as-is,
@@ -364,7 +552,7 @@ fn run_moe_experts_packed(
                 .into_iter()
                 .map(|it| it.expect("expert missing after paging"))
                 .collect()
-        } else if std::env::var("RLX_KIMI_SEQ_PAGING").is_ok() {
+        } else if rlx_ir::env::var_result("RLX_KIMI_SEQ_PAGING").is_ok() {
             uniq.iter()
                 .map(|&e| ck.load_expert_packed(layer_prefix, e).map(Arc::new))
                 .collect::<Result<_>>()?
@@ -415,7 +603,7 @@ fn run_moe_experts_packed(
                 .for_each(|(s, p)| s.copy_from_slice(&e8m0_bf16(&p.w2_s)));
         }
         let t_push = t.elapsed().as_secs_f64();
-        if std::env::var("RLX_KIMI_PAGING_DIAG").is_ok() {
+        if rlx_ir::env::var_result("RLX_KIMI_PAGING_DIAG").is_ok() {
             eprintln!(
                 "[paging] {n} experts: READ {:.0}ms + ASSEMBLY(par) {:.0}ms",
                 t_read * 1e3,
@@ -452,7 +640,7 @@ fn run_moe_experts_packed(
     )?;
     g.set_outputs(vec![out]);
     timed("moe:experts(packed-gpu)", || -> Result<Vec<f32>> {
-        let diag = std::env::var("RLX_KIMI_PAGING_DIAG").is_ok();
+        let diag = rlx_ir::env::var_result("RLX_KIMI_PAGING_DIAG").is_ok();
         let t = std::time::Instant::now();
         let built = built_from_hir(hir, params)?;
         let mut cb = compile_built(built, dev_override("RLX_KIMI_EXPERTS_DEVICE", device))?;
@@ -724,26 +912,115 @@ pub struct LayerCache {
     /// by global layer index → `(graph, n_snaps_out)`. The layer weights are baked
     /// into the graph, so those layers are kept HERE and NOT in `map` (caching both
     /// would double their RAM). Env `RLX_KIMI_NO_GRAPH_CACHE` disables this.
-    graphs: HashMap<usize, (CompiledGraph, usize)>,
+    /// `(graph, n_snaps_out, n_state_log_outputs)`.
+    graphs: HashMap<usize, (CompiledGraph, usize, usize)>,
     graphs_enabled: bool,
     cap: usize,
     enabled: bool,
+    /// Per-MoE-layer decode state reused across tokens (seq == 1), for layers
+    /// whose backbone is already resident: the dense MoE weights, the compiled
+    /// router graph and the experts graphs by compact-bank size. Without it every
+    /// token re-reads and re-transposes the router / latent / shared weights and
+    /// compiles two graphs per MoE layer.
+    moe: HashMap<usize, MoeDecodeCache>,
+    /// `RLX_KIMI_NO_MOE_CACHE` turns the MoE decode state cache off.
+    moe_enabled: bool,
+    /// Keep each KDA layer's `scan` state in its cached decode graph between
+    /// tokens instead of passing it in and reading it back every token (6.3 MB
+    /// per layer each way on the real model). `RLX_KIMI_NO_RESIDENT_KDA` turns it
+    /// off.
+    resident_kda: bool,
+    /// Layer → `(state id, scan output index, scan length)` of the
+    /// [`DecodeState`] whose `scan` the layer's graph currently holds.
+    kda_owner: HashMap<usize, (u64, usize, usize)>,
+    /// `(state id, layer)` → a resident `scan` displaced by another sequence.
+    kda_parked: HashMap<(u64, usize), Vec<f32>>,
+    /// Dequantized routed experts, least-recently-used within
+    /// `RLX_KIMI_EXPERT_CACHE` MB (0 / unset = none).
+    experts: ExpertLru,
+}
+
+struct MoeDecodeCache {
+    w: MoeWeights,
+    route: CompiledGraph,
+    experts: HashMap<usize, CompiledGraph>,
+}
+
+/// Byte-budgeted LRU of dequantized experts `(gate_up [L,2mi], down [mi,L])`.
+struct ExpertLru {
+    budget: usize,
+    bytes: usize,
+    map: HashMap<(usize, usize), (std::sync::Arc<Vec<f32>>, std::sync::Arc<Vec<f32>>)>,
+    order: std::collections::VecDeque<(usize, usize)>,
+}
+
+impl ExpertLru {
+    fn from_env() -> Self {
+        let mb: usize = rlx_ir::env::var_result("RLX_KIMI_EXPERT_CACHE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        Self {
+            budget: mb << 20,
+            bytes: 0,
+            map: HashMap::new(),
+            order: Default::default(),
+        }
+    }
+    fn get(
+        &mut self,
+        key: (usize, usize),
+    ) -> Option<(std::sync::Arc<Vec<f32>>, std::sync::Arc<Vec<f32>>)> {
+        let v = self.map.get(&key).cloned()?;
+        if let Some(p) = self.order.iter().position(|k| *k == key) {
+            self.order.remove(p);
+        }
+        self.order.push_back(key);
+        Some(v)
+    }
+    fn put(
+        &mut self,
+        key: (usize, usize),
+        v: (std::sync::Arc<Vec<f32>>, std::sync::Arc<Vec<f32>>),
+    ) {
+        let n = (v.0.len() + v.1.len()) * 4;
+        if n > self.budget || self.map.contains_key(&key) {
+            return;
+        }
+        while self.bytes + n > self.budget {
+            let Some(old) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(o) = self.map.remove(&old) {
+                self.bytes -= (o.0.len() + o.1.len()) * 4;
+            }
+        }
+        self.bytes += n;
+        self.map.insert(key, v);
+        self.order.push_back(key);
+    }
 }
 
 impl LayerCache {
     /// Cache configured from the environment (the worker / generation default).
     pub fn from_env() -> Self {
-        let enabled = std::env::var("RLX_KIMI_NO_WEIGHT_CACHE").is_err();
-        let cap = std::env::var("RLX_KIMI_WEIGHT_CACHE_LAYERS")
+        let enabled = rlx_ir::env::var_result("RLX_KIMI_NO_WEIGHT_CACHE").is_err();
+        let cap = rlx_ir::env::var_result("RLX_KIMI_WEIGHT_CACHE_LAYERS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(usize::MAX);
         Self {
             map: HashMap::new(),
             graphs: HashMap::new(),
-            graphs_enabled: std::env::var("RLX_KIMI_NO_GRAPH_CACHE").is_err(),
+            graphs_enabled: rlx_ir::env::var_result("RLX_KIMI_NO_GRAPH_CACHE").is_err(),
             cap,
             enabled,
+            moe: HashMap::new(),
+            moe_enabled: rlx_ir::env::var_result("RLX_KIMI_NO_MOE_CACHE").is_err(),
+            resident_kda: rlx_ir::env::var_result("RLX_KIMI_NO_RESIDENT_KDA").is_err(),
+            kda_owner: HashMap::new(),
+            kda_parked: HashMap::new(),
+            experts: ExpertLru::from_env(),
         }
     }
     /// A no-op cache for single-forward callers that never reuse across tokens.
@@ -754,6 +1031,17 @@ impl LayerCache {
             graphs_enabled: false,
             cap: 0,
             enabled: false,
+            moe: HashMap::new(),
+            moe_enabled: false,
+            resident_kda: false,
+            kda_owner: HashMap::new(),
+            kda_parked: HashMap::new(),
+            experts: ExpertLru {
+                budget: 0,
+                bytes: 0,
+                map: HashMap::new(),
+                order: Default::default(),
+            },
         }
     }
     /// Is the compiled-graph cache active AND does layer `i` fit the weight cap
@@ -770,6 +1058,69 @@ impl LayerCache {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+    /// Keep up to `mb` MB of dequantized routed experts across tokens
+    /// (overrides `RLX_KIMI_EXPERT_CACHE`).
+    pub fn with_expert_cache_mb(mut self, mb: usize) -> Self {
+        self.experts.budget = mb << 20;
+        self
+    }
+    /// Turn the MoE decode state cache on or off (default: on unless
+    /// `RLX_KIMI_NO_MOE_CACHE`).
+    pub fn with_moe_cache(mut self, on: bool) -> Self {
+        self.moe_enabled = on;
+        self
+    }
+    /// Keep KDA `scan` state resident in the cached decode graphs (default: on
+    /// unless `RLX_KIMI_NO_RESIDENT_KDA`).
+    pub fn with_resident_kda(mut self, on: bool) -> Self {
+        self.resident_kda = on;
+        self
+    }
+
+    /// Bring `state`'s host copy up to date for every layer whose `scan` lives in
+    /// a cached graph (call before reading or cloning `state.layers`).
+    pub fn sync_kda_state(&mut self, state: &mut DecodeState) -> Result<()> {
+        for i in 0..state.layers.len() {
+            if state.on_device[i] {
+                let v = self.resident_scan(i, state.id)?;
+                if let AttnState::Kda(ks) = &mut state.layers[i] {
+                    ks.scan = v;
+                }
+                state.on_device[i] = false;
+            }
+        }
+        Ok(())
+    }
+
+    /// The resident `scan` of state `sid` at layer `i`: from the graph that holds
+    /// it, or from where it was parked.
+    fn resident_scan(&mut self, i: usize, sid: u64) -> Result<Vec<f32>> {
+        if let Some(&(owner, idx, len)) = self.kda_owner.get(&i)
+            && owner == sid
+        {
+            let (c, _, _) = self
+                .graphs
+                .get(&i)
+                .with_context(|| format!("layer {i}: resident KDA state without its graph"))?;
+            return read_resident_scan(c, i, idx, len);
+        }
+        self.kda_parked
+            .remove(&(sid, i))
+            .with_context(|| format!("layer {i}: resident KDA state of sequence {sid} lost"))
+    }
+
+    /// Number of MoE layers with cached decode state.
+    pub fn moe_layers_cached(&self) -> usize {
+        self.moe.len()
+    }
+    /// Reuse layer `i`'s MoE decode state? Only for layers whose backbone is
+    /// already resident, so the cap on resident layers also bounds this.
+    fn moe_on(&self, i: usize) -> bool {
+        self.moe_enabled
+            && self.enabled
+            && self.graphs_enabled
+            && (self.map.contains_key(&i) || self.graphs.contains_key(&i))
+    }
     /// Should layer `i` be admitted (enabled, and either already in or under cap)?
     fn admits(&self, i: usize) -> bool {
         self.enabled && (self.map.contains_key(&i) || self.map.len() < self.cap)
@@ -780,7 +1131,7 @@ impl LayerCache {
 /// `default`. Used to bisect backend bugs (e.g. run the MoE router on CPU while
 /// the rest runs on Metal) without touching the call sites.
 fn dev_override(key: &str, default: Device) -> Device {
-    match std::env::var(key).ok().as_deref() {
+    match rlx_ir::env::read(key).ok().as_deref() {
         Some("cpu") => Device::Cpu,
         Some("metal") | Some("mtl") => Device::Metal,
         Some("mlx") => Device::Mlx,
@@ -836,15 +1187,18 @@ pub fn run_layer_range_streaming(
     device: Device,
 ) -> Result<(Vec<f32>, Vec<Vec<f32>>)> {
     let (hidden, seq) = (cfg.hidden, cfg.seq);
-    let profile = std::env::var("RLX_KIMI_PROFILE").is_ok();
+    let profile = rlx_ir::env::var_result("RLX_KIMI_PROFILE").is_ok();
     // The producer overlaps CPU dequant with compute — a WIN only when compute is
     // off-CPU (Metal/MLX/GPU); on the CPU device the producer's rayon dequant
     // steals cores from the main compute and it's a net loss. Gate to GPU devices
     // (override with RLX_KIMI_PIPELINE=1/0).
-    let pipeline_on = match std::env::var("RLX_KIMI_PIPELINE").ok().as_deref() {
+    let pipeline_on = match rlx_ir::env::var_result("RLX_KIMI_PIPELINE").ok().as_deref() {
         Some("1") => true,
         Some("0") => false,
-        _ => !matches!(device, Device::Cpu) && std::env::var("RLX_KIMI_NO_PIPELINE").is_err(),
+        _ => {
+            !matches!(device, Device::Cpu)
+                && rlx_ir::env::var_result("RLX_KIMI_NO_PIPELINE").is_err()
+        }
     };
     let (mut t_load, mut t_compute) = (0f64, 0f64);
 
@@ -1046,7 +1400,7 @@ impl HeadCache {
     pub fn from_env() -> Self {
         Self {
             graph: None,
-            enabled: std::env::var("RLX_KIMI_NO_HEAD_CACHE").is_err(),
+            enabled: rlx_ir::env::var_result("RLX_KIMI_NO_HEAD_CACHE").is_err(),
         }
     }
     pub fn disabled() -> Self {
@@ -1070,7 +1424,7 @@ fn build_head_graph(
     // bf16-resident head (opt-in): keep lm_head BF16 ([hidden,vocab], 2.35 GB) and
     // drive the CPU dequant-on-the-fly SgemmBf16 — ~2× the head GEMV. Precision-
     // approximate (bf16 weights) → verify tokens before relying on it.
-    let bf16_head = std::env::var("RLX_KIMI_BF16_HEAD").is_ok();
+    let bf16_head = rlx_ir::env::var_result("RLX_KIMI_BF16_HEAD").is_ok();
     // int8-resident head (the 2.35 GB lm_head is the single biggest per-token load):
     // route it through `emit_int8_resident` like the layers so its codes are
     // recorded / mmapped by the prequant path. `ck.lin` returns empty in LOAD mode
@@ -1214,10 +1568,35 @@ pub enum AttnState {
 /// cache length `s_past` (all MLA layers grow in lockstep). Snapshots are NOT here
 /// — AttnRes is per-position, so they're internal to each token's forward.
 /// `Clone` enables speculative decode's snapshot / re-sync.
-#[derive(Clone)]
+///
+/// With resident KDA state (see [`LayerCache`]) a KDA layer's `scan` matrix lives
+/// in that layer's compiled decode graph between tokens and the host copy in
+/// `layers` goes stale; [`LayerCache::sync_kda_state`] refreshes it. `Clone`
+/// copies the host side only and gives the copy its own identity — sync first.
 pub struct DecodeState {
     pub layers: Vec<AttnState>,
     pub s_past: usize,
+    /// Identity, so a cached graph knows whose state its resident buffer holds.
+    id: u64,
+    /// Per layer: the device holds this state's `scan` and the host copy is stale.
+    on_device: Vec<bool>,
+}
+
+static NEXT_DECODE_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_state_id() -> u64 {
+    NEXT_DECODE_STATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Clone for DecodeState {
+    fn clone(&self) -> Self {
+        Self {
+            layers: self.layers.clone(),
+            s_past: self.s_past,
+            id: next_state_id(),
+            on_device: vec![false; self.layers.len()],
+        }
+    }
 }
 
 impl DecodeState {
@@ -1234,19 +1613,24 @@ impl DecodeState {
                     }
                 }
             })
-            .collect();
-        Self { layers, s_past: 0 }
+            .collect::<Vec<_>>();
+        let n = layers.len();
+        Self {
+            layers,
+            s_past: 0,
+            id: next_state_id(),
+            on_device: vec![false; n],
+        }
+    }
+
+    /// Does any layer's current `scan` live only on a device?
+    pub fn has_resident_layers(&self) -> bool {
+        self.on_device.iter().any(|&b| b)
     }
 }
 
 pub(crate) fn argmax(v: &[f32]) -> u32 {
-    v.iter()
-        .enumerate()
-        .fold(
-            (0usize, f32::MIN),
-            |m, (i, &x)| if x > m.1 { (i, x) } else { m },
-        )
-        .0 as u32
+    rlx_runtime::search::argmax_u32(v)
 }
 
 /// Build + compile one layer's decode-step graph (weights from `lw` baked in),
@@ -1263,15 +1647,21 @@ fn build_decode_layer_compiled(
     n_snaps_in: usize,
     s_past: usize,
     device: Device,
-) -> Result<(CompiledGraph, usize)> {
+) -> Result<(CompiledGraph, usize, usize)> {
     let (hidden, seq) = (cfg.hidden, cfg.seq);
     let is_moe = tc.is_moe_layer(i);
     let is_kda = tc.is_kda_layer(i);
+    // State logging (feature `state-log`): expose the KDA recurrence inputs and raw
+    // projections as extra outputs after the state outputs.
+    let capture = is_kda && state_capture();
+    if capture {
+        crate::common::taps_begin();
+    }
     // bf16-resident backbone (opt-in): emit this layer's `linear` matmul weights as
     // BF16 params (fed post-compile) instead of baked f32 — half the weight bytes,
     // consumed by the backends' bf16 matmul kernels. On a graph-cached KDA layer the
     // bf16 bakes into the cached graph (f32 source transient) → genuinely resident.
-    let bf16_bb = std::env::var("RLX_KIMI_BF16_BACKBONE").is_ok();
+    let bf16_bb = crate::common::bf16_backbone_requested();
     if bf16_bb {
         crate::common::bf16_backbone_begin();
     }
@@ -1327,8 +1717,14 @@ fn build_decode_layer_compiled(
         }
     };
     let mut params = HashMap::new();
-    let (mn, stream, snaps_out, attn_out) =
-        build_layer_decode_step(&mut g, &mut params, i, h_node, snap_nodes, attn_in, lw, cfg)?;
+    let built_step =
+        build_layer_decode_step(&mut g, &mut params, i, h_node, snap_nodes, attn_in, lw, cfg);
+    let taps = if capture {
+        crate::common::taps_take()
+    } else {
+        Vec::new()
+    };
+    let (mn, stream, snaps_out, attn_out) = built_step?;
     let mut outputs = Vec::new();
     if is_moe {
         outputs.push(mn);
@@ -1363,6 +1759,19 @@ fn build_decode_layer_compiled(
         } => outputs.extend([*csq, *csk, *csv, *scan]),
         AttnDecodeOut::Mla { k, v } => outputs.extend([*k, *v]),
     }
+    let mut n_extra = 0;
+    for suffix in crate::kda::DECODE_STATE_TAPS
+        .iter()
+        .take(if capture { 7 } else { 0 })
+    {
+        let name = format!("l{i}.self_attn.{suffix}");
+        let t = taps
+            .iter()
+            .find(|t| t.name == name)
+            .with_context(|| format!("decode step exposes no {name}"))?;
+        outputs.push(t.node);
+        n_extra += 1;
+    }
     g.set_outputs(outputs);
     let mut compiled = timed("layer:body(compile)", || -> Result<_> {
         let built = built_from_hir(hir, params)?;
@@ -1381,7 +1790,39 @@ fn build_decode_layer_compiled(
         }
     }
     crate::common::set_quant_layer(None);
-    Ok((compiled, n_snaps_out))
+    Ok((compiled, n_snaps_out, n_extra))
+}
+
+/// Backends whose compiled graphs keep a bound input in place across runs and can
+/// read an output back on demand (wgpu has no `read_output_row`).
+fn resident_capable(device: Device) -> bool {
+    !matches!(device, Device::Gpu)
+}
+
+/// Output index of a KDA decode graph's `scan` (after `[h]` or `[mn, stream]`,
+/// the snapshots, and the three conv windows).
+fn scan_output_index(is_moe: bool, n_snaps: usize) -> usize {
+    usize::from(is_moe) + 1 + n_snaps + 3
+}
+
+/// Read the current `scan` of a KDA decode graph whose state is resident: its
+/// output `idx` is the bound input buffer the carry op updates in place.
+fn read_resident_scan(c: &CompiledGraph, layer: usize, idx: usize, len: usize) -> Result<Vec<f32>> {
+    c.read_output_row(idx, 0, len)
+        .filter(|v| v.len() == len)
+        .with_context(|| {
+            format!("layer {layer}: this backend cannot read the resident KDA state back")
+        })
+}
+
+#[cfg(feature = "state-log")]
+fn state_capture() -> bool {
+    crate::state_log::capture_active()
+}
+
+#[cfg(not(feature = "state-log"))]
+fn state_capture() -> bool {
+    false
 }
 
 /// Run `cfg.seq` new tokens through ALL layers via the O(1) decode-step builders,
@@ -1446,9 +1887,22 @@ pub fn decode_forward_range(
         // graph-cached layer is NOT also weight-cached (that would double its RAM).
         let use_graph_cache = seq == 1 && is_kda && cache.graphs_on(i);
 
+        let resident = use_graph_cache
+            && cache.resident_kda
+            && resident_capable(dev_override("RLX_KIMI_BODY_DEVICE", device));
+        if is_kda && !resident && state.on_device[i] {
+            // This pass needs the state on the host (prefill, an uncached graph):
+            // fetch it from wherever it is resident.
+            let v = cache.resident_scan(i, state.id)?;
+            if let AttnState::Kda(ks) = &mut state.layers[i] {
+                ks.scan = v;
+            }
+            state.on_device[i] = false;
+        }
+
         // Ensure a compiled graph is available; `local` holds a freshly-built one
         // for the non-cached path (MLA, seq>1, or graph cache off/full).
-        let mut local: Option<(CompiledGraph, usize)> = None;
+        let mut local: Option<(CompiledGraph, usize, usize)> = None;
         if use_graph_cache {
             if let std::collections::hash_map::Entry::Vacant(e) = cache.graphs.entry(i) {
                 let lw = timed("backbone:load(cache-miss)", || {
@@ -1493,13 +1947,52 @@ pub fn decode_forward_range(
                 device,
             )?);
         }
-        let (compiled, n_snaps): (&mut CompiledGraph, usize) = if use_graph_cache {
-            let (c, n) = cache.graphs.get_mut(&i).unwrap();
-            (c, *n)
+        let (compiled, n_snaps, n_extra): (&mut CompiledGraph, usize, usize) = if use_graph_cache {
+            let (c, n, x) = cache.graphs.get_mut(&i).unwrap();
+            (c, *n, *x)
         } else {
-            let (c, n) = local.as_mut().unwrap();
-            (c, *n)
+            let (c, n, x) = local.as_mut().unwrap();
+            (c, *n, *x)
         };
+        if is_kda && state_capture() && n_extra == 0 {
+            bail!(
+                "layer {i}: decode graph was cached before state logging started; \
+                 use a fresh LayerCache for a logged run"
+            );
+        }
+
+        // Resident KDA state: the cached graph keeps this sequence's `scan` in its
+        // bound input buffer between tokens (the carry op updates it in place), so
+        // it is neither uploaded nor read back per token.
+        let scan_idx = scan_output_index(is_moe, n_snaps);
+        if is_kda {
+            let sid = state.id;
+            if resident {
+                let owner = cache.kda_owner.get(&i).copied();
+                if owner.map(|o| o.0) != Some(sid) || !state.on_device[i] {
+                    if let Some((prev, pidx, plen)) = owner.filter(|o| o.0 != sid) {
+                        // Another sequence's state is in this graph: park it.
+                        let v = read_resident_scan(compiled, i, pidx, plen)?;
+                        cache.kda_parked.insert((prev, i), v);
+                    }
+                    let src = if state.on_device[i] {
+                        cache.kda_parked.remove(&(sid, i)).with_context(|| {
+                            format!("layer {i}: resident KDA state of sequence {sid} lost")
+                        })?
+                    } else {
+                        match &state.layers[i] {
+                            AttnState::Kda(ks) => ks.scan.clone(),
+                            AttnState::Mla { .. } => bail!("layer {i}: KDA layer with MLA state"),
+                        }
+                    };
+                    let len = src.len();
+                    if !compiled.bind_gpu_handle("scan", &src) {
+                        bail!("layer {i}: backend refused a resident KDA state buffer");
+                    }
+                    cache.kda_owner.insert(i, (sid, scan_idx, len));
+                }
+            }
+        }
 
         // bind (scoped so the immutable borrow of `state` ends before we mutate it)
         let snap_names: Vec<String> = (0..snaps.len()).map(|j| format!("snap_{j}")).collect();
@@ -1509,17 +2002,27 @@ pub fn decode_forward_range(
                 inputs.push((snap_names[j].as_str(), sn.as_slice()));
             }
             match &state.layers[i] {
-                AttnState::Kda(ks) => inputs.extend([
-                    ("csq", ks.conv_q.as_slice()),
-                    ("csk", ks.conv_k.as_slice()),
-                    ("csv", ks.conv_v.as_slice()),
-                    ("scan", ks.scan.as_slice()),
-                ]),
+                AttnState::Kda(ks) => {
+                    inputs.extend([
+                        ("csq", ks.conv_q.as_slice()),
+                        ("csk", ks.conv_k.as_slice()),
+                        ("csv", ks.conv_v.as_slice()),
+                    ]);
+                    if !resident {
+                        inputs.push(("scan", ks.scan.as_slice()));
+                    }
+                }
                 AttnState::Mla { k, v } => {
                     inputs.extend([("ck", k.as_slice()), ("cv", v.as_slice())])
                 }
             }
-            compiled.run(&inputs)
+            if resident {
+                let n_out = scan_idx + 1 + n_extra;
+                let read: Vec<usize> = (0..n_out).filter(|&o| o != scan_idx).collect();
+                compiled.run_read_outputs(&inputs, Some(&read))
+            } else {
+                compiled.run(&inputs)
+            }
         });
 
         // extract: [h_or_(mn,stream), snaps.., state..]
@@ -1528,7 +2031,11 @@ pub fn decode_forward_range(
             let stream_v = res.remove(0);
             let new_snaps: Vec<Vec<f32>> = res.drain(0..n_snaps).collect();
             snaps = new_snaps;
-            let moe = run_moe_layer(ck, &lp, i, &mn_v, cfg.moe, device)?;
+            let moe = if seq == 1 && cache.moe_on(i) && !moe_offloaded() && !packed_moe(device) {
+                run_moe_cached(ck, &lp, i, &mn_v, cfg.moe, device, cache)?
+            } else {
+                run_moe_layer(ck, &lp, i, &mn_v, cfg.moe, device)?
+            };
             add_vec(&stream_v, &moe)
         } else {
             let h_out = res.remove(0);
@@ -1541,13 +2048,25 @@ pub fn decode_forward_range(
                 ks.conv_q = res.remove(0);
                 ks.conv_k = res.remove(0);
                 ks.conv_v = res.remove(0);
-                ks.scan = res.remove(0);
+                if resident {
+                    state.on_device[i] = true;
+                } else {
+                    ks.scan = res.remove(0);
+                    state.on_device[i] = false;
+                }
             }
             AttnState::Mla { k, v } => {
                 *k = res.remove(0);
                 *v = res.remove(0);
             }
         }
+        // What is left are the state-log outputs, in `DECODE_STATE_TAPS` order.
+        #[cfg(feature = "state-log")]
+        if n_extra > 0 {
+            crate::state_log::push_capture(i, std::mem::take(&mut res));
+        }
+        #[cfg(not(feature = "state-log"))]
+        let _ = n_extra;
     }
     state.s_past += seq;
     Ok((h, snaps))

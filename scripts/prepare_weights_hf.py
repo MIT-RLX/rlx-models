@@ -542,7 +542,7 @@ MODELS: dict[str, dict] = {
         "pipeline": "text-to-speech",
         "upstream": "https://github.com/tronghieuit/tiny-tts",
         "crate": "rlx-tiny-tts",
-        "run": 'just fetch-tiny-tts && cargo run -p rlx-tiny-tts --release --features apple-silicon -- --data weights/tts/tiny-tts-rlx --text "Hi." --device metal --out /tmp/tiny.wav',
+        "run": 'just fetch-tiny-tts && cargo run -p rlx-tiny-tts --release --features macos-gpu -- --data weights/tts/tiny-tts-rlx --text "Hi." --device metal --out /tmp/tiny.wav',
         "summary": "MeloTTS/VITS2 English nested `.rlxp` subgraphs + frontend for RLX TinyTTS and MeloTTS. CPU / Metal / MLX / CUDA / wgpu.",
         "tags": ["tts", "melotts", "vits2", "rlx", "rlxp"],
         "primary": ["tiny-tts.rlxp"],

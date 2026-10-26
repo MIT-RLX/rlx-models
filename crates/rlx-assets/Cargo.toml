@@ -19,13 +19,13 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 memmap2 = "0.9"
 rlx-pkg = { workspace = true, optional = true }
-rlx-ir = { workspace = true, optional = true }
+rlx-ir = { workspace = true }
 rlx-onnx-import = { workspace = true, optional = true }
 
 [features]
 default = []
 # Official RLX package format (`.rlxp` / RLXPFLAT) — sidecar asset bundles.
-rlxp = ["dep:rlx-pkg", "dep:rlx-ir"]
+rlxp = ["dep:rlx-pkg"]
 # Pack-time ONNX → nested subgraph `.rlxp` (hot tensors + graph.json) + outer pack.
 native-pack = ["rlxp", "dep:rlx-onnx-import"]
 

@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 fn fixture_dir() -> Option<PathBuf> {
-    std::env::var_os("RLX_GEMMA4_FIXTURE").map(PathBuf::from)
+    rlx_ir::env::var_os("RLX_GEMMA4_FIXTURE").map(PathBuf::from)
 }
 
 #[test]

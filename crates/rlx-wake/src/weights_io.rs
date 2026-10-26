@@ -58,7 +58,7 @@ pub fn load_f32_map_bytes(bytes: &[u8]) -> Result<HashMap<String, Vec<f32>>> {
             bail!("tensor {name} byte length not multiple of 4");
         }
         let mut v = Vec::with_capacity(data.len() / 4);
-        for chunk in data.chunks_exact(4) {
+        for chunk in data.as_chunks::<4>().0.iter() {
             v.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
         out.insert(name.to_string(), v);

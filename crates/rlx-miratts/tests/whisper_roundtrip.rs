@@ -35,20 +35,24 @@ fn root() -> PathBuf {
 fn read_i64(p: &PathBuf) -> Vec<i64> {
     std::fs::read(p)
         .unwrap()
-        .chunks_exact(8)
-        .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|b| i64::from_le_bytes(*b))
         .collect()
 }
 fn read_i32(p: &PathBuf) -> Vec<i32> {
     std::fs::read(p)
         .unwrap()
-        .chunks_exact(4)
-        .map(|b| i32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| i32::from_le_bytes(*b))
         .collect()
 }
 
 fn whisper_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("RLX_WHISPER_DIR") {
+    if let Ok(d) = rlx_ir::env::var_result("RLX_WHISPER_DIR") {
         return ready(PathBuf::from(d));
     }
     let cache = root().join(".cache");

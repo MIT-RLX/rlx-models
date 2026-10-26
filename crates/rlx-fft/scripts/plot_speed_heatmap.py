@@ -57,7 +57,7 @@ X0, Y0 = 55, 70
 W = X0 + 3 * PITCH_X + 80
 H = Y0 + 2 * PITCH_Y
 out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
-       f'viewBox="0 0 {W} {H}" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">',
+       f'viewBox="0 0 {W} {H}" font-family="Segoe UI,Helvetica,Arial,sans-serif">',
        f'<rect width="{W}" height="{H}" fill="#fff"/>',
        f'<text x="{W/2}" y="30" text-anchor="middle" font-size="19" font-weight="700" '
        f'fill="#222">FFT latency over n_fft × batch (ms/iter, lower=greener)</text>',

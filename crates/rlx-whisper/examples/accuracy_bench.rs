@@ -61,7 +61,7 @@ fn main() -> Result<()> {
     }
     let reference = load_jfk_reference().context("load reference transcript")?;
 
-    let device_s = std::env::var("RLX_WHISPER_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device_s = rlx_ir::env::var_result("RLX_WHISPER_DEVICE").unwrap_or_else(|_| "cpu".into());
     let device = parse_standard_device("whisper", &device_s)?;
 
     let pcm = load_wav_mono_f32(&wav).with_context(|| format!("read {}", wav.display()))?;

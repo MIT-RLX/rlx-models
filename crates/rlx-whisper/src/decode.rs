@@ -15,7 +15,9 @@
 
 //! Greedy / beam decoding helpers (host-side token loop).
 
+use crate::cache::WhisperKvCache;
 use crate::config::WhisperConfig;
+use rlx_search::{BeamConfig, BeamSearch, Constraint, Hypothesis};
 
 pub const SOT_TOKEN: &str = "<|startoftranscript|>";
 pub const TRANSCRIBE_TOKEN: &str = "<|transcribe|>";
@@ -152,6 +154,10 @@ pub fn argmax_batched_row(
 
 /// Argmax with optional precomputed suppression mask (`-inf` entries skipped).
 pub fn argmax_logits_masked(logits: &[f32], mask: Option<&[f32]>) -> u32 {
+    let Some(mask) = mask else {
+        return rlx_search::argmax_u32(logits);
+    };
+    let mask = Some(mask);
     let mut best_i = 0usize;
     let mut best_v = f32::NEG_INFINITY;
     for (i, &v) in logits.iter().enumerate() {
@@ -208,14 +214,25 @@ impl SuppressionMask {
         }
     }
 
-    /// Argmax after log-softmax with global + optional begin suppression.
+    /// Argmax with global + optional begin suppression. (Log-softmax is a
+    /// shift, so the argmax of the logits is the argmax of the log-probs.)
     pub fn argmax_next(&self, logits: &mut [f32], at_generation_start: bool) -> u32 {
         if at_generation_start {
             self.apply_begin(logits);
         }
         self.apply(logits);
-        log_softmax_last(logits);
-        argmax_logits_masked(logits, None)
+        rlx_search::argmax_u32(logits)
+    }
+}
+
+/// Beam-search masks: `suppress_tokens` every step, `begin_suppress_tokens`
+/// at the first generated token.
+impl Constraint for SuppressionMask {
+    fn mask(&mut self, _sequence: &[u32], generated: usize, scores: &mut [f32]) {
+        if generated == 0 {
+            self.apply_begin(scores);
+        }
+        self.apply(scores);
     }
 }
 
@@ -223,19 +240,6 @@ pub fn argmax_last_logits(logits: &[f32], dec_seq: usize, vocab: usize) -> u32 {
     let last = dec_seq - 1;
     let off = last * vocab;
     argmax_logits(&logits[off..off + vocab])
-}
-
-pub fn log_softmax_last(logits: &mut [f32]) {
-    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let mut sum = 0f32;
-    for v in logits.iter_mut() {
-        *v = (*v - max).exp();
-        sum += *v;
-    }
-    let log_z = sum.max(1e-20).ln();
-    for v in logits.iter_mut() {
-        *v = v.ln() - log_z;
-    }
 }
 
 pub fn is_eot(tokenizer: &tokenizers::Tokenizer, id: u32) -> bool {
@@ -249,356 +253,283 @@ pub fn filter_suppressed(logits: &mut [f32], cfg: &WhisperConfig) {
     SuppressionMask::from_config(cfg).apply(logits);
 }
 
-/// One beam hypothesis during search.
-#[derive(Debug, Clone)]
-pub struct BeamHypothesis {
-    pub tokens: Vec<u32>,
-    pub score: f32,
-    pub completed: bool,
+/// A beam result's tokens, ending in `eot` when it finished (as the greedy
+/// loop's do).
+fn with_eot(h: Option<Hypothesis>, eot: u32) -> Vec<u32> {
+    h.map(|h| {
+        let mut t = h.tokens;
+        if h.finished {
+            t.push(eot);
+        }
+        t
+    })
+    .unwrap_or_default()
 }
 
-/// Beam state for KV-incremental search (suffix tokens only; prompt handled separately).
-#[derive(Debug, Clone)]
-pub struct BeamKvState {
-    pub suffix: Vec<u32>,
-    pub score: f32,
-    pub cache: crate::cache::WhisperKvCache,
-    pub next_logits: Vec<f32>,
-    pub completed: bool,
-}
-
-/// Beam search with per-hypothesis self-attention KV (no full prefill replay).
+/// Beam search with per-hypothesis self-attention KV (no full prefill replay):
+/// `openai/whisper`'s rule ([`BeamConfig::whisper`]). `decode_step(token,
+/// parent_cache)` runs one step on a copy of the parent's cache, once per kept
+/// hypothesis. Returns the generated tokens.
+#[allow(clippy::too_many_arguments)]
 pub fn beam_search_decode_kv(
     prefill_logits: &[f32],
     prompt_len: usize,
-    initial_cache: crate::cache::WhisperKvCache,
+    initial_cache: WhisperKvCache,
     eot_id: u32,
     beam_size: usize,
     max_steps: usize,
     vocab: usize,
-    mut decode_step: impl FnMut(
-        u32,
-        &crate::cache::WhisperKvCache,
-    ) -> anyhow::Result<(Vec<f32>, crate::cache::WhisperKvCache)>,
+    suppression: &mut SuppressionMask,
+    mut decode_step: impl FnMut(u32, &WhisperKvCache) -> anyhow::Result<(Vec<f32>, WhisperKvCache)>,
 ) -> anyhow::Result<Vec<u32>> {
-    let beam_size = beam_size.max(1);
-    let mut beams = vec![BeamKvState {
-        suffix: Vec::new(),
-        score: 0.0,
-        cache: initial_cache,
-        next_logits: last_logits_row(prefill_logits, prompt_len, vocab),
-        completed: false,
-    }];
-
-    for _ in 0..max_steps {
-        let mut candidates = Vec::new();
-        for beam in &beams {
-            if beam.completed {
-                candidates.push(beam.clone());
-                continue;
-            }
-            let mut lp = beam.next_logits.clone();
-            log_softmax_last(&mut lp);
-            let mut indexed: Vec<(usize, f32)> = lp.into_iter().enumerate().collect();
-            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            for (tok, logp) in indexed.into_iter().take(beam_size) {
-                let tok = tok as u32;
-                if beam.suffix.is_empty() && tok == eot_id {
-                    continue;
-                }
-                let (next_logits, mut new_cache) = decode_step(tok, &beam.cache)?;
-                let row = if next_logits.len() == vocab {
-                    next_logits
-                } else {
-                    last_logits_row(&next_logits, 1, vocab)
-                };
-                let mut suffix = beam.suffix.clone();
-                suffix.push(tok);
-                let completed = tok == eot_id;
-                if completed {
-                    // A completed hypothesis is never extended again, but it survives in
-                    // `beams` and is cloned every remaining step. Drop its KV cache (only
-                    // `suffix`/`score` are ever read from it) to avoid repeated full-cache
-                    // clones — result-preserving.
-                    new_cache.layers_k.clear();
-                    new_cache.layers_v.clear();
-                    new_cache.past_len = 0;
-                }
-                candidates.push(BeamKvState {
-                    suffix,
-                    score: beam.score + logp,
-                    cache: new_cache,
-                    next_logits: row,
-                    completed,
-                });
-            }
+    let cfg = BeamConfig::whisper(beam_size, max_steps, eot_id);
+    let first = last_logits_row(prefill_logits, prompt_len, vocab);
+    let mut caches = vec![initial_cache];
+    let best = rlx_search::beam_search::<anyhow::Error>(cfg, &[], &first, suppression, |step| {
+        let mut rows = Vec::with_capacity(step.len());
+        let mut next = Vec::with_capacity(step.len());
+        for (&parent, &token) in step.parents.iter().zip(step.tokens) {
+            let (logits, cache) = decode_step(token, &caches[parent])?;
+            rows.push(if logits.len() == vocab {
+                logits
+            } else {
+                last_logits_row(&logits, 1, vocab)
+            });
+            next.push(cache);
         }
-        candidates.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        candidates.truncate(beam_size);
-        beams = candidates;
-        if beams.iter().all(|b| b.completed) {
-            break;
-        }
-    }
-    Ok(beams
-        .into_iter()
-        .max_by(|a, b| {
-            a.score
-                .partial_cmp(&b.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|b| b.suffix)
-        .unwrap_or_default())
+        caches = next;
+        Ok(rows)
+    })?;
+    Ok(with_eot(best.into_iter().next(), eot_id))
 }
 
-/// Top-k token ids from log-probs (descending). Full sort — fine for small `vocab`.
-pub fn topk_tokens(logits: &mut [f32], k: usize) -> Vec<(u32, f32)> {
-    log_softmax_last(logits);
-    topk_from_log_probs(logits, k)
-}
-
-/// Top-k on already log-softmaxed logits — `O(vocab * k)` (small `k` / beam width).
-pub fn topk_from_log_probs(log_probs: &[f32], k: usize) -> Vec<(u32, f32)> {
-    use std::cmp::Ordering;
-    if k == 0 {
-        return Vec::new();
-    }
-    let mut best: Vec<(u32, f32)> = Vec::with_capacity(k);
-    for (i, &p) in log_probs.iter().enumerate() {
-        if !p.is_finite() {
-            continue;
-        }
-        if best.len() < k {
-            best.push((i as u32, p));
-        } else {
-            let mut min_j = 0usize;
-            for (j, &(_, v)) in best.iter().enumerate() {
-                if v < best[min_j].1 {
-                    min_j = j;
-                }
-            }
-            if p > best[min_j].1 {
-                best[min_j] = (i as u32, p);
-            }
-        }
-    }
-    best.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
-    best
-}
-
-/// Copy `row` into `scratch`, log-softmax, return top-k (reuses `scratch` each call).
-pub fn topk_tokens_row(scratch: &mut [f32], row: &[f32], k: usize) -> Vec<(u32, f32)> {
-    let n = row.len().min(scratch.len());
-    scratch[..n].copy_from_slice(&row[..n]);
-    log_softmax_last(&mut scratch[..n]);
-    topk_from_log_probs(&scratch[..n], k)
-}
-
-/// One beam slot in a batched (regions × beams) decode.
-#[derive(Debug, Clone)]
-struct BatchedBeamSlot {
-    region: usize,
-    suffix: Vec<u32>,
-    score: f32,
-    logits: Vec<f32>,
-    completed: bool,
-}
-
-/// Batched beam search: `batch = n_regions * beam_size`, one GPU forward per time step.
+/// Batched beam search: `batch = n_regions * beam_size`, one GPU forward per time
+/// step. Region `r`'s live hypothesis `j` is batch slot `r * beam_size + j`; each
+/// step reorders the KV cache to the chosen parents, then feeds the chosen tokens.
+#[allow(clippy::too_many_arguments)]
 pub fn beam_search_decode_kv_batched(
     prefill_logits: &[f32],
     prompt_len: usize,
-    mut cache: crate::cache::WhisperKvCache,
+    mut cache: WhisperKvCache,
     n_regions: usize,
     beam_size: usize,
     max_steps: usize,
     vocab: usize,
     eot_id: u32,
-    mut decode_step_batch: impl FnMut(
-        &[u32],
-        &mut crate::cache::WhisperKvCache,
-    ) -> anyhow::Result<Vec<f32>>,
+    suppression: &mut SuppressionMask,
+    mut decode_step_batch: impl FnMut(&[u32], &mut WhisperKvCache) -> anyhow::Result<Vec<f32>>,
 ) -> anyhow::Result<Vec<Vec<u32>>> {
     use crate::batch::reorder_kv_beams;
 
-    let mut logits_scratch = vec![0f32; vocab];
     let beam_size = beam_size.max(1);
     let batch = n_regions * beam_size;
-
-    let mut slots: Vec<BatchedBeamSlot> = (0..batch)
-        .map(|b| {
-            let ri = b / beam_size;
-            BatchedBeamSlot {
-                region: ri,
-                suffix: Vec::new(),
-                score: 0.0,
-                logits: batched_logits_row_owned(prefill_logits, b, batch, prompt_len, vocab),
-                completed: false,
-            }
+    let cfg = BeamConfig::whisper(beam_size, max_steps, eot_id);
+    let mut searches: Vec<BeamSearch> = (0..n_regions)
+        .map(|_| BeamSearch::new(cfg.clone(), &[]))
+        .collect();
+    // Every slot of a region holds the same prefill; read the first.
+    let mut rows: Vec<Vec<Vec<f32>>> = (0..n_regions)
+        .map(|r| {
+            vec![batched_logits_row_owned(
+                prefill_logits,
+                r * beam_size,
+                batch,
+                prompt_len,
+                vocab,
+            )]
         })
         .collect();
 
-    for _ in 0..max_steps {
-        if slots.iter().all(|s| s.completed) {
+    loop {
+        // Idle slots (finished regions, short beams) keep their cache and
+        // decode `eot`; their output is never read.
+        let mut reorder: Vec<usize> = (0..batch).collect();
+        let mut tokens = vec![eot_id; batch];
+        let mut stepped = false;
+        for (r, bs) in searches.iter_mut().enumerate() {
+            if bs.is_done() {
+                continue;
+            }
+            let refs: Vec<&[f32]> = rows[r].iter().map(Vec::as_slice).collect();
+            let Some(step) = bs.advance(&refs, suppression) else {
+                continue;
+            };
+            stepped = true;
+            for (j, (&parent, &token)) in step.parents.iter().zip(step.tokens).enumerate() {
+                reorder[r * beam_size + j] = r * beam_size + parent;
+                tokens[r * beam_size + j] = token;
+            }
+        }
+        if !stepped {
             break;
         }
-
-        let mut step_tokens = vec![eot_id; batch];
-        for (b, slot) in slots.iter().enumerate() {
-            if slot.completed {
-                continue;
-            }
-            let row = batched_logits_row(&slot.logits, 0, 1, 1, vocab);
-            let (tok, _) = topk_tokens_row(&mut logits_scratch, row, 1)
-                .into_iter()
-                .next()
-                .unwrap_or((eot_id, 0.0));
-            step_tokens[b] = tok;
-        }
-
-        let step_logits = decode_step_batch(&step_tokens, &mut cache)?;
-
-        let mut per_region_cands: Vec<Vec<(BatchedBeamSlot, usize)>> = vec![Vec::new(); n_regions];
-
-        for (b, slot) in slots.iter().enumerate() {
-            if slot.completed {
-                per_region_cands[slot.region].push((slot.clone(), b));
-                continue;
-            }
-            let row = batched_logits_row(&step_logits, b, batch, 1, vocab);
-            for (tok, logp) in topk_tokens_row(&mut logits_scratch, row, beam_size) {
-                if slot.suffix.is_empty() && tok == eot_id {
-                    continue;
-                }
-                let mut suffix = slot.suffix.clone();
-                suffix.push(tok);
-                per_region_cands[slot.region].push((
-                    BatchedBeamSlot {
-                        region: slot.region,
-                        suffix,
-                        score: slot.score + logp,
-                        logits: row.to_vec(),
-                        completed: tok == eot_id,
-                    },
-                    b,
-                ));
+        cache = reorder_kv_beams(&cache, &reorder, batch).map_err(|e| anyhow::anyhow!(e))?;
+        let logits = decode_step_batch(&tokens, &mut cache)?;
+        for (r, bs) in searches.iter().enumerate() {
+            if !bs.is_done() {
+                rows[r] = (0..bs.live_len())
+                    .map(|j| batched_logits_row_owned(&logits, r * beam_size + j, batch, 1, vocab))
+                    .collect();
             }
         }
-
-        let mut reorder_idx = vec![0usize; batch];
-        let mut next_slots = Vec::with_capacity(batch);
-        for (ri, cands) in per_region_cands.iter_mut().enumerate() {
-            cands.sort_by(|a, b| {
-                b.0.score
-                    .partial_cmp(&a.0.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            cands.truncate(beam_size);
-            while cands.len() < beam_size {
-                let pad = slots[ri * beam_size].clone();
-                cands.push((pad, ri * beam_size));
-            }
-            for (bi, (cand, parent)) in cands.iter().enumerate() {
-                let dst = ri * beam_size + bi;
-                reorder_idx[dst] = *parent;
-                next_slots.push(cand.clone());
-            }
-        }
-        slots = next_slots;
-        cache = reorder_kv_beams(&cache, &reorder_idx, batch).map_err(|e| anyhow::anyhow!(e))?;
     }
-
-    let mut out = vec![Vec::new(); n_regions];
-    for ri in 0..n_regions {
-        out[ri] = slots
-            .iter()
-            .filter(|s| s.region == ri)
-            .max_by(|a, b| {
-                a.score
-                    .partial_cmp(&b.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|s| s.suffix.clone())
-            .unwrap_or_default();
-    }
-    Ok(out)
+    Ok(searches
+        .into_iter()
+        .map(|bs| with_eot(bs.finish().into_iter().next(), eot_id))
+        .collect())
 }
 
-/// Standard log-sum beam search over a closure that returns next-token log-probs.
+/// Beam search over a closure returning next-token logits for the generated
+/// tokens so far (no KV cache): [`BeamConfig::whisper`].
 pub fn beam_search_decode(
-    mut next_logprobs: impl FnMut(&[u32]) -> Vec<f32>,
+    mut next_logits: impl FnMut(&[u32]) -> Vec<f32>,
     eot_id: u32,
     beam_size: usize,
     max_steps: usize,
 ) -> Vec<u32> {
-    let beam_size = beam_size.max(1);
-    let mut beams = vec![BeamHypothesis {
-        tokens: Vec::new(),
-        score: 0.0,
-        completed: false,
-    }];
-
-    for _ in 0..max_steps {
-        let mut candidates = Vec::new();
-        for beam in &beams {
-            if beam.completed {
-                candidates.push(beam.clone());
-                continue;
-            }
-            let mut lp = next_logprobs(&beam.tokens);
-            log_softmax_last(&mut lp);
-            let mut indexed: Vec<(usize, f32)> = lp.into_iter().enumerate().collect();
-            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            for (tok, logp) in indexed.into_iter().take(beam_size) {
-                let mut t = beam.tokens.clone();
-                t.push(tok as u32);
-                candidates.push(BeamHypothesis {
-                    tokens: t,
-                    score: beam.score + logp,
-                    completed: tok as u32 == eot_id,
-                });
-            }
-        }
-        candidates.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+    let cfg = BeamConfig::whisper(beam_size, max_steps, eot_id);
+    let first = next_logits(&[]);
+    let best =
+        rlx_search::beam_search::<std::convert::Infallible>(cfg, &[], &first, &mut (), |s| {
+            Ok((0..s.len()).map(|i| next_logits(s.generated(i))).collect())
         });
-        candidates.truncate(beam_size);
-        beams = candidates;
-        if beams.iter().all(|b| b.completed) {
-            break;
-        }
+    match best {
+        Ok(b) => with_eot(b.into_iter().next(), eot_id),
+        Err(e) => match e {},
     }
-    beams
-        .into_iter()
-        .max_by(|a, b| {
-            a.score
-                .partial_cmp(&b.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|b| b.tokens)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn topk_heap_matches_sort_on_toy_vocab() {
-        let logits = [0.1f32, 3.0, 1.0, 2.0, 0.5];
-        let mut scratch = logits.to_vec();
-        let heap = topk_tokens_row(&mut scratch, &logits, 3);
-        let mut full = logits.to_vec();
-        let sort = topk_tokens(&mut full, 3);
-        assert_eq!(heap.len(), sort.len());
-        for ((hi, _), (si, _)) in heap.iter().zip(sort.iter()) {
-            assert_eq!(hi, si);
+    use crate::cache::WhisperKvCache;
+
+    /// A tiny "decoder" whose logits depend on the generated tokens only, so
+    /// the batched and per-hypothesis searches must agree.
+    fn logits_for(seq: &[u32], vocab: usize) -> Vec<f32> {
+        let mut h = 0x9e37_79b9u64;
+        for &t in seq {
+            h = (h ^ t as u64).wrapping_mul(0x0100_0000_01b3);
         }
+        (0..vocab)
+            .map(|i| ((h ^ (i as u64 * 0x2545_f491)) % 1000) as f32 / 97.0)
+            .collect()
+    }
+
+    /// The KV "cache" stores the generated tokens in `layers_k[0]` (one f32 per
+    /// token per batch slot), so a wrong parent reorder shows up as wrong logits.
+    fn kv(slots: &[Vec<u32>]) -> WhisperKvCache {
+        let width = slots.iter().map(Vec::len).max().unwrap_or(0) + 1;
+        let mut k = Vec::new();
+        for s in slots {
+            k.push(s.len() as f32);
+            k.extend(s.iter().map(|&t| t as f32));
+            k.resize(k.len() + width - 1 - s.len(), 0.0);
+        }
+        WhisperKvCache {
+            past_len: 0,
+            layers_kv_base: vec![0],
+            layers_k: vec![k.clone()],
+            layers_v: vec![k],
+        }
+    }
+
+    fn slots_of(cache: &WhisperKvCache, batch: usize) -> Vec<Vec<u32>> {
+        let per = cache.layers_k[0].len() / batch;
+        (0..batch)
+            .map(|b| {
+                let row = &cache.layers_k[0][b * per..(b + 1) * per];
+                let n = row[0] as usize;
+                row[1..=n].iter().map(|&t| t as u32).collect()
+            })
+            .collect()
+    }
+
+    fn mask(vocab: usize) -> SuppressionMask {
+        SuppressionMask {
+            data: vec![0.0; vocab],
+            begin: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn batched_regions_match_the_single_stream_search() {
+        let (vocab, beam, eot) = (9usize, 3usize, 4u32);
+        let single = beam_search_decode(|g| logits_for(g, vocab), eot, beam, 7);
+        let n_regions = 2;
+        let batch = n_regions * beam;
+        let prefill: Vec<f32> = (0..batch).flat_map(|_| logits_for(&[], vocab)).collect();
+        let out = beam_search_decode_kv_batched(
+            &prefill,
+            1,
+            kv(&vec![Vec::new(); batch]),
+            n_regions,
+            beam,
+            7,
+            vocab,
+            eot,
+            &mut mask(vocab),
+            |tokens, cache| {
+                // Append each slot's token to its (reordered) history.
+                let mut slots = slots_of(cache, batch);
+                for (s, &t) in slots.iter_mut().zip(tokens) {
+                    s.push(t);
+                }
+                *cache = kv(&slots);
+                Ok(slots.iter().flat_map(|s| logits_for(s, vocab)).collect())
+            },
+        )
+        .unwrap();
+        assert_eq!(out, vec![single.clone(), single]);
+    }
+
+    #[test]
+    fn kv_search_matches_the_closure_search() {
+        let (vocab, beam, eot) = (8usize, 4usize, 2u32);
+        let want = beam_search_decode(|g| logits_for(g, vocab), eot, beam, 6);
+        let got = beam_search_decode_kv(
+            &logits_for(&[], vocab),
+            1,
+            kv(&[Vec::new()]),
+            eot,
+            beam,
+            6,
+            vocab,
+            &mut mask(vocab),
+            |token, cache| {
+                let mut s = slots_of(cache, 1).remove(0);
+                s.push(token);
+                Ok((logits_for(&s, vocab), kv(&[s])))
+            },
+        )
+        .unwrap();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn suppressed_tokens_never_appear_in_beam_output() {
+        let (vocab, beam, eot) = (8usize, 3usize, 2u32);
+        let mut m = mask(vocab);
+        m.data[5] = f32::NEG_INFINITY;
+        m.data[6] = f32::NEG_INFINITY;
+        let got = beam_search_decode_kv(
+            &logits_for(&[], vocab),
+            1,
+            kv(&[Vec::new()]),
+            eot,
+            beam,
+            8,
+            vocab,
+            &mut m,
+            |token, cache| {
+                let mut s = slots_of(cache, 1).remove(0);
+                s.push(token);
+                Ok((logits_for(&s, vocab), kv(&[s])))
+            },
+        )
+        .unwrap();
+        assert!(!got.contains(&5) && !got.contains(&6), "{got:?}");
+        assert_ne!(got.first(), Some(&eot), "end-of-text can't come first");
     }
 }

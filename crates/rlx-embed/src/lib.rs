@@ -28,12 +28,16 @@
 
 mod arch;
 mod bert;
+#[cfg(feature = "export")]
+pub mod export;
 mod nomic;
+pub mod packed;
 mod pooling;
 mod registry;
 mod reranker;
 mod runtime;
 mod text;
+mod text_encoder;
 mod tokenizer;
 mod vision;
 
@@ -47,6 +51,7 @@ pub use registry::{
 pub use reranker::RlxReranker;
 pub use runtime::{RlxEmbed, compile_model, compile_model_cpu};
 pub use text::embed_with_rlx;
+pub use text_encoder::{BertFiles, BertTextEncoder};
 pub use tokenizer::{BertTokenizer, TokenizedBatch};
 pub use vision::{RlxVisionModel, assemble_vision_hidden};
 

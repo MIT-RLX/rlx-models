@@ -26,6 +26,8 @@ pub mod conditioner;
 pub mod config;
 pub mod delay;
 pub mod engine;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod generate;
 pub mod native;

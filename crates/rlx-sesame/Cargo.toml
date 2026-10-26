@@ -29,9 +29,18 @@ hound = "3"
 fastrand = "2"
 clap = { version = "4", features = ["derive"] }
 memmap2 = "0.9"
+rlx-llama32 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+rlx-text = { workspace = true }
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }
 
 [features]
 default = []
+# `export::export_rlxp`: Sesame CSM as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-mimi/export", "dep:rlx-llama32"]
 metal = ["rlx-runtime/metal", "rlx-mimi/metal"]
 mlx = ["rlx-runtime/mlx", "rlx-mimi/mlx"]
 cuda = ["rlx-runtime/cuda", "rlx-mimi/cuda"]
@@ -40,7 +49,7 @@ gpu = ["rlx-runtime/gpu", "rlx-mimi/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-mimi/vulkan"]
 coreml = ["rlx-runtime/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 
 [[bin]]

@@ -1,0 +1,19 @@
+# HumeAI TADA's host logic as an RLX program (WebAssembly): the prompt
+# plan, the autoregressive loop with the crate's noise (`rng.rs`) and
+# durations (`gray.rs`), the text normalization (`text.rs`) and the output
+# trim (`rlx-models-core`'s `voice_clone.rs`). Built by `rlx-tada`'s
+# exporter, so it stands outside the workspace.
+[package]
+name = "rlx-tada-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+
+[workspace]

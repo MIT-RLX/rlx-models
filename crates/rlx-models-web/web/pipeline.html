@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>rlx-models-web: Qwen3.5 across workers</title>
+<pre id="log"></pre>
+<script type="module">
+// ?model=qwen3.5-0.8b-q4km&workers=3&n=32&backend=webgpu&parallel=0&maxseq=256&set=K=V — split
+// Qwen3.5 by layer across N Web Workers (pipeline.js), generate twice, and
+// POST the report (text + timings + per-worker load time) to /__result.
+import { MODELS } from "./models.js";
+import { Qwen35Pipeline } from "./pipeline.js";
+const q = new URLSearchParams(location.search);
+const spec = MODELS[q.get("model") ?? "qwen3.5-0.8b-q4km"];
+const workers = Number(q.get("workers") ?? 2), n = Number(q.get("n") ?? 32);
+const backend = q.get("backend") ?? "webgpu";
+const settings = Object.fromEntries(q.getAll("set").map((kv) => kv.split("=")));
+const base = new URL(`../../../weights/${spec.dir}`, location.href).href;
+const prompt = "<|im_start|>user\nWrite a short paragraph about the sea.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
+const log = (s) => (console.log(s), (document.getElementById("log").textContent += s + "\n"));
+let report;
+try {
+  const t0 = performance.now();
+  const p = await Qwen35Pipeline.create({ base, workers, backend, maxSeq: Number(q.get("maxseq") ?? 256),
+    parallelLoad: q.get("parallel") === "1", settings, onProgress: log });
+  const load_ms = Math.round(performance.now() - t0);
+  const text = await p.generate(prompt, n, { stopAtEos: false });
+  const first = p.stats;
+  const text2 = await p.generate(prompt, n, { stopAtEos: false });
+  report = { ok: true, model: q.get("model"), workers, backend, load_ms, stage_load_ms: p.loadMs, fetched_mb: p.fetchedMb,
+    first, warm: p.stats, memory_mb: await p.memoryMb(), same_text: text === text2, sample: text.slice(0, 120) };
+  p.terminate();
+} catch (e) {
+  report = { ok: false, workers, error: String(e?.message ?? e) };
+}
+log(JSON.stringify(report));
+await fetch("/__result", { method: "POST", body: JSON.stringify(report) });
+</script>

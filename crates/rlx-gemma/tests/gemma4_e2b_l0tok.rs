@@ -16,7 +16,9 @@ fn dir() -> Option<PathBuf> {
 fn rd(p: &std::path::Path) -> Option<Vec<f32>> {
     let r = std::fs::read(p).ok()?;
     Some(
-        r.chunks_exact(4)
+        r.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )
@@ -37,10 +39,8 @@ fn e2b_l0_per_token() {
     let seq = ids.len();
     let lp = GemmaQatLoader::open(&d).unwrap();
     let ple = lp.compute_per_layer_inputs(&cfg, &ids).unwrap();
-    unsafe {
-        std::env::set_var("RLX_TAP_L0", "1");
-        std::env::set_var("RLX_TAP_LAYER", "0");
-    }
+    rlx_ir::env::set("RLX_TAP_L0", "1");
+    rlx_ir::env::set("RLX_TAP_LAYER", "0");
     let mut loader = GemmaQatLoader::open(&d).unwrap();
     let mut packed = HashMap::new();
     let (g, p) = rlx_gemma::builder::build_gemma_graph_sized_packed_ext(

@@ -1,0 +1,19 @@
+# Qwen3-TTS's host logic as an RLX program (WebAssembly): the prompt's
+# layout, the codec loop (repetition penalty, greedy codes) and the code
+# predictor's groups over the
+# package's graphs. Built by `rlx-qwen3-tts`'s exporter, so it stands
+# outside the workspace.
+[package]
+name = "rlx-qwen3-tts-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+
+[workspace]

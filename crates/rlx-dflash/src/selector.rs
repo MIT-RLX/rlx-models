@@ -265,13 +265,7 @@ pub fn walk_lattice(
 }
 
 fn argmax(xs: &[f32]) -> usize {
-    let mut best = 0usize;
-    for (i, v) in xs.iter().enumerate() {
-        if *v > xs[best] {
-            best = i;
-        }
-    }
-    best
+    rlx_runtime::search::argmax(xs)
 }
 
 /// `softmax(x / t)`, max-shifted. A non-positive temperature would divide by

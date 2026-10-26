@@ -53,7 +53,7 @@ impl Default for FetchConfig {
 
 /// Default cache directory (`$RLX_LLM_BENCH_CACHE` or `.cache/llm-bench`).
 pub fn default_cache_dir() -> PathBuf {
-    std::env::var_os("RLX_LLM_BENCH_CACHE")
+    rlx_ir::env::var_os("RLX_LLM_BENCH_CACHE")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".cache/llm-bench"))
 }

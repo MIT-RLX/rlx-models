@@ -69,7 +69,7 @@ Native backend details (placement, discrete NVIDIA caps, QMatMul, full env list)
 |--------|--------|------------|
 | Cpu | ✅ | Reference |
 | Cuda / Rocm | ✅ | Long IPA (single-pass) |
-| Metal / Mlx | ✅ | Apple Silicon |
+| Metal / Mlx | ✅ | macOS arm64 |
 | Vulkan | ✅ | Native GPU when CUDA unavailable (80 k wave cap) |
 | Gpu (wgpu) | ✅ | **→ Cuda** when linked; else CPU vocoder. `KITTEN_RLX_GPU_WAVE=1` → Vulkan |
 | Ane | ✅ | Duration+wave on CPU |

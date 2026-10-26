@@ -572,8 +572,9 @@ impl H3TextEncoderConfig {
         let path = dir.join("config.json");
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("read text encoder config {}", path.display()))?;
-        let root: serde_json::Value = serde_json::from_str(&raw)
+        let mut root: serde_json::Value = serde_json::from_str(&raw)
             .with_context(|| format!("parse text encoder config {}", path.display()))?;
+        rlx_core::config::legacy_rope_keys(&mut root);
         let text = root
             .get("text_config")
             .cloned()

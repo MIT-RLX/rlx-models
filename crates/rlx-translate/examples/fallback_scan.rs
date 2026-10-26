@@ -15,7 +15,7 @@ use rlx_translate::quasar::LangPair;
 use rlx_translate::spm::Vocab;
 
 fn main() -> Result<()> {
-    let dir = std::env::var("RLX_TRANSLATE_FLORES")
+    let dir = rlx_ir::env::var_result("RLX_TRANSLATE_FLORES")
         .map_err(|_| anyhow::anyhow!("set RLX_TRANSLATE_FLORES"))?;
     let assets = Assets::discover();
     let mut rows: Vec<(String, f64, f64, usize)> = Vec::new();

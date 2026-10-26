@@ -22,7 +22,7 @@ use crate::suite::{failed_row, scenarios_for_flags};
 const WORKER_ENV: &str = "RLX_TTS_BENCH_WORKER";
 
 pub fn is_worker() -> bool {
-    env::var_os(WORKER_ENV).is_some()
+    rlx_ir::env::read_os(WORKER_ENV).is_some()
 }
 
 pub fn run_isolated(

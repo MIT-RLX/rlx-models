@@ -42,7 +42,7 @@ Lower-level entry points: [`OcrEngine`](src/engine.rs) / `OcrEngineParams` (dete
 |---------|---------|
 | `rlx` (default) | Native RLX detection + recognition graphs + host pad/resize |
 | `metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan` | Forwarded to `rlx-runtime`; `all-backends` builds one binary accepting all `--device` values |
-| `blas-accelerate` | Apple Accelerate (AMX) CPU matmul/conv |
+| `blas-accelerate` | Accelerate (AMX) CPU matmul/conv |
 | `convert-rten` | `rlx-ocr-convert` — export `.rten` → `.safetensors` |
 | `rten-inference` / `parity-ocrs` | Legacy RTen graph inference / upstream `ocrs` parity oracle (baseline + tests only) |
 

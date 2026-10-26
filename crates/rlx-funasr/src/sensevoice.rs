@@ -104,31 +104,40 @@ impl SenseVoice {
     pub fn run_logits(&self, feats: &[f32], t_total: usize) -> Result<Vec<f32>> {
         let in_dim = self.cfg.encoder.input_size;
         ensure!(feats.len() == t_total * in_dim, "feature length mismatch");
-        let cfg = &self.cfg;
-        let weights = &self.weights;
-        let build = || -> anyhow::Result<rlx_flow::BuiltModel> {
-            let mut params = HashMap::new();
-            let mut hir = HirModule::new("sensevoice").with_fusion_policy(FusionPolicy::Direct);
-            {
-                let mut src = RefSource(weights);
-                let mut g = Graph::new(&mut hir, &mut params, &mut src);
-                let x = g.input("feats", &[1, t_total, in_dim]);
-                let enc = build_sanm_encoder(&mut g, x, &cfg.encoder, "encoder", t_total, true)?;
-                let logits = g.linear(
-                    enc,
-                    "ctc.ctc_lo.weight",
-                    Some("ctc.ctc_lo.bias"),
-                    cfg.vocab_size,
-                )?;
-                g.set_output(logits);
-            }
-            built_from_hir(hir, params)
-        };
+        let build = || self.logits_model(t_total);
         self.cache
             .run(t_total as u64, self.device, build, &[("feats", feats)])?
             .into_iter()
             .next()
             .context("sensevoice encoder produced no output")
+    }
+
+    /// The encoder + CTC head at `t_total` frames as a model, uncompiled:
+    /// `feats` `[1, t_total, input_size]` → logits `[1, t_total, vocab]`.
+    pub fn logits_model(&self, t_total: usize) -> Result<rlx_flow::BuiltModel> {
+        let cfg = &self.cfg;
+        let in_dim = cfg.encoder.input_size;
+        let mut params = HashMap::new();
+        let mut hir = HirModule::new("sensevoice").with_fusion_policy(FusionPolicy::Direct);
+        {
+            let mut src = RefSource(&self.weights);
+            let mut g = Graph::new(&mut hir, &mut params, &mut src);
+            let x = g.input("feats", &[1, t_total, in_dim]);
+            let enc = build_sanm_encoder(&mut g, x, &cfg.encoder, "encoder", t_total, true)?;
+            let logits = g.linear(
+                enc,
+                "ctc.ctc_lo.weight",
+                Some("ctc.ctc_lo.bias"),
+                cfg.vocab_size,
+            )?;
+            g.set_output(logits);
+        }
+        built_from_hir(hir, params)
+    }
+
+    /// The checkpoint's tensors.
+    pub fn weights(&self) -> &WeightMap {
+        &self.weights
     }
 
     /// Run the frontend + encoder + CTC head over PCM and return the per-frame
@@ -200,29 +209,7 @@ impl SenseVoice {
 
 /// Greedy CTC: per-frame argmax → collapse consecutive repeats → drop blank.
 pub fn ctc_greedy(logits: &[f32], t: usize, vocab: usize, blank: usize) -> Vec<u32> {
-    let mut ids = Vec::new();
-    let mut prev = usize::MAX;
-    for ti in 0..t {
-        let row = &logits[ti * vocab..(ti + 1) * vocab];
-        let am = argmax(row);
-        if am != prev {
-            ids.push(am as u32);
-            prev = am;
-        }
-    }
-    ids.into_iter().filter(|&x| x as usize != blank).collect()
-}
-
-fn argmax(row: &[f32]) -> usize {
-    let mut best = 0usize;
-    let mut bv = f32::NEG_INFINITY;
-    for (i, &v) in row.iter().enumerate() {
-        if v > bv {
-            bv = v;
-            best = i;
-        }
-    }
-    best
+    rlx_search::ctc::greedy(&logits[..t * vocab], vocab, blank as u32).ids()
 }
 
 #[cfg(test)]

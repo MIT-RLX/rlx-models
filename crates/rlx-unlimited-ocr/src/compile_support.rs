@@ -85,7 +85,7 @@ where
     let need_q4_grouped_off = device == Device::Metal
         && packed
         && pack.resolved_precision == ResolvedLmPrecision::Q4_0
-        && std::env::var_os("RLX_METAL_GROUPED_GEMV_DISABLE").is_none();
+        && rlx_ir::env::var_os("RLX_METAL_GROUPED_GEMV_DISABLE").is_none();
     if need_q4_grouped_off {
         rlx_ir::env::set("RLX_METAL_GROUPED_GEMV_DISABLE", "1");
         let out = lm_runtime_guard(device, packed, f);

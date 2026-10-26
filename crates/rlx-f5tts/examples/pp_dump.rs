@@ -12,18 +12,18 @@ use rlx_f5tts::{DEFAULT_LOCAL_DIR, F5Native, InferOpts};
 use rlx_runtime::Device;
 
 fn main() -> anyhow::Result<()> {
-    let model = std::env::var("RLX_F5TTS_DIR")
+    let model = rlx_ir::env::var_result("RLX_F5TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_LOCAL_DIR));
-    let ref_path = std::env::var("RLX_REF")
+    let ref_path = rlx_ir::env::var_result("RLX_REF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/prompt.wav")
         });
     let (reference, _) = read_wav(&ref_path)?;
-    let text = std::env::var("RLX_TEXT")
+    let text = rlx_ir::env::var_result("RLX_TEXT")
         .unwrap_or_else(|_| "The quick brown fox jumps over the lazy dog.".into());
-    let ref_text = std::env::var("RLX_REF_TEXT").unwrap_or_else(|_| {
+    let ref_text = rlx_ir::env::var_result("RLX_REF_TEXT").unwrap_or_else(|_| {
         "Hello from Kokoro. This is a test of speech synthesis in Rust.".into()
     });
     let opts = InferOpts { nfe: 2, speed: 1.0 };

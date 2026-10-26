@@ -8,6 +8,11 @@
 # `true` | `false` — e.g. `just release=false check`
 release := "true"
 
+# Compiler cache: every recipe builds through sccache when it is on PATH and
+# RUSTC_WRAPPER is not already set (an empty value means no wrapper to cargo).
+# `sccache --show-stats` for hit rates; `brew install sccache` to enable.
+export RUSTC_WRAPPER := env("RUSTC_WRAPPER", `command -v sccache || true`)
+
 # Bundled JFK reference audio (voice clone demos / eval WAV).
 jfk_ref_wav := "assets/jfk/jfk_voice_clone.wav"
 
@@ -129,9 +134,10 @@ test *ARGS:
     cargo test -p rlx-models {{ARGS}}
 
 test-quick:
-    cargo test -p rlx-models --test qwen35_forward_check --test compile_profile_quick_check
-    cargo test -p rlx-models --test gemma_backend_quick_check gemma_tiny --release
-    cargo test -p rlx-gemma --lib gemma2_rms_ones --release
+    cargo test -p rlx-models --features qwen3,qwen35 --test qwen35_forward_check --test compile_profile_quick_check
+    cargo test -p rlx-models --features gemma,qwen3 --test gemma_backend_quick_check gemma_tiny --release
+    cargo test -p rlx-gemma --test gemma4_lm_backend_parity legacy_gemma --release
+    cargo test -p rlx-gemma --lib decode_matches_oneshot --release
 
 # Qwen3 synthetic prefill + generator on each backend.
 #   just features=all-backends test-qwen3-backends
@@ -158,7 +164,7 @@ test-gemma-backends *ARGS:
     cargo test -p rlx-models --test gemma_backend_quick_check --test gemma_gpu_backend_parity {{profile}} {{feature_args}} {{ARGS}}
 
 test-gemma-parity *ARGS:
-    cargo test -p rlx-models --test gemma_parity --features parity-candle --release {{ARGS}}
+    cargo test -p rlx-models --test gemma_parity --features parity-candle,gemma --release {{ARGS}}
 
 test-parity *ARGS:
     cargo test -p rlx-models --features parity-candle {{ARGS}}
@@ -365,6 +371,125 @@ fetch-fara-9b:
 fara-demo *ARGS:
     just fara --model-dir .cache/fara/4b --size 4b {{ARGS}}
 
+# OpenBMB MiniCPM-V 4.7 / 4.6 (SigLIP + window merger, canvas M-RoPE, Qwen3.5 trunk).
+# `just fetch-minicpm-v`, then `just minicpm-v -- --model-dir weights/vision/minicpm-v-4.7-1b --image photo.jpg --prompt "…"`.
+minicpm-v *ARGS:
+    just features={{features}} run-bin rlx-minicpm-v rlx-minicpm-v {{ARGS}}
+
+# REPO: MiniCPM-V-4.7-1B (default), MiniCPM-V-4.6, … — any minicpmv4_6 / minicpmv4_7 checkpoint.
+fetch-minicpm-v REPO="MiniCPM-V-4.7-1B":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="weights/vision/$(echo {{REPO}} | tr '[:upper:]' '[:lower:]')"
+    hf download openbmb/{{REPO}} --local-dir "$dir"
+
+# OpenBMB MiniCPM-SALA 9B (sparse + Lightning attention). `just fetch-minicpm-sala` (~19 GB),
+# then `just minicpm-sala -- --model-dir weights/lm/minicpm-sala --prompt "…"`.
+minicpm-sala *ARGS:
+    just features={{features}} run-bin rlx-minicpm-sala rlx-minicpm-sala {{ARGS}}
+
+fetch-minicpm-sala:
+    hf download openbmb/MiniCPM-SALA --local-dir weights/lm/minicpm-sala
+
+# Parity vs OpenBMB's modeling code (needs `.venv-sala`: transformers==4.56.2, torch, einops).
+# LAYERS=0 runs the whole 9B reference in f32 (~36 GB); the default 4 fits beside other work.
+# InfLLM-v2 block-sparse attention (past dense_len = 8192 keys) vs OpenBMB's CUDA kernels.
+# Make REF on a CUDA machine: `scripts/infllm_reference_env.sh` (adapts to the CUDA toolkit,
+# host compiler and GPU it finds), then `scripts/minicpm_sala_reference.py sparse DIR REF --layers 2`.
+test-minicpm-sala-sparse REF DEVICE="cpu":
+    RLX_TEST_DEVICE={{DEVICE}} RLX_SALA_DIR="$PWD/weights/lm/minicpm-sala" RLX_SALA_SPARSE_REF="{{REF}}" \
+        cargo test -p rlx-minicpm-sala --release {{feature_args}} --test reference_parity sparse -- --nocapture
+
+# LAYERS=0 runs all 32 (reference peaks ~39 GB, rlx ~26 GB on Metal).
+test-minicpm-sala-parity LAYERS="4" DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    py="${REF_PY:-.venv-sala/bin/python}"
+    [ -f .cache/sala/tiny/reference.json ] || "$py" -I scripts/minicpm_sala_reference.py tiny .cache/sala/tiny
+    ref=".cache/sala/real{{LAYERS}}"
+    [ -f "$ref.json" ] || "$py" -I scripts/minicpm_sala_reference.py real weights/lm/minicpm-sala "$ref" --layers {{LAYERS}} \
+        --dtype bfloat16 --widen
+    RLX_TEST_DEVICE={{DEVICE}} RLX_SALA_TINY_DIR="$PWD/.cache/sala/tiny" RLX_SALA_DIR="$PWD/weights/lm/minicpm-sala" \
+        RLX_SALA_REF="$PWD/$ref" cargo test -p rlx-minicpm-sala --release {{feature_args}} --test reference_parity -- --nocapture
+
+# HF parity, stage by stage (needs `.venv-minicpmv`: transformers>=5.18, torch, pillow).
+test-minicpm-v-parity DIR="weights/vision/minicpm-v-4.7-1b" IMAGE="crates/rlx-locateanything/fixtures/sample.jpg" DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .cache/minicpmv
+    ref="$PWD/.cache/minicpmv/$(basename {{DIR}})"
+    [ -f "$ref.json" ] || "${REF_PY:-.venv-minicpmv/bin/python}" -I scripts/minicpmv_reference.py "{{DIR}}" "{{IMAGE}}" "$ref"
+    # The GGUF test runs too when `{{DIR}}-gguf` holds the official GGUFs.
+    gguf="$PWD/{{DIR}}-gguf"
+    RLX_TEST_DEVICE={{DEVICE}} RLX_MINICPMV_DIR="$PWD/{{DIR}}" RLX_MINICPMV_REF="$ref" \
+        RLX_MINICPMV_GGUF_DIR="$gguf" RLX_MINICPMV_GGUF_PREFER="${GGUF_PREFER:-F16}" \
+        cargo test -p rlx-minicpm-v --release {{feature_args}} --test hf_parity_live -- --nocapture --test-threads 1
+
+# Video parity: frames sampled and decoded with ffmpeg on both sides (needs ffmpeg + `.venv-minicpmv`).
+test-minicpm-v-video-parity VIDEO DIR="weights/vision/minicpm-v-4.7-1b" FRAMES="16" DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .cache/minicpmv
+    ref="$PWD/.cache/minicpmv/video-$(basename {{DIR}})-{{FRAMES}}"
+    [ -f "$ref.json" ] || "${REF_PY:-.venv-minicpmv/bin/python}" -I scripts/minicpmv_video_reference.py \
+        "{{DIR}}" "{{VIDEO}}" "$ref" --max-num-frames {{FRAMES}}
+    RLX_TEST_DEVICE={{DEVICE}} RLX_MINICPMV_DIR="$PWD/{{DIR}}" RLX_MINICPMV_VIDEO_REF="$ref" \
+        cargo test -p rlx-minicpm-v --release {{feature_args}} --test hf_parity_live video -- --nocapture
+
+# MiniCPM-V 4.0 / 4.5 (resampler generation) vs OpenBMB's remote code (needs `.venv-sala`:
+# transformers 4.5x, torch, torchvision, pillow). `--widen` keeps the reference in bf16 storage.
+test-minicpm-v-resampler-parity DIR="weights/vision/minicpm-v-4" IMAGE="crates/rlx-locateanything/fixtures/sample.jpg" DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .cache/minicpmv
+    ref="$PWD/.cache/minicpmv/$(basename {{DIR}})"
+    [ -f "$ref.json" ] || "${REF_PY:-.venv-sala/bin/python}" -I scripts/minicpmv_legacy_reference.py \
+        "{{DIR}}" "{{IMAGE}}" "$ref" --widen
+    RLX_TEST_DEVICE={{DEVICE}} RLX_MINICPMV_V4_DIR="$PWD/{{DIR}}" RLX_MINICPMV_V4_REF="$ref" \
+        cargo test -p rlx-minicpm-v --release {{feature_args}} --test hf_parity_live resampler -- --nocapture
+
+# `just fetch-timestral 209M`, then `just timestral -- --weights .cache/timestral/209M --horizon 96`.
+# Mistral Timestral time-series forecasting (5M / 28M / 123M / 209M)
+timestral *ARGS:
+    just features={{features}} run-bin rlx-timestral rlx-timestral {{ARGS}}
+
+# Download mistralai/Timestral-SIZE (5M, 28M, 123M, 209M) into .cache/timestral/SIZE
+fetch-timestral SIZE="209M":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    local=".cache/timestral/{{SIZE}}"
+    if [ -f "$local/config.json" ] && [ -f "$local/model.safetensors" ]; then
+      echo ">> Timestral-{{SIZE}} already at $local"; exit 0
+    fi
+    if ! command -v hf >/dev/null 2>&1; then
+      echo "error: need \`hf\` (pip install -U huggingface_hub[cli])" >&2
+      exit 1
+    fi
+    hf download mistralai/Timestral-{{SIZE}} config.json model.safetensors --local-dir "$local"
+    echo ">> ready: $local"
+
+# Unit tests + synthetic backend check (no download). Add `features=macos-gpu` / `all-backends`.
+test-timestral:
+    cargo test -p rlx-timestral --release {{feature_args}}
+
+# Writes a reference file with scripts/timestral_reference_dump.py (needs torch; clones
+# github.com/mistralai/timestral into TIMESTRAL_SRC), then compares on DEVICE.
+# Timestral parity vs the upstream `timestral` package
+test-timestral-parity SIZE="5M" DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir=".cache/timestral/{{SIZE}}"
+    [ -f "$dir/model.safetensors" ] || just fetch-timestral {{SIZE}}
+    src="${TIMESTRAL_SRC:-.cache/timestral/src}"
+    [ -d "$src" ] || git clone --depth 1 https://github.com/mistralai/timestral "$src"
+    ref=".cache/timestral/ref-{{SIZE}}.safetensors"
+    [ -f "$ref" ] || PYTHONPATH="$src/src" python3 scripts/timestral_reference_dump.py --weights "$dir" --out "$ref"
+    ref64=".cache/timestral/ref-{{SIZE}}-f64.safetensors"
+    [ -f "$ref64" ] || PYTHONPATH="$src/src" python3 scripts/timestral_reference_dump.py --weights "$dir" --out "$ref64" --dtype float64
+    # cargo runs the test from the crate directory: pass absolute paths.
+    RLX_TIMESTRAL_DIR="$PWD/$dir" RLX_TIMESTRAL_REF="$PWD/$ref" RLX_TIMESTRAL_REF64="$PWD/$ref64" RLX_TIMESTRAL_DEVICE={{DEVICE}} \
+      cargo test -p rlx-timestral --release {{feature_args}} --test reference_parity -- --nocapture
+
 # Fara-4B text ChatML probe (top-1 must be HF id 760 "The").
 # RAM-heavy: default DEVICES=cpu. One GPU at a time, e.g. `DEVICES=metal just test-fara-backends`.
 # Full backend matrix without Fara weights: `just test-qwen35-backends`.
@@ -381,7 +506,7 @@ test-fara-backends *ARGS:
     expect_id="${FARA_EXPECT_TOP1:-760}"
     fail=0
     ran=0
-    feats="${features:-apple-silicon}"
+    feats="${features:-macos-gpu}"
     echo "==> building fara_text_probe (features=$feats)"
     echo "    note: Fara-4B is RAM-heavy; run one GPU device per invocation"
     cargo build -p rlx-qwen35 --example fara_text_probe --release --features "$feats"
@@ -745,7 +870,7 @@ fetch-laguna QUANT="UD-Q4_K_M":
     if [[ -n "$shard" ]]; then
         echo ">> first shard: $shard"
         echo ">> sniff:  just laguna -- --weights $dest --prefer Q4_K_M"
-        echo ">> generate: just features=apple-silicon laguna -- --weights $dest --prefer Q4_K_M --packed-load --device metal --tokenizer-dir $dest --prompt \"Say hello\" --max-tokens 8"
+        echo ">> generate: just features=macos-gpu laguna -- --weights $dest --prefer Q4_K_M --packed-load --device metal --tokenizer-dir $dest --prompt \"Say hello\" --max-tokens 8"
     fi
 
 fetch-laguna-s QUANT="UD-Q4_K_M":
@@ -766,7 +891,7 @@ fetch-laguna-xs QUANT="Q4_K_M":
     gguf=$(find "$dest" -maxdepth 1 -name '*.gguf' -type f | sort | head -n1 || true)
     echo ">> Laguna-XS ready under $dest${gguf:+ ($gguf)}"
 
-# poolside Laguna MoE — packed GGUF generate (KV cache); Metal: `just features=apple-silicon laguna -- … --device metal`
+# poolside Laguna MoE — packed GGUF generate (KV cache); Metal: `just features=macos-gpu laguna -- … --device metal`
 laguna *ARGS:
     just run-bin rlx-laguna rlx-laguna {{ARGS}}
 
@@ -777,17 +902,17 @@ laguna-probe-gguf *ARGS:
     cargo run -p rlx-laguna --features hf-probe {{profile}} -- --probe-gguf-remote {{ARGS}}
 
 # OpenAI-compatible HTTP (`--serve`); greedy decode. Prefer central multi-model:
-#   just features=apple-silicon,laguna openai-serve -- \
+#   just features=macos-gpu,laguna openai-serve -- \
 #     --engine laguna --weights .cache/laguna-s --prefer Q4_K_M --tokenizer-dir .cache/laguna-s --device metal
 # Example (single-model convenience):
-#   just features=apple-silicon laguna-serve -- \
+#   just features=macos-gpu laguna-serve -- \
 #     --weights .cache/laguna-s --prefer Q4_K_M \
 #     --tokenizer-dir .cache/laguna-s --device metal --host 127.0.0.1 --port 8080
 laguna-serve *ARGS:
     cargo run -p rlx-laguna --bin rlx-laguna {{profile}} {{feature_args}} --features serve -- --serve {{ARGS}}
 
 # Central OpenAI server (multi-model RegistryBackend). Example:
-#   just features=apple-silicon,laguna openai-serve -- \
+#   just features=macos-gpu,laguna openai-serve -- \
 #     --engine laguna --weights .cache/laguna-s --prefer Q4_K_M \
 #     --tokenizer-dir .cache/laguna-s --device metal --model-id laguna
 openai-serve *ARGS:
@@ -795,7 +920,7 @@ openai-serve *ARGS:
 
 # Packed DequantMatMul backend speed + parity (CPU / Metal / MLX / …).
 laguna-backend-bench *ARGS:
-    cargo run -p rlx-laguna --example backend_bench --features apple-silicon {{profile}} -- {{ARGS}}
+    cargo run -p rlx-laguna --example backend_bench --features macos-gpu {{profile}} -- {{ARGS}}
 
 minicpm5-chat MESSAGE *ARGS:
     RLX_MODELS_ROOT={{justfile_directory()}} python3 crates/rlx-models/examples/minicpm5_chat.py "{{MESSAGE}}" {{ARGS}}
@@ -898,11 +1023,11 @@ gemma *ARGS:
 
 # Gemma 4 synthetic e2e bench (sequential — safe for GPU).
 gemma4-bench *ARGS:
-    cargo test -p rlx-gemma --release --features apple-silicon \
+    cargo test -p rlx-gemma --release --features macos-gpu \
         --test gemma4_e2e_bench bench_e2e_all_backends -- --nocapture --test-threads=1 {{ARGS}}
 
 gemma4-bench-metal *ARGS:
-    cargo test -p rlx-gemma --release --features apple-silicon \
+    cargo test -p rlx-gemma --release --features macos-gpu \
         --test gemma4_e2e_bench bench_synthetic_metal -- --nocapture --test-threads=1 {{ARGS}}
 
 # Fast Metal smoke (~short_chat + image_caption only).
@@ -912,7 +1037,7 @@ gemma4-bench-lite *ARGS:
 # Real Gemma 4 12B weights (needs RLX_GEMMA4_FIXTURE with HF download).
 gemma4-bench-real *ARGS:
     RLX_GEMMA4_FIXTURE={{env_var_or_default('RLX_GEMMA4_FIXTURE', '/Users/Shared/rlx-models/.cache/gemma4-12B-it')}} \
-    cargo test -p rlx-gemma --release --features apple-silicon \
+    cargo test -p rlx-gemma --release --features macos-gpu \
         --test gemma4_e2e_bench bench_real_weights -- --nocapture --test-threads=1 {{ARGS}}
 
 # Download google/gemma-4-12B-it into .cache/gemma4-12B-it (≈24 GB).
@@ -982,7 +1107,7 @@ gemma4-coder-demo *ARGS:
 
 test-gemma4-coder *ARGS:
     RLX_GEMMA4_CODER_FIXTURE={{env_var_or_default('RLX_GEMMA4_CODER_FIXTURE', justfile_directory() + '/.cache/gemma4-12b-coder')}} \
-    cargo test -p rlx-gemma --release --features apple-silicon \
+    cargo test -p rlx-gemma --release --features macos-gpu \
         --test gemma4_coder_gguf -- --nocapture --test-threads=1 {{ARGS}}
 
 # Recursive llama.cpp checkout (submodules) for local parity / vendor builds.
@@ -1006,7 +1131,7 @@ gemma4-coder-parity-llama *ARGS:
         {{justfile_directory()}}/.cache/gemma4-12b-coder/gemma4-coding-Q4_K_M.gguf llama {{ARGS}}
 
 gemma4-coder-parity-rlx *ARGS:
-    cargo run -p rlx-gemma --release --features "tokenizer apple-silicon" \
+    cargo run -p rlx-gemma --release --features "tokenizer macos-gpu" \
         --example parity_check -- \
         {{justfile_directory()}}/.cache/gemma4-12b-coder/gemma4-coding-Q4_K_M.gguf rlx {{ARGS}}
 
@@ -1016,12 +1141,12 @@ gemma4-coder-parity *ARGS:
 
 # Speed + precision sweep across local Gemma 4 GGUF quants (Metal).
 test-gemma4-quant-sweep *ARGS:
-    cargo test -p rlx-gemma --release --features apple-silicon \
+    cargo test -p rlx-gemma --release --features macos-gpu \
         --test gemma4_gguf_quant_sweep bench_all_quants -- --nocapture --test-threads=1 {{ARGS}}
 
 # Isolated Metal step_cached throughput (hidden=1024, bucketed decode).
 gemma4-decode-bench-metal *ARGS:
-    cargo test -p rlx-gemma --release --features apple-silicon \
+    cargo test -p rlx-gemma --release --features macos-gpu \
         --test gemma4_decode_throughput bench_step_cached_metal_1024 -- --nocapture {{ARGS}}
 
 dinov2 *ARGS:
@@ -1159,7 +1284,7 @@ whisper-subtitles *ARGS:
         --output-format srt {{ARGS}}
 
 bench-whisper *ARGS:
-    cargo run -p rlx-models --example whisper_bench --features "metal,mlx,apple-silicon" --release -- {{ARGS}}
+    cargo run -p rlx-models --example whisper_bench --features "metal,mlx,macos-gpu" --release -- {{ARGS}}
 
 bench-whisper-precision *ARGS:
     just bench-whisper --precision --all-backends {{ARGS}}
@@ -1169,7 +1294,7 @@ bench-whisper-all-backends *ARGS:
 
 bench-whisper-subtitles *ARGS:
     just fetch-whisper fetch-whisper-bench
-    cargo run -p rlx-models --example whisper_subtitles_bench --features "whisper-subtitles,metal,apple-silicon" --release -- {{ARGS}}
+    cargo run -p rlx-models --example whisper_subtitles_bench --features "whisper-subtitles,metal,macos-gpu" --release -- {{ARGS}}
 
 bench-whisper-subtitles-all-backends *ARGS:
     just fetch-whisper fetch-whisper-bench
@@ -1454,7 +1579,7 @@ locateanything-demo:
     set -euo pipefail
     ARGS=(--task ground-single --phrase person --device auto --max-image-side 480 --max-tokens 32)
     case "$(uname -s)" in
-      Darwin) just features=apple-silicon locateanything "${ARGS[@]}" ;;
+      Darwin) just features=macos-gpu locateanything "${ARGS[@]}" ;;
       *)      just features=nvidia-gpu locateanything "${ARGS[@]}" 2>/dev/null \
                 || just locateanything "${ARGS[@]}" ;;
     esac
@@ -1481,7 +1606,7 @@ test-locateanything-moonvit-backends *ARGS:
 # CPU vs each available backend — grounding tokens on real weights (needs RLX_LOCATEANYTHING_DIR).
 test-locateanything-grounding-parity *ARGS:
     RLX_LOCATEANYTHING_DIR=${RLX_LOCATEANYTHING_DIR:-.cache/locateanything/LocateAnything-3B} \
-    cargo test -p rlx-locateanything --test backend_grounding_parity --features apple-silicon,tokenizer {{profile}} -- --test-threads 1 {{ARGS}}
+    cargo test -p rlx-locateanything --test backend_grounding_parity --features macos-gpu,tokenizer {{profile}} -- --test-threads 1 {{ARGS}}
 
 bench-locateanything-backends *ARGS:
     cargo run -p rlx-models --example locateanything_bench --release {{feature_args}} -- --all-backends {{ARGS}}
@@ -1694,7 +1819,7 @@ test-florence2-parity:
 test-florence2-backends:
     RLX_FLORENCE2_DIR="$(cd {{florence2_dir}} && pwd)" \
     RLX_FLORENCE2_FIXTURE="$(pwd)/.cache/florence2/parity_caption.json" \
-        cargo test -p rlx-florence2 --release --features apple-silicon \
+        cargo test -p rlx-florence2 --release --features macos-gpu \
         --test florence2_backend_parity -- --nocapture --test-threads 1
 
 voxtral-tts *ARGS:
@@ -1702,7 +1827,7 @@ voxtral-tts *ARGS:
 
 # Stage timing on one Voxtral-4B-TTS checkpoint (RLX_VOXTRAL_TTS_DIR). --compare A/B compiled vs eager.
 bench-voxtral-tts *ARGS:
-    cargo run -p rlx-models --example voxtral_tts_bench --features "metal,mlx,apple-silicon" --release -- {{ARGS}}
+    cargo run -p rlx-models --example voxtral_tts_bench --features "metal,mlx,macos-gpu" --release -- {{ARGS}}
 
 fetch-qwen3-tts:
     cargo run -p rlx-models --example qwen3_tts_download --features "hf-download,qwen3-tts" --release
@@ -1761,14 +1886,14 @@ voice-chat-demo:
     set -euo pipefail
     ROOT="{{justfile_directory()}}"
     export RLX_QWEN3_TTS_DIR="${RLX_QWEN3_TTS_DIR:-$ROOT/.cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base}"
-    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-qwen3-tts --features apple-silicon \
+    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-qwen3-tts --features macos-gpu \
       --example bidirectional_voice_chat -- --turbo \
       --ref-wav "$ROOT/assets/jfk/jfk_voice_clone.wav" \
       --input-wav "$ROOT/crates/rlx-qwen3-tts/examples/audio/voice_chat_question.wav" \
       --out-dir /tmp/voice_chat_roundtrip
 
 # All-Qwen duplex chat: question WAV → Qwen3-ASR → Qwen3 LM → Qwen3-TTS reply.
-# Fastest RLX backends: Qwen3-ASR + TTS on Metal, Qwen3 LM on MLX (apple-silicon
+# Fastest RLX backends: Qwen3-ASR + TTS on Metal, Qwen3 LM on MLX (macos-gpu
 # builds in both). The LM auto-uses the Q4_K_M GGUF sibling (weights/Qwen3-0.6B-gguf)
 # when present. Prereqs:
 #   just fetch-qwen3 fetch-qwen3-gguf fetch-qwen3-asr fetch-qwen3-tts-base
@@ -1780,7 +1905,7 @@ qwen-voice-chat-demo:
     export RLX_QWEN3_ASR_DIR="${RLX_QWEN3_ASR_DIR:-$ROOT/.cache/qwen3-asr/Qwen3-ASR-0.6B}"
     export RLX_QWEN3_WEIGHTS="${RLX_QWEN3_WEIGHTS:-$ROOT/weights/Qwen3-0.6B}"
     export RLX_QWEN3_TTS_DIR="${RLX_QWEN3_TTS_DIR:-$ROOT/.cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base}"
-    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-qwen3-tts --features apple-silicon \
+    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-qwen3-tts --features macos-gpu \
       --example qwen_voice_chat -- --fast \
       --device metal --qwen3-device mlx \
       --ref-wav "$ROOT/assets/jfk/jfk_voice_clone.wav" \
@@ -1797,7 +1922,7 @@ qwen-voice-chat-mic:
     export RLX_QWEN3_ASR_DIR="${RLX_QWEN3_ASR_DIR:-$ROOT/.cache/qwen3-asr/Qwen3-ASR-0.6B}"
     export RLX_QWEN3_WEIGHTS="${RLX_QWEN3_WEIGHTS:-$ROOT/weights/Qwen3-0.6B}"
     export RLX_QWEN3_TTS_DIR="${RLX_QWEN3_TTS_DIR:-$ROOT/.cache/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base}"
-    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-qwen3-tts --features apple-silicon,mic \
+    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-qwen3-tts --features macos-gpu,mic \
       --example qwen_voice_chat -- --fast --mic \
       --device metal --qwen3-device mlx \
       --ref-wav "$ROOT/assets/jfk/jfk_voice_clone.wav" \
@@ -1824,7 +1949,7 @@ qwen3-tts-vivian-hf-demo:
       --out-wav /tmp/vivian-hf-demo.wav --device mps --max-new-tokens 64
 
 bench-qwen3-tts *ARGS:
-    cargo run -p rlx-models --example qwen3_tts_bench --features "metal,mlx,apple-silicon" --release -- {{ARGS}}
+    cargo run -p rlx-models --example qwen3_tts_bench --features "metal,mlx,macos-gpu" --release -- {{ARGS}}
 
 bench-qwen3-tts-cp-ab *ARGS:
     VECLIB_MAXIMUM_THREADS=1 cargo run -p rlx-models --example qwen3_tts_cp_ab --release -- {{ARGS}}
@@ -1871,8 +1996,8 @@ test-qwen3-tts *ARGS:
     for t in "${tests[@]}"; do
       cargo test -p rlx-models --test "$t" --release -- "$@"
     done
-    cargo test -p rlx-models --test qwen3_tts_mlx_greedy_parity --features apple-silicon --release -- "$@"
-    cargo test -p rlx-models --test qwen3_tts_speech_pt_mlx_parity --features apple-silicon --release -- "$@"
+    cargo test -p rlx-models --test qwen3_tts_mlx_greedy_parity --features macos-gpu --release -- "$@"
+    cargo test -p rlx-models --test qwen3_tts_speech_pt_mlx_parity --features macos-gpu --release -- "$@"
 
 # Talker prefill/decode on real 0.6B weights per backend (RLX_QWEN3_TTS_DIR).
 test-qwen3-tts-backends *ARGS:
@@ -1908,34 +2033,54 @@ export-soprano-gguf DIR="weights/tts/soprano" OUT="weights/tts/soprano/soprano.g
     cargo run -p rlx-soprano --release -- --pack-gguf "{{OUT}}" --model-dir "{{DIR}}"
 
 soprano-demo TEXT="The quick brown fox jumps over the lazy dog." DEVICE="metal":
-    cargo run -p rlx-soprano --release --features apple-silicon -- \
+    cargo run -p rlx-soprano --release --features macos-gpu -- \
         --text "{{TEXT}}" --device {{DEVICE}} --output /tmp/soprano_demo.wav
 
 soprano-matrix:
-    RLX_GREEDY=1 cargo run -p rlx-soprano --release --example backend_matrix --features apple-silicon
+    RLX_GREEDY=1 cargo run -p rlx-soprano --release --example backend_matrix --features macos-gpu
 
 # Text-in → Soprano → Whisper text-out (CPU/Metal/MLX, …). Env: RLX_DEVICES,
 # RLX_ORT_LATENTS=1 (ORT backbone latents → native Vocos only).
 soprano-whisper TEXT="The quick brown fox jumps over the lazy dog.":
-    RLX_TEXT="{{TEXT}}" RLX_GREEDY=1 cargo run -p rlx-soprano --release --example whisper_roundtrip --features apple-silicon
+    RLX_TEXT="{{TEXT}}" RLX_GREEDY=1 cargo run -p rlx-soprano --release --example whisper_roundtrip --features macos-gpu
 
 # Brand/name check (longer phrase — short “Hello from Soprano.” → Whisper “Suprano”).
 soprano-whisper-brand TEXT="Hello from the Soprano model.":
-    RLX_TEXT="{{TEXT}}" RLX_GREEDY=1 cargo run -p rlx-soprano --release --example whisper_roundtrip --features apple-silicon
+    RLX_TEXT="{{TEXT}}" RLX_GREEDY=1 cargo run -p rlx-soprano --release --example whisper_roundtrip --features macos-gpu
 
 # HumeAI TADA (Text-Acoustic Dual Alignment) — zero-shot voice cloning.
 # Weights land on the external volume: tada-1b alone is 3.9 GB.
 TADA_DIR := env_var_or_default("TADA_DIR", "/Volumes/FOUR/rlx-weights/tada")
+
+# Fish Audio S2-Pro (9 GB) / Drama 3 (40 GB) + the shared codec.pth — crates/rlx-fish
+fetch-fish-s2:
+    hf download fishaudio/s2-pro --local-dir weights/tts/fish-s2-pro
+
+fetch-fish-drama3:
+    hf download fishaudio/drama-3 --local-dir weights/tts/fish-drama-3
+
+fish-s2 TEXT="Hello from Fish Audio on RLX." OUT="/tmp/fish_s2.wav" DEVICE="metal" *ARGS:
+    cargo run -p rlx-fish --release --features macos-gpu -- s2 \
+        --model-dir weights/tts/fish-s2-pro --text "{{TEXT}}" --out "{{OUT}}" --device {{DEVICE}} {{ARGS}}
+
+fish-drama3 TEXT="Hello from Drama 3 on RLX." OUT="/tmp/fish_drama3.wav" DEVICE="metal" *ARGS:
+    cargo run -p rlx-fish --release --features macos-gpu -- drama3 \
+        --model-dir weights/tts/fish-drama-3 --text "{{TEXT}}" --out "{{OUT}}" --device {{DEVICE}} {{ARGS}}
+
+# Parity vs scripts/fish_reference.py fixtures in REF (see crates/rlx-fish/README.md).
+test-fish REF="/tmp/fish_ref":
+    RLX_FISH_DIR=$PWD/weights/tts/fish-s2-pro RLX_FISH_DRAMA3_DIR=$PWD/weights/tts/fish-drama-3 \
+        RLX_FISH_REF={{REF}} cargo test -p rlx-fish --release -- --include-ignored --nocapture
 
 fetch-tada:
     mkdir -p "{{TADA_DIR}}"
     hf download HumeAI/tada-1b --local-dir "{{TADA_DIR}}/tada-1b"
     # decoder/ is mandatory: the `_decoder.*` copy bundled in tada-1b is a
     # different, unused set of weights that produces unintelligible audio.
-    hf download HumeAI/tada-codec --include "encoder/*" "decoder/*" "aligner/*" \
-        --local-dir "{{TADA_DIR}}/tada-codec"
+    hf download HumeAI/tada-codec --include "encoder/*" --include "decoder/*" \
+        --include "aligner/*" --local-dir "{{TADA_DIR}}/tada-codec"
     # meta-llama/Llama-3.2-1B is gated; any mirror of the same vocabulary works.
-    hf download unsloth/Llama-3.2-1B --include "tokenizer*" "special_tokens_map.json" \
+    hf download unsloth/Llama-3.2-1B --include "tokenizer*" --include "special_tokens_map.json" \
         --local-dir "{{TADA_DIR}}/tokenizer"
     # The cross-backend harness reads repo-relative paths; big checkpoints live
     # off-repo, so link them in the way the other large models are linked.
@@ -1964,12 +2109,12 @@ fetch-tada-aligner LANG:
 
 # Encode a reference speaker into a reusable voice prompt.
 tada-prompt WAV TEXT OUT="/tmp/tada_voice.tadaprompt" DEVICE="cpu":
-    cargo run -p rlx-tada --release --features apple-silicon -- prompt \
+    cargo run -p rlx-tada --release --features macos-gpu -- prompt \
         --weights "{{TADA_DIR}}" --wav "{{WAV}}" --text "{{TEXT}}" \
         --out "{{OUT}}" --device {{DEVICE}}
 
 tada-speak TEXT="Hello from TADA." PROMPT="/tmp/tada_voice.tadaprompt" OUT="/tmp/tada.wav" DEVICE="metal":
-    cargo run -p rlx-tada --release --features apple-silicon -- speak \
+    cargo run -p rlx-tada --release --features macos-gpu -- speak \
         --weights "{{TADA_DIR}}" --prompt "{{PROMPT}}" --text "{{TEXT}}" \
         --out "{{OUT}}" --device {{DEVICE}}
 
@@ -1983,7 +2128,7 @@ test-tada DEVICE="cpu":
     RLX_TADA_TOKENIZER="{{TADA_DIR}}/tokenizer" \
     RLX_TADA_WEIGHTS="{{TADA_DIR}}" \
     RLX_TADA_TEST_DEVICE={{DEVICE}} \
-        cargo test -p rlx-tada --release --features apple-silicon
+        cargo test -p rlx-tada --release --features macos-gpu
 
 # Every backend this host can run, through the crate's own suite.
 test-tada-backends:
@@ -2005,6 +2150,83 @@ test-tada-backends:
 tada-matrix BACKENDS="cpu,metal,mlx,wgpu,coreml":
     ONLY=tada ALL=1 BACKENDS={{BACKENDS}} python3 scripts/matrix/run_matrix.py
 
+# KittenTTS 2 — 1.7B ternary Qwen3 speech LM + chatterbox-turbo S3Gen (24 kHz).
+# The LM's first load transcodes lm/model-ternary.safetensors → lm/model-q2_0.gguf
+# (lossless, once). Built-in voices or cloning; see crates/rlx-kittentts2/README.md.
+KITTENTTS2_DIR := env_var_or_default("KITTENTTS2_DIR", "weights/tts/kitten-tts-2")
+KITTENTTS2_S3GEN_DIR := env_var_or_default("KITTENTTS2_S3GEN_DIR", "weights/tts/chatterbox-turbo")
+
+fetch-kittentts2:
+    hf download KittenML/kitten-tts-2 --local-dir "{{KITTENTTS2_DIR}}" \
+        --include config.json LICENSE.md README.md "lm/*.json" lm/merges.txt \
+        lm/model-ternary.safetensors "voices/*" "speaker/*" cpp/default/voices.json
+    hf download ResembleAI/chatterbox-turbo s3gen_meanflow.safetensors README.md \
+        --local-dir "{{KITTENTTS2_S3GEN_DIR}}"
+
+kittentts2 TEXT="Hello there, how are you today?" VOICE="Bruno" DEVICE="metal" OUT="/tmp/kittentts2.wav":
+    cargo run -p rlx-kittentts2 --release --features macos-gpu -- \
+        --model-dir "{{KITTENTTS2_DIR}}" --s3gen "{{KITTENTTS2_S3GEN_DIR}}/s3gen_meanflow.safetensors" \
+        --text "{{TEXT}}" --voice "{{VOICE}}" --device {{DEVICE}} -o "{{OUT}}"
+
+# Clone a voice from a reference clip (5–30 s, one speaker) and what it says.
+kittentts2-clone WAV TRANSCRIPT TEXT DEVICE="metal" OUT="/tmp/kittentts2_clone.wav":
+    cargo run -p rlx-kittentts2 --release --features macos-gpu -- \
+        --model-dir "{{KITTENTTS2_DIR}}" --s3gen "{{KITTENTTS2_S3GEN_DIR}}/s3gen_meanflow.safetensors" \
+        --reference "{{WAV}}" --reference-text "{{TRANSCRIPT}}" \
+        --text "{{TEXT}}" --device {{DEVICE}} -o "{{OUT}}"
+
+# Cloning front end vs scripts/kittentts2_clone_reference.py (run that first).
+test-kittentts2-clone DEVICE="cpu" REF="weights/tts/kitten-tts-2/clone_reference":
+    RLX_KITTENTTS2_DIR="$(cd "{{KITTENTTS2_DIR}}" && pwd)" \
+    RLX_KITTENTTS2_S3GEN="$(cd "{{KITTENTTS2_S3GEN_DIR}}" && pwd)/s3gen_meanflow.safetensors" \
+    RLX_KITTENTTS2_CLONE_REF="$(cd "{{REF}}" && pwd)" RLX_KITTENTTS2_TEST_DEVICE={{DEVICE}} \
+        cargo test -p rlx-kittentts2 --release --features macos-gpu --test clone_parity -- --nocapture
+
+# Stage-by-stage parity vs scripts/kittentts2_reference.py (run that first).
+test-kittentts2-parity DEVICE="cpu" REF="weights/tts/kitten-tts-2/reference":
+    RLX_KITTENTTS2_DIR="$(cd "{{KITTENTTS2_DIR}}" && pwd)" \
+    RLX_KITTENTTS2_S3GEN="$(cd "{{KITTENTTS2_S3GEN_DIR}}" && pwd)/s3gen_meanflow.safetensors" \
+    RLX_KITTENTTS2_REF="$(cd "{{REF}}" && pwd)" RLX_KITTENTTS2_TEST_DEVICE={{DEVICE}} \
+        cargo test -p rlx-kittentts2 --release --features macos-gpu --test reference_parity
+
+test-kittentts2-whisper DEVICE="cpu":
+    RLX_KITTENTTS2_DIR="$(cd "{{KITTENTTS2_DIR}}" && pwd)" \
+    RLX_KITTENTTS2_S3GEN="$(cd "{{KITTENTTS2_S3GEN_DIR}}" && pwd)/s3gen_meanflow.safetensors" \
+    RLX_KITTENTTS2_TEST_DEVICE={{DEVICE}} \
+        cargo test -p rlx-kittentts2 --release --features macos-gpu --test whisper_roundtrip -- --nocapture
+
+# Pocket TTS (Kyutai) — FlowLM + Mimi decoder as rlx graphs on every backend.
+# The ungated repo has every language and the released voice states; cloning
+# from a WAV needs the gated kyutai/pocket-tts (its Mimi encoder is zeroed in
+# the ungated one). VOICE="*" fetches every voice. The drifting model also needs
+# languages/english_2026-09/tokenizer.*. See crates/rlx-pocket-tts/README.md.
+POCKET_TTS_DIR := env_var_or_default("POCKET_TTS_DIR", "weights/tts/pocket-tts-kyutai")
+
+fetch-pocket-tts LANG="english" VOICE="alba":
+    hf download kyutai/pocket-tts-without-voice-cloning --local-dir "{{POCKET_TTS_DIR}}" \
+        --include "languages/{{LANG}}/model.safetensors" "languages/{{LANG}}/tokenizer.*" \
+        "languages/{{LANG}}/embeddings/{{VOICE}}.safetensors"
+
+pocket-tts TEXT="Hello world. I am Kyutai's Pocket TTS." LANG="english" VOICE="alba" DEVICE="cpu" OUT="/tmp/pocket-tts.wav":
+    cargo run -p rlx-pocket-tts --release --features macos-gpu --bin rlx-pocket-tts -- \
+        say "{{TEXT}}" --root "{{POCKET_TTS_DIR}}" --language {{LANG}} --voice "{{VOICE}}" \
+        --device {{DEVICE}} -o "{{OUT}}"
+
+# Parity vs upstream pocket_tts (tokens, per-frame backbone/EOS/latents, audio).
+# Make REF with scripts/pocket_tts_reference.py in .venv-pocket first.
+test-pocket-tts-parity REF DEVICE="cpu":
+    RLX_POCKET_TTS_ROOT="$(cd "{{POCKET_TTS_DIR}}" && pwd)" RLX_POCKET_TTS_REFERENCE="$(cd "{{REF}}" && pwd)" \
+    RLX_POCKET_TTS_DEVICE={{DEVICE}} \
+        cargo test -p rlx-pocket-tts --release --features macos-gpu --test reference_parity -- --nocapture
+
+# Voice-cloning parity (Mimi encoder + speaker projection) on a randomized-encoder
+# checkpoint from scripts/pocket_tts_clone_reference.py.
+test-pocket-tts-clone REF WAV LANG="english_2026-10" DEVICE="cpu":
+    RLX_POCKET_TTS_CLONE_REFERENCE="$(cd "{{REF}}" && pwd)" RLX_POCKET_TTS_CLONE_WAV="$(cd "$(dirname "{{WAV}}")" && pwd)/$(basename "{{WAV}}")" \
+    RLX_POCKET_TTS_TOKENIZER="$(cd "{{POCKET_TTS_DIR}}/languages/{{LANG}}" && pwd)/tokenizer.model" \
+    RLX_POCKET_TTS_DEVICE={{DEVICE}} \
+        cargo test -p rlx-pocket-tts --release --features macos-gpu --test clone_parity -- --nocapture
+
 # Zonos v0.1 transformer (espeak → AR → DAC 44.1 kHz)
 fetch-zonos:
     hf download Zyphra/Zonos-v0.1-transformer --local-dir weights/tts/zonos
@@ -2018,7 +2240,7 @@ zonos-whisper TEXT="Hello from Zonos.":
 
 # Sentence across CPU/Metal/MLX (compiled backbone + DAC).
 zonos-backends TEXT="The quick brown fox jumps over the lazy dog.":
-    RLX_TEXT="{{TEXT}}" RLX_MAX_TOKENS=256 cargo run -p rlx-zonos --release --example backend_matrix --features "espeak,apple-silicon"
+    RLX_TEXT="{{TEXT}}" RLX_MAX_TOKENS=256 cargo run -p rlx-zonos --release --example backend_matrix --features "espeak,macos-gpu"
 
 # Gepard (~556M) — Qwen3.5 FA backbone + NanoCodec FSQ @ 22.05 kHz
 fetch-gepard:
@@ -2026,20 +2248,20 @@ fetch-gepard:
     @echo "Also need nano_dec_1.89kbps.safetensors under weights/tts/gepard (see rlx-gepard README)."
 
 gepard-demo TEXT="The quick brown fox jumps over the lazy dog." DEVICE="metal" OUT="/tmp/gepard_demo.wav":
-    cargo run -p rlx-gepard --release --features apple-silicon -- \
+    cargo run -p rlx-gepard --release --features macos-gpu -- \
         --weights weights/tts/gepard --text "{{TEXT}}" --device {{DEVICE}} --out "{{OUT}}"
 
 gepard-whisper:
-    cargo test -p rlx-gepard --release --features apple-silicon --test whisper_roundtrip test_gepard_whisper_fox -- --nocapture
+    cargo test -p rlx-gepard --release --features macos-gpu --test whisper_roundtrip test_gepard_whisper_fox -- --nocapture
 
 gepard-whisper-long:
-    cargo test -p rlx-gepard --release --features apple-silicon --test whisper_roundtrip test_gepard_whisper_long -- --nocapture
+    cargo test -p rlx-gepard --release --features macos-gpu --test whisper_roundtrip test_gepard_whisper_long -- --nocapture
 
 gepard-backends TEXT="The quick brown fox jumps over the lazy dog.":
     RLX_TEXT="{{TEXT}}" cargo run -p rlx-gepard --release --example backend_matrix --features all-backends
 
 gepard-parity:
-    cargo test -p rlx-gepard --release --features apple-silicon --test whisper_roundtrip test_gepard_compiled_cpu_prefill_parity -- --nocapture
+    cargo test -p rlx-gepard --release --features macos-gpu --test whisper_roundtrip test_gepard_compiled_cpu_prefill_parity -- --nocapture
 
 gepard-bench DEVICE="metal" TEXT="The quick brown fox jumps over the lazy dog.":
     RLX_TEXT="{{TEXT}}" cargo run -p rlx-gepard --release --example bench_timing --features all-backends -- --device {{DEVICE}}
@@ -2054,15 +2276,15 @@ fetch-sesame:
     @echo "CSM weights in weights/tts/sesame (also need: just fetch-mimi)"
 
 sesame TEXT="The quick brown fox jumps over the lazy dog." DEVICE="cpu" OUT="/tmp/sesame.wav" SEED="42":
-    cargo run -p rlx-sesame --release --features apple-silicon -- \
+    cargo run -p rlx-sesame --release --features macos-gpu -- \
         --model-dir weights/tts/sesame --mimi-dir .cache/mimi \
         --text "{{TEXT}}" --device {{DEVICE}} --seed {{SEED}} --output "{{OUT}}"
 
 sesame-whisper:
-    cargo test -p rlx-sesame --release --features apple-silicon --test whisper_roundtrip test_sesame_whisper_fox -- --nocapture
+    cargo test -p rlx-sesame --release --features macos-gpu --test whisper_roundtrip test_sesame_whisper_fox -- --nocapture
 
 sesame-whisper-long:
-    cargo test -p rlx-sesame --release --features apple-silicon --test whisper_roundtrip test_sesame_whisper_long -- --nocapture
+    cargo test -p rlx-sesame --release --features macos-gpu --test whisper_roundtrip test_sesame_whisper_long -- --nocapture
 
 # Mimi decode + Whisper across available backends (LM codes cached after first run).
 sesame-backends TEXT="The quick brown fox jumps over the lazy dog.":
@@ -2090,12 +2312,12 @@ export-miocodec:
     .venv-miotts/bin/python crates/rlx-miotts/scripts/export_miocodec_decode.py
 
 miotts TEXT="The quick brown fox jumps over the lazy dog." DEVICE="cpu" OUT="/tmp/miotts.wav" SEED="42" PRESET="en_female":
-    cargo run -p rlx-miotts --release --features apple-silicon -- \
+    cargo run -p rlx-miotts --release --features macos-gpu -- \
         --model-dir weights/tts/miotts --codec-dir weights/tts/miocodec \
         --text "{{TEXT}}" --device {{DEVICE}} --seed {{SEED}} --preset {{PRESET}} --output "{{OUT}}"
 
 miotts-whisper:
-    cargo test -p rlx-miotts --release --features apple-silicon --test whisper_roundtrip test_miotts_whisper_fox -- --nocapture
+    cargo test -p rlx-miotts --release --features macos-gpu --test whisper_roundtrip test_miotts_whisper_fox -- --nocapture
 
 miotts-backends TEXT="The quick brown fox jumps over the lazy dog.":
     RLX_TEXT="{{TEXT}}" cargo run -p rlx-miotts --release --example backend_matrix --features all-backends
@@ -2114,11 +2336,11 @@ parlertts-demo TEXT="Hello from Parler.":
 
 # MetaVoice-1B — first/second-stage eager + EnCodec on --device
 metavoice-demo TEXT="The quick brown fox jumps over the lazy dog." DEVICE="metal":
-    cargo run -p rlx-metavoice --release --features apple-silicon -- \
+    cargo run -p rlx-metavoice --release --features macos-gpu -- \
         --text "{{TEXT}}" --max-tokens 448 --device {{DEVICE}} --output /tmp/metavoice_demo.wav
 
 metavoice-matrix:
-    cargo run -p rlx-metavoice --release --example backend_matrix --features apple-silicon
+    cargo run -p rlx-metavoice --release --example backend_matrix --features macos-gpu
 
 # One-command demo after `just fetch-kokoro`
 kokoro-demo:
@@ -2126,14 +2348,14 @@ kokoro-demo:
 
 # StyleTTS2-family = Kokoro-82M thin facade (`rlx-styletts2` → native Kokoro)
 styletts2 TEXT="The quick brown fox jumps over the lazy dog." DEVICE="cpu" OUT="/tmp/styletts2.wav" VOICE="af_heart":
-    cargo run -p rlx-styletts2 --release --features apple-silicon -- \
+    cargo run -p rlx-styletts2 --release --features macos-gpu -- \
         --text "{{TEXT}}" --voice "{{VOICE}}" --device {{DEVICE}} --output "{{OUT}}"
 
 styletts2-whisper:
-    cargo test -p rlx-styletts2 --release --features apple-silicon --test whisper_roundtrip test_styletts2_whisper_fox -- --nocapture
+    cargo test -p rlx-styletts2 --release --features macos-gpu --test whisper_roundtrip test_styletts2_whisper_fox -- --nocapture
 
 styletts2-backends TEXT="The quick brown fox jumps over the lazy dog.":
-    RLX_TEXT="{{TEXT}}" cargo run -p rlx-styletts2 --release --example backend_matrix --features apple-silicon
+    RLX_TEXT="{{TEXT}}" cargo run -p rlx-styletts2 --release --example backend_matrix --features macos-gpu
 
 # Supertonic-3 flow-matching TTS — https://huggingface.co/Supertone/supertonic-3
 fetch-supertonic:
@@ -2157,20 +2379,20 @@ fetch-f5tts:
     @echo "F5-TTS ONNX in weights/tts/f5tts (add vocab.txt from SWivid/F5-TTS if missing)"
 
 f5tts TEXT="The quick brown fox jumps over the lazy dog." DEVICE="cpu" NFE="32" OUT="/tmp/f5tts.wav" REF="crates/rlx-f5tts/tests/fixtures/prompt.wav" REF_TEXT="Hello from Kokoro. This is a test of speech synthesis in Rust.":
-    cargo run -p rlx-f5tts --release --features apple-silicon -- \
+    cargo run -p rlx-f5tts --release --features macos-gpu -- \
       --ref-wav "{{REF}}" --ref-text "{{REF_TEXT}}" --text "{{TEXT}}" \
       --nfe "{{NFE}}" --device "{{DEVICE}}" --out "{{OUT}}"
 
 f5tts-whisper OUT="tmp/f5tts_wavs/validated.wav":
     mkdir -p tmp/f5tts_wavs
     RLX_F5TTS_DIR=weights/tts/f5tts RLX_WHISPER_DIR=.cache/whisper-base.en NFE=32 OUT="{{OUT}}" \
-      cargo run -p rlx-f5tts --release --features apple-silicon --quiet --example native_clone
+      cargo run -p rlx-f5tts --release --features macos-gpu --quiet --example native_clone
 
 f5tts-backends TEXT="The quick brown fox jumps over the lazy dog.":
-    RLX_TEXT="{{TEXT}}" RLX_NFE=32 cargo run -p rlx-f5tts --release --example backend_matrix --features apple-silicon
+    RLX_TEXT="{{TEXT}}" RLX_NFE=32 cargo run -p rlx-f5tts --release --example backend_matrix --features macos-gpu
 
 f5tts-demo REF_WAV REF_TEXT TEXT:
-    cargo run -p rlx-f5tts --release --features apple-silicon -- \
+    cargo run -p rlx-f5tts --release --features macos-gpu -- \
       --ref-wav "{{REF_WAV}}" --ref-text "{{REF_TEXT}}" --text "{{TEXT}}" --nfe 32 --out /tmp/f5tts_demo.wav
 
 # Piper VITS TTS — voices at https://huggingface.co/rhasspy/piper-voices (MIT)
@@ -2179,7 +2401,7 @@ piper-demo:
     cargo run -p rlx-piper --release -- --text "The quick brown fox jumps over the lazy dog." --out /tmp/piper_demo.wav
 
 piper-backends:
-    RLX_PIPER_DETERMINISTIC=1 RLX_ITERS=1 cargo run -p rlx-piper --release --example backend_matrix --features apple-silicon -- weights/tts/piper
+    RLX_PIPER_DETERMINISTIC=1 RLX_ITERS=1 cargo run -p rlx-piper --release --example backend_matrix --features macos-gpu -- weights/tts/piper
 
 # ZipVoice voice cloning — k2-fsa/ZipVoice (Apache); reuses the LuxTTS runtime.
 # Download zipvoice_distill/ + export vocoder (scripts/export_vocoder.py) into weights/tts/zipvoice-distill
@@ -2200,17 +2422,17 @@ export-moss-nano-gguf DIR="weights/tts/moss-nano" OUT="weights/tts/moss-nano/mos
     cargo run -p rlx-moss-nano --release -- --pack-gguf --data "{{DIR}}" --out "{{OUT}}"
 
 moss-nano TEXT="The quick brown fox jumps over the lazy dog." VOICE="Trump" DEVICE="cpu" OUT="/tmp/moss_nano.wav":
-    cargo run -p rlx-moss-nano --release --features apple-silicon -- \
+    cargo run -p rlx-moss-nano --release --features macos-gpu -- \
       --text "{{TEXT}}" --voice "{{VOICE}}" --device "{{DEVICE}}" --out "{{OUT}}"
 
 moss-nano-whisper:
-    cargo run -p rlx-moss-nano --release --features apple-silicon --quiet --example native_whisper
+    cargo run -p rlx-moss-nano --release --features macos-gpu --quiet --example native_whisper
 
 moss-nano-backends TEXT="The quick brown fox jumps over the lazy dog.":
-    RLX_TEXT="{{TEXT}}" cargo run -p rlx-moss-nano --release --example backend_matrix --features apple-silicon
+    RLX_TEXT="{{TEXT}}" cargo run -p rlx-moss-nano --release --example backend_matrix --features macos-gpu
 
 moss-nano-demo TEXT VOICE="Trump":
-    cargo run -p rlx-moss-nano --release --features apple-silicon -- --text "{{TEXT}}" --voice "{{VOICE}}" --out /tmp/moss_nano_demo.wav
+    cargo run -p rlx-moss-nano --release --features macos-gpu -- --text "{{TEXT}}" --voice "{{VOICE}}" --out /tmp/moss_nano_demo.wav
 
 # Maya1 — expressive voice-design TTS (Llama-3B + SNAC, Apache). Reuses rlx-orpheus.
 # Needs a Maya1 GGUF in weights/tts/maya1 + ORPHEUS_SNAC_PATH (see crate README).
@@ -2228,7 +2450,7 @@ fetch-sanotts PACK="amy-en-1p46m":
 
 # Synthesize with sanoTTS. DEVICE: host|cpu|metal|mlx|cuda|rocm|gpu|vulkan|ane.
 sanotts TEXT="Hello from a two megabyte voice." PACK="amy-en-1p46m" DEVICE="mlx":
-    cargo run -p rlx-sanotts --release --features apple-silicon -- \
+    cargo run -p rlx-sanotts --release --features macos-gpu -- \
         say "{{TEXT}}" --voice-dir weights/tts/sanotts/{{PACK}} --device {{DEVICE}} \
         -o /tmp/sanotts_demo.wav
 
@@ -2237,14 +2459,14 @@ test-sanotts-parity:
     cargo test -p rlx-sanotts --features metal,mlx --test reference_parity -- --nocapture
 
 melotts-demo TEXT:
-    cargo run -p rlx-melotts --release --features apple-silicon -- --text "{{TEXT}}" --out /tmp/melotts_demo.wav
+    cargo run -p rlx-melotts --release --features macos-gpu -- --text "{{TEXT}}" --out /tmp/melotts_demo.wav
 
 # TinyTTS/MeloTTS cross-backend parity (cos≥0.95). Override: RLX_DEVICES=cpu,gpu
 melotts-backends *ARGS:
-    cargo run -p rlx-tiny-tts --release --example backend_matrix --features apple-silicon -- weights/tts/melotts {{ARGS}}
+    cargo run -p rlx-tiny-tts --release --example backend_matrix --features macos-gpu -- weights/tts/melotts {{ARGS}}
 
 tiny-tts-backends *ARGS:
-    cargo run -p rlx-tiny-tts --release --example backend_matrix --features apple-silicon -- weights/tts/tiny-tts-rlx {{ARGS}}
+    cargo run -p rlx-tiny-tts --release --example backend_matrix --features macos-gpu -- weights/tts/tiny-tts-rlx {{ARGS}}
 
 fetch-tiny-tts:
     mkdir -p weights/tts/tiny-tts-rlx
@@ -2276,17 +2498,17 @@ fetch-chatterbox:
     @echo "ChatterBox in weights/tts/chatterbox"
 
 chatterbox TEXT="The quick brown fox jumps over the lazy dog." DEVICE="cpu" OUT="/tmp/chatterbox.wav" REF="crates/rlx-luxtts/tests/fixtures/prompt.wav":
-    cargo run -p rlx-chatterbox --release --features apple-silicon -- \
+    cargo run -p rlx-chatterbox --release --features macos-gpu -- \
         --ref-wav "{{REF}}" --text "{{TEXT}}" --device "{{DEVICE}}" --greedy --out "{{OUT}}"
 
 chatterbox-whisper:
-    cargo test -p rlx-chatterbox --release --features apple-silicon --test whisper_roundtrip test_chatterbox_whisper_fox -- --nocapture
+    cargo test -p rlx-chatterbox --release --features macos-gpu --test whisper_roundtrip test_chatterbox_whisper_fox -- --nocapture
 
 chatterbox-backends TEXT="The quick brown fox jumps over the lazy dog.":
-    RLX_TEXT="{{TEXT}}" cargo run -p rlx-chatterbox --release --example backend_matrix --features apple-silicon
+    RLX_TEXT="{{TEXT}}" cargo run -p rlx-chatterbox --release --example backend_matrix --features macos-gpu
 
 chatterbox-demo REF_WAV TEXT:
-    cargo run -p rlx-chatterbox --release --features apple-silicon -- --ref-wav "{{REF_WAV}}" --text "{{TEXT}}" --greedy --out /tmp/chatterbox_demo.wav
+    cargo run -p rlx-chatterbox --release --features macos-gpu -- --ref-wav "{{REF_WAV}}" --text "{{TEXT}}" --greedy --out /tmp/chatterbox_demo.wav
 
 # Kyutai Mimi codec — https://huggingface.co/kyutai/mimi
 fetch-mimi:
@@ -2297,11 +2519,11 @@ fetch-kyutai-tts:
     cargo run -p rlx-kyutai-tts --features hf-download --release -- --fetch
 
 kyutai-tts PROMPT="Hello from Kyutai." DEVICE="cpu" OUT="/tmp/kyutai_tts.wav":
-    cargo run -p rlx-kyutai-tts --release --features "hf-download,apple-silicon" -- \
+    cargo run -p rlx-kyutai-tts --release --features "hf-download,macos-gpu" -- \
         --prompt "{{PROMPT}}" --device "{{DEVICE}}" --out-wav "{{OUT}}"
 
 kyutai-tts-e2e:
-    RLX_KYUTAI_TTS_E2E=1 cargo test -p rlx-kyutai-tts --release --features "hf-download,apple-silicon" --test whisper_validate -- --nocapture
+    RLX_KYUTAI_TTS_E2E=1 cargo test -p rlx-kyutai-tts --release --features "hf-download,macos-gpu" --test whisper_validate -- --nocapture
 
 # Descript Audio Codec — https://github.com/descriptinc/descript-audio-codec
 fetch-dac MODEL="24khz":
@@ -2385,13 +2607,13 @@ moshi *ARGS:
 # Batch: drive Moshi from a WAV, write its spoken reply. Needs full-duplex weights
 # + Mimi: `just fetch-mimi && just fetch-moshi` (or fetch-moshi-q8 + RLX_MOSHI_CHECKPOINT=q8).
 moshi-voice-chat *ARGS:
-    cargo run --release -p rlx-moshi --features "apple-silicon,hf-download" \
+    cargo run --release -p rlx-moshi --features "macos-gpu,hf-download" \
       --example moshi_voice_chat -- --device metal {{ARGS}}
 
 # Live mic ↔ Moshi ↔ speaker, full-duplex. USE HEADPHONES (Moshi hears the mic
 # continuously). Needs a GPU for real-time (7B @ 12.5 Hz).
 moshi-voice-chat-mic *ARGS:
-    cargo run --release -p rlx-moshi --features "apple-silicon,hf-download,mic" \
+    cargo run --release -p rlx-moshi --features "macos-gpu,hf-download,mic" \
       --example moshi_voice_chat -- --device metal --mic {{ARGS}}
 
 test-moshi *ARGS:
@@ -2504,7 +2726,7 @@ orpheus-voice-clone REF_JSON="/tmp/jfk_orpheus_ref.json" *ARGS:
     set -euo pipefail
     export ORPHEUS_SNAC_PATH="${ORPHEUS_SNAC_PATH:-/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors}"
     test -f "$ORPHEUS_SNAC_PATH" || { echo "missing SNAC — run \`just fetch-orpheus-snac\`" >&2; exit 1; }
-    cargo run -p rlx-orpheus --example voice_clone --release --features apple-silicon -- \
+    cargo run -p rlx-orpheus --example voice_clone --release --features macos-gpu -- \
       --ref-json "{{REF_JSON}}" {{ARGS}}
 
 test-orpheus *ARGS:
@@ -2540,7 +2762,7 @@ test-orpheus-backends-whisper *ARGS:
     cargo test -p rlx-orpheus --test backends_whisper --features all-backends --release -- --nocapture {{ARGS}}
 
 bench-orpheus *ARGS:
-    cargo run -p rlx-orpheus --example tts_bench --release --features apple-silicon -- {{ARGS}}
+    cargo run -p rlx-orpheus --example tts_bench --release --features macos-gpu -- {{ARGS}}
 
 bench-orpheus-all-devices *ARGS:
     #!/usr/bin/env bash
@@ -2567,7 +2789,7 @@ orpheus-demos *ARGS:
     export ORPHEUS_DEMO_DIR="${ORPHEUS_DEMO_DIR:-/tmp/orpheus-demos}"
     test -f "$ORPHEUS_GGUF_PATH" || { echo "missing Orpheus GGUF — run \`just fetch-orpheus\`" >&2; exit 1; }
     test -f "$ORPHEUS_SNAC_PATH" || { echo "missing SNAC — export with scripts/export_snac_decoder.py" >&2; exit 1; }
-    cargo run -p rlx-orpheus --example batch_demos --release --features apple-silicon -- {{ARGS}}
+    cargo run -p rlx-orpheus --example batch_demos --release --features macos-gpu -- {{ARGS}}
 
 test-orpheus-clone-whisper *ARGS:
     #!/usr/bin/env bash
@@ -2628,7 +2850,7 @@ tts-prepare SRC="":
       cp "$dest/gryphon.cfg" "$dest/post.cfg"
     fi
     rm -f "$dest/gryphon.cfg"
-    # Drop Apple-compare fixtures and unused frontend blobs if present.
+    # Drop reference-compare fixtures and unused frontend blobs if present.
     rm -rf "$dest/fixtures"
     rm -f "$dest/.DS_Store" "$dest/frontend.cfg" "$dest/gryphon.cfg"
     rm -f "$dest/frontend/gprm" "$dest/frontend/g2p_seq2seq.bin" \
@@ -2757,7 +2979,7 @@ bench-kittentts-backends *ARGS:
     feats="{{features}}"
     if [[ -z "$feats" ]]; then
       case "$(uname -s)" in
-        Darwin) feats="native,apple-silicon" ;;
+        Darwin) feats="native,macos-gpu" ;;
         *)      feats="native,gpu,cuda,vulkan" ;;
       esac
     fi
@@ -3182,6 +3404,114 @@ sam3 *ARGS:
 flux2 *ARGS:
     just run-bin rlx-flux2 rlx-flux2 {{ARGS}}
 
+# FLUX.1 [dev] (12B) from ungated mirrors (~36 GB): BFL single-file transformer,
+# T5-XXL (bf16) + flan-t5 tokenizer.json (same vocab), CLIP-L, BFL ae.safetensors.
+fetch-flux1-dev DIR="weights/image/flux1-dev":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    d="{{DIR}}"; mkdir -p "$d/t5" "$d/clip" "$d/vae"
+    hf download Comfy-Org/flux1-dev flux1-dev.safetensors --local-dir "$d"
+    hf download city96/t5-v1_1-xxl-encoder-bf16 config.json model.safetensors spiece.model special_tokens_map.json tokenizer_config.json --local-dir "$d/t5"
+    hf download google/flan-t5-xxl tokenizer.json --local-dir "$d/t5"
+    hf download openai/clip-vit-large-patch14 config.json tokenizer.json model.safetensors --local-dir "$d/clip"
+    hf download ffxvs/vae-flux ae.safetensors --local-dir "$d/vae"
+
+# `just flux1 -- --model-dir weights/image/flux1-dev --prompt "…" --device metal`
+flux1 *ARGS:
+    just run-bin rlx-flux1 rlx-flux1 {{ARGS}}
+
+# Parity vs scripts/flux1_reference.py dumps (RLX_FLUX1_REF) — text encoders,
+# truncated denoiser + LoRA, VAE. DEVICE: cpu | metal | …
+test-flux1-parity REF DEVICE="cpu":
+    RLX_FLUX1_REF={{REF}} RLX_FLUX1_DIR=$PWD/weights/image/flux1-dev RLX_FLUX1_DEVICE={{DEVICE}} \
+        cargo test -p rlx-flux1 --release {{feature_args}} --test reference_parity -- --nocapture --test-threads 1
+
+# FLUX 3 Image Klein base (ungated unsloth mirror of the BFL package, ~20 GB:
+# DiT + Qwen3-VL-4B text encoder + ae.safetensors). `distilled` fetches the
+# 16-step flow-map checkpoint instead.
+fetch-flux3-klein WHICH="base" DIR="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{WHICH}}" in
+      base) repo=unsloth/flux-3-image-klein-base; def=weights/image/flux3-klein-base ;;
+      distilled) repo=unsloth/flux-3-image-klein; def=weights/image/flux3-klein ;;
+      *) echo "WHICH: base | distilled" >&2; exit 1 ;;
+    esac
+    d="{{DIR}}"; d="${d:-$def}"; mkdir -p "$d"
+    hf download "$repo" model.safetensors config.json manifest.json ae.safetensors LICENSE.md NOTICE.md --local-dir "$d"
+    hf download "$repo" --include "text_encoder/*" --local-dir "$d"
+
+# The prompt upsampler flux-3-image-klein-pup (Qwen3.5-9B): Q4_K_M GGUF
+# (5.6 GB), its vision tower for edits (0.9 GB) + the BFL tokenizer, chat
+# template, image-processor config and system prompts.
+fetch-flux3-pup QUANT="Q4_K_M" DIR="weights/lm/flux3-klein-pup":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    d="{{DIR}}"; mkdir -p "$d"
+    hf download unsloth/flux-3-image-klein-pup-GGUF "flux-3-image-klein-pup-{{QUANT}}.gguf" mmproj-BF16.gguf --local-dir "$d"
+    hf download black-forest-labs/flux-3-image-klein-pup tokenizer.json tokenizer_config.json chat_template.jinja config.json generation_config.json system_prompts.json preprocessor_config.json --local-dir "$d"
+
+# `just flux3 -- --model-dir weights/image/flux3-klein-base --pup weights/lm/flux3-klein-pup --prompt "…" --device metal`
+flux3 *ARGS:
+    just run-bin rlx-flux3 rlx-flux3 {{ARGS}}
+
+# Parity vs scripts/flux3_reference.py dumps (RLX_FLUX3_REF): text encoder
+# (incl. padding rows), DiT velocity + 4-step CFG run, autoencoder both ways,
+# reference-image conditioning. DEVICE: cpu | metal | …
+test-flux3-parity REF DEVICE="cpu":
+    RLX_FLUX3_REF={{REF}} RLX_FLUX3_DIR=$PWD/weights/image/flux3-klein-base RLX_FLUX3_DEVICE={{DEVICE}} \
+        RLX_FLUX3_FLOW_MAP_DIR=$PWD/weights/image/flux3-klein \
+        cargo test -p rlx-flux3 --release {{feature_args}} --test reference_parity -- --nocapture --test-threads 1
+
+# Open Genmoji LoRAs (EvanZhouDev/open-genmoji: flux-dev, diverse-emoji) + the
+# metaprompt / few-shot history its prompt assistant uses.
+fetch-genmoji DIR="weights/image/genmoji":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    d="{{DIR}}"; mkdir -p "$d/lora" "$d/metaprompt"
+    hf download EvanZhouDev/open-genmoji flux-dev.safetensors diverse-emoji.safetensors --local-dir "$d/lora"
+    raw=https://raw.githubusercontent.com/EvanZhouDev/open-genmoji/main
+    curl -sfL "$raw/metaprompt/open-genmoji.md" -o "$d/metaprompt/open-genmoji.md"
+    curl -sfL "$raw/metaprompt/open-genmoji.json" -o "$d/metaprompt/open-genmoji.json"
+    curl -sfL "$raw/lora/info.json" -o "$d/info.json"
+
+# `rlx-genmoji --fast`: Hyper-SD's 8-step FLUX.1-dev LoRA (1.4 GB) + the
+# assistant LM as a packed Q6_K GGUF (0.6 GB).
+fetch-genmoji-fast DIR="weights/image/genmoji":
+    hf download ByteDance/Hyper-SD Hyper-FLUX.1-dev-8steps-lora.safetensors --local-dir "{{DIR}}/turbo"
+    hf download unsloth/Qwen3.5-0.8B-GGUF Qwen3.5-0.8B-Q6_K.gguf --local-dir weights/Qwen3.5-0.8B-gguf
+
+# BiRefNet (MIT) background removal: lite (Swin-T, 178 MB) + full (Swin-L, 444 MB).
+fetch-birefnet DIR="weights/image/birefnet":
+    hf download ZhengPeng7/BiRefNet_lite model.safetensors config.json --local-dir "{{DIR}}/BiRefNet_lite"
+    hf download ZhengPeng7/BiRefNet model.safetensors config.json --local-dir "{{DIR}}/BiRefNet"
+
+# Parity vs scripts/birefnet_reference.py dumps: `just test-birefnet-parity REF [DIR] [DEVICE]`
+test-birefnet-parity REF DIR="weights/image/birefnet/BiRefNet_lite" DEVICE="cpu":
+    cargo run -p rlx-birefnet --release {{feature_args}} --example parity -- {{DIR}} {{REF}} {{DEVICE}}
+
+# Vision.framework subject lifting (from this Mac) vs the Vision API itself.
+test-subject-lift-parity *ARGS:
+    cargo run -p rlx-subject-lift --release {{feature_args}} --example parity -- {{ARGS}}
+
+# SAM ViT-B (Apache-2.0), used by rlx-genmoji to find enclosed background pockets.
+fetch-sam-v1 DIR="weights/sam_v1":
+    hf download eugenehp/sam-v1 sam_vit_b_meta.safetensors LICENSE --local-dir "{{DIR}}"
+
+# Real-ESRGAN ×4 checkpoints (BSD-3) for rlx-upscale / rlx-genmoji `--sr`:
+# x4plus (photo), x4plus_anime_6B (clean lines; genmoji default), animevideov3 (tiny Compact).
+fetch-upscale-esrgan DIR="weights/image/upscale":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{DIR}}"; r=https://github.com/xinntao/Real-ESRGAN/releases/download
+    for f in v0.1.0/RealESRGAN_x4plus.pth v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth v0.2.5.0/realesr-animevideov3.pth; do
+        curl -sfL -C - -o "{{DIR}}/$(basename $f)" "$r/$f"
+    done
+
+# `just genmoji "flying pig" -- --device metal` (see crates/rlx-genmoji/README.md)
+genmoji PROMPT *ARGS:
+    just run-bin rlx-genmoji rlx-genmoji "{{PROMPT}}" {{ARGS}}
+
 trellis2 *ARGS:
     just run-bin rlx-trellis2 rlx-trellis2 {{ARGS}}
 
@@ -3203,7 +3533,7 @@ test-minimax-h3:
 
 # Cross-backend agreement (Metal / MLX / wgpu against CPU).
 test-minimax-h3-backends:
-    cargo test -p rlx-minimax-h3 --release --features apple-silicon --test backends -- --nocapture
+    cargo test -p rlx-minimax-h3 --release --features macos-gpu --test backends -- --nocapture
 
 # Checks against a real checkpoint (only the VAEs and configs are required).
 test-minimax-h3-weights WEIGHTS:
@@ -3427,6 +3757,19 @@ fetch-qwen35-08b:
     just fetch-qwen35-base
     just fetch-qwen35-gguf
 
+# Qwen3.5-0.8B for the browser (`rlx-models-web`'s `Qwen35Generator`): one
+# GGUF as `model.gguf` + the HF `tokenizer.json`, in the layout `web/models.js`
+# expects. QUANT: Q4_K_M (520 MB) | BF16 (1.5 GB, kept bf16 — lossless).
+fetch-qwen35-web QUANT="Q4_K_M":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{QUANT}}" in Q4_K_M) dir=weights/lm/qwen3.5-0.8b-q4km ;; BF16) dir=weights/lm/qwen3.5-0.8b-bf16 ;; *) echo "QUANT: Q4_K_M | BF16" >&2; exit 2 ;; esac
+    mkdir -p "$dir"
+    test -s "$dir/model.gguf" && ! test -L "$dir/model.gguf" || { rm -f "$dir/model.gguf"; curl -L -C - -o "$dir/model.gguf" \
+        'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-{{QUANT}}.gguf'; }
+    test -s "$dir/tokenizer.json" || curl -L -o "$dir/tokenizer.json" \
+        https://huggingface.co/Qwen/Qwen3.5-0.8B/resolve/main/tokenizer.json
+
 # Back-compat alias (same as fetch-qwen35-08b).
 alias fetch-qwen35-0pt8b := fetch-qwen35-08b
 
@@ -3478,7 +3821,7 @@ gemma-inflect-speak *ARGS:
         echo "missing Inflect bundle at $RLX_INFLECT_NANO_DATA — see crates/rlx-inflect-nano/README.md"
         exit 1
     }
-    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-gemma-inflect-nano --features apple-silicon \
+    VECLIB_MAXIMUM_THREADS=1 cargo run --release -p rlx-gemma-inflect-nano --features macos-gpu \
       --example speak -- --device metal --tts-device auto {{ARGS}}
 
 # Gemma 3 270M Q4_K_M (~250 MB) + HF tokenizer.json.
@@ -3629,19 +3972,19 @@ test-net-hf:
 run-rlx-fft *ARGS:
     cargo run -p rlx-fft --bin rlx-fft {{profile}} {{feature_args}} -- {{ARGS}}
 
-# IO-aware Welch peaks picker bench. macOS: `just features=apple-silicon bench-welch-peaks -- --device metal`
+# IO-aware Welch peaks picker bench. macOS: `just features=macos-gpu bench-welch-peaks -- --device metal`
 bench-welch-peaks *ARGS:
     just run-rlx-fft bench-welch-peaks {{ARGS}}
 
 # Fusion phase bench (dev-only module). Override backends: `just features=dev,gpu bench-fusion-phases -- …`
 bench-fusion-phases *ARGS:
-    cargo run -p rlx-fft --bin rlx-fft {{profile}} --features dev,apple-silicon -- bench-fusion-phases {{ARGS}}
+    cargo run -p rlx-fft --bin rlx-fft {{profile}} --features dev,macos-gpu -- bench-fusion-phases {{ARGS}}
 
 test-rlx-fft-welch-peaks *ARGS:
     cargo test -p rlx-fft welch_peaks {{profile}} {{feature_args}} {{ARGS}}
 
 test-rlx-fft-fusion-gate *ARGS:
-    cargo test -p rlx-fft --lib fusion_gate_batch_matrix io_gate --features apple-silicon {{profile}} {{ARGS}}
+    cargo test -p rlx-fft --lib fusion_gate_batch_matrix io_gate --features macos-gpu {{profile}} {{ARGS}}
 
 # --- cross-backend model harness (scripts/matrix) ---
 
@@ -3681,11 +4024,11 @@ tts-stress *ARGS:
 #   just tts-backends
 #   RLX_ITERS=5 just tts-backends
 tts-backends *ARGS:
-    cargo run -p rlx-tts --release --example backend_matrix --features apple-silicon -- {{ARGS}}
+    cargo run -p rlx-tts --release --example backend_matrix --features macos-gpu -- {{ARGS}}
 
 # Unified matrix: rlx-tts × available devices + Whisper (non-CPU cells skip).
 tts-backends-whisper *ARGS:
-    cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} --features "rlx-tts,matrix-onnx,apple-silicon" -- \
+    cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} --features "rlx-tts,matrix-onnx,macos-gpu" -- \
         run -m rlx-tts -d auto --phrases short,long --whisper --noise --no-isolate \
         --out-dir /tmp/rlx-tts-backends {{ARGS}}
 
@@ -3695,7 +4038,7 @@ tts-bench-quick *ARGS:
         run -m fake -d cpu --phrases short --noise --out-dir /tmp/tts-bench-quick {{ARGS}}
 
 tts-bench-metal *ARGS:
-    cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} --features "all-models,apple-silicon" -- {{ARGS}}
+    cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} --features "all-models,macos-gpu" -- {{ARGS}}
 
 tts-bench-list:
     cargo run -p rlx-tts-bench --bin rlx-tts-bench {{profile}} {{feature_args}} -- list
@@ -3739,7 +4082,7 @@ fgd-wave *ARGS:
 test-fgd *ARGS:
     cargo test -p rlx-fgd --release {{ARGS}}
 
-# Needs `--features all-backends` (or apple-silicon / nvidia-gpu / amd-gpu).
+# Needs `--features all-backends` (or macos-gpu / nvidia-gpu / amd-gpu).
 test-fgd-backends *ARGS:
     cargo test -p rlx-fgd --test backend_parity --release {{feature_args}} {{ARGS}}
 
@@ -3750,3 +4093,265 @@ fgd-radiance *ARGS:
 # Fetch one NeRF-Synthetic scene for `fgd-radiance` — ~38 MB pulled out of a 1.27 GB archive by HTTP range requests.
 fetch-nerf-synthetic SCENE="ficus" *ARGS:
     python3 scripts/fetch_nerf_synthetic.py {{SCENE}} {{ARGS}}
+
+# ── Kimi-K3 ──────────────────────────────────────────────────────────────────
+# `just kimi -- train --model-dir … --tokens-file … --out …`; subcommands:
+# info, synth, weights, trace, graph, train, worker, ping, generate, train-dist, kda-state, size.
+kimi *ARGS:
+    cargo run -p rlx-kimi-k3 --bin rlx-kimi-k3 --release {{feature_args}} {{ARGS}}
+
+# How many nodes (RAM / VRAM / storage / IO / network / compute) and how fast:
+# `just kimi-size --compare`, `just kimi-size --node pc-rtx4090-128 --target-tps 1`.
+kimi-size *ARGS:
+    cargo run -p rlx-kimi-k3 --bin rlx-kimi-k3 --release -- size {{ARGS}}
+
+# Small checkpoint with Kimi-K3's real tensor layout (no 1.6 TB download).
+kimi-synth DIR="/tmp/kimi-synth":
+    cargo run -p rlx-kimi-k3 --bin rlx-kimi-k3 --release -- synth --out {{DIR}}
+
+# Training / activation + weight dumps / distributed pipeline, on synthetic weights.
+test-kimi-train *ARGS:
+    cargo test -p rlx-kimi-k3 --release --features state-log --test train_stream --test inspect_export --test dist_pipeline --test state_log {{ARGS}}
+
+# ── Small on-device models: LFM2.5, Qwen3.5-0.8B, embeddings, streaming ASR ──
+# Weights land under weights/; parity recipes regenerate an f32 reference with
+# `REF_PY` (default python3): transformers ≥ 5 for LMs and Moonshine streaming,
+# plus sentence-transformers and peft for the embedding models.
+
+# LiquidAI LFM2.5-230M / LFM2.5-350M HF checkpoints (rlx-lfm reads them directly).
+fetch-lfm25-small:
+    hf download LiquidAI/LFM2.5-230M --local-dir weights/lm/lfm2.5-230m
+    hf download LiquidAI/LFM2.5-350M --local-dir weights/lm/lfm2.5-350m
+
+# `just test-lfm25-hf-parity 350m [metal]` — logits + greedy vs transformers.
+test-lfm25-hf-parity SIZE="230m" DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/lm/lfm2.5-{{SIZE}}"
+    [ -f "$dir/model.safetensors" ] || just fetch-lfm25-small
+    ref="/tmp/lfm25-{{SIZE}}.ref.json"
+    [ -f "$ref" ] || "${REF_PY:-python3}" scripts/lm_hf_reference.py "$dir" "$ref"
+    RLX_TEST_DEVICE={{DEVICE}} RLX_LFM_HF_DIR="$dir" RLX_LFM_HF_REF="$ref" \
+        cargo test -p rlx-lfm --release {{feature_args}} --test hf_parity_live -- --nocapture
+
+# Qwen/Qwen3.5-0.8B post-trained, HF safetensors (1.75 GB); `fetch-qwen35-08b` pulls Base + GGUF.
+fetch-qwen35-08b-instruct:
+    hf download Qwen/Qwen3.5-0.8B --local-dir weights/lm/qwen3.5-0.8b
+
+test-qwen35-hf-parity DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/lm/qwen3.5-0.8b"
+    [ -d "$dir" ] || just fetch-qwen35-08b-instruct
+    ref="/tmp/qwen35-08b.ref.json"
+    [ -f "$ref" ] || "${REF_PY:-python3}" scripts/lm_hf_reference.py "$dir" "$ref"
+    RLX_TEST_DEVICE={{DEVICE}} RLX_QWEN35_HF_DIR="$dir" RLX_QWEN35_HF_REF="$ref" \
+        cargo test -p rlx-qwen35 --release {{feature_args}} --test hf_parity_live -- --nocapture
+
+# google/embeddinggemma-300m via the ungated unsloth mirror (same files).
+fetch-embeddinggemma:
+    hf download unsloth/embeddinggemma-300m --local-dir weights/embed/embeddinggemma-300m
+
+# `just embeddinggemma -- --weights weights/embed/embeddinggemma-300m --text "…"`
+embeddinggemma *ARGS:
+    cargo run -p rlx-embeddinggemma --release {{feature_args}} {{ARGS}}
+
+test-embeddinggemma-parity DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/embed/embeddinggemma-300m"
+    [ -f "$dir/model.safetensors" ] || just fetch-embeddinggemma
+    ref="/tmp/embeddinggemma.ref.json"
+    [ -f "$ref" ] || "${REF_PY:-python3}" scripts/embedding_hf_reference.py "$dir" "$ref" --prompt "task: search result | query: "
+    RLX_TEST_DEVICE={{DEVICE}} RLX_EMBEDDINGGEMMA_DIR="$dir" RLX_EMBEDDINGGEMMA_REF="$ref" \
+        cargo test -p rlx-embeddinggemma --release {{feature_args}} --test hf_parity_live -- --nocapture
+
+fetch-jina-v5:
+    hf download jinaai/jina-embeddings-v5-text-nano --local-dir weights/embed/jina-embeddings-v5-text-nano
+
+# `just jina-v5 -- --weights weights/embed/jina-embeddings-v5-text-nano --task retrieval --text "…"`
+jina-v5 *ARGS:
+    cargo run -p rlx-jina-v5 --release {{feature_args}} {{ARGS}}
+
+# TASK: retrieval | text-matching | clustering | classification
+test-jina-v5-parity TASK="retrieval" DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/embed/jina-embeddings-v5-text-nano"
+    [ -f "$dir/model.safetensors" ] || just fetch-jina-v5
+    ref="/tmp/jina-v5-nano-{{TASK}}.ref.json"
+    [ -f "$ref" ] || "${REF_PY:-python3}" scripts/embedding_hf_reference.py "$dir" "$ref" --task {{TASK}} --prompt-name query
+    RLX_TEST_DEVICE={{DEVICE}} RLX_JINA_V5_DIR="$dir" RLX_JINA_V5_REF="$ref" \
+        cargo test -p rlx-jina-v5 --release {{feature_args}} --test hf_parity_live -- --nocapture
+
+# LiquidAI/d1-3B (6.2 GB bf16): System One decision model on LFM2.5-VL-3B.
+fetch-d1:
+    hf download LiquidAI/d1-3B --local-dir weights/lm/d1-3b
+
+# `just d1 -- --weights weights/lm/d1-3b --state "…" --questions '{"q": {"type": "noul", "instructions": "…"}}' [--image P]`
+d1 *ARGS:
+    cargo run -p rlx-d1 --release {{feature_args}} {{ARGS}}
+
+# Prompt rendering + answers vs d1's own prompt.py (no weights).
+test-d1:
+    cargo test -p rlx-d1 {{feature_args}}
+
+# Real-weight parity vs LiquidAI's code (fp32 CPU reference, `REF_PY` needs transformers>=5.14, torchvision, Pillow).
+test-d1-parity DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/lm/d1-3b"
+    [ -f "$dir/model.safetensors" ] || just fetch-d1
+    ref="${D1_REF:-/tmp/d1ref}"; imgs="${D1_IMAGES:-/tmp/d1img}"
+    [ -f "$ref/ref.json" ] || "${REF_PY:-python3}" scripts/d1_reference.py --model "$dir" --images "$imgs" --out "$ref"
+    RLX_D1_DEVICE={{DEVICE}} RLX_D1_DIR="$dir" RLX_D1_IMAGES="$imgs" RLX_D1_REF_DIR="$ref" \
+        cargo test -p rlx-d1 --release {{feature_args}} --test real_weights -- --nocapture --test-threads=1
+
+# LiquidAI/d1-3B-GGUF: Q4_K_M + Q8_0 text, Q8_0 + F16 mmproj, plus the tokenizer/config files the GGUF repo lacks.
+fetch-d1-gguf:
+    hf download LiquidAI/d1-3B-GGUF d1-3B-Q4_K_M.gguf d1-3B-Q8_0.gguf mmproj-d1-3B-Q8_0.gguf mmproj-d1-3B-F16.gguf --local-dir weights/lm/d1-3b-gguf
+    hf download LiquidAI/d1-3B tokenizer.json tokenizer_config.json config.json processor_config.json --local-dir weights/lm/d1-3b-gguf
+
+# Quantized d1 vs llama.cpp on the same GGUF (fixture from scripts/d1_llama_reference.py) + mmproj tower vs HF.
+test-d1-gguf-parity QUANT="Q4_K_M" DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/lm/d1-3b-gguf"
+    [ -f "$dir/d1-3B-{{QUANT}}.gguf" ] || just fetch-d1-gguf
+    RLX_D1_DEVICE={{DEVICE}} RLX_D1_QUANT={{QUANT}} RLX_D1_GGUF_DIR="$dir" \
+        RLX_D1_IMAGES="${D1_IMAGES:-/tmp/d1img}" RLX_D1_REF_DIR="${D1_REF:-/tmp/d1ref}" \
+        cargo test -p rlx-d1 --release {{feature_args}} --test gguf_parity -- --nocapture --test-threads=1
+
+# perplexity-ai/pplx-decider-flash-gguf-v1.2: Q8_0 backbone + readout (5.2 GB) and F16 mmproj (672 MB).
+fetch-pplx-decider:
+    hf download perplexity-ai/pplx-decider-flash-gguf-v1.2 --local-dir weights/lm/pplx-decider-flash-gguf
+
+# The bf16 base checkpoint (9 GB) — only needed to regenerate the parity references.
+fetch-pplx-decider-hf:
+    hf download perplexity-ai/pplx-decider-flash-v1.2 --local-dir weights/lm/pplx-decider-flash
+
+# `just pplx-decider -- --weights weights/lm/pplx-decider-flash-gguf --state "…" --questions '{"q": {"type": "noul", "instructions": "…"}}'`
+pplx-decider *ARGS:
+    cargo run -p rlx-pplx-decider --release {{feature_args}} {{ARGS}}
+
+# Prompt rendering, answers and image preprocessing vs the reference (no weights).
+test-pplx-decider:
+    cargo test -p rlx-pplx-decider {{feature_args}} --lib
+    cargo test -p rlx-pplx-decider {{feature_args}} --test reference_parity prompt_text_is_byte_identical
+    cargo test -p rlx-pplx-decider {{feature_args}} --test reference_parity_images preprocessing_is_bit_exact
+
+# Real-weight parity vs Perplexity's own code: token ids, logits vs the dequantized-Q8_0 reference, probabilities vs bf16.
+# Regenerate the fixtures with scripts/pplx_decider_reference.py (`REF_PY` needs transformers>=5.17, torchvision, Pillow, gguf).
+test-pplx-decider-parity DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/lm/pplx-decider-flash-gguf"
+    [ -f "$dir/decider-flash-v1.2-q8_0.gguf" ] || just fetch-pplx-decider
+    PPLX_DECIDER_DEVICE={{DEVICE}} PPLX_DECIDER_GGUF="$dir" \
+        cargo test -p rlx-pplx-decider --release {{feature_args}} --features libjpeg-turbo --test reference_parity --test reference_parity_images --test tokenizer_parity -- --nocapture --test-threads=1
+
+# RecursiveSI/flint: the BF16 checkpoint (80 GB, 15 shards) + tokenizer. Experts
+# are paged from it at run time, so it stays on disk rather than in RAM.
+fetch-flint:
+    hf download RecursiveSI/flint --local-dir weights/lm/flint --exclude 'sglang/*' --exclude 'assets/*'
+
+# `just flint -- --weights weights/lm/flint --prompt "…" [--device cpu|metal] [--sample] [--timing]`
+flint *ARGS:
+    cargo run -p rlx-flint --release {{feature_args}} {{ARGS}}
+
+# Config, masks, chat template, paged-vs-resident and torch parity on the
+# synthetic checkpoint (no weights needed).
+test-flint:
+    cargo test -p rlx-flint --release {{feature_args}}
+
+# Block-quantize Flint's routed experts (74 GB bf16) into a store the runner
+# reads with `--experts DIR`: SCHEME q8_0 (40 GB) or q4_0 (21 GB).
+flint-quantize SCHEME="q4_0" OUT="weights/lm/flint-experts-q4_0":
+    cargo run -p rlx-flint --release {{feature_args}} -- quantize --weights weights/lm/flint --scheme {{SCHEME}} --out {{OUT}}
+
+# The real checkpoint against scripts/flint_reference.py at every position of a
+# chat prompt (decode and chunked prefill), plus its tensor manifest.
+test-flint-parity DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/lm/flint"
+    [ -f "$dir/model.safetensors.index.json" ] || just fetch-flint
+    ref=/tmp/flint-reference.safetensors
+    [ -f "$ref" ] || python3 scripts/flint_reference.py --model-dir "$dir" \
+        --text "Write a Python function that reverses a string." --chat --out "$ref"
+    RLX_FLINT_DIR="$dir" RLX_FLINT_REF="$ref" RLX_FLINT_DEVICE={{DEVICE}} \
+        cargo test -p rlx-flint --release {{feature_args}} --test real_weights --test config_and_manifest -- --nocapture
+
+# SIZE: tiny (176 MB) | small (561 MB) | medium (1.06 GB)
+fetch-moonshine-streaming SIZE="tiny":
+    hf download moonshine-ai/moonshine-streaming-{{SIZE}} --local-dir weights/asr/moonshine-streaming-{{SIZE}}
+
+# `just moonshine-streaming -- --weights weights/asr/moonshine-streaming-tiny --wav clip.wav`
+moonshine-streaming *ARGS:
+    cargo run -p rlx-moonshine-streaming --release {{feature_args}} {{ARGS}}
+
+test-moonshine-streaming-parity SIZE="tiny" DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/asr/moonshine-streaming-{{SIZE}}"
+    [ -f "$dir/model.safetensors" ] || just fetch-moonshine-streaming {{SIZE}}
+    wav="$PWD/assets/harness/jfk_16k.wav"
+    ref="/tmp/moonshine-streaming-{{SIZE}}.ref.json"
+    [ -f "$ref" ] || "${REF_PY:-python3}" scripts/moonshine_streaming_reference.py "$dir" "$wav" "$ref"
+    RLX_TEST_DEVICE={{DEVICE}} RLX_MOONSHINE_STREAMING_DIR="$dir" RLX_MOONSHINE_STREAMING_REF="$ref" \
+    RLX_MOONSHINE_STREAMING_WAV="$wav" \
+        cargo test -p rlx-moonshine-streaming --release {{feature_args}} --test hf_parity_live -- --nocapture
+
+# ── Browser (wasm32) build of the small models: crates/rlx-models-web ────────
+# `+simd128` is ~2.8× faster than scalar wasm and runs in every current
+# browser and Node; getrandom (via tokenizers) needs the JS backend cfg.
+web_models_rustflags := '--cfg getrandom_backend="wasm_js" -C target-feature=+simd128'
+
+# TARGET: web (ES module for the demo page → web/pkg) | nodejs (→ pkg-node)
+web-models-build TARGET="web":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The browser build carries WebGPU; Node has none.
+    # (`${feat[@]+…}`: an empty array under `set -u` fails in macOS's bash 3.2.)
+    if [ "{{TARGET}}" = web ]; then out=web/pkg; feat=(-- --features webgpu,webgl); else out=pkg-node; feat=(); fi
+    RUSTFLAGS='{{web_models_rustflags}}' CARGO_TARGET_DIR=target/wasm \
+        wasm-pack build crates/rlx-models-web --target {{TARGET}} --release --out-dir "$out" --no-typescript ${feat[@]+"${feat[@]}"}
+
+# The wasm build under Node vs the HF references (`just test-*-parity` writes them to /tmp).
+web-models-parity: (web-models-build "nodejs")
+    node crates/rlx-models-web/node/parity.mjs "$PWD/weights" /tmp
+
+# Native: loading from in-memory files (the browser path) == loading from a directory.
+test-web-models-memory:
+    RLX_WEB_WEIGHTS="$PWD/weights" cargo test -p rlx-models-web --release --test memory_source
+
+# Demo page at http://127.0.0.1:8787/crates/rlx-models-web/web/
+web-models-serve: (web-models-build "web")
+    python3 crates/rlx-models-web/web/serve.py
+
+# Open Genmoji's prompt pipeline as a static site in OUT: Qwen3.5-0.8B in Web
+# Workers (streamed from the Hugging Face Hub), genmoji.html as index.html.
+# Any static host serves it; `python3 -m http.server -d OUT` to try it locally.
+# The image side reads `rlx-genmoji --fast --export-web DIR`'s files from
+# OUT/genmoji/ (or `?imageBase=URL`); IMAGES=DIR links them in. Each worker
+# fetches its tensors by HTTP Range, so the host must honour Range requests
+# (`python3 -m http.server` does not).
+genmoji-web-dist OUT="target/genmoji-web" IMAGES="": (web-models-build "web")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    w=crates/rlx-models-web/web
+    mkdir -p "{{OUT}}/pkg"
+    cp "$w/genmoji.html" "{{OUT}}/index.html"
+    cp "$w/genmoji.js" "$w/genmoji_prompt.js" "$w/genmoji_image.js" "$w/genmoji_image_worker.js" \
+      "$w/pipeline.js" "$w/pipeline_worker.js" "{{OUT}}/"
+    if [ -n "{{IMAGES}}" ]; then ln -sfn "$(cd "{{IMAGES}}" && pwd)" "{{OUT}}/genmoji"; fi
+    cp "$w/pkg/rlx_models_web.js" "$w/pkg/rlx_models_web_bg.wasm" "{{OUT}}/pkg/"
+    du -sh "{{OUT}}"
+
+# Headless Chrome: MODEL = moonshine-streaming-tiny | embeddinggemma | jina-v5 | lfm2.5-230m | …
+web-models-selftest MODEL="moonshine-streaming-tiny": (web-models-build "web")
+    crates/rlx-models-web/web/selftest.sh {{MODEL}}
+
+# Timing in a headless browser: BROWSER chrome | firefox, BACKEND cpu | webgpu | webgl.
+web-models-bench MODEL="moonshine-streaming-tiny" BACKEND="webgpu" BROWSER="chrome": (web-models-build "web")
+    crates/rlx-models-web/web/run_page.sh {{BROWSER}} "bench.html?model={{MODEL}}&backend={{BACKEND}}&runs=3" 900

@@ -144,7 +144,7 @@ impl NativeKokoro {
             inter_channels: 0,
             gin_channels: 0,
         };
-        let enc_device = match std::env::var("RLX_KOKORO_ENC_DEVICE").as_deref() {
+        let enc_device = match rlx_ir::env::var_result("RLX_KOKORO_ENC_DEVICE").as_deref() {
             Ok("gpu") | Ok("device") => device,
             _ => Device::Cpu,
         };
@@ -227,7 +227,7 @@ impl NativeKokoro {
         // ── 1. Encoder → prosody / text / durations ─────────────────────────
         let (prosody, text, dur) = self.encode(ids, style, speed)?;
         anyhow::ensure!(dur.len() == seq, "durations len {} != seq {seq}", dur.len());
-        if let Ok(dir) = std::env::var("RLX_KOK_DUMP") {
+        if let Ok(dir) = rlx_ir::env::var_result("RLX_KOK_DUMP") {
             let _ = std::fs::write(format!("{dir}/prosody.f32"), f32_bytes(&prosody));
             let _ = std::fs::write(format!("{dir}/text.f32"), f32_bytes(&text));
             let _ = std::fs::write(
@@ -258,7 +258,7 @@ impl NativeKokoro {
         // ISTFTNet upsampler output ~25× too large → garbage; now host-evaled
         // for groups>1). Decoder runs on the requested device again; override
         // with RLX_KOKORO_DEC_DEVICE=cpu if a future backend regresses.
-        let dec_device = match std::env::var("RLX_KOKORO_DEC_DEVICE").as_deref() {
+        let dec_device = match rlx_ir::env::var_result("RLX_KOKORO_DEC_DEVICE").as_deref() {
             Ok(v) => parse_device(v.trim()).unwrap_or(self.device),
             Err(_) => self.device,
         };
@@ -285,7 +285,7 @@ impl NativeKokoro {
             ("style", &f32_bytes(style), DType::F32),
         ]);
         anyhow::ensure!(!dec_out.is_empty(), "decoder produced no output");
-        if let Ok(dir) = std::env::var("RLX_KOK_DUMP") {
+        if let Ok(dir) = rlx_ir::env::var_result("RLX_KOK_DUMP") {
             for (i, (bytes, dtype)) in dec_out.iter().enumerate() {
                 let path = format!("{dir}/decoder_{i:03}_{dtype:?}.bin");
                 std::fs::write(&path, bytes)
@@ -397,7 +397,9 @@ fn read_f32(p: &Path) -> Result<Vec<f32>> {
 
 fn as_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
 }
@@ -414,12 +416,16 @@ fn read_usize_dyn(bytes: &[u8], dt: DType) -> Vec<usize> {
             .map(|&x| x.round().max(0.0) as usize)
             .collect(),
         DType::I32 => bytes
-            .chunks_exact(4)
-            .map(|b| i32::from_le_bytes(b.try_into().unwrap()).max(0) as usize)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| i32::from_le_bytes(*b).max(0) as usize)
             .collect(),
         _ => bytes
-            .chunks_exact(8)
-            .map(|b| i64::from_le_bytes(b.try_into().unwrap()).max(0) as usize)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|b| i64::from_le_bytes(*b).max(0) as usize)
             .collect(),
     }
 }

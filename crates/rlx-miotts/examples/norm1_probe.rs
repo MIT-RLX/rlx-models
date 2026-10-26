@@ -55,14 +55,18 @@ fn main() -> anyhow::Result<()> {
     let outs = outs.expect("no input name worked");
     for (i, (bytes, _)) in outs.iter().enumerate() {
         let v: Vec<f32> = bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         println!("out[{i}] n={} [:4]={:?}", v.len(), &v[..4.min(v.len())]);
     }
     let y: Vec<f32> = outs[0]
         .0
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let ref_files: Vec<_> = std::fs::read_dir(&dir)?
@@ -74,7 +78,9 @@ fn main() -> anyhow::Result<()> {
     for rf in &ref_files {
         if rf.contains("Add") || rf.contains("tap") {
             let reference: Vec<f32> = std::fs::read(dir.join(rf))?
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             println!(

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! CPU evaluator for the Espresso graphs the NMT ships in.
+//! CPU evaluator for the network graphs the NMT ships in.
 //!
 //! Eleven layer types cover every graph in the model (verified by
 //! `tests/real_graphs.rs`): `quantized_gather`, `elementwise`,
@@ -85,7 +85,7 @@ pub type Env = HashMap<String, Value>;
 
 /// Whether q·kᵀ products are divided by `sqrt(head_dim)`.
 ///
-/// **Off by default, because it was measured and made things worse.** Espresso
+/// **Off by default, because it was measured and made things worse.** The vendor runtime
 /// emits no scale layer. Without scaling the shipped input net gives softmax
 /// entropies 0.00 / 2.50 / 3.97 / 3.35 (layer 0 saturated, the rest sane); with
 /// scaling they become 0.17 / 4.14 / 4.15 / 4.14 — layers 1-3 collapse to
@@ -107,7 +107,7 @@ pub type Env = HashMap<String, Value>;
 /// it and see whether any value restores token discrimination through the
 /// encoder. 1.0 (no change) unless `RLX_TRANSLATE_DEQUANT_GAIN` is set.
 pub fn dequant_gain() -> f32 {
-    std::env::var("RLX_TRANSLATE_DEQUANT_GAIN")
+    rlx_ir::env::var_result("RLX_TRANSLATE_DEQUANT_GAIN")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1.0)
@@ -120,16 +120,22 @@ pub fn dequant_gain() -> f32 {
 /// check can distinguish them — a transposed weight matrix produces perfectly
 /// well-formed garbage. Set `RLX_TRANSLATE_WT=1` to compare.
 pub fn weights_are_input_major() -> bool {
-    matches!(std::env::var("RLX_TRANSLATE_WT").as_deref(), Ok("1"))
+    matches!(
+        rlx_ir::env::var_result("RLX_TRANSLATE_WT").as_deref(),
+        Ok("1")
+    )
 }
 
 pub fn bypass_activation_quantization() -> bool {
-    matches!(std::env::var("RLX_TRANSLATE_F32").as_deref(), Ok("1"))
+    matches!(
+        rlx_ir::env::var_result("RLX_TRANSLATE_F32").as_deref(),
+        Ok("1")
+    )
 }
 
 pub fn scale_attention_scores() -> bool {
     matches!(
-        std::env::var("RLX_TRANSLATE_ATTN_SCALE").as_deref(),
+        rlx_ir::env::var_result("RLX_TRANSLATE_ATTN_SCALE").as_deref(),
         Ok("1")
     )
 }
@@ -265,7 +271,7 @@ fn eval(graph: &Graph, l: &Layer, env: &mut Env) -> Result<()> {
         }
         "reshape" => {
             let t = get(env, &l.bottoms[0])?.f32()?;
-            // Espresso writes the destination innermost-last as (k, h, w),
+            // The format writes the destination innermost-last as (k, h, w),
             // trimmed to `dst_nd_rank`; -1 means "solve me".
             let rank = l.int("dst_nd_rank").unwrap_or(3).clamp(1, 3) as usize;
             let raw = [l.int("dst_k"), l.int("dst_h"), l.int("dst_w")];
@@ -305,7 +311,7 @@ fn eval(graph: &Graph, l: &Layer, env: &mut Env) -> Result<()> {
             let b = get(env, &l.bottoms[1])?.f32()?;
             let transpose_y = l.flag("transpose_y");
             let mut out = batch_matmul(a, b, transpose_y)?;
-            // Attention score scaling. Espresso emits no explicit scale layer,
+            // Attention score scaling. The format emits no explicit scale layer,
             // and the query weights do NOT absorb it: measured on the shipped
             // encoder, the first softmax saw a logit RMS of 58 and saturated to
             // max-prob 1.0000 / entropy 0.000, which averages every position
@@ -364,27 +370,27 @@ fn eval(graph: &Graph, l: &Layer, env: &mut Env) -> Result<()> {
             let out = dynamic_dequantize(graph, l, acc, act)?;
             env.insert(l.tops[0].clone(), Value::F32(out));
         }
-        other => bail!("unsupported Espresso layer type {other:?}"),
+        other => bail!("unsupported network layer type {other:?}"),
     }
     Ok(())
 }
 
-/// Espresso stores a permutation as `axis_w/k/h/n/seq`, naming for each *source*
+/// The format stores a permutation as `axis_w/k/h/n/seq`, naming for each *source*
 /// axis where it lands. Only the axes within the tensor's rank participate.
 fn transpose(t: &Tensor, l: &Layer) -> Result<Tensor> {
     let rank = t.rank();
-    // Espresso's axis ids are innermost-first (w=0, h=1, k=2 …) whereas our
+    // The format's axis ids are innermost-first (w=0, h=1, k=2 …) whereas our
     // dims are outermost-first, so ids are mirrored into our index space.
     let ids = ["axis_w", "axis_h", "axis_k", "axis_n", "axis_seq"];
     let mut dest = Vec::with_capacity(rank);
     for i in 0..rank {
-        // Source axis `i` (outermost-first) is Espresso axis `rank-1-i`.
+        // Source axis `i` (outermost-first) is format axis `rank-1-i`.
         let key = ids[rank - 1 - i];
         let a = l.int(key).unwrap_or((rank - 1 - i) as i64);
         ensure!(a >= 0, "{key} is negative");
         dest.push(a as usize);
     }
-    // `dest[i]` = Espresso destination id of our axis i; convert back and invert.
+    // `dest[i]` = format destination id of our axis i; convert back and invert.
     let mut perm = vec![0usize; rank];
     for (src, &d) in dest.iter().enumerate() {
         ensure!(d < rank, "transpose axis {d} out of range for rank {rank}");
@@ -650,7 +656,7 @@ const PARALLEL_MIN_MACS: usize = 1 << 16;
 pub fn gemm_lanes() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
-        std::env::var("RLX_TRANSLATE_GEMM_LANES")
+        rlx_ir::env::var_result("RLX_TRANSLATE_GEMM_LANES")
             .ok()
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(1)
@@ -862,7 +868,7 @@ pub fn gather_gain() -> f32 {
     // 168 000 x 512 elements, and an env lookup per element dominated the run.
     static GAIN: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *GAIN.get_or_init(|| {
-        std::env::var("RLX_TRANSLATE_GATHER_GAIN")
+        rlx_ir::env::var_result("RLX_TRANSLATE_GATHER_GAIN")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1.0)
@@ -886,7 +892,7 @@ pub fn gather_gain() -> f32 {
 pub fn quartile_knots() -> (f32, f32) {
     static KNOTS: std::sync::OnceLock<(f32, f32)> = std::sync::OnceLock::new();
     *KNOTS.get_or_init(|| {
-        std::env::var("RLX_TRANSLATE_KNOTS")
+        rlx_ir::env::var_result("RLX_TRANSLATE_KNOTS")
             .ok()
             .and_then(|v| {
                 let (a, b) = v.split_once(',')?;
@@ -996,16 +1002,18 @@ pub enum GatherCurve {
 pub fn gather_curve() -> GatherCurve {
     // Read once; see `gather_gain` for why.
     static CURVE: std::sync::OnceLock<GatherCurve> = std::sync::OnceLock::new();
-    *CURVE.get_or_init(|| match std::env::var("RLX_TRANSLATE_GATHER").as_deref() {
-        Ok("outer") => GatherCurve::AffineOuter,
-        Ok("inner") => GatherCurve::AffineInner,
-        Ok("palette") => GatherCurve::Palette,
-        Ok("companded") => GatherCurve::Companded,
-        Ok("smooth") => GatherCurve::Smooth,
-        Ok("seg") => GatherCurve::SegInterp,
-        Ok("segx") => GatherCurve::SegExtrap,
-        _ => GatherCurve::Quartile,
-    })
+    *CURVE.get_or_init(
+        || match rlx_ir::env::var_result("RLX_TRANSLATE_GATHER").as_deref() {
+            Ok("outer") => GatherCurve::AffineOuter,
+            Ok("inner") => GatherCurve::AffineInner,
+            Ok("palette") => GatherCurve::Palette,
+            Ok("companded") => GatherCurve::Companded,
+            Ok("smooth") => GatherCurve::Smooth,
+            Ok("seg") => GatherCurve::SegInterp,
+            Ok("segx") => GatherCurve::SegExtrap,
+            _ => GatherCurve::Quartile,
+        },
+    )
 }
 
 #[cfg(test)]

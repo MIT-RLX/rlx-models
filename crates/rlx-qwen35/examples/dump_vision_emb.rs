@@ -1,7 +1,7 @@
 //! Dump Qwen3.5 / Fara vision embeddings for parity checks.
 //!
 //! ```bash
-//! cargo run -p rlx-qwen35 --example dump_vision_emb --release --features "apple-silicon qwen35-vlm" -- \
+//! cargo run -p rlx-qwen35 --example dump_vision_emb --release --features "macos-gpu qwen35-vlm" -- \
 //!   --model-dir .cache/fara/4b --image /tmp/fara-tiny.png --force-size 128x96 \
 //!   --out /tmp/fara_rlx_vision.npy
 //! ```
@@ -38,12 +38,12 @@ fn main() -> Result<()> {
     let mut cfg = MmProjConfig::from_hf_config_json(&cfg_path)?;
     // Match the tiny Fara smoke path unless the caller forces a size.
     if force_w.is_none() {
-        if let Ok(v) = env::var("RLX_QWEN35_IMAGE_MIN_PIXELS")
+        if let Ok(v) = rlx_ir::env::var_result("RLX_QWEN35_IMAGE_MIN_PIXELS")
             && let Ok(n) = v.parse()
         {
             cfg.image_min_pixels = n;
         }
-        if let Ok(v) = env::var("RLX_QWEN35_IMAGE_MAX_PIXELS")
+        if let Ok(v) = rlx_ir::env::var_result("RLX_QWEN35_IMAGE_MAX_PIXELS")
             && let Ok(n) = v.parse()
         {
             cfg.image_max_pixels = n;

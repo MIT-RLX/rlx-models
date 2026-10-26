@@ -26,11 +26,14 @@ rlx-gguf = { workspace = true }
 rlx-pkg = { workspace = true }
 rlx-assets = { workspace = true, features = ["rlxp"] }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
+rlx-core = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 [features]
 default = []
+# `export::export_rlxp`: RLX TTS as an `.rlxp` package rlx runs alone.
+export = ["dep:rlx-core", "rlx-core/export"]
 metal = ["rlx-runtime/metal"]
 mlx = ["rlx-runtime/mlx"]
 cuda = ["rlx-runtime/cuda"]
@@ -38,7 +41,7 @@ rocm = ["rlx-runtime/rocm"]
 gpu = ["rlx-runtime/gpu"]
 coreml = ["rlx-runtime/coreml"]
 vulkan = ["rlx-runtime/vulkan"]
-apple-silicon = ["metal", "mlx", "gpu"]
+macos-gpu = ["metal", "mlx", "gpu"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "coreml", "vulkan"]
 
 [[bin]]
@@ -51,3 +54,8 @@ path = "examples/backend_matrix.rs"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+# The package's program (`tests/export_rlxp.rs`).
+rlx-runtime = { workspace = true, features = ["program"] }

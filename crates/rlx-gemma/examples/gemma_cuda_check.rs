@@ -20,17 +20,17 @@ const DEFAULT_IDS: &[u32] = &[
 ];
 
 fn prompt_ids() -> Vec<u32> {
-    match std::env::var("RLX_GEMMA_PROMPT_IDS") {
+    match rlx_ir::env::var_result("RLX_GEMMA_PROMPT_IDS") {
         Ok(s) => s.split(',').filter_map(|t| t.trim().parse().ok()).collect(),
         Err(_) => DEFAULT_IDS.to_vec(),
     }
 }
 
 fn main() -> Result<()> {
-    let path: PathBuf = std::env::var("RLX_GEMMA3_GGUF")
+    let path: PathBuf = rlx_ir::env::var_result("RLX_GEMMA3_GGUF")
         .expect("RLX_GEMMA3_GGUF")
         .into();
-    let dev = match std::env::var("RLX_GEMMA_CHECK_DEVICE").as_deref() {
+    let dev = match rlx_ir::env::var_result("RLX_GEMMA_CHECK_DEVICE").as_deref() {
         Ok("cuda") => Device::Cuda,
         Ok("metal") => Device::Metal,
         Ok("mlx") => Device::Mlx,
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
         ranked[0].0
     );
 
-    if std::env::var("RLX_GEMMA_CHECK_NOGEN").is_ok() {
+    if rlx_ir::env::var_result("RLX_GEMMA_CHECK_NOGEN").is_ok() {
         println!("greedy skipped (RLX_GEMMA_CHECK_NOGEN)");
         return Ok(());
     }

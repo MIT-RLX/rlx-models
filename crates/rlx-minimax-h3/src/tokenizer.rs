@@ -148,7 +148,7 @@ mod tests {
     use super::*;
 
     fn checkpoint() -> Option<PathBuf> {
-        let p = PathBuf::from(std::env::var("RLX_MINIMAX_H3").ok()?);
+        let p = PathBuf::from(rlx_ir::env::var_result("RLX_MINIMAX_H3").ok()?);
         p.is_dir().then_some(p)
     }
 

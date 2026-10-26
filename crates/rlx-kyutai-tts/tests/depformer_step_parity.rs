@@ -22,7 +22,7 @@ struct Ref {
 }
 
 fn ref_path() -> PathBuf {
-    std::env::var("RLX_KYUTAI_DEP16_REF")
+    rlx_ir::env::var_result("RLX_KYUTAI_DEP16_REF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp/py_dep16.json"))
 }
@@ -34,7 +34,7 @@ fn depformer_greedy_matches_moshi_hidden_export() -> Result<()> {
         eprintln!("skip: missing {}", path.display());
         return Ok(());
     }
-    let dir = std::env::var("RLX_KYUTAI_TTS_DIR")
+    let dir = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| rlx_kyutai_tts::download::default_kyutai_tts_dir());
     if !dir.join("dsm_tts_1e68beda@240.safetensors").is_file() {

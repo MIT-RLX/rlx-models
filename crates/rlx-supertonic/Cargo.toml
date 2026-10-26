@@ -11,6 +11,7 @@ categories.workspace = true
 repository.workspace = true
 
 [dependencies]
+rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -21,6 +22,7 @@ rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 # and compiled per-device through TinyModel (same engine as rlx-tiny-tts /
 # rlx-openvoice) — no ONNX Runtime on the default path.
 rlx-tiny-tts = { workspace = true }
+rlx-core = { workspace = true, optional = true }
 
 [dependencies.hf-hub]
 workspace = true
@@ -50,6 +52,9 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 ] }
 
 [features]
+# `export::export_rlxp`: Supertonic-3 as an `.rlxp` package (its graphs rlx
+# IR, its frontend and flow-matching loop a program).
+export = ["dep:rlx-core", "rlx-core/export"]
 # Native RLX is the default runtime; `onnx` (ONNX Runtime) is opt-in for
 # dev/validation parity only. Native backends forward to the shared TinyModel.
 default = []
@@ -62,10 +67,12 @@ gpu = ["rlx-runtime/gpu", "rlx-tiny-tts/gpu"]
 vulkan = ["rlx-runtime/vulkan", "rlx-tiny-tts/vulkan"]
 coreml = ["rlx-runtime/coreml", "rlx-tiny-tts/coreml"]
 all-backends = ["metal", "mlx", "cuda", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 hf-download = ["dep:hf-hub"]
 
 [dev-dependencies]
+rlx-runtime = { workspace = true, features = ["program"] }
+tempfile = "3"
 rlx-whisper = { workspace = true }
 
 [[bin]]

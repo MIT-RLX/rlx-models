@@ -3,7 +3,7 @@ use rlx_tiny_tts::BundleConfig;
 use rlx_tiny_tts::model::TinyModel;
 use std::path::PathBuf;
 fn main() -> anyhow::Result<()> {
-    let dir = PathBuf::from(std::env::var("RLX_MOSS_DIR").unwrap());
+    let dir = PathBuf::from(rlx_ir::env::var_result("RLX_MOSS_DIR").unwrap());
     let cfg = BundleConfig {
         model: String::new(),
         sample_rate: 48000,
@@ -37,7 +37,9 @@ fn main() -> anyhow::Result<()> {
     ]);
     let (b, _) = &out[0];
     let v: Vec<f32> = b
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let pk = v

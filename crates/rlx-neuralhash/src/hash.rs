@@ -136,7 +136,7 @@ impl NeuralHash {
     /// Whether two hashes are within `max_distance` bits of each other.
     ///
     /// NeuralHash is a *perceptual* hash: visually similar images produce
-    /// nearby, not identical, codes. Apple's own client-side matching used
+    /// nearby, not identical, codes. The vendor's own client-side matching used
     /// exact equality after a separate blinding step, so there is no
     /// canonical threshold here — pick one from measured distributions on
     /// your own data rather than assuming a default.

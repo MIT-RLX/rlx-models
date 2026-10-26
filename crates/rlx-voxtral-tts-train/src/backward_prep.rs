@@ -39,7 +39,7 @@ pub fn prepare_backward_for_device(graph: Graph, device: Device) -> Graph {
 }
 
 fn backward_graph_opt_from_env() -> bool {
-    !std::env::var("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_GRAPH_OPT")
+    !rlx_ir::env::var_result("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_GRAPH_OPT")
         .ok()
         .is_some_and(|v| matches!(v.as_str(), "0" | "false" | "no"))
 }
@@ -189,7 +189,7 @@ fn optimize_backward_graph(graph: Graph) -> Graph {
 }
 
 fn graph_opt_verbose() -> bool {
-    std::env::var("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_GRAPH_OPT_VERBOSE")
+    rlx_ir::env::var_result("RLX_VOXTRAL_TTS_TRAIN_BACKWARD_GRAPH_OPT_VERBOSE")
         .ok()
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
 }

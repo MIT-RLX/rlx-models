@@ -111,7 +111,7 @@ pub fn run(args: &[String]) -> Result<()> {
                      --voice NAME       Voice prefix ({VOICES:?})\n\
                      --out PATH         Output WAV path\n\
                      --device auto|cpu|metal|gpu|wgpu|vulkan|coreml|mlx|…  \
-                       Default auto (Metal on Apple Silicon, else CUDA/ROCm/wgpu). \
+                       Default auto (Metal on macOS arm64, else CUDA/ROCm/wgpu). \
                        coreml = Metal LM + SNAC on native RLX CoreML (Device::Ane)\n\
                      --max-tokens N     Default 1200\n\
                      --temperature F    Default 0.6\n\

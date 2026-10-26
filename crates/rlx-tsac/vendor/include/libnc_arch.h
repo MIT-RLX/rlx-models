@@ -12,7 +12,7 @@ extern "C" {
  * Architecture abstraction layer for LibNC GPU backends.
  *
  * This header defines the portability interface that allows the same
- * host code to target CUDA (NVIDIA), HIP (AMD), Metal (Apple),
+ * host code to target CUDA (NVIDIA), HIP (AMD), Metal (macOS),
  * SYCL (Intel), and Vulkan Compute (cross-platform).
  *
  * To add a new backend:

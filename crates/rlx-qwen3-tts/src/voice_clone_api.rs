@@ -152,7 +152,7 @@ pub struct VoiceClone {
 impl VoiceClone {
     /// Open the Qwen3-TTS Base model from `model_dir` on the given device.
     ///
-    /// This is the slow step (~1 second on Apple M3 Pro Metal). Reuse the
+    /// This is the slow step (~1 second on M3 Pro Metal). Reuse the
     /// returned `VoiceClone` for as many clones / generations as you need.
     ///
     /// Also flips on top-k sampling defaults (`RLX_QWEN3_TTS_SAMPLE=1`,
@@ -179,11 +179,8 @@ impl VoiceClone {
             ("RLX_QWEN3_TTS_TOP_K", "50"),
             ("RLX_QWEN3_TTS_WAV_NORMALIZE", "1"),
         ] {
-            if std::env::var(k).is_err() {
-                // SAFETY: at process startup, no other threads running.
-                unsafe {
-                    std::env::set_var(k, v);
-                }
+            if rlx_ir::env::read(k).is_err() {
+                rlx_ir::env::set(k, v);
             }
         }
         let model_dir = model_dir.into();

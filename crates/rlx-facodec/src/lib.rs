@@ -6,6 +6,8 @@
 // the timbre AdaIN conditioning all run on-device; the per-speaker timbre
 // affine is precomputed on the host. (The VQ encoder is out of scope here.)
 
+#[cfg(feature = "export")]
+pub mod export;
 pub mod graph;
 pub mod model;
 

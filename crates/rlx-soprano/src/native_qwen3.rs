@@ -237,12 +237,7 @@ fn bucket(real: usize) -> usize {
 }
 
 fn argmax(v: &[f32]) -> usize {
-    v.iter()
-        .enumerate()
-        .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &x)| {
-            if x > bv { (i, x) } else { (bi, bv) }
-        })
-        .0
+    rlx_runtime::search::argmax(v)
 }
 
 fn take_rows(wm: &mut WeightMap, name: &str, expect: usize) -> Result<Vec<f32>> {

@@ -44,8 +44,10 @@ sys.stdout.buffer.write(v.astype(np.float32).tobytes())
         .output()
         .expect("python style");
     out.stdout
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
@@ -144,8 +146,10 @@ print('MATMUL1_SHAPE', mshape[1], mshape[2], flush=True)
     }
     let read_f32 = |path: &str| -> anyhow::Result<Vec<f32>> {
         let b = std::fs::read(path)?;
-        Ok(b.chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        Ok(b.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect())
     };
     Ok(OrtProsody {
@@ -229,8 +233,10 @@ print(r.get('text','').strip())
 fn decode_wave(outs: &[(Vec<u8>, rlx_ir::DType)]) -> Vec<f32> {
     let (bytes, _) = &outs[0];
     bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 

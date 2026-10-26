@@ -691,7 +691,7 @@ impl CpuKernel for F0IfSelectKernel {
         // active region is the first `2·mel` frames. `f0` (padded to the F0 mel cap) and `out`
         // (padded to the `If`-stub cap) share this 2×-mel time base, so copy the active prefix.
         let valid = mel.saturating_mul(2);
-        if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+        if rlx_ir::env::var_result("RLX_KITTEN_F0_DEBUG").is_ok() {
             let s: Vec<String> = [0usize, 10, 20, 35, 70, 128, 130, 256, 640, 1000]
                 .iter()
                 .filter(|&&i| i < f0.len())
@@ -942,12 +942,12 @@ pub fn instance_norm_active_frames(t: usize) -> usize {
 /// Resolve the active time window for [`KITTEN_INSTANCE_NORM_ACTIVE`] (shared by
 /// CPU host and CudaGpuKernel paths).
 pub fn instance_norm_resolve_active(t: usize, is_generator: bool) -> usize {
-    let gen_full_axis = std::env::var("RLX_KITTEN_INORM_GEN_FULL").is_ok();
+    let gen_full_axis = rlx_ir::env::var_result("RLX_KITTEN_INORM_GEN_FULL").is_ok();
     if is_generator && gen_full_axis {
         return t.max(1);
     }
     if is_generator {
-        if let Ok(m) = std::env::var("RLX_KITTEN_GEN_ACTIVE_MULT") {
+        if let Ok(m) = rlx_ir::env::var_result("RLX_KITTEN_GEN_ACTIVE_MULT") {
             let mult = m.parse::<f64>().unwrap_or(2.0);
             let base = instance_norm_active_frames(t);
             return ((base as f64 * mult).round() as usize).clamp(1, t.max(1));
@@ -999,7 +999,7 @@ impl CpuKernel for KittenInstanceNormActiveKernel {
             ));
         }
         let active = instance_norm_resolve_active(t, is_generator);
-        if is_generator && std::env::var("RLX_KITTEN_INORM_DEBUG").is_ok() {
+        if is_generator && rlx_ir::env::var_result("RLX_KITTEN_INORM_DEBUG").is_ok() {
             eprintln!(
                 "[inorm] gen t={t} mel={:?} wave_cap={:?} mel_cap={:?} active={active}",
                 crate::opts::runtime_mel_frames(),

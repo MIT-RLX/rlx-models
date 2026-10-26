@@ -832,13 +832,7 @@ fn shift_into(img: &[f32], dy: i32, dx: i32, flip: bool, spec: &DataSpec, out: &
 }
 
 fn argmax(v: &[f32]) -> usize {
-    let mut best = 0;
-    for i in 1..v.len() {
-        if v[i] > v[best] {
-            best = i;
-        }
-    }
-    best
+    rlx_runtime::search::argmax(v)
 }
 
 fn shuffle(order: &mut [usize], state: &mut u64) {
@@ -886,7 +880,7 @@ pub fn hostname() -> String {
 /// the precision of the cross-rank sync is independent of the per-rank compute
 /// backend: GPUs for speed, CPU f64 reduction for precision.
 pub fn training_device() -> Device {
-    match std::env::var("RLX_DEVICE") {
+    match rlx_ir::env::var_result("RLX_DEVICE") {
         Ok(s) if !s.trim().is_empty() => rlx_runtime::parse_device(s.trim()).unwrap_or_else(|e| {
             eprintln!("  (RLX_DEVICE={s:?} invalid: {e}; using fastest_device)");
             rlx_runtime::fastest_device()
@@ -977,7 +971,10 @@ pub fn run_distributed(cfg: &Config, world: u32, train: &Split, test: &Split) ->
 /// `iroh` cargo feature (`cargo run -p rlx-vision-bench --features iroh`).
 fn iroh_selected() -> bool {
     matches!(std::env::var("TOPOLOGY").as_deref(), Ok("iroh"))
-        || matches!(std::env::var("RLX_TRANSPORT").as_deref(), Ok("iroh"))
+        || matches!(
+            rlx_ir::env::var_result("RLX_TRANSPORT").as_deref(),
+            Ok("iroh")
+        )
 }
 
 /// Build the multi-node [`ProcessGroup`] from the environment: over iroh when
@@ -1107,13 +1104,13 @@ pub fn run_coordinate(
         // (intra-node data-parallel across every backend). RLX_WORKER_DEVICE
         // overrides; must be uniform across ranks so their reduces stay
         // lock-step (equal shards → equal batch counts).
-        device: std::env::var("RLX_WORKER_DEVICE").unwrap_or_else(|_| "auto".into()),
+        device: rlx_ir::env::var_result("RLX_WORKER_DEVICE").unwrap_or_else(|_| "auto".into()),
         grad_group,
         // Push shards over the wire when workers have no shared filesystem
         // (required cross-machine); default off (shared FS / pre-staged).
-        push_data: std::env::var("RLX_PUSH_DATA").is_ok(),
+        push_data: rlx_ir::env::var_result("RLX_PUSH_DATA").is_ok(),
     };
-    let push = std::env::var("RLX_PUSH_DATA").is_ok();
+    let push = rlx_ir::env::var_result("RLX_PUSH_DATA").is_ok();
 
     rlx_collectives::register();
     rlx_collectives::register_group(grad_group, group.clone());

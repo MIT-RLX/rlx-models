@@ -37,6 +37,91 @@ thread_local! {
     /// outside a layer build (adaptive then falls back to safe per-channel int8).
     static QUANT_LAYER: std::cell::Cell<Option<(usize, usize)>> =
         const { std::cell::Cell::new(None) };
+
+    /// Depth of active [`CanonicalParams`] scopes. While non-zero the builders
+    /// register one graph param per checkpoint tensor (see [`canonical_params`]).
+    static CANONICAL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+
+    /// When `Some`, [`tap`] records named intermediate nodes here so a caller can
+    /// expose them as extra graph outputs (activation dumps).
+    static TAPS: RefCell<Option<Vec<Tap>>> = const { RefCell::new(None) };
+}
+
+/// While alive, the graph builders emit **canonical** params: one graph param per
+/// checkpoint tensor, under a name [`crate::export::hf_name`] maps back to the
+/// checkpoint, with every fusion done in-graph instead of host-side —
+///
+/// * KDA's six input projections stay separate matmuls (`q_proj` … `g_proj`)
+///   instead of the host-concatenated `in_proj_fused`;
+/// * the KDA short-conv weight is one `[channels, k]` param sliced per tap in-graph
+///   instead of `k` host-split tap vectors;
+/// * MLA's `q_a_proj` / `kv_a_proj_with_mqa` stay separate instead of `qkv_a_fused`;
+/// * the Attention-Residual query is `norm ⊙ proj` computed in-graph from the two
+///   checkpoint vectors instead of their host-side product;
+/// * the MoE routing weights are a differentiable gather of the router sigmoid
+///   (the selection itself stays non-differentiable), so the router trains.
+///
+/// The forward value is unchanged; what changes is which tensors are graph leaves.
+/// Training needs this (gradients land on checkpoint tensors, LoRA targets real
+/// module names, export is a rename), and so do activation dumps (their params
+/// line up with the checkpoint). Weight fake-quant (`RLX_KIMI_QUANT`) is skipped
+/// inside the scope — it would bake rounded values into trainable params.
+pub struct CanonicalParams(());
+
+impl CanonicalParams {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        CANONICAL.with(|c| c.set(c.get() + 1));
+        Self(())
+    }
+}
+
+impl Drop for CanonicalParams {
+    fn drop(&mut self) {
+        CANONICAL.with(|c| c.set(c.get().saturating_sub(1)));
+    }
+}
+
+/// Is a [`CanonicalParams`] scope active on this thread?
+pub fn canonical_params() -> bool {
+    CANONICAL.with(|c| c.get() > 0)
+}
+
+/// A named intermediate recorded by [`tap`].
+#[derive(Debug, Clone)]
+pub struct Tap {
+    pub name: String,
+    pub node: HirNodeId,
+    pub shape: Vec<usize>,
+}
+
+/// Start recording [`tap`]s for the graph about to be built.
+pub fn taps_begin() {
+    TAPS.with(|c| *c.borrow_mut() = Some(Vec::new()));
+}
+
+/// Stop recording and return the taps, in build order.
+pub fn taps_take() -> Vec<Tap> {
+    TAPS.with(|c| c.borrow_mut().take().unwrap_or_default())
+}
+
+/// Record `node` under `name` when taps are being collected; free otherwise.
+pub fn tap(g: &HirMut, name: impl Into<String>, node: HirNodeId) {
+    TAPS.with(|c| {
+        if let Some(v) = c.borrow_mut().as_mut() {
+            let shape = g
+                .shape(node)
+                .dims()
+                .iter()
+                .map(|d| d.unwrap_static())
+                .collect();
+            v.push(Tap {
+                name: name.into(),
+                node,
+                shape,
+            });
+        }
+    });
 }
 
 /// Record the layer index / total-layer count for the layer about to be built, so
@@ -89,7 +174,7 @@ pub fn emit_int8_resident(
     in_dim: usize,
     out_dim: usize,
 ) -> HirNodeId {
-    if std::env::var("RLX_KIMI_INT8_DIAG").is_ok() {
+    if rlx_ir::env::var_result("RLX_KIMI_INT8_DIAG").is_ok() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static N: AtomicUsize = AtomicUsize::new(0);
         let c = N.fetch_add(1, Ordering::Relaxed);
@@ -161,7 +246,10 @@ pub fn emit_int8_resident(
 /// activation-quantized arithmetic (`Op::ScaledMatMul`) — W×A8, not weight-only
 /// fake-quant — and doubles as the low-precision compute path.
 pub fn scaled_backbone() -> Option<(ScaledFormat, ScaledFormat, ScaleLayout)> {
-    match std::env::var("RLX_KIMI_SCALED_BACKBONE").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_KIMI_SCALED_BACKBONE")
+        .ok()
+        .as_deref()
+    {
         Some("fp8") | Some("w8a8") => Some((
             ScaledFormat::F8E4M3,
             ScaledFormat::F8E4M3,
@@ -244,13 +332,13 @@ pub fn emit_scaled_linear(
 
 /// Directory to DUMP int8 codes into during a normal forward (`RLX_KIMI_PREQUANT_RECORD`).
 pub fn prequant_record_dir() -> Option<String> {
-    std::env::var("RLX_KIMI_PREQUANT_RECORD")
+    rlx_ir::env::var_result("RLX_KIMI_PREQUANT_RECORD")
         .ok()
         .filter(|s| !s.is_empty())
 }
 /// Directory to MMAP pre-recorded int8 codes from (`RLX_KIMI_PREQUANT_LOAD`).
 pub fn prequant_load_dir() -> Option<String> {
-    std::env::var("RLX_KIMI_PREQUANT_LOAD")
+    rlx_ir::env::var_result("RLX_KIMI_PREQUANT_LOAD")
         .ok()
         .filter(|s| !s.is_empty())
 }
@@ -260,11 +348,71 @@ pub fn prequant_load_active() -> bool {
     prequant_load_dir().is_some()
 }
 
+/// How the dense (backbone) weights are held in the compiled decode graphs.
+///
+/// `F32` bakes f32 weights (4 B/param read per token); `Bf16` keeps the
+/// checkpoint's bf16 bytes and multiplies through the backends' bf16 matmul (the
+/// values are the checkpoint's exactly — it is stored bf16 — at half the bytes);
+/// `Int8` quantizes per output channel (a quarter; lossy). Decode is
+/// memory-bandwidth-bound on the dense weights, so this sets its speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DenseResidency {
+    F32,
+    Bf16,
+    Int8,
+}
+
+impl std::str::FromStr for DenseResidency {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "f32" => Ok(Self::F32),
+            "bf16" => Ok(Self::Bf16),
+            "int8" => Ok(Self::Int8),
+            o => anyhow::bail!("dense residency must be f32, bf16 or int8, not {o:?}"),
+        }
+    }
+}
+
+/// 0 = follow the environment, else `DenseResidency as u8 + 1`.
+static DENSE_RESIDENCY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Set the dense residency for this process (`None` = follow
+/// `RLX_KIMI_INT8_BACKBONE` / `RLX_KIMI_BF16_BACKBONE`). Set it before building
+/// graphs: cached graphs keep the residency they were built with.
+pub fn set_dense_residency(r: Option<DenseResidency>) {
+    let v = match r {
+        None => 0,
+        Some(DenseResidency::F32) => 1,
+        Some(DenseResidency::Bf16) => 2,
+        Some(DenseResidency::Int8) => 3,
+    };
+    DENSE_RESIDENCY.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The dense residency in effect (int8 wins when both env flags are set, as it
+/// always has).
+pub fn dense_residency() -> DenseResidency {
+    match DENSE_RESIDENCY.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => DenseResidency::F32,
+        2 => DenseResidency::Bf16,
+        3 => DenseResidency::Int8,
+        _ if rlx_ir::env::var_result("RLX_KIMI_INT8_BACKBONE").is_ok() => DenseResidency::Int8,
+        _ if rlx_ir::env::var_result("RLX_KIMI_BF16_BACKBONE").is_ok() => DenseResidency::Bf16,
+        _ => DenseResidency::F32,
+    }
+}
+
+/// Is the bf16-resident backbone in effect?
+pub fn bf16_backbone_requested() -> bool {
+    dense_residency() == DenseResidency::Bf16
+}
+
 /// int8-resident backbone is requested by `RLX_KIMI_INT8_BACKBONE` OR by either
 /// prequant mode (record needs the codes; load feeds them) — both route through
 /// [`emit_int8_resident`].
 pub fn int8_backbone_requested() -> bool {
-    std::env::var("RLX_KIMI_INT8_BACKBONE").is_ok()
+    dense_residency() == DenseResidency::Int8
         || prequant_load_dir().is_some()
         || prequant_record_dir().is_some()
 }
@@ -305,7 +453,9 @@ fn load_prequant(
     }
     let codes = m[..ncodes].to_vec();
     let scale: Vec<f32> = m[ncodes..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Some((codes, scale))
@@ -393,7 +543,10 @@ pub enum QuantPolicy {
 }
 
 pub fn quant_policy() -> QuantPolicy {
-    match std::env::var("RLX_KIMI_QUANT").ok().as_deref() {
+    if canonical_params() {
+        return QuantPolicy::Fixed(WeightQuant::None);
+    }
+    match rlx_ir::env::var_result("RLX_KIMI_QUANT").ok().as_deref() {
         Some("int8") => QuantPolicy::Fixed(WeightQuant::Int8Ch),
         Some("int8t") => QuantPolicy::Fixed(WeightQuant::Int8Tensor),
         Some("int7") => QuantPolicy::Fixed(WeightQuant::Int7G64),
@@ -417,7 +570,7 @@ pub fn quant_policy() -> QuantPolicy {
 /// Does this projection `name` belong to the int8-kept "high-sensitivity" set for
 /// the `mixed` policy? Comma-separated `RLX_KIMI_MIXED_HI` (default `o_proj`).
 fn mixed_hi(name: &str) -> bool {
-    let hi = std::env::var("RLX_KIMI_MIXED_HI").unwrap_or_else(|_| "o_proj".into());
+    let hi = rlx_ir::env::var_result("RLX_KIMI_MIXED_HI").unwrap_or_else(|_| "o_proj".into());
     hi.split(',')
         .any(|p| !p.trim().is_empty() && name.contains(p.trim()))
 }
@@ -712,7 +865,7 @@ pub fn fake_quant_weight(w: &[f32], k: usize, n: usize, q: WeightQuant) -> Vec<f
             // outlier-channel mixed precision: the top-`frac` highest-amax output
             // columns stay per-channel int8, the rest go int4-g64. Uses exactly the
             // per-channel outlier structure the recording found.
-            let frac: f32 = std::env::var("RLX_KIMI_INT4MIX_FRAC")
+            let frac: f32 = rlx_ir::env::var_result("RLX_KIMI_INT4MIX_FRAC")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.125);
@@ -798,6 +951,12 @@ pub fn linear(
     out_dim: usize,
 ) -> HirNodeId {
     let full = format!("{prefix}.{name}");
+    if canonical_params() {
+        // Plain f32 `[in,out]` leaf: no packed dtypes, no fake-quant, so the
+        // param is the checkpoint tensor (transposed) and can carry a gradient.
+        let wid = reg(g, params, &full, w.to_vec(), &[in_dim, out_dim]);
+        return g.mm(x, wid);
+    }
     if let Some((afmt, wfmt, lay)) = scaled_backbone() {
         return emit_scaled_linear(g, params, &full, x, w, in_dim, out_dim, afmt, wfmt, lay);
     }
@@ -850,7 +1009,10 @@ pub fn linear(
 /// (F8E4M3, block-32 e8m0), `fp8t` → per-tensor FP8. `None` when unset. Composes
 /// with the weight fake-quant (`RLX_KIMI_QUANT`) to form W×A8 configs.
 pub fn act_quant() -> Option<(ScaledFormat, ScaleLayout)> {
-    match std::env::var("RLX_KIMI_ACT_QUANT").ok().as_deref() {
+    match rlx_ir::env::var_result("RLX_KIMI_ACT_QUANT")
+        .ok()
+        .as_deref()
+    {
         Some("fp8") | Some("mxfp8") | Some("a8") => Some((ScaledFormat::F8E4M3, ScaleLayout::mx())),
         Some("fp8t") => Some((ScaledFormat::F8E4M3, ScaleLayout::PerTensor)),
         _ => None,

@@ -28,7 +28,7 @@ thread_local! {
 /// Metal: disable MPSGraph for stable Qwen3 lowering (matches voxtral-tts / packed GGUF guard).
 /// Nested calls only set/unset the env var once (hot synthesis loop calls this per decode step).
 pub fn metal_mpsgraph_enabled() -> bool {
-    if std::env::var("RLX_QWEN3_TTS_METAL_MPSGRAPH")
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_MPSGRAPH")
         .ok()
         .as_deref()
         != Some("1")
@@ -37,7 +37,7 @@ pub fn metal_mpsgraph_enabled() -> bool {
     }
     // Bucketed decode + native Metal compile still hits MPSGraph SDPA matmul bugs.
     if talker_metal_native_compile(Device::Metal)
-        && std::env::var("RLX_QWEN3_TTS_METAL_MPSGRAPH_FORCE")
+        && rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_MPSGRAPH_FORCE")
             .ok()
             .as_deref()
             != Some("1")
@@ -94,7 +94,11 @@ where
 }
 
 fn fusion_skip_for_device(device: Device) -> bool {
-    if std::env::var("RLX_QWEN3_TTS_FUSION_SKIP").ok().as_deref() == Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_FUSION_SKIP")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         return true;
     }
     // MLX bucketed decode mis-binds fused `inputs_embeds`; portable GPU stacks lack fused lowerings.
@@ -115,7 +119,7 @@ fn fusion_target_for_device(device: Device) -> FusionTargetKind {
 pub fn tune_cp_qwen3_profile(profile: &mut CompileProfile, device: Device) {
     tune_qwen3_profile(profile, device);
     if device == Device::Metal
-        && std::env::var("RLX_QWEN3_TTS_CP_METAL_UNFUSE")
+        && rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_METAL_UNFUSE")
             .ok()
             .as_deref()
             == Some("1")
@@ -127,7 +131,7 @@ pub fn tune_cp_qwen3_profile(profile: &mut CompileProfile, device: Device) {
 }
 
 fn metal_fusion_skip() -> bool {
-    std::env::var("RLX_QWEN3_TTS_METAL_FUSION_SKIP")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_FUSION_SKIP")
         .ok()
         .as_deref()
         == Some("1")
@@ -138,7 +142,7 @@ pub fn talker_metal_native_compile(device: Device) -> bool {
     if device != Device::Metal {
         return false;
     }
-    match std::env::var("RLX_QWEN3_TTS_METAL_COMPILED")
+    match rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_COMPILED")
         .ok()
         .as_deref()
     {
@@ -154,7 +158,7 @@ pub fn talker_metal_native_compile(device: Device) -> bool {
 /// Native Metal talker decode via HIR (experimental; still diverges today — decode stays on CPU).
 pub fn talker_decode_use_hir_compile(device: Device) -> bool {
     talker_metal_native_compile(device)
-        && std::env::var("RLX_QWEN3_TTS_METAL_DECODE_HIR")
+        && rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_DECODE_HIR")
             .ok()
             .as_deref()
             == Some("1")
@@ -180,14 +184,14 @@ pub fn talker_compile_device(session_device: Device) -> Device {
 /// Force CPU graphs: `RLX_QWEN3_TTS_METAL_DECODE_CPU=1`.
 pub fn talker_decode_compile_device(session_device: Device) -> Device {
     if session_device == Device::Metal {
-        if std::env::var("RLX_QWEN3_TTS_METAL_DECODE_CPU")
+        if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_DECODE_CPU")
             .ok()
             .as_deref()
             == Some("1")
         {
             return Device::Cpu;
         }
-        if std::env::var("RLX_QWEN3_TTS_METAL_DECODE_NATIVE")
+        if rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_DECODE_NATIVE")
             .ok()
             .as_deref()
             == Some("1")
@@ -218,14 +222,17 @@ pub fn talker_prefill_profile_device(session_device: Device) -> Device {
 /// Force CPU CP graphs: `RLX_QWEN3_TTS_CP_CPU_COMPILE=1`.
 pub fn cp_compile_device(session_device: Device) -> Device {
     if session_device == Device::Metal {
-        if std::env::var("RLX_QWEN3_TTS_CP_CPU_COMPILE")
+        if rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_CPU_COMPILE")
             .ok()
             .as_deref()
             == Some("1")
         {
             return Device::Cpu;
         }
-        if std::env::var("RLX_QWEN3_TTS_CP_METAL").ok().as_deref() == Some("1")
+        if rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_METAL")
+            .ok()
+            .as_deref()
+            == Some("1")
             || (crate::gpu_pipeline::gpu_session_enabled(session_device)
                 && crate::gpu_pipeline::cp_compiled_default())
         {
@@ -242,7 +249,7 @@ pub fn talker_metal_cpu_prefill(device: Device) -> bool {
     if device != Device::Metal || !talker_metal_native_compile(device) {
         return false;
     }
-    std::env::var("RLX_QWEN3_TTS_METAL_CPU_PREFILL")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_METAL_CPU_PREFILL")
         .ok()
         .as_deref()
         != Some("0")

@@ -16,7 +16,7 @@
 use crate::kda::{KdaDims, KdaWeights};
 use crate::mla::{MlaDims, MlaWeights};
 use crate::moe::{DenseMlpWeights, MoeDims, MoeWeights};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use memmap2::Mmap;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -637,6 +637,47 @@ impl CheckpointLoader {
     /// Checkpoint directory (for spawning a second loader on a producer thread).
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Every tensor name in the index, sorted.
+    pub fn tensor_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.weight_map.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// `(dtype, shape, byte length, shard file)` of a tensor — header only, no
+    /// tensor data is touched.
+    pub fn tensor_meta(&mut self, name: &str) -> Result<(String, Vec<usize>, usize, String)> {
+        let file = self
+            .weight_map
+            .get(name)
+            .with_context(|| format!("{name} not in index"))?
+            .clone();
+        let sh = self.shard(&file)?;
+        let (dt, shape, a, b) = sh
+            .tensors
+            .get(name)
+            .with_context(|| format!("{name} in shard"))?;
+        Ok((dt.clone(), shape.clone(), b - a, file))
+    }
+
+    /// A tensor as f32 in its checkpoint shape, whatever its storage: F32/BF16
+    /// as-is, and an MXFP4 pair addressed by its logical name
+    /// (`….w1.weight` → `….w1.weight_packed` + `….w1.weight_scale`) dequantized.
+    pub fn tensor_f32_any(&mut self, name: &str) -> Result<(Vec<usize>, Vec<f32>)> {
+        if self.weight_map.contains_key(name) {
+            return self.tensor_f32_shaped(name);
+        }
+        let packed = format!("{name}_packed");
+        let scale = format!("{name}_scale");
+        let (_, ps, _, _) = self.tensor_meta(&packed)?;
+        ensure!(ps.len() == 2, "{packed}: rank {}", ps.len());
+        let (rows, cols) = (ps[0], ps[1] * 2);
+        Ok((
+            vec![rows, cols],
+            self.dequant_mxfp4(&packed, &scale, rows, cols)?,
+        ))
     }
 
     /// Names of a layer's **resident** (non-expert) tensors — attention, norms,

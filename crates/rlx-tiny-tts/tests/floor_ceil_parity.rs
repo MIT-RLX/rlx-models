@@ -15,7 +15,9 @@ fn dir() -> PathBuf {
 fn read_f32(p: &Path) -> Vec<f32> {
     std::fs::read(p)
         .unwrap_or_default()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
 }
@@ -27,7 +29,9 @@ fn run_component(d: &Path, comp: &'static str, x: &[u8]) -> Vec<f32> {
         .next()
         .expect("out")
         .0
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
 }

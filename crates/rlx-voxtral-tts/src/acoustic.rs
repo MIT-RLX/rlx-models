@@ -114,7 +114,9 @@ impl AcousticTransformer {
         crate::rng::fill_standard_normal(&mut x0, crate::rng::frame_seed(seed, frame_index));
         let mut sampled = Array2::<f32>::zeros((1, self.n_acoustic_codebook));
         for (i, v) in x0.iter().enumerate() {
-            sampled[[0, i]] = *v * self.args.sigma as f32;
+            // vLLM-Omni's `_noise_scale` is 1.0: the flow starts from unit noise
+            // (`sigma` is the training schedule's, not the sampler's).
+            sampled[[0, i]] = *v;
         }
         let timesteps: Vec<f32> = (0..=self.n_steps)
             .map(|i| i as f32 / self.n_steps as f32)
@@ -170,7 +172,9 @@ impl AcousticTransformer {
         crate::rng::fill_standard_normal(&mut x0, crate::rng::frame_seed(seed, frame_index));
         let mut sampled = Array2::<f32>::zeros((1, self.n_acoustic_codebook));
         for (i, v) in x0.iter().enumerate() {
-            sampled[[0, i]] = *v * self.args.sigma as f32;
+            // vLLM-Omni's `_noise_scale` is 1.0: the flow starts from unit noise
+            // (`sigma` is the training schedule's, not the sampler's).
+            sampled[[0, i]] = *v;
         }
         let timesteps: Vec<f32> = (0..=self.n_steps)
             .map(|i| i as f32 / self.n_steps as f32)
@@ -397,11 +401,10 @@ fn time_embed(t: f32, inv_freq: ArrayView1<f32>) -> Array2<f32> {
 }
 
 fn argmax1(x: ArrayView1<f32>) -> usize {
-    x.iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-        .map(|(i, _)| i)
-        .unwrap_or(0)
+    match x.as_slice() {
+        Some(s) => rlx_runtime::search::argmax(s),
+        None => rlx_runtime::search::argmax(&x.to_vec()),
+    }
 }
 
 fn take2d(map: &HashMap<String, (Vec<f32>, Vec<usize>)>, key: &str) -> Result<Array2<f32>> {

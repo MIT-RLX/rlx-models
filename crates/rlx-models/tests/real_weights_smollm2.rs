@@ -34,11 +34,13 @@ use rlx_models::run::{ChatTemplate, CompatibilityStatus, check_path};
 use std::path::PathBuf;
 
 fn weights_path() -> Option<PathBuf> {
-    std::env::var("RLX_SMOLLM2_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_SMOLLM2_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 
 fn tokenizer_path() -> Option<PathBuf> {
-    std::env::var("RLX_SMOLLM2_TOKENIZER")
+    rlx_ir::env::var_result("RLX_SMOLLM2_TOKENIZER")
         .ok()
         .map(PathBuf::from)
         // Default: sidecar next to the GGUF (the convention rlx-llama32 uses).
@@ -183,7 +185,11 @@ fn chat_template_round_trip_on_real_gguf() {
 /// — too slow for default test runs.
 #[test]
 fn forward_inference_real_weights() {
-    if std::env::var("RLX_SMOLLM2_RUN_INFERENCE").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_SMOLLM2_RUN_INFERENCE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_SMOLLM2_RUN_INFERENCE=1 to run forward inference");
         return;
     }

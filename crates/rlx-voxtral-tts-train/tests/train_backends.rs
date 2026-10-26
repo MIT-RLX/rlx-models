@@ -139,7 +139,7 @@ backend_codec_train_compile!(codec_train_compiles_vulkan, "vulkan", Device::Vulk
 
 #[test]
 fn lora_backward_step_on_auto_device() {
-    if std::env::var("RLX_VOXTRAL_TTS_TRAIN_GPU_STEP")
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_TRAIN_GPU_STEP")
         .ok()
         .as_deref()
         != Some("1")
@@ -185,7 +185,7 @@ fn lora_backward_step_on_auto_device() {
 
 #[test]
 fn encoder_backward_step_on_auto_device() {
-    if std::env::var("RLX_VOXTRAL_TTS_TRAIN_GPU_STEP")
+    if rlx_ir::env::var_result("RLX_VOXTRAL_TTS_TRAIN_GPU_STEP")
         .ok()
         .as_deref()
         != Some("1")

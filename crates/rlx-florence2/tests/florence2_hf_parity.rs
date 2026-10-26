@@ -54,14 +54,14 @@ fn argmax(a: &[f32]) -> usize {
 }
 
 fn dir() -> Option<PathBuf> {
-    let p = std::env::var("RLX_FLORENCE2_DIR")
+    let p = rlx_ir::env::var_result("RLX_FLORENCE2_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/florence2/Florence-2-large"));
     p.join("config.json").is_file().then_some(p)
 }
 
 fn fixture() -> Option<serde_json::Value> {
-    let p = std::env::var("RLX_FLORENCE2_FIXTURE")
+    let p = rlx_ir::env::var_result("RLX_FLORENCE2_FIXTURE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/florence2/parity_caption.json"));
     let raw = std::fs::read_to_string(p).ok()?;
@@ -213,7 +213,7 @@ fn florence2_od_postprocess_parity() {
         eprintln!("[florence2] skipping OD parity (weights absent)");
         return;
     };
-    let p = std::env::var("RLX_FLORENCE2_OD_FIXTURE")
+    let p = rlx_ir::env::var_result("RLX_FLORENCE2_OD_FIXTURE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/florence2/parity_od.json"));
     let Some(fx): Option<serde_json::Value> = std::fs::read_to_string(&p)

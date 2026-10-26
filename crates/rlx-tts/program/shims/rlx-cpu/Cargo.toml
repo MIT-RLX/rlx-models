@@ -1,0 +1,10 @@
+# The `rlx_cpu::vmath` the crate's `ops.rs` calls, for the program: a
+# portable `exp`.
+[package]
+name = "rlx-tts-program-vmath"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"

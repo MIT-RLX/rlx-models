@@ -5,7 +5,7 @@
 //! dataset — a showcase of the RLX training flow: the model graph is written in
 //! the [`rlx!`](rlx_tensor::rlx) DSL, gradients come from `rlx-tensor`'s
 //! autodiff, and the loop is driven by the `Func::train_step_*` helpers with
-//! `AdamW` + a warmup-cosine schedule, on Apple GPU (Metal) or CPU.
+//! `AdamW` + a warmup-cosine schedule, on Metal GPU (Metal) or CPU.
 //!
 //! The whole training objective is one line of DSL:
 //! `mean(cross_entropy(logits, targets))`.

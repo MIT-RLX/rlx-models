@@ -85,7 +85,7 @@ impl Encoder {
             bail!("encoder_cache bin size not multiple of 4");
         }
         let mut v = vec![0f32; bytes.len() / 4];
-        for (i, chunk) in bytes.chunks_exact(4).enumerate() {
+        for (i, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
             v[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
         if v.len() < AED_WINDOW_FRAMES * DECODER_DIM {

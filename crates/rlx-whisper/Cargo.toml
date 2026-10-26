@@ -15,6 +15,7 @@ readme = "README.md"
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
 rlx-ir = { workspace = true }
+rlx-search = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-runtime = { workspace = true }
 rlx-opt = { workspace = true }
@@ -33,10 +34,17 @@ rlx-diarize = { workspace = true, optional = true }
 name = "rlx-whisper"
 path = "src/bin/rlx_whisper.rs"
 
+[dev-dependencies]
+# The export test opens the package as any rlx program does.
+rlx-text = { workspace = true }
+tempfile = "3"
+
 [features]
 default = ["tokenizer", "timestamps"]
 tokenizer = ["dep:tokenizers"]
 timestamps = []
+# `export::export_rlxp`: a checkpoint as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export"]
 word-dtw = ["timestamps"]
 word-w2v = ["timestamps", "dep:rlx-wav2vec2-asr"]
 silero-vad = ["dep:rlx-vad", "rlx-vad/silero"]
@@ -49,7 +57,7 @@ rocm = ["rlx-runtime/rocm"]
 gpu = ["rlx-runtime/gpu", "rlx-diarize?/gpu"]
 vulkan = ["rlx-runtime/vulkan"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]

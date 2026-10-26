@@ -37,11 +37,18 @@ fn max_abs(a: &[f32], b: &[f32]) -> f32 {
 
 #[test]
 fn fused_codec_frame_matches_legacy_one_frame() {
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };
@@ -144,11 +151,18 @@ fn fused_codec_frame_matches_legacy_one_frame() {
 
 #[test]
 fn fused_talk_decode_matches_eager_one_frame() {
-    if std::env::var("RLX_QWEN3_TTS_PARITY").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_PARITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: RLX_QWEN3_TTS_PARITY");
         return;
     }
-    let Some(model_dir) = std::env::var("RLX_QWEN3_TTS_DIR").ok().map(PathBuf::from) else {
+    let Some(model_dir) = rlx_ir::env::var_result("RLX_QWEN3_TTS_DIR")
+        .ok()
+        .map(PathBuf::from)
+    else {
         eprintln!("skip: RLX_QWEN3_TTS_DIR");
         return;
     };

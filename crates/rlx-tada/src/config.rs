@@ -121,8 +121,8 @@ impl TadaConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
         let raw =
             std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        let cfg: Self =
-            serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+        let cfg: Self = rlx_core::config::from_hf_json(&raw)
+            .with_context(|| format!("parse {}", path.display()))?;
         cfg.validate()?;
         Ok(cfg)
     }

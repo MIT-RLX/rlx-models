@@ -41,6 +41,7 @@ pub mod dataset;
 pub mod distributed;
 pub mod dwq;
 pub mod inject;
+pub mod lm;
 pub mod loss;
 pub mod resident;
 pub mod trainer;

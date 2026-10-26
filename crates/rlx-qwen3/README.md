@@ -47,7 +47,7 @@ Dimensions are baked into each compiled graph, so consumers keep a shape→graph
 
 ## Backends
 
-Prefill and KV-cache decode run on every standard RLX backend when the matching `rlx-runtime` feature is enabled: `metal`, `mlx`, `cuda`, `rocm`, `gpu` (wgpu), `vulkan`, `coreml`. Build with `all-backends` (or `apple-silicon` / `nvidia-gpu` / `amd-gpu` / `portable-gpu`) for a single binary that accepts every `--device` value. [`validate_device`](src/capabilities.rs) reports what the current build supports.
+Prefill and KV-cache decode run on every standard RLX backend when the matching `rlx-runtime` feature is enabled: `metal`, `mlx`, `cuda`, `rocm`, `gpu` (wgpu), `vulkan`, `coreml`. Build with `all-backends` (or `macos-gpu` / `nvidia-gpu` / `amd-gpu` / `portable-gpu`) for a single binary that accepts every `--device` value. [`validate_device`](src/capabilities.rs) reports what the current build supports.
 
 ## Examples
 
@@ -69,6 +69,24 @@ resident-KV — fuse concurrent requests at mixed lengths) are documented in
 [`docs/qwen3-packed-decode-throughput.md`](../../docs/qwen3-packed-decode-throughput.md).
 The earlier F16-weight single-stream path is in
 [`rlx/docs/metal-qwen3-decode-perf.md`](../../../rlx/docs/metal-qwen3-decode-perf.md).
+
+## Export as an `.rlxp` package
+
+With feature `export`, `export::export_rlxp` writes a Hugging Face checkpoint
+as a package that rlx runs with no rlx-models code.
+`Model.open("qwen3-0.6b.rlxp").chat(messages)` then works from any rlx
+language binding:
+
+```rust,ignore
+rlx_qwen3::export::export_rlxp("Qwen3-0.6B".as_ref(), "qwen3-0.6b.rlxp".as_ref(), &Default::default())?;
+```
+
+The package holds the decode graph at cache capacities 64 to 4096, a
+`generate` entry, the RoPE tables, the tokenizer and chat template, and the
+`README.md` as its model card. Its weights are referenced from
+`model.safetensors`, so Qwen3-0.6B becomes a 4.9 MB package. To check that
+it greedy-decodes the same tokens as `Qwen3Runner`:
+`RLX_TEST_QWEN3_DIR=<checkpoint dir> cargo test -p rlx-qwen3 --features export --test export_rlxp`.
 
 ## How it fits
 

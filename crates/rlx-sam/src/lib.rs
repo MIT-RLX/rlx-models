@@ -48,10 +48,14 @@
 
 pub mod cli;
 pub mod config;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
+pub mod image;
 pub mod image_encoder;
 pub mod mask_decoder;
 pub mod mlp_ir;
+pub mod points;
 pub mod preprocess;
 pub mod profile;
 pub mod prompt_encoder;

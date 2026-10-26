@@ -19,7 +19,7 @@ policy = "ram_balanced"
 [[node]]                              # coordinator + stage 0 — runs locally and holds the full checkpoint
 addr = "127.0.0.1:9100"
 ckpt_dir = "/path/to/DeepSeek-V4-Flash-2bit-DQ"
-device = "metal"                      # e.g. an Apple-silicon box (unified-memory GPU)
+device = "metal"                      # e.g. an M-series box (unified-memory GPU)
 precision = "bf16"
 kv_cache = "host"
 max_ram_gb = 16                       # cap the layers this node takes to fit its free RAM

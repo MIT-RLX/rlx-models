@@ -241,8 +241,8 @@ fn write_u32(w: &mut impl Write, v: u32) -> Result<()> {
 fn read_f32_slice(r: &mut impl Read, out: &mut [f32]) -> Result<()> {
     let mut bytes = vec![0u8; out.len() * 4];
     r.read_exact(&mut bytes)?;
-    for (o, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
-        *o = f32::from_le_bytes(chunk.try_into().unwrap());
+    for (o, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
+        *o = f32::from_le_bytes(*chunk);
     }
     Ok(())
 }

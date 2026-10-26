@@ -19,22 +19,22 @@ use rlx_runtime::{Device, Session};
 use serde_json::Value;
 
 fn main() -> anyhow::Result<()> {
-    let dir = std::env::var("RLX_DSV41_WEIGHTS")
+    let dir = rlx_ir::env::var_result("RLX_DSV41_WEIGHTS")
         .map(std::path::PathBuf::from)
         .expect("set RLX_DSV41_WEIGHTS");
-    let layer: usize = std::env::var("RLX_DSV41_LAYER")
+    let layer: usize = rlx_ir::env::var_result("RLX_DSV41_LAYER")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let runs: usize = std::env::var("RLX_DSV41_RUNS")
+    let runs: usize = rlx_ir::env::var_result("RLX_DSV41_RUNS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8);
-    let seq: usize = std::env::var("RLX_DSV41_SEQ")
+    let seq: usize = rlx_ir::env::var_result("RLX_DSV41_SEQ")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(160);
-    let stage = std::env::var("RLX_DSV41_DBG").unwrap_or_else(|_| "attn".into());
+    let stage = rlx_ir::env::var_result("RLX_DSV41_DBG").unwrap_or_else(|_| "attn".into());
 
     let root = env!("CARGO_MANIFEST_DIR");
     let cfg: Value = serde_json::from_str(&std::fs::read_to_string(format!(
@@ -61,12 +61,9 @@ fn main() -> anyhow::Result<()> {
     // ends at its natural output instead of an intermediate — which is the
     // difference that matters if output buffers are being reused too early.
     let tapped = stage != "none";
-    // SAFETY: single-threaded probe.
-    unsafe {
-        if tapped {
-            std::env::set_var("RLX_DSV41_DBG", &stage);
-            std::env::set_var("RLX_DSV41_DBGLAYER", layer.to_string());
-        }
+    if tapped {
+        rlx_ir::env::set("RLX_DSV41_DBG", &stage);
+        rlx_ir::env::set("RLX_DSV41_DBGLAYER", layer.to_string());
     }
     let mut loader = DsV41Loader::open(&dir, DEFAULT_BLOCK)?;
     let mut packed = std::collections::HashMap::new();
@@ -79,10 +76,8 @@ fn main() -> anyhow::Result<()> {
         &V41Inputs::default(),
         &mut packed,
     );
-    unsafe {
-        std::env::remove_var("RLX_DSV41_DBG");
-        std::env::remove_var("RLX_DSV41_DBGLAYER");
-    }
+    rlx_ir::env::remove("RLX_DSV41_DBG");
+    rlx_ir::env::remove("RLX_DSV41_DBGLAYER");
     let (g, params, _) = built?;
     let n_nodes = g.nodes().len();
 
@@ -105,25 +100,21 @@ fn main() -> anyhow::Result<()> {
     );
     // `RLX_DSV41_FRESH=1` recompiles a new session for every run, which tells
     // session reuse apart from anything inherent to the graph.
-    let fresh = std::env::var("RLX_DSV41_FRESH").is_ok();
+    let fresh = rlx_ir::env::var_result("RLX_DSV41_FRESH").is_ok();
     let mut first: Option<Vec<f32>> = None;
     let mut ever_differed = 0usize;
     for r in 0..runs {
         if fresh {
             let mut l = DsV41Loader::open(&dir, DEFAULT_BLOCK)?;
             let mut pk = std::collections::HashMap::new();
-            unsafe {
-                if tapped {
-                    std::env::set_var("RLX_DSV41_DBG", &stage);
-                    std::env::set_var("RLX_DSV41_DBGLAYER", layer.to_string());
-                }
+            if tapped {
+                rlx_ir::env::set("RLX_DSV41_DBG", &stage);
+                rlx_ir::env::set("RLX_DSV41_DBGLAYER", layer.to_string());
             }
             let b =
                 build_deepseek_v41_stage(&spec, &mut l, seq, &span, &V41Inputs::default(), &mut pk);
-            unsafe {
-                std::env::remove_var("RLX_DSV41_DBG");
-                std::env::remove_var("RLX_DSV41_DBGLAYER");
-            }
+            rlx_ir::env::remove("RLX_DSV41_DBG");
+            rlx_ir::env::remove("RLX_DSV41_DBGLAYER");
             let (g2, p2, _) = b?;
             sess = Session::new(Device::Cpu).compile_with(g2, &opts);
             for (n, d) in &p2 {

@@ -11,7 +11,7 @@ pub fn resolve_codec_device(requested: Device) -> Device {
         if candle_codec_available(requested) {
             return requested;
         }
-        // Apple MLX tag → Candle Metal kernels on the same GPU.
+        // MLX tag → Candle Metal kernels on the same GPU.
         if requested == Device::Mlx && candle_codec_available(Device::Metal) {
             return Device::Metal;
         }
@@ -51,7 +51,7 @@ pub fn parse_mimi_device(name: &str) -> Result<Device> {
 }
 
 pub fn test_devices() -> Vec<Device> {
-    let raw = std::env::var("RLX_MIMI_DEVICES").unwrap_or_else(|_| "cpu".into());
+    let raw = rlx_ir::env::var_result("RLX_MIMI_DEVICES").unwrap_or_else(|_| "cpu".into());
     if raw.eq_ignore_ascii_case("all") {
         return all_compiled_devices();
     }

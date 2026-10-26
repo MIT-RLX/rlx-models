@@ -23,7 +23,7 @@
 //!   `sgemm_bias` call. First call at a shape pays the compile cost;
 //!   subsequent calls are pure `.run`.
 //! - Doing element-wise / softplus / silu / neg_exp / conv1d / scan
-//!   host-side, same as the Metal backend. Apple's `MetalBuffer` made
+//!   host-side, same as the Metal backend. rlx-metal's `MetalBuffer` made
 //!   that free; wgpu requires real read-backs, so this pays bandwidth.
 //!   The intent is to migrate the heavy bits into a single end-to-end
 //!   graph (Mamba1 lowered through `rlx_ssm::MambaScanStage`) when the

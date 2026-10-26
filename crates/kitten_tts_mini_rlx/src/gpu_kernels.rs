@@ -109,31 +109,39 @@ fn decode_i64_indices(bytes: &[u8], shape: &rlx_ir::Shape) -> Result<Vec<i64>, S
     let es = bytes.len() / n;
     match (shape.dtype(), es) {
         (DType::I64, 8) => Ok(bytes
-            .chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| i64::from_le_bytes(*c))
             .collect()),
         (DType::I32, 4) => Ok(bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as i64)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| i32::from_le_bytes(*c) as i64)
             .collect()),
         (DType::F32, 4) | (_, 4) => Ok(bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| {
-                let f = f32::from_le_bytes(c.try_into().unwrap());
+                let f = f32::from_le_bytes(*c);
                 // Prefer float-encoded integers (Metal f32-uniform arena).
                 // Fall back to i32 bitcast when the slot still holds raw
                 // integer bits (legacy uploads → denormals like 4e-45 for 3).
                 if f.is_finite() && f.abs() < 1.0e7 && (f - f.round()).abs() < 1.0e-3 {
                     f.round() as i64
                 } else {
-                    i32::from_le_bytes(c.try_into().unwrap()) as i64
+                    i32::from_le_bytes(*c) as i64
                 }
             })
             .collect()),
         (DType::I64, _) if bytes.len() >= n * 8 => Ok(bytes
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .take(n)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            .map(|c| i64::from_le_bytes(*c))
             .collect()),
         _ => Err(format!(
             "indices: cannot decode {} elems from {} bytes (dtype={:?})",
@@ -559,7 +567,7 @@ fn run_f0_if_select(
     unsafe {
         let f0 = typed::<f32>(inputs[0].0, inputs[0].1, DType::F32, "f0")?;
         let out = typed_mut::<f32>(output.0, output.1, DType::F32, "out")?;
-        if std::env::var("RLX_KITTEN_F0_DEBUG").is_ok() {
+        if rlx_ir::env::var_result("RLX_KITTEN_F0_DEBUG").is_ok() {
             let s: Vec<String> = [0usize, 10, 20, 35, 70, 128, 130, 256, 640, 1000]
                 .iter()
                 .filter(|&&i| i < f0.len())

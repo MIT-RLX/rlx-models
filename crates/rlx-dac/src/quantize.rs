@@ -133,6 +133,13 @@ impl ResidualVectorQuantizer {
         (z_q_sum, all_codes)
     }
 
+    /// Each quantizer's codebook `[size, dim]` and output projection, in
+    /// order: what [`Self::from_codes`] reads.
+    #[cfg(feature = "export")]
+    pub(crate) fn decoding(&self) -> impl Iterator<Item = (&Array2<f32>, &WnConv1d)> {
+        self.quantizers.iter().map(|q| (&q.codebook, &q.out_proj))
+    }
+
     // Decodes codes back to embeddings — `from_codes` reads naturally despite `&self`.
     #[allow(clippy::wrong_self_convention)]
     pub fn from_codes(&self, codes: &[Vec<u32>]) -> Array2<f32> {

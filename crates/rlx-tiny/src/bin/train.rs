@@ -466,7 +466,7 @@ fn main() -> Result<()> {
 
     // One-shot diagnostics run on the freshly-built model, then exit (before the
     // training banner, matching the original ordering).
-    if std::env::var("RLX_BENCH_BWD").is_ok() {
+    if rlx_ir::env::var_result("RLX_BENCH_BWD").is_ok() {
         trainer.bench_backward(train_data, &mut rng);
         return Ok(());
     }

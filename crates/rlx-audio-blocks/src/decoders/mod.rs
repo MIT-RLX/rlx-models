@@ -24,7 +24,7 @@ pub mod tdt;
 pub mod transducer;
 
 pub use tdt::{
-    TdtAlgorithm, TdtDecodeResult, TdtDecoderCore, TdtJointStep, run_tdt_decoder,
+    SosState, TdtAlgorithm, TdtDecodeResult, TdtDecoderCore, TdtJointStep, run_tdt_decoder,
     run_tdt_greedy_duration_loop,
 };
 pub use transducer::{

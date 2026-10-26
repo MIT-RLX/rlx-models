@@ -17,9 +17,9 @@
 
 ARG BASE=python:3.12-slim
 ARG INSTALL_TORCH=1
-# Default to PyPI so arm64 (Apple Silicon under Docker) gets a working wheel.
+# Default to PyPI so arm64 (macOS under Docker) gets a working wheel.
 # The PyTorch /whl/cpu index only ships working wheels for x86_64; arm64
-# wheels there were built without the ISA features Apple's virtio CPU
+# wheels there were built without the ISA features the macOS Docker VM's virtio CPU
 # exposes and crash on import with SIGBUS. Override TORCH_INDEX explicitly
 # when building x86 GPU/CPU variants.
 ARG TORCH_INDEX=

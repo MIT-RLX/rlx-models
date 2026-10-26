@@ -80,7 +80,7 @@ impl KyutaiTtsCheckpoint {
 
     /// Read `RLX_KYUTAI_TTS_CHECKPOINT`, defaulting to the 1.6B en/fr preset.
     pub fn from_env_or_default() -> Self {
-        std::env::var("RLX_KYUTAI_TTS_CHECKPOINT")
+        rlx_ir::env::var_result("RLX_KYUTAI_TTS_CHECKPOINT")
             .ok()
             .and_then(|s| Self::parse(&s))
             .unwrap_or(Self::V1_6bEnFr)

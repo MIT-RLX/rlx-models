@@ -13,13 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Exports the Espresso graphs to an open, rlx-consumable form: f32 tensors in
+//! Exports the network graphs to an open, rlx-consumable form: f32 tensors in
 //! **safetensors** (what `rlx_core::weight_map::WeightMap::from_file` reads)
 //! plus a JSON description of the graph.
 //!
 //! # The int8 triple folds into one f32 linear
 //!
-//! Espresso spells a linear layer as three nodes:
+//! The format spells a linear layer as three nodes:
 //!
 //! ```text
 //!   dynamic_quantize   x        -> x.q, x.q_scale        (act_scale = 127/max|x|)
@@ -89,7 +89,7 @@ pub struct ExportedGraph {
     pub ops: Vec<ExportedOp>,
 }
 
-/// Converts one Espresso graph and writes `<out>/<name>.safetensors` plus
+/// Converts one network graph and writes `<out>/<name>.safetensors` plus
 /// returning its JSON-serializable description.
 pub fn export_graph(g: &Graph, out: &Path) -> Result<ExportedGraph> {
     std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
@@ -378,8 +378,10 @@ mod tests {
         assert_eq!(w.shape(), &[2, 2]);
         let vals: Vec<f32> = w
             .data()
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().expect("4 bytes")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         assert_eq!(vals, vec![0.5, 1.0, 1.5, 2.0], "W_int8 / w_scale");
         let b = st.tensor("y.bias").expect("bias");

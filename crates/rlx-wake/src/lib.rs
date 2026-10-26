@@ -19,6 +19,8 @@ pub mod audio;
 pub mod bench;
 pub mod cnn;
 pub mod device;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod mel;
 pub mod metrics;
 pub mod ops;

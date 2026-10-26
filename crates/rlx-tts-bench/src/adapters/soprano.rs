@@ -35,7 +35,7 @@ pub fn make(device: Device) -> Result<Box<dyn TtsAdapter>> {
     // Prefer the native (ort-free) rlx-qwen3 backbone when the stock
     // Qwen3ForCausalLM checkpoint (ekwek/Soprano-1.1-80M) is available — the
     // onnx-imported backbone diverges on CUDA (wrong output) and caps seq at 128.
-    let bb = std::env::var("RLX_SOPRANO_BACKBONE_ST")
+    let bb = rlx_ir::env::var_result("RLX_SOPRANO_BACKBONE_ST")
         .ok()
         .map(PathBuf::from)
         .or_else(|| {

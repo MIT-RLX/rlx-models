@@ -208,13 +208,7 @@ fn matvec(w: &[f32], b: &[f32], x: &[f32], out: usize, inp: usize) -> Vec<f32> {
 }
 
 fn argmax(v: &[f32]) -> (usize, f32) {
-    let mut best = 0usize;
-    let mut bv = f32::NEG_INFINITY;
-    for (i, &x) in v.iter().enumerate() {
-        if x > bv {
-            bv = x;
-            best = i;
-        }
-    }
-    (best, bv)
+    let i = rlx_runtime::search::argmax(v);
+    let best = v.get(i).copied().filter(|x| *x > f32::NEG_INFINITY);
+    (i, best.unwrap_or(f32::NEG_INFINITY))
 }

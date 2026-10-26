@@ -174,7 +174,7 @@ Current phase: **Phase 4 Complete** — v0.1.4 (102 rounds, 4 phases). 🎯 RMS 
 
 ## Development Methodology
 
-This is an **AI-augmented reverse engineering** project. The workflow:
+The workflow:
 
 ```
 Human extracts ground truth           AI generates implementation

@@ -36,11 +36,13 @@ use rlx_models::bonsai::{BonsaiRunner, FAMILY, PLAN_MILESTONE};
 use std::path::PathBuf;
 
 fn llama_gguf_path() -> Option<PathBuf> {
-    std::env::var("RLX_SMOLLM2_GGUF").ok().map(PathBuf::from)
+    rlx_ir::env::var_result("RLX_SMOLLM2_GGUF")
+        .ok()
+        .map(PathBuf::from)
 }
 
 fn tokenizer_path() -> Option<PathBuf> {
-    std::env::var("RLX_SMOLLM2_TOKENIZER")
+    rlx_ir::env::var_result("RLX_SMOLLM2_TOKENIZER")
         .ok()
         .map(PathBuf::from)
         .or_else(|| {
@@ -81,8 +83,8 @@ fn bonsai_runner_rejects_non_llama_arch() {
     // produce garbage. We use whichever non-llama GGUF the test env
     // has handy.
     let candidates = [
-        std::env::var("RLX_QWEN25_GGUF").ok(),
-        std::env::var("RLX_GEMMA3_GGUF").ok(),
+        rlx_ir::env::var_result("RLX_QWEN25_GGUF").ok(),
+        rlx_ir::env::var_result("RLX_GEMMA3_GGUF").ok(),
     ];
     let Some(path) = candidates.into_iter().flatten().next() else {
         eprintln!("skip: need RLX_QWEN25_GGUF or RLX_GEMMA3_GGUF for negative test");
@@ -109,7 +111,11 @@ fn bonsai_runner_rejects_non_llama_arch() {
 /// the delegation didn't break anything.
 #[test]
 fn forward_inference_via_bonsai_stub() {
-    if std::env::var("RLX_BONSAI_RUN_INFERENCE").ok().as_deref() != Some("1") {
+    if rlx_ir::env::var_result("RLX_BONSAI_RUN_INFERENCE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
         eprintln!("skip: set RLX_BONSAI_RUN_INFERENCE=1");
         return;
     }

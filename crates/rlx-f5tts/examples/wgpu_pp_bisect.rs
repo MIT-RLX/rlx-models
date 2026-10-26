@@ -20,7 +20,7 @@ use rlx_tiny_tts::model::TinyModel;
 const TEXT_EMBED_LEN: usize = 612;
 
 fn main() -> anyhow::Result<()> {
-    let model = std::env::var("RLX_F5TTS_DIR")
+    let model = rlx_ir::env::var_result("RLX_F5TTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_LOCAL_DIR));
     let ref_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/prompt.wav");
@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
     // Optional opt bisect: RLX_BISECT_OPTS=dce,fold,fusion (comma flags to KEEP on;
     // unset = defaults; "none" = all off). Cache key now includes these flags.
     let mut copts = rlx_runtime::CompileOptions::default();
-    if let Ok(spec) = std::env::var("RLX_BISECT_OPTS") {
+    if let Ok(spec) = rlx_ir::env::var_result("RLX_BISECT_OPTS") {
         let keep: std::collections::HashSet<_> = spec
             .split(',')
             .map(str::trim)
@@ -140,7 +140,7 @@ fn main() -> anyhow::Result<()> {
         println!("cat_mel text512 cos={cos_t:.6} mae={mae_t:.4e} maxabs={mx_t:.4e}");
     }
 
-    if std::env::var("RLX_BISECT_GRN").is_ok() {
+    if rlx_ir::env::var_result("RLX_BISECT_GRN").is_ok() {
         bisect_grn()?;
     }
 
@@ -326,24 +326,34 @@ fn stats(a: &[f32], b: &[f32]) -> (f64, f64, f64) {
 fn to_f32(b: &[u8], dt: DType) -> Vec<f32> {
     match dt {
         DType::F32 => b
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
         DType::F16 => b
-            .chunks_exact(2)
-            .map(|c| f16::from_le_bytes(c.try_into().unwrap()).to_f32())
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| f16::from_le_bytes(*c).to_f32())
             .collect(),
         DType::I64 => b
-            .chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f32)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| i64::from_le_bytes(*c) as f32)
             .collect(),
         DType::I32 => b
-            .chunks_exact(4)
-            .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f32)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| i32::from_le_bytes(*c) as f32)
             .collect(),
         _ => b
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
     }
 }

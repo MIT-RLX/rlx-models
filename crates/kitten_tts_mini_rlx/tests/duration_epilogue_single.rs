@@ -53,8 +53,10 @@ fn load_style_row() -> Vec<f32> {
         .output()
         .expect("style");
     out.stdout
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
@@ -171,8 +173,10 @@ fn duration_epilogue_single_probe_parity() {
     );
     if let Some((dur_bytes, DType::I64)) = outs.get(1) {
         let dur: Vec<i64> = dur_bytes
-            .chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| i64::from_le_bytes(*c))
             .collect();
         eprintln!("native duration={dur:?} sum={}", dur.iter().sum::<i64>());
     }

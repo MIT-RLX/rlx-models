@@ -116,6 +116,16 @@ impl MelFrontend {
         frames
     }
 
+    /// The analysis window, `[win_length]`.
+    pub fn window(&self) -> &[f32] {
+        &self.window
+    }
+
+    /// The mel filters, `[n_mels, n_fft / 2 + 1]`.
+    pub fn filters(&self) -> &[f32] {
+        &self.mel_fb
+    }
+
     /// Number of mel bins.
     pub fn n_mels(&self) -> usize {
         self.cfg.n_mels

@@ -43,6 +43,8 @@
 
 pub mod config;
 pub mod download;
+#[cfg(all(feature = "export", feature = "native"))]
+pub mod export;
 pub mod model;
 #[cfg(feature = "native")]
 pub mod native;

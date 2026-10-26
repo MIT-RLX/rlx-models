@@ -114,7 +114,9 @@ pub(crate) fn load_f32(st: &SafeTensors<'_>, name: &str) -> Result<Vec<f32>> {
             out
         }
         Dtype::BF16 => raw
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| {
                 let bits = u16::from_le_bytes([b[0], b[1]]);
                 f32::from_bits((bits as u32) << 16)
@@ -325,7 +327,8 @@ fn softmax_inplace(x: &mut [f32]) {
 ///
 /// For each code (0..65535):
 /// 1. Decompose into 8 base-4 digits using `FSQ_BASIS`.
-/// 2. Scale each digit d ∈ {0,1,2,3} to {−1, −⅓, ⅓, 1} via `(d/1.5) - 1`.
+/// 2. Scale each digit d ∈ {0,1,2,3} to {−1, −½, 0, ½} via `(d − 2) / 2`
+///    (transformers' `NeuCodecFiniteScalarQuantization`: `(d − L/2) / (L/2)`).
 /// 3. Apply the `project_out` linear layer (8 → 2048).
 ///
 /// Returns \[T, fsq_out_dim\].
@@ -342,9 +345,8 @@ fn fsq_decode(
     for (i, &code) in codes.iter().enumerate() {
         for (j, (&basis, &levels)) in FSQ_BASIS.iter().zip(FSQ_LEVELS.iter()).enumerate() {
             let d = (code / basis) % levels;
-            // Scale from {0,1,…,L-1} to {-1, -1/3, 1/3, 1} for L=4
-            // Formula: (d / ((L-1)/2)) - 1  =  (d / 1.5) - 1
-            digits[[i, j]] = d as f32 / 1.5 - 1.0;
+            let half = (levels / 2) as f32;
+            digits[[i, j]] = (d as f32 - half) / half;
         }
     }
 
@@ -352,11 +354,15 @@ fn fsq_decode(
     linear(digits.view(), proj_w, Some(proj_b))
 }
 
-/// Encode continuous latents → integer FSQ codes (inverse of [`fsq_decode`]).
+/// Encode continuous latents → integer FSQ codes, as transformers'
+/// `NeuCodecQuantizer` does:
 ///
 /// 1. Apply `project_in` linear (2048 → 8).
-/// 2. Round each dimension to the nearest FSQ level digit ∈ {0,1,2,3}.
-/// 3. Pack digits into a single code with [`FSQ_BASIS`].
+/// 2. Bound each dimension: `tanh(z + shift) · half_range − offset`, with
+///    `half_range = (L − 1)(1 + 1e-3) / 2`, `offset = ½` for an even `L`,
+///    `shift = atanh(offset / half_range)`.
+/// 3. Round (half to even, as `torch.round`), shift by `L/2` to a digit
+///    ∈ {0,1,2,3}, and pack the digits with [`FSQ_BASIS`].
 ///
 /// * `latent`: \[T, fsq_in_dim\]  (typically 2048)
 /// * `proj_w`: \[8, fsq_in_dim\]  (`generator.quantizer.project_in.weight`)
@@ -372,10 +378,10 @@ pub(crate) fn fsq_encode(
     for ti in 0..t {
         let mut code = 0i32;
         for (j, &levels) in FSQ_LEVELS.iter().enumerate() {
-            let scaled = z[[ti, j]];
-            // Inverse of digits[[i,j]] = d/1.5 - 1
-            let max_d = (levels - 1) as f32;
-            let d = ((scaled + 1.0) * (max_d / 2.0)).round().clamp(0.0, max_d) as i32;
+            let (shift, half_range, offset) = fsq_bound(levels);
+            let bounded = (z[[ti, j]] + shift).tanh() * half_range - offset;
+            let half = levels / 2;
+            let d = (bounded.round_ties_even() as i32 + half).clamp(0, levels - 1);
             code += d * FSQ_BASIS[j];
         }
         codes.push(code);
@@ -383,89 +389,11 @@ pub(crate) fn fsq_encode(
     codes
 }
 
-// ─── RoPE sin/cos dispatch ────────────────────────────────────────────────────
-
-/// Compute `(sin(x), cos(x))` for use in Rotary Positional Embedding.
-///
-/// The implementation is selected at compile time by the active feature flag:
-///
-/// | Feature     | Implementation                          | Max abs. error |
-/// |-------------|-----------------------------------------|----------------|
-/// | `fast`      | degree-7/6 Horner polynomial + f32 RR   | ~1 × 10⁻⁴     |
-/// | `precise`   | `f32::sin_cos()` — correctly rounded    | ~1 × 10⁻⁷     |
-/// | *(neither)* | same as `fast` (default)                | ~1 × 10⁻⁴     |
-///
-/// ### Fast-mode notes
-///
-/// The polynomial path avoids transcendental function calls entirely: sin and
-/// cos are each evaluated with 6 fused multiply-adds (Horner's method).  On
-/// platforms where hardware `sin`/`cos` instructions are slow or absent this
-/// can be 6–12× faster per value.
-///
-/// Range reduction to \[−π, π\] uses a single `f32` round-multiply.  For large
-/// angles — RoPE dimensions with position ≈ 2 047 and the highest frequency
-/// (`inv_freq = 1.0`) give θ ≈ 2 047 rad — floating-point cancellation in the
-/// reduction introduces O(2⁻²³ · |θ|) extra absolute error before the
-/// polynomial.  At the worst case this is ≈ 2 × 10⁻⁴ rad, which is well
-/// within perceptual threshold for speech synthesis.
-///
-/// Both this function and the Burn GPU path in `codec_burn::load_weights` use
-/// the same dispatch, so precomputed RoPE tables and runtime CPU evaluations
-/// are always produced by the same algorithm.
-#[cfg(not(feature = "precise"))]
-#[inline(always)]
-pub(crate) fn rope_sin_cos(x: f32) -> (f32, f32) {
-    use std::f32::consts::TAU;
-    // Range-reduce to [−π, π] with a single round() multiply.
-    let x = x - TAU * (x * (1.0 / TAU)).round();
-    let x2 = x * x;
-    // Horner-form degree-7 sin: x(1 + x²(−1/6 + x²(1/120 − x²/5040)))
-    let s = x * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 - x2 * (1.0 / 5040.0))));
-    // Horner-form degree-6 cos: 1 + x²(−1/2 + x²(1/24 − x²/720))
-    let c = 1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 - x2 * (1.0 / 720.0)));
-    (s, c)
-}
-
-#[cfg(feature = "precise")]
-#[inline(always)]
-pub(crate) fn rope_sin_cos(x: f32) -> (f32, f32) {
-    x.sin_cos()
-}
-
-// ─── Rotary positional embedding ──────────────────────────────────────────────
-
-/// Apply split-half RoPE (torchtune convention) to `x` in-place.
-///
-/// * `x`: \[T, n_heads, head_dim\]
-///
-/// The outer loop order is `(position, freq_index, head)` so each
-/// `sin_cos()` result is computed **once per (position, freq)** and reused
-/// across all heads — previously it was computed once per (position, freq,
-/// head), allocating a fresh `Vec<f32>` for each position.
-fn apply_rope(x: &mut Array3<f32>) {
-    let (t, n_heads, head_dim) = (x.shape()[0], x.shape()[1], x.shape()[2]);
-    let half = head_dim / 2;
-
-    // Inverse frequencies — only `half` f32 values, computed once.
-    let inv_freqs: Vec<f32> = (0..half)
-        .map(|i| 1.0_f32 / 10_000_f32.powf(2.0 * i as f32 / head_dim as f32))
-        .collect();
-
-    for p in 0..t {
-        let p_f = p as f32;
-        for i in 0..half {
-            // Dispatch to rope_sin_cos(): polynomial (fast, default) or
-            // stdlib sin_cos (precise feature).
-            let (s, c) = rope_sin_cos(p_f * inv_freqs[i]);
-            // Apply the same rotation to every head — no per-head recompute.
-            for h in 0..n_heads {
-                let x1 = x[[p, h, i]];
-                let x2 = x[[p, h, i + half]];
-                x[[p, h, i]] = x1 * c - x2 * s;
-                x[[p, h, i + half]] = x1 * s + x2 * c;
-            }
-        }
-    }
+/// FSQ's bound for `levels`: `(shift, half_range, offset)`.
+fn fsq_bound(levels: i32) -> (f32, f32, f32) {
+    let half_range = (levels - 1) as f32 * (1.0 + 1e-3) / 2.0;
+    let offset = if levels % 2 == 0 { 0.5 } else { 0.0 };
+    ((offset / half_range).atanh(), half_range, offset)
 }
 
 // ─── Transformer components ───────────────────────────────────────────────────
@@ -497,18 +425,19 @@ fn transformer_block(x: ArrayView2<f32>, w: &TransformerWeights, n_heads: usize)
     let v_flat = qkv.slice(s![.., 2 * d..]).to_owned();
 
     // Reshape to [T, n_heads, head_dim]
-    let mut q = q_flat
+    let q = q_flat
         .into_shape_with_order((t, n_heads, head_dim))
         .expect("q reshape");
-    let mut k = k_flat
+    let k = k_flat
         .into_shape_with_order((t, n_heads, head_dim))
         .expect("k reshape");
     let v = v_flat
         .into_shape_with_order((t, n_heads, head_dim))
         .expect("v reshape");
 
-    apply_rope(&mut q);
-    apply_rope(&mut k);
+    // No RoPE: NeuCodec rotates q and k by the head's index
+    // (`position_ids = arange(num_heads)`), the same rotation for both,
+    // which cancels in qᵀk.
 
     // Scaled dot-product attention per head
     let scale = (head_dim as f32).sqrt().recip();
@@ -587,28 +516,18 @@ fn resnet_block(x: ArrayView2<f32>, w: &ResnetBlockWeights) -> Array2<f32> {
 
 // ─── ISTFT ────────────────────────────────────────────────────────────────────
 
-/// Inverse STFT matching PyTorch `torch.istft(..., center=True)`.
+/// Inverse STFT with Vocos' "same" padding, as transformers'
+/// `NeuCodecISTFTHead` computes it.
 ///
-/// * `mag`: \[n_fft/2+1, T\]  **log**-magnitudes (the model head outputs log-mag)
+/// * `mag`: \[n_fft/2+1, T\]  **log**-magnitudes, `exp` then clamped at 100
 /// * `phase`: \[n_fft/2+1, T\] phase angles in radians
 /// * `hop`: hop length (= n_fft / 4)
 /// * `window`: Hann window \[n_fft\]
 /// * returns: waveform of exactly `T × hop` samples
 ///
-/// ### Two bugs this function previously had (now fixed)
-///
-/// 1. **Clamp-before-exp** — the original code did `mag.min(1e2).exp()`, which
-///    caps the *log*-magnitude at 100 (meaning `exp(100) ≈ 2.7e43` for large
-///    bins).  The correct Python behaviour is `exp(mag).clamp(max=1e2)` — clamp
-///    the *linear* magnitude to 100.  Large log-magnitude bins (common for
-///    loud/low-frequency speech) therefore blew up, drowning out high-frequency
-///    content and causing muffled output.
-///
-/// 2. **Wrong center trim** — PyTorch's `center=True` removes `n_fft/2` samples
-///    from the **start** of the OLA buffer and then takes exactly `T*hop`
-///    samples.  The old code instead removed `(n_fft-hop)/2` from **both ends**,
-///    which is a 240-sample temporal offset (at 24 kHz with hop=480) and
-///    includes partially-overlapped edge frames with poor reconstruction quality.
+/// Each frame's inverse FFT, windowed and overlap-added, divided by the
+/// window's squared overlap (at least 1e-11), with `(n_fft − hop) / 2`
+/// trimmed from each end.
 ///
 /// `pub(crate)` so the Burn decoder in `codec_burn.rs` can call it after
 /// pulling the head output back from the device.
@@ -662,21 +581,13 @@ pub(crate) fn istft_burn(
         }
     }
 
-    // Weighted overlap-add normalization
+    // Weighted overlap-add normalization (the envelope clamped at 1e-11).
     for i in 0..out_size {
-        if env[i] > 1e-11 {
-            y[i] /= env[i];
-        }
+        y[i] /= env[i].max(1e-11);
     }
 
-    // FIX 2: match PyTorch center=True — trim n_fft/2 from the START only,
-    // then take exactly T*hop samples.
-    //
-    // Old code: y[(n_fft-hop)/2 .. out_size-(n_fft-hop)/2]
-    //   → 240-sample temporal offset + includes edge frames with 1-2 overlaps.
-    // Correct:  y[n_fft/2 .. n_fft/2 + T*hop]
-    //   → first fully-overlapped sample (≥4 frames) through end of signal.
-    let start = n_fft / 2;
+    // "Same" padding: `(n_fft − hop) / 2` off each end, `T × hop` left.
+    let start = (n_fft - hop) / 2;
     let length = n_frames * hop;
     y[start..start + length].to_vec()
 }
@@ -1258,11 +1169,15 @@ fn decode_wav_mono(data: &[u8]) -> Result<(Vec<f32>, u32)> {
 
     let pcm = match (audio_format, bits_per_sample) {
         (1, 16) => pcm_raw
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
             .collect(),
         (3, 32) => pcm_raw
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect(),
         (af, bps) => bail!("unsupported WAV format: audio_format={af} bits={bps}"),
@@ -1499,23 +1414,34 @@ mod tests {
 
     #[test]
     fn test_fsq_code_max() {
-        // Code 65535 = 4^8 - 1 → all digits 3 → all scaled to 1.0
+        // Code 65535 = 4^8 - 1 → all digits 3 → all scaled to (3 − 2) / 2 = ½
         let w = Array2::eye(8);
         let b = Array1::zeros(8);
         let out = fsq_decode(&[65535], w.view(), b.view());
         for v in out.iter() {
-            assert!((*v - 1.0).abs() < 1e-5, "expected 1.0, got {v}");
+            assert!((*v - 0.5).abs() < 1e-5, "expected 0.5, got {v}");
         }
     }
 
     #[test]
-    fn test_fsq_roundtrip_identity() {
+    fn test_fsq_encode_rounds_the_bounded_latent() {
+        // A latent whose bound is exactly each digit's rounded value
+        // (`atanh((r + offset) / half_range) − shift`) encodes to that digit.
         let w = Array2::eye(8);
         let b = Array1::zeros(8);
-        let codes = vec![0i32, 42, 1000, 65535];
-        let emb = fsq_decode(&codes, w.view(), b.view());
-        let back = fsq_encode(emb.view(), w.view(), b.view());
-        assert_eq!(codes, back);
+        for code in [0i32, 42, 1000, 65535] {
+            let latent: Vec<f32> = FSQ_BASIS
+                .iter()
+                .zip(FSQ_LEVELS)
+                .map(|(&basis, levels)| {
+                    let (shift, half_range, offset) = fsq_bound(levels);
+                    let r = ((code / basis) % levels - levels / 2) as f32;
+                    ((r + offset) / half_range).atanh() - shift
+                })
+                .collect();
+            let latent = Array2::from_shape_vec((1, 8), latent).unwrap();
+            assert_eq!(fsq_encode(latent.view(), w.view(), b.view()), [code]);
+        }
     }
 
     #[test]
@@ -1615,16 +1541,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rope_shape_preserved() {
-        let t = 4;
-        let n_heads = 2;
-        let head_dim = 8;
-        let mut x = Array3::ones((t, n_heads, head_dim));
-        apply_rope(&mut x);
-        assert_eq!(x.shape(), &[t, n_heads, head_dim]);
-    }
-
-    #[test]
     fn test_hann_window() {
         let w = hann_window(4);
         assert_eq!(w.len(), 4);
@@ -1649,7 +1565,7 @@ mod tests {
         let win = hann_window(n_fft);
         let ifft = make_ifft(n_fft);
         let audio = istft_burn(mag.view(), phase.view(), hop, &win, ifft.as_ref());
-        // center=True: output is exactly T*hop samples
+        // "Same" padding: output is exactly T*hop samples
         assert_eq!(
             audio.len(),
             t * hop,

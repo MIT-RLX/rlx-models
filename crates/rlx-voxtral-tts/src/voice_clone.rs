@@ -45,7 +45,7 @@ pub fn voice_clone_support(store: &VoxtralTtsWeightStore) -> VoiceCloneSupport {
 }
 
 pub fn max_reference_seconds() -> f32 {
-    std::env::var("RLX_VOXTRAL_TTS_REF_SECS")
+    rlx_ir::env::var_result("RLX_VOXTRAL_TTS_REF_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|v| *v > 0.0)

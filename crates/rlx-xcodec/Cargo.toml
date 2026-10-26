@@ -23,8 +23,13 @@ rlx-metal = { workspace = true, optional = true }
 rlx-mlx = { workspace = true, optional = true }
 rlx-wgpu = { workspace = true, optional = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = []
+# `export::export_rlxp`: a checkpoint as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export"]
 cpu = ["rlx-runtime/cpu"]
 metal = ["rlx-runtime/metal", "dep:rlx-metal", "rlx-core/metal"]
 mlx = ["rlx-runtime/mlx", "dep:rlx-mlx", "rlx-core/mlx"]

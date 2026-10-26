@@ -5,9 +5,9 @@
 // the CPU reference dumped in the parity fixture. Gated on RLX_FLORENCE2_DIR +
 // the fixture; each backend is additionally behind its cargo feature.
 //
-// Run on Apple silicon:
+// Run on macOS arm64:
 //   RLX_FLORENCE2_DIR=$PWD/.cache/florence2/Florence-2-large \
-//   cargo test -p rlx-florence2 --release --features apple-silicon \
+//   cargo test -p rlx-florence2 --release --features macos-gpu \
 //     --test florence2_backend_parity -- --nocapture
 
 #![allow(dead_code)]
@@ -41,13 +41,13 @@ fn argmax(a: &[f32]) -> usize {
 }
 
 fn env() -> Option<(PathBuf, serde_json::Value)> {
-    let dir = std::env::var("RLX_FLORENCE2_DIR")
+    let dir = rlx_ir::env::var_result("RLX_FLORENCE2_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/florence2/Florence-2-large"));
     if !dir.join("config.json").is_file() {
         return None;
     }
-    let fxp = std::env::var("RLX_FLORENCE2_FIXTURE")
+    let fxp = rlx_ir::env::var_result("RLX_FLORENCE2_FIXTURE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".cache/florence2/parity_caption.json"));
     let fx: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(fxp).ok()?).ok()?;
@@ -161,7 +161,7 @@ fn metal_matches_reference() {
 #[cfg(all(target_os = "macos", any(feature = "metal", feature = "mlx")))]
 #[test]
 fn vision_stage_bisect() {
-    let Ok(which) = std::env::var("RLX_FLORENCE2_BISECT") else {
+    let Ok(which) = rlx_ir::env::var_result("RLX_FLORENCE2_BISECT") else {
         return;
     };
     let Some((dir, fx)) = env() else { return };
@@ -174,16 +174,14 @@ fn vision_stage_bisect() {
     let model = Florence2Model::load(&dir, cfg, Device::Cpu).unwrap();
     let pixel = f32_vec(&fx, "pixel_values");
     let img = fx["img_size"].as_u64().unwrap() as usize;
-    if std::env::var("RLX_FLORENCE2_BISECT_DEPTH").is_ok() {
+    if rlx_ir::env::var_result("RLX_FLORENCE2_BISECT_DEPTH").is_ok() {
         // Walk depths of stage 2 (spatial then channel) to see how the GPU
         // divergence accumulates.
-        unsafe { std::env::set_var("RLX_FLORENCE2_VISION_STOP_STAGE", "2") };
+        rlx_ir::env::set("RLX_FLORENCE2_VISION_STOP_STAGE", "2");
         for depth in 0..9 {
             for phase in ["spatial", "channel"] {
-                unsafe {
-                    std::env::set_var("RLX_FLORENCE2_VISION_STOP_DEPTH", depth.to_string());
-                    std::env::set_var("RLX_FLORENCE2_VISION_STOP_PHASE", phase);
-                }
+                rlx_ir::env::set("RLX_FLORENCE2_VISION_STOP_DEPTH", depth.to_string());
+                rlx_ir::env::set("RLX_FLORENCE2_VISION_STOP_PHASE", phase);
                 let cpu = model.debug_vision(&pixel, img, Device::Cpu).unwrap();
                 let gpu = model.debug_vision(&pixel, img, device).unwrap();
                 eprintln!(
@@ -192,16 +190,13 @@ fn vision_stage_bisect() {
                 );
             }
         }
-        unsafe {
-            std::env::remove_var("RLX_FLORENCE2_VISION_STOP_STAGE");
-            std::env::remove_var("RLX_FLORENCE2_VISION_STOP_DEPTH");
-            std::env::remove_var("RLX_FLORENCE2_VISION_STOP_PHASE");
-        }
+        rlx_ir::env::remove("RLX_FLORENCE2_VISION_STOP_STAGE");
+        rlx_ir::env::remove("RLX_FLORENCE2_VISION_STOP_DEPTH");
+        rlx_ir::env::remove("RLX_FLORENCE2_VISION_STOP_PHASE");
         return;
     }
     for stage in 0..4 {
-        // SAFETY: single-threaded test.
-        unsafe { std::env::set_var("RLX_FLORENCE2_VISION_STOP_STAGE", stage.to_string()) };
+        rlx_ir::env::set("RLX_FLORENCE2_VISION_STOP_STAGE", stage.to_string());
         let cpu = model.debug_vision(&pixel, img, Device::Cpu).unwrap();
         let gpu = model.debug_vision(&pixel, img, device).unwrap();
         let cos = cosine(&cpu, &gpu);
@@ -211,7 +206,7 @@ fn vision_stage_bisect() {
             gpu.len()
         );
     }
-    unsafe { std::env::remove_var("RLX_FLORENCE2_VISION_STOP_STAGE") };
+    rlx_ir::env::remove("RLX_FLORENCE2_VISION_STOP_STAGE");
 }
 
 #[cfg(all(target_os = "macos", feature = "mlx"))]

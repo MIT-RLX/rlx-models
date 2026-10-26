@@ -10,6 +10,8 @@
 pub mod audio;
 pub mod config;
 pub mod coreml;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod glue;
 pub mod model;
 

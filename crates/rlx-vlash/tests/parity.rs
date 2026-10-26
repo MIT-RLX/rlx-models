@@ -72,7 +72,9 @@ impl Fixture {
                     .unwrap_or_default();
                 let bytes = std::fs::read(dir.join(file)).ok()?;
                 let data: Vec<f32> = bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 tensors.insert(name.clone(), (data, shape));
@@ -129,14 +131,14 @@ fn assert_parity(label: &str, got: &[f32], want: &[f32]) {
 }
 
 fn fixture_dir(var: &str) -> Option<PathBuf> {
-    std::env::var(var)
+    rlx_ir::env::read(var)
         .ok()
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
 }
 
 fn model_safetensors(var: &str) -> Option<String> {
-    let dir = std::env::var(var).ok()?;
+    let dir = rlx_ir::env::read(var).ok()?;
     let p = Path::new(&dir);
     let single = p.join("model.safetensors");
     if single.is_file() {

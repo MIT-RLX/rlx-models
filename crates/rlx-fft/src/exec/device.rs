@@ -19,7 +19,6 @@ use anyhow::{Context, Result, ensure};
 use rlx_cli::parse_device;
 use rlx_core::STANDARD_DEVICE_NAMES;
 use rlx_runtime::{Device, is_available};
-use std::env;
 
 const FAMILY: &str = "rlx-fft";
 
@@ -30,7 +29,7 @@ pub fn normalize_device_alias(name: &str) -> String {
         "wgu" | "wgpu" => "wgpu".into(),
         "mps" => "metal".into(),
         "hip" => "rocm".into(),
-        // CoreML / Apple Neural Engine: `parse_device` accepts `ane`/`neural-engine`
+        // CoreML / Neural Engine: `parse_device` accepts `ane`/`neural-engine`
         // (Device::Ane); map the user-facing `coreml` alias onto it too.
         "coreml" | "neural-engine" | "neural_engine" => "ane".into(),
         other => other.into(),
@@ -45,7 +44,7 @@ pub fn bench_device_label(device: Device) -> String {
     }
 }
 
-/// Parse `--device cpu,metal,mlx,wgpu` or `all` / `apple-silicon`.
+/// Parse `--device cpu,metal,mlx,wgpu` or `all` / `macos-gpu`.
 pub fn parse_bench_device_list(csv: &str) -> Result<Vec<String>> {
     let csv = csv.trim();
     if csv.eq_ignore_ascii_case("all") {
@@ -54,7 +53,7 @@ pub fn parse_bench_device_list(csv: &str) -> Result<Vec<String>> {
             .map(str::to_string)
             .collect());
     }
-    if csv.eq_ignore_ascii_case("apple-silicon") {
+    if csv.eq_ignore_ascii_case("macos-gpu") {
         let mut out = vec!["cpu".to_string()];
         for name in ["metal", "mlx", "wgpu", "ane"] {
             if let Ok(dev) = parse_device(name)
@@ -76,7 +75,7 @@ pub fn parse_bench_device_list(csv: &str) -> Result<Vec<String>> {
             continue;
         }
         let dev = parse_device(&norm).with_context(|| {
-            format!("parse device {norm} ({STANDARD_DEVICE_NAMES}|all|apple-silicon)")
+            format!("parse device {norm} ({STANDARD_DEVICE_NAMES}|all|macos-gpu)")
         })?;
         ensure_backend_ready(dev)?;
         let label = bench_device_label(dev);
@@ -94,7 +93,7 @@ pub fn resolve_train_device(requested: Option<&str>) -> Result<Device> {
         .filter(|s| !s.is_empty())
         .map(normalize_device_alias)
         .or_else(|| {
-            env::var("RLX_DEVICE")
+            rlx_ir::env::var_result("RLX_DEVICE")
                 .ok()
                 .map(|s| normalize_device_alias(&s))
         })

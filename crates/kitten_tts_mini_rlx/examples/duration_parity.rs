@@ -42,8 +42,10 @@ sys.stdout.buffer.write(v.astype(np.float32).tobytes())
         return vec![0.0; 256];
     }
     out.stdout
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
@@ -90,8 +92,10 @@ fn main() -> anyhow::Result<()> {
     let wave_len = outs[0].0.len() / 4;
     if let Some((dur_bytes, _)) = outs.get(1) {
         let dur: Vec<i64> = dur_bytes
-            .chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| i64::from_le_bytes(*c))
             .collect();
         let sum: i64 = dur[..token_len.min(dur.len())]
             .iter()

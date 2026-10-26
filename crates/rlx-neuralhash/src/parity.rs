@@ -14,11 +14,11 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! **Validation only** — cross-checks the native graph against the community
-//! ONNX export from AppleNeuralHash2ONNX.
+//! reference ONNX export (see the crate README).
 //!
 //! Gated behind the `onnx-parity` feature and never reachable from
 //! [`crate::NeuralHasher`]. The default build has no ONNX dependency at all;
-//! this module exists so the Espresso-derived architecture in [`crate::spec`]
+//! this module exists so the container-derived architecture in [`crate::spec`]
 //! can be shown to compute the same descriptor as the independently-produced
 //! `model.onnx`, which is the strongest check available without an iOS device.
 //!

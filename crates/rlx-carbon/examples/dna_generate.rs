@@ -25,8 +25,8 @@
 //!   --model /path/to/Carbon-500M --device cpu \
 //!   --prompt ATGGCGACCTTTAGCGATCTGGGCAAAGAACTGCGTACC --max-tokens 48
 //!
-//! # Apple GPU/ANE (Metal, MLX, wgpu, CoreML)
-//! cargo run -p rlx-carbon --example dna_generate --features tokenizer,apple-silicon --release -- \
+//! # Metal GPU/ANE (Metal, MLX, wgpu, CoreML)
+//! cargo run -p rlx-carbon --example dna_generate --features tokenizer,macos-gpu --release -- \
 //!   --model /path/to/Carbon-500M --device metal   --prompt ATGGCGACCTTTAGCGATCTG
 //!
 //! # NVIDIA / AMD / portable Vulkan
@@ -44,7 +44,7 @@ use rlx_cli::parse_llama32_device;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut model: Option<String> = std::env::var("RLX_CARBON_MODEL").ok();
+    let mut model: Option<String> = rlx_ir::env::var_result("RLX_CARBON_MODEL").ok();
     let mut device = "cpu".to_string();
     let mut prompt = "ATGGCGACCTTTAGCGATCTGGGCAAAGAACTGCGTACCGATCTGGCAGAT".to_string();
     let mut max_tokens = 48usize;

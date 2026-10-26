@@ -161,10 +161,12 @@ fn coverage(text: &str, heard: &str) -> f32 {
 }
 
 fn main() -> anyhow::Result<()> {
-    let dir =
-        PathBuf::from(std::env::var("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()));
-    let wd =
-        PathBuf::from(std::env::var("RLX_WHISPER_DIR").unwrap_or(".cache/whisper-tiny".into()));
+    let dir = PathBuf::from(
+        rlx_ir::env::var_result("RLX_MOSS_DIR").unwrap_or("weights/tts/moss-nano".into()),
+    );
+    let wd = PathBuf::from(
+        rlx_ir::env::var_result("RLX_WHISPER_DIR").unwrap_or(".cache/whisper-tiny".into()),
+    );
     let text =
         std::env::var("TEXT").unwrap_or("The quick brown fox jumps over the lazy dog.".into());
     let maxf: usize = std::env::var("MAXF")

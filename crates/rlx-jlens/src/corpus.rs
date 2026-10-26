@@ -216,7 +216,9 @@ impl CorpusFit {
             let layer = u64_at(off);
             off += 8;
             let values: Vec<f32> = b[off..off + per * 4]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             off += per * 4;

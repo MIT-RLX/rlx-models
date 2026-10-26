@@ -24,6 +24,8 @@ hf-hub = { workspace = true, optional = true }
 [features]
 default = []
 hf-download = ["dep:hf-hub"]
+# `export::export_rlxp`: an HY-MT checkpoint as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-qwen3/export"]
 metal = ["rlx-qwen3/metal"]
 mlx = ["rlx-qwen3/mlx"]
 cuda = ["rlx-qwen3/cuda"]
@@ -32,7 +34,12 @@ gpu = ["rlx-qwen3/gpu"]
 vulkan = ["rlx-qwen3/vulkan"]
 coreml = ["rlx-qwen3/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
+
+[dev-dependencies]
+rlx-core = { workspace = true, features = ["export"] }
+rlx-text = { workspace = true }
+tempfile = "3"
 
 [[bin]]
 name = "rlx-hy-mt"

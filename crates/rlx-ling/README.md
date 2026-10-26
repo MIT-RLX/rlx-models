@@ -341,7 +341,7 @@ and is already exercised by the mlx-community models.
 
 The same box runs it fine on **CPU**: prefill 15.7 tok/s (TTFT 4.07 s), decode
 4.16 tok/s, peak RSS 57.6 GB of 61 — slower than the M4 Pro's 150 / 15.2 (OpenBLAS
-on a mobile x86 vs Accelerate on Apple silicon).
+on a mobile x86 vs Accelerate on macOS arm64).
 
 The plain `sgemm` kernel has the identical single-chain shape and is the next
 obvious target, but it is the workhorse for *every* Metal matmul: unrolling it

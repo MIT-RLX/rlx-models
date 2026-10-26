@@ -18,14 +18,18 @@ thread_local! {
 
 fn mpsgraph_force_off() -> bool {
     matches!(
-        std::env::var("RLX_ZONOS_DISABLE_MPSGRAPH").ok().as_deref(),
+        rlx_ir::env::var_result("RLX_ZONOS_DISABLE_MPSGRAPH")
+            .ok()
+            .as_deref(),
         Some("1") | Some("true") | Some("yes")
     )
 }
 
 fn hybrid_opt_in() -> bool {
     matches!(
-        std::env::var("RLX_ZONOS_MPSGRAPH_HYBRID").ok().as_deref(),
+        rlx_ir::env::var_result("RLX_ZONOS_MPSGRAPH_HYBRID")
+            .ok()
+            .as_deref(),
         Some("1") | Some("true") | Some("yes")
     )
 }

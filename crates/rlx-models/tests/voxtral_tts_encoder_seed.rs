@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 #[test]
 fn encoder_loads_from_decoder_seed_and_encodes_pcm() {
-    let dir = match std::env::var("RLX_VOXTRAL_TTS_DIR") {
+    let dir = match rlx_ir::env::var_result("RLX_VOXTRAL_TTS_DIR") {
         Ok(d) => PathBuf::from(d),
         Err(_) => {
             eprintln!("skip encoder_loads_from_decoder_seed: set RLX_VOXTRAL_TTS_DIR");

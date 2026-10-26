@@ -36,7 +36,7 @@ export RLX_MOSHI_DIR=.cache/moshiko-q8
 # One-way generation (CPU eager — slow; use Metal for production)
 just moshi -- --prompt "Hello, I'm Moshi." --out-wav /tmp/moshi.wav --device cpu
 
-# GPU path (~70 ms/frame on Apple Silicon with Q4 MLX or bf16)
+# GPU path (~70 ms/frame on macOS arm64 with Q4 MLX or bf16)
 just fetch-moshi-q4
 just moshi -- --checkpoint q4 --device metal --prompt "Hello." --out-wav /tmp/moshi-metal.wav --max-steps 8
 
@@ -88,7 +88,7 @@ just fetch-moshika            # Moshika bf16
 just fetch-moshika-q4         # Moshika MLX Q4
 ```
 
-(`--device mlx` uses Apple GPU via Candle Metal; native rlx-mlx quantized matmul is future work.)
+(`--device mlx` uses Metal GPU via Candle Metal; native rlx-mlx quantized matmul is future work.)
 
 ## Environment
 

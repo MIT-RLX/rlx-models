@@ -118,7 +118,7 @@ fn the_ple_hash_sees_the_image_token_not_the_placeholder() {
 }
 
 fn dev() -> Device {
-    std::env::var("RLX_TEST_DEVICE")
+    rlx_ir::env::var_result("RLX_TEST_DEVICE")
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| rlx_cli::parse_device(&s).expect("bad RLX_TEST_DEVICE"))
@@ -389,7 +389,7 @@ fn the_native_tower_runs_on_real_mmproj_weights() {
     use rlx_qwen4exp::vision::VisionEncoder;
     use rlx_qwen4exp::vit::VisionConfig;
 
-    let Some(path) = std::env::var("RLX_QWEN4EXP_MMPROJ")
+    let Some(path) = rlx_ir::env::var_result("RLX_QWEN4EXP_MMPROJ")
         .ok()
         .filter(|s| !s.is_empty())
     else {

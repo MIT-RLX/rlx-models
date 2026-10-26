@@ -12,6 +12,7 @@ categories.workspace = true
 readme = "README.md"
 
 [dependencies]
+rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
@@ -27,6 +28,8 @@ hf-hub = { workspace = true, optional = true }
 default = []
 hf-download = ["dep:hf-hub"]
 tokenizer = ["rlx-llama32/tokenizer"]
+# `export::export_rlxp`: a Nanbeige checkpoint as an `.rlxp` package rlx runs alone.
+export = ["rlx-core/export", "rlx-llama32/export"]
 metal = ["rlx-llama32/metal"]
 mlx = ["rlx-llama32/mlx"]
 cuda = ["rlx-llama32/cuda"]
@@ -35,7 +38,12 @@ gpu = ["rlx-llama32/gpu"]
 vulkan = ["rlx-llama32/vulkan"]
 coreml = ["rlx-llama32/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
+
+[dev-dependencies]
+rlx-core = { workspace = true, features = ["export"] }
+rlx-text = { workspace = true }
+tempfile = "3"
 
 [[bin]]
 name = "rlx-nanbeige"
@@ -49,7 +57,7 @@ required-features = ["hf-download"]
 [[example]]
 name = "backend_matrix"
 # Enable whichever backends you want at build time, e.g. `--features all-backends`
-# or `--features apple-silicon`.
+# or `--features macos-gpu`.
 
 [[example]]
 name = "backend_bench"

@@ -25,6 +25,8 @@ pub mod attention;
 pub mod cli;
 pub mod config;
 pub mod decode;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod flow;
 pub mod indexer;
 pub mod mlp;

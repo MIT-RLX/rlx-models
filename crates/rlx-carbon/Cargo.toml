@@ -19,6 +19,14 @@ rlx-runtime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokenizers = { workspace = true, optional = true }
+rlx-core = { workspace = true, optional = true }
+rlx-qwen3 = { workspace = true, optional = true }
+
+[dev-dependencies]
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true, features = ["program"] }
+rlx-text = { workspace = true }
+tempfile = "3"
 
 [features]
 default = []
@@ -26,6 +34,8 @@ default = []
 # BPE for text + algorithmic DNA 6-mer coding). Without it the CLI/runner are
 # token-ids only (the backbone still runs via rlx-llama32).
 tokenizer = ["dep:tokenizers", "rlx-llama32/tokenizer"]
+# `export::export_rlxp`: Carbon as an `.rlxp` package rlx runs alone.
+export = ["tokenizer", "dep:rlx-core", "rlx-core/export", "dep:rlx-qwen3", "rlx-qwen3/export"]
 # Backend passthroughs to the rlx-llama32 backbone.
 metal = ["rlx-llama32/metal"]
 mlx = ["rlx-llama32/mlx"]
@@ -35,7 +45,7 @@ gpu = ["rlx-llama32/gpu"]
 vulkan = ["rlx-llama32/vulkan"]
 coreml = ["rlx-llama32/coreml"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-apple-silicon = ["metal", "mlx", "gpu", "coreml"]
+macos-gpu = ["metal", "mlx", "gpu", "coreml"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
@@ -52,3 +62,8 @@ required-features = ["tokenizer"]
 
 [lints]
 workspace = true
+
+[[test]]
+name = "export_rlxp"
+path = "tests/export_rlxp.rs"
+required-features = ["export"]

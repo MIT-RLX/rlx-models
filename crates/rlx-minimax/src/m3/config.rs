@@ -289,8 +289,9 @@ impl M3VisionConfig {
     pub fn from_hf_config_json(path: &Path) -> Result<Self> {
         let raw =
             std::fs::read_to_string(path).map_err(|e| anyhow!("minimax-m3: read {path:?}: {e}"))?;
-        let root: serde_json::Value =
+        let mut root: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| anyhow!("minimax-m3: parse {path:?}: {e}"))?;
+        rlx_core::config::legacy_rope_keys(&mut root);
         let vc = root
             .get("vision_config")
             .ok_or_else(|| anyhow!("minimax-m3: no vision_config in {path:?}"))?;
@@ -427,8 +428,9 @@ impl MiniMaxM3Config {
     pub fn from_hf_config_json(path: &Path) -> Result<Self> {
         let raw =
             std::fs::read_to_string(path).map_err(|e| anyhow!("minimax-m3: read {path:?}: {e}"))?;
-        let root: serde_json::Value =
+        let mut root: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| anyhow!("minimax-m3: parse {path:?}: {e}"))?;
+        rlx_core::config::legacy_rope_keys(&mut root);
         let text = root.get("text_config").unwrap_or(&root);
         let mut cfg: Self = serde_json::from_value(text.clone())
             .map_err(|e| anyhow!("minimax-m3: parse text_config in {path:?}: {e}"))?;

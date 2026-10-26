@@ -504,6 +504,8 @@ pub fn ggml_type_to_quant_scheme(dtype: rlx_gguf::GgmlType) -> Option<QuantSchem
         GgmlType::Q6K => Some(QuantScheme::GgufQ6K),
         GgmlType::Q8K => Some(QuantScheme::GgufQ8K),
         GgmlType::Q4_0 => Some(QuantScheme::GgufQ4_0),
+        // Only where opted in: see `dequant_matmul_supported`.
+        GgmlType::Q4_1 => Some(QuantScheme::GgufQ4_1),
         GgmlType::Q5_0 => Some(QuantScheme::GgufQ5_0),
         GgmlType::Q8_0 => Some(QuantScheme::GgufQ8_0),
         // PrismML Bonsai 1-bit / Ternary 2-bit — keep packed so the
@@ -554,6 +556,10 @@ pub fn ggml_type_to_quant_scheme(dtype: rlx_gguf::GgmlType) -> Option<QuantSchem
 pub fn dequant_matmul_supported(scheme: QuantScheme) -> bool {
     match scheme {
         QuantScheme::GgufQ6K => q6k_dequant_matmul_supported(),
+        // CPU / Metal / MLX dequantize Q4_1; the other GPU backends do not, so
+        // it stays packed only on request (`RLX_GGUF_PACKED_Q4_1`, CPU runs).
+        // A Q4_0 checkpoint stores a few `ffn_down` tensors as Q4_1.
+        QuantScheme::GgufQ4_1 => rlx_ir::env::flag("RLX_GGUF_PACKED_Q4_1"),
         _ => true,
     }
 }
@@ -717,6 +723,15 @@ pub trait WeightLoader: Send {
         let _ = key;
         Ok(None)
     }
+    /// The float dtype `key` is stored in on disk (F32 / F16 / BF16), when the
+    /// format records one and the tensor is not a packed quant. `take` always
+    /// widens to f32; this is how a builder learns it can keep a half-precision
+    /// tensor at 2 B/elem without loss ([`crate::weight_storage::WeightStorage::Auto`]).
+    /// Default `None` (unknown — treated as f32).
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        let _ = key;
+        None
+    }
     /// Names that haven't been taken yet — useful for "did the
     /// model use every weight?" hygiene checks.
     fn remaining_keys(&self) -> Vec<String>;
@@ -742,6 +757,9 @@ impl WeightLoader for WeightMap {
     }
     fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         Self::take_transposed(self, key)
+    }
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        Self::stored_dtype(self, key)
     }
     fn remaining_keys(&self) -> Vec<String> {
         self.keys().map(|s| s.to_string()).collect()
@@ -786,6 +804,9 @@ impl WeightLoader for Box<dyn WeightLoader> {
     }
     fn gguf_file(&self) -> Option<&rlx_gguf::GgufFile> {
         (**self).gguf_file()
+    }
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        (**self).stored_dtype(key)
     }
     fn remaining_keys(&self) -> Vec<String> {
         (**self).remaining_keys()
@@ -1013,6 +1034,106 @@ impl WeightLoader for MlxLoader {
     }
 }
 
+/// A [`WeightLoader`] that serves keys requested under one prefix from the
+/// inner loader's tensors under another.
+///
+/// Multimodal HF checkpoints nest a text model one level down — LFM2-VL
+/// stores `model.language_model.layers.N.*` where a text-only builder asks
+/// for `model.layers.N.*`. `PrefixRenameLoader::new(inner, "model.",
+/// "model.language_model.")` lets that builder read the multimodal file
+/// unchanged. Keys without the `from` prefix pass through. Every method is
+/// forwarded, packed and streaming paths included, so wrapping costs no
+/// zero-copy upload.
+pub struct PrefixRenameLoader<L: WeightLoader> {
+    inner: L,
+    from: String,
+    to: String,
+}
+
+impl<L: WeightLoader> PrefixRenameLoader<L> {
+    pub fn new(inner: L, from: impl Into<String>, to: impl Into<String>) -> Self {
+        Self {
+            inner,
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    fn map(&self, key: &str) -> String {
+        match key.strip_prefix(&self.from) {
+            Some(rest) => format!("{}{rest}", self.to),
+            None => key.to_string(),
+        }
+    }
+}
+
+impl<L: WeightLoader> WeightLoader for PrefixRenameLoader<L> {
+    fn format_id(&self) -> &'static str {
+        self.inner.format_id()
+    }
+    fn read_tensor_bytes_into(&self, key: &str, buf: &mut Vec<u8>) -> Result<bool> {
+        self.inner.read_tensor_bytes_into(&self.map(key), buf)
+    }
+    fn release_mapped_pages(&self) {
+        self.inner.release_mapped_pages()
+    }
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+    fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let k = self.map(key);
+        self.inner.take(&k)
+    }
+    fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let k = self.map(key);
+        self.inner.take_transposed(&k)
+    }
+    fn take_packed(&mut self, key: &str) -> Result<Option<crate::weight_map::PackedWeightTensor>> {
+        let k = self.map(key);
+        self.inner.take_packed(&k)
+    }
+    fn take_packed_mlx(&mut self, key: &str) -> Result<Option<MlxPackedLinear>> {
+        let k = self.map(key);
+        self.inner.take_packed_mlx(&k)
+    }
+    fn borrow_packed_mlx(&self, key: &str) -> Option<rlx_mlx_io::PackedMlxBorrow<'_>> {
+        self.inner.borrow_packed_mlx(&self.map(key))
+    }
+    fn dontneed_packed_mlx(&self, key: &str) {
+        self.inner.dontneed_packed_mlx(&self.map(key))
+    }
+    fn prewarm(&self, keys: &[&str]) {
+        let mapped: Vec<String> = keys.iter().map(|k| self.map(k)).collect();
+        let refs: Vec<&str> = mapped.iter().map(String::as_str).collect();
+        self.inner.prewarm(&refs)
+    }
+    fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
+        self.inner.tensor_bytes_borrowed(&self.map(key))
+    }
+    fn packed_meta(&self, key: &str) -> Option<(rlx_ir::quant::QuantScheme, Vec<usize>)> {
+        self.inner.packed_meta(&self.map(key))
+    }
+    fn gguf_file(&self) -> Option<&rlx_gguf::GgufFile> {
+        self.inner.gguf_file()
+    }
+    fn packed_mlx_meta(&mut self, key: &str) -> Result<Option<PackedMlxMeta>> {
+        let k = self.map(key);
+        self.inner.packed_mlx_meta(&k)
+    }
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        self.inner.stored_dtype(&self.map(key))
+    }
+    fn remaining_keys(&self) -> Vec<String> {
+        self.inner.remaining_keys()
+    }
+    fn arch_hint(&self) -> Option<&str> {
+        self.inner.arch_hint()
+    }
+}
+
 /// Adapter that lets a HF-safetensors-backed [`WeightLoader`] satisfy
 /// requests phrased in GGUF-style names (`blk.N.attn_q.weight` etc.).
 ///
@@ -1089,6 +1210,13 @@ impl<L: WeightLoader> WeightLoader for HfTranslatingLoader<L> {
     fn tensor_bytes_borrowed(&self, key: &str) -> Option<&[u8]> {
         self.inner.tensor_bytes_borrowed(key)
     }
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        self.inner.stored_dtype(key).or_else(|| {
+            gguf_to_hf_name_candidates(key)
+                .into_iter()
+                .find_map(|hf| self.inner.stored_dtype(&hf))
+        })
+    }
     fn remaining_keys(&self) -> Vec<String> {
         self.inner.remaining_keys()
     }
@@ -1117,6 +1245,12 @@ pub struct GgufLoader {
     /// so downstream MTP-aware builders can iterate them through
     /// the standard drain pattern.
     include_mtp: bool,
+    /// Report `BF16` tensors to [`Self::take_packed_metadata`] and
+    /// [`Self::take_packed`] as
+    /// [`QuantScheme::GgufBF16`](rlx_ir::quant::QuantScheme::GgufBF16)
+    /// (kept 2 bytes/element) instead of leaving them to the f32 path.
+    /// Off by default: only callers that upload bf16 params opt in.
+    keep_bf16: bool,
     /// First `blk.N` index that belongs to an MTP head, computed
     /// from `{arch}.block_count - {arch}.nextn_predict_layers` at
     /// construction. `None` for files without the metadata key
@@ -1136,8 +1270,27 @@ impl GgufLoader {
             arch,
             taken: HashSet::new(),
             include_mtp: false,
+            keep_bf16: false,
             mtp_layer_threshold,
         })
+    }
+
+    /// A loader over an already-parsed GGUF — e.g. one read from memory with
+    /// [`rlx_gguf::GgufFile::from_reader`], where there is no file to open
+    /// (wasm32).
+    pub fn from_gguf_file(file: rlx_gguf::GgufFile) -> Self {
+        let arch = gguf_architecture_str(&file)
+            .unwrap_or("unknown")
+            .to_string();
+        let mtp_layer_threshold = compute_mtp_layer_threshold(&file);
+        Self {
+            file,
+            arch,
+            taken: HashSet::new(),
+            include_mtp: false,
+            keep_bf16: false,
+            mtp_layer_threshold,
+        }
     }
 
     /// An empty loader (no tensors) tagged with `arch`. Placeholder for runtimes
@@ -1149,6 +1302,7 @@ impl GgufLoader {
             arch: arch.to_string(),
             taken: HashSet::new(),
             include_mtp: false,
+            keep_bf16: false,
             mtp_layer_threshold: None,
         }
     }
@@ -1223,16 +1377,31 @@ impl GgufLoader {
             .file
             .get(&real)
             .ok_or_else(|| anyhow!("tensor missing: {real}"))?;
-        let Some(scheme) = ggml_type_to_quant_scheme(t.dtype) else {
-            return Ok(None);
+        let scheme = match ggml_type_to_quant_scheme(t.dtype) {
+            Some(scheme) if dequant_matmul_supported(scheme) => scheme,
+            None if self.keep_bf16 && t.dtype == rlx_gguf::GgmlType::BF16 => {
+                rlx_ir::quant::QuantScheme::GgufBF16
+            }
+            _ => return Ok(None),
         };
-        if !dequant_matmul_supported(scheme) {
-            return Ok(None);
-        }
         let mut shape = t.shape.clone();
         shape.reverse();
         self.taken.insert(real);
         Ok(Some((scheme, shape)))
+    }
+
+    /// Keep, and optionally rename, a subset of the backing file's tensors:
+    /// `map` returns each tensor's new name or `None` to drop it, and what is
+    /// left is compacted ([`rlx_gguf::GgufFile::retain_map`]). For a pipeline
+    /// stage that holds only its own layers, renumbered from `blk.0`.
+    pub fn retain_tensors(&mut self, map: impl FnMut(&str) -> Option<String>) -> Result<()> {
+        self.file.retain_map(map)
+    }
+
+    /// Keep `BF16` tensors as bf16 in [`Self::take_packed_metadata`] (see the
+    /// `keep_bf16` field).
+    pub fn keep_bf16(&mut self, on: bool) {
+        self.keep_bf16 = on;
     }
 
     /// True if `name` is an MTP weight under this file's naming
@@ -1293,14 +1462,15 @@ impl GgufLoader {
             .get(&real)
             .ok_or_else(|| anyhow!("tensor missing: {real}"))?;
         // Map ggml dtype → our QuantScheme. K-quants and Q4_0/Q5_0/Q8_0 can stay
-        // packed on CPU; Q4_1/Q5_1 + uncompressed F32/F16/BF16 fall through
+        // packed on CPU (Q4_1 with `RLX_GGUF_PACKED_Q4_1`); Q5_1 + uncompressed
         // F32/F16/BF16 fall through to the dequant path (return
-        // None — caller switches to `take`).
-        let Some(scheme) = ggml_type_to_quant_scheme(t.dtype) else {
-            return Ok(None);
-        };
-        if !dequant_matmul_supported(scheme) {
-            return Ok(None);
+        // None — caller switches to `take`), BF16 excepted under `keep_bf16`.
+        let scheme = match ggml_type_to_quant_scheme(t.dtype) {
+            Some(scheme) if dequant_matmul_supported(scheme) => scheme,
+            None if self.keep_bf16 && t.dtype == rlx_gguf::GgmlType::BF16 => {
+                rlx_ir::quant::QuantScheme::GgufBF16
+            }
+            _ => return Ok(None),
         };
         let bytes = self
             .file
@@ -1526,6 +1696,15 @@ impl WeightLoader for GgufLoader {
         }
         let (rows, cols) = (shape[0], shape[1]);
         Ok((transpose_2d_rowmajor(&data, rows, cols), vec![cols, rows]))
+    }
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        let t = self.file.get(&self.resolve(key).ok()?)?;
+        Some(match t.dtype {
+            rlx_gguf::GgmlType::F32 => rlx_ir::DType::F32,
+            rlx_gguf::GgmlType::F16 => rlx_ir::DType::F16,
+            rlx_gguf::GgmlType::BF16 => rlx_ir::DType::BF16,
+            _ => return None,
+        })
     }
     fn remaining_keys(&self) -> Vec<String> {
         // MTP weights default to invisible — they belong to optional
@@ -2300,8 +2479,7 @@ mod tests {
     #[test]
     fn laguna_gguf_f32_take_is_forbidden() {
         use rlx_gguf::{GgmlType, GgufWriter, MetaValue, bytes_for_public};
-        // SAFETY: isolate from opt-in left by another test.
-        unsafe { std::env::remove_var("RLX_LAGUNA_ALLOW_F32_EXPAND") };
+        rlx_ir::env::remove("RLX_LAGUNA_ALLOW_F32_EXPAND");
         let path = std::env::temp_dir().join("rlx_laguna_forbid_f32_take.gguf");
         let mut w = GgufWriter::new();
         w.set_arch("laguna");
@@ -2344,11 +2522,11 @@ mod tests {
         assert_eq!(data2, bias);
 
         // Opt-in: quant take succeeds.
-        unsafe { std::env::set_var("RLX_LAGUNA_ALLOW_F32_EXPAND", "1") };
+        rlx_ir::env::set("RLX_LAGUNA_ALLOW_F32_EXPAND", "1");
         let mut loader3 = GgufLoader::from_file(path.to_str().unwrap()).unwrap();
         let (qdata, _) = loader3.take("blk.0.ffn_down.weight").unwrap();
         assert_eq!(qdata.len(), 256);
-        unsafe { std::env::remove_var("RLX_LAGUNA_ALLOW_F32_EXPAND") };
+        rlx_ir::env::remove("RLX_LAGUNA_ALLOW_F32_EXPAND");
 
         std::fs::remove_file(&path).ok();
     }

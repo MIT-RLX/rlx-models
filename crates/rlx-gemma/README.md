@@ -76,19 +76,19 @@ just test-gemma4-coder   # env-gated; needs .cache/gemma4-12b-coder
 | Feature | `Device` it enables |
 |---|---|
 | (default) | CPU |
-| `metal` | Apple Metal |
-| `mlx` | Apple MLX |
+| `metal` | Metal |
+| `mlx` | MLX |
 | `cuda` | NVIDIA CUDA |
 | `rocm` | AMD ROCm |
 | `gpu` | wgpu (Metal/Vulkan/DX12) |
 | `vulkan` | Vulkan compute |
-| `apple-silicon` | metal + mlx + gpu |
+| `macos-gpu` | metal + mlx + gpu |
 | `all-backends` | every device |
 
-### Verified parity (M-series macOS, `apple-silicon`)
+### Verified parity (M-series macOS, `macos-gpu`)
 
 ```
-cargo test -p rlx-gemma --features apple-silicon
+cargo test -p rlx-gemma --features macos-gpu
 # 106 / 106 pass:
 #   54 lib  (config, flow, multimodal, runner)
 #    8 gemma4_backend_parity         (projector vs CPU on Metal/MLX/wgpu)
@@ -111,7 +111,7 @@ per-layer head_dim variation, tiny 6-layer config):
 
 ### Metal precision: a knob, not a floor
 
-Apple Silicon's `simdgroup_float8x8` matmul units use reduced-precision
+M-series `simdgroup_float8x8` matmul units use reduced-precision
 internal accumulators (~fp16 class for the tensor-multiply step) — fine
 for production inference where the resulting ~1e-3 relative error is
 bounded by stable softmax + layer norms, but visible (~1e-1 absolute)

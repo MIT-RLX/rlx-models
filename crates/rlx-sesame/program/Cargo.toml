@@ -1,0 +1,20 @@
+# Sesame CSM's host logic as an RLX program (WebAssembly): the prompt's
+# frames, each frame's 32 codes sampled through the backbone and the depth
+# decoder, and Mimi. Built by `rlx-sesame`'s exporter, so it stands outside
+# the workspace.
+[package]
+name = "rlx-sesame-program"
+version = "0.2.19"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rlx-program = "0.2.19"
+serde_json = "1"
+# The runner's sampler stream.
+fastrand = { version = "=2.5.0", default-features = false }
+
+[workspace]

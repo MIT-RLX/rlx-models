@@ -24,7 +24,7 @@
 //! just fetch-orpheus-snac
 //! export ORPHEUS_SNAC_PATH=/tmp/rlx-weights/snac/snac_24khz_decoder.safetensors
 //!
-//! cargo run --release -p rlx-orpheus --example voice_clone --features apple-silicon -- \
+//! cargo run --release -p rlx-orpheus --example voice_clone --features macos-gpu -- \
 //!   --weights /path/to/orpheus-3b-0.1-pretrained.Q4_K_M.gguf \
 //!   --ref-json /tmp/jfk_orpheus_ref.json \
 //!   --target-text "I write my software in Rust because it is fast and safe." \

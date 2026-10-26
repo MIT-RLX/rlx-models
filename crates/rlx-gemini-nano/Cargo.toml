@@ -1,0 +1,27 @@
+[package]
+name = "rlx-gemini-nano"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Gemini Nano (Chrome on-device model) for RLX: TFLite container reader and manifest inspection"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+memmap2 = "0.9"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+flatbuffers = "24"
+
+[[bin]]
+name = "rlx-gemini-nano"
+path = "src/bin/rlx_gemini_nano.rs"
+
+[lints]
+workspace = true

@@ -50,7 +50,7 @@ See [`MlmExecMode`](src/runner.rs) for measured numbers (RTX 4090 + Intel x86, B
 - `tokenizer` — WordPiece via `tokenizers`
 - `prepare`, `hf-download` — convert / download HF snapshots into `model.safetensors` + `tokenizer.json`
 - `blas-mkl` — link `rlx-cpu` against Intel MKL instead of OpenBLAS on Linux / Windows (macOS stays on Accelerate)
-- backend: `metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, plus convenience bundles (`all-backends`, `apple-silicon`, `nvidia-gpu`, `amd-gpu`, `portable-gpu`)
+- backend: `metal`, `mlx`, `cuda`, `rocm`, `gpu`, `vulkan`, plus convenience bundles (`all-backends`, `macos-gpu`, `nvidia-gpu`, `amd-gpu`, `portable-gpu`)
 
 ## Examples
 

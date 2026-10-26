@@ -24,7 +24,10 @@ use ndarray::{Array2, ArrayView1};
 use rlx_runtime::Device;
 
 fn cp_force_eager() -> bool {
-    std::env::var("RLX_QWEN3_TTS_CP_EAGER").ok().as_deref() == Some("1")
+    rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_EAGER")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// GPU sessions use compiled CP on Metal/CUDA/ROCm. CPU eager: `RLX_QWEN3_TTS_CP_EAGER=1`.
@@ -32,7 +35,11 @@ pub fn cp_use_compiled_for_device(talker_device: Device) -> bool {
     if cp_force_eager() {
         return false;
     }
-    if std::env::var("RLX_QWEN3_TTS_CP_COMPILED").ok().as_deref() == Some("1") {
+    if rlx_ir::env::var_result("RLX_QWEN3_TTS_CP_COMPILED")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         return true;
     }
     if crate::gpu_pipeline::gpu_session_enabled(talker_device) {

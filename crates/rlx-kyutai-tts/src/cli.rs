@@ -10,7 +10,6 @@ use crate::download::{
 use crate::session::{GenerationConfig, KyutaiTtsSession};
 use anyhow::{Context, Result};
 use rlx_mimi::audio::write_wav_mono;
-use std::env;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,5 +208,5 @@ Env:
   RLX_KYUTAI_TTS_CHECKPOINT  Default checkpoint preset (1.6b-en_fr)
 "
     );
-    let _ = env::var("RLX_KYUTAI_TTS_DIR");
+    let _ = rlx_ir::env::var_result("RLX_KYUTAI_TTS_DIR");
 }
