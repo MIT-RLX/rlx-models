@@ -16,16 +16,9 @@
 //! SeamlessM4T-compatible audio preprocessing for Wav2Vec2-BERT.
 
 use anyhow::{Result, anyhow, bail};
-use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-
-const FRAME_LENGTH: usize = 400;
-const HOP_LENGTH: usize = 160;
-const FFT_LENGTH: usize = 512;
-const PREEMPHASIS: f32 = 0.97;
-const MEL_LOW_HZ: f32 = 20.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Wav2Vec2BertPreprocessConfig {
@@ -105,16 +98,18 @@ impl LogMelExtractor {
         &self.cfg
     }
 
+    /// HF `SeamlessM4TFeatureExtractor`: rlx-spectral's Kaldi fbank (computed
+    /// in f64: the int16-scaled frames put quiet bins near f32's noise floor),
+    /// per-bin normalization, `stride` frames stacked per row.
     pub fn extract(&self, pcm: &[f32]) -> LogMelFeatures {
-        let m = self.cfg.num_mel_bins;
-        let fbank = log_mel_fbank(pcm, m, self.cfg.sampling_rate);
-        let t = fbank.len() / m / self.cfg.stride;
+        let wide: Vec<f64> = pcm.iter().map(|&v| v as f64).collect();
+        let fe = rlx_spectral::KaldiFbank::<f64>::new(
+            self.cfg.sampling_rate as f64,
+            self.cfg.num_mel_bins,
+        );
+        let (x, t) = fe.input_features_stacked(&wide, self.cfg.stride);
         let stacked_dim = self.cfg.feature_dim();
-        let mut features = vec![0.0; t * stacked_dim];
-        for ti in 0..t {
-            let src = &fbank[ti * self.cfg.stride * m..(ti + 1) * self.cfg.stride * m];
-            features[ti * stacked_dim..(ti + 1) * stacked_dim].copy_from_slice(src);
-        }
+        let features: Vec<f32> = x.into_iter().map(|v| v as f32).collect();
         LogMelFeatures {
             num_mel_bins: stacked_dim,
             num_frames: t,
@@ -140,96 +135,6 @@ impl LogMelExtractor {
         feats.attention_mask = mask;
         feats
     }
-}
-
-/// Extract unstacked SeamlessM4T log-mel filterbank frames `[T, n_mels]`.
-///
-/// This follows the feature extractor geometry used by
-/// `facebook/w2v-bert-2.0`: 25 ms frames, 10 ms hop, 512-point FFT, DC removal,
-/// preemphasis, a Povey window, and Kaldi-scale mel filters from 20 Hz to Nyquist.
-fn log_mel_fbank(pcm: &[f32], n_mels: usize, sample_rate: usize) -> Vec<f32> {
-    if pcm.len() < FRAME_LENGTH || n_mels == 0 || sample_rate == 0 {
-        return Vec::new();
-    }
-    let n_frames = 1 + (pcm.len() - FRAME_LENGTH) / HOP_LENGTH;
-    let n_freq = FFT_LENGTH / 2 + 1;
-    let filters = kaldi_mel_filters(sample_rate as f32, n_mels);
-    let window = povey_window(FRAME_LENGTH);
-    let fft = rustfft::FftPlanner::new().plan_fft_forward(FFT_LENGTH);
-    let mut out = vec![0.0; n_frames * n_mels];
-    let mut frame = vec![0.0; FRAME_LENGTH];
-    let mut spectrum = vec![Complex::new(0.0, 0.0); FFT_LENGTH];
-
-    for fi in 0..n_frames {
-        frame.copy_from_slice(&pcm[fi * HOP_LENGTH..fi * HOP_LENGTH + FRAME_LENGTH]);
-        let mean = frame.iter().sum::<f32>() / FRAME_LENGTH as f32;
-        for sample in &mut frame {
-            *sample -= mean;
-        }
-        for i in (1..FRAME_LENGTH).rev() {
-            frame[i] -= PREEMPHASIS * frame[i - 1];
-        }
-        frame[0] *= 1.0 - PREEMPHASIS;
-        for i in 0..FFT_LENGTH {
-            spectrum[i] = Complex::new(
-                if i < FRAME_LENGTH {
-                    frame[i] * window[i]
-                } else {
-                    0.0
-                },
-                0.0,
-            );
-        }
-        fft.process(&mut spectrum);
-        for mi in 0..n_mels {
-            let weights = &filters[mi * n_freq..(mi + 1) * n_freq];
-            let mut energy = 0.0;
-            for (bin, &weight) in weights.iter().enumerate() {
-                let value = spectrum[bin];
-                energy += weight * (value.re * value.re + value.im * value.im);
-            }
-            out[fi * n_mels + mi] = energy.max(f32::EPSILON).ln();
-        }
-    }
-    out
-}
-
-fn povey_window(n: usize) -> Vec<f32> {
-    (0..n)
-        .map(|i| {
-            let phase = 2.0 * std::f32::consts::PI * i as f32 / (n - 1) as f32;
-            (0.5 - 0.5 * phase.cos()).powf(0.85)
-        })
-        .collect()
-}
-
-fn hz_to_mel(hz: f32) -> f32 {
-    1127.0 * (1.0 + hz / 700.0).ln()
-}
-
-fn kaldi_mel_filters(sample_rate: f32, n_mels: usize) -> Vec<f32> {
-    let n_freq = FFT_LENGTH / 2 + 1;
-    let mel_low = hz_to_mel(MEL_LOW_HZ);
-    let mel_high = hz_to_mel(sample_rate * 0.5);
-    let step = (mel_high - mel_low) / (n_mels + 1) as f32;
-    let bin_width = sample_rate / FFT_LENGTH as f32;
-    let mut filters = vec![0.0; n_mels * n_freq];
-    for mi in 0..n_mels {
-        let left = mel_low + mi as f32 * step;
-        let center = left + step;
-        let right = center + step;
-        for bin in 0..n_freq {
-            let mel = hz_to_mel(bin as f32 * bin_width);
-            filters[mi * n_freq + bin] = if mel > left && mel <= center {
-                (mel - left) / step
-            } else if mel > center && mel < right {
-                (right - mel) / step
-            } else {
-                0.0
-            };
-        }
-    }
-    filters
 }
 
 pub fn load_wav_mono_f32(path: &Path) -> Result<(Vec<f32>, usize)> {

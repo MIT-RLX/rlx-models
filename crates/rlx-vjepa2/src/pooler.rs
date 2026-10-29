@@ -19,7 +19,7 @@ use super::config::Vjepa2Config;
 use super::layers::{attention_plain, cross_attention};
 use super::weights::{Vjepa2PoolerCrossWeights, Vjepa2PoolerSelfBlockWeights, Vjepa2PoolerWeights};
 use anyhow::Result;
-use rlx_core::host_kernels::{gelu_tanh, layer_norm, linear};
+use rlx_core::host_kernels::{gelu_erf, layer_norm, linear};
 
 pub struct Vjepa2PoolerOutput {
     pub embedding: Vec<f32>,
@@ -116,7 +116,7 @@ fn pooler_self_block(
 
     let n2 = layer_norm(x, &block.norm2_w, &block.norm2_b, e, eps)?;
     let mut mlp = linear(&n2, rows, e, &block.mlp_fc1_w_t, hidden, &block.mlp_fc1_b)?;
-    gelu_tanh(&mut mlp);
+    gelu_erf(&mut mlp);
     let ffn = linear(&mlp, rows, hidden, &block.mlp_fc2_w_t, e, &block.mlp_fc2_b)?;
     for i in 0..x.len() {
         x[i] += ffn[i];
@@ -169,7 +169,7 @@ fn cross_block(
         hidden,
         &block.mlp_fc1_b,
     )?;
-    gelu_tanh(&mut mlp);
+    gelu_erf(&mut mlp);
     let ffn = linear(
         &mlp,
         batch * l_q,

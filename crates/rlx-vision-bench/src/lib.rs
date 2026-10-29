@@ -1046,6 +1046,21 @@ pub fn run_coordinate(
     train: &Split,
     test: &Split,
 ) -> Report {
+    run_coordinate_with(cfg, group, train, test, None)
+}
+
+/// [`run_coordinate`] with cluster [`TrainOptions`](rlx_runtime::dist::TrainOptions):
+/// `Some` ships ONE spec covering the whole dataset to every rank and trains
+/// through `dist::run_train_group`, which plans each rank's share of every sync
+/// and data slice itself (accumulation, bf16/f16 wire, overlap, balance, local
+/// SGD, ZeRO-1, checkpoints). `None` is the original per-rank equal-shard path.
+pub fn run_coordinate_with(
+    cfg: &Config,
+    group: std::sync::Arc<rlx_driver::ProcessGroup>,
+    train: &Split,
+    test: &Split,
+    options: Option<rlx_runtime::dist::TrainOptions>,
+) -> Report {
     use rlx_runtime::dist::{self, DataRef, TrainSpec, WeightRef};
 
     let grad_group = 0u64;
@@ -1074,7 +1089,14 @@ pub fn run_coordinate(
 
     // Equal shards for every rank (drop the remainder) so all ranks run the same
     // number of batches → their per-step gradient all-reduces stay in lock-step.
-    let per = train.len() / world as usize;
+    // With options, every rank gets the whole range and the trainer slices it.
+    let cluster = options.is_some();
+    let per = if cluster {
+        train.len()
+    } else {
+        train.len() / world as usize
+    };
+    let first = |r: u32| if cluster { 0 } else { r as usize * per };
     let make_spec = |r: u32| TrainSpec {
         graph: build_local_grad_graph(cfg), // [loss, logits, grad_0…] — no collective
         params: weights.clone(),
@@ -1085,14 +1107,14 @@ pub fn run_coordinate(
                 input: "x".into(),
                 uri: x_uri.clone(),
                 elem: cfg.spec.pixels(),
-                shard_start: r as usize * per,
+                shard_start: first(r),
                 shard_len: per,
             },
             DataRef {
                 input: "labels".into(),
                 uri: y_uri.clone(),
                 elem: 1,
-                shard_start: r as usize * per,
+                shard_start: first(r),
                 shard_len: per,
             },
         ],
@@ -1109,8 +1131,10 @@ pub fn run_coordinate(
         // Push shards over the wire when workers have no shared filesystem
         // (required cross-machine); default off (shared FS / pre-staged).
         push_data: rlx_ir::env::var_result("RLX_PUSH_DATA").is_ok(),
+        options: options.clone(),
+        frozen: Vec::new(),
     };
-    let push = rlx_ir::env::var_result("RLX_PUSH_DATA").is_ok();
+    let push = rlx_ir::env::var_result("RLX_PUSH_DATA").is_ok() && !cluster;
 
     rlx_collectives::register();
     rlx_collectives::register_group(grad_group, group.clone());
@@ -1134,35 +1158,71 @@ pub fn run_coordinate(
     );
 
     // Rank 0 runs its own shard through the SAME generic loop the workers use.
-    let (m, final_params) = dist::run_train(
-        &make_spec(0),
-        world,
-        dist::uri_resolver,
-        |flat| {
-            rlx_collectives::start_all_reduce(grad_group, flat.to_vec(), ReduceKind::Mean)
-                .expect("gradient group")
-                .wait()
-        },
-        true,
-    )
-    .expect("run_train");
+    let (m, final_params) = if cluster {
+        dist::run_train_group(&make_spec(0), &group, dist::uri_resolver, true)
+            .expect("run_train_group")
+    } else {
+        dist::run_train(
+            &make_spec(0),
+            world,
+            dist::uri_resolver,
+            |flat| {
+                rlx_collectives::start_all_reduce(grad_group, flat.to_vec(), ReduceKind::Mean)
+                    .expect("gradient group")
+                    .wait()
+            },
+            true,
+        )
+        .expect("run_train")
+    };
 
     group.barrier().expect("post-train barrier");
     rlx_collectives::unregister_group(grad_group);
     group.barrier().expect("final barrier");
 
-    // Evaluate the trained model (rank 0's params == every rank's, kept synced).
-    let mut eval = Session::new(Device::Cpu).compile(build_eval_graph(cfg));
-    for (n, v) in &final_params {
-        eval.set_param(n, v);
+    // Evaluate the trained model (rank 0's params == every rank's, kept synced),
+    // timed as an inference bench: on the CPU (the reported accuracy) and on
+    // the device this rank trained on.
+    let mut accuracy = 0.0;
+    let mut devices = vec![Device::Cpu];
+    if m.device != Device::Cpu {
+        devices.push(m.device);
     }
-    let accuracy = evaluate(&mut eval, test, cfg.batch);
+    // The Neural Engine where there is one: an inference engine, which the
+    // trained (now fixed) weights suit.
+    if rlx_runtime::available_devices().contains(&Device::Ane) && !devices.contains(&Device::Ane) {
+        devices.push(Device::Ane);
+    }
+    for dev in devices {
+        let mut eval = Session::new(dev).compile(build_eval_graph(cfg));
+        for (n, v) in &final_params {
+            eval.set_param(n, v);
+        }
+        let _ = evaluate(&mut eval, test, cfg.batch); // warm-up (compile, upload)
+        let t = std::time::Instant::now();
+        let acc = evaluate(&mut eval, test, cfg.batch);
+        let dt = t.elapsed().as_secs_f64();
+        eprintln!(
+            "  [master rank {rank}] inference on {}: {} images in {:.3}s = {:.0} img/s, accuracy {:.2}%",
+            rlx_runtime::full_name(dev),
+            test.len(),
+            dt,
+            test.len() as f64 / dt,
+            acc * 100.0
+        );
+        if dev == Device::Cpu {
+            accuracy = acc;
+        }
+    }
     eprintln!(
-        "  [master rank {rank}] trained on {} — {} samples, compute {:.2}s / comm {:.2}s, loss {:.4}→{:.4}",
+        "  [master rank {rank}] trained on {} — {} samples, compute {:.2}s / comm {:.2}s / upload {:.2}s, {} syncs × {} micro-step(s), loss {:.4}→{:.4}",
         rlx_runtime::full_name(m.device),
         m.samples,
         m.compute_s,
         m.comm_s,
+        m.upload_s,
+        m.syncs,
+        m.micro_steps,
         m.first_loss,
         m.last_loss,
     );
@@ -1229,6 +1289,8 @@ pub fn run_alldev(cfg: &Config, train: &Split, test: &Split) -> Report {
         device: "all".into(),
         grad_group: 0,
         push_data: false,
+        options: None,
+        frozen: Vec::new(),
     };
 
     // Single node → world 1, so the cross-worker reduce is the identity.

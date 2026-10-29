@@ -15,13 +15,16 @@
 
 //! CPU mel spectrogram (OpenAI Whisper frontend).
 
-use crate::audio::{MelSpectrogram, SAMPLE_RATE};
-use rustfft::num_complex::Complex;
+use crate::audio::MelSpectrogram;
+use rlx_spectral::WhisperLogMel;
+#[cfg(any(test, feature = "export"))]
+use rlx_spectral::{MelBank, Window};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 const N_FFT: usize = 400;
 const HOP_LENGTH: usize = 160;
+#[cfg(test)]
 const N_FREQ: usize = N_FFT / 2 + 1;
 
 /// Mel frames needed for `n_samples` of 16 kHz PCM (OpenAI hop 160, fft 400).
@@ -88,35 +91,13 @@ pub fn pad_mel_to_frames(m: &MelSpectrogram, target: usize) -> MelSpectrogram {
 }
 
 /// Build log-mel for one utterance: row-major `[1, n_mels, n_frames]` (padded/truncated to `n_frames`).
+/// The spectral front-end is rlx-spectral's [`WhisperLogMel`] (f32).
 pub fn pcm_to_log_mel(pcm: &[f32], n_mels: usize, n_frames: usize) -> MelSpectrogram {
-    let filters = cached_mel_filterbank(n_mels);
-    let window = cached_hann_window(N_FFT);
-    let stft = stft_mag(pcm, window.as_slice());
-    let n_stft_frames = stft.n_frames;
-    let mut mel = vec![0f32; n_mels * n_frames];
-    for fi in 0..n_stft_frames.min(n_frames) {
-        for mi in 0..n_mels {
-            let mut acc = 0f32;
-            for bin in 0..N_FREQ {
-                acc += filters[mi * N_FREQ + bin] * stft.data[fi * N_FREQ + bin];
-            }
-            mel[mi * n_frames + fi] = acc;
-        }
-    }
-    let mut max = f32::NEG_INFINITY;
-    for v in mel.iter_mut() {
-        *v = (*v).max(1e-10).log10();
-        max = max.max(*v);
-    }
-    let floor = max - 8.0;
-    for v in mel.iter_mut() {
-        *v = (*v).max(floor);
-        *v = (*v + 4.0) / 4.0;
-    }
+    let fe = cached_front_end(n_mels);
     MelSpectrogram {
         n_mels,
         n_frames,
-        data: mel,
+        data: fe.compute_frames(pcm, n_frames),
     }
 }
 
@@ -137,155 +118,40 @@ pub fn stack_mels(mels: &[MelSpectrogram]) -> Vec<f32> {
     out
 }
 
-struct StftMag {
-    n_frames: usize,
-    data: Vec<f32>,
-}
-
-fn stft_mag(pcm: &[f32], window: &[f32]) -> StftMag {
-    let pad = N_FFT / 2;
-    let mut padded = Vec::with_capacity(pcm.len() + 2 * pad);
-    // `center=True`'s reflect padding (`np.pad(mode="reflect")`): the
-    // samples after the first, and before the last, mirrored.
-    let last = pcm.len().saturating_sub(1);
-    for i in (1..=pad).rev() {
-        padded.push(pcm[i.min(last)]);
-    }
-    padded.extend_from_slice(pcm);
-    for i in 1..=pad {
-        padded.push(pcm[last.saturating_sub(i)]);
-    }
-    let n_frames = if padded.len() >= N_FFT {
-        1 + (padded.len() - N_FFT) / HOP_LENGTH
-    } else {
-        0
-    };
-    let mut data = vec![0f32; n_frames * N_FREQ];
-    // Cached forward FFT plan (length N_FFT). rustfft's forward transform computes
-    // `Σ s·w·e^{-iωt}`, matching the previous naive DFT (`re += s·w·cos`,
-    // `im -= s·w·sin`) within float rounding; only bins `0..N_FREQ` are kept.
-    let fft = fft_plan();
-    let mut buf: Vec<Complex<f32>> = vec![Complex { re: 0.0, im: 0.0 }; N_FFT];
-    for fi in 0..n_frames {
-        let start = fi * HOP_LENGTH;
-        for (t, w) in window.iter().enumerate() {
-            let s = padded.get(start + t).copied().unwrap_or(0.0);
-            buf[t] = Complex { re: s * w, im: 0.0 };
-        }
-        fft.process(&mut buf);
-        for bin in 0..N_FREQ {
-            let c = buf[bin];
-            data[fi * N_FREQ + bin] = c.re * c.re + c.im * c.im;
-        }
-    }
-    StftMag { n_frames, data }
-}
-
-/// Shared forward FFT plan of length [`N_FFT`] (rustfft plans are `Send + Sync`).
-fn fft_plan() -> Arc<dyn rustfft::Fft<f32>> {
-    static PLAN: OnceLock<Arc<dyn rustfft::Fft<f32>>> = OnceLock::new();
-    PLAN.get_or_init(|| rustfft::FftPlanner::new().plan_fft_forward(N_FFT))
-        .clone()
-}
-
-/// Hann window, memoized by length (deterministic; recomputed otherwise per call).
-fn cached_hann_window(n: usize) -> Arc<Vec<f32>> {
-    static CACHE: OnceLock<Mutex<HashMap<usize, Arc<Vec<f32>>>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().unwrap();
-    guard
-        .entry(n)
-        .or_insert_with(|| Arc::new(hann_window(n)))
-        .clone()
-}
-
-/// Mel filterbank, memoized by `n_mels` (constant `SAMPLE_RATE`/`N_FFT`).
-/// Whisper's Slaney mel filters at 16 kHz, `[n_mels, n_fft / 2 + 1]`: what
-/// [`pcm_to_log_mel`] weighs each frame's power by.
-pub fn mel_filters(n_mels: usize) -> Vec<f32> {
-    cached_mel_filterbank(n_mels).as_ref().clone()
-}
-
-fn cached_mel_filterbank(n_mels: usize) -> Arc<Vec<f32>> {
-    static CACHE: OnceLock<Mutex<HashMap<usize, Arc<Vec<f32>>>>> = OnceLock::new();
+/// The front-end (FFT plan, window, sparse mel bank), built once per `n_mels`.
+fn cached_front_end(n_mels: usize) -> Arc<WhisperLogMel<f32>> {
+    static CACHE: OnceLock<Mutex<HashMap<usize, Arc<WhisperLogMel<f32>>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = cache.lock().unwrap();
     guard
         .entry(n_mels)
-        .or_insert_with(|| Arc::new(mel_filterbank(SAMPLE_RATE as f64, N_FFT, n_mels)))
+        .or_insert_with(|| Arc::new(WhisperLogMel::new(n_mels)))
         .clone()
 }
 
+/// Whisper's Slaney mel filters at 16 kHz, `[n_mels, n_fft / 2 + 1]`: what
+/// [`pcm_to_log_mel`] weighs each frame's power by.
+pub fn mel_filters(n_mels: usize) -> Vec<f32> {
+    cached_front_end(n_mels).filters()
+}
+
+/// Periodic Hann window (whisper's `torch.hann_window(400)`).
+#[cfg(any(test, feature = "export"))]
 pub(crate) fn hann_window(n: usize) -> Vec<f32> {
-    (0..n)
-        .map(|i| {
-            let x = std::f32::consts::PI * i as f32 / n as f32;
-            (x.sin()).powi(2)
-        })
-        .collect()
+    Window::HannPeriodic.build(n)
 }
 
-fn hz_to_mel(hz: f64) -> f64 {
-    let min_log_hz = 1000.0;
-    let min_log_mel = (min_log_hz - 0.0) / (200.0 / 3.0);
-    let logstep = 6.4f64.ln() / 27.0;
-    if hz >= min_log_hz {
-        min_log_mel + (hz / min_log_hz).ln() / logstep
-    } else {
-        hz / (200.0 / 3.0)
-    }
-}
-
-fn mel_to_hz(mel: f64) -> f64 {
-    let min_log_hz = 1000.0;
-    let min_log_mel = (min_log_hz - 0.0) / (200.0 / 3.0);
-    let logstep = 6.4f64.ln() / 27.0;
-    if mel >= min_log_mel {
-        min_log_hz * ((logstep * (mel - min_log_mel)).exp())
-    } else {
-        mel * (200.0 / 3.0)
-    }
-}
-
+/// Slaney mel filterbank `[n_mels, n_fft/2 + 1]`.
+#[cfg(any(test, feature = "export"))]
 pub(crate) fn mel_filterbank(sample_rate: f64, n_fft: usize, n_mels: usize) -> Vec<f32> {
-    let fmax = sample_rate * 0.5;
-    let n_freq = n_fft / 2 + 1;
-    let fftfreqs: Vec<f64> = (0..n_freq)
-        .map(|k| k as f64 * sample_rate / n_fft as f64)
-        .collect();
-    let n_mel_points = n_mels + 2;
-    let mel_pts: Vec<f64> = (0..n_mel_points)
-        .map(|i| {
-            let mel = hz_to_mel(0.0)
-                + (hz_to_mel(fmax) - hz_to_mel(0.0)) * i as f64 / (n_mel_points - 1) as f64;
-            mel_to_hz(mel)
-        })
-        .collect();
-    let mut fdiff = vec![0f64; n_mel_points - 1];
-    for i in 0..fdiff.len() {
-        fdiff[i] = mel_pts[i + 1] - mel_pts[i];
-    }
-    let mut weights = vec![0f32; n_mels * n_freq];
-    for m in 0..n_mels {
-        for k in 0..n_freq {
-            let f = fftfreqs[k];
-            let lower = (f - mel_pts[m]) / fdiff[m];
-            let upper = (mel_pts[m + 2] - f) / fdiff[m + 1];
-            let v = lower.min(upper).max(0.0) as f32;
-            weights[m * n_freq + k] = v;
-        }
-        let enorm = 2.0 / (mel_pts[m + 2] - mel_pts[m]) as f32;
-        for k in 0..n_freq {
-            weights[m * n_freq + k] *= enorm;
-        }
-    }
-    weights
+    MelBank::whisper(sample_rate, n_fft, n_mels).weights()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::N_FRAMES;
+    use crate::audio::SAMPLE_RATE;
 
     #[test]
     fn mel_nonempty_for_tone() {
@@ -304,12 +170,13 @@ mod tests {
     fn stft_mag_naive(pcm: &[f32], window: &[f32]) -> (usize, Vec<f32>) {
         let pad = N_FFT / 2;
         let mut padded = Vec::with_capacity(pcm.len() + 2 * pad);
+        let last = pcm.len().saturating_sub(1);
         for i in (1..=pad).rev() {
-            padded.push(pcm[pcm.len().saturating_sub(i)]);
+            padded.push(pcm[i.min(last)]);
         }
         padded.extend_from_slice(pcm);
         for i in 1..=pad {
-            padded.push(pcm[pcm.len().saturating_sub(i)]);
+            padded.push(pcm[last.saturating_sub(i)]);
         }
         let n_frames = if padded.len() >= N_FFT {
             1 + (padded.len() - N_FFT) / HOP_LENGTH
@@ -346,13 +213,21 @@ mod tests {
             })
             .collect();
         let window = hann_window(N_FFT);
-        let fast = stft_mag(&pcm, &window);
+        let st = rlx_spectral::Stft::new(
+            window.clone(),
+            HOP_LENGTH,
+            N_FFT,
+            rlx_spectral::Pad::CenterReflect,
+            rlx_spectral::FramePrep::default(),
+        );
+        let mut fast_data = Vec::new();
+        st.power_frames(&pcm, |_, p| fast_data.extend_from_slice(p));
         let (n_naive, naive) = stft_mag_naive(&pcm, &window);
-        assert_eq!(fast.n_frames, n_naive);
+        assert_eq!(st.n_frames(pcm.len()), n_naive);
         let peak = naive.iter().cloned().fold(0f32, f32::max).max(1e-12);
         let mut max_abs = 0f32;
         let mut max_rel = 0f32;
-        for (a, b) in fast.data.iter().zip(naive.iter()) {
+        for (a, b) in fast_data.iter().zip(naive.iter()) {
             let d = (a - b).abs();
             max_abs = max_abs.max(d);
             // Relative error is only meaningful on non-null bins; near-null bins are

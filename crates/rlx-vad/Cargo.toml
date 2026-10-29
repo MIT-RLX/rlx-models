@@ -20,6 +20,7 @@ rlx-flow = { workspace = true }
 rlx-runtime = { workspace = true }
 rlx-cpu = { workspace = true }
 anyhow = { workspace = true }
+rlx-torch-ckpt = { workspace = true, optional = true }
 
 [[bin]]
 name = "rlx-vad"
@@ -54,12 +55,15 @@ path = "tests/e2e_jfk.rs"
 [dev-dependencies]
 rlx-runtime = { workspace = true, features = ["program"] }
 tempfile = "3"
-serde_json = { workspace = true }
+# float_roundtrip: parity reads reference floats bit for bit.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 [features]
 default = ["earshot", "silero"]
 earshot = []
 silero = ["dep:rlx-core"]
+# WhisperX's pyannote segmentation VAD (`pyannote::PyannoteSegmentation`).
+pyannote = ["dep:rlx-torch-ckpt"]
 # `export::export_rlxp`: Silero VAD as an `.rlxp` package rlx runs alone.
 export = ["silero", "rlx-core/export", "dep:serde_json"]
 hf-download = ["dep:hf-hub"]

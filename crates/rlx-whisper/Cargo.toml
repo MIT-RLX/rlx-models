@@ -24,7 +24,10 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
 rayon = "1.10"
-rustfft = "6"
+libm = "0.2"
+half = { workspace = true }
+# whisper log-mel front-end (FFT plans, Hann, Slaney mel)
+rlx-spectral = { workspace = true }
 tokenizers = { workspace = true, optional = true }
 rlx-vad = { workspace = true, optional = true }
 rlx-wav2vec2-asr = { workspace = true, optional = true }

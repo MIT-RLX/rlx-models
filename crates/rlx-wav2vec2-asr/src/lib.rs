@@ -20,7 +20,10 @@
 
 pub mod align;
 pub mod config;
+pub mod model;
+pub mod punkt;
 pub mod registry;
+pub mod whisperx;
 
 pub use align::{AlignSession, AlignedWord};
 pub use config::Wav2Vec2AsrConfig;

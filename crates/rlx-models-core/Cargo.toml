@@ -14,6 +14,7 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+libm = "0.2"
 rlx-ir = { workspace = true }
 rlx-flow = { workspace = true }
 rlx-runtime = { workspace = true }
@@ -54,7 +55,7 @@ rlx-rocm = { workspace = true, optional = true }
 
 # The workspace pin carries no regex backend (see the root Cargo.toml).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokenizers = { workspace = true, optional = true, features = ["onig"] }
+tokenizers = { workspace = true, optional = true, features = ["fancy-regex"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokenizers = { workspace = true, optional = true, features = ["unstable_wasm"] }
@@ -81,7 +82,7 @@ tokenizer = ["dep:tokenizers"]
 export = ["rlx-runtime/model-io"]
 
 [dev-dependencies]
-tokenizers = { workspace = true, features = ["onig"] }
+tokenizers = { workspace = true, features = ["fancy-regex"] }
 tempfile = "3"
 rlx-opscope = { workspace = true }
 

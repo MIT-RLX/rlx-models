@@ -86,6 +86,10 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> (f32, usize) {
 }
 
 fn main() -> anyhow::Result<()> {
+    // `KITTEN_PROBE_FAST_MATH=1`: wgpu's opt-in native `/` and `sqrt`.
+    if std::env::var("KITTEN_PROBE_FAST_MATH").is_ok() {
+        rlx_runtime::set_gpu_fast_math(true);
+    }
     let device =
         parse_device(&std::env::var("KITTEN_PROBE_DEVICE").unwrap_or_else(|_| "cuda".into()));
     let filter = std::env::var("PROBE_FILTER").ok();
@@ -139,6 +143,16 @@ fn main() -> anyhow::Result<()> {
             );
             f32_out(&o, 0)
         };
+        // `KITTEN_PROBE_PERTURB=<rel>` scales the device run's style vector by
+        // `1 + rel`: the reference's own sensitivity to a perturbation that
+        // size, to read a device gap against.
+        let style = match std::env::var("KITTEN_PROBE_PERTURB") {
+            Ok(r) => {
+                let r: f32 = r.parse().expect("KITTEN_PROBE_PERTURB is a number");
+                style.iter().map(|v| v * (1.0 + r)).collect::<Vec<f32>>()
+            }
+            Err(_) => style.clone(),
+        };
         let dev_wave = {
             let mut g = dev_g.full.lock().unwrap();
             let o = run_parity_inputs_with_duration(
@@ -151,6 +165,32 @@ fn main() -> anyhow::Result<()> {
             );
             f32_out(&o, 0)
         };
+        // `KITTEN_PROBE_RERUN=1` runs the CPU graph once more after the device
+        // run: a second run of the SAME compiled graph must reproduce the first.
+        if std::env::var("KITTEN_PROBE_RERUN").is_ok() {
+            let again = {
+                let mut g = cpu_g.full.lock().unwrap();
+                let o = run_parity_inputs_with_duration(
+                    &mut g,
+                    seq,
+                    ids.len(),
+                    &ids,
+                    &style,
+                    Some(&ort_dur),
+                );
+                f32_out(&o, 0)
+            };
+            let same = again
+                .iter()
+                .zip(&cpu_wave)
+                .filter(|(a, b)| a.to_bits() == b.to_bits())
+                .count();
+            eprintln!(
+                "cpu rerun: corr={:.4} bit-equal {same}/{}",
+                corr(&cpu_wave, &again),
+                cpu_wave.len()
+            );
+        }
         let peak = |w: &[f32]| w.iter().copied().map(f32::abs).fold(0.0f32, f32::max);
         eprintln!(
             "waveform: cpu.len={} {device:?}.len={} corr={:.4} cpu_peak={:.4e} dev_peak={:.4e}",
@@ -160,6 +200,13 @@ fn main() -> anyhow::Result<()> {
             peak(&cpu_wave),
             peak(&dev_wave),
         );
+        // `KITTEN_PROBE_SAVE=<dir>` keeps both waveforms (raw f32 LE) so runs
+        // on different machines can be compared against each other.
+        if let Ok(dir) = std::env::var("KITTEN_PROBE_SAVE") {
+            let bytes = |w: &[f32]| w.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+            std::fs::write(format!("{dir}/cpu.f32"), bytes(&cpu_wave))?;
+            std::fs::write(format!("{dir}/dev.f32"), bytes(&dev_wave))?;
+        }
         eprintln!("cpu[0..6]={:?}", &cpu_wave[..cpu_wave.len().min(6)]);
         eprintln!("dev[0..6]={:?}", &dev_wave[..dev_wave.len().min(6)]);
         return Ok(());
@@ -263,9 +310,18 @@ fn main() -> anyhow::Result<()> {
         peak(&dev_outs)
     );
 
-    rows.sort_by(|a, b| b.max_abs.partial_cmp(&a.max_abs).unwrap());
+    if std::env::var("KITTEN_PROBE_IN_ORDER").is_err() {
+        rows.sort_by(|a, b| b.max_abs.partial_cmp(&a.max_abs).unwrap());
+    }
     eprintln!("\n=== Cpu vs {device:?} — worst first ===");
-    for r in rows.iter().take(24) {
+    for r in rows
+        .iter()
+        .take(if std::env::var("KITTEN_PROBE_IN_ORDER").is_ok() {
+            usize::MAX
+        } else {
+            24
+        })
+    {
         eprintln!(
             "{:>48} max={:.5} idx={} cpu0={:?} dev0={:?}",
             r.label, r.max_abs, r.idx, r.cpu0, r.dev0

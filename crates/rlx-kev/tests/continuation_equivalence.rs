@@ -170,6 +170,8 @@ fn run_check(base_dir: std::path::PathBuf, run_dir: std::path::PathBuf) -> Resul
             residual_out: false,
             greedy_token: false,
             multi_row: false,
+            mtp_kv: false,
+            keys_mask: false,
         };
         let (hir, pc, _) =
             rlx_qwen35::build_qwen35_decode_model_flow(&cfg, std::sync::Arc::new(load()?), &opts)?;

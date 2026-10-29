@@ -383,11 +383,13 @@ pub fn run(args: &[String]) -> Result<()> {
         );
         let mut context = prompt_ids.clone();
         let mut generated = Vec::new();
+        let (mut rounds, t0) = (0usize, std::time::Instant::now());
         while generated.len() < max_tokens {
             let batch = dec.step(&context);
             if batch.is_empty() {
                 break;
             }
+            rounds += 1;
             for tok in batch {
                 if generated.len() >= max_tokens {
                     break;
@@ -399,6 +401,13 @@ pub fn run(args: &[String]) -> Result<()> {
             }
         }
         println!("\n[rlx-qwen35] qwen35: generated: {generated:?}");
+        let dt = t0.elapsed().as_secs_f64();
+        println!(
+            "[rlx-qwen35] spec: {} tokens in {rounds} rounds = {:.2} tokens/round, {:.1} tok/s",
+            generated.len(),
+            generated.len() as f64 / rounds.max(1) as f64,
+            generated.len() as f64 / dt.max(1e-9)
+        );
         return Ok(());
     }
 

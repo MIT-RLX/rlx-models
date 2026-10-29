@@ -96,6 +96,7 @@ members = [
     "crates/rlx-wav2vec2-bert",
     "crates/rlx-whisper",
     "crates/rlx-wav2vec2-asr",
+    "crates/rlx-spacy",
     "crates/rlx-wespeaker",
     "crates/rlx-diarize",
     "crates/rlx-voxtral",
@@ -168,6 +169,7 @@ members = [
     "crates/rlx-ocr2",
     "crates/rlx-asr",
     "crates/rlx-ppocrv6",
+    "crates/rlx-indra",
     "crates/rlx-neutts",
     "crates/rlx-kev",
     "crates/rlx-pplx-decider",
@@ -274,6 +276,7 @@ rlx-autodiff = { version = "^0.2.19" }
 rlx-compile = { version = "^0.2.19" }
 rlx-fusion = { version = "^0.2.19" }
 rlx-cpu = { version = "^0.2.19" }
+rlx-spectral = { version = "^0.2.19" }
 rlx-gguf = { version = "^0.2.19" }
 rlx-pkg = { version = "^0.2.19" }
 rlx-text = { version = "^0.2.19" }
@@ -398,6 +401,7 @@ rlx-vjepa2 = { path = "crates/rlx-vjepa2", version = "0.2.19" }
 rlx-wav2vec2-bert = { path = "crates/rlx-wav2vec2-bert", version = "0.2.19" }
 rlx-whisper = { path = "crates/rlx-whisper", version = "0.2.19" }
 rlx-wav2vec2-asr = { path = "crates/rlx-wav2vec2-asr", version = "0.2.19" }
+rlx-spacy = { path = "crates/rlx-spacy", version = "0.2.19" }
 rlx-wespeaker = { path = "crates/rlx-wespeaker", version = "0.2.19" }
 rlx-diarize = { path = "crates/rlx-diarize", version = "0.2.19" }
 rlx-voxtral = { path = "crates/rlx-voxtral", version = "0.2.19" }
@@ -445,6 +449,7 @@ rlx-ocr = { path = "crates/rlx-ocr", version = "0.2.19" }
 rlx-ocr2 = { path = "crates/rlx-ocr2", version = "0.2.19" }
 rlx-asr = { path = "crates/rlx-asr", version = "0.2.19" }
 rlx-ppocrv6 = { path = "crates/rlx-ppocrv6", version = "0.2.19" }
+rlx-indra = { path = "crates/rlx-indra", version = "0.2.19" }
 rlx-jina-ocr = { path = "crates/rlx-jina-ocr", version = "0.2.19" }
 rlx-unlimited-ocr = { path = "crates/rlx-unlimited-ocr", version = "0.2.19" }
 rlx-neutts = { path = "crates/rlx-neutts", version = "0.2.19" }

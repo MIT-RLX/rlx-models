@@ -93,6 +93,14 @@ pub fn matmul_bt(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: u
     blas::sgemm_bt(a, b, out, m, k, n, alpha);
 }
 
+/// Exact (erf) GELU, PyTorch `gelu(approximate="none")`:
+/// `x * 0.5 * (1 + erf(x / sqrt(2)))` in float32.
+pub fn gelu_erf(x: &mut [f32]) {
+    for v in x {
+        *v = *v * 0.5 * (1.0 + libm::erff(*v * std::f32::consts::FRAC_1_SQRT_2));
+    }
+}
+
 pub fn gelu_tanh(x: &mut [f32]) {
     const K: f32 = 0.797_884_6;
     for v in x {

@@ -51,9 +51,10 @@ pub(crate) fn host_embed_enabled_for_bytes(table_nbytes: usize) -> bool {
 }
 
 use super::builder::{
-    PackedParams, Qwen35BsLayout, emit_qwen35_decode_trunk_layer,
-    emit_qwen35_full_attn_bidirectional_layer, emit_qwen35_full_attn_prefill_layer,
-    emit_qwen35_gather_last_token, emit_qwen35_gdn_prefill_layer, emit_qwen35_layer_probe_layer,
+    MtpDecodeCache, PackedParams, Qwen35BsLayout, causal_bias_from_keys,
+    emit_qwen35_decode_trunk_layer, emit_qwen35_full_attn_bidirectional_layer,
+    emit_qwen35_full_attn_prefill_layer, emit_qwen35_gather_last_token,
+    emit_qwen35_gdn_prefill_layer, emit_qwen35_layer_probe_layer,
     emit_qwen35_prefill_cache_trunk_layer, emit_qwen35_prefill_tail,
 };
 use super::config::Qwen35Config;
@@ -466,12 +467,6 @@ impl<'a> Qwen35Flow<'a> {
             });
         }
 
-        flow = flow.plugin_named("qwen35.snapshot", |emit, input| {
-            let h = input.ok_or_else(|| anyhow::anyhow!("snapshot requires hidden"))?;
-            emit.set_named(H_PRE_NORM, h.hir_id());
-            Ok(Some(h))
-        });
-
         let layer_fn = self.layer_fn.clone();
         let cfg_layers = cfg.clone();
         let weights_layers = weights.clone();
@@ -513,6 +508,14 @@ impl<'a> Qwen35Flow<'a> {
                 seq,
             }
             .default_stage_with_packed(Some(packed_for_layers.clone()))
+        });
+
+        // The MTP head reads the trunk's last hidden, before the final norm
+        // and before the last-token gather.
+        flow = flow.plugin_named("qwen35.snapshot", |emit, input| {
+            let h = input.ok_or_else(|| anyhow::anyhow!("snapshot requires hidden"))?;
+            emit.set_named(H_PRE_NORM, h.hir_id());
+            Ok(Some(h))
         });
 
         if need_last_idx {
@@ -571,6 +574,7 @@ impl<'a> Qwen35Flow<'a> {
                     export_normed_hidden,
                     fast_mtp,
                     last_idx,
+                    None,
                 )?;
                 if let Some(mtp_id) = mtp {
                     mtp_out.lock().expect("mtp sink").push(mtp_id);
@@ -775,6 +779,18 @@ pub struct Qwen35DecodeOpts {
     /// (`Qwen35RunnerBuilder::decode_rows`): each Gated DeltaNet layer takes a
     /// `gdn_pad_l*` row mask so padding rows leave its state alone.
     pub multi_row: bool,
+    /// With the MTP head: give its attention layer its own KV cache, the
+    /// `past_k_l{mtp}` / `past_v_l{mtp}` inputs (shaped as the trunk's) and
+    /// the previous step's last hidden `mtp_hidden` `[batch, 1, hidden]`,
+    /// with their updates after the trunk states ([`MtpDecodeCache`]: its
+    /// rows run a step behind, so each pairs a hidden with the real next
+    /// token). Without it the head attends the new rows only.
+    pub mtp_kv: bool,
+    /// With `use_custom_mask` and `seq > 1`: the `mask` input is the per-key
+    /// `[batch, past + seq]` one (as for a one-token step, the new rows last)
+    /// and the graph derives the causal-among-new bias for the trunk itself,
+    /// so a host feeds keys, not `[batch, heads, seq, keys]`.
+    pub keys_mask: bool,
     pub profile: Option<CompileProfile>,
 }
 
@@ -796,6 +812,8 @@ impl Qwen35DecodeOpts {
             residual_out: false,
             greedy_token: false,
             multi_row: false,
+            mtp_kv: false,
+            keys_mask: false,
         }
     }
 }
@@ -892,6 +910,8 @@ pub fn build_qwen35_decode_model_flow(
     let fast_mtp = opts.fast_mtp;
     let verify_all = opts.verify_all;
     let multi_row = opts.multi_row;
+    let mtp_kv = enable_mtp && opts.mtp_kv;
+    let keys_mask = use_mask && opts.keys_mask && seq > 1;
 
     let mut flow = ModelFlow::new("qwen35_decode")
         .input("rope_cos", rope_shape.clone())
@@ -900,7 +920,7 @@ pub fn build_qwen35_decode_model_flow(
 
     if use_mask {
         // Bias: additive per-query `[b, n_head, seq, past+seq]`; Custom: `[b, past+seq]`.
-        let mask_shape = if bias_mask {
+        let mask_shape = if bias_mask && !keys_mask {
             Shape::new(&[batch, n_head, seq, past_len + seq], f)
         } else {
             Shape::new(&[batch, past_len + seq], f)
@@ -946,6 +966,17 @@ pub fn build_qwen35_decode_model_flow(
         Ok(Some(emit.wrap(h, hidden.clone())))
     });
 
+    if keys_mask {
+        flow = flow.plugin_named("qwen35.decode.verify_mask", move |emit, input| {
+            let mask = emit.flow_input("mask")?.hir_id();
+            let (hir, params) = emit.hir_and_params();
+            let mut gb = HirMut::new(hir);
+            let bias = causal_bias_from_keys(&mut gb, params, mask, batch, n_head, seq);
+            emit.set_named("qwen35.decode.verify_bias", bias);
+            Ok(input)
+        });
+    }
+
     let trunk_count = weights_c.trunk_layers.len();
     let weights_layers = weights_c.clone();
     let cfg_layers = cfg_c.clone();
@@ -963,7 +994,9 @@ pub fn build_qwen35_decode_model_flow(
             let hidden = input.ok_or_else(|| anyhow::anyhow!("decode layer requires hidden"))?;
             let cos = emit.flow_input("rope_cos")?.hir_id();
             let sin = emit.flow_input("rope_sin")?.hir_id();
-            let mask = if use_mask {
+            let mask = if keys_mask {
+                Some(emit.named("qwen35.decode.verify_bias")?)
+            } else if use_mask {
                 Some(emit.flow_input("mask")?.hir_id())
             } else {
                 None
@@ -989,7 +1022,7 @@ pub fn build_qwen35_decode_model_flow(
                 past_len,
                 dynamic_past,
                 mask,
-                bias_mask,
+                bias_mask || keys_mask,
                 multi_row,
                 &mut layer_recur,
             )?;
@@ -1002,11 +1035,17 @@ pub fn build_qwen35_decode_model_flow(
     let cfg_tail = cfg_c.clone();
     let mtp_out = mtp_sink.clone();
     let packed_tail = packed_sink.clone();
+    let recur_tail = recur_sink.clone();
     flow = flow.plugin_named("qwen35.decode.tail", move |emit, input| {
         let hidden = input.ok_or_else(|| anyhow::anyhow!("decode tail requires hidden"))?;
         let cos = emit.flow_input("rope_cos")?.hir_id();
         let sin = emit.flow_input("rope_sin")?.hir_id();
         let input_ids = emit.named("qwen35.decode.input_ids")?;
+        let mask = if use_mask {
+            Some(emit.flow_input("mask")?.hir_id())
+        } else {
+            None
+        };
         let hir = emit
             .module
             .as_hir_mut()
@@ -1032,6 +1071,43 @@ pub fn build_qwen35_decode_model_flow(
         // `output_norm`ed hidden, as the prefill flows do. Exporting `h_lm`
         // itself left decode logits ~10× too small on Qwen3.5-0.8B: argmax
         // mostly survived, sampling and near-ties did not.
+        let (mut mtp_k, mut mtp_v, mut mtp_h) = (HirNodeId(0), HirNodeId(0), HirNodeId(0));
+        let mtp_cache = if mtp_kv {
+            let mtp_il = cfg_tail.num_hidden_layers - cfg_tail.nextn_predict_layers;
+            let kv_cols = cfg_tail.num_key_value_heads * cfg_tail.key_length;
+            // The trunk's layout (`emit_qwen35_decode_trunk_layer`, without
+            // the in-place row), so both caches grow alike under one mask.
+            let past_shape = if dynamic_past {
+                Shape::from_dims(
+                    &[
+                        Dim::Static(batch),
+                        Dim::Dynamic(sym::PAST_SEQ),
+                        Dim::Static(kv_cols),
+                    ],
+                    f,
+                )
+            } else {
+                Shape::new(&[batch, past_len, kv_cols], f)
+            };
+            let past_k = gb.input(format!("past_k_l{mtp_il}"), past_shape.clone());
+            let past_v = gb.input(format!("past_v_l{mtp_il}"), past_shape);
+            let h_prev = gb.input(
+                "mtp_hidden",
+                Shape::new(&[batch, 1, cfg_tail.hidden_size], f),
+            );
+            Some(MtpDecodeCache {
+                past_k,
+                past_v,
+                past_seq: past_len,
+                h_prev,
+                mask,
+                k_out: &mut mtp_k,
+                v_out: &mut mtp_v,
+                h_out: &mut mtp_h,
+            })
+        } else {
+            None
+        };
         let (logits, mtp, normed) = emit_qwen35_prefill_tail(
             &mut gb,
             emit.params,
@@ -1050,9 +1126,16 @@ pub fn build_qwen35_decode_model_flow(
             !with_lm_head,
             fast_mtp,
             None,
+            mtp_cache,
         )?;
         if let Some(mtp_id) = mtp {
             *mtp_out.lock().expect("mtp sink") = Some(mtp_id);
+        }
+        if mtp_kv {
+            recur_tail
+                .lock()
+                .expect("recur sink")
+                .extend([mtp_k, mtp_v, mtp_h]);
         }
         let primary = logits.or(normed).unwrap_or(h_lm);
         let out_rows = if verify_all { seq } else { 1 };
@@ -1369,12 +1452,6 @@ pub fn build_qwen35_prefill_cache_model_flow(
         });
     }
 
-    flow = flow.plugin_named("qwen35.snapshot", |emit, input| {
-        let h = input.ok_or_else(|| anyhow::anyhow!("snapshot requires hidden"))?;
-        emit.set_named(H_PRE_NORM, h.hir_id());
-        Ok(Some(h))
-    });
-
     let trunk_count = weights_c.trunk_layers.len();
     let weights_layers = weights_c.clone();
     let cfg_layers = cfg_c.clone();
@@ -1425,6 +1502,13 @@ pub fn build_qwen35_prefill_cache_model_flow(
             recur.lock().expect("recur sink").extend(layer_recur);
             Ok(Some(emit.wrap(h, layer_out.clone())))
         })
+    });
+
+    // The MTP head reads the trunk's last hidden (see the prefill flow).
+    flow = flow.plugin_named("qwen35.snapshot", |emit, input| {
+        let h = input.ok_or_else(|| anyhow::anyhow!("snapshot requires hidden"))?;
+        emit.set_named(H_PRE_NORM, h.hir_id());
+        Ok(Some(h))
     });
 
     if need_last_idx {
@@ -1488,6 +1572,7 @@ pub fn build_qwen35_prefill_cache_model_flow(
             export_normed_hidden,
             fast_mtp,
             last_idx,
+            None,
         )?;
         if let Some(mtp_id) = mtp {
             *mtp_out.lock().expect("mtp sink") = Some(mtp_id);
@@ -1762,6 +1847,7 @@ pub fn build_qwen35_trunk_export_model_flow(
             export_normed_hidden,
             fast_mtp,
             Some(last_idx),
+            None,
         )?;
         let mut tail = tail_extra.lock().expect("tail sink");
         if let Some(n) = normed {

@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+### Added
+
+- rlx-whisper's log-mel and rlx-wav2vec2-bert's feature extractor run on
+  rlx-spectral (no `rustfft`). The whisper front-end stays within 2.6e-5 of
+  CTranslate2's features with identical tokens; w2v-BERT's extractor now
+  follows HF's `SeamlessM4TFeatureExtractor` (int16 scale, mel-space
+  triangles, per-bin normalization; computed in f64) instead of skipping the
+  normalization. rlx-whisper's `export` builds again (`Op::Fft` gained `algo`).
+- rlx-models-core's `tokenizer` feature builds HF `tokenizers` with the
+  pure-Rust `fancy-regex` backend on native targets too (was Oniguruma, C):
+  LLaMA 3.2 ids identical to Python `tokenizers` 0.22.2 on 2.37M tokens.
+- rlx-spacy: spaCy 3.8 `en_core_web_lg` inference in pure Rust, as far as
+  `doc.sents` needs it: the tokenizer (1705 of 1705 texts identical),
+  `tok2vec` (0 of 6,419,232 values differ; the BLIS `sgemmsup` accumulation
+  order, NEON with four weight rows per load) and the arc-eager dependency
+  parser with `deprojectivize` (heads, labels, sentence starts identical on
+  all 1705 texts; 0 of 3,833,596 per-step class scores differ). 3.4 s on that
+  corpus, against 6.6 s for spaCy's tok2vec + parser.
+- rlx-qwen35 MTP with a KV cache of its own, for decode and speculative
+  verify: `Qwen35DecodeOpts::mtp_kv` adds `past_k_l{mtp}` / `past_v_l{mtp}`
+  (shaped and masked as the trunk's) and `mtp_hidden`, the previous step's
+  last hidden (`MtpDecodeCache`). Its rows run one step behind the trunk's,
+  as llama.cpp's do: a row pairs position i's hidden with token i+1, so every
+  cached row embeds a real token and the prompt can go in one token at a
+  time. `rlx-export --variant mtp` exports a Qwen3.5 MTP GGUF's step with it,
+  the draft logits as output 1 (`generate.draft_logits`). Qwen3.5-0.8B Q8_0,
+  greedy: the draft is the next token 32/59 times on prose and 108/119 on
+  code (llama.cpp `--spec-type draft-mtp`: 20/39 on the same prose), with the
+  trunk's tokens unchanged (60/60 against the package without MTP).
+
+- `rlx-export --variant mtp` also exports `verify`, the speculative step of
+  the last token and its MTP draft (`generate.verify`): both rows' logits,
+  the next draft, the step's states. `Qwen35DecodeOpts::keys_mask` lets such a
+  step take the per-key mask a one-token step does and derive its trunk's
+  causal-among-new bias itself, so a host never sends `[batch, heads, seq,
+  keys]`; the bias has no constant sized by the key count, so the step is
+  symbolic in the cache (fitted at three sizes and checked at the third).
+  In a decode step of several rows every row is real, so the Gated DeltaNet
+  conv window needs no `gdn_conv_shift_l*` input there.
+
+### Fixed
+
+- rlx-qwen35 MTP head, five faults that kept it from drafting:
+  - it embedded the token just processed instead of the next one, and so
+    re-predicted the trunk's own next token (Qwen3.5-0.8B: 55% equal to it,
+    5% to the token after). Position i now embeds token i+1, and the last
+    position the trunk's argmax, which the graph computes even when the LM
+    head is not among its outputs;
+  - the explicit (packed / MoE) head ran the MTP layer's FFN twice
+    (`build_full_attn_layer` already ends with it);
+  - it read the hidden before `output_norm`; llama.cpp's `t_h_nextn` is
+    after it;
+  - both prefill flows recorded that hidden before the trunk layers, so the
+    head saw token embeddings;
+  - on packed GGUFs the graph failed to build ("matmul requires rank >= 2"):
+    the fused head lowers plain matmuls and the unsloth MTP GGUFs store
+    `nextn.eh_proj` as Q8_0. A head with any packed projection, or a cache,
+    now builds through the layer builders, and a tied head shares the
+    trunk's packed LM head node (a second param of the name zeroed every
+    logit on Metal).
+- `rlx-qwen35 --spec-decode` reports rounds, tokens per round and tok/s.
+
+- KittenTTS native: the import panicked on every device ("a reshape must
+  preserve the element count") since rlx began checking reshapes, and once it
+  imported the waveform was garbage (peak 3.8e37 for 16 IPA tokens). Three
+  causes: rlx-onnx-import mis-laid-out the `decode.3` upsample (fixed there);
+  `fix_sine_broadcast_reshapes` now also resolves the importer's
+  `onnx_import.shape_relabel` nodes (broadcast → `Expand`, same element count
+  → `Reshape`); and the duration fixed point set the duration carry without
+  the vocoder's alignment frame count, which stayed at its compile default of
+  1. Each adopted duration now applies `apply_alignment_hint` too. The native
+  CPU waveform peaks at 0.54 / 0.60 for the two test phrases (ORT reference
+  0.56 / 0.68–0.73), and `native_long_ipa_via_whisper` transcribes.
+
 ## 0.2.19 — 200 model families, one exporter, upstream rlx 0.2.19 (2026-10-25)
 
 First release since 0.2.11 on crates.io; 0.2.14 and 0.2.16 were prepared but

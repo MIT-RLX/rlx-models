@@ -21,7 +21,7 @@
 use super::config::Vjepa2Config;
 use super::predictor::Vjepa2PredictorLayout;
 use super::preprocess::Vjepa2PatchEmbedWeights;
-use super::rope::build_vjepa2_rope_tables;
+use super::rope::{build_vjepa2_rope_tables_hf, vjepa2_rope_swap_matrix};
 use super::weights::{
     Vjepa2BlockWeights, Vjepa2EncoderWeights, Vjepa2PoolerCrossWeights,
     Vjepa2PoolerSelfBlockWeights, Vjepa2PoolerWeights, Vjepa2PredictorWeights,
@@ -145,30 +145,78 @@ impl VjepaBuilder {
         self.hir.mir(Op::MatMul, vec![lhs, rhs], out)
     }
 
-    fn rope_n(
+    /// HF V-JEPA2 RoPE: `x * cos + (x @ swap) * sin` per head. `cos`/`sin`
+    /// are `[rows, 1, head_dim]` tables from [`build_vjepa2_rope_tables_hf`],
+    /// `swap` the `[head_dim, head_dim]` [`vjepa2_rope_swap_matrix`].
+    fn rope_hf(
         &mut self,
         x: HirNodeId,
         cos: HirNodeId,
         sin: HirNodeId,
+        swap: HirNodeId,
+        nh: usize,
         head_dim: usize,
-        n_rot: usize,
     ) -> HirNodeId {
         let shape = self.hir.node(x).shape.clone();
-        self.hir.mir(
-            Op::Rope {
-                head_dim,
-                n_rot,
-                style: rlx_ir::op::RopeStyle::NeoX,
-            },
-            vec![x, cos, sin],
-            shape,
-        )
+        let dims: Vec<usize> = (0..shape.rank())
+            .map(|i| shape.dim(i).unwrap_static())
+            .collect();
+        let (batch, rows) = (dims[0], dims[1]);
+        let heads = self.reshape(
+            x,
+            vec![batch as i64, rows as i64, nh as i64, head_dim as i64],
+        );
+        let hshape = Shape::new(&[batch, rows, nh, head_dim], self.f);
+        let swapped = self.mm(heads, swap);
+        let xc = self
+            .hir
+            .mir(Op::Binary(BinaryOp::Mul), vec![heads, cos], hshape.clone());
+        let ys = self.hir.mir(
+            Op::Binary(BinaryOp::Mul),
+            vec![swapped, sin],
+            hshape.clone(),
+        );
+        let out = self.add(xc, ys, hshape);
+        self.reshape(out, vec![batch as i64, rows as i64, (nh * head_dim) as i64])
+    }
+
+    /// Bind HF RoPE tables for `positions` plus the swap matrix.
+    fn bind_rope_hf(
+        &mut self,
+        positions: &[usize],
+        head_dim: usize,
+        segs: (usize, usize, usize),
+        grid: (usize, usize),
+    ) -> (HirNodeId, HirNodeId, HirNodeId) {
+        let (c, s) = build_vjepa2_rope_tables_hf(
+            positions, head_dim, segs.0, segs.1, segs.2, grid.0, grid.1,
+        );
+        self.bind_rope_tables(&c, &s, positions.len(), head_dim, segs)
+    }
+
+    fn bind_rope_tables(
+        &mut self,
+        cos: &[f32],
+        sin: &[f32],
+        rows: usize,
+        head_dim: usize,
+        segs: (usize, usize, usize),
+    ) -> (HirNodeId, HirNodeId, HirNodeId) {
+        let shape = Shape::new(&[rows, 1, head_dim], self.f);
+        let c = self.hir.param("rope_cos", shape.clone());
+        self.params.insert("rope_cos".into(), cos.to_vec());
+        let s = self.hir.param("rope_sin", shape);
+        self.params.insert("rope_sin".into(), sin.to_vec());
+        let p = vjepa2_rope_swap_matrix(head_dim, segs.0, segs.1, segs.2);
+        let swap = self.bind_mat("rope_swap", &p, head_dim, head_dim);
+        (c, s, swap)
     }
 
     #[allow(dead_code)]
+    /// Exact (erf) GELU: HF V-JEPA2 `hidden_act = "gelu"`.
     fn gelu_approx(&mut self, x: HirNodeId, shape: Shape) -> HirNodeId {
         self.hir
-            .mir(Op::Activation(Activation::GeluApprox), vec![x], shape)
+            .mir(Op::Activation(Activation::Gelu), vec![x], shape)
     }
 
     fn attention_custom(
@@ -254,7 +302,7 @@ impl VjepaBuilder {
                 .expect("fc1 shape");
         let up = self
             .hir
-            .linear_fused(x, fc1_w, fc1_bias, Some(Activation::GeluApprox), fc1_shape);
+            .linear_fused(x, fc1_w, fc1_bias, Some(Activation::Gelu), fc1_shape);
 
         let fc2_w = self.bind_mat(&format!("{lp}.mlp.fc2.weight"), fc2_w_t, hidden, embed);
         let fc2_bias = self.bind_vec(&format!("{lp}.mlp.fc2.bias"), fc2_b);
@@ -282,17 +330,13 @@ pub fn build_vjepa2_encoder_hir_sized(
     let (d_dim, hd_dim, w_dim) = cfg.rope_segment_dims();
     let grid_h = cfg.grid_spatial();
     let grid_w = cfg.grid_spatial();
-    let n_rot = d_dim + hd_dim + w_dim;
 
     let preprocess = Vjepa2GraphPreprocess {
         patch: enc.patch.clone(),
     };
 
-    let (cos_data, sin_data) =
-        build_vjepa2_rope_tables(seq, dh, d_dim, hd_dim, w_dim, grid_h, grid_w);
-    let half = dh / 2;
-    let cos_id = b.bind_mat("rope_cos", &cos_data, seq, half);
-    let sin_id = b.bind_mat("rope_sin", &sin_data, seq, half);
+    let positions: Vec<usize> = (0..seq).collect();
+    let rope = b.bind_rope_hf(&positions, dh, (d_dim, hd_dim, w_dim), (grid_h, grid_w));
 
     let mask_data = vec![1.0f32; batch * seq];
     let mask_id = b.hir.param("attn_mask", Shape::new(&[batch, seq], b.f));
@@ -312,9 +356,7 @@ pub fn build_vjepa2_encoder_hir_sized(
             h,
             nh,
             dh,
-            n_rot,
-            cos_id,
-            sin_id,
+            rope,
             Some(mask_id),
             eps,
             true,
@@ -328,6 +370,87 @@ pub fn build_vjepa2_encoder_hir_sized(
     b.hir.outputs = vec![encoded];
 
     Ok((b.hir, b.params, preprocess))
+}
+
+/// Encoder graph whose outputs are the hidden states `wanted` (numbered as
+/// [`crate::encode_video_native_hidden_states`]: `0` = the `hidden` input,
+/// `k` = raw output of block `k - 1`), one output per distinct `k` in
+/// increasing order. With `token_mean`, each output is reduced over the
+/// token axis to `[batch, hidden]`. Blocks past the deepest state are not
+/// built. Input: `hidden` = host patch embedding `[batch, seq, hidden]`.
+pub fn build_vjepa2_encoder_states_hir_sized(
+    cfg: &Vjepa2Config,
+    enc: &Vjepa2EncoderWeights,
+    batch: usize,
+    wanted: &[usize],
+    token_mean: bool,
+) -> Result<(HirModule, HashMap<String, Vec<f32>>)> {
+    let n_blocks = enc.blocks.len();
+    if let Some(&bad) = wanted.iter().find(|&&k| k > n_blocks) {
+        anyhow::bail!("hidden state {bad} out of range (0..={n_blocks})");
+    }
+    let Some(&deepest) = wanted.iter().max() else {
+        anyhow::bail!("no hidden states requested");
+    };
+    let mut b = VjepaBuilder::new("vjepa2_encoder_states");
+
+    let h = cfg.hidden_size;
+    let nh = cfg.num_attention_heads;
+    let dh = cfg.head_dim();
+    let eps = cfg.layer_norm_eps as f32;
+    let seq = cfg.num_patches();
+    let (d_dim, hd_dim, w_dim) = cfg.rope_segment_dims();
+
+    let positions: Vec<usize> = (0..seq).collect();
+    let grid = (cfg.grid_spatial(), cfg.grid_spatial());
+    let rope = b.bind_rope_hf(&positions, dh, (d_dim, hd_dim, w_dim), grid);
+    let mask_id = b.hir.param("attn_mask", Shape::new(&[batch, seq], b.f));
+    b.params
+        .insert("attn_mask".into(), vec![1.0f32; batch * seq]);
+
+    let enc_shape = b.shape3(batch, seq, h);
+    let mut x = b.hir.input("hidden", enc_shape.clone());
+    let mut outputs = Vec::new();
+    let mut emit = |b: &mut VjepaBuilder, k: usize, x: HirNodeId| {
+        if !wanted.contains(&k) {
+            return;
+        }
+        let out = if token_mean {
+            b.hir.mir(
+                Op::Reduce {
+                    op: rlx_ir::op::ReduceOp::Mean,
+                    axes: vec![1],
+                    keep_dim: false,
+                },
+                vec![x],
+                Shape::new(&[batch, h], b.f),
+            )
+        } else {
+            x
+        };
+        outputs.push(out);
+    };
+    emit(&mut b, 0, x);
+    for (layer_idx, block) in enc.blocks.iter().enumerate().take(deepest) {
+        let lp = format!("blocks.{layer_idx}");
+        x = append_rope_block(
+            &mut b,
+            x,
+            block,
+            &lp,
+            h,
+            nh,
+            dh,
+            rope,
+            Some(mask_id),
+            eps,
+            true,
+            enc_shape.clone(),
+        );
+        emit(&mut b, layer_idx + 1, x);
+    }
+    b.hir.outputs = outputs;
+    Ok((b.hir, b.params))
 }
 
 /// Build the V-JEPA2 encoder IR graph from extracted weights (via [`super::flow::Vjepa2EncoderFlow`]).
@@ -358,11 +481,9 @@ pub fn build_vjepa2_predictor_hir_sized(
     let eps = cfg.layer_norm_eps as f32;
     let enc_seq = cfg.num_patches();
     let (d_dim, hd_dim, w_dim) = cfg.pred_rope_segment_dims();
-    let n_rot = d_dim + hd_dim + w_dim;
     let n_ctxt = layout.n_ctxt;
     let n_tgt = layout.n_tgt;
     let n_combined = layout.n_combined;
-    let half = dh / 2;
 
     let encoder = b.hir.input("encoder", b.shape3(batch, enc_seq, enc));
 
@@ -391,8 +512,13 @@ pub fn build_vjepa2_predictor_hir_sized(
     x = b.gather(x, sort_idx_id, 1);
     x = b.reshape(x, vec![batch as i64, n_combined as i64, pred_h as i64]);
 
-    let cos_id = b.bind_mat("rope_cos", &layout.rope_cos, n_combined, half);
-    let sin_id = b.bind_mat("rope_sin", &layout.rope_sin, n_combined, half);
+    let rope = b.bind_rope_tables(
+        &layout.rope_cos,
+        &layout.rope_sin,
+        n_combined,
+        dh,
+        (d_dim, hd_dim, w_dim),
+    );
     let pred_shape = b.shape3(batch, n_combined, pred_h);
 
     for (layer_idx, block) in pred.blocks.iter().enumerate() {
@@ -405,9 +531,7 @@ pub fn build_vjepa2_predictor_hir_sized(
             pred_h,
             nh,
             dh,
-            n_rot,
-            cos_id,
-            sin_id,
+            rope,
             None,
             eps,
             false,
@@ -567,9 +691,7 @@ fn append_rope_block(
     embed: usize,
     nh: usize,
     dh: usize,
-    n_rot: usize,
-    cos_id: HirNodeId,
-    sin_id: HirNodeId,
+    rope: (HirNodeId, HirNodeId, HirNodeId),
     mask_id: Option<HirNodeId>,
     eps: f32,
     use_mask: bool,
@@ -601,8 +723,8 @@ fn append_rope_block(
         &block.v_b,
     );
 
-    let q_rot = b.rope_n(q, cos_id, sin_id, dh, n_rot);
-    let k_rot = b.rope_n(k, cos_id, sin_id, dh, n_rot);
+    let q_rot = b.rope_hf(q, rope.0, rope.1, rope.2, nh, dh);
+    let k_rot = b.rope_hf(k, rope.0, rope.1, rope.2, nh, dh);
     let attn = if use_mask {
         let mask = mask_id.expect("rope block with use_mask requires attn mask");
         b.attention_custom(q_rot, k_rot, v, mask, nh, dh)

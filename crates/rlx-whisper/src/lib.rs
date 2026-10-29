@@ -46,12 +46,14 @@ pub mod config;
 pub mod decode;
 #[cfg(feature = "export")]
 pub mod export;
+pub mod fast_decoder;
 pub mod flow;
 pub mod fused;
 pub mod mel;
 pub mod runner;
 pub mod vad;
 pub mod weights;
+pub mod whisperx;
 
 pub mod alignment_heads;
 #[cfg(feature = "word-dtw")]

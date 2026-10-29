@@ -50,7 +50,7 @@ pub struct Vjepa2PredictorLayout {
     pub unsort_idx: Vec<i64>,
     /// Flat `[batch, n_tgt, pred_hidden]` mask token rows.
     pub mask_rows: Vec<f32>,
-    /// `[n_combined, pred_head_dim/2]`
+    /// HF RoPE tables `[n_combined, pred_head_dim]` (see `build_vjepa2_rope_tables_hf`).
     pub rope_cos: Vec<f32>,
     pub rope_sin: Vec<f32>,
 }
@@ -61,7 +61,7 @@ pub fn prepare_predictor_layout(
     masks: &Vjepa2Masks,
     batch: usize,
 ) -> Result<Vjepa2PredictorLayout> {
-    use super::rope::build_vjepa2_rope_tables;
+    use super::rope::build_vjepa2_rope_tables_hf;
 
     ensure!(!masks.context.is_empty(), "context mask must be non-empty");
     ensure!(!masks.target.is_empty(), "target mask must be non-empty");
@@ -92,15 +92,10 @@ pub fn prepare_predictor_layout(
     }
 
     let sorted_pos: Vec<usize> = order.iter().map(|&i| position_ids[i]).collect();
-    let (full_cos, full_sin) =
-        build_vjepa2_rope_tables(enc_seq, pred_dh, d_dim, h_dim, w_dim, grid_h, grid_w);
-    let half = pred_dh / 2;
-    let mut rope_cos = vec![0f32; n_combined * half];
-    let mut rope_sin = vec![0f32; n_combined * half];
-    for (i, &p) in sorted_pos.iter().enumerate() {
-        rope_cos[i * half..(i + 1) * half].copy_from_slice(&full_cos[p * half..(p + 1) * half]);
-        rope_sin[i * half..(i + 1) * half].copy_from_slice(&full_sin[p * half..(p + 1) * half]);
-    }
+    // Per-element HF RoPE tables `[n_combined, pred_dh]` for the sorted tokens.
+    let (rope_cos, rope_sin) =
+        build_vjepa2_rope_tables_hf(&sorted_pos, pred_dh, d_dim, h_dim, w_dim, grid_h, grid_w);
+    let _ = enc_seq;
 
     let mut ctxt_idx = Vec::with_capacity(batch * n_ctxt);
     let mut sort_flat = Vec::with_capacity(batch * n_combined);

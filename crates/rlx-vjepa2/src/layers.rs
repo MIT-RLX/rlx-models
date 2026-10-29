@@ -18,7 +18,7 @@
 use super::rope::apply_vjepa2_rope;
 use super::weights::Vjepa2BlockWeights;
 use anyhow::Result;
-use rlx_core::host_kernels::{gelu_tanh, layer_norm, linear, matmul, matmul_bt, softmax_rows};
+use rlx_core::host_kernels::{gelu_erf, layer_norm, linear, matmul, matmul_bt, softmax_rows};
 
 #[allow(clippy::too_many_arguments)]
 pub fn block_forward(
@@ -77,7 +77,8 @@ pub fn block_forward(
         hidden,
         &block.mlp_fc1_b,
     )?;
-    gelu_tanh(&mut mlp);
+    // HF VJEPA2Config.hidden_act = "gelu" (exact erf), for every checkpoint.
+    gelu_erf(&mut mlp);
     let ffn = linear(
         &mlp,
         rows,

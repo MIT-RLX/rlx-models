@@ -651,11 +651,14 @@ fn run_with_duration_fixed_point_on_graph(
     let active_tokens = crate::opts::runtime_active_tokens().unwrap_or(compile_seq);
     let max_iters = duration_refine_iters(active_tokens);
     let mut outs = graph.run_typed(inputs);
-    if max_iters == 1 {
-        return outs;
-    }
+    // Every adopted duration also sets the vocoder's alignment frame count
+    // (`apply_alignment_hint`). The carry alone left that count at its compile
+    // default of 1, so the returned waveform was vocoded for a one-frame
+    // utterance: peak 3.8e37 for 16 IPA tokens on CPU. The loop exits only on
+    // a pass whose carry and frame count both came from its own durations, so
+    // even a one-iteration budget re-runs once with the hint in place.
     let mut prev_carry: Option<Vec<u8>> = None;
-    for _ in 1..max_iters {
+    for _ in 0..max_iters {
         let Some((raw, dt)) = outs.get(DURATION_OUTPUT_INDEX) else {
             break;
         };
@@ -666,6 +669,7 @@ fn run_with_duration_fixed_point_on_graph(
             break;
         }
         set_duration_carry(graph, &dur_bytes);
+        apply_alignment_hint(graph, &dur_bytes, active_tokens);
         prev_carry = Some(dur_bytes);
         outs = graph.run_typed(inputs);
     }

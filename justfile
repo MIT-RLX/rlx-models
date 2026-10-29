@@ -3286,6 +3286,26 @@ ppocrv6 *ARGS:
 test-ppocrv6-backends *ARGS:
     cargo test -p rlx-ppocrv6 --test ppocrv6_backend_quick_check --release {{ARGS}}
 
+# Indra OCR (datalab-to/indra) — download the v1.1.0 release, export its weights
+# and n-gram tables to safetensors for the native RLX graphs (.cache/indra).
+fetch-indra:
+    hf download datalab-to/indra-ocr --revision v1.1.0 --local-dir .cache/indra-upstream
+    cargo run -p rlx-indra --release --bin rlx-indra-convert -- .cache/indra-upstream .cache/indra
+
+indra *ARGS:
+    INDRA_MODEL_DIR="${INDRA_MODEL_DIR:-.cache/indra}" just run-bin rlx-indra rlx-indra {{ARGS}}
+
+# Per-network parity vs the upstream ONNX graphs on ONNX Runtime.
+test-indra-parity *ARGS:
+    INDRA_UPSTREAM_DIR=.cache/indra-upstream INDRA_MODEL_DIR=.cache/indra \
+      cargo test -p rlx-indra --features parity-ort --release --test indra_parity_ort {{ARGS}} -- --nocapture
+
+# Per-network latency: native graphs vs the upstream ONNX on ONNX Runtime
+# (INDRA_BENCH_DEVICE=metal for the GPU; run `just throttle` in ../rlx first).
+bench-indra *ARGS:
+    INDRA_UPSTREAM_DIR=.cache/indra-upstream INDRA_MODEL_DIR=.cache/indra \
+      cargo test -p rlx-indra --features parity-ort --release --test indra_bench {{ARGS}} -- --nocapture
+
 asr *ARGS:
     just run-bin rlx-asr rlx-asr {{ARGS}}
 

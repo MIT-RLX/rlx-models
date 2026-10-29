@@ -110,40 +110,40 @@ pub fn conv3d_patch_embed(
     let h_out = height / ps;
     let w_out = width / ps;
     let seq = t_out * h_out * w_out;
-    let mut tokens = vec![0f32; seq * e];
 
     let plane = height * width;
     let vol = frames * plane;
+    let k = c * ts * ps * ps;
 
+    // Stride == kernel, so the conv is im2col + one GEMM: gather each
+    // tubelet in the weight's (ic, kt, kh, kw) order, then x @ W^T + b.
+    let mut cols = vec![0f32; seq * k];
     for ot in 0..t_out {
         for oh in 0..h_out {
             for ow in 0..w_out {
                 let tok = (ot * h_out + oh) * w_out + ow;
-                for oc in 0..e {
-                    let mut acc = patch.proj_b[oc];
-                    for ic in 0..c {
-                        for kt in 0..ts {
-                            for kh in 0..ps {
-                                for kw in 0..ps {
-                                    let it = ot * ts + kt;
-                                    let ih = oh * ps + kh;
-                                    let iw = ow * ps + kw;
-                                    let in_idx = ic * vol + it * plane + ih * width + iw;
-                                    let w_idx = oc * (c * ts * ps * ps)
-                                        + ic * (ts * ps * ps)
-                                        + kt * (ps * ps)
-                                        + kh * ps
-                                        + kw;
-                                    acc += patch.proj_w[w_idx] * video_ncthw[in_idx];
-                                }
-                            }
+                let dst = &mut cols[tok * k..(tok + 1) * k];
+                let mut j = 0;
+                for ic in 0..c {
+                    for kt in 0..ts {
+                        let base = ic * vol + (ot * ts + kt) * plane + (oh * ps) * width + ow * ps;
+                        for kh in 0..ps {
+                            let row = base + kh * width;
+                            dst[j..j + ps].copy_from_slice(&video_ncthw[row..row + ps]);
+                            j += ps;
                         }
                     }
-                    tokens[tok * e + oc] = acc;
                 }
             }
         }
     }
+    let mut w_t = vec![0f32; k * e];
+    for oc in 0..e {
+        for kk in 0..k {
+            w_t[kk * e + oc] = patch.proj_w[oc * k + kk];
+        }
+    }
+    let tokens = rlx_core::host_kernels::linear(&cols, seq, k, &w_t, e, &patch.proj_b)?;
     Ok(tokens)
 }
 

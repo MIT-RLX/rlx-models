@@ -89,6 +89,7 @@ pub fn log_mel_graph(n_mels: usize) -> Graph {
         Op::Fft {
             inverse: false,
             norm: rlx_ir::fft::FftNorm::Backward,
+            algo: rlx_ir::fft::FftAlgo::Native,
         },
         vec![block],
         f(&[FRAMES, 2 * N_FFT]),

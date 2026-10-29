@@ -106,13 +106,14 @@ pub use tokenizer::{
 pub use tokenizer::{gguf_tokenizer_json, qwen_pre_tokenizer};
 
 pub use builder::{
-    PackedParams, Qwen35BsLayout, build_qwen35_decode_graph, build_qwen35_decode_graph_ext,
-    build_qwen35_decode_hir_dynamic_ext, build_qwen35_decode_hir_ext, build_qwen35_graph_sized,
-    build_qwen35_graph_sized_ext, build_qwen35_hir_sized_ext, build_qwen35_layer_probe_graph,
-    build_qwen35_prefill_cache_graph, build_qwen35_prefill_cache_graph_ext,
-    build_qwen35_prefill_cache_hir_dynamic_ext, build_qwen35_prefill_cache_hir_ext,
-    build_qwen35_prefill_hidden_cache_hir_dynamic_ext, build_qwen35_prefill_hidden_cache_hir_ext,
-    build_qwen35_prefix_graph, build_qwen35_trunk_export_graph, build_qwen35_verify_hir,
+    AttnCacheMode, MtpDecodeCache, PackedParams, Qwen35BsLayout, build_qwen35_decode_graph,
+    build_qwen35_decode_graph_ext, build_qwen35_decode_hir_dynamic_ext,
+    build_qwen35_decode_hir_ext, build_qwen35_graph_sized, build_qwen35_graph_sized_ext,
+    build_qwen35_hir_sized_ext, build_qwen35_layer_probe_graph, build_qwen35_prefill_cache_graph,
+    build_qwen35_prefill_cache_graph_ext, build_qwen35_prefill_cache_hir_dynamic_ext,
+    build_qwen35_prefill_cache_hir_ext, build_qwen35_prefill_hidden_cache_hir_dynamic_ext,
+    build_qwen35_prefill_hidden_cache_hir_ext, build_qwen35_prefix_graph,
+    build_qwen35_trunk_export_graph, build_qwen35_verify_hir,
     emit_qwen35_full_attn_bidirectional_layer, emit_qwen35_full_attn_prefill_layer,
     emit_qwen35_gdn_prefill_layer, emit_qwen35_prefill_tail,
 };

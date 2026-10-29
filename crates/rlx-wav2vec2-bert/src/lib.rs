@@ -21,8 +21,8 @@ pub mod preprocess;
 pub mod runner;
 
 pub use builder::{
-    W2vLayerStop, build_wav2vec2_bert_graph_probe, build_wav2vec2_bert_graph_sized,
-    build_wav2vec2_bert_hir_sized,
+    W2vLayerStop, build_wav2vec2_bert_graph_hidden_states, build_wav2vec2_bert_graph_probe,
+    build_wav2vec2_bert_graph_sized, build_wav2vec2_bert_graph_taps, build_wav2vec2_bert_hir_sized,
 };
 pub use config::Wav2Vec2BertConfig;
 pub use flow::{Wav2Vec2BertFlow, build_wav2vec2_bert_built, build_wav2vec2_bert_hir};
@@ -175,6 +175,135 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(out.len(), batch * seq * h);
+    }
+
+    /// `synthetic_weights` is a constant fill, which makes every layer act
+    /// alike; re-fill each tensor so distinct depths give distinct states.
+    fn varied_weights(cfg: &Wav2Vec2BertConfig, seq: usize) -> WeightMap {
+        let mut wm = synthetic_weights(cfg, seq);
+        let mut keys: Vec<String> = wm.keys().map(|s| s.to_string()).collect();
+        keys.sort();
+        let mut t: HashMap<String, (Vec<f32>, Vec<usize>)> = HashMap::new();
+        for (ki, k) in keys.iter().enumerate() {
+            let (data, shape) = wm.take(k).unwrap();
+            let filled = (0..data.len())
+                .map(|i| (((i * 13 + ki * 7 + 5) % 23) as f32 - 11.0) * 0.03)
+                .collect();
+            t.insert(k.clone(), (filled, shape));
+        }
+        WeightMap::from_tensors(t)
+    }
+
+    fn tiny_cfg(n_layers: usize) -> Wav2Vec2BertConfig {
+        let mut cfg = Wav2Vec2BertConfig::w2v_bert_2_0();
+        cfg.hidden_size = 16;
+        cfg.num_attention_heads = 2;
+        cfg.intermediate_size = 32;
+        cfg.feature_projection_input_dim = 8;
+        cfg.left_max_position_embeddings = 4;
+        cfg.right_max_position_embeddings = 2;
+        cfg.conv_depthwise_kernel_size = 3;
+        cfg.num_hidden_layers = n_layers;
+        cfg
+    }
+
+    fn run_graph(
+        graph: rlx_ir::Graph,
+        params: &HashMap<String, Vec<f32>>,
+        seq: usize,
+        feat: usize,
+    ) -> Vec<Vec<f32>> {
+        let mut compiled = rlx_runtime::Session::new(Device::Cpu).compile(graph);
+        for (name, data) in params {
+            compiled.set_param(name, data);
+        }
+        let features: Vec<f32> = (0..seq * feat)
+            .map(|i| ((i % 7) as f32 - 3.0) * 0.1)
+            .collect();
+        let mut mask = vec![1.0f32; seq];
+        mask[seq - 1] = 0.0;
+        compiled.run(&[("input_features", &features), ("attention_mask", &mask)])
+    }
+
+    #[test]
+    fn probe_truncates_at_its_layer() {
+        // A probe at layer L must equal the same probe on an (L+1)-layer model:
+        // deeper layers are not applied after the probe point.
+        let (seq, cfg) = (6, tiny_cfg(3));
+        let feat = cfg.feature_projection_input_dim;
+        for stop in [W2vLayerStop::AfterFfn2, W2vLayerStop::Final] {
+            let (g, p) = build_wav2vec2_bert_graph_probe(
+                &cfg,
+                &mut varied_weights(&cfg, seq),
+                1,
+                seq,
+                0,
+                stop,
+            )
+            .unwrap();
+            let got = run_graph(g, &p, seq, feat).remove(0);
+            let short = tiny_cfg(1);
+            let (g, p) = build_wav2vec2_bert_graph_probe(
+                &short,
+                &mut varied_weights(&cfg, seq),
+                1,
+                seq,
+                0,
+                stop,
+            )
+            .unwrap();
+            let want = run_graph(g, &p, seq, feat).remove(0);
+            assert_eq!(got, want, "{stop:?}");
+        }
+    }
+
+    #[test]
+    fn taps_match_individual_probes_bitwise() {
+        let (seq, cfg) = (6, tiny_cfg(3));
+        let feat = cfg.feature_projection_input_dim;
+        let taps = [
+            (2, W2vLayerStop::AfterFfn2),
+            (0, W2vLayerStop::AfterFfn2),
+            (1, W2vLayerStop::Final),
+            (0, W2vLayerStop::AfterAttn),
+            (1, W2vLayerStop::Final),
+        ];
+        let (g, p) =
+            build_wav2vec2_bert_graph_taps(&cfg, &mut varied_weights(&cfg, seq), 1, seq, &taps)
+                .unwrap();
+        assert_eq!(g.outputs.len(), taps.len());
+        let tapped = run_graph(g, &p, seq, feat);
+        assert_eq!(tapped.len(), taps.len());
+        for (out, &(layer, stop)) in tapped.iter().zip(&taps) {
+            let (g, p) = build_wav2vec2_bert_graph_probe(
+                &cfg,
+                &mut varied_weights(&cfg, seq),
+                1,
+                seq,
+                layer,
+                stop,
+            )
+            .unwrap();
+            let want = run_graph(g, &p, seq, feat).remove(0);
+            let same = out.len() == want.len()
+                && out
+                    .iter()
+                    .zip(&want)
+                    .all(|(a, b)| a.to_bits() == b.to_bits());
+            assert!(same, "tap ({layer}, {stop:?}) differs from its probe");
+        }
+        assert_ne!(tapped[0], tapped[1]);
+        assert_ne!(tapped[1], tapped[2]);
+        assert!(
+            build_wav2vec2_bert_graph_taps(
+                &cfg,
+                &mut varied_weights(&cfg, seq),
+                1,
+                seq,
+                &[(3, W2vLayerStop::Final)]
+            )
+            .is_err()
+        );
     }
 
     #[test]

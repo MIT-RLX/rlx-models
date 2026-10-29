@@ -26,7 +26,10 @@ rlx-collectives = { workspace = true }
 
 # Native GPU backends so `--alldev` has real lanes (cargo unions feature sets).
 [target.'cfg(target_os = "macos")'.dependencies]
-rlx-runtime = { version = "0.2.19", default-features = false, features = ["metal"] }
+# metal + coreml: the Neural Engine runs the eval (inference) pass; training
+# lanes that list `ane` are planned out by the balancer (Core ML recompiles on
+# every weight update).
+rlx-runtime = { version = "0.2.19", default-features = false, features = ["metal", "coreml"] }
 
 # Every native Linux backend so `--alldev` / `RLX_DEVICE=…` can exercise the
 # full discrete-GPU matrix (CUDA + wgpu + Vulkan + OneAPI). `cuda`/`gpu`/`vulkan`/

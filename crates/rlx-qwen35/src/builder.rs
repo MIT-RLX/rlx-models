@@ -55,7 +55,7 @@ use crate::weights::{
 use anyhow::{Result, anyhow};
 use rlx_ir::dynamic::sym;
 use rlx_ir::hir::{FusionPolicy, HirGraphExt, HirModule, HirMut, HirNodeId, HirOp};
-use rlx_ir::op::{Activation, MaskKind};
+use rlx_ir::op::{Activation, CmpOp, MaskKind};
 use rlx_ir::quant::QuantScheme;
 use rlx_ir::shape::Dim;
 use rlx_ir::{DType, Graph, Op, Shape};
@@ -198,10 +198,14 @@ pub(crate) struct LinearRecurrentIo {
     /// behaviour — rather than "everything is padding", which would
     /// silently zero the whole scan.
     pub pad_mask: Option<NodeId>,
+    /// Every row of a `seq > 1` step is a real token (a decode verify step):
+    /// the exported conv window is its last `k - 1` rows, with no
+    /// `gdn_conv_shift_l*` input to place it.
+    pub all_rows_real: bool,
 }
 
 /// KV cache wiring for full-attention layers.
-pub(crate) enum AttnCacheMode<'a> {
+pub enum AttnCacheMode<'a> {
     /// Append post-RoPE K and pre-GQA V to graph outputs (prefill seed).
     Export {
         k_out: &'a mut NodeId,
@@ -220,6 +224,9 @@ pub(crate) enum AttnCacheMode<'a> {
         /// (`MaskKind::Bias`, for multi-token bucketed verify); `false` → a
         /// multiplicative per-key mask `[b, past+seq]` (`MaskKind::Custom`, decode).
         mask_bias: bool,
+        /// `Some(r)`: every new row is attended, but only the first `r` go
+        /// into `k_out` / `v_out` (the MTP cache, whose last row is a draft).
+        append_rows: Option<usize>,
     },
     /// Cache-free prefill whose full-attention layers see the whole sequence
     /// (encoder-style). `key_mask` is an optional per-key `[batch, seq]` mask
@@ -356,6 +363,8 @@ pub fn build_qwen35_graph_sized_ext(
             residual_out: false,
             greedy_token: false,
             multi_row: false,
+            mtp_kv: false,
+            keys_mask: false,
         };
         let (built, packed) = crate::flow::build_qwen35_decode_built(cfg, weights, &opts)?;
         let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
@@ -700,6 +709,8 @@ pub fn build_qwen35_verify_hir(
         residual_out: false,
         greedy_token: false,
         multi_row: false,
+        mtp_kv: false,
+        keys_mask: false,
     };
     crate::flow::build_qwen35_decode_model_flow(cfg, weights.into(), &opts)
 }
@@ -731,6 +742,8 @@ pub fn build_qwen35_decode_graph_ext(
         residual_out: false,
         greedy_token: false,
         multi_row: false,
+        mtp_kv: false,
+        keys_mask: false,
     };
     let (built, packed) = crate::flow::build_qwen35_decode_built(cfg, weights, &opts)?;
     let (graph, params) = rlx_core::flow_util::graph_from_built(built)?;
@@ -770,6 +783,8 @@ pub(crate) fn build_qwen35_decode_hir_assembled(
         residual_out: false,
         greedy_token: false,
         multi_row: false,
+        mtp_kv: false,
+        keys_mask: false,
     };
     crate::flow::build_qwen35_decode_model_flow(cfg, weights.into(), &opts)
 }
@@ -1165,6 +1180,7 @@ fn build_qwen35_hir_fallback_assembled(
                         conv_state,
                         ssm_state,
                         pad_mask: None,
+                        all_rows_real: false,
                     })
                 } else {
                     None
@@ -1217,6 +1233,7 @@ fn build_qwen35_hir_fallback_assembled(
                         v_out: &mut v_export,
                         mask: decode_mask_id,
                         mask_bias: false,
+                        append_rows: None,
                     })
                 } else {
                     None
@@ -1296,7 +1313,12 @@ fn build_qwen35_hir_fallback_assembled(
         outputs.push(h_norm);
     }
 
-    if with_lm_head {
+    // The trunk logits, for the token the MTP head pairs with the last position.
+    let mut trunk_logits = None;
+    let mut trunk_tied_head = None;
+    // Without the LM head among the outputs, the MTP head still needs it:
+    // its last row embeds the trunk's argmax.
+    if with_lm_head || enable_mtp_head {
         // LM head: tied to token_embd if no separate `output` weight.
         // Packed-aware when `weights.output` carries K-quant bytes.
         let logit_rows = if last_logits_only { 1 } else { seq };
@@ -1331,6 +1353,7 @@ fn build_qwen35_hir_fallback_assembled(
                         n_embd,
                         n_vocab,
                     );
+                    trunk_tied_head = Some((head, w));
                     emit_proj(&mut g, h_logits_in, head, w, logit_shape)
                 } else {
                     let embed_t = transpose_2d(weights.token_embd(), n_vocab, n_embd);
@@ -1345,7 +1368,10 @@ fn build_qwen35_hir_fallback_assembled(
                 }
             }
         };
-        outputs.push(logits);
+        trunk_logits = Some(logits);
+        if with_lm_head {
+            outputs.push(logits);
+        }
     }
 
     // ── MTP head (optional) ────────────────────────────────────
@@ -1355,6 +1381,17 @@ fn build_qwen35_hir_fallback_assembled(
             .first()
             .ok_or_else(|| anyhow!("qwen35: MTP requested but no MTP layers loaded"))?;
         let mtp_il = cfg.num_hidden_layers - cfg.nextn_predict_layers;
+        let ids = input_ids.ok_or_else(|| anyhow!("qwen35: MTP head requires input_ids"))?;
+        let mtp_ids = mtp_next_ids(
+            &mut g,
+            &mut params,
+            mtp_il,
+            trunk_logits,
+            ids,
+            last_token_idx,
+            batch,
+            seq,
+        );
         let mtp_logits = build_mtp_head(
             &mut g,
             &mut params,
@@ -1364,9 +1401,10 @@ fn build_qwen35_hir_fallback_assembled(
             mtp_layer,
             batch,
             seq,
-            input_ids.ok_or_else(|| anyhow!("qwen35: MTP head requires input_ids"))?,
+            mtp_ids,
             h_pre_norm,
             weights.token_embd(),
+            trunk_tied_head,
             n_vocab,
             cos_id,
             sin_id,
@@ -1374,6 +1412,7 @@ fn build_qwen35_hir_fallback_assembled(
             n_rot,
             fast_mtp,
             last_token_idx,
+            None,
         )?;
         outputs.push(mtp_logits);
     }
@@ -1708,7 +1747,7 @@ pub(crate) fn build_linear_layer(
         // never contained. Gather the window ending at the last real token
         // instead: `gdn_conv_shift_l{il}` carries `prompt_len - seq` (≤ 0),
         // so an unbound input reads 0 and reproduces the old narrow exactly.
-        let new_conv = if seq > 1 {
+        let new_conv = if seq > 1 && !rec.all_rows_real {
             let base: Vec<f32> = (0..k_conv - 1).map(|j| (seq + j) as f32).collect();
             let shift = g.input(
                 format!("gdn_conv_shift_l{il}"),
@@ -2058,6 +2097,7 @@ pub(crate) fn build_full_attn_layer(
             v_out,
             mask,
             mask_bias,
+            append_rows,
         }) => {
             // In-place KV append (opt-in `RLX_QWEN35_INPLACE_KV`): write the new
             // row into `past_k/v` at index `past_seq` instead of concat-copying
@@ -2070,20 +2110,33 @@ pub(crate) fn build_full_attn_layer(
             // rows must go through `concat` instead. So in-place KV is seq==1 only.
             // Bias-masked bucketed verify needs the concat layout (new tokens at
             // rows `[upper, upper+n)`), so force in-place KvAppend off there.
-            let (new_k, new_v) =
-                if seq == 1 && !mask_bias && rlx_ir::env::flag("RLX_QWEN35_INPLACE_KV") {
-                    (
-                        g.kv_append(past_k, k_rot, 1, past_seq),
-                        g.kv_append(past_v, v_packed, 1, past_seq),
-                    )
-                } else {
-                    (
-                        g.concat_(vec![past_k, k_rot], 1),
-                        g.concat_(vec![past_v, v_packed], 1),
-                    )
-                };
-            *k_out = new_k;
-            *v_out = new_v;
+            let (new_k, new_v) = if seq == 1
+                && !mask_bias
+                && append_rows.is_none()
+                && rlx_ir::env::flag("RLX_QWEN35_INPLACE_KV")
+            {
+                (
+                    g.kv_append(past_k, k_rot, 1, past_seq),
+                    g.kv_append(past_v, v_packed, 1, past_seq),
+                )
+            } else {
+                (
+                    g.concat_(vec![past_k, k_rot], 1),
+                    g.concat_(vec![past_v, v_packed], 1),
+                )
+            };
+            match append_rows {
+                Some(r) if r < seq => {
+                    let k_keep = g.narrow_(k_rot, 1, 0, r);
+                    let v_keep = g.narrow_(v_packed, 1, 0, r);
+                    *k_out = g.concat_(vec![past_k, k_keep], 1);
+                    *v_out = g.concat_(vec![past_v, v_keep], 1);
+                }
+                _ => {
+                    *k_out = new_k;
+                    *v_out = new_v;
+                }
+            }
             (new_k, new_v, past_seq + seq, mask, mask_bias)
         }
         None => (k_rot, v_packed, seq, None, false),
@@ -2201,6 +2254,9 @@ fn build_mtp_head(
     input_ids: NodeId,
     h_pre_norm: NodeId,
     trunk_token_embd: &[f32],
+    // The trunk's tied LM head (its registered node and packed weight), the
+    // head an MTP layer without `shared_head_head` shares.
+    tied_lm: Option<(NodeId, &MatWeight)>,
     n_vocab: usize,
     cos_id: NodeId,
     sin_id: NodeId,
@@ -2208,7 +2264,36 @@ fn build_mtp_head(
     n_rot: usize,
     fast_mtp: bool,
     last_token_idx: Option<NodeId>,
+    attn_cache: Option<AttnCacheMode<'_>>,
 ) -> Result<NodeId> {
+    // The fused `Qwen35MtpHead` block lowers every projection to a plain
+    // MatMul: dense f32 weights only, and attends without a cache. A packed
+    // (or factored) head, or one with its own KV cache, builds the same head
+    // from the layer builders instead.
+    if !mtp_weights_dense(mtp) || attn_cache.is_some() {
+        return build_mtp_head_moe(
+            g,
+            params,
+            packed,
+            cfg,
+            il,
+            mtp,
+            batch,
+            seq,
+            input_ids,
+            h_pre_norm,
+            trunk_token_embd,
+            tied_lm,
+            n_vocab,
+            cos_id,
+            sin_id,
+            head_dim,
+            n_rot,
+            fast_mtp,
+            last_token_idx,
+            attn_cache,
+        );
+    }
     let n_embd = cfg.hidden_size;
     let n_ff = cfg.intermediate_size;
     let n_head = cfg.num_attention_heads;
@@ -2360,6 +2445,7 @@ fn build_mtp_head(
             input_ids,
             h_pre_norm,
             trunk_token_embd,
+            tied_lm,
             n_vocab,
             cos_id,
             sin_id,
@@ -2367,6 +2453,7 @@ fn build_mtp_head(
             n_rot,
             fast_mtp,
             last_token_idx,
+            None,
         );
     }
 
@@ -2936,7 +3023,209 @@ fn expert_mat_param(
     }
 }
 
+/// The token ids the MTP head embeds. The head pairs position i's hidden
+/// state with the embedding of token i+1 and predicts token i+2. Inside the
+/// sequence token i+1 is the next input id; at the last real position it is
+/// the trunk's own prediction, the argmax of its logits there — the committed
+/// token under greedy and the base a draft extends. Fed token i instead, the
+/// head re-predicts the trunk's next token (Qwen3.5-0.8B: 55% equal to it, 5%
+/// to the one after). `last_idx` is the last real position of a padded
+/// prefill (`seq - 1` when absent); without trunk logits it keeps `input_ids`.
 #[allow(clippy::too_many_arguments)]
+fn mtp_next_ids(
+    g: &mut HirMut,
+    params: &mut HashMap<String, Vec<f32>>,
+    il: usize,
+    trunk_logits: Option<NodeId>,
+    input_ids: NodeId,
+    last_idx: Option<NodeId>,
+    batch: usize,
+    seq: usize,
+) -> NodeId {
+    let Some(logits) = trunk_logits else {
+        return input_ids;
+    };
+    let ids_dtype = g.shape(input_ids).dtype();
+    let cast = |g: &mut HirMut, x: NodeId, to: DType| {
+        let dims = g.shape(x).dims().to_vec();
+        g.0.mir(Op::Cast { to }, vec![x], Shape::from_dims(&dims, to))
+    };
+    // The trunk logits row at the last real position, `[batch, 1, vocab]`.
+    let rows = g.shape(logits).dims()[1].unwrap_static();
+    let last_row = match last_idx {
+        Some(idx) if rows > 1 => gather_last_token(g, logits, batch, idx),
+        None if rows > 1 => g.narrow_(logits, 1, rows - 1, 1),
+        _ => logits,
+    };
+    let argmax = g.0.mir(
+        Op::ArgMax {
+            axis: 2,
+            keep_dim: false,
+        },
+        vec![last_row],
+        Shape::new(&[batch, 1], DType::F32),
+    );
+    if seq == 1 {
+        return cast(g, argmax, ids_dtype);
+    }
+    // Positions come from the ids themselves (an exclusive cumsum of ones),
+    // so this holds for a dynamic sequence length too.
+    let scalar = |g: &mut HirMut, params: &mut HashMap<String, Vec<f32>>, tag: &str, v: f32| {
+        register_param(
+            g,
+            params,
+            &name(il, tag),
+            vec![v],
+            Shape::new(&[1, 1], DType::F32),
+        )
+    };
+    let ids = cast(g, input_ids, DType::F32);
+    let zero = scalar(g, params, "nextn.ids_zero", 0.0);
+    let one = scalar(g, params, "nextn.ids_one", 1.0);
+    let ones = g.mul(ids, zero);
+    let ones = g.add(ones, one);
+    let ids_shape = g.shape(ids).clone();
+    let positions = g.0.mir(
+        Op::Cumsum {
+            axis: 1,
+            exclusive: true,
+        },
+        vec![ones],
+        ids_shape,
+    );
+    let last = match last_idx {
+        Some(idx) => {
+            let idx = cast(g, idx, DType::F32);
+            g.reshape_(idx, vec![batch as i64, 1])
+        }
+        None => register_param(
+            g,
+            params,
+            &name(il, "nextn.ids_last"),
+            vec![(seq - 1) as f32; batch],
+            Shape::new(&[batch, 1], DType::F32),
+        ),
+    };
+    // Position i reads id i+1 up to the last real position; that one (and
+    // any padding after it) reads itself, and the last is replaced below.
+    let step = compare_f32(g, CmpOp::Lt, positions, last);
+    let src = g.add(positions, step);
+    let row_base = register_param(
+        g,
+        params,
+        &name(il, "nextn.ids_row_base"),
+        (0..batch).map(|b| (b * seq) as f32).collect(),
+        Shape::new(&[batch, 1], DType::F32),
+    );
+    let src = g.add(src, row_base);
+    let flat = g.reshape_(ids, vec![-1]);
+    let shifted = g.gather_(flat, src, 0);
+    let at_last = compare_f32(g, CmpOp::Eq, positions, last);
+    let delta = g.sub(argmax, shifted);
+    let delta = g.mul(at_last, delta);
+    let next = g.add(shifted, delta);
+    cast(g, next, ids_dtype)
+}
+
+/// The additive attention bias `[batch, heads, seq, keys]` for `seq` new
+/// rows after a padded cache, from the per-key mask `mask` `[batch, keys]`
+/// (`1` attend, `0` padding; the new rows last): each new row also stops at
+/// itself. Built from distances to the last key, so no constant is sized by
+/// the key count and a symbolic step stays symbolic.
+pub(crate) fn causal_bias_from_keys(
+    g: &mut HirMut,
+    params: &mut HashMap<String, Vec<f32>>,
+    mask: NodeId,
+    batch: usize,
+    heads: usize,
+    seq: usize,
+) -> NodeId {
+    let scalar = |g: &mut HirMut, params: &mut HashMap<String, Vec<f32>>, tag: &str, v: f32| {
+        register_param(
+            g,
+            params,
+            &format!("verify_mask.{tag}"),
+            vec![v],
+            Shape::new(&[1, 1], DType::F32),
+        )
+    };
+    // A reshape's target is re-derived from its shape when generalized.
+    let keys = g.shape(mask).dims()[1].unwrap_static() as i64;
+    let zero = scalar(g, params, "zero", 0.0);
+    let one = scalar(g, params, "one", 1.0);
+    let big = scalar(g, params, "big", 1e9);
+    let ones = g.mul(mask, zero);
+    let ones = g.add(ones, one);
+    let total = g.sum(ones, vec![1], true);
+    let shape = g.shape(ones).clone();
+    let upto = g.0.mir(
+        Op::Cumsum {
+            axis: 1,
+            exclusive: false,
+        },
+        vec![ones],
+        shape,
+    );
+    // Keys after this one: 0 for the last key.
+    let after = g.sub(total, upto);
+    let after = g.reshape_(after, vec![batch as i64, 1, 1, keys]);
+    let reach = register_param(
+        g,
+        params,
+        "verify_mask.reach",
+        (0..seq).map(|i| (seq - 1 - i) as f32).collect(),
+        Shape::new(&[1, 1, seq, 1], DType::F32),
+    );
+    // Row i sees a key with at least `seq - 1 - i` keys after it. Both
+    // sides at the full shape: Metal's compare broadcasts scalars only.
+    let full = vec![batch as i64, 1, seq as i64, keys];
+    let after = g.expand_(after, full.clone());
+    let reach = g.expand_(reach, full);
+    let seen = compare_f32(g, CmpOp::Ge, after, reach);
+    let m = g.reshape_(mask, vec![batch as i64, 1, 1, keys]);
+    let keep = g.mul(seen, m);
+    let off = g.sub(keep, one);
+    let bias = g.mul(off, big);
+    let heads_zero = register_param(
+        g,
+        params,
+        "verify_mask.heads",
+        vec![0.0; heads],
+        Shape::new(&[1, heads, 1, 1], DType::F32),
+    );
+    g.add(bias, heads_zero)
+}
+
+/// `a <op> b` as 1.0 / 0.0. The compare is declared with its own output
+/// (`Bool`) and cast: `HirMut::eq` / `lt` declare the operands' f32, which the
+/// CPU then reads back as raw bool bytes — never 1.0.
+fn compare_f32(g: &mut HirMut, op: CmpOp, a: NodeId, b: NodeId) -> NodeId {
+    let shape = rlx_ir::shape::compare_shape(g.shape(a), g.shape(b)).expect("compare shape");
+    let dims = shape.dims().to_vec();
+    let c = g.0.mir(Op::Compare(op), vec![a, b], shape);
+    g.0.mir(
+        Op::Cast { to: DType::F32 },
+        vec![c],
+        Shape::from_dims(&dims, DType::F32),
+    )
+}
+
+/// Every MTP projection a dense f32 matrix — what the fused head lowers.
+fn mtp_weights_dense(mtp: &Qwen35MtpLayer) -> bool {
+    let dense =
+        |p: &crate::weights::Proj| matches!(p, crate::weights::Proj::Dense(MatWeight::F32(_)));
+    let fa = &mtp.base;
+    matches!(mtp.eh_proj, MatWeight::F32(_))
+        && !matches!(mtp.shared_head_head, Some(MatWeight::Packed { .. }))
+        && [&fa.attn_q_gate, &fa.attn_k, &fa.attn_v, &fa.attn_output]
+            .into_iter()
+            .all(dense)
+        && match &fa.ffn {
+            Qwen35LayerFfn::Dense { gate, up, down } => dense(gate) && dense(up) && dense(down),
+            Qwen35LayerFfn::Moe(_) => false,
+        }
+}
+
 fn build_mtp_head_moe(
     g: &mut HirMut,
     params: &mut HashMap<String, Vec<f32>>,
@@ -2949,6 +3238,9 @@ fn build_mtp_head_moe(
     input_ids: NodeId,
     h_pre_norm: NodeId,
     trunk_token_embd: &[f32],
+    // The trunk's tied LM head (its registered node and packed weight), the
+    // head an MTP layer without `shared_head_head` shares.
+    tied_lm: Option<(NodeId, &MatWeight)>,
     n_vocab: usize,
     cos_id: NodeId,
     sin_id: NodeId,
@@ -2956,6 +3248,7 @@ fn build_mtp_head_moe(
     n_rot: usize,
     fast_mtp: bool,
     last_token_idx: Option<NodeId>,
+    attn_cache: Option<AttnCacheMode<'_>>,
 ) -> Result<NodeId> {
     let n_embd = cfg.hidden_size;
     let _n_head = cfg.num_attention_heads;
@@ -2963,7 +3256,9 @@ fn build_mtp_head_moe(
     let mtp_vocab = mtp_draft_vocab_size(n_vocab, fast_mtp);
     let fa = &mtp.base;
     let eps = cfg.rms_norm_eps as f32;
-    let bs = BsLayout::new(batch, seq, false);
+    // The prefill-cache flow runs with a dynamic sequence length.
+    let dynamic = !g.shape(h_pre_norm).dims()[1].is_static();
+    let bs = BsLayout::new(batch, seq, dynamic);
 
     let hnorm_w = param(
         g,
@@ -3023,38 +3318,27 @@ fn build_mtp_head_moe(
     let e_normed = g.rms_norm(tok_embd, enorm_w, enorm_b, eps);
     let concat = g.concat_(vec![e_normed, h_normed], 2);
     let concat_2d = bs.reshape_flat(g, concat, 2 * n_embd);
-    let cur_2d = g.mm(concat_2d, eh_w);
+    // A packed eh_proj (Q8_0 in the unsloth MTP GGUFs) needs DequantMatMul.
+    let cur_2d = emit_proj(
+        g,
+        concat_2d,
+        eh_w,
+        &mtp.eh_proj,
+        bs.flat2_shape(n_embd, DType::F32),
+    );
     let cur = bs.reshape_bsh(g, cur_2d, n_embd);
 
-    let h_post_attn = build_full_attn_layer(
-        g, params, packed, cfg, il, fa, bs, cur, cos_id, sin_id, head_dim, n_rot, None, None,
-    )?;
-    let h_ffn = build_layer_ffn(
-        g,
-        params,
-        cfg,
-        il,
-        h_post_attn,
-        bs,
-        &fa.attn_post_norm,
-        &fa.ffn,
-        packed,
+    // The whole layer, attention and FFN (`build_full_attn_layer` ends with
+    // the FFN; a second one here ran it twice).
+    let h_ffn = build_full_attn_layer(
+        g, params, packed, cfg, il, fa, bs, cur, cos_id, sin_id, head_dim, n_rot, attn_cache, None,
     )?;
 
-    let last_idx = if let Some(id) = last_token_idx {
-        id
-    } else {
-        let data: Vec<f32> = vec![(seq - 1) as f32; batch];
-        register_param(
-            g,
-            params,
-            &name(il, "nextn.last_token_idx"),
-            data,
-            Shape::new(&[batch], DType::F32),
-        )
+    // The last real row: a padded prefill's `last_token_idx`, else the last.
+    let last = match last_token_idx {
+        Some(idx) => gather_last_token(g, h_ffn, batch, idx),
+        None => g.narrow_(h_ffn, 1, seq - 1, 1),
     };
-    let idx_2d = g.reshape_(last_idx, vec![batch as i64, 1]);
-    let last = g.gather_(h_ffn, idx_2d, 1);
 
     let head_norm_w = if let Some(w) = &mtp.shared_head_norm {
         param(
@@ -3089,6 +3373,20 @@ fn build_mtp_head_moe(
     } else {
         n_vocab
     };
+    if mtp.shared_head_head.is_none()
+        && mtp_vocab == n_vocab
+        && let Some((head, w)) = tied_lm
+    {
+        // The trunk's own head node: a transposed f32 copy of a packed table
+        // is a gigabyte, and a second param of the name breaks Metal.
+        return Ok(emit_proj(
+            g,
+            last_norm,
+            head,
+            w,
+            Shape::new(&[batch, 1, n_vocab], DType::F32),
+        ));
+    }
     let lm_head_w = if let Some(w) = &mtp.shared_head_head {
         let mat = match w {
             MatWeight::F32(data) if mtp_vocab < n_vocab => {
@@ -3864,6 +4162,7 @@ pub fn emit_qwen35_decode_trunk_layer(
                 conv_state,
                 ssm_state,
                 pad_mask,
+                all_rows_real: !multi_row,
             };
             build_linear_layer(
                 g,
@@ -3915,6 +4214,7 @@ pub fn emit_qwen35_decode_trunk_layer(
                 v_out: &mut v_export,
                 mask: decode_mask,
                 mask_bias,
+                append_rows: None,
             };
             let h = build_full_attn_layer(
                 g,
@@ -3990,6 +4290,7 @@ pub fn emit_qwen35_prefill_cache_trunk_layer(
                 conv_state,
                 ssm_state,
                 pad_mask,
+                all_rows_real: false,
             };
             build_linear_layer(
                 g,
@@ -4156,6 +4457,98 @@ pub fn emit_qwen35_layer_probe_layer(
     }
 }
 
+/// The MTP layer's decode cache. Its rows run one step behind the trunk's:
+/// a row pairs position i's hidden with token i+1, which is only known one
+/// step later, so a step's rows are the previous step's last hidden with
+/// this step's first token, and so on, with each kept row exact (no row
+/// embeds a guess). One more row, the last hidden with the trunk's argmax,
+/// gives the draft and is not kept. The cache thus grows by the trunk's rows,
+/// and its rows sit one position ahead (RoPE sees relative positions only);
+/// the first row, before any hidden, pairs zeros with the first token.
+pub struct MtpDecodeCache<'a> {
+    pub past_k: NodeId,
+    pub past_v: NodeId,
+    pub past_seq: usize,
+    /// The previous step's last trunk hidden (pre-norm) `[batch, 1, hidden]`,
+    /// zeros before the first step.
+    pub h_prev: NodeId,
+    /// The trunk's per-key decode mask `[batch, past + seq]`.
+    pub mask: Option<NodeId>,
+    pub k_out: &'a mut NodeId,
+    pub v_out: &'a mut NodeId,
+    /// This step's last trunk hidden, the next step's `h_prev`.
+    pub h_out: &'a mut NodeId,
+}
+
+/// The ids the lagged MTP rows embed: this step's tokens, then the trunk's
+/// argmax at its last row (the draft row's), `[batch, seq + 1]`.
+fn mtp_lagged_ids(g: &mut HirMut, logits: NodeId, input_ids: NodeId, batch: usize) -> NodeId {
+    let ids_dtype = g.shape(input_ids).dtype();
+    let cast = |g: &mut HirMut, x: NodeId, to: DType| {
+        let dims = g.shape(x).dims().to_vec();
+        g.0.mir(Op::Cast { to }, vec![x], Shape::from_dims(&dims, to))
+    };
+    let rows = g.shape(logits).dims()[1].unwrap_static();
+    let last_row = if rows > 1 {
+        g.narrow_(logits, 1, rows - 1, 1)
+    } else {
+        logits
+    };
+    let argmax = g.0.mir(
+        Op::ArgMax {
+            axis: 2,
+            keep_dim: false,
+        },
+        vec![last_row],
+        Shape::new(&[batch, 1], DType::F32),
+    );
+    let ids = cast(g, input_ids, DType::F32);
+    let ids = g.concat_(vec![ids, argmax], 1);
+    cast(g, ids, ids_dtype)
+}
+
+/// The RoPE rows `cos` / `sin` (`[seq, half]`, consecutive text positions)
+/// with the next position's row after them, by angle addition with the
+/// position-1 row: every column is `cos(p·θ)` / `sin(p·θ)` for one θ.
+fn rope_one_row_on(
+    g: &mut HirMut,
+    params: &mut HashMap<String, Vec<f32>>,
+    cfg: &Qwen35Config,
+    il: usize,
+    cos: NodeId,
+    sin: NodeId,
+    seq: usize,
+) -> (NodeId, NodeId) {
+    let half = g.shape(cos).dims()[1].unwrap_static();
+    let (c1, s1) = crate::mrope_row_for_sections(cfg, crate::text_section_pos(1), half);
+    let c1 = register_param(
+        g,
+        params,
+        &name(il, "nextn.rope_step_cos"),
+        c1,
+        Shape::new(&[1, half], DType::F32),
+    );
+    let s1 = register_param(
+        g,
+        params,
+        &name(il, "nextn.rope_step_sin"),
+        s1,
+        Shape::new(&[1, half], DType::F32),
+    );
+    let c = g.narrow_(cos, 0, seq - 1, 1);
+    let s = g.narrow_(sin, 0, seq - 1, 1);
+    let cc = g.mul(c, c1);
+    let ss = g.mul(s, s1);
+    let sc = g.mul(s, c1);
+    let cs = g.mul(c, s1);
+    let c_next = g.sub(cc, ss);
+    let s_next = g.add(sc, cs);
+    (
+        g.concat_(vec![cos, c_next], 0),
+        g.concat_(vec![sin, s_next], 0),
+    )
+}
+
 /// Final norm, optional LM head, and optional MTP head (prefill).
 #[allow(clippy::too_many_arguments)]
 pub fn emit_qwen35_prefill_tail(
@@ -4176,6 +4569,8 @@ pub fn emit_qwen35_prefill_tail(
     export_normed_hidden: bool,
     fast_mtp: bool,
     last_token_idx: Option<HirNodeId>,
+    // The MTP layer's own KV cache (decode); `None` attends the new rows only.
+    mtp_cache: Option<MtpDecodeCache<'_>>,
 ) -> Result<(Option<HirNodeId>, Option<HirNodeId>, Option<HirNodeId>)> {
     let n_embd = cfg.hidden_size;
     let n_vocab = if weights.embd_elems() == 0 {
@@ -4197,7 +4592,10 @@ pub fn emit_qwen35_prefill_tail(
     let h_norm = g.rms_norm(h_for_lm, out_norm, out_norm_beta, cfg.rms_norm_eps as f32);
 
     let mut logits = None;
-    if with_lm_head {
+    let mut trunk_tied_head = None;
+    // Without the LM head among the outputs, the MTP head still needs it:
+    // its last row embeds the trunk's argmax.
+    if with_lm_head || enable_mtp_head {
         let logit_rows = if last_token_idx.is_some() { 1 } else { seq };
         let logit_shape = Shape::new(&[batch, logit_rows, n_vocab], DType::F32);
         let lm = match &weights.output {
@@ -4212,6 +4610,7 @@ pub fn emit_qwen35_prefill_tail(
             None => {
                 if let Some(w) = &weights.token_embd_lm {
                     let head = proj_mat(g, params, packed, "lm_head.tied_t", w, n_embd, n_vocab);
+                    trunk_tied_head = Some((head, w));
                     emit_proj(g, h_norm, head, w, logit_shape)
                 } else {
                     let embed_t = transpose_2d(weights.token_embd(), n_vocab, n_embd);
@@ -4257,6 +4656,83 @@ pub fn emit_qwen35_prefill_tail(
             .first()
             .ok_or_else(|| anyhow!("qwen35: MTP requested but no MTP layers loaded"))?;
         let mtp_il = cfg.num_hidden_layers - cfg.nextn_predict_layers;
+        // The head reads the trunk's hidden after `output_norm` (llama.cpp's
+        // `t_h_nextn`), at every row: the pre-norm one drafted ~20% vs ~50%.
+        let h_pre_norm = g.rms_norm(h_pre_norm, out_norm, out_norm_beta, cfg.rms_norm_eps as f32);
+        // Without a cache the head runs on this graph's rows; with one, on
+        // them one step behind plus the draft row (`MtpDecodeCache`).
+        let (rows, ids, h, cos, sin, attn_cache) = match mtp_cache {
+            None => {
+                let ids = mtp_next_ids(
+                    g,
+                    params,
+                    mtp_il,
+                    logits,
+                    input_ids,
+                    last_token_idx,
+                    batch,
+                    seq,
+                );
+                (seq, ids, h_pre_norm, cos_id, sin_id, None)
+            }
+            Some(c) => {
+                let logits =
+                    logits.ok_or_else(|| anyhow!("qwen35: the MTP cache needs the LM head"))?;
+                let ids = mtp_lagged_ids(g, logits, input_ids, batch);
+                let h = g.concat_(vec![c.h_prev, h_pre_norm], 1);
+                *c.h_out = g.narrow_(h_pre_norm, 1, seq - 1, 1);
+                let (cos, sin) = rope_one_row_on(g, params, cfg, mtp_il, cos_id, sin_id, seq);
+                // The draft row is one more key than the trunk's mask covers,
+                // and cache row 0 (zeros for a hidden) is never attended.
+                let mask = c.mask.map(|m| {
+                    let scalar =
+                        |g: &mut HirMut, params: &mut HashMap<String, Vec<f32>>, tag, v| {
+                            register_param(
+                                g,
+                                params,
+                                &name(mtp_il, tag),
+                                vec![v],
+                                Shape::new(&[1, 1], DType::F32),
+                            )
+                        };
+                    let one = register_param(
+                        g,
+                        params,
+                        &name(mtp_il, "nextn.mask_draft"),
+                        vec![1.0; batch],
+                        Shape::new(&[batch, 1], DType::F32),
+                    );
+                    let m = g.concat_(vec![m, one], 1);
+                    let zero = scalar(g, params, "nextn.mask_zero", 0.0);
+                    let unit = scalar(g, params, "nextn.mask_one", 1.0);
+                    let ones = g.mul(m, zero);
+                    let ones = g.add(ones, unit);
+                    let shape = g.shape(m).clone();
+                    let pos = g.0.mir(
+                        Op::Cumsum {
+                            axis: 1,
+                            exclusive: true,
+                        },
+                        vec![ones],
+                        shape.clone(),
+                    );
+                    let first = compare_f32(g, CmpOp::Eq, pos, zero);
+                    let keep = g.sub(unit, first);
+                    g.mul(m, keep)
+                });
+                let cache = AttnCacheMode::Decode {
+                    past_k: c.past_k,
+                    past_v: c.past_v,
+                    past_seq: c.past_seq,
+                    k_out: c.k_out,
+                    v_out: c.v_out,
+                    mask,
+                    mask_bias: false,
+                    append_rows: Some(seq),
+                };
+                (seq + 1, ids, h, cos, sin, Some(cache))
+            }
+        };
         mtp_logits = Some(build_mtp_head(
             g,
             params,
@@ -4265,22 +4741,28 @@ pub fn emit_qwen35_prefill_tail(
             mtp_il,
             mtp_layer,
             batch,
-            seq,
-            input_ids,
-            h_pre_norm,
+            rows,
+            ids,
+            h,
             weights.token_embd(),
+            trunk_tied_head,
             n_vocab,
-            cos_id,
-            sin_id,
+            cos,
+            sin,
             head_dim,
             n_rot,
             fast_mtp,
-            last_token_idx,
+            if attn_cache.is_some() {
+                None
+            } else {
+                last_token_idx
+            },
+            attn_cache,
         )?);
     }
 
     let normed = export_normed_hidden.then_some(h_norm);
-    Ok((logits, mtp_logits, normed))
+    Ok((logits.filter(|_| with_lm_head), mtp_logits, normed))
 }
 
 fn transpose_2d(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {

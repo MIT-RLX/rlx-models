@@ -12,8 +12,22 @@ repository.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+fancy-regex = "0.14"
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+rlx-torch-ckpt = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
+[features]
+metal = ["rlx-runtime/metal"]
+gpu = ["rlx-runtime/gpu"]
+cuda = ["rlx-runtime/cuda"]
+
 [lints]
 workspace = true
+
+[dev-dependencies]
+rlx-runtime = { workspace = true }
+# float_roundtrip: parity reads reference floats bit for bit.
+serde_json = { workspace = true, features = ["float_roundtrip"] }

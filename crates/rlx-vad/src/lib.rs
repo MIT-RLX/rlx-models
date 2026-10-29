@@ -23,6 +23,8 @@ pub mod device;
 pub mod export;
 pub mod marblenet;
 pub mod ops;
+#[cfg(feature = "pyannote")]
+pub mod pyannote;
 pub mod segments;
 
 #[cfg(feature = "earshot")]

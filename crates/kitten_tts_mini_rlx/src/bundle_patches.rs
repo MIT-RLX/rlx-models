@@ -997,7 +997,12 @@ fn fix_sine_broadcast_reshapes(hir: &mut HirModule) -> bool {
         if !n.name.as_deref().is_some_and(|nm| nm.starts_with(PREFIX)) {
             continue;
         }
-        if !matches!(n.op, HirOp::Mir(Op::Reshape { .. })) || n.inputs.is_empty() {
+        // rlx-onnx-import lowers an `output_shape_fix` that changes the element
+        // count to a kernel-less `onnx_import.shape_relabel:<node>` custom op (it
+        // used to be a `Reshape` that read past its input). Both are resolved here.
+        let relabel = matches!(&n.op, HirOp::Mir(Op::Custom { name, .. })
+            if name.starts_with("onnx_import.shape_relabel"));
+        if !(relabel || matches!(n.op, HirOp::Mir(Op::Reshape { .. }))) || n.inputs.is_empty() {
             continue;
         }
         let out_dims: Vec<usize> = n.shape.dims().iter().map(|d| d.unwrap_static()).collect();
@@ -1013,6 +1018,13 @@ fn fix_sine_broadcast_reshapes(hir: &mut HirModule) -> bool {
             .map(|d| d.unwrap_static())
             .collect();
         let in_nel: usize = in_dims.iter().product();
+        if relabel && out_nel == in_nel {
+            hir.node_mut(id).op = HirOp::Mir(Op::Reshape {
+                new_shape: out_dims.iter().map(|&d| d as i64).collect(),
+            });
+            fixed += 1;
+            continue;
+        }
         if out_nel <= in_nel || !broadcastable(&in_dims, &out_dims) {
             continue;
         }

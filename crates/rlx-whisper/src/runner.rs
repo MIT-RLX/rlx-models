@@ -811,7 +811,9 @@ impl WhisperRunner {
         self.decode_step_batch(cross, std::slice::from_ref(&token), cache, batch, false)
     }
 
-    fn decode_step_batch(
+    /// One decoder step for `batch` slots (one token each), appending to
+    /// `cache`; returns `[batch, vocab]` logits.
+    pub fn decode_step_batch(
         &mut self,
         cross: &WhisperCrossCache,
         tokens: &[u32],

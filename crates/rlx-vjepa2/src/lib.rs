@@ -33,11 +33,15 @@ pub mod weights;
 
 pub use builder::{
     Vjepa2GraphParams, Vjepa2GraphPreprocess, build_vjepa2_encoder_graph_sized,
-    build_vjepa2_encoder_hir_sized, build_vjepa2_pooler_graph_sized, build_vjepa2_pooler_hir_sized,
+    build_vjepa2_encoder_hir_sized, build_vjepa2_encoder_states_hir_sized,
+    build_vjepa2_pooler_graph_sized, build_vjepa2_pooler_hir_sized,
     build_vjepa2_predictor_graph_sized, build_vjepa2_predictor_hir_sized, compile_vjepa2_encoder,
 };
 pub use config::{IMAGENET_MEAN, IMAGENET_STD, Vjepa2Config, rope_segment_dims};
-pub use encoder::{Vjepa2EncoderOutput, encode_video_native, encode_video_native_ext};
+pub use encoder::{
+    Vjepa2EncoderOutput, encode_video_native, encode_video_native_ext,
+    encode_video_native_hidden_states, encode_video_native_taps,
+};
 pub use flow::{Vjepa2EncoderBuilt, Vjepa2EncoderFlow, Vjepa2PoolerFlow, Vjepa2PredictorFlow};
 pub use pooler::{Vjepa2PoolerOutput, pool_native};
 pub use predictor::{
@@ -233,6 +237,142 @@ mod tests {
         let video = vec![0.0f32; 3 * cfg.frames_per_clip * cfg.crop_size * cfg.crop_size];
         let out = encode_video_native(&enc, &cfg, &video, 1).unwrap();
         assert_eq!(out.tokens.len(), cfg.num_patches() * cfg.hidden_size);
+    }
+
+    #[test]
+    fn taps_match_per_layer_truncation_bitwise() {
+        let mut cfg = tiny_cfg();
+        cfg.num_hidden_layers = 4;
+        let mut wm = synthetic_encoder_weights(&cfg);
+        let enc = extract_encoder_weights(&mut wm, &cfg).unwrap();
+        let n = 3 * cfg.frames_per_clip * cfg.crop_size * cfg.crop_size;
+        let video: Vec<f32> = (0..n).map(|i| ((i % 11) as f32 - 5.0) * 0.05).collect();
+
+        // Unsorted, duplicated, and including the last block (final layer norm).
+        let taps = [3, 1, 2, 1, 0];
+        let tapped = encode_video_native_taps(&enc, &cfg, &video, 1, &taps).unwrap();
+        assert_eq!(tapped.len(), taps.len());
+        for (out, &t) in tapped.iter().zip(&taps) {
+            let want = encode_video_native_ext(&enc, &cfg, &video, 1, Some(t)).unwrap();
+            let same = out.tokens.len() == want.tokens.len()
+                && out
+                    .tokens
+                    .iter()
+                    .zip(&want.tokens)
+                    .all(|(a, b)| a.to_bits() == b.to_bits());
+            assert!(same, "tap {t} differs from encode_video_native_ext");
+        }
+        // Guard against a blind check: distinct depths must give distinct states.
+        assert_ne!(tapped[1].tokens, tapped[2].tokens);
+        assert_ne!(tapped[2].tokens, tapped[0].tokens);
+        assert!(encode_video_native_taps(&enc, &cfg, &video, 1, &[4]).is_err());
+        assert!(
+            encode_video_native_taps(&enc, &cfg, &video, 1, &[])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn hidden_states_endpoints_match_hf_numbering() {
+        let mut cfg = tiny_cfg();
+        cfg.num_hidden_layers = 3;
+        let mut wm = synthetic_encoder_weights(&cfg);
+        let enc = extract_encoder_weights(&mut wm, &cfg).unwrap();
+        let n = 3 * cfg.frames_per_clip * cfg.crop_size * cfg.crop_size;
+        let video: Vec<f32> = (0..n).map(|i| ((i % 7) as f32 - 3.0) * 0.07).collect();
+        let mut seen = Vec::new();
+        let mut states = std::collections::HashMap::new();
+        encode_video_native_hidden_states(&enc, &cfg, &video, 1, &[3, 0, 3, 2], |k, t| {
+            seen.push(k);
+            states.insert(k, t.to_vec());
+        })
+        .unwrap();
+        assert_eq!(seen, vec![0, 2, 3], "each state once, increasing");
+        let embed = conv3d_patch_embed(
+            &enc.patch,
+            &video,
+            cfg.frames_per_clip,
+            cfg.crop_size,
+            cfg.crop_size,
+        )
+        .unwrap();
+        assert_eq!(states[&0], embed);
+        // transformers 5.x: the last state is the raw last block, no final norm.
+        let full = encode_video_native(&enc, &cfg, &video, 1).unwrap().tokens;
+        assert_ne!(states[&3], full);
+        let normed = rlx_core::host_kernels::layer_norm(
+            &states[&3],
+            &enc.norm_w,
+            &enc.norm_b,
+            cfg.hidden_size,
+            cfg.layer_norm_eps as f32,
+        )
+        .unwrap();
+        assert_eq!(normed, full);
+        assert_eq!(
+            states[&2],
+            encode_video_native_ext(&enc, &cfg, &video, 1, Some(1))
+                .unwrap()
+                .tokens
+        );
+        assert!(encode_video_native_hidden_states(&enc, &cfg, &video, 1, &[4], |_, _| {}).is_err());
+    }
+
+    #[test]
+    fn states_graph_token_means_match_native() {
+        use rlx_runtime::{Device, Session};
+        let mut cfg = tiny_cfg();
+        cfg.num_hidden_layers = 3;
+        let mut wm = synthetic_encoder_weights(&cfg);
+        let enc = extract_encoder_weights(&mut wm, &cfg).unwrap();
+        let n = 3 * cfg.frames_per_clip * cfg.crop_size * cfg.crop_size;
+        let video: Vec<f32> = (0..n).map(|i| ((i % 11) as f32 - 5.0) * 0.05).collect();
+        let (seq, h) = (cfg.num_patches(), cfg.hidden_size);
+        let wanted = [0, 2, 3];
+        let mut want = Vec::new();
+        encode_video_native_hidden_states(&enc, &cfg, &video, 1, &wanted, |_, t| {
+            want.push(
+                (0..h)
+                    .map(|j| (0..seq).map(|i| t[i * h + j]).sum::<f32>() / seq as f32)
+                    .collect::<Vec<_>>(),
+            );
+        })
+        .unwrap();
+        let (hir, params) =
+            build_vjepa2_encoder_states_hir_sized(&cfg, &enc, 1, &wanted, true).unwrap();
+        let graph = hir.lower_to_mir().unwrap().into_graph();
+        let opts = rlx_core::flow_bridge::compile_options_for_profile(
+            &rlx_flow::CompileProfile::encoder(),
+            Device::Cpu,
+        );
+        let mut c = Session::new(Device::Cpu).compile_with(graph, &opts);
+        Vjepa2GraphParams::from_f32(params).load(&mut c);
+        let hidden = conv3d_patch_embed(
+            &enc.patch,
+            &video,
+            cfg.frames_per_clip,
+            cfg.crop_size,
+            cfg.crop_size,
+        )
+        .unwrap();
+        let got = c.run(&[("hidden", hidden.as_slice())]);
+        assert_eq!(got.len(), wanted.len());
+        for (k, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert_eq!(g.len(), h);
+            let e = g
+                .iter()
+                .zip(w)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            let m = w.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+            assert!(
+                e <= 1e-4 * m.max(1.0),
+                "state {}: max err {e} (max |ref| {m})",
+                wanted[k]
+            );
+        }
+        assert_ne!(got[1], got[2]);
     }
 
     #[test]

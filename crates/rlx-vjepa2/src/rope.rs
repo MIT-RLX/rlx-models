@@ -181,8 +181,93 @@ pub fn build_vjepa2_rope_tables(
     (cos, sin)
 }
 
+/// Per-element cos/sin tables `[positions.len(), head_dim]` for HF V-JEPA2's
+/// RoPE, so a graph can compute `x * cos + swap(x) * sin` with
+/// `swap` = [`vjepa2_rope_swap_matrix`]. Element `j` of a segment uses the
+/// same frequency and angle arithmetic as `rotate_segment` (tiled frequency
+/// index `j % (seg/2)`); dims past the three segments get `cos = 1, sin = 0`.
+pub fn build_vjepa2_rope_tables_hf(
+    positions: &[usize],
+    head_dim: usize,
+    d_dim: usize,
+    h_dim: usize,
+    w_dim: usize,
+    grid_h: usize,
+    grid_w: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    let mut cos = vec![1f32; positions.len() * head_dim];
+    let mut sin = vec![0f32; positions.len() * head_dim];
+    for (r, &p) in positions.iter().enumerate() {
+        let (frame, height, width) = decompose_token_pos(p, grid_h, grid_w);
+        let mut off = 0;
+        for (seg_dim, pos) in [(d_dim, frame), (h_dim, height), (w_dim, width)] {
+            let half = seg_dim / 2;
+            for j in 0..seg_dim {
+                let k = j % half;
+                let exp = (2 * k) as f32 / seg_dim as f32;
+                let omega = 1.0 / 10_000.0f32.powf(exp);
+                let ang = pos as f32 * omega;
+                cos[r * head_dim + off + j] = ang.cos();
+                sin[r * head_dim + off + j] = ang.sin();
+            }
+            off += seg_dim;
+        }
+    }
+    (cos, sin)
+}
+
+/// `[head_dim, head_dim]` matrix `P` with `x @ P` = HF's rotate step within
+/// each segment: `y[2m] = -x[2m+1]`, `y[2m+1] = x[2m]` (pairs relative to the
+/// segment start); zero past the segments. Exactly one `±1` per column, so the
+/// product is exact.
+pub fn vjepa2_rope_swap_matrix(
+    head_dim: usize,
+    d_dim: usize,
+    h_dim: usize,
+    w_dim: usize,
+) -> Vec<f32> {
+    let mut p = vec![0f32; head_dim * head_dim];
+    let mut off = 0;
+    for seg_dim in [d_dim, h_dim, w_dim] {
+        for m in 0..seg_dim / 2 {
+            let (a, b) = (off + 2 * m, off + 2 * m + 1);
+            p[b * head_dim + a] = -1.0; // y[a] = -x[b]
+            p[a * head_dim + b] = 1.0; // y[b] = x[a]
+        }
+        off += seg_dim;
+    }
+    p
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hf_tables_and_swap_reproduce_native_rope() {
+        let (bh, seq, dh) = (2, 12, 20);
+        let (d, h, w) = (6, 6, 6);
+        let (gh, gw) = (2, 3);
+        let mut q: Vec<f32> = (0..bh * seq * dh)
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.03)
+            .collect();
+        let mut k = q.iter().map(|v| v * -0.7 + 0.1).collect::<Vec<_>>();
+        let (q0, k0) = (q.clone(), k.clone());
+        apply_vjepa2_rope(&mut q, &mut k, bh, seq, dh, 2, gh, gw, d, h, w, None);
+        let pos: Vec<usize> = (0..seq).collect();
+        let (c, sn) = build_vjepa2_rope_tables_hf(&pos, dh, d, h, w, gh, gw);
+        let p = vjepa2_rope_swap_matrix(dh, d, h, w);
+        for (x0, want) in [(&q0, &q), (&k0, &k)] {
+            for r in 0..bh * seq {
+                let t = r % seq;
+                let x = &x0[r * dh..(r + 1) * dh];
+                for j in 0..dh {
+                    let y: f32 = (0..dh).map(|i| x[i] * p[i * dh + j]).sum();
+                    let got = x[j] * c[t * dh + j] + y * sn[t * dh + j];
+                    assert_eq!(got.to_bits(), want[r * dh + j].to_bits(), "row {r} dim {j}");
+                }
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

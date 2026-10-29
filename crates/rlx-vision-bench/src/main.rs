@@ -19,11 +19,16 @@
 //! shard, then per-rank throughput + comm/compute metrics.
 
 use rlx_vision_bench::{
-    Config, DatasetKind, ModelKind, Report, datasets, harness, run_alldev, run_coordinate,
+    Config, DatasetKind, ModelKind, Report, datasets, harness, run_alldev, run_coordinate_with,
     run_distributed, run_node_from_env, training_device,
 };
 use std::sync::Arc;
 use std::time::Instant;
+
+/// The cluster options, created on first use.
+fn opt(o: &mut Option<rlx_runtime::dist::TrainOptions>) -> &mut rlx_runtime::dist::TrainOptions {
+    o.get_or_insert_with(Default::default)
+}
 
 fn main() {
     let mut world = 2u32;
@@ -35,6 +40,9 @@ fn main() {
     let mut model_set = false;
     let mut max_train: Option<usize> = None;
     let mut max_test: Option<usize> = None;
+    // Cluster training options (`--coordinate` only); any flag below turns
+    // them on, otherwise the original equal-shard path runs.
+    let mut copts: Option<rlx_runtime::dist::TrainOptions> = None;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     let val = |i: &mut usize| -> String {
@@ -54,6 +62,52 @@ fn main() {
             "--deterministic" => cfg.deterministic = true,
             "--no-deterministic" => cfg.deterministic = false,
             "--coordinate" => coordinate = true,
+            "--cluster" => {
+                opt(&mut copts);
+            }
+            "--accum" => {
+                let v = val(&mut i).parse().unwrap_or(1);
+                opt(&mut copts).accum = v
+            }
+            "--wire" => {
+                let v = val(&mut i).parse().unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(2)
+                });
+                opt(&mut copts).wire = v
+            }
+            "--overlap" => opt(&mut copts).overlap = true,
+            "--balance" => opt(&mut copts).balance = true,
+            "--local-steps" => {
+                let v = val(&mut i).parse().unwrap_or(0);
+                opt(&mut copts).local_steps = v
+            }
+            "--zero" => opt(&mut copts).zero = true,
+            "--lr-scaling" => {
+                let v = val(&mut i).parse().unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(2)
+                });
+                opt(&mut copts).lr_scaling = v
+            }
+            "--warmup" => {
+                let v = val(&mut i).parse().ok();
+                opt(&mut copts).warmup = v
+            }
+            "--number-format" | "--precision" => {
+                let v = val(&mut i);
+                opt(&mut copts).number_format = Some(v)
+            }
+            "--loss-scale" => {
+                let v = val(&mut i).parse().ok();
+                opt(&mut copts).loss_scale = v
+            }
+            "--no-wire-feedback" => opt(&mut copts).wire_feedback = false,
+            "--round-half-casts" => opt(&mut copts).half_casts = true,
+            "--checkpoint" => {
+                let v = val(&mut i);
+                opt(&mut copts).checkpoint_dir = Some(v)
+            }
             "--alldev" => alldev = true,
             "--max-train" => max_train = val(&mut i).parse().ok(),
             "--max-test" => max_test = val(&mut i).parse().ok(),
@@ -183,7 +237,7 @@ fn main() {
             hostname(),
             w.saturating_sub(1)
         );
-        let rep = run_coordinate(&cfg, group, &data.train, &data.test);
+        let rep = run_coordinate_with(&cfg, group, &data.train, &data.test, copts.clone());
         print_metrics(&[(rank, rep)], w);
         println!(
             "distributed MNIST (ship-graph, generic workers) · {w} ranks · master accuracy = {:.2}% · {:.1}s",

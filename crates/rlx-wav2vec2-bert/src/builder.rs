@@ -26,7 +26,7 @@ use std::collections::HashMap;
 const ATTN_MASK_NEG: f32 = -1e4;
 const FFN_RESIDUAL_SCALE: f32 = 0.5;
 
-/// Stop building at an intermediate point inside encoder layer `L`.
+/// An intermediate point inside encoder layer `L`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum W2vLayerStop {
     AfterFfn1,
@@ -50,7 +50,7 @@ fn build_wav2vec2_bert_hir_inner(
     weights: &mut WeightMap,
     batch: usize,
     seq: usize,
-    probe: Option<(usize, W2vLayerStop)>,
+    taps: &[(usize, W2vLayerStop)],
 ) -> Result<(HirModule, HashMap<String, Vec<f32>>)> {
     validate_cfg(cfg)?;
     let feat_dim = cfg.feature_projection_input_dim;
@@ -61,8 +61,11 @@ fn build_wav2vec2_bert_hir_inner(
     let attention_mask = hir.input("attention_mask", Shape::new(&[batch, seq], f));
     let mut src = WeightMapSource(weights);
     let mut b = W2vBuilder::from_emit_parts(&mut hir, &mut params, &mut src, batch, seq);
-    let hidden = b.emit_encoder(input_features, attention_mask, probe, cfg)?;
-    hir.outputs = vec![hidden];
+    let outputs = match taps {
+        [] => vec![b.emit_encoder(input_features, attention_mask, None, cfg)?],
+        _ => b.emit_encoder_taps(input_features, attention_mask, taps, cfg)?,
+    };
+    hir.outputs = outputs;
     Ok((hir, params))
 }
 
@@ -87,7 +90,81 @@ pub fn build_wav2vec2_bert_graph_probe(
     stop_layer: usize,
     stop: W2vLayerStop,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
-    build_wav2vec2_bert_graph_inner(cfg, weights, batch, seq, Some((stop_layer, stop)))
+    build_wav2vec2_bert_graph_inner(cfg, weights, batch, seq, &[(stop_layer, stop)])
+}
+
+/// Build one graph whose outputs are the hidden states at every `(layer, stop)`
+/// in `taps`, in `taps` order. Output `i` equals the single output of
+/// `build_wav2vec2_bert_graph_probe(.., taps[i].0, taps[i].1)`; layers past the
+/// deepest tap are not built.
+pub fn build_wav2vec2_bert_graph_taps(
+    cfg: &Wav2Vec2BertConfig,
+    weights: &mut WeightMap,
+    batch: usize,
+    seq: usize,
+    taps: &[(usize, W2vLayerStop)],
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    if taps.is_empty() {
+        bail!("build_wav2vec2_bert_graph_taps: no taps");
+    }
+    build_wav2vec2_bert_graph_inner(cfg, weights, batch, seq, taps)
+}
+
+/// One graph whose outputs are `Wav2Vec2BertModel(output_hidden_states=True)
+/// .hidden_states[k]` for each distinct `k` in `wanted`, in increasing `k`:
+/// `0` is the feature projection output (the encoder input), `k >= 1` the
+/// full output of encoder layer `k - 1` (after its `final_layer_norm`, i.e.
+/// [`W2vLayerStop::Final`]). Layers past the deepest `k` are not built.
+pub fn build_wav2vec2_bert_graph_hidden_states(
+    cfg: &Wav2Vec2BertConfig,
+    weights: &mut WeightMap,
+    batch: usize,
+    seq: usize,
+    wanted: &[usize],
+) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+    let mut ks: Vec<usize> = wanted.to_vec();
+    ks.sort_unstable();
+    ks.dedup();
+    let Some(&deepest) = ks.last() else {
+        bail!("build_wav2vec2_bert_graph_hidden_states: nothing requested");
+    };
+    if deepest > cfg.num_hidden_layers {
+        bail!(
+            "hidden state {deepest} out of range (0..={})",
+            cfg.num_hidden_layers
+        );
+    }
+    validate_cfg(cfg)?;
+    let feat_dim = cfg.feature_projection_input_dim;
+    let f = DType::F32;
+    let mut hir = HirModule::new("wav2vec2_bert").with_fusion_policy(FusionPolicy::Direct);
+    let mut params = HashMap::new();
+    let input_features = hir.input("input_features", Shape::new(&[batch, seq, feat_dim], f));
+    let attention_mask = hir.input("attention_mask", Shape::new(&[batch, seq], f));
+    let mut src = WeightMapSource(weights);
+    let mut b = W2vBuilder::from_emit_parts(&mut hir, &mut params, &mut src, batch, seq);
+    let taps: Vec<(usize, W2vLayerStop)> = ks
+        .iter()
+        .filter(|&&k| k > 0)
+        .map(|&k| (k - 1, W2vLayerStop::Final))
+        .collect();
+    let mut embedding = None;
+    let tapped = b.emit_encoder_inner(
+        input_features,
+        attention_mask,
+        &taps,
+        cfg,
+        Some(&mut embedding),
+        deepest,
+    )?;
+    let mut outputs = Vec::with_capacity(ks.len());
+    if ks[0] == 0 {
+        outputs.push(embedding.expect("embedding recorded"));
+    }
+    outputs.extend(if taps.is_empty() { Vec::new() } else { tapped });
+    hir.outputs = outputs;
+    let mir = hir.lower_to_mir()?;
+    Ok((mir.into_graph(), params))
 }
 
 /// Build a Wav2Vec2-BERT encoder HIR module (no MIR/graph lowering).
@@ -97,7 +174,7 @@ pub fn build_wav2vec2_bert_hir_sized(
     batch: usize,
     seq: usize,
 ) -> Result<(HirModule, HashMap<String, Vec<f32>>)> {
-    build_wav2vec2_bert_hir_inner(cfg, weights, batch, seq, None)
+    build_wav2vec2_bert_hir_inner(cfg, weights, batch, seq, &[])
 }
 
 fn build_wav2vec2_bert_graph_inner(
@@ -105,9 +182,9 @@ fn build_wav2vec2_bert_graph_inner(
     weights: &mut WeightMap,
     batch: usize,
     seq: usize,
-    probe: Option<(usize, W2vLayerStop)>,
+    taps: &[(usize, W2vLayerStop)],
 ) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
-    let (hir, params) = build_wav2vec2_bert_hir_inner(cfg, weights, batch, seq, probe)?;
+    let (hir, params) = build_wav2vec2_bert_hir_inner(cfg, weights, batch, seq, taps)?;
     let mir = hir.lower_to_mir()?;
     Ok((mir.into_graph(), params))
 }
@@ -137,6 +214,50 @@ impl<'a> W2vBuilder<'a> {
         probe: Option<(usize, W2vLayerStop)>,
         cfg: &Wav2Vec2BertConfig,
     ) -> Result<HirNodeId> {
+        let taps: Vec<(usize, W2vLayerStop)> = probe.into_iter().collect();
+        let n = taps.first().map_or(cfg.num_hidden_layers, |t| t.0 + 1);
+        let mut out =
+            self.emit_encoder_inner(input_features, attention_mask, &taps, cfg, None, n)?;
+        Ok(out
+            .pop()
+            .expect("emit_encoder_inner returns at least one node"))
+    }
+
+    /// Emit the encoder up to the deepest tap and return the tapped nodes in
+    /// `taps` order.
+    pub(crate) fn emit_encoder_taps(
+        &mut self,
+        input_features: HirNodeId,
+        attention_mask: HirNodeId,
+        taps: &[(usize, W2vLayerStop)],
+        cfg: &Wav2Vec2BertConfig,
+    ) -> Result<Vec<HirNodeId>> {
+        let n = taps
+            .iter()
+            .map(|(l, _)| l + 1)
+            .max()
+            .unwrap_or(cfg.num_hidden_layers);
+        self.emit_encoder_inner(input_features, attention_mask, taps, cfg, None, n)
+    }
+
+    /// Emit `n_layers` encoder layers. With no taps, returns `[final hidden]`;
+    /// otherwise the tapped nodes in `taps` order. `embedding` receives the
+    /// encoder input (feature projection output) when given.
+    fn emit_encoder_inner(
+        &mut self,
+        input_features: HirNodeId,
+        attention_mask: HirNodeId,
+        taps: &[(usize, W2vLayerStop)],
+        cfg: &Wav2Vec2BertConfig,
+        embedding: Option<&mut Option<HirNodeId>>,
+        n_layers: usize,
+    ) -> Result<Vec<HirNodeId>> {
+        if let Some(&(bad, _)) = taps.iter().find(|(l, _)| *l >= cfg.num_hidden_layers) {
+            bail!(
+                "tap layer {bad} out of range ({} encoder layers)",
+                cfg.num_hidden_layers
+            );
+        }
         let h = cfg.hidden_size;
         let feat_dim = cfg.feature_projection_input_dim;
         let batch = self.batch;
@@ -170,9 +291,14 @@ impl<'a> W2vBuilder<'a> {
         let mut hidden = self.reshape(fp_out, vec![batch as i64, seq as i64, h as i64]);
 
         hidden = self.apply_padding_mask(hidden, attention_mask, b3h.clone());
+        if let Some(e) = embedding {
+            *e = Some(hidden);
+        }
         let attn_mask_bias = self.build_extended_attention_mask(attention_mask);
 
-        for layer_idx in 0..cfg.num_hidden_layers {
+        // Deeper layers than `n_layers` are never built.
+        let mut tapped: Vec<Option<HirNodeId>> = vec![None; taps.len()];
+        for layer_idx in 0..n_layers {
             let lp = format!("encoder.layers.{layer_idx}");
             hidden = self.encoder_layer(
                 cfg,
@@ -181,10 +307,17 @@ impl<'a> W2vBuilder<'a> {
                 hidden,
                 attn_mask_bias,
                 attention_mask,
-                probe,
+                taps,
+                &mut tapped,
             )?;
         }
-        Ok(hidden)
+        if taps.is_empty() {
+            return Ok(vec![hidden]);
+        }
+        Ok(tapped
+            .into_iter()
+            .map(|n| n.expect("every tap layer is built"))
+            .collect())
     }
 
     fn encoder_layer(
@@ -195,8 +328,18 @@ impl<'a> W2vBuilder<'a> {
         x: HirNodeId,
         attn_mask_bias: HirNodeId,
         pad_mask: HirNodeId,
-        probe: Option<(usize, W2vLayerStop)>,
+        taps: &[(usize, W2vLayerStop)],
+        tapped: &mut [Option<HirNodeId>],
     ) -> Result<HirNodeId> {
+        let mut record = |stop: W2vLayerStop, node: HirNodeId| {
+            for (slot, _) in tapped
+                .iter_mut()
+                .zip(taps)
+                .filter(|(_, t)| **t == (layer_idx, stop))
+            {
+                *slot = Some(node);
+            }
+        };
         let batch = self.batch;
         let seq = self.seq;
         let h = cfg.hidden_size;
@@ -218,9 +361,7 @@ impl<'a> W2vBuilder<'a> {
             residual,
             self.shape3(batch, seq, h),
         );
-        if probe == Some((layer_idx, W2vLayerStop::AfterFfn1)) {
-            return Ok(after_ffn1);
-        }
+        record(W2vLayerStop::AfterFfn1, after_ffn1);
 
         // 2. Self-attention (relative-key via Op::Attention + bias)
         let residual = after_ffn1;
@@ -242,9 +383,7 @@ impl<'a> W2vBuilder<'a> {
             dh,
         )?;
         let after_attn = self.add(sa_out, residual, self.shape3(batch, seq, h));
-        if probe == Some((layer_idx, W2vLayerStop::AfterAttn)) {
-            return Ok(after_attn);
-        }
+        record(W2vLayerStop::AfterAttn, after_attn);
 
         // 3. Conformer conv
         let residual = after_attn;
@@ -257,9 +396,7 @@ impl<'a> W2vBuilder<'a> {
             eps,
         )?;
         let after_conv = self.add(conv_out, residual, self.shape3(batch, seq, h));
-        if probe == Some((layer_idx, W2vLayerStop::AfterConv)) {
-            return Ok(after_conv);
-        }
+        record(W2vLayerStop::AfterConv, after_conv);
 
         // 4. FFN2 (0.5 residual) + final LN
         let residual = after_conv;
@@ -280,19 +417,19 @@ impl<'a> W2vBuilder<'a> {
             residual,
             self.shape3(batch, seq, h),
         );
-        if probe == Some((layer_idx, W2vLayerStop::AfterFfn2)) {
-            return Ok(after_ffn2);
-        }
+        record(W2vLayerStop::AfterFfn2, after_ffn2);
 
         let final_ln_w = self.load_param(&format!("{lp}.final_layer_norm.weight"), &[h], false)?;
         let final_ln_b = self.load_param(&format!("{lp}.final_layer_norm.bias"), &[h], false)?;
-        Ok(self.layer_norm(
+        let out = self.layer_norm(
             after_ffn2,
             final_ln_w,
             final_ln_b,
             eps,
             self.shape3(batch, seq, h),
-        ))
+        );
+        record(W2vLayerStop::Final, out);
+        Ok(out)
     }
 
     fn feed_forward(&mut self, prefix: &str, x: HirNodeId, int_dim: usize) -> Result<HirNodeId> {

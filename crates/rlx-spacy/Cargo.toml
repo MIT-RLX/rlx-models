@@ -1,0 +1,23 @@
+[package]
+name = "rlx-spacy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "spaCy 3.8 English pipeline inference in pure Rust (tokenizer, tok2vec, dependency parser / sentence boundaries)"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+fancy-regex = "0.14"
+rmpv = "1"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+
+[lints]
+workspace = true
