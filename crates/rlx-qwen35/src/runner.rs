@@ -616,7 +616,7 @@ impl Qwen35RunnerBuilder {
             }
 
             // HF stores `A_log`; the GGUF-shaped builder wants `-exp(A_log)`.
-            let mut loader = hf::hf_weight_loader(mmap_loader);
+            let mut loader = hf::hf_weight_loader_for(mmap_loader, &cfg);
             let t = Instant::now();
             let weights = Qwen35Weights::from_loader(&mut loader, &cfg)?;
             eprintln!(
@@ -2248,7 +2248,7 @@ impl Qwen35Runner {
             );
         }
         let (_model_dir, _resolved, mmap_loader) = load_hf_mmap_loader(&self.weights_path)?;
-        let mut loader = hf::hf_weight_loader(mmap_loader);
+        let mut loader = hf::hf_weight_loader_for(mmap_loader, &self.cfg);
         let mut fresh = Qwen35Weights::from_loader(&mut loader, &self.cfg)?;
         // Keep the live embedding table (host-embed / multimodal splice).
         fresh.set_token_embd(emb);

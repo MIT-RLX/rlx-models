@@ -13,8 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! NLLB / M2M100 encoder + decoder graphs (post-norm, learned positions with
-//! offset 2, `layernorm_embedding`, ReLU FFN, tied shared embedding LM head).
+//! NLLB / M2M100 encoder + decoder graphs, matching HF
+//! `M2M100{Encoder,Decoder}`: pre-norm layers, sinusoidal positions offset by
+//! `padding_idx + 1`, ReLU FFN, a final `layer_norm` per stack, tied LM head.
+//!
+//! Two decoder spellings share the layer code: the full-prefix causal pass
+//! ([`NllbBuilder::emit_decoder_hidden`], teacher forcing) and the KV-cached
+//! single-token step ([`NllbBuilder::emit_decoder_step`]). Each must equal the
+//! other, which is what the HF parity test checks.
 
 use crate::builder::NllbBuilder;
 use crate::config::NllbConfig;
@@ -24,104 +30,95 @@ use rlx_ir::hir::{HirGraphExt, HirNodeId};
 use rlx_ir::op::MaskKind;
 use rlx_ir::{Shape, ops::attention::attention_kind_op};
 
+/// Key mask for one attention: none, causal, or a `[B, key_len]` keep mask.
+#[derive(Clone, Copy)]
+pub(crate) enum KeyMask {
+    None,
+    Causal,
+    Keep(HirNodeId),
+}
+
+/// Cached K/V a decode step attends to, one entry per decoder layer.
+pub(crate) struct StepKv<'a> {
+    pub cross_k: &'a [HirNodeId],
+    pub cross_v: &'a [HirNodeId],
+    pub past_k: &'a [HirNodeId],
+    pub past_v: &'a [HirNodeId],
+    /// `[B, past + 1]` keep mask over `concat(past_k, k_new)`.
+    pub self_mask: HirNodeId,
+    /// `[B, src]` keep mask over the (bucket-padded) source.
+    pub src_mask: HirNodeId,
+}
+
 impl NllbBuilder<'_> {
-    /// Encoder over precomputed `inputs_embeds [B, S, d]`. Returns
-    /// `encoder_hidden [B, S, d]`.
+    /// Encoder over token embeds `[B, S, d]` (already `× embed_scale`);
+    /// adds positions in-graph. Returns `encoder_hidden [B, S, d]`.
     pub(crate) fn emit_encoder(
         &mut self,
         cfg: &NllbConfig,
         inputs_embeds: HirNodeId,
         seq: usize,
     ) -> Result<HirNodeId> {
-        let d = cfg.d_model;
-        let pos = self.positional_embeddings(cfg, &lk::enc_embed_positions(), 0, seq, d)?;
-        let mut x = self.g().add(inputs_embeds, pos);
-        if self.weights.has(&lk::enc_layernorm_embedding_w()) {
-            x = self.layer_norm(
-                x,
-                &lk::enc_layernorm_embedding_w(),
-                &lk::enc_layernorm_embedding_b(),
-            )?;
-        }
-        for layer in 0..cfg.encoder_layers {
-            x = self.encoder_layer(cfg, layer, x, seq)?;
-        }
-        // Optional final encoder LayerNorm (`model.encoder.layer_norm`).
-        if self.weights.has(&lk::enc_final_layer_norm_w()) {
-            x = self.layer_norm(
-                x,
-                &lk::enc_final_layer_norm_w(),
-                &lk::enc_final_layer_norm_b(),
-            )?;
-        }
-        Ok(x)
+        let pos = self.positional_embeddings(cfg, "enc", seq)?;
+        let x = self.g().add(inputs_embeds, pos);
+        self.emit_encoder_stack(cfg, x, KeyMask::None)
     }
 
-    fn encoder_layer(
+    /// Encoder layers + final norm over `x = embeds + positions`.
+    pub(crate) fn emit_encoder_stack(
         &mut self,
         cfg: &NllbConfig,
-        layer: usize,
         mut x: HirNodeId,
-        seq: usize,
+        mask: KeyMask,
     ) -> Result<HirNodeId> {
         let nh = cfg.encoder_attention_heads;
         let hd = cfg.enc_head_dim();
-        let p = |s: &str| lk::enc_layer(layer, s);
-
-        if self.m2m100_style() {
-            let residual = x;
-            let mut h = self.layer_norm(
+        for layer in 0..cfg.encoder_layers {
+            let p = |s: &str| lk::enc_layer(layer, s);
+            let h = self.layer_norm(
                 x,
                 &p("self_attn_layer_norm.weight"),
                 &p("self_attn_layer_norm.bias"),
             )?;
-            let sa =
-                self.self_attention(h, h, &p("self_attn"), seq, seq, nh, hd, MaskKind::None)?;
-            x = self.g().add(residual, sa);
-            let residual = x;
-            h = self.layer_norm(
-                x,
-                &p("final_layer_norm.weight"),
-                &p("final_layer_norm.bias"),
-            )?;
-            let ff = self.ffn(
-                h,
-                &p("fc1.weight"),
-                &p("fc1.bias"),
-                &p("fc2.weight"),
-                &p("fc2.bias"),
-            )?;
-            return Ok(self.g().add(residual, ff));
+            let (q, k, v) = self.qkv(h, h, &p("self_attn"))?;
+            let sa = self.attend(q, k, v, &p("self_attn"), nh, hd, mask)?;
+            x = self.g().add(x, sa);
+            x = self.ffn_block(x, &p)?;
         }
-
-        let residual = x;
-        let sa = self.self_attention(x, x, &p("self_attn"), seq, seq, nh, hd, MaskKind::None)?;
-        let mut x = self.g().add(residual, sa);
-        x = self.layer_norm(
-            x,
-            &p("self_attn_layer_norm.weight"),
-            &p("self_attn_layer_norm.bias"),
-        )?;
-
-        let residual = x;
-        let ff = self.ffn(
-            x,
-            &p("fc1.weight"),
-            &p("fc1.bias"),
-            &p("fc2.weight"),
-            &p("fc2.bias"),
-        )?;
-        x = self.g().add(residual, ff);
         self.layer_norm(
             x,
-            &p("final_layer_norm.weight"),
-            &p("final_layer_norm.bias"),
+            &lk::enc_final_layer_norm_w(),
+            &lk::enc_final_layer_norm_b(),
         )
     }
 
-    /// Decoder hidden states (no embed lookup, no LM head). Takes precomputed
-    /// `decoder_inputs_embeds [B,dec_seq,d]` plus `encoder_hidden`, and returns
-    /// the post-layer hidden `[B,dec_seq,d]`. The LM head is applied host-side.
+    /// Per decoder layer, the cross-attention `(K, V)` of the encoder output.
+    pub(crate) fn emit_cross_kv(
+        &mut self,
+        cfg: &NllbConfig,
+        encoder_hidden: HirNodeId,
+    ) -> Result<Vec<(HirNodeId, HirNodeId)>> {
+        (0..cfg.decoder_layers)
+            .map(|layer| {
+                let p = |s: &str| lk::dec_layer(layer, s);
+                let k = self.linear(
+                    encoder_hidden,
+                    &p("encoder_attn.k_proj.weight"),
+                    Some(&p("encoder_attn.k_proj.bias")),
+                )?;
+                let v = self.linear(
+                    encoder_hidden,
+                    &p("encoder_attn.v_proj.weight"),
+                    Some(&p("encoder_attn.v_proj.bias")),
+                )?;
+                Ok((k, v))
+            })
+            .collect()
+    }
+
+    /// Full-prefix causal decoder over token embeds `[B, T, d]` (already
+    /// `× embed_scale`); adds positions in-graph. Returns hidden `[B, T, d]`
+    /// after the final norm. The LM head runs host-side.
     pub(crate) fn emit_decoder_hidden(
         &mut self,
         cfg: &NllbConfig,
@@ -129,153 +126,141 @@ impl NllbBuilder<'_> {
         encoder_hidden: HirNodeId,
         dec_seq: usize,
     ) -> Result<HirNodeId> {
-        let d = cfg.d_model;
-        let pos = self.positional_embeddings(cfg, &lk::dec_embed_positions(), 0, dec_seq, d)?;
+        let pos = self.positional_embeddings(cfg, "dec", dec_seq)?;
         let mut x = self.g().add(inputs_embeds, pos);
-        if self.weights.has(&lk::dec_layernorm_embedding_w()) {
-            x = self.layer_norm(
-                x,
-                &lk::dec_layernorm_embedding_w(),
-                &lk::dec_layernorm_embedding_b(),
-            )?;
-        }
-        for layer in 0..cfg.decoder_layers {
-            x = self.decoder_layer(cfg, layer, x, encoder_hidden, dec_seq)?;
-        }
-        if self.weights.has(&lk::dec_final_layer_norm_w()) {
-            x = self.layer_norm(
-                x,
-                &lk::dec_final_layer_norm_w(),
-                &lk::dec_final_layer_norm_b(),
-            )?;
-        }
-        Ok(x)
-    }
-
-    fn decoder_layer(
-        &mut self,
-        cfg: &NllbConfig,
-        layer: usize,
-        mut x: HirNodeId,
-        encoder_hidden: HirNodeId,
-        seq: usize,
-    ) -> Result<HirNodeId> {
-        let nh = cfg.decoder_attention_heads;
-        let hd = cfg.dec_head_dim();
-        let enc_seq = self.kv_seq(encoder_hidden);
-        let p = |s: &str| lk::dec_layer(layer, s);
-
-        if self.m2m100_style() {
-            let residual = x;
-            let mut h = self.layer_norm(
+        let cross = self.emit_cross_kv(cfg, encoder_hidden)?;
+        for (layer, &(ck, cv)) in cross.iter().enumerate() {
+            let p = |s: &str| lk::dec_layer(layer, s);
+            let h = self.layer_norm(
                 x,
                 &p("self_attn_layer_norm.weight"),
                 &p("self_attn_layer_norm.bias"),
             )?;
-            let sa =
-                self.self_attention(h, h, &p("self_attn"), seq, seq, nh, hd, MaskKind::Causal)?;
-            x = self.g().add(residual, sa);
-
-            let residual = x;
-            h = self.layer_norm(
-                x,
-                &p("encoder_attn_layer_norm.weight"),
-                &p("encoder_attn_layer_norm.bias"),
+            let (q, k, v) = self.qkv(h, h, &p("self_attn"))?;
+            let sa = self.attend(
+                q,
+                k,
+                v,
+                &p("self_attn"),
+                self.dec_nh(cfg),
+                cfg.dec_head_dim(),
+                KeyMask::Causal,
             )?;
-            let ca =
-                self.cross_attention(h, encoder_hidden, &p("encoder_attn"), seq, enc_seq, nh, hd)?;
-            x = self.g().add(residual, ca);
-
-            let residual = x;
-            h = self.layer_norm(
-                x,
-                &p("final_layer_norm.weight"),
-                &p("final_layer_norm.bias"),
-            )?;
-            let ff = self.ffn(
-                h,
-                &p("fc1.weight"),
-                &p("fc1.bias"),
-                &p("fc2.weight"),
-                &p("fc2.bias"),
-            )?;
-            return Ok(self.g().add(residual, ff));
+            x = self.g().add(x, sa);
+            x = self.cross_block(cfg, x, ck, cv, &p, KeyMask::None)?;
+            x = self.ffn_block(x, &p)?;
         }
-
-        // Self attention (causal).
-        let residual = x;
-        let sa = self.self_attention(x, x, &p("self_attn"), seq, seq, nh, hd, MaskKind::Causal)?;
-        let mut x = self.g().add(residual, sa);
-        x = self.layer_norm(
+        self.layer_norm(
             x,
-            &p("self_attn_layer_norm.weight"),
-            &p("self_attn_layer_norm.bias"),
-        )?;
+            &lk::dec_final_layer_norm_w(),
+            &lk::dec_final_layer_norm_b(),
+        )
+    }
 
-        // Cross attention to encoder.
-        let residual = x;
-        let ca =
-            self.cross_attention(x, encoder_hidden, &p("encoder_attn"), seq, enc_seq, nh, hd)?;
-        x = self.g().add(residual, ca);
-        x = self.layer_norm(
+    /// One KV-cached decoder step over `x [B, 1, d]` (embeds × scale +
+    /// position, host-side). Returns the normed hidden `[B, 1, d]` and, per
+    /// layer, `concat(past, new)` self-attention `(K, V)` `[B, past + 1, d]`.
+    pub(crate) fn emit_decoder_step(
+        &mut self,
+        cfg: &NllbConfig,
+        mut x: HirNodeId,
+        kv: &StepKv<'_>,
+    ) -> Result<(HirNodeId, Vec<(HirNodeId, HirNodeId)>)> {
+        let mut new_kv = Vec::with_capacity(cfg.decoder_layers);
+        for layer in 0..cfg.decoder_layers {
+            let p = |s: &str| lk::dec_layer(layer, s);
+            let h = self.layer_norm(
+                x,
+                &p("self_attn_layer_norm.weight"),
+                &p("self_attn_layer_norm.bias"),
+            )?;
+            let (q, k_new, v_new) = self.qkv(h, h, &p("self_attn"))?;
+            let k = self.g().concat_(vec![kv.past_k[layer], k_new], 1);
+            let v = self.g().concat_(vec![kv.past_v[layer], v_new], 1);
+            let sa = self.attend(
+                q,
+                k,
+                v,
+                &p("self_attn"),
+                self.dec_nh(cfg),
+                cfg.dec_head_dim(),
+                KeyMask::Keep(kv.self_mask),
+            )?;
+            new_kv.push((k, v));
+            x = self.g().add(x, sa);
+            x = self.cross_block(
+                cfg,
+                x,
+                kv.cross_k[layer],
+                kv.cross_v[layer],
+                &p,
+                KeyMask::Keep(kv.src_mask),
+            )?;
+            x = self.ffn_block(x, &p)?;
+        }
+        let hidden = self.layer_norm(
+            x,
+            &lk::dec_final_layer_norm_w(),
+            &lk::dec_final_layer_norm_b(),
+        )?;
+        Ok((hidden, new_kv))
+    }
+
+    fn dec_nh(&self, cfg: &NllbConfig) -> usize {
+        cfg.decoder_attention_heads
+    }
+
+    /// `x + encoder_attn(LN(x))` over precomputed cross `(K, V)`.
+    fn cross_block(
+        &mut self,
+        cfg: &NllbConfig,
+        x: HirNodeId,
+        ck: HirNodeId,
+        cv: HirNodeId,
+        p: &dyn Fn(&str) -> String,
+        mask: KeyMask,
+    ) -> Result<HirNodeId> {
+        let h = self.layer_norm(
             x,
             &p("encoder_attn_layer_norm.weight"),
             &p("encoder_attn_layer_norm.bias"),
         )?;
-
-        // FFN (ReLU).
-        let residual = x;
-        let ff = self.ffn(
-            x,
-            &p("fc1.weight"),
-            &p("fc1.bias"),
-            &p("fc2.weight"),
-            &p("fc2.bias"),
+        let q = self.linear(
+            h,
+            &p("encoder_attn.q_proj.weight"),
+            Some(&p("encoder_attn.q_proj.bias")),
         )?;
-        x = self.g().add(residual, ff);
-        self.layer_norm(
+        let ca = self.attend(
+            q,
+            ck,
+            cv,
+            &p("encoder_attn"),
+            self.dec_nh(cfg),
+            cfg.dec_head_dim(),
+            mask,
+        )?;
+        Ok(self.g().add(x, ca))
+    }
+
+    /// `x + fc2(relu(fc1(LN(x))))` — M2M100 / NLLB use **ReLU**.
+    fn ffn_block(&mut self, x: HirNodeId, p: &dyn Fn(&str) -> String) -> Result<HirNodeId> {
+        let h = self.layer_norm(
             x,
             &p("final_layer_norm.weight"),
             &p("final_layer_norm.bias"),
-        )
+        )?;
+        let h = self.linear(h, &p("fc1.weight"), Some(&p("fc1.bias")))?;
+        let h = self.g().relu(h);
+        let ff = self.linear(h, &p("fc2.weight"), Some(&p("fc2.bias")))?;
+        Ok(self.g().add(x, ff))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn cross_attention(
-        &mut self,
-        q_src: HirNodeId,
-        enc: HirNodeId,
-        pfx: &str,
-        q_seq: usize,
-        enc_seq: usize,
-        n_head: usize,
-        head_dim: usize,
-    ) -> Result<HirNodeId> {
-        self.self_attention(
-            q_src,
-            enc,
-            pfx,
-            q_seq,
-            enc_seq,
-            n_head,
-            head_dim,
-            MaskKind::None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn self_attention(
+    fn qkv(
         &mut self,
         q_src: HirNodeId,
         kv_src: HirNodeId,
         pfx: &str,
-        q_seq: usize,
-        kv_seq: usize,
-        n_head: usize,
-        head_dim: usize,
-        mask: MaskKind,
-    ) -> Result<HirNodeId> {
-        let d = n_head * head_dim;
+    ) -> Result<(HirNodeId, HirNodeId, HirNodeId)> {
         let q = self.linear(
             q_src,
             &format!("{pfx}.q_proj.weight"),
@@ -291,12 +276,32 @@ impl NllbBuilder<'_> {
             &format!("{pfx}.v_proj.weight"),
             Some(&format!("{pfx}.v_proj.bias")),
         )?;
-        let out_shape = Shape::new(&[self.batch, q_seq, d], self.f);
-        let _ = kv_seq;
+        Ok((q, k, v))
+    }
+
+    /// Scaled dot-product attention (`head_dim^-0.5`, the op default) +
+    /// `out_proj`.
+    #[allow(clippy::too_many_arguments)]
+    fn attend(
+        &mut self,
+        q: HirNodeId,
+        k: HirNodeId,
+        v: HirNodeId,
+        pfx: &str,
+        n_head: usize,
+        head_dim: usize,
+        mask: KeyMask,
+    ) -> Result<HirNodeId> {
+        let q_shape = self.hir.node(q).shape.clone();
+        let (kind, inputs) = match mask {
+            KeyMask::None => (MaskKind::None, vec![q, k, v]),
+            KeyMask::Causal => (MaskKind::Causal, vec![q, k, v]),
+            KeyMask::Keep(m) => (MaskKind::Custom, vec![q, k, v, m]),
+        };
         let attn = self.g().add_node(
-            attention_kind_op(n_head, head_dim, None, mask, None, None),
-            vec![q, k, v],
-            out_shape,
+            attention_kind_op(n_head, head_dim, None, kind, None, None),
+            inputs,
+            q_shape,
         );
         self.linear(
             attn,
@@ -305,51 +310,21 @@ impl NllbBuilder<'_> {
         )
     }
 
-    /// M2M100 / NLLB FFN uses **ReLU** (not GELU).
-    fn ffn(&mut self, x: HirNodeId, w1: &str, b1: &str, w2: &str, b2: &str) -> Result<HirNodeId> {
-        let h = self.linear(x, w1, Some(b1))?;
-        let h = self.g().relu(h);
-        self.linear(h, w2, Some(b2))
-    }
-
-    /// Positional embeddings: learned table when present, else M2M100 sinusoidal.
+    /// `[1, seq, d]` slice of the M2M100 sinusoidal table starting at row
+    /// `padding_idx + 1` (the first non-pad position).
     fn positional_embeddings(
         &mut self,
         cfg: &NllbConfig,
-        key: &str,
-        past: usize,
+        tag: &str,
         seq: usize,
-        d: usize,
     ) -> Result<HirNodeId> {
-        if self.weights.has(key) {
-            return self.learned_positions(key, past, seq, d);
-        }
-        let num_embed = cfg.max_position_embeddings + NllbConfig::POS_OFFSET;
-        let table =
-            NllbConfig::m2m100_sinusoidal_embedding(num_embed, d, cfg.pad_token_id as usize);
-        let start = cfg.pad_token_id as usize + 1 + past;
-        let slice: Vec<f32> = table[start * d..(start + seq) * d].to_vec();
-        let param_key = format!("@sin_pos_{key}_{past}_{seq}");
-        let id = self.hir.param(&param_key, Shape::new(&[1, seq, d], self.f));
-        self.params.insert(param_key, slice);
+        let d = cfg.d_model;
+        let start = cfg.pad_token_id as usize + 1;
+        let table = cfg.sinusoidal_positions(start + seq);
+        let slice = table[start * d..(start + seq) * d].to_vec();
+        let key = format!("@sin_pos_{tag}_{seq}");
+        let id = self.hir.param(&key, Shape::new(&[1, seq, d], self.f));
+        self.params.insert(key, slice);
         Ok(id)
-    }
-
-    /// Learned positional embeddings with BART/M2M100 offset of 2.
-    fn learned_positions(
-        &mut self,
-        key: &str,
-        past: usize,
-        seq: usize,
-        d: usize,
-    ) -> Result<HirNodeId> {
-        let pos_w = self.load_param(key, false)?;
-        let start = NllbConfig::POS_OFFSET + past;
-        let rows = self.g().narrow_(pos_w, 0, start, seq);
-        Ok(self.g().reshape_(rows, vec![1, seq as i64, d as i64]))
-    }
-
-    pub(crate) fn kv_seq(&self, x: HirNodeId) -> usize {
-        self.hir.node(x).shape.dim(1).unwrap_static()
     }
 }

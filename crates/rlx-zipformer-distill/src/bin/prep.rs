@@ -11,7 +11,10 @@
 //!     --audio LibriSpeech/train-clean-100 \
 //!     --hours 10 --chunks 8 --out .cache/zipformer-distill-10h
 //! ```
-//! FLAC is decoded in Rust (`symphonia`).
+//! FLAC is decoded in Rust (`symphonia`). The subset is every n-th file (n
+//! from `--hours`); `--offset N` starts at the N-th file instead of the first,
+//! so a second run with the same `--hours` and `--offset 1` picks a disjoint
+//! subset.
 //!
 //! `--contexts --teacher DIR --data DIR` adds `contexts.u16` to an existing
 //! set: the teacher's greedy decoding of each stored target, for training on
@@ -186,6 +189,7 @@ fn main() -> Result<()> {
         .transpose()?
         .unwrap_or(10.0);
     let k: usize = get("--chunks").map(|v| v.parse()).transpose()?.unwrap_or(8);
+    let offset: usize = get("--offset").map(|v| v.parse()).transpose()?.unwrap_or(0);
 
     let mut files = Vec::new();
     flac_files(&audio, &mut files)?;
@@ -193,8 +197,11 @@ fn main() -> Result<()> {
     // Spread the subset over speakers: every n-th file.
     let est_files = (hours * 3600.0 / 12.7).ceil() as usize; // ~12.7 s per utterance
     let step = (files.len() / est_files.max(1)).max(1);
-    let files: Vec<PathBuf> = files.into_iter().step_by(step).collect();
-    eprintln!("{} files (every {step}th), target {hours} h", files.len());
+    let files: Vec<PathBuf> = files.into_iter().skip(offset).step_by(step).collect();
+    eprintln!(
+        "{} files (every {step}th from #{offset}), target {hours} h",
+        files.len()
+    );
 
     let words = aligned(&raw);
     let raw_len = raw.len();
@@ -272,7 +279,7 @@ fn main() -> Result<()> {
     })?;
     let n = writer.finish(
         &out,
-        serde_json::json!({"segment_hours": secs / 3600.0, "source": audio.display().to_string()}),
+        serde_json::json!({"segment_hours": secs / 3600.0, "source": audio.display().to_string(), "offset": offset, "every": step}),
     )?;
     println!(
         "{n} segments ({:.2} h) in {:.0} s → {}",

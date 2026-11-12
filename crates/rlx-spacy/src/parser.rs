@@ -5,7 +5,7 @@
 //! `predict_states`), `set_annotations`, `set_children_from_heads` and
 //! `nonproj.deprojectivize` — so heads, labels and sentence starts match.
 //!
-//! Every product is the BLIS-order [`dot`] of `tok2vec`; feature rows are
+//! Every product is the BLIS-order `dot` of `tok2vec`; feature rows are
 //! summed in feature order like `saxpy`, and the maxout pick is thinc's
 //! two-class `Vec.arg_max` (`0 if a > b else 1`, ties go to piece 1).
 
@@ -585,7 +585,7 @@ fn children_from_heads(heads: &[usize]) -> (Vec<(usize, usize)>, Vec<bool>) {
         'check: for i in 0..n {
             if (i > 0 && starts.contains(&i)) || i == n - 1 {
                 for j in cur..i {
-                    if heads[j] < cur || heads[j] >= i + 1 {
+                    if heads[j] < cur || heads[j] > i {
                         within = false;
                         break 'check;
                     }

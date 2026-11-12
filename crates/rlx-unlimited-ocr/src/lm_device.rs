@@ -830,7 +830,7 @@ fn resident_kv_device(device: Device) -> bool {
 ///
 /// Public so the parity tests can tell "this backend is outside the verified
 /// set" (skip, and say so) from "this backend is in it and the resident path
-/// still did not engage" (a bug). See [`resident_kv_device`].
+/// still did not engage" (a bug). See `resident_kv_device`.
 pub fn resident_kv_available(device: Device) -> bool {
     resident_kv_device(device)
 }

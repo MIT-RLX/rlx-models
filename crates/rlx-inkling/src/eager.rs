@@ -36,6 +36,20 @@ impl TextWeights {
     }
 }
 
+/// Per-position temperature for global layers: `1 + alpha * ln(max(1, (pos + 1) / n_floor))`.
+///
+/// Scales the normalised queries and the relative bias (transformers
+/// `InklingAttention`). It is 1.0 for every position below `n_floor`, so short
+/// prompts never see it. `None` when the checkpoint sets no `log_scaling_n_floor`.
+pub fn log_scaling_tau(cfg: &InklingTextConfig, seq: usize) -> Option<Vec<f32>> {
+    let n_floor = cfg.log_scaling_n_floor? as f32;
+    Some(
+        (0..seq)
+            .map(|t| 1.0 + cfg.log_scaling_alpha * ((t as f32 + 1.0) / n_floor).max(1.0).ln())
+            .collect(),
+    )
+}
+
 fn silu(x: f32) -> f32 {
     x / (1.0 + (-x).exp())
 }
@@ -219,7 +233,7 @@ fn attention(
             rel_states[dst..dst + cfg.d_rel].copy_from_slice(&r[src..src + cfg.d_rel]);
         }
     }
-    let pos_bias = relative_bias(
+    let mut pos_bias = relative_bias(
         &rel_states,
         w.get(&format!("layers.{layer}.rel_proj"))?,
         seq,
@@ -231,6 +245,20 @@ fn attention(
     let scale = 1.0 / hd as f32;
     let sliding = cfg.is_sliding(layer);
     let win = cfg.sliding_window_size;
+
+    if !sliding && let Some(tau) = log_scaling_tau(cfg, seq) {
+        for tq in 0..seq {
+            for v in &mut qn[tq * q_dim..(tq + 1) * q_dim] {
+                *v *= tau[tq];
+            }
+            for head in 0..n_heads {
+                let off = head * seq * seq + tq * seq;
+                for v in &mut pos_bias[off..off + seq] {
+                    *v *= tau[tq];
+                }
+            }
+        }
+    }
 
     let mut ctx = vec![0.0; seq * q_dim];
     for head in 0..n_heads {
@@ -476,12 +504,15 @@ pub fn forward_logits(
     hidden = rms_norm(&hidden, w.get("norm")?, cfg.rms_norm_eps);
     let last = &hidden[(seq - 1) * h..seq * h];
     let mut logits = linear(last, w.get("unembed")?, 1, v, h);
+    // transformers: `lm_head(hidden / logits_mup_width_multiplier)`, then the
+    // padded vocab tail is cut off.
     let mup = cfg.logits_mup_width_multiplier;
     if mup != 1.0 {
         for z in &mut logits {
-            *z *= mup;
+            *z /= mup;
         }
     }
+    logits.truncate(cfg.output_vocab_size());
     Ok(logits)
 }
 

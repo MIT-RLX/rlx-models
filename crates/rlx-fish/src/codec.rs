@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! The fish codec (`codec.pth`, shared by S2-Pro and Drama 3): a causal
+//! The fish codec (`codec.pth`, shared by S2-Pro, Drama 3 and Audio8): a causal
 //! 44.1 kHz DAC whose RVQ sits behind a 4× temporal downsample with a
 //! transformer on each side.
 //!
@@ -30,6 +30,10 @@
 //! The decoder transformer the config declares is never registered by the
 //! reference `DecoderBlock` and the checkpoint has no weights for it.
 //!
+//! Audio8's `codec.pth` matches the others tensor for tensor except for the
+//! post transformer, which is narrower (GQA 16/8, FFN 1216): each
+//! transformer's geometry is read from its own weights.
+//!
 //! Layout: everything runs in rows (`[1, T, C]`); convs are sums of matmuls
 //! over shifted views (see the conv half below).
 
@@ -37,6 +41,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
+use rlx_core::safetensors_checkpoint::SafetensorsCheckpoint;
 use rlx_ir::infer::GraphExt;
 use rlx_ir::op::MaskKind;
 use rlx_ir::{DType, NodeId, PadMode, RopeStyle, Shape};
@@ -76,7 +81,7 @@ struct Codebook {
 }
 
 impl Codebook {
-    fn load(src: &PtModel, prefix: &str) -> Result<Self> {
+    fn load(src: &CodecWeights, prefix: &str) -> Result<Self> {
         let (entries, shape) = get(src, &format!("{prefix}.codebook.weight"))?;
         ensure!(
             shape.len() == 2 && shape[1] == CODE_DIM,
@@ -129,8 +134,43 @@ impl Codebook {
     }
 }
 
+/// The codec's tensors: the published `codec.pth`, or its safetensors export
+/// (`codec_decoder.safetensors` / `codec_encoder.safetensors`, `rlx-fish
+/// export-web`) — the same names and values, readable in parts, which a
+/// browser can range-fetch.
+pub enum CodecWeights {
+    Torch(PtModel),
+    Safetensors(SafetensorsCheckpoint),
+}
+
+impl CodecWeights {
+    fn shape_of(&self, key: &str) -> Option<Vec<usize>> {
+        match self {
+            Self::Torch(m) => m.shape_of(key).map(<[usize]>::to_vec),
+            Self::Safetensors(c) => c.shape_of(key),
+        }
+    }
+
+    /// Every tensor name.
+    pub fn keys(&self) -> Vec<String> {
+        match self {
+            Self::Torch(m) => m.names(),
+            Self::Safetensors(c) => c.keys().map(str::to_string).collect(),
+        }
+    }
+}
+
+impl TensorSource for CodecWeights {
+    fn tensor(&self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        match self {
+            Self::Torch(m) => TensorSource::tensor(m, key),
+            Self::Safetensors(c) => TensorSource::tensor(c, key),
+        }
+    }
+}
+
 /// A checkpoint tensor as `(f32 data, shape)`.
-fn get(src: &PtModel, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+fn get(src: &CodecWeights, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
     TensorSource::tensor(src, key)
 }
 
@@ -144,7 +184,7 @@ fn l2_normalize(v: &mut [f32]) {
 /// A conv weight with weight-norm folded in: `g · v / ‖v‖`, the norm taken
 /// over every axis but the first (torch `weight_norm(dim=0)`). Reads either
 /// parametrization spelling, or a plain `.weight`. Returns `(w, shape)`.
-fn folded_conv(src: &PtModel, prefix: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+fn folded_conv(src: &CodecWeights, prefix: &str) -> Result<(Vec<f32>, Vec<usize>)> {
     let (g_key, v_key) = if src
         .shape_of(&format!("{prefix}.parametrizations.weight.original0"))
         .is_some()
@@ -178,23 +218,56 @@ fn folded_conv(src: &PtModel, prefix: &str) -> Result<(Vec<f32>, Vec<usize>)> {
 
 /// The codec: host codebooks plus compiled decode/encode graphs per bucket.
 pub struct FishCodec {
-    ckpt: PtModel,
+    ckpt: CodecWeights,
     device: Device,
     semantic: Codebook,
     residual: Vec<Codebook>,
+    /// Post transformer + upsample graphs, by frame bucket.
     decoders: HashMap<usize, CompiledGraph>,
+    /// The DAC decoder over one window (`DAC_CONTEXT + DAC_ROWS` rows).
+    dac: Option<CompiledGraph>,
     encoders: HashMap<usize, CompiledGraph>,
 }
 
 impl FishCodec {
-    /// Open `codec.pth` (a file, or a model directory holding one).
+    /// Open `codec.pth` (a file, or a model directory holding one — or, in a
+    /// directory without one, its `codec_*.safetensors` export).
     pub fn open(path: &Path, device: Device) -> Result<Self> {
         let file = if path.is_dir() {
             path.join("codec.pth")
         } else {
             path.to_path_buf()
         };
+        if path.is_dir() && !file.is_file() {
+            let parts: Vec<std::path::PathBuf> =
+                ["codec_decoder.safetensors", "codec_encoder.safetensors"]
+                    .iter()
+                    .map(|n| path.join(n))
+                    .filter(|p| p.is_file())
+                    .collect();
+            ensure!(
+                !parts.is_empty(),
+                "{}: no codec.pth or codec_*.safetensors",
+                path.display()
+            );
+            let files = parts
+                .iter()
+                .map(|p| {
+                    let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                    Ok((name, std::fs::read(p)?))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            return Self::from_weights(
+                CodecWeights::Safetensors(SafetensorsCheckpoint::from_bytes(files)?),
+                device,
+            );
+        }
         let ckpt = PtModel::open(&file).with_context(|| format!("open {}", file.display()))?;
+        Self::from_weights(CodecWeights::Torch(ckpt), device)
+    }
+
+    /// The codec from tensors already in memory.
+    pub fn from_weights(ckpt: CodecWeights, device: Device) -> Result<Self> {
         let semantic = Codebook::load(&ckpt, "quantizer.semantic_quantizer.quantizers.0")?;
         ensure!(
             semantic.size == SEMANTIC_SIZE,
@@ -210,6 +283,7 @@ impl FishCodec {
             semantic,
             residual,
             decoders: HashMap::new(),
+            dac: None,
             encoders: HashMap::new(),
         })
     }
@@ -267,35 +341,165 @@ impl FishCodec {
 
     /// The checkpoint the decoder graphs read.
     #[cfg(feature = "export")]
-    pub(crate) fn checkpoint(&self) -> &PtModel {
+    pub(crate) fn checkpoint(&self) -> &CodecWeights {
         &self.ckpt
     }
 
     /// Decode a `[frames, 1024]` latent.
+    ///
+    /// The post transformer and upsample run over the whole utterance (they
+    /// are small: 1024 channels at 4 rows a frame). The DAC decoder then runs
+    /// window by window: each window is `DAC_CONTEXT` rows of history and
+    /// `DAC_ROWS` new rows, and keeps the new rows' samples. Its convs are
+    /// causal and reach 19 rows back (`dac_receptive_rows`), fewer than the
+    /// history, so every kept sample sees exactly what the whole-utterance
+    /// graph would. The first window starts at the real beginning, where the
+    /// convs' zero padding is the whole graph's, and keeps all its rows.
     pub fn decode_latent(&mut self, z: &[f32], frames: usize) -> Result<Vec<f32>> {
+        self.decode_latent_from(z, frames, 0)
+    }
+
+    /// The samples of [`Self::decode`] from sample `from` on — the same
+    /// samples, without decoding the ones before. The upsample stage runs over
+    /// every frame (its attention looks back up to 128 frames), the DAC
+    /// decoder only over the windows holding samples at or after `from`.
+    /// Decoding a growing utterance this way as it is generated plays it as it
+    /// is made: the codec is causal, so frames added later cannot change the
+    /// samples already returned.
+    pub fn decode_from(&mut self, codes: &[Vec<u32>], from: usize) -> Result<Vec<f32>> {
+        let z = self.dequantize(codes)?;
+        self.decode_latent_from(&z, codes[0].len(), from)
+    }
+
+    fn decode_latent_from(&mut self, z: &[f32], frames: usize, from: usize) -> Result<Vec<f32>> {
+        let input = self.upsample_prepare(z, frames)?;
+        let bucket = upsample_bucket(frames);
+        let mut h = self
+            .decoders
+            .get_mut(&bucket)
+            .expect("upsample graph")
+            .run(&[("z", &input)]);
+        let h = Self::upsample_finish(h.swap_remove(0), frames);
+        self.dac_prepare()?;
+        let rows = h.len() / LATENT;
+        let mut wav = Vec::with_capacity(rows * DAC_HOP);
+        for (start, keep) in dac_windows(rows) {
+            if dac_window_end(start) * DAC_HOP <= from {
+                dac_skip(keep, start, rows, &mut wav);
+                continue;
+            }
+            let input = dac_input(&h, start);
+            let out = self
+                .dac
+                .as_mut()
+                .expect("dac graph")
+                .run(&[("h", &input)])
+                .swap_remove(0);
+            dac_keep(&out, keep, rows, &mut wav);
+        }
+        Ok(wav.split_off(from.min(wav.len())))
+    }
+
+    /// [`Self::decode_latent`] with async runs (WebGPU in a browser).
+    #[cfg(target_family = "wasm")]
+    pub async fn decode_latent_async(&mut self, z: &[f32], frames: usize) -> Result<Vec<f32>> {
+        self.decode_latent_from_async(z, frames, 0).await
+    }
+
+    /// [`Self::decode_from`] with async runs.
+    #[cfg(target_family = "wasm")]
+    pub async fn decode_from_async(&mut self, codes: &[Vec<u32>], from: usize) -> Result<Vec<f32>> {
+        let z = self.dequantize(codes)?;
+        self.decode_latent_from_async(&z, codes[0].len(), from)
+            .await
+    }
+
+    #[cfg(target_family = "wasm")]
+    async fn decode_latent_from_async(
+        &mut self,
+        z: &[f32],
+        frames: usize,
+        from: usize,
+    ) -> Result<Vec<f32>> {
+        let input = self.upsample_prepare(z, frames)?;
+        let bucket = upsample_bucket(frames);
+        let mut h = {
+            let g = self.decoders.get_mut(&bucket).expect("upsample graph");
+            g.run_async(&[("z", &input)])
+                .await
+                .map_err(anyhow::Error::msg)?
+        };
+        let h = Self::upsample_finish(h.swap_remove(0), frames);
+        self.dac_prepare()?;
+        let rows = h.len() / LATENT;
+        let mut wav = Vec::with_capacity(rows * DAC_HOP);
+        for (start, keep) in dac_windows(rows) {
+            if dac_window_end(start) * DAC_HOP <= from {
+                dac_skip(keep, start, rows, &mut wav);
+                continue;
+            }
+            let input = dac_input(&h, start);
+            let mut out = {
+                let g = self.dac.as_mut().expect("dac graph");
+                g.run_async(&[("h", &input)])
+                    .await
+                    .map_err(anyhow::Error::msg)?
+            };
+            dac_keep(&out.swap_remove(0), keep, rows, &mut wav);
+        }
+        Ok(wav.split_off(from.min(wav.len())))
+    }
+
+    /// [`Self::decode`] with async runs.
+    #[cfg(target_family = "wasm")]
+    pub async fn decode_async(&mut self, codes: &[Vec<u32>]) -> Result<Vec<f32>> {
+        let z = self.dequantize(codes)?;
+        self.decode_latent_async(&z, codes[0].len()).await
+    }
+
+    /// The post transformer + upsample graph for `frames`, and its input.
+    fn upsample_prepare(&mut self, z: &[f32], frames: usize) -> Result<Vec<f32>> {
         ensure!(
             frames > 0 && z.len() == frames * LATENT,
             "latent is {} values for {frames} frames",
             z.len()
         );
-        let bucket = frames.div_ceil(FRAME_BUCKET) * FRAME_BUCKET;
+        let bucket = upsample_bucket(frames);
         if !self.decoders.contains_key(&bucket) {
-            let t = std::time::Instant::now();
-            let (b, out) = build_decoder(&self.ckpt, bucket)?;
-            if rlx_ir::env::flag("RLX_FISH_VERBOSE") {
-                eprintln!(
-                    "codec: build decoder for {bucket} frames {:.1} s",
-                    t.elapsed().as_secs_f32()
-                );
-            }
+            let (b, out) = build_upsampled(&self.ckpt, bucket)?;
             let g = compile(self.device, b, out, &self.ckpt)?;
             self.decoders.insert(bucket, g);
         }
         let mut input = vec![0f32; bucket * LATENT];
         input[..z.len()].copy_from_slice(z);
-        let g = self.decoders.get_mut(&bucket).expect("decoder graph");
-        let mut outs = g.run(&[("z", &input)]);
-        let mut wav = outs.swap_remove(0);
+        Ok(input)
+    }
+
+    /// `h` `[4·frames, 1024]` from the upsample graph's output.
+    fn upsample_finish(mut h: Vec<f32>, frames: usize) -> Vec<f32> {
+        h.truncate(4 * frames * LATENT);
+        h
+    }
+
+    /// The DAC decoder's window graph.
+    fn dac_prepare(&mut self) -> Result<()> {
+        if self.dac.is_none() {
+            let (b, out) = build_dac(&self.ckpt, DAC_CONTEXT + DAC_ROWS)?;
+            self.dac = Some(compile(self.device, b, out, &self.ckpt)?);
+        }
+        Ok(())
+    }
+
+    /// Decode with the whole-utterance graph (`build_decoder`): what
+    /// [`Self::decode_latent`] must equal.
+    #[doc(hidden)]
+    pub fn decode_latent_whole(&mut self, z: &[f32], frames: usize) -> Result<Vec<f32>> {
+        let bucket = frames.div_ceil(FRAME_BUCKET) * FRAME_BUCKET;
+        let (b, out) = build_decoder(&self.ckpt, bucket)?;
+        let mut g = compile(self.device, b, out, &self.ckpt)?;
+        let mut input = vec![0f32; bucket * LATENT];
+        input[..z.len()].copy_from_slice(z);
+        let mut wav = g.run(&[("z", &input)]).swap_remove(0);
         wav.truncate(frames * FRAME_SAMPLES);
         Ok(wav)
     }
@@ -304,6 +508,11 @@ impl FishCodec {
     /// `frames = ceil(len / 2048)`.
     pub fn encode(&mut self, pcm: &[f32]) -> Result<Vec<Vec<u32>>> {
         let latent = self.encode_latent(pcm)?;
+        Ok(self.quantize(&latent))
+    }
+
+    /// The residual codebook search over a pre-quantizer latent `[frames, 1024]`.
+    fn quantize(&self, latent: &[f32]) -> Vec<Vec<u32>> {
         let frames = latent.len() / LATENT;
         let mut codes: Vec<Vec<u32>> = (0..NUM_CODEBOOKS)
             .map(|_| Vec::with_capacity(frames))
@@ -322,11 +531,44 @@ impl FishCodec {
                 }
             }
         }
-        Ok(codes)
+        codes
     }
 
     /// The pre-quantizer latent `[frames, 1024]` for `pcm`.
+    ///
+    /// Runs in strict f32 ([`rlx_runtime::with_strict_f32`]): the codes are
+    /// a nearest-codebook search, and CUDA's default TF32 moves the latent
+    /// enough (rel-L2 7e-3) to change 82 of 1120 codes of a 5 s clip — the
+    /// prompt a cloned voice is built from.
     pub fn encode_latent(&mut self, pcm: &[f32]) -> Result<Vec<f32>> {
+        rlx_runtime::with_strict_f32(|| self.encode_latent_inner(pcm))
+    }
+
+    fn encode_latent_inner(&mut self, pcm: &[f32]) -> Result<Vec<f32>> {
+        let (bucket, input) = self.encode_prepare(pcm)?;
+        let g = self.encoders.get_mut(&bucket).expect("encoder graph");
+        let mut latent = g.run(&[("pcm", &input)]).swap_remove(0);
+        latent.truncate(pcm.len().div_ceil(FRAME_SAMPLES) * LATENT);
+        Ok(latent)
+    }
+
+    /// [`Self::encode`] with an async run (WebGPU in a browser). Strict f32
+    /// is CUDA's concern; a browser has no CUDA.
+    #[cfg(target_family = "wasm")]
+    pub async fn encode_async(&mut self, pcm: &[f32]) -> Result<Vec<Vec<u32>>> {
+        let (bucket, input) = self.encode_prepare(pcm)?;
+        let mut latent = {
+            let g = self.encoders.get_mut(&bucket).expect("encoder graph");
+            g.run_async(&[("pcm", &input)])
+                .await
+                .map_err(anyhow::Error::msg)?
+                .swap_remove(0)
+        };
+        latent.truncate(pcm.len().div_ceil(FRAME_SAMPLES) * LATENT);
+        Ok(self.quantize(&latent))
+    }
+
+    fn encode_prepare(&mut self, pcm: &[f32]) -> Result<(usize, Vec<f32>)> {
         ensure!(!pcm.is_empty(), "empty audio");
         let frames = pcm.len().div_ceil(FRAME_SAMPLES);
         let bucket = frames.div_ceil(FRAME_BUCKET) * FRAME_BUCKET;
@@ -337,34 +579,112 @@ impl FishCodec {
         }
         let mut input = vec![0f32; bucket * FRAME_SAMPLES];
         input[..pcm.len()].copy_from_slice(pcm);
-        let g = self.encoders.get_mut(&bucket).expect("encoder graph");
-        let mut outs = g.run(&[("pcm", &input)]);
-        let mut latent = outs.swap_remove(0);
-        latent.truncate(frames * LATENT);
-        Ok(latent)
+        Ok((bucket, input))
+    }
+
+    /// Build every decode graph an utterance of up to `frames` frames uses,
+    /// ahead of it: a stream then pays no graph build between pieces.
+    pub fn prepare(&mut self, frames: usize) -> Result<()> {
+        let mut b = FRAME_BUCKET;
+        while b <= upsample_bucket(frames) {
+            if !self.decoders.contains_key(&b) {
+                let (builder, out) = build_upsampled(&self.ckpt, b)?;
+                let g = compile(self.device, builder, out, &self.ckpt)?;
+                self.decoders.insert(b, g);
+            }
+            b *= 2;
+        }
+        self.dac_prepare()
+    }
+
+    /// Write the codec as `codec_decoder.safetensors` (what [`Self::decode`]
+    /// reads) and `codec_encoder.safetensors` (what [`Self::encode`] reads)
+    /// into `dir`: the checkpoint's own tensors, names and f32 values, so a
+    /// browser can fetch the half it needs, in parts. Returns their sizes.
+    pub fn export_safetensors(&self, dir: &Path) -> Result<[u64; 2]> {
+        let keys = self.ckpt.keys();
+        let codebooks = |k: &str| {
+            k.starts_with("quantizer.quantizer.") || k.starts_with("quantizer.semantic_quantizer.")
+        };
+        let decoder = |k: &str| {
+            codebooks(k)
+                || k.starts_with("quantizer.post_module.")
+                || k.starts_with("quantizer.upsample.")
+                || k.starts_with("decoder.")
+        };
+        let encoder = |k: &str| {
+            codebooks(k)
+                || k.starts_with("quantizer.pre_module.")
+                || k.starts_with("quantizer.downsample.")
+                || k.starts_with("encoder.")
+        };
+        let mut sizes = [0u64; 2];
+        for (slot, (name, keep)) in [
+            (
+                "codec_decoder.safetensors",
+                &decoder as &dyn Fn(&str) -> bool,
+            ),
+            ("codec_encoder.safetensors", &encoder),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut tensors: Vec<(String, Vec<u8>, Vec<usize>)> = Vec::new();
+            for k in keys.iter().filter(|k| keep(k)) {
+                let (data, shape) = get(&self.ckpt, k)?;
+                tensors.push((
+                    k.clone(),
+                    data.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                    shape,
+                ));
+            }
+            tensors.sort_by(|a, b| a.0.cmp(&b.0));
+            let views = tensors
+                .iter()
+                .map(|(k, bytes, shape)| {
+                    let view = safetensors::tensor::TensorView::new(
+                        safetensors::Dtype::F32,
+                        shape.clone(),
+                        bytes,
+                    )?;
+                    Ok((k.clone(), view))
+                })
+                .collect::<Result<Vec<_>, safetensors::SafeTensorError>>()?;
+            let path = dir.join(name);
+            safetensors::serialize_to_file(views, None, &path)
+                .with_context(|| format!("write {}", path.display()))?;
+            sizes[slot] = std::fs::metadata(&path)?.len();
+        }
+        Ok(sizes)
     }
 
     /// Drop every compiled graph (they are rebuilt on demand).
     pub fn release(&mut self) {
         self.decoders.clear();
+        self.dac = None;
         self.encoders.clear();
     }
 }
 
-fn compile(device: Device, mut b: Builder, out: NodeId, src: &PtModel) -> Result<CompiledGraph> {
+fn compile(
+    device: Device,
+    mut b: Builder,
+    out: NodeId,
+    src: &CodecWeights,
+) -> Result<CompiledGraph> {
     b.g.set_outputs(vec![out]);
     let profile = rlx_flow::CompileProfile::default();
     let name = b.g.name.clone();
-    let t = std::time::Instant::now();
+    let t = crate::clock();
     let mut g = rlx_core::flow_bridge::compile_graph_with_profile(device, b.g, &profile)?;
-    let t_compile = t.elapsed();
-    let t = std::time::Instant::now();
+    let t_compile = crate::elapsed(t);
+    let t = crate::clock();
     nn::upload(&mut g, b.params, src)?;
     if rlx_ir::env::flag("RLX_FISH_VERBOSE") {
         eprintln!(
             "codec: {name}: compile {:.1} s, weights {:.1} s",
             t_compile.as_secs_f32(),
-            t.elapsed().as_secs_f32()
+            crate::elapsed(t).as_secs_f32()
         );
     }
     Ok(g)
@@ -372,27 +692,56 @@ fn compile(device: Device, mut b: Builder, out: NodeId, src: &PtModel) -> Result
 
 // ── transformer half (rows) ─────────────────────────────────────────────
 
+/// Head width of every codec transformer.
+const HEAD_DIM: usize = 64;
+
+/// `(n_head, n_kv, ffn)` of the transformer under `prefix`, from the shapes of
+/// its first layer: `wo` is `[dim, n_head·d]`, `wqkv` `[(n_head + 2·n_kv)·d,
+/// dim]` and `w1` `[ffn, dim]`.
+fn transformer_geometry(src: &CodecWeights, prefix: &str) -> Result<(usize, usize, usize)> {
+    let shape = |name: &str| {
+        let key = format!("{prefix}layers.0.{name}.weight");
+        src.shape_of(&key)
+            .with_context(|| format!("codec: missing {key}"))
+    };
+    let (wo, wqkv, w1) = (
+        shape("attention.wo")?,
+        shape("attention.wqkv")?,
+        shape("feed_forward.w1")?,
+    );
+    let q_w = wo[1];
+    ensure!(
+        q_w % HEAD_DIM == 0 && wqkv[0] > q_w && (wqkv[0] - q_w) % (2 * HEAD_DIM) == 0,
+        "{prefix}: wqkv {wqkv:?} does not fit wo {wo:?}"
+    );
+    Ok((q_w / HEAD_DIM, (wqkv[0] - q_w) / (2 * HEAD_DIM), w1[0]))
+}
+
 /// The codec's `WindowLimitedTransformer`: causal, `window` keys per query,
 /// LayerScale, RoPE from bf16 tables, a final RMSNorm. `x: [1, t, dim]`.
+#[allow(clippy::too_many_arguments)]
 fn transformer(
     b: &mut Builder,
+    src: &CodecWeights,
     prefix: &str,
     x: NodeId,
     t: usize,
     layers: usize,
     dim: usize,
     window: Option<usize>,
-) -> NodeId {
+) -> Result<NodeId> {
+    let (n_head, n_kv, ffn) = transformer_geometry(src, prefix)?;
     let spec = BlockSpec {
         dim,
-        ffn: dim * 3,
+        ffn,
         eps: 1e-5,
         attn: AttnSpec {
-            n_head: dim / 64,
-            n_kv: dim / 64,
-            head_dim: 64,
+            n_head,
+            n_kv,
+            head_dim: HEAD_DIM,
             qk_norm: false,
-            rope_dim: 64,
+            qkv_bias: false,
+            rope_dim: HEAD_DIM,
             rope_style: RopeStyle::GptJ,
             output_gate: false,
         },
@@ -400,9 +749,9 @@ fn transformer(
         zero_centered: false,
     };
     let positions: Vec<usize> = (0..t).collect();
-    let (cos, sin) = nn::rope_tables(&positions, 64, 10_000.0, true);
-    let cos = b.data(&format!("{prefix}rope_cos.{t}"), cos, &[t, 32]);
-    let sin = b.data(&format!("{prefix}rope_sin.{t}"), sin, &[t, 32]);
+    let (cos, sin) = nn::rope_tables(&positions, HEAD_DIM, 10_000.0, true);
+    let cos = b.data(&format!("{prefix}rope_cos.{t}"), cos, &[t, HEAD_DIM / 2]);
+    let sin = b.data(&format!("{prefix}rope_sin.{t}"), sin, &[t, HEAD_DIM / 2]);
     // `make_window_limited_mask`: key j is visible to query i when
     // i - window < j <= i, i.e. `window` keys including itself.
     let mask = match window {
@@ -423,14 +772,14 @@ fn transformer(
         )
         .x;
     }
-    b.rms_norm(h, &format!("{prefix}norm.weight"), dim, 1e-5, false)
+    Ok(b.rms_norm(h, &format!("{prefix}norm.weight"), dim, 1e-5, false))
 }
 
 /// `ConvNeXtBlock` in rows: causal depthwise k7, LayerNorm, MLP ×4 with exact
 /// GELU, LayerScale, residual.
 fn convnext(
     b: &mut Builder,
-    src: &PtModel,
+    src: &CodecWeights,
     prefix: &str,
     x: NodeId,
     t: usize,
@@ -487,7 +836,13 @@ fn conv_tap(w: &[f32], c_out: usize, c_in: usize, k: usize, j: usize) -> Vec<f32
     t
 }
 
-fn add_bias(b: &mut Builder, src: &PtModel, prefix: &str, y: NodeId, c: usize) -> Result<NodeId> {
+fn add_bias(
+    b: &mut Builder,
+    src: &CodecWeights,
+    prefix: &str,
+    y: NodeId,
+    c: usize,
+) -> Result<NodeId> {
     let (bias, _) = get(src, &format!("{prefix}.bias"))?;
     ensure!(
         bias.len() == c,
@@ -516,7 +871,7 @@ fn tap_sum(b: &mut Builder, x: NodeId, taps: Vec<(usize, NodeId)>, rows: usize) 
 /// `k = 2·stride` (the encoder's downsamplers). Returns `(y, c_out, t_out)`.
 fn causal_conv(
     b: &mut Builder,
-    src: &PtModel,
+    src: &CodecWeights,
     prefix: &str,
     x: NodeId,
     t: usize,
@@ -576,7 +931,7 @@ fn causal_conv(
 /// onto all `s` phases at once, then a reshape interleaves them.
 fn causal_conv_transpose(
     b: &mut Builder,
-    src: &PtModel,
+    src: &CodecWeights,
     prefix: &str,
     x: NodeId,
     t: usize,
@@ -610,7 +965,7 @@ fn causal_conv_transpose(
 /// Snake: `x + sin(α·x)² / (α + 1e-9)`, per channel (last axis).
 fn snake(
     b: &mut Builder,
-    src: &PtModel,
+    src: &CodecWeights,
     key: &str,
     x: NodeId,
     c: usize,
@@ -632,7 +987,7 @@ fn snake(
 /// `ResidualUnit(causal)`: snake → conv k7 (dilated) → snake → conv k1, + x.
 fn residual_unit(
     b: &mut Builder,
-    src: &PtModel,
+    src: &CodecWeights,
     prefix: &str,
     x: NodeId,
     c: usize,
@@ -646,18 +1001,139 @@ fn residual_unit(
     Ok(b.g.add(x, h))
 }
 
-pub(crate) fn build_decoder(src: &PtModel, frames: usize) -> Result<(Builder, NodeId)> {
+pub(crate) fn build_decoder(src: &CodecWeights, frames: usize) -> Result<(Builder, NodeId)> {
     let mut b = Builder::new("fish_codec_decode");
     let z = b.input("z", &[1, frames, LATENT]);
+    let (h, t) = upsampled(&mut b, src, z, frames)?;
+    let out = dac(&mut b, src, h, t)?;
+    Ok((b, out))
+}
+
+/// The post transformer and the 4× upsample, on their own: `z` `[1, frames,
+/// 1024]` → `h` `[1, 4·frames, 1024]`, the rows [`build_dac`] reads.
+fn build_upsampled(src: &CodecWeights, frames: usize) -> Result<(Builder, NodeId)> {
+    let mut b = Builder::new("fish_codec_upsample");
+    let z = b.input("z", &[1, frames, LATENT]);
+    let (h, _) = upsampled(&mut b, src, z, frames)?;
+    Ok((b, h))
+}
+
+/// The DAC decoder on its own: `h` `[1, rows, 1024]` → `rows · 512` samples.
+fn build_dac(src: &CodecWeights, rows: usize) -> Result<(Builder, NodeId)> {
+    let mut b = Builder::new("fish_codec_dac");
+    let h = b.input("h", &[1, rows, LATENT]);
+    let out = dac(&mut b, src, h, rows)?;
+    Ok((b, out))
+}
+
+/// Samples per `h` row (the DAC decoder's upsampling: 8·8·4·2).
+const DAC_HOP: usize = 512;
+/// The DAC decoder's strides, first block first.
+const DAC_STRIDES: [usize; 4] = [8, 8, 4, 2];
+/// Its residual units' dilations, each a k7 conv.
+const DAC_DILATIONS: [usize; 3] = [1, 3, 9];
+
+/// `h` rows before a sample's own row that the DAC decoder reads: every conv
+/// is causal, so walk back from the output (the final k7 conv, then each
+/// block's residual units and its `k = 2s` transposed conv, then the first
+/// k7 conv). 19 for this decoder.
+const fn dac_receptive_rows() -> usize {
+    let k7 = 6;
+    let mut ctx = k7;
+    let mut i = DAC_STRIDES.len();
+    while i > 0 {
+        i -= 1;
+        let mut j = 0;
+        while j < DAC_DILATIONS.len() {
+            ctx += k7 * DAC_DILATIONS[j];
+            j += 1;
+        }
+        ctx = ctx.div_ceil(DAC_STRIDES[i]) + 1;
+    }
+    ctx + k7
+}
+
+/// `h` rows one DAC run keeps, and the rows of history it is given before
+/// them. The DAC decoder holds the codec's large activations (1536 channels
+/// at 1/512 of the sample rate down to 96 at the full rate), so it runs over
+/// a fixed window instead of the whole utterance: memory stays that of
+/// `DAC_CONTEXT + DAC_ROWS` rows (1.1 s of audio) however long the speech.
+// 64: one window per 16 frames, the step `rlx-fish audio8 --play` decodes
+// at, so a streamed piece runs exactly one window (128 ran ~1.5 of 160 rows
+// a step: 1.5x real time on a shared Metal GPU against ~4x).
+const DAC_ROWS: usize = 64;
+const DAC_CONTEXT: usize = 32;
+const _: () = assert!(DAC_CONTEXT >= dac_receptive_rows());
+
+/// The DAC windows over `rows` `h` rows: `(first input row, leading output
+/// rows to drop)`. The first starts at row 0 and keeps everything; each later
+/// one starts `DAC_CONTEXT` rows before the first row it keeps.
+fn dac_windows(rows: usize) -> Vec<(usize, usize)> {
+    let window = DAC_CONTEXT + DAC_ROWS;
+    let mut out = vec![(0, 0)];
+    let mut start = window;
+    while start < rows {
+        out.push((start - DAC_CONTEXT, DAC_CONTEXT));
+        start += DAC_ROWS;
+    }
+    out
+}
+
+/// One window's input: `h` rows from `from`, zero past the end.
+fn dac_input(h: &[f32], from: usize) -> Vec<f32> {
+    let window = DAC_CONTEXT + DAC_ROWS;
+    let rows = h.len() / LATENT;
+    let mut input = vec![0f32; window * LATENT];
+    let have = rows.saturating_sub(from).min(window);
+    input[..have * LATENT].copy_from_slice(&h[from * LATENT..(from + have) * LATENT]);
+    input
+}
+
+/// The frames an upsample graph is built for: a power of two from
+/// `FRAME_BUCKET` up. A growing utterance (streamed) crosses few of them —
+/// five to 512 frames — instead of a new graph every 32 frames; the padding
+/// is free of effect (the stage is causal) and cheap (it is the small half).
+fn upsample_bucket(frames: usize) -> usize {
+    frames.max(1).next_power_of_two().max(FRAME_BUCKET)
+}
+
+/// The row after the last one a window starting at `start` keeps.
+fn dac_window_end(start: usize) -> usize {
+    start + DAC_CONTEXT + DAC_ROWS
+}
+
+/// Stand-in samples for a window not run, where its samples would go (cut
+/// before returning: only windows wholly before `from` are skipped).
+fn dac_skip(keep: usize, start: usize, rows: usize, wav: &mut Vec<f32>) {
+    let n = (dac_window_end(start) - start - keep) * DAC_HOP;
+    let want = rows * DAC_HOP - wav.len();
+    wav.resize(wav.len() + n.min(want), 0.0);
+}
+
+/// A window's samples after its `keep` history rows, up to `rows · 512` in all.
+fn dac_keep(out: &[f32], keep: usize, rows: usize, wav: &mut Vec<f32>) {
+    let kept = &out[keep * DAC_HOP..];
+    let want = rows * DAC_HOP - wav.len();
+    wav.extend_from_slice(&kept[..kept.len().min(want)]);
+}
+
+/// `[1, frames, 1024]` → `([1, 4·frames, 1024], 4·frames)`.
+fn upsampled(
+    b: &mut Builder,
+    src: &CodecWeights,
+    z: NodeId,
+    frames: usize,
+) -> Result<(NodeId, usize)> {
     let mut h = transformer(
-        &mut b,
+        b,
+        src,
         "quantizer.post_module.",
         z,
         frames,
         8,
         LATENT,
         Some(128),
-    );
+    )?;
 
     // Upsample: ConvTranspose(k2, s2) in rows is one matmul onto both output
     // phases, `[t, C] @ [C, 2C]`, then a reshape that interleaves them.
@@ -684,25 +1160,28 @@ pub(crate) fn build_decoder(src: &PtModel, frames: usize) -> Result<(Builder, No
             nn::TensorOp::Raw,
         );
         let y = b.g.add(y, bias);
-        h = convnext(&mut b, src, &format!("{prefix}.1"), y, t, LATENT)?;
+        h = convnext(b, src, &format!("{prefix}.1"), y, t, LATENT)?;
     }
-
-    let (mut x, mut c, mut t) = causal_conv(&mut b, src, "decoder.model.0.conv", h, t, 1, 1)?;
-    for (i, stride) in [8usize, 8, 4, 2].into_iter().enumerate() {
-        let p = format!("decoder.model.{}.block", i + 1);
-        let s = snake(&mut b, src, &format!("{p}.0.alpha"), x, c, t)?;
-        (x, c, t) = causal_conv_transpose(&mut b, src, &format!("{p}.1.conv"), s, t, stride)?;
-        for (j, dil) in [1usize, 3, 9].into_iter().enumerate() {
-            x = residual_unit(&mut b, src, &format!("{p}.{}", j + 2), x, c, t, dil)?;
-        }
-    }
-    let x = snake(&mut b, src, "decoder.model.5.alpha", x, c, t)?;
-    let (x, _, _) = causal_conv(&mut b, src, "decoder.model.6.conv", x, t, 1, 1)?;
-    let out = b.g.tanh(x);
-    Ok((b, out))
+    Ok((h, t))
 }
 
-fn build_encoder(src: &PtModel, samples: usize) -> Result<(Builder, NodeId)> {
+/// The DAC decoder on `h` `[1, t, 1024]`.
+fn dac(b: &mut Builder, src: &CodecWeights, h: NodeId, t: usize) -> Result<NodeId> {
+    let (mut x, mut c, mut t) = causal_conv(b, src, "decoder.model.0.conv", h, t, 1, 1)?;
+    for (i, stride) in DAC_STRIDES.into_iter().enumerate() {
+        let p = format!("decoder.model.{}.block", i + 1);
+        let s = snake(b, src, &format!("{p}.0.alpha"), x, c, t)?;
+        (x, c, t) = causal_conv_transpose(b, src, &format!("{p}.1.conv"), s, t, stride)?;
+        for (j, dil) in DAC_DILATIONS.into_iter().enumerate() {
+            x = residual_unit(b, src, &format!("{p}.{}", j + 2), x, c, t, dil)?;
+        }
+    }
+    let x = snake(b, src, "decoder.model.5.alpha", x, c, t)?;
+    let (x, _, _) = causal_conv(b, src, "decoder.model.6.conv", x, t, 1, 1)?;
+    Ok(b.g.tanh(x))
+}
+
+fn build_encoder(src: &CodecWeights, samples: usize) -> Result<(Builder, NodeId)> {
     if !samples.is_multiple_of(FRAME_SAMPLES) {
         bail!("encoder input must be a multiple of {FRAME_SAMPLES} samples");
     }
@@ -718,7 +1197,7 @@ fn build_encoder(src: &PtModel, samples: usize) -> Result<(Builder, NodeId)> {
         x = snake(&mut b, src, &format!("{p}.3.alpha"), x, c, t)?;
         (x, c, t) = causal_conv(&mut b, src, &format!("{p}.4.conv"), x, t, stride, 1)?;
         if i == 3 {
-            x = transformer(&mut b, &format!("{p}.5."), x, t, 4, c, Some(512));
+            x = transformer(&mut b, src, &format!("{p}.5."), x, t, 4, c, Some(512))?;
         }
     }
     let x = snake(&mut b, src, "encoder.block.5.alpha", x, c, t)?;
@@ -752,13 +1231,30 @@ fn build_encoder(src: &PtModel, samples: usize) -> Result<(Builder, NodeId)> {
         let y = b.g.add(y, bias);
         h = convnext(&mut b, src, &format!("{prefix}.1"), y, t, LATENT)?;
     }
-    let out = transformer(&mut b, "quantizer.pre_module.", h, t, 8, LATENT, Some(128));
+    let out = transformer(
+        &mut b,
+        src,
+        "quantizer.pre_module.",
+        h,
+        t,
+        8,
+        LATENT,
+        Some(128),
+    )?;
     Ok((b, out))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dac_windows_carry_enough_history() {
+        assert_eq!(dac_receptive_rows(), 19);
+        assert!(DAC_CONTEXT >= dac_receptive_rows());
+        assert_eq!(DAC_STRIDES.iter().product::<usize>(), DAC_HOP);
+        assert_eq!(4 * DAC_HOP, FRAME_SAMPLES);
+    }
 
     #[test]
     fn frame_geometry() {

@@ -142,11 +142,17 @@ impl Qwen35LayerCtx<'_> {
     }
 }
 
+/// Input of [`Qwen35Flow::logit_rows`]: positions per batch item, `[batch, rows]`.
+pub const LOGIT_ROW_IDX: &str = "logit_row_idx";
+
 /// Tier-0 Qwen3.5 flow builder.
 #[derive(Clone)]
 pub struct Qwen35Flow<'a> {
     cfg: &'a Qwen35Config,
     weights: Option<&'a Qwen35Weights>,
+    /// The same weights, already shared: the build's closures hold this
+    /// instead of a clone of the whole model. See [`Self::shared_weights`].
+    shared: Option<Arc<Qwen35Weights>>,
     batch: usize,
     seq: usize,
     with_embed: bool,
@@ -155,7 +161,10 @@ pub struct Qwen35Flow<'a> {
     enable_mtp_head: bool,
     runtime_mrope: bool,
     fast_mtp: bool,
+    mtp_every_row: bool,
     export_normed_hidden: bool,
+    /// Gather this many rows per batch item before the tail; see [`Self::logit_rows`].
+    logit_rows: Option<usize>,
     /// Full-attention layers attend the whole sequence; see
     /// [`Self::bidirectional_attention`].
     bidirectional: bool,
@@ -187,6 +196,7 @@ impl<'a> Qwen35Flow<'a> {
         Self {
             cfg,
             weights: None,
+            shared: None,
             batch: 1,
             seq: 128,
             with_embed: false,
@@ -195,7 +205,9 @@ impl<'a> Qwen35Flow<'a> {
             enable_mtp_head: false,
             runtime_mrope: false,
             fast_mtp: false,
+            mtp_every_row: false,
             export_normed_hidden: false,
+            logit_rows: None,
             bidirectional: false,
             key_padding_mask: false,
             single_gdn: None,
@@ -228,6 +240,7 @@ impl<'a> Qwen35Flow<'a> {
         Self {
             cfg,
             weights: None,
+            shared: None,
             batch,
             seq,
             with_embed: false,
@@ -236,7 +249,9 @@ impl<'a> Qwen35Flow<'a> {
             enable_mtp_head: false,
             runtime_mrope: false,
             fast_mtp: false,
+            mtp_every_row: false,
             export_normed_hidden: false,
+            logit_rows: None,
             bidirectional: false,
             key_padding_mask: false,
             single_gdn: Some((layer_idx, lin)),
@@ -247,6 +262,14 @@ impl<'a> Qwen35Flow<'a> {
 
     pub fn weights(mut self, weights: &'a Qwen35Weights) -> Self {
         self.weights = Some(weights);
+        self
+    }
+
+    /// Like [`Self::weights`], for weights the caller already holds in an
+    /// `Arc`: the build's closures share it rather than cloning the model,
+    /// so building costs no second host copy of the weights.
+    pub fn shared_weights(mut self, weights: Arc<Qwen35Weights>) -> Self {
+        self.shared = Some(weights);
         self
     }
 
@@ -292,6 +315,13 @@ impl<'a> Qwen35Flow<'a> {
         self
     }
 
+    /// MTP logits at every row `[batch, seq, vocab]`, not the last only:
+    /// what training the head against the trunk reads.
+    pub fn mtp_every_row(mut self) -> Self {
+        self.mtp_every_row = true;
+        self
+    }
+
     /// Last-token index input without enabling the LM head.
     pub fn last_token_index(mut self) -> Self {
         self.last_logits_only = true;
@@ -302,6 +332,21 @@ impl<'a> Qwen35Flow<'a> {
     pub fn export_normed_hidden(mut self) -> Self {
         self.export_normed_hidden = true;
         self.with_lm_head = false;
+        self
+    }
+
+    /// Run the tail on `rows` positions per batch item instead of all `seq`.
+    ///
+    /// Adds an input `logit_row_idx` `[batch, rows]` (positions, f32-encoded like
+    /// `last_token_idx`); the final hidden state is gathered at those positions
+    /// (`rlx_flow`'s `gather_rows`) before the output norm, so the primary output
+    /// is `[batch, rows, vocab]` with [`Self::lm_head`] or `[batch, rows, hidden]`
+    /// with [`Self::export_normed_hidden`]. For scoring or training on a known
+    /// subset of positions: the LM head and the logits read back shrink by
+    /// `seq / rows`. Positions may repeat. Does not combine with
+    /// [`Self::last_token_logits`] or the MTP head.
+    pub fn logit_rows(mut self, rows: usize) -> Self {
+        self.logit_rows = Some(rows);
         self
     }
 
@@ -363,7 +408,15 @@ impl<'a> Qwen35Flow<'a> {
         let enable_mtp_head = self.enable_mtp_head;
         let runtime_mrope = self.runtime_mrope;
         let fast_mtp = self.fast_mtp;
+        let mtp_every_row = self.mtp_every_row;
         let export_normed_hidden = self.export_normed_hidden;
+        let logit_rows = self.logit_rows;
+        if logit_rows.is_some() {
+            anyhow::ensure!(
+                !last_logits_only && !enable_mtp_head,
+                "Qwen35Flow::logit_rows does not combine with last-token logits or the MTP head"
+            );
+        }
         let bidirectional = self.bidirectional;
         let key_padding_mask = self.bidirectional && self.key_padding_mask;
         let need_last_idx =
@@ -385,10 +438,14 @@ impl<'a> Qwen35Flow<'a> {
             return Ok((built, PackedParams::new()));
         }
 
-        let weights_ref = self
-            .weights
-            .ok_or_else(|| anyhow::anyhow!("Qwen35Flow: call .weights() for prefill builds"))?;
-        let weights = weights_ref.clone();
+        // One copy for the 'static plugin closures, shared by all of them: each
+        // `weights.clone()` below was otherwise another full copy of the trunk.
+        // With `shared_weights` not even that one.
+        let weights = match (self.shared, self.weights) {
+            (Some(shared), _) => shared,
+            (None, Some(weights)) => Arc::new(weights.clone()),
+            (None, None) => anyhow::bail!("Qwen35Flow: call .weights() for prefill builds"),
+        };
 
         let trunk_count = cfg
             .num_hidden_layers
@@ -427,6 +484,9 @@ impl<'a> Qwen35Flow<'a> {
 
         if need_last_idx {
             flow = flow.input("last_token_idx", Shape::new(&[batch], f));
+        }
+        if let Some(rows) = logit_rows {
+            flow = flow.input(LOGIT_ROW_IDX, Shape::new(&[batch, rows], f));
         }
 
         if key_padding_mask {
@@ -521,6 +581,9 @@ impl<'a> Qwen35Flow<'a> {
         if need_last_idx {
             flow = flow.gather_last_token_dynamic(batch);
         }
+        if let Some(rows) = logit_rows {
+            flow = flow.gather_rows(LOGIT_ROW_IDX, batch, rows);
+        }
 
         let mtp_sink: Arc<Mutex<Vec<HirNodeId>>> = Arc::new(Mutex::new(Vec::new()));
         let mtp_out = mtp_sink.clone();
@@ -575,6 +638,7 @@ impl<'a> Qwen35Flow<'a> {
                     fast_mtp,
                     last_idx,
                     None,
+                    mtp_every_row,
                 )?;
                 if let Some(mtp_id) = mtp {
                     mtp_out.lock().expect("mtp sink").push(mtp_id);
@@ -584,11 +648,11 @@ impl<'a> Qwen35Flow<'a> {
                 } else {
                     logits.unwrap_or(h_for_lm.hir_id())
                 };
-                let logit_rows = if last_logits_only { 1 } else { seq };
+                let out_rows = if last_logits_only { 1 } else { logit_rows.unwrap_or(seq) };
                 let out_shape = if export_normed_hidden {
-                    Shape::new(&[batch, logit_rows, n_embd], DType::F32)
+                    Shape::new(&[batch, out_rows, n_embd], DType::F32)
                 } else if with_lm_head {
-                    Shape::new(&[batch, logit_rows, n_vocab], DType::F32)
+                    Shape::new(&[batch, out_rows, n_vocab], DType::F32)
                 } else {
                     h_for_lm.shape.clone()
                 };
@@ -786,6 +850,11 @@ pub struct Qwen35DecodeOpts {
     /// rows run a step behind, so each pairs a hidden with the real next
     /// token). Without it the head attends the new rows only.
     pub mtp_kv: bool,
+    /// With `mtp_kv`: drafts the head chains a step (`[batch, drafts,
+    /// vocab]`), each further one from its own output hidden and pick. With
+    /// `multi_row` too, the drafts follow the last real row, which the
+    /// `mtp_last_row` input `[batch, 1]` gives. 0 or 1: one draft.
+    pub mtp_drafts: usize,
     /// With `use_custom_mask` and `seq > 1`: the `mask` input is the per-key
     /// `[batch, past + seq]` one (as for a one-token step, the new rows last)
     /// and the graph derives the causal-among-new bias for the trunk itself,
@@ -813,6 +882,7 @@ impl Qwen35DecodeOpts {
             greedy_token: false,
             multi_row: false,
             mtp_kv: false,
+            mtp_drafts: 1,
             keys_mask: false,
         }
     }
@@ -911,6 +981,7 @@ pub fn build_qwen35_decode_model_flow(
     let verify_all = opts.verify_all;
     let multi_row = opts.multi_row;
     let mtp_kv = enable_mtp && opts.mtp_kv;
+    let mtp_drafts = opts.mtp_drafts.max(1);
     let keys_mask = use_mask && opts.keys_mask && seq > 1;
 
     let mut flow = ModelFlow::new("qwen35_decode")
@@ -1095,12 +1166,16 @@ pub fn build_qwen35_decode_model_flow(
                 "mtp_hidden",
                 Shape::new(&[batch, 1, cfg_tail.hidden_size], f),
             );
+            let last_row = (multi_row && seq > 1)
+                .then(|| gb.input("mtp_last_row", Shape::new(&[batch, 1], f)));
             Some(MtpDecodeCache {
                 past_k,
                 past_v,
                 past_seq: past_len,
                 h_prev,
                 mask,
+                last_row,
+                drafts: mtp_drafts,
                 k_out: &mut mtp_k,
                 v_out: &mut mtp_v,
                 h_out: &mut mtp_h,
@@ -1127,6 +1202,7 @@ pub fn build_qwen35_decode_model_flow(
             fast_mtp,
             None,
             mtp_cache,
+            false,
         )?;
         if let Some(mtp_id) = mtp {
             *mtp_out.lock().expect("mtp sink") = Some(mtp_id);
@@ -1573,6 +1649,7 @@ pub fn build_qwen35_prefill_cache_model_flow(
             fast_mtp,
             last_idx,
             None,
+            false,
         )?;
         if let Some(mtp_id) = mtp {
             *mtp_out.lock().expect("mtp sink") = Some(mtp_id);
@@ -1848,6 +1925,7 @@ pub fn build_qwen35_trunk_export_model_flow(
             fast_mtp,
             Some(last_idx),
             None,
+            false,
         )?;
         let mut tail = tail_extra.lock().expect("tail sink");
         if let Some(n) = normed {

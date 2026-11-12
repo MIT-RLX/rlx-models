@@ -27,6 +27,11 @@ name = "rlx-vad"
 path = "src/bin/rlx_vad.rs"
 
 [[example]]
+name = "pyannote_parity"
+path = "examples/pyannote_parity.rs"
+required-features = ["pyannote"]
+
+[[example]]
 name = "jfk_bench"
 path = "examples/jfk_bench.rs"
 

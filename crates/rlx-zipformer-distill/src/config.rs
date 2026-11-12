@@ -25,6 +25,10 @@ pub struct StudentConfig {
     pub qdim: usize,
     /// Value width per head.
     pub vdim: usize,
+    /// Quantization-aware training: the layer matrices are rounded in the
+    /// forward pass as the MCU export stores them at `Some(bits)` (4: one
+    /// scale per 32 values, else per row), gradients pass straight through.
+    pub qat_bits: Option<u8>,
 }
 
 /// Fbank frames per chunk, with the 13-frame lookahead.
@@ -67,6 +71,7 @@ impl StudentConfig {
             ff,
             qdim: 32,
             vdim: 12,
+            qat_bits: None,
         }
     }
 

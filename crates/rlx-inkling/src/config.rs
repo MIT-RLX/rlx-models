@@ -22,13 +22,13 @@ use std::path::Path;
 
 pub const FAMILY: &str = "Inkling";
 pub const HF_MODEL_ID: &str = "thinkingmachines/Inkling";
-/// Announced but **not yet released**
-/// ([Inkling-Small](https://thinkingmachines.ai/news/introducing-inkling/#inkling-small)).
-/// Hub id TBD when TML publishes weights — do not assume this string exists today.
+/// [Inkling-Small](https://huggingface.co/thinkingmachines/Inkling-Small): BF16
+/// safetensors, 42 layers, hidden 4096. Pinned by `tests/small_manifest.rs`.
 pub const HF_MODEL_ID_SMALL: &str = "thinkingmachines/Inkling-Small";
 /// Unsloth GGUF repo (quantized full model; recommended for local RLX work).
 pub const HF_GGUF_REPO: &str = "unsloth/inkling-GGUF";
-/// Placeholder for a future Unsloth / community Small GGUF — unset until released.
+/// Small GGUF repo name. Not checked against the Hub yet — the Small path is
+/// HF safetensors today.
 pub const HF_GGUF_REPO_SMALL: &str = "unsloth/inkling-small-GGUF";
 pub const MODEL_TYPE: &str = "inkling_mm_model";
 pub const ARCHITECTURE: &str = "InklingForConditionalGeneration";
@@ -36,13 +36,14 @@ pub const GGUF_ARCH: &str = "inkling";
 
 /// Which member of the Inkling family a config / checkpoint belongs to.
 ///
-/// Small shares the same arch recipes (relative attn, shortconv, sink MoE) but
-/// different width/depth/expert counts — fill in from `config.json` once TML ships it.
+/// Small shares the same arch recipes (relative attn, shortconv, sink MoE) with
+/// different width and depth: 42 layers, hidden 4096, 32 heads, dense MLP 16384,
+/// expert width 2048, still 256 routed + 2 shared, top-6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InklingVariant {
     /// Released full model: ~975B total / ~41B active.
     Full,
-    /// Preview / unreleased: ~276B total / ~12B active (public totals only).
+    /// Inkling-Small: ~276B total / ~12B active.
     Small,
 }
 
@@ -65,7 +66,7 @@ impl InklingVariant {
             Self::Small => AnnouncedParams {
                 total_billions: 276.0,
                 active_billions: 12.0,
-                weights_public: false,
+                weights_public: true,
             },
         }
     }
@@ -84,8 +85,8 @@ impl InklingVariant {
         }
     }
 
-    /// Heuristic once Small weights exist: match known full dims, else treat as Small
-    /// when `config.json` parses but does not match the full preset.
+    /// Match the released full dims (layers, hidden, experts); anything else that
+    /// parses is treated as Small.
     pub fn detect_from_text(text: &InklingTextConfig) -> Self {
         let full = InklingConfig::production_preset().text;
         if text.num_hidden_layers == full.num_hidden_layers
@@ -99,7 +100,7 @@ impl InklingVariant {
     }
 }
 
-/// Public announcement figures only — layer/hidden/expert dims for Small are TBD.
+/// Parameter counts from TML's announcement (not a substitute for config dims).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnnouncedParams {
     pub total_billions: f32,
@@ -226,6 +227,15 @@ impl InklingTextConfig {
                 self.num_key_value_heads,
                 self.head_dim,
             )
+        }
+    }
+
+    /// Width of the logits the model returns: `unpadded_vocab_size` when it is
+    /// smaller than the (padded) embedding table, else `vocab_size`.
+    pub fn output_vocab_size(&self) -> usize {
+        match self.unpadded_vocab_size {
+            Some(n) if n < self.vocab_size => n,
+            _ => self.vocab_size,
         }
     }
 
@@ -398,7 +408,7 @@ impl InklingTextConfig {
 
 impl InklingConfig {
     /// [`InklingVariant::Full`] when dims match the released checkpoint; otherwise
-    /// [`InklingVariant::Small`] (placeholder until Small ships and we pin its preset).
+    /// [`InklingVariant::Small`].
     pub fn variant(&self) -> InklingVariant {
         InklingVariant::detect_from_text(&self.text)
     }
@@ -800,14 +810,14 @@ mod tests {
     }
 
     #[test]
-    fn small_variant_placeholder() {
+    fn small_variant_metadata() {
         let small = InklingVariant::Small;
-        assert!(!small.announced_params().weights_public);
+        assert!(small.announced_params().weights_public);
         assert_eq!(small.announced_params().active_billions, 12.0);
         assert_eq!(small.hf_model_id(), HF_MODEL_ID_SMALL);
         let mut text = InklingConfig::production_preset().text;
-        text.hidden_size = 4096; // stand-in until real Small config.json exists
-        text.num_hidden_layers = 48;
+        text.hidden_size = 4096;
+        text.num_hidden_layers = 42;
         assert_eq!(
             InklingVariant::detect_from_text(&text),
             InklingVariant::Small

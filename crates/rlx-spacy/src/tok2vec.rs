@@ -48,16 +48,15 @@ fn murmur64a(key: &[u8], seed: u64) -> u64 {
     const R: u32 = 47;
     let len = key.len();
     let mut h = seed ^ (len as u64).wrapping_mul(M);
-    let mut chunks = key.chunks_exact(8);
-    for c in &mut chunks {
-        let mut k = u64::from_le_bytes(c.try_into().unwrap());
+    let (chunks, t) = key.as_chunks::<8>();
+    for c in chunks {
+        let mut k = u64::from_le_bytes(*c);
         k = k.wrapping_mul(M);
         k ^= k >> R;
         k = k.wrapping_mul(M);
         h ^= k;
         h = h.wrapping_mul(M);
     }
-    let t = chunks.remainder();
     if !t.is_empty() {
         for (i, &b) in t.iter().enumerate() {
             h ^= (b as u64) << (8 * i);
@@ -108,9 +107,7 @@ pub fn word_shape(text: &str) -> String {
     for c in text.chars() {
         let sc = if c.is_alphabetic() {
             if c.is_uppercase() { 'X' } else { 'x' }
-        } else if c.to_digit(10).is_some()
-            || (c.is_numeric() && !c.is_alphabetic() && unicode_digit(c))
-        {
+        } else if c.is_ascii_digit() || (c.is_numeric() && !c.is_alphabetic() && unicode_digit(c)) {
             'd'
         } else {
             c
@@ -132,7 +129,7 @@ pub fn word_shape(text: &str) -> String {
 /// superscript/subscript digits (`Numeric_Type=Digit`).
 fn unicode_digit(c: char) -> bool {
     matches!(c, '\u{b2}' | '\u{b3}' | '\u{b9}' | '\u{2070}'..='\u{2079}' | '\u{2080}'..='\u{2089}' | '\u{2460}'..='\u{2468}')
-        || c.to_digit(10).is_some()
+        || c.is_ascii_digit()
 }
 
 /// A dense float array from a thinc / msgpack-numpy map.
@@ -158,7 +155,9 @@ fn ndarray(v: &rmpv::Value) -> Result<(Vec<usize>, Vec<f32>)> {
     let data = field(b"data").and_then(|d| d.as_slice()).context("data")?;
     Ok((
         shape,
-        data.chunks_exact(4)
+        data.as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect(),
     ))
@@ -467,7 +466,9 @@ impl Tok2Vec {
             bail!("vectors: unexpected npy header {header}");
         }
         let vectors: Vec<f32> = raw[10 + hl..]
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
         let k2r = std::fs::read(model_dir.join("vocab/key2row"))?;

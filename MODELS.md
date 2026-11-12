@@ -78,7 +78,7 @@ Decoder LMs, MoE, hybrid SSM/attention, ternary, diffusion LMs, and speculative 
 | `rlx-nanbeige` | Nanbeige4.2 Looped Transformer LM (Nanbeige/Nanbeige4.2-3B) | **All 7** (+CoreML) |
 | `rlx-nemotron` | NVIDIA Nemotron 3 Nano runner — text + hybrid Mamba2/attention LM | **All 7** |
 | `rlx-neutrino` | Neutrino-8B (Fermion Research) — Qwen3 topology with FV5 ternary weights for RLX | **All 7** (+CoreML) |
-| `rlx-nllb` | Meta NLLB-200 / M2M100 encoder–decoder MT (safetensors, FLORES-200) | **All 7** (+CoreML) |
+| `rlx-nllb` | Meta NLLB-200 / M2M100 encoder–decoder MT (`pytorch_model.bin` or safetensors, FLORES-200; HF parity CPU/Metal/MLX) | **All 7** (+CoreML) |
 | `rlx-omnicoder` | OmniCoder Qwen3-coder-shaped runner — STUB (PLAN.md M4) | **All 7** |
 | `rlx-phi` | Phi 3 / Phi 4 runner on rlx-llama32 (partial RoPE, NeoX GGUF) | **All 7** (+CoreML) |
 | `rlx-pplx-decider` | Perplexity pplx-decider classifiers (Qwen3.5 trunk, non-causal full attention, protocol v3) — typed questions over a state, answered in one forward pass | **All 7** wired; CPU / Metal / MLX verified — parity with Perplexity's own code on the Q8_0 GGUF (max abs(Δlogit) 4.5e-4, abs(Δp) 2.5e-5 vs the dequantized reference; abs(Δp) 4.7e-3 vs bf16), prompt byte-identical, tokens exact; images via the F16 mmproj (pixels bit-exact vs torchvision, JPEG too with `libjpeg-turbo`; logits 2-3e-4); peak 6 GB Metal / 15 GB MLX / 5 GB CPU on text |
@@ -99,7 +99,7 @@ Image/video (and audio) understanding, grounding, and computer-use agents.
 | `rlx-d1` | LiquidAI d1 System One decision models (LFM2.5-VL backbone) for RLX — typed questions over text, JSON and images, answered in one forward pass | CPU, Metal — end-to-end parity with LiquidAI's code on real weights (max abs(Δp) 2.8e-6 CPU / 2.3e-6 Metal; vision features cos 1.0000000); official GGUF Q4_K_M / Q8_0 + mmproj run packed (5e-6 vs the dequantized reference, picks = llama.cpp, 6.4 GB peak) |
 | `rlx-fara` | Microsoft Fara1.5 computer-use agent (Qwen3.5 multimodal) for RLX | **All 7** (+CoreML) |
 | `rlx-florence2` | Microsoft Florence-2 (DaViT + BART) vision-language model for RLX | **All 7** |
-| `rlx-inkling` | Inkling multimodal MoE (thinkingmachines/Inkling) for RLX | CPU |
+| `rlx-inkling` | Inkling / Inkling-Small multimodal MoE (thinkingmachines) for RLX | CPU |
 | `rlx-kimi-k3` | Kimi-K3 (Moonshot AI) — hybrid KDA + MLA linear attention, LatentMoE, multimodal — for RLX | **All 7** (+CoreML) |
 | `rlx-lfm3-audio` | LiquidAI LFM3-Audio-2B GGUF — LFM3 LM + LFM2 speech encoder + MaskGIT depth decoder + Liquid codec: ASR, TTS, interleaved spoken chat | **All 7** wired; CPU (arm64 + x86) / Metal / MLX / ROCm / CUDA / Vulkan / wgpu / CoreML / WebGL verified (all but CPU-arm64, Metal, MLX, ROCm on Q8_0); TPU builds, not run — every stage vs a torch port of the released code on the F16 LM: encoder and LM hidden cos 1.000000, top-5 logits within 5e-5, greedy ASR token-identical (JFK), depth logits within 8e-5, 18/18 greedy TTS frames identical, codec audio within 7e-9; Q4_K_M round-trips TTS → ASR exactly |
 | `rlx-lfm-vl` | LFM2.5-VL runner (vision + LFM2.5 LM) | CPU |
@@ -236,7 +236,7 @@ Voice cloning, expressive/controllable TTS, and speech-to-speech LMs.
 | `rlx-dramabox` | DramaBox expressive TTS + voice cloning on RLX — config + inline expressive-tag parser | CPU |
 | `rlx-f5tts` | F5-TTS (flow-matching DiT voice cloning) for RLX | CPU, Metal, MLX, CUDA, wgpu, Vulkan (+CoreML) |
 | `rlx-fireredaudio` | FireRedAudio unified audio LM on RLX — Qwen3.5 backbone + Whisper-style encoder + RedAE/DiT; ASR/understand E2E | **All 7** (+CoreML) |
-| `rlx-fish` | Fish Audio S2-Pro (dual-AR Qwen3 backbone) and Drama 3 (Qwen3.5-MoE hybrid + codebook tower, FP8 experts on the host) TTS + voice cloning, with the fish 44.1 kHz codec; parity vs the official PyTorch | CPU, Metal, MLX, wgpu verified; CUDA, ROCm, Vulkan wired, untested |
+| `rlx-fish` | Fish Audio S2-Pro (dual-AR Qwen3 backbone), Drama 3 (Qwen3.5-MoE hybrid + codebook tower, FP8 experts on the host) and Audio8-TTS-Realistic-Air (0.6 B dual-AR, 23 languages) TTS + voice cloning, with the fish 44.1 kHz codec; parity vs the official PyTorch | CPU, Metal, MLX, wgpu verified; Audio8 also on CUDA, ROCm and Vulkan |
 | `rlx-gemma-inflect-nano` | Gemma 3 270M + Inflect-Nano TTS pairing demo (unpublished) | **All 7** (+CoreML) |
 | `rlx-gepard` | Gepard (~556M) autoregressive decoder-only TTS — Qwen3.5 backbone + NanoCodec FSQ | **All 7** (+CoreML) |
 | `rlx-glm-tts` | GLM-TTS / GLM-4-Voice (GLM backbone + streaming speech tokens + flow token2mel) on RLX | CPU |

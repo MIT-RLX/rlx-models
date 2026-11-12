@@ -20,7 +20,7 @@ use rlx_ir::{Graph, hir::HirModule};
 use rlx_runtime::compile_cache::{
     BucketedCompileCache, CacheRunInput, CompileCache, pad_rows, pad_rows_into, slice_rows,
 };
-use rlx_runtime::kv_cache::LayerKvCache;
+use rlx_runtime::kv_cache::{LayerKvCache, append_row_per_sequence};
 use rlx_runtime::{CompileOptions, CompiledGraph, Device};
 use std::collections::HashMap;
 
@@ -255,25 +255,34 @@ fn run_bucketed_decode_on_compiled_metal_rows(
     let slots = upper + 1;
     for layer in 0..num_layers {
         let kd = kv_dims[layer];
-        let row_size = batch * kd;
-        let need = (past_seq + 1) * row_size;
-        let mut k_out = Vec::with_capacity(need);
-        let mut v_out = Vec::with_capacity(need);
-        k_out.extend_from_slice(&kv.layers_k[layer]);
-        v_out.extend_from_slice(&kv.layers_v[layer]);
+        let mut rows_k = Vec::with_capacity(batch * kd);
+        let mut rows_v = Vec::with_capacity(batch * kd);
         for b in 0..batch {
             let row_ix = b * slots + upper;
-            let row_k = compiled
-                .read_output_row(1 + 2 * layer, row_ix, kd)
-                .with_context(|| format!("Metal K row read layer {layer} batch {b}"))?;
-            let row_v = compiled
-                .read_output_row(2 + 2 * layer, row_ix, kd)
-                .with_context(|| format!("Metal V row read layer {layer} batch {b}"))?;
-            k_out.extend_from_slice(&row_k);
-            v_out.extend_from_slice(&row_v);
+            rows_k.extend(
+                compiled
+                    .read_output_row(1 + 2 * layer, row_ix, kd)
+                    .with_context(|| format!("Metal K row read layer {layer} batch {b}"))?,
+            );
+            rows_v.extend(
+                compiled
+                    .read_output_row(2 + 2 * layer, row_ix, kd)
+                    .with_context(|| format!("Metal V row read layer {layer} batch {b}"))?,
+            );
         }
-        new_k.push(k_out);
-        new_v.push(v_out);
+        // Each sequence's row after its own history (not all after the lot).
+        new_k.push(append_row_per_sequence(
+            &kv.layers_k[layer],
+            &rows_k,
+            past_seq,
+            kd,
+        ));
+        new_v.push(append_row_per_sequence(
+            &kv.layers_v[layer],
+            &rows_v,
+            past_seq,
+            kd,
+        ));
     }
     Ok((logits, new_k, new_v))
 }

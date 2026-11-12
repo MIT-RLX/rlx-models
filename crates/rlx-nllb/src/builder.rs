@@ -18,7 +18,6 @@
 //! `impl NllbBuilder` blocks.
 
 use crate::config::LN_EPS;
-use crate::weights::lang as lk;
 use anyhow::Result;
 use rlx_flow::WeightSource;
 use rlx_ir::hir::{HirGraphExt, HirModule, HirMut, HirNodeId};
@@ -29,7 +28,6 @@ pub(crate) struct NllbBuilder<'a> {
     pub hir: &'a mut HirModule,
     pub params: &'a mut HashMap<String, Vec<f32>>,
     pub weights: &'a mut dyn WeightSource,
-    pub batch: usize,
     pub f: DType,
 }
 
@@ -38,24 +36,17 @@ impl<'a> NllbBuilder<'a> {
         hir: &'a mut HirModule,
         params: &'a mut HashMap<String, Vec<f32>>,
         weights: &'a mut dyn WeightSource,
-        batch: usize,
     ) -> Self {
         Self {
             hir,
             params,
             weights,
-            batch,
             f: DType::F32,
         }
     }
 
     pub(crate) fn g(&mut self) -> HirMut<'_> {
         HirMut::new(self.hir)
-    }
-
-    /// HF M2M100 uses sinusoidal positions + Pre-LN; synthetic BART tests use learned + Post-LN.
-    pub(crate) fn m2m100_style(&self) -> bool {
-        !self.weights.has(&lk::enc_embed_positions())
     }
 
     /// Load a checkpoint tensor as a graph parameter. `transpose` flips the

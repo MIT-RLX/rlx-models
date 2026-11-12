@@ -68,7 +68,7 @@ fn translate(p: &str) -> String {
     while i < cs.len() {
         if cs[i] == '\\' && i + 1 < cs.len() {
             match cs[i + 1] {
-                'u' if i + 5 < cs.len() + 0
+                'u' if i + 5 < cs.len()
                     && cs[i + 2..i + 6].iter().all(|c| c.is_ascii_hexdigit()) =>
                 {
                     o.push_str(&format!(
@@ -78,7 +78,7 @@ fn translate(p: &str) -> String {
                     i += 6;
                     continue;
                 }
-                'U' if i + 9 < cs.len() + 0
+                'U' if i + 9 < cs.len()
                     && cs[i + 2..i + 10].iter().all(|c| c.is_ascii_hexdigit()) =>
                 {
                     o.push_str(&format!(

@@ -218,6 +218,66 @@ let out = runner.generate(&[1, 2, 3], 32, |tok| {
 
 Also exported: [`Qwen35Config`](src/config.rs), graph builders (`build_qwen35_graph_sized`, `build_qwen35_prefill_cache_graph`, `build_qwen35_decode_graph`), [`Qwen35DecodeCache`](src/cache.rs), [`Qwen35SpecRunner`](src/spec_runner.rs), MoE offload (`build_moe_offload`, `MoeOffloadState`), ChatML helpers (`format_chatml_with`, `split_thinking`, …), and multimodal prefill (`MultimodalPrompt`, `Qwen35VisionEncoder`).
 
+## Training (LoRA)
+
+`rlx-export model-BF16.gguf -o train.rlxp --variant train --seqs 64` writes
+a package rlx trains with `Trainer.from_package`: one full-sequence function
+`forward` with dense weights, and LoRA on the full-attention q / v and the
+delta-net qkv by default ([`docs/exporting.md`](../../docs/exporting.md), the
+`qwen35` row). rlx's `docs/agent-optimizer.md` (§ Fine-tuning a package) runs
+it on Qwen3.5 0.8B, with an agent rewriting the optimizer.
+
+## MTP drafts and distillation
+
+`rlx-export model.gguf -o mtp.rlxp --variant mtp --speculate 3` (a GGUF with
+MTP layers) adds the MTP head's draft logits to `generate` and a `verify`
+function. That function checks 3 chained drafts in one padded 4-row pass;
+rlx's `docs/distributed.md` (§ Speculative decoding) covers how a pass is
+kept or replayed, and `decode_local_verify` runs it on one device. Each
+further draft runs the head on its own normed hidden and the previous
+draft's argmax, one RoPE position on (`Qwen35DecodeOpts::mtp_drafts`).
+
+`--variant distill [--seqs N]` writes a package that trains the MTP head on
+the trunk it drafts for, the trunk frozen (after Soft-MTP). The trunk's
+whole next-token distribution is the head's target, since a draft is kept
+exactly when it is the trunk's argmax. One function `distill`: over
+`input_ids` `[1, N]` the head's row i (the hidden at i, token i+1) and the
+trunk's row i+1 both predict token i+2. Its output `kl` `[1, N - 1]` is the
+per-row KL(trunk ‖ head), and only rows where token i+1 is the trunk's own
+pick count. Those are the rows decoding meets
+(`Qwen35Flow::mtp_every_row` gives the head's logits at every row).
+`rlx_runtime::model::trainer::open_trainer` trains it. The model block's
+`train` lists the MTP layer's 15 weights, not the embedding and LM head
+it shares with the trunk. To use the result, write the trained values into
+a copy of the GGUF (matrices transposed back to `[out, in]`, each
+requantized to its stored type with `rlx_gguf::quantize`, norms as they
+are), then export `--variant mtp` from it.
+
+The data decides the outcome. Qwen3.5-0.8B Q8_0, k = 3, tokens per pass
+over 128 new tokens:
+
+| head | prose | Python | list | letter | Rust | JSON | passes, all six |
+|---|---|---|---|---|---|---|---|
+| stock | 2.10 | 3.12 | 2.91 | 3.05 | 3.12 | 2.67 | 277 |
+| corpus text, lr 1e-5, 400 steps | 2.10 | 2.84 | 2.56 | | | | |
+| greedy text, lr 3e-6, 1184 steps | 2.21 | 3.28 | 2.91 | 3.20 | 2.98 | 2.61 | 273 |
+
+- **Corpus text** (Python sources and markdown, teacher-forced) made the
+  head worse at every learning rate tried, with held-out KL up. The
+  head then reads tokens the trunk would not have picked.
+- **Greedy text**: the trunk's own continuations of 1200 prompts cut from
+  the same sources, 192 tokens each, from `llama-server` with
+  `temperature 0`. The windows were each sample's last 128 tokens.
+  - Held-out KL went from 0.096 to 0.0735.
+  - Acceptance rose about 5% on prose, Python and the letter, near the
+    training data. It fell a little on Rust and JSON, which the data lacked.
+  - Over all six prompts it is +1.5%, within run-to-run spread. Broader greedy
+    data is the next step.
+- One sequence a step with AdamW is noisy: at lr 5e-5, corpus training lost
+  about a third of the drafts. Training on 16 windows alone lowers their KL,
+  so the gradient is right. KL on windows held out of training is the
+  number to watch.
+
 ## How it fits
 
 | Crate | Relationship |

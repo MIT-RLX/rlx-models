@@ -171,6 +171,7 @@ fn run_check(base_dir: std::path::PathBuf, run_dir: std::path::PathBuf) -> Resul
             greedy_token: false,
             multi_row: false,
             mtp_kv: false,
+            mtp_drafts: 1,
             keys_mask: false,
         };
         let (hir, pc, _) =

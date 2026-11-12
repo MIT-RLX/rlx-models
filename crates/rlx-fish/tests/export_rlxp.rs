@@ -69,8 +69,10 @@ fn an_exported_fish_s2_speaks_as_the_runner_does() {
         .unwrap();
     let flat: Vec<u32> = got[0]
         .data
-        .chunks_exact(4)
-        .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u32)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| i32::from_le_bytes(*b) as u32)
         .collect();
     let n = want[0].len();
     let f = flat.len() / want.len();

@@ -284,6 +284,8 @@ pub struct AttnSpec {
     pub head_dim: usize,
     /// Per-head RMSNorm on q and k (`attention.q_norm` / `k_norm`).
     pub qk_norm: bool,
+    /// `attention.wqkv` has a bias.
+    pub qkv_bias: bool,
     /// Leading channels of each head that RoPE rotates (`head_dim` = all).
     pub rope_dim: usize,
     pub rope_style: RopeStyle,
@@ -317,6 +319,12 @@ pub enum Keys {
         past: usize,
         mask: NodeId,
     },
+    /// `n` independent sequences of `seq / n` rows each, back to back in the
+    /// block's input, attending as a batch: `keys` is one of the other
+    /// variants with a batch axis (`past_k` / `past_v` `[n, past, kv·d]`,
+    /// `mask` `[n, past + seq / n]`). Every other part of the block runs on
+    /// all rows at once, so a batch of sequences reads each weight once a step.
+    Batched { n: usize, keys: Box<Keys> },
 }
 
 /// Output of [`block`]: the new residual stream and this block's K/V rows
@@ -352,7 +360,11 @@ pub fn block(
     } else {
         q_w + 2 * kv_w
     };
-    let qkv = b.linear(xn, &format!("{prefix}attention.wqkv.weight"), dim, qkv_w);
+    let qkv = if a.qkv_bias {
+        b.linear_bias(xn, &format!("{prefix}attention.wqkv"), dim, qkv_w)
+    } else {
+        b.linear(xn, &format!("{prefix}attention.wqkv.weight"), dim, qkv_w)
+    };
     let mut off = 0;
     let mut take = |b: &mut Builder, w: usize| {
         let n = b.g.narrow_(qkv, 2, off, w);
@@ -382,27 +394,64 @@ pub fn block(
             b.g.rope_n_styled(k, cos, sin, a.head_dim, a.rope_dim, a.rope_style);
     }
 
+    let attn = match keys {
+        Keys::Batched { n, keys } => {
+            assert!(seq.is_multiple_of(n), "{seq} rows are not {n} sequences");
+            attend_rows(b, a, q, k, v, n, seq / n, *keys)
+        }
+        keys => attend_rows(b, a, q, k, v, 1, seq, keys),
+    };
+    let attn = b.g.reshape_(attn, vec![1, seq as i64, q_w as i64]);
+    finish_block(b, spec, prefix, x, attn, gate, k, v)
+}
+
+/// Attention of `batch` sequences of `seq` query rows each, `q` with keys
+/// `k`/`v` (`[1, batch · seq, …]`, after RoPE, sequence-major) under `keys`
+/// (batch-shaped when `batch > 1`): `[1, batch · seq, n_head · head_dim]`.
+#[allow(clippy::too_many_arguments)]
+fn attend_rows(
+    b: &mut Builder,
+    a: &AttnSpec,
+    q: NodeId,
+    k: NodeId,
+    v: NodeId,
+    batch: usize,
+    seq: usize,
+    keys: Keys,
+) -> NodeId {
     let group = a.n_head / a.n_kv;
     let (nh, nkv, d) = (a.n_head as i64, a.n_kv as i64, a.head_dim as i64);
-    // `[1, rows, heads, D]` views for the attention op.
+    let nb = batch as i64;
     let heads = |b: &mut Builder, x: NodeId, rows: usize, h: i64| {
-        b.g.reshape_(x, vec![1, rows as i64, h, d])
+        b.g.reshape_(x, vec![nb, rows as i64, h, d])
     };
     let q4 = heads(b, q, seq, nh);
-    let shape4 = Shape::new(&[1, seq, a.n_head, a.head_dim], F32);
+    let shape4 = Shape::new(&[batch, seq, a.n_head, a.head_dim], F32);
+    let kvw = (a.n_kv * a.head_dim) as i64;
     let (k_all, v_all, total, mask) = match keys {
         Keys::Own(mask) => (k, v, seq, Err(mask)),
+        Keys::Batched { .. } => unreachable!("a batch holds sequences, not batches"),
         Keys::Cached {
             past_k,
             past_v,
             past,
             mask,
-        } => (
-            b.g.concat_(vec![past_k, k], 1),
-            b.g.concat_(vec![past_v, v], 1),
-            past + seq,
-            Ok(mask),
-        ),
+        } => {
+            let (k, v) = if batch > 1 {
+                (
+                    b.g.reshape_(k, vec![nb, seq as i64, kvw]),
+                    b.g.reshape_(v, vec![nb, seq as i64, kvw]),
+                )
+            } else {
+                (k, v)
+            };
+            (
+                b.g.concat_(vec![past_k, k], 1),
+                b.g.concat_(vec![past_v, v], 1),
+                past + seq,
+                Ok(mask),
+            )
+        }
     };
     let attend =
         |b: &mut Builder, q: NodeId, k: NodeId, v: NodeId, heads: usize, shape: Shape| match mask {
@@ -418,7 +467,7 @@ pub fn block(
         // A backend without GQA, one query row: regroup its heads as `group`
         // query rows × `n_kv` heads (head h = kv·group + g), so each KV head
         // still serves its own query heads straight from the cache.
-        let qg = b.g.reshape_(q, vec![1, nkv, group as i64, d]);
+        let qg = b.g.reshape_(q, vec![nb, nkv, group as i64, d]);
         let qg = b.g.transpose_(qg, vec![0, 2, 1, 3]);
         let (k4, v4) = (heads(b, k_all, total, nkv), heads(b, v_all, total, nkv));
         let o = attend(
@@ -427,17 +476,20 @@ pub fn block(
             k4,
             v4,
             a.n_kv,
-            Shape::new(&[1, group, a.n_kv, a.head_dim], F32),
+            Shape::new(&[batch, group, a.n_kv, a.head_dim], F32),
         );
         b.g.transpose_(o, vec![0, 2, 1, 3])
     } else {
+        assert_eq!(batch, 1, "GQA expansion of a batch");
         let kr = b.repeat_kv(k_all, total, a.n_kv, a.head_dim, group);
         let vr = b.repeat_kv(v_all, total, a.n_kv, a.head_dim, group);
         let (kr, vr) = (heads(b, kr, total, nh), heads(b, vr, total, nh));
         attend(b, q4, kr, vr, a.n_head, shape4)
     };
-    let attn = b.g.reshape_(attn, vec![1, seq as i64, q_w as i64]);
-    finish_block(b, spec, prefix, x, attn, gate, k, v)
+    b.g.reshape_(
+        attn,
+        vec![1, (batch * seq) as i64, (a.n_head * a.head_dim) as i64],
+    )
 }
 
 /// Output gate, `wo`, residual and the SwiGLU half of [`block`].

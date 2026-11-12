@@ -29,12 +29,35 @@ use std::sync::{Arc, Mutex};
 
 type F32TensorLoad = (String, Vec<f32>, Vec<usize>);
 
+/// A shard's bytes: mapped from a file, or held in memory (a browser has no
+/// files: [`SafetensorsCheckpoint::from_bytes`]).
+pub enum ShardBytes {
+    Mapped(Mmap),
+    Owned(Vec<u8>),
+}
+
+impl std::ops::Deref for ShardBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Mapped(m) => m,
+            Self::Owned(v) => v,
+        }
+    }
+}
+
+impl AsRef<[u8]> for ShardBytes {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
 /// Cached mmap views of a sharded (or flat) safetensors directory.
 pub struct SafetensorsCheckpoint {
     dir: PathBuf,
     /// Tensor name → shard filename (relative to `dir`).
     index: HashMap<String, String>,
-    shards: Mutex<HashMap<String, Arc<Mmap>>>,
+    shards: Mutex<HashMap<String, Arc<ShardBytes>>>,
 }
 
 impl SafetensorsCheckpoint {
@@ -95,6 +118,29 @@ impl SafetensorsCheckpoint {
         })
     }
 
+    /// Safetensors files held in memory, `(name, bytes)` each: what a page
+    /// fetched. Every tensor of every file is indexed; nothing is copied.
+    pub fn from_bytes(files: Vec<(String, Vec<u8>)>) -> Result<Self> {
+        let mut index = HashMap::new();
+        let mut shards = HashMap::new();
+        for (name, bytes) in files {
+            let st = SafeTensors::deserialize(&bytes)
+                .with_context(|| format!("parse safetensors {name}"))?;
+            for key in st.names() {
+                index.insert(key.to_string(), name.clone());
+            }
+            shards.insert(name, Arc::new(ShardBytes::Owned(bytes)));
+        }
+        if index.is_empty() {
+            bail!("no safetensors tensors in the given bytes");
+        }
+        Ok(Self {
+            dir: PathBuf::new(),
+            index,
+            shards: Mutex::new(shards),
+        })
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -105,6 +151,14 @@ impl SafetensorsCheckpoint {
         let mmap = self.mmap_shard(shard).ok()?;
         let st = SafeTensors::deserialize(mmap.as_ref()).ok()?;
         st.tensor(name).ok().map(|v| v.dtype())
+    }
+
+    /// A tensor's shape, from its shard's header (no data read).
+    pub fn shape_of(&self, name: &str) -> Option<Vec<usize>> {
+        let shard = self.index.get(name)?;
+        let bytes = self.mmap_shard(shard).ok()?;
+        let st = SafeTensors::deserialize(bytes.as_ref()).ok()?;
+        st.tensor(name).ok().map(|v| v.shape().to_vec())
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &str> {
@@ -316,7 +370,7 @@ impl SafetensorsCheckpoint {
         Ok(index)
     }
 
-    fn mmap_shard(&self, shard: &str) -> Result<Arc<Mmap>> {
+    fn mmap_shard(&self, shard: &str) -> Result<Arc<ShardBytes>> {
         let mut guard = self
             .shards
             .lock()
@@ -331,10 +385,10 @@ impl SafetensorsCheckpoint {
     }
 }
 
-fn map_file(path: &Path) -> Result<Arc<Mmap>> {
+fn map_file(path: &Path) -> Result<Arc<ShardBytes>> {
     let file = File::open(path).with_context(|| format!("open {path:?}"))?;
     let mmap = unsafe { MmapOptions::new().map(&file)? };
-    Ok(Arc::new(mmap))
+    Ok(Arc::new(ShardBytes::Mapped(mmap)))
 }
 
 fn ingest_selected_from_bytes(

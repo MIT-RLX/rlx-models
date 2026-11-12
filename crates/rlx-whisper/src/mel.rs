@@ -18,7 +18,7 @@
 use crate::audio::MelSpectrogram;
 use rlx_spectral::WhisperLogMel;
 #[cfg(any(test, feature = "export"))]
-use rlx_spectral::{MelBank, Window};
+use rlx_spectral::Window;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -142,9 +142,9 @@ pub(crate) fn hann_window(n: usize) -> Vec<f32> {
 }
 
 /// Slaney mel filterbank `[n_mels, n_fft/2 + 1]`.
-#[cfg(any(test, feature = "export"))]
+#[cfg(feature = "export")]
 pub(crate) fn mel_filterbank(sample_rate: f64, n_fft: usize, n_mels: usize) -> Vec<f32> {
-    MelBank::whisper(sample_rate, n_fft, n_mels).weights()
+    rlx_spectral::MelBank::whisper(sample_rate, n_fft, n_mels).weights()
 }
 
 #[cfg(test)]

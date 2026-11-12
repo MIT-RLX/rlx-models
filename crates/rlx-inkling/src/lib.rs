@@ -27,6 +27,7 @@ pub mod eager;
 pub mod fixture;
 pub mod gguf_layout;
 pub mod gguf_probe;
+pub mod graph;
 pub mod probe;
 pub mod runner;
 pub mod shapes;
@@ -41,6 +42,7 @@ pub use config::{
 pub use eager::{TextWeights, forward_logits, greedy_next};
 pub use gguf_layout::{GGUF_ARCHES, gguf_to_eager_key};
 pub use gguf_probe::{DEFAULT_QUANT, GgufProbeReport};
+pub use graph::{InklingTables, build_text_flow, forward_logits_compiled, graph_weight_map};
 pub use probe::{ProbeReport, compare_shapes, read_local_header, validate_model_dir};
 pub use runner::InklingRunner;
 pub use shapes::expected_hf_shapes;

@@ -26,11 +26,16 @@
 //!   DeltaNet + gated attention, 256 experts) with a codebook *tower* that
 //!   attends across frames.
 //!
-//! Both emit 10 codes per frame for the same codec ([`codec::FishCodec`]):
+//! - **Audio8-TTS-Realistic-Air**
+//!   ([`Edge0/Audio8-TTS-Realistic-Air`](https://huggingface.co/Edge0/Audio8-TTS-Realistic-Air)) —
+//!   S2's dual-AR design at 0.6 B, 23 languages ([`audio8`]).
+//!
+//! All emit 10 codes per frame for the same codec ([`codec::FishCodec`]):
 //! a causal 44.1 kHz DAC with a transformer-wrapped RVQ, 2048 samples per
-//! frame.
+//! frame. Audio8 ships its own, with a narrower post transformer.
 
 pub mod audio;
+pub mod audio8;
 pub mod codec;
 pub mod config;
 pub mod drama3;
@@ -41,6 +46,8 @@ pub mod drama3_text;
 pub mod export;
 pub mod moe;
 pub mod nn;
+#[cfg(feature = "play")]
+pub mod play;
 pub mod prompt;
 pub mod s2;
 pub mod sampling;
@@ -51,3 +58,14 @@ pub use config::S2Config;
 pub use drama3::{DramaModel, DramaOptions};
 pub use s2::{S2Model, S2Options};
 pub use sampling::{Rng, SampleParams};
+
+/// A clock read for timing logs: `None` on wasm32, where
+/// `std::time::Instant::now` panics.
+pub(crate) fn clock() -> Option<std::time::Instant> {
+    (!cfg!(target_arch = "wasm32")).then(std::time::Instant::now)
+}
+
+/// Time since [`clock`] (zero where there is no clock).
+pub(crate) fn elapsed(t: Option<std::time::Instant>) -> std::time::Duration {
+    t.map_or(std::time::Duration::ZERO, |t| t.elapsed())
+}

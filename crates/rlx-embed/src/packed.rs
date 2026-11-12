@@ -7,7 +7,7 @@
 //!   `[out, in/32·34]`), which the BERT flow runs as fused `DequantMatMul`s;
 //! - every other 2-D `*.weight` (the embedding tables) is `I8`, one f32 scale
 //!   per row beside it as `<name>.qscale` (symmetric, round-to-nearest) — a
-//!   caller gathers rows of these on the host ([`PackedWeights::row`]);
+//!   caller gathers rows of these on the host ([`PackedWeights::add_row`]);
 //! - everything else (biases, LayerNorms) stays as it was.
 //!
 //! Version 1 files (every 2-D weight `I8` + `.qscale`) still load: their

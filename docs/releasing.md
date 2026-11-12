@@ -13,10 +13,12 @@ upstream has published versions that rlx-models never did.
 
 1. **Every upstream pin must exist on crates.io.** This has been the hard
    blocker twice: `rlx-opscope` (0.2.16 cycle) and `rlx-torch-ckpt`. **Both
-   are shipped as of 2026-10-11** (0.2.16 and 0.2.17 on the sparse index), so
-   there is currently no upstream blocker — `check-publishable.py --release`
-   reports only the clean-tree problems. Re-check rather than assume: a new
-   upstream crate reintroduces this class instantly.
+   are shipped as of 2026-10-11** (0.2.16 and 0.2.17 on the sparse index).
+   **As of 2026-11-05 the index stops at 0.2.19 while this workspace pins
+   `^0.2.20`**, so upstream 0.2.20 is the blocker again — and it has to
+   include what this workspace now builds against in `../rlx` (e.g.
+   `rlx_runtime::with_strict_f32`, used by `rlx-fish`). Re-check rather than
+   assume: a new upstream crate reintroduces this class instantly.
    A single unpublished upstream crate makes the *whole workspace*
    unresolvable — `cargo metadata` fails outright once the local path patch is
    removed, so a fresh clone or CI box cannot even load the workspace. A

@@ -93,6 +93,14 @@ pub fn matmul_bt(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: u
     blas::sgemm_bt(a, b, out, m, k, n, alpha);
 }
 
+/// `out = a @ b^T` for a few rows `a` (`[m, k]`, `b` `[n, k]`): a decode
+/// step's LM head over the `[vocab, d]` table. Splits `b`'s rows over the
+/// pool, reading it once at the bandwidth of all cores (~2× a single vendor
+/// GEMV on Apple silicon); see [`rlx_cpu::gemv::matmul_nt_rows`].
+pub fn matmul_bt_few_rows(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
+    rlx_cpu::gemv::matmul_nt_rows(a, b, out, m, n, k);
+}
+
 /// Exact (erf) GELU, PyTorch `gelu(approximate="none")`:
 /// `x * 0.5 * (1 + erf(x / sqrt(2)))` in float32.
 pub fn gelu_erf(x: &mut [f32]) {

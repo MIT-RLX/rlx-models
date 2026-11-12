@@ -38,7 +38,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         0
     };
-    let has_last = n < WINDOW || (n - WINDOW) % STEP > 0;
+    let has_last = n < WINDOW || !(n - WINDOW).is_multiple_of(STEP);
     // 1. host-side stages from the REFERENCE raw activations
     let agg_from_ref = aggregate(&raw_ref, num_chunks + has_last as usize, n, has_last);
     let agg_exact = agg_from_ref == agg_ref;

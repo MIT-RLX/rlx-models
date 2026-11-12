@@ -47,7 +47,9 @@ fn an_exported_silero_vad_gives_the_sessions_probabilities_and_segments() {
             .fold(0f32, |a, (x, y)| a.max((x - y).abs()));
         let segs: Vec<i32> = outs[1]
             .data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
         let want_flat: Vec<i32> = want_segs
@@ -97,7 +99,9 @@ fn an_exported_earshot_gives_the_detectors_probabilities_and_segments() {
         .fold(0f32, |a, (x, y)| a.max((x - y).abs()));
     let segs: Vec<i32> = outs[1]
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
     let want_flat: Vec<i32> = want_segs

@@ -35,11 +35,27 @@
 //!     [--devices LIST] [--calibrate 3] [--no-init] [--cluster [--rendezvous URL]]
 //!     [--accumulate N] [--mse-only] [--mse-weight 0.1] [--temperature 1] [--resume]
 //!     [--token-weight 1] [--keep-checkpoints]
-//!     [--optimizer adamw|muon]
+//!     [--optimizer adamw|muon] [--init RESUME_FILE] [--qat 4|8] [--max-mem-gb G]
 //! zipformer-distill-train --worker [--devices LIST] [--rendezvous URL]
 //! ```
 //! `--optimizer muon` trains the 2-D weight matrices with Muon and the rest
 //! with AdamW, at the same learning rate (`rlx_optim::MuonAdamW`).
+//!
+//! `--init PATH` starts from the weights in another run's `resume.bin` with
+//! a fresh optimizer and schedule (a fine-tune); `--resume` takes precedence.
+//!
+//! `--qat 4` trains against the int4 MCU export: each layer matrix is
+//! rounded in the forward pass exactly as `rlx_kroko::mcu` stores it, and
+//! gradients pass straight through to the float weights (best as a short
+//! fine-tune from a float run, with `--init`).
+//!
+//! Progress lines report the process's private and shared memory where the OS
+//! exposes them (Linux). `--max-mem-gb G` exits with status 75 after a save
+//! once the two add up to more than `G`, so a run loop that restarts with
+//! `--resume` caps the process's memory instead of the machine running out.
+//!
+//! `--data A,B` trains on several record directories as one set; the
+//! held-out records come from the end of the last one.
 //!
 //! `--keep-checkpoints` also saves every checkpoint to `--out/step-N/`, to
 //! compare runs at the same step.
@@ -79,6 +95,21 @@ const TAG_JOB: u32 = 7100;
 const TAG_SAMPLES: u32 = 7101;
 /// The teacher's joiner output weight and bias, for the token loss.
 const TAG_JOINER: u32 = 7102;
+/// Exit status after a save when `--max-mem-gb` is exceeded (`EX_TEMPFAIL`):
+/// the caller restarts with `--resume`.
+const EXIT_MEMORY: i32 = 75;
+
+/// This process's private (anonymous) and shared resident memory in GB, where
+/// the OS reports them (Linux `/proc/self/status`).
+fn mem_gb() -> Option<(f64, f64)> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb = |key: &str| -> Option<f64> {
+        let line = status.lines().find(|l| l.starts_with(key))?;
+        line.split_whitespace().nth(1)?.parse::<f64>().ok()
+    };
+    Some((kb("RssAnon:")? / 1048576.0, kb("RssShmem:")? / 1048576.0))
+}
+
 /// The optimizer state of a resumed run.
 const TAG_OPT: u32 = 7103;
 /// Resume point in `--out`.
@@ -318,10 +349,17 @@ fn main() -> Result<()> {
     let mut source: Option<(Records, Teacher, PathBuf, PathBuf)> = None;
     let mut joiner: Option<Joiner> = None;
     let keep_checkpoints = flag("--keep-checkpoints");
+    let max_mem_gb: Option<f64> = get("--max-mem-gb").map(|v| v.parse()).transpose()?;
     let mut resumed: Option<(NamedTensors, OptimizerState)> = None;
+    let mut initial: Option<NamedTensors> = None;
     let job = if rank == 0 {
         let teacher_dir = PathBuf::from(get("--teacher").context("--teacher")?);
-        let data = Records::open(&PathBuf::from(get("--data").context("--data")?))?;
+        let dirs: Vec<PathBuf> = get("--data")
+            .context("--data")?
+            .split(',')
+            .map(PathBuf::from)
+            .collect();
+        let data = Records::open_all(&dirs)?;
         let out = PathBuf::from(get("--out").context("--out")?);
         let job = json!({
             "k": data.k,
@@ -335,6 +373,7 @@ fn main() -> Result<()> {
             "temperature": num("--temperature", 1.0)?,
             "token_weight": num("--token-weight", 1.0)?,
             "optimizer": get("--optimizer").map_or("adamw", String::as_str),
+            "qat_bits": get("--qat").map(|b| b.parse::<u8>()).transpose()?,
         });
         let mut job = job;
         if flag("--resume") {
@@ -345,6 +384,11 @@ fn main() -> Result<()> {
             eprintln!("resuming after step {step} from {}", path.display());
             job["start"] = json!(step);
             resumed = Some((params, opt));
+        } else if let Some(path) = get("--init") {
+            let (step, params, _) =
+                decode_state(&std::fs::read(path).with_context(|| format!("--init: {path}"))?)?;
+            eprintln!("starting from the weights of {path} (its step {step}), fresh optimizer");
+            initial = Some(params);
         }
         let teacher = Teacher::open(&teacher_dir)?;
         let mut messages = vec![(TAG_JOB, job.to_string().into_bytes())];
@@ -419,7 +463,10 @@ fn main() -> Result<()> {
     );
     ensure!(batch >= world, "--batch {batch} below the {world} machines");
 
-    let cfg = StudentConfig::small10m();
+    let cfg = StudentConfig {
+        qat_bits: job["qat_bits"].as_u64().map(|b| b as u8),
+        ..StudentConfig::small10m()
+    };
     let mut m = model::build(&cfg, 1, k);
     if let Some((_, teacher, _, _)) = &source {
         let from_teacher = !flag("--no-init");
@@ -448,7 +495,7 @@ fn main() -> Result<()> {
     } else {
         m = m.init_params(|_, dims| vec![0.0; dims.iter().product()]);
     }
-    if let Some((params, _)) = &resumed
+    if let Some(params) = resumed.as_ref().map(|(p, _)| p).or(initial.as_ref())
         && rank == 0
     {
         let by_name: std::collections::HashMap<&str, &Vec<f32>> =
@@ -720,6 +767,9 @@ fn main() -> Result<()> {
             d.n
         );
         eprintln!("optimizer: {}", job["optimizer"]);
+        if let Some(b) = cfg.qat_bits {
+            eprintln!("quantization-aware: layer matrices rounded to int{b} as exported");
+        }
         eprintln!(
             "loss: {}",
             match &kd {
@@ -859,8 +909,11 @@ fn main() -> Result<()> {
                 .zip(&busy)
                 .map(|(n, b)| format!("{n} {:.0}%", 100.0 * b / el))
                 .collect();
+            let mem = mem_gb().map_or(String::new(), |(a, s)| {
+                format!(", memory {a:.1} GB private {s:.1} GB shared")
+            });
             eprintln!(
-                "step {step}: loss {l:.4} (avg {avg:.4}), lr {:.2e}, {sps:.2} steps/s, {:.1} samples/s, micro-batches {}, busy {}, {:.1} min",
+                "step {step}: loss {l:.4} (avg {avg:.4}), lr {:.2e}, {sps:.2} steps/s, {:.1} samples/s, micro-batches {}, busy {}, {:.1} min{mem}",
                 sched.lr_at(step),
                 samples_done as f64 / el,
                 rounds.join("/"),
@@ -891,6 +944,16 @@ fn main() -> Result<()> {
                 std::fs::write(&tmp, encode_state(step + 1, &params, &state))?;
                 std::fs::rename(&tmp, out.join(RESUME_FILE))?;
                 eprintln!("saved {}", out.display());
+                if let (Some(max), Some((a, s))) = (max_mem_gb, mem_gb())
+                    && a + s > max
+                    && step + 1 < steps
+                {
+                    eprintln!(
+                        "memory {:.1} GB is above --max-mem-gb {max}: exiting after the save (`--resume` continues)",
+                        a + s
+                    );
+                    std::process::exit(EXIT_MEMORY);
+                }
             }
         }
     }

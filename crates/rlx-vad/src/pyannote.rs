@@ -146,9 +146,9 @@ impl PyannoteSegmentation {
     /// Raw `[n, 293, 3]` speaker activations for `n` 5 s windows.
     pub fn infer(&self, chunks: &[f32], n: usize) -> Result<Vec<f32>> {
         let mut graphs = self.graphs.borrow_mut();
-        if !graphs.contains_key(&n) {
+        if let std::collections::hash_map::Entry::Vacant(e) = graphs.entry(n) {
             let g = self.build(n)?;
-            graphs.insert(n, g);
+            e.insert(g);
         }
         graphs
             .get_mut(&n)
@@ -308,7 +308,7 @@ impl PyannoteSegmentation {
         } else {
             0
         };
-        let has_last = n < WINDOW || (n - WINDOW) % STEP > 0;
+        let has_last = n < WINDOW || !(n - WINDOW).is_multiple_of(STEP);
         let total = num_chunks + has_last as usize;
         let mut chunks = vec![0f32; total * WINDOW];
         for c in 0..num_chunks {

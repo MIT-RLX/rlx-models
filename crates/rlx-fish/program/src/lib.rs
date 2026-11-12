@@ -25,6 +25,11 @@
 //! (`step`); until `<|im_end|>`; then the codes dequantized (`dequant`) and
 //! decoded (`codec`). `run` answers the codes (`options.codes` decodes
 //! given ones).
+//!
+//! Audio8's package runs the same program with `one_pass` set
+//! (`audio8::synthesize_codes`): the text whole, whitespace collapsed, the
+//! frames cut to what the context has left, and a reference voice from
+//! `options.reference_codes` and `options.reference_text`.
 
 #[allow(dead_code)]
 #[path = "../../src/prompt.rs"]
@@ -41,13 +46,6 @@ use serde_json::{Value, json};
 const TOKENIZER: &str = "sidecar:tokenizer.json";
 const IM_START: &str = "<|im_start|>";
 const IM_END: &str = "<|im_end|>\n";
-/// Repetition-aware sampling: a main token among the last ten is redrawn.
-const RAS_WINDOW: usize = 10;
-const RAS: SampleParams = SampleParams {
-    temperature: 1.0,
-    top_p: 0.9,
-    top_k: 30,
-};
 const DECODE_BUCKET: usize = 256;
 
 /// The host's tokenizer.
@@ -90,7 +88,13 @@ struct Fish {
     max_rows: usize,
     max_new_tokens: usize,
     chunk_length: usize,
+    one_pass: bool,
     params: SampleParams,
+    /// Repetition-aware sampling: a main token among the last `ras_window`
+    /// is redrawn at these settings.
+    ras_window: usize,
+    ras_temperature: f32,
+    ras_top_p: f32,
     seed: u64,
     semantic_size: usize,
     residual_size: usize,
@@ -130,7 +134,31 @@ fn cache_names(prefix: &str, layers: usize) -> (Slots, Slots) {
     (names, nexts)
 }
 
-/// S2's conversation for one utterance (`s2::Conversation`, no references).
+/// Codes `[num_codebooks][frames]` from JSON.
+fn codes_of(v: &Value) -> Option<Vec<Vec<u32>>> {
+    Some(
+        v.as_array()?
+            .iter()
+            .map(|r| {
+                r.as_array()
+                    .map(|c| {
+                        c.iter()
+                            .filter_map(|v| v.as_u64().map(|v| v as u32))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect(),
+    )
+}
+
+/// `audio8::clean_text`.
+fn clean_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// S2's conversation for one utterance (`s2::Conversation`, at most one
+/// reference voice).
 struct Conversation {
     segments: Vec<Segment>,
 }
@@ -141,6 +169,29 @@ impl Conversation {
             segments: vec![
                 Segment::Text(format!("{IM_START}system\n")),
                 Segment::Text("convert the provided text to speech".into()),
+                Segment::Text(IM_END.into()),
+            ],
+        }
+    }
+
+    /// The system turn with a reference voice: its transcript, tagged
+    /// `<|speaker:0|>` unless it carries a tag, and its codes.
+    fn with_reference(text: &str, codes: Vec<Vec<u32>>) -> Self {
+        let tagged = if prompt::has_speaker_tag(text) {
+            text.to_string()
+        } else {
+            format!("<|speaker:0|>{text}")
+        };
+        Self {
+            segments: vec![
+                Segment::Text(format!("{IM_START}system\n")),
+                Segment::Text(
+                    "convert the provided text to speech reference to the following:\n\nText:\n"
+                        .into(),
+                ),
+                Segment::Text(tagged),
+                Segment::Text("\n\nSpeech:\n".into()),
+                Segment::Codes(codes),
                 Segment::Text(IM_END.into()),
             ],
         }
@@ -298,7 +349,7 @@ impl Fish {
         )?;
         let (mut hidden, mut logits) = (named(&outs, "hidden")?, named(&outs, "logits")?);
         let mut len = t;
-        let mut window: Vec<u32> = Vec::with_capacity(RAS_WINDOW);
+        let mut window: Vec<u32> = Vec::with_capacity(self.ras_window);
         let mut frames = Vec::new();
         let mut mask = vec![0f32; cap + 1];
         mask[..t].fill(1.0);
@@ -309,8 +360,9 @@ impl Fish {
             let mut main = first_draw;
             if step > 0 {
                 let ras = SampleParams {
+                    temperature: self.ras_temperature,
+                    top_p: self.ras_top_p,
                     top_k: self.params.top_k,
-                    ..RAS
                 };
                 let retry = self.band_token(sampling::sample(&logits, ras, Flavor::S2, rng));
                 if self.is_semantic(first_draw) && window.contains(&first_draw) {
@@ -322,7 +374,7 @@ impl Fish {
             }
             let codes = self.fast_frame(&hidden, main, rng)?;
             if step > 0 {
-                if window.len() == RAS_WINDOW {
+                if window.len() == self.ras_window {
                     window.remove(0);
                 }
                 window.push(main);
@@ -355,8 +407,47 @@ impl Fish {
         Ok(frames)
     }
 
+    /// `audio8::synthesize_codes`: the text in one pass.
+    fn one_pass_codes(&self, text: &str, o: &Value) -> Result<Vec<Vec<u32>>, String> {
+        let max_new = o["max_new_tokens"]
+            .as_u64()
+            .map_or(self.max_new_tokens, |v| v as usize);
+        let target = clean_text(text);
+        if target.is_empty() {
+            return Err("text must not be empty".into());
+        }
+        let mut conv = match codes_of(&o["reference_codes"]) {
+            Some(codes) => {
+                let transcript = clean_text(o["reference_text"].as_str().unwrap_or(""));
+                if transcript.is_empty() {
+                    return Err("reference_codes needs reference_text".into());
+                }
+                Conversation::with_reference(&transcript, codes)
+            }
+            None => Conversation::new(),
+        };
+        conv.push_user(&target);
+        let rows = conv.prompt_rows(self)?;
+        if rows.len() >= self.max_seq_len {
+            return Err(format!(
+                "prompt length {} must be smaller than {}",
+                rows.len(),
+                self.max_seq_len
+            ));
+        }
+        let budget = max_new.min(self.max_seq_len - rows.len());
+        let mut rng = Rng::new(o["seed"].as_u64().unwrap_or(self.seed));
+        let frames = self.generate(&rows, budget, &mut rng)?;
+        Ok((0..self.nc)
+            .map(|i| frames.iter().map(|f| f[i]).collect())
+            .collect())
+    }
+
     /// `synthesize_codes`: codes `[num_codebooks][frames]`.
     fn codes(&self, text: &str, o: &Value) -> Result<Vec<Vec<u32>>, String> {
+        if self.one_pass {
+            return self.one_pass_codes(text, o);
+        }
         let max_new = o["max_new_tokens"]
             .as_u64()
             .map_or(self.max_new_tokens, |v| v as usize);
@@ -440,11 +531,15 @@ impl Program for Fish {
             max_rows: u("max_rows")? as usize,
             max_new_tokens: u("max_new_tokens")? as usize,
             chunk_length: u("chunk_length")? as usize,
+            one_pass: config["one_pass"].as_bool().unwrap_or(false),
             params: SampleParams {
                 temperature: f("temperature")?,
                 top_p: f("top_p")?,
                 top_k: u("top_k")? as usize,
             },
+            ras_window: u("ras_window")? as usize,
+            ras_temperature: f("ras_temperature")?,
+            ras_top_p: f("ras_top_p")?,
             seed: u("seed")?,
             semantic_size: u("semantic_size")? as usize,
             residual_size: u("residual_size")? as usize,
@@ -470,19 +565,8 @@ impl Program for Fish {
             me.params.top_k = k as usize;
         }
         // `options.codes`: codes `[10][frames]` to decode, the stacks skipped.
-        let codes: Vec<Vec<u32>> = match o["codes"].as_array() {
-            Some(rows) => rows
-                .iter()
-                .map(|r| {
-                    r.as_array()
-                        .map(|c| {
-                            c.iter()
-                                .filter_map(|v| v.as_u64().map(|v| v as u32))
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                })
-                .collect(),
+        let codes: Vec<Vec<u32>> = match codes_of(&o["codes"]) {
+            Some(codes) => codes,
             None => me.codes(text, o)?,
         };
         if codes.is_empty() || codes[0].is_empty() {

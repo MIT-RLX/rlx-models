@@ -132,6 +132,26 @@ fn p_lin(s: &mut GraphScope, name: &str, o: usize, i: usize) -> Lin {
     }
 }
 
+/// A layer matrix as the MCU export stores it (`rlx_kroko::mcu`): at
+/// `bits = Some(4)` one int4 scale per 32 values (16 when 32 does not divide
+/// the row, per-row int8 when neither does); `Some(8)` one int8 scale per row.
+fn q_lin(s: &mut GraphScope, bits: Option<u8>, name: &str, o: usize, i: usize) -> Lin {
+    let Lin { w, b } = p_lin(s, name, o, i);
+    let ste = rlx_tensor::SteKind::Identity;
+    let w = match bits {
+        None => w,
+        Some(4) if i.is_multiple_of(16) => {
+            let g = if i.is_multiple_of(32) { 32 } else { 16 };
+            r(
+                &r(&w, &[o * i / g, g]).fake_quantize(4, Some(0), ste),
+                &[o, i],
+            )
+        }
+        Some(_) => w.fake_quantize(8, Some(0), ste),
+    };
+    Lin { w, b }
+}
+
 struct ConvW {
     in_proj: Lin,
     causal_w: Tensor,
@@ -162,24 +182,37 @@ fn layer_params(s: &mut GraphScope, cfg: &StudentConfig, st: usize, l: usize) ->
     let (d, h, k) = (cfg.dims[st], cfg.heads[st], cfg.kernels[st]);
     let (hq, hv, nl) = (h * cfg.qdim, h * cfg.vdim, 3 * d / 4);
     let ff = cfg.ff[st];
+    let qb = cfg.qat_bits;
     let mut ffw = |i: usize| {
         (
-            p_lin(s, &format!("{p}feed_forward{}.in_proj", i + 1), ff[i], d),
-            p_lin(s, &format!("{p}feed_forward{}.out_proj", i + 1), d, ff[i]),
+            q_lin(
+                s,
+                qb,
+                &format!("{p}feed_forward{}.in_proj", i + 1),
+                ff[i],
+                d,
+            ),
+            q_lin(
+                s,
+                qb,
+                &format!("{p}feed_forward{}.out_proj", i + 1),
+                d,
+                ff[i],
+            ),
         )
     };
     let ff = [ffw(0), ffw(1), ffw(2)];
     let mut conv = |c: &str| {
         let dc = format!("{p}{c}.depthwise_conv");
         ConvW {
-            in_proj: p_lin(s, &format!("{p}{c}.in_proj"), 2 * d, d),
+            in_proj: q_lin(s, qb, &format!("{p}{c}.in_proj"), 2 * d, d),
             causal_w: s.param(format!("{dc}.causal_conv.weight"), shape![d, 1, k / 2 + 1]),
             causal_b: s.param(format!("{dc}.causal_conv.bias"), shape![d]),
             chunk_w: s.param(format!("{dc}.chunkwise_conv.weight"), shape![d, 1, k]),
             chunk_b: s.param(format!("{dc}.chunkwise_conv.bias"), shape![d]),
             left: s.param(format!("{dc}.chunk_scale_left"), shape![d, k]),
             right: s.param(format!("{dc}.chunk_scale_right"), shape![d, k]),
-            out_proj: p_lin(s, &format!("{p}{c}.out_proj"), d, d),
+            out_proj: q_lin(s, qb, &format!("{p}{c}.out_proj"), d, d),
         }
     };
     let conv = [conv("conv_module1"), conv("conv_module2")];
@@ -188,8 +221,9 @@ fn layer_params(s: &mut GraphScope, cfg: &StudentConfig, st: usize, l: usize) ->
         bypass_mid: s.param(format!("{p}bypass_mid.bypass_scale"), shape![d]),
         norm_bias: s.param(format!("{p}norm.bias"), shape![d]),
         norm_log_scale: s.param(format!("{p}norm.log_scale"), shape![1]),
-        attn_in: p_lin(
+        attn_in: q_lin(
             s,
+            qb,
             &format!("{p}self_attn_weights.in_proj"),
             2 * hq + h * POS_HEAD,
             d,
@@ -199,16 +233,16 @@ fn layer_params(s: &mut GraphScope, cfg: &StudentConfig, st: usize, l: usize) ->
             shape![h * POS_HEAD, POS_DIM],
         ),
         ff,
-        nonlin_in: p_lin(s, &format!("{p}nonlin_attention.in_proj"), 3 * nl, d),
-        nonlin_out: p_lin(s, &format!("{p}nonlin_attention.out_proj"), d, nl),
+        nonlin_in: q_lin(s, qb, &format!("{p}nonlin_attention.in_proj"), 3 * nl, d),
+        nonlin_out: q_lin(s, qb, &format!("{p}nonlin_attention.out_proj"), d, nl),
         sa: [
             (
-                p_lin(s, &format!("{p}self_attn1.in_proj"), hv, d),
-                p_lin(s, &format!("{p}self_attn1.out_proj"), d, hv),
+                q_lin(s, qb, &format!("{p}self_attn1.in_proj"), hv, d),
+                q_lin(s, qb, &format!("{p}self_attn1.out_proj"), d, hv),
             ),
             (
-                p_lin(s, &format!("{p}self_attn2.in_proj"), hv, d),
-                p_lin(s, &format!("{p}self_attn2.out_proj"), d, hv),
+                q_lin(s, qb, &format!("{p}self_attn2.in_proj"), hv, d),
+                q_lin(s, qb, &format!("{p}self_attn2.out_proj"), d, hv),
             ),
         ],
         conv,

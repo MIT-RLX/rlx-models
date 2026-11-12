@@ -978,6 +978,7 @@ impl DramaModel {
                 n_kv: t.n_kv,
                 head_dim: t.head_dim,
                 qk_norm: true,
+                qkv_bias: false,
                 rope_dim: t.rotary_dim,
                 rope_style: RopeStyle::GptJ,
                 output_gate: true,

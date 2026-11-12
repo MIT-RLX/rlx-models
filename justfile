@@ -1001,6 +1001,30 @@ test-nllb-backends *ARGS:
 test-nllb-backends-all *ARGS:
     just features=all-backends test-nllb-backends {{ARGS}}
 
+# facebook/nllb-200-distilled-600M (pytorch_model.bin, 2.5 GB — read in place, no conversion)
+fetch-nllb:
+    hf download facebook/nllb-200-distilled-600M config.json generation_config.json tokenizer.json pytorch_model.bin --local-dir weights/mt/nllb-200-distilled-600M
+
+# `just nllb -- --weights weights/mt/nllb-200-distilled-600M --text "…" --src eng_Latn --tgt fra_Latn [--beams 4]`
+[positional-arguments]
+nllb *ARGS:
+    cargo run -p rlx-nllb --release {{feature_args}} "$@"
+
+# Parity vs HF transformers on the real checkpoint (encoder, KV-cached decoder, greedy + beam-4 ids).
+test-nllb-parity DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/mt/nllb-200-distilled-600M"
+    [ -f "$dir/pytorch_model.bin" ] || just fetch-nllb
+    ref="/tmp/nllb.ref.json"
+    [ -f "$ref" ] || "${REF_PY:-python3}" scripts/nllb_reference.py "$dir" "$ref"
+    RLX_TEST_DEVICE={{DEVICE}} RLX_NLLB_DIR="$dir" RLX_NLLB_REF="$ref" \
+        cargo test -p rlx-nllb --release {{feature_args}} --test hf_parity_live -- --nocapture
+
+# Load / first / warm timings and phys_footprint: `just bench-nllb [cpu|metal|mlx] [BEAMS]`
+bench-nllb DEVICE="cpu" BEAMS="1":
+    cargo run -p rlx-nllb --release {{feature_args}} --example translate_bench -- weights/mt/nllb-200-distilled-600M {{DEVICE}} {{BEAMS}}
+
 test-tinyllama-backends-all *ARGS:
     just features=all-backends test-tinyllama-backends {{ARGS}}
 
@@ -2287,6 +2311,20 @@ fish-drama3 TEXT="Hello from Drama 3 on RLX." OUT="/tmp/fish_drama3.wav" DEVICE=
 test-fish REF="/tmp/fish_ref":
     RLX_FISH_DIR=$PWD/weights/tts/fish-s2-pro RLX_FISH_DRAMA3_DIR=$PWD/weights/tts/fish-drama-3 \
         RLX_FISH_REF={{REF}} cargo test -p rlx-fish --release -- --include-ignored --nocapture
+
+# Audio8-TTS-Realistic-Air (0.6 B dual-AR, 23 languages, 2.5 GB) — crates/rlx-fish
+fetch-audio8:
+    hf download Edge0/Audio8-TTS-Realistic-Air --local-dir weights/tts/audio8-realistic-air \
+        --include "*.json" --include model.safetensors --include codec.pth
+
+audio8 TEXT="Hello from Audio8 on RLX." OUT="/tmp/audio8.wav" DEVICE="metal" *ARGS:
+    cargo run -p rlx-fish --release --features macos-gpu -- audio8 \
+        --model-dir weights/tts/audio8-realistic-air --text "{{TEXT}}" --out "{{OUT}}" --device {{DEVICE}} {{ARGS}}
+
+# Parity vs scripts/audio8_reference.py fixtures in REF (see crates/rlx-fish/README.md).
+test-audio8 REF="/tmp/audio8_ref" DEVICE="cpu":
+    RLX_AUDIO8_DIR=$PWD/weights/tts/audio8-realistic-air RLX_FISH_REF={{REF}} RLX_FISH_DEVICE={{DEVICE}} \
+        cargo test -p rlx-fish --release --features macos-gpu --test audio8_parity -- --nocapture --test-threads=1
 
 fetch-tada:
     mkdir -p "{{TADA_DIR}}"

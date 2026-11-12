@@ -785,6 +785,7 @@ impl<T: TokenizerLike> DecisionModel<T> {
             greedy_token: false,
             multi_row: false,
             mtp_kv: false,
+            mtp_drafts: 1,
             keys_mask: false,
         };
         let (hir, params, packed) = rlx_qwen35::build_qwen35_decode_model_flow(

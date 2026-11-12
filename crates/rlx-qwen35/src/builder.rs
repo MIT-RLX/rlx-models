@@ -52,7 +52,7 @@ use crate::weights::{
     MatWeight, Proj, Qwen35FullAttnLayer, Qwen35LayerFfn, Qwen35LinearLayer, Qwen35MoeFfn,
     Qwen35MtpLayer, Qwen35TrunkLayer, Qwen35Weights,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use rlx_ir::dynamic::sym;
 use rlx_ir::hir::{FusionPolicy, HirGraphExt, HirModule, HirMut, HirNodeId, HirOp};
 use rlx_ir::op::{Activation, CmpOp, MaskKind};
@@ -364,6 +364,7 @@ pub fn build_qwen35_graph_sized_ext(
             greedy_token: false,
             multi_row: false,
             mtp_kv: false,
+            mtp_drafts: 1,
             keys_mask: false,
         };
         let (built, packed) = crate::flow::build_qwen35_decode_built(cfg, weights, &opts)?;
@@ -710,6 +711,7 @@ pub fn build_qwen35_verify_hir(
         greedy_token: false,
         multi_row: false,
         mtp_kv: false,
+        mtp_drafts: 1,
         keys_mask: false,
     };
     crate::flow::build_qwen35_decode_model_flow(cfg, weights.into(), &opts)
@@ -743,6 +745,7 @@ pub fn build_qwen35_decode_graph_ext(
         greedy_token: false,
         multi_row: false,
         mtp_kv: false,
+        mtp_drafts: 1,
         keys_mask: false,
     };
     let (built, packed) = crate::flow::build_qwen35_decode_built(cfg, weights, &opts)?;
@@ -784,6 +787,7 @@ pub(crate) fn build_qwen35_decode_hir_assembled(
         greedy_token: false,
         multi_row: false,
         mtp_kv: false,
+        mtp_drafts: 1,
         keys_mask: false,
     };
     crate::flow::build_qwen35_decode_model_flow(cfg, weights.into(), &opts)
@@ -2292,6 +2296,8 @@ fn build_mtp_head(
             fast_mtp,
             last_token_idx,
             attn_cache,
+            None,
+            false,
         );
     }
     let n_embd = cfg.hidden_size;
@@ -2454,6 +2460,8 @@ fn build_mtp_head(
             fast_mtp,
             last_token_idx,
             None,
+            None,
+            false,
         );
     }
 
@@ -3249,6 +3257,12 @@ fn build_mtp_head_moe(
     fast_mtp: bool,
     last_token_idx: Option<NodeId>,
     attn_cache: Option<AttnCacheMode<'_>>,
+    // The last row's hidden after the head's norm `[batch, 1, hidden]`, the
+    // one its LM head reads: what a chained draft takes as its hidden.
+    hidden_out: Option<&mut NodeId>,
+    // Logits at every row `[batch, seq, vocab]`, not the last only: what
+    // training the head against the trunk reads.
+    every_row: bool,
 ) -> Result<NodeId> {
     let n_embd = cfg.hidden_size;
     let _n_head = cfg.num_attention_heads;
@@ -3336,9 +3350,11 @@ fn build_mtp_head_moe(
 
     // The last real row: a padded prefill's `last_token_idx`, else the last.
     let last = match last_token_idx {
+        _ if every_row => h_ffn,
         Some(idx) => gather_last_token(g, h_ffn, batch, idx),
         None => g.narrow_(h_ffn, 1, seq - 1, 1),
     };
+    let out_rows = if every_row { seq } else { 1 };
 
     let head_norm_w = if let Some(w) = &mtp.shared_head_norm {
         param(
@@ -3367,6 +3383,9 @@ fn build_mtp_head_moe(
     };
     let head_norm_b = synth_zero(g, params, &name(il, "nextn.shared_head_norm.beta"), n_embd);
     let last_norm = g.rms_norm(last, head_norm_w, head_norm_b, eps);
+    if let Some(h) = hidden_out {
+        *h = last_norm;
+    }
 
     let logit_vocab = if mtp_vocab < n_vocab {
         mtp_vocab
@@ -3384,7 +3403,7 @@ fn build_mtp_head_moe(
             last_norm,
             head,
             w,
-            Shape::new(&[batch, 1, n_vocab], DType::F32),
+            Shape::new(&[batch, out_rows, n_vocab], DType::F32),
         ));
     }
     let lm_head_w = if let Some(w) = &mtp.shared_head_head {
@@ -3733,12 +3752,12 @@ fn proj_mat(
                 "proj_mat F32 {name}: len {} != in {expected_in} * out {expected_out}",
                 data.len()
             );
-            param(
+            register_param(
                 g,
                 params,
                 name,
-                &transpose_2d(data, expected_out, expected_in),
-                &[expected_in, expected_out],
+                transpose_2d(data, expected_out, expected_in),
+                Shape::new(&[expected_in, expected_out], DType::F32),
             )
         }
         MatWeight::Packed { key, scheme, shape } => {
@@ -4068,6 +4087,45 @@ pub(crate) fn register_param(
     let id = g.param(name, shape);
     params.insert(name.to_string(), data);
     id
+}
+
+/// The node of the param `name`, if the graph has one.
+fn find_param(g: &HirMut, name: &str) -> Option<NodeId> {
+    g.0.nodes().iter().find_map(|n| match &n.op {
+        HirOp::Param { name: nm } if nm == name => Some(n.id),
+        _ => None,
+    })
+}
+
+/// Point the nodes from `start` on at the params registered before it
+/// that they register again (same name and shape), leaving their own
+/// unused: a layer built twice reads one set of weights, not two leaves of
+/// a name (a second param of a name zeroed the Metal logits).
+fn reuse_params(g: &mut HirMut, start: usize) {
+    let mut earlier: HashMap<&str, (NodeId, &Shape)> = HashMap::new();
+    for n in &g.0.nodes()[..start] {
+        if let HirOp::Param { name } = &n.op {
+            earlier.entry(name.as_str()).or_insert((n.id, &n.shape));
+        }
+    }
+    let remap: HashMap<NodeId, NodeId> = g.0.nodes()[start..]
+        .iter()
+        .filter_map(|n| match &n.op {
+            HirOp::Param { name } => earlier
+                .get(name.as_str())
+                .filter(|(_, shape)| **shape == n.shape)
+                .map(|(id, _)| (n.id, *id)),
+            _ => None,
+        })
+        .collect();
+    for i in start..g.0.nodes().len() {
+        let node = g.0.node_mut(HirNodeId(i as u32));
+        for input in &mut node.inputs {
+            if let Some(to) = remap.get(input) {
+                *input = *to;
+            }
+        }
+    }
 }
 
 fn synth_zero(
@@ -4474,6 +4532,13 @@ pub struct MtpDecodeCache<'a> {
     pub h_prev: NodeId,
     /// The trunk's per-key decode mask `[batch, past + seq]`.
     pub mask: Option<NodeId>,
+    /// A padded multi-row step's last real row `[batch, 1]`: the draft row
+    /// and `h_out` read that row, not the last. `None`: every row is real.
+    pub last_row: Option<NodeId>,
+    /// Drafts to chain: the first from the trunk's hidden, each further one
+    /// from the head's own output hidden and its pick, attending the rows
+    /// before it (the cache keeps none of them).
+    pub drafts: usize,
     pub k_out: &'a mut NodeId,
     pub v_out: &'a mut NodeId,
     /// This step's last trunk hidden, the next step's `h_prev`.
@@ -4481,18 +4546,13 @@ pub struct MtpDecodeCache<'a> {
 }
 
 /// The ids the lagged MTP rows embed: this step's tokens, then the trunk's
-/// argmax at its last row (the draft row's), `[batch, seq + 1]`.
-fn mtp_lagged_ids(g: &mut HirMut, logits: NodeId, input_ids: NodeId, batch: usize) -> NodeId {
+/// argmax at `last_row` (its logits `[batch, 1, vocab]`, the draft row's),
+/// `[batch, seq + 1]`.
+fn mtp_lagged_ids(g: &mut HirMut, last_row: NodeId, input_ids: NodeId, batch: usize) -> NodeId {
     let ids_dtype = g.shape(input_ids).dtype();
     let cast = |g: &mut HirMut, x: NodeId, to: DType| {
         let dims = g.shape(x).dims().to_vec();
         g.0.mir(Op::Cast { to }, vec![x], Shape::from_dims(&dims, to))
-    };
-    let rows = g.shape(logits).dims()[1].unwrap_static();
-    let last_row = if rows > 1 {
-        g.narrow_(logits, 1, rows - 1, 1)
-    } else {
-        logits
     };
     let argmax = g.0.mir(
         Op::ArgMax {
@@ -4571,6 +4631,8 @@ pub fn emit_qwen35_prefill_tail(
     last_token_idx: Option<HirNodeId>,
     // The MTP layer's own KV cache (decode); `None` attends the new rows only.
     mtp_cache: Option<MtpDecodeCache<'_>>,
+    // MTP logits at every row, not the last only (no cache).
+    mtp_every_row: bool,
 ) -> Result<(Option<HirNodeId>, Option<HirNodeId>, Option<HirNodeId>)> {
     let n_embd = cfg.hidden_size;
     let n_vocab = if weights.embd_elems() == 0 {
@@ -4596,7 +4658,17 @@ pub fn emit_qwen35_prefill_tail(
     // Without the LM head among the outputs, the MTP head still needs it:
     // its last row embeds the trunk's argmax.
     if with_lm_head || enable_mtp_head {
-        let logit_rows = if last_token_idx.is_some() { 1 } else { seq };
+        // One row per position the hidden carries: `seq`, unless a caller
+        // gathered rows first (`Qwen35Flow::logit_rows`).
+        let logit_rows = if last_token_idx.is_some() {
+            1
+        } else {
+            let sh = g.shape(h_for_lm);
+            match sh.dims().get(1) {
+                Some(d) if sh.rank() == 3 => d.unwrap_static(),
+                _ => seq,
+            }
+        };
         let logit_shape = Shape::new(&[batch, logit_rows, n_vocab], DType::F32);
         let lm = match &weights.output {
             Some(w) => {
@@ -4661,6 +4733,8 @@ pub fn emit_qwen35_prefill_tail(
         let h_pre_norm = g.rms_norm(h_pre_norm, out_norm, out_norm_beta, cfg.rms_norm_eps as f32);
         // Without a cache the head runs on this graph's rows; with one, on
         // them one step behind plus the draft row (`MtpDecodeCache`).
+        let (mut k_all, mut v_all) = (HirNodeId(0), HirNodeId(0));
+        let mut chain = None;
         let (rows, ids, h, cos, sin, attn_cache) = match mtp_cache {
             None => {
                 let ids = mtp_next_ids(
@@ -4676,15 +4750,51 @@ pub fn emit_qwen35_prefill_tail(
                 (seq, ids, h_pre_norm, cos_id, sin_id, None)
             }
             Some(c) => {
+                let MtpDecodeCache {
+                    past_k,
+                    past_v,
+                    past_seq,
+                    h_prev,
+                    mask,
+                    last_row,
+                    drafts,
+                    k_out,
+                    v_out,
+                    h_out,
+                } = c;
                 let logits =
                     logits.ok_or_else(|| anyhow!("qwen35: the MTP cache needs the LM head"))?;
-                let ids = mtp_lagged_ids(g, logits, input_ids, batch);
-                let h = g.concat_(vec![c.h_prev, h_pre_norm], 1);
-                *c.h_out = g.narrow_(h_pre_norm, 1, seq - 1, 1);
+                let logit_rows = g.shape(logits).dims()[1].unwrap_static();
+                if last_row.is_some() && logit_rows != seq {
+                    bail!("qwen35: a padded MTP step needs the logits of every row");
+                }
+                // The draft row reads the last real row: a padded step's
+                // `last_row`, else the last.
+                let last = |g: &mut HirMut, x: NodeId| match last_row {
+                    Some(idx) => gather_last_token(g, x, batch, idx),
+                    None => g.narrow_(x, 1, seq - 1, 1),
+                };
+                let last_logits = if logit_rows > 1 {
+                    last(g, logits)
+                } else {
+                    logits
+                };
+                let ids = mtp_lagged_ids(g, last_logits, input_ids, batch);
+                let h_last = last(g, h_pre_norm);
+                let h = match last_row {
+                    // Row i pairs hidden i - 1 with token i; the draft row
+                    // pairs the last real hidden with its pick.
+                    Some(_) if seq > 1 => {
+                        let head = g.narrow_(h_pre_norm, 1, 0, seq - 1);
+                        g.concat_(vec![h_prev, head, h_last], 1)
+                    }
+                    _ => g.concat_(vec![h_prev, h_pre_norm], 1),
+                };
+                *h_out = h_last;
                 let (cos, sin) = rope_one_row_on(g, params, cfg, mtp_il, cos_id, sin_id, seq);
                 // The draft row is one more key than the trunk's mask covers,
                 // and cache row 0 (zeros for a hidden) is never attended.
-                let mask = c.mask.map(|m| {
+                let mask = mask.map(|m| {
                     let scalar =
                         |g: &mut HirMut, params: &mut HashMap<String, Vec<f32>>, tag, v| {
                             register_param(
@@ -4720,45 +4830,172 @@ pub fn emit_qwen35_prefill_tail(
                     let keep = g.sub(unit, first);
                     g.mul(m, keep)
                 });
-                let cache = AttnCacheMode::Decode {
-                    past_k: c.past_k,
-                    past_v: c.past_v,
-                    past_seq: c.past_seq,
-                    k_out: c.k_out,
-                    v_out: c.v_out,
-                    mask,
-                    mask_bias: false,
-                    append_rows: Some(seq),
+                let cache = if drafts > 1 {
+                    // Every row's K/V, the draft row's too: the chained
+                    // drafts attend it; the cache keeps the lagged rows.
+                    let m = mask.ok_or_else(|| {
+                        anyhow!("qwen35: chained MTP drafts need the decode mask")
+                    })?;
+                    chain = Some((drafts, k_out, v_out, m, past_seq, cos, sin));
+                    AttnCacheMode::Decode {
+                        past_k,
+                        past_v,
+                        past_seq,
+                        k_out: &mut k_all,
+                        v_out: &mut v_all,
+                        mask: Some(m),
+                        mask_bias: false,
+                        append_rows: None,
+                    }
+                } else {
+                    AttnCacheMode::Decode {
+                        past_k,
+                        past_v,
+                        past_seq,
+                        k_out,
+                        v_out,
+                        mask,
+                        mask_bias: false,
+                        append_rows: Some(seq),
+                    }
                 };
                 (seq + 1, ids, h, cos, sin, Some(cache))
             }
         };
-        mtp_logits = Some(build_mtp_head(
-            g,
-            params,
-            packed,
-            cfg,
-            mtp_il,
-            mtp_layer,
-            batch,
-            rows,
-            ids,
-            h,
-            weights.token_embd(),
-            trunk_tied_head,
-            n_vocab,
-            cos,
-            sin,
-            head_dim,
-            n_rot,
-            fast_mtp,
-            if attn_cache.is_some() {
-                None
-            } else {
-                last_token_idx
-            },
-            attn_cache,
-        )?);
+        let mut h_draft = HirNodeId(0);
+        let first = if attn_cache.is_some() || mtp_every_row {
+            build_mtp_head_moe(
+                g,
+                params,
+                packed,
+                cfg,
+                mtp_il,
+                mtp_layer,
+                batch,
+                rows,
+                ids,
+                h,
+                weights.token_embd(),
+                trunk_tied_head,
+                n_vocab,
+                cos,
+                sin,
+                head_dim,
+                n_rot,
+                fast_mtp,
+                None,
+                attn_cache,
+                Some(&mut h_draft),
+                mtp_every_row,
+            )?
+        } else {
+            build_mtp_head(
+                g,
+                params,
+                packed,
+                cfg,
+                mtp_il,
+                mtp_layer,
+                batch,
+                rows,
+                ids,
+                h,
+                weights.token_embd(),
+                trunk_tied_head,
+                n_vocab,
+                cos,
+                sin,
+                head_dim,
+                n_rot,
+                fast_mtp,
+                last_token_idx,
+                None,
+            )?
+        };
+        mtp_logits = Some(match chain {
+            None => first,
+            Some((drafts, k_out, v_out, mut mask, past_seq, cos, sin)) => {
+                *k_out = g.narrow_(k_all, 1, 0, past_seq + seq);
+                *v_out = g.narrow_(v_all, 1, 0, past_seq + seq);
+                // Each further draft: the head again on its own output
+                // hidden and pick, one position on, attending every row
+                // before it (`[batch, drafts, vocab]` in all).
+                let lookup = |g: &HirMut, tag: &str| {
+                    let want = name(mtp_il, tag);
+                    find_param(g, &want).ok_or_else(|| anyhow!("qwen35: no param {want}"))
+                };
+                let (c1, s1) = (
+                    lookup(g, "nextn.rope_step_cos")?,
+                    lookup(g, "nextn.rope_step_sin")?,
+                );
+                let one = lookup(g, "nextn.mask_draft")?;
+                let (mut c_row, mut s_row) = (g.narrow_(cos, 0, seq, 1), g.narrow_(sin, 0, seq, 1));
+                let ids_dtype = g.shape(input_ids).dtype();
+                let (mut k_past, mut v_past, mut keys) = (k_all, v_all, past_seq + seq + 1);
+                let (mut prev, mut h) = (first, h_draft);
+                let mut outs = vec![first];
+                for _ in 1..drafts {
+                    let pick = g.0.mir(
+                        Op::ArgMax {
+                            axis: 2,
+                            keep_dim: false,
+                        },
+                        vec![prev],
+                        Shape::new(&[batch, 1], DType::F32),
+                    );
+                    let ids = g.0.mir(
+                        Op::Cast { to: ids_dtype },
+                        vec![pick],
+                        Shape::new(&[batch, 1], ids_dtype),
+                    );
+                    let (cc, ss) = (g.mul(c_row, c1), g.mul(s_row, s1));
+                    let (sc, cs) = (g.mul(s_row, c1), g.mul(c_row, s1));
+                    (c_row, s_row) = (g.sub(cc, ss), g.add(sc, cs));
+                    mask = g.concat_(vec![mask, one], 1);
+                    let (mut k_next, mut v_next, mut h_next) =
+                        (HirNodeId(0), HirNodeId(0), HirNodeId(0));
+                    let start = g.0.nodes().len();
+                    let logits = build_mtp_head_moe(
+                        g,
+                        params,
+                        packed,
+                        cfg,
+                        mtp_il,
+                        mtp_layer,
+                        batch,
+                        1,
+                        ids,
+                        h,
+                        weights.token_embd(),
+                        trunk_tied_head,
+                        n_vocab,
+                        c_row,
+                        s_row,
+                        head_dim,
+                        n_rot,
+                        fast_mtp,
+                        None,
+                        Some(AttnCacheMode::Decode {
+                            past_k: k_past,
+                            past_v: v_past,
+                            past_seq: keys,
+                            k_out: &mut k_next,
+                            v_out: &mut v_next,
+                            mask: Some(mask),
+                            mask_bias: false,
+                            append_rows: None,
+                        }),
+                        Some(&mut h_next),
+                        false,
+                    )?;
+                    reuse_params(g, start);
+                    (k_past, v_past, keys) = (k_next, v_next, keys + 1);
+                    (prev, h) = (logits, h_next);
+                    outs.push(logits);
+                }
+                g.concat_(outs, 1)
+            }
+        });
     }
 
     let normed = export_normed_hidden.then_some(h_norm);
@@ -4772,13 +5009,61 @@ fn transpose_2d(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {
         "transpose_2d: len {} != rows {rows} * cols {cols}",
         data.len()
     );
+    // Every F32 projection goes through here when a graph is built, so a
+    // whole model's weights: tiled, so reads and writes both stay in cache,
+    // and split over threads by output rows. Element order is unchanged.
+    const TILE: usize = 32;
     let mut out = vec![0f32; rows * cols];
-    for r in 0..rows {
-        for c in 0..cols {
-            out[c * rows + r] = data[r * cols + c];
+    if out.is_empty() {
+        return out;
+    }
+    let threads = if rows * cols < 1 << 20 {
+        1
+    } else {
+        std::thread::available_parallelism().map_or(1, |n| n.get()).min(16)
+    };
+    // Output row `c` is input column `c`; each thread takes a band of them.
+    let band = cols.div_ceil(threads).next_multiple_of(TILE);
+    std::thread::scope(|s| {
+        for (b, chunk) in out.chunks_mut(band * rows).enumerate() {
+            s.spawn(move || {
+                let c0 = b * band;
+                let c1 = c0 + chunk.len() / rows;
+                for r0 in (0..rows).step_by(TILE) {
+                    let r1 = (r0 + TILE).min(rows);
+                    for t0 in (c0..c1).step_by(TILE) {
+                        let t1 = (t0 + TILE).min(c1);
+                        for c in t0..t1 {
+                            let o = &mut chunk[(c - c0) * rows..];
+                            for r in r0..r1 {
+                                o[r] = data[r * cols + c];
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    out
+}
+
+#[cfg(test)]
+mod transpose_tests {
+    use super::transpose_2d;
+
+    #[test]
+    fn tiled_threaded_transpose_matches_the_definition() {
+        // Small, ragged tiles, and big enough for the threaded path.
+        for (rows, cols) in [(1, 1), (3, 70), (33, 31), (1100, 1037), (2048, 600)] {
+            let data: Vec<f32> = (0..rows * cols).map(|i| i as f32).collect();
+            let t = transpose_2d(&data, rows, cols);
+            for r in 0..rows {
+                for c in 0..cols {
+                    assert_eq!(t[c * rows + r], data[r * cols + c], "{rows}x{cols} at ({r}, {c})");
+                }
+            }
         }
     }
-    out
 }
 
 #[cfg(test)]

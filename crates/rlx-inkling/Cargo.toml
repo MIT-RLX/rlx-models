@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Inkling multimodal MoE (thinkingmachines/Inkling) for RLX"
+description = "Inkling / Inkling-Small multimodal MoE (thinkingmachines) for RLX"
 keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
@@ -16,7 +16,11 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-flow = { workspace = true }
 rlx-gguf = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
 hf-hub = { workspace = true, optional = true }
 ureq = { version = "2.12", default-features = false, features = ["tls"], optional = true }
 

@@ -28,26 +28,7 @@ pub mod lang {
     /// Optional generation bias buffer (often zeros / absent).
     pub const FINAL_LOGITS_BIAS: &str = "final_logits_bias";
 
-    pub fn enc_embed_positions() -> String {
-        "model.encoder.embed_positions.weight".into()
-    }
-    pub fn dec_embed_positions() -> String {
-        "model.decoder.embed_positions.weight".into()
-    }
-    pub fn enc_layernorm_embedding_w() -> String {
-        "model.encoder.layernorm_embedding.weight".into()
-    }
-    pub fn enc_layernorm_embedding_b() -> String {
-        "model.encoder.layernorm_embedding.bias".into()
-    }
-    pub fn dec_layernorm_embedding_w() -> String {
-        "model.decoder.layernorm_embedding.weight".into()
-    }
-    pub fn dec_layernorm_embedding_b() -> String {
-        "model.decoder.layernorm_embedding.bias".into()
-    }
-
-    /// Optional final encoder LayerNorm (present on many M2M100 exports).
+    /// Final encoder / decoder LayerNorm (`model.{encoder,decoder}.layer_norm`).
     pub fn enc_final_layer_norm_w() -> String {
         "model.encoder.layer_norm.weight".into()
     }

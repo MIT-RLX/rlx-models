@@ -41,6 +41,9 @@ use rlx_core::AssetSource;
 use rlx_runtime::Device;
 use wasm_bindgen::prelude::*;
 
+mod audio8;
+pub use audio8::*;
+
 /// Runs when the module loads: route Rust panics to `console.error`.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(start)]
@@ -54,6 +57,15 @@ fn start() {
 #[wasm_bindgen]
 pub fn set_setting(key: &str, value: &str) {
     rlx_ir::env::set(key, value);
+}
+
+/// WebGPU's fast arithmetic (`rlx_runtime::set_gpu_fast_math`): a decode-row
+/// matmul splits its sum across threads, and `/` and `sqrt` use the native
+/// operators. Results move off the CPU's bit for bit (the sum's order), to
+/// within float rounding. Call before the first WebGPU model is built.
+#[wasm_bindgen]
+pub fn set_gpu_fast_math(on: bool) {
+    rlx_runtime::set_gpu_fast_math(on);
 }
 
 /// Set up WebGPU; resolves to whether a GPU adapter was found. Await it once
@@ -1384,7 +1396,7 @@ pub fn flux1_unpack(packed: &[f32], c: usize, h: usize, w: usize) -> Vec<f32> {
 }
 
 /// The sampler's `steps + 1` timesteps for `img_len` image positions (`shift`
-/// for FLUX.1 [dev]).
+/// for FLUX.1 \[dev\]).
 #[wasm_bindgen]
 pub fn flux1_schedule(steps: usize, img_len: usize, shift: bool) -> Vec<f32> {
     rlx_flux1::sampler::schedule(steps, img_len, shift)
@@ -1454,6 +1466,12 @@ impl TextTokenizer {
     /// The id of a token string such as `"<|im_end|>"`, if it has one.
     pub fn token_id(&self, token: &str) -> Option<u32> {
         self.inner.token_to_id(token)
+    }
+}
+
+impl TextTokenizer {
+    pub(crate) fn inner(&self) -> &tokenizers::Tokenizer {
+        &self.inner
     }
 }
 

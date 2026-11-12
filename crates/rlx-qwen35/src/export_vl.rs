@@ -195,6 +195,7 @@ pub fn raw_step_from(
         greedy_token: false,
         multi_row: false,
         mtp_kv: false,
+        mtp_drafts: 1,
         keys_mask: false,
     };
     let (built, packed) = crate::build_qwen35_decode_built(cfg, weights, &opts)?;

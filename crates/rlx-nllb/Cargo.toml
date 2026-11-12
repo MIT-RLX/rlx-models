@@ -15,7 +15,7 @@ readme = "README.md"
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
 rlx-ir = { workspace = true }
-rlx-flow = { workspace = true }
+rlx-flow = { workspace = true, features = ["formats"] }
 rlx-runtime = { workspace = true }
 rlx-opt = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -23,8 +23,8 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
 half = { workspace = true }
-rayon = "1.10"
 tokenizers = { workspace = true }
+rlx-torch-ckpt = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

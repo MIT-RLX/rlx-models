@@ -86,7 +86,7 @@ impl Rng {
     }
 
     /// `Exp(1)`.
-    fn exponential(&mut self) -> f64 {
+    pub fn exponential(&mut self) -> f64 {
         -self.uniform().ln()
     }
 }
@@ -98,14 +98,14 @@ fn softmax(x: &[f32]) -> Vec<f64> {
     e.into_iter().map(|v| v / s).collect()
 }
 
-/// Draw an index of `logits`.
-pub fn sample(logits: &[f32], p: SampleParams, flavor: Flavor, rng: &mut Rng) -> usize {
+/// What a draw chooses among: `(index, probability)`, best first.
+pub fn candidates(logits: &[f32], p: SampleParams, flavor: Flavor) -> Vec<(usize, f64)> {
     let t = p.temperature.max(MIN_TEMPERATURE);
     let mut order: Vec<usize> = (0..logits.len()).collect();
     // Descending, ties to the lower index (deterministic greedy).
     order.sort_by(|&a, &b| logits[b].total_cmp(&logits[a]).then(a.cmp(&b)));
     if p.top_k <= 1 {
-        return order[0];
+        return vec![(order[0], 1.0)];
     }
     let sorted: Vec<f32> = order.iter().map(|&i| logits[i]).collect();
     let scaled: Vec<f32> = sorted.iter().map(|v| v / t).collect();
@@ -124,14 +124,50 @@ pub fn sample(logits: &[f32], p: SampleParams, flavor: Flavor, rng: &mut Rng) ->
         keep = rank + 1;
     }
     let probs = softmax(&scaled[..keep]);
+    order.into_iter().zip(probs).collect()
+}
+
+/// The draws [`sample_with`] reads for one token: `top_k` of them (none when
+/// greedy). A fixed count, so a graph can take them as an input and the
+/// host and the graph consume the stream alike.
+pub fn draws(p: SampleParams, rng: &mut Rng) -> Vec<f64> {
+    if p.top_k <= 1 {
+        return Vec::new();
+    }
+    (0..p.top_k).map(|_| rng.exponential()).collect()
+}
+
+/// [`sample`] with its exponential draws given (`draws`): the candidate at
+/// rank `r` races with `noise[r]`.
+pub fn sample_with(logits: &[f32], p: SampleParams, flavor: Flavor, noise: &[f64]) -> usize {
+    let pool = candidates(logits, p, flavor);
+    if p.top_k <= 1 {
+        return pool[0].0;
+    }
     let mut best = (f64::NEG_INFINITY, 0usize);
-    for (rank, pr) in probs.iter().enumerate() {
-        let score = pr / rng.exponential();
+    for (r, &(index, pr)) in pool.iter().enumerate() {
+        let score = pr / noise[r];
         if score > best.0 {
-            best = (score, rank);
+            best = (score, index);
         }
     }
-    order[best.1]
+    best.1
+}
+
+/// Draw an index of `logits`.
+pub fn sample(logits: &[f32], p: SampleParams, flavor: Flavor, rng: &mut Rng) -> usize {
+    let pool = candidates(logits, p, flavor);
+    if pool.len() == 1 && p.top_k <= 1 {
+        return pool[0].0;
+    }
+    let mut best = (f64::NEG_INFINITY, 0usize);
+    for &(index, pr) in &pool {
+        let score = pr / rng.exponential();
+        if score > best.0 {
+            best = (score, index);
+        }
+    }
+    best.1
 }
 
 #[cfg(test)]

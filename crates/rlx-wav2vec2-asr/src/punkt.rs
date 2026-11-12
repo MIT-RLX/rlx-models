@@ -340,10 +340,10 @@ impl Punkt {
             } else {
                 idx = prev_start;
             }
-            if let Some((ps, pe, pn, pg)) = prev.take() {
-                if prev_stop <= idx {
-                    out.push((ps, pe, pn, sub(prev_start, prev_stop) + &pg));
-                }
+            if let Some((ps, pe, pn, pg)) = prev.take()
+                && prev_stop <= idx
+            {
+                out.push((ps, pe, pn, sub(prev_start, prev_stop) + &pg));
             }
             prev = Some((ms, me, next_tok, m.as_str().to_string() + &after));
             prev_start = idx;

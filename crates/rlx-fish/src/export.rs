@@ -13,12 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Export Fish Audio S2-Pro as an `.rlxp` package rlx runs alone: text in,
-//! 44.1 kHz speech out, through the one exporter ([`rlx_core::export`]).
+//! Export Fish Audio S2-Pro or Audio8 as an `.rlxp` package rlx runs alone:
+//! text in, 44.1 kHz speech out, through the one exporter
+//! ([`rlx_core::export`]).
 //!
 //! Its graphs are [`crate::s2::S2Model`]'s and [`crate::codec::FishCodec`]'s:
 //! `embed` (rows: the token embedding, plus an audio row's codebook rows,
-//! scaled by `1/√11`); `prefill` (the slow stack over the prompt, symbolic in
+//! on S2 scaled by `1/√11`); `prefill` (the slow stack over the prompt, symbolic in
 //! its rows and the caches' rows: the last row's hidden state and band
 //! logits, each layer's keys and values); `step` (one row after the caches,
 //! its key and value written in at `pos`); `fast` (one fast-decoder position
@@ -28,7 +29,10 @@
 //! weights are the checkpoint's tensors, referenced; the codec's, from
 //! `codec.pth`, held. The program (`program/`) builds the conversation (the
 //! crate's `prompt.rs`), samples (its `sampling.rs`: top-p, top-k,
-//! repetition-aware), fills each frame's codes and decodes.
+//! repetition-aware), fills each frame's codes and decodes. S2 chunks a
+//! growing conversation; Audio8 speaks the text in one pass and takes a
+//! reference voice as `options.reference_codes` and `reference_text` (the
+//! package has no codec encoder).
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -42,8 +46,10 @@ use rlx_ir::{DType, Graph, GraphExt, NodeId, Op, Shape};
 use serde_json::json;
 
 use crate::codec::{FRAME_SAMPLES, FishCodec, NUM_CODEBOOKS, SAMPLE_RATE, build_decoder};
+use crate::config::{AUDIO8_LAYOUT, S2_LAYOUT, S2Config};
 use crate::nn::{Builder, Init, TensorOp};
 use crate::s2::{S2Model, S2Options};
+use crate::sampling::SampleParams;
 
 /// The symbols: the codec's frames, the prompt's rows, the caches' rows.
 const FRAMES: u32 = 0;
@@ -271,10 +277,6 @@ fn fast(
     Ok(g)
 }
 
-const EMBED: &str = "text_model.model.embeddings.weight";
-const CODEBOOK_EMBED: &str = "audio_decoder.codebook_embeddings.weight";
-const FAST_EMBED: &str = "audio_decoder.embeddings.weight";
-
 /// `embed`: `tokens` `[t]` i32, `codes` `[t, 10]` i32 (an audio row's
 /// `i · 4096 + code_i`), `audio` `[t]` (1 for an audio row) →
 /// `embeds` `[1, t, dim]`.
@@ -285,34 +287,37 @@ fn embed(m: &S2Model, vocab: usize, cb_rows: usize, t: usize) -> Graph {
     let tokens = g.input("tokens", Shape::new(&[t], DType::I32));
     let codes = g.input("codes", Shape::new(&[t, nc], DType::I32));
     let audio = g.input("audio", f32s(&[t, 1]));
-    let table = g.param(EMBED, f32s(&[vocab, dim]));
+    let [embed_key, codebook_key, _] = m.host_tensor_keys();
+    let table = g.param(embed_key, f32s(&[vocab, dim]));
     let tok = g.gather_(table, tokens, 0);
-    let cb = g.param(CODEBOOK_EMBED, f32s(&[cb_rows, dim]));
+    let cb = g.param(codebook_key, f32s(&[cb_rows, dim]));
     let flat = g.reshape_(codes, vec![(t * nc) as i64]);
     let rows = g.gather_(cb, flat, 0);
     let rows = g.reshape_(rows, vec![t as i64, nc as i64, dim as i64]);
     let sum = g.sum(rows, vec![1], false);
     let sum = g.mul(sum, audio);
-    let x = g.add(tok, sum);
-    // An audio row's sum scaled by 1/√(N+1), a text row's kept.
-    let s = 1.0 / ((nc + 1) as f32).sqrt();
-    let k = g.add_node(
-        Op::Constant {
-            data: (s - 1.0).to_le_bytes().to_vec(),
-        },
-        vec![],
-        f32s(&[1]),
-    );
-    let one = g.add_node(
-        Op::Constant {
-            data: 1f32.to_le_bytes().to_vec(),
-        },
-        vec![],
-        f32s(&[1]),
-    );
-    let gain = g.mul(audio, k);
-    let gain = g.add(gain, one);
-    let x = g.mul(x, gain);
+    let mut x = g.add(tok, sum);
+    if m.cfg.scale_codebook_sum {
+        // An audio row's sum scaled by 1/√(N+1), a text row's kept.
+        let s = 1.0 / ((nc + 1) as f32).sqrt();
+        let k = g.add_node(
+            Op::Constant {
+                data: (s - 1.0).to_le_bytes().to_vec(),
+            },
+            vec![],
+            f32s(&[1]),
+        );
+        let one = g.add_node(
+            Op::Constant {
+                data: 1f32.to_le_bytes().to_vec(),
+            },
+            vec![],
+            f32s(&[1]),
+        );
+        let gain = g.mul(audio, k);
+        let gain = g.add(gain, one);
+        x = g.mul(x, gain);
+    }
     let x = g.reshape_(x, vec![1, t as i64, dim as i64]);
     g.node_mut(x).name = Some("embeds".into());
     g.set_outputs(vec![x]);
@@ -324,7 +329,8 @@ fn fast_embed(m: &S2Model, rows: usize) -> Graph {
     let dim = m.cfg.fast.dim;
     let mut g = Graph::new("fast_embed");
     let id = g.input("id", Shape::new(&[1], DType::I32));
-    let t = g.param(FAST_EMBED, f32s(&[rows, dim]));
+    let [_, _, key] = m.host_tensor_keys();
+    let t = g.param(key, f32s(&[rows, dim]));
     let x = g.gather_(t, id, 0);
     let x = g.reshape_(x, vec![1, 1, dim as i64]);
     g.node_mut(x).name = Some("x".into());
@@ -365,7 +371,7 @@ fn dequant(f: usize, rows: usize) -> Graph {
 /// sliding window at any length (the reference's causal mask below the
 /// window is the same), each computed tensor baked as a constant (the fit's
 /// to make symbolic) but for the upsampling weights, held.
-fn codec(src: &rlx_torch_ckpt::PtModel, f: usize) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
+fn codec(src: &crate::codec::CodecWeights, f: usize) -> Result<(Graph, HashMap<String, Vec<f32>>)> {
     let (mut b, out) = build_decoder(src, f)?;
     b.g.set_outputs(vec![out]);
     let specs: HashMap<String, crate::nn::ParamSpec> =
@@ -472,9 +478,64 @@ pub(crate) fn codec_functions(
     Ok(())
 }
 
+/// What separates one dual-AR package from another.
+struct Family {
+    name: &'static str,
+    exporter: &'static str,
+    license: &'static str,
+    /// Speak the text in one pass rather than chunk a conversation.
+    one_pass: bool,
+    params: SampleParams,
+    max_new_tokens: usize,
+}
+
 /// Export the S2-Pro directory `dir` (`config.json`, `model*.safetensors`,
 /// `tokenizer.json`, `codec.pth`) as the package `out`.
 pub fn export_rlxp(dir: &Path, out: &Path, opts: &ExportOptions) -> Result<ExportReport> {
+    let cfg = S2Config::from_dir(dir)?;
+    anyhow::ensure!(
+        cfg.layout == S2_LAYOUT,
+        "export_rlxp supports S2-Pro only; {} is another dual-AR checkpoint",
+        dir.display()
+    );
+    let family = Family {
+        name: "fish-s2-pro",
+        exporter: "fish-s2",
+        license: "fish-audio-research",
+        one_pass: false,
+        params: SampleParams::default(),
+        max_new_tokens: crate::s2::DEFAULT_MAX_NEW_TOKENS,
+    };
+    export_dual_ar(dir, out, opts, &family)
+}
+
+/// Export the Audio8 directory `dir` (the same files, plus
+/// `generation_config.json`) as the package `out`.
+pub fn export_audio8_rlxp(dir: &Path, out: &Path, opts: &ExportOptions) -> Result<ExportReport> {
+    let cfg = S2Config::from_dir(dir)?;
+    anyhow::ensure!(
+        cfg.layout == AUDIO8_LAYOUT,
+        "export_audio8_rlxp supports Audio8 only; {} is another dual-AR checkpoint",
+        dir.display()
+    );
+    let defaults = crate::audio8::SynthOptions::from_dir(dir)?;
+    let family = Family {
+        name: "audio8-tts-realistic-air",
+        exporter: "audio8",
+        license: "apache-2.0",
+        one_pass: true,
+        params: defaults.params,
+        max_new_tokens: defaults.max_new_tokens,
+    };
+    export_dual_ar(dir, out, opts, &family)
+}
+
+fn export_dual_ar(
+    dir: &Path,
+    out: &Path,
+    opts: &ExportOptions,
+    family: &Family,
+) -> Result<ExportReport> {
     // Expanded K/V heads: every backend's attention takes them.
     rlx_ir::env::set("RLX_FISH_GQA_EXPAND", "1");
     let m = S2Model::open(
@@ -487,13 +548,13 @@ pub fn export_rlxp(dir: &Path, out: &Path, opts: &ExportOptions) -> Result<Expor
     )?;
     let cfg = m.cfg.clone();
     let mut pkg = Package::new(
-        "fish-s2-pro",
+        family.name,
         &opts.version,
-        "fish-s2",
+        family.exporter,
         "text-to-speech",
         "rlx-fish",
     );
-    pkg.model["license"] = json!("fish-audio-research");
+    pkg.model["license"] = json!(family.license);
     let mut held: HashMap<String, Vec<f32>> = HashMap::new();
     let mut refs: BTreeSet<String> = BTreeSet::new();
 
@@ -524,18 +585,15 @@ pub fn export_rlxp(dir: &Path, out: &Path, opts: &ExportOptions) -> Result<Expor
         }
         anyhow::bail!("no {k}")
     };
-    let vocab = shard_dims(EMBED)?[0];
-    let cb_rows = shard_dims(CODEBOOK_EMBED)?[0];
-    let fe_rows = shard_dims(FAST_EMBED)?[0];
+    let host_keys = m.host_tensor_keys();
+    let vocab = shard_dims(&host_keys[0])?[0];
+    let cb_rows = shard_dims(&host_keys[1])?[0];
+    let fe_rows = shard_dims(&host_keys[2])?[0];
     pkg.function(symbolic_in(PROMPT, (5, 7, 3), |t| {
         Ok(embed(&m, vocab, cb_rows, t))
     })?);
     pkg.function(fast_embed(&m, fe_rows));
-    refs.extend([
-        EMBED.to_string(),
-        CODEBOOK_EMBED.to_string(),
-        FAST_EMBED.to_string(),
-    ]);
+    refs.extend(host_keys);
 
     codec_functions(&mut pkg, dir, &mut held)?;
     for (table, hd) in [
@@ -585,7 +643,7 @@ pub fn export_rlxp(dir: &Path, out: &Path, opts: &ExportOptions) -> Result<Expor
         std::fs::read(dir.join("tokenizer.json"))?,
     );
     let module = program::build(&Path::new(env!("CARGO_MANIFEST_DIR")).join("program/Cargo.toml"))
-        .context("build Fish S2's program")?;
+        .with_context(|| format!("build {}'s program", family.name))?;
     program::entry(
         &mut pkg,
         "speak",
@@ -607,11 +665,15 @@ pub fn export_rlxp(dir: &Path, out: &Path, opts: &ExportOptions) -> Result<Expor
             "eos": cfg.eos,
             "max_seq_len": cfg.max_seq_len,
             "max_rows": MAX_ROWS,
-            "max_new_tokens": crate::s2::DEFAULT_MAX_NEW_TOKENS,
+            "max_new_tokens": family.max_new_tokens,
             "chunk_length": crate::s2::DEFAULT_CHUNK_LENGTH,
-            "temperature": 0.7,
-            "top_p": 0.7,
-            "top_k": 30,
+            "one_pass": family.one_pass,
+            "temperature": family.params.temperature,
+            "top_p": family.params.top_p,
+            "top_k": family.params.top_k,
+            "ras_window": cfg.ras.window,
+            "ras_temperature": cfg.ras.temperature,
+            "ras_top_p": cfg.ras.top_p,
             "seed": 0,
             "semantic_size": crate::codec::SEMANTIC_SIZE,
             "residual_size": crate::codec::RESIDUAL_SIZE,
@@ -626,4 +688,7 @@ pub fn export_rlxp(dir: &Path, out: &Path, opts: &ExportOptions) -> Result<Expor
 pub fn register() {
     use rlx_core::export::{Exporter, register_exporter};
     register_exporter(Exporter::new("fish-s2", "text-to-speech", export_rlxp));
+    register_exporter(
+        Exporter::new("audio8", "text-to-speech", export_audio8_rlxp).claims(&["arktts"]),
+    );
 }

@@ -26,6 +26,9 @@ rlx-embed = { workspace = true }
 rlx-core = { workspace = true }
 rlx-lfm = { workspace = true }
 rlx-qwen35 = { workspace = true }
+# Audio8-TTS across workers (`Audio8Slow`, `Audio8Frames`, `Audio8Codec`).
+rlx-fish = { workspace = true, features = ["tokenizer"] }
+serde_json = { workspace = true }
 # The FLUX.1 denoiser split across workers (`FluxStage`, genmoji.html).
 rlx-flux1 = { workspace = true }
 rlx-gguf = { workspace = true }

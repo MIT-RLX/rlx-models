@@ -17,18 +17,27 @@
 //! target-language token (`forced_bos_token_id` = tgt FLORES lang id).
 
 use crate::config::NllbConfig;
-use crate::runner::NllbModel;
+use crate::runner::{Encoded, NllbModel};
 use anyhow::Result;
 
-/// Generation knobs (defaults mirror NLLB `generation_config`).
+/// Generation options. Defaults follow HF `GenerationConfig`, and beam
+/// search follows HF `_beam_search` step for step, so the same options give
+/// the same tokens as `transformers`.
 #[derive(Debug, Clone)]
 pub struct GenerateConfig {
     pub max_new_tokens: usize,
     pub num_beams: usize,
+    /// Finished beams score `sum_logprobs / generated_len^length_penalty`.
     pub length_penalty: f64,
+    /// Stop as soon as `num_beams` hypotheses have finished (HF `True`).
+    /// When false, stop once no running beam can beat the worst finished one
+    /// at its current length (HF `False`, the transformers default).
     pub early_stopping: bool,
     /// Target language token id forced at decoder position 1 (NLLB convention).
     pub forced_bos_token_id: Option<u32>,
+    /// Token forced on the last step allowed by `max_new_tokens`. NLLB's
+    /// config sets none, so HF ends a length-capped output without EOS.
+    pub forced_eos_token_id: Option<u32>,
     pub no_repeat_ngram_size: usize,
 }
 
@@ -40,18 +49,16 @@ impl GenerateConfig {
             length_penalty: 1.0,
             early_stopping: true,
             forced_bos_token_id: None,
+            forced_eos_token_id: None,
             no_repeat_ngram_size: 0,
         }
     }
 
     pub fn from_config(cfg: &NllbConfig, max_new_tokens: usize) -> Self {
         Self {
-            max_new_tokens,
             num_beams: cfg.num_beams.max(1),
-            length_penalty: 1.0,
-            early_stopping: true,
-            forced_bos_token_id: None,
             no_repeat_ngram_size: cfg.no_repeat_ngram_size,
+            ..Self::new(max_new_tokens)
         }
     }
 
@@ -66,53 +73,52 @@ impl GenerateConfig {
     }
 }
 
-fn log_softmax(logits: &[f32]) -> Vec<f32> {
+fn log_softmax_in_place(logits: &mut [f32]) {
     let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0f64;
-    for &l in logits {
+    for &l in logits.iter() {
         sum += ((l - max) as f64).exp();
     }
     let lse = max as f64 + sum.ln();
-    logits.iter().map(|&l| (l as f64 - lse) as f32).collect()
+    for l in logits.iter_mut() {
+        *l = (*l as f64 - lse) as f32;
+    }
 }
 
-/// Logits processors: no-repeat-ngram, forced tgt-lang at position 1, forced EOS
-/// at last position. `cur_len` is the current decoder length (token about to be
-/// produced is at index `cur_len`).
-fn apply_processors(
-    logits: &mut [f32],
-    seq: &[u32],
-    cur_len: usize,
-    max_len: usize,
-    cfg: &NllbConfig,
-    forced_bos: Option<u32>,
-    no_repeat_ngram: usize,
-) {
-    if no_repeat_ngram > 0 && seq.len() >= no_repeat_ngram {
-        let n = no_repeat_ngram;
+/// HF logits processors, in HF order: no-repeat-ngram, forced BOS (tgt lang
+/// at position 1), forced EOS (last allowed position). `seq` is the decoder
+/// prefix; the token about to be produced lands at index `seq.len()`.
+fn apply_processors(scores: &mut [f32], seq: &[u32], max_len: usize, opts: &GenerateConfig) {
+    let n = opts.no_repeat_ngram_size;
+    if n > 0 && seq.len() + 1 >= n {
         let prefix = &seq[seq.len() + 1 - n..];
-        for i in 0..=seq.len() - n {
+        for i in 0..=seq.len() + 1 - n {
+            if i + n > seq.len() {
+                break;
+            }
             if seq[i..i + n - 1] == *prefix {
                 let banned = seq[i + n - 1] as usize;
-                if banned < logits.len() {
-                    logits[banned] = f32::NEG_INFINITY;
+                if banned < scores.len() {
+                    scores[banned] = f32::NEG_INFINITY;
                 }
             }
         }
     }
-    // NLLB: first generated token (position 1) is the target language id.
+    let cur_len = seq.len();
     if cur_len == 1
-        && let Some(tok) = forced_bos
+        && let Some(tok) = opts.forced_bos_token_id
     {
-        force_token(logits, tok);
+        force_token(scores, tok);
     }
-    if cur_len == max_len - 1 {
-        force_token(logits, cfg.eos_token_id);
+    if cur_len == max_len - 1
+        && let Some(tok) = opts.forced_eos_token_id
+    {
+        force_token(scores, tok);
     }
 }
 
-fn force_token(logits: &mut [f32], token: u32) {
-    for (i, l) in logits.iter_mut().enumerate() {
+fn force_token(scores: &mut [f32], token: u32) {
+    for (i, l) in scores.iter_mut().enumerate() {
         *l = if i as u32 == token {
             0.0
         } else {
@@ -121,104 +127,215 @@ fn force_token(logits: &mut [f32], token: u32) {
     }
 }
 
+/// The token the processors force at this step without needing its logits:
+/// the target language at position 1. That step's LM head (a 1 GB pass over
+/// the vocabulary table) is skipped — every other score would be −∞. Not
+/// when a forced EOS lands on the same step and overrides it.
+fn forced_without_logits(seq: &[u32], max_len: usize, opts: &GenerateConfig) -> Option<u32> {
+    let eos_here = opts.forced_eos_token_id.is_some() && seq.len() == max_len - 1;
+    (seq.len() == 1 && !eos_here)
+        .then_some(opts.forced_bos_token_id)
+        .flatten()
+}
+
 fn argmax(a: &[f32]) -> u32 {
     rlx_runtime::search::argmax_u32(a)
+}
+
+/// Indices of the `k` largest finite entries of `v`, best first.
+fn top_k(v: &[f32], k: usize) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..v.len()).filter(|&i| v[i].is_finite()).collect();
+    let k = k.min(idx.len());
+    if k == 0 {
+        return idx;
+    }
+    if k < idx.len() {
+        idx.select_nth_unstable_by(k - 1, |&a, &b| v[b].total_cmp(&v[a]));
+        idx.truncate(k);
+    }
+    idx.sort_by(|&a, &b| v[b].total_cmp(&v[a]).then(a.cmp(&b)));
+    idx
 }
 
 impl NllbModel {
     /// Greedy decode. Starts with `decoder_start_token_id` (eos=2); forces
     /// `forced_bos_token_id` (tgt lang) as the first generated token.
-    pub fn generate_greedy(
-        &mut self,
-        encoder_hidden: &[f32],
-        enc_seq: usize,
-        opts: &GenerateConfig,
-    ) -> Result<Vec<u32>> {
-        let cfg = self.config().clone();
+    pub fn generate_greedy(&mut self, enc: &Encoded, opts: &GenerateConfig) -> Result<Vec<u32>> {
+        let eos = self.config().eos_token_id;
         let max_len = opts.max_new_tokens + 1;
-        let no_ngram = opts.no_repeat_ngram_size;
-        let forced = opts.forced_bos_token_id;
-        let mut seq = vec![cfg.decoder_start_token_id];
+        let mut state = self.start_decode(enc, 1, max_len)?;
+        let mut seq = vec![self.config().decoder_start_token_id];
         while seq.len() < max_len {
-            let mut last = self.decode_logits(&seq, encoder_hidden, enc_seq, max_len)?;
-            apply_processors(&mut last, &seq, seq.len(), max_len, &cfg, forced, no_ngram);
-            let next = argmax(&last);
+            let next = if let Some(tok) = forced_without_logits(&seq, max_len, opts) {
+                self.step_hidden(&mut state, &seq[seq.len() - 1..])?;
+                tok
+            } else {
+                let mut scores = self.step(&mut state, &seq[seq.len() - 1..])?;
+                apply_processors(&mut scores, &seq, max_len, opts);
+                argmax(&scores)
+            };
             seq.push(next);
-            if next == cfg.eos_token_id {
+            if next == eos {
                 break;
             }
         }
         Ok(seq)
     }
 
-    /// Beam search (HF semantics: log-prob accumulation, length penalty).
-    pub fn generate_beam(
-        &mut self,
-        encoder_hidden: &[f32],
-        enc_seq: usize,
-        opts: &GenerateConfig,
-    ) -> Result<Vec<u32>> {
-        let cfg = self.config().clone();
+    /// Beam search with HF `_beam_search` semantics:
+    ///
+    /// * candidates are the top `2·num_beams` of all beams × vocab by summed
+    ///   log-prob (processors act on log-probs, after `log_softmax`);
+    /// * a candidate finishes on EOS or at `max_new_tokens`, but only one
+    ///   ranked inside the top `num_beams` may join the finished set, which
+    ///   keeps the best `num_beams`, scored `logp / generated_len^penalty`
+    ///   (`generated_len` excludes the decoder start token);
+    /// * the best `num_beams` unfinished candidates keep running.
+    ///
+    /// All beams decode as one batch; the KV cache follows each beam's parent.
+    pub fn generate_beam(&mut self, enc: &Encoded, opts: &GenerateConfig) -> Result<Vec<u32>> {
         let nb = opts.num_beams.max(1);
         if nb == 1 {
-            return self.generate_greedy(encoder_hidden, enc_seq, opts);
+            return self.generate_greedy(enc, opts);
         }
+        let eos = self.config().eos_token_id;
+        let vocab = self.config().vocab_size;
         let max_len = opts.max_new_tokens + 1;
-        let no_ngram = opts.no_repeat_ngram_size;
-        let forced = opts.forced_bos_token_id;
-        let eos = cfg.eos_token_id;
+        let keep = 2 * nb;
+        let lp = opts.length_penalty;
 
-        let mut beams: Vec<(Vec<u32>, f64)> = vec![(vec![cfg.decoder_start_token_id], 0.0)];
+        let mut state = self.start_decode(enc, nb, max_len)?;
+        // Exactly `nb` rows; a dead row (score −∞) only pads the batch — the
+        // first step has a single live beam, as in HF's −1e9 initialisation.
+        let start = vec![self.config().decoder_start_token_id];
+        let mut running: Vec<(Vec<u32>, f64)> = (0..nb)
+            .map(|i| (start.clone(), if i == 0 { 0.0 } else { f64::NEG_INFINITY }))
+            .collect();
+        // Best `nb` finished hypotheses, best first.
         let mut finished: Vec<(Vec<u32>, f64)> = Vec::new();
 
-        for _ in 0..max_len - 1 {
-            let mut cands: Vec<(Vec<u32>, f64)> = Vec::new();
-            for (seq, score) in &beams {
-                let mut last = self.decode_logits(seq, encoder_hidden, enc_seq, max_len)?;
-                apply_processors(&mut last, seq, seq.len(), max_len, &cfg, forced, no_ngram);
-                let logp = log_softmax(&last);
-                let mut idx: Vec<usize> = (0..logp.len()).collect();
-                idx.select_nth_unstable_by(2 * nb, |&a, &b| logp[b].partial_cmp(&logp[a]).unwrap());
-                for &tok in idx.iter().take(2 * nb) {
-                    if logp[tok] == f32::NEG_INFINITY {
-                        continue;
-                    }
-                    let mut ns = seq.clone();
-                    ns.push(tok as u32);
-                    cands.push((ns, score + logp[tok] as f64));
+        loop {
+            let cur_len = running[0].0.len();
+            let last: Vec<u32> = running.iter().map(|(s, _)| *s.last().unwrap()).collect();
+            // (beam, token, summed log-prob), best first.
+            let mut cands: Vec<(usize, u32, f64)> = Vec::new();
+            let forced = forced_without_logits(&running[0].0, max_len, opts);
+            let mut logits = if let Some(tok) = forced {
+                // Only beam 0 is live here; the forced token scores log 1 = 0.
+                self.step_hidden(&mut state, &last)?;
+                cands.push((0, tok, running[0].1));
+                Vec::new()
+            } else {
+                self.step(&mut state, &last)?
+            };
+            for (b, (seq, score)) in running.iter().enumerate() {
+                if forced.is_some() {
+                    break;
+                }
+                if *score == f64::NEG_INFINITY {
+                    continue;
+                }
+                let scores = &mut logits[b * vocab..(b + 1) * vocab];
+                log_softmax_in_place(scores);
+                apply_processors(scores, seq, max_len, opts);
+                for t in top_k(scores, keep) {
+                    cands.push((b, t as u32, score + scores[t] as f64));
                 }
             }
-            cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-            let mut next_beams: Vec<(Vec<u32>, f64)> = Vec::new();
-            for (seq, score) in cands {
-                if *seq.last().unwrap() == eos {
-                    let norm = score / (seq.len() as f64).powf(opts.length_penalty);
-                    finished.push((seq, norm));
-                } else {
-                    next_beams.push((seq, score));
+            cands.sort_by(|a, b| b.2.total_cmp(&a.2));
+            cands.truncate(keep);
+
+            let at_limit = cur_len + 1 >= max_len;
+            // As in HF, fullness is judged before this step's finishers merge.
+            let full = opts.early_stopping && finished.len() >= nb;
+            let mut next: Vec<(Vec<u32>, f64)> = Vec::with_capacity(nb);
+            let mut parents = Vec::with_capacity(nb);
+            for (rank, &(b, tok, score)) in cands.iter().enumerate() {
+                let mut seq = running[b].0.clone();
+                seq.push(tok);
+                if tok == eos || at_limit {
+                    if rank < nb && !full {
+                        let norm = score / ((seq.len() - 1) as f64).powf(lp);
+                        finished.push((seq, norm));
+                    }
+                } else if next.len() < nb {
+                    next.push((seq, score));
+                    parents.push(b);
                 }
-                if next_beams.len() >= nb {
+            }
+            finished.sort_by(|a, b| b.1.total_cmp(&a.1));
+            finished.truncate(nb);
+
+            if next.is_empty() || at_limit || (opts.early_stopping && finished.len() >= nb) {
+                running = next;
+                break;
+            }
+            // HF's `early_stopping=False` heuristic: the best running beam,
+            // scored at its current length, cannot beat the worst finished.
+            if !opts.early_stopping && finished.len() >= nb {
+                let (seq, score) = &next[0];
+                if score / ((seq.len() - 1) as f64).powf(lp) <= finished[nb - 1].1 {
+                    running = next;
                     break;
                 }
             }
-            beams = next_beams;
-            if beams.is_empty() {
-                break;
+            while next.len() < nb {
+                next.push((next[0].0.clone(), f64::NEG_INFINITY));
+                parents.push(parents[0]);
             }
-            if opts.early_stopping && finished.len() >= nb {
-                break;
-            }
+            state.reorder(&parents);
+            running = next;
         }
 
-        for (seq, score) in beams {
-            let norm = score / (seq.len() as f64).powf(opts.length_penalty);
-            finished.push((seq, norm));
-        }
-        finished.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         Ok(finished
             .into_iter()
             .next()
+            .or_else(|| running.into_iter().next())
             .map(|(s, _)| s)
             .unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_repeat_ngram_bans_completion_of_seen_bigram() {
+        let opts = GenerateConfig {
+            no_repeat_ngram_size: 2,
+            ..GenerateConfig::new(16)
+        };
+        // Seen bigrams: (2,5) (5,7) (7,5) — prefix ends in 5, so 7 is banned.
+        let mut s = vec![0f32; 10];
+        apply_processors(&mut s, &[2, 5, 7, 5], 16, &opts);
+        assert_eq!(s[7], f32::NEG_INFINITY);
+        assert!(s.iter().enumerate().all(|(i, v)| i == 7 || *v == 0.0));
+    }
+
+    #[test]
+    fn forced_tokens_follow_options() {
+        let opts = GenerateConfig::new(4).with_forced_bos(9);
+        let mut s = vec![0f32; 10];
+        apply_processors(&mut s, &[2], 5, &opts);
+        assert_eq!(argmax(&s), 9);
+        // No forced EOS unless configured.
+        let mut s = vec![0f32; 10];
+        s[3] = 1.0;
+        apply_processors(&mut s, &[2, 9, 4, 4], 5, &opts);
+        assert_eq!(argmax(&s), 3);
+        let opts = GenerateConfig {
+            forced_eos_token_id: Some(2),
+            ..opts
+        };
+        apply_processors(&mut s, &[2, 9, 4, 4], 5, &opts);
+        assert_eq!(argmax(&s), 2);
+    }
+
+    #[test]
+    fn top_k_skips_masked_and_orders() {
+        let v = [0.1, f32::NEG_INFINITY, 0.5, 0.3, 0.5];
+        assert_eq!(top_k(&v, 3), vec![2, 4, 3]);
+        assert_eq!(top_k(&v, 10), vec![2, 4, 3, 0]);
     }
 }

@@ -32,18 +32,23 @@ use crate::{Qwen35Config, Qwen35Weights, build_qwen35_decode_graph_ext};
 
 pub use rlx_core::export::{ExportOptions, ExportReport};
 
-/// Tokens a verify step takes: the last token and one MTP draft.
-const VERIFY_TOKENS: usize = 2;
+/// Drafts a verify step checks when the options ask for none
+/// (`speculate`): it takes the last token and them.
+const DEFAULT_DRAFTS: usize = 1;
 
 /// Cache capacities when the options list none.
 const DEFAULT_UPPERS: [usize; 4] = [64, 256, 1024, 4096];
+
+/// The `train` variant's sequence length when the options list none.
+const DEFAULT_TRAIN_SEQ: usize = 128;
 
 fn decode_graph(
     cfg: &Qwen35Config,
     gguf: &str,
     upper: usize,
     mtp: bool,
-    // `Some(n)`: the `n`-token verify step (MTP only).
+    // `Some(n)`: the `n`-token verify step (MTP only), its `n - 1` drafts
+    // chained.
     verify: Option<usize>,
 ) -> Result<(
     rlx_ir::Graph,
@@ -68,12 +73,16 @@ fn decode_graph(
         ..crate::flow::Qwen35DecodeOpts::step(1, upper)
     };
     let opts = match verify {
-        // The token and its draft at once: logits for both rows, the trunk's
-        // causal mask derived from the per-key one.
+        // The token and its drafts at once: logits for every row, the
+        // trunk's causal mask derived from the per-key one. Its trailing
+        // rows may be padding (a pass of fewer tokens), which the delta-net
+        // scans skip and the drafts start before.
         Some(tokens) => crate::flow::Qwen35DecodeOpts {
             seq: tokens,
             verify_all: true,
             keys_mask: true,
+            multi_row: true,
+            mtp_drafts: tokens - 1,
             ..opts
         },
         None => opts,
@@ -105,6 +114,12 @@ pub fn export_rlxp(gguf: &Path, out: &Path, opts: &ExportOptions) -> Result<Expo
     let path = gguf.to_str().context("GGUF path is not UTF-8")?;
     let raw = rlx_gguf::GgufFile::from_path(gguf).with_context(|| format!("open {path}"))?;
     let cfg = Qwen35Config::from_gguf(&raw)?;
+    if opts.variant.as_deref() == Some("train") {
+        return export_train(gguf, &raw, &cfg, out, opts);
+    }
+    if opts.variant.as_deref() == Some("distill") {
+        return export_distill(gguf, &raw, &cfg, out, opts);
+    }
     let mut uppers = opts.uppers_or(&DEFAULT_UPPERS);
     uppers.sort();
     let Some(&longest) = uppers.last() else {
@@ -116,7 +131,9 @@ pub fn export_rlxp(gguf: &Path, out: &Path, opts: &ExportOptions) -> Result<Expo
         None => false,
         Some("mtp") if cfg.nextn_predict_layers > 0 => true,
         Some("mtp") => bail!("the GGUF has no MTP layers (nextn_predict_layers = 0)"),
-        Some(other) => bail!("qwen35 has no variant '{other}' (only 'mtp')"),
+        Some(other) => {
+            bail!("qwen35 has no variant '{other}' (only 'mtp', 'train' and 'distill')")
+        }
     };
     let first_state = 1 + usize::from(mtp);
 
@@ -153,8 +170,9 @@ pub fn export_rlxp(gguf: &Path, out: &Path, opts: &ExportOptions) -> Result<Expo
     // The MTP variant's verify step: the last token and the draft, at once.
     // Symbolic only; it shares the step's states and their order.
     let mut verify_function = None;
+    let verify_tokens = opts.speculate.max(DEFAULT_DRAFTS) + 1;
     if mtp && symbolic_failure.is_none() && opts.symbolic {
-        let at = |upper| decode_graph(&cfg, path, upper, mtp, Some(VERIFY_TOKENS));
+        let at = |upper| decode_graph(&cfg, path, upper, mtp, Some(verify_tokens));
         let (a, pa, ka) = at(36)?;
         let (b, c) = (at(52)?.0, at(44)?.0);
         // Its own params (the mask's constants) besides the step's.
@@ -164,11 +182,14 @@ pub fn export_rlxp(gguf: &Path, out: &Path, opts: &ExportOptions) -> Result<Expo
         for (k, v) in ka {
             packed.entry(k).or_insert(v);
         }
-        // Its keys run up to `upper + 3`, past `generalize`'s default offset,
-        // so fitted through three sizes (in `upper` alone: `cap` moves with
-        // it) and checked against the third.
-        let mut g = rlx_ir::dynamic::generalize_checked(&a, &b, &c, &[(1, 36, 52, 44)], Some(4))
-            .map_err(|e| anyhow::anyhow!("the verify step is not symbolic: {e}"))?;
+        // Its keys run up to `upper + 2 * tokens - 1` (the rows, then each
+        // draft's), past `generalize`'s default offset, so fitted through
+        // three sizes (in `upper` alone: `cap` moves with it) and checked
+        // against the third.
+        let reach = 2 * verify_tokens as i64;
+        let mut g =
+            rlx_ir::dynamic::generalize_checked(&a, &b, &c, &[(1, 36, 52, 44)], Some(reach))
+                .map_err(|e| anyhow::anyhow!("the verify step is not symbolic: {e}"))?;
         let mut at_c = rlx_ir::DimBinding::new();
         at_c.set(0, 45);
         at_c.set(1, 44);
@@ -337,13 +358,36 @@ pub fn export_rlxp(gguf: &Path, out: &Path, opts: &ExportOptions) -> Result<Expo
         entry["draft_logits"] = json!(1);
     }
     if let Some(f) = verify_function {
-        // A speculative step: `tokens` new tokens (the last one, then the
-        // draft), every row's logits, and the next draft; same states.
+        // A speculative step: up to `tokens` new tokens (the last one, then
+        // the drafts), every row's logits, and the next `drafts` drafts;
+        // same states. A pass of fewer tokens pads the rest, its `rows`
+        // inputs saying which are real.
+        let g = pkg
+            .graphs
+            .iter()
+            .find(|g| g.name == f)
+            .context("the verify step")?;
+        let mut rows = serde_json::Map::new();
+        for n in g.nodes() {
+            let Op::Input { name } = &n.op else { continue };
+            let kind = if name.starts_with("gdn_pad_l") {
+                "pad_rows"
+            } else if name.starts_with("gdn_conv_shift_l") {
+                "pad_shift"
+            } else if name == "mtp_last_row" {
+                "last_row"
+            } else {
+                continue;
+            };
+            rows.insert(name.clone(), json!(kind));
+        }
         entry["verify"] = json!({
             "function": f,
-            "tokens": VERIFY_TOKENS,
+            "tokens": verify_tokens,
+            "drafts": verify_tokens - 1,
             "logits": 0,
             "draft_logits": 1,
+            "rows": rows,
         });
     }
     pkg.entry("generate", entry);
@@ -365,6 +409,238 @@ pub fn export_rlxp(gguf: &Path, out: &Path, opts: &ExportOptions) -> Result<Expo
         symbolic_failure,
         ..report
     })
+}
+
+/// The `train` variant: one function `forward`, the whole sequence at once
+/// (`input_ids` `[1, seq]` → `logits` `[1, seq, vocab]`, `seq` the first of
+/// `opts.seqs`, else 128), its matmul weights dense params, so
+/// `rlx_runtime::model::trainer` trains it. The model block's `train` holds
+/// the defaults: next-token cross-entropy against `labels`, LoRA (rank 8,
+/// alpha 16) on `*attn_q*` / `*attn_v*` — the full-attention layers' q and v
+/// and the delta-net layers' fused `attn_qkv`.
+fn export_train(
+    gguf: &Path,
+    raw: &rlx_gguf::GgufFile,
+    cfg: &Qwen35Config,
+    out: &Path,
+    opts: &ExportOptions,
+) -> Result<ExportReport> {
+    let path = gguf.to_str().context("GGUF path is not UTF-8")?;
+    let seq = opts.seqs_or(&[DEFAULT_TRAIN_SEQ])[0];
+    let mut loader = GgufLoader::from_file(path)?;
+    loader.include_mtp(true);
+    let weights = Qwen35Weights::from_loader(&mut loader, cfg)?;
+    let (mut graph, params, packed) =
+        crate::build_qwen35_graph_sized(cfg, weights, 1, seq, true, false, false)?;
+    if !packed.is_empty() {
+        bail!(
+            "the train variant needs dense weights, {} are packed",
+            packed.len()
+        );
+    }
+    graph.name = "forward".into();
+    let first = graph.outputs[0];
+    graph.node_mut(first).name = Some("logits".into());
+    graph.outputs.truncate(1);
+
+    let sizes: std::collections::HashSet<usize> = params.values().map(Vec::len).collect();
+    let mut refr =
+        Referencer::open_gguf_only(gguf, opts.embed_weights, &|_, n| sizes.contains(&n))?;
+    refr.take(params)?;
+    let ck = Checkpoint::open(gguf)?;
+    // Dense f32 weights unless asked otherwise: the trainer differentiates
+    // through them.
+    let opts = ExportOptions {
+        weight_dtype: Some(opts.weight_dtype.unwrap_or(rlx_ir::DType::F32)),
+        ..opts.clone()
+    };
+    let mut pkg = Package::for_checkpoint(&ck, &opts, "qwen35", "text-generation", "rlx-qwen35");
+    pkg.graphs = vec![graph];
+    pkg.reference(refr, out)?;
+    let tokenizer = rlx_core::tokenizer::build_gguf_tokenizer(gguf)?;
+    let tokenizer_json = tokenizer
+        .to_string(false)
+        .map_err(|e| anyhow::anyhow!("serialize tokenizer: {e}"))?;
+    let tokenizer_id = pkg.sidecar(
+        "tokenizer.json",
+        "application/json",
+        tokenizer_json.into_bytes(),
+    );
+    pkg.metadata("seq", json!(seq));
+    pkg.metadata("tokenizer", json!(tokenizer_id));
+    pkg.metadata("source", json!(meta_str(raw, "general.basename")));
+    // Next-token prediction: `labels[i]` is the token after `input_ids[i]`.
+    pkg.model["train"] = json!({
+        "function": "forward",
+        "loss": {"cross_entropy": {"logits": "logits", "labels": "labels"}},
+        "train": {"lora": {"targets": ["*attn_q*", "*attn_v*"], "rank": 8, "alpha": 16}},
+    });
+    pkg.write(out, &opts)
+}
+
+/// The `distill` variant: one function `distill` that trains the MTP head
+/// on the trunk it drafts for, the trunk frozen. Over a sequence
+/// (`input_ids` `[1, seq]`), the head's row i (the hidden at i, token i+1)
+/// predicts token i+2, which the trunk's row i+1 predicts too; the output
+/// `kl` `[1, seq - 1]` is, per row, KL(trunk ‖ head) of the two
+/// distributions. A draft is kept when it is the trunk's argmax, so the
+/// trunk's whole distribution is a better target than the text's next
+/// token. The model block's `train` trains the MTP layer's weights only (not
+/// the embedding and LM head it shares with the trunk).
+fn export_distill(
+    gguf: &Path,
+    raw: &rlx_gguf::GgufFile,
+    cfg: &Qwen35Config,
+    out: &Path,
+    opts: &ExportOptions,
+) -> Result<ExportReport> {
+    use rlx_ir::op::{CmpOp, ReduceOp};
+    use rlx_ir::{DType, GraphExt, Shape};
+    if cfg.nextn_predict_layers == 0 {
+        bail!("the GGUF has no MTP layers (nextn_predict_layers = 0)");
+    }
+    let path = gguf.to_str().context("GGUF path is not UTF-8")?;
+    let seq = opts.seqs_or(&[DEFAULT_TRAIN_SEQ])[0];
+    let mut loader = GgufLoader::from_file(path)?;
+    loader.include_mtp(true);
+    let weights = Qwen35Weights::from_loader(&mut loader, cfg)?;
+    let (built, packed) = crate::flow::Qwen35Flow::prefill(cfg, &weights, 1, seq)
+        .lm_head()
+        .mtp_head()
+        .mtp_every_row()
+        .build_with_weights(&weights)?;
+    if !packed.is_empty() {
+        bail!(
+            "the distill variant needs dense weights, {} are packed",
+            packed.len()
+        );
+    }
+    let (mut g, params) = rlx_core::flow_util::graph_from_built(built)?;
+    let [logits, draft] = g.outputs[..] else {
+        bail!("the distill graph has {} outputs, not 2", g.outputs.len());
+    };
+    let vocab = g
+        .node(logits)
+        .shape
+        .dims()
+        .last()
+        .map_or(0, |d| d.unwrap_static());
+    let rows = seq - 1;
+    // log softmax over the vocab, stable: x - max - log Σ exp(x - max), the
+    // max a constant to the gradient.
+    let log_softmax = |g: &mut rlx_ir::Graph, x| {
+        let max = g.add_node(
+            Op::Reduce {
+                op: ReduceOp::Max,
+                axes: vec![2],
+                keep_dim: true,
+            },
+            vec![x],
+            Shape::new(&[1, rows, 1], DType::F32),
+        );
+        let max = g.stop_gradient(max);
+        let shifted = g.sub(x, max);
+        let e = g.exp(shifted);
+        let sum = g.sum(e, vec![2], true);
+        let lse = g.log(sum);
+        g.sub(shifted, lse)
+    };
+    let trunk_rows = g.narrow_(logits, 1, 0, rows);
+    let trunk = g.narrow_(logits, 1, 1, rows);
+    let trunk = g.stop_gradient(trunk);
+    let head = g.narrow_(draft, 1, 0, rows);
+    let log_q = log_softmax(&mut g, trunk);
+    let log_p = log_softmax(&mut g, head);
+    let q = g.exp(log_q);
+    let gap = g.sub(log_q, log_p);
+    let per = g.mul(q, gap);
+    let kl = g.sum(per, vec![2], false);
+    // Only the rows where the text's next token is the trunk's own pick: a
+    // draft is made after a greedy token, never after one the trunk would
+    // not have chosen, so those rows are the ones decoding meets.
+    let ids = g
+        .nodes()
+        .iter()
+        .find(|n| matches!(&n.op, Op::Input { name } if name == "input_ids"))
+        .map(|n| n.id)
+        .context("the distill graph has no input_ids")?;
+    let next = g.narrow_(ids, 1, 1, rows);
+    let next = g.add_node(
+        Op::Cast { to: DType::F32 },
+        vec![next],
+        Shape::new(&[1, rows], DType::F32),
+    );
+    let pick = g.add_node(
+        Op::ArgMax {
+            axis: 2,
+            keep_dim: false,
+        },
+        vec![trunk_rows],
+        Shape::new(&[1, rows], DType::F32),
+    );
+    let same = g.add_node(
+        Op::Compare(CmpOp::Eq),
+        vec![pick, next],
+        Shape::new(&[1, rows], DType::Bool),
+    );
+    let greedy = g.add_node(
+        Op::Cast { to: DType::F32 },
+        vec![same],
+        Shape::new(&[1, rows], DType::F32),
+    );
+    let greedy = g.stop_gradient(greedy);
+    let kl = g.mul(kl, greedy);
+    g.node_mut(kl).name = Some("kl".into());
+    g.outputs = vec![kl];
+    g.name = "distill".into();
+    if vocab == 0 {
+        bail!("the distill graph's logits have no vocab axis");
+    }
+
+    // The MTP layer's own weights: not the embedding copy, the LM head it
+    // shares, or the zero norm betas the builder makes.
+    let prefix = format!("blk.{}.", cfg.num_hidden_layers - cfg.nextn_predict_layers);
+    let mut trained: Vec<String> = params
+        .keys()
+        .filter(|n| n.starts_with(&prefix) && n.ends_with(".weight"))
+        .filter(|n| !n.contains("embed_tokens") && !n.contains("shared_head_head"))
+        .cloned()
+        .collect();
+    trained.sort();
+    if trained.is_empty() {
+        bail!("no MTP weights under {prefix}");
+    }
+
+    let sizes: std::collections::HashSet<usize> = params.values().map(Vec::len).collect();
+    let mut refr =
+        Referencer::open_gguf_only(gguf, opts.embed_weights, &|_, n| sizes.contains(&n))?;
+    refr.take(params)?;
+    let ck = Checkpoint::open(gguf)?;
+    let opts = ExportOptions {
+        weight_dtype: Some(opts.weight_dtype.unwrap_or(DType::F32)),
+        ..opts.clone()
+    };
+    let mut pkg = Package::for_checkpoint(&ck, &opts, "qwen35", "text-generation", "rlx-qwen35");
+    pkg.graphs = vec![g];
+    pkg.reference(refr, out)?;
+    let tokenizer = rlx_core::tokenizer::build_gguf_tokenizer(gguf)?;
+    let tokenizer_json = tokenizer
+        .to_string(false)
+        .map_err(|e| anyhow::anyhow!("serialize tokenizer: {e}"))?;
+    let tokenizer_id = pkg.sidecar(
+        "tokenizer.json",
+        "application/json",
+        tokenizer_json.into_bytes(),
+    );
+    pkg.metadata("seq", json!(seq));
+    pkg.metadata("tokenizer", json!(tokenizer_id));
+    pkg.metadata("source", json!(meta_str(raw, "general.basename")));
+    pkg.model["train"] = json!({
+        "function": "distill",
+        "loss": {"output": "kl"},
+        "train": {"params": trained},
+    });
+    pkg.write(out, &opts)
 }
 
 /// Register this crate's exporter ([`rlx_core::export::register_exporter`])

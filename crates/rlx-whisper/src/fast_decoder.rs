@@ -101,15 +101,21 @@ fn f32_tensor(st: &SafeTensors, name: &str) -> Result<(Vec<f32>, Vec<usize>)> {
     let data = t.data();
     let v = match t.dtype() {
         safetensors::Dtype::F16 => data
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| half::f16::from_le_bytes([b[0], b[1]]).to_f32())
             .collect(),
         safetensors::Dtype::BF16 => data
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| half::bf16::from_le_bytes([b[0], b[1]]).to_f32())
             .collect(),
         safetensors::Dtype::F32 => data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect(),
         d => bail!("{name}: dtype {d:?}"),
@@ -121,7 +127,9 @@ fn f32_tensor(st: &SafeTensors, name: &str) -> Result<(Vec<f32>, Vec<usize>)> {
 /// the four rows, so the loop is bound by its fused multiply-adds.
 #[inline(always)]
 fn rows4<const B: usize>(w: &[f32], x: &[f32], inp: usize, out: &mut [f32]) {
-    assert!(w.len() >= 4 * inp && x.len() >= B * inp && out.len() >= 4 * B && inp % 4 == 0);
+    assert!(
+        w.len() >= 4 * inp && x.len() >= B * inp && out.len() >= 4 * B && inp.is_multiple_of(4)
+    );
     #[cfg(target_arch = "aarch64")]
     // SAFETY: the assert bounds every 4-lane load below.
     unsafe {
@@ -214,7 +222,7 @@ fn layer_norm(ln: &Ln, x: &[f32], d: usize) -> Vec<f32> {
 
 #[inline(always)]
 fn dot(a: &[f32], b: &[f32]) -> f32 {
-    assert!(a.len() == b.len() && a.len() % 16 == 0);
+    assert!(a.len() == b.len() && a.len().is_multiple_of(16));
     #[cfg(target_arch = "aarch64")]
     // SAFETY: equal lengths, a multiple of 16, bound every load.
     unsafe {
@@ -255,7 +263,7 @@ fn expf_nonpos(x: f32) -> f32 {
     p = p.mul_add(r, 8.333_452e-3);
     p = p.mul_add(r, 4.166_579_6e-2);
     p = p.mul_add(r, 1.666_666_5e-1);
-    p = p.mul_add(r, 5.000_000_1e-1);
+    p = p.mul_add(r, 5e-1);
     let e = (p * r).mul_add(r, r) + 1.0;
     e * f32::from_bits(((n as i32 + 127) as u32) << 23)
 }
@@ -263,7 +271,7 @@ fn expf_nonpos(x: f32) -> f32 {
 /// `o += p * v` over equal-length slices (a multiple of 4).
 #[inline(always)]
 fn axpy(o: &mut [f32], p: f32, v: &[f32]) {
-    assert!(o.len() == v.len() && o.len() % 4 == 0);
+    assert!(o.len() == v.len() && o.len().is_multiple_of(4));
     #[cfg(target_arch = "aarch64")]
     // SAFETY: equal lengths, a multiple of 4, bound every access.
     unsafe {

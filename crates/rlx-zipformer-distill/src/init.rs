@@ -65,6 +65,7 @@ impl Teacher {
             ff,
             qdim: ints("query_head_dims")?[0],
             vdim: ints("value_head_dims")?[0],
+            qat_bits: None,
         };
         let one = |k: &str| {
             cfg[k]

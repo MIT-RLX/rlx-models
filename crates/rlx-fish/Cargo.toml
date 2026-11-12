@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Fish Audio S2-Pro (dual-AR) and Drama 3 TTS + voice cloning, with the fish 44.1 kHz codec, on RLX"
+description = "Fish Audio S2-Pro (dual-AR), Drama 3 and Audio8 TTS + voice cloning, with the fish 44.1 kHz codec, on RLX"
 keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
@@ -28,6 +28,9 @@ rlx-core = { workspace = true }
 rlx-cli = { workspace = true }
 rlx-torch-ckpt = { workspace = true }
 
+# `play`: speak through the default output device as the speech is made.
+cpal = { version = "0.15", optional = true }
+
 [dependencies.tokenizers]
 workspace = true
 optional = true
@@ -48,6 +51,8 @@ all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
 macos-gpu = ["metal", "mlx", "gpu"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
+# `rlx-fish audio8 --play`: play while generating (`play::StreamPlayer`).
+play = ["dep:cpal"]
 # `export::export_rlxp`: Fish S2-Pro as an `.rlxp` package rlx runs alone.
 export = ["rlx-core/export"]
 

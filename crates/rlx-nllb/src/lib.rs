@@ -26,13 +26,14 @@ pub mod flow;
 pub mod generate;
 mod language;
 pub mod runner;
+pub mod synth;
 pub mod tokenizer;
 pub mod weight_source;
 pub mod weights;
 
 pub use config::{HF_DISTILLED_600M, NllbConfig};
 pub use generate::GenerateConfig;
-pub use runner::NllbModel;
+pub use runner::{DecodeState, Encoded, NllbModel};
 pub use tokenizer::NllbTokenizer;
 
 use anyhow::{Result, bail};
@@ -249,9 +250,6 @@ impl NllbRunnerBuilder {
 mod tests {
     use super::*;
     use crate::weight_source::CloningWeightSource;
-    use crate::weights::lang as lk;
-    use rlx_core::weight_map::WeightMap;
-    use std::collections::HashMap;
 
     #[test]
     fn flores_en_fr() {
@@ -280,121 +278,10 @@ mod tests {
         assert!((cfg.embed_scale() - 32.0).abs() < 1e-5);
     }
 
-    fn rand_vec(n: usize, seed: u32) -> Vec<f32> {
-        let mut s = seed;
-        (0..n)
-            .map(|_| {
-                s = s.wrapping_mul(1664525).wrapping_add(1013904223);
-                ((s >> 8) as f32 / (1u32 << 24) as f32) * 0.02 - 0.01
-            })
-            .collect()
-    }
-
-    fn put(
-        map: &mut HashMap<String, (Vec<f32>, Vec<usize>)>,
-        key: &str,
-        shape: &[usize],
-        seed: u32,
-    ) {
-        let n: usize = shape.iter().product();
-        map.insert(key.to_string(), (rand_vec(n, seed), shape.to_vec()));
-    }
-
-    fn synthetic_tiny_weights(cfg: &NllbConfig) -> WeightMap {
-        let mut t = HashMap::new();
-        let d = cfg.d_model;
-        let v = cfg.vocab_size;
-        let ffn = cfg.encoder_ffn_dim;
-        let pos = cfg.max_position_embeddings + NllbConfig::POS_OFFSET;
-        put(&mut t, lk::SHARED, &[v, d], 1);
-        put(&mut t, &lk::enc_embed_positions(), &[pos, d], 2);
-        put(&mut t, &lk::dec_embed_positions(), &[pos, d], 3);
-        put(&mut t, &lk::enc_layernorm_embedding_w(), &[d], 4);
-        put(&mut t, &lk::enc_layernorm_embedding_b(), &[d], 5);
-        put(&mut t, &lk::dec_layernorm_embedding_w(), &[d], 6);
-        put(&mut t, &lk::dec_layernorm_embedding_b(), &[d], 7);
-        // Optional final norms present.
-        put(&mut t, &lk::enc_final_layer_norm_w(), &[d], 8);
-        put(&mut t, &lk::enc_final_layer_norm_b(), &[d], 9);
-        put(&mut t, &lk::dec_final_layer_norm_w(), &[d], 10);
-        put(&mut t, &lk::dec_final_layer_norm_b(), &[d], 11);
-
-        let mut seed = 100u32;
-        for layer in 0..cfg.encoder_layers {
-            let p = |s: &str| lk::enc_layer(layer, s);
-            for name in [
-                "self_attn.q_proj",
-                "self_attn.k_proj",
-                "self_attn.v_proj",
-                "self_attn.out_proj",
-            ] {
-                put(&mut t, &p(&format!("{name}.weight")), &[d, d], seed);
-                seed += 1;
-                put(&mut t, &p(&format!("{name}.bias")), &[d], seed);
-                seed += 1;
-            }
-            put(&mut t, &p("self_attn_layer_norm.weight"), &[d], seed);
-            seed += 1;
-            put(&mut t, &p("self_attn_layer_norm.bias"), &[d], seed);
-            seed += 1;
-            put(&mut t, &p("fc1.weight"), &[ffn, d], seed);
-            seed += 1;
-            put(&mut t, &p("fc1.bias"), &[ffn], seed);
-            seed += 1;
-            put(&mut t, &p("fc2.weight"), &[d, ffn], seed);
-            seed += 1;
-            put(&mut t, &p("fc2.bias"), &[d], seed);
-            seed += 1;
-            put(&mut t, &p("final_layer_norm.weight"), &[d], seed);
-            seed += 1;
-            put(&mut t, &p("final_layer_norm.bias"), &[d], seed);
-            seed += 1;
-        }
-        for layer in 0..cfg.decoder_layers {
-            let p = |s: &str| lk::dec_layer(layer, s);
-            for name in [
-                "self_attn.q_proj",
-                "self_attn.k_proj",
-                "self_attn.v_proj",
-                "self_attn.out_proj",
-                "encoder_attn.q_proj",
-                "encoder_attn.k_proj",
-                "encoder_attn.v_proj",
-                "encoder_attn.out_proj",
-            ] {
-                put(&mut t, &p(&format!("{name}.weight")), &[d, d], seed);
-                seed += 1;
-                put(&mut t, &p(&format!("{name}.bias")), &[d], seed);
-                seed += 1;
-            }
-            put(&mut t, &p("self_attn_layer_norm.weight"), &[d], seed);
-            seed += 1;
-            put(&mut t, &p("self_attn_layer_norm.bias"), &[d], seed);
-            seed += 1;
-            put(&mut t, &p("encoder_attn_layer_norm.weight"), &[d], seed);
-            seed += 1;
-            put(&mut t, &p("encoder_attn_layer_norm.bias"), &[d], seed);
-            seed += 1;
-            put(&mut t, &p("fc1.weight"), &[ffn, d], seed);
-            seed += 1;
-            put(&mut t, &p("fc1.bias"), &[ffn], seed);
-            seed += 1;
-            put(&mut t, &p("fc2.weight"), &[d, ffn], seed);
-            seed += 1;
-            put(&mut t, &p("fc2.bias"), &[d], seed);
-            seed += 1;
-            put(&mut t, &p("final_layer_norm.weight"), &[d], seed);
-            seed += 1;
-            put(&mut t, &p("final_layer_norm.bias"), &[d], seed);
-            seed += 1;
-        }
-        WeightMap::from_tensors(t)
-    }
-
     #[test]
     fn graph_builders_compile_with_cloning_source() {
         let cfg = NllbConfig::tiny();
-        let wm = synthetic_tiny_weights(&cfg);
+        let wm = synth::weights(&cfg);
         let mut src = CloningWeightSource(&wm);
         let enc = flow::build_encoder_built(&cfg, &mut src, 1, 4).expect("encoder build");
         assert!(!enc.params.is_empty());
@@ -403,22 +290,78 @@ mod tests {
         assert!(!dec.params.is_empty());
     }
 
+    /// The three decoder spellings must agree on synthetic weights: the
+    /// KV-cached step (bucket-padded, masked source), the full causal prefix
+    /// over the unpadded encoder, and greedy/beam built on the step.
     #[test]
-    fn synthetic_encode_decode_logits_smoke() {
+    fn kv_step_matches_full_prefix() {
         let cfg = NllbConfig::tiny();
-        let wm = synthetic_tiny_weights(&cfg);
-        let mut model =
-            NllbModel::from_weight_map(wm, cfg.clone(), Device::Cpu, None).expect("load");
-        let ids = vec![3u32, 4, 5, 2];
+        let d = cfg.d_model;
+        // `RLX_TEST_DEVICE=metal` (with the feature) runs it on a GPU.
+        let device = rlx_ir::env::var_result("RLX_TEST_DEVICE")
+            .ok()
+            .map(|d| rlx_cli::parse_device(&d).expect("RLX_TEST_DEVICE"))
+            .unwrap_or(Device::Cpu);
+        let mut model = NllbModel::from_weight_map(synth::weights(&cfg), cfg.clone(), device, None)
+            .expect("load");
+        let ids = vec![5u32, 9, 13, 21, 2];
         let enc = model.encode_tokens(&ids).expect("encode");
-        assert_eq!(enc.len(), ids.len() * cfg.d_model);
-        assert!(enc.iter().all(|v| v.is_finite()));
-        let dec_ids = vec![cfg.decoder_start_token_id, 7];
-        let logits = model
-            .decode_logits(&dec_ids, &enc, ids.len(), 8)
-            .expect("decode");
-        assert_eq!(logits.len(), cfg.vocab_size);
+        assert_eq!(enc.bucket, 128);
+        let full_enc = model.encode_full(&ids).expect("encode full");
+        let enc_err = max_abs(&enc.hidden, &full_enc);
+        assert!(enc_err < 1e-5, "padded encoder vs unpadded: {enc_err:.3e}");
+
+        let prefix = [cfg.decoder_start_token_id, 7, 11, 3, 40, 17];
+        let full = model.decode_hidden(&prefix, &enc).expect("full prefix");
+        let mut state = model.start_decode(&enc, 1, 16).expect("state");
+        let mut stepped = Vec::new();
+        for &t in &prefix {
+            stepped.extend(model.step_hidden(&mut state, &[t]).expect("step"));
+        }
+        let err = max_abs(&stepped, &full);
+        assert!(err < 1e-5, "KV step vs full prefix: {err:.3e}");
+        assert_eq!(stepped.len(), prefix.len() * d);
+
+        // A batch of distinct rows decodes each row as if alone.
+        let enc2 = model.encode_tokens(&ids).expect("encode");
+        let mut batched = model.start_decode(&enc2, 2, 16).expect("state");
+        let a = model.step_hidden(&mut batched, &[2, 2]).expect("step");
+        let b = model.step_hidden(&mut batched, &[7, 40]).expect("step");
+        assert!(max_abs(&a[..d], &a[d..]) < 1e-6);
+        assert!(max_abs(&b[..d], &full[d..2 * d]) < 1e-5, "batched row 0");
+        let mut lone = model.start_decode(&enc2, 1, 16).expect("state");
+        model.step_hidden(&mut lone, &[2]).unwrap();
+        let want = model.step_hidden(&mut lone, &[40]).unwrap();
+        assert!(max_abs(&b[d..], &want) < 1e-5, "batched row 1");
+        // After a reorder, row 0 continues row 1's history.
+        batched.reorder(&[1, 1]);
+        let c = model.step_hidden(&mut batched, &[3, 3]).expect("step");
+        let want = model.step_hidden(&mut lone, &[3]).unwrap();
+        assert!(max_abs(&c[..d], &want) < 1e-5, "reordered row 0");
+        assert!(max_abs(&c[d..], &want) < 1e-5, "reordered row 1");
+
+        let logits = model.lm_logits_batch(&c, 2);
+        assert_eq!(logits.len(), 2 * cfg.vocab_size);
         assert!(logits.iter().all(|v| v.is_finite()));
+        let greedy = model
+            .generate_greedy(&enc, &GenerateConfig::new(8).with_forced_bos(9))
+            .expect("greedy");
+        assert_eq!(greedy[..2], [cfg.decoder_start_token_id, 9]);
+        let beam = model
+            .generate_beam(
+                &enc,
+                &GenerateConfig::new(8).with_forced_bos(9).with_beams(3),
+            )
+            .expect("beam");
+        assert_eq!(beam[..2], [cfg.decoder_start_token_id, 9]);
+    }
+
+    fn max_abs(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len());
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f32::max)
     }
 
     #[test]

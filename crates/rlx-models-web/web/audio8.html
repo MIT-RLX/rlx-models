@@ -1,0 +1,161 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Audio8-TTS in the browser</title>
+<style>
+  body { font: 15px system-ui, sans-serif; max-width: 52em; margin: 2em auto; padding: 0 1em; }
+  textarea { width: 100%; height: 6em; font: inherit; }
+  pre { background: #f4f4f4; padding: .6em; white-space: pre-wrap; }
+  label { margin-right: 1em; }
+</style>
+<h1>Audio8-TTS-Realistic-Air</h1>
+<p>Text to 44.1 kHz speech, in this tab: the 0.6 B model split across Web Workers
+(the slow layers over <em>N</em> of them, the fast decoder and the codec in one each),
+on WebGPU or the CPU. Weights: <code>weights/tts/audio8-web</code> (<code>rlx-fish export-web</code>).</p>
+<textarea id="text">Welcome to Audio8 on RLX. It is wonderful to hear from you.</textarea>
+<p>
+  <label>Backend <select id="backend"><option value="webgpu">WebGPU</option><option value="cpu">CPU (wasm)</option></select></label>
+  <label>Slow workers <select id="slow"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+  <label title="Sentences generated together (one step serves them all)">Sentences at once <select id="batch"><option>1</option><option>2</option><option selected>3</option><option>4</option></select></label>
+  <label>Seed <input id="seed" type="number" value="0" style="width:5em"></label>
+  <label>Max frames <input id="max" type="number" value="512" style="width:5em"></label>
+  <button id="go" disabled>Speak</button>
+</p>
+<audio id="audio" controls></audio>
+<pre id="log"></pre>
+<script type="module">
+// ?auto=1 speaks `text` (or the box's) once and POSTs a JSON report —
+// { ok, frames, finished, codes, pcm16 (base64), ms, memory } — to /__result
+// (serve.py), so `run_page.sh` can check a headless run against native.
+import { Audio8Pipeline, wavBytes } from "./audio8.js";
+const q = new URLSearchParams(location.search);
+const $ = (id) => document.getElementById(id);
+const log = (s) => ($("log").textContent += s + "\n");
+const base = q.get("base") ?? new URL("../../../weights/tts/audio8-web", location.href).href.replace(/\/$/, "");
+if (q.get("text")) $("text").value = q.get("text");
+if (q.get("slow")) $("slow").value = q.get("slow");
+if (q.get("seed")) $("seed").value = q.get("seed");
+if (q.get("max")) $("max").value = q.get("max");
+if (q.get("batch")) $("batch").value = q.get("batch");
+$("backend").value = q.get("backend") ?? (navigator.gpu ? "webgpu" : "cpu");
+let p = null;
+let loadedWith = "";
+const load = async () => {
+  p?.terminate();
+  const t0 = performance.now();
+  const backend = $("backend").value;
+  log(`loading on ${backend}…`);
+  p = await Audio8Pipeline.create({ base, slow: Number($("slow").value), backend,
+    framesBackend: q.get("frames") ?? "cpu", codecBackend: q.get("codec") ?? backend,
+    fastMath: q.get("fast") !== "0", onProgress: log,
+    // ?set=RLX_KEY=value (repeatable): settings for every worker.
+    settings: Object.fromEntries(q.getAll("set").map((kv) => kv.split("="))) });
+  loadedWith = `${backend}/${$("slow").value}`;
+  log(`loaded in ${Math.round(performance.now() - t0)} ms`);
+};
+// Speech plays as it is made, but only once it can play straight through:
+// generation runs slower than real time, so starting at the first piece
+// would stall between pieces (and click where a stalled piece restarts).
+// Playback waits until the frames still to come should be ready before the
+// audio already made runs out — from the measured time per frame and a
+// length estimated from the text, both refined as frames arrive.
+const FPS = 21.533;
+let ctx = null;
+let playAt = 0;
+let pending = []; // pieces held until playback starts
+let playing = false;
+let firstSound = null;
+let t0 = 0;
+const estimateFrames = (text) =>
+  [...text].reduce((n, c) => n + (/[⺀-鿿가-힯぀-ヿ]/.test(c) ? 6 : 2.1), 0);
+const schedule = (pcm, rate) => {
+  const buf = ctx.createBuffer(1, pcm.length, rate);
+  buf.copyToChannel(pcm, 0);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const gain = ctx.createGain();
+  src.connect(gain).connect(ctx.destination);
+  const late = playAt < ctx.currentTime + 0.02;
+  playAt = Math.max(playAt, ctx.currentTime + 0.05);
+  if (late && firstSound !== null) {
+    // Starting after a stall: fade in, so the restart does not click.
+    gain.gain.setValueAtTime(0, playAt);
+    gain.gain.linearRampToValueAtTime(1, playAt + 0.01);
+    log("stalled: generation fell behind playback");
+  }
+  src.start(playAt);
+  playAt += buf.duration;
+  if (firstSound === null) {
+    firstSound = performance.now() - t0;
+    log(`playing from ${(firstSound / 1000).toFixed(1)} s`);
+  }
+};
+const startPlaying = () => {
+  playing = true;
+  for (const [pcm, rate] of pending) schedule(pcm, rate);
+  pending = [];
+};
+const speak = async () => {
+  p.resetTimes();
+  t0 = performance.now();
+  firstSound = null;
+  playing = false;
+  pending = [];
+  const stream = !q.get("auto") || q.get("stream") === "1";
+  if (stream) {
+    ctx ??= new AudioContext();
+    await ctx.resume();
+    playAt = 0;
+  }
+  let total = Math.max(32, Math.round(estimateFrames($("text").value)));
+  let tFirst = null;
+  const r = await p.speak($("text").value, {
+    seed: Number($("seed").value), maxFrames: Number($("max").value), batch: Number($("batch").value),
+    streamEvery: Number(q.get("every") ?? 32),
+    onFrame: (n) => {
+      tFirst ??= performance.now();
+      if (n > total * 0.9) total = Math.round(n * 1.15);
+      if (n % 16 === 0) log(`${n} frames`);
+      if (!stream || playing || n < 5) return;
+      // Start once the frames still to come will be ready before the audio
+      // made so far (from the first frame on) has played out.
+      const perFrame = (performance.now() - tFirst) / (n - 1) / 1000;
+      if ((total - n) * perFrame <= (n / FPS) * 0.9) startPlaying();
+    },
+    onAudio: stream ? (pcm, rate) => (playing ? schedule(pcm, rate) : pending.push([pcm, rate])) : null,
+  });
+  if (stream && !playing) startPlaying();
+  const secs = r.pcm.length / r.sampleRate;
+  log(`${r.frames} frames, ${secs.toFixed(2)} s of audio${r.finished ? "" : " (frame limit reached)"}; ` +
+    `prompt ${r.ms.prompt} ms, frames ${r.ms.frames} ms (${(r.ms.frames / Math.max(r.frames, 1)).toFixed(0)} ms/frame), codec ${r.ms.codec} ms`);
+  $("audio").src = URL.createObjectURL(new Blob([wavBytes(r.pcm, r.sampleRate)], { type: "audio/wav" }));
+  // Already heard as it streamed; the player keeps the whole clip to replay.
+  return r;
+};
+$("go").onclick = async () => {
+  $("go").disabled = true;
+  try {
+    if (!p || loadedWith !== `${$("backend").value}/${$("slow").value}`) await load();
+    log("speaking…");
+    await speak();
+  } catch (e) { log(String(e?.stack ?? e)); }
+  $("go").disabled = false;
+};
+if (q.get("auto")) {
+  const report = (body) => fetch("/__result", { method: "POST", body: JSON.stringify(body) });
+  try {
+    await load();
+    const r = await speak();
+    const pcm16 = new Int16Array(r.pcm.length);
+    r.pcm.forEach((s, i) => (pcm16[i] = Math.round(Math.max(-1, Math.min(1, s)) * 32767)));
+    let bin = "";
+    const bytes = new Uint8Array(pcm16.buffer);
+    for (let i = 0; i < bytes.length; i += 1 << 15) bin += String.fromCharCode(...bytes.subarray(i, i + (1 << 15)));
+    await report({ ok: true, backend: $("backend").value, batch: Number($("batch").value), times: p.times(), frames: r.frames, finished: r.finished, codes: Array.from(r.codes), ms: r.ms,
+      loaded: p.loaded, memory: await p.memory(), sample_rate: r.sampleRate, pcm16: btoa(bin) });
+  } catch (e) {
+    await report({ ok: false, error: String(e?.stack ?? e) });
+  }
+} else {
+  $("go").disabled = false;
+}
+</script>

@@ -72,6 +72,13 @@ impl NllbConfig {
         }
     }
 
+    /// First `rows` rows of this model's sinusoidal position table
+    /// (`[rows, d_model]`; row `padding_idx` is zero, real positions start at
+    /// `padding_idx + 1`). Rows do not depend on the table's full length.
+    pub fn sinusoidal_positions(&self, rows: usize) -> Vec<f32> {
+        Self::m2m100_sinusoidal_embedding(rows, self.d_model, self.pad_token_id as usize)
+    }
+
     /// M2M100 / NLLB sinusoidal positional table `[num_embeddings, d_model]`.
     /// Matches HuggingFace `M2M100SinusoidalPositionalEmbedding.get_embedding`.
     pub fn m2m100_sinusoidal_embedding(
@@ -124,7 +131,7 @@ impl NllbConfig {
             eos_token_id: 2,
             pad_token_id: 1,
             decoder_start_token_id: 2,
-            num_beams: 5,
+            num_beams: 1,
             no_repeat_ngram_size: 0,
         }
     }
@@ -193,8 +200,9 @@ fn default_scale() -> bool {
 fn default_activation() -> String {
     "relu".into()
 }
+/// HF `GenerationConfig` default (NLLB's `generation_config.json` sets none).
 fn default_beams() -> usize {
-    5
+    1
 }
 
 impl HfConfig {

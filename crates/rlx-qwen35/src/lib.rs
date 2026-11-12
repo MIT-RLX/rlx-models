@@ -130,7 +130,7 @@ pub use execution::{
     get_or_specialize_hir_with_options, hidden_prefill_config, prefill_config,
 };
 pub use flow::{
-    ATTN_KEY_MASK, Qwen35DecodeFlow, Qwen35DecodeOpts, Qwen35Flow, Qwen35LayerCtx,
+    ATTN_KEY_MASK, LOGIT_ROW_IDX, Qwen35DecodeFlow, Qwen35DecodeOpts, Qwen35Flow, Qwen35LayerCtx,
     Qwen35LayerProbeFlow, Qwen35PrefillCacheFlow, Qwen35PrefillCacheOpts, Qwen35TrunkExportOpts,
     build_qwen35_decode_built, build_qwen35_decode_flow, build_qwen35_decode_model_flow,
     build_qwen35_layer_probe_model_flow, build_qwen35_prefill_built,
