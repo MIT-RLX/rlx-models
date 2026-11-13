@@ -648,7 +648,11 @@ impl<'a> Qwen35Flow<'a> {
                 } else {
                     logits.unwrap_or(h_for_lm.hir_id())
                 };
-                let out_rows = if last_logits_only { 1 } else { logit_rows.unwrap_or(seq) };
+                let out_rows = if last_logits_only {
+                    1
+                } else {
+                    logit_rows.unwrap_or(seq)
+                };
                 let out_shape = if export_normed_hidden {
                     Shape::new(&[batch, out_rows, n_embd], DType::F32)
                 } else if with_lm_head {

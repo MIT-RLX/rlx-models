@@ -123,7 +123,11 @@ impl<L: WeightLoader> HfQwen35Fixups<L> {
         let (n_k, n_v) = (cfg.ssm_group_count, cfg.ssm_time_step_rank);
         if n_k > 0 && n_v > n_k && n_v % n_k == 0 {
             let d_k = cfg.ssm_state_size;
-            let d_v = if cfg.ssm_inner_size > 0 { cfg.ssm_inner_size / n_v } else { d_k };
+            let d_v = if cfg.ssm_inner_size > 0 {
+                cfg.ssm_inner_size / n_v
+            } else {
+                d_k
+            };
             self.heads = Some(GdnHeads { n_k, n_v, d_k, d_v });
         }
         self
@@ -145,7 +149,13 @@ impl<L: WeightLoader> HfQwen35Fixups<L> {
         key.ends_with(".ssm_a") || key.ends_with("linear_attn.A_log")
     }
 
-    fn fix(&mut self, key: &str, data: &mut [f32], shape: &[usize], transposed: bool) -> Result<()> {
+    fn fix(
+        &mut self,
+        key: &str,
+        data: &mut [f32],
+        shape: &[usize],
+        transposed: bool,
+    ) -> Result<()> {
         self.reorder(key, data, shape, transposed)?;
         if !Self::is_a_log(key) {
             return Ok(());
@@ -160,11 +170,21 @@ impl<L: WeightLoader> HfQwen35Fixups<L> {
     /// Value-head reorder of one tensor, if it has a value-head axis. In HF
     /// layout every such tensor is `[rows, cols]` row-major with the heads on
     /// one axis, in a run of `n_v` blocks of `block` starting at `offset`.
-    fn reorder(&mut self, key: &str, data: &mut [f32], shape: &[usize], transposed: bool) -> Result<()> {
+    fn reorder(
+        &mut self,
+        key: &str,
+        data: &mut [f32],
+        shape: &[usize],
+        transposed: bool,
+    ) -> Result<()> {
         let Some(h) = self.heads else { return Ok(()) };
         let key_dim = h.n_k * h.d_k;
         let suffix = key.rsplit_once('.').map_or(key, |(head, last)| {
-            if last == "weight" || last == "bias" { head.rsplit_once('.').map_or(head, |(_, s)| s) } else { last }
+            if last == "weight" || last == "bias" {
+                head.rsplit_once('.').map_or(head, |(_, s)| s)
+            } else {
+                last
+            }
         });
         // (axis in HF layout, offset of the value-head run on it, block per head)
         let (axis, offset, block) = match suffix {
@@ -190,7 +210,11 @@ impl<L: WeightLoader> HfQwen35Fixups<L> {
             [r, rest @ ..] => (*r, rest.iter().product()),
             [] => return Ok(()),
         };
-        let (rows, cols, axis) = if transposed && shape.len() == 2 { (rows, cols, 1 - axis) } else { (rows, cols, axis) };
+        let (rows, cols, axis) = if transposed && shape.len() == 2 {
+            (rows, cols, 1 - axis)
+        } else {
+            (rows, cols, axis)
+        };
         let along = if axis == 0 { rows } else { cols };
         anyhow::ensure!(
             offset + h.n_v * block <= along,
@@ -202,7 +226,8 @@ impl<L: WeightLoader> HfQwen35Fixups<L> {
             let src = offset + h.source(j) * block;
             let dst = offset + j * block;
             if axis == 0 {
-                data[dst * cols..(dst + block) * cols].copy_from_slice(&old[src * cols..(src + block) * cols]);
+                data[dst * cols..(dst + block) * cols]
+                    .copy_from_slice(&old[src * cols..(src + block) * cols]);
             } else {
                 for r in 0..rows {
                     data[r * cols + dst..r * cols + dst + block]
@@ -298,12 +323,17 @@ mod tests {
             self.0.len()
         }
         fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
-            self.0.remove(key).ok_or_else(|| anyhow::anyhow!("no {key}"))
+            self.0
+                .remove(key)
+                .ok_or_else(|| anyhow::anyhow!("no {key}"))
         }
         fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
             let (d, s) = self.take(key)?;
             let (r, c) = (s[0], s[1]);
-            Ok(((0..r * c).map(|i| d[(i % r) * c + i / r]).collect(), vec![c, r]))
+            Ok((
+                (0..r * c).map(|i| d[(i % r) * c + i / r]).collect(),
+                vec![c, r],
+            ))
         }
         fn remaining_keys(&self) -> Vec<String> {
             self.0.keys().cloned().collect()
@@ -319,18 +349,34 @@ mod tests {
     #[test]
     fn value_heads_are_reordered_from_grouped_to_tiled() {
         let cfg = crate::synth::medium_cfg();
-        let (n_k, n_v, d) = (cfg.ssm_group_count, cfg.ssm_time_step_rank, cfg.ssm_state_size);
+        let (n_k, n_v, d) = (
+            cfg.ssm_group_count,
+            cfg.ssm_time_step_rank,
+            cfg.ssm_state_size,
+        );
         assert_eq!((n_k, n_v, d, cfg.ssm_inner_size), (4, 8, 16, 128));
         let src = |j: usize| (j % n_k) * (n_v / n_k) + j / n_k;
         let (key_dim, value_dim, n_in) = (n_k * d, n_v * d, 3);
         let qkv_rows = 2 * key_dim + value_dim;
         let mut m = HashMap::new();
         m.insert("blk.0.ssm_dt.bias".to_string(), (ramp(n_v), vec![n_v]));
-        m.insert("blk.0.attn_qkv.weight".to_string(), (ramp(qkv_rows * n_in), vec![qkv_rows, n_in]));
-        m.insert("blk.0.ssm_out.weight".to_string(), (ramp(n_in * value_dim), vec![n_in, value_dim]));
-        m.insert("blk.0.ssm_conv1d.weight".to_string(), (ramp(qkv_rows * 4), vec![qkv_rows, 1, 4]));
+        m.insert(
+            "blk.0.attn_qkv.weight".to_string(),
+            (ramp(qkv_rows * n_in), vec![qkv_rows, n_in]),
+        );
+        m.insert(
+            "blk.0.ssm_out.weight".to_string(),
+            (ramp(n_in * value_dim), vec![n_in, value_dim]),
+        );
+        m.insert(
+            "blk.0.ssm_conv1d.weight".to_string(),
+            (ramp(qkv_rows * 4), vec![qkv_rows, 1, 4]),
+        );
         m.insert("blk.0.ssm_norm.weight".to_string(), (ramp(d), vec![d]));
-        m.insert("blk.0.ssm_beta.weight".to_string(), (ramp(n_v * n_in), vec![n_v, n_in]));
+        m.insert(
+            "blk.0.ssm_beta.weight".to_string(),
+            (ramp(n_v * n_in), vec![n_v, n_in]),
+        );
         let mut l = HfQwen35Fixups::new(Map(m)).gdn_heads(&cfg);
 
         let (dt, _) = l.take("blk.0.ssm_dt.bias").unwrap();
@@ -345,7 +391,10 @@ mod tests {
         for j in 0..n_v {
             for i in 0..d {
                 let (new, old) = (2 * key_dim + j * d + i, 2 * key_dim + src(j) * d + i);
-                assert_eq!(qkv[new * n_in..(new + 1) * n_in], ramp(qkv_rows * n_in)[old * n_in..(old + 1) * n_in]);
+                assert_eq!(
+                    qkv[new * n_in..(new + 1) * n_in],
+                    ramp(qkv_rows * n_in)[old * n_in..(old + 1) * n_in]
+                );
             }
         }
 

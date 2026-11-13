@@ -170,6 +170,11 @@ pub mod lfm3_audio {
     pub use rlx_lfm3_audio::*;
 }
 
+#[cfg(feature = "liquid-codec")]
+pub mod liquid_codec {
+    pub use rlx_liquid_codec::*;
+}
+
 #[cfg(feature = "kev")]
 pub mod kev {
     pub use rlx_kev::*;
@@ -378,6 +383,26 @@ pub mod streaming_asr {
 #[cfg(feature = "ppocrv6")]
 pub mod ppocrv6 {
     pub use rlx_ppocrv6::*;
+}
+/// PyLaia CRNN handwritten line recognition. Enable feature `pylaia`.
+#[cfg(feature = "pylaia")]
+pub mod pylaia {
+    pub use rlx_pylaia::*;
+}
+/// Kraken VGSL line recognition (Core ML `.mlmodel`). Enable feature `kraken`.
+#[cfg(feature = "kraken")]
+pub mod kraken {
+    pub use rlx_kraken::*;
+}
+/// TrOCR transformer line recognition. Enable feature `trocr`.
+#[cfg(feature = "trocr")]
+pub mod trocr {
+    pub use rlx_trocr::*;
+}
+/// DAN full-page handwritten text recognition. Enable feature `dan`.
+#[cfg(feature = "dan")]
+pub mod dan {
+    pub use rlx_dan::*;
 }
 #[cfg(feature = "neutts")]
 pub mod neutts {

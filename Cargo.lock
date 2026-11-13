@@ -7908,6 +7908,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-dan"
+version = "0.2.20"
+dependencies = [
+ "anyhow",
+ "image",
+ "rlx-cli",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-models-core",
+ "rlx-runtime",
+ "rlx-torch-ckpt",
+ "serde_json",
+]
+
+[[package]]
 name = "rlx-dduf"
 version = "0.2.20"
 dependencies = [
@@ -9058,6 +9073,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlx-kraken"
+version = "0.2.20"
+dependencies = [
+ "anyhow",
+ "image",
+ "rlx-cli",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-models-core",
+ "rlx-runtime",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "rlx-kroko"
 version = "0.2.20"
 dependencies = [
@@ -9220,6 +9250,23 @@ name = "rlx-linux-ref"
 version = "0.2.20"
 dependencies = [
  "rlx-libm",
+]
+
+[[package]]
+name = "rlx-liquid-codec"
+version = "0.2.20"
+dependencies = [
+ "anyhow",
+ "half",
+ "rlx-cli",
+ "rlx-ir",
+ "rlx-lfm3-audio",
+ "rlx-models-core",
+ "rlx-runtime",
+ "rustfft",
+ "safetensors 0.7.0",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -9767,6 +9814,7 @@ dependencies = [
  "rlx-cpu",
  "rlx-d1",
  "rlx-dac",
+ "rlx-dan",
  "rlx-diamond",
  "rlx-diarize",
  "rlx-dinov2",
@@ -9802,11 +9850,13 @@ dependencies = [
  "rlx-kittentts",
  "rlx-kittentts2",
  "rlx-kokoro",
+ "rlx-kraken",
  "rlx-kyutai-tts",
  "rlx-laguna",
  "rlx-lfm",
  "rlx-lfm-vl",
  "rlx-lfm3-audio",
+ "rlx-liquid-codec",
  "rlx-llada2",
  "rlx-llama-base",
  "rlx-llama32",
@@ -9857,6 +9907,7 @@ dependencies = [
  "rlx-porcupine",
  "rlx-pplx-decider",
  "rlx-ppocrv6",
+ "rlx-pylaia",
  "rlx-qwen25-vl",
  "rlx-qwen3",
  "rlx-qwen3-asr",
@@ -9888,6 +9939,7 @@ dependencies = [
  "rlx-translate",
  "rlx-translategemma",
  "rlx-trellis2",
+ "rlx-trocr",
  "rlx-tsac",
  "rlx-tts",
  "rlx-tune",
@@ -10764,6 +10816,21 @@ dependencies = [
  "anyhow",
  "half",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rlx-pylaia"
+version = "0.2.20"
+dependencies = [
+ "anyhow",
+ "image",
+ "rlx-cli",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-models-core",
+ "rlx-runtime",
+ "rlx-torch-ckpt",
  "serde_json",
 ]
 
@@ -11648,6 +11715,21 @@ dependencies = [
  "rlx-runtime",
  "safetensors 0.7.0",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rlx-trocr"
+version = "0.2.20"
+dependencies = [
+ "anyhow",
+ "image",
+ "rlx-cli",
+ "rlx-flow",
+ "rlx-ir",
+ "rlx-models-core",
+ "rlx-runtime",
+ "rlx-torch-ckpt",
  "serde_json",
 ]
 

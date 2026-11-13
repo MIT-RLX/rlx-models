@@ -158,6 +158,7 @@ members = [
     "crates/rlx-lfm",
     "crates/rlx-lfm3-audio",
     "crates/rlx-lfm3-audio-ffi",
+    "crates/rlx-liquid-codec",
     "crates/rlx-glm",
     "crates/rlx-ssm",
     "crates/rlx-vlm-base",
@@ -170,6 +171,10 @@ members = [
     "crates/rlx-nemotron-omni",
     "crates/rlx-ocr",
     "crates/rlx-ocr2",
+    "crates/rlx-dan",
+    "crates/rlx-trocr",
+    "crates/rlx-kraken",
+    "crates/rlx-pylaia",
     "crates/rlx-asr",
     "crates/rlx-ppocrv6",
     "crates/rlx-indra",
@@ -466,6 +471,10 @@ rlx-kimi-k3 = { path = "crates/rlx-kimi-k3", version = "0.2.20" }
 rlx-nemotron-omni = { path = "crates/rlx-nemotron-omni", version = "0.2.20" }
 rlx-ocr = { path = "crates/rlx-ocr", version = "0.2.20" }
 rlx-ocr2 = { path = "crates/rlx-ocr2", version = "0.2.20" }
+rlx-dan = { path = "crates/rlx-dan", version = "0.2.20" }
+rlx-trocr = { path = "crates/rlx-trocr", version = "0.2.20" }
+rlx-kraken = { path = "crates/rlx-kraken", version = "0.2.20" }
+rlx-pylaia = { path = "crates/rlx-pylaia", version = "0.2.20" }
 rlx-asr = { path = "crates/rlx-asr", version = "0.2.20" }
 rlx-ppocrv6 = { path = "crates/rlx-ppocrv6", version = "0.2.20" }
 rlx-indra = { path = "crates/rlx-indra", version = "0.2.20" }
@@ -516,6 +525,7 @@ rlx-kyutai-tts = { path = "crates/rlx-kyutai-tts", version = "0.2.20" }
 rlx-ssm = { path = "crates/rlx-ssm", version = "0.2.20" }
 rlx-lfm = { path = "crates/rlx-lfm", version = "0.2.20" }
 rlx-lfm3-audio = { path = "crates/rlx-lfm3-audio", version = "0.2.20" }
+rlx-liquid-codec = { path = "crates/rlx-liquid-codec", version = "0.2.20" }
 rlx-minimax = { path = "crates/rlx-minimax", version = "0.2.20" }
 rlx-minimax-h3 = { path = "crates/rlx-minimax-h3", version = "0.2.20" }
 rlx-nemotron = { path = "crates/rlx-nemotron", version = "0.2.20" }

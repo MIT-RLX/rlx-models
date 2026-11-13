@@ -462,7 +462,7 @@ impl Layerer<'_> {
 
 /// The stack over a whole sequence `x` (`[seq, hidden]`) from a zero state.
 /// Returns the final-normed hidden states `[seq, hidden]`.
-pub(crate) fn sequence(gb: &mut Gb, spec: &TrunkSpec, x: NodeId, seq: usize) -> Result<NodeId> {
+pub fn sequence(gb: &mut Gb, spec: &TrunkSpec, x: NodeId, seq: usize) -> Result<NodeId> {
     let half = spec.head_dim / 2;
     let mut ropes = Vec::new();
     for (r, rope) in spec.ropes.iter().enumerate() {
@@ -500,7 +500,7 @@ pub(crate) fn sequence(gb: &mut Gb, spec: &TrunkSpec, x: NodeId, seq: usize) -> 
 ///
 /// Returns the final-normed hidden states and the cache outputs, which the
 /// caller appends to the graph outputs in [`StepState`] order.
-pub(crate) fn step(
+pub fn step(
     gb: &mut Gb,
     spec: &TrunkSpec,
     x: NodeId,

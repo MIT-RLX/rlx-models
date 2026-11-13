@@ -13,11 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Graph building over a GGUF loader, and compiling + attaching the result.
+//! Graph building over a weight loader, and compiling + attaching the result.
 //!
-//! Every parameter is named after its GGUF tensor. Quantized projections stay
+//! Every parameter is named after its tensor. Quantized GGUF projections stay
 //! packed (`Op::DequantMatMul`, bytes uploaded straight from the file at
-//! attach); everything else is widened to f32.
+//! attach); everything else is widened to f32 (or kept at half width, see
+//! [`WeightStorage`]). Any [`WeightLoader`] works: the model reads GGUF, and
+//! `rlx-liquid-codec` builds the same stacks over HF safetensors.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -38,12 +40,12 @@ pub use rlx_core::weight_storage::WeightStorage;
 /// f16-weight matmul (`rlx_cpu::blas::sgemm_half_rhs_widened`) segfaults
 /// inside OpenBLAS here, and on ROCm hipRTC fails to compile the backend's
 /// `cast_f32_to_half` kernel (integrated RDNA 3).
-pub(crate) fn default_storage() -> WeightStorage {
+pub fn default_storage() -> WeightStorage {
     WeightStorage::from_env().unwrap_or(WeightStorage::F32)
 }
 
 /// A graph under construction plus the weights it reads.
-pub(crate) struct Gb<'a> {
+pub struct Gb<'a> {
     pub g: Graph,
     pub params: HashMap<String, Vec<f32>>,
     /// Packed GGUF params to upload at attach: param name, tensor, and the
@@ -51,7 +53,7 @@ pub(crate) struct Gb<'a> {
     pub packed: Vec<(String, String, Option<std::ops::Range<usize>>)>,
     /// Dense half-precision weights kept at 2 B/elem: name -> (bytes, dtype).
     pub typed: HashMap<String, (Vec<u8>, DType)>,
-    pub w: &'a mut GgufLoader,
+    pub w: &'a mut dyn WeightLoader,
     storage: WeightStorage,
     /// Keep GGUF quants packed (`DequantMatMul`); off widens them to dense.
     packed_ok: bool,
@@ -59,7 +61,7 @@ pub(crate) struct Gb<'a> {
 }
 
 impl<'a> Gb<'a> {
-    pub fn new(name: &str, w: &'a mut GgufLoader, storage: WeightStorage) -> Self {
+    pub fn new(name: &str, w: &'a mut dyn WeightLoader, storage: WeightStorage) -> Self {
         Self {
             g: Graph::new(name),
             params: HashMap::new(),
@@ -91,15 +93,15 @@ impl<'a> Gb<'a> {
         self.g.input(name, Shape::new(shape, DType::F32))
     }
 
-    /// A GGUF tensor widened to f32, row-major in safetensors order
-    /// (outermost dimension first).
+    /// A tensor widened to f32, row-major in safetensors order (outermost
+    /// dimension first).
     pub fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
         self.w
             .take(key)
             .with_context(|| format!("lfm3-audio: tensor {key}"))
     }
 
-    /// A GGUF tensor as an f32 parameter of `shape` (same element count).
+    /// A tensor as an f32 parameter of `shape` (same element count).
     pub fn tensor(&mut self, key: &str, shape: &[usize]) -> Result<NodeId> {
         let (data, have) = self.take(key)?;
         if data.len() != shape.iter().product::<usize>() {
@@ -279,7 +281,7 @@ impl<'a> Gb<'a> {
 
 /// Whether `device` takes packed GGUF parameters. WebGL uploads f32 textures
 /// only, so its graphs get dense weights.
-pub(crate) fn dense_only(device: Device) -> bool {
+pub fn dense_only(device: Device) -> bool {
     matches!(device, Device::OpenGl)
 }
 
@@ -295,7 +297,7 @@ fn compile_opts(device: Device) -> rlx_runtime::CompileOptions {
 
 /// The device a packed-GGUF graph actually runs on (wgpu/Vulkan may be routed
 /// to the host by the shared `RLX_PACKED_GGUF_*_HOST` settings).
-pub(crate) fn exec_device(device: Device) -> Device {
+pub fn exec_device(device: Device) -> Device {
     rlx_core::flow_bridge::packed_gguf_execution_device(device)
 }
 
@@ -306,7 +308,7 @@ pub(crate) fn exec_device(device: Device) -> Device {
 /// `RLX_CUDA_SHARED_PARAMS=1`), so the LM's decode and prefill graphs hold one
 /// copy of the model, not two. Host-side f32 params are freed one by one as
 /// they are uploaded.
-pub(crate) fn compile(gb: Gb<'_>, device: Device, scope: &Path) -> Result<CompiledGraph> {
+pub fn compile(gb: Gb<'_>, device: Device, scope: &Path) -> Result<CompiledGraph> {
     let Gb {
         g,
         params,
@@ -378,7 +380,7 @@ pub(crate) fn compile(gb: Gb<'_>, device: Device, scope: &Path) -> Result<Compil
 
 /// The stored bytes of tensor `key` into `buf`: `pread` when the loader
 /// streams, else a copy from its mapping.
-pub(crate) fn read_tensor_bytes(w: &mut GgufLoader, key: &str, buf: &mut Vec<u8>) -> Result<()> {
+pub fn read_tensor_bytes(w: &dyn WeightLoader, key: &str, buf: &mut Vec<u8>) -> Result<()> {
     if !w.read_tensor_bytes_into(key, buf)? {
         *buf = w
             .tensor_bytes_borrowed(key)
@@ -389,7 +391,7 @@ pub(crate) fn read_tensor_bytes(w: &mut GgufLoader, key: &str, buf: &mut Vec<u8>
 }
 
 /// Open a GGUF file as a loader.
-pub(crate) fn open(path: &Path) -> Result<GgufLoader> {
+pub fn open(path: &Path) -> Result<GgufLoader> {
     GgufLoader::from_file(
         path.to_str()
             .ok_or_else(|| anyhow!("non-UTF-8 path {}", path.display()))?,

@@ -5020,7 +5020,9 @@ fn transpose_2d(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {
     let threads = if rows * cols < 1 << 20 {
         1
     } else {
-        std::thread::available_parallelism().map_or(1, |n| n.get()).min(16)
+        std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(16)
     };
     // Output row `c` is input column `c`; each thread takes a band of them.
     let band = cols.div_ceil(threads).next_multiple_of(TILE);
@@ -5059,7 +5061,11 @@ mod transpose_tests {
             let t = transpose_2d(&data, rows, cols);
             for r in 0..rows {
                 for c in 0..cols {
-                    assert_eq!(t[c * rows + r], data[r * cols + c], "{rows}x{cols} at ({r}, {c})");
+                    assert_eq!(
+                        t[c * rows + r],
+                        data[r * cols + c],
+                        "{rows}x{cols} at ({r}, {c})"
+                    );
                 }
             }
         }

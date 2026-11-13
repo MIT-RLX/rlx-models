@@ -55,7 +55,8 @@
 pub mod cli;
 pub mod config;
 pub mod diag;
-mod graph;
+pub mod graph;
+pub mod istft;
 pub mod mel;
 pub mod model;
 pub mod prompt;
@@ -68,8 +69,7 @@ pub mod wav;
 
 pub use config::{Lfm3AudioConfig, SpeechSampling, Tokens};
 pub use diag::{footprint, set_timing};
-pub use model::{
-    GenerateOptions, Generated, Lfm3Audio, Mode, RevealOrder, Segment, istft, resolve,
-};
+pub use istft::{Istft, istft};
+pub use model::{GenerateOptions, Generated, Lfm3Audio, Mode, RevealOrder, Segment, resolve};
 pub use rlx_core::weight_storage::WeightStorage;
 pub use sampling::{Rng, Sampling};

@@ -289,6 +289,7 @@ fn bicubic_matrix(
             let w = g.sub(wide, d);
             g.relu(w)
         }
+        Filter::Lanczos => unreachable!("pillow_preprocess rejects a Lanczos resize"),
     };
     let total = g.reduce(w, rlx_ir::op::ReduceOp::Sum, vec![1], true, f32s(&[out, 1]));
     let w = g.div(w, total);
@@ -423,6 +424,9 @@ fn pillow_preprocess_at(h: usize, w: usize, pre: &ImagePreprocessor) -> Graph {
 /// param [`CLIP_IOTA`] (hold [`clip_iota`]). Run it on the CPU (a GPU's
 /// fast division moves a coefficient).
 pub fn pillow_preprocess(pre: &ImagePreprocessor) -> Result<Graph> {
+    if pre.filter == Filter::Lanczos {
+        bail!("a Lanczos resize is not exported (bicubic and bilinear are)");
+    }
     if pre.resize_mode != ResizeMode::Exact && !pre.center_crop {
         bail!("a resize that keeps the aspect ratio without a crop is not square");
     }
@@ -1011,6 +1015,7 @@ mod tests {
                 let allowed = match filter {
                     Filter::Bicubic => 0,
                     Filter::Bilinear => got.len() * 3 / 100,
+                    Filter::Lanczos => unreachable!(),
                 };
                 assert!(off <= allowed, "{filter:?} {mode:?} {h}x{w}: {off} off");
             }

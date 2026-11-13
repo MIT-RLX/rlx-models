@@ -23,12 +23,11 @@ use anyhow::{Result, anyhow, bail};
 use rlx_core::weight_loader::{GgufLoader, WeightLoader};
 use rlx_core::weight_storage::HostTable;
 use rlx_runtime::{CompiledGraph, Device};
-use rustfft::FftPlanner;
-use rustfft::num_complex::Complex;
 
-use crate::config::{CODEC_FRAME_STACK, CODEC_HOP, CODEC_N_FFT, Lfm3AudioConfig};
+use crate::config::{CODEC_FRAME_STACK, CODEC_N_FFT, Lfm3AudioConfig};
 use crate::diag::{Timer, trace};
 use crate::graph::{self, Gb};
+use crate::istft::istft;
 use crate::sampling::{Rng, Sampling, sample};
 use crate::trunk::{self, Mixer, StepState};
 use crate::{mel, stages};
@@ -864,48 +863,6 @@ fn host_table(w: &mut GgufLoader, key: &str, row_elems: usize) -> Result<HostTab
     }
     let (data, _) = w.take(key)?;
     Ok(HostTable::F32(data))
-}
-
-/// Inverse STFT of the codec's `[steps, 2 * bins]` output (log-magnitudes,
-/// then phases): `irfft` × periodic Hann, overlap-add, divided by the summed
-/// squared window, `(win - hop) / 2` trimmed from both ends.
-pub fn istft(spec: &[f32], bins: usize) -> Vec<f32> {
-    let n_fft = (bins - 1) * 2;
-    let (hop, win) = (CODEC_HOP, n_fft);
-    let steps = spec.len() / (2 * bins);
-    let window: Vec<f64> = (0..win)
-        .map(|i| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / win as f64).cos())
-        .collect();
-    let size = (steps - 1) * hop + win;
-    let mut audio = vec![0f64; size];
-    let mut env = vec![0f64; size];
-    let ifft = FftPlanner::<f64>::new().plan_fft_inverse(n_fft);
-    let mut buf = vec![Complex::new(0.0, 0.0); n_fft];
-    for t in 0..steps {
-        let row = &spec[t * 2 * bins..(t + 1) * 2 * bins];
-        for k in 0..bins {
-            let mag = (row[k] as f64).exp();
-            let ph = row[bins + k] as f64;
-            let mut z = Complex::from_polar(mag, ph);
-            if k == 0 || k == bins - 1 {
-                // `irfft` reads only the real part of DC and Nyquist.
-                z.im = 0.0;
-            }
-            buf[k] = z;
-            if k > 0 && k < bins - 1 {
-                buf[n_fft - k] = z.conj();
-            }
-        }
-        ifft.process(&mut buf);
-        for i in 0..win {
-            audio[t * hop + i] += buf[i].re / n_fft as f64 * window[i];
-            env[t * hop + i] += window[i] * window[i];
-        }
-    }
-    let trim = (win - hop) / 2;
-    (trim..size - trim)
-        .map(|i| (audio[i] / env[i]) as f32)
-        .collect()
 }
 
 /// `Mixer` kinds of the LM, for diagnostics.

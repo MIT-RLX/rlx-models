@@ -49,6 +49,8 @@ pub enum Filter {
     Bicubic,
     /// Triangle (PIL `BILINEAR`). Support 1.0.
     Bilinear,
+    /// Windowed sinc, `sinc(x)·sinc(x/3)` (PIL `LANCZOS`). Support 3.0.
+    Lanczos,
 }
 
 impl Filter {
@@ -56,6 +58,7 @@ impl Filter {
         match self {
             Filter::Bicubic => 2.0,
             Filter::Bilinear => 1.0,
+            Filter::Lanczos => 3.0,
         }
     }
 
@@ -66,6 +69,22 @@ impl Filter {
             Filter::Bilinear => {
                 if x < 1.0 {
                     1.0 - x
+                } else {
+                    0.0
+                }
+            }
+            Filter::Lanczos => {
+                // Pillow's `lanczos_filter`: a sinc windowed by a wider one.
+                fn sinc(x: f64) -> f64 {
+                    if x == 0.0 {
+                        1.0
+                    } else {
+                        let x = x * std::f64::consts::PI;
+                        x.sin() / x
+                    }
+                }
+                if x < 3.0 {
+                    sinc(x) * sinc(x / 3.0)
                 } else {
                     0.0
                 }
@@ -486,6 +505,38 @@ mod tests {
         let src: Vec<u8> = (0..4 * 4 * 3).map(|i| (i % 256) as u8).collect();
         let out = pil_resize_rgb8(&src, 4, 4, 4, 4, Filter::Bicubic);
         assert_eq!(src, out);
+    }
+
+    /// Pinned against Pillow 12: `Image.frombytes("RGB", (9, 6), src)
+    /// .resize(size, Image.LANCZOS)` with `src[y][x][c] = (37x + 91y + 53c)
+    /// % 256`, a downscale and an upscale.
+    #[test]
+    fn lanczos_matches_pillow() {
+        let (w, h) = (9, 6);
+        let src: Vec<u8> = (0..h)
+            .flat_map(|y| {
+                (0..w).flat_map(move |x| (0..3).map(move |c| (x * 37 + y * 91 + c * 53) % 256))
+            })
+            .map(|v| v as u8)
+            .collect();
+        let down = pil_resize_rgb8_exact(&src, w, h, 4, 3, Filter::Lanczos);
+        assert_eq!(
+            down,
+            vec![
+                83, 124, 138, 140, 167, 136, 132, 122, 134, 92, 114, 148, 111, 123, 131, 105, 132,
+                123, 134, 153, 136, 128, 125, 147, 147, 155, 142, 107, 103, 128, 99, 147, 130, 156,
+                158, 140
+            ]
+        );
+        let up = pil_resize_rgb8_exact(&src, w, h, 13, 8, Filter::Lanczos);
+        assert_eq!(
+            &up[..24],
+            &[
+                0, 47, 94, 11, 61, 108, 41, 89, 147, 62, 115, 191, 87, 139, 210, 110, 168, 255,
+                138, 215, 255, 173, 255, 94
+            ]
+        );
+        assert_eq!(&up[up.len() - 6..], &[228, 142, 67, 246, 1, 77]);
     }
 
     #[test]

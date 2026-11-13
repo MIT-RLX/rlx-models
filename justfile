@@ -1002,6 +1002,88 @@ test-nllb-backends-all *ARGS:
     just features=all-backends test-nllb-backends {{ARGS}}
 
 # facebook/nllb-200-distilled-600M (pytorch_model.bin, 2.5 GB — read in place, no conversion)
+# ── Handwritten text recognition: PyLaia / Kraken / TrOCR (lines), DAN (pages) ──
+# `just fetch-pylaia rimes` — any Teklia/pylaia-<NAME> release (rimes = French, iam = English, …).
+fetch-pylaia NAME="rimes":
+    hf download Teklia/pylaia-{{NAME}} model weights.ckpt syms.txt tokens.txt lexicon.txt --local-dir weights/ocr/pylaia-{{NAME}}
+
+# `just pylaia -- --weights weights/ocr/pylaia-rimes --image line.jpg` (lines at the model height, 128 px)
+[positional-arguments]
+pylaia *ARGS:
+    cargo run -p rlx-pylaia --release {{feature_args}} "$@"
+
+# Parity vs a plain-torch transcription of PyLaia's LaiaCRNN (input, logits, text).
+test-pylaia-parity IMAGE DEVICE="cpu" NAME="rimes":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="weights/ocr/pylaia-{{NAME}}"
+    [ -f "$dir/weights.ckpt" ] || just fetch-pylaia {{NAME}}
+    ref="/tmp/pylaia-ref-$(basename {{IMAGE}})"
+    "${REF_PY:-python3}" -I scripts/pylaia_reference.py --model "$dir" --image {{IMAGE}} --out "$ref"
+    cargo run -p rlx-pylaia --release {{feature_args}} --example parity -- "$dir" "$ref" {{DEVICE}}
+
+# CATMuS Medieval (Old/Middle French, Latin, …) from Zenodo 10.5281/zenodo.12743230.
+fetch-kraken-catmus:
+    mkdir -p weights/ocr/kraken-catmus-medieval
+    curl -fL -o weights/ocr/kraken-catmus-medieval/catmus-medieval.mlmodel https://zenodo.org/api/records/12743230/files/catmus-medieval.mlmodel/content
+
+# `just kraken -- --model weights/ocr/kraken-catmus-medieval/catmus-medieval.mlmodel --image line.png`
+[positional-arguments]
+kraken *ARGS:
+    cargo run -p rlx-kraken --release {{feature_args}} "$@"
+
+# Parity vs Kraken itself (`.venv-kraken`: `uv pip install kraken==7.1.1`): input, logits, text.
+test-kraken-parity IMAGE DEVICE="cpu" MODEL="weights/ocr/kraken-catmus-medieval/catmus-medieval.mlmodel":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -f {{MODEL}} ] || just fetch-kraken-catmus
+    ref="/tmp/kraken-ref-$(basename {{IMAGE}})"
+    "${REF_PY:-.venv-kraken/bin/python}" scripts/kraken_reference.py --model {{MODEL}} --image {{IMAGE}} --out "$ref"
+    cargo run -p rlx-kraken --release {{feature_args}} --example parity -- {{MODEL}} "$ref" {{DEVICE}}
+
+# `just fetch-trocr small` — microsoft/trocr-{small,base,large}-handwritten (≈250 MB / 1.3 GB / 2.2 GB).
+fetch-trocr SIZE="small":
+    hf download microsoft/trocr-{{SIZE}}-handwritten --local-dir weights/ocr/trocr-{{SIZE}}-handwritten --exclude "*.msgpack" "*.h5"
+
+# `just trocr -- --weights weights/ocr/trocr-small-handwritten --image line.jpg`
+[positional-arguments]
+trocr *ARGS:
+    cargo run -p rlx-trocr --release {{feature_args}} "$@"
+
+# Parity vs transformers (`.venv-trocr`): pixels, encoder, teacher-forced logits, greedy ids, text.
+test-trocr-parity IMAGE DEVICE="cpu" SIZE="small":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="weights/ocr/trocr-{{SIZE}}-handwritten"
+    [ -f "$dir/config.json" ] || just fetch-trocr {{SIZE}}
+    ref="/tmp/trocr-{{SIZE}}-ref-$(basename {{IMAGE}})"
+    "${REF_PY:-.venv-trocr/bin/python}" scripts/trocr_reference.py --model "$dir" --image {{IMAGE}} --out "$ref"
+    cargo run -p rlx-trocr --release {{feature_args}} --example parity -- "$dir" "$ref" {{DEVICE}}
+
+# DAN page checkpoints from Zenodo 7244382 (`rimes` = French letters, `read` = German).
+fetch-dan NAME="rimes":
+    mkdir -p weights/ocr/dan-{{NAME}}
+    curl -fL -o weights/ocr/dan-{{NAME}}/dan_{{NAME}}_page.pt https://zenodo.org/api/records/7244382/files/dan_{{NAME}}_page.pt/content
+
+# `just dan -- --weights weights/ocr/dan-rimes/dan_rimes_page.pt --image page.png` (150 dpi pages)
+[positional-arguments]
+dan *ARGS:
+    cargo run -p rlx-dan --release {{feature_args}} "$@"
+
+# Parity vs a plain-torch transcription of DAN's encoder + decoder loop: features, logits, ids, text.
+test-dan-parity IMAGE DEVICE="cpu" NAME="rimes":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ck="weights/ocr/dan-{{NAME}}/dan_{{NAME}}_page.pt"
+    [ -f "$ck" ] || just fetch-dan {{NAME}}
+    ref="/tmp/dan-ref-$(basename {{IMAGE}})"
+    "${REF_PY:-python3}" -I scripts/dan_reference.py --model "$ck" --image {{IMAGE}} --out "$ref"
+    cargo run -p rlx-dan --release {{feature_args}} --example parity -- "$ck" "$ref" {{DEVICE}}
+
+# Unit + synthetic tests of the four HTR crates (no weights needed).
+test-htr:
+    cargo test -p rlx-pylaia -p rlx-kraken -p rlx-trocr -p rlx-dan
+
 fetch-nllb:
     hf download facebook/nllb-200-distilled-600M config.json generation_config.json tokenizer.json pytorch_model.bin --local-dir weights/mt/nllb-200-distilled-600M
 
@@ -4653,6 +4735,26 @@ test-lfm3-audio-parity DEVICE="cpu":
     [ -f "$dir/LFM3-Audio-2B-F16.gguf" ] || just fetch-lfm3-audio F16
     LFM3_AUDIO_DEVICE={{DEVICE}} LFM3_AUDIO_GGUF="$dir" \
         cargo test -p rlx-lfm3-audio --release {{feature_args}} --test reference_parity -- --nocapture --test-threads=1
+
+# LiquidAI LiquidCodec (24 kHz speech <-> 12 x 12.5 Hz tokens, ~147 MB bf16).
+fetch-liquid-codec:
+    hf download LiquidAI/Liquid-Codec --local-dir weights/audio/liquid-codec
+
+# `just liquid-codec roundtrip --wav clip.wav -o out.wav`, `encode --wav … -o codes.json`,
+# `decode --codes codes.json -o out.wav [--stream]` (add `--device metal` with features=metal).
+liquid-codec *ARGS:
+    cargo run -p rlx-liquid-codec --release {{feature_args}} -- {{ARGS}}
+
+# Parity vs `scripts/liquid_codec_reference.py` (LiquidAI's own modeling code):
+# encoder latents + codes, decoder audio, streaming == whole; plus the LFM3-Audio
+# GGUF decoder when weights/lm/lfm3-audio-2b-gguf is present.
+test-liquid-codec-parity DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/audio/liquid-codec"
+    [ -f "$dir/model.safetensors" ] || just fetch-liquid-codec
+    LIQUID_CODEC_DEVICE={{DEVICE}} LIQUID_CODEC_DIR="$dir" \
+        cargo test -p rlx-liquid-codec --release {{feature_args}} --test reference_parity -- --nocapture --test-threads=1
 
 # LFM3-Audio iOS app (crates/rlx-lfm3-audio-ffi/ios): build the Rust library +
 # app, install, copy the Q4_K_M LM + Q8_0 mmproj, run the self-test.

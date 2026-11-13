@@ -103,6 +103,10 @@ rlx-voxtral-tts = { workspace = true, optional = true }
 rlx-ocr = { workspace = true, optional = true }
 rlx-asr = { workspace = true, optional = true }
 rlx-ppocrv6 = { workspace = true, optional = true }
+rlx-pylaia = { workspace = true, optional = true }
+rlx-kraken = { workspace = true, optional = true }
+rlx-trocr = { workspace = true, optional = true }
+rlx-dan = { workspace = true, optional = true }
 rlx-neutts = { workspace = true, optional = true }
 rlx-orpheus = { workspace = true, optional = true }
 rlx-kittentts = { workspace = true, optional = true }
@@ -161,6 +165,7 @@ rlx-timesfm3 = { workspace = true, optional = true }
 rlx-timestral = { workspace = true, optional = true }
 rlx-pplx-decider = { workspace = true, optional = true }
 rlx-lfm3-audio = { workspace = true, optional = true }
+rlx-liquid-codec = { workspace = true, optional = true }
 rlx-kev = { workspace = true, optional = true }
 rlx-carbon = { workspace = true, optional = true }
 rlx-f0 = { workspace = true, optional = true }
@@ -254,6 +259,7 @@ timesfm3 = ["dep:rlx-timesfm3"]
 timestral = ["dep:rlx-timestral"]
 pplx-decider = ["dep:rlx-pplx-decider"]
 lfm3-audio = ["dep:rlx-lfm3-audio"]
+liquid-codec = ["dep:rlx-liquid-codec"]
 kev = ["dep:rlx-kev"]
 carbon = ["dep:rlx-carbon"]
 f0 = ["dep:rlx-f0"]
@@ -445,6 +451,12 @@ ocr = ["dep:rlx-ocr"]
 # RLX streaming Conformer ASR (`rlx-asr`).
 streaming-asr = ["dep:rlx-asr"]
 ppocrv6 = ["dep:rlx-ppocrv6"]
+# Handwritten text recognition: PyLaia, Kraken, TrOCR (lines) and DAN (pages).
+pylaia = ["dep:rlx-pylaia"]
+kraken = ["dep:rlx-kraken"]
+trocr = ["dep:rlx-trocr"]
+dan = ["dep:rlx-dan"]
+htr = ["pylaia", "kraken", "trocr", "dan"]
 neutts = ["dep:rlx-neutts"]
 orpheus = ["dep:rlx-orpheus"]
 kittentts = ["dep:rlx-kittentts"]

@@ -1,0 +1,49 @@
+[package]
+name = "rlx-liquid-codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "LiquidAI LiquidCodec (Liquid-Codec): 24 kHz speech ↔ 12 × 12.5 Hz GFSQ tokens — STFT front end, causal LFM3 encoder and decoder as rlx graphs, streaming decode"
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+half = { workspace = true }
+rlx-cli = { workspace = true }
+rlx-core = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-lfm3-audio = { workspace = true }
+rlx-runtime = { workspace = true }
+rustfft = "6"
+safetensors = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "rlx-liquid-codec"
+path = "src/bin/rlx_liquid_codec.rs"
+
+[features]
+default = []
+metal = ["rlx-runtime/metal", "rlx-lfm3-audio/metal"]
+mlx = ["rlx-runtime/mlx", "rlx-lfm3-audio/mlx"]
+cuda = ["rlx-runtime/cuda", "rlx-lfm3-audio/cuda"]
+rocm = ["rlx-runtime/rocm", "rlx-lfm3-audio/rocm"]
+gpu = ["rlx-runtime/gpu", "rlx-lfm3-audio/gpu"]
+vulkan = ["rlx-runtime/vulkan", "rlx-lfm3-audio/vulkan"]
+# Apple Neural Engine (`Device::Ane`) and Google TPU (`Device::Tpu`): opt-in,
+# outside `all-backends`, like the rest of the workspace.
+coreml = ["rlx-runtime/coreml", "rlx-lfm3-audio/coreml"]
+tpu = ["rlx-runtime/tpu", "rlx-lfm3-audio/tpu"]
+all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
+apple-silicon = ["metal", "mlx", "coreml"]
+nvidia-gpu = ["cuda"]
+amd-gpu = ["rocm"]
+
+[lints]
+workspace = true

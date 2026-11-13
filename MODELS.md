@@ -2,7 +2,7 @@
 
 Every model family in this workspace, one crate per architecture. This catalog is generated from each crate's `Cargo.toml` (`description` + backend feature set).
 
-**215 model families** across 17 categories, plus 4 training crates and 1 interpretability crate. Shared infrastructure, servers, and benchmark crates are not listed here.
+**220 model families** across 17 categories, plus 4 training crates and 1 interpretability crate. Shared infrastructure, servers, and benchmark crates are not listed here.
 
 ## Backends
 
@@ -27,16 +27,16 @@ Enable GPU backends at build time with matching features, e.g. `cargo build -p r
 | [Text & vision embeddings](#text--vision-embeddings) | 5 |
 | [Text processing (NLP)](#text-processing-nlp) | 1 |
 | [Image, video & 3D generation](#image-video--3d-generation) | 8 |
-| [OCR & document understanding](#ocr--document-understanding) | 7 |
+| [OCR & document understanding](#ocr--document-understanding) | 11 |
 | [Speech recognition (ASR)](#speech-recognition-asr) | 16 |
 | [Text-to-speech & speech LMs](#text-to-speech--speech-lms) | 47 |
 | [Voice conversion](#voice-conversion) | 3 |
 | [Music & audio generation](#music--audio-generation) | 3 |
 | [Audio source separation](#audio-source-separation) | 2 |
-| [Neural audio codecs](#neural-audio-codecs) | 11 |
+| [Neural audio codecs](#neural-audio-codecs) | 12 |
 | [Speech front-end, wake-word & DSP](#speech-front-end-wake-word--dsp) | 31 |
 | [Robotics (vision-language-action)](#robotics-vision-language-action) | 1 |
-| **Total** | **215** |
+| **Total** | **220** |
 
 ## Language models (text LLMs & reasoning)
 
@@ -190,16 +190,20 @@ Rectified-flow / diffusion image and image-to-3D, plus flow reward alignment.
 
 ## OCR & document understanding
 
-Text detection + recognition, VLM OCR, and terminal-screen extraction.
+Text detection + recognition, handwritten text recognition (lines and pages), VLM OCR, and terminal-screen extraction.
 
 | Crate | Description | Backends |
 |---|---|---|
+| `rlx-dan` | DAN (Document Attention Network) full-page handwritten text recognition for RLX | **All 7** — parity verified on CPU, Metal, MLX, wgpu |
 | `rlx-indra` | Indra OCR (datalab-to/indra) — native RLX graphs + Rust page pipeline (no runtime ONNX) | **All 7** wired; parity vs ONNX Runtime per graph |
 | `rlx-jina-ocr` | jinaai/jina-ocr-v1 — DeepSeek-OCR DeepEncoder + MoE LM + FastMTP | **All 7** |
+| `rlx-kraken` | Kraken VGSL text recognition models (Core ML .mlmodel, CTC) for RLX | **All 7** — parity verified on CPU, Metal, MLX, wgpu |
 | `rlx-ocr` | OCR engine for RLX — text detection + recognition | **All 7** |
 | `rlx-ocr2` | Native RLX OCR: CRAFT-style text detector + CRNN/CTC recognizer + n-gram/lexicon correction | CPU, Metal, MLX, CUDA, wgpu, Vulkan (+CoreML) |
 | `rlx-ppocrv6` | PP-OCRv6 tiny/small OCR — native RLX HIR + safetensors (no runtime ONNX) | **All 7** (+CoreML) |
+| `rlx-pylaia` | PyLaia CRNN handwritten text recognition (conv blocks + BiLSTM + CTC) for RLX | **All 7** — parity verified on CPU, Metal, MLX, wgpu |
 | `rlx-termclean` | Fast TUI text extraction: strip chrome from terminal screens, classify line types, and reconstruct scrolled documents (pure-std, batched, multicore; optional Metal tagger) | CPU |
+| `rlx-trocr` | TrOCR transformer text recognition (ViT/DeiT encoder + autoregressive decoder) for RLX | **All 7** — parity verified on CPU, Metal, MLX, wgpu |
 | `rlx-unlimited-ocr` | baidu/Unlimited-OCR (SAM + CLIP DeepEncoder + MoE LM) for RLX | **All 7** |
 
 ## Speech recognition (ASR)
@@ -317,6 +321,7 @@ RVQ / FSQ / VAE codecs and speech tokenizers.
 | `rlx-dac` | Descript Audio Codec (DAC) neural audio codec for RLX | **All 7** |
 | `rlx-encodec` | Meta EnCodec neural audio codec (facebook/encodec_24khz) for RLX — multi-backend | **All 7** |
 | `rlx-facodec` | FACodec (amphion/naturalspeech3_facodec) factorized codec for RLX — multi-backend HiFi-GAN/BigVGAN decoder | **All 7** |
+| `rlx-liquid-codec` | LiquidAI LiquidCodec (Liquid-Codec): 24 kHz speech ↔ 12 × 12.5 Hz GFSQ tokens — STFT front end, causal LFM3 encoder and decoder as rlx graphs, streaming encode and decode | **All 7** + CoreML verified (CPU arm64/x86, Metal, MLX, wgpu, Vulkan, CUDA, ROCm) — vs LiquidAI's own modeling code: codes identical (600/600, also chunked and streamed), decoded audio within 8e-6 (CUDA with TF32 off), streaming = whole-clip; streaming 1.5 ms/frame CUDA, 6-7 ms x86 CPU; 10-min encode < 1 GB |
 | `rlx-mimi` | Kyutai Mimi neural audio codec (12.5 Hz, 24 kHz) for RLX | **All 7** |
 | `rlx-nanocodec` | NVIDIA NanoCodec (nvidia/nemo-nano-codec) FSQ codec for RLX — multi-backend causal HiFi-GAN decoder | **All 7** |
 | `rlx-snac` | SNAC multi-scale neural audio codec (hubertsiuzdak/snac) for RLX — multi-backend | **All 7** |

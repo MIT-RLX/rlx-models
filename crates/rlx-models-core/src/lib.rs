@@ -32,6 +32,7 @@ pub mod backend_matrix;
 pub mod block_weights;
 pub mod codec_bench;
 pub mod config;
+pub mod ctc;
 pub mod dataprocessing;
 pub mod device_capabilities;
 pub mod distributed_bridge;
