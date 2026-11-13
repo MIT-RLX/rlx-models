@@ -95,6 +95,7 @@ pub mod pretrain;
 pub mod prompt_cache;
 pub mod resource;
 pub mod safetensors_checkpoint;
+pub mod sentencepiece;
 pub mod standard_decoder;
 pub mod tokenizer;
 pub mod vision_ops_ir;

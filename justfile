@@ -2548,6 +2548,14 @@ pocket-tts TEXT="Hello world. I am Kyutai's Pocket TTS." LANG="english" VOICE="a
         say "{{TEXT}}" --root "{{POCKET_TTS_DIR}}" --language {{LANG}} --voice "{{VOICE}}" \
         --device {{DEVICE}} -o "{{OUT}}"
 
+# rlx_core::sentencepiece vs the C++ SentencePiece: ids + decoded text for MODELS
+# (e.g. Pocket TTS's tokenizer.model files) and small trained models covering
+# charsmap normalization, BPE, byte fallback, user-defined symbols, char and word.
+test-sentencepiece-parity +MODELS:
+    rm -rf /tmp/rlx-spm-reference
+    "${PYTHON:-python3}" -I scripts/sentencepiece_reference.py /tmp/rlx-spm-reference --train {{MODELS}}
+    RLX_SPM_REFERENCE_DIR=/tmp/rlx-spm-reference cargo test -p rlx-models-core --test sentencepiece_parity -- --nocapture
+
 # Parity vs upstream pocket_tts (tokens, per-frame backbone/EOS/latents, audio).
 # Make REF with scripts/pocket_tts_reference.py in .venv-pocket first.
 test-pocket-tts-parity REF DEVICE="cpu":

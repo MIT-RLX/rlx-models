@@ -35,6 +35,13 @@ that message rather than producing garbage. The drifting model reuses
 `--root` accepts a checkout of either repo, a `languages/<name>` directory, or a
 flat directory with one `*.safetensors` and `tokenizer.model` (the January mirror).
 
+The tokenizer is [`rlx_core::sentencepiece`](../rlx-models-core/src/sentencepiece.rs),
+a Rust SentencePiece with no C++ build. It reads `tokenizer.model` or
+`tokenizer.json`. Its token ids match the C++ library and HF `tokenizers`
+exactly, on the French and English models and on 3000 random French strings.
+To re-check, run `just test-sentencepiece-parity languages/french/tokenizer.model`
+(needs `pip install sentencepiece`).
+
 ## Usage
 
 ```bash

@@ -1,17 +1,19 @@
 // Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna.
 // Licensed under GNU GPL v3. See top-level LICENSE.
 
-//! SentencePiece tokenizer bridge + simple sentence-aware chunker.
+//! SentencePiece tokenizer + simple sentence-aware chunker.
 //!
-//! Pocket TTS ships a SentencePiece model with vocab=4000. Long inputs must be
+//! Pocket TTS ships a SentencePiece model with vocab=4000, read and run by
+//! [`rlx_core::sentencepiece`] (Rust; no C++ library). The `.model` and the
+//! repository's `tokenizer.json` both load and segment identically. Long inputs must be
 //! split into chunks of ≤ 50 tokens at sentence boundaries (`.`, `!`, `?`,
 //! `...`) — falling back to `,;:` for sentences that are too long — before
 //! handing them to the FlowLM. See `pocket_tts/main.py::split_text_into_chunks`.
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use sentencepiece::SentencePieceProcessor;
+use anyhow::Result;
+use rlx_core::sentencepiece::SentencePiece;
 
 /// Maximum tokens per generation chunk (matches pocket_tts default).
 pub const MAX_TOKENS_PER_CHUNK: usize = 50;
@@ -61,23 +63,21 @@ pub fn prepare_text_prompt(text: &str, pad_with_spaces_for_short_inputs: bool) -
 }
 
 pub struct PocketTokenizer {
-    sp: SentencePieceProcessor,
+    sp: SentencePiece,
 }
 
 impl PocketTokenizer {
+    /// Load a SentencePiece `.model`, or a `tokenizer.json` holding its
+    /// unigram conversion.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let sp = SentencePieceProcessor::open(path.as_ref())
-            .with_context(|| format!("open tokenizer {}", path.as_ref().display()))?;
-        Ok(Self { sp })
+        Ok(Self {
+            sp: SentencePiece::open(path)?,
+        })
     }
 
     /// Encode `text` to token IDs (no BOS/EOS).
     pub fn encode(&self, text: &str) -> Result<Vec<u32>> {
-        let ids = self
-            .sp
-            .encode(text)
-            .with_context(|| format!("encode {text:?}"))?;
-        Ok(ids.into_iter().map(|p| p.id).collect())
+        Ok(self.sp.encode(text))
     }
 
     pub fn vocab_size(&self) -> usize {
@@ -85,7 +85,12 @@ impl PocketTokenizer {
     }
 
     pub fn decode(&self, ids: &[u32]) -> Result<String> {
-        Ok(self.sp.decode_piece_ids(ids)?)
+        self.sp.decode(ids)
+    }
+
+    /// The underlying SentencePiece model.
+    pub fn sentencepiece(&self) -> &SentencePiece {
+        &self.sp
     }
 }
 
