@@ -672,61 +672,74 @@ impl Qwen35Weights {
     /// which is never released either, so both layouts keep one vocab-sized
     /// table on the host.
     pub fn clear_dense_f32_projections(&mut self) {
-        fn clear_mat(m: &mut MatWeight) {
-            if let MatWeight::F32(v) = m {
+        self.clear_dense_f32_projections_at_least(0);
+    }
+
+    /// [`Self::clear_dense_f32_projections`] for the projections of at least
+    /// `min_elems` elements only, so the small ones stay on the host.
+    ///
+    /// The builder takes a cleared projection for a param with no data (its
+    /// shape comes from the config): one already resident on the device, such
+    /// as a weight a sharing scope maps from another live executable, can then
+    /// be built against again without reloading the checkpoint.
+    pub fn clear_dense_f32_projections_at_least(&mut self, min_elems: usize) {
+        fn clear_mat(m: &mut MatWeight, min: usize) {
+            if let MatWeight::F32(v) = m
+                && v.len() >= min
+            {
                 v.clear();
                 v.shrink_to_fit();
             }
         }
-        fn clear_proj(p: &mut Proj) {
-            p.mats_mut().for_each(clear_mat);
+        fn clear_proj(p: &mut Proj, min: usize) {
+            p.mats_mut().for_each(|m| clear_mat(m, min));
         }
-        fn clear_ffn(ffn: &mut Qwen35LayerFfn) {
+        fn clear_ffn(ffn: &mut Qwen35LayerFfn, min: usize) {
             match ffn {
                 Qwen35LayerFfn::Dense { gate, up, down } => {
-                    clear_proj(gate);
-                    clear_proj(up);
-                    clear_proj(down);
+                    clear_proj(gate, min);
+                    clear_proj(up, min);
+                    clear_proj(down, min);
                 }
                 Qwen35LayerFfn::Moe(m) => {
-                    clear_mat(&mut m.router);
-                    clear_mat(&mut m.gate_exps);
-                    clear_mat(&mut m.up_exps);
-                    clear_mat(&mut m.down_exps);
-                    clear_mat(&mut m.shared_gate);
-                    clear_mat(&mut m.shared_up);
-                    clear_mat(&mut m.shared_down);
+                    clear_mat(&mut m.router, min);
+                    clear_mat(&mut m.gate_exps, min);
+                    clear_mat(&mut m.up_exps, min);
+                    clear_mat(&mut m.down_exps, min);
+                    clear_mat(&mut m.shared_gate, min);
+                    clear_mat(&mut m.shared_up, min);
+                    clear_mat(&mut m.shared_down, min);
                 }
             }
         }
-        fn clear_full(t: &mut Qwen35FullAttnLayer) {
-            clear_proj(&mut t.attn_q_gate);
-            clear_proj(&mut t.attn_k);
-            clear_proj(&mut t.attn_v);
-            clear_proj(&mut t.attn_output);
-            clear_ffn(&mut t.ffn);
+        fn clear_full(t: &mut Qwen35FullAttnLayer, min: usize) {
+            clear_proj(&mut t.attn_q_gate, min);
+            clear_proj(&mut t.attn_k, min);
+            clear_proj(&mut t.attn_v, min);
+            clear_proj(&mut t.attn_output, min);
+            clear_ffn(&mut t.ffn, min);
         }
         for layer in &mut self.trunk_layers {
             match layer {
                 Qwen35TrunkLayer::Linear(t) => {
-                    clear_proj(&mut t.attn_qkv);
-                    clear_proj(&mut t.attn_gate);
-                    clear_proj(&mut t.ssm_beta);
-                    clear_proj(&mut t.ssm_alpha);
-                    clear_proj(&mut t.ssm_out);
-                    clear_ffn(&mut t.ffn);
+                    clear_proj(&mut t.attn_qkv, min_elems);
+                    clear_proj(&mut t.attn_gate, min_elems);
+                    clear_proj(&mut t.ssm_beta, min_elems);
+                    clear_proj(&mut t.ssm_alpha, min_elems);
+                    clear_proj(&mut t.ssm_out, min_elems);
+                    clear_ffn(&mut t.ffn, min_elems);
                 }
-                Qwen35TrunkLayer::FullAttn(t) => clear_full(t),
+                Qwen35TrunkLayer::FullAttn(t) => clear_full(t, min_elems),
             }
         }
         for m in &mut self.mtp_layers {
-            clear_full(&mut m.base);
-            clear_mat(&mut m.eh_proj);
+            clear_full(&mut m.base, min_elems);
+            clear_mat(&mut m.eh_proj, min_elems);
             if let Some(e) = m.embed_tokens.as_mut() {
-                clear_mat(e);
+                clear_mat(e, min_elems);
             }
             if let Some(h) = m.shared_head_head.as_mut() {
-                clear_mat(h);
+                clear_mat(h, min_elems);
             }
         }
     }

@@ -85,7 +85,7 @@ Peak process footprint, CPU, measured with `/usr/bin/time -l`:
 |---|---|---|---|
 | encode 20 s | 0.80 GB | 0.50 GB | 0.36 GB |
 | encode 10 min | 3.66 GB (one graph) | 0.74 GB | 0.64 GB |
-| stream-encode 10 min | 4.37 GB | 0.99 GB | — |
+| stream-encode 10 min | 4.37 GB | 0.72 GB | — |
 | roundtrip 20 s | — | 0.77 GB | 0.56 GB |
 
 What changed:
@@ -165,8 +165,12 @@ compile):
 | CUDA, RTX 3080 Ti | 5 / 8 ms | 1.6 ms | 1.5 / 1.5 ms |
 | ROCm, Radeon 780M | 30 / 54 ms | 5.3 ms | 5.6 / 8.5 ms |
 | Vulkan, RTX 3080 Ti | 42 / 112 ms | 24 ms | 22 / 22 ms |
-| Metal (Mac under load) | — / 13 ms | — | 7.0 / 10 ms |
+| CPU, M-series Mac | 12 / 42 ms | 2.3 ms | 3.1 / 3.3 ms |
+| Metal | 13 / 11 ms | 3.1 ms | 4.9 / 5.1 ms |
+| MLX | 16 / 18 ms | 11 ms | 11 / 14 ms |
 
 Compiling each graph takes 120–350 ms. A streamed encoder step attends
-over everything so far, so its cost grows with the stream. Over a
-10-minute stream on a loaded Mac it averaged 14–30 ms per frame.
+over everything so far, so its cost grows with the stream. A 10-minute
+stream (7500 frames) averages 7.1 ms per frame on Mac CPU (real-time factor
+0.089, 0.72 GB peak) and 6.5 ms on Metal (0.082). CPU and Metal give
+identical codes.

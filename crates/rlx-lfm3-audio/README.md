@@ -51,6 +51,12 @@ for the other 32); the builder reads that back as "rotate the first half, keep
 the zero-tail progression of the full head", as `Lfm3RotaryEmbedding` does.
 The codec decoder's 30-step window has no metadata key and is fixed.
 
+The builder is public for other LFM3 checkpoints: `graph::Gb` takes any
+`rlx_core::weight_loader::WeightLoader` (the GGUF loader here, safetensors in
+[`rlx-liquid-codec`](../rlx-liquid-codec/README.md)), `trunk::sequence` builds
+a whole-sequence stack and `trunk::step` a KV-cached one, and `Istft` is the
+codec's inverse STFT fed a piece at a time (`istft()` is the one-call form).
+
 The LM advances against fixed-size caches (one compile per 256 slots): a
 32-row graph for prompt chunks (masked matmul attention) and a 1-row graph for
 decoding. Quantized projections stay packed (`DequantMatMul`), the tied LM head

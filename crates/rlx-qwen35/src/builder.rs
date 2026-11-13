@@ -3745,6 +3745,15 @@ fn proj_mat(
     expected_out: usize,
 ) -> NodeId {
     match weight {
+        // Cleared by `clear_dense_f32_projections_at_least`: the param, with no
+        // data to set. Whoever compiles it must find it resident already.
+        MatWeight::F32(data) if data.is_empty() => register_param(
+            g,
+            params,
+            name,
+            Vec::new(),
+            Shape::new(&[expected_in, expected_out], DType::F32),
+        ),
         MatWeight::F32(data) => {
             assert_eq!(
                 data.len(),
