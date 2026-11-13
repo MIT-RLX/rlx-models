@@ -92,10 +92,8 @@ lm-tts = [
     "dep:rlx-orpheus",
     "dep:rlx-kittentts",
     "dep:rlx-qwen3-tts",
+    "kyutai",
 ]
-# kyutai is separate: rlx-kyutai-tts pulls C++ sentencepiece, whose statically
-# linked protobuf collides with ort_sys when ORT is also linked. Keep it out
-# of `lm-tts` so mixed builds stay clean. Opt in via `kyutai` or `all-models`.
 kyutai = ["dep:rlx-kyutai-tts"]
 all-models = ["matrix-native", "matrix-ar", "lm-tts", "kyutai", "rlx-tts"]
 

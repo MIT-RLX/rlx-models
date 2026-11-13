@@ -74,9 +74,18 @@ impl VoiceFile {
         let path = path.as_ref();
         let wf =
             WeightFile::open(path).with_context(|| format!("open voice {}", path.display()))?;
+        Self::read(&wf).with_context(|| path.display().to_string())
+    }
+
+    /// A voice `.safetensors` already in memory.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        Self::read(&WeightFile::from_bytes(bytes)?)
+    }
+
+    fn read(wf: &WeightFile) -> Result<Self> {
         let names = wf.names()?;
         if names.iter().any(|n| n.ends_with("self_attn/cache")) {
-            return read_state(&wf, &names).map(Self::State);
+            return read_state(wf, &names).map(Self::State);
         }
         for key in ["audio_prompt", "conditioning"] {
             if let Ok((data, shape)) = wf.get_f32(key) {
@@ -87,10 +96,7 @@ impl VoiceFile {
                 return Ok(Self::Prompt { rows, dim, data });
             }
         }
-        bail!(
-            "{}: neither a voice state (…self_attn/cache) nor an audio_prompt",
-            path.display()
-        )
+        bail!("neither a voice state (…self_attn/cache) nor an audio_prompt")
     }
 }
 

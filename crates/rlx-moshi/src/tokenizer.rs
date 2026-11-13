@@ -1,18 +1,17 @@
-use anyhow::{Context, Result};
-use sentencepiece::SentencePieceProcessor;
+use anyhow::Result;
+use rlx_core::sentencepiece::SentencePiece;
 use std::path::Path;
 
 /// Moshi text tokenizer (SentencePiece, 32k vocab).
 pub struct MoshiTokenizer {
-    inner: SentencePieceProcessor,
+    inner: SentencePiece,
     pub text_start_token: u32,
     pub text_pad_token: u32,
 }
 
 impl MoshiTokenizer {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let inner = SentencePieceProcessor::open(path.as_ref())
-            .with_context(|| format!("open tokenizer {}", path.as_ref().display()))?;
+        let inner = SentencePiece::open(path)?;
         Ok(Self {
             inner,
             text_start_token: 32_000,
@@ -21,15 +20,11 @@ impl MoshiTokenizer {
     }
 
     pub fn encode(&self, text: &str) -> Result<Vec<u32>> {
-        let ids = self
-            .inner
-            .encode(text)
-            .with_context(|| format!("encode {text:?}"))?;
-        Ok(ids.into_iter().map(|p| p.id).collect())
+        Ok(self.inner.encode(text))
     }
 
     pub fn decode_piece(&self, id: u32) -> Result<String> {
-        Ok(self.inner.decode_piece_ids(&[id])?)
+        self.inner.decode(&[id])
     }
 
     /// Build per-frame text tokens for one-way generation: pad + inner-monologue prefix.

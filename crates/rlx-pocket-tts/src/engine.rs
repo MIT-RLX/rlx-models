@@ -257,6 +257,36 @@ impl PocketTts {
         let ck = Checkpoint::open(&files.weights)
             .with_context(|| format!("weights {}", files.weights.display()))?;
         let tokenizer = PocketTokenizer::open(&files.tokenizer)?;
+        Self::from_parts(spec, files, ck, tokenizer, device)
+    }
+
+    /// `language`'s model from bytes already in memory (a browser has no
+    /// files): the checkpoint and the SentencePiece `.model`. Voices then
+    /// come from [`voice_from_bytes`](Self::voice_from_bytes).
+    pub fn from_bytes(
+        language: &str,
+        weights: Vec<u8>,
+        tokenizer: &[u8],
+        device: Device,
+    ) -> Result<Self> {
+        let spec = ModelSpec::builtin(language)?;
+        let files = ModelFiles {
+            weights: PathBuf::from("<memory>/model.safetensors"),
+            tokenizer: PathBuf::from("<memory>/tokenizer.model"),
+            voices: None,
+        };
+        let ck = Checkpoint::from_bytes(weights).context("weights")?;
+        let tokenizer = PocketTokenizer::from_bytes(tokenizer).context("tokenizer")?;
+        Self::from_parts(spec, files, ck, tokenizer, device)
+    }
+
+    fn from_parts(
+        spec: ModelSpec,
+        files: ModelFiles,
+        ck: Checkpoint,
+        tokenizer: PocketTokenizer,
+        device: Device,
+    ) -> Result<Self> {
         let dims = FlowLmDims::new(&spec);
         let lut = &spec.flow_lm.lookup_table;
         let embed = ck.tensor("flow_lm.conditioner.embed.weight")?;
@@ -355,12 +385,22 @@ impl PocketTts {
             }
             p
         };
-        match VoiceFile::open(&path)? {
+        let file = VoiceFile::open(&path)?;
+        self.voice_of(file)
+            .with_context(|| format!("voice {}", path.display()))
+    }
+
+    /// A voice `.safetensors` already in memory (one of `embeddings/`).
+    pub fn voice_from_bytes(&mut self, bytes: Vec<u8>) -> Result<VoiceState> {
+        self.voice_of(VoiceFile::from_bytes(bytes)?)
+    }
+
+    fn voice_of(&mut self, file: VoiceFile) -> Result<VoiceState> {
+        match file {
             VoiceFile::State(s) => {
                 if s.num_layers() != self.dims.num_layers || s.kv_dim != self.dims.kv_dim() {
                     bail!(
-                        "voice {} has {} layers × {} kv, the model {} × {}",
-                        path.display(),
+                        "voice has {} layers × {} kv, the model {} × {}",
                         s.num_layers(),
                         s.kv_dim,
                         self.dims.num_layers,
@@ -592,17 +632,19 @@ impl PocketTts {
             bail!("chunk {text:?} has no tokens");
         }
         let timing = rlx_ir::env::flag("RLX_POCKET_TTS_TIMING");
-        let t0 = std::time::Instant::now();
+        // The clock only when timing: `Instant::now` panics on wasm32.
+        let t0 = timing.then(std::time::Instant::now);
+        let elapsed = || t0.map(|t| t.elapsed()).unwrap_or_default();
         let max_gen = self.max_gen_len(tokens.len());
         let mut kv = Kv::from_state(voice, bucket(voice.offset + tokens.len() + max_gen));
         self.step_graph(kv.cap)?;
-        let t_compile = t0.elapsed();
+        let t_compile = elapsed();
         let zeros = vec![0.0; self.dims.latent_dim];
         for &t in &tokens {
             let x = self.embed_token(t);
             self.step(&x, &zeros, &mut kv)?;
         }
-        let t_prompt = t0.elapsed();
+        let t_prompt = elapsed();
 
         let ldim = self.dims.latent_dim;
         let mut out = ChunkOutput::default();
@@ -636,7 +678,7 @@ impl PocketTts {
             });
         }
 
-        let t_gen = t0.elapsed();
+        let t_gen = elapsed();
         out.audio_raw = self.decode_latents(&out.latents)?;
         if timing {
             let frames = out.eos_logits.len();
@@ -649,7 +691,7 @@ impl PocketTts {
                 (t_prompt - t_compile).as_secs_f64() * 1e3,
                 (t_gen - t_prompt).as_secs_f64() * 1e3,
                 (t_gen - t_prompt).as_secs_f64() * 1e3 / frames.max(1) as f64,
-                (t0.elapsed() - t_gen).as_secs_f64() * 1e3,
+                (elapsed() - t_gen).as_secs_f64() * 1e3,
             );
         }
         out.audio = out.audio_raw.clone();

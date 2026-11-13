@@ -156,6 +156,67 @@ back on an *unsupported* error — a real failure is returned as-is. The fallbac
 is **quadratic**; `is_passthrough()` reports whether it is engaged and
 `reprefills()` counts it. See [`rlx-serve`](../rlx-serve)'s `host_drivable`.
 
+## SentencePiece (`sentencepiece`)
+
+`rlx_core::sentencepiece` is SentencePiece in Rust. It reads a `.model`
+(`ModelProto`) and does what the C++ `SentencePieceProcessor` does, with no
+C++ build and no protobuf library. Use it instead of the `sentencepiece`
+crate. It runs anywhere the rest of `rlx-core` runs, wasm32 included.
+
+```rust
+use rlx_core::sentencepiece::{EncodeOptions, SentencePiece, SplitMix64};
+
+let sp = SentencePiece::open("tokenizer.model")?; // or a Unigram tokenizer.json
+let ids = sp.encode("Bonjour le monde");          // Vec<u32>, no BOS/EOS
+let text = sp.decode(&ids)?;
+
+// Pieces with their surface and byte span in the input.
+let e = sp.encode_full("Ça va");                  // e.pieces[i].{piece, id, surface, begin, end}
+// add_bos / add_eos / reverse / emit_unk_piece, applied as the C++ applies them.
+let e = sp.encode_with("Ça va", &EncodeOptions { add_bos: true, add_eos: true, ..Default::default() })?;
+// The n best segmentations with scores (unigram).
+let best = sp.nbest_encode("bonjour", 8)?;
+// Subword regularization: unigram sampling (nbest_size -1 = whole lattice), or BPE-dropout.
+let mut rng = SplitMix64(42);
+let sampled = sp.sample_encode("bonjour", -1, 0.1, &mut || rng.uniform())?;
+```
+
+| Part | What it covers |
+|------|----------------|
+| Normalizer | Precompiled charsmap (darts-clone double array, longest match), user-defined symbols kept whole, `add_dummy_prefix`, `remove_extra_whitespaces`, `escape_whitespaces`, `treat_whitespace_as_suffix`, offsets back into the input (`normalize_with_offsets`); the denormalizer on decoded text |
+| Models | Unigram (the optimized Viterbi; a lattice for n-best and sampling), BPE (score-ordered merges, `UNUSED` pieces re-split, dropout), word, char |
+| Processor | Byte fallback, runs of unknown pieces merged, per-piece surfaces and spans, `bos` / `eos` / `reverse` / `unk` options (`parse_extra_options`), decoding of ids (`decode`, `decode_full` with spans) or piece strings (`decode_pieces`), `bos_id` / `eos_id` / `pad_id` / `unk_id`, `is_control` / `is_byte` / … |
+| `tokenizer.json` | A Hugging Face `Unigram` conversion. `Precompiled`, `Replace(" {2,}")`, `Prepend("▁")` and the `Metaspace` prefix map back to their SentencePiece settings, and any other normalizer is an error |
+
+This covers the API of the current Python binding (0.2.3). Upstream has
+dropped `calculate_entropy`, `set_vocabulary` and `sample_encode_and_score`,
+so they are not here. Sampling follows the C++ in distribution, not draw for
+draw, because the random generators differ.
+
+**Parity.** `just test-sentencepiece-parity MODEL…` runs
+`scripts/sentencepiece_reference.py` with the PyPI wheel over the given models
+plus ten trained ones. These cover charsmaps, BPE with and without byte
+fallback, user-defined symbols, kept and suffix whitespace, denormalization,
+char and word. `tests/sentencepiece_parity.rs` then compares the C++ output
+with this crate's. It checks ids, pieces and spans, extra options, normalized
+text and offsets, n-best, decoding with spans, and sampling distributions. On
+2026-11-13, 9215 of 9215 checks matched over 20 models: Pocket TTS fr/en,
+Kyutai TTS, Moshi, MOSS-TTS-Nano, T5, MiniCPM-V 4, MiniCPM-SALA, SenseVoice,
+TrOCR and the trained ten.
+
+Some C++ behaviour this reproduces had to be measured from the library's
+output:
+
+- A user-defined piece scores `0.1 · (characters − 1)`.
+- An unknown character scores `min_score − 10`.
+- `nbest_size` above 512 is an error, not clamped.
+- Decoding strips the dummy-prefix `▁` from the first non-control piece only.
+  With `remove_extra_whitespaces`, it keeps stripping until a piece decodes to
+  visible text.
+- The denormalizer rewrites the decoded text but not the pieces' spans.
+- The Python binding reports normalize and offset-mapping offsets in
+  characters; proto `begin` / `end` are bytes.
+
 ## MXFP4 encoder
 
 [`mxfp4_pack`](src/mxfp4_pack.rs) is rlx's f32 → MXFP4 **encoder** — E2M1 nibbles

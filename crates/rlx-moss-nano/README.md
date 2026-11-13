@@ -63,7 +63,10 @@ cargo run -p rlx-moss-nano --release --features macos-gpu -- \
 ## Notes
 
 - **Tokenizer**: convert `tokenizer.model` (SentencePiece BPE) to `tokenizer.json`
-  for the pure-Rust `tokenizers` crate when packing from loose ONNX.
+  for the pure-Rust `tokenizers` crate when packing from loose ONNX. Packages
+  ship that `tokenizer.json`. [`rlx_core::sentencepiece`](../rlx-models-core/README.md#sentencepiece-sentencepiece)
+  also reads `tokenizer.model` directly and matches the C++ library on it,
+  without the conversion step.
 - Override sampler device with `RLX_MOSS_SAMPLER_DEVICE=gpu` (may break cross-backend
   token identity).
 - Output PCM is pause-polished by default: lead/trail trim + internal holes

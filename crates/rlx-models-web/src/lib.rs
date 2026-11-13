@@ -43,6 +43,8 @@ use wasm_bindgen::prelude::*;
 
 mod audio8;
 pub use audio8::*;
+mod pocket;
+pub use pocket::*;
 
 /// Runs when the module loads: route Rust panics to `console.error`.
 #[cfg(target_arch = "wasm32")]

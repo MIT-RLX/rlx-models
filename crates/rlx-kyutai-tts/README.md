@@ -74,7 +74,7 @@ cargo run --release --example generate_wav -p rlx-kyutai-tts -- \
 | `config.json` | 2.4 kB | Static architecture |
 | `dsm_tts_1e68beda@240.safetensors` | 3.68 GB | Backbone + DepFormer weights |
 | `tokenizer-e351c8d8-checkpoint125.safetensors` | 385 MB | Mimi codec sidecar (same as `kyutai/moshiko-*`) |
-| `tokenizer_spm_8k_en_fr_audio.model` | 120 kB | SentencePiece text tokenizer |
+| `tokenizer_spm_8k_en_fr_audio.model` | 120 kB | SentencePiece text tokenizer, read by [`rlx_core::sentencepiece`](../rlx-models-core/README.md#sentencepiece-sentencepiece) (Rust, no C++) |
 
 The Mimi sidecar matches the file shipped by `kyutai/moshiko-*` — [`rlx_mimi::resolve_candle_weights`](../rlx-mimi/src/download.rs) picks it up out of the TTS dir.
 

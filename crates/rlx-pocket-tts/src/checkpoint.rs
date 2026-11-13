@@ -27,6 +27,13 @@ pub struct Checkpoint {
 }
 
 impl Checkpoint {
+    /// The checkpoint's bytes, already in memory.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        Ok(Self {
+            file: WeightFile::from_bytes(bytes)?,
+        })
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             file: WeightFile::open(path)?,

@@ -75,6 +75,13 @@ impl PocketTokenizer {
         })
     }
 
+    /// A SentencePiece `.model` already in memory.
+    pub fn from_bytes(model: &[u8]) -> Result<Self> {
+        Ok(Self {
+            sp: SentencePiece::from_bytes(model)?,
+        })
+    }
+
     /// Encode `text` to token IDs (no BOS/EOS).
     pub fn encode(&self, text: &str) -> Result<Vec<u32>> {
         Ok(self.sp.encode(text))

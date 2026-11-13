@@ -90,6 +90,11 @@ just fetch-moshika-q4         # Moshika MLX Q4
 
 (`--device mlx` uses Metal GPU via Candle Metal; native rlx-mlx quantized matmul is future work.)
 
+The text tokenizer (`tokenizer_spm_32k_3.model`) is read by
+[`rlx_core::sentencepiece`](../rlx-models-core/README.md#sentencepiece-sentencepiece),
+SentencePiece in Rust. There is no C++ build, and its ids match the C++
+library on this model.
+
 ## Environment
 
 | Variable | Default | Purpose |

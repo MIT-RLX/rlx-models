@@ -17,6 +17,12 @@ pub struct WeightFile {
 }
 
 impl WeightFile {
+    /// A safetensors file already in memory (a browser has no files).
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        SafeTensors::deserialize(&bytes).context("parse safetensors")?;
+        Ok(Self { bytes })
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;

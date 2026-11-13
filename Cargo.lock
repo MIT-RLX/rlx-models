@@ -6798,17 +6798,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
 dependencies = [
  "bytes",
- "prost-derive 0.13.5",
-]
-
-[[package]]
-name = "prost"
-version = "0.14.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
-dependencies = [
- "bytes",
- "prost-derive 0.14.4",
+ "prost-derive",
 ]
 
 [[package]]
@@ -6824,7 +6814,7 @@ dependencies = [
  "once_cell",
  "petgraph 0.7.1",
  "prettyplease",
- "prost 0.13.5",
+ "prost",
  "prost-types",
  "regex",
  "syn 2.0.119",
@@ -6845,19 +6835,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prost-derive"
-version = "0.14.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
-dependencies = [
- "anyhow",
- "itertools 0.14.0",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "prost-reflect"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6866,7 +6843,7 @@ dependencies = [
  "logos",
  "miette",
  "once_cell",
- "prost 0.13.5",
+ "prost",
  "prost-types",
 ]
 
@@ -6876,7 +6853,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52c2c1bf36ddb1a1c396b3601a3cec27c2462e45f07c386894ec3ccf5332bd16"
 dependencies = [
- "prost 0.13.5",
+ "prost",
 ]
 
 [[package]]
@@ -6971,7 +6948,7 @@ checksum = "6f352af331bf637b8ecc720f7c87bf903d2571fa2e14a66e9b2558846864b54a"
 dependencies = [
  "bytes",
  "miette",
- "prost 0.13.5",
+ "prost",
  "prost-reflect",
  "prost-types",
  "protox-parse",
@@ -7809,7 +7786,7 @@ dependencies = [
  "bytemuck",
  "cc",
  "half",
- "prost 0.13.5",
+ "prost",
  "prost-build",
  "protoc-bin-vendored",
  "rlx-cpu",
@@ -9130,7 +9107,6 @@ dependencies = [
  "rlx-text",
  "rlx-whisper",
  "safetensors 0.7.0",
- "sentencepiece",
  "serde",
  "serde_json",
  "tempfile",
@@ -10032,6 +10008,7 @@ version = "0.2.20"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
+ "getrandom 0.2.17",
  "getrandom 0.3.4",
  "js-sys",
  "rlx-embed",
@@ -10044,6 +10021,7 @@ dependencies = [
  "rlx-lfm",
  "rlx-models-core",
  "rlx-moonshine-streaming",
+ "rlx-pocket-tts",
  "rlx-qwen35",
  "rlx-runtime",
  "serde_json",
@@ -10122,7 +10100,6 @@ dependencies = [
  "rlx-text",
  "rlx-whisper",
  "safetensors 0.4.5",
- "sentencepiece",
  "serde",
  "serde_json",
  "tempfile",
@@ -11649,7 +11626,7 @@ name = "rlx-tpu"
 version = "0.2.20"
 dependencies = [
  "libloading 0.8.9",
- "prost 0.13.5",
+ "prost",
  "prost-build",
  "prost-types",
  "protoc-bin-vendored",
@@ -12829,41 +12806,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
 
 [[package]]
-name = "sentencepiece"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "199cd424616675812f71a43866e2fb6e4725538dd7cee7d537fea81c0d66c102"
-dependencies = [
- "libc",
- "num-derive",
- "num-traits",
- "prost 0.14.4",
- "prost-derive 0.14.4",
- "sentencepiece-sys",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "sentencepiece-model"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40b87bf750a8322c3236d7aa63c1f4a6862187d00d2d8b038e1dfe263bfe43ec"
 dependencies = [
  "miette",
- "prost 0.13.5",
+ "prost",
  "prost-build",
  "protox",
-]
-
-[[package]]
-name = "sentencepiece-sys"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f4f7b039e2b80f69283f56211f9457ea3f4a8d3045b9ba4282326b446fa3a9a"
-dependencies = [
- "cc",
- "cmake",
- "pkg-config",
 ]
 
 [[package]]

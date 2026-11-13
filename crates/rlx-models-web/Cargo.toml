@@ -29,6 +29,8 @@ rlx-qwen35 = { workspace = true }
 # Audio8-TTS across workers (`Audio8Slow`, `Audio8Frames`, `Audio8Codec`).
 rlx-fish = { workspace = true, features = ["tokenizer"] }
 serde_json = { workspace = true }
+# Kyutai Pocket TTS (`PocketTts`): text → speech, French and others.
+rlx-pocket-tts = { workspace = true }
 # The FLUX.1 denoiser split across workers (`FluxStage`, genmoji.html).
 rlx-flux1 = { workspace = true }
 rlx-gguf = { workspace = true }
@@ -64,6 +66,8 @@ wasm-bindgen-futures = "0.4"
 # `tokenizers` (through rlx-cli) pulls getrandom; on wasm32 it needs the JS
 # backend: this feature plus `--cfg getrandom_backend="wasm_js"` at build time.
 getrandom = { version = "0.3", features = ["wasm_js"] }
+# rand 0.8 (Pocket TTS's sampler) is on getrandom 0.2: its JS backend.
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 [lints]
 workspace = true

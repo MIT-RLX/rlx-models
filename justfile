@@ -2548,9 +2548,10 @@ pocket-tts TEXT="Hello world. I am Kyutai's Pocket TTS." LANG="english" VOICE="a
         say "{{TEXT}}" --root "{{POCKET_TTS_DIR}}" --language {{LANG}} --voice "{{VOICE}}" \
         --device {{DEVICE}} -o "{{OUT}}"
 
-# rlx_core::sentencepiece vs the C++ SentencePiece: ids + decoded text for MODELS
-# (e.g. Pocket TTS's tokenizer.model files) and small trained models covering
-# charsmap normalization, BPE, byte fallback, user-defined symbols, char and word.
+# rlx_core::sentencepiece vs the C++ SentencePiece for MODELS (any *.model) and
+# small trained models: ids, spans, extra options, normalize offsets, n-best,
+# decode spans and sampling distributions. PYTHON needs the PyPI wheel
+# (`pip install sentencepiece`, 0.2.x).
 test-sentencepiece-parity +MODELS:
     rm -rf /tmp/rlx-spm-reference
     "${PYTHON:-python3}" -I scripts/sentencepiece_reference.py /tmp/rlx-spm-reference --train {{MODELS}}
