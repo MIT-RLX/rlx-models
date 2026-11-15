@@ -1,4 +1,4 @@
-//! Load Kyutai MLX Q4/Q8/bf16 safetensors → dequantized f32 weight map (native, candle-free).
+//! Load Kyutai MLX Q4/Q8/bf16 safetensors → dequantized f32 weight map (native).
 
 use crate::checkpoint::MoshiCheckpoint;
 use crate::mlx_dequant::{bf16_to_f32, dequantize_affine};
@@ -26,8 +26,8 @@ impl MlxSafetensorsFile {
     }
 }
 
-/// Map MLX tensor base name → Kyutai Candle / rlx-moshi key.
-pub fn mlx_to_candle_key(mlx_key: &str) -> Option<String> {
+/// Map MLX tensor base name → Kyutai / rlx-moshi key.
+pub fn mlx_to_moshi_key(mlx_key: &str) -> Option<String> {
     if mlx_key.ends_with(".scales") || mlx_key.ends_with(".biases") {
         return None;
     }
@@ -41,9 +41,8 @@ pub fn mlx_to_candle_key(mlx_key: &str) -> Option<String> {
     Some(key)
 }
 
-/// Load Kyutai MLX Q4/Q8/bf16 safetensors → dequantized f32 weight map, **natively**
-/// (no candle). Quantized weights use the native [`dequantize_affine`]; this is the
-/// candle-free counterpart of the old candle-`Tensor` round-trip and drives both the
+/// Load Kyutai MLX Q4/Q8/bf16 safetensors → dequantized f32 weight map, **natively**.
+/// Quantized weights use the native [`dequantize_affine`]; drives both the
 /// eager `LmModel` and `RlxLm` MLX paths.
 pub fn load_eager_weight_map(
     path: &Path,
@@ -59,7 +58,7 @@ pub fn load_eager_weight_map(
         if name.ends_with(".scales") || name.ends_with(".biases") {
             continue;
         }
-        let Some(key) = mlx_to_candle_key(name) else {
+        let Some(key) = mlx_to_moshi_key(name) else {
             continue;
         };
         let tensor = st.tensor(name)?;

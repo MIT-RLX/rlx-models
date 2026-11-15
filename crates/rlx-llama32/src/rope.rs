@@ -14,7 +14,7 @@ pub fn default_inv_freq(rope_theta: f64, head_dim: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Llama 3 RoPE scaling from HF `rope_scaling` (candle / transformers formula).
+/// Llama 3 RoPE scaling from HF `rope_scaling` (transformers formula).
 pub fn llama3_inv_freq(cfg: &Llama32Config) -> Vec<f64> {
     let head_dim = cfg.head_dim();
     let base = default_inv_freq(cfg.rope_theta, head_dim);

@@ -1,9 +1,8 @@
 # SAM v1 (Segment Anything) for rlx-models
 
-Meta's image-segmentation model, ported from
-`candle-transformers::models::segment_anything`. Bit-equivalent
-outputs vs candle on CPU, MLX, and Metal; runs on weights from
-`lmz/candle-sam` directly.
+Meta's image-segmentation model, ported from Meta's reference implementation.
+Bit-equivalent outputs on CPU, MLX, and Metal; loads the official SAM
+safetensors checkpoints directly.
 
 ## Layout
 
@@ -66,33 +65,32 @@ BLAS-backed matmuls (`rlx_cpu::blas::sgemm_auto`).
 cargo add rlx-models --features metal,mlx  # add the backends you want
 ```
 
-## Numerical parity vs candle
+## Numerical parity
 
 | Pair | image_emb cosine | mask logits cosine | binary mask agreement |
 |---|---:|---:|---:|
-| **CPU ↔ candle CPU** | 1.000000000 | 1.000000000 | **99.993%** |
+| **CPU reference** | 1.000000000 | 1.000000000 | **99.993%** |
 | **Metal ↔ CPU** | 1.000000000 | 1.000000000 | **100.000%** |
 | **MLX ↔ CPU** | 1.000000000 | 1.000000000 | **100.000%** |
 
 f32 per-element mismatch is ~10⁻⁵–10⁻⁶ across all backends (BLAS
-reduction-order noise). For tightest reproducibility against candle on
-CPU, enable `parity-gemm` — routes sgemm through the same `gemm` crate
-candle uses (no AMX, slower).
+reduction-order noise). For tightest reproducibility on CPU, enable
+`parity-gemm` — routes sgemm through a strict gemm crate (no AMX, slower).
 
 ```bash
-cargo test -p rlx-models --features parity-candle,parity-gemm --release sam_
+cargo test -p rlx-models --features parity-gemm --release sam_
 ```
 
 ## Running the parity test
 
-Download the same `lmz/candle-sam` checkpoint candle uses:
+Download the official SAM checkpoint:
 
 ```bash
-hf download lmz/candle-sam sam_vit_b_01ec64.safetensors --local-dir /tmp/rlx_sam
+hf download facebook/sam-vit-base sam_vit_b_01ec64.safetensors --local-dir /tmp/rlx_sam
 
 RLX_SAM_WEIGHTS=/tmp/rlx_sam/sam_vit_b_01ec64.safetensors \
 RLX_SAM_DEVICE={cpu|metal|mlx} \
-  cargo test -p rlx-models --features parity-candle,metal,mlx --release \
+  cargo test -p rlx-models --features metal,mlx --release \
   sam_ -- --nocapture
 ```
 
@@ -130,7 +128,7 @@ broadcast kernel bug — see `mod.rs` comments).
 
 ### Prompt encoder + mask decoder
 
-Host-side Rust. Mirrors candle's `prompt_encoder.rs` /
+Host-side Rust. Mirrors Meta's SAM `prompt_encoder.rs` /
 `mask_decoder.rs` / `transformer.rs` exactly. BLAS-backed matmuls via
 `rlx_cpu::blas::sgemm_auto` — the decoder is ~1% of total compute, so
 keeping it host-side avoids growing the IR surface with
@@ -138,7 +136,7 @@ ConvTranspose2d, 4-D layer norm, etc.
 
 ## Weights & key naming
 
-Compatible with `lmz/candle-sam`'s safetensors layout exactly
+Compatible with the official SAM safetensors layout exactly
 (`image_encoder.blocks.0.attn.qkv.weight`, `prompt_encoder.pe_layer.*`,
 `mask_decoder.transformer.layers.0.self_attn.q_proj.weight`, …).
 No remapping needed — `WeightMap::from_file` loads directly.

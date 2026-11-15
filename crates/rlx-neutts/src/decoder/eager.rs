@@ -928,7 +928,7 @@ pub struct NeuCodecDecoder {
     ///
     /// * `Ready(Some(_))` — Burn backend available and ready.
     /// * `Ready(None)`    — Burn init was attempted but failed; falls through
-    ///                      to raw ndarray.
+    ///   to raw ndarray.
     ///
     /// The `Mutex` provides interior mutability so that `decode(&self)` can
     /// be called without `&mut self`.

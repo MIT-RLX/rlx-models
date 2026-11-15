@@ -161,7 +161,7 @@ fn step(
         }
     }
     g.set_outputs(next);
-    Ok((g, b.params))
+    Ok((g, b.params_f32().1))
 }
 
 /// The Mimi decoder block of `frames` frames: [`build_decoder_block`]'s
@@ -193,7 +193,7 @@ fn decode(
                 .collect::<Vec<usize>>(),
         );
     }
-    Ok((g, block.builder.params, sizes))
+    Ok((g, block.builder.params_f32().1, sizes))
 }
 
 fn f32_bytes(v: &[f32]) -> Vec<u8> {

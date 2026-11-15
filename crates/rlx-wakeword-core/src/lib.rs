@@ -17,7 +17,7 @@ pub mod pack;
 pub mod ternary;
 
 pub use cnn::{WakeCnn, WakeCnnConfig, WakeCnnWeights};
-pub use mel::{MelConfig, MelFrontend, SAMPLE_RATE_16K};
+pub use mel::{MelConfig, MelFrontend, PowerSpectrum, SAMPLE_RATE_16K};
 pub use pack::{PACK_MAGIC, PACK_VERSION, PackHeader, QuantScales};
 pub use ternary::{
     TernaryOpts, TernaryStats, is_ternary_f32, pack_trits, ternarize, ternarize_inplace,

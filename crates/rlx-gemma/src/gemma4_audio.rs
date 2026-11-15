@@ -62,6 +62,12 @@ pub struct AudioConfig {
     /// not, and its checkpoint ships no bound tensors at all.
     pub use_clipped_linears: bool,
     pub invalid_logit: f32, // attention_invalid_logits_value -1e9
+    /// Earlier positions a query attends to, besides itself (HF:
+    /// `0 <= q - k < ctx_left - 1`, so `ctx_left - 2` = 11). The block layout
+    /// reserves `ctx_left - 1` past slots; this is how many are unmasked. A
+    /// 12-position window looks the same on one 12-position block, which is all
+    /// the old fixtures covered; longer audio needs 11.
+    pub past_keys: usize,
 }
 
 impl Default for AudioConfig {
@@ -84,6 +90,7 @@ impl Default for AudioConfig {
             invalid_logit: -1.0e9,
             // Gemma 4 E2B, the default this describes, ships no bound tensors.
             use_clipped_linears: false,
+            past_keys: 11,
         }
     }
 }
@@ -121,7 +128,7 @@ pub fn audio_rel_pos(cfg: &AudioConfig) -> Vec<f32> {
 /// Per-block additive attention mask `[num_blocks, chunk, context]`
 /// (0 = allowed, `invalid_logit` = blocked). Context index `j` maps to real
 /// sequence position `block*chunk + (j - max_past)`; allowed iff that position
-/// is in `[0, seq)`, lies within `[query - (ctx_left-1), query + ctx_right]`,
+/// is in `[0, seq)`, lies within `[query - past_keys, query + ctx_right]`,
 /// and (causal) not in the future beyond `ctx_right`. Data-independent.
 pub fn audio_block_mask(cfg: &AudioConfig, seq: usize) -> (Vec<f32>, usize) {
     let chunk = cfg.chunk;
@@ -141,7 +148,7 @@ pub fn audio_block_mask(cfg: &AudioConfig, seq: usize) -> (Vec<f32>, usize) {
                 if qpos >= seq {
                     continue; // padded query row (kept blocked)
                 }
-                let lo = qpos as isize - max_past as isize;
+                let lo = qpos as isize - cfg.past_keys.min(max_past) as isize;
                 let hi = qpos as isize + cfg.ctx_right as isize;
                 if (kpos as isize) >= lo && (kpos as isize) <= hi {
                     m[(b * chunk + qi) * ctx + j] = 0.0;
@@ -757,6 +764,47 @@ pub fn build_audio_tower(
     n_layers: usize,
     with_output_proj: bool,
 ) -> Result<(Graph, HashMap<String, Vec<f32>>, usize)> {
+    build_audio_tower_taps(cfg, weights, batch, t, n_layers, with_output_proj, &[])
+}
+
+/// Compile an audio-tower graph ([`build_audio_tower`] /
+/// [`build_audio_tower_taps`]) on `device` and set its params.
+///
+/// The tower is 1,780–4,708 IR nodes for 0.7–30 s of audio, above MLX's
+/// default compile limit at the long end. Under `mlx::compile` it costs no
+/// more first-run time than Lazy and runs 1.7–5× faster, with bit-identical
+/// output, so this lifts the limit for the tower.
+///
+/// Matmuls run in strict FP32: CUDA's TF32 put the tower 0.043 (max abs)
+/// from the reference instead of 1e-4, at no measurable speed gain.
+pub fn compile_audio_tower(
+    device: rlx_runtime::Device,
+    graph: Graph,
+    params: HashMap<String, Vec<f32>>,
+) -> Result<rlx_runtime::CompiledGraph> {
+    let mut profile = rlx_flow::CompileProfile::gemma_prefill();
+    profile.backend.mlx.compile_max_nodes = Some(0);
+    profile.precision.exact_f32_matmul = true;
+    rlx_core::flow_util::compile_graph_profile(device, graph, params, &profile)
+}
+
+/// [`build_audio_tower`] that also outputs the hidden states after the
+/// conformer layers in `taps` (1-based: `2` is the state after the second
+/// layer, HF's `hidden_states[2]`, where `hidden_states[0]` is the
+/// sub-sampler output). Outputs: the tower output, then one `[B, seq, hidden]`
+/// per tap, in the order given.
+pub fn build_audio_tower_taps(
+    cfg: &AudioConfig,
+    weights: &mut dyn WeightLoader,
+    batch: usize,
+    t: usize,
+    n_layers: usize,
+    with_output_proj: bool,
+    taps: &[usize],
+) -> Result<(Graph, HashMap<String, Vec<f32>>, usize)> {
+    if let Some(&bad) = taps.iter().find(|&&l| l > n_layers) {
+        anyhow::bail!("gemma4 audio: tap after layer {bad}, but only {n_layers} layers are built");
+    }
     let mut g = Graph::new("gemma4_audio");
     let mut params: HashMap<String, Vec<f32>> = HashMap::new();
     let (mut hs, seq) = build_subsample(&mut g, &mut params, cfg, weights, batch, t)?;
@@ -767,6 +815,10 @@ pub fn build_audio_tower(
         "audio_mask",
         Shape::new(&[nb, cfg.chunk, cfg.context_size()], DType::F32),
     );
+    let mut tapped = vec![None; taps.len()];
+    for (i, _) in taps.iter().enumerate().filter(|(_, l)| **l == 0) {
+        tapped[i] = Some(hs);
+    }
     for li in 0..n_layers {
         hs = conformer_layer(
             &mut g,
@@ -780,6 +832,9 @@ pub fn build_audio_tower(
             batch,
             seq,
         )?;
+        for (i, _) in taps.iter().enumerate().filter(|(_, l)| **l == li + 1) {
+            tapped[i] = Some(hs);
+        }
     }
     if with_output_proj {
         let ow = load_t(
@@ -798,7 +853,13 @@ pub fn build_audio_tower(
         o = g.add(o, ob);
         hs = o;
     }
-    g.set_outputs(vec![hs]);
+    let mut outputs = vec![hs];
+    outputs.extend(
+        tapped
+            .into_iter()
+            .map(|t| t.expect("every tap is at or below n_layers")),
+    );
+    g.set_outputs(outputs);
     Ok((g, params, seq))
 }
 

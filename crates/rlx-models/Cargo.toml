@@ -20,8 +20,7 @@ rlx-core = { workspace = true }
 # Every model family below is an OPTIONAL dependency, surfaced through a
 # matching feature (see [features]). The default build pulls only the
 # embedding/tokenizer stack; consumers opt into the catalogue they need so the
-# heavy/native deps of unused families (e.g. candle via the kyutai/moshi codec)
-# never reach a binary that doesn't ask for them.
+# heavy/native deps of unused families never reach a binary that doesn't ask for them.
 rlx-sam-ir = { workspace = true, optional = true }
 rlx-bert = { workspace = true, optional = true }
 rlx-clinicalbert = { workspace = true, optional = true }
@@ -199,9 +198,6 @@ rlx-metal = { workspace = true, optional = true }
 rlx-mlx = { workspace = true, optional = true }
 # Adapter introspection for the wgpu/vulkan backend checks in tests/.
 rlx-wgpu = { workspace = true, optional = true }
-candle-core = { workspace = true, optional = true }
-candle-nn = { workspace = true, optional = true }
-candle-transformers = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 rlx-lfm = { workspace = true, optional = true }
 
@@ -488,8 +484,7 @@ piper = ["dep:rlx-piper"]
 piper-native = ["piper", "rlx-piper/native"]
 qwen3-tts = ["dep:rlx-qwen3-tts"]
 voxtral-tts = ["dep:rlx-voxtral-tts"]
-# kyutai-tts pulls the moshi/mimi neural codec, which is the ONLY path to candle
-# in this crate — keep it strictly opt-in.
+# kyutai-tts pulls the moshi/mimi neural codec — keep it strictly opt-in.
 mimi = ["dep:rlx-mimi"]
 moshi = ["dep:rlx-moshi"]
 tsac = ["dep:rlx-tsac"]
@@ -1243,12 +1238,6 @@ rocm = [
 # hardware here.
 tpu = ["rlx-runtime/tpu", "rlx-core/tpu", "rlx-qwen4exp?/tpu"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan", "coreml"]
-parity-candle = [
-    "dep:candle-core",
-    "dep:candle-nn",
-    "dep:candle-transformers",
-    "dep:image",
-]
 parity-gemm = ["rlx-cpu/parity-gemm"]
 parity-pytorch = []
 parity-llama = ["dep:llama-cpp-2", "rlx-qwen35/parity-llama"]
@@ -1257,10 +1246,6 @@ parity-llama = ["dep:llama-cpp-2", "rlx-qwen35/parity-llama"]
 name = "bench_small_lm"
 path = "examples/bench_small_lm.rs"
 required-features = ["gemma", "phi", "llama32", "metal", "mlx", "coreml"]
-
-[[example]]
-name = "qwen3_matrix"
-required-features = ["parity-candle"]
 
 [[example]]
 name = "llada2_run"
@@ -1407,16 +1392,6 @@ harness = false
 name = "minicpm5_inference"
 required-features = ["llama32", "minicpm5"]
 harness = false
-
-[[bench]]
-name = "dinov2_vs_candle"
-harness = false
-required-features = ["parity-candle"]
-
-[[bench]]
-name = "sam_vs_candle"
-harness = false
-required-features = ["parity-candle"]
 
 [[test]]
 name = "diamond_methods"

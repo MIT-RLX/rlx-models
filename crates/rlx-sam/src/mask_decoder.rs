@@ -17,7 +17,7 @@
 //!
 //! Two-way transformer over (point tokens, image embeddings) → mask
 //! token outputs → ConvTranspose2d ×2 upscaling → hypernetwork MLPs
-//! → mask logits + IoU predictions. Mirrors candle's
+//! → mask logits + IoU predictions. Mirrors Meta's SAM
 //! `mask_decoder.rs`.
 
 use super::config::SAM_EMBED_HW;

@@ -1,7 +1,7 @@
 # Native-Parity Roadmap — Zero Alien Inference Runtimes
 
 **Goal:** every model family in this workspace runs **100% on rlx backends**
-(cpu / metal / mlx / cuda / rocm / wgpu) with **no rten, no ONNX/ort, no candle,
+(cpu / metal / mlx / cuda / rocm / wgpu) with **no rten, no ONNX/ort,
 no moshi, no llama.cpp** in any shipped build — at **numerical parity** with the
 reference implementation and at **equal-or-better speed**, via fully **fused
 rlx-flow graphs** and **optimized (quantized / layout-planned) tensors**.
@@ -19,7 +19,7 @@ A family is "native-complete" only when all three pass:
 1. **Parity gate.** Op-level *and* end-to-end numerical equivalence vs the
    reference, under tolerance (the `kitten_tts_mini_rlx` probe pattern: per-op
    `gelu`, `ffn`, `attention`, `qmatmul`, `scatter` tests vs reference, ~1e-3 f32;
-   then stage outputs; then E2E). The reference (ort/candle/llama-cpp) is demoted
+   then stage outputs; then E2E). The reference (ort/llama-cpp) is demoted
    to a **dev-only oracle** behind a `parity-*` feature — never in default/ship.
 
 2. **Perf gate.** Native throughput **≥ reference** on the target backend
@@ -41,12 +41,11 @@ replacement passes all three gates.
 |---|---|---|---|
 | **rten** (engine + tensor + imageproc) | `rlx-ocr` | Graph inference **already native** (`rlx` default). rten = 4 plumbing surfaces. | `tensor-ops` (pad/resize), `convert-rten` (weight load), `rten-tensor` (NdTensor I/O), `rten-imageproc` (geometry) |
 | **ort / ONNX** | `rlx-kittentts`, `rlx-inflect-nano` | kitten: native `kitten_tts_mini_rlx` exists w/ op-parity suite, but `default=["onnx","rlx"]`. inflect-nano: only HiFi-GAN **vocoder** on ort. | Finish kitten parity + flip default; port Snake HiFi-GAN to rlx graph |
-| **candle / moshi** | `rlx-mimi`, `rlx-moshi`, `rlx-kyutai-tts`, `rlx-clinicalbert` | mimi: native graph **already default**, candle = legacy `gpu-codec`. moshi: native port **in progress**. kyutai: transitive via mimi+moshi. clinicalbert: BERT on candle. | Delete mimi legacy; finish moshi native; port clinicalbert to rlx-bert |
+| **moshi** (codec only) | `rlx-mimi`, `rlx-moshi`, `rlx-kyutai-tts`, `rlx-clinicalbert` | mimi: native graph, codec removed. moshi: native port **in progress**. kyutai: native, no moshi at runtime. clinicalbert: pytorch .bin conversion stub. | Finish moshi native; port clinicalbert prepare to rlx-torch-ckpt |
 | **llama.cpp** (`llama-cpp-2`) | `rlx-neutts`, `rlx-qwen35`, `rlx-models` | neutts: GGUF LM backbone via llama.cpp. qwen35/models: **parity oracle only** (optional). | Port neutts backbone to native `rlx-gguf`; keep qwen35 oracle dev-only |
 
-candle reaches the tree **only** through `rlx-mimi → moshi → candle` (plus the
-opt-in `parity-candle` in `rlx-models`); ort only through kittentts/inflect-nano;
-rten only through rlx-ocr. So the islands are independent and can be cleared in
+ort reaches the tree only through kittentts/inflect-nano;
+rten only through rlx-ocr. These islands are independent and can be cleared in
 parallel.
 
 ---
@@ -55,11 +54,8 @@ parallel.
 
 ### Phase A — harvest the near-done (low effort, immediate wins)
 
-- **A1 · rlx-mimi: delete the candle/moshi codec path.** Native rlx-runtime
-  codec is already the default; `gpu-codec` (candle/moshi) is "no longer
-  required." Move `candle`/`candle-nn`/`moshi` to a `parity-mimi` dev feature (or
-  delete), keep the codec round-trip parity test green. **Removes candle from
-  mimi** → with B1, kyutai-tts goes candle-free.
+- **A1 · rlx-mimi: delete the moshi codec path.** ✅ Done — native rlx-runtime
+  codec is the only path; the gpu backend file has been removed.
 - **A2 · rlx-ocr Stages 1–2: drop the heavy rten engine.**
   - *Stage 1 (convert-rten → offline):* run `export_rten_to_safetensors` **once
     offline**, publish `ocr-detection.safetensors` / `ocr-recognition.safetensors`
@@ -78,8 +74,7 @@ parallel.
 
 - **B1 · rlx-moshi: complete the native moshi LM.** Finish `rlx_gen` / `rlx_lm`;
   pass the depformer / gen / temporal parity tests (already being authored);
-  demote `candle*`/`moshi` to `parity-moshi`. **Removes candle from moshi.**
-  (A1 + B1 ⇒ `rlx-kyutai-tts` is fully candle-free.)
+  demote `moshi` to `parity-moshi`.
 - **B2 · rlx-kittentts: flip to native.** Drive `kitten_tts_mini_rlx` through the
   op → stage → E2E parity ladder; set `default = ["native","rlx"]`; make `onnx`
   a `parity-kitten` dev feature. **Removes ort from kittentts.**
@@ -98,7 +93,8 @@ parallel.
 - **C1 · rlx-inflect-nano:** port the **Snake HiFi-GAN vocoder** to an rlx-flow
   graph (acoustic stage is already host-eager). Drop `ort`.
 - **C2 · rlx-clinicalbert:** retarget to the native rlx BERT graph (reuse
-  `rlx-bert` / `build_bert_graph_sized`). Drop `candle`.
+  `rlx-bert` / `build_bert_graph_sized`). The `prepare` feature now stubs out
+  pytorch_model.bin conversion — place model.safetensors directly.
 - **C3 · rlx-neutts:** port the GGUF LM backbone to native `rlx-gguf`. Drop
   `llama-cpp-2`.
 
@@ -115,7 +111,7 @@ parallel.
 ## 4. Performance strategy (fused graph + optimized tensors)
 
 The native path should *beat* the alien runtimes, not just match them — the lever
-is whole-model graph compilation that ort/candle/rten (op-by-op dispatch) can't do.
+is whole-model graph compilation that ort/rten (op-by-op dispatch) can't do.
 
 - **One fused graph per model.** Build the full forward as a single rlx-flow
   `BuiltModel` (`build_*_graph_sized` + `attach_built_params`) so `rlx-opt` fuses
@@ -149,8 +145,8 @@ Mirror `kitten_tts_mini_rlx`'s ladder for every family:
    numeric or perceptual tolerance.
 
 The reference oracle stays behind a `parity-*` feature (the existing
-`parity-candle` / `parity-pytorch` / `parity-llama` pattern + the new
-`parity-onnx` / `parity-moshi` / `parity-mimi` / `parity-kitten`) — built in CI
+`parity-pytorch` / `parity-llama` pattern + the new
+`parity-onnx` / `parity-moshi` / `parity-kitten`) — built in CI
 only, never shipped.
 
 ---
@@ -164,7 +160,7 @@ feature-set:
 # expect: empty
 cargo tree --workspace --edges normal \
   -e no-dev --no-default-features --features <ship-set> \
-  | grep -E '\b(ort|onnxruntime(-sys)?|candle-(core|nn|transformers)|moshi|rten|rten-(tensor|imageproc|gemm)|llama-cpp-2)\b'
+  | grep -E '\b(ort|onnxruntime(-sys)?|moshi|rten|rten-(tensor|imageproc|gemm)|llama-cpp-2)\b'
 ```
 
 Run per family as each phase lands; once all phases complete, run for the whole
@@ -175,7 +171,7 @@ dev-only).
 
 ## 7. Sequencing & risk notes
 
-- **Independent islands** — rten / ort / candle / llama.cpp don't overlap, so
+- **Independent islands** — rten / ort / llama.cpp don't overlap, so
   Phases A–C can proceed in parallel by area.
 - **Quantized ops are the hardest parity** — moshi & kitten native q-kernels must
   match the reference's rounding bit-for-bit-ish; budget the most probe effort
@@ -183,15 +179,15 @@ dev-only).
 - **Only genuinely new code** is the rlx-ocr CV geometry (`find_contours`,
   `min_area_rect`); everything else is graph translation against an existing
   native scaffold.
-- **Order of value:** A1 + A2 (candle out of mimi, heavy rten out of ocr) are the
-  cheapest big wins; B1/B2 finish the two hardest islands (candle/ort); C/D are
+- **Order of value:** A1 + A2 (heavy rten out of ocr) are the
+  cheapest big wins; B1/B2 finish the remaining islands (moshi/ort); C/D are
   cleanup.
 
 ---
 
 ### Quick status checklist
 
-- [x] A1 rlx-mimi — candle/moshi codec demoted to dev-only `parity-mimi` (default tree candle-free; oracle still builds)
+- [x] A1 rlx-mimi — moshi codec path removed (gpu backend deleted, parity-mimi feature gone, default tree codec-free)
 - [x] A2 rlx-ocr — **Stage 2 done**: native `host_resize` pad/resize (parity-tested vs rten, <1e-6 / <1e-4; <7 ms at 2K²); `tensor-ops` out of default → heavy rten engine gone from default + skill's feature set. Stage 1 = native safetensors path already works without `convert-rten`; offline-publish the `.safetensors` to retire `convert-rten` in skill (ops step).
 
   > **⚠ Bench reality check (CPU, `ocr_parity` + `ocr_perf_vs_reference`, real weights/image).** Removing rten is mechanically clean and my host ops are parity- + perf-neutral. Status of the two native-graph gates:
@@ -201,10 +197,10 @@ dev-only).
   > **`Op::Gru` cross-backend parity** (`rlx-runtime/tests/cpu_gru_parity.rs`, uni/bi/2-layer/wide): CPU-native ✅, **unfuse decomposition** (the path MLX/CoreML/CUDA-host/ROCm/wgpu/TPU/autodiff take) ✅, **Metal** ✅ (vs ref + vs cpu, M4 Pro), **MLX** ✅, **wgpu** ✅ — all ≤1e-4.
   >
   > **Takeaway:** A2 REMOVAL gate ✅; recognition PARITY gate ✅ (+ all backends); PERF gate still open (native conv graph, not rten plumbing). "Drop rten in skill" now waits only on perf.
-- [ ] B1 rlx-moshi — finish native LM, demote candle to `parity-moshi`
+- [ ] B1 rlx-moshi — finish native LM, demote moshi to `parity-moshi`
 - [ ] B2 rlx-kittentts — flip default to native, `onnx` → `parity-kitten`
 - [ ] B3 rlx-ocr — Stage 3 (native tensor) + Stage 4 (native geometry) → zero rten
 - [ ] C1 rlx-inflect-nano — native HiFi-GAN vocoder, drop ort
-- [ ] C2 rlx-clinicalbert — native rlx BERT, drop candle
+- [ ] C2 rlx-clinicalbert — native rlx BERT, drop pytorch .bin conversion stub
 - [ ] C3 rlx-neutts — native rlx-gguf backbone, drop llama-cpp-2
 - [ ] D  purge unused alien deps + `default-features=false` in rlx-models + CI deny-list

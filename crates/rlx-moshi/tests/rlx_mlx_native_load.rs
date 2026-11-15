@@ -1,4 +1,4 @@
-// Native (candle-free) MLX safetensors loader: build a tiny synthetic MLX-format
+// Native MLX safetensors loader: build a tiny synthetic MLX-format
 // file (Q4-packed weight + bf16 tensors + 1-D norm alpha), load via
 // `load_eager_weight_map`, and check dequant values, key remapping, and the
 // alpha `[d] → [1,1,d]` reshape. Validates the file→map plumbing without the

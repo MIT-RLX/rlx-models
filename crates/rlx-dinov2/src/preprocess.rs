@@ -31,8 +31,7 @@
 //! ```
 //!
 //! `pos_embed` is added at native (training) resolution. Variable-input
-//! bicubic interpolation of `pos_embed` (candle's
-//! `interpolate_pos_encoding`) is not yet implemented; callers should
+//! bicubic interpolation of `pos_embed` is not yet implemented; callers should
 //! supply images at `cfg.img_size`.
 
 use super::config::DinoV2Config;
@@ -230,8 +229,7 @@ pub fn assemble_hidden(
 }
 
 /// Convert an RGB u8 image with arbitrary HxW to a normalized NCHW f32
-/// tensor at `(img_size, img_size)` using bilinear resize and ImageNet
-/// stats — same recipe as candle's `imagenet::load_image*` for parity.
+/// tensor at `(img_size, img_size)` using bilinear resize and ImageNet stats.
 ///
 /// `rgb` must be `H_in · W_in · 3` row-major (u8).
 pub fn rgb_u8_to_imagenet_nchw(rgb: &[u8], h_in: usize, w_in: usize, img_size: usize) -> Vec<f32> {

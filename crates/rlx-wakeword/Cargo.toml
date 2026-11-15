@@ -53,6 +53,10 @@ path = "src/bin/rlx_wakeword.rs"
 name = "rlx-wakeword-train"
 path = "src/bin/rlx_wakeword_train.rs"
 
+[[bin]]
+name = "rlx-wakeword-train-multi"
+path = "src/bin/rlx_wakeword_train_multi.rs"
+
 [[example]]
 name = "multi_phrase_bench"
 path = "examples/multi_phrase_bench.rs"

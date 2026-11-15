@@ -693,7 +693,6 @@ pub(crate) fn load_encoder_weights(
 #[cfg(feature = "w2v-bert")]
 pub(crate) struct W2vSemanticRunner {
     runner: rlx_wav2vec2_bert::Wav2Vec2BertRunner,
-    hidden_layers: usize,
 }
 
 #[cfg(feature = "w2v-bert")]
@@ -731,10 +730,7 @@ impl W2vSemanticRunner {
             .batch(1)
             .build()
             .context("build Wav2Vec2-BERT runner for NeuCodec semantic tap")?;
-        Ok(Some(Self {
-            runner,
-            hidden_layers: layer,
-        }))
+        Ok(Some(Self { runner }))
     }
 
     pub(crate) fn encode_pcm(&mut self, pcm: &[f32]) -> Result<Array2<f32>> {

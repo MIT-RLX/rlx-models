@@ -16,9 +16,8 @@
 //! SAM v1 prompt encoder — Fourier/point embeddings host-side; mask
 //! downscaling stack compiled via [`super::prompt_mask_ir`].
 //!
-//! Mirrors `candle-transformers/src/models/segment_anything/prompt_encoder.rs`
-//! exactly so the same `lmz/candle-sam` safetensors checkpoint loads
-//! without remapping.
+//! Mirrors Meta's SAM prompt encoder exactly so the standard SAM
+//! safetensors checkpoints load without remapping.
 
 use super::config::{SAM_EMBED_HW, SAM_PROMPT_EMBED_DIM};
 use super::prompt_mask_ir::SamPromptMaskCompiled;
@@ -54,7 +53,7 @@ pub struct PromptEncoderWeights {
     /// no mask prompt is supplied.
     pub no_mask_embed: Vec<f32>,
     pub embed_dim: usize,
-    /// `mask_in_chans` from candle's `Sam::new` (= 16 for ViT-B).
+    /// `mask_in_chans` from SAM config (= 16 for ViT-B).
     pub mask_in_chans: usize,
 }
 
@@ -154,7 +153,7 @@ pub struct PromptEncoderOutput {
     pub image_pe: Vec<f32>,
 }
 
-/// Run the prompt encoder. Mirrors candle's `PromptEncoder::forward`.
+/// Run the prompt encoder. Mirrors SAM's `PromptEncoder::forward`.
 ///
 /// `points`: optional `(coords, labels)` where coords is `[N, 2]`
 ///   (x, y in input-image pixels, 0..`SAM_IMG_SIZE`) and labels is
@@ -288,7 +287,7 @@ fn conv2d_1x1(
 }
 
 /// LayerNorm over the channel axis of NCHW (per spatial pos).
-/// Matches candle's `LayerNorm2d`.
+/// Matches SAM's `LayerNorm2d`.
 #[allow(dead_code)]
 fn layernorm2d_nchw(
     data: &mut [f32],
@@ -320,7 +319,7 @@ fn layernorm2d_nchw(
     }
 }
 
-/// Exact erf-based GELU (candle's `Activation::Gelu` → `gelu_erf`).
+/// Exact erf-based GELU (`gelu_erf`).
 #[allow(dead_code)]
 pub(super) fn gelu_erf_inplace(data: &mut [f32]) {
     const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;

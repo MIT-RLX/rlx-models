@@ -19,8 +19,8 @@ use crate::audio::{MelSpectrogram, N_FRAMES, pcm_slice_to_mel, pcm_to_mel};
 #[cfg(feature = "word-dtw")]
 use crate::backend::align_cache_key;
 use crate::backend::{
-    WhisperCompileOpts, WhisperGraphCtx, decode_bucket_ladder, geometry_cache_key,
-    metal_compile_guard, prefill_cache_key, whisper_decoder_device, whisper_encoder_device,
+    WhisperCompileOpts, WhisperGraphCtx, decode_bucket_ladder_from, geometry_cache_key,
+    next_share_scope, prefill_cache_key, shared_compile_guard, whisper_decoder_device, whisper_encoder_device,
     whisper_use_gpu_kv,
 };
 use crate::batch::batched_prompt_f32;
@@ -73,10 +73,14 @@ pub struct WhisperRunnerBuilder {
     weights: Option<PathBuf>,
     config_path: Option<PathBuf>,
     tokenizer_path: Option<PathBuf>,
+    /// The weights and tokenizer given as bytes, not paths (a browser).
+    weights_bytes: Option<std::sync::Arc<[u8]>>,
+    tokenizer_bytes: Option<std::sync::Arc<[u8]>>,
     config: Option<WhisperConfig>,
     device: Option<Device>,
     mel_frames: usize,
     max_decode_steps: usize,
+    decode_first_bucket: u64,
     beam_size: usize,
     language: Option<String>,
     translate: bool,
@@ -96,10 +100,13 @@ impl Default for WhisperRunnerBuilder {
             weights: None,
             config_path: None,
             tokenizer_path: None,
+            weights_bytes: None,
+            tokenizer_bytes: None,
             config: None,
             device: None,
             mel_frames: 0,
             max_decode_steps: 0,
+            decode_first_bucket: 0,
             beam_size: 0,
             language: None,
             translate: false,
@@ -128,6 +135,18 @@ impl WhisperRunnerBuilder {
         self.tokenizer_path = Some(path.into());
         self
     }
+    /// The checkpoint's `model.safetensors` as bytes, instead of a path.
+    pub fn weights_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.weights_bytes = Some(bytes.into());
+        self
+    }
+
+    /// `tokenizer.json` as bytes, instead of a path.
+    pub fn tokenizer_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.tokenizer_bytes = Some(bytes.into());
+        self
+    }
+
     pub fn config(mut self, cfg: WhisperConfig) -> Self {
         self.config = Some(cfg);
         self
@@ -184,6 +203,13 @@ impl WhisperRunnerBuilder {
         self.max_decode_steps = n;
         self
     }
+    /// The first decode bucket covers past lengths `0..=n` (see
+    /// [`crate::backend::decode_bucket_ladder_from`]): 64 makes a sentence
+    /// one decode graph. 0 (default): the usual ladder.
+    pub fn decode_first_bucket(mut self, n: usize) -> Self {
+        self.decode_first_bucket = n as u64;
+        self
+    }
     pub fn beam_size(mut self, n: usize) -> Self {
         self.beam_size = n;
         self
@@ -199,10 +225,14 @@ impl WhisperRunnerBuilder {
     }
 
     pub fn build(self) -> Result<WhisperRunner> {
-        let weights_path = self
-            .weights
-            .ok_or_else(|| anyhow::anyhow!("weights path required"))?;
-        if !weights_path.exists() {
+        // Given as bytes: a name to stand for them (no file is read by it).
+        let in_memory = self.weights_bytes.is_some();
+        let weights_path = match (&self.weights, in_memory) {
+            (Some(p), _) => p.clone(),
+            (None, true) => PathBuf::from("model.safetensors"),
+            (None, false) => bail!("weights path required"),
+        };
+        if !in_memory && !weights_path.exists() {
             bail!("weights file not found: {weights_path:?}");
         }
         let weights_dir = weights_path
@@ -226,7 +256,10 @@ impl WhisperRunnerBuilder {
         // this crate is built with the `coreml` feature (which links the
         // backend). Other exotic devices still fail the standard check.
         let allow_ane = cfg!(feature = "coreml") && matches!(device, Device::Ane);
-        if !allow_ane {
+        // WebGL2 (rlx-webgl) is outside the standard set too: in a browser,
+        // where it is the GPU there is.
+        let allow_webgl = cfg!(target_arch = "wasm32") && matches!(device, Device::OpenGl);
+        if !allow_ane && !allow_webgl {
             validate_standard_device("whisper", device)?;
         }
         let mel_frames = if self.mel_frames == 0 {
@@ -242,7 +275,19 @@ impl WhisperRunnerBuilder {
         let wt = weights_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("non-utf8 weights path"))?;
-        let mut weights_cache = WeightMap::snapshot_from_path(wt)?;
+        let mut weights_cache = match &self.weights_bytes {
+            Some(bytes) => {
+                let mut wm = WeightMap::from_bytes(bytes)?;
+                let keys: Vec<String> = wm.keys().map(str::to_owned).collect();
+                let mut out = std::collections::HashMap::with_capacity(keys.len());
+                for k in keys {
+                    let t = wm.take(&k)?;
+                    out.insert(k, t);
+                }
+                out
+            }
+            None => WeightMap::snapshot_from_path(wt)?,
+        };
         // Detect prefixes from key names only — avoids cloning the full f32 snapshot.
         let pfx = WhisperWeightPrefix::detect_with(|k| weights_cache.contains_key(k));
         let fused = FusedDecoderWeights::from_checkpoint(&weights_cache, &cfg, &pfx)?;
@@ -297,21 +342,22 @@ impl WhisperRunnerBuilder {
             fused_enc: Some(fused_enc.clone()),
         };
 
+        let share_scope = next_share_scope(&format!("d{}", cfg.d_model));
         let mut enc_compile_cache = CompileCache::new(encoder_device, 8);
         let mut cross_compile_cache = CompileCache::new(decode_device, 8);
-        metal_compile_guard(encoder_device, || -> Result<()> {
+        shared_compile_guard(&share_scope, encoder_device, || -> Result<()> {
             compile_cache_ensure_built_with_options(
                 &mut enc_compile_cache,
-                geometry_cache_key(0, 1),
+                geometry_cache_key(mel_frames as u64, 1),
                 graph_ctx.build_encoder(1)?,
                 &compile_opts.encoder,
             )?;
             Ok(())
         })?;
-        metal_compile_guard(decode_device, || -> Result<()> {
+        shared_compile_guard(&share_scope, decode_device, || -> Result<()> {
             compile_cache_ensure_built_with_options(
                 &mut cross_compile_cache,
-                geometry_cache_key(0, 1),
+                geometry_cache_key(mel_frames as u64, 1),
                 graph_ctx.build_cross(1)?,
                 &compile_opts.cross,
             )?;
@@ -319,15 +365,21 @@ impl WhisperRunnerBuilder {
         })?;
 
         let max_past = cfg.max_target_positions.max(1);
-        let decode_compile_cache = decode_bucket_ladder(decode_device, max_past as u64);
+        let decode_compile_cache =
+            decode_bucket_ladder_from(decode_device, max_past as u64, self.decode_first_bucket);
 
         #[cfg(feature = "tokenizer")]
-        let tokenizer = {
-            ensure!(tok_path.exists(), "tokenizer not found: {tok_path:?}");
-            Some(
-                tokenizers::Tokenizer::from_file(&tok_path)
-                    .map_err(|e| anyhow::anyhow!("load tokenizer {tok_path:?}: {e}"))?,
-            )
+        let tokenizer = match &self.tokenizer_bytes {
+            Some(bytes) => Some(
+                tokenizers::Tokenizer::from_bytes(bytes).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?,
+            ),
+            None => {
+                ensure!(tok_path.exists(), "tokenizer not found: {tok_path:?}");
+                Some(
+                    tokenizers::Tokenizer::from_file(&tok_path)
+                        .map_err(|e| anyhow::anyhow!("load tokenizer {tok_path:?}: {e}"))?,
+                )
+            }
         };
 
         let cross_input_names: Vec<String> = (0..cfg.decoder_layers)
@@ -337,6 +389,7 @@ impl WhisperRunnerBuilder {
         let model_name = crate::alignment_heads::model_nickname(&cfg, wt);
 
         Ok(WhisperRunner {
+            share_scope,
             graph_ctx,
             device,
             encoder_device,
@@ -346,6 +399,7 @@ impl WhisperRunnerBuilder {
             activation_dtype: self.activation_dtype,
             suppression,
             max_decode_steps,
+            decode_first_bucket: self.decode_first_bucket,
             beam_size: self.beam_size,
             max_region_batch: self.max_region_batch,
             parallel_align: self.parallel_align,
@@ -362,6 +416,8 @@ impl WhisperRunnerBuilder {
             prefill_compile_cache: CompileCache::new(prefill_device, 8),
             align_compile_cache: CompileCache::new(align_device, 8),
             decode_compile_cache,
+            decode_caches_kept: Default::default(),
+            geometries_kept: vec![mel_frames as u64],
             decode_token_f32: Vec::new(),
             decode_pos_ix: Vec::new(),
             decode_mask: Vec::new(),
@@ -375,7 +431,7 @@ impl WhisperRunnerBuilder {
             tokenizer,
             last_full_enc: None,
             last_full_enc_seq: 0,
-            geometry_epoch: 0,
+            geometry_epoch: mel_frames as u64,
             active_mel_frames: mel_frames,
             active_enc_seq: enc_seq,
             decode_geometry_epoch: u64::MAX,
@@ -412,6 +468,7 @@ pub struct WhisperRunner {
     pub activation_dtype: DType,
     suppression: SuppressionMask,
     max_decode_steps: usize,
+    decode_first_bucket: u64,
     beam_size: usize,
     max_region_batch: usize,
     parallel_align: bool,
@@ -431,6 +488,15 @@ pub struct WhisperRunner {
     #[allow(dead_code)]
     align_compile_cache: CompileCache,
     decode_compile_cache: BucketedCompileCache,
+    /// This runner's parameter-sharing scope (see
+    /// [`crate::backend::shared_compile_guard`]).
+    share_scope: String,
+    /// Decode graphs of the other geometries met, by (geometry, batch): a
+    /// change of length swaps them in rather than compiling them again.
+    decode_caches_kept: std::collections::HashMap<(u64, u64), BucketedCompileCache>,
+    /// The geometries (mel frames) with graphs compiled, at most
+    /// [`MAX_GEOMETRIES`].
+    geometries_kept: Vec<u64>,
     decode_token_f32: Vec<f32>,
     decode_pos_ix: Vec<f32>,
     decode_mask: Vec<f32>,
@@ -528,9 +594,30 @@ impl WhisperRunner {
         if self.active_mel_frames == mel_frames && self.active_enc_seq == enc_seq {
             return Ok(());
         }
+        // Compiled graphs hold their weights: each geometry kept costs about
+        // as much as the model several times over (Whisper tiny: ~0.8 GB),
+        // so at most two are kept; a third clears them.
+        let geometry = mel_frames as u64;
+        if !self.geometries_kept.contains(&geometry) {
+            if self.geometries_kept.len() >= MAX_GEOMETRIES {
+                self.enc_compile_cache.clear();
+                self.cross_compile_cache.clear();
+                self.prefill_compile_cache.clear();
+                self.align_compile_cache.clear();
+                self.decode_caches_kept.clear();
+                self.geometries_kept.clear();
+                // The decode graphs in use are of the old geometry: dropped too.
+                self.decode_batch_tag = u64::MAX;
+            }
+            self.geometries_kept.push(geometry);
+        }
         self.active_mel_frames = mel_frames;
         self.active_enc_seq = enc_seq;
-        self.geometry_epoch = self.geometry_epoch.saturating_add(1);
+        // The geometry itself, not a count of changes: back at a length seen
+        // before, its compiled graphs are found again (a counter compiled
+        // them anew each time and kept every old one — unbounded memory with
+        // `no_pad`, whose lengths change from clip to clip).
+        self.geometry_epoch = mel_frames as u64;
         self.gpu_kv_binding = GpuKvBinding::default();
         self.cross_gpu_bound_epoch = u64::MAX;
         Ok(())
@@ -550,7 +637,7 @@ impl WhisperRunner {
         }
         let built = self.graph_ctx.build_encoder_sized(batch, mel_frames)?;
         let opts = self.compile_opts.encoder.clone();
-        metal_compile_guard(self.encoder_device, || -> Result<()> {
+        shared_compile_guard(&self.share_scope, self.encoder_device, || -> Result<()> {
             compile_cache_ensure_built_with_options(
                 &mut self.enc_compile_cache,
                 key,
@@ -590,7 +677,7 @@ impl WhisperRunner {
             .graph_ctx
             .build_cross_sized(batch, self.active_enc_seq)?;
         let opts = self.compile_opts.cross.clone();
-        metal_compile_guard(self.decode_device, || -> Result<()> {
+        shared_compile_guard(&self.share_scope, self.decode_device, || -> Result<()> {
             compile_cache_ensure_built_with_options(
                 &mut self.cross_compile_cache,
                 key,
@@ -618,7 +705,7 @@ impl WhisperRunner {
             .graph_ctx
             .build_align_hidden_sized(1, dec_seq, enc_seq, max_layer)?;
         let opts = self.compile_opts.align.clone();
-        metal_compile_guard(self.align_device, || -> Result<()> {
+        shared_compile_guard(&self.share_scope, self.align_device, || -> Result<()> {
             compile_cache_ensure_built_with_options(
                 &mut self.align_compile_cache,
                 key,
@@ -653,7 +740,7 @@ impl WhisperRunner {
                 cross.layers_v[i].as_slice(),
             ));
         }
-        metal_compile_guard(self.align_device, || {
+        shared_compile_guard(&self.share_scope, self.align_device, || {
             self.align_compile_cache
                 .get_or_compile(key, || panic!("align cache missing"))
                 .run(&inputs)
@@ -671,7 +758,7 @@ impl WhisperRunner {
         self.prepare_geometry(mel.n_frames)?;
         self.ensure_encoder(1, mel.n_frames)?;
         let key = geometry_cache_key(self.geometry_epoch, 1);
-        let enc = metal_compile_guard(self.encoder_device, || {
+        let enc = shared_compile_guard(&self.share_scope, self.encoder_device, || {
             self.enc_compile_cache
                 .get_or_compile(key, || panic!("encoder cache missing"))
                 .run(&[("mel", &mel.data)])
@@ -705,7 +792,7 @@ impl WhisperRunner {
     fn cross_cache(&mut self, enc: &[f32]) -> Result<WhisperCrossCache> {
         self.ensure_cross(1)?;
         let key = geometry_cache_key(self.geometry_epoch, 1);
-        let outs = metal_compile_guard(self.decode_device, || {
+        let outs = shared_compile_guard(&self.share_scope, self.decode_device, || {
             self.cross_compile_cache
                 .get_or_compile(key, || panic!("cross cache missing"))
                 .run(&[("encoder_hidden", enc)])
@@ -731,7 +818,7 @@ impl WhisperRunner {
         let dec_seq = prompt_tokens.len();
         let key = prefill_cache_key(self.geometry_epoch, batch, dec_seq);
 
-        metal_compile_guard(self.prefill_device, || {
+        shared_compile_guard(&self.share_scope, self.prefill_device, || {
             compile_cache_ensure_built_with_options(
                 &mut self.prefill_compile_cache,
                 key,
@@ -787,7 +874,7 @@ impl WhisperRunner {
                 ));
             }
         }
-        let outputs = metal_compile_guard(self.prefill_device, || prefill.run(&inputs));
+        let outputs = shared_compile_guard(&self.share_scope, self.prefill_device, || prefill.run(&inputs));
         ensure!(!outputs.is_empty(), "prefill returned no outputs");
         let logits = outputs[0].clone();
         let kv = kv_from_prefill_outputs(
@@ -859,7 +946,7 @@ impl WhisperRunner {
         let n_layers = self.graph_ctx.cfg.decoder_layers;
         let enc_seq = self.active_enc_seq;
 
-        metal_compile_guard(self.decode_device, || {
+        shared_compile_guard(&self.share_scope, self.decode_device, || {
             bucket_cache_ensure_built(
                 &mut self.decode_compile_cache,
                 key,
@@ -946,7 +1033,7 @@ impl WhisperRunner {
             bucket_changed || !handles_live
         };
 
-        let logits = metal_compile_guard(self.decode_device, || {
+        let logits = shared_compile_guard(&self.share_scope, self.decode_device, || {
             run_bucketed_kv_decode_gpu(
                 &mut self.decode_compile_cache,
                 key,
@@ -987,10 +1074,19 @@ impl WhisperRunner {
             return Ok(());
         }
         self.gpu_kv_binding = GpuKvBinding::default();
+        let max_past = self.graph_ctx.cfg.max_target_positions.max(1) as u64;
+        let wanted = self
+            .decode_caches_kept
+            .remove(&(self.geometry_epoch, batch_tag))
+            .unwrap_or_else(|| {
+                decode_bucket_ladder_from(self.decode_device, max_past, self.decode_first_bucket)
+            });
+        let old = std::mem::replace(&mut self.decode_compile_cache, wanted);
+        if self.decode_batch_tag != u64::MAX {
+            self.decode_caches_kept.insert((self.decode_geometry_epoch, self.decode_batch_tag), old);
+        }
         self.decode_batch_tag = batch_tag;
         self.decode_geometry_epoch = self.geometry_epoch;
-        let max_past = self.graph_ctx.cfg.max_target_positions.max(1) as u64;
-        self.decode_compile_cache = decode_bucket_ladder(self.decode_device, max_past);
         Ok(())
     }
 
@@ -1074,7 +1170,7 @@ impl WhisperRunner {
             }
         }
 
-        let (logits, new_k, new_v) = metal_compile_guard(self.decode_device, || {
+        let (logits, new_k, new_v) = shared_compile_guard(&self.share_scope, self.decode_device, || {
             run_bucketed_kv_decode_keyed_batched(
                 &mut self.decode_compile_cache,
                 key,
@@ -1106,6 +1202,7 @@ impl WhisperRunner {
             &mut other.decode_compile_cache,
         );
         std::mem::swap(&mut self.decode_batch_tag, &mut other.decode_batch_tag);
+        std::mem::swap(&mut self.decode_caches_kept, &mut other.decode_caches_kept);
         std::mem::swap(
             &mut self.decode_geometry_epoch,
             &mut other.decode_geometry_epoch,
@@ -1152,7 +1249,7 @@ impl WhisperRunner {
         };
         self.ensure_encoder(batch, mel_frames)?;
         let key = geometry_cache_key(self.geometry_epoch, batch);
-        metal_compile_guard(self.encoder_device, || {
+        shared_compile_guard(&self.share_scope, self.encoder_device, || {
             self.enc_compile_cache
                 .get_or_compile(key, || panic!("encoder cache missing"))
                 .run(&[("mel", &mel_input)])
@@ -1285,7 +1382,7 @@ impl WhisperRunner {
     pub fn cross_cache_batch(&mut self, enc: &[f32], batch: usize) -> Result<WhisperCrossCache> {
         self.ensure_cross(batch)?;
         let key = geometry_cache_key(self.geometry_epoch, batch);
-        let outs = metal_compile_guard(self.decode_device, || {
+        let outs = shared_compile_guard(&self.share_scope, self.decode_device, || {
             self.cross_compile_cache
                 .get_or_compile(key, || panic!("cross cache missing"))
                 .run(&[("encoder_hidden", enc)])
@@ -1330,6 +1427,7 @@ impl WhisperRunner {
             self.beam_size
         };
         let texts = self.transcribe_regions_batched(pcm, &regions, beam)?;
+        let texts: Vec<String> = texts.into_iter().filter(|t| !t.trim().is_empty()).collect();
         Ok(texts.join(" "))
     }
 
@@ -1403,6 +1501,9 @@ impl WhisperRunner {
                 tokens[b].push(step_tokens[b]);
                 if step_tokens[b] == eot {
                     done[b] = true;
+                } else if let Some(keep) = repetition_cut(&tokens[b][prompt.len()..]) {
+                    tokens[b].truncate(prompt.len() + keep);
+                    done[b] = true;
                 }
             }
         }
@@ -1466,6 +1567,10 @@ impl WhisperRunner {
             let next = self.suppression.argmax_next(&mut row, n_gen == 0);
             tokens.push(next);
             if next == eot {
+                break;
+            }
+            if let Some(keep) = repetition_cut(&tokens[prompt_len..]) {
+                tokens.truncate(prompt_len + keep);
                 break;
             }
             let step_logits = self.decode_step(cross, next, &mut cache, 1)?;
@@ -1546,6 +1651,7 @@ impl WhisperRunner {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("tokenizer not loaded"))?;
         tok.decode(tokens, true)
+            .map(heard_or_nothing)
             .map_err(|e| anyhow::anyhow!("decode tokens: {e}"))
     }
 
@@ -2061,5 +2167,65 @@ impl WhisperRunner {
                 t
             })
             .collect())
+    }
+}
+
+/// Whisper, given silence or noise, writes punctuation ("...", " .") or a
+/// symbol ("♪"): no words were said, so nothing. Anything with a letter or
+/// a digit in it is kept as it is.
+fn heard_or_nothing(text: String) -> String {
+    if text.chars().any(char::is_alphanumeric) {
+        text
+    } else {
+        String::new()
+    }
+}
+
+#[cfg(test)]
+mod heard_or_nothing_tests {
+    use super::heard_or_nothing;
+
+    #[test]
+    fn punctuation_alone_is_nothing_heard() {
+        for silence in ["...", " .", "", " ♪ ", "—"] {
+            assert_eq!(heard_or_nothing(silence.to_owned()), "", "{silence:?}");
+        }
+        for words in [" Bonjour.", "C'est 3 heures.", "Ça va ?"] {
+            assert_eq!(heard_or_nothing(words.to_owned()), words);
+        }
+    }
+}
+
+/// Input geometries (mel lengths) kept compiled at once: see
+/// `prepare_geometry`.
+const MAX_GEOMETRIES: usize = 2;
+
+/// The shortest run of tokens taken as a loop when it comes twice in a row.
+const MIN_REPEAT: usize = 4;
+
+/// Whisper's commonest failure: once a phrase is written, writing it again
+/// and again (on unpadded or noisy audio especially) until the decode limit.
+/// If the tokens written so far (`generated`) end with a run of at least
+/// [`MIN_REPEAT`] tokens just written before it too, how many to keep (up to
+/// the end of its first time); else none. Said twice on purpose is rarer
+/// than this loop, and costs the second saying.
+fn repetition_cut(generated: &[u32]) -> Option<usize> {
+    let n = generated.len();
+    (MIN_REPEAT..=n / 2).find(|&len| generated[n - 2 * len..n - len] == generated[n - len..]).map(|len| n - len)
+}
+
+#[cfg(test)]
+mod repetition_tests {
+    use super::repetition_cut;
+
+    #[test]
+    fn a_loop_is_cut_after_its_first_time() {
+        let once = [10, 11, 12, 13, 14];
+        let looped: Vec<u32> = once.iter().chain(once.iter()).copied().collect();
+        assert_eq!(repetition_cut(&looped), Some(once.len()));
+        // Still being written, or short repeats ("non, non"): kept.
+        assert_eq!(repetition_cut(&looped[..8]), None);
+        assert_eq!(repetition_cut(&[1, 2, 1, 2, 1, 2]), None);
+        assert_eq!(repetition_cut(&[5, 6, 7, 8, 9]), None);
     }
 }

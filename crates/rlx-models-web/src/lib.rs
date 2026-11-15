@@ -243,6 +243,58 @@ impl Transcriber {
     }
 }
 
+/// Whisper speech recognition in any of its languages (Moonshine, above, is
+/// English): `model.safetensors`, `config.json` and `tokenizer.json` of a
+/// Hugging Face checkpoint (`openai/whisper-tiny`, f16 or f32).
+#[wasm_bindgen]
+pub struct Whisper {
+    runner: Rc<RefCell<rlx_whisper::WhisperRunner>>,
+}
+
+#[wasm_bindgen]
+impl Whisper {
+    /// Consumes the files in `files`. `language`: an ISO code (`"fr"`,
+    /// default); `backend`: `"cpu"` (default) or `"webgl"`; `short`: encode
+    /// only as much as was said (rounded up to a power of two of frames)
+    /// instead of padding to 30 s — several times less work for a sentence,
+    /// not bit-identical to the reference (off by default).
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        files: &mut Files,
+        language: Option<String>,
+        backend: Option<String>,
+        short: Option<bool>,
+    ) -> Result<Whisper, JsError> {
+        let device = parse_backend(backend.as_deref())?;
+        let weights = files.take_file("model.safetensors")?;
+        let config = files.take_file("config.json")?;
+        let tokenizer = files.take_file("tokenizer.json")?;
+        let config = std::str::from_utf8(&config).map_err(|e| JsError::new(&format!("config.json: {e}")))?;
+        let config = rlx_whisper::config::WhisperConfig::from_json(config).map_err(js_err)?;
+        let runner = rlx_whisper::WhisperRunnerBuilder::default()
+            .weights_bytes(weights)
+            .tokenizer_bytes(tokenizer)
+            .config(config)
+            .language(language.unwrap_or_else(|| "fr".into()))
+            .device(device)
+            .no_pad(short.unwrap_or(false))
+            // Short: compiled first for 5.12 s (callers padding to it stay on
+            // one geometry: each costs memory), and one decode graph for a
+            // sentence rather than five.
+            .mel_frames(if short.unwrap_or(false) { 512 } else { 0 })
+            .decode_first_bucket(if short.unwrap_or(false) { 64 } else { 0 })
+            .build()
+            .map_err(js_err)?;
+        Ok(Whisper { runner: Rc::new(RefCell::new(runner)) })
+    }
+
+    /// What is said in `pcm`: 16 kHz mono in `[-1, 1]`, up to 30 seconds.
+    pub fn transcribe(&mut self, pcm: Vec<f32>) -> Result<String, JsError> {
+        let text = self.runner.borrow_mut().transcribe_greedy(&pcm).map_err(js_err)?;
+        Ok(text.trim().to_owned())
+    }
+}
+
 enum EmbedModel {
     Gemma(rlx_embeddinggemma::EmbeddingGemma),
     Jina(rlx_jina_v5::JinaV5),

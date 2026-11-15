@@ -20,14 +20,6 @@ use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "prepare")]
-use candle_core::pickle::PthTensors;
-#[cfg(feature = "prepare")]
-use candle_core::{DType as CDtype, Tensor as CTensor};
-#[cfg(feature = "prepare")]
-use safetensors::serialize_to_file;
-#[cfg(feature = "prepare")]
-use safetensors::tensor::{Dtype, TensorView};
 #[cfg(feature = "tokenizer")]
 use tokenizers::Tokenizer;
 #[cfg(feature = "tokenizer")]
@@ -223,75 +215,11 @@ fn try_download_safetensors_pr(dir: &Path) -> Result<()> {
 }
 
 #[cfg(feature = "prepare")]
-fn convert_pytorch_bin_to_safetensors(pth: &Path, out: &Path) -> Result<()> {
-    let loader =
-        PthTensors::new(pth, None).with_context(|| format!("read pytorch weights {pth:?}"))?;
-    let names: Vec<String> = loader.tensor_infos().keys().cloned().collect();
-    eprintln!("[rlx-clinicalbert] pytorch tensors: {}", names.len());
-
-    let mut staged: Vec<(String, Vec<f32>, Vec<usize>)> = Vec::with_capacity(names.len());
-    for (i, name) in names.iter().enumerate() {
-        let Some(tensor) = loader
-            .get(name)
-            .with_context(|| format!("load tensor {name}"))?
-        else {
-            continue;
-        };
-        let (data, shape) =
-            candle_tensor_to_f32(&tensor).with_context(|| format!("dequant tensor {name}"))?;
-        staged.push((name.clone(), data, shape));
-        if (i + 1) % 20 == 0 || i + 1 == names.len() {
-            eprintln!(
-                "[rlx-clinicalbert]   loaded {}/{} tensors",
-                i + 1,
-                names.len()
-            );
-        }
-    }
-
-    let mut views: Vec<(String, TensorView<'_>)> = Vec::with_capacity(staged.len());
-    let mut backing: Vec<Vec<u8>> = Vec::with_capacity(staged.len());
-    for (_name, data, _shape) in &staged {
-        let bytes: Vec<u8> = data.iter().flat_map(|v| v.to_le_bytes()).collect();
-        backing.push(bytes);
-    }
-    for ((name, _data, shape), bytes) in staged.iter().zip(backing.iter()) {
-        views.push((
-            name.clone(),
-            TensorView::new(Dtype::F32, shape.clone(), bytes)?,
-        ));
-    }
-
-    serialize_to_file(views, None, out).map_err(|e| anyhow::anyhow!("write safetensors: {e}"))?;
-    eprintln!(
-        "[rlx-clinicalbert] wrote {} ({} tensors)",
-        out.display(),
-        staged.len()
-    );
-    Ok(())
-}
-
-#[cfg(feature = "prepare")]
-fn candle_tensor_to_f32(t: &CTensor) -> Result<(Vec<f32>, Vec<usize>)> {
-    let shape = t.dims().to_vec();
-    let flat = t.flatten_all().context("flatten pytorch tensor")?;
-    let data = match flat.dtype() {
-        CDtype::F32 => flat.to_vec1::<f32>().context("f32 vec")?,
-        CDtype::F16 => flat
-            .to_vec1::<half::f16>()
-            .context("f16 vec")?
-            .into_iter()
-            .map(f32::from)
-            .collect(),
-        CDtype::BF16 => flat
-            .to_vec1::<half::bf16>()
-            .context("bf16 vec")?
-            .into_iter()
-            .map(f32::from)
-            .collect(),
-        other => bail!("unsupported pytorch dtype {other:?}"),
-    };
-    Ok((data, shape))
+fn convert_pytorch_bin_to_safetensors(_pth: &Path, _out: &Path) -> Result<()> {
+    bail!(
+        "pytorch_model.bin conversion is not supported; \
+         place model.safetensors directly in the checkpoint directory"
+    )
 }
 
 /// Default materialized model directory name for a variant download.

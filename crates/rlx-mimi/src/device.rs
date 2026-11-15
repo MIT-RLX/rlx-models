@@ -6,43 +6,10 @@ pub fn resolve_codec_device(requested: Device) -> Device {
     if requested == Device::Cpu {
         return Device::Cpu;
     }
-    #[cfg(feature = "parity-mimi")]
-    {
-        if candle_codec_available(requested) {
-            return requested;
-        }
-        // MLX tag → Candle Metal kernels on the same GPU.
-        if requested == Device::Mlx && candle_codec_available(Device::Metal) {
-            return Device::Metal;
-        }
-    }
     Device::Cpu
 }
 
-#[cfg(feature = "parity-mimi")]
-pub fn candle_codec_available(device: Device) -> bool {
-    match device {
-        Device::Metal => candle::utils::metal_is_available(),
-        Device::Cuda => candle::utils::cuda_is_available(),
-        Device::Mlx
-        | Device::Cpu
-        | Device::Gpu
-        | Device::Vulkan
-        | Device::Rocm
-        | Device::Ane
-        | Device::Tpu
-        | Device::OpenGl
-        | Device::DirectX
-        | Device::Xdna
-        | Device::OneApi
-        | Device::Hexagon
-        | Device::Egpu
-        | Device::WebGpu => false,
-    }
-}
-
-#[cfg(not(feature = "parity-mimi"))]
-pub fn candle_codec_available(_device: Device) -> bool {
+pub fn gpu_codec_available(_device: Device) -> bool {
     false
 }
 
@@ -103,17 +70,5 @@ fn all_compiled_devices() -> Vec<Device> {
 }
 
 pub fn device_ready(device: Device) -> bool {
-    if device == Device::Cpu {
-        return true;
-    }
-    #[cfg(feature = "parity-mimi")]
-    {
-        if candle_codec_available(device) {
-            return true;
-        }
-        if device == Device::Mlx && candle_codec_available(Device::Metal) {
-            return true;
-        }
-    }
     device == Device::Cpu || is_available(device)
 }

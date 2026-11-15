@@ -69,6 +69,92 @@ to tokenize verbatim. Model-card sampling: `temp 1.0`, `top_p 0.95`, `top_k 64`.
 just test-gemma4-coder   # env-gated; needs .cache/gemma4-12b-coder
 ```
 
+### EmbeddingGemma 2 (text + audio) and the null-space audio head
+
+[`google/embeddinggemma-2`](https://huggingface.co/google/embeddinggemma-2) is a
+Gemma 4 trunk (24 layers, width 512, bidirectional) used as an embedder: text
+and audio go in, one 768-wide unit vector comes out (mean pooling after
+`embedding_projection`). Audio runs through the Gemma 4 Conformer tower and is
+spliced into the token sequence. `embedding_gemma2_model::EmbeddingGemma2` runs
+both; the vision tower is not wired.
+
+[`BrunoHays/embeddinggemma-2-nullspace-audio`](https://huggingface.co/BrunoHays/embeddinggemma-2-nullspace-audio)
+([write-up](https://bruno-hays.github.io/posts/maeb-null-space-audio/)) adds
+acoustic features (pooled audio-tower layers 2 and 6, PCA-whitened) along the
+256 directions `embedding_projection` never reaches. Text embeddings and
+text–audio dot products are unchanged, and audio–audio similarity gains speaker,
+emotion and sound-texture information. `embedding_gemma2_nullspace::NullSpaceAudioHead`
+implements it.
+
+```rust
+use rlx_gemma::embedding_gemma2_model::EmbeddingGemma2;
+use rlx_gemma::embedding_gemma2_nullspace::NullSpaceAudioHead;
+
+let mut model = EmbeddingGemma2::open("weights/embed/embeddinggemma-2", Device::Cpu)?;
+let head = NullSpaceAudioHead::open("…/nullspace_audio_head.safetensors")?;
+// `prompt_ids`: <bos> + tokenizer("task: search result | query: "), no <eos>.
+let audio = model.embed_audio_nullspace(&head, &prompt_ids, &samples_16k_mono)?;
+let text = model.embed_ids(&tokenizer_ids_with_bos_eos)?;
+```
+
+```bash
+just fetch-embeddinggemma2
+REF_PY=/path/to/venv/bin/python just test-embeddinggemma2-parity
+```
+
+**Parity** vs HF transformers 5.20.2 + sentence-transformers 6.1.0 in float32
+(`tests/embedding_gemma2_parity.rs`: seven clips from 0.7 s to 35 s and four
+texts up to 759 tokens), with identical results on CPU, Metal and MLX:
+
+| Stage | Result |
+|---|---|
+| log-mel features | max abs difference 4.8e-7 |
+| audio tower after layers 2 / 6 / 12, output, soft tokens | worst row cosine 1.000000 |
+| token ids (prompt, `<|audio>`, placeholders, `<audio|>`, `<eos>`) | identical |
+| base audio and text embeddings | cosine 1.0000000 |
+| head pools, `z`, final embedding | cosine 1.0000000 |
+| `u_perp` vs `embedding_projection` | worst overlap 1.65e-7 |
+| text·audio with and without the head (× √2) | identical to 1e-6 |
+
+The author ran the model in bf16. HF bf16 and HF float32 agree to cosine
+≥ 0.9997 on the same clips, so that is the gap between this path and the
+published numbers.
+
+Length: the trunk takes inputs past the 512-token sliding window. Full-attention
+layers see every token and sliding layers every token within 512 positions,
+through a second attention bias (`attn_bias_sliding`) once the input is longer
+than 513 tokens. Audio is cut at 30 s (`MAX_AUDIO_SAMPLES`), as HF's feature
+extractor cuts it. The head inherits the write-up's caveats: its setting was
+chosen on test scores, it costs points on semantic audio tasks (spoken topic,
+intent, QA), and audio embeddings with the head cannot be truncated
+(Matryoshka).
+
+On Metal this needed an upstream `rlx-metal` fix: a batched matmul whose
+operands differ in rank (`[1,8,24,128] · [8,128,13]`, the audio attention's
+relative-position term) ran on the 2-D path and used only the first of the 8
+right-hand matrices. Gemma 4 E2B never hit it because its attention ran in
+MPSGraph; this checkpoint's clamped linears move it to per-op kernels.
+
+`EmbeddingGemma2Names` keeps the builders' `w − 1` norm convention, which a
+plain loader feeding raw norm weights breaks (it gives `1 + w`).
+
+### Gemma 4 audio tower: attention window
+
+A query in the audio tower attends to itself and the 11 positions before it
+(HF: `0 <= q - k < attention_context_left - 1`). The tower used to allow 12. The
+E2B fixtures it was checked against had a single 12-position block, where both
+windows give the same mask, so the error never showed. Any E2B audio longer
+than about 0.5 s was affected. `AudioConfig::past_keys` is now 11.
+
+`scripts/gemma4_audio_reference.py` regenerates the E2B audio fixtures from a
+clip (5 s of JFK, 125 positions, by default). It works around a transformers
+5.20.2 bug: the three audio linears this checkpoint stores as f32
+(`output_proj`, `input_proj_linear`, `embed_audio`) load as int2
+`QuantizedLinear`s and decode garbage. The script restores them, and it turns off
+8-bit activation rounding (SRQ), which the Rust tower does not model. On those
+fixtures, `tests/gemma4_audio_parity.rs` (11 tests) matches at worst row cosine
+1.000000 on CPU, Metal, MLX, wgpu and CoreML.
+
 ## Backend coverage
 
 `cargo build -p rlx-gemma --features <feature>`. Feature → backend:

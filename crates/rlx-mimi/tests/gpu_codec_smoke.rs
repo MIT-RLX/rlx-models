@@ -34,11 +34,11 @@ fn gpu_codec_roundtrip_smoke() {
         .ok()
         .map(PathBuf::from);
     if resolve_codec_device(requested) != Device::Cpu
-        && rlx_mimi::resolve_candle_weights(&mimi_dir, moshi_dir.as_deref()).is_none()
+        && rlx_mimi::resolve_mimi_weights(&mimi_dir, moshi_dir.as_deref()).is_none()
     {
         eprintln!(
             "skip: no {} for GPU mimi (set RLX_MOSHI_DIR to moshiko bundle)",
-            rlx_mimi::MIMI_CANDLE_SIDECAR
+            rlx_mimi::MIMI_SIDECAR_FILENAME
         );
         return;
     }

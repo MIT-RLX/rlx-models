@@ -516,7 +516,7 @@ fn inspect_gguf(pb: &Path, json: bool) -> Result<()> {
             );
         }
         ("dinov2", _) => {
-            println!("compat:   ok — `rlx-dinov2` (F32 drain; tensor names must match HF/candle)");
+            println!("compat:   ok — `rlx-dinov2` (F32 drain; tensor names must match HF keys)");
             println!("rust:     rlx_core::load_weight_map(path, DINOV2_GGUF_ARCHES)?");
         }
         ("sam3", _) => {

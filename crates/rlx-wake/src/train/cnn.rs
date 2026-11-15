@@ -301,6 +301,12 @@ fn train_step(w: &mut WakeCnnWeights, mel_flat: &[f32], label: f32, lr: f32, wd:
     loss
 }
 
+/// The reference forward's probability for a clip's mel frames (frame-major), on its last
+/// `window_frames` frames.
+pub fn predict(w: &WakeCnnWeights, frames: &[f32], window_frames: usize) -> f32 {
+    forward(w, &window_mel(frames, w.cfg.n_mels, window_frames)).prob
+}
+
 pub fn train_wake_cnn(
     weights: &mut WakeCnnWeights,
     clips: &[LabeledClip],
@@ -318,9 +324,18 @@ pub fn train_wake_cnn(
 
     let mut initial = 0.0f32;
     let mut final_loss = 0.0f32;
+    // Per-sample SGD over a fixed order (all positives, then all negatives) drifts towards
+    // whichever class came last: shuffle every epoch (deterministic, Fisher-Yates).
+    let mut order: Vec<usize> = (0..feats.len()).collect();
+    let mut rng = 0x2545_F491_4F6C_DD1Du64;
     for epoch in 0..cfg.sgd.epochs {
+        for i in (1..order.len()).rev() {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            order.swap(i, (rng >> 33) as usize % (i + 1));
+        }
         let mut sum = 0.0f32;
-        for (mel, y) in &feats {
+        for &i in &order {
+            let (mel, y) = &feats[i];
             sum += train_step(weights, mel, *y, cfg.sgd.lr, cfg.sgd.weight_decay);
         }
         let mean = sum / feats.len().max(1) as f32;
@@ -359,7 +374,7 @@ pub fn train_new_lite_cnn(
     keyword: &str,
     epochs: usize,
 ) -> (WakeCnnWeights, TrainReport) {
-    let mut w = WakeCnnWeights::stub(WakeCnnConfig::lite());
+    let mut w = WakeCnnWeights::he_init(WakeCnnConfig::lite(), 1);
     let cfg = CnnTrainConfig {
         keyword: keyword.into(),
         sgd: SgdConfig {

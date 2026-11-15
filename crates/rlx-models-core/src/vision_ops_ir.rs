@@ -249,7 +249,7 @@ pub fn sigmoid_nchw(g: &mut HirMut<'_>, x: HirNodeId) -> HirNodeId {
     g.activation(Activation::Sigmoid, x, s)
 }
 
-/// SAM/candle `LayerNorm2d` on NCHW.
+/// SAM `LayerNorm2d` on NCHW.
 pub fn layer_norm2d_nchw(
     g: &mut HirMut<'_>,
     x: HirNodeId,

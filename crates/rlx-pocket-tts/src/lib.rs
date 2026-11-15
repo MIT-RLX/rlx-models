@@ -54,7 +54,7 @@ pub mod weights;
 pub mod download;
 
 pub use config::PocketTtsConfig;
-pub use engine::{ChunkOutput, ModelFiles, PocketTts, SynthOptions};
+pub use engine::{ChunkOutput, ModelFiles, PocketTts, SynthOptions, last_timing};
 pub use model::{Audio, GenerationOptions, TtsModel};
 pub use spec::{FlowType, ModelSpec};
 pub use tokenizer::{PocketTokenizer, split_into_chunks};

@@ -3,6 +3,7 @@ use rlx_core::flow_util::compile_graph_gemma_prefill_with_params;
 use rlx_gemma::gemma4_audio::{
     AudioConfig, audio_block_mask, audio_rel_pos, build_attention_test, build_audio_features,
     build_audio_layer0_debug, build_audio_subsample, build_audio_tower, build_depthwise_test,
+    compile_audio_tower,
 };
 use rlx_gemma::qat_loader::GemmaQatLoader;
 use rlx_runtime::{Device, is_available};
@@ -99,7 +100,7 @@ fn run_tower_dev(
         build_audio_tower(cfg, &mut loader, 1, t, n_layers, with_proj).expect("build tower");
     let rel = audio_rel_pos(cfg);
     let (mask, _nb) = audio_block_mask(cfg, seq);
-    let mut c = compile_graph_gemma_prefill_with_params(dev, g, params).unwrap();
+    let mut c = compile_audio_tower(dev, g, params).unwrap();
     let outs = c.run(&[
         ("audio_feats", feats),
         ("audio_rel_pos", rel.as_slice()),
@@ -294,6 +295,16 @@ fn audio_full_parity_wgpu() {
 #[test]
 fn audio_full_parity_coreml() {
     run_audio_full(Device::Ane, "audio full coreml");
+}
+
+#[test]
+fn audio_full_parity_cuda() {
+    run_audio_full(Device::Cuda, "audio full cuda");
+}
+
+#[test]
+fn audio_full_parity_rocm() {
+    run_audio_full(Device::Rocm, "audio full rocm");
 }
 
 #[test]

@@ -25,6 +25,15 @@ use llama_cpp_2::token::LlamaToken;
 use std::num::NonZeroU32;
 use std::path::Path;
 
+/// `text` through the GGUF's tokenizer, BOS first: what `AddBos::Always`
+/// gave before `llama-cpp-2` moved tokenizing onto the vocab.
+fn tokens_with_bos(model: &LlamaModel, text: &str) -> Vec<LlamaToken> {
+    let vocab = model.vocab();
+    let mut toks = vocab.tokenize(text.as_bytes(), false, false);
+    toks.insert(0, vocab.bos());
+    toks
+}
+
 /// Last-token logits top-K from llama.cpp for raw token ids (no tokenizer).
 pub fn top_k_logits(path: &Path, prompt_ids: &[u32], top_k: usize) -> Result<Vec<(u32, f32)>> {
     let logits = last_token_logits(path, prompt_ids)?;
@@ -45,9 +54,7 @@ pub fn tokenize(path: &Path, text: &str) -> Result<Vec<u32>> {
     let model_params = LlamaModelParams::default().with_n_gpu_layers(0);
     let model = LlamaModel::load_from_file(&backend, path, &model_params)
         .with_context(|| format!("load GGUF {}", path.display()))?;
-    let toks = model
-        .str_to_token(text, llama_cpp_2::model::AddBos::Always)
-        .context("str_to_token")?;
+    let toks = tokens_with_bos(&model, text);
     Ok(toks.into_iter().map(|t| t.0 as u32).collect())
 }
 
@@ -158,7 +165,7 @@ pub fn greedy_generation_ids(
     for n_cur in (prompt_ids.len() as i32..).take(max_new_tokens as usize) {
         let token = sampler.sample(&ctx, batch.n_tokens() - 1);
         sampler.accept(token);
-        if model.is_eog_token(token) {
+        if model.vocab().is_eog(token) {
             break;
         }
         out.push(token.0 as u32);

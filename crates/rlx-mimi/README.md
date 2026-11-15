@@ -25,10 +25,9 @@ cargo run -p rlx-mimi --features "parity-mimi-metal,metal" --release -- \
 | `metal` / `mlx` / `cuda` | Native rlx graph |
 | `wgpu` / `vulkan` | Native rlx graph (`gpu`/`vulkan`) |
 
-The candle/moshi codec is retained only as a dev parity oracle behind
-`parity-mimi` (cross-check the native graph): `cargo build -p rlx-mimi --features "parity-mimi-metal,metal"`.
+GPU path loads the Kyutai Moshi bundle sidecar from `RLX_MOSHI_DIR` or the mimi dir.
 
-GPU path loads `tokenizer-e351c8d8-checkpoint125.safetensors` from `RLX_MOSHI_DIR` or the mimi dir (not `model.safetensors` HF layout).
+The GPU sidecar is `tokenizer-e351c8d8-checkpoint125.safetensors` (not `model.safetensors` HF layout).
 
 ## Library
 
@@ -48,7 +47,7 @@ Set `RLX_MIMI_DIR` to skip `--model-dir`. Input WAVs are resampled to 24 kHz.
 | Artifact | HuggingFace |
 |----------|-------------|
 | HF Mimi (CPU) | [`kyutai/mimi`](https://huggingface.co/kyutai/mimi) |
-| Candle Mimi (GPU) | sidecar in [`kyutai/moshiko-candle-bf16`](https://huggingface.co/kyutai/moshiko-candle-bf16) |
+| Moshi bundle sidecar (GPU) | sidecar in [`kyutai/moshiko-candle-bf16`](https://huggingface.co/kyutai/moshiko-candle-bf16) |
 
 ## Tests
 

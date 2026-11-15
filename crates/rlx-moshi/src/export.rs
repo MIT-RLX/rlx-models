@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Export Moshi (`kyutai/moshiko-candle-bf16`) one-way as an `.rlxp`
+//! Export Moshi (`kyutai/moshiko-mlx-bf16`) one-way as an `.rlxp`
 //! package rlx runs alone: a text prompt in, Moshi's speech out.
 //!
 //! Its graphs read the checkpoint's tensors by their own names (referenced,

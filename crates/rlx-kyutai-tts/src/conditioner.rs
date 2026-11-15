@@ -8,7 +8,7 @@
 //! | [`TensorConditioner`] | pre-computed `[dim]` embedding | proj→`[d_model]` | `cross` (speaker_wavs) |
 //!
 //! The native eager forms below are pure ndarray; they consume already-loaded
-//! weights (no candle / safetensors dependency at this layer).
+//! weights (no safetensors dependency at this layer).
 
 use crate::nn::{Embedding, linear};
 use anyhow::{Result, bail};

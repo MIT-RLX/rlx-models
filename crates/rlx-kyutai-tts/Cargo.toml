@@ -29,7 +29,7 @@ rayon = "1.10"
 # NOTE: rlx-kyutai-tts implements all required architecture primitives natively
 # (see src/nn.rs, src/cross_attention.rs, src/conditioner.rs, etc.). We avoid
 # depending on rlx-moshi at runtime because workspace feature unification would
-# drag candle/moshi (rlx-moshi's optional gpu-lm path) into our runtime graph.
+# drag optional rlx-moshi features into our runtime graph.
 
 [dependencies.hf-hub]
 workspace = true
@@ -59,14 +59,10 @@ name = "rlx-kyutai-tts"
 path = "src/bin/rlx_kyutai_tts.rs"
 required-features = ["cli"]
 
-# Dev-only: upstream Kyutai `moshi` + Candle for parity checks against the
-# published `dsm_tts_*` checkpoint; `rlx-whisper` for ASR round-trip validation
-# of synthesised audio. NOT runtime dependencies.
+# Dev-only: `rlx-whisper` for ASR round-trip validation of synthesised audio.
+# NOT runtime dependencies.
 [dev-dependencies]
 rlx-kyutai-tts = { path = ".", features = ["cli", "hf-download", "all-backends"] }
-candle = { version = "0.9.2", default-features = false, package = "candle-core" }
-candle-nn = { version = "0.9.2" }
-moshi = { version = "0.6.4", default-features = false }
 safetensors = { workspace = true }
 rlx-whisper = { workspace = true, features = ["tokenizer"] }
 tempfile = "3"

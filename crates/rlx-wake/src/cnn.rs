@@ -46,6 +46,28 @@ impl WakeCnnConfig {
         }
     }
 
+    /// Between the two: twice lite's channels (about 4x its multiply-adds).
+    pub fn mid() -> Self {
+        Self {
+            n_mels: 32,
+            c1: 32,
+            c2: 64,
+            c3: 64,
+            k: 3,
+            hidden: 128,
+        }
+    }
+
+    /// `lite`, `mid` or `full`.
+    pub fn named(name: &str) -> Option<Self> {
+        match name {
+            "lite" => Some(Self::lite()),
+            "mid" => Some(Self::mid()),
+            "full" => Some(Self::full()),
+            _ => None,
+        }
+    }
+
     pub fn full() -> Self {
         Self {
             n_mels: 32,
@@ -95,6 +117,36 @@ impl WakeCnnWeights {
             fc1_b: vec![0.0; cfg.hidden],
             fc2_w: fill(cfg.hidden, &mut next),
             fc2_b: vec![-2.0], // bias toward low score on stub
+            cfg,
+        }
+    }
+
+    /// Weights to start training from: He (Kaiming) uniform, `±sqrt(6 / fan_in)` per layer,
+    /// zero biases. [`Self::stub`]'s ±0.01 everywhere shrinks the signal ~100x per layer, so
+    /// after five layers the output no longer depends on the input and SGD only learns the
+    /// final bias: every trained phrase answered one class (or 0.5) to everything.
+    pub fn he_init(cfg: WakeCnnConfig, seed: u64) -> Self {
+        let mut rng = seed ^ 0x9E37_79B9_7F4A_7C15;
+        let mut unit = move || {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (rng >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+        };
+        let mut fill = |n: usize, fan_in: usize| -> Vec<f32> {
+            let a = (6.0 / fan_in.max(1) as f32).sqrt();
+            (0..n).map(|_| unit() * a).collect()
+        };
+        let k = cfg.k;
+        Self {
+            conv1_w: fill(cfg.c1 * cfg.n_mels * k, cfg.n_mels * k),
+            conv1_b: vec![0.0; cfg.c1],
+            conv2_w: fill(cfg.c2 * cfg.c1 * k, cfg.c1 * k),
+            conv2_b: vec![0.0; cfg.c2],
+            conv3_w: fill(cfg.c3 * cfg.c2 * k, cfg.c2 * k),
+            conv3_b: vec![0.0; cfg.c3],
+            fc1_w: fill(cfg.hidden * cfg.c3, cfg.c3),
+            fc1_b: vec![0.0; cfg.hidden],
+            fc2_w: fill(cfg.hidden, cfg.hidden),
+            fc2_b: vec![0.0],
             cfg,
         }
     }

@@ -245,13 +245,9 @@ pub fn assert_full_model_fits(cfg: &Llama32Config, device: Device, max_seq: usiz
 /// Apply process-wide defaults that help Nanbeige on `device` (idempotent-ish).
 ///
 /// Call **before** the first MLX graph compile. Nanbeige looped prefill/decode
-/// graphs are ~2k nodes; the MLX default compile cap (1536) forces Lazy and
-/// makes real 3B F32 impractically slow.
+/// graphs (≈2013 / ≈1930 nodes for Nanbeige4.2-3B) are under MLX's default
+/// compile limit (5000), so they run Compiled without a setting here.
 pub fn prepare(device: Device) {
-    if matches!(device, Device::Mlx) && rlx_ir::env::var_os("RLX_MLX_COMPILE_MAX_NODES").is_none() {
-        // Prefill ≈2013 nodes, decode ≈1930 for Nanbeige4.2-3B (22×2 loops).
-        rlx_ir::env::set("RLX_MLX_COMPILE_MAX_NODES", "4096");
-    }
     if matches!(device, Device::Mlx | Device::Metal) {
         // Dense F32 3B leaves high RSS after Compiled prefill; default 80%
         // soft cap then rejects decode (+4–12 GiB peak estimate).

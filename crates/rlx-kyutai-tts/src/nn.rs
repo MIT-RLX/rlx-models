@@ -1,6 +1,6 @@
 //! Native eager nn primitives used by the Kyutai TTS modules.
 //!
-//! All ops are pure-Rust ndarray; nothing depends on candle / moshi / GPU
+//! All ops are pure-Rust ndarray; nothing depends on upstream moshi / GPU
 //! runtimes. Intentionally small — only what the Kyutai-TTS-specific layers
 //! ([`crate::cross_attention`], [`crate::conditioner`], [`crate::depformer`],
 //! [`crate::low_rank_embedding`]) consume.

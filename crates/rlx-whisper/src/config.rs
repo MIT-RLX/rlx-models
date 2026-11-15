@@ -18,7 +18,7 @@
 use serde::Deserialize;
 use std::path::Path;
 
-/// Whisper model dimensions (HF field names; see OpenAI `model.py` comments in candle).
+/// Whisper model dimensions (HF field names; see OpenAI `model.py`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct WhisperConfig {
     pub num_mel_bins: usize,
@@ -41,6 +41,11 @@ impl WhisperConfig {
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let data = std::fs::read_to_string(path)?;
         Ok(serde_json::from_str(&data)?)
+    }
+
+    /// From `config.json`'s text (a browser has no files).
+    pub fn from_json(text: &str) -> anyhow::Result<Self> {
+        Ok(serde_json::from_str(text)?)
     }
 
     pub fn head_dim(&self) -> usize {

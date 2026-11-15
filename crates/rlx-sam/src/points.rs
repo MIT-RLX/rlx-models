@@ -14,7 +14,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! SAM's point and box prompts as sparse embeddings, and the image's
-//! positional encoding: the random-Fourier features candle's
+//! positional encoding: the random-Fourier features SAM's
 //! `PromptEncoder` computes. Plain host math over the prompt encoder's
 //! weights, which the exported package's program builds too.
 
@@ -104,7 +104,7 @@ pub fn image_pe(w: &PointWeights<'_>, h: usize, ww: usize) -> Vec<f32> {
 
 /// Apply the Gaussian + sin/cos PE to arbitrary `[N, 2]` coords already
 /// in `[0, 1]` (or with extra padding columns that are passed through
-/// unchanged via the candle convention). Returns `[N, embed_dim]`.
+/// unchanged). Returns `[N, embed_dim]`.
 fn pe_encode_normalized(w: &PointWeights<'_>, coords: &[f32], n: usize) -> Vec<f32> {
     let e = w.embed_dim;
     let half = e / 2;

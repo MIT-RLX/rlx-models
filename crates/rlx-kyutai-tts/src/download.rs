@@ -8,7 +8,7 @@
 //! - `tokenizer_spm_8k_en_fr_audio.model` — SentencePiece text tokenizer
 //!
 //! The Mimi sidecar matches the one shipped with `kyutai/moshiko-*`, so
-//! [`rlx_mimi::resolve_candle_weights`] can pick it up out of the TTS dir.
+//! [`rlx_mimi::resolve_mimi_weights`] can pick it up out of the TTS dir.
 
 use crate::checkpoint::KyutaiTtsCheckpoint;
 use anyhow::Result;

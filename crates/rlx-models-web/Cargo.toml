@@ -19,6 +19,8 @@ crate-type = ["cdylib", "rlib"]
 rlx-ir = { workspace = true }
 anyhow = { workspace = true }
 rlx-moonshine-streaming = { workspace = true }
+# Whisper (multilingual: French and the rest), for speech recognition in a browser.
+rlx-whisper = { workspace = true }
 rlx-jina-v5 = { workspace = true }
 rlx-embeddinggemma = { workspace = true }
 # BERT-family sentence encoders (`BertEmbedder`): bge, MiniLM, MedCPT, …

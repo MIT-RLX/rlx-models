@@ -28,6 +28,11 @@ pub struct TrainOpts {
     pub log_every: usize,
     /// After SGD, ternarize selected tensors to exact `{−1,0,+1}` for bake TQ2 / fused kernels.
     pub ternary: Option<TernaryOpts>,
+    /// The CNN's size (`WakeCnnConfig::lite()` by default; see `WakeCnnConfig::named`).
+    pub model: WakeCnnConfig,
+    /// Train as an RLX graph on this device, in minibatches with AdamW
+    /// (`rlx_wake::train_wake_cnn_device`); `None`: the per-clip SGD reference on the host.
+    pub graph: Option<(rlx_wake::Device, rlx_wake::GraphTrainConfig)>,
 }
 
 impl Default for TrainOpts {
@@ -40,6 +45,8 @@ impl Default for TrainOpts {
             threshold: 0.5,
             log_every: 5,
             ternary: None,
+            model: WakeCnnConfig::lite(),
+            graph: None,
         }
     }
 }
@@ -293,8 +300,13 @@ pub fn train_one_phrase(
         load_pos_neg_dirs(pos, neg)?
     };
     ensure!(!clips.is_empty(), "empty dataset for {}", spec.id);
-    let mut w = WakeCnnWeights::stub(WakeCnnConfig::lite());
+    let mut w = WakeCnnWeights::he_init(opts.model.clone(), 1);
+    // Train on the window the session scores at run time (`context_ms`, 10 ms mel hop), not
+    // the trainer's default 40 frames: 0.4 s cannot hold a two-word phrase, and a model
+    // trained on the clip's last 0.4 s and run on 1.2 s answered "no" to everything.
+    let hop_ms = 1000.0 * rlx_wakeword_core::MelConfig::default().hop_length as f32 / rlx_wakeword_core::SAMPLE_RATE_16K as f32;
     let cfg = CnnTrainConfig {
+        window_frames: ((opts.context_ms / hop_ms).round() as usize).max(1),
         keyword: spec.id.clone(),
         sgd: SgdConfig {
             lr: opts.lr,
@@ -302,9 +314,11 @@ pub fn train_one_phrase(
             log_every: opts.log_every,
             weight_decay: 1e-4,
         },
-        ..CnnTrainConfig::default()
     };
-    let report = train_wake_cnn(&mut w, &clips, &cfg);
+    let report = match &opts.graph {
+        Some((device, gcfg)) => rlx_wake::train_wake_cnn_device(&mut w, &clips, &cfg, gcfg, *device),
+        None => train_wake_cnn(&mut w, &clips, &cfg),
+    };
     if let Some(topts) = opts.ternary {
         let stats = w.ternarize(topts);
         eprintln!(
@@ -357,7 +371,8 @@ pub fn train_phrases(
         speaker_id: false,
         ..WakewordConfig::default()
     };
-    Ok(WakewordBundle { config, weights })
+    let sources = weights.iter().map(|(id, _)| (format!("phrase_{id}.safetensors"), 0)).collect();
+    Ok(WakewordBundle { config, weights, sources })
 }
 
 /// Quick multi-word synth: `word0` … `word{n-1}`.

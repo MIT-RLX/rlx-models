@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 
 pub const HF_MIMI_REPO: &str = "kyutai/mimi";
 
-/// Kyutai Moshi bundle sidecar — Candle/moshi weight layout (~385 MB).
-pub const MIMI_CANDLE_SIDECAR: &str = "tokenizer-e351c8d8-checkpoint125.safetensors";
+/// Kyutai Moshi bundle sidecar weight file (~385 MB).
+pub const MIMI_SIDECAR_FILENAME: &str = "tokenizer-e351c8d8-checkpoint125.safetensors";
+
 
 pub fn default_mimi_dir() -> PathBuf {
     rlx_ir::env::var_result("RLX_MIMI_DIR")
@@ -68,17 +69,18 @@ pub fn ensure_weights(model_dir: &Path) -> Result<()> {
     }
 }
 
-/// Candle/moshi-format Mimi weights (sidecar from `kyutai/moshiko-*` repos).
-pub fn resolve_candle_weights(model_dir: &Path, moshi_dir: Option<&Path>) -> Option<PathBuf> {
+/// Mimi sidecar weights (from `kyutai/moshiko-*` repos).
+pub fn resolve_mimi_weights(model_dir: &Path, moshi_dir: Option<&Path>) -> Option<PathBuf> {
     if let Some(dir) = moshi_dir {
-        let p = dir.join(MIMI_CANDLE_SIDECAR);
+        let p = dir.join(MIMI_SIDECAR_FILENAME);
         if p.is_file() {
             return Some(p);
         }
     }
-    let p = model_dir.join(MIMI_CANDLE_SIDECAR);
+    let p = model_dir.join(MIMI_SIDECAR_FILENAME);
     if p.is_file() {
         return Some(p);
     }
     None
 }
+

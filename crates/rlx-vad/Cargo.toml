@@ -12,12 +12,13 @@ repository.workspace = true
 readme = "README.md"
 
 [dependencies]
-rlx-cli = { workspace = true }
+# The CLI and device selection (`cli` feature); Earshot alone needs only
+# rlx-cpu, so it builds lean (e.g. into a wasm app).
+rlx-cli = { workspace = true, optional = true }
 rlx-core = { workspace = true, optional = true }
-rlx-ir = { workspace = true }
+rlx-ir = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-rlx-flow = { workspace = true }
-rlx-runtime = { workspace = true }
+rlx-runtime = { workspace = true, optional = true }
 rlx-cpu = { workspace = true }
 anyhow = { workspace = true }
 rlx-torch-ckpt = { workspace = true, optional = true }
@@ -25,6 +26,7 @@ rlx-torch-ckpt = { workspace = true, optional = true }
 [[bin]]
 name = "rlx-vad"
 path = "src/bin/rlx_vad.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "pyannote_parity"
@@ -34,6 +36,7 @@ required-features = ["pyannote"]
 [[example]]
 name = "jfk_bench"
 path = "examples/jfk_bench.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "jfk_probe"
@@ -52,33 +55,37 @@ required-features = ["silero"]
 [[test]]
 name = "backend_quick_check"
 path = "tests/backend_quick_check.rs"
+required-features = ["cli"]
 
 [[test]]
 name = "e2e_jfk"
 path = "tests/e2e_jfk.rs"
 
 [dev-dependencies]
+rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true, features = ["program"] }
 tempfile = "3"
 # float_roundtrip: parity reads reference floats bit for bit.
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 [features]
-default = ["earshot", "silero"]
+default = ["earshot", "silero", "cli"]
+# The `rlx-vad` binary, `cli` and `device` (rlx-runtime device selection).
+cli = ["dep:rlx-cli", "dep:rlx-runtime"]
 earshot = []
 silero = ["dep:rlx-core"]
 # WhisperX's pyannote segmentation VAD (`pyannote::PyannoteSegmentation`).
-pyannote = ["dep:rlx-torch-ckpt"]
+pyannote = ["dep:rlx-torch-ckpt", "dep:rlx-ir", "dep:rlx-runtime"]
 # `export::export_rlxp`: Silero VAD as an `.rlxp` package rlx runs alone.
-export = ["silero", "rlx-core/export", "dep:serde_json"]
+export = ["silero", "rlx-core/export", "dep:serde_json", "dep:rlx-ir"]
 hf-download = ["dep:hf-hub"]
 all-backends = ["metal", "mlx", "cuda", "rocm", "gpu", "vulkan"]
-metal = ["rlx-runtime/metal"]
-mlx = ["rlx-runtime/mlx"]
-cuda = ["rlx-runtime/cuda"]
-rocm = ["rlx-runtime/rocm"]
-gpu = ["rlx-runtime/gpu"]
-vulkan = ["rlx-runtime/vulkan"]
+metal = ["cli", "rlx-runtime/metal"]
+mlx = ["cli", "rlx-runtime/mlx"]
+cuda = ["cli", "rlx-runtime/cuda"]
+rocm = ["cli", "rlx-runtime/rocm"]
+gpu = ["cli", "rlx-runtime/gpu"]
+vulkan = ["cli", "rlx-runtime/vulkan"]
 macos-gpu = ["metal", "mlx", "gpu"]
 nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]

@@ -69,23 +69,26 @@ pub fn conv1d_nchw(
     } else {
         0
     };
-    out.fill(0.0);
+    // Per tap, the outputs whose input index `ot·stride + ki − pad` falls inside `[0, t_in)`:
+    // the padding test leaves the inner loop, which then runs over contiguous time (and
+    // vectorizes). Each output still sums bias, then channels, then taps, in that order.
     for oc in 0..out_ch {
-        for ot in 0..t_out {
-            let mut sum = bias.map(|b| b[oc]).unwrap_or(0.0);
-            for ic in 0..in_ch {
-                for ki in 0..k {
-                    let ti = ot * stride + ki;
-                    let ti = ti as isize - pad as isize;
-                    if ti < 0 || ti >= t_in as isize {
-                        continue;
-                    }
-                    let x_idx = ic * t_in + ti as usize;
-                    let w_idx = oc * (in_ch * k) + ic * k + ki;
-                    sum += x[x_idx] * w[w_idx];
+        let row = &mut out[oc * t_out..(oc + 1) * t_out];
+        row.fill(bias.map(|b| b[oc]).unwrap_or(0.0));
+        for ic in 0..in_ch {
+            let xr = &x[ic * t_in..(ic + 1) * t_in];
+            let wr = &w[oc * (in_ch * k) + ic * k..oc * (in_ch * k) + (ic + 1) * k];
+            for (ki, &wv) in wr.iter().enumerate() {
+                let lo = if pad > ki { (pad - ki).div_ceil(stride) } else { 0 };
+                let hi = if t_in + pad > ki { ((t_in + pad - ki - 1) / stride + 1).min(t_out) } else { 0 };
+                if lo >= hi {
+                    continue;
+                }
+                let start = lo * stride + ki - pad;
+                for (o, &xv) in row[lo..hi].iter_mut().zip(xr[start..].iter().step_by(stride)) {
+                    *o += wv * xv;
                 }
             }
-            out[oc * t_out + ot] = sum;
         }
     }
     t_out

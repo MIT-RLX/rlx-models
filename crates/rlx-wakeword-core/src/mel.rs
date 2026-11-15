@@ -5,7 +5,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
-use core::f32::consts::{PI, TAU};
+use core::f32::consts::PI;
 
 pub const SAMPLE_RATE_16K: usize = 16_000;
 
@@ -40,6 +40,10 @@ pub struct MelFrontend {
     window: Vec<f32>,
     mel_fb: Vec<f32>,
     leftover: Vec<f32>,
+    /// The power spectrum (see [`Fft`]).
+    fft: Fft,
+    windowed: Vec<f32>,
+    power: Vec<f32>,
 }
 
 impl MelFrontend {
@@ -54,11 +58,15 @@ impl MelFrontend {
             cfg.f_max,
             cfg.n_fft,
         );
+        let fft = Fft::new(cfg.n_fft);
         Self {
+            windowed: vec![0.0; cfg.n_fft],
+            power: vec![0.0; n_freqs],
             cfg,
             window,
             mel_fb,
             leftover: Vec::new(),
+            fft,
         }
     }
 
@@ -84,26 +92,21 @@ impl MelFrontend {
         let n_mels = self.cfg.n_mels;
         let n_freqs = n_fft / 2 + 1;
 
-        while self.leftover.len() >= win {
-            let frame = &self.leftover[..win];
-            let mut windowed = vec![0.0f32; n_fft];
+        let mut off = 0;
+        while self.leftover.len() - off >= win {
             for i in 0..win {
-                windowed[i] = frame[i] * self.window[i];
+                self.windowed[i] = self.leftover[off + i] * self.window[i];
             }
-            let power = rfft_power(&windowed);
-            let mut mel = vec![0.0f32; n_mels];
+            self.windowed[win..].fill(0.0);
+            self.fft.power(&self.windowed, &mut self.power);
             for m in 0..n_mels {
-                let mut s = 0.0f32;
-                let row = m * n_freqs;
-                for f in 0..n_freqs {
-                    s += self.mel_fb[row + f] * power[f];
-                }
-                let logv = (s.max(1e-10)).ln();
-                mel[m] = logv / 10.0 + 2.0;
+                let row = &self.mel_fb[m * n_freqs..(m + 1) * n_freqs];
+                let s: f32 = row.iter().zip(&self.power).map(|(w, p)| w * p).sum();
+                frames.push((s.max(1e-10)).ln() / 10.0 + 2.0);
             }
-            frames.extend_from_slice(&mel);
-            self.leftover.drain(..hop);
+            off += hop;
         }
+        self.leftover.drain(..off);
         frames
     }
 }
@@ -163,6 +166,137 @@ fn mel_filterbank(
     fb
 }
 
+/// `|X_k|²` of real frames of one length, by [`Fft`]: the frontend's spectrum, shared with
+/// `rlx-wake`'s training features so both compute exactly the same thing.
+#[derive(Debug, Clone)]
+pub struct PowerSpectrum(Fft);
+
+impl PowerSpectrum {
+    pub fn new(n_fft: usize) -> Self {
+        Self(Fft::new(n_fft))
+    }
+
+    /// Bins `0..out.len()` (`n_fft / 2 + 1` for all of them) of `frame` (`n_fft` long).
+    pub fn compute(&mut self, frame: &[f32], out: &mut [f32]) {
+        self.0.power(frame, out);
+    }
+}
+
+/// A complex number for [`Fft`].
+#[derive(Debug, Clone, Copy, Default)]
+struct C {
+    re: f32,
+    im: f32,
+}
+
+impl C {
+    fn mul(self, o: C) -> C {
+        C { re: self.re * o.re - self.im * o.im, im: self.re * o.im + self.im * o.re }
+    }
+}
+
+/// A mixed-radix FFT (recursive decimation in time) for the power spectrum: `n_fft = 400` is
+/// 4·4·5·5, about 7 k complex multiply-adds a frame instead of a DFT's 80 k. Only a unit-circle
+/// table and two `n`-long scratch buffers (MCU-sized), no trig per frame.
+#[derive(Debug, Clone)]
+struct Fft {
+    factors: Vec<usize>,
+    /// `exp(-2πi j / n)`.
+    tw: Vec<C>,
+    buf: Vec<C>,
+    out: Vec<C>,
+}
+
+impl Fft {
+    fn new(n: usize) -> Self {
+        let mut factors = Vec::new();
+        let mut m = n.max(1);
+        for p in [4, 2, 3, 5] {
+            while m.is_multiple_of(p) {
+                factors.push(p);
+                m /= p;
+            }
+        }
+        let mut p = 7;
+        while m > 1 {
+            while m.is_multiple_of(p) {
+                factors.push(p);
+                m /= p;
+            }
+            p += 2;
+        }
+        if factors.is_empty() {
+            factors.push(1);
+        }
+        let tw = (0..n)
+            .map(|j| {
+                let a = -core::f64::consts::TAU * j as f64 / n as f64;
+                C { re: a.cos() as f32, im: a.sin() as f32 }
+            })
+            .collect();
+        Self { factors, tw, buf: vec![C::default(); n], out: vec![C::default(); n] }
+    }
+
+    /// `|X_k|²` for `k = 0..out.len()` (up to `n/2`) of the real signal `x` (`x.len() == n`).
+    fn power(&mut self, x: &[f32], out: &mut [f32]) {
+        for (b, &v) in self.buf.iter_mut().zip(x) {
+            *b = C { re: v, im: 0.0 };
+        }
+        fft_rec(&self.buf, 1, &mut self.out, &self.factors, &self.tw, 1);
+        for (o, c) in out.iter_mut().zip(&self.out) {
+            *o = c.re * c.re + c.im * c.im;
+        }
+    }
+}
+
+/// `out = DFT(x[0], x[xs], x[2 xs], ...)` of length `out.len()`, whose size factors into
+/// `factors`; `tw` is the table for the full length and `ts` its stride at this depth.
+fn fft_rec(x: &[C], xs: usize, out: &mut [C], factors: &[usize], tw: &[C], ts: usize) {
+    let n = out.len();
+    let p = factors[0];
+    let m = n / p;
+    if m == 1 {
+        for (k, o) in out.iter_mut().enumerate() {
+            *o = x[k * xs];
+        }
+    } else {
+        for q in 0..p {
+            fft_rec(&x[q * xs..], xs * p, &mut out[q * m..(q + 1) * m], &factors[1..], tw, ts * p);
+        }
+    }
+    if p == 1 {
+        return;
+    }
+    let big = tw.len();
+    let wp = big / p;
+    let mut small = [C::default(); 8];
+    let mut large = Vec::new();
+    let y: &mut [C] = if p <= small.len() {
+        &mut small[..p]
+    } else {
+        large.resize(p, C::default());
+        &mut large
+    };
+    // X[k + r m] = Σ_q W_p^{q r} · (W_n^{q k} · F_q[k]), F_q at out[q m..].
+    for k in 0..m {
+        for (q, yq) in y.iter_mut().enumerate() {
+            *yq = out[q * m + k].mul(tw[(q * k * ts) % big]);
+        }
+        for r in 0..p {
+            let mut acc = y[0];
+            for (q, yq) in y.iter().enumerate().skip(1) {
+                acc = {
+                    let t = yq.mul(tw[(q * r * wp) % big]);
+                    C { re: acc.re + t.re, im: acc.im + t.im }
+                };
+            }
+            out[r * m + k] = acc;
+        }
+    }
+}
+
+/// The reference: a DFT with trig per term.
+#[cfg(test)]
 fn rfft_power(x: &[f32]) -> Vec<f32> {
     let n = x.len();
     let n_freqs = n / 2 + 1;
@@ -170,7 +304,7 @@ fn rfft_power(x: &[f32]) -> Vec<f32> {
     for k in 0..n_freqs {
         let mut re = 0.0f32;
         let mut im = 0.0f32;
-        let ang0 = -TAU * k as f32 / n as f32;
+        let ang0 = -core::f32::consts::TAU * k as f32 / n as f32;
         for (t, &xv) in x.iter().enumerate() {
             let ang = ang0 * t as f32;
             re += xv * ang.cos();
@@ -179,4 +313,23 @@ fn rfft_power(x: &[f32]) -> Vec<f32> {
         out[k] = re * re + im * im;
     }
     out
+}
+
+#[cfg(test)]
+mod fft_tests {
+    use super::*;
+
+    #[test]
+    fn fft_matches_the_reference_dft() {
+        for n in [400, 512, 360, 98, 7] {
+            let x: Vec<f32> = (0..n).map(|i| ((i * 7919 % n) as f32 / n as f32 - 0.5) * 0.6).collect();
+            let mut fast = vec![0.0; n / 2 + 1];
+            Fft::new(n).power(&x, &mut fast);
+            let slow = rfft_power(&x);
+            let peak = slow.iter().cloned().fold(0.0f32, f32::max);
+            for (k, (a, b)) in fast.iter().zip(&slow).enumerate() {
+                assert!((a - b).abs() <= 1e-4 * peak.max(1.0), "n={n} k={k}: {a} vs {b}");
+            }
+        }
+    }
 }

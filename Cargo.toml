@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rlx-yunet",
     "crates/rlx-models",
     "crates/rlx-models-plugin",
     "crates/rlx-dsv41",
@@ -309,6 +310,7 @@ rlx-cuda = { version = "^0.2.20" }
 rlx-wgpu = { version = "^0.2.20" }
 rlx-rocm = { version = "^0.2.20" }
 rlx-onnx-import = { version = "^0.2.20" }
+rlx-onnx-proto = { version = "^0.2.20" }
 # The rlx! DSL + autodiff training stack (`rlx-tinystories`, `rlx-termclean`).
 # Published, so it follows the same `^0.2.20` registry pin as every other rlx
 # crate; `.cargo/config.toml` redirects it to the sibling checkout for local dev.
@@ -344,9 +346,6 @@ parquet = { version = "56", default-features = false, features = ["snap", "zstd"
 # pure-Rust `fancy-regex` (`unstable_wasm`). Most crates get it through
 # rlx-text (via rlx-cli); the rest declare it themselves.
 tokenizers = { version = "0.22", default-features = false }
-candle-core = { version = "0.10.2", default-features = false }
-candle-nn = { version = "0.10.2" }
-candle-transformers = { version = "0.10.2" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 rten = { version = "0.24", default-features = false }
@@ -508,6 +507,7 @@ rlx-conformer-ctc-core = { path = "crates/rlx-conformer-ctc-core", version = "0.
 rlx-voice-link = { path = "crates/rlx-voice-link", version = "0.2.20" }
 rlx-wake = { path = "crates/rlx-wake", version = "0.2.20" }
 rlx-wakeword-core = { path = "crates/rlx-wakeword-core", version = "0.2.20" }
+rlx-yunet = { path = "crates/rlx-yunet", version = "0.2.20" }
 rlx-wakeword = { path = "crates/rlx-wakeword", version = "0.2.20" }
 rlx-wakeword-wasm = { path = "crates/rlx-wakeword-wasm", version = "0.2.20" }
 rlx-openwakeword = { path = "crates/rlx-openwakeword", version = "0.2.20" }

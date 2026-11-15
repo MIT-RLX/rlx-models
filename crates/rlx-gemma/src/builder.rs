@@ -975,6 +975,22 @@ pub fn build_gemma_graph_sized_packed_ext(
     } else {
         None
     };
+    // With `__sliding_bias__` as well, sliding-attention layers read their own
+    // `attn_bias_sliding` (same shape) and `attn_bias` serves the full layers:
+    // one bias per layer type, so sequences longer than the sliding window
+    // keep the right mask on both.
+    let sliding_bias_id = if media_bias_id.is_some()
+        && known_packed
+            .map(|m| m.contains_key("__sliding_bias__"))
+            .unwrap_or(false)
+    {
+        Some(g.input(
+            "attn_bias_sliding",
+            Shape::new(&[batch, nh, seq, seq], DType::F32),
+        ))
+    } else {
+        None
+    };
     let last_token_idx = if with_lm_head && last_token_from_input {
         Some(g.input("last_token_idx", Shape::new(&[batch], DType::F32)))
     } else {
@@ -1344,7 +1360,11 @@ pub fn build_gemma_graph_sized_packed_ext(
         // Per-layer mask.
         let (mask_kind, _, _) = cfg.layer_attn_options(layer);
         let attn_shape = rlx_ir::shape::attention_shape(g.shape(q_attn));
-        let attn = if let Some(bias) = media_bias_id {
+        let layer_bias = match sliding_bias_id {
+            Some(sb) if !cfg.is_full_attention_layer(layer) => Some(sb),
+            _ => media_bias_id,
+        };
+        let attn = if let Some(bias) = layer_bias {
             g.attention_bias_opts(
                 q_attn,
                 k_rep,

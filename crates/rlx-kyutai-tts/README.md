@@ -33,7 +33,7 @@ cargo run --release --example generate_wav -p rlx-kyutai-tts -- \
 > loop (Helium temporal LM on RLX backends + eager DepFormer) and Mimi decode
 > to 24 kHz PCM. Whisper E2E: `RLX_KYUTAI_TTS_E2E=1 cargo test -p rlx-kyutai-tts --test whisper_validate`.
 >
-> The upstream Kyutai `moshi` 0.6.4 + Candle crates are dev-only (parity / validation tests; see `tests/whisper_validate.rs`) and are NOT in the runtime dep graph.
+> The upstream Kyutai `moshi` 0.6.4 crate is dev-only (parity / validation tests; see `tests/whisper_validate.rs`) and is NOT in the runtime dep graph.
 
 ## Architecture (mirrors `kyutai/tts-1.6b-en_fr/config.json`)
 
@@ -48,7 +48,7 @@ cargo run --release --example generate_wav -p rlx-kyutai-tts -- \
 | **Sampling** | Distilled CFG (single-pass — no batch doubling), `temp = text_temp = 0.6` |
 | **Codec** | Mimi @ 12.5 Hz, 24 kHz mono, f32 PCM |
 
-## Native module index (all pure Rust, no candle / moshi at runtime)
+## Native module index (all pure Rust, no moshi at runtime)
 
 | Module | Role | Unit tests |
 |--------|------|:----------:|
@@ -76,7 +76,7 @@ cargo run --release --example generate_wav -p rlx-kyutai-tts -- \
 | `tokenizer-e351c8d8-checkpoint125.safetensors` | 385 MB | Mimi codec sidecar (same as `kyutai/moshiko-*`) |
 | `tokenizer_spm_8k_en_fr_audio.model` | 120 kB | SentencePiece text tokenizer, read by [`rlx_core::sentencepiece`](../rlx-models-core/README.md#sentencepiece-sentencepiece) (Rust, no C++) |
 
-The Mimi sidecar matches the file shipped by `kyutai/moshiko-*` — [`rlx_mimi::resolve_candle_weights`](../rlx-mimi/src/download.rs) picks it up out of the TTS dir.
+The Mimi sidecar matches the file shipped by `kyutai/moshiko-*` — [`rlx_mimi::resolve_mimi_weights`](../rlx-mimi/src/download.rs) picks it up out of the TTS dir.
 
 ## Quick start
 
@@ -164,7 +164,7 @@ rlx-kyutai-tts
 ├── rlx-cli, rlx-mimi, rlx-models-core, rlx-runtime
 ```
 
-No `candle`, no upstream `moshi`, no `tokio` in the runtime graph. Dev-only deps (parity / Whisper validation) are isolated under `[dev-dependencies]`.
+No upstream `moshi`, no `tokio` in the runtime graph. Dev-only deps (parity / Whisper validation) are isolated under `[dev-dependencies]`.
 
 ## Upstream
 

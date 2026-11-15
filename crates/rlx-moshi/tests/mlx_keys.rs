@@ -1,26 +1,26 @@
 //! MLX Q4/Q8 safetensors key mapping (env `RLX_MOSHI_MLX_Q4`).
 
-use rlx_moshi::{MoshiCheckpoint, mlx_to_candle_key};
+use rlx_moshi::{MoshiCheckpoint, mlx_to_moshi_key};
 
 #[test]
 fn mlx_key_mapping_samples() {
     assert_eq!(
-        mlx_to_candle_key("audio_embs.0.weight").as_deref(),
+        mlx_to_moshi_key("audio_embs.0.weight").as_deref(),
         Some("emb.0.weight")
     );
     assert_eq!(
-        mlx_to_candle_key("depformer.slices.0.norm1.weight").as_deref(),
+        mlx_to_moshi_key("depformer.slices.0.norm1.weight").as_deref(),
         Some("depformer.0.norm1.alpha")
     );
     assert_eq!(
-        mlx_to_candle_key("transformer.layers.0.self_attn.in_proj.weight").as_deref(),
+        mlx_to_moshi_key("transformer.layers.0.self_attn.in_proj.weight").as_deref(),
         Some("transformer.layers.0.self_attn.in_proj_weight")
     );
     assert_eq!(
-        mlx_to_candle_key("out_norm.weight").as_deref(),
+        mlx_to_moshi_key("out_norm.weight").as_deref(),
         Some("out_norm.alpha")
     );
-    assert_eq!(mlx_to_candle_key("text_linear.scales"), None);
+    assert_eq!(mlx_to_moshi_key("text_linear.scales"), None);
     let _ = MoshiCheckpoint::Q4MlxSafetensors;
 }
 

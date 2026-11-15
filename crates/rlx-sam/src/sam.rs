@@ -16,9 +16,8 @@
 //! SAM v1 top-level orchestrator — ties the IR-graph image encoder
 //! together with the host-side prompt encoder + mask decoder.
 //!
-//! Mirrors `candle-transformers/src/models/segment_anything/sam.rs`
-//! at the API level. The image encoder runs on the rlx-runtime
-//! `Session`; mask/prompt conv stacks use IR ops on the same device.
+//! The image encoder runs on the rlx-runtime `Session`;
+//! mask/prompt conv stacks use IR ops on the same device.
 
 use super::config::{SAM_EMBED_HW, SAM_IMG_SIZE, SAM_PROMPT_EMBED_DIM, SamConfig};
 use super::image_encoder::build_sam_encoder_graph;
@@ -36,8 +35,7 @@ use rlx_sam_ir::mask_hyper_matmul_ir::MaskHyperMatmulCompiled;
 use rlx_sam_ir::mlp_relu_ir::MlpReluCompiled;
 use std::path::Path;
 
-/// Mask channels used by the prompt encoder's mask-downscaling stack.
-/// candle's `Sam::new` hardcodes 16 across all ViT variants.
+/// Mask channels used by the prompt encoder's mask-downscaling stack (16 for all ViT variants).
 pub const SAM_MASK_IN_CHANS: usize = 16;
 
 /// Full SAM model — owns the compiled image encoder + all decoder
@@ -238,8 +236,7 @@ impl MaskPrediction {
     }
 }
 
-/// Drop-in default config matching candle's `Sam::new()` for ViT-B
-/// (the `lmz/candle-sam/sam_vit_b_01ec64.safetensors` checkpoint).
+/// Default config for SAM ViT-B (`sam_vit_b_01ec64.safetensors` checkpoint).
 pub fn sam_vit_b_config() -> SamConfig {
     SamConfig::vit_b()
 }

@@ -39,7 +39,7 @@ impl MoshiLm {
             )?));
         }
 
-        // CPU eager (ndarray) path. All checkpoint formats load candle-free.
+        // CPU eager (ndarray) path. All checkpoint formats load natively.
         let cfg = variant.lm_config();
         let weights_path = checkpoint.lm_weights_path(model_dir);
         if checkpoint.is_mlx() {

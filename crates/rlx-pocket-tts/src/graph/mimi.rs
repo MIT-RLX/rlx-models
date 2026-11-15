@@ -470,6 +470,32 @@ impl Stream {
     /// Run one block of `frames` frames; `x` is the block input, `extra` any
     /// further named inputs. Returns the block output.
     fn run(&mut self, frames: usize, x: &[f32], extra: &[(&str, &[f32])]) -> Result<Vec<f32>> {
+        let (mask, cos, sin) = self.tables(frames);
+        let inputs = block_inputs(&self.states, &self.state, x, &mask, &cos, &sin, extra);
+        let outs = self.compiled.run(&inputs);
+        self.absorb(frames, outs)
+    }
+
+    /// [`Self::run`] awaiting the graph (WebGPU in a browser).
+    #[cfg(target_family = "wasm")]
+    async fn run_async(
+        &mut self,
+        frames: usize,
+        x: &[f32],
+        extra: &[(&str, &[f32])],
+    ) -> Result<Vec<f32>> {
+        let (mask, cos, sin) = self.tables(frames);
+        let inputs = block_inputs(&self.states, &self.state, x, &mask, &cos, &sin, extra);
+        let outs = self
+            .compiled
+            .run_async(&inputs)
+            .await
+            .map_err(|e| anyhow::anyhow!("Mimi block: {e}"))?;
+        self.absorb(frames, outs)
+    }
+
+    /// The block's attention mask and rotary tables, from the stream's place.
+    fn tables(&self, frames: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
         let t = frames * self.steps;
         let p = self.context - 1;
         let p0 = self.position;
@@ -485,17 +511,13 @@ impl Stream {
                 }
             }
         }
-        let mut inputs: Vec<(&str, &[f32])> = vec![
-            ("x", x),
-            ("attn_mask", &mask),
-            ("rope_cos", &cos),
-            ("rope_sin", &sin),
-        ];
-        inputs.extend_from_slice(extra);
-        for (slot, data) in self.states.iter().zip(&self.state) {
-            inputs.push((slot.name.as_str(), data));
-        }
-        let mut outs = self.compiled.run(&inputs).into_iter();
+        (mask, cos, sin)
+    }
+
+    /// The block's outputs: its audio returned, the next state kept.
+    fn absorb(&mut self, frames: usize, outs: Vec<Vec<f32>>) -> Result<Vec<f32>> {
+        let t = frames * self.steps;
+        let mut outs = outs.into_iter();
         let out = outs
             .next()
             .ok_or_else(|| anyhow::anyhow!("block returned no output"))?;
@@ -514,6 +536,29 @@ impl Stream {
 }
 
 /// Streaming Mimi decoder on one device.
+/// A block's inputs: `x`, the tables, `extra`, and the carried state.
+fn block_inputs<'a>(
+    states: &'a [StateSlot],
+    state: &'a [Vec<f32>],
+    x: &'a [f32],
+    mask: &'a [f32],
+    cos: &'a [f32],
+    sin: &'a [f32],
+    extra: &[(&'a str, &'a [f32])],
+) -> Vec<(&'a str, &'a [f32])> {
+    let mut inputs: Vec<(&str, &[f32])> = vec![
+        ("x", x),
+        ("attn_mask", mask),
+        ("rope_cos", cos),
+        ("rope_sin", sin),
+    ];
+    inputs.extend_from_slice(extra);
+    for (slot, data) in states.iter().zip(state) {
+        inputs.push((slot.name.as_str(), data));
+    }
+    inputs
+}
+
 pub struct MimiDecoder {
     stream: Stream,
     frames: usize,
@@ -551,6 +596,22 @@ impl MimiDecoder {
     /// frames, row-major `[n, ldim]`; returns `n · frame_size` samples. A short
     /// block is zero-padded; its state is then only good for the end of a stream.
     pub fn decode_block(&mut self, latents: &[f32]) -> Result<Vec<f32>> {
+        let (n, x) = self.block_input(latents)?;
+        let audio = self.stream.run(self.frames, &x, &[])?;
+        self.block_output(n, audio)
+    }
+
+    /// [`Self::decode_block`] awaiting the graph (WebGPU in a browser).
+    #[cfg(target_family = "wasm")]
+    pub async fn decode_block_async(&mut self, latents: &[f32]) -> Result<Vec<f32>> {
+        let (n, x) = self.block_input(latents)?;
+        let audio = self.stream.run_async(self.frames, &x, &[]).await?;
+        self.block_output(n, audio)
+    }
+
+    /// `latents` (`[n, ldim]`, n up to a block) as the block's input
+    /// (channel-major `[1, ldim, F, 1]`, zero after `n`), and `n`.
+    fn block_input(&self, latents: &[f32]) -> Result<(usize, Vec<f32>)> {
         let n = latents.len() / self.ldim;
         if n == 0 || n * self.ldim != latents.len() || n > self.frames {
             bail!(
@@ -561,19 +622,22 @@ impl MimiDecoder {
             );
         }
         let f = self.frames;
-        // [n, ldim] → channel-major [1, ldim, F, 1].
         let mut x = vec![0.0f32; self.ldim * f];
         for i in 0..n {
             for c in 0..self.ldim {
                 x[c * f + i] = latents[i * self.ldim + c];
             }
         }
-        let mut audio = self.stream.run(f, &x, &[])?;
-        if audio.len() != f * self.frame_size {
+        Ok((n, x))
+    }
+
+    /// The block's audio, cut to its `n` frames.
+    fn block_output(&self, n: usize, mut audio: Vec<f32>) -> Result<Vec<f32>> {
+        if audio.len() != self.frames * self.frame_size {
             bail!(
                 "decoder returned {} samples, expected {}",
                 audio.len(),
-                f * self.frame_size
+                self.frames * self.frame_size
             );
         }
         audio.truncate(n * self.frame_size);

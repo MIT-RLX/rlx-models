@@ -14,7 +14,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Native RLX graphs for the Moshi temporal transformer (Helium), built directly
-//! on the rlx-ir / rlx-runtime op library — no candle, no `moshi` crate.
+//! on the rlx-ir / rlx-runtime op library — no upstream `moshi` crate.
 //!
 //! Moshi's temporal stack is Llama/Helium-shaped: pre-norm RMSNorm, fused-QKV
 //! multi-head attention with rotary embeddings (rotate-half, θ=10000), and a

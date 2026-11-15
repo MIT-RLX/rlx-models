@@ -15,8 +15,8 @@
 
 //! SAM v1 two-way transformer — host-side.
 //!
-//! Implements `transformer.rs` from candle's `segment_anything`
-//! module verbatim: 2 layers of `TwoWayAttentionBlock` (self-attn on
+//! Implements `transformer.rs` from Meta's SAM `segment_anything`
+//! module: 2 layers of `TwoWayAttentionBlock` (self-attn on
 //! tokens → cross token→image → ReLU MLP → cross image→token) followed
 //! by a final token→image attention + LayerNorm.
 //!
@@ -189,7 +189,7 @@ pub(super) fn extract_two_way_transformer_weights(
 
 // ─── Host-side execution ─────────────────────────────────────────
 
-/// Standard scaled-dot-product multi-head attention (candle's
+/// Standard scaled-dot-product multi-head attention (SAM's
 /// `transformer::Attention::forward`). All inputs `[B, N_*, embed_dim]`.
 ///
 /// `b` is the batch dim (typically 1 for a single prompt batch in SAM).
@@ -443,7 +443,7 @@ pub fn two_way_attention_block_forward(
     add_inplace(&mut queries, &attn_out);
     layer_norm_last(&mut queries, b * q_n, e, &w.norm2_g, &w.norm2_b, 1e-5);
 
-    // ── MLP block (Linear → ReLU → Linear, candle uses Activation::Relu) ──
+    // ── MLP block (Linear → ReLU → Linear) ──
     let mlp_dim = w.mlp_lin1_b.len();
     let mut mlp_mid = linear(&queries, &w.mlp_lin1_w, &w.mlp_lin1_b, b * q_n, e, mlp_dim);
     relu_inplace(&mut mlp_mid);
@@ -456,7 +456,7 @@ pub fn two_way_attention_block_forward(
     add_inplace(&mut q_pe, query_pe);
     let mut k_pe = keys.clone();
     add_inplace(&mut k_pe, key_pe);
-    // Per candle: q = k_pe, k = q_pe, v = queries
+    // Per SAM: q = k_pe, k = q_pe, v = queries
     let attn_out = attention_forward(
         &w.cross_image_to_token,
         &k_pe,

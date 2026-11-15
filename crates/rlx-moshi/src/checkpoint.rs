@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 /// Published Moshi LM weight preset (quantization + on-disk layout).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MoshiCheckpoint {
-    /// `kyutai/moshiko-candle-bf16` — `model.safetensors` (~14 GB).
+    /// `kyutai/moshiko-*-bf16` — `model.safetensors` (~14 GB).
     Bf16Safetensors,
-    /// `kyutai/moshiko-candle-q8` — `model.q8.gguf` (~8 GB).
+    /// `kyutai/moshiko-*-q8` — `model.q8.gguf` (~8 GB).
     Q8Gguf,
     /// `kyutai/moshiko-mlx-q4` — `model.q4.safetensors` (~4 GB).
     Q4MlxSafetensors,
@@ -92,13 +92,13 @@ impl MoshiCheckpoint {
         }
     }
 
-    /// Whether the Candle `moshi` GPU backend can load this preset.
+    /// Whether this preset can be loaded by the native Moshi backend.
     pub fn gpu_loadable(self) -> bool {
-        self.candle_compatible() || self.is_mlx()
+        self.hf_native() || self.is_mlx()
     }
 
-    /// Candle-native tensor names (bf16 safetensors or Q8 GGUF).
-    pub fn candle_compatible(self) -> bool {
+    /// Native HuggingFace tensor names (bf16 safetensors or Q8 GGUF).
+    pub fn hf_native(self) -> bool {
         matches!(self, Self::Bf16Safetensors | Self::Q8Gguf)
     }
 
@@ -124,7 +124,7 @@ impl MoshiCheckpoint {
         }
     }
 
-    /// Read `RLX_MOSHI_CHECKPOINT`, defaulting to Candle bf16 safetensors.
+    /// Read `RLX_MOSHI_CHECKPOINT`, defaulting to bf16 safetensors.
     pub fn from_env_or_default() -> Self {
         rlx_ir::env::var_result("RLX_MOSHI_CHECKPOINT")
             .ok()

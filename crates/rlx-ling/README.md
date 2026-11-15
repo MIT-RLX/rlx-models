@@ -156,8 +156,10 @@ not reach.
 All three return the same top-5. For `"The capital of France is Paris. The capital
 of Japan is"` → `" Tokyo"` at p=0.9711, then `" Kyoto"`, `" Beijing"`.
 
-MLX is slow because the 4735-node graph exceeds `RLX_MLX_COMPILE_MAX_NODES`
-(1536) and falls back to `MlxMode::Lazy`; it is correct, just uncompiled.
+The MLX row was measured when the compile limit (`RLX_MLX_COMPILE_MAX_NODES`)
+was 1536: the 4735-node graph fell back to `MlxMode::Lazy`, correct but
+uncompiled. The default is now 5000, so the graph runs Compiled; these MLX
+numbers have not been re-measured since.
 
 One-time costs (not in TTFT): ~10 s weight load, ~31 s expert stacking, ~2 s graph
 build, 6–18 s compile.

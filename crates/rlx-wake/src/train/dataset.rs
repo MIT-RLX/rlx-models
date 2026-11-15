@@ -49,21 +49,38 @@ fn load_dir(dir: &Path, label: f32) -> Result<Vec<LabeledClip>> {
         })
         .collect();
     paths.sort();
-    let mut out = Vec::new();
-    for path in paths {
+    // Read and decode on every core (thousands of small files); order is kept.
+    let load = |path: PathBuf| -> Result<LabeledClip> {
         let (sr, pcm) = load_wav_mono_f32(&path)?;
         let pcm = if sr != SAMPLE_RATE_16K {
             resample_linear(&pcm, sr, SAMPLE_RATE_16K)
         } else {
             pcm
         };
-        out.push(LabeledClip {
+        Ok(LabeledClip {
             path: Some(path),
             pcm,
             label,
-        });
+        })
+    };
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let per = paths.len().div_ceil(threads).max(1);
+    let mut chunks: Vec<Vec<PathBuf>> = Vec::new();
+    let mut it = paths.into_iter().peekable();
+    while it.peek().is_some() {
+        chunks.push(it.by_ref().take(per).collect());
     }
-    Ok(out)
+    std::thread::scope(|s| {
+        let parts: Vec<_> = chunks
+            .into_iter()
+            .map(|part| s.spawn(move || part.into_iter().map(load).collect::<Result<Vec<_>>>()))
+            .collect();
+        let mut out = Vec::new();
+        for h in parts {
+            out.extend(h.join().expect("load thread")?);
+        }
+        Ok(out)
+    })
 }
 
 /// Mel frames for a clip (frame-major `[n_frames * n_mels]`).

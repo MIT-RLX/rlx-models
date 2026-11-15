@@ -119,7 +119,7 @@ fn cmd_cnn(args: &[String]) -> Result<()> {
     let lr = parse_opt_f32(args, "--lr", 1e-2);
     let devices = bind_devices(args)?;
     let clips = load_clips(args)?;
-    let mut w = WakeCnnWeights::stub(WakeCnnConfig::lite());
+    let mut w = WakeCnnWeights::he_init(WakeCnnConfig::lite(), 1);
     let mut cfg = CnnTrainConfig {
         keyword: keyword.into(),
         ..CnnTrainConfig::default()

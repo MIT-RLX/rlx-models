@@ -48,7 +48,7 @@ ws-server = ["tokio", "dep:axum", "dep:futures-util"]
 # `export::export_rlxp`: Moshi one-way as an `.rlxp` package rlx runs alone.
 export = ["rlx-core/export", "rlx-mimi/export"]
 
-# Backends are fully native RLX (LM via RlxLm + Mimi codec), candle-free. The LM
+# Backends are fully native RLX (LM via RlxLm + Mimi codec). The LM
 # uses the native graph backend on any non-CPU device (or `RLX_MOSHI_NATIVE=1`).
 metal = ["rlx-runtime/metal", "rlx-mimi/metal"]
 mlx = ["rlx-runtime/mlx", "rlx-mimi/mlx"]

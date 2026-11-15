@@ -26,7 +26,7 @@
 //!     GELU-tanh MLPs, pre-norm residual structure.
 //!   - IR neck (Conv2d 1×1 → LN2d → Conv2d 3×3 → LN2d → `[256, 64, 64]`).
 //!
-//! **Phase 1 status:** 100% numerical parity with candle's
+//! **Phase 1 status:** 100% numerical parity with Meta's reference
 //! `ImageEncoderViT::forward()` on real `sam_vit_b_01ec64.safetensors`
 //! weights — `max |Δ| = 7.15e-6` on the 1×256×64×64 image embeddings
 //! (full 12-layer ViT-B at 1024×1024 input). Phase-1 bisect env vars
@@ -43,8 +43,8 @@
 //!   - ConvTranspose2d upscaling (IR) + hypernetwork
 //!     MLPs for mask + IoU output.
 //!
-//! Weight key convention matches Meta / candle exactly so the
-//! `lmz/candle-sam` safetensors checkpoints load with no remapping.
+//! Weight key convention matches Meta's safetensors layout so HF Hub
+//! SAM checkpoints load with no remapping.
 
 pub mod cli;
 pub mod config;

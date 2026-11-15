@@ -15,6 +15,13 @@
 //! # Auto-discover phrases-dir/<id>/{positives,negatives}/
 //! rlx-wakeword-train --out-dir DIR --phrases-dir data/phrases --epochs 40
 //! ```
+//!
+//! `--context-ms MS` sets the scored window (1200 by default; longer holds longer pauses).
+//! `--model lite|mid|full` sizes the CNN (lite by default; mid has twice its channels).
+//! `--device metal` (or mlx, gpu, …; `--graph` for CPU) trains the CNN as an RLX graph on that
+//! device in minibatches (`--batch`, default 128) with AdamW (`--adam-lr`, default 2e-3);
+//! otherwise per-clip SGD on the host (`--lr`). Hard-negative mining: `--mine-threshold`,
+//! `--mine-ratio`, `--mine-every` (see `GraphTrainConfig`).
 
 use anyhow::{Result, bail};
 use rlx_wake::{TernaryOpts, bind_streaming_device, parse_device_list};
@@ -44,6 +51,12 @@ fn main() -> Result<()> {
     opts.threshold = flag(&args, "--threshold")
         .and_then(|s| s.parse().ok())
         .unwrap_or(opts.threshold);
+    if let Some(ms) = flag(&args, "--context-ms").and_then(|s| s.parse().ok()) {
+        opts.context_ms = ms;
+    }
+    if let Some(m) = flag(&args, "--model") {
+        opts.model = rlx_wake::WakeCnnConfig::named(&m).ok_or_else(|| anyhow::anyhow!("--model must be lite|mid|full (got {m})"))?;
+    }
     if args.iter().any(|a| a == "--ternary") {
         let layers = flag(&args, "--ternary-layers").unwrap_or_else(|| "fc".into());
         let mut topts = TernaryOpts::parse(&layers).ok_or_else(|| {
@@ -60,9 +73,35 @@ fn main() -> Result<()> {
     opts.hop_samples = validate_hop_ms(hop_ms)?;
 
     let device_spec = flag(&args, "--device").unwrap_or_else(|| "cpu".into());
-    for d in parse_device_list(&device_spec)? {
+    let devices = parse_device_list(&device_spec)?;
+    for &d in &devices {
         let (_, label) = bind_streaming_device(d)?;
         eprintln!("[rlx-wakeword-train] device={label}");
+    }
+    // A GPU (or `--graph`): train as an RLX graph there, in minibatches.
+    let gpu = devices.iter().copied().find(|d| *d != rlx_wake::Device::Cpu);
+    if gpu.is_some() || args.iter().any(|a| a == "--graph") {
+        let mut g = rlx_wake::GraphTrainConfig::default();
+        if let Some(b) = flag(&args, "--batch").and_then(|s| s.parse().ok()) {
+            g.batch = b;
+        }
+        if let Some(lr) = flag(&args, "--adam-lr").and_then(|s| s.parse().ok()) {
+            g.lr = lr;
+        }
+        // Hard-negative mining: score every negative window this often, keep those above the
+        // threshold, up to `ratio` × the positives per epoch.
+        if let Some(t) = flag(&args, "--mine-threshold").and_then(|s| s.parse().ok()) {
+            g.mine_threshold = t;
+        }
+        if let Some(r) = flag(&args, "--mine-ratio").and_then(|s| s.parse().ok()) {
+            g.mine_ratio = r;
+        }
+        if let Some(e) = flag(&args, "--mine-every").and_then(|s| s.parse().ok()) {
+            g.mine_every = e;
+        }
+        let device = gpu.unwrap_or(rlx_wake::Device::Cpu);
+        eprintln!("[rlx-wakeword-train] graph training on {device:?}, batch {}, AdamW lr {}", g.batch, g.lr);
+        opts.graph = Some((device, g));
     }
 
     let specs = collect_specs(&args)?;

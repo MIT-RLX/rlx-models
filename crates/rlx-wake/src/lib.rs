@@ -48,8 +48,10 @@ pub use parity::{
     score_parity_fraction, scores_exact_match,
 };
 pub use ternary::{TernaryOpts, TernaryStats, is_ternary_f32, ternarize, ternarize_inplace};
+/// The RLX device type (for [`train::train_wake_cnn_device`]).
+pub use rlx_runtime::Device;
 pub use train::{
-    CnnTrainConfig, LabeledClip, MlpConfig, MlpWeights, SgdConfig, TrainReport, load_pos_neg_dirs,
+    CnnTrainConfig, GraphTrainConfig, LabeledClip, train_wake_cnn_device, MlpConfig, MlpWeights, SgdConfig, TrainReport, load_pos_neg_dirs,
     synth_pos_neg_dataset, train_mlp, train_wake_cnn, write_synth_corpus,
 };
 

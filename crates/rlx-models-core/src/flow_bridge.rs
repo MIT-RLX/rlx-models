@@ -144,6 +144,10 @@ pub fn apply_compile_profile(profile: &CompileProfile, opts: &mut CompileOptions
     if let Some(target) = fusion_target_from_profile(profile.fusion.target) {
         opts.fusion_target = Some(target);
     }
+    opts.exact_f32_matmul |= profile.precision.exact_f32_matmul;
+    if profile.backend.mlx.compile_max_nodes.is_some() {
+        opts.mlx_compile_max_nodes = profile.backend.mlx.compile_max_nodes;
+    }
     opts.precision = match profile.precision.compute {
         PrecisionKind::F32 => Precision::F32,
         PrecisionKind::F16 => Precision::F16,

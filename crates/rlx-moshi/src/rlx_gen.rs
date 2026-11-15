@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Eugene Hauptmann, Nataliya Kosmyna.
 //
 //! Native-RLX Moshi LM driver: runs the temporal-transformer decode graph with a
-//! persistent KV cache and the DepFormer graphs each 12.5 Hz frame — the candle-
-//! free counterpart to [`crate::lm::LmModel`] + [`crate::generate::GenerateState`].
+//! persistent KV cache and the DepFormer graphs each 12.5 Hz frame — the native
+//! counterpart to [`crate::lm::LmModel`] + [`crate::generate::GenerateState`].
 
 use crate::checkpoint::MoshiCheckpoint;
 use crate::config::{GenerateConfig, LmConfig, MoshiVariant};
@@ -73,9 +73,8 @@ impl RlxLm {
         self.temporal_pruned = true;
     }
 
-    /// Load a checkpoint into a native-RLX LM. GGUF and bf16 are candle-free;
-    /// MLX dequant currently still routes through the candle loader (to be
-    /// replaced by the native `mlx_dequant` path).
+    /// Load a checkpoint into a native-RLX LM. GGUF, bf16, and MLX formats
+    /// are supported via the native weight loaders.
     pub fn open(
         model_dir: &Path,
         variant: MoshiVariant,

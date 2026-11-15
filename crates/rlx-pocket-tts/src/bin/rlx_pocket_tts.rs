@@ -40,6 +40,10 @@ struct Cli {
 enum Command {
     /// Synthesize text to a WAV file.
     Say(SayArgs),
+    /// Synthesize many texts: a TSV of `voice<TAB>text<TAB>out.wav` lines,
+    /// one model load for all (files already there are skipped, so a run
+    /// can be resumed).
+    Batch(BatchArgs),
     /// Encode a voice prompt (WAV) into a reusable voice state.
     ExportVoice(ExportArgs),
     /// List the bundled model configs.
@@ -56,7 +60,8 @@ struct ModelArgs {
     /// Bundled config name (see `languages`).
     #[arg(long, default_value = "english")]
     language: String,
-    /// Device: cpu, metal, mlx, cuda, rocm, wgpu, vulkan, …
+    /// Device: auto (the best GPU built in and present: Metal, CUDA, ROCm,
+    /// wgpu; else the CPU), cpu, metal, mlx, cuda, rocm, wgpu, vulkan, …
     #[arg(long, default_value = "cpu")]
     device: String,
 }
@@ -94,6 +99,14 @@ struct SayArgs {
 }
 
 #[derive(Parser)]
+struct BatchArgs {
+    /// The jobs: `voice<TAB>text<TAB>out.wav` per line.
+    jobs: PathBuf,
+    #[command(flatten)]
+    model: ModelArgs,
+}
+
+#[derive(Parser)]
 struct ExportArgs {
     /// Voice prompt WAV (any rate, mixed to mono).
     wav: PathBuf,
@@ -107,8 +120,20 @@ struct ExportArgs {
     out: PathBuf,
 }
 
+/// The best GPU this build has and this machine runs, else the CPU.
+fn best_device() -> rlx_runtime::Device {
+    use rlx_runtime::Device;
+    [Device::Metal, Device::Cuda, Device::Rocm, Device::Gpu]
+        .into_iter()
+        .find(|d| rlx_runtime::is_available(*d))
+        .unwrap_or(Device::Cpu)
+}
+
 fn open(model: &ModelArgs, voices: &[&str]) -> Result<PocketTts> {
-    let device = rlx_runtime::parse_device(&model.device).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let device = match model.device.as_str() {
+        "auto" => best_device(),
+        name => rlx_runtime::parse_device(name).map_err(|e| anyhow::anyhow!("{e}"))?,
+    };
     let root = match &model.root {
         Some(r) => r.clone(),
         None => fetch(&model.language, voices)?,
@@ -196,9 +221,49 @@ fn export_voice(a: ExportArgs) -> Result<()> {
     Ok(())
 }
 
+fn batch(a: BatchArgs) -> Result<()> {
+    let jobs = std::fs::read_to_string(&a.jobs).with_context(|| a.jobs.display().to_string())?;
+    let jobs: Vec<(&str, &str, PathBuf)> = jobs
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.splitn(3, '\t');
+            Some((f.next()?, f.next()?, PathBuf::from(f.next()?)))
+        })
+        .filter(|(_, _, out)| !out.exists())
+        .collect();
+    eprintln!("{} to make", jobs.len());
+    let mut tts = open(&a.model, &[])?;
+    let mut voices = std::collections::HashMap::new();
+    let t0 = Instant::now();
+    let (mut made, mut audio) = (0usize, 0f32);
+    for (voice, text, out) in &jobs {
+        if !voices.contains_key(*voice) {
+            voices.insert(voice.to_string(), tts.load_voice(voice)?);
+        }
+        let result = tts.generate(text, &voices[*voice]);
+        match result {
+            Ok(wav) => {
+                if let Some(dir) = out.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                wav.write_wav(out)?;
+                made += 1;
+                audio += wav.duration_secs();
+            }
+            Err(e) => eprintln!("skipped {text:?}: {e:#}"),
+        }
+        if made % 50 == 0 && made > 0 {
+            eprintln!("{made} / {} ({:.0}s of audio in {:.0}s)", jobs.len(), audio, t0.elapsed().as_secs_f32());
+        }
+    }
+    eprintln!("made {made} ({:.0}s of audio) in {:.0}s", audio, t0.elapsed().as_secs_f32());
+    Ok(())
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Say(a) => say(a),
+        Command::Batch(a) => batch(a),
         Command::ExportVoice(a) => export_voice(a),
         Command::Languages => {
             for l in ModelSpec::builtin_languages() {

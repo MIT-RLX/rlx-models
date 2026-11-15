@@ -24,6 +24,8 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
 rayon = "1.10"
+# `FastDecoder::load` maps the checkpoint and reads only the decoder's tensors.
+memmap2 = "0.9"
 libm = "0.2"
 half = { workspace = true }
 # whisper log-mel front-end (FFT plans, Hann, Slaney mel)

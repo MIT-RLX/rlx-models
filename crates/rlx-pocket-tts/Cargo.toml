@@ -30,6 +30,10 @@ rlx-core = { workspace = true }
 rlx-ir = { workspace = true }
 rlx-runtime = { workspace = true, default-features = false, features = ["cpu"] }
 
+# The clock for RLX_POCKET_TTS_TIMING in a browser (`Instant` panics there).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+
 [dependencies.hf-hub]
 workspace = true
 optional = true

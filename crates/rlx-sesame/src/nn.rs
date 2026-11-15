@@ -41,7 +41,7 @@ pub fn silu(x: f32) -> f32 {
     x / (1.0 + (-x).exp())
 }
 
-/// Llama-3 RoPE inverse frequencies (HF / candle formula).
+/// Llama-3 RoPE inverse frequencies (HF formula).
 pub fn llama3_inv_freq(
     rope_theta: f64,
     head_dim: usize,

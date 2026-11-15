@@ -120,8 +120,10 @@ fn an_exported_neutts_speaks_as_the_reference_does() {
         .unwrap();
     let got: Vec<i32> = got[0]
         .data
-        .chunks_exact(4)
-        .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| i32::from_le_bytes(*b))
         .collect();
     let same = got.iter().zip(&want).take_while(|(a, b)| a == b).count();
     eprintln!(

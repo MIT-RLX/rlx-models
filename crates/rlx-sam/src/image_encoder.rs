@@ -15,7 +15,7 @@
 
 //! SAM v1 ViT image encoder HIR builder.
 //!
-//! Mirrors `candle-transformers/src/models/segment_anything/image_encoder.rs`.
+//! Mirrors Meta's SAM image encoder.
 //! Decomposes attention into primitives (rlx-ir's `attention_` op is a
 //! black box and can't host the inline rel-pos add SAM uses).
 //!
@@ -150,7 +150,7 @@ pub fn build_sam_encoder_hir(
 
         let up_mm = b.m().mm(normed2, fc1_w);
         let up = b.m().add(up_mm, fc1_b);
-        // candle's `Activation::Gelu` dispatches to `Tensor::gelu_erf()`
+        // SAM uses erf-based GELU (`gelu_erf`)
         // — the exact erf form — for SAM's MlpBlock. Use the matching
         // erf kernel here.
         let act = b.m().gelu(up);
@@ -466,7 +466,7 @@ fn decomposed_attention(
 
 /// Add decomposed relative positional bias to attention scores.
 ///
-/// Math (per the SAM paper, candle's `add_decomposed_rel_pos`):
+/// Math (per the SAM paper, `add_decomposed_rel_pos`):
 ///   r_q = q.reshape(B·nh, h, w, dh)
 ///   rel_h[bhw,c] = sum_c r_q[bhw,c] · r_h_indexed[hq, hk, c]    → [B·nh, h, w, h]
 ///   rel_w[bhw,c] = sum_c r_q[bhw,c] · r_w_indexed[wq, wk, c]    → [B·nh, h, w, w]
@@ -574,7 +574,7 @@ fn add_decomposed_rel_pos(
         .reshape_(s2, vec![bh as i64, (h * w) as i64, (h * w) as i64]))
 }
 
-/// Resolve candle's `get_rel_pos()` host-side into per-axis bias
+/// Resolve SAM's `get_rel_pos()` host-side into per-axis bias
 /// tables of shape `[q_size, k_size, dh]` (here q_size == k_size).
 ///
 /// Stored `rel_pos_h` has shape `[2·max(q,k)-1, dh]`; we gather along
@@ -732,7 +732,7 @@ pub fn apply_neck_host(neck: &NeckWeights, body_out: &[f32], hw: usize) -> Vec<f
     out_nchw
 }
 
-/// LN over channel dim of BHWC `[S, C]` (matches candle's LayerNorm2d).
+/// LN over channel dim of BHWC `[S, C]` (matches SAM's LayerNorm2d).
 fn layernorm2d_inplace(data: &mut [f32], s: usize, c: usize, g: &[f32], b: &[f32], eps: f32) {
     for si in 0..s {
         let row = &mut data[si * c..(si + 1) * c];

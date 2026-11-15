@@ -19,8 +19,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 /// ImageNet-1k mean/std applied to RGB pixels in `[0, 1]`.
-/// Matches `candle-examples::imagenet::load_image*` and the original
-/// DINOv2 PyTorch preprocessing.
+/// Matches the DINOv2 PyTorch preprocessing.
 pub const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 

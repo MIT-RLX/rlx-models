@@ -32,7 +32,7 @@ use rlx_runtime::{CompiledGraph, Device};
 
 use crate::checkpoint::Checkpoint;
 use crate::graph::flow_lm::{
-    FlowLmDims, OUT_EOS, OUT_HIDDEN, OUT_KV, OUT_LATENT, build_step, past_k_name, past_v_name,
+    FlowLmDims, KV_WRITE, OUT_EOS, OUT_HIDDEN, OUT_KV, OUT_LATENT, build_step_with, past_k_name, past_v_name,
 };
 use crate::graph::mimi::{MimiDecoder, MimiEncoder};
 use crate::graph::{Tensor, compile, rope_tables};
@@ -42,8 +42,46 @@ use crate::text::{MAX_TOKENS_PER_CHUNK, TextOptions, prepare_text_prompt, split_
 use crate::tokenizer::PocketTokenizer;
 use crate::voice_state::{VoiceFile, VoiceState};
 
+/// Time since the first call: `Instant` natively, `Date.now` in a browser
+/// (where `Instant::now` panics). For RLX_POCKET_TTS_TIMING only.
+fn clock() -> std::time::Duration {
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::time::Duration::from_secs_f64(js_sys::Date::now() / 1e3)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START.get_or_init(std::time::Instant::now).elapsed()
+    }
+}
+
+/// The last RLX_POCKET_TTS_TIMING lines ([`last_timing`]).
+static TIMING: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// One RLX_POCKET_TTS_TIMING line: to stderr, and kept for [`last_timing`]
+/// (a browser worker has no stderr).
+fn report(line: String) {
+    eprintln!("{line}");
+    let mut t = TIMING.lock().unwrap_or_else(|e| e.into_inner());
+    t.push_str(&line);
+    t.push('\n');
+}
+
+/// The RLX_POCKET_TTS_TIMING lines since the last call (and clears them).
+pub fn last_timing() -> String {
+    std::mem::take(&mut *TIMING.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// KV capacity granularity: one step graph is compiled per multiple of this.
+// Natively, rows to the next 64 (attention over few empty rows); on wasm32,
+// to the next 256, so nearly every sentence shares one compiled graph —
+// each holds a full copy of the weights (~440 MB), and wasm32 has 4 GiB
+// at most (a browser often allows less).
+#[cfg(not(target_arch = "wasm32"))]
 const KV_BUCKET: usize = 64;
+#[cfg(target_arch = "wasm32")]
+const KV_BUCKET: usize = 256;
 /// Upstream `_MIN_FRAMES_BEFORE_EOS`.
 const MIN_FRAMES_BEFORE_EOS: usize = 6;
 /// Upstream `_TOKENS_PER_SECOND_ESTIMATE` / `_GEN_SECONDS_PADDING`.
@@ -225,6 +263,10 @@ pub struct PocketTts {
     spec: ModelSpec,
     ck: Checkpoint,
     device: Device,
+    /// Where the Mimi decoder runs: `device` unless set apart
+    /// ([`Self::set_decoder_device`]) — in a browser the FlowLM step is
+    /// quickest on the CPU, the decoder's convolutions on WebGL.
+    decoder_device: Device,
     files: ModelFiles,
     tokenizer: PocketTokenizer,
     text: TextOptions,
@@ -237,6 +279,10 @@ pub struct PocketTts {
     emb_mean: Vec<f32>,
     emb_std: Vec<f32>,
     steps: HashMap<usize, CompiledGraph>,
+    /// The KV cache stays on the device between steps (a GPU that keeps
+    /// bound buffers): the step graph writes each row in itself, and only
+    /// the latent, EOS and hidden state come back to the host.
+    resident: bool,
     step_names: Vec<(String, String)>,
     mimi: MimiDecoder,
     encoder: Option<MimiEncoder>,
@@ -339,8 +385,10 @@ impl PocketTts {
             files,
             ck,
             device,
+            decoder_device: device,
             spec,
             steps: HashMap::new(),
+            resident: device != Device::Cpu && rlx_core::device_supports_gpu_kv(device),
             step_names,
             mimi,
             encoder: None,
@@ -365,8 +413,24 @@ impl PocketTts {
 
     /// Recompile the Mimi decoder for blocks of `frames` frames.
     pub fn set_decoder_block(&mut self, frames: usize) -> Result<()> {
-        self.mimi = MimiDecoder::new(&self.ck, &self.spec, frames, self.device)?;
+        self.mimi = MimiDecoder::new(&self.ck, &self.spec, frames, self.decoder_device)?;
         Ok(())
+    }
+
+    /// Run the Mimi decoder on `device` (the FlowLM step stays where it
+    /// is): recompiled there, for blocks of the same length.
+    pub fn set_decoder_device(&mut self, device: Device) -> Result<()> {
+        if !rlx_runtime::is_available(device) {
+            bail!("device {device:?} is not available in this build");
+        }
+        let frames = self.mimi.block_frames();
+        self.mimi = MimiDecoder::new(&self.ck, &self.spec, frames, device)?;
+        self.decoder_device = device;
+        Ok(())
+    }
+
+    pub fn decoder_device(&self) -> Device {
+        self.decoder_device
     }
 
     /// Load a voice: a name from the model's `embeddings/` directory, or a path
@@ -523,8 +587,23 @@ impl PocketTts {
 
     fn step_graph(&mut self, cap: usize) -> Result<&mut CompiledGraph> {
         if !self.steps.contains_key(&cap) {
-            let b = build_step(&self.ck, &self.spec, cap, self.options.sampler_steps)?;
+            // On wasm32 one at a time: each holds a full copy of the
+            // weights, and a second or third does not fit.
+            if cfg!(target_arch = "wasm32") {
+                self.steps.clear();
+            }
+            let timing = rlx_ir::env::flag("RLX_POCKET_TTS_TIMING");
+            let t0 = timing.then(clock);
+            let b = build_step_with(&self.ck, &self.spec, cap, self.options.sampler_steps, self.resident)?;
+            let built = t0.map(|t| clock() - t);
             let compiled = compile(b, self.device).context("compile FlowLM step")?;
+            if let (Some(t0), Some(built)) = (t0, built) {
+                report(format!(
+                    "pocket-tts: step graph c{cap}: built in {:.0} ms, compiled in {:.0} ms",
+                    built.as_secs_f64() * 1e3,
+                    (clock() - t0 - built).as_secs_f64() * 1e3
+                ));
+            }
             self.steps.insert(cap, compiled);
         }
         Ok(self.steps.get_mut(&cap).expect("inserted"))
@@ -532,6 +611,104 @@ impl PocketTts {
 
     /// One backbone row: run the graph, append the row's K/V.
     fn step(&mut self, x: &[f32], noise: &[f32], kv: &mut Kv) -> Result<StepOutput> {
+        if self.resident {
+            return self.step_resident(x, noise, kv);
+        }
+        let (mask, cos, sin) = self.step_tables(kv)?;
+        let names = std::mem::take(&mut self.step_names);
+        let outs = {
+            let graph = self.step_graph(kv.cap)?;
+            graph.run(&step_inputs(x, noise, &mask, &cos, &sin, &names, kv))
+        };
+        self.step_names = names;
+        self.absorb_step(outs, kv)
+    }
+
+    /// [`Self::step`] awaiting the graph (a browser's WebGPU reads results
+    /// back asynchronously).
+    #[cfg(target_family = "wasm")]
+    async fn step_async(&mut self, x: &[f32], noise: &[f32], kv: &mut Kv) -> Result<StepOutput> {
+        if self.resident {
+            return self.step_resident_async(x, noise, kv).await;
+        }
+        let (mask, cos, sin) = self.step_tables(kv)?;
+        let names = std::mem::take(&mut self.step_names);
+        let outs = {
+            let graph = self.step_graph(kv.cap)?;
+            graph.run_async(&step_inputs(x, noise, &mask, &cos, &sin, &names, kv)).await
+        };
+        self.step_names = names;
+        self.absorb_step(outs.map_err(|e| anyhow!("FlowLM step: {e}"))?, kv)
+    }
+
+    /// [`Self::step`] with the cache on the device ([`Self::bind_cache`]):
+    /// the row's place given, its K/V written by the graph, three small
+    /// outputs read back.
+    fn step_resident(&mut self, x: &[f32], noise: &[f32], kv: &mut Kv) -> Result<StepOutput> {
+        let (mask, cos, sin) = self.step_tables(kv)?;
+        let mut write = vec![0.0f32; kv.cap];
+        write[kv.len] = 1.0;
+        let inputs: Vec<(&str, &[f32])> = vec![
+            ("x", x),
+            ("noise", noise),
+            ("mask", &mask),
+            ("rope_cos", &cos),
+            ("rope_sin", &sin),
+            (KV_WRITE, &write),
+        ];
+        let outs = self.step_graph(kv.cap)?.run_read_outputs(&inputs, Some(&[OUT_LATENT, OUT_EOS, OUT_HIDDEN]));
+        kv.len += 1;
+        resident_output(outs)
+    }
+
+    /// [`Self::step_resident`] awaiting the graph (WebGPU in a browser).
+    #[cfg(target_family = "wasm")]
+    async fn step_resident_async(&mut self, x: &[f32], noise: &[f32], kv: &mut Kv) -> Result<StepOutput> {
+        let (mask, cos, sin) = self.step_tables(kv)?;
+        let mut write = vec![0.0f32; kv.cap];
+        write[kv.len] = 1.0;
+        let inputs: Vec<(&str, &[f32])> = vec![
+            ("x", x),
+            ("noise", noise),
+            ("mask", &mask),
+            ("rope_cos", &cos),
+            ("rope_sin", &sin),
+            (KV_WRITE, &write),
+        ];
+        let outs = self
+            .step_graph(kv.cap)?
+            .run_read_outputs_async(&inputs, Some(&[OUT_LATENT, OUT_EOS, OUT_HIDDEN]))
+            .await
+            .map_err(|e| anyhow!("FlowLM step: {e}"))?;
+        kv.len += 1;
+        resident_output(outs)
+    }
+
+    /// Resident: the chunk's starting cache (the voice) into the step
+    /// graph's device buffers, each fed from its own updated output after a
+    /// step. False when the backend cannot keep them (the host path then).
+    fn bind_cache(&mut self, kv: &Kv) -> Result<bool> {
+        if !self.resident {
+            return Ok(false);
+        }
+        let layers = self.dims.num_layers;
+        let names = self.step_names.clone();
+        let graph = self.step_graph(kv.cap)?;
+        for (l, (kn, vn)) in names.iter().enumerate() {
+            let (k_out, v_out) = (OUT_KV + 2 * layers + 2 * l, OUT_KV + 2 * layers + 2 * l + 1);
+            let bound = graph.bind_gpu_handle(kn, &kv.k[l])
+                && graph.bind_gpu_handle(vn, &kv.v[l])
+                && graph.set_gpu_handle_feed(kn, k_out)
+                && graph.set_gpu_handle_feed(vn, v_out);
+            if !bound {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The step's attention mask and rotary tables for row `kv.len`.
+    fn step_tables(&self, kv: &Kv) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
         if kv.len >= kv.cap {
             bail!("KV cache full ({} rows)", kv.cap);
         }
@@ -540,23 +717,11 @@ impl PocketTts {
         let mut mask = vec![0.0f32; kv.cap + 1];
         mask[..kv.len].fill(1.0);
         mask[kv.cap] = 1.0;
-        let names = std::mem::take(&mut self.step_names);
-        let outs = {
-            let graph = self.step_graph(kv.cap)?;
-            let mut inputs: Vec<(&str, &[f32])> = vec![
-                ("x", x),
-                ("noise", noise),
-                ("mask", &mask),
-                ("rope_cos", &cos),
-                ("rope_sin", &sin),
-            ];
-            for (l, (kn, vn)) in names.iter().enumerate() {
-                inputs.push((kn.as_str(), &kv.k[l]));
-                inputs.push((vn.as_str(), &kv.v[l]));
-            }
-            graph.run(&inputs)
-        };
-        self.step_names = names;
+        Ok((mask, cos, sin))
+    }
+
+    /// The step's outputs: its row's K/V into the cache, the rest returned.
+    fn absorb_step(&mut self, outs: Vec<Vec<f32>>, kv: &mut Kv) -> Result<StepOutput> {
         let n_out = OUT_KV + 2 * self.dims.num_layers;
         if outs.len() != n_out {
             bail!(
@@ -600,7 +765,7 @@ impl PocketTts {
         frames_after_eos: usize,
         noise: &mut dyn FnMut() -> Vec<f32>,
     ) -> Result<ChunkOutput> {
-        self.chunk(text, voice, frames_after_eos, noise, None)
+        self.chunk(text, voice, frames_after_eos, noise, None, None)
     }
 
     /// [`Self::generate_chunk`] with teacher forcing: frame `i > 0` is fed
@@ -616,7 +781,7 @@ impl PocketTts {
         noise: &mut dyn FnMut() -> Vec<f32>,
         forced: &[f32],
     ) -> Result<ChunkOutput> {
-        self.chunk(text, voice, frames_after_eos, noise, Some(forced))
+        self.chunk(text, voice, frames_after_eos, noise, Some(forced), None)
     }
 
     fn chunk(
@@ -626,18 +791,29 @@ impl PocketTts {
         frames_after_eos: usize,
         noise: &mut dyn FnMut() -> Vec<f32>,
         forced: Option<&[f32]>,
+        // Streaming: each decoder block's audio as soon as its frames are
+        // made (the same samples as decoding at the end, in pieces).
+        mut sink: Option<&mut dyn FnMut(&[f32])>,
     ) -> Result<ChunkOutput> {
         let tokens = self.tokenizer.encode(text)?;
         if tokens.is_empty() {
             bail!("chunk {text:?} has no tokens");
         }
         let timing = rlx_ir::env::flag("RLX_POCKET_TTS_TIMING");
-        // The clock only when timing: `Instant::now` panics on wasm32.
-        let t0 = timing.then(std::time::Instant::now);
-        let elapsed = || t0.map(|t| t.elapsed()).unwrap_or_default();
+        let t0 = timing.then(clock);
+        let elapsed = || t0.map(|t| clock() - t).unwrap_or_default();
+        // Streaming: the decoder's share of the frame loop.
+        let mut t_blocks = std::time::Duration::ZERO;
         let max_gen = self.max_gen_len(tokens.len());
         let mut kv = Kv::from_state(voice, bucket(voice.offset + tokens.len() + max_gen));
         self.step_graph(kv.cap)?;
+        // On a GPU that keeps buffers: the cache stays there. Otherwise (or
+        // if binding fails) the host path, for good.
+        if self.resident && !self.bind_cache(&kv)? {
+            self.resident = false;
+            self.steps.clear();
+            self.step_graph(kv.cap)?;
+        }
         let t_compile = elapsed();
         let zeros = vec![0.0; self.dims.latent_dim];
         for &t in &tokens {
@@ -648,6 +824,12 @@ impl PocketTts {
 
         let ldim = self.dims.latent_dim;
         let mut out = ChunkOutput::default();
+        // Streaming: frames decoded so far, a decoder block at a time.
+        let block = self.mimi.block_frames();
+        let mut decoded = 0;
+        if sink.is_some() {
+            self.mimi.reset();
+        }
         let mut prev: Option<Vec<f32>> = None;
         let mut eos_step: Option<usize> = None;
         for step in 0..max_gen {
@@ -669,6 +851,14 @@ impl PocketTts {
                 break;
             }
             out.latents.extend_from_slice(&s.latent);
+            if let Some(sink) = sink.as_deref_mut()
+                && out.latents.len() / ldim - decoded == block
+            {
+                let t = elapsed();
+                self.stream_block(&mut out, decoded, sink)?;
+                t_blocks += elapsed() - t;
+                decoded += block;
+            }
             prev = Some(match forced {
                 Some(f) => match f.get(step * ldim..(step + 1) * ldim) {
                     Some(row) => row.to_vec(),
@@ -679,44 +869,142 @@ impl PocketTts {
         }
 
         let t_gen = elapsed();
-        out.audio_raw = self.decode_latents(&out.latents)?;
+        match sink {
+            // The frames after the last whole block.
+            Some(sink) => {
+                if out.latents.len() / ldim > decoded {
+                    self.stream_block(&mut out, decoded, sink)?;
+                }
+            }
+            None => out.audio_raw = self.decode_latents(&out.latents)?,
+        }
         if timing {
             let frames = out.eos_logits.len();
-            eprintln!(
+            let steps = t_gen - t_prompt - t_blocks;
+            report(format!(
                 "pocket-tts: kv cap {} | step graph {:.0} ms | {} prompt tokens {:.0} ms | \
                  {frames} frames {:.0} ms ({:.1} ms/frame) | decode {:.0} ms",
                 kv.cap,
                 t_compile.as_secs_f64() * 1e3,
                 tokens.len(),
                 (t_prompt - t_compile).as_secs_f64() * 1e3,
-                (t_gen - t_prompt).as_secs_f64() * 1e3,
-                (t_gen - t_prompt).as_secs_f64() * 1e3 / frames.max(1) as f64,
-                (elapsed() - t_gen).as_secs_f64() * 1e3,
-            );
+                steps.as_secs_f64() * 1e3,
+                steps.as_secs_f64() * 1e3 / frames.max(1) as f64,
+                (t_blocks + elapsed() - t_gen).as_secs_f64() * 1e3,
+            ));
         }
         out.audio = out.audio_raw.clone();
-        let fade = self.spec.mimi.sample_rate / 200;
-        let n = fade.min(out.audio.len());
-        for (i, s) in out.audio[..n].iter_mut().enumerate() {
-            // torch.linspace(0, 1, fade)
-            *s *= i as f32 / (fade - 1) as f32;
-        }
+        self.fade_in(&mut out.audio, 0);
         Ok(out)
+    }
+
+    /// [`Self::chunk`] streamed, awaiting each graph (WebGPU in a browser,
+    /// where results come back asynchronously).
+    #[cfg(target_family = "wasm")]
+    async fn chunk_async(
+        &mut self,
+        text: &str,
+        voice: &VoiceState,
+        frames_after_eos: usize,
+        noise: &mut dyn FnMut() -> Vec<f32>,
+        sink: &mut dyn FnMut(&[f32]),
+    ) -> Result<Vec<f32>> {
+        let tokens = self.tokenizer.encode(text)?;
+        if tokens.is_empty() {
+            bail!("chunk {text:?} has no tokens");
+        }
+        let max_gen = self.max_gen_len(tokens.len());
+        let mut kv = Kv::from_state(voice, bucket(voice.offset + tokens.len() + max_gen));
+        self.step_graph(kv.cap)?;
+        if self.resident && !self.bind_cache(&kv)? {
+            self.resident = false;
+            self.steps.clear();
+            self.step_graph(kv.cap)?;
+        }
+        let zeros = vec![0.0; self.dims.latent_dim];
+        for &t in &tokens {
+            let x = self.embed_token(t);
+            self.step_async(&x, &zeros, &mut kv).await?;
+        }
+        let ldim = self.dims.latent_dim;
+        let block = self.mimi.block_frames();
+        self.mimi.reset();
+        let (mut latents, mut audio) = (Vec::new(), Vec::new());
+        let mut decoded = 0;
+        let mut prev: Option<Vec<f32>> = None;
+        let mut eos_step: Option<usize> = None;
+        for step in 0..max_gen {
+            let x = self.embed_latent(prev.as_deref());
+            let z = noise();
+            if z.len() != ldim {
+                bail!("noise has {} values, expected {ldim}", z.len());
+            }
+            let s = self.step_async(&x, &z, &mut kv).await?;
+            if s.eos_logit > self.options.eos_threshold && eos_step.is_none() && step >= MIN_FRAMES_BEFORE_EOS {
+                eos_step = Some(step);
+            }
+            if eos_step.is_some_and(|e| step >= e + frames_after_eos) {
+                break;
+            }
+            latents.extend_from_slice(&s.latent);
+            if latents.len() / ldim - decoded == block {
+                self.stream_block_async(&latents[decoded * ldim..], &mut audio, sink).await?;
+                decoded += block;
+            }
+            prev = Some(s.latent);
+        }
+        if latents.len() / ldim > decoded {
+            self.stream_block_async(&latents[decoded * ldim..], &mut audio, sink).await?;
+        }
+        Ok(audio)
+    }
+
+    /// [`Self::stream_block`] awaiting the decoder; `audio` gets the faded
+    /// samples (what the chunk returns).
+    #[cfg(target_family = "wasm")]
+    async fn stream_block_async(&mut self, latents: &[f32], audio: &mut Vec<f32>, sink: &mut dyn FnMut(&[f32])) -> Result<()> {
+        let denorm = self.denormalize(latents);
+        let mut block = self.mimi.decode_block_async(&denorm).await?;
+        self.fade_in(&mut block, audio.len());
+        audio.extend_from_slice(&block);
+        sink(&block);
+        Ok(())
+    }
+
+    /// The utterance's 5 ms fade-in (`torch.linspace(0, 1, fade)`), on
+    /// `audio` starting `at` samples into it.
+    fn fade_in(&self, audio: &mut [f32], at: usize) {
+        let fade = self.spec.mimi.sample_rate / 200;
+        for (i, s) in audio.iter_mut().enumerate().take(fade.saturating_sub(at)) {
+            *s *= (at + i) as f32 / (fade - 1) as f32;
+        }
+    }
+
+    /// Streaming: decode the frames from `from` on (one block, or the last
+    /// part of one), keep them, and hand them to `sink` faded in.
+    fn stream_block(&mut self, out: &mut ChunkOutput, from: usize, sink: &mut dyn FnMut(&[f32])) -> Result<()> {
+        let ldim = self.dims.latent_dim;
+        let latents = self.denormalize(&out.latents[from * ldim..]);
+        let raw = self.mimi.decode_block(&latents)?;
+        let mut faded = raw.clone();
+        self.fade_in(&mut faded, out.audio_raw.len());
+        out.audio_raw.extend_from_slice(&raw);
+        sink(&faded);
+        Ok(())
+    }
+
+    /// Latents (`[frames, 32]`, row-major) out of the model's normalization.
+    fn denormalize(&self, latents: &[f32]) -> Vec<f32> {
+        latents
+            .chunks(self.dims.latent_dim)
+            .flat_map(|f| f.iter().zip(&self.emb_std).zip(&self.emb_mean).map(|((x, s), m)| x * s + m))
+            .collect()
     }
 
     /// De-normalize generated latents (`[frames, 32]`, row-major) and decode
     /// them with Mimi from a fresh decoder state (no fade-in).
     pub fn decode_latents(&mut self, latents: &[f32]) -> Result<Vec<f32>> {
-        let ldim = self.dims.latent_dim;
-        let denorm: Vec<f32> = latents
-            .chunks(ldim)
-            .flat_map(|f| {
-                f.iter()
-                    .zip(&self.emb_std)
-                    .zip(&self.emb_mean)
-                    .map(|((x, s), m)| x * s + m)
-            })
-            .collect();
+        let denorm = self.denormalize(latents);
         if denorm.is_empty() {
             return Ok(Vec::new());
         }
@@ -725,15 +1013,76 @@ impl PocketTts {
 
     /// Text → speech with `voice`, using [`Self::options`].
     pub fn generate(&mut self, text: &str, voice: &VoiceState) -> Result<Audio> {
+        self.generate_with(text, voice, None)
+    }
+
+    /// [`Self::generate`], handing `sink` the audio as it is made: a decoder
+    /// block (`set_decoder_block`, 8 frames = 640 ms) at a time, so playback
+    /// can start long before the end. The pieces together are the samples
+    /// [`Self::generate`] returns.
+    pub fn generate_streaming(
+        &mut self,
+        text: &str,
+        voice: &VoiceState,
+        sink: &mut dyn FnMut(&[f32]),
+    ) -> Result<Audio> {
+        self.generate_with(text, voice, Some(sink))
+    }
+
+    fn generate_with(
+        &mut self,
+        text: &str,
+        voice: &VoiceState,
+        mut sink: Option<&mut dyn FnMut(&[f32])>,
+    ) -> Result<Audio> {
+        let (chunks, mut noise) = self.generation_setup(text)?;
+        let mut samples = Vec::new();
+        for (prepared, fae) in chunks {
+            // A reborrow each chunk (the coercion shortens the closure's lifetime).
+            let each: Option<&mut dyn FnMut(&[f32])> = match &mut sink {
+                Some(s) => Some(&mut **s),
+                None => None,
+            };
+            let out = self.chunk(&prepared, voice, fae, &mut noise, None, each)?;
+            samples.extend(out.audio);
+        }
+        Ok(Audio { samples, sample_rate: self.sample_rate() })
+    }
+
+    /// [`Self::generate_streaming`] awaiting each graph: what a browser's
+    /// WebGPU needs (its results come back asynchronously). The same
+    /// samples, on any device.
+    #[cfg(target_family = "wasm")]
+    pub async fn generate_streaming_async(
+        &mut self,
+        text: &str,
+        voice: &VoiceState,
+        sink: &mut dyn FnMut(&[f32]),
+    ) -> Result<Audio> {
+        let (chunks, mut noise) = self.generation_setup(text)?;
+        let mut samples = Vec::new();
+        for (prepared, fae) in chunks {
+            samples.extend(self.chunk_async(&prepared, voice, fae, &mut noise, sink).await?);
+        }
+        Ok(Audio { samples, sample_rate: self.sample_rate() })
+    }
+
+    /// `text` split into prepared chunks (with each one's frames after EOS),
+    /// and the sampler's noise, seeded as the options say.
+    #[allow(clippy::type_complexity)]
+    fn generation_setup(&self, text: &str) -> Result<(Vec<(String, usize)>, Box<dyn FnMut() -> Vec<f32>>)> {
         let opts = self.options.clone();
-        let chunks =
-            split_into_chunks(&self.tokenizer, text, opts.max_tokens_per_chunk, &self.text)?;
+        let mut chunks = Vec::new();
+        for chunk in split_into_chunks(&self.tokenizer, text, opts.max_tokens_per_chunk, &self.text)? {
+            let (prepared, guess) = prepare_text_prompt(&chunk, &self.text)?;
+            chunks.push((prepared, opts.frames_after_eos.unwrap_or(guess + 2)));
+        }
         let mut rng = StdRng::seed_from_u64(opts.seed);
         let std = opts.temperature.max(0.0).sqrt();
         let normal = Normal::new(0.0f32, std.max(f32::MIN_POSITIVE)).map_err(|e| anyhow!("{e}"))?;
         let ldim = self.dims.latent_dim;
         let clamp = opts.noise_clamp;
-        let mut noise = move || -> Vec<f32> {
+        let noise = move || -> Vec<f32> {
             (0..ldim)
                 .map(|_| {
                     if std == 0.0 {
@@ -749,22 +1098,50 @@ impl PocketTts {
                 })
                 .collect()
         };
-        let mut samples = Vec::new();
-        for chunk in chunks {
-            let (prepared, guess) = prepare_text_prompt(&chunk, &self.text)?;
-            let fae = opts.frames_after_eos.unwrap_or(guess + 2);
-            let out = self.generate_chunk(&prepared, voice, fae, &mut noise)?;
-            samples.extend(out.audio);
-        }
-        Ok(Audio {
-            samples,
-            sample_rate: self.sample_rate(),
-        })
+        Ok((chunks, Box::new(noise)))
     }
 }
 
 fn bucket(rows: usize) -> usize {
-    rows.max(1).div_ceil(KV_BUCKET) * KV_BUCKET
+    rows.max(MIN_KV_CAP).div_ceil(KV_BUCKET) * KV_BUCKET
+}
+
+/// The least KV capacity compiled. On wasm32, enough for any chunk (a voice
+/// of up to ~200 rows, 50 tokens, and the frames they may take: (50/3 + 2)
+/// s × 12.5 Hz), so one step graph serves every sentence — a second would
+/// mean a second full copy of the weights.
+#[cfg(target_arch = "wasm32")]
+const MIN_KV_CAP: usize = 512;
+#[cfg(not(target_arch = "wasm32"))]
+const MIN_KV_CAP: usize = 1;
+
+/// A resident step's read-back outputs (latent, EOS logit, hidden).
+fn resident_output(outs: Vec<Vec<f32>>) -> Result<StepOutput> {
+    let mut outs = outs.into_iter();
+    let (Some(latent), Some(eos), Some(hidden)) = (outs.next(), outs.next(), outs.next()) else {
+        bail!("resident step returned too few outputs");
+    };
+    let eos_logit = *eos.first().ok_or_else(|| anyhow!("no EOS logit"))?;
+    Ok(StepOutput { latent, eos_logit, hidden })
+}
+
+/// The step graph's inputs, the cache's layers by name.
+fn step_inputs<'a>(
+    x: &'a [f32],
+    noise: &'a [f32],
+    mask: &'a [f32],
+    cos: &'a [f32],
+    sin: &'a [f32],
+    names: &'a [(String, String)],
+    kv: &'a Kv,
+) -> Vec<(&'a str, &'a [f32])> {
+    let mut inputs: Vec<(&str, &[f32])> =
+        vec![("x", x), ("noise", noise), ("mask", mask), ("rope_cos", cos), ("rope_sin", sin)];
+    for (l, (kn, vn)) in names.iter().enumerate() {
+        inputs.push((kn.as_str(), &kv.k[l]));
+        inputs.push((vn.as_str(), &kv.v[l]));
+    }
+    inputs
 }
 
 /// `W x` for row-major `W [rows, cols]`.

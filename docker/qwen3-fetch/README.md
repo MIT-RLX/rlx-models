@@ -56,13 +56,13 @@ weights/
 
 Run `cargo` from the sibling **`rlx`** workspace (`cd ../rlx`).
 
-**Numerical parity test vs candle-transformers:**
+**Numerical parity test (PyTorch reference):**
 
 ```bash
 cd ../rlx
 RLX_QWEN3_WEIGHTS="$PWD/../rlx-models/weights/Qwen3-0.6B/model.safetensors" \
 RLX_QWEN3_CONFIG="$PWD/../rlx-models/weights/Qwen3-0.6B/config.json" \
-cargo test -p rlx-models --features parity-candle --release qwen3_parity_vs_candle
+cargo test -p rlx-models --features parity-pytorch --release qwen3_parity
 ```
 
 **End-to-end demo (prefill + generate via cached KV path):**

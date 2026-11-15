@@ -57,11 +57,11 @@ There is no smaller Moshi **architecture** — only quantization variants:
 
 | Preset | Env / CLI | HuggingFace (Moshiko) | Size | Backends |
 |--------|-----------|----------------------|------|----------|
-| `bf16` (default) | `RLX_MOSHI_CHECKPOINT=bf16` | [`kyutai/moshiko-candle-bf16`](https://huggingface.co/kyutai/moshiko-candle-bf16) | ~14 GB | CPU eager, Candle GPU |
-| `q8` | `--checkpoint q8` | [`kyutai/moshiko-candle-q8`](https://huggingface.co/kyutai/moshiko-candle-q8) | ~8 GB | CPU eager (GGUF), Candle GPU |
-| `q4` | `--checkpoint q4` | [`kyutai/moshiko-mlx-q4`](https://huggingface.co/kyutai/moshiko-mlx-q4) | ~4 GB | MLX Q4 → dequant → Candle / CPU |
-| `q8-mlx` | `--checkpoint q8-mlx` | [`kyutai/moshiko-mlx-q8`](https://huggingface.co/kyutai/moshiko-mlx-q8) | ~7 GB | MLX Q8 → dequant → Candle / CPU |
-| `mlx-bf16` | `--checkpoint mlx-bf16` | [`kyutai/moshiko-mlx-bf16`](https://huggingface.co/kyutai/moshiko-mlx-bf16) | ~14 GB | MLX key layout, BF16 tensors → Candle / CPU |
+| `bf16` (default) | `RLX_MOSHI_CHECKPOINT=bf16` | [`kyutai/moshiko-candle-bf16`](https://huggingface.co/kyutai/moshiko-candle-bf16) | ~14 GB | CPU eager |
+| `q8` | `--checkpoint q8` | [`kyutai/moshiko-candle-q8`](https://huggingface.co/kyutai/moshiko-candle-q8) | ~8 GB | CPU eager (GGUF) |
+| `q4` | `--checkpoint q4` | [`kyutai/moshiko-mlx-q4`](https://huggingface.co/kyutai/moshiko-mlx-q4) | ~4 GB | MLX Q4 → dequant → CPU |
+| `q8-mlx` | `--checkpoint q8-mlx` | [`kyutai/moshiko-mlx-q8`](https://huggingface.co/kyutai/moshiko-mlx-q8) | ~7 GB | MLX Q8 → dequant → CPU |
+| `mlx-bf16` | `--checkpoint mlx-bf16` | [`kyutai/moshiko-mlx-bf16`](https://huggingface.co/kyutai/moshiko-mlx-bf16) | ~14 GB | MLX key layout, BF16 tensors → CPU |
 
 Pass `--variant moshika` or `--variant moshika-one-way` to use **Moshika** repos (`kyutai/moshika-*`) with the same presets.
 

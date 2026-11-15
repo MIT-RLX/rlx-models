@@ -14,12 +14,16 @@ readme = "README.md"
 [dependencies]
 rlx-cli = { workspace = true }
 rlx-core = { workspace = true }
-rlx-runtime = { workspace = true }
+rlx-runtime = { workspace = true, features = ["training"] }
 rlx-cpu = { workspace = true }
+# The mel frontend's FFT, so training features match the streaming engine exactly.
+rlx-wakeword-core = { workspace = true }
 anyhow = { workspace = true }
 safetensors = { workspace = true }
 serde_json = { workspace = true, optional = true }
-rlx-ir = { workspace = true, optional = true }
+rlx-ir = { workspace = true }
+# Device training (`train::graph_cnn`): the CNN + loss as an RLX graph, differentiated.
+rlx-autodiff = { workspace = true }
 
 [[bin]]
 name = "rlx-wake-train"
@@ -39,7 +43,7 @@ nvidia-gpu = ["cuda"]
 amd-gpu = ["rocm"]
 portable-gpu = ["gpu"]
 # `export::export_family`: a wake CNN as an `.rlxp` package rlx runs alone.
-export = ["rlx-core/export", "dep:serde_json", "dep:rlx-ir"]
+export = ["rlx-core/export", "dep:serde_json"]
 
 [dev-dependencies]
 serde_json = { workspace = true }

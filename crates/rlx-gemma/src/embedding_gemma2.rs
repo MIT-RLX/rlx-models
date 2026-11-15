@@ -52,16 +52,17 @@
 //!
 //! ## Status
 //!
-//! The config, the tensor contract and the head are here and tested offline
-//! against the published `config.json` and tensor index. **Not done:** the
-//! vision and audio towers' entry points for *this* checkpoint. Both towers
-//! exist ([`crate::gemma4_vision`], [`crate::gemma4_audio`]) but expect
-//! `model.`-prefixed names, and this checkpoint's audio tower sets
-//! `use_clipped_linears`, which ships four extra scalars per linear
-//! (`input_min`/`input_max`/`output_min`/`output_max`) that nothing here reads
-//! yet. Text embedding needs neither.
+//! Text and audio embeddings run end to end in
+//! [`crate::embedding_gemma2_model::EmbeddingGemma2`], with the null-space audio
+//! head in [`crate::embedding_gemma2_nullspace`]. Both match HF +
+//! sentence-transformers at every stage on CPU, Metal and MLX
+//! (`tests/embedding_gemma2_parity.rs`). The vision tower is not wired.
+//!
+//! [`EmbeddingGemma2Names`] maps this checkpoint's tensor names and keeps the
+//! builders' `w − 1` norm convention, which a plain loader would not.
 
 use anyhow::{Result, bail};
+use rlx_core::weight_loader::WeightLoader;
 use std::path::Path;
 
 use crate::GemmaConfig;
@@ -85,14 +86,15 @@ pub struct EmbeddingGemma2Config {
     pub eoi_token_id: u32,
     pub boa_token_id: u32,
     pub eoa_token_id: u32,
+    /// `text_config.eos_token_id`: closes every input, after the audio.
+    pub eos_token_id: u32,
     /// Soft tokens one image occupies in the sequence.
     pub vision_soft_tokens_per_image: usize,
     /// Whether the checkpoint carries the respective tower.
     pub has_vision: bool,
     pub has_audio: bool,
-    /// `audio_config.use_clipped_linears` — see the module docs; not yet read
-    /// by [`crate::gemma4_audio`], so an audio path must refuse rather than
-    /// silently skip the clipping.
+    /// `audio_config.use_clipped_linears`: every audio-tower linear clamps its
+    /// input and output to learned bounds ([`crate::gemma4_audio::AudioConfig`]).
     pub audio_use_clipped_linears: bool,
 }
 
@@ -116,7 +118,11 @@ impl EmbeddingGemma2Config {
         // Hand over the subtree directly — no temp file, so nothing races
         // with itself when two threads parse at once. `raw` is passed for the
         // arch sniff, which keys off the nested `model_type`.
-        let text = GemmaConfig::from_hf_value(text_v, raw)?;
+        let mut text = GemmaConfig::from_hf_value(text_v, raw)?;
+        // The trunk is a Gemma 4, but nothing in this config names one, so
+        // the arch sniff would fall back to plain Gemma.
+        text.arch = crate::config::GemmaArch::Gemma4;
+        apply_per_layer_config(&mut text, text_v)?;
 
         let u = |k: &str| -> Option<u64> { top.get(k).and_then(|x| x.as_u64()) };
         let embedding_dim = text_v
@@ -139,6 +145,10 @@ impl EmbeddingGemma2Config {
             eoa_token_id: u("eoa_token_index")
                 .or_else(|| u("eoa_token_id"))
                 .unwrap_or(0) as u32,
+            eos_token_id: text_v
+                .get("eos_token_id")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(1) as u32,
             vision_soft_tokens_per_image: u("vision_soft_tokens_per_image").unwrap_or(0) as usize,
             has_vision: top.contains_key("vision_config"),
             has_audio: audio.is_some(),
@@ -189,6 +199,143 @@ impl EmbeddingGemma2Config {
                 self.text.hidden_size,
             ]
         })
+    }
+}
+
+/// `text_config.per_layer_config`: per-layer overrides keyed by the layer
+/// index (`"05"`). This checkpoint uses them for one thing, the wider heads of
+/// its full-attention layers (`head_dim` 512, one KV head), which
+/// [`GemmaConfig`] states as `global_head_dim` / `num_global_key_value_heads`.
+/// Anything else, or an override on a sliding layer, is refused rather than
+/// ignored.
+fn apply_per_layer_config(text: &mut GemmaConfig, text_v: &serde_json::Value) -> Result<()> {
+    let Some(per_layer) = text_v.get("per_layer_config").and_then(|p| p.as_object()) else {
+        return Ok(());
+    };
+    let mut global: Option<(usize, usize)> = None;
+    for (key, over) in per_layer {
+        let layer: usize = key.parse().map_err(|_| {
+            anyhow::anyhow!("embeddinggemma2: per_layer_config key {key:?} is not a layer index")
+        })?;
+        if !text.is_full_attention_layer(layer) {
+            bail!("embeddinggemma2: per_layer_config overrides sliding layer {layer}");
+        }
+        let obj = over.as_object().ok_or_else(|| {
+            anyhow::anyhow!("embeddinggemma2: per_layer_config[{key}] is not an object")
+        })?;
+        if let Some(k) = obj
+            .keys()
+            .find(|k| *k != "head_dim" && *k != "num_key_value_heads")
+        {
+            bail!("embeddinggemma2: per_layer_config[{key}].{k} is not supported");
+        }
+        let hd = obj
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize);
+        let kv = obj
+            .get("num_key_value_heads")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize);
+        let this = (
+            hd.unwrap_or(text.head_dim()),
+            kv.unwrap_or(text.num_key_value_heads),
+        );
+        if global.is_some_and(|g| g != this) {
+            bail!("embeddinggemma2: full-attention layers disagree on head_dim / kv heads");
+        }
+        global = Some(this);
+    }
+    if let Some((hd, kv)) = global {
+        // Every full-attention layer must carry the override, or the uniform
+        // `global_*` fields would misdescribe the ones that do not.
+        let full = (0..text.num_hidden_layers)
+            .filter(|&l| text.is_full_attention_layer(l))
+            .count();
+        if full != per_layer.len() {
+            bail!(
+                "embeddinggemma2: per_layer_config covers {} of {full} full-attention layers",
+                per_layer.len()
+            );
+        }
+        text.global_head_dim = Some(hd);
+        text.num_global_key_value_heads = Some(kv);
+    }
+    Ok(())
+}
+
+/// A [`WeightLoader`] that serves the names [`crate::builder`] and
+/// [`crate::gemma4_audio`] ask for (`model.layers.N.…`,
+/// `model.audio_tower.…`) from this checkpoint's (`language_model.layers.N.…`,
+/// `audio_tower.…`, PLE weights under `ple_block.`).
+///
+/// It also keeps the norm convention those builders share with
+/// [`crate::qat_loader::GemmaQatLoader`]: a tensor whose checkpoint name ends
+/// in `norm.weight` is served as `w − 1`, because the builders apply
+/// `1 + w` (Gemma ≤ 3) while Gemma 4 norms multiply by `w` itself.
+pub struct EmbeddingGemma2Names<L: WeightLoader> {
+    inner: L,
+}
+
+impl<L: WeightLoader> EmbeddingGemma2Names<L> {
+    pub fn new(inner: L) -> Self {
+        Self { inner }
+    }
+
+    /// The checkpoint name of a builder-side `key`.
+    pub fn map(key: &str) -> String {
+        for tower in [
+            "audio_tower.",
+            "embed_audio.",
+            "vision_tower.",
+            "embed_vision.",
+        ] {
+            if let Some(rest) = key.strip_prefix("model.").filter(|r| r.starts_with(tower)) {
+                return rest.to_string();
+            }
+        }
+        if let Some(rest) = key.strip_prefix("model.layers.")
+            && let Some((layer, tail)) = rest.split_once('.')
+            && (tail.starts_with("per_layer_input_gate.")
+                || tail.starts_with("per_layer_projection.")
+                || tail.starts_with("post_per_layer_input_norm."))
+        {
+            return format!("language_model.layers.{layer}.ple_block.{tail}");
+        }
+        match key.strip_prefix("model.") {
+            Some(rest) => format!("language_model.{rest}"),
+            None => key.to_string(),
+        }
+    }
+}
+
+impl<L: WeightLoader> WeightLoader for EmbeddingGemma2Names<L> {
+    fn format_id(&self) -> &'static str {
+        self.inner.format_id()
+    }
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+    fn take(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let name = Self::map(key);
+        let (mut data, shape) = self.inner.take(&name)?;
+        if name.ends_with("norm.weight") {
+            data.iter_mut().for_each(|v| *v -= 1.0);
+        }
+        Ok((data, shape))
+    }
+    fn take_transposed(&mut self, key: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let name = Self::map(key);
+        if name.ends_with("norm.weight") {
+            bail!("embeddinggemma2: {name} is a norm, not a matrix to transpose");
+        }
+        self.inner.take_transposed(&name)
+    }
+    fn stored_dtype(&self, key: &str) -> Option<rlx_ir::DType> {
+        self.inner.stored_dtype(&Self::map(key))
+    }
+    fn remaining_keys(&self) -> Vec<String> {
+        self.inner.remaining_keys()
     }
 }
 

@@ -25,12 +25,34 @@ use llama_cpp_2::{
     context::params::LlamaContextParams,
     llama_backend::LlamaBackend,
     llama_batch::LlamaBatch,
-    model::{AddBos, LlamaModel, params::LlamaModelParams},
+    model::{LlamaModel, params::LlamaModelParams},
     sampling::LlamaSampler,
     token::LlamaToken,
 };
 
 use crate::tokens::STOP_TOKEN;
+
+/// `token`'s text through the streaming `decoder`, which holds back a UTF-8
+/// sequence split across tokens until it completes (as the old
+/// `LlamaModel::token_to_piece` did).
+fn token_text(model: &LlamaModel, token: LlamaToken, decoder: &mut encoding_rs::Decoder) -> String {
+    let bytes = model.vocab().token_to_piece(token, true, None);
+    let cap = decoder
+        .max_utf8_buffer_length(bytes.len())
+        .unwrap_or(bytes.len() * 3 + 8);
+    let mut out = String::with_capacity(cap);
+    let _ = decoder.decode_to_string(&bytes, &mut out, false);
+    out
+}
+
+/// `text` through the GGUF's tokenizer, BOS first: what `AddBos::Always`
+/// gave before `llama-cpp-2` moved tokenizing onto the vocab.
+fn tokens_with_bos(model: &LlamaModel, text: &str) -> Vec<LlamaToken> {
+    let vocab = model.vocab();
+    let mut toks = vocab.tokenize(text.as_bytes(), false, false);
+    toks.insert(0, vocab.bos());
+    toks
+}
 
 /// Reference backbone for parity tests (llama-cpp-2).
 pub struct LlamaCppBackbone {
@@ -85,20 +107,18 @@ impl LlamaCppBackbone {
         ctx.decode(&mut batch).context("Prompt decode failed")?;
 
         let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
-        let mut n_cur = prompt_ids.len() as i32;
         let mut out: Vec<u32> = Vec::with_capacity(max_new_tokens as usize);
 
-        for _ in 0..max_new_tokens {
+        for n_cur in (prompt_ids.len() as i32..).take(max_new_tokens as usize) {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             sampler.accept(token);
-            if self.model.is_eog_token(token) {
+            if self.model.vocab().is_eog(token) {
                 break;
             }
             out.push(token.0 as u32);
             batch.clear();
             batch.add(token, n_cur, &[0], true)?;
             ctx.decode(&mut batch).context("Decode step failed")?;
-            n_cur += 1;
         }
         Ok(out)
     }
@@ -138,10 +158,7 @@ impl LlamaCppBackbone {
             .new_context(&self._backend, ctx_params)
             .context("Failed to create llama.cpp context")?;
 
-        let tokens = self
-            .model
-            .str_to_token(prompt, AddBos::Always)
-            .context("Tokenisation failed")?;
+        let tokens = tokens_with_bos(&self.model, prompt);
 
         eprintln!(
             "[backbone/llama-cpp] prompt tokens: {} / n_ctx={}",
@@ -177,14 +194,11 @@ impl LlamaCppBackbone {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             sampler.accept(token);
 
-            if self.model.is_eog_token(token) {
+            if self.model.vocab().is_eog(token) {
                 break;
             }
 
-            let piece = self
-                .model
-                .token_to_piece(token, &mut decoder, true, None)
-                .map_err(|e| anyhow::anyhow!("token decode error: {e}"))?;
+            let piece = token_text(&self.model, token, &mut decoder);
 
             if let Some(pos) = piece.find(STOP_TOKEN) {
                 let before = &piece[..pos];
@@ -225,10 +239,7 @@ impl LlamaCppBackbone {
             .new_context(&self._backend, ctx_params)
             .context("Failed to create llama.cpp context")?;
 
-        let tokens = self
-            .model
-            .str_to_token(prompt, AddBos::Always)
-            .context("Tokenisation failed")?;
+        let tokens = tokens_with_bos(&self.model, prompt);
         if tokens.is_empty() {
             return Ok(());
         }
@@ -249,13 +260,10 @@ impl LlamaCppBackbone {
         loop {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             sampler.accept(token);
-            if self.model.is_eog_token(token) {
+            if self.model.vocab().is_eog(token) {
                 break;
             }
-            let piece = self
-                .model
-                .token_to_piece(token, &mut decoder, true, None)
-                .map_err(|e| anyhow::anyhow!("token decode error: {e}"))?;
+            let piece = token_text(&self.model, token, &mut decoder);
             if let Some(pos) = piece.find(STOP_TOKEN) {
                 let before = &piece[..pos];
                 if !before.is_empty() {

@@ -1,6 +1,6 @@
 # rlx-dinov2
 
-Meta's [**DINOv2**](https://github.com/facebookresearch/dinov2) self-supervised ViT for RLX (with optional register tokens). Runs the ViT-S/B/L encoder to produce patch + CLS tokens, or the linear classifier head when `num_classes > 0`. Weight keys match Meta / candle safetensors, so HF Hub checkpoints (e.g. `lmz/candle-dino-v2`) load with no remapping; a bundled converter handles HuggingFace `transformers` layouts.
+Meta's [**DINOv2**](https://github.com/facebookresearch/dinov2) self-supervised ViT for RLX (with optional register tokens). Runs the ViT-S/B/L encoder to produce patch + CLS tokens, or the linear classifier head when `num_classes > 0`. Weight keys match Meta's safetensors layout, so HF Hub checkpoints load with no remapping; a bundled converter handles HuggingFace `transformers` layouts.
 
 ## Quick start
 

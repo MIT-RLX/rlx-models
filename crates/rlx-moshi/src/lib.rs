@@ -52,7 +52,7 @@ pub use download::{
 };
 pub use generate::GenerateState;
 pub use lm::LmModel;
-pub use mlx_weights::mlx_to_candle_key;
+pub use mlx_weights::mlx_to_moshi_key;
 pub use session::{GenerationConfig, GenerationResult, MoshiSession, MoshiSessionParts};
 pub use stream::{
     DuplexStreamEngine, FRAME_SAMPLES, StreamCommand, StreamEvent, StreamHandle, StreamStats,

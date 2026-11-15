@@ -164,10 +164,10 @@ test-gemma-backends *ARGS:
     cargo test -p rlx-models --test gemma_backend_quick_check --test gemma_gpu_backend_parity {{profile}} {{feature_args}} {{ARGS}}
 
 test-gemma-parity *ARGS:
-    cargo test -p rlx-models --test gemma_parity --features parity-candle,gemma --release {{ARGS}}
+    cargo test -p rlx-models --test gemma_parity --features parity-pytorch,gemma --release {{ARGS}}
 
 test-parity *ARGS:
-    cargo test -p rlx-models --features parity-candle {{ARGS}}
+    cargo test -p rlx-models --features parity-pytorch {{ARGS}}
 
 # RLX OCR vs upstream ocrs crate (`parity-ocrs` feature; pipeline needs models).
 test-ocr-parity *ARGS:
@@ -1575,7 +1575,7 @@ test-whisper-jfk *ARGS:
     cargo test -p rlx-models --test whisper_jfk_e2e --release {{ARGS}}
 
 test-whisper-parity *ARGS:
-    cargo test -p rlx-models --test whisper_parity --features parity-candle whisper_synthetic --release {{ARGS}}
+    cargo test -p rlx-models --test whisper_parity --features whisper whisper_synthetic --release {{ARGS}}
 
 test-whisper-backend-parity *ARGS:
     just fetch-whisper fetch-whisper-bench
@@ -2923,7 +2923,7 @@ test-mimi-whisper *ARGS:
     export RLX_MIMI_DIR="${RLX_MIMI_DIR:-.cache/mimi}"
     cargo test -p rlx-mimi --test whisper_roundtrip --release -- --nocapture {{ARGS}}
 
-# Kyutai Moshi speech-to-speech — https://huggingface.co/kyutai/moshiko-candle-bf16
+# Kyutai Moshi speech-to-speech — https://huggingface.co/kyutai/moshiko-mlx-bf16
 fetch-moshi:
     cargo run -p rlx-moshi --features hf-download --release -- --fetch
 
@@ -4530,6 +4530,41 @@ test-embeddinggemma-parity DEVICE="cpu":
     [ -f "$ref" ] || "${REF_PY:-python3}" scripts/embedding_hf_reference.py "$dir" "$ref" --prompt "task: search result | query: "
     RLX_TEST_DEVICE={{DEVICE}} RLX_EMBEDDINGGEMMA_DIR="$dir" RLX_EMBEDDINGGEMMA_REF="$ref" \
         cargo test -p rlx-embeddinggemma --release {{feature_args}} --test hf_parity_live -- --nocapture
+
+# google/embeddinggemma-2 (text + image + audio, 1.5 GB) at the revision the
+# null-space head was fitted against, plus that head
+# (BrunoHays/embeddinggemma-2-nullspace-audio, 2.4 MB).
+fetch-embeddinggemma2:
+    hf download google/embeddinggemma-2 --revision 914f7f89142e33e77833254d9c9b90c3cef7303b --local-dir weights/embed/embeddinggemma-2
+    hf download BrunoHays/embeddinggemma-2-nullspace-audio nullspace_audio_head.safetensors --revision 0222035d2bb6e8baa9949b026a87368c520f8eba --local-dir weights/embed/embeddinggemma-2-nullspace-audio
+
+# Text + audio embeddings and the null-space audio head vs HF + sentence-transformers,
+# stage by stage (features, tower layers 2/6/12, soft tokens, ids, embeddings, pools, z).
+# The reference needs the head author's pins: transformers 5.20.2, torch 2.14.1,
+# sentence-transformers 6.1.0, torchaudio 2.11.0, soundfile (REF_PY=… to pick the venv).
+test-embeddinggemma2-parity DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/embed/embeddinggemma-2"
+    head="$PWD/weights/embed/embeddinggemma-2-nullspace-audio/nullspace_audio_head.safetensors"
+    [ -f "$dir/model.safetensors" ] && [ -f "$head" ] || just fetch-embeddinggemma2
+    ref="$PWD/fixtures/embeddinggemma2"
+    [ -d "$ref/float32" ] || "${REF_PY:-python3}" -I scripts/embeddinggemma2_reference.py \
+        --model-dir "$dir" --head "$head" --out "$ref" --dtype float32 \
+        assets/harness/jfk_16k.wav crates/rlx-f5tts/tests/fixtures/prompt.wav
+    RLX_EMBEDDINGGEMMA2_DEVICE={{DEVICE}} RLX_EMBEDDINGGEMMA2_DIR="$dir" RLX_EMBEDDINGGEMMA2_HEAD="$head" \
+    RLX_EMBEDDINGGEMMA2_REF="$ref/float32" RLX_ENV_WARN_UNKNOWN=0 \
+        cargo test -p rlx-gemma --release {{feature_args}} --test embedding_gemma2_parity -- --nocapture
+
+# Gemma 4 E2B audio tower vs HF, stage by stage, on every Apple backend. Fixtures
+# from scripts/gemma4_audio_reference.py (5 s of JFK; needs transformers >= 5.18).
+test-gemma4-audio-parity:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ckpt=$(ls -d ~/.cache/huggingface/hub/models--google--gemma-4-E2B-it-qat-mobile-transformers/snapshots/*/ 2>/dev/null | head -1)
+    [ -n "$ckpt" ] || { hf download google/gemma-4-E2B-it-qat-mobile-transformers; ckpt=$(ls -d ~/.cache/huggingface/hub/models--google--gemma-4-E2B-it-qat-mobile-transformers/snapshots/*/ | head -1); }
+    [ -f fixtures/gemma4_audio/feats.bin ] || "${REF_PY:-python3}" -I scripts/gemma4_audio_reference.py "$ckpt" assets/harness/jfk_16k.wav fixtures/gemma4_audio
+    cargo test -p rlx-gemma --release --features macos-gpu --test gemma4_audio_parity -- --nocapture --test-threads 1
 
 fetch-jina-v5:
     hf download jinaai/jina-embeddings-v5-text-nano --local-dir weights/embed/jina-embeddings-v5-text-nano

@@ -13,8 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! SAM v1 model configuration. Mirrors Meta's `segment-anything` Python
-//! reference and candle's `segment_anything` module.
+//! SAM v1 model configuration. Mirrors Meta's `segment-anything` Python reference.
 //!
 //! Three ViT image-encoder variants (B/L/H) and one MobileSAM TinyViT
 //! variant. Decoder + prompt-encoder hyperparameters are fixed across
@@ -23,8 +22,7 @@
 use serde::Deserialize;
 
 /// ImageNet mean/std applied to raw 0..255 pixel values *before* the
-/// /255 scaling — SAM uses unnormalized pixel values directly, unlike
-/// most ViTs. Match `sam.rs::preprocess()` in candle exactly.
+/// /255 scaling — SAM uses unnormalized pixel values directly, unlike most ViTs.
 pub const SAM_PIXEL_MEAN: [f32; 3] = [123.675, 116.28, 103.53];
 pub const SAM_PIXEL_STD: [f32; 3] = [58.395, 57.12, 57.375];
 

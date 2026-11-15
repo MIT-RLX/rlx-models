@@ -18,7 +18,7 @@
 //! Two host-side tensor manipulations happen before the IR graph:
 //!   1. **Image preprocess** ([`super::image`]) — resize the long side
 //!      to 1024 (preserve aspect ratio), normalize, zero-pad to
-//!      1024×1024 NCHW. Matches `sam.rs::preprocess()` in candle exactly.
+//!      1024×1024 NCHW. Matches SAM's `preprocess()` exactly.
 //!   2. **Patch embedding** (here) — Conv2d(in=3, out=embed_dim, k=16, s=16)
 //!      with no padding, equivalent to per-patch matmul. We do it on
 //!      the CPU for the same reason as DINOv2: rlx-ir has no f32

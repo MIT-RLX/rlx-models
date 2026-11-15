@@ -23,8 +23,7 @@
 //!   - [`assemble_hidden`] / [`rgb_u8_to_imagenet_nchw`] — host-side
 //!     image → encoder-input plumbing.
 //!
-//! Weight keys match Meta / candle's safetensors so checkpoints from
-//! the HF Hub (e.g. `lmz/candle-dino-v2`) load with no remapping.
+//! Weight keys match Meta's safetensors layout so HF Hub checkpoints load with no remapping.
 
 pub mod builder;
 pub mod cli;

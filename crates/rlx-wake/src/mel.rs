@@ -52,6 +52,7 @@ pub struct MelFrontend {
     window: Vec<f32>,
     mel_fb: Vec<f32>, // [n_mels, n_fft/2+1]
     leftover: Vec<f32>,
+    spectrum: rlx_wakeword_core::PowerSpectrum,
 }
 
 impl MelFrontend {
@@ -67,6 +68,7 @@ impl MelFrontend {
             cfg.n_fft,
         );
         Self {
+            spectrum: rlx_wakeword_core::PowerSpectrum::new(cfg.n_fft),
             cfg,
             window,
             mel_fb,
@@ -98,7 +100,8 @@ impl MelFrontend {
             for i in 0..win {
                 windowed[i] = frame[i] * self.window[i];
             }
-            let power = rfft_power(&windowed);
+            let mut power = vec![0.0f32; n_freqs];
+            self.spectrum.compute(&windowed, &mut power);
             let mut mel = vec![0.0f32; n_mels];
             for m in 0..n_mels {
                 let mut s = 0.0f32;
@@ -185,25 +188,6 @@ fn mel_filterbank(
         }
     }
     fb
-}
-
-/// Real FFT power spectrum via naive DFT (n_fft is small: 400).
-fn rfft_power(x: &[f32]) -> Vec<f32> {
-    let n = x.len();
-    let n_freqs = n / 2 + 1;
-    let mut out = vec![0.0f32; n_freqs];
-    for k in 0..n_freqs {
-        let mut re = 0.0f32;
-        let mut im = 0.0f32;
-        let ang0 = -std::f32::consts::TAU * k as f32 / n as f32;
-        for (t, &xv) in x.iter().enumerate() {
-            let ang = ang0 * t as f32;
-            re += xv * ang.cos();
-            im += xv * ang.sin();
-        }
-        out[k] = re * re + im * im;
-    }
-    out
 }
 
 #[cfg(test)]

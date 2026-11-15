@@ -103,7 +103,7 @@ fn main() -> Result<()> {
     let backend = if session.device() == Device::Cpu {
         "rlx-moshi-cpu-eager"
     } else {
-        "rlx-moshi-gpu-candle"
+        "rlx-moshi-gpu"
     };
     println!("backend={backend}");
     println!("device={:?}", session.device());

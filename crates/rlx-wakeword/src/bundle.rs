@@ -16,6 +16,9 @@ use crate::config::{PhraseConfig, WakewordConfig, hop_ms_to_samples, samples_to_
 pub struct BundleManifest {
     pub hop_ms: u32,
     pub context_ms: f32,
+    /// [`WakewordConfig::min_hops`]; 1 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_hops: Option<usize>,
     pub phrases: Vec<BundlePhrase>,
 }
 
@@ -24,11 +27,24 @@ pub struct BundlePhrase {
     pub id: String,
     pub threshold: f32,
     pub weights: String,
+    /// Which output of `weights` scores this phrase (a multi-phrase network); 0 when absent.
+    /// Phrases naming the same `weights` share one network, run once per hop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<usize>,
+    /// This phrase's window if not the bundle's `context_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_ms: Option<f32>,
+    /// This phrase's confirmation hops if not the bundle's `min_hops`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_hops: Option<usize>,
 }
 
 pub struct WakewordBundle {
     pub config: WakewordConfig,
     pub weights: Vec<(String, WakeCnnWeights)>,
+    /// Per phrase (same order as `weights`): its weights file and output index, which say
+    /// which phrases share a network.
+    pub sources: Vec<(String, usize)>,
 }
 
 impl WakewordBundle {
@@ -39,28 +55,55 @@ impl WakewordBundle {
         let man: BundleManifest = serde_json::from_str(&text)?;
         let mut weights = Vec::new();
         let mut phrases = Vec::new();
+        let mut sources = Vec::new();
+        let mut loaded: std::collections::HashMap<String, WakeCnnWeights> = std::collections::HashMap::new();
         for p in &man.phrases {
-            let path = dir.join(&p.weights);
-            let host = HostWeights::load(&path)
-                .with_context(|| format!("load phrase weights {}", path.display()))?;
-            weights.push((p.id.clone(), host_to_core(&host)));
-            phrases.push(PhraseConfig::new(&p.id, p.threshold));
+            let w = match loaded.get(&p.weights) {
+                Some(w) => w.clone(),
+                None => {
+                    let path = dir.join(&p.weights);
+                    let host = HostWeights::load(&path)
+                        .with_context(|| format!("load phrase weights {}", path.display()))?;
+                    let w = host_to_core(&host);
+                    loaded.insert(p.weights.clone(), w.clone());
+                    w
+                }
+            };
+            weights.push((p.id.clone(), w));
+            sources.push((p.weights.clone(), p.output.unwrap_or(0)));
+            let mut pc = PhraseConfig::new(&p.id, p.threshold);
+            pc.context_ms = p.context_ms;
+            pc.min_hops = p.min_hops;
+            phrases.push(pc);
         }
         let config = WakewordConfig {
             hop_samples: hop_ms_to_samples(man.hop_ms),
             context_ms: man.context_ms,
+            min_hops: man.min_hops.unwrap_or(1).max(1),
             phrases,
             ..WakewordConfig::default()
         };
-        Ok(Self { config, weights })
+        Ok(Self { config, weights, sources })
+    }
+
+    /// Networks with the phrases they score, `sources` grouped by weights file.
+    fn nets(&self) -> Vec<(WakeCnnWeights, Vec<(String, usize)>)> {
+        let mut nets: Vec<(String, WakeCnnWeights, Vec<(String, usize)>)> = Vec::new();
+        for ((id, w), (file, output)) in self.weights.iter().zip(&self.sources) {
+            match nets.iter_mut().find(|n| &n.0 == file) {
+                Some(n) => n.2.push((id.clone(), *output)),
+                None => nets.push((file.clone(), w.clone(), vec![(id.clone(), *output)])),
+            }
+        }
+        nets.into_iter().map(|(_, w, p)| (w, p)).collect()
     }
 
     pub fn into_session(self) -> Result<crate::session::WakewordSession> {
-        crate::session::WakewordSession::new(self.config, self.weights)
+        crate::session::WakewordSession::new_shared(self.config.clone(), self.nets())
     }
 
     pub fn open_session(&self) -> Result<crate::session::WakewordSession> {
-        crate::session::WakewordSession::new(self.config.clone(), self.weights.clone())
+        crate::session::WakewordSession::new_shared(self.config.clone(), self.nets())
     }
 }
 
@@ -74,6 +117,7 @@ pub fn save_bundle(
     let mut man = BundleManifest {
         hop_ms: samples_to_hop_ms(hop_samples),
         context_ms,
+        min_hops: None,
         phrases: Vec::new(),
     };
     for (id, thr, w) in phrases {
@@ -84,6 +128,9 @@ pub fn save_bundle(
             id: id.clone(),
             threshold: *thr,
             weights: fname,
+            output: None,
+            context_ms: None,
+            min_hops: None,
         });
     }
     let man_path = dir.join("manifest.json");
@@ -174,7 +221,8 @@ pub fn stub_bundle_n(
         speaker_id: false,
         ..WakewordConfig::default()
     };
-    WakewordBundle { config, weights }
+    let sources = weights.iter().map(|(id, _)| (format!("phrase_{id}.safetensors"), 0)).collect();
+    WakewordBundle { config, weights, sources }
 }
 
 pub fn default_stub_path() -> PathBuf {

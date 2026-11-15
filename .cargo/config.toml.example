@@ -41,6 +41,7 @@ rlx-mcu = { path = "../rlx/crates/backends/rlx-mcu" }
 rlx-text = { path = "../rlx/crates/io/rlx-text" }
 rlx-program = { path = "../rlx/crates/io/rlx-program" }
 rlx-onnx-import = { path = "../rlx/crates/io/rlx-onnx-import" }
+rlx-onnx-proto = { path = "../rlx/crates/io/rlx-onnx-proto" }
 rlx-tensor = { path = "../rlx/crates/core/rlx-tensor" }
 rlx-search = { path = "../rlx/crates/numerics/rlx-search" }
 rlx-rng = { path = "../rlx/crates/numerics/rlx-rng" }

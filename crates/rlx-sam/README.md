@@ -1,6 +1,6 @@
 # rlx-sam
 
-Meta's [**Segment Anything (SAM v1)**](https://github.com/facebookresearch/segment-anything) for RLX. Loads the official `sam_vit_{b,l,h}` safetensors (candle / Meta key layout, no remapping), builds an RLX IR graph for the ViT image encoder + neck, then runs the prompt encoder, two-way transformer, and mask decoder to turn point/box prompts into masks.
+Meta's [**Segment Anything (SAM v1)**](https://github.com/facebookresearch/segment-anything) for RLX. Loads the official `sam_vit_{b,l,h}` safetensors (Meta key layout, no remapping), builds an RLX IR graph for the ViT image encoder + neck, then runs the prompt encoder, two-way transformer, and mask decoder to turn point/box prompts into masks.
 
 ## Quick start
 
@@ -60,4 +60,4 @@ Key exports (see `src/lib.rs`): [`Sam`] / [`MaskPrediction`], the graph builder 
 cargo test -p rlx-sam                       # synthetic-weight encoder graph build + preprocess shapes
 ```
 
-Real-weight numerical parity vs candle's `ImageEncoderViT::forward()` lives in `tests/sam_parity.rs` (max |Δ| ≈ 7e-6 on the 1×256×64×64 image embeddings for ViT-B at 1024×1024); the `RLX_SAM_DEBUG_*` env vars there bisect the encoder.
+Real-weight numerical parity vs Meta's `ImageEncoderViT::forward()` lives in `tests/sam_parity.rs` (max |Δ| ≈ 7e-6 on the 1×256×64×64 image embeddings for ViT-B at 1024×1024); the `RLX_SAM_DEBUG_*` env vars there bisect the encoder.

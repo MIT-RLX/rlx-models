@@ -16,8 +16,8 @@
 //! SAM 2 image-encoder + decoder parity test against the official
 //! `facebookresearch/sam2` PyTorch package.
 //!
-//! Unlike SAM v1, there is no Rust-side reference (candle has no SAM 2
-//! implementation). The reference path runs as a subprocess invocation
+//! Unlike SAM v1, there is no Rust-side parity reference. The reference
+//! path runs as a subprocess invocation
 //! of `tests/sam2_parity_helpers/dump_reference.py`, which dumps every
 //! intermediate to a temp directory as raw f32 LE blobs. The Rust test
 //! then loads them and compares against the rlx-models output

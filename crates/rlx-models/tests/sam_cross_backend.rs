@@ -25,8 +25,6 @@
 //!   - relative L2         (‖a-b‖₂ / ‖a‖₂)
 //!   - binary mask agreement %
 
-#![cfg(feature = "parity-candle")]
-
 mod compile_support;
 
 use anyhow::Result;

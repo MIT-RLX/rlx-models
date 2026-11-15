@@ -78,8 +78,8 @@ decode, and whether full BF16/F32 3B is allowed (wgpu/Vulkan → synth/GGUF only
 just features=all-backends bench-nanbeige-backends
 just features=macos-gpu bench-nanbeige-backends
 
-# Real 3B F32 (mmap-on-take; ~1× device-resident params + KV). MLX sets
-# RLX_MLX_COMPILE_MAX_NODES=4096 so looped graphs stay Compiled (not Lazy).
+# Real 3B F32 (mmap-on-take; ~1× device-resident params + KV). The looped
+# graphs (~2k nodes) are under MLX's compile limit, so they run Compiled.
 just fetch-nanbeige
 just features=macos-gpu bench-nanbeige-backends -- \
   --weights /tmp/rlx-weights/Nanbeige4.2-3B --device mlx
@@ -87,7 +87,7 @@ just features=macos-gpu bench-nanbeige-backends -- \
 
 Overrides: `RLX_NANBEIGE_MAX_SEQ`, `RLX_NANBEIGE_PROMPT_LEN`,
 `RLX_NANBEIGE_DECODE_TOKENS`, `RLX_NANBEIGE_MEM_BUDGET_BYTES`,
-`RLX_MLX_COMPILE_MAX_NODES` (default 4096 via `prepare` when unset),
+`RLX_MLX_COMPILE_MAX_NODES` (MLX's default, 5000),
 `RLX_SOFT_MEMORY_FRACTION` (default 0.95 on Metal/MLX via `prepare`).
 
 Observed on M4 Pro (synth looped graphs): **MLX** wins accelerator prefill/decode;

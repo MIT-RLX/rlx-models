@@ -15,6 +15,12 @@ pub const DEFAULT_VAD_THRESHOLD: f32 = 0.35;
 pub struct PhraseConfig {
     pub id: String,
     pub threshold: f32,
+    /// This phrase's window, when it differs from [`WakewordConfig::context_ms`] (a longer
+    /// phrase, e.g. a question, needs more than a short call).
+    pub context_ms: Option<f32>,
+    /// This phrase's confirmation hops, when they differ from [`WakewordConfig::min_hops`] (a
+    /// longer phrase holds its score over more hops, and can ask for more).
+    pub min_hops: Option<usize>,
 }
 
 impl PhraseConfig {
@@ -22,6 +28,8 @@ impl PhraseConfig {
         Self {
             id: id.into(),
             threshold,
+            context_ms: None,
+            min_hops: None,
         }
     }
 }
@@ -33,6 +41,9 @@ pub struct WakewordConfig {
     pub vad_gate: bool,
     pub vad_threshold: f32,
     pub cooldown_ms: f32,
+    /// A phrase fires only after this many hops in a row at or above its threshold: a real
+    /// phrase holds its score while the window slides over it, a noise burst rarely does.
+    pub min_hops: usize,
     pub phrases: Vec<PhraseConfig>,
     /// When `speaker-id` feature is on and a gate is attached, filter candidates.
     pub speaker_id: bool,
@@ -46,6 +57,7 @@ impl Default for WakewordConfig {
             vad_gate: cfg!(feature = "earshot"),
             vad_threshold: DEFAULT_VAD_THRESHOLD,
             cooldown_ms: DEFAULT_COOLDOWN_MS,
+            min_hops: 1,
             phrases: Vec::new(),
             speaker_id: cfg!(feature = "speaker-id"),
         }
@@ -59,9 +71,27 @@ impl WakewordConfig {
     }
 
     pub fn context_frames(&self, hop_length: usize) -> usize {
-        let samples = (self.context_ms / 1000.0 * SAMPLE_RATE_16K as f32) as usize;
-        (samples / hop_length.max(1)).max(8)
+        frames_for(self.context_ms, hop_length)
     }
+
+    /// The window of phrase `id` (its own, else the session's), ms.
+    pub fn phrase_context_ms(&self, id: &str) -> f32 {
+        self.phrases.iter().find(|p| p.id == id).and_then(|p| p.context_ms).unwrap_or(self.context_ms)
+    }
+
+    /// The longest window any phrase uses, ms: how much audio a caller must keep to fill them.
+    pub fn max_context_ms(&self) -> f32 {
+        self.phrases.iter().filter_map(|p| p.context_ms).fold(self.context_ms, f32::max)
+    }
+}
+
+/// Mel frames in `ms` of audio.
+pub fn frames_for(ms: f32, hop_length: usize) -> usize {
+    let samples = (ms / 1000.0 * SAMPLE_RATE_16K as f32) as usize;
+    (samples / hop_length.max(1)).max(8)
+}
+
+impl WakewordConfig {
 }
 
 pub fn hop_ms_to_samples(hop_ms: u32) -> usize {

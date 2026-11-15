@@ -12,6 +12,11 @@ repository.workspace = true
 build = "build.rs"
 exclude = ["models/"]
 
+
+# `fast` and `precise` exclude each other (build.rs); see
+# scripts/check-feature-states.py.
+[package.metadata.feature-states]
+exclusive = [["fast", "precise"]]
 [dependencies]
 rlx-ir = { workspace = true }
 anyhow = { workspace = true }

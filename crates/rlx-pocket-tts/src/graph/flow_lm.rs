@@ -89,11 +89,31 @@ pub fn past_v_name(layer: usize) -> String {
 }
 
 /// Build the step graph for KV capacity `cap` and `sampler_steps` head steps.
+// The engine builds through `build_step_with`; the `.rlxp` export uses this.
+#[cfg_attr(not(feature = "export"), allow(dead_code))]
 pub(crate) fn build_step(
     ck: &Checkpoint,
     spec: &ModelSpec,
     cap: usize,
     sampler_steps: usize,
+) -> Result<Builder> {
+    build_step_with(ck, spec, cap, sampler_steps, false)
+}
+
+/// The input that says which cache row the step writes (`resident`).
+pub const KV_WRITE: &str = "kv_write";
+
+/// [`build_step`]; `resident`: the cache stays on the device — the graph
+/// also takes [`KV_WRITE`] (`[1, cap, 1, 1]`, one at the row being written)
+/// and outputs each layer's whole cache with the new K/V written there
+/// (after the per-layer new rows: K then V, layer by layer), so a GPU can
+/// feed it back without a round trip through the host.
+pub(crate) fn build_step_with(
+    ck: &Checkpoint,
+    spec: &ModelSpec,
+    cap: usize,
+    sampler_steps: usize,
+    resident: bool,
 ) -> Result<Builder> {
     let dims = FlowLmDims::new(spec);
     let t = &spec.flow_lm.transformer;
@@ -104,14 +124,28 @@ pub(crate) fn build_step(
     let half = hd / 2;
     let ldim = dims.latent_dim;
 
-    let mut b = Builder::new(&format!("pocket_flow_lm_step_c{cap}"));
+    let mut b = Builder::new(&format!(
+        "pocket_flow_lm_step_c{cap}{}",
+        if resident { "_resident" } else { "" }
+    ));
     let mut x = b.input("x", &[1, 1, d]);
     let noise = b.input("noise", &[1, ldim]);
     let mask = b.input("mask", &[1, cap + 1]);
     let cos = b.input("rope_cos", &[1, 1, 1, half]);
     let sin = b.input("rope_sin", &[1, 1, 1, half]);
+    // Resident: where the new row goes, and everywhere else kept.
+    let write = resident.then(|| {
+        let w = b.input(KV_WRITE, &[1, cap, 1, 1]);
+        let one = b.scalar(1.0);
+        let keep = b.g.sub(one, w);
+        (
+            b.expand(w, &[1, cap, nkv, hd]),
+            b.expand(keep, &[1, cap, nkv, hd]),
+        )
+    });
 
     let mut kv_out = Vec::with_capacity(2 * dims.num_layers);
+    let mut cache_out = Vec::new();
     for l in 0..dims.num_layers {
         let pre = format!("flow_lm.transformer.layers.{l}");
         let in_proj = get(ck, &format!("{pre}.self_attn.in_proj.weight"))?;
@@ -151,6 +185,15 @@ pub(crate) fn build_step(
 
         let past_k = b.input(&past_k_name(l), &[1, cap, nkv, hd]);
         let past_v = b.input(&past_v_name(l), &[1, cap, nkv, hd]);
+        if let Some((w, keep)) = write {
+            for (past, row) in [(past_k, k), (past_v, v)] {
+                let row = b.expand(row, &[1, cap, nkv, hd]);
+                let kept = b.g.mul(past, keep);
+                let new = b.g.mul(row, w);
+                let cache = b.g.add(kept, new);
+                cache_out.push(b.own(cache));
+            }
+        }
         let mut k_full = b.g.concat_(vec![past_k, k], 1);
         let mut v_full = b.g.concat_(vec![past_v, v], 1);
         if nkv != nh {
@@ -200,6 +243,7 @@ pub(crate) fn build_step(
     let hidden_out = b.own(c);
     let mut outs = vec![latent, eos, hidden_out];
     outs.extend(kv_out);
+    outs.extend(cache_out);
     b.g.set_outputs(outs);
     Ok(b)
 }

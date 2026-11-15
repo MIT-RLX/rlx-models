@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "hf-download")]
 use anyhow::Context;
 
-/// Default Moshiko bf16 HuggingFace repo (legacy constant).
+/// Default Moshiko bf16 HuggingFace repo.
 pub const HF_MOSHI_MOSHIKO_REPO: &str = "kyutai/moshiko-candle-bf16";
 
 /// Default `.cache/…` path for a variant + checkpoint pair.

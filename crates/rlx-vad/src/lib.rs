@@ -18,6 +18,7 @@
 //! Enable backends via features: `earshot`, `silero` (both on by default).
 
 pub mod audio;
+#[cfg(feature = "cli")]
 pub mod device;
 #[cfg(feature = "export")]
 pub mod export;
@@ -36,8 +37,10 @@ pub mod silero;
 pub use audio::{
     SAMPLE_RATE_16K, SpeechSegment, load_wav_mono_f32, parse_wav_mono_f32, resample_linear,
 };
+#[cfg(feature = "cli")]
 pub mod cli;
 
+#[cfg(feature = "cli")]
 pub use device::{
     available_device_labels, available_devices, bench_device_label, ensure_backend_ready,
     parse_device_list, resolve_device, streaming_execution_device,

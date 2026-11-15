@@ -52,12 +52,14 @@ pub fn geometry_cache_key(geometry_epoch: u64, batch: usize) -> u64 {
 
 /// Prefill graphs also depend on encoder sequence length (cross KV width).
 pub fn prefill_cache_key(geometry_epoch: u64, batch: usize, dec_seq: usize) -> u64 {
-    geometry_epoch ^ ((batch as u64) << 24) ^ (dec_seq as u64)
+    // Each part in its own bits: the geometry is a frame count now, which
+    // xor-ed with a decoder length could name another geometry's graph.
+    (geometry_epoch << 40) ^ ((batch as u64) << 24) ^ (dec_seq as u64)
 }
 
 /// Align-hidden graphs keyed by `(geometry_epoch, dec_seq, max_layer)`.
 pub fn align_cache_key(geometry_epoch: u64, dec_seq: usize, max_layer: usize) -> u64 {
-    geometry_epoch ^ ((dec_seq as u64) << 20) ^ (max_layer as u64)
+    (geometry_epoch << 40) ^ ((dec_seq as u64) << 20) ^ (max_layer as u64)
 }
 
 /// Power-of-two decode buckets; graphs take runtime `pos_ix` + bucket self-attn mask.
@@ -74,6 +76,27 @@ pub fn decode_bucket_ladder(device: Device, max_past: u64) -> BucketedCompileCac
         }
         start = extent + 1;
         extent = extent.saturating_mul(2).max(start + 1);
+    }
+    BucketedCompileCache::with_policy(device, ranges, None)
+}
+
+/// As [`decode_bucket_ladder`], its first rung `0..=first` (then doubling):
+/// one decode graph for a whole short utterance instead of five or six.
+/// Each compiled graph holds its weights, so fewer graphs is less memory
+/// (a browser's above all) and less compiling; the self-attention runs over
+/// the wider masked window, a small cost. `first` under 5: the usual ladder.
+pub fn decode_bucket_ladder_from(device: Device, max_past: u64, first: u64) -> BucketedCompileCache {
+    if first < 5 {
+        return decode_bucket_ladder(device, max_past);
+    }
+    let max_past = max_past.max(1);
+    let mut ranges: Vec<Range<u64>> = vec![0..(first + 1)];
+    let mut start = first + 1;
+    let mut extent = first.saturating_mul(2);
+    while start <= max_past {
+        ranges.push(start..(extent + 1));
+        start = extent + 1;
+        extent = extent.saturating_mul(2);
     }
     BucketedCompileCache::with_policy(device, ranges, None)
 }
@@ -128,7 +151,8 @@ pub fn whisper_use_gpu_kv(lm_device: Device, decode_device: Device) -> bool {
 /// | DTW align-hidden | Metal |
 pub fn whisper_decoder_device(lm_device: Device) -> Device {
     match lm_device {
-        Device::Metal | Device::Mlx | Device::Vulkan => Device::Cpu,
+        // WebGL2: a token at a time, each read back — the CPU's.
+        Device::Metal | Device::Mlx | Device::Vulkan | Device::OpenGl => Device::Cpu,
         other => other,
     }
 }
@@ -140,6 +164,25 @@ pub fn whisper_encoder_device(lm_device: Device) -> Device {
         Device::Mlx => Device::Cpu,
         other => other,
     }
+}
+
+/// [`metal_compile_guard`], with the runner's parameter-sharing `scope` in
+/// force (`rlx_runtime::with_param_sharing_scope`): the encoder, cross,
+/// prefill and every decode bucket and geometry then hold one copy of each
+/// weight between them (CPU, Metal), not one each — several times the model
+/// otherwise (Whisper tiny: ~1 GB for a 150 MB model).
+pub fn shared_compile_guard<R, F>(scope: &str, device: Device, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    rlx_runtime::with_param_sharing_scope(scope, || metal_compile_guard(device, f))
+}
+
+/// A sharing scope of its own for each runner built: one runner's weights
+/// are not another's (two models, or two loads, in one process).
+pub fn next_share_scope(model: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("whisper:{model}:{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Disable MPSGraph for LM-shaped compiles on Metal (attention reshape coverage).

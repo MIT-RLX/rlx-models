@@ -90,6 +90,36 @@ impl WakeCnnWeights {
         }
     }
 
+    /// Weights to start training from: He (Kaiming) uniform, `±sqrt(6 / fan_in)` per layer,
+    /// zero biases. [`Self::stub`]'s ±0.01 everywhere shrinks the signal ~100x per layer, so
+    /// after five layers the output no longer depends on the input and SGD only learns the
+    /// final bias: every trained phrase answered one class (or 0.5) to everything.
+    pub fn he_init(cfg: WakeCnnConfig, seed: u64) -> Self {
+        let mut rng = seed ^ 0x9E37_79B9_7F4A_7C15;
+        let mut unit = move || {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (rng >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+        };
+        let mut fill = |n: usize, fan_in: usize| -> Vec<f32> {
+            let a = sqrt(6.0 / fan_in.max(1) as f32);
+            (0..n).map(|_| unit() * a).collect()
+        };
+        let k = cfg.k;
+        Self {
+            conv1_w: fill(cfg.c1 * cfg.n_mels * k, cfg.n_mels * k),
+            conv1_b: vec![0.0; cfg.c1],
+            conv2_w: fill(cfg.c2 * cfg.c1 * k, cfg.c1 * k),
+            conv2_b: vec![0.0; cfg.c2],
+            conv3_w: fill(cfg.c3 * cfg.c2 * k, cfg.c2 * k),
+            conv3_b: vec![0.0; cfg.c3],
+            fc1_w: fill(cfg.hidden * cfg.c3, cfg.c3),
+            fc1_b: vec![0.0; cfg.hidden],
+            fc2_w: fill(cfg.hidden, cfg.hidden),
+            fc2_b: vec![0.0],
+            cfg,
+        }
+    }
+
     /// Build from the same field layout as `rlx_wake::WakeCnnWeights`.
     pub fn from_parts(
         cfg: WakeCnnConfig,
@@ -145,6 +175,11 @@ impl WakeCnnWeights {
         stats
     }
 
+    /// Outputs (phrases) the network scores: the last layer's bias length.
+    pub fn n_out(&self) -> usize {
+        self.fc2_b.len().max(1)
+    }
+
     pub fn fc_ternary(&self) -> bool {
         is_ternary_f32(&self.fc1_w) && is_ternary_f32(&self.fc2_w)
     }
@@ -156,23 +191,67 @@ impl WakeCnnWeights {
     }
 }
 
+/// The CNN over a sliding window of mel frames, scored as frames arrive.
+///
+/// Streaming: each layer's outputs for the last scored window are kept. When the window
+/// slides by a multiple of the network's total stride (4 frames: one 40 ms hop), only the
+/// positions that changed are recomputed in each layer: a few at the right (the new frames,
+/// and those computed with zero padding past the old window's end) and at the left (those
+/// reading the zero padding before the window); the rest are the previous values, shifted.
+/// The arithmetic and its order are the full forward's, so scores are bit-identical to
+/// recomputing the whole window, at a fraction of the cost (a few frames per layer instead
+/// of the window). Anything else (a window not yet full, frames slid in without scoring,
+/// an odd shift, ternary weights) recomputes the whole window.
 pub struct WakeCnn {
     weights: WakeCnnWeights,
     mel_buf: Vec<f32>,
     window_frames: usize,
+    /// Channel-major input window and each layer's (post-ReLU) outputs.
+    x: Vec<f32>,
+    y1: Vec<f32>,
+    y2: Vec<f32>,
+    y3: Vec<f32>,
+    /// The layer state is the last scored window's, `pending` frames ago.
+    stream: bool,
+    pending: usize,
+    /// The last scores, one per output.
+    probs: Vec<f32>,
+    /// Scratch for the head.
+    pooled: Vec<f32>,
+    hidden: Vec<f32>,
+    patch: Vec<f32>,
+}
+
+/// One time-conv layer: kernel, stride, padding.
+const STRIDES: [usize; 3] = [1, 2, 2];
+
+fn conv_out_len(t_in: usize, k: usize, stride: usize, pad: usize) -> usize {
+    if t_in + 2 * pad >= k { (t_in + 2 * pad - k) / stride + 1 } else { 0 }
 }
 
 impl WakeCnn {
     pub fn new(weights: WakeCnnWeights) -> Self {
+        let n_out = weights.n_out();
         Self {
             window_frames: 40,
             weights,
             mel_buf: Vec::new(),
+            x: Vec::new(),
+            y1: Vec::new(),
+            y2: Vec::new(),
+            y3: Vec::new(),
+            stream: false,
+            pending: 0,
+            probs: vec![0.0; n_out],
+            pooled: Vec::new(),
+            hidden: Vec::new(),
+            patch: Vec::new(),
         }
     }
 
     pub fn with_window_frames(mut self, frames: usize) -> Self {
         self.window_frames = frames.max(8);
+        self.stream = false;
         self
     }
 
@@ -180,178 +259,271 @@ impl WakeCnn {
         &self.weights
     }
 
-    pub fn reset(&mut self) {
-        self.mel_buf.clear();
+    /// How many scores each window gives (one per phrase the network was trained for).
+    pub fn n_out(&self) -> usize {
+        self.weights.n_out()
     }
 
-    pub fn push_mel_frames(&mut self, frames: &[f32]) -> f32 {
+    pub fn reset(&mut self) {
+        self.mel_buf.clear();
+        self.stream = false;
+        self.pending = 0;
+    }
+
+    fn append(&mut self, frames: &[f32]) {
         let n_mels = self.weights.cfg.n_mels;
-        if frames.is_empty() || !frames.len().is_multiple_of(n_mels) {
-            return 0.0;
-        }
         self.mel_buf.extend_from_slice(frames);
+        // Compacted at twice the window, so sliding by a hop costs no shifting.
         let max_len = self.window_frames * n_mels;
-        if self.mel_buf.len() > max_len {
+        if self.mel_buf.len() >= 2 * max_len {
             let drop = self.mel_buf.len() - max_len;
             self.mel_buf.drain(..drop);
         }
-        if self.mel_buf.len() < n_mels * 8 {
-            return 0.0;
-        }
-        self.forward_buffer()
     }
 
-    fn forward_buffer(&self) -> f32 {
-        let cfg = &self.weights.cfg;
-        let n_mels = cfg.n_mels;
-        let t = self.mel_buf.len() / n_mels;
-        let mut x = vec![0.0f32; n_mels * t];
-        for ti in 0..t {
-            for m in 0..n_mels {
-                x[m * t + ti] = self.mel_buf[ti * n_mels + m];
+    /// Slide `frames` into the window without scoring, so that a gated stretch (the VAD
+    /// not yet sure it hears speech) still leaves the window continuous: the phrase onset
+    /// is there when scoring resumes.
+    pub fn append_mel_frames(&mut self, frames: &[f32]) {
+        let n_mels = self.weights.cfg.n_mels;
+        if frames.is_empty() || !frames.len().is_multiple_of(n_mels) {
+            return;
+        }
+        self.append(frames);
+        self.stream = false;
+    }
+
+    /// The scored window: the last `window_frames` frames.
+    fn window(&self) -> &[f32] {
+        let max_len = self.window_frames * self.weights.cfg.n_mels;
+        &self.mel_buf[self.mel_buf.len().saturating_sub(max_len)..]
+    }
+
+    /// Slide `frames` in and score: the first output's probability (0 until the window is
+    /// full). See [`Self::push_mel_frames_all`].
+    pub fn push_mel_frames(&mut self, frames: &[f32]) -> f32 {
+        self.push_mel_frames_all(frames).map_or(0.0, |p| p[0])
+    }
+
+    /// Slide `frames` (frame-major, `n_mels` each) in and score: every output's probability,
+    /// or `None` until the window is full (the model is trained on `window_frames`-long
+    /// windows, and a shorter one, the first `context_ms` of a stream, scores out of
+    /// distribution).
+    pub fn push_mel_frames_all(&mut self, frames: &[f32]) -> Option<&[f32]> {
+        let n_mels = self.weights.cfg.n_mels;
+        if frames.is_empty() || !frames.len().is_multiple_of(n_mels) {
+            return None;
+        }
+        self.append(frames);
+        self.pending += frames.len() / n_mels;
+        if self.window().len() < n_mels * self.window_frames {
+            self.stream = false;
+            return None;
+        }
+        let ternary = self.weights.conv_ternary();
+        if !(self.stream && !ternary && self.forward_stream(self.pending)) {
+            self.forward_full();
+        }
+        self.stream = !ternary;
+        self.pending = 0;
+        self.head();
+        Some(&self.probs)
+    }
+
+    /// Layer `l`'s (input channels, output channels, kernel weights, bias).
+    fn layer(&self, l: usize) -> (usize, usize, &[f32], &[f32]) {
+        let c = &self.weights.cfg;
+        let w = &self.weights;
+        match l {
+            0 => (c.n_mels, c.c1, &w.conv1_w, &w.conv1_b),
+            1 => (c.c1, c.c2, &w.conv2_w, &w.conv2_b),
+            _ => (c.c2, c.c3, &w.conv3_w, &w.conv3_b),
+        }
+    }
+
+    /// Output lengths of the three layers for the current window.
+    fn lens(&self) -> [usize; 4] {
+        let (k, pad) = (self.weights.cfg.k, self.weights.cfg.k / 2);
+        let t0 = self.window_frames;
+        let t1 = conv_out_len(t0, k, STRIDES[0], pad);
+        let t2 = conv_out_len(t1, k, STRIDES[1], pad);
+        let t3 = conv_out_len(t2, k, STRIDES[2], pad);
+        [t0, t1, t2, t3]
+    }
+
+    /// Recompute layer `l`'s outputs `[lo, hi)` from the layer below, then ReLU them.
+    fn conv_part(&mut self, l: usize, lo: usize, hi: usize) {
+        let (k, pad) = (self.weights.cfg.k, self.weights.cfg.k / 2);
+        let t = self.lens();
+        let (in_c, out_c, _, _) = self.layer(l);
+        let mut out = core::mem::take(match l {
+            0 => &mut self.y1,
+            1 => &mut self.y2,
+            _ => &mut self.y3,
+        });
+        let mut patch = core::mem::take(&mut self.patch);
+        {
+            let input: &[f32] = match l {
+                0 => &self.x,
+                1 => &self.y1,
+                _ => &self.y2,
+            };
+            let (_, _, w, b) = self.layer(l);
+            crate::ops::conv1d_positions(input, in_c, t[l], w, out_c, k, STRIDES[l], pad, b, &mut out, t[l + 1], lo, hi, &mut patch);
+        }
+        self.patch = patch;
+        for c in 0..out_c {
+            for v in &mut out[c * t[l + 1] + lo..c * t[l + 1] + hi.min(t[l + 1])] {
+                *v = relu(*v);
             }
         }
-        let conv_t = self.weights.conv_ternary();
-        let fc_t = self.weights.fc_ternary();
-
-        let mut y1 = vec![0.0f32; cfg.c1 * t];
-        let t1 = if conv_t && is_ternary_f32(&self.weights.conv1_w) {
-            conv1d_ternary(
-                &x,
-                n_mels,
-                t,
-                &self.weights.conv1_w,
-                cfg.c1,
-                cfg.k,
-                1,
-                cfg.k / 2,
-                Some(&self.weights.conv1_b),
-                &mut y1,
-            )
-        } else {
-            conv1d_nchw(
-                &x,
-                n_mels,
-                t,
-                &self.weights.conv1_w,
-                cfg.c1,
-                cfg.k,
-                1,
-                cfg.k / 2,
-                Some(&self.weights.conv1_b),
-                &mut y1,
-            )
-        };
-        for v in &mut y1[..cfg.c1 * t1] {
-            *v = relu(*v);
+        match l {
+            0 => self.y1 = out,
+            1 => self.y2 = out,
+            _ => self.y3 = out,
         }
-        let mut y2 = vec![0.0f32; cfg.c2 * t1];
-        let t2 = if conv_t && is_ternary_f32(&self.weights.conv2_w) {
-            conv1d_ternary(
-                &y1[..cfg.c1 * t1],
-                cfg.c1,
-                t1,
-                &self.weights.conv2_w,
-                cfg.c2,
-                cfg.k,
-                2,
-                cfg.k / 2,
-                Some(&self.weights.conv2_b),
-                &mut y2,
-            )
-        } else {
-            conv1d_nchw(
-                &y1[..cfg.c1 * t1],
-                cfg.c1,
-                t1,
-                &self.weights.conv2_w,
-                cfg.c2,
-                cfg.k,
-                2,
-                cfg.k / 2,
-                Some(&self.weights.conv2_b),
-                &mut y2,
-            )
-        };
-        for v in &mut y2[..cfg.c2 * t2] {
-            *v = relu(*v);
-        }
-        let mut y3 = vec![0.0f32; cfg.c3 * t2];
-        let t3 = if conv_t && is_ternary_f32(&self.weights.conv3_w) {
-            conv1d_ternary(
-                &y2[..cfg.c2 * t2],
-                cfg.c2,
-                t2,
-                &self.weights.conv3_w,
-                cfg.c3,
-                cfg.k,
-                2,
-                cfg.k / 2,
-                Some(&self.weights.conv3_b),
-                &mut y3,
-            )
-        } else {
-            conv1d_nchw(
-                &y2[..cfg.c2 * t2],
-                cfg.c2,
-                t2,
-                &self.weights.conv3_w,
-                cfg.c3,
-                cfg.k,
-                2,
-                cfg.k / 2,
-                Some(&self.weights.conv3_b),
-                &mut y3,
-            )
-        };
-        for v in &mut y3[..cfg.c3 * t3] {
-            *v = relu(*v);
-        }
-        let mut pooled = vec![0.0f32; cfg.c3];
-        global_mean_pool_chw(&y3[..cfg.c3 * t3], cfg.c3, t3, &mut pooled);
-        let mut h = vec![0.0f32; cfg.hidden];
-        if fc_t {
-            gemv_bias_ternary(
-                cfg.hidden,
-                cfg.c3,
-                &self.weights.fc1_w,
-                &pooled,
-                &self.weights.fc1_b,
-                &mut h,
-            );
-        } else {
-            gemv_bias(
-                cfg.hidden,
-                cfg.c3,
-                &self.weights.fc1_w,
-                &pooled,
-                &self.weights.fc1_b,
-                &mut h,
-            );
-        }
-        for v in &mut h {
-            *v = relu(*v);
-        }
-        let mut logit = [0.0f32];
-        if fc_t {
-            gemv_bias_ternary(
-                1,
-                cfg.hidden,
-                &self.weights.fc2_w,
-                &h,
-                &self.weights.fc2_b,
-                &mut logit,
-            );
-        } else {
-            gemv_bias(
-                1,
-                cfg.hidden,
-                &self.weights.fc2_w,
-                &h,
-                &self.weights.fc2_b,
-                &mut logit,
-            );
-        }
-        sigmoid(logit[0])
     }
+
+    /// The input window, channel-major, into `self.x` (columns `from..` only).
+    fn fill_x(&mut self, from: usize) {
+        let n_mels = self.weights.cfg.n_mels;
+        let t = self.window_frames;
+        let start = self.mel_buf.len() - t * n_mels;
+        for ti in from..t {
+            for m in 0..n_mels {
+                self.x[m * t + ti] = self.mel_buf[start + ti * n_mels + m];
+            }
+        }
+    }
+
+    fn forward_full(&mut self) {
+        let cfg = self.weights.cfg.clone();
+        let t = self.lens();
+        self.x.resize(cfg.n_mels * t[0], 0.0);
+        self.fill_x(0);
+        self.y1.resize(cfg.c1 * t[1], 0.0);
+        self.y2.resize(cfg.c2 * t[2], 0.0);
+        self.y3.resize(cfg.c3 * t[3], 0.0);
+        if !self.weights.conv_ternary() {
+            for l in 0..3 {
+                self.conv_part(l, 0, t[l + 1]);
+            }
+            return;
+        }
+        // Ternary weights: the fused add/sub kernels, whole window.
+        let (k, pad) = (cfg.k, cfg.k / 2);
+        for l in 0..3 {
+            let (in_c, out_c, w, b) = self.layer(l);
+            let (w, b) = (w.to_vec(), b.to_vec());
+            let input = match l {
+                0 => self.x.clone(),
+                1 => self.y1.clone(),
+                _ => self.y2.clone(),
+            };
+            let out = match l {
+                0 => &mut self.y1,
+                1 => &mut self.y2,
+                _ => &mut self.y3,
+            };
+            if is_ternary_f32(&w) {
+                conv1d_ternary(&input, in_c, t[l], &w, out_c, k, STRIDES[l], pad, Some(&b), out);
+            } else {
+                conv1d_nchw(&input, in_c, t[l], &w, out_c, k, STRIDES[l], pad, Some(&b), out);
+            }
+            for v in out.iter_mut() {
+                *v = relu(*v);
+            }
+        }
+    }
+
+    /// Slide the layer state by `n` input frames and recompute what changed. `false` (state
+    /// untouched) if `n` does not slide every layer by whole positions or is a window or more.
+    fn forward_stream(&mut self, n: usize) -> bool {
+        let cfg = self.weights.cfg.clone();
+        let t = self.lens();
+        let total: usize = STRIDES.iter().product();
+        if n == 0 || !n.is_multiple_of(total) || n >= t[0] || self.x.len() != cfg.n_mels * t[0] {
+            return false;
+        }
+        let (k, pad) = (cfg.k, cfg.k / 2);
+        // Input: shift, then the new frames.
+        let t0 = t[0];
+        for m in 0..cfg.n_mels {
+            self.x.copy_within(m * t0 + n..(m + 1) * t0, m * t0);
+        }
+        self.fill_x(t0 - n);
+        // Changed positions of the layer below: `[0, a)` and `[b, t)`; `shift` is its slide.
+        let (mut a, mut b, mut shift) = (0usize, t0 - n, n);
+        for l in 0..3 {
+            let s = STRIDES[l];
+            let t_out = t[l + 1];
+            let shift_out = shift / s;
+            // Left: any output reading a changed input or the zero padding before the window.
+            let mut a_out = if a == 0 { 0 } else { (a - 1 + pad) / s + 1 };
+            if pad > 0 {
+                a_out = a_out.max(1);
+            }
+            let a_out = a_out.min(t_out);
+            // Right: any output reading a changed input (or padding past the window's end).
+            let b_out = if b + pad >= k - 1 { (b + pad - (k - 1)).div_ceil(s) } else { 0 }.min(t_out);
+            let ch = self.layer(l).1;
+            let arr = match l {
+                0 => &mut self.y1,
+                1 => &mut self.y2,
+                _ => &mut self.y3,
+            };
+            for c in 0..ch {
+                arr.copy_within(c * t_out + shift_out..(c + 1) * t_out, c * t_out);
+            }
+            if a_out >= b_out {
+                self.conv_part(l, 0, t_out);
+            } else {
+                self.conv_part(l, 0, a_out);
+                self.conv_part(l, b_out, t_out);
+            }
+            (a, b, shift) = (a_out, b_out, shift_out);
+        }
+        true
+    }
+
+    /// Mean-pool the last layer and run the two dense layers: `self.probs`.
+    fn head(&mut self) {
+        let cfg = self.weights.cfg.clone();
+        let t3 = self.lens()[3];
+        let n_out = self.weights.n_out();
+        self.pooled.resize(cfg.c3, 0.0);
+        global_mean_pool_chw(&self.y3[..cfg.c3 * t3], cfg.c3, t3, &mut self.pooled);
+        self.hidden.resize(cfg.hidden, 0.0);
+        let fc_t = self.weights.fc_ternary();
+        let w = &self.weights;
+        if fc_t {
+            gemv_bias_ternary(cfg.hidden, cfg.c3, &w.fc1_w, &self.pooled, &w.fc1_b, &mut self.hidden);
+        } else {
+            gemv_bias(cfg.hidden, cfg.c3, &w.fc1_w, &self.pooled, &w.fc1_b, &mut self.hidden);
+        }
+        for v in &mut self.hidden {
+            *v = relu(*v);
+        }
+        self.probs.resize(n_out, 0.0);
+        if fc_t {
+            gemv_bias_ternary(n_out, cfg.hidden, &w.fc2_w, &self.hidden, &w.fc2_b, &mut self.probs);
+        } else {
+            gemv_bias(n_out, cfg.hidden, &w.fc2_w, &self.hidden, &w.fc2_b, &mut self.probs);
+        }
+        for p in &mut self.probs {
+            *p = sigmoid(*p);
+        }
+    }
+}
+
+/// `x.sqrt()` without std (this crate is `no_std`): Newton's method, for initialisation scales.
+fn sqrt(x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let mut r = if x > 1.0 { x / 2.0 } else { 1.0 };
+    for _ in 0..30 {
+        r = 0.5 * (r + x / r);
+    }
+    r
 }

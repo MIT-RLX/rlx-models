@@ -10,7 +10,7 @@
 //! [`crate::config::KyutaiTtsConfig`]. The constants in this module document
 //! the expected names — see [`expected_kyutai_tts_keys`].
 //!
-//! This loader is dependency-light: only `safetensors` + `half`, no candle.
+//! This loader is dependency-light: only `safetensors` + `half`.
 
 use anyhow::{Context, Result, anyhow, bail};
 use half::{bf16, f16};

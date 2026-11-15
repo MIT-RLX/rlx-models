@@ -2,7 +2,7 @@
 
 Every model family in this workspace, one crate per architecture. This catalog is generated from each crate's `Cargo.toml` (`description` + backend feature set).
 
-**220 model families** across 17 categories, plus 4 training crates and 1 interpretability crate. Shared infrastructure, servers, and benchmark crates are not listed here.
+**222 model families** across 17 categories, plus 6 training crates and 1 interpretability crate. Shared infrastructure, servers, and benchmark crates are not listed here.
 
 ## Backends
 
@@ -21,12 +21,12 @@ Enable GPU backends at build time with matching features, e.g. `cargo build -p r
 |---|--:|
 | [Language models (text LLMs & reasoning)](#language-models-text-llms--reasoning) | 45 |
 | [Vision-language & multimodal (VLM / omni)](#vision-language--multimodal-vlm--omni) | 15 |
-| [Vision encoders, detection & segmentation](#vision-encoders-detection--segmentation) | 12 |
+| [Vision encoders, detection & segmentation](#vision-encoders-detection--segmentation) | 13 |
 | [Biomedical & scientific](#biomedical--scientific) | 5 |
 | [Time series & forecasting](#time-series--forecasting) | 3 |
 | [Text & vision embeddings](#text--vision-embeddings) | 5 |
 | [Text processing (NLP)](#text-processing-nlp) | 1 |
-| [Image, video & 3D generation](#image-video--3d-generation) | 8 |
+| [Image, video & 3D generation](#image-video--3d-generation) | 9 |
 | [OCR & document understanding](#ocr--document-understanding) | 11 |
 | [Speech recognition (ASR)](#speech-recognition-asr) | 16 |
 | [Text-to-speech & speech LMs](#text-to-speech--speech-lms) | 47 |
@@ -36,7 +36,7 @@ Enable GPU backends at build time with matching features, e.g. `cargo build -p r
 | [Neural audio codecs](#neural-audio-codecs) | 12 |
 | [Speech front-end, wake-word & DSP](#speech-front-end-wake-word--dsp) | 31 |
 | [Robotics (vision-language-action)](#robotics-vision-language-action) | 1 |
-| **Total** | **220** |
+| **Total** | **222** |
 
 ## Language models (text LLMs & reasoning)
 
@@ -130,6 +130,7 @@ ViT encoders, video encoders, open-vocabulary detection, and Segment Anything.
 | `rlx-subject-lift` | Vision-framework subject lifting (foreground saliency) run natively by RLX from the model macOS ships | **All 7** |
 | `rlx-vit-elastic` | SnapViT elastic structured pruning + GLARE continual SSL pre-training for ViTs on RLX | CPU, Metal, MLX, CUDA, wgpu, Vulkan |
 | `rlx-vjepa2` | V-JEPA 2 video encoder for RLX | **All 7** |
+| `rlx-yunet` | YuNet face detection (boxes + 5 landmarks) on RLX | CPU, Metal |
 
 ## Biomedical & scientific
 
@@ -181,6 +182,7 @@ Rectified-flow / diffusion image and image-to-3D, plus flow reward alignment.
 |---|---|---|
 | `rlx-denoise` | Monte-Carlo render denoiser for RLX — guided U-Net over colour, albedo and normal, trainable end to end | **All 7** |
 | `rlx-diamond` | Diamond Maps reward alignment — flow matching value functions and GLASS sampling (arXiv:2602.05993) | CPU |
+| `rlx-fgd` | Functional gradient descent with adaptive representations (arXiv:2606.16926) — Algorithm 1, convergence theory, and all four experiments: L² fitting, RKHS regression over decision trees, the wave equation in Sobolev/frequency space, and radiance fields (DDA volumetric renderer with NeRF cameras + SH colour) | **All 7** |
 | `rlx-flux1` | FLUX.1 [dev]/[schnell] text-to-image (T5-XXL + CLIP-L + MMDiT + VAE, diffusers LoRAs) for RLX | **All 7** |
 | `rlx-flux3` | FLUX 3 Image Klein base + distilled (Qwen3-VL-4B text encoder + per-mode DiT + FLUX.2 AE, editing with up to 10 references) + Qwen3.5-9B prompt upsampler for RLX | **All 7** — parity verified on CPU, Metal |
 | `rlx-flux2` | FLUX.2 rectified-flow image model for RLX | **All 7** |
@@ -390,7 +392,9 @@ Fine-tuning / from-scratch training harnesses (not counted in the model total ab
 | `rlx-qwen3-tts-train` | RLX MLX/Metal LoRA training for Qwen3-TTS talker (JFK custom voice) | CPU, Metal, MLX, CUDA |
 | `rlx-tiny` | Train a small nanoGPT-style LLM from scratch on TinyStories — a showcase of the RLX rlx! DSL + autodiff training flow (unpublished) | CPU, Metal |
 | `rlx-tinystories` | Train a small nanoGPT-style LLM from scratch on TinyStories — a showcase of the RLX rlx! DSL + autodiff training flow (unpublished) | CPU, Metal, CUDA (ROCm, Vulkan wired; `examples/device_parity.rs`) |
+| `rlx-tune` | Generic LoRA / DoRA fine-tuning harness for RLX models — adapters, datasets, fuse to weights | CPU, Metal, CUDA |
 | `rlx-voxtral-tts-train` | RLX autodiff training for Voxtral voice cloning — codec encoder + LoRA | **All 7** |
+| `rlx-zipformer-distill` | Distil a small streaming Zipformer2 from a larger teacher with RLX autodiff (Metal / CPU), targeting `rlx-kroko-core` on MCUs | CPU, Metal |
 
 ## Interpretability crates
 

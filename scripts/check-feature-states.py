@@ -19,6 +19,17 @@ Each package is checked twice: its **default** features (what `just lint`
 builds) and its default features **plus every optional extra** except those
 needing a toolchain this host does not have.
 
+Features that cannot be on together (`rlx-neutts`'s `fast` / `precise`) are
+declared in the crate's manifest:
+
+    [package.metadata.feature-states]
+    exclusive = [["fast", "precise"]]
+
+The extras state then keeps only the first of each group, and each other
+member gets a state of its own: every extra and default feature with that
+member in place of the rest of its group, library and binaries only (a crate's
+dev-dependency on itself pins the default member for its tests).
+
 It deliberately does not test `--no-default-features`. Most crates here declare
 a default that their core path requires — `rlx-whisper` is
 `default = ["tokenizer", "timestamps"]` with the tokenizer behind a `dep:` —
@@ -64,8 +75,11 @@ def changed_packages(pkgs: dict) -> list[str]:
     return sorted(n for n, d in pkgs.items() if d["dir"] in dirs)
 
 
-def run(pkg: str, features: list[str], bare: bool) -> tuple[bool, str]:
-    cmd = ["cargo", "clippy", "-p", pkg, "--all-targets", "--no-deps"]
+def run(pkg: str, features: list[str], bare: bool, all_targets: bool = True) -> tuple[bool, str]:
+    cmd = ["cargo", "clippy", "-p", pkg, "--no-deps"]
+    # A crate's dev-dependency on itself pins its default choice of an
+    # exclusive group for test targets, so those states lint lib + bins only.
+    cmd += ["--all-targets"] if all_targets else ["--lib", "--bins"]
     if bare:
         cmd.append("--no-default-features")
     if features:
@@ -95,6 +109,10 @@ def main() -> int:
     pkgs = {
         p["name"]: {
             "features": sorted(p["features"]),
+            "default": p["features"].get("default", []),
+            "exclusive": ((p.get("metadata") or {}).get("feature-states") or {}).get(
+                "exclusive", []
+            ),
             "dir": pathlib.Path(p["manifest_path"]).parent.name,
         }
         for p in md["packages"]
@@ -120,12 +138,25 @@ def main() -> int:
         own = [f for f in pkgs[name]["features"]
                if not any(t in f for t in NEEDS_TOOLCHAIN) and f != "default"]
         skipped = len(pkgs[name]["features"]) - len(own) - 1
-        states = [("default", [], False), ("default + extras", own, False)]
+        groups = pkgs[name]["exclusive"]
+        held = {f for g in groups for f in g[1:]}
+        states = [
+            ("default", [], False, True),
+            ("default + extras", [f for f in own if f not in held], False, True),
+        ]
+        for g in groups:
+            for alt in g[1:]:
+                others = set(g) - {alt}
+                feats = sorted(
+                    {f for f in own + pkgs[name]["default"] if f not in held and f not in others}
+                    | {alt}
+                )
+                states.append((f"extras with {alt}", feats, True, False))
         if args.bare:
-            states.insert(0, ("no features", [], True))
+            states.insert(0, ("no features", [], True, True))
         marks = []
-        for label, feats, bare in states:
-            ok, why = run(name, feats, bare)
+        for label, feats, bare, all_targets in states:
+            ok, why = run(name, feats, bare, all_targets)
             marks.append("ok" if ok else "FAIL")
             if not ok:
                 failures.append(f"{name} [{label}]: {why}")

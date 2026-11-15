@@ -48,8 +48,8 @@
 //!
 //! ## Phase 1 parity status
 //!
-//! Graph builder is wired but **not yet parity-tested** — candle has no
-//! SAM 2 implementation to bisect against, and the official
+//! Graph builder is wired but **not yet parity-tested** — there is no
+//! Rust-side SAM 2 implementation to bisect against, and the official
 //! `sam2_hiera_*.pt` checkpoints need a pytorch reference to compare.
 //! The `tests/sam2_parity.rs` skeleton lays out the harness; turning it
 //! on is a follow-up (Phase 1B). The synthetic-weights test in

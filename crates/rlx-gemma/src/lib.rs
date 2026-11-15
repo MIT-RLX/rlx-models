@@ -48,10 +48,13 @@ pub mod capabilities;
 pub mod cli;
 pub mod config;
 pub mod embedding_gemma2;
+pub mod embedding_gemma2_model;
+pub mod embedding_gemma2_nullspace;
 #[cfg(feature = "export")]
 pub mod export;
 pub mod flow;
 pub mod gemma4_audio;
+pub mod gemma4_audio_features;
 pub mod gemma4_e2b_mm;
 pub mod gemma4_vision;
 pub mod gemma_e2b;

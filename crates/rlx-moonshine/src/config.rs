@@ -156,8 +156,21 @@ impl MoonshineConfig {
     }
 
     pub fn from_file(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&raw)?)
+        Self::from_json(&std::fs::read_to_string(path)?)
+    }
+
+    /// Parse a Hugging Face `config.json`. Those carry one `intermediate_size` for encoder and
+    /// decoder alike (moonshine-base: 1664); without it both fell back to tiny's 1152, and every
+    /// checkpoint but tiny failed shape inference ("matmul K mismatch: 1152 vs 1664").
+    pub fn from_json(raw: &str) -> Result<Self> {
+        let mut v: serde_json::Value = serde_json::from_str(raw)?;
+        if let Some(obj) = v.as_object_mut()
+            && let Some(ff) = obj.get("intermediate_size").cloned()
+        {
+            obj.entry("encoder_intermediate_size").or_insert_with(|| ff.clone());
+            obj.entry("decoder_intermediate_size").or_insert(ff);
+        }
+        Ok(serde_json::from_value(v)?)
     }
 
     /// Load `config.json` from a weights directory.
@@ -232,5 +245,16 @@ mod tests {
         assert_eq!(MoonshineConfig::feat_extract_output_length(895), 1);
         assert_eq!(MoonshineConfig::feat_extract_output_length(16_000), 40);
         assert_eq!(MoonshineConfig::feat_extract_output_length(100), 0);
+    }
+
+    #[test]
+    fn hf_intermediate_size_sets_both_mlps() {
+        let base = r#"{"hidden_size": 416, "intermediate_size": 1664, "encoder_num_hidden_layers": 8,
+            "decoder_num_hidden_layers": 8, "encoder_num_attention_heads": 8, "decoder_num_attention_heads": 8}"#;
+        let c = MoonshineConfig::from_json(base).unwrap();
+        assert_eq!((c.encoder_intermediate_size, c.decoder_intermediate_size), (1664, 1664));
+        // An explicit per-stack size still wins.
+        let c = MoonshineConfig::from_json(r#"{"intermediate_size": 1664, "decoder_intermediate_size": 2048}"#).unwrap();
+        assert_eq!((c.encoder_intermediate_size, c.decoder_intermediate_size), (1664, 2048));
     }
 }

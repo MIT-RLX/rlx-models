@@ -1,0 +1,41 @@
+[package]
+name = "rlx-yunet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "YuNet face detection (boxes + 5 landmarks) on RLX"
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Read weights out of the ONNX export (`rlx-yunet-convert`, the parity test). Not needed to run.
+onnx = ["dep:protobuf", "dep:rlx-onnx-proto"]
+metal = ["rlx-runtime/metal"]
+
+[dependencies]
+anyhow = { workspace = true }
+rlx-ir = { workspace = true }
+rlx-runtime = { workspace = true }
+safetensors = { workspace = true }
+protobuf = { version = "=3.7.2", optional = true } # rlx-onnx-proto's generated code pins it
+rlx-onnx-proto = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[[bin]]
+name = "rlx-yunet-convert"
+path = "src/bin/convert.rs"
+required-features = ["onnx"]
+
+[[test]]
+name = "parity_onnxruntime"
+path = "tests/parity_onnxruntime.rs"
+required-features = ["onnx"]
+
+[lints]
+workspace = true
