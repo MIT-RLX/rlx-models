@@ -79,13 +79,19 @@ impl WakewordSession {
         if cfg.phrases.is_empty() && weights.is_empty() {
             bail!("need at least one phrase");
         }
-        let shared: Vec<(WakeCnnWeights, Vec<(String, usize)>)> = weights.into_iter().map(|(id, w)| (w, vec![(id, 0)])).collect();
+        let shared: Vec<(WakeCnnWeights, Vec<(String, usize)>)> = weights
+            .into_iter()
+            .map(|(id, w)| (w, vec![(id, 0)]))
+            .collect();
         Self::new_shared(cfg, shared)
     }
 
     /// Networks each scoring one or more phrases: `(weights, [(phrase id, output index)])`.
     /// A network's window is its first phrase's ([`WakewordConfig::phrase_context_ms`]).
-    pub fn new_shared(cfg: WakewordConfig, nets_in: Vec<(WakeCnnWeights, Vec<(String, usize)>)>) -> Result<Self> {
+    pub fn new_shared(
+        cfg: WakewordConfig,
+        nets_in: Vec<(WakeCnnWeights, Vec<(String, usize)>)>,
+    ) -> Result<Self> {
         if cfg.phrases.is_empty() && nets_in.is_empty() {
             bail!("need at least one phrase");
         }
@@ -93,7 +99,9 @@ impl WakewordSession {
         let mut nets = Vec::new();
         let mut heads = Vec::new();
         for (w, phrases) in nets_in {
-            let Some((first, _)) = phrases.first() else { continue };
+            let Some((first, _)) = phrases.first() else {
+                continue;
+            };
             let window_frames = crate::config::frames_for(cfg.phrase_context_ms(first), hop_len);
             let n_out = w.n_out();
             for (id, output) in phrases {
@@ -250,7 +258,10 @@ impl WakewordSession {
     /// for an unknown phrase). With several phrases, a detection whose rival scored higher
     /// just before or after it is most likely the rival ("Hey Peachy" vs "Bye Peachy").
     pub fn peak_score(&self, phrase_id: &str) -> Option<f32> {
-        self.heads.iter().find(|h| h.id == phrase_id).map(|h| h.recent.iter().copied().fold(0.0, f32::max))
+        self.heads
+            .iter()
+            .find(|h| h.id == phrase_id)
+            .map(|h| h.recent.iter().copied().fold(0.0, f32::max))
     }
 
     /// See [`WakewordConfig::min_hops`].
@@ -314,7 +325,8 @@ impl WakewordSession {
                 .iter_mut()
                 .map(|n| {
                     let k = n.n_out();
-                    n.push_mel_frames_all(&frames).map_or_else(|| vec![0.0; k], <[f32]>::to_vec)
+                    n.push_mel_frames_all(&frames)
+                        .map_or_else(|| vec![0.0; k], <[f32]>::to_vec)
                 })
                 .collect();
             let mut fires: Vec<(String, f32)> = Vec::new();

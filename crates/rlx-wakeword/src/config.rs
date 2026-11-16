@@ -76,12 +76,19 @@ impl WakewordConfig {
 
     /// The window of phrase `id` (its own, else the session's), ms.
     pub fn phrase_context_ms(&self, id: &str) -> f32 {
-        self.phrases.iter().find(|p| p.id == id).and_then(|p| p.context_ms).unwrap_or(self.context_ms)
+        self.phrases
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.context_ms)
+            .unwrap_or(self.context_ms)
     }
 
     /// The longest window any phrase uses, ms: how much audio a caller must keep to fill them.
     pub fn max_context_ms(&self) -> f32 {
-        self.phrases.iter().filter_map(|p| p.context_ms).fold(self.context_ms, f32::max)
+        self.phrases
+            .iter()
+            .filter_map(|p| p.context_ms)
+            .fold(self.context_ms, f32::max)
     }
 }
 
@@ -91,8 +98,7 @@ pub fn frames_for(ms: f32, hop_length: usize) -> usize {
     (samples / hop_length.max(1)).max(8)
 }
 
-impl WakewordConfig {
-}
+impl WakewordConfig {}
 
 pub fn hop_ms_to_samples(hop_ms: u32) -> usize {
     let sr = SAMPLE_RATE_16K as u32;

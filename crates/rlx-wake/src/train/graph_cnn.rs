@@ -54,12 +54,22 @@ pub struct GraphTrainConfig {
 
 impl Default for GraphTrainConfig {
     fn default() -> Self {
-        Self { batch: 128, shift_negatives: true, partial_ratio: 1.0, partial_gap: 50, tail_frames: 60,
+        Self {
+            batch: 128,
+            shift_negatives: true,
+            partial_ratio: 1.0,
+            partial_gap: 50,
+            tail_frames: 60,
             mine_every: 10,
             mine_after: 20,
             mine_stride: 8,
             mine_threshold: 0.3,
-            mine_ratio: 1.0, lr: 2e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8 }
+            mine_ratio: 1.0,
+            lr: 2e-3,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+        }
     }
 }
 
@@ -72,7 +82,10 @@ fn sh(dims: &[usize]) -> Shape {
 }
 
 /// The parameters in graph layout, in the order of the graph's gradients.
-const PARAMS: [&str; 10] = ["conv1_w", "conv1_b", "conv2_w", "conv2_b", "conv3_w", "conv3_b", "fc1_w", "fc1_b", "fc2_w", "fc2_b"];
+const PARAMS: [&str; 10] = [
+    "conv1_w", "conv1_b", "conv2_w", "conv2_b", "conv3_w", "conv3_b", "fc1_w", "fc1_b", "fc2_w",
+    "fc2_b",
+];
 
 /// The CNN over a batch `x [B, n_mels, 1, T]`: logits `[B, 1]` and the parameter nodes.
 fn body(g: &mut Graph, w: &WakeCnnWeights, b: usize, t: usize) -> (NodeId, Vec<NodeId>) {
@@ -219,8 +232,20 @@ pub fn train_wake_cnn_device(
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let per = clips.len().div_ceil(threads).max(1);
     let mels: Vec<Vec<f32>> = std::thread::scope(|s| {
-        let parts: Vec<_> = clips.chunks(per).map(|part| s.spawn(move || part.iter().map(|c| clip_mel_frames(&c.pcm)).collect::<Vec<_>>())).collect();
-        parts.into_iter().flat_map(|h| h.join().expect("feature thread")).collect()
+        let parts: Vec<_> = clips
+            .chunks(per)
+            .map(|part| {
+                s.spawn(move || {
+                    part.iter()
+                        .map(|c| clip_mel_frames(&c.pcm))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        parts
+            .into_iter()
+            .flat_map(|h| h.join().expect("feature thread"))
+            .collect()
     });
     let frames: Vec<usize> = mels.iter().map(|m| m.len() / n_mels).collect();
     // Each clip between `lead` frames of its own background (its opening frames, repeated if
@@ -246,16 +271,26 @@ pub fn train_wake_cnn_device(
     let ext: Vec<usize> = mels.iter().map(|m| m.len() / n_mels).collect();
     let t_feats = t0.elapsed();
     let labels: Vec<f32> = clips.iter().map(|c| c.label).collect();
-    let positives: Vec<usize> = (0..clips.len()).filter(|&i| labels[i] >= 0.5 && frames[i] >= t + opt.partial_gap).collect();
-    debug_assert!(frames.iter().all(|&f| f >= t), "the lead makes every clip at least a window");
-    let n_partial = if opt.partial_ratio > 0.0 { (positives.len() as f32 * opt.partial_ratio) as usize } else { 0 };
+    let positives: Vec<usize> = (0..clips.len())
+        .filter(|&i| labels[i] >= 0.5 && frames[i] >= t + opt.partial_gap)
+        .collect();
+    debug_assert!(
+        frames.iter().all(|&f| f >= t),
+        "the lead makes every clip at least a window"
+    );
+    let n_partial = if opt.partial_ratio > 0.0 {
+        (positives.len() as f32 * opt.partial_ratio) as usize
+    } else {
+        0
+    };
     let n = clips.len();
     let n_partial = if positives.is_empty() { 0 } else { n_partial };
     let mut total = n + n_partial;
     let negatives: Vec<usize> = (0..n).filter(|&i| labels[i] < 0.5).collect();
     // Mined hard negatives: (clip, window end); items `n + n_partial..total`.
     let mut hard: Vec<(usize, usize)> = Vec::new();
-    let mut probe = (opt.mine_every > 0).then(|| Session::new(device).compile(build_probs(weights, opt.batch.max(1), t)));
+    let mut probe = (opt.mine_every > 0)
+        .then(|| Session::new(device).compile(build_probs(weights, opt.batch.max(1), t)));
     let b = opt.batch.clamp(1, total.max(1));
 
     let (fwd, wrt) = build_loss(weights, b, t);
@@ -280,26 +315,42 @@ pub fn train_wake_cnn_device(
     let mut order: Vec<usize> = (0..total).collect();
     let mut rng = 0x2545_F491_4F6C_DD1Du64;
     let mut next = move || {
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        rng = rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (rng >> 33) as usize
     };
     let mut xb = vec![0.0f32; b * n_mels * t];
     let mut yb = vec![0.0f32; b];
     let (mut initial, mut final_loss) = (0.0f32, 0.0f32);
     for epoch in 0..cnn.sgd.epochs {
-        if let Some(probe) = probe.as_mut().filter(|_| epoch >= opt.mine_after && (epoch - opt.mine_after).is_multiple_of(opt.mine_every)) {
+        if let Some(probe) = probe.as_mut().filter(|_| {
+            epoch >= opt.mine_after && (epoch - opt.mine_after).is_multiple_of(opt.mine_every)
+        }) {
             let tm = std::time::Instant::now();
             for (name, p) in PARAMS.iter().zip(&params) {
                 probe.set_param(name, p);
             }
             let pb = opt.batch.max(1);
-            let windows: Vec<(usize, usize)> =
-                negatives.iter().flat_map(|&i| (t..=ext[i].max(t)).step_by(opt.mine_stride.max(1)).map(move |e| (i, e))).collect();
+            let windows: Vec<(usize, usize)> = negatives
+                .iter()
+                .flat_map(|&i| {
+                    (t..=ext[i].max(t))
+                        .step_by(opt.mine_stride.max(1))
+                        .map(move |e| (i, e))
+                })
+                .collect();
             let mut scored: Vec<(f32, usize, usize)> = Vec::new();
             let mut px = vec![0.0f32; pb * n_mels * t];
             for chunk in windows.chunks(pb) {
                 for (j, &(i, e)) in chunk.iter().enumerate() {
-                    window_into(&mels[i], n_mels, e, t, &mut px[j * n_mels * t..(j + 1) * n_mels * t]);
+                    window_into(
+                        &mels[i],
+                        n_mels,
+                        e,
+                        t,
+                        &mut px[j * n_mels * t..(j + 1) * n_mels * t],
+                    );
                 }
                 let out = probe.run(&[("x", &px)]);
                 for (j, &(i, e)) in chunk.iter().enumerate() {
@@ -311,7 +362,11 @@ pub fn train_wake_cnn_device(
             scored.sort_by(|a, b| b.0.total_cmp(&a.0));
             let cap = (positives.len().max(1) as f32 * opt.mine_ratio) as usize;
             let found = scored.len();
-            hard = scored.into_iter().take(cap).map(|(_, i, e)| (i, e)).collect();
+            hard = scored
+                .into_iter()
+                .take(cap)
+                .map(|(_, i, e)| (i, e))
+                .collect();
             total = n + n_partial + hard.len();
             order = (0..total).collect();
             steps_per_epoch = total.div_ceil(b);
@@ -350,7 +405,13 @@ pub fn train_wake_cnn_device(
                     let (i, e) = hard[item - n - n_partial];
                     (i, e, 0.0)
                 };
-                window_into(&mels[idx], n_mels, end, t, &mut xb[j * n_mels * t..(j + 1) * n_mels * t]);
+                window_into(
+                    &mels[idx],
+                    n_mels,
+                    end,
+                    t,
+                    &mut xb[j * n_mels * t..(j + 1) * n_mels * t],
+                );
                 yb[j] = label;
             }
             for (name, p) in PARAMS.iter().zip(&params) {
@@ -368,7 +429,8 @@ pub fn train_wake_cnn_device(
                     let gi = grad[i];
                     m[i] = opt.beta1 * m[i] + (1.0 - opt.beta1) * gi;
                     v[i] = opt.beta2 * v[i] + (1.0 - opt.beta2) * gi * gi;
-                    p[i] -= lr_t * m[i] / (v[i].sqrt() + opt.eps) + opt.lr * cnn.sgd.weight_decay * p[i];
+                    p[i] -= lr_t * m[i] / (v[i].sqrt() + opt.eps)
+                        + opt.lr * cnn.sgd.weight_decay * p[i];
                 }
             }
         }
@@ -420,7 +482,10 @@ pub fn train_wake_cnn_device(
                 })
             })
             .collect();
-        parts.into_iter().map(|h| h.join().expect("eval thread")).sum()
+        parts
+            .into_iter()
+            .map(|h| h.join().expect("eval thread"))
+            .sum()
     });
     TrainReport {
         epochs: cnn.sgd.epochs,
@@ -453,9 +518,14 @@ mod tests {
         for c in &clips {
             let x = features(c, w.cfg.n_mels, t);
             let out = sess.run(&[("x", &x), ("y", &[c.label])]);
-            let p = crate::train::cnn::predict(&w, &clip_mel_frames(&c.pcm), t).clamp(1e-6, 1.0 - 1e-6);
+            let p =
+                crate::train::cnn::predict(&w, &clip_mel_frames(&c.pcm), t).clamp(1e-6, 1.0 - 1e-6);
             let want = -(c.label * p.ln() + (1.0 - c.label) * (1.0 - p).ln());
-            assert!((out[0][0] - want).abs() < 1e-3 * (1.0 + want), "graph {} vs reference {want}", out[0][0]);
+            assert!(
+                (out[0][0] - want).abs() < 1e-3 * (1.0 + want),
+                "graph {} vs reference {want}",
+                out[0][0]
+            );
         }
     }
 
@@ -463,12 +533,22 @@ mod tests {
     fn learns_the_synthetic_task_on_cpu() {
         let clips = synth_pos_neg_dataset(16, 16, 1.2);
         let mut w = WakeCnnWeights::he_init(WakeCnnConfig::lite(), 1);
-        let mut cnn = CnnTrainConfig { window_frames: 120, ..CnnTrainConfig::default() };
+        let mut cnn = CnnTrainConfig {
+            window_frames: 120,
+            ..CnnTrainConfig::default()
+        };
         cnn.sgd.epochs = 30;
         cnn.sgd.log_every = 0;
         // The toy clips are signal from end to end (no background to pad with, no phrase to
         // cut): plain end-of-clip windows.
-        let opt = GraphTrainConfig { batch: 8, shift_negatives: false, partial_ratio: 0.0, tail_frames: 0, mine_every: 0, ..Default::default() };
+        let opt = GraphTrainConfig {
+            batch: 8,
+            shift_negatives: false,
+            partial_ratio: 0.0,
+            tail_frames: 0,
+            mine_every: 0,
+            ..Default::default()
+        };
         let r = train_wake_cnn_device(&mut w, &clips, &cnn, &opt, Device::Cpu);
         assert!(r.final_loss < r.initial_loss * 0.5, "{r:?}");
         assert!(r.train_acc >= 0.9, "{r:?}");

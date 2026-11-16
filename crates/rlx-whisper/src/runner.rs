@@ -20,8 +20,8 @@ use crate::audio::{MelSpectrogram, N_FRAMES, pcm_slice_to_mel, pcm_to_mel};
 use crate::backend::align_cache_key;
 use crate::backend::{
     WhisperCompileOpts, WhisperGraphCtx, decode_bucket_ladder_from, geometry_cache_key,
-    next_share_scope, prefill_cache_key, shared_compile_guard, whisper_decoder_device, whisper_encoder_device,
-    whisper_use_gpu_kv,
+    next_share_scope, prefill_cache_key, shared_compile_guard, whisper_decoder_device,
+    whisper_encoder_device, whisper_use_gpu_kv,
 };
 use crate::batch::batched_prompt_f32;
 // Only the `tokenizer`-gated batch decoders below use these, so an ungated
@@ -371,7 +371,8 @@ impl WhisperRunnerBuilder {
         #[cfg(feature = "tokenizer")]
         let tokenizer = match &self.tokenizer_bytes {
             Some(bytes) => Some(
-                tokenizers::Tokenizer::from_bytes(bytes).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?,
+                tokenizers::Tokenizer::from_bytes(bytes)
+                    .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?,
             ),
             None => {
                 ensure!(tok_path.exists(), "tokenizer not found: {tok_path:?}");
@@ -874,7 +875,9 @@ impl WhisperRunner {
                 ));
             }
         }
-        let outputs = shared_compile_guard(&self.share_scope, self.prefill_device, || prefill.run(&inputs));
+        let outputs = shared_compile_guard(&self.share_scope, self.prefill_device, || {
+            prefill.run(&inputs)
+        });
         ensure!(!outputs.is_empty(), "prefill returned no outputs");
         let logits = outputs[0].clone();
         let kv = kv_from_prefill_outputs(
@@ -1083,7 +1086,8 @@ impl WhisperRunner {
             });
         let old = std::mem::replace(&mut self.decode_compile_cache, wanted);
         if self.decode_batch_tag != u64::MAX {
-            self.decode_caches_kept.insert((self.decode_geometry_epoch, self.decode_batch_tag), old);
+            self.decode_caches_kept
+                .insert((self.decode_geometry_epoch, self.decode_batch_tag), old);
         }
         self.decode_batch_tag = batch_tag;
         self.decode_geometry_epoch = self.geometry_epoch;
@@ -1170,25 +1174,26 @@ impl WhisperRunner {
             }
         }
 
-        let (logits, new_k, new_v) = shared_compile_guard(&self.share_scope, self.decode_device, || {
-            run_bucketed_kv_decode_keyed_batched(
-                &mut self.decode_compile_cache,
-                key,
-                past_seq,
-                batch,
-                cache,
-                d_model,
-                n_layers,
-                &specs,
-                |upper| {
-                    let built = graph_ctx
-                        .build_decode_step_sized(batch, upper as usize, enc_seq)
-                        .expect("whisper decode step built");
-                    graph_from_built(built).expect("whisper decode step graph")
-                },
-                &self.compile_opts.decode,
-            )
-        })?;
+        let (logits, new_k, new_v) =
+            shared_compile_guard(&self.share_scope, self.decode_device, || {
+                run_bucketed_kv_decode_keyed_batched(
+                    &mut self.decode_compile_cache,
+                    key,
+                    past_seq,
+                    batch,
+                    cache,
+                    d_model,
+                    n_layers,
+                    &specs,
+                    |upper| {
+                        let built = graph_ctx
+                            .build_decode_step_sized(batch, upper as usize, enc_seq)
+                            .expect("whisper decode step built");
+                        graph_from_built(built).expect("whisper decode step graph")
+                    },
+                    &self.compile_opts.decode,
+                )
+            })?;
 
         apply_bucketed_decode_step(cache, new_k, new_v, batch, d_model)
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -2211,7 +2216,9 @@ const MIN_REPEAT: usize = 4;
 /// than this loop, and costs the second saying.
 fn repetition_cut(generated: &[u32]) -> Option<usize> {
     let n = generated.len();
-    (MIN_REPEAT..=n / 2).find(|&len| generated[n - 2 * len..n - len] == generated[n - len..]).map(|len| n - len)
+    (MIN_REPEAT..=n / 2)
+        .find(|&len| generated[n - 2 * len..n - len] == generated[n - len..])
+        .map(|len| n - len)
 }
 
 #[cfg(test)]

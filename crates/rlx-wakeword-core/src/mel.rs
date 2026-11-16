@@ -191,7 +191,10 @@ struct C {
 
 impl C {
     fn mul(self, o: C) -> C {
-        C { re: self.re * o.re - self.im * o.im, im: self.re * o.im + self.im * o.re }
+        C {
+            re: self.re * o.re - self.im * o.im,
+            im: self.re * o.im + self.im * o.re,
+        }
     }
 }
 
@@ -231,10 +234,18 @@ impl Fft {
         let tw = (0..n)
             .map(|j| {
                 let a = -core::f64::consts::TAU * j as f64 / n as f64;
-                C { re: a.cos() as f32, im: a.sin() as f32 }
+                C {
+                    re: a.cos() as f32,
+                    im: a.sin() as f32,
+                }
             })
             .collect();
-        Self { factors, tw, buf: vec![C::default(); n], out: vec![C::default(); n] }
+        Self {
+            factors,
+            tw,
+            buf: vec![C::default(); n],
+            out: vec![C::default(); n],
+        }
     }
 
     /// `|X_k|²` for `k = 0..out.len()` (up to `n/2`) of the real signal `x` (`x.len() == n`).
@@ -261,7 +272,14 @@ fn fft_rec(x: &[C], xs: usize, out: &mut [C], factors: &[usize], tw: &[C], ts: u
         }
     } else {
         for q in 0..p {
-            fft_rec(&x[q * xs..], xs * p, &mut out[q * m..(q + 1) * m], &factors[1..], tw, ts * p);
+            fft_rec(
+                &x[q * xs..],
+                xs * p,
+                &mut out[q * m..(q + 1) * m],
+                &factors[1..],
+                tw,
+                ts * p,
+            );
         }
     }
     if p == 1 {
@@ -287,7 +305,10 @@ fn fft_rec(x: &[C], xs: usize, out: &mut [C], factors: &[usize], tw: &[C], ts: u
             for (q, yq) in y.iter().enumerate().skip(1) {
                 acc = {
                     let t = yq.mul(tw[(q * r * wp) % big]);
-                    C { re: acc.re + t.re, im: acc.im + t.im }
+                    C {
+                        re: acc.re + t.re,
+                        im: acc.im + t.im,
+                    }
                 };
             }
             out[r * m + k] = acc;
@@ -322,13 +343,18 @@ mod fft_tests {
     #[test]
     fn fft_matches_the_reference_dft() {
         for n in [400, 512, 360, 98, 7] {
-            let x: Vec<f32> = (0..n).map(|i| ((i * 7919 % n) as f32 / n as f32 - 0.5) * 0.6).collect();
+            let x: Vec<f32> = (0..n)
+                .map(|i| ((i * 7919 % n) as f32 / n as f32 - 0.5) * 0.6)
+                .collect();
             let mut fast = vec![0.0; n / 2 + 1];
             Fft::new(n).power(&x, &mut fast);
             let slow = rfft_power(&x);
             let peak = slow.iter().cloned().fold(0.0f32, f32::max);
             for (k, (a, b)) in fast.iter().zip(&slow).enumerate() {
-                assert!((a - b).abs() <= 1e-4 * peak.max(1.0), "n={n} k={k}: {a} vs {b}");
+                assert!(
+                    (a - b).abs() <= 1e-4 * peak.max(1.0),
+                    "n={n} k={k}: {a} vs {b}"
+                );
             }
         }
     }

@@ -21,8 +21,8 @@
 //! reserves the execution slot for future compiled paths.
 
 use anyhow::{Context, Result, ensure};
-use rlx_cli::parse_standard_device;
 use rlx_cli::STANDARD_DEVICE_NAMES;
+use rlx_cli::parse_standard_device;
 use rlx_runtime::{Device, is_available};
 
 const FAMILY: &str = "rlx-vad";

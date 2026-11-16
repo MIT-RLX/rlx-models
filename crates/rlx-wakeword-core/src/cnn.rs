@@ -23,6 +23,10 @@ pub struct WakeCnnConfig {
     pub c3: usize,
     pub k: usize,
     pub hidden: usize,
+    /// The last layer is averaged over this many consecutive stretches of the window, kept in
+    /// order (1: over the whole window). With phrases that share a word ("Hey/Bye/Hi Peachy"),
+    /// a single average loses what came before it; a few stretches keep the order.
+    pub pool_chunks: usize,
 }
 
 impl WakeCnnConfig {
@@ -34,6 +38,7 @@ impl WakeCnnConfig {
             c3: 32,
             k: 3,
             hidden: 64,
+            pool_chunks: 1,
         }
     }
 
@@ -45,6 +50,7 @@ impl WakeCnnConfig {
             c3: 128,
             k: 3,
             hidden: 256,
+            pool_chunks: 1,
         }
     }
 }
@@ -82,7 +88,7 @@ impl WakeCnnWeights {
             conv2_b: vec![0.0; cfg.c2],
             conv3_w: fill(cfg.c3 * cfg.c2 * k, &mut next),
             conv3_b: vec![0.0; cfg.c3],
-            fc1_w: fill(cfg.hidden * cfg.c3, &mut next),
+            fc1_w: fill(cfg.hidden * cfg.c3 * cfg.pool_chunks.max(1), &mut next),
             fc1_b: vec![0.0; cfg.hidden],
             fc2_w: fill(cfg.hidden, &mut next),
             fc2_b: vec![-2.0],
@@ -97,7 +103,9 @@ impl WakeCnnWeights {
     pub fn he_init(cfg: WakeCnnConfig, seed: u64) -> Self {
         let mut rng = seed ^ 0x9E37_79B9_7F4A_7C15;
         let mut unit = move || {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (rng >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
         };
         let mut fill = |n: usize, fan_in: usize| -> Vec<f32> {
@@ -112,7 +120,10 @@ impl WakeCnnWeights {
             conv2_b: vec![0.0; cfg.c2],
             conv3_w: fill(cfg.c3 * cfg.c2 * k, cfg.c2 * k),
             conv3_b: vec![0.0; cfg.c3],
-            fc1_w: fill(cfg.hidden * cfg.c3, cfg.c3),
+            fc1_w: fill(
+                cfg.hidden * cfg.c3 * cfg.pool_chunks.max(1),
+                cfg.c3 * cfg.pool_chunks.max(1),
+            ),
             fc1_b: vec![0.0; cfg.hidden],
             fc2_w: fill(cfg.hidden, cfg.hidden),
             fc2_b: vec![0.0],
@@ -226,7 +237,11 @@ pub struct WakeCnn {
 const STRIDES: [usize; 3] = [1, 2, 2];
 
 fn conv_out_len(t_in: usize, k: usize, stride: usize, pad: usize) -> usize {
-    if t_in + 2 * pad >= k { (t_in + 2 * pad - k) / stride + 1 } else { 0 }
+    if t_in + 2 * pad >= k {
+        (t_in + 2 * pad - k) / stride + 1
+    } else {
+        0
+    }
 }
 
 impl WakeCnn {
@@ -369,7 +384,22 @@ impl WakeCnn {
                 _ => &self.y2,
             };
             let (_, _, w, b) = self.layer(l);
-            crate::ops::conv1d_positions(input, in_c, t[l], w, out_c, k, STRIDES[l], pad, b, &mut out, t[l + 1], lo, hi, &mut patch);
+            crate::ops::conv1d_positions(
+                input,
+                in_c,
+                t[l],
+                w,
+                out_c,
+                k,
+                STRIDES[l],
+                pad,
+                b,
+                &mut out,
+                t[l + 1],
+                lo,
+                hi,
+                &mut patch,
+            );
         }
         self.patch = patch;
         for c in 0..out_c {
@@ -426,9 +456,31 @@ impl WakeCnn {
                 _ => &mut self.y3,
             };
             if is_ternary_f32(&w) {
-                conv1d_ternary(&input, in_c, t[l], &w, out_c, k, STRIDES[l], pad, Some(&b), out);
+                conv1d_ternary(
+                    &input,
+                    in_c,
+                    t[l],
+                    &w,
+                    out_c,
+                    k,
+                    STRIDES[l],
+                    pad,
+                    Some(&b),
+                    out,
+                );
             } else {
-                conv1d_nchw(&input, in_c, t[l], &w, out_c, k, STRIDES[l], pad, Some(&b), out);
+                conv1d_nchw(
+                    &input,
+                    in_c,
+                    t[l],
+                    &w,
+                    out_c,
+                    k,
+                    STRIDES[l],
+                    pad,
+                    Some(&b),
+                    out,
+                );
             }
             for v in out.iter_mut() {
                 *v = relu(*v);
@@ -465,7 +517,12 @@ impl WakeCnn {
             }
             let a_out = a_out.min(t_out);
             // Right: any output reading a changed input (or padding past the window's end).
-            let b_out = if b + pad >= k - 1 { (b + pad - (k - 1)).div_ceil(s) } else { 0 }.min(t_out);
+            let b_out = if b + pad >= k - 1 {
+                (b + pad - (k - 1)).div_ceil(s)
+            } else {
+                0
+            }
+            .min(t_out);
             let ch = self.layer(l).1;
             let arr = match l {
                 0 => &mut self.y1,
@@ -491,27 +548,82 @@ impl WakeCnn {
         let cfg = self.weights.cfg.clone();
         let t3 = self.lens()[3];
         let n_out = self.weights.n_out();
-        self.pooled.resize(cfg.c3, 0.0);
-        global_mean_pool_chw(&self.y3[..cfg.c3 * t3], cfg.c3, t3, &mut self.pooled);
+        let chunks = cfg.pool_chunks.max(1);
+        self.pooled.resize(cfg.c3 * chunks, 0.0);
+        if chunks == 1 {
+            global_mean_pool_chw(&self.y3[..cfg.c3 * t3], cfg.c3, t3, &mut self.pooled);
+        } else {
+            pool_chunks(
+                &self.y3[..cfg.c3 * t3],
+                cfg.c3,
+                t3,
+                chunks,
+                &mut self.pooled,
+            );
+        }
+        let n_in = cfg.c3 * chunks;
         self.hidden.resize(cfg.hidden, 0.0);
         let fc_t = self.weights.fc_ternary();
         let w = &self.weights;
         if fc_t {
-            gemv_bias_ternary(cfg.hidden, cfg.c3, &w.fc1_w, &self.pooled, &w.fc1_b, &mut self.hidden);
+            gemv_bias_ternary(
+                cfg.hidden,
+                n_in,
+                &w.fc1_w,
+                &self.pooled,
+                &w.fc1_b,
+                &mut self.hidden,
+            );
         } else {
-            gemv_bias(cfg.hidden, cfg.c3, &w.fc1_w, &self.pooled, &w.fc1_b, &mut self.hidden);
+            gemv_bias(
+                cfg.hidden,
+                n_in,
+                &w.fc1_w,
+                &self.pooled,
+                &w.fc1_b,
+                &mut self.hidden,
+            );
         }
         for v in &mut self.hidden {
             *v = relu(*v);
         }
         self.probs.resize(n_out, 0.0);
         if fc_t {
-            gemv_bias_ternary(n_out, cfg.hidden, &w.fc2_w, &self.hidden, &w.fc2_b, &mut self.probs);
+            gemv_bias_ternary(
+                n_out,
+                cfg.hidden,
+                &w.fc2_w,
+                &self.hidden,
+                &w.fc2_b,
+                &mut self.probs,
+            );
         } else {
-            gemv_bias(n_out, cfg.hidden, &w.fc2_w, &self.hidden, &w.fc2_b, &mut self.probs);
+            gemv_bias(
+                n_out,
+                cfg.hidden,
+                &w.fc2_w,
+                &self.hidden,
+                &w.fc2_b,
+                &mut self.probs,
+            );
         }
         for p in &mut self.probs {
             *p = sigmoid(*p);
+        }
+    }
+}
+
+/// The stretches `[i·t / chunks, (i+1)·t / chunks)` of a channel-major `[c, t]` map, each
+/// averaged per channel, chunk-major into `out [chunks · c]`. Shared with training's graph.
+pub fn pool_chunks(y: &[f32], c: usize, t: usize, chunks: usize, out: &mut [f32]) {
+    for i in 0..chunks {
+        let (lo, hi) = (
+            i * t / chunks,
+            ((i + 1) * t / chunks).max(i * t / chunks + 1).min(t),
+        );
+        for ch in 0..c {
+            let row = &y[ch * t + lo..ch * t + hi];
+            out[i * c + ch] = row.iter().sum::<f32>() / row.len().max(1) as f32;
         }
     }
 }

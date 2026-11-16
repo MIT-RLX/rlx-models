@@ -26,7 +26,7 @@ pub use codec::{FRAME_RATE, MimiCodec, RoundtripStats, SAMPLE_RATE};
 pub use codes::MimiCodes;
 pub use config::MimiConfig;
 pub use device::{
-    gpu_codec_available, device_ready, parse_mimi_device, resolve_codec_device, test_devices,
+    device_ready, gpu_codec_available, parse_mimi_device, resolve_codec_device, test_devices,
 };
 pub use download::{
     HF_MIMI_REPO, MIMI_SIDECAR_FILENAME, default_mimi_dir, ensure_weights, fetch_mimi,

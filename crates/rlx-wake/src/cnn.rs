@@ -32,6 +32,8 @@ pub struct WakeCnnConfig {
     pub c3: usize,
     pub k: usize,
     pub hidden: usize,
+    /// See `rlx_wakeword_core::WakeCnnConfig::pool_chunks` (1: one average over the window).
+    pub pool_chunks: usize,
 }
 
 impl WakeCnnConfig {
@@ -43,6 +45,7 @@ impl WakeCnnConfig {
             c3: 32,
             k: 3,
             hidden: 64,
+            pool_chunks: 1,
         }
     }
 
@@ -55,6 +58,7 @@ impl WakeCnnConfig {
             c3: 64,
             k: 3,
             hidden: 128,
+            pool_chunks: 1,
         }
     }
 
@@ -76,6 +80,7 @@ impl WakeCnnConfig {
             c3: 128,
             k: 3,
             hidden: 256,
+            pool_chunks: 1,
         }
     }
 }
@@ -113,7 +118,7 @@ impl WakeCnnWeights {
             conv2_b: vec![0.0; cfg.c2],
             conv3_w: fill(cfg.c3 * cfg.c2 * k, &mut next),
             conv3_b: vec![0.0; cfg.c3],
-            fc1_w: fill(cfg.hidden * cfg.c3, &mut next),
+            fc1_w: fill(cfg.hidden * cfg.c3 * cfg.pool_chunks.max(1), &mut next),
             fc1_b: vec![0.0; cfg.hidden],
             fc2_w: fill(cfg.hidden, &mut next),
             fc2_b: vec![-2.0], // bias toward low score on stub
@@ -128,7 +133,9 @@ impl WakeCnnWeights {
     pub fn he_init(cfg: WakeCnnConfig, seed: u64) -> Self {
         let mut rng = seed ^ 0x9E37_79B9_7F4A_7C15;
         let mut unit = move || {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (rng >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
         };
         let mut fill = |n: usize, fan_in: usize| -> Vec<f32> {
@@ -143,7 +150,10 @@ impl WakeCnnWeights {
             conv2_b: vec![0.0; cfg.c2],
             conv3_w: fill(cfg.c3 * cfg.c2 * k, cfg.c2 * k),
             conv3_b: vec![0.0; cfg.c3],
-            fc1_w: fill(cfg.hidden * cfg.c3, cfg.c3),
+            fc1_w: fill(
+                cfg.hidden * cfg.c3 * cfg.pool_chunks.max(1),
+                cfg.c3 * cfg.pool_chunks.max(1),
+            ),
             fc1_b: vec![0.0; cfg.hidden],
             fc2_w: fill(cfg.hidden, cfg.hidden),
             fc2_b: vec![0.0],
@@ -172,6 +182,7 @@ impl WakeCnnWeights {
                 self.cfg.c3 as f32,
                 self.cfg.k as f32,
                 self.cfg.hidden as f32,
+                self.cfg.pool_chunks.max(1) as f32,
             ],
         );
         save_f32_map(path, &map)
@@ -192,6 +203,8 @@ impl WakeCnnWeights {
             c3: cfg_v[3] as usize,
             k: cfg_v[4] as usize,
             hidden: cfg_v[5] as usize,
+            // Absent in older files: one average over the window.
+            pool_chunks: cfg_v.get(6).map_or(1, |&v| (v as usize).max(1)),
         };
         Ok(Self {
             cfg,
@@ -338,12 +351,23 @@ impl WakeCnn {
         for v in &mut y3[..cfg.c3 * t3] {
             *v = relu(*v);
         }
-        let mut pooled = vec![0.0f32; cfg.c3];
-        global_mean_pool_chw(&y3[..cfg.c3 * t3], cfg.c3, t3, &mut pooled);
+        let chunks = cfg.pool_chunks.max(1);
+        let mut pooled = vec![0.0f32; cfg.c3 * chunks];
+        if chunks == 1 {
+            global_mean_pool_chw(&y3[..cfg.c3 * t3], cfg.c3, t3, &mut pooled);
+        } else {
+            rlx_wakeword_core::cnn::pool_chunks(
+                &y3[..cfg.c3 * t3],
+                cfg.c3,
+                t3,
+                chunks,
+                &mut pooled,
+            );
+        }
         let mut h = vec![0.0f32; cfg.hidden];
         gemv_bias(
             cfg.hidden,
-            cfg.c3,
+            cfg.c3 * chunks,
             &self.weights.fc1_w,
             &pooled,
             &self.weights.fc1_b,

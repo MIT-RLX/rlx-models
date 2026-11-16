@@ -47,12 +47,13 @@ pub use parity::{
     BackendParityRow, assert_100_percent_parity, max_abs_score_delta, run_backend_parity,
     score_parity_fraction, scores_exact_match,
 };
-pub use ternary::{TernaryOpts, TernaryStats, is_ternary_f32, ternarize, ternarize_inplace};
 /// The RLX device type (for [`train::train_wake_cnn_device`]).
 pub use rlx_runtime::Device;
+pub use ternary::{TernaryOpts, TernaryStats, is_ternary_f32, ternarize, ternarize_inplace};
 pub use train::{
-    CnnTrainConfig, GraphTrainConfig, LabeledClip, train_wake_cnn_device, MlpConfig, MlpWeights, SgdConfig, TrainReport, load_pos_neg_dirs,
-    synth_pos_neg_dataset, train_mlp, train_wake_cnn, write_synth_corpus,
+    CnnTrainConfig, GraphTrainConfig, LabeledClip, MlpConfig, MlpWeights, SgdConfig, TrainReport,
+    load_pos_neg_dirs, synth_pos_neg_dataset, train_mlp, train_wake_cnn, train_wake_cnn_device,
+    write_synth_corpus,
 };
 
 /// Default openWakeWord-style hop (80 ms @ 16 kHz).

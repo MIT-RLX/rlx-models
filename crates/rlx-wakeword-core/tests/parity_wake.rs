@@ -15,6 +15,7 @@ fn copy_weights(host: &HostW) -> WakeCnnWeights {
             c3: host.cfg.c3,
             k: host.cfg.k,
             hidden: host.cfg.hidden,
+            pool_chunks: host.cfg.pool_chunks,
         },
         host.conv1_w.clone(),
         host.conv1_b.clone(),

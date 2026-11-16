@@ -7,7 +7,9 @@ use std::path::Path;
 #[test]
 fn from_bytes_hears_what_from_files_does() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../weights/asr/whisper-tiny");
-    let Ok(wav) = std::env::var("RLX_WHISPER_TEST_WAV") else { return };
+    let Ok(wav) = std::env::var("RLX_WHISPER_TEST_WAV") else {
+        return;
+    };
     if !dir.join("model.safetensors").exists() {
         return;
     }
@@ -19,7 +21,10 @@ fn from_bytes_hears_what_from_files_does() {
         .unwrap()
         .transcribe_greedy(&pcm)
         .unwrap();
-    let config = rlx_whisper::config::WhisperConfig::from_json(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    let config = rlx_whisper::config::WhisperConfig::from_json(
+        &std::fs::read_to_string(dir.join("config.json")).unwrap(),
+    )
+    .unwrap();
     let from_bytes = rlx_whisper::WhisperRunnerBuilder::default()
         .weights_bytes(std::fs::read(dir.join("model.safetensors")).unwrap())
         .tokenizer_bytes(std::fs::read(dir.join("tokenizer.json")).unwrap())

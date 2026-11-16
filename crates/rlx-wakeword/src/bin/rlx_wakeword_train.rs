@@ -55,7 +55,8 @@ fn main() -> Result<()> {
         opts.context_ms = ms;
     }
     if let Some(m) = flag(&args, "--model") {
-        opts.model = rlx_wake::WakeCnnConfig::named(&m).ok_or_else(|| anyhow::anyhow!("--model must be lite|mid|full (got {m})"))?;
+        opts.model = rlx_wake::WakeCnnConfig::named(&m)
+            .ok_or_else(|| anyhow::anyhow!("--model must be lite|mid|full (got {m})"))?;
     }
     if args.iter().any(|a| a == "--ternary") {
         let layers = flag(&args, "--ternary-layers").unwrap_or_else(|| "fc".into());
@@ -79,7 +80,10 @@ fn main() -> Result<()> {
         eprintln!("[rlx-wakeword-train] device={label}");
     }
     // A GPU (or `--graph`): train as an RLX graph there, in minibatches.
-    let gpu = devices.iter().copied().find(|d| *d != rlx_wake::Device::Cpu);
+    let gpu = devices
+        .iter()
+        .copied()
+        .find(|d| *d != rlx_wake::Device::Cpu);
     if gpu.is_some() || args.iter().any(|a| a == "--graph") {
         let mut g = rlx_wake::GraphTrainConfig::default();
         if let Some(b) = flag(&args, "--batch").and_then(|s| s.parse().ok()) {
@@ -100,7 +104,10 @@ fn main() -> Result<()> {
             g.mine_every = e;
         }
         let device = gpu.unwrap_or(rlx_wake::Device::Cpu);
-        eprintln!("[rlx-wakeword-train] graph training on {device:?}, batch {}, AdamW lr {}", g.batch, g.lr);
+        eprintln!(
+            "[rlx-wakeword-train] graph training on {device:?}, batch {}, AdamW lr {}",
+            g.batch, g.lr
+        );
         opts.graph = Some((device, g));
     }
 

@@ -456,10 +456,12 @@ impl FastDecoder {
         // Mapped, not read: only the decoder's pages are touched (whisper-small: ~0.55 of
         // 0.97 GB), which on a Raspberry Pi's eMMC halved loading and removed a whole-file copy
         // from the peak memory.
-        let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let file =
+            std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
         // SAFETY: the checkpoint is not modified while it is mapped (a read-only model file).
         #[allow(unsafe_code)]
-        let bytes = unsafe { memmap2::Mmap::map(&file) }.with_context(|| format!("mapping {}", path.display()))?;
+        let bytes = unsafe { memmap2::Mmap::map(&file) }
+            .with_context(|| format!("mapping {}", path.display()))?;
         let st = SafeTensors::deserialize(&bytes)?;
         let p = "model.decoder";
         let lin = |name: &str, bias: bool| -> Result<Lin> {

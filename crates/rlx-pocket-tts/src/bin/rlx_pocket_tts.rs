@@ -253,10 +253,19 @@ fn batch(a: BatchArgs) -> Result<()> {
             Err(e) => eprintln!("skipped {text:?}: {e:#}"),
         }
         if made % 50 == 0 && made > 0 {
-            eprintln!("{made} / {} ({:.0}s of audio in {:.0}s)", jobs.len(), audio, t0.elapsed().as_secs_f32());
+            eprintln!(
+                "{made} / {} ({:.0}s of audio in {:.0}s)",
+                jobs.len(),
+                audio,
+                t0.elapsed().as_secs_f32()
+            );
         }
     }
-    eprintln!("made {made} ({:.0}s of audio) in {:.0}s", audio, t0.elapsed().as_secs_f32());
+    eprintln!(
+        "made {made} ({:.0}s of audio) in {:.0}s",
+        audio,
+        t0.elapsed().as_secs_f32()
+    );
     Ok(())
 }
 

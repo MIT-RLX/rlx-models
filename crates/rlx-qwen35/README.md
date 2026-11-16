@@ -153,6 +153,13 @@ just qwen35 -- --weights weights/Qwen3.5-0.8B-gguf/Qwen3.5-0.8B-Q4_K_M.gguf \
 # Or safetensors directory from Qwen/Qwen3.5-0.8B-Base
 just qwen35 -- --weights weights/Qwen3.5-0.8B-Base --chat --prompt "Hello" --max-tokens 32
 
+# Any HF `qwen3_5` fine-tune works the same way, e.g. the 9B
+# xtools-at/DeepSeek-V4-Pro-Qwen3.5-9B-UNCENSORED-heretic (~19 GB bf16, ~36 GB
+# resident as dense f32). Contract: tests/dsv4pro_qwen35_9b.rs (real config +
+# 775-tensor manifest); numerics: just test-dsv4pro-qwen35-9b-parity
+just fetch-dsv4pro-qwen35-9b
+just qwen35 -- --weights weights/lm/dsv4pro-qwen35-9b --chat --prompt "Hello" --max-tokens 32
+
 # Generic local GGUF path
 just qwen35 -- --weights model.gguf --prompt "Hello" --max-tokens 32
 # or:

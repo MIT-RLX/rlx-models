@@ -330,7 +330,9 @@ pub fn train_wake_cnn(
     let mut rng = 0x2545_F491_4F6C_DD1Du64;
     for epoch in 0..cfg.sgd.epochs {
         for i in (1..order.len()).rev() {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             order.swap(i, (rng >> 33) as usize % (i + 1));
         }
         let mut sum = 0.0f32;

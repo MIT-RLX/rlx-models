@@ -53,9 +53,14 @@ fn streaming_gives_the_same_samples_in_blocks() {
     let text = "Les enfants jouent dans le jardin, et leur mère prépare le dîner.";
     let whole = tts.generate(text, &voice).unwrap();
     let mut blocks: Vec<Vec<f32>> = Vec::new();
-    let streamed = tts.generate_streaming(text, &voice, &mut |b| blocks.push(b.to_vec())).unwrap();
+    let streamed = tts
+        .generate_streaming(text, &voice, &mut |b| blocks.push(b.to_vec()))
+        .unwrap();
     assert!(blocks.len() > 1, "{} blocks", blocks.len());
-    assert!(blocks[0].len() < whole.samples.len() / 2, "the first block comes early");
+    assert!(
+        blocks[0].len() < whole.samples.len() / 2,
+        "the first block comes early"
+    );
     assert_eq!(blocks.concat(), whole.samples, "the blocks are the audio");
     assert_eq!(streamed.samples, whole.samples);
 }

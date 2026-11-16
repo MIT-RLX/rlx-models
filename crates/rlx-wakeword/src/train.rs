@@ -304,7 +304,8 @@ pub fn train_one_phrase(
     // Train on the window the session scores at run time (`context_ms`, 10 ms mel hop), not
     // the trainer's default 40 frames: 0.4 s cannot hold a two-word phrase, and a model
     // trained on the clip's last 0.4 s and run on 1.2 s answered "no" to everything.
-    let hop_ms = 1000.0 * rlx_wakeword_core::MelConfig::default().hop_length as f32 / rlx_wakeword_core::SAMPLE_RATE_16K as f32;
+    let hop_ms = 1000.0 * rlx_wakeword_core::MelConfig::default().hop_length as f32
+        / rlx_wakeword_core::SAMPLE_RATE_16K as f32;
     let cfg = CnnTrainConfig {
         window_frames: ((opts.context_ms / hop_ms).round() as usize).max(1),
         keyword: spec.id.clone(),
@@ -316,7 +317,9 @@ pub fn train_one_phrase(
         },
     };
     let report = match &opts.graph {
-        Some((device, gcfg)) => rlx_wake::train_wake_cnn_device(&mut w, &clips, &cfg, gcfg, *device),
+        Some((device, gcfg)) => {
+            rlx_wake::train_wake_cnn_device(&mut w, &clips, &cfg, gcfg, *device)
+        }
         None => train_wake_cnn(&mut w, &clips, &cfg),
     };
     if let Some(topts) = opts.ternary {
@@ -371,8 +374,15 @@ pub fn train_phrases(
         speaker_id: false,
         ..WakewordConfig::default()
     };
-    let sources = weights.iter().map(|(id, _)| (format!("phrase_{id}.safetensors"), 0)).collect();
-    Ok(WakewordBundle { config, weights, sources })
+    let sources = weights
+        .iter()
+        .map(|(id, _)| (format!("phrase_{id}.safetensors"), 0))
+        .collect();
+    Ok(WakewordBundle {
+        config,
+        weights,
+        sources,
+    })
 }
 
 /// Quick multi-word synth: `word0` … `word{n-1}`.

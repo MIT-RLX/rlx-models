@@ -9,9 +9,18 @@
 use rlx_wakeword_core::{WakeCnn, WakeCnnConfig, WakeCnnWeights};
 
 fn weights(n_out: usize, seed: u64) -> WakeCnnWeights {
-    let mut w = WakeCnnWeights::he_init(WakeCnnConfig::lite(), seed);
+    // Order-aware pooling (4 stretches), as trained now.
+    let mut w = WakeCnnWeights::he_init(
+        WakeCnnConfig {
+            pool_chunks: 4,
+            ..WakeCnnConfig::lite()
+        },
+        seed,
+    );
     let h = w.cfg.hidden;
-    w.fc2_w = (0..n_out * h).map(|i| ((i * 7919 % 211) as f32 - 105.0) / 400.0).collect();
+    w.fc2_w = (0..n_out * h)
+        .map(|i| ((i * 7919 % 211) as f32 - 105.0) / 400.0)
+        .collect();
     w.fc2_b = (0..n_out).map(|i| i as f32 * 0.1 - 0.2).collect();
     w
 }
@@ -38,12 +47,17 @@ fn streaming_matches_the_full_window_exactly() {
         let (mut at, mut i, mut scored) = (0usize, 0usize, 0usize);
         while at + hops[i % hops.len()] <= all.len() / n_mels {
             let h = hops[i % hops.len()];
-            let got = stream.push_mel_frames_all(&all[at * n_mels..(at + h) * n_mels]).map(|p| p.to_vec());
+            let got = stream
+                .push_mel_frames_all(&all[at * n_mels..(at + h) * n_mels])
+                .map(|p| p.to_vec());
             at += h;
             i += 1;
             let Some(got) = got else { continue };
             let mut fresh = WakeCnn::new(w.clone()).with_window_frames(window);
-            let want = fresh.push_mel_frames_all(&all[(at - window) * n_mels..at * n_mels]).unwrap().to_vec();
+            let want = fresh
+                .push_mel_frames_all(&all[(at - window) * n_mels..at * n_mels])
+                .unwrap()
+                .to_vec();
             assert_eq!(got, want, "window {window}, hop {h} ending at frame {at}");
             scored += 1;
         }
@@ -59,7 +73,14 @@ fn appending_without_scoring_then_scoring_is_still_exact() {
     let mut s = WakeCnn::new(w.clone()).with_window_frames(100);
     s.push_mel_frames_all(&all[..120 * n_mels]);
     s.append_mel_frames(&all[120 * n_mels..140 * n_mels]);
-    let got = s.push_mel_frames_all(&all[140 * n_mels..144 * n_mels]).unwrap().to_vec();
-    let want = WakeCnn::new(w).with_window_frames(100).push_mel_frames_all(&all[44 * n_mels..144 * n_mels]).unwrap().to_vec();
+    let got = s
+        .push_mel_frames_all(&all[140 * n_mels..144 * n_mels])
+        .unwrap()
+        .to_vec();
+    let want = WakeCnn::new(w)
+        .with_window_frames(100)
+        .push_mel_frames_all(&all[44 * n_mels..144 * n_mels])
+        .unwrap()
+        .to_vec();
     assert_eq!(got, want);
 }

@@ -59,6 +59,9 @@ pub struct MultiTrainConfig {
     pub mine_stride: usize,
     pub mine_threshold: f32,
     pub mine_ratio: f32,
+    /// Each training window louder or softer by up to this many dB (uniform), as if said
+    /// nearer or further: a constant on every log-mel bin. 0 = off.
+    pub gain_db: f32,
     pub log_every: usize,
 }
 
@@ -78,6 +81,7 @@ impl Default for MultiTrainConfig {
             mine_stride: 8,
             mine_threshold: 0.2,
             mine_ratio: 0.5,
+            gain_db: 12.0,
             log_every: 5,
         }
     }
@@ -103,14 +107,23 @@ fn sh(dims: &[usize]) -> Shape {
     Shape::new(dims, DType::F32)
 }
 
-const PARAMS: [&str; 10] = ["conv1_w", "conv1_b", "conv2_w", "conv2_b", "conv3_w", "conv3_b", "fc1_w", "fc1_b", "fc2_w", "fc2_b"];
+const PARAMS: [&str; 10] = [
+    "conv1_w", "conv1_b", "conv2_w", "conv2_b", "conv3_w", "conv3_b", "fc1_w", "fc1_b", "fc2_w",
+    "fc2_b",
+];
 
 /// The CNN over `x [B, T, n_mels]` (frames as stored: a batch is plain copies; the transpose
 /// to channel-major is the device's): logits `[B, K]` and the parameter nodes. The 1-D
 /// convolutions are `conv2d` over `[B, C, 1, T]` with `1 × k` kernels, in the engine's weight
 /// layout. (Rewriting them as GEMMs over shifted views was slower on Metal at these shapes:
 /// tall, skinny products plus the slicing.)
-fn body(g: &mut Graph, c: &WakeCnnConfig, n_out: usize, b: usize, t: usize) -> (NodeId, Vec<NodeId>) {
+fn body(
+    g: &mut Graph,
+    c: &WakeCnnConfig,
+    n_out: usize,
+    b: usize,
+    t: usize,
+) -> (NodeId, Vec<NodeId>) {
     let (k, pad) = (c.k, c.k / 2);
     let x = g.input("x", sh(&[b, t, c.n_mels]));
     let x = g.transpose_(x, vec![0, 2, 1]);
@@ -122,7 +135,7 @@ fn body(g: &mut Graph, c: &WakeCnnConfig, n_out: usize, b: usize, t: usize) -> (
         g.param("conv2_b", sh(&[1, c.c2, 1, 1])),
         g.param("conv3_w", sh(&[c.c3, c.c2, 1, k])),
         g.param("conv3_b", sh(&[1, c.c3, 1, 1])),
-        g.param("fc1_w", sh(&[c.c3, c.hidden])),
+        g.param("fc1_w", sh(&[c.c3 * c.pool_chunks.max(1), c.hidden])),
         g.param("fc1_b", sh(&[1, c.hidden])),
         g.param("fc2_w", sh(&[c.hidden, n_out])),
         g.param("fc2_b", sh(&[1, n_out])),
@@ -135,7 +148,27 @@ fn body(g: &mut Graph, c: &WakeCnnConfig, n_out: usize, b: usize, t: usize) -> (
     let h = conv(g, x, p[0], p[1], 1);
     let h = conv(g, h, p[2], p[3], 2);
     let h = conv(g, h, p[4], p[5], 2);
-    let pooled = g.mean(h, vec![2, 3], false); // [B, c3]
+    // Each of `pool_chunks` consecutive stretches averaged, in order ([B, c3 · chunks],
+    // chunk-major: the engine's `pool_chunks`).
+    let chunks = c.pool_chunks.max(1);
+    let t1 = t;
+    let t2 = (t1 + 2 * pad - k) / 2 + 1;
+    let t3 = (t2 + 2 * pad - k) / 2 + 1;
+    let pooled = if chunks == 1 {
+        g.mean(h, vec![2, 3], false)
+    } else {
+        let parts: Vec<NodeId> = (0..chunks)
+            .map(|i| {
+                let (lo, hi) = (
+                    i * t3 / chunks,
+                    ((i + 1) * t3 / chunks).max(i * t3 / chunks + 1).min(t3),
+                );
+                let part = g.narrow_(h, 3, lo, hi - lo);
+                g.mean(part, vec![2, 3], false)
+            })
+            .collect();
+        g.concat_(parts, 1)
+    };
     let h = g.mm(pooled, p[6]);
     let h = g.add(h, p[7]);
     let h = g.relu(h);
@@ -193,7 +226,7 @@ fn to_graph(w: &WakeCnnWeights) -> HashMap<String, Vec<f32>> {
         w.conv2_b.clone(),
         w.conv3_w.clone(),
         w.conv3_b.clone(),
-        transpose(&w.fc1_w, c.hidden, c.c3),
+        transpose(&w.fc1_w, c.hidden, c.c3 * c.pool_chunks.max(1)),
         w.fc1_b.clone(),
         transpose(&w.fc2_w, k, c.hidden),
         w.fc2_b.clone(),
@@ -202,7 +235,11 @@ fn to_graph(w: &WakeCnnWeights) -> HashMap<String, Vec<f32>> {
 }
 
 fn from_graph(w: &mut WakeCnnWeights, p: &HashMap<String, Vec<f32>>) {
-    let (c3, hidden, k) = (w.cfg.c3, w.cfg.hidden, w.fc2_b.len());
+    let (c3, hidden, k) = (
+        w.cfg.c3 * w.cfg.pool_chunks.max(1),
+        w.cfg.hidden,
+        w.fc2_b.len(),
+    );
     w.conv1_w.clone_from(&p["conv1_w"]);
     w.conv1_b.clone_from(&p["conv1_b"]);
     w.conv2_w.clone_from(&p["conv2_w"]);
@@ -221,7 +258,9 @@ pub fn init_multi(cfg: WakeCnnConfig, n_out: usize, seed: u64) -> WakeCnnWeights
     let h = w.cfg.hidden;
     let base = WakeCnnWeights::he_init(w.cfg.clone(), seed ^ 0x5151).fc1_w;
     let a = (6.0 / h as f32).sqrt();
-    w.fc2_w = (0..n_out * h).map(|i| base[i % base.len()].signum() * a * ((i * 2_654_435_761 % 1000) as f32 / 1000.0)).collect();
+    w.fc2_w = (0..n_out * h)
+        .map(|i| base[i % base.len()].signum() * a * ((i * 2_654_435_761 % 1000) as f32 / 1000.0))
+        .collect();
     w.fc2_b = vec![0.0; n_out];
     w
 }
@@ -236,14 +275,44 @@ fn window_into(mel: &[f32], n_mels: usize, end: usize, t: usize, dst: &mut [f32]
     dst[gap..].copy_from_slice(&mel[(end - take) * n_mels..end * n_mels]);
 }
 
-/// `(clip, window end, class)` per batch row into `x [B, n_mels·t]` and `y [B, K]`, on every core.
-fn fill_batch(items: &[(usize, usize, Option<usize>)], mels: &[Vec<f32>], n_mels: usize, t: usize, n_out: usize, x: &mut [f32], y: &mut [f32]) {
+/// One feature step per dB: features are `ln(power) / 10 + 2`.
+const FEATURE_PER_DB: f32 = std::f32::consts::LN_10 / 100.0;
+
+/// `(clip, window end, class)` per batch row into `x [B, n_mels·t]` and `y [B, K]`, on every core;
+/// each window shifted by a random gain within `±gain_db` (`seed`: this batch's draw).
+#[allow(clippy::too_many_arguments)]
+fn fill_batch(
+    items: &[(usize, usize, Option<usize>)],
+    mels: &[Vec<f32>],
+    n_mels: usize,
+    t: usize,
+    n_out: usize,
+    x: &mut [f32],
+    y: &mut [f32],
+    gain_db: f32,
+    seed: u64,
+) {
     let per = items.len().div_ceil(8).max(16);
     std::thread::scope(|s| {
-        for ((it, xc), yc) in items.chunks(per).zip(x.chunks_mut(per * n_mels * t)).zip(y.chunks_mut(per * n_out)) {
+        for (part, ((it, xc), yc)) in items
+            .chunks(per)
+            .zip(x.chunks_mut(per * n_mels * t))
+            .zip(y.chunks_mut(per * n_out))
+            .enumerate()
+        {
             s.spawn(move || {
+                let mut r = seed ^ (part as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
                 for (j, &(i, e, c)) in it.iter().enumerate() {
-                    window_into(&mels[i], n_mels, e, t, &mut xc[j * n_mels * t..(j + 1) * n_mels * t]);
+                    let row = &mut xc[j * n_mels * t..(j + 1) * n_mels * t];
+                    window_into(&mels[i], n_mels, e, t, row);
+                    if gain_db > 0.0 {
+                        r = r
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        let u = (r >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0;
+                        let shift = u * gain_db * FEATURE_PER_DB;
+                        row.iter_mut().for_each(|v| *v += shift);
+                    }
                     let row = &mut yc[j * n_out..(j + 1) * n_out];
                     row.fill(0.0);
                     if let Some(c) = c {
@@ -274,9 +343,15 @@ pub fn load_mels_cached(paths: &[PathBuf], cache: Option<&Path>) -> Result<Vec<V
         if let Some(k) = &k
             && let Ok(b) = std::fs::read(k)
         {
-            return Ok(b.as_chunks::<4>().0.iter().map(|x| f32::from_le_bytes(*x)).collect());
+            return Ok(b
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|x| f32::from_le_bytes(*x))
+                .collect());
         }
-        let (sr, pcm) = crate::load_wav_mono_f32(p).with_context(|| format!("read {}", p.display()))?;
+        let (sr, pcm) =
+            crate::load_wav_mono_f32(p).with_context(|| format!("read {}", p.display()))?;
         let pcm = crate::resample_linear(&pcm, sr, crate::SAMPLE_RATE_16K);
         let mel = clip_mel_frames(&pcm);
         if let Some(k) = &k {
@@ -291,7 +366,10 @@ pub fn load_mels_cached(paths: &[PathBuf], cache: Option<&Path>) -> Result<Vec<V
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let per = paths.len().div_ceil(threads).max(1);
     std::thread::scope(|s| {
-        let parts: Vec<_> = paths.chunks(per).map(|part| s.spawn(move || part.iter().map(one).collect::<Result<Vec<_>>>())).collect();
+        let parts: Vec<_> = paths
+            .chunks(per)
+            .map(|part| s.spawn(move || part.iter().map(one).collect::<Result<Vec<_>>>()))
+            .collect();
         let mut out = Vec::with_capacity(paths.len());
         for h in parts {
             out.extend(h.join().expect("mel thread")?);
@@ -301,7 +379,12 @@ pub fn load_mels_cached(paths: &[PathBuf], cache: Option<&Path>) -> Result<Vec<V
 }
 
 /// Train `w` (`K` = `w.fc2_b.len()` outputs) on `clips` on `device`.
-pub fn train_multi(w: &mut WakeCnnWeights, clips: &[MultiClip], cfg: &MultiTrainConfig, device: Device) -> Result<MultiReport> {
+pub fn train_multi(
+    w: &mut WakeCnnWeights,
+    clips: &[MultiClip],
+    cfg: &MultiTrainConfig,
+    device: Device,
+) -> Result<MultiReport> {
     let n_mels = w.cfg.n_mels;
     let n_out = w.fc2_b.len();
     let t = cfg.window_frames.max(8);
@@ -327,11 +410,19 @@ pub fn train_multi(w: &mut WakeCnnWeights, clips: &[MultiClip], cfg: &MultiTrain
     let frames: Vec<usize> = clips.iter().map(|c| c.mel.len() / n_mels + lead).collect();
     let ext: Vec<usize> = mels.iter().map(|m| m.len() / n_mels).collect();
     let n = clips.len();
-    let positives: Vec<usize> = (0..n).filter(|&i| clips[i].class.is_some() && frames[i] >= t + cfg.partial_gap).collect();
+    let positives: Vec<usize> = (0..n)
+        .filter(|&i| clips[i].class.is_some() && frames[i] >= t + cfg.partial_gap)
+        .collect();
     let negatives: Vec<usize> = (0..n).filter(|&i| clips[i].class.is_none()).collect();
-    let n_partial = if positives.is_empty() { 0 } else { (positives.len() as f32 * cfg.partial_ratio) as usize };
+    let n_partial = if positives.is_empty() {
+        0
+    } else {
+        (positives.len() as f32 * cfg.partial_ratio) as usize
+    };
     // Balance the phrases: each phrase's positives repeated up to the largest phrase's count.
-    let per_class: Vec<usize> = (0..n_out).map(|c| (0..n).filter(|&i| clips[i].class == Some(c)).count()).collect();
+    let per_class: Vec<usize> = (0..n_out)
+        .map(|c| (0..n).filter(|&i| clips[i].class == Some(c)).count())
+        .collect();
     let largest = per_class.iter().copied().max().unwrap_or(0);
     let extra: Vec<usize> = (0..n)
         .filter_map(|i| clips[i].class.map(|c| (i, c)))
@@ -342,9 +433,21 @@ pub fn train_multi(w: &mut WakeCnnWeights, clips: &[MultiClip], cfg: &MultiTrain
     let b = cfg.batch.max(1);
 
     let (fwd, nodes) = build_loss(&w.cfg, n_out, b, t);
-    let wrt: Vec<TrainableParam> = PARAMS.iter().zip(&nodes).map(|(name, &node)| TrainableParam { name: name.to_string(), node }).collect();
-    let spec = AdamSpec { lr: cfg.lr, weight_decay: cfg.weight_decay, ..AdamSpec::default() };
-    let mut trainer = ResidentTrainer::new(&fwd, &wrt, &to_graph(w), &spec, device).map_err(|e| anyhow::anyhow!("fused step: {e}"))?;
+    let wrt: Vec<TrainableParam> = PARAMS
+        .iter()
+        .zip(&nodes)
+        .map(|(name, &node)| TrainableParam {
+            name: name.to_string(),
+            node,
+        })
+        .collect();
+    let spec = AdamSpec {
+        lr: cfg.lr,
+        weight_decay: cfg.weight_decay,
+        ..AdamSpec::default()
+    };
+    let mut trainer = ResidentTrainer::new(&fwd, &wrt, &to_graph(w), &spec, device)
+        .map_err(|e| anyhow::anyhow!("fused step: {e}"))?;
     let mut probe = Session::new(device).compile(build_probs(&w.cfg, n_out, b, t));
     let resident = trainer.is_resident();
     if cfg.log_every > 0 {
@@ -352,27 +455,37 @@ pub fn train_multi(w: &mut WakeCnnWeights, clips: &[MultiClip], cfg: &MultiTrain
             "[rlx-wake multi/{device:?}] {n} clips, {} outputs, window {t}: setup {:.1?}, optimizer {}",
             n_out,
             t0.elapsed(),
-            if resident { "on the device" } else { "host-chained (no device handles)" }
+            if resident {
+                "on the device"
+            } else {
+                "host-chained (no device handles)"
+            }
         );
     }
 
     let mut rng = 0x2545_F491_4F6C_DD1Du64;
     let mut next = move || {
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        rng = rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (rng >> 33) as usize
     };
     // Score windows `(clip, end)` with the current weights: probabilities `[len, K]`.
-    let score = |probe: &mut rlx_runtime::CompiledGraph, params: &HashMap<String, Vec<f32>>, wins: &[(usize, usize)]| -> Vec<f32> {
+    let score = |probe: &mut rlx_runtime::CompiledGraph,
+                 params: &HashMap<String, Vec<f32>>,
+                 wins: &[(usize, usize)]|
+     -> Vec<f32> {
         for (name, p) in params {
             probe.set_param(name, p);
         }
         let mut out = Vec::with_capacity(wins.len() * n_out);
         let mut px = vec![0.0f32; b * n_mels * t];
         for chunk in wins.chunks(b) {
-            let items: Vec<(usize, usize, Option<usize>)> = chunk.iter().map(|&(i, e)| (i, e, None)).collect();
+            let items: Vec<(usize, usize, Option<usize>)> =
+                chunk.iter().map(|&(i, e)| (i, e, None)).collect();
             let mut dummy = vec![0.0f32; b * n_out];
             px.fill(0.0);
-            fill_batch(&items, &mels, n_mels, t, n_out, &mut px, &mut dummy);
+            fill_batch(&items, &mels, n_mels, t, n_out, &mut px, &mut dummy, 0.0, 0);
             let o = probe.run(&[("x", &px)]);
             out.extend_from_slice(&o[0][..chunk.len() * n_out]);
         }
@@ -385,16 +498,30 @@ pub fn train_multi(w: &mut WakeCnnWeights, clips: &[MultiClip], cfg: &MultiTrain
     let (mut initial, mut last) = (0.0f32, 0.0f32);
     let t_train = Instant::now();
     for epoch in 0..cfg.epochs {
-        if cfg.mine_every > 0 && epoch >= cfg.mine_after && (epoch - cfg.mine_after).is_multiple_of(cfg.mine_every) {
+        if cfg.mine_every > 0
+            && epoch >= cfg.mine_after
+            && (epoch - cfg.mine_after).is_multiple_of(cfg.mine_every)
+        {
             let tm = Instant::now();
-            let wins: Vec<(usize, usize)> = negatives.iter().flat_map(|&i| (t..=ext[i].max(t)).step_by(cfg.mine_stride.max(1)).map(move |e| (i, e))).collect();
+            let wins: Vec<(usize, usize)> = negatives
+                .iter()
+                .flat_map(|&i| {
+                    (t..=ext[i].max(t))
+                        .step_by(cfg.mine_stride.max(1))
+                        .map(move |e| (i, e))
+                })
+                .collect();
             let probs = score(&mut probe, &trainer.params(), &wins);
             // Each window counts against the output it fires most; each output keeps its own
             // worst ones, up to `mine_ratio` × its (balanced) positives.
             let mut by_out: Vec<Vec<(f32, usize, usize)>> = vec![Vec::new(); n_out];
             for (j, &(i, e)) in wins.iter().enumerate() {
                 let row = &probs[j * n_out..(j + 1) * n_out];
-                let (k, m) = row.iter().copied().enumerate().fold((0, 0.0f32), |a, (k, v)| if v > a.1 { (k, v) } else { a });
+                let (k, m) = row
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .fold((0, 0.0f32), |a, (k, v)| if v > a.1 { (k, v) } else { a });
                 if m > cfg.mine_threshold {
                     by_out[k].push((m, i, e));
                 }
@@ -409,7 +536,13 @@ pub fn train_multi(w: &mut WakeCnnWeights, clips: &[MultiClip], cfg: &MultiTrain
                 })
                 .collect();
             if cfg.log_every > 0 {
-                eprintln!("[rlx-wake multi] epoch={epoch} mined {found} of {} negative windows above {}: training on {} ({:.1?})", wins.len(), cfg.mine_threshold, hard.len(), tm.elapsed());
+                eprintln!(
+                    "[rlx-wake multi] epoch={epoch} mined {found} of {} negative windows above {}: training on {} ({:.1?})",
+                    wins.len(),
+                    cfg.mine_threshold,
+                    hard.len(),
+                    tm.elapsed()
+                );
             }
         }
         let total = n + n_partial + hard.len();
@@ -418,12 +551,18 @@ pub fn train_multi(w: &mut WakeCnnWeights, clips: &[MultiClip], cfg: &MultiTrain
             order.swap(i, next() % (i + 1));
         }
         let steps = total.div_ceil(b);
-        let pick = |s: usize, next: &mut dyn FnMut() -> usize| -> Vec<(usize, usize, Option<usize>)> {
+        let pick = |s: usize,
+                    next: &mut dyn FnMut() -> usize|
+         -> Vec<(usize, usize, Option<usize>)> {
             (0..b)
                 .map(|j| {
                     let item = order[(s * b + j) % total];
                     if item < n {
-                        let item = if item < n_clips { item } else { extra[item - n_clips] };
+                        let item = if item < n_clips {
+                            item
+                        } else {
+                            extra[item - n_clips]
+                        };
                         let f = frames[item];
                         match clips[item].class {
                             Some(c) => (item, f - next() % (POS_JITTER + 1).min(f.max(1)), Some(c)),
@@ -441,24 +580,40 @@ pub fn train_multi(w: &mut WakeCnnWeights, clips: &[MultiClip], cfg: &MultiTrain
                 .collect()
         };
         let first = pick(0, &mut next);
-        fill_batch(&first, &mels, n_mels, t, n_out, &mut xb, &mut yb);
+        fill_batch(
+            &first,
+            &mels,
+            n_mels,
+            t,
+            n_out,
+            &mut xb,
+            &mut yb,
+            cfg.gain_db,
+            next() as u64,
+        );
         let mut sum = 0.0f32;
         let (mut in_step, mut waited) = (0.0f64, 0.0f64);
         for s in 0..steps {
             // Cut the next batch while the device runs this one.
-            let upcoming = (s + 1 < steps).then(|| pick(s + 1, &mut next));
+            let upcoming = (s + 1 < steps).then(|| (pick(s + 1, &mut next), next() as u64));
             let ts = Instant::now();
             let loss = std::thread::scope(|sc| {
-                if let Some(items) = &upcoming {
-                    let (xn, yn, mels) = (&mut xn, &mut yn, &mels);
-                    sc.spawn(move || fill_batch(items, mels, n_mels, t, n_out, xn, yn));
+                if let Some((items, seed)) = &upcoming {
+                    let (xn, yn, mels, gain) = (&mut xn, &mut yn, &mels, cfg.gain_db);
+                    sc.spawn(move || {
+                        fill_batch(items, mels, n_mels, t, n_out, xn, yn, gain, *seed)
+                    });
                 }
                 let r = trainer.step(&[("x", &xb), ("y", &yb)]);
                 in_step += ts.elapsed().as_secs_f64();
                 r
             });
             waited += ts.elapsed().as_secs_f64();
-            let l = loss.first().and_then(|v| v.first()).copied().unwrap_or(f32::NAN);
+            let l = loss
+                .first()
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or(f32::NAN);
             sum += l;
             std::mem::swap(&mut xb, &mut xn);
             std::mem::swap(&mut yb, &mut yn);
@@ -499,7 +654,14 @@ pub fn train_multi(w: &mut WakeCnnWeights, clips: &[MultiClip], cfg: &MultiTrain
             }
         }
     }
-    Ok(MultiReport { initial_loss: initial, final_loss: last, resident, secs_per_epoch, recall, negatives_firing: neg })
+    Ok(MultiReport {
+        initial_loss: initial,
+        final_loss: last,
+        resident,
+        secs_per_epoch,
+        recall,
+        negatives_firing: neg,
+    })
 }
 
 #[cfg(test)]
@@ -510,7 +672,10 @@ mod tests {
     /// (same weights after the layout conversions, K outputs).
     #[test]
     fn graph_matches_the_engine() {
-        let cfg = WakeCnnConfig::lite();
+        let cfg = WakeCnnConfig {
+            pool_chunks: 4,
+            ..WakeCnnConfig::lite()
+        };
         let w = init_multi(cfg.clone(), 3, 11);
         let (b, t) = (2usize, 40usize);
         let n_mels = cfg.n_mels;
@@ -529,9 +694,25 @@ mod tests {
         }
         let got = probe.run(&[("x", &x)]).remove(0);
         let core = rlx_wakeword_core::WakeCnnWeights::from_parts(
-            rlx_wakeword_core::WakeCnnConfig { n_mels, c1: cfg.c1, c2: cfg.c2, c3: cfg.c3, k: cfg.k, hidden: cfg.hidden },
-            w.conv1_w.clone(), w.conv1_b.clone(), w.conv2_w.clone(), w.conv2_b.clone(), w.conv3_w.clone(), w.conv3_b.clone(),
-            w.fc1_w.clone(), w.fc1_b.clone(), w.fc2_w.clone(), w.fc2_b.clone(),
+            rlx_wakeword_core::WakeCnnConfig {
+                n_mels,
+                c1: cfg.c1,
+                c2: cfg.c2,
+                c3: cfg.c3,
+                k: cfg.k,
+                hidden: cfg.hidden,
+                pool_chunks: cfg.pool_chunks,
+            },
+            w.conv1_w.clone(),
+            w.conv1_b.clone(),
+            w.conv2_w.clone(),
+            w.conv2_b.clone(),
+            w.conv3_w.clone(),
+            w.conv3_b.clone(),
+            w.fc1_w.clone(),
+            w.fc1_b.clone(),
+            w.fc2_w.clone(),
+            w.fc2_b.clone(),
         );
         let mut engine = rlx_wakeword_core::WakeCnn::new(core).with_window_frames(t);
         let want = engine.push_mel_frames_all(&frames).unwrap().to_vec();
@@ -582,12 +763,24 @@ mod tests {
             clips.push(MultiClip { mel, class });
         }
         let mut w = init_multi(cfg, 2, 3);
-        let tc = MultiTrainConfig { epochs: 40, batch: 32, window_frames: 40, partial_ratio: 0.0, mine_every: 0, log_every: 0, lr: 3e-3, ..Default::default() };
+        let tc = MultiTrainConfig {
+            epochs: 40,
+            batch: 32,
+            window_frames: 40,
+            partial_ratio: 0.0,
+            mine_every: 0,
+            log_every: 0,
+            lr: 3e-3,
+            ..Default::default()
+        };
         let r = train_multi(&mut w, &clips, &tc, Device::Cpu).unwrap();
         assert!(r.final_loss < r.initial_loss * 0.5, "{r:?}");
         for (found, total) in &r.recall {
             assert!(*found as f32 >= 0.9 * *total as f32, "{r:?}");
         }
-        assert!(r.negatives_firing.0 as f32 <= 0.1 * r.negatives_firing.1 as f32, "{r:?}");
+        assert!(
+            r.negatives_firing.0 as f32 <= 0.1 * r.negatives_firing.1 as f32,
+            "{r:?}"
+        );
     }
 }

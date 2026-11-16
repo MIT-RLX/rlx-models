@@ -32,7 +32,8 @@ use rlx_runtime::{CompiledGraph, Device};
 
 use crate::checkpoint::Checkpoint;
 use crate::graph::flow_lm::{
-    FlowLmDims, KV_WRITE, OUT_EOS, OUT_HIDDEN, OUT_KV, OUT_LATENT, build_step_with, past_k_name, past_v_name,
+    FlowLmDims, KV_WRITE, OUT_EOS, OUT_HIDDEN, OUT_KV, OUT_LATENT, build_step_with, past_k_name,
+    past_v_name,
 };
 use crate::graph::mimi::{MimiDecoder, MimiEncoder};
 use crate::graph::{Tensor, compile, rope_tables};
@@ -594,7 +595,13 @@ impl PocketTts {
             }
             let timing = rlx_ir::env::flag("RLX_POCKET_TTS_TIMING");
             let t0 = timing.then(clock);
-            let b = build_step_with(&self.ck, &self.spec, cap, self.options.sampler_steps, self.resident)?;
+            let b = build_step_with(
+                &self.ck,
+                &self.spec,
+                cap,
+                self.options.sampler_steps,
+                self.resident,
+            )?;
             let built = t0.map(|t| clock() - t);
             let compiled = compile(b, self.device).context("compile FlowLM step")?;
             if let (Some(t0), Some(built)) = (t0, built) {
@@ -635,7 +642,9 @@ impl PocketTts {
         let names = std::mem::take(&mut self.step_names);
         let outs = {
             let graph = self.step_graph(kv.cap)?;
-            graph.run_async(&step_inputs(x, noise, &mask, &cos, &sin, &names, kv)).await
+            graph
+                .run_async(&step_inputs(x, noise, &mask, &cos, &sin, &names, kv))
+                .await
         };
         self.step_names = names;
         self.absorb_step(outs.map_err(|e| anyhow!("FlowLM step: {e}"))?, kv)
@@ -656,14 +665,21 @@ impl PocketTts {
             ("rope_sin", &sin),
             (KV_WRITE, &write),
         ];
-        let outs = self.step_graph(kv.cap)?.run_read_outputs(&inputs, Some(&[OUT_LATENT, OUT_EOS, OUT_HIDDEN]));
+        let outs = self
+            .step_graph(kv.cap)?
+            .run_read_outputs(&inputs, Some(&[OUT_LATENT, OUT_EOS, OUT_HIDDEN]));
         kv.len += 1;
         resident_output(outs)
     }
 
     /// [`Self::step_resident`] awaiting the graph (WebGPU in a browser).
     #[cfg(target_family = "wasm")]
-    async fn step_resident_async(&mut self, x: &[f32], noise: &[f32], kv: &mut Kv) -> Result<StepOutput> {
+    async fn step_resident_async(
+        &mut self,
+        x: &[f32],
+        noise: &[f32],
+        kv: &mut Kv,
+    ) -> Result<StepOutput> {
         let (mask, cos, sin) = self.step_tables(kv)?;
         let mut write = vec![0.0f32; kv.cap];
         write[kv.len] = 1.0;
@@ -940,7 +956,10 @@ impl PocketTts {
                 bail!("noise has {} values, expected {ldim}", z.len());
             }
             let s = self.step_async(&x, &z, &mut kv).await?;
-            if s.eos_logit > self.options.eos_threshold && eos_step.is_none() && step >= MIN_FRAMES_BEFORE_EOS {
+            if s.eos_logit > self.options.eos_threshold
+                && eos_step.is_none()
+                && step >= MIN_FRAMES_BEFORE_EOS
+            {
                 eos_step = Some(step);
             }
             if eos_step.is_some_and(|e| step >= e + frames_after_eos) {
@@ -948,13 +967,15 @@ impl PocketTts {
             }
             latents.extend_from_slice(&s.latent);
             if latents.len() / ldim - decoded == block {
-                self.stream_block_async(&latents[decoded * ldim..], &mut audio, sink).await?;
+                self.stream_block_async(&latents[decoded * ldim..], &mut audio, sink)
+                    .await?;
                 decoded += block;
             }
             prev = Some(s.latent);
         }
         if latents.len() / ldim > decoded {
-            self.stream_block_async(&latents[decoded * ldim..], &mut audio, sink).await?;
+            self.stream_block_async(&latents[decoded * ldim..], &mut audio, sink)
+                .await?;
         }
         Ok(audio)
     }
@@ -962,7 +983,12 @@ impl PocketTts {
     /// [`Self::stream_block`] awaiting the decoder; `audio` gets the faded
     /// samples (what the chunk returns).
     #[cfg(target_family = "wasm")]
-    async fn stream_block_async(&mut self, latents: &[f32], audio: &mut Vec<f32>, sink: &mut dyn FnMut(&[f32])) -> Result<()> {
+    async fn stream_block_async(
+        &mut self,
+        latents: &[f32],
+        audio: &mut Vec<f32>,
+        sink: &mut dyn FnMut(&[f32]),
+    ) -> Result<()> {
         let denorm = self.denormalize(latents);
         let mut block = self.mimi.decode_block_async(&denorm).await?;
         self.fade_in(&mut block, audio.len());
@@ -982,7 +1008,12 @@ impl PocketTts {
 
     /// Streaming: decode the frames from `from` on (one block, or the last
     /// part of one), keep them, and hand them to `sink` faded in.
-    fn stream_block(&mut self, out: &mut ChunkOutput, from: usize, sink: &mut dyn FnMut(&[f32])) -> Result<()> {
+    fn stream_block(
+        &mut self,
+        out: &mut ChunkOutput,
+        from: usize,
+        sink: &mut dyn FnMut(&[f32]),
+    ) -> Result<()> {
         let ldim = self.dims.latent_dim;
         let latents = self.denormalize(&out.latents[from * ldim..]);
         let raw = self.mimi.decode_block(&latents)?;
@@ -997,7 +1028,12 @@ impl PocketTts {
     fn denormalize(&self, latents: &[f32]) -> Vec<f32> {
         latents
             .chunks(self.dims.latent_dim)
-            .flat_map(|f| f.iter().zip(&self.emb_std).zip(&self.emb_mean).map(|((x, s), m)| x * s + m))
+            .flat_map(|f| {
+                f.iter()
+                    .zip(&self.emb_std)
+                    .zip(&self.emb_mean)
+                    .map(|((x, s), m)| x * s + m)
+            })
             .collect()
     }
 
@@ -1046,7 +1082,10 @@ impl PocketTts {
             let out = self.chunk(&prepared, voice, fae, &mut noise, None, each)?;
             samples.extend(out.audio);
         }
-        Ok(Audio { samples, sample_rate: self.sample_rate() })
+        Ok(Audio {
+            samples,
+            sample_rate: self.sample_rate(),
+        })
     }
 
     /// [`Self::generate_streaming`] awaiting each graph: what a browser's
@@ -1062,18 +1101,29 @@ impl PocketTts {
         let (chunks, mut noise) = self.generation_setup(text)?;
         let mut samples = Vec::new();
         for (prepared, fae) in chunks {
-            samples.extend(self.chunk_async(&prepared, voice, fae, &mut noise, sink).await?);
+            samples.extend(
+                self.chunk_async(&prepared, voice, fae, &mut noise, sink)
+                    .await?,
+            );
         }
-        Ok(Audio { samples, sample_rate: self.sample_rate() })
+        Ok(Audio {
+            samples,
+            sample_rate: self.sample_rate(),
+        })
     }
 
     /// `text` split into prepared chunks (with each one's frames after EOS),
     /// and the sampler's noise, seeded as the options say.
     #[allow(clippy::type_complexity)]
-    fn generation_setup(&self, text: &str) -> Result<(Vec<(String, usize)>, Box<dyn FnMut() -> Vec<f32>>)> {
+    fn generation_setup(
+        &self,
+        text: &str,
+    ) -> Result<(Vec<(String, usize)>, Box<dyn FnMut() -> Vec<f32>>)> {
         let opts = self.options.clone();
         let mut chunks = Vec::new();
-        for chunk in split_into_chunks(&self.tokenizer, text, opts.max_tokens_per_chunk, &self.text)? {
+        for chunk in
+            split_into_chunks(&self.tokenizer, text, opts.max_tokens_per_chunk, &self.text)?
+        {
             let (prepared, guess) = prepare_text_prompt(&chunk, &self.text)?;
             chunks.push((prepared, opts.frames_after_eos.unwrap_or(guess + 2)));
         }
@@ -1122,7 +1172,11 @@ fn resident_output(outs: Vec<Vec<f32>>) -> Result<StepOutput> {
         bail!("resident step returned too few outputs");
     };
     let eos_logit = *eos.first().ok_or_else(|| anyhow!("no EOS logit"))?;
-    Ok(StepOutput { latent, eos_logit, hidden })
+    Ok(StepOutput {
+        latent,
+        eos_logit,
+        hidden,
+    })
 }
 
 /// The step graph's inputs, the cache's layers by name.
@@ -1135,8 +1189,13 @@ fn step_inputs<'a>(
     names: &'a [(String, String)],
     kv: &'a Kv,
 ) -> Vec<(&'a str, &'a [f32])> {
-    let mut inputs: Vec<(&str, &[f32])> =
-        vec![("x", x), ("noise", noise), ("mask", mask), ("rope_cos", cos), ("rope_sin", sin)];
+    let mut inputs: Vec<(&str, &[f32])> = vec![
+        ("x", x),
+        ("noise", noise),
+        ("mask", mask),
+        ("rope_cos", cos),
+        ("rope_sin", sin),
+    ];
     for (l, (kn, vn)) in names.iter().enumerate() {
         inputs.push((kn.as_str(), &kv.k[l]));
         inputs.push((vn.as_str(), &kv.v[l]));

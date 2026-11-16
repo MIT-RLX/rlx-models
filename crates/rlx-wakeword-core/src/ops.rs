@@ -60,7 +60,11 @@ pub fn conv1d_positions(
         for ic in 0..in_ch {
             for ki in 0..k {
                 let i = (j * stride + ki) as isize - pad as isize;
-                patch[ic * k + ki] = if i >= 0 && (i as usize) < t_in { x[ic * t_in + i as usize] } else { 0.0 };
+                patch[ic * k + ki] = if i >= 0 && (i as usize) < t_in {
+                    x[ic * t_in + i as usize]
+                } else {
+                    0.0
+                };
             }
         }
         for oc in 0..out_ch {
@@ -115,13 +119,24 @@ pub fn conv1d_nchw(
             let xr = &x[ic * t_in..(ic + 1) * t_in];
             let wr = &w[oc * (in_ch * k) + ic * k..oc * (in_ch * k) + (ic + 1) * k];
             for (ki, &wv) in wr.iter().enumerate() {
-                let lo = if pad > ki { (pad - ki).div_ceil(stride) } else { 0 };
-                let hi = if t_in + pad > ki { ((t_in + pad - ki - 1) / stride + 1).min(t_out) } else { 0 };
+                let lo = if pad > ki {
+                    (pad - ki).div_ceil(stride)
+                } else {
+                    0
+                };
+                let hi = if t_in + pad > ki {
+                    ((t_in + pad - ki - 1) / stride + 1).min(t_out)
+                } else {
+                    0
+                };
                 if lo >= hi {
                     continue;
                 }
                 let start = lo * stride + ki - pad;
-                for (o, &xv) in row[lo..hi].iter_mut().zip(xr[start..].iter().step_by(stride)) {
+                for (o, &xv) in row[lo..hi]
+                    .iter_mut()
+                    .zip(xr[start..].iter().step_by(stride))
+                {
                     *o += wv * xv;
                 }
             }
@@ -153,7 +168,17 @@ mod conv_tests {
     use alloc::vec::Vec;
 
     /// The direct definition, with the padding test inside.
-    fn reference(x: &[f32], in_ch: usize, t_in: usize, w: &[f32], out_ch: usize, k: usize, stride: usize, pad: usize, b: &[f32]) -> Vec<f32> {
+    fn reference(
+        x: &[f32],
+        in_ch: usize,
+        t_in: usize,
+        w: &[f32],
+        out_ch: usize,
+        k: usize,
+        stride: usize,
+        pad: usize,
+        b: &[f32],
+    ) -> Vec<f32> {
         let t_out = (t_in + 2 * pad - k) / stride + 1;
         let mut out = vec![0.0; out_ch * t_out];
         for oc in 0..out_ch {
@@ -176,14 +201,32 @@ mod conv_tests {
     #[test]
     fn matches_the_direct_definition_bit_for_bit() {
         let val = |i: usize| ((i * 2654435761) % 1000) as f32 / 500.0 - 1.0;
-        for (t_in, k, stride, pad) in [(120, 3, 1, 1), (120, 3, 2, 1), (61, 3, 2, 1), (9, 5, 2, 2), (7, 3, 3, 0), (4, 3, 1, 1)] {
+        for (t_in, k, stride, pad) in [
+            (120, 3, 1, 1),
+            (120, 3, 2, 1),
+            (61, 3, 2, 1),
+            (9, 5, 2, 2),
+            (7, 3, 3, 0),
+            (4, 3, 1, 1),
+        ] {
             let (in_ch, out_ch) = (3, 4);
             let x: Vec<f32> = (0..in_ch * t_in).map(val).collect();
             let w: Vec<f32> = (0..out_ch * in_ch * k).map(|i| val(i + 7)).collect();
             let b: Vec<f32> = (0..out_ch).map(|i| val(i + 99)).collect();
             let want = reference(&x, in_ch, t_in, &w, out_ch, k, stride, pad, &b);
             let mut got = vec![0.0; want.len()];
-            let t_out = conv1d_nchw(&x, in_ch, t_in, &w, out_ch, k, stride, pad, Some(&b), &mut got);
+            let t_out = conv1d_nchw(
+                &x,
+                in_ch,
+                t_in,
+                &w,
+                out_ch,
+                k,
+                stride,
+                pad,
+                Some(&b),
+                &mut got,
+            );
             assert_eq!(t_out * out_ch, want.len());
             assert_eq!(got, want, "t_in={t_in} k={k} stride={stride} pad={pad}");
         }

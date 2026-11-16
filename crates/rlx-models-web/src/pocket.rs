@@ -33,7 +33,11 @@ impl PocketTts {
     /// apart: `"cpu+webgl"` (the step on the CPU, the decoder on WebGL —
     /// each where it is quickest in a browser).
     #[wasm_bindgen(constructor)]
-    pub fn new(files: &mut Files, language: &str, backend: Option<String>) -> Result<PocketTts, JsError> {
+    pub fn new(
+        files: &mut Files,
+        language: &str,
+        backend: Option<String>,
+    ) -> Result<PocketTts, JsError> {
         let (device, decoder) = match backend.as_deref().and_then(|b| b.split_once('+')) {
             Some((step, dec)) => (parse_backend(Some(step))?, Some(parse_backend(Some(dec))?)),
             None => (parse_backend(backend.as_deref())?, None),
@@ -41,7 +45,8 @@ impl PocketTts {
         let weights = files.take_file("model.safetensors")?;
         let tokenizer = files.take_file("tokenizer.model")?;
         let mut tts =
-            rlx_pocket_tts::engine::PocketTts::from_bytes(language, weights, &tokenizer, device).map_err(js_err)?;
+            rlx_pocket_tts::engine::PocketTts::from_bytes(language, weights, &tokenizer, device)
+                .map_err(js_err)?;
         if let Some(d) = decoder.filter(|d| *d != device) {
             tts.set_decoder_device(d).map_err(js_err)?;
         }
@@ -59,26 +64,43 @@ impl PocketTts {
 
     /// The voice to speak in: one of the model's `embeddings/<name>.safetensors`.
     pub fn set_voice(&mut self, bytes: Vec<u8>) -> Result<(), JsError> {
-        let mut m = self.model.try_borrow_mut().map_err(|_| JsError::new("busy speaking"))?;
+        let mut m = self
+            .model
+            .try_borrow_mut()
+            .map_err(|_| JsError::new("busy speaking"))?;
         m.voice = Some(m.tts.voice_from_bytes(bytes).map_err(js_err)?);
         Ok(())
     }
 
     /// `text` spoken, as mono samples at [`sample_rate`](Self::sample_rate).
     pub fn speak(&mut self, text: &str) -> Result<Vec<f32>, JsError> {
-        let mut m = self.model.try_borrow_mut().map_err(|_| JsError::new("busy speaking"))?;
+        let mut m = self
+            .model
+            .try_borrow_mut()
+            .map_err(|_| JsError::new("busy speaking"))?;
         let Model { tts, voice } = &mut *m;
-        let voice = voice.as_ref().ok_or_else(|| JsError::new("set_voice first"))?;
+        let voice = voice
+            .as_ref()
+            .ok_or_else(|| JsError::new("set_voice first"))?;
         Ok(tts.generate(text, voice).map_err(js_err)?.samples)
     }
 
     /// [`speak`](Self::speak), calling `on_block(samples)` with each decoder
     /// block (about 0.64 s) as soon as it is made, so it can play while the
     /// rest is made. Returns the whole, as `speak` would.
-    pub fn speak_streaming(&mut self, text: &str, on_block: &js_sys::Function) -> Result<Vec<f32>, JsError> {
-        let mut m = self.model.try_borrow_mut().map_err(|_| JsError::new("busy speaking"))?;
+    pub fn speak_streaming(
+        &mut self,
+        text: &str,
+        on_block: &js_sys::Function,
+    ) -> Result<Vec<f32>, JsError> {
+        let mut m = self
+            .model
+            .try_borrow_mut()
+            .map_err(|_| JsError::new("busy speaking"))?;
         let Model { tts, voice } = &mut *m;
-        let voice = voice.as_ref().ok_or_else(|| JsError::new("set_voice first"))?;
+        let voice = voice
+            .as_ref()
+            .ok_or_else(|| JsError::new("set_voice first"))?;
         let mut failed = None;
         let mut sink = |block: &[f32]| {
             if failed.is_none()
@@ -87,7 +109,9 @@ impl PocketTts {
                 failed = Some(e);
             }
         };
-        let audio = tts.generate_streaming(text, voice, &mut sink).map_err(js_err)?;
+        let audio = tts
+            .generate_streaming(text, voice, &mut sink)
+            .map_err(js_err)?;
         if let Some(e) = failed {
             return Err(JsError::new(&format!("on_block: {e:?}")));
         }
@@ -98,16 +122,25 @@ impl PocketTts {
     /// WebGPU needs (its results come back asynchronously). Resolves to the
     /// whole as a `Float32Array`.
     #[allow(clippy::await_holding_refcell_ref)]
-    pub fn speak_streaming_async(&self, text: String, on_block: js_sys::Function) -> js_sys::Promise {
+    pub fn speak_streaming_async(
+        &self,
+        text: String,
+        on_block: js_sys::Function,
+    ) -> js_sys::Promise {
         let model = self.model.clone();
         wasm_bindgen_futures::future_to_promise(async move {
-            let mut m = model.try_borrow_mut().map_err(|_| JsValue::from_str("busy speaking"))?;
+            let mut m = model
+                .try_borrow_mut()
+                .map_err(|_| JsValue::from_str("busy speaking"))?;
             let Model { tts, voice } = &mut *m;
-            let voice = voice.as_ref().ok_or_else(|| JsValue::from_str("set_voice first"))?;
+            let voice = voice
+                .as_ref()
+                .ok_or_else(|| JsValue::from_str("set_voice first"))?;
             let mut failed = None;
             let mut sink = |block: &[f32]| {
                 if failed.is_none()
-                    && let Err(e) = on_block.call1(&JsValue::NULL, &js_sys::Float32Array::from(block))
+                    && let Err(e) =
+                        on_block.call1(&JsValue::NULL, &js_sys::Float32Array::from(block))
                 {
                     failed = Some(e);
                 }

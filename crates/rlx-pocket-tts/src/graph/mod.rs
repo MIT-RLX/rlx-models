@@ -558,7 +558,14 @@ mod conv_transpose_tests {
     use super::*;
 
     /// torch's `conv_transpose1d` (no bias, no trim), directly.
-    fn reference(x: &[f32], c_in: usize, t: usize, w: &Tensor, s: usize, groups: usize) -> Vec<f32> {
+    fn reference(
+        x: &[f32],
+        c_in: usize,
+        t: usize,
+        w: &Tensor,
+        s: usize,
+        groups: usize,
+    ) -> Vec<f32> {
         let (_, c_out_g, k) = w.dims3().unwrap();
         let c_out = c_out_g * groups;
         let c_in_g = c_in / groups;
@@ -570,7 +577,8 @@ mod conv_transpose_tests {
                 let oc = g * c_out_g + ocp;
                 for m in 0..t {
                     for j in 0..k {
-                        y[oc * len + m * s + j] += x[ic * t + m] * w.data[(ic * c_out_g + ocp) * k + j];
+                        y[oc * len + m * s + j] +=
+                            x[ic * t + m] * w.data[(ic * c_out_g + ocp) * k + j];
                     }
                 }
             }
@@ -591,10 +599,17 @@ mod conv_transpose_tests {
         };
         // (c_in, c_out/groups, k, stride, groups, t): Mimi's shapes (k = 2S,
         // depthwise ×16), and a k that S does not divide.
-        for (c_in, c_out_g, k, s, groups, t) in
-            [(8, 4, 12, 6, 1, 5), (6, 3, 10, 5, 1, 4), (4, 1, 32, 16, 4, 3), (5, 2, 7, 3, 1, 6), (3, 2, 2, 4, 1, 3)]
-        {
-            let w = Tensor { data: noise(c_in * c_out_g * k), shape: vec![c_in, c_out_g, k] };
+        for (c_in, c_out_g, k, s, groups, t) in [
+            (8, 4, 12, 6, 1, 5),
+            (6, 3, 10, 5, 1, 4),
+            (4, 1, 32, 16, 4, 3),
+            (5, 2, 7, 3, 1, 6),
+            (3, 2, 2, 4, 1, 3),
+        ] {
+            let w = Tensor {
+                data: noise(c_in * c_out_g * k),
+                shape: vec![c_in, c_out_g, k],
+            };
             let x = noise(c_in * t);
             let want = reference(&x, c_in, t, &w, s, groups);
             let mut b = Builder::new("convtr");
@@ -605,7 +620,10 @@ mod conv_transpose_tests {
             let got = c.run(&[("x", &x)]).remove(0);
             assert_eq!(got.len(), want.len(), "({c_in},{c_out_g},{k},{s},{groups})");
             for (i, (a, e)) in got.iter().zip(&want).enumerate() {
-                assert!((a - e).abs() < 1e-5, "({c_in},{c_out_g},{k},{s},{groups}) [{i}]: {a} vs {e}");
+                assert!(
+                    (a - e).abs() < 1e-5,
+                    "({c_in},{c_out_g},{k},{s},{groups}) [{i}]: {a} vs {e}"
+                );
             }
         }
     }

@@ -167,7 +167,8 @@ impl MoonshineConfig {
         if let Some(obj) = v.as_object_mut()
             && let Some(ff) = obj.get("intermediate_size").cloned()
         {
-            obj.entry("encoder_intermediate_size").or_insert_with(|| ff.clone());
+            obj.entry("encoder_intermediate_size")
+                .or_insert_with(|| ff.clone());
             obj.entry("decoder_intermediate_size").or_insert(ff);
         }
         Ok(serde_json::from_value(v)?)
@@ -252,9 +253,18 @@ mod tests {
         let base = r#"{"hidden_size": 416, "intermediate_size": 1664, "encoder_num_hidden_layers": 8,
             "decoder_num_hidden_layers": 8, "encoder_num_attention_heads": 8, "decoder_num_attention_heads": 8}"#;
         let c = MoonshineConfig::from_json(base).unwrap();
-        assert_eq!((c.encoder_intermediate_size, c.decoder_intermediate_size), (1664, 1664));
+        assert_eq!(
+            (c.encoder_intermediate_size, c.decoder_intermediate_size),
+            (1664, 1664)
+        );
         // An explicit per-stack size still wins.
-        let c = MoonshineConfig::from_json(r#"{"intermediate_size": 1664, "decoder_intermediate_size": 2048}"#).unwrap();
-        assert_eq!((c.encoder_intermediate_size, c.decoder_intermediate_size), (1664, 2048));
+        let c = MoonshineConfig::from_json(
+            r#"{"intermediate_size": 1664, "decoder_intermediate_size": 2048}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (c.encoder_intermediate_size, c.decoder_intermediate_size),
+            (1664, 2048)
+        );
     }
 }

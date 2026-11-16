@@ -85,7 +85,11 @@ pub fn decode_bucket_ladder(device: Device, max_past: u64) -> BucketedCompileCac
 /// Each compiled graph holds its weights, so fewer graphs is less memory
 /// (a browser's above all) and less compiling; the self-attention runs over
 /// the wider masked window, a small cost. `first` under 5: the usual ladder.
-pub fn decode_bucket_ladder_from(device: Device, max_past: u64, first: u64) -> BucketedCompileCache {
+pub fn decode_bucket_ladder_from(
+    device: Device,
+    max_past: u64,
+    first: u64,
+) -> BucketedCompileCache {
     if first < 5 {
         return decode_bucket_ladder(device, max_past);
     }
@@ -182,7 +186,10 @@ where
 /// are not another's (two models, or two loads, in one process).
 pub fn next_share_scope(model: &str) -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    format!("whisper:{model}:{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    format!(
+        "whisper:{model}:{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 /// Disable MPSGraph for LM-shaped compiles on Metal (attention reshape coverage).

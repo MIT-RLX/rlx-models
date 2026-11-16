@@ -79,13 +79,24 @@ pub fn conv1d_nchw(
             let xr = &x[ic * t_in..(ic + 1) * t_in];
             let wr = &w[oc * (in_ch * k) + ic * k..oc * (in_ch * k) + (ic + 1) * k];
             for (ki, &wv) in wr.iter().enumerate() {
-                let lo = if pad > ki { (pad - ki).div_ceil(stride) } else { 0 };
-                let hi = if t_in + pad > ki { ((t_in + pad - ki - 1) / stride + 1).min(t_out) } else { 0 };
+                let lo = if pad > ki {
+                    (pad - ki).div_ceil(stride)
+                } else {
+                    0
+                };
+                let hi = if t_in + pad > ki {
+                    ((t_in + pad - ki - 1) / stride + 1).min(t_out)
+                } else {
+                    0
+                };
                 if lo >= hi {
                     continue;
                 }
                 let start = lo * stride + ki - pad;
-                for (o, &xv) in row[lo..hi].iter_mut().zip(xr[start..].iter().step_by(stride)) {
+                for (o, &xv) in row[lo..hi]
+                    .iter_mut()
+                    .zip(xr[start..].iter().step_by(stride))
+                {
                     *o += wv * xv;
                 }
             }

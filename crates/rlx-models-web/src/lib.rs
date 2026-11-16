@@ -269,7 +269,8 @@ impl Whisper {
         let weights = files.take_file("model.safetensors")?;
         let config = files.take_file("config.json")?;
         let tokenizer = files.take_file("tokenizer.json")?;
-        let config = std::str::from_utf8(&config).map_err(|e| JsError::new(&format!("config.json: {e}")))?;
+        let config =
+            std::str::from_utf8(&config).map_err(|e| JsError::new(&format!("config.json: {e}")))?;
         let config = rlx_whisper::config::WhisperConfig::from_json(config).map_err(js_err)?;
         let runner = rlx_whisper::WhisperRunnerBuilder::default()
             .weights_bytes(weights)
@@ -285,12 +286,18 @@ impl Whisper {
             .decode_first_bucket(if short.unwrap_or(false) { 64 } else { 0 })
             .build()
             .map_err(js_err)?;
-        Ok(Whisper { runner: Rc::new(RefCell::new(runner)) })
+        Ok(Whisper {
+            runner: Rc::new(RefCell::new(runner)),
+        })
     }
 
     /// What is said in `pcm`: 16 kHz mono in `[-1, 1]`, up to 30 seconds.
     pub fn transcribe(&mut self, pcm: Vec<f32>) -> Result<String, JsError> {
-        let text = self.runner.borrow_mut().transcribe_greedy(&pcm).map_err(js_err)?;
+        let text = self
+            .runner
+            .borrow_mut()
+            .transcribe_greedy(&pcm)
+            .map_err(js_err)?;
         Ok(text.trim().to_owned())
     }
 }

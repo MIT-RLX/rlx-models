@@ -56,7 +56,8 @@ impl WakewordBundle {
         let mut weights = Vec::new();
         let mut phrases = Vec::new();
         let mut sources = Vec::new();
-        let mut loaded: std::collections::HashMap<String, WakeCnnWeights> = std::collections::HashMap::new();
+        let mut loaded: std::collections::HashMap<String, WakeCnnWeights> =
+            std::collections::HashMap::new();
         for p in &man.phrases {
             let w = match loaded.get(&p.weights) {
                 Some(w) => w.clone(),
@@ -83,7 +84,11 @@ impl WakewordBundle {
             phrases,
             ..WakewordConfig::default()
         };
-        Ok(Self { config, weights, sources })
+        Ok(Self {
+            config,
+            weights,
+            sources,
+        })
     }
 
     /// Networks with the phrases they score, `sources` grouped by weights file.
@@ -176,6 +181,7 @@ pub fn host_to_core(host: &HostWeights) -> WakeCnnWeights {
             c3: host.cfg.c3,
             k: host.cfg.k,
             hidden: host.cfg.hidden,
+            pool_chunks: host.cfg.pool_chunks,
         },
         host.conv1_w.clone(),
         host.conv1_b.clone(),
@@ -221,8 +227,15 @@ pub fn stub_bundle_n(
         speaker_id: false,
         ..WakewordConfig::default()
     };
-    let sources = weights.iter().map(|(id, _)| (format!("phrase_{id}.safetensors"), 0)).collect();
-    WakewordBundle { config, weights, sources }
+    let sources = weights
+        .iter()
+        .map(|(id, _)| (format!("phrase_{id}.safetensors"), 0))
+        .collect();
+    WakewordBundle {
+        config,
+        weights,
+        sources,
+    }
 }
 
 pub fn default_stub_path() -> PathBuf {

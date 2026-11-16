@@ -9,7 +9,6 @@ pub const HF_MIMI_REPO: &str = "kyutai/mimi";
 /// Kyutai Moshi bundle sidecar weight file (~385 MB).
 pub const MIMI_SIDECAR_FILENAME: &str = "tokenizer-e351c8d8-checkpoint125.safetensors";
 
-
 pub fn default_mimi_dir() -> PathBuf {
     rlx_ir::env::var_result("RLX_MIMI_DIR")
         .map(PathBuf::from)
@@ -83,4 +82,3 @@ pub fn resolve_mimi_weights(model_dir: &Path, moshi_dir: Option<&Path>) -> Optio
     }
     None
 }
-

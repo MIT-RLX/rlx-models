@@ -4513,6 +4513,30 @@ test-qwen35-hf-parity DEVICE="cpu":
     RLX_TEST_DEVICE={{DEVICE}} RLX_QWEN35_HF_DIR="$dir" RLX_QWEN35_HF_REF="$ref" \
         cargo test -p rlx-qwen35 --release {{feature_args}} --test hf_parity_live -- --nocapture
 
+# xtools-at/DeepSeek-V4-Pro-Qwen3.5-9B-UNCENSORED-heretic: a stock Qwen3.5-9B
+# (`qwen3_5`, bf16, ~19 GB) read by rlx-qwen35's HF path with no code of its own.
+# Run: just qwen35 -- --weights weights/lm/dsv4pro-qwen35-9b --chat --prompt "…" [--device metal]
+# (safetensors load dense f32: ~36 GB resident.)
+fetch-dsv4pro-qwen35-9b:
+    hf download xtools-at/DeepSeek-V4-Pro-Qwen3.5-9B-UNCENSORED-heretic --local-dir weights/lm/dsv4pro-qwen35-9b
+
+# Its first LAYERS decoder layers + embedding/LM head (5.8 GB at 4), by HTTP range.
+fetch-dsv4pro-qwen35-9b-subset LAYERS="4":
+    python3 -I scripts/hf_safetensors_subset.py xtools-at/DeepSeek-V4-Pro-Qwen3.5-9B-UNCENSORED-heretic \
+        weights/lm/dsv4pro-qwen35-9b-l{{LAYERS}} --layers {{LAYERS}}
+
+# Parity vs transformers on the 4-layer subset (3 Gated DeltaNet + 1 full
+# attention: covers the 32-value / 16-key head reorder). REF_PY needs transformers ≥ 5.3.
+test-dsv4pro-qwen35-9b-parity DEVICE="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/weights/lm/dsv4pro-qwen35-9b-l4"
+    [ -f "$dir/model.safetensors" ] || just fetch-dsv4pro-qwen35-9b-subset 4
+    ref="/tmp/dsv4pro-qwen35-9b-l4.ref.json"
+    [ -f "$ref" ] || "${REF_PY:-python3}" scripts/lm_hf_reference.py "$dir" "$ref"
+    RLX_TEST_DEVICE={{DEVICE}} RLX_QWEN35_HF_DIR="$dir" RLX_QWEN35_HF_REF="$ref" \
+        cargo test -p rlx-qwen35 --release {{feature_args}} --test hf_parity_live -- --nocapture
+
 # google/embeddinggemma-300m via the ungated unsloth mirror (same files).
 fetch-embeddinggemma:
     hf download unsloth/embeddinggemma-300m --local-dir weights/embed/embeddinggemma-300m
