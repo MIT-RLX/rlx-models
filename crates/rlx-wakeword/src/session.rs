@@ -85,6 +85,11 @@ pub struct WakewordSession {
     nets: Vec<WakeCnn>,
     heads: Vec<PhraseHead>,
     verifier: Option<Verifier>,
+    /// With [`Self::log_scores`]: every scored hop's raw scores (heads' order), and an empty
+    /// row at each [`Self::reset`] (where a replay must restart its counters).
+    score_log: Option<Vec<(f32, Vec<f32>)>>,
+    /// Speech hops since the last reset ([`WakewordConfig::score_every_hops`]).
+    hops: usize,
     pcm_buf: Vec<f32>,
     /// Rolling PCM for optional speaker-id scoring (≈ context_ms).
     pcm_ring: Vec<f32>,
@@ -174,6 +179,8 @@ impl WakewordSession {
             nets,
             heads,
             verifier: None,
+            score_log: None,
+            hops: 0,
             pcm_buf: Vec::new(),
             pcm_ring: Vec::new(),
             samples_seen: 0,
@@ -287,8 +294,25 @@ impl WakewordSession {
         }
     }
 
+    /// Keep every scored hop's raw scores (for tuning thresholds offline); see
+    /// [`Self::take_scores`].
+    pub fn log_scores(&mut self) {
+        self.score_log.get_or_insert_with(Vec::new);
+    }
+
+    /// The logged hops since the last call: `(time ms, score per phrase in [`Self::phrase_ids`]
+    /// order)`; an empty score list marks a reset.
+    pub fn take_scores(&mut self) -> Vec<(f32, Vec<f32>)> {
+        self.score_log.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
     pub fn reset(&mut self) {
+        let t_ms = self.samples_seen as f32 * 1000.0 / SAMPLE_RATE_16K as f32;
+        if let Some(log) = &mut self.score_log {
+            log.push((t_ms, Vec::new()));
+        }
         self.mel.reset();
+        self.hops = 0;
         self.pcm_buf.clear();
         self.pcm_ring.clear();
         self.samples_seen = 0;
@@ -384,6 +408,16 @@ impl WakewordSession {
                 continue;
             }
 
+            // Only every `score_every_hops`-th hop scores; the others queue their frames.
+            self.hops += 1;
+            if self.hops % self.cfg.score_every_hops.max(1) != 0 {
+                for n in &mut self.nets {
+                    n.queue_frames(&frames);
+                }
+                events.push(WakeEvent::Idle { t_ms });
+                continue;
+            }
+
             // Each network scores once (streaming); its phrases read their outputs.
             let scores: Vec<Vec<f32>> = self
                 .nets
@@ -394,6 +428,9 @@ impl WakewordSession {
                         .map_or_else(|| vec![0.0; k], <[f32]>::to_vec)
                 })
                 .collect();
+            if let Some(log) = &mut self.score_log {
+                log.push((t_ms, self.heads.iter().map(|h| scores[h.net][h.output]).collect()));
+            }
             let mut fires: Vec<(String, f32)> = Vec::new();
             // The verifier's scores, computed at most once a hop, when something fires.
             let mut verified: Option<Vec<f32>> = None;

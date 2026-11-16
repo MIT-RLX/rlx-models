@@ -155,3 +155,48 @@ fn pcen_engine_is_pcen_then_the_network() {
         assert_eq!(x, y, "frame {at}");
     }
 }
+
+/// A causal network streams exactly: each hop computes only the newest positions, and scores
+/// equal a fresh network's on the same window (also when it scores every other hop).
+#[test]
+fn causal_network_streams_exactly() {
+    let mut w = WakeCnnWeights::he_init(
+        WakeCnnConfig {
+            pool_chunks: 4,
+            res_blocks: 3,
+            attn: true,
+            dual: true,
+            causal: true,
+            ..WakeCnnConfig::lite()
+        },
+        11,
+    );
+    w.fc2_b = vec![0.1, -0.2];
+    w.fc2_w = (0..2 * w.cfg.hidden)
+        .map(|i| ((i * 7919 % 211) as f32 - 105.0) / 400.0)
+        .collect();
+    let n_mels = w.cfg.n_mels;
+    let window = 160;
+    let all: Vec<f32> = frames(window + 240, n_mels).iter().map(|v| v * 0.3 + 1.2).collect();
+    for every in [1usize, 2] {
+        let mut stream = WakeCnn::new(w.clone()).with_window_frames(window);
+        let mut scored = 0;
+        for (h, at) in (4..=all.len() / n_mels).step_by(4).enumerate() {
+            let f = &all[(at - 4) * n_mels..at * n_mels];
+            if h % every != every - 1 {
+                stream.queue_frames(f);
+                continue;
+            }
+            let Some(got) = stream.push_mel_frames_all(f).map(<[f32]>::to_vec) else {
+                continue;
+            };
+            // The same frames from the stream's start, so PCEN's smoother has the same history.
+            let mut fresh = WakeCnn::new(w.clone()).with_window_frames(window);
+            fresh.append_mel_frames(&all[..(at - 4) * n_mels]);
+            let want = fresh.push_mel_frames_all(f).unwrap().to_vec();
+            assert_eq!(got, want, "every {every}, window ending at frame {at}");
+            scored += 1;
+        }
+        assert!(scored > 20);
+    }
+}

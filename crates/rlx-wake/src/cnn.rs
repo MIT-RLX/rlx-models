@@ -40,6 +40,10 @@ pub struct WakeCnnConfig {
     pub res_blocks: usize,
     pub attn: bool,
     pub pcen: bool,
+    /// Input = log-mel and PCEN side by side (`2·n_mels` channels), see the core crate.
+    pub dual: bool,
+    /// Causal, unpadded convolutions: a fully streaming network (see the core crate).
+    pub causal: bool,
 }
 
 impl WakeCnnConfig {
@@ -55,6 +59,8 @@ impl WakeCnnConfig {
             res_blocks: 0,
             attn: false,
             pcen: false,
+            dual: false,
+            causal: false,
         }
     }
 
@@ -71,7 +77,19 @@ impl WakeCnnConfig {
             res_blocks: 0,
             attn: false,
             pcen: false,
+            dual: false,
+            causal: false,
         }
+    }
+
+    /// The convolutions' zero padding each side: `k / 2`, none when `causal`.
+    pub fn pad(&self) -> usize {
+        if self.causal { 0 } else { self.k / 2 }
+    }
+
+    /// The first layer's input channels: `n_mels`, or twice that with `dual`.
+    pub fn in_ch(&self) -> usize {
+        self.n_mels * (1 + usize::from(self.dual))
     }
 
     /// The pooled vector's length (the first dense layer's input).
@@ -101,6 +119,8 @@ impl WakeCnnConfig {
             res_blocks: 0,
             attn: false,
             pcen: false,
+            dual: false,
+            causal: false,
         }
     }
 }
@@ -138,7 +158,7 @@ impl WakeCnnWeights {
             |n: usize, f: &mut dyn FnMut() -> f32| -> Vec<f32> { (0..n).map(|_| f()).collect() };
         let k = cfg.k;
         Self {
-            conv1_w: fill(cfg.c1 * cfg.n_mels * k, &mut next),
+            conv1_w: fill(cfg.c1 * cfg.in_ch() * k, &mut next),
             conv1_b: vec![0.0; cfg.c1],
             conv2_w: fill(cfg.c2 * cfg.c1 * k, &mut next),
             conv2_b: vec![0.0; cfg.c2],
@@ -180,7 +200,7 @@ impl WakeCnnWeights {
         };
         let k = cfg.k;
         Self {
-            conv1_w: fill(cfg.c1 * cfg.n_mels * k, cfg.n_mels * k),
+            conv1_w: fill(cfg.c1 * cfg.in_ch() * k, cfg.in_ch() * k),
             conv1_b: vec![0.0; cfg.c1],
             conv2_w: fill(cfg.c2 * cfg.c1 * k, cfg.c1 * k),
             conv2_b: vec![0.0; cfg.c2],
@@ -243,6 +263,8 @@ impl WakeCnnWeights {
                 self.cfg.res_blocks as f32,
                 f32::from(u8::from(self.cfg.attn)),
                 f32::from(u8::from(self.cfg.pcen)),
+                f32::from(u8::from(self.cfg.dual)),
+                f32::from(u8::from(self.cfg.causal)),
             ],
         );
         save_f32_map(path, &map)
@@ -268,6 +290,8 @@ impl WakeCnnWeights {
             res_blocks: cfg_v.get(7).map_or(0, |&v| v as usize),
             attn: cfg_v.get(8).is_some_and(|&v| v != 0.0),
             pcen: cfg_v.get(9).is_some_and(|&v| v != 0.0),
+            dual: cfg_v.get(10).is_some_and(|&v| v != 0.0),
+            causal: cfg_v.get(11).is_some_and(|&v| v != 0.0),
         };
         let get = |k: &str| -> Result<Vec<f32>> {
             map.get(k)
@@ -342,7 +366,7 @@ impl WakeCnn {
     pub fn new(weights: WakeCnnWeights) -> Self {
         let c = &weights.cfg;
         assert!(
-            c.res_blocks == 0 && !c.attn && !c.pcen,
+            c.res_blocks == 0 && !c.attn && !c.pcen && !c.dual && !c.causal,
             "residual blocks, attention pooling and PCEN run in rlx_wakeword_core::WakeCnn"
         );
         Self {

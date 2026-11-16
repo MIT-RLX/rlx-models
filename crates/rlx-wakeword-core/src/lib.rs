@@ -11,6 +11,7 @@
 extern crate alloc;
 
 pub mod cnn;
+pub mod fastmath;
 pub mod mel;
 pub mod ops;
 pub mod pack;

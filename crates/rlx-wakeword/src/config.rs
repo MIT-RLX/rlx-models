@@ -57,6 +57,10 @@ pub struct WakewordConfig {
     /// Each phrase's score is the mean of its last this many hops before the threshold and
     /// `min_hops` see it: a one-hop dip in a held phrase does not break the run. 1: raw.
     pub smooth_hops: usize,
+    /// Score the networks on every this-many hops (the others' frames are queued and folded
+    /// into the next score, exactly): 2 halves the work, a detection then comes on an 80 ms
+    /// grid. Thresholds, `min_hops` and `smooth_hops` count scored hops.
+    pub score_every_hops: usize,
     pub phrases: Vec<PhraseConfig>,
     /// When `speaker-id` feature is on and a gate is attached, filter candidates.
     pub speaker_id: bool,
@@ -72,6 +76,7 @@ impl Default for WakewordConfig {
             cooldown_ms: DEFAULT_COOLDOWN_MS,
             min_hops: 1,
             smooth_hops: 1,
+            score_every_hops: 1,
             phrases: Vec::new(),
             speaker_id: cfg!(feature = "speaker-id"),
         }

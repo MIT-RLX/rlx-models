@@ -25,11 +25,19 @@ Weight field layout matches [`rlx-wake`](../rlx-wake) (`conv1..3`, `res{i}`, `at
 | `res_blocks` | Residual blocks after the third layer, dilated 1, 2, 4, …: each output hears ~1.3 s with 4 instead of 90 ms |
 | `attn` | Attention pooling (bounded scores, softmax over time), appended to the stretch averages |
 | `pcen` | PCEN on the input frames; its smoother is carried across pushes |
+| `dual` | Both side by side: each frame's log-mel values then their PCEN (`2·n_mels` input channels) |
 
 `WakeCnn` streams: when the window slides by a 40 ms hop, the first three layers recompute only the
 positions that changed; residual blocks and pooling run over the third layer's output. Scores are
-bit-identical to scoring the window from scratch (`tests/streaming.rs`). `score_window` scores the
-current window on demand (a verifier fed with `append_mel_frames`).
+bit-identical to scoring the window from scratch (`tests/streaming.rs`). The residual blocks
+update incrementally too: block `i` (dilation `d`) recomputes the positions within `d` of what
+changed below it. `score_window` scores the current window on demand (a verifier fed with
+`append_mel_frames`).
+
+On aarch64 the dot products (first layers, dense layers) and the residual blocks' dilated
+convolution run hand-written NEON (`ops::neon`: 4-lane fused multiply-adds, 4 output channels × 8
+positions in registers); elsewhere the same fused operations in the same order. On a Raspberry Pi
+CM4 (Cortex-A72) this halved the cost of a `mid` network with 4 residual blocks.
 
 ## Ternary
 

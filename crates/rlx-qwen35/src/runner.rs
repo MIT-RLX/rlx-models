@@ -1029,8 +1029,8 @@ fn release_host_dense_enabled(device: Device, weights: &Qwen35Weights) -> bool {
 /// Width to compile the static text-prefill graph at for a prompt of `need`
 /// tokens. Delegates to the SHARED policy so this family buckets like every
 /// other — see `rlx_core::prefill_bucket_for` for why pow2 and why not `cap`.
-fn prefill_bucket_for(need: usize, cap: usize) -> usize {
-    rlx_core::prefill_bucket_for(need, cap)
+fn prefill_bucket_for(need: usize, cap: usize, device: Device) -> usize {
+    rlx_core::prefill_bucket_for_device(need, cap, device)
 }
 
 fn compile_static_prefill_cache(
@@ -1447,7 +1447,7 @@ fn finish_build(
     let initial_prefill_bucket = rlx_ir::env::var("RLX_QWEN35_PREFILL_BUCKET0")
         .and_then(|v| v.parse::<usize>().ok())
         .map(|v| v.clamp(1, prefill_seq))
-        .unwrap_or_else(|| prefill_bucket_for(rlx_core::MIN_PREFILL_BUCKET, prefill_seq));
+        .unwrap_or_else(|| prefill_bucket_for(rlx_core::min_prefill_bucket(device), prefill_seq, device));
 
     // A hidden-prefill runner takes its prompts as embeddings: the text
     // prefill graph may never run, and compiled at load it holds a whole copy
@@ -2296,7 +2296,7 @@ impl Qwen35Runner {
         if self.dynamic_prefill {
             return Ok(());
         }
-        let bucket = prefill_bucket_for(need, self.prefill_seq);
+        let bucket = prefill_bucket_for(need, self.prefill_seq, self.device);
         if self.prefill_cache.is_some() && self.prefill_cache_seq >= bucket {
             return Ok(());
         }

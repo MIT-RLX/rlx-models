@@ -145,7 +145,8 @@ pub use gguf_support::{
 
 pub use asset_source::{AssetProvider, AssetSource, LocalDir, SourceSpec, load_materialized};
 pub use autoregressive::{
-    KvCacheState, MIN_DECODE_BUCKET, MIN_PREFILL_BUCKET, compact_bucketed_kv_buffer,
+    KvCacheState, MIN_DECODE_BUCKET, MIN_PREFILL_BUCKET, MIN_PREFILL_BUCKET_CPU,
+    compact_bucketed_kv_buffer, min_prefill_bucket, prefill_bucket_for_device,
     compile_cache_ensure_graph, infer_prefill_kv_seq, kv_from_prefill_outputs,
     kv_from_prefill_outputs_per_layer, packed_prefill_active_extent_enabled, pad_kv_sequences,
     past_kv_input_names, prefill_bucket_for, prefill_cache_key, run_bucketed_kv_decode,

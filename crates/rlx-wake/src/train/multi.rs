@@ -81,7 +81,21 @@ pub struct MultiTrainConfig {
     /// With a PCEN front end (`cfg.pcen` of the network), each window's PCEN starts this many
     /// frames earlier, so its smoother has settled as on a stream.
     pub pcen_warm: usize,
+    /// With teachers ([`train_multi_taught`]): each taught output's target is
+    /// `(1 − w)·label + w·teacher score` (knowledge distillation).
+    pub teacher_weight: f32,
     pub log_every: usize,
+}
+
+/// A trained network whose scores become part of the targets for some outputs (its outputs of
+/// the same index). It reads the student's batch: the same input, or one half of a dual one
+/// (its log-mel or PCEN half, as its own front end says).
+pub struct Teacher {
+    pub weights: WakeCnnWeights,
+    pub outputs: Vec<usize>,
+    /// The window it was trained on (frames): it reads the last this many of the student's
+    /// (a causal student reads more). `None`: the student's.
+    pub window_frames: Option<usize>,
 }
 
 impl Default for MultiTrainConfig {
@@ -107,6 +121,7 @@ impl Default for MultiTrainConfig {
             pos_tail: 0,
             bn: false,
             pcen_warm: 100,
+            teacher_weight: 0.5,
             log_every: 5,
         }
     }
@@ -166,10 +181,33 @@ fn bn_layers(c: &WakeCnnConfig) -> Vec<String> {
 /// with `1 × k` kernels, in the engine's weight layout. (Rewriting them as GEMMs over shifted
 /// views was slower on Metal at these shapes: tall, skinny products plus the slicing.)
 fn body(g: &mut Graph, c: &WakeCnnConfig, n_out: usize, b: usize, t: usize, form: Form) -> Net {
-    let (k, pad) = (c.k, c.k / 2);
-    let x = g.input("x", sh(&[b, t, c.n_mels]));
+    body_on(g, c, n_out, b, t, form, (c.in_ch(), 0), t)
+}
+
+/// [`body`] reading channels `[offset, offset + c.in_ch())` of an input `x [B, T, total]`: a
+/// teacher scoring the student's batch (log-mel or PCEN half of a dual row).
+fn body_on(
+    g: &mut Graph,
+    c: &WakeCnnConfig,
+    n_out: usize,
+    b: usize,
+    t: usize,
+    form: Form,
+    (total, offset): (usize, usize),
+    t_in: usize,
+) -> Net {
+    let (k, pad) = (c.k, c.pad());
+    // The input may be longer than the window (a teacher reading a causal student's rows):
+    // its last `t` frames.
+    let x = g.input("x", sh(&[b, t_in, total]));
+    let x = if t_in > t { g.narrow_(x, 1, t_in - t, t) } else { x };
+    let x = if total == c.in_ch() {
+        x
+    } else {
+        g.narrow_(x, 2, offset, c.in_ch())
+    };
     let x = g.transpose_(x, vec![0, 2, 1]);
-    let x = g.reshape_(x, vec![b as i64, c.n_mels as i64, 1, t as i64]);
+    let x = g.reshape_(x, vec![b as i64, c.in_ch() as i64, 1, t as i64]);
     let mut params: Vec<(String, NodeId)> = Vec::new();
     let mut bn_in = Vec::new();
     let mut param = |g: &mut Graph, name: String, dims: &[usize]| -> NodeId {
@@ -198,7 +236,7 @@ fn body(g: &mut Graph, c: &WakeCnnConfig, n_out: usize, b: usize, t: usize, form
         }
     };
     let mut h = x;
-    for (l, (cin, cout, stride)) in [(c.n_mels, c.c1, 1), (c.c1, c.c2, 2), (c.c2, c.c3, 2)]
+    for (l, (cin, cout, stride)) in [(c.in_ch(), c.c1, 1), (c.c1, c.c2, 2), (c.c2, c.c3, 2)]
         .into_iter()
         .enumerate()
     {
@@ -208,17 +246,26 @@ fn body(g: &mut Graph, c: &WakeCnnConfig, n_out: usize, b: usize, t: usize, form
         let y = affine(g, &mut param, y, &name, cout);
         h = g.relu(y);
     }
-    let t1 = t;
+    let t1 = t + 2 * pad - (k - 1);
     let t2 = (t1 + 2 * pad - k) / 2 + 1;
-    let t3 = (t2 + 2 * pad - k) / 2 + 1;
+    let mut t3 = (t2 + 2 * pad - k) / 2 + 1;
     // Residual blocks: h = relu(h + affine(conv_dilated(h))), dilation 2^i, same length.
     for i in 0..c.res_blocks {
         let d = rlx_wakeword_core::WakeCnnConfig::dilation(i);
         let name = format!("res{i}");
         let w = param(g, format!("{name}_w"), &[c.c3, c.c3, 1, k]);
         let y = g.conv2d(h, w, [1, k], [1, 1], [0, pad * d], [1, d], 1);
+        // Causal (unpadded): the output is `(k − 1)·d` shorter; its residual is the input's
+        // last positions (each output's newest tap).
+        let span = (k - 1) * d;
+        let skip = if c.causal {
+            t3 -= span;
+            g.narrow_(h, 3, span, t3)
+        } else {
+            h
+        };
         let y = affine(g, &mut param, y, &name, c.c3);
-        let y = g.add(h, y);
+        let y = g.add(skip, y);
         h = g.relu(y);
     }
     // Each of `pool_chunks` consecutive stretches averaged, in order ([B, c3 · chunks],
@@ -470,6 +517,8 @@ struct Aug<'a> {
     /// augmentation: scoring sets it too.
     pcen: bool,
     warm: usize,
+    /// Rows of log-mel then PCEN per frame (`2·n_mels` wide); implies `pcen`.
+    dual: bool,
 }
 
 impl Aug<'_> {
@@ -481,7 +530,13 @@ impl Aug<'_> {
         mask_p: 0.0,
         pcen: false,
         warm: 0,
+        dual: false,
     };
+
+    /// A row's frame width.
+    fn width(&self, n_mels: usize) -> usize {
+        n_mels * (1 + usize::from(self.dual))
+    }
 }
 
 /// A feature's power (features are `ln(power) / 10 + 2`), as a natural log.
@@ -516,7 +571,8 @@ fn add_noise(row: &mut [f32], noise: &[f32], n_mels: usize, start: usize, snr_db
     }
 }
 
-/// `(clip, window end, class)` per batch row into `x [B, n_mels·t]` and `y [B, K]`, on every core;
+/// `(clip, window end, class)` per batch row into `x [B, width·t]` (`width`: `n_mels`, or twice
+/// with `dual`) and `y [B, K]`, on every core;
 /// each window varied as `aug` says (`seed`: this batch's draws).
 #[allow(clippy::too_many_arguments)]
 fn fill_batch(
@@ -534,7 +590,7 @@ fn fill_batch(
     std::thread::scope(|s| {
         for (part, ((it, xc), yc)) in items
             .chunks(per)
-            .zip(x.chunks_mut(per * n_mels * t))
+            .zip(x.chunks_mut(per * aug.width(n_mels) * t))
             .zip(y.chunks_mut(per * n_out))
             .enumerate()
         {
@@ -550,6 +606,7 @@ fn fill_batch(
                 // The window and the frames before it that its PCEN starts from.
                 let mut span = vec![0.0f32; (t + aug.warm) * n_mels];
                 let mut level = Vec::new();
+                let mut norm = Vec::new();
                 for (j, &(i, e, c)) in it.iter().enumerate() {
                     window_into(&mels[i], n_mels, e, t + aug.warm, &mut span);
                     let row = &mut span[..];
@@ -570,22 +627,49 @@ fn fill_batch(
                         let shift = (u() * 2.0 - 1.0) * aug.gain_db * FEATURE_PER_DB;
                         row.iter_mut().for_each(|v| *v += shift);
                     }
-                    if aug.pcen {
+                    let wd = aug.width(n_mels);
+                    let row = &mut xc[j * wd * t..(j + 1) * wd * t];
+                    if aug.dual {
+                        // Log-mel, then its PCEN (over the frames before the window too).
+                        norm.clear();
+                        norm.extend_from_slice(&span);
                         level.clear();
-                        rlx_wakeword_core::pcen_inplace(row, n_mels, &mut level);
+                        rlx_wakeword_core::pcen_inplace(&mut norm, n_mels, &mut level);
+                        let at = aug.warm * n_mels;
+                        for (f, fr) in row.chunks_exact_mut(wd).enumerate() {
+                            fr[..n_mels].copy_from_slice(&span[at + f * n_mels..at + (f + 1) * n_mels]);
+                            fr[n_mels..].copy_from_slice(&norm[at + f * n_mels..at + (f + 1) * n_mels]);
+                        }
+                    } else {
+                        if aug.pcen {
+                            level.clear();
+                            rlx_wakeword_core::pcen_inplace(&mut span, n_mels, &mut level);
+                        }
+                        row.copy_from_slice(&span[aug.warm * n_mels..]);
                     }
-                    let row = &mut xc[j * n_mels * t..(j + 1) * n_mels * t];
-                    row.copy_from_slice(&span[aug.warm * n_mels..]);
                     if aug.mask_p > 0.0 && u() < aug.mask_p {
-                        let mean = row.iter().sum::<f32>() / row.len() as f32;
+                        // The same band and stretch in each half (log-mel, PCEN), each set to its
+                        // own mean.
+                        let halves = wd / n_mels;
+                        let means: Vec<f32> = (0..halves)
+                            .map(|h| {
+                                row.chunks_exact(wd)
+                                    .map(|fr| fr[h * n_mels..(h + 1) * n_mels].iter().sum::<f32>())
+                                    .sum::<f32>()
+                                    / (t * n_mels) as f32
+                            })
+                            .collect();
                         let (bw, tw) = (1 + (u() * 4.0) as usize, 1 + (u() * 10.0) as usize);
                         let b0 = (u() * (n_mels - bw.min(n_mels)) as f32) as usize;
                         let t0 = (u() * (t - tw.min(t)) as f32) as usize;
-                        for (f, fr) in row.chunks_exact_mut(n_mels).enumerate() {
-                            if (t0..t0 + tw).contains(&f) {
-                                fr.fill(mean);
-                            } else {
-                                fr[b0..(b0 + bw).min(n_mels)].fill(mean);
+                        for (f, fr) in row.chunks_exact_mut(wd).enumerate() {
+                            for (h, &m) in means.iter().enumerate() {
+                                let half = &mut fr[h * n_mels..(h + 1) * n_mels];
+                                if (t0..t0 + tw).contains(&f) {
+                                    half.fill(m);
+                                } else {
+                                    half[b0..(b0 + bw).min(n_mels)].fill(m);
+                                }
                             }
                         }
                     }
@@ -673,12 +757,30 @@ pub fn train_multi_with_noise(
     cfg: &MultiTrainConfig,
     device: Device,
 ) -> Result<MultiReport> {
+    train_multi_taught(w, clips, noise, &[], cfg, device)
+}
+
+/// [`train_multi_with_noise`], with `teachers` scoring every batch on the device: their scores
+/// blended into the taught outputs' targets (`cfg.teacher_weight`).
+pub fn train_multi_taught(
+    w: &mut WakeCnnWeights,
+    clips: &[MultiClip],
+    noise: &[Vec<f32>],
+    teachers: &[Teacher],
+    cfg: &MultiTrainConfig,
+    device: Device,
+) -> Result<MultiReport> {
     let n_mels = w.cfg.n_mels;
     let n_out = w.fc2_b.len();
     let t = cfg.window_frames.max(8);
     let t0 = Instant::now();
     // What a window reads: itself and, with PCEN, the frames its smoother starts from.
-    let warm = if w.cfg.pcen { cfg.pcen_warm } else { 0 };
+    let warm = if w.cfg.pcen || w.cfg.dual {
+        cfg.pcen_warm
+    } else {
+        0
+    };
+    let in_ch = w.cfg.in_ch();
     let t_in = t + warm;
     // Each clip between `t_in` frames of its own background (its opening, repeated if short)
     // and `tail_frames` more: windows can end from a window before its speech to well after it.
@@ -757,6 +859,8 @@ pub fn train_multi_with_noise(
                 (w.cfg.res_blocks > 0).then(|| format!(", {} residual blocks", w.cfg.res_blocks)),
                 w.cfg.attn.then(|| ", attention pooling".to_string()),
                 w.cfg.pcen.then(|| format!(", PCEN ({warm} frames before)")),
+                w.cfg.dual.then(|| format!(", log-mel + PCEN input ({warm} frames before)")),
+                (!teachers.is_empty()).then(|| format!(", {} teachers", teachers.len())),
                 cfg.bn.then(|| ", batch norm".to_string()),
             ]
             .into_iter()
@@ -786,13 +890,40 @@ pub fn train_multi_with_noise(
         mask_p: cfg.mask_p,
         pcen: w.cfg.pcen,
         warm,
+        dual: w.cfg.dual,
     };
     // The front end alone, for scoring.
     let plain = Aug {
         pcen: w.cfg.pcen,
         warm,
+        dual: w.cfg.dual,
         ..Aug::NONE
     };
+    // The teachers, compiled on the device, each reading its part of the student's rows.
+    let mut taught: Vec<(rlx_runtime::CompiledGraph, &Teacher, usize)> = Vec::new();
+    for tch in teachers {
+        let tc = &tch.weights.cfg;
+        let kt = tch.weights.fc2_b.len();
+        let offset = match (w.cfg.dual, tc.dual, tc.pcen) {
+            (_, true, _) if w.cfg.dual => 0,
+            (true, false, pcen) => usize::from(pcen) * n_mels,
+            (false, false, pcen) if pcen == w.cfg.pcen => 0,
+            _ => anyhow::bail!("a teacher must read the student's input (or one half of a dual one)"),
+        };
+        if tc.n_mels != n_mels || tch.outputs.iter().any(|&k| k >= kt.min(n_out)) {
+            anyhow::bail!("a teacher's mel bands or outputs do not match the student's");
+        }
+        let mut g = Graph::new("wake_multi_teacher");
+        let tw = tch.window_frames.unwrap_or(t).min(t);
+        let net = body_on(&mut g, tc, kt, b, tw, Form::Infer, (in_ch, offset), t);
+        let p = g.sigmoid(net.z);
+        g.set_outputs(vec![p]);
+        let mut probe = Session::new(device).compile(g);
+        for (name, v) in to_graph(&tch.weights) {
+            probe.set_param(&name, &v);
+        }
+        taught.push((probe, tch, kt));
+    }
     // A training item (an index into clips and their balancing copies): its window's end.
     let base_item =
         |item: usize, next: &mut dyn FnMut() -> usize| -> (usize, usize, Option<usize>) {
@@ -830,7 +961,7 @@ pub fn train_multi_with_noise(
             g.set_param(name, p);
         }
         let mut acc: Vec<(Vec<f32>, Vec<f32>)> = Vec::new();
-        let (mut px, mut py) = (vec![0.0f32; b * n_mels * t], vec![0.0f32; b * n_out]);
+        let (mut px, mut py) = (vec![0.0f32; b * in_ch * t], vec![0.0f32; b * n_out]);
         for _ in 0..batches {
             let items: Vec<(usize, usize, Option<usize>)> =
                 (0..b).map(|_| base_item(next() % n, next)).collect();
@@ -882,7 +1013,7 @@ pub fn train_multi_with_noise(
             probe.set_param(name, p);
         }
         let mut out = Vec::with_capacity(wins.len() * n_out);
-        let mut px = vec![0.0f32; b * n_mels * t];
+        let mut px = vec![0.0f32; b * in_ch * t];
         for chunk in wins.chunks(b) {
             let items: Vec<(usize, usize, Option<usize>)> =
                 chunk.iter().map(|&(i, e)| (i, e, None)).collect();
@@ -898,7 +1029,7 @@ pub fn train_multi_with_noise(
     };
 
     let mut hard: Vec<(usize, usize)> = Vec::new();
-    let (mut xb, mut yb) = (vec![0.0f32; b * n_mels * t], vec![0.0f32; b * n_out]);
+    let (mut xb, mut yb) = (vec![0.0f32; b * in_ch * t], vec![0.0f32; b * n_out]);
     let (mut xn, mut yn) = (xb.clone(), yb.clone());
     let (mut initial, mut last) = (0.0f32, 0.0f32);
     let t_train = Instant::now();
@@ -995,6 +1126,16 @@ pub fn train_multi_with_noise(
         for s in 0..steps {
             // Cut the next batch while the device runs this one.
             let upcoming = (s + 1 < steps).then(|| (pick(s + 1, &mut next), next() as u64));
+            // Distillation: the teachers' scores into the taught outputs' targets.
+            for (probe, tch, kt) in taught.iter_mut() {
+                let o = probe.run(&[("x", &xb)]);
+                for r in 0..b {
+                    for &k in &tch.outputs {
+                        let y = &mut yb[r * n_out + k];
+                        *y = (1.0 - cfg.teacher_weight) * *y + cfg.teacher_weight * o[0][r * *kt + k];
+                    }
+                }
+            }
             let ts = Instant::now();
             let loss = std::thread::scope(|sc| {
                 if let Some((items, seed)) = &upcoming {
@@ -1079,6 +1220,8 @@ mod tests {
                 res_blocks: c.res_blocks,
                 attn: c.attn,
                 pcen: c.pcen,
+                dual: c.dual,
+                causal: c.causal,
             },
             w.conv1_w.clone(),
             w.conv1_b.clone(),
@@ -1132,6 +1275,19 @@ mod tests {
                 pcen: true,
                 ..base.clone()
             },
+            WakeCnnConfig {
+                res_blocks: 2,
+                attn: true,
+                dual: true,
+                ..base.clone()
+            },
+            WakeCnnConfig {
+                res_blocks: 2,
+                attn: true,
+                dual: true,
+                causal: true,
+                ..base.clone()
+            },
         ];
         for cfg in variants {
             let mut w = init_multi(cfg.clone(), 3, 11);
@@ -1140,12 +1296,20 @@ mod tests {
                 .flatten()
                 .enumerate()
                 .for_each(|(i, v)| *v = (i % 7) as f32 * 0.01);
-            let (b, t) = (2usize, 40usize);
+            let (b, t) = (2usize, 80usize);
             let n_mels = cfg.n_mels;
             let frames = test_frames(t * n_mels, 3);
             let mut x = frames.clone();
-            if cfg.pcen {
+            if cfg.pcen || cfg.dual {
                 rlx_wakeword_core::pcen_inplace(&mut x, n_mels, &mut Vec::new());
+            }
+            if cfg.dual {
+                // Each frame: log-mel, then PCEN (fill_batch's layout).
+                x = frames
+                    .chunks_exact(n_mels)
+                    .zip(x.chunks_exact(n_mels))
+                    .flat_map(|(r, p)| r.iter().chain(p).copied())
+                    .collect();
             }
             let x = [x.clone(), x].concat();
             let mut probe = Session::new(Device::Cpu).compile(build_probs(&cfg, 3, b, t));
@@ -1246,10 +1410,8 @@ mod tests {
         }
     }
 
-    /// Two "phrases" (tones in different mel bands) and noise: the network learns to tell
-    /// them apart, each output firing for its own phrase only.
-    #[test]
-    fn learns_two_phrases_on_cpu() {
+    /// Two "phrases" (tones in different mel bands) and noise.
+    fn toy_clips() -> (Vec<MultiClip>, WakeCnnConfig) {
         let cfg = WakeCnnConfig::lite();
         let n_mels = cfg.n_mels;
         let mut clips = Vec::new();
@@ -1281,6 +1443,14 @@ mod tests {
             }
             clips.push(MultiClip { mel, class });
         }
+        (clips, cfg)
+    }
+
+    /// Two "phrases" (tones in different mel bands) and noise: the network learns to tell
+    /// them apart, each output firing for its own phrase only.
+    #[test]
+    fn learns_two_phrases_on_cpu() {
+        let (clips, cfg) = toy_clips();
         // The plain network, and with residual blocks, attention pooling, PCEN and batch
         // normalization (calibrated and folded: the report scores the engine's form).
         let wide = WakeCnnConfig {
@@ -1312,6 +1482,46 @@ mod tests {
                 r.negatives_firing.0 as f32 <= 0.1 * r.negatives_firing.1 as f32,
                 "bn {bn}: {r:?}"
             );
+        }
+    }
+
+    /// A dual-input student trained with a teacher (a plain network trained first, scoring the
+    /// log-mel half of the student's rows) learns the task.
+    #[test]
+    fn learns_from_a_teacher() {
+        let (clips, cfg) = toy_clips();
+        let tc = MultiTrainConfig {
+            epochs: 30,
+            batch: 32,
+            window_frames: 40,
+            partial_ratio: 0.0,
+            mine_every: 0,
+            log_every: 0,
+            lr: 3e-3,
+            pcen_warm: 20,
+            ..Default::default()
+        };
+        let mut teacher = init_multi(cfg.clone(), 2, 3);
+        train_multi(&mut teacher, &clips, &tc, Device::Cpu).unwrap();
+        let mut student = init_multi(
+            WakeCnnConfig {
+                dual: true,
+                res_blocks: 1,
+                attn: true,
+                ..cfg
+            },
+            2,
+            4,
+        );
+        let t = [Teacher {
+            weights: teacher,
+            outputs: vec![0, 1],
+            window_frames: None,
+        }];
+        let r = train_multi_taught(&mut student, &clips, &[], &t, &tc, Device::Cpu).unwrap();
+        assert!(r.final_loss < r.initial_loss * 0.7, "{r:?}");
+        for (found, total) in &r.recall {
+            assert!(*found as f32 >= 0.9 * *total as f32, "{r:?}");
         }
     }
 }

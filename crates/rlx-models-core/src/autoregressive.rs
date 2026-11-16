@@ -84,7 +84,40 @@ pub const MIN_PREFILL_BUCKET: usize = 256;
 /// `log2(cap / MIN_PREFILL_BUCKET)` distinct graphs per session with at most 2x
 /// padded compute, which is the right side of both trades.
 pub fn prefill_bucket_for(need: usize, cap: usize) -> usize {
-    let floor = MIN_PREFILL_BUCKET.min(cap.max(1));
+    prefill_bucket_with_floor(need, cap, MIN_PREFILL_BUCKET)
+}
+
+/// Narrowest prefill bucket on the CPU.
+///
+/// [`MIN_PREFILL_BUCKET`]'s 256 was set where padding is nearly free (Metal),
+/// but CPU prefill cost tracks the COMPILED width, not the prompt: active
+/// extent does not trim the expensive steps there. Measured on a Raspberry Pi
+/// 5 (Qwen3.5-0.8B Q4_K_M, a 26-token prompt, warm cache): 10.1 s per prompt
+/// at width 256 against 2.8 s at 64, while compiling a new bucket costs ~1.8 s
+/// once per width. A 32 floor still caps a session at log2(cap / 32) graphs.
+pub const MIN_PREFILL_BUCKET_CPU: usize = 32;
+
+/// The prefill-bucket floor for `device`: [`MIN_PREFILL_BUCKET_CPU`] on the
+/// CPU, [`MIN_PREFILL_BUCKET`] elsewhere. `RLX_MIN_PREFILL_BUCKET=<n>`
+/// overrides both, for A/B runs.
+pub fn min_prefill_bucket(device: Device) -> usize {
+    if let Some(n) = rlx_ir::env::var("RLX_MIN_PREFILL_BUCKET").and_then(|v| v.parse::<usize>().ok()) {
+        return n.max(1);
+    }
+    if device == Device::Cpu {
+        MIN_PREFILL_BUCKET_CPU
+    } else {
+        MIN_PREFILL_BUCKET
+    }
+}
+
+/// [`prefill_bucket_for`] with the floor for `device` ([`min_prefill_bucket`]).
+pub fn prefill_bucket_for_device(need: usize, cap: usize, device: Device) -> usize {
+    prefill_bucket_with_floor(need, cap, min_prefill_bucket(device))
+}
+
+fn prefill_bucket_with_floor(need: usize, cap: usize, floor: usize) -> usize {
+    let floor = floor.min(cap.max(1));
     need.max(floor)
         .next_power_of_two()
         .min(cap.max(1))
@@ -143,6 +176,18 @@ mod prefill_bucket_tests {
         // for a 256-wide graph.
         assert_eq!(prefill_bucket_for(16, 128), 128);
         assert_eq!(prefill_bucket_for(1, 1), 1);
+    }
+
+    #[test]
+    fn cpu_floor_is_narrower_and_still_fits_the_prompt() {
+        assert_eq!(prefill_bucket_with_floor(26, 2048, MIN_PREFILL_BUCKET_CPU), 32);
+        assert_eq!(prefill_bucket_with_floor(33, 2048, MIN_PREFILL_BUCKET_CPU), 64);
+        assert_eq!(prefill_bucket_with_floor(300, 2048, MIN_PREFILL_BUCKET_CPU), 512);
+        assert_eq!(prefill_bucket_with_floor(16, 16, MIN_PREFILL_BUCKET_CPU), 16);
+        for need in [1usize, 31, 32, 33, 255, 257, 2047] {
+            let b = prefill_bucket_with_floor(need, 2048, MIN_PREFILL_BUCKET_CPU);
+            assert!(b >= need && b <= 2048, "{need} → {b}");
+        }
     }
 
     #[test]

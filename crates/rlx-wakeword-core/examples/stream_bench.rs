@@ -22,6 +22,8 @@ fn main() {
         res_blocks: 0,
         attn: false,
         pcen: false,
+        dual: false,
+        causal: false,
     };
     for (name, cfg) in [
         ("lite", WakeCnnConfig::lite()),

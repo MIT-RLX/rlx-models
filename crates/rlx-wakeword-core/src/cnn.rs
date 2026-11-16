@@ -36,6 +36,15 @@ pub struct WakeCnnConfig {
     pub attn: bool,
     /// PCEN front end ([`crate::pcen`]) on the input frames instead of plain log-mel.
     pub pcen: bool,
+    /// Both: each frame is its `n_mels` log-mel values then their PCEN (the first layer reads
+    /// `2·n_mels` channels; `pcen` is then implied).
+    pub dual: bool,
+    /// Fully streaming: every convolution causal and unpadded ("valid"), so a position never
+    /// changes once computed and each 40 ms hop adds one position per layer past the first two
+    /// (the window has no edges to recompute). The first layers shorten the window by their
+    /// taps, each residual block by `2·dilation`; the pooled positions are what remains (train
+    /// with a window that long plus about 1.2 s).
+    pub causal: bool,
 }
 
 impl WakeCnnConfig {
@@ -51,6 +60,8 @@ impl WakeCnnConfig {
             res_blocks: 0,
             attn: false,
             pcen: false,
+            dual: false,
+            causal: false,
         }
     }
 
@@ -66,7 +77,19 @@ impl WakeCnnConfig {
             res_blocks: 0,
             attn: false,
             pcen: false,
+            dual: false,
+            causal: false,
         }
+    }
+
+    /// The convolutions' zero padding each side: `k / 2`, none when `causal`.
+    pub fn pad(&self) -> usize {
+        if self.causal { 0 } else { self.k / 2 }
+    }
+
+    /// The first layer's input channels: `n_mels`, or twice that with `dual`.
+    pub fn in_ch(&self) -> usize {
+        self.n_mels * (1 + usize::from(self.dual))
     }
 
     /// The pooled vector's length (the first dense layer's input).
@@ -117,7 +140,7 @@ impl WakeCnnWeights {
             |n: usize, f: &mut dyn FnMut() -> f32| -> Vec<f32> { (0..n).map(|_| f()).collect() };
         let k = cfg.k;
         Self {
-            conv1_w: fill(cfg.c1 * cfg.n_mels * k, &mut next),
+            conv1_w: fill(cfg.c1 * cfg.in_ch() * k, &mut next),
             conv1_b: vec![0.0; cfg.c1],
             conv2_w: fill(cfg.c2 * cfg.c1 * k, &mut next),
             conv2_b: vec![0.0; cfg.c2],
@@ -159,7 +182,7 @@ impl WakeCnnWeights {
         };
         let k = cfg.k;
         Self {
-            conv1_w: fill(cfg.c1 * cfg.n_mels * k, cfg.n_mels * k),
+            conv1_w: fill(cfg.c1 * cfg.in_ch() * k, cfg.in_ch() * k),
             conv1_b: vec![0.0; cfg.c1],
             conv2_w: fill(cfg.c2 * cfg.c1 * k, cfg.c1 * k),
             conv2_b: vec![0.0; cfg.c2],
@@ -293,6 +316,9 @@ impl WakeCnnWeights {
 /// an odd shift, ternary weights) recomputes the whole window.
 pub struct WakeCnn {
     weights: WakeCnnWeights,
+    opts: EngineOpts,
+    /// The residual blocks' padded input, kept between hops (`opts.reuse_pad`).
+    pad_buf: Vec<f32>,
     mel_buf: Vec<f32>,
     window_frames: usize,
     /// Channel-major input window and each layer's (post-ReLU) outputs.
@@ -300,9 +326,12 @@ pub struct WakeCnn {
     y1: Vec<f32>,
     y2: Vec<f32>,
     y3: Vec<f32>,
-    /// The residual blocks' output (`cfg.res_blocks > 0`), and scratch for a block's branch.
-    yr: Vec<f32>,
+    /// Each residual block's output (`cfg.res_blocks > 0`), and scratch for a block's branch.
+    yr: Vec<Vec<f32>>,
     branch: Vec<f32>,
+    /// After a streamed hop: the third layer's changed positions `[0, a)` and `[b, t)` and how
+    /// far it slid, for the residual blocks to recompute only what changed. `None`: all.
+    stem_change: Option<(usize, usize, usize)>,
     /// The PCEN smoother (`cfg.pcen`), carried across pushes.
     pcen_m: Vec<f32>,
     /// The layer state is the last scored window's, `pending` frames ago.
@@ -314,6 +343,27 @@ pub struct WakeCnn {
     pooled: Vec<f32>,
     hidden: Vec<f32>,
     patch: Vec<f32>,
+}
+
+/// How the engine computes (all on by default; off, the plainer forms, to measure each).
+#[derive(Debug, Clone, Copy)]
+pub struct EngineOpts {
+    /// Keep the residual blocks' padded input buffer between calls (else allocate each time).
+    pub reuse_pad: bool,
+    /// The first layers: four output channels per pass over a position's patch.
+    pub stem_blocked: bool,
+    /// PCEN and attention with [`crate::fastmath`] (else the library's `exp` / `powf` / `tanh`).
+    pub fast_math: bool,
+}
+
+impl Default for EngineOpts {
+    fn default() -> Self {
+        Self {
+            reuse_pad: true,
+            stem_blocked: true,
+            fast_math: true,
+        }
+    }
 }
 
 /// One time-conv layer: kernel, stride, padding.
@@ -333,6 +383,8 @@ impl WakeCnn {
         Self {
             window_frames: 40,
             weights,
+            opts: EngineOpts::default(),
+            pad_buf: Vec::new(),
             mel_buf: Vec::new(),
             x: Vec::new(),
             y1: Vec::new(),
@@ -340,6 +392,7 @@ impl WakeCnn {
             y3: Vec::new(),
             yr: Vec::new(),
             branch: Vec::new(),
+            stem_change: None,
             pcen_m: Vec::new(),
             stream: false,
             pending: 0,
@@ -348,6 +401,13 @@ impl WakeCnn {
             hidden: Vec::new(),
             patch: Vec::new(),
         }
+    }
+
+    /// How to compute ([`EngineOpts`]); scores are the same either way except for `fast_math`
+    /// (within float rounding).
+    pub fn with_opts(mut self, opts: EngineOpts) -> Self {
+        self.opts = opts;
+        self
     }
 
     pub fn with_window_frames(mut self, frames: usize) -> Self {
@@ -373,14 +433,33 @@ impl WakeCnn {
     }
 
     fn append(&mut self, frames: &[f32]) {
-        let n_mels = self.weights.cfg.n_mels;
+        let cfg = &self.weights.cfg;
+        let n_mels = cfg.n_mels;
         let at = self.mel_buf.len();
-        self.mel_buf.extend_from_slice(frames);
-        if self.weights.cfg.pcen {
-            crate::pcen::pcen_inplace(&mut self.mel_buf[at..], n_mels, &mut self.pcen_m);
+        if cfg.dual {
+            // Each frame stored as its log-mel values then their PCEN.
+            let mut p = frames.to_vec();
+            if self.opts.fast_math {
+                crate::pcen::pcen_inplace(&mut p, n_mels, &mut self.pcen_m);
+            } else {
+                crate::pcen::pcen_inplace_libm(&mut p, n_mels, &mut self.pcen_m);
+            }
+            for (raw, norm) in frames.chunks_exact(n_mels).zip(p.chunks_exact(n_mels)) {
+                self.mel_buf.extend_from_slice(raw);
+                self.mel_buf.extend_from_slice(norm);
+            }
+        } else {
+            self.mel_buf.extend_from_slice(frames);
+            if cfg.pcen {
+                if self.opts.fast_math {
+                    crate::pcen::pcen_inplace(&mut self.mel_buf[at..], n_mels, &mut self.pcen_m);
+                } else {
+                    crate::pcen::pcen_inplace_libm(&mut self.mel_buf[at..], n_mels, &mut self.pcen_m);
+                }
+            }
         }
         // Compacted at twice the window, so sliding by a hop costs no shifting.
-        let max_len = self.window_frames * n_mels;
+        let max_len = self.window_frames * cfg.in_ch();
         if self.mel_buf.len() >= 2 * max_len {
             let drop = self.mel_buf.len() - max_len;
             self.mel_buf.drain(..drop);
@@ -399,9 +478,21 @@ impl WakeCnn {
         self.stream = false;
     }
 
+    /// Slide `frames` in without scoring now, keeping the streaming state: the next score
+    /// updates incrementally over everything queued (scoring every other hop: 8 frames at a
+    /// time instead of 4, at no extra cost per score).
+    pub fn queue_frames(&mut self, frames: &[f32]) {
+        let n_mels = self.weights.cfg.n_mels;
+        if frames.is_empty() || !frames.len().is_multiple_of(n_mels) {
+            return;
+        }
+        self.append(frames);
+        self.pending += frames.len() / n_mels;
+    }
+
     /// The scored window: the last `window_frames` frames.
     fn window(&self) -> &[f32] {
-        let max_len = self.window_frames * self.weights.cfg.n_mels;
+        let max_len = self.window_frames * self.weights.cfg.in_ch();
         &self.mel_buf[self.mel_buf.len().saturating_sub(max_len)..]
     }
 
@@ -422,7 +513,7 @@ impl WakeCnn {
         }
         self.append(frames);
         self.pending += frames.len() / n_mels;
-        if self.window().len() < n_mels * self.window_frames {
+        if self.window().len() < self.weights.cfg.in_ch() * self.window_frames {
             self.stream = false;
             return None;
         }
@@ -441,7 +532,7 @@ impl WakeCnn {
     /// a verifier fed with [`Self::append_mel_frames`] and asked only when a detector fires.
     /// `None` until the window is full.
     pub fn score_window(&mut self) -> Option<&[f32]> {
-        if self.window().len() < self.weights.cfg.n_mels * self.window_frames {
+        if self.window().len() < self.weights.cfg.in_ch() * self.window_frames {
             return None;
         }
         self.forward_full();
@@ -452,39 +543,85 @@ impl WakeCnn {
         Some(&self.probs)
     }
 
-    /// The residual blocks over the third layer's whole output (on the robot about 2.5 M
-    /// multiply-adds a hop at mid width with four blocks; cheap next to recomputing the window,
-    /// and exact).
+    /// The residual blocks over the third layer's output. After a streamed hop only what
+    /// changed: block `i` (dilation `d`) reads positions `p − d`, `p`, `p + d`, so its changed
+    /// outputs are the input's changed ones widened by `d` (plus the first `d`, which read the
+    /// padding before the window); the rest are the previous outputs, slid. Exact either way.
     fn res_forward(&mut self) {
         let cfg = &self.weights.cfg;
+        let change = self.stem_change.take();
         if cfg.res_blocks == 0 {
             return;
+        }
+        if cfg.causal {
+            return self.res_forward_causal(change);
         }
         let (c, k) = (cfg.c3, cfg.k);
         let t = self.lens()[3];
         let mut yr = core::mem::take(&mut self.yr);
         let mut branch = core::mem::take(&mut self.branch);
-        yr.clear();
-        yr.extend_from_slice(&self.y3[..c * t]);
         branch.resize(c * t, 0.0);
+        let reuse = self.opts.reuse_pad;
+        let mut pad = core::mem::take(&mut self.pad_buf);
+        let fresh = yr.len() != cfg.res_blocks || yr.iter().any(|v| v.len() != c * t);
+        if fresh {
+            yr = alloc::vec![alloc::vec![0.0; c * t]; cfg.res_blocks];
+        }
+        // Changed input positions `[0, a)` ∪ `[b, t)` (all: `a = t`), and the slide.
+        let (mut a, mut b, shift) = match change {
+            Some(ch) if !fresh => ch,
+            _ => (t, 0, 0),
+        };
         for i in 0..cfg.res_blocks {
-            conv1d_dilated(
-                &yr,
-                c,
-                t,
-                &self.weights.res_w[i],
-                c,
-                k,
-                WakeCnnConfig::dilation(i),
-                &self.weights.res_b[i],
-                &mut branch,
-            );
-            for (y, z) in yr.iter_mut().zip(&branch) {
-                *y = relu(*y + *z);
+            let d = WakeCnnConfig::dilation(i);
+            let (a_out, b_out) = ((a + d).min(t), b.saturating_sub(d));
+            let ranges: &[(usize, usize)] = if a_out >= b_out {
+                &[(0, t), (t, t)]
+            } else {
+                &[(0, a_out), (b_out, t)]
+            };
+            let (before, rest) = yr.split_at_mut(i);
+            let input: &[f32] = if i == 0 {
+                &self.y3[..c * t]
+            } else {
+                &before[i - 1]
+            };
+            let out = &mut rest[0];
+            if a_out < b_out && shift > 0 {
+                for ch in 0..c {
+                    out.copy_within(ch * t + shift..(ch + 1) * t, ch * t);
+                }
             }
+            for &(lo, hi) in ranges {
+                conv1d_dilated(
+                    input,
+                    c,
+                    t,
+                    &self.weights.res_w[i],
+                    c,
+                    k,
+                    d,
+                    &self.weights.res_b[i],
+                    &mut branch,
+                    lo,
+                    hi,
+                    &mut pad,
+                );
+                if !reuse {
+                    // The plain form: a fresh buffer each call.
+                    pad = Vec::new();
+                }
+                for ch in 0..c {
+                    for p in lo..hi {
+                        out[ch * t + p] = relu(input[ch * t + p] + branch[ch * t + p]);
+                    }
+                }
+            }
+            (a, b) = (a_out, b_out);
         }
         self.yr = yr;
         self.branch = branch;
+        self.pad_buf = pad;
     }
 
     /// Layer `l`'s (input channels, output channels, kernel weights, bias).
@@ -492,7 +629,7 @@ impl WakeCnn {
         let c = &self.weights.cfg;
         let w = &self.weights;
         match l {
-            0 => (c.n_mels, c.c1, &w.conv1_w, &w.conv1_b),
+            0 => (c.in_ch(), c.c1, &w.conv1_w, &w.conv1_b),
             1 => (c.c1, c.c2, &w.conv2_w, &w.conv2_b),
             _ => (c.c2, c.c3, &w.conv3_w, &w.conv3_b),
         }
@@ -500,7 +637,7 @@ impl WakeCnn {
 
     /// Output lengths of the three layers for the current window.
     fn lens(&self) -> [usize; 4] {
-        let (k, pad) = (self.weights.cfg.k, self.weights.cfg.k / 2);
+        let (k, pad) = (self.weights.cfg.k, self.weights.cfg.pad());
         let t0 = self.window_frames;
         let t1 = conv_out_len(t0, k, STRIDES[0], pad);
         let t2 = conv_out_len(t1, k, STRIDES[1], pad);
@@ -510,7 +647,7 @@ impl WakeCnn {
 
     /// Recompute layer `l`'s outputs `[lo, hi)` from the layer below, then ReLU them.
     fn conv_part(&mut self, l: usize, lo: usize, hi: usize) {
-        let (k, pad) = (self.weights.cfg.k, self.weights.cfg.k / 2);
+        let (k, pad) = (self.weights.cfg.k, self.weights.cfg.pad());
         let t = self.lens();
         let (in_c, out_c, _, _) = self.layer(l);
         let mut out = core::mem::take(match l {
@@ -541,6 +678,7 @@ impl WakeCnn {
                 lo,
                 hi,
                 &mut patch,
+                self.opts.stem_blocked,
             );
         }
         self.patch = patch;
@@ -558,20 +696,21 @@ impl WakeCnn {
 
     /// The input window, channel-major, into `self.x` (columns `from..` only).
     fn fill_x(&mut self, from: usize) {
-        let n_mels = self.weights.cfg.n_mels;
+        let w = self.weights.cfg.in_ch();
         let t = self.window_frames;
-        let start = self.mel_buf.len() - t * n_mels;
+        let start = self.mel_buf.len() - t * w;
         for ti in from..t {
-            for m in 0..n_mels {
-                self.x[m * t + ti] = self.mel_buf[start + ti * n_mels + m];
+            for m in 0..w {
+                self.x[m * t + ti] = self.mel_buf[start + ti * w + m];
             }
         }
     }
 
     fn forward_full(&mut self) {
+        self.stem_change = None;
         let cfg = self.weights.cfg.clone();
         let t = self.lens();
-        self.x.resize(cfg.n_mels * t[0], 0.0);
+        self.x.resize(cfg.in_ch() * t[0], 0.0);
         self.fill_x(0);
         self.y1.resize(cfg.c1 * t[1], 0.0);
         self.y2.resize(cfg.c2 * t[2], 0.0);
@@ -583,7 +722,7 @@ impl WakeCnn {
             return;
         }
         // Ternary weights: the fused add/sub kernels, whole window.
-        let (k, pad) = (cfg.k, cfg.k / 2);
+        let (k, pad) = (cfg.k, cfg.pad());
         for l in 0..3 {
             let (in_c, out_c, w, b) = self.layer(l);
             let (w, b) = (w.to_vec(), b.to_vec());
@@ -636,13 +775,13 @@ impl WakeCnn {
         let cfg = self.weights.cfg.clone();
         let t = self.lens();
         let total: usize = STRIDES.iter().product();
-        if n == 0 || !n.is_multiple_of(total) || n >= t[0] || self.x.len() != cfg.n_mels * t[0] {
+        if n == 0 || !n.is_multiple_of(total) || n >= t[0] || self.x.len() != cfg.in_ch() * t[0] {
             return false;
         }
-        let (k, pad) = (cfg.k, cfg.k / 2);
+        let (k, pad) = (cfg.k, cfg.pad());
         // Input: shift, then the new frames.
         let t0 = t[0];
-        for m in 0..cfg.n_mels {
+        for m in 0..cfg.in_ch() {
             self.x.copy_within(m * t0 + n..(m + 1) * t0, m * t0);
         }
         self.fill_x(t0 - n);
@@ -682,17 +821,111 @@ impl WakeCnn {
             }
             (a, b, shift) = (a_out, b_out, shift_out);
         }
+        self.stem_change = Some((a, b, shift));
         true
+    }
+
+    /// The residual blocks' output lengths when `causal` (each `2·dilation` shorter).
+    fn causal_lens(&self) -> Vec<usize> {
+        let cfg = &self.weights.cfg;
+        let mut len = self.lens()[3];
+        (0..cfg.res_blocks)
+            .map(|i| {
+                len = len.saturating_sub(2 * WakeCnnConfig::dilation(i) * (cfg.k / 2));
+                len
+            })
+            .collect()
+    }
+
+    /// [`Self::res_forward`] for a `causal` network: block `i`'s output `q` reads its input at
+    /// `q`, `q + d`, `q + 2d` (the last one the residual), so after a hop only the newest
+    /// outputs (those reading what changed below) are computed; the rest slide.
+    fn res_forward_causal(&mut self, change: Option<(usize, usize, usize)>) {
+        let cfg = self.weights.cfg.clone();
+        let (c, k) = (cfg.c3, cfg.k);
+        let t3 = self.lens()[3];
+        let lens = self.causal_lens();
+        let mut yr = core::mem::take(&mut self.yr);
+        let mut branch = core::mem::take(&mut self.branch);
+        branch.resize(c * t3, 0.0);
+        let mut pad = core::mem::take(&mut self.pad_buf);
+        let fresh = yr.len() != cfg.res_blocks || yr.iter().zip(&lens).any(|(v, &l)| v.len() != c * l);
+        if fresh {
+            yr = lens.iter().map(|&l| alloc::vec![0.0; c * l]).collect();
+        }
+        // Changed input positions `[b, len)` and the slide; everything when fresh.
+        let (mut b, shift, all) = match change {
+            Some((_, b, shift)) if !fresh => (b, shift, false),
+            _ => (0, 0, true),
+        };
+        let mut in_len = t3;
+        for i in 0..cfg.res_blocks {
+            let d = WakeCnnConfig::dilation(i);
+            let span = 2 * d * (k / 2);
+            let out_len = lens[i];
+            let b_out = if all { 0 } else { b.saturating_sub(span) };
+            let (before, rest) = yr.split_at_mut(i);
+            let input: &[f32] = if i == 0 { &self.y3[..c * t3] } else { &before[i - 1] };
+            let out = &mut rest[0];
+            if !all && shift > 0 && shift < out_len {
+                for ch in 0..c {
+                    out.copy_within(ch * out_len + shift..(ch + 1) * out_len, ch * out_len);
+                }
+            }
+            // Output `q` reads input `q + j·d` (taps j = 0..k): one patch per position, then
+            // four output channels per pass (NEON); the same per-position arithmetic whether
+            // one position or all are computed, so streaming stays exact.
+            let w = &self.weights.res_w[i];
+            let bias = &self.weights.res_b[i];
+            let n = c * k;
+            pad.resize(n, 0.0);
+            for q in b_out..out_len {
+                for ch in 0..c {
+                    for j in 0..k {
+                        pad[ch * k + j] = input[ch * in_len + q + j * d];
+                    }
+                }
+                let mut o = 0;
+                while o + 4 <= c {
+                    let r = crate::ops::dot4(
+                        [&w[o * n..(o + 1) * n], &w[(o + 1) * n..(o + 2) * n], &w[(o + 2) * n..(o + 3) * n], &w[(o + 3) * n..(o + 4) * n]],
+                        &pad[..n],
+                    );
+                    for (u, v) in r.iter().enumerate() {
+                        branch[(o + u) * in_len + q] = bias[o + u] + v;
+                    }
+                    o += 4;
+                }
+                for o in o..c {
+                    branch[o * in_len + q] = bias[o] + crate::ops::dot(&w[o * n..(o + 1) * n], &pad[..n]);
+                }
+                for ch in 0..c {
+                    out[ch * out_len + q] = relu(input[ch * in_len + q + span] + branch[ch * in_len + q]);
+                }
+            }
+            if !self.opts.reuse_pad {
+                pad = Vec::new();
+            }
+            (b, in_len) = (b_out, out_len);
+        }
+        self.yr = yr;
+        self.branch = branch;
+        self.pad_buf = pad;
     }
 
     /// Mean-pool the last layer and run the two dense layers: `self.probs`.
     fn head(&mut self) {
         let cfg = self.weights.cfg.clone();
-        let t3 = self.lens()[3];
+        // The pooled positions: the third layer's, or the last residual block's when causal.
+        let t3 = if cfg.causal && cfg.res_blocks > 0 {
+            *self.causal_lens().last().expect("blocks")
+        } else {
+            self.lens()[3]
+        };
         let n_out = self.weights.n_out();
         let chunks = cfg.pool_chunks.max(1);
         let top: &[f32] = if cfg.res_blocks > 0 {
-            &self.yr
+            &self.yr[cfg.res_blocks - 1]
         } else {
             &self.y3[..cfg.c3 * t3]
         };
@@ -702,7 +935,16 @@ impl WakeCnn {
         } else {
             pool_chunks(top, cfg.c3, t3, chunks, &mut self.pooled[..cfg.c3 * chunks]);
         }
-        if cfg.attn {
+        if cfg.attn && self.opts.fast_math {
+            attention_pool_fast(
+                top,
+                cfg.c3,
+                t3,
+                &self.weights.attn_w,
+                self.weights.attn_b[0],
+                &mut self.pooled[cfg.c3 * chunks..],
+            );
+        } else if cfg.attn {
             attention_pool(
                 top,
                 cfg.c3,
@@ -795,6 +1037,28 @@ pub fn attention_pool(y: &[f32], c: usize, t: usize, w: &[f32], b: f32, out: &mu
     for ch in 0..c {
         let row = &y[ch * t..(ch + 1) * t];
         out[ch] = row.iter().zip(&a).map(|(v, p)| v * p).sum::<f32>() / sum;
+    }
+}
+
+/// [`attention_pool`] with [`crate::fastmath::exp`] (`tanh u = 1 − 2 / (e^{2u} + 1)`) and the
+/// scores' sums and products vectorized.
+pub fn attention_pool_fast(y: &[f32], c: usize, t: usize, w: &[f32], b: f32, out: &mut [f32]) {
+    use crate::fastmath::exp;
+    // u[t] = b + Σ_c w_c · y[c, t], channel rows accumulated whole (vectorizes).
+    let mut a = vec![b; t];
+    for ch in 0..c {
+        let row = &y[ch * t..(ch + 1) * t];
+        for (s, &v) in a.iter_mut().zip(row) {
+            *s = w[ch].mul_add(v, *s);
+        }
+    }
+    for s in a.iter_mut() {
+        let th = 1.0 - 2.0 / (exp(2.0 * *s) + 1.0);
+        *s = exp(ATTN_BOUND * th);
+    }
+    let sum: f32 = a.iter().sum();
+    for ch in 0..c {
+        out[ch] = crate::ops::dot(&y[ch * t..(ch + 1) * t], &a) / sum;
     }
 }
 

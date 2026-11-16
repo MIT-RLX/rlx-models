@@ -19,6 +19,8 @@ fn copy_weights(host: &HostW) -> WakeCnnWeights {
             res_blocks: host.cfg.res_blocks,
             attn: host.cfg.attn,
             pcen: host.cfg.pcen,
+            dual: host.cfg.dual,
+            causal: host.cfg.causal,
         },
         host.conv1_w.clone(),
         host.conv1_b.clone(),

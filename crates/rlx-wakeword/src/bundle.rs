@@ -22,6 +22,9 @@ pub struct BundleManifest {
     /// [`WakewordConfig::smooth_hops`]; 1 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smooth_hops: Option<usize>,
+    /// [`WakewordConfig::score_every_hops`]; 1 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_every_hops: Option<usize>,
     /// A second network asked only when a phrase fires, whose score must agree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verifier: Option<BundleVerifier>,
@@ -125,6 +128,7 @@ impl WakewordBundle {
             context_ms: man.context_ms,
             min_hops: man.min_hops.unwrap_or(1).max(1),
             smooth_hops: man.smooth_hops.unwrap_or(1).max(1),
+            score_every_hops: man.score_every_hops.unwrap_or(1).max(1),
             phrases,
             ..WakewordConfig::default()
         };
@@ -173,6 +177,7 @@ pub fn save_bundle(
         context_ms,
         min_hops: None,
         smooth_hops: None,
+        score_every_hops: None,
         verifier: None,
         phrases: Vec::new(),
     };
@@ -239,6 +244,8 @@ pub fn host_to_core(host: &HostWeights) -> WakeCnnWeights {
             res_blocks: host.cfg.res_blocks,
             attn: host.cfg.attn,
             pcen: host.cfg.pcen,
+            dual: host.cfg.dual,
+            causal: host.cfg.causal,
         },
         host.conv1_w.clone(),
         host.conv1_b.clone(),

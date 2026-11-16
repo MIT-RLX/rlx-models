@@ -11,7 +11,11 @@
 //!     [--noise DIR [--noise …]] [--noise-p 0.5] [--noise-snr 0,25] [--mask-p 0.3] [--pos-tail-ms 200]
 //!
 //! Architecture: `--res-blocks N` (dilated residual blocks), `--attn` (attention pooling),
-//! `--pcen` (PCEN front end), `--bn` (batch normalization while training, folded on export).
+//! `--pcen` (PCEN front end), `--dual` (log-mel and PCEN side by side), `--bn` (batch
+//! normalization while training, folded on export). Distillation: `--teacher FILE:OUT[,OUT…]`
+//! (repeatable; a trained network whose scores join those outputs' targets, at
+//! `--teacher-weight`, default 0.5; `--teacher-window-ms`: the window the teachers were trained
+//! on, when the student's is longer, e.g. a `--causal` one).
 //! `--save-pack FILE` writes the loaded clips and noise as one file (`--epochs 0`: and stops);
 //! `--pack FILE` trains from such a file instead of `--phrase` / `--neg` / `--noise`.
 //!
@@ -34,7 +38,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use rlx_wake::train::multi::{
-    MultiClip, MultiTrainConfig, init_multi, load_mels_cached, train_multi_with_noise,
+    MultiClip, MultiTrainConfig, Teacher, init_multi, load_mels_cached, train_multi_taught,
 };
 use rlx_wake::{WakeCnnConfig, parse_device_list};
 
@@ -90,6 +94,8 @@ fn main() -> Result<()> {
     cfg.res_blocks = parse("--res-blocks", 0.0) as usize;
     cfg.attn = has("--attn");
     cfg.pcen = has("--pcen");
+    cfg.dual = has("--dual");
+    cfg.causal = has("--causal");
     let device = *parse_device_list(&flag(&args, "--device").unwrap_or_else(|| "cpu".into()))?
         .first()
         .unwrap_or(&rlx_wake::Device::Cpu);
@@ -116,6 +122,7 @@ fn main() -> Result<()> {
         mask_p: parse("--mask-p", 0.3) as f32,
         pos_tail: (parse("--pos-tail-ms", 200.0) / 10.0).round() as usize,
         bn: has("--bn"),
+        teacher_weight: parse("--teacher-weight", 0.5) as f32,
         ..MultiTrainConfig::default()
     };
     let cache = match flag(&args, "--mel-cache").as_deref() {
@@ -172,8 +179,26 @@ fn main() -> Result<()> {
         );
     }
 
+    // Teachers: `FILE:OUT,OUT…` (weights trained before; which outputs they teach).
+    let teachers: Vec<Teacher> = flags(&args, "--teacher")
+        .iter()
+        .map(|s| {
+            let (file, outs) = s
+                .rsplit_once(':')
+                .ok_or_else(|| anyhow::anyhow!("--teacher FILE:OUT[,OUT…], got {s}"))?;
+            let weights = rlx_wake::WakeCnnWeights::load(Path::new(file))
+                .with_context(|| format!("load teacher {file}"))?;
+            let outputs = outs.split(',').map(|o| o.trim().parse()).collect::<Result<Vec<usize>, _>>()?;
+            eprintln!("[rlx-wakeword-train-multi] teacher {file} for outputs {outputs:?} (weight {})", tc.teacher_weight);
+            let window_frames = flag(&args, "--teacher-window-ms")
+                .and_then(|v| v.parse::<f32>().ok())
+                .map(|ms| (ms / 10.0).round() as usize);
+            Ok(Teacher { weights, outputs, window_frames })
+        })
+        .collect::<Result<_>>()?;
+
     let mut w = init_multi(cfg, ids.len(), 0x5EED);
-    let r = train_multi_with_noise(&mut w, &clips, &noise, &tc, device)?;
+    let r = train_multi_taught(&mut w, &clips, &noise, &teachers, &tc, device)?;
     for (id, (found, total)) in ids.iter().zip(&r.recall) {
         eprintln!("  {id}: {found}/{total} training positives at 0.5");
     }

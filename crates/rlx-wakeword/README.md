@@ -54,7 +54,10 @@ rlx-wakeword-train-multi --phrase hey=POS_DIR --phrase bye=POS_DIR --neg NEG_DIR
 # then:                                              rlx-wakeword-train-multi --pack r.pack …
 ```
 
-`--res-blocks` dilated residual blocks, `--attn` attention pooling, `--pcen` PCEN front end, `--bn`
+`--res-blocks` dilated residual blocks, `--attn` attention pooling, `--pcen` PCEN front end,
+`--dual` log-mel and PCEN side by side, `--teacher FILE:OUT[,OUT…]` distillation (a trained
+network's scores join those outputs' targets, weight `--teacher-weight`; a teacher reads the
+student's input, or its log-mel or PCEN half), `--bn`
 batch normalization (folded into the convolutions on export), `--noise` noise mixed into training
 windows on the fly, `--mask-p` SpecAugment, `--pos-tail-ms` positive windows ending after the
 phrase, hard-negative mining every `--mine-every` epochs.
@@ -63,7 +66,8 @@ Manifest options read by `WakewordSession`: `min_hops` (hops in a row at the thr
 `smooth_hops` (score = mean of the last N), per phrase `threshold` / `output` / `context_ms` /
 `min_hops` / `smooth_hops` / `verify_threshold` / `verify_output`, and `verifier`
 (`{weights, threshold, context_ms}`: a second network scored only when a phrase fires, which can
-veto it). A worked example (Reachy Mini's wake words, with their data and training): `reachy-rs/crates/wakeword-peachy-r15`.
+veto it). `WakewordSession::log_scores` / `take_scores` keep every scored hop's raw scores, for
+tuning thresholds offline. A worked example (Reachy Mini's wake words, with their data and training): `reachy-rs/crates/wakeword-peachy-r15`.
 
 ## Library
 
