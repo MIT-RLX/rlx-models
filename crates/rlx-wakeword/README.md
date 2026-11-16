@@ -38,6 +38,33 @@ just wakeword-demo -- --wav clip.wav --bundle /tmp/wake_bundle --hop-ms 40
 just test-wakeword
 ```
 
+## Multi-phrase network (`rlx-wakeword-train-multi`)
+
+One network with an output per phrase, run once per hop for all of them (the bundle's phrases share
+`weights` and name their `output`). Trained on an RLX device with AdamW on the device
+(`rlx-wake::train::multi`):
+
+```bash
+rlx-wakeword-train-multi --phrase hey=POS_DIR --phrase bye=POS_DIR --neg NEG_DIR … \
+  --out-dir OUT --window-ms 2000 --model mid --device metal|cuda --epochs 100 \
+  --pool-chunks 4 --res-blocks 4 --attn --pcen --bn \
+  --noise NOISE_DIR --noise-p 0.5 --noise-snr 0,25 --mask-p 0.3 --pos-tail-ms 200 \
+  --mine-ratio 2 --gain-db 12
+# the loaded clips as one file, to train elsewhere:  … --save-pack r.pack --epochs 0
+# then:                                              rlx-wakeword-train-multi --pack r.pack …
+```
+
+`--res-blocks` dilated residual blocks, `--attn` attention pooling, `--pcen` PCEN front end, `--bn`
+batch normalization (folded into the convolutions on export), `--noise` noise mixed into training
+windows on the fly, `--mask-p` SpecAugment, `--pos-tail-ms` positive windows ending after the
+phrase, hard-negative mining every `--mine-every` epochs.
+
+Manifest options read by `WakewordSession`: `min_hops` (hops in a row at the threshold),
+`smooth_hops` (score = mean of the last N), per phrase `threshold` / `output` / `context_ms` /
+`min_hops` / `smooth_hops` / `verify_threshold` / `verify_output`, and `verifier`
+(`{weights, threshold, context_ms}`: a second network scored only when a phrase fires, which can
+veto it). A worked example (Reachy Mini's wake words, with their data and training): `reachy-rs/crates/wakeword-peachy-r15`.
+
 ## Library
 
 ```rust

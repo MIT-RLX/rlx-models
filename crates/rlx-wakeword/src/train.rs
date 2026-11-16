@@ -382,6 +382,7 @@ pub fn train_phrases(
         config,
         weights,
         sources,
+        verifier: None,
     })
 }
 

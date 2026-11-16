@@ -33,7 +33,7 @@ pub struct GraphTrainConfig {
     pub partial_gap: usize,
     /// Frames of each clip's own background (its first frames) appended after it, so that a
     /// negative's window can also end well after its speech: what streaming scores for a
-    /// second after any phrase (a "Hey Peachy" must not read as "Bye Peachy" 0.4 s later).
+    /// second after any phrase (a "hey" phrase must not read as a "bye" one 0.4 s later).
     pub tail_frames: usize,
     /// Hard-negative mining: from epoch `mine_after`, every `mine_every` epochs (0: never),
     /// score every negative window `mine_stride` frames apart with the current model (forward

@@ -19,7 +19,23 @@ pub struct BundleManifest {
     /// [`WakewordConfig::min_hops`]; 1 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_hops: Option<usize>,
+    /// [`WakewordConfig::smooth_hops`]; 1 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smooth_hops: Option<usize>,
+    /// A second network asked only when a phrase fires, whose score must agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<BundleVerifier>,
     pub phrases: Vec<BundlePhrase>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleVerifier {
+    pub weights: String,
+    /// The verifier score a phrase needs, unless the phrase says (`verify_threshold`).
+    pub threshold: f32,
+    /// Its window, if not the bundle's `context_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_ms: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +53,15 @@ pub struct BundlePhrase {
     /// This phrase's confirmation hops if not the bundle's `min_hops`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_hops: Option<usize>,
+    /// This phrase's score smoothing if not the bundle's `smooth_hops`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smooth_hops: Option<usize>,
+    /// With a verifier: its score this phrase needs, and its output scoring the phrase
+    /// (default: `output`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_threshold: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_output: Option<usize>,
 }
 
 pub struct WakewordBundle {
@@ -45,6 +70,8 @@ pub struct WakewordBundle {
     /// Per phrase (same order as `weights`): its weights file and output index, which say
     /// which phrases share a network.
     pub sources: Vec<(String, usize)>,
+    /// The verifier: weights, default threshold, window (ms).
+    pub verifier: Option<(WakeCnnWeights, f32, f32)>,
 }
 
 impl WakewordBundle {
@@ -75,12 +102,29 @@ impl WakewordBundle {
             let mut pc = PhraseConfig::new(&p.id, p.threshold);
             pc.context_ms = p.context_ms;
             pc.min_hops = p.min_hops;
+            pc.smooth_hops = p.smooth_hops;
+            pc.verify_threshold = p.verify_threshold;
+            pc.verify_output = p.verify_output;
             phrases.push(pc);
         }
+        let verifier = match &man.verifier {
+            Some(v) => {
+                let path = dir.join(&v.weights);
+                let host = HostWeights::load(&path)
+                    .with_context(|| format!("load verifier {}", path.display()))?;
+                Some((
+                    host_to_core(&host),
+                    v.threshold,
+                    v.context_ms.unwrap_or(man.context_ms),
+                ))
+            }
+            None => None,
+        };
         let config = WakewordConfig {
             hop_samples: hop_ms_to_samples(man.hop_ms),
             context_ms: man.context_ms,
             min_hops: man.min_hops.unwrap_or(1).max(1),
+            smooth_hops: man.smooth_hops.unwrap_or(1).max(1),
             phrases,
             ..WakewordConfig::default()
         };
@@ -88,6 +132,7 @@ impl WakewordBundle {
             config,
             weights,
             sources,
+            verifier,
         })
     }
 
@@ -104,11 +149,15 @@ impl WakewordBundle {
     }
 
     pub fn into_session(self) -> Result<crate::session::WakewordSession> {
-        crate::session::WakewordSession::new_shared(self.config.clone(), self.nets())
+        self.open_session()
     }
 
     pub fn open_session(&self) -> Result<crate::session::WakewordSession> {
-        crate::session::WakewordSession::new_shared(self.config.clone(), self.nets())
+        let s = crate::session::WakewordSession::new_shared(self.config.clone(), self.nets())?;
+        Ok(match &self.verifier {
+            Some((w, thr, ms)) => s.with_verifier(w.clone(), *thr, *ms),
+            None => s,
+        })
     }
 }
 
@@ -123,6 +172,8 @@ pub fn save_bundle(
         hop_ms: samples_to_hop_ms(hop_samples),
         context_ms,
         min_hops: None,
+        smooth_hops: None,
+        verifier: None,
         phrases: Vec::new(),
     };
     for (id, thr, w) in phrases {
@@ -136,6 +187,9 @@ pub fn save_bundle(
             output: None,
             context_ms: None,
             min_hops: None,
+            smooth_hops: None,
+            verify_threshold: None,
+            verify_output: None,
         });
     }
     let man_path = dir.join("manifest.json");
@@ -182,6 +236,9 @@ pub fn host_to_core(host: &HostWeights) -> WakeCnnWeights {
             k: host.cfg.k,
             hidden: host.cfg.hidden,
             pool_chunks: host.cfg.pool_chunks,
+            res_blocks: host.cfg.res_blocks,
+            attn: host.cfg.attn,
+            pcen: host.cfg.pcen,
         },
         host.conv1_w.clone(),
         host.conv1_b.clone(),
@@ -193,6 +250,12 @@ pub fn host_to_core(host: &HostWeights) -> WakeCnnWeights {
         host.fc1_b.clone(),
         host.fc2_w.clone(),
         host.fc2_b.clone(),
+    )
+    .with_extras(
+        host.res_w.clone(),
+        host.res_b.clone(),
+        host.attn_w.clone(),
+        host.attn_b.clone(),
     )
 }
 
@@ -235,6 +298,7 @@ pub fn stub_bundle_n(
         config,
         weights,
         sources,
+        verifier: None,
     }
 }
 

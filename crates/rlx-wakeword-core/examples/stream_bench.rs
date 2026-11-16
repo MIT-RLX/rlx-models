@@ -19,6 +19,9 @@ fn main() {
         k: 3,
         hidden: 128,
         pool_chunks: 4,
+        res_blocks: 0,
+        attn: false,
+        pcen: false,
     };
     for (name, cfg) in [
         ("lite", WakeCnnConfig::lite()),

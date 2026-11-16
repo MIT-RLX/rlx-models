@@ -34,6 +34,12 @@ pub struct WakeCnnConfig {
     pub hidden: usize,
     /// See `rlx_wakeword_core::WakeCnnConfig::pool_chunks` (1: one average over the window).
     pub pool_chunks: usize,
+    /// See `rlx_wakeword_core::WakeCnnConfig`: dilated residual blocks after the third layer,
+    /// attention pooling, the PCEN front end. Run such weights with `rlx_wakeword_core`'s
+    /// engine; [`WakeCnn`] here is the plain network only.
+    pub res_blocks: usize,
+    pub attn: bool,
+    pub pcen: bool,
 }
 
 impl WakeCnnConfig {
@@ -46,6 +52,9 @@ impl WakeCnnConfig {
             k: 3,
             hidden: 64,
             pool_chunks: 1,
+            res_blocks: 0,
+            attn: false,
+            pcen: false,
         }
     }
 
@@ -59,7 +68,15 @@ impl WakeCnnConfig {
             k: 3,
             hidden: 128,
             pool_chunks: 1,
+            res_blocks: 0,
+            attn: false,
+            pcen: false,
         }
+    }
+
+    /// The pooled vector's length (the first dense layer's input).
+    pub fn pooled_len(&self) -> usize {
+        self.c3 * (self.pool_chunks.max(1) + usize::from(self.attn))
     }
 
     /// `lite`, `mid` or `full`.
@@ -81,6 +98,9 @@ impl WakeCnnConfig {
             k: 3,
             hidden: 256,
             pool_chunks: 1,
+            res_blocks: 0,
+            attn: false,
+            pcen: false,
         }
     }
 }
@@ -98,6 +118,12 @@ pub struct WakeCnnWeights {
     pub fc1_b: Vec<f32>,
     pub fc2_w: Vec<f32>,
     pub fc2_b: Vec<f32>,
+    /// Residual blocks (`cfg.res_blocks`): `[c3, c3, k]` weights and `[c3]` biases each.
+    pub res_w: Vec<Vec<f32>>,
+    pub res_b: Vec<Vec<f32>>,
+    /// Attention pooling (`cfg.attn`): `[c3]` score weights, `[1]` bias.
+    pub attn_w: Vec<f32>,
+    pub attn_b: Vec<f32>,
 }
 
 impl WakeCnnWeights {
@@ -118,10 +144,20 @@ impl WakeCnnWeights {
             conv2_b: vec![0.0; cfg.c2],
             conv3_w: fill(cfg.c3 * cfg.c2 * k, &mut next),
             conv3_b: vec![0.0; cfg.c3],
-            fc1_w: fill(cfg.hidden * cfg.c3 * cfg.pool_chunks.max(1), &mut next),
+            fc1_w: fill(cfg.hidden * cfg.pooled_len(), &mut next),
             fc1_b: vec![0.0; cfg.hidden],
             fc2_w: fill(cfg.hidden, &mut next),
             fc2_b: vec![-2.0], // bias toward low score on stub
+            res_w: (0..cfg.res_blocks)
+                .map(|_| fill(cfg.c3 * cfg.c3 * k, &mut next))
+                .collect(),
+            res_b: (0..cfg.res_blocks).map(|_| vec![0.0; cfg.c3]).collect(),
+            attn_w: if cfg.attn {
+                fill(cfg.c3, &mut next)
+            } else {
+                Vec::new()
+            },
+            attn_b: if cfg.attn { vec![0.0] } else { Vec::new() },
             cfg,
         }
     }
@@ -150,13 +186,26 @@ impl WakeCnnWeights {
             conv2_b: vec![0.0; cfg.c2],
             conv3_w: fill(cfg.c3 * cfg.c2 * k, cfg.c2 * k),
             conv3_b: vec![0.0; cfg.c3],
-            fc1_w: fill(
-                cfg.hidden * cfg.c3 * cfg.pool_chunks.max(1),
-                cfg.c3 * cfg.pool_chunks.max(1),
-            ),
+            fc1_w: fill(cfg.hidden * cfg.pooled_len(), cfg.pooled_len()),
             fc1_b: vec![0.0; cfg.hidden],
             fc2_w: fill(cfg.hidden, cfg.hidden),
             fc2_b: vec![0.0],
+            // Residual branches start small: each block begins close to the identity.
+            res_w: (0..cfg.res_blocks)
+                .map(|_| {
+                    fill(cfg.c3 * cfg.c3 * k, cfg.c3 * k)
+                        .into_iter()
+                        .map(|v| v * 0.1)
+                        .collect()
+                })
+                .collect(),
+            res_b: (0..cfg.res_blocks).map(|_| vec![0.0; cfg.c3]).collect(),
+            attn_w: if cfg.attn {
+                fill(cfg.c3, cfg.c3)
+            } else {
+                Vec::new()
+            },
+            attn_b: if cfg.attn { vec![0.0] } else { Vec::new() },
             cfg,
         }
     }
@@ -173,6 +222,14 @@ impl WakeCnnWeights {
         map.insert("fc1.bias".into(), self.fc1_b.clone());
         map.insert("fc2.weight".into(), self.fc2_w.clone());
         map.insert("fc2.bias".into(), self.fc2_b.clone());
+        for (i, (w, b)) in self.res_w.iter().zip(&self.res_b).enumerate() {
+            map.insert(format!("res{i}.weight"), w.clone());
+            map.insert(format!("res{i}.bias"), b.clone());
+        }
+        if self.cfg.attn {
+            map.insert("attn.weight".into(), self.attn_w.clone());
+            map.insert("attn.bias".into(), self.attn_b.clone());
+        }
         map.insert(
             "cfg".into(),
             vec![
@@ -183,6 +240,9 @@ impl WakeCnnWeights {
                 self.cfg.k as f32,
                 self.cfg.hidden as f32,
                 self.cfg.pool_chunks.max(1) as f32,
+                self.cfg.res_blocks as f32,
+                f32::from(u8::from(self.cfg.attn)),
+                f32::from(u8::from(self.cfg.pcen)),
             ],
         );
         save_f32_map(path, &map)
@@ -205,9 +265,16 @@ impl WakeCnnWeights {
             hidden: cfg_v[5] as usize,
             // Absent in older files: one average over the window.
             pool_chunks: cfg_v.get(6).map_or(1, |&v| (v as usize).max(1)),
+            res_blocks: cfg_v.get(7).map_or(0, |&v| v as usize),
+            attn: cfg_v.get(8).is_some_and(|&v| v != 0.0),
+            pcen: cfg_v.get(9).is_some_and(|&v| v != 0.0),
+        };
+        let get = |k: &str| -> Result<Vec<f32>> {
+            map.get(k)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing {k}"))
         };
         Ok(Self {
-            cfg,
             conv1_w: map["conv1.weight"].clone(),
             conv1_b: map["conv1.bias"].clone(),
             conv2_w: map["conv2.weight"].clone(),
@@ -218,6 +285,23 @@ impl WakeCnnWeights {
             fc1_b: map["fc1.bias"].clone(),
             fc2_w: map["fc2.weight"].clone(),
             fc2_b: map["fc2.bias"].clone(),
+            res_w: (0..cfg.res_blocks)
+                .map(|i| get(&format!("res{i}.weight")))
+                .collect::<Result<_>>()?,
+            res_b: (0..cfg.res_blocks)
+                .map(|i| get(&format!("res{i}.bias")))
+                .collect::<Result<_>>()?,
+            attn_w: if cfg.attn {
+                get("attn.weight")?
+            } else {
+                Vec::new()
+            },
+            attn_b: if cfg.attn {
+                get("attn.bias")?
+            } else {
+                Vec::new()
+            },
+            cfg,
         })
     }
 
@@ -256,6 +340,11 @@ pub struct WakeCnn {
 
 impl WakeCnn {
     pub fn new(weights: WakeCnnWeights) -> Self {
+        let c = &weights.cfg;
+        assert!(
+            c.res_blocks == 0 && !c.attn && !c.pcen,
+            "residual blocks, attention pooling and PCEN run in rlx_wakeword_core::WakeCnn"
+        );
         Self {
             // ~1.3 s of mel frames at hop 160 (~8 frames per 80 ms chunk → keep 40)
             window_frames: 40,

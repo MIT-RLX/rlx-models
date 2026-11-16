@@ -9,12 +9,27 @@ No RLX runtime dependency — suitable for MCU / FPGA ports and WASM (via [`rlx-
 | Module | Role |
 |--------|------|
 | `mel` | 16 kHz mel frontend (OWW-compatible hop / norm) |
-| `cnn` | Lite / full `WakeCnn` + `WakeCnnWeights` |
+| `pcen` | Per-channel energy normalization over the mel features (stateful, streaming) |
+| `cnn` | Lite / mid / full `WakeCnn` + `WakeCnnWeights`, streaming, K outputs |
 | `ops` | Pure f32 conv / GEMV / pool (no BLAS) |
 | `ternary` | Exact `{−1,0,+1}` quantize, trit pack, fused add/sub kernels |
 | `pack` | `.rlxw` header (`RLXW` magic; dtype 0=f32, 2=ternary) |
 
-Weight field layout matches [`rlx-wake`](../rlx-wake) (`conv1..3`, `fc1`, `fc2`, `cfg`).
+Weight field layout matches [`rlx-wake`](../rlx-wake) (`conv1..3`, `res{i}`, `attn`, `fc1`, `fc2`, `cfg`).
+
+## Network options (`WakeCnnConfig`)
+
+| Field | Effect |
+|-------|--------|
+| `pool_chunks` | The last layer averaged in this many ordered stretches of the window (1: one average) |
+| `res_blocks` | Residual blocks after the third layer, dilated 1, 2, 4, …: each output hears ~1.3 s with 4 instead of 90 ms |
+| `attn` | Attention pooling (bounded scores, softmax over time), appended to the stretch averages |
+| `pcen` | PCEN on the input frames; its smoother is carried across pushes |
+
+`WakeCnn` streams: when the window slides by a 40 ms hop, the first three layers recompute only the
+positions that changed; residual blocks and pooling run over the third layer's output. Scores are
+bit-identical to scoring the window from scratch (`tests/streaming.rs`). `score_window` scores the
+current window on demand (a verifier fed with `append_mel_frames`).
 
 ## Ternary
 

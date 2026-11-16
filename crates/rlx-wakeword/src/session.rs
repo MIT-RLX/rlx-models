@@ -42,6 +42,13 @@ struct PhraseHead {
     last_fire_ms: f32,
     /// Hops in a row at or above the threshold.
     above: usize,
+    /// Its score is the mean of its last this many (see [`WakewordConfig::smooth_hops`]).
+    smooth: usize,
+    /// The verifier's score it needs, and the verifier output scoring it (with a verifier).
+    verify_threshold: Option<f32>,
+    verify_output: usize,
+    /// The verifier said no: it does not ask again until the score drops below the threshold.
+    vetoed: bool,
     /// The last [`SCORE_HISTORY`] scores (a ring; 0 when not scored).
     recent: [f32; SCORE_HISTORY],
     next: usize,
@@ -52,6 +59,22 @@ impl PhraseHead {
         self.recent[self.next] = score;
         self.next = (self.next + 1) % SCORE_HISTORY;
     }
+
+    /// The mean of the last `smooth` recorded scores.
+    fn smoothed(&self) -> f32 {
+        let n = self.smooth.clamp(1, SCORE_HISTORY);
+        (1..=n)
+            .map(|i| self.recent[(self.next + SCORE_HISTORY - i) % SCORE_HISTORY])
+            .sum::<f32>()
+            / n as f32
+    }
+}
+
+/// A second network asked only when a phrase fires (a larger one: run on the robot a few times
+/// a minute, not every hop). It is fed every frame without scoring.
+struct Verifier {
+    net: WakeCnn,
+    threshold: f32,
 }
 
 pub struct WakewordSession {
@@ -61,6 +84,7 @@ pub struct WakewordSession {
     /// one (streaming) forward per hop.
     nets: Vec<WakeCnn>,
     heads: Vec<PhraseHead>,
+    verifier: Option<Verifier>,
     pcm_buf: Vec<f32>,
     /// Rolling PCM for optional speaker-id scoring (≈ context_ms).
     pcm_ring: Vec<f32>,
@@ -111,6 +135,12 @@ impl WakewordSession {
                 let pc = cfg.phrases.iter().find(|p| p.id == id);
                 let thr = pc.map(|p| p.threshold).unwrap_or(0.5);
                 let min_hops = pc.and_then(|p| p.min_hops);
+                let smooth = pc
+                    .and_then(|p| p.smooth_hops)
+                    .unwrap_or(cfg.smooth_hops)
+                    .max(1);
+                let verify_threshold = pc.and_then(|p| p.verify_threshold);
+                let verify_output = pc.and_then(|p| p.verify_output).unwrap_or(output);
                 heads.push(PhraseHead {
                     id,
                     threshold: thr,
@@ -119,6 +149,10 @@ impl WakewordSession {
                     min_hops,
                     last_fire_ms: -1.0e9,
                     above: 0,
+                    smooth,
+                    verify_threshold,
+                    verify_output,
+                    vetoed: false,
                     recent: [0.0; SCORE_HISTORY],
                     next: 0,
                 });
@@ -139,6 +173,7 @@ impl WakewordSession {
             cfg,
             nets,
             heads,
+            verifier: None,
             pcm_buf: Vec::new(),
             pcm_ring: Vec::new(),
             samples_seen: 0,
@@ -150,6 +185,22 @@ impl WakewordSession {
             #[cfg(feature = "speaker-id")]
             speaker: None,
         })
+    }
+
+    /// Ask `weights` (scoring a `context_ms` window) before any phrase fires: the phrase's
+    /// verifier output must reach its `verify_threshold`, else `threshold`.
+    pub fn with_verifier(
+        mut self,
+        weights: WakeCnnWeights,
+        threshold: f32,
+        context_ms: f32,
+    ) -> Self {
+        let frames = crate::config::frames_for(context_ms, MelConfig::default().hop_length);
+        self.verifier = Some(Verifier {
+            net: WakeCnn::new(weights).with_window_frames(frames),
+            threshold,
+        });
+        self
     }
 
     pub fn with_device_label(mut self, label: impl Into<String>) -> Self {
@@ -219,6 +270,10 @@ impl WakewordSession {
                 min_hops: None,
                 last_fire_ms: -1.0e9,
                 above: 0,
+                smooth: self.cfg.smooth_hops.max(1),
+                verify_threshold: None,
+                verify_output: 0,
+                vetoed: false,
                 recent: [0.0; SCORE_HISTORY],
                 next: 0,
             });
@@ -240,9 +295,13 @@ impl WakewordSession {
         for n in &mut self.nets {
             n.reset();
         }
+        if let Some(v) = &mut self.verifier {
+            v.net.reset();
+        }
         for h in &mut self.heads {
             h.last_fire_ms = -1.0e9;
             h.above = 0;
+            h.vetoed = false;
             h.recent = [0.0; SCORE_HISTORY];
         }
         #[cfg(feature = "earshot")]
@@ -256,7 +315,7 @@ impl WakewordSession {
 
     /// The highest score `phrase_id` had over the last [`SCORE_HISTORY`] scored hops (`None`
     /// for an unknown phrase). With several phrases, a detection whose rival scored higher
-    /// just before or after it is most likely the rival ("Hey Peachy" vs "Bye Peachy").
+    /// just before or after it is most likely the rival ("Hey <name>" vs "Bye <name>").
     pub fn peak_score(&self, phrase_id: &str) -> Option<f32> {
         self.heads
             .iter()
@@ -287,6 +346,9 @@ impl WakewordSession {
         for n in &mut self.nets {
             n.append_mel_frames(&frames);
         }
+        if let Some(v) = &mut self.verifier {
+            v.net.append_mel_frames(&frames);
+        }
         self.samples_seen += used;
         buf.drain(..used);
         self.pcm_buf = buf;
@@ -310,6 +372,9 @@ impl WakewordSession {
             // The mel window is fed either way (the VAD needs a few frames to be sure, and
             // the phrase onset must still be in the window then); only scoring is gated.
             let frames = self.mel.push(chunk);
+            if let Some(v) = &mut self.verifier {
+                v.net.append_mel_frames(&frames);
+            }
             let speech = self.vad_allows(chunk);
             if !speech {
                 for n in &mut self.nets {
@@ -330,13 +395,29 @@ impl WakewordSession {
                 })
                 .collect();
             let mut fires: Vec<(String, f32)> = Vec::new();
+            // The verifier's scores, computed at most once a hop, when something fires.
+            let mut verified: Option<Vec<f32>> = None;
             for h in &mut self.heads {
-                let score = scores[h.net][h.output];
-                h.record(score);
+                h.record(scores[h.net][h.output]);
+                let score = h.smoothed();
                 h.above = if score >= h.threshold { h.above + 1 } else { 0 };
-                let mut fire = h.above >= h.min_hops.unwrap_or(self.cfg.min_hops).max(1);
+                if h.above == 0 {
+                    h.vetoed = false;
+                }
+                let mut fire =
+                    h.above >= h.min_hops.unwrap_or(self.cfg.min_hops).max(1) && !h.vetoed;
                 if fire && t_ms - h.last_fire_ms < self.cfg.cooldown_ms {
                     fire = false;
+                }
+                if fire && let Some(v) = &mut self.verifier {
+                    let vs = verified.get_or_insert_with(|| {
+                        v.net.score_window().map_or_else(Vec::new, <[f32]>::to_vec)
+                    });
+                    let need = h.verify_threshold.unwrap_or(v.threshold);
+                    if vs.get(h.verify_output).is_none_or(|&p| p < need) {
+                        fire = false;
+                        h.vetoed = true;
+                    }
                 }
                 if fire {
                     h.last_fire_ms = t_ms;

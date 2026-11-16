@@ -9,7 +9,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::ops::{conv1d_nchw, gemv_bias, global_mean_pool_chw, relu, sigmoid};
+use crate::ops::{conv1d_dilated, conv1d_nchw, gemv_bias, global_mean_pool_chw, relu, sigmoid};
 use crate::ternary::{
     TernaryOpts, TernaryStats, conv1d_ternary, gemv_bias_ternary, is_ternary_f32, pack_trits,
     ternarize_inplace,
@@ -24,9 +24,18 @@ pub struct WakeCnnConfig {
     pub k: usize,
     pub hidden: usize,
     /// The last layer is averaged over this many consecutive stretches of the window, kept in
-    /// order (1: over the whole window). With phrases that share a word ("Hey/Bye/Hi Peachy"),
+    /// order (1: over the whole window). With phrases that share a word ("Hey/Bye/Hi <name>"),
     /// a single average loses what came before it; a few stretches keep the order.
     pub pool_chunks: usize,
+    /// Residual blocks after the third layer, on its 40 ms grid: block `i` a `k`-tap
+    /// convolution dilated `2^i` (same length), added to its input, then ReLU. Three plain
+    /// layers hear 90 ms each; four blocks widen that to about 1.3 s. 0: none.
+    pub res_blocks: usize,
+    /// Attention pooling: the window's positions weighted by a learned, bounded score
+    /// (softmax over time), one more `c3` vector after the stretch averages.
+    pub attn: bool,
+    /// PCEN front end ([`crate::pcen`]) on the input frames instead of plain log-mel.
+    pub pcen: bool,
 }
 
 impl WakeCnnConfig {
@@ -39,6 +48,9 @@ impl WakeCnnConfig {
             k: 3,
             hidden: 64,
             pool_chunks: 1,
+            res_blocks: 0,
+            attn: false,
+            pcen: false,
         }
     }
 
@@ -51,9 +63,26 @@ impl WakeCnnConfig {
             k: 3,
             hidden: 256,
             pool_chunks: 1,
+            res_blocks: 0,
+            attn: false,
+            pcen: false,
         }
     }
+
+    /// The pooled vector's length (the first dense layer's input).
+    pub fn pooled_len(&self) -> usize {
+        self.c3 * (self.pool_chunks.max(1) + usize::from(self.attn))
+    }
+
+    /// Residual block `i`'s dilation.
+    pub fn dilation(i: usize) -> usize {
+        1 << i
+    }
 }
+
+/// Attention scores are `ATTN_BOUND · tanh(·)`: bounded, so the softmax needs no max shift and
+/// training and the engine compute the same thing.
+pub const ATTN_BOUND: f32 = 8.0;
 
 #[derive(Clone)]
 pub struct WakeCnnWeights {
@@ -68,6 +97,12 @@ pub struct WakeCnnWeights {
     pub fc1_b: Vec<f32>,
     pub fc2_w: Vec<f32>,
     pub fc2_b: Vec<f32>,
+    /// Residual blocks (`cfg.res_blocks`): weights `[c3, c3, k]` and biases `[c3]` each.
+    pub res_w: Vec<Vec<f32>>,
+    pub res_b: Vec<Vec<f32>>,
+    /// Attention pooling (`cfg.attn`): score weights `[c3]` and bias `[1]`.
+    pub attn_w: Vec<f32>,
+    pub attn_b: Vec<f32>,
 }
 
 impl WakeCnnWeights {
@@ -88,10 +123,20 @@ impl WakeCnnWeights {
             conv2_b: vec![0.0; cfg.c2],
             conv3_w: fill(cfg.c3 * cfg.c2 * k, &mut next),
             conv3_b: vec![0.0; cfg.c3],
-            fc1_w: fill(cfg.hidden * cfg.c3 * cfg.pool_chunks.max(1), &mut next),
+            fc1_w: fill(cfg.hidden * cfg.pooled_len(), &mut next),
             fc1_b: vec![0.0; cfg.hidden],
             fc2_w: fill(cfg.hidden, &mut next),
             fc2_b: vec![-2.0],
+            res_w: (0..cfg.res_blocks)
+                .map(|_| fill(cfg.c3 * cfg.c3 * k, &mut next))
+                .collect(),
+            res_b: (0..cfg.res_blocks).map(|_| vec![0.0; cfg.c3]).collect(),
+            attn_w: if cfg.attn {
+                fill(cfg.c3, &mut next)
+            } else {
+                Vec::new()
+            },
+            attn_b: if cfg.attn { vec![0.0] } else { Vec::new() },
             cfg,
         }
     }
@@ -120,13 +165,26 @@ impl WakeCnnWeights {
             conv2_b: vec![0.0; cfg.c2],
             conv3_w: fill(cfg.c3 * cfg.c2 * k, cfg.c2 * k),
             conv3_b: vec![0.0; cfg.c3],
-            fc1_w: fill(
-                cfg.hidden * cfg.c3 * cfg.pool_chunks.max(1),
-                cfg.c3 * cfg.pool_chunks.max(1),
-            ),
+            fc1_w: fill(cfg.hidden * cfg.pooled_len(), cfg.pooled_len()),
             fc1_b: vec![0.0; cfg.hidden],
             fc2_w: fill(cfg.hidden, cfg.hidden),
             fc2_b: vec![0.0],
+            // Residual branches start small: each block begins close to the identity.
+            res_w: (0..cfg.res_blocks)
+                .map(|_| {
+                    fill(cfg.c3 * cfg.c3 * k, cfg.c3 * k)
+                        .into_iter()
+                        .map(|v| v * 0.1)
+                        .collect()
+                })
+                .collect(),
+            res_b: (0..cfg.res_blocks).map(|_| vec![0.0; cfg.c3]).collect(),
+            attn_w: if cfg.attn {
+                fill(cfg.c3, cfg.c3)
+            } else {
+                Vec::new()
+            },
+            attn_b: if cfg.attn { vec![0.0] } else { Vec::new() },
             cfg,
         }
     }
@@ -157,7 +215,27 @@ impl WakeCnnWeights {
             fc1_b,
             fc2_w,
             fc2_b,
+            res_w: Vec::new(),
+            res_b: Vec::new(),
+            attn_w: Vec::new(),
+            attn_b: Vec::new(),
         }
+    }
+
+    /// The residual blocks' and attention pooling's tensors (`cfg.res_blocks`, `cfg.attn`), for
+    /// weights built with [`Self::from_parts`].
+    pub fn with_extras(
+        mut self,
+        res_w: Vec<Vec<f32>>,
+        res_b: Vec<Vec<f32>>,
+        attn_w: Vec<f32>,
+        attn_b: Vec<f32>,
+    ) -> Self {
+        self.res_w = res_w;
+        self.res_b = res_b;
+        self.attn_w = attn_w;
+        self.attn_b = attn_b;
+        self
     }
 
     /// Convert selected weight tensors to exact `{−1,0,+1}` (biases unchanged).
@@ -222,6 +300,11 @@ pub struct WakeCnn {
     y1: Vec<f32>,
     y2: Vec<f32>,
     y3: Vec<f32>,
+    /// The residual blocks' output (`cfg.res_blocks > 0`), and scratch for a block's branch.
+    yr: Vec<f32>,
+    branch: Vec<f32>,
+    /// The PCEN smoother (`cfg.pcen`), carried across pushes.
+    pcen_m: Vec<f32>,
     /// The layer state is the last scored window's, `pending` frames ago.
     stream: bool,
     pending: usize,
@@ -255,6 +338,9 @@ impl WakeCnn {
             y1: Vec::new(),
             y2: Vec::new(),
             y3: Vec::new(),
+            yr: Vec::new(),
+            branch: Vec::new(),
+            pcen_m: Vec::new(),
             stream: false,
             pending: 0,
             probs: vec![0.0; n_out],
@@ -281,13 +367,18 @@ impl WakeCnn {
 
     pub fn reset(&mut self) {
         self.mel_buf.clear();
+        self.pcen_m.clear();
         self.stream = false;
         self.pending = 0;
     }
 
     fn append(&mut self, frames: &[f32]) {
         let n_mels = self.weights.cfg.n_mels;
+        let at = self.mel_buf.len();
         self.mel_buf.extend_from_slice(frames);
+        if self.weights.cfg.pcen {
+            crate::pcen::pcen_inplace(&mut self.mel_buf[at..], n_mels, &mut self.pcen_m);
+        }
         // Compacted at twice the window, so sliding by a hop costs no shifting.
         let max_len = self.window_frames * n_mels;
         if self.mel_buf.len() >= 2 * max_len {
@@ -341,8 +432,59 @@ impl WakeCnn {
         }
         self.stream = !ternary;
         self.pending = 0;
+        self.res_forward();
         self.head();
         Some(&self.probs)
+    }
+
+    /// Score the current window now, from scratch (whatever was slid in without scoring):
+    /// a verifier fed with [`Self::append_mel_frames`] and asked only when a detector fires.
+    /// `None` until the window is full.
+    pub fn score_window(&mut self) -> Option<&[f32]> {
+        if self.window().len() < self.weights.cfg.n_mels * self.window_frames {
+            return None;
+        }
+        self.forward_full();
+        self.stream = false;
+        self.pending = 0;
+        self.res_forward();
+        self.head();
+        Some(&self.probs)
+    }
+
+    /// The residual blocks over the third layer's whole output (on the robot about 2.5 M
+    /// multiply-adds a hop at mid width with four blocks; cheap next to recomputing the window,
+    /// and exact).
+    fn res_forward(&mut self) {
+        let cfg = &self.weights.cfg;
+        if cfg.res_blocks == 0 {
+            return;
+        }
+        let (c, k) = (cfg.c3, cfg.k);
+        let t = self.lens()[3];
+        let mut yr = core::mem::take(&mut self.yr);
+        let mut branch = core::mem::take(&mut self.branch);
+        yr.clear();
+        yr.extend_from_slice(&self.y3[..c * t]);
+        branch.resize(c * t, 0.0);
+        for i in 0..cfg.res_blocks {
+            conv1d_dilated(
+                &yr,
+                c,
+                t,
+                &self.weights.res_w[i],
+                c,
+                k,
+                WakeCnnConfig::dilation(i),
+                &self.weights.res_b[i],
+                &mut branch,
+            );
+            for (y, z) in yr.iter_mut().zip(&branch) {
+                *y = relu(*y + *z);
+            }
+        }
+        self.yr = yr;
+        self.branch = branch;
     }
 
     /// Layer `l`'s (input channels, output channels, kernel weights, bias).
@@ -549,19 +691,28 @@ impl WakeCnn {
         let t3 = self.lens()[3];
         let n_out = self.weights.n_out();
         let chunks = cfg.pool_chunks.max(1);
-        self.pooled.resize(cfg.c3 * chunks, 0.0);
-        if chunks == 1 {
-            global_mean_pool_chw(&self.y3[..cfg.c3 * t3], cfg.c3, t3, &mut self.pooled);
+        let top: &[f32] = if cfg.res_blocks > 0 {
+            &self.yr
         } else {
-            pool_chunks(
-                &self.y3[..cfg.c3 * t3],
+            &self.y3[..cfg.c3 * t3]
+        };
+        self.pooled.resize(cfg.pooled_len(), 0.0);
+        if chunks == 1 {
+            global_mean_pool_chw(top, cfg.c3, t3, &mut self.pooled[..cfg.c3]);
+        } else {
+            pool_chunks(top, cfg.c3, t3, chunks, &mut self.pooled[..cfg.c3 * chunks]);
+        }
+        if cfg.attn {
+            attention_pool(
+                top,
                 cfg.c3,
                 t3,
-                chunks,
-                &mut self.pooled,
+                &self.weights.attn_w,
+                self.weights.attn_b[0],
+                &mut self.pooled[cfg.c3 * chunks..],
             );
         }
-        let n_in = cfg.c3 * chunks;
+        let n_in = cfg.pooled_len();
         self.hidden.resize(cfg.hidden, 0.0);
         let fc_t = self.weights.fc_ternary();
         let w = &self.weights;
@@ -625,6 +776,25 @@ pub fn pool_chunks(y: &[f32], c: usize, t: usize, chunks: usize, out: &mut [f32]
             let row = &y[ch * t + lo..ch * t + hi];
             out[i * c + ch] = row.iter().sum::<f32>() / row.len().max(1) as f32;
         }
+    }
+}
+
+/// Attention pooling of a channel-major `[c, t]` map: score per position
+/// `ATTN_BOUND · tanh(b + Σ_c w_c·y[c, t])`, softmax over positions, the weighted mean of each
+/// channel into `out [c]`. Shared with training's graph.
+pub fn attention_pool(y: &[f32], c: usize, t: usize, w: &[f32], b: f32, out: &mut [f32]) {
+    let mut a = vec![0.0f32; t];
+    for (tt, s) in a.iter_mut().enumerate() {
+        let mut u = b;
+        for ch in 0..c {
+            u += w[ch] * y[ch * t + tt];
+        }
+        *s = (ATTN_BOUND * u.tanh()).exp();
+    }
+    let sum: f32 = a.iter().sum();
+    for ch in 0..c {
+        let row = &y[ch * t..(ch + 1) * t];
+        out[ch] = row.iter().zip(&a).map(|(v, p)| v * p).sum::<f32>() / sum;
     }
 }
 

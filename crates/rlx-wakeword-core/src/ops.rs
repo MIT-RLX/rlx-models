@@ -232,3 +232,43 @@ mod conv_tests {
         }
     }
 }
+
+/// Same-length conv1d, dilation `d`: `out[o, t] = b[o] + Σ_i Σ_j w[o, i, j] · x[i, t + (j − k/2)·d]`
+/// (zero outside the input). `x [c_in, t]`, `w [c_out, c_in, k]`, `out [c_out, t]`. The residual
+/// blocks' layer; each output row accumulates whole shifted input rows (vectorizes well).
+#[allow(clippy::too_many_arguments)]
+pub fn conv1d_dilated(
+    x: &[f32],
+    c_in: usize,
+    t: usize,
+    w: &[f32],
+    c_out: usize,
+    k: usize,
+    d: usize,
+    bias: &[f32],
+    out: &mut [f32],
+) {
+    let pad = (k / 2) as isize;
+    for o in 0..c_out {
+        let row = &mut out[o * t..(o + 1) * t];
+        row.fill(bias[o]);
+        for i in 0..c_in {
+            let xi = &x[i * t..(i + 1) * t];
+            for j in 0..k {
+                let wv = w[(o * c_in + i) * k + j];
+                let off = (j as isize - pad) * d as isize;
+                let (lo, hi) = (
+                    (-off).max(0) as usize,
+                    (t as isize - off).clamp(0, t as isize) as usize,
+                );
+                if lo >= hi {
+                    continue;
+                }
+                let src = &xi[(lo as isize + off) as usize..(hi as isize + off) as usize];
+                for (r, &v) in row[lo..hi].iter_mut().zip(src) {
+                    *r += wv * v;
+                }
+            }
+        }
+    }
+}

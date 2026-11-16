@@ -21,6 +21,13 @@ pub struct PhraseConfig {
     /// This phrase's confirmation hops, when they differ from [`WakewordConfig::min_hops`] (a
     /// longer phrase holds its score over more hops, and can ask for more).
     pub min_hops: Option<usize>,
+    /// This phrase's score smoothing, when it differs from [`WakewordConfig::smooth_hops`].
+    pub smooth_hops: Option<usize>,
+    /// With a verifier ([`crate::session::WakewordSession::with_verifier`]): the verifier's
+    /// score this phrase needs (else the verifier's default), and which of its outputs scores
+    /// the phrase (else the detector's output index).
+    pub verify_threshold: Option<f32>,
+    pub verify_output: Option<usize>,
 }
 
 impl PhraseConfig {
@@ -30,6 +37,9 @@ impl PhraseConfig {
             threshold,
             context_ms: None,
             min_hops: None,
+            smooth_hops: None,
+            verify_threshold: None,
+            verify_output: None,
         }
     }
 }
@@ -44,6 +54,9 @@ pub struct WakewordConfig {
     /// A phrase fires only after this many hops in a row at or above its threshold: a real
     /// phrase holds its score while the window slides over it, a noise burst rarely does.
     pub min_hops: usize,
+    /// Each phrase's score is the mean of its last this many hops before the threshold and
+    /// `min_hops` see it: a one-hop dip in a held phrase does not break the run. 1: raw.
+    pub smooth_hops: usize,
     pub phrases: Vec<PhraseConfig>,
     /// When `speaker-id` feature is on and a gate is attached, filter candidates.
     pub speaker_id: bool,
@@ -58,6 +71,7 @@ impl Default for WakewordConfig {
             vad_threshold: DEFAULT_VAD_THRESHOLD,
             cooldown_ms: DEFAULT_COOLDOWN_MS,
             min_hops: 1,
+            smooth_hops: 1,
             phrases: Vec::new(),
             speaker_id: cfg!(feature = "speaker-id"),
         }

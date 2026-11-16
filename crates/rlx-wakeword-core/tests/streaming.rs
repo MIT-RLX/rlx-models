@@ -84,3 +84,74 @@ fn appending_without_scoring_then_scoring_is_still_exact() {
         .to_vec();
     assert_eq!(got, want);
 }
+
+/// Residual blocks and attention pooling (recomputed over the third layer each hop) keep
+/// streaming exact.
+#[test]
+fn residual_blocks_and_attention_stream_exactly() {
+    let mut w = WakeCnnWeights::he_init(
+        WakeCnnConfig {
+            pool_chunks: 4,
+            res_blocks: 3,
+            attn: true,
+            ..WakeCnnConfig::lite()
+        },
+        5,
+    );
+    w.fc2_b = vec![0.1, -0.2];
+    w.fc2_w = (0..2 * w.cfg.hidden)
+        .map(|i| ((i * 7919 % 211) as f32 - 105.0) / 400.0)
+        .collect();
+    let n_mels = w.cfg.n_mels;
+    let window = 120;
+    let all = frames(window + 200, n_mels);
+    let mut stream = WakeCnn::new(w.clone()).with_window_frames(window);
+    let mut scored = 0;
+    for at in (4..=all.len() / n_mels).step_by(4) {
+        let Some(got) = stream
+            .push_mel_frames_all(&all[(at - 4) * n_mels..at * n_mels])
+            .map(<[f32]>::to_vec)
+        else {
+            continue;
+        };
+        let want = WakeCnn::new(w.clone())
+            .with_window_frames(window)
+            .push_mel_frames_all(&all[(at - window) * n_mels..at * n_mels])
+            .unwrap()
+            .to_vec();
+        assert_eq!(got, want, "window ending at frame {at}");
+        assert!(got.iter().all(|p| p.is_finite() && *p > 0.0 && *p < 1.0));
+        scored += 1;
+    }
+    assert!(scored > 40);
+}
+
+/// With PCEN, the engine scores what a plain engine scores on the PCEN'd stream (the smoother
+/// carried across pushes, appended frames included).
+#[test]
+fn pcen_engine_is_pcen_then_the_network() {
+    let cfg = WakeCnnConfig {
+        pool_chunks: 4,
+        ..WakeCnnConfig::lite()
+    };
+    let plain = WakeCnnWeights::he_init(cfg.clone(), 9);
+    let mut with = plain.clone();
+    with.cfg.pcen = true;
+    let n_mels = cfg.n_mels;
+    let all: Vec<f32> = frames(300, n_mels).iter().map(|v| v * 0.3 + 1.2).collect();
+    let mut pcen_all = all.clone();
+    rlx_wakeword_core::pcen_inplace(&mut pcen_all, n_mels, &mut Vec::new());
+    let mut a = WakeCnn::new(with).with_window_frames(100);
+    let mut b = WakeCnn::new(plain).with_window_frames(100);
+    a.append_mel_frames(&all[..40 * n_mels]);
+    b.append_mel_frames(&pcen_all[..40 * n_mels]);
+    for at in (44..=300).step_by(4) {
+        let x = a
+            .push_mel_frames_all(&all[(at - 4) * n_mels..at * n_mels])
+            .map(<[f32]>::to_vec);
+        let y = b
+            .push_mel_frames_all(&pcen_all[(at - 4) * n_mels..at * n_mels])
+            .map(<[f32]>::to_vec);
+        assert_eq!(x, y, "frame {at}");
+    }
+}
